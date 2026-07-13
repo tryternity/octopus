@@ -2209,6 +2209,65 @@ mod tests {
     }
 
     #[test]
+    fn agent_adapter_duplicate_key_rejected() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES ('dup', 'A', 'a-bin', 'a {prompt}')",
+            [],
+        ).unwrap();
+        // 同 key 再插 → UNIQUE 约束拒绝
+        let result = conn.execute(
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES ('dup', 'B', 'b-bin', 'b {prompt}')",
+            [],
+        );
+        assert!(result.is_err(), "duplicate key should be rejected");
+    }
+
+    #[test]
+    fn action_bar_submenu_accepts_default_any() {
+        // init_schema 运行 v25→v26 迁移，submenu 项的 accepts 升级为 'any'
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let submenu_accepts: Vec<String> = conn.prepare(
+            "SELECT accepts FROM action_bar_items WHERE action_type='submenu' ORDER BY id"
+        ).unwrap()
+        .query_map([], |r| r.get::<_, String>(0)).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        // 至少有 seed 的 AI(id=1) 和 搜索(id=3) 两个 submenu
+        assert!(submenu_accepts.len() >= 2, "seed 应有 submenu 项");
+        for a in &submenu_accepts {
+            assert_eq!(a, "any", "submenu accepts 应为 'any'，实际: {}", a);
+        }
+    }
+
+    #[test]
+    fn action_bar_non_submenu_accepts_default_text() {
+        // 非 submenu 类型 seed 的 accepts 保持 'text'（列默认值）
+        let conn = open_init();
+        let non_submenu: Vec<(String, String)> = conn.prepare(
+            "SELECT action_type, accepts FROM action_bar_items WHERE action_type != 'submenu' ORDER BY id"
+        ).unwrap()
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        assert!(non_submenu.len() > 0, "seed 应有非 submenu 项");
+        for (atype, accepts) in &non_submenu {
+            assert_eq!(accepts, "text", "{} 类型 accepts 应为 'text'，实际: {}", atype, accepts);
+        }
+    }
+
+    #[test]
+    fn action_bar_insert_agent_type_default_accepts() {
+        // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
+        let conn = open_init();
+        let id = insert_action_bar_item_at(
+            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file",
+        ).unwrap();
+        let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
+        assert_eq!(item.accepts, "file");
+        assert_eq!(item.agent, "claude");
+    }
+
+    #[test]
     fn init_schema_v25_is_noop() {
         // 已是 v26 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();

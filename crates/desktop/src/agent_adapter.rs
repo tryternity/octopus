@@ -121,10 +121,66 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_escape_single_no_quotes() {
+        // 无单引号——直接包裹
+        let escaped = shell_escape_single("hello world");
+        assert_eq!(escaped, "'hello world'");
+    }
+
+    #[test]
+    fn test_shell_escape_single_empty() {
+        assert_eq!(shell_escape_single(""), "''");
+    }
+
+    #[test]
     fn test_builtin_adapters_has_claude_and_pi() {
         let builtins = builtin_adapters();
         let keys: Vec<&str> = builtins.iter().map(|a| a.key.as_str()).collect();
         assert!(keys.contains(&"claude"));
         assert!(keys.contains(&"pi"));
+    }
+
+    #[test]
+    fn test_builtin_adapters_are_marked_builtin() {
+        let builtins = builtin_adapters();
+        assert!(builtins.iter().all(|a| a.is_builtin));
+    }
+
+    #[test]
+    fn test_render_command_empty_files() {
+        // 空文件列表——{files} 和 {files_at} 渲染为空串
+        let cmd = render_command("tool {files} {files_at} \"{prompt}\"", "do something", &[], "/tmp");
+        assert_eq!(cmd, "tool   \"'do something'\"");
+    }
+
+    #[test]
+    fn test_render_command_no_placeholders() {
+        // 模板不含任何占位符——原样返回
+        let cmd = render_command("echo hello", "ignored", &["/a".into()], "/tmp");
+        assert_eq!(cmd, "echo hello");
+    }
+
+    #[test]
+    fn test_render_command_prompt_with_special_chars() {
+        // prompt 含 $ 和 ` ——shell_escape_single 用单引号包裹后不解释
+        let cmd = render_command("tool \"{prompt}\"", "echo $HOME `whoami`", &[], "/tmp");
+        assert_eq!(cmd, "tool \"'echo $HOME `whoami`'\"");
+    }
+
+    #[test]
+    fn test_render_command_single_file() {
+        let cmd = render_command("tool {files}", "", &["/path/to/file.pdf".into()], "/tmp");
+        assert_eq!(cmd, "tool /path/to/file.pdf");
+    }
+
+    #[test]
+    fn test_render_command_multiple_files_at() {
+        let cmd = render_command(
+            "tool {files_at}",
+            "",
+            &["/a.pdf".into(), "/b.jpg".into(), "/c.docx".into()],
+            "/tmp",
+        );
+        assert_eq!(cmd, "tool @/a.pdf @/b.jpg @/c.docx");
     }
 }

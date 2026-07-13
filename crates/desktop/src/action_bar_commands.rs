@@ -524,6 +524,32 @@ fn url_encode_path(path: &str) -> String {
     path.replace(' ', "%20")
 }
 
+/// 渲染 agent prompt 模板：替换 {{task}} 和 {{files}} 占位符。
+/// task: 用户输入的任务描述（无 {{task}} 占位符时忽略）
+/// files: 文件路径列表（换行分隔注入 {{files}}）
+pub fn render_agent_prompt(template: &str, task: &str, files: &[String]) -> String {
+    template
+        .replace("{{task}}", task)
+        .replace("{{files}}", &files.join("\n"))
+}
+
+/// 按格式格式化文件路径列表（copy_path 动作用）。
+/// format: "plain"（纯路径）/ "url"（file:// URL）/ "quoted"（带引号），其他值同 plain。
+pub fn format_paths(files: &[String], format: &str) -> String {
+    match format {
+        "url" => files.iter().map(|f| format!("file://{}", url_encode_path(f))).collect::<Vec<_>>().join("\n"),
+        "quoted" => files.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join("\n"),
+        _ => files.join("\n"),
+    }
+}
+
+/// 从文件列表推导工作目录：首个文件的父目录，无文件时 fallback HOME 或 /tmp。
+pub fn derive_cwd(files: &[String]) -> String {
+    files.first()
+        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_string_lossy().to_string()))
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+}
+
 // ── 脚本执行（spawn_script + wait_with_timeout + 运行时探测）──
 
 struct ScriptResult {
@@ -974,15 +1000,8 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             if !adapter.is_available {
                 return Err(format!("{} 未安装（未在 PATH 找到 `{}`）", adapter.display_name, adapter.detect_binary));
             }
-            // prompt 渲染：action_data 是模板，含 {{files}} {{task}}
-            // text 参数 = 用户输入的 task（或空，无 {{task}} 时）
-            let prompt = item.action_data
-                .replace("{{task}}", &text)
-                .replace("{{files}}", &app_state_files.join("\n"));
-            // cwd：首个文件的父目录
-            let cwd = app_state_files.first()
-                .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_string_lossy().to_string()))
-                .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+            let prompt = render_agent_prompt(&item.action_data, &text, &app_state_files);
+            let cwd = derive_cwd(&app_state_files);
             let cwd_path = std::path::Path::new(&cwd);
             let command = crate::agent_adapter::render_command(
                 &adapter.command_template, &prompt, &app_state_files, &cwd,
@@ -993,12 +1012,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             Ok(false)
         }
         "copy_path" => {
-            // 复制文件路径到剪贴板。format: plain / url / quoted
-            let formatted: String = match item.action_data.as_str() {
-                "url" => app_state_files.iter().map(|f| format!("file://{}", url_encode_path(f))).collect::<Vec<_>>().join("\n"),
-                "quoted" => app_state_files.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join("\n"),
-                _ => app_state_files.join("\n"), // plain
-            };
+            let formatted = format_paths(&app_state_files, &item.action_data);
             write_clipboard_text(app, &formatted);
             Ok(false)
         }
@@ -1067,4 +1081,130 @@ pub fn delete_agent_adapter(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapter>, String> {
     Ok(crate::agent_adapter::refresh_detection())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── render_agent_prompt ──
+
+    #[test]
+    fn test_render_agent_prompt_with_task_and_files() {
+        let prompt = render_agent_prompt(
+            "{{task}}\n\n文件列表：\n{{files}}",
+            "制作PPT",
+            &["/a.pdf".into(), "/b.pdf".into()],
+        );
+        assert_eq!(prompt, "制作PPT\n\n文件列表：\n/a.pdf\n/b.pdf");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_no_task_placeholder() {
+        // 无 {{task}}——task 参数被忽略
+        let prompt = render_agent_prompt("整理这些文件：{{files}}", "ignored task", &["/a".into()]);
+        assert_eq!(prompt, "整理这些文件：/a");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_no_files_placeholder() {
+        let prompt = render_agent_prompt("执行：{{task}}", "do something", &["/a".into()]);
+        assert_eq!(prompt, "执行：do something");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_no_placeholders() {
+        let prompt = render_agent_prompt("固定命令", "ignored", &[]);
+        assert_eq!(prompt, "固定命令");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_empty_task() {
+        let prompt = render_agent_prompt("{{task}}", "", &[]);
+        assert_eq!(prompt, "");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_empty_files() {
+        let prompt = render_agent_prompt("文件：{{files}}", "task", &[]);
+        assert_eq!(prompt, "文件：");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_multiple_files() {
+        let prompt = render_agent_prompt("{{files}}", "", &["/a".into(), "/b".into(), "/c".into()]);
+        assert_eq!(prompt, "/a\n/b\n/c");
+    }
+
+    // ── format_paths ──
+
+    #[test]
+    fn test_format_paths_plain() {
+        let result = format_paths(&["/a.pdf".into(), "/b.pdf".into()], "plain");
+        assert_eq!(result, "/a.pdf\n/b.pdf");
+    }
+
+    #[test]
+    fn test_format_paths_url() {
+        let result = format_paths(&["/a/b.pdf".into()], "url");
+        assert_eq!(result, "file:///a/b.pdf");
+    }
+
+    #[test]
+    fn test_format_paths_url_with_spaces() {
+        let result = format_paths(&["/a/b c.pdf".into()], "url");
+        assert_eq!(result, "file:///a/b%20c.pdf");
+    }
+
+    #[test]
+    fn test_format_paths_quoted() {
+        let result = format_paths(&["/a.pdf".into(), "/b.pdf".into()], "quoted");
+        assert_eq!(result, "\"/a.pdf\"\n\"/b.pdf\"");
+    }
+
+    #[test]
+    fn test_format_paths_unknown_format_defaults_plain() {
+        let result = format_paths(&["/a".into()], "unknown");
+        assert_eq!(result, "/a");
+    }
+
+    #[test]
+    fn test_format_paths_empty_list() {
+        assert_eq!(format_paths(&[], "plain"), "");
+        assert_eq!(format_paths(&[], "url"), "");
+        assert_eq!(format_paths(&[], "quoted"), "");
+    }
+
+    // ── url_encode_path ──
+
+    #[test]
+    fn test_url_encode_path_no_spaces() {
+        assert_eq!(url_encode_path("/a/b.pdf"), "/a/b.pdf");
+    }
+
+    #[test]
+    fn test_url_encode_path_multiple_spaces() {
+        assert_eq!(url_encode_path("/a/b c d.pdf"), "/a/b%20c%20d.pdf");
+    }
+
+    // ── derive_cwd ──
+
+    #[test]
+    fn test_derive_cwd_from_file() {
+        let cwd = derive_cwd(&["/Users/x/projects/file.pdf".into()]);
+        assert_eq!(cwd, "/Users/x/projects");
+    }
+
+    #[test]
+    fn test_derive_cwd_root_file() {
+        let cwd = derive_cwd(&["/file.txt".into()]);
+        assert_eq!(cwd, "/");
+    }
+
+    #[test]
+    fn test_derive_cwd_empty_files_fallback() {
+        // 空列表——fallback 到 HOME 或 /tmp（不验证具体值，只验证不 panic）
+        let cwd = derive_cwd(&[]);
+        assert!(!cwd.is_empty());
+    }
 }

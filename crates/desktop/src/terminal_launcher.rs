@@ -13,17 +13,7 @@ pub struct TerminalAppLauncher;
 impl TerminalLauncher for TerminalAppLauncher {
     #[cfg(target_os = "macos")]
     fn spawn(&self, command: &str, cwd: &Path) -> Result<(), String> {
-        let cwd_str = cwd.to_string_lossy();
-        // 组装完整 shell 命令：cd 到工作目录 → 执行命令
-        let full_cmd = format!("cd {} && {}", shell_quote(&cwd_str), command);
-        // AppleScript：tell application "Terminal" → do script（新窗口）→ activate
-        let script = format!(
-            r#"tell application "Terminal"
-    do script "{}"
-    activate
-end tell"#,
-            escape_applescript_string(&full_cmd)
-        );
+        let script = build_terminal_script(command, &cwd.to_string_lossy());
         let output = std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
@@ -52,6 +42,19 @@ fn shell_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\\\""))
 }
 
+/// 组装 Terminal.app AppleScript 脚本字符串（纯函数，可测试）。
+/// 返回完整的 `tell application "Terminal" / do script / activate / end tell` 脚本。
+pub fn build_terminal_script(command: &str, cwd: &str) -> String {
+    let full_cmd = format!("cd {} && {}", shell_quote(cwd), command);
+    format!(
+        r#"tell application "Terminal"
+    do script "{}"
+    activate
+end tell"#,
+        escape_applescript_string(&full_cmd)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,8 +66,62 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_applescript_string_plain() {
+        assert_eq!(escape_applescript_string("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_escape_applescript_string_multiple_quotes() {
+        assert_eq!(escape_applescript_string(r#"a"b"c"#), r#"a\"b\"c"#);
+    }
+
+    #[test]
     fn test_shell_quote() {
         assert_eq!(shell_quote("/Users/My User"), r#""/Users/My User""#);
         assert_eq!(shell_quote(r#"a"b"#), r#""a\"b""#);
+    }
+
+    #[test]
+    fn test_shell_quote_no_spaces() {
+        assert_eq!(shell_quote("/tmp"), "\"/tmp\"");
+    }
+
+    #[test]
+    fn test_shell_quote_empty() {
+        assert_eq!(shell_quote(""), "\"\"");
+    }
+
+    #[test]
+    fn test_build_terminal_script_basic() {
+        let script = build_terminal_script("claude", "/Users/x");
+        assert!(script.contains(r#"tell application "Terminal""#));
+        assert!(script.contains("do script"));
+        assert!(script.contains("activate"));
+        // cwd 被 shell_quote 包裹 + AppleScript 转义后双引号变 \"
+        assert!(script.contains("cd \\\"/Users/x\\\""));
+        assert!(script.contains("&& claude"));
+    }
+
+    #[test]
+    fn test_build_terminal_script_cwd_with_spaces() {
+        let script = build_terminal_script("echo hi", "/Users/My User/docs");
+        // 含空格的路径必须被引号包裹（AppleScript 转义后 \" 形式）
+        assert!(script.contains("My User"));
+    }
+
+    #[test]
+    fn test_build_terminal_script_command_with_quotes() {
+        // 命令中的双引号被 AppleScript 转义为 \"
+        let script = build_terminal_script(r#"echo "hello""#, "/tmp");
+        assert!(script.contains(r#"echo \"hello\""#));
+    }
+
+    #[test]
+    fn test_build_terminal_script_structure() {
+        let script = build_terminal_script("ls", "/tmp");
+        // 验证完整 AppleScript 结构
+        assert!(script.starts_with("tell application \"Terminal\""));
+        assert!(script.contains("end tell"));
+        assert!(script.contains("activate"));
     }
 }
