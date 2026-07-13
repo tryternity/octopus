@@ -388,6 +388,7 @@ fn read_file_as_text(path: &std::path::Path) -> Option<String> {
     let ext = path.extension()?.to_string_lossy().to_lowercase();
 
     match ext.as_str() {
+        "pdf" => read_pdf_text(path),
         "docx" | "pptx" => read_ooxml_text(path, &ext),
         "xlsx" => read_xlsx_text(path),
         _ => {
@@ -403,6 +404,21 @@ fn read_file_as_text(path: &std::path::Path) -> Option<String> {
             Some(String::from_utf8_lossy(&bytes).to_string())
         }
     }
+}
+
+/// 从 PDF 提取文本。优先用系统 pdftotext（poppler），没有则返回 None。
+fn read_pdf_text(path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("pdftotext")
+        .arg(path)
+        .arg("-") // stdout
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 /// 从 OOXML 格式（.docx/.pptx）中提取纯文本。
