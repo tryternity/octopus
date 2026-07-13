@@ -496,6 +496,7 @@ agentPanel:
   taskStatusDone: 已完成
   taskStatusFailed: 失败
   noTasks: 暂无任务
+  clearFinished: 清理已完成
 
 # ════════ Result ASR 结果窗 ════════
 result:

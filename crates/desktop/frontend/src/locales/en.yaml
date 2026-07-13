@@ -496,6 +496,7 @@ agentPanel:
   taskStatusDone: Done
   taskStatusFailed: Failed
   noTasks: No tasks
+  clearFinished: Clear finished
 
 # ════════ Result ════════
 result:
