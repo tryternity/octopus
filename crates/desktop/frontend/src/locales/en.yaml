@@ -465,8 +465,6 @@ tray:
 actionbar:
   processing: Processing
   timeout: Request timeout (${n}s)
-  taskPlaceholder: Tell the agent what to do…
-  taskSubmit: ↵ Run · Esc Cancel
 
 # ════════ Agent Panel ════════
 agentPanel:

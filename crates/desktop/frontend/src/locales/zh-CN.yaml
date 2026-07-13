@@ -465,8 +465,6 @@ tray:
 actionbar:
   processing: 处理中
   timeout: 请求超时（${n}s）
-  taskPlaceholder: 告诉 agent 做什么…
-  taskSubmit: ↵ 执行 · Esc 取消
 
 # ════════ Agent 管理 ════════
 agentPanel:

@@ -1333,6 +1333,9 @@ pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
     if task.status != "failed" && task.status != "done" {
         return Err("仅 failed/done 状态可重试".into());
     }
+    if task.transcribed_text.trim().is_empty() {
+        return Err("识别结果为空，无法重试".into());
+    }
     crate::coordinator::retry_agent_task(&app, &id);
     Ok(())
 }
