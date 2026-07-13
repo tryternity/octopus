@@ -501,11 +501,6 @@ export default function ActionBar() {
           <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
         </div>
       )}
-      {context?.source && (
-        <div className="flex items-center px-2.5 py-0.5 text-[9px] text-muted-foreground/60 shrink-0">
-          <span className="truncate max-w-[120px]">{context.source.name}</span>
-        </div>
-      )}
       {/* 主菜单 */}
       <ScrollRow>
         {mainItems.map((item, i) => (
