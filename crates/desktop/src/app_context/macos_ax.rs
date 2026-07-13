@@ -114,13 +114,30 @@ fn ax_error_desc(err: AXError) -> &'static str {
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
 fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
+        // 辅助功能权限诊断
+        let trusted = AXIsProcessTrustedWithOptions(std::ptr::null());
+        if !trusted {
+            log::warn!("[app-context] AXIsProcessTrusted()=false，辅助功能权限可能缺失");
+        }
+
         let app_element = AXUIElementCreateApplication(pid);
         if app_element.is_null() {
             return Err(anyhow::anyhow!("AXUIElementCreateApplication 返回 null"));
         }
 
-        // 获取焦点元素
-        let result = match get_attribute_value(app_element, &ax_focused_ui_element()) {
+        // 获取焦点元素——首次失败（特别是 -25212 kAXErrorAPIDisabled）时重试一次。
+        // Chrome 等 App 的 AX 树有初始化延迟，200ms 后重试常能成功。
+        let focused_result = get_attribute_value(app_element, &ax_focused_ui_element());
+        let focused_result = match focused_result {
+            Err(ref e) if e.to_string().contains("-25212") => {
+                log::info!("[app-context] AXFocusedUIElement 返回 -25212，200ms 后重试");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                get_attribute_value(app_element, &ax_focused_ui_element())
+            }
+            other => other,
+        };
+
+        let result = match focused_result {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
                 let surrounding = build_surrounding(focused_element, app_element, kind, selected_text);
@@ -128,12 +145,11 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::R
                 surrounding
             }
             Err(e) => {
-                log::info!("[app-context] 无法获取焦点元素: {}", e);
-                // 焦点元素获取失败时，尝试遍历 app_element 子树找文本元素
+                log::info!("[app-context] 无法获取焦点元素（含重试）: {}", e);
                 match find_text_element(app_element) {
                     Some(text_elem) => {
                         let surrounding = build_surrounding(text_elem, app_element, kind, selected_text);
-                        CFRelease(text_elem as CFTypeRef); // find_text_element 做了 CFRetain
+                        CFRelease(text_elem as CFTypeRef);
                         let mut result = surrounding?;
                         result.1 = Some(format!(
                             "{}\n  fallback: find_text_element 从 app_element 子树找到文本元素",
