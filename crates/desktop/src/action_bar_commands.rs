@@ -7,11 +7,30 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
 
-/// 暂存选中文本 + 上下文（trigger 时写入，前端 mount 时 take）。
+/// 选中对象类型。
+#[derive(Clone, serde::Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextKind {
+    Text,
+    Files,
+}
+
+/// 暂存选中对象 + 上下文（trigger 时写入，前端 mount 时读）。
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionBarContext {
-    pub text: String,
+    pub kind: ContextKind,
+    pub text: Option<String>,
+    pub files: Vec<String>,
+}
+
+impl ActionBarContext {
+    pub fn text(text: String) -> Self {
+        Self { kind: ContextKind::Text, text: Some(text), files: vec![] }
+    }
+    pub fn files(files: Vec<String>) -> Self {
+        Self { kind: ContextKind::Files, text: None, files }
+    }
 }
 
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
@@ -35,6 +54,28 @@ pub fn trigger_action_bar(app: AppHandle) {
         if TRIGGER_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             log::info!("[action-bar] trigger already in progress, skipping");
             return;
+        }
+
+        // ── Finder 分流：前台是 Finder 时走文件选中路径，否则走文本路径 ──
+        if crate::finder_selection::is_finder_frontmost() {
+            match crate::finder_selection::get_finder_selection() {
+                Ok(files) if !files.is_empty() => {
+                    log::info!("[action-bar] Finder selection: {} files", files.len());
+                    *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(files));
+                    show_action_bar_at_mouse(&app_clone);
+                    return;
+                }
+                Ok(_) => {
+                    log::info!("[action-bar] Finder 空选中，不弹窗");
+                    finalize_action_bar(&app_clone);
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("[action-bar] Finder selection 获取失败: {}", e);
+                    finalize_action_bar(&app_clone);
+                    return;
+                }
+            }
         }
 
         // 1. 记录触发前的剪贴板内容（文本 + 图片 + 文件，防非文本数据丢失）
@@ -100,54 +141,58 @@ pub fn trigger_action_bar(app: AppHandle) {
         log::info!("[action-bar] got text len={}", text.len());
 
         // 5. 暂存上下文
-        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
+        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
 
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
-        // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
-        let (mx, my) = get_mouse_position(&app_clone);
-        // 不截断——副屏在主屏左/上方时坐标可为负值
-        let mut win_x = mx - 190.0;
-        let win_y = my - 42.0;
+        show_action_bar_at_mouse(&app_clone);
+    });
+}
 
-        // 碰撞检测：防止浮窗溢出显示器边缘
-        // Monitor position/size 返回物理像素，需 ÷ scale_factor() 转逻辑坐标
-        const WIN_W: f64 = 380.0;
-        if let Some(monitor) = app_clone.available_monitors().ok().and_then(|monitors| {
-            monitors.into_iter().find(|m| {
-                let scale = m.scale_factor();
-                let mx_phys = m.position().x as f64;
-                let my_phys = m.position().y as f64;
-                let mw_phys = m.size().width as f64;
-                let mh_phys = m.size().height as f64;
-                let mon_left = mx_phys / scale;
-                let mon_top = my_phys / scale;
-                let mon_right = (mx_phys + mw_phys) / scale;
-                let mon_bottom = (my_phys + mh_phys) / scale;
-                mx >= mon_left && mx < mon_right && my >= mon_top && my < mon_bottom
-            })
-        }) {
-            let scale = monitor.scale_factor();
-            let mon_x = monitor.position().x as f64 / scale;
-            let mon_w = monitor.size().width as f64 / scale;
-            let mon_right = mon_x + mon_w;
-            // 右溢出：贴右边缘
-            if win_x + WIN_W > mon_right {
-                win_x = mon_right - WIN_W;
-            }
-            // 左溢出：贴左边缘
-            if win_x < mon_x {
-                win_x = mon_x;
-            }
+/// 获取鼠标位置 + 碰撞检测 + 主线程显示浮窗。text 和 Files 路径共用。
+fn show_action_bar_at_mouse(app: &AppHandle) {
+    let (mx, my) = get_mouse_position(app);
+    // 不截断——副屏在主屏左/上方时坐标可为负值
+    let mut win_x = mx - 190.0;
+    let win_y = my - 42.0;
+
+    // 碰撞检测：防止浮窗溢出显示器边缘
+    // Monitor position/size 返回物理像素，需 ÷ scale_factor() 转逻辑坐标
+    const WIN_W: f64 = 380.0;
+    if let Some(monitor) = app.available_monitors().ok().and_then(|monitors| {
+        monitors.into_iter().find(|m| {
+            let scale = m.scale_factor();
+            let mx_phys = m.position().x as f64;
+            let my_phys = m.position().y as f64;
+            let mw_phys = m.size().width as f64;
+            let mh_phys = m.size().height as f64;
+            let mon_left = mx_phys / scale;
+            let mon_top = my_phys / scale;
+            let mon_right = (mx_phys + mw_phys) / scale;
+            let mon_bottom = (my_phys + mh_phys) / scale;
+            mx >= mon_left && mx < mon_right && my >= mon_top && my < mon_bottom
+        })
+    }) {
+        let scale = monitor.scale_factor();
+        let mon_x = monitor.position().x as f64 / scale;
+        let mon_w = monitor.size().width as f64 / scale;
+        let mon_right = mon_x + mon_w;
+        // 右溢出：贴右边缘
+        if win_x + WIN_W > mon_right {
+            win_x = mon_right - WIN_W;
         }
+        // 左溢出：贴左边缘
+        if win_x < mon_x {
+            win_x = mon_x;
+        }
+    }
 
-        log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
+    log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
-        let app_for_show = app_clone.clone();
-        // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
-        // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
-        let _ = app_clone.run_on_main_thread(move || {
-            show_action_bar_window(&app_for_show, win_x, win_y);
-        });
+    let app_for_show = app.clone();
+    // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
+    // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
+    let _ = app.run_on_main_thread(move || {
+        show_action_bar_window(&app_for_show, win_x, win_y);
     });
 }
 
