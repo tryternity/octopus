@@ -22,11 +22,11 @@ use super::*;
 /// AX 调用整体超时上限。
 const AX_TIMEOUT: Duration = Duration::from_millis(500);
 /// Editor before/after 截断字数。
-const SURROUNDING_LIMIT: usize = 2000;
+const SURROUNDING_LIMIT: usize = 1000;
 /// Terminal scrollback 最大行数。
-const TERMINAL_MAX_LINES: usize = 50;
+const TERMINAL_MAX_LINES: usize = 30;
 /// Terminal scrollback 最大字数。
-const TERMINAL_MAX_CHARS: usize = 2000;
+const TERMINAL_MAX_CHARS: usize = 1000;
 
 pub struct AxProvider;
 
@@ -153,9 +153,10 @@ unsafe fn build_surrounding(
         .or_else(|_| get_attribute_string(app_element, &ax_title()))
         .ok();
 
-    // 全文
+    // 全文——过滤终端 scrollback 中的 null bytes（\0）和其他 C0 控制字符
+    // iTerm2/Terminal 的 AXValue 常含 \0 间隔（UTF-16 残留）或控制序列残留
     let (full_text, full_text_err) = match get_attribute_string(text_element, &ax_value()) {
-        Ok(s) => (s, None),
+        Ok(s) => (strip_control_chars(&s), None),
         Err(e) => (String::new(), Some(e.to_string())),
     };
     diagnostics.push(format!(
@@ -251,6 +252,14 @@ unsafe fn is_text_element(role: &str) -> bool {
         role,
         "AXTextArea" | "AXTextField" | "AXText" | "AXStaticText"
     )
+}
+
+/// 移除终端 scrollback 文本中的 C0 控制字符（保留 \n \t \r）。
+/// iTerm2/Terminal 的 AXValue 常含 \0 间隔（UTF-16 编码残留）或终端控制序列。
+fn strip_control_chars(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\n' || c == '\t' || c == '\r' || !c.is_control())
+        .collect()
 }
 
 /// 递归遍历 AX 子树，找到第一个有 AXValue 的文本元素（AXTextArea/AXTextField）。
@@ -533,5 +542,38 @@ mod tests {
     fn test_is_cf_array_null() {
         let result = unsafe { is_cf_array(std::ptr::null()) };
         assert!(!result);
+    }
+
+    // ── strip_control_chars ──
+
+    #[test]
+    fn test_strip_null_bytes() {
+        // iTerm2 AXValue 的典型模式：CJK 字符间混 \0
+        let input = "\0项\0目\0是\0多\0\0crate\0Rust";
+        assert_eq!(strip_control_chars(input), "项目是多crateRust");
+    }
+
+    #[test]
+    fn test_strip_keeps_newlines_tabs() {
+        let input = "line1\n\0line2\t\0end\r\n";
+        assert_eq!(strip_control_chars(input), "line1\nline2\tend\r\n");
+    }
+
+    #[test]
+    fn test_strip_cjk_no_nulls() {
+        let input = "你好世界 hello";
+        assert_eq!(strip_control_chars(input), "你好世界 hello");
+    }
+
+    #[test]
+    fn test_strip_all_control() {
+        let input = "\0\0\0\x01\x02\x03";
+        assert_eq!(strip_control_chars(input), "");
+    }
+
+    #[test]
+    fn test_strip_normal_text_unchanged() {
+        let input = "正常文本 without any control chars";
+        assert_eq!(strip_control_chars(input), input);
     }
 }
