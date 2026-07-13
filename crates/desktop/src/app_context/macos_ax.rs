@@ -269,14 +269,41 @@ end tell"#,
     };
 
     // spawn + 超时轮询——防止 osascript 挂起（浏览器未响应/权限弹窗）导致线程泄漏。
-    // 用 try_wait 轮询模式（与 spawn_script 的 wait_with_timeout 一致），不引入新依赖。
-    let mut child = match Command::new("osascript").args(["-e", &script]).spawn() {
+    // 必须配 Stdio::piped()，否则 spawn 默认继承父进程 stdout → child.stdout 为 None。
+    use std::process::Stdio;
+    let mut child = match Command::new("osascript")
+        .args(["-e", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
         Ok(c) => c,
         Err(e) => {
             log::warn!("[app-context] osascript spawn 失败: {}", e);
             return None;
         }
     };
+
+    // spawn 后立即 take stdout/stderr + 起线程并发读——防 pipe 满导致子进程写阻塞
+    // （与 spawn_script 的 wait_with_timeout_secs 范式一致）
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        if let Some(mut s) = stdout_handle {
+            let _ = s.read_to_string(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        if let Some(mut s) = stderr_handle {
+            let _ = s.read_to_string(&mut buf);
+        }
+        buf
+    });
 
     // 轮询等待，超时杀进程
     let mut timed_out = false;
@@ -297,16 +324,9 @@ end tell"#,
         return None;
     }
 
-    // 读取输出
-    use std::io::Read;
-    let mut stdout = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-    let mut stderr = String::new();
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr);
-    }
+    // join 读线程拿到输出
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
     let status = child.wait().ok();
 
     if status.as_ref().is_some_and(|s| !s.success()) {
