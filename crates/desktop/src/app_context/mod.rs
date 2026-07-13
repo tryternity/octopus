@@ -119,8 +119,9 @@ pub struct TextRange {
 pub fn extract_surrounding(full_text: &str, range: TextRange, limit: usize) -> SurroundingText {
     let chars: Vec<char> = full_text.chars().collect();
     let total = chars.len();
+    // 归一化：确保 start <= end（AX 可能返回反向选区或负 length）
     let start = range.start.min(total);
-    let end = range.end.min(total);
+    let end = range.end.max(start).min(total);
 
     let before_start = start.saturating_sub(limit);
     let before: String = chars[before_start..start].iter().collect();

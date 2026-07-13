@@ -32,8 +32,6 @@ pub struct AxProvider;
 
 impl super::ContextProvider for AxProvider {
     fn gather(&self, selected_text: &str) -> anyhow::Result<ExtraContext> {
-        let deadline = Instant::now() + AX_TIMEOUT;
-
         // 1. 前台应用信息
         let (pid, bundle_id, name) =
             frontmost_app().ok_or_else(|| anyhow::anyhow!("无法获取前台应用"))?;
@@ -50,7 +48,8 @@ impl super::ContextProvider for AxProvider {
         };
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
-        let (surrounding, diagnostics) = if deadline.checked_duration_since(Instant::now()).is_some() {
+        let deadline = Instant::now() + AX_TIMEOUT;
+        let (surrounding, diagnostics) = if Instant::now() < deadline {
             // Browser 优先用 AppleScript execute javascript（直接读 DOM，比 AX 准确）
             if kind == AppKind::Browser {
                 if let Some(result) = gather_browser_via_applescript(
@@ -61,7 +60,7 @@ impl super::ContextProvider for AxProvider {
                 } else {
                     // AppleScript JS 失败（可能未开启 Allow JavaScript from Apple Events），fallback 到 AX
                     let mut diag_prefix = "browser AppleScript JS 失败，fallback 到 AX\n".to_string();
-                    match gather_surrounding(pid, kind, selected_text) {
+                    match gather_surrounding(pid, kind, selected_text, deadline) {
                         Ok((s, diag)) => {
                             let full_diag = match diag {
                                 Some(d) => format!("{}{}", diag_prefix, d),
@@ -76,7 +75,7 @@ impl super::ContextProvider for AxProvider {
                     }
                 }
             } else {
-                match gather_surrounding(pid, kind, selected_text) {
+                match gather_surrounding(pid, kind, selected_text, deadline) {
                     Ok((s, diag)) => (Some(s), diag),
                     Err(e) => {
                         log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
@@ -220,7 +219,7 @@ fn gather_browser_via_applescript(
         escaped = escaped
     );
 
-    let js_path = std::env::temp_dir().join("octopus_browser_context.js");
+    let js_path = std::env::temp_dir().join(format!("octopus_browser_ctx_{}_{}.js", std::process::id(), js_source.len()));
     if let Err(e) = std::fs::write(&js_path, js_source) {
         log::warn!("[app-context] 写 JS 临时文件失败: {}", e);
         return None;
@@ -255,6 +254,9 @@ end tell"#,
         .args(["-e", &script])
         .output()
         .ok()?;
+
+    // 用完即删——防止选中文本（可能含敏感信息）明文残留在 /tmp
+    let _ = std::fs::remove_file(&js_path);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -300,7 +302,7 @@ end tell"#,
 }
 
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
-fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
+fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: Instant) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
         // 辅助功能权限诊断
         let trusted = AXIsProcessTrustedWithOptions(std::ptr::null());
@@ -317,7 +319,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::R
         // Chrome 等 App 的 AX 树有初始化延迟，200ms 后重试常能成功。
         let focused_result = get_attribute_value(app_element, &ax_focused_ui_element());
         let focused_result = match focused_result {
-            Err(ref e) if e.to_string().contains("-25212") => {
+            Err(ref e) if e.to_string().contains("-25212") && Instant::now() < deadline => {
                 log::info!("[app-context] AXFocusedUIElement 返回 -25212，200ms 后重试");
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 get_attribute_value(app_element, &ax_focused_ui_element())
@@ -328,15 +330,15 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::R
         let result = match focused_result {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
-                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text);
+                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text, deadline);
                 CFRelease(focused_ref);
                 surrounding
             }
             Err(e) => {
                 log::info!("[app-context] 无法获取焦点元素（含重试）: {}", e);
-                match find_text_element_with_selected(app_element, selected_text) {
+                match find_text_element_with_selected(app_element, selected_text, deadline) {
                     Some(text_elem) => {
-                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text);
+                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text, deadline);
                         CFRelease(text_elem as CFTypeRef);
                         let mut result = surrounding?;
                         result.1 = Some(format!(
@@ -364,6 +366,7 @@ unsafe fn build_surrounding(
     app_element: AXUIElementRef,
     kind: AppKind,
     selected_text: &str,
+    deadline: Instant,
 ) -> anyhow::Result<(SurroundingText, Option<String>)> {
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -374,7 +377,7 @@ unsafe fn build_surrounding(
     let (text_element, owns_text_element) = if is_text_element(&focused_role) {
         (focused_element, false)
     } else {
-        match find_text_element_with_selected(focused_element, selected_text) {
+        match find_text_element_with_selected(focused_element, selected_text, deadline) {
             Some(child) => {
                 let child_role =
                     get_attribute_string(child, &ax_role()).unwrap_or_default();
@@ -558,13 +561,14 @@ fn truncate_text_head(s: &str, max_chars: usize) -> Option<String> {
 unsafe fn find_text_element_with_selected(
     element: AXUIElementRef,
     selected_text: &str,
+    deadline: Instant,
 ) -> Option<AXUIElementRef> {
     // 第一轮：找包含 selected_text 的文本元素
-    if let Some(found) = find_text_element_depth(element, 0, 8, Some(selected_text)) {
+    if let Some(found) = find_text_element_depth(element, 0, 8, Some(selected_text), deadline) {
         return Some(found);
     }
-    // 回退：任意文本元素
-    find_text_element_depth(element, 0, 8, None)
+    // 回退：任意文本元素（仍检查 deadline）
+    find_text_element_depth(element, 0, 8, None, deadline)
 }
 
 /// 递归遍历。selected_text = Some(t) 时只匹配包含 t 的文本元素；None 时匹配任意。
@@ -573,8 +577,15 @@ unsafe fn find_text_element_depth(
     depth: usize,
     max_depth: usize,
     selected_text: Option<&str>,
+    deadline: Instant,
 ) -> Option<AXUIElementRef> {
     if depth >= max_depth {
+        return None;
+    }
+
+    // 超时检查——每层递归入口检查，避免庞大的 AX 树卡住
+    if Instant::now() >= deadline {
+        log::warn!("[app-context] find_text_element 超时 (depth={})", depth);
         return None;
     }
 
@@ -634,7 +645,7 @@ unsafe fn find_text_element_depth(
         if child.is_null() {
             continue;
         }
-        if let Some(found) = find_text_element_depth(child, depth + 1, max_depth, selected_text) {
+        if let Some(found) = find_text_element_depth(child, depth + 1, max_depth, selected_text, deadline) {
             return Some(found);
         }
     }
@@ -703,9 +714,31 @@ unsafe fn is_cf_array(value: CFTypeRef) -> bool {
     CFGetTypeID(value) == core_foundation::array::CFArray::<CFTypeRef>::type_id()
 }
 
+/// 检查 CFTypeRef 是否为 AXValue 类型（null → false）。
+/// AXSelectedTextRange 应返回 AXValue，非 AXValue 调 AXValueGetValue 是 UB。
+unsafe fn is_cf_value(value: CFTypeRef) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    // AXValueGetTypeID 在 ApplicationServices framework 中，用 FFI 获取
+    CFGetTypeID(value) == crate::app_context::ffi::ax_value_type_id()
+}
+
 /// 读取选区范围 (start, end)，单位为 UTF-16 字符偏移（AX 的 CFRange 单位）。
 unsafe fn get_selected_range(element: AXUIElementRef) -> anyhow::Result<TextRange> {
     let value = get_attribute_value(element, &ax_selected_text_range())?;
+
+    // 类型守卫：AXSelectedTextRange 应返回 AXValue 类型，
+    // 非 AXValue（如 CFString/CFNumber）直接调用 AXValueGetValue 是未定义行为。
+    if !is_cf_value(value) {
+        let actual_type = CFGetTypeID(value);
+        CFRelease(value);
+        return Err(anyhow::anyhow!(
+            "AXSelectedTextRange 返回非 AXValue 类型 (CFTypeID={})",
+            actual_type
+        ));
+    }
+
     let ax_value = value as AXValueRef;
 
     let mut range = CFRange {

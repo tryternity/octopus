@@ -43,6 +43,19 @@ extern "C" {
     ) -> AXError;
     #[allow(dead_code)] // 预留：权限检查未启用
     pub fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+    pub fn AXValueGetTypeID() -> core_foundation::base::CFTypeID;
+}
+
+/// 缓存 AXValue 的 CFTypeID（进程内不变）。
+fn cached_ax_value_type_id() -> core_foundation::base::CFTypeID {
+    use std::sync::OnceLock;
+    static ID: OnceLock<core_foundation::base::CFTypeID> = OnceLock::new();
+    *ID.get_or_init(|| unsafe { AXValueGetTypeID() })
+}
+
+/// AXValue 的 CFTypeID（用于 is_cf_value 类型守卫）。
+pub fn ax_value_type_id() -> core_foundation::base::CFTypeID {
+    cached_ax_value_type_id()
 }
 
 // AX 属性名 CFString——用 new() 构造（extern static 不可链接）

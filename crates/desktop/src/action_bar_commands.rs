@@ -103,20 +103,11 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         log::info!("[action-bar] got text len={}", text.len());
 
-        // 5. 暂存上下文——采集来源应用 + 环境上下文（失败降级到仅 text）
-        let mut ctx = ActionBarContext { text: text.clone(), source: None, surrounding: None };
-        match crate::app_context::gather_context(&text) {
-            Ok(extra) => {
-                log_app_context(&text, &extra);
-                ctx.source = Some(extra.source);
-                ctx.surrounding = extra.surrounding;
-            }
-            Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
-        }
-        *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+        // 5. 先显示浮窗，再后台采集上下文（避免 gather 阻塞浮窗显示）
+        let app_for_gather = app_clone.clone();
+        let text_for_gather = text.clone();
 
-        // 6. 获取鼠标位置 + 显示浮窗（主线程）
-        // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
+        // 浮窗先弹——获取鼠标位置 + 显示浮窗（主线程）
         let (mx, my) = get_mouse_position(&app_clone);
         // 不截断——副屏在主屏左/上方时坐标可为负值
         let mut win_x = mx - 190.0;
@@ -155,11 +146,34 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
+        // 暂存基础 ctx（仅 text），浮窗 mount 时能立即拿到
+        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext {
+            text: text_for_gather.clone(),
+            source: None,
+            surrounding: None,
+        });
+
         let app_for_show = app_clone.clone();
-        // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
-        // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
         let _ = app_clone.run_on_main_thread(move || {
             show_action_bar_window(&app_for_show, win_x, win_y);
+        });
+
+        // 浮窗已显示，后台采集上下文，完成后回填 PENDING_CONTEXT
+        // gather 自带 500ms 超时兜底，不会永久阻塞
+        std::thread::spawn(move || {
+            match crate::app_context::gather_context(&text_for_gather) {
+                Ok(extra) => {
+                    log_app_context(&text_for_gather, &extra);
+                    // 回填 source/surrounding——前端后续 execute_action_bar 时读取
+                    if let Some(ctx) = PENDING_CONTEXT.lock().unwrap().as_mut() {
+                        ctx.source = Some(extra.source);
+                        ctx.surrounding = extra.surrounding;
+                    }
+                    // 通知前端上下文已更新
+                    let _ = app_for_gather.emit("action-bar://context-updated", ());
+                }
+                Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+            }
         });
     });
 }
