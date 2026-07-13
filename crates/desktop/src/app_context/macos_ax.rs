@@ -157,39 +157,48 @@ fn gather_browser_via_applescript(
         _ => return None,
     };
 
-    // JS 代码：只使用 single quotes（AppleScript string 用 double quotes 分隔）
-    // 取选区所在 block 元素全文，按选区位置切 before/after。
-    let js = "(function(){\
-        var s=window.getSelection();\
-        if(!s||s.rangeCount===0)return JSON.stringify({before:'',after:'',title:document.title});\
-        var range=s.getRangeAt(0);\
-        var block=range.startContainer;\
-        while(block&&block.parentNode){\
-            var t=block.nodeName;\
-            if(['P','DIV','LI','TD','TH','BLOCKQUOTE','PRE','H1','H2','H3','H4','H5','H6','ARTICLE','SECTION'].indexOf(t)>=0)break;\
-            block=block.parentNode;\
-        }\
-        if(!block)block=document.body;\
-        var fr=document.createRange();\
-        fr.selectNodeContents(block);\
-        var br=document.createRange();\
-        br.setStart(fr.startContainer,fr.startOffset);\
-        try{br.setEnd(range.startContainer,range.startOffset);}catch(e){return JSON.stringify({before:'',after:'',title:document.title});}\
-        var ar=document.createRange();\
-        try{ar.setStart(range.endContainer,range.endOffset);ar.setEnd(fr.endContainer,fr.endOffset);}catch(e){return JSON.stringify({before:'',after:'',title:document.title});}\
-        var ml=1000;\
-        var b=br.toString();\
-        var a=ar.toString();\
-        if(b.length>ml)b=b.slice(-ml);\
-        if(a.length>ml)a=a.slice(0,ml);\
-        return JSON.stringify({before:b,after:a,title:document.title});\
-    })()";
+    // JS 代码中不能出现双引号（与 AppleScript 的 "..." 字符串分隔符冲突）。
+    // 用 base64 编码 JS，在 AppleScript 中 decode + eval，彻底避免转义问题。
+    let js_source = r#"
+(function(){
+  var s=window.getSelection();
+  if(!s||s.rangeCount===0) return JSON.stringify({before:"",after:"",title:document.title});
+  var range=s.getRangeAt(0);
+  var block=range.startContainer;
+  var tags=["P","DIV","LI","TD","TH","BLOCKQUOTE","PRE","H1","H2","H3","H4","H5","H6","ARTICLE","SECTION"];
+  while(block&&block.parentNode){
+    if(tags.indexOf(block.nodeName)>=0) break;
+    block=block.parentNode;
+  }
+  if(!block) block=document.body;
+  var fr=document.createRange();
+  fr.selectNodeContents(block);
+  var br=document.createRange();
+  br.setStart(fr.startContainer,fr.startOffset);
+  try{br.setEnd(range.startContainer,range.startOffset);}catch(e){return JSON.stringify({before:"",after:"",title:document.title});}
+  var ar=document.createRange();
+  try{ar.setStart(range.endContainer,range.endOffset);ar.setEnd(fr.endContainer,fr.endOffset);}catch(e){return JSON.stringify({before:"",after:"",title:document.title});}
+  var ml=1000;
+  var b=br.toString();
+  var a=ar.toString();
+  if(b.length>ml) b=b.slice(-ml);
+  if(a.length>ml) a=a.slice(0,ml);
+  return JSON.stringify({before:b,after:a,title:document.title});
+})()
+"#;
+
+    // base64 编码 JS 源码——AppleScript 侧 decode 后 eval，避免引号转义地狱
+    use base64::{Engine, engine::general_purpose};
+    let js_b64 = general_purpose::STANDARD.encode(js_source.as_bytes());
+
+    // AppleScript：通过 atob + Function 解码执行 base64 JS
+    let eval_js = format!("eval(atob(\"{}\"))", js_b64);
 
     let script = format!(
         r#"tell application "{}"
     {} "{}" in {} of front window
 end tell"#,
-        app_name, verb, js, tab_spec
+        app_name, verb, eval_js, tab_spec
     );
 
     let output = Command::new("osascript")
