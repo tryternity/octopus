@@ -995,7 +995,7 @@ export default function ActionBarPanel({
       : t("settings.actionBar.menuManage");
 
   return (
-    <div className="w-full">
+    <div className="w-full max-w-[640px]">
       {/* ── 页头 ── */}
       <div className="mb-6 flex items-start justify-between gap-4">
         <div className="min-w-0">
