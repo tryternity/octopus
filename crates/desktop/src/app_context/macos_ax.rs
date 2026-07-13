@@ -747,9 +747,24 @@ unsafe fn build_surrounding(
                     return Ok((file_ctx, diag));
                 }
             }
-            diagnostics.push(
-                "DEGRADED: full_text 不含选中文本，磁盘 fallback 也失败".to_string(),
-            );
+            // 诊断降级原因
+            let degrade_reason = match &window_title {
+                None => "无窗口标题".to_string(),
+                Some(title) => match extract_filename_from_title(title) {
+                    None => format!("标题 '{}' 无法提取文件名", title),
+                    Some(fname) => match find_file_path(&fname, bundle_id_or_name) {
+                        None => format!("文件 '{}' 未在 session/mdfind 中找到", fname),
+                        Some(path) => match std::fs::read_to_string(&path) {
+                            Err(e) => format!("文件 {} 读取失败: {}", path.display(), e),
+                            Ok(content) if !content.contains(selected_trimmed) => {
+                                "文件内容不含选中文本".to_string()
+                            }
+                            Ok(_) => "未知原因".to_string(),
+                        },
+                    },
+                },
+            };
+            diagnostics.push(format!("DEGRADED: {}", degrade_reason));
             let diag = Some(diagnostics.join("\n  "));
             log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
             return Ok((
