@@ -211,19 +211,36 @@ unsafe fn build_surrounding(
     }
 
     let mut surrounding = if kind == AppKind::Terminal {
-        let before = if !full_text.is_empty() {
-            Some(truncate_terminal_scrollback(
-                &full_text,
-                range.start,
-                TERMINAL_MAX_LINES,
-                TERMINAL_MAX_CHARS,
-            ))
+        // Terminal 模式：AXSelectedTextRange 和 AXValue 不在同一坐标系（iTerm2 的
+        // range 基于整个终端缓冲区，AXValue 只是可见 scrollback），
+        // 改为用选中文本在全文中搜索定位，按定位点切 before/after。
+        let (before, after) = if !full_text.is_empty() && !selected_text.is_empty() {
+            match full_text.find(selected_text.trim()) {
+                Some(pos) => {
+                    let before_text = &full_text[..pos];
+                    let after_start = pos + selected_text.trim().len();
+                    let after_text = if after_start < full_text.len() {
+                        &full_text[after_start..]
+                    } else {
+                        ""
+                    };
+                    let b = truncate_text_tail(before_text, TERMINAL_MAX_LINES, TERMINAL_MAX_CHARS);
+                    let a = truncate_text_head(after_text, TERMINAL_MAX_CHARS);
+                    (b, a)
+                }
+                None => {
+                    // 选中文本不在可见 scrollback 里（可能在光标行以下不可见区域）
+                    // 退化：取 scrollback 末尾作 before
+                    let b = truncate_text_tail(&full_text, TERMINAL_MAX_LINES, TERMINAL_MAX_CHARS);
+                    (b, None)
+                }
+            }
         } else {
-            None
+            (None, None)
         };
         SurroundingText {
             before,
-            after: None,
+            after,
             window_title,
         }
     } else {
@@ -260,6 +277,40 @@ fn strip_control_chars(s: &str) -> String {
     s.chars()
         .filter(|&c| c == '\n' || c == '\t' || c == '\r' || !c.is_control())
         .collect()
+}
+
+/// 截取文本末尾：取最后 max_lines 行或 max_chars 字符（先达到者为准）。
+/// 用于 Terminal before（选中文本之前的历史输出）。
+fn truncate_text_tail(s: &str, max_lines: usize, max_chars: usize) -> Option<String> {
+    if s.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = s.lines().collect();
+    let start_line = lines.len().saturating_sub(max_lines);
+    let by_lines: String = lines[start_line..].join("\n");
+
+    if by_lines.chars().count() > max_chars {
+        let char_start = by_lines.chars().count().saturating_sub(max_chars);
+        let result: String = by_lines.chars().skip(char_start).collect();
+        Some(result)
+    } else {
+        Some(by_lines)
+    }
+}
+
+/// 截取文本头部：取前 max_chars 字符。
+/// 用于 Terminal after（选中文本之后的输出）。
+fn truncate_text_head(s: &str, max_chars: usize) -> Option<String> {
+    if s.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        Some(s.to_string())
+    } else {
+        let head: String = chars[..max_chars].iter().collect();
+        Some(format!("{}…", head))
+    }
 }
 
 /// 递归遍历 AX 子树，找到第一个有 AXValue 的文本元素（AXTextArea/AXTextField）。
@@ -575,5 +626,47 @@ mod tests {
     fn test_strip_normal_text_unchanged() {
         let input = "正常文本 without any control chars";
         assert_eq!(strip_control_chars(input), input);
+    }
+
+    // ── truncate_text_tail / truncate_text_head ──
+
+    #[test]
+    fn test_tail_by_lines() {
+        let s = "l1\nl2\nl3\nl4\nl5\nSELECTED";
+        // 6 lines, take last 2 → ["l5", "SELECTED"]
+        let result = truncate_text_tail(s, 2, 1000).unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "l5");
+        assert_eq!(lines[1], "SELECTED");
+    }
+
+    #[test]
+    fn test_tail_by_chars() {
+        let s = "abcdefghijklmnopqrstuvwxyz";
+        let result = truncate_text_tail(s, 1000, 5).unwrap();
+        assert_eq!(result, "vwxyz");
+    }
+
+    #[test]
+    fn test_tail_empty() {
+        assert_eq!(truncate_text_tail("", 10, 10), None);
+    }
+
+    #[test]
+    fn test_head_normal() {
+        let s = "abcdef";
+        assert_eq!(truncate_text_head(s, 3), Some("abc…".to_string()));
+    }
+
+    #[test]
+    fn test_head_short() {
+        let s = "ab";
+        assert_eq!(truncate_text_head(s, 5), Some("ab".to_string()));
+    }
+
+    #[test]
+    fn test_head_empty() {
+        assert_eq!(truncate_text_head("", 5), None);
     }
 }
