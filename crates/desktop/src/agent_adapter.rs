@@ -12,6 +12,11 @@ pub struct AgentAdapter {
     pub is_available: bool,
 }
 
+/// 检查 key 是否为内置 adapter（零进程开销，不走 which）。
+pub fn is_builtin_key(key: &str) -> bool {
+    builtin_adapters().iter().any(|a| a.key == key)
+}
+
 /// 内置白名单（一期）
 fn builtin_adapters() -> Vec<AgentAdapter> {
     vec![
@@ -83,13 +88,13 @@ pub fn render_command(template: &str, prompt: &str, files: &[String], cwd: &str)
         .replace("{cwd}", &shell_quote(cwd))
 }
 
-/// shell 双引号转义：用双引号包裹，内部双引号和反斜杠转义。
-/// 用于文件路径——macOS 路径不会含双引号，但含空格常见。
+/// 路径转义：直接用单引号（严格安全，$ / ` / \ 全部字面）
 fn shell_quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    shell_escape_single(s)
 }
 
 /// shell 单引号转义：用单引号包裹，内部单引号用 '"'"' 转义。
+/// 单引号内 $/`/\ 等全部字面，严格安全。
 fn shell_escape_single(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
@@ -106,7 +111,7 @@ mod tests {
             &["/a.pdf".into(), "/b.pdf".into()],
             "/Users/x",
         );
-        assert_eq!(cmd, "claude --add-dir \"/Users/x\" '整理这些文件'");
+        assert_eq!(cmd, "claude --add-dir '/Users/x' '整理这些文件'");
     }
 
     #[test]
@@ -117,7 +122,7 @@ mod tests {
             &["/a.pdf".into(), "/b.pdf".into()],
             "/Users/x",
         );
-        assert_eq!(cmd, "pi @\"/a.pdf\" @\"/b.pdf\" 'make ppt'");
+        assert_eq!(cmd, "pi @'/a.pdf' @'/b.pdf' 'make ppt'");
     }
 
     #[test]
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn test_render_command_single_file() {
         let cmd = render_command("tool {files}", "", &["/path/to/file.pdf".into()], "/tmp");
-        assert_eq!(cmd, "tool \"/path/to/file.pdf\"");
+        assert_eq!(cmd, "tool '/path/to/file.pdf'");
     }
 
     #[test]
@@ -187,26 +192,39 @@ mod tests {
             &["/a.pdf".into(), "/b.jpg".into(), "/c.docx".into()],
             "/tmp",
         );
-        assert_eq!(cmd, "tool @\"/a.pdf\" @\"/b.jpg\" @\"/c.docx\"");
+        assert_eq!(cmd, "tool @'/a.pdf' @'/b.jpg' @'/c.docx'");
     }
 
     #[test]
     fn test_render_command_path_with_spaces() {
-        // 含空格的路径——shell_quote 双引号包裹
+        // 含空格的路径——单引号包裹安全
         let cmd = render_command(
             "tool {files} {cwd}",
             "",
             &["/Users/John Doe/report.pdf".into()],
             "/Users/John Doe",
         );
-        assert_eq!(cmd, "tool \"/Users/John Doe/report.pdf\" \"/Users/John Doe\"");
+        assert_eq!(cmd, "tool '/Users/John Doe/report.pdf' '/Users/John Doe'");
     }
 
     #[test]
     fn test_render_command_path_with_shell_metachar() {
-        // 路径含 shell 元字符——双引号包裹后安全（$ ` 等在双引号内仍可解释，
-        // 但 macOS 文件路径实际不会含这些字符；此处验证基本包裹行为）
+        // 路径含 shell 元字符——单引号内全部字面，不解释
         let cmd = render_command("tool {files}", "", &["/tmp/a;echo b".into()], "/tmp");
-        assert_eq!(cmd, "tool \"/tmp/a;echo b\"");
+        assert_eq!(cmd, "tool '/tmp/a;echo b'");
+    }
+
+    #[test]
+    fn test_render_command_path_with_dollar() {
+        // 路径含 $ ——单引号内不展开
+        let cmd = render_command("tool {files}", "", &["/tmp/$HOME".into()], "/tmp");
+        assert_eq!(cmd, "tool '/tmp/$HOME'");
+    }
+
+    #[test]
+    fn test_render_command_path_with_backtick() {
+        // 路径含 ` ——单引号内不执行命令替换
+        let cmd = render_command("tool {files}", "", &["/tmp/`whoami`".into()], "/tmp");
+        assert_eq!(cmd, "tool '/tmp/`whoami`'");
     }
 }

@@ -1062,12 +1062,7 @@ pub fn create_agent_adapter(
     key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<i64, String> {
     // 拒绝与内置 adapter 同名——避免 find() 永远命中内置项
-    let builtin_keys: Vec<String> = crate::agent_adapter::list_adapters()
-        .into_iter()
-        .filter(|a| a.is_builtin)
-        .map(|a| a.key)
-        .collect();
-    if builtin_keys.contains(&key) {
+    if crate::agent_adapter::is_builtin_key(&key) {
         return Err(format!("key '{}' 与内置 adapter 冲突", key));
     }
     octopus_infra::db::insert_agent_adapter_record(&key, &display_name, &detect_binary, &command_template)
@@ -1078,6 +1073,10 @@ pub fn create_agent_adapter(
 pub fn update_agent_adapter(
     id: i64, key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<(), String> {
+    // 与 create 对称：拒绝改名为内置 key
+    if crate::agent_adapter::is_builtin_key(&key) {
+        return Err(format!("key '{}' 与内置 adapter 冲突", key));
+    }
     octopus_infra::db::update_agent_adapter_record(id, &key, &display_name, &detect_binary, &command_template)
         .map_err(|e| e.to_string())
 }
