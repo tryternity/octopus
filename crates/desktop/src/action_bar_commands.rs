@@ -248,19 +248,26 @@ fn write_clipboard_text(app: &AppHandle, text: &str) {
 /// 将采集到的应用上下文以结构化文本追加写入 ~/.octopus/logs/action-bar.log，
 /// 方便直接验证 AX 取数结果（而非通过 AI 结果间接判断）。
 fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext) {
-    let log_path = {
-        let mut p = dirs::home_dir().unwrap_or_default();
-        p.push(".octopus");
-        p.push("logs");
-        p.push("action-bar.log");
-        p
-    };
+    let log_path = context_log_path();
 
-    // 确保目录存在
-    if let Err(e) = std::fs::create_dir_all(&log_path) {
-        log::warn!("[action-bar] 无法创建日志目录: {}", e);
+    let entry = format_context_entry(selected_text, extra);
+
+    if let Err(e) = write_context_log(&log_path, &entry) {
+        log::warn!("[action-bar] 上下文日志写入失败 {}: {}", log_path.display(), e);
     }
+}
 
+/// 默认日志路径：~/.octopus/logs/action-bar.log
+fn context_log_path() -> std::path::PathBuf {
+    let mut p = dirs::home_dir().unwrap_or_default();
+    p.push(".octopus");
+    p.push("logs");
+    p.push("action-bar.log");
+    p
+}
+
+/// 将上下文格式化为日志条目（纯函数，可单测）。
+fn format_context_entry(selected_text: &str, extra: &crate::app_context::ExtraContext) -> String {
     let kind_label = match extra.source.kind {
         crate::app_context::AppKind::Editor => "Editor",
         crate::app_context::AppKind::Terminal => "Terminal",
@@ -292,7 +299,7 @@ fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext
         .map(|t| t.as_str())
         .unwrap_or("(无)");
 
-    let entry = format!(
+    format!(
         "═══════════════════════════════════════════════════\n\
          [{timestamp}]\n\
          【应用】{name} ({kind})\n\
@@ -310,21 +317,23 @@ fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext
         selected = truncate_for_log(selected_text, 1000),
         before = before_preview,
         after = after_preview,
-    );
+    )
+}
+
+/// 将日志条目写入文件：先创建父目录（非文件路径本身），再追加。
+fn write_context_log(path: &std::path::Path, entry: &str) -> std::io::Result<()> {
+    // 创建父目录，不是文件路径本身——曾经误用 create_dir_all(&path) 把日志文件创建成目录
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     use std::io::Write;
-    match std::fs::OpenOptions::new()
+    let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&log_path)
-    {
-        Ok(mut f) => {
-            if let Err(e) = f.write_all(entry.as_bytes()) {
-                log::warn!("[action-bar] 写入上下文日志失败: {}", e);
-            }
-        }
-        Err(e) => log::warn!("[action-bar] 无法打开上下文日志 {}: {}", log_path.display(), e),
-    }
+        .open(path)?;
+    f.write_all(entry.as_bytes())?;
+    Ok(())
 }
 
 /// 截断文本到指定字符数并添加省略标记。
@@ -1088,5 +1097,143 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             finalize_action_bar(&app);
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_context::{AppKind, AppSource, ExtraContext, SurroundingText};
+
+    fn sample_extra() -> ExtraContext {
+        ExtraContext {
+            source: AppSource {
+                bundle_id: Some("com.apple.TextEdit".to_string()),
+                name: "TextEdit".to_string(),
+                kind: AppKind::Editor,
+            },
+            surrounding: Some(SurroundingText {
+                before: Some("上文内容".to_string()),
+                after: Some("下文内容".to_string()),
+                window_title: Some("report.txt".to_string()),
+            }),
+        }
+    }
+
+    // ── truncate_for_log ──
+
+    #[test]
+    fn test_truncate_for_log_short() {
+        assert_eq!(truncate_for_log("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_for_log_exact() {
+        assert_eq!(truncate_for_log("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn test_truncate_for_log_truncated() {
+        let result = truncate_for_log("abcdefghij", 3);
+        assert!(result.starts_with("abc…"));
+        assert!(result.contains("10 字"));
+    }
+
+    #[test]
+    fn test_truncate_for_log_cjk() {
+        let result = truncate_for_log("你好世界你好世界", 4);
+        assert!(result.starts_with("你好世界…"));
+        assert!(result.contains("8 字"));
+    }
+
+    // ── format_context_entry ──
+
+    #[test]
+    fn test_format_entry_contains_source() {
+        let entry = format_context_entry("选中的文字", &sample_extra());
+        assert!(entry.contains("TextEdit"));
+        assert!(entry.contains("Editor"));
+        assert!(entry.contains("com.apple.TextEdit"));
+    }
+
+    #[test]
+    fn test_format_entry_contains_surrounding() {
+        let entry = format_context_entry("选中", &sample_extra());
+        assert!(entry.contains("上文内容"));
+        assert!(entry.contains("下文内容"));
+        assert!(entry.contains("report.txt"));
+    }
+
+    #[test]
+    fn test_format_entry_no_surrounding() {
+        let extra = ExtraContext {
+            source: AppSource {
+                bundle_id: None,
+                name: "UnknownApp".to_string(),
+                kind: AppKind::Unknown,
+            },
+            surrounding: None,
+        };
+        let entry = format_context_entry("hello", &extra);
+        assert!(entry.contains("UnknownApp"));
+        assert!(entry.contains("(无)")); // before/after/title 都应显示 "(无)"
+        assert!(entry.contains("(未知)")); // bundle_id = None
+    }
+
+    #[test]
+    fn test_format_entry_selected_char_count() {
+        let entry = format_context_entry("你好world", &sample_extra());
+        assert!(entry.contains("(7 字)")); // 2 CJK + 5 ASCII = 7 chars
+    }
+
+    // ── write_context_log ──
+
+    #[test]
+    fn test_write_creates_file_not_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("logs").join("action-bar.log");
+
+        write_context_log(&log_path, "test entry\n").unwrap();
+
+        // 关键断言：是文件，不是目录——曾经误用 create_dir_all(&path) 把日志文件创建成目录
+        assert!(log_path.is_file(), "日志路径应该是文件，不是目录");
+        assert!(!log_path.is_dir(), "日志路径不应该被创建为目录");
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content, "test entry\n");
+    }
+
+    #[test]
+    fn test_write_appends_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("deep").join("nested").join("action-bar.log");
+
+        write_context_log(&log_path, "first\n").unwrap();
+        write_context_log(&log_path, "second\n").unwrap();
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content, "first\nsecond\n");
+    }
+
+    #[test]
+    fn test_write_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("a").join("b").join("c").join("action-bar.log");
+
+        write_context_log(&log_path, "deep path\n").unwrap();
+
+        assert!(log_path.is_file());
+        assert_eq!(std::fs::read_to_string(&log_path).unwrap(), "deep path\n");
+    }
+
+    #[test]
+    fn test_write_existing_directory_at_path_fails() {
+        // 如果路径本身已经是目录，写入应该失败（而不是静默成功）
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("action-bar.log");
+        std::fs::create_dir_all(&log_path).unwrap(); // 预先创建为目录
+
+        let result = write_context_log(&log_path, "test\n");
+        assert!(result.is_err(), "路径已是目录时写入应失败");
     }
 }
