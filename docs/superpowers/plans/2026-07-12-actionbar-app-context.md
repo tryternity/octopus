@@ -954,13 +954,35 @@ git commit -m "docs: 同步 app_context 模块到 architecture + plan review 回
 
 实现完成后，对照 spec 逐条验证：
 
-1. ☐ `ActionBarContext` 有 `source` + `surrounding` 字段，`skip_serializing_if` 保证向后兼容
-2. ☐ macOS 走 NSWorkspace + AXUIElement，Windows/Linux 走 NullProvider
-3. ☐ `gather()` 失败/超时降级到「仅 text」，浮窗照常显示
-4. ☐ Terminal 特例：before 走 scrollback 截断（50 行 / 2000 字）
-5. ☐ Editor：before/after 各 2000 字截断
-6. ☐ AX 超时 500ms
-7. ☐ AI 动作 prompt 注入上下文；本地翻译不注入
-8. ☐ 前端类型升级 + 来源标签
-9. ☐ 纯函数单元测试（classify_app、extract_surrounding、truncate_terminal_scrollback）
-10. ☐ 手动验证 5 个场景
+1. ✅ `ActionBarContext` 有 `source` + `surrounding` 字段，`skip_serializing_if` 保证向后兼容
+2. ✅ macOS 走 NSWorkspace + AXUIElement，Windows/Linux 走 NullProvider
+3. ✅ `gather()` 失败/超时降级到「仅 text」，浮窗照常显示
+4. ✅ Terminal 特例：before 走 scrollback 截断（50 行 / 2000 字）
+5. ✅ Editor：before/after 各 2000 字截断
+6. ✅ AX 超时 500ms
+7. ✅ AI 动作 prompt 注入上下文；本地翻译不注入
+8. ✅ 前端类型升级 + 来源标签
+9. ✅ 纯函数单元测试（classify_app、extract_surrounding、truncate_terminal_scrollback）
+10. ⬜ 手动验证 5 个场景（需运行桌面应用，用户手动测试）
+
+---
+
+## Plan Review 回写（实际实现偏差）
+
+### 与计划的偏差
+
+1. **`lib.rs` → `main.rs`**：计划写 `crates/desktop/src/lib.rs` 加 `mod app_context;`，实际该 crate 没有 lib.rs，入口是 `main.rs`（第 3-50 行的 mod 声明区）。已修正。
+
+2. **测试命令**：计划写 `cargo test -p octopus-desktop --lib app_context`，实际该 crate 是 binary-only（无 `[lib]` target），正确命令是 `cargo test -p octopus-desktop --bin octopus-desktop app_context`。
+
+3. **AX FFI 链接方式修正（关键偏差）**：计划用 `extern "C" { pub static kAXFocusedUIElementAttribute: CFStringRef; }` 直接链接 AX 属性名 extern static。实际编译发现这些符号在 Rust 链接器中**不可见**（linker 报 `symbol(s) not found for architecture arm64`）。修正为 `CFString::new("AXFocusedUIElement")` 从字符串名构造——这是 Rust AX 绑定的标准做法（`accessibility` crate 同此方式）。
+
+4. **objc2-app-kit 版本**：计划写 version 0.2，项目实际已用 0.3（Cargo.toml 已有 `objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", ...] }`），无需新增依赖。
+
+5. **Task 2+3 合并**：因 FFI 链接问题导致 Task 2 的 macos_ax.rs 需在 Task 3 同批修正，两 task 代码在同一 commit 链中迭代完成。
+
+6. **测试断言修正**：`test_extract_surrounding_normal` 期望值 "Hello" 有误（实际是 "ello "，因为选区前 5 字符含空格）；`test_truncate_terminal_by_lines` 的 selection_start=35 有误（"selected" 起始在 char 30），已修正。
+
+### 前端 dist 预构建
+
+worktree 首次编译时缺 `dist/` 目录（Tauri `generate_context!()` 需要前端构建产物）。需先 `cd crates/desktop/frontend && npm install && npm run build`。
