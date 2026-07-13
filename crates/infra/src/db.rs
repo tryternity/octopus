@@ -295,7 +295,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 "UPDATE action_bar_items SET accepts='any' WHERE action_type='submenu' AND accepts='text'",
                 [],
             )?;
-            conn.execute_batch(INIT_SQL).ok(); // agent_adapters 表由 IF NOT EXISTS 自动建
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS agent_adapters (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, detect_binary TEXT NOT NULL, command_template TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+                [],
+            )?;
             conn.execute("PRAGMA user_version = 26", [])?;
             log::info!("schema upgraded to v26 (action_bar_items.agent/accepts + agent_adapters table)");
         }
@@ -2238,6 +2241,62 @@ mod tests {
         for a in &submenu_accepts {
             assert_eq!(a, "any", "submenu accepts 应为 'any'，实际: {}", a);
         }
+    }
+
+    #[test]
+    fn migration_v25_to_v26_upgrades_submenu_accepts() {
+        // 模拟老库：v25 schema（无 agent/accepts 列），手动插入 submenu 行
+        let conn = Connection::open_in_memory().unwrap();
+        // 先建一张 v25 风格的 action_bar_items（无 agent/accepts 列）
+        conn.execute_batch(
+            "CREATE TABLE action_bar_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER DEFAULT NULL,
+                title TEXT NOT NULL,
+                icon TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL,
+                action_data TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_system INTEGER NOT NULL DEFAULT 1,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                is_async INTEGER NOT NULL DEFAULT 1,
+                write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
+                shortcut TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
+            );
+            INSERT INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system)
+            VALUES (1, NULL, '测试菜单', '', 'submenu', '', 0, 1),
+                   (2, NULL, '测试脚本', '', 'script', '', 1, 0);"
+        ).unwrap();
+        conn.execute("PRAGMA user_version = 25", []).unwrap();
+
+        // 运行迁移
+        init_schema(&conn).unwrap();
+
+        // 验证：迁移后 user_version = 26
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 26);
+
+        // 验证：submenu 行 accepts 升级为 'any'
+        let accepts: String = conn.query_row(
+            "SELECT accepts FROM action_bar_items WHERE id=1", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(accepts, "any", "老 submenu 应升级为 accepts='any'");
+
+        // 验证：非 submenu 行保持 'text'
+        let accepts2: String = conn.query_row(
+            "SELECT accepts FROM action_bar_items WHERE id=2", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(accepts2, "text", "非 submenu 应保持 accepts='text'");
+
+        // 验证：agent_adapters 表已建
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_adapters'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

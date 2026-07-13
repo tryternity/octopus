@@ -391,6 +391,9 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // task-input 视图：不拦截任何键，让输入框自己处理（Escape 返回主菜单等）
+      if (viewRef.current === "task-input") return;
+
       if (e.key === "Escape") {
         e.preventDefault();
         invoke("action_bar_dismiss");
@@ -398,9 +401,6 @@ export default function ActionBar() {
       }
 
       if (viewRef.current === "loading") return;
-
-      // task-input 视图：不拦截键盘导航，让输入框正常接收所有按键
-      if (viewRef.current === "task-input") return;
 
       // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
       // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
