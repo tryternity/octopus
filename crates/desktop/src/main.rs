@@ -3,6 +3,9 @@
 mod activation;
 mod action_bar_window;
 mod action_bar_commands;
+mod agent_adapter;
+mod terminal_launcher;
+mod finder_selection;
 mod audio;
 mod config;
 mod clipboard_commands;
