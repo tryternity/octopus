@@ -238,26 +238,39 @@ unsafe fn find_text_element_depth(
     // 当前元素角色
     let role = get_attribute_string(element, &ax_role()).unwrap_or_default();
     if is_text_element(&role) {
-        // 确认有 AXValue
-        if get_attribute_value(element, &ax_value()).is_ok() {
+        // 确认有 AXValue（必须释放，否则泄漏）
+        let has_value = match get_attribute_value(element, &ax_value()) {
+            Ok(v) => {
+                CFRelease(v);
+                true
+            }
+            Err(_) => false,
+        };
+        if has_value {
             return Some(element);
         }
     }
 
-    // 遍历子元素
+    // 遍历子元素——AXChildren 可能返回非 CFArray（如 CFBoolean false），需类型检查
     let children = match get_attribute_value(element, &ax_children()) {
         Ok(v) => v,
         Err(_) => return None,
     };
 
-    let cf_array = core_foundation::array::CFArray::<CFTypeRef>::wrap_under_create_rule(children as *const _);
+    // 类型检查：AXChildren 必须是 CFArray，否则释放后返回 None
+    if !is_cf_array(children) {
+        CFRelease(children);
+        return None;
+    }
+
+    let cf_array =
+        core_foundation::array::CFArray::<CFTypeRef>::wrap_under_create_rule(children as *const _);
     let count = cf_array.len().min(50);
 
     for i in 0..count {
         let Some(child_ref) = cf_array.get(i) else {
             continue;
         };
-        // ItemRef deref 到 CFTypeRef（即 *const c_void），直接 cast
         let child: AXUIElementRef = *child_ref as AXUIElementRef;
         if child.is_null() {
             continue;
@@ -319,6 +332,16 @@ unsafe fn is_cf_string(value: CFTypeRef) -> bool {
     CFGetTypeID(value) == CFString::type_id()
 }
 
+/// 检查 CFTypeRef 是否为 CFArray 类型（null → false）。
+/// AXChildren 在某些元素上返回 CFBoolean/CFNull 而非 CFArray，
+/// 盲目 wrap 为 CFArray 会类型混淆崩溃（与 CFString 同类 bug）。
+unsafe fn is_cf_array(value: CFTypeRef) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    CFGetTypeID(value) == core_foundation::array::CFArray::<CFTypeRef>::type_id()
+}
+
 /// 读取选区范围 (start, end)，单位为 UTF-16 字符偏移（AX 的 CFRange 单位）。
 unsafe fn get_selected_range(element: AXUIElementRef) -> anyhow::Result<TextRange> {
     let value = get_attribute_value(element, &ax_selected_text_range())?;
@@ -353,6 +376,8 @@ mod tests {
     use core_foundation::boolean::CFBoolean;
     use core_foundation::number::CFNumber;
     use core_foundation::string::CFString;
+
+    // ── is_cf_string ──
 
     /// CFString 的 CFTypeRef 能被 `is_cf_string` 识别为 true。
     #[test]
@@ -430,5 +455,43 @@ mod tests {
         // 如果 is_string 为 false，get_attribute_string 会走 Err 路径，
         // 不会执行 CFString::wrap_under_create_rule → 不触发 _fastCStringContents 崩溃。
         // （get_attribute_string 的 AX 调用部分无法在单测中模拟，这里验证的是判定逻辑）
+    }
+
+    // ── is_cf_array ──
+
+    /// CFArray 的 CFTypeRef 被正确识别。
+    #[test]
+    fn test_is_cf_array_true() {
+        let arr: core_foundation::array::CFArray<CFString> =
+            core_foundation::array::CFArray::from_CFTypes(&[CFString::new("hi")]);
+        let raw: CFTypeRef = arr.as_CFTypeRef();
+        let result = unsafe { is_cf_array(raw) };
+        assert!(result);
+    }
+
+    /// CFBoolean（AXChildren 在某些元素上返回 false）→ 不是 CFArray。
+    /// 这正是第二个崩溃的根因：AXChildren 返回 CFBoolean，被当 CFArray wrap。
+    #[test]
+    fn test_is_cf_array_false_for_boolean() {
+        let b = CFBoolean::false_value();
+        let raw: CFTypeRef = b.as_CFTypeRef();
+        let result = unsafe { is_cf_array(raw) };
+        assert!(!result);
+    }
+
+    /// CFNumber 也不是 CFArray。
+    #[test]
+    fn test_is_cf_array_false_for_number() {
+        let n = CFNumber::from(0i32);
+        let raw: CFTypeRef = n.as_CFTypeRef();
+        let result = unsafe { is_cf_array(raw) };
+        assert!(!result);
+    }
+
+    /// null → false。
+    #[test]
+    fn test_is_cf_array_null() {
+        let result = unsafe { is_cf_array(std::ptr::null()) };
+        assert!(!result);
     }
 }
