@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFGetTypeID, CFRelease, CFTypeRef, TCFType};
 use core_foundation::string::CFString;
 
 use super::ffi::*;
@@ -194,19 +194,26 @@ unsafe fn get_attribute_string(
 ) -> anyhow::Result<String> {
     let value = get_attribute_value(element, attr)?;
 
-    // CFString 的 type id（进程内缓存）
-    let string_type_id = core_foundation::string::CFString::type_id();
-
-    if core_foundation::base::CFGetTypeID(value) != string_type_id {
+    if !is_cf_string(value) {
+        let actual_type = core_foundation::base::CFGetTypeID(value);
         CFRelease(value);
         return Err(anyhow::anyhow!(
-            "AX 属性 {} 返回非 CFString 类型",
-            attr.to_string()
+            "AX 属性 {} 返回非 CFString 类型 (CFTypeID={})",
+            attr.to_string(),
+            actual_type
         ));
     }
 
     let cf_string = CFString::wrap_under_create_rule(value as *const _);
     Ok(cf_string.to_string())
+}
+
+/// 检查 CFTypeRef 是否为 CFString 类型（null → false）。
+unsafe fn is_cf_string(value: CFTypeRef) -> bool {
+    if value.is_null() {
+        return false;
+    }
+    CFGetTypeID(value) == CFString::type_id()
 }
 
 /// 读取选区范围 (start, end)，单位为 UTF-16 字符偏移（AX 的 CFRange 单位）。
@@ -234,4 +241,91 @@ unsafe fn get_selected_range(element: AXUIElementRef) -> anyhow::Result<TextRang
         start: range.location.max(0) as usize,
         end: (range.location + range.length).max(0) as usize,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+
+    /// CFString 的 CFTypeRef 能被 `is_cf_string` 识别为 true。
+    #[test]
+    fn test_is_cf_string_true() {
+        let s = CFString::new("hello world");
+        let raw: CFTypeRef = s.as_CFTypeRef(); // get rule，不转移所有权
+        let result = unsafe { is_cf_string(raw) };
+        assert!(result);
+    }
+
+    /// CFNumber 的 CFTypeRef 被识别为 false——这是线上崩溃的根因：
+    /// AX 返回 CFNumber 而代码按 CFString 解转。
+    #[test]
+    fn test_is_cf_string_false_for_number() {
+        let n = CFNumber::from(42i32);
+        let raw: CFTypeRef = n.as_CFTypeRef();
+        let result = unsafe { is_cf_string(raw) };
+        assert!(!result);
+    }
+
+    /// CFBoolean 也不是 CFString。
+    #[test]
+    fn test_is_cf_string_false_for_boolean() {
+        let b = CFBoolean::true_value();
+        let raw: CFTypeRef = b.as_CFTypeRef();
+        let result = unsafe { is_cf_string(raw) };
+        assert!(!result);
+    }
+
+    /// null 指针 → false，不应崩溃。
+    #[test]
+    fn test_is_cf_string_null() {
+        let result = unsafe { is_cf_string(std::ptr::null()) };
+        assert!(!result);
+    }
+
+    /// CJK（多字节）CFString 也能正确识别。
+    #[test]
+    fn test_is_cf_string_cjk() {
+        let s = CFString::new("你好世界");
+        let raw: CFTypeRef = s.as_CFTypeRef();
+        let result = unsafe { is_cf_string(raw) };
+        assert!(result);
+    }
+
+    /// 确认 CFGetTypeID 对 CFString 和 CFNumber 返回不同的值——
+    /// 这是 is_cf_string 安全性的基础。
+    #[test]
+    fn test_cf_typeid_distinct() {
+        let s = CFString::new("test");
+        let n = CFNumber::from(1i32);
+        let s_id = unsafe { CFGetTypeID(s.as_CFTypeRef()) };
+        let n_id = unsafe { CFGetTypeID(n.as_CFTypeRef()) };
+        assert_ne!(s_id, n_id, "CFString 和 CFNumber 必须有不同的 CFTypeID");
+        assert_eq!(s_id, CFString::type_id());
+    }
+
+    /// 端到端模拟「AX 返回 CFNumber 被当 CFString 解转」的旧崩溃路径：
+    /// 创建一个 CFNumber，用 is_cf_string 判定为 false → 不走 CFString 解转 → 不崩溃。
+    /// 如果去掉类型检查直接 wrap_under_create_rule 会 NSException crash（此测试验证护栏生效）。
+    #[test]
+    fn test_type_check_prevents_crash_on_wrong_type() {
+        let n = CFNumber::from(99i32);
+
+        // 模拟 AX 返回的 create-rule CFTypeRef（+1 retain，需手动 release）
+        // CFNumber::as_CFTypeRef() 是 get-rule（不 +1），手动 retain 模拟 create
+        let raw: CFTypeRef = n.as_CFTypeRef();
+        // 手动 retain 模拟 AX "Copy" 语义（返回 +1）
+        // core-foundation 没有直接 CFRetain，但 CFGetTypeID 本身是 get-rule 无需 retain
+        // 这里只需验证 is_cf_string 返回 false，保证后续不会 wrap 为 CFString
+
+        let is_string = unsafe { is_cf_string(raw) };
+        assert!(!is_string, "CFNumber 不应被识别为 CFString");
+
+        // 如果 is_string 为 false，get_attribute_string 会走 Err 路径，
+        // 不会执行 CFString::wrap_under_create_rule → 不触发 _fastCStringContents 崩溃。
+        // （get_attribute_string 的 AX 调用部分无法在单测中模拟，这里验证的是判定逻辑）
+    }
 }
