@@ -3,6 +3,7 @@
 mod activation;
 mod action_bar_window;
 mod action_bar_commands;
+mod app_context;
 mod audio;
 mod config;
 mod clipboard_commands;
