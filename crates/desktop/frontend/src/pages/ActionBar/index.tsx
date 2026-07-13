@@ -7,8 +7,24 @@ import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 import { t } from "@/lib/i18n";
 
+type AppKind = 'editor' | 'terminal' | 'browser' | 'chat' | 'unknown';
+
+interface AppSource {
+  bundleId?: string;
+  name: string;
+  kind: AppKind;
+}
+
+interface SurroundingText {
+  before?: string;
+  after?: string;
+  windowTitle?: string;
+}
+
 interface Context {
   text: string;
+  source?: AppSource;
+  surrounding?: SurroundingText;
 }
 
 type View = "main" | "submenu" | "loading";
@@ -483,6 +499,11 @@ export default function ActionBar() {
       {toast && (
         <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
           <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
+        </div>
+      )}
+      {context?.source && (
+        <div className="flex items-center px-2.5 py-0.5 text-[9px] text-muted-foreground/60 shrink-0">
+          <span className="truncate max-w-[120px]">{context.source.name}</span>
         </div>
       )}
       {/* 主菜单 */}
