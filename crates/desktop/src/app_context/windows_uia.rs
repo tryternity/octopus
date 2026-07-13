@@ -28,8 +28,8 @@ impl super::ContextProvider for UiaProvider {
         let deadline = Instant::now() + UIA_TIMEOUT;
 
         // 1. 前台窗口 + 进程信息
-        let (pid, exe_name) = frontmost_process().ok_or_else(|| anyhow::anyhow!("无法获取前台窗口进程"))?;
-        let kind = classify_app(&exe_name);
+        let (_pid, exe_name) = frontmost_process().ok_or_else(|| anyhow::anyhow!("无法获取前台窗口进程"))?;
+        let kind = classify_app(&exe_name.to_lowercase());
 
         let source = AppSource {
             bundle_id: Some(exe_name.clone()),
@@ -105,7 +105,9 @@ fn gather_surrounding(selected_text: &str, kind: AppKind, deadline: Instant) -> 
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationTextPattern,
-        UIA_TextPatternId,
+        IUIAutomationTextRange,
+        UIA_TextPatternId, UIA_WindowPatternId,
+        TreeScope_Ancestors,
     };
     use windows::core::Interface;
 
@@ -118,8 +120,9 @@ fn gather_surrounding(selected_text: &str, kind: AppKind, deadline: Instant) -> 
 
         let focused = uia.GetFocusedElement()?;
 
-        // 窗口标题
-        let window_title = focused.CurrentName().ok().map(|n| n.to_string());
+        // 窗口标题——焦点元素的 Name 通常是控件 label 而非窗口标题，
+        // 需向上找 Window 祖先的 Name
+        let window_title = find_window_title(&uia, &focused);
 
         // 尝试 TextPattern 获取选区和文本
         let text_pattern: IUIAutomationTextPattern = focused
@@ -127,88 +130,145 @@ fn gather_surrounding(selected_text: &str, kind: AppKind, deadline: Instant) -> 
             .ok()
             .and_then(|p| p.cast().ok());
 
-        let (full_text, _range) = if let Some(ref tp) = text_pattern {
-            // 获取文档全文
+        let full_text = if let Some(ref tp) = text_pattern {
+            // 优先用 GetSelection 精确拿选区，再取选区所在范围文本
+            let selections = tp.GetSelection().ok();
+            if let Some(ranges) = selections {
+                let count = ranges.Length().unwrap_or(0);
+                if count > 0 {
+                    // 取第一个选区 range，扩展到所在段落/block 取上下文
+                    if let Some(sel_range) = ranges.GetElement(0).and_then(|e| e.cast::<IUIAutomationTextRange>().ok()) {
+                        // 选区文本验证
+                        let sel_text = sel_range.GetText(-1).ok().map(|t| t.to_string()).unwrap_or_default();
+                        // 选区起点向前取全文
+                        let doc_range = tp.get_DocumentRange().ok();
+                        let doc_text = doc_range
+                            .and_then(|r| r.GetText(-1).ok())
+                            .map(|t| t.to_string())
+                            .unwrap_or_default();
+                        // 用 selected_text 在全文中定位（比 UIA range 偏移更可靠）
+                        return Ok(build_surrounding_from_text(
+                            &doc_text,
+                            selected_text,
+                            kind,
+                            window_title,
+                            deadline,
+                        ));
+                    }
+                }
+            }
+            // GetSelection 失败 → 全文 find 退化
             let doc_range = tp.get_DocumentRange().ok();
-            let text = doc_range
+            doc_range
                 .and_then(|r| r.GetText(-1).ok())
                 .map(|t| t.to_string())
-                .unwrap_or_default();
-            (text, super::TextRange { start: 0, end: 0 })
+                .unwrap_or_default()
         } else {
             // 无 TextPattern，尝试 ValuePattern
             use windows::Win32::UI::Accessibility::UIA_ValuePatternId;
             let value_pattern = focused.GetCurrentPattern(UIA_ValuePatternId).ok();
-            let text = value_pattern
+            value_pattern
                 .and_then(|p| {
                     use windows::Win32::UI::Accessibility::IUIAutomationValuePattern;
                     let vp: IUIAutomationValuePattern = p.cast().ok()?;
                     vp.CurrentValue().ok().map(|v| v.to_string())
                 })
-                .unwrap_or_default();
-            (text, super::TextRange { start: 0, end: 0 })
+                .unwrap_or_default()
         };
 
-        // 超时检查
-        if Instant::now() >= deadline {
-            log::warn!("[app-context] Windows UIA 超时");
-            return Ok(SurroundingText {
-                before: None,
-                after: None,
-                window_title,
-            });
-        }
+        return Ok(build_surrounding_from_text(
+            &full_text,
+            selected_text,
+            kind,
+            window_title,
+            deadline,
+        ));
+    }
+}
 
-        // 内容校验（Terminal 排除）
-        if kind != AppKind::Terminal
-            && !full_text.is_empty()
-            && !selected_text.is_empty()
-            && !full_text.contains(selected_text.trim())
-        {
-            return Ok(SurroundingText {
-                before: None,
-                after: None,
-                window_title,
-            });
-        }
+/// 从焦点元素向上找 Window 祖先取标题（焦点元素 Name 通常是控件 label，不是窗口标题）。
+unsafe fn find_window_title(
+    uia: &IUIAutomation,
+    focused: &windows::Win32::UI::Accessibility::IUIAutomationElement,
+) -> Option<String> {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationElement, IUIAutomationCondition, UIA_WindowControlTypeId,
+    };
+    use windows::core::Interface;
 
-        // 用 selected_text 在 full_text 中搜索定位切 before/after
-        let (before, after) = if !full_text.is_empty() && !selected_text.is_empty() {
-            match full_text.find(selected_text.trim()) {
-                Some(pos) => {
-                    let before_text = &full_text[..pos];
-                    let after_start = pos + selected_text.trim().len();
-                    let after_text = if after_start < full_text.len() {
-                        &full_text[after_start..]
-                    } else {
-                        ""
-                    };
-                    let b = if kind == AppKind::Terminal {
-                        truncate_terminal_tail(before_text)
-                    } else {
-                        truncate_text_tail(before_text, 1000, SURROUNDING_LIMIT)
-                    };
-                    let a = truncate_text_head(after_text, SURROUNDING_LIMIT);
-                    (b, a)
-                }
-                None => {
-                    if kind == AppKind::Terminal {
-                        (truncate_terminal_tail(&full_text), None)
-                    } else {
-                        (None, None)
-                    }
+    let cond = uia
+        .CreatePropertyCondition(
+            windows::Win32::UI::Accessibility::UIA_ControlTypePropertyId,
+            &windows::Win32::UI::Accessibility::UIA_ReservedNotSupportedValue.into(),
+        )
+        .ok()?;
+
+    // 简化：用 TreeWalker 向上找 Window
+    let walker = uia.CreateTreeWalker(&cond).ok()?;
+    let window_element = walker
+        .NormalizeElement(focused)
+        .ok()
+        .or_else(|| Some(focused.clone().into()))?;
+
+    let window_elem: IUIAutomationElement = window_element.cast().ok()?;
+    window_elem.CurrentName().ok().map(|n| n.to_string())
+}
+
+/// 从全文 + selected_text 构建 SurroundingText（内容校验 + find 定位 + 截断）。
+fn build_surrounding_from_text(
+    full_text: &str,
+    selected_text: &str,
+    kind: AppKind,
+    window_title: Option<String>,
+    deadline: Instant,
+) -> SurroundingText {
+    if Instant::now() >= deadline {
+        log::warn!("[app-context] Windows UIA 超时");
+        return SurroundingText { before: None, after: None, window_title };
+    }
+
+    // 内容校验（Terminal 排除）
+    let sel_trimmed = selected_text.trim();
+    if kind != AppKind::Terminal
+        && !full_text.is_empty()
+        && !sel_trimmed.is_empty()
+        && !full_text.contains(sel_trimmed)
+    {
+        return SurroundingText { before: None, after: None, window_title };
+    }
+
+    // 用 selected_text 在 full_text 中搜索定位切 before/after
+    let (before, after) = if !full_text.is_empty() && !sel_trimmed.is_empty() {
+        match full_text.find(sel_trimmed) {
+            Some(pos) => {
+                let before_text = &full_text[..pos];
+                let after_start = pos + sel_trimmed.len();
+                let after_text = if after_start < full_text.len() {
+                    &full_text[after_start..]
+                } else {
+                    ""
+                };
+                let b = if kind == AppKind::Terminal {
+                    truncate_terminal_tail(before_text)
+                } else {
+                    truncate_text_tail(before_text, 1000, SURROUNDING_LIMIT)
+                };
+                let a = truncate_text_head(after_text, SURROUNDING_LIMIT);
+                (b, a)
+            }
+            None => {
+                if kind == AppKind::Terminal {
+                    (truncate_terminal_tail(full_text), None)
+                } else {
+                    (None, None)
                 }
             }
-        } else {
-            (None, None)
-        };
+        }
+    } else {
+        (None, None)
+    };
 
-        Ok(SurroundingText {
-            before,
-            after,
-            window_title,
-        })
-    }
+    SurroundingText { before, after, window_title }
 }
 
 /// Terminal scrollback 截断（简化版，行数/字数限制）。

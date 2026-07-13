@@ -128,7 +128,7 @@ gtk = "0.18"
 gdk = "0.18"
 cairo-rs = { version = "0.18", features = ["use_glib"] }
 glib = "0.18"
-zbus = { version = "4", default-features = false, features = ["blocking"] }
+# zbus 暂不引入——Linux AT-SPI2 实现待 v2（需事件流，见 linux_atspi.rs）
 
 [dev-dependencies]
 tempfile = "3"

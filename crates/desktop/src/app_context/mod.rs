@@ -71,11 +71,8 @@ pub fn provider() -> Box<dyn ContextProvider> {
     {
         Box::new(self::windows_uia::UiaProvider)
     }
-    #[cfg(target_os = "linux")]
-    {
-        Box::new(self::linux_atspi::AtspiProvider)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    // Linux 暂不支持（AT-SPI2 需事件流，见 linux_atspi.rs 注释）
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Box::new(NullProvider)
     }
@@ -92,8 +89,7 @@ mod ffi;
 mod macos_ax;
 #[cfg(target_os = "windows")]
 mod windows_uia;
-#[cfg(target_os = "linux")]
-mod linux_atspi;
+// linux_atspi.rs 暂不编译——AT-SPI2 需事件流，见文件注释
 
 // ── 纯函数辅助 ──
 
