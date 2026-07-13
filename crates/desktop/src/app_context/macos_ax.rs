@@ -88,6 +88,29 @@ fn frontmost_app() -> Option<(i32, Option<String>, String)> {
     Some((pid, bundle_id, name))
 }
 
+/// 将 AX 错误码翻译为人类可读描述。
+fn ax_error_desc(err: AXError) -> &'static str {
+    match err {
+        0 => "kAXErrorSuccess (成功)",
+        -25200 => "kAXErrorFailure (通用失败)",
+        -25202 => "kAXErrorIllegalArgument (非法参数)",
+        -25203 => "kAXErrorInvalidUIElement (无效 UI 元素)",
+        -25204 => "kAXErrorInvalidUIElementObserver (无效观察者)",
+        -25205 => "kAXErrorCannotComplete (操作无法完成)",
+        -25206 => "kAXErrorAttributeUnsupported (属性不支持)",
+        -25207 => "kAXErrorActionUnsupported (动作不支持)",
+        -25208 => "kAXErrorNotificationUnsupported (通知不支持)",
+        -25209 => "kAXErrorNotImplemented (未实现)",
+        -25210 => "kAXErrorNotificationAlreadyRegistered (通知已注册)",
+        -25211 => "kAXErrorNotificationNotRegistered (通知未注册)",
+        -25212 => "kAXErrorAPIDisabled (AX API 被禁用——检查辅助功能权限)",
+        -25213 => "kAXErrorNoValue (无值)",
+        -25214 => "kAXErrorParameterizedAttributeUnsupported (参数化属性不支持)",
+        -25215 => "kAXErrorNotEnoughPrecision (精度不足)",
+        _ => "未知 AX 错误码",
+    }
+}
+
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
 fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
@@ -106,12 +129,25 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::R
             }
             Err(e) => {
                 log::info!("[app-context] 无法获取焦点元素: {}", e);
-                Err(e)
+                // 焦点元素获取失败时，尝试遍历 app_element 子树找文本元素
+                match find_text_element(app_element) {
+                    Some(text_elem) => {
+                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text);
+                        CFRelease(text_elem as CFTypeRef); // find_text_element 做了 CFRetain
+                        let mut result = surrounding?;
+                        result.1 = Some(format!(
+                            "{}\n  fallback: find_text_element 从 app_element 子树找到文本元素",
+                            result.1.unwrap_or_default()
+                        ));
+                        Ok(result)
+                    }
+                    None => Err(e),
+                }
             }
         };
 
         CFRelease(app_element as CFTypeRef);
-        result.map(|(s, diag)| (s, diag))
+        result
     }
 }
 
@@ -392,8 +428,10 @@ unsafe fn get_attribute_value(
     let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value);
     if err != 0 || value.is_null() {
         return Err(anyhow::anyhow!(
-            "AXUIElementCopyAttributeValue error: {}",
-            err
+            "AXUIElementCopyAttributeValue({}) error: {} ({})",
+            attr.to_string(),
+            err,
+            ax_error_desc(err),
         ));
     }
     Ok(value)
@@ -626,6 +664,21 @@ mod tests {
     fn test_strip_normal_text_unchanged() {
         let input = "正常文本 without any control chars";
         assert_eq!(strip_control_chars(input), input);
+    }
+
+    // ── ax_error_desc ──
+
+    #[test]
+    fn test_ax_error_desc_known() {
+        assert_eq!(ax_error_desc(-25212), "kAXErrorAPIDisabled (AX API 被禁用——检查辅助功能权限)");
+        assert_eq!(ax_error_desc(-25205), "kAXErrorCannotComplete (操作无法完成)");
+        assert_eq!(ax_error_desc(-25200), "kAXErrorFailure (通用失败)");
+        assert_eq!(ax_error_desc(0), "kAXErrorSuccess (成功)");
+    }
+
+    #[test]
+    fn test_ax_error_desc_unknown() {
+        assert_eq!(ax_error_desc(-99999), "未知 AX 错误码");
     }
 
     // ── truncate_text_tail / truncate_text_head ──
