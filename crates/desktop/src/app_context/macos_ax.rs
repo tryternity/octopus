@@ -31,7 +31,7 @@ const TERMINAL_MAX_CHARS: usize = 2000;
 pub struct AxProvider;
 
 impl super::ContextProvider for AxProvider {
-    fn gather(&self) -> anyhow::Result<ExtraContext> {
+    fn gather(&self, selected_text: &str) -> anyhow::Result<ExtraContext> {
         let deadline = Instant::now() + AX_TIMEOUT;
 
         // 1. 前台应用信息
@@ -51,7 +51,7 @@ impl super::ContextProvider for AxProvider {
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
         let (surrounding, diagnostics) = if deadline.checked_duration_since(Instant::now()).is_some() {
-            match gather_surrounding(pid, kind) {
+            match gather_surrounding(pid, kind, selected_text) {
                 Ok((s, diag)) => (Some(s), diag),
                 Err(e) => {
                     log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
@@ -89,7 +89,7 @@ fn frontmost_app() -> Option<(i32, Option<String>, String)> {
 }
 
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
-fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<(SurroundingText, Option<String>)> {
+fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
         let app_element = AXUIElementCreateApplication(pid);
         if app_element.is_null() {
@@ -100,7 +100,7 @@ fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<(SurroundingTex
         let result = match get_attribute_value(app_element, &ax_focused_ui_element()) {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
-                let surrounding = build_surrounding(focused_element, app_element, kind);
+                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text);
                 CFRelease(focused_ref);
                 surrounding
             }
@@ -123,6 +123,7 @@ unsafe fn build_surrounding(
     focused_element: AXUIElementRef,
     app_element: AXUIElementRef,
     kind: AppKind,
+    selected_text: &str,
 ) -> anyhow::Result<(SurroundingText, Option<String>)> {
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -182,6 +183,30 @@ unsafe fn build_surrounding(
     // 用完后释放 find_text_element 返回的 +1 引用
     if owns_text_element {
         CFRelease(text_element as CFTypeRef);
+    }
+
+    // ── 内容校验：AX 树可能不含真实编辑器文本 ──
+    // 自绘编辑器（Sublime Text、Vim GUI 等）的 AX 树只有静态文本
+    // （如试用版水印 "UNREGISTERED"），不包含编辑器实际内容。
+    // 判定：full_text 不包含选中文本 → AX 无真实内容 → 降级返回 None。
+    if !full_text.is_empty() && !selected_text.is_empty() {
+        let selected_trimmed = selected_text.trim();
+        let full_trimmed = full_text.trim();
+        if !full_trimmed.contains(selected_trimmed) {
+            diagnostics.push(format!(
+                "DEGRADED: full_text 不含选中文本，AX 树无真实内容（如 Sublime 自绘编辑器）"
+            ));
+            let diag = Some(diagnostics.join("\n  "));
+            log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
+            return Ok((
+                SurroundingText {
+                    before: None,
+                    after: None,
+                    window_title,
+                },
+                diag,
+            ));
+        }
     }
 
     let mut surrounding = if kind == AppKind::Terminal {

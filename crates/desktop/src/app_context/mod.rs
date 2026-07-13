@@ -47,7 +47,8 @@ pub struct ExtraContext {
 /// 平台无关的应用上下文获取接口。
 pub trait ContextProvider {
     /// 至少返回 source（前台 app 信息）；surrounding 可能 None。
-    fn gather(&self) -> anyhow::Result<ExtraContext>;
+    /// selected_text 用于校验 AX 树是否包含真实编辑器内容。
+    fn gather(&self, selected_text: &str) -> anyhow::Result<ExtraContext>;
 }
 
 /// 非 macOS 平台的空实现——永远返回 Err。
@@ -55,7 +56,7 @@ pub trait ContextProvider {
 pub struct NullProvider;
 
 impl ContextProvider for NullProvider {
-    fn gather(&self) -> anyhow::Result<ExtraContext> {
+    fn gather(&self, _selected_text: &str) -> anyhow::Result<ExtraContext> {
         Err(anyhow::anyhow!("app context: platform not supported"))
     }
 }
@@ -70,6 +71,11 @@ pub fn provider() -> Box<dyn ContextProvider> {
     {
         Box::new(NullProvider)
     }
+}
+
+/// 工厂便捷方法：调 provider().gather()。
+pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
+    provider().gather(selected_text)
 }
 
 #[cfg(target_os = "macos")]
@@ -229,6 +235,6 @@ mod tests {
     #[test]
     fn test_null_provider_returns_err() {
         let p = NullProvider;
-        assert!(p.gather().is_err());
+        assert!(p.gather("test").is_err());
     }
 }

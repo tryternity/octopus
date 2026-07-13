@@ -105,7 +105,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         // 5. 暂存上下文——采集来源应用 + 环境上下文（失败降级到仅 text）
         let mut ctx = ActionBarContext { text: text.clone(), source: None, surrounding: None };
-        match crate::app_context::provider().gather() {
+        match crate::app_context::gather_context(&text) {
             Ok(extra) => {
                 log_app_context(&text, &extra);
                 ctx.source = Some(extra.source);
