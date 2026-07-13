@@ -491,6 +491,13 @@ agentPanel:
   templateHelpFiles: "{files} — 空格分隔的文件路径"
   templateHelpFilesAt: "{files_at} — @ 前缀的文件路径（pi 风格）"
   templateHelpCwd: "{cwd} — 首个文件的父目录"
+  tasksTitle: 任务列表
+  retry: 重试
+  taskStatusPending: 等待中
+  taskStatusExecuting: 执行中
+  taskStatusDone: 已完成
+  taskStatusFailed: 失败
+  noTasks: 暂无任务
 
 # ════════ Result ASR 结果窗 ════════
 result:

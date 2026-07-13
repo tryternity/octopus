@@ -349,12 +349,16 @@ export default function ActionBar() {
       return;
     }
 
-    // agent 类型：含 {{task}} → 弹输入框；否则直接执行
+    // agent 类型：含 {{task}} → 联动语音录音；否则直接执行
     if (item.actionType === "agent") {
       if (item.actionData.includes("{{task}}")) {
-        setTaskItem(item);
-        setTaskInput("");
-        setView("task-input");
+        setView("loading");
+        try {
+          await invoke("trigger_agent_voice", { itemId: item.id });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+          setView("main");
+        }
         return;
       }
       setView("loading");

@@ -210,6 +210,82 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
           <div><span className="text-foreground">{"{cwd}"}</span> {t("agentPanel.templateHelpCwd")}</div>
         </div>
       </div>
+
+      {/* 任务列表区 */}
+      <TaskList showToast={showToast} />
+    </div>
+  );
+}
+
+// ── 任务列表 ──
+interface AgentTask {
+  id: string;
+  status: string;
+  agentKey: string;
+  transcribedText: string;
+  errorMsg: string;
+  createdAt: string;
+}
+
+function TaskList({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
+  const [tasks, setTasks] = useState<AgentTask[]>([]);
+
+  const refresh = useCallback(() => {
+    invoke<AgentTask[]>("list_agent_tasks", { limit: 50 }).then(setTasks).catch(() => {});
+  }, []);
+
+  useEffect(refresh, [refresh]);
+
+  const handleRetry = async (id: string) => {
+    try {
+      await invoke("retry_agent_task", { id });
+      showToast(t("agentPanel.retry"));
+      refresh();
+    } catch (e) { showToast(String(e)); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await invoke("delete_agent_task", { id });
+      refresh();
+    } catch (e) { showToast(String(e)); }
+  };
+
+  const statusColor = (s: string) =>
+    s === "done" ? "bg-emerald-500" : s === "failed" ? "bg-red-500" : s === "executing" ? "bg-sky-500" : "bg-muted-foreground";
+  const statusLabel = (s: string) =>
+    s === "done" ? t("agentPanel.taskStatusDone") : s === "failed" ? t("agentPanel.taskStatusFailed")
+    : s === "executing" ? t("agentPanel.taskStatusExecuting") : t("agentPanel.taskStatusPending");
+
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">{t("agentPanel.tasksTitle")}</h3>
+      {tasks.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("agentPanel.noTasks")}</p>
+      ) : (
+        <div className="space-y-1">
+          {tasks.map((task) => (
+            <div key={task.id} className="flex items-center gap-3 rounded-lg border border-border p-3">
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusColor(task.status))} />
+              <span className="font-mono text-[10px] text-muted-foreground">{task.id.slice(0, 8)}</span>
+              <span className="text-xs">{task.agentKey}</span>
+              <span className="flex-1 truncate text-xs text-muted-foreground">
+                {task.transcribedText || "—"}
+              </span>
+              <span className="text-[10px] text-muted-foreground">{statusLabel(task.status)}</span>
+              {task.status === "failed" && (
+                <button onClick={() => handleRetry(task.id)} className="text-[10px] text-voice hover:underline">
+                  {t("agentPanel.retry")}
+                </button>
+              )}
+              <button onClick={() => handleDelete(task.id)} className="text-[10px] text-muted-foreground hover:text-red-500">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
