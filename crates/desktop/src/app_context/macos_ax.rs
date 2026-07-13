@@ -184,11 +184,27 @@ unsafe fn get_attribute_value(
 }
 
 /// 读取 AX 字符串属性。
+///
+/// AX 属性值可能是任意 CFType（CFString / CFNumber / CFBoolean ...），
+/// 盲目按 CFString 解转会调 `_fastCStringContents` 到非字符串类型上导致崩溃。
+/// 这里用 CFGetTypeID 检查类型，非 CFString 返回 Err。
 unsafe fn get_attribute_string(
     element: AXUIElementRef,
     attr: &CFString,
 ) -> anyhow::Result<String> {
     let value = get_attribute_value(element, attr)?;
+
+    // CFString 的 type id（进程内缓存）
+    let string_type_id = core_foundation::string::CFString::type_id();
+
+    if core_foundation::base::CFGetTypeID(value) != string_type_id {
+        CFRelease(value);
+        return Err(anyhow::anyhow!(
+            "AX 属性 {} 返回非 CFString 类型",
+            attr.to_string()
+        ));
+    }
+
     let cf_string = CFString::wrap_under_create_rule(value as *const _);
     Ok(cf_string.to_string())
 }
