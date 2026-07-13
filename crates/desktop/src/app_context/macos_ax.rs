@@ -51,11 +51,37 @@ impl super::ContextProvider for AxProvider {
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
         let (surrounding, diagnostics) = if deadline.checked_duration_since(Instant::now()).is_some() {
-            match gather_surrounding(pid, kind, selected_text) {
-                Ok((s, diag)) => (Some(s), diag),
-                Err(e) => {
-                    log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
-                    (None, Some(format!("gather_surrounding error: {}", e)))
+            // Browser 优先用 AppleScript execute javascript（直接读 DOM，比 AX 准确）
+            if kind == AppKind::Browser {
+                if let Some(result) = gather_browser_via_applescript(
+                    bundle_id.as_deref().unwrap_or(""),
+                    selected_text,
+                ) {
+                    (Some(result.0), result.1)
+                } else {
+                    // AppleScript JS 失败（可能未开启 Allow JavaScript from Apple Events），fallback 到 AX
+                    let mut diag_prefix = "browser AppleScript JS 失败，fallback 到 AX\n".to_string();
+                    match gather_surrounding(pid, kind, selected_text) {
+                        Ok((s, diag)) => {
+                            let full_diag = match diag {
+                                Some(d) => format!("{}{}", diag_prefix, d),
+                                None => diag_prefix,
+                            };
+                            (Some(s), Some(full_diag))
+                        }
+                        Err(e) => {
+                            diag_prefix.push_str(&format!("gather_surrounding error: {}", e));
+                            (None, Some(diag_prefix))
+                        }
+                    }
+                }
+            } else {
+                match gather_surrounding(pid, kind, selected_text) {
+                    Ok((s, diag)) => (Some(s), diag),
+                    Err(e) => {
+                        log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
+                        (None, Some(format!("gather_surrounding error: {}", e)))
+                    }
                 }
             }
         } else {
@@ -109,6 +135,109 @@ fn ax_error_desc(err: AXError) -> &'static str {
         -25215 => "kAXErrorNotEnoughPrecision (精度不足)",
         _ => "未知 AX 错误码",
     }
+}
+
+/// 通过 AppleScript 在浏览器中执行 JS 获取选区上下文。
+///
+/// 直接读 DOM（Selection API + Range），比 AX 遍历准确得多。
+/// 需要用户在浏览器中开启「Allow JavaScript from Apple Events」：
+/// - Chrome/Edge: 菜单栏 → View → Developer → Allow JavaScript from Apple Events
+/// - Safari: 偏好设置 → 高级 → 勾选「在菜单栏中显示开发菜单」→ 开发菜单 → 勾选「允许从 Apple 事件执行 JavaScript」
+fn gather_browser_via_applescript(
+    bundle_id: &str,
+    _selected_text: &str,
+) -> Option<(SurroundingText, Option<String>)> {
+    use std::process::Command;
+
+    let (app_name, verb, tab_spec) = match bundle_id {
+        "com.google.Chrome" => ("Google Chrome", "execute javascript", "active tab"),
+        "com.microsoft.edgemac" => ("Microsoft Edge", "execute javascript", "active tab"),
+        "com.apple.Safari" => ("Safari", "do JavaScript", "document 1"),
+        "org.mozilla.firefox" => return None, // Firefox 不支持 AppleScript JS
+        _ => return None,
+    };
+
+    // JS 代码：只使用 single quotes（AppleScript string 用 double quotes 分隔）
+    // 取选区所在 block 元素全文，按选区位置切 before/after。
+    let js = "(function(){\
+        var s=window.getSelection();\
+        if(!s||s.rangeCount===0)return JSON.stringify({before:'',after:'',title:document.title});\
+        var range=s.getRangeAt(0);\
+        var block=range.startContainer;\
+        while(block&&block.parentNode){\
+            var t=block.nodeName;\
+            if(['P','DIV','LI','TD','TH','BLOCKQUOTE','PRE','H1','H2','H3','H4','H5','H6','ARTICLE','SECTION'].indexOf(t)>=0)break;\
+            block=block.parentNode;\
+        }\
+        if(!block)block=document.body;\
+        var fr=document.createRange();\
+        fr.selectNodeContents(block);\
+        var br=document.createRange();\
+        br.setStart(fr.startContainer,fr.startOffset);\
+        try{br.setEnd(range.startContainer,range.startOffset);}catch(e){return JSON.stringify({before:'',after:'',title:document.title});}\
+        var ar=document.createRange();\
+        try{ar.setStart(range.endContainer,range.endOffset);ar.setEnd(fr.endContainer,fr.endOffset);}catch(e){return JSON.stringify({before:'',after:'',title:document.title});}\
+        var ml=1000;\
+        var b=br.toString();\
+        var a=ar.toString();\
+        if(b.length>ml)b=b.slice(-ml);\
+        if(a.length>ml)a=a.slice(0,ml);\
+        return JSON.stringify({before:b,after:a,title:document.title});\
+    })()";
+
+    let script = format!(
+        r#"tell application "{}"
+    {} "{}" in {} of front window
+end tell"#,
+        app_name, verb, js, tab_spec
+    );
+
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::info!(
+            "[app-context] browser AppleScript JS 失败: {}",
+            stderr.trim()
+        );
+        return None;
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let json_str = json_str.trim();
+
+    log::info!("[app-context] browser JS result: {} chars", json_str.len());
+
+    let result: serde_json::Value = serde_json::from_str(json_str).ok()?;
+
+    let before = result["before"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let after = result["after"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let window_title = result["title"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    if before.is_none() && after.is_none() && window_title.is_none() {
+        return None;
+    }
+
+    Some((
+        SurroundingText {
+            before,
+            after,
+            window_title,
+        },
+        Some(format!("browser: AppleScript {} ({} chars result)", verb, json_str.len())),
+    ))
 }
 
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
