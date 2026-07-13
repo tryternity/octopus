@@ -1,6 +1,6 @@
 # Result 浮窗翻译双语视图设计
 
-> **状态**：设计确认，待实现
+> **状态**：已实现
 > **日期**：2026-07-12
 > **分支**：`worktree-translation-pane`
 > **scope**：在语音识别 **Result 浮窗**（`pages/Result/`）内新增「翻译」入口——点击后自动进大窗，文本区从单语变**上下**两栏（上原文、下译文），最终提交产物为**译文**。
@@ -38,14 +38,15 @@
 |--------|------|
 | 翻译触发时机 | **手工触发**进入双语模式；进入即首翻一次；可重复重翻；保存时终翻一次 |
 | ASR 仍在识别时译文行为 | **节流（throttle）**：每 N 秒检查原文是否变化，变化才重翻；翻译中跳过本次（不排队） |
-| 自动档间隔 | **8 / 12 / 15 秒**三档；默认选中**手动**（首次），用户改选后**记忆到 DB** |
-| 命名 | "手动"（vs 自动 8/12/15s） |
+| 自动档间隔 | **4 / 8 / 12 秒**三档；默认选中**手动**（首次），用户改选后**记忆到 DB** |
+| 命名 | "手动"（vs 自动 4/8/12s） |
 | 布局 | **上下**分栏（上原文、下译文），仅大窗态（480px 高） |
 | 迷你窗 | **不支持**翻译模式（空间不足）；进翻译模式自动转大窗 |
 | 手动翻译入口 | **独立按钮 + 快捷键**双通道（下拉纯选择器不触发动作） |
-| 产物 | **译文**（保存提交译文到光标） |
+| 产物 | **译文**（停止录音时后端终翻，粘贴译文到光标） |
 | 档位记忆 | 写 **DB app_config 表**（`translate_mode` 键），与 `denoise_mode` 一致——**非** config.yaml |
-| 保存后 | **自动退出**翻译模式，回单语大窗 |
+| 保存/Cmd+Enter | **仅退出编辑态**（commit），不触发翻译、不改变双语布局 |
+| 终翻时机 | **停止录音（Toggle）时**，后端 `finalize_after_stop` → `do_paste` 入口统一拦截 |
 | 工具栏 | **移除** settings 按钮（改经托盘菜单进入设置） |
 | 实现路径 | **Approach 1**：Result 浮窗内新建轻量双语视图，改动封闭在 Result 模块 |
 
@@ -65,7 +66,7 @@
 `Result/index.tsx` 新增：
 
 ```ts
-type TranslateMode = 'off' | 'manual' | '8s' | '12s' | '15s';
+type TranslateMode = 'off' | 'manual' | '4s' | '8s' | '12s';
 
 // 新增 state
 const [translateMode, setTranslateMode] = useState<TranslateMode>('off');
@@ -78,7 +79,7 @@ const throttleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 ### 2.2 DB app_config 键
 
-新增键 `translate_mode`（string），取值：`"manual"` / `"8s"` / `"12s"` / `"15s"`。
+新增键 `translate_mode`（string），取值：`"manual"` / `"4s"` / `"8s"` / `"12s"`。
 
 - 首次进入翻译模式：DB 无此键 → 默认 `"manual"`
 - 用户切换档位 → `save_config_key("translate_mode", ...)` 写 DB
@@ -92,7 +93,7 @@ const throttleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 ```rust
 pub struct ToolbarState {
     // ... 现有字段 ...
-    /// 翻译自动档（记忆档位）："manual" / "8s" / "12s" / "15s"
+    /// 翻译自动档（记忆档位）："manual" / "4s" / "8s" / "12s"
     pub translate_mode: String,
 }
 ```
@@ -109,7 +110,7 @@ pub struct ToolbarState {
 
 ## 3. 翻译触发与数据流
 
-### 3.1 翻译执行
+### 3.1 前端翻译执行（实时预览）
 
 复用现有 `translate_text` 命令（`action_bar_commands.rs:451`，fire-and-forget）：
 
@@ -118,34 +119,39 @@ pub struct ToolbarState {
 - emit `translate-progress`（每段完成，累积译文）→ 前端 `setTranslatedText`
 - emit `translate-done`（全部完成）→ 前端 `setTranslating(false)`
 
-### 3.2 三种翻译触发路径
+前端三条路径——首翻、自动档节流、手动立即翻译——均走 `doTranslate()`（fire-and-forget）：
 
 ```
                     ┌─ 首翻（进入翻译模式）──────────┐
-                    │  立即 invoke translate_text     │
-                    │  setTranslating(true)            │
+                    │  set_translation_active(true)   │
+                    │  invoke translate_text          │
                     └──────────────────────────────────┘
 进翻译模式 ─────────┤
-                    ┌─ 自动档节流 ───────────────────┐
+                    ┌─ 自动档节流（4s/8s/12s）──────┐
                     │  setInterval(N 秒):              │
                     │    if 原文≠lastTranslated &&     │
                     │       !translating: doTranslate  │
-                    │    // else 跳过                   │
                     └──────────────────────────────────┘
                     │
                     ┌─ 手动「立即翻译」/ Cmd+T ───────┐
                     │  无视档位立即 doTranslate        │
-                    │  （仍受 translating 单飞约束）   │
                     └──────────────────────────────────┘
-
-保存/提交（翻译态）─ 终翻（同步等待）:
-  1. asrEditorRef.commit()              // 拿最新原文
-  2. 终翻：invoke translate_text + await translate-done
-  3. commit_edit 提交【译文】
-  4. 退出翻译模式（translateMode='off'）
 ```
 
-**首翻**、**自动档**、**手动** 三个路径走 `doTranslate()` 公共函数（fire-and-forget）；**终翻**单独处理（同步等待 `translate-done`，确保提交最终译文）。
+### 3.2 后端终翻（停止录音时）
+
+翻译的最终产物不依赖前端，而是在**停止录音**时由后端统一处理：
+
+```
+用户停止录音（Toggle）
+  → finalize_after_stop: ASR flush + 句末标点
+    → start_final_polish_or_paste: 最终润色（如有 polish_mode）
+      → do_paste 入口: 检查 TRANSLATION_ACTIVE
+        → true: 同步翻译（do_translate）→ 粘贴译文
+        → false: 粘贴原文
+```
+
+**关键设计**：翻译拦截放在 `do_paste` 入口，确保润色完成后才翻译。流程为 ASR 原文 → 最终润色 → 翻译润色结果 → 粘贴译文。`TRANSLATION_ACTIVE` 用 `swap(false)` 消费，保证只翻译一次。
 
 ### 3.3 doTranslate() 公共函数
 
@@ -159,53 +165,27 @@ const doTranslate = useCallback(async () => {
   lastTranslatedRef.current = source;
   try {
     await invoke("translate_text", { text: source });
-    // translate-progress/done 事件驱动 setTranslatedText / setTranslating
   } catch (e) {
     translatingRef.current = false;
     setTranslating(false);
-    showToast(ti18n("result.translateFail") + ": " + String(e));
+    showToast(ti18n("result.translateFail") + String(e));
   }
 }, [text, showToast]);
 ```
 
-> **注**：`AsrEditorHandle` 需新增 `getText()` 方法（当前只有 `commit()`），用于节流比较和终翻取原文——commit 会清空编辑态副作用，节流路径不应触发。
-
-### 3.4 终翻的同步等待
-
-终翻需要同步拿最终译文，但 `translate_text` 是 fire-and-forget。实现：终翻 invoke 后，`listen("translate-done")` 一次性 Promise resolve：
-
-```ts
-const finalTranslate = async (): Promise<string> => {
-  const source = asrEditorRef.current?.getText() ?? text;
-  if (!source.trim()) return "";
-  await invoke("translate_text", { text: source });
-  return new Promise<string>((resolve) => {
-    const unlisten = listen("translate-done", (e) => {
-      unlisten();
-      resolve(e.payload as string);
-    });
-  });
-};
-```
-
-### 3.5 translate-progress / done 监听
+### 3.4 translate-progress / done 监听
 
 翻译模式下 listen 两个事件：
 
 ```ts
 useEffect(() => {
   if (translateMode === 'off') return;
-  const fnProgress = listen("translate-progress", (e) => setTranslatedText(e.payload as string));
-  const fnDone = listen("translate-done", (e) => {
-    setTranslatedText(e.payload as string);
-    translatingRef.current = false;
-    setTranslating(false);
-  });
-  return () => { fnProgress.then(f => f()); fnDone.then(f => f()); };
+  // listen translate-progress → setTranslatedText
+  // listen translate-done → setTranslatedText + setTranslating(false)
 }, [translateMode]);
 ```
 
-### 3.6 节流定时器生命周期
+### 3.5 节流定时器生命周期
 
 ```ts
 useEffect(() => {
@@ -224,43 +204,20 @@ useEffect(() => {
 }, [translateMode, text, doTranslate]);
 ```
 
-### 3.7 保存语义（翻译态）
+### 3.6 保存/Cmd+Enter 语义
+
+Cmd+Enter / 保存按钮 / edit_shortcut 仅 `asrEditorRef.current?.commit()`——**退出编辑态**。不触发翻译、不改变双语布局、不提交译文。终翻和粘贴完全由后端 `do_paste` 在停止录音时处理。
+
+翻译态下 AsrEditor 的 `onCommit` 回调仅更新 `text` state（不调 `commit_edit`），由 `translateModeRef.current` 判断：
 
 ```ts
-const onSave = useCallback(async () => {
-  if (translateMode === 'off') {
-    // 单语态：现有行为——AsrEditor commit → commit_edit 提交原文
-    asrEditorRef.current?.commit();
-    return;
+onCommit={(payload) => {
+  setText(payload.text);
+  if (translateModeRef.current === 'off') {      // 仅单语态走原 commit_edit 路径
+    invoke("commit_edit", { ...payload });
   }
-  // 翻译态：终翻 → 提交译文 → 退出
-  asrEditorRef.current?.commit();          // 先提交原文编辑（同步拿最新原文）
-  const finalText = await finalTranslate();   // 终翻（同步等待 translate-done）
-  const submitText = finalText.startsWith("❌") ? translatedText : finalText;
-  invoke("commit_edit", {               // 提交译文到光标
-    text: submitText,
-    dirtyRanges: [],
-    hasEdited: false,
-    caret: null,
-    selection: null,
-  });
-  setTranslateMode('off');                 // 退出翻译模式
-  setTranslatedText("");
-}, [translateMode, translatedText]);
+}}
 ```
-
-> **注**：翻译态下 `asrEditorRef.current?.commit()` 不会触发原文的 `commit_edit`——因为 AsrEditor 的 `onCommit` 回调是**调用方决定的**。现有 `onCommit` 直接 invoke `commit_edit`，翻译态需改为：翻译态下 `onCommit` 只更新 `text` state（不 invoke `commit_edit`），由 `onSave` 统一处理提交。实现细节：
->
-> ```ts
-> onCommit={(payload) => {
->   setText(payload.text);              // 翻译态/单语态都更新 text
->   if (translateMode === 'off') {      // 仅单语态走原 commit_edit 路径
->     invoke("commit_edit", { ...payload });
->   }
-> }}
-> ```
->
-> 但注意闭包陷阱：`onCommit` 是 AsrEditor 内部 CM6 updateListener 触发的，需读 `translateModeRef.current`（ref 镜像）而非闭包捕获的 `translateMode`。
 
 ---
 
@@ -346,7 +303,7 @@ interface TranslationPaneProps {
 
 - **移除** settings（改经托盘菜单进入设置）
 - **新增** 翻译模式下拉（languages 图标 + ▼ 指示）
-- **新增** 立即翻译按钮（rotate/refresh 图标）
+- **新增** 立即翻译按钮（redo 图标）
 
 ### 5.2 翻译模式下拉
 
@@ -354,9 +311,9 @@ interface TranslationPaneProps {
 - 翻译态（`translateMode!=='off'`）：点击 = 展开下拉菜单
   ```
   ● 手动
+  ○ 自动 4s
   ○ 自动 8s
   ○ 自动 12s
-  ○ 自动 15s
   ```
   - 当前档位带 ●
   - 点击某项 → `setTranslateMode(新档位)` + `invoke("set_translate_mode", { mode })` 写 DB + 重置节流定时器
@@ -386,43 +343,51 @@ if (e.metaKey && e.key === 't') {
 
 ### 6.1 新增 `set_translate_mode` 命令
 
-`runtime_config.rs`：
+`runtime_config.rs`：校验 `manual`/`4s`/`8s`/`12s` 四值，调 `db::save_config_key` 持久化。提取 `validate_translate_mode` + `resolve_translate_mode` 纯逻辑函数（有单测覆盖）。
+
+### 6.2 新增 `set_translation_active` 命令
+
+`coordinator.rs`：
 
 ```rust
+static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
-pub fn set_translate_mode(mode: String) -> Result<(), String> {
-    let valid = matches!(mode.as_str(), "manual" | "8s" | "12s" | "15s");
-    if !valid {
-        return Err(format!("translate_mode='{}' 非法（应为 manual/8s/12s/15s）", mode));
-    }
-    octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
+pub fn set_translation_active(active: bool) {
+    TRANSLATION_ACTIVE.store(active, Ordering::Relaxed);
 }
 ```
 
-- 纯持久化，无运行时状态（翻译节流完全在前端）
-- 与 `set_denoise_mode` 一致走 `save_config_key`
+前端 enterTranslateMode 设 true，exitTranslateMode/show-result 设 false。`do_paste` 入口 `swap(false)` 消费此标志——true 时同步翻译最终文本（润色后的），粘贴译文。
 
-### 6.2 `toolbar_state` 命令补 `translate_mode`
+### 6.3 `do_translate` 改 pub(crate)
+
+`action_bar_commands.rs::do_translate` 从私有改为 `pub(crate)`，供 `coordinator::do_paste` 终翻调用。
+
+### 6.4 `do_paste` 入口翻译拦截
+
+`coordinator.rs::do_paste` 在 show_result 前：
 
 ```rust
-pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> Result<ToolbarState, String> {
-    // ... 现有逻辑 ...
-    let translate_mode = octopus_infra::db::get_config_key("translate_mode")
-        .unwrap_or("manual".to_string());
-    Ok(ToolbarState {
-        // ... 现有字段 ...
-        translate_mode,
-    })
-}
+let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
+    // 同步翻译，失败回退原文
+    do_translate(text_to_paste, config).unwrap_or_else(|_| text_to_paste.to_string())
+} else { text_to_paste };
 ```
 
-### 6.3 main.rs 注册
+确保润色完成后才翻译（润色 → do_paste → 翻译 → 粘贴译文）。
 
-`main.rs` 的 invoke_handler 新增 `set_translate_mode`。
+### 6.5 `toolbar_state` 命令补 `translate_mode`
 
-### 6.4 笔误清理（附带）
+读 DB `translate_mode` 键，经 `resolve_translate_mode` 过滤非法值，默认 `"manual"`。
 
-`runtime_config.rs:350` 日志文案 "写回 config.yaml 失败（polish_mode={}）" 改为 "写回 DB 失败（polish_mode={}）"——实际写 DB（`persist_polish_mode` 调 `db::save_config_key`），文案遗留笔误。
+### 6.6 main.rs 注册
+
+`invoke_handler` 新增 `set_translate_mode` + `set_translation_active`。
+
+### 6.7 笔误清理
+
+`runtime_config.rs::set_polish_mode` 日志 "写回 config.yaml 失败" → "写回 DB 失败"（实际写 DB app_config 表）。
 
 ---
 
@@ -433,13 +398,13 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> Result<ToolbarState,
 | key | zh-CN | en |
 |-----|-------|-----|
 | `result.translate` | 翻译 | Translate |
-| `result.translate.manual` | 手动 | Manual |
-| `result.translate.auto8` | 自动 8s | Auto 8s |
-| `result.translate.auto12` | 自动 12s | Auto 12s |
-| `result.translate.auto15` | 自动 15s | Auto 15s |
-| `result.translateNow` | 立即翻译 | Translate now |
+| `result.translateManual` | 手动 | Manual |
+| `result.translateAuto4` | 自动 4s | Auto 4s |
+| `result.translateAuto8` | 自动 8s | Auto 8s |
+| `result.translateAuto12` | 自动 12s | Auto 12s |
+| `result.translateNow` | 立即翻译 | Translate Now |
 | `result.translating` | 翻译中… | Translating… |
-| `result.translateFail` | 翻译失败 | Translation failed |
+| `result.translateFail` | "翻译失败：" | "Translation failed:" |
 
 ---
 
@@ -454,7 +419,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> Result<ToolbarState,
 
 ### 8.2 终翻失败
 
-终翻失败时（`translate-done` 携带 `❌` 前缀），提交**最后一次成功的译文**（`translatedText` 当前值）；若从未成功翻译过，提交空串 + toast 提示。不阻塞用户保存流程。
+`do_paste` 入口的终翻失败时，回退原文（润色后的文本）；不阻塞粘贴流程。译文区实时预览的最后一次成功译文会随窗口关闭丢失。
 
 ### 8.3 识别中途进翻译模式
 
@@ -462,11 +427,12 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> Result<ToolbarState,
 - 自动档节流正常工作（每 N 秒检查原文变化）
 - 用户可继续说话，译文定期跟进
 
-### 8.4 翻译中退出翻译模式
+### 8.4 翻译中停止录音
 
-- 清除节流定时器
-- 正在进行的 `do_translate_streaming` 后台继续跑完（无害，emit 事件因前端已卸载 listener 被丢弃）
-- 译文栏清空
+- `TRANSLATION_ACTIVE` 被 `do_paste` 的 `swap(false)` 消费，只终翻一次
+- 终翻同步阻塞 coordinator 线程（本地引擎 ~1-2s，LLM 3-8s），期间显示「⏳ 最终翻译中...」
+- 终翻完成后粘贴译文，进入 Pasting 阶段
+- 前端 `show-result`（新一轮识别）重置 `TRANSLATION_ACTIVE` 为 false
 
 ### 8.5 迷你窗限制
 
@@ -506,12 +472,14 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> Result<ToolbarState,
 | 文件 | 改动 |
 |------|------|
 | `crates/desktop/frontend/src/pages/Result/TranslationPane.tsx` | **新建** 译文区组件 |
-| `crates/desktop/frontend/src/pages/Result/index.tsx` | **修改** 翻译模式 state + 渲染分流 + 工具栏 + 节流 + 终翻 + 移除 settings 按钮 |
+| `crates/desktop/frontend/src/pages/Result/index.tsx` | **修改** 翻译模式 state + 渲染分流 + 工具栏 + 节流 + Cmd+T + 移除 settings |
 | `crates/desktop/frontend/src/pages/Result/AsrEditor.tsx` | **修改** AsrEditorHandle 新增 `getText()` |
 | `crates/desktop/frontend/src/locales/zh-CN.yaml` | **修改** 新增翻译相关 key |
 | `crates/desktop/frontend/src/locales/en.yaml` | **修改** 新增翻译相关 key |
-| `crates/desktop/src/runtime_config.rs` | **修改** 新增 `set_translate_mode` 命令 + `ToolbarState.translate_mode` + 笔误清理 |
-| `crates/desktop/src/main.rs` | **修改** 注册 `set_translate_mode` |
+| `crates/desktop/src/runtime_config.rs` | **修改** `set_translate_mode` + `validate/resolve` 纯函数 + `ToolbarState.translate_mode` + 笔误清理 |
+| `crates/desktop/src/coordinator.rs` | **修改** `TRANSLATION_ACTIVE` + `set_translation_active` 命令 + `do_paste` 入口翻译拦截 |
+| `crates/desktop/src/action_bar_commands.rs` | **修改** `do_translate` 改 `pub(crate)` |
+| `crates/desktop/src/main.rs` | **修改** 注册 `set_translate_mode` + `set_translation_active` |
 | `docs/architecture.md` | **修改** 补 Result 浮窗翻译双语视图说明 |
 
-**无后端翻译逻辑改动**——完全复用现有 `translate_text` / `do_translate_streaming` / `detect_translate_direction`。
+翻译执行复用现有 `translate_text` / `do_translate_streaming` / `do_translate` / `detect_translate_direction`——后端翻译逻辑零改动，仅 `do_translate` 可见性从私有改为 `pub(crate)`。

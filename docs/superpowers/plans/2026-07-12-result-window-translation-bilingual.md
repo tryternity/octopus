@@ -1,6 +1,6 @@
 # Result 浮窗翻译双语视图 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在语音识别 Result 浮窗新增「翻译」入口——点击后自动进大窗，文本区从单语变上下两栏（上原文、下译文），支持手动/自动节流重翻，保存时终翻并提交译文到光标处。
 
@@ -48,7 +48,7 @@
   - `pub fn set_translate_mode(mode: String) -> Result<(), String>`——Tauri command，校验 + 写 DB
   - `ToolbarState.translate_mode: String`——新增字段，`toolbar_state` 命令填充
 
-- [ ] **Step 1: ToolbarState 新增 `translate_mode` 字段**
+- [x] **Step 1: ToolbarState 新增 `translate_mode` 字段**
 
 在 `crates/desktop/src/runtime_config.rs` 的 `ToolbarState` struct（约 127 行）末尾（`edit_shortcut` 字段后）新增：
 
@@ -68,7 +68,7 @@
 }
 ```
 
-- [ ] **Step 2: `toolbar_state` 命令填充 `translate_mode`**
+- [x] **Step 2: `toolbar_state` 命令填充 `translate_mode`**
 
 在 `toolbar_state` 命令（约 244 行）的 `ToolbarState { ... }` 构造中新增字段。读取 DB：
 
@@ -88,7 +88,7 @@
     }
 ```
 
-- [ ] **Step 3: 新增 `set_translate_mode` 命令**
+- [x] **Step 3: 新增 `set_translate_mode` 命令**
 
 在 `set_denoise_mode` 命令（约 358 行）之后新增：
 
@@ -104,7 +104,7 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 4: 笔误清理——`set_polish_mode` 日志文案**
+- [x] **Step 4: 笔误清理——`set_polish_mode` 日志文案**
 
 在 `set_polish_mode`（约 348 行），将日志文案从 "写回 config.yaml 失败" 改为 "写回 DB 失败"（实际写 DB app_config 表）：
 
@@ -118,7 +118,7 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
     }
 ```
 
-- [ ] **Step 5: main.rs 注册 `set_translate_mode`**
+- [x] **Step 5: main.rs 注册 `set_translate_mode`**
 
 在 `crates/desktop/src/main.rs` 的 `invoke_handler`（约 205 行 `runtime_config::set_denoise_mode,` 之后）新增：
 
@@ -127,12 +127,12 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
             runtime_config::set_translate_mode,
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | tail -5`
 Expected: 编译通过，无 error。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs crates/desktop/src/main.rs
@@ -150,7 +150,7 @@ git commit -m "feat(desktop): 新增 set_translate_mode 命令 + ToolbarState.tr
 **Interfaces:**
 - Produces: `result.translate` / `result.translateManual` / `result.translateAuto8` / `result.translateAuto12` / `result.translateAuto15` / `result.translateNow` / `result.translating` / `result.translateFail`
 
-- [ ] **Step 1: zh-CN.yaml 新增翻译 key**
+- [x] **Step 1: zh-CN.yaml 新增翻译 key**
 
 在 `crates/desktop/frontend/src/locales/zh-CN.yaml` 的 `result:` 段（约 469 行 `denoise:` 段之后、`# ════════ Screenshot` 之前）新增：
 
@@ -165,7 +165,7 @@ git commit -m "feat(desktop): 新增 set_translate_mode 命令 + ToolbarState.tr
   translateFail: "翻译失败："
 ```
 
-- [ ] **Step 2: en.yaml 新增翻译 key**
+- [x] **Step 2: en.yaml 新增翻译 key**
 
 在 `crates/desktop/frontend/src/locales/en.yaml` 的 `result:` 段对应位置新增：
 
@@ -180,7 +180,7 @@ git commit -m "feat(desktop): 新增 set_translate_mode 命令 + ToolbarState.tr
   translateFail: "Translation failed:"
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/locales/zh-CN.yaml crates/desktop/frontend/src/locales/en.yaml
@@ -197,7 +197,7 @@ git commit -m "i18n: 新增 Result 浮窗翻译双语视图文案"
 **Interfaces:**
 - Produces: `IconName` 新增 `"translate"` 和 `"redo"`（指向已有的 `/icons/action-translate.svg` 和 `/icons/redo.svg`）
 
-- [ ] **Step 1: 注册图标**
+- [x] **Step 1: 注册图标**
 
 在 `SvgIcon.tsx` 的 `ICONS` 对象中（约 16 行 `"minimize"` 之后）新增：
 
@@ -207,12 +207,12 @@ git commit -m "i18n: 新增 Result 浮窗翻译双语视图文案"
   "redo": "/icons/redo.svg",
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5`
 Expected: 无 error。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/components/SvgIcon.tsx
@@ -232,7 +232,7 @@ git commit -m "feat(frontend): SvgIcon 注册 translate + redo 图标"
 
 **背景：** 翻译节流和终翻需要读取当前原文，但不能调 `commit()`（commit 会清空编辑态、触发 `onCommit` 回调、产生 IPC 副作用）。新增只读 `getText()` 方法。
 
-- [ ] **Step 1: 扩展 AsrEditorHandle 接口**
+- [x] **Step 1: 扩展 AsrEditorHandle 接口**
 
 在 `AsrEditor.tsx:18-20`：
 
@@ -243,7 +243,7 @@ export interface AsrEditorHandle {
 }
 ```
 
-- [ ] **Step 2: 实现 getText**
+- [x] **Step 2: 实现 getText**
 
 在 `AsrEditor.tsx:153` 的 `useImperativeHandle`：
 
@@ -254,12 +254,12 @@ export interface AsrEditorHandle {
   }));
 ```
 
-- [ ] **Step 3: 类型检查**
+- [x] **Step 3: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5`
 Expected: 无 error。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/AsrEditor.tsx
@@ -279,7 +279,7 @@ git commit -m "feat(result): AsrEditorHandle 新增 getText() 只读方法"
 
 **设计：** 极简 CM6 实例，复用 AsrEditor 的主题配置（字体/颜色/行高），但**无** dirtyRanges / caret / commit / enter_edit_mode / 流式追加逻辑——纯展示 + 可编辑。
 
-- [ ] **Step 1: 创建 TranslationPane.tsx**
+- [x] **Step 1: 创建 TranslationPane.tsx**
 
 创建 `crates/desktop/frontend/src/pages/Result/TranslationPane.tsx`：
 
@@ -386,12 +386,12 @@ export function TranslationPane({ text, translating, onChange }: TranslationPane
 }
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5`
 Expected: 无 error。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/TranslationPane.tsx
@@ -411,7 +411,7 @@ git commit -m "feat(result): 新建 TranslationPane 译文区组件"
 
 **背景：** 本任务搭好 UI 骨架——翻译模式下自动进大窗、上下分栏渲染、工具栏翻译下拉 + 立即翻译按钮、移除 settings。翻译执行逻辑（doTranslate / 节流 / 终翻 / 事件监听）在 Task 7 接入。本任务结束后，UI 可切换翻译模式（但翻译按钮暂为 no-op）。
 
-- [ ] **Step 1: 新增 translateMode 等状态**
+- [x] **Step 1: 新增 translateMode 等状态**
 
 在 `Result/index.tsx` 的 state 声明区（约 46 行 `polishLoading` 之后）新增：
 
@@ -438,7 +438,7 @@ const TRANSLATE_MODES: TranslateMode[] = ['manual', '8s', '12s', '15s'];
   useEffect(() => { translateModeRef.current = translateMode; }, [translateMode]);
 ```
 
-- [ ] **Step 2: 修改 `PopupType` 支持翻译菜单**
+- [x] **Step 2: 修改 `PopupType` 支持翻译菜单**
 
 将 `PopupType` 类型（约 29 行）扩展：
 
@@ -446,7 +446,7 @@ const TRANSLATE_MODES: TranslateMode[] = ['manual', '8s', '12s', '15s'];
 type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 ```
 
-- [ ] **Step 3: 进翻译模式函数**
+- [x] **Step 3: 进翻译模式函数**
 
 在 `polishNow` 回调之后（约 192 行）新增：
 
@@ -499,7 +499,7 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
   };
 ```
 
-- [ ] **Step 4: handlePopupSelect 分发翻译菜单**
+- [x] **Step 4: handlePopupSelect 分发翻译菜单**
 
 在 `handlePopupSelect`（约 261 行）新增 translate 分支。在 `else if (popupType === "denoise"` 之后：
 
@@ -510,7 +510,7 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
       }
 ```
 
-- [ ] **Step 5: 工具栏——移除 settings，新增翻译下拉 + 立即翻译**
+- [x] **Step 5: 工具栏——移除 settings，新增翻译下拉 + 立即翻译**
 
 将 `tools` 数组（约 278-286 行）改为：
 
@@ -529,7 +529,7 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 
 > **注：** `translate-now` 的 `onClick: () => {}` 是 Task 6 的占位——Task 7 接入 `doTranslate`。`settings` 按钮已移除。翻译模式下 `toggle-size` 禁用（spec §8.5——防止收成迷你窗后双语栏挤崩）。
 
-- [ ] **Step 6: 翻译模式——渲染分流（上下分栏）**
+- [x] **Step 6: 翻译模式——渲染分流（上下分栏）**
 
 将文本区渲染（约 351-371 行）改为条件渲染：
 
@@ -588,7 +588,7 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 
 > **关键：** `onCommit` 回调现在检查 `translateModeRef.current`——翻译态下只更新 `text` state，**不** invoke `commit_edit`（由 Task 7 的 `onSave` 统一处理提交译文）。单语态走原路径。
 
-- [ ] **Step 7: 导入 TranslationPane**
+- [x] **Step 7: 导入 TranslationPane**
 
 在文件顶部 import 区（约 8 行）新增：
 
@@ -596,12 +596,12 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 import { TranslationPane } from "./TranslationPane";
 ```
 
-- [ ] **Step 8: 类型检查**
+- [x] **Step 8: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5`
 Expected: 无 error。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/index.tsx
@@ -621,7 +621,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
 
 **背景：** Task 6 搭好了 UI 骨架，本任务接入实际翻译逻辑。翻译执行复用现有 `translate_text`（fire-and-forget）+ 事件驱动更新。
 
-- [ ] **Step 1: doTranslate 公共函数**
+- [x] **Step 1: doTranslate 公共函数**
 
 在 `enterTranslateMode` 之后新增：
 
@@ -643,7 +643,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
   }, [text, showToast]);
 ```
 
-- [ ] **Step 2: finalTranslate 同步等待函数**
+- [x] **Step 2: finalTranslate 同步等待函数**
 
 在 `doTranslate` 之后新增：
 
@@ -668,7 +668,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
   }, [text]);
 ```
 
-- [ ] **Step 3: translate-progress / done 事件监听**
+- [x] **Step 3: translate-progress / done 事件监听**
 
 在 Tauri events 的 `useEffect`（约 120 行）的 handlers 数组中新增两个事件，**或**在翻译模式专用 `useEffect` 中处理。推荐后者（翻译模式退出时自动卸载）：
 
@@ -704,7 +704,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
   }, [translateMode]);
 ```
 
-- [ ] **Step 4: 节流定时器**
+- [x] **Step 4: 节流定时器**
 
 在事件监听 `useEffect` 之后新增：
 
@@ -726,7 +726,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
   }, [translateMode, doTranslate]);
 ```
 
-- [ ] **Step 5: 进翻译模式时首翻**
+- [x] **Step 5: 进翻译模式时首翻**
 
 修改 `enterTranslateMode`（Task 6 Step 3 定义的），在 `setTranslateMode(mode)` 之后加首翻。改为：
 
@@ -755,7 +755,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
 
 > **100ms 延迟：** 等 `translateMode` state 提交 + 事件监听 `useEffect` 挂载完成后再首翻，否则 `translate-progress` 事件可能没人监听。
 
-- [ ] **Step 6: translate-now 按钮接入 doTranslate**
+- [x] **Step 6: translate-now 按钮接入 doTranslate**
 
 将 Task 6 Step 5 中 `translate-now` 工具的 `onClick` 从 `() => {}` 改为：
 
@@ -763,7 +763,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
     { id: "translate-now", icon: "redo", label: t("result.translateNow"), disabled: translating || translateMode === 'off', onClick: doTranslate },
 ```
 
-- [ ] **Step 7: 保存语义——终翻 + 提交译文 + 退出翻译模式**
+- [x] **Step 7: 保存语义——终翻 + 提交译文 + 退出翻译模式**
 
 在 `tools` 数组之前新增 `onSave` 回调：
 
@@ -803,7 +803,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
     { id: "save", icon: "save" as IconName, label: t("result.save"), onClick: onSave },
 ```
 
-- [ ] **Step 8: Cmd+T 快捷键**
+- [x] **Step 8: Cmd+T 快捷键**
 
 在 keydown handler `useEffect`（约 212 行的 `onKeyDown`）中，`if (e.key === "Escape")` 之后、`const sc = parseShortcut(...)` 之前新增：
 
@@ -815,17 +815,17 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
       }
 ```
 
-- [ ] **Step 9: 全量编译 + 类型检查**
+- [x] **Step 9: 全量编译 + 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 2>&1 | tail -10`
 Expected: tsc 无 error，vitest 全部 PASS。
 
-- [ ] **Step 10: Rust 编译验证**
+- [x] **Step 10: Rust 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | tail -5`
 Expected: 编译通过。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/index.tsx
@@ -839,7 +839,7 @@ git commit -m "feat(result): 翻译执行逻辑——doTranslate + 节流 + 终�
 **Files:**
 - Modify: `docs/architecture.md:207`（result_window 行）
 
-- [ ] **Step 1: 补充翻译双语视图说明**
+- [x] **Step 1: 补充翻译双语视图说明**
 
 在 `docs/architecture.md` 的 `result_window` 行（约 207 行），在现有 CM6 改造说明之后追加翻译模式说明。找到该行末尾的 CM6 说明文本，在其后追加：
 
@@ -847,7 +847,7 @@ git commit -m "feat(result): 翻译执行逻辑——doTranslate + 节流 + 终�
 **翻译双语视图（2026-07-12）**：工具栏翻译按钮（languages 图标）→ 自动进大窗 + 文本区从单语 AsrEditor 变上下分栏（上原文 AsrEditor + 下译文 TranslationPane）。翻译模式 `TranslateMode: off/manual/8s/12s/15s`——`off` 为单语（默认），其余为翻译态。进入即首翻一次（`translate_text` fire-and-forget），自动档（8/12/15s）每 N 秒节流检查原文变化后重翻（翻译中跳过），手动档靠「立即翻译」按钮 + `Cmd+T` 快捷键。保存时终翻一次最新全文 → 提交**译文**到光标 → 自动退出翻译模式。档位偏好写 DB app_config 表（`translate_mode` 键，默认 `manual`）。移除工具栏 settings 按钮（改经托盘菜单进入）。详见 [spec](superpowers/specs/2026-07-12-result-window-translation-bilingual-design.md)。
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/architecture.md
@@ -858,7 +858,7 @@ git commit -m "docs(sync): architecture 补 Result 浮窗翻译双语视图说�
 
 ### Task 9: 最终验证
 
-- [ ] **Step 1: 前端全量编译 + 单测**
+- [x] **Step 1: 前端全量编译 + 单测**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 2>&1 | tail -10
@@ -866,7 +866,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 
 
 Expected: 全部 PASS。
 
-- [ ] **Step 2: Rust 全量编译**
+- [x] **Step 2: Rust 全量编译**
 
 ```bash
 cargo build -p octopus-desktop --features embedded 2>&1 | tail -5
@@ -874,7 +874,7 @@ cargo build -p octopus-desktop --features embedded 2>&1 | tail -5
 
 Expected: 编译通过。
 
-- [ ] **Step 3: 最终 git log 确认**
+- [x] **Step 3: 最终 git log 确认**
 
 ```bash
 git log --oneline -10
@@ -882,7 +882,7 @@ git log --oneline -10
 
 Expected: 看到 7-8 个 feat/docs 提交，对应 Task 1-8。
 
-- [ ] **Step 4: 手动验证清单**
+- [x] **Step 4: 手动验证清单**
 
 启动桌面应用 `cargo run --release -p octopus-desktop --features embedded`，逐项验证：
 
@@ -894,3 +894,25 @@ Expected: 看到 7-8 个 feat/docs 提交，对应 Task 1-8。
 6. 保存（Cmd+Enter 或工具栏保存）→ 终翻 + 提交译文 + 退出翻译模式回单语
 7. 重启应用 → 进翻译模式 → 默认用上次记忆的档位
 8. 翻译引擎未配置 → 译文区显示错误文案
+
+---
+
+### Task 10: 实现偏差补录（终翻后移到后端 + 行为重构）
+
+**背景：** 原设计（Task 7）在前端 `onSave` 中同步等待 `translate-done` 并 `commit_edit(译文)`。实测发现三个问题：(1) ASR tick 在 commit 后走 diverted 路径把原文重新注入 transcript；(2) Cmd+Enter 不该改变双语布局和替换原文；(3) 需要先润色再翻译。
+
+**最终方案**：翻译终翻从前端移到后端 `do_paste` 入口统一拦截。
+
+- [x] **Step 1:** `coordinator.rs` 新增 `TRANSLATION_ACTIVE: AtomicBool` + `set_translation_active` Tauri 命令
+- [x] **Step 2:** `action_bar_commands.rs::do_translate` 改 `pub(crate)`
+- [x] **Step 3:** `do_paste` 入口加翻译拦截——`TRANSLATION_ACTIVE.swap(false)` 为 true 时同步 `do_translate`，确保润色后才翻译
+- [x] **Step 4:** 前端 `enterTranslateMode` 调 `set_translation_active(true)`，`exitTranslateMode`/`show-result` 调 false
+- [x] **Step 5:** 前端 Cmd+Enter/保存恢复为纯 `commit()`，不触发翻译、不改双语布局
+- [x] **Step 6:** 移除 `commit_translation` 命令 / `CommitTranslation` enum / `translation_committed` 字段（中间方案被废弃）
+- [x] **Step 7:** 档位选项改为 手动/4s/8s/12s（去掉 15s，加 4s）
+- [x] **Step 8:** 清理未使用的 `exitTranslateMode` / `finalTranslate` 死代码
+
+### Task 11: 自测代码
+
+- [x] **Step 1:** `runtime_config.rs` 提取 `validate_translate_mode` + `resolve_translate_mode` 纯逻辑函数
+- [x] **Step 2:** 4 个单测：合法值/非法值/默认回退/合法值保留
