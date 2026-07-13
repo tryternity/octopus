@@ -1319,6 +1319,66 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<()> {
     })
 }
 
+// ── Agent Adapter（用户自定义 agent 适配器）──────────────────────
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAdapterRecord {
+    pub id: i64,
+    pub key: String,
+    pub display_name: String,
+    pub detect_binary: String,
+    pub command_template: String,
+}
+
+pub fn list_agent_adapter_records() -> Result<Vec<AgentAdapterRecord>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, key, display_name, detect_binary, command_template FROM agent_adapters ORDER BY id"
+        )?;
+        let rows = stmt.query_map([], |r| Ok(AgentAdapterRecord {
+            id: r.get(0)?,
+            key: r.get(1)?,
+            display_name: r.get(2)?,
+            detect_binary: r.get(3)?,
+            command_template: r.get(4)?,
+        }))?;
+        let mut list = Vec::new();
+        for r in rows { list.push(r?); }
+        Ok(list)
+    })
+}
+
+pub fn insert_agent_adapter_record(
+    key: &str, display_name: &str, detect_binary: &str, command_template: &str,
+) -> Result<i64> {
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES (?1, ?2, ?3, ?4)",
+            params![key, display_name, detect_binary, command_template],
+        )?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
+pub fn update_agent_adapter_record(
+    id: i64, key: &str, display_name: &str, detect_binary: &str, command_template: &str,
+) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE agent_adapters SET key=?1, display_name=?2, detect_binary=?3, command_template=?4, updated_at=datetime('now') WHERE id=?5",
+            params![key, display_name, detect_binary, command_template, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn delete_agent_adapter_record(id: i64) -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM agent_adapters WHERE id=?1", params![id])?;
+        Ok(())
+    })
+}
+
 // ── HotwordSet（热词版本/场景）──────────────────────────────────
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2114,6 +2174,38 @@ mod tests {
         assert_eq!(item.agent, "claude");
         assert_eq!(item.accepts, "file");
         assert_eq!(item.action_type, "agent");
+    }
+
+    #[test]
+    fn agent_adapter_crud_roundtrip() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES ('myagent', 'My Agent', 'myagent-bin', 'myagent {prompt}')",
+            [],
+        ).unwrap();
+        let id = conn.last_insert_rowid();
+
+        let rows: Vec<(i64, String, String, String, String)> = conn.prepare(
+            "SELECT id, key, display_name, detect_binary, command_template FROM agent_adapters ORDER BY id"
+        ).unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "myagent");
+        assert_eq!(rows[0].4, "myagent {prompt}");
+
+        conn.execute(
+            "UPDATE agent_adapters SET key='myagent2', display_name='My Agent 2', detect_binary='myagent2-bin', command_template='myagent2 {prompt} {files}' WHERE id=?1",
+            params![id],
+        ).unwrap();
+        let updated_key: String = conn.query_row(
+            "SELECT key FROM agent_adapters WHERE id=?1", params![id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(updated_key, "myagent2");
+
+        conn.execute("DELETE FROM agent_adapters WHERE id=?1", params![id]).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_adapters", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]
