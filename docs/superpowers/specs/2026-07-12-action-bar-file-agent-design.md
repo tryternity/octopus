@@ -233,7 +233,7 @@ ALTER TABLE action_bar_items ADD COLUMN accepts TEXT NOT NULL DEFAULT 'text';
 | `file` | ❌ | ✅ |
 | `any` | ✅ | ✅ |
 
-**现有类型默认值**：`submenu` / `ai` / `url` / `script` / `extension` / `copy` → `text`（保持行为不变）。
+**现有类型默认值**：`ai` / `url` / `script` / `extension` / `copy` → `text`（保持行为不变）；`submenu` → `any`（容器类型，两种场景都可能承载子菜单——用户可建「文件处理」submenu 下挂多个 agent 动作）。
 
 **新类型默认值**：`agent` / `copy_path` → `file`。
 
@@ -246,7 +246,7 @@ const visible = items.filter(item =>
 );
 ```
 
-`submenu` 容器特殊处理：如果所有子项在当前场景都不可见，submenu 自身也隐藏。
+`submenu` 容器特殊处理：可见性**动态计算**——它自身的 `accepts=any` 让它通过初筛，但最终是否显示取决于「是否有任意子项在当前场景可见」。如果一个 submenu 下所有子项（递归）在当前场景都不可见，该 submenu 自身也隐藏。这样既允许用户用 submenu 组织 file 专用 agent 动作组，又保证纯 text 的 submenu（如现有「搜索」「网页」）在 file 场景不噪声。
 
 ### 4.6 终端启动器抽象
 
