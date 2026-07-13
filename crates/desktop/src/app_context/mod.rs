@@ -49,6 +49,7 @@ pub trait ContextProvider {
 }
 
 /// 非 macOS 平台的空实现——永远返回 Err。
+#[allow(dead_code)] // 仅非 macOS 平台使用
 pub struct NullProvider;
 
 impl ContextProvider for NullProvider {

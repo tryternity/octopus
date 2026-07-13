@@ -41,15 +41,13 @@ extern "C" {
         the_type: AXValueType,
         value_ptr: *mut std::ffi::c_void,
     ) -> AXError;
+    #[allow(dead_code)] // 预留：权限检查未启用
     pub fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
 }
 
 // AX 属性名 CFString——用 new() 构造（extern static 不可链接）
 pub fn ax_focused_ui_element() -> CFString {
     CFString::new("AXFocusedUIElement")
-}
-pub fn ax_selected_text() -> CFString {
-    CFString::new("AXSelectedText")
 }
 pub fn ax_selected_text_range() -> CFString {
     CFString::new("AXSelectedTextRange")
