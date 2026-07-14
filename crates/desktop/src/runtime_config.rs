@@ -353,7 +353,7 @@ pub fn switch_asr_engine(
         Ok(cfg) => cfg.engine_mode,
         Err(_) => "embedded".to_string(),
     };
-    crate::tray::update_tray_engine_label(&app_handle, &model_name, &engine_mode);
+    crate::tray::update_tray_engine_label(&app_handle, &spec, &engine_mode);
 
     if let Err(e) = persist_asr_engine(&spec) {
         log::warn!(

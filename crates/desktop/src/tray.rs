@@ -41,6 +41,23 @@ fn fmt_shortcut(s: &str) -> String {
      .replace("Control+", "⌃").replace("Super+", "⌘")
 }
 
+/// 将 3-part spec（如 "local:sensevoice-orig:sensevoice-orig-small"）格式化为
+/// `model_name[provider]`，provider=local 时 i18n 为「本地」。
+fn fmt_engine_label(spec: &str) -> String {
+    let parts: Vec<&str> = spec.split(':').collect();
+    let (provider, model_name) = match parts.len() {
+        3 => (parts[0], parts[2]),
+        1 if !spec.is_empty() => ("local", parts[0]),
+        _ => return spec.to_string(),
+    };
+    let provider_display = if provider == "local" {
+        crate::i18n::t("settings.models.local", &[])
+    } else {
+        provider.to_string()
+    };
+    format!("{}[{}]", model_name, provider_display)
+}
+
 /// Create the system tray icon and its context menu.
 ///
 /// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
@@ -54,7 +71,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        &crate::i18n::t("tray.engineInfo", &[("engine", &config.asr_engine), ("mode", &config.engine_mode)]),
+        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(&config.asr_engine)), ("mode", &config.engine_mode)]),
         false,
         None::<&str>,
     )
@@ -164,8 +181,8 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 }
 
 /// Update the engine info menu item label dynamically.
-pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engine_mode: &str) {
-    let label = crate::i18n::t("tray.engineInfo", &[("engine", engine_name), ("mode", engine_mode)]);
+pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_spec: &str, engine_mode: &str) {
+    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(engine_spec)), ("mode", engine_mode)]);
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
@@ -191,5 +208,37 @@ pub fn rebuild_tray_labels() {
         let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
         let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
         let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_engine_label_3part_local() {
+        crate::i18n::init("zh-CN");
+        let label = fmt_engine_label("local:sensevoice-orig:sensevoice-orig-small");
+        assert!(label.contains("sensevoice-orig-small"), "应含 model_name");
+        assert!(label.contains("["), "应含 provider 标记");
+    }
+
+    #[test]
+    fn fmt_engine_label_3part_cloud() {
+        let label = fmt_engine_label("aliyun:Fun-ASR:fun-asr-realtime");
+        assert_eq!(label, "fun-asr-realtime[aliyun]");
+    }
+
+    #[test]
+    fn fmt_engine_label_bare_name() {
+        crate::i18n::init("zh-CN");
+        let label = fmt_engine_label("zipformer-small-ctc");
+        assert!(label.contains("zipformer-small-ctc"));
+    }
+
+    #[test]
+    fn fmt_engine_label_empty() {
+        let label = fmt_engine_label("");
+        assert_eq!(label, "");
     }
 }
