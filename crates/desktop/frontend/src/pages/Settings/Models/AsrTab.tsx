@@ -37,26 +37,13 @@ function fmtBytes(n: number | null | undefined): string {
   return (n / 1073741824).toFixed(2) + " GB";
 }
 
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
-}
-
 export default function AsrTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [models, setModels] = useState<DownloadableModel[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
-  const [currentLabel, setCurrentLabel] = useState("");
-  const [cloudEngines, setCloudEngines] = useState<EngineOption[]>([]);
-
   const [allEngines, setAllEngines] = useState<EngineOption[]>([]);
+  const [cloudEngines, setCloudEngines] = useState<EngineOption[]>([]);
 
   const loadModels = useCallback(async () => {
     try {
@@ -69,8 +56,6 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     loadModels();
     invoke<{ asr_engines: EngineOption[] }>("get_config").then((resp) => {
       setAllEngines(resp.asr_engines ?? []);
-      const cur = resp.asr_engines?.find((e) => e.current);
-      setCurrentLabel(cur?.label ?? "");
       setCloudEngines(resp.asr_engines?.filter((e) => !e.is_local) ?? []);
     }).catch(() => {});
     let unlistens: UnlistenFn[] = [];
@@ -128,8 +113,6 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      {currentLabel && <CurrentBanner label={currentLabel} />}
-
       {/* ASR 引擎选择 */}
       <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
         <span className="text-xs text-muted-foreground">{t("settings.general.asrModel")}</span>

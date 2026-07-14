@@ -29,17 +29,6 @@ interface DownloadProgress {
   total: number;
 }
 
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
-}
-
 export default function OcrTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [models, setModels] = useState<OcrOption[]>([]);
@@ -100,8 +89,6 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     finally { setBusyRepo(null); }
   };
 
-  const current = models.find((m) => m.current);
-
   const handleSetOcrModel = async (name: string) => {
     try { await invoke("set_config", { key: "ocr_model", value: name }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
@@ -111,8 +98,6 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      {current && <CurrentBanner label={current.label} />}
-
       <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
         <span className="text-xs text-muted-foreground">{t("settings.general.ocrModel")}</span>
         <select className={selectClass}

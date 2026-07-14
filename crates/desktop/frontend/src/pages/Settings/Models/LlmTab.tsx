@@ -16,17 +16,6 @@ interface LlmOption {
   is_local: boolean;
 }
 
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
-}
-
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [models, setModels] = useState<LlmOption[]>([]);
@@ -52,7 +41,6 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
-  const current = models.find((m) => m.current);
   const localModels = models.filter((m) => m.is_local);
   const cloudModels = models.filter((m) => !m.is_local);
 
@@ -85,8 +73,6 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      {current && <CurrentBanner label={current.label} />}
-
       <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
         <span className="text-xs text-muted-foreground">{t("settings.general.polishModel")}</span>
         <select className={selectClass}
