@@ -1014,6 +1014,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LlmModelInfo {
+    pub id: i64,
     pub model_name: String,
     pub provider: String,
     pub category: String,
@@ -1027,20 +1028,21 @@ pub struct LlmModelInfo {
 /// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking FROM models
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking FROM models
          WHERE domain='llm' AND is_enabled = 1
          ORDER BY is_local DESC, category",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(LlmModelInfo {
-            provider: row.get::<_, String>(0)?,
-            category: row.get::<_, String>(1)?,
-            model_name: row.get::<_, String>(2)?,
-            is_local: row.get::<_, i32>(3)? != 0,
-            source: row.get::<_, String>(4)?,
-            secret_key: row.get::<_, String>(5)?,
-            is_streaming: row.get::<_, i32>(6)? != 0,
-            is_thinking: row.get::<_, i32>(7)? != 0,
+            id: row.get::<_, i64>(0)?,
+            provider: row.get::<_, String>(1)?,
+            category: row.get::<_, String>(2)?,
+            model_name: row.get::<_, String>(3)?,
+            is_local: row.get::<_, i32>(4)? != 0,
+            source: row.get::<_, String>(5)?,
+            secret_key: row.get::<_, String>(6)?,
+            is_streaming: row.get::<_, i32>(7)? != 0,
+            is_thinking: row.get::<_, i32>(8)? != 0,
         })
     })?;
     let mut list = Vec::new();

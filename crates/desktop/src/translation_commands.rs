@@ -44,9 +44,10 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
         });
     }
 
-    // local:* — 灵活匹配
+    // local:* — 提取模型名精确匹配
     if spec.starts_with("local:") {
-        return match models.into_iter().find(|m| m.downloaded) {
+        let target_name = &spec["local:".len()..];
+        return match models.into_iter().find(|m| m.downloaded && m.name == target_name) {
             Some(m) => Ok(TranslateStatus {
                 strategy: "local".into(),
                 engine_name: m.name.clone(),

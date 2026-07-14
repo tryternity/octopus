@@ -76,6 +76,7 @@ fn build_asr_options(
     let mut options = Vec::with_capacity(engines.len() + 1);
     // 兜底固定第一
     options.push(EngineOption {
+        id: 0,
         name: FALLBACK_ASR_ENGINE.to_string(),
         provider: "local".to_string(),
         category: "zipformer".to_string(),
@@ -94,6 +95,7 @@ fn build_asr_options(
         }
         let cat = octopus_asr_local::config::category_label(e.category);
         options.push(EngineOption {
+            id: 0,
             current: e.name == effective,
             name: e.name.clone(),
             provider: e.provider.clone(),
@@ -162,6 +164,7 @@ pub struct ToolbarState {
 
 #[derive(Serialize)]
 pub struct EngineOption {
+    pub id: i64,
     pub name: String,
     pub provider: String,
     pub category: String,
@@ -177,6 +180,7 @@ pub struct EngineOption {
 /// LLM 润色模型菜单项（与 EngineOption 同构，current 标记当前选中的 polish_llm）。
 #[derive(Serialize)]
 pub struct LlmOption {
+    pub id: i64,
     pub name: String,
     pub provider: String,
     pub category: String,
@@ -220,6 +224,7 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
     let mut options = Vec::with_capacity(llms.len() + 1);
     // 首项：「不选择模型」（name 空）。current 无效时为选中态。
     options.push(LlmOption {
+        id: 0,
         name: String::new(),
         provider: String::new(),
         category: String::new(),
@@ -240,6 +245,7 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
             m.model_name == current_bare
         };
         options.push(LlmOption {
+            id: m.id,
             current: is_current,
             label,
             name: m.model_name.clone(),

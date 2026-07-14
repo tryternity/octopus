@@ -14,6 +14,12 @@ interface DownloadableModel {
   is_enabled: boolean;
 }
 
+interface TranslateStatus {
+  strategy: string;
+  engineName: string;
+  available: boolean;
+}
+
 interface DownloadProgress {
   repo: string;
   downloaded: number;
@@ -23,13 +29,18 @@ interface DownloadProgress {
 export default function TranslateTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [downloadable, setDownloadable] = useState<DownloadableModel[]>([]);
+  const [status, setStatus] = useState<TranslateStatus | null>(null);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const data = await invoke<DownloadableModel[]>("list_downloadable_models", { domain: "translate" });
+      const [data, st] = await Promise.all([
+        invoke<DownloadableModel[]>("list_downloadable_models", { domain: "translate" }),
+        invoke<TranslateStatus>("translate_status"),
+      ]);
       setDownloadable(data);
+      setStatus(st);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
@@ -86,25 +97,19 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
   };
 
   const readyCount = downloadable.filter((m) => m.is_enabled).length;
-  // translate 没有持久化 "current" 的概念——translate_engine 存的是引擎 spec
-  // 简化：已下载的本地模型即 is_ready，current 通过配置判断
-  const currentEngine = (() => {
-    try {
-      // 从 downloadable + translate_status 无法精确知道 current，用启发式：第一个 ready 的
-      return "";
-    } catch { return ""; }
-  })();
+  // translate_status 返回 engineName（如 "m2m100-418M"），用它判断 current
+  const currentEngineName = status?.engineName ?? "";
 
   const rows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_enabled,
-    is_current: false, // translate 无 current 概念，不显示绿勾
+    is_current: m.name === currentEngineName,
     is_local: true, repo: m.repo,
   }));
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      {currentEngine && <CurrentBanner label={currentEngine} />}
+      {currentEngineName && <CurrentBanner label={currentEngineName} />}
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {rows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
