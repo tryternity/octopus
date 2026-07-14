@@ -118,13 +118,16 @@ export function CloudModelForm({
     if (!provider || !modelName) return;
     setSaving(true);
     try {
+      // 编辑时：如果 secret_key 未改（仍是脱敏值），不传 secret_key（后端保留原值）
+      const keyToSend = (editModel && secretKey.includes("********"))
+        ? "" : secretKey;
       const input = {
         domain,
         provider,
         category: category || provider,
         modelName,
         source,
-        secretKey,
+        secretKey: keyToSend,
         isStreaming,
         isThinking,
       };

@@ -51,6 +51,15 @@ fn engine_label(is_local: bool, category: &str, provider: &str, name: &str) -> S
 /// ASR 兜底引擎名（固定首项，不依赖 DB 存在）。
 pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
 
+/// API Key 脱敏：显示前 4 位 + ****** + 后 4 位（长度 <= 8 时全掩码）。
+fn mask_key(key: &str) -> String {
+    if key.is_empty() { return String::new(); }
+    if key.len() <= 8 { return "********".to_string(); }
+    let chars: Vec<char> = key.chars().collect();
+    let n = chars.len();
+    format!("{}********{}", chars[..4].iter().collect::<String>(), chars[n-4..].iter().collect::<String>())
+}
+
 /// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
 /// current_effective 为空时视作兜底。current 可能为 3-part spec（"provider:category:name"）或裸名，
 /// 统一用 parse_model_spec 提取裸 model_name 后比较。
@@ -73,6 +82,10 @@ fn build_asr_options(
         is_local: true,
         current: effective == FALLBACK_ASR_ENGINE,
         label: engine_label(true, "zipformer", "local", FALLBACK_ASR_ENGINE),
+        source: String::new(),
+        secret_key: String::new(),
+        is_streaming: true,
+        is_thinking: false,
     });
     // DB 模型（跳过同名兜底，避免重复）
     for e in engines {
@@ -87,6 +100,10 @@ fn build_asr_options(
             category: cat.to_string(),
             is_local: e.is_local,
             label: engine_label(e.is_local, cat, &e.provider, &e.name),
+            source: String::new(),
+            secret_key: String::new(),
+            is_streaming: false,
+            is_thinking: false,
         });
     }
     options
@@ -151,6 +168,10 @@ pub struct EngineOption {
     pub current: bool,
     pub is_local: bool,
     pub label: String,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
 }
 
 /// LLM 润色模型菜单项（与 EngineOption 同构，current 标记当前选中的 polish_llm）。
@@ -162,6 +183,10 @@ pub struct LlmOption {
     pub is_local: bool,
     pub current: bool,
     pub label: String,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
 }
 
 /// OCR 模型菜单项（与 LlmOption 同构，current 标记当前选中的 ocr_model）。
@@ -201,6 +226,10 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
         is_local: false,
         current: !current_valid,
         label: "不选择模型".to_string(),
+        source: String::new(),
+        secret_key: String::new(),
+        is_streaming: false,
+        is_thinking: false,
     });
     for m in llms {
         let label = engine_label(m.is_local, &m.category, &m.provider, &m.model_name);
@@ -213,10 +242,14 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
         options.push(LlmOption {
             current: is_current,
             label,
-            name: m.model_name,
-            provider: m.provider,
-            category: m.category,
+            name: m.model_name.clone(),
+            provider: m.provider.clone(),
+            category: m.category.clone(),
             is_local: m.is_local,
+            source: m.source.clone(),
+            secret_key: mask_key(&m.secret_key),
+            is_streaming: m.is_streaming,
+            is_thinking: m.is_thinking,
         });
     }
     options

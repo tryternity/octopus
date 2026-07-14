@@ -14,6 +14,10 @@ interface LlmOption {
   current: boolean;
   is_local: boolean;
   label: string;
+  source: string;
+  secret_key: string;
+  is_streaming: boolean;
+  is_thinking: boolean;
 }
 
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
@@ -44,8 +48,8 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   const onEdit = (m: LlmOption) => {
     setEditTarget({
       id: m.id, domain: "llm", provider: m.provider, category: m.category,
-      modelName: m.name, source: "", secretKey: "",
-      isStreaming: true, isThinking: false,
+      modelName: m.name, source: m.source, secretKey: m.secret_key,
+      isStreaming: m.is_streaming, isThinking: m.is_thinking,
     });
     setShowForm(true);
   };

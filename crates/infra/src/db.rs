@@ -876,19 +876,29 @@ pub fn insert_cloud_model(
     })
 }
 
-/// 更新云端模型（按 id）。
+/// 更新云端模型（按 id）。secret_key 为空时不覆盖原值。
 pub fn update_cloud_model(
     id: i64, provider: &str, category: &str,
     model_name: &str, source: &str, secret_key: &str,
     is_streaming: bool, is_thinking: bool,
 ) -> Result<()> {
     with_db(|conn| {
-        conn.execute(
-            "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
-             secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8",
-            params![provider, category, model_name, source, secret_key,
-                    is_streaming as i32, is_thinking as i32, id],
-        )?;
+        if secret_key.is_empty() {
+            // 不改 secret_key
+            conn.execute(
+                "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
+                 is_streaming=?5, is_thinking=?6 WHERE id=?7",
+                params![provider, category, model_name, source,
+                        is_streaming as i32, is_thinking as i32, id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
+                 secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8",
+                params![provider, category, model_name, source, secret_key,
+                        is_streaming as i32, is_thinking as i32, id],
+            )?;
+        }
         Ok(())
     })
 }
@@ -1008,12 +1018,16 @@ pub struct LlmModelInfo {
     pub provider: String,
     pub category: String,
     pub is_local: bool,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
 }
 
 /// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT provider, category, model_name, is_local FROM models
+        "SELECT provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking FROM models
          WHERE domain='llm' AND is_enabled = 1
          ORDER BY is_local DESC, category",
     )?;
@@ -1023,6 +1037,10 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
             category: row.get::<_, String>(1)?,
             model_name: row.get::<_, String>(2)?,
             is_local: row.get::<_, i32>(3)? != 0,
+            source: row.get::<_, String>(4)?,
+            secret_key: row.get::<_, String>(5)?,
+            is_streaming: row.get::<_, i32>(6)? != 0,
+            is_thinking: row.get::<_, i32>(7)? != 0,
         })
     })?;
     let mut list = Vec::new();
