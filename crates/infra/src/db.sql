@@ -87,8 +87,8 @@ VALUES
 -- source = 路径标识 ocr/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('ocr','paddleocr','ocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
-    ('ocr','paddleocr','ocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
+    ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
+    ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
 
 -- ── 翻译模型（domain='translate'）─────────────────────────────────
 -- source = 路径标识 translate/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）

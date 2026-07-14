@@ -27,6 +27,8 @@ interface EngineOption {
   is_local: boolean;
 }
 
+const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[220px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
+
 function fmtBytes(n: number | null | undefined): string {
   if (n == null) return "?";
   if (n < 1024) return n + " B";
@@ -54,6 +56,8 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const [currentLabel, setCurrentLabel] = useState("");
   const [cloudEngines, setCloudEngines] = useState<EngineOption[]>([]);
 
+  const [allEngines, setAllEngines] = useState<EngineOption[]>([]);
+
   const loadModels = useCallback(async () => {
     try {
       const data = await invoke<DownloadableModel[]>("list_downloadable_models", { domain: "asr" });
@@ -64,6 +68,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   useEffect(() => {
     loadModels();
     invoke<{ asr_engines: EngineOption[] }>("get_config").then((resp) => {
+      setAllEngines(resp.asr_engines ?? []);
       const cur = resp.asr_engines?.find((e) => e.current);
       setCurrentLabel(cur?.label ?? "");
       setCloudEngines(resp.asr_engines?.filter((e) => !e.is_local) ?? []);
@@ -109,9 +114,14 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const handleVerify = async (model: DownloadableModel) => {
     if (busyRepo) return;
     setBusyRepo(model.repo);
-    try { await invoke("verify_model", { repo: model.repo }); showToast(t("settings.models.verifyComplete")); loadModels(); }
+    try { await invoke("verify_model", { repo: model.repo, modelName: model.name }); showToast(t("settings.models.verifyComplete")); loadModels(); }
     catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
+  };
+
+  const handleSwitchEngine = async (name: string) => {
+    try { await invoke("switch_asr_engine", { modelName: name }); }
+    catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
   const readyCount = models.filter((m) => m.is_enabled).length;
@@ -119,6 +129,16 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
+
+      {/* ASR 引擎选择 */}
+      <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
+        <span className="text-xs text-muted-foreground">{t("settings.general.asrModel")}</span>
+        <select className={selectClass}
+          value={allEngines.find((e) => e.current)?.name ?? ""}
+          onChange={(e) => handleSwitchEngine(e.target.value)}>
+          {allEngines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
+        </select>
+      </div>
 
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${models.length}`}>
       {models.map((model) => {

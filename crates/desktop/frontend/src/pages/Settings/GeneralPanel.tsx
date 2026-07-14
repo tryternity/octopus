@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
@@ -89,7 +89,7 @@ function ShortcutButton({ shortcut, capturing, onClick }: { shortcut: string; ca
 const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[200px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
 
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig }: GeneralPanelProps) {
-  const { config: cfg, asr_engines, llm_models, ocr_models, prompts, active_prompt_id, microphones } = configResp;
+  const { config: cfg, prompts, active_prompt_id, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
 
@@ -191,30 +191,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Row>
         <Row label={t("settings.general.pasteSwitchEnglish")} effect={t("settings.effect.now")} hint={t("settings.general.pasteSwitchEnglishHint")}>
           <Toggle on={cfg.switch_input_source_on_paste as boolean} onClick={() => toggleVal("switch_input_source_on_paste")} />
-        </Row>
-      </Card>
-
-      <Card icon={Layers} title={t("settings.general.modelSelect")}>
-        <Row label={t("settings.general.asrModel")} effect={t("settings.effect.nextRecording")}>
-          {/* 后端 asr_engine 存 3-part spec（"provider:category:name"），option value 是裸名，
-              直接用 cfg.asr_engine 匹配不上 → 必须从 asr_engines 的 current 项取裸名（同润色模型行） */}
-          <select className={selectClass}
-            value={asr_engines.find((e) => e.current)?.name ?? ""}
-            onChange={(e) => setVal("asr_engine", e.target.value)}>
-            {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
-          </select>
-        </Row>
-        <Row label={t("settings.general.polishModel")} effect={t("settings.effect.now")}>
-          <select className={selectClass}
-            value={llm_models.find((m) => m.current)?.name ?? ""}
-            onChange={(e) => setVal("polish_llm", e.target.value)}>
-            {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-          </select>
-        </Row>
-        <Row label={t("settings.general.ocrModel")} effect={t("settings.effect.nextStart")} hint={t("settings.general.ocrModelHint")}>
-          <select className={selectClass} value={cfg.ocr_model as string} onChange={(e) => setVal("ocr_model", e.target.value)}>
-            {ocr_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-          </select>
         </Row>
       </Card>
 

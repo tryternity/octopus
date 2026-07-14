@@ -102,9 +102,25 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
 
   const current = models.find((m) => m.current);
 
+  const handleSetOcrModel = async (name: string) => {
+    try { await invoke("set_config", { key: "ocr_model", value: name }); load(); }
+    catch (e) { showToast(t("settings.models.switchFailed") + e); }
+  };
+
+  const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[220px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
+
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {current && <CurrentBanner label={current.label} />}
+
+      <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
+        <span className="text-xs text-muted-foreground">{t("settings.general.ocrModel")}</span>
+        <select className={selectClass}
+          value={models.find((m) => m.current)?.name ?? ""}
+          onChange={(e) => handleSetOcrModel(e.target.value)}>
+          {models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+        </select>
+      </div>
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${downloadable.filter(m => m.is_enabled).length}/${downloadable.length}`}>
         {downloadable.map((model) => {
           const prog = progress[model.repo];
