@@ -226,13 +226,14 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 
 ### 5.5 自绘编辑器取数（macOS）
 
-自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当 §5.2 第 8 点内容校验触发（`full_text` 空 / 不含选中文本）时，按 bundle 匹配优先级走 fallback 链（`build_surrounding`，仅 `kind == Editor`）：
+自绘编辑器（Sublime Text、WPS、Pages）的 AX 树不含真实编辑器内容。当 §5.2 第 8 点内容校验触发（`full_text` 空 / 不含选中文本）时，按 bundle 匹配优先级走 fallback 链（`build_surrounding`，仅 `kind == Editor`，`bundle_id` 大小写不敏感匹配）：
 
-1. `bundle.contains("sublimetext")` → **路径 1** Sublime 插件取数器
-2. `bundle.contains("kingsoft")` → **路径 1.5** WPS lsof 取数
-3. 有 `window_title` → **路径 2** 通用磁盘 fallback（所有 Editor）
+1. `bundle.contains("sublimetext")` → **Sublime 插件取数器**（`sublime_plugin.rs`）
+2. `bundle.contains("iwork")` → **Pages AppleScript**（`try_pages_applescript`）
+3. 所有 Editor → **lsof 文件路径取数**（`try_lsof_context`，泛化，不再限 WPS）
+4. 有 `window_title` → **窗口标题磁盘 fallback**（所有 Editor）
 
-**路径 1：Sublime 插件取数器**（`sublime_plugin.rs`，仅 `com.sublimetext.*`）
+**1. Sublime 插件取数器**（`sublime_plugin.rs`，仅 `com.sublimetext.*`）
 
 1. 自动安装插件到 `Packages/Octopus/octopus_context.py`（首次运行，内容比对确保最新）
 2. 触发 `subl --command octopus_export_context`
@@ -240,43 +241,49 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 4. 读取 JSON → 用选区位置精确切 before/after 各 1000 字
 5. **对未保存文件（untitled）同样有效**——插件直接读 view 内容
 
-**路径 1.5：WPS lsof 取数**（`try_wps_lsof_context`，仅 `bundle.contains("kingsoft")`）
+**2. Pages AppleScript**（`try_pages_applescript`，仅 `com.apple.iWork.*`）
 
-WPS 窗口标题通常为空，路径 2 磁盘 fallback 无法从标题提取文件名。改用 `lsof -c wpsoffice -F n` 列出 WPS 进程当前打开的文件：
+Pages 是 Apple 原生 App，AppleScript 支持 `body text of document 1`。
+AX 失败时（-25205 CannotComplete）直接 AppleScript 读全文 → `slice_around_text` 切上下文。
 
-1. 筛选 `.docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt` 扩展名，排除 `/dev/`、`.~` 临时锁文件
-2. 逐个 `read_file_as_text`（officecli / pdftotext / zip+XML）提取文本
-3. `slice_around_text` 用选中文本定位切 before/after 各 1000 字
-4. 命中即返回，`window_title` 填文件名（`path.file_name()`）
+**3. lsof 文件路径取数**（`try_lsof_context`，所有 Editor）
 
-**路径 2：磁盘文件 fallback**（仅 `kind == Editor`）
+窗口标题不可靠时（WPS 空 / Pages 显示 App 名），用 `lsof -c <proc_name> -F n` 列出进程打开的文件：
+- `bundle_id_to_procname` 映射：`kingsoft` → `wpsoffice`、`iwork.pages` → `Pages` 等
+- `filter_lsof_doc_files` 纯函数筛选 `.docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt/.pages`，排除 `/dev/`、`.~`
+- 逐个 `read_file_as_text` → `slice_around_text` 用选中文本匹配
 
-1. `extract_filename_from_title("test.txt — Sublime Text")` → `"test.txt"`（em dash / hyphen 分隔，过滤 untitled/App 名/无扩展名）
-2. `find_file_path(filename, bundle_id)`：
-   - Sublime session（`file_history` + `buffers` JSON 解析，`path_matches_filename` 精确匹配，遍历所有 windows）
-   - `mdfind -name` Spotlight fallback（文件名精确匹配）
-3. `read_file_as_text(path)` → `slice_around_text`（char-level 偏移）切 before/after 各 1000 字
+**4. 窗口标题磁盘 fallback**（所有 Editor）
+
+1. `extract_filename_from_title("test.txt — Sublime Text")` → `"test.txt"`
+2. `find_file_path(filename, bundle_id)`：Sublime session（`find_file_in_session_json` 纯函数，多窗口遍历）→ `mdfind -name` Spotlight
+3. `read_file_as_text(path)` → `slice_around_text` 切 before/after 各 1000 字
 
 **`read_file_as_text` 支持的格式**：
 
 | 格式 | 优先工具 | Fallback |
 |------|---------|----------|
-| `.docx`/`.xlsx`/`.pptx` | **officecli**（`officecli view file text`，需安装，处理修订/批注/公式/图表/SmartArt） | 内置 zip+XML 解析（`<w:t>`/`<a:t>`/sharedStrings） |
-| `.pdf` | **pdftotext**（poppler，需 Homebrew）+ CJK 排版换行合并（`merge_cjk_line_breaks`：前一行末尾 CJK 字符 ≥ `0x2e80` 则合并） | None（降级） |
-| `.txt`/`.md`/`.rs`/`.py` 等 | 直接读取（UTF-8 lossy） | — |
-| zip 文件（误存为 .txt） | 检测 `PK\x03\x04` 魔数 → OOXML 解析 | — |
+| `.docx`/`.xlsx`/`.pptx` | **officecli**（`officecli view file text`，处理修订/批注/公式/图表） | 内置 zip+XML 解析 |
+| `.pdf` | **pdftotext** + `merge_cjk_line_breaks`（CJK 排版换行合并） | None |
+| `.pages` | zip → `Index/Document.iwa` → Protobuf 明文碎片提取 | None |
+| `.txt`/`.md`/`.rs` 等 | 直接读取（UTF-8 lossy） | — |
 
-**路径 3：降级返回 None**
+**`slice_around_text` 三轮匹配**：
 
-诊断日志区分 5 种降级原因：无窗口标题 / 标题无法提取文件名 / 文件未找到 / 读取失败 / 内容不含选中文本。
+1. 精确匹配（`find`）
+2. 忽略大小写匹配
+3. **NFKC 归一化匹配**（`unicode-normalization` crate）——WPS Cmd+C 产生康熙部首（U+2Exx）和全角标点（U+FFxx），pdftotext 提取的是正常 Unicode。归一化后只保留 CJK + ASCII 字母数字比较。一次性构建 `norm_to_byte[]` 映射表，O(n) 定位回原文 byte offset。
 
 **各编辑器覆盖情况**：
 
-| 编辑器 | 路径 1 插件 | 路径 2 磁盘 | 备注 |
-|--------|------------|------------|------|
-| Sublime Text | ✅ 最可靠 | ✅ session 精确 | 含未保存文件 |
-| WPS Office | ❌ 无插件 API | ✅ **lsof 取进程路径**（绕过空窗口标题）→ officecli/OOXML/pdftotext | 窗口标题通常为空，走 lsof |
-| 其他自绘编辑器 | ❌ | ✅ 纯文本文件 | 需窗口标题含文件名 |
+| 编辑器 | fallback 路径 | 备注 |
+|--------|-------------|------|
+| Sublime Text | 插件取数器（最可靠，含未保存） | session 磁盘 fallback 备用 |
+| Pages | AppleScript `body text`（最可靠） | lsof .pages 备用 |
+| WPS Office | lsof + officecli/pdftotext | 窗口标题通常空 |
+| 其他 Editor | lsof → 窗口标题磁盘 fallback | 取决于 App |
+
+**降级诊断**：区分无窗口标题 / 标题无法提取文件名 / 文件未找到 / 读取失败 / 内容不含选中文本。
 
 ### 5.6 AX 安全约束（踩坑总结）
 
