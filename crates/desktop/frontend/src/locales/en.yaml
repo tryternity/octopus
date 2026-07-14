@@ -474,7 +474,7 @@ tray:
   compactEditor: Image-Text Editor
   settings: Settings
   quit: Quit
-  engineInfo: Engine  ${engine} · ${mode}
+  engineInfo: Engine  ${engine}
 
 # ════════ ActionBar ════════
 actionbar:
