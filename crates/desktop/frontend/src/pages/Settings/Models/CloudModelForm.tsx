@@ -72,7 +72,7 @@ export function CloudModelForm({
   const [source, setSource] = useState(editModel?.source ?? "");
   const [secretKey, setSecretKey] = useState(editModel?.secretKey ?? "");
   const [isStreaming, setIsStreaming] = useState(editModel?.isStreaming ?? true);
-  const [isThinking, setIsThinking] = useState(editModel?.isThinking ?? false);
+  const [isThinking, setIsThinking] = useState(editModel?.isThinking ?? true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -166,7 +166,7 @@ export function CloudModelForm({
         return;
       }
       const result = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
-        source, secretKey: realKey, modelName,
+        source, secretKey: realKey, modelName, isThinking,
       });
       setTestResult(result);
     } catch (e) {

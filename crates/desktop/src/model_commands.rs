@@ -449,6 +449,7 @@ pub async fn test_cloud_model(
     source: String,
     secret_key: String,
     model_name: Option<String>,
+    is_thinking: Option<bool>,
 ) -> Result<TestConnectionResult, String> {
     let client = reqwest::Client::new();
     let base = source.trim_end_matches('/');
@@ -456,11 +457,18 @@ pub async fn test_cloud_model(
     // 如果提供了 model_name，发一个最小 chat completion 验证模型可用性
     if let Some(model) = model_name.filter(|m| !m.is_empty()) {
         let url = format!("{}/chat/completions", base);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 1,
         });
+        // 思考模型需要关 thinking，否则返回空 content 导致测试误判失败
+        if is_thinking.unwrap_or(false) {
+            // DeepSeek 用 thinking: {type: "disabled"}，其他用 enable_thinking: false
+            // 两都带上，各 API 取自己认识的字段
+            body["thinking"] = serde_json::json!({"type": "disabled"});
+            body["enable_thinking"] = serde_json::json!(false);
+        }
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", secret_key))
@@ -480,7 +488,6 @@ pub async fn test_cloud_model(
                 } else {
                     let status = r.status().as_u16();
                     let body = r.text().await.unwrap_or_default();
-                    // 尝试提取 error message
                     let msg = serde_json::from_str::<serde_json::Value>(&body)
                         .ok()
                         .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(String::from))
