@@ -1,6 +1,6 @@
 # 云端模型管理 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 移除所有云端模型 seed，改为用户自行添加/编辑/删除 LLM 润色模型和云端 ASR 模型。通过 app_config 表存储各 provider 的参考模型列表。
 
@@ -30,15 +30,15 @@
 **Interfaces:**
 - Produces: DB v31，`models` 表无云端模型，`app_config` 表含 `asr_cloud_model` + `llm_provider` 参考数据
 
-- [ ] **Step 1: db.sql 删除云端 ASR seed**
+- [x] **Step 1: db.sql 删除云端 ASR seed**
 
 删除 db.sql 中所有 `domain='asr' AND is_local=0` 的 INSERT 语句块（aliyun/bytedance/tencent/baidu 云端 ASR）。
 
-- [ ] **Step 2: db.sql 删除 LLM seed**
+- [x] **Step 2: db.sql 删除 LLM seed**
 
 删除 db.sql 中 `domain='llm'` 的 INSERT 语句块。
 
-- [ ] **Step 3: db.sql 加 app_config 参考列表 seed**
+- [x] **Step 3: db.sql 加 app_config 参考列表 seed**
 
 在 env 变量 seed 之后加：
 
@@ -64,7 +64,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
 ('ollama', 'http://localhost:11434/v1', 'Ollama 本地', 'llm_provider');
 ```
 
-- [ ] **Step 4: db.rs v30→v31 迁移**
+- [x] **Step 4: db.rs v30→v31 迁移**
 
 ```rust
 // v30→v31：删除云端模型 seed + 新增参考列表
@@ -81,16 +81,16 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
 
 更新 `if v >= 30` → `if v >= 31`，全新库 `PRAGMA user_version = 31`。
 
-- [ ] **Step 5: 更新测试断言 v30→v31**
+- [x] **Step 5: 更新测试断言 v30→v31**
 
 所有 `assert_eq!(v, 30)` → `assert_eq!(v, 31)`。
 
-- [ ] **Step 6: 运行测试**
+- [x] **Step 6: 运行测试**
 
 Run: `cargo test -p octopus-infra`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -109,7 +109,7 @@ git commit -m "feat: DB v31 — remove cloud model seed, add reference presets"
 **Interfaces:**
 - Produces: `insert_cloud_model` / `update_cloud_model` / `delete_cloud_model` / `list_asr_cloud_presets` / `list_llm_provider_presets`
 
-- [ ] **Step 1: DB CRUD 函数**
+- [x] **Step 1: DB CRUD 函数**
 
 在 `db.rs` 中新增：
 
@@ -140,7 +140,7 @@ pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>>
 pub fn list_llm_provider_presets() -> Result<Vec<(String, String)>>
 ```
 
-- [ ] **Step 2: Tauri 命令**
+- [x] **Step 2: Tauri 命令**
 
 在 `model_commands.rs` 中新增对应 `#[tauri::command]` 包装。
 
@@ -161,16 +161,16 @@ pub struct LlmProviderPreset {
 }
 ```
 
-- [ ] **Step 3: 注册命令**
+- [x] **Step 3: 注册命令**
 
 在 `main.rs` invoke_handler 中注册 5 个新命令。
 
-- [ ] **Step 4: 编译 + 测试**
+- [x] **Step 4: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-infra`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
@@ -182,7 +182,7 @@ Expected: PASS
 **Interfaces:**
 - Produces: `CloudModelForm` 组件（Modal 弹窗），props: `{ domain: "asr" | "llm", onSaved: () => void, onCancel: () => void, editModel?: CloudModel | null }`
 
-- [ ] **Step 1: 创建 CloudModelForm.tsx**
+- [x] **Step 1: 创建 CloudModelForm.tsx**
 
 组件功能：
 - `domain="llm"` 时：provider 下拉（从 `list_llm_provider_presets` 读）→ base_url 自动填 → model_name input → api_key password → is_stream/is_thinking checkbox
@@ -214,12 +214,12 @@ const ASR_PROVIDER_CONFIG: Record<string, Record<string, { source: string; keyLa
 };
 ```
 
-- [ ] **Step 2: 前端构建**
+- [x] **Step 2: 前端构建**
 
 Run: `cd crates/desktop/frontend && npm run build`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ---
 
@@ -230,7 +230,7 @@ Expected: PASS
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/AsrTab.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/ModelRow.tsx`（加编辑/删除按钮回调）
 
-- [ ] **Step 1: LlmTab 云端 section 加「添加」按钮 + CloudModelForm**
+- [x] **Step 1: LlmTab 云端 section 加「添加」按钮 + CloudModelForm**
 
 ```tsx
 // 云端 section 标题栏右侧加「+ 添加模型」按钮
@@ -238,7 +238,7 @@ Expected: PASS
 // 每个云端模型行加「编辑」「删除」按钮
 ```
 
-- [ ] **Step 2: AsrTab 云端 section 同理**
+- [x] **Step 2: AsrTab 云端 section 同理**
 
 ```tsx
 // 云端 section 标题栏右侧加「+ 添加模型」按钮
@@ -246,16 +246,16 @@ Expected: PASS
 // 每个云端模型行加「编辑」「删除」按钮
 ```
 
-- [ ] **Step 3: ModelRow 扩展——云端模型显示编辑/删除按钮**
+- [x] **Step 3: ModelRow 扩展——云端模型显示编辑/删除按钮**
 
 ModelRow 已有 `onDelete`，新增 `onEdit` 回调。云端模型（`is_local=false`）显示编辑/删除，不显示下载/校验。
 
-- [ ] **Step 4: 前端构建**
+- [x] **Step 4: 前端构建**
 
 Run: `cd crates/desktop/frontend && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
@@ -264,7 +264,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/model_commands.rs`（delete_cloud_model 检查是否为当前引擎）
 
-- [ ] **Step 1: delete_cloud_model 检查当前激活**
+- [x] **Step 1: delete_cloud_model 检查当前激活**
 
 删除前检查：如果被删的模型是当前 `asr_engine` / `polish_llm`，需要回退。
 
@@ -289,12 +289,12 @@ pub async fn delete_cloud_model(id: i64, rc: State<'_, SharedRuntimeConfig>) -> 
 }
 ```
 
-- [ ] **Step 2: 编译 + 测试**
+- [x] **Step 2: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ---
 
@@ -304,18 +304,18 @@ Expected: PASS
 - Modify: `docs/architecture.md`
 - Modify: `docs/superpowers/specs/2026-07-14-cloud-model-management-design.md`（偏差记录）
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo build --release -p octopus-server -p octopus-cli -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `cargo test -p octopus-infra -p octopus-translation`
 Expected: PASS
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 更新模型管理章节，描述云端模型用户自管理（无 seed、参考列表存 app_config、CRUD 命令）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**

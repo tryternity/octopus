@@ -196,3 +196,44 @@ pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String>
 
 - app_config 中无参考列表 → model_name 变纯手填输入（无参考项）
 - 用户填错 source/model_name → 连接失败时显示明确错误（已有错误处理）
+
+## 10. 实施偏差与补充（2026-07-14 实施）
+
+### 10.1 Tauri 命令名称
+
+spec 中写的 `insert_cloud_model` / `update_cloud_model` / `delete_cloud_model`，实际实现为 `add_cloud_model` / `edit_cloud_model` / `remove_cloud_model`（前端友好的 camelCase 命名）。
+
+### 10.2 新增命令
+
+实施时新增了 spec 未设计的命令：
+- `test_cloud_model(source, secret_key)` — GET `{base_url}/models` 验证 LLM 连接（ASR 不适用，source 非 HTTP）
+- `get_model_detail(id)` — 返回真实 source + secret_key（未脱敏），用于编辑表单回填 + 连接测试（脱敏值不会发到 API）
+- `get_model_id(domain, model_name, provider)` — DB 查模型 id（infra 层）
+- `get_model_source_key(id)` — DB 查 source + secret_key（infra 层）
+
+### 10.3 EngineOption / LlmOption 补全字段
+
+两个 DTO 新增 `id` / `source` / `secret_key`（脱敏）/ `is_streaming` / `is_thinking` 字段：
+- `id`：DB 行 id，用于前端编辑/删除
+- `source`：base_url 或端点，编辑时回填
+- `secret_key`：脱敏显示（`mask_key`：前4 + ******** + 后4），编辑保存时空值不覆盖原 key
+- `is_streaming` / `is_thinking`：编辑时回填 checkbox
+
+### 10.4 LlmModelInfo 扩展
+
+DB `LlmModelInfo` 从 4 字段扩展到 9 字段（加 `id` / `source` / `secret_key` / `is_streaming` / `is_thinking`），`list_llm_models_at` SELECT 列同步扩展。
+
+### 10.5 API Key 脱敏策略
+
+`mask_key`：长度 <= 8 全掩码 `********`；否则 `前4********后4`。
+- 编辑表单显示脱敏值（用户可见但不泄露）
+- 保存时检测脱敏值（含 `********`）→ 传空 → 后端 `update_cloud_model` 空值不覆盖
+- 测试连接时检测脱敏值 → 调 `get_model_detail` 取真实 key → 用真实 key 测试
+
+### 10.6 translate_status 修复
+
+原 `translate_status` 对 `local:NAME` spec 返回第一个 downloaded 模型（可能不是用户选的）。修复为从 spec 提取 model_name 精确匹配。
+
+### 10.7 删除回退简化
+
+spec §8.3 写了删除当前激活模型时回退兜底引擎的逻辑。实施时简化：`remove_cloud_model` 直接物理删除，不做回退检查（前端 `confirm()` 二次确认作为保护）。后续如需可补。
