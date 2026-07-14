@@ -1070,15 +1070,17 @@ unsafe fn build_surrounding(
     }
 
     // ── 内容校验：AX 树可能不含真实编辑器文本 ──
-    // 自绘编辑器（Sublime Text、Vim GUI 等）的 AX 树只有静态文本
-    // （如试用版水印 "UNREGISTERED"），不包含编辑器实际内容。
-    // 判定：full_text 不包含选中文本 → AX 无真实内容。
-    // Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域
-    // （光标行以下），此时 find-fail fallback 应取 scrollback 末尾作 before。
-    if kind == AppKind::Editor && !full_text.is_empty() && !selected_text.is_empty() {
+    // 自绘编辑器（Sublime Text、WPS 等）的 AX 树不含真实编辑器内容：
+    // - Sublime: AX 树只有 "UNREGISTERED" 水印
+    // - WPS: AX 返回 -25212（禁用），full_text 为空
+    // Terminal 排除：full_text 是真实 scrollback。
+    if kind == AppKind::Editor && !selected_text.is_empty() {
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
-        if !full_trimmed.contains(selected_trimmed) {
+        // full_text 为空 或 不含选中文本 → 触发 fallback
+        let need_fallback = full_trimmed.is_empty() || !full_trimmed.contains(selected_trimmed);
+
+        if need_fallback {
             // WPS Office: AX 禁用 + 无 AppleScript + 无插件 API + 窗口标题通常为空。
             // Sublime Text: 通过插件取数器（含未保存文件）。
             // 通用 fallback：磁盘文件读取。
