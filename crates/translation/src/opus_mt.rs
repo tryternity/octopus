@@ -244,25 +244,15 @@ fn load_opus_tokenizer(path: &std::path::Path) -> Result<Tokenizer> {
 /// 按翻译方向解析 opus-mt 子目录。
 /// 返回 (目录路径, source_lang, target_lang)。
 fn resolve_opus_dir(source_lang: &str, target_lang: &str) -> Result<(std::path::PathBuf, String, String)> {
-    // 构建 direction key：zh→en → "zh-en"
     let src = lang_prefix(source_lang);
     let tgt = lang_prefix(target_lang);
     let direction = format!("{}-{}", src, tgt);
 
-    // ~//octopus/models/translate/opus-mt/{direction}/
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let base = std::path::PathBuf::from(&home)
-        .join(".octopus/models/translate/opus-mt")
-        .join(&direction);
-
-    if base.is_dir() {
-        return Ok((base, src, tgt));
-    }
-
-    // 也尝试 HF cache 路径（Xenova/opus-mt-{direction}）
-    let hf_repo = format!("Xenova/opus-mt-{}", direction);
-    if let Ok(p) = onnx_infra::resolve_model_dir(&hf_repo) {
-        return Ok((p, src, tgt));
+    // DB source = "translate/opus-mt"，方向子目录 zh-en / en-zh
+    let base = onnx_infra::resolve_model_dir("translate/opus-mt")?;
+    let dir = base.join(&direction);
+    if dir.is_dir() {
+        return Ok((dir, src, tgt));
     }
 
     anyhow::bail!(

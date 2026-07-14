@@ -1,14 +1,5 @@
-use octopus_translation::{
-    discover_translation_models as do_discover,
-    list_downloadable_translation_models as do_list_downloadable,
-    DownloadableTranslationModel, TranslationModelInfo,
-};
+use octopus_translation::{discover_translation_models as do_discover, TranslationModelInfo};
 use serde::Serialize;
-
-#[tauri::command]
-pub fn list_downloadable_translation_models() -> Result<Vec<DownloadableTranslationModel>, String> {
-    Ok(do_list_downloadable())
-}
 
 #[tauri::command]
 pub fn discover_translation_models() -> Result<Vec<TranslationModelInfo>, String> {
@@ -53,7 +44,7 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
         });
     }
 
-    // local:* — 灵活匹配，同 resolve_translate_strategy 的 starts_with 逻辑
+    // local:* — 灵活匹配
     if spec.starts_with("local:") {
         return match models.into_iter().find(|m| m.downloaded) {
             Some(m) => Ok(TranslateStatus {

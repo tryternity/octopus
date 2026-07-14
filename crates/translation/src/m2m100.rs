@@ -10,7 +10,8 @@ use crate::tokenizer::{M2M100Tokenizer, EOS_ID, DECODER_START_TOKEN_ID, lang_cod
 const MAX_ENCODER_TOKENS: usize = 900;
 /// decoder 单 chunk 最大生成长度
 const MAX_DECODER_LENGTH: usize = 200;
-const M2M100_REPO: &str = "lazycodepersona/m2m100_418m";
+/// 模型路径标识（DB source 字段）。
+const M2M100_SOURCE: &str = "translate/m2m100-418M";
 
 pub struct M2M100Engine {
     encoder: Mutex<Session>,
@@ -20,7 +21,7 @@ pub struct M2M100Engine {
 
 impl M2M100Engine {
     pub fn load() -> Result<Self> {
-        let model_dir = onnx_infra::resolve_model_dir(M2M100_REPO)
+        let model_dir = onnx_infra::resolve_model_dir(M2M100_SOURCE)
             .context("m2m100 模型未找到，请在设置 > 模型管理 > 翻译模型 中下载")?;
 
         let encoder_path = model_dir.join("onnx/encoder_model_quantized.onnx");

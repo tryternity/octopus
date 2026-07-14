@@ -330,7 +330,6 @@ pub fn run() {
             extensions::list_extensions,
             extensions::delete_extension,
             extensions::refresh_extensions,
-            translation_commands::list_downloadable_translation_models,
             translation_commands::discover_translation_models,
             translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）

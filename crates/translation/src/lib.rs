@@ -9,6 +9,5 @@ pub use m2m100::M2M100Engine;
 pub use opus_mt::OpusMTEngine;
 pub use tokenizer::M2M100Tokenizer;
 pub use discovery::{
-    discover_translation_models, list_downloadable_translation_models, TranslationModelInfo,
-    DownloadableTranslationModel,
+    discover_translation_models, TranslationModelInfo,
 };

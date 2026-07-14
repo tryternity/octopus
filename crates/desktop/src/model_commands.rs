@@ -44,26 +44,15 @@ pub struct VerifyResult {
     pub message: String,
 }
 
-/// 判定 source 是否为可下载的 HF repo。
-/// 排除：随包打包（`models/` 前缀）、绝对路径、云端协议（http/wss）、空。
-fn is_hf_repo(source: &str) -> bool {
-    !source.is_empty()
-        && !source.starts_with("models/") // 随包小模型（如 models/zipformer）
-        && !source.starts_with('/') // 绝对路径（用户自定义本地模型）
-        && !source.starts_with("http") // http(s) 云端
-        && !source.starts_with("wss") // wss 云端
-        && source.contains('/') // HF repo 至少 owner/name
-}
-
-/// 列出所有可下载的本地 ASR 模型（含未就绪，按 is_enabled 显示就绪/下载）。
+/// 列出所有可下载的本地模型（含未就绪，按 is_enabled 显示就绪/下载）。
+/// domain 参数："asr"（默认）| "translate" | "ocr"。
 #[tauri::command]
-pub fn list_downloadable_models() -> Result<Vec<DownloadableModel>, String> {
-    let rows = octopus_infra::db::list_all_local_asr_models().map_err(|e| e.to_string())?;
+pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<DownloadableModel>, String> {
+    let domain = domain.unwrap_or_else(|| "asr".to_string());
+    let rows = octopus_infra::db::list_local_models_by_domain(&domain)
+        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        if !is_hf_repo(&r.source) {
-            continue;
-        }
         out.push(DownloadableModel {
             name: r.model_name,
             repo: r.source,
@@ -75,8 +64,6 @@ pub fn list_downloadable_models() -> Result<Vec<DownloadableModel>, String> {
     Ok(out)
 }
 
-/// 设置下载镜像（写运行时 AppConfig + 持久化 DB）。
-#[tauri::command]
 /// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
 fn resolve_env_template(url: &str) -> String {
     let vars = match octopus_infra::db::list_env_vars() {
@@ -91,6 +78,7 @@ fn resolve_env_template(url: &str) -> String {
     result
 }
 
+/// 设置下载镜像（写运行时 AppConfig + 持久化 DB）。
 #[tauri::command]
 pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     let mut cfg = rc.read().clone();
@@ -286,32 +274,4 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn is_hf_repo_real_repos() {
-        assert!(is_hf_repo(
-            "k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13"
-        ));
-        assert!(is_hf_repo("csukuangfj/sherpa-onnx-streaming-paraformer-zh"));
-        assert!(is_hf_repo("onnx-community/whisper-small.en"));
-    }
-
-    #[test]
-    fn is_hf_repo_excludes_bundled() {
-        assert!(!is_hf_repo("models/zipformer"));
-        assert!(!is_hf_repo("models/silero_vad_v4.onnx"));
-    }
-
-    #[test]
-    fn is_hf_repo_excludes_absolute_and_remote() {
-        assert!(!is_hf_repo("/Users/x/models/foo"));
-        assert!(!is_hf_repo("https://x.com/m"));
-        assert!(!is_hf_repo("wss://dashscope.aliyuncs.com/api-ws/v1/inference"));
-    }
-
-    #[test]
-    fn is_hf_repo_excludes_empty() {
-        assert!(!is_hf_repo(""));
-    }
 }
