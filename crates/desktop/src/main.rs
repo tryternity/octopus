@@ -32,6 +32,7 @@ mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
 mod model_commands;
+mod model_migrate;
 mod hotword_commands;
 mod input_source;
 mod paste;
@@ -91,6 +92,10 @@ pub fn run() {
     // 失败仅告警，不阻断启动（识别历史写入会失败，但应用可用）
     if let Err(e) = octopus_asr_local::db::ensure_db() {
         log::error!("DB init failed: {}, storage disabled", e);
+    }
+    // 创建模型路径软链（HF cache → ~/.octopus/models/{domain}/{name}/）
+    if let Err(e) = model_migrate::create_model_symlinks() {
+        log::warn!("模型路径迁移失败（非致命）: {e:?}");
     }
 
     // 校验引擎模式
