@@ -389,6 +389,7 @@ fn read_file_as_text(path: &std::path::Path) -> Option<String> {
 
     match ext.as_str() {
         "pdf" => read_pdf_text(path),
+        "pages" => read_pages_text(path),
         "docx" | "pptx" | "xlsx" => {
             // 优先用 officecli（更健壮，处理修订/批注/公式/图表）
             if let Some(text) = try_officecli_text(path) {
@@ -450,6 +451,50 @@ fn try_officecli_text(path: &std::path::Path) -> Option<String> {
     } else {
         Some(cleaned)
     }
+}
+
+/// 从 .pages 文件提取文本。.pages 是 iWork 格式（zip 内 Protobuf iwa），
+/// 不是 OOXML。从 Document.iwa 中提取明文 UTF-8 片段（Protobuf 的 string 字段）。
+fn read_pages_text(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    // 查找 Index/Document.iwa
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).ok()?;
+        if file.name() != "Index/Document.iwa" {
+            continue;
+        }
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut buf).ok()?;
+
+        // Protobuf 中 string 字段是 length-delimited（wire type 2）
+        // 提取连续的 UTF-8 可打印字符片段（>= 4 字符）
+        let mut fragments = Vec::new();
+        let mut current = Vec::new();
+        for &byte in &buf {
+            if byte >= 0x20 && byte != 0x7f || byte >= 0xc0 {
+                current.push(byte);
+            } else {
+                if current.len() >= 6 {
+                    if let Ok(s) = std::str::from_utf8(&current) {
+                        // 过滤掉明显的二进制噪音（含大量 ? 的串）
+                        let readable = s.chars().filter(|c| !c.is_control()).count();
+                        if readable >= 4 && !s.contains("​​") {
+                            fragments.push(s.to_string());
+                        }
+                    }
+                }
+                current.clear();
+            }
+        }
+
+        if !fragments.is_empty() {
+            return Some(fragments.join(" "));
+        }
+    }
+
+    None
 }
 
 /// 从 PDF 提取文本。优先用系统 pdftotext（poppler），没有则返回 None。
@@ -730,7 +775,7 @@ fn bundle_id_to_procname(bundle_id: &str) -> String {
 /// - 排除 .~ 临时锁文件
 /// - 只保留 .docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt 扩展名
 fn filter_lsof_doc_files(lsof_output: &str) -> Vec<String> {
-    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt"];
+    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt", "pages"];
     lsof_output
         .lines()
         .filter(|l| l.starts_with('n'))
