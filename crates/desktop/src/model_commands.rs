@@ -399,19 +399,7 @@ pub fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn remove_cloud_model(id: i64, _rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
-    // 查被删模型信息（用于检查是否为当前激活）
-    let rows = octopus_infra::db::list_all_local_asr_models().unwrap_or_default();
-    // 也查云端模型——用通用 list_local_models_by_domain 分别查
-    let mut all_rows = rows;
-    for domain in &["asr", "llm"] {
-        if let Ok(r) = octopus_infra::db::list_local_models_by_domain(domain) {
-            all_rows.extend(r);
-        }
-    }
-    // 注意：上面只查 is_local=1 的，但云端模型 is_local=0。
-    // 用直接查 app_config 不行——需要在 with_db 中查 models 表。
-    // 简化：直接删，不检查激活状态（前端会在删除前提示用户）。
+pub fn remove_cloud_model(id: i64) -> Result<(), String> {
     octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())
 }
 

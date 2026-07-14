@@ -838,7 +838,7 @@ pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
 
 fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
     conn.execute(
-        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND domain='asr' AND is_local = 1",
+        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND is_local = 1",
         params![if enabled { 1 } else { 0 }, model_name],
     )?;
     Ok(())
@@ -851,7 +851,7 @@ pub fn set_model_secret_key(model_name: &str, json: &str) -> Result<()> {
 
 fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> Result<()> {
     conn.execute(
-        "UPDATE models SET secret_key = ?1 WHERE model_name = ?2 AND domain='asr' AND is_local = 1",
+        "UPDATE models SET secret_key = ?1 WHERE model_name = ?2 AND is_local = 1",
         params![json, model_name],
     )?;
     Ok(())
@@ -946,6 +946,37 @@ pub fn get_model_flags(id: i64) -> Result<(bool, bool)> {
             |r| Ok((r.get::<_, i32>(0)? != 0, r.get::<_, i32>(1)? != 0)),
         )
         .map_err(Into::into)
+    })
+}
+
+/// 批量查 ASR 域所有模型的 id / model_name / source / secret_key / is_streaming / is_thinking。
+/// 替代 N+1 的 get_model_id + get_model_source_key + get_model_flags。
+pub struct ModelDetailRow {
+    pub id: i64,
+    pub model_name: String,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+}
+
+pub fn list_asr_model_details() -> Result<Vec<ModelDetailRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, model_name, source, secret_key, is_streaming, is_thinking
+             FROM models WHERE domain='asr'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ModelDetailRow {
+                id: r.get(0)?,
+                model_name: r.get(1)?,
+                source: r.get(2)?,
+                secret_key: r.get(3)?,
+                is_streaming: r.get::<_, i32>(4)? != 0,
+                is_thinking: r.get::<_, i32>(5)? != 0,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
     })
 }
 

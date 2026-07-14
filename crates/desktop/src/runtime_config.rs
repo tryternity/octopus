@@ -88,24 +88,23 @@ fn build_asr_options(
         is_streaming: true,
         is_thinking: false,
     });
+    // 批量查 DB 所有 ASR 模型详情（替代 N+1 查询）
+    let db_details = octopus_infra::db::list_asr_model_details().unwrap_or_default();
+
     // DB 模型（跳过同名兜底，避免重复）
     for e in engines {
         if e.name == FALLBACK_ASR_ENGINE {
             continue;
         }
         let cat = octopus_asr_local::config::category_label(e.category);
-        // 从 DB 查 id / source / secret_key / is_streaming / is_thinking（用于编辑/删除）
-        let real_id = octopus_infra::db::get_model_id("asr", &e.name, &e.provider)
-            .ok().flatten().unwrap_or(0);
-        let (source, secret_key, is_streaming, is_thinking) = if real_id > 0 {
-            let (src, key) = octopus_infra::db::get_model_source_key(real_id).unwrap_or_default();
-            let (streaming, thinking) = octopus_infra::db::get_model_flags(real_id).unwrap_or((false, false));
-            (src, mask_key(&key), streaming, thinking)
-        } else {
-            (String::new(), String::new(), false, false)
+        // 从批量查询结果中查找匹配
+        let detail = db_details.iter().find(|d| d.model_name == e.name);
+        let (id, source, secret_key, is_streaming, is_thinking) = match detail {
+            Some(d) => (d.id, d.source.clone(), mask_key(&d.secret_key), d.is_streaming, d.is_thinking),
+            None => (0i64, String::new(), String::new(), false, false),
         };
         options.push(EngineOption {
-            id: real_id,
+            id,
             current: e.name == effective,
             name: e.name.clone(),
             provider: e.provider.clone(),

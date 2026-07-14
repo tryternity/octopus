@@ -115,7 +115,10 @@ export function CloudModelForm({
     : "API Key";
 
   const handleSave = async () => {
-    if (!provider || !modelName) return;
+    if (!provider || !modelName) {
+      setTestResult({ ok: false, message: !provider ? "请选择 Provider" : "请填写 Model Name" });
+      return;
+    }
     setSaving(true);
     try {
       // 编辑时：如果 secret_key 未改（仍是脱敏值），不传 secret_key（后端保留原值）
