@@ -154,6 +154,7 @@ settings:
     noCloudModels: 暂无云端模型，点击上方添加
     cancel: 取消
     save: 保存
+    testConnection: 测试连接
     env:
       loadFailed: "加载环境变量失败："
       saved: 已保存
@@ -208,6 +209,7 @@ settings:
     descPlaceholder: 简短描述（可选）
     contentPlaceholder: 提示词内容…
     save: 保存
+    testConnection: 测试连接
     cancel: 取消
     header: 提示词
     newBtn: 新建
@@ -354,6 +356,7 @@ settings:
     hidden: 已隐藏
     cancel: 取消
     save: 保存
+    testConnection: 测试连接
     collapse: 收起
     expand: 展开
     builtin: 内置

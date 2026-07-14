@@ -84,6 +84,9 @@ octopus-infra = { path = "../infra" }
 # 通用下载 crate（模型管理页下 HF 模型，复用阶段1 能力）
 octopus-download = { path = "../download" }
 
+# HTTP 客户端（云端模型连接测试 GET /models）
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
 # 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
 octopus-clipboard = { path = "../clipboard" }
 

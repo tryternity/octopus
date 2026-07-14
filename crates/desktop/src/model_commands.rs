@@ -363,7 +363,7 @@ pub fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn remove_cloud_model(id: i64, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+pub async fn remove_cloud_model(id: i64, _rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     // 查被删模型信息（用于检查是否为当前激活）
     let rows = octopus_infra::db::list_all_local_asr_models().unwrap_or_default();
     // 也查云端模型——用通用 list_local_models_by_domain 分别查
@@ -394,6 +394,47 @@ pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String> {
     Ok(rows.into_iter().map(|(provider, base_url)| {
         LlmProviderPreset { provider, base_url }
     }).collect())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestConnectionResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+/// 测试云端模型连接：GET {base_url}/models 验证 api_key 有效。
+#[tauri::command]
+pub async fn test_cloud_model(source: String, secret_key: String) -> Result<TestConnectionResult, String> {
+    let url = format!("{}/models", source.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", secret_key))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            if r.status().is_success() {
+                Ok(TestConnectionResult {
+                    ok: true,
+                    message: "连接成功".into(),
+                })
+            } else {
+                let status = r.status();
+                Ok(TestConnectionResult {
+                    ok: false,
+                    message: format!("HTTP {}", status.as_u16()),
+                })
+            }
+        }
+        Err(e) => Ok(TestConnectionResult {
+            ok: false,
+            message: format!("{}", e),
+        }),
+    }
 }
 
 #[cfg(test)]

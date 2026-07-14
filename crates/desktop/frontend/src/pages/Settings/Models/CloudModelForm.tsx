@@ -73,6 +73,8 @@ export function CloudModelForm({
   const [isStreaming, setIsStreaming] = useState(editModel?.isStreaming ?? true);
   const [isThinking, setIsThinking] = useState(editModel?.isThinking ?? false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     if (domain === "asr") {
@@ -136,6 +138,22 @@ export function CloudModelForm({
       alert(e);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    if (!source || !secretKey) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
+        source, secretKey,
+      });
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ ok: false, message: String(e) });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -241,22 +259,48 @@ export function CloudModelForm({
           </div>
         </div>
 
+        {/* Test result */}
+        {testResult && (
+          <div className={cn(
+            "text-[11px] px-2.5 py-1.5 rounded-md",
+            testResult.ok ? "bg-emerald-500/10 text-emerald-600" : "bg-destructive/10 text-destructive",
+          )}>
+            {testResult.ok ? "✓ " : "✗ "}{testResult.message}
+          </div>
+        )}
+
         {/* Actions */}
-        <div className="flex justify-end gap-2 mt-5">
-          <button className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:bg-accent transition-colors"
-            onClick={onCancel}>
-            {t("settings.models.cancel")}
-          </button>
-          <button className={cn(
-            "px-3 py-1.5 text-xs rounded-md transition-colors",
-            (!provider || !modelName || saving)
-              ? "bg-muted text-muted-foreground cursor-not-allowed"
-              : "bg-foreground text-background hover:opacity-85",
-          )}
-          disabled={!provider || !modelName || saving}
-          onClick={handleSave}>
-            {saving ? "..." : t("settings.models.save")}
-          </button>
+        <div className="flex justify-between items-center gap-2 mt-5">
+          {/* 测试连接（仅 LLM——ASR 的 source 不是 HTTP base_url） */}
+          {domain === "llm" ? (
+            <button className={cn(
+              "px-3 py-1.5 text-xs rounded-md border transition-colors",
+              (!source || !secretKey || testing)
+                ? "border-border text-muted-foreground/40 cursor-not-allowed"
+                : "border-voice/40 text-voice hover:bg-voice/10",
+            )}
+            disabled={!source || !secretKey || testing}
+            onClick={handleTest}>
+              {testing ? "..." : t("settings.models.testConnection")}
+            </button>
+          ) : <div />}
+
+          <div className="flex gap-2">
+            <button className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:bg-accent transition-colors"
+              onClick={onCancel}>
+              {t("settings.models.cancel")}
+            </button>
+            <button className={cn(
+              "px-3 py-1.5 text-xs rounded-md transition-colors",
+              (!provider || !modelName || saving)
+                ? "bg-muted text-muted-foreground cursor-not-allowed"
+                : "bg-foreground text-background hover:opacity-85",
+            )}
+            disabled={!provider || !modelName || saving}
+            onClick={handleSave}>
+              {saving ? "..." : t("settings.models.save")}
+            </button>
+          </div>
         </div>
       </div>
     </div>

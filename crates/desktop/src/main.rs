@@ -252,6 +252,7 @@ pub fn run() {
             model_commands::remove_cloud_model,
             model_commands::list_asr_cloud_presets,
             model_commands::list_llm_provider_presets,
+            model_commands::test_cloud_model,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,

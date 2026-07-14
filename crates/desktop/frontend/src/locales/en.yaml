@@ -154,6 +154,7 @@ settings:
     noCloudModels: No cloud models yet
     cancel: Cancel
     save: Save
+    testConnection: Test Connection
     env:
       loadFailed: "Failed to load env vars:"
       saved: Saved
@@ -208,6 +209,7 @@ settings:
     descPlaceholder: Short description (optional)
     contentPlaceholder: Prompt content…
     save: Save
+    testConnection: Test Connection
     cancel: Cancel
     header: Prompts
     newBtn: New
@@ -354,6 +356,7 @@ settings:
     hidden: Hidden
     cancel: Cancel
     save: Save
+    testConnection: Test Connection
     collapse: Collapse
     expand: Expand
     builtin: Built-in
