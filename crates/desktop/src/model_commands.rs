@@ -64,7 +64,7 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
     Ok(out)
 }
 
-/// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
+/// 对 URL 字符串做 `{env.key}` → value 模板替换（读 DB env 变量）。
 fn resolve_env_template(url: &str) -> String {
     let vars = match octopus_infra::db::list_env_vars() {
         Ok(v) => v,
@@ -72,7 +72,8 @@ fn resolve_env_template(url: &str) -> String {
     };
     let mut result = url.to_string();
     for (key, value) in vars {
-        let placeholder = format!("{{{}}}", key);
+        // list_env_vars 返回 bare key（如 "huggingface"），URL 模板用 "{env.huggingface}"
+        let placeholder = format!("{{env.{}}}", key);
         result = result.replace(&placeholder, &value);
     }
     result
@@ -278,4 +279,37 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 测试前确保 DB 初始化（desktop bin 测试不自动调 ensure_db）。
+    fn ensure_test_db() {
+        let _ = octopus_asr_local::db::ensure_db();
+    }
+
+    /// resolve_env_template 应将 {key} 替换为 DB env 变量值。
+    #[test]
+    fn resolve_env_template_replaces_placeholders() {
+        ensure_test_db();
+        let result = resolve_env_template("{env.huggingface}/org/repo/resolve/main/model.onnx");
+        assert!(!result.contains("{env."), "模板变量应被替换");
+        assert!(result.contains("/org/repo/resolve/main/model.onnx"), "非模板部分应保留");
+    }
+
+    /// resolve_env_template 对无模板的 URL 应原样返回。
+    #[test]
+    fn resolve_env_template_passthrough_no_placeholders() {
+        let url = "https://example.com/model.onnx";
+        let result = resolve_env_template(url);
+        assert_eq!(result, url);
+    }
+
+    /// resolve_env_template 多个不同变量都替换。
+    #[test]
+    fn resolve_env_template_multiple_vars() {
+        ensure_test_db();
+        let url = "{env.huggingface}/repo/resolve/main/model.onnx and {env.github}/org/repo";
+        let result = resolve_env_template(url);
+        assert!(!result.contains("{env.huggingface}"));
+        assert!(!result.contains("{env.github}"));
+    }
 }

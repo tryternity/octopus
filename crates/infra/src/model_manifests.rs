@@ -72,3 +72,138 @@ const M2M100_418M: &str = r#"{"config.json":{"source":"{env.huggingface}/lazycod
 const OCR_V6_SMALL: &str = r#"{"cls.onnx":{"source":"{env.huggingface}/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-cls.onnx","sha256":"f4bb53707100c5f3d59ba834eb05bb400369f20aed35d4b26807b1bfadd2a70e","size":582663},"det.onnx":{"source":"{env.huggingface}/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx","sha256":"d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e","size":9880512},"rec.onnx":{"source":"{env.huggingface}/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx","sha256":"5435fd747c9e0efe15a96d0b378d5bd1579e492ed8fd80edf08f30d02fa24634","size":21159378},"keys_v6.txt":{"source":"{env.github}/PaddlePaddle/PaddleOCR/raw/main/ppocr/utils/dict/ppocrv6_dict.txt","sha256":"b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d","size":74947},"keys.txt":{"source":"{env.github}/PaddlePaddle/PaddleOCR/raw/main/ppocr/utils/dict/ppocrv6_dict.txt","sha256":"b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d","size":74947}}"#;
 
 const OCR_V5: &str = r#"{"cls.onnx":{"source":"{env.huggingface}/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-cls.onnx","sha256":"f4bb53707100c5f3d59ba834eb05bb400369f20aed35d4b26807b1bfadd2a70e","size":582663},"det.onnx":{"source":"{env.huggingface}/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-mobile-det.onnx","sha256":"d7fe3ea74652890722c0f4d02458b7261d9f5ae6c92904d05707c9eb155c7924","size":4748769},"rec.onnx":{"source":"{env.huggingface}/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5-mobile-rec.onnx","sha256":"bf66820f48fa99f779974c4df78e5274a9d8e0458c4137e8c5357e40e2c3faf2","size":16517247},"keys.txt":{"source":"{env.huggingface}/bukuroo/PPOCRv5-ONNX/resolve/main/ppocrv5_dict.txt","sha256":"1ea29636956177e400af712d9782e7693f3fb25f98617bed10479d2965a836fd","size":92395}}"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 每个返回的 manifest JSON 应是有效 JSON，且每个条目含 source/sha256/size 三字段。
+    fn validate_manifest(name: &str, json: &str) {
+        let parsed: serde_json::Value = serde_json::from_str(json)
+            .unwrap_or_else(|e| panic!("{} manifest 不是有效 JSON: {e}", name));
+        let obj = parsed.as_object()
+            .unwrap_or_else(|| panic!("{} manifest 顶层应是 object", name));
+        assert!(!obj.is_empty(), "{} manifest 不应为空", name);
+        for (path, meta) in obj {
+            let source = meta.get("source").unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' 缺 source 字段", name, path
+            )).as_str().unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' source 不是 string", name, path
+            ));
+            assert!(!source.is_empty(), "{} manifest 条目 '{}' source 不应为空", name, path);
+            assert!(
+                source.contains("/resolve/main/") || source.contains("/raw/main/"),
+                "{} manifest 条目 '{}' source 应含 resolve/main 或 raw/main: {}",
+                name, path, source
+            );
+            let sha = meta.get("sha256").unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' 缺 sha256 字段", name, path
+            )).as_str().unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' sha256 不是 string", name, path
+            ));
+            assert_eq!(sha.len(), 64, "{} manifest 条目 '{}' sha256 应为 64 字符 hex", name, path);
+            let size = meta.get("size").unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' 缺 size 字段", name, path
+            )).as_u64().unwrap_or_else(|| panic!(
+                "{} manifest 条目 '{}' size 不是 u64", name, path
+            ));
+            assert!(size > 0, "{} manifest 条目 '{}' size 应 > 0", name, path);
+        }
+    }
+
+    #[test]
+    fn asr_manifests_all_valid_json() {
+        for name in [
+            "moonshine-base-en", "moonshine-tiny-en",
+            "paraformer-bilingual", "paraformer-multi-zh",
+            "paraformer-streaming", "paraformer-zh",
+            "qwen3-asr-0.6B", "qwen3-asr-1.7B",
+            "sensevoice-orig-small", "firered-asr2",
+            "whisper-small", "zipformer", "zipformer-large",
+        ] {
+            let json = asr_manifest(name)
+                .unwrap_or_else(|| panic!("asr_manifest('{}') 返回 None", name));
+            validate_manifest(name, json);
+        }
+    }
+
+    #[test]
+    fn translate_manifests_all_valid_json() {
+        for name in ["opus-mt", "m2m100-418M"] {
+            let json = translate_manifest(name)
+                .unwrap_or_else(|| panic!("translate_manifest('{}') 返回 None", name));
+            validate_manifest(name, json);
+        }
+    }
+
+    #[test]
+    fn ocr_manifests_all_valid_json() {
+        for name in ["PP-OCRv6-small", "PP-OCRv5"] {
+            let json = ocr_manifest(name)
+                .unwrap_or_else(|| panic!("ocr_manifest('{}') 返回 None", name));
+            validate_manifest(name, json);
+        }
+    }
+
+    #[test]
+    fn asr_manifest_returns_none_for_unknown() {
+        assert!(asr_manifest("nonexistent-model").is_none());
+    }
+
+    #[test]
+    fn translate_manifest_returns_none_for_unknown() {
+        assert!(translate_manifest("nonexistent-model").is_none());
+    }
+
+    #[test]
+    fn ocr_manifest_returns_none_for_unknown() {
+        assert!(ocr_manifest("nonexistent-model").is_none());
+    }
+
+    /// paraformer-zh 与 paraformer-streaming 共用同一 manifest（同 repo）。
+    #[test]
+    fn paraformer_zh_shares_streaming_manifest() {
+        assert_eq!(
+            asr_manifest("paraformer-zh"),
+            asr_manifest("paraformer-streaming"),
+        );
+    }
+
+    /// opus-mt manifest 应含 zh-en 和 en-zh 两个方向的文件。
+    #[test]
+    fn opus_mt_manifest_has_both_directions() {
+        let json = translate_manifest("opus-mt").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let obj = parsed.as_object().unwrap();
+        let has_zh_en = obj.keys().any(|k| k.starts_with("zh-en/"));
+        let has_en_zh = obj.keys().any(|k| k.starts_with("en-zh/"));
+        assert!(has_zh_en, "opus-mt manifest 应含 zh-en/ 前缀文件");
+        assert!(has_en_zh, "opus-mt manifest 应含 en-zh/ 前缀文件");
+    }
+
+    /// PP-OCRv6-small manifest 的文件来自多个来源（HuggingFace + GitHub）。
+    #[test]
+    fn ocr_v6_manifest_has_multi_source() {
+        let json = ocr_manifest("PP-OCRv6-small").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let obj = parsed.as_object().unwrap();
+        let has_hf = obj.values().any(|v| {
+            v.get("source").unwrap().as_str().unwrap().contains("huggingface")
+        });
+        let has_github = obj.values().any(|v| {
+            v.get("source").unwrap().as_str().unwrap().contains("github")
+        });
+        assert!(has_hf, "PP-OCRv6-small manifest 应有 HuggingFace 来源文件");
+        assert!(has_github, "PP-OCRv6-small manifest 应有 GitHub 来源文件 (keys_v6.txt)");
+    }
+
+    /// 所有 manifest 的 source URL 都应使用 {env.*} 模板变量。
+    #[test]
+    fn asr_manifests_use_env_template() {
+        let json = asr_manifest("whisper-small").unwrap();
+        assert!(
+            json.contains("{env.huggingface}"),
+            "whisper-small manifest source 应含 {{env.huggingface}} 模板"
+        );
+    }
+}

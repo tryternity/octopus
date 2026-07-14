@@ -3602,4 +3602,165 @@ mod tests {
         let hits = list_hotword_hits_at(conn).unwrap();
         assert_eq!(hits.get("吴大锐"), Some(&2i64));
     }
+
+    // ── v28: manifest 填充 + 路径统一 测试 ──
+
+    /// fill_manifests 应为 secret_key 为空的 is_local=1 模型填充 manifest。
+    #[test]
+    fn fill_manifests_populates_empty_secret_key() {
+        let conn = open_init();
+        // INIT_SQL 后 secret_key 全空（seed 不预填 manifest）
+        let empty_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE is_local=1 AND (secret_key='' OR secret_key IS NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(empty_count > 0, "seed 后应有 is_local=1 且 secret_key 空的行");
+
+        fill_manifests(&conn).unwrap();
+
+        // 验证 ASR 模型有了 manifest
+        let sk: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='whisper-small' AND domain='asr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!sk.is_empty(), "whisper-small secret_key 应被填充");
+        let parsed: serde_json::Value = serde_json::from_str(&sk).unwrap();
+        assert!(parsed.as_object().unwrap().contains_key("onnx/encoder_model_int8.onnx"));
+
+        // 验证翻译模型有了 manifest
+        let sk: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='opus-mt' AND domain='translate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!sk.is_empty(), "opus-mt secret_key 应被填充");
+
+        // 验证 OCR 模型有了 manifest
+        let sk: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='PP-OCRv6-small' AND domain='ocr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!sk.is_empty(), "PP-OCRv6-small secret_key 应被填充");
+    }
+
+    /// fill_manifests 幂等：已填充的 manifest 不应被覆盖。
+    #[test]
+    fn fill_manifests_is_idempotent() {
+        let conn = open_init();
+        fill_manifests(&conn).unwrap();
+        let sk1: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='whisper-small' AND domain='asr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 再次调用——不会重写（secret_key 非空，WHERE 条件不匹配）
+        fill_manifests(&conn).unwrap();
+        let sk2: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='whisper-small' AND domain='asr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sk1, sk2, "二次调用不应改变已有 manifest");
+    }
+
+    /// list_local_models_by_domain 按 domain 正确过滤。
+    #[test]
+    fn list_local_models_by_domain_filters_correctly() {
+        let conn = open_init();
+        fill_manifests(&conn).unwrap();
+
+        let asr_rows = list_all_local_asr_models_at(&conn).unwrap();
+        assert!(asr_rows.iter().all(|r| r.source.starts_with("asr/")),
+            "ASR models source 应以 asr/ 开头");
+
+        // 用新函数查 translate
+        let translate_rows: Vec<LocalAsrModelRow> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+                     FROM models WHERE domain='translate' AND is_local = 1",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |row| {
+                Ok(LocalAsrModelRow {
+                    category: row.get(0)?,
+                    model_name: row.get(1)?,
+                    source: row.get(2)?,
+                    secret_key: row.get(3)?,
+                    description: row.get(4)?,
+                    is_enabled: row.get::<_, i32>(5)? != 0,
+                    is_streaming: row.get::<_, i32>(6)? != 0,
+                })
+            }).unwrap();
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(translate_rows.len(), 2, "应有 2 个翻译模型");
+        assert!(
+            translate_rows.iter().any(|r| r.model_name == "opus-mt"),
+            "应包含 opus-mt"
+        );
+        assert!(
+            translate_rows.iter().any(|r| r.model_name == "m2m100-418M"),
+            "应包含 m2m100-418M"
+        );
+    }
+
+    /// ASR source 应从旧 HF repo 格式更新为 asr/{name} 路径标识。
+    #[test]
+    fn asr_source_is_path_identifier() {
+        let conn = open_init();
+        // INIT_SQL 已用新 seed（asr/{name}），验证
+        let source: String = conn
+            .query_row(
+                "SELECT source FROM models WHERE model_name='whisper-small' AND domain='asr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "asr/whisper-small");
+    }
+
+    /// OCR seed 不再含旧 GitHub MNN URL。
+    #[test]
+    fn ocr_source_is_path_identifier_not_mnn() {
+        let conn = open_init();
+        let source: String = conn
+            .query_row(
+                "SELECT source FROM models WHERE model_name='PP-OCRv6-small' AND domain='ocr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "ocr/PP-OCRv6-small");
+        assert!(!source.contains("github.com"), "不应再含 GitHub URL");
+    }
+
+    /// PP-OCRv5 应在 seed 中。
+    #[test]
+    fn ocr_v5_in_seed() {
+        let conn = open_init();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE model_name='PP-OCRv5' AND domain='ocr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "PP-OCRv5 应在 seed 中");
+    }
 }
