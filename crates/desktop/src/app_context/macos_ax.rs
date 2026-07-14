@@ -699,6 +699,29 @@ fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
     texts
 }
 
+/// 从 bundle_id 推断进程名（用于 lsof -c 匹配）。
+fn bundle_id_to_procname(bundle_id: &str) -> String {
+    let id = bundle_id.to_ascii_lowercase();
+    if id.contains("kingsoft") {
+        "wpsoffice".to_string()
+    } else if id.contains("iwork.pages") {
+        "Pages".to_string()
+    } else if id.contains("iwork.keynote") {
+        "Keynote".to_string()
+    } else if id.contains("iwork.numbers") {
+        "Numbers".to_string()
+    } else if id.contains("sublimetext") {
+        "Sublime".to_string()
+    } else {
+        // 通用：取 bundle_id 最后一段
+        bundle_id
+            .split('.')
+            .last()
+            .unwrap_or(bundle_id)
+            .to_string()
+    }
+}
+
 /// 从 lsof -F n 输出中筛选文档文件路径（纯函数，可单测）。
 ///
 /// 过滤规则：
@@ -728,15 +751,18 @@ fn filter_lsof_doc_files(lsof_output: &str) -> Vec<String> {
         .collect()
 }
 
-/// WPS Office 专用：通过 lsof 获取进程打开的文件路径。
+/// 通过 lsof 获取进程打开的文件路径，读取内容并匹配选中文本。
 ///
-/// WPS 窗口标题通常为空，无法从标题提取文件名。
-/// 但 lsof 可以列出 WPS 进程当前打开的文件（.docx/.xlsx/.pptx/.pdf）。
-/// 拿到路径后用 read_file_as_text 提取文本，再用 selected_text 定位切上下文。
-fn try_wps_lsof_context(selected_text: &str) -> Option<SurroundingText> {
-    // 1. lsof 获取 WPS 打开的文件
+/// 当 AX 树不含真实编辑器内容且窗口标题不可靠时（WPS/Pages 等），
+/// lsof 可以列出进程当前打开的文档文件。
+/// 进程名从 bundle_id 推断。
+fn try_lsof_context(selected_text: &str, bundle_id: &str) -> Option<SurroundingText> {
+    // 从 bundle_id 推断进程名
+    let proc_name = bundle_id_to_procname(bundle_id);
+
+    // 1. lsof 获取进程打开的文件
     let output = std::process::Command::new("lsof")
-        .args(["-c", "wpsoffice", "-F", "n"])
+        .args(["-c", &proc_name, "-F", "n"])
         .output()
         .ok()?;
 
@@ -749,7 +775,7 @@ fn try_wps_lsof_context(selected_text: &str) -> Option<SurroundingText> {
     // 2. 筛选文档文件
     let candidates = filter_lsof_doc_files(&stdout);
 
-    log::info!("[app-context] WPS lsof: {} 个候选文件", candidates.len());
+    log::info!("[app-context] lsof ({}): {} 个候选文件", proc_name, candidates.len());
 
     // 3. 逐个尝试读取 + 匹配选中文本
     for file_path in &candidates {
@@ -763,7 +789,7 @@ fn try_wps_lsof_context(selected_text: &str) -> Option<SurroundingText> {
             let window_title = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string());
-            log::info!("[app-context] WPS lsof 命中: {}", file_path);
+            log::info!("[app-context] lsof 命中: {}", file_path);
             return Some(SurroundingText {
                 before: result.0,
                 after: result.1,
@@ -1207,14 +1233,13 @@ unsafe fn build_surrounding(
                     }
                 }
 
-                // WPS Office 专用：lsof 获取进程打开的文件路径（窗口标题通常为空）
-                if bundle_id_or_name.contains("kingsoft") {
-                    if let Some(wps_ctx) = try_wps_lsof_context(selected_text) {
-                        diagnostics.push("WPS_LSOF: lsof 文件路径 + officecli/pdftotext 取数成功".to_string());
-                        let diag = Some(diagnostics.join("\n  "));
-                        log::info!("[app-context] WPS lsof 取数成功");
-                        return Ok((wps_ctx, diag));
-                    }
+                // 通用 lsof fallback：获取进程打开的文件路径（窗口标题常为空或不含文件名）
+                // 对 WPS/Pages 等窗口标题不可靠的 App 特别有效
+                if let Some(lsof_ctx) = try_lsof_context(selected_text, bundle_id_or_name) {
+                    diagnostics.push("LSOF: lsof 文件路径 + officecli/pdftotext 取数成功".to_string());
+                    let diag = Some(diagnostics.join("\n  "));
+                    log::info!("[app-context] lsof 取数成功");
+                    return Ok((lsof_ctx, diag));
                 }
 
                 // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
