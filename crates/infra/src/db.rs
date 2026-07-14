@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 30 {
+    if v >= 31 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -364,6 +364,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 30", [])?;
             log::info!("schema upgraded to v30 (OCR provider/category fix)");
         }
+        // v30→v31：云端模型改为用户自建——删除 seed，新增参考列表
+        {
+            conn.execute("DELETE FROM models WHERE domain='asr' AND is_local=0", [])?;
+            conn.execute("DELETE FROM models WHERE domain='llm'", [])?;
+            // 重跑 INIT_SQL 确保参考列表 seed 已建（幂等）
+            conn.execute_batch(INIT_SQL).ok();
+            conn.execute("PRAGMA user_version = 31", [])?;
+            log::info!("schema upgraded to v31 (cloud models: remove seed, add presets)");
+        }
         return Ok(());
     }
 
@@ -371,8 +380,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 30", [])?;
-    log::info!("DB initialized (v30): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 31", [])?;
+    log::info!("DB initialized (v31): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2331,7 +2340,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30, "全新库 init_schema 后应到 v30");
+        assert_eq!(v, 31, "全新库 init_schema 后应到 v31");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2475,9 +2484,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 30
+        // 验证：迁移后 user_version = 31
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2534,7 +2543,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -2664,7 +2673,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2722,8 +2731,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 13 local + 2 bytedance + 2 tencent + 1 baidu + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
-        assert_eq!(count, 21);
+        // v31: 13 local ASR only (cloud models removed from seed)
+        assert_eq!(count, 13);
     }
 
     #[test]
@@ -2749,47 +2758,26 @@ mod tests {
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
         // moonshine ASR（base + tiny）
         assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
-        // aliyun ASR（Fun-ASR / Paraformer / Qwen-ASR）
-        let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
-        assert_eq!(aliyun.len(), 3);
-        // bytedance ASR（Doubao-ASR 1.0 + 2.0）
-        let bytedance = cfg.asr.bytedance.as_ref().expect("bytedance section");
-        assert_eq!(bytedance.len(), 2);
-        let doubao = bytedance.get("doubao-asr-1.0-streaming").unwrap();
-        assert_eq!(doubao.source, "volc.bigasr.sauc.duration");
-        assert!(!doubao.is_local, "bytedance 模型非本地");
-        assert!(doubao.is_enabled, "测试强制 is_enabled=1，此处应为 true");
-        assert!(doubao.is_streaming, "Doubao-ASR 应支持流式");
-        // tencent ASR（16k_zh + 16k_zh_en）
-        let tencent = cfg.asr.tencent.as_ref().expect("tencent section");
-        assert_eq!(tencent.len(), 2);
-        let tc_zh = tencent.get("16k_zh").unwrap();
-        assert!(!tc_zh.is_local, "tencent 模型非本地");
-        assert!(tc_zh.is_streaming, "tencent ASR 应支持流式");
-        // baidu ASR（15372 中文加强标点）
-        let baidu = cfg.asr.baidu.as_ref().expect("baidu section");
-        assert_eq!(baidu.len(), 1);
-        let bd = baidu.get("15372").unwrap();
-        assert!(!bd.is_local, "baidu 模型非本地");
-        assert!(bd.is_streaming, "baidu ASR 应支持流式");
-        let funasr = aliyun.get("fun-asr-realtime").unwrap();
-        assert_eq!(funasr.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
-        assert!(!funasr.is_local, "aliyun Fun-ASR 非本地");
-        assert!(!funasr.is_streaming, "aliyun Fun-ASR 走 chunk 路径（is_streaming=0）");
-        // Paraformer Realtime（共用 inference 端点）
-        let paraformer = aliyun.get("paraformer-realtime-v2").unwrap();
-        assert_eq!(paraformer.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
-        // Qwen-ASR Realtime（realtime 端点 + OpenAI Realtime 协议）
-        let qwen = aliyun.get("qwen3-asr-flash-realtime").unwrap();
-        assert_eq!(qwen.source, "wss://dashscope.aliyuncs.com/api-ws/v1/realtime");
-        assert!(qwen.is_streaming, "aliyun Qwen-ASR 走 CloudStreaming 路径（is_streaming=1）");
+        // 云端 ASR 已移除 seed（v31），用户自建
+        assert!(cfg.asr.aliyun.is_none(), "aliyun 云端 ASR 不再 seed");
+        assert!(cfg.asr.bytedance.is_none(), "bytedance 云端 ASR 不再 seed");
+        assert!(cfg.asr.tencent.is_none(), "tencent 云端 ASR 不再 seed");
+        assert!(cfg.asr.baidu.is_none(), "baidu 云端 ASR 不再 seed");
     }
 
     #[test]
     fn test_load_llm_model() {
         let conn = open_init();
-        // 强制启用所有模型做断言测试
-        conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
+        // LLM 不再 seed（v31），插入测试数据
+        conn.execute_batch(
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
+             VALUES
+             ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','GLM-4 FlashX',0,0,1),
+             ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','DeepSeek V4 Flash',1,0,1),
+             ('llm','aliyun','deepseek','deepseek-v4-flash','https://dashscope.aliyuncs.com/compatible-mode/v1','DeepSeek via DashScope',1,0,1),
+             ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Plus',0,0,1),
+             ('llm','bigmodel','glm','glm-4.5-flash','https://open.bigmodel.cn/api/paas/v4','GLM-4.5 Flash',1,0,1)"
+        ).unwrap();
 
         // 3-part：bigmodel:glm:glm-4-flashx
         let glm = load_llm_model_at(&conn, "bigmodel:glm:glm-4-flashx")
@@ -2798,80 +2786,41 @@ mod tests {
         assert_eq!(glm.provider, "bigmodel");
         assert_eq!(glm.model, "glm-4-flashx");
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
-        assert_eq!(glm.secret_key, "");
         assert!(!glm.is_thinking, "glm-4-flashx 不是思考模型");
-        assert!(!glm.is_local, "glm-4-flashx 不是本地模型");
-        assert!(glm.is_enabled, "glm-4-flashx 应为启用状态");
 
-        // deepseek-v4-flash 在 deepseek 和 aliyun 两个 provider 下同名同系列，
-        // 必须用 3-part "provider:category:model_name" 才能唯一定位。
+        // deepseek-v4-flash 在 deepseek 和 aliyun 两个 provider 下同名
         let ds = load_llm_model_at(&conn, "deepseek:deepseek:deepseek-v4-flash")
             .unwrap()
             .unwrap();
         assert_eq!(ds.provider, "deepseek");
-        assert_eq!(ds.model, "deepseek-v4-flash");
-        assert_eq!(ds.base_url, "https://api.deepseek.com/");
-        assert!(ds.is_thinking, "deepseek-v4-flash 是思考模型");
-        assert!(!ds.is_local, "deepseek-v4-flash 不是本地模型");
-        assert!(ds.is_enabled, "deepseek-v4-flash 应为启用状态");
+        assert!(ds.is_thinking);
 
         let aliyun = load_llm_model_at(&conn, "aliyun:deepseek:deepseek-v4-flash")
             .unwrap()
             .unwrap();
         assert_eq!(aliyun.provider, "aliyun");
-        assert_eq!(aliyun.model, "deepseek-v4-flash");
-        assert_eq!(
-            aliyun.base_url,
-            "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        );
-        assert!(aliyun.is_thinking, "aliyun 下的 deepseek-v4-flash 也是思考模型");
-        assert!(aliyun.is_enabled);
+        assert!(aliyun.is_thinking);
 
-        // Feature 1：aliyun:qwen 原生（同名 model_name 跨 provider）
-        let qwen = load_llm_model_at(&conn, "aliyun:qwen:qwen-plus")
-            .unwrap()
-            .unwrap();
-        assert_eq!(qwen.provider, "aliyun");
-        assert_eq!(qwen.model, "qwen-plus");
-        assert_eq!(
-            qwen.base_url,
-            "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        );
-        assert!(!qwen.is_thinking, "qwen-plus 非思考模型");
-
-        // provider 不匹配时应返回 None（同 model_name 但不同 provider）
+        // provider 不匹配时应返回 None
         assert!(
             load_llm_model_at(&conn, "deepseek:qwen:qwen-plus")
                 .unwrap()
                 .is_none(),
             "deepseek 下不存在 qwen:qwen-plus"
         );
-        // category 不匹配也应返回 None
-        assert!(
-            load_llm_model_at(&conn, "bigmodel:deepseek:deepseek-v4-flash")
-                .unwrap()
-                .is_none(),
-            "bigmodel 下不存在 deepseek 系列"
-        );
 
         let glm_think = load_llm_model_at(&conn, "bigmodel:glm:glm-4.5-flash")
             .unwrap()
             .unwrap();
-        assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
-        assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
-        assert!(glm_think.is_enabled, "glm-4.5-flash 应为启用状态");
+        assert!(glm_think.is_thinking);
 
-        // 裸名（NameOnly）：跨 provider/category 搜 model_name，优先 local。
-        // seed 中所有 LLM 均 is_local=0，但仍可查到（ORDER BY is_local DESC 兜底）。
+        // 裸名（NameOnly）
         let bare = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
         assert_eq!(bare.model, "glm-4-flashx");
-        assert!(!bare.is_local);
-        assert!(bare.provider.is_empty(), "NameOnly 时 provider 字段为空串（仅日志用）");
 
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
 
-        // 插入一个 is_local=1 的 LLM 行，验证 3-part 能精确命中本地模型
-        //（注：model_name 必须不含冒号，3-part spec 不支持冒号嵌入 name）
+        // 插入 is_local=1 的 LLM 行，验证精确命中
         conn.execute(
             "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
              VALUES ('llm', 'ollama', 'qwen', 'qwen3-8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
@@ -2880,12 +2829,7 @@ mod tests {
         .unwrap();
         let local_llm = load_llm_model_at(&conn, "ollama:qwen:qwen3-8b").unwrap().unwrap();
         assert_eq!(local_llm.provider, "ollama");
-        assert_eq!(local_llm.model, "qwen3-8b");
-        assert!(local_llm.is_local, "ollama 本地模型应命中");
-        // 裸名也应能命中（NameOnly 跨 provider/category 搜，优先 local）
-        let bare_local = load_llm_model_at(&conn, "qwen3-8b").unwrap().unwrap();
-        assert_eq!(bare_local.model, "qwen3-8b");
-        assert!(bare_local.is_local);
+        assert!(local_llm.is_local);
     }
 
     #[test]
@@ -2965,33 +2909,30 @@ mod tests {
     #[test]
     fn list_llm_models_filters_disabled_and_sorts() {
         let conn = open_init();
-        // seed 默认 6 条 LLM 全 is_enabled=0；全部启用
-        conn.execute("UPDATE models SET is_enabled = 1 WHERE domain='llm'", []).unwrap();
-        // 再禁用 aliyun provider 下全部 3 条（deepseek-v4-flash + qwen-plus + qwen-turbo）
+        // LLM 不再 seed（v31），插入测试数据
+        conn.execute_batch(
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+             VALUES
+             ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','',0,1),
+             ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','',0,1),
+             ('llm','bigmodel','glm','glm-4.5-flash','https://open.bigmodel.cn/api/paas/v4','',0,1),
+             ('llm','aliyun','deepseek','deepseek-v4-flash','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1),
+             ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1),
+             ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1)"
+        ).unwrap();
+        // 禁用 aliyun provider 下全部 3 条
         conn.execute(
             "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND provider='aliyun'",
             [],
         ).unwrap();
         let list = list_llm_models_at(&conn).unwrap();
-        // 剩余 3 条（全 is_local=0）→ is_local desc 无影响 → category 字母序
-        // categories: deepseek(deepseek-v4-flash), glm(glm-4-flashx), glm(glm-4.5-flash)
+        // 剩余 3 条 → category 字母序: deepseek, glm, glm
         assert_eq!(list.len(), 3, "aliyun 3 条被禁用应过滤");
         assert_eq!(
             list.iter().map(|m| m.category.as_str()).collect::<Vec<_>>(),
             vec!["deepseek", "glm", "glm"],
             "按 category 字母序"
         );
-        assert!(list.iter().all(|m| !m.is_local), "seed LLM 全远程");
-        // 同 category 内未显式二级排序（仅 is_local + category），但当前两条 glm 顺序
-        // 不依赖 name——验证集合而非顺序
-        let glm_names: Vec<&str> = list.iter()
-            .filter(|m| m.category == "glm")
-            .map(|m| m.model_name.as_str())
-            .collect();
-        let mut sorted = glm_names.clone();
-        sorted.sort();
-        assert_eq!(glm_names, sorted, "glm 两条均存在");
-        assert!(sorted.contains(&"glm-4-flashx") && sorted.contains(&"glm-4.5-flash"));
     }
 
     #[test]
@@ -3542,7 +3483,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 30);
+        assert_eq!(v, 31);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))

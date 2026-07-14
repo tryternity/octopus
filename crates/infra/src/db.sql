@@ -45,43 +45,8 @@ VALUES
     ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
     ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1);
 
--- ── 云端 ASR（is_local=0，走「系统设置」填 key + 连接测试，不在模型管理页）──
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
-VALUES
-    -- 火山引擎豆包大模型 ASR（bigmodel_async 双向流式优化版）
-    -- endpoint 固定 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
-    -- source = X-Api-Resource-Id；secret_key = X-Api-Key（火山引擎控制台申请）
-    ('asr','bytedance','Doubao-ASR','doubao-asr-1.0-streaming','volc.bigasr.sauc.duration','zh','火山引擎豆包大模型 ASR 1.0（bigmodel_async，时长计费，key 填 secret_key）',0,0,1),
-    ('asr','bytedance','Doubao-ASR-2.0','doubao-asr-2.0-streaming','volc.seedasr.sauc.duration','zh','火山引擎豆包大模型 ASR 2.0（bigmodel_async，时长计费，key 填 secret_key）',0,0,0),
-    -- 腾讯云实时语音识别（WebSocket HMAC-SHA1 签名鉴权）
-    -- endpoint 固定 wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}
-    -- source = appid:secretid 复合字段；secret_key = SecretKey（签名密钥）
-    -- model_name = engine_model_type（如 16k_zh / 16k_zh_en）
-    ('asr','tencent','Tencent-ASR','16k_zh','{appid}:{secretid}','zh','腾讯云实时语音识别（16k 中文通用，source 填 appid:secretid，key 填 SecretKey）',0,0,1),
-    ('asr','tencent','Tencent-ASR-Multi','16k_zh_en','{appid}:{secretid}','zh','腾讯云实时语音识别大模型（16k 普方英+31 方言，source 填 appid:secretid，key 填 SecretKey）',0,0,0),
-    -- 百度智能云实时语音识别（WebSocket START 帧鉴权）
-    -- endpoint 固定 wss://vop.baidu.com/realtime_asr?sn=<UUID>
-    -- source = AppID；secret_key = API Key（appkey）；model_name = dev_pid（如 15372）
-    ('asr','baidu','Baidu-ASR','15372','{appid}','zh','百度智能云实时语音识别（中文加强标点 dev_pid=15372，source 填 AppID，key 填 API Key）',0,0,1),
-    -- 阿里云 DashScope 实时 ASR（cloud WS，secret_key 填 DashScope API Key）
-    -- Fun-ASR / Paraformer 共用 /api-ws/v1/inference 端点（run-task 协议）
-    -- Qwen-ASR 用 /api-ws/v1/realtime 端点（OpenAI Realtime 风格协议）
-    -- is_streaming=0：cloud 引擎在 dashscope feature 下由 is_cloud_engine 路由到 CloudStreaming，
-    --   is_streaming 仅影响无 dashscope feature 时的本地 fallback 路径（VadSegmented→transcribe）
-    ('asr','aliyun','Fun-ASR','fun-asr-realtime','wss://dashscope.aliyuncs.com/api-ws/v1/inference','auto','阿里云百炼 FunASR 实时（run-task 协议，DashScope key 填 secret_key）',0,0,0),
-    ('asr','aliyun','Paraformer-Realtime','paraformer-realtime-v2','wss://dashscope.aliyuncs.com/api-ws/v1/inference','zh','阿里云百炼 Paraformer 实时 v2（run-task 协议，带时间戳）',0,0,0),
-    ('asr','aliyun','Qwen-ASR','qwen3-asr-flash-realtime','wss://dashscope.aliyuncs.com/api-ws/v1/realtime','auto','阿里云百炼 Qwen3-ASR-Flash Realtime（OpenAI Realtime 协议，base64 PCM）',0,0,1);
-
--- LLM 润色模型（原 category=vendor 迁移到 provider；category=模型系列）
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
-VALUES
-    ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','DeepSeek V4 Flash（思考模型，需关闭 thinking）',1,0,0),
-    ('llm','aliyun','deepseek','deepseek-v4-flash','https://dashscope.aliyuncs.com/compatible-mode/v1','DeepSeek V4 Flash 经 DashScope（思考模型）',1,0,0),
-    ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','GLM-4 FlashX（非思考）',0,0,0),
-    ('llm','bigmodel','glm','glm-4.5-flash','https://open.bigmodel.cn/api/paas/v4','GLM-4.5 Flash（思考模型，需关闭 thinking）',1,0,0),
-    -- Feature 1：阿里云 Qwen 原生（DashScope OpenAI 兼容端点）
-    ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Plus（非思考）',0,0,0),
-    ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
+-- ── 云端模型（is_local=0）不再 seed，由用户自行添加 ──
+-- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。
 
 -- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
 -- source = 路径标识 ocr/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
@@ -268,6 +233,23 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
     ('huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),
     ('modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),
     ('github',      'https://github.com',     'GitHub 下载地址',         'env');
+
+-- ── 云端模型参考列表 ──────────────────────────────────────────
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+    ('aliyun:Fun-ASR', 'fun-asr-realtime;fun-asr-realtime-2026-02-28;fun-asr-realtime-2025-11-07;fun-asr-flash-8k-realtime;fun-asr-flash-8k-realtime-2026-01-28', '阿里云 FunASR 实时模型列表', 'asr_cloud_model'),
+    ('aliyun:Paraformer', 'paraformer-realtime-v1;paraformer-realtime-v2;paraformer-realtime-8k-v1;paraformer-realtime-8k-v2', '阿里云 Paraformer 实时模型列表', 'asr_cloud_model'),
+    ('aliyun:Qwen-ASR', 'qwen3-asr-flash-realtime;qwen3-asr-flash-realtime-2026-02-10;qwen3-asr-flash-realtime-2025-10-27', '阿里云 Qwen3-ASR Realtime 模型列表', 'asr_cloud_model'),
+    ('bytedance:Doubao-ASR', 'doubao-asr-1.0-streaming', '火山引擎豆包 ASR 1.0', 'asr_cloud_model'),
+    ('bytedance:Doubao-ASR-2.0', 'doubao-asr-2.0-streaming;seedasr-2.0-streaming', '火山引擎豆包 ASR 2.0', 'asr_cloud_model'),
+    ('tencent:Tencent-ASR', '16k_zh;16k_zh_large;16k_zh-PY;16k_zh-TW;16k_yue;16k_zh_dialect;16k_wuu-SH', '腾讯云实时语音识别中文引擎', 'asr_cloud_model'),
+    ('tencent:Tencent-ASR-Multi', '16k_zh_en;16k_multi_lang;16k_en;16k_en_large', '腾讯云实时语音识别多语种引擎', 'asr_cloud_model'),
+    ('baidu:Baidu-ASR', '15372;15376;1537', '百度实时语音识别中文模型（dev_pid）', 'asr_cloud_model'),
+    ('baidu:Baidu-ASR-EN', '17372;1737', '百度实时语音识别英文模型（dev_pid）', 'asr_cloud_model'),
+    ('deepseek', 'https://api.deepseek.com/', 'DeepSeek API', 'llm_provider'),
+    ('aliyun', 'https://dashscope.aliyuncs.com/compatible-mode/v1', '阿里云 DashScope', 'llm_provider'),
+    ('bigmodel', 'https://open.bigmodel.cn/api/paas/v4', '智谱 BigModel', 'llm_provider'),
+    ('openai', 'https://api.openai.com/v1', 'OpenAI', 'llm_provider'),
+    ('ollama', 'http://localhost:11434/v1', 'Ollama 本地', 'llm_provider');
 
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。

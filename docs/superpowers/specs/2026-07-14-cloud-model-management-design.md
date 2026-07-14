@@ -1,0 +1,198 @@
+# 云端模型新增/编辑/删除 设计
+
+> 2026-07-14 · 云端模型（LLM 润色 + ASR）用户自管理
+
+## 1. 背景
+
+现有云端模型（`domain='asr' AND is_local=0`、`domain='llm'`）全部在 DB seed 中预定义。用户无法自行添加新 provider/模型、无法编辑 api_key 之外的配置、无法删除不需要的模型。
+
+本设计：移除所有云端模型 seed，改为用户自行添加。通过 `app_config` 表存储各 provider 的参考模型列表，帮助用户正确配置。
+
+## 2. 设计概要
+
+### 2.1 移除 seed 云端模型
+
+DB v31 迁移：
+```sql
+DELETE FROM models WHERE domain='asr' AND is_local=0;
+DELETE FROM models WHERE domain='llm';
+```
+
+db.sql 中删除所有云端 ASR INSERT 和 LLM INSERT（只保留 local 模型 seed）。
+
+### 2.2 参考模型列表存 app_config
+
+`category='asr_cloud_model'`，`config_key='{provider}:{category}'`，`config_value` = 分号分隔的参考模型名列表：
+
+```sql
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+('aliyun:Fun-ASR', 'fun-asr-realtime;fun-asr-realtime-2026-02-28;fun-asr-realtime-2025-11-07;fun-asr-flash-8k-realtime;fun-asr-flash-8k-realtime-2026-01-28', '阿里云 FunASR 实时模型列表', 'asr_cloud_model'),
+('aliyun:Paraformer', 'paraformer-realtime-v1;paraformer-realtime-v2;paraformer-realtime-8k-v1;paraformer-realtime-8k-v2', '阿里云 Paraformer 实时模型列表', 'asr_cloud_model'),
+('aliyun:Qwen-ASR', 'qwen3-asr-flash-realtime;qwen3-asr-flash-realtime-2026-02-10;qwen3-asr-flash-realtime-2025-10-27', '阿里云 Qwen3-ASR Realtime 模型列表', 'asr_cloud_model'),
+('bytedance:Doubao-ASR', 'doubao-asr-1.0-streaming', '火山引擎豆包 ASR 1.0（bigmodel_async，Resource ID=volc.bigasr.sauc.duration）', 'asr_cloud_model'),
+('bytedance:Doubao-ASR-2.0', 'doubao-asr-2.0-streaming;seedasr-2.0-streaming', '火山引擎豆包 ASR 2.0（bigmodel_async，Resource ID=volc.seedasr.sauc.duration）', 'asr_cloud_model'),
+('tencent:Tencent-ASR', '16k_zh;16k_zh_large;16k_zh-PY;16k_zh-TW;16k_yue;16k_zh_dialect;16k_wuu-SH', '腾讯云实时语音识别中文引擎列表', 'asr_cloud_model'),
+('tencent:Tencent-ASR-Multi', '16k_zh_en;16k_multi_lang;16k_en;16k_en_large', '腾讯云实时语音识别多语种引擎列表', 'asr_cloud_model'),
+('baidu:Baidu-ASR', '15372;15376;1537', '百度智能云实时语音识别中文模型（dev_pid）', 'asr_cloud_model'),
+('baidu:Baidu-ASR-EN', '17372;1737', '百度智能云实时语音识别英文模型（dev_pid）', 'asr_cloud_model');
+```
+
+### 2.3 各 provider 固定配置
+
+每个 ASR provider 有固定的 source 端点和 source 字段语义，用户选 provider + category 后自动填入，不可改：
+
+| provider | category | source（自动填） | secret_key 语义 | model_name 用途 |
+|----------|----------|-----------------|----------------|----------------|
+| aliyun | Fun-ASR / Paraformer | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | DashScope API Key | model 参数 |
+| aliyun | Qwen-ASR | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | DashScope API Key | model 参数 |
+| bytedance | Doubao-ASR | `volc.bigasr.sauc.duration` | X-Api-Key | 不用（硬编码 bigmodel） |
+| bytedance | Doubao-ASR-2.0 | `volc.seedasr.sauc.duration` | X-Api-Key | 不用 |
+| tencent | Tencent-ASR / Tencent-ASR-Multi | `{appid}:{secretid}` | SecretKey（签名密钥） | engine_model_type |
+| baidu | Baidu-ASR / Baidu-ASR-EN | `{appid}` | API Key（appkey） | dev_pid |
+
+### 2.4 LLM provider 预设
+
+`category='llm_provider'`，存 base_url 模板：
+
+```sql
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+('deepseek', 'https://api.deepseek.com/', 'DeepSeek API', 'llm_provider'),
+('aliyun', 'https://dashscope.aliyuncs.com/compatible-mode/v1', '阿里云 DashScope OpenAI 兼容端点', 'llm_provider'),
+('bigmodel', 'https://open.bigmodel.cn/api/paas/v4', '智谱 BigModel API', 'llm_provider'),
+('openai', 'https://api.openai.com/v1', 'OpenAI API', 'llm_provider'),
+('ollama', 'http://localhost:11434/v1', 'Ollama 本地 API', 'llm_provider');
+```
+
+## 3. 用户操作流程
+
+### 3.1 LLM 模型新增
+
+1. 点「添加模型」按钮
+2. 表单：
+   - provider：下拉（deepseek / aliyun / bigmodel / openai / ollama / 自定义）
+   - 选预设 → base_url 自动填（从 `llm_provider` 配置读）
+   - model_name：手填（如 `deepseek-chat`、`gpt-4o`）
+   - api_key：密码框
+   - is_stream：默认 true
+   - is_thinking：默认 false
+3. 保存：INSERT 到 `models` 表
+
+### 3.2 ASR 模型新增
+
+1. 点「添加模型」按钮
+2. 表单：
+   - provider：下拉（aliyun / bytedance / tencent / baidu）
+   - category：下拉（选 provider 后过滤——aliyun 3 种 / bytedance 2 种 / tencent 2 种 / baidu 2 种）
+   - source：自动填（provider+category 固定端点），不可改
+   - model_name：下拉（从 `asr_cloud_model` 配置读参考列表）+ 自由输入
+   - api_key：密码框（label 按 provider 变化：API Key / SecretKey / AppKey）
+3. 保存：INSERT 到 `models` 表
+
+### 3.3 编辑
+
+全部字段可编辑（provider / category / source / model_name / api_key / is_stream / is_thinking）。
+
+### 3.4 删除
+
+从 `models` 表物理删除。
+
+## 4. DB 操作
+
+新增函数：
+
+```rust
+/// 新增云端模型。
+pub fn insert_cloud_model(
+    domain: &str, provider: &str, category: &str,
+    model_name: &str, source: &str, secret_key: &str,
+    is_streaming: bool, is_thinking: bool,
+) -> Result<i64>
+
+/// 更新云端模型（按 id）。
+pub fn update_cloud_model(
+    id: i64, provider: &str, category: &str,
+    model_name: &str, source: &str, secret_key: &str,
+    is_streaming: bool, is_thinking: bool,
+) -> Result<()>
+
+/// 删除云端模型（物理删除）。
+pub fn delete_cloud_model(id: i64) -> Result<()>
+
+/// 读取 app_config 中 category='asr_cloud_model' 的全部参考模型列表。
+pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>>
+// 返回 (provider, category, "model1;model2;model3")
+
+/// 读取 app_config 中 category='llm_provider' 的预设 base_url。
+pub fn list_llm_provider_presets() -> Result<Vec<(String, String)>>
+// 返回 (provider, base_url)
+```
+
+## 5. 各 provider 适配状态
+
+现有代码已适配的接口协议：
+
+| provider | 协议 | 端点切换 | model_name 影响 |
+|----------|------|:--------:|----------------|
+| aliyun | run-task + OpenAI Realtime | source 切端点 | 传给 API 作 model 参数 |
+| bytedance | bigmodel_async | source 切 Resource ID | 不用（硬编码） |
+| tencent | HMAC-SHA1 签名 WS | source 固定 | engine_model_type 参数 |
+| baidu | START/STOP JSON 帧 | source 固定 | dev_pid 参数 |
+
+**结论：现有代码不需要额外适配。** 用户选对 source + model_name 即可。
+
+## 6. 前端
+
+### 6.1 LLM Tab（LlmTab.tsx）
+
+云端 section 顶部加「+ 添加模型」按钮。点击弹出表单弹窗（或 inline 表单）：
+- provider select → base_url 自动填
+- model_name input
+- api_key password input
+- is_stream / is_thinking checkbox
+- 保存 / 取消
+
+每个云端模型行加「编辑」「删除」按钮（ModelRow 扩展，或独立 CloudModelRow）。
+
+### 6.2 ASR Tab（AsrTab.tsx）
+
+云端 section 顶部加「+ 添加模型」按钮。点击弹出表单：
+- provider select → category select（按 provider 过滤）
+- source 自动显示（只读）
+- model_name datalist（参考项 + 自由输入）
+- api_key input（label 按 provider 变化）
+- 保存 / 取消
+
+### 6.3 组件复用
+
+新增 `CloudModelForm.tsx` 组件（Modal 弹窗），含 provider/category/model_name/api_key/source 字段，按 domain（asr/llm）渲染不同字段组合。
+
+## 7. Tauri 命令
+
+```rust
+#[tauri::command]
+pub fn insert_cloud_model(...) -> Result<i64, String>
+
+#[tauri::command]
+pub fn update_cloud_model(...) -> Result<(), String>
+
+#[tauri::command]
+pub fn delete_cloud_model(id: i64) -> Result<(), String>
+
+#[tauri::command]
+pub fn list_asr_cloud_presets() -> Result<Vec<AsrCloudPreset>, String>
+
+#[tauri::command]
+pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String>
+```
+
+## 8. 不变量
+
+1. **本地模型 seed 不变**：只删云端模型 seed，本地 ASR/翻译/OCR seed 保持不动
+2. **app_config 参考列表可远程更新**：以后可通过更新 app_config 表远程推送新模型参考列表
+3. **删除后如果当前激活的模型被删**：回退到兜底引擎（ASR）或空（LLM）
+4. **source 字段语义不变**：ASR source = 端点/Resource ID/appid，LLM source = base_url
+
+## 9. 降级
+
+- app_config 中无参考列表 → model_name 变纯手填输入（无参考项）
+- 用户填错 source/model_name → 连接失败时显示明确错误（已有错误处理）
