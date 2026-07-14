@@ -87,6 +87,8 @@ pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
 mod ffi;
 #[cfg(target_os = "macos")]
 mod macos_ax;
+#[cfg(target_os = "macos")]
+mod sublime_plugin;
 #[cfg(target_os = "windows")]
 mod windows_uia;
 // linux_atspi.rs 暂不编译——AT-SPI2 需事件流，见文件注释
@@ -109,7 +111,9 @@ pub fn classify_app(id: &str) -> AppKind {
         "com.microsoft.word" | "com.apple.textedit"
         | "com.sublimetext.4" | "com.sublimetext.3"
         | "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92"
-        | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
+        | "com.github.atom" | "com.kingsoft.wpsoffice.mac"
+        | "com.apple.iwork.pages" | "com.apple.iwork.keynote"
+        | "com.apple.iwork.numbers" => AppKind::Editor,
         #[cfg(target_os = "windows")]
         "notepad.exe" | "winword.exe" | "excel.exe" | "powerpnt.exe"
         | "code.exe" | "sublime_text.exe" | "wps.exe" | "notepad++.exe" => AppKind::Editor,
@@ -118,7 +122,8 @@ pub fn classify_app(id: &str) -> AppKind {
         | "vim" | "gvim" | "emacs" | "wps" => AppKind::Editor,
         // ── Browser ──
         "com.apple.safari" | "com.google.chrome"
-        | "org.mozilla.firefox" | "com.microsoft.edgemac" => AppKind::Browser,
+        | "org.mozilla.firefox" | "org.mozilla.firefoxdeveloperedition"
+        | "org.mozilla.firefox.nightly" | "com.microsoft.edgemac" => AppKind::Browser,
         #[cfg(target_os = "windows")]
         "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
         #[cfg(target_os = "linux")]

@@ -21,6 +21,9 @@ tauri-plugin-opener = "2"
 # octopus-asr-local (embedded engine)
 octopus-asr-local = { path = "../asr-local", optional = true }
 
+# Unicode normalization（兼容字符归一化，如 WPS 康熙部首）
+unicode-normalization.workspace = true
+
 # OCR
 octopus-ocr = { path = "../ocr" }
 # Screenshot

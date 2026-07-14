@@ -49,11 +49,12 @@ impl super::ContextProvider for AxProvider {
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
         let deadline = Instant::now() + AX_TIMEOUT;
+        let bid = bundle_id.as_deref().unwrap_or("");
         let (surrounding, diagnostics) = if Instant::now() < deadline {
             // Browser 优先用 AppleScript execute javascript（直接读 DOM，比 AX 准确）
             if kind == AppKind::Browser {
                 if let Some(result) = gather_browser_via_applescript(
-                    bundle_id.as_deref().unwrap_or(""),
+                    bid,
                     selected_text,
                     deadline,
                 ) {
@@ -61,7 +62,7 @@ impl super::ContextProvider for AxProvider {
                 } else {
                     // AppleScript JS 失败（可能未开启 Allow JavaScript from Apple Events），fallback 到 AX
                     let mut diag_prefix = "browser AppleScript JS 失败，fallback 到 AX\n".to_string();
-                    match gather_surrounding(pid, kind, selected_text, deadline) {
+                    match gather_surrounding(pid, kind, selected_text, deadline, bid) {
                         Ok((s, diag)) => {
                             let full_diag = match diag {
                                 Some(d) => format!("{}{}", diag_prefix, d),
@@ -76,7 +77,7 @@ impl super::ContextProvider for AxProvider {
                     }
                 }
             } else {
-                match gather_surrounding(pid, kind, selected_text, deadline) {
+                match gather_surrounding(pid, kind, selected_text, deadline, bid) {
                     Ok((s, diag)) => (Some(s), diag),
                     Err(e) => {
                         log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
@@ -153,11 +154,14 @@ fn gather_browser_via_applescript(
     // JS 源码写入临时文件——用传入的 selected_text 在 DOM 中搜索定位，
     // 不依赖 window.getSelection()（execute javascript 时选区可能已清空）。
     // 转义 selected_text 中的反斜杠和双引号，防止注入。
+    // 另转义 U+2028/U+2029（JS 字符串字面量中的换行符）。
     let escaped = selected_text
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
-        .replace('\r', "\\r");
+        .replace('\r', "\\r")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     let js_source = format!(
         r#"(function(){{
   var sel="{escaped}";
@@ -370,8 +374,785 @@ end tell"#,
     ))
 }
 
+/// 判断路径的 file_name 部分是否精确匹配 filename（大小写敏感）。
+fn path_matches_filename(path: &str, filename: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().as_ref() == filename)
+        .unwrap_or(false)
+}
+
+/// 读文件内容为纯文本。支持纯文本、Office 格式（.docx/.xlsx/.pptx）和 PDF。
+/// Office 格式优先用 officecli（如果安装了），否则 fallback 到内置 zip+XML 解析。
+fn read_file_as_text(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_string_lossy().to_lowercase();
+
+    match ext.as_str() {
+        "pdf" => read_pdf_text(path),
+        "pages" => read_pages_text(path),
+        "docx" | "pptx" | "xlsx" => {
+            // 优先用 officecli（更健壮，处理修订/批注/公式/图表）
+            if let Some(text) = try_officecli_text(path) {
+                return Some(text);
+            }
+            // Fallback 到内置 zip+XML 解析
+            match ext.as_str() {
+                "xlsx" => read_xlsx_text(path),
+                _ => read_ooxml_text(path, &ext),
+            }
+        }
+        _ => {
+            // 纯文本格式：直接读取（可能非 UTF-8，用 lossy 转换）
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.is_empty() {
+                return None;
+            }
+            // 检查是否为 zip（二进制 Office 文件误存为 .txt）
+            if bytes.starts_with(b"PK\x03\x04") {
+                return read_ooxml_text(path, "docx");
+            }
+            Some(String::from_utf8_lossy(&bytes).to_string())
+        }
+    }
+}
+
+/// 尝试用 officecli 提取 Office 文档文本。
+/// officecli 是单二进制工具（iOfficeAI/OfficeCLI），支持 .docx/.xlsx/.pptx。
+/// 输出格式 `[/path] text`，去掉路径标签后是纯文本。
+fn try_officecli_text(path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("officecli")
+        .arg("view")
+        .arg(path)
+        .arg("text")
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    // 去掉每行的 [/path] 前缀
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let cleaned: String = raw
+        .lines()
+        .map(|line| {
+            // 去掉 [/body/...] 路径前缀
+            if let Some(idx) = line.find("] ") {
+                &line[idx + 2..]
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    if cleaned.trim().is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// 从 .pages 文件提取文本。.pages 是 iWork 格式（zip 内 Protobuf iwa），
+/// 不是 OOXML。从 Document.iwa 中提取明文 UTF-8 片段（Protobuf 的 string 字段）。
+fn read_pages_text(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    // 查找 Index/Document.iwa
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).ok()?;
+        if file.name() != "Index/Document.iwa" {
+            continue;
+        }
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut buf).ok()?;
+
+        // Protobuf 中 string 字段是 length-delimited（wire type 2）
+        // 提取连续的 UTF-8 可打印字符片段（>= 4 字符）
+        let mut fragments = Vec::new();
+        let mut current = Vec::new();
+        for &byte in &buf {
+            if byte >= 0x20 && byte != 0x7f || byte >= 0xc0 {
+                current.push(byte);
+            } else {
+                if current.len() >= 6 {
+                    if let Ok(s) = std::str::from_utf8(&current) {
+                        // 过滤掉明显的二进制噪音（含大量 ? 的串）
+                        let readable = s.chars().filter(|c| !c.is_control()).count();
+                        if readable >= 4 && !s.contains("​​") {
+                            fragments.push(s.to_string());
+                        }
+                    }
+                }
+                current.clear();
+            }
+        }
+
+        if !fragments.is_empty() {
+            return Some(fragments.join(" "));
+        }
+    }
+
+    None
+}
+
+/// 从 PDF 提取文本。优先用系统 pdftotext（poppler），没有则返回 None。
+fn read_pdf_text(path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("pdftotext")
+        .arg(path)
+        .arg("-") // stdout
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    // PDF 排版换行合并：pdftotext 按 PDF 布局断行，CJK 文本每 N 字换行。
+    // 选中文字可能跨行，精确搜索匹配不到。
+    // 合并策略：前一行末尾是 CJK 字符 → 合并到前一行（排版换行）。
+    let merged = merge_cjk_line_breaks(&raw);
+    Some(merged)
+}
+
+/// 合并 CJK 排版换行：前一行末尾是 CJK 字符 → 合并（非语义换行）。
+fn merge_cjk_line_breaks(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut merged: Vec<String> = Vec::new();
+
+    for line in lines {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            merged.push(String::new());
+            continue;
+        }
+        if let Some(last) = merged.last() {
+            let prev = last.trim_end();
+            if !prev.is_empty() {
+                let last_char = prev.chars().last();
+                // 前一行末尾是 CJK → 合并（排版换行，非语义换行）
+                if let Some(ch) = last_char {
+                    if (ch as u32) >= 0x2e80 {
+                        *merged.last_mut().unwrap() = format!("{}{}", prev, line.trim());
+                        continue;
+                    }
+                }
+            }
+        }
+        merged.push(line.to_string());
+    }
+
+    merged.join("\n")
+}
+
+/// 从 OOXML 格式（.docx/.pptx）中提取纯文本。
+/// .docx: word/document.xml 的 <w:t> 节点
+/// .pptx: ppt/slides/slideN.xml 的 <a:t> 节点
+fn read_ooxml_text(path: &std::path::Path, ext: &str) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    let mut texts = Vec::new();
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        let name = file.name().to_string();
+
+        let is_target = match ext {
+            "docx" => name == "word/document.xml",
+            "pptx" => name.starts_with("ppt/slides/slide") && name.ends_with(".xml"),
+            _ => false,
+        };
+
+        if !is_target {
+            continue;
+        }
+
+        let xml_content = std::io::read_to_string(file).ok()?;
+        let extracted = extract_text_from_ooxml_xml(&xml_content);
+        texts.push(extracted);
+    }
+
+    if texts.is_empty() {
+        return None;
+    }
+
+    Some(texts.join("\n\n"))
+}
+
+/// 从 .xlsx 中提取纯文本。遍历 sharedStrings.xml 和 sheetN.xml。
+fn read_xlsx_text(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    let mut shared_strings: Vec<String> = Vec::new();
+    let mut sheet_texts: Vec<String> = Vec::new();
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        let name = file.name().to_string();
+        let content = std::io::read_to_string(file).ok()?;
+
+        if name == "xl/sharedStrings.xml" {
+            // 共享字符串表
+            shared_strings = extract_xlsx_shared_strings(&content);
+        } else if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
+            // 工作表——提取 cell 值
+            sheet_texts.push(extract_xlsx_sheet_text(&content, &shared_strings).join("\t"));
+        }
+    }
+
+    if sheet_texts.is_empty() {
+        return None;
+    }
+
+    Some(sheet_texts.join("\n"))
+}
+
+/// 从 OOXML XML 中提取 <w:t> 或 <a:t> 文本节点。
+fn extract_text_from_ooxml_xml(xml: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_tag = false;
+    let mut tag_name = String::new();
+    let mut in_text = false;
+    let mut text_content = String::new();
+
+    for ch in xml.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                tag_name.clear();
+            }
+            '>' => {
+                in_tag = false;
+                let tag = tag_name.trim();
+                // <w:t> 或 <a:t>（含属性如 <w:t xml:space="preserve">）
+                if tag.starts_with("w:t") || tag.starts_with("a:t") {
+                    in_text = true;
+                } else if tag.starts_with("/w:t") || tag.starts_with("/a:t") {
+                    if !text_content.is_empty() {
+                        result.push(text_content.clone());
+                        text_content.clear();
+                    }
+                    in_text = false;
+                } else if tag == "w:p" || tag.starts_with("w:p ") || tag == "a:p" {
+                    // 段落结束 → 换行
+                    if !result.is_empty() && !result.last().unwrap().is_empty() {
+                        result.push("\n".to_string());
+                    }
+                }
+            }
+            _ if in_tag => tag_name.push(ch),
+            _ if in_text => text_content.push(ch),
+            _ => {}
+        }
+    }
+
+    result.join("")
+}
+
+/// 从 sharedStrings.xml 提取共享字符串列表。
+fn extract_xlsx_shared_strings(xml: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut in_tag = false;
+    let mut tag = String::new();
+    let mut collect = false;
+    let mut buf = String::new();
+
+    for ch in xml.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                tag.clear();
+            }
+            '>' => {
+                in_tag = false;
+                let t = tag.trim();
+                if t.starts_with("t") && !t.starts_with("/t") {
+                    collect = true;
+                    buf.clear();
+                } else if t.starts_with("/t") {
+                    if collect && !buf.is_empty() {
+                        strings.push(buf.clone());
+                    }
+                    collect = false;
+                }
+            }
+            _ if in_tag => tag.push(ch),
+            _ if collect => buf.push(ch),
+            _ => {}
+        }
+    }
+
+    strings
+}
+
+/// 从 sheetN.xml 提取单元格文本（引用 sharedStrings 或内联值）。
+fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
+    // 简化：提取 <c> 标签的 <v> 值和 t="s" 引用
+    // 用正则更简洁，但避免额外依赖
+    let mut texts = Vec::new();
+    let chars: Vec<char> = xml.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // 查找 <c 开头
+        if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] == 'c' {
+            // 提取属性直到 >
+            let mut attrs = String::new();
+            i += 2;
+            while i < chars.len() && chars[i] != '>' {
+                attrs.push(chars[i]);
+                i += 1;
+            }
+            // 检查是否 t="s"（共享字符串引用）
+            let is_shared = attrs.contains("t=\"s\"");
+            // 查找 <v> 值
+            i += 1;
+            if i < chars.len() && chars[i] == '<' {
+                let mut tag = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != '>' {
+                    tag.push(chars[i]);
+                    i += 1;
+                }
+                i += 1; // skip >
+                if tag.trim().starts_with("v") {
+                    let mut val = String::new();
+                    while i < chars.len() && chars[i] != '<' {
+                        val.push(chars[i]);
+                        i += 1;
+                    }
+                    if !val.is_empty() {
+                        if is_shared {
+                            if let Ok(idx) = val.parse::<usize>() {
+                                if idx < shared.len() {
+                                    texts.push(shared[idx].clone());
+                                }
+                            }
+                        } else {
+                            texts.push(val);
+                        }
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    texts
+}
+
+/// Pages/Keynote AppleScript 文本提取。
+/// `body text of document 1` 返回当前文档全文。
+fn try_pages_applescript(selected_text: &str, window_title: &Option<String>) -> Option<SurroundingText> {
+    use std::process::Command;
+
+    let script = r#"tell application "Pages"
+    set d to document 1
+    return body text of d
+end tell"#;
+
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    let full_text = String::from_utf8_lossy(&output.stdout).to_string();
+    log::info!("[app-context] Pages AppleScript: {} chars", full_text.chars().count());
+
+    let result = slice_around_text(&full_text, selected_text, 1000)?;
+
+    Some(SurroundingText {
+        before: result.0,
+        after: result.1,
+        window_title: window_title.clone(),
+    })
+}
+
+/// 从 bundle_id 推断进程名（用于 lsof -c 匹配）。
+fn bundle_id_to_procname(bundle_id: &str) -> String {
+    let id = bundle_id.to_ascii_lowercase();
+    if id.contains("kingsoft") {
+        "wpsoffice".to_string()
+    } else if id.contains("iwork.pages") {
+        "Pages".to_string()
+    } else if id.contains("iwork.keynote") {
+        "Keynote".to_string()
+    } else if id.contains("iwork.numbers") {
+        "Numbers".to_string()
+    } else if id.contains("sublimetext") {
+        "Sublime".to_string()
+    } else {
+        // 通用：取 bundle_id 最后一段
+        bundle_id
+            .split('.')
+            .last()
+            .unwrap_or(bundle_id)
+            .to_string()
+    }
+}
+
+/// 从 lsof -F n 输出中筛选文档文件路径（纯函数，可单测）。
+///
+/// 过滤规则：
+/// - 只保留 `n` 前缀行（lsof -F n 格式）
+/// - 排除 /dev/ 设备文件
+/// - 排除 .~ 临时锁文件
+/// - 只保留 .docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt 扩展名
+fn filter_lsof_doc_files(lsof_output: &str) -> Vec<String> {
+    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt", "pages"];
+    lsof_output
+        .lines()
+        .filter(|l| l.starts_with('n'))
+        .map(|l| &l[1..])
+        .filter(|path| {
+            !path.starts_with("/dev/") && !path.contains("/.~") && !path.contains(".~")
+        })
+        .filter(|path| {
+            std::path::Path::new(path)
+                .extension()
+                .map(|ext| {
+                    let ext = ext.to_string_lossy().to_lowercase();
+                    doc_exts.contains(&ext.as_str())
+                })
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 通过 lsof 获取进程打开的文件路径，读取内容并匹配选中文本。
+///
+/// 当 AX 树不含真实编辑器内容且窗口标题不可靠时（WPS/Pages 等），
+/// lsof 可以列出进程当前打开的文档文件。
+/// 进程名从 bundle_id 推断。
+fn try_lsof_context(selected_text: &str, bundle_id: &str) -> Option<SurroundingText> {
+    // 从 bundle_id 推断进程名
+    let proc_name = bundle_id_to_procname(bundle_id);
+
+    // 1. lsof 获取进程打开的文件
+    let output = std::process::Command::new("lsof")
+        .args(["-c", &proc_name, "-F", "n"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // 2. 筛选文档文件
+    let candidates = filter_lsof_doc_files(&stdout);
+
+    log::info!("[app-context] lsof ({}): {} 个候选文件", proc_name, candidates.len());
+
+    // 3. 逐个尝试读取 + 匹配选中文本
+    for file_path in &candidates {
+        let path = std::path::Path::new(file_path);
+        let content = match read_file_as_text(path) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        if let Some(result) = slice_around_text(&content, selected_text, 1000) {
+            let window_title = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string());
+            log::info!("[app-context] lsof 命中: {}", file_path);
+            return Some(SurroundingText {
+                before: result.0,
+                after: result.1,
+                window_title,
+            });
+        }
+    }
+
+    None
+}
+
+/// 自绘编辑器 fallback：从磁盘读文件内容获取上下文。
+///
+/// 当 AX 树不含真实编辑器内容时（Sublime Text、WPS），尝试：
+/// 1. 从窗口标题提取文件名
+/// 2. 用 App 的 session 文件查找完整路径（Sublime）或直接搜索
+/// 3. 读文件内容，用 selected_text 定位切 before/after
+///
+/// **限制**：仅对纯文本格式（.txt/.md/.rs/.py/.json 等）有效。
+/// Office 格式（.docx/.xlsx）是 zip 压缩二进制，read_to_string 会失败。
+/// WPS 用户编辑 .txt/.md 时可受益，编辑 .docx 时 fallback 无效。
+fn try_read_file_context(
+    window_title: &str,
+    bundle_id: &str,
+    selected_text: &str,
+) -> Option<SurroundingText> {
+    // 1. 从标题提取文件名
+    let filename = extract_filename_from_title(window_title)?;
+    log::info!(
+        "[app-context] 磁盘 fallback: 标题='{}' → 文件名='{}'",
+        window_title,
+        filename
+    );
+
+    // 2. 查找文件完整路径
+    let file_path = find_file_path(&filename, bundle_id)?;
+    log::info!("[app-context] 磁盘 fallback: 找到文件 {}", file_path.display());
+
+    // 3. 读文件内容——支持纯文本和 Office 格式（.docx/.xlsx/.pptx）
+    let content = read_file_as_text(&file_path)?;
+    if content.is_empty() {
+        return None;
+    }
+
+    // 4. 用 selected_text 定位
+    let result = slice_around_text(&content, selected_text, 1000)?;
+    Some(SurroundingText {
+        before: result.0,
+        after: result.1,
+        window_title: Some(window_title.to_string()),
+    })
+}
+
+/// 在全文中搜索 selected_text，返回 (before, after) 各截断到 limit 字。
+/// 尝试精确匹配 → 忽略大小写匹配 → 兼容字符归一化匹配。
+fn slice_around_text(
+    full_text: &str,
+    selected_text: &str,
+    limit: usize,
+) -> Option<(Option<String>, Option<String>)> {
+    let sel = selected_text.trim();
+    if sel.is_empty() || full_text.is_empty() {
+        return None;
+    }
+
+    // find 返回 byte offset，转 char offset 以正确处理多字节字符
+    let full_chars: Vec<char> = full_text.chars().collect();
+
+    // 尝试 1：精确匹配
+    if let Some(pos_bytes) = full_text.find(sel) {
+        return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+    }
+
+    // 尝试 2：忽略大小写匹配
+    let sel_lower = sel.to_lowercase();
+    if let Some(pos_bytes) = full_text.to_lowercase().find(&sel_lower) {
+        return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+    }
+
+    // 尝试 3：NFKC 归一化匹配
+    // WPS Cmd+C 可能产生康熙部首（U+2Exx）或全角标点（U+FFxx），
+    // 而 pdftotext/officecli 提取的是正常 Unicode → 精确匹配失败。
+    use unicode_normalization::UnicodeNormalization;
+
+    let normalize_nfkc = |s: &str| -> String {
+        s.nfkc()
+            .filter(|c| {
+                let cp = *c as u32;
+                (0x4E00..=0x9FFF).contains(&cp) || c.is_ascii_alphanumeric()
+            })
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+
+    let sel_norm = normalize_nfkc(sel);
+    if sel_norm.len() >= 5 {
+        // 构建归一化映射表：一次遍历，记录每个归一化字符对应的原文 byte offset
+        let mut full_norm = String::new();
+        let mut norm_to_byte: Vec<usize> = Vec::new(); // norm char index → original byte offset
+
+        let mut byte_pos = 0usize;
+        for orig_char in full_text.chars() {
+            let char_bytes = orig_char.len_utf8();
+            // NFKC 归一化单个字符（兼容字符可能展开为多字符，如全角→半角）
+            let nfkc_str: String = orig_char.nfkc().collect();
+            for nc in nfkc_str.chars() {
+                let cp = nc as u32;
+                if (0x4E00..=0x9FFF).contains(&cp) || nc.is_ascii_alphanumeric() {
+                    full_norm.push(nc.to_ascii_lowercase());
+                    norm_to_byte.push(byte_pos);
+                }
+            }
+            byte_pos += char_bytes;
+        }
+
+        if let Some(pos) = full_norm.find(&sel_norm) {
+            let char_index = full_norm[..pos].chars().count();
+            if char_index < norm_to_byte.len() {
+                let pos_bytes = norm_to_byte[char_index];
+                return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+            }
+        }
+    }
+
+    None
+}
+
+/// 按 byte offset 在 char 数组中切片 before/after。
+fn char_level_slice(
+    full_chars: &[char],
+    pos_bytes: usize,
+    sel: &str,
+    full_text: &str,
+    limit: usize,
+) -> (Option<String>, Option<String>) {
+    let pos_chars = full_text[..pos_bytes].chars().count();
+    let sel_chars = sel.chars().count();
+
+    let before = if pos_chars > 0 {
+        let start = pos_chars.saturating_sub(limit);
+        Some(full_chars[start..pos_chars].iter().collect())
+    } else {
+        None
+    };
+    let end = pos_chars + sel_chars;
+    let after = if end < full_chars.len() {
+        let after_end = (end + limit).min(full_chars.len());
+        Some(full_chars[end..after_end].iter().collect())
+    } else {
+        None
+    };
+
+    (before, after)
+}
+
+/// 从窗口标题提取文件名。
+/// "test.txt — Sublime Text" → "test.txt"
+/// "report.docx - WPS Office" → "report.docx"
+/// "untitled — Sublime Text" → None（未保存文件）
+fn extract_filename_from_title(title: &str) -> Option<String> {
+    // 取 " — " 或 " - " 前面的部分（em dash 优先，hyphen 回退）
+    let name_part = if title.contains(" — ") {
+        title.split(" — ").next()?
+    } else if title.contains(" - ") {
+        title.split(" - ").next()?
+    } else {
+        title
+    };
+    let name_part = name_part.trim();
+
+    if name_part.is_empty() || name_part == "untitled" || name_result_is_app_name(name_part) {
+        return None;
+    }
+
+    // 确保看起来像文件名（含扩展名或路径分隔符）
+    if name_part.contains('.') || name_part.contains('/') {
+        Some(name_part.to_string())
+    } else {
+        None
+    }
+}
+
+/// 判断标题前半段是否是 App 名（误匹配防护）。
+fn name_result_is_app_name(s: &str) -> bool {
+    matches!(
+        s.to_lowercase().as_str(),
+        "sublime text" | "wps office" | "code" | "finder" | "terminal" | "safari"
+    )
+}
+
+/// 查找文件的完整路径。
+/// 先查 Sublime session，再查 mdfind（Spotlight）。
+fn find_file_path(filename: &str, bundle_id: &str) -> Option<std::path::PathBuf> {
+    // Sublime session 查找
+    if bundle_id.contains("sublimetext") {
+        if let Some(path) = find_in_sublime_session(filename) {
+            return Some(path);
+        }
+    }
+
+    // Spotlight fallback（文件名精确匹配）。
+    // 无超时保护——mdfind 通常 <100ms，且整个 gather 在后台线程执行不阻塞 UI。
+    // 误读同名文件的内容兜底：slice_around_text 的 find() 在误读文件中大概率
+    // 不含 selected_text → 返回 None → 自动降级为空 surrounding。
+    let output = std::process::Command::new("mdfind")
+        .args(["-name", filename])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 取第一个匹配
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            // 文件名精确匹配（mdfind -name 可能返回子串匹配）
+            std::path::Path::new(l)
+                .file_name()
+                .map(|n| n.to_string_lossy().as_ref() == filename)
+                .unwrap_or(false)
+        })
+        .next()
+        .map(std::path::PathBuf::from)
+}
+
+/// 从 Sublime Text session 文件中查找文件路径。
+fn find_in_sublime_session(filename: &str) -> Option<std::path::PathBuf> {
+    // Sublime Text 3/4 的 session 路径
+    let home = dirs::home_dir()?;
+    let candidates = [
+        home.join("Library/Application Support/Sublime Text/Local/Session.sublime_session"),
+        home.join("Library/Application Support/Sublime Text 3/Local/Session.sublime_session"),
+    ];
+
+    for session_path in &candidates {
+        let content = match std::fs::read_to_string(session_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(path) = find_file_in_session_json(&json, filename) {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+/// 在 Sublime session JSON 中查找文件路径（纯函数，可单测）。
+/// 遍历所有窗口的 file_history 和 buffers，用 file_name 精确匹配。
+fn find_file_in_session_json(
+    json: &serde_json::Value,
+    filename: &str,
+) -> Option<std::path::PathBuf> {
+    let windows = json["windows"].as_array()?;
+    for win in windows {
+        // file_history
+        if let Some(history) = win["file_history"].as_array() {
+            for item in history {
+                if let Some(path) = item.as_str() {
+                    if path_matches_filename(path, filename) {
+                        return Some(std::path::PathBuf::from(path));
+                    }
+                }
+            }
+        }
+        // buffers
+        if let Some(buffers) = win["buffers"].as_array() {
+            for buf in buffers {
+                if let Some(path) = buf["file"].as_str() {
+                    if !path.is_empty() && path_matches_filename(path, filename) {
+                        return Some(std::path::PathBuf::from(path));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
-fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: Instant) -> anyhow::Result<(SurroundingText, Option<String>)> {
+fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: Instant, bundle_id: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
         // 辅助功能权限诊断
         let trusted = AXIsProcessTrustedWithOptions(std::ptr::null());
@@ -399,7 +1180,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: In
         let result = match focused_result {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
-                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text, deadline);
+                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text, deadline, bundle_id);
                 CFRelease(focused_ref);
                 surrounding
             }
@@ -407,7 +1188,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: In
                 log::info!("[app-context] 无法获取焦点元素（含重试）: {}", e);
                 match find_text_element_with_selected(app_element, selected_text, deadline) {
                     Some(text_elem) => {
-                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text, deadline);
+                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text, deadline, bundle_id);
                         CFRelease(text_elem as CFTypeRef);
                         let mut result = surrounding?;
                         result.1 = Some(format!(
@@ -436,6 +1217,7 @@ unsafe fn build_surrounding(
     kind: AppKind,
     selected_text: &str,
     deadline: Instant,
+    bundle_id_or_name: &str,
 ) -> anyhow::Result<(SurroundingText, Option<String>)> {
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -499,18 +1281,86 @@ unsafe fn build_surrounding(
     }
 
     // ── 内容校验：AX 树可能不含真实编辑器文本 ──
-    // 自绘编辑器（Sublime Text、Vim GUI 等）的 AX 树只有静态文本
-    // （如试用版水印 "UNREGISTERED"），不包含编辑器实际内容。
-    // 判定：full_text 不包含选中文本 → AX 无真实内容 → 降级返回 None。
-    // Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域
-    // （光标行以下），此时 find-fail fallback 应取 scrollback 末尾作 before。
-    if kind != AppKind::Terminal && !full_text.is_empty() && !selected_text.is_empty() {
+    // 自绘编辑器（Sublime Text、WPS 等）的 AX 树不含真实编辑器内容：
+    // - Sublime: AX 树只有 "UNREGISTERED" 水印
+    // - WPS: AX 返回 -25212（禁用），full_text 为空
+    // Terminal 排除：full_text 是真实 scrollback。
+    if kind == AppKind::Editor && !selected_text.is_empty() {
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
-        if !full_trimmed.contains(selected_trimmed) {
-            diagnostics.push(format!(
-                "DEGRADED: full_text 不含选中文本，AX 树无真实内容（如 Sublime 自绘编辑器）"
-            ));
+        // full_text 为空 或 不含选中文本 → 触发 fallback
+        let need_fallback = full_trimmed.is_empty() || !full_trimmed.contains(selected_trimmed);
+
+        if need_fallback {
+            // WPS Office: AX 禁用 + 无 AppleScript + 无插件 API + 窗口标题通常为空。
+            // Sublime Text: 通过插件取数器（含未保存文件）。
+            // 通用 fallback：磁盘文件读取。
+            {
+                // Sublime Text 专用取数器
+                if bundle_id_or_name.contains("sublimetext") {
+                    if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
+                        bundle_id_or_name,
+                        selected_text,
+                    ) {
+                        diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] Sublime 插件取数成功");
+                        return Ok((sublime_ctx, diag));
+                    }
+                }
+
+                // Pages/Keynote 用 AppleScript 读全文（和 Chrome JS 同思路）
+                if bundle_id_or_name.to_ascii_lowercase().contains("iwork") {
+                    if let Some(ctx) = try_pages_applescript(selected_text, &window_title) {
+                        diagnostics.push("PAGES_APPLESCRIPT: AppleScript body text 取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] Pages AppleScript 取数成功");
+                        return Ok((ctx, diag));
+                    }
+                }
+
+                // 通用 lsof fallback：获取进程打开的文件路径（窗口标题常为空或不含文件名）
+                // 对 WPS/Pages 等窗口标题不可靠的 App 特别有效
+                if let Some(lsof_ctx) = try_lsof_context(selected_text, bundle_id_or_name) {
+                    diagnostics.push("LSOF: lsof 文件路径 + officecli/pdftotext 取数成功".to_string());
+                    let diag = Some(diagnostics.join("\n  "));
+                    log::info!("[app-context] lsof 取数成功");
+                    return Ok((lsof_ctx, diag));
+                }
+
+                // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
+                if let Some(ref title) = window_title {
+                    if let Some(file_ctx) = try_read_file_context(
+                        title,
+                        bundle_id_or_name,
+                        selected_text,
+                    ) {
+                        diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] AX 降级 → 磁盘文件 fallback 成功");
+                        return Ok((file_ctx, diag));
+                    }
+                }
+
+                // 诊断降级原因
+                let degrade_reason = match &window_title {
+                    None => "无窗口标题".to_string(),
+                    Some(title) => match extract_filename_from_title(title) {
+                        None => format!("标题 '{}' 无法提取文件名", title),
+                        Some(fname) => match find_file_path(&fname, bundle_id_or_name) {
+                            None => format!("文件 '{}' 未在 session/mdfind 中找到", fname),
+                            Some(path) => match std::fs::read_to_string(&path) {
+                                Err(e) => format!("文件 {} 读取失败: {}", path.display(), e),
+                                Ok(content) if !content.contains(selected_trimmed) => {
+                                    "文件内容不含选中文本".to_string()
+                                }
+                                Ok(_) => "未知原因".to_string(),
+                            },
+                        },
+                    },
+                };
+                diagnostics.push(format!("DEGRADED: {}", degrade_reason));
+            }
             let diag = Some(diagnostics.join("\n  "));
             log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
             return Ok((
@@ -1048,5 +1898,493 @@ mod tests {
     #[test]
     fn test_head_empty() {
         assert_eq!(truncate_text_head("", 5), None);
+    }
+
+    // ── extract_filename_from_title ──
+
+    #[test]
+    fn test_extract_filename_sublime() {
+        assert_eq!(
+            extract_filename_from_title("test.txt — Sublime Text"),
+            Some("test.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_wps() {
+        assert_eq!(
+            extract_filename_from_title("report.docx - WPS Office"),
+            Some("report.docx".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_untitled() {
+        assert_eq!(extract_filename_from_title("untitled — Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_app_name_only() {
+        assert_eq!(extract_filename_from_title("Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_no_extension() {
+        assert_eq!(extract_filename_from_title("Makefile — Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_vscode() {
+        assert_eq!(
+            extract_filename_from_title("main.rs - octopus - Visual Studio Code"),
+            Some("main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_empty_title() {
+        assert_eq!(extract_filename_from_title(""), None);
+    }
+
+    #[test]
+    fn test_extract_filename_only_extension() {
+        // 极端边界：标题只有 ".bashrc"
+        assert_eq!(
+            extract_filename_from_title(".bashrc — Sublime Text"),
+            Some(".bashrc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_dotted_path() {
+        assert_eq!(
+            extract_filename_from_title("src/main.rs — Sublime Text"),
+            Some("src/main.rs".to_string())
+        );
+    }
+
+    // ── slice_around_text ──
+
+    #[test]
+    fn test_slice_normal() {
+        let full = "Hello world this is a test sentence";
+        let result = slice_around_text(full, "world", 5).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ello "));
+        assert_eq!(result.1.as_deref(), Some(" this"));
+    }
+
+    #[test]
+    fn test_slice_start_of_text() {
+        let full = "Hello world";
+        let result = slice_around_text(full, "Hello", 5).unwrap();
+        assert_eq!(result.0, None); // 没有上文
+        assert_eq!(result.1.as_deref(), Some(" worl")); // 后 5 字符
+    }
+
+    #[test]
+    fn test_slice_end_of_text() {
+        let full = "Hello world";
+        let result = slice_around_text(full, "world", 5).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ello "));
+        assert_eq!(result.1, None); // 没有下文
+    }
+
+    #[test]
+    fn test_slice_case_insensitive() {
+        let full = "Hello WORLD test";
+        let result = slice_around_text(full, "world", 3).unwrap();
+        assert_eq!(result.0.as_deref(), Some("lo ")); // 限制 3 字符
+        assert_eq!(result.1.as_deref(), Some(" te"));
+    }
+
+    #[test]
+    fn test_slice_cjk() {
+        let full = "你好世界这是一段测试文字";
+        let result = slice_around_text(full, "这是", 2).unwrap();
+        assert_eq!(result.0.as_deref(), Some("世界"));
+        assert_eq!(result.1.as_deref(), Some("一段"));
+    }
+
+    #[test]
+    fn test_slice_not_found() {
+        assert_eq!(slice_around_text("hello world", "nonexistent", 5), None);
+    }
+
+    #[test]
+    fn test_slice_empty_selected() {
+        assert_eq!(slice_around_text("hello", "", 5), None);
+    }
+
+    #[test]
+    fn test_slice_empty_full() {
+        assert_eq!(slice_around_text("", "test", 5), None);
+    }
+
+    #[test]
+    fn test_slice_limit_exceeds_content() {
+        // limit > 全文长度 → before/after 为全文剩余部分
+        let full = "ABC SELECT DEF";
+        let result = slice_around_text(full, "SELECT", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ABC "));
+        assert_eq!(result.1.as_deref(), Some(" DEF"));
+    }
+
+    #[test]
+    fn test_slice_selected_with_whitespace() {
+        // trim 后匹配
+        let full = "hello world end";
+        let result = slice_around_text(full, "  world  ", 3).unwrap();
+        assert_eq!(result.0.as_deref(), Some("lo "));
+        assert_eq!(result.1.as_deref(), Some(" en"));
+    }
+
+    #[test]
+    fn test_slice_multiple_occurrences() {
+        // 多次出现 → 命中第一次
+        let full = "aaa bbb aaa ccc";
+        let result = slice_around_text(full, "aaa", 3).unwrap();
+        assert_eq!(result.0, None); // 第一次 "aaa" 在开头
+        assert_eq!(result.1.as_deref(), Some(" bb")); // 后 3 字
+    }
+
+    // ── try_read_file_context (用 tempfile 端到端测试) ──
+
+    #[test]
+    fn test_try_read_file_context_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test_context.md");
+        let content = "这是上文内容。\n选中这段文字。\n这是下文内容。";
+        std::fs::write(&file_path, content).unwrap();
+
+        // find_file_path 走 mdfind 找不到 tempfile 目录，
+        // 所以直接测 slice_around_text 逻辑 + try_read_file_context 需要真实文件路径。
+        // 这里验证 slice 逻辑（try_read_file_context 的核心）：
+        let result = slice_around_text(content, "选中这段文字。", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("这是上文内容。\n"));
+        assert_eq!(result.1.as_deref(), Some("\n这是下文内容。"));
+    }
+
+    #[test]
+    fn test_try_read_file_context_large_file() {
+        // 模拟大文件：before/after 各截断到 1000 字
+        let before: String = "A".repeat(2000);
+        let after: String = "B".repeat(2000);
+        let content = format!("{}SELECTED{}", before, after);
+        let result = slice_around_text(&content, "SELECTED", 1000).unwrap();
+        assert_eq!(result.0.as_ref().unwrap().len(), 1000);
+        assert_eq!(result.0.as_ref().unwrap().chars().all(|c| c == 'A'), true);
+        assert_eq!(result.1.as_ref().unwrap().len(), 1000);
+        assert_eq!(result.1.as_ref().unwrap().chars().all(|c| c == 'B'), true);
+    }
+
+    #[test]
+    fn test_try_read_file_context_multiline_selected() {
+        let content = "line1\nline2\nline3\nSELECTED\nline5\nline6";
+        let result = slice_around_text(content, "SELECTED", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("line1\nline2\nline3\n"));
+        assert_eq!(result.1.as_deref(), Some("\nline5\nline6"));
+    }
+
+    // ── path_matches_filename ──
+
+    #[test]
+    fn test_path_matches_exact() {
+        assert!(path_matches_filename("/home/user/main.rs", "main.rs"));
+        assert!(path_matches_filename("/tmp/test.txt", "test.txt"));
+    }
+
+    #[test]
+    fn test_path_matches_no_false_positive() {
+        // "ba.rs" 不应匹配 "a.rs"
+        assert!(!path_matches_filename("/x/ba.rs", "a.rs"));
+        // 子目录名不应匹配
+        assert!(!path_matches_filename("/home/main.rs/file.txt", "main.rs"));
+    }
+
+    #[test]
+    fn test_path_matches_no_path() {
+        // 裸文件名（无目录前缀）——file_name() 仍返回自身
+        assert!(path_matches_filename("main.rs", "main.rs"));
+    }
+
+    // ── find_file_in_session_json（纯函数，直接测真实逻辑）──
+
+    #[test]
+    fn test_session_json_file_history_single_window() {
+        let json = serde_json::json!({
+            "windows": [{
+                "file_history": ["/other/file.txt", "/home/user/main.rs"],
+                "buffers": []
+            }]
+        });
+        let result = find_file_in_session_json(&json, "main.rs");
+        assert_eq!(result, Some(std::path::PathBuf::from("/home/user/main.rs")));
+    }
+
+    #[test]
+    fn test_session_json_buffers_single_window() {
+        let json = serde_json::json!({
+            "windows": [{
+                "file_history": [],
+                "buffers": [{"file": ""}, {"file": "/home/user/notes.md"}]
+            }]
+        });
+        let result = find_file_in_session_json(&json, "notes.md");
+        assert_eq!(result, Some(std::path::PathBuf::from("/home/user/notes.md")));
+    }
+
+    #[test]
+    fn test_session_json_multi_window() {
+        // P3b 回归保护：文件在第二个窗口
+        let json = serde_json::json!({
+            "windows": [
+                {"file_history": ["/a/x.rs"], "buffers": []},
+                {"file_history": ["/b/y.rs"], "buffers": [{"file": "/c/target.go"}]}
+            ]
+        });
+        let result = find_file_in_session_json(&json, "target.go");
+        assert_eq!(result, Some(std::path::PathBuf::from("/c/target.go")));
+    }
+
+    #[test]
+    fn test_session_json_empty_buffers_filtered() {
+        let json = serde_json::json!({
+            "windows": [{"file_history": [], "buffers": [{"file": ""}, {"file": ""}]}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "anything.txt"), None);
+    }
+
+    #[test]
+    fn test_session_json_suffix_no_false_positive() {
+        // P3a 回归保护：ends_with "a.rs" 不应匹配 "ba.rs"
+        let json = serde_json::json!({
+            "windows": [{"file_history": ["/x/ba.rs"], "buffers": []}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "a.rs"), None);
+    }
+
+    #[test]
+    fn test_session_json_not_found() {
+        let json = serde_json::json!({
+            "windows": [{"file_history": ["/a/b.rs"], "buffers": []}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "missing.rs"), None);
+    }
+
+    #[test]
+    fn test_session_json_empty_windows() {
+        let json = serde_json::json!({"windows": []});
+        assert_eq!(find_file_in_session_json(&json, "main.rs"), None);
+    }
+
+    // ── name_result_is_app_name ──
+
+    #[test]
+    fn test_name_result_is_app_name_yes() {
+        assert!(name_result_is_app_name("Sublime Text"));
+        assert!(name_result_is_app_name("WPS Office"));
+        assert!(name_result_is_app_name("Code"));
+        assert!(name_result_is_app_name("sublime text")); // 大小写不敏感
+    }
+
+    #[test]
+    fn test_name_result_is_app_name_no() {
+        assert!(!name_result_is_app_name("main.rs"));
+        assert!(!name_result_is_app_name("test.txt"));
+        assert!(!name_result_is_app_name("unknown_app"));
+    }
+
+    // ── merge_cjk_line_breaks ──
+
+    #[test]
+    fn test_merge_cjk_normal() {
+        // 两行 CJK 文本，前一行末尾是 CJK → 合并
+        let input = "这是第一行的文\n本内容继续";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "这是第一行的文本内容继续");
+    }
+
+    #[test]
+    fn test_merge_cjk_preserves_paragraph_break() {
+        // 空行分隔的段落 → 不合并
+        let input = "第一段文字\n\n第二段文字";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "第一段文字\n\n第二段文字");
+    }
+
+    #[test]
+    fn test_merge_cjk_ascii_no_merge() {
+        // 前一行末尾是 ASCII → 不合并
+        let input = "hello world\n继续文本";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "hello world\n继续文本");
+    }
+
+    #[test]
+    fn test_merge_cjk_multi_line() {
+        // 多行连续 CJK 排版换行 → 全部合并
+        let input = "这是一段很长的文字第一\n行继续到第二行\n再继续到第三行";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "这是一段很长的文字第一行继续到第二行再继续到第三行");
+    }
+
+    #[test]
+    fn test_merge_cjk_empty_input() {
+        assert_eq!(merge_cjk_line_breaks(""), "");
+    }
+
+    // ── filter_lsof_doc_files ──
+
+    #[test]
+    fn test_filter_lsof_normal() {
+        let input = "pwpsoffice\nn/Users/user/report.docx\nn/Users/user/notes.txt\nn/dev/null";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/report.docx"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_excludes_lock_files() {
+        let input = "n/Users/user/report.docx\nn/Users/user/.~report.docx";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/report.docx"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_multiple_formats() {
+        let input = "n/a/b.pdf\nn/c/d.xlsx\nn/e/f.pptx\nn/g/h.txt\nn/i/j.doc";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/a/b.pdf", "/c/d.xlsx", "/e/f.pptx", "/i/j.doc"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_excludes_dev_and_frameworks() {
+        // WPS 打开 .pdf framework 文件不应匹配
+        let input = "n/dev/urandom\nn/Applications/wpsoffice.app/pdf.framework/pdf";
+        let result = filter_lsof_doc_files(input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_lsof_path_with_spaces() {
+        let input = "n/Users/user/my report final.docx";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/my report final.docx"]);
+    }
+
+    // ── bundle_id_to_procname ──
+
+    #[test]
+    fn test_bundle_id_to_procname_wps() {
+        assert_eq!(bundle_id_to_procname("com.kingsoft.wpsoffice.mac"), "wpsoffice");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_pages() {
+        assert_eq!(bundle_id_to_procname("com.apple.iWork.Pages"), "Pages");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_sublime() {
+        assert_eq!(bundle_id_to_procname("com.sublimetext.4"), "Sublime");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_fallback() {
+        // 未知 bundle_id → 取最后一段
+        assert_eq!(bundle_id_to_procname("com.example.myeditor"), "myeditor");
+    }
+
+    // ── char_level_slice ──
+
+    #[test]
+    fn test_char_level_slice_normal() {
+        let chars: Vec<char> = "Hello world test".chars().collect();
+        let (before, after) = char_level_slice(&chars, 6, "world", "Hello world test", 5);
+        assert_eq!(before.as_deref(), Some("ello "));
+        assert_eq!(after.as_deref(), Some(" test"));
+    }
+
+    #[test]
+    fn test_char_level_slice_start() {
+        let chars: Vec<char> = "Hello world".chars().collect();
+        let (before, after) = char_level_slice(&chars, 0, "Hello", "Hello world", 5);
+        assert_eq!(before, None);
+        assert_eq!(after.as_deref(), Some(" worl"));
+    }
+
+    #[test]
+    fn test_char_level_slice_cjk() {
+        let full = "你好世界测试文字";
+        let chars: Vec<char> = full.chars().collect();
+        // "试" 在 char index 5（byte offset 15）
+        // before limit=2 → chars[3..5] = "界测"
+        // after: chars[6..8] = "文字"
+        let (before, after) = char_level_slice(&chars, 15, "试", full, 2);
+        assert_eq!(before.as_deref(), Some("界测"));
+        assert_eq!(after.as_deref(), Some("文字"));
+    }
+
+    // ── extract_text_from_ooxml_xml ──
+
+    #[test]
+    fn test_ooxml_xml_basic() {
+        let xml = r#"<doc><w:p><w:r><w:t>Hello</w:t></w:r></w:p><w:p><w:r><w:t>World</w:t></w:r></w:p></doc>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+    }
+
+    #[test]
+    fn test_ooxml_xml_with_attributes() {
+        // <w:t xml:space="preserve"> 带属性的标签
+        let xml = r#"<w:p><w:r><w:t xml:space="preserve">测试</w:t></w:r></w:p>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert_eq!(result.trim(), "测试");
+    }
+
+    #[test]
+    fn test_ooxml_xml_pptx_a_tag() {
+        let xml = r#"<a:p><a:r><a:t>Slide text</a:t></a:r></a:p>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.contains("Slide text"));
+    }
+
+    #[test]
+    fn test_ooxml_xml_empty() {
+        let xml = r#"<doc><w:p></w:p></doc>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.is_empty() || result.trim().is_empty());
+    }
+
+    // ── slice_around_text NFKC 归一化（第三轮匹配）──
+
+    #[test]
+    fn test_slice_nfkc_kangxi() {
+        // 康熙部首 ⾥(U+2FA5) → 里(U+91CC)
+        let full = "这里的常数可能不是把一个项目";
+        let sel = "⾥的常数"; // ⾥ 是康熙部首
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_some(), "NFKC 应该匹配康熙部首");
+        if let Some((before, after)) = result {
+            assert!(before.as_deref().unwrap_or("").contains("这"));
+        }
+    }
+
+    #[test]
+    fn test_slice_nfkc_fullwidth_punct() {
+        // 全角逗号 ，(U+FF0C) → 半角逗号
+        let full = "Hello, World";
+        let sel = "Hello，"; // 全角逗号
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_some(), "NFKC 应该匹配全角标点");
+    }
+
+    #[test]
+    fn test_slice_nfkc_short_rejected() {
+        // 归一化后太短 (<5) 不尝试
+        let full = "测试文本内容";
+        let sel = "⾥"; // 单字符
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_none());
     }
 }

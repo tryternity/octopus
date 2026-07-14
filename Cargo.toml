@@ -20,3 +20,4 @@ resolver = "2"
 
 [workspace.dependencies]
 parking_lot = "0.12"
+unicode-normalization = "0.1"
