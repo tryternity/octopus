@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 27 {
+    if v >= 28 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -311,13 +311,77 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 27", [])?;
             log::info!("schema upgraded to v27 (agent_tasks table)");
         }
+        // v27→v28：模型路径统一 + manifest 填充 + 翻译模型入 DB
+        //
+        // 1. ASR source: HF repo → asr/{model_name}（路径标识）
+        // 2. OCR source/secret_key: GitHub MNN URL → ocr/{name}（路径标识，清旧 secret_key）
+        // 3. translate seed: db.sql IF NOT EXISTS 自动创建
+        // 4. secret_key: 从 model_manifests 常量写入所有 is_local=1 模型
+        {
+            // 重跑 INIT_SQL 确保 translate/OCR seed 已建（幂等）
+            conn.execute_batch(INIT_SQL).ok();
+
+            // ASR source 改路径标识（幂等：只改 source 仍为 HF repo 格式的行）
+            conn.execute(
+                "UPDATE models SET source = 'asr/' || model_name
+                 WHERE domain = 'asr' AND is_local = 1
+                   AND source NOT LIKE 'asr/%'",
+                [],
+            )?;
+
+            // OCR source 改路径标识 + 清除旧 MNN URL secret_key
+            conn.execute(
+                "UPDATE models SET source = 'ocr/' || model_name, secret_key = ''
+                 WHERE domain = 'ocr' AND is_local = 1
+                   AND source NOT LIKE 'ocr/%'",
+                [],
+            )?;
+
+            // 填充 manifest（secret_key 空 → 从常量写入）
+            fill_manifests(conn)?;
+
+            conn.execute("PRAGMA user_version = 28", [])?;
+            log::info!("schema upgraded to v28 (model path unification + manifest fill + translate seed)");
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 27", [])?;
-    log::info!("DB initialized (v27): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
+    fill_manifests(conn)?;
+    conn.execute("PRAGMA user_version = 28", [])?;
+    log::info!("DB initialized (v28): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    Ok(())
+}
+
+/// v28 迁移：为所有 is_local=1 且 secret_key 为空的模型填充 manifest JSON。
+/// 按 domain 分发到 model_manifests 常量。
+fn fill_manifests(conn: &Connection) -> Result<()> {
+    for (domain, lookup) in [
+        ("asr", crate::model_manifests::asr_manifest as fn(&str) -> Option<&str>),
+        ("translate", crate::model_manifests::translate_manifest),
+        ("ocr", crate::model_manifests::ocr_manifest),
+    ] {
+        let rows: Vec<String> = conn
+            .prepare(
+                &format!(
+                    "SELECT model_name FROM models WHERE domain='{}' AND is_local=1 AND (secret_key='' OR secret_key IS NULL)",
+                    domain
+                ),
+            )?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for name in &rows {
+            if let Some(json) = lookup(name) {
+                conn.execute(
+                    "UPDATE models SET secret_key=?1 WHERE model_name=?2 AND domain=?3",
+                    params![json, name, domain],
+                )?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -711,6 +775,33 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
         out.push(r?);
     }
     Ok(out)
+}
+
+/// 按 domain 列出所有本地模型（is_local=1），通用版。
+/// 用于翻译/OCR 等非 ASR domain 的模型管理。
+pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+             FROM models WHERE domain=?1 AND is_local = 1",
+        )?;
+        let rows = stmt.query_map(params![domain], |row| {
+            Ok(LocalAsrModelRow {
+                category: row.get(0)?,
+                model_name: row.get(1)?,
+                source: row.get(2)?,
+                secret_key: row.get(3)?,
+                description: row.get(4)?,
+                is_enabled: row.get::<_, i32>(5)? != 0,
+                is_streaming: row.get::<_, i32>(6)? != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
 }
 
 /// 设置某本地 ASR 模型就绪状态（is_enabled）。写 DB；调方需随后 reload 运行时缓存。
@@ -2222,7 +2313,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27, "全新库 init_schema 后应到 v27");
+        assert_eq!(v, 28, "全新库 init_schema 后应到 v28");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2366,9 +2457,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 27
+        // 验证：迁移后 user_version = 28
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 28);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2425,7 +2516,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 28);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -2555,7 +2646,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 28);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2628,7 +2719,7 @@ mod tests {
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
         assert_eq!(zf.len(), 2);
         let zp = zf.get("zipformer").unwrap();
-        assert_eq!(zp.source, "csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30");
+        assert_eq!(zp.source, "asr/zipformer");
         assert!(zp.is_local, "ASR 模型应为本地模型");
         assert!(zp.is_enabled, "测试强制 is_enabled=1，此处应为 true");
         assert!(zp.is_streaming, "Zipformer 模型应支持流式");
@@ -3432,7 +3523,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 27);
+        assert_eq!(v, 28);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))

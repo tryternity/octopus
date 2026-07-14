@@ -7,12 +7,12 @@
 
 CREATE TABLE IF NOT EXISTS models (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain        TEXT    NOT NULL,                       -- 'asr' | 'llm'
+    domain        TEXT    NOT NULL,                       -- 'asr' | 'llm' | 'ocr' | 'translate'
     provider      TEXT    NOT NULL DEFAULT 'local',       -- vendor/运行位置：local/aliyun/deepseek/bigmodel
     category      TEXT    NOT NULL,                       -- ASR 引擎族(zipformer/whisper/Fun-ASR) ; LLM 模型系列(qwen/glm/deepseek)
     model_name    TEXT    NOT NULL,                       -- 具体模型标识，精确匹配
-    source        TEXT    NOT NULL,                       -- ASR: 本地路径/HF repo/云 wss 端点 ; LLM: API base URL
-    secret_key    TEXT    NOT NULL DEFAULT '',            -- 远程 API Key（本地模型留空）
+    source        TEXT    NOT NULL,                       -- 本地模型: 路径标识(domain/name) ; 云端: wss 端点 ; LLM: API base URL
+    secret_key    TEXT    NOT NULL DEFAULT '',            -- is_local=1: 下载清单 manifest JSON ; is_local=0: API Key
     language      TEXT    NOT NULL DEFAULT '',
     is_local      INTEGER NOT NULL DEFAULT 0,             -- 是否为本地模型 (0=否, 1=是)
     is_thinking   INTEGER NOT NULL DEFAULT 0,             -- LLM 专用：是否为思考（reasoning）模型
@@ -31,19 +31,19 @@ CREATE TABLE IF NOT EXISTS models (
 -- 清单以 2026-06-22 实时数据库 is_local=1 行为准重生成（旧随包 zipformer-small-ctc 等已移除）。
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('asr','local','moonshine','moonshine-base-en','csukuangfj/sherpa-onnx-moonshine-base-en-int8','en','Moonshine Base EN (274M)',1,0,0),
-    ('asr','local','moonshine','moonshine-tiny-en','csukuangfj/sherpa-onnx-moonshine-tiny-en-int8','en','Moonshine Tiny EN (119M)',1,0,0),
-    ('asr','local','paraformer','paraformer-bilingual','csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en','auto','paraformer中英版, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-multi-zh','csukuangfj/sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en','auto','paraformer方言+英语, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-streaming','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer-streaming, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-zh','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
-    ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 954M',1,0,0),
-    ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
-    ('asr','local','sensevoice-orig','sensevoice-orig-small','WisemeAI/sensevoice-small-quant','auto','原版 SenseVoice-Small quant (230M，FunASR 4输入，中/英/粤/日/韩)',1,1,0),
-    ('asr','local','firered','firered-asr2','VidraAI/FireRedASR2-onnx','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
-    ('asr','local','whisper','whisper-small','onnx-community/whisper-small.en','en','whisper-small.en, 372M',1,0,0),
-    ('asr','local','zipformer','zipformer','csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30','zh','zipformer, 160M',1,0,1),
-    ('asr','local','zipformer','zipformer-large','csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30','zh','zipformer-large, 736M',1,0,1);
+    ('asr','local','moonshine','moonshine-base-en','asr/moonshine-base-en','en','Moonshine Base EN (274M)',1,0,0),
+    ('asr','local','moonshine','moonshine-tiny-en','asr/moonshine-tiny-en','en','Moonshine Tiny EN (119M)',1,0,0),
+    ('asr','local','paraformer','paraformer-bilingual','asr/paraformer-bilingual','auto','paraformer中英版, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-multi-zh','asr/paraformer-multi-zh','auto','paraformer方言+英语, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-streaming','asr/paraformer-streaming','zh','paraformer-streaming, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-zh','asr/paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
+    ('asr','local','qwen3-asr','qwen3-asr-0.6B','asr/qwen3-asr-0.6B','auto','qwen3-asr-0.6B, 954M',1,0,0),
+    ('asr','local','qwen3-asr','qwen3-asr-1.7B','asr/qwen3-asr-1.7B','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
+    ('asr','local','sensevoice-orig','sensevoice-orig-small','asr/sensevoice-orig-small','auto','原版 SenseVoice-Small quant (230M，FunASR 4输入，中/英/粤/日/韩)',1,1,0),
+    ('asr','local','firered','firered-asr2','asr/firered-asr2','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
+    ('asr','local','whisper','whisper-small','asr/whisper-small','en','whisper-small.en, 372M',1,0,0),
+    ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
+    ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1);
 
 -- ── 云端 ASR（is_local=0，走「系统设置」填 key + 连接测试，不在模型管理页）──
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
@@ -84,14 +84,18 @@ VALUES
     ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
 
 -- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
--- source = det 下载地址；secret_key = rec 下载地址（本地模型复用字段）
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, secret_key, language, description, is_local, is_enabled, is_streaming)
+-- source = 路径标识 ocr/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('ocr','paddleocr','ocr','PP-OCRv6-small',
-     'https://github.com/zibo-chen/rust-paddle-ocr/raw/next/models/PP-OCRv6_small_det.mnn',
-     'https://github.com/zibo-chen/rust-paddle-ocr/raw/next/models/PP-OCRv6_small_rec.mnn',
-     'auto','PP-OCRv6 small (det 4.7M + rec 10M + keys 73K)，中/英/繁体/日',
-     1,1,0);
+    ('ocr','paddleocr','ocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
+    ('ocr','paddleocr','ocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
+
+-- ── 翻译模型（domain='translate'）─────────────────────────────────
+-- source = 路径标识 translate/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
+VALUES
+    ('translate','local','opus-mt','opus-mt','translate/opus-mt','auto','opus-mt 中英互译（轻量快速，~500M）',1,0,0),
+    ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);
 
 -- ── 润色提示词（prompts 表）───────────────────────────────────────────────────
 -- 用户可维护多条润色 prompt，激活其一（app_config.active_polish_prompt 存 id）。
