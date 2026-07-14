@@ -664,6 +664,71 @@ fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
     texts
 }
 
+/// WPS Office 专用：通过 lsof 获取进程打开的文件路径。
+///
+/// WPS 窗口标题通常为空，无法从标题提取文件名。
+/// 但 lsof 可以列出 WPS 进程当前打开的文件（.docx/.xlsx/.pptx/.pdf）。
+/// 拿到路径后用 read_file_as_text 提取文本，再用 selected_text 定位切上下文。
+fn try_wps_lsof_context(selected_text: &str) -> Option<SurroundingText> {
+    // 1. lsof 获取 WPS 打开的文件
+    let output = std::process::Command::new("lsof")
+        .args(["-c", "wpsoffice", "-F", "n"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // 2. 筛选文档文件（排除临时锁文件 .~ 开头）
+    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt"];
+    let candidates: Vec<String> = stdout
+        .lines()
+        .filter(|l| l.starts_with('n')) // lsof -F n 输出格式：n/path/to/file
+        .map(|l| &l[1..]) // 去掉 'n' 前缀
+        .filter(|path| {
+            !path.starts_with("/dev/") && !path.contains("/.~") && !path.contains(".~")
+        })
+        .filter(|path| {
+            std::path::Path::new(path)
+                .extension()
+                .map(|ext| {
+                    let ext = ext.to_string_lossy().to_lowercase();
+                    doc_exts.contains(&ext.as_str())
+                })
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect();
+
+    log::info!("[app-context] WPS lsof: {} 个候选文件", candidates.len());
+
+    // 3. 逐个尝试读取 + 匹配选中文本
+    for file_path in &candidates {
+        let path = std::path::Path::new(file_path);
+        let content = match read_file_as_text(path) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        if let Some(result) = slice_around_text(&content, selected_text, 1000) {
+            let window_title = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string());
+            log::info!("[app-context] WPS lsof 命中: {}", file_path);
+            return Some(SurroundingText {
+                before: result.0,
+                after: result.1,
+                window_title,
+            });
+        }
+    }
+
+    None
+}
+
 /// 自绘编辑器 fallback：从磁盘读文件内容获取上下文。
 ///
 /// 当 AX 树不含真实编辑器内容时（Sublime Text、WPS），尝试：
@@ -1014,11 +1079,34 @@ unsafe fn build_surrounding(
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
-            // WPS Office: AX 禁用 + 无 AppleScript + 无插件 API。
-            // 但窗口标题含文件名时，可通过磁盘 fallback 读 .docx（OOXML zip 解析）。
-            // 先尝试 Sublime 插件（非 Sublime 会跳过），再尝试磁盘 fallback。
+            // WPS Office: AX 禁用 + 无 AppleScript + 无插件 API + 窗口标题通常为空。
+            // Sublime Text: 通过插件取数器（含未保存文件）。
+            // 通用 fallback：磁盘文件读取。
             {
                 // Sublime Text 专用取数器
+                if bundle_id_or_name.contains("sublimetext") {
+                    if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
+                        bundle_id_or_name,
+                        selected_text,
+                    ) {
+                        diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] Sublime 插件取数成功");
+                        return Ok((sublime_ctx, diag));
+                    }
+                }
+
+                // WPS Office 专用：lsof 获取进程打开的文件路径（窗口标题通常为空）
+                if bundle_id_or_name.contains("kingsoft") {
+                    if let Some(wps_ctx) = try_wps_lsof_context(selected_text) {
+                        diagnostics.push("WPS_LSOF: lsof 文件路径 + officecli/pdftotext 取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] WPS lsof 取数成功");
+                        return Ok((wps_ctx, diag));
+                    }
+                }
+
+                // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
                 if bundle_id_or_name.contains("sublimetext") {
                     if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
                         bundle_id_or_name,
