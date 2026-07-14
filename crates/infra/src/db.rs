@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 28 {
+    if v >= 29 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -210,7 +210,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         log::info!("schema upgraded to v21 (action_bar_items + script_runs)");
         // v21→v22：env 变量 seed（huggingface/modelscope/github）
         conn.execute_batch(
-            "INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES\n             ('env.huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),\n             ('env.modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),\n             ('env.github',      'https://github.com',     'GitHub 下载地址',         'env')"
+            "INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES\n             ('huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),\n             ('modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),\n             ('github',      'https://github.com',     'GitHub 下载地址',         'env')"
         )?;
         conn.execute("PRAGMA user_version = 22", [])?;
         log::info!("schema upgraded to v22 (env vars seed)");
@@ -343,6 +343,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 28", [])?;
             log::info!("schema upgraded to v28 (model path unification + manifest fill + translate seed)");
         }
+        // v28→v29：env 变量 config_key 去掉 env. 前缀（category='env' 已是命名空间）
+        {
+            // INIT_SQL 已用新 key (huggingface/modelscope/github) 重新 seed。
+            // 旧 env.* 行与新 key 共存会导致唯一约束冲突——直接删除旧 env.* 行。
+            conn.execute(
+                "DELETE FROM app_config WHERE config_key IN ('env.huggingface','env.modelscope','env.github')",
+                [],
+            )?;
+            conn.execute("PRAGMA user_version = 29", [])?;
+            log::info!("schema upgraded to v29 (env var config_key: remove env. prefix)");
+        }
         return Ok(());
     }
 
@@ -350,8 +361,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 28", [])?;
-    log::info!("DB initialized (v28): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 29", [])?;
+    log::info!("DB initialized (v29): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -616,22 +627,20 @@ pub fn list_env_vars() -> Result<Vec<(String, String)>> {
         let rows = stmt.query_map([], |r| {
             let key: String = r.get(0)?;
             let value: String = r.get(1)?;
-            let bare_key = key.strip_prefix("env.").unwrap_or(&key).to_string();
-            Ok((bare_key, value))
+            Ok((key, value))
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
     })
 }
 
-/// 保存 env 变量（自动加 `env.` 前缀 + category='env'）。
+/// 保存 env 变量（category='env'，config_key 不带 env. 前缀）。
 pub fn save_env_var(key: &str, value: &str) -> Result<()> {
     ensure_db()?;
-    let full_key = format!("env.{}", key);
     with_db(|conn| {
         conn.execute(
             "INSERT INTO app_config (config_key, config_value, category) VALUES (?1, ?2, 'env')
              ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
-            params![full_key, value],
+            params![key, value],
         )?;
         Ok(())
     })
@@ -644,11 +653,10 @@ pub fn delete_env_var(key: &str) -> Result<bool> {
         return Ok(false);
     }
     ensure_db()?;
-    let full_key = format!("env.{}", key);
     with_db(|conn| {
         conn.execute(
             "DELETE FROM app_config WHERE config_key = ?1 AND category = 'env'",
-            params![full_key],
+            params![key],
         )?;
         Ok(true)
     })
@@ -2313,7 +2321,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 28, "全新库 init_schema 后应到 v28");
+        assert_eq!(v, 29, "全新库 init_schema 后应到 v29");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2457,9 +2465,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 28
+        // 验证：迁移后 user_version = 29
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 28);
+        assert_eq!(v, 29);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2516,7 +2524,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 28);
+        assert_eq!(v, 29);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -2646,7 +2654,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 28);
+        assert_eq!(v, 29);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3523,7 +3531,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 28);
+        assert_eq!(v, 29);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))

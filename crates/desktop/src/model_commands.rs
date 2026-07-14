@@ -64,7 +64,7 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
     Ok(out)
 }
 
-/// 对 URL 字符串做 `{env.key}` → value 模板替换（读 DB env 变量）。
+/// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
 fn resolve_env_template(url: &str) -> String {
     let vars = match octopus_infra::db::list_env_vars() {
         Ok(v) => v,
@@ -72,8 +72,7 @@ fn resolve_env_template(url: &str) -> String {
     };
     let mut result = url.to_string();
     for (key, value) in vars {
-        // list_env_vars 返回 bare key（如 "huggingface"），URL 模板用 "{env.huggingface}"
-        let placeholder = format!("{{env.{}}}", key);
+        let placeholder = format!("{{{}}}", key);
         result = result.replace(&placeholder, &value);
     }
     result
@@ -290,8 +289,8 @@ mod tests {
     #[test]
     fn resolve_env_template_replaces_placeholders() {
         ensure_test_db();
-        let result = resolve_env_template("{env.huggingface}/org/repo/resolve/main/model.onnx");
-        assert!(!result.contains("{env."), "模板变量应被替换");
+        let result = resolve_env_template("{huggingface}/org/repo/resolve/main/model.onnx");
+        assert!(!result.contains("{huggingface}"), "模板变量应被替换");
         assert!(result.contains("/org/repo/resolve/main/model.onnx"), "非模板部分应保留");
     }
 
@@ -307,9 +306,9 @@ mod tests {
     #[test]
     fn resolve_env_template_multiple_vars() {
         ensure_test_db();
-        let url = "{env.huggingface}/repo/resolve/main/model.onnx and {env.github}/org/repo";
+        let url = "{huggingface}/repo/resolve/main/model.onnx and {github}/org/repo";
         let result = resolve_env_template(url);
-        assert!(!result.contains("{env.huggingface}"));
-        assert!(!result.contains("{env.github}"));
+        assert!(!result.contains("{huggingface}"));
+        assert!(!result.contains("{github}"));
     }
 }

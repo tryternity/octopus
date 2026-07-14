@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 /// 文件清单条目：sha256 + size（path 是 [`Manifest`] map 的 key）。
 #[derive(Serialize, Deserialize)]
 pub struct ManifestFile {
-    /// 下载来源 URL（支持 {env.*} 模板）。bootstrap 生成时为空串。
+    /// 下载来源 URL（支持 {*} 模板）。bootstrap 生成时为空串。
     pub source: String,
     pub sha256: String,
     pub size: u64,

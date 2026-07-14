@@ -52,14 +52,14 @@ pub fn create_model_symlinks() -> Result<()> {
     Ok(())
 }
 
-/// 从 manifest 的 source URL 解析 HF repo（`{env.huggingface}/{owner}/{repo}/resolve/main/...`）。
+/// 从 manifest 的 source URL 解析 HF repo（`{huggingface}/{owner}/{repo}/resolve/main/...`）。
 fn extract_hf_repo_from_manifest(manifest: &serde_json::Value) -> Option<String> {
     let obj = manifest.as_object()?;
     for (_path, meta) in obj {
         let source = meta.get("source")?.as_str()?;
         if let Some(idx) = source.find("/resolve/main/") {
             let prefix = &source[..idx];
-            // 去掉模板变量前缀（{env.*}）或 mirror host 前缀
+            // 去掉模板变量前缀（{*}）或 mirror host 前缀
             let repo_part = if let Some(brace) = prefix.rfind('}') {
                 &prefix[brace + 1..]
             } else {
@@ -94,7 +94,7 @@ mod tests {
     fn extract_repo_from_simple_manifest() {
         let json = serde_json::json!({
             "onnx/model.onnx": {
-                "source": "{env.huggingface}/onnx-community/whisper-small.en/resolve/main/onnx/model.onnx",
+                "source": "{huggingface}/onnx-community/whisper-small.en/resolve/main/onnx/model.onnx",
                 "sha256": "abc", "size": 123
             }
         });
@@ -108,7 +108,7 @@ mod tests {
     fn extract_repo_from_multi_source_manifest() {
         let json = serde_json::json!({
             "zh-en/onnx/encoder.onnx": {
-                "source": "{env.huggingface}/Xenova/opus-mt-zh-en/resolve/main/onnx/encoder.onnx",
+                "source": "{huggingface}/Xenova/opus-mt-zh-en/resolve/main/onnx/encoder.onnx",
                 "sha256": "abc", "size": 123
             }
         });
@@ -122,7 +122,7 @@ mod tests {
     fn extract_repo_returns_none_for_github_only() {
         let json = serde_json::json!({
             "keys.txt": {
-                "source": "{env.github}/PaddlePaddle/PaddleOCR/raw/main/dict.txt",
+                "source": "{github}/PaddlePaddle/PaddleOCR/raw/main/dict.txt",
                 "sha256": "abc", "size": 123
             }
         });
