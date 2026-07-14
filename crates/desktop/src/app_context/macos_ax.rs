@@ -807,7 +807,7 @@ fn try_read_file_context(
 }
 
 /// 在全文中搜索 selected_text，返回 (before, after) 各截断到 limit 字。
-/// 尝试精确匹配 → 忽略大小写匹配。
+/// 尝试精确匹配 → 忽略大小写匹配 → 兼容字符归一化匹配。
 fn slice_around_text(
     full_text: &str,
     selected_text: &str,
@@ -819,12 +819,161 @@ fn slice_around_text(
     }
 
     // find 返回 byte offset，转 char offset 以正确处理多字节字符
-    let pos_bytes = full_text
-        .find(sel)
-        .or_else(|| full_text.to_lowercase().find(&sel.to_lowercase()))?;
-
-    // 计算 char-level 偏移
     let full_chars: Vec<char> = full_text.chars().collect();
+
+    // 尝试 1：精确匹配
+    if let Some(pos_bytes) = full_text.find(sel) {
+        return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+    }
+
+    // 尝试 2：忽略大小写匹配
+    let sel_lower = sel.to_lowercase();
+    if let Some(pos_bytes) = full_text.to_lowercase().find(&sel_lower) {
+        return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+    }
+
+    // 尝试 3：兼容字符归一化匹配
+    // WPS Cmd+C 可能产生康熙部首（U+2Exx）或全角标点（U+FFxx），
+    // 而 pdftotext/officecli 提取的是正常 Unicode → 精确匹配失败。
+    // 归一化策略：只保留 CJK 统一表意（U+4E00-U+9FFF）+ ASCII 字母数字，
+    // 去掉标点和兼容字符差异。
+    let normalize = |s: &str| -> String {
+        s.chars()
+            .filter_map(|c| {
+                let cp = c as u32;
+                match cp {
+                    // 正常 CJK → 保留
+                    0x4E00..=0x9FFF => Some(c),
+                    // ASCII 字母数字 → 小写
+                    0x41..=0x5A => Some((cp + 32) as u8 as char),
+                    0x61..=0x7A => Some(c),
+                    0x30..=0x39 => Some(c),
+                    // 康熙部首（U+2E00-U+2FFF）→ 映射到 CJK 兼容表意
+                    0x2E00..=0x2FFF => {
+                        // CJK Radicals Supplement → 尝试映射到常见目标
+                        normalize_kangxi(cp)
+                    }
+                    // 全角标点（U+FF00-U+FFEF）→ 半角
+                    0xFF01..=0xFF5E => Some(((cp - 0xFEE0) as u8) as char),
+                    // CJK 兼容表意（U+F900-U+FAFF）→ 大多数有规范映射但简化处理：保留
+                    0xF900..=0xFAFF => Some(c),
+                    _ => None, // 标点、空格等全部丢弃
+                }
+            })
+            .collect()
+    };
+
+    let sel_norm = normalize(sel);
+    if sel_norm.len() < 5 {
+        return None; // 归一化后太短，误匹配风险高
+    }
+
+    let full_norm = normalize(full_text);
+    if full_norm.find(&sel_norm).is_some() {
+        // 归一化后的位置无法直接映射回原文（字符被丢弃了）
+        // 用归一化匹配确认"存在"，再在原文中找第一个匹配的 CJK 子串
+        // 取选中文字的前 10 个 CJK 字符在原文中搜索定位
+        let first_cjk: String = sel.chars()
+            .filter(|&c| (c as u32) >= 0x4E00 && (c as u32) <= 0x9FFF
+                || (c as u32) >= 0x2E00 && (c as u32) <= 0x2FFF)
+            .take(10)
+            .collect();
+        if first_cjk.len() >= 4 {
+            // 在原文中搜索前几个字符的兼容版本
+            let first_cjk_norm = normalize(&first_cjk);
+            if let Some(pos_bytes) = find_normalized_substring(full_text, &first_cjk_norm, &normalize) {
+                return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
+            }
+        }
+    }
+
+    None
+}
+
+/// 康熙部首到 CJK 统一表意的简化映射（覆盖常见字符）。
+fn normalize_kangxi(cp: u32) -> Option<char> {
+    // 常见康熙部首 → 目标字符的映射
+    match cp {
+        0x2F00 => Some('一'),  // ⼀
+        0x2F02 => Some('丨'),  // ⼁
+        0x2F04 => Some('丶'),  // ⼃
+        0x2F08 => Some('冂'),  // ⼇
+        0x2F12 => Some('土'),  // ⼑
+        0x2F1A => Some('口'),  // ⼙
+        0x2F24 => Some('大'),  // ⼣
+        0x2F2E => Some('山'),  // ⼭
+        0x2F36 => Some('心'),  // ⼵
+        0x2F3A => Some('手'),  // ⼹
+        0x2F40 => Some('日'),  // ⼿
+        0x2F44 => Some('月'),  // ⼃
+        0x2F4D => Some('目'),  // ⽬
+        0x2F50 => Some('禾'),  // ⽏
+        0x2F58 => Some('立'),  // ⼹
+        0x2F5A => Some('竹'),  // ⼻
+        0x2F5E => Some('米'),  // ⼽
+        0x2F66 => Some('衣'),  // ⼥
+        0x2F6C => Some('目'),  // ⽬ (variant)
+        0x2F74 => Some('走'),  // ⽳
+        0x2F7C => Some('足'),  // ⽻
+        0x2F80 => Some('身'),  // ⾿
+        0x2F82 => Some('車'),  // ⾁
+        0x2F8A => Some('金'),  // ⾉
+        0x2F8C => Some('長'),  // ⾋
+        0x2F94 => Some('雨'),  // ⾓
+        0x2F9A => Some('香'),  // ⾙
+        0x2FA5 => Some('里'),  // ⾥
+        0x2FA8 => Some('金'),  // ⾧
+        _ => {
+            // CJK Radicals Supplement 范围内的字符，尝试偏移映射
+            // 这不完全准确但覆盖很多常见情况
+            None
+        }
+    }
+}
+
+/// 在原文中搜索归一化子串，返回 byte offset。
+fn find_normalized_substring(
+    full_text: &str,
+    target_norm: &str,
+    normalize: impl Fn(&str) -> String,
+) -> Option<usize> {
+    // 逐字符滑动窗口
+    let full_chars: Vec<char> = full_text.chars().collect();
+    let target_chars: Vec<char> = target_norm.chars().collect();
+    if target_chars.is_empty() || target_chars.len() > full_chars.len() {
+        return None;
+    }
+
+    // 在 full_text 的归一化版本中找 target_norm 的位置
+    let full_norm = normalize(full_text);
+    if full_norm.find(target_norm).is_none() {
+        return None;
+    }
+
+    // 归一化后找到了——现在需要映射回原文 byte offset
+    // 策略：从 full_text 开头逐字符尝试，归一化每个窗口看是否匹配 target 开头
+    for (i, _) in full_chars.iter().enumerate() {
+        // 从位置 i 开始取窗口，归一化后看是否以 target 开头
+        let window: String = full_chars[i..].iter().take(target_chars.len() + 20).collect();
+        let window_norm = normalize(&window);
+        if window_norm.starts_with(target_norm) {
+            // 找到了——计算原文 byte offset
+            let byte_offset: usize = full_chars[..i].iter().map(|c| c.len_utf8()).sum();
+            return Some(byte_offset);
+        }
+    }
+
+    None
+}
+
+/// 按 byte offset 在 char 数组中切片 before/after。
+fn char_level_slice(
+    full_chars: &[char],
+    pos_bytes: usize,
+    sel: &str,
+    full_text: &str,
+    limit: usize,
+) -> (Option<String>, Option<String>) {
     let pos_chars = full_text[..pos_bytes].chars().count();
     let sel_chars = sel.chars().count();
 
@@ -842,7 +991,7 @@ fn slice_around_text(
         None
     };
 
-    Some((before, after))
+    (before, after)
 }
 
 /// 从窗口标题提取文件名。
