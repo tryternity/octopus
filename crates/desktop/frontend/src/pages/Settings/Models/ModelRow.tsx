@@ -79,8 +79,8 @@ export function ModelRow({
           ) : (
             <Circle className="w-3 h-3 text-muted-foreground/30 shrink-0" />
           )}
-          <span className="text-xs font-medium">{model.provider}:{model.name}</span>
-          <span className="text-[9px] text-muted-foreground/50 px-1 py-px rounded bg-muted">{model.category}</span>
+          <span className="text-xs font-medium">{model.name}</span>
+          <span className="text-[9px] text-muted-foreground/50 px-1 py-px rounded bg-muted">[{model.provider === "local" ? t("settings.models.local") : model.provider}]</span>
         </div>
         {model.description && (
           <span className="text-[11px] text-muted-foreground/60">{model.description}</span>

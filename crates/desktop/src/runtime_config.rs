@@ -329,21 +329,21 @@ pub fn preheat_local_engine(
 /// 切换 ASR 引擎：先校验 DB 存在（或兜底），再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
 #[tauri::command]
 pub fn switch_asr_engine(
-    name: String,
+    model_name: String,
     rc: State<'_, SharedRuntimeConfig>,
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
-    validate_switch(&name, &engines)?;
+    validate_switch(&model_name, &engines)?;
     // 构造 3-part spec "{provider}:{category}:{model_name}"：
     // 兜底固定 local:zipformer:NAME；其余查 DB 取 provider/category。
-    let spec = if name == FALLBACK_ASR_ENGINE {
-        format!("local:zipformer:{}", name)
+    let spec = if model_name == FALLBACK_ASR_ENGINE {
+        format!("local:zipformer:{}", model_name)
     } else {
-        let engine = engines.iter().find(|e| e.name == name)
-            .ok_or_else(|| format!("引擎 '{}' 不存在，未切换", name))?;
-        format!("{}:{}:{}", engine.provider, octopus_asr_local::config::category_label(engine.category), name)
+        let engine = engines.iter().find(|e| e.name == model_name)
+            .ok_or_else(|| format!("引擎 '{}' 不存在，未切换", model_name))?;
+        format!("{}:{}:{}", engine.provider, octopus_asr_local::config::category_label(engine.category), model_name)
     };
     {
         let mut g = rc.write();
@@ -353,7 +353,7 @@ pub fn switch_asr_engine(
         Ok(cfg) => cfg.engine_mode,
         Err(_) => "embedded".to_string(),
     };
-    crate::tray::update_tray_engine_label(&app_handle, &name, &engine_mode);
+    crate::tray::update_tray_engine_label(&app_handle, &model_name, &engine_mode);
 
     if let Err(e) = persist_asr_engine(&spec) {
         log::warn!(
@@ -442,12 +442,12 @@ pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOpti
 /// 下次点「立即润色」或停顿润色就用新模型。
 #[tauri::command]
 pub fn switch_polish_llm(
-    name: String,
+    model_name: String,
     provider: Option<String>,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
 ) -> Result<(), String> {
-    let spec = if name.is_empty() {
+    let spec = if model_name.is_empty() {
         // 「不选择模型」：polish_llm 置空
         String::new()
     } else {
@@ -456,12 +456,12 @@ pub fn switch_polish_llm(
         // 精确匹配：有 provider 时用 provider+model_name，否则用裸名（向后兼容）
         let model = if let Some(ref p) = provider {
             models.into_iter()
-                .find(|m| m.model_name == name && m.provider == *p)
+                .find(|m| m.model_name == model_name && m.provider == *p)
         } else {
             models.into_iter()
-                .find(|m| m.model_name == name)
+                .find(|m| m.model_name == model_name)
         }
-        .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), name))?;
+        .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), model_name))?;
         // 构造 3-part spec "{provider}:{category}:{model_name}"
         format!("{}:{}:{}", model.provider, model.category, model.model_name)
     };

@@ -197,8 +197,17 @@ pub async fn verify_model(model_name: String, repo: String) -> Result<VerifyResu
 }
 
 fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, String> {
-    let dir = octopus_asr_local::config::resolve_model_dir(repo)
-        .map_err(|e| format!("模型目录不存在（未就绪）: {e:?}"))?;
+    let dir = match octopus_asr_local::config::resolve_model_dir(repo) {
+        Ok(d) => d,
+        Err(_) => {
+            return Ok(VerifyResult {
+                ok: false,
+                bootstrapped: false,
+                broken_files: vec![],
+                message: "模型未下载，请先下载".into(),
+            });
+        }
+    };
 
     let secret_key = current_secret_key(&model_name)?;
     // 清单空 → 自举生成 + 确保置 true。

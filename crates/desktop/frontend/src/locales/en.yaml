@@ -122,7 +122,7 @@ settings:
     shortcutRecordingHint: Press shortcut… (Esc to cancel)
   models:
     tab:
-      env: Constants
+      env: Environment
       asr: Speech Recognition
       llm: Text Model
       ocr: OCR
@@ -135,6 +135,7 @@ settings:
     downloadStartFailed: "Failed to start download:"
     verifyComplete: Verification complete
     verifyFailed: Verification failed
+    local: Local
     localModels: Local Models
     cloudEngines: Cloud Engines
     cloudModels: Cloud Models

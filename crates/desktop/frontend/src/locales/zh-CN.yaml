@@ -122,7 +122,7 @@ settings:
     shortcutRecordingHint: 按下快捷键…（Esc 取消）
   models:
     tab:
-      env: 常量
+      env: 环境设置
       asr: 语音识别
       llm: 文本模型
       ocr: 扫描识别
@@ -135,6 +135,7 @@ settings:
     downloadStartFailed: "下载启动失败："
     verifyComplete: 校验完成
     verifyFailed: 校验失败
+    local: 本地
     localModels: 本地模型
     cloudEngines: 云端引擎
     cloudModels: 云端模型
