@@ -857,7 +857,83 @@ fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> R
     Ok(())
 }
 
-/// 从 DB 加载 LLM 配置（domain='llm'）。
+// ── 云端模型 CRUD（用户自建，domain='asr'|'llm' AND is_local=0）──
+
+/// 新增云端模型。返回新行 id。
+pub fn insert_cloud_model(
+    domain: &str, provider: &str, category: &str,
+    model_name: &str, source: &str, secret_key: &str,
+    is_streaming: bool, is_thinking: bool,
+) -> Result<i64> {
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local, is_enabled, is_streaming, is_thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8)",
+            params![domain, provider, category, model_name, source, secret_key,
+                    is_streaming as i32, is_thinking as i32],
+        )?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
+/// 更新云端模型（按 id）。
+pub fn update_cloud_model(
+    id: i64, provider: &str, category: &str,
+    model_name: &str, source: &str, secret_key: &str,
+    is_streaming: bool, is_thinking: bool,
+) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
+             secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8",
+            params![provider, category, model_name, source, secret_key,
+                    is_streaming as i32, is_thinking as i32, id],
+        )?;
+        Ok(())
+    })
+}
+
+/// 删除云端模型（物理删除，按 id）。
+pub fn delete_cloud_model(id: i64) -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM models WHERE id=?1", params![id])?;
+        Ok(())
+    })
+}
+
+/// 读取 ASR 云端参考模型列表。
+/// 返回 Vec<(provider, category, models_str)>，models_str 为分号分隔。
+pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT config_key, config_value FROM app_config WHERE category='asr_cloud_model' ORDER BY config_key"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let key: String = r.get(0)?;
+            let value: String = r.get(1)?;
+            // key = "provider:category"
+            let parts: Vec<&str> = key.splitn(2, ':').collect();
+            let provider = parts.get(0).unwrap_or(&"").to_string();
+            let category = parts.get(1).unwrap_or(&"").to_string();
+            Ok((provider, category, value))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    })
+}
+
+/// 读取 LLM provider 预设 base_url。
+/// 返回 Vec<(provider, base_url)>
+pub fn list_llm_provider_presets() -> Result<Vec<(String, String)>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT config_key, config_value FROM app_config WHERE category='llm_provider' ORDER BY config_key"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    })
+}
 ///
 /// `spec` 支持三种写法（见 [`parse_model_spec`]）：
 /// - `"local:name"`：`is_local = true AND name`（本地 LLM，如 Ollama）
