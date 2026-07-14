@@ -1736,6 +1736,8 @@ fn handle_final_polish_done(
         }
         Err(e) => {
             warn!("Final polish failed: {}, using fallback (display)", e);
+            use tauri::Emitter;
+            let _ = app_handle.emit("polish-error", &e);
             do_paste(
                 stage,
                 &fallback_text,
@@ -2159,6 +2161,8 @@ fn handle_polish_done(
             Ok(polished) => {
                 if polished.is_empty() {
                     warn!("Polish returned empty, keeping previous");
+                    use tauri::Emitter;
+                    let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                     transcript.on_polish_failed();
                 } else {
                     transcript.polish_apply(&polished);
@@ -2184,6 +2188,8 @@ fn handle_polish_done(
             }
             Err(e) => {
                 warn!("Polish failed: {}, keeping previous", e);
+                use tauri::Emitter;
+                let _ = app_handle.emit("polish-error", &e);
                 transcript.on_polish_failed();
             }
         }
@@ -2224,6 +2230,8 @@ fn handle_polish_done(
         Ok(polished) => {
             if polished.is_empty() {
                 warn!("Polish returned empty, keeping previous");
+                use tauri::Emitter;
+                let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                 transcript.on_polish_failed();
             } else {
                 // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
@@ -2255,6 +2263,8 @@ fn handle_polish_done(
         }
         Err(e) => {
             warn!("Polish failed: {}, keeping previous", e);
+            use tauri::Emitter;
+            let _ = app_handle.emit("polish-error", &e);
             transcript.on_polish_failed();
         }
     }

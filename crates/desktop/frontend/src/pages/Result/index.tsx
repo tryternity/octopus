@@ -56,6 +56,7 @@ function Result() {
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [polishLoading, setPolishLoading] = useState(false);
+  const [polishError, setPolishError] = useState<string | null>(null);
   const [translateMode, setTranslateMode] = useState<TranslateMode>('off');
   const [translatedText, setTranslatedText] = useState("");
   const [translating, setTranslating] = useState(false);
@@ -189,6 +190,11 @@ function Result() {
         }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
+        ["polish-error", (msg) => {
+          setPolishLoading(false);
+          setPolishError(typeof msg === "string" ? msg : "润色失败");
+          setTimeout(() => setPolishError(null), 2500);
+        }],
         ["prepare-record", (p) => {
           invoke("start_recording", {
             prepareId: p as number,
@@ -441,6 +447,12 @@ function Result() {
 
   return (
     <div className="relative w-full h-full">
+    {/* 润色失败气泡 */}
+    {polishError && (
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md bg-red-500 text-white text-xs shadow-lg animate-pulse">
+        ⚠ 润色失败：{polishError}
+      </div>
+    )}
     <div
       id="result-container"
       className={cn(
