@@ -1,6 +1,6 @@
 # 模型下载统一 Manifest 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将所有本地模型（ASR/翻译/OCR）的下载清单统一为声明式 manifest（`{path: {source, sha256, size}}`），存 DB `secret_key` 字段，统一路径结构 `~/.octopus/models/{domain}/{name}/`，翻译模型入 DB。
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - manifest 格式：`{"<相对路径>": {"source": "<URL>", "sha256": "<hex>", "size": <u64>}}`
-- `source` URL 支持 `{env.huggingface}` / `{env.github}` / `{env.modelscope}` 模板变量（读 `app_config` 表 `category='env'`）
+- `source` URL 支持 `{huggingface}` / `{github}` / `{modelscope}` 模板变量（读 `app_config` 表 `category='env'`）
 - 路径结构：`~/.octopus/models/{domain}/{model_name}/`（domain = asr/translate/ocr）
 - DB `models.source`（`is_local=1`）= 路径标识（如 `asr/whisper-small`），不再是 HF repo 字符串
 - `secret_key`（`is_local=1`）= manifest JSON；`secret_key`（`is_local=0`）= API Key
@@ -33,7 +33,7 @@
 - Produces: `bootstrap_manifest` 不变签名，但内部生成的条目加 `source: ""`（空——bootstrap 不生成 URL）
 - Produces: `verify_against_manifest` 不变（只校验 sha256）
 
-- [ ] **Step 1: 写失败测试——ManifestFile 反序列化新格式**
+- [x] **Step 1: 写失败测试——ManifestFile 反序列化新格式**
 
 在 `manifest.rs` 的 `#[cfg(test)] mod tests` 中加测试：
 
@@ -49,12 +49,12 @@ fn manifest_file_deserializes_with_source() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-asr-local --lib manifest::tests::manifest_file_deserializes_with_source`
 Expected: FAIL — `ManifestFile` 无 `source` 字段
 
-- [ ] **Step 3: 加 source 字段**
+- [x] **Step 3: 加 source 字段**
 
 修改 `ManifestFile`：
 
@@ -78,12 +78,12 @@ out.insert(rel, ManifestFile {
 });
 ```
 
-- [ ] **Step 4: 运行全部 manifest 测试**
+- [x] **Step 4: 运行全部 manifest 测试**
 
 Run: `cargo test -p octopus-asr-local --lib manifest`
 Expected: PASS（新测试 + 旧 `bootstrap_manifest_hashes_files` + `verify_detects_tamper` 都过）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/asr-local/src/manifest.rs
@@ -105,7 +105,7 @@ git commit -m "feat: add source field to ManifestFile for manifest-driven downlo
 - Produces: `model_manifests::translate_manifest(model_name) -> Option<&'static str>`
 - Produces: `model_manifests::ocr_manifest(model_name) -> Option<&'static str>`
 
-- [ ] **Step 1: 生成 manifest JSON 数据**
+- [x] **Step 1: 生成 manifest JSON 数据**
 
 运行脚本从 HF cache 生成所有 ASR/翻译/OCR 模型的 manifest JSON（排除 test_wavs/、.gitattributes、README.md、LICENSE、*.py、quantize_config.json）。
 
@@ -115,7 +115,7 @@ git commit -m "feat: add source field to ManifestFile for manifest-driven downlo
 # 整理为 Rust 常量格式
 ```
 
-- [ ] **Step 2: 创建 model_manifests.rs**
+- [x] **Step 2: 创建 model_manifests.rs**
 
 文件结构：
 ```rust
@@ -141,21 +141,21 @@ const MOONSHINE_BASE_EN: &str = r#"{...}"#;
 
 注意：
 - 排除 `test_wavs/`、`.gitattributes`、`README.md`、`LICENSE`、`*.py`、`quantize_config.json`
-- source URL 用 `{env.huggingface}/{repo}/resolve/main/{path}` 格式
-- OCR `keys_v6.txt` 和 `keys.txt` 的 source 用 `{env.github}/PaddlePaddle/PaddleOCR/raw/main/ppocr/utils/dict/ppocrv6_dict.txt`
+- source URL 用 `{huggingface}/{repo}/resolve/main/{path}` 格式
+- OCR `keys_v6.txt` 和 `keys.txt` 的 source 用 `{github}/PaddlePaddle/PaddleOCR/raw/main/ppocr/utils/dict/ppocrv6_dict.txt`
 
-- [ ] **Step 3: 在 lib.rs 注册模块**
+- [x] **Step 3: 在 lib.rs 注册模块**
 
 ```rust
 pub mod model_manifests;
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-infra`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/model_manifests.rs crates/infra/src/lib.rs
@@ -174,13 +174,13 @@ git commit -m "feat: add pre-filled model manifest constants for all local model
 - Consumes: `model_manifests::asr_manifest` / `translate_manifest` / `ocr_manifest`
 - Produces: DB v28，所有 `is_local=1` 模型有正确 `source`（路径标识）+ `secret_key`（manifest JSON）
 
-- [ ] **Step 1: 更新 db.sql domain 注释**
+- [x] **Step 1: 更新 db.sql domain 注释**
 
 ```sql
 domain        TEXT    NOT NULL,                       -- 'asr' | 'llm' | 'ocr' | 'translate'
 ```
 
-- [ ] **Step 2: 更新 db.sql ASR seed——source 改为路径标识**
+- [x] **Step 2: 更新 db.sql ASR seed——source 改为路径标识**
 
 所有 ASR 本地模型的 INSERT 语句中，source 从 HF repo 改为 `asr/{model_name}`：
 
@@ -192,19 +192,19 @@ domain        TEXT    NOT NULL,                       -- 'asr' | 'llm' | 'ocr' |
 
 同时 `paraformer-zh`（与 `paraformer-streaming` 同 repo）的 source 改为 `asr/paraformer-zh`。
 
-- [ ] **Step 3: 更新 db.sql OCR seed**
+- [x] **Step 3: 更新 db.sql OCR seed**
 
 ```sql
 -- 删除旧 PP-OCRv6-small 行（GitHub MNN URL），替换为：
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('ocr','paddleocr','ocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
-    ('ocr','paddleocr','ocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
+    ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
+    ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
 ```
 
 注意：secret_key 不在 db.sql 中预填（太大），由 v28 迁移函数从 `model_manifests` 写入。
 
-- [ ] **Step 4: 加 db.sql translate seed**
+- [x] **Step 4: 加 db.sql translate seed**
 
 ```sql
 -- ── 翻译模型（domain='translate'）─────────────────────────────────
@@ -214,7 +214,7 @@ VALUES
     ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);
 ```
 
-- [ ] **Step 5: 写 v27→v28 迁移逻辑（db.rs init_schema）**
+- [x] **Step 5: 写 v27→v28 迁移逻辑（db.rs init_schema）**
 
 在 `init_schema` 函数末尾（v27 block 之后）加 v28：
 
@@ -256,7 +256,7 @@ VALUES
 
 同时更新全新库 init 末尾的 `PRAGMA user_version = 28`。
 
-- [ ] **Step 6: 实现 fill_manifests_from_constants 函数**
+- [x] **Step 6: 实现 fill_manifests_from_constants 函数**
 
 ```rust
 fn fill_manifests_from_constants(conn: &Connection) -> Result<()> {
@@ -297,7 +297,7 @@ fn fill_manifests_from_constants(conn: &Connection) -> Result<()> {
 }
 ```
 
-- [ ] **Step 7: 加 DB 查询函数 list_local_models_by_domain**
+- [x] **Step 7: 加 DB 查询函数 list_local_models_by_domain**
 
 ```rust
 pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
@@ -324,12 +324,12 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
 }
 ```
 
-- [ ] **Step 8: 编译 + 运行已有 DB 测试**
+- [x] **Step 8: 编译 + 运行已有 DB 测试**
 
 Run: `cargo test -p octopus-infra`
 Expected: PASS
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -349,7 +349,7 @@ git commit -m "feat: DB v28 — model path unification + manifest fill + transla
 **Interfaces:**
 - Produces: `migrate::create_model_symlinks()` — 幂等创建软链
 
-- [ ] **Step 1: 写失败测试——create_model_symlinks 幂等**
+- [x] **Step 1: 写失败测试——create_model_symlinks 幂等**
 
 ```rust
 #[cfg(test)]
@@ -369,7 +369,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 实现 create_model_symlinks**
+- [x] **Step 2: 实现 create_model_symlinks**
 
 ```rust
 //! 模型路径迁移：为已下载到 HF cache 的模型创建
@@ -411,12 +411,12 @@ pub fn create_model_symlinks() -> Result<()> {
     Ok(())
 }
 
-/// 从 manifest 的 source URL 解析 HF repo（{env.huggingface}/{owner}/{name}/resolve/main/...）
+/// 从 manifest 的 source URL 解析 HF repo（{huggingface}/{owner}/{name}/resolve/main/...）
 fn extract_hf_repo_from_manifest(manifest: &serde_json::Value) -> Option<String> {
     let obj = manifest.as_object()?;
     for (_path, meta) in obj {
         let source = meta.get("source")?.as_str()?;
-        // 匹配 {env.huggingface}/{owner}/{repo}/resolve/main/...
+        // 匹配 {huggingface}/{owner}/{repo}/resolve/main/...
         if let Some(idx) = source.find("/resolve/main/") {
             let prefix = &source[..idx]; // https://...{env}/owner/repo
             // 去掉 {env.*} 前缀 + 第一个 /
@@ -435,7 +435,7 @@ fn extract_hf_repo_from_manifest(manifest: &serde_json::Value) -> Option<String>
 }
 ```
 
-- [ ] **Step 3: 在 desktop server 启动时调用**
+- [x] **Step 3: 在 desktop server 启动时调用**
 
 在 `crates/desktop/src/main.rs` 的 setup 闭包中（`init_schema` 之后）加：
 
@@ -446,12 +446,12 @@ if let Err(e) = octopus_onnx_infra::migrate::create_model_symlinks() {
 }
 ```
 
-- [ ] **Step 4: 编译**
+- [x] **Step 4: 编译**
 
 Run: `cargo build -p octopus-onnx-infra`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/onnx-infra/src/migrate.rs crates/onnx-infra/src/lib.rs crates/desktop/src/main.rs
@@ -471,7 +471,7 @@ git commit -m "feat: auto-create model path symlinks from HF cache on startup"
 - Consumes: `octopus_infra::db::list_local_models_by_domain("translate")`
 - Produces: `discover_translation_models()` 改为从 DB 读 + 文件系统检查
 
-- [ ] **Step 1: 重写 discovery.rs**
+- [x] **Step 1: 重写 discovery.rs**
 
 删除 `KNOWN_MODELS` 和 `OPUS_REPOS` 常量。`discover_translation_models` 改为：
 
@@ -501,7 +501,7 @@ pub fn discover_translation_models() -> Vec<TranslationModelInfo> {
 - `m2m100-418M` → `resolve_model_dir("translate/m2m100-418M")` + 检查 onnx 文件
 - `opus-mt` → `resolve_model_dir("translate/opus-mt")` + 检查 zh-en/en-zh 子目录
 
-- [ ] **Step 2: 重写 m2m100.rs——repo 从 DB source 读**
+- [x] **Step 2: 重写 m2m100.rs——repo 从 DB source 读**
 
 ```rust
 // 删除: const M2M100_REPO: &str = "lazycodepersona/m2m100_418m";
@@ -515,7 +515,7 @@ impl M2M100Engine {
 }
 ```
 
-- [ ] **Step 3: 重写 opus_mt.rs——resolve_opus_dir 简化**
+- [x] **Step 3: 重写 opus_mt.rs——resolve_opus_dir 简化**
 
 `resolve_opus_dir` 不再拼 HOME 路径，直接用 `resolve_model_dir`：
 
@@ -534,12 +534,12 @@ fn resolve_opus_dir(source_lang: &str, target_lang: &str) -> Result<(PathBuf, St
 }
 ```
 
-- [ ] **Step 4: 编译**
+- [x] **Step 4: 编译**
 
 Run: `cargo build -p octopus-translation`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/translation/src/discovery.rs crates/translation/src/m2m100.rs crates/translation/src/opus_mt.rs
@@ -558,7 +558,7 @@ git commit -m "refactor: translation models read from DB instead of hardcoded co
 - Consumes: `model_manifests`（旧格式升级用）
 - Produces: `download_model(repo)` 改为按 manifest 逐文件下载
 
-- [ ] **Step 1: 重写 download_model 为 manifest 驱动**
+- [x] **Step 1: 重写 download_model 为 manifest 驱动**
 
 核心逻辑：
 1. 从 DB 按 source 查 model → 读 secret_key manifest
@@ -653,7 +653,7 @@ pub async fn download_model(
 }
 ```
 
-- [ ] **Step 2: 实现 lookup_model_by_source 辅助函数**
+- [x] **Step 2: 实现 lookup_model_by_source 辅助函数**
 
 ```rust
 fn lookup_model_by_source(source: &str) -> Result<(String, String), String> {
@@ -669,7 +669,7 @@ fn lookup_model_by_source(source: &str) -> Result<(String, String), String> {
 }
 ```
 
-- [ ] **Step 3: 实现 check_manifest_ready + set_model_enabled_state**
+- [x] **Step 3: 实现 check_manifest_ready + set_model_enabled_state**
 
 ```rust
 fn check_manifest_ready(dir: &Path, manifest: &octopus_asr_local::manifest::Manifest) -> bool {
@@ -689,11 +689,11 @@ fn set_model_enabled_state(model_name: &str, enabled: bool) -> Result<(), String
 }
 ```
 
-- [ ] **Step 4: 修复 #[tauri::command] 错位**
+- [x] **Step 4: 修复 #[tauri::command] 错位**
 
 将 line 79-80 的 `#[tauri::command]` 从 `resolve_env_template` 移到 `set_download_mirror` 正上方。`resolve_env_template` 改为内部函数（去掉 macro）。
 
-- [ ] **Step 5: 更新 list_downloadable_models 加 domain 参数**
+- [x] **Step 5: 更新 list_downloadable_models 加 domain 参数**
 
 ```rust
 #[tauri::command]
@@ -715,12 +715,12 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
 }
 ```
 
-- [ ] **Step 6: 编译**
+- [x] **Step 6: 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/model_commands.rs
@@ -735,7 +735,7 @@ git commit -m "feat: manifest-driven download + fix tauri::command misplacement 
 - Modify: `crates/desktop/src/main.rs`（invoke_handler）
 - Modify: `crates/desktop/src/translation_commands.rs`
 
-- [ ] **Step 1: 删除 translation_commands.rs 中 list_downloadable_translation_models**
+- [x] **Step 1: 删除 translation_commands.rs 中 list_downloadable_translation_models**
 
 ```rust
 // 删除：
@@ -743,17 +743,17 @@ git commit -m "feat: manifest-driven download + fix tauri::command misplacement 
 // 前端统一走 list_downloadable_models({domain: "translate"})
 ```
 
-- [ ] **Step 2: 更新 main.rs invoke_handler**
+- [x] **Step 2: 更新 main.rs invoke_handler**
 
 移除 `translation_commands::list_downloadable_translation_models`。
 保留 `discover_translation_models` 和 `translate_status`。
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/translation_commands.rs crates/desktop/src/main.rs
@@ -769,13 +769,13 @@ git commit -m "refactor: remove translation-specific download command, unify via
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/TranslateTab.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/OcrTab.tsx`
 
-- [ ] **Step 1: AsrTab——list_downloadable_models 加 domain 参数**
+- [x] **Step 1: AsrTab——list_downloadable_models 加 domain 参数**
 
 ```typescript
 const data = await invoke<DownloadableModel[]>("list_downloadable_models", { domain: "asr" });
 ```
 
-- [ ] **Step 2: TranslateTab——改用统一 API**
+- [x] **Step 2: TranslateTab——改用统一 API**
 
 删除 `list_downloadable_translation_models` 调用，改用：
 
@@ -790,19 +790,19 @@ const [dl, disc, st, cfg] = await Promise.all([
 
 `DownloadableModel` 接口与 AsrTab 统一（去掉 `sizeMb`）。
 
-- [ ] **Step 3: OcrTab——加下载按钮**
+- [x] **Step 3: OcrTab——加下载按钮**
 
 OcrTab 当前只有 enable/disable toggle。改为与 AsrTab 统一模式：
 - 调 `list_downloadable_models({domain: "ocr"})`
 - 未就绪（is_enabled=false）显示下载按钮
 - 就绪（is_enabled=true）显示校验按钮
 
-- [ ] **Step 4: 前端构建**
+- [x] **Step 4: 前端构建**
 
 Run: `cd crates/desktop/frontend && npm run build`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/Models/
@@ -816,18 +816,18 @@ git commit -m "feat: unify AsrTab/TranslateTab/OcrTab to use list_downloadable_m
 **Files:**
 - Modify: `crates/cli/src/main.rs`
 
-- [ ] **Step 1: 更新 build_hf_request 和 run_download**
+- [x] **Step 1: 更新 build_hf_request 和 run_download**
 
 CLI `download` 子命令目前直接接 HF repo。改为支持路径标识格式：
 - 输入 `asr/whisper-small` → 从 DB 查 manifest → manifest 驱动下载
 - 输入 `owner/repo`（旧格式）→ 走原有 resolve_tasks 逻辑（向后兼容）
 
-- [ ] **Step 2: 编译**
+- [x] **Step 2: 编译**
 
 Run: `cargo build -p octopus-cli`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/cli/src/main.rs
@@ -841,19 +841,19 @@ git commit -m "feat: CLI download supports manifest-driven path identifiers"
 **Files:**
 - Modify: `crates/desktop/src/model_commands.rs`
 
-- [ ] **Step 1: 更新 verify_model 支持 manifest 校验**
+- [x] **Step 1: 更新 verify_model 支持 manifest 校验**
 
 `verify_model_inner` 当前只处理 ASR 模型（`lookup_model_name` 只查 ASR）。改为：
 - 从所有 domain 查 model_name
 - 解析 manifest（新格式含 source）→ `verify_against_manifest`
 - 损坏置 false
 
-- [ ] **Step 2: 编译 + 测试**
+- [x] **Step 2: 编译 + 测试**
 
 Run: `cargo test -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/model_commands.rs
@@ -868,25 +868,25 @@ git commit -m "feat: verify_model supports all domains with new manifest format"
 - Modify: `docs/architecture.md`（更新模型管理章节）
 - Modify: `docs/superpowers/specs/2026-07-14-model-download-manifest-design.md`（标注偏差）
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo build --release -p octopus-server -p octopus-cli -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `cargo test`
 Expected: PASS（无回归）
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 更新 octopus-download、model_commands、translation 相关章节，反映 manifest 驱动下载。
 
-- [ ] **Step 4: 更新 spec 偏差记录**
+- [x] **Step 4: 更新 spec 偏差记录**
 
 在 spec 末尾记录实现中的偏差（如有）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/

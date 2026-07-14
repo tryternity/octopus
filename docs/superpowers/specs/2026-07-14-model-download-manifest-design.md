@@ -533,3 +533,54 @@ WHERE domain = 'asr' AND is_local = 1;
 | `download_by_manifest` | `desktop/model_commands.rs` | 按 manifest 逐文件下载 |
 | `env_template_resolution` | `desktop/model_commands.rs` | `{env.huggingface}` 替换 |
 | `resolve_asr_path` | `onnx-infra/paths.rs` | `asr/{name}` 路径查找 + HF cache fallback |
+
+## 12. 实施偏差与补充（2026-07-14 实施）
+
+### 12.1 env 变量前缀统一（v29 迁移）
+
+spec 原设计 URL 模板用 `{env.huggingface}`，实施时改为 `{huggingface}`：
+- DB `config_key` 从 `env.huggingface` → `huggingface`（`category='env'` 已是命名空间，前缀冗余）
+- URL 模板从 `{env.huggingface}/...` → `{huggingface}/...`
+- `list_env_vars` / `save_env_var` / `delete_env_var` 不再做 strip/add prefix
+- v29 迁移：删除旧 `env.*` 行（INIT_SQL 用新 key 重新 seed）
+
+### 12.2 OCR seed provider/category 修正（v30 迁移）
+
+spec 原设计 `('ocr','paddleocr','ocr',...)`，修正为 `('ocr','local','paddleocr',...)`：
+- `provider='local'`（与其他本地模型一致）
+- `category='paddleocr'`（引擎族标识）
+- v30 迁移：删除旧 `provider='paddleocr' AND category='ocr'` 行
+
+### 12.3 模型管理 UI 统一（实施时新增）
+
+spec 原设计仅描述下载/校验逻辑，实施时统一了前端 4 Tab 的交互模式：
+
+**共享 `ModelRow` 组件**（`ModelRow.tsx`）：
+- 状态指示：绿色 ✓ = 当前激活，红色 ✓ = 已就绪可用，灰色 ⊙ = 未下载
+- 激活按钮：可用的非当前模型显示「激活」，已激活显示灰色「已激活」
+- 下载按钮：本地未下载显示
+- 删除按钮：本地已下载显示（`confirm()` 二次确认）
+- 校验按钮：本地已下载显示（图标按钮）
+- 名称格式：`model_name[provider]`，`local` → i18n「本地」
+
+**4 Tab 统一模式**：
+- AsrTab：`switch_asr_engine(model_name)` 激活
+- LlmTab：`switch_polish_llm(model_name, provider)` 激活（provider 参数解决同名不同 provider 问题）
+- OcrTab：`set_config("ocr_model", name)` 激活 + 重启提示（OnceLock 单例）
+- TranslateTab：`set_config("translate_engine", "local:{name}")` 激活
+
+**后端新增**：
+- `EngineOption` / `LlmOption` / `OcrOption` 新增 `provider` 字段
+- `build_llm_options` 用 `provider + model_name` 精确匹配 `current`（避免同名多 provider 都标 current）
+- `switch_asr_engine` / `switch_polish_llm` 参数名 `name` → `model_name`（Tauri camelCase 映射 `modelName → model_name`）
+- `list_downloadable_models` 加文件系统检查：`resolve_model_dir(source).is_ok()` fallback（手动放置/软链的模型也能显示为已就绪）
+- `delete_model` 命令：删除软链/目录 + `is_enabled=false`
+- `list_ocr_models` 改为不过滤 `is_enabled`（前端需展示全部供下载/切换）
+- `verify_model` 未下载时返回「未下载」而非报错
+- `model_migrate::create_model_symlinks`：desktop 启动时为 HF cache 模型创建软链
+
+**GeneralPanel 移除模型选择 Card**：ASR/LLM/OCR 模型选择移到各自 Tab。
+
+### 12.4 Tab 标题调整
+
+「常量」→「环境设置」/ "Environment"（i18n）。
