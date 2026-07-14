@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { CheckCircle2, Circle, Download, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { useT } from "@/lib/i18n";
 
 export interface ModelRowData {
@@ -138,8 +139,9 @@ export function ModelRow({
               <button
                 className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10")}
                 disabled={busy}
-                onClick={() => {
-                  if (confirm(t("settings.models.confirmDelete"))) onDelete();
+                onClick={async () => {
+                  const ok = await confirm(t("settings.models.confirmDelete"), { title: "删除模型", kind: "warning" });
+                  if (ok) onDelete();
                 }}
               >
                 <Trash2 className="w-2.5 h-2.5" />
