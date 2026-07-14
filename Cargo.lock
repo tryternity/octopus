@@ -5177,6 +5177,7 @@ name = "octopus-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "log",
  "octopus-asr-local",
  "octopus-infra",
  "once_cell",
