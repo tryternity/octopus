@@ -260,3 +260,19 @@ spec 原设计只验证 base_url + api_key 连通性（GET `/models`）。实施
 - `get_model_detail` `is_streaming`/`is_thinking` 从 DB 取真值（N3）
 - `CloudModelForm.handleSave` 错误提示改用 `setTestResult`（N1），空字段校验显示提示（M8）
 - 删除确认改用 `@tauri-apps/plugin-dialog`（WKWebView 不支持原生 `confirm()`）
+
+### 10.11 LLM 保存事务性测试（最终设计）
+
+LLM 模型保存是事务性操作——后端在写 DB 前先测试连接，测试通过才入库：
+
+- `add_cloud_model` / `edit_cloud_model` 改为 `async`，先调 `test_llm_connection`（POST `/chat/completions` + thinking disable 参数）
+- 测试失败 → 返回 `Err` → 模型不入库，前端显示错误
+- 测试通过 → 写入 DB（`is_enabled=1`）
+- 编辑时 secret_key 为空（脱敏未改）→ 从 DB 取真实 key 测试
+- `test_llm_connection` 抽为内部共享函数，`test_cloud_model`（前端手动按钮）和 add/edit（保存时）共用
+
+前端 `handleSave` 简化：只调 `add/edit_cloud_model`，不再做前端预测试。错误信息通过 catch 显示。
+
+### 10.12 is_thinking 默认值
+
+`CloudModelForm` 中 `is_thinking` 默认勾选（`true`）。大多数 flash 模型（deepseek-v4-flash、glm-4.5-flash）是思考模型，默认开更安全。非思考模型（glm-4-flashx、qwen-plus）用户取消勾选即可——取消后测试也能通过（不需要关 thinking）。

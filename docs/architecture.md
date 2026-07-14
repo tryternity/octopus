@@ -491,7 +491,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - `get_env_vars` / `set_env_var` / `delete_env_var_cmd`：环境变量 CRUD（`config_key` 不含 `env.` 前缀，`category='env'` 已是命名空间）。
 - `add_cloud_model` / `edit_cloud_model` / `remove_cloud_model`：云端模型 CRUD（v31 后无 seed，用户自建；编辑时空 secret_key 不覆盖原值）。
 - `list_asr_cloud_presets` / `list_llm_provider_presets`：参考模型列表（`app_config` 表 `category='asr_cloud_model'` / `'llm_provider'`，以后可远程更新）。
-- `test_cloud_model`：GET `{base_url}/models` 验证 LLM 连接（Bearer auth）。
+- `test_cloud_model`：前端手动测试按钮。有 model_name 时 POST `/chat/completions`（`max_tokens:1` + thinking disable）验证模型可用；无 model_name 时 GET `/models` 验证连通性。`is_thinking` 默认 true。`test_llm_connection` 内部函数被 add/edit_cloud_model 和 test_cloud_model 共用。
 - `get_model_detail`：按 id 取真实 source + secret_key（未脱敏），用于编辑回填 + 测试连接。
 
 **is_enabled 语义 = 文件就绪（v2）**：`true`=文件完备可被引擎加载，`false`=未就绪/未下载。写 DB 后调 `asr::config::reload_models_config()` 刷新 AsrConfig 缓存（`RUNTIME_CONFIG` v2 改 `RwLock<Option<Arc<AsrConfig>>>`，对齐 `APP_CONFIG` 模式），让「系统设置」引擎下拉即时更新——未就绪的模型不进下拉。local 模型 `secret_key` 重载为「文件清单 + sha256」JSON（api 模型仍是 key，按 `is_local` 分支，不冲突）。前端 `dist/settings/models.js`（IIFE 隔离；卡片按 is_enabled 显示「✓ 已就绪（+重新校验）/ 下载」；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。manifest（文件清单 + sha256，map 格式存 secret_key）下沉 `asr::manifest`，desktop/cli 共用；**cli `octopus-cli sync-models`** 批量扫描就绪本地模型、自举写 secret_key + 同步 is_enabled（首次填充/批量复核）。spec `superpowers/specs/2026-06-21-archived-spec.md#model-management-gui-design` §9。
