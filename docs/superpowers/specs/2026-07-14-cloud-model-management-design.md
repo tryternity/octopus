@@ -237,3 +237,26 @@ DB `LlmModelInfo` 从 4 字段扩展到 9 字段（加 `id` / `source` / `secret
 ### 10.7 删除回退简化
 
 spec §8.3 写了删除当前激活模型时回退兜底引擎的逻辑。实施时简化：`remove_cloud_model` 直接物理删除，不做回退检查（前端 `confirm()` 二次确认作为保护）。后续如需可补。
+
+### 10.8 LLM provider 预设改为 JSON 格式
+
+spec 原设计 `llm_provider` 的 `config_value` 为纯 base_url 字符串。实施时改为 JSON：
+
+```json
+{"base_url":"https://api.deepseek.com/","models":["deepseek-chat","deepseek-v4-flash"]}
+```
+
+`models` 数组提供参考模型列表（前端 datalist 下拉），允许为空（如 Ollama 全手填）。`list_llm_provider_presets` 解析 JSON 返回 `LlmProviderPresetRow { provider, base_url, models }`。
+
+### 10.9 test_cloud_model 验证模型可用性
+
+spec 原设计只验证 base_url + api_key 连通性（GET `/models`）。实施时增强：有 `model_name` 时改为 POST `/chat/completions`（`max_tokens: 1`），验证模型真实可用。错误时提取 API 返回的 `error.message`。无 `model_name` 时回退到 GET `/models`。
+
+### 10.10 审查修复
+
+- `remove_cloud_model` 简化为同步 fn（删死代码 M2）
+- `set_model_enabled_at` / `set_model_secret_key_at` WHERE 扩展到 `domain IN ('asr','translate','ocr')`（M3/N4）
+- `build_asr_options` 批量查询替代 N+1（M1），`is_streaming`/`is_thinking` 从 DB 取真值（I2）
+- `get_model_detail` `is_streaming`/`is_thinking` 从 DB 取真值（N3）
+- `CloudModelForm.handleSave` 错误提示改用 `setTestResult`（N1），空字段校验显示提示（M8）
+- 删除确认改用 `@tauri-apps/plugin-dialog`（WKWebView 不支持原生 `confirm()`）

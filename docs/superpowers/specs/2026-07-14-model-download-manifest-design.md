@@ -584,3 +584,21 @@ spec 原设计仅描述下载/校验逻辑，实施时统一了前端 4 Tab 的�
 ### 12.4 Tab 标题调整
 
 「常量」→「环境设置」/ "Environment"（i18n）。
+
+### 12.5 审查修复（4 轮独立审查）
+
+实施后经 4 轮独立审查（C/I/N/M 级），修复了以下问题：
+
+- **C1（Critical）**：`download_model` 第二步仍用旧 HF API 路径（`resolve_tasks(HfRequest{repo})`），路径标识非 HF repo → 404。改为读 DB manifest 逐文件按 source URL 下载 + sha256 校验。
+- **I-1（Important）**：`download_model` 第一步探查命中时无条件 `bootstrap_manifest` 覆盖预填 `secret_key`（source URL 丢失）。改为先查现有 `secret_key`——非空只置 `is_enabled=true`，空才 bootstrap。
+- **I1**：`create_model_symlinks` 对多来源模型（opus-mt 双 repo / OCR 三 repo）只取第一个 repo 软链。改为 `extract_all_hf_repos` 检查 repo 数，多 repo 跳过让 `download_model` 处理。
+- **I2**：`build_asr_options` 硬编码 `is_streaming: false`，编辑时静默篡改。改为从 DB `list_asr_model_details()` 批量查真实值（同时消除 N+1 查询）。
+- **M1**：`build_asr_options` N+1 查询（24 次锁）→ 单次 `list_asr_model_details()` 批量查询。
+- **M2**：`remove_cloud_model` 死代码（3 段无用查询）→ 简化为同步 fn。
+- **M3**：`set_model_enabled_at` / `set_model_secret_key_at` WHERE `domain='asr'` → 改为 `domain IN ('asr','translate','ocr')`。
+- **M8/N1**：`CloudModelForm.handleSave` 空 provider/modelName 静默 return + `alert(e)` WKWebView 不弹窗 → 改为 `setTestResult` 显示错误。
+- **N3**：`get_model_detail` 硬编码 `is_streaming: false` → 改用 `get_model_flags(id)`。
+- **N4**：M3 副作用——WHERE 丢 domain 限定 → 改为 `domain IN ('asr','translate','ocr')`。
+- **test_cloud_model**：原来只 GET `/models` 不验证 model_name → 改为 POST `/chat/completions` 验证模型可用性（有 model_name 时）。
+- **translate_status**：对 `local:NAME` spec 返回第一个 downloaded 模型 → 改为精确匹配 spec 中的 model_name。
+- **Tauri confirm**：浏览器原生 `confirm()` 在 WKWebView 不弹窗 → 改用 `@tauri-apps/plugin-dialog`。
