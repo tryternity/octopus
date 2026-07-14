@@ -744,6 +744,37 @@ fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
     texts
 }
 
+/// Pages/Keynote AppleScript 文本提取。
+/// `body text of document 1` 返回当前文档全文。
+fn try_pages_applescript(selected_text: &str, window_title: &Option<String>) -> Option<SurroundingText> {
+    use std::process::Command;
+
+    let script = r#"tell application "Pages"
+    set d to document 1
+    return body text of d
+end tell"#;
+
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    let full_text = String::from_utf8_lossy(&output.stdout).to_string();
+    log::info!("[app-context] Pages AppleScript: {} chars", full_text.chars().count());
+
+    let result = slice_around_text(&full_text, selected_text, 1000)?;
+
+    Some(SurroundingText {
+        before: result.0,
+        after: result.1,
+        window_title: window_title.clone(),
+    })
+}
+
 /// 从 bundle_id 推断进程名（用于 lsof -c 匹配）。
 fn bundle_id_to_procname(bundle_id: &str) -> String {
     let id = bundle_id.to_ascii_lowercase();
@@ -1275,6 +1306,16 @@ unsafe fn build_surrounding(
                         let diag = Some(diagnostics.join("\n  "));
                         log::info!("[app-context] Sublime 插件取数成功");
                         return Ok((sublime_ctx, diag));
+                    }
+                }
+
+                // Pages/Keynote 用 AppleScript 读全文（和 Chrome JS 同思路）
+                if bundle_id_or_name.contains("iwork") {
+                    if let Some(ctx) = try_pages_applescript(selected_text, &window_title) {
+                        diagnostics.push("PAGES_APPLESCRIPT: AppleScript body text 取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] Pages AppleScript 取数成功");
+                        return Ok((ctx, diag));
                     }
                 }
 
