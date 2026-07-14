@@ -134,15 +134,8 @@ fn chat_text(
         .unwrap_or_default();
 
     if polished.is_empty() {
-        // 空 content 可能是思考模型未关 thinking——自动重试一次带 disable 参数
-        if !config.needs_disable_thinking() {
-            log::info!("[llm] 空 content，自动重试带 thinking disable");
-            let mut retry_config = config.clone();
-            retry_config.is_thinking = true;
-            return chat_text(system, user, max_tokens, &retry_config);
-        }
         anyhow::bail!(
-            "LLM 返回空 content（已尝试关闭 thinking，仍失败；可能 max_tokens 不足或模型不支持）"
+            "LLM 返回空 content（模型可能仍处于思考模式，或 max_tokens 不足）；润色建议确认 thinking 已关闭或改用非思考模型"
         );
     }
 
