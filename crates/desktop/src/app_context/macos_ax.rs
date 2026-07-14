@@ -846,74 +846,45 @@ fn slice_around_text(
     // 尝试 3：NFKC 归一化匹配
     // WPS Cmd+C 可能产生康熙部首（U+2Exx）或全角标点（U+FFxx），
     // 而 pdftotext/officecli 提取的是正常 Unicode → 精确匹配失败。
-    // 用 unicode-normalization crate 做 NFKC 归一化，去掉标点后比较。
     use unicode_normalization::UnicodeNormalization;
 
     let normalize_nfkc = |s: &str| -> String {
         s.nfkc()
             .filter(|c| {
                 let cp = *c as u32;
-                // 只保留 CJK + ASCII 字母数字
-                (0x4E00..=0x9FFF).contains(&cp)
-                    || c.is_ascii_alphanumeric()
+                (0x4E00..=0x9FFF).contains(&cp) || c.is_ascii_alphanumeric()
             })
             .map(|c| c.to_ascii_lowercase())
             .collect()
     };
 
     let sel_norm = normalize_nfkc(sel);
-    if sel_norm.len() < 5 {
-        return None; // 归一化后太短，误匹配风险高
-    }
+    if sel_norm.len() >= 5 {
+        // 构建归一化映射表：一次遍历，记录每个归一化字符对应的原文 byte offset
+        let mut full_norm = String::new();
+        let mut norm_to_byte: Vec<usize> = Vec::new(); // norm char index → original byte offset
 
-    let full_norm = normalize_nfkc(full_text);
-    if full_norm.find(&sel_norm).is_some() {
-        // 归一化匹配成功——在原文中搜索定位
-        // 取选中文字前 10 个 CJK 字符的 NFKC 在原文中定位
-        let first_cjk_nfkc: String = sel.nfkc()
-            .filter(|c| (*c as u32) >= 0x4E00 && (*c as u32) <= 0x9FFF)
-            .take(10)
-            .collect();
-        if first_cjk_nfkc.len() >= 4 {
-            let first_cjk_norm = normalize_nfkc(&first_cjk_nfkc);
-            if let Some(pos_bytes) = find_normalized_substring(full_text, &first_cjk_norm, &normalize_nfkc) {
+        let mut byte_pos = 0usize;
+        for orig_char in full_text.chars() {
+            let char_bytes = orig_char.len_utf8();
+            // NFKC 归一化单个字符（兼容字符可能展开为多字符，如全角→半角）
+            let nfkc_str: String = orig_char.nfkc().collect();
+            for nc in nfkc_str.chars() {
+                let cp = nc as u32;
+                if (0x4E00..=0x9FFF).contains(&cp) || nc.is_ascii_alphanumeric() {
+                    full_norm.push(nc.to_ascii_lowercase());
+                    norm_to_byte.push(byte_pos);
+                }
+            }
+            byte_pos += char_bytes;
+        }
+
+        if let Some(pos) = full_norm.find(&sel_norm) {
+            let char_index = full_norm[..pos].chars().count();
+            if char_index < norm_to_byte.len() {
+                let pos_bytes = norm_to_byte[char_index];
                 return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
             }
-        }
-    }
-
-    None
-}
-
-/// 在原文中搜索归一化子串，返回 byte offset。
-fn find_normalized_substring(
-    full_text: &str,
-    target_norm: &str,
-    normalize: impl Fn(&str) -> String,
-) -> Option<usize> {
-    // 逐字符滑动窗口
-    let full_chars: Vec<char> = full_text.chars().collect();
-    let target_chars: Vec<char> = target_norm.chars().collect();
-    if target_chars.is_empty() || target_chars.len() > full_chars.len() {
-        return None;
-    }
-
-    // 在 full_text 的归一化版本中找 target_norm 的位置
-    let full_norm = normalize(full_text);
-    if full_norm.find(target_norm).is_none() {
-        return None;
-    }
-
-    // 归一化后找到了——现在需要映射回原文 byte offset
-    // 策略：从 full_text 开头逐字符尝试，归一化每个窗口看是否匹配 target 开头
-    for (i, _) in full_chars.iter().enumerate() {
-        // 从位置 i 开始取窗口，归一化后看是否以 target 开头
-        let window: String = full_chars[i..].iter().take(target_chars.len() + 20).collect();
-        let window_norm = normalize(&window);
-        if window_norm.starts_with(target_norm) {
-            // 找到了——计算原文 byte offset
-            let byte_offset: usize = full_chars[..i].iter().map(|c| c.len_utf8()).sum();
-            return Some(byte_offset);
         }
     }
 
