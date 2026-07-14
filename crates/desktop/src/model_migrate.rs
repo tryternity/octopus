@@ -38,7 +38,15 @@ pub fn create_model_symlinks() -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if let Some(repo) = extract_hf_repo_from_manifest(&manifest) {
+        let repos = extract_all_hf_repos_from_manifest(&manifest);
+        // 多来源模型（opus-mt 双 repo / OCR 三 repo）不能单 repo 软链覆盖目标布局，
+        // 跳过让 download_model 按 manifest 逐文件下载。
+        if repos.len() != 1 {
+            log::info!("[migrate] {} 有 {} 个来源，跳过软链（由 download_model 处理）",
+                m.source, repos.len());
+            continue;
+        }
+        if let Some(repo) = repos.into_iter().next() {
             if let Ok(snapshot_dir) = octopus_asr_local::config::find_hf_cache(&repo) {
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent).ok();
@@ -52,38 +60,51 @@ pub fn create_model_symlinks() -> Result<()> {
     Ok(())
 }
 
-/// 从 manifest 的 source URL 解析 HF repo（`{huggingface}/{owner}/{repo}/resolve/main/...`）。
-fn extract_hf_repo_from_manifest(manifest: &serde_json::Value) -> Option<String> {
-    let obj = manifest.as_object()?;
-    for (_path, meta) in obj {
-        let source = meta.get("source")?.as_str()?;
-        if let Some(idx) = source.find("/resolve/main/") {
-            let prefix = &source[..idx];
-            // 去掉模板变量前缀（{*}）或 mirror host 前缀
-            let repo_part = if let Some(brace) = prefix.rfind('}') {
-                &prefix[brace + 1..]
-            } else {
-                // 已解析的 URL：去掉 https://host/ 前缀
-                if let Some(slash) = prefix.find("://") {
-                    let after_scheme = &prefix[slash + 3..];
-                    // 跳过 host，取 path 的前两段（owner/repo）
-                    if let Some(path_start) = after_scheme.find('/') {
-                        &after_scheme[path_start + 1..]
-                    } else {
-                        continue;
+/// 从 manifest 解析所有不同的 HF repo（去重）。
+/// 用于判断是否为单 repo 模型（可软链）还是多 repo（需逐文件下载）。
+fn extract_all_hf_repos_from_manifest(manifest: &serde_json::Value) -> Vec<String> {
+    let mut repos: Vec<String> = Vec::new();
+    if let Some(obj) = manifest.as_object() {
+        for (_path, meta) in obj {
+            if let Some(source) = meta.get("source").and_then(|v| v.as_str()) {
+                if let Some(repo) = parse_hf_repo_from_url(source) {
+                    if !repos.contains(&repo) {
+                        repos.push(repo);
                     }
-                } else {
-                    prefix
                 }
-            };
-            let parts: Vec<&str> = repo_part.split('/').collect();
-            if parts.len() >= 2 {
-                let n = parts.len();
-                return Some(format!("{}/{}", parts[n - 2], parts[n - 1]));
             }
         }
     }
-    None
+    repos
+}
+
+/// 从单个 source URL 解析 HF repo（`{huggingface}/{owner}/{repo}/resolve/main/...`）。
+fn parse_hf_repo_from_url(source: &str) -> Option<String> {
+    let idx = source.find("/resolve/main/")?;
+    let prefix = &source[..idx];
+    // 去掉模板变量前缀（{*}）或 mirror host 前缀
+    let repo_part = if let Some(brace) = prefix.rfind('}') {
+        &prefix[brace + 1..]
+    } else {
+        // 已解析的 URL：去掉 https://host/ 前缀
+        if let Some(slash) = prefix.find("://") {
+            let after_scheme = &prefix[slash + 3..];
+            if let Some(path_start) = after_scheme.find('/') {
+                &after_scheme[path_start + 1..]
+            } else {
+                return None;
+            }
+        } else {
+            prefix
+        }
+    };
+    let parts: Vec<&str> = repo_part.split('/').collect();
+    if parts.len() >= 2 {
+        let n = parts.len();
+        Some(format!("{}/{}", parts[n - 2], parts[n - 1]))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -91,55 +112,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_repo_from_simple_manifest() {
+    fn extract_all_repos_single() {
         let json = serde_json::json!({
             "onnx/model.onnx": {
                 "source": "{huggingface}/onnx-community/whisper-small.en/resolve/main/onnx/model.onnx",
                 "sha256": "abc", "size": 123
             }
         });
-        assert_eq!(
-            extract_hf_repo_from_manifest(&json),
-            Some("onnx-community/whisper-small.en".to_string())
-        );
+        let repos = extract_all_hf_repos_from_manifest(&json);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0], "onnx-community/whisper-small.en");
     }
 
     #[test]
-    fn extract_repo_from_multi_source_manifest() {
+    fn extract_all_repos_multi() {
         let json = serde_json::json!({
             "zh-en/onnx/encoder.onnx": {
                 "source": "{huggingface}/Xenova/opus-mt-zh-en/resolve/main/onnx/encoder.onnx",
                 "sha256": "abc", "size": 123
+            },
+            "en-zh/onnx/encoder.onnx": {
+                "source": "{huggingface}/Xenova/opus-mt-en-zh/resolve/main/onnx/encoder.onnx",
+                "sha256": "def", "size": 456
             }
         });
-        assert_eq!(
-            extract_hf_repo_from_manifest(&json),
-            Some("Xenova/opus-mt-zh-en".to_string())
-        );
+        let repos = extract_all_hf_repos_from_manifest(&json);
+        assert_eq!(repos.len(), 2);
+        assert!(repos.contains(&"Xenova/opus-mt-zh-en".to_string()));
+        assert!(repos.contains(&"Xenova/opus-mt-en-zh".to_string()));
     }
 
     #[test]
-    fn extract_repo_returns_none_for_github_only() {
+    fn extract_all_repos_github_only() {
         let json = serde_json::json!({
             "keys.txt": {
                 "source": "{github}/PaddlePaddle/PaddleOCR/raw/main/dict.txt",
                 "sha256": "abc", "size": 123
             }
         });
-        assert_eq!(extract_hf_repo_from_manifest(&json), None);
+        let repos = extract_all_hf_repos_from_manifest(&json);
+        assert!(repos.is_empty(), "GitHub-only manifest should have no HF repos");
     }
 
     #[test]
-    fn extract_repo_from_resolved_url() {
+    fn extract_all_repos_resolved_url() {
         let json = serde_json::json!({
             "model.onnx": {
                 "source": "https://hf-mirror.com/csukuangfj/sherpa-onnx-xxx/resolve/main/model.onnx",
                 "sha256": "abc", "size": 123
             }
         });
-        assert_eq!(
-            extract_hf_repo_from_manifest(&json),
-            Some("csukuangfj/sherpa-onnx-xxx".to_string())
-        );
+        let repos = extract_all_hf_repos_from_manifest(&json);
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0], "csukuangfj/sherpa-onnx-xxx");
     }
 }

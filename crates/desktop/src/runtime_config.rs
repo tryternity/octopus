@@ -94,14 +94,15 @@ fn build_asr_options(
             continue;
         }
         let cat = octopus_asr_local::config::category_label(e.category);
-        // 从 DB 查 id / source / secret_key（用于编辑/删除）
+        // 从 DB 查 id / source / secret_key / is_streaming / is_thinking（用于编辑/删除）
         let real_id = octopus_infra::db::get_model_id("asr", &e.name, &e.provider)
             .ok().flatten().unwrap_or(0);
-        let (source, secret_key) = if real_id > 0 {
+        let (source, secret_key, is_streaming, is_thinking) = if real_id > 0 {
             let (src, key) = octopus_infra::db::get_model_source_key(real_id).unwrap_or_default();
-            (src, mask_key(&key))
+            let (streaming, thinking) = octopus_infra::db::get_model_flags(real_id).unwrap_or((false, false));
+            (src, mask_key(&key), streaming, thinking)
         } else {
-            (String::new(), String::new())
+            (String::new(), String::new(), false, false)
         };
         options.push(EngineOption {
             id: real_id,
@@ -113,8 +114,8 @@ fn build_asr_options(
             label: engine_label(e.is_local, cat, &e.provider, &e.name),
             source,
             secret_key,
-            is_streaming: false,
-            is_thinking: false,
+            is_streaming,
+            is_thinking,
         });
     }
     options

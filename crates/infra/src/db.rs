@@ -937,6 +937,18 @@ pub fn get_model_source_key(id: i64) -> Result<(String, String)> {
     })
 }
 
+/// 按 id 查模型的 is_streaming + is_thinking（用于编辑时回填）。
+pub fn get_model_flags(id: i64) -> Result<(bool, bool)> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT is_streaming, is_thinking FROM models WHERE id=?1",
+            params![id],
+            |r| Ok((r.get::<_, i32>(0)? != 0, r.get::<_, i32>(1)? != 0)),
+        )
+        .map_err(Into::into)
+    })
+}
+
 /// 读取 ASR 云端参考模型列表。
 /// 返回 Vec<(provider, category, models_str)>，models_str 为分号分隔。
 pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {
