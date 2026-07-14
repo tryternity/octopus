@@ -196,7 +196,7 @@ Browser (Chrome/Edge/Safari)
 5. **焦点元素角色** (`AXRole`) 判断是否文本元素（AXTextArea/AXTextField/AXStaticText）
 6. 非文本元素 → **find_text_element** 遍历 AX 子树（深度 8 层、广度 100），优先找 `AXValue` 包含 selected_text 的文本元素。**每层递归入口检查 deadline**，超时即返回已采集部分
 7. **AXValue** + **AXSelectedTextRange**（经 `is_cf_value` 类型守卫）→ 切 before/after
-8. **内容校验**（仅 `kind != Terminal`）：full_text 不含选中文本 → 降级返回 None（Sublime/WPS 自绘编辑器场景）。Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域（光标行以下），find-fail fallback 应取 scrollback 末尾作 before
+8. **内容校验**（仅 `kind == Editor`）：`full_text` 为空（WPS AX 返回 -25212 禁用）**或**不包含选中文本 → 触发自绘编辑器 fallback 链（见 §5.5，按 Sublime 插件 → WPS lsof → 磁盘 顺序）。Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域（光标行以下），find-fail fallback 应取 scrollback 末尾作 before
 
 **deadline 透传**：`Instant` 从 `gather()` 创建，透传到 `gather_surrounding` → `build_surrounding` → `find_text_element_depth`，确保庞大的 AX 树（Electron App）不会卡死。
 
@@ -226,7 +226,11 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 
 ### 5.5 自绘编辑器取数（macOS）
 
-自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当 AX 内容校验降级时，按优先级尝试三条 fallback 路径：
+自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当 §5.2 第 8 点内容校验触发（`full_text` 空 / 不含选中文本）时，按 bundle 匹配优先级走 fallback 链（`build_surrounding`，仅 `kind == Editor`）：
+
+1. `bundle.contains("sublimetext")` → **路径 1** Sublime 插件取数器
+2. `bundle.contains("kingsoft")` → **路径 1.5** WPS lsof 取数
+3. 有 `window_title` → **路径 2** 通用磁盘 fallback（所有 Editor）
 
 **路径 1：Sublime 插件取数器**（`sublime_plugin.rs`，仅 `com.sublimetext.*`）
 
@@ -235,6 +239,15 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 3. 插件从 Sublime Python API 读 view 全文 + 选区位置 → 写 `/tmp/octopus_sublime_ctx.json`
 4. 读取 JSON → 用选区位置精确切 before/after 各 1000 字
 5. **对未保存文件（untitled）同样有效**——插件直接读 view 内容
+
+**路径 1.5：WPS lsof 取数**（`try_wps_lsof_context`，仅 `bundle.contains("kingsoft")`）
+
+WPS 窗口标题通常为空，路径 2 磁盘 fallback 无法从标题提取文件名。改用 `lsof -c wpsoffice -F n` 列出 WPS 进程当前打开的文件：
+
+1. 筛选 `.docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt` 扩展名，排除 `/dev/`、`.~` 临时锁文件
+2. 逐个 `read_file_as_text`（officecli / pdftotext / zip+XML）提取文本
+3. `slice_around_text` 用选中文本定位切 before/after 各 1000 字
+4. 命中即返回，`window_title` 填文件名（`path.file_name()`）
 
 **路径 2：磁盘文件 fallback**（仅 `kind == Editor`）
 
@@ -249,7 +262,7 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 | 格式 | 优先工具 | Fallback |
 |------|---------|----------|
 | `.docx`/`.xlsx`/`.pptx` | **officecli**（`officecli view file text`，需安装，处理修订/批注/公式/图表/SmartArt） | 内置 zip+XML 解析（`<w:t>`/`<a:t>`/sharedStrings） |
-| `.pdf` | **pdftotext**（poppler，需 Homebrew） | None（降级） |
+| `.pdf` | **pdftotext**（poppler，需 Homebrew）+ CJK 排版换行合并（`merge_cjk_line_breaks`：前一行末尾 CJK 字符 ≥ `0x2e80` 则合并） | None（降级） |
 | `.txt`/`.md`/`.rs`/`.py` 等 | 直接读取（UTF-8 lossy） | — |
 | zip 文件（误存为 .txt） | 检测 `PK\x03\x04` 魔数 → OOXML 解析 | — |
 
@@ -262,10 +275,10 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 | 编辑器 | 路径 1 插件 | 路径 2 磁盘 | 备注 |
 |--------|------------|------------|------|
 | Sublime Text | ✅ 最可靠 | ✅ session 精确 | 含未保存文件 |
-| WPS Office | ❌ 无插件 API | ✅ officecli / OOXML | 需窗口标题含文件名 |
+| WPS Office | ❌ 无插件 API | ✅ **lsof 取进程路径**（绕过空窗口标题）→ officecli/OOXML/pdftotext | 窗口标题通常为空，走 lsof |
 | 其他自绘编辑器 | ❌ | ✅ 纯文本文件 | 需窗口标题含文件名 |
 
-### 5.5 AX 安全约束（踩坑总结）
+### 5.6 AX 安全约束（踩坑总结）
 
 | 风险 | 防护 |
 |------|------|
@@ -341,7 +354,7 @@ fn classify_app(bundle_id: &str) -> AppKind {
 | Linux 平台 | `NullProvider` 返回 Err，行为等同改造前 |
 | 无辅助功能权限 | AX 调用返回错误码 → gather 返回 Err → 降级 |
 | Chrome `-25212` | 200ms 后重试一次；仍失败 → fallback AX 或 Browser JS |
-| 自绘编辑器（Sublime/WPS） | full_text 不含选中文本 → 降级返回 None |
+| 自绘编辑器（Sublime/WPS） | full_text 空/不含选中文本 → 触发 fallback 链（Sublime 插件 → WPS lsof → 磁盘） |
 | AX 调用超时（>500ms） | 返回已采集的部分字段 |
 | Browser AppleScript 失败 | fallback 到 AX |
 | gather 整体 Err | 记日志，ctx 仅含 `text`，**浮窗照常显示** |
@@ -355,7 +368,7 @@ fn classify_app(bundle_id: &str) -> AppKind {
 | 限制 | 现状 | v2 方向 |
 |------|------|---------|
 | Sublime Text | ✅ 插件取数器（subl --command + Python API）+ 磁盘 fallback | — |
-| WPS Office | AX 禁用 + 无 AppleScript + 无插件 API；磁盘 fallback 支持 .docx（OOXML zip 解析），需窗口标题含文件名 | WPS 插件 API（如有） |
+| WPS Office | AX 禁用 + 无 AppleScript + 无插件 API + 窗口标题通常为空；**lsof 取进程打开文件路径**（绕过空标题）+ officecli/OOXML 提取 .docx/.xlsx/.pptx + pdftotext 提取 .pdf | WPS 插件 API（如有） |
 | Firefox (macOS) | 无 AppleScript JS 接口，走 AX（Mozilla AX 比 Chrome 完整） | 浏览器扩展 + WebSocket |
 | Windows 浏览器 | UIA TextPattern 全文 find，无 AppleScript JS 精度 | GetSelection + ExpandToEnclosingUnit 段落级精准扩展 |
 | Windows 全文 find | selected_text 多次出现时命中第一次，可能错位 | GetSelection 精确选区 + range 扩展 |

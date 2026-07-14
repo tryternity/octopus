@@ -114,6 +114,19 @@
 - [x] **三轮**：osascript spawn 补 `Stdio::piped()` + 并发读线程（防 child.stdout=None 功能回归）
 - [x] **三轮卫生**：超时路径显式 join 读线程
 
+### WPS / PDF 取数增强（2026-07-14，合并 main 前）
+- [x] **WPS lsof 文件路径获取**（`try_wps_lsof_context`）：WPS 窗口标题通常为空 → `lsof -c wpsoffice -F n` 取进程打开文件路径（筛选 .docx/.xlsx/.pptx/.pdf，排除 .~ 锁文件）→ `read_file_as_text` → `slice_around_text` 切 before/after
+- [x] **full_text 为空也触发 fallback**：WPS AX 返回 -25212 时 full_text 为空，原判定 `!full_text.is_empty() && !contains` 漏掉空文本路径 → 改 `full_text.is_empty() || !contains`
+- [x] **PDF 排版换行合并**（`merge_cjk_line_breaks`）：pdftotext 按 PDF 布局断行致 CJK 跨行选中匹配失败 → `read_pdf_text` 输出合并（前一行末尾 CJK 字符 ≥ `0x2e80` 视为排版换行）
+
+### Spec Coverage 补充
+| Spec section | Task |
+|--------------|------|
+| §5.2 第 8 点（full_text 空 / 不含均触发 fallback） | full_text 为空也触发 fallback |
+| §5.5 路径 1.5 WPS lsof 取数 | WPS lsof 文件路径获取 |
+| §5.5 read_file_as_text `.pdf`（CJK 换行合并） | PDF 排版换行合并 |
+| §5.6（原重复 §5.5，已修正编号） | — |
+
 ---
 
 ## 回顾检查项
