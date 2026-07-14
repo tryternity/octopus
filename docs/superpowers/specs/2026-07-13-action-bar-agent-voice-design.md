@@ -42,7 +42,7 @@ agent 项需要用户输入任务时，**联动语音识别**：
 | 上下文解耦 | DB agent_tasks 表存完整上下文（context JSON + prompt_template）；录音只带 task_id |
 | 回调方式 | finalize_after_stop 按 record_type match 分流 |
 | task 状态 | 精简 4 态：pending / executing / done / failed |
-| 管理界面 | AgentPanel 底部加任务列表区 |
+| 管理界面 | AgentPanel 双 Tab 布局（Agent 管理 + Agent 任务），后台 task 完成实时刷新 |
 
 ---
 
@@ -259,7 +259,10 @@ fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
 
 ### 3.7 管理界面
 
-在现有 AgentPanel（`AgentPanel.tsx`）底部加**任务列表区**：
+AgentPanel（`AgentPanel.tsx`）改为**双 Tab 布局**（Pill tab，与 ModelsPanel 统一模式）：
+
+**Tab 1: Agent 管理**——adapter 列表（检测状态 + CRUD + 新建表单 + 占位符参考）
+**Tab 2: Agent 任务**——任务列表（状态色条 + 识别文本 + 重试/删除 + 批量清理已完成）
 
 | task_id（前 8 位） | 状态 | agent | 识别文本（前 20 字） | 创建时间 | 操作 |
 |---|---|---|---|---|---|
@@ -267,8 +270,10 @@ fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
 | e5f6g7h8 | ❌ failed | Pi | 制作摘要 | 10 分钟前 | 重试 · 删除 |
 | i9j0k1l2 | ⏳ pending | Claude Code | — | 1 小时前 | 删除 |
 
-- 仅查最近 50 条
+- 仅查最近 100 条
 - failed/done 可重试（重新组装命令 + Terminal.app 执行）；空识别 task（transcribed_text 为空）拒绝重试
+- 批量清理已完成（done/failed）
+- 后台 task 完成 emit `agent-task://updated`，TaskTab listen 后实时刷新（无需重开设置页）
 
 **新增 Tauri 命令**：
 
@@ -320,7 +325,7 @@ fn retry_agent_task(id: String)  // 重新执行 failed 的 task
 | `crates/desktop/src/action_bar_commands.rs` | trigger_agent_voice 命令；list/delete/retry_agent_task 命令 |
 | `crates/desktop/src/main.rs` | invoke_handler 注册新命令 |
 | `crates/desktop/frontend/src/pages/ActionBar/index.tsx` | agent 含 {{task}} 时调 trigger_agent_voice 替代弹输入框 |
-| `crates/desktop/frontend/src/pages/Settings/AgentPanel.tsx` | 底部加任务列表区 |
+| `crates/desktop/frontend/src/pages/Settings/AgentPanel.tsx` | 双 Tab 布局（AdapterTab + TaskTab），任务实时刷新 |
 | `crates/desktop/frontend/src/locales/zh-CN.yaml` | 新增 i18n 键 |
 | `crates/desktop/frontend/src/locales/en.yaml` | 新增 i18n 键 |
 
