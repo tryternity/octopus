@@ -887,14 +887,14 @@ pub fn update_cloud_model(
             // 不改 secret_key
             conn.execute(
                 "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
-                 is_streaming=?5, is_thinking=?6 WHERE id=?7",
+                 is_streaming=?5, is_thinking=?6 WHERE id=?7 AND is_local=0",
                 params![provider, category, model_name, source,
                         is_streaming as i32, is_thinking as i32, id],
             )?;
         } else {
             conn.execute(
                 "UPDATE models SET provider=?1, category=?2, model_name=?3, source=?4,
-                 secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8",
+                 secret_key=?5, is_streaming=?6, is_thinking=?7 WHERE id=?8 AND is_local=0",
                 params![provider, category, model_name, source, secret_key,
                         is_streaming as i32, is_thinking as i32, id],
             )?;
@@ -906,7 +906,7 @@ pub fn update_cloud_model(
 /// 删除云端模型（物理删除，按 id）。
 pub fn delete_cloud_model(id: i64) -> Result<()> {
     with_db(|conn| {
-        conn.execute("DELETE FROM models WHERE id=?1", params![id])?;
+        conn.execute("DELETE FROM models WHERE id=?1 AND is_local=0", params![id])?;
         Ok(())
     })
 }

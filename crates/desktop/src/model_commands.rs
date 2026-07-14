@@ -338,7 +338,7 @@ fn current_secret_key_for_source(source: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 删除本地模型：删除模型目录 + is_enabled=false + secret_key 清空。
+/// 删除本地模型：删除模型目录 + is_enabled=false（secret_key 保留，下次下载不需重新生成清单）。
 #[tauri::command]
 pub async fn delete_model(repo: String) -> Result<(), String> {
     let dir = octopus_asr_local::config::resolve_model_dir(&repo)

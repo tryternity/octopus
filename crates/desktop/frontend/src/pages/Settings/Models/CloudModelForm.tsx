@@ -89,7 +89,7 @@ export function CloudModelForm({
   useEffect(() => {
     if (domain === "llm" && provider) {
       const preset = llmPresets.find((p) => p.provider === provider);
-      if (preset && !editModel) {
+      if (preset) {
         setSource(preset.baseUrl);
       }
     }
