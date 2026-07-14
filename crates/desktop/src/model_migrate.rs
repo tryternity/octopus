@@ -38,7 +38,16 @@ pub fn create_model_symlinks() -> Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let repos = extract_all_hf_repos_from_manifest(&manifest);
+        let mut repos = extract_all_hf_repos_from_manifest(&manifest);
+        // 旧 bootstrap manifest source 全空 → 回退到预填常量取 repo 信息
+        if repos.is_empty() {
+            if let Some(preset) = octopus_infra::model_manifests::asr_manifest(&m.model_name) {
+                if let Ok(preset_val) = serde_json::from_str::<serde_json::Value>(preset) {
+                    repos = extract_all_hf_repos_from_manifest(&preset_val);
+                    log::info!("[migrate] {} secret_key source 为空，用预填常量取 repo", m.model_name);
+                }
+            }
+        }
         // 多来源模型（opus-mt 双 repo / OCR 三 repo）不能单 repo 软链覆盖目标布局，
         // 跳过让 download_model 按 manifest 逐文件下载。
         if repos.len() != 1 {

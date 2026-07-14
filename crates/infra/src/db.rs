@@ -393,6 +393,7 @@ fn fill_manifests(conn: &Connection) -> Result<()> {
         ("translate", crate::model_manifests::translate_manifest),
         ("ocr", crate::model_manifests::ocr_manifest),
     ] {
+        // 填充 secret_key 为空的行（首次 init）
         let rows: Vec<String> = conn
             .prepare(
                 &format!(
@@ -409,6 +410,42 @@ fn fill_manifests(conn: &Connection) -> Result<()> {
                     "UPDATE models SET secret_key=?1 WHERE model_name=?2 AND domain=?3",
                     params![json, name, domain],
                 )?;
+            }
+        }
+        // 升级旧 bootstrap manifest（source 全空）→ 替换为预填常量（含 source URL）
+        let all_rows: Vec<String> = conn
+            .prepare(
+                &format!(
+                    "SELECT model_name FROM models WHERE domain='{}' AND is_local=1 AND secret_key != ''",
+                    domain
+                ),
+            )?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for name in &all_rows {
+            if let Some(preset) = lookup(name) {
+                // 检查现有 manifest 是否有 source 字段（任一文件有 source 即认为已升级）
+                let current: String = conn
+                    .query_row(
+                        &format!("SELECT secret_key FROM models WHERE model_name=?1 AND domain='{}'", domain),
+                        params![name],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .unwrap_or_default();
+                let has_source = serde_json::from_str::<serde_json::Value>(&current)
+                    .ok()
+                    .and_then(|v| v.as_object().map(|obj| {
+                        obj.values().any(|v| v.get("source").and_then(|s| s.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+                    }))
+                    .unwrap_or(false);
+                if !has_source {
+                    log::info!("[fill_manifests] {} secret_key 无 source，升级为预填常量", name);
+                    conn.execute(
+                        "UPDATE models SET secret_key=?1 WHERE model_name=?2 AND domain=?3",
+                        params![preset, name, domain],
+                    )?;
+                }
             }
         }
     }
