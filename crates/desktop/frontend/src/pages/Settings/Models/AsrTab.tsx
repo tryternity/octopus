@@ -56,7 +56,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
 
   const loadModels = useCallback(async () => {
     try {
-      const data = await invoke<DownloadableModel[]>("list_downloadable_models");
+      const data = await invoke<DownloadableModel[]>("list_downloadable_models", { domain: "asr" });
       setModels(data);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast]);

@@ -9,14 +9,14 @@ interface DownloadableModel {
   name: string;
   repo: string;
   description: string;
-  sizeMb: number;
+  category: string;
+  is_enabled: boolean;
 }
 
 interface TranslationModelInfo {
   name: string;
   source: string;
   downloaded: boolean;
-  sizeMb: number;
   path: string;
 }
 
@@ -51,7 +51,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
   const loadData = useCallback(async () => {
     try {
       const [dl, disc, st, cfg] = await Promise.all([
-        invoke<DownloadableModel[]>("list_downloadable_translation_models"),
+        invoke<DownloadableModel[]>("list_downloadable_models", { domain: "translate" }),
         invoke<TranslationModelInfo[]>("discover_translation_models"),
         invoke<TranslateStatus>("translate_status"),
         invoke<{ config: Record<string, string | number | boolean> }>("get_config"),
@@ -162,7 +162,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
                   <span className="text-xs font-medium">{model.name}</span>
                   {downloaded && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                 </div>
-                <span className="text-[11px] text-muted-foreground">{model.description} · {model.sizeMb}MB</span>
+                <span className="text-[11px] text-muted-foreground">{model.description}</span>
               </div>
               {isBusy && progress ? (
                 <div className="flex items-center gap-2 shrink-0">
