@@ -844,7 +844,7 @@ fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> R
     Ok(())
 }
 
-/// 写某本地 ASR 模型的 secret_key（模型管理页存「文件清单 + sha256」JSON）。写 DB。
+/// 写某本地模型的 secret_key（asr/translate/ocr，模型管理页存「文件清单 + sha256」JSON）。写 DB。
 pub fn set_model_secret_key(model_name: &str, json: &str) -> Result<()> {
     with_db(|conn| set_model_secret_key_at(conn, model_name, json))
 }
