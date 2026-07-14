@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 /// 文件清单条目：sha256 + size（path 是 [`Manifest`] map 的 key）。
 #[derive(Serialize, Deserialize)]
 pub struct ManifestFile {
+    /// 下载来源 URL（支持 {env.*} 模板）。bootstrap 生成时为空串。
+    pub source: String,
     pub sha256: String,
     pub size: u64,
 }
@@ -47,7 +49,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Manifest) -> Result<()> {
             // 流式哈希 + metadata 取大小（不整文件读入，避免大模型文件的内存尖峰/OOM）。
             let size = std::fs::metadata(&path)?.len(); // follow symlink，实际字节数
             let sha256 = hex_sha256_file(&path)?;
-            out.insert(rel, ManifestFile { sha256, size });
+            out.insert(rel, ManifestFile { source: String::new(), sha256, size });
         } else if path.is_dir() {
             collect_files(root, &path, out)?;
         }
@@ -122,6 +124,17 @@ mod tests {
         assert_eq!(a.size, 5);
     }
 
+    /// 新格式（含 source）能正确反序列化。
+    #[test]
+    fn manifest_file_deserializes_with_source() {
+        let json = r#"{"a.onnx":{"source":"https://x.com/a.onnx","sha256":"abc","size":123}}"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let f = m.get("a.onnx").unwrap();
+        assert_eq!(f.source, "https://x.com/a.onnx");
+        assert_eq!(f.sha256, "abc");
+        assert_eq!(f.size, 123);
+    }
+
     /// 未篡改空；篡改/删除返回损坏清单。
     #[test]
     fn verify_detects_tamper() {
@@ -131,6 +144,7 @@ mod tests {
         manifest.insert(
             "a.onnx".into(),
             ManifestFile {
+                source: String::new(),
                 sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
                 size: 5,
             },
