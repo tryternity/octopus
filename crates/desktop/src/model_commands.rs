@@ -106,14 +106,22 @@ pub async fn download_model(
     _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ bootstrap + 置 true，不重下。
+    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ 置 true，不重下。
+    //    secret_key 非空时保留原值（含预填下载源）；空才 bootstrap 生成校验清单。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
-        let repo_clone = repo.clone();
-        let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
-            .await
-            .map_err(|e| format!("bootstrap 任务异常: {}", e))?
-            .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-        apply_model_state(&repo_clone, Some(&manifest), true)?;
+        let existing_key = current_secret_key_for_source(&repo);
+        if existing_key.is_empty() {
+            // 无 manifest → bootstrap 生成
+            let repo_clone = repo.clone();
+            let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
+                .await
+                .map_err(|e| format!("bootstrap 任务异常: {}", e))?
+                .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+            apply_model_state(&repo_clone, Some(&manifest), true)?;
+        } else {
+            // 已有 manifest → 只置 is_enabled=true，保留原 secret_key
+            apply_model_state(&repo, None, true)?;
+        }
         let _ = app_handle.emit(
             "download-done",
             serde_json::json!({ "repo": &repo, "already_ready": true }),
@@ -321,6 +329,13 @@ fn lookup_model_by_source(source: &str) -> Result<(String, String), String> {
         }
     }
     Err(format!("未找到 source='{source}' 的模型"))
+}
+
+/// 按 source（路径标识）查 secret_key，搜索所有 domain。找不到返回空串。
+fn current_secret_key_for_source(source: &str) -> String {
+    lookup_model_by_source(source)
+        .map(|(_, key)| key)
+        .unwrap_or_default()
 }
 
 /// 删除本地模型：删除模型目录 + is_enabled=false + secret_key 清空。
