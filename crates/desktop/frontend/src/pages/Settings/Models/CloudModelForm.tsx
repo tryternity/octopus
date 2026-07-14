@@ -152,11 +152,14 @@ export function CloudModelForm({
       // 编辑时 secretKey 可能是脱敏值（含 ********），需查 DB 取真实 key
       let realKey = secretKey;
       if (editModel?.id && secretKey.includes("********")) {
-        // 从后端取真实 key
         try {
-          const result = await invoke<{ source: string; secret_key: string }>("get_model_detail", { id: editModel.id });
-          realKey = result.secret_key;
-        } catch { /* 取不到就用脱敏值（会失败，用户需重新输入） */ }
+          const result = await invoke<{ source: string; secretKey: string }>("get_model_detail", { id: editModel.id });
+          realKey = result.secretKey;
+        } catch { /* fall through with masked value */ }
+      }
+      if (!realKey || realKey.includes("********")) {
+        setTestResult({ ok: false, message: "请重新输入 API Key" });
+        return;
       }
       const result = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
         source, secretKey: realKey,
