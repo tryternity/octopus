@@ -699,6 +699,35 @@ fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
     texts
 }
 
+/// 从 lsof -F n 输出中筛选文档文件路径（纯函数，可单测）。
+///
+/// 过滤规则：
+/// - 只保留 `n` 前缀行（lsof -F n 格式）
+/// - 排除 /dev/ 设备文件
+/// - 排除 .~ 临时锁文件
+/// - 只保留 .docx/.xlsx/.pptx/.pdf/.doc/.xls/.ppt 扩展名
+fn filter_lsof_doc_files(lsof_output: &str) -> Vec<String> {
+    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt"];
+    lsof_output
+        .lines()
+        .filter(|l| l.starts_with('n'))
+        .map(|l| &l[1..])
+        .filter(|path| {
+            !path.starts_with("/dev/") && !path.contains("/.~") && !path.contains(".~")
+        })
+        .filter(|path| {
+            std::path::Path::new(path)
+                .extension()
+                .map(|ext| {
+                    let ext = ext.to_string_lossy().to_lowercase();
+                    doc_exts.contains(&ext.as_str())
+                })
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// WPS Office 专用：通过 lsof 获取进程打开的文件路径。
 ///
 /// WPS 窗口标题通常为空，无法从标题提取文件名。
@@ -717,26 +746,8 @@ fn try_wps_lsof_context(selected_text: &str) -> Option<SurroundingText> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // 2. 筛选文档文件（排除临时锁文件 .~ 开头）
-    let doc_exts = ["docx", "xlsx", "pptx", "pdf", "doc", "xls", "ppt"];
-    let candidates: Vec<String> = stdout
-        .lines()
-        .filter(|l| l.starts_with('n')) // lsof -F n 输出格式：n/path/to/file
-        .map(|l| &l[1..]) // 去掉 'n' 前缀
-        .filter(|path| {
-            !path.starts_with("/dev/") && !path.contains("/.~") && !path.contains(".~")
-        })
-        .filter(|path| {
-            std::path::Path::new(path)
-                .extension()
-                .map(|ext| {
-                    let ext = ext.to_string_lossy().to_lowercase();
-                    doc_exts.contains(&ext.as_str())
-                })
-                .unwrap_or(false)
-        })
-        .map(|s| s.to_string())
-        .collect();
+    // 2. 筛选文档文件
+    let candidates = filter_lsof_doc_files(&stdout);
 
     log::info!("[app-context] WPS lsof: {} 个候选文件", candidates.len());
 
@@ -1232,19 +1243,6 @@ unsafe fn build_surrounding(
                         let diag = Some(diagnostics.join("\n  "));
                         log::info!("[app-context] WPS lsof 取数成功");
                         return Ok((wps_ctx, diag));
-                    }
-                }
-
-                // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
-                if bundle_id_or_name.contains("sublimetext") {
-                    if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
-                        bundle_id_or_name,
-                        selected_text,
-                    ) {
-                        diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
-                        let diag = Some(diagnostics.join("\n  "));
-                        log::info!("[app-context] Sublime 插件取数成功");
-                        return Ok((sublime_ctx, diag));
                     }
                 }
 
@@ -2112,5 +2110,82 @@ mod tests {
         assert!(!name_result_is_app_name("main.rs"));
         assert!(!name_result_is_app_name("test.txt"));
         assert!(!name_result_is_app_name("unknown_app"));
+    }
+
+    // ── merge_cjk_line_breaks ──
+
+    #[test]
+    fn test_merge_cjk_normal() {
+        // 两行 CJK 文本，前一行末尾是 CJK → 合并
+        let input = "这是第一行的文\n本内容继续";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "这是第一行的文本内容继续");
+    }
+
+    #[test]
+    fn test_merge_cjk_preserves_paragraph_break() {
+        // 空行分隔的段落 → 不合并
+        let input = "第一段文字\n\n第二段文字";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "第一段文字\n\n第二段文字");
+    }
+
+    #[test]
+    fn test_merge_cjk_ascii_no_merge() {
+        // 前一行末尾是 ASCII → 不合并
+        let input = "hello world\n继续文本";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "hello world\n继续文本");
+    }
+
+    #[test]
+    fn test_merge_cjk_multi_line() {
+        // 多行连续 CJK 排版换行 → 全部合并
+        let input = "这是一段很长的文字第一\n行继续到第二行\n再继续到第三行";
+        let result = merge_cjk_line_breaks(input);
+        assert_eq!(result, "这是一段很长的文字第一行继续到第二行再继续到第三行");
+    }
+
+    #[test]
+    fn test_merge_cjk_empty_input() {
+        assert_eq!(merge_cjk_line_breaks(""), "");
+    }
+
+    // ── filter_lsof_doc_files ──
+
+    #[test]
+    fn test_filter_lsof_normal() {
+        let input = "pwpsoffice\nn/Users/user/report.docx\nn/Users/user/notes.txt\nn/dev/null";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/report.docx"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_excludes_lock_files() {
+        let input = "n/Users/user/report.docx\nn/Users/user/.~report.docx";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/report.docx"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_multiple_formats() {
+        let input = "n/a/b.pdf\nn/c/d.xlsx\nn/e/f.pptx\nn/g/h.txt\nn/i/j.doc";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/a/b.pdf", "/c/d.xlsx", "/e/f.pptx", "/i/j.doc"]);
+    }
+
+    #[test]
+    fn test_filter_lsof_excludes_dev_and_frameworks() {
+        // WPS 打开 .pdf framework 文件不应匹配
+        let input = "n/dev/urandom\nn/Applications/wpsoffice.app/pdf.framework/pdf";
+        let result = filter_lsof_doc_files(input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_lsof_path_with_spaces() {
+        let input = "n/Users/user/my report final.docx";
+        let result = filter_lsof_doc_files(input);
+        assert_eq!(result, vec!["/Users/user/my report final.docx"]);
     }
 }
