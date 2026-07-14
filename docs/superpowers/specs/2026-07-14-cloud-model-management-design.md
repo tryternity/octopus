@@ -276,3 +276,15 @@ LLM 模型保存是事务性操作——后端在写 DB 前先测试连接，测
 ### 10.12 is_thinking 默认值
 
 `CloudModelForm` 中 `is_thinking` 默认勾选（`true`）。大多数 flash 模型（deepseek-v4-flash、glm-4.5-flash）是思考模型，默认开更安全。非思考模型（glm-4-flashx、qwen-plus）用户取消勾选即可——取消后测试也能通过（不需要关 thinking）。
+
+### 10.13 润色失败前端提示
+
+后端在所有润色失败路径（`PolishDone` Err / 空 content / `FinalPolishDone` Err）emit `polish-error` 事件（含错误信息）。前端结果窗口监听后显示红色气泡「⚠ 润色失败：xxx」，`POLISH_ERROR_TIMEOUT_MS = 2500` 后自动消失。用户不再面对静默失败。
+
+### 10.14 防御性 is_local 守卫
+
+`delete_cloud_model` / `update_cloud_model` 的 WHERE 子句加 `AND is_local=0`，防止前端传错 id 时误删/误改本地模型 DB 记录。与本地模型写操作的 `AND is_local=1` 对称。
+
+### 10.15 编辑模式 provider 切换更新 base_url
+
+CloudModelForm 编辑模式下切换 LLM provider 时自动更新 base_url（不再因 `!editModel` 跳过）。用户切换 provider 后 base_url 始终与预设同步，避免请求发到错误端点。
