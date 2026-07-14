@@ -397,7 +397,14 @@ pub struct LlmProviderPreset {
 }
 
 #[tauri::command]
-pub fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
+pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
+    // LLM 模型：后端先测试连接，通过才保存（is_enabled=1），失败返回错误（is_enabled=0 不入库）
+    if input.domain == "llm" && !input.model_name.is_empty() {
+        let test = test_llm_connection(&input.source, &input.secret_key, &input.model_name, input.is_thinking).await;
+        if !test.ok {
+            return Err(format!("模型测试失败，无法保存：{}", test.message));
+        }
+    }
     octopus_infra::db::insert_cloud_model(
         &input.domain, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
@@ -406,7 +413,22 @@ pub fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
 }
 
 #[tauri::command]
-pub fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
+pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
+    // LLM 模型：后端先测试连接，通过才更新
+    if input.domain == "llm" && !input.model_name.is_empty() {
+        // secret_key 为空表示编辑时未改 key，从 DB 取真实 key 测试
+        let real_key = if input.secret_key.is_empty() {
+            octopus_infra::db::get_model_source_key(id)
+                .map(|(_, k)| k)
+                .unwrap_or_default()
+        } else {
+            input.secret_key.clone()
+        };
+        let test = test_llm_connection(&input.source, &real_key, &input.model_name, input.is_thinking).await;
+        if !test.ok {
+            return Err(format!("模型测试失败，无法保存：{}", test.message));
+        }
+    }
     octopus_infra::db::update_cloud_model(
         id, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
@@ -443,7 +465,47 @@ pub struct TestConnectionResult {
     pub message: String,
 }
 
-/// 测试云端模型连接：GET {base_url}/models 验证 api_key 有效。
+/// 内部 LLM 连接测试（发 chat completion + thinking disable）。
+async fn test_llm_connection(source: &str, secret_key: &str, model_name: &str, is_thinking: bool) -> TestConnectionResult {
+    let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", source.trim_end_matches('/'));
+    let mut body = serde_json::json!({
+        "model": model_name,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1,
+    });
+    if is_thinking {
+        body["thinking"] = serde_json::json!({"type": "disabled"});
+        body["enable_thinking"] = serde_json::json!(false);
+    }
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", secret_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            if r.status().is_success() {
+                TestConnectionResult { ok: true, message: format!("模型 {} 连接成功", model_name) }
+            } else {
+                let status = r.status().as_u16();
+                let body = r.text().await.unwrap_or_default();
+                let msg = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(String::from))
+                    .unwrap_or(body);
+                TestConnectionResult { ok: false, message: format!("HTTP {} — {}", status, msg) }
+            }
+        }
+        Err(e) => TestConnectionResult { ok: false, message: format!("{}", e) },
+    }
+}
+
+/// 测试云端模型连接（前端「测试连接」按钮调用）。
 #[tauri::command]
 pub async fn test_cloud_model(
     source: String,
@@ -451,69 +513,18 @@ pub async fn test_cloud_model(
     model_name: Option<String>,
     is_thinking: Option<bool>,
 ) -> Result<TestConnectionResult, String> {
-    let client = reqwest::Client::new();
-    let base = source.trim_end_matches('/');
-
-    // 如果提供了 model_name，发一个最小 chat completion 验证模型可用性
     if let Some(model) = model_name.filter(|m| !m.is_empty()) {
-        let url = format!("{}/chat/completions", base);
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-        });
-        // 思考模型需要关 thinking，否则返回空 content 导致测试误判失败
-        if is_thinking.unwrap_or(false) {
-            // DeepSeek 用 thinking: {type: "disabled"}，其他用 enable_thinking: false
-            // 两都带上，各 API 取自己认识的字段
-            body["thinking"] = serde_json::json!({"type": "disabled"});
-            body["enable_thinking"] = serde_json::json!(false);
-        }
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", secret_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(15))
-            .send()
-            .await;
-
-        return match resp {
-            Ok(r) => {
-                if r.status().is_success() {
-                    Ok(TestConnectionResult {
-                        ok: true,
-                        message: format!("模型 {} 连接成功", model),
-                    })
-                } else {
-                    let status = r.status().as_u16();
-                    let body = r.text().await.unwrap_or_default();
-                    let msg = serde_json::from_str::<serde_json::Value>(&body)
-                        .ok()
-                        .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(String::from))
-                        .unwrap_or(body);
-                    Ok(TestConnectionResult {
-                        ok: false,
-                        message: format!("HTTP {} — {}", status, msg),
-                    })
-                }
-            }
-            Err(e) => Ok(TestConnectionResult {
-                ok: false,
-                message: format!("{}", e),
-            }),
-        };
+        return Ok(test_llm_connection(&source, &secret_key, &model, is_thinking.unwrap_or(false)).await);
     }
-
-    // 无 model_name：只验证 base_url + api_key 连通性
-    let url = format!("{}/models", base);
+    // 无 model_name：只验证连通性
+    let url = format!("{}/models", source.trim_end_matches('/'));
+    let client = reqwest::Client::new();
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", secret_key))
         .timeout(std::time::Duration::from_secs(10))
         .send()
         .await;
-
     match resp {
         Ok(r) => {
             if r.status().is_success() {
