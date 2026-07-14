@@ -5117,6 +5117,7 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tonic",
  "tonic-build",
+ "unicode-normalization",
  "uuid",
  "windows 0.61.3",
  "zip",

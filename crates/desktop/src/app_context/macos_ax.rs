@@ -832,103 +832,46 @@ fn slice_around_text(
         return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
     }
 
-    // 尝试 3：兼容字符归一化匹配
+    // 尝试 3：NFKC 归一化匹配
     // WPS Cmd+C 可能产生康熙部首（U+2Exx）或全角标点（U+FFxx），
     // 而 pdftotext/officecli 提取的是正常 Unicode → 精确匹配失败。
-    // 归一化策略：只保留 CJK 统一表意（U+4E00-U+9FFF）+ ASCII 字母数字，
-    // 去掉标点和兼容字符差异。
-    let normalize = |s: &str| -> String {
-        s.chars()
-            .filter_map(|c| {
-                let cp = c as u32;
-                match cp {
-                    // 正常 CJK → 保留
-                    0x4E00..=0x9FFF => Some(c),
-                    // ASCII 字母数字 → 小写
-                    0x41..=0x5A => Some((cp + 32) as u8 as char),
-                    0x61..=0x7A => Some(c),
-                    0x30..=0x39 => Some(c),
-                    // 康熙部首（U+2E00-U+2FFF）→ 映射到 CJK 兼容表意
-                    0x2E00..=0x2FFF => {
-                        // CJK Radicals Supplement → 尝试映射到常见目标
-                        normalize_kangxi(cp)
-                    }
-                    // 全角标点（U+FF00-U+FFEF）→ 半角
-                    0xFF01..=0xFF5E => Some(((cp - 0xFEE0) as u8) as char),
-                    // CJK 兼容表意（U+F900-U+FAFF）→ 大多数有规范映射但简化处理：保留
-                    0xF900..=0xFAFF => Some(c),
-                    _ => None, // 标点、空格等全部丢弃
-                }
+    // 用 unicode-normalization crate 做 NFKC 归一化，去掉标点后比较。
+    use unicode_normalization::UnicodeNormalization;
+
+    let normalize_nfkc = |s: &str| -> String {
+        s.nfkc()
+            .filter(|c| {
+                let cp = *c as u32;
+                // 只保留 CJK + ASCII 字母数字
+                (0x4E00..=0x9FFF).contains(&cp)
+                    || c.is_ascii_alphanumeric()
             })
+            .map(|c| c.to_ascii_lowercase())
             .collect()
     };
 
-    let sel_norm = normalize(sel);
+    let sel_norm = normalize_nfkc(sel);
     if sel_norm.len() < 5 {
         return None; // 归一化后太短，误匹配风险高
     }
 
-    let full_norm = normalize(full_text);
+    let full_norm = normalize_nfkc(full_text);
     if full_norm.find(&sel_norm).is_some() {
-        // 归一化后的位置无法直接映射回原文（字符被丢弃了）
-        // 用归一化匹配确认"存在"，再在原文中找第一个匹配的 CJK 子串
-        // 取选中文字的前 10 个 CJK 字符在原文中搜索定位
-        let first_cjk: String = sel.chars()
-            .filter(|&c| (c as u32) >= 0x4E00 && (c as u32) <= 0x9FFF
-                || (c as u32) >= 0x2E00 && (c as u32) <= 0x2FFF)
+        // 归一化匹配成功——在原文中搜索定位
+        // 取选中文字前 10 个 CJK 字符的 NFKC 在原文中定位
+        let first_cjk_nfkc: String = sel.nfkc()
+            .filter(|c| (*c as u32) >= 0x4E00 && (*c as u32) <= 0x9FFF)
             .take(10)
             .collect();
-        if first_cjk.len() >= 4 {
-            // 在原文中搜索前几个字符的兼容版本
-            let first_cjk_norm = normalize(&first_cjk);
-            if let Some(pos_bytes) = find_normalized_substring(full_text, &first_cjk_norm, &normalize) {
+        if first_cjk_nfkc.len() >= 4 {
+            let first_cjk_norm = normalize_nfkc(&first_cjk_nfkc);
+            if let Some(pos_bytes) = find_normalized_substring(full_text, &first_cjk_norm, &normalize_nfkc) {
                 return Some(char_level_slice(&full_chars, pos_bytes, sel, full_text, limit));
             }
         }
     }
 
     None
-}
-
-/// 康熙部首到 CJK 统一表意的简化映射（覆盖常见字符）。
-fn normalize_kangxi(cp: u32) -> Option<char> {
-    // 常见康熙部首 → 目标字符的映射
-    match cp {
-        0x2F00 => Some('一'),  // ⼀
-        0x2F02 => Some('丨'),  // ⼁
-        0x2F04 => Some('丶'),  // ⼃
-        0x2F08 => Some('冂'),  // ⼇
-        0x2F12 => Some('土'),  // ⼑
-        0x2F1A => Some('口'),  // ⼙
-        0x2F24 => Some('大'),  // ⼣
-        0x2F2E => Some('山'),  // ⼭
-        0x2F36 => Some('心'),  // ⼵
-        0x2F3A => Some('手'),  // ⼹
-        0x2F40 => Some('日'),  // ⼿
-        0x2F44 => Some('月'),  // ⼃
-        0x2F4D => Some('目'),  // ⽬
-        0x2F50 => Some('禾'),  // ⽏
-        0x2F58 => Some('立'),  // ⼹
-        0x2F5A => Some('竹'),  // ⼻
-        0x2F5E => Some('米'),  // ⼽
-        0x2F66 => Some('衣'),  // ⼥
-        0x2F6C => Some('目'),  // ⽬ (variant)
-        0x2F74 => Some('走'),  // ⽳
-        0x2F7C => Some('足'),  // ⽻
-        0x2F80 => Some('身'),  // ⾿
-        0x2F82 => Some('車'),  // ⾁
-        0x2F8A => Some('金'),  // ⾉
-        0x2F8C => Some('長'),  // ⾋
-        0x2F94 => Some('雨'),  // ⾓
-        0x2F9A => Some('香'),  // ⾙
-        0x2FA5 => Some('里'),  // ⾥
-        0x2FA8 => Some('金'),  // ⾧
-        _ => {
-            // CJK Radicals Supplement 范围内的字符，尝试偏移映射
-            // 这不完全准确但覆盖很多常见情况
-            None
-        }
-    }
 }
 
 /// 在原文中搜索归一化子串，返回 byte offset。
