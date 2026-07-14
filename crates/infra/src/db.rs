@@ -911,6 +911,32 @@ pub fn delete_cloud_model(id: i64) -> Result<()> {
     })
 }
 
+/// 按 domain + model_name + provider 查模型 id（用于前端编辑/删除）。
+pub fn get_model_id(domain: &str, model_name: &str, provider: &str) -> Result<Option<i64>> {
+    with_db(|conn| {
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM models WHERE domain=?1 AND model_name=?2 AND provider=?3",
+                params![domain, model_name, provider],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(id)
+    })
+}
+
+/// 按 id 查模型的 source 和 secret_key（用于编辑时回填）。
+pub fn get_model_source_key(id: i64) -> Result<(String, String)> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT source, secret_key FROM models WHERE id=?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .map_err(Into::into)
+    })
+}
+
 /// 读取 ASR 云端参考模型列表。
 /// 返回 Vec<(provider, category, models_str)>，models_str 为分号分隔。
 pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {

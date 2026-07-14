@@ -7,21 +7,26 @@ import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { CloudModelForm, type CloudModelData } from "./CloudModelForm";
 import { useT } from "@/lib/i18n";
 
-interface DownloadableModel {
-  name: string;
-  repo: string;
-  description: string;
-  category: string;
-  is_enabled: boolean;
-}
-
 interface EngineOption {
+  id: number;
   name: string;
   provider: string;
   category: string;
   current: boolean;
   is_local: boolean;
   label: string;
+  source: string;
+  secret_key: string;
+  is_streaming: boolean;
+  is_thinking: boolean;
+}
+
+interface DownloadableModel {
+  name: string;
+  repo: string;
+  description: string;
+  category: string;
+  is_enabled: boolean;
 }
 
 interface DownloadProgress {
@@ -122,17 +127,21 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     name: e.name, provider: e.provider, category: e.category,
     description: e.label, is_ready: true,
     is_current: e.current, is_local: false, repo: "",
+    cloudId: e.id,
   }));
 
-  const onDeleteCloud = async (_name: string, _provider: string) => {
-    // 云端模型删除需要 id——从 engines 找不到 id，用 DB 查
-    // 简化：通过 name 找 engines 中的匹配项再调 remove_cloud_model
-    // 实际需要后端返回 id，暂时用 name+provider 查
-    try {
-      // 找到 engines 中的索引——但 EngineOption 没有 id
-      // TODO: 后端 EngineOption 加 id 字段，或 remove_cloud_model 按 name+provider+domain 删
-      showToast(t("settings.models.deleteCloudHint") || "请通过编辑修改");
-    } catch (e) { showToast(String(e)); }
+  const onDeleteCloud = async (id: number) => {
+    try { await invoke("remove_cloud_model", { id }); load(); }
+    catch (e) { showToast(String(e)); }
+  };
+
+  const onEditCloud = (e: EngineOption) => {
+    setEditTarget({
+      id: e.id, domain: "asr", provider: e.provider, category: e.category,
+      modelName: e.name, source: e.source, secretKey: e.secret_key,
+      isStreaming: e.is_streaming, isThinking: e.is_thinking,
+    });
+    setShowForm(true);
   };
 
   return (
@@ -157,14 +166,18 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
             <Plus className="w-2.5 h-2.5" /> {t("settings.models.addModel")}
           </button>
         </div>
-        {cloudRows.map((m) => (
+        {cloudRows.map((m) => {
+          const engine = cloudEngines.find((e) => e.id === m.cloudId);
+          return (
           <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={!!busyRepo}
             onActivate={() => onActivate(m.name)}
             onDownload={() => {}}
             onVerify={() => {}}
-            onDelete={() => onDeleteCloud(m.name, m.provider)}
+            onDelete={() => m.cloudId && onDeleteCloud(m.cloudId)}
+            onEdit={engine ? () => onEditCloud(engine) : undefined}
           />
-        ))}
+          );
+        })}
         {cloudRows.length === 0 && (
           <div className="text-[11px] text-muted-foreground/50 py-3 text-center">
             {t("settings.models.noCloudModels")}

@@ -149,8 +149,17 @@ export function CloudModelForm({
     setTesting(true);
     setTestResult(null);
     try {
+      // 编辑时 secretKey 可能是脱敏值（含 ********），需查 DB 取真实 key
+      let realKey = secretKey;
+      if (editModel?.id && secretKey.includes("********")) {
+        // 从后端取真实 key
+        try {
+          const result = await invoke<{ source: string; secret_key: string }>("get_model_detail", { id: editModel.id });
+          realKey = result.secret_key;
+        } catch { /* 取不到就用脱敏值（会失败，用户需重新输入） */ }
+      }
       const result = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
-        source, secretKey,
+        source, secretKey: realKey,
       });
       setTestResult(result);
     } catch (e) {

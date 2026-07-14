@@ -94,16 +94,25 @@ fn build_asr_options(
             continue;
         }
         let cat = octopus_asr_local::config::category_label(e.category);
+        // 从 DB 查 id / source / secret_key（用于编辑/删除）
+        let real_id = octopus_infra::db::get_model_id("asr", &e.name, &e.provider)
+            .ok().flatten().unwrap_or(0);
+        let (source, secret_key) = if real_id > 0 {
+            let (src, key) = octopus_infra::db::get_model_source_key(real_id).unwrap_or_default();
+            (src, mask_key(&key))
+        } else {
+            (String::new(), String::new())
+        };
         options.push(EngineOption {
-            id: 0,
+            id: real_id,
             current: e.name == effective,
             name: e.name.clone(),
             provider: e.provider.clone(),
             category: cat.to_string(),
             is_local: e.is_local,
             label: engine_label(e.is_local, cat, &e.provider, &e.name),
-            source: String::new(),
-            secret_key: String::new(),
+            source,
+            secret_key,
             is_streaming: false,
             is_thinking: false,
         });

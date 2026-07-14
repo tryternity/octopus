@@ -437,6 +437,27 @@ pub async fn test_cloud_model(source: String, secret_key: String) -> Result<Test
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDetail {
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+}
+
+/// 按 id 查模型详情（source + 真实 secret_key，用于编辑表单回填 + 连接测试）。
+#[tauri::command]
+pub fn get_model_detail(id: i64) -> Result<ModelDetail, String> {
+    let (source, secret_key) = octopus_infra::db::get_model_source_key(id).map_err(|e| e.to_string())?;
+    Ok(ModelDetail {
+        source,
+        secret_key,
+        is_streaming: false,
+        is_thinking: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
