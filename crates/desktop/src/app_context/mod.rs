@@ -111,7 +111,9 @@ pub fn classify_app(id: &str) -> AppKind {
         "com.microsoft.word" | "com.apple.textedit"
         | "com.sublimetext.4" | "com.sublimetext.3"
         | "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92"
-        | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
+        | "com.github.atom" | "com.kingsoft.wpsoffice.mac"
+        | "com.apple.iwork.pages" | "com.apple.iwork.keynote"
+        | "com.apple.iwork.numbers" => AppKind::Editor,
         #[cfg(target_os = "windows")]
         "notepad.exe" | "winword.exe" | "excel.exe" | "powerpnt.exe"
         | "code.exe" | "sublime_text.exe" | "wps.exe" | "notepad++.exe" => AppKind::Editor,
