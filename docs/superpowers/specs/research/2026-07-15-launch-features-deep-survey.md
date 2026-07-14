@@ -28,7 +28,7 @@
 | **Silent Query**（不弹窗直接执行） | ✅ AI Command silent mode | ✅ Quick AI | ❌ | ❌ | ❌ |
 | **Floating Hotkey**（按住说话） | ❌ | ❌ | ❌ | ❌ | ✅ VoxFlow 同源模式 |
 | **Snippet 触发**（打字自动展开触发命令） | ❌ | ✅ Snippet keyword | ✅ Snippet Trigger | ❌ | ❌ |
-| **Universal Action**（对选中文件/文本执行操作） | ❌ | ✅ | ✅ Powerpack 60+ | ✅ | ❌ |
+| **Universal Action**（对选中文件/文本执行操作） | ❌ | ✅ | ✅ Powerpack 60+ | ✅ | ✅ action bar（kind=Text/Files + accepts=text/file/any） |
 | **菜单栏图标点击** | ✅ Tray Query | ✅ | ✅ | ❌ | ✅ 托盘菜单 |
 | **Deep Link / URL Scheme** | ✅ `wox://` | ❌ | ✅ `alfred://` | ❌ | ❌ |
 
@@ -204,13 +204,30 @@ Alfred 的触发器最丰富：
 
 ### 5.2 可引入的 Launch 功能（按价值排序）
 
+#### ~~P0: Universal Actions 扩展~~（已实现）
+
+octopus action bar **已经是 Universal Action 的等价实现**：
+
+| 维度 | Raycast | Alfred | octopus |
+|------|---------|--------|---------|
+| 选中文本触发 | ✅ | ✅ Powerpack | ✅ `kind=Text` |
+| 选中文件触发 | ✅ | ✅ Powerpack | ✅ `kind=Files`（Finder 选中） |
+| 按上下文过滤动作 | ✅ | ✅ | ✅ `accepts=text/file/any` |
+| 动作类型 | AI/搜索/复制/Note | 60+ 内置 | AI/搜索/网页/脚本/copy_path/agent |
+| 触发方式 | 命令面板内选中 | 全局热键 | 全局热键 ⌘⇧Space |
+
+**octopus 与两者的差异**：
+- Alfred/Raycast 的 Universal Action 是"选中后在面板里选操作"，octopus 是"选中后浮窗直接选"——交互更轻
+- octopus 的 `accepts` 字段按上下文过滤可见菜单项，与 Raycast/Alfred 逻辑一致
+- octopus 独有 `agent` 类型（文件桥接到 Terminal.app 启动编码 agent），三者无等价
+
+**可改进方向**：扩展 `kind=Files` 的文件类型识别（图片→OCR、代码文件→格式化、压缩包→预览），而非当前仅 agent 桥接。
+
 #### P0（高价值，低成本）
 
 1. **Silent Query Hotkey**——借鉴 Wox：不弹 action bar，直接用热键执行某个菜单项。用户选中文本 → 按 `⌘⇧T` → 直接翻译（不经过菜单选择）。已有 `shortcut` 字段，只需前端注册全局热键时判断是否 silent。
 
-2. **Universal Actions 扩展**——借鉴 Raycast/Alfred：当前 action bar 只处理选中文本。扩展到处理选中文件/URL/图片—— Finder 选中文件已支持，可加终端选中路径、浏览器 URL 等。
-
-3. **Deep Link（`octopus://`）**——借鉴 Wox/Alfred：允许其他应用/脚本通过 URL Scheme 触发 octopus 命令（`octopus://translate?text=hello`）。Tauri 2 原生支持 deep link。
+2. **Deep Link（`octopus://`）**——借鉴 Wox/Alfred：允许其他应用/脚本通过 URL Scheme 触发 octopus 命令（`octopus://translate?text=hello`）。Tauri 2 原生支持 deep link。
 
 #### P1（中价值，中成本）
 
