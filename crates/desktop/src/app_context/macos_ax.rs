@@ -2270,4 +2270,121 @@ mod tests {
         let result = filter_lsof_doc_files(input);
         assert_eq!(result, vec!["/Users/user/my report final.docx"]);
     }
+
+    // ── bundle_id_to_procname ──
+
+    #[test]
+    fn test_bundle_id_to_procname_wps() {
+        assert_eq!(bundle_id_to_procname("com.kingsoft.wpsoffice.mac"), "wpsoffice");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_pages() {
+        assert_eq!(bundle_id_to_procname("com.apple.iWork.Pages"), "Pages");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_sublime() {
+        assert_eq!(bundle_id_to_procname("com.sublimetext.4"), "Sublime");
+    }
+
+    #[test]
+    fn test_bundle_id_to_procname_fallback() {
+        // 未知 bundle_id → 取最后一段
+        assert_eq!(bundle_id_to_procname("com.example.myeditor"), "myeditor");
+    }
+
+    // ── char_level_slice ──
+
+    #[test]
+    fn test_char_level_slice_normal() {
+        let chars: Vec<char> = "Hello world test".chars().collect();
+        let (before, after) = char_level_slice(&chars, 6, "world", "Hello world test", 5);
+        assert_eq!(before.as_deref(), Some("ello "));
+        assert_eq!(after.as_deref(), Some(" test"));
+    }
+
+    #[test]
+    fn test_char_level_slice_start() {
+        let chars: Vec<char> = "Hello world".chars().collect();
+        let (before, after) = char_level_slice(&chars, 0, "Hello", "Hello world", 5);
+        assert_eq!(before, None);
+        assert_eq!(after.as_deref(), Some(" worl"));
+    }
+
+    #[test]
+    fn test_char_level_slice_cjk() {
+        let full = "你好世界测试文字";
+        let chars: Vec<char> = full.chars().collect();
+        // "试" 在 char index 5（byte offset 15）
+        // before limit=2 → chars[3..5] = "界测"
+        // after: chars[6..8] = "文字"
+        let (before, after) = char_level_slice(&chars, 15, "试", full, 2);
+        assert_eq!(before.as_deref(), Some("界测"));
+        assert_eq!(after.as_deref(), Some("文字"));
+    }
+
+    // ── extract_text_from_ooxml_xml ──
+
+    #[test]
+    fn test_ooxml_xml_basic() {
+        let xml = r#"<doc><w:p><w:r><w:t>Hello</w:t></w:r></w:p><w:p><w:r><w:t>World</w:t></w:r></w:p></doc>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.contains("Hello"));
+        assert!(result.contains("World"));
+    }
+
+    #[test]
+    fn test_ooxml_xml_with_attributes() {
+        // <w:t xml:space="preserve"> 带属性的标签
+        let xml = r#"<w:p><w:r><w:t xml:space="preserve">测试</w:t></w:r></w:p>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert_eq!(result.trim(), "测试");
+    }
+
+    #[test]
+    fn test_ooxml_xml_pptx_a_tag() {
+        let xml = r#"<a:p><a:r><a:t>Slide text</a:t></a:r></a:p>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.contains("Slide text"));
+    }
+
+    #[test]
+    fn test_ooxml_xml_empty() {
+        let xml = r#"<doc><w:p></w:p></doc>"#;
+        let result = extract_text_from_ooxml_xml(xml);
+        assert!(result.is_empty() || result.trim().is_empty());
+    }
+
+    // ── slice_around_text NFKC 归一化（第三轮匹配）──
+
+    #[test]
+    fn test_slice_nfkc_kangxi() {
+        // 康熙部首 ⾥(U+2FA5) → 里(U+91CC)
+        let full = "这里的常数可能不是把一个项目";
+        let sel = "⾥的常数"; // ⾥ 是康熙部首
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_some(), "NFKC 应该匹配康熙部首");
+        if let Some((before, after)) = result {
+            assert!(before.as_deref().unwrap_or("").contains("这"));
+        }
+    }
+
+    #[test]
+    fn test_slice_nfkc_fullwidth_punct() {
+        // 全角逗号 ，(U+FF0C) → 半角逗号
+        let full = "Hello, World";
+        let sel = "Hello，"; // 全角逗号
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_some(), "NFKC 应该匹配全角标点");
+    }
+
+    #[test]
+    fn test_slice_nfkc_short_rejected() {
+        // 归一化后太短 (<5) 不尝试
+        let full = "测试文本内容";
+        let sel = "⾥"; // 单字符
+        let result = slice_around_text(full, sel, 5);
+        assert!(result.is_none());
+    }
 }
