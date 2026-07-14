@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
-import { Cloud, HardDrive } from "lucide-react";
+import { Cloud, HardDrive, Plus } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
+import { CloudModelForm, type CloudModelData } from "./CloudModelForm";
 import { useT } from "@/lib/i18n";
 
 interface LlmOption {
+  id: number;
   name: string;
   provider: string;
   category: string;
@@ -17,6 +19,8 @@ interface LlmOption {
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [models, setModels] = useState<LlmOption[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState<CloudModelData | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -32,13 +36,30 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
-  const currentLabel = models.find((m) => m.current && m.name)?.label ?? "";
+  const onDelete = async (id: number) => {
+    try { await invoke("remove_cloud_model", { id }); load(); }
+    catch (e) { showToast(String(e)); }
+  };
+
+  const onEdit = (m: LlmOption) => {
+    setEditTarget({
+      id: m.id, domain: "llm", provider: m.provider, category: m.category,
+      modelName: m.name, source: "", secretKey: "",
+      isStreaming: true, isThinking: false,
+    });
+    setShowForm(true);
+  };
+
+  const current = models.find((m) => m.current && m.name);
+  const currentLabel = current?.label ?? "";
+
   const rows: ModelRowData[] = models
     .filter((m) => m.name)
     .map((m) => ({
       name: m.name, provider: m.provider, category: m.category,
       description: m.label, is_ready: true,
       is_current: m.current, is_local: m.is_local, repo: "",
+      cloudId: m.id,
     }));
 
   const localRows = rows.filter((r) => r.is_local);
@@ -47,6 +68,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
+
       {localRows.length > 0 && (
         <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>
           {localRows.map((m) => (
@@ -56,14 +78,40 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
           ))}
         </CollapsibleSection>
       )}
-      {cloudRows.length > 0 && (
-        <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
-          {cloudRows.map((m) => (
-            <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
-              onActivate={() => onActivate(m.name, m.provider)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
-            />
-          ))}
-        </CollapsibleSection>
+
+      <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
+        <div className="flex justify-end pb-1">
+          <button className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
+            onClick={() => { setEditTarget(null); setShowForm(true); }}>
+            <Plus className="w-2.5 h-2.5" /> {t("settings.models.addModel")}
+          </button>
+        </div>
+        {cloudRows.map((m) => (
+          <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
+            onActivate={() => onActivate(m.name, m.provider)}
+            onDownload={() => {}}
+            onVerify={() => {}}
+            onDelete={() => m.cloudId && onDelete(m.cloudId)}
+            onEdit={() => {
+              const opt = models.find((o) => o.id === m.cloudId);
+              if (opt) onEdit(opt);
+            }}
+          />
+        ))}
+        {cloudRows.length === 0 && (
+          <div className="text-[11px] text-muted-foreground/50 py-3 text-center">
+            {t("settings.models.noCloudModels")}
+          </div>
+        )}
+      </CollapsibleSection>
+
+      {showForm && (
+        <CloudModelForm
+          domain="llm"
+          editModel={editTarget}
+          onSaved={() => { setShowForm(false); setEditTarget(null); load(); }}
+          onCancel={() => { setShowForm(false); setEditTarget(null); }}
+        />
       )}
     </div>
   );

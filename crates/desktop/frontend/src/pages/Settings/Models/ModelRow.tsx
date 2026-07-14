@@ -1,24 +1,18 @@
 import { cn } from "@/lib/utils";
-import { CheckCircle2, Circle, Download, RefreshCw, Trash2 } from "lucide-react";
+import { CheckCircle2, Circle, Download, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 
 export interface ModelRowData {
-  /** model_name */
   name: string;
-  /** provider: local / aliyun / deepseek / bigmodel 等 */
   provider: string;
-  /** 引擎族 / 类别 */
   category: string;
-  /** 描述 */
   description: string;
-  /** 本地模型是否已下载（is_enabled） */
   is_ready: boolean;
-  /** 是否为当前激活模型 */
   is_current: boolean;
-  /** 是否为本地模型（可下载/删除） */
   is_local: boolean;
-  /** 下载路径标识（source），用于 download/delete */
   repo: string;
+  /** 云端模型 id（用于编辑/删除） */
+  cloudId?: number;
 }
 
 interface DownloadProgress {
@@ -44,6 +38,7 @@ export function ModelRow({
   onDownload,
   onVerify,
   onDelete,
+  onEdit,
 }: {
   model: ModelRowData;
   progress?: DownloadProgress | null;
@@ -52,6 +47,7 @@ export function ModelRow({
   onDownload: () => void;
   onVerify: () => void;
   onDelete: () => void;
+  onEdit?: () => void;
 }) {
   const t = useT();
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
@@ -137,8 +133,8 @@ export function ModelRow({
               </button>
             )}
 
-            {/* 删除（本地已就绪） */}
-            {model.is_local && model.is_ready && (
+            {/* 删除（本地已就绪 或 云端模型） */}
+            {(model.is_local && model.is_ready || !model.is_local) && (
               <button
                 className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10")}
                 disabled={busy}
@@ -147,6 +143,16 @@ export function ModelRow({
                 }}
               >
                 <Trash2 className="w-2.5 h-2.5" />
+              </button>
+            )}
+
+            {/* 编辑（云端模型） */}
+            {!model.is_local && onEdit && (
+              <button
+                className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:bg-accent")}
+                onClick={onEdit}
+              >
+                <Pencil className="w-2.5 h-2.5" />
               </button>
             )}
           </>
