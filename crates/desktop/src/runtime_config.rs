@@ -180,7 +180,16 @@ pub struct OcrOption {
 /// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 3-part spec
 /// （"provider:category:model_name"）或裸名，统一用 parse_model_spec 提取 model_name 后比较。
 fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
-    let current_bare = octopus_infra::db::parse_model_spec(current).model_name();
+    let parsed = octopus_infra::db::parse_model_spec(current);
+    let current_bare = parsed.model_name();
+    // current 可能是 3-part spec（"provider:category:model_name"）或裸名。
+    // 用完整 provider+model_name 精确匹配，避免同 model_name 不同 provider 都标 current。
+    let (cur_provider, cur_cat) = match &parsed {
+        octopus_infra::db::ModelSpec::Full { provider, category, .. } => {
+            (Some(*provider), Some(*category))
+        }
+        _ => (None, None),
+    };
     // current 有效 = 裸名非空且在 DB 列表中；否则回退无模型（首项 current）。
     let current_valid = !current_bare.is_empty() && llms.iter().any(|m| m.model_name == current_bare);
     let mut options = Vec::with_capacity(llms.len() + 1);
@@ -195,8 +204,14 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
     });
     for m in llms {
         let label = engine_label(m.is_local, &m.category, &m.provider, &m.model_name);
+        // 精确匹配：有 3-part 信息时用 provider+model_name，否则用裸名
+        let is_current = if let (Some(p), _) = (cur_provider, cur_cat) {
+            m.model_name == current_bare && m.provider == p
+        } else {
+            m.model_name == current_bare
+        };
         options.push(LlmOption {
-            current: m.model_name == current_bare,
+            current: is_current,
             label,
             name: m.model_name,
             provider: m.provider,
@@ -428,6 +443,7 @@ pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOpti
 #[tauri::command]
 pub fn switch_polish_llm(
     name: String,
+    provider: Option<String>,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
 ) -> Result<(), String> {
@@ -435,11 +451,17 @@ pub fn switch_polish_llm(
         // 「不选择模型」：polish_llm 置空
         String::new()
     } else {
-        let model = octopus_infra::db::list_llm_models()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|m| m.model_name == name)
-            .ok_or_else(|| format!("润色模型 '{}' 不存在，未切换", name))?;
+        let models = octopus_infra::db::list_llm_models()
+            .map_err(|e| e.to_string())?;
+        // 精确匹配：有 provider 时用 provider+model_name，否则用裸名（向后兼容）
+        let model = if let Some(ref p) = provider {
+            models.into_iter()
+                .find(|m| m.model_name == name && m.provider == *p)
+        } else {
+            models.into_iter()
+                .find(|m| m.model_name == name)
+        }
+        .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), name))?;
         // 构造 3-part spec "{provider}:{category}:{model_name}"
         format!("{}:{}:{}", model.provider, model.category, model.model_name)
     };

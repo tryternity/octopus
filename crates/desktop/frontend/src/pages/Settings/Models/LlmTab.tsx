@@ -27,8 +27,8 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
 
   useEffect(() => { load(); }, [load]);
 
-  const onActivate = async (name: string) => {
-    try { await invoke("switch_polish_llm", { modelName: name }); load(); }
+  const onActivate = async (name: string, provider: string) => {
+    try { await invoke("switch_polish_llm", { modelName: name, provider }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
@@ -51,7 +51,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>
           {localRows.map((m) => (
             <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
-              onActivate={() => onActivate(m.name)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
+              onActivate={() => onActivate(m.name, m.provider)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
             />
           ))}
         </CollapsibleSection>
@@ -60,7 +60,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
           {cloudRows.map((m) => (
             <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
-              onActivate={() => onActivate(m.name)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
+              onActivate={() => onActivate(m.name, m.provider)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
             />
           ))}
         </CollapsibleSection>
