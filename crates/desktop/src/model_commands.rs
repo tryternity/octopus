@@ -238,11 +238,10 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
 
 /// 写 secret_key（可选）+ is_enabled + reload 运行时 AsrConfig 缓存。
 fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> Result<(), String> {
-    // 翻译模型不在 ASR models 表中——跳过 DB 状态更新，文件系统检查即可
     let model_name = match lookup_model_name(repo) {
         Ok(name) => name,
         Err(_) => {
-            log::info!("[model_commands] {} 不在 ASR models 表中，跳过 DB 状态更新", repo);
+            log::info!("[model_commands] {} 未在 models 表中找到，跳过 DB 状态更新", repo);
             return Ok(());
         }
     };
@@ -250,26 +249,31 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }
     octopus_infra::db::set_model_enabled(&model_name, enabled).map_err(|e| e.to_string())?;
+    // reload 只对 ASR 有意义（翻译/OCR 不走 AsrConfig）
     octopus_asr_local::config::reload_models_config();
     Ok(())
 }
 
-/// 由 repo（source）反查 model_name。
-fn lookup_model_name(repo: &str) -> Result<String, String> {
-    let rows = octopus_infra::db::list_all_local_asr_models().map_err(|e| e.to_string())?;
-    rows.iter()
-        .find(|r| r.source == repo)
-        .map(|r| r.model_name.clone())
-        .ok_or_else(|| format!("未找到 source='{repo}' 的模型"))
+/// 由 source（路径标识）反查 model_name，搜索所有 domain。
+fn lookup_model_name(source: &str) -> Result<String, String> {
+    for domain in &["asr", "translate", "ocr"] {
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        if let Some(r) = rows.iter().find(|r| r.source == source) {
+            return Ok(r.model_name.clone());
+        }
+    }
+    Err(format!("未找到 source='{source}' 的模型"))
 }
 
-/// 读某模型当前 secret_key（DB）。
+/// 读某模型当前 secret_key（DB），搜索所有 domain。
 fn current_secret_key(model_name: &str) -> Result<String, String> {
-    let rows = octopus_infra::db::list_all_local_asr_models().map_err(|e| e.to_string())?;
-    rows.iter()
-        .find(|r| r.model_name == model_name)
-        .map(|r| r.secret_key.clone())
-        .ok_or_else(|| format!("未找到模型 '{model_name}'"))
+    for domain in &["asr", "translate", "ocr"] {
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        if let Some(r) = rows.iter().find(|r| r.model_name == model_name) {
+            return Ok(r.secret_key.clone());
+        }
+    }
+    Err(format!("未找到模型 '{model_name}'"))
 }
 
 #[cfg(test)]
