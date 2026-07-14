@@ -25,6 +25,7 @@ interface AsrPreset {
 interface LlmPreset {
   provider: string;
   baseUrl: string;
+  models: string[];
 }
 
 // ASR provider 固定配置
@@ -109,7 +110,7 @@ export function CloudModelForm({
     : [];
   const referenceModels = domain === "asr"
     ? asrPresets.find((p) => p.provider === provider && p.category === category)?.models ?? []
-    : [];
+    : llmPresets.find((p) => p.provider === provider)?.models ?? [];
   const keyLabel = domain === "asr"
     ? ASR_CONFIG[provider]?.[category]?.keyLabel ?? "API Key"
     : "API Key";
@@ -239,14 +240,14 @@ export function CloudModelForm({
           {/* Model Name */}
           <div>
             <div className={labelClass}>Model Name</div>
-            {domain === "asr" && referenceModels.length > 0 ? (
+            {referenceModels.length > 0 ? (
               <input className={inputClass} value={modelName} list="ref-models"
                 onChange={(e) => setModelName(e.target.value)} placeholder="选择或输入" />
             ) : (
               <input className={inputClass} value={modelName}
-                onChange={(e) => setModelName(e.target.value)} placeholder="如 deepseek-chat" />
+                onChange={(e) => setModelName(e.target.value)} placeholder={domain === "llm" ? "如 deepseek-chat" : "选择或输入"} />
             )}
-            {domain === "asr" && referenceModels.length > 0 && (
+            {referenceModels.length > 0 && (
               <datalist id="ref-models">
                 {referenceModels.map((m) => <option key={m} value={m} />)}
               </datalist>

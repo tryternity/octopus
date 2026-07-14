@@ -245,11 +245,11 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
     ('tencent:Tencent-ASR-Multi', '16k_zh_en;16k_multi_lang;16k_en;16k_en_large', '腾讯云实时语音识别多语种引擎', 'asr_cloud_model'),
     ('baidu:Baidu-ASR', '15372;15376;1537', '百度实时语音识别中文模型（dev_pid）', 'asr_cloud_model'),
     ('baidu:Baidu-ASR-EN', '17372;1737', '百度实时语音识别英文模型（dev_pid）', 'asr_cloud_model'),
-    ('deepseek', 'https://api.deepseek.com/', 'DeepSeek API', 'llm_provider'),
-    ('aliyun', 'https://dashscope.aliyuncs.com/compatible-mode/v1', '阿里云 DashScope', 'llm_provider'),
-    ('bigmodel', 'https://open.bigmodel.cn/api/paas/v4', '智谱 BigModel', 'llm_provider'),
-    ('openai', 'https://api.openai.com/v1', 'OpenAI', 'llm_provider'),
-    ('ollama', 'http://localhost:11434/v1', 'Ollama 本地', 'llm_provider');
+    ('deepseek', '{"base_url":"https://api.deepseek.com/","models":["deepseek-chat","deepseek-reasoner","deepseek-v4","deepseek-v4-flash"]}', 'DeepSeek API', 'llm_provider'),
+    ('aliyun', '{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","models":["qwen-plus","qwen-turbo","qwen-max","deepseek-v4-flash"]}', '阿里云 DashScope', 'llm_provider'),
+    ('bigmodel', '{"base_url":"https://open.bigmodel.cn/api/paas/v4","models":["glm-4-flashx","glm-4.5-flash","glm-4-flash"]}', '智谱 BigModel', 'llm_provider'),
+    ('openai', '{"base_url":"https://api.openai.com/v1","models":["gpt-4o","gpt-4o-mini","gpt-4-turbo"]}', 'OpenAI', 'llm_provider'),
+    ('ollama', '{"base_url":"http://localhost:11434/v1","models":[]}', 'Ollama 本地', 'llm_provider');
 
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。

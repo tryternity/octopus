@@ -1001,14 +1001,30 @@ pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {
 }
 
 /// 读取 LLM provider 预设 base_url。
-/// 返回 Vec<(provider, base_url)>
-pub fn list_llm_provider_presets() -> Result<Vec<(String, String)>> {
+/// LLM provider 预设（base_url + 参考模型列表）。
+pub struct LlmProviderPresetRow {
+    pub provider: String,
+    pub base_url: String,
+    pub models: Vec<String>,
+}
+
+/// 读取 LLM provider 预设。config_value 为 JSON：{"base_url":"...","models":["..."]}。
+pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPresetRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT config_key, config_value FROM app_config WHERE category='llm_provider' ORDER BY config_key"
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            let provider: String = r.get(0)?;
+            let value: String = r.get(1)?;
+            // 解析 JSON {"base_url":"...","models":["..."]}
+            let parsed: serde_json::Value = serde_json::from_str(&value).unwrap_or_default();
+            let base_url = parsed.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let models: Vec<String> = parsed.get("models")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            Ok(LlmProviderPresetRow { provider, base_url, models })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
     })

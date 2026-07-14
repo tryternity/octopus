@@ -378,6 +378,7 @@ pub struct AsrCloudPreset {
 pub struct LlmProviderPreset {
     pub provider: String,
     pub base_url: String,
+    pub models: Vec<String>,
 }
 
 #[tauri::command]
@@ -415,8 +416,8 @@ pub fn list_asr_cloud_presets() -> Result<Vec<AsrCloudPreset>, String> {
 #[tauri::command]
 pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String> {
     let rows = octopus_infra::db::list_llm_provider_presets().map_err(|e| e.to_string())?;
-    Ok(rows.into_iter().map(|(provider, base_url)| {
-        LlmProviderPreset { provider, base_url }
+    Ok(rows.into_iter().map(|r| {
+        LlmProviderPreset { provider: r.provider, base_url: r.base_url, models: r.models }
     }).collect())
 }
 
