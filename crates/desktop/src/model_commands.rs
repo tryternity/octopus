@@ -53,12 +53,14 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
+        // 文件系统实际检查：目录存在 → is_enabled=true（覆盖 DB 未更新的情况）
+        let is_ready = r.is_enabled || octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
         out.push(DownloadableModel {
             name: r.model_name,
             repo: r.source,
             category: r.category,
             description: r.description,
-            is_enabled: r.is_enabled,
+            is_enabled: is_ready,
         });
     }
     Ok(out)
