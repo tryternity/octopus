@@ -67,15 +67,23 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
 }
 
 /// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
+#[cfg(test)]
 fn resolve_env_template(url: &str) -> String {
-    let vars = match octopus_infra::db::list_env_vars() {
-        Ok(v) => v,
-        Err(_) => return url.to_string(),
-    };
+    let vars = load_env_vars();
+    resolve_env_template_with(url, &vars)
+}
+
+/// 加载 DB 中的 env 变量（category='env'），返回 (key, value) 列表。
+fn load_env_vars() -> Vec<(String, String)> {
+    octopus_infra::db::list_env_vars().unwrap_or_default()
+}
+
+/// 用给定的 env 变量列表做模板替换。
+fn resolve_env_template_with(url: &str, vars: &[(String, String)]) -> String {
     let mut result = url.to_string();
     for (key, value) in vars {
         let placeholder = format!("{{{}}}", key);
-        result = result.replace(&placeholder, &value);
+        result = result.replace(&placeholder, value);
     }
     result
 }
@@ -90,16 +98,16 @@ pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) ->
     Ok(())
 }
 
-/// 下载 HF 模型（先探查）：命中则自举清单+置 true 不重下；未命中才下载后自举+置 true。
+/// 下载模型（manifest 驱动）：先探查文件是否已就绪；未命中则读 secret_key manifest
+/// 逐文件按 source URL 下载 + sha256 校验 → 置 is_enabled=true。
 #[tauri::command]
 pub async fn download_model(
     repo: String,
     _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache）→ 自举清单 + 置 true，不重下。
+    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ bootstrap + 置 true，不重下。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
-        // bootstrap_manifest 计算 SHA-256（230-740MB），移入 spawn_blocking
         let repo_clone = repo.clone();
         let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
             .await
@@ -113,30 +121,31 @@ pub async fn download_model(
         return Ok(());
     }
 
-    // 2. 未命中：下载（复用阶段1 download crate）。
-    // 变量模板替换：repo 中的 {huggingface} 等替换为 env 变量实际值
-    let resolved_repo = resolve_env_template(&repo);
-    let target_dir = octopus_infra::paths::octopus_config_home().join("models");
+    // 2. 未命中：读 DB manifest，逐文件按 source URL 下载。
+    let (model_name, secret_key) = lookup_model_by_source(&repo)?;
+    if secret_key.is_empty() {
+        return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
+    }
+    let manifest: Manifest = serde_json::from_str(&secret_key)
+        .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+    if manifest.is_empty() {
+        return Err(format!("模型 '{repo}' 下载清单为空"));
+    }
+
+    // 3. 解析 {huggingface} / {github} 模板变量
+    let env_vars = load_env_vars();
+
+    // 4. 目标目录：~/.octopus/models/{repo}/
+    let dest_base = octopus_infra::paths::octopus_config_home().join("models").join(&repo);
+
+    // 5. 逐文件下载
     let dl = octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
         .map_err(|e| format!("初始化下载器失败: {e:?}"))?;
-    let client = dl.client().clone();
-    let hf_req = octopus_download::HfRequest {
-        repo: resolved_repo,
-        include: Vec::new(),
-        exclude: Vec::new(),
-        source_url: None,
-        target_dir,
-    };
-    let tasks = octopus_download::resolve_tasks(&client, hf_req)
-        .await
-        .map_err(|e| format!("解析仓库 '{repo}' 失败: {e:?}"))?;
-    if tasks.is_empty() {
-        return Err(format!("仓库 '{repo}' 无可下载文件"));
-    }
-    let total_files = tasks.len();
 
-    // 进度转发：download crate 的 mpsc Progress → Tauri 事件。
+    let total_files = manifest.len();
     let (tx, mut rx) = mpsc::channel::<octopus_download::Progress>(64);
+
+    // 进度转发
     let fwd_handle = app_handle.clone();
     let fwd_repo = repo.clone();
     tokio::spawn(async move {
@@ -144,7 +153,7 @@ pub async fn download_model(
             let _ = fwd_handle.emit(
                 "download-progress",
                 serde_json::json!({
-                    "repo": fwd_repo,
+                    "repo": &fwd_repo,
                     "downloaded": p.downloaded_bytes,
                     "total": p.total_bytes,
                     "speed": p.speed_bps,
@@ -153,37 +162,53 @@ pub async fn download_model(
         }
     });
 
-    for (i, task) in tasks.into_iter().enumerate() {
+    for (i, (path, file)) in manifest.iter().enumerate() {
         let _ = app_handle.emit(
             "download-file",
             serde_json::json!({
                 "repo": &repo,
                 "index": i + 1,
                 "total": total_files,
-                "file": task.dest.file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default(),
+                "file": path,
             }),
         );
-        dl.download(&task, tx.clone(), None)
-            .await
-            .map_err(|e| format!("下载文件失败: {e:?}"))?;
-    }
-    drop(tx); // 关闭 channel → 转发 task 退出
 
-    // 3. 下载完成：自举清单 + 置 true + reload。
-    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
-        .map_err(|e| format!("下载后定位目录失败: {e:?}"))?;
-    let repo_clone = repo.clone();
-    let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
-        .await
-        .map_err(|e| format!("bootstrap 任务异常: {}", e))?
-        .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-    apply_model_state(&repo_clone, Some(&manifest), true)?;
+        // 解析模板变量
+        let url = resolve_env_template_with(&file.source, &env_vars);
+        let dest = dest_base.join(path);
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+
+        let task = octopus_download::DownloadTask {
+            url: url.clone(),
+            mirrors: vec![],
+            dest: dest.clone(),
+            expected_hash: if file.sha256.is_empty() { None }
+                else { Some(octopus_download::Hash::Sha256(file.sha256.clone())) },
+        };
+
+        let (prog_tx, mut prog_rx) = mpsc::channel::<octopus_download::Progress>(64);
+        let tx2 = tx.clone();
+        tokio::spawn(async move {
+            while let Some(p) = prog_rx.recv().await {
+                let _ = tx2.send(p).await;
+            }
+        });
+
+        dl.download(&task, prog_tx, None)
+            .await
+            .map_err(|e| format!("下载 {path} 失败: {e:?}"))?;
+    }
+    drop(tx);
+
+    // 6. 置 is_enabled=true + emit done
+    apply_model_state(&repo, None, true)?;
     let _ = app_handle.emit(
         "download-done",
         serde_json::json!({ "repo": &repo, "already_ready": false }),
     );
+    let _ = model_name; // 避免 unused warning
     Ok(())
 }
 
@@ -285,6 +310,17 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
         }
     }
     Err(format!("未找到模型 '{model_name}'"))
+}
+
+/// 按 source（路径标识）反查 model_name + secret_key，搜索所有 domain。
+fn lookup_model_by_source(source: &str) -> Result<(String, String), String> {
+    for domain in &["asr", "translate", "ocr"] {
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        if let Some(r) = rows.iter().find(|r| r.source == source) {
+            return Ok((r.model_name.clone(), r.secret_key.clone()));
+        }
+    }
+    Err(format!("未找到 source='{source}' 的模型"))
 }
 
 /// 删除本地模型：删除模型目录 + is_enabled=false + secret_key 清空。

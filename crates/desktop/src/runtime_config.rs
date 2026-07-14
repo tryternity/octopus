@@ -613,8 +613,8 @@ mod tests {
     fn build_llm_options_marks_current_and_labels() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         let opts = build_llm_options("glm-4-flashx", llms);
         assert_eq!(opts.len(), 3);
@@ -635,8 +635,8 @@ mod tests {
         // polish_llm 存为 3-part spec 时，build_llm_options 应正确提取 model_name 标记 current
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         // 3-part spec 格式
         let opts = build_llm_options("bigmodel:glm:glm-4-flashx", llms.clone());
@@ -653,7 +653,7 @@ mod tests {
         // 需求：polish_llm 空 / 裸名不在 DB / spec 格式不命中 → 首项「无模型」标 current（DB 回退）。
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         // current 空 → 无模型 current
         let opts = build_llm_options("", llms.clone());
@@ -730,8 +730,8 @@ mod tests {
     fn build_llm_options_provider_precise_current() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false },
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false },
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         // 当前选中 aliyun 的
         let opts = build_llm_options("aliyun:deepseek:deepseek-v4-flash", llms);
@@ -745,8 +745,8 @@ mod tests {
     fn build_llm_options_bare_name_matches_all_providers() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false },
-            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false },
+            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         // 裸名（无 3-part spec）→ 匹配所有同名
         let opts = build_llm_options("test-model", llms);
@@ -770,7 +770,7 @@ mod tests {
     fn llm_option_has_provider_field() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
+            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
         ];
         let opts = build_llm_options("test", llms);
         assert_eq!(opts[1].provider, "bigmodel", "LlmOption 应包含 provider 字段");
