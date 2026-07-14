@@ -831,14 +831,14 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
     })
 }
 
-/// 设置某本地 ASR 模型就绪状态（is_enabled）。写 DB；调方需随后 reload 运行时缓存。
+/// 写某本地模型的 is_enabled。写 DB。
 pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
     with_db(|conn| set_model_enabled_at(conn, model_name, enabled))
 }
 
 fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
     conn.execute(
-        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND is_local = 1",
+        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
         params![if enabled { 1 } else { 0 }, model_name],
     )?;
     Ok(())
@@ -851,7 +851,7 @@ pub fn set_model_secret_key(model_name: &str, json: &str) -> Result<()> {
 
 fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> Result<()> {
     conn.execute(
-        "UPDATE models SET secret_key = ?1 WHERE model_name = ?2 AND is_local = 1",
+        "UPDATE models SET secret_key = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
         params![json, model_name],
     )?;
     Ok(())

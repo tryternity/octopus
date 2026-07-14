@@ -141,7 +141,7 @@ export function CloudModelForm({
       }
       onSaved();
     } catch (e) {
-      alert(e);
+      setTestResult({ ok: false, message: String(e) });
     } finally {
       setSaving(false);
     }

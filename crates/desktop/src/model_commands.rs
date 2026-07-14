@@ -474,11 +474,12 @@ pub struct ModelDetail {
 #[tauri::command]
 pub fn get_model_detail(id: i64) -> Result<ModelDetail, String> {
     let (source, secret_key) = octopus_infra::db::get_model_source_key(id).map_err(|e| e.to_string())?;
+    let (is_streaming, is_thinking) = octopus_infra::db::get_model_flags(id).unwrap_or((false, false));
     Ok(ModelDetail {
         source,
         secret_key,
-        is_streaming: false,
-        is_thinking: false,
+        is_streaming,
+        is_thinking,
     })
 }
 
