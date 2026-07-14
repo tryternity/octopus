@@ -170,13 +170,13 @@ pub fn list_llm_provider_presets() -> Result<Vec<(String, String)>>
 
 ```rust
 #[tauri::command]
-pub fn insert_cloud_model(...) -> Result<i64, String>
+pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String>
 
 #[tauri::command]
-pub fn update_cloud_model(...) -> Result<(), String>
+pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String>
 
 #[tauri::command]
-pub fn delete_cloud_model(id: i64) -> Result<(), String>
+pub fn remove_cloud_model(id: i64) -> Result<(), String>
 
 #[tauri::command]
 pub fn list_asr_cloud_presets() -> Result<Vec<AsrCloudPreset>, String>
@@ -189,7 +189,7 @@ pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String>
 
 1. **本地模型 seed 不变**：只删云端模型 seed，本地 ASR/翻译/OCR seed 保持不动
 2. **app_config 参考列表可远程更新**：以后可通过更新 app_config 表远程推送新模型参考列表
-3. **删除后如果当前激活的模型被删**：回退到兜底引擎（ASR）或空（LLM）
+3. **删除后如果当前激活的模型被删**：⚠️ 实施时简化为直接删除不回退（见 §10.7）；原计划「回退到兜底引擎（ASR）或空（LLM）」未实施
 4. **source 字段语义不变**：ASR source = 端点/Resource ID/appid，LLM source = base_url
 
 ## 9. 降级

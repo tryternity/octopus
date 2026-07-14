@@ -259,12 +259,14 @@ Expected: PASS
 
 ---
 
-### Task 5: 删除当前激活模型时的回退处理
+### Task 5: 删除当前激活模型时的回退处理（⚠️ 未实施——简化为直接物理删除，见 spec §10.7）
+
+> 本 Task 原计划的「删除前检查激活 + 回退兜底引擎」逻辑**未实施**。实施时简化：`remove_cloud_model` 直接物理删除（前端 `confirm()` 二次确认作为保护），见 spec §10.7。以下保留原设计记录供参考。
 
 **Files:**
 - Modify: `crates/desktop/src/model_commands.rs`（delete_cloud_model 检查是否为当前引擎）
 
-- [x] **Step 1: delete_cloud_model 检查当前激活**
+- [ ] **Step 1: delete_cloud_model 检查当前激活**
 
 删除前检查：如果被删的模型是当前 `asr_engine` / `polish_llm`，需要回退。
 
@@ -289,12 +291,12 @@ pub async fn delete_cloud_model(id: i64, rc: State<'_, SharedRuntimeConfig>) -> 
 }
 ```
 
-- [x] **Step 2: 编译 + 测试**
+- [ ] **Step 2: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [x] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ---
 
