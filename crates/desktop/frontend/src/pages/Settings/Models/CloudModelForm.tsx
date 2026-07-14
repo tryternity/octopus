@@ -165,7 +165,7 @@ export function CloudModelForm({
         return;
       }
       const result = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
-        source, secretKey: realKey,
+        source, secretKey: realKey, modelName,
       });
       setTestResult(result);
     } catch (e) {

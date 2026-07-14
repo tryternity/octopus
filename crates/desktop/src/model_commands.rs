@@ -429,9 +429,61 @@ pub struct TestConnectionResult {
 
 /// 测试云端模型连接：GET {base_url}/models 验证 api_key 有效。
 #[tauri::command]
-pub async fn test_cloud_model(source: String, secret_key: String) -> Result<TestConnectionResult, String> {
-    let url = format!("{}/models", source.trim_end_matches('/'));
+pub async fn test_cloud_model(
+    source: String,
+    secret_key: String,
+    model_name: Option<String>,
+) -> Result<TestConnectionResult, String> {
     let client = reqwest::Client::new();
+    let base = source.trim_end_matches('/');
+
+    // 如果提供了 model_name，发一个最小 chat completion 验证模型可用性
+    if let Some(model) = model_name.filter(|m| !m.is_empty()) {
+        let url = format!("{}/chat/completions", base);
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        });
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", secret_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await;
+
+        return match resp {
+            Ok(r) => {
+                if r.status().is_success() {
+                    Ok(TestConnectionResult {
+                        ok: true,
+                        message: format!("模型 {} 连接成功", model),
+                    })
+                } else {
+                    let status = r.status().as_u16();
+                    let body = r.text().await.unwrap_or_default();
+                    // 尝试提取 error message
+                    let msg = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).map(String::from))
+                        .unwrap_or(body);
+                    Ok(TestConnectionResult {
+                        ok: false,
+                        message: format!("HTTP {} — {}", status, msg),
+                    })
+                }
+            }
+            Err(e) => Ok(TestConnectionResult {
+                ok: false,
+                message: format!("{}", e),
+            }),
+        };
+    }
+
+    // 无 model_name：只验证 base_url + api_key 连通性
+    let url = format!("{}/models", base);
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", secret_key))
@@ -442,22 +494,12 @@ pub async fn test_cloud_model(source: String, secret_key: String) -> Result<Test
     match resp {
         Ok(r) => {
             if r.status().is_success() {
-                Ok(TestConnectionResult {
-                    ok: true,
-                    message: "连接成功".into(),
-                })
+                Ok(TestConnectionResult { ok: true, message: "连接成功".into() })
             } else {
-                let status = r.status();
-                Ok(TestConnectionResult {
-                    ok: false,
-                    message: format!("HTTP {}", status.as_u16()),
-                })
+                Ok(TestConnectionResult { ok: false, message: format!("HTTP {}", r.status().as_u16()) })
             }
         }
-        Err(e) => Ok(TestConnectionResult {
-            ok: false,
-            message: format!("{}", e),
-        }),
+        Err(e) => Ok(TestConnectionResult { ok: false, message: format!("{}", e) }),
     }
 }
 
