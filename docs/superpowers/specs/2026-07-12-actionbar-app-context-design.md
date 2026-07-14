@@ -241,24 +241,49 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 
 ---
 
-## 6. bundle id → AppKind 映射
+## 6. id/进程名 → AppKind 映射（三平台统一）
 
 ```rust
-fn classify_app(bundle_id: &str) -> AppKind {
-    match bundle_id {
-        "com.apple.Terminal" | "com.googlecode.iterm2" => Terminal,
-        "com.microsoft.Word" | "com.apple.TextEdit"
-          | "com.sublimetext.4" | "com.sublimetext.3"
-          | "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92"
-          | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => Editor,
-        "com.apple.Safari" | "com.google.Chrome"
-          | "org.mozilla.firefox" | "com.microsoft.edgemac" => Browser,
-        "com.tencent.xinWeChat" | "com.tinyspeck.slackmacgap"
-          | "com.hnc.Discord" => Chat,
-        _ => Unknown,
+/// bundle_id（macOS）/ 进程名（Windows/Linux）→ AppKind（三平台统一）。
+/// 内部统一转小写比较——Windows 文件系统不区分大小写（WINWORD.EXE = winword.exe），
+/// macOS bundle_id 本就小写，无副作用。
+pub fn classify_app(id: &str) -> AppKind {
+    let id = id.to_ascii_lowercase();
+    match id.as_str() {
+        // ── Terminal ──
+        "com.apple.terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
+        #[cfg(target_os = "windows")]
+        "cmd.exe" | "powershell.exe" | "pwsh.exe" | "windowsterminal.exe" | "conhost.exe" => AppKind::Terminal,
+        #[cfg(target_os = "linux")]
+        "gnome-terminal" | "konsole" | "xterm" | "kitty" | "wezterm-gui" | "alacritty" => AppKind::Terminal,
+        // ── Editor ──
+        "com.microsoft.word" | "com.apple.textedit" | "com.sublimetext.4"
+          | "com.microsoft.vscode" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
+        #[cfg(target_os = "windows")]
+        "notepad.exe" | "winword.exe" | "code.exe" | "sublime_text.exe" | "wps.exe" => AppKind::Editor,
+        #[cfg(target_os = "linux")]
+        "gedit" | "code" | "sublime_text" | "vim" | "emacs" | "wps" => AppKind::Editor,
+        // ── Browser ──
+        "com.apple.safari" | "com.google.chrome" | "org.mozilla.firefox" => AppKind::Browser,
+        #[cfg(target_os = "windows")]
+        "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
+        #[cfg(target_os = "linux")]
+        "firefox" | "chromium" | "google-chrome" | "brave" | "microsoft-edge" => AppKind::Browser,
+        // ── Chat ──
+        "com.tencent.xinweichat" | "com.tinyspeck.slackmacgap" | "com.hnc.discord" => AppKind::Chat,
+        #[cfg(target_os = "windows")]
+        "wechat.exe" | "slack.exe" | "discord.exe" => AppKind::Chat,
+        _ => AppKind::Unknown,
     }
 }
 ```
+
+**演进**（commit `20b21a18`）：v1 仅 macOS bundle_id 按原样 match（大小写敏感），跨平台后改为：
+1. 签名 `bundle_id` → `id`（Windows/Linux 是进程名而非 bundle_id）
+2. 内部 `to_ascii_lowercase()` 归一（Windows `WINWORD.EXE` 等需小写匹配；macOS bundle_id 本就小写，无副作用）
+3. 三平台进程名各自 `#[cfg(target_os = "...")]` 分发，全小写
+
+> 完整进程名清单见源码 `crates/desktop/src/app_context/mod.rs`（含已停更的 atom/todesktop 等历史 key）。
 
 ---
 
