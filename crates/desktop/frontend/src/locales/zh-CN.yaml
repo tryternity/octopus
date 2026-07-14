@@ -144,6 +144,8 @@ settings:
     enable: 启用
     disable: 禁用
     switchFailed: "切换失败："
+    activate: 激活
+    activated: 已激活
     env:
       loadFailed: "加载环境变量失败："
       saved: 已保存
@@ -246,6 +248,8 @@ settings:
     newFailed: "新建失败："
     importFailed: "导入失败："
     switchFailed: "切换失败："
+    activate: 激活
+    activated: 已激活
     renameFailed: "重命名失败："
     deleteConfirmMsg: 删除版本「${name}」？（命中统计保留）
     deleteConfirmTitle: 确认删除

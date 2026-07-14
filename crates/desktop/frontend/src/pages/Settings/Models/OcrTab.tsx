@@ -29,6 +29,17 @@ interface DownloadProgress {
   total: number;
 }
 
+function CurrentBanner({ label }: { label: string }) {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
+      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
+      <span className="text-muted-foreground">{t("settings.models.current")}</span>
+      <span className="font-medium text-foreground">{label}</span>
+    </div>
+  );
+}
+
 export default function OcrTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [models, setModels] = useState<OcrOption[]>([]);
@@ -38,9 +49,11 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
 
   const load = useCallback(async () => {
     try {
-      const resp = await invoke<{ ocr_models: OcrOption[] }>("get_config");
+      const [resp, dl] = await Promise.all([
+        invoke<{ ocr_models: OcrOption[] }>("get_config"),
+        invoke<DownloadableModel[]>("list_downloadable_models", { domain: "ocr" }),
+      ]);
       setModels(resp.ocr_models ?? []);
-      const dl = await invoke<DownloadableModel[]>("list_downloadable_models", { domain: "ocr" });
       setDownloadable(dl);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
@@ -89,40 +102,37 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     finally { setBusyRepo(null); }
   };
 
-  const handleSetOcrModel = async (name: string) => {
-    try { await invoke("set_config", { key: "ocr_model", value: name }); load(); }
+  const handleActivate = async (model: DownloadableModel) => {
+    try { await invoke("set_config", { key: "ocr_model", value: model.name }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
-  const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[220px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
+  const isCurrent = (name: string) => models.some((m) => m.current && m.name === name);
+  const currentLabel = models.find((m) => m.current)?.label ?? "";
+  const readyCount = downloadable.filter((m) => m.is_enabled).length;
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      <div className="flex items-center justify-between py-2 px-3 rounded-md border border-border/60 bg-surface">
-        <span className="text-xs text-muted-foreground">{t("settings.general.ocrModel")}</span>
-        <select className={selectClass}
-          value={models.find((m) => m.current)?.name ?? ""}
-          onChange={(e) => handleSetOcrModel(e.target.value)}>
-          {models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-        </select>
-      </div>
-      <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${downloadable.filter(m => m.is_enabled).length}/${downloadable.length}`}>
+      {currentLabel && <CurrentBanner label={currentLabel} />}
+
+      <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {downloadable.map((model) => {
           const prog = progress[model.repo];
           const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
+          const current = isCurrent(model.name);
           return (
             <div
               key={model.repo}
               className={cn(
                 "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
-                "border-l-2 border-border/40 hover:border-border hover:bg-accent/30",
-                model.is_enabled && "border-l-voice/40",
+                "border-l-2 hover:border-border hover:bg-accent/30",
+                current ? "border-l-voice/40 bg-voice/5" : "border-l-border/40",
               )}
             >
               <div className="flex flex-col gap-0.5 flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-medium">{model.name}</span>
-                  {model.is_enabled && <CheckCircle2 className="w-3 h-3 text-voice" />}
+                  {current && <CheckCircle2 className="w-3 h-3 text-voice" />}
                 </div>
                 <span className="text-[11px] text-muted-foreground/60">{model.description}</span>
                 {prog && (
@@ -134,15 +144,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
                 )}
               </div>
               <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                {model.is_enabled ? (
-                  <button
-                    className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-accent"
-                    disabled={!!busyRepo}
-                    onClick={() => handleVerify(model)}
-                  >
-                    <RefreshCw className="w-2.5 h-2.5" /> {t("settings.models.verify")}
-                  </button>
-                ) : (
+                {!model.is_enabled ? (
                   <button
                     className={cn(
                       "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-all",
@@ -155,6 +157,24 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
                     <Download className="w-2.5 h-2.5" />
                     {busyRepo === model.repo ? t("settings.models.downloading") : t("settings.models.download")}
                   </button>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    {!current && (
+                      <button
+                        className="px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
+                        onClick={() => handleActivate(model)}
+                      >
+                        {t("settings.models.activate")}
+                      </button>
+                    )}
+                    <button
+                      className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-accent"
+                      disabled={!!busyRepo}
+                      onClick={() => handleVerify(model)}
+                    >
+                      <RefreshCw className="w-2.5 h-2.5" /> {t("settings.models.verify")}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
