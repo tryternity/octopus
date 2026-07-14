@@ -121,10 +121,33 @@ export function CloudModelForm({
       return;
     }
     setSaving(true);
+    setTestResult(null);
     try {
       // 编辑时：如果 secret_key 未改（仍是脱敏值），不传 secret_key（后端保留原值）
       const keyToSend = (editModel && secretKey.includes("********"))
         ? "" : secretKey;
+
+      // LLM 模型：保存前必须先测试通过（带 is_thinking）
+      if (domain === "llm") {
+        let realKey = secretKey;
+        if (editModel?.id && secretKey.includes("********")) {
+          const detail = await invoke<{ secretKey: string }>("get_model_detail", { id: editModel.id });
+          realKey = detail.secretKey;
+        }
+        if (!realKey || realKey.includes("********")) {
+          setTestResult({ ok: false, message: "请重新输入 API Key" });
+          return;
+        }
+        const testRes = await invoke<{ ok: boolean; message: string }>("test_cloud_model", {
+          source, secretKey: realKey, modelName, isThinking,
+        });
+        if (!testRes.ok) {
+          setTestResult(testRes);
+          return;
+        }
+        setTestResult(testRes);
+      }
+
       const input = {
         domain,
         provider,

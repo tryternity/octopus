@@ -859,7 +859,7 @@ fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> R
 
 // ── 云端模型 CRUD（用户自建，domain='asr'|'llm' AND is_local=0）──
 
-/// 新增云端模型。返回新行 id。
+/// 新增云端模型。is_enabled=1（前端已测试通过才保存）。返回新行 id。
 pub fn insert_cloud_model(
     domain: &str, provider: &str, category: &str,
     model_name: &str, source: &str, secret_key: &str,
