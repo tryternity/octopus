@@ -602,3 +602,8 @@ spec 原设计仅描述下载/校验逻辑，实施时统一了前端 4 Tab 的�
 - **test_cloud_model**：原来只 GET `/models` 不验证 model_name → 改为 POST `/chat/completions` 验证模型可用性（有 model_name 时）。
 - **translate_status**：对 `local:NAME` spec 返回第一个 downloaded 模型 → 改为精确匹配 spec 中的 model_name。
 - **Tauri confirm**：浏览器原生 `confirm()` 在 WKWebView 不弹窗 → 改用 `@tauri-apps/plugin-dialog`。
+
+### 12.6 第 5 轮修复
+
+- **旧 bootstrap manifest 升级**：v28 迁移时 `bootstrap_manifest` 生成的旧 manifest `source` 全空（如 firered-asr2），导致 `create_model_symlinks` 无法解析 HF repo、`download_model` 无 source URL。`fill_manifests` 新增升级逻辑：检测 source 全空的 manifest → 替换为预填常量（含 source URL）。`create_model_symlinks` 加 fallback：manifest source 为空时从 `model_manifests::asr_manifest` 常量取 repo 信息。
+- **托盘引擎信息**：移除 `· ${mode}` 后缀（`engine_mode` 对用户无用），只显示 `引擎 model-name[provider]`。
