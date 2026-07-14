@@ -464,7 +464,42 @@ fn read_pdf_text(path: &std::path::Path) -> Option<String> {
         return None;
     }
 
-    Some(String::from_utf8_lossy(&output.stdout).to_string())
+    let raw = String::from_utf8_lossy(&output.stdout);
+    // PDF 排版换行合并：pdftotext 按 PDF 布局断行，CJK 文本每 N 字换行。
+    // 选中文字可能跨行，精确搜索匹配不到。
+    // 合并策略：前一行末尾是 CJK 字符 → 合并到前一行（排版换行）。
+    let merged = merge_cjk_line_breaks(&raw);
+    Some(merged)
+}
+
+/// 合并 CJK 排版换行：前一行末尾是 CJK 字符 → 合并（非语义换行）。
+fn merge_cjk_line_breaks(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut merged: Vec<String> = Vec::new();
+
+    for line in lines {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            merged.push(String::new());
+            continue;
+        }
+        if let Some(last) = merged.last() {
+            let prev = last.trim_end();
+            if !prev.is_empty() {
+                let last_char = prev.chars().last();
+                // 前一行末尾是 CJK → 合并（排版换行，非语义换行）
+                if let Some(ch) = last_char {
+                    if (ch as u32) >= 0x2e80 {
+                        *merged.last_mut().unwrap() = format!("{}{}", prev, line.trim());
+                        continue;
+                    }
+                }
+            }
+        }
+        merged.push(line.to_string());
+    }
+
+    merged.join("\n")
 }
 
 /// 从 OOXML 格式（.docx/.pptx）中提取纯文本。
