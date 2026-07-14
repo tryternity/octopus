@@ -1310,7 +1310,7 @@ unsafe fn build_surrounding(
                 }
 
                 // Pages/Keynote 用 AppleScript 读全文（和 Chrome JS 同思路）
-                if bundle_id_or_name.contains("iwork") {
+                if bundle_id_or_name.to_ascii_lowercase().contains("iwork") {
                     if let Some(ctx) = try_pages_applescript(selected_text, &window_title) {
                         diagnostics.push("PAGES_APPLESCRIPT: AppleScript body text 取数成功".to_string());
                         let diag = Some(diagnostics.join("\n  "));
