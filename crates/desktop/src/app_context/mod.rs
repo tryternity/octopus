@@ -51,8 +51,8 @@ pub trait ContextProvider {
     fn gather(&self, selected_text: &str) -> anyhow::Result<ExtraContext>;
 }
 
-/// 非 macOS 平台的空实现——永远返回 Err。
-#[allow(dead_code)] // 仅非 macOS 平台使用
+/// 非 macOS/Windows/Linux 平台的空实现——永远返回 Err。
+#[allow(dead_code)] // 仅非主流平台使用
 pub struct NullProvider;
 
 impl ContextProvider for NullProvider {
@@ -67,7 +67,12 @@ pub fn provider() -> Box<dyn ContextProvider> {
     {
         Box::new(self::macos_ax::AxProvider)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(self::windows_uia::UiaProvider)
+    }
+    // Linux 暂不支持（AT-SPI2 需事件流，见 linux_atspi.rs 注释）
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Box::new(NullProvider)
     }
@@ -82,28 +87,49 @@ pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
 mod ffi;
 #[cfg(target_os = "macos")]
 mod macos_ax;
+#[cfg(target_os = "windows")]
+mod windows_uia;
+// linux_atspi.rs 暂不编译——AT-SPI2 需事件流，见文件注释
 
 // ── 纯函数辅助 ──
 
-/// bundle id → AppKind 映射。
-pub fn classify_app(bundle_id: &str) -> AppKind {
-    match bundle_id {
-        "com.apple.Terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
-        "com.microsoft.Word"
-        | "com.apple.TextEdit"
-        | "com.sublimetext.4"
-        | "com.sublimetext.3"
-        | "com.microsoft.VSCode"
-        | "com.todesktop.230313mzl4w4u92"
-        | "com.github.atom"
-        | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
-        "com.apple.Safari"
-        | "com.google.Chrome"
-        | "org.mozilla.firefox"
-        | "com.microsoft.edgemac" => AppKind::Browser,
-        "com.tencent.xinWeChat"
-        | "com.tinyspeck.slackmacgap"
-        | "com.hnc.Discord" => AppKind::Chat,
+/// bundle_id / 进程名 → AppKind 映射（三平台统一）。
+/// 内部统一转小写比较——Windows 文件系统不区分大小写（WINWORD.EXE = winword.exe），
+/// macOS bundle_id 本就小写，无副作用。
+pub fn classify_app(id: &str) -> AppKind {
+    let id = id.to_ascii_lowercase();
+    match id.as_str() {
+        // ── Terminal ──
+        "com.apple.terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
+        #[cfg(target_os = "windows")]
+        "cmd.exe" | "powershell.exe" | "pwsh.exe" | "windowsterminal.exe" | "conhost.exe" => AppKind::Terminal,
+        "gnome-terminal" | "gnome-terminal-server" | "konsole" | "xterm" | "alacritty"
+        | "kitty" | "terminator" | "tilix" | "foot" | "wezterm-gui" => AppKind::Terminal,
+        // ── Editor ──
+        "com.microsoft.word" | "com.apple.textedit"
+        | "com.sublimetext.4" | "com.sublimetext.3"
+        | "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92"
+        | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
+        #[cfg(target_os = "windows")]
+        "notepad.exe" | "winword.exe" | "excel.exe" | "powerpnt.exe"
+        | "code.exe" | "sublime_text.exe" | "wps.exe" | "notepad++.exe" => AppKind::Editor,
+        #[cfg(target_os = "linux")]
+        "gedit" | "code" | "sublime_text" | "kate" | "nano"
+        | "vim" | "gvim" | "emacs" | "wps" => AppKind::Editor,
+        // ── Browser ──
+        "com.apple.safari" | "com.google.chrome"
+        | "org.mozilla.firefox" | "com.microsoft.edgemac" => AppKind::Browser,
+        #[cfg(target_os = "windows")]
+        "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
+        #[cfg(target_os = "linux")]
+        "firefox" | "chromium" | "google-chrome" | "brave" | "microsoft-edge" => AppKind::Browser,
+        // ── Chat ──
+        "com.tencent.xinweichat" | "com.tinyspeck.slackmacgap"
+        | "com.hnc.discord" => AppKind::Chat,
+        #[cfg(target_os = "windows")]
+        "wechat.exe" | "slack.exe" | "discord.exe" => AppKind::Chat,
+        #[cfg(target_os = "linux")]
+        "slack" | "discord" => AppKind::Chat,
         _ => AppKind::Unknown,
     }
 }
