@@ -352,10 +352,10 @@ pub fn classify_app(id: &str) -> AppKind {
 
 | 层 | 测试 | 数量 |
 |----|------|------|
-| 纯函数（mod.rs） | classify_app / extract_surrounding | 5 |
+| 纯函数（mod.rs） | classify_app / extract_surrounding / NullProvider | 7 |
 | AX 类型安全（macos_ax.rs） | is_cf_string / is_cf_array（覆盖两类崩溃根因） | 11 |
 | AX 错误码翻译 | ax_error_desc | 2 |
 | 控制字符过滤 | strip_control_chars | 5 |
 | Terminal 截断 | truncate_text_tail / truncate_text_head | 6 |
 | 日志格式化/写入（action_bar_commands.rs） | format_context_entry / write_context_log（含文件vs目录 bug 回归） | 12 |
-| **合计** | | **41** |
+| **合计** | | **43** |
