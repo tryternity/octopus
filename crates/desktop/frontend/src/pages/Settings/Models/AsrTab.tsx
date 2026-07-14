@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cn } from "@/lib/utils";
-import { CheckCircle2, Download, RefreshCw, Cloud, HardDrive } from "lucide-react";
+import { Cloud, HardDrive } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { useT } from "@/lib/i18n";
 
 interface DownloadableModel {
@@ -14,62 +14,41 @@ interface DownloadableModel {
   is_enabled: boolean;
 }
 
+interface EngineOption {
+  name: string;
+  provider: string;
+  category: string;
+  current: boolean;
+  is_local: boolean;
+  label: string;
+}
+
 interface DownloadProgress {
   repo: string;
   downloaded: number;
   total: number;
 }
 
-interface EngineOption {
-  name: string;
-  label: string;
-  current: boolean;
-  is_local: boolean;
-}
-
-function fmtBytes(n: number | null | undefined): string {
-  if (n == null) return "?";
-  if (n < 1024) return n + " B";
-  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
-  return (n / 1073741824).toFixed(2) + " GB";
-}
-
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
-}
-
 export default function AsrTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
-  const [models, setModels] = useState<DownloadableModel[]>([]);
+  const [downloadable, setDownloadable] = useState<DownloadableModel[]>([]);
+  const [engines, setEngines] = useState<EngineOption[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
-  const [allEngines, setAllEngines] = useState<EngineOption[]>([]);
-  const [cloudEngines, setCloudEngines] = useState<EngineOption[]>([]);
-  const [currentLabel, setCurrentLabel] = useState("");
 
-  const loadModels = useCallback(async () => {
+  const load = useCallback(async () => {
     try {
       const [data, resp] = await Promise.all([
         invoke<DownloadableModel[]>("list_downloadable_models", { domain: "asr" }),
         invoke<{ asr_engines: EngineOption[] }>("get_config"),
       ]);
-      setModels(data);
-      setAllEngines(resp.asr_engines ?? []);
-      setCloudEngines(resp.asr_engines?.filter((e) => !e.is_local) ?? []);
-      setCurrentLabel(resp.asr_engines?.find((e) => e.current)?.label ?? "");
+      setDownloadable(data);
+      setEngines(resp.asr_engines ?? []);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
   useEffect(() => {
-    loadModels();
+    load();
     let unlistens: UnlistenFn[] = [];
     let cancelled = false;
     (async () => {
@@ -89,7 +68,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           if (data.error) showToast(t("settings.models.downloadFailed") + data.error);
           else if (data.already_ready) showToast(t("settings.models.alreadyReady"));
           else showToast(t("settings.models.downloadComplete"));
-          loadModels();
+          load();
         }],
       ];
       for (const [event, handler] of subs) {
@@ -99,133 +78,72 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       }
     })();
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
-  }, [loadModels, showToast, t]);
+  }, [load, showToast, t]);
 
-  const handleDownload = async (model: DownloadableModel) => {
+  const isCurrent = (name: string) => engines.some((e) => e.current && e.name === name);
+  const currentLabel = engines.find((e) => e.current)?.label ?? "";
+
+  const onActivate = (name: string) =>
+    invoke("switch_asr_engine", { modelName: name }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
+
+  const onDownload = (repo: string) => {
     if (busyRepo) return;
-    setBusyRepo(model.repo);
-    try { await invoke("download_model", { repo: model.repo }); }
-    catch (e) { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); }
+    setBusyRepo(repo);
+    invoke("download_model", { repo }).catch((e) => { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); });
   };
 
-  const handleVerify = async (model: DownloadableModel) => {
+  const onVerify = async (repo: string, name: string) => {
     if (busyRepo) return;
-    setBusyRepo(model.repo);
-    try { await invoke("verify_model", { repo: model.repo, modelName: model.name }); showToast(t("settings.models.verifyComplete")); loadModels(); }
+    setBusyRepo(repo);
+    try { await invoke("verify_model", { repo, modelName: name }); showToast(t("settings.models.verifyComplete")); load(); }
     catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
   };
 
-  const handleActivate = async (model: DownloadableModel) => {
-    try { await invoke("switch_asr_engine", { modelName: model.name }); loadModels(); }
-    catch (e) { showToast(t("settings.models.switchFailed") + e); }
+  const onDelete = (repo: string) => {
+    invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
-  const isCurrentModel = (model: DownloadableModel) =>
-    allEngines.some((e) => e.current && e.name === model.name);
+  const readyCount = downloadable.filter((m) => m.is_enabled).length;
 
-  const readyCount = models.filter((m) => m.is_enabled).length;
+  // 合并本地 + 云端
+  const localRows: ModelRowData[] = downloadable.map((m) => ({
+    name: m.name, provider: "local", category: m.category,
+    description: m.description, is_ready: m.is_enabled,
+    is_current: isCurrent(m.name), is_local: true, repo: m.repo,
+  }));
+
+  const cloudEngines = engines.filter((e) => !e.is_local);
+  const cloudRows: ModelRowData[] = cloudEngines.map((e) => ({
+    name: e.name, provider: e.provider, category: e.category,
+    description: e.label, is_ready: true,
+    is_current: e.current, is_local: false, repo: "",
+  }));
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
 
-      <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${models.length}`}>
-      {models.map((model) => {
-        const prog = progress[model.repo];
-        const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
-        const isCurrent = isCurrentModel(model);
-        return (
-          <div
-            key={model.repo}
-            className={cn(
-              "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
-              "border-l-2 border-border/40 hover:border-border hover:bg-accent/30",
-              isCurrent ? "border-l-voice/40 bg-voice/5" : (model.is_enabled && "border-l-voice/40"),
-            )}
-          >
-            <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium">{model.name}</span>
-                <span className="text-[9px] text-muted-foreground/50 px-1 py-px rounded bg-muted">{model.category}</span>
-                {isCurrent && <CheckCircle2 className="w-3 h-3 text-voice" />}
-              </div>
-              <span className="text-[11px] text-muted-foreground/60">{model.description}</span>
-              {prog && (
-                <div className="mt-1">
-                  <div className="h-1 bg-muted rounded-full overflow-hidden">
-                    <div className="h-full bg-voice transition-all" style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground/50">{fmtBytes(prog.downloaded)} / {fmtBytes(prog.total)}</span>
-                </div>
-              )}
-            </div>
-            <div className="flex flex-col items-end gap-1 flex-shrink-0">
-              {!model.is_enabled ? (
-                <button
-                  className={cn(
-                    "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-all",
-                    "bg-foreground text-background hover:opacity-85",
-                    busyRepo && "opacity-40 cursor-not-allowed",
-                  )}
-                  disabled={!!busyRepo}
-                  onClick={() => handleDownload(model)}
-                >
-                  <Download className="w-2.5 h-2.5" />
-                  {busyRepo === model.repo ? t("settings.models.downloading") : t("settings.models.download")}
-                </button>
-              ) : (
-                <div className="flex items-center gap-1">
-                  {!isCurrent && (
-                    <button
-                      className="px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
-                      onClick={() => handleActivate(model)}
-                    >
-                      {t("settings.models.activate")}
-                    </button>
-                  )}
-                  <button
-                    className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-accent"
-                    disabled={!!busyRepo}
-                    onClick={() => handleVerify(model)}
-                  >
-                    <RefreshCw className="w-2.5 h-2.5" /> {t("settings.models.verify")}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+      <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
+        {localRows.map((m) => (
+          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
+            onActivate={() => onActivate(m.name)}
+            onDownload={() => onDownload(m.repo)}
+            onVerify={() => onVerify(m.repo, m.name)}
+            onDelete={() => onDelete(m.repo)}
+          />
+        ))}
       </CollapsibleSection>
 
-      {cloudEngines.length > 0 && (
+      {cloudRows.length > 0 && (
         <CollapsibleSection icon={Cloud} label={t("settings.models.cloudEngines")}>
-          {cloudEngines.map((engine) => (
-            <div
-              key={engine.name}
-              className={cn(
-                "flex items-center justify-between py-2 px-3 rounded-md transition-colors",
-                "border-l-2 border-border/40",
-                engine.current && "border-l-voice/40 bg-voice/5",
-              )}
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-medium">{engine.label}</span>
-                {engine.current && <CheckCircle2 className="w-3 h-3 text-voice" />}
-              </div>
-              <div className="flex items-center gap-1">
-                {!engine.current && (
-                  <button
-                    className="px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
-                    onClick={() => invoke("switch_asr_engine", { modelName: engine.name }).then(() => loadModels())}
-                  >
-                    {t("settings.models.activate")}
-                  </button>
-                )}
-                <span className="text-[9px] text-muted-foreground/40 px-1 py-px rounded bg-muted font-mono">{engine.name}</span>
-              </div>
-            </div>
+          {cloudRows.map((m) => (
+            <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={!!busyRepo}
+              onActivate={() => onActivate(m.name)}
+              onDownload={() => {}}
+              onVerify={() => {}}
+              onDelete={() => {}}
+            />
           ))}
         </CollapsibleSection>
       )}

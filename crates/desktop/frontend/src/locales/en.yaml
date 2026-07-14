@@ -146,6 +146,7 @@ settings:
     switchFailed: "Switch failed:"
     activate: Activate
     activated: Active
+    confirmDelete: Delete this model files?
     env:
       loadFailed: "Failed to load env vars:"
       saved: Saved

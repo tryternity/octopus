@@ -245,6 +245,7 @@ pub fn run() {
             model_commands::list_downloadable_models,
             model_commands::download_model,
             model_commands::verify_model,
+            model_commands::delete_model,
             model_commands::set_download_mirror,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,

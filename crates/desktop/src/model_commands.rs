@@ -276,6 +276,33 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
     Err(format!("未找到模型 '{model_name}'"))
 }
 
+/// 删除本地模型：删除模型目录 + is_enabled=false + secret_key 清空。
+#[tauri::command]
+pub async fn delete_model(repo: String) -> Result<(), String> {
+    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
+        .map_err(|e| format!("模型目录不存在: {e:?}"))?;
+
+    // 如果是软链，只删软链不删 HF cache 原文件
+    tokio::task::spawn_blocking(move || {
+        let meta = std::fs::symlink_metadata(&dir);
+        if let Ok(m) = meta {
+            if m.is_symlink() || m.file_type().is_symlink() {
+                std::fs::remove_file(&dir)
+                    .map_err(|e| format!("删除软链失败: {e:?}"))?;
+            } else {
+                std::fs::remove_dir_all(&dir)
+                    .map_err(|e| format!("删除目录失败: {e:?}"))?;
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("delete_model 任务异常: {e}"))??;
+
+    apply_model_state(&repo, None, false)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,28 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
-import { cn } from "@/lib/utils";
-import { CheckCircle2, Cloud, HardDrive } from "lucide-react";
+import { Cloud, HardDrive } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { useT } from "@/lib/i18n";
 
 interface LlmOption {
-  id: number;
   name: string;
-  label: string;
+  provider: string;
+  category: string;
   current: boolean;
-  is_enabled: boolean;
   is_local: boolean;
-}
-
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
+  label: string;
 }
 
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
@@ -38,55 +27,42 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
 
   useEffect(() => { load(); }, [load]);
 
-  const handleActivate = async (model: LlmOption) => {
-    if (model.current) return;
-    try { await invoke("switch_polish_llm", { modelName: model.name }); load(); }
+  const onActivate = async (name: string) => {
+    try { await invoke("switch_polish_llm", { modelName: name }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
-  const current = models.find((m) => m.current);
-  const localModels = models.filter((m) => m.is_local);
-  const cloudModels = models.filter((m) => !m.is_local);
+  const currentLabel = models.find((m) => m.current && m.name)?.label ?? "";
+  const rows: ModelRowData[] = models
+    .filter((m) => m.name)
+    .map((m) => ({
+      name: m.name, provider: m.provider, category: m.category,
+      description: m.label, is_ready: true,
+      is_current: m.current, is_local: m.is_local, repo: "",
+    }));
 
-  const renderModel = (model: LlmOption) => (
-    <div
-      key={model.id}
-      className={cn(
-        "group flex items-center justify-between py-2 px-3 rounded-md transition-colors",
-        "border-l-2 hover:bg-accent/30",
-        model.current ? "border-l-voice/40 bg-voice/5" : "border-l-border/40",
-      )}
-    >
-      <div className="flex items-center gap-1.5">
-        <span className={cn("text-xs font-medium", !model.is_enabled && "text-muted-foreground")}>{model.name}</span>
-        {model.current && <CheckCircle2 className="w-3 h-3 text-voice" />}
-      </div>
-      <button
-        className={cn(
-          "px-2 py-0.5 text-[11px] rounded transition-colors",
-          model.current
-            ? "bg-muted text-muted-foreground/40 cursor-default"
-            : "bg-voice/10 text-voice hover:bg-voice/20",
-        )}
-        disabled={model.current}
-        onClick={() => handleActivate(model)}
-      >
-        {model.current ? t("settings.models.activated") : t("settings.models.activate")}
-      </button>
-    </div>
-  );
+  const localRows = rows.filter((r) => r.is_local);
+  const cloudRows = rows.filter((r) => !r.is_local);
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
-      {current && <CurrentBanner label={current.label} />}
-      {localModels.length > 0 && (
+      {currentLabel && <CurrentBanner label={currentLabel} />}
+      {localRows.length > 0 && (
         <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>
-          {localModels.map(renderModel)}
+          {localRows.map((m) => (
+            <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
+              onActivate={() => onActivate(m.name)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
+            />
+          ))}
         </CollapsibleSection>
       )}
-      {cloudModels.length > 0 && (
+      {cloudRows.length > 0 && (
         <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
-          {cloudModels.map(renderModel)}
+          {cloudRows.map((m) => (
+            <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
+              onActivate={() => onActivate(m.name)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
+            />
+          ))}
         </CollapsibleSection>
       )}
     </div>

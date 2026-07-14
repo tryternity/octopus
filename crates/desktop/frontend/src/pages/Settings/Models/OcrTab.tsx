@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cn } from "@/lib/utils";
-import { CheckCircle2, HardDrive, Download, RefreshCw } from "lucide-react";
+import { HardDrive } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { useT } from "@/lib/i18n";
 
 interface DownloadableModel {
@@ -15,11 +15,10 @@ interface DownloadableModel {
 }
 
 interface OcrOption {
-  id: number;
   name: string;
+  provider: string;
   label: string;
   current: boolean;
-  is_enabled: boolean;
   is_local: boolean;
 }
 
@@ -29,21 +28,10 @@ interface DownloadProgress {
   total: number;
 }
 
-function CurrentBanner({ label }: { label: string }) {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">{t("settings.models.current")}</span>
-      <span className="font-medium text-foreground">{label}</span>
-    </div>
-  );
-}
-
 export default function OcrTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
-  const [models, setModels] = useState<OcrOption[]>([]);
   const [downloadable, setDownloadable] = useState<DownloadableModel[]>([]);
+  const [ocrModels, setOcrModels] = useState<OcrOption[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
 
@@ -53,7 +41,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
         invoke<{ ocr_models: OcrOption[] }>("get_config"),
         invoke<DownloadableModel[]>("list_downloadable_models", { domain: "ocr" }),
       ]);
-      setModels(resp.ocr_models ?? []);
+      setOcrModels(resp.ocr_models ?? []);
       setDownloadable(dl);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
@@ -87,99 +75,51 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  const handleDownload = async (model: DownloadableModel) => {
-    if (busyRepo) return;
-    setBusyRepo(model.repo);
-    try { await invoke("download_model", { repo: model.repo }); }
-    catch (e) { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); }
+  const isCurrent = (name: string) => ocrModels.some((m) => m.current && m.name === name);
+  const currentLabel = ocrModels.find((m) => m.current)?.label ?? "";
+  const readyCount = downloadable.filter((m) => m.is_enabled).length;
+
+  const onActivate = async (name: string) => {
+    try { await invoke("set_config", { key: "ocr_model", value: name }); load(); }
+    catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
-  const handleVerify = async (model: DownloadableModel) => {
+  const onDownload = (repo: string) => {
     if (busyRepo) return;
-    setBusyRepo(model.repo);
-    try { await invoke("verify_model", { repo: model.repo, modelName: model.name }); showToast(t("settings.models.verifyComplete")); load(); }
+    setBusyRepo(repo);
+    invoke("download_model", { repo }).catch((e) => { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); });
+  };
+
+  const onVerify = async (repo: string, name: string) => {
+    if (busyRepo) return;
+    setBusyRepo(repo);
+    try { await invoke("verify_model", { repo, modelName: name }); showToast(t("settings.models.verifyComplete")); load(); }
     catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
   };
 
-  const handleActivate = async (model: DownloadableModel) => {
-    try { await invoke("set_config", { key: "ocr_model", value: model.name }); load(); }
-    catch (e) { showToast(t("settings.models.switchFailed") + e); }
+  const onDelete = (repo: string) => {
+    invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
-  const isCurrent = (name: string) => models.some((m) => m.current && m.name === name);
-  const currentLabel = models.find((m) => m.current)?.label ?? "";
-  const readyCount = downloadable.filter((m) => m.is_enabled).length;
+  const rows: ModelRowData[] = downloadable.map((m) => ({
+    name: m.name, provider: "local", category: m.category,
+    description: m.description, is_ready: m.is_enabled,
+    is_current: isCurrent(m.name), is_local: true, repo: m.repo,
+  }));
 
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
-
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
-        {downloadable.map((model) => {
-          const prog = progress[model.repo];
-          const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
-          const current = isCurrent(model.name);
-          return (
-            <div
-              key={model.repo}
-              className={cn(
-                "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
-                "border-l-2 hover:border-border hover:bg-accent/30",
-                current ? "border-l-voice/40 bg-voice/5" : "border-l-border/40",
-              )}
-            >
-              <div className="flex flex-col gap-0.5 flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-medium">{model.name}</span>
-                  {current && <CheckCircle2 className="w-3 h-3 text-voice" />}
-                </div>
-                <span className="text-[11px] text-muted-foreground/60">{model.description}</span>
-                {prog && (
-                  <div className="mt-1">
-                    <div className="h-1 bg-muted rounded-full overflow-hidden">
-                      <div className="h-full bg-voice transition-all" style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                )}
-              </div>
-              <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                {!model.is_enabled ? (
-                  <button
-                    className={cn(
-                      "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-all",
-                      "bg-foreground text-background hover:opacity-85",
-                      busyRepo && "opacity-40 cursor-not-allowed",
-                    )}
-                    disabled={!!busyRepo}
-                    onClick={() => handleDownload(model)}
-                  >
-                    <Download className="w-2.5 h-2.5" />
-                    {busyRepo === model.repo ? t("settings.models.downloading") : t("settings.models.download")}
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1">
-                    {!current && (
-                      <button
-                        className="px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
-                        onClick={() => handleActivate(model)}
-                      >
-                        {t("settings.models.activate")}
-                      </button>
-                    )}
-                    <button
-                      className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-accent"
-                      disabled={!!busyRepo}
-                      onClick={() => handleVerify(model)}
-                    >
-                      <RefreshCw className="w-2.5 h-2.5" /> {t("settings.models.verify")}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        {rows.map((m) => (
+          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
+            onActivate={() => onActivate(m.name)}
+            onDownload={() => onDownload(m.repo)}
+            onVerify={() => onVerify(m.repo, m.name)}
+            onDelete={() => onDelete(m.repo)}
+          />
+        ))}
       </CollapsibleSection>
     </div>
   );

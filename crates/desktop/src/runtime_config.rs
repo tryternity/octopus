@@ -68,6 +68,7 @@ fn build_asr_options(
     // 兜底固定第一
     options.push(EngineOption {
         name: FALLBACK_ASR_ENGINE.to_string(),
+        provider: "local".to_string(),
         category: "zipformer".to_string(),
         is_local: true,
         current: effective == FALLBACK_ASR_ENGINE,
@@ -82,6 +83,7 @@ fn build_asr_options(
         options.push(EngineOption {
             current: e.name == effective,
             name: e.name.clone(),
+            provider: e.provider.clone(),
             category: cat.to_string(),
             is_local: e.is_local,
             label: engine_label(e.is_local, cat, &e.provider, &e.name),
@@ -144,6 +146,7 @@ pub struct ToolbarState {
 #[derive(Serialize)]
 pub struct EngineOption {
     pub name: String,
+    pub provider: String,
     pub category: String,
     pub current: bool,
     pub is_local: bool,
@@ -154,6 +157,7 @@ pub struct EngineOption {
 #[derive(Serialize)]
 pub struct LlmOption {
     pub name: String,
+    pub provider: String,
     pub category: String,
     pub is_local: bool,
     pub current: bool,
@@ -165,6 +169,7 @@ pub struct LlmOption {
 #[derive(Serialize)]
 pub struct OcrOption {
     pub name: String,
+    pub provider: String,
     pub label: String,
     pub current: bool,
     pub is_local: bool,
@@ -182,6 +187,7 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
     // 首项：「不选择模型」（name 空）。current 无效时为选中态。
     options.push(LlmOption {
         name: String::new(),
+        provider: String::new(),
         category: String::new(),
         is_local: false,
         current: !current_valid,
@@ -193,6 +199,7 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
             current: m.model_name == current_bare,
             label,
             name: m.model_name,
+            provider: m.provider,
             category: m.category,
             is_local: m.is_local,
         });
@@ -227,6 +234,7 @@ fn build_ocr_options(current: &str, ocrs: Vec<octopus_infra::db::OcrModelInfo>) 
                 m.description
             },
             name: m.model_name,
+            provider: "local".to_string(),
             is_local: m.is_local,
         })
         .collect()

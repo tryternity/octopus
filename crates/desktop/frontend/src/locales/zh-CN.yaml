@@ -146,6 +146,7 @@ settings:
     switchFailed: "切换失败："
     activate: 激活
     activated: 已激活
+    confirmDelete: 确定删除此模型文件吗？
     env:
       loadFailed: "加载环境变量失败："
       saved: 已保存
