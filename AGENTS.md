@@ -150,6 +150,57 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | cloud (�
 - **及时提出讨论**，不要自行假设继续推进
 - 讨论澄清后回写到对应文档，避免下次重复混淆
 
+### 改动验证纪律（强制）
+
+任何代码改动（包括 bug fix、字段新增、接口修改），**声称完成前必须**完成以下验证，缺一不可。遵循 `superpowers:verification-before-completion` skill 的核心原则：evidence before assertions。
+
+#### 1. 编译验证（改完即跑，不等报错）
+
+```
+改 Rust → cargo build（相关 crate）→ 看完整 error 列表 → 逐个修完 → 再 build → 0 error 0 warning
+改 前端 → tsc + vite build → 0 error
+```
+
+- **看完整 error 列表**：不要修一个报一个。编译器一次性列出所有问题，全部修完再编译。
+- **0 warning**：`unused variable` 等警告说明有遗漏（参数改名了但调用方没跟）。
+
+#### 2. 影响面追踪（grep 所有消费点）
+
+改 struct / enum / fn 签名 / 接口字段后：
+
+```bash
+# Rust
+rg "改动的类型名" crates/ --type rust
+# 前端
+rg "改动的接口字段" crates/desktop/frontend/src/
+```
+
+- **所有构造点**（`StructName {`）都要更新
+- **所有消费点**（读字段、调函数）都要检查
+- 不能只改当前报错的那一处——同一 struct 有多个构造点时，全部要改
+
+#### 3. 端到端调用链验证
+
+改完后端命令 / Tauri 命令 / DB 函数后，**手动追踪完整链路**：
+
+```
+前端 invoke("xxx", { param }) → Tauri 命令签名（参数名 camelCase 映射）→ DB 函数 → 返回值结构 → 前端消费
+```
+
+- **参数名**：Tauri 2 自动 camelCase → snake_case 映射（`modelName` → `model_name`），参数名改了前端必须同步
+- **返回值**：后端加了字段，前端 interface 必须同步加
+- **删除/编辑链路**：确认 `id` / `key` 等标识符从后端 → 前端 → 再回后端的完整传递
+
+#### 4. 测试验证
+
+```bash
+cargo test -p <改动的 crate> --lib
+```
+
+- 改动涉及的 crate 测试全过
+- 新增字段 / 函数有对应测试覆盖
+- 测试数据（如 INSERT 语句）与新 schema 一致
+
 ## 文档体系
 
 ```
