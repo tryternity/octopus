@@ -148,6 +148,7 @@ settings:
     activate: 激活
     activated: 已激活
     confirmDelete: 确定删除此模型文件吗？
+    ocrRestartHint: 已切换，重启后生效
     env:
       loadFailed: "加载环境变量失败："
       saved: 已保存

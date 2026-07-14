@@ -80,8 +80,11 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const readyCount = downloadable.filter((m) => m.is_enabled).length;
 
   const onActivate = async (name: string) => {
-    try { await invoke("set_config", { key: "ocr_model", value: name }); load(); }
-    catch (e) { showToast(t("settings.models.switchFailed") + e); }
+    try {
+      await invoke("set_config", { key: "ocr_model", value: name });
+      showToast(t("settings.models.ocrRestartHint"));
+      load();
+    } catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
   const onDownload = (repo: string) => {

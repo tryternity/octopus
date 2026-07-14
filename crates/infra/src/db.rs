@@ -960,11 +960,11 @@ pub struct OcrModelInfo {
     pub is_local: bool,
 }
 
-/// 列出所有启用的 OCR 模型（domain='ocr' AND is_enabled=1）。
+/// 列出所有 OCR 模型（domain='ocr'，含未就绪的——前端列表需展示全部供下载/切换）。
 fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
     let mut stmt = conn.prepare(
         "SELECT model_name, description, is_local FROM models
-         WHERE domain='ocr' AND is_enabled = 1",
+         WHERE domain='ocr'",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(OcrModelInfo {

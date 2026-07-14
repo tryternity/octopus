@@ -148,6 +148,7 @@ settings:
     activate: Activate
     activated: Active
     confirmDelete: Delete this model files?
+    ocrRestartHint: Switched, restart to take effect
     env:
       loadFailed: "Failed to load env vars:"
       saved: Saved
