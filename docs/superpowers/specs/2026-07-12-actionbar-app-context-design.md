@@ -246,12 +246,12 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 
 **`read_file_as_text` 支持的格式**：
 
-| 格式 | 机制 |
-|------|------|
-| `.txt`/`.md`/`.rs`/`.py` 等 | 直接读取（UTF-8 lossy） |
-| `.docx`/`.pptx` | zip 解压 → `word/document.xml` 或 `ppt/slides/slideN.xml` → 提取 `<w:t>`/`<a:t>` 文本 |
-| `.xlsx` | zip 解压 → `sharedStrings.xml` + `worksheets/sheetN.xml` → 提取单元格文本 |
-| zip 文件（误存为 .txt） | 检测 `PK\x03\x04` 魔数 → 走 OOXML 解析 |
+| 格式 | 优先工具 | Fallback |
+|------|---------|----------|
+| `.docx`/`.xlsx`/`.pptx` | **officecli**（`officecli view file text`，需安装，处理修订/批注/公式/图表/SmartArt） | 内置 zip+XML 解析（`<w:t>`/`<a:t>`/sharedStrings） |
+| `.pdf` | **pdftotext**（poppler，需 Homebrew） | None（降级） |
+| `.txt`/`.md`/`.rs`/`.py` 等 | 直接读取（UTF-8 lossy） | — |
+| zip 文件（误存为 .txt） | 检测 `PK\x03\x04` 魔数 → OOXML 解析 | — |
 
 **路径 3：降级返回 None**
 
@@ -262,7 +262,7 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 | 编辑器 | 路径 1 插件 | 路径 2 磁盘 | 备注 |
 |--------|------------|------------|------|
 | Sublime Text | ✅ 最可靠 | ✅ session 精确 | 含未保存文件 |
-| WPS Office | ❌ 无插件 API | ✅ .docx OOXML | 需窗口标题含文件名 |
+| WPS Office | ❌ 无插件 API | ✅ officecli / OOXML | 需窗口标题含文件名 |
 | 其他自绘编辑器 | ❌ | ✅ 纯文本文件 | 需窗口标题含文件名 |
 
 ### 5.5 AX 安全约束（踩坑总结）
