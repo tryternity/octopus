@@ -674,4 +674,57 @@ mod tests {
         assert_eq!(resolve_translate_mode(Some("8s".into())), "8s");
         assert_eq!(resolve_translate_mode(Some("12s".into())), "12s");
     }
+
+    // ── TDD 防御：provider 精确匹配（修复 bug：同名多 provider 都标 current）──
+
+    /// 同 model_name 不同 provider，3-part spec 只标一个 current。
+    #[test]
+    fn build_llm_options_provider_precise_current() {
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false },
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false },
+        ];
+        // 当前选中 aliyun 的
+        let opts = build_llm_options("aliyun:deepseek:deepseek-v4-flash", llms);
+        let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
+        assert_eq!(currents.len(), 1, "同名不同 provider 只应有一个 current");
+        assert_eq!(currents[0].provider, "aliyun", "current 应精确匹配 aliyun provider");
+    }
+
+    /// 裸名（无 provider 信息）向后兼容：同 model_name 多 provider 时都标 current（旧行为）。
+    #[test]
+    fn build_llm_options_bare_name_matches_all_providers() {
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false },
+            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false },
+        ];
+        // 裸名（无 3-part spec）→ 匹配所有同名
+        let opts = build_llm_options("test-model", llms);
+        let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
+        assert_eq!(currents.len(), 2, "裸名无 provider 信息时，同名都标 current（向后兼容）");
+    }
+
+    /// EngineOption 包含 provider 字段。
+    #[test]
+    fn engine_option_has_provider_field() {
+        use octopus_asr_local::config::{EngineCategory, EngineInfo};
+        let engines = vec![
+            EngineInfo { name: "whisper-small".into(), provider: "aliyun".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        let opts = build_asr_options("whisper-small", engines);
+        assert_eq!(opts[1].provider, "aliyun", "EngineOption 应包含 provider 字段");
+    }
+
+    /// LlmOption 包含 provider 字段。
+    #[test]
+    fn llm_option_has_provider_field() {
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
+        ];
+        let opts = build_llm_options("test", llms);
+        assert_eq!(opts[1].provider, "bigmodel", "LlmOption 应包含 provider 字段");
+    }
 }

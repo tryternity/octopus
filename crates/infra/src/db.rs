@@ -3003,21 +3003,22 @@ mod tests {
     }
 
     #[test]
-    fn list_ocr_models_returns_enabled() {
+    fn list_ocr_models_returns_all() {
         let conn = open_init();
         let list = list_ocr_models_at(&conn).unwrap();
-        // seed 默认 1 条 OCR（PP-OCRv6-small, is_enabled=1）
-        assert_eq!(list.len(), 1, "seed 1 条启用 OCR");
-        assert_eq!(list[0].model_name, "PP-OCRv6-small");
-        assert!(!list[0].description.is_empty(), "description 非空");
+        // seed 2 条 OCR（PP-OCRv6-small is_enabled=1 + PP-OCRv5 is_enabled=0），全部返回
+        assert_eq!(list.len(), 2, "seed 2 条 OCR，不过滤 is_enabled");
+        assert!(list.iter().any(|m| m.model_name == "PP-OCRv6-small"));
+        assert!(list.iter().any(|m| m.model_name == "PP-OCRv5"));
     }
 
     #[test]
-    fn list_ocr_models_filters_disabled() {
+    fn list_ocr_models_includes_all_even_disabled() {
         let conn = open_init();
         conn.execute("UPDATE models SET is_enabled = 0 WHERE domain='ocr'", []).unwrap();
         let list = list_ocr_models_at(&conn).unwrap();
-        assert!(list.is_empty(), "全禁用时返回空");
+        // 即使全部 is_enabled=0，仍返回全部（前端需展示供切换）
+        assert_eq!(list.len(), 2, "全禁用时仍返回全部 OCR 模型");
     }
 
     #[test]
@@ -3780,5 +3781,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1, "PP-OCRv5 应在 seed 中");
+    }
+
+    // ── TDD 防御：OCR 列表不过滤 is_enabled ──
+
+    /// list_ocr_models 返回全部 OCR 模型（含 is_enabled=0 的未就绪模型）。
+    #[test]
+    fn list_ocr_models_includes_disabled() {
+        let conn = open_init();
+        // PP-OCRv5 默认 is_enabled=0
+        let pp5_enabled: i32 = conn
+            .query_row(
+                "SELECT is_enabled FROM models WHERE model_name='PP-OCRv5' AND domain='ocr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pp5_enabled, 0, "PP-OCRv5 默认未就绪");
+
+        // list_ocr_models_at 不过滤 is_enabled → 应包含 PP-OCRv5
+        let ocrs = list_ocr_models_at(&conn).unwrap();
+        assert!(
+            ocrs.iter().any(|m| m.model_name == "PP-OCRv5"),
+            "list_ocr_models 应包含未就绪的 PP-OCRv5"
+        );
+        assert!(
+            ocrs.iter().any(|m| m.model_name == "PP-OCRv6-small"),
+            "list_ocr_models 应包含已就绪的 PP-OCRv6-small"
+        );
+    }
+
+    // ── TDD 防御：env 变量 config_key 不含 env. 前缀 ──
+
+    /// DB seed 中 env 变量 config_key 不含 env. 前缀。
+    #[test]
+    fn env_var_keys_have_no_env_prefix() {
+        let conn = open_init();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM app_config WHERE category='env' AND config_key LIKE 'env.%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "env 变量 config_key 不应含 env. 前缀");
+
+        // 验证 bare key 存在
+        let hf: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key='huggingface' AND category='env'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!hf.is_empty(), "huggingface 环境变量应有值");
     }
 }
