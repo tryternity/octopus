@@ -71,7 +71,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(&config.asr_engine)), ("mode", &config.engine_mode)]),
+        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(&config.asr_engine))]),
         false,
         None::<&str>,
     )
@@ -181,8 +181,8 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 }
 
 /// Update the engine info menu item label dynamically.
-pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_spec: &str, engine_mode: &str) {
-    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(engine_spec)), ("mode", engine_mode)]);
+pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_spec: &str, _engine_mode: &str) {
+    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(engine_spec))]);
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);

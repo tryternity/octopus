@@ -474,7 +474,7 @@ tray:
   compactEditor: 图文编辑
   settings: 系统管理
   quit: 退出系统
-  engineInfo: 引擎  ${engine} · ${mode}
+  engineInfo: 引擎  ${engine}
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
