@@ -55,6 +55,7 @@ function Result() {
   const [popupType, setPopupType] = useState<PopupType>(null);
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+const POLISH_ERROR_TIMEOUT_MS = 2500;
   const [polishLoading, setPolishLoading] = useState(false);
   const [polishError, setPolishError] = useState<string | null>(null);
   const [translateMode, setTranslateMode] = useState<TranslateMode>('off');
@@ -193,7 +194,7 @@ function Result() {
         ["polish-error", (msg) => {
           setPolishLoading(false);
           setPolishError(typeof msg === "string" ? msg : "润色失败");
-          setTimeout(() => setPolishError(null), 2500);
+          setTimeout(() => setPolishError(null), POLISH_ERROR_TIMEOUT_MS);
         }],
         ["prepare-record", (p) => {
           invoke("start_recording", {
