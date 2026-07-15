@@ -16,30 +16,77 @@ pub struct AppIndex {
 }
 
 /// 读取 .app 的本地化名称（如 WeChat 的中文名"微信"）。
-/// 优先用 mdls（Spotlight 元数据，已缓存），回退到 plist。
+/// 直接读 zh-Hans.lproj/InfoPlist.strings，解析 OpenStep 或 XML 格式。
+/// 文件可能是 UTF-16（多数 macOS app）或 UTF-8 编码。
 fn read_localized_names(app_path: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
+    let stem = app_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
-    // 方案 1：mdls kMDItemDisplayName（Spotlight 元数据，系统已缓存，快速）
-    let output = std::process::Command::new("mdls")
-        .args(["-name", "kMDItemDisplayName", "-raw"])
-        .arg(app_path)
-        .output();
-    if let Ok(o) = output {
-        if o.status.success() {
-            let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            // mdls 对无元数据的 app 返回 "(null)" 或空
-            if !name.is_empty() && name != "(null)" {
-                let stem = app_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                // 本地化名与 file_stem 不同才有价值
-                if name != stem {
-                    names.push(name);
+    for locale in &["zh-Hans.lproj", "zh_CN.lproj"] {
+        let plist = app_path.join("Contents/Resources").join(locale).join("InfoPlist.strings");
+        if !plist.exists() { continue; }
+        let bytes = match std::fs::read(&plist) { Ok(b) => b, Err(_) => continue };
+
+        // 解码：UTF-16 LE (BOM ff fe) / UTF-16 BE (BOM fe ff) / UTF-8
+        let content = decode_plist_string(&bytes);
+
+        // OpenStep 格式: "CFBundleDisplayName" = "微信";
+        // XML 格式: <key>CFBundleDisplayName</key><string>微信</string>
+        for key in &["CFBundleDisplayName", "CFBundleName"] {
+            // OpenStep
+            let pattern_openstep = format!("\"{}\" = \"", key);
+            if let Some(pos) = content.find(&pattern_openstep) {
+                let rest = &content[pos + pattern_openstep.len()..];
+                if let Some(end) = rest.find('"') {
+                    let name = rest[..end].trim().to_string();
+                    if !name.is_empty() && name != stem && !names.contains(&name) {
+                        names.push(name);
+                    }
+                    continue;
+                }
+            }
+            // XML plist
+            let pattern_xml_key = format!("<key>{}</key>", key);
+            if let Some(pos) = content.find(&pattern_xml_key) {
+                let after = &content[pos + pattern_xml_key.len()..];
+                if let Some(start) = after.find("<string>") {
+                    let rest = &after[start + 8..];
+                    if let Some(end) = rest.find("</string>") {
+                        let name = rest[..end].trim().to_string();
+                        if !name.is_empty() && name != stem && !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
                 }
             }
         }
     }
-
     names
+}
+
+/// 解码 plist 文件内容——处理 UTF-16 LE/BE 和 UTF-8。
+fn decode_plist_string(bytes: &[u8]) -> String {
+    // BOM 检测
+    if bytes.len() >= 2 {
+        if bytes[0] == 0xFF && bytes[1] == 0xFE {
+            // UTF-16 LE
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16s);
+        }
+        if bytes[0] == 0xFE && bytes[1] == 0xFF {
+            // UTF-16 BE
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                .collect();
+            return String::from_utf16_lossy(&u16s);
+        }
+    }
+    // UTF-8 或 Latin-1 fallback
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 impl AppIndex {
