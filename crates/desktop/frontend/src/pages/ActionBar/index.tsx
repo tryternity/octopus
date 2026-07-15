@@ -187,7 +187,7 @@ export default function ActionBar() {
   const [delayedResults, setDelayedResults] = useState<SearchHit[]>([]);
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
   const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
-  const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
+  const [, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   // 记录上次 keyCode 229（IME 处理中）的时间——如果紧跟一个 Enter(13)，
@@ -292,7 +292,7 @@ export default function ActionBar() {
         // 每次 show 都重置基础状态——防止遗留旧状态
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]); setDelayedResults([]);
-        setActiveTab("all"); setSearchFocusZone("input"); setSearchSelectedIdx(0);
+        setActiveTab("all"); setSearchZone("input"); setSearchSelectedIdx(0);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
         setContext(ctx);
@@ -426,7 +426,7 @@ export default function ActionBar() {
   useEffect(() => {
     if (!hasQuery(query)) {
       setActiveTab("all");
-      setSearchFocusZone("input");
+      setSearchZone("input");
       setSearchSelectedIdx(0);
     }
   }, [query]);
@@ -641,6 +641,12 @@ export default function ActionBar() {
   const activeTabRef = useRef<TabId>("all");
   const searchSelectedIdxRef = useRef(0);
   const searchFocusZoneRef = useRef<FocusZone>("input");
+  const setSearchZone = (zone: FocusZone) => {
+    searchFocusZoneRef.current = zone; // 同步更新 ref
+    setSearchFocusZone(zone);
+    // 结果区时设 readOnly 防 IME 捕获字母；回 input 时解除
+    if (inputRef.current) inputRef.current.readOnly = (zone === "results");
+  };
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
@@ -648,7 +654,6 @@ export default function ActionBar() {
   useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   useEffect(() => { searchSelectedIdxRef.current = searchSelectedIdx; }, [searchSelectedIdx]);
-  useEffect(() => { searchFocusZoneRef.current = searchFocusZone; }, [searchFocusZone]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -673,7 +678,7 @@ export default function ActionBar() {
         e.preventDefault();
         if (hasQuery(queryRef.current)) {
           setQuery("");
-          setSearchFocusZone("input");
+          setSearchZone("input");
           inputRef.current?.focus();
         } else {
           invoke("action_bar_dismiss");
@@ -693,14 +698,14 @@ export default function ActionBar() {
         if (zone === "input") {
           if (e.key === "Tab") {
             e.preventDefault();
-            setSearchFocusZone("results");
+            setSearchZone("results");
             setSearchSelectedIdx(0);
             return;
           }
           if (e.key === "ArrowDown") {
             e.preventDefault();
             if (results.length > 0) {
-              setSearchFocusZone("results");
+              setSearchZone("results");
               setSearchSelectedIdx(0);
             }
             return;
@@ -708,7 +713,7 @@ export default function ActionBar() {
           if (e.key === "ArrowUp") {
             e.preventDefault();
             if (results.length > 0) {
-              setSearchFocusZone("results");
+              setSearchZone("results");
               setSearchSelectedIdx(results.length - 1);
             }
             return;
@@ -733,7 +738,7 @@ export default function ActionBar() {
           const isLastForward = !e.shiftKey && currentIdx === TABS.length - 1;
           const isFirstBackward = e.shiftKey && currentIdx === 0;
           if (isLastForward || isFirstBackward) {
-            setSearchFocusZone("input");
+            setSearchZone("input");
             setSearchSelectedIdx(0);
           } else {
             setActiveTab(nextTab);
@@ -758,7 +763,7 @@ export default function ActionBar() {
         }
         if (e.key === "i") {
           e.preventDefault();
-          setSearchFocusZone("input");
+          setSearchZone("input");
           setSearchSelectedIdx(0);
           inputRef.current?.focus();
           return;
@@ -773,7 +778,7 @@ export default function ActionBar() {
         }
         // 其他可打印字符 → 回到输入框（字符自然进入输入框）
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          setSearchFocusZone("input");
+          setSearchZone("input");
           inputRef.current?.focus();
         }
         return;
@@ -931,7 +936,7 @@ export default function ActionBar() {
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        onFocus={() => setSearchFocusZone("input")}
+        onFocus={() => setSearchZone("input")}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"

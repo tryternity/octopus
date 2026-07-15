@@ -142,7 +142,7 @@ Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 - 纯英文 Enter = `keydown(Enter, 13)`，前面没有 229
 - 实现：window keydown handler 记录 keyCode 229 的时间戳，Enter(13) 在 229 后 500ms 内 → 跳过（选词确认），否则正常执行
 - **不依赖** `isComposing`（window 级时序不可靠）和 `compositionend`（WKWebView 空组合会误触发）
-- **DOM focus 策略**：input 永远不 blur——`searchFocusZone` 只是 React state 控制 window handler 路由，不改变 DOM focus。这样 Tab 循环回到 input 后不会丢失 DOM focus 导致 Tab 失效
+- **DOM focus 策略**：input 永远不 blur——`searchFocusZone` 通过同步 ref（非 useEffect 异步更新）控制 window handler 路由。结果区时设 `input.readOnly = true` 防 IME 捕获字母键；回 input 时解除 readOnly。这样 Tab 循环和字母快捷键都能正常工作
 
 ## 4. 搜索结果执行
 
