@@ -698,6 +698,12 @@ export default function ActionBar() {
         if (zone === "input") {
           if (e.key === "Tab") {
             e.preventDefault();
+            // input 按 Tab → 进入结果区，切到第二个 Tab（apps）
+            // 如果当前不在 all（比如从 results 回来后仍在最后一个 tab），先回 all 再进 apps
+            if (activeTabRef.current !== "all") {
+              setActiveTab("all");
+            }
+            setActiveTab(getNextTab("all", e.shiftKey ? -1 : 1));
             setSearchZone("results");
             setSearchSelectedIdx(0);
             return;
@@ -732,16 +738,21 @@ export default function ActionBar() {
         // 结果区域
         if (e.key === "Tab") {
           e.preventDefault();
-          const nextTab = getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1);
-          // 从最后一个 Tab 正向 Tab → 回输入框；从第一个 Tab 反向 → 回输入框
           const currentIdx = TABS.findIndex(t => t.id === activeTabRef.current);
           const isLastForward = !e.shiftKey && currentIdx === TABS.length - 1;
           const isFirstBackward = e.shiftKey && currentIdx === 0;
-          if (isLastForward || isFirstBackward) {
+          if (isLastForward) {
+            // 最后一个 Tab 正向 Tab → 回搜索框，Tab 页回到 all
             setSearchZone("input");
             setSearchSelectedIdx(0);
+            setActiveTab("all");
+          } else if (isFirstBackward) {
+            // 第一个 Tab 反向 Tab → 回搜索框，Tab 页回到 all
+            setSearchZone("input");
+            setSearchSelectedIdx(0);
+            setActiveTab("all");
           } else {
-            setActiveTab(nextTab);
+            setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
           }
           return;
         }
