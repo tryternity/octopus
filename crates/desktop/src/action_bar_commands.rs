@@ -1277,9 +1277,10 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
         }
         "url" => {
             let url = if item.action_data.is_empty() {
-                // 选中文本即 URL——补 scheme（缺 https:// 时 macOS open 当文件路径）
+                // 选中文本即 URL——仅放行 http/https，其余 scheme 统一补 https://
+                // 防止 smb:// / file:/// / vnc:// 等通过选中不可信文本触发系统级操作
                 let raw = text.trim();
-                if raw.starts_with("http://") || raw.starts_with("https://") || raw.contains("://") {
+                if raw.starts_with("http://") || raw.starts_with("https://") {
                     raw.to_string()
                 } else {
                     format!("https://{}", raw)

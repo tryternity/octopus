@@ -5,6 +5,7 @@ use octopus_search::{self, SearchResult};
 /// 综合搜索。
 #[tauri::command]
 pub async fn search_all(query: String, tab: String) -> Result<Vec<SearchResult>, String> {
+    let query = query.trim().to_string();
     let engine = match octopus_search::get_engine() {
         Some(e) => e,
         None => return Err("搜索引擎未初始化".into()),
