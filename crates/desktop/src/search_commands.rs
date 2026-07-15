@@ -45,7 +45,7 @@ pub fn open_url(url: String) -> Result<(), String> {
 /// 执行 Shell 命令（30s 超时，输出限制 100KB）。
 #[tauri::command]
 pub async fn execute_shell(command: String) -> Result<String, String> {
-    let mut child = tokio::process::Command::new("sh")
+    let child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&command)
         .kill_on_drop(true) // 超时 drop future 时杀子进程，防孤儿

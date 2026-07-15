@@ -216,6 +216,7 @@ mod tests {
 
     #[test]
     fn quick_tab_excludes_files_and_bookmarks() {
+        setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![] },
@@ -244,6 +245,7 @@ mod tests {
 
     #[test]
     fn quick_tab_includes_shell_mode() {
+        setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![] },
@@ -256,6 +258,7 @@ mod tests {
 
     #[test]
     fn all_tab_returns_combined_results() {
+        setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![
@@ -297,6 +300,7 @@ mod tests {
 
     #[test]
     fn url_type_returned_as_quicklink_source() {
+        setup_test_db();
         // URL 类型菜单项在搜索结果中 source 为 "quicklink"，action_type 为 "url"
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {

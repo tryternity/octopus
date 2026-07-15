@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 收集 query_map 结果，遇到失败行时 log::warn 并跳过（而非静默丢弃）。
 /// 替代 `.filter_map(|r| r.ok()).collect()`——后者吞掉所有错误，
@@ -108,34 +109,84 @@ impl CompatibleLlmConfig {
     }
 }
 
+/// 测试模式标志：设为 true 后 [`ensure_db`] 使用 in-memory SQLite，
+/// 不打开也不迁移 `~/.octopus/octopus.db`。由 [`init_test_db`] 设置。
+///
+/// 跨 crate 可见（不依赖 `#[cfg(test)]`——`cfg(test)` 不传递到依赖 crate），
+/// 供 octopus-search / octopus-desktop 等下游 crate 的测试使用。
+static TEST_MODE: AtomicBool = AtomicBool::new(false);
+
 static DB: OnceLock<parking_lot::ReentrantMutex<Connection>> = OnceLock::new();
 
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
 const INIT_SQL: &str = include_str!("db.sql");
 
 /// DB 文件路径：~/.octopus/octopus.db
+///
+/// **测试/CI 可覆盖**：设置环境变量 `OCTOPUS_DB_PATH` 可重定向到任意路径；
+/// 特殊值 `:memory:` 使用 in-memory SQLite（不落盘）。未设置时走默认开发库。
 fn db_path() -> std::path::PathBuf {
     crate::paths::octopus_config_home().join("octopus.db")
 }
 
+/// 测试初始化：强制后续 [`ensure_db`] 使用 in-memory SQLite，彻底隔离开发库。
+///
+/// **必须在任何 `ensure_db` / `with_db` 调用之前调用**（通常在 test mod 顶部
+/// `std::sync::Once::call_once` 中），否则若 `ensure_db` 已被并发触发并打开了
+/// 文件 DB，本调用不再生效。幂等——多次调用无副作用。
+///
+/// 设计动机：`#[cfg(test)]` 不跨 crate 传递，下游 crate（search/desktop）的测试
+/// 无法通过编译期 cfg 触发 infra 的 test 分支，改用运行时 flag。
+#[doc(hidden)]
+pub fn init_test_db() {
+    TEST_MODE.store(true, Ordering::SeqCst);
+}
+
 /// 幂等初始化：打开/创建 DB，以 db.sql 为准建表（开发期简化，无历史迁移链）。
+///
+/// **三种模式**（优先级递减）：
+/// 1. `TEST_MODE`（[`init_test_db`] 设置）→ in-memory，不碰文件系统
+/// 2. `OCTOPUS_DB_PATH` 环境变量 → 指定路径（`:memory:` 同样 in-memory）
+/// 3. 默认 → `~/.octopus/octopus.db`
 pub fn ensure_db() -> Result<()> {
     if DB.get().is_some() {
         return Ok(());
     }
+    let conn = open_db_conn()?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+    )
+    .context("set WAL + busy_timeout")?;
+    init_schema(&conn)?;
+    let _ = DB.set(parking_lot::ReentrantMutex::new(conn));
+    Ok(())
+}
+
+/// 实际打开 DB 连接——三种模式分支（见 [`ensure_db`] 文档）。
+fn open_db_conn() -> Result<Connection> {
+    // 1. 测试模式：in-memory
+    if TEST_MODE.load(Ordering::SeqCst) {
+        return Connection::open_in_memory().context("Failed to open in-memory test DB");
+    }
+    // 2. env var 覆盖（支持 ":memory:"）
+    if let Ok(p) = std::env::var("OCTOPUS_DB_PATH") {
+        if p == ":memory:" {
+            return Connection::open_in_memory().context("Failed to open in-memory DB (OCTOPUS_DB_PATH)");
+        }
+        let path = std::path::PathBuf::from(p);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        return Connection::open(&path)
+            .with_context(|| format!("Failed to open DB at {} (OCTOPUS_DB_PATH)", path.display()));
+    }
+    // 3. 默认：~/.octopus/octopus.db
     let path = db_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let conn = Connection::open(&path)
-        .with_context(|| format!("Failed to open DB at {}", path.display()))?;
-    // WAL 模式（读写并发友好，server 多任务访问不 SQLITE_BUSY）+ busy_timeout（锁竞争时
-    // 等待 5s 而非立即报错）。journal_mode 持久化在 db 头（设一次即生效），重复设置幂等。
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
-        .context("set WAL + busy_timeout")?;
-    init_schema(&conn)?;
-    let _ = DB.set(parking_lot::ReentrantMutex::new(conn));
-    Ok(())
+    Connection::open(&path)
+        .with_context(|| format!("Failed to open DB at {}", path.display()))
 }
 
 /// 取 DB 锁执行闭包（未初始化时自动 ensure_db）。
@@ -2454,6 +2505,18 @@ mod tests {
         conn
     }
 
+    /// 全局测试 DB 初始化（进程级 Once）。
+    ///
+    /// 调用 [`init_test_db`] 切换到 in-memory 模式——所有经 [`with_db`] /
+    /// [`ensure_db`] 的测试不再打开 `~/.octopus/octopus.db`，彻底隔离开发库。
+    /// 详见架构文档「测试数据库隔离」。
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn setup_test_db() {
+        TEST_DB_SETUP.call_once(|| {
+            init_test_db();
+        });
+    }
+
     #[test]
     fn action_bar_shortcut_validate_and_conflict() {
         let conn = open_init();
@@ -2521,6 +2584,7 @@ mod tests {
     /// 用只读 `PRAGMA` 避免污染数据；`ensure_db` 对已存在的 v18 库幂等（noop）。
     #[test]
     fn with_db_reentrant_no_deadlock() {
+        setup_test_db();
         let outer = with_db(|conn| {
             // 同线程重入：闭包内再调 with_db
             let inner_v: u32 = with_db(|c2| {

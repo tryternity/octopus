@@ -5,6 +5,10 @@
 //! 再调用 octopus_llm::polish() 验证封装链路。
 //!
 //! 用法：cargo run --release --package octopus-llm --example test_polish
+//!
+//! **注意**：此 example 直接读开发库 ~/.octopus/octopus.db 的 prompt 和 LLM 配置，
+//! 并会调真实 LLM API（产生费用）。不会写 DB（只读）。
+//! 若要指向其他库，设 `OCTOPUS_DB_PATH=/path/to/test.db`。
 
 use octopus_llm::{polish, set_system_prompt};
 

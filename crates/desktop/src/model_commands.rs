@@ -563,9 +563,15 @@ pub fn get_model_detail(id: i64) -> Result<ModelDetail, String> {
 mod tests {
     use super::*;
 
-    /// 测试前确保 DB 初始化（desktop bin 测试不自动调 ensure_db）。
+    /// 测试前切换到 in-memory DB，避免污染开发库 ~/.octopus/octopus.db。
+    /// 详见架构文档「测试数据库隔离」。
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
     fn ensure_test_db() {
-        let _ = octopus_asr_local::db::ensure_db();
+        TEST_DB_SETUP.call_once(|| {
+            octopus_infra::db::init_test_db();
+            // 触发 ensure_db 初始化 in-memory 连接（惰性首调会建表+seed）
+            let _ = octopus_asr_local::db::ensure_db();
+        });
     }
 
     /// resolve_env_template 应将 {key} 替换为 DB env 变量值。

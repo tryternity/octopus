@@ -228,55 +228,27 @@ fn show_action_bar_at_mouse(app: &AppHandle) {
     });
 }
 
-/// 无选中时居中显示浮窗——水平居中，垂直位于屏幕上 1/3 位置（类似 Alfred/Wox）。
+/// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
 fn show_action_bar_centered(app: &AppHandle) {
     const WIN_W: f64 = 380.0;
 
-    // 取包含鼠标的显示器（找不到则用主屏）
-    let (mon_x, mon_y, mon_w, mon_h) = {
-        let (mx, my) = get_mouse_position(app);
-        let monitor = app.available_monitors().ok()
-            .and_then(|monitors| {
-                monitors.into_iter().find(|m| {
-                    let scale = m.scale_factor();
-                    let ml = m.position().x as f64 / scale;
-                    let mt = m.position().y as f64 / scale;
-                    let mr = (m.position().x as f64 + m.size().width as f64) / scale;
-                    let mb = (m.position().y as f64 + m.size().height as f64) / scale;
-                    mx >= ml && mx < mr && my >= mt && my < mb
-                })
-            });
-        match monitor {
-            Some(m) => {
-                let scale = m.scale_factor();
-                (
-                    m.position().x as f64 / scale,
-                    m.position().y as f64 / scale,
-                    m.size().width as f64 / scale,
-                    m.size().height as f64 / scale,
-                )
-            }
-            None => {
-                let m = app.primary_monitor().ok().flatten();
-                match m {
-                    Some(m) => {
-                        let scale = m.scale_factor();
-                        (
-                            m.position().x as f64 / scale,
-                            m.position().y as f64 / scale,
-                            m.size().width as f64 / scale,
-                            m.size().height as f64 / scale,
-                        )
-                    }
-                    None => (0.0, 0.0, 1440.0, 900.0),
-                }
-            }
+    // 强制用主显示器
+    let (mon_x, mon_y, mon_w, mon_h) = match app.primary_monitor().ok().flatten() {
+        Some(m) => {
+            let scale = m.scale_factor();
+            (
+                m.position().x as f64 / scale,
+                m.position().y as f64 / scale,
+                m.size().width as f64 / scale,
+                m.size().height as f64 / scale,
+            )
         }
+        None => (0.0, 0.0, 1440.0, 900.0),
     };
 
     let win_x = mon_x + (mon_w - WIN_W) / 2.0;
-    // 上 1/3 位置
-    let win_y = mon_y + mon_h / 3.0;
+    // 上 1/5 位置
+    let win_y = mon_y + mon_h / 5.0;
 
     log::info!("[action-bar] centered: monitor=({},{},{},{}) → win_pos=({},{})", mon_x, mon_y, mon_w, mon_h, win_x, win_y);
 
