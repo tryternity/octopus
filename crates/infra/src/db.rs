@@ -227,7 +227,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 32 {
+    if v >= 33 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -438,6 +438,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 32", [])?;
             log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste)");
         }
+        // v32→v33：app_index 缓存表
+        {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS app_index (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT NOT NULL,
+                    alias      TEXT NOT NULL DEFAULT '',
+                    path       TEXT NOT NULL UNIQUE,
+                    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
+                CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);"
+            )?;
+            conn.execute("PRAGMA user_version = 33", [])?;
+            log::info!("schema upgraded to v33 (app_index cache table)");
+        }
         return Ok(());
     }
 
@@ -445,8 +461,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 32", [])?;
-    log::info!("DB initialized (v32): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 33", [])?;
+    log::info!("DB initialized (v33): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1661,6 +1677,41 @@ pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
 }
 
 // ── Script Run（脚本执行记录）─────────────────────────────────────
+
+// ── App Index Cache（应用索引缓存）──────────────────────────────
+
+/// 从 DB 加载应用索引缓存。空表返回空 Vec（触发首次扫描）。
+pub fn load_app_index() -> Result<Vec<(String, String, String)>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare("SELECT name, alias, path FROM app_index")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    })
+}
+
+/// 全量替换应用索引缓存（先清空再写入）。
+pub fn save_app_index(apps: &[(String, String, String)]) -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM app_index", [])?;
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO app_index (name, alias, path) VALUES (?1, ?2, ?3)"
+            )?;
+            for (name, alias, path) in apps {
+                stmt.execute(params![name, alias, path])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptRun {
@@ -2660,7 +2711,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 32, "全新库 init_schema 后应到 v32");
+        assert_eq!(v, 33, "全新库 init_schema 后应到 v33");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2834,7 +2885,7 @@ mod tests {
 
         // 验证：迁移后 user_version = 32
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 32);
+        assert_eq!(v, 33);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2891,7 +2942,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 32);
+        assert_eq!(v, 33);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3021,7 +3072,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 32);
+        assert_eq!(v, 33);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3831,7 +3882,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 32);
+        assert_eq!(v, 33);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))

@@ -380,3 +380,14 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── 应用索引缓存（避免每次启动扫文件系统）─────────────────
+CREATE TABLE IF NOT EXISTS app_index (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,           -- file_stem（英文名，如 WeChat）
+    alias      TEXT NOT NULL DEFAULT '', -- 本地化名（如 微信），空=无别名
+    path       TEXT NOT NULL UNIQUE,    -- .app 绝对路径
+    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
+CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);

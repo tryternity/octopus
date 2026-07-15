@@ -262,6 +262,7 @@ pub fn run() {
             search_commands::open_file,
             search_commands::open_url,
             search_commands::execute_shell,
+            search_commands::reindex_apps,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,

@@ -75,3 +75,10 @@ pub async fn execute_shell(command: String) -> Result<String, String> {
         Ok(result)
     }
 }
+
+/// 重新扫描应用索引并更新 DB 缓存（安装/卸载应用后调用）。
+#[tauri::command]
+pub fn reindex_apps() -> Result<usize, String> {
+    let index = octopus_search::app_index::AppIndex::rescan();
+    Ok(index.apps.len())
+}

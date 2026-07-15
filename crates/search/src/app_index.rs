@@ -90,8 +90,54 @@ fn decode_plist_string(bytes: &[u8]) -> String {
 }
 
 impl AppIndex {
-    /// 扫描 macOS 应用目录（递归子目录，覆盖 Adobe / JetBrains Toolbox 等嵌套 .app）。
+    /// 加载应用索引。优先从 DB 缓存读取（<1ms），缓存为空时扫文件系统并写入缓存。
     pub fn scan() -> Self {
+        // 先试 DB 缓存
+        if let Ok(cached) = octopus_infra::db::load_app_index() {
+            if !cached.is_empty() {
+                let apps: Vec<AppEntry> = cached
+                    .into_iter()
+                    .map(|(name, alias, path)| AppEntry {
+                        name,
+                        aliases: if alias.is_empty() { vec![] } else { vec![alias] },
+                        path,
+                    })
+                    .collect();
+                log::info!("[search] 应用索引（DB 缓存）: {} 个应用", apps.len());
+                return Self { apps };
+            }
+        }
+
+        // DB 为空 → 扫文件系统
+        let apps = Self::scan_filesystem();
+
+        // 写入 DB 缓存
+        let cache_data: Vec<(String, String, String)> = apps
+            .iter()
+            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone()))
+            .collect();
+        if let Err(e) = octopus_infra::db::save_app_index(&cache_data) {
+            log::warn!("[search] 应用索引缓存写入失败: {}", e);
+        }
+
+        Self { apps }
+    }
+
+    /// 强制重新扫描文件系统并更新缓存。
+    pub fn rescan() -> Self {
+        let apps = Self::scan_filesystem();
+        let cache_data: Vec<(String, String, String)> = apps
+            .iter()
+            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone()))
+            .collect();
+        if let Err(e) = octopus_infra::db::save_app_index(&cache_data) {
+            log::warn!("[search] 应用索引缓存写入失败: {}", e);
+        }
+        Self { apps }
+    }
+
+    /// 扫描文件系统构建应用索引。
+    fn scan_filesystem() -> Vec<AppEntry> {
         let mut apps = Vec::new();
         for dir in &[
             "/Applications",
@@ -104,11 +150,11 @@ impl AppIndex {
         if let Some(home) = dirs::home_dir() {
             Self::scan_apps_dir(&home.join("Applications"), &mut apps, 0);
         }
-        log::info!("[search] 应用索引: {} 个应用", apps.len());
+        log::info!("[search] 应用索引（文件系统扫描）: {} 个应用", apps.len());
         // 去重：跨目录同名 app 只保留第一个（/Applications 优先于 ~/Applications）
         let mut seen = std::collections::HashSet::new();
         apps.retain(|a| seen.insert(a.name.clone()));
-        Self { apps }
+        apps
     }
 
     /// 递归扫描目录下的 .app（深度受限，不进入 .app 包内部）。
