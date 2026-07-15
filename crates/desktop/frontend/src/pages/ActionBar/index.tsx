@@ -923,6 +923,13 @@ export default function ActionBar() {
     ? getSubItems(submenuParentIdRef.current)
     : [];
 
+  // submenu 项变化时 clamp subSelectedIdx——防缩短后越界 Enter 静默失败
+  useEffect(() => {
+    if (view === "submenu" && subSelectedIdx >= subItems.length && subItems.length > 0) {
+      setSubSelectedIdx(subItems.length - 1);
+    }
+  }, [subItems.length, view]);
+
   const menuContent = (
     <>
       {/* 主菜单 */}

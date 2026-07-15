@@ -10,10 +10,12 @@ pub async fn search_files(query: &str) -> Vec<SearchResult> {
     }
 
     // 10s 超时——Spotlight 索引异常时不永久阻塞搜索 UI
+    // kill_on_drop：超时 drop future 时杀 mdfind 子进程，防孤儿累积
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         tokio::process::Command::new("mdfind")
             .args(["-name", query])
+            .kill_on_drop(true)
             .output(),
     )
     .await;
