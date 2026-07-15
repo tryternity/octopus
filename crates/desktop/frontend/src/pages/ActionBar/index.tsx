@@ -909,6 +909,7 @@ export default function ActionBar() {
     : [];
 
   // submenu 项变化时 clamp subSelectedIdx——防缩短后越界 Enter 静默失败
+  // 必须在 early return (loading view) 之前，否则 React hooks 数量不一致
   useEffect(() => {
     if (view === "submenu" && subSelectedIdx >= subItems.length && subItems.length > 0) {
       setSubSelectedIdx(subItems.length - 1);
