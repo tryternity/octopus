@@ -191,7 +191,9 @@ export default function ActionBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   // compositionend 后紧跟的 Enter 需跳过——macOS IME 确认候选后会多发一个 Enter(13)
+  // 仅当真正经过 compositionstart（IME 组合）时才跳过，避免纯英文 Enter 被误吞
   const skipNextEnterRef = useRef(false);
+  const composingRef = useRef(false);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -199,13 +201,20 @@ export default function ActionBar() {
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    const onCompositionEnd = () => {
-      // macOS IME 确认候选后，compositionend 之后紧跟一个 Enter(13) keydown
-      // 标记跳过那个 Enter
-      skipNextEnterRef.current = true;
+    const onStart = () => { composingRef.current = true; };
+    const onEnd = () => {
+      // 只有真正组合过才标记跳过——避免 WebKit 空组合的 compositionend 误吞 Enter
+      if (composingRef.current) {
+        skipNextEnterRef.current = true;
+        composingRef.current = false;
+      }
     };
-    el.addEventListener("compositionend", onCompositionEnd);
-    return () => el.removeEventListener("compositionend", onCompositionEnd);
+    el.addEventListener("compositionstart", onStart);
+    el.addEventListener("compositionend", onEnd);
+    return () => {
+      el.removeEventListener("compositionstart", onStart);
+      el.removeEventListener("compositionend", onEnd);
+    };
   }, []);
 
   // 高亮项变化时自动滚动到可见区域
