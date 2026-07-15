@@ -123,15 +123,38 @@ Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 
 ### 3.5 键盘导航
 
+**Tab 键完整循环**（必须支持无限循环，无死锁）：
+
+```
+搜索框 → Tab → 结果区(all) → Tab → 结果区(apps) → Tab → 结果区(files)
+→ Tab → 结果区(shell) → Tab → 结果区(bookmarks) → Tab → 搜索框 → ...
+```
+
+- 搜索框按 Tab → 进入结果区（第一个 Tab 页 `all`）
+- 结果区按 Tab → 切换到下一个 Tab 页
+- 结果区最后一个 Tab（`bookmarks`）按 Tab → 回搜索框
+- Shift+Tab 反向同理（搜索框 → bookmarks → shell → files → apps → all → 搜索框）
+- **实现要求**：`searchFocusZoneRef` 必须同步更新（不能用 useEffect 异步同步），否则快速 Tab 时 ref 滞后导致循环断裂
+
+**结果区字母键不触发输入法**：
+
+- 焦点在结果区时，按 `a`/`p`/`f`/`s`/`b` 切换 Tab 页
+- 但 DOM focus 仍在 input 上（不 blur），IME 会拦截字母键
+- 解决：进入结果区时设 `input.readOnly = true` → IME 不捕获只读 input 的字符 → 字母键到达 window handler 执行 Tab 切换
+- 回搜索框时解除 `input.readOnly = false` → IME 恢复正常输入
+- **不能用 `inputRef.blur()`**：blur 后浏览器 Tab 序列被打乱，Tab 循环回 input 后再按 Tab 失效
+
+**完整键盘导航表**：
+
 | 当前焦点 | 按键 | 行为 |
 |---------|------|------|
 | 搜索框 | `Tab` | 焦点跳到结果区，选中第一个 |
 | 搜索框 | `↑↓` | 焦点跳到结果区首/末项 |
 | 搜索框 | `Enter` | 执行第一个结果 |
-| 结果区 | `Tab` | 循环：Tab 页之间 → 最后一个 Tab 正向 Tab 回搜索框 |
-| 结果区 | `Shift+Tab` | 反向：Tab 页之间 → 第一个 Tab 反向 Tab 回搜索框 |
-| 结果区 | `a` `p` `f` `s` `b` | 跳到对应 Tab |
-| 结果区 | `i` | 焦点回搜索框（input focus 恢复） |
+| 结果区 | `Tab` | 切换下一个 Tab 页；最后一个 Tab → 回搜索框 |
+| 结果区 | `Shift+Tab` | 切换上一个 Tab 页；第一个 Tab → 回搜索框 |
+| 结果区 | `a` `p` `f` `s` `b` | 跳到对应 Tab（不触发 IME） |
+| 结果区 | `i` | 焦点回搜索框 |
 | 结果区 | `↑↓` | 在结果项间导航 |
 | 结果区 | `Enter` | 执行选中项 |
 | 任意 | `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
