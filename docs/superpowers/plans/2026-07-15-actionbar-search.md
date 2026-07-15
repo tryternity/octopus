@@ -23,7 +23,7 @@
 
 ---
 
-### Task 1: DB v32 — trigger_keyword + auto_paste 字段
+### Task 1: DB v32 — trigger_keyword + auto_paste 字段 ✅
 
 **Files:**
 - Modify: `crates/infra/src/db.sql`
@@ -68,7 +68,7 @@ Expected: PASS
 
 ---
 
-### Task 2: nucleo-matcher 集成 + 搜索核心模块
+### Task 2: nucleo-matcher 集成 + 搜索核心模块 ✅
 
 **Files:**
 - Modify: `crates/desktop/Cargo.toml`（加 nucleo-matcher 依赖）
@@ -206,7 +206,7 @@ Expected: PASS
 
 ---
 
-### Task 3: Tauri 命令 — 搜索 + 执行
+### Task 3: Tauri 命令 — 搜索 + 执行 ✅
 
 **Files:**
 - Modify: `crates/desktop/src/main.rs`（注册命令）
@@ -372,7 +372,7 @@ Expected: PASS
 
 ---
 
-### Task 5: Quicklinks 关键词触发
+### Task 5: Quicklinks 关键词触发 ✅
 
 **Files:**
 - Modify: `crates/desktop/src/search_commands.rs`
@@ -404,7 +404,11 @@ Expected: PASS
 
 ---
 
-### Task 6: Silent Query Hotkey + Run And Paste
+### Task 6: Silent Query Hotkey + Run And Paste ✅
+
+**实际实现决策：** Silent Hotkey 全局热键注册未实现（需确定 modifier 方案），
+重点实现了 Run And Paste 核心逻辑：auto_paste 模式下执行后直接粘贴结果到光标，
+不弹 CompactEditor。autoPaste 开关在设置页 AI/Script 类型编辑表单中。
 
 **Files:**
 - Modify: `crates/desktop/src/action_bar_commands.rs`（全局热键注册 + silent handler）
@@ -445,7 +449,7 @@ Expected: PASS
 
 ---
 
-### Task 7: 全量编译 + 测试 + 文档同步
+### Task 7: 全量编译 + 测试 + 文档同步 ✅
 
 - [ ] **Step 1: 全量编译**
 
