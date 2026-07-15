@@ -227,7 +227,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 33 {
+    if v >= 34 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -460,10 +460,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     .collect();
                 if !cols.contains(&"icon".to_string()) {
                     conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
+                    log::info!("schema patched: app_index add icon column");
                 }
             }
             conn.execute("PRAGMA user_version = 33", [])?;
             log::info!("schema upgraded to v33 (app_index cache table)");
+        }
+        // v33→v34：app_index 补 icon 列（已有 v33 库跳过上面块，这里兜底）
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"icon".to_string()) {
+                conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
+                log::info!("schema upgraded to v34 (app_index add icon column)");
+            }
+            conn.execute("PRAGMA user_version = 34", [])?;
         }
         return Ok(());
     }
@@ -472,8 +485,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 33", [])?;
-    log::info!("DB initialized (v33): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 34", [])?;
+    log::info!("DB initialized (v34): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2724,7 +2737,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 33, "全新库 init_schema 后应到 v33");
+        assert_eq!(v, 34, "全新库 init_schema 后应到 v33");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2898,7 +2911,7 @@ mod tests {
 
         // 验证：迁移后 user_version = 32
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 33);
+        assert_eq!(v, 34);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2955,7 +2968,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 33);
+        assert_eq!(v, 34);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3085,7 +3098,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 33);
+        assert_eq!(v, 34);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3895,7 +3908,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 33);
+        assert_eq!(v, 34);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
