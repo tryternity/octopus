@@ -190,32 +190,8 @@ export default function ActionBar() {
   const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
-  // compositionend 后紧跟的 Enter 需跳过——macOS IME 确认候选后会多发一个 Enter(13)
-  // 仅当真正经过 compositionstart（IME 组合）时才跳过，避免纯英文 Enter 被误吞
-  const skipNextEnterRef = useRef(false);
-  const composingRef = useRef(false);
 
   useEffect(() => { viewRef.current = view; }, [view]);
-
-  // 原生 composition 事件——不依赖 React 合成事件（macOS WKWebView 时序不可靠）
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const onStart = () => { composingRef.current = true; };
-    const onEnd = () => {
-      // 只有真正组合过才标记跳过——避免 WebKit 空组合的 compositionend 误吞 Enter
-      if (composingRef.current) {
-        skipNextEnterRef.current = true;
-        composingRef.current = false;
-      }
-    };
-    el.addEventListener("compositionstart", onStart);
-    el.addEventListener("compositionend", onEnd);
-    return () => {
-      el.removeEventListener("compositionstart", onStart);
-      el.removeEventListener("compositionend", onEnd);
-    };
-  }, []);
 
   // 高亮项变化时自动滚动到可见区域
   useEffect(() => {
@@ -678,13 +654,8 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中——keyCode 229 是 IME 处理中的标识
-      if (e.isComposing || e.keyCode === 229) return;
-      // compositionend 后紧跟的 Enter 需跳过（macOS IME 确认候选后会多发一个 Enter）
-      if (e.key === "Enter" && skipNextEnterRef.current) {
-        skipNextEnterRef.current = false;
-        return;
-      }
+      // IME 组合中（keyCode 229）放行——确认候选词的 Enter 不触发执行
+      if (e.keyCode === 229) return;
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
