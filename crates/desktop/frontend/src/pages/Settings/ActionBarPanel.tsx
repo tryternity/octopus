@@ -35,6 +35,7 @@ interface ActionBarItem {
   agent?: string;
   accepts?: string;
   triggerKeyword?: string;
+  autoPaste?: boolean;
 }
 
 // ── 类型元信息 ──
@@ -472,6 +473,21 @@ const EditForm = ({
               />
               <span className="text-[11px] text-muted-foreground/60">
                 {t("settings.actionBar.triggerKeywordHint")}
+              </span>
+            </div>
+          </FormField>
+        )}
+
+        {/* Run And Paste（AI/翻译/脚本类型） */}
+        {(type === "ai" || type === "script") && (
+          <FormField label={t("settings.actionBar.autoPasteLabel")}>
+            <div className="flex items-center gap-2.5">
+              <Toggle
+                checked={form.autoPaste ?? false}
+                onChange={(v) => onChange({ ...form, autoPaste: v })}
+              />
+              <span className="text-[11px] text-muted-foreground/60">
+                {t("settings.actionBar.autoPasteHint")}
               </span>
             </div>
           </FormField>
@@ -952,6 +968,11 @@ export default function ActionBarPanel({
         });
         showToast(t("settings.actionBar.saved"));
       }
+      // auto_paste 单独更新（仅 AI/脚本类型）
+      if (editingId && (editingForm.actionType === "ai" || editingForm.actionType === "script")) {
+        await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
+      }
+
       cancelEdit();
       refresh();
     } catch (e) {

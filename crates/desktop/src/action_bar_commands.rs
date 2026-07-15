@@ -245,6 +245,22 @@ pub fn action_bar_dismiss(app: AppHandle) {
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
+    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false);
+}
+
+/// Run And Paste 模式：写剪贴板 + 模拟 ⌘V，不弹 CompactEditor。
+pub fn action_bar_run_and_paste(result: String, app: AppHandle) {
+    action_bar_show_result_internal(result, String::new(), String::new(), app, true, true);
+}
+
+fn action_bar_show_result_internal(
+    result: String,
+    _original_text: String,
+    _action: String,
+    app: AppHandle,
+    write_clipboard: bool,
+    auto_paste: bool,
+) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
     // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
@@ -256,30 +272,48 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
     #[cfg(target_os = "macos")]
     { crate::activation::after_floating_window_hide_keep_active(&app); }
 
-    let label = match action.as_str() {
-        "translate" => "翻译",
-        "polish" => "润色",
-        "summarize" => "摘要",
-        "explain" => "解释",
-        // script 同步路径传入的 action 是菜单项 title，直接用作 label
-        _ => &action,
-    };
-    let display_text = format!("【{}】\n{}", label, result);
-
-    // 结果写入系统剪贴板（仅 write_clipboard=true 时）——write_text 自带 suppress 不会入库
-    if write_clipboard {
+    // 结果写入系统剪贴板——write_text 自带 suppress 不会入库
+    if write_clipboard || auto_paste {
         write_clipboard_text(&app, &result);
     }
 
     finalize_action_bar(&app);
 
+    // ── Run And Paste 模式：写剪贴板 + 模拟 ⌘V，不弹 CompactEditor ──
+    if auto_paste {
+        log::info!("[action-bar] Run And Paste: result written to clipboard, simulating ⌘V");
+        let app_clone = app.clone();
+        let paste_result = result.clone();
+        std::thread::spawn(move || {
+            // 等待 clipboard 写入完成 + 窗口隐藏
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let config = octopus_infra::config::load_config().unwrap_or_default();
+            let handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
+            if let Err(e) = crate::paste::paste(&paste_result, &handle, &config) {
+                log::warn!("[action-bar] Run And Paste failed: {}", e);
+            }
+        });
+        return;
+    }
+
+    // ── 常规模式：打开 CompactEditor 展示结果 ──
+    let label = match _action.as_str() {
+        "translate" => "翻译",
+        "polish" => "润色",
+        "summarize" => "摘要",
+        "explain" => "解释",
+        // script 同步路径传入的 action 是菜单项 title，直接用作 label
+        _ => &_action,
+    };
+    let display_text = format!("【{}】\n{}", label, result);
+
     // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）。
     // 翻译 action 且有原文 → contrast 模式（左原文右译文）；其他 → single。
-    let payload = if action == "translate" && !original_text.is_empty() {
+    let payload = if _action == "translate" && !_original_text.is_empty() {
         crate::compact_editor_commands::TempTabPayload {
             text: display_text.clone(),
             mode: Some("contrast".into()),
-            original_text: Some(original_text),
+            original_text: Some(_original_text),
             translated_text: Some(result.clone()),
         }
     } else {
@@ -539,6 +573,12 @@ pub fn delete_action_bar_item(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
     octopus_infra::db::move_action_bar_item(id, direction).map_err(|e| e.to_string())
+}
+
+/// 设置菜单项的 auto_paste（Run And Paste 模式）。
+#[tauri::command]
+pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<(), String> {
+    octopus_infra::db::set_auto_paste(id, auto_paste).map_err(|e| e.to_string())
 }
 
 // ── 脚本执行记录 ──
@@ -1092,7 +1132,11 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                         let prompt = auto_translate_prompt(&enriched_text);
                         let result = octopus_llm::chat_text_with_prompt(prompt, &enriched_text, &llm_config)
                         .map_err(|e| e.to_string())?;
-                        action_bar_show_result(result, text, "translate".into(), app.clone(), true);
+                        if item.auto_paste {
+                            action_bar_run_and_paste(result, app.clone());
+                        } else {
+                            action_bar_show_result(result, text, "translate".into(), app.clone(), true);
+                        }
                         return Ok(true);
                     }
                 }
@@ -1104,7 +1148,11 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let enriched_text = build_enriched_text(&text);
             let result = octopus_llm::chat_text_with_prompt(&item.action_data, &enriched_text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, String::new(), item.title, app.clone(), true);
+            if item.auto_paste {
+                action_bar_run_and_paste(result, app.clone());
+            } else {
+                action_bar_show_result(result, String::new(), item.title, app.clone(), true);
+            }
             Ok(true)
         }
         "url" => {
@@ -1166,10 +1214,14 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 }
                 // 成功
                 if !result.stdout.is_empty() {
-                    if write_output {
+                    if item.auto_paste {
+                        action_bar_run_and_paste(result.stdout, app.clone());
+                    } else if write_output {
                         write_clipboard_text(app, &result.stdout);
+                        action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
+                    } else {
+                        action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
                     }
-                    action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
                     return Ok(true);
                 }
                 // 成功无输出 → 正常关闭

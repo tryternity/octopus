@@ -327,6 +327,7 @@ pub fn run() {
             action_bar_commands::list_action_bar_items,
             action_bar_commands::create_action_bar_item,
             action_bar_commands::update_action_bar_item,
+            action_bar_commands::set_auto_paste,
             action_bar_commands::delete_action_bar_item,
             action_bar_commands::move_action_bar_item,
             action_bar_commands::execute_action_bar,
