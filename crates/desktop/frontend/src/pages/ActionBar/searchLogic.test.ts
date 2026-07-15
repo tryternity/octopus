@@ -16,6 +16,8 @@ import {
   navigateResults,
   hasQuery,
   nextFocusLayerAfterExecute,
+  calcMenuHeight,
+  calcTotalHeight,
 } from "./searchLogic";
 import type { SearchResult } from "./searchTypes";
 import { TABS } from "./searchTypes";
@@ -441,5 +443,57 @@ describe("nextFocusLayerAfterExecute", () => {
     // 这是 S3 bug 的核心不变量——executeItem(submenu) 后 Enter 走 sub 分支执行子项
     const layer = nextFocusLayerAfterExecute("submenu", "main");
     expect(layer).toBe("sub");
+  });
+});
+
+// ── calcMenuHeight / calcTotalHeight ──
+
+describe("calcMenuHeight", () => {
+  it("无选中（hasContext=false）→ 0（仅搜索框）", () => {
+    expect(calcMenuHeight(false, "main")).toBe(0);
+    expect(calcMenuHeight(false, "submenu")).toBe(0);
+    expect(calcMenuHeight(false, "loading")).toBe(0);
+  });
+
+  it("有选中 + view=main → MENU_HEIGHT_MAIN (40)", () => {
+    expect(calcMenuHeight(true, "main")).toBe(40);
+  });
+
+  it("有选中 + view=submenu → MENU_HEIGHT_SUBMENU (78)", () => {
+    expect(calcMenuHeight(true, "submenu")).toBe(78);
+  });
+
+  it("有选中 + view=loading → MENU_HEIGHT_LOADING (48)", () => {
+    expect(calcMenuHeight(true, "loading")).toBe(48);
+  });
+
+  it("回归：有选中时菜单条高度必须 > 0（防 resize 裁剪菜单）", () => {
+    // 核心不变量——context 非 null 时菜单条必须有高度，
+    // 否则窗口裁剪菜单条（"首次有选中只显示搜索框"回归）
+    for (const view of ["main", "submenu", "loading"] as const) {
+      expect(calcMenuHeight(true, view)).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("calcTotalHeight", () => {
+  it("无选中菜单模式 = 输入框 + 0", () => {
+    expect(calcTotalHeight(false, false, "main", 0)).toBe(36);
+  });
+
+  it("有选中菜单模式 main = 输入框 + MENU_HEIGHT_MAIN", () => {
+    expect(calcTotalHeight(false, true, "main", 0)).toBe(36 + 40);
+  });
+
+  it("有选中菜单模式 submenu = 输入框 + MENU_HEIGHT_SUBMENU", () => {
+    expect(calcTotalHeight(false, true, "submenu", 0)).toBe(36 + 78);
+  });
+
+  it("搜索模式 = 输入框 + Tab栏 + 结果区（不受 context/view 影响）", () => {
+    // 搜索模式高度只依赖结果数，与 context 无关
+    const withContext = calcTotalHeight(true, true, "main", 5);
+    const noContext = calcTotalHeight(true, false, "main", 5);
+    expect(withContext).toBe(noContext);
+    expect(withContext).toBe(36 + 30 + calcResultsHeight(5));
   });
 });

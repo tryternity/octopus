@@ -242,3 +242,12 @@
 - 用户明确"不能依赖用户设置，octopus 要适配"
 - **修复**：detect 对 Sublime 新增插件分支——`is_sublime_frontmost()` 判定后调 `get_sublime_selection(deadline)`，用插件的 `sel_start/sel_end` 精确判定（`sel_start == sel_end` = 无选中），绕过 Cmd+C。`sublime_plugin.rs` 加 `is_sublime_frontmost` + `get_sublime_selection`；`mod.rs` 改 `pub mod sublime_plugin`；`action_bar_commands.rs` detect 在 Finder 分支后插入 Sublime 分支
 - **保留**：`CHANGE_COUNT_BASELINE`（对其他应用的恢复写入污染仍有防护价值）；`simulate_copy` 的 octopus frontmost 深度防御（防其他应用的 octopus frontmost 边角场景）
+
+**现象 3（重启后首次有选中→只显示搜索框，输入删除后菜单出现）根因：resize effect 依赖遗漏 context**：
+- 用户关键观察："弹出在鼠标位置 = context 非 null，不是 context 问题，更像渲染错误" → 推翻首屏竞态假设
+- 根因：resize useEffect（动态算窗口高度）依赖数组 `[view, query, filteredResults.length, expandDirection]` 遗漏 `context`，而 `menuHeight = !context ? 0 : 40` 依赖 context。窗口创建时 context=null → 高度=仅搜索框（76px）；首次有选中 setContext 非 null → 菜单条 DOM 渲染了但 resize effect 不重跑 → 窗口高度仍是 76px → 菜单条被裁剪不可见
+- **修复**：依赖数组加 `context`；抽 `calcMenuHeight(hasContext, view)` 纯函数到 searchLogic.ts + `calcTotalHeight` + 9 个单测（searchTypes.ts 加 View 类型 + MENU_HEIGHT_* 常量）
+
+**测试防护（防回归）**：
+- 前端：`calcMenuHeight` / `calcTotalHeight` 纯函数 + 9 个单测（无选中→0、有选中各 view→40/78/48、搜索模式不受 context 影响）。锁住"有选中时菜单条高度必须 > 0"核心不变量
+- 后端：`extract_sublime_selection(full_text, sel_start, sel_end)` 纯函数 + 8 个单测（无选中 sel_start==sel_end→None、反向选区→None、CJK 字符偏移、空白选中→None、越界 clamp、空文本→None）。锁住"sel_start < sel_end 且非空白→Some"核心不变量，防 detect 对 Sublime 误判回退到 Cmd+C

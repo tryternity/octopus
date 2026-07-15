@@ -56,6 +56,14 @@ export const TAB_BAR_HEIGHT = 30;
 /** 搜索输入框高度（px） */
 export const INPUT_HEIGHT = 36;
 
+/** 菜单模式各视图的菜单条高度（px）—— resize effect 据此算窗口总高 */
+export const MENU_HEIGHT_MAIN = 40;
+export const MENU_HEIGHT_SUBMENU = 78;
+export const MENU_HEIGHT_LOADING = 48;
+
+/** ActionBar 视图状态（菜单模式内部切换） */
+export type View = "main" | "submenu" | "loading";
+
 /** 最多可见结果数 */
 export const MAX_VISIBLE_RESULTS = 10;
 

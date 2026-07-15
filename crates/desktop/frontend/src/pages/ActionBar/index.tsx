@@ -12,7 +12,7 @@ import {
   TAB_BAR_HEIGHT,
   DELAYED_SEARCH_DEBOUNCE_MS,
   type TabId,
-
+  type View,
   type ExpandDirection,
   type SearchResult as SearchHit,
 } from "./searchTypes";
@@ -28,6 +28,7 @@ import {
   navigateResults,
   hasQuery,
   nextFocusLayerAfterExecute,
+  calcMenuHeight,
 } from "./searchLogic";
 
 type ContextKind = "text" | "files";
@@ -53,8 +54,6 @@ interface Context {
   source?: AppSource;
   surrounding?: SurroundingText;
 }
-
-type View = "main" | "submenu" | "loading";
 
 interface ActionBarItem {
   id: number;
@@ -258,8 +257,8 @@ export default function ActionBar() {
         }
       }
     } else {
-      // 无选中（context=null）时只有搜索框，无菜单条
-      const menuHeight = !context ? 0 : view === "submenu" ? 78 : view === "loading" ? 48 : 40;
+      // 菜单条高度——抽纯函数 calcMenuHeight（防护 context 依赖遗漏导致窗口裁剪菜单条）
+      const menuHeight = calcMenuHeight(!!context, view);
       totalHeight = INPUT_HEIGHT + menuHeight;
       if (baseWinPosRef.current) {
         targetX = baseWinPosRef.current.x;

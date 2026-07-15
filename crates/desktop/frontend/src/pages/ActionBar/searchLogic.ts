@@ -8,8 +8,12 @@ import {
   RESULT_ROW_HEIGHT,
   TAB_BAR_HEIGHT,
   INPUT_HEIGHT,
+  MENU_HEIGHT_MAIN,
+  MENU_HEIGHT_SUBMENU,
+  MENU_HEIGHT_LOADING,
   type TabId,
   type ExpandDirection,
+  type View,
   type SearchResult,
 } from "./searchTypes";
 
@@ -183,4 +187,42 @@ export function nextFocusLayerAfterExecute(
   currentLayer: "main" | "sub",
 ): "main" | "sub" {
   return actionType === "submenu" ? "sub" : currentLayer;
+}
+
+/**
+ * 菜单条高度（不含输入框）—— resize effect 据此算窗口总高。
+ *
+ * 关键不变量（防护「首次有选中触发菜单条被窗口裁剪」回归）：
+ * - 无选中（hasContext=false）→ 0（仅搜索框，不显示菜单条）
+ * - 有选中 + view=main → MENU_HEIGHT_MAIN
+ * - 有选中 + view=submenu → MENU_HEIGHT_SUBMENU
+ * - 有选中 + view=loading → MENU_HEIGHT_LOADING
+ *
+ * 此函数从 index.tsx 的 resize useEffect 内联逻辑抽取——原内联表达式的
+ * `!context ? 0 : ...` 依赖 context state，但 resize effect 曾遗漏 context 依赖
+ * 导致窗口高度不随 context 更新（菜单条 DOM 渲染了但被窗口边界裁剪）。
+ * 抽纯函数 + 单测锁定高度规则，resize effect 只需 `calcMenuHeight(!!context, view)`。
+ */
+export function calcMenuHeight(hasContext: boolean, view: View): number {
+  if (!hasContext) return 0;
+  if (view === "submenu") return MENU_HEIGHT_SUBMENU;
+  if (view === "loading") return MENU_HEIGHT_LOADING;
+  return MENU_HEIGHT_MAIN;
+}
+
+/**
+ * 窗口总高度 = 输入框 + 菜单/搜索结果区。
+ * - 搜索模式（inSearch=true）：输入框 + Tab 栏 + 结果区
+ * - 菜单模式（inSearch=false）：输入框 + 菜单条（calcMenuHeight）
+ */
+export function calcTotalHeight(
+  inSearch: boolean,
+  hasContext: boolean,
+  view: View,
+  resultsCount: number,
+): number {
+  if (inSearch) {
+    return INPUT_HEIGHT + TAB_BAR_HEIGHT + calcResultsHeight(resultsCount);
+  }
+  return INPUT_HEIGHT + calcMenuHeight(hasContext, view);
 }

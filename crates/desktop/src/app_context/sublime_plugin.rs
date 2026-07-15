@@ -200,27 +200,41 @@ pub fn get_sublime_selection(deadline: std::time::Instant) -> Option<String> {
     let sel_start = json["sel_start"].as_u64().unwrap_or(0) as usize;
     let sel_end = json["sel_end"].as_u64().unwrap_or(0) as usize;
 
-    // sel_start == sel_end → 无选中（Sublime 插件的精确判定，绕过 copy_with_empty_selection 陷阱）
+    let selected = extract_sublime_selection(full_text, sel_start, sel_end);
+    match &selected {
+        Some(s) => log::info!(
+            "[app-context][detect] Sublime sel=[{},{}] = 选中 {} 字符",
+            sel_start, sel_end, s.chars().count()
+        ),
+        None => log::info!("[app-context][detect] Sublime sel=[{},{}] = 无选中", sel_start, sel_end),
+    }
+    selected
+}
+
+/// 从 Sublime 插件的 full_text + sel_start + sel_end 提取选中文本（纯函数，可单测）。
+///
+/// 判定规则（绕过 Sublime 4 `copy_with_empty_selection` 的 Cmd+C 陷阱）：
+/// - `sel_start >= sel_end` 或 full_text 空 → None（无选中）
+/// - 选区文本 trim 后空 → None（纯空白选中不算）
+/// - 否则 → Some(选区文本)
+///
+/// sel_start/sel_end 是 Sublime 的**字符偏移**（非字节），用 chars() 切片保证 CJK 正确。
+/// 偏移越界时 clamp 到 full_text 长度（Sublime 插件理论上不越界，但防御性 clamp）。
+pub fn extract_sublime_selection(full_text: &str, sel_start: usize, sel_end: usize) -> Option<String> {
     if sel_start >= sel_end || full_text.is_empty() {
-        log::info!("[app-context][detect] Sublime sel=[{},{}] = 无选中", sel_start, sel_end);
         return None;
     }
-
-    // 取选区文本——按 char 偏移切（sel_start/sel_end 是 Sublime 的字符偏移）
     let chars: Vec<char> = full_text.chars().collect();
     let total = chars.len();
     let start = sel_start.min(total);
     let end = sel_end.min(total);
+    if start >= end {
+        return None;
+    }
     let selected: String = chars[start..end].iter().collect();
-
     if selected.trim().is_empty() {
         return None;
     }
-
-    log::info!(
-        "[app-context][detect] Sublime sel=[{},{}] = 选中 {} 字符",
-        sel_start, sel_end, selected.chars().count()
-    );
     Some(selected)
 }
 
@@ -297,4 +311,81 @@ fn find_subl_binary(deadline: std::time::Instant) -> Option<std::path::PathBuf> 
             Some(std::path::PathBuf::from(s))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：无选中（sel_start == sel_end）→ None。
+    /// 这是 Sublime `copy_with_empty_selection` 陷阱的核心防护——
+    /// sel_start == sel_end 必须判定为无选中，否则 detect 误判 Text。
+    #[test]
+    fn extract_sublime_selection_no_selection() {
+        assert_eq!(extract_sublime_selection("hello world", 5, 5), None);
+        assert_eq!(extract_sublime_selection("hello", 0, 0), None);
+        assert_eq!(extract_sublime_selection("任意文本", 2, 2), None);
+    }
+
+    /// 回归：sel_start > sel_end（反向选区或异常）→ None
+    #[test]
+    fn extract_sublime_selection_reversed_range() {
+        assert_eq!(extract_sublime_selection("hello", 4, 2), None);
+        assert_eq!(extract_sublime_selection("hello", 3, 3), None);
+    }
+
+    /// 正常有选中 → 返回选区文本
+    #[test]
+    fn extract_sublime_selection_normal() {
+        assert_eq!(extract_sublime_selection("hello world", 0, 5), Some("hello".into()));
+        assert_eq!(extract_sublime_selection("hello world", 6, 11), Some("world".into()));
+        assert_eq!(extract_sublime_selection("选中Text", 0, 8), Some("选中Text".into()));
+    }
+
+    /// CJK 文本按字符偏移切（非字节）—— sel_start/sel_end 是字符偏移
+    #[test]
+    fn extract_sublime_selection_cjk_char_offset() {
+        // "你好世界" 4 个字符，选 [1,3] = "好世"
+        assert_eq!(extract_sublime_selection("你好世界", 1, 3), Some("好世".into()));
+    }
+
+    /// 选区纯空白 → None（trim 后空不算选中）
+    #[test]
+    fn extract_sublime_selection_whitespace_only() {
+        assert_eq!(extract_sublime_selection("a   b", 1, 4), None); // 选 "   " 纯空格
+        assert_eq!(extract_sublime_selection("a\n\nb", 1, 3), None); // 选 "\n\n"
+    }
+
+    /// 偏移越界 clamp 到 full_text 长度（防御性）
+    #[test]
+    fn extract_sublime_selection_clamps_overflow() {
+        // full_text "abc" 只有 3 字符，sel [1, 100] → clamp 到 [1,3] = "bc"
+        assert_eq!(extract_sublime_selection("abc", 1, 100), Some("bc".into()));
+        // sel_start 也越界
+        assert_eq!(extract_sublime_selection("abc", 50, 100), None); // clamp 后 start(3) >= end(3)
+    }
+
+    /// 空 full_text → None
+    #[test]
+    fn extract_sublime_selection_empty_text() {
+        assert_eq!(extract_sublime_selection("", 0, 5), None);
+    }
+
+    /// 回归核心不变量：sel_start < sel_end 且非空白 → 必须返回 Some
+    /// （detect_selection 的 Sublime 分支依赖此判定区分有无选中）
+    #[test]
+    fn extract_sublime_selection_valid_range_returns_some() {
+        let cases = [
+            ("hello", 0, 1),
+            ("选中Text", 0, 2),
+            ("a\nb", 0, 3),
+            ("你好", 0, 2),
+        ];
+        for (text, s, e) in cases {
+            assert!(
+                extract_sublime_selection(text, s, e).is_some(),
+                "sel=[{},{}] of {:?} 应返回 Some", s, e, text
+            );
+        }
+    }
 }
