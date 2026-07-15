@@ -1,11 +1,11 @@
 //! 搜索相关 Tauri 命令。
 
-use crate::search::{self, SearchResult};
+use octopus_search::{self, SearchResult};
 
 /// 综合搜索。
 #[tauri::command]
 pub async fn search_all(query: String, tab: String) -> Result<Vec<SearchResult>, String> {
-    let engine = match search::get_engine() {
+    let engine = match octopus_search::get_engine() {
         Some(e) => e,
         None => return Err("搜索引擎未初始化".into()),
     };

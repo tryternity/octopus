@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation"]
+members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search"]
 exclude = ["xcap"]
 resolver = "2"
 

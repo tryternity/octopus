@@ -1,6 +1,8 @@
-//! ActionBar 搜索引擎：应用索引 + 菜单搜索 + Quicklinks + 文件搜索 + 书签搜索。
+//! octopus-search: 独立搜索引擎 crate。
 //!
+//! 应用索引 + 菜单搜索 + Quicklinks + 文件搜索 + 书签搜索。
 //! 统一 SearchResult 结构，nucleo-matcher 模糊匹配 + 拼音首字母。
+//! 不依赖 Tauri，可独立测试和复用。
 
 pub mod matcher;
 pub mod app_index;

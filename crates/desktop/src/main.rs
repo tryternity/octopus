@@ -33,7 +33,6 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod model_migrate;
-mod search;
 mod search_commands;
 mod hotword_commands;
 mod input_source;
@@ -100,7 +99,7 @@ pub fn run() {
         log::warn!("模型路径迁移失败（非致命）: {e:?}");
     }
     // 初始化搜索引擎（应用索引 + 书签扫描）
-    search::init_search_engine();
+    octopus_search::init_search_engine();
 
     // 校验引擎模式
     if config.engine_mode == "embedded" && !config::is_streaming_engine(&config) {

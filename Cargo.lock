@@ -5104,6 +5104,7 @@ dependencies = [
  "octopus-infra",
  "octopus-llm",
  "octopus-ocr",
+ "octopus-search",
  "octopus-translation",
  "once_cell",
  "parking_lot",
@@ -5228,6 +5229,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "unicode-bidi",
+]
+
+[[package]]
+name = "octopus-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 5.0.1",
+ "log",
+ "nucleo-matcher",
+ "octopus-infra",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
