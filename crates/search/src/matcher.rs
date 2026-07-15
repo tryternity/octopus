@@ -63,20 +63,18 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
     }
 }
 
-/// 取中文文本的拼音首字母。硬编码常用菜单项 + 简单 Unicode 范围判断。
+/// 取中文文本的拼音首字母。用 pinyin crate（覆盖全部 CJK 汉字）。
 fn pinyin_initials(text: &str) -> String {
-    // 硬编码常用菜单名
-    let known: &[(&str, &str)] = &[
-        ("翻译", "fy"), ("搜索", "ss"), ("润色", "rs"), ("摘要", "zy"),
-        ("解释", "js"), ("网页", "wy"), ("脚本", "jb"), ("复制路径", "fzlj"),
-        ("系统", "xt"), ("设置", "sz"), ("退出", "tc"), ("问豆包", "wdb"),
-    ];
-    for (name, initials) in known {
-        if text.contains(name) {
-            return initials.to_string();
+    use pinyin::ToPinyin;
+    let mut result = String::new();
+    for ch in text.chars() {
+        if let Some(py) = ch.to_pinyin() {
+            result.push_str(py.first_letter());
+        } else if ch.is_ascii_alphabetic() {
+            result.push(ch.to_ascii_lowercase());
         }
     }
-    String::new()
+    result
 }
 
 /// 综合匹配：按优先级尝试 exact > prefix > pinyin > fuzzy，取最高分。

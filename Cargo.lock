@@ -5240,6 +5240,7 @@ dependencies = [
  "log",
  "nucleo-matcher",
  "octopus-infra",
+ "pinyin",
  "serde",
  "serde_json",
  "tempfile",

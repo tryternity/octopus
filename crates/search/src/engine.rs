@@ -243,7 +243,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![
-                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into() },
+                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![] },
             ]},
             bookmarks: vec![],
         };
@@ -272,7 +272,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![
-                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into() },
+                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![] },
             ]},
             bookmarks: vec![],
         };
