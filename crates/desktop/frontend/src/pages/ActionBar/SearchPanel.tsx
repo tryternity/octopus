@@ -31,12 +31,22 @@ const SOURCE_BADGE_COLOR: Record<string, string> = {
   quicklink: "bg-cyan-500/15 text-cyan-600",
 };
 
-function SourceBadge({ source }: { source: string }) {
-  const icon = SOURCE_ICON[source] ?? "❓";
+function SourceBadge({ source, icon }: { source: string; icon?: string }) {
+  // 有自定义图标（如应用 icon）→ 渲染 img
+  if (icon) {
+    return (
+      <img
+        src={icon}
+        alt=""
+        className="inline-flex h-5 w-5 shrink-0 rounded object-contain"
+      />
+    );
+  }
+  const fallbackIcon = SOURCE_ICON[source] ?? "❓";
   const color = SOURCE_BADGE_COLOR[source] ?? "bg-muted text-muted-foreground";
   return (
     <span className={cn("inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px]", color)}>
-      {icon}
+      {fallbackIcon}
     </span>
   );
 }
@@ -124,7 +134,7 @@ function ResultRow({
       onMouseMove={onHover}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
     >
-      <SourceBadge source={result.source} />
+      <SourceBadge source={result.source} icon={result.icon ?? undefined} />
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
           <span className={cn(

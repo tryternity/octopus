@@ -94,7 +94,8 @@ pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchR
                 source: "bookmark".into(),
                 title: bm.title.clone(),
                 subtitle: format!("[{}] {}", bm.browser, bm.url),
-                action_type: "url".into(),
+                icon: None,
+    action_type: "url".into(),
                 action_data: serde_json::json!({ "url": bm.url }).to_string(),
                 score: 0,
             }))

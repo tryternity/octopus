@@ -9,13 +9,69 @@ pub struct AppEntry {
     pub path: String,
     /// 本地化别名（如 WeChat 的中文名"微信"），用于拼音/模糊匹配
     pub aliases: Vec<String>,
+    /// base64 PNG 图标（32×32），空=无图标
+    pub icon: String,
 }
 
 pub struct AppIndex {
     pub apps: Vec<AppEntry>,
 }
 
-/// 读取 .app 的本地化名称（如 WeChat 的中文名"微信"）。
+/// 提取 .app 的图标为 base64 PNG（32×32）。
+/// 用 sips 命令将 icns/png 转为 32×32 PNG，再 base64 编码。
+/// sips 是 macOS 内置工具，无需额外依赖。
+fn extract_app_icon(app_path: &std::path::Path) -> String {
+    // 1. 从 Info.plist 读 CFBundleIconFile 获取 icon 文件名
+    let info_plist = app_path.join("Contents/Info.plist");
+    if !info_plist.exists() { return String::new(); }
+
+    // 读 Info.plist 找 CFBundleIconFile
+    let icon_name = {
+        let output = std::process::Command::new("defaults")
+            .arg("read")
+            .arg(&info_plist)
+            .arg("CFBundleIconFile")
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let name = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if name.is_empty() { return String::new(); }
+                name
+            }
+            _ => return String::new(),
+        }
+    };
+
+    // 2. 查找 icon 文件（可能带或不带 .icns/.png 后缀）
+    let resources = app_path.join("Contents/Resources");
+    let icon_path = {
+        // 尝试原名 + 常见后缀
+        let candidates = [
+            resources.join(&icon_name),
+            resources.join(format!("{}.icns", icon_name)),
+            resources.join(format!("{}.png", icon_name)),
+        ];
+        candidates.into_iter().find(|p| p.exists())
+    };
+    let icon_path = match icon_path { Some(p) => p, None => return String::new() };
+
+    // 3. 用 sips 转为 32×32 PNG 到临时文件
+    let tmp = std::env::temp_dir().join(format!("octopus_icon_{}.png", std::process::id()));
+    let output = std::process::Command::new("sips")
+        .args(["-z", "32", "32", "--out"])
+        .arg(&tmp)
+        .arg(&icon_path)
+        .output();
+    let png_bytes = match output {
+        Ok(o) if o.status.success() => std::fs::read(&tmp).unwrap_or_default(),
+        _ => return String::new(),
+    };
+    let _ = std::fs::remove_file(&tmp);
+
+    if png_bytes.is_empty() { return String::new(); }
+    use base64::Engine;
+    format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png_bytes))
+}
 /// 直接读 zh-Hans.lproj/InfoPlist.strings，解析 OpenStep 或 XML 格式。
 /// 文件可能是 UTF-16（多数 macOS app）或 UTF-8 编码。
 fn read_localized_names(app_path: &std::path::Path) -> Vec<String> {
@@ -97,10 +153,11 @@ impl AppIndex {
             if !cached.is_empty() {
                 let apps: Vec<AppEntry> = cached
                     .into_iter()
-                    .map(|(name, alias, path)| AppEntry {
+                    .map(|(name, alias, path, icon)| AppEntry {
                         name,
                         aliases: if alias.is_empty() { vec![] } else { vec![alias] },
                         path,
+                        icon,
                     })
                     .collect();
                 log::info!("[search] 应用索引（DB 缓存）: {} 个应用", apps.len());
@@ -112,9 +169,9 @@ impl AppIndex {
         let apps = Self::scan_filesystem();
 
         // 写入 DB 缓存
-        let cache_data: Vec<(String, String, String)> = apps
+        let cache_data: Vec<(String, String, String, String)> = apps
             .iter()
-            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone()))
+            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone(), a.icon.clone()))
             .collect();
         if let Err(e) = octopus_infra::db::save_app_index(&cache_data) {
             log::warn!("[search] 应用索引缓存写入失败: {}", e);
@@ -126,9 +183,9 @@ impl AppIndex {
     /// 强制重新扫描文件系统并更新缓存。
     pub fn rescan() -> Self {
         let apps = Self::scan_filesystem();
-        let cache_data: Vec<(String, String, String)> = apps
+        let cache_data: Vec<(String, String, String, String)> = apps
             .iter()
-            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone()))
+            .map(|a| (a.name.clone(), a.aliases.first().cloned().unwrap_or_default(), a.path.clone(), a.icon.clone()))
             .collect();
         if let Err(e) = octopus_infra::db::save_app_index(&cache_data) {
             log::warn!("[search] 应用索引缓存写入失败: {}", e);
@@ -174,10 +231,12 @@ impl AppIndex {
                 if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                     if !name.is_empty() {
                         let aliases = read_localized_names(&path);
+                        let icon = extract_app_icon(&path);
                         apps.push(AppEntry {
                             name: name.to_string(),
                             path: path.to_string_lossy().to_string(),
                             aliases,
+                            icon,
                         });
                     }
                 }
@@ -213,6 +272,7 @@ impl AppIndex {
                 source: "app".into(),
                 title: app.name.clone(),
                 subtitle: app.path.clone(),
+                icon: if app.icon.is_empty() { None } else { Some(app.icon.clone()) },
                 action_type: "launch_app".into(),
                 action_data: serde_json::json!({ "path": app.path }).to_string(),
                 score,
@@ -228,8 +288,8 @@ mod tests {
     #[test]
     fn search_finds_matching_apps() {
         let index = AppIndex { apps: vec![
-            AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![] },
-            AppEntry { name: "Safari".into(), path: "/Applications/Safari.app".into(), aliases: vec![] },
+            AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() },
+            AppEntry { name: "Safari".into(), path: "/Applications/Safari.app".into(), aliases: vec![], icon: String::new() },
         ]};
         let results = index.search("chr");
         assert!(!results.is_empty());
@@ -240,7 +300,7 @@ mod tests {
     #[test]
     fn search_empty_query_returns_empty() {
         let index = AppIndex { apps: vec![
-            AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![] },
+            AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() },
         ]};
         let results = index.search("");
         assert!(results.is_empty());
@@ -250,7 +310,7 @@ mod tests {
     fn search_matches_alias() {
         // WeChat 英文名不匹配 wx，但别名“微信”的拼音首字母 wx 能匹配
         let index = AppIndex { apps: vec![
-            AppEntry { name: "WeChat".into(), path: "/Applications/WeChat.app".into(), aliases: vec!["微信".into()] },
+            AppEntry { name: "WeChat".into(), path: "/Applications/WeChat.app".into(), aliases: vec!["微信".into()], icon: String::new() },
         ]};
         let results = index.search("wx");
         assert!(!results.is_empty(), "wx should match WeChat via alias 微信");
@@ -261,7 +321,7 @@ mod tests {
     fn search_matches_alias_by_name() {
         // 直接搜别名也能匹配
         let index = AppIndex { apps: vec![
-            AppEntry { name: "WeChat".into(), path: "/Applications/WeChat.app".into(), aliases: vec!["微信".into()] },
+            AppEntry { name: "WeChat".into(), path: "/Applications/WeChat.app".into(), aliases: vec!["微信".into()], icon: String::new() },
         ]};
         let results = index.search("微信");
         assert!(!results.is_empty());

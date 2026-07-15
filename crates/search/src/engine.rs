@@ -14,6 +14,7 @@ pub struct SearchResult {
     pub source: String,       // "app" | "file" | "menu" | "bookmark" | "quicklink" | "shell"
     pub title: String,
     pub subtitle: String,
+    pub icon: Option<String>, // base64 data URI（应用图标等），None=用 source 默认图标
     pub action_type: String,  // "launch_app" | "open_file" | "menu" | "url" | "shell"
     pub action_data: String,  // JSON
     pub score: i32,
@@ -56,7 +57,8 @@ impl SearchEngine {
                     source: "shell".into(),
                     title: format!("▶ {}", cmd),
                     subtitle: "Shell".into(),
-                    action_type: "shell".into(),
+                    icon: None,
+    action_type: "shell".into(),
                     action_data: serde_json::json!({ "command": cmd }).to_string(),
                     score: 10000,
                 });
@@ -66,9 +68,10 @@ impl SearchEngine {
         // 即时搜索（内存索引）
         if tab == "all" || tab == "apps" || tab == "quick" {
             let mut apps = self.app_index.search(query);
-            // 应用加权重（source 优先级——应用启动是 launcher 核心场景）
+            // 应用加权重——应用启动是 launcher 核心场景，应排在文件/书签前面
+            // +2000 确保拼音匹配的 app（4000+2000=6000）超过文件 prefix match（~5000）
             for r in &mut apps {
-                r.score += 500;
+                r.score += 2000;
             }
             results.extend(apps);
         }
@@ -116,7 +119,8 @@ fn search_menus_and_quicklinks(query: &str, rows: &[octopus_infra::db::ActionBar
                 source: if row.action_type == "url" { "quicklink" } else { "menu" }.into(),
                 title: row.title.clone(),
                 subtitle: row.action_type.clone(),
-                action_type: if row.action_type == "url" { "url" } else { "menu" }.into(),
+                icon: None,
+    action_type: if row.action_type == "url" { "url" } else { "menu" }.into(),
                 action_data: action_data.to_string(),
                 score: 0,
             }))
@@ -153,7 +157,8 @@ fn search_quicklink_keywords(query: &str, rows: &[octopus_infra::db::ActionBarIt
                 source: "quicklink".into(),
                 title: format!("{} «{}»", r.trigger_keyword, rest),
                 subtitle: format!("{} → {}", r.title, url),
-                action_type: "url".into(),
+                icon: None,
+    action_type: "url".into(),
                 action_data: serde_json::json!({
                     "url": url,
                     "id": r.id,
@@ -243,7 +248,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![
-                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![] },
+                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![], icon: String::new() },
             ]},
             bookmarks: vec![],
         };
@@ -272,7 +277,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine {
             app_index: AppIndex { apps: vec![
-                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![] },
+                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() },
             ]},
             bookmarks: vec![],
         };

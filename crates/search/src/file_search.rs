@@ -38,7 +38,8 @@ pub async fn search_files(query: &str) -> Vec<SearchResult> {
                 source: "file".into(),
                 title: filename.to_string(),
                 subtitle: line.to_string(),
-                action_type: "open_file".into(),
+                icon: None,
+    action_type: "open_file".into(),
                 action_data: serde_json::json!({ "path": line }).to_string(),
                 score: 0,
             }))

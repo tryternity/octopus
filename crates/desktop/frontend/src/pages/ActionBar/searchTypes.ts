@@ -8,6 +8,8 @@ export interface SearchResult {
   title: string;
   /** 副标题（路径 / action_type 标签） */
   subtitle: string;
+  /** 自定义图标（base64 data URI，如应用 icon），空=用 source 默认图标 */
+  icon?: string | null;
   /** 动作类型："launch_app" | "open_file" | "menu" | "url" | "shell" */
   actionType: string;
   /** 动作数据（JSON 字符串） */

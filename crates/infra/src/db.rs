@@ -446,11 +446,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     name       TEXT NOT NULL,
                     alias      TEXT NOT NULL DEFAULT '',
                     path       TEXT NOT NULL UNIQUE,
+                    icon       TEXT NOT NULL DEFAULT '',
                     indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
                 CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);"
             )?;
+            // v33→v33.1: 如果表已存在但缺 icon 列（从早期 v33 创建），补列
+            {
+                let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)")?
+                    .query_map([], |r| r.get::<_, String>(1))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                if !cols.contains(&"icon".to_string()) {
+                    conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
+                }
+            }
             conn.execute("PRAGMA user_version = 33", [])?;
             log::info!("schema upgraded to v33 (app_index cache table)");
         }
@@ -1681,11 +1692,12 @@ pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
 // ── App Index Cache（应用索引缓存）──────────────────────────────
 
 /// 从 DB 加载应用索引缓存。空表返回空 Vec（触发首次扫描）。
-pub fn load_app_index() -> Result<Vec<(String, String, String)>> {
+/// 返回 (name, alias, path, icon_base64)
+pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
     with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT name, alias, path FROM app_index")?;
+        let mut stmt = conn.prepare("SELECT name, alias, path, icon FROM app_index")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         })?;
         let mut result = Vec::new();
         for row in rows {
@@ -1696,16 +1708,17 @@ pub fn load_app_index() -> Result<Vec<(String, String, String)>> {
 }
 
 /// 全量替换应用索引缓存（先清空再写入）。
-pub fn save_app_index(apps: &[(String, String, String)]) -> Result<()> {
+/// apps: (name, alias, path, icon_base64)
+pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
     with_db(|conn| {
         conn.execute("DELETE FROM app_index", [])?;
         let tx = conn.unchecked_transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO app_index (name, alias, path) VALUES (?1, ?2, ?3)"
+                "INSERT INTO app_index (name, alias, path, icon) VALUES (?1, ?2, ?3, ?4)"
             )?;
-            for (name, alias, path) in apps {
-                stmt.execute(params![name, alias, path])?;
+            for (name, alias, path, icon) in apps {
+                stmt.execute(params![name, alias, path, icon])?;
             }
         }
         tx.commit()?;

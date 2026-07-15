@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS app_index (
     name       TEXT NOT NULL,           -- file_stem（英文名，如 WeChat）
     alias      TEXT NOT NULL DEFAULT '', -- 本地化名（如 微信），空=无别名
     path       TEXT NOT NULL UNIQUE,    -- .app 绝对路径
+    icon       TEXT NOT NULL DEFAULT '', -- base64 PNG 图标（32×32），空=无图标
     indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
