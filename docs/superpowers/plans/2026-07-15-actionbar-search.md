@@ -265,24 +265,47 @@ Expected: PASS
 
 ---
 
-### Task 4: 前端 — 搜索输入框 + Tab 栏 + 结果列表
+### Task 4: 前端 — 搜索输入框 + Tab 栏 + 结果列表 ✅
 
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`
 - Create: `crates/desktop/frontend/src/pages/ActionBar/SearchPanel.tsx`
+- Create: `crates/desktop/frontend/src/pages/ActionBar/searchTypes.ts`
+- Create: `crates/desktop/frontend/src/pages/ActionBar/searchLogic.ts`
+- Create: `crates/desktop/frontend/src/pages/ActionBar/searchLogic.test.ts`
+- Modify: `crates/search/src/engine.rs`（加 "quick" + "files_bookmarks" tab 支持即时/延迟分离）
+- Modify: `crates/search/src/app_index.rs` + `bookmark.rs`（清理未用导入）
 
-- [ ] **Step 1: 搜索输入框组件**
+- [x] **Step 1: 搜索输入框组件** — 始终显示在 ActionBar 顶部（向下展开）或底部（向上展开），
+  无选中文本时自动聚焦。输入框有内容时隐藏菜单条，显示搜索结果。
 
-ActionBar 顶部加输入框（始终显示）：
-- 未选中场景：输入框聚焦，无菜单条
-- 选中场景：输入框 + 菜单条（输入框为空时）
-- 输入框有内容时：隐藏菜单条，显示搜索结果
+- [x] **Step 2: Tab 栏 + 结果列表组件** — SearchPanel 组件含 5 个 Tab
+  （`? 全部` `a 应用` `f 文件` `> Shell` `b 书签`）+ 最多 10 行结果列表。
 
-- [ ] **Step 2: Tab 栏 + 结果列表组件**
+- [x] **Step 3: 展开方向判定** — show 时通过 `window.outerPosition()` + `window.screen.height`
+  计算展开方向（向下/向上），一次 show 中固定。
 
-```
-[? 全部] [a 应用] [f 文件] [> Shell] [b 书签]
-```
+- [x] **Step 4: 搜索请求（即时 / 延迟）** — 即时搜索调用 `search_all(query, "quick")`
+  （应用+菜单+Quicklinks，无防抖），延迟搜索调用 `search_all(query, "files_bookmarks")`
+  （文件+书签，150ms 防抖，query ≥ 2 字符）。后端新增 "quick" + "files_bookmarks" tab
+  支持即时/延迟搜索分离。
+
+- [x] **Step 5: 键盘导航** — 完整实现 spec 中的键盘导航表：
+  - 输入框：Tab/↑↓ → 结果区，Enter → 执行首个，Escape → 清空
+  - 结果区：↑↓ 导航，Enter 执行，Tab 循环 Tab 页，?/a/f/>/b 跳转，i 回输入框
+  - 输入框聚焦时菜单快捷键不干扰（防止字符进入输入框时同时触发菜单导航）
+
+- [x] **Step 6: 结果执行** — 按 actionType 分发：launch_app / open_file / menu / url / shell
+
+- [x] **Step 7: 前端编译** — `npm run build` PASS
+
+- [x] **Step 8: 测试** — searchLogic.test.ts 55 个单元测试 + 前端全量 213 个测试 PASS
+
+**实际偏差/新增决策：**
+- 搜索逻辑提取为纯函数模块 `searchLogic.ts`（15 个函数），配套 55 个单元测试
+- 类型定义独立为 `searchTypes.ts`（SearchResult / TabId / TABS / ExpandDirection 等）
+- 后端引擎加 "quick" + "files_bookmarks" tab（原计划未提及），用于即时/延迟搜索分离
+- 引擎新增 4 个测试覆盖新 tab 行为（quick_tab_excludes / files_bookmarks_tab_excludes / quick_tab_shell / all_tab_combined）
 
 - Tab 栏在搜索结果上方（向下展开）或下方（向上展开）
 - 结果列表最多 10 行，每行：图标 + 标题 + 副标题

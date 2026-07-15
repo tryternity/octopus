@@ -37,7 +37,10 @@ pub fn init_search_engine() {
 }
 
 impl SearchEngine {
-    /// 综合搜索。tab = "all" | "apps" | "files" | "shell" | "bookmarks"。
+    /// 综合搜索。
+    /// tab = "all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"。
+    /// - "quick": 仅即时搜索（应用+菜单+Quicklinks），无文件/书签
+    /// - "files_bookmarks": 仅延迟搜索（文件+书签）
     pub async fn search(&self, query: &str, tab: &str) -> Vec<SearchResult> {
         if query.is_empty() {
             return Vec::new();
@@ -46,7 +49,7 @@ impl SearchEngine {
         let mut results = Vec::new();
 
         // Shell 模式：query 以 > 开头
-        if query.starts_with('>') && (tab == "shell" || tab == "all") {
+        if query.starts_with('>') && (tab == "shell" || tab == "all" || tab == "quick") {
             let cmd = query[1..].trim();
             if !cmd.is_empty() {
                 results.push(SearchResult {
@@ -61,7 +64,7 @@ impl SearchEngine {
         }
 
         // 即时搜索（内存索引）
-        if tab == "all" || tab == "apps" {
+        if tab == "all" || tab == "apps" || tab == "quick" {
             let mut apps = self.app_index.search(query);
             // 应用加权重（source 优先级）
             for r in &mut apps {
@@ -71,15 +74,15 @@ impl SearchEngine {
         }
 
         // 菜单项 + Quicklinks（从 DB 查）
-        if tab == "all" {
+        if tab == "all" || tab == "quick" {
             results.extend(search_menus_and_quicklinks(query));
         }
 
         // 延迟搜索（文件 + 书签）
-        if tab == "all" || tab == "files" {
+        if tab == "all" || tab == "files" || tab == "files_bookmarks" {
             results.extend(search_files(query).await);
         }
-        if tab == "all" || tab == "bookmarks" {
+        if tab == "all" || tab == "bookmarks" || tab == "files_bookmarks" {
             results.extend(search_bookmarks(query, &self.bookmarks));
         }
 
@@ -140,6 +143,7 @@ pub fn get_engine() -> Option<&'static SearchEngine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_index::AppEntry;
 
     #[test]
     fn search_empty_returns_empty() {
@@ -163,5 +167,59 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source, "shell");
         assert_eq!(results[0].action_type, "shell");
+    }
+
+    #[test]
+    fn quick_tab_excludes_files_and_bookmarks() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let engine = SearchEngine {
+            app_index: AppIndex { apps: vec![] },
+            bookmarks: vec![],
+        };
+        // quick tab 搜索 → 无文件/书签结果（因为没有应用也没有菜单）
+        let results = rt.block_on(engine.search("test", "quick"));
+        // 可能只有菜单匹配，但不会有文件/书签
+        assert!(results.iter().all(|r| r.source != "file" && r.source != "bookmark"));
+    }
+
+    #[test]
+    fn files_bookmarks_tab_excludes_apps_and_menus() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let engine = SearchEngine {
+            app_index: AppIndex { apps: vec![
+                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into() },
+            ]},
+            bookmarks: vec![],
+        };
+        let results = rt.block_on(engine.search("test", "files_bookmarks"));
+        // files_bookmarks tab 不返回应用结果
+        assert!(results.iter().all(|r| r.source != "app"));
+        assert!(results.iter().all(|r| r.source != "menu"));
+    }
+
+    #[test]
+    fn quick_tab_includes_shell_mode() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let engine = SearchEngine {
+            app_index: AppIndex { apps: vec![] },
+            bookmarks: vec![],
+        };
+        let results = rt.block_on(engine.search("> echo hi", "quick"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "shell");
+    }
+
+    #[test]
+    fn all_tab_returns_combined_results() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let engine = SearchEngine {
+            app_index: AppIndex { apps: vec![
+                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into() },
+            ]},
+            bookmarks: vec![],
+        };
+        let results = rt.block_on(engine.search("chr", "all"));
+        // all tab 应包含应用结果
+        assert!(results.iter().any(|r| r.source == "app" && r.title == "Chrome"));
     }
 }

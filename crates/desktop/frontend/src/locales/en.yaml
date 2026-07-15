@@ -480,6 +480,7 @@ tray:
 actionbar:
   processing: Processing
   timeout: Request timeout (${n}s)
+  searchPlaceholder: Search apps, files, commands…
 
 # ════════ Agent Panel ════════
 agentPanel:

@@ -1,7 +1,5 @@
 //! 应用索引：扫描 macOS /Applications/ 等目录。
 
-use std::path::PathBuf;
-use serde::Serialize;
 use super::matcher::{match_score, Score};
 use super::engine::SearchResult;
 

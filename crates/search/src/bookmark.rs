@@ -1,6 +1,5 @@
 //! 浏览器书签解析：Safari / Chrome / Edge。
 
-use serde::Serialize;
 use super::matcher::{match_score, Score};
 use super::engine::SearchResult;
 

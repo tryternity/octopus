@@ -1,11 +1,34 @@
-import { useState, useEffect, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
-import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 import { t } from "@/lib/i18n";
+import SearchPanel from "./SearchPanel";
+import {
+  INPUT_HEIGHT,
+  TAB_BAR_HEIGHT,
+  DELAYED_SEARCH_DEBOUNCE_MS,
+  type TabId,
+  type ExpandDirection,
+  type FocusZone,
+  type SearchResult as SearchHit,
+} from "./searchTypes";
+import {
+  determineExpandDirection,
+  getTabByKey,
+  getNextTab,
+  shouldTriggerDelayedSearch,
+  mergeResults,
+  filterByTab,
+  parseActionData,
+  calcResultsHeight,
+  clampSelectedIndex,
+  navigateResults,
+  hasQuery,
+} from "./searchLogic";
 
 type ContextKind = "text" | "files";
 
@@ -157,6 +180,17 @@ export default function ActionBar() {
   const [focusLayer, setFocusLayer] = useState<"main" | "sub">("main");
   const focusLayerRef = useRef<"main" | "sub">("main");
 
+  // ── 搜索状态 ──
+  const [query, setQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<TabId>("all");
+  const [instantResults, setInstantResults] = useState<SearchHit[]>([]);
+  const [delayedResults, setDelayedResults] = useState<SearchHit[]>([]);
+  const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
+  const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
+  const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
+
   useEffect(() => { viewRef.current = view; }, [view]);
 
   // 高亮项变化时自动滚动到可见区域
@@ -177,13 +211,39 @@ export default function ActionBar() {
 
   // task-input 视图已移除（agent 含 {{task}} 改为联动语音）
 
-  // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
-  // 避免透明区域遮挡下层点击
+  // ── 搜索：合并结果 + 按Tab过滤（需在 resize effect 之前声明）──
+  const allResults = useMemo(() => mergeResults(instantResults, delayedResults), [instantResults, delayedResults]);
+  const filteredResults = useMemo(() => filterByTab(allResults, activeTab), [allResults, activeTab]);
+
+  // 动态调整窗口高度 + 位置（展开方向）
   useEffect(() => {
-    const height = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
     const win = getCurrentWindow();
-    win.setSize(new LogicalSize(380, height)).catch(() => {});
-  }, [view]);
+    const inSearch = hasQuery(query);
+
+    if (inSearch) {
+      // 搜索模式：输入框 + Tab栏 + 结果列表
+      const resultsHeight = calcResultsHeight(filteredResults.length);
+      const totalHeight = INPUT_HEIGHT + TAB_BAR_HEIGHT + resultsHeight;
+      win.setSize(new LogicalSize(380, totalHeight)).catch(() => {});
+      // 向上展开时窗口上移（输入框保持在原位）
+      if (expandDirection === "up" && baseWinPosRef.current) {
+        const searchContent = TAB_BAR_HEIGHT + resultsHeight;
+        const newY = baseWinPosRef.current.y - searchContent;
+        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, newY)).catch(() => {});
+      } else if (baseWinPosRef.current) {
+        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, baseWinPosRef.current.y)).catch(() => {});
+      }
+    } else {
+      // 菜单模式：输入框 + 菜单条
+      const menuHeight = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
+      const totalHeight = INPUT_HEIGHT + menuHeight;
+      win.setSize(new LogicalSize(380, totalHeight)).catch(() => {});
+      // 恢复原始位置
+      if (baseWinPosRef.current) {
+        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, baseWinPosRef.current.y)).catch(() => {});
+      }
+    }
+  }, [view, query, filteredResults.length, expandDirection]);
 
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
@@ -194,7 +254,13 @@ export default function ActionBar() {
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
         // 每次 show 都重置基础状态——防止遗留旧状态
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
+        setQuery(""); setInstantResults([]); setDelayedResults([]);
+        setActiveTab("all"); setSearchFocusZone("input"); setSearchSelectedIdx(0);
         if (ctx) { setContext(ctx); }
+        // 无选中文本时聚焦搜索框；有选中文本时菜单为主交互
+        if (!ctx || (!ctx.text && (!ctx.files || ctx.files.length === 0))) {
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }
       });
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
@@ -239,6 +305,78 @@ export default function ActionBar() {
       unlistenFocus.then((fn) => fn());
     };
   }, []);
+
+  // ── 搜索：结果同步 + 展开方向 + 搜索请求 ──
+  useEffect(() => { filteredResultsRef.current = filteredResults; }, [filteredResults]);
+
+  // 结果数量变化时 clamp 选中索引
+  useEffect(() => {
+    setSearchSelectedIdx((prev) => clampSelectedIndex(prev, filteredResults.length));
+  }, [filteredResults.length]);
+
+  // 展开方向判定（show 时计算一次，一次 show 中固定）
+  useEffect(() => {
+    const compute = async () => {
+      try {
+        const win = getCurrentWindow();
+        const pos = await win.outerPosition();
+        const scaleFactor = await win.scaleFactor();
+        // 用 window.screen 估算屏幕高度（逻辑坐标）
+        // 多显示器时 outerPosition 可能超出主屏，但 ActionBar 靠近鼠标，通常在主屏
+        const screenH = window.screen.height;
+        const winYLogical = pos.y / scaleFactor;
+        const winXLogical = pos.x / scaleFactor;
+        baseWinPosRef.current = { x: winXLogical, y: winYLogical };
+        setExpandDirection(determineExpandDirection(winYLogical, screenH));
+      } catch { /* ignore */ }
+    };
+    compute();
+
+    // 每次 show 重新计算
+    const listenPromise = rawListen("action-bar://show", () => { compute(); });
+    return () => { listenPromise.then((fn: () => void) => fn()); };
+  }, []);
+
+  // 即时搜索（应用+菜单+Quicklinks，无防抖）
+  useEffect(() => {
+    if (!hasQuery(query)) {
+      setInstantResults([]);
+      return;
+    }
+    let cancelled = false;
+    const searchTab = activeTab === "all" ? "quick" : activeTab;
+    invoke<SearchHit[]>("search_all", { query, tab: searchTab }).then((results) => {
+      if (!cancelled) setInstantResults(results);
+    }).catch(() => {
+      if (!cancelled) setInstantResults([]);
+    });
+    return () => { cancelled = true; };
+  }, [query, activeTab]);
+
+  // 延迟搜索（文件+书签，150ms 防抖，仅 all Tab 且 query ≥ 2 字符）
+  useEffect(() => {
+    if (activeTab !== "all" || !shouldTriggerDelayedSearch(query)) {
+      setDelayedResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      invoke<SearchHit[]>("search_all", { query, tab: "files_bookmarks" }).then((results) => {
+        setDelayedResults(results);
+      }).catch(() => {
+        setDelayedResults([]);
+      });
+    }, DELAYED_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query, activeTab]);
+
+  // 查询清空时重置搜索状态
+  useEffect(() => {
+    if (!hasQuery(query)) {
+      setActiveTab("all");
+      setSearchFocusZone("input");
+      setSearchSelectedIdx(0);
+    }
+  }, [query]);
 
   const urlResult = context ? detectActionUrl(context.text || "") : { isUrl: false, url: "" };
 
@@ -362,6 +500,73 @@ export default function ActionBar() {
     }
   };
 
+  // ── 搜索结果执行 ──
+
+  const executeSearchResult = async (result: SearchHit) => {
+    const data = parseActionData(result.actionData);
+    const ctx = contextRef.current;
+
+    switch (result.actionType) {
+      case "launch_app": {
+        const path = data.path as string;
+        if (!path) return;
+        try {
+          await invoke("launch_app", { path });
+          invoke("action_bar_dismiss");
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+        }
+        break;
+      }
+      case "open_file": {
+        const path = data.path as string;
+        if (!path) return;
+        try {
+          await invoke("open_file", { path });
+          invoke("action_bar_dismiss");
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+        }
+        break;
+      }
+      case "menu": {
+        const itemId = data.id as number;
+        const item = menuItemsRef.current.find((i) => i.id === itemId);
+        if (item) {
+          executeItem(item);
+        }
+        break;
+      }
+      case "url": {
+        const url = (data.action_data as string) || (data.url as string);
+        if (url) {
+          try {
+            await invoke("execute_action_bar", {
+              itemId: data.id as number,
+              text: ctx?.text || "",
+            });
+          } catch (e) {
+            showQuickError(String(e).slice(0, 40));
+          }
+        }
+        break;
+      }
+      case "shell": {
+        const command = data.command as string;
+        if (!command) return;
+        setView("loading");
+        try {
+          await invoke<string>("execute_shell", { command });
+          invoke("action_bar_dismiss");
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+          setView("main");
+        }
+        break;
+      }
+    }
+  };
+
   // ── 键盘导航 ──
 
   const selectedIdxRef = useRef(0);
@@ -369,10 +574,20 @@ export default function ActionBar() {
   const mainItemsRef = useRef<ActionBarItem[]>([]);
   const subItemsRef = useRef<ActionBarItem[]>([]);
   const menuItemsRef = useRef<ActionBarItem[]>([]);
+  // 搜索 refs（供键盘 handler 读取最新值）
+  const queryRef = useRef("");
+  const activeTabRef = useRef<TabId>("all");
+  const searchSelectedIdxRef = useRef(0);
+  const searchFocusZoneRef = useRef<FocusZone>("input");
+  const filteredResultsRef = useRef<SearchHit[]>([]);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
   useEffect(() => { menuItemsRef.current = menuItems; }, [menuItems]);
+  useEffect(() => { queryRef.current = query; }, [query]);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => { searchSelectedIdxRef.current = searchSelectedIdx; }, [searchSelectedIdx]);
+  useEffect(() => { searchFocusZoneRef.current = searchFocusZone; }, [searchFocusZone]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -384,9 +599,107 @@ export default function ActionBar() {
       // loading 视图不拦截键盘导航
       if (viewRef.current === "loading") return;
 
+      // Escape：搜索模式下先清空查询，再 dismiss
       if (e.key === "Escape") {
         e.preventDefault();
-        invoke("action_bar_dismiss");
+        if (hasQuery(queryRef.current)) {
+          setQuery("");
+          setSearchFocusZone("input");
+          inputRef.current?.focus();
+        } else {
+          invoke("action_bar_dismiss");
+        }
+        return;
+      }
+
+      // ── 搜索模式键盘导航（query 非空时）──
+      if (hasQuery(queryRef.current)) {
+        const zone = searchFocusZoneRef.current;
+        const results = filteredResultsRef.current;
+
+        // 输入框区域
+        if (zone === "input") {
+          if (e.key === "Tab") {
+            e.preventDefault();
+            setSearchFocusZone("results");
+            setSearchSelectedIdx(0);
+            return;
+          }
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (results.length > 0) {
+              setSearchFocusZone("results");
+              setSearchSelectedIdx(0);
+            }
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            if (results.length > 0) {
+              setSearchFocusZone("results");
+              setSearchSelectedIdx(results.length - 1);
+            }
+            return;
+          }
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (results.length > 0) {
+              executeSearchResult(results[0]);
+            }
+            return;
+          }
+          // 其他键 → 交给输入框处理（不 preventDefault）
+          return;
+        }
+
+        // 结果区域
+        if (e.key === "Tab") {
+          e.preventDefault();
+          setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
+          return;
+        }
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, 1, results.length));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, -1, results.length));
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const selected = results[searchSelectedIdxRef.current];
+          if (selected) executeSearchResult(selected);
+          return;
+        }
+        if (e.key === "i") {
+          e.preventDefault();
+          setSearchFocusZone("input");
+          inputRef.current?.focus();
+          return;
+        }
+        // Tab 快捷键
+        const tabByKey = getTabByKey(e.key);
+        if (tabByKey) {
+          e.preventDefault();
+          setActiveTab(tabByKey);
+          return;
+        }
+        // 其他可打印字符 → 回到输入框（字符自然进入输入框）
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          setSearchFocusZone("input");
+          inputRef.current?.focus();
+        }
+        return;
+      }
+
+      // ── 菜单模式键盘导航（query 为空时，沿用现有逻辑）──
+
+      // 搜索输入框聚焦时不拦截键盘事件（让字符进入输入框），
+      // 仅 Escape（已在上方处理）例外
+      if (document.activeElement === inputRef.current && !e.altKey && !e.metaKey) {
         return;
       }
 
@@ -515,16 +828,49 @@ export default function ActionBar() {
 
   // ── 渲染 ──
 
+  const inSearch = hasQuery(query);
+
+  // 搜索输入框组件
+  const searchInputEl = (
+    <div
+      className={cn(
+        "flex items-center gap-2 px-3 shrink-0",
+        inSearch ? "h-[36px]" : "h-[36px] border-b border-border/20",
+      )}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onFocus={() => setSearchFocusZone("input")}
+        placeholder={t("actionbar.searchPlaceholder")}
+        className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+      />
+    </div>
+  );
+
   if (view === "loading") {
     return (
-      <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
-        <Loader2 className="w-4 h-4 animate-spin text-voice" />
-        <span className="text-[12px] font-medium">{t("actionbar.processing")}</span>
-        <span className="flex gap-0.5">
-          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "0ms" }} />
-          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "150ms" }} />
-          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "300ms" }} />
-        </span>
+      <div
+        data-action-bar
+        className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+      >
+        {searchInputEl}
+        <div className="flex items-center justify-center gap-2.5 px-6 py-3 text-foreground">
+          <Loader2 className="w-4 h-4 animate-spin text-voice" />
+          <span className="text-[12px] font-medium">{t("actionbar.processing")}</span>
+          <span className="flex gap-0.5">
+            <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "0ms" }} />
+            <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "150ms" }} />
+            <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "300ms" }} />
+          </span>
+        </div>
       </div>
     );
   }
@@ -533,16 +879,8 @@ export default function ActionBar() {
     ? getSubItems(submenuParentIdRef.current)
     : [];
 
-  return (
-    <div
-      data-action-bar
-      className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
-    >
-      {toast && (
-        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
-          <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
-        </div>
-      )}
+  const menuContent = (
+    <>
       {/* 主菜单 */}
       <ScrollRow>
         {mainItems.map((item, i) => (
@@ -576,6 +914,45 @@ export default function ActionBar() {
           />
         ))}
       </ScrollRow>
+    </>
+  );
+
+  const searchContent = inSearch ? (
+    <SearchPanel
+      results={filteredResults}
+      activeTab={activeTab}
+      selectedIdx={searchSelectedIdx}
+      expandDirection={expandDirection}
+      onTabChange={setActiveTab}
+      onSelect={setSearchSelectedIdx}
+      onExecute={executeSearchResult}
+    />
+  ) : null;
+
+  return (
+    <div
+      data-action-bar
+      className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+    >
+      {toast && (
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
+          <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
+        </div>
+      )}
+      {/* 展开方向决定 DOM 顺序：
+          down → [Input] [Search/Menu]
+          up   → [Search] [Input]  (搜索模式) 或 [Input] [Menu] (菜单模式) */}
+      {inSearch && expandDirection === "up" ? (
+        <>
+          {searchContent}
+          {searchInputEl}
+        </>
+      ) : (
+        <>
+          {searchInputEl}
+          {inSearch ? searchContent : menuContent}
+        </>
+      )}
     </div>
   );
 }

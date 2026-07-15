@@ -1,0 +1,224 @@
+/**
+ * SearchPanel — 搜索结果面板（Tab 栏 + 结果列表）。
+ *
+ * 由 ActionBar/index.tsx 在搜索模式下渲染。输入框在父组件中管理。
+ * 展开方向由父组件传入，影响 DOM 顺序：
+ *   - down: [TabBar] [Results]
+ *   - up:   [Results] [TabBar]
+ */
+import { useRef, useEffect } from "react";
+import { cn } from "@/lib/utils";
+import { TABS, MAX_VISIBLE_RESULTS, type TabId, type ExpandDirection, type SearchResult } from "./searchTypes";
+
+// ── 来源图标 ──
+
+const SOURCE_ICON: Record<string, string> = {
+  app: "📦",
+  file: "📄",
+  shell: "▶",
+  bookmark: "🔖",
+  menu: "⚡",
+  quicklink: "🔗",
+};
+
+const SOURCE_BADGE_COLOR: Record<string, string> = {
+  app: "bg-blue-500/15 text-blue-500",
+  file: "bg-amber-500/15 text-amber-600",
+  shell: "bg-green-500/15 text-green-600",
+  bookmark: "bg-purple-500/15 text-purple-500",
+  menu: "bg-voice/15 text-voice",
+  quicklink: "bg-cyan-500/15 text-cyan-600",
+};
+
+function SourceBadge({ source }: { source: string }) {
+  const icon = SOURCE_ICON[source] ?? "❓";
+  const color = SOURCE_BADGE_COLOR[source] ?? "bg-muted text-muted-foreground";
+  return (
+    <span className={cn("inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px]", color)}>
+      {icon}
+    </span>
+  );
+}
+
+// ── Tab 按钮 ──
+
+function TabButton({
+  tab,
+  active,
+  onClick,
+}: {
+  tab: (typeof TABS)[number];
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={cn(
+        "flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-100 shrink-0",
+        active
+          ? "bg-voice/12 text-voice"
+          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+      )}
+      onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+      onClick={onClick}
+    >
+      <span className={cn(
+        "inline-flex h-4 w-4 items-center justify-center rounded font-mono text-[10px] font-bold leading-none",
+        active ? "bg-voice text-white" : "bg-muted text-muted-foreground",
+      )}>
+        {tab.key}
+      </span>
+      <span className="text-[10px] font-medium leading-none whitespace-nowrap">{tab.label}</span>
+    </button>
+  );
+}
+
+// ── TabBar ──
+
+function TabBar({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: TabId;
+  onTabChange: (tab: TabId) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/20 shrink-0">
+      {TABS.map((tab) => (
+        <TabButton
+          key={tab.id}
+          tab={tab}
+          active={activeTab === tab.id}
+          onClick={() => onTabChange(tab.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── 结果行 ──
+
+function ResultRow({
+  result,
+  selected,
+  index,
+  onClick,
+  onHover,
+}: {
+  result: SearchResult;
+  selected: boolean;
+  index: number;
+  onClick: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      className={cn(
+        "flex items-center gap-2 px-2.5 py-1.5 cursor-default transition-colors duration-75",
+        selected ? "bg-voice/10" : "hover:bg-foreground/[0.03]",
+      )}
+      onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+      onMouseMove={onHover}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+    >
+      <SourceBadge source={result.source} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2">
+          <span className={cn(
+            "text-[12px] font-medium truncate",
+            selected ? "text-voice" : "text-foreground",
+          )}>
+            {result.title}
+          </span>
+        </div>
+        {result.subtitle && (
+          <span className="text-[10px] text-muted-foreground truncate block leading-tight">
+            {result.subtitle}
+          </span>
+        )}
+      </div>
+      <span className="text-[9px] text-muted-foreground/60 font-mono shrink-0">
+        {index + 1}
+      </span>
+    </div>
+  );
+}
+
+// ── SearchPanel ──
+
+export interface SearchPanelProps {
+  results: SearchResult[];
+  activeTab: TabId;
+  selectedIdx: number;
+  expandDirection: ExpandDirection;
+  onTabChange: (tab: TabId) => void;
+  onSelect: (idx: number) => void;
+  onExecute: (result: SearchResult) => void;
+}
+
+export default function SearchPanel({
+  results,
+  activeTab,
+  selectedIdx,
+  expandDirection,
+  onTabChange,
+  onSelect,
+  onExecute,
+}: SearchPanelProps) {
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef<HTMLDivElement>(null);
+
+  // 选中项滚动到可见区域
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedIdx]);
+
+  const tabBar = (
+    <TabBar activeTab={activeTab} onTabChange={onTabChange} />
+  );
+
+  const resultList = (
+    <div
+      ref={resultsRef}
+      className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+      style={{ maxHeight: `${MAX_VISIBLE_RESULTS * 36}px` }}
+    >
+      {results.length === 0 ? (
+        <div className="flex items-center justify-center py-4 text-[11px] text-muted-foreground/50">
+          无结果
+        </div>
+      ) : (
+        results.map((result, i) => (
+          <div key={`${result.source}-${result.title}-${i}`} ref={i === selectedIdx ? selectedRef : undefined}>
+            <ResultRow
+              result={result}
+              selected={i === selectedIdx}
+              index={i}
+              onClick={() => onExecute(result)}
+              onHover={() => onSelect(i)}
+            />
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  // 展开方向决定 DOM 顺序
+  if (expandDirection === "up") {
+    return (
+      <div className="flex flex-col flex-1 min-h-0">
+        {resultList}
+        {tabBar}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      {tabBar}
+      {resultList}
+    </div>
+  );
+}
