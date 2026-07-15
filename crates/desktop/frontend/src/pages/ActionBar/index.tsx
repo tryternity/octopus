@@ -275,7 +275,7 @@ export default function ActionBar() {
         setActiveTab("all"); setSearchFocusZone("input"); setSearchSelectedIdx(0);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
-        if (ctx) { setContext(ctx); }
+        setContext(ctx);
         // 无选中文本时聚焦搜索框；有选中文本时菜单为主交互
         if (!ctx || (!ctx.text && (!ctx.files || ctx.files.length === 0))) {
           setTimeout(() => inputRef.current?.focus(), 50);

@@ -190,6 +190,16 @@ mod tests {
     use super::*;
     use crate::app_index::AppEntry;
 
+    /// 切换到 in-memory DB，避免测试读 ~/.octopus/octopus.db。
+    /// SearchEngine::search 在 tab=all/quick 时经 list_action_bar_items → with_db 触达 DB。
+    /// 详见架构文档「测试数据库隔离」。
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn setup_test_db() {
+        TEST_DB_SETUP.call_once(|| {
+            octopus_infra::db::init_test_db();
+        });
+    }
+
     #[test]
     fn search_empty_returns_empty() {
         let rt = tokio::runtime::Runtime::new().unwrap();

@@ -29,6 +29,44 @@ octopus/
 
 无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v32（v17→v18：FTS5 backfill；v18→v19：action_bar_items 表；v19→v20：hotwords 表 + paste_input_source_switch；v20→v21：action_bar_items 加 is_async/write_output_to_clipboard 列 + script_runs 表；v21→v22：env 变量 seed；v22→v23：hotword_sets + hotword_hits + db.sql seed 默认「通用」版本；v23→v24：action_bar_items 加 shortcut 列；v24→v25：seed 新增「问豆包」菜单项；v25→v26：action_bar_items 加 agent/accepts 列 + agent_adapters 表；v26→v27：agent_tasks 表；v27→v28：模型 source 改路径标识 + manifest 填充 + 翻译模型入 DB；v28→v29：env 变量去 env. 前缀；v29→v30：OCR provider/category 修正；v30→v31：云端模型删 seed 改用户自建 + 参考列表；v31→v32：action_bar_items 加 trigger_keyword + auto_paste）。**开发期简化**：`init_schema` 以 db.sql 为唯一 schema 真相——`user_version >= 32` 跳过，v17+ 库跑增量迁移升到 v32（FTS5 backfill + ALTER TABLE 补列 + env seed + v22→v23 热词多版本迁移 + v23→v24 shortcut 列 + v24→v25 问豆包 seed + v25→v26 agent 文件桥接 + v26→v27 agent_tasks + v27→v28 模型路径统一/manifest + v28→v29 env 去前缀 + v29→v30 OCR provider 修正 + v30→v31 云端模型自建 + v31→v32 trigger_keyword + auto_paste），其他（含全新库）跑 db.sql 建表+seed+yaml 导入一次性到 v32，无 DROP 兜底（开发期无旧库需兼容）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`（多任务并发友好，server 多连接不再 SQLITE_BUSY）；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子，中途崩溃全回滚，不再配置半更新）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE（trigram 无法生成 3-gram）。`with_db` 为公开 API 供其他 crate 调用。**并发约束**：`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化）——闭包内可安全地再调 `with_db`（如间接读 config / 查模型 meta），不再有历史 `Mutex`（非递归）期的同线程重入死锁（arch-fixes ③，2026-07-06）；回归测试 `with_db_reentrant_no_deadlock` 守护，退回 `Mutex` 会挂起。仍为单连接排他（性能上限，非死锁），server 上量再上 r2d2 池。
 
+### 测试数据库隔离（⚠️ 勿让 cargo test 污染开发库）
+
+**问题**：`~/.octopus/octopus.db` 是开发期唯一存储——含所有识别历史 / 配置 / 菜单 / 模型 meta。若 `cargo test` 触达 `ensure_db` / `with_db`，会打开并**可能迁移**这个文件（schema 落后时跑 `ALTER TABLE` + `PRAGMA user_version=N`）。即便只读，全局单例 `DB: OnceLock` 也会绑定到开发库连接。
+
+**三层隔离机制**（优先级递减，见 `crates/infra/src/db.rs::open_db_conn`）：
+
+1. **`init_test_db()` 运行时 flag（主）**——`AtomicBool` 切到 in-memory SQLite，不碰文件系统。跨 crate 可见（`#[cfg(test)]` 不传递到依赖 crate，故不能用编译期 cfg）。所有经 `with_db` 的单元测试必须在 test mod 顶部 `std::sync::Once::call_once` 中调用一次：
+
+    ```rust
+    // 在 test mod 顶部
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn setup_test_db() {
+        TEST_DB_SETUP.call_once(|| octopus_infra::db::init_test_db());
+    }
+    // 触发 DB 的测试函数第一行：
+    setup_test_db();
+    ```
+
+    目前已接入的 test mod：
+    - `crates/infra/src/db.rs` — `with_db_reentrant_no_deadlock`
+    - `crates/desktop/src/model_commands.rs` — `resolve_env_template_*`
+    - `crates/search/src/engine.rs` — `quick_tab_*` / `all_tab_*` / `url_type_returned_*`
+
+2. **`OCTOPUS_DB_PATH` 环境变量（辅）**——重定向 DB 到任意路径，特殊值 `:memory:` 同样 in-memory。适用 example / CI / 手动集成测试：
+
+    ```bash
+    # example
+    OCTOPUS_DB_PATH=/tmp/test.db cargo run --example test_polish
+    # CI 跑全套 cargo test 兜底
+    OCTOPUS_DB_PATH=:memory: cargo test
+    ```
+
+3. **默认（无任何覆盖）**——`~/.octopus/octopus.db`，仅 production 二进制走此路径。
+
+**绝大多数 infra/db.rs 单元测试**用本地 `open_init()` helper（`Connection::open_in_memory()` + `INIT_SQL`），完全独立于全局 `DB` 单例——这些不受影响、也不需要 `init_test_db()`。只有**少数经全局 `with_db`**的测试需要显式调用 `setup_test_db()`。
+
+**并发约束**：同一测试进程内所有线程共享 `DB: OnceLock`（in-memory 或文件）。首个触达 `ensure_db` 的测试决定模式——故 `setup_test_db()` 必须在任何可能调 `with_db` 的测试逻辑前执行。并行测试间共享同一 in-memory 连接（经 `ReentrantMutex` 排他），目前所有经 `with_db` 的测试均为只读，安全；若未来加写测试，需自行用 `open_init()` 独立连接。
+
 ### onnx-infra（ONNX 推理基础设施）
 无项目内依赖的最底层 ONNX 公共设施，从 asr-local 抽取。`paths` 模块提供模型路径查找（`resolve_model_dir`：4 级查找 `~/.octopus/<source>` → 绝对路径 → `~/.octopus/models/<source>` → HF cache snapshots）；`session` 模块提供 `apply_session_acceleration`（按平台注册 CoreML/CUDA/DirectML EP，generic 化 `skip_coreml` 参数）。asr-local 和 translation 都依赖此 crate。
 
