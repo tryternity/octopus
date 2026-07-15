@@ -42,9 +42,102 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
+/// 选中对象类型。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SelectType {
+    None = 0,
+    Text = 1,
+    File = 2,
+    Folder = 3,
+}
+
+/// 一次触发检测出的选中状态——后端唯一的"有没有选中"真相源。
+/// change_count 只在 detect_selection() 内部使用，下游全部读 select_type。
+struct SelectionState {
+    select_type: SelectType,
+    text: Option<String>,
+    files: Vec<String>,
+}
+
+/// 检测当前选中状态。Finder 走 AppleScript，其余走 Cmd+C + changeCount。
+fn detect_selection(app: &AppHandle) -> SelectionState {
+    // ── Finder 分支：AppleScript 直接拿 selection ──
+    if crate::finder_selection::is_finder_frontmost() {
+        return match crate::finder_selection::get_finder_selection() {
+            Ok(files) if !files.is_empty() => {
+                // 有目录 → Folder，全文件 → File
+                let has_folder = files.iter().any(|p| std::path::Path::new(p).is_dir());
+                let select_type = if has_folder { SelectType::Folder } else { SelectType::File };
+                log::info!("[action-bar] Finder selection: {} items, type={:?}", files.len(), select_type);
+                SelectionState { select_type, text: None, files }
+            }
+            Ok(_) => {
+                log::info!("[action-bar] Finder 空选中");
+                SelectionState { select_type: SelectType::None, text: None, files: vec![] }
+            }
+            Err(e) => {
+                log::warn!("[action-bar] Finder selection 获取失败: {}", e);
+                SelectionState { select_type: SelectType::None, text: None, files: vec![] }
+            }
+        };
+    }
+
+    // ── 非 Finder 分支：Cmd+C + changeCount 判断有无选中文本 ──
+    let clip_handle = app.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
+    let clipboard_before_text = read_clipboard_text(app);
+    let clipboard_before_image = if clip_handle.has_image() {
+        clip_handle.read_image().ok()
+    } else { None };
+    let clipboard_before_files = if clip_handle.has_files() {
+        clip_handle.read_files().ok().filter(|f| !f.is_empty())
+    } else { None };
+
+    clip_handle.suppress_next();
+    let change_count_before = pasteboard_change_count();
+
+    let focus = FocusTracker::new();
+    focus.simulate_copy();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let change_count_after = pasteboard_change_count();
+    let changed = change_count_after != change_count_before;
+
+    if !changed {
+        log::info!("[action-bar] changeCount unchanged {}→{} = no selection",
+            change_count_before, change_count_after);
+        clip_handle.clear_suppress();
+        return SelectionState { select_type: SelectType::None, text: None, files: vec![] };
+    }
+
+    // changeCount 递增 → 有选中，读剪贴板拿文本
+    let clipboard_after = read_clipboard_text(app);
+    let text = match &clipboard_after {
+        Some(t) if !t.trim().is_empty() => t.clone(),
+        _ => {
+            log::info!("[action-bar] changeCount changed but clipboard empty");
+            clip_handle.clear_suppress();
+            return SelectionState { select_type: SelectType::None, text: None, files: vec![] };
+        }
+    };
+
+    // 恢复原始剪贴板
+    clip_handle.clear_suppress();
+    if let Some(ref files) = clipboard_before_files {
+        let _ = clip_handle.write_files(files.clone());
+    } else if let Some(img) = clipboard_before_image {
+        let _ = clip_handle.set_image(img);
+    } else if let Some(ref original) = clipboard_before_text {
+        if clipboard_after.as_deref() != Some(original.as_str()) {
+            write_clipboard_text(app, original);
+        }
+    }
+
+    log::info!("[action-bar] got text len={}", text.len());
+    SelectionState { select_type: SelectType::Text, text: Some(text), files: vec![] }
+}
+
 #[tauri::command]
 pub fn trigger_action_bar(app: AppHandle) {
-    // action bar 依赖 macOS 模拟 Cmd+C + CGEvent 鼠标坐标，其他平台尚未实现
     #[cfg(not(target_os = "macos"))]
     {
         log::warn!("[action-bar] 仅 macOS 支持此功能");
@@ -54,132 +147,52 @@ pub fn trigger_action_bar(app: AppHandle) {
 
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        // 重入 guard——防止热键连按导致 trigger 重叠执行
         if TRIGGER_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             log::info!("[action-bar] trigger already in progress, skipping");
             return;
         }
 
-        // ── Finder 分流：前台是 Finder 时走文件选中路径，否则走文本路径 ──
-        if crate::finder_selection::is_finder_frontmost() {
-            match crate::finder_selection::get_finder_selection() {
-                Ok(files) if !files.is_empty() => {
-                    log::info!("[action-bar] Finder selection: {} files", files.len());
-                    *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(files));
-                    show_action_bar_at_mouse(&app_clone);
-                    return;
-                }
-                Ok(_) => {
-                    log::info!("[action-bar] Finder 空选中 — showing centered search");
-                    *PENDING_CONTEXT.lock().unwrap() = None;
-                    show_action_bar_centered(&app_clone);
-                    finalize_action_bar(&app_clone);
-                    return;
-                }
-                Err(e) => {
-                    log::warn!("[action-bar] Finder selection 获取失败: {}", e);
-                    finalize_action_bar(&app_clone);
-                    return;
-                }
-            }
-        }
+        // ── 检测选中状态（唯一感知 changeCount 的地方）──
+        let sel = detect_selection(&app_clone);
 
-        // 1. 记录触发前的剪贴板内容（文本 + 图片 + 文件，防非文本数据丢失）
-        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
-        let clipboard_before_text = read_clipboard_text(&app_clone);
-        let clipboard_before_image = if clip_handle.has_image() {
-            clip_handle.read_image().ok()
-        } else { None };
-        let clipboard_before_files = if clip_handle.has_files() {
-            clip_handle.read_files().ok().filter(|f| !f.is_empty())
-        } else { None };
-
-        // 2. suppress watcher
-        clip_handle.suppress_next();
-
-        // 记录 Cmd+C 前的 pasteboard changeCount
-        let change_count_before = pasteboard_change_count();
-
-        let focus = FocusTracker::new();
-        focus.simulate_copy();
-
-        // 3. 等待 200ms 让系统完成复制
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        // 4. 判断 Cmd+C 是否产生了复制操作
-        //    changeCount 递增 = 有选中（无论内容是否与之前相同）
-        //    changeCount 不变 = 没有选中 → 走 centered 搜索
-        let change_count_after = pasteboard_change_count();
-        if change_count_after == change_count_before {
-            log::info!("[action-bar] No selection (changeCount unchanged {}→{}) — showing centered search",
-                change_count_before, change_count_after);
-            clip_handle.clear_suppress();
-            *PENDING_CONTEXT.lock().unwrap() = None;
-            show_action_bar_centered(&app_clone);
-            finalize_action_bar(&app_clone);
-            return;
-        }
-
-        // changeCount 递增 → 有选中，读剪贴板拿文本
-        let clipboard_after = read_clipboard_text(&app_clone);
-        let text: String = match &clipboard_after {
-            Some(t) if !t.trim().is_empty() => t.clone(),
-            _ => {
-                log::info!("[action-bar] changeCount changed but clipboard empty — showing centered search");
-                clip_handle.clear_suppress();
+        // ── 路由：仅依赖 select_type ──
+        match sel.select_type {
+            SelectType::None => {
                 *PENDING_CONTEXT.lock().unwrap() = None;
                 show_action_bar_centered(&app_clone);
                 finalize_action_bar(&app_clone);
-                return;
             }
-        };
-
-        // suppress_next 已完成使命——watcher 有 200ms 窗口消费 flag。
-        // 若剪贴板未变化（unchanged 路径），watcher 不触发，flag 残留会
-        // 导致用户下次手动复制被静默吞掉，在此显式清除。
-        // write_text 自带独立 suppress，不受此清除影响。
-        clip_handle.clear_suppress();
-
-        // 5. 恢复原始剪贴板内容（优先级：文件 > 图片 > 文本）
-        if let Some(ref files) = clipboard_before_files {
-            let _ = clip_handle.write_files(files.clone());
-        } else if let Some(img) = clipboard_before_image {
-            let _ = clip_handle.set_image(img);
-        } else if let Some(ref original) = clipboard_before_text {
-            if clipboard_after.as_deref() != Some(original.as_str()) {
-                write_clipboard_text(&app_clone, original);
+            SelectType::Text => {
+                let text = sel.text.unwrap_or_default();
+                let text_for_gather = text.clone();
+                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
+                show_action_bar_at_mouse(&app_clone);
+                // 后台采集上下文
+                std::thread::spawn(move || {
+                    match crate::app_context::gather_context(&text_for_gather) {
+                        Ok(extra) => {
+                            log_app_context(&text_for_gather, &extra);
+                            let mut guard = PENDING_CONTEXT.lock().unwrap();
+                            if let Some(ref ctx) = *guard {
+                                if ctx.text.as_deref() == Some(&text_for_gather) {
+                                    if let Some(ref mut ctx) = *guard {
+                                        ctx.source = Some(extra.source);
+                                        ctx.surrounding = extra.surrounding;
+                                    }
+                                } else {
+                                    log::info!("[action-bar] gather 回填跳过：ctx 已被新触发覆盖");
+                                }
+                            }
+                        }
+                        Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+                    }
+                });
+            }
+            SelectType::File | SelectType::Folder => {
+                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(sel.files));
+                show_action_bar_at_mouse(&app_clone);
             }
         }
-
-        log::info!("[action-bar] got text len={}", text.len());
-
-        // 5. 暂存基础 ctx，显示浮窗，后台采集上下文
-        let text_for_gather = text.clone();
-        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
-
-        // 6. 获取鼠标位置 + 显示浮窗（主线程）
-        show_action_bar_at_mouse(&app_clone);
-
-        // 7. 后台采集上下文（source + surrounding），完成后回填 PENDING_CONTEXT
-        std::thread::spawn(move || {
-            match crate::app_context::gather_context(&text_for_gather) {
-                Ok(extra) => {
-                    log_app_context(&text_for_gather, &extra);
-                    let mut guard = PENDING_CONTEXT.lock().unwrap();
-                    if let Some(ref ctx) = *guard {
-                        if ctx.text.as_deref() == Some(&text_for_gather) {
-                            if let Some(ref mut ctx) = *guard {
-                                ctx.source = Some(extra.source);
-                                ctx.surrounding = extra.surrounding;
-                            }
-                        } else {
-                            log::info!("[action-bar] gather 回填跳过：ctx 已被新触发覆盖");
-                        }
-                    }
-                }
-                Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
-            }
-        });
     });
 }
 
