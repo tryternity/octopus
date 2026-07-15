@@ -65,7 +65,7 @@ function TabButton({
   return (
     <button
       className={cn(
-        "flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-100 shrink-0",
+        "flex items-center gap-1 px-2 py-1 rounded-md transition-colors duration-100 shrink-0",
         active
           ? "bg-voice/12 text-voice"
           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -94,7 +94,7 @@ function TabBar({
   onTabChange: (tab: TabId) => void;
 }) {
   return (
-    <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/20 shrink-0">
+    <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/20 shrink-0 h-[30px]">
       {TABS.map((tab) => (
         <TabButton
           key={tab.id}
