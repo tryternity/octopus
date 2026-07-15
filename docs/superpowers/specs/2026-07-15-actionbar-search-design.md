@@ -95,10 +95,19 @@
 **匹配优先级**（取最高分）：
 1. **精确匹配**（query == target，忽略大小写）→ 10000
 2. **前缀匹配**（target 以 query 开头）→ `5000 - remaining`（越短分越高；remaining 按 **char count** 计算，非 byte len——CJK 3 字节/char，byte 算法会系统性压低中文排名）
-3. **拼音首字母**（query 全 ASCII 时匹配中文菜单项硬编码首字母）→ `3000 - remaining`（remaining 同样按 char count）
+3. **拼音首字母**（query 全 ASCII 时匹配中文文本的拼音首字母）→ `4000 - remaining`（remaining 按 char count；用 `pinyin` crate 覆盖全部 CJK 汉字，非硬编码菜单名表）
 4. **模糊匹配**（nucleo）→ 按匹配度评分
 
-**结果合并排序**：即时结果与延迟结果合并后全局按 score 降序排序（`mergeResults` 含 `source:title:subtitle` 去重）。
+**应用 source 加权**：应用结果 `score += 2000`——应用启动是 launcher 核心场景，确保拼音匹配的 app（如 `wx`→微信 = 4000+2000=6000）排在文件 prefix 匹配（~5000）之前。
+
+**结果合并排序**：即时结果与延迟结果合并后全局按 score 降序排序（`mergeResults` 按 `source:title:subtitle` 去重——同名文件/重复 quicklink 不互丢）。
+
+**应用别名 + 图标**：
+- 扫描时读 `zh-Hans.lproj/InfoPlist.strings`（UTF-16 LE 解码 + OpenStep/XML plist 解析）获取本地化名（如 WeChat→微信）作为 alias
+- 用 `sips -s format png -z 32 32` 提取 icon → base64 PNG 存 DB
+- `AppIndex::search` 对 name + aliases 都匹配取最高分
+- 应用索引缓存在 DB `app_index` 表（v34），启动时 <1ms 加载；DB 为空时扫文件系统 + 写缓存
+- `reindex_apps` 命令供安装/卸载应用后刷新缓存
 
 ### 3.4 结果分组与 Tab
 
@@ -116,21 +125,40 @@ Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 
 | 当前焦点 | 按键 | 行为 |
 |---------|------|------|
-| 搜索框 | `Tab` | 焦点跳到结果区，选中第一个 |
-| 搜索框 | `↑↓` | 焦点跳到结果区首/末项 |
+| 搜索框 | `Tab` | 焦点跳到结果区，选中第一个；input blur（防 IME 在结果区捕获字符） |
+| 搜索框 | `↑↓` | 焦点跳到结果区首/末项；input blur |
 | 搜索框 | `Enter` | 执行第一个结果 |
-| 结果区 | `Tab` | 循环切换 Tab 页 |
-| 结果区 | `Shift+Tab` | 反向循环 Tab 页 |
+| 结果区 | `Tab` | 循环：Tab 页之间 → 最后一个 Tab 正向 Tab 回搜索框 |
+| 结果区 | `Shift+Tab` | 反向：Tab 页之间 → 第一个 Tab 反向 Tab 回搜索框 |
 | 结果区 | `a` `p` `f` `s` `b` | 跳到对应 Tab |
-| 结果区 | `i` | 焦点回搜索框 |
+| 结果区 | `i` | 焦点回搜索框（input focus 恢复） |
 | 结果区 | `↑↓` | 在结果项间导航 |
 | 结果区 | `Enter` | 执行选中项 |
-| 任意 | `Escape` | 有查询→清空；无查询→dismiss |
+| 任意 | `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
+| 快捷键 | 再按热键 | 窗口已可见 → 隐藏（toggle 语义） |
 
-> **IME 组合**（`e.isComposing`）期间放行所有按键——Enter 是确认候选词，不应触发搜索执行。
-> **loading 视图** Escape 仍生效（auto_translate 无超时，防卡住困死用户）；其他导航键在 loading 时屏蔽。
+**IME 处理**：
+- `e.isComposing === true` 时放行所有按键——IME 候选框按 Enter 是确认候选词，不应触发搜索执行
+- 正常 Enter 的 `isComposing === false` → 执行选中条目（输入框无"换行"语义，不需要二次 Enter）
+- 焦点切到结果区时 `inputRef.blur()`——取消 DOM focus，防 IME 在结果区仍捕获字符按键
 
 ## 4. 搜索结果执行
+
+### 4.0 UI 交互规则
+
+**鼠标 hover 选中**：
+- `onMouseMove` 内比较 `clientX/clientY` 与上次记录（<1px 容差）+ 结果/Tab 变化后 200ms 抑制窗口
+- 只有鼠标**真的移动了**才改变选中——React 重渲染导致 DOM 重建时浏览器自动触发的 mousemove 不影响选中
+- 结果列表变化时 `searchSelectedIdx` 重置为 0（用户输入时焦点在搜索框，选中应始终是第一个）
+
+**窗口 resize 序列化**：
+- `setSize` + `setPosition` 用 generation token 保证只有最新一次 resize 生效
+- 两者串行 await——防快速 Tab 切换时异步乱序导致输入框被覆盖
+- TabBar 固定 `h-[30px]`，Tab 按钮用 `transition-colors`（非 `transition-all`）——防 active 切换时尺寸微变导致布局晃动
+
+**快捷键 toggle**：
+- 窗口已可见时再按热键 → 隐藏（等同 Escape）
+- 不可见时按热键 → 正常触发
 
 ### 4.1 应用启动
 - `launch_app(path)` → `open <path>` (status，非 spawn)
@@ -225,6 +253,23 @@ ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0;
 
 `insert_action_bar_item` 和 `update_action_bar_item` 全链路传入这两个字段 + `is_enabled` 参数（新建不再硬编码 1）。
 
+### 7.2 v32→v33→v34：app_index 缓存表
+
+```sql
+CREATE TABLE IF NOT EXISTS app_index (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,           -- file_stem（英文名，如 WeChat）
+    alias      TEXT NOT NULL DEFAULT '', -- 本地化名（如 微信），空=无别名
+    path       TEXT NOT NULL UNIQUE,    -- .app 绝对路径
+    icon       TEXT NOT NULL DEFAULT '', -- base64 PNG 32×32，空=无图标
+    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+- 首次启动扫文件系统 + 写缓存；后续启动直接读 DB（<1ms）
+- `reindex_apps` Tauri 命令供安装/卸载应用后刷新
+- `scan()` 检测旧缓存 icon 全空时自动重扫
+
 ## 8. 性能预算
 
 | 操作 | 预算 |
@@ -240,8 +285,13 @@ ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0;
 2. 有选中 + 输入框为空 → 菜单条显示
 3. 输入框有内容 → 搜索结果替代菜单条
 4. 搜索结果最多 10 行可见
-5. Run And Paste 结果直接粘贴到原光标位置
-6. LLM 调用用 `spawn_blocking`（防阻塞 tokio worker）
+5. 无结果时保留 1 行高度（显示"无结果"提示，不被 0 高度裁剪）
+6. Run And Paste 结果直接粘贴到原光标位置
+7. LLM 调用用 `spawn_blocking`（防阻塞 tokio worker）
+8. 所有子进程（open/mdfind/sips/osascript）有超时 + kill/防孤儿
+9. 结果列表 hover 选中只在鼠标真正移动时生效（不受 React 重渲染影响）
+10. 窗口 resize 串行化（generation token），防 Tab 快速切换异步乱序
+11. URL scheme 仅放行 http/https（选中文本即 URL 时）
 
 ## 10. 降级
 
