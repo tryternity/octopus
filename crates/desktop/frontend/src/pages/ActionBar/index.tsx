@@ -12,6 +12,7 @@ import {
   TAB_BAR_HEIGHT,
   DELAYED_SEARCH_DEBOUNCE_MS,
   type TabId,
+  TABS,
   type ExpandDirection,
   type FocusZone,
   type SearchResult as SearchHit,
@@ -748,7 +749,18 @@ export default function ActionBar() {
         // 结果区域
         if (e.key === "Tab") {
           e.preventDefault();
-          setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
+          const nextTab = getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1);
+          // 从最后一个 Tab 正向 Tab → 回输入框；从第一个 Tab 反向 → 回输入框
+          const currentIdx = TABS.findIndex(t => t.id === activeTabRef.current);
+          const isLastForward = !e.shiftKey && currentIdx === TABS.length - 1;
+          const isFirstBackward = e.shiftKey && currentIdx === 0;
+          if (isLastForward || isFirstBackward) {
+            setSearchFocusZone("input");
+            setSearchSelectedIdx(0);
+            inputRef.current?.focus();
+          } else {
+            setActiveTab(nextTab);
+          }
           return;
         }
         if (e.key === "ArrowDown") {

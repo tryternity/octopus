@@ -11,6 +11,9 @@ import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 import { TABS, MAX_VISIBLE_RESULTS, type TabId, type ExpandDirection, type SearchResult } from "./searchTypes";
 
+// 结果列表变化后忽略 hover 的时长（ms）——防止 DOM 重建时误触发
+const HOVER_SUPPRESS_MS = 200;
+
 // ── 来源图标 ──
 
 const SOURCE_ICON: Record<string, string> = {
@@ -115,12 +118,14 @@ function ResultRow({
   index,
   onClick,
   onHover,
+  suppressRef,
 }: {
   result: SearchResult;
   selected: boolean;
   index: number;
   onClick: () => void;
   onHover: () => void;
+  suppressRef: React.RefObject<number>;
 }) {
   const lastPos = useRef<{ x: number; y: number } | null>(null);
   return (
@@ -133,9 +138,8 @@ function ResultRow({
       )}
       onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
       onMouseMove={(e) => {
-        // 只有鼠标真的移动了才触发 hover 选中——防止 React 重渲染时
-        // DOM 重建自动触发 mousemove 导致选中跳到鼠标位置
-        if (lastPos.current && lastPos.current.x === e.clientX && lastPos.current.y === e.clientY) return;
+        if (Date.now() < suppressRef.current) return;
+        if (lastPos.current && Math.abs(lastPos.current.x - e.clientX) < 1 && Math.abs(lastPos.current.y - e.clientY) < 1) return;
         lastPos.current = { x: e.clientX, y: e.clientY };
         onHover();
       }}
@@ -187,6 +191,11 @@ export default function SearchPanel({
 }: SearchPanelProps) {
   const resultsRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
+  // 结果变化后抑制 hover 一小段时间——防 DOM 重建误触发 mousemove
+  const hoverSuppressRef = useRef(0);
+  useEffect(() => {
+    hoverSuppressRef.current = Date.now() + HOVER_SUPPRESS_MS;
+  }, [results, activeTab]);
 
   // 选中项滚动到可见区域
   useEffect(() => {
@@ -216,6 +225,7 @@ export default function SearchPanel({
               index={i}
               onClick={() => onExecute(result)}
               onHover={() => onSelect(i)}
+              suppressRef={hoverSuppressRef}
             />
           </div>
         ))
