@@ -131,7 +131,7 @@ function ResultRow({
         selected ? "bg-voice/10" : "hover:bg-foreground/[0.03]",
       )}
       onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-      onMouseMove={onHover}
+      onMouseEnter={onHover}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
     >
       <SourceBadge source={result.source} icon={result.icon ?? undefined} />

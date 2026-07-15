@@ -25,7 +25,6 @@ import {
   filterByTab,
   parseActionData,
   calcResultsHeight,
-  clampSelectedIndex,
   navigateResults,
   hasQuery,
 } from "./searchLogic";
@@ -372,9 +371,11 @@ export default function ActionBar() {
   useEffect(() => { filteredResultsRef.current = filteredResults; }, [filteredResults]);
 
   // 结果数量变化时 clamp 选中索引
+  // 结果列表变化时重置选中到第一个——用户在输入时焦点在搜索框，
+  // 鼠标悬停选择只在鼠标主动移动时生效（onMouseEnter）
   useEffect(() => {
-    setSearchSelectedIdx((prev) => clampSelectedIndex(prev, filteredResults.length));
-  }, [filteredResults.length]);
+    setSearchSelectedIdx(0);
+  }, [filteredResults]);
 
   // 展开方向判定（show 时计算一次，一次 show 中固定）
   useEffect(() => {
