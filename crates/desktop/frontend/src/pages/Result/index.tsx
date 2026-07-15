@@ -55,6 +55,7 @@ function Result() {
   const [popupType, setPopupType] = useState<PopupType>(null);
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastError, setToastError] = useState(false);
   const POLISH_ERROR_TIMEOUT_MS = 1500;
   const [polishLoading, setPolishLoading] = useState(false);
   const [polishError, setPolishError] = useState<string | null>(null);
@@ -79,9 +80,10 @@ function Result() {
 
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
 
-  const showToast = useCallback((msg: string, ms = 2000) => {
+  const showToast = useCallback((msg: string, ms = 2000, isError = false) => {
     setToast(msg);
-    setTimeout(() => setToast(null), ms);
+    setToastError(isError);
+    setTimeout(() => { setToast(null); setToastError(false); }, ms);
   }, []);
 
   const showToolbar = useCallback(() => {
@@ -126,7 +128,12 @@ function Result() {
       const msg = typeof payload === "string" ? payload : (payload as any)?.payload ?? "";
       if (msg) showToast(msg, 3000);
     });
-    return () => { unlisten.then((f) => f()); unlistenAgentError.then((f) => f()); };
+    // 麦克风不可用错误——红色气泡提示
+    const unlistenMicError = listen<string>("mic-error", (payload) => {
+      const msg = typeof payload === "string" ? payload : (payload as any)?.payload ?? "";
+      if (msg) showToast(msg, 5000, true);
+    });
+    return () => { unlisten.then((f) => f()); unlistenAgentError.then((f) => f()); unlistenMicError.then((f) => f()); };
   }, []);
 
   // ── Toolbar hover ──
@@ -597,7 +604,10 @@ function Result() {
 
       {/* Toast */}
       {toast && (
-        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-black/78 text-white text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none">
+        <div className={cn(
+          "absolute bottom-1.5 left-1/2 -translate-x-1/2 text-white text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none",
+          toastError ? "bg-red-500/90" : "bg-black/78",
+        )}>
           {toast}
         </div>
       )}

@@ -763,6 +763,10 @@ fn begin_recording(
 
     if let Err(e) = audio.start(&config.microphone) {
         error!("Failed to start recording: {}", e);
+        // 弹出结果窗 + 红色错误提示，告知用户麦克风不可用
+        let _ = app_handle.emit("mic-error", "麦克风不可用，请在系统设置中授权麦克风权限");
+        crate::result_window::show_result(app_handle, "");
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
     }
 
