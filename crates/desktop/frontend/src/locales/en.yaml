@@ -57,6 +57,9 @@ settings:
     nextRecording: Next Recording
     nextStart: Next Start
   general:
+    tabGeneral: General
+    tabShortcut: Shortcuts
+    tabVoice: Voice
     appearance: Appearance
     theme: Theme
     themeHint: Floating window & color scheme
