@@ -17,9 +17,11 @@ pub fn exact_match(query: &str, target: &str) -> Option<Score> {
 }
 
 /// 前缀匹配：target 以 query 开头（忽略大小写）。
+/// 打分：base 5000，剩余字符越少（越接近精确匹配）分越高。
 pub fn prefix_match(query: &str, target: &str) -> Option<Score> {
     if target.to_lowercase().starts_with(&query.to_lowercase()) {
-        Some(5000 + (target.len() - query.len()) as Score)
+        let remaining = target.len().saturating_sub(query.len());
+        Some(5000 - remaining as Score)
     } else {
         None
     }
@@ -95,6 +97,14 @@ mod tests {
     fn prefix_match_basic() {
         assert!(prefix_match("chr", "Chrome").is_some());
         assert!(prefix_match("xyz", "Chrome").is_none());
+    }
+
+    #[test]
+    fn prefix_match_shorter_target_scores_higher() {
+        // 短目标（接近精确）得分高于长目标
+        let short = prefix_match("chr", "Chrome").unwrap();
+        let long = prefix_match("chr", "Chrome Apps Helper").unwrap();
+        assert!(short > long, "Chrome ({}) should outrank Chrome Apps Helper ({})", short, long);
     }
 
     #[test]

@@ -12,12 +12,12 @@ pub async fn search_all(query: String, tab: String) -> Result<Vec<SearchResult>,
     Ok(engine.search(&query, &tab).await)
 }
 
-/// 启动应用。
+/// 启动应用。用 status() 替代 spawn() 防僵尸进程（open 命令本身很快退出）。
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(&path)
-        .spawn()
+        .status()
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -27,7 +27,7 @@ pub fn launch_app(path: String) -> Result<(), String> {
 pub fn open_file(path: String) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(&path)
-        .spawn()
+        .status()
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -37,7 +37,7 @@ pub fn open_file(path: String) -> Result<(), String> {
 pub fn open_url(url: String) -> Result<(), String> {
     std::process::Command::new("open")
         .arg(&url)
-        .spawn()
+        .status()
         .map_err(|e| e.to_string())?;
     Ok(())
 }

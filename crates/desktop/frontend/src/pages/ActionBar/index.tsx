@@ -213,7 +213,24 @@ export default function ActionBar() {
 
   // ── 搜索：合并结果 + 按Tab过滤（需在 resize effect 之前声明）──
   const allResults = useMemo(() => mergeResults(instantResults, delayedResults), [instantResults, delayedResults]);
-  const filteredResults = useMemo(() => filterByTab(allResults, activeTab), [allResults, activeTab]);
+
+  // 按 context.accepts 过滤菜单/quicklink 搜索结果
+  // （Files 场景下 text-only 项如翻译不应出现，反之亦然）
+  const contextFilteredResults = useMemo(() => {
+    if (!context) return allResults;
+    const isFiles = context.kind === "files";
+    return allResults.filter((r) => {
+      if (r.source !== "menu" && r.source !== "quicklink") return true;
+      const data = parseActionData(r.actionData);
+      const item = menuItems.find((i) => i.id === (data.id as number));
+      if (!item) return true;
+      const accepts = item.accepts || "text";
+      if (accepts === "any") return true;
+      return isFiles ? accepts === "file" : accepts === "text";
+    });
+  }, [allResults, context, menuItems]);
+
+  const filteredResults = useMemo(() => filterByTab(contextFilteredResults, activeTab), [contextFilteredResults, activeTab]);
 
   // 动态调整窗口高度 + 位置（展开方向）
   useEffect(() => {
@@ -256,6 +273,8 @@ export default function ActionBar() {
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]); setDelayedResults([]);
         setActiveTab("all"); setSearchFocusZone("input"); setSearchSelectedIdx(0);
+        // 清空 stale 位置——等 compute() 从后端重新读取
+        baseWinPosRef.current = null;
         if (ctx) { setContext(ctx); }
         // 无选中文本时聚焦搜索框；有选中文本时菜单为主交互
         if (!ctx || (!ctx.text && (!ctx.files || ctx.files.length === 0))) {
@@ -370,14 +389,15 @@ export default function ActionBar() {
     }
     // 确定 tab 参数：all → files_bookmarks，files → files，bookmarks → bookmarks
     const searchTab = activeTab === "files" ? "files" : activeTab === "bookmarks" ? "bookmarks" : "files_bookmarks";
+    let cancelled = false;
     const timer = setTimeout(() => {
       invoke<SearchHit[]>("search_all", { query, tab: searchTab }).then((results) => {
-        setDelayedResults(results);
+        if (!cancelled) setDelayedResults(results);
       }).catch(() => {
-        setDelayedResults([]);
+        if (!cancelled) setDelayedResults([]);
       });
     }, DELAYED_SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query, activeTab]);
 
   // 查询清空时重置搜索状态
@@ -692,6 +712,7 @@ export default function ActionBar() {
         if (e.key === "i") {
           e.preventDefault();
           setSearchFocusZone("input");
+          setSearchSelectedIdx(0);
           inputRef.current?.focus();
           return;
         }
