@@ -97,21 +97,35 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 2. suppress watcher
         clip_handle.suppress_next();
 
+        // 记录 Cmd+C 前的 pasteboard changeCount
+        let change_count_before = pasteboard_change_count();
+
         let focus = FocusTracker::new();
         focus.simulate_copy();
 
         // 3. 等待 200ms 让系统完成复制
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // 4. 读剪贴板拿到选中文本
-        //    判定"有选中"的唯一标准：Cmd+C 后剪贴板内容发生了变化。
-        //    剪贴板未变 = 没有选中（Cmd+C 是空操作）→ 走 centered 搜索。
+        // 4. 判断 Cmd+C 是否产生了复制操作
+        //    changeCount 递增 = 有选中（无论内容是否与之前相同）
+        //    changeCount 不变 = 没有选中 → 走 centered 搜索
+        let change_count_after = pasteboard_change_count();
+        if change_count_after == change_count_before {
+            log::info!("[action-bar] No selection (changeCount unchanged {}→{}) — showing centered search",
+                change_count_before, change_count_after);
+            clip_handle.clear_suppress();
+            *PENDING_CONTEXT.lock().unwrap() = None;
+            show_action_bar_centered(&app_clone);
+            finalize_action_bar(&app_clone);
+            return;
+        }
+
+        // changeCount 递增 → 有选中，读剪贴板拿文本
         let clipboard_after = read_clipboard_text(&app_clone);
-        let text = match (&clipboard_before_text, &clipboard_after) {
-            (Some(before), Some(after)) if before != after => after.clone(),
-            (None, Some(after)) => after.clone(),
+        let text: String = match &clipboard_after {
+            Some(t) if !t.trim().is_empty() => t.clone(),
             _ => {
-                log::info!("[action-bar] No selection (clipboard unchanged) — showing centered search");
+                log::info!("[action-bar] changeCount changed but clipboard empty — showing centered search");
                 clip_handle.clear_suppress();
                 *PENDING_CONTEXT.lock().unwrap() = None;
                 show_action_bar_centered(&app_clone);
@@ -119,15 +133,6 @@ pub fn trigger_action_bar(app: AppHandle) {
                 return;
             }
         };
-
-        if text.trim().is_empty() {
-            log::info!("[action-bar] Selected text is empty — showing centered search");
-            clip_handle.clear_suppress();
-            *PENDING_CONTEXT.lock().unwrap() = None;
-            show_action_bar_centered(&app_clone);
-            finalize_action_bar(&app_clone);
-            return;
-        }
 
         // suppress_next 已完成使命——watcher 有 200ms 窗口消费 flag。
         // 若剪贴板未变化（unchanged 路径），watcher 不触发，flag 残留会
@@ -141,7 +146,7 @@ pub fn trigger_action_bar(app: AppHandle) {
         } else if let Some(img) = clipboard_before_image {
             let _ = clip_handle.set_image(img);
         } else if let Some(ref original) = clipboard_before_text {
-            if Some(original.as_str()) != clipboard_after.as_deref() {
+            if clipboard_after.as_deref() != Some(original.as_str()) {
                 write_clipboard_text(&app_clone, original);
             }
         }
@@ -374,6 +379,24 @@ fn write_clipboard_text(app: &AppHandle, text: &str) {
     let handle = app.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
     let _ = handle.write_text(text);
 }
+
+/// 读取系统剪贴板的 changeCount（macOS NSPasteboard）。
+/// 每次 Cmd+C（或程序写剪贴板）都会递增，与内容是否相同无关。
+/// 用于判断 Cmd+C 是否真正产生了复制操作（有无选中文本）。
+#[cfg(target_os = "macos")]
+fn pasteboard_change_count() -> i64 {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    unsafe {
+        let cls = objc2::class!(NSPasteboard);
+        let pb: *mut AnyObject = msg_send![cls, generalPasteboard];
+        let count: i64 = msg_send![pb, changeCount];
+        count
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pasteboard_change_count() -> i64 { 0 }
 
 /// 将采集到的应用上下文以结构化文本追加写入 ~/.octopus/logs/action-bar.log，
 /// 方便直接验证 AX 取数结果（而非通过 AI 结果间接判断）。
