@@ -257,7 +257,8 @@ export default function ActionBar() {
         }
       }
     } else {
-      const menuHeight = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
+      // 无选中（context=null）时只有搜索框，无菜单条
+      const menuHeight = !context ? 0 : view === "submenu" ? 78 : view === "loading" ? 48 : 40;
       totalHeight = INPUT_HEIGHT + menuHeight;
       if (baseWinPosRef.current) {
         targetX = baseWinPosRef.current.x;
@@ -1007,7 +1008,8 @@ export default function ActionBar() {
       )}
       {/* 展开方向决定 DOM 顺序：
           down → [Input] [Search/Menu]
-          up   → [Search] [Input]  (搜索模式) 或 [Input] [Menu] (菜单模式) */}
+          up   → [Search] [Input]  (搜索模式) 或 [Input] [Menu] (菜单模式)
+          无选中（context=null）时只显示搜索框，不显示菜单条 */}
       {inSearch && expandDirection === "up" ? (
         <>
           {searchContent}
@@ -1016,7 +1018,7 @@ export default function ActionBar() {
       ) : (
         <>
           {searchInputEl}
-          {inSearch ? searchContent : menuContent}
+          {inSearch ? searchContent : (context ? menuContent : null)}
         </>
       )}
     </div>
