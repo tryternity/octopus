@@ -45,25 +45,31 @@ pub fn open_url(url: String) -> Result<(), String> {
 /// 执行 Shell 命令（30s 超时，输出限制 100KB）。
 #[tauri::command]
 pub async fn execute_shell(command: String) -> Result<String, String> {
-    let fut = tokio::process::Command::new("sh")
+    let mut child = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&command)
-        .output();
-    // 30 秒超时，防止挂起
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), fut)
-        .await
-        .map_err(|_| format!("Shell 命令超时（30s）: {}", command))?
+        .kill_on_drop(true) // 超时 drop future 时杀子进程，防孤儿
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| e.to_string())?;
+
+    // 30 秒超时，防止挂起
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await {
+        Ok(r) => r.map_err(|e| e.to_string())?,
+        Err(_) => return Err(format!("Shell 命令超时（30s）: {}", command)),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !output.status.success() {
         return Err(format!("exit: {}\n{}", output.status, stderr));
     }
     let result = if stdout.is_empty() { stderr } else { stdout };
-    // 输出限制 100KB，防止 OOM
-    const MAX_OUTPUT: usize = 100 * 1024;
-    if result.len() > MAX_OUTPUT {
-        Ok(format!("{}...（输出已截断，共 {} 字节）", &result[..MAX_OUTPUT], result.len()))
+    // 输出限制 100KB（按字符截断，不 panic on non-ASCII boundary）
+    const MAX_OUTPUT_CHARS: usize = 100 * 1024;
+    if result.chars().count() > MAX_OUTPUT_CHARS {
+        let truncated: String = result.chars().take(MAX_OUTPUT_CHARS).collect();
+        Ok(format!("{}...（输出已截断）", truncated))
     } else {
         Ok(result)
     }

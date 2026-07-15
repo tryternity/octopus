@@ -47,7 +47,8 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
         return None;
     }
     if initials.starts_with(&query.to_lowercase()) {
-        Some(3000 + (initials.len() - query.len()) as Score)
+        let remaining = initials.len().saturating_sub(query.len());
+        Some(3000 - remaining as Score)
     } else if initials.contains(&query.to_lowercase() as &str) {
         Some(1000)
     } else {
@@ -119,6 +120,14 @@ mod tests {
         assert_eq!(pinyin_match("fy", "翻译"), Some(3000));
         assert_eq!(pinyin_match("rs", "润色"), Some(3000));
         assert_eq!(pinyin_match("xyz", "翻译"), None);
+    }
+
+    #[test]
+    fn pinyin_match_shorter_initials_scores_higher() {
+        // 短首字母项（翻译=fy）得分高于长首字母项（复制路径=fzlj）
+        let short = pinyin_match("f", "翻译").unwrap();
+        let long = pinyin_match("f", "复制路径").unwrap();
+        assert!(short > long, "翻译 ({}) should outrank 复制路径 ({})", short, long);
     }
 
     #[test]
