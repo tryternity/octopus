@@ -190,10 +190,23 @@ export default function ActionBar() {
   const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
-  // IME 组合状态——手动追踪比 e.isComposing 可靠（macOS WebKit 时序问题）
-  const composingRef = useRef(false);
+  // compositionend 后紧跟的 Enter 需跳过——macOS IME 确认候选后会多发一个 Enter(13)
+  const skipNextEnterRef = useRef(false);
 
   useEffect(() => { viewRef.current = view; }, [view]);
+
+  // 原生 composition 事件——不依赖 React 合成事件（macOS WKWebView 时序不可靠）
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onCompositionEnd = () => {
+      // macOS IME 确认候选后，compositionend 之后紧跟一个 Enter(13) keydown
+      // 标记跳过那个 Enter
+      skipNextEnterRef.current = true;
+    };
+    el.addEventListener("compositionend", onCompositionEnd);
+    return () => el.removeEventListener("compositionend", onCompositionEnd);
+  }, []);
 
   // 高亮项变化时自动滚动到可见区域
   useEffect(() => {
@@ -654,10 +667,13 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中（输入法正在组词）——不拦截任何键
-      // 用 composingRef 替代 e.isComposing：macOS WebKit 上确认候选词的 Enter
-      // 触发 keydown 时 isComposing 可能为 false（compositionend 时序问题）
-      if (e.isComposing || composingRef.current) return;
+      // IME 组合中——keyCode 229 是 IME 处理中的标识
+      if (e.isComposing || e.keyCode === 229) return;
+      // compositionend 后紧跟的 Enter 需跳过（macOS IME 确认候选后会多发一个 Enter）
+      if (e.key === "Enter" && skipNextEnterRef.current) {
+        skipNextEnterRef.current = false;
+        return;
+      }
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
@@ -912,21 +928,6 @@ export default function ActionBar() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setSearchFocusZone("input")}
-        onCompositionStart={() => { composingRef.current = true; }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-        }}
-        onKeyDown={(e) => {
-          // input 级 keydown 先于 window keydown 触发
-          // IME 组合中 Enter 确认候选词——在 input 级直接拦截 + 标记
-          if (composingRef.current && (e.key === "Enter" || e.key === "Tab" ||
-              e.key === "ArrowUp" || e.key === "ArrowDown")) {
-            // 确认候选后 composingRef 仍为 true（compositionend 尚未触发）
-            // 延迟一帧清除，让 window keydown handler 也跳过
-            e.stopPropagation();
-            requestAnimationFrame(() => { composingRef.current = false; });
-          }
-        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"

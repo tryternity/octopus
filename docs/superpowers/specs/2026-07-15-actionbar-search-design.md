@@ -2,7 +2,7 @@
 
 > 2026-07-15 · ActionBar 集成搜索输入框 + 应用启动 + 文件搜索 + Quicklinks + 书签搜索 + Run And Paste
 >
-> **实现完成** — 本文档已同步实际代码（2026-07-15，含 5 轮 code review 修复）
+> **实现完成** — 本文档已同步实际代码（2026-07-15，含 9 轮 code review 修复）
 
 ## 1. 设计目标
 
@@ -94,8 +94,8 @@
 
 **匹配优先级**（取最高分）：
 1. **精确匹配**（query == target，忽略大小写）→ 10000
-2. **前缀匹配**（target 以 query 开头）→ `5000 - remaining`（越短分越高）
-3. **拼音首字母**（query 全 ASCII 时匹配中文菜单项硬编码首字母）→ `3000 - remaining`
+2. **前缀匹配**（target 以 query 开头）→ `5000 - remaining`（越短分越高；remaining 按 **char count** 计算，非 byte len——CJK 3 字节/char，byte 算法会系统性压低中文排名）
+3. **拼音首字母**（query 全 ASCII 时匹配中文菜单项硬编码首字母）→ `3000 - remaining`（remaining 同样按 char count）
 4. **模糊匹配**（nucleo）→ 按匹配度评分
 
 **结果合并排序**：即时结果与延迟结果合并后全局按 score 降序排序（`mergeResults` 含 `source:title:subtitle` 去重）。
@@ -126,6 +126,9 @@ Tab 页：`[? 全部] [a 应用] [f 文件] [> Shell] [b 书签]`
 | 结果区 | `↑↓` | 在结果项间导航 |
 | 结果区 | `Enter` | 执行选中项 |
 | 任意 | `Escape` | 有查询→清空；无查询→dismiss |
+
+> **IME 组合**（`e.isComposing`）期间放行所有按键——Enter 是确认候选词，不应触发搜索执行。
+> **loading 视图** Escape 仍生效（auto_translate 无超时，防卡住困死用户）；其他导航键在 loading 时屏蔽。
 
 ## 4. 搜索结果执行
 
@@ -246,3 +249,10 @@ ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0;
 - 书签文件读取失败 → 书签搜索返回空
 - Safari 书签解析暂未实现（plist 解析需额外依赖）
 - osascript 超时 → 返回 None（非 Finder 视为无选中）
+
+## 11. 安全约束与边界处理
+
+- **URL scheme 白名单**：选中文本即 URL 时（`item.action_data` 为空的内置「在浏览器打开」项）仅放行 `http://`/`https://`，其余 scheme 统一补 `https://`——防 `smb://`/`file:///`/`vnc://` 等通过选中不可信文本触发系统级操作（挂载共享致 NTLM 凭据泄露 / Finder 打开任意路径 / 屏幕共享）。用户配置的 url 模板（`action_data` 非空）走 `{text}` 替换 + `url_encode_param` 编码，不受此约束。
+- **query trim**：`search_all` 入口 `query.trim()` 一次，覆盖所有 tab 路径——防前导/尾部空格（粘贴 / IME 残留）致 exact/prefix 匹配失败。
+- **无结果保留高度**：`calcResultsHeight(0)` 返回 1 行高度（36px）而非 0——保证「无结果」提示可见，不被 0 高度容器 overflow 裁剪。
+- **accepts=any 无选中可执行**：`accepts="any"` 的项无选中（context=null）时仍可执行（text 用空串）——`executeItem` 不再 `if(!ctx) return`；由 `contextFilteredResults` 保证无选中时仅 any 项进入搜索结果。

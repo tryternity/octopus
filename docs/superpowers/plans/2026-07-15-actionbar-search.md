@@ -1,6 +1,6 @@
 # ActionBar 搜索功能 实施计划
 
-> **状态：全部完成 ✅**（含 5 轮 code review 修复）
+> **状态：全部完成 ✅**（含 9 轮 code review 修复）
 >
 > 本文档为实施记录而非一次性待办——反映实际实现。
 
@@ -127,3 +127,13 @@
 - 快速 Tab 切换窗口尺寸异步乱序（generation token）
 - 无选中时不显示菜单条
 - AI/LLM spawn_blocking
+
+### 第六-九轮（7 项）
+
+- prefix_match / pinyin_match 剩余惩罚改 **char count**（非 byte len，CJK 3 字节/char 公平）
+- `accepts="any"` 项无选中时可执行（去掉 `executeItem` 的 `if(!ctx) return`，text 用空串；`contextFilteredResults` 保证无选中仅 any 项入结果）
+- loading 视图 Escape 仍生效（auto_translate 无超时，防卡住困死）
+- 无结果时 `calcResultsHeight(0)` 返回 1 行高度 36px（保证「无结果」提示可见）
+- IME 组合中（`e.isComposing`）Enter 不触发搜索执行（确认候选词）
+- URL scheme 白名单：选中文本即 URL 仅放行 http/https，其余补 https://（防 smb/file/vnc 触发系统操作）
+- `search_all` 入口 `query.trim()`（防前导/尾部空格致 exact/prefix 匹配失败）
