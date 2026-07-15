@@ -260,6 +260,7 @@ pub fn run() {
             search_commands::search_all,
             search_commands::launch_app,
             search_commands::open_file,
+            search_commands::open_url,
             search_commands::execute_shell,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,

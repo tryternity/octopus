@@ -34,6 +34,7 @@ interface ActionBarItem {
   shortcut?: string;
   agent?: string;
   accepts?: string;
+  triggerKeyword?: string;
 }
 
 // ── 类型元信息 ──
@@ -451,6 +452,26 @@ const EditForm = ({
               )}
               <span className="text-[11px] text-muted-foreground/60">
                 {t("settings.actionBar.shortcutHint")}
+              </span>
+            </div>
+          </FormField>
+        )}
+
+        {/* Quicklink 关键词触发（仅 URL 类型） */}
+        {type === "url" && (
+          <FormField label={t("settings.actionBar.triggerKeywordLabel")}>
+            <div className="flex items-center gap-2">
+              <input
+                className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                placeholder="tr"
+                value={form.triggerKeyword || ""}
+                onChange={(e) => {
+                  const val = e.target.value.trim().toLowerCase();
+                  onChange({ ...form, triggerKeyword: val });
+                }}
+              />
+              <span className="text-[11px] text-muted-foreground/60">
+                {t("settings.actionBar.triggerKeywordHint")}
               </span>
             </div>
           </FormField>
@@ -894,6 +915,7 @@ export default function ActionBarPanel({
               shortcut: editingForm.shortcut || "",
               agent: "",
               accepts: "text",
+              triggerKeyword: editingForm.triggerKeyword || "",
             });
           }
           showToast(t("settings.actionBar.saved"));
@@ -910,6 +932,7 @@ export default function ActionBarPanel({
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
+          triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
         });
         showToast(t("settings.actionBar.created"));
       } else if (editingId) {
@@ -925,6 +948,7 @@ export default function ActionBarPanel({
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
+          triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
         });
         showToast(t("settings.actionBar.saved"));
       }

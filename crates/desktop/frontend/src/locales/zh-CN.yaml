@@ -351,6 +351,8 @@ settings:
     writeToClipboard: 结果写入剪贴板
     shortcutLabel: 快捷键
     shortcutHint: action bar 打开时按 Alt+此键直接执行
+    triggerKeywordLabel: 搜索关键词
+    triggerKeywordHint: 在搜索框输入「关键词 查询」触发，URL 中用 {query} 代表查询
     enableLabel: 启用
     showInMenu: 显示在菜单中
     hidden: 已隐藏

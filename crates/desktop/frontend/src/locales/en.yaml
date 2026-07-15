@@ -351,6 +351,8 @@ settings:
     writeToClipboard: Write result to clipboard
     shortcutLabel: Shortcut
     shortcutHint: Press Alt+this key when action bar is open to execute directly
+    triggerKeywordLabel: Search Keyword
+    triggerKeywordHint: Type "keyword query" in search box to trigger. Use {query} in URL
     enableLabel: Enable
     showInMenu: Show in menu
     hidden: Hidden

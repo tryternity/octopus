@@ -32,6 +32,16 @@ pub fn open_file(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开 URL（默认浏览器）。
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 执行 Shell 命令。
 #[tauri::command]
 pub async fn execute_shell(command: String) -> Result<String, String> {

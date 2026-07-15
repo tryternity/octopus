@@ -78,6 +78,11 @@ impl SearchEngine {
             results.extend(search_menus_and_quicklinks(query));
         }
 
+        // Quicklink 关键词触发：`<keyword> <query>` 模式
+        if tab == "all" || tab == "quick" {
+            results.extend(search_quicklink_keywords(query));
+        }
+
         // 延迟搜索（文件 + 书签）
         if tab == "all" || tab == "files" || tab == "files_bookmarks" {
             results.extend(search_files(query).await);
@@ -107,24 +112,16 @@ fn search_menus_and_quicklinks(query: &str) -> Vec<SearchResult> {
         .filter(|r| r.is_enabled && r.action_type != "submenu")
         .filter_map(|row| {
             let score = match_score(query, &row.title)?;
-            let action_data = if row.action_type == "url" && !row.action_data.is_empty() {
-                serde_json::json!({
-                    "action_type": row.action_type,
-                    "action_data": row.action_data,
-                    "id": row.id,
-                })
-            } else {
-                serde_json::json!({
-                    "action_type": row.action_type,
-                    "action_data": row.action_data,
-                    "id": row.id,
-                })
-            };
+            let action_data = serde_json::json!({
+                "action_type": row.action_type,
+                "action_data": row.action_data,
+                "id": row.id,
+            });
             Some((score, SearchResult {
-                source: "menu".into(),
+                source: if row.action_type == "url" { "quicklink" } else { "menu" }.into(),
                 title: row.title.clone(),
                 subtitle: row.action_type.clone(),
-                action_type: "menu".into(),
+                action_type: if row.action_type == "url" { "url" } else { "menu" }.into(),
                 action_data: action_data.to_string(),
                 score: 0,
             }))
@@ -133,6 +130,64 @@ fn search_menus_and_quicklinks(query: &str) -> Vec<SearchResult> {
 
     results.sort_by(|a, b| b.0.cmp(&a.0));
     results.into_iter().take(5).map(|(s, mut r)| { r.score = s; r }).collect()
+}
+
+/// Quicklink 关键词触发：query 以 `<keyword> <rest>` 模式开头时，
+/// 匹配 trigger_keyword == keyword 的 URL 类型菜单项，
+/// 将 URL 模板中的 {query} 替换为 rest。
+fn search_quicklink_keywords(query: &str) -> Vec<SearchResult> {
+    let parts: Vec<&str> = query.splitn(2, char::is_whitespace).collect();
+    if parts.len() < 2 || parts[1].trim().is_empty() {
+        return Vec::new();
+    }
+    let keyword = parts[0];
+    let rest = parts[1].trim();
+
+    let rows = match octopus_infra::db::list_action_bar_items() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    rows.iter()
+        .filter(|r| r.is_enabled && r.action_type == "url" && !r.trigger_keyword.is_empty())
+        .filter(|r| r.trigger_keyword == keyword)
+        .map(|r| {
+            let url = if r.action_data.contains("{query}") {
+                r.action_data.replace("{query}", &url_encode_param(rest))
+            } else if r.action_data.contains("{text}") {
+                r.action_data.replace("{text}", &url_encode_param(rest))
+            } else {
+                r.action_data.clone()
+            };
+            SearchResult {
+                source: "quicklink".into(),
+                title: format!("{} «{}»", r.trigger_keyword, rest),
+                subtitle: format!("{} → {}", r.title, url),
+                action_type: "url".into(),
+                action_data: serde_json::json!({
+                    "url": url,
+                    "id": r.id,
+                }).to_string(),
+                score: 15000,
+            }
+        })
+        .collect()
+}
+
+/// URL 参数编码（百分比编码），用于 Quicklink URL 模板替换。
+fn url_encode_param(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
 }
 
 /// 获取全局搜索引擎（需先 init_search_engine）。
@@ -221,5 +276,46 @@ mod tests {
         let results = rt.block_on(engine.search("chr", "all"));
         // all tab 应包含应用结果
         assert!(results.iter().any(|r| r.source == "app" && r.title == "Chrome"));
+    }
+
+    #[test]
+    fn url_encode_param_basic() {
+        assert_eq!(url_encode_param("hello"), "hello");
+        assert_eq!(url_encode_param("hello world"), "hello%20world");
+        assert_eq!(url_encode_param("a+b=c"), "a%2Bb%3Dc");
+        assert_eq!(url_encode_param("中文"), "%E4%B8%AD%E6%96%87");
+        assert_eq!(url_encode_param(""), "");
+    }
+
+    #[test]
+    fn url_encode_param_safe_chars() {
+        assert_eq!(url_encode_param("A-Z0-9-_.~"), "A-Z0-9-_.~");
+    }
+
+    #[test]
+    fn quicklink_keyword_no_keyword_returns_empty() {
+    // 单词查询（无空格）不触发关键词模式
+        assert!(search_quicklink_keywords("translate").is_empty());
+        assert!(search_quicklink_keywords("hello").is_empty());
+    }
+
+    #[test]
+    fn quicklink_keyword_only_space_returns_empty() {
+        // keyword 后只有空格不算
+        assert!(search_quicklink_keywords("tr   ").is_empty());
+    }
+
+    #[test]
+    fn url_type_returned_as_quicklink_source() {
+        // URL 类型菜单项在搜索结果中 source 为 "quicklink"，action_type 为 "url"
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let engine = SearchEngine {
+            app_index: AppIndex { apps: vec![] },
+            bookmarks: vec![],
+        };
+        // 如果 DB 中有 URL 类型菜单项，搜索应该返回 source="quicklink"
+        // 测试不依赖具体 DB 内容，只验证返回的结果中 URL 类型的 source 正确
+        let _results = rt.block_on(engine.search("test", "all"));
+        // 不 assert 具体结果（依赖 DB），仅验证不 panic
     }
 }

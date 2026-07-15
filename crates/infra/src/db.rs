@@ -1493,8 +1493,9 @@ pub fn insert_action_bar_item(
     shortcut: &str,
     agent: &str,
     accepts: &str,
+    trigger_keyword: &str,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword))
 }
 
 fn insert_action_bar_item_at(
@@ -1509,6 +1510,7 @@ fn insert_action_bar_item_at(
     shortcut: &str,
     agent: &str,
     accepts: &str,
+    trigger_keyword: &str,
 ) -> Result<i64> {
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
@@ -1521,9 +1523,9 @@ fn insert_action_bar_item_at(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8, ?9, ?10, ?11)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1540,8 +1542,9 @@ pub fn update_action_bar_item(
     shortcut: &str,
     agent: &str,
     accepts: &str,
+    trigger_keyword: &str,
 ) -> Result<()> {
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword))
 }
 
 fn update_action_bar_item_at(
@@ -1557,6 +1560,7 @@ fn update_action_bar_item_at(
     shortcut: &str,
     agent: &str,
     accepts: &str,
+    trigger_keyword: &str,
 ) -> Result<()> {
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
     if row.is_system && row.action_type != action_type {
@@ -1568,8 +1572,8 @@ fn update_action_bar_item_at(
         anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
     }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, updated_at=datetime('now') WHERE id=?11",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, updated_at=datetime('now') WHERE id=?12",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, id],
     )?;
     Ok(())
 }
@@ -2474,7 +2478,7 @@ mod tests {
     fn action_bar_insert_with_shortcut() {
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "copy", "", true, false, "q", "", "text",
+            &conn, None, "测试", "", "copy", "", true, false, "q", "", "text", "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.shortcut, "q");
@@ -2484,7 +2488,7 @@ mod tests {
     fn action_bar_update_shortcut() {
         let conn = open_init();
         update_action_bar_item_at(
-            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text",
+            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, 5).unwrap().unwrap();
         assert_eq!(item.shortcut, "p");
@@ -2494,9 +2498,9 @@ mod tests {
     fn action_bar_shortcut_conflict_rejected() {
         let conn = open_init();
         // id=2 设快捷键 't'
-        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text").unwrap();
+        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "").unwrap();
         // id=5 也想用 't' → 应失败
-        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text");
+        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "");
         assert!(result.is_err());
     }
 
@@ -2792,7 +2796,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file",
+            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -3702,8 +3706,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "", "", "text").unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false, "", "", "text").unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "", "", "text", "").unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false, "", "", "text", "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -3721,8 +3725,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "", "", "text").unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "", "", "text").unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "", "", "text", "").unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "", "", "text", "").unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

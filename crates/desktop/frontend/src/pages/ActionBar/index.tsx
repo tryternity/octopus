@@ -504,7 +504,6 @@ export default function ActionBar() {
 
   const executeSearchResult = async (result: SearchHit) => {
     const data = parseActionData(result.actionData);
-    const ctx = contextRef.current;
 
     switch (result.actionType) {
       case "launch_app": {
@@ -538,13 +537,12 @@ export default function ActionBar() {
         break;
       }
       case "url": {
-        const url = (data.action_data as string) || (data.url as string);
+        // Quicklink 关键词触发时 actionData 已含替换后的 URL
+        const url = (data.url as string) || (data.action_data as string);
         if (url) {
           try {
-            await invoke("execute_action_bar", {
-              itemId: data.id as number,
-              text: ctx?.text || "",
-            });
+            await invoke("open_url", { url });
+            invoke("action_bar_dismiss");
           } catch (e) {
             showQuickError(String(e).slice(0, 40));
           }

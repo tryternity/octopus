@@ -270,6 +270,7 @@ pub fn install_extension(
         "",
         "",
         "text",
+        "",
     )
     .map_err(|e| e.to_string())
 }
