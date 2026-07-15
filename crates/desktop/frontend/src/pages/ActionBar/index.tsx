@@ -284,7 +284,7 @@ export default function ActionBar() {
       }
     };
     apply().catch(() => {});
-  }, [view, query, filteredResults.length, expandDirection]);
+  }, [view, query, filteredResults.length, expandDirection, context]);
 
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   // showPayload: show 事件携带的 context（消除首屏竞态）；mount 首次为 undefined（走 invoke 兜底）
@@ -312,7 +312,7 @@ export default function ActionBar() {
       if (showPayload !== undefined) {
         applyContext(showPayload);
       } else {
-        invoke<Context | null>("action_bar_get_context").then(applyContext);
+        invoke<Context | null>("action_bar_get_context").then((ctx) => applyContext(ctx));
       }
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
@@ -1011,16 +1011,6 @@ export default function ActionBar() {
       onExecute={executeSearchResult}
     />
   ) : null;
-
-  // 诊断：渲染时状态演进——定位「有选中却渲染 launch 模式」根因
-  console.log("[action-bar][render]", {
-    hasContext: !!context,
-    textLen: context?.text?.length,
-    menuItems: menuItems.length,
-    mainItems: mainItems.length,
-    inSearch,
-    view,
-  });
 
   return (
     <div
