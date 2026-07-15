@@ -1545,8 +1545,9 @@ pub fn insert_action_bar_item(
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
+    is_enabled: bool,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled))
 }
 
 fn insert_action_bar_item_at(
@@ -1562,6 +1563,7 @@ fn insert_action_bar_item_at(
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
+    is_enabled: bool,
 ) -> Result<i64> {
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
@@ -1575,8 +1577,8 @@ fn insert_action_bar_item_at(
     )?;
     conn.execute(
         "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword],
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -2552,7 +2554,7 @@ mod tests {
     fn action_bar_insert_with_shortcut() {
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "copy", "", true, false, "q", "", "text", "",
+            &conn, None, "测试", "", "copy", "", true, false, "q", "", "text", "", true,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.shortcut, "q");
@@ -2871,7 +2873,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "",
+            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -3781,7 +3783,7 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "", "", "text", "").unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
         update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false, "", "", "text", "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
@@ -3800,8 +3802,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "", "", "text", "").unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "", "", "text", "").unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

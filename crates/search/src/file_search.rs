@@ -3,20 +3,24 @@
 use super::engine::SearchResult;
 use super::matcher::{match_score, Score};
 
-/// 用 mdfind 搜索文件名。异步执行，限制 10 条结果。
+/// 用 mdfind 搜索文件名。异步执行，10s 超时，限制 10 条结果。
 pub async fn search_files(query: &str) -> Vec<SearchResult> {
     if query.len() < 2 {
         return Vec::new();
     }
 
-    let output = tokio::process::Command::new("mdfind")
-        .args(["-name", query])
-        .output()
-        .await;
+    // 10s 超时——Spotlight 索引异常时不永久阻塞搜索 UI
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new("mdfind")
+            .args(["-name", query])
+            .output(),
+    )
+    .await;
 
     let stdout = match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Err(_) => return Vec::new(),
+        Ok(Ok(o)) => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(Err(_)) | Err(_) => return Vec::new(),
     };
 
     let mut results: Vec<(Score, SearchResult)> = stdout

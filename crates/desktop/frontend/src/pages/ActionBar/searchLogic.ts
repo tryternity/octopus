@@ -71,17 +71,19 @@ export function mergeResults(
   instant: SearchResult[],
   delayed: SearchResult[],
 ): SearchResult[] {
+  // 去重 key 包含 source + title + subtitle——不同目录同名文件（readme.md）
+  // 或重复 quicklink 才不会被误丢
   const seen = new Set<string>();
   const merged: SearchResult[] = [];
   for (const r of instant) {
-    const key = `${r.source}:${r.title}`;
+    const key = `${r.source}:${r.title}:${r.subtitle}`;
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(r);
     }
   }
   for (const r of delayed) {
-    const key = `${r.source}:${r.title}`;
+    const key = `${r.source}:${r.title}:${r.subtitle}`;
     if (!seen.has(key)) {
       seen.add(key);
       merged.push(r);

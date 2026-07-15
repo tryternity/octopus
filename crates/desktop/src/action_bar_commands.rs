@@ -640,6 +640,7 @@ pub fn create_action_bar_item(
     agent: String,
     accepts: String,
     trigger_keyword: Option<String>,
+    is_enabled: Option<bool>,
 ) -> Result<i64, String> {
     // 同级菜单项最多 35 个（9 数字 + 26 字母快捷键上限）
     let all = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
@@ -647,7 +648,7 @@ pub fn create_action_bar_item(
     if sibling_count >= 35 {
         return Err("同级菜单项已达上限 35 个（快捷键 1-9 + a-z）".into());
     }
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""))
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true))
         .map_err(|e| e.to_string())
 }
 
@@ -1233,9 +1234,11 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                     TranslateStrategy::Llm => {
                         let llm_config = crate::config::llm_config_ignore_mode(&config)
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-                        let enriched_text = build_enriched_text(&text);
-                        let prompt = auto_translate_prompt(&enriched_text);
-                        let result = octopus_llm::chat_text_with_prompt(prompt, &enriched_text, &llm_config)
+                        // 翻译用纯 text（不含 enriched 上下文标签）：
+                        // 1. auto_translate_prompt 检测 CJK 判断方向——标签会干扰检测
+                        // 2. 翻译结果不应包含【来源】等上下文标签
+                        let prompt = auto_translate_prompt(&text);
+                        let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                         .map_err(|e| e.to_string())?;
                         if item.auto_paste {
                             action_bar_run_and_paste(result, app.clone());

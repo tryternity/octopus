@@ -216,9 +216,8 @@ export default function ActionBar() {
 
   // 按 context.accepts 过滤菜单/quicklink 搜索结果
   // （Files 场景下 text-only 项如翻译不应出现，反之亦然）
+  // 无选中（context=null）时仅显示 accepts="any" 的 menu/quicklink 项
   const contextFilteredResults = useMemo(() => {
-    if (!context) return allResults;
-    const isFiles = context.kind === "files";
     return allResults.filter((r) => {
       if (r.source !== "menu" && r.source !== "quicklink") return true;
       const data = parseActionData(r.actionData);
@@ -226,6 +225,8 @@ export default function ActionBar() {
       if (!item) return true;
       const accepts = item.accepts || "text";
       if (accepts === "any") return true;
+      if (!context) return false; // 无选中：非 any 的 menu 项不显示
+      const isFiles = context.kind === "files";
       return isFiles ? accepts === "file" : accepts === "text";
     });
   }, [allResults, context, menuItems]);

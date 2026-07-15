@@ -334,7 +334,11 @@ const EditForm = ({
             className={cn(inputBase, "disabled:opacity-60")}
             value={type}
             disabled={isSystem}
-            onChange={(e) => onChange({ ...form, actionType: e.target.value })}
+            onChange={(e) => {
+              const newType = e.target.value;
+              // 改类型时重算 accepts——防止旧值残留（如 agent→ai 后仍 accepts="file"）
+              onChange({ ...form, actionType: newType, accepts: deriveAccepts(newType, undefined) });
+            }}
           >
             {ACTION_TYPES.map((at) => (
               <option key={at.value} value={at.value}>{t(at.labelKey)}</option>
@@ -949,6 +953,7 @@ export default function ActionBarPanel({
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
+          isEnabled: editingForm.isEnabled ?? true,
         });
         // 新建 AI/Script 项时也需要设置 auto_paste
         if (editingForm.actionType === "ai" || editingForm.actionType === "script") {
