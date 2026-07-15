@@ -1,0 +1,123 @@
+//! 模糊匹配 + 拼音首字母。
+
+use nucleo_matcher::{Matcher, Config};
+use nucleo_matcher::pattern::{Pattern, CaseMatching, Normalization};
+use nucleo_matcher::Utf32Str;
+
+/// 匹配得分类型（越高越好，<0 表示不匹配）。
+pub type Score = i32;
+
+/// 精确匹配：query == target（忽略大小写）。
+pub fn exact_match(query: &str, target: &str) -> Option<Score> {
+    if query.eq_ignore_ascii_case(target) {
+        Some(10000)
+    } else {
+        None
+    }
+}
+
+/// 前缀匹配：target 以 query 开头（忽略大小写）。
+pub fn prefix_match(query: &str, target: &str) -> Option<Score> {
+    if target.to_lowercase().starts_with(&query.to_lowercase()) {
+        Some(5000 + (target.len() - query.len()) as Score)
+    } else {
+        None
+    }
+}
+
+/// 模糊匹配：nucleo-matcher。
+pub fn fuzzy_match(query: &str, target: &str) -> Option<Score> {
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+    let target_chars: Vec<char> = target.chars().collect();
+    let target_str = Utf32Str::Unicode(&target_chars);
+    pattern.score(target_str, &mut matcher).map(|s| s as Score)
+}
+
+/// 拼音首字母匹配：query 全 ASCII 时，匹配 target 的拼音首字母。
+/// 简单实现：硬编码常用中文菜单项。
+pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
+    if !query.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let initials = pinyin_initials(target);
+    if initials.is_empty() {
+        return None;
+    }
+    if initials.starts_with(&query.to_lowercase()) {
+        Some(3000 + (initials.len() - query.len()) as Score)
+    } else if initials.contains(&query.to_lowercase() as &str) {
+        Some(1000)
+    } else {
+        None
+    }
+}
+
+/// 取中文文本的拼音首字母。硬编码常用菜单项 + 简单 Unicode 范围判断。
+fn pinyin_initials(text: &str) -> String {
+    // 硬编码常用菜单名
+    let known: &[(&str, &str)] = &[
+        ("翻译", "fy"), ("搜索", "ss"), ("润色", "rs"), ("摘要", "zy"),
+        ("解释", "js"), ("网页", "wy"), ("脚本", "jb"), ("复制路径", "fzlj"),
+        ("系统", "xt"), ("设置", "sz"), ("退出", "tc"), ("问豆包", "wdb"),
+    ];
+    for (name, initials) in known {
+        if text.contains(name) {
+            return initials.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 综合匹配：按优先级尝试 exact > prefix > pinyin > fuzzy，取最高分。
+pub fn match_score(query: &str, target: &str) -> Option<Score> {
+    if query.is_empty() {
+        return None;
+    }
+    exact_match(query, target)
+        .or_else(|| prefix_match(query, target))
+        .or_else(|| pinyin_match(query, target))
+        .or_else(|| fuzzy_match(query, target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_match_case_insensitive() {
+        assert_eq!(exact_match("chrome", "Chrome"), Some(10000));
+        assert_eq!(exact_match("CHROME", "Chrome"), Some(10000));
+        assert_eq!(exact_match("chrom", "Chrome"), None);
+    }
+
+    #[test]
+    fn prefix_match_basic() {
+        assert!(prefix_match("chr", "Chrome").is_some());
+        assert!(prefix_match("xyz", "Chrome").is_none());
+    }
+
+    #[test]
+    fn fuzzy_match_basic() {
+        assert!(fuzzy_match("chr", "Chrome").is_some());
+        assert!(fuzzy_match("cme", "Chrome").is_some());
+        assert!(fuzzy_match("xyz", "Chrome").is_none());
+    }
+
+    #[test]
+    fn pinyin_match_chinese_menu() {
+        assert_eq!(pinyin_match("fy", "翻译"), Some(3000));
+        assert_eq!(pinyin_match("rs", "润色"), Some(3000));
+        assert_eq!(pinyin_match("xyz", "翻译"), None);
+    }
+
+    #[test]
+    fn match_score_priority() {
+        // exact > prefix > pinyin > fuzzy
+        let exact = match_score("chrome", "Chrome").unwrap();
+        let prefix = match_score("chr", "Chrome").unwrap();
+        let fuzzy = match_score("cme", "Chrome").unwrap();
+        assert!(exact > prefix);
+        assert!(prefix > fuzzy);
+    }
+}

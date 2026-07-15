@@ -33,6 +33,8 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod model_migrate;
+mod search;
+mod search_commands;
 mod hotword_commands;
 mod input_source;
 mod paste;
@@ -97,6 +99,8 @@ pub fn run() {
     if let Err(e) = model_migrate::create_model_symlinks() {
         log::warn!("模型路径迁移失败（非致命）: {e:?}");
     }
+    // 初始化搜索引擎（应用索引 + 书签扫描）
+    search::init_search_engine();
 
     // 校验引擎模式
     if config.engine_mode == "embedded" && !config::is_streaming_engine(&config) {
@@ -254,6 +258,10 @@ pub fn run() {
             model_commands::list_llm_provider_presets,
             model_commands::test_cloud_model,
             model_commands::get_model_detail,
+            search_commands::search_all,
+            search_commands::launch_app,
+            search_commands::open_file,
+            search_commands::execute_shell,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,
