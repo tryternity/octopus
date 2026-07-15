@@ -1784,4 +1784,47 @@ mod tests {
         let result = write_context_log(&log_path, "test\n");
         assert!(result.is_err(), "路径已是目录时写入应失败");
     }
+
+    // ── TRIGGER_IN_PROGRESS guard 超时保护 ──
+
+    #[test]
+    fn test_reset_trigger_guard_clears_flag() {
+        TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
+        reset_trigger_guard();
+        assert!(!TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "reset_trigger_guard 应清除 guard");
+    }
+
+    #[test]
+    fn test_reset_trigger_guard_if_stale_resets_when_stale() {
+        TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
+        // 设一个 60 秒前的时间戳
+        let old = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64 - 60;
+        TRIGGER_TIMESTAMP.store(old, Ordering::SeqCst);
+        reset_trigger_guard_if_stale(30);
+        assert!(!TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "超过 30s 应被强制重置");
+    }
+
+    #[test]
+    fn test_reset_trigger_guard_if_stale_keeps_recent() {
+        TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
+        // 设一个 5 秒前的时间戳
+        let recent = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64 - 5;
+        TRIGGER_TIMESTAMP.store(recent, Ordering::SeqCst);
+        reset_trigger_guard_if_stale(30);
+        assert!(TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "5s < 30s 不应被重置");
+    }
+
+    #[test]
+    fn test_reset_trigger_guard_if_stale_ignores_zero_timestamp() {
+        TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
+        TRIGGER_TIMESTAMP.store(0, Ordering::SeqCst);
+        reset_trigger_guard_if_stale(30);
+        assert!(TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "timestamp=0 不应被重置");
+    }
 }

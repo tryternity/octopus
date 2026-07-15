@@ -76,7 +76,7 @@ pub fn register_action_bar_shortcut(
                     }
                 }
                 // guard 超时保护——如果上次触发超过 30s 仍未 finalize，强制重置
-                crate::action_bar_commands::reset_trigger_guard_if_stale(30);
+                crate::action_bar_commands::reset_trigger_guard_if_stale(10);
                 crate::action_bar_commands::trigger_action_bar(app_handle.clone());
             }
         })
