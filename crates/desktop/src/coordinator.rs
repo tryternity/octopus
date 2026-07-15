@@ -2315,7 +2315,8 @@ fn handle_polish_now(
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
     if crate::config::llm_config_ignore_mode(config).is_none() {
         warn!("PolishNow: no LLM config available");
-        crate::result_window::show_result(app_handle, "未配置润色模型");
+        // 不覆盖浮窗识别文本——以 polish-error 红色气泡提示，保留原文显示
+        let _ = app_handle.emit("polish-error", "未配置润色模型");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
