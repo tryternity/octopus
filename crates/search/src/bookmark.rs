@@ -63,7 +63,16 @@ fn load_chromium_bookmarks(browser: &str, path: &std::path::Path) -> Vec<Bookmar
     }
     let roots = root.get("roots");
     if let Some(roots) = roots {
-        walk(roots, browser, &mut result);
+        // Chromium 的 roots 是一个对象，含 bookmark_bar / other / synced 三个 folder 键。
+        // 每个 folder 才有 children 数组。遍历 roots 的每个 value 递归 walk。
+        if let Some(roots_obj) = roots.as_object() {
+            for (_, folder) in roots_obj {
+                walk(folder, browser, &mut result);
+            }
+        } else {
+            // 某些版本 roots 本身就是数组，直接 walk
+            walk(roots, browser, &mut result);
+        }
     }
     result
 }
@@ -117,5 +126,40 @@ mod tests {
         ];
         let results = search_bookmarks("", &bookmarks);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_chromium_bookmarks_json() {
+        // 模拟真实 Chromium Bookmarks 文件结构
+        let json = r#"{
+            "roots": {
+                "bookmark_bar": {
+                    "children": [
+                        {"type": "url", "name": "GitHub", "url": "https://github.com"},
+                        {"type": "folder", "name": "Dev", "children": [
+                            {"type": "url", "name": "Rust", "url": "https://rust-lang.org"}
+                        ]}
+                    ]
+                },
+                "other": {
+                    "children": [
+                        {"type": "url", "name": "Google", "url": "https://google.com"}
+                    ]
+                },
+                "synced": {
+                    "children": []
+                }
+            }
+        }"#;
+        let path = std::env::temp_dir().join("test_bookmarks.json");
+        std::fs::write(&path, json).unwrap();
+        let entries = load_chromium_bookmarks("Chrome", &path);
+        let _ = std::fs::remove_file(&path);
+
+        // 应解析出 3 个书签（GitHub + Rust(嵌套) + Google）
+        assert_eq!(entries.len(), 3, "expected 3 bookmarks, got {}: {:?}", entries.len(), entries.iter().map(|e| &e.title).collect::<Vec<_>>());
+        assert!(entries.iter().any(|e| e.title == "GitHub"));
+        assert!(entries.iter().any(|e| e.title == "Rust"));
+        assert!(entries.iter().any(|e| e.title == "Google"));
     }
 }
