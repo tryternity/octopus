@@ -190,21 +190,11 @@ export default function ActionBar() {
   const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
-  // compositionend 后紧跟的 Enter(13) 需跳过——macOS IME 确认候选后会多发一个 Enter
-  const skipNextEnterRef = useRef(false);
+  // 记录上次 keyCode 229（IME 处理中）的时间——如果紧跟一个 Enter(13)，
+  // 说明是 IME 选词确认，跳过它。不依赖 compositionend（WKWebView 空组合会误触发）。
+  const lastImeKeyTime = useRef(0);
 
   useEffect(() => { viewRef.current = view; }, [view]);
-
-  // 原生 composition 事件——不依赖 React 合成事件（macOS WKWebView 时序不可靠）
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const onCompositionEnd = () => {
-      skipNextEnterRef.current = true;
-    };
-    el.addEventListener("compositionend", onCompositionEnd);
-    return () => el.removeEventListener("compositionend", onCompositionEnd);
-  }, []);
 
   // 高亮项变化时自动滚动到可见区域
   useEffect(() => {
@@ -667,13 +657,14 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // 三层 IME 防御：
-      // 1. keyCode 229 = IME 组合输入中的按键，放行
-      // 2. isComposing = 浏览器标准 IME 状态（window 级可能不可靠，但保留双保险）
-      // 3. skipNextEnterRef = compositionend 后紧跟的 Enter(13)，由原生 compositionend 事件设置
-      if (e.keyCode === 229 || e.isComposing) return;
-      if (e.key === "Enter" && skipNextEnterRef.current) {
-        skipNextEnterRef.current = false;
+      // IME 处理中的按键（keyCode 229）——记录时间，放行
+      if (e.keyCode === 229) {
+        lastImeKeyTime.current = Date.now();
+        return;
+      }
+      // Enter(13) 在 IME 按键后 500ms 内 → 选词确认，跳过
+      if (e.key === "Enter" && Date.now() - lastImeKeyTime.current < 500) {
+        lastImeKeyTime.current = 0;
         return;
       }
 
