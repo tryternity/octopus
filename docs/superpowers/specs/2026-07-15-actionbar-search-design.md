@@ -250,7 +250,8 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 ```
 detect_selection() ── 唯一感知 changeCount 的地方
   ├─ Finder → AppleScript → Selection::File/Folder {files, parent_dir, mouse}
-  └─ 非 Finder → Cmd+C + changeCount → Selection::Text {text, mouse} / None
+  ├─ Sublime → 插件 sel_start/sel_end → Selection::Text / None（绕过 Cmd+C）
+  └─ 其他 → Cmd+C + changeCount → Selection::Text {text, mouse} / None
   返回：Selection 枚举（携带选中内容 + 鼠标坐标 + meta）
 
 trigger_action_bar() ── 纯路由
@@ -260,6 +261,8 @@ trigger_action_bar() ── 纯路由
     File   → at_mouse(sel.mouse)
     Folder → at_mouse(sel.mouse)
 ```
+
+**Sublime 选区检测（绕过 Cmd+C 的 copy_with_empty_selection 陷阱）**：Sublime 4 默认 `copy_with_empty_selection: true`——无选中时 Cmd+C 复制当前行，导致 changeCount +1 且剪贴板有当前行内容，changeCount 方案误判"有选中"。detect 对 Sublime 走插件 `get_sublime_selection`：用 `subl --command octopus_export_context` 触发插件导出 `sel_start/sel_end`，`sel_start == sel_end` 即无选中（精确，不依赖 Cmd+C）。副作用：detect 阶段调 `subl --command` 会激活 Sublime，但 gather_context 对 Sublime 本就要调此命令，故无额外副作用。
 
 **changeCount 污染防护**：detect 恢复剪贴板（write_files/set_image/write_text）自身会递增 changeCount。用全局 `CHANGE_COUNT_BASELINE: AtomicI64` 记录上次 detect 结束时的 changeCount，下次 detect 的 `before = max(实时读, baseline)`，所有退出路径（None/Text）恢复后更新 baseline。隔离恢复写入对下次检测的污染（防"无选中误判 Some"）。
 
@@ -357,6 +360,7 @@ CREATE TABLE IF NOT EXISTS app_index (
 15. **trigger guard 统一收口**：`trigger_action_bar` 的 None/Text/File/Folder 所有分支在 match 后统一 `finalize_action_bar`，不依赖用户后续操作清 guard
 16. **changeCount 基准隔离**：`CHANGE_COUNT_BASELINE` 记录上次 detect 结束时的 changeCount，下次 `before = max(实时读, baseline)`——隔离恢复剪贴板写入对 changeCount 判定的污染
 17. **show 事件携带 context**：`action-bar://show` emit 时携带 context payload，前端首屏渲染用 payload 而非异步 invoke（消除首屏竞态，防"有选中却只显示输入框"）
+18. **Sublime 选区精确判定**：detect 对 Sublime 走插件 `sel_start/sel_end`（不靠 Cmd+C），绕过 Sublime 4 `copy_with_empty_selection` 导致的"无选中复制当前行"陷阱——Cmd+C 方案对该设置根本失效
 - osascript 超时 → 返回 None（非 Finder 视为无选中）
 
 ## 11. 安全约束与边界处理

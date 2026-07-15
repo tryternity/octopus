@@ -137,6 +137,93 @@ pub fn try_sublime_plugin_context(
     })
 }
 
+/// 前台是否为 Sublime Text。
+pub fn is_sublime_frontmost() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#;
+        let mut cmd = std::process::Command::new("osascript");
+        cmd.args(["-e", script]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        match super::run_command_with_deadline(cmd, deadline) {
+            Some(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).trim().contains("sublimetext")
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// 通过插件读取 Sublime 当前选区文本。
+///
+/// detect_selection 专用——Sublime 4 默认 `copy_with_empty_selection: true`
+/// （无选中时 Cmd+C 复制当前行），导致 changeCount 方案失效（changeCount +1 且
+/// 剪贴板有当前行内容，误判有选中）。本函数用插件的 `sel_start/sel_end` 精确判定：
+/// - 返回 `Some(text)`：有选中文本（sel_start != sel_end）
+/// - 返回 `None`：无选中（sel_start == sel_end）或插件不可用
+///
+/// 复用 try_sublime_plugin_context 的插件机制（subl --command + JSON 输出），
+/// 但只取选区文本，不切前后文（前后文留给后续 gather_context）。
+pub fn get_sublime_selection(deadline: std::time::Instant) -> Option<String> {
+    // bundle_id 用 Sublime 4 兜底（detect 阶段不精确读 bundle_id，find_sublime_packages_dir 会自动找）
+    let packages_dir = find_sublime_packages_dir("com.sublimetext.4")?;
+    let plugin_path = packages_dir.join("Octopus").join(SUBLIME_PLUGIN_NAME);
+    ensure_plugin_installed(&plugin_path);
+
+    let _ = std::fs::remove_file(SUBLIME_OUTPUT_PATH);
+
+    let subl_path = find_subl_binary(deadline)?;
+    let mut cmd = std::process::Command::new(&subl_path);
+    cmd.arg("--command").arg("octopus_export_context");
+    let result = super::run_command_with_deadline(cmd, deadline);
+    if result.is_none() {
+        log::info!("[app-context][detect] subl --command 失败，Sublime 选区检测降级");
+        return None;
+    }
+
+    let mut waited = 0;
+    while waited < 300 {
+        if std::path::Path::new(SUBLIME_OUTPUT_PATH).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        waited += 50;
+    }
+
+    let content = std::fs::read_to_string(SUBLIME_OUTPUT_PATH).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let full_text = json["content"].as_str().unwrap_or("");
+    let sel_start = json["sel_start"].as_u64().unwrap_or(0) as usize;
+    let sel_end = json["sel_end"].as_u64().unwrap_or(0) as usize;
+
+    // sel_start == sel_end → 无选中（Sublime 插件的精确判定，绕过 copy_with_empty_selection 陷阱）
+    if sel_start >= sel_end || full_text.is_empty() {
+        log::info!("[app-context][detect] Sublime sel=[{},{}] = 无选中", sel_start, sel_end);
+        return None;
+    }
+
+    // 取选区文本——按 char 偏移切（sel_start/sel_end 是 Sublime 的字符偏移）
+    let chars: Vec<char> = full_text.chars().collect();
+    let total = chars.len();
+    let start = sel_start.min(total);
+    let end = sel_end.min(total);
+    let selected: String = chars[start..end].iter().collect();
+
+    if selected.trim().is_empty() {
+        return None;
+    }
+
+    log::info!(
+        "[app-context][detect] Sublime sel=[{},{}] = 选中 {} 字符",
+        sel_start, sel_end, selected.chars().count()
+    );
+    Some(selected)
+}
+
 /// 查找 Sublime Text 的 Packages 目录。
 fn find_sublime_packages_dir(bundle_id: &str) -> Option<std::path::PathBuf> {
     let home = dirs::home_dir()?;

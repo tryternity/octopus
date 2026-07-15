@@ -135,7 +135,26 @@ fn detect_selection(app: &AppHandle) -> Selection {
         };
     }
 
-    // ── 非 Finder 分支：Cmd+C + changeCount 判断有无选中文本 ──
+    // ── Sublime 分支：插件精确读选区（绕过 Cmd+C 的 copy_with_empty_selection 陷阱）──
+    // Sublime 4 默认 `copy_with_empty_selection: true`——无选中时 Cmd+C 复制当前行，
+    // 导致 changeCount +1 且剪贴板有当前行内容，changeCount 方案误判为"有选中"。
+    // 插件的 sel_start/sel_end 能精确区分有无选中，不依赖 Cmd+C。
+    #[cfg(target_os = "macos")]
+    if crate::app_context::sublime_plugin::is_sublime_frontmost() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        return match crate::app_context::sublime_plugin::get_sublime_selection(deadline) {
+            Some(text) => {
+                log::info!("[action-bar] Sublime 插件选区: len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
+                Selection::Text { text, mouse }
+            }
+            None => {
+                log::info!("[action-bar] Sublime 无选中（插件 sel_start==sel_end）");
+                Selection::None
+            }
+        };
+    }
+
+    // ── 非 Finder/非 Sublime 分支：Cmd+C + changeCount 判断有无选中文本 ──
     let clip_handle = app.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
     let clipboard_before_text = read_clipboard_text(app);
     let clipboard_before_image = if clip_handle.has_image() {
@@ -151,12 +170,18 @@ fn detect_selection(app: &AppHandle) -> Selection {
     let now_count = pasteboard_change_count();
     let baseline = CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst);
     let change_count_before = now_count.max(baseline);
+    log::info!(
+        "[action-bar][detect] before: now={} baseline={} → use={}, clip_text_len={}",
+        now_count, baseline, change_count_before,
+        clipboard_before_text.as_deref().map(|t| t.len()).unwrap_or(0)
+    );
 
     let focus = FocusTracker::new();
     focus.simulate_copy();
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let change_count_after = pasteboard_change_count();
+    log::info!("[action-bar][detect] after: changeCount={}", change_count_after);
     // 无选中退出：更新 baseline 到当前 changeCount（含本次 Cmd+C 可能的无效写入）
     if change_count_after <= change_count_before {
         log::info!("[action-bar] changeCount unchanged {}→{} = no selection",
@@ -168,6 +193,11 @@ fn detect_selection(app: &AppHandle) -> Selection {
 
     // changeCount 递增 → 有选中，读剪贴板拿文本
     let clipboard_after = read_clipboard_text(app);
+    log::info!(
+        "[action-bar][detect] changed: before_use={} after={}, clip_after_len={}",
+        change_count_before, change_count_after,
+        clipboard_after.as_deref().map(|t| t.len()).unwrap_or(0)
+    );
 
     // 恢复原始剪贴板——只要 Cmd+C 改了剪贴板就恢复（含选中图片/文件致文本为空的场景），
     // 防止用户原剪贴板内容被 Cmd+C 产生的非文本内容永久覆盖。

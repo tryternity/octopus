@@ -235,7 +235,10 @@
 - 用户输入触发搜索（inSearch=true）再删除后，期间 ctx Promise 已 resolve，菜单才出现
 - **修复**：`show_action_bar_window` emit `action-bar://show` 时携带 `snapshot_pending_context()` 的 context payload；前端 refresh 优先用事件 payload（零延迟），mount 首次走 invoke 兜底。改动：`action_bar_commands.rs` 加 `snapshot_pending_context`；`action_bar_window.rs` emit 带 `&ctx`；`index.tsx` refresh 接收 `showPayload` 参数
 
-**现象 2 根因（后端 changeCount 污染，弹出在鼠标位置=误判 Some）**：
-- 用户观察弹出在鼠标位置 → 后端误判有选中（PENDING_CONTEXT 错误写了 Some），非前端残留
-- 根因：detect_selection 恢复剪贴板（write_files/set_image/write_text，原 169-177 行）**自身递增 changeCount**。下次 detect 的 `change_count_before` 实时读时，若上次恢复写入尚未完成或本次 200ms sleep 期间有异步剪贴板写入，changeCount"假递增"→ 误判有选中 → 读残留文本 → Selection::Text
-- **修复**：全局 `CHANGE_COUNT_BASELINE: AtomicI64` 记录上次 detect 结束时的 changeCount，下次 detect 的 `before = max(实时读, baseline)`；所有退出路径（None/Text）恢复后更新 baseline = 当前 changeCount。隔离恢复写入对下次检测的污染
+**现象 2 根因（Sublime 4 `copy_with_empty_selection`，非 changeCount 污染）**：
+- 初判为 changeCount 污染，加 `CHANGE_COUNT_BASELINE` 后仍 100% 复现 → 根因判断有误
+- 诊断日志铁证：`simulate_copy: frontmost target = sublime_text`（Cmd+C 确实发给 Sublime），`sel=[203,203]`（插件报告无选中），但 `clip_after_preview="选中Text，是搜索框 + 菜单栏"`（当前行内容）+ changeCount +1
+- **真正根因**：Sublime 4 默认 `copy_with_empty_selection: true`——无选中时 Cmd+C 复制当前行。changeCount 方案对该设置根本失效（changeCount 确实 +1，剪贴板确实有内容，但不是"选中文本"而是"当前行"）
+- 用户明确"不能依赖用户设置，octopus 要适配"
+- **修复**：detect 对 Sublime 新增插件分支——`is_sublime_frontmost()` 判定后调 `get_sublime_selection(deadline)`，用插件的 `sel_start/sel_end` 精确判定（`sel_start == sel_end` = 无选中），绕过 Cmd+C。`sublime_plugin.rs` 加 `is_sublime_frontmost` + `get_sublime_selection`；`mod.rs` 改 `pub mod sublime_plugin`；`action_bar_commands.rs` detect 在 Finder 分支后插入 Sublime 分支
+- **保留**：`CHANGE_COUNT_BASELINE`（对其他应用的恢复写入污染仍有防护价值）；`simulate_copy` 的 octopus frontmost 深度防御（防其他应用的 octopus frontmost 边角场景）
