@@ -57,6 +57,9 @@ settings:
     nextRecording: 下次录音
     nextStart: 下次启动
   general:
+    tabGeneral: 一般
+    tabShortcut: 快捷键
+    tabVoice: 语音
     appearance: 外观
     theme: 主题
     themeHint: 浮窗与窗口配色
