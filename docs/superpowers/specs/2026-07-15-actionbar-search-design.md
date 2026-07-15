@@ -125,8 +125,8 @@ Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 
 | 当前焦点 | 按键 | 行为 |
 |---------|------|------|
-| 搜索框 | `Tab` | 焦点跳到结果区，选中第一个；input blur（防 IME 在结果区捕获字符） |
-| 搜索框 | `↑↓` | 焦点跳到结果区首/末项；input blur |
+| 搜索框 | `Tab` | 焦点跳到结果区，选中第一个 |
+| 搜索框 | `↑↓` | 焦点跳到结果区首/末项 |
 | 搜索框 | `Enter` | 执行第一个结果 |
 | 结果区 | `Tab` | 循环：Tab 页之间 → 最后一个 Tab 正向 Tab 回搜索框 |
 | 结果区 | `Shift+Tab` | 反向：Tab 页之间 → 第一个 Tab 反向 Tab 回搜索框 |
@@ -137,10 +137,12 @@ Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 | 任意 | `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
 | 快捷键 | 再按热键 | 窗口已可见 → 隐藏（toggle 语义） |
 
-**IME 处理**：
-- `e.isComposing === true` 时放行所有按键——IME 候选框按 Enter 是确认候选词，不应触发搜索执行
-- 正常 Enter 的 `isComposing === false` → 执行选中条目（输入框无"换行"语义，不需要二次 Enter）
-- 焦点切到结果区时 `inputRef.blur()`——取消 DOM focus，防 IME 在结果区仍捕获字符按键
+**IME 处理（Enter 键）**：
+- macOS 事件序列：IME 选词 = `keydown(keyCode=229)` → `compositionend` → `keydown(Enter, 13)`
+- 纯英文 Enter = `keydown(Enter, 13)`，前面没有 229
+- 实现：window keydown handler 记录 keyCode 229 的时间戳，Enter(13) 在 229 后 500ms 内 → 跳过（选词确认），否则正常执行
+- **不依赖** `isComposing`（window 级时序不可靠）和 `compositionend`（WKWebView 空组合会误触发）
+- **DOM focus 策略**：input 永远不 blur——`searchFocusZone` 只是 React state 控制 window handler 路由，不改变 DOM focus。这样 Tab 循环回到 input 后不会丢失 DOM focus 导致 Tab 失效
 
 ## 4. 搜索结果执行
 
