@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 31 {
+    if v >= 32 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -368,10 +368,24 @@ fn init_schema(conn: &Connection) -> Result<()> {
         {
             conn.execute("DELETE FROM models WHERE domain='asr' AND is_local=0", [])?;
             conn.execute("DELETE FROM models WHERE domain='llm'", [])?;
-            // 重跑 INIT_SQL 确保参考列表 seed 已建（幂等）
             conn.execute_batch(INIT_SQL).ok();
             conn.execute("PRAGMA user_version = 31", [])?;
             log::info!("schema upgraded to v31 (cloud models: remove seed, add presets)");
+        }
+        // v31→v32：action_bar_items 加 trigger_keyword + auto_paste
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"trigger_keyword".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN trigger_keyword TEXT NOT NULL DEFAULT ''", [])?;
+            }
+            if !cols.contains(&"auto_paste".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0", [])?;
+            }
+            conn.execute("PRAGMA user_version = 32", [])?;
+            log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste)");
         }
         return Ok(());
     }
@@ -380,8 +394,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 31", [])?;
-    log::info!("DB initialized (v31): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 32", [])?;
+    log::info!("DB initialized (v32): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1359,9 +1373,11 @@ pub struct ActionBarItem {
     pub shortcut: String,
     pub agent: String,
     pub accepts: String,
+    pub trigger_keyword: String,
+    pub auto_paste: bool,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, auto_paste";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -1379,6 +1395,8 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         shortcut: row.get(11)?,
         agent: row.get(12)?,
         accepts: row.get(13)?,
+        trigger_keyword: row.get(14)?,
+        auto_paste: row.get::<_, i32>(15)? != 0,
     })
 }
 
@@ -2558,7 +2576,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 31, "全新库 init_schema 后应到 v31");
+        assert_eq!(v, 32, "全新库 init_schema 后应到 v32");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2604,6 +2622,34 @@ mod tests {
         assert_eq!(item.agent, "claude");
         assert_eq!(item.accepts, "file");
         assert_eq!(item.action_type, "agent");
+    }
+
+    #[test]
+    fn action_bar_item_has_trigger_keyword_and_auto_paste() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, trigger_keyword, auto_paste, sort_order)
+             VALUES (NULL, 'Quicklink测试', 'link', 'url', 'https://example.com/?q={query}', 'ql', 1, 0)",
+            [],
+        ).unwrap();
+        let id = conn.last_insert_rowid();
+        let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
+        assert_eq!(item.trigger_keyword, "ql");
+        assert!(item.auto_paste);
+    }
+
+    #[test]
+    fn action_bar_trigger_keyword_defaults_empty() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order)
+             VALUES (NULL, '普通菜单', 'bot', 'script', 'echo hi', 0)",
+            [],
+        ).unwrap();
+        let id = conn.last_insert_rowid();
+        let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
+        assert_eq!(item.trigger_keyword, "");
+        assert!(!item.auto_paste);
     }
 
     #[test]
@@ -2702,9 +2748,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 31
+        // 验证：迁移后 user_version = 32
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 31);
+        assert_eq!(v, 32);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2761,7 +2807,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 31);
+        assert_eq!(v, 32);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -2891,7 +2937,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 31);
+        assert_eq!(v, 32);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3701,7 +3747,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 31);
+        assert_eq!(v, 32);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
