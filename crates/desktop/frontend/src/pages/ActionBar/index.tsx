@@ -287,14 +287,15 @@ export default function ActionBar() {
   }, [view, query, filteredResults.length, expandDirection]);
 
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
+  // showPayload: show 事件携带的 context（消除首屏竞态）；mount 首次为 undefined（走 invoke 兜底）
   useEffect(() => {
-    const refresh = () => {
+    const refresh = (showPayload?: Context | null) => {
       showTimeRef.current = Date.now(); // 记录 show 时刻，供 onFocusChanged 宽限判定
       // 前端获取键盘焦点（后端 show 不调 set_focus 避免激活 app），
       // 让方向键直接可用——用户无需鼠标点击
       window.focus();
-      invoke<Context | null>("action_bar_get_context").then((ctx) => {
-        // 每次 show 都重置基础状态——防止遗留旧状态
+      // 每次 show 都重置基础状态——防止遗留旧状态
+      const applyContext = (ctx: Context | null) => {
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]); setDelayedResults([]);
         setActiveTab("all"); setSearchSelectedIdx(0);
@@ -306,7 +307,13 @@ export default function ActionBar() {
         // 有选中时菜单的方向键 / Alt+字母 快捷键由 window 级 handler 拦截，不受 input focus 影响
         // （handler 已对 Arrow/Tab/Enter 等导航键精确放行，不会被 input focus 劫持）。
         setTimeout(() => inputRef.current?.focus(), 50);
-      });
+      };
+      // 优先用 show 事件 payload（零延迟，消除首屏竞态）；无 payload（mount 首次）走 invoke 兜底
+      if (showPayload !== undefined) {
+        applyContext(showPayload);
+      } else {
+        invoke<Context | null>("action_bar_get_context").then(applyContext);
+      }
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
         setMenuItems(items);
@@ -316,7 +323,12 @@ export default function ActionBar() {
       });
     };
     refresh();
-    const listenPromise = rawListen("action-bar://show", () => refresh());
+    // show 事件携带 context payload——消除首屏竞态（原 refresh 内 invoke(get_context)
+    // 是异步 Promise，窗口已 show 但 ctx 还在 pending 时首屏用陈旧 context state 渲染）。
+    // mount 首次仍走 refresh（invoke 兜底），后续 show 从 payload 直接拿 context。
+    const listenPromise = rawListen<Context | null>("action-bar://show", (event) => {
+      refresh(event.payload);
+    });
     // 设置页保存后 emit 此事件 → 浮窗立即刷新菜单（无需关闭再打开）
     const itemsListenPromise = rawListen("action-bar://items-changed", () => {
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {

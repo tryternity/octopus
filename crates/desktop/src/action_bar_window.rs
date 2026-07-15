@@ -57,7 +57,11 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
             }
         }
 
-        let _ = app.emit("action-bar://show", ());
+        // emit 携带 context payload——前端 refresh 直接用事件里的 context，
+        // 不再依赖异步 invoke(get_context)（消除首屏竞态：窗口已 show 但 ctx Promise
+        // 还在 pending 时用了陈旧 context state，导致"有选中却只显示输入框"）。
+        let ctx = crate::action_bar_commands::snapshot_pending_context();
+        let _ = app.emit("action-bar://show", &ctx);
 
         // 焦点时序诊断 + 巩固：gather_context 内 `subl --command` 激活 Sublime 可能是异步的，
         // 间歇性晚于 set_focus 抢走 key 状态（"偶尔没焦点"）。150/350ms 记录 isKeyWindow 定位

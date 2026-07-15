@@ -222,3 +222,20 @@
 - **L6 v33/v34 死代码**：删除 v34 块的冗余 icon 补丁（v33 内部补丁已覆盖），合并为单次 v32→v34 迁移。新增 `migration_v32_to_v34_creates_app_index_with_icon` 测试
 
 **文档同步**：spec §3.3（后台扫描策略）/ §3.5（submenu focusLayer 契约）/ §4.0（dismiss reason + focus-lost 宽限）/ §6.3（reindex 降级 + gather 超时 + Safari 未实现）/ §6.4 / §8（性能预算拆分）/ §9（+4 条不变量）；plan 第十四轮记录
+
+### 第十四轮（Sublime 选中检测两个现象修复）
+
+用户报告 Sublime 下两个现象：
+- **现象 1**：选中文本召唤 ActionBar，有时只显示输入框（无菜单条），输入文字删除后菜单才出现
+- **现象 2**：未选中文本召唤 ActionBar，有时显示菜单模式（应只显示搜索框），弹出位置在鼠标位置（应居中）
+
+**现象 1 根因（前端首屏竞态，非 context=null）**：
+- 用户观察推翻了 context=null 假设——窗口在鼠标位置弹出说明后端正确判定有选中（PENDING_CONTEXT=Some），但前端只显示输入框
+- 根因：`refresh()` 的 `invoke("action_bar_get_context")` 是异步 Promise。窗口已 show + React 已渲染首屏，但 ctx Promise 还在 pending → `context` state 仍是初始/陈旧 null → 只渲染输入框（`context ? menuContent : null`）
+- 用户输入触发搜索（inSearch=true）再删除后，期间 ctx Promise 已 resolve，菜单才出现
+- **修复**：`show_action_bar_window` emit `action-bar://show` 时携带 `snapshot_pending_context()` 的 context payload；前端 refresh 优先用事件 payload（零延迟），mount 首次走 invoke 兜底。改动：`action_bar_commands.rs` 加 `snapshot_pending_context`；`action_bar_window.rs` emit 带 `&ctx`；`index.tsx` refresh 接收 `showPayload` 参数
+
+**现象 2 根因（后端 changeCount 污染，弹出在鼠标位置=误判 Some）**：
+- 用户观察弹出在鼠标位置 → 后端误判有选中（PENDING_CONTEXT 错误写了 Some），非前端残留
+- 根因：detect_selection 恢复剪贴板（write_files/set_image/write_text，原 169-177 行）**自身递增 changeCount**。下次 detect 的 `change_count_before` 实时读时，若上次恢复写入尚未完成或本次 200ms sleep 期间有异步剪贴板写入，changeCount"假递增"→ 误判有选中 → 读残留文本 → Selection::Text
+- **修复**：全局 `CHANGE_COUNT_BASELINE: AtomicI64` 记录上次 detect 结束时的 changeCount，下次 detect 的 `before = max(实时读, baseline)`；所有退出路径（None/Text）恢复后更新 baseline = 当前 changeCount。隔离恢复写入对下次检测的污染

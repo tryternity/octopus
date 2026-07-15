@@ -42,6 +42,10 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// 触发时间戳——用于超时保护，防 webview 崩溃后 guard 永久卡死
 static TRIGGER_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// detect_selection 的 changeCount 基准——上次 detect 结束时（含恢复剪贴板的写入）
+/// 记录的 changeCount。下次 detect 的 before 用 max(实时读, 此基准)，
+/// 隔离恢复剪贴板写入自身递增 changeCount 对下次检测的污染（现象 2 根因）。
+static CHANGE_COUNT_BASELINE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 /// 一次触发检测出的完整选中状态——后端唯一的"有什么选中"真相源。
@@ -142,17 +146,23 @@ fn detect_selection(app: &AppHandle) -> Selection {
     } else { None };
 
     clip_handle.suppress_next();
-    let change_count_before = pasteboard_change_count();
+    // before 取 max(实时读, 上次记录的 baseline)——隔离上次 detect 恢复剪贴板的写入
+    // 递增 changeCount 对本次检测的污染（现象 2：无选中误判 Some）。
+    let now_count = pasteboard_change_count();
+    let baseline = CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst);
+    let change_count_before = now_count.max(baseline);
 
     let focus = FocusTracker::new();
     focus.simulate_copy();
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let change_count_after = pasteboard_change_count();
-    if change_count_after == change_count_before {
+    // 无选中退出：更新 baseline 到当前 changeCount（含本次 Cmd+C 可能的无效写入）
+    if change_count_after <= change_count_before {
         log::info!("[action-bar] changeCount unchanged {}→{} = no selection",
             change_count_before, change_count_after);
         clip_handle.clear_suppress();
+        CHANGE_COUNT_BASELINE.store(change_count_after, std::sync::atomic::Ordering::SeqCst);
         return Selection::None;
     }
 
@@ -160,7 +170,9 @@ fn detect_selection(app: &AppHandle) -> Selection {
     let clipboard_after = read_clipboard_text(app);
 
     // 恢复原始剪贴板——只要 Cmd+C 改了剪贴板就恢复（含选中图片/文件致文本为空的场景），
-    // 防止用户原剪贴板内容被 Cmd+C 产生的非文本内容永久覆盖
+    // 防止用户原剪贴板内容被 Cmd+C 产生的非文本内容永久覆盖。
+    // 注意：恢复写入（write_files/set_image/write_text）自身会递增 changeCount，
+    // 恢复后更新 baseline 到新的 changeCount，避免下次检测把恢复写入误认为 Cmd+C。
     clip_handle.clear_suppress();
     if let Some(ref files) = clipboard_before_files {
         let _ = clip_handle.write_files(files.clone());
@@ -171,6 +183,8 @@ fn detect_selection(app: &AppHandle) -> Selection {
             write_clipboard_text(app, original);
         }
     }
+    // 更新 baseline 到恢复后的 changeCount——下次 detect 的 before 至少是这个值
+    CHANGE_COUNT_BASELINE.store(pasteboard_change_count(), std::sync::atomic::Ordering::SeqCst);
 
     let text = match &clipboard_after {
         Some(t) if !t.trim().is_empty() => t.clone(),
@@ -350,6 +364,13 @@ pub fn action_bar_get_context() -> Option<ActionBarContext> {
             .unwrap_or_else(|| "None".to_string())
     );
     ctx
+}
+
+/// emit show 事件时快照 PENDING_CONTEXT——供前端从事件 payload 直接读 context，
+/// 消除 invoke(get_context) 异步延迟导致的首屏竞态（窗口已 show 但 ctx Promise
+/// 还在 pending，首屏用陈旧 context state 渲染）。
+pub fn snapshot_pending_context() -> Option<ActionBarContext> {
+    PENDING_CONTEXT.lock().unwrap().clone()
 }
 
 /// 前端隐藏浮窗时调用。reason 用于诊断 dismiss 触发来源（focus-lost / click-outside / 操作后）。

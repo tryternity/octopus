@@ -261,6 +261,10 @@ trigger_action_bar() ── 纯路由
     Folder → at_mouse(sel.mouse)
 ```
 
+**changeCount 污染防护**：detect 恢复剪贴板（write_files/set_image/write_text）自身会递增 changeCount。用全局 `CHANGE_COUNT_BASELINE: AtomicI64` 记录上次 detect 结束时的 changeCount，下次 detect 的 `before = max(实时读, baseline)`，所有退出路径（None/Text）恢复后更新 baseline。隔离恢复写入对下次检测的污染（防"无选中误判 Some"）。
+
+**show 事件携带 context payload**：`show_action_bar_window` emit `action-bar://show` 时携带 `snapshot_pending_context()` 的 context。前端 refresh 优先用事件 payload（零延迟），mount 首次走 invoke 兜底。消除首屏竞态——原 invoke(get_context) 异步 Promise pending 期间，窗口已 show 但 context state 仍是陈旧值，导致"有选中却只显示输入框"。
+
 ### 6.2 前端模块
 
 | 文件 | 职责 |
@@ -351,6 +355,8 @@ CREATE TABLE IF NOT EXISTS app_index (
 13. **save_app_index 原子性**：DELETE + INSERT 在同一事务内，中途失败回滚 DELETE，不丢索引
 14. **executeItem submenu 焦点契约**：展开 submenu 后 focusLayer 必为 `sub`（`nextFocusLayerAfterExecute` 守护），Enter 执行子项而非重复展开父项
 15. **trigger guard 统一收口**：`trigger_action_bar` 的 None/Text/File/Folder 所有分支在 match 后统一 `finalize_action_bar`，不依赖用户后续操作清 guard
+16. **changeCount 基准隔离**：`CHANGE_COUNT_BASELINE` 记录上次 detect 结束时的 changeCount，下次 `before = max(实时读, baseline)`——隔离恢复剪贴板写入对 changeCount 判定的污染
+17. **show 事件携带 context**：`action-bar://show` emit 时携带 context payload，前端首屏渲染用 payload 而非异步 invoke（消除首屏竞态，防"有选中却只显示输入框"）
 - osascript 超时 → 返回 None（非 Finder 视为无选中）
 
 ## 11. 安全约束与边界处理
