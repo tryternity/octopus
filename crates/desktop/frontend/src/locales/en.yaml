@@ -89,6 +89,8 @@ settings:
     clipboardTabShortcutHint: Switch filter type in float window
     actionBarShortcut: AI Panel
     actionBarShortcutHint: Press this key after selecting text
+    screenshotShortcut: Screenshot OCR
+    screenshotShortcutHint: Capture screen region and recognize text
     recording: Voice Recognition
     recogLang: Recognition Language
     recogAuto: Auto

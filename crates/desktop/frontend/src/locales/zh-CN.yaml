@@ -89,6 +89,8 @@ settings:
     clipboardTabShortcutHint: 浮窗内切过滤类型
     actionBarShortcut: AI面板
     actionBarShortcutHint: 选中文本后按此键唤起
+    screenshotShortcut: 截图OCR
+    screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
     recogLang: 识别语言
     recogAuto: 自动
