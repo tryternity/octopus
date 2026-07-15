@@ -64,8 +64,15 @@ pub fn register_action_bar_shortcut(
         .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
     let app_handle = app.clone();
     app.global_shortcut()
-        .on_shortcut(shortcut, move |_app, _scut, event| {
+        .on_shortcut(shortcut, move |app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
+                // 已可见 → 隐藏（toggle 语义）；不可见 → 触发
+                if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+                    if win.is_visible().unwrap_or(false) {
+                        let _ = win.hide();
+                        return;
+                    }
+                }
                 crate::action_bar_commands::trigger_action_bar(app_handle.clone());
             }
         })

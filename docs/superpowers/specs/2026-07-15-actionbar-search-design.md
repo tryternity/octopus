@@ -256,3 +256,18 @@ ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0;
 - **query trim**：`search_all` 入口 `query.trim()` 一次，覆盖所有 tab 路径——防前导/尾部空格（粘贴 / IME 残留）致 exact/prefix 匹配失败。
 - **无结果保留高度**：`calcResultsHeight(0)` 返回 1 行高度（36px）而非 0——保证「无结果」提示可见，不被 0 高度容器 overflow 裁剪。
 - **accepts=any 无选中可执行**：`accepts="any"` 的项无选中（context=null）时仍可执行（text 用空串）——`executeItem` 不再 `if(!ctx) return`；由 `contextFilteredResults` 保证无选中时仅 any 项进入搜索结果。
+
+## 12. URL 检测（urlDetect.ts）
+
+选中文本时前端 `detectActionUrl` 判定是否为 URL，是则显示「在浏览器打开」项（`actionType='url'`、`actionData=''`），执行时后端走 §11 的 URL scheme 白名单分支（`item.action_data` 为空 → 用选中文本作 URL）。
+
+**三条检测路径**（宽松设计，源码注释明示「比剪贴板 detectUrl 更宽松」）：
+1. `localhost`（`LOCALHOST_RE`）→ `http://localhost…`
+2. IPv4（`IPV4_RE = /^\d{1,3}\.…/`）→ `http://<ip>`
+3. 域名（含 `.` 且不以点开头/结尾，且点两侧至少一侧含字母）→ `https://<domain>`
+
+**已知边界缺陷（未修，P2）**：
+- **文件名误判**：`readme.md`/`photo.jpg`/`data.csv` 等含点 + 字母的文件名命中域名分支 → 构造 `https://readme.md`（`.md`/`.jpg` 非 TLD，DNS 无法解析，浏览器报错）。
+- **无效 IP**：`999.999.999.999` 命中 IPv4 正则（仅 `\d{1,3}`，无 0-255 范围校验）→ `http://999.999.999.999`（无效）。
+
+后端 §11 URL scheme 白名单已确保这些**不会触发系统级操作**（非 http/https 统一补 `https://`），影响仅是显示一个无效的「打开」项，用户点击后浏览器报错。前端可加 TLD 白名单 / IPv4 0-255 范围校验收紧（可选优化）。
