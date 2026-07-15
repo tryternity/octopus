@@ -712,6 +712,8 @@ export default function ActionBar() {
             e.preventDefault();
             setSearchFocusZone("results");
             setSearchSelectedIdx(0);
+            // 离开输入框时 blur——防止 IME 在结果区仍捕获字符
+            inputRef.current?.blur();
             return;
           }
           if (e.key === "ArrowDown") {
@@ -719,6 +721,7 @@ export default function ActionBar() {
             if (results.length > 0) {
               setSearchFocusZone("results");
               setSearchSelectedIdx(0);
+              inputRef.current?.blur();
             }
             return;
           }
@@ -727,6 +730,7 @@ export default function ActionBar() {
             if (results.length > 0) {
               setSearchFocusZone("results");
               setSearchSelectedIdx(results.length - 1);
+              inputRef.current?.blur();
             }
             return;
           }
@@ -774,6 +778,7 @@ export default function ActionBar() {
         const tabByKey = getTabByKey(e.key);
         if (tabByKey) {
           e.preventDefault();
+          e.stopPropagation();
           setActiveTab(tabByKey);
           return;
         }
