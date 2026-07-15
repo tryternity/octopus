@@ -190,8 +190,21 @@ export default function ActionBar() {
   const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
+  // compositionend 后紧跟的 Enter(13) 需跳过——macOS IME 确认候选后会多发一个 Enter
+  const skipNextEnterRef = useRef(false);
 
   useEffect(() => { viewRef.current = view; }, [view]);
+
+  // 原生 composition 事件——不依赖 React 合成事件（macOS WKWebView 时序不可靠）
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onCompositionEnd = () => {
+      skipNextEnterRef.current = true;
+    };
+    el.addEventListener("compositionend", onCompositionEnd);
+    return () => el.removeEventListener("compositionend", onCompositionEnd);
+  }, []);
 
   // 高亮项变化时自动滚动到可见区域
   useEffect(() => {
@@ -654,8 +667,15 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中的按键已由 input 的 onKeyDown 用 stopPropagation 阻止冒泡
-      // 此处收到的都是非 IME 组合的按键
+      // 三层 IME 防御：
+      // 1. keyCode 229 = IME 组合输入中的按键，放行
+      // 2. isComposing = 浏览器标准 IME 状态（window 级可能不可靠，但保留双保险）
+      // 3. skipNextEnterRef = compositionend 后紧跟的 Enter(13)，由原生 compositionend 事件设置
+      if (e.keyCode === 229 || e.isComposing) return;
+      if (e.key === "Enter" && skipNextEnterRef.current) {
+        skipNextEnterRef.current = false;
+        return;
+      }
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
@@ -926,14 +946,6 @@ export default function ActionBar() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setSearchFocusZone("input")}
-        onKeyDown={(e) => {
-          // input DOM 级拦截——此处的 isComposing 是可靠的
-          // （window keydown handler 的 isComposing 时序不可靠）
-          // IME 组合中的 Enter 是确认候选词，用 stopPropagation 阻止它冒泡到 window handler
-          if (e.nativeEvent.isComposing) {
-            e.stopPropagation();
-          }
-        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"
