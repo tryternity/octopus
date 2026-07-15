@@ -80,7 +80,7 @@ function TabButton({
         "inline-flex h-4 w-4 items-center justify-center rounded font-mono text-[10px] font-bold leading-none",
         active ? "bg-voice text-white" : "bg-muted text-muted-foreground",
       )}>
-        {tab.key}
+        ⌘{tab.key}
       </span>
       <span className="text-[10px] font-medium leading-none whitespace-nowrap">{tab.label}</span>
     </button>

@@ -31,11 +31,11 @@ export interface TabDef {
 
 /**
  * Tab 栏定义（顺序即 Tab 循环顺序）。
- * 搜索框 → all → apps → files → shell → bookmarks → 搜索框
+ * Tab 键在 Tab 页之间循环；Cmd+字母 快捷定位。
  */
 export const TABS: readonly TabDef[] = [
   { id: "all", label: "全部", key: "a" },
-  { id: "apps", label: "应用", key: "p" },
+  { id: "apps", label: "应用", key: "d" },
   { id: "files", label: "文件", key: "f" },
   { id: "shell", label: "Shell", key: "s" },
   { id: "bookmarks", label: "书签", key: "b" },

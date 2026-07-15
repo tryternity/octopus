@@ -12,9 +12,8 @@ import {
   TAB_BAR_HEIGHT,
   DELAYED_SEARCH_DEBOUNCE_MS,
   type TabId,
-  TABS,
+
   type ExpandDirection,
-  type FocusZone,
   type SearchResult as SearchHit,
 } from "./searchTypes";
 import {
@@ -187,11 +186,8 @@ export default function ActionBar() {
   const [delayedResults, setDelayedResults] = useState<SearchHit[]>([]);
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
   const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
-  const [, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
-  // 记录上次 keyCode 229（IME 处理中）的时间——如果紧跟一个 Enter(13)，
-  // 说明是 IME 选词确认，跳过它。不依赖 compositionend（WKWebView 空组合会误触发）。
   const lastImeKeyTime = useRef(0);
 
   useEffect(() => { viewRef.current = view; }, [view]);
@@ -292,7 +288,7 @@ export default function ActionBar() {
         // 每次 show 都重置基础状态——防止遗留旧状态
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]); setDelayedResults([]);
-        setActiveTab("all"); setSearchZone("input"); setSearchSelectedIdx(0);
+        setActiveTab("all"); setSearchSelectedIdx(0);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
         setContext(ctx);
@@ -426,7 +422,6 @@ export default function ActionBar() {
   useEffect(() => {
     if (!hasQuery(query)) {
       setActiveTab("all");
-      setSearchZone("input");
       setSearchSelectedIdx(0);
     }
   }, [query]);
@@ -640,13 +635,6 @@ export default function ActionBar() {
   const queryRef = useRef("");
   const activeTabRef = useRef<TabId>("all");
   const searchSelectedIdxRef = useRef(0);
-  const searchFocusZoneRef = useRef<FocusZone>("input");
-  const setSearchZone = (zone: FocusZone) => {
-    searchFocusZoneRef.current = zone; // 同步更新 ref
-    setSearchFocusZone(zone);
-    // 结果区时设 readOnly 防 IME 捕获字母；回 input 时解除
-    if (inputRef.current) inputRef.current.readOnly = (zone === "results");
-  };
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
@@ -678,7 +666,6 @@ export default function ActionBar() {
         e.preventDefault();
         if (hasQuery(queryRef.current)) {
           setQuery("");
-          setSearchZone("input");
           inputRef.current?.focus();
         } else {
           invoke("action_bar_dismiss");
@@ -690,72 +677,29 @@ export default function ActionBar() {
       if (viewRef.current === "loading") return;
 
       // ── 搜索模式键盘导航（query 非空时）──
+      // 简化设计：输入框始终是焦点，Tab 键只切换 Tab 页，不改变焦点
+      // Cmd+字母 快捷定位 Tab 页
       if (hasQuery(queryRef.current)) {
-        const zone = searchFocusZoneRef.current;
         const results = filteredResultsRef.current;
 
-        // 输入框区域
-        if (zone === "input") {
-          if (e.key === "Tab") {
+        // Cmd+字母 → 快捷定位 Tab 页
+        if (e.metaKey && e.key.length === 1) {
+          const tabByKey = getTabByKey(e.key.toLowerCase());
+          if (tabByKey) {
             e.preventDefault();
-            // input 按 Tab → 进入结果区，切到第二个 Tab（apps）
-            // 如果当前不在 all（比如从 results 回来后仍在最后一个 tab），先回 all 再进 apps
-            if (activeTabRef.current !== "all") {
-              setActiveTab("all");
-            }
-            setActiveTab(getNextTab("all", e.shiftKey ? -1 : 1));
-            setSearchZone("results");
-            setSearchSelectedIdx(0);
-            return;
+            setActiveTab(tabByKey);
           }
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            if (results.length > 0) {
-              setSearchZone("results");
-              setSearchSelectedIdx(0);
-            }
-            return;
-          }
-          if (e.key === "ArrowUp") {
-            e.preventDefault();
-            if (results.length > 0) {
-              setSearchZone("results");
-              setSearchSelectedIdx(results.length - 1);
-            }
-            return;
-          }
-          if (e.key === "Enter") {
-            e.preventDefault();
-            if (results.length > 0) {
-              executeSearchResult(results[0]);
-            }
-            return;
-          }
-          // 其他键 → 交给输入框处理（不 preventDefault）
           return;
         }
 
-        // 结果区域
+        // Tab → 循环切换 Tab 页
         if (e.key === "Tab") {
           e.preventDefault();
-          const currentIdx = TABS.findIndex(t => t.id === activeTabRef.current);
-          const isLastForward = !e.shiftKey && currentIdx === TABS.length - 1;
-          const isFirstBackward = e.shiftKey && currentIdx === 0;
-          if (isLastForward) {
-            // 最后一个 Tab 正向 Tab → 回搜索框，Tab 页回到 all
-            setSearchZone("input");
-            setSearchSelectedIdx(0);
-            setActiveTab("all");
-          } else if (isFirstBackward) {
-            // 第一个 Tab 反向 Tab → 回搜索框，Tab 页回到 all
-            setSearchZone("input");
-            setSearchSelectedIdx(0);
-            setActiveTab("all");
-          } else {
-            setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
-          }
+          setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
           return;
         }
+
+        // ↑↓ → 导航结果列表
         if (e.key === "ArrowDown") {
           e.preventDefault();
           setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, 1, results.length));
@@ -766,32 +710,16 @@ export default function ActionBar() {
           setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, -1, results.length));
           return;
         }
+
+        // Enter → 执行选中项（或第一个）
         if (e.key === "Enter") {
           e.preventDefault();
-          const selected = results[searchSelectedIdxRef.current];
+          const selected = results[searchSelectedIdxRef.current] ?? results[0];
           if (selected) executeSearchResult(selected);
           return;
         }
-        if (e.key === "i") {
-          e.preventDefault();
-          setSearchZone("input");
-          setSearchSelectedIdx(0);
-          inputRef.current?.focus();
-          return;
-        }
-        // Tab 快捷键
-        const tabByKey = getTabByKey(e.key);
-        if (tabByKey) {
-          e.preventDefault();
-          e.stopPropagation();
-          setActiveTab(tabByKey);
-          return;
-        }
-        // 其他可打印字符 → 回到输入框（字符自然进入输入框）
-        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          setSearchZone("input");
-          inputRef.current?.focus();
-        }
+
+        // 其他键 → 交给输入框处理
         return;
       }
 
@@ -947,7 +875,6 @@ export default function ActionBar() {
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        onFocus={() => setSearchZone("input")}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"
