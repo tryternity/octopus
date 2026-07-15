@@ -126,10 +126,10 @@ export function parseActionData(actionData: string): Record<string, unknown> {
 
 /**
  * 计算搜索结果区域需要的高度（px）。
- * 限制在 MAX_VISIBLE_RESULTS 行以内。
+ * 0 结果时仍保留 1 行高度（显示"无结果"提示），最多 MAX_VISIBLE_RESULTS 行。
  */
 export function calcResultsHeight(resultCount: number): number {
-  const visible = Math.min(Math.max(resultCount, 0), MAX_VISIBLE_RESULTS);
+  const visible = Math.min(Math.max(resultCount, 1), MAX_VISIBLE_RESULTS);
   return visible * RESULT_ROW_HEIGHT;
 }
 

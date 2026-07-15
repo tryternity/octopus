@@ -18,9 +18,10 @@ pub fn exact_match(query: &str, target: &str) -> Option<Score> {
 
 /// 前缀匹配：target 以 query 开头（忽略大小写）。
 /// 打分：base 5000，剩余字符越少（越接近精确匹配）分越高。
+/// 用 char count 而非 byte len——CJK 文字 3 bytes/char，byte 算法系统性压低中文。
 pub fn prefix_match(query: &str, target: &str) -> Option<Score> {
     if target.to_lowercase().starts_with(&query.to_lowercase()) {
-        let remaining = target.len().saturating_sub(query.len());
+        let remaining = target.chars().count().saturating_sub(query.chars().count());
         Some(5000 - remaining as Score)
     } else {
         None
@@ -47,7 +48,7 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
         return None;
     }
     if initials.starts_with(&query.to_lowercase()) {
-        let remaining = initials.len().saturating_sub(query.len());
+        let remaining = initials.chars().count().saturating_sub(query.chars().count());
         Some(3000 - remaining as Score)
     } else if initials.contains(&query.to_lowercase() as &str) {
         Some(1000)

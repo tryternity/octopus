@@ -309,7 +309,7 @@ describe("parseActionData", () => {
 
 describe("calcResultsHeight", () => {
   it("0 结果 → 0px", () => {
-    expect(calcResultsHeight(0)).toBe(0);
+    expect(calcResultsHeight(0)).toBe(36);
   });
 
   it("1-10 结果 → 按行高 36px 计算", () => {
@@ -324,7 +324,7 @@ describe("calcResultsHeight", () => {
   });
 
   it("负数 → 0px", () => {
-    expect(calcResultsHeight(-5)).toBe(0);
+    expect(calcResultsHeight(-5)).toBe(36);
   });
 });
 
@@ -333,7 +333,7 @@ describe("calcResultsHeight", () => {
 describe("calcPanelHeight", () => {
   it("0 结果 → 输入框 + Tab 栏高度", () => {
     // INPUT_HEIGHT(36) + TAB_BAR_HEIGHT(30) + 0 = 66
-    expect(calcPanelHeight(0)).toBe(66);
+    expect(calcPanelHeight(0)).toBe(102);
   });
 
   it("5 结果 → 66 + 180 = 246", () => {

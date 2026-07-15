@@ -466,7 +466,7 @@ export default function ActionBar() {
 
   const executeAiItem = async (item: ActionBarItem) => {
     const ctx = contextRef.current;
-    if (!ctx) return;
+    const text = ctx?.text || "";
     setView("loading");
     timedOutRef.current = false;
 
@@ -481,7 +481,7 @@ export default function ActionBar() {
     }, timeoutMs) : null;
 
     try {
-      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text || "" });
+      await invoke("execute_action_bar", { itemId: item.id, text });
       if (timeoutId) clearTimeout(timeoutId);
       if (timedOutRef.current) {
         console.warn("[action-bar] AI result arrived after timeout, discarding");
@@ -500,7 +500,8 @@ export default function ActionBar() {
 
   const executeItem = async (item: ActionBarItem) => {
     const ctx = contextRef.current;
-    if (!ctx) return;
+    // accepts=any 的项不需要选中内容——无 ctx 时用空文本
+    const text = ctx?.text || "";
 
     if (item.actionType === "submenu") {
       submenuParentIdRef.current = item.id;
@@ -544,10 +545,8 @@ export default function ActionBar() {
     }
 
     // copy_path / url / script / copy
-    // copy_path / url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
-    // Files 场景 ctx.text 为空，确保传空串而非 undefined（Tauri 参数校验）
     try {
-      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text || "" });
+      await invoke("execute_action_bar", { itemId: item.id, text });
     } catch (e) {
       showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
     }
@@ -653,10 +652,7 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // loading 视图不拦截键盘导航
-      if (viewRef.current === "loading") return;
-
-      // Escape：搜索模式下先清空查询，再 dismiss
+      // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
         e.preventDefault();
         if (hasQuery(queryRef.current)) {
@@ -668,6 +664,9 @@ export default function ActionBar() {
         }
         return;
       }
+
+      // loading 视图不拦截其他键盘导航
+      if (viewRef.current === "loading") return;
 
       // ── 搜索模式键盘导航（query 非空时）──
       if (hasQuery(queryRef.current)) {
