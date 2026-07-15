@@ -441,6 +441,11 @@ export default function ActionBar() {
   });
   const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId && isItemVisible(i));
 
+  // items 变化时 clamp 选中索引——防删除/设置改动后越界
+  useEffect(() => {
+    if (selectedIdx >= mainItems.length && mainItems.length > 0) setSelectedIdx(mainItems.length - 1);
+  }, [mainItems.length]);
+
   // ── 动作执行 ──
 
   const executeAiItem = async (item: ActionBarItem) => {
@@ -790,12 +795,14 @@ export default function ActionBar() {
           // 焦点在子菜单——左右键在子菜单移动
           setSubSelectedIdx((prev) => {
             const items = subItemsRef.current;
+            if (items.length === 0) return 0;
             return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
           });
         } else {
           // 焦点在主菜单——左右键在主菜单移动，submenu 项自动展开子菜单预览
           setSelectedIdx((prev) => {
             const items = mainItemsRef.current;
+            if (items.length === 0) return 0;
             const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
             const item = items[next];
             if (item && item.actionType === "submenu") {

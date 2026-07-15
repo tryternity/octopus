@@ -64,6 +64,9 @@ impl AppIndex {
             }
         }
         log::info!("[search] 应用索引: {} 个应用", apps.len());
+        // 去重：跨目录同名 app 只保留第一个（/Applications 优先于 ~/Applications）
+        let mut seen = std::collections::HashSet::new();
+        apps.retain(|a| seen.insert(a.name.clone()));
         Self { apps }
     }
 

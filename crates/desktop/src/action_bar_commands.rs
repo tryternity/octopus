@@ -1288,11 +1288,11 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 item.action_data.replace("{text}", &url_encode_param(&text))
             };
             #[cfg(target_os = "macos")]
-            { let _ = std::process::Command::new("open").arg(&url).spawn(); }
+            { let _ = std::process::Command::new("open").arg(&url).status(); }
             #[cfg(target_os = "windows")]
-            { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn(); }
+            { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).status(); }
             #[cfg(target_os = "linux")]
-            { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+            { let _ = std::process::Command::new("xdg-open").arg(&url).status(); }
             Ok(false)
         }
         "script" => {

@@ -1649,10 +1649,13 @@ fn delete_action_bar_item_at(conn: &Connection, id: i64) -> Result<()> {
 /// 更新 auto_paste 字段（Run And Paste 模式开关）。
 pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
     with_db(|conn| {
-        conn.execute(
+        let rows = conn.execute(
             "UPDATE action_bar_items SET auto_paste=?1, updated_at=datetime('now') WHERE id=?2",
             params![auto_paste as i32, id],
         )?;
+        if rows == 0 {
+            anyhow::bail!("菜单项不存在: {}", id);
+        }
         Ok(())
     })
 }

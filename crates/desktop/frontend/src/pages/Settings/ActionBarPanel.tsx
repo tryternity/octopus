@@ -722,8 +722,12 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
-    const list = await invoke<ScriptRun[]>("list_script_runs", { limit: 100 });
-    setRuns(list);
+    try {
+      const list = await invoke<ScriptRun[]>("list_script_runs", { limit: 100 });
+      setRuns(list);
+    } catch {
+      // 静默——脚本记录列表加载失败不应阻塞设置页
+    }
     setLoaded(true);
   }, []);
 
@@ -882,7 +886,11 @@ export default function ActionBarPanel({
   const startEdit = useCallback((item: ActionBarItem) => {
     setDraftParentId(undefined);
     setEditingId(item.id);
-    const isExt = item.actionType === "script" && item.actionData.startsWith("/");
+    // extension 判断：action_data 是已安装的脚本绝对路径（非内联脚本）
+    // shebang 行（#!/bin/sh）以 # 开头，不会误判
+    const p = item.actionData.trim();
+    const isExt = item.actionType === "script" && p.length > 0 && !p.startsWith("#") &&
+      (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p));
     setEditingForm({ ...item, actionType: isExt ? "extension" : item.actionType });
     setView("edit");
   }, []);
