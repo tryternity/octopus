@@ -137,3 +137,10 @@
 - IME 组合中（`e.isComposing`）Enter 不触发搜索执行（确认候选词）
 - URL scheme 白名单：选中文本即 URL 仅放行 http/https，其余补 https://（防 smb/file/vnc 触发系统操作）
 - `search_all` 入口 `query.trim()`（防前导/尾部空格致 exact/prefix 匹配失败）
+
+### 第十轮（实施 P0-P2 建议修复）
+
+- **P0 extension 编辑死锁链**：`install_extension` 加 `shortcut`/`is_enabled`/`replace_id`（编辑重选走 update 保持位置）；`import_extension` 去掉 `dest.exists()` 拒绝；`saveEdit` 重构去顶部误拦 + 补 `set_auto_paste`；autoPaste toggle 显示 extension 类型
+- **P1 剪贴板恢复**：`detect_selection` 恢复逻辑前移到读 `clipboard_after` 之后（`_` 分支选中图片/文件也恢复原剪贴板）
+- **P2 urlDetect 边界**：文件扩展名黑名单 `FILE_EXT_RE` + IPv4 `isValidIpv4Host` 0-255 校验
+- **P2 性能/可维护性**：`fuzzy_match` Matcher `thread_local` 复用；`app_index` 递归子目录（深度 2，覆盖嵌套 .app）；`search_bookmarks` 按 url 去重；`now_iso8601` → `now_epoch_secs` 重命名（名实一致）

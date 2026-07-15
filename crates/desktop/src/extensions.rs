@@ -213,15 +213,12 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     // 校验 config.yaml + 脚本
     let config = validate_package(&pkg_dir)?;
 
-    // 重复检测——dir_name 是否已在 extensions 中存在
     let dir_name = pkg_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or("无法获取文件夹名")?;
-    let dest = extensions_dir().join(&dir_name);
-    if dest.exists() {
-        return Err(format!("扩展包「{}」已存在，请先删除旧版或重命名", dir_name));
-    }
+    // 不拒绝已存在的 dir_name——install_extension 会 remove_dir_all 覆盖，
+    // 允许编辑/重装时重选同一扩展包（否则形成编辑死锁）
 
     Ok(ImportResult {
         name: config.name,
@@ -241,6 +238,9 @@ pub fn install_extension(
     is_async: bool,
     write_output_to_clipboard: bool,
     parent_id: Option<i64>,
+    shortcut: Option<String>,
+    is_enabled: Option<bool>,
+    replace_id: Option<i64>,
 ) -> Result<i64, String> {
     use std::fs;
     let src = std::path::Path::new(&source_path);
@@ -256,24 +256,46 @@ pub fn install_extension(
         let _ = fs::remove_dir_all(src);
     }
 
-    // 创建 DB 记录——action_data 存脚本绝对路径
+    // 创建/更新 DB 记录——action_data 存脚本绝对路径
+    // replace_id 有值 = 编辑时重选扩展包：update 现有记录（保持 sort_order/位置），否则 insert 新记录
     let config = validate_package(&dest)?;
     let script_abs = dest.join(&config.action.script);
-    octopus_infra::db::insert_action_bar_item(
-        parent_id,
-        &name,
-        "",
-        "script",
-        &script_abs.to_string_lossy(),
-        is_async,
-        write_output_to_clipboard,
-        "",
-        "",
-        "text",
-        "",
-        true,
-    )
-    .map_err(|e| e.to_string())
+    let shortcut = shortcut.unwrap_or_default();
+    let is_enabled = is_enabled.unwrap_or(true);
+    if let Some(id) = replace_id {
+        octopus_infra::db::update_action_bar_item(
+            id,
+            &name,
+            "",
+            "script",
+            &script_abs.to_string_lossy(),
+            is_enabled,
+            is_async,
+            write_output_to_clipboard,
+            &shortcut,
+            "",
+            "text",
+            "",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(id)
+    } else {
+        octopus_infra::db::insert_action_bar_item(
+            parent_id,
+            &name,
+            "",
+            "script",
+            &script_abs.to_string_lossy(),
+            is_async,
+            write_output_to_clipboard,
+            &shortcut,
+            "",
+            "text",
+            "",
+            is_enabled,
+        )
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// 返回扩展列表 + DB 关联

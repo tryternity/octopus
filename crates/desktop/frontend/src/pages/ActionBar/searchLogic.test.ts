@@ -72,10 +72,10 @@ describe("determineExpandDirection", () => {
 
 describe("getTabByKey", () => {
   it("正确映射快捷键字符 → TabId", () => {
-    expect(getTabByKey("?")).toBe("all");
-    expect(getTabByKey("a")).toBe("apps");
+    expect(getTabByKey("a")).toBe("all");
+    expect(getTabByKey("p")).toBe("apps");
     expect(getTabByKey("f")).toBe("files");
-    expect(getTabByKey(">")).toBe("shell");
+    expect(getTabByKey("s")).toBe("shell");
     expect(getTabByKey("b")).toBe("bookmarks");
   });
 

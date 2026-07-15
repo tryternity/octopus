@@ -3,9 +3,16 @@
 use nucleo_matcher::{Matcher, Config};
 use nucleo_matcher::pattern::{Pattern, CaseMatching, Normalization};
 use nucleo_matcher::Utf32Str;
+use std::cell::RefCell;
 
 /// 匹配得分类型（越高越好，<0 表示不匹配）。
 pub type Score = i32;
+
+// fuzzy Matcher 复用（thread_local）。nucleo 的 Matcher 设计为 reset 复用，
+// 对大书签列表（数百~上千条逐条调 fuzzy_match）避免每次重新分配 score table。
+thread_local! {
+    static FUZZY_MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT));
+}
 
 /// 精确匹配：query == target（忽略大小写）。
 pub fn exact_match(query: &str, target: &str) -> Option<Score> {
@@ -28,13 +35,12 @@ pub fn prefix_match(query: &str, target: &str) -> Option<Score> {
     }
 }
 
-/// 模糊匹配：nucleo-matcher。
+/// 模糊匹配：nucleo-matcher。Matcher 经 thread_local FUZZY_MATCHER 复用。
 pub fn fuzzy_match(query: &str, target: &str) -> Option<Score> {
-    let mut matcher = Matcher::new(Config::DEFAULT);
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
     let target_chars: Vec<char> = target.chars().collect();
     let target_str = Utf32Str::Unicode(&target_chars);
-    pattern.score(target_str, &mut matcher).map(|s| s as Score)
+    FUZZY_MATCHER.with(|m| pattern.score(target_str, &mut m.borrow_mut()).map(|s| s as Score))
 }
 
 /// 拼音首字母匹配：query 全 ASCII 时，匹配 target 的拼音首字母。

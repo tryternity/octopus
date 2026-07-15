@@ -32,10 +32,10 @@ export interface TabDef {
  * 搜索框 → all → apps → files → shell → bookmarks → 搜索框
  */
 export const TABS: readonly TabDef[] = [
-  { id: "all", label: "全部", key: "?" },
-  { id: "apps", label: "应用", key: "a" },
+  { id: "all", label: "全部", key: "a" },
+  { id: "apps", label: "应用", key: "p" },
   { id: "files", label: "文件", key: "f" },
-  { id: "shell", label: "Shell", key: ">" },
+  { id: "shell", label: "Shell", key: "s" },
   { id: "bookmarks", label: "书签", key: "b" },
 ] as const;
 

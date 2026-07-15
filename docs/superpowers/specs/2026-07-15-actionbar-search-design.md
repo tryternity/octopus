@@ -28,7 +28,7 @@
 ┌─────────────────────────────────────────┐
 │ [搜索输入框]                              │ ← 始终在顶部
 ├─────────────────────────────────────────┤
-│ [? 全部] [a 应用] [f 文件] [> Shell] [b 书签] │ ← Tab 栏（有搜索时显示）
+│ [a 全部] [p 应用] [f 文件] [s Shell] [b 书签] │ ← Tab 栏（有搜索时显示）
 │  结果1                                    │
 │  结果2                                    │ ← 最多10行
 │  ...                                     │
@@ -45,7 +45,7 @@
 │  ...                                     │
 │  结果2                                    │ ← 最多10行
 │  结果1                                    │
-│ [? 全部] [a 应用] [f 文件] [> Shell] [b 书签] │ ← Tab 栏
+│ [a 全部] [p 应用] [f 文件] [s Shell] [b 书签] │ ← Tab 栏
 ├─────────────────────────────────────────┤
 │ [搜索输入框]                              │ ← 始终在核心位置
 ├─────────────────────────────────────────┤
@@ -70,11 +70,11 @@
 
 | 来源 | 数据 | 索引时机 | 搜索方式 |
 |------|------|---------|---------|
-| **应用** | `/Applications/`、`~/Applications/`、`/System/Applications/`、`/Applications/Utilities/` 下的 `.app` | 启动时 | 内存索引，即时（跨目录同名去重） |
+| **应用** | `/Applications/`、`~/Applications/`、`/System/Applications/`、`/Applications/Utilities/` 下的 `.app`（**递归子目录，深度 2**，覆盖 Adobe / JetBrains Toolbox 等嵌套） | 启动时 | 内存索引，即时（跨目录同名去重） |
 | **菜单项** | DB `action_bar_items` 表 | 实时读 DB | 内存索引，即时 |
 | **Quicklinks** | DB `action_bar_items` WHERE `action_type='url'` AND 有 `trigger_keyword` | 实时读 DB | 内存索引，即时 |
 | **文件** | mdfind（Spotlight metadata） | 实时查 | 防抖 150ms，10s 超时 + `kill_on_drop` |
-| **书签** | Chrome/Edge（JSON）| 启动时 | 防抖 150ms |
+| **书签** | Chrome/Edge（JSON）| 启动时 | 防抖 150ms（**按 url 去重**） |
 
 ### 3.2 搜索策略
 
@@ -90,7 +90,7 @@
 
 ### 3.3 匹配算法
 
-引入 `nucleo-matcher` crate。
+引入 `nucleo-matcher` crate。`fuzzy_match` 的 Matcher 经 `thread_local` 复用（避免大书签列表逐条匹配时重复分配 score table）。
 
 **匹配优先级**（取最高分）：
 1. **精确匹配**（query == target，忽略大小写）→ 10000
@@ -102,12 +102,12 @@
 
 ### 3.4 结果分组与 Tab
 
-Tab 页：`[? 全部] [a 应用] [f 文件] [> Shell] [b 书签]`
+Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
 
-- `[? 全部]`：混合展示所有来源结果，按优先级排序
-- `[a 应用]`：仅 source === "app"
+- `[a 全部]`：混合展示所有来源结果，按优先级排序
+- `[p 应用]`：仅 source === "app"
 - `[f 文件]`：仅 source === "file"
-- `[> Shell]`：`>` 前缀路由的 shell 命令
+- `[s Shell]`：`>` 前缀路由的 shell 命令
 - `[b 书签]`：仅 source === "bookmark"
 
 **菜单项 accepts 过滤**：搜索结果中的 menu/quicklink 来源按 `context.accepts` 过滤。无选中（context=null）时仅显示 `accepts="any"` 的项。
@@ -121,7 +121,7 @@ Tab 页：`[? 全部] [a 应用] [f 文件] [> Shell] [b 书签]`
 | 搜索框 | `Enter` | 执行第一个结果 |
 | 结果区 | `Tab` | 循环切换 Tab 页 |
 | 结果区 | `Shift+Tab` | 反向循环 Tab 页 |
-| 结果区 | `?` `a` `f` `>` `b` | 跳到对应 Tab |
+| 结果区 | `a` `p` `f` `s` `b` | 跳到对应 Tab |
 | 结果区 | `i` | 焦点回搜索框 |
 | 结果区 | `↑↓` | 在结果项间导航 |
 | 结果区 | `Enter` | 执行选中项 |
@@ -266,8 +266,8 @@ ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0;
 2. IPv4（`IPV4_RE = /^\d{1,3}\.…/`）→ `http://<ip>`
 3. 域名（含 `.` 且不以点开头/结尾，且点两侧至少一侧含字母）→ `https://<domain>`
 
-**已知边界缺陷（未修，P2）**：
-- **文件名误判**：`readme.md`/`photo.jpg`/`data.csv` 等含点 + 字母的文件名命中域名分支 → 构造 `https://readme.md`（`.md`/`.jpg` 非 TLD，DNS 无法解析，浏览器报错）。
-- **无效 IP**：`999.999.999.999` 命中 IPv4 正则（仅 `\d{1,3}`，无 0-255 范围校验）→ `http://999.999.999.999`（无效）。
+**边界处理（已修）**：
+- **文件名不误判**：`FILE_EXT_RE` 命中常见文件扩展名（`readme.md`/`photo.jpg`/`data.csv` 等）时不判为 URL。
+- **IPv4 范围校验**：`isValidIpv4Host` 补 0-255 校验，剔 `999.999.999.999` 等无效 IP。
 
-后端 §11 URL scheme 白名单已确保这些**不会触发系统级操作**（非 http/https 统一补 `https://`），影响仅是显示一个无效的「打开」项，用户点击后浏览器报错。前端可加 TLD 白名单 / IPv4 0-255 范围校验收紧（可选优化）。
+后端 §11 URL scheme 白名单双保险：即使检测漏过，非 http/https 统一补 `https://`，不会触发系统级操作。

@@ -483,7 +483,7 @@ const EditForm = ({
         )}
 
         {/* Run And Paste（AI/翻译/脚本类型） */}
-        {(type === "ai" || type === "script") && (
+        {(type === "ai" || type === "script" || type === "extension") && (
           <FormField label={t("settings.actionBar.autoPasteLabel")}>
             <div className="flex items-center gap-2.5">
               <Toggle
@@ -906,46 +906,54 @@ export default function ActionBarPanel({
     try {
       if (editingForm.actionType === "extension") {
         const actionData = editingForm.actionData || "";
-        const [sourcePath, dirName] = actionData.split("|");
-        if (!sourcePath || !dirName) {
-          showToast(t("settings.actionBar.selectExtFirst"));
-          return;
-        }
+        const hasNewPkg = actionData.includes("|");
+        const extName = editingForm.title || t("settings.actionBar.extName");
+        const isAsync = editingForm.isAsync ?? true;
+        const writeOutput = editingForm.writeOutputToClipboard ?? false;
+        const shortcut = editingForm.shortcut || "";
+        const isEnabled = editingForm.isEnabled ?? true;
         if (draftParentId !== undefined) {
-          await invoke("install_extension", {
-            sourcePath, dirName,
-            name: editingForm.title || t("settings.actionBar.extName"),
-            isAsync: editingForm.isAsync ?? true,
-            writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
-            parentId: draftParentId,
+          // 新建：必须先选扩展包
+          if (!hasNewPkg) {
+            showToast(t("settings.actionBar.selectExtFirst"));
+            return;
+          }
+          const [sourcePath, dirName] = actionData.split("|");
+          const newId = await invoke<number>("install_extension", {
+            sourcePath, dirName, name: extName, isAsync,
+            writeOutputToClipboard: writeOutput,
+            parentId: draftParentId, shortcut, isEnabled,
           });
+          await invoke("set_auto_paste", { id: newId, autoPaste: editingForm.autoPaste ?? false });
           showToast(t("settings.actionBar.created"));
         } else if (editingId) {
-          if (actionData.includes("|")) {
+          if (hasNewPkg) {
+            // 重选扩展包：复制新包 + update 现有记录（保持 id/位置，不再 install+delete）
+            const [sourcePath, dirName] = actionData.split("|");
             await invoke("install_extension", {
-              sourcePath, dirName,
-              name: editingForm.title || t("settings.actionBar.extName"),
-              isAsync: editingForm.isAsync ?? true,
-              writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+              sourcePath, dirName, name: extName, isAsync,
+              writeOutputToClipboard: writeOutput,
               parentId: editingForm.parentId ?? null,
+              shortcut, isEnabled, replaceId: editingId,
             });
-            await invoke("delete_action_bar_item", { id: editingId });
           } else {
+            // 未重选：直接 update（actionData 保持原脚本路径）
             await invoke("update_action_bar_item", {
               id: editingId,
               title: editingForm.title || "",
               icon: editingForm.icon || "",
               actionType: "script",
               actionData: editingForm.actionData || "",
-              isEnabled: editingForm.isEnabled ?? true,
-              isAsync: editingForm.isAsync ?? true,
-              writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
-              shortcut: editingForm.shortcut || "",
+              isEnabled,
+              isAsync,
+              writeOutputToClipboard: writeOutput,
+              shortcut,
               agent: "",
               accepts: "text",
-              triggerKeyword: editingForm.triggerKeyword || "",
+              triggerKeyword: "",
             });
           }
+          await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
           showToast(t("settings.actionBar.saved"));
         }
       } else if (draftParentId !== undefined) {

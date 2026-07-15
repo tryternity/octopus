@@ -85,12 +85,12 @@ fn load_safari_bookmarks(_path: &std::path::Path) -> Vec<BookmarkEntry> {
 
 /// 搜索书签。
 pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchResult> {
-    let mut scored: Vec<(Score, SearchResult)> = bookmarks
+    let mut scored: Vec<(Score, String, SearchResult)> = bookmarks
         .iter()
         .filter_map(|bm| {
             let score = match_score(query, &bm.title)
                 .or_else(|| match_score(query, &bm.url))?;
-            Some((score, SearchResult {
+            Some((score, bm.url.clone(), SearchResult {
                 source: "bookmark".into(),
                 title: bm.title.clone(),
                 subtitle: format!("[{}] {}", bm.browser, bm.url),
@@ -101,7 +101,13 @@ pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchR
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.into_iter().take(10).map(|(s, mut r)| { r.score = s; r }).collect()
+    // 按 url 去重（bookmark_bar + synced 同步可能产出同 URL，保留高分首个）
+    let mut seen = std::collections::HashSet::new();
+    scored.into_iter()
+        .filter(|(_, url, _)| seen.insert(url.clone()))
+        .take(10)
+        .map(|(s, _, mut r)| { r.score = s; r })
+        .collect()
 }
 
 #[cfg(test)]

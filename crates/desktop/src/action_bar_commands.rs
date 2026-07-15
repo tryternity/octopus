@@ -156,16 +156,9 @@ fn detect_selection(app: &AppHandle) -> Selection {
 
     // changeCount 递增 → 有选中，读剪贴板拿文本
     let clipboard_after = read_clipboard_text(app);
-    let text = match &clipboard_after {
-        Some(t) if !t.trim().is_empty() => t.clone(),
-        _ => {
-            log::info!("[action-bar] changeCount changed but clipboard empty");
-            clip_handle.clear_suppress();
-            return Selection::None;
-        }
-    };
 
-    // 恢复原始剪贴板
+    // 恢复原始剪贴板——只要 Cmd+C 改了剪贴板就恢复（含选中图片/文件致文本为空的场景），
+    // 防止用户原剪贴板内容被 Cmd+C 产生的非文本内容永久覆盖
     clip_handle.clear_suppress();
     if let Some(ref files) = clipboard_before_files {
         let _ = clip_handle.write_files(files.clone());
@@ -176,6 +169,14 @@ fn detect_selection(app: &AppHandle) -> Selection {
             write_clipboard_text(app, original);
         }
     }
+
+    let text = match &clipboard_after {
+        Some(t) if !t.trim().is_empty() => t.clone(),
+        _ => {
+            log::info!("[action-bar] changeCount changed but clipboard empty");
+            return Selection::None;
+        }
+    };
 
     log::info!("[action-bar] got text len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
     Selection::Text { text, mouse }
@@ -1132,8 +1133,8 @@ fn wait_with_timeout_secs(mut child: std::process::Child, timeout_secs: u32) -> 
     ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out }
 }
 
-/// 生成 ISO 8601 时间戳（UTC），不依赖 chrono
-fn now_iso8601() -> String {
+/// 当前 Unix epoch 秒数（字符串），落 script_runs.started_at/finished_at——命名反映实际返回值（非 ISO 8601）
+fn now_epoch_secs() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     format!("{}", secs)
@@ -1143,13 +1144,13 @@ fn now_iso8601() -> String {
 fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<(), String> {
     let (child, script_type, text_tmp) = spawn_script(source, text, false, &pkg_dir)?;
     let started = std::time::Instant::now();
-    let started_at = now_iso8601();
+    let started_at = now_epoch_secs();
     std::thread::spawn(move || {
         let result = wait_forever(child);
         // 清理超长文本临时文件
         if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
         let duration_ms = started.elapsed().as_millis() as i64;
-        let finished_at = now_iso8601();
+        let finished_at = now_epoch_secs();
         let error_msg = script_error_msg(&result);
         let _ = octopus_infra::db::insert_script_run(
             item_id, &script_type, result.exit_code,
@@ -1164,12 +1165,12 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
 fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<ScriptResult, String> {
     let (child, script_type, text_tmp) = spawn_script(source, text, true, &pkg_dir)?;
     let started = std::time::Instant::now();
-    let started_at = now_iso8601();
+    let started_at = now_epoch_secs();
     let mut result = wait_with_timeout(child);
     // 清理超长文本临时文件
     if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
     let duration_ms = started.elapsed().as_millis() as i64;
-    let finished_at = now_iso8601();
+    let finished_at = now_epoch_secs();
     let error_msg = script_error_msg(&result);
     let _ = octopus_infra::db::insert_script_run(
         item_id, &script_type, result.exit_code,
