@@ -914,8 +914,18 @@ export default function ActionBar() {
         onFocus={() => setSearchFocusZone("input")}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => {
-          // 延迟清除——确认候选词的 Enter keydown 先于 compositionend 触发
-          setTimeout(() => { composingRef.current = false; }, 0);
+          composingRef.current = false;
+        }}
+        onKeyDown={(e) => {
+          // input 级 keydown 先于 window keydown 触发
+          // IME 组合中 Enter 确认候选词——在 input 级直接拦截 + 标记
+          if (composingRef.current && (e.key === "Enter" || e.key === "Tab" ||
+              e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            // 确认候选后 composingRef 仍为 true（compositionend 尚未触发）
+            // 延迟一帧清除，让 window keydown handler 也跳过
+            e.stopPropagation();
+            requestAnimationFrame(() => { composingRef.current = false; });
+          }
         }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
