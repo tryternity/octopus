@@ -66,9 +66,9 @@ impl SearchEngine {
         // 即时搜索（内存索引）
         if tab == "all" || tab == "apps" || tab == "quick" {
             let mut apps = self.app_index.search(query);
-            // 应用加权重（source 优先级）
+            // 应用加权重（source 优先级——应用启动是 launcher 核心场景）
             for r in &mut apps {
-                r.score += 100;
+                r.score += 500;
             }
             results.extend(apps);
         }

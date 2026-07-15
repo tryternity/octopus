@@ -44,7 +44,7 @@ pub fn fuzzy_match(query: &str, target: &str) -> Option<Score> {
 }
 
 /// 拼音首字母匹配：query 全 ASCII 时，匹配 target 的拼音首字母。
-/// 简单实现：硬编码常用中文菜单项。
+/// 优先级接近前缀匹配——拼音首字母匹配是强意图信号。
 pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
     if !query.chars().all(|c| c.is_ascii_alphabetic()) {
         return None;
@@ -55,7 +55,9 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
     }
     if initials.starts_with(&query.to_lowercase()) {
         let remaining = initials.chars().count().saturating_sub(query.chars().count());
-        Some(3000 - remaining as Score)
+        // 完全匹配（remaining=0）= 4000，每多一个剩余字符 -1
+        // 远高于 fuzzy match，确保拼音匹配的应用排在最前
+        Some(4000 - remaining as Score)
     } else if initials.contains(&query.to_lowercase() as &str) {
         Some(1000)
     } else {
@@ -122,8 +124,8 @@ mod tests {
 
     #[test]
     fn pinyin_match_chinese_menu() {
-        assert_eq!(pinyin_match("fy", "翻译"), Some(3000));
-        assert_eq!(pinyin_match("rs", "润色"), Some(3000));
+        assert_eq!(pinyin_match("fy", "翻译"), Some(4000));
+        assert_eq!(pinyin_match("rs", "润色"), Some(4000));
         assert_eq!(pinyin_match("xyz", "翻译"), None);
     }
 
