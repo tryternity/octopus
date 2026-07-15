@@ -70,7 +70,9 @@ pub fn trigger_action_bar(app: AppHandle) {
                     return;
                 }
                 Ok(_) => {
-                    log::info!("[action-bar] Finder 空选中，不弹窗");
+                    log::info!("[action-bar] Finder 空选中 — showing centered search");
+                    *PENDING_CONTEXT.lock().unwrap() = None;
+                    show_action_bar_centered(&app_clone);
                     finalize_action_bar(&app_clone);
                     return;
                 }
@@ -111,16 +113,20 @@ pub fn trigger_action_bar(app: AppHandle) {
                 after.clone()
             }
             _ => {
-                log::warn!("[action-bar] No text available — no selection?");
+                log::info!("[action-bar] No selection — showing centered search");
                 clip_handle.clear_suppress();
+                *PENDING_CONTEXT.lock().unwrap() = None;
+                show_action_bar_centered(&app_clone);
                 finalize_action_bar(&app_clone);
                 return;
             }
         };
 
         if text.trim().is_empty() {
-            log::warn!("[action-bar] Selected text is empty");
+            log::info!("[action-bar] Selected text is empty — showing centered search");
             clip_handle.clear_suppress();
+            *PENDING_CONTEXT.lock().unwrap() = None;
+            show_action_bar_centered(&app_clone);
             finalize_action_bar(&app_clone);
             return;
         }
@@ -217,6 +223,64 @@ fn show_action_bar_at_mouse(app: &AppHandle) {
     let app_for_show = app.clone();
     // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
     // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
+    let _ = app.run_on_main_thread(move || {
+        show_action_bar_window(&app_for_show, win_x, win_y);
+    });
+}
+
+/// 无选中时居中显示浮窗——水平居中，垂直位于屏幕上 1/3 位置（类似 Alfred/Wox）。
+fn show_action_bar_centered(app: &AppHandle) {
+    const WIN_W: f64 = 380.0;
+
+    // 取包含鼠标的显示器（找不到则用主屏）
+    let (mon_x, mon_y, mon_w, mon_h) = {
+        let (mx, my) = get_mouse_position(app);
+        let monitor = app.available_monitors().ok()
+            .and_then(|monitors| {
+                monitors.into_iter().find(|m| {
+                    let scale = m.scale_factor();
+                    let ml = m.position().x as f64 / scale;
+                    let mt = m.position().y as f64 / scale;
+                    let mr = (m.position().x as f64 + m.size().width as f64) / scale;
+                    let mb = (m.position().y as f64 + m.size().height as f64) / scale;
+                    mx >= ml && mx < mr && my >= mt && my < mb
+                })
+            });
+        match monitor {
+            Some(m) => {
+                let scale = m.scale_factor();
+                (
+                    m.position().x as f64 / scale,
+                    m.position().y as f64 / scale,
+                    m.size().width as f64 / scale,
+                    m.size().height as f64 / scale,
+                )
+            }
+            None => {
+                let m = app.primary_monitor().ok().flatten();
+                match m {
+                    Some(m) => {
+                        let scale = m.scale_factor();
+                        (
+                            m.position().x as f64 / scale,
+                            m.position().y as f64 / scale,
+                            m.size().width as f64 / scale,
+                            m.size().height as f64 / scale,
+                        )
+                    }
+                    None => (0.0, 0.0, 1440.0, 900.0),
+                }
+            }
+        }
+    };
+
+    let win_x = mon_x + (mon_w - WIN_W) / 2.0;
+    // 上 1/3 位置
+    let win_y = mon_y + mon_h / 3.0;
+
+    log::info!("[action-bar] centered: monitor=({},{},{},{}) → win_pos=({},{})", mon_x, mon_y, mon_w, mon_h, win_x, win_y);
+
+    let app_for_show = app.clone();
     let _ = app.run_on_main_thread(move || {
         show_action_bar_window(&app_for_show, win_x, win_y);
     });
