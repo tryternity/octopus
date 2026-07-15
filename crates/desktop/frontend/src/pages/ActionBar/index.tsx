@@ -234,33 +234,48 @@ export default function ActionBar() {
   const filteredResults = useMemo(() => filterByTab(contextFilteredResults, activeTab), [contextFilteredResults, activeTab]);
 
   // 动态调整窗口高度 + 位置（展开方向）
+  // 用 generation token 防"快速 Tab 切换"时异步乱序——只让最后一次 resize 生效
+  const resizeGenRef = useRef(0);
   useEffect(() => {
     const win = getCurrentWindow();
     const inSearch = hasQuery(query);
 
+    // 计算目标高度 + 位置
+    let totalHeight: number;
+    let targetX: number | null = null;
+    let targetY: number | null = null;
+
     if (inSearch) {
-      // 搜索模式：输入框 + Tab栏 + 结果列表
       const resultsHeight = calcResultsHeight(filteredResults.length);
-      const totalHeight = INPUT_HEIGHT + TAB_BAR_HEIGHT + resultsHeight;
-      win.setSize(new LogicalSize(380, totalHeight)).catch(() => {});
-      // 向上展开时窗口上移（输入框保持在原位）
-      if (expandDirection === "up" && baseWinPosRef.current) {
-        const searchContent = TAB_BAR_HEIGHT + resultsHeight;
-        const newY = baseWinPosRef.current.y - searchContent;
-        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, newY)).catch(() => {});
-      } else if (baseWinPosRef.current) {
-        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, baseWinPosRef.current.y)).catch(() => {});
+      totalHeight = INPUT_HEIGHT + TAB_BAR_HEIGHT + resultsHeight;
+      if (baseWinPosRef.current) {
+        targetX = baseWinPosRef.current.x;
+        if (expandDirection === "up") {
+          targetY = baseWinPosRef.current.y - (TAB_BAR_HEIGHT + resultsHeight);
+        } else {
+          targetY = baseWinPosRef.current.y;
+        }
       }
     } else {
-      // 菜单模式：输入框 + 菜单条
       const menuHeight = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
-      const totalHeight = INPUT_HEIGHT + menuHeight;
-      win.setSize(new LogicalSize(380, totalHeight)).catch(() => {});
-      // 恢复原始位置
+      totalHeight = INPUT_HEIGHT + menuHeight;
       if (baseWinPosRef.current) {
-        win.setPosition(new LogicalPosition(baseWinPosRef.current.x, baseWinPosRef.current.y)).catch(() => {});
+        targetX = baseWinPosRef.current.x;
+        targetY = baseWinPosRef.current.y;
       }
     }
+
+    // 序列化：每次只执行最新一代 resize
+    const gen = ++resizeGenRef.current;
+    const apply = async () => {
+      if (gen !== resizeGenRef.current) return; // 已被更新一代取代
+      await win.setSize(new LogicalSize(380, totalHeight));
+      if (gen !== resizeGenRef.current) return;
+      if (targetX !== null && targetY !== null) {
+        await win.setPosition(new LogicalPosition(targetX, targetY));
+      }
+    };
+    apply().catch(() => {});
   }, [view, query, filteredResults.length, expandDirection]);
 
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
