@@ -55,10 +55,10 @@ fn extract_app_icon(app_path: &std::path::Path) -> String {
     };
     let icon_path = match icon_path { Some(p) => p, None => return String::new() };
 
-    // 3. 用 sips 转为 32×32 PNG 到临时文件
+    // 3. 用 sips 转为 32×32 PNG（必须 -s format png，否则 icns 输出仍为 icns）
     let tmp = std::env::temp_dir().join(format!("octopus_icon_{}.png", std::process::id()));
     let output = std::process::Command::new("sips")
-        .args(["-z", "32", "32", "--out"])
+        .args(["-s", "format", "png", "-z", "32", "32", "--out"])
         .arg(&tmp)
         .arg(&icon_path)
         .output();
@@ -150,7 +150,9 @@ impl AppIndex {
     pub fn scan() -> Self {
         // 先试 DB 缓存
         if let Ok(cached) = octopus_infra::db::load_app_index() {
-            if !cached.is_empty() {
+            // 缓存有效：icon 列存在且有值（旧缓存 icon 全空需重扫）
+            let has_icons = cached.iter().any(|(_, _, _, icon)| !icon.is_empty());
+            if !cached.is_empty() && has_icons {
                 let apps: Vec<AppEntry> = cached
                     .into_iter()
                     .map(|(name, alias, path, icon)| AppEntry {
