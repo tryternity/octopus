@@ -104,16 +104,14 @@ pub fn trigger_action_bar(app: AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // 4. 读剪贴板拿到选中文本
+        //    判定"有选中"的唯一标准：Cmd+C 后剪贴板内容发生了变化。
+        //    剪贴板未变 = 没有选中（Cmd+C 是空操作）→ 走 centered 搜索。
         let clipboard_after = read_clipboard_text(&app_clone);
         let text = match (&clipboard_before_text, &clipboard_after) {
             (Some(before), Some(after)) if before != after => after.clone(),
             (None, Some(after)) => after.clone(),
-            (Some(_), Some(after)) if !after.trim().is_empty() => {
-                log::info!("[action-bar] clipboard unchanged but has content, using it");
-                after.clone()
-            }
             _ => {
-                log::info!("[action-bar] No selection — showing centered search");
+                log::info!("[action-bar] No selection (clipboard unchanged) — showing centered search");
                 clip_handle.clear_suppress();
                 *PENDING_CONTEXT.lock().unwrap() = None;
                 show_action_bar_centered(&app_clone);
