@@ -654,8 +654,8 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中放行——isComposing=true 时 Enter 是确认候选词，不是执行搜索
-      if (e.isComposing) return;
+      // IME 组合中的按键已由 input 的 onKeyDown 用 stopPropagation 阻止冒泡
+      // 此处收到的都是非 IME 组合的按键
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
@@ -926,6 +926,14 @@ export default function ActionBar() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setSearchFocusZone("input")}
+        onKeyDown={(e) => {
+          // input DOM 级拦截——此处的 isComposing 是可靠的
+          // （window keydown handler 的 isComposing 时序不可靠）
+          // IME 组合中的 Enter 是确认候选词，用 stopPropagation 阻止它冒泡到 window handler
+          if (e.nativeEvent.isComposing) {
+            e.stopPropagation();
+          }
+        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"
