@@ -654,8 +654,8 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中（keyCode 229）放行——确认候选词的 Enter 不触发执行
-      if (e.keyCode === 229) return;
+      // IME 组合中放行——isComposing=true 时 Enter 是确认候选词，不是执行搜索
+      if (e.isComposing) return;
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
