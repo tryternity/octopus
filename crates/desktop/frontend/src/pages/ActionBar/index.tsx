@@ -307,6 +307,8 @@ export default function ActionBar() {
   }, []);
 
   // ── 搜索：结果同步 + 展开方向 + 搜索请求 ──
+  // filteredResultsRef 供键盘 handler 读取最新值（声明在使用之前）
+  const filteredResultsRef = useRef<SearchHit[]>([]);
   useEffect(() => { filteredResultsRef.current = filteredResults; }, [filteredResults]);
 
   // 结果数量变化时 clamp 选中索引
@@ -337,30 +339,39 @@ export default function ActionBar() {
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
-  // 即时搜索（应用+菜单+Quicklinks，无防抖）
+  // 即时搜索（应用+菜单+Quicklinks，无防抖，纯内存索引）
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
       return;
     }
     let cancelled = false;
-    const searchTab = activeTab === "all" ? "quick" : activeTab;
-    invoke<SearchHit[]>("search_all", { query, tab: searchTab }).then((results) => {
+    // 始终用 "quick" tab 做即时搜索（应用+菜单+Quicklinks）
+    // 文件/书签结果由延迟搜索补充，避免每次按键触发 mdfind
+    invoke<SearchHit[]>("search_all", { query, tab: "quick" }).then((results) => {
       if (!cancelled) setInstantResults(results);
     }).catch(() => {
       if (!cancelled) setInstantResults([]);
     });
     return () => { cancelled = true; };
-  }, [query, activeTab]);
+  }, [query]);
 
-  // 延迟搜索（文件+书签，150ms 防抖，仅 all Tab 且 query ≥ 2 字符）
+  // 延迟搜索（文件+书签，150ms 防抖，query ≥ 2 字符）
+  // all/files/bookmarks tab 都需要延迟搜索结果
   useEffect(() => {
-    if (activeTab !== "all" || !shouldTriggerDelayedSearch(query)) {
+    if (!shouldTriggerDelayedSearch(query)) {
       setDelayedResults([]);
       return;
     }
+    // apps/shell tab 不需要文件/书签
+    if (activeTab !== "all" && activeTab !== "files" && activeTab !== "bookmarks") {
+      setDelayedResults([]);
+      return;
+    }
+    // 确定 tab 参数：all → files_bookmarks，files → files，bookmarks → bookmarks
+    const searchTab = activeTab === "files" ? "files" : activeTab === "bookmarks" ? "bookmarks" : "files_bookmarks";
     const timer = setTimeout(() => {
-      invoke<SearchHit[]>("search_all", { query, tab: "files_bookmarks" }).then((results) => {
+      invoke<SearchHit[]>("search_all", { query, tab: searchTab }).then((results) => {
         setDelayedResults(results);
       }).catch(() => {
         setDelayedResults([]);
@@ -537,8 +548,15 @@ export default function ActionBar() {
         break;
       }
       case "url": {
-        // Quicklink 关键词触发时 actionData 已含替换后的 URL
-        const url = (data.url as string) || (data.action_data as string);
+        // Quicklink 关键词触发时 data.url 已含替换后的 URL
+        // 非关键词匹配时 data.action_data 是原始模板（可能含 {query}/{text}）
+        const ctx = contextRef.current;
+        const fallbackText = ctx?.text || queryRef.current;
+        const rawUrl = (data.url as string) || (data.action_data as string) || "";
+        // 替换 URL 模板中的 {query} / {text} 占位符
+        const url = rawUrl
+          .replace(/\{query\}/g, encodeURIComponent(fallbackText))
+          .replace(/\{text\}/g, encodeURIComponent(fallbackText));
         if (url) {
           try {
             await invoke("open_url", { url });
@@ -577,7 +595,6 @@ export default function ActionBar() {
   const activeTabRef = useRef<TabId>("all");
   const searchSelectedIdxRef = useRef(0);
   const searchFocusZoneRef = useRef<FocusZone>("input");
-  const filteredResultsRef = useRef<SearchHit[]>([]);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);

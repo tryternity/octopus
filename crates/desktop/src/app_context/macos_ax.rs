@@ -1362,7 +1362,6 @@ unsafe fn build_surrounding(
                 diagnostics.push(format!("DEGRADED: {}", degrade_reason));
             }
             let diag = Some(diagnostics.join("\n  "));
-            log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
             return Ok((
                 SurroundingText {
                     before: None,
@@ -1422,7 +1421,6 @@ unsafe fn build_surrounding(
     }
 
     let diag_string = diagnostics.join("\n  ");
-    log::info!("[app-context] AX 诊断:\n  {}", diag_string);
 
     Ok((surrounding, Some(diag_string)))
 }

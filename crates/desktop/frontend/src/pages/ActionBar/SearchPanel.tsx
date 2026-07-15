@@ -8,6 +8,7 @@
  */
 import { useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { t } from "@/lib/i18n";
 import { TABS, MAX_VISIBLE_RESULTS, type TabId, type ExpandDirection, type SearchResult } from "./searchTypes";
 
 // ── 来源图标 ──
@@ -187,7 +188,7 @@ export default function SearchPanel({
     >
       {results.length === 0 ? (
         <div className="flex items-center justify-center py-4 text-[11px] text-muted-foreground/50">
-          无结果
+          {t("actionbar.noResults")}
         </div>
       ) : (
         results.map((result, i) => (

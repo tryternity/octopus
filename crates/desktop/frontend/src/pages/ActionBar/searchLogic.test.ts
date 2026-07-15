@@ -220,6 +220,25 @@ describe("mergeResults", () => {
     const merged = mergeResults([], delayed);
     expect(merged).toHaveLength(1);
   });
+
+  it("合并后全局按 score 降序排序（跨来源）", () => {
+    // 即时 score 低、延迟 score 高——合并后延迟应在前
+    const instant = [
+      makeResult("app", "Chrome", 200),
+      makeResult("menu", "翻译", 150),
+    ];
+    const delayed = [
+      makeResult("file", "doc.pdf", 8000),
+      makeResult("bookmark", "GitHub", 500),
+    ];
+    const merged = mergeResults(instant, delayed);
+    expect(merged).toHaveLength(4);
+    // 8000 > 500 > 200 > 150
+    expect(merged[0].title).toBe("doc.pdf");
+    expect(merged[1].title).toBe("GitHub");
+    expect(merged[2].title).toBe("Chrome");
+    expect(merged[3].title).toBe("翻译");
+  });
 });
 
 // ── filterByTab ──

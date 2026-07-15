@@ -937,7 +937,7 @@ export default function ActionBarPanel({
           showToast(t("settings.actionBar.saved"));
         }
       } else if (draftParentId !== undefined) {
-        await invoke("create_action_bar_item", {
+        const createdId = await invoke<number>("create_action_bar_item", {
           parentId: draftParentId,
           title: editingForm.title || t("settings.actionBar.newMenuItem"),
           icon: "",
@@ -950,6 +950,10 @@ export default function ActionBarPanel({
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
         });
+        // 新建 AI/Script 项时也需要设置 auto_paste
+        if (editingForm.actionType === "ai" || editingForm.actionType === "script") {
+          await invoke("set_auto_paste", { id: createdId, autoPaste: editingForm.autoPaste ?? false });
+        }
         showToast(t("settings.actionBar.created"));
       } else if (editingId) {
         await invoke("update_action_bar_item", {

@@ -87,6 +87,8 @@ export function mergeResults(
       merged.push(r);
     }
   }
+  // 全局按 score 降序排序——即时和延迟两路各自有序，但合并后需重排
+  merged.sort((a, b) => b.score - a.score);
   return merged;
 }
 

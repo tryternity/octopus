@@ -55,7 +55,7 @@ impl SearchEngine {
                 results.push(SearchResult {
                     source: "shell".into(),
                     title: format!("▶ {}", cmd),
-                    subtitle: "运行 Shell 命令".into(),
+                    subtitle: "Shell".into(),
                     action_type: "shell".into(),
                     action_data: serde_json::json!({ "command": cmd }).to_string(),
                     score: 10000,
@@ -73,14 +73,14 @@ impl SearchEngine {
             results.extend(apps);
         }
 
-        // 菜单项 + Quicklinks（从 DB 查）
+        // 菜单项 + Quicklinks + 关键词触发（一次 DB 读，传给两个函数）
         if tab == "all" || tab == "quick" {
-            results.extend(search_menus_and_quicklinks(query));
-        }
-
-        // Quicklink 关键词触发：`<keyword> <query>` 模式
-        if tab == "all" || tab == "quick" {
-            results.extend(search_quicklink_keywords(query));
+            let rows = match octopus_infra::db::list_action_bar_items() {
+                Ok(r) => r,
+                Err(_) => Vec::new(),
+            };
+            results.extend(search_menus_and_quicklinks(query, &rows));
+            results.extend(search_quicklink_keywords(query, &rows));
         }
 
         // 延迟搜索（文件 + 书签）
@@ -100,13 +100,8 @@ impl SearchEngine {
     }
 }
 
-/// 从 DB 查菜单项 + Quicklinks。
-fn search_menus_and_quicklinks(query: &str) -> Vec<SearchResult> {
-    let rows = match octopus_infra::db::list_action_bar_items() {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-
+/// 从 DB rows 查菜单项 + Quicklinks。调用方负责一次性读 DB。
+fn search_menus_and_quicklinks(query: &str, rows: &[octopus_infra::db::ActionBarItem]) -> Vec<SearchResult> {
     let mut results: Vec<(i32, SearchResult)> = rows
         .iter()
         .filter(|r| r.is_enabled && r.action_type != "submenu")
@@ -135,18 +130,13 @@ fn search_menus_and_quicklinks(query: &str) -> Vec<SearchResult> {
 /// Quicklink 关键词触发：query 以 `<keyword> <rest>` 模式开头时，
 /// 匹配 trigger_keyword == keyword 的 URL 类型菜单项，
 /// 将 URL 模板中的 {query} 替换为 rest。
-fn search_quicklink_keywords(query: &str) -> Vec<SearchResult> {
+fn search_quicklink_keywords(query: &str, rows: &[octopus_infra::db::ActionBarItem]) -> Vec<SearchResult> {
     let parts: Vec<&str> = query.splitn(2, char::is_whitespace).collect();
     if parts.len() < 2 || parts[1].trim().is_empty() {
         return Vec::new();
     }
     let keyword = parts[0];
     let rest = parts[1].trim();
-
-    let rows = match octopus_infra::db::list_action_bar_items() {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
 
     rows.iter()
         .filter(|r| r.is_enabled && r.action_type == "url" && !r.trigger_keyword.is_empty())
@@ -295,14 +285,14 @@ mod tests {
     #[test]
     fn quicklink_keyword_no_keyword_returns_empty() {
     // 单词查询（无空格）不触发关键词模式
-        assert!(search_quicklink_keywords("translate").is_empty());
-        assert!(search_quicklink_keywords("hello").is_empty());
+        assert!(search_quicklink_keywords("translate", &[]).is_empty());
+        assert!(search_quicklink_keywords("hello", &[]).is_empty());
     }
 
     #[test]
     fn quicklink_keyword_only_space_returns_empty() {
         // keyword 后只有空格不算
-        assert!(search_quicklink_keywords("tr   ").is_empty());
+        assert!(search_quicklink_keywords("tr   ", &[]).is_empty());
     }
 
     #[test]
