@@ -76,13 +76,15 @@ function TabButton({
       onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
       onClick={onClick}
     >
-      <span className={cn(
-        "inline-flex h-4 w-4 items-center justify-center rounded font-mono text-[10px] font-bold leading-none",
-        active ? "bg-voice text-white" : "bg-muted text-muted-foreground",
-      )}>
-        ⌘{tab.key}
+      <span className="text-[10px] font-medium leading-none whitespace-nowrap">
+        {tab.label}
+        <span className={cn(
+          "ml-1 font-mono text-[9px]",
+          active ? "text-voice/70" : "text-muted-foreground/50",
+        )}>
+          ⌘{tab.key.toUpperCase()}
+        </span>
       </span>
-      <span className="text-[10px] font-medium leading-none whitespace-nowrap">{tab.label}</span>
     </button>
   );
 }
