@@ -1237,9 +1237,15 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                         // 翻译用纯 text（不含 enriched 上下文标签）：
                         // 1. auto_translate_prompt 检测 CJK 判断方向——标签会干扰检测
                         // 2. 翻译结果不应包含【来源】等上下文标签
-                        let prompt = auto_translate_prompt(&text);
-                        let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
-                        .map_err(|e| e.to_string())?;
+                        let prompt = auto_translate_prompt(&text).to_string();
+                        let text_clone = text.clone();
+                        let config_clone = llm_config.clone();
+                        // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
+                        let result = tokio::task::spawn_blocking(move || {
+                            octopus_llm::chat_text_with_prompt(&prompt, &text_clone, &config_clone)
+                        }).await
+                            .map_err(|e| format!("LLM 线程异常: {}", e))?
+                            .map_err(|e| e.to_string())?;
                         if item.auto_paste {
                             action_bar_run_and_paste(result, app.clone());
                         } else {
@@ -1254,7 +1260,13 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let llm_config = crate::config::llm_config_ignore_mode(&config)
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
             let enriched_text = build_enriched_text(&text);
-            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &enriched_text, &llm_config)
+            let prompt = item.action_data.clone();
+            let config_clone = llm_config.clone();
+            // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
+            let result = tokio::task::spawn_blocking(move || {
+                octopus_llm::chat_text_with_prompt(&prompt, &enriched_text, &config_clone)
+            }).await
+                .map_err(|e| format!("LLM 线程异常: {}", e))?
                 .map_err(|e| e.to_string())?;
             if item.auto_paste {
                 action_bar_run_and_paste(result, app.clone());
