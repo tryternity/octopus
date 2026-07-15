@@ -87,7 +87,7 @@ settings:
     clipboardShortcut: 剪贴板浮窗
     clipboardTabShortcut: 剪贴TAB切换
     clipboardTabShortcutHint: 浮窗内切过滤类型
-    actionBarShortcut: AI面板
+    actionBarShortcut: 快捷操作面板
     actionBarShortcutHint: 选中文本后按此键唤起
     screenshotShortcut: 截图OCR
     screenshotShortcutHint: 截取屏幕区域并识别文字

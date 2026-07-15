@@ -87,7 +87,7 @@ settings:
     clipboardShortcut: Clipboard Float
     clipboardTabShortcut: Clipboard Tab Switch
     clipboardTabShortcutHint: Switch filter type in float window
-    actionBarShortcut: AI Panel
+    actionBarShortcut: Quick Panel
     actionBarShortcutHint: Press this key after selecting text
     screenshotShortcut: Screenshot OCR
     screenshotShortcutHint: Capture screen region and recognize text
