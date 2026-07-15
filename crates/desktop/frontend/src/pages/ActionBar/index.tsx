@@ -652,6 +652,9 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // IME 组合中（输入法正在组词）——不拦截任何键，让浏览器处理确认候选
+      if (e.isComposing) return;
+
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
         e.preventDefault();
