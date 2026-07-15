@@ -76,9 +76,12 @@ pub async fn execute_shell(command: String) -> Result<String, String> {
     }
 }
 
-/// 重新扫描应用索引并更新 DB 缓存（安装/卸载应用后调用）。
+/// 强制重扫应用索引：刷新内存索引 + DB 缓存。
+///
+/// **诊断/兜底用途**——正常运行由后台 mtime 轮询线程自动触发（main.rs），
+/// 用户无需手动调用。保留此命令作为后台扫描失效时的手动 fallback 和开发调试入口。
 #[tauri::command]
 pub fn reindex_apps() -> Result<usize, String> {
-    let index = octopus_search::app_index::AppIndex::rescan();
-    Ok(index.apps.len())
+    let engine = octopus_search::get_engine().ok_or("搜索引擎未初始化")?;
+    Ok(engine.refresh_app_index())
 }

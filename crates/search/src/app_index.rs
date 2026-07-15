@@ -56,7 +56,12 @@ fn extract_app_icon(app_path: &std::path::Path) -> String {
     let icon_path = match icon_path { Some(p) => p, None => return String::new() };
 
     // 3. 用 sips 转为 32×32 PNG（必须 -s format png，否则 icns 输出仍为 icns）
-    let tmp = std::env::temp_dir().join(format!("octopus_icon_{}.png", std::process::id()));
+    // 文件名含 pid + 纳秒时间戳——防跨进程双开/同进程多次提取互相覆盖（L3）
+    let tmp = std::env::temp_dir().join(format!(
+        "octopus_icon_{}_{}.png",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+    ));
     let output = std::process::Command::new("sips")
         .args(["-s", "format", "png", "-z", "32", "32", "--out"])
         .arg(&tmp)
@@ -64,7 +69,11 @@ fn extract_app_icon(app_path: &std::path::Path) -> String {
         .output();
     let png_bytes = match output {
         Ok(o) if o.status.success() => std::fs::read(&tmp).unwrap_or_default(),
-        _ => return String::new(),
+        _ => {
+            // sips 失败也清理临时文件（L3——原失败分支直接 return 不清理，残留 tmp）
+            let _ = std::fs::remove_file(&tmp);
+            return String::new();
+        }
     };
     let _ = std::fs::remove_file(&tmp);
 

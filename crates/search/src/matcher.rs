@@ -53,12 +53,14 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
     if initials.is_empty() {
         return None;
     }
-    if initials.starts_with(&query.to_lowercase()) {
+    // 复用单次小写转换（L4——原两次 query.to_lowercase() 各分配一次 String）
+    let query_lower = query.to_lowercase();
+    if initials.starts_with(&query_lower) {
         let remaining = initials.chars().count().saturating_sub(query.chars().count());
         // 完全匹配（remaining=0）= 4000，每多一个剩余字符 -1
         // 远高于 fuzzy match，确保拼音匹配的应用排在最前
         Some(4000 - remaining as Score)
-    } else if initials.contains(&query.to_lowercase() as &str) {
+    } else if initials.contains(&query_lower) {
         Some(1000)
     } else {
         None
@@ -66,6 +68,12 @@ pub fn pinyin_match(query: &str, target: &str) -> Option<Score> {
 }
 
 /// 取中文文本的拼音首字母。用 pinyin crate（覆盖全部 CJK 汉字）。
+///
+/// **限制（L5）**：`first_letter()` 只返回多音字的常用读音首字母。
+/// 多音字（行=xing/hang、重=zhong/chong、长=chang/zhang）的另一读音不会被生成，
+/// 按非主流读音首字母搜索时召回率低。pinyin crate 的 `to_pinyin()` 返回多读音迭代，
+/// 但展开所有组合会导致首字母序列组合爆炸（N 个多音字 → 2^N 组合），
+/// 不值得为低频场景引入。保持单读音 + 文档标注此限制。
 fn pinyin_initials(text: &str) -> String {
     use pinyin::ToPinyin;
     let mut result = String::new();

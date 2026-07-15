@@ -39,7 +39,70 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
 
         let _ = win.show();
         let _ = win.set_focus();
+
+        #[cfg(target_os = "macos")]
+        {
+            // 诊断：set_focus 后窗口是否真的成为 key/main window。
+            // 比读 NSApplication::isActive 更准确——isActive 是 app 级，isKeyWindow 是窗口级。
+            // 若 isKeyWindow=false，说明 set_focus 没让透明窗口成 key（焦点问题的直接证据）。
+            use objc2::msg_send;
+            use objc2::runtime::AnyObject;
+            if let Ok(ns_ptr) = win.ns_window() {
+                let ns_win: *mut AnyObject = ns_ptr as *mut AnyObject;
+                unsafe {
+                    let is_key: bool = msg_send![ns_win, isKeyWindow];
+                    let is_main: bool = msg_send![ns_win, isMainWindow];
+                    log::info!("[action-bar][show] after set_focus: isKeyWindow={} isMainWindow={}", is_key, is_main);
+                }
+            }
+        }
+
         let _ = app.emit("action-bar://show", ());
+
+        // 焦点时序诊断 + 巩固：gather_context 内 `subl --command` 激活 Sublime 可能是异步的，
+        // 间歇性晚于 set_focus 抢走 key 状态（"偶尔没焦点"）。150/350ms 记录 isKeyWindow 定位
+        // 抢焦点时点；150ms 若已失焦则 set_focus 巩固，覆盖 Sublime 延迟激活窗口。
+        #[cfg(target_os = "macos")]
+        {
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let app1 = app_clone.clone();
+                let _ = app_clone.run_on_main_thread(move || {
+                    check_and_consolidate_focus(&app1, 150, true);
+                });
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let app2 = app_clone.clone();
+                let _ = app_clone.run_on_main_thread(move || {
+                    check_and_consolidate_focus(&app2, 350, false);
+                });
+            });
+        }
+    }
+}
+
+/// 焦点诊断 + 巩固（须在主线程调用）：记录 isKeyWindow；若 consolidate 且已失焦则 set_focus 夺回。
+#[cfg(target_os = "macos")]
+fn check_and_consolidate_focus(app: &AppHandle, at_ms: u64, consolidate: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        if let Ok(ns_ptr) = win.ns_window() {
+            let ns_win: *mut AnyObject = ns_ptr as *mut AnyObject;
+            unsafe {
+                let before: bool = msg_send![ns_win, isKeyWindow];
+                if consolidate && !before {
+                    let _ = win.set_focus();
+                    let after: bool = msg_send![ns_win, isKeyWindow];
+                    log::info!(
+                        "[action-bar][focus@{}ms] lost → consolidate {}→{}",
+                        at_ms, before, after
+                    );
+                } else {
+                    log::info!("[action-bar][focus@{}ms] isKeyWindow={}", at_ms, before);
+                }
+            }
+        }
     }
 }
 
@@ -67,13 +130,17 @@ pub fn register_action_bar_shortcut(
         .on_shortcut(shortcut, move |app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
                 // 已可见 → 隐藏（toggle 语义）+ 重置 guard；不可见 → 触发
-                if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
-                    if win.is_visible().unwrap_or(false) {
-                        let _ = win.hide();
-                        // 重置 guard——防 webview 崩溃后 guard 永久卡死
-                        crate::action_bar_commands::reset_trigger_guard();
-                        return;
-                    }
+                if app
+                    .get_webview_window(WINDOW_LABEL)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false)
+                {
+                    // 走统一收口 hide_action_bar_window（含切回 Accessory + 焦点协调），非裸 win.hide()——
+                    // 否则 show 时切的 Regular policy 残留，Dock 图标常驻。
+                    hide_action_bar_window(app);
+                    // 重置 guard——防 webview 崩溃后 guard 永久卡死
+                    crate::action_bar_commands::reset_trigger_guard();
+                    return;
                 }
                 // guard 超时保护——如果上次触发超过 30s 仍未 finalize，强制重置
                 crate::action_bar_commands::reset_trigger_guard_if_stale(10);

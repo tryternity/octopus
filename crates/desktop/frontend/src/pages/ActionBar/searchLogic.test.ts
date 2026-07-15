@@ -15,6 +15,7 @@ import {
   clampSelectedIndex,
   navigateResults,
   hasQuery,
+  nextFocusLayerAfterExecute,
 } from "./searchLogic";
 import type { SearchResult } from "./searchTypes";
 import { TABS } from "./searchTypes";
@@ -418,5 +419,27 @@ describe("hasQuery", () => {
     expect(hasQuery("")).toBe(false);
     expect(hasQuery("   ")).toBe(false);
     expect(hasQuery("\t\n")).toBe(false);
+  });
+});
+
+// ── nextFocusLayerAfterExecute ──
+
+describe("nextFocusLayerAfterExecute", () => {
+  it("submenu 类型 → sub（终结性展开，Enter 应执行子项）", () => {
+    expect(nextFocusLayerAfterExecute("submenu", "main")).toBe("sub");
+    expect(nextFocusLayerAfterExecute("submenu", "sub")).toBe("sub");
+  });
+
+  it("非 submenu 类型 → 保持当前层（executeItem 不改变焦点层）", () => {
+    expect(nextFocusLayerAfterExecute("ai", "main")).toBe("main");
+    expect(nextFocusLayerAfterExecute("script", "main")).toBe("main");
+    expect(nextFocusLayerAfterExecute("url", "main")).toBe("main");
+    expect(nextFocusLayerAfterExecute("copy", "sub")).toBe("sub");
+  });
+
+  it("回归 S3：executeItem 展开 submenu 后 focusLayer 必须为 sub", () => {
+    // 这是 S3 bug 的核心不变量——executeItem(submenu) 后 Enter 走 sub 分支执行子项
+    const layer = nextFocusLayerAfterExecute("submenu", "main");
+    expect(layer).toBe("sub");
   });
 });

@@ -208,36 +208,33 @@ pub fn trigger_action_bar(app: AppHandle) {
         let sel = detect_selection(&app_clone);
 
         // ── 路由：仅依赖 Selection，不再碰检测细节 ──
+        // 注意：show_action_bar_* 投递 show 闭包到主线程后立即返回（不 await）。
+        // finalize 在 match 后统一调用——guard 防的是「detect+gather 期间重入」，
+        // show 投递后 guard 可清（toggle 兜底 + reset_trigger_guard_if_stale 兜底仍在）。
         match &sel {
             Selection::None => {
                 *PENDING_CONTEXT.lock().unwrap() = None;
                 show_action_bar_centered(&app_clone);
-                finalize_action_bar(&app_clone);
             }
             Selection::Text { text, mouse } => {
-                let text_for_gather = text.clone();
-                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text.clone()));
-                show_action_bar_at_mouse_with_pos(&app_clone, *mouse);
-                // 后台采集上下文
-                std::thread::spawn(move || {
-                    match crate::app_context::gather_context(&text_for_gather) {
-                        Ok(extra) => {
-                            log_app_context(&text_for_gather, &extra);
-                            let mut guard = PENDING_CONTEXT.lock().unwrap();
-                            if let Some(ref ctx) = *guard {
-                                if ctx.text.as_deref() == Some(&text_for_gather) {
-                                    if let Some(ref mut ctx) = *guard {
-                                        ctx.source = Some(extra.source);
-                                        ctx.surrounding = extra.surrounding;
-                                    }
-                                } else {
-                                    log::info!("[action-bar] gather 回填跳过：ctx 已被新触发覆盖");
-                                }
-                            }
-                        }
-                        Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+                // 先同步采集上下文再 show——gather 会调用前台 app（Sublime 的 `subl --command` /
+                // Browser 的 osascript），这些调用激活前台 app、在 show 之后抢走 ActionBar 焦点。
+                // 对照实验铁证：无选中（不 gather）→ 正常获焦；有选中（gather）→ 失焦。
+                // 移到 show 之前，让随后的 show + set_focus 统一夺回焦点（最后 set_focus 者持有）。
+                // 附带收益：show 前前台确定是源 app，frontmost_app() 读到源 app 上下文更准确
+                // （原异步方案在 ActionBar 获焦后 frontmost 可能变成 octopus 自己）。
+                // 代价：热键到弹出增加 gather 耗时（Sublime ~50-150ms，AX 上限 500ms）。
+                let mut ctx = ActionBarContext::text(text.clone());
+                match crate::app_context::gather_context(text) {
+                    Ok(extra) => {
+                        log_app_context(text, &extra);
+                        ctx.source = Some(extra.source);
+                        ctx.surrounding = extra.surrounding;
                     }
-                });
+                    Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+                }
+                *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+                show_action_bar_at_mouse_with_pos(&app_clone, *mouse);
             }
             Selection::File { files, .. } => {
                 *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(files.clone()));
@@ -248,6 +245,10 @@ pub fn trigger_action_bar(app: AppHandle) {
                 show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }
         }
+        // 统一收口：所有分支（None/Text/File/Folder）投递 show 后清 guard。
+        // 修复 M1——原仅 None 分支调 finalize，Text/File/Folder 漏调，
+        // 导致 guard 在用户不操作时最多卡 10s（靠 reset_trigger_guard_if_stale 兜底）。
+        finalize_action_bar(&app_clone);
     });
 }
 
@@ -341,12 +342,20 @@ pub fn reset_trigger_guard_if_stale(timeout_secs: u64) {
 #[tauri::command]
 pub fn action_bar_get_context() -> Option<ActionBarContext> {
     // 非消耗读取（clone）——防止 mount + show 竞态导致第二次拿到 None
-    PENDING_CONTEXT.lock().unwrap().clone()
+    let ctx = PENDING_CONTEXT.lock().unwrap().clone();
+    log::info!(
+        "[action-bar][get_context] {}",
+        ctx.as_ref()
+            .map(|c| format!("Some(text_len={})", c.text.as_deref().map(|t| t.len()).unwrap_or(0)))
+            .unwrap_or_else(|| "None".to_string())
+    );
+    ctx
 }
 
-/// 前端隐藏浮窗时调用。
+/// 前端隐藏浮窗时调用。reason 用于诊断 dismiss 触发来源（focus-lost / click-outside / 操作后）。
 #[tauri::command]
-pub fn action_bar_dismiss(app: AppHandle) {
+pub fn action_bar_dismiss(app: AppHandle, reason: Option<String>) {
+    log::info!("[action-bar][dismiss] reason={:?}", reason);
     hide_action_bar_window(&app);
     finalize_action_bar(&app);
 }
@@ -1500,12 +1509,8 @@ pub fn trigger_agent_voice(
     octopus_infra::db::insert_agent_task(&task_id, &item.agent, &context)
         .map_err(|e| e.to_string())?;
 
-    // 隐藏 action bar 浮窗
-    if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-        let _ = win.hide();
-    }
-    #[cfg(target_os = "macos")]
-    { crate::activation::after_floating_window_hide(&app); }
+    // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
+    hide_action_bar_window(&app);
     finalize_action_bar(&app);
 
     // 触发 agent 录音
@@ -1541,6 +1546,10 @@ pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 序列化所有修改 TRIGGER_* 全局静态量的测试，防并行竞态。
+    static TRIGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     // ── render_agent_prompt ──
 
@@ -1789,6 +1798,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_clears_flag() {
+        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         reset_trigger_guard();
         assert!(!TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "reset_trigger_guard 应清除 guard");
@@ -1796,6 +1806,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_resets_when_stale() {
+        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         // 设一个 60 秒前的时间戳
         let old = std::time::SystemTime::now()
@@ -1809,6 +1820,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_keeps_recent() {
+        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         // 设一个 5 秒前的时间戳
         let recent = std::time::SystemTime::now()
@@ -1822,6 +1834,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_ignores_zero_timestamp() {
+        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         TRIGGER_TIMESTAMP.store(0, Ordering::SeqCst);
         reset_trigger_guard_if_stale(30);

@@ -438,7 +438,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 32", [])?;
             log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste)");
         }
-        // v32→v33：app_index 缓存表
+        // v32→v33：app_index 缓存表（含 icon 列）+ 早期 v33 库补 icon 列
         {
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS app_index (
@@ -452,31 +452,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
                 CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);"
             )?;
-            // v33→v33.1: 如果表已存在但缺 icon 列（从早期 v33 创建），补列
-            {
-                let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)")?
-                    .query_map([], |r| r.get::<_, String>(1))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                if !cols.contains(&"icon".to_string()) {
-                    conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
-                    log::info!("schema patched: app_index add icon column");
-                }
-            }
-            conn.execute("PRAGMA user_version = 33", [])?;
-            log::info!("schema upgraded to v33 (app_index cache table)");
-        }
-        // v33→v34：app_index 补 icon 列（已有 v33 库跳过上面块，这里兜底）
-        {
+            // 早期 v33 库（CREATE 时无 icon 列）补列——CREATE TABLE IF NOT EXISTS 对已存在表是 no-op，
+            // 此时需 ALTER 补 icon。新建库 CREATE 已含 icon，此检查为 no-op。
             let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)")?
                 .query_map([], |r| r.get::<_, String>(1))?
                 .filter_map(|r| r.ok())
                 .collect();
             if !cols.contains(&"icon".to_string()) {
                 conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
-                log::info!("schema upgraded to v34 (app_index add icon column)");
+                log::info!("schema patched: app_index add icon column");
             }
             conn.execute("PRAGMA user_version = 34", [])?;
+            log::info!("schema upgraded to v34 (app_index cache table with icon)");
         }
         return Ok(());
     }
@@ -1720,12 +1707,15 @@ pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
     })
 }
 
-/// 全量替换应用索引缓存（先清空再写入）。
+/// 全量替换应用索引缓存（原子：DELETE + INSERT 在同一事务内）。
 /// apps: (name, alias, path, icon_base64)
+///
+/// **原子性保证**：DELETE 和 INSERT 都在 `tx` 内，中途 INSERT 失败（如 UNIQUE 冲突、
+/// 磁盘满）会回滚 DELETE，避免 DB 变空表导致下次启动触发全量重扫 + 期间搜索无 app。
 pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
     with_db(|conn| {
-        conn.execute("DELETE FROM app_index", [])?;
         let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM app_index", [])?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO app_index (name, alias, path, icon) VALUES (?1, ?2, ?3, ?4)"
@@ -2946,6 +2936,71 @@ mod tests {
         for (atype, accepts) in &non_submenu {
             assert_eq!(accepts, "text", "{} 类型 accepts 应为 'text'，实际: {}", atype, accepts);
         }
+    }
+
+    /// 回归 S2：save_app_index 原子性——中途 INSERT 失败时 DELETE 也回滚。
+    #[test]
+    fn save_app_index_atomic_on_failure() {
+        setup_test_db();
+        // 先写入 1 个合法应用
+        save_app_index(&[("App1".into(), "".into(), "/Applications/App1.app".into(), "".into())]).unwrap();
+        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(count, 1, "初始应有 1 条记录");
+
+        // 再写入 2 个应用，其中第 2 个 path 与第 1 个相同（UNIQUE 冲突）→ INSERT 失败
+        let result = save_app_index(&[
+            ("App2".into(), "".into(), "/Applications/App2.app".into(), "".into()),
+            ("App3".into(), "".into(), "/Applications/App2.app".into(), "".into()), // path 重复
+        ]);
+        assert!(result.is_err(), "UNIQUE 冲突应返回 Err");
+
+        // 关键断言：DELETE 应回滚，原 App1 应保留（事务原子性）
+        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(count, 1, "失败时 DELETE 应回滚，原数据保留");
+        let name: String = with_db(|c| c.query_row("SELECT name FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(name, "App1", "原 App1 应保留");
+    }
+
+    /// 回归 T9-L6：v32→v34 迁移——从无 app_index 表的 v32 库升级，表 + icon 列就绪。
+    #[test]
+    fn migration_v32_to_v34_creates_app_index_with_icon() {
+        // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index 表
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE action_bar_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER DEFAULT NULL,
+                title TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '', action_type TEXT NOT NULL,
+                action_data TEXT NOT NULL DEFAULT '', accepts TEXT NOT NULL DEFAULT 'text',
+                sort_order INTEGER NOT NULL DEFAULT 0, is_system INTEGER NOT NULL DEFAULT 1,
+                is_enabled INTEGER NOT NULL DEFAULT 1, is_async INTEGER NOT NULL DEFAULT 1,
+                write_output_to_clipboard INTEGER NOT NULL DEFAULT 0, shortcut TEXT NOT NULL DEFAULT '',
+                agent TEXT NOT NULL DEFAULT '', trigger_keyword TEXT NOT NULL DEFAULT '',
+                auto_paste INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
+            );"
+        ).unwrap();
+        conn.execute("PRAGMA user_version = 32", []).unwrap();
+
+        // 运行迁移
+        init_schema(&conn).unwrap();
+
+        // 验证 user_version = 34
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 34);
+
+        // 验证 app_index 表存在 + icon 列存在
+        let table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(table_count, 1, "app_index 表应被创建");
+
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .filter_map(|r| r.ok()).collect();
+        assert!(cols.contains(&"icon".to_string()), "app_index 应有 icon 列");
+        assert!(cols.contains(&"path".to_string()), "app_index 应有 path 列");
     }
 
     #[test]

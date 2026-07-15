@@ -50,6 +50,7 @@ class OctopusExportContextCommand(sublime_plugin.TextCommand):
 pub fn try_sublime_plugin_context(
     bundle_id: &str,
     selected_text: &str,
+    deadline: std::time::Instant,
 ) -> Option<SurroundingText> {
     let packages_dir = find_sublime_packages_dir(bundle_id)?;
 
@@ -60,15 +61,14 @@ pub fn try_sublime_plugin_context(
     // 2. 删除旧的输出文件
     let _ = std::fs::remove_file(SUBLIME_OUTPUT_PATH);
 
-    // 3. 触发插件命令
-    let subl_path = find_subl_binary()?;
-    let result = std::process::Command::new(&subl_path)
-        .arg("--command")
-        .arg("octopus_export_context")
-        .output();
+    // 3. 触发插件命令（受 deadline 约束，防 subl 挂起卡死 trigger worker）
+    let subl_path = find_subl_binary(deadline)?;
+    let mut cmd = std::process::Command::new(&subl_path);
+    cmd.arg("--command").arg("octopus_export_context");
+    let result = super::run_command_with_deadline(cmd, deadline);
 
-    if result.is_err() {
-        log::warn!("[app-context] subl --command 执行失败");
+    if result.is_none() {
+        log::warn!("[app-context] subl --command 执行失败或超时");
         return None;
     }
 
@@ -183,7 +183,7 @@ fn ensure_plugin_installed(plugin_path: &std::path::Path) {
 }
 
 /// 查找 subl 命令行工具。
-fn find_subl_binary() -> Option<std::path::PathBuf> {
+fn find_subl_binary(deadline: std::time::Instant) -> Option<std::path::PathBuf> {
     // 常见安装路径
     let candidates = [
         std::path::PathBuf::from("/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl"),
@@ -198,17 +198,16 @@ fn find_subl_binary() -> Option<std::path::PathBuf> {
     }
 
     // 尝试 PATH 中的 subl
-    std::process::Command::new("which")
-        .arg("subl")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() {
-                None
-            } else {
-                Some(std::path::PathBuf::from(s))
-            }
-        })
+    let mut cmd = std::process::Command::new("which");
+    cmd.arg("subl");
+    super::run_command_with_deadline(cmd, deadline)
+    .filter(|o| o.status.success())
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(std::path::PathBuf::from(s))
+        }
+    })
 }

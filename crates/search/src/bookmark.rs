@@ -24,11 +24,13 @@ pub fn load_all_bookmarks() -> Vec<BookmarkEntry> {
             }
         }
     }
-    // Safari（plist，需 Full Disk Access）—— 尝试读，失败跳过
+    // Safari（plist 解析未实现）—— 跳过。load_safari_bookmarks 当前返回空 Vec。
+    // 不假装"尝试读失败跳过"——如实记录未实现状态，避免日志/行为误导。
+    // 实现需引入 plist crate + Full Disk Access 权限。
     if let Some(home) = dirs::home_dir() {
         let safari_path = home.join("Library/Safari/Bookmarks.plist");
         if safari_path.exists() {
-            bookmarks.extend(load_safari_bookmarks(&safari_path));
+            log::debug!("[search] Safari 书签解析未实现，跳过 {}", safari_path.display());
         }
     }
     log::info!("[search] 书签索引: {} 条", bookmarks.len());
@@ -77,9 +79,13 @@ fn load_chromium_bookmarks(browser: &str, path: &std::path::Path) -> Vec<Bookmar
     result
 }
 
-/// 解析 Safari 书签 plist（简化：用 plist crate 或跳过）。
+/// 解析 Safari 书签 plist。
+///
+/// **未实现**——返回空 Vec。Safari 书签存于 `Bookmarks.plist`（二进制 plist），
+/// 解析需引入 `plist` crate + 用户授予 Full Disk Access。当前留作接口占位，
+/// 未来实现时填充函数体即可（调用点已就绪，见 `load_all_bookmarks`）。
+#[allow(dead_code)] // 接口占位，未来实现时启用；测试覆盖其"返回空"语义
 fn load_safari_bookmarks(_path: &std::path::Path) -> Vec<BookmarkEntry> {
-    // Safari plist 解析需要额外依赖（plist crate），暂跳过
     Vec::new()
 }
 
@@ -133,6 +139,15 @@ mod tests {
         ];
         let results = search_bookmarks("", &bookmarks);
         assert!(results.is_empty());
+    }
+
+    /// 回归 S4：Safari 书签解析未实现，load_safari_bookmarks 返回空。
+    /// 锁住"未实现"语义——未来实现时此测试需更新，提醒同步文档。
+    #[test]
+    fn load_safari_bookmarks_unimplemented_returns_empty() {
+        let path = std::path::Path::new("/nonexistent/Safari/Bookmarks.plist");
+        let result = load_safari_bookmarks(path);
+        assert!(result.is_empty(), "Safari 书签解析未实现，应返回空 Vec");
     }
 
     #[test]

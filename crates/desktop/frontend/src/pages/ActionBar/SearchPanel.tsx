@@ -82,7 +82,7 @@ function TabButton({
           "ml-1 font-mono text-[9px]",
           active ? "text-voice/70" : "text-muted-foreground/50",
         )}>
-          ⌘{tab.key.toUpperCase()}
+          ⌥{tab.key.toUpperCase()}
         </span>
       </span>
     </button>
@@ -193,11 +193,12 @@ export default function SearchPanel({
 }: SearchPanelProps) {
   const resultsRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
-  // 结果变化后抑制 hover 一小段时间——防 DOM 重建误触发 mousemove
+  // 结果/Tab 变化或键盘选中变化后抑制 hover 一小段时间——
+  // 防 DOM 重建误触发 mousemove，也防键盘 ↑↓ 选中后鼠标轻微移动覆盖选中（L1）
   const hoverSuppressRef = useRef(0);
   useEffect(() => {
     hoverSuppressRef.current = Date.now() + HOVER_SUPPRESS_MS;
-  }, [results, activeTab]);
+  }, [results, activeTab, selectedIdx]);
 
   // 选中项滚动到可见区域
   useEffect(() => {

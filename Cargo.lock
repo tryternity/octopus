@@ -5241,6 +5241,7 @@ dependencies = [
  "log",
  "nucleo-matcher",
  "octopus-infra",
+ "parking_lot",
  "pinyin",
  "serde",
  "serde_json",

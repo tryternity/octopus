@@ -384,15 +384,16 @@ fn path_matches_filename(path: &str, filename: &str) -> bool {
 
 /// 读文件内容为纯文本。支持纯文本、Office 格式（.docx/.xlsx/.pptx）和 PDF。
 /// Office 格式优先用 officecli（如果安装了），否则 fallback 到内置 zip+XML 解析。
-fn read_file_as_text(path: &std::path::Path) -> Option<String> {
+/// 子进程（pdftotext/officecli）受 deadline 约束，防永久挂起。
+fn read_file_as_text(path: &std::path::Path, deadline: Instant) -> Option<String> {
     let ext = path.extension()?.to_string_lossy().to_lowercase();
 
     match ext.as_str() {
-        "pdf" => read_pdf_text(path),
+        "pdf" => read_pdf_text(path, deadline),
         "pages" => read_pages_text(path),
         "docx" | "pptx" | "xlsx" => {
             // 优先用 officecli（更健壮，处理修订/批注/公式/图表）
-            if let Some(text) = try_officecli_text(path) {
+            if let Some(text) = try_officecli_text(path, deadline) {
                 return Some(text);
             }
             // Fallback 到内置 zip+XML 解析
@@ -419,13 +420,10 @@ fn read_file_as_text(path: &std::path::Path) -> Option<String> {
 /// 尝试用 officecli 提取 Office 文档文本。
 /// officecli 是单二进制工具（iOfficeAI/OfficeCLI），支持 .docx/.xlsx/.pptx。
 /// 输出格式 `[/path] text`，去掉路径标签后是纯文本。
-fn try_officecli_text(path: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("officecli")
-        .arg("view")
-        .arg(path)
-        .arg("text")
-        .output()
-        .ok()?;
+fn try_officecli_text(path: &std::path::Path, deadline: Instant) -> Option<String> {
+    let mut cmd = std::process::Command::new("officecli");
+    cmd.arg("view").arg(path).arg("text");
+    let output = super::run_command_with_deadline(cmd, deadline)?;
 
     if !output.status.success() || output.stdout.is_empty() {
         return None;
@@ -498,12 +496,10 @@ fn read_pages_text(path: &std::path::Path) -> Option<String> {
 }
 
 /// 从 PDF 提取文本。优先用系统 pdftotext（poppler），没有则返回 None。
-fn read_pdf_text(path: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("pdftotext")
-        .arg(path)
-        .arg("-") // stdout
-        .output()
-        .ok()?;
+fn read_pdf_text(path: &std::path::Path, deadline: Instant) -> Option<String> {
+    let mut cmd = std::process::Command::new("pdftotext");
+    cmd.arg(path).arg("-"); // stdout
+    let output = super::run_command_with_deadline(cmd, deadline)?;
 
     if !output.status.success() || output.stdout.is_empty() {
         return None;
@@ -746,7 +742,7 @@ fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
 
 /// Pages/Keynote AppleScript 文本提取。
 /// `body text of document 1` 返回当前文档全文。
-fn try_pages_applescript(selected_text: &str, window_title: &Option<String>) -> Option<SurroundingText> {
+fn try_pages_applescript(selected_text: &str, window_title: &Option<String>, deadline: Instant) -> Option<SurroundingText> {
     use std::process::Command;
 
     let script = r#"tell application "Pages"
@@ -754,10 +750,9 @@ fn try_pages_applescript(selected_text: &str, window_title: &Option<String>) -> 
     return body text of d
 end tell"#;
 
-    let output = Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("osascript");
+    cmd.args(["-e", script]);
+    let output = super::run_command_with_deadline(cmd, deadline)?;
 
     if !output.status.success() || output.stdout.is_empty() {
         return None;
@@ -832,15 +827,14 @@ fn filter_lsof_doc_files(lsof_output: &str) -> Vec<String> {
 /// 当 AX 树不含真实编辑器内容且窗口标题不可靠时（WPS/Pages 等），
 /// lsof 可以列出进程当前打开的文档文件。
 /// 进程名从 bundle_id 推断。
-fn try_lsof_context(selected_text: &str, bundle_id: &str) -> Option<SurroundingText> {
+fn try_lsof_context(selected_text: &str, bundle_id: &str, deadline: Instant) -> Option<SurroundingText> {
     // 从 bundle_id 推断进程名
     let proc_name = bundle_id_to_procname(bundle_id);
 
     // 1. lsof 获取进程打开的文件
-    let output = std::process::Command::new("lsof")
-        .args(["-c", &proc_name, "-F", "n"])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("lsof");
+    cmd.args(["-c", &proc_name, "-F", "n"]);
+    let output = super::run_command_with_deadline(cmd, deadline)?;
 
     if !output.status.success() {
         return None;
@@ -856,7 +850,7 @@ fn try_lsof_context(selected_text: &str, bundle_id: &str) -> Option<SurroundingT
     // 3. 逐个尝试读取 + 匹配选中文本
     for file_path in &candidates {
         let path = std::path::Path::new(file_path);
-        let content = match read_file_as_text(path) {
+        let content = match read_file_as_text(path, deadline) {
             Some(c) => c,
             None => continue,
         };
@@ -891,6 +885,7 @@ fn try_read_file_context(
     window_title: &str,
     bundle_id: &str,
     selected_text: &str,
+    deadline: Instant,
 ) -> Option<SurroundingText> {
     // 1. 从标题提取文件名
     let filename = extract_filename_from_title(window_title)?;
@@ -901,11 +896,11 @@ fn try_read_file_context(
     );
 
     // 2. 查找文件完整路径
-    let file_path = find_file_path(&filename, bundle_id)?;
+    let file_path = find_file_path(&filename, bundle_id, deadline)?;
     log::info!("[app-context] 磁盘 fallback: 找到文件 {}", file_path.display());
 
     // 3. 读文件内容——支持纯文本和 Office 格式（.docx/.xlsx/.pptx）
-    let content = read_file_as_text(&file_path)?;
+    let content = read_file_as_text(&file_path, deadline)?;
     if content.is_empty() {
         return None;
     }
@@ -1058,7 +1053,7 @@ fn name_result_is_app_name(s: &str) -> bool {
 
 /// 查找文件的完整路径。
 /// 先查 Sublime session，再查 mdfind（Spotlight）。
-fn find_file_path(filename: &str, bundle_id: &str) -> Option<std::path::PathBuf> {
+fn find_file_path(filename: &str, bundle_id: &str, deadline: Instant) -> Option<std::path::PathBuf> {
     // Sublime session 查找
     if bundle_id.contains("sublimetext") {
         if let Some(path) = find_in_sublime_session(filename) {
@@ -1067,13 +1062,12 @@ fn find_file_path(filename: &str, bundle_id: &str) -> Option<std::path::PathBuf>
     }
 
     // Spotlight fallback（文件名精确匹配）。
-    // 无超时保护——mdfind 通常 <100ms，且整个 gather 在后台线程执行不阻塞 UI。
+    // mdfind 通常 <100ms，但仍受 deadline 约束防异常挂起。
     // 误读同名文件的内容兜底：slice_around_text 的 find() 在误读文件中大概率
     // 不含 selected_text → 返回 None → 自动降级为空 surrounding。
-    let output = std::process::Command::new("mdfind")
-        .args(["-name", filename])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("mdfind");
+    cmd.args(["-name", filename]);
+    let output = super::run_command_with_deadline(cmd, deadline)?;
 
     if !output.status.success() {
         return None;
@@ -1301,6 +1295,7 @@ unsafe fn build_surrounding(
                     if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
                         bundle_id_or_name,
                         selected_text,
+                        deadline,
                     ) {
                         diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
                         let diag = Some(diagnostics.join("\n  "));
@@ -1311,7 +1306,7 @@ unsafe fn build_surrounding(
 
                 // Pages/Keynote 用 AppleScript 读全文（和 Chrome JS 同思路）
                 if bundle_id_or_name.to_ascii_lowercase().contains("iwork") {
-                    if let Some(ctx) = try_pages_applescript(selected_text, &window_title) {
+                    if let Some(ctx) = try_pages_applescript(selected_text, &window_title, deadline) {
                         diagnostics.push("PAGES_APPLESCRIPT: AppleScript body text 取数成功".to_string());
                         let diag = Some(diagnostics.join("\n  "));
                         log::info!("[app-context] Pages AppleScript 取数成功");
@@ -1321,7 +1316,7 @@ unsafe fn build_surrounding(
 
                 // 通用 lsof fallback：获取进程打开的文件路径（窗口标题常为空或不含文件名）
                 // 对 WPS/Pages 等窗口标题不可靠的 App 特别有效
-                if let Some(lsof_ctx) = try_lsof_context(selected_text, bundle_id_or_name) {
+                if let Some(lsof_ctx) = try_lsof_context(selected_text, bundle_id_or_name, deadline) {
                     diagnostics.push("LSOF: lsof 文件路径 + officecli/pdftotext 取数成功".to_string());
                     let diag = Some(diagnostics.join("\n  "));
                     log::info!("[app-context] lsof 取数成功");
@@ -1334,6 +1329,7 @@ unsafe fn build_surrounding(
                         title,
                         bundle_id_or_name,
                         selected_text,
+                        deadline,
                     ) {
                         diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
                         let diag = Some(diagnostics.join("\n  "));
@@ -1347,7 +1343,7 @@ unsafe fn build_surrounding(
                     None => "无窗口标题".to_string(),
                     Some(title) => match extract_filename_from_title(title) {
                         None => format!("标题 '{}' 无法提取文件名", title),
-                        Some(fname) => match find_file_path(&fname, bundle_id_or_name) {
+                        Some(fname) => match find_file_path(&fname, bundle_id_or_name, deadline) {
                             None => format!("文件 '{}' 未在 session/mdfind 中找到", fname),
                             Some(path) => match std::fs::read_to_string(&path) {
                                 Err(e) => format!("文件 {} 读取失败: {}", path.display(), e),
@@ -2363,7 +2359,7 @@ mod tests {
         let sel = "⾥的常数"; // ⾥ 是康熙部首
         let result = slice_around_text(full, sel, 5);
         assert!(result.is_some(), "NFKC 应该匹配康熙部首");
-        if let Some((before, after)) = result {
+        if let Some((before, _after)) = result {
             assert!(before.as_deref().unwrap_or("").contains("这"));
         }
     }

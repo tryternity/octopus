@@ -27,6 +27,7 @@ import {
   calcResultsHeight,
   navigateResults,
   hasQuery,
+  nextFocusLayerAfterExecute,
 } from "./searchLogic";
 
 type ContextKind = "text" | "files";
@@ -97,7 +98,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     )}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={onClick}
-    title={label}
+    title={`${label} — Alt+${indexLabel(index)} 定位${shortcut ? ` · ⌘${shortcut} 执行` : ""}`}
   >
     <span
       className={cn(
@@ -111,7 +112,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
     {shortcut && (
-      <span className="text-[9px] text-voice/70 font-mono leading-none">⌥{shortcut}</span>
+      <span className="text-[9px] text-voice/70 font-mono leading-none">⌘{shortcut}</span>
     )}
   </button>
 );
@@ -189,6 +190,7 @@ export default function ActionBar() {
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastImeKeyTime = useRef(0);
+  const showTimeRef = useRef(0);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -274,6 +276,12 @@ export default function ActionBar() {
       if (targetX !== null && targetY !== null) {
         await win.setPosition(new LogicalPosition(targetX, targetY));
       }
+      // setSize/setPosition 在 macOS 调整 NSWindow frame 会触发 webview blur，
+      // 致 input 失焦（query 变化、搜索结果展开时尤其明显——"打第一个字母即失焦"）。
+      // resize 后重新 focus 输入框，保证连续输入不中断。
+      if (gen === resizeGenRef.current && document.activeElement !== inputRef.current) {
+        inputRef.current?.focus();
+      }
     };
     apply().catch(() => {});
   }, [view, query, filteredResults.length, expandDirection]);
@@ -281,6 +289,7 @@ export default function ActionBar() {
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
     const refresh = () => {
+      showTimeRef.current = Date.now(); // 记录 show 时刻，供 onFocusChanged 宽限判定
       // 前端获取键盘焦点（后端 show 不调 set_focus 避免激活 app），
       // 让方向键直接可用——用户无需鼠标点击
       window.focus();
@@ -292,10 +301,11 @@ export default function ActionBar() {
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
         setContext(ctx);
-        // 无选中文本时聚焦搜索框；有选中文本时菜单为主交互
-        if (!ctx || (!ctx.text && (!ctx.files || ctx.files.length === 0))) {
-          setTimeout(() => inputRef.current?.focus(), 50);
-        }
+        // 输入框始终保持 DOM focus（重构后设计意图——键盘 handler 738 行的放行逻辑依赖
+        // activeElement===input）。无论有无选中文本，字母键都要能进搜索框触发过滤；
+        // 有选中时菜单的方向键 / Alt+字母 快捷键由 window 级 handler 拦截，不受 input focus 影响
+        // （handler 已对 Arrow/Tab/Enter 等导航键精确放行，不会被 input focus 劫持）。
+        setTimeout(() => inputRef.current?.focus(), 50);
       });
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
@@ -326,10 +336,15 @@ export default function ActionBar() {
       if (viewRef.current === "loading") return;
       const el = e.target as HTMLElement;
       if (el && el.closest("[data-action-bar]")) return;
-      invoke("action_bar_dismiss");
+      invoke("action_bar_dismiss", { reason: "click-outside" });
     };
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused && viewRef.current !== "loading") invoke("action_bar_dismiss");
+      const sinceShow = Date.now() - showTimeRef.current;
+      if (!focused && viewRef.current !== "loading") {
+        // show 后宽限：app 激活/窗口成为 key 有时序抖动，期间 spurious focus-lost 不触发 dismiss
+        if (sinceShow < 500) return;
+        invoke("action_bar_dismiss", { reason: "focus-lost" });
+      }
     });
     const timer = setTimeout(() => {
       document.addEventListener("click", onClick, false);
@@ -513,6 +528,10 @@ export default function ActionBar() {
       } else {
         setSubSelectedIdx(0);
       }
+      // executeItem 是终结性动作——展开 submenu 后焦点应进 sub 层，
+      // 否则按 Enter 会走 main 分支再次执行父项（重复展开，Enter 失灵）。
+      // 与 Tab/Alt+字母 的「预览展开不抢焦点」区分（架构文档契约）。
+      setFocusLayer(nextFocusLayerAfterExecute(item.actionType, focusLayerRef.current));
       setView("submenu");
       return;
     }
@@ -563,7 +582,7 @@ export default function ActionBar() {
         if (!path) return;
         try {
           await invoke("launch_app", { path });
-          invoke("action_bar_dismiss");
+          invoke("action_bar_dismiss", { reason: "launch-app" });
         } catch (e) {
           showQuickError(String(e).slice(0, 40));
         }
@@ -574,7 +593,7 @@ export default function ActionBar() {
         if (!path) return;
         try {
           await invoke("open_file", { path });
-          invoke("action_bar_dismiss");
+          invoke("action_bar_dismiss", { reason: "open-file" });
         } catch (e) {
           showQuickError(String(e).slice(0, 40));
         }
@@ -601,7 +620,7 @@ export default function ActionBar() {
         if (url) {
           try {
             await invoke("open_url", { url });
-            invoke("action_bar_dismiss");
+            invoke("action_bar_dismiss", { reason: "open-url" });
           } catch (e) {
             showQuickError(String(e).slice(0, 40));
           }
@@ -614,7 +633,7 @@ export default function ActionBar() {
         setView("loading");
         try {
           await invoke<string>("execute_shell", { command });
-          invoke("action_bar_dismiss");
+          invoke("action_bar_dismiss", { reason: "execute-shell" });
         } catch (e) {
           showQuickError(String(e).slice(0, 40));
           setView("main");
@@ -668,7 +687,7 @@ export default function ActionBar() {
           setQuery("");
           inputRef.current?.focus();
         } else {
-          invoke("action_bar_dismiss");
+          invoke("action_bar_dismiss", { reason: "escape" });
         }
         return;
       }
@@ -682,12 +701,16 @@ export default function ActionBar() {
       if (hasQuery(queryRef.current)) {
         const results = filteredResultsRef.current;
 
-        // Cmd+字母 → 快捷定位 Tab 页
-        if (e.metaKey && e.key.length === 1) {
-          const tabByKey = getTabByKey(e.key.toLowerCase());
-          if (tabByKey) {
-            e.preventDefault();
-            setActiveTab(tabByKey);
+        // Alt + 字母 → 快捷切换 Tab 页（统一 Alt=定位/切换；Cmd/Ctrl 留给执行）
+        // Alt 改变 e.key 输出（如 Alt+A → "å"），用 codeToChar(e.code) 取物理键
+        if (e.altKey) {
+          const ch = codeToChar(e.code);
+          if (ch) {
+            const tabByKey = getTabByKey(ch);
+            if (tabByKey) {
+              e.preventDefault();
+              setActiveTab(tabByKey);
+            }
           }
           return;
         }
@@ -725,15 +748,20 @@ export default function ActionBar() {
 
       // ── 菜单模式键盘导航（query 为空时，沿用现有逻辑）──
 
-      // 搜索输入框聚焦时不拦截键盘事件（让字符进入输入框），
-      // 仅 Escape（已在上方处理）例外
-      if (document.activeElement === inputRef.current && !e.altKey && !e.metaKey) {
-        return;
+      // input 始终 focus：放行【无修饰】的可打印字符（字母/数字/Backspace）与左右方向键（移光标）进输入框；
+      // 修饰键(Alt/Cmd/Ctrl)+字符不放行——交下方分支（Alt=定位 / Cmd·Ctrl=执行）。
+      // Tab（菜单项切换）/ ↑↓（主子菜单层切换）/ Enter·Space（执行菜单项）也由本 handler 处理。
+      // input 无多行/回车概念——Enter 交给 handler 执行菜单项，不放行给输入框。Escape 已在上方处理。
+      if (document.activeElement === inputRef.current && !e.altKey && !e.metaKey && !e.ctrlKey) {
+        const navKeys = ["ArrowUp", "ArrowDown", "Tab", "Enter", " "];
+        if (!navKeys.includes(e.key)) {
+          return;
+        }
       }
 
-      // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
-      // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
-      if (e.altKey) {
+      // Cmd/Ctrl + 数字/字母 → 直接执行（按菜单项配置的 shortcut 匹配；原 Alt+字母 的功能）
+      // macOS Cmd 不改变字母输出，统一用 codeToChar(e.code) 取物理键
+      if (e.metaKey || e.ctrlKey) {
         const ch = codeToChar(e.code);
         if (ch) {
           const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
@@ -745,51 +773,58 @@ export default function ActionBar() {
         return;
       }
 
-      // 快捷定位：1-9 数字键 + a-z 字母键（支持最多 35 项）
-      const idx = labelToIndex(e.key.toLowerCase());
-      if (idx >= 0) {
-        e.preventDefault();
-        if (focusLayerRef.current === "sub") {
-          if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
-        } else {
-          if (idx < mainItemsRef.current.length) {
-            const item = mainItemsRef.current[idx];
-            setSelectedIdx(idx);
-            // submenu 项同步展开子菜单预览（与左右键行为一致）
-            if (item.actionType === "submenu") {
-              submenuParentIdRef.current = item.id;
-              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
-              if (subs.length > 0 && subs[0].actionType === "url") {
-                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-              } else {
-                setSubSelectedIdx(0);
-              }
-              setView("submenu");
+      // Alt + 数字/字母 → 定位菜单项（按位置 labelToIndex，选中不执行；原 无修饰数字/字母 的功能）
+      // Alt 改变 e.key 输出（如 Alt+H → "˙"），用 codeToChar(e.code) 取物理键再 labelToIndex
+      if (e.altKey) {
+        const ch = codeToChar(e.code);
+        if (ch) {
+          const idx = labelToIndex(ch);
+          if (idx >= 0) {
+            e.preventDefault();
+            if (focusLayerRef.current === "sub") {
+              if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
             } else {
-              submenuParentIdRef.current = null;
-              setView("main");
+              if (idx < mainItemsRef.current.length) {
+                const item = mainItemsRef.current[idx];
+                setSelectedIdx(idx);
+                // submenu 项同步展开子菜单预览（与 Tab 移动行为一致）
+                if (item.actionType === "submenu") {
+                  submenuParentIdRef.current = item.id;
+                  const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+                  if (subs.length > 0 && subs[0].actionType === "url") {
+                    const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                    setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+                  } else {
+                    setSubSelectedIdx(0);
+                  }
+                  setView("submenu");
+                } else {
+                  submenuParentIdRef.current = null;
+                  setView("main");
+                }
+              }
             }
           }
         }
         return;
       }
 
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      if (e.key === "Tab") {
         e.preventDefault();
+        const forward = !e.shiftKey;
         if (focusLayerRef.current === "sub") {
-          // 焦点在子菜单——左右键在子菜单移动
+          // 焦点在子菜单——Tab/Shift+Tab 在子菜单项间移动
           setSubSelectedIdx((prev) => {
             const items = subItemsRef.current;
             if (items.length === 0) return 0;
-            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+            return forward ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
           });
         } else {
-          // 焦点在主菜单——左右键在主菜单移动，submenu 项自动展开子菜单预览
+          // 焦点在主菜单——Tab/Shift+Tab 在主菜单项间移动，submenu 项自动展开子菜单预览
           setSelectedIdx((prev) => {
             const items = mainItemsRef.current;
             if (items.length === 0) return 0;
-            const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+            const next = forward ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
             const item = items[next];
             if (item && item.actionType === "submenu") {
               submenuParentIdRef.current = item.id;
@@ -813,8 +848,8 @@ export default function ActionBar() {
 
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        // 上下键只切换焦点层，不展开/收起子菜单
-        // 子菜单展开/收起由左右键移动主菜单项时控制
+        // 上下键只切换焦点层（main↔sub），不展开/收起子菜单
+        // 子菜单展开/收起由 Tab/Shift+Tab 移动主菜单项时控制
         if (focusLayerRef.current === "sub") {
           setFocusLayer("main");
         } else {
@@ -964,6 +999,16 @@ export default function ActionBar() {
       onExecute={executeSearchResult}
     />
   ) : null;
+
+  // 诊断：渲染时状态演进——定位「有选中却渲染 launch 模式」根因
+  console.log("[action-bar][render]", {
+    hasContext: !!context,
+    textLen: context?.text?.length,
+    menuItems: menuItems.length,
+    mainItems: mainItems.length,
+    inSearch,
+    view,
+  });
 
   return (
     <div

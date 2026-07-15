@@ -1,6 +1,6 @@
 # ActionBar 搜索功能 实施计划
 
-> **状态：全部完成 ✅**（含 11 轮 code review 修复 + 搜索增强 / 键盘导航重构）
+> **状态：全部完成 ✅**（含 14 轮修复 + 搜索增强 / 键盘导航重构 / 焦点时序修复 / S1-L6 系统性审查）
 >
 > 本文档为实施记录而非一次性待办——反映实际实现。
 
@@ -153,10 +153,10 @@
 - 应用索引 **DB 缓存**（`app_index` 表，v33 建表 / v34 补 icon 列）：启动 <1ms 加载，DB 空则扫盘写回，旧缓存 icon 全空时自动重扫；`reindex_apps` Tauri 命令供装卸应用后强制刷新
 - **拼音通用化**：`pinyin` crate 覆盖全部 CJK 汉字首字母（替代硬编码菜单表），pinyin 分数 3000→4000；app 结果额外 +2000 权重，使拼音匹配 app（4000+2000=6000）排在文件 prefix match（~5000）之前
 
-**键盘导航重构（refactor 127877fc + 6d22df27）**：
+**键盘导航重构（refactor 127877fc + 6d22df27，搜索模式键盘）**：
 - 去掉 `searchFocusZone`（输入区/结果区焦点切换）概念——输入框始终保持 DOM focus
 - `Tab`/`Shift+Tab` 只在 Tab 页间循环（all→apps→files→shell→bookmarks→all），不回搜索框
-- Tab 定位改 **Cmd+字母**：`Cmd+A`/`D`/`F`/`S`/`B` = 全部/应用/文件/Shell/书签；Tab 栏按钮显示「全部 ⌘A」等（字母大写、文字后、`text-[9px] font-mono` 弱化）
+- Tab 页定位：此轮为 `Cmd+A`/`D`/`F`/`S`/`B`（**第十三轮统一改为 `Alt+字母`**——Alt 统一承担定位/切换，Cmd/Ctrl 让给执行）；Tab 栏按钮显示「全部 ⌥A」等（字母大写、文字后、`text-[9px] font-mono` 弱化）
 - ↑↓ 导航结果时输入框保留 focus（字母键直接进输入框参与过滤，不触发 IME）
 
 **IME Enter 最终方案（多轮反复后收敛 10e20727）**：
@@ -167,5 +167,58 @@
 **UX 收尾**：
 - hover 选中：`onMouseMove` 坐标比较（<1px 容差）+ 结果/Tab 变化后 200ms 抑制——React 重渲染致 DOM 重建触发的 mousemove 不影响选中
 - 窗口 resize generation token 串行化；Tab 按钮 `transition-colors`（非 `transition-all`）防 active 切换尺寸晃动；TabBar 固定 `h-[30px]`
-- 全局快捷键 toggle：窗口可见时再按 → 后端内联 `win.hide()`（不经前端 dismiss）；不可见 → 正常触发
+- 全局快捷键 toggle：窗口可见时再按 → 隐藏（**第十三轮改为走统一收口 `hide_action_bar_window`**，非裸 `win.hide()`——否则 show 时切的 Regular policy 残留、Dock 图标常驻）；不可见 → 正常触发
 - 设置页 `GeneralPanel` 内部加水平 sub-tab（一般/快捷键/语音，纯 UI 重组，无新配置项 / 无 Rust 改动）
+
+### 第十二轮（测试竞态修复 + 预存警告清理）
+
+- **TRIGGER guard 测试竞态**：4 个 `test_reset_trigger_guard*` 测试共享全局 `TRIGGER_IN_PROGRESS`/`TRIGGER_TIMESTAMP` 静态量，Rust 默认并行跑 → 互相覆盖导致 `test_reset_trigger_guard_if_stale_keeps_recent` 间歇性失败。加 `TRIGGER_TEST_LOCK: Mutex<()>` 序列化这 4 个测试
+- **预存警告清理**：`macos_ax.rs:2366` 测试中 `if let Some((before, after))` 的 `after` 未使用 → 改 `_after`
+
+### 第十三轮（菜单模式键盘模型重构 + 焦点时序修复）
+
+**菜单模式键盘模型重构（双模式确立）**：
+旧菜单模式键盘（左右键移项 / 无修饰 1-9+a-z 定位 / Alt+字符执行）整体重设计，与搜索模式键盘并立为**双模式**。
+
+- **输入框始终聚焦**：去掉「有选中文本时不聚焦 input（让方向键导航菜单）」的旧逻辑——input 始终持 DOM focus，键盘处理器放行规则依赖 `activeElement===input`
+- **修饰键重映射**：`Alt+数字/字母`=定位菜单项（`labelToIndex`，选中不执行）；`Cmd/Ctrl+字符`=执行（按菜单项 `shortcut` 匹配）；无修饰字符=进输入框触发搜索过滤。统一 **Alt=定位/切换、Cmd/Ctrl=执行**，避免与执行键打架
+- **Tab 替代左右键**：`Tab`/`Shift+Tab` 在主菜单项 / 子菜单项间循环移动（submenu 项自动展开预览），原 `ArrowLeft/ArrowRight` 移项职责移交 Tab
+- **↑↓ 切焦点层**：主↔子菜单层切换不变（注释更新为「展开/收起由 Tab 控制而非左右键」）
+- **input 无多行/回车**：Enter 交给处理器执行菜单项，不放行给输入框；放行规则 `navKeys=["ArrowUp","ArrowDown","Tab","Enter"," "]` + `!e.altKey && !e.metaKey && !e.ctrlKey`（补 `!e.ctrlKey` 防 Ctrl+字符误入输入框）
+- UI：IconBtn `title` 显示「`Alt+{indexLabel}` 定位 · `⌘{shortcut}` 执行」；快捷键徽章 `⌥`→`⌘`
+
+**焦点时序修复（Sublime 间歇性失焦根因）**：
+- **gather_context 同步化**：`trigger_action_bar` 文本分支 `gather_context` 从 show 后异步改为 **show 前同步**——gather 调前台 app（Sublime `subl --command` / Browser osascript）会激活前台 app、异步在 show 之后抢走 ActionBar 焦点（对照实验铁证：无选中不 gather → 正常获焦；有选中 gather → 失焦）。附带收益：show 前前台确定是源 app，`frontmost_app()` 读上下文更准（原异步方案 ActionBar 获焦后 frontmost 可能变成 octopus 自己）。代价：热键到弹出增加 gather 耗时（Sublime ~50-150ms）
+- **show 后焦点探针 + 巩固**：`show_action_bar_window` 后起诊断线程 150/350ms 记录 `isKeyWindow`（objc2 `msg_send!`，比 `NSApplication::isActive` 准——isActive 是 app 级，isKeyWindow 是窗口级）；150ms 若已失焦则 `set_focus` 巩固夺回——覆盖 Sublime 延迟激活窗口
+- **onFocusChanged 宽限**：show 后 500ms 内的 spurious focus-lost 不触发 dismiss（`showTimeRef` 记录 show 时刻，app 激活 / 窗口成 key 的时序抖动期不误关）
+- **resize 后重新 focus**：`apply` effect 在 `setSize`/`setPosition` 后（macOS 调 NSWindow frame 触发 webview blur，致「打第一个字母即失焦」）若 `activeElement !== inputRef` 则重新 focus，保证连续输入不中断
+
+**诊断增强 + 收口统一**：
+- `action_bar_dismiss` 加 `reason: Option<String>`（`focus-lost` / `click-outside` / 操作后）+ `[action-bar][dismiss]` 日志；前端 `onFocusChanged` 加 console.log
+- `trigger_agent_voice` 隐藏浮窗从裸 `win.hide()` 改走统一收口 `hide_action_bar_window`（切回 Accessory + 焦点协调）；热键 toggle 同改（防 show 时切的 Regular policy 残留、Dock 图标常驻）
+
+**React #300 修复（ab51a283 → d3daeda9）**：
+- 初版 ab51a283 仍有 hooks 顺序问题；d3daeda9 将 useEffect + subItems 声明移到 early return 之前，彻底修复 hooks 数量不一致
+
+**TRIGGER guard 收尾（092e4dbb + b91af242）**：
+- toggle 重置 + 超时保护：上次触发超 10s（092e4dbb 初 30s → b91af242 改 10s）仍未 finalize 则强制重置，防 webview 崩溃后 guard 永久卡死
+
+### 第十四轮（系统性代码审查 S1-S4 / M1-M5 / L1-L6 修复）
+
+承第十三轮键盘/焦点修复之后的系统性代码审查，逐项修复 + 配套回归测试：
+
+- **S1 reindex 无效 → 后台 mtime 自动扫描**：`SearchEngine.app_index` 改 `RwLock<AppIndex>`（对齐 `hotword.rs` 的 `OnceLock<RwLock<T>>` 先例），后台线程启动 30s 后每 10 分钟检测 `/Applications` 等目录 mtime，变化时 `refresh_app_index` 刷新内存 + DB。`reindex_apps` 命令改为调 `refresh_app_index`（修复"只更 DB 不更内存"）。新增 `refresh_app_index_replaces_in_memory_index` + `app_index_rwlock_concurrent_safe` 2 个并发测试
+- **S2 save_app_index 非原子**：DELETE 移入 `unchecked_transaction` 内，中途 INSERT 失败回滚 DELETE。新增 `save_app_index_atomic_on_failure` 测试（UNIQUE 冲突验证原数据保留）
+- **S3 submenu Enter 失灵**：`executeItem` 展开 submenu 时 `setFocusLayer(nextFocusLayerAfterExecute(...))`——executeItem 是终结性动作，展开后焦点进 sub，Enter 执行子项。抽 `nextFocusLayerAfterExecute` 纯函数到 searchLogic.ts + 3 个单测。Tab/Alt 预览路径不改（保持"预览不抢焦点"契约）
+- **S4 Safari 书签声明不符**：`load_all_bookmarks` 不再假装"尝试读失败跳过"，改为 `log::debug!("未实现，跳过")`。`load_safari_bookmarks` 标注 `#[allow(dead_code)]` + 注释明确未实现。新增 `load_safari_bookmarks_unimplemented_returns_empty` 测试锁定语义
+- **M1 trigger 漏 finalize**：`finalize_action_bar` 从 None 分支提取到 match 后统一调用，覆盖 Text/File/Folder 分支
+- **M2 gather 子进程无超时**：抽 `run_command_with_deadline(cmd, deadline)` 到 `app_context/mod.rs`（spawn + 轮询到 deadline + 超时 kill/wait），替换 Pages osascript / lsof / pdftotext / officecli / mdfind / subl 共 7 处裸 `.output()`。fallback 函数加 `deadline: Instant` 参数透传。新增 `run_command_with_deadline_kills_on_timeout` + `returns_output_on_success` 2 个测试
+- **M4 dismiss reason 补全**：5 处裸 `invoke("action_bar_dismiss")` 补 reason 参数（launch-app/open-file/open-url/execute-shell/escape）
+- **M5 focus-lost 宽限文档化**：移除生产 `console.log`；spec §4.0 补 500ms 宽限不变量
+- **L1 hover 抑制覆盖键盘选中**：SearchPanel suppress effect 依赖加 `selectedIdx`
+- **L3 sips 临时文件残留**：失败分支也 `remove_file`；文件名加纳秒时间戳防跨进程冲突
+- **L4 matcher 热路径分配**：`pinyin_match` 复用单次 `query.to_lowercase()`
+- **L5 多音字**：`pinyin_initials` 注释标注 `first_letter()` 只取常用读音的限制（不改实现，避免组合爆炸）
+- **L6 v33/v34 死代码**：删除 v34 块的冗余 icon 补丁（v33 内部补丁已覆盖），合并为单次 v32→v34 迁移。新增 `migration_v32_to_v34_creates_app_index_with_icon` 测试
+
+**文档同步**：spec §3.3（后台扫描策略）/ §3.5（submenu focusLayer 契约）/ §4.0（dismiss reason + focus-lost 宽限）/ §6.3（reindex 降级 + gather 超时 + Safari 未实现）/ §6.4 / §8（性能预算拆分）/ §9（+4 条不变量）；plan 第十四轮记录

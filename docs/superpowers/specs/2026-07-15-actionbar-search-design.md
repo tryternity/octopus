@@ -2,7 +2,7 @@
 
 > 2026-07-15 · ActionBar 集成搜索输入框 + 应用启动 + 文件搜索 + Quicklinks + 书签搜索 + Run And Paste
 >
-> **实现完成** — 本文档已同步实际代码（2026-07-15，含 11 轮 code review 修复 + 搜索增强 / 键盘导航重构）
+> **实现完成** — 本文档已同步实际代码（2026-07-16，含 14 轮修复 + 搜索增强 / 键盘导航重构 / 焦点时序修复 / S1-L6 系统性审查）
 
 ## 1. 设计目标
 
@@ -28,7 +28,7 @@
 ┌─────────────────────────────────────────┐
 │ [搜索输入框]                              │ ← 始终在顶部
 ├─────────────────────────────────────────┤
-│ [全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B] │ ← Tab 栏（有搜索时显示）
+│ [全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B] │ ← Tab 栏（有搜索时显示）
 │  结果1                                    │
 │  结果2                                    │ ← 最多10行
 │  ...                                     │
@@ -45,7 +45,7 @@
 │  ...                                     │
 │  结果2                                    │ ← 最多10行
 │  结果1                                    │
-│ [全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B] │ ← Tab 栏
+│ [全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B] │ ← Tab 栏
 ├─────────────────────────────────────────┤
 │ [搜索输入框]                              │ ← 始终在核心位置
 ├─────────────────────────────────────────┤
@@ -106,72 +106,107 @@
 - 扫描时读 `zh-Hans.lproj/InfoPlist.strings`（UTF-16 LE 解码 + OpenStep/XML plist 解析）获取本地化名（如 WeChat→微信）作为 alias
 - 用 `sips -s format png -z 32 32` 提取 icon → base64 PNG 存 DB
 - `AppIndex::search` 对 name + aliases 都匹配取最高分
-- 应用索引缓存在 DB `app_index` 表（v34），启动时 <1ms 加载；DB 为空时扫文件系统 + 写缓存
-- `reindex_apps` 命令供安装/卸载应用后刷新缓存
+- 应用索引缓存在 DB `app_index` 表（v34），启动时 <1ms 加载（DB 非空）；DB 为空时扫文件系统 + 写缓存
+- **后台自动刷新**：运行期间后台线程每 10 分钟检测 `/Applications` 等目录 mtime，变化时（用户装卸应用）自动触发后台重扫并刷新内存索引 + DB 缓存，用户无感知。内存索引通过 `SearchEngine.app_index` 的 `RwLock` 热替换，搜索走读锁零阻塞
+- `reindex_apps` 命令降级为诊断/强制重扫 fallback（后台扫描失效时的手动兜底，正常情况下用户无需调用）
 
 ### 3.4 结果分组与 Tab
 
-Tab 页：`[全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B]`
+Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 
-- `全部 ⌘A`：混合展示所有来源结果，按优先级排序
-- `应用 ⌘D`：仅 source === "app"
-- `文件 ⌘F`：仅 source === "file"
-- `Shell ⌘S`：`>` 前缀路由的 shell 命令
-- `书签 ⌘B`：仅 source === "bookmark"
+- `全部 ⌥A`：混合展示所有来源结果，按优先级排序
+- `应用 ⌥D`：仅 source === "app"
+- `文件 ⌥F`：仅 source === "file"
+- `Shell ⌥S`：`>` 前缀路由的 shell 命令
+- `书签 ⌥B`：仅 source === "bookmark"
 
 **菜单项 accepts 过滤**：搜索结果中的 menu/quicklink 来源按 `context.accepts` 过滤。无选中（context=null）时仅显示 `accepts="any"` 的项。
 
 ### 3.5 键盘导航
 
-**设计原则**：输入框始终保持 DOM focus。Tab 键只切换 Tab 页，不改变焦点。Cmd+字母 快捷定位 Tab 页。不使用 `searchFocusZone` 概念——没有"输入区"和"结果区"的焦点切换。
+**设计原则**：输入框始终保持 DOM focus（双模式共用）。不使用 `searchFocusZone` 概念——没有"输入区"和"结果区"的焦点切换。**修饰键统一分工**：`Alt`=定位/切换（选中不执行），`Cmd/Ctrl`=执行；无修饰字符进输入框触发搜索过滤。window 级 keydown handler 据 `query` 是否为空分**搜索模式**与**菜单模式**两套行为。
 
-**Tab 键循环**（在 Tab 页之间循环，不回到搜索框）：
+> macOS Option 键改变 `e.key` 输出（Alt+H → "˙"），所有修饰键分支统一用 `codeToChar(e.code)` 取物理键字符再匹配。
 
-```
-Tab: all → apps → files → shell → bookmarks → all → ...
-Shift+Tab: 反向
-```
-
-**快捷定位**：`Cmd+A`=全部, `Cmd+D`=应用, `Cmd+F`=文件, `Cmd+S`=Shell, `Cmd+B`=书签
-
-**Tab 栏按钮显示**：`全部 ⌘A`、`应用 ⌘D`、`文件 ⌘F`、`Shell ⌘S`、`书签 ⌘B`——快捷键字母大写，放在文字后面，样式弱化（`text-[9px]`、`font-mono`）。
-
-**完整键盘导航表**：
+#### 3.5.1 搜索模式（query 非空）
 
 | 按键 | 行为 |
 |------|------|
-| `Tab` | 循环切换 Tab 页 |
-| `Shift+Tab` | 反向循环 Tab 页 |
-| `Cmd+A`/`D`/`F`/`S`/`B` | 跳到对应 Tab 页 |
+| `Alt+A`/`D`/`F`/`S`/`B` | 跳到对应 Tab 页（全部/应用/文件/Shell/书签） |
+| `Tab` / `Shift+Tab` | 循环切换 Tab 页（all → apps → files → shell → bookmarks → all，不回搜索框） |
 | `↑↓` | 导航结果列表（输入框始终保留 focus） |
 | `Enter` | 执行选中项（无选中时执行第一个） |
-| `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
-| 再按热键 | 窗口已可见 → 隐藏（toggle 语义） |
+| 其他键 | 交给输入框（参与搜索过滤） |
 
-**IME Enter 处理**：
+**Tab 栏按钮显示**：`全部 ⌥A`、`应用 ⌥D`、`文件 ⌥F`、`Shell ⌥S`、`书签 ⌥B`——快捷键字母大写，放在文字后面，样式弱化（`text-[9px]`、`font-mono`）。
+
+#### 3.5.2 菜单模式（query 为空）
+
+| 按键 | 行为 |
+|------|------|
+| `Cmd/Ctrl+数字/字母` | 执行菜单项（按菜单项配置的 `shortcut` 匹配，跨主/子菜单层级） |
+| `Alt+数字/字母` | 定位菜单项（`labelToIndex`：1-9→索引 0-8，a-z→索引 9-34，最多 35 项；选中不执行） |
+| `Tab` / `Shift+Tab` | 主菜单项 / 子菜单项间循环移动（submenu 项自动展开子菜单预览） |
+| `↑↓` | 切换焦点层 main↔sub（不展开/收起子菜单，展开由 Tab 控制） |
+| `Enter` / `Space` | 执行当前选中菜单项 |
+| 无修饰字符 | 进输入框触发搜索过滤（切换到搜索模式） |
+
+- **input 始终聚焦 + 无回车**：放行规则 `navKeys=["ArrowUp","ArrowDown","Tab","Enter"," "]` + `!e.altKey && !e.metaKey && !e.ctrlKey`——导航键与修饰键组合由 handler 拦截，其余字符放行进输入框。input 无多行/回车概念，Enter 执行菜单项而非提交输入框。
+- **IconBtn 提示**：`title` 显示「`Alt+{indexLabel}` 定位 · `⌘{shortcut}` 执行」；徽章显示 `⌘{shortcut}`。
+
+#### 3.5.3 通用按键
+
+| 按键 | 行为 |
+|------|------|
+| `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
+| 再按热键 | 窗口已可见 → 隐藏（toggle 语义，走 `hide_action_bar_window` 统一收口） |
+
+**IME Enter 处理**（双模式共用）：
 - macOS 事件序列：IME 选词 = `keydown(keyCode=229)` → `compositionend` → `keydown(Enter, 13)`
 - 纯英文 Enter = `keydown(Enter, 13)`，前面没有 229
 - 实现：window keydown handler 记录 keyCode 229 的时间戳，Enter(13) 在 229 后 500ms 内 → 跳过（选词确认），否则正常执行
 - **不依赖** `isComposing`（window 级时序不可靠）和 `compositionend`（WKWebView 空组合会误触发）
 - **DOM focus 策略**：input 永远不 blur 也不设 readOnly——因为没有"结果区焦点"概念，字母键直接进入输入框参与搜索过滤
 
+**菜单模式 submenu 展开 × focusLayer 契约**（S3 修复）：
+- `executeItem`（点击 / Cmd+字母 / Enter on main）展开 submenu 是**终结性动作**——展开后焦点层进 `sub`，后续 Enter 执行子项（`nextFocusLayerAfterExecute` 纯函数守护）
+- Tab / Alt+字母 的**预览展开不抢焦点**——焦点层保持 `main`，用户可继续在主菜单移动（架构文档「预览不抢焦点」契约）
+- ↑↓ 仍是从 main 进入 sub 的显式焦点层切换路径
+
 ## 4. 搜索结果执行
 
 ### 4.0 UI 交互规则
 
 **鼠标 hover 选中**：
-- `onMouseMove` 内比较 `clientX/clientY` 与上次记录（<1px 容差）+ 结果/Tab 变化后 200ms 抑制窗口
+- `onMouseMove` 内比较 `clientX/clientY` 与上次记录（<1px 容差）+ 结果/Tab/**键盘选中**变化后 200ms 抑制窗口
 - 只有鼠标**真的移动了**才改变选中——React 重渲染导致 DOM 重建时浏览器自动触发的 mousemove 不影响选中
+- 键盘 ↑↓ 改变 `selectedIdx` 后也启动 200ms 抑制——防键盘选中后鼠标轻微移动覆盖选中（L1）
 - 结果列表变化时 `searchSelectedIdx` 重置为 0（用户输入时焦点在搜索框，选中应始终是第一个）
 
 **窗口 resize 序列化**：
 - `setSize` + `setPosition` 用 generation token 保证只有最新一次 resize 生效
 - 两者串行 await——防快速 Tab 切换时异步乱序导致输入框被覆盖
 - TabBar 固定 `h-[30px]`，Tab 按钮用 `transition-colors`（非 `transition-all`）——防 active 切换时尺寸微变导致布局晃动
+- **resize 后重新 focus**：`setSize`/`setPosition` 在 macOS 调整 NSWindow frame 会触发 webview blur（query 变化、搜索结果展开时尤其明显——「打第一个字母即失焦」）；`apply` effect 在 resize 完成后若 `activeElement !== inputRef` 则重新 `inputRef.focus()`，保证连续输入不中断
 
 **快捷键 toggle**：
-- 窗口已可见时再按热键 → 隐藏（等同 Escape）
+- 窗口已可见时再按热键 → 隐藏（等同 Escape，走 `hide_action_bar_window` 统一收口，非裸 `win.hide()`）
 - 不可见时按热键 → 正常触发
+
+**dismiss 触发路径 + reason 诊断**（M4）：
+- `action_bar_dismiss(reason)` 命令的 `reason` 仅用于日志诊断（`click-outside` / `focus-lost` / `launch-app` / `open-file` / `open-url` / `execute-shell` / `escape`），后端对所有 reason 走相同 `hide_action_bar_window` + `finalize_action_bar`
+- 所有 dismiss 调用点必须传 reason——否则日志记 `None`，无法区分触发来源
+
+**focus-lost 500ms 宽限**（M5）：
+- show 后 500ms 内的 `onFocusChanged(focused=false)` 被宽限跳过（防 app 激活/窗口成 key 的时序抖动产生的 spurious focus-lost）
+- 此期间 Escape 仍可 dismiss（不经 onFocusChanged）；click-outside 走 document click 独立路径
+- 代价：show 后 500ms 内点其他 app 无法立即关闭（需等 500ms 或按 Escape）
+
+**焦点时序（Sublime 间歇性失焦根因修复）**：
+- **gather_context 同步化**：`trigger_action_bar` 文本分支在 show **之前**同步采集上下文。原异步方案（浮窗先弹 → 后台 gather）中，gather 调用前台 app（Sublime `subl --command` / Browser osascript）会激活前台 app，异步在 show 之后抢走 ActionBar 焦点——对照实验铁证：无选中（不 gather）→ 正常获焦；有选中（gather）→ 失焦。移到 show 之前，由随后的 `show` + `set_focus` 统一夺回（最后 `set_focus` 者持有）。附带收益：show 前前台确定是源 app，`frontmost_app()` 读上下文更准。代价：热键到弹出增加 gather 耗时。
+- **show 后焦点探针 + 巩固**：`show` 后起诊断线程 150/350ms 读 `isKeyWindow`（objc2 `msg_send!`，窗口级，比 app 级 `isActive` 准）；150ms 若已失焦则 `set_focus` 巩固夺回——覆盖 Sublime 延迟激活窗口。
+- **onFocusChanged 宽限**：show 后 500ms 内的 spurious focus-lost 不触发 dismiss（`showTimeRef` 记录 show 时刻，app 激活 / 窗口成 key 的时序抖动期不误关）。
+- **dismiss 诊断**：`action_bar_dismiss` 携带 `reason`（`focus-lost` / `click-outside` / 操作后）+ 日志，定位失焦触发来源。
 
 ### 4.1 应用启动
 - `launch_app(path)` → `open <path>` (status，非 spawn)
@@ -231,8 +266,8 @@ trigger_action_bar() ── 纯路由
 | 文件 | 职责 |
 |------|------|
 | `searchTypes.ts` | SearchResult/TabId/TABS/ExpandDirection 等类型 + 常量 |
-| `searchLogic.ts` | 15 个纯逻辑函数（展开方向/Tab 循环/结果合并/过滤/高度计算等） |
-| `searchLogic.test.ts` | 56 个单元测试 |
+| `searchLogic.ts` | 16 个纯逻辑函数（展开方向/Tab 循环/结果合并/过滤/高度计算/focusLayer 切换等） |
+| `searchLogic.test.ts` | 59 个单元测试 |
 | `SearchPanel.tsx` | Tab 栏 + 结果列表组件 |
 | `index.tsx` | 集成：搜索输入框 + 条件渲染 + 窗口动态调整 + 键盘导航 |
 
@@ -245,7 +280,8 @@ open_file(path) → ()                           // status
 open_url(url) → ()                             // status
 execute_shell(command) → String                // 30s 超时 + kill_on_drop + 100KB 截断
 set_auto_paste(id, auto_paste) → ()            // 零行检查
-reindex_apps() → usize                         // 强制重扫应用索引并更新 app_index 缓存
+reindex_apps() → usize                         // 诊断命令：强制重扫 + 刷新内存索引 + DB（后台自动扫描的 fallback）
+action_bar_dismiss(reason) → ()                // reason 仅诊断（click-outside/focus-lost/launch-app/...）
 ```
 
 ### 6.4 独立 crate `octopus-search`
@@ -254,7 +290,9 @@ reindex_apps() → usize                         // 强制重扫应用索引并�
 
 **Chromium 书签解析**：遍历 `roots` 对象的每个 folder value（bookmark_bar/other/synced）递归 walk children——非直接 walk(roots)。
 
-**osascript 超时**：所有 osascript 调用通过子线程 + `recv_timeout(5s)`，防首次自动化权限对话框永久挂起。
+**Safari 书签**：`load_safari_bookmarks` **未实现**（返回空 Vec）——解析需引入 `plist` crate + Full Disk Access。接口占位已就绪，未来填充函数体即可。
+
+**osascript / 子进程超时**：gather_context 的 fallback 链（Pages osascript / lsof / pdftotext / officecli / mdfind / subl）统一经 `run_command_with_deadline(cmd, deadline)` 执行——spawn 后轮询到 `AX_TIMEOUT`（500ms），超时 `kill` + `wait` 回收，防权限对话框/无响应进程永久卡死 trigger worker。Finder selection 检测的 osascript 经子线程 + `recv_timeout(5s)`。
 
 ## 7. DB 变更
 
@@ -281,7 +319,8 @@ CREATE TABLE IF NOT EXISTS app_index (
 ```
 
 - 首次启动扫文件系统 + 写缓存；后续启动直接读 DB（<1ms）
-- `reindex_apps` Tauri 命令供安装/卸载应用后刷新
+- **后台 mtime 轮询**：启动 30s 后每 10 分钟检测 `/Applications` 等目录 mtime，变化时后台重扫 + 刷新内存索引（`SearchEngine.app_index` 的 `RwLock`）+ 写 DB
+- `reindex_apps` 命令作诊断/强制重扫 fallback（后台扫描失效时手动兜底）
 - `scan()` 检测旧缓存 icon 全空时自动重扫
 
 ## 8. 性能预算
@@ -289,9 +328,11 @@ CREATE TABLE IF NOT EXISTS app_index (
 | 操作 | 预算 |
 |------|------|
 | 按键到结果显示 | <16ms（即时搜索） |
-| 文件搜索（mdfind） | <200ms（防抖后），10s 超时 |
-| 应用索引扫描（启动时） | <500ms |
+| 文件搜索（mdfind） | <200ms（防抖后），受 gather deadline 约束 |
+| 应用索引加载（启动，DB 缓存） | <1ms（DB 非空时） |
+| 应用索引全量扫描（DB 空 / 后台 mtime 变化触发） | ~5-8s（~90 app × ~50-80ms/app，含 sips/defaults 子进程；后台异步不阻塞 UI） |
 | 书签解析（启动时） | <100ms |
+| gather_context（trigger 热键→show） | <500ms（`AX_TIMEOUT`；子进程超时 kill） |
 
 ## 9. 不变量
 
@@ -302,16 +343,14 @@ CREATE TABLE IF NOT EXISTS app_index (
 5. 无结果时保留 1 行高度（显示"无结果"提示，不被 0 高度裁剪）
 6. Run And Paste 结果直接粘贴到原光标位置
 7. LLM 调用用 `spawn_blocking`（防阻塞 tokio worker）
-8. 所有子进程（open/mdfind/sips/osascript）有超时 + kill/防孤儿
-9. 结果列表 hover 选中只在鼠标真正移动时生效（不受 React 重渲染影响）
+8. 所有子进程（open/mdfind/sips/osascript/pdftotext/lsof/officecli/subl）有超时 + kill/防孤儿——gather 链统一经 `run_command_with_deadline`
+9. 结果列表 hover 选中只在鼠标真正移动时生效（不受 React 重渲染 / 键盘选中影响）
 10. 窗口 resize 串行化（generation token），防 Tab 快速切换异步乱序
 11. URL scheme 仅放行 http/https（选中文本即 URL 时）
-
-## 10. 降级
-
-- mdfind 不可用 → 文件搜索返回空
-- 书签文件读取失败 → 书签搜索返回空
-- Safari 书签解析暂未实现（plist 解析需额外依赖）
+12. **应用索引内存与 DB 一致性**：后台扫描刷新内存 `RwLock<AppIndex>` 与 DB 缓存同步，搜索走读锁零阻塞
+13. **save_app_index 原子性**：DELETE + INSERT 在同一事务内，中途失败回滚 DELETE，不丢索引
+14. **executeItem submenu 焦点契约**：展开 submenu 后 focusLayer 必为 `sub`（`nextFocusLayerAfterExecute` 守护），Enter 执行子项而非重复展开父项
+15. **trigger guard 统一收口**：`trigger_action_bar` 的 None/Text/File/Folder 所有分支在 match 后统一 `finalize_action_bar`，不依赖用户后续操作清 guard
 - osascript 超时 → 返回 None（非 Finder 视为无选中）
 
 ## 11. 安全约束与边界处理

@@ -95,6 +95,44 @@ mod windows_uia;
 
 // ── 纯函数辅助 ──
 
+/// 带截止时间执行子进程——超时 kill 子进程，防永久挂起（权限对话框/无响应进程）。
+///
+/// gather_context 的 fallback 链（Pages osascript / lsof / pdftotext / officecli / mdfind / subl）
+/// 原各自用 `.output()` 无超时同步阻塞，子进程挂起会永久卡死 trigger worker 线程，进而
+/// 卡死 TRIGGER_IN_PROGRESS 守卫。本函数统一收口：spawn 后轮询到 deadline，超时 kill + wait
+/// 回收，保证 gather 总耗时受 `AX_TIMEOUT`（500ms）约束。
+///
+/// 范式同 `action_bar_commands::wait_with_timeout_secs`，但接收 `Instant` deadline 而非固定秒数，
+/// 以融入 gather 的整体预算语义。返回 `None` 表示超时或 spawn 失败。
+pub(crate) fn run_command_with_deadline(
+    mut cmd: std::process::Command,
+    deadline: std::time::Instant,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // 轮询到 deadline——500ms 内每 50ms 检查一次
+    loop {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(), // 已退出，一次性拿 output
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+    // 超时仍未退出 → kill + wait 回收，防孤儿进程
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 /// bundle_id / 进程名 → AppKind 映射（三平台统一）。
 /// 内部统一转小写比较——Windows 文件系统不区分大小写（WINWORD.EXE = winword.exe），
 /// macOS bundle_id 本就小写，无副作用。
@@ -226,5 +264,32 @@ mod tests {
     fn test_null_provider_returns_err() {
         let p = NullProvider;
         assert!(p.gather("test").is_err());
+    }
+
+    /// 回归 M2：超时时 kill 子进程并返回 None，不永久阻塞。
+    #[test]
+    fn run_command_with_deadline_kills_on_timeout() {
+        // sleep 10 命令远超 deadline——应在 deadline 内返回 None 且子进程被 kill
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(200);
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("10");
+        let result = run_command_with_deadline(cmd, deadline);
+        assert!(result.is_none(), "超时应返回 None");
+        // 应在远小于 10s 内返回（实际 ~200ms + kill 开销）
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "不应阻塞到 sleep 自然结束");
+    }
+
+    /// 回归 M2：正常命令返回 output。
+    #[test]
+    fn run_command_with_deadline_returns_output_on_success() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("hello");
+        let result = run_command_with_deadline(cmd, deadline);
+        assert!(result.is_some(), "echo 应成功返回 output");
+        let output = result.unwrap();
+        assert!(output.status.success(), "echo 退出码应为 0");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("hello"), "stdout 应含 hello");
     }
 }

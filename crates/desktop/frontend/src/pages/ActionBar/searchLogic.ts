@@ -167,3 +167,20 @@ export function navigateResults(
 export function hasQuery(query: string): boolean {
   return query.trim().length > 0;
 }
+
+/**
+ * executeItem 展开 submenu 后，焦点层应切换到 "sub"。
+ *
+ * 设计意图（架构文档「预览不抢焦点」契约）：
+ * - executeItem（点击 / Cmd+字母 / Enter on main）是终结性动作——用户明确要打开子菜单，
+ *   展开后按 Enter 应执行子项，故 focusLayer 应进 "sub"。
+ * - Tab / Alt+字母 的「预览展开」不抢焦点（用户可能继续在 main 层移动）。
+ *
+ * 本函数只处理 executeItem 路径：submenu → "sub"，其他 actionType 保持当前层。
+ */
+export function nextFocusLayerAfterExecute(
+  actionType: string,
+  currentLayer: "main" | "sub",
+): "main" | "sub" {
+  return actionType === "submenu" ? "sub" : currentLayer;
+}

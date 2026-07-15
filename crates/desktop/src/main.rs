@@ -424,6 +424,37 @@ pub fn run() {
                 }
             });
 
+            // 应用索引后台自动刷新（mtime 轮询）：用户装卸应用后无需重启即可搜到。
+            // 启动后延迟 30s（避开 ASR 预热等重活），之后每 10 分钟检测 /Applications 等
+            // 目录 mtime，变化时才触发全量重扫（扫盘耗时数秒，仅在真实变化时发生）。
+            // 内存索引通过 SearchEngine.app_index 的 RwLock 热替换，搜索走读锁零阻塞。
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                let watch_dirs = ["/Applications", "/System/Applications", "/Applications/Utilities"];
+                let home_apps = dirs::home_dir().map(|h| h.join("Applications"));
+                let read_mtimes = |home_apps: &Option<std::path::PathBuf>| -> Vec<Option<std::time::SystemTime>> {
+                    let mut v: Vec<Option<std::time::SystemTime>> = watch_dirs.iter()
+                        .map(|d| std::fs::metadata(d).ok().and_then(|m| m.modified().ok()))
+                        .collect();
+                    v.push(home_apps.as_ref()
+                        .and_then(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok())));
+                    v
+                };
+                let mut last = read_mtimes(&home_apps);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(600));
+                    let now = read_mtimes(&home_apps);
+                    if now != last {
+                        last = now;
+                        log::info!("[search] 应用目录 mtime 变化，后台重扫");
+                        if let Some(e) = octopus_search::get_engine() {
+                            let n = e.refresh_app_index();
+                            log::info!("[search] 后台重扫完成: {} 个应用", n);
+                        }
+                    }
+                }
+            });
+
             // Start focus tracker (macOS no-op, Windows/Linux TODO)
             let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
             if let Err(e) = focus_tracker.start() {

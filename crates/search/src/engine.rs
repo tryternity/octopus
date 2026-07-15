@@ -21,8 +21,10 @@ pub struct SearchResult {
 }
 
 /// 全局搜索引擎（启动时初始化一次）。
+/// `app_index` 用 `RwLock` 包裹——后台 mtime 轮询线程检测到应用目录变化时，
+// 可通过 `refresh_app_index` 替换内存索引，无需重启进程。搜索走读锁（无阻塞）。
 pub struct SearchEngine {
-    app_index: AppIndex,
+    app_index: parking_lot::RwLock<AppIndex>,
     bookmarks: Vec<BookmarkEntry>,
 }
 
@@ -31,13 +33,33 @@ static SEARCH_ENGINE: OnceLock<SearchEngine> = OnceLock::new();
 pub fn init_search_engine() {
     SEARCH_ENGINE.get_or_init(|| {
         SearchEngine {
-            app_index: AppIndex::scan(),
+            app_index: parking_lot::RwLock::new(AppIndex::scan()),
             bookmarks: load_all_bookmarks(),
         }
     });
 }
 
 impl SearchEngine {
+    /// 测试用构造函数——直接注入内存 app_index + bookmarks，不触达文件系统/DB。
+    #[cfg(test)]
+    fn new_for_test(apps: Vec<super::app_index::AppEntry>, bookmarks: Vec<BookmarkEntry>) -> Self {
+        SearchEngine {
+            app_index: parking_lot::RwLock::new(AppIndex { apps }),
+            bookmarks,
+        }
+    }
+
+    /// 强制重扫应用索引：扫文件系统 + 写 DB 缓存 + 替换内存索引。
+    /// 供后台 mtime 轮询线程（main.rs）和 reindex_apps 诊断命令复用。
+    /// 返回扫描到的应用数。
+    pub fn refresh_app_index(&self) -> usize {
+        let new_index = AppIndex::rescan();
+        let n = new_index.apps.len();
+        // 写锁仅持续替换瞬间——rescan() 的扫盘耗时发生在锁外
+        *self.app_index.write() = new_index;
+        n
+    }
+
     /// 综合搜索。
     /// tab = "all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"。
     /// - "quick": 仅即时搜索（应用+菜单+Quicklinks），无文件/书签
@@ -67,7 +89,7 @@ impl SearchEngine {
 
         // 即时搜索（内存索引）
         if tab == "all" || tab == "apps" || tab == "quick" {
-            let mut apps = self.app_index.search(query);
+            let mut apps = self.app_index.read().search(query);
             // 应用加权重——应用启动是 launcher 核心场景，应排在文件/书签前面
             // +2000 确保拼音匹配的 app（4000+2000=6000）超过文件 prefix match（~5000）
             for r in &mut apps {
@@ -208,10 +230,7 @@ mod tests {
     #[test]
     fn search_empty_returns_empty() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![] },
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(vec![], vec![]);
         let results = rt.block_on(engine.search("", "all"));
         assert!(results.is_empty());
     }
@@ -219,10 +238,7 @@ mod tests {
     #[test]
     fn shell_mode_prefix() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![] },
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(vec![], vec![]);
         let results = rt.block_on(engine.search("> ls", "shell"));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source, "shell");
@@ -233,10 +249,7 @@ mod tests {
     fn quick_tab_excludes_files_and_bookmarks() {
         setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![] },
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(vec![], vec![]);
         // quick tab 搜索 → 无文件/书签结果（因为没有应用也没有菜单）
         let results = rt.block_on(engine.search("test", "quick"));
         // 可能只有菜单匹配，但不会有文件/书签
@@ -246,12 +259,10 @@ mod tests {
     #[test]
     fn files_bookmarks_tab_excludes_apps_and_menus() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![
-                AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![], icon: String::new() },
-            ]},
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(
+            vec![AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![], icon: String::new() }],
+            vec![],
+        );
         let results = rt.block_on(engine.search("test", "files_bookmarks"));
         // files_bookmarks tab 不返回应用结果
         assert!(results.iter().all(|r| r.source != "app"));
@@ -262,10 +273,7 @@ mod tests {
     fn quick_tab_includes_shell_mode() {
         setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![] },
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(vec![], vec![]);
         let results = rt.block_on(engine.search("> echo hi", "quick"));
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].source, "shell");
@@ -275,12 +283,10 @@ mod tests {
     fn all_tab_returns_combined_results() {
         setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![
-                AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() },
-            ]},
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(
+            vec![AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() }],
+            vec![],
+        );
         let results = rt.block_on(engine.search("chr", "all"));
         // all tab 应包含应用结果
         assert!(results.iter().any(|r| r.source == "app" && r.title == "Chrome"));
@@ -318,13 +324,76 @@ mod tests {
         setup_test_db();
         // URL 类型菜单项在搜索结果中 source 为 "quicklink"，action_type 为 "url"
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine {
-            app_index: AppIndex { apps: vec![] },
-            bookmarks: vec![],
-        };
+        let engine = SearchEngine::new_for_test(vec![], vec![]);
         // 如果 DB 中有 URL 类型菜单项，搜索应该返回 source="quicklink"
         // 测试不依赖具体 DB 内容，只验证返回的结果中 URL 类型的 source 正确
         let _results = rt.block_on(engine.search("test", "all"));
         // 不 assert 具体结果（依赖 DB），仅验证不 panic
+    }
+
+    /// 回归 S1：refresh_app_index 替换内存索引后，search 读到新数据。
+    /// 不触达文件系统——直接操作 RwLock 验证"写后读"语义。
+    #[test]
+    fn refresh_app_index_replaces_in_memory_index() {
+        let engine = SearchEngine::new_for_test(
+            vec![AppEntry { name: "OldApp".into(), path: "/Applications/OldApp.app".into(), aliases: vec![], icon: String::new() }],
+            vec![],
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // 初始：搜 old 能命中
+        let r = rt.block_on(engine.search("old", "apps"));
+        assert!(r.iter().any(|x| x.title == "OldApp"), "初始索引应有 OldApp");
+
+        // 模拟 refresh：直接替换内存索引（绕过 rescan 的文件系统扫描）
+        *engine.app_index.write() = AppIndex {
+            apps: vec![AppEntry { name: "NewApp".into(), path: "/Applications/NewApp.app".into(), aliases: vec![], icon: String::new() }],
+        };
+        // 替换后：搜 new 命中，搜 old 不命中
+        let r = rt.block_on(engine.search("new", "apps"));
+        assert!(r.iter().any(|x| x.title == "NewApp"), "refresh 后应能搜到 NewApp");
+        let r = rt.block_on(engine.search("old", "apps"));
+        assert!(r.iter().all(|x| x.title != "OldApp"), "refresh 后 OldApp 应已从索引移除");
+    }
+
+    /// 回归 S1：多线程并发读 search + 写 refresh，RwLock 不死锁不 panic。
+    #[test]
+    fn app_index_rwlock_concurrent_safe() {
+        let engine = std::sync::Arc::new(SearchEngine::new_for_test(
+            vec![AppEntry { name: "App".into(), path: "/Applications/App.app".into(), aliases: vec![], icon: String::new() }],
+            vec![],
+        ));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut handles = vec![];
+
+        // 读线程：持续 search
+        for _ in 0..3 {
+            let eng = engine.clone();
+            let stop = stop.clone();
+            handles.push(std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = rt.block_on(eng.search("app", "apps"));
+                }
+            }));
+        }
+        // 写线程：多次替换内存索引
+        for i in 0..20 {
+            *engine.app_index.write() = AppIndex {
+                apps: vec![AppEntry {
+                    name: format!("App{}", i),
+                    path: format!("/Applications/App{}.app", i),
+                    aliases: vec![],
+                    icon: String::new(),
+                }],
+            };
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        for h in handles {
+            h.join().expect("读线程不应 panic");
+        }
+        // 最终索引应是最后一次写入
+        let r = rt.block_on(engine.search("app19", "apps"));
+        assert!(r.iter().any(|x| x.title == "App19"), "最终应为 App19");
     }
 }
