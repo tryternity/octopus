@@ -1,6 +1,6 @@
 # ActionBar 搜索功能 实施计划
 
-> **状态：全部完成 ✅**（含 9 轮 code review 修复）
+> **状态：全部完成 ✅**（含 11 轮 code review 修复 + 搜索增强 / 键盘导航重构）
 >
 > 本文档为实施记录而非一次性待办——反映实际实现。
 
@@ -144,3 +144,28 @@
 - **P1 剪贴板恢复**：`detect_selection` 恢复逻辑前移到读 `clipboard_after` 之后（`_` 分支选中图片/文件也恢复原剪贴板）
 - **P2 urlDetect 边界**：文件扩展名黑名单 `FILE_EXT_RE` + IPv4 `isValidIpv4Host` 0-255 校验
 - **P2 性能/可维护性**：`fuzzy_match` Matcher `thread_local` 复用；`app_index` 递归子目录（深度 2，覆盖嵌套 .app）；`search_bookmarks` 按 url 去重；`now_iso8601` → `now_epoch_secs` 重命名（名实一致）
+
+### 第十一轮（搜索增强 + 键盘导航重构 + IME/UX 收尾）
+
+**搜索增强（feature）**：
+- 应用**本地化别名**：扫描读 `zh-Hans.lproj/InfoPlist.strings`（UTF-16 LE 解码 + OpenStep/XML plist 解析）取 CFBundleDisplayName/Name 作 alias（WeChat→微信）；`AppIndex::search` 对 name+aliases 都匹配取最高分
+- 应用**图标**：`sips -s format png -z 32 32` 提取 icon → base64 PNG 存 DB；`SearchResult` 携带 `icon` 字段（应用为 base64 PNG，其余 source 为 None 由前端用默认图标）
+- 应用索引 **DB 缓存**（`app_index` 表，v33 建表 / v34 补 icon 列）：启动 <1ms 加载，DB 空则扫盘写回，旧缓存 icon 全空时自动重扫；`reindex_apps` Tauri 命令供装卸应用后强制刷新
+- **拼音通用化**：`pinyin` crate 覆盖全部 CJK 汉字首字母（替代硬编码菜单表），pinyin 分数 3000→4000；app 结果额外 +2000 权重，使拼音匹配 app（4000+2000=6000）排在文件 prefix match（~5000）之前
+
+**键盘导航重构（refactor 127877fc + 6d22df27）**：
+- 去掉 `searchFocusZone`（输入区/结果区焦点切换）概念——输入框始终保持 DOM focus
+- `Tab`/`Shift+Tab` 只在 Tab 页间循环（all→apps→files→shell→bookmarks→all），不回搜索框
+- Tab 定位改 **Cmd+字母**：`Cmd+A`/`D`/`F`/`S`/`B` = 全部/应用/文件/Shell/书签；Tab 栏按钮显示「全部 ⌘A」等（字母大写、文字后、`text-[9px] font-mono` 弱化）
+- ↑↓ 导航结果时输入框保留 focus（字母键直接进输入框参与过滤，不触发 IME）
+
+**IME Enter 最终方案（多轮反复后收敛 10e20727）**：
+- macOS 序列：选词 = `keydown(keyCode=229)` → `compositionend` → `keydown(Enter,13)`；纯英文 Enter 前无 229
+- window keydown 记录 keyCode 229 时间戳；Enter(13) 在 229 后 500ms 内 → 跳过（选词确认），否则正常执行
+- **不依赖** `isComposing`（window 级时序不可靠）和 `compositionend`（WKWebView 空组合误触发）；早期 compositionstart/end + skipNextEnterRef 方案因「Enter 按两次」「纯英文被吞」等问题已废弃
+
+**UX 收尾**：
+- hover 选中：`onMouseMove` 坐标比较（<1px 容差）+ 结果/Tab 变化后 200ms 抑制——React 重渲染致 DOM 重建触发的 mousemove 不影响选中
+- 窗口 resize generation token 串行化；Tab 按钮 `transition-colors`（非 `transition-all`）防 active 切换尺寸晃动；TabBar 固定 `h-[30px]`
+- 全局快捷键 toggle：窗口可见时再按 → 后端内联 `win.hide()`（不经前端 dismiss）；不可见 → 正常触发
+- 设置页 `GeneralPanel` 内部加水平 sub-tab（一般/快捷键/语音，纯 UI 重组，无新配置项 / 无 Rust 改动）

@@ -2,7 +2,7 @@
 
 > 2026-07-15 · ActionBar 集成搜索输入框 + 应用启动 + 文件搜索 + Quicklinks + 书签搜索 + Run And Paste
 >
-> **实现完成** — 本文档已同步实际代码（2026-07-15，含 9 轮 code review 修复）
+> **实现完成** — 本文档已同步实际代码（2026-07-15，含 11 轮 code review 修复 + 搜索增强 / 键盘导航重构）
 
 ## 1. 设计目标
 
@@ -28,7 +28,7 @@
 ┌─────────────────────────────────────────┐
 │ [搜索输入框]                              │ ← 始终在顶部
 ├─────────────────────────────────────────┤
-│ [a 全部] [p 应用] [f 文件] [s Shell] [b 书签] │ ← Tab 栏（有搜索时显示）
+│ [全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B] │ ← Tab 栏（有搜索时显示）
 │  结果1                                    │
 │  结果2                                    │ ← 最多10行
 │  ...                                     │
@@ -45,7 +45,7 @@
 │  ...                                     │
 │  结果2                                    │ ← 最多10行
 │  结果1                                    │
-│ [a 全部] [p 应用] [f 文件] [s Shell] [b 书签] │ ← Tab 栏
+│ [全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B] │ ← Tab 栏
 ├─────────────────────────────────────────┤
 │ [搜索输入框]                              │ ← 始终在核心位置
 ├─────────────────────────────────────────┤
@@ -111,13 +111,13 @@
 
 ### 3.4 结果分组与 Tab
 
-Tab 页：`[a 全部] [p 应用] [f 文件] [s Shell] [b 书签]`
+Tab 页：`[全部 ⌘A] [应用 ⌘D] [文件 ⌘F] [Shell ⌘S] [书签 ⌘B]`
 
-- `[a 全部]`：混合展示所有来源结果，按优先级排序
-- `[p 应用]`：仅 source === "app"
-- `[f 文件]`：仅 source === "file"
-- `[s Shell]`：`>` 前缀路由的 shell 命令
-- `[b 书签]`：仅 source === "bookmark"
+- `全部 ⌘A`：混合展示所有来源结果，按优先级排序
+- `应用 ⌘D`：仅 source === "app"
+- `文件 ⌘F`：仅 source === "file"
+- `Shell ⌘S`：`>` 前缀路由的 shell 命令
+- `书签 ⌘B`：仅 source === "bookmark"
 
 **菜单项 accepts 过滤**：搜索结果中的 menu/quicklink 来源按 `context.accepts` 过滤。无选中（context=null）时仅显示 `accepts="any"` 的项。
 
@@ -239,12 +239,13 @@ trigger_action_bar() ── 纯路由
 ### 6.3 后端 Tauri 命令
 
 ```rust
-search_all(query, tab) → Vec<SearchResult>    // 综合搜索
+search_all(query, tab) → Vec<SearchResult>    // 综合搜索（入口 trim query）
 launch_app(path) → ()                          // status (非 spawn)
 open_file(path) → ()                           // status
 open_url(url) → ()                             // status
 execute_shell(command) → String                // 30s 超时 + kill_on_drop + 100KB 截断
 set_auto_paste(id, auto_paste) → ()            // 零行检查
+reindex_apps() → usize                         // 强制重扫应用索引并更新 app_index 缓存
 ```
 
 ### 6.4 独立 crate `octopus-search`
