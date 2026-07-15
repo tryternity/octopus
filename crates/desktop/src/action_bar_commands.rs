@@ -40,6 +40,8 @@ impl ActionBarContext {
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 /// 重入 guard——防止热键连按导致 trigger 重叠执行
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// 触发时间戳——用于超时保护，防 webview 崩溃后 guard 永久卡死
+static TRIGGER_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 /// 一次触发检测出的完整选中状态——后端唯一的"有什么选中"真相源。
@@ -197,6 +199,10 @@ pub fn trigger_action_bar(app: AppHandle) {
             log::info!("[action-bar] trigger already in progress, skipping");
             return;
         }
+        TRIGGER_TIMESTAMP.store(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            Ordering::SeqCst,
+        );
 
         // ── 检测：一次性拿到全部信息，changeCount 只在这里出现 ──
         let sel = detect_selection(&app_clone);
@@ -313,6 +319,22 @@ fn show_action_bar_centered(app: &AppHandle) {
 /// action bar 所有出口的统一收口：重置重入 guard。
 fn finalize_action_bar(_app: &AppHandle) {
     TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
+}
+
+/// 重置 guard——用于 toggle 隐藏时和超时保护。
+pub fn reset_trigger_guard() {
+    TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
+}
+
+/// 超时保护——如果上次触发超过 timeout_secs 秒仍未 finalize，强制重置。
+/// 防 webview 崩溃后 guard 永久卡死。
+pub fn reset_trigger_guard_if_stale(timeout_secs: u64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let ts = TRIGGER_TIMESTAMP.load(Ordering::SeqCst);
+    if ts > 0 && now - ts > timeout_secs as i64 {
+        log::warn!("[action-bar] trigger guard stale ({}s), force reset", now - ts);
+        TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
 }
 
 /// 前端 mount 时拉取上下文。

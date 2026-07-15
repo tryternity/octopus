@@ -66,13 +66,17 @@ pub fn register_action_bar_shortcut(
     app.global_shortcut()
         .on_shortcut(shortcut, move |app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
-                // 已可见 → 隐藏（toggle 语义）；不可见 → 触发
+                // 已可见 → 隐藏（toggle 语义）+ 重置 guard；不可见 → 触发
                 if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
                     if win.is_visible().unwrap_or(false) {
                         let _ = win.hide();
+                        // 重置 guard——防 webview 崩溃后 guard 永久卡死
+                        crate::action_bar_commands::reset_trigger_guard();
                         return;
                     }
                 }
+                // guard 超时保护——如果上次触发超过 30s 仍未 finalize，强制重置
+                crate::action_bar_commands::reset_trigger_guard_if_stale(30);
                 crate::action_bar_commands::trigger_action_bar(app_handle.clone());
             }
         })
