@@ -122,6 +122,7 @@ function ResultRow({
   onClick: () => void;
   onHover: () => void;
 }) {
+  const lastPos = useRef<{ x: number; y: number } | null>(null);
   return (
     <div
       role="option"
@@ -131,7 +132,13 @@ function ResultRow({
         selected ? "bg-voice/10" : "hover:bg-foreground/[0.03]",
       )}
       onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-      onMouseEnter={onHover}
+      onMouseMove={(e) => {
+        // 只有鼠标真的移动了才触发 hover 选中——防止 React 重渲染时
+        // DOM 重建自动触发 mousemove 导致选中跳到鼠标位置
+        if (lastPos.current && lastPos.current.x === e.clientX && lastPos.current.y === e.clientY) return;
+        lastPos.current = { x: e.clientX, y: e.clientY };
+        onHover();
+      }}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
     >
       <SourceBadge source={result.source} icon={result.icon ?? undefined} />
