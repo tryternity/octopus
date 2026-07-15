@@ -190,6 +190,8 @@ export default function ActionBar() {
   const [searchFocusZone, setSearchFocusZone] = useState<FocusZone>("input");
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
+  // IME 组合状态——手动追踪比 e.isComposing 可靠（macOS WebKit 时序问题）
+  const composingRef = useRef(false);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -652,8 +654,10 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 组合中（输入法正在组词）——不拦截任何键，让浏览器处理确认候选
-      if (e.isComposing) return;
+      // IME 组合中（输入法正在组词）——不拦截任何键
+      // 用 composingRef 替代 e.isComposing：macOS WebKit 上确认候选词的 Enter
+      // 触发 keydown 时 isComposing 可能为 false（compositionend 时序问题）
+      if (e.isComposing || composingRef.current) return;
 
       // Escape 在任何视图都生效——防止 loading 卡住时困死用户
       if (e.key === "Escape") {
@@ -908,6 +912,11 @@ export default function ActionBar() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => setSearchFocusZone("input")}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => {
+          // 延迟清除——确认候选词的 Enter keydown 先于 compositionend 触发
+          setTimeout(() => { composingRef.current = false; }, 0);
+        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
         autoComplete="off"
