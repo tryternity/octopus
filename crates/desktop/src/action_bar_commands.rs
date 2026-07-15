@@ -42,42 +42,89 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
-/// 选中对象类型。
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum SelectType {
-    None = 0,
-    Text = 1,
-    File = 2,
-    Folder = 3,
+/// 一次触发检测出的完整选中状态——后端唯一的"有什么选中"真相源。
+/// 检测完成后，下游所有操作仅读这个枚举，不再碰 changeCount / 剪贴板 / 鼠标坐标。
+///
+/// 鼠标坐标始终在检测阶段采集（无论有无选中），用于：
+///   - 有选中 → 鼠标位置弹出
+///   - 无选中 → 忽略，用主屏居中
+enum Selection {
+    /// 无选中——居中搜索模式
+    None,
+    /// 选中文本
+    Text {
+        text: String,
+        mouse: (f64, f64),
+    },
+    /// 选中文件（Finder）
+    File {
+        files: Vec<String>,
+        #[allow(dead_code)]
+        parent_dir: Option<String>,
+        mouse: (f64, f64),
+    },
+    /// 选中文件夹（Finder）
+    Folder {
+        folders: Vec<String>,
+        #[allow(dead_code)]
+        parent_dir: Option<String>,
+        mouse: (f64, f64),
+    },
 }
 
-/// 一次触发检测出的选中状态——后端唯一的"有没有选中"真相源。
-/// change_count 只在 detect_selection() 内部使用，下游全部读 select_type。
-struct SelectionState {
-    select_type: SelectType,
-    text: Option<String>,
-    files: Vec<String>,
+impl Selection {
+    /// 是否有选中（None → false，其余 → true）
+    #[allow(dead_code)]
+    fn has_selection(&self) -> bool {
+        !matches!(self, Selection::None)
+    }
+
+    /// 鼠标坐标（None 时返回 (0,0) 不使用）
+    fn mouse(&self) -> (f64, f64) {
+        match self {
+            Selection::None => (0.0, 0.0),
+            Selection::Text { mouse, .. }
+            | Selection::File { mouse, .. }
+            | Selection::Folder { mouse, .. } => *mouse,
+        }
+    }
+}
+
+/// 从路径列表提取公共父目录。
+fn common_parent_dir(paths: &[String]) -> Option<String> {
+    if paths.is_empty() { return None; }
+    let first = std::path::Path::new(&paths[0]);
+    let parent = first.parent()?;
+    parent.to_str().map(|s| s.to_string())
 }
 
 /// 检测当前选中状态。Finder 走 AppleScript，其余走 Cmd+C + changeCount。
-fn detect_selection(app: &AppHandle) -> SelectionState {
+/// 返回的 Selection 携带全部信息（选中内容 + 鼠标坐标），下游不再碰检测细节。
+fn detect_selection(app: &AppHandle) -> Selection {
+    // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）
+    let mouse = get_mouse_position(app);
+
     // ── Finder 分支：AppleScript 直接拿 selection ──
     if crate::finder_selection::is_finder_frontmost() {
         return match crate::finder_selection::get_finder_selection() {
             Ok(files) if !files.is_empty() => {
-                // 有目录 → Folder，全文件 → File
                 let has_folder = files.iter().any(|p| std::path::Path::new(p).is_dir());
-                let select_type = if has_folder { SelectType::Folder } else { SelectType::File };
-                log::info!("[action-bar] Finder selection: {} items, type={:?}", files.len(), select_type);
-                SelectionState { select_type, text: None, files }
+                let parent_dir = common_parent_dir(&files);
+                if has_folder {
+                    log::info!("[action-bar] Finder: {} folders", files.len());
+                    Selection::Folder { folders: files, parent_dir, mouse }
+                } else {
+                    log::info!("[action-bar] Finder: {} files", files.len());
+                    Selection::File { files, parent_dir, mouse }
+                }
             }
             Ok(_) => {
                 log::info!("[action-bar] Finder 空选中");
-                SelectionState { select_type: SelectType::None, text: None, files: vec![] }
+                Selection::None
             }
             Err(e) => {
-                log::warn!("[action-bar] Finder selection 获取失败: {}", e);
-                SelectionState { select_type: SelectType::None, text: None, files: vec![] }
+                log::warn!("[action-bar] Finder selection 失败: {}", e);
+                Selection::None
             }
         };
     }
@@ -100,13 +147,11 @@ fn detect_selection(app: &AppHandle) -> SelectionState {
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let change_count_after = pasteboard_change_count();
-    let changed = change_count_after != change_count_before;
-
-    if !changed {
+    if change_count_after == change_count_before {
         log::info!("[action-bar] changeCount unchanged {}→{} = no selection",
             change_count_before, change_count_after);
         clip_handle.clear_suppress();
-        return SelectionState { select_type: SelectType::None, text: None, files: vec![] };
+        return Selection::None;
     }
 
     // changeCount 递增 → 有选中，读剪贴板拿文本
@@ -116,7 +161,7 @@ fn detect_selection(app: &AppHandle) -> SelectionState {
         _ => {
             log::info!("[action-bar] changeCount changed but clipboard empty");
             clip_handle.clear_suppress();
-            return SelectionState { select_type: SelectType::None, text: None, files: vec![] };
+            return Selection::None;
         }
     };
 
@@ -132,8 +177,8 @@ fn detect_selection(app: &AppHandle) -> SelectionState {
         }
     }
 
-    log::info!("[action-bar] got text len={}", text.len());
-    SelectionState { select_type: SelectType::Text, text: Some(text), files: vec![] }
+    log::info!("[action-bar] got text len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
+    Selection::Text { text, mouse }
 }
 
 #[tauri::command]
@@ -152,21 +197,20 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
-        // ── 检测选中状态（唯一感知 changeCount 的地方）──
+        // ── 检测：一次性拿到全部信息，changeCount 只在这里出现 ──
         let sel = detect_selection(&app_clone);
 
-        // ── 路由：仅依赖 select_type ──
-        match sel.select_type {
-            SelectType::None => {
+        // ── 路由：仅依赖 Selection，不再碰检测细节 ──
+        match &sel {
+            Selection::None => {
                 *PENDING_CONTEXT.lock().unwrap() = None;
                 show_action_bar_centered(&app_clone);
                 finalize_action_bar(&app_clone);
             }
-            SelectType::Text => {
-                let text = sel.text.unwrap_or_default();
+            Selection::Text { text, mouse } => {
                 let text_for_gather = text.clone();
-                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
-                show_action_bar_at_mouse(&app_clone);
+                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text.clone()));
+                show_action_bar_at_mouse_with_pos(&app_clone, *mouse);
                 // 后台采集上下文
                 std::thread::spawn(move || {
                     match crate::app_context::gather_context(&text_for_gather) {
@@ -188,35 +232,34 @@ pub fn trigger_action_bar(app: AppHandle) {
                     }
                 });
             }
-            SelectType::File | SelectType::Folder => {
-                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(sel.files));
-                show_action_bar_at_mouse(&app_clone);
+            Selection::File { files, .. } => {
+                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(files.clone()));
+                show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
+            }
+            Selection::Folder { folders, .. } => {
+                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(folders.clone()));
+                show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }
         }
     });
 }
 
-/// 获取鼠标位置 + 碰撞检测 + 主线程显示浮窗。text 和 Files 路径共用。
-fn show_action_bar_at_mouse(app: &AppHandle) {
-    let (mx, my) = get_mouse_position(app);
+/// 在指定鼠标坐标附近显示浮窗（含碰撞检测）。
+fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
+    let (mx, my) = mouse;
     // 不截断——副屏在主屏左/上方时坐标可为负值
     let mut win_x = mx - 190.0;
     let win_y = my - 42.0;
 
     // 碰撞检测：防止浮窗溢出显示器边缘
-    // Monitor position/size 返回物理像素，需 ÷ scale_factor() 转逻辑坐标
     const WIN_W: f64 = 380.0;
     if let Some(monitor) = app.available_monitors().ok().and_then(|monitors| {
         monitors.into_iter().find(|m| {
             let scale = m.scale_factor();
-            let mx_phys = m.position().x as f64;
-            let my_phys = m.position().y as f64;
-            let mw_phys = m.size().width as f64;
-            let mh_phys = m.size().height as f64;
-            let mon_left = mx_phys / scale;
-            let mon_top = my_phys / scale;
-            let mon_right = (mx_phys + mw_phys) / scale;
-            let mon_bottom = (my_phys + mh_phys) / scale;
+            let mon_left = m.position().x as f64 / scale;
+            let mon_top = m.position().y as f64 / scale;
+            let mon_right = (m.position().x as f64 + m.size().width as f64) / scale;
+            let mon_bottom = (m.position().y as f64 + m.size().height as f64) / scale;
             mx >= mon_left && mx < mon_right && my >= mon_top && my < mon_bottom
         })
     }) {
@@ -224,21 +267,13 @@ fn show_action_bar_at_mouse(app: &AppHandle) {
         let mon_x = monitor.position().x as f64 / scale;
         let mon_w = monitor.size().width as f64 / scale;
         let mon_right = mon_x + mon_w;
-        // 右溢出：贴右边缘
-        if win_x + WIN_W > mon_right {
-            win_x = mon_right - WIN_W;
-        }
-        // 左溢出：贴左边缘
-        if win_x < mon_x {
-            win_x = mon_x;
-        }
+        if win_x + WIN_W > mon_right { win_x = mon_right - WIN_W; }
+        if win_x < mon_x { win_x = mon_x; }
     }
 
     log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
     let app_for_show = app.clone();
-    // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
-    // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
     let _ = app.run_on_main_thread(move || {
         show_action_bar_window(&app_for_show, win_x, win_y);
     });
