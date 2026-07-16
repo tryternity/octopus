@@ -2457,3 +2457,7 @@ git commit -m "docs: 搜索多 Provider 架构文档同步 + spec 状态实现�
 
 - **shell 功能移除（手测后决策）**：用户反馈"shell 选了回车没作用，是不是鸡肋"。根因：execute_shell 后端执行了但输出被丢弃 + 窗口立刻 dismiss，用户看不到任何结果；且 launcher 场景下 shell 无终端上下文（无 cwd/环境继承），是伪需求。用户决定**移除 shell**。**删除范围**：search crate 的 shell.rs/shell_commands.rs/shell_history.rs + engine.rs 的 ShellProvider 装配 + 2 个 shell 测试；desktop 的 execute_shell 命令 + 注册；前端的 shell Tab + case "shell" 分支（保留防御性空 case 兜底历史频次残留）+ isShellMode/extractShellCommand 辅助函数 + 相关测试。Tab 从 6 个（all/apps/files/shell/bookmarks/actions）减为 5 个。search 测试 63→51（删 shell provider 7 测试 + engine 2 测试 + matcher 无关），前端测试 233→227。
 
+- **结果数 10→30（可视高度 vs 总量混淆）**：用户反馈"列表只展示 10 项，滚动也只有 10 项"。根因：后端 `MAX_RESULTS=10` 被误解为"总结果数"，truncate(10) 卡死总量；但 10 的本意是前端"一屏可视 10 行"（窗口高度）。前端 SearchPanel 本就有 `overflow-y-auto` + `maxHeight: 10 * RESULT_ROW_HEIGHT` + 选中项 scrollIntoView，滚动能力一直 ready，只是后端没给足够数据可滚。**修复**：`MAX_RESULTS` → `MAX_TOTAL_RESULTS = 30`（跨 Provider 合并后的可滚动总量）。窗口高度仍由前端 `calcResultsHeight` clamp 到 `MAX_VISIBLE_RESULTS`（10 行）控制。
+
+- **Task 7 状态说明**：Task 7（ShellProvider 实现）的代码已全部移除，但 plan 保留该 Task 的描述作为"曾经实现过、为何移除"的历史记录（见上方"shell 功能移除"）。Task 7 的 checkbox 不勾——它代表的工作（实现 shell）虽已完成但随后被整体删除。
+

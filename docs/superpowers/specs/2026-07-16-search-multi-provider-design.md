@@ -1,8 +1,8 @@
 # 搜索多 Provider 架构重构设计
 
-> 2026-07-16 · 借鉴 wox 多源广播思想，重构 octopus 搜索为 Provider trait + 并发扇出 + 流式渐进渲染 + 频次加权。修复 shell/bookmark 不显示问题，新增 calculator/url 源。
+> 2026-07-16 · 借鉴 wox 多源广播思想，重构 octopus 搜索为 Provider trait + 并发扇出 + 流式渐进渲染 + 频次加权。修复 bookmark 不显示问题，新增 calculator/url 源。
 >
-> **状态**：实现完成（2026-07-16）。实际偏差见下方各节"实现注"。
+> **状态**：实现完成（2026-07-16，含用户手测后反馈驱动修复）。实际偏差见下方各节"实现注"。
 
 ## 0. 背景与动机
 
@@ -12,8 +12,8 @@
 
 经代码 + 环境排查，根因有三层：
 
-1. **shell 是匹配逻辑 bug**（非 provider 缺失）：`engine.rs:75` 要求 query 以 `>` 开头。前端切到 shell tab 输入裸命令（如 `ls`）不会自动补 `>`，`filterByTab("shell")` 又把非 shell 来源全过滤掉 → 空结果。`isShellMode`/`extractShellCommand` 辅助函数已写好且有单测，但 `index.tsx` 未接入。
-2. **"标签"实为浏览器收藏（bookmark）覆盖缺失**：用户用 Safari + Arc，但 octopus 只读 Chrome/Edge（用户本机均未安装），Safari 解析是占位函数返回空（`bookmark.rs:88`），Arc 未覆盖。→ bookmark tab 永远空。
+1. **shell**：原是匹配逻辑 bug（要求 `>` 前缀 + 前端未接入辅助函数）。**手测后用户判定 launcher 场景下 shell 是伪需求**（无终端上下文 / 输出无展示区），**已移除整个 shell 功能**——详见 §4.2「ShellProvider 已移除」。
+2. **"标签"实为浏览器收藏（bookmark）覆盖缺失**：用户主要用 Chrome（书签在 `Profile 1`，非 `Default`），另有 Safari。原代码只读 Chrome/Edge 的 `Default/Bookmarks`，漏掉多 profile + Safari + Firefox。→ bookmark tab 永远空。
 3. **架构串行**：当前 `search()` 是 6 个 source 串行 `results.extend`，慢源（mdfind）拖慢整体，且无频次加权，常用项不会排前。
 
 ### 0.2 借鉴 wox 的核心思想（不照搬实现）
@@ -23,7 +23,7 @@ wox 是 38 插件、3 语言运行时、Flutter UI 的完整体系，直接照�
 | wox 思想 | octopus 采纳方式 |
 |---|---|
 | `*` 触发词 = 全局搜索源注册 | Provider 声明 `matches_tab` |
-| 并发扇出所有插件 | `tokio::spawn` 每个 Provider 独立 task |
+| 并发扇出所有插件 | `FuturesUnordered` 单 task 并发（不 spawn，避免 ctx 生命周期问题） |
 | `FallbackSearcher` 接口 | `is_fallback()` trait 方法（本期暂不启用 fallback provider，预留） |
 | 频次加权（斐波那契衰减） | 简化为 7 天滑窗 + 当次 query 加分 |
 | 渐进式渲染（resultDebouncer） | Tauri 事件 + 前端 listen 增量 |
@@ -34,20 +34,21 @@ wox 是 38 插件、3 语言运行时、Flutter UI 的完整体系，直接照�
 
 ## 1. 设计目标
 
-1. **广覆盖**：从 6 个 source 扩展到 7 个 Provider，修复 shell + bookmark 让现有源真正可用，新增 calculator/url。
-2. **搜得准**：频次加权让常用项排前（借鉴 wox 斐波那契衰减思想，简化实现）。
+1. **广覆盖**：从 6 个 source 重构为 6 个 Provider（app/file/menu/bookmark/calculator/url），修复 bookmark 让现有源真正可用，新增 calculator/url。**shell 手测后移除**（详见 §4.2）。
+2. **搜得准**：频次加权让常用项排前（借鉴 wox 斐波那契衰减思想，简化实现）+ **word-prefix 匹配**让 "Google Chrome" 搜 "chrome" 走分词匹配拿高分（详见 §4.7）。
 3. **搜得快**：并发扇出 + 流式渐进渲染，首屏 < 30ms，全量 < 200ms。
 4. **可扩展**：Provider trait 让新增搜索源变成"实现一个 trait"，不动搜索主流程。
 5. **健壮**：单个 Provider 失败绝不拖垮整个搜索。
 
 ### 1.1 非目标（YAGNI）
 
+- ❌ **shell 命令搜索**（手测后新增）：launcher 场景下无终端上下文（无 cwd/环境继承）+ 输出无展示区，伪需求。已移除。
 - ❌ Finder 文件标签（tag）搜索：macOS 独有，跨平台性差，用户实际不用。取消。
 - ❌ 浏览器标签页（tabs）搜索：需浏览器扩展，复杂度高，不在本期。
 - ❌ websearch provider（联网搜索）：fallback 场景，本期不做。
 - ❌ clipboard provider：独立大功能，另立 spec。
 - ❌ AI 问答 fallback：另立 spec。
-- ❌ Arc/Brave/Vivaldi 浏览器：长期支持，本期只做 Chrome/Edge（已有）+ Safari + Firefox。
+- ❌ Arc/Brave/Vivaldi 浏览器：长期支持，本期只做 Chrome/Edge（含多 profile）+ Safari + Firefox。
 - ❌ 前端 Tab/结果渲染重构为 wox 式分组：保持现有 Tab 栏 + 列表，只改数据流。
 
 ## 2. 架构总览
@@ -69,7 +70,7 @@ pub trait SearchProvider: Send + Sync {
     /// 执行搜索。契约：绝不返回 Err，失败时返回空 vec。
     async fn search(&self, query: &str, ctx: &SearchContext) -> Vec<SearchResult>;
 
-    /// 是否参与频次加权。shell 等时间序/命令序的返回 false。
+    /// 是否参与频次加权。calculator/url 等确定性/无频次意义的返回 false。
     fn uses_frequency(&self) -> bool { true }
 
     /// 是否作为 fallback（无结果时兜底）。本期预留，无 Provider 启用。
@@ -80,7 +81,8 @@ pub trait SearchProvider: Send + Sync {
 pub struct SearchContext<'a> {
     pub app_index: &'a parking_lot::RwLock<AppIndex>,
     pub bookmarks: &'a parking_lot::RwLock<Vec<BookmarkEntry>>,
-    pub shell_history: &'a ShellHistoryCache,
+    pub frequency: &'a FrequencyScorer,
+    pub tab: &'a str,  // 当前 tab（Provider 可据此调整行为，如 ShellProvider 已移除但保留设计）
 }
 ```
 
@@ -93,74 +95,59 @@ pub struct SearchEngine {
     providers: Vec<Box<dyn SearchProvider>>,
     app_index: parking_lot::RwLock<AppIndex>,       // 仍保留供后台刷新
     bookmarks: parking_lot::RwLock<Vec<BookmarkEntry>>,
-    shell_history: ShellHistoryCache,               // 进程内缓存
     frequency: FrequencyScorer,
 }
+
+/// 单次 search 返回的最大**总**结果数（跨所有 Provider 合并后）。
+/// 这是"可滚动浏览的总量"，不是"一屏可视行数"——前端窗口高度由前端的
+/// MAX_VISIBLE_RESULTS（10 行）+ overflow-y-auto 滚动容器控制，与本常量无关。
+/// 设 30：足够滚动浏览多个 Provider 的结果，又不过载。
+const MAX_TOTAL_RESULTS: usize = 30;
 
 impl SearchEngine {
     /// 旧 API 保留（诊断/测试）：聚合所有 Provider 一次返回。
     pub async fn search(&self, query: &str, tab: &str) -> Vec<SearchResult> {
-        let ctx = self.make_ctx();
+        let ctx = SearchContext { app_index: &self.app_index, bookmarks: &self.bookmarks,
+                                  frequency: &self.frequency, tab };
         let futures = self.providers.iter()
-            .filter(|p| p.matches_tab(tab))
-            .map(|p| async move { p.search(query, &ctx).await });
+            .filter(|p| tab == "all" || p.matches_tab(tab))
+            .map(|p| p.search(query, &ctx));
         let batches = futures::future::join_all(futures).await;
         let mut all: Vec<SearchResult> = batches.into_iter().flatten().collect();
         self.frequency.boost(&mut all, query);
         all.sort_by(|a, b| b.score.cmp(&a.score));
-        all.truncate(MAX_RESULTS);
+        all.truncate(MAX_TOTAL_RESULTS);
         all
     }
 
-    /// 新 API：流式。每个 Provider 完成立即 emit 一批。
-    pub async fn search_streaming(
-        &self, query: &str, tab: &str, run_id: &str,
-        emit: impl Fn(SearchBatch),
-    ) {
-        let ctx = self.make_ctx();
+    /// 新 API：流式。每个 Provider 完成立即 emit 一批全局 top-N。
+    pub async fn search_streaming<F>(
+        &self, query: &str, tab: &str, run_id: &str, mut emit: F,
+    ) where F: FnMut(SearchBatch) {
+        let ctx = SearchContext { /* ... tab ... */ };
         let active: Vec<_> = self.providers.iter()
-            .filter(|p| p.matches_tab(tab)).collect();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(active.len());
-        for p in active {
-            let tx = tx.clone();
-            let q = query.to_string();
-            let ctx_ref = &ctx;  // 见实现注：跨 task 需 Arc 或改设计
-            tokio::spawn(async move {
-                let batch = p.search(&q, /* ctx */).await;
-                let _ = tx.send((p.id(), batch)).await;
-            });
-        }
-        drop(tx);
-        // 收一批：合并到全局已收集 → 频次加权 → 排序 → truncate → emit 整表
+            .filter(|p| tab == "all" || p.matches_tab(tab)).collect();
+        // FuturesUnordered：单 task 并发，先完成先 yield（不 spawn，避免 ctx 生命周期问题）
+        let mut futs = active.into_iter()
+            .map(|p| p.search(query, &ctx))
+            .collect::<futures::stream::FuturesUnordered<_>>();
         let mut collected: Vec<SearchResult> = Vec::new();
-        while let Some((_source, batch)) = rx.recv().await {
+        while let Some(batch) = futs.next().await {
+            // ⚠️ 关键：boost 只对新 batch 加权一次，不对累积的 collected 重复 boost
+            // （boost 是加法性的 score += X，对已 boost 的再 boost 会重复加权）
+            self.frequency.boost(&mut batch, query);  // ← per-batch boost
             collected.extend(batch);
-            self.frequency.boost(&mut collected, query);
             collected.sort_by(|a, b| b.score.cmp(&a.score));
-            collected.truncate(MAX_RESULTS);
-            emit(SearchBatch {
-                run_id: run_id.to_string(),
-                results: collected.clone(),
-            });
+            collected.truncate(MAX_TOTAL_RESULTS);
+            emit(SearchBatch { run_id: run_id.to_string(), results: collected.clone() });
         }
     }
 }
 ```
 
-**实现注**：`SearchContext` 含引用，跨 `tokio::spawn` 生命周期受限。实际实现改为 `SearchContext` 持有 `Arc<RwLock<...>>`（而非 `&'a`），或 `search_streaming` 用 `join_all`（不 spawn，单 task 内并发 future，不跨越引用生命周期）。**推荐 `join_all` + `FuturesUnordered`**：既并发又不用 Arc 化，且 `FuturesUnordered` 可边完成边收（流式语义）。具体：
+**实现注（已验证）**：`FuturesUnordered` 在单 task 内轮询多个 future，ctx 借用 `&self.{app_index,bookmarks,frequency}`，生命周期覆盖整个 while 循环，borrow checker 接受——无需 Arc / spawn。**采纳此方案**。
 
-```rust
-use futures::stream::{FuturesUnordered, StreamExt};
-let mut futs = active.into_iter()
-    .map(|p| async move { (p.id(), p.search(query, &ctx).await) })
-    .collect::<FuturesUnordered<_>>();
-while let Some((_id, batch)) = futs.next().await {
-    collected.extend(batch);
-    // ... boost + sort + truncate + emit
-}
-```
-
-`FuturesUnordered` 在单 task 内轮询多个 future，先完成的先 yield，完美匹配"边出结果边 emit"。**采纳此方案，弃用 mpsc + spawn**。
+**流式 boost 修正（review 抓到的 Critical）**：原设计 `boost(&mut collected, query)` 对累积 vec 重复 boost——boost 是 `score += X` 加法性，先完成的 Provider 结果被多次加权。**修正为 per-batch boost**：每个新 batch 进来先独立 boost 一次，再 extend 到 collected。这样每条结果只加权一次，流式最终排序与非流式 `search()` 一致（回归测试 `streaming_boost_applied_once_not_per_round` 锁住）。
 
 ### 2.3 数据流
 
@@ -171,10 +158,10 @@ search_stream 命令（search_commands.rs）
     ↓
 engine.search_streaming(query, tab, runId, |batch| app.emit("search://batch", batch))
     ↓
-FuturesUnordererd 并发跑各 Provider
+FuturesUnordered 并发跑各 Provider
     ↓ 每个 Provider 完成
     ↓
-收集 → frequency.boost → sort → truncate(10) → emit("search://batch", {runId, results})
+收集 → per-batch frequency.boost → sort → truncate(30) → emit("search://batch", {runId, results})
     ↓ 所有 Provider 完成
 emit("search://done", {runId})
     ↓
@@ -213,11 +200,11 @@ pub async fn search_stream(
 #[serde(rename_all = "camelCase")]
 pub struct SearchBatch {
     pub run_id: String,
-    pub results: Vec<SearchResult>,  // 整表 top-10（后端已排序+加权）
+    pub results: Vec<SearchResult>,  // 全局 top-30（后端已加权+排序+截断）
 }
 ```
 
-**排序在后端**：每次 emit 的 `results` 是"截至当前所有已完成 Provider 的全局 top-10"，前端零排序逻辑，直接 `setSearchResults(payload.results)`。
+**排序在后端**：每次 emit 的 `results` 是"截至当前所有已完成 Provider 的全局 top-30"，前端零排序逻辑，直接 `setSearchResults(payload.results)` 整体替换。
 
 ### 3.2 前端契约
 
@@ -240,7 +227,9 @@ export async function executeSearchStream(
     if (e.payload.runId !== myRunId) return;  // 旧批次丢弃
     onResults(e.payload.results);
   });
-  unlistenDone = await listen("search://done", (e) => {
+  // done 事件也校验 runId——否则旧搜索的 done 会 tear down 新搜索的 batch listener
+  unlistenDone = await listen<{ runId: string }>("search://done", (e) => {
+    if (e.payload.runId !== myRunId) return;
     unlistenBatch?.(); unlistenDone?.();
     unlistenBatch = null; unlistenDone = null;
   });
@@ -254,6 +243,7 @@ export async function executeSearchStream(
 
 - **run_id 唯一**：每次搜索 `crypto.randomUUID()`。
 - **旧监听即弃**：新搜索发起时立即 `unlisten()` 旧的 + 用闭包捕获的 `myRunId` 二次校验 payload。
+- **batch + done 双校验**：`search://batch` 和 `search://done` 的 listener 都校验 `payload.runId !== myRunId`（review 抓到的竞态：旧搜索的 done 事件会 tear down 新搜索的 batch listener，导致慢 Provider 结果被丢弃）。
 - **单事件名**：`search://batch`（不带 run_id 后缀，避免 run_id 含特殊字符），payload 字段区分。
 - **完成即清理**：`search://done` 触发 unlisten，防内存泄漏。
 
@@ -266,126 +256,18 @@ export async function executeSearchStream(
 | AppProvider | `app` | all/apps/quick | ✅ | 从 engine.rs 搬出为独立 Provider，+2000 权重保留 |
 | FileProvider | `file` | all/files/files_bookmarks | ✅ | mdfind，无大改，包成 Provider |
 | MenuProvider | `menu`+`quicklink` | all/quick/actions | ✅ | 合并现有 `search_menus_and_quicklinks` + `search_quicklink_keywords` |
-| BookmarkProvider | `bookmark` | all/bookmarks/files_bookmarks | ✅ | **新增 Safari (plist) + Firefox (places.sqlite)** |
-| ShellProvider | `shell` | all/shell/quick | ❌ | **修复匹配 + 命令补全表 + 读 zsh_history** |
-| CalculatorProvider | `calculator` | all | ❌ | 新增：evalexpr 求值 |
+| BookmarkProvider | `bookmark` | all/bookmarks/files_bookmarks | ✅ | **新增 Safari (plist) + Firefox (places.sqlite) + Chrome/Edge 多 profile 扫描** |
+| CalculatorProvider | `calculator` | all | ❌ | 新增：evalexpr 求值（整数字面量升 Float 让 `10/4=2.5`） |
 | UrlProvider | `url` | all | ❌ | 新增：检测合法 URL |
 
-### 4.2 ShellProvider（重点）
+### 4.2 ShellProvider 已移除（2026-07-16 手测后）
 
-```rust
-// crates/search/src/providers/shell.rs
-pub struct ShellProvider {
-    history: ShellHistoryCache,  // 进程内缓存
-}
+**原设计**：曾实现 ShellProvider（裸命令透传 + 55 条命令补全 + zsh_history 历史匹配）。**手测后用户判定 launcher 场景下 shell 是伪需求**：
+- 无终端上下文（`sh -c` 从 home 起步，无 cwd / 环境继承，`cd` 无意义）
+- 输出无展示区（execute_shell 执行了但结果被丢弃 + 窗口立刻 dismiss，用户看不到输出）
+- 唯一"能用"的无输出命令（`open`/`pbcopy`）用户更习惯在终端做
 
-#[async_trait]
-impl SearchProvider for ShellProvider {
-    fn id(&self) -> &'static str { "shell" }
-    fn matches_tab(&self, tab: &str) -> bool {
-        matches!(tab, "all" | "shell" | "quick")
-    }
-    fn uses_frequency(&self) -> bool { false }  // 命令透传不参与频次加权
-
-    async fn search(&self, query: &str, _ctx) -> Vec<SearchResult> {
-        // 修复核心：剥离可选的 > 前缀（兼容旧习惯），裸命令也处理
-        let cmd = query.trim_start_matches('>').trim();
-        if cmd.is_empty() { return vec![]; }
-
-        let mut results = vec![];
-
-        // (1) 透传执行项（原行为，最高分）
-        results.push(SearchResult {
-            source: "shell".into(),
-            title: format!("▶ {}", cmd),
-            subtitle: "Shell".into(),
-            icon: None,
-            action_type: "shell".into(),
-            action_data: json!({ "command": cmd }).to_string(),
-            score: 10000,
-        });
-
-        // (2) 内置命令补全：cmd 是某 builtin 前缀时，列出补全
-        let mut completions = vec![];
-        for cmd_def in BUILTIN_COMMANDS.iter() {
-            if cmd_def.name.starts_with(cmd) && cmd_def.name != cmd {
-                completions.push(SearchResult {
-                    source: "shell".into(),
-                    title: format!("▶ {}", cmd_def.name),
-                    subtitle: cmd_def.desc.to_string(),
-                    action_type: "shell".into(),
-                    action_data: json!({ "command": cmd_def.name }).to_string(),
-                    score: 8000,  // 补全低于透传
-                });
-            }
-        }
-        results.extend(completions.into_iter().take(5));
-
-        // (3) 历史匹配
-        let hist_matches: Vec<_> = self.history.search(cmd).into_iter().take(5).collect();
-        for hist_cmd in hist_matches {
-            results.push(SearchResult {
-                source: "shell".into(),
-                title: format!("▶ {}", hist_cmd),
-                subtitle: "历史".into(),
-                action_type: "shell".into(),
-                action_data: json!({ "command": hist_cmd }).to_string(),
-                score: 6000,  // 历史低于补全
-            });
-        }
-
-        results
-    }
-}
-```
-
-**BUILTIN_COMMANDS**（`crates/search/src/providers/shell_commands.rs`，硬编码约 50 条）：
-```rust
-pub struct CmdDef { pub name: &'static str, pub desc: &'static str }
-pub static BUILTIN_COMMANDS: &[CmdDef] = &[
-    CmdDef { name: "ls", desc: "列出目录" },
-    CmdDef { name: "cd", desc: "切换目录" },
-    CmdDef { name: "pwd", desc: "当前路径" },
-    CmdDef { name: "git", desc: "版本控制" },
-    CmdDef { name: "git status", desc: "查看状态" },
-    CmdDef { name: "git diff", desc: "查看差异" },
-    CmdDef { name: "docker", desc: "容器" },
-    CmdDef { name: "cargo", desc: "Rust 包管理" },
-    CmdDef { name: "npm", desc: "Node 包管理" },
-    CmdDef { name: "ping", desc: "网络连通" },
-    CmdDef { name: "curl", desc: "HTTP 请求" },
-    // ... 约 50 条，覆盖 90% 日常
-];
-```
-支持多词命令（`git status`），cmd 以 `git ` 开头时补全 `git status`/`git diff` 等。
-
-**ShellHistoryCache**（进程内缓存，`crates/search/src/providers/shell_history.rs`）：
-```rust
-pub struct ShellHistoryCache {
-    entries: once_cell::sync::OnceCell<Vec<String>>,  // 首次查询惰性加载
-}
-
-impl ShellHistoryCache {
-    pub fn search(&self, query: &str) -> Vec<String> {
-        let entries = self.entries.get_or_init(|| load_history_files());
-        entries.iter()
-            .filter_map(|h| crate::matcher::fuzzy_match(query, h).map(|_| h.clone()))
-            .take(20)
-            .collect()
-    }
-}
-
-fn load_history_files() -> Vec<String> {
-    let mut all = vec![];
-    for path in &["~/.zsh_history", "~/.bash_history"] {
-        if let Ok(content) = std::fs::read_to_string(shellexpand::tilde(path)) {
-            all.extend(parse_zsh_history(&content));  // 解析 `: ts:0;cmd` 格式
-        }
-    }
-    all
-}
-```
-zsh_history 格式：`: 1234567890:0;git status`，解析取 `;` 后的 cmd 部分。bash_history 是纯命令行。惰性加载：首次 shell 查询触发，之后进程内复用，重启重载。
+**移除范围**：search crate 的 `shell.rs`/`shell_commands.rs`/`shell_history.rs`（git rm）+ engine.rs 的 ShellProvider 装配 + 2 个 shell 测试；desktop 的 `execute_shell` 命令 + 注册；前端的 shell Tab + `case "shell"` 分支（保留防御性空 case 兜底历史频次残留）+ `isShellMode`/`extractShellCommand` 辅助函数 + 相关测试。Tab 从 6 个减为 5 个（all/apps/files/bookmarks/actions）。
 
 ### 4.3 BookmarkProvider（重点）
 
@@ -395,7 +277,10 @@ impl BookmarkProvider {
     fn load_all(&self, bookmarks: &[BookmarkEntry]) -> Vec<SearchResult> { ... }
 }
 ```
-`load_all_bookmarks()`（`bookmark.rs`）扩展支持 Safari + Firefox：
+`load_all_bookmarks()`（`bookmark.rs`）扩展支持多 profile + Safari + Firefox：
+
+**Chrome/Edge 多 profile 扫描**（用户反馈触发的修复，Task 8 遗漏）：
+旧代码硬编码读 `Default/Bookmarks`，但多账号/迁移用户的书签常在 `Profile 1`（用户实测主 profile，261 条书签在 `Profile 1/Bookmarks`，无 `Default`）。`load_chromium_all_profiles` 扫 User Data 下所有 profile 目录（`Default`/`Profile 1`/`Profile 2`/...）的 `Bookmarks`，跳过 `Guest Profile`/`System Profile`，合并后跨 profile 按 url 去重。
 
 **Safari**（plist 二进制，需 `plist` crate + Full Disk Access）：
 ```rust
@@ -444,7 +329,7 @@ fn load_firefox_bookmarks() -> Vec<BookmarkEntry> {
 }
 ```
 
-**新增依赖**：`plist` crate（infra 或 search crate）。`rusqlite` infra 已有。
+**新增依赖**：`plist` crate（search crate）+ `rusqlite`（search crate，与 infra 同版本，避免重复链接）。
 
 ### 4.4 CalculatorProvider
 
@@ -491,6 +376,8 @@ fn looks_like_expression(s: &str) -> bool {
 ```
 
 **新 action_type: "copy"**：calculator 结果回车 = 复制到剪贴板。前端 `executeSearchResult` 加分支。
+
+**浮点除法修正（review 驱动）**：evalexpr 11 对 `Int/Int` 做整数除法（`10/4 → 2`），用户期望 JS/Python3 风格（`10/4 → 2.5`）。原方案 `1.0*(expr)` 对 `1.0*(10/4)=2.0` 仍错（括号内先整数除法）。**实际采用"整数字面量升 Float"**：`promote_int_literals_to_float` 扫描表达式把整数字面量 `10` → `10.0`，对所有算式一致正确（`5-10/4=2.5`、`2*3/4=1.5`）。额外处理浮点化后 `1/0 → inf` 被 `is_finite()` 过滤，保持除零返回空的原语义。
 
 ### 4.5 UrlProvider
 
@@ -540,6 +427,30 @@ fn looks_like_url(s: &str) -> bool {
 
 现有 `search_menus_and_quicklinks` + `search_quicklink_keywords` 合并进 `MenuProvider::search`，逻辑不变（一次 DB 读，两个分支产出结果）。source 仍区分 `menu`/`quicklink`（前端按 source 显示 badge）。
 
+### 4.7 word_prefix_match 匹配增强（用户反馈修复 2）
+
+**问题**：用户反馈"Chrome 在列表中但跌出前 10"。根因：`prefix_match` 只检查 target **整体**前缀，"Google Chrome" 搜 "chrome" 命中失败（不以 "chrome" 开头）→ 落 fuzzy（~500）+ 2000 加权 ≈ 2500，被书签 prefix（~5000）压下挤出 top-10。
+
+**修复**：新增 `word_prefix_match`——按空格/连字符/斜杠/点分词后，检查 query 是否匹配**任意一个词**的开头。打分 base 4500（介于 prefix 5000 和 pinyin 4000 之间）。"Google Chrome" → "Chrome" 词匹配 → 4495 + 2000 加权 = 6495 稳压书签。
+
+```rust
+pub fn word_prefix_match(query: &str, target: &str) -> Option<Score> {
+    let query_lower = query.to_lowercase();
+    target.split(|c: char| !c.is_alphanumeric())  // 按非字母数字分词
+        .filter(|w| !w.is_empty())
+        .filter_map(|word| {
+            let word_lower = word.to_lowercase();
+            if word_lower.starts_with(&query_lower) {
+                let remaining = word.chars().count().saturating_sub(query.chars().count());
+                Some(4500 - remaining as Score)
+            } else { None }
+        })
+        .max()
+}
+```
+
+`match_score` 升级为 **exact > prefix > word-prefix > pinyin > fuzzy** 五级。
+
 ## 5. 频次加权
 
 ### 5.1 DB schema（v35）
@@ -565,8 +476,7 @@ CREATE TABLE IF NOT EXISTS search_frequency (
 | file | `file\|/path/to/file.txt`（用路径） |
 | menu/quicklink | `menu\|<db_id>` / `quicklink\|<db_id>` |
 | bookmark | `bookmark\|<url>` |
-| shell | 不加权（`uses_frequency()=false`） |
-| calculator/url | 不加权 |
+| calculator/url | 不加权（`uses_frequency()=false`） |
 
 ### 5.3 加分公式（`FrequencyScorer::boost`，每次 emit 前）
 
@@ -605,18 +515,25 @@ fn boost(&self, results: &mut [SearchResult], query: &str) {
 
 ```rust
 #[tauri::command]
-pub async fn record_search_hit(score_key: String, query: String) -> Result<(), String> {
+pub async fn record_search_hit(
+    source: String, action_type: String, action_data: String, query: String,
+) -> Result<(), String> {
     let engine = get_engine().ok_or("not init")?;
-    engine.frequency.record(&score_key, &query);
+    let result = SearchResult { source, action_type, action_data, /* title 等不用 */ };
+    engine.record_frequency(&result, &query);  // 后端内部 make_score_key
     Ok(())
 }
 ```
-前端 `executeSearchResult`（`index.tsx`）在执行动作前：
+前端 `executeSearchResult`（`index.tsx`）在 switch 之前 fire-and-forget：
 ```ts
-const scoreKey = makeScoreKey(result);  // 与后端一致
-invoke("record_search_hit", { scoreKey, query: currentQuery });
+invoke("record_search_hit", {
+  source: result.source, actionType: result.actionType,
+  actionData: result.actionData, query: queryRef.current,
+}).catch(() => {});
 ```
-**ScoreKey 前后端一致性**：前端 `makeScoreKey` 必须与后端 `make_score_key` 产同样字符串（同 source + 同字段拼接）。在后端暴露一个 `compute_score_key` 命令，前端调一次拿到 key 再 record，避免前后端重复实现导致不一致。**或**：前端直接传整个 result 对象，后端算 key。**采纳后者**——前端传 result，后端算 key 并 record，保证一致性。
+**ScoreKey 前后端一致性**：前端传整个 result 对象，后端 `make_score_key` 算 key 并 record——避免前后端重复实现导致不一致。
+
+**已知技术债（Minor）**：quicklink 关键词触发的 score_key 含 url（含替换后的 query），不同 query 产生不同 key，频次不累积——低频场景，后续可优先 id 字段。`record` 每次 upsert 后全表 reload 内存 map——性能优化空间。
 
 ## 6. 降级路径与错误处理
 
@@ -633,7 +550,7 @@ invoke("record_search_hit", { scoreKey, query: currentQuery });
 | FileProvider | mdfind 超时/不存在 | 返回空，log warn |
 | BookmarkProvider-Safari | 无 Full Disk Access / plist 解析失败 | 返回空，log warn（不 crash、不弹窗） |
 | BookmarkProvider-Firefox | places.sqlite 被锁 / 无 profile / 拷贝失败 | 返回空 |
-| ShellProvider-history | zsh_history 不存在/无权限 | 跳过历史，只返回补全+透传 |
+| BookmarkProvider-Chromium | 无 profile / Bookmarks 文件损坏 | 返回空 |
 | CalculatorProvider | 表达式不合法 | 返回空（静默） |
 | UrlProvider | 非 URL | 返回空 |
 | **search_streaming 整体** | 某 Provider future panic | `FuturesUnordered` 的 future 内用 `catch_unwind` 包装（或 AssertUnwindSafe），panic 时该 Provider 贡献空 vec，不影响其他 |
@@ -655,21 +572,27 @@ invoke("record_search_hit", { scoreKey, query: currentQuery });
 ### 7.1 searchTypes.ts
 
 ```ts
-// SearchResult.source 扩展
-source: "app" | "file" | "menu" | "quicklink" | "bookmark" | "shell" | "calculator" | "url";
-// action_type 扩展
-actionType: "launch_app" | "open_file" | "menu" | "url" | "shell" | "copy";  // +copy
+// SearchResult.source
+source: "app" | "file" | "menu" | "quicklink" | "bookmark" | "calculator" | "url";
+// action_type
+actionType: "launch_app" | "open_file" | "menu" | "url" | "copy";
+// TabId（shell 已移除）
+type TabId = "all" | "apps" | "files" | "bookmarks" | "actions";
+// SearchBatch（流式批次事件 payload）
+interface SearchBatch { runId: string; results: SearchResult[]; }
 ```
 
 ### 7.2 index.tsx
 
 - `executeSearch`（调 search_all）→ `executeSearchStream`（调 search_stream + listen）
-- 即时/延迟搜索统一为一次 stream（后端 Provider 并发，前端不再区分 quick/delayed）
+- **防抖按 tab 分流**：files/bookmarks/files_bookmarks tab（走 mdfind，慢）150ms 防抖；其他 tab（含 all）0ms 即时——all tab 虽跑 mdfind 但后端流式扇出，快 Provider 先 emit，mdfind 慢的后追加，首屏 < 30ms。
 - `executeSearchResult` 加 `"copy"` 分支：`navigator.clipboard.writeText(actionData.text)`
+- `executeSearchResult` switch 之前 fire-and-forget `record_search_hit`（频次加权记录）
+- 组件卸载 `useEffect(() => () => cleanupSearchStream(), [])` 防 listener 泄漏
 
-### 7.3 Tab 栏不变
+### 7.3 Tab 栏
 
-保持现有 all/apps/files/shell/bookmarks/actions。calculator/url 只在 "all" tab 出现（后端 `matches_tab` 控制），不新增 Tab。
+5 个：all/apps/files/bookmarks/actions（shell tab 已随 shell 功能移除）。calculator/url 只在 "all" tab 出现（后端 `matches_tab` 返回 false，仅由 search() 的 `tab=="all"` 兜底），不新增 Tab。
 
 ### 7.4 capabilities/default.json
 
@@ -680,48 +603,51 @@ actionType: "launch_app" | "open_file" | "menu" | "url" | "shell" | "copy";  // 
 ### 8.1 Provider 单测（每个 Provider 独立）
 
 ```rust
-// shell
-#[tokio::test] async fn shell_naked_command_returns_transparent_result()
-#[tokio::test] async fn shell_prefix_gt_stripped()  // ">ls" == "ls"
-#[tokio::test] async fn shell_completion_for_partial()
-#[tokio::test] async fn shell_history_match()
-
 // calculator
 #[tokio::test] async fn calc_basic_arithmetic()  // "1+2" → "= 3"
 #[tokio::test] async fn calc_division_by_zero_returns_empty()
 #[tokio::test] async fn calc_non_expression_returns_empty()  // "abc" → empty
+#[tokio::test] async fn calc_float_result()  // "10/4" → "= 2.5"（整数字面量升 Float）
+#[tokio::test] async fn calc_integer_result_no_decimal()  // "1+2" → "= 3" 不是 "3.0"
 
 // url
 #[tokio::test] async fn url_domain_detected()  // "github.com"
 #[tokio::test] async fn url_non_domain_rejected()  // "hello" / "中文" → empty
 #[tokio::test] async fn url_known_false_positive_accepted()  // "report.pdf" → 出 URL 项（已知假阳性，本期接受）
 
-// bookmark-safari
-#[test] fn safari_plist_parsed()  // fixture plist 文件
-#[test] fn safari_no_fda_returns_empty()
+// matcher（word-prefix 增强）
+#[test] fn word_prefix_match_non_first_word()  // "chrome" 匹配 "Google Chrome"
+#[test] fn word_prefix_match_partial_word()    // "chr" 匹配 "Google Chrome"
+#[test] fn word_prefix_match_rejects_non_prefix()  // "hrome" 不匹配
+#[test] fn match_score_google_chrome_chrome_outranks_bookmark_fuzzy()  // 核心场景回归
 
-// bookmark-firefox
-#[test] fn firefox_places_read()  // fixture places.sqlite
+// bookmark-safari（fixture plist）
+#[test] fn safari_plist_parsed_from_fixture()
+#[test] fn safari_nonexistent_returns_empty()
+
+// bookmark-firefox（fixture places.sqlite）
+#[test] fn firefox_places_query_from_fixture()
+
+// bookmark-chromium 多 profile
+#[test] fn chromium_multiple_profiles_scanned()  // Default + Profile 1 + 跳过 Guest
+#[test] fn chromium_only_profile1_no_default()    // 用户实测场景：只有 Profile 1
 ```
 
 ### 8.2 SearchEngine 集成测试
 
 ```rust
 #[tokio::test]
-async fn concurrent_providers_merge_by_score() {
-    let engine = SearchEngine::new_for_test(vec![
-        Box::new(MockProvider{ id:"a", scores:[100] }),
-        Box::new(MockProvider{ id:"b", scores:[200] }),
-    ]);
-    let r = engine.search("x", "all").await;
-    assert_eq!(r[0].score, 200);
+async fn streaming_boost_applied_once_not_per_round() {
+    // review 抓到的 Critical：流式 boost 重复加权回归测试。
+    // 两个 MockAppProvider + 非空 frequency 数据，断言流式最后 emit 的每条 score
+    // == 非流式 search() 的对应 score（boost 只加一次）。
+    // buggy 状态下流式分数 > 非流式（先完成的被重复 boost）。
 }
 
 #[tokio::test]
-async fn streaming_emits_progressively() {
-    // FuturesUnordered：快 Provider 先 emit，慢 Provider 后追加
-    // 注入 sleep 不同时长的 mock provider
-}
+async fn streaming_emits_at_least_once() { /* 至少 emit 一次 */ }
+#[tokio::test]
+async fn streaming_empty_query_emits_once_empty() { /* empty query → emit 一次空 batch */ }
 ```
 
 ### 8.3 频次加权回归
@@ -737,7 +663,7 @@ fn frequency_query_exact_match_bonus() {}
 
 ### 8.4 现有测试保留
 
-`engine.rs` 现有 9 个测试（empty/shell_mode/quick_tab 等）适配新架构，断言不变。重构不应改变行为。
+`engine.rs` 现有测试（empty/quick_tab/files_bookmarks_tab 等）适配新架构，shell 相关测试已随 shell 功能移除。重构不应改变非 shell 行为。
 
 ### 8.5 编译验证
 
@@ -751,27 +677,29 @@ cargo test -p octopus-desktop --lib
 
 ## 9. 性能基线
 
-- **首屏目标**：即时 Provider（app/menu/shell/calc/url/bookmark）< 30ms 完成第一批 emit
+- **首屏目标**：即时 Provider（app/menu/calc/url/bookmark）< 30ms 完成第一批 emit
 - **全量目标**：含 file（mdfind）< 200ms 全部完成
 - mdfind 10s 超时保留，FileProvider 独立 future 不阻塞其他源
 - `FuturesUnordered` 单 task 轮询，无线程开销
-- 频次表内存缓存，boost 是 O(N) 纯算术（N=top-10）
+- 频次表内存缓存，boost 是 O(N) 纯算术（N=MAX_TOTAL_RESULTS=30）
+- **前端可视**：窗口高度 clamp 到 MAX_VISIBLE_RESULTS=10 行 + overflow-y-auto 滚动容器，30 条结果可上下键/滚轮浏览
 
 ## 10. 实施顺序（高层）
 
 1. **infra**：DB schema v35（search_frequency 表）
-2. **search crate**：Provider trait + SearchContext + 重构 SearchEngine（providers Vec）
-3. **search crate**：搬移现有 6 个 source 为 Provider（app/file/menu/bookmark-shell 现状）
-4. **search crate**：ShellProvider 修复（裸命令/补全/历史）
-5. **search crate**：BookmarkProvider 加 Safari + Firefox
-6. **search crate**：CalculatorProvider + UrlProvider（+ evalexpr 依赖）
-7. **search crate**：FrequencyScorer + record_search_hit 命令
-8. **search crate**：search_streaming（FuturesUnordered + emit）
-9. **desktop**：search_stream Tauri 命令 + capabilities
-10. **前端**：executeSearchStream + listen + "copy" action 分支
-11. **测试**：各 Provider 单测 + 集成 + 回归
+2. **search crate**：Provider trait + SearchContext（含 tab 字段）+ 重构 SearchEngine（providers Vec）
+3. **search crate**：FrequencyScorer + make_score_key
+4. **search crate**：搬移现有 source 为 Provider（app/file/menu/bookmark）
+5. **search crate**：BookmarkProvider 加 Safari + Firefox + **Chrome/Edge 多 profile 扫描**
+6. **search crate**：CalculatorProvider（整数字面量升 Float）+ UrlProvider（+ evalexpr 依赖）
+7. **search crate**：search_streaming（FuturesUnordered + per-batch boost + emit）
+8. **desktop**：search_stream + record_search_hit Tauri 命令
+9. **前端**：executeSearchStream + listen（batch + done 双校验）+ "copy" action + record_search_hit 接入
+10. **matcher 增强**：word_prefix_match（exact > prefix > word-prefix > pinyin > fuzzy 五级）
+11. **用户手测后修复**：record_search_hit 前端接入（Critical）+ shell all-tab 污染（后直接移除 shell）+ 结果数 10→30（滚动）+ 删 delayedResults 死状态 + 防抖按 tab 分流
+12. **测试**：各 Provider 单测 + 集成 + streaming boost 回归 + multi-profile + word-prefix
 
-详细任务分解见实施 plan（下一步 writing-plans）。
+详细任务分解见实施 plan。
 
 ## 11. 新增依赖
 
@@ -787,12 +715,15 @@ cargo test -p octopus-desktop --lib
 ## 12. 不变量速查（实现时对照）
 
 1. `Provider::search` 绝不返回 Err，失败返空 vec
-2. `search_streaming` 每次 emit 的是**全局 top-10**（已加权+排序+截断）
-3. run_id 防串扰：新搜索即弃旧监听 + payload runId 二次校验
-4. ScoreKey 前后端一致：前端传 result，后端算 key
-5. shell `uses_frequency()=false`，其他默认 true
-6. calculator/url 仅 "all" tab，不新增 Tab
-7. Safari 无 Full Disk Access 时返回空，不 crash
-8. Firefox places 必须拷临时文件读，不锁运行中 DB
-9. 现有 search_all 命令保留（诊断/测试）
-10. 现有 engine.rs 9 个测试断言不变（行为兼容）
+2. `search_streaming` 每次 emit 的是**全局 top-30**（per-batch boost + 排序 + 截断）
+3. **per-batch boost**：每个新 batch 独立 boost 一次，不对累积 collected 重复 boost（boost 加法性，重复加权是 bug）
+4. run_id 防串扰：batch + done listener 都校验 payload.runId（旧 done 会 tear down 新 batch listener）
+5. ScoreKey 后端算：前端传 result 对象，后端 make_score_key
+6. calculator/url `uses_frequency()=false`，其他默认 true
+7. calculator/url 仅 "all" tab（matches_tab 返回 false，靠 search() 的 tab=="all" 兜底）
+8. Safari 无 Full Disk Access 时返回空，不 crash
+9. Firefox places 必须拷临时文件读，不锁运行中 DB
+10. Chrome/Edge 扫所有 profile（Default/Profile 1/...），跳过 Guest/System，跨 profile 按 url 去重
+11. `MAX_TOTAL_RESULTS=30` 是可滚动总量，不是可视行数——前端窗口高度 clamp 到 `MAX_VISIBLE_RESULTS=10` 行 + overflow-y-auto
+12. 现有 search_all 命令保留（诊断/测试）
+13. shell 功能已移除（launcher 伪需求）——前端 case "shell" 保留防御性空 case 兜底历史频次残留
