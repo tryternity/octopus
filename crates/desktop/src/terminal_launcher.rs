@@ -32,14 +32,23 @@ impl TerminalLauncher for TerminalAppLauncher {
     }
 }
 
-/// AppleScript 字符串转义：双引号和反斜杠。
+/// AppleScript 字符串转义：双引号、反斜杠、换行、制表符。
+/// AppleScript 字符串字面量不能含裸换行（do script "..." 会在换行处截断），
+/// 多文件 agent prompt 用 \n join 后必须转义为 \\n 字面量。
 fn escape_applescript_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
-/// shell 引号包裹路径（处理含空格的路径）。
+/// shell 单引号转义：用单引号包裹，内部单引号用 '"'"' 转义。
+/// 单引号内 $/`/\ 等全部字面，严格安全——cwd 来自用户文件路径（可能含
+/// $()/反引号等 shell 元字符），必须用单引号防命令注入。
+/// 与 agent_adapter::shell_escape_single 保持一致的安全级别。
 fn shell_quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\\\""))
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
 /// 组装 Terminal.app AppleScript 脚本字符串（纯函数，可测试）。
@@ -76,19 +85,43 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_applescript_string_newline() {
+        // 换行必须转义为 \n 字面量——否则 do script "..." 在换行处截断
+        assert_eq!(escape_applescript_string("line1\nline2"), "line1\\nline2");
+        assert_eq!(escape_applescript_string("a\r\nb"), "a\\r\\nb");
+        assert_eq!(escape_applescript_string("a\tb"), "a\\tb");
+    }
+
+    #[test]
     fn test_shell_quote() {
-        assert_eq!(shell_quote("/Users/My User"), r#""/Users/My User""#);
-        assert_eq!(shell_quote(r#"a"b"#), r#""a\"b""#);
+        // 单引号包裹——含空格的路径安全
+        assert_eq!(shell_quote("/Users/My User"), "'/Users/My User'");
     }
 
     #[test]
     fn test_shell_quote_no_spaces() {
-        assert_eq!(shell_quote("/tmp"), "\"/tmp\"");
+        assert_eq!(shell_quote("/tmp"), "'/tmp'");
     }
 
     #[test]
     fn test_shell_quote_empty() {
-        assert_eq!(shell_quote(""), "\"\"");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn test_shell_quote_single_quote_in_path() {
+        // 路径含单引号用 '"'"' 转义
+        assert_eq!(shell_quote("/Users/it's"), "'/Users/it'\"'\"'s'");
+    }
+
+    #[test]
+    fn test_shell_quote_injection_attempt() {
+        // cwd 含 $() 命令替换——单引号内全字面，不执行
+        let q = shell_quote("/path/$(whoami)");
+        assert_eq!(q, "'/path/$(whoami)'");
+        // 反引号同样字面
+        let q2 = shell_quote("/path/`whoami`");
+        assert_eq!(q2, "'/path/`whoami`'");
     }
 
     #[test]
@@ -97,8 +130,8 @@ mod tests {
         assert!(script.contains(r#"tell application "Terminal""#));
         assert!(script.contains("do script"));
         assert!(script.contains("activate"));
-        // cwd 被 shell_quote 包裹 + AppleScript 转义后双引号变 \"
-        assert!(script.contains("cd \\\"/Users/x\\\""));
+        // cwd 被单引号包裹（AppleScript 转义后单引号是字面字符不需转义）
+        assert!(script.contains("cd '/Users/x'"));
         assert!(script.contains("&& claude"));
     }
 

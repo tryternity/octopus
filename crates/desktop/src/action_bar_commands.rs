@@ -1116,7 +1116,20 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
                 .unwrap_or_default()
                 .as_nanos(),
         ));
-        if let Err(e) = std::fs::write(&tmp_path, text) {
+        if let Err(e) = {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .write(true).create(true).truncate(true)
+                    .mode(0o600)  // 仅 owner 可读——选中文本可能含敏感信息，防其他本地用户读取
+                    .open(&tmp_path)
+                    .and_then(|mut f| f.write_all(text.as_bytes()))
+            }
+            #[cfg(not(unix))]
+            { std::fs::write(&tmp_path, text) }
+        } {
             log::warn!("[script] 临时文件写入失败，回退截断: {}", e);
             // 按字节截断（非字符），确保 UTF-8 边界安全 + 严格 < TEXT_LIMIT 字节
             let mut end = TEXT_LIMIT;
@@ -1369,15 +1382,25 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                     format!("https://{}", raw)
                 }
             } else {
-                item.action_data.replace("{text}", &url_encode_param(&text))
+                // URL 模板替换 {query} 和 {text} 两个占位符（与前端搜索/关键词路径对齐）
+                item.action_data
+                    .replace("{query}", &url_encode_param(&text))
+                    .replace("{text}", &url_encode_param(&text))
             };
-            #[cfg(target_os = "macos")]
-            { let _ = std::process::Command::new("open").arg(&url).status(); }
-            #[cfg(target_os = "windows")]
-            { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).status(); }
-            #[cfg(target_os = "linux")]
-            { let _ = std::process::Command::new("xdg-open").arg(&url).status(); }
-            Ok(false)
+            // 检查 open 退出码——无默认处理器/URL 无效时返回错误而非静默成功
+            let open_result = {
+                #[cfg(target_os = "macos")]
+                { std::process::Command::new("open").arg(&url).status() }
+                #[cfg(target_os = "windows")]
+                { std::process::Command::new("cmd").args(["/c", "start", "", &url]).status() }
+                #[cfg(target_os = "linux")]
+                { std::process::Command::new("xdg-open").arg(&url).status() }
+            };
+            match open_result {
+                Ok(s) if s.success() => Ok(false),
+                Ok(s) => Err(format!("打开 URL 失败（exit {}）: {}", s, url)),
+                Err(e) => Err(format!("打开 URL 异常: {}", e)),
+            }
         }
         "script" => {
             let is_async = item.is_async;

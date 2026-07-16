@@ -60,33 +60,42 @@ pub async fn record_search_hit(
     Ok(())
 }
 
-/// 启动应用。用 status() 替代 spawn() 防僵尸进程（open 命令本身很快退出）。
+/// 启动应用。检查 open 退出码——路径无效/应用已移动时返回错误而非静默成功。
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
-    std::process::Command::new("open")
+    let status = std::process::Command::new("open")
         .arg(&path)
         .status()
         .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("启动应用失败（exit {}）: {}", status, path));
+    }
     Ok(())
 }
 
-/// 打开文件。
+/// 打开文件。检查 open 退出码——路径无效/权限拒绝时返回错误。
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
-    std::process::Command::new("open")
+    let status = std::process::Command::new("open")
         .arg(&path)
         .status()
         .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("打开文件失败（exit {}）: {}", status, path));
+    }
     Ok(())
 }
 
-/// 打开 URL（默认浏览器）。
+/// 打开 URL（默认浏览器）。检查 open 退出码——无默认处理器时返回错误。
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
-    std::process::Command::new("open")
+    let status = std::process::Command::new("open")
         .arg(&url)
         .status()
         .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("打开 URL 失败（exit {}）: {}", status, url));
+    }
     Ok(())
 }
 
