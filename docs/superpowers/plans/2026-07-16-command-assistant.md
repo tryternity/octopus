@@ -708,3 +708,10 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm test
 git add -A
 git commit -m "docs: 命令查阅助手 + notify-rs 文档同步"
 ```
+
+## 实施记录（review 回填，2026-07-16）
+
+- **Task 1（launcher_index）**：用户决策从 command_index 独立表改为统一 launcher_index（合并 app_index + command_index，app 也支持 description/keywords）。迁移旧 app_index 数据后 DROP 旧表。load_app_index/save_app_index 签名不变（wrapper）。
+- **Task 2（CommandIndex 性能）**：brief 假设 whats/brew desc 微秒级实测错误（每次 5-8s，240 命令卡死 20 分钟）。改为 apropos 一次建 map（~9s）+ brew desc 批量（~5s），scan 总耗时 ~20s。
+- **Task 4（LLM 线程）**：commands_needing_keywords 扩为三元组（加 description，LLM prompt 需要输入）。config 每轮从 DB 重读（不缓存在线程，保证运行时改配置生效）。
+- **Task 5（notify-rs）**：watcher move 进事件线程保活（函数返回后监听不停止）。debounce 用 Instant elapsed > 3s（不引 notify-debouncer）。

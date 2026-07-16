@@ -2,7 +2,7 @@
 
 > 2026-07-16 · 新增"命令"Tab 作为 CLI 命令查阅助手（LLM 生成中英文描述 + fuzzy 匹配），引入 notify-rs 实时监听 app 目录变化。
 >
-> **状态**：设计完成（配套实施计划见 `docs/superpowers/plans/2026-07-16-command-assistant.md`）
+> **状态**：实现完成（2026-07-16）。偏差：whats/brew desc 改批量预建 map（避免逐命令 spawn 卡死）；LLM 线程直接同步调（不嵌套 spawn）。
 
 ## 0. 背景与动机
 
