@@ -440,7 +440,7 @@ fn action_bar_show_result_internal(
     _original_text: String,
     _action: String,
     app: AppHandle,
-    write_clipboard: bool,
+    _write_clipboard: bool,
     auto_paste: bool,
     source_pid: Option<i32>,
     is_silent: bool,
@@ -470,7 +470,6 @@ fn action_bar_show_result_internal(
             {
                 if let Some(pid) = source_pid {
                     // 用 run_on_main_thread 确保 AX API 在主线程调用
-                    let app_for_activate = app_clone.clone();
                     let _ = app_clone.run_on_main_thread(move || {
                         crate::activation::activate_window_by_pid(pid);
                     });
@@ -1334,7 +1333,9 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
 
             // 翻译特殊处理：优先本地引擎
-            if item.action_data == "auto_translate" {
+            // silent 模式（全局快捷键）不走本地流式翻译（它弹 CompactEditor），
+            // 强制走 LLM 路径（auto_paste → run_and_paste 粘贴结果）。
+            if item.action_data == "auto_translate" && !is_silent {
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(_) => {
                         // 流式翻译：立即隐藏浮窗 + 打开 contrast tab（译文区 loading），

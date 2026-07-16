@@ -81,9 +81,10 @@ fn silent_run_and_paste(item_id: i64, app: &AppHandle) {
     let saved_baseline = crate::action_bar_commands::save_change_count_baseline();
 
     // detect_selection 需要 AppHandle 且内部有 Cmd+C 模拟 + sleep
+    log::info!("[action-hotkey][silent] 开始 detect_selection");
     let selection = crate::action_bar_commands::detect_selection(app);
 
-    // 恢复 baseline（无论 detect 结果如何，silent 路径不影响 ActionBar 的 baseline）
+    // 恢复 baseline
     crate::action_bar_commands::restore_change_count_baseline(saved_baseline);
 
     if SILENT_CANCELLED.load(Ordering::SeqCst) {

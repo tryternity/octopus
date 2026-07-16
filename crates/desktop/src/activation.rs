@@ -335,16 +335,7 @@ fn float_clear_state() {
 /// 返回 true=激活成功，false=PID 未找到或激活失败。
 #[cfg(target_os = "macos")]
 pub fn activate_window_by_pid(pid: i32) -> bool {
-    use objc2_app_kit::{NSWorkspace, NSRunningApplication};
-    use objc2_foundation::MainThreadMarker;
-
-    let mtm = match MainThreadMarker::new() {
-        Some(m) => m,
-        None => {
-            log::warn!("[activation] activate_window_by_pid 必须在主线程调用");
-            return false;
-        }
-    };
+    use objc2_app_kit::NSWorkspace;
 
     let workspace = NSWorkspace::sharedWorkspace();
     let apps = workspace.runningApplications();
