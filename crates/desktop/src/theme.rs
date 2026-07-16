@@ -163,6 +163,36 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 icon_filter: "brightness(0) invert(1)".into(),
             },
         },
+        // ── Azure Mist ── HashiCorp 风明亮浅蓝。
+        // 设计意图（参考 DESIGN.md「HashiCorp」）：enterprise infra made approachable——
+        // 清白底 + 深靛蓝按钮 + sky blue 品牌色。色值贴 DESIGN.md：
+        // - muted-foreground 直接用 Dark Gray #656a76（helper text token）
+        // - primary 用 Link Blue #2264d6 的深化变体 #1563a8（白字 ~7.6:1 AAA）——
+        //   DESIGN.md 的 Link Blue 作按钮底白字仅 4.6:1，深化保 AAA
+        // - voice 用 Bright Blue #2b89ff（active link 色），与 primary 形成深浅层次
+        // 对比度：foreground #1a2840 对 background #f6f8fb ≈ 13:1（远超 AA）。
+        // 状态色在 index.css [data-theme="azure"] 硬编码（沿用 light 标准值）。
+        ThemeInfo {
+            id: "azure".into(),
+            name: "Azure Mist".into(),
+            description: "HashiCorp 风明亮浅蓝".into(),
+            blur: false,
+            colors: ThemeColors {
+                background: "#f6f8fb".into(),
+                foreground: "#1a2840".into(),
+                primary: "#1563a8".into(),
+                primary_foreground: "#ffffff".into(),
+                muted: "#edf1f7".into(),
+                muted_foreground: "#656a76".into(),
+                accent: "#e3edf7".into(),
+                accent_foreground: "#1a2840".into(),
+                border: "#d8e1ec".into(),
+                voice: "#2b89ff".into(),
+                surface: "#ffffff".into(),
+                tool_icon: "rgba(0, 0, 0, 0.55)".into(),
+                icon_filter: "none".into(),
+            },
+        },
     ]
 }
 

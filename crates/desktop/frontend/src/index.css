@@ -123,6 +123,39 @@
   --icon-filter: brightness(0) invert(1);
 }
 
+/* ── Azure Mist ── HashiCorp 风明亮浅蓝。
+   设计意图（参考 DESIGN.md「HashiCorp」）：enterprise infra made approachable——
+   清白底 + 深靛蓝按钮 + sky blue 品牌色。色值尽量贴 DESIGN.md：
+   - background/muted/border 沿用 Neutral Scale（#f1f2f3 系），略带冷调而非 stone 暖灰
+   - muted-foreground 直接用 Dark Gray #656a76（DESIGN.md 的 helper text token）
+   - primary 用 Link Blue #2264d6 的深化变体 #1563a8（白字对比度 ~7.6:1，AAA）——
+     DESIGN.md 的 Link Blue 白字仅 4.6:1，作按钮底不够稳；深化到 #1563a8 保 AAA
+   - voice 用 Bright Blue #2b89ff（DESIGN.md 的 active link 色）——与 primary 同色系但更亮，
+     形成深浅层次，又与 light 主题的 amber #d97706 拉开辨识度
+   - surface 用纯白 #ffffff（result_window 等需实色背景的组件）
+   状态色沿用 light 主题标准值（浅底语义色跨主题一致）。 */
+[data-theme="azure"] {
+  --color-background: #f6f8fb;
+  --color-foreground: #1a2840;
+  --color-primary: #1563a8;
+  --color-primary-foreground: #ffffff;
+  --color-muted: #edf1f7;
+  --color-muted-foreground: #656a76;
+  --color-accent: #e3edf7;
+  --color-accent-foreground: #1a2840;
+  --color-border: #d8e1ec;
+  --color-voice: #2b89ff;
+  --color-surface: #ffffff;
+  --color-success: #16a34a;
+  --color-success-foreground: #ffffff;
+  --color-info: #2563eb;
+  --color-warning: #d97706;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-tool-icon: rgba(0, 0, 0, 0.55);
+  --icon-filter: none;
+}
+
 * {
   border-color: var(--color-border);
 }
