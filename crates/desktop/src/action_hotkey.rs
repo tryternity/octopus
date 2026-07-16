@@ -1,4 +1,4 @@
-//! Run Quickly 全局快捷键——为 auto_paste 菜单项注册全局快捷键，跳过 ActionBar 浮窗直接执行。
+//! Run Quickly 全局快捷键——为配置了 global_shortcut 的菜单项注册全局快捷键，跳过 ActionBar 浮窗直接执行。
 //!
 //! 与 ActionBar 路径的区别：全局快捷键省去"弹出浮窗 + 手动选菜单"两步。
 //! 结果仍展示在 CompactEditor（与 ActionBar 路径完全一致），不直接粘贴替换。
@@ -8,7 +8,7 @@
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-/// 注册所有 auto_paste 菜单项的全局快捷键。
+/// 注册所有配置了 global_shortcut 的菜单项的全局快捷键。
 /// 启动时 + 设置变更后调用。先注销旧的再注册新的。
 pub fn register_action_hotkeys(app: &AppHandle) {
     let items = match octopus_infra::db::list_action_hotkeys() {

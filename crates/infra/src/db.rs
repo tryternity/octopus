@@ -424,7 +424,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 31", [])?;
             log::info!("schema upgraded to v31 (cloud models: remove seed, add presets)");
         }
-        // v31→v32：action_bar_items 加 trigger_keyword + auto_paste
+        // v31→v32：action_bar_items 加 trigger_keyword + auto_paste。
+        // 注意：auto_paste 列现已废弃（Quick Execute 改由 global_shortcut 是否为空决定），
+        // 代码不再读写该列；此处 ALTER 仅为兼容已升级到 v32 的旧库，列本身将在未来 schema 重整时清理。
         {
             let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
                 .query_map([], |r| r.get::<_, String>(1))?
@@ -437,7 +439,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 conn.execute("ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0", [])?;
             }
             conn.execute("PRAGMA user_version = 32", [])?;
-            log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste)");
+            log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste [deprecated])");
         }
         // v32→v33：app_index 缓存表（含 icon 列）+ 早期 v33 库补 icon 列
         {
@@ -1490,11 +1492,10 @@ pub struct ActionBarItem {
     pub agent: String,
     pub accepts: String,
     pub trigger_keyword: String,
-    pub auto_paste: bool,
     pub global_shortcut: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, auto_paste, global_shortcut";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -1513,8 +1514,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         agent: row.get(12)?,
         accepts: row.get(13)?,
         trigger_keyword: row.get(14)?,
-        auto_paste: row.get::<_, i32>(15)? != 0,
-        global_shortcut: row.get(16)?,
+        global_shortcut: row.get(15)?,
     })
 }
 
@@ -1713,21 +1713,7 @@ fn delete_action_bar_item_at(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// 更新 auto_paste 字段（Run And Paste 模式开关）。
-pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
-    with_db(|conn| {
-        let rows = conn.execute(
-            "UPDATE action_bar_items SET auto_paste=?1, updated_at=datetime('now') WHERE id=?2",
-            params![auto_paste as i32, id],
-        )?;
-        if rows == 0 {
-            anyhow::bail!("菜单项不存在: {}", id);
-        }
-        Ok(())
-    })
-}
-
-/// 设置菜单项的全局快捷键（Run And Paste silent 入口）。空串清除。
+/// 设置菜单项的全局快捷键（Quick Execute silent 入口）。空串清除。
 pub fn set_global_shortcut(id: i64, global_shortcut: &str) -> Result<()> {
     with_db(|conn| {
         let rows = conn.execute(
@@ -1741,13 +1727,13 @@ pub fn set_global_shortcut(id: i64, global_shortcut: &str) -> Result<()> {
     })
 }
 
-/// 查询所有注册了全局快捷键的菜单项（auto_paste + is_enabled + global_shortcut 非空）。
+/// 查询所有注册了全局快捷键的菜单项（is_enabled + global_shortcut 非空）。
 /// 启动时和设置变更后用于注册全局快捷键。
 pub fn list_action_hotkeys() -> Result<Vec<ActionBarItem>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             &format!(
-                "SELECT {} FROM action_bar_items WHERE global_shortcut != '' AND auto_paste = 1 AND is_enabled = 1",
+                "SELECT {} FROM action_bar_items WHERE global_shortcut != '' AND is_enabled = 1",
                 ACTION_BAR_SELECT_COLS
             )
         )?;
@@ -2904,17 +2890,16 @@ mod tests {
     }
 
     #[test]
-    fn action_bar_item_has_trigger_keyword_and_auto_paste() {
+    fn action_bar_item_has_trigger_keyword() {
         let conn = open_init();
         conn.execute(
-            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, trigger_keyword, auto_paste, sort_order)
-             VALUES (NULL, 'Quicklink测试', 'link', 'url', 'https://example.com/?q={query}', 'ql', 1, 0)",
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, trigger_keyword, sort_order)
+             VALUES (NULL, 'Quicklink测试', 'link', 'url', 'https://example.com/?q={query}', 'ql', 0)",
             [],
         ).unwrap();
         let id = conn.last_insert_rowid();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.trigger_keyword, "ql");
-        assert!(item.auto_paste);
     }
 
     #[test]
@@ -2928,7 +2913,6 @@ mod tests {
         let id = conn.last_insert_rowid();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.trigger_keyword, "");
-        assert!(!item.auto_paste);
     }
 
     #[test]

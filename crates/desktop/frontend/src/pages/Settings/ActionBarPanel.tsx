@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT, t as ti18n } from "@/lib/i18n";
+import ShortcutButton from "@/components/ShortcutButton";
 
 interface ActionBarItem {
   id: number;
@@ -35,7 +36,6 @@ interface ActionBarItem {
   agent?: string;
   accepts?: string;
   triggerKeyword?: string;
-  autoPaste?: boolean;
   globalShortcut?: string;
 }
 
@@ -281,9 +281,46 @@ const EditForm = ({
   const showContent = type !== "submenu" && type !== "copy" && type !== "extension" && type !== "copy_path";
   const showShortcut = type !== "submenu";
   const [adapters, setAdapters] = useState<{key:string;displayName:string;isAvailable:boolean}[]>([]);
+  const [capturingGlobal, setCapturingGlobal] = useState(false);
   useEffect(() => {
     invoke<{key:string;displayName:string;isAvailable:boolean}[]>("list_agent_adapters").then(setAdapters).catch(() => {});
   }, []);
+
+  // 全局快捷键录制：capturingGlobal=true 时拦截按键，组装为 Tauri shortcut 字符串，
+  // 经 check_shortcut 校验后写回表单。Esc 退出录制，纯修饰键等待实际按键。
+  // 监听器生命周期绑定到 capturingGlobal：结束/卸载时自动 removeEventListener。
+  useEffect(() => {
+    if (!capturingGlobal) return;
+    const handler = async (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") { setCapturingGlobal(false); return; }
+      if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
+      // Backspace/Delete 清空快捷键
+      if (e.key === "Backspace" || e.key === "Delete") {
+        onChange({ ...form, globalShortcut: "" });
+        setCapturingGlobal(false);
+        return;
+      }
+      const parts: string[] = [];
+      if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
+      if (e.altKey) parts.push("Alt");
+      if (e.shiftKey) parts.push("Shift");
+      const keyName = e.code.startsWith("Key") ? e.code.slice(3) : e.code;
+      parts.push(keyName);
+      const shortcut = parts.join("+");
+      try {
+        await invoke("check_shortcut", { shortcut });
+        onChange({ ...form, globalShortcut: shortcut });
+      } catch (err) {
+        // 校验失败（格式/占用）——不改写表单，仅退出录制
+        console.warn("[action-bar] global shortcut check failed:", err);
+      }
+      setCapturingGlobal(false);
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [capturingGlobal, form, onChange]);
 
   return (
     <div className="space-y-5">
@@ -483,48 +520,28 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 快速执行（AI/翻译/脚本类型）——全局快捷键跳过 ActionBar */}
-        {(type === "ai" || type === "script" || type === "extension") && (
-          <FormField label={t("settings.actionBar.autoPasteLabel")}>
-            <div className="flex items-center gap-2.5">
-              <Toggle
-                checked={form.autoPaste ?? false}
-                onChange={(v) => onChange({ ...form, autoPaste: v })}
+        {/* 全局快捷键（所有叶子命令，非 submenu）——设置后可跳过 ActionBar 直接执行 */}
+        {type !== "submenu" && (
+          <FormField
+            label={ti18n("settings.actionBar.globalShortcutLabel")}
+            hint={ti18n("settings.actionBar.globalShortcutHint")}
+          >
+            <div className="flex items-center gap-2">
+              <ShortcutButton
+                shortcut={form.globalShortcut ?? ""}
+                capturing={capturingGlobal}
+                onClick={() => setCapturingGlobal((v) => !v)}
               />
-              <span className="text-[11px] text-muted-foreground/60">
-                {t("settings.actionBar.autoPasteHint")}
-              </span>
+              {form.globalShortcut && (
+                <button
+                  onClick={() => onChange({ ...form, globalShortcut: "" })}
+                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  aria-label={ti18n("settings.actionBar.clearShortcut")}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-          </FormField>
-        )}
-
-        {/* 全局快捷键（仅 auto_paste=true 时显示）—— 跳过 ActionBar 直接执行 */}
-        {(type === "ai" || type === "script") && form.autoPaste && (
-          <FormField label="全局快捷键">
-            <input
-              type="text"
-              value={form.globalShortcut ?? ""}
-              onChange={(e) => onChange({ ...form, globalShortcut: e.target.value })}
-              onKeyDown={(e) => {
-                // 按键录制：组合键 → Tauri shortcut 字符串
-                const parts: string[] = [];
-                if (e.metaKey) parts.push("CmdOrCtrl");
-                if (e.ctrlKey) parts.push("CmdOrCtrl");
-                if (e.altKey) parts.push("Alt");
-                if (e.shiftKey) parts.push("Shift");
-                // 只在有修饰键 + 非修饰键本身时录制
-                if (parts.length > 0 && e.key.length === 1) {
-                  e.preventDefault();
-                  const shortcut = [...new Set(parts), e.key.toUpperCase()].join("+");
-                  onChange({ ...form, globalShortcut: shortcut });
-                }
-              }}
-              placeholder="按组合键录入（留空 = 不设全局快捷键）"
-              className="w-full px-2.5 py-1.5 text-[12px] bg-muted/40 border border-border/30 rounded-md text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-voice/40"
-            />
-            <span className="text-[11px] text-muted-foreground/50 mt-1 block">
-              选中文本后按此快捷键，直接 silent 执行 + 粘贴结果（不弹浮窗）
-            </span>
           </FormField>
         )}
 
@@ -955,7 +972,6 @@ export default function ActionBarPanel({
             writeOutputToClipboard: writeOutput,
             parentId: draftParentId, shortcut, isEnabled,
           });
-          await invoke("set_auto_paste", { id: newId, autoPaste: editingForm.autoPaste ?? false });
           await invoke("set_global_shortcut", { id: newId, globalShortcut: editingForm.globalShortcut ?? "" });
           showToast(t("settings.actionBar.created"));
         } else if (editingId) {
@@ -985,7 +1001,6 @@ export default function ActionBarPanel({
               triggerKeyword: "",
             });
           }
-          await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
           await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
           showToast(t("settings.actionBar.saved"));
         }
@@ -1004,9 +1019,8 @@ export default function ActionBarPanel({
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
         });
-        // 新建 AI/Script 项时也需要设置 auto_paste
-        if (editingForm.actionType === "ai" || editingForm.actionType === "script") {
-          await invoke("set_auto_paste", { id: createdId, autoPaste: editingForm.autoPaste ?? false });
+        // 新建非 submenu 项时设置全局快捷键（Quick Execute）
+        if (editingForm.actionType !== "submenu") {
           await invoke("set_global_shortcut", { id: createdId, globalShortcut: editingForm.globalShortcut ?? "" });
         }
         showToast(t("settings.actionBar.created"));
@@ -1025,18 +1039,11 @@ export default function ActionBarPanel({
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
         });
+        // global_shortcut 单独更新（非 submenu 类型）
+        if (editingForm.actionType !== "submenu") {
+          await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
+        }
         showToast(t("settings.actionBar.saved"));
-      }
-      // auto_paste 单独更新（仅 AI/脚本类型）
-      if (editingId && (editingForm.actionType === "ai" || editingForm.actionType === "script")) {
-        await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
-        // global_shortcut 单独更新（仅 auto_paste 类型）
-        await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
-      }
-      // 新建项也需要设 global_shortcut
-      if (!editingId && (editingForm.actionType === "ai" || editingForm.actionType === "script")) {
-        // createdId 已在上面设置 auto_paste 时拿到——这里需要拿到 id
-        // 实际上 create 路径在上方已 return showToast，这里走不到
       }
 
       cancelEdit();

@@ -59,6 +59,7 @@ fn show_at_mouse(app: &AppHandle, payload: &OverlayPayload) {
 }
 
 /// 隐藏 overlay 窗口。
+#[allow(dead_code)]
 pub fn hide_overlay_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.hide();
@@ -76,7 +77,8 @@ pub fn show_overlay_loading(app: &AppHandle, action_name: &str) {
     });
 }
 
-/// 显示 toast（warn/error），duration ms 后自动隐藏。
+/// 显示 toast（warn/error），duration ms 后自动隐藏。当前未使用——保留供未来 silent 模式复用。
+#[allow(dead_code)]
 pub fn show_overlay_toast(app: &AppHandle, message: &str, toast_type: &str, duration_ms: u64) {
     show_at_mouse(app, &OverlayPayload {
         mode: "toast".into(),

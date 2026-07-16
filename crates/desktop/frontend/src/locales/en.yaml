@@ -356,8 +356,9 @@ settings:
     shortcutHint: Press Alt+this key when action bar is open to execute directly
     triggerKeywordLabel: Search Keyword
     triggerKeywordHint: Type "keyword query" in search box to trigger. Use {query} in URL
-    autoPasteLabel: Quick Execute
-    autoPasteHint: Assign a global hotkey to skip ActionBar and run directly
+    globalShortcutLabel: Global Shortcut
+    globalShortcutHint: Press this shortcut with text selected to run directly, skipping the action bar. Result opens in the editor.
+    clearShortcut: Clear shortcut
     enableLabel: Enable
     showInMenu: Show in menu
     hidden: Hidden
