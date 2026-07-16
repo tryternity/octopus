@@ -1,18 +1,12 @@
-//! Run And Paste 全局快捷键——为 auto_paste 菜单项注册全局快捷键，触发 silent 执行链路。
+//! Run Quickly 全局快捷键——为 auto_paste 菜单项注册全局快捷键，跳过 ActionBar 浮窗直接执行。
 //!
-//! 链路：全局热键 → detect_selection → overlay 进度
-//!   → execute_action_bar_inner（30s 超时）→ paste
+//! 与 ActionBar 路径的区别：全局快捷键省去"弹出浮窗 + 手动选菜单"两步。
+//! 结果仍展示在 CompactEditor（与 ActionBar 路径完全一致），不直接粘贴替换。
 //!
-//! silent 模式下 overlay 不获取焦点，源应用始终是前台——
-//! detect_selection 的 simulate_copy 不改前台（源应用本来就在前台），
-//! paste 直接发给源应用，不需要 ActivateWindowByPid。
+//! 链路：全局热键 → detect_selection → execute_action_bar_inner → CompactEditor
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// silent 执行的取消标志——Esc 或新触发时置 true，worker 线程检查后退出。
-static SILENT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// 注册所有 auto_paste 菜单项的全局快捷键。
 /// 启动时 + 设置变更后调用。先注销旧的再注册新的。
@@ -25,7 +19,7 @@ pub fn register_action_hotkeys(app: &AppHandle) {
         }
     };
 
-    // 先注销所有已注册的 action_hotkey 快捷键（用 DB 里的值精确注销）
+    // 先注销所有已注册的快捷键
     for item in &items {
         if let Ok(sc) = item.global_shortcut.parse::<Shortcut>() {
             let _ = app.global_shortcut().unregister(sc);
@@ -48,14 +42,9 @@ pub fn register_action_hotkeys(app: &AppHandle) {
         match app.global_shortcut().on_shortcut(shortcut, move |_app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
                 log::info!("[action-hotkey] 触发 item_id={}", item_id);
-                // 取消上一次执行（如果仍在进行）
-                SILENT_CANCELLED.store(true, Ordering::SeqCst);
                 let app_for_worker = app_clone.clone();
                 std::thread::spawn(move || {
-                    // 短暂等待让上一次 worker 退出，然后重置取消标志
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    SILENT_CANCELLED.store(false, Ordering::SeqCst);
-                    silent_run_and_paste(item_id, &app_for_worker);
+                    quick_execute(item_id, &app_for_worker);
                 });
             }
         }) {
@@ -65,49 +54,23 @@ pub fn register_action_hotkeys(app: &AppHandle) {
     }
 }
 
-/// 取消当前 silent 执行（Esc 触发 / 新热键触发）。
-pub fn cancel_silent() {
-    SILENT_CANCELLED.store(true, Ordering::SeqCst);
-    log::info!("[action-hotkey] 用户取消 silent 执行");
-}
-
-/// silent 执行链路（worker 线程）。
-fn silent_run_and_paste(item_id: i64, app: &AppHandle) {
-    // detect_selection 内部会写 CHANGE_COUNT_BASELINE（全局静态量），
-    // silent 路径与 ActionBar 路径共享此 baseline 会互相污染——
-    // silent detect 的 Cmd+C 模拟 + 恢复写入产生的 changeCount 值
-    // 会让后续 ActionBar detect 误判有无选中。
-    // 解法：detect 前保存 baseline，detect 后恢复，隔离 silent 的副作用。
+/// 快速执行链路（worker 线程）：detect → execute → CompactEditor。
+/// 不弹出 ActionBar 浮窗，不直接粘贴——结果展示在 CompactEditor（与 ActionBar 路径一致）。
+fn quick_execute(item_id: i64, app: &AppHandle) {
+    // baseline 隔离——detect 写 CHANGE_COUNT_BASELINE，恢复原值不污染 ActionBar 路径
     let saved_baseline = crate::action_bar_commands::save_change_count_baseline();
 
-    // detect_selection 需要 AppHandle 且内部有 Cmd+C 模拟 + sleep
-    log::info!("[action-hotkey][silent] 开始 detect_selection");
+    log::info!("[action-hotkey] 开始 detect_selection");
     let selection = crate::action_bar_commands::detect_selection(app);
 
-    // 恢复 baseline
     crate::action_bar_commands::restore_change_count_baseline(saved_baseline);
-
-    if SILENT_CANCELLED.load(Ordering::SeqCst) {
-        return;
-    }
 
     let text = match &selection {
         crate::action_bar_commands::Selection::Text { text, .. } => text.clone(),
         _ => {
-            crate::overlay_window::show_overlay_toast(app, "请先选中文本", "warn", 2000);
-            return;
-        }
-    };
-
-    // 读 DB 取 item（title 用于 overlay）
-    let item = match octopus_infra::db::load_action_bar_item(item_id) {
-        Ok(Some(i)) => i,
-        Ok(None) => {
-            crate::overlay_window::show_overlay_toast(app, "菜单项不存在", "error", 3000);
-            return;
-        }
-        Err(e) => {
-            crate::overlay_window::show_overlay_toast(app, &format!("读取菜单项失败: {}", e), "error", 3000);
+            // 无选中——用 ActionBar 浮窗 fallback（让用户看到搜索框）
+            log::info!("[action-hotkey] 无选中，fallback 到 ActionBar 浮窗");
+            crate::action_bar_commands::trigger_action_bar(app.clone());
             return;
         }
     };
@@ -119,43 +82,18 @@ fn silent_run_and_paste(item_id: i64, app: &AppHandle) {
         }
     }
 
-    if SILENT_CANCELLED.load(Ordering::SeqCst) {
-        crate::overlay_window::hide_overlay_window(app);
-        return;
-    }
-
-    // 显示 overlay loading（"正在执行 {title}... · 按 Esc 取消"）
-    crate::overlay_window::show_overlay_loading(app, &item.title);
-
-    // 执行动作（复用 execute_action_bar_inner，auto_paste=true 时内部走 run_and_paste）
+    // 执行动作——非 silent 模式（is_silent=false），走正常 CompactEditor 展示
+    log::info!("[action-hotkey] 执行 item_id={}, text len={}", item_id, text.len());
     let app_clone = app.clone();
     let result = std::thread::spawn(move || -> Result<bool, String> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
-        rt.block_on(crate::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone, true))
+        rt.block_on(crate::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone, false))
     }).join();
 
-    if SILENT_CANCELLED.load(Ordering::SeqCst) {
-        crate::overlay_window::hide_overlay_window(app);
-        return;
-    }
-
     match result {
-        Ok(Ok(true)) => {
-            // auto_paste=true 时内部已调 action_bar_run_and_paste（paste 在子线程异步执行）
-            // overlay 由 action_bar_run_and_paste 内部隐藏
-            log::info!("[action-hotkey] 执行完成");
-        }
-        Ok(Ok(false)) => {
-            // 动作不需要 paste（如 url/async script）
-            crate::overlay_window::hide_overlay_window(app);
-        }
-        Ok(Err(e)) => {
-            crate::overlay_window::hide_overlay_window(app);
-            crate::overlay_window::show_overlay_toast(app, &e, "error", 3000);
-        }
-        Err(e) => {
-            crate::overlay_window::hide_overlay_window(app);
-            crate::overlay_window::show_overlay_toast(app, &format!("执行异常: {:?}", e), "error", 3000);
-        }
+        Ok(Ok(true)) => log::info!("[action-hotkey] 执行完成（结果已在 CompactEditor 展示）"),
+        Ok(Ok(false)) => log::info!("[action-hotkey] 执行完成（无需展示）"),
+        Ok(Err(e)) => log::warn!("[action-hotkey] 执行失败: {}", e),
+        Err(e) => log::warn!("[action-hotkey] 执行线程异常: {:?}", e),
     }
 }

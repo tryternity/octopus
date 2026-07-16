@@ -356,8 +356,8 @@ settings:
     shortcutHint: action bar 打开时按 Alt+此键直接执行
     triggerKeywordLabel: 搜索关键词
     triggerKeywordHint: 在搜索框输入「关键词 查询」触发，URL 中用 {query} 代表查询
-    autoPasteLabel: Run And Paste
-    autoPasteHint: 执行后自动将结果粘贴到光标位置，不弹编辑器
+    autoPasteLabel: 快速执行
+    autoPasteHint: 分配全局快捷键，跳过 ActionBar 直接执行，结果展示在编辑器
     enableLabel: 启用
     showInMenu: 显示在菜单中
     hidden: 已隐藏

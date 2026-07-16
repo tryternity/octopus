@@ -65,7 +65,8 @@ pub fn hide_overlay_window(app: &AppHandle) {
     }
 }
 
-/// 显示 loading 状态（执行中）。
+/// 显示 loading 状态（执行中）。当前 quick_execute 不使用 overlay——保留供未来 silent 模式复用。
+#[allow(dead_code)]
 pub fn show_overlay_loading(app: &AppHandle, action_name: &str) {
     show_at_mouse(app, &OverlayPayload {
         mode: "loading".into(),

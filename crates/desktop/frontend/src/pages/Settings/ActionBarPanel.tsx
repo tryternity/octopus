@@ -483,7 +483,7 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* Run And Paste（AI/翻译/脚本类型） */}
+        {/* 快速执行（AI/翻译/脚本类型）——全局快捷键跳过 ActionBar */}
         {(type === "ai" || type === "script" || type === "extension") && (
           <FormField label={t("settings.actionBar.autoPasteLabel")}>
             <div className="flex items-center gap-2.5">
@@ -498,7 +498,7 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 全局快捷键（仅 auto_paste=true 时显示）—— silent 执行 + 粘贴入口 */}
+        {/* 全局快捷键（仅 auto_paste=true 时显示）—— 跳过 ActionBar 直接执行 */}
         {(type === "ai" || type === "script") && form.autoPaste && (
           <FormField label="全局快捷键">
             <input

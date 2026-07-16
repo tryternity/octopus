@@ -815,12 +815,6 @@ pub fn set_global_shortcut(id: i64, global_shortcut: String, app: AppHandle) -> 
     Ok(())
 }
 
-/// 取消当前 silent 执行（Esc 触发）。
-#[tauri::command]
-pub fn cancel_silent_action() {
-    crate::action_hotkey::cancel_silent();
-}
-
 // ── 脚本执行记录 ──
 
 #[tauri::command]
