@@ -173,16 +173,14 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// Task 7（ShellProvider 实现）恢复——stub 阶段 shell search 返回空。
-    #[ignore]
+    /// Task 7（ShellProvider 实现）恢复——shell search 返回透传 + 补全 + 历史。
     #[test]
     fn shell_mode_prefix() {
+        setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
         let results = rt.block_on(engine.search("> ls", "shell"));
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source, "shell");
-        assert_eq!(results[0].action_type, "shell");
+        assert!(results.iter().any(|r| r.source == "shell" && r.action_type == "shell"));
     }
 
     #[test]
@@ -209,16 +207,14 @@ mod tests {
         assert!(results.iter().all(|r| r.source != "menu"));
     }
 
-    /// Task 7（ShellProvider 实现）恢复——stub 阶段 shell search 返回空。
-    #[ignore]
+    /// Task 7（ShellProvider 实现）恢复——quick tab 包含 shell 透传项。
     #[test]
     fn quick_tab_includes_shell_mode() {
         setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
         let results = rt.block_on(engine.search("> echo hi", "quick"));
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source, "shell");
+        assert!(results.iter().any(|r| r.source == "shell" && r.action_type == "shell"));
     }
 
     #[test]
