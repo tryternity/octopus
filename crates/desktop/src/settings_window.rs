@@ -39,7 +39,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = window.set_focus();
+            let _ = app_handle.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
         }
         // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {
@@ -48,13 +48,21 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         }
         return;
     }
-    // macOS: 打开设置窗口 → Dock 显示图标 + 设置应用图标
+    // macOS: 打开设置窗口 → Dock 显示图标 + 设置应用图标 + 激活到前台
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        // set_dock_icon 调 AppKit（NSApplication），必须在主线程执行。
+        // set_dock_icon + NSApplication::activate 调 AppKit，必须在主线程执行。
         // open_settings 是 Tauri command（worker 线程），用 run_on_main_thread 调度。
+        // ⚠️ 必须显式 activate——app 在 Accessory 模式下从托盘点击时，
+        // macOS 不会自动把 app 带到前台（窗口创建了但不前置）。
         let _ = app_handle.run_on_main_thread(|| {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSApplication;
+            if let Some(mtm) = MainThreadMarker::new() {
+                let app = NSApplication::sharedApplication(mtm);
+                app.activate();
+            }
             set_dock_icon();
         });
     }
