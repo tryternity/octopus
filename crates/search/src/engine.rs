@@ -124,6 +124,11 @@ impl SearchEngine {
         n
     }
 
+    /// 供 Tauri 命令调：记录频次命中（用户执行搜索结果动作时）。
+    pub fn record_frequency(&self, result: &SearchResult, query: &str) {
+        self.frequency.record(result, query);
+    }
+
     /// 综合搜索（并发）。
     ///
     /// tab = "all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"。

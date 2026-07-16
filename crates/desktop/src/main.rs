@@ -258,6 +258,8 @@ pub fn run() {
             model_commands::test_cloud_model,
             model_commands::get_model_detail,
             search_commands::search_all,
+            search_commands::search_stream,
+            search_commands::record_search_hit,
             search_commands::launch_app,
             search_commands::open_file,
             search_commands::open_url,
