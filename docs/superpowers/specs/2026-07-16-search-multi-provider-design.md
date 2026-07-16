@@ -2,7 +2,7 @@
 
 > 2026-07-16 · 借鉴 wox 多源广播思想，重构 octopus 搜索为 Provider trait + 并发扇出 + 流式渐进渲染 + 频次加权。修复 shell/bookmark 不显示问题，新增 calculator/url 源。
 >
-> **状态**：设计阶段（待 review）
+> **状态**：设计完成（配套实施计划见 `docs/superpowers/plans/2026-07-16-search-multi-provider.md`）
 
 ## 0. 背景与动机
 
@@ -542,7 +542,7 @@ fn looks_like_url(s: &str) -> bool {
 
 ## 5. 频次加权
 
-### 5.1 DB schema（v27）
+### 5.1 DB schema（v35）
 
 ```sql
 CREATE TABLE IF NOT EXISTS search_frequency (
@@ -553,7 +553,7 @@ CREATE TABLE IF NOT EXISTS search_frequency (
     PRIMARY KEY (score_key)
 );
 ```
-迁移：`db.rs` 加 v27 分支，`CREATE TABLE IF NOT EXISTS`。
+迁移：`db.rs` 加 v35 分支（当前最新 v34），`CREATE TABLE IF NOT EXISTS`。
 
 ### 5.2 ScoreKey 设计
 
@@ -759,7 +759,7 @@ cargo test -p octopus-desktop --lib
 
 ## 10. 实施顺序（高层）
 
-1. **infra**：DB schema v27（search_frequency 表）
+1. **infra**：DB schema v35（search_frequency 表）
 2. **search crate**：Provider trait + SearchContext + 重构 SearchEngine（providers Vec）
 3. **search crate**：搬移现有 6 个 source 为 Provider（app/file/menu/bookmark-shell 现状）
 4. **search crate**：ShellProvider 修复（裸命令/补全/历史）
