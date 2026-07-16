@@ -9,30 +9,31 @@ pub struct BookmarkEntry {
     pub browser: String,
 }
 
-/// 加载所有浏览器的书签。
+/// 加载所有浏览器的书签：Chrome / Edge（JSON）+ Safari（plist）+ Firefox（SQLite）。
+///
+/// 每个浏览器的 loader 自带降级（无权限/无文件返回空 Vec），这里只做存在性预检
+/// 跳过明显不存在的路径以省 syscalls，不掩盖 loader 内部错误。
 pub fn load_all_bookmarks() -> Vec<BookmarkEntry> {
     let mut bookmarks = Vec::new();
-    // Chrome / Edge（JSON 格式，无需 Full Disk Access）
-    for (browser, path) in &[
-        ("Chrome", "Library/Application Support/Google/Chrome/Default/Bookmarks"),
-        ("Edge", "Library/Application Support/Microsoft Edge/Default/Bookmarks"),
-    ] {
-        if let Some(home) = dirs::home_dir() {
+    if let Some(home) = dirs::home_dir() {
+        // Chrome / Edge（JSON，无需 Full Disk Access）
+        for (browser, path) in &[
+            ("Chrome", "Library/Application Support/Google/Chrome/Default/Bookmarks"),
+            ("Edge", "Library/Application Support/Microsoft Edge/Default/Bookmarks"),
+        ] {
             let full_path = home.join(path);
             if full_path.exists() {
                 bookmarks.extend(load_chromium_bookmarks(browser, &full_path));
             }
         }
-    }
-    // Safari（plist 解析未实现）—— 跳过。load_safari_bookmarks 当前返回空 Vec。
-    // 不假装"尝试读失败跳过"——如实记录未实现状态，避免日志/行为误导。
-    // 实现需引入 plist crate + Full Disk Access 权限。
-    if let Some(home) = dirs::home_dir() {
+        // Safari（plist，需 Full Disk Access——失败则 load_safari_bookmarks 自降级）
         let safari_path = home.join("Library/Safari/Bookmarks.plist");
         if safari_path.exists() {
-            log::debug!("[search] Safari 书签解析未实现，跳过 {}", safari_path.display());
+            bookmarks.extend(load_safari_bookmarks(&safari_path));
         }
     }
+    // Firefox（SQLite，独立函数自己找 profile）
+    bookmarks.extend(load_firefox_bookmarks());
     log::info!("[search] 书签索引: {} 条", bookmarks.len());
     bookmarks
 }
@@ -79,14 +80,129 @@ fn load_chromium_bookmarks(browser: &str, path: &std::path::Path) -> Vec<Bookmar
     result
 }
 
-/// 解析 Safari 书签 plist。
+/// 解析 Safari 书签 plist（XML 或二进制）。
 ///
-/// **未实现**——返回空 Vec。Safari 书签存于 `Bookmarks.plist`（二进制 plist），
-/// 解析需引入 `plist` crate + 用户授予 Full Disk Access。当前留作接口占位，
-/// 未来实现时填充函数体即可（调用点已就绪，见 `load_all_bookmarks`）。
-#[allow(dead_code)] // 接口占位，未来实现时启用；测试覆盖其"返回空"语义
-fn load_safari_bookmarks(_path: &std::path::Path) -> Vec<BookmarkEntry> {
-    Vec::new()
+/// **降级**：需 Full Disk Access。失败（权限拒绝 / 文件缺失 / 格式异常）时
+/// 返回空 Vec + log debug，不 panic 不弹窗。这样无权限用户与无书签用户行为一致。
+pub fn load_safari_bookmarks(path: &std::path::Path) -> Vec<BookmarkEntry> {
+    let plist_val = match plist::Value::from_file(path) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("[search] Safari plist 解析失败 {}: {}", path.display(), e);
+            return vec![];
+        }
+    };
+    let mut result = vec![];
+    walk_safari(&plist_val, &mut result);
+    result
+}
+
+/// 递归遍历 Safari plist 节点。
+/// - `WebBookmarkTypeLeaf`：取 `URIDictionary.title` + `URLString`
+/// - `WebBookmarkTypeList`：递归 `Children`
+///
+/// 叶子节点之外也会无差别递归 `Children`（根 dict 不是 WebBookmarkType 但含 Children）。
+fn walk_safari(node: &plist::Value, out: &mut Vec<BookmarkEntry>) {
+    let dict = match node.as_dictionary() {
+        Some(d) => d,
+        None => return,
+    };
+    let bm_type = dict.get("WebBookmarkType").and_then(|v| v.as_string()).unwrap_or("");
+    if bm_type == "WebBookmarkTypeLeaf" {
+        let title = dict.get("URIDictionary")
+            .and_then(|d| d.as_dictionary())
+            .and_then(|d| d.get("title"))
+            .and_then(|v| v.as_string())
+            .unwrap_or("")
+            .to_string();
+        let url = dict.get("URLString")
+            .and_then(|v| v.as_string())
+            .unwrap_or("")
+            .to_string();
+        if !title.is_empty() && !url.is_empty() {
+            out.push(BookmarkEntry { title, url, browser: "Safari".into() });
+        }
+    }
+    if let Some(children) = dict.get("Children").and_then(|v| v.as_array()) {
+        for child in children {
+            walk_safari(child, out);
+        }
+    }
+}
+
+/// 解析 Firefox 书签：读 `places.sqlite`（拷临时文件避免锁运行中的 Firefox）。
+///
+/// **降级**：找不到 profile / 文件缺失 / 拷贝失败 / 查询失败 → 返回空 Vec。
+pub fn load_firefox_bookmarks() -> Vec<BookmarkEntry> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return vec![],
+    };
+    let profiles_dir = home.join("Library/Application Support/Firefox/Profiles");
+    // 找 *.default-release profile（Firefox 主用户 profile 命名约定）
+    let profile_path = match std::fs::read_dir(&profiles_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().ends_with(".default-release"))
+            .map(|e| e.path()),
+        Err(_) => return vec![],
+    };
+    let profile_path = match profile_path {
+        Some(p) => p,
+        None => return vec![],
+    };
+    let places = profile_path.join("places.sqlite");
+    if !places.exists() {
+        return vec![];
+    }
+    // 拷到临时文件：运行中的 Firefox 会持锁，直接 OpenFlags::READ_ONLY 在某些
+    // 平台仍会失败。拷一份隔离，避免污染原 DB / 阻塞用户使用 Firefox。
+    let tmp = std::env::temp_dir()
+        .join(format!("octopus_ff_places_{}.db", std::process::id()));
+    if std::fs::copy(&places, &tmp).is_err() {
+        return vec![];
+    }
+    let result = query_firefox_places(&tmp);
+    let _ = std::fs::remove_file(&tmp); // 清理（失败忽略——tmp 目录 OS 会定期清）
+    result
+}
+
+fn query_firefox_places(db_path: &std::path::Path) -> Vec<BookmarkEntry> {
+    use rusqlite::OpenFlags;
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            log::debug!("[search] Firefox places 打开失败: {}", e);
+            return vec![];
+        }
+    };
+    // type=1 是 bookmark（其余如 folder=2 / separator=3 跳过）；
+    // 过滤 place:% 这些 Firefox 内部伪 URL（不是真实网页书签）。
+    let mut stmt = match conn.prepare(
+        "SELECT b.title, p.url FROM moz_bookmarks b
+         JOIN moz_places p ON b.fk = p.id
+         WHERE b.type = 1 AND p.url NOT LIKE 'place:%'"
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            log::debug!("[search] Firefox places prepare 失败: {}", e);
+            return vec![];
+        }
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok(BookmarkEntry {
+            title: row.get::<_, String>(0)?,
+            url: row.get::<_, String>(1)?,
+            browser: "Firefox".into(),
+        })
+    });
+    match rows {
+        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    }
 }
 
 /// 搜索书签。
@@ -141,13 +257,28 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// 回归 S4：Safari 书签解析未实现，load_safari_bookmarks 返回空。
-    /// 锁住"未实现"语义——未来实现时此测试需更新，提醒同步文档。
+    /// Safari plist 解析降级：文件不存在/无权限时返回空 Vec，不 panic。
+    /// 锁住"失败不爆炸"语义——无 Full Disk Access 的用户与无书签用户行为一致。
     #[test]
-    fn load_safari_bookmarks_unimplemented_returns_empty() {
-        let path = std::path::Path::new("/nonexistent/Safari/Bookmarks.plist");
-        let result = load_safari_bookmarks(path);
-        assert!(result.is_empty(), "Safari 书签解析未实现，应返回空 Vec");
+    fn safari_nonexistent_returns_empty() {
+        let entries = load_safari_bookmarks(std::path::Path::new("/nonexistent/Bookmarks.plist"));
+        assert!(entries.is_empty());
+    }
+
+    /// Safari plist 解析：从测试 fixture（XML plist）解析出书签。
+    /// fixture 不存在则 skip（不 fail——开发环境可能未生成）。
+    #[test]
+    fn safari_plist_parsed_from_fixture() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/safari_bookmarks.plist");
+        if !fixture.exists() {
+            eprintln!("skip: fixture not found at {}", fixture.display());
+            return;
+        }
+        let entries = load_safari_bookmarks(&fixture);
+        assert!(!entries.is_empty(), "应解析出书签");
+        assert!(entries.iter().all(|e| e.browser == "Safari"));
+        assert!(entries.iter().any(|e| e.url.starts_with("http")), "应有 http URL");
     }
 
     #[test]

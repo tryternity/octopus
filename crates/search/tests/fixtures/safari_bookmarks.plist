@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Children</key>
+    <array>
+        <dict>
+            <key>Title</key><string>BookmarksBar</string>
+            <key>WebBookmarkType</key><string>WebBookmarkTypeList</string>
+            <key>Children</key>
+            <array>
+                <dict>
+                    <key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string>
+                    <key>URIDictionary</key><dict><key>title</key><string>GitHub</string></dict>
+                    <key>URLString</key><string>https://github.com</string>
+                </dict>
+                <dict>
+                    <key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string>
+                    <key>URIDictionary</key><dict><key>title</key><string>Rust</string></dict>
+                    <key>URLString</key><string>https://rust-lang.org</string>
+                </dict>
+            </array>
+        </dict>
+        <dict>
+            <key>Title</key><string>ReadingList</string>
+            <key>WebBookmarkType</key><string>WebBookmarkTypeList</string>
+            <key>Children</key>
+            <array>
+                <dict>
+                    <key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string>
+                    <key>URIDictionary</key><dict><key>title</key><string>MDN Web Docs</string></dict>
+                    <key>URLString</key><string>https://developer.mozilla.org</string>
+                </dict>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

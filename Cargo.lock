@@ -5253,6 +5253,7 @@ dependencies = [
  "parking_lot",
  "pinyin",
  "plist",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
