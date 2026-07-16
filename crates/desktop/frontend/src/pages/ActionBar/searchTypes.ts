@@ -2,7 +2,7 @@
 
 /** 搜索结果（与 Rust octopus_search::SearchResult 对齐，camelCase 序列化） */
 export interface SearchResult {
-  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "calculator" | "url" */
+  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "calculator" | "url" | "command" */
   source: string;
   /** 标题（应用名 / 文件名 / 菜单标题） */
   title: string;
@@ -29,7 +29,7 @@ export interface SearchBatch {
 }
 
 /** Tab 标识 */
-export type TabId = "all" | "apps" | "files" | "bookmarks" | "actions";
+export type TabId = "all" | "apps" | "files" | "bookmarks" | "actions" | "commands";
 
 /** Tab 定义 */
 export interface TabDef {
@@ -49,6 +49,7 @@ export const TABS: readonly TabDef[] = [
   { id: "files", label: "文件", key: "f" },
   { id: "bookmarks", label: "书签", key: "b" },
   { id: "actions", label: "动作", key: "z" },
+  { id: "commands", label: "命令", key: "c" },
 ] as const;
 
 /** 展开方向 */

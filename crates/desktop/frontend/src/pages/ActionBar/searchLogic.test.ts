@@ -80,6 +80,7 @@ describe("getTabByKey", () => {
     expect(getTabByKey("f")).toBe("files");
     expect(getTabByKey("b")).toBe("bookmarks");
     expect(getTabByKey("z")).toBe("actions");
+    expect(getTabByKey("c")).toBe("commands");
   });
 
   it("无匹配返回 null", () => {
@@ -98,32 +99,36 @@ describe("getTabByKey", () => {
 // ── getVisibleTabs ──
 
 describe("getVisibleTabs", () => {
-  it("有选中（hasContext=true）→ 全部 5 个 Tab 含 actions", () => {
+  it("有选中（hasContext=true）→ 全部 6 个 Tab 含 actions", () => {
     const tabs = getVisibleTabs(true);
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(6);
     expect(tabs.find((t) => t.id === "actions")).toBeDefined();
+    expect(tabs.find((t) => t.id === "commands")).toBeDefined();
   });
 
-  it("无选中（hasContext=false，launch 模式）→ 4 个 Tab，无 actions", () => {
+  it("无选中（hasContext=false，launch 模式）→ 5 个 Tab，无 actions（commands 不依赖 context）", () => {
     const tabs = getVisibleTabs(false);
-    expect(tabs).toHaveLength(4);
+    expect(tabs).toHaveLength(5);
     expect(tabs.find((t) => t.id === "actions")).toBeUndefined();
+    expect(tabs.find((t) => t.id === "commands")).toBeDefined();
   });
 });
 
 // ── getNextTab ──
 
 describe("getNextTab", () => {
-  it("正向循环 all → apps → files → bookmarks → actions → all", () => {
+  it("正向循环 all → apps → files → bookmarks → actions → commands → all", () => {
     expect(getNextTab("all", 1)).toBe("apps");
     expect(getNextTab("apps", 1)).toBe("files");
     expect(getNextTab("files", 1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", 1)).toBe("actions");
-    expect(getNextTab("actions", 1)).toBe("all");
+    expect(getNextTab("actions", 1)).toBe("commands");
+    expect(getNextTab("commands", 1)).toBe("all");
   });
 
-  it("反向循环 all → actions → bookmarks → files → apps → all", () => {
-    expect(getNextTab("all", -1)).toBe("actions");
+  it("反向循环 all → commands → actions → bookmarks → files → apps → all", () => {
+    expect(getNextTab("all", -1)).toBe("commands");
+    expect(getNextTab("commands", -1)).toBe("actions");
     expect(getNextTab("actions", -1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", -1)).toBe("files");
     expect(getNextTab("files", -1)).toBe("apps");
@@ -144,6 +149,8 @@ describe("getTabIndex", () => {
     expect(getTabIndex("apps")).toBe(1);
     expect(getTabIndex("files")).toBe(2);
     expect(getTabIndex("bookmarks")).toBe(3);
+    expect(getTabIndex("actions")).toBe(4);
+    expect(getTabIndex("commands")).toBe(5);
   });
 
   it("无效 Tab 返回 -1", () => {
@@ -151,8 +158,8 @@ describe("getTabIndex", () => {
     expect(getTabIndex("invalid")).toBe(-1);
   });
 
-  it("TABS 长度为 5", () => {
-    expect(TABS.length).toBe(5);
+  it("TABS 长度为 6", () => {
+    expect(TABS.length).toBe(6);
   });
 });
 
@@ -185,10 +192,11 @@ describe("filterByTab", () => {
     makeResult("file", "doc.pdf"),
     makeResult("bookmark", "GitHub"),
     makeResult("menu", "翻译"),
+    makeResult("command", "git status"),
   ];
 
   it("all → 全部", () => {
-    expect(filterByTab(results, "all")).toHaveLength(4);
+    expect(filterByTab(results, "all")).toHaveLength(5);
   });
 
   it("apps → 仅 app 来源", () => {
@@ -213,6 +221,12 @@ describe("filterByTab", () => {
     const filtered = filterByTab(results, "actions");
     expect(filtered).toHaveLength(1);
     expect(filtered[0].source).toBe("menu");
+  });
+
+  it("commands → 仅 command 来源", () => {
+    const filtered = filterByTab(results, "commands");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].source).toBe("command");
   });
 
   it("空列表 → 空列表", () => {

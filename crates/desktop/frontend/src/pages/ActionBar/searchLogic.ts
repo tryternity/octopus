@@ -78,6 +78,7 @@ export function filterByTab(results: SearchResult[], tab: TabId): SearchResult[]
     files: "file",
     bookmarks: "bookmark",
     actions: "menu",
+    commands: "command",
   };
   const targetSource = sourceMap[tab];
   if (!targetSource) return results;
