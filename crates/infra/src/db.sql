@@ -391,3 +391,13 @@ CREATE TABLE IF NOT EXISTS app_index (
 );
 CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
 CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);
+
+-- ── 搜索频次加权（search_frequency 表）──────────────────────────
+-- 按命中次数加权搜索结果排序；score_key 为打分维度键（如查询归一化串）。
+CREATE TABLE IF NOT EXISTS search_frequency (
+    score_key   TEXT    NOT NULL,           -- 打分维度键（主键）
+    query       TEXT    NOT NULL DEFAULT '', -- 最近一次命中的查询原文
+    hit_count   INTEGER NOT NULL DEFAULT 0,  -- 累计命中次数
+    last_hit_ts INTEGER NOT NULL DEFAULT 0,  -- 最近命中 Unix 秒
+    PRIMARY KEY (score_key)
+);

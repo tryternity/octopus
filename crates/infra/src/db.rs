@@ -467,7 +467,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             log::info!("schema upgraded to v34 (app_index cache table with icon)");
         }
         // v34→v35：搜索频次加权表（search_frequency）。
-        {
+        // 表由 db.sql IF NOT EXISTS 自动创建（此处保留建表是为兼容跳过 INIT_SQL 的路径）。
+        if v < 35 {
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS search_frequency (
                     score_key TEXT NOT NULL,
@@ -1757,6 +1758,7 @@ pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
 // ── 搜索频次加权（search_frequency 表）───────────────────────────
 
 /// 频次加权表的一行（search_frequency）。
+#[derive(Debug, Clone)]
 pub struct FreqRow {
     pub hit_count: i64,
     pub last_hit_ts: i64,
@@ -1778,7 +1780,8 @@ pub fn record_search_frequency(score_key: &str, query: &str) -> Result<()> {
                 query = excluded.query,
                 last_hit_ts = excluded.last_hit_ts",
             params![score_key, query, now],
-        )?;
+        )
+        .with_context(|| format!("record_search_frequency key={}", score_key))?;
         Ok(())
     })
 }
@@ -1788,7 +1791,8 @@ pub fn load_search_frequency() -> Result<HashMap<String, FreqRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT score_key, hit_count, last_hit_ts, query FROM search_frequency",
-        )?;
+        )
+        .context("load_search_frequency")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
