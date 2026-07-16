@@ -6,8 +6,8 @@
  *    新调用立即 unlisten 旧监听器，丢弃未到的旧批次。
  * 2. 即便旧监听器回调已被调度，payload.runId !== myRunId 时仍丢弃。
  *
- * 累加约定：后端按 Provider 扇出，每个 Provider 完成即 emit 一个 batch。
- * 调用方在 onBatch 回调里自行累加/去重/排序（见 index.tsx 的 accumulateBatch）。
+ * 替换约定：后端 emit 的是全局累积 top-10（已加权+排序+截断），每个 Provider
+ * 完成即 emit 一次完整快照。调用方在 onBatch 回调里整体替换即可（见 index.tsx 的 setInstantResults）。
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -48,8 +48,9 @@ export async function executeSearchStream(
     if (e.payload.runId !== myRunId) return;
     onBatch(e.payload.results);
   });
-  unlistenDone = await listen("search://done", () => {
-    // done 事件不带 runId（search_commands.rs 当前实现）；当前会话监听器收尾即弃
+  unlistenDone = await listen<{ runId: string }>("search://done", (e) => {
+    // done 事件后端 emit { runId }（见 search_commands.rs:36）；旧会话的 done 忽略，避免 tear down 新会话的 batch listener
+    if (e.payload.runId !== myRunId) return;
     unlistenBatch?.();
     unlistenDone?.();
     unlistenBatch = null;
@@ -59,7 +60,7 @@ export async function executeSearchStream(
   try {
     await invoke("search_stream", { query, tab, runId: myRunId });
   } catch (e) {
-    // invoke 失败（如引擎未初始化）——清理监听器，避免泄漏；不抛，调用方依赖 onBatch 累加
+    // invoke 失败（如引擎未初始化）——清理监听器，避免泄漏；不抛，调用方在 onBatch 里已整体替换
     cleanupSearchStream();
     console.error("[searchStream] search_stream failed:", e);
   }

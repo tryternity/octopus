@@ -19,11 +19,12 @@ export interface SearchResult {
 }
 
 /** 流式批次事件 payload（search_stream emit 的 `search://batch` 事件体）。
- *  后端每完成一个 Provider 即 emit 一次，前端按 runId 校验本次会话后累加合并。 */
+ *  后端每完成一个 Provider 即 emit 一次全局累积 top-10 的完整快照（已加权+排序+截断）；
+ *  前端按 runId 校验本次会话后整体替换（非累加合并）。 */
 export interface SearchBatch {
   /** 本次 search_stream 会话 ID（前端生成 crypto.randomUUID 传入） */
   runId: string;
-  /** 本批次（单个 Provider）的搜索结果 */
+  /** 全局累积 top-N 结果快照（已排序截断），整体替换上次结果 */
   results: SearchResult[];
 }
 
