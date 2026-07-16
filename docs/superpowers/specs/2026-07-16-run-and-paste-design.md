@@ -279,8 +279,31 @@ pub fn action_bar_run_and_paste(result: String, app: AppHandle, source_pid: Opti
 | 源窗口 PID 捕获 | <5ms |
 | detect_selection | ~200-500ms（含 Cmd+C 模拟） |
 | overlay 显示 | <16ms（窗口已预创建，只 show + emit） |
-| 动作执行（LLM） | 1-10s（取决于模型） |
+| 动作执行（LLM） | 1-30s（silent 路径 30s 超时，其他路径 120s 默认） |
 | ActivateWindowByPid + 焦点稳定 | ~150ms |
 | paste（写剪贴板 + ⌘V + 恢复） | ~300ms |
+
+## 13. 取消机制
+
+silent 模式下 LLM 可能需要 1-30s，用户必须有取消能力。
+
+### 13.1 LLM 超时
+
+`chat_text_with_prompt` 新增 `timeout_secs: Option<u64>` 参数：
+- `None`：用全局默认 `HTTP_TIMEOUT_SECS`（120s）——现有路径保持不变
+- `Some(30)`：Run And Paste silent 路径用 30s 超时
+- 通过 `reqwest::blocking::RequestBuilder::timeout()` 覆盖 client 级超时（per-request）
+
+### 13.2 Esc 取消
+
+- overlay loading 状态显示"正在执行 {动作名}... · 按 Esc 取消"
+- overlay 窗口在 loading 期间监听 Esc 键（window keydown handler）
+- 按 Esc → `abort` worker 的 `JoinHandle`（`tokio::task::JoinHandle::abort()`）→ 隐藏 overlay → 结束
+- LLM HTTP 请求可能仍在后台跑完（reqwest blocking 无法真正中断），但结果被丢弃——不粘贴、不覆盖剪贴板
+- 用户感知：按 Esc → overlay 消失 → 回到原应用，无副作用
+
+### 13.3 超时处理
+
+LLM 30s 超时 → `reqwest` 返回超时错误 → overlay 显示"执行超时（30s）"3s → 隐藏 → 结束
 
 总预算：选中 → 粘贴 ≈ 2-12s（主要是 LLM 延迟，overlay 全程可见）。

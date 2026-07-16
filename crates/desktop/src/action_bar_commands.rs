@@ -856,7 +856,7 @@ pub(crate) fn do_translate(text: &str, config: &octopus_infra::config::AppConfig
             let llm_config = crate::config::llm_config_ignore_mode(config)
                 .ok_or_else(|| "翻译引擎未配置，请在设置中配置本地翻译模型或 LLM".to_string())?;
             let prompt = auto_translate_prompt(text);
-            octopus_llm::chat_text_with_prompt(prompt, text, &llm_config)
+            octopus_llm::chat_text_with_prompt(prompt, text, &llm_config, None)
                 .map_err(|e| e.to_string())
         }
     }
@@ -1325,7 +1325,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                         let config_clone = llm_config.clone();
                         // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
                         let result = tokio::task::spawn_blocking(move || {
-                            octopus_llm::chat_text_with_prompt(&prompt, &text_clone, &config_clone)
+                            octopus_llm::chat_text_with_prompt(&prompt, &text_clone, &config_clone, None)
                         }).await
                             .map_err(|e| format!("LLM 线程异常: {}", e))?
                             .map_err(|e| e.to_string())?;
@@ -1347,7 +1347,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let config_clone = llm_config.clone();
             // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
             let result = tokio::task::spawn_blocking(move || {
-                octopus_llm::chat_text_with_prompt(&prompt, &enriched_text, &config_clone)
+                octopus_llm::chat_text_with_prompt(&prompt, &enriched_text, &config_clone, None)
             }).await
                 .map_err(|e| format!("LLM 线程异常: {}", e))?
                 .map_err(|e| e.to_string())?;

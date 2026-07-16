@@ -67,9 +67,10 @@
 - [ ] 3.10 验证：`npm run build` + `cargo build`
 - [ ] 3.11 提交
 
-## Task 4: action_bar_run_and_paste 加 source_pid + 焦点恢复
+## Task 4: action_bar_run_and_paste 加 source_pid + 焦点恢复 + LLM 超时
 
-**文件**：`action_bar_commands.rs`
+**文件**：`action_bar_commands.rs`, `crates/llm/src/client.rs`
+**前置已完成**：`chat_text_with_prompt` 已加 `timeout_secs: Option<u64>` 参数（LLM 超时可配，默认 120s，silent 路径传 30s）。所有现有调用点已传 `None`。
 **Steps**：
 
 - [ ] 4.1 `action_bar_run_and_paste` 签名加 `source_pid: Option<i32>` 参数
@@ -95,11 +96,16 @@
   - 同步读源窗口 PID（NSWorkspace.frontmostApplication）
   - `detect_selection(app)` 读选中
   - 无选中 → `show_overlay_toast("请先选中文本", warn, 2000)` → return
-  - 有选中 → 隐藏 ActionBar（如可见）+ `show_overlay_loading(action_name)`
+  - 有选中 → 隐藏 ActionBar（如可见）+ `show_overlay_loading(action_name)` （含"按 Esc 取消"提示）
   - 读 DB 取 item（title 用于 overlay）
-  - `execute_action_bar_inner` 的 silent 版（不弹 CompactEditor）
+  - `execute_action_bar_inner` 的 silent 版（不弹 CompactEditor），LLM 调用传 `timeout_secs=Some(30)`（30s 超时）
   - 成功 → `action_bar_run_and_paste(result, app, Some(pid))`
+  - 超时 → `show_overlay_toast("执行超时（30s）", error, 3000)`
   - 失败 → `show_overlay_toast(error, error, 3000)`
+- [ ] 5.2b **Esc 取消**：overlay loading 期间监听 Esc → abort worker JoinHandle → 隐藏 overlay
+  - overlay 前端 keydown handler 捕获 Esc → `invoke("cancel_silent_action")`
+  - 后端 `cancel_silent_action` 命令 → `JoinHandle::abort()` + `hide_overlay_window`
+  - LLM HTTP 可能仍在后台跑完（reqwest blocking 不可中断），但结果被丢弃
 - [ ] 5.3 `execute_action_bar_inner` 的 silent 复用：现有 auto_paste 路径已走 `action_bar_run_and_paste`，只需确保 silent 调用时 `auto_paste=true` 生效。silent 路径调 `execute_action_bar` Tauri 命令（已有），但需要传一个 silent flag 避免弹 CompactEditor
   - 实际上 `execute_action_bar_inner` 里 auto_paste=true 时**已经不弹 CompactEditor**（走 run_and_paste return）。所以 silent 路径只需确保 item.auto_paste=true 即可
 - [ ] 5.4 `main.rs` setup 闭包加 `action_hotkey::register_action_hotkeys(app.handle())`
