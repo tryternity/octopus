@@ -2709,7 +2709,6 @@ mod tests {
         cfg.clipboard_max_items = 42;
         cfg.clipboard_max_age_days = 7;
         cfg.clipboard_enabled = false;
-        cfg.clipboard_tab_modifier = "alt".into();
         cfg.screenshot_shortcut = "Alt+6".into();
         cfg.ocr_model = "sentinel-ocr".into();
 

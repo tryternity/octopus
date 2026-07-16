@@ -88,8 +88,6 @@ settings:
     editShortcut: Voice Edit
     editShortcutHint: Invoke result window when any app is focused
     clipboardShortcut: Clipboard Float
-    clipboardTabShortcut: Clipboard Tab Switch
-    clipboardTabShortcutHint: Switch filter type in float window
     actionBarShortcut: Quick Panel
     actionBarShortcutHint: Press this key after selecting text
     screenshotShortcut: Screenshot OCR

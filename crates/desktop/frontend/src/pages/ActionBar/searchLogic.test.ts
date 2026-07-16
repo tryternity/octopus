@@ -3,6 +3,7 @@ import {
   determineExpandDirection,
   getTabByKey,
   getNextTab,
+  getVisibleTabs,
   getTabIndex,
   shouldTriggerDelayedSearch,
   isShellMode,
@@ -18,6 +19,8 @@ import {
   nextFocusLayerAfterExecute,
   calcMenuHeight,
   calcTotalHeight,
+  isMoveKey,
+  moveDirection,
 } from "./searchLogic";
 import type { SearchResult } from "./searchTypes";
 import { TABS } from "./searchTypes";
@@ -80,6 +83,7 @@ describe("getTabByKey", () => {
     expect(getTabByKey("f")).toBe("files");
     expect(getTabByKey("s")).toBe("shell");
     expect(getTabByKey("b")).toBe("bookmarks");
+    expect(getTabByKey("z")).toBe("actions");
   });
 
   it("无匹配返回 null", () => {
@@ -88,21 +92,44 @@ describe("getTabByKey", () => {
     expect(getTabByKey("A")).toBeNull(); // 大写不匹配
     expect(getTabByKey(" ")).toBeNull();
   });
+
+  it("hasContext=false 时 z（actions）不匹配 → null", () => {
+    expect(getTabByKey("z", false)).toBeNull();
+    expect(getTabByKey("a", false)).toBe("all"); // 其他 Tab 仍可用
+  });
+});
+
+// ── getVisibleTabs ──
+
+describe("getVisibleTabs", () => {
+  it("有选中（hasContext=true）→ 全部 6 个 Tab 含 actions", () => {
+    const tabs = getVisibleTabs(true);
+    expect(tabs).toHaveLength(6);
+    expect(tabs.find((t) => t.id === "actions")).toBeDefined();
+  });
+
+  it("无选中（hasContext=false，launch 模式）→ 5 个 Tab，无 actions", () => {
+    const tabs = getVisibleTabs(false);
+    expect(tabs).toHaveLength(5);
+    expect(tabs.find((t) => t.id === "actions")).toBeUndefined();
+  });
 });
 
 // ── getNextTab ──
 
 describe("getNextTab", () => {
-  it("正向循环 all → apps → files → shell → bookmarks → all", () => {
+  it("正向循环 all → apps → files → shell → bookmarks → actions → all", () => {
     expect(getNextTab("all", 1)).toBe("apps");
     expect(getNextTab("apps", 1)).toBe("files");
     expect(getNextTab("files", 1)).toBe("shell");
     expect(getNextTab("shell", 1)).toBe("bookmarks");
-    expect(getNextTab("bookmarks", 1)).toBe("all");
+    expect(getNextTab("bookmarks", 1)).toBe("actions");
+    expect(getNextTab("actions", 1)).toBe("all");
   });
 
-  it("反向循环 all → bookmarks → shell → files → apps → all", () => {
-    expect(getNextTab("all", -1)).toBe("bookmarks");
+  it("反向循环 all → actions → bookmarks → shell → files → apps → all", () => {
+    expect(getNextTab("all", -1)).toBe("actions");
+    expect(getNextTab("actions", -1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", -1)).toBe("shell");
     expect(getNextTab("shell", -1)).toBe("files");
     expect(getNextTab("files", -1)).toBe("apps");
@@ -131,8 +158,8 @@ describe("getTabIndex", () => {
     expect(getTabIndex("invalid")).toBe(-1);
   });
 
-  it("TABS 长度为 5", () => {
-    expect(TABS.length).toBe(5);
+  it("TABS 长度为 6", () => {
+    expect(TABS.length).toBe(6);
   });
 });
 
@@ -283,6 +310,12 @@ describe("filterByTab", () => {
     expect(filtered[0].source).toBe("bookmark");
   });
 
+  it("actions → 仅 menu 来源（不含 quicklink/app/file 等）", () => {
+    const filtered = filterByTab(results, "actions");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].source).toBe("menu");
+  });
+
   it("空列表 → 空列表", () => {
     expect(filterByTab([], "all")).toEqual([]);
   });
@@ -311,44 +344,44 @@ describe("parseActionData", () => {
 // ── calcResultsHeight ──
 
 describe("calcResultsHeight", () => {
-  it("0 结果 → 0px", () => {
-    expect(calcResultsHeight(0)).toBe(36);
+  it("0 结果 → 1 行兜底（RESULT_ROW_HEIGHT）", () => {
+    expect(calcResultsHeight(0)).toBe(49);
   });
 
-  it("1-10 结果 → 按行高 36px 计算", () => {
-    expect(calcResultsHeight(1)).toBe(36);
-    expect(calcResultsHeight(5)).toBe(180);
-    expect(calcResultsHeight(10)).toBe(360);
+  it("1-10 结果 → 按行高 49px 计算", () => {
+    expect(calcResultsHeight(1)).toBe(49);
+    expect(calcResultsHeight(5)).toBe(245);
+    expect(calcResultsHeight(10)).toBe(490);
   });
 
-  it("> 10 结果 → 截断到 10 行（360px）", () => {
-    expect(calcResultsHeight(15)).toBe(360);
-    expect(calcResultsHeight(100)).toBe(360);
+  it("> 10 结果 → 截断到 10 行（490px）", () => {
+    expect(calcResultsHeight(15)).toBe(490);
+    expect(calcResultsHeight(100)).toBe(490);
   });
 
-  it("负数 → 0px", () => {
-    expect(calcResultsHeight(-5)).toBe(36);
+  it("负数 → 1 行兜底", () => {
+    expect(calcResultsHeight(-5)).toBe(49);
   });
 });
 
 // ── calcPanelHeight ──
 
 describe("calcPanelHeight", () => {
-  it("0 结果 → 输入框 + Tab 栏高度", () => {
-    // INPUT_HEIGHT(36) + TAB_BAR_HEIGHT(30) + 0 = 66
-    expect(calcPanelHeight(0)).toBe(102);
+  it("0 结果 → 输入框 + Tab 栏 + 1 行（calcResultsHeight(0)=RESULT_ROW_HEIGHT）", () => {
+    // INPUT_HEIGHT(44) + TAB_BAR_HEIGHT(30) + calcResultsHeight(0)=49 = 123
+    expect(calcPanelHeight(0)).toBe(123);
   });
 
-  it("5 结果 → 66 + 180 = 246", () => {
-    expect(calcPanelHeight(5)).toBe(246);
+  it("5 结果 → 44 + 30 + 245 = 319", () => {
+    expect(calcPanelHeight(5)).toBe(319);
   });
 
-  it("10 结果 → 66 + 360 = 426", () => {
-    expect(calcPanelHeight(10)).toBe(426);
+  it("10 结果 → 44 + 30 + 490 = 564", () => {
+    expect(calcPanelHeight(10)).toBe(564);
   });
 
   it("> 10 结果 → 截断到 10 行", () => {
-    expect(calcPanelHeight(20)).toBe(426);
+    expect(calcPanelHeight(20)).toBe(564);
   });
 });
 
@@ -455,16 +488,16 @@ describe("calcMenuHeight", () => {
     expect(calcMenuHeight(false, "loading")).toBe(0);
   });
 
-  it("有选中 + view=main → MENU_HEIGHT_MAIN (40)", () => {
-    expect(calcMenuHeight(true, "main")).toBe(40);
+  it("有选中 + view=main → MENU_HEIGHT_MAIN (42)", () => {
+    expect(calcMenuHeight(true, "main")).toBe(42);
   });
 
-  it("有选中 + view=submenu → MENU_HEIGHT_SUBMENU (78)", () => {
-    expect(calcMenuHeight(true, "submenu")).toBe(78);
+  it("有选中 + view=submenu → MENU_HEIGHT_SUBMENU (85)", () => {
+    expect(calcMenuHeight(true, "submenu")).toBe(85);
   });
 
-  it("有选中 + view=loading → MENU_HEIGHT_LOADING (48)", () => {
-    expect(calcMenuHeight(true, "loading")).toBe(48);
+  it("有选中 + view=loading → MENU_HEIGHT_LOADING (50)", () => {
+    expect(calcMenuHeight(true, "loading")).toBe(50);
   });
 
   it("回归：有选中时菜单条高度必须 > 0（防 resize 裁剪菜单）", () => {
@@ -478,15 +511,15 @@ describe("calcMenuHeight", () => {
 
 describe("calcTotalHeight", () => {
   it("无选中菜单模式 = 输入框 + 0", () => {
-    expect(calcTotalHeight(false, false, "main", 0)).toBe(36);
+    expect(calcTotalHeight(false, false, "main", 0)).toBe(44);
   });
 
   it("有选中菜单模式 main = 输入框 + MENU_HEIGHT_MAIN", () => {
-    expect(calcTotalHeight(false, true, "main", 0)).toBe(36 + 40);
+    expect(calcTotalHeight(false, true, "main", 0)).toBe(44 + 42);
   });
 
   it("有选中菜单模式 submenu = 输入框 + MENU_HEIGHT_SUBMENU", () => {
-    expect(calcTotalHeight(false, true, "submenu", 0)).toBe(36 + 78);
+    expect(calcTotalHeight(false, true, "submenu", 0)).toBe(44 + 85);
   });
 
   it("搜索模式 = 输入框 + Tab栏 + 结果区（不受 context/view 影响）", () => {
@@ -494,6 +527,64 @@ describe("calcTotalHeight", () => {
     const withContext = calcTotalHeight(true, true, "main", 5);
     const noContext = calcTotalHeight(true, false, "main", 5);
     expect(withContext).toBe(noContext);
-    expect(withContext).toBe(36 + 30 + calcResultsHeight(5));
+    expect(withContext).toBe(44 + 30 + calcResultsHeight(5));
+  });
+});
+
+// ── isMoveKey / moveDirection ──
+
+describe("isMoveKey", () => {
+  it("Tab 始终是移动键（不受 ARROW_AS_TAB 影响）", () => {
+    expect(isMoveKey("Tab", true)).toBe(true);
+    expect(isMoveKey("Tab", false)).toBe(true);
+  });
+
+  it("ARROW_AS_TAB=true 时 ←/→ 是移动键", () => {
+    expect(isMoveKey("ArrowLeft", true)).toBe(true);
+    expect(isMoveKey("ArrowRight", true)).toBe(true);
+  });
+
+  it("ARROW_AS_TAB=false 时 ←/→ 不是移动键", () => {
+    expect(isMoveKey("ArrowLeft", false)).toBe(false);
+    expect(isMoveKey("ArrowRight", false)).toBe(false);
+  });
+
+  it("其他键（字母/数字/↑↓/Enter）不是移动键", () => {
+    expect(isMoveKey("a", true)).toBe(false);
+    expect(isMoveKey("ArrowUp", true)).toBe(false);
+    expect(isMoveKey("ArrowDown", true)).toBe(false);
+    expect(isMoveKey("Enter", true)).toBe(false);
+    expect(isMoveKey(" ", true)).toBe(false);
+  });
+});
+
+describe("moveDirection", () => {
+  it("Tab → 正向（shiftKey=false）", () => {
+    expect(moveDirection("Tab", false, true)).toBe(true);
+    expect(moveDirection("Tab", false, false)).toBe(true);
+  });
+
+  it("Shift+Tab → 反向（shiftKey=true）", () => {
+    expect(moveDirection("Tab", true, true)).toBe(false);
+    expect(moveDirection("Tab", true, false)).toBe(false);
+  });
+
+  it("ARROW_AS_TAB=true：→ 正向，← 反向", () => {
+    expect(moveDirection("ArrowRight", false, true)).toBe(true);
+    expect(moveDirection("ArrowLeft", false, true)).toBe(false);
+    // shiftKey 不影响左右键方向（← 永远反向，→ 永远正向）
+    expect(moveDirection("ArrowRight", true, true)).toBe(true);
+    expect(moveDirection("ArrowLeft", true, true)).toBe(false);
+  });
+
+  it("ARROW_AS_TAB=false：←/→ 不是移动键 → null", () => {
+    expect(moveDirection("ArrowRight", false, false)).toBeNull();
+    expect(moveDirection("ArrowLeft", false, false)).toBeNull();
+  });
+
+  it("非移动键 → null", () => {
+    expect(moveDirection("a", false, true)).toBeNull();
+    expect(moveDirection("Enter", false, true)).toBeNull();
+    expect(moveDirection("ArrowUp", false, true)).toBeNull();
   });
 });

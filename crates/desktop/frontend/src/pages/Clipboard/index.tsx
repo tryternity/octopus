@@ -44,8 +44,6 @@ export default function Clipboard() {
   // 一键清理两步确认：点 1 次 → confirming=true（变红 + 3s 超时），再点才执行。
   const [confirming, setConfirming] = useState(false);
   const confirmTimer = useRef<number | null>(null);
-  // 浮窗内切 Tab 的修饰键（cmd/ctrl/alt），由设置页配置，默认 ctrl。
-  const tabModifierRef = useRef<"cmd" | "ctrl" | "alt">("ctrl");
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
 
@@ -184,13 +182,10 @@ export default function Clipboard() {
         setFilter(TABS_VALUES[next]);
         return;
       }
-      // +1..7：直接跳 tab。修饰键由设置页配置（cmd/ctrl/alt），默认 ctrl。
-      // 注意：cmd 在 Accessory 激活策略下可能被前一 app 菜单栏 key equivalent 拦截。
-      // 用 e.code（物理键位）而非 e.key（产生的字符）——macOS Option+数字会产生
-      // 特殊字符（Option+1="¡"），e.key 不匹配 "1".."7"。
-      const mod = tabModifierRef.current;
-      const modPressed = mod === "cmd" ? e.metaKey : mod === "ctrl" ? e.ctrlKey : e.altKey;
-      const digitMatch = modPressed ? e.code.match(/^Digit([1-7])$/) : null;
+      // Ctrl+1..7：直接跳 tab（写死，不可配置）。
+      // 不用 cmd：Accessory 激活策略下会被前一 app 菜单栏 key equivalent 拦截。
+      // 用 e.code（物理键位）而非 e.key——避免 macOS Option+数字产生特殊字符。
+      const digitMatch = e.ctrlKey ? e.code.match(/^Digit([1-7])$/) : null;
       if (digitMatch) {
         e.preventDefault();
         const n = parseInt(digitMatch[1], 10) - 1;
@@ -202,15 +197,11 @@ export default function Clipboard() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // 监听开关 + Tab 修饰键：mount 读 get_config + 监听 config-changed 同步。
+  // 监听开关：mount 读 get_config + 监听 config-changed 同步。
   const loadRecording = useCallback(async () => {
     try {
       const resp = await invoke<ConfigResponse>("get_config");
       setRecording(resp.config.clipboard_enabled !== false);
-      const mod = resp.config.clipboard_tab_modifier as string;
-      if (mod === "cmd" || mod === "ctrl" || mod === "alt") {
-        tabModifierRef.current = mod;
-      }
     } catch (e) {
       console.error(e);
     }

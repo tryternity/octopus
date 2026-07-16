@@ -247,12 +247,12 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 | `Esc` | 有搜索内容清空、已空隐藏浮窗 |
 | `←→` | **仅搜索框为空时**循环切 tab（有内容让出给光标移动） |
 | `Tab/Shift+Tab` | 无论搜索框是否有内容都循环切 tab |
-| `<mod>+1..7` | 直接跳 tab——`mod` 由设置项 `clipboard_tab_modifier` 配置（`cmd`/`ctrl`/`alt`，**默认 `ctrl`**），用 `e.code`（物理键位 `Digit[1-7]`）匹配非 `e.key`（macOS Option+数字产生特殊字符如 `¡`） |
+| `Ctrl+1..7` | 直接跳 tab（写死，不可配置；不用 cmd 防 Accessory 策略下菜单栏拦截），用 `e.code`（物理键位 `Digit[1-7]`）匹配非 `e.key`（macOS Option+数字产生特殊字符如 `¡`） |
 
 - `selectedIndex` 索引驱动（非 `selectedId`）；items 变化（过滤/搜索/刷新）时 useEffect 夹紧越界索引。
 - TABS 顺序：all/favorite/asr/text/ocr/image/file（favorite 第 2）。
-- **修饰键默认 `Ctrl` 非 `Cmd`**：octopus 激活策略为 Accessory，浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 `Cmd+digit`；`Ctrl` 不产生特殊字符、非标准 menu equivalent、跨平台一致。用户可在设置页改回 `cmd`/`alt`。
-- **闭包陷阱**：window keydown handler 用 `itemsRef`/`selectedIndexRef`/`searchRef`/`filterRef`/`tabModifierRef` 存最新值，避免注册时闭包过期。
+- **写死 `Ctrl` 非 `Cmd`**：octopus 激活策略为 Accessory，浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 `Cmd+digit`；`Ctrl` 不产生特殊字符、非标准 menu equivalent、跨平台一致。固定 Ctrl 不再开放配置（原 `clipboard_tab_modifier` 配置项已移除）。
+- **闭包陷阱**：window keydown handler 用 `itemsRef`/`selectedIndexRef`/`searchRef`/`filterRef` 存最新值，避免注册时闭包过期。
 - `moveIndex`（边界夹紧，null 初态按方向落到首/末）/ `moveTab`（循环 `(cur+delta+len)%len`）抽纯函数单测。
 
 ### 12.4 一键清理（`clear_history_by_filter`）

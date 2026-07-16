@@ -259,16 +259,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
           <Row label={t("settings.general.clipboardShortcut")} effect={t("settings.effect.now")}>
             <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
           </Row>
-          <Row label={t("settings.general.clipboardTabShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.clipboardTabShortcutHint")}>
-            <div className="flex items-center gap-1.5">
-              <select className={selectClass + " min-w-[120px]"} value={(cfg.clipboard_tab_modifier as string) || "ctrl"} onChange={(e) => setVal("clipboard_tab_modifier", e.target.value)}>
-                <option value="cmd">⌘ Command</option>
-                <option value="ctrl">⌃ Control</option>
-                <option value="alt">⌥ Option</option>
-              </select>
-              <span className="text-xs text-muted-foreground">+ 1..7</span>
-            </div>
-          </Row>
         </Card>
       )}
 

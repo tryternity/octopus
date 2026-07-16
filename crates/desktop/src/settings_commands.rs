@@ -350,13 +350,6 @@ fn apply_config_value(
         "clipboard_enabled" => {
             cfg.clipboard_enabled = value.as_bool().ok_or("clipboard_enabled 需要 bool")?;
         }
-        "clipboard_tab_modifier" => {
-            let v = value.as_str().ok_or("clipboard_tab_modifier 需要字符串")?;
-            if !["cmd", "ctrl", "alt"].contains(&v) {
-                return Err(format!("clipboard_tab_modifier 非法值 '{}'（应为 cmd/ctrl/alt）", v));
-            }
-            cfg.clipboard_tab_modifier = v.to_string();
-        }
         "clipboard_theme" => {
             cfg.clipboard_theme = value.as_str().ok_or("clipboard_theme 需要字符串")?.to_string();
         }

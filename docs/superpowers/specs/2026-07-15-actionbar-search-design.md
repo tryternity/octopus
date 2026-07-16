@@ -64,6 +64,22 @@
 
 快速 Tab 切换时，`setSize` + `setPosition` 用 generation token 保证只有最新一次 resize 生效，且两者串行 await——防异步乱序导致输入框被覆盖。
 
+### 2.6 视觉规格（参考 Wox 风格，CSS 变量 token 多主题适配）
+
+| 属性 | 值 | 说明 |
+|------|-----|------|
+| 窗口宽度 | 480px | `WINDOW_WIDTH` 常量（Rust `inner_size` + `WIN_W` + 前端 `setSize` 三处一致） |
+| 窗口圆角 | 10px | `rounded-[10px]`（参考 Wox dark `queryBoxBorderRadius=8`，取 10 更柔和） |
+| 背景透明度 | 90% | `bg-background/90`（Wox dark `rgba(...,0.75)`，取 90 防背后文字穿透） |
+| 毛玻璃模糊 | 40px | `backdrop-blur-2xl` |
+| 阴影 | `shadow-black/20` | `shadow-2xl shadow-black/20` |
+| 边框 | `border-border/40` | 微妙分隔 |
+| 输入框高度 | 44px | `INPUT_HEIGHT`（字号 15px，图标 18px，padding px-4） |
+| 结果行高 | 49px | `RESULT_ROW_HEIGHT`（CSS 理论 py-2+badge=38，实测含 baseline/圆角需 49） |
+| SourceBadge | 22px | `h-[22px] w-[22px]`（Lucide SVG 图标，非 emoji） |
+| 选中态 | `bg-voice/12` + 左侧 3px 色条 | `absolute left-0 h-5 w-[3px] bg-voice` |
+| 菜单条 IconBtn | py-[7px] + badge 20px + label 11px | 激活 `bg-voice/15 ring-1 ring-inset ring-voice/20` |
+
 ## 3. 搜索引擎
 
 ### 3.1 搜索来源
@@ -112,13 +128,14 @@
 
 ### 3.4 结果分组与 Tab
 
-Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
+Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B] [动作 ⌥Z]`
 
 - `全部 ⌥A`：混合展示所有来源结果，按优先级排序
 - `应用 ⌥D`：仅 source === "app"
 - `文件 ⌥F`：仅 source === "file"
 - `Shell ⌥S`：`>` 前缀路由的 shell 命令
 - `书签 ⌥B`：仅 source === "bookmark"
+- `动作 ⌥Z`：仅 source === "menu"（用户配置的可执行动作项——翻译/AI/脚本/复制路径/agent 等，从 `action_bar_items` 表匹配；不含 quicklink/app/file/bookmark）
 
 **菜单项 accepts 过滤**：搜索结果中的 menu/quicklink 来源按 `context.accepts` 过滤。无选中（context=null）时仅显示 `accepts="any"` 的项。
 
@@ -132,13 +149,14 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 
 | 按键 | 行为 |
 |------|------|
-| `Alt+A`/`D`/`F`/`S`/`B` | 跳到对应 Tab 页（全部/应用/文件/Shell/书签） |
-| `Tab` / `Shift+Tab` | 循环切换 Tab 页（all → apps → files → shell → bookmarks → all，不回搜索框） |
+| `Alt+A`/`D`/`F`/`S`/`B`/`Z` | 跳到对应 Tab 页（全部/应用/文件/Shell/书签/动作） |
+| `Tab` / `Shift+Tab` | 循环切换 Tab 页（all → apps → files → shell → bookmarks → actions → all，不回搜索框） |
+| `←/→`（`ARROW_AS_TAB=true`）| 循环切换 Tab 页（→ 正向，← 反向，等同 Tab/Shift+Tab） |
 | `↑↓` | 导航结果列表（输入框始终保留 focus） |
 | `Enter` | 执行选中项（无选中时执行第一个） |
 | 其他键 | 交给输入框（参与搜索过滤） |
 
-**Tab 栏按钮显示**：`全部 ⌥A`、`应用 ⌥D`、`文件 ⌥F`、`Shell ⌥S`、`书签 ⌥B`——快捷键字母大写，放在文字后面，样式弱化（`text-[9px]`、`font-mono`）。
+**Tab 栏按钮显示**：`全部 ⌥A`、`应用 ⌥D`、`文件 ⌥F`、`Shell ⌥S`、`书签 ⌥B`、`动作 ⌥Z`——快捷键字母大写，放在文字后面，样式弱化（`text-[9px]`、`font-mono`）。
 
 #### 3.5.2 菜单模式（query 为空）
 
@@ -147,11 +165,22 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 | `Cmd/Ctrl+数字/字母` | 执行菜单项（按菜单项配置的 `shortcut` 匹配，跨主/子菜单层级） |
 | `Alt+数字/字母` | 定位菜单项（`labelToIndex`：1-9→索引 0-8，a-z→索引 9-34，最多 35 项；选中不执行） |
 | `Tab` / `Shift+Tab` | 主菜单项 / 子菜单项间循环移动（submenu 项自动展开子菜单预览） |
+| `←/→`（`ARROW_AS_TAB=true`）| 菜单项间移动（→ 正向，← 反向，等同 Tab/Shift+Tab） |
 | `↑↓` | 切换焦点层 main↔sub（不展开/收起子菜单，展开由 Tab 控制） |
 | `Enter` / `Space` | 执行当前选中菜单项 |
 | 无修饰字符 | 进输入框触发搜索过滤（切换到搜索模式） |
 
-- **input 始终聚焦 + 无回车**：放行规则 `navKeys=["ArrowUp","ArrowDown","Tab","Enter"," "]` + `!e.altKey && !e.metaKey && !e.ctrlKey`——导航键与修饰键组合由 handler 拦截，其余字符放行进输入框。input 无多行/回车概念，Enter 执行菜单项而非提交输入框。
+**`ARROW_AS_TAB` 开关**（`index.tsx` 顶部常量，默认 `true`）：
+- `true`：←/→ 在菜单项/Tab 页间移动（ActionBar 场景下输入框内容短，左右键挪给导航更实用）
+- `false`：←/→ 放行给输入框移光标（原行为）
+- 搜索模式不受影响（始终移光标）——**统一后两种模式行为一致**：←/→ 在搜索模式切 Tab 页、在菜单模式移菜单项
+
+**统一输入放行**（双模式共享，提到 `hasQuery` 分支之前）：
+- 无修饰 + 非导航键（Tab/Arrow/Enter/Space）→ `return` 放行给 input 原生处理
+- 修饰键(Alt/Cmd/Ctrl) → 交各自模式分支处理
+- 这样两种模式对输入框输入**完全一致**，不再有菜单模式特有的字符重复
+
+- **input 始终聚焦 + 无回车**：input 无多行/回车概念，Enter 执行菜单项而非提交输入框。
 - **IconBtn 提示**：`title` 显示「`Alt+{indexLabel}` 定位 · `⌘{shortcut}` 执行」；徽章显示 `⌘{shortcut}`。
 
 #### 3.5.3 通用按键
@@ -161,11 +190,11 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 | `Escape` | 有查询→清空；无查询→dismiss；**loading 视图也生效** |
 | 再按热键 | 窗口已可见 → 隐藏（toggle 语义，走 `hide_action_bar_window` 统一收口） |
 
-**IME Enter 处理**（双模式共用）：
+**IME 处理**（双模式共用，统一在 handler 顶部拦截）：
+- `keyCode === 229 || e.isComposing` → 一律 `return` 放行，handler 不干预。IME 接管输入组合，不 preventDefault、不路由到导航分支。
 - macOS 事件序列：IME 选词 = `keydown(keyCode=229)` → `compositionend` → `keydown(Enter, 13)`
-- 纯英文 Enter = `keydown(Enter, 13)`，前面没有 229
-- 实现：window keydown handler 记录 keyCode 229 的时间戳，Enter(13) 在 229 后 500ms 内 → 跳过（选词确认），否则正常执行
-- **不依赖** `isComposing`（window 级时序不可靠）和 `compositionend`（WKWebView 空组合会误触发）
+- Enter(13) 在 229/isComposing 后 500ms 内 → 跳过（选词确认），否则正常执行
+- **为何 `isComposing` 也要拦**：WKWebView 的 IME 组合期间，部分按键 `keyCode≠229` 但 `isComposing=true`。若不拦，菜单模式放行逻辑的条件分支会吃掉这些按键（input 没收到原生 keydown，但 IME compositionend 仍插入字符 → 字符重复，如输 `wx` 变 `wwx`）。统一在顶部拦截后，两种模式行为完全一致。
 - **DOM focus 策略**：input 永远不 blur 也不设 readOnly——因为没有"结果区焦点"概念，字母键直接进入输入框参与搜索过滤
 
 **菜单模式 submenu 展开 × focusLayer 契约**（S3 修复）：
@@ -183,11 +212,13 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B]`
 - 键盘 ↑↓ 改变 `selectedIdx` 后也启动 200ms 抑制——防键盘选中后鼠标轻微移动覆盖选中（L1）
 - 结果列表变化时 `searchSelectedIdx` 重置为 0（用户输入时焦点在搜索框，选中应始终是第一个）
 
-**窗口 resize 序列化**：
+**窗口 resize 序列化 + 实测修正**：
 - `setSize` + `setPosition` 用 generation token 保证只有最新一次 resize 生效
 - 两者串行 await——防快速 Tab 切换时异步乱序导致输入框被覆盖
 - TabBar 固定 `h-[30px]`，Tab 按钮用 `transition-colors`（非 `transition-all`）——防 active 切换时尺寸微变导致布局晃动
 - **resize 后重新 focus**：`setSize`/`setPosition` 在 macOS 调整 NSWindow frame 会触发 webview blur（query 变化、搜索结果展开时尤其明显——「打第一个字母即失焦」）；`apply` effect 在 resize 完成后若 `activeElement !== inputRef` 则重新 `inputRef.focus()`，保证连续输入不中断
+- **两阶段 resize**（跨平台/DPR/分辨率自适应）：阶段 1 用估算常量（`calcResultsHeight`/`calcMenuHeight`）初步 `setSize`；阶段 2 在 `await setSize` resolve 后（DOM 已重排）实测 `actionBarRef.scrollHeight`，差 > 1px 则二次 `setSize` 精确修正（+2px 圆角预留）。不再依赖估算常量的精确性——CSS 渲染高度受 baseline 对齐/line-height/Retina 取整/圆角影响，估算总有偏差，实测兜底
+- **窗口宽度**：`WINDOW_WIDTH=480`（searchTypes.ts），与 Rust `inner_size` + `WIN_W` 三处一致；resize effect 的 `setSize` 用此常量（防前端覆盖 Rust 创建时的宽度）
 
 **快捷键 toggle**：
 - 窗口已可见时再按热键 → 隐藏（等同 Escape，走 `hide_action_bar_window` 统一收口，非裸 `win.hide()`）

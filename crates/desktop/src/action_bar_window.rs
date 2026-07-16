@@ -16,7 +16,7 @@ pub fn create_action_bar_window(app: &AppHandle) {
         WebviewUrl::default(),
     )
     .title("")
-    .inner_size(380.0, 76.0) // 每行 ~36px × 2 + padding + 2px 余量
+    .inner_size(480.0, 76.0) // 宽 480（大气 + 不遮挡），初始高度由 resize effect 调整
     .decorations(false)
     .always_on_top(true)
     .transparent(true)

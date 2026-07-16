@@ -199,11 +199,6 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_enabled")]
     pub clipboard_enabled: bool,
 
-    /// 剪贴板浮窗内切 Tab 的修饰键（cmd/ctrl/alt）。默认 ctrl。
-    /// cmd 在 Accessory 激活策略下可能被前一 app 菜单栏 key equivalent 拦截。
-    #[serde(default = "default_clipboard_tab_modifier")]
-    pub clipboard_tab_modifier: String,
-
     /// UI 主题 id（light / glass-dark / nord / 用户自定义）。默认 light。
     #[serde(default = "default_clipboard_theme")]
     pub clipboard_theme: String,
@@ -310,9 +305,6 @@ fn default_clipboard_max_age_days() -> i64 {
 fn default_clipboard_enabled() -> bool {
     true
 }
-fn default_clipboard_tab_modifier() -> String {
-    "ctrl".into()
-}
 fn default_clipboard_theme() -> String {
     "light".into()
 }
@@ -369,7 +361,6 @@ impl Default for AppConfig {
             clipboard_max_items: default_clipboard_max_items(),
             clipboard_max_age_days: default_clipboard_max_age_days(),
             clipboard_enabled: default_clipboard_enabled(),
-            clipboard_tab_modifier: default_clipboard_tab_modifier(),
             clipboard_theme: default_clipboard_theme(),
             action_bar_shortcut: default_action_bar_shortcut(),
             action_bar_search_engine: default_action_bar_search_engine(),

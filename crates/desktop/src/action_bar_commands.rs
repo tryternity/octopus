@@ -300,11 +300,11 @@ pub fn trigger_action_bar(app: AppHandle) {
 fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
     let (mx, my) = mouse;
     // 不截断——副屏在主屏左/上方时坐标可为负值
-    let mut win_x = mx - 190.0;
+    let mut win_x = mx - 240.0;
     let win_y = my - 42.0;
 
     // 碰撞检测：防止浮窗溢出显示器边缘
-    const WIN_W: f64 = 380.0;
+    const WIN_W: f64 = 480.0;
     if let Some(monitor) = app.available_monitors().ok().and_then(|monitors| {
         monitors.into_iter().find(|m| {
             let scale = m.scale_factor();
@@ -333,7 +333,7 @@ fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
 
 /// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
 fn show_action_bar_centered(app: &AppHandle) {
-    const WIN_W: f64 = 380.0;
+    const WIN_W: f64 = 480.0;
 
     // 强制用主显示器
     let (mon_x, mon_y, mon_w, mon_h) = match app.primary_monitor().ok().flatten() {

@@ -251,3 +251,27 @@
 **测试防护（防回归）**：
 - 前端：`calcMenuHeight` / `calcTotalHeight` 纯函数 + 9 个单测（无选中→0、有选中各 view→40/78/48、搜索模式不受 context 影响）。锁住"有选中时菜单条高度必须 > 0"核心不变量
 - 后端：`extract_sublime_selection(full_text, sel_start, sel_end)` 纯函数 + 8 个单测（无选中 sel_start==sel_end→None、反向选区→None、CJK 字符偏移、空白选中→None、越界 clamp、空文本→None）。锁住"sel_start < sel_end 且非空白→Some"核心不变量，防 detect 对 Sublime 误判回退到 Cmd+C
+
+### 第十五轮（视觉重构 + 键盘导航增强 + 实测 resize + IME 统一）
+
+**视觉重构（参考 Wox 风格，CSS 变量 token 多主题适配）**：
+- 浮窗外壳：圆角 8→10px、透明度 95→90%、模糊 xl→2xl(40px)、阴影 /10→/20、宽度 380→480px
+- 搜索框：高度 36→44px、字号 12→15px、图标 3.5→18px、padding px-3→px-4
+- IconBtn：padding/圆角/激活态（`bg-voice/15 ring-1`）/序号 badge 18→20px/label 10→11px
+- ResultRow：padding 加宽、选中态 `bg-voice/12` + 左侧 3px 色条、标题 12→13px、SourceBadge emoji→Lucide SVG（Package/FileText/Terminal/Bookmark/Zap/Link）
+- TabButton：激活 `bg-voice/15`、圆角 md→6px、label 10→11px
+
+**键盘导航增强**：
+- `ARROW_AS_TAB` 开关（默认 true）：菜单模式 ←/→ 移动菜单项、搜索模式 ←/→ 切换 Tab 页（与 Tab/Shift+Tab 等效）。false 时 ←/→ 移光标（原行为）
+- Tab handler 抽 `isMoveKey` 统一路由 Tab + ARROW_AS_TAB 时的左右键，`forward` 方向：Tab 看 shiftKey、→ 正向、← 反向
+
+**IME 统一放行**（修复菜单模式输 wx 变 wwx）：
+- 根因：菜单模式放行逻辑（`document.activeElement === input && !alt && !meta && !ctrl`）未检查 `isComposing`。IME 组合期间 `keyCode≠229 && isComposing=true` 的按键被条件分支吃掉，input 没收到原生 keydown，但 IME compositionend 仍插入字符 → 字符重复
+- 修复：IME 拦截从 `keyCode === 229` 扩展为 `keyCode === 229 || isComposing`，统一在 handler 顶部放行。同时把"无修饰可打印字符放行"从两处（搜索/菜单各自）合并为一处（提到 `hasQuery` 分支之前），两种模式对输入框输入完全一致
+
+**实测 resize（跨平台/DPR/分辨率自适应）**：
+- 根因：`RESULT_ROW_HEIGHT`/`MENU_HEIGHT_*` 等 JS 常量估算 CSS 渲染高度，受 baseline 对齐/line-height/Retina 取整/圆角影响总有偏差（CSS 理论 38px，实测需 49px）
+- 修复：两阶段 resize——阶段 1 估算 `setSize` → 阶段 2 `await` 后实测 `actionBarRef.scrollHeight`，差 > 1px 二次 `setSize` 修正（+2px 圆角预留）。常量不再需要精确，实测兜底
+- `scrollIntoView` 改手动 `scrollTop`（getBoundingClientRect 比较）——防结果少时 `scrollIntoView` 向外找祖先链滚动整个 webview，导致列表盖住搜索框
+
+**文档同步**：spec §2.6（视觉规格表）/ §3.5（左右键 + 统一放行 + IME）/ §4.0（两阶段 resize + 窗口宽度）；plan 第十五轮

@@ -10,6 +10,7 @@ import SearchPanel from "./SearchPanel";
 import {
   INPUT_HEIGHT,
   TAB_BAR_HEIGHT,
+  WINDOW_WIDTH,
   DELAYED_SEARCH_DEBOUNCE_MS,
   type TabId,
   type View,
@@ -29,6 +30,7 @@ import {
   hasQuery,
   nextFocusLayerAfterExecute,
   calcMenuHeight,
+  moveDirection,
 } from "./searchLogic";
 
 type ContextKind = "text" | "files";
@@ -72,6 +74,13 @@ interface ActionBarItem {
 
 const AI_TIMEOUT_MS = 10000;
 
+/** 菜单模式左右键行为开关。
+ *  - true（默认）：←/→ 在菜单项间移动（等同 Tab/Shift+Tab）， ActionBar 场景下输入框
+ *    无需手动移光标（内容短），左右键挪给菜单导航更实用。
+ *  - false：←/→ 放行给输入框移光标（原行为）。
+ *  搜索模式不受影响（←/→ 始终移光标，搜索模式无"菜单项间移动"概念）。 */
+const ARROW_AS_TAB = true;
+
 import { indexLabel, labelToIndex } from "./label";
 
 /** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
@@ -90,9 +99,9 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   <button
     ref={btnRef}
     className={cn(
-      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150 shrink-0",
+      "flex items-center gap-1.5 px-2.5 py-[7px] rounded-[8px] transition-all duration-150 shrink-0",
       active
-        ? "bg-voice/12 text-voice"
+        ? "bg-voice/15 text-voice ring-1 ring-inset ring-voice/20"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
     )}
     onMouseDown={(e) => e.stopPropagation()}
@@ -101,17 +110,17 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   >
     <span
       className={cn(
-        "inline-flex h-[18px] w-[18px] items-center justify-center rounded-md font-mono text-[11px] font-semibold tabular-nums leading-none",
+        "inline-flex h-[20px] w-[20px] items-center justify-center rounded-[6px] font-mono text-[11px] font-semibold tabular-nums leading-none",
         active
           ? "bg-voice text-white"
-          : "bg-muted text-muted-foreground",
+          : "bg-muted/60 text-muted-foreground",
       )}
     >
       {indexLabel(index)}
     </span>
-    <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
+    <span className="text-[11px] font-medium leading-none whitespace-nowrap">{label}</span>
     {shortcut && (
-      <span className="text-[9px] text-voice/70 font-mono leading-none">⌘{shortcut}</span>
+      <span className="text-[9px] text-voice/60 font-mono leading-none">⌘{shortcut}</span>
     )}
   </button>
 );
@@ -190,6 +199,8 @@ export default function ActionBar() {
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastImeKeyTime = useRef(0);
   const showTimeRef = useRef(0);
+  // 浮窗根容器 ref——resize effect 实测 scrollHeight 精确修正窗口高度（不再依赖估算常量）
+  const actionBarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -270,11 +281,25 @@ export default function ActionBar() {
     const gen = ++resizeGenRef.current;
     const apply = async () => {
       if (gen !== resizeGenRef.current) return; // 已被更新一代取代
-      await win.setSize(new LogicalSize(380, totalHeight));
+      // 阶段 1：用估算常量初步 setSize，让 DOM 按新窗口尺寸重排
+      await win.setSize(new LogicalSize(WINDOW_WIDTH, totalHeight));
       if (gen !== resizeGenRef.current) return;
       if (targetX !== null && targetY !== null) {
         await win.setPosition(new LogicalPosition(targetX, targetY));
       }
+
+      // 阶段 2：实测根容器实际高度，精确修正窗口。
+      // setSize resolve 后 webview 已按新尺寸重排，scrollHeight 是准确的。
+      // 不再依赖估算常量——跨平台/DPR/分辨率/字体变化自适应，无闪烁（paint 前完成修正）。
+      // +2px 圆角预留：rounded-[10px] 底部弧线会裁剪最后一点内容，scrollHeight 不含此视觉空间。
+      const el = actionBarRef.current;
+      if (el) {
+        const actual = Math.ceil(el.scrollHeight) + 2;
+        if (Math.abs(actual - totalHeight) > 1) {
+          await win.setSize(new LogicalSize(WINDOW_WIDTH, actual));
+        }
+      }
+
       // setSize/setPosition 在 macOS 调整 NSWindow frame 会触发 webview blur，
       // 致 input 失焦（query 变化、搜索结果展开时尤其明显——"打第一个字母即失焦"）。
       // resize 后重新 focus 输入框，保证连续输入不中断。
@@ -680,8 +705,11 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // IME 处理中的按键（keyCode 229）——记录时间，放行
-      if (e.keyCode === 229) {
+      // IME 组合中的按键（keyCode 229 或 isComposing=true）——一律放行，不干预。
+      // 两种模式（搜索/菜单）统一处理：IME 接管输入，handler 不 preventDefault/return 吃掉按键。
+      // 否则菜单模式下 IME 按键被 handler 条件分支拦截，input 没收到原生事件，
+      // 而 IME compositionend 仍插入字符 → 字符重复（输 wx 变 wwx）。
+      if (e.keyCode === 229 || e.isComposing) {
         lastImeKeyTime.current = Date.now();
         return;
       }
@@ -706,6 +734,19 @@ export default function ActionBar() {
       // loading 视图不拦截其他键盘导航
       if (viewRef.current === "loading") return;
 
+      // ── 统一放行：无修饰的可打印字符（字母/数字/Backspace）交给输入框原生处理 ──
+      // 搜索模式和菜单模式共享此逻辑——两种模式对输入框输入行为完全一致。
+      // IME 组合按键已在顶部拦截（229/isComposing），修饰键(Alt/Cmd/Ctrl)交各自分支处理。
+      // 导航键（Tab/Arrow/Enter/Space）不走这里——它们在各自模式的分支里处理。
+      if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+        const navKeys = ARROW_AS_TAB
+          ? ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Enter", " "]
+          : ["ArrowUp", "ArrowDown", "Tab", "Enter", " "];
+        if (!navKeys.includes(e.key)) {
+          return; // 可打印字符 → 放行给 input
+        }
+      }
+
       // ── 搜索模式键盘导航（query 非空时）──
       // 简化设计：输入框始终是焦点，Tab 键只切换 Tab 页，不改变焦点
       // Cmd+字母 快捷定位 Tab 页
@@ -714,22 +755,26 @@ export default function ActionBar() {
 
         // Alt + 字母 → 快捷切换 Tab 页（统一 Alt=定位/切换；Cmd/Ctrl 留给执行）
         // Alt 改变 e.key 输出（如 Alt+A → "å"），用 codeToChar(e.code) 取物理键
+        // 无选中时隐藏"动作"Tab（菜单项需要选中内容）
+        // Alt+字母始终 preventDefault——用户意图是切 Tab，不是输入 Alt 变异字符（如 Alt+Z → "ˀ"）
+        const hasCtx = !!contextRef.current;
         if (e.altKey) {
           const ch = codeToChar(e.code);
           if (ch) {
-            const tabByKey = getTabByKey(ch);
+            e.preventDefault();
+            const tabByKey = getTabByKey(ch, hasCtx);
             if (tabByKey) {
-              e.preventDefault();
               setActiveTab(tabByKey);
             }
           }
           return;
         }
 
-        // Tab → 循环切换 Tab 页
-        if (e.key === "Tab") {
+        // Tab 或（ARROW_AS_TAB 时）←/→ → 循环切换 Tab 页
+        const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
+        if (dir !== null) {
           e.preventDefault();
-          setActiveTab(getNextTab(activeTabRef.current, e.shiftKey ? -1 : 1));
+          setActiveTab(getNextTab(activeTabRef.current, dir ? 1 : -1, hasCtx));
           return;
         }
 
@@ -753,22 +798,12 @@ export default function ActionBar() {
           return;
         }
 
-        // 其他键 → 交给输入框处理
+        // 其他键 → 已在上游统一放行（无修饰可打印字符），这里兜底
         return;
       }
 
-      // ── 菜单模式键盘导航（query 为空时，沿用现有逻辑）──
-
-      // input 始终 focus：放行【无修饰】的可打印字符（字母/数字/Backspace）与左右方向键（移光标）进输入框；
-      // 修饰键(Alt/Cmd/Ctrl)+字符不放行——交下方分支（Alt=定位 / Cmd·Ctrl=执行）。
-      // Tab（菜单项切换）/ ↑↓（主子菜单层切换）/ Enter·Space（执行菜单项）也由本 handler 处理。
-      // input 无多行/回车概念——Enter 交给 handler 执行菜单项，不放行给输入框。Escape 已在上方处理。
-      if (document.activeElement === inputRef.current && !e.altKey && !e.metaKey && !e.ctrlKey) {
-        const navKeys = ["ArrowUp", "ArrowDown", "Tab", "Enter", " "];
-        if (!navKeys.includes(e.key)) {
-          return;
-        }
-      }
+      // ── 菜单模式键盘导航（query 为空时）──
+      // 无修饰的可打印字符已在上游统一放行，这里只处理修饰键 + 导航键。
 
       // Cmd/Ctrl + 数字/字母 → 直接执行（按菜单项配置的 shortcut 匹配；原 Alt+字母 的功能）
       // macOS Cmd 不改变字母输出，统一用 codeToChar(e.code) 取物理键
@@ -820,18 +855,20 @@ export default function ActionBar() {
         return;
       }
 
-      if (e.key === "Tab") {
+      // Tab 或（ARROW_AS_TAB 时）←/→ → 菜单项间移动
+      const menuDir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
+      if (menuDir !== null) {
         e.preventDefault();
-        const forward = !e.shiftKey;
+        const forward = menuDir;
         if (focusLayerRef.current === "sub") {
-          // 焦点在子菜单——Tab/Shift+Tab 在子菜单项间移动
+          // 焦点在子菜单——在子菜单项间移动
           setSubSelectedIdx((prev) => {
             const items = subItemsRef.current;
             if (items.length === 0) return 0;
             return forward ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
           });
         } else {
-          // 焦点在主菜单——Tab/Shift+Tab 在主菜单项间移动，submenu 项自动展开子菜单预览
+          // 焦点在主菜单——在主菜单项间移动，submenu 项自动展开子菜单预览
           setSelectedIdx((prev) => {
             const items = mainItemsRef.current;
             if (items.length === 0) return 0;
@@ -917,23 +954,23 @@ export default function ActionBar() {
     }
   }, [subItems.length, view]);
 
-  // 搜索输入框组件
+  // 搜索输入框组件——高度 = INPUT_HEIGHT（44px），字号 15px，视觉重心
   const searchInputEl = (
     <div
       className={cn(
-        "flex items-center gap-2 px-3 shrink-0",
-        inSearch ? "h-[36px]" : "h-[36px] border-b border-border/20",
+        "flex items-center gap-2.5 px-4 shrink-0",
+        inSearch ? "h-[44px]" : "h-[44px] border-b border-border/30",
       )}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+      <Search className="w-[18px] h-[18px] text-muted-foreground/80 shrink-0" />
       <input
         ref={inputRef}
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder={t("actionbar.searchPlaceholder")}
-        className="flex-1 bg-transparent text-[12px] text-foreground placeholder:text-muted-foreground/50 outline-none border-none min-w-0"
+        className="flex-1 bg-transparent text-[15px] font-medium text-foreground placeholder:text-muted-foreground/40 placeholder:font-normal outline-none border-none min-w-0"
         autoComplete="off"
         autoCorrect="off"
         spellCheck={false}
@@ -944,8 +981,9 @@ export default function ActionBar() {
   if (view === "loading") {
     return (
       <div
+        ref={actionBarRef}
         data-action-bar
-        className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+        className="relative flex flex-col rounded-[10px] border border-border/40 shadow-2xl shadow-black/20 overflow-hidden bg-background/90 backdrop-blur-2xl"
       >
         {searchInputEl}
         <div className="flex items-center justify-center gap-2.5 px-6 py-3 text-foreground">
@@ -981,7 +1019,7 @@ export default function ActionBar() {
       <ScrollRow className={cn(
         "transition-all duration-200",
         view === "submenu"
-          ? "border-t border-border/30 bg-foreground/[0.02]"
+          ? "border-t border-border/25 bg-foreground/[0.025]"
           : "h-0 overflow-hidden",
       )}>
         {subItems.map((item, i) => (
@@ -1005,6 +1043,7 @@ export default function ActionBar() {
       activeTab={activeTab}
       selectedIdx={searchSelectedIdx}
       expandDirection={expandDirection}
+      hasContext={!!context}
       onTabChange={setActiveTab}
       onSelect={setSearchSelectedIdx}
       onExecute={executeSearchResult}
@@ -1013,11 +1052,12 @@ export default function ActionBar() {
 
   return (
     <div
+      ref={actionBarRef}
       data-action-bar
-      className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+      className="relative flex flex-col rounded-[10px] border border-border/40 shadow-2xl shadow-black/20 overflow-hidden bg-background/90 backdrop-blur-2xl"
     >
       {toast && (
-        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/95 backdrop-blur-md rounded-t-[10px] px-3 py-2 animate-in fade-in duration-150">
           <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
         </div>
       )}

@@ -19,7 +19,7 @@ export interface SearchResult {
 }
 
 /** Tab 标识 */
-export type TabId = "all" | "apps" | "files" | "shell" | "bookmarks";
+export type TabId = "all" | "apps" | "files" | "shell" | "bookmarks" | "actions";
 
 /** Tab 定义 */
 export interface TabDef {
@@ -39,6 +39,7 @@ export const TABS: readonly TabDef[] = [
   { id: "files", label: "文件", key: "f" },
   { id: "shell", label: "Shell", key: "s" },
   { id: "bookmarks", label: "书签", key: "b" },
+  { id: "actions", label: "动作", key: "z" },
 ] as const;
 
 /** 展开方向 */
@@ -47,19 +48,40 @@ export type ExpandDirection = "up" | "down";
 /** 焦点区域 */
 export type FocusZone = "input" | "results";
 
-/** 搜索结果行高（px） */
-export const RESULT_ROW_HEIGHT = 36;
+/** 搜索结果行高（px）—— 实测每行渲染含 padding/baseline/border 约 49px，
+ *  用于 resize effect 算窗口总高。比 CSS 理论值（py-2+badge=38）大 11px 余量，
+ *  确保 resize 算的窗口高度 ≥ 列表实际高度 + 底部圆角空间，防最后一条被裁剪。
+ *
+ *  为何比理论值大这么多：ResultRow 内 SourceBadge(h-22) + title(text-13) 在 flex
+ *  baseline 对齐时有额外行盒高度（line-height 1.5 → 文字行盒 ~20px，但 flex align-items
+ *  center 取最高子项 badge 22px，再加 py-2(16px) = 38px 理论值）。实际渲染受：
+ *  1. WKWebView 默认 line-height 比桌面 Chrome 高（macOS 系统字体渲染）
+ *  2. flex 容器 border-box 与 content-box 计算差异
+ *  3. 窗口 setSize 的逻辑像素与 webview devicePixelRatio 取整误差累积
+ *  4. 外壳 rounded-[10px] 圆角占底部空间
+ *  实测需 49px 才完整容纳 + 底部圆角。 */
+export const RESULT_ROW_HEIGHT = 49;
 
 /** Tab 栏高度（px） */
 export const TAB_BAR_HEIGHT = 30;
 
-/** 搜索输入框高度（px） */
-export const INPUT_HEIGHT = 36;
+/** 搜索输入框高度（px）—— resize effect 据此算窗口总高 */
+export const INPUT_HEIGHT = 44;
 
-/** 菜单模式各视图的菜单条高度（px）—— resize effect 据此算窗口总高 */
-export const MENU_HEIGHT_MAIN = 40;
-export const MENU_HEIGHT_SUBMENU = 78;
-export const MENU_HEIGHT_LOADING = 48;
+/** 窗口宽度（px）—— resize effect 的 setSize 用此值。
+ *  必须与 Rust action_bar_window.rs 的 inner_size + action_bar_commands.rs 的 WIN_W 一致，
+ *  否则前端 setSize 会覆盖 Rust 创建时的宽度。 */
+export const WINDOW_WIDTH = 480;
+
+/** 菜单模式各视图的菜单条高度（px）—— resize effect 据此算窗口总高。
+ *  CSS 理论值 ScrollRow(6) + IconBtn(34) = 40，但实测受 baseline 对齐 + 底部圆角
+ *  影响需 +2px 余量（与 RESULT_ROW_HEIGHT 同理）。
+ *  MAIN = 42（CSS 理论 40 + 2 余量）
+ *  SUBMENU = MAIN(42) + 子菜单(42) + border-t(1) = 85
+ *  LOADING = 50（spinner 区理论 40 + 余量） */
+export const MENU_HEIGHT_MAIN = 42;
+export const MENU_HEIGHT_SUBMENU = 85;
+export const MENU_HEIGHT_LOADING = 50;
 
 /** ActionBar 视图状态（菜单模式内部切换） */
 export type View = "main" | "submenu" | "loading";

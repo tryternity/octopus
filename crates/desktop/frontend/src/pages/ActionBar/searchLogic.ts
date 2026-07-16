@@ -12,6 +12,7 @@ import {
   MENU_HEIGHT_SUBMENU,
   MENU_HEIGHT_LOADING,
   type TabId,
+  type TabDef,
   type ExpandDirection,
   type View,
   type SearchResult,
@@ -31,20 +32,26 @@ export function determineExpandDirection(
 }
 
 /** 按快捷键字符获取 Tab ID。无匹配返回 null。 */
-export function getTabByKey(key: string): TabId | null {
-  const tab = TABS.find((t) => t.key === key);
+export function getTabByKey(key: string, hasContext = true): TabId | null {
+  const tab = getVisibleTabs(hasContext).find((t) => t.key === key);
   return tab ? tab.id : null;
+}
+
+/** 返回当前可见的 Tab 列表。无选中（launch 模式）时隐藏"动作"Tab——菜单项需要选中内容。 */
+export function getVisibleTabs(hasContext: boolean): readonly TabDef[] {
+  return hasContext ? TABS : TABS.filter((t) => t.id !== "actions");
 }
 
 /**
  * 获取下一个/上一个 Tab（循环）。
  * @param direction 1 = 下一个，-1 = 上一个
  */
-export function getNextTab(current: TabId, direction: 1 | -1): TabId {
-  const idx = TABS.findIndex((t) => t.id === current);
+export function getNextTab(current: TabId, direction: 1 | -1, hasContext = true): TabId {
+  const tabs = getVisibleTabs(hasContext);
+  const idx = tabs.findIndex((t) => t.id === current);
   if (idx === -1) return "all";
-  const nextIdx = (idx + direction + TABS.length) % TABS.length;
-  return TABS[nextIdx].id;
+  const nextIdx = (idx + direction + tabs.length) % tabs.length;
+  return tabs[nextIdx].id;
 }
 
 /** Tab 在 TABS 数组中的索引。无效返回 -1。 */
@@ -113,6 +120,7 @@ export function filterByTab(results: SearchResult[], tab: TabId): SearchResult[]
     files: "file",
     shell: "shell",
     bookmarks: "bookmark",
+    actions: "menu",
   };
   const targetSource = sourceMap[tab];
   if (!targetSource) return results;
@@ -187,6 +195,30 @@ export function nextFocusLayerAfterExecute(
   currentLayer: "main" | "sub",
 ): "main" | "sub" {
   return actionType === "submenu" ? "sub" : currentLayer;
+}
+
+/**
+ * 判断按键是否是"移动键"——Tab 或（ARROW_AS_TAB 时）←/→。
+ * 搜索模式用于切 Tab 页，菜单模式用于移菜单项，逻辑共享。
+ */
+export function isMoveKey(key: string, arrowAsTab: boolean): boolean {
+  if (key === "Tab") return true;
+  return arrowAsTab && (key === "ArrowLeft" || key === "ArrowRight");
+}
+
+/**
+ * 移动方向：Tab 看 shiftKey，→ 正向，← 反向。非移动键返回 null。
+ * forward=true → 正向（下一个），forward=false → 反向（上一个）。
+ */
+export function moveDirection(
+  key: string,
+  shiftKey: boolean,
+  arrowAsTab: boolean,
+): boolean | null {
+  if (key === "Tab") return !shiftKey;
+  if (arrowAsTab && key === "ArrowRight") return true;
+  if (arrowAsTab && key === "ArrowLeft") return false;
+  return null;
 }
 
 /**
