@@ -2419,3 +2419,33 @@ git commit -m "docs: 搜索多 Provider 架构文档同步 + spec 状态实现�
 - `MAX_RESULTS = 10` engine.rs 内常量，Task 4 引入。
 
 无遗漏。Plan 完成。
+
+---
+
+## 实施记录（review 回填，2026-07-16）
+
+实际实现与上方 plan 的偏差、review 期新增决策与修复，逐条记录：
+
+- **Task 1（schema）**：
+  - 新增「**全新库路径也建 `search_frequency` 表**」——plan 原只提了在 v17 块内增量迁移分支建表，review 发现全新库路径（`user_version < 17`，跑 db.sql 建表）若漏建会致全新装用户首次启动即缺表。**修复**：`db.sql` 同步补 `CREATE TABLE search_frequency ...`（review fix）。
+  - `FreqRow` 加 derive `Debug`/`Clone`（便于日志与跨函数传递）。
+  - 两个频次读写函数加 `anyhow::Context`（错误带定位信息，替代裸 `?`）。
+
+- **Task 9（calculator）**：
+  - 用「**整数字面量升 Float**」实现除法语义而非 reviewer 推荐的 `1.0*(...)` 包装——后者对 `1.0*(10/4)` 仍是 `2.0`（整数除法先发生），整字面量升 Float 才能让 `10/4=2.5` 正确。
+  - 额外处理 `1/0`：浮点化后变 `inf` 被 `is_finite()` 过滤掉，不进结果列表（避免渲染 `= inf`）。
+
+- **Task 10（流式 + boost）**——**Critical fix**：
+  - **boost 重复加权 bug**：原实现 per-round 对**累积 collected** 再 boost 一遍，导致已 boost 的项被反复加权（越后完成的 provider 越占便宜）。改为 **per-batch boost**——只对当前 batch 新到的项 boost，sort + truncate 在累积集合上做。
+  - 加 **流式 == 非流式回归测试**（`streaming_emits_at_least_once` 等几个 engine 级测试），守护两条路径输出一致。
+
+- **Task 12（前端）**：
+  - 前端传 `activeTab` 而非 plan 写的硬编码 `"all"`——**更好的设计**：在 `apps` tab 下不跑 mdfind（文件搜索）减少无谓开销，也更贴合用户的 tab 意图。
+  - `search://done` 加 `runId` 校验（review fix）——原仅 `search://batch` 校验 runId，竞态场景 batch 已被新 run 拦截但 done 仍清空了新 run 的状态；done 也校验后彻底防竞态。
+
+- **已知设计张力**（后续可统一）：所有 Provider 的 `uses_frequency()` trait 方法定义了，但 `search()` 实际用 **source 名单**判断（`frequency.rs::boost` 里 `matches source`）。两套口径目前一致但耦合脆弱——后续可统一为「Provider 声明 `uses_frequency` 后 engine 据此决定是否 boost」。
+
+- **capabilities 确认无需改**：`search_stream`/`record_search_hit` 是 Tauri command（invoke 走 capabilities 的 core:default 即可），`search://batch` / `search://done` 是 app.emit 全局事件（ActionBar 窗口已在 capabilities 的 `windows` 数组里，listen 全局事件无需额外 event 权限）。
+
+- **Task 13（本步）**：文档同步 + spec 状态改实现完成 + 本 review 回填 + 全量自动化验证（53 search / 114 infra 全 PASS + desktop cargo check + frontend tsc/build）。手测清单见 task-13-report.md。
+

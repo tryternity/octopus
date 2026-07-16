@@ -2,7 +2,7 @@
 
 > 2026-07-16 · 借鉴 wox 多源广播思想，重构 octopus 搜索为 Provider trait + 并发扇出 + 流式渐进渲染 + 频次加权。修复 shell/bookmark 不显示问题，新增 calculator/url 源。
 >
-> **状态**：设计完成（配套实施计划见 `docs/superpowers/plans/2026-07-16-search-multi-provider.md`）
+> **状态**：实现完成（2026-07-16）。实际偏差见下方各节"实现注"。
 
 ## 0. 背景与动机
 
