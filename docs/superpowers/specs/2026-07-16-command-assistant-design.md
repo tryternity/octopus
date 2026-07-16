@@ -2,7 +2,7 @@
 
 > 2026-07-16 · 新增"命令"Tab 作为 CLI 命令查阅助手（LLM 生成中英文描述 + fuzzy 匹配），引入 notify-rs 实时监听 app 目录变化。
 >
-> **状态**：实现完成（2026-07-16）。偏差：whats/brew desc 改批量预建 map（避免逐命令 spawn 卡死）；LLM 线程直接同步调（不嵌套 spawn）。
+> **状态**：实现完成（2026-07-16）。偏差：whats/brew desc 改批量预建 map（避免逐命令 spawn 卡死）；LLM 线程直接同步调（不嵌套 spawn）；action_type 从 copy 改为 copy_and_reveal（回车复制 + Finder 定位）。
 
 ## 0. 背景与动机
 
@@ -58,7 +58,7 @@
 搜索 → CommandProvider (source="command")
   ├─ matches_tab: "commands"（不进 all）
   ├─ match_score(query, name) ∨ match_score(query, keywords) ∨ match_score(query, description)
-  └─ action_type="copy"（回车复制命令名到剪贴板）
+  └─ action_type="copy_and_reveal"（回车复制命令名 + 在 Finder 中定位命令文件）
 
 文件监听 → notify-rs watcher
   ├─ 监听 /Applications 等（Create/Remove 事件）
@@ -142,8 +142,8 @@ impl SearchProvider for CommandProvider {
             subtitle: if cmd.keywords.is_empty() { cmd.description.clone() }
                       else { cmd.keywords.clone() },
             icon: None,
-            action_type: "copy".into(),
-            action_data: serde_json::json!({ "text": cmd.name }).to_string(),
+            action_type: "copy_and_reveal".into(),
+            action_data: serde_json::json!({ "text": cmd.name, "path": cmd.path }).to_string(),
             score,
         }).collect()
     }
@@ -277,4 +277,4 @@ SearchEngine 加 `command_index: RwLock<CommandIndex>` 字段。所有 Provider 
 4. notify 漏事件时数量轮询兜底（2 分钟内必定校准）
 5. PATH 扫描覆盖所有来源（brew/cargo/npm/系统命令），不硬编码特定目录
 6. 同名命令按 PATH 顺序去重（前面的优先）
-7. 命令查阅不执行命令（action_type="copy" 复制命令名）
+7. 命令查阅不执行命令（action_type="copy_and_reveal"：复制命令名 + Finder 定位，不执行）

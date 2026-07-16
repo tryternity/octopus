@@ -282,6 +282,8 @@ impl BookmarkProvider {
 **Chrome/Edge 多 profile 扫描**（用户反馈触发的修复，Task 8 遗漏）：
 旧代码硬编码读 `Default/Bookmarks`，但多账号/迁移用户的书签常在 `Profile 1`（用户实测主 profile，261 条书签在 `Profile 1/Bookmarks`，无 `Default`）。`load_chromium_all_profiles` 扫 User Data 下所有 profile 目录（`Default`/`Profile 1`/`Profile 2`/...）的 `Bookmarks`，跳过 `Guest Profile`/`System Profile`，合并后跨 profile 按 url 去重。
 
+**URL 匹配噪声剥离**（`strip_url_noise`，用户反馈"无关书签太多"驱动）：书签 URL 匹配前剥掉协议(`https://`)/`www.`/域名后缀(`.com`/`.net`/`.org`/`.cn`/`.io`/`.dev`/`.co.jp`)，只保留域名主体+路径。例：`https://www.github.com/torvalds/linux` → `github/torvalds/linux`。原对完整 URL 跑 fuzzy → `http`/`com`/`www` 等噪声词在每个 URL 里都有，搜含这些字母的 query 命中几乎所有书签。
+
 **Safari**（plist 二进制，需 `plist` crate + Full Disk Access）：
 ```rust
 fn load_safari_bookmarks() -> Vec<BookmarkEntry> {

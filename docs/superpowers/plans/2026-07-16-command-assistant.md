@@ -715,3 +715,11 @@ git commit -m "docs: 命令查阅助手 + notify-rs 文档同步"
 - **Task 2（CommandIndex 性能）**：brief 假设 whats/brew desc 微秒级实测错误（每次 5-8s，240 命令卡死 20 分钟）。改为 apropos 一次建 map（~9s）+ brew desc 批量（~5s），scan 总耗时 ~20s。
 - **Task 4（LLM 线程）**：commands_needing_keywords 扩为三元组（加 description，LLM prompt 需要输入）。config 每轮从 DB 重读（不缓存在线程，保证运行时改配置生效）。
 - **Task 5（notify-rs）**：watcher move 进事件线程保活（函数返回后监听不停止）。debounce 用 Instant elapsed > 3s（不引 notify-debouncer）。
+
+### 用户反馈驱动的额外修复（2026-07-16 手测后）
+
+- **command 回车 copy_and_reveal**（用户需求）：原 action_type="copy" 只复制命令名。改为 "copy_and_reveal"——复制命令名 + 在 Finder 中定位命令文件（`reveal_path` Tauri 命令，三平台：macOS `open -R` / Windows `explorer /select,` / Linux `xdg-open` 父目录）。calculator 的 "copy" 不受影响。
+- **书签 URL 噪声剥离**（用户反馈"无关书签太多"）：`strip_url_noise` 匹配前剥协议/www./域名后缀，只保留域名主体+路径。原对完整 URL fuzzy → http/com 等噪声词命中几乎所有书签。
+- **v36 迁移自愈**（用户反馈"DB 无 launcher_index 表"）：开发期中间 binary 跳设 user_version=36 但迁移没跑完。早返回前检查 app_index 残留 → 补跑迁移。
+- **v17→v31 历史迁移清理**（用户反馈"每次升级清掉 LLM 配置"）：原 v30→v31 有无 guard 裸块 `DELETE FROM models WHERE domain='llm'`，每次启动清空用户 LLM 配置。整段 v17→v31 历史迁移删除（-304 行），只保留 INIT_SQL + fill_manifests + v32→v36 活跃迁移。
+- **ActionBar 安全修复**（代码审查驱动）：terminal_launcher 单引号防注入（cwd 含 `$()` 被双引号解释）+ escape 换行（多文件 agent prompt）+ search_commands 检查 exit code + url 分支补 {query} + tmp 文件 0o600。
