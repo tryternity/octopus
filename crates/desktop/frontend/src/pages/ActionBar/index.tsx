@@ -481,6 +481,8 @@ export default function ActionBar() {
 
   // accepts 过滤：按选中类型（text/files）过滤菜单项可见性
   const isItemVisible = (item: ActionBarItem): boolean => {
+    // 禁用项不显示（与搜索引擎 engine.rs 的 .filter(|r| r.is_enabled && ...) 对齐）
+    if (!item.isEnabled) return false;
     if (!context) return true;
     const accepts = item.accepts || "text";
     if (accepts === "any") return true;
@@ -490,7 +492,7 @@ export default function ActionBar() {
 
   // submenu 可见性：子项全不可见则自身也隐藏
   const isSubmenuVisible = (item: ActionBarItem): boolean => {
-    const subs = menuItems.filter((i) => i.parentId === item.id);
+    const subs = menuItems.filter((i) => i.parentId === item.id && i.isEnabled);
     if (subs.length === 0) return true;
     return subs.some((s) =>
       s.actionType === "submenu" ? isSubmenuVisible(s) : isItemVisible(s)
@@ -498,7 +500,7 @@ export default function ActionBar() {
   };
 
   // 派生菜单项
-  const allMainItems = menuItems.filter((i) => i.parentId === null);
+  const allMainItems = menuItems.filter((i) => i.parentId === null && i.isEnabled);
   const mainItems = allMainItems.filter((i) => {
     if (!isItemVisible(i)) return false;
     if (i.actionType === "submenu" && !isSubmenuVisible(i)) return false;
@@ -506,7 +508,7 @@ export default function ActionBar() {
     if (i.actionType === "url" && i.actionData === "") return urlResult.isUrl;
     return true;
   });
-  const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId && isItemVisible(i));
+  const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId && i.isEnabled && isItemVisible(i));
 
   // items 变化时 clamp 选中索引——防删除/设置改动后越界
   useEffect(() => {
@@ -810,7 +812,7 @@ export default function ActionBar() {
       if (e.metaKey || e.ctrlKey) {
         const ch = codeToChar(e.code);
         if (ch) {
-          const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
+          const item = menuItemsRef.current.find((i: ActionBarItem) => i.isEnabled && i.shortcut === ch);
           if (item) {
             e.preventDefault();
             executeItem(item);

@@ -392,7 +392,7 @@ CREATE TABLE IF NOT EXISTS app_index (
 16. **changeCount 基准隔离**：`CHANGE_COUNT_BASELINE` 记录上次 detect 结束时的 changeCount，下次 `before = max(实时读, baseline)`——隔离恢复剪贴板写入对 changeCount 判定的污染
 17. **show 事件携带 context**：`action-bar://show` emit 时携带 context payload，前端首屏渲染用 payload 而非异步 invoke（消除首屏竞态，防"有选中却只显示输入框"）
 18. **Sublime 选区精确判定**：detect 对 Sublime 走插件 `sel_start/sel_end`（不靠 Cmd+C），绕过 Sublime 4 `copy_with_empty_selection` 导致的"无选中复制当前行"陷阱——Cmd+C 方案对该设置根本失效。纯函数 `extract_sublime_selection` + 8 个单测守护判定规则
-19. **窗口高度随 context 更新**：resize effect 依赖数组含 `context`（`calcMenuHeight` 纯函数 + 9 个单测守护）——context null→0（仅搜索框），非 null→40/78/48。防"有选中但菜单条被窗口裁剪"回归
+19. **窗口高度随 context 更新**：resize effect 依赖数组含 `context`（`calcMenuHeight` 纯函数 + 单测守护）——context null→0（仅搜索框），非 null→42/85/50。防"有选中但菜单条被窗口裁剪"回归
 - osascript 超时 → 返回 None（非 Finder 视为无选中）
 
 ## 11. 安全约束与边界处理
