@@ -23,17 +23,14 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     if let Some(_) = app_handle.get_webview_window(WINDOW_LABEL) {
         // macOS: app 可能被其他应用遮挡——set_focus 仅设焦点不激活 app。
         // 需要切 Regular + 主线程 activate 才能把 app 带到前台。
+        // 用 activation::activate_self 双保险（NSApplication + NSRunningApplication），
+        // 应对托盘菜单关闭时 macOS 焦点恢复覆盖 activate 的"偶尔不激活"问题。
         #[cfg(target_os = "macos")]
         {
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
             let ah = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                use objc2::MainThreadMarker;
-                use objc2_app_kit::NSApplication;
-                if let Some(mtm) = MainThreadMarker::new() {
-                    let app = NSApplication::sharedApplication(mtm);
-                    app.activate();
-                }
+                crate::activation::activate_self();
                 let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
             });
         }
@@ -52,17 +49,12 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        // set_dock_icon + NSApplication::activate 调 AppKit，必须在主线程执行。
+        // activate_self + set_dock_icon 调 AppKit，必须在主线程执行。
         // open_settings 是 Tauri command（worker 线程），用 run_on_main_thread 调度。
         // ⚠️ 必须显式 activate——app 在 Accessory 模式下从托盘点击时，
         // macOS 不会自动把 app 带到前台（窗口创建了但不前置）。
         let _ = app_handle.run_on_main_thread(|| {
-            use objc2::MainThreadMarker;
-            use objc2_app_kit::NSApplication;
-            if let Some(mtm) = MainThreadMarker::new() {
-                let app = NSApplication::sharedApplication(mtm);
-                app.activate();
-            }
+            crate::activation::activate_self();
             set_dock_icon();
         });
     }

@@ -353,6 +353,52 @@ pub fn activate_window_by_pid(pid: i32) -> bool {
     false
 }
 
+/// 激活自己（本进程）到前台——给 settings/compact_editor 等常规窗口用。
+///
+/// macOS 14+ 的 `NSApplication::activate()` 是协作式激活，Apple 文档明说"不保证成功"。
+/// 托盘菜单点击场景尤其脆弱：菜单关闭时 macOS 会尝试恢复菜单弹出前的焦点，
+/// 若 activate() 恰好在此时执行会被覆盖（"偶尔不激活"的根因）。
+///
+/// 双保险策略：
+/// 1. `NSApplication::activate()` —— 标准路径，app 已是前台时足够
+/// 2. `NSRunningApplication::activateWithOptions(ActivateAllWindows)` —— 走 NSWorkspace
+///    路径的跨 app 激活 API，比 NSApplication::activate 更可靠（Apple 推荐用于
+///    把指定 app 带到前台）。注意 IgnoreOtherApps（1<<1）在 macOS 14+ 已 deprecated
+///    且"will have no effect"，故只用 ActivateAllWindows（1<<0）。
+///
+/// 必须在主线程调用（NSApplication::sharedApplication 要求）。
+#[cfg(target_os = "macos")]
+pub fn activate_self() {
+    use objc2_app_kit::{NSApplication, NSWorkspace};
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = match MainThreadMarker::new() {
+        Some(mtm) => mtm,
+        None => {
+            log::warn!("[activation] activate_self called off main thread, skipping");
+            return;
+        }
+    };
+
+    // ① NSApplication 标准激活
+    let app = NSApplication::sharedApplication(mtm);
+    app.activate();
+
+    // ② NSRunningApplication 兜底（用自己 PID 走 NSWorkspace 路径）
+    let pid = std::process::id() as i32;
+    let workspace = NSWorkspace::sharedWorkspace();
+    for running in workspace.runningApplications().iter() {
+        if running.processIdentifier() == pid {
+            running.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 0));
+            break;
+        }
+    }
+    log::info!("[activation] activate_self pid={}", pid);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_self() {}
+
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
 pub fn activate_window_by_pid(_pid: i32) -> bool {
