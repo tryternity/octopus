@@ -230,7 +230,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .context("query user_version")?;
 
     if v >= 36 {
-        return Ok(()); // 已最新
+        // 自愈检查：开发期中间 binary 可能跳设 user_version=36 但迁移没跑完
+        // （app_index 残留 + launcher_index 可能缺失）。检测到 app_index 残留则补跑。
+        let app_index_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
+            [], |r| r.get(0),
+        )?;
+        if app_index_exists == 0 {
+            return Ok(()); // 已最新，无 app_index 残留
+        }
+        log::warn!("schema v36 but app_index still exists——self-healing migration");
     }
     if v >= 17 {
         // v17→v18：backfill FTS5 索引——触发器（clip_fts_ai）仅维护建表后的新行，
@@ -483,10 +492,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
             log::info!("schema upgraded to v35 (search_frequency table)");
         }
         // v35→v36：统一 launcher_index 表（合并 app_index + 预留 command）。
-        // 1. 建 launcher_index（IF NOT EXISTS 幂等：全新库跳过 INIT_SQL 的 app_index 段后这里补建）
-        // 2. 从旧 app_index 迁移数据（INSERT OR IGNORE 防重复迁移——主键 (type, path) 去重）
-        // 3. DROP 旧 app_index 表（数据已迁完才删，保证不丢用户 167 条应用缓存）
-        if v < 36 {
+        // 幂等 + 自愈：不只看 user_version（开发期可能被中间 binary 跳设到 36 而迁移没跑完），
+        // 还检查 app_index 是否残留（有旧表就有数据要迁）。
+        let app_index_exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
+            [], |r| r.get(0),
+        )?;
+        if v < 36 || app_index_exists > 0 {
+            // 1. 建 launcher_index（IF NOT EXISTS 幂等——INIT_SQL 可能已建）
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS launcher_index (
                     type        TEXT NOT NULL,
@@ -503,11 +516,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
                 CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
             )?;
-            // 旧表存在才迁——全新库无 app_index 表，SELECT 会报错，先检查 sqlite_master。
-            let app_index_exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
-                [], |r| r.get(0),
-            )?;
+            // 2. app_index 残留则迁——INSERT OR IGNORE 幂等防重复
             if app_index_exists > 0 {
                 conn.execute_batch(
                     "INSERT OR IGNORE INTO launcher_index (type, name, path, alias, icon, source)
@@ -3192,6 +3201,64 @@ mod tests {
         // load_app_index wrapper 读回（经 load_launcher_by_type("app") → 四元组）
         let loaded = load_app_index().unwrap();
         assert_eq!(loaded.len(), 2, "load_app_index 应返回 2 条");
+    }
+
+    /// 自愈场景：user_version 已是 36 但 launcher_index 不存在 + app_index 残留
+    /// （开发期中间 binary 跳设 user_version=36 而迁移未跑完）。
+    /// init_schema 应检测 launcher_index 缺失并补跑迁移 + DROP 旧 app_index。
+    #[test]
+    fn v36_self_heal_when_launcher_missing_but_version_set() {
+        setup_test_db();  // 确保正常迁移到 v36 + launcher_index 存在
+
+        // 模拟半途损坏状态：手动删 launcher_index + 重建 app_index + 强设 user_version=36
+        with_db(|c| {
+            c.execute_batch("DROP TABLE launcher_index")?;
+            c.execute_batch(
+                "CREATE TABLE app_index (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                    alias TEXT NOT NULL DEFAULT '', path TEXT NOT NULL UNIQUE,
+                    indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    icon TEXT NOT NULL DEFAULT ''
+                )"
+            )?;
+            c.execute("INSERT INTO app_index (name, alias, path, icon) VALUES ('TestApp', '测试', '/Applications/TestApp.app', 'icon')", [])?;
+            c.execute("PRAGMA user_version = 36", [])?;
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+
+        // 验证损坏状态
+        let launcher_cnt: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'",
+            [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(launcher_cnt, 0, "损坏状态：launcher_index 应不存在");
+
+        // 重新跑 init_schema——应自愈（检测 launcher 缺失 → 建表 → 迁移 app_index → DROP）
+        with_db(|c| { init_schema(c).map_err(anyhow::Error::from) }).unwrap();
+
+        // 验证自愈成功
+        let launcher_exists: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'",
+            [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(launcher_exists, 1, "自愈后 launcher_index 应存在");
+
+        let app_count: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM launcher_index WHERE type='app'", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(app_count, 1, "app_index 数据应已迁移到 launcher_index");
+
+        let migrated_name: String = with_db(|c| c.query_row(
+            "SELECT name FROM launcher_index WHERE type='app' AND path='/Applications/TestApp.app'",
+            [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(migrated_name, "TestApp");
+
+        let old_app_index_exists: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
+            [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(old_app_index_exists, 0, "旧 app_index 表应已 DROP");
     }
 
     /// 回归 T9-L6：v32→v36 迁移——从无 app_index 表的 v32 库升级，
