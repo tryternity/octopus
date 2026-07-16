@@ -1,8 +1,8 @@
-//! BookmarkProvider：书签搜索（来自内存 bookmarks 列表）。
-//! Task 4 stub——search 返回空。Task 5 填真实实现。
+//! 书签搜索 Provider。
 
 use async_trait::async_trait;
 
+use crate::bookmark::search_bookmarks;
 use crate::engine::SearchResult;
 use crate::provider::{SearchContext, SearchProvider};
 
@@ -18,7 +18,8 @@ impl SearchProvider for BookmarkProvider {
         matches!(tab, "bookmarks" | "files_bookmarks")
     }
 
-    async fn search(&self, _query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
-        vec![]
+    async fn search(&self, query: &str, ctx: &SearchContext<'_>) -> Vec<SearchResult> {
+        let bookmarks = ctx.bookmarks.read();
+        search_bookmarks(query, &bookmarks)
     }
 }
