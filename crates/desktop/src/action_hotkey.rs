@@ -9,7 +9,11 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// 注册所有配置了 global_shortcut 的菜单项的全局快捷键。
-/// 启动时 + 设置变更后调用。先注销旧的再注册新的。
+/// 启动时 + 设置变更后调用。
+///
+/// ⚠️ **必须先 unregister_all 清空再全量重注册**：原先只遍历「当前 DB 中非空快捷键」来
+/// unregister，删除/清空场景下（DB 已是 ''，不在结果集里）旧 handler 永远残留在进程内，
+/// 直到下次重启。曾导致：用户把菜单项快捷键从 `Cmd+Shift+G` 删除后，按键仍被 octopus 吞。
 pub fn register_action_hotkeys(app: &AppHandle) {
     let items = match octopus_infra::db::list_action_hotkeys() {
         Ok(items) => items,
@@ -19,12 +23,10 @@ pub fn register_action_hotkeys(app: &AppHandle) {
         }
     };
 
-    // 先注销所有已注册的快捷键
-    for item in &items {
-        if let Ok(sc) = item.global_shortcut.parse::<Shortcut>() {
-            let _ = app.global_shortcut().unregister(sc);
-        }
-    }
+    // 全量清空所有菜单项快捷键（含已从 DB 删除但仍在进程内残留的），
+    // action_bar / clipboard / asr / edit / polish / screenshot 各自独立注册的快捷键
+    // 不受影响（它们走各自的 register_*_shortcut 路径）。
+    let _ = app.global_shortcut().unregister_all();
 
     // 重新注册
     for item in &items {
@@ -67,10 +69,16 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
 
     let text = match &selection {
         crate::action_bar_commands::Selection::Text { text, .. } => text.clone(),
-        _ => {
-            // 无选中——用 ActionBar 浮窗 fallback（让用户看到搜索框）
-            log::info!("[action-hotkey] 无选中，fallback 到 ActionBar 浮窗");
-            crate::action_bar_commands::trigger_action_bar(app.clone());
+        other => {
+            // 无文本选中（如 Finder 选中文件夹、桌面空选）——菜单项热键的语义是
+            // 「对这段文本执行动作」，没文本就不该继续。原先 fallback 到 ActionBar 浮窗，
+            // 会劫持系统快捷键（Finder 的 Cmd+Shift+G「前往文件夹」被吞）并误导用户。
+            // 静默失败即可，留给用户在 ActionBar 浮窗主动弹出时再处理。
+            log::info!(
+                "[action-hotkey] 非文本选中 ({})，跳过菜单项 item_id={} 执行",
+                selection_kind_name(other),
+                item_id,
+            );
             return;
         }
     };
@@ -95,5 +103,16 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
         Ok(Ok(false)) => log::info!("[action-hotkey] 执行完成（无需展示）"),
         Ok(Err(e)) => log::warn!("[action-hotkey] 执行失败: {}", e),
         Err(e) => log::warn!("[action-hotkey] 执行线程异常: {:?}", e),
+    }
+}
+
+/// 用于日志输出——Selection 未 derive Debug，手工映射为可读字符串。
+fn selection_kind_name(sel: &crate::action_bar_commands::Selection) -> &'static str {
+    use crate::action_bar_commands::Selection;
+    match sel {
+        Selection::None => "None",
+        Selection::Text { .. } => "Text",
+        Selection::File { .. } => "File",
+        Selection::Folder { .. } => "Folder",
     }
 }
