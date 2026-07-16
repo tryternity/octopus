@@ -87,7 +87,7 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
     let app_clone = app.clone();
     let result = std::thread::spawn(move || -> Result<bool, String> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
-        rt.block_on(crate::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone, false))
+        rt.block_on(crate::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone))
     }).join();
 
     match result {

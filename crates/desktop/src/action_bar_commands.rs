@@ -425,7 +425,7 @@ pub fn action_bar_dismiss(app: AppHandle, reason: Option<String>) {
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
-    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false);
+    action_bar_show_result_internal(result, original_text, action, app, write_clipboard);
 }
 
 fn action_bar_show_result_internal(
@@ -434,11 +434,15 @@ fn action_bar_show_result_internal(
     _action: String,
     app: AppHandle,
     _write_clipboard: bool,
-    is_silent: bool,
 ) {
-    // silent 模式（全局快捷键）跳过 ActionBar 窗口管理——
-    // silent 路径 ActionBar 从未 show，无 depth 配对，跳过避免 FLOAT_DEPTH 状态被破坏。
-    if !is_silent {
+    // 只在 ActionBar 实际可见时才 hide + depth 操作。
+    // Quick Execute（全局快捷键）路径下 ActionBar 从未 show（depth 未 +1），
+    // 此时 hide + after_floating_window_hide_keep_active（depth -1）会破坏配对。
+    // 用 is_visible 检查替代 is_silent 参数——自动适配 ActionBar 可见/不可见两条路径。
+    let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    if action_bar_visible {
         if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
             let _ = win.hide();
         }
@@ -1264,9 +1268,9 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
 
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
-/// is_silent: 全局快捷键 silent 模式——跳过 ActionBar 窗口管理（hide/depth/finalize），
-///            只做 LLM 调用 + 结果展示（CompactEditor），避免破坏 FLOAT_DEPTH 焦点协调状态。
-pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle, is_silent: bool) -> Result<bool, String> {
+/// Quick Execute（全局快捷键）和 ActionBar 路径共用——action_bar_show_result_internal
+/// 用 is_visible 检查自动适配 ActionBar 可见/不可见。
+pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -1280,23 +1284,23 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
 
             // 翻译特殊处理：优先本地引擎
-            // silent 模式（全局快捷键）不走本地流式翻译（它弹 CompactEditor），
+            // Quick Execute（全局快捷键，ActionBar 不可见）不走本地流式翻译（它弹 CompactEditor），
             // 强制走 LLM 路径（结果展示在 CompactEditor）。
-            if item.action_data == "auto_translate" && !is_silent {
+            let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            if item.action_data == "auto_translate" && action_bar_visible {
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(_) => {
                         // 流式翻译：立即隐藏浮窗 + 打开 contrast tab（译文区 loading），
                         // 后台逐段翻译，通过 emit 事件实时更新译文区。
                         // 用户无需等待，翻译结果在编辑器中逐段出现。
-                        // silent 模式跳过 ActionBar 窗口管理（防 FLOAT_DEPTH 状态破坏）
-                        if !is_silent {
-                            if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                                let _ = win.hide();
-                            }
-                            #[cfg(target_os = "macos")]
-                            { crate::activation::after_floating_window_hide_keep_active(&app); }
-                            finalize_action_bar(&app);
+                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                            let _ = win.hide();
                         }
+                        #[cfg(target_os = "macos")]
+                        { crate::activation::after_floating_window_hide_keep_active(&app); }
+                        finalize_action_bar(&app);
 
                         let original_text = text.clone();
                         let payload = crate::compact_editor_commands::TempTabPayload {
@@ -1471,7 +1475,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
 /// 统一执行菜单项动作。
 #[tauri::command]
 pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app, false).await {
+    match execute_action_bar_inner(item_id, text, &app).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
