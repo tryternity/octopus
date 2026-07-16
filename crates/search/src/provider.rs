@@ -15,6 +15,10 @@ pub struct SearchContext<'a> {
     pub app_index: &'a RwLock<AppIndex>,
     pub bookmarks: &'a RwLock<Vec<BookmarkEntry>>,
     pub frequency: &'a FrequencyScorer,
+    /// 当前 tab（"all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"）。
+    /// 让 Provider 能依据 tab 调整行为（例：ShellProvider 在 all tab 不 emit 裸命令透传项，
+    /// 避免每个查询都出 `▶ <query>` 污染应用/文件结果）。
+    pub tab: &'a str,
 }
 
 /// 搜索 Provider 契约。
@@ -27,6 +31,8 @@ pub trait SearchProvider: Send + Sync {
     fn id(&self) -> &'static str;
 
     /// 该 Provider 响应哪些 tab。"all" 由调用方保证包含，无需在此判断。
+    /// Provider 若要在 all tab 上调整行为（例：ShellProvider 不 emit 透传项），
+    /// 用 `ctx.tab == "all"` 在 `search` 里判断。
     fn matches_tab(&self, tab: &str) -> bool;
 
     /// 执行搜索。绝不 panic / 绝不返回 Err。

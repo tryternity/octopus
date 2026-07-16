@@ -147,6 +147,7 @@ impl SearchEngine {
             app_index: &self.app_index,
             bookmarks: &self.bookmarks,
             frequency: &self.frequency,
+            tab,
         };
 
         // tab=="all" 时所有 Provider 参与；否则按 matches_tab 过滤。
@@ -192,6 +193,7 @@ impl SearchEngine {
             app_index: &self.app_index,
             bookmarks: &self.bookmarks,
             frequency: &self.frequency,
+            tab,
         };
 
         let active: Vec<_> = self

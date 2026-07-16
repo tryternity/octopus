@@ -609,6 +609,16 @@ export default function ActionBar() {
   const executeSearchResult = async (result: SearchHit) => {
     const data = parseActionData(result.actionData);
 
+    // 频次加权记录（fire-and-forget，失败不影响动作执行）。
+    // spec §5.4：执行动作时记录，让 frequency.boost 在后续搜索中加权用户常用结果。
+    // 放在 switch 之前，对所有 actionType 通用（含 launch_app/open_file/menu/url/shell/copy）。
+    invoke("record_search_hit", {
+      source: result.source,
+      actionType: result.actionType,
+      actionData: result.actionData,
+      query: queryRef.current,
+    }).catch(() => {});
+
     switch (result.actionType) {
       case "launch_app": {
         const path = data.path as string;

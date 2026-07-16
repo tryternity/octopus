@@ -147,6 +147,7 @@ mod tests {
             app_index: a,
             bookmarks: b,
             frequency: f,
+            tab: "all",
         }
     }
 
