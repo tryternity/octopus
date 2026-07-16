@@ -6,3 +6,4 @@ pub mod menu;
 pub mod bookmark;
 pub mod calculator;
 pub mod url;
+pub mod command;

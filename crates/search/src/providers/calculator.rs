@@ -135,6 +135,7 @@ mod tests {
     use super::*;
     use crate::app_index::AppIndex;
     use crate::bookmark::BookmarkEntry;
+    use crate::command_index::CommandIndex;
     use crate::frequency::FrequencyScorer;
     use parking_lot::RwLock;
 
@@ -142,11 +143,13 @@ mod tests {
         f: &'a FrequencyScorer,
         a: &'a RwLock<AppIndex>,
         b: &'a RwLock<Vec<BookmarkEntry>>,
+        c: &'a RwLock<CommandIndex>,
     ) -> SearchContext<'a> {
         SearchContext {
             app_index: a,
             bookmarks: b,
             frequency: f,
+            command_index: c,
             tab: "all",
         }
     }
@@ -157,7 +160,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("1+2", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("1+2", &ctx(&f, &a, &b, &c)).await;
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].title, "= 3");
     }
@@ -168,7 +172,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("1/0", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("1/0", &ctx(&f, &a, &b, &c)).await;
         assert!(r.is_empty(), "除零应返回空");
     }
 
@@ -178,11 +183,12 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
+        let c = RwLock::new(CommandIndex::empty());
         // "abc" 含字母，looks_like_expression 返回 false
-        let r = p.search("abc", &ctx(&f, &a, &b)).await;
+        let r = p.search("abc", &ctx(&f, &a, &b, &c)).await;
         assert!(r.is_empty());
         // "hello" 无运算符
-        let r = p.search("hello", &ctx(&f, &a, &b)).await;
+        let r = p.search("hello", &ctx(&f, &a, &b, &c)).await;
         assert!(r.is_empty());
     }
 
@@ -192,8 +198,9 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
+        let c = RwLock::new(CommandIndex::empty());
         // 1.0* 包裹后 Int/Int 除法变 Float，10/4 → 2.5
-        let r = p.search("10/4", &ctx(&f, &a, &b)).await;
+        let r = p.search("10/4", &ctx(&f, &a, &b, &c)).await;
         assert_eq!(r[0].title, "= 2.5");
     }
 
@@ -203,7 +210,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("1+2", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("1+2", &ctx(&f, &a, &b, &c)).await;
         // 1.0*(1+2) = 3.0，format_value 应显示为 "3" 不是 "3.0"
         assert_eq!(r[0].title, "= 3");
     }

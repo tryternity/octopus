@@ -57,6 +57,7 @@ mod tests {
     use super::*;
     use crate::app_index::AppIndex;
     use crate::bookmark::BookmarkEntry;
+    use crate::command_index::CommandIndex;
     use crate::frequency::FrequencyScorer;
     use parking_lot::RwLock;
 
@@ -64,11 +65,13 @@ mod tests {
         f: &'a FrequencyScorer,
         a: &'a RwLock<AppIndex>,
         b: &'a RwLock<Vec<BookmarkEntry>>,
+        c: &'a RwLock<CommandIndex>,
     ) -> SearchContext<'a> {
         SearchContext {
             app_index: a,
             bookmarks: b,
             frequency: f,
+            command_index: c,
             tab: "all",
         }
     }
@@ -79,7 +82,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("github.com", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("github.com", &ctx(&f, &a, &b, &c)).await;
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].action_type, "url");
         assert!(r[0].action_data.contains("https://github.com"));
@@ -91,7 +95,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("http://example.com", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("http://example.com", &ctx(&f, &a, &b, &c)).await;
         assert!(r[0].action_data.contains("http://example.com"));
     }
 
@@ -101,7 +106,8 @@ mod tests {
         let f = FrequencyScorer::with_test_data(Default::default());
         let a = RwLock::new(AppIndex { apps: vec![] });
         let b = RwLock::new(vec![]);
-        let r = p.search("hello", &ctx(&f, &a, &b)).await;
+        let c = RwLock::new(CommandIndex::empty());
+        let r = p.search("hello", &ctx(&f, &a, &b, &c)).await;
         assert!(r.is_empty());
     }
 }

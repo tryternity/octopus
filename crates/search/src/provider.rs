@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 
 use crate::app_index::AppIndex;
 use crate::bookmark::BookmarkEntry;
+use crate::command_index::CommandIndex;
 use crate::engine::SearchResult;
 use crate::frequency::FrequencyScorer;
 
@@ -15,7 +16,10 @@ pub struct SearchContext<'a> {
     pub app_index: &'a RwLock<AppIndex>,
     pub bookmarks: &'a RwLock<Vec<BookmarkEntry>>,
     pub frequency: &'a FrequencyScorer,
-    /// 当前 tab（"all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"）。
+    /// CLI 命令索引（Task 3 引入，供 CommandProvider 查询）。
+    /// 与 app_index 同生命周期——后台 LLM 线程通过 refresh_command_index 替换内存索引。
+    pub command_index: &'a RwLock<CommandIndex>,
+    /// 当前 tab（"all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks" | "commands"）。
     /// 让 Provider 能依据 tab 调整行为（例：ShellProvider 在 all tab 不 emit 裸命令透传项，
     /// 避免每个查询都出 `▶ <query>` 污染应用/文件结果）。
     pub tab: &'a str,

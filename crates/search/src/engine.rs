@@ -37,14 +37,18 @@ pub struct SearchBatch {
 
 /// 全局搜索引擎（启动时初始化一次）。
 ///
-/// `app_index` / `bookmarks` 用 `RwLock` 包裹——供 Provider 通过 `SearchContext` 只读访问，
-/// 后台 mtime 轮询线程检测到应用目录变化时，可通过 `refresh_app_index` 替换内存索引，
-/// 无需重启进程。搜索走读锁（无阻塞）。
+/// `app_index` / `bookmarks` / `command_index` 用 `RwLock` 包裹——供 Provider 通过
+/// `SearchContext` 只读访问，后台线程（mtime 轮询 / LLM 关键字生成）检测到变化时，
+/// 可通过 `refresh_app_index` / `refresh_command_index` 替换内存索引，无需重启进程。
+/// 搜索走读锁（无阻塞）。
 pub struct SearchEngine {
     providers: Vec<Box<dyn SearchProvider>>,
     app_index: parking_lot::RwLock<crate::app_index::AppIndex>,
     bookmarks: parking_lot::RwLock<Vec<crate::bookmark::BookmarkEntry>>,
     frequency: FrequencyScorer,
+    /// CLI 命令索引（Task 3 引入）。与 app_index 同模式：写锁仅替换瞬间，
+    /// 后台 LLM 线程通过 `refresh_command_index` / `update_command_keywords` 刷新。
+    command_index: parking_lot::RwLock<crate::command_index::CommandIndex>,
 }
 
 /// 单次 search 返回的最大**总**结果数（跨所有 Provider 合并后）。
@@ -56,7 +60,7 @@ const MAX_TOTAL_RESULTS: usize = 30;
 
 static SEARCH_ENGINE: OnceLock<SearchEngine> = OnceLock::new();
 
-/// 生产用默认 Provider 装配：6 个 Provider（app/file/menu/bookmark/calculator/url）。
+/// 生产用默认 Provider 装配：7 个 Provider（app/file/menu/bookmark/calculator/url/command）。
 fn default_providers() -> Vec<Box<dyn SearchProvider>> {
     vec![
         Box::new(crate::providers::app::AppProvider),
@@ -65,6 +69,7 @@ fn default_providers() -> Vec<Box<dyn SearchProvider>> {
         Box::new(crate::providers::bookmark::BookmarkProvider),
         Box::new(crate::providers::calculator::CalculatorProvider),
         Box::new(crate::providers::url::UrlProvider),
+        Box::new(crate::providers::command::CommandProvider),
     ]
 }
 
@@ -76,13 +81,14 @@ pub fn init_search_engine() {
             app_index: parking_lot::RwLock::new(crate::app_index::AppIndex::scan()),
             bookmarks: parking_lot::RwLock::new(bookmarks),
             frequency: FrequencyScorer::load(),
+            command_index: parking_lot::RwLock::new(crate::command_index::CommandIndex::scan()),
         }
     });
 }
 
 impl SearchEngine {
     /// 测试用构造函数——直接注入内存 app_index + bookmarks + providers，
-    /// 不触达文件系统/DB。frequency 用空 HashMap。
+    /// 不触达文件系统/DB。frequency 用空 HashMap，command_index 用 empty。
     #[cfg(test)]
     fn new_for_test(
         apps: Vec<crate::app_index::AppEntry>,
@@ -94,6 +100,7 @@ impl SearchEngine {
             app_index: parking_lot::RwLock::new(crate::app_index::AppIndex { apps }),
             bookmarks: parking_lot::RwLock::new(bookmarks),
             frequency: FrequencyScorer::with_test_data(std::collections::HashMap::new()),
+            command_index: parking_lot::RwLock::new(crate::command_index::CommandIndex::empty()),
         }
     }
 
@@ -111,6 +118,7 @@ impl SearchEngine {
             app_index: parking_lot::RwLock::new(crate::app_index::AppIndex { apps }),
             bookmarks: parking_lot::RwLock::new(bookmarks),
             frequency: FrequencyScorer::with_test_data(freqs),
+            command_index: parking_lot::RwLock::new(crate::command_index::CommandIndex::empty()),
         }
     }
 
@@ -128,6 +136,44 @@ impl SearchEngine {
         // 写锁仅持续替换瞬间——rescan() 的扫盘耗时发生在锁外
         *self.app_index.write() = new_index;
         n
+    }
+
+    /// 强制重扫命令索引：扫 PATH + 取英文描述 + 读 DB 缓存的 keywords + 替换内存索引。
+    /// 供 Task 4 后台线程复用（如 PATH 变化检测或手动 reindex 命令）。
+    /// 返回扫描到的命令数。与 `refresh_app_index` 同模式——写锁仅持续替换瞬间。
+    pub fn refresh_command_index(&self) -> usize {
+        let new_index = crate::command_index::CommandIndex::scan();
+        let n = new_index.commands.len();
+        *self.command_index.write() = new_index;
+        n
+    }
+
+    /// 返回内存索引中 keywords 为空的命令（name + path 列表）。
+    /// 供 Task 4 后台 LLM 线程批量生成 keywords——已生成过的（DB 命中）不重复处理。
+    /// 不占用读锁返回迭代器——直接 clone 出来，避免调用方在异步 LLM 调用期间持锁。
+    pub fn commands_needing_keywords(&self) -> Vec<(String, String)> {
+        self.command_index
+            .read()
+            .commands
+            .iter()
+            .filter(|c| c.keywords.is_empty())
+            .map(|c| (c.name.clone(), c.path.clone()))
+            .collect()
+    }
+
+    /// 更新单个命令的 LLM keywords：写内存索引 + 写 DB 缓存（增量更新，不重扫 PATH）。
+    /// 供 Task 4 后台 LLM 线程调用——生成完一条 keywords 立即更新，避免崩溃丢失全部进度。
+    ///
+    /// 幂等：path 不存在时无操作（DB UPDATE 0 行受影响，内存索引不变）。
+    pub fn update_command_keywords(&self, path: &str, keywords: &str) {
+        // 内存索引：按 path 定位命令，替换 keywords 字段。
+        let mut idx = self.command_index.write();
+        if let Some(cmd) = idx.commands.iter_mut().find(|c| c.path == path) {
+            cmd.keywords = keywords.to_string();
+        }
+        // DB 缓存：增量 UPDATE（不调 save_launcher_batch——那是全量替换，
+        // 会清空并发场景下其他线程刚写入的行）。
+        let _ = octopus_infra::db::update_launcher_keywords("command", path, keywords);
     }
 
     /// 供 Tauri 命令调：记录频次命中（用户执行搜索结果动作时）。
@@ -153,6 +199,7 @@ impl SearchEngine {
             app_index: &self.app_index,
             bookmarks: &self.bookmarks,
             frequency: &self.frequency,
+            command_index: &self.command_index,
             tab,
         };
 
@@ -200,6 +247,7 @@ impl SearchEngine {
             app_index: &self.app_index,
             bookmarks: &self.bookmarks,
             frequency: &self.frequency,
+            command_index: &self.command_index,
             tab,
         };
 
