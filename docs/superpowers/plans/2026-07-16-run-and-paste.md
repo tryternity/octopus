@@ -2,7 +2,7 @@
 
 > spec: `docs/superpowers/specs/2026-07-16-run-and-paste-design.md`
 >
-> 状态：全部完成 ✅（含方案从 Run And Paste → Quick Execute 的重构）
+> 状态：全部完成 ✅（含方案从 Run And Paste → Quick Execute 的重构，以及 2026-07-17 快捷键残留 + fallback 误触两个 bug 修复）
 
 ## 实施记录
 
@@ -27,8 +27,26 @@
 ### Task 5: 全局快捷键注册 + Quick Execute 链路 ✅
 - `action_hotkey.rs`：`register_action_hotkeys`（DB 驱动注册/注销）
 - `quick_execute`：detect（baseline 隔离）→ execute_action_bar_inner → CompactEditor
-- 无选中 fallback 到 ActionBar 浮窗
+- ~~无选中 fallback 到 ActionBar 浮窗~~ → **2026-07-17 删除**：改为静默失败（详见下方 Bug 修复）
 - `set_global_shortcut` / `cancel_silent_action` Tauri 命令（后者已删）
+
+### Bug 修复：快捷键残留 + fallback 误触（2026-07-17）✅
+
+**现象**：用户给「Google」菜单项配了 `CmdOrCtrl+Shift+G`，在 Finder 选中文件夹按下时本想触发系统"前往文件夹"，却被 octopus 吞掉并弹出 ActionBar；之后即使用户在设置里删除该快捷键，按键仍被 octopus 拦截。
+
+**根因 1 — 删除快捷键不注销**：
+- `register_action_hotkeys` 旧实现遍历 `list_action_hotkeys()` 结果（已 `WHERE global_shortcut != ''`）逐个 unregister，**删空场景下旧值不在结果集里 → 永远残留**
+- 修复：开头改用 `app.global_shortcut().unregister_all()` 全量清空再重注册
+- 文件：`crates/desktop/src/action_hotkey.rs::register_action_hotkeys`
+
+**根因 2 — fallback 误触 ActionBar**：
+- `quick_execute` 旧实现「无选中 → fallback `trigger_action_bar`」，但菜单项热键语义是「对这段文本执行动作」，没文本就不该继续
+- Finder 选中文件夹属于 `Selection::Folder`（非 `Text`）→ fallback 弹浮窗 → 劫持了 Finder `Cmd+Shift+G`「前往文件夹」+ 误导交互
+- 修复：删除 fallback 分支，改为 `log::info!` + `return`（静默失败）
+- 文件：`crates/desktop/src/action_hotkey.rs::quick_execute`
+- 附带新增 `selection_kind_name` helper（`Selection` 未 derive Debug，日志要可读）
+
+**验证**：`cargo build --release -p octopus-desktop` 0 error 0 warning；`cargo test -p octopus-desktop --bin octopus-desktop` 311 passed。
 
 ### Task 6: 设置页 global_shortcut UI ✅
 - ShortcutButton 组件（从 GeneralPanel 抽出共享）
