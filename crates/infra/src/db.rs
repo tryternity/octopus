@@ -222,12 +222,13 @@ where
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 /// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
 /// v24：action_bar_items 加 shortcut 列。
+/// v35：搜索频次加权表。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 34 {
+    if v >= 35 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -465,6 +466,20 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 34", [])?;
             log::info!("schema upgraded to v34 (app_index cache table with icon)");
         }
+        // v34→v35：搜索频次加权表（search_frequency）。
+        {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS search_frequency (
+                    score_key TEXT NOT NULL,
+                    query TEXT NOT NULL DEFAULT '',
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    last_hit_ts INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (score_key)
+                )",
+            )?;
+            conn.execute("PRAGMA user_version = 35", [])?;
+            log::info!("schema upgraded to v35 (search_frequency table)");
+        }
         return Ok(());
     }
 
@@ -472,8 +487,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    conn.execute("PRAGMA user_version = 34", [])?;
-    log::info!("DB initialized (v34): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // v35：搜索频次加权表（新建库直接建表，不依赖迁移分支）。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS search_frequency (
+            score_key TEXT NOT NULL,
+            query TEXT NOT NULL DEFAULT '',
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            last_hit_ts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (score_key)
+        )",
+    )?;
+    conn.execute("PRAGMA user_version = 35", [])?;
+    log::info!("DB initialized (v35): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1728,6 +1753,61 @@ pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
         Ok(())
     })
 }
+
+// ── 搜索频次加权（search_frequency 表）───────────────────────────
+
+/// 频次加权表的一行（search_frequency）。
+pub struct FreqRow {
+    pub hit_count: i64,
+    pub last_hit_ts: i64,
+    pub query: String,
+}
+
+/// 记录一次搜索命中：hit_count+1，更新 query 和 last_hit_ts。
+pub fn record_search_frequency(score_key: &str, query: &str) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO search_frequency (score_key, query, hit_count, last_hit_ts)
+             VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT(score_key) DO UPDATE SET
+                hit_count = hit_count + 1,
+                query = excluded.query,
+                last_hit_ts = excluded.last_hit_ts",
+            params![score_key, query, now],
+        )?;
+        Ok(())
+    })
+}
+
+/// 加载所有频次记录到内存 map（key → FreqRow）。
+pub fn load_search_frequency() -> Result<HashMap<String, FreqRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT score_key, hit_count, last_hit_ts, query FROM search_frequency",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                FreqRow {
+                    hit_count: r.get::<_, i64>(1)?,
+                    last_hit_ts: r.get::<_, i64>(2)?,
+                    query: r.get::<_, String>(3)?,
+                },
+            ))
+        })?;
+        let mut map = HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptRun {
@@ -2726,7 +2806,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 34, "全新库 init_schema 后应到 v33");
+        assert_eq!(v, 35, "全新库 init_schema 后应到 v35");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2898,9 +2978,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 32
+        // 验证：迁移后 user_version = 35（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 34);
+        assert_eq!(v, 35);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2960,7 +3040,8 @@ mod tests {
         assert_eq!(name, "App1", "原 App1 应保留");
     }
 
-    /// 回归 T9-L6：v32→v34 迁移——从无 app_index 表的 v32 库升级，表 + icon 列就绪。
+    /// 回归 T9-L6：v32→v35 迁移——从无 app_index 表的 v32 库升级，
+    /// app_index 表 + icon 列、search_frequency 表均就绪。
     #[test]
     fn migration_v32_to_v34_creates_app_index_with_icon() {
         // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index 表
@@ -2985,9 +3066,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 34
+        // 验证 user_version = 35（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 34);
+        assert_eq!(v, 35);
 
         // 验证 app_index 表存在 + icon 列存在
         let table_count: i64 = conn.query_row(
@@ -3000,6 +3081,12 @@ mod tests {
             .filter_map(|r| r.ok()).collect();
         assert!(cols.contains(&"icon".to_string()), "app_index 应有 icon 列");
         assert!(cols.contains(&"path".to_string()), "app_index 应有 path 列");
+
+        // v35 新增：search_frequency 表应一并创建
+        let sf_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_frequency'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(sf_count, 1, "search_frequency 表应被 v35 迁移创建");
     }
 
     #[test]
@@ -3022,7 +3109,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 34);
+        assert_eq!(v, 35);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3152,7 +3239,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 34);
+        assert_eq!(v, 35);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3962,7 +4049,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 34);
+        assert_eq!(v, 35);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -4255,5 +4342,54 @@ mod tests {
             )
             .unwrap();
         assert!(!hf.is_empty(), "huggingface 环境变量应有值");
+    }
+
+    // ── Task 1: search_frequency 表 + record/load fns ──
+
+    /// record_search_frequency 写一行 → load_search_frequency 读回，验证字段。
+    /// 再 record 同一 key → hit_count +1，query/last_hit_ts 更新。
+    #[test]
+    fn search_frequency_record_and_load_roundtrip() {
+        setup_test_db();
+        // 清理可能的旧数据（测试隔离）
+        let _ = with_db(|conn| {
+            conn.execute(
+                "DELETE FROM search_frequency WHERE score_key LIKE 'test_%'",
+                [],
+            )?;
+            Ok(())
+        });
+        record_search_frequency("test_key_1", "test_query").unwrap();
+        let map = load_search_frequency().unwrap();
+        let row = map.get("test_key_1").expect("应能读到刚写的记录");
+        assert_eq!(row.hit_count, 1);
+        assert_eq!(row.query, "test_query");
+        assert!(row.last_hit_ts > 0);
+        // 再 record 一次，hit_count 应 +1
+        record_search_frequency("test_key_1", "test_query2").unwrap();
+        let map = load_search_frequency().unwrap();
+        assert_eq!(map.get("test_key_1").unwrap().hit_count, 2);
+        assert_eq!(map.get("test_key_1").unwrap().query, "test_query2");
+    }
+
+    /// schema v35 迁移后 search_frequency 表应存在于 sqlite_master。
+    #[test]
+    fn search_frequency_table_exists_after_init() {
+        setup_test_db();
+        let exists: bool = with_db(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='search_frequency'",
+            )?;
+            let mut found = false;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            for r in rows {
+                if r?.contains("search_frequency") {
+                    found = true;
+                }
+            }
+            Ok(found)
+        })
+        .unwrap_or(false);
+        assert!(exists, "search_frequency 表应在 schema v35 后存在");
     }
 }
