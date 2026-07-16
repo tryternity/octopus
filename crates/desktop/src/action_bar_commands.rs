@@ -1283,24 +1283,25 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
         "ai" => {
             let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
 
-            // 翻译特殊处理：优先本地引擎
-            // Quick Execute（全局快捷键，ActionBar 不可见）不走本地流式翻译（它弹 CompactEditor），
-            // 强制走 LLM 路径（结果展示在 CompactEditor）。
-            let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
-                .and_then(|w| w.is_visible().ok())
-                .unwrap_or(false);
-            if item.action_data == "auto_translate" && action_bar_visible {
+            // 翻译特殊处理：优先本地引擎。
+            // 翻译分支入口只看 action_data，不依赖 ActionBar 可见性——
+            // Quick Execute（ActionBar 不可见）也必须正确翻译。
+            // action_bar_visible 只 gate Local 流式路径里的 hide/depth 操作。
+            if item.action_data == "auto_translate" {
+                let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(_) => {
-                        // 流式翻译：立即隐藏浮窗 + 打开 contrast tab（译文区 loading），
-                        // 后台逐段翻译，通过 emit 事件实时更新译文区。
-                        // 用户无需等待，翻译结果在编辑器中逐段出现。
-                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                            let _ = win.hide();
+                        // 流式翻译：隐藏浮窗（仅 ActionBar 可见时）+ 打开 contrast tab
+                        if action_bar_visible {
+                            if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                                let _ = win.hide();
+                            }
+                            #[cfg(target_os = "macos")]
+                            { crate::activation::after_floating_window_hide_keep_active(&app); }
+                            finalize_action_bar(&app);
                         }
-                        #[cfg(target_os = "macos")]
-                        { crate::activation::after_floating_window_hide_keep_active(&app); }
-                        finalize_action_bar(&app);
 
                         let original_text = text.clone();
                         let payload = crate::compact_editor_commands::TempTabPayload {
