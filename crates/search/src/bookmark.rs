@@ -9,21 +9,25 @@ pub struct BookmarkEntry {
     pub browser: String,
 }
 
-/// 加载所有浏览器的书签：Chrome / Edge（JSON）+ Safari（plist）+ Firefox（SQLite）。
+/// 加载所有浏览器的书签：Chrome / Edge（JSON，扫描全部 profile）+ Safari（plist）+ Firefox（SQLite）。
 ///
 /// 每个浏览器的 loader 自带降级（无权限/无文件返回空 Vec），这里只做存在性预检
 /// 跳过明显不存在的路径以省 syscalls，不掩盖 loader 内部错误。
+///
+/// **多 profile 支持**：Chrome/Edge 登录多 Google 账号或从旧设备迁移时，profile 目录
+/// 可能是 `Default` / `Profile 1` / `Profile 2` 等（非只有 `Default`）。扫 User Data 下
+/// 所有含 `Bookmarks` 文件的 profile 目录，合并全部书签（按 url 去重）。
 pub fn load_all_bookmarks() -> Vec<BookmarkEntry> {
     let mut bookmarks = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        // Chrome / Edge（JSON，无需 Full Disk Access）
-        for (browser, path) in &[
-            ("Chrome", "Library/Application Support/Google/Chrome/Default/Bookmarks"),
-            ("Edge", "Library/Application Support/Microsoft Edge/Default/Bookmarks"),
+        // Chrome / Edge（JSON）——扫描全部 profile
+        for (browser, user_data_rel) in &[
+            ("Chrome", "Library/Application Support/Google/Chrome"),
+            ("Edge", "Library/Application Support/Microsoft Edge"),
         ] {
-            let full_path = home.join(path);
-            if full_path.exists() {
-                bookmarks.extend(load_chromium_bookmarks(browser, &full_path));
+            let user_data = home.join(user_data_rel);
+            if user_data.is_dir() {
+                bookmarks.extend(load_chromium_all_profiles(browser, &user_data));
             }
         }
         // Safari（plist，需 Full Disk Access——失败则 load_safari_bookmarks 自降级）
@@ -34,8 +38,40 @@ pub fn load_all_bookmarks() -> Vec<BookmarkEntry> {
     }
     // Firefox（SQLite，独立函数自己找 profile）
     bookmarks.extend(load_firefox_bookmarks());
+    // 按 url 去重（跨 profile / 跨浏览器可能产出同 URL，保留首个）
+    let mut seen = std::collections::HashSet::new();
+    bookmarks.retain(|b| seen.insert(b.url.clone()));
     log::info!("[search] 书签索引: {} 条", bookmarks.len());
     bookmarks
+}
+
+/// 扫描 Chromium User Data 下所有 profile 目录的 Bookmarks 文件。
+/// profile 目录：`Default` / `Profile 1` / `Profile 2` / ...（Chrome 多账号场景）。
+/// 跳过 `Guest Profile` / `System Profile`（无用户书签）。
+fn load_chromium_all_profiles(browser: &str, user_data: &std::path::Path) -> Vec<BookmarkEntry> {
+    let mut all = Vec::new();
+    let entries = match std::fs::read_dir(user_data) {
+        Ok(e) => e,
+        Err(_) => return all,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // 只处理目录（profile 都是目录）
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // 跳过系统/访客 profile（无用户书签）
+        if name_str == "Guest Profile" || name_str == "System Profile" || name_str == "Snapshots" {
+            continue;
+        }
+        let bookmarks_file = path.join("Bookmarks");
+        if bookmarks_file.is_file() {
+            all.extend(load_chromium_bookmarks(browser, &bookmarks_file));
+        }
+    }
+    all
 }
 
 /// 解析 Chrome/Edge 书签 JSON。
@@ -341,5 +377,55 @@ mod tests {
         assert!(entries.iter().any(|e| e.title == "GitHub"));
         assert!(entries.iter().any(|e| e.title == "Rust"));
         assert!(entries.iter().any(|e| e.title == "Google"));
+    }
+
+    /// 多 profile 扫描：Chrome 多账号场景下书签在 `Profile 1` 而非 `Default`。
+    /// 验证 load_chromium_all_profiles 扫描所有 profile 目录 + 跳过 Guest/System。
+    #[test]
+    fn chromium_multiple_profiles_scanned() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("octopus_bm_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // 模拟 User Data 目录结构
+        let default = tmp.join("Default");
+        let profile1 = tmp.join("Profile 1");
+        let guest = tmp.join("Guest Profile");
+        fs::create_dir_all(&default).unwrap();
+        fs::create_dir_all(&profile1).unwrap();
+        fs::create_dir_all(&guest).unwrap();
+
+        // Default profile：GitHub
+        fs::write(default.join("Bookmarks"), r#"{"roots":{"bookmark_bar":{"children":[{"type":"url","name":"GitHub","url":"https://github.com"}]},"other":{"children":[]},"synced":{"children":[]}}}"#).unwrap();
+        // Profile 1：Rust（用户的真实场景——Profile 1 是主 profile）
+        fs::write(profile1.join("Bookmarks"), r#"{"roots":{"bookmark_bar":{"children":[{"type":"url","name":"Rust","url":"https://rust-lang.org"}]},"other":{"children":[]},"synced":{"children":[]}}}"#).unwrap();
+        // Guest Profile：应被跳过
+        fs::write(guest.join("Bookmarks"), r#"{"roots":{"bookmark_bar":{"children":[{"type":"url","name":"GuestOnly","url":"https://guest.example.com"}]},"other":{"children":[]},"synced":{"children":[]}}}"#).unwrap();
+
+        let entries = load_chromium_all_profiles("Chrome", &tmp);
+        let _ = fs::remove_dir_all(&tmp);
+
+        // 应扫到 Default + Profile 1 的 2 个书签，跳过 Guest
+        assert_eq!(entries.len(), 2, "应扫描 Default + Profile 1，跳过 Guest，got: {:?}", entries.iter().map(|e| &e.title).collect::<Vec<_>>());
+        assert!(entries.iter().any(|e| e.title == "GitHub"), "Default 的 GitHub 应在");
+        assert!(entries.iter().any(|e| e.title == "Rust"), "Profile 1 的 Rust 应在（用户主 profile）");
+        assert!(entries.iter().all(|e| e.title != "GuestOnly"), "Guest Profile 应被跳过");
+    }
+
+    /// 只有非 Default profile（Profile 1）时也应扫到——这是用户报告的真实场景。
+    #[test]
+    fn chromium_only_profile1_no_default() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join(format!("octopus_bm_test_p1_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // 只有 Profile 1，没有 Default（用户实际场景）
+        let profile1 = tmp.join("Profile 1");
+        fs::create_dir_all(&profile1).unwrap();
+        fs::write(profile1.join("Bookmarks"), r#"{"roots":{"bookmark_bar":{"children":[{"type":"url","name":"MyBookmark","url":"https://example.com"}]},"other":{"children":[]},"synced":{"children":[]}}}"#).unwrap();
+
+        let entries = load_chromium_all_profiles("Chrome", &tmp);
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(entries.len(), 1, "只有 Profile 1 也应扫到书签");
+        assert_eq!(entries[0].title, "MyBookmark");
     }
 }

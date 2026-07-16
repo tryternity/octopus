@@ -2449,3 +2449,7 @@ git commit -m "docs: 搜索多 Provider 架构文档同步 + spec 状态实现�
 
 - **Task 13（本步）**：文档同步 + spec 状态改实现完成 + 本 review 回填 + 全量自动化验证（53 search / 114 infra 全 PASS + desktop cargo check + frontend tsc/build）。手测清单见 task-13-report.md。
 
+### 用户反馈触发的额外修复（2026-07-16，手测前）
+
+- **Chrome 多 profile 覆盖盲区（Task 8 遗漏）**：用户反馈"大部分场景用 Chrome"，但初查显示 `Default/Bookmarks` 不存在，误判"Chrome 没装"。深查发现 Chrome **已安装**，书签在 **`Profile 1/Bookmarks`**（261 条，用户主 profile，非 `Default`）。根因：旧代码 + Task 8 都硬编码读 `Default/Bookmarks`，漏掉多账号/迁移场景（Chrome 登录多 Google 账号或从旧设备迁移会创建 `Profile 1/2/...`）。**修复**：`load_chromium_all_profiles` 扫 User Data 下所有 profile 目录的 `Bookmarks`（跳过 `Guest Profile`/`System Profile`），合并后跨 profile 按 url 去重。加 2 个回归测试（`chromium_multiple_profiles_scanned`、`chromium_only_profile1_no_default`——后者精确复现用户场景）。search 测试 56→58。
+
