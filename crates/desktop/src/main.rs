@@ -3,6 +3,8 @@
 mod activation;
 mod action_bar_window;
 mod action_bar_commands;
+mod overlay_window;
+mod action_hotkey;
 mod agent_adapter;
 mod terminal_launcher;
 mod finder_selection;
@@ -331,7 +333,7 @@ pub fn run() {
             action_bar_commands::list_action_bar_items,
             action_bar_commands::create_action_bar_item,
             action_bar_commands::update_action_bar_item,
-            action_bar_commands::set_auto_paste,
+            action_bar_commands::set_global_shortcut,
             action_bar_commands::delete_action_bar_item,
             action_bar_commands::move_action_bar_item,
             action_bar_commands::execute_action_bar,
@@ -512,7 +514,7 @@ pub fn run() {
                     let mut generated = 0;
                     for (name, path, desc) in pending.iter().take(20) { // 每轮最多 20 个
                         let user = format!("命令: {}\n英文描述: {}", name, desc);
-                        match octopus_llm::chat_text_with_prompt(system, &user, &llm_config) {
+                        match octopus_llm::chat_text_with_prompt(system, &user, &llm_config, None) {
                             Ok(keywords) => {
                                 let keywords = keywords.trim();
                                 if !keywords.is_empty() {
@@ -569,6 +571,8 @@ pub fn run() {
 
             // Create + register action bar window (AI command palette)
             action_bar_window::create_action_bar_window(app.handle());
+            overlay_window::create_overlay_window(app.handle());
+            action_hotkey::register_action_hotkeys(app.handle());
             if !config.action_bar_shortcut.is_empty() {
                 if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
                     log::error!("Failed to register action bar shortcut: {}", e);

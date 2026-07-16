@@ -92,6 +92,7 @@ fn chat_text(
     user: &str,
     max_tokens: u64,
     config: &CompatibleLlmConfig,
+    timeout: Option<std::time::Duration>,
 ) -> Result<String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let (thinking, enable_thinking) = thinking_flags(config);
@@ -109,11 +110,16 @@ fn chat_text(
     };
 
     let client = &*HTTP_CLIENT;
-    let response = client
+    let mut builder = client
         .post(&url)
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", config.secret_key))
-        .json(&request)
+        .json(&request);
+    // 调用方可覆盖 client 级超时（Run And Paste silent 用 30s，默认 120s）
+    if let Some(dur) = timeout {
+        builder = builder.timeout(dur);
+    }
+    let response = builder
         .send()
         .context("LLM API 请求失败")?;
 
@@ -164,20 +170,24 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
         &prompt::user_prompt(preserved, to_polish),
         max_tokens,
         config,
+        None,
     )
 }
 
 /// 通用 LLM 文本补全（action bar 翻译/摘要/解释等非润色场景）。
 /// 自定义 system + user prompt，不读全局 SYSTEM_PROMPT，不污染 ASR 润色。
 /// max_tokens 按输入文本字符数 × 2.0 计算（与 polish 一致）。
+/// timeout_secs: 可选超时（秒），None 用全局默认 120s。Run And Paste silent 传 30s。
 pub fn chat_text_with_prompt(
     system: &str,
     user: &str,
     config: &CompatibleLlmConfig,
+    timeout_secs: Option<u64>,
 ) -> Result<String> {
     let total_chars = user.chars().count();
     let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
-    chat_text(system, user, max_tokens, config)
+    let timeout = timeout_secs.map(std::time::Duration::from_secs);
+    chat_text(system, user, max_tokens, config, timeout)
 }
 
 /// 多段润色：按 regions 顺序，edited 区（preserve=true）verbatim 保留、其余润色，返回整篇。
@@ -200,6 +210,7 @@ pub fn polish_regions(
         &prompt::regions_prompt(regions),
         max_tokens,
         config,
+        None,
     )
 }
 

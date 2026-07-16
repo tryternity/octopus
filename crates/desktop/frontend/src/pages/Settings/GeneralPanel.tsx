@@ -7,6 +7,7 @@ import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
 import { useT, setLocale } from "@/lib/i18n";
+import ShortcutButton from "@/components/ShortcutButton";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -52,36 +53,6 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
         "absolute top-0.5 left-0.5 w-[18px] h-[18px] bg-white rounded-full transition-transform shadow-sm",
         on && "translate-x-[18px]",
       )} />
-    </button>
-  );
-}
-
-function ShortcutButton({ shortcut, capturing, onClick }: { shortcut: string; capturing: boolean; onClick: () => void }) {
-  const t = useT();
-  if (capturing) {
-    return (
-      <button
-        className="px-3 py-1.5 rounded-md text-xs font-medium text-voice bg-voice/5 border border-voice/40 cursor-pointer animate-pulse"
-        onClick={onClick}
-      >
-        {t("settings.general.shortcutRecordingHint")}
-      </button>
-    );
-  }
-  const keys = shortcut.split("+");
-  return (
-    <button
-      className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-stone-50 hover:border-foreground/30 cursor-pointer transition-colors group"
-      onClick={onClick}
-    >
-      {keys.map((k, i) => (
-        <span key={i} className="flex items-center gap-1">
-          {i > 0 && <span className="text-muted-foreground/40 text-[10px]">+</span>}
-          <kbd className="min-w-[20px] px-1.5 py-0.5 text-[11px] font-medium text-stone-700 bg-white rounded border border-stone-200 shadow-sm group-hover:border-stone-300 transition-colors">
-            {k === "CmdOrCtrl" ? "⌘" : k === "Alt" ? "⌥" : k === "Shift" ? "⇧" : k}
-          </kbd>
-        </span>
-      ))}
     </button>
   );
 }

@@ -260,16 +260,18 @@ Tab 页：`[全部 ⌥A] [应用 ⌥D] [文件 ⌥F] [Shell ⌥S] [书签 ⌥B] 
 - `execute_shell(command)` → `sh -c "<command>"`
 - 30s 超时 + `kill_on_drop(true)` + 100KB 字符截断（`chars().take()`，非字节切片）
 
-## 5. Run And Paste
+## 5. Quick Execute（原 Run And Paste）
 
 ### 5.1 设计
-`auto_paste=true` 的 AI/翻译/脚本项执行后跳过 CompactEditor，直接写剪贴板 + 模拟 ⌘V 粘贴到光标。
+菜单项可配全局快捷键（`global_shortcut`），选中文本后直接按快捷键执行——跳过 ActionBar 浮窗，结果展示在 CompactEditor（与 ActionBar 路径一致）。详见 [Quick Execute spec](2026-07-16-run-and-paste-design.md)。
 
-### 5.2 实现
-- `action_bar_items.auto_paste INTEGER DEFAULT 0`
-- `execute_action_bar_inner` 三处调用点（translate LLM / AI / script）检查 `item.auto_paste`
-- `action_bar_run_and_paste(result, app)` → 写剪贴板 + 100ms 后 `paste::paste`
-- 设置页 `autoPaste` 开关（仅 AI/Script 类型），新建和编辑时都通过 `set_auto_paste` 命令更新
+### 5.2 实现（已重构）
+- `action_bar_items.global_shortcut TEXT DEFAULT ''`（DB v36）
+- 所有非 submenu 叶子命令均可设全局快捷键（设置页 ShortcutButton 组件录入）
+- `action_hotkey.rs`：`register_action_hotkeys`（DB 驱动注册）→ `quick_execute`（detect → execute → CompactEditor）
+- detect 前后隔离 `CHANGE_COUNT_BASELINE`（防污染 ActionBar 路径）
+- 无选中时 fallback 到 ActionBar 浮窗
+- `auto_paste` 字段已从代码层全面清理（DB 列保留兼容旧库）
 
 ### 5.3 麦克风不可用提示
 `audio.start()` 失败时 emit `"mic-error"` 事件 + 弹结果窗 + 红色 toast 气泡（5s）。
