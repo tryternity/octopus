@@ -35,6 +35,29 @@ pub fn prefix_match(query: &str, target: &str) -> Option<Score> {
     }
 }
 
+/// 词级前缀匹配：target 按空格/标点分词后，query 匹配某个**词**的开头。
+/// 例："chrome" 匹配 "Google Chrome" 的 "Chrome" 词 → 高分（远高于 fuzzy）。
+/// 打分：base 4500（比全局 prefix 低 500，因为不是首词），剩余字符越少分越高。
+/// 解决 "Google Chrome" 搜 "chrome" 时 prefix 失败、只能走低分 fuzzy 的问题。
+pub fn word_prefix_match(query: &str, target: &str) -> Option<Score> {
+    let query_lower = query.to_lowercase();
+    // 按非字母数字字符分词（空格 / 连字符 / 斜杠 / 点等）
+    let best = target
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .filter_map(|word| {
+            let word_lower = word.to_lowercase();
+            if word_lower.starts_with(&query_lower) {
+                let remaining = word.chars().count().saturating_sub(query.chars().count());
+                Some(4500 - remaining as Score)
+            } else {
+                None
+            }
+        })
+        .max()?;
+    Some(best)
+}
+
 /// 模糊匹配：nucleo-matcher。Matcher 经 thread_local FUZZY_MATCHER 复用。
 pub fn fuzzy_match(query: &str, target: &str) -> Option<Score> {
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
@@ -87,13 +110,16 @@ fn pinyin_initials(text: &str) -> String {
     result
 }
 
-/// 综合匹配：按优先级尝试 exact > prefix > pinyin > fuzzy，取最高分。
+/// 综合匹配：按优先级尝试 exact > prefix > word-prefix > pinyin > fuzzy，取最高分。
+/// word-prefix 介于 prefix 和 pinyin 之间——"Google Chrome" 搜 "chrome" 走 word-prefix
+/// 拿 ~4495 分（远高于书签的 fuzzy 几百分），应用稳排书签前。
 pub fn match_score(query: &str, target: &str) -> Option<Score> {
     if query.is_empty() {
         return None;
     }
     exact_match(query, target)
         .or_else(|| prefix_match(query, target))
+        .or_else(|| word_prefix_match(query, target))
         .or_else(|| pinyin_match(query, target))
         .or_else(|| fuzzy_match(query, target))
 }
@@ -147,11 +173,52 @@ mod tests {
 
     #[test]
     fn match_score_priority() {
-        // exact > prefix > pinyin > fuzzy
+        // exact > prefix > word-prefix > pinyin > fuzzy
         let exact = match_score("chrome", "Chrome").unwrap();
         let prefix = match_score("chr", "Chrome").unwrap();
         let fuzzy = match_score("cme", "Chrome").unwrap();
         assert!(exact > prefix);
         assert!(prefix > fuzzy);
+    }
+
+    #[test]
+    fn word_prefix_match_non_first_word() {
+        // "chrome" 匹配 "Google Chrome" 的第二个词
+        let score = word_prefix_match("chrome", "Google Chrome");
+        assert!(score.is_some(), "应匹配 Google Chrome 的 Chrome 词");
+        // 分数应远高于 fuzzy（~几百）
+        assert!(score.unwrap() > 4000, "word-prefix 应 > 4000");
+    }
+
+    #[test]
+    fn word_prefix_match_partial_word() {
+        // "chr" 匹配 "Google Chrome" 的 "Chrome" 词前缀
+        assert!(word_prefix_match("chr", "Google Chrome").is_some());
+        assert!(word_prefix_match("chr", "Google Chrome Helper").is_some());
+    }
+
+    #[test]
+    fn word_prefix_match_rejects_non_prefix() {
+        // "hrome"（缺首字母 c）不是任何词的前缀
+        assert!(word_prefix_match("hrome", "Google Chrome").is_none());
+        // "xyz" 不匹配
+        assert!(word_prefix_match("xyz", "Google Chrome").is_none());
+    }
+
+    #[test]
+    fn word_prefix_splits_on_punctuation() {
+        // 按 - / . 分词
+        assert!(word_prefix_match("app", "my-app").is_some());
+        assert!(word_prefix_match("bar", "foo/bar").is_some());
+        assert!(word_prefix_match("com", "example.com").is_some());
+    }
+
+    #[test]
+    fn match_score_google_chrome_chrome_outranks_bookmark_fuzzy() {
+        // 核心场景：搜 "chrome"，"Google Chrome" 应用应远高于书签的 fuzzy 匹配
+        let app_score = match_score("chrome", "Google Chrome").unwrap() + 2000; // app +2000 权重
+        let bookmark_fuzzy = fuzzy_match("chrome", "Chrome Extension Dev").unwrap_or(0);
+        assert!(app_score > bookmark_fuzzy,
+            "Google Chrome 应用 ({}) 应高于书签 fuzzy ({})，否则应用被书签挤出 top-10", app_score, bookmark_fuzzy);
     }
 }
