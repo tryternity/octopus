@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@/lib/tauri";
-import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
+import { Input, Select } from "@/components/ui/input";
 
 export interface CloudModelData {
   id?: number;
@@ -49,7 +50,6 @@ const ASR_CONFIG: Record<string, Record<string, { source: string; keyLabel: stri
   },
 };
 
-const inputClass = "w-full px-2.5 py-1.5 border border-border rounded-md text-sm bg-background outline-none focus:border-voice/40 transition-colors";
 const labelClass = "text-[11px] text-muted-foreground mb-1";
 
 export function CloudModelForm({
@@ -177,18 +177,18 @@ export function CloudModelForm({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onCancel}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm" onClick={onCancel}>
       <div
-        className="bg-background border border-border rounded-lg p-5 w-[420px] max-w-[90vw] shadow-xl"
+        className="raycast-ring w-[420px] max-w-[90vw] rounded-lg border border-border bg-background p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold">
             {editModel ? t("settings.models.editModel") : t("settings.models.addModel")}
           </h3>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
-            <X className="w-4 h-4" />
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={onCancel}>
+            <X />
+          </Button>
         </div>
 
         <div className="space-y-3">
@@ -196,22 +196,22 @@ export function CloudModelForm({
           <div>
             <div className={labelClass}>Provider</div>
             {domain === "llm" ? (
-              <select className={inputClass} value={provider}
+              <Select variant="default" size="full" value={provider}
                 onChange={(e) => setProvider(e.target.value)}>
                 <option value="">-- 选择 --</option>
                 {llmPresets.map((p) => (
                   <option key={p.provider} value={p.provider}>{p.provider}</option>
                 ))}
                 <option value="custom">自定义</option>
-              </select>
+              </Select>
             ) : (
-              <select className={inputClass} value={provider}
+              <Select variant="default" size="full" value={provider}
                 onChange={(e) => { setProvider(e.target.value); setCategory(""); }}>
                 <option value="">-- 选择 --</option>
                 {Object.keys(ASR_CONFIG).map((p) => (
                   <option key={p} value={p}>{p}</option>
                 ))}
-              </select>
+              </Select>
             )}
           </div>
 
@@ -219,20 +219,20 @@ export function CloudModelForm({
           {domain === "asr" && availableCategories.length > 0 && (
             <div>
               <div className={labelClass}>Category</div>
-              <select className={inputClass} value={category}
+              <Select variant="default" size="full" value={category}
                 onChange={(e) => setCategory(e.target.value)}>
                 <option value="">-- 选择 --</option>
                 {availableCategories.map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
-              </select>
+              </Select>
             </div>
           )}
 
           {/* Source / Base URL */}
           <div>
             <div className={labelClass}>{domain === "llm" ? "Base URL" : "Source"}</div>
-            <input className={inputClass} value={source}
+            <Input variant="default" size="full" value={source}
               onChange={(e) => setSource(e.target.value)}
               placeholder={domain === "llm" ? "https://api.example.com/v1" : ""} />
           </div>
@@ -241,10 +241,10 @@ export function CloudModelForm({
           <div>
             <div className={labelClass}>Model Name</div>
             {referenceModels.length > 0 ? (
-              <input className={inputClass} value={modelName} list="ref-models"
+              <Input variant="default" size="full" value={modelName} list="ref-models"
                 onChange={(e) => setModelName(e.target.value)} placeholder="选择或输入" />
             ) : (
-              <input className={inputClass} value={modelName}
+              <Input variant="default" size="full" value={modelName}
                 onChange={(e) => setModelName(e.target.value)} placeholder={domain === "llm" ? "如 deepseek-chat" : "选择或输入"} />
             )}
             {referenceModels.length > 0 && (
@@ -257,7 +257,7 @@ export function CloudModelForm({
           {/* API Key */}
           <div>
             <div className={labelClass}>{keyLabel}</div>
-            <input className={inputClass} type="password" value={secretKey}
+            <Input variant="default" size="full" type="password" value={secretKey}
               onChange={(e) => setSecretKey(e.target.value)} placeholder="sk-..." />
           </div>
 
@@ -280,10 +280,10 @@ export function CloudModelForm({
 
         {/* Test result */}
         {testResult && (
-          <div className={cn(
-            "text-[11px] px-2.5 py-1.5 rounded-md",
-            testResult.ok ? "bg-emerald-500/10 text-emerald-600" : "bg-destructive/10 text-destructive",
-          )}>
+          <div className={
+            "mt-3 rounded-md px-2.5 py-1.5 text-[11px] " +
+            (testResult.ok ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive")
+          }>
             {testResult.ok ? "✓ " : "✗ "}{testResult.message}
           </div>
         )}
@@ -292,33 +292,22 @@ export function CloudModelForm({
         <div className="flex justify-between items-center gap-2 mt-5">
           {/* 测试连接（仅 LLM——ASR 的 source 不是 HTTP base_url） */}
           {domain === "llm" ? (
-            <button className={cn(
-              "px-3 py-1.5 text-xs rounded-md border transition-colors",
-              (!source || !secretKey || testing)
-                ? "border-border text-muted-foreground/40 cursor-not-allowed"
-                : "border-voice/40 text-voice hover:bg-voice/10",
-            )}
-            disabled={!source || !secretKey || testing}
-            onClick={handleTest}>
+            <Button variant="outline" size="sm"
+              disabled={!source || !secretKey || testing}
+              onClick={handleTest}>
               {testing ? "..." : t("settings.models.testConnection")}
-            </button>
+            </Button>
           ) : <div />}
 
           <div className="flex gap-2">
-            <button className="px-3 py-1.5 text-xs rounded-md border border-border text-muted-foreground hover:bg-accent transition-colors"
-              onClick={onCancel}>
+            <Button variant="outline" size="sm" onClick={onCancel}>
               {t("settings.models.cancel")}
-            </button>
-            <button className={cn(
-              "px-3 py-1.5 text-xs rounded-md transition-colors",
-              (!provider || !modelName || saving)
-                ? "bg-muted text-muted-foreground cursor-not-allowed"
-                : "bg-foreground text-background hover:opacity-85",
-            )}
-            disabled={!provider || !modelName || saving}
-            onClick={handleSave}>
+            </Button>
+            <Button variant="primary" size="sm"
+              disabled={!provider || !modelName || saving}
+              onClick={handleSave}>
               {saving ? "..." : t("settings.models.save")}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

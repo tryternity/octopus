@@ -4,6 +4,11 @@ import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
 import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, Check } from 'lucide-react';
 import { useT } from '@/lib/i18n';
+import { Card as UICard, CardHeader, CardTitle } from '@/components/ui/card';
+import { Row } from '@/components/ui/row';
+import { Toggle } from '@/components/ui/toggle';
+import { Input, Select } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 interface HotwordSet {
   id: number;
@@ -28,36 +33,24 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'r/l', key: 'settings.hotword.rL' },
 ];
 
-const selectClass = 'border border-border rounded-md bg-background px-2.5 py-1.5 text-sm cursor-pointer outline-none focus:border-voice/40 hover:border-foreground/30 transition-colors';
-
-function Card({ icon: Icon, title, children }: { icon: React.ElementType; title: string; children: React.ReactNode }) {
+/** HotwordPanel 专用卡片：头部图标+标题 + 紧凑内容区（py-1）。 */
+function SectionCard({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="mb-3 border border-border rounded-lg overflow-hidden bg-background">
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-muted/40 border-b border-border">
+    <UICard className="mb-3">
+      <CardHeader>
         <Icon className="w-4 h-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">{title}</h3>
-      </div>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
       <div className="px-4 py-1">{children}</div>
-    </div>
-  );
-}
-
-function Row({ children }: { children: React.ReactNode }) {
-  return <div className="flex items-center justify-between py-2.5 border-b border-border/40 last:border-0 gap-3">{children}</div>;
-}
-
-function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      onClick={onClick}
-      className={cn('relative w-10 h-[22px] rounded-full transition-colors flex-shrink-0', on ? 'bg-voice' : 'bg-muted-foreground/25')}
-    >
-      <span className={cn('absolute top-0.5 left-0.5 w-[18px] h-[18px] bg-white rounded-full transition-transform shadow-sm', on && 'translate-x-[18px]')} />
-    </button>
+    </UICard>
   );
 }
 
@@ -272,61 +265,65 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
         <p className="mt-1 text-xs text-muted-foreground">{t('settings.hotword.intro', { n: totalActiveWords })}</p>
       </div>
 
-      {/* 方言模糊 —— 保留 */}
-      <Card icon={Type} title={t('settings.hotword.dialectFuzzy')}>
+      {/* 方言模糊 */}
+      <SectionCard icon={Type} title={t('settings.hotword.dialectFuzzy')}>
         <div className="grid grid-cols-2 gap-x-8 gap-y-1 py-1">
           {DIALECT_KEYS.map(({ tok, key }) => {
             const label = t(key);
             return (
             <div key={tok} className="flex items-center justify-between py-2">
               <span className="text-sm">{label}</span>
-              <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} label={label} />
+              <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
             </div>
             );
           })}
         </div>
-      </Card>
+      </SectionCard>
 
       {/* 版本管理 */}
-      <Card icon={BookMarked} title={t('settings.hotword.versionsN', { n: sets.length })}>
+      <SectionCard icon={BookMarked} title={t('settings.hotword.versionsN', { n: sets.length })}>
         {!loaded ? (
           <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.loading')}</p>
         ) : (
           <>
             <div className="flex items-center gap-2 py-2.5">
               {creating ? (
-                <input
+                <Input
+                  variant="default"
+                  size="full"
                   autoFocus
                   value={createVal}
                   onChange={(e) => setCreateVal(e.target.value)}
                   onBlur={commitCreate}
                   onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { createCancelledRef.current = true; setCreating(null); setCreateVal(''); } }}
                   placeholder={creating === 'create' ? t('settings.hotword.newVersionPlaceholder') : t('settings.hotword.importVersionPlaceholder')}
-                  className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice"
+                  className="focus:border-voice"
                 />
               ) : (
                 <>
-                  <button onClick={() => { createCancelledRef.current = false; setCreating('create'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
-                    <Plus className="w-4 h-4" /> {t('settings.hotword.newVersionBtn')}
-                  </button>
-                  <button onClick={() => { createCancelledRef.current = false; setCreating('import'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
-                    <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.importBtn')}
-                  </button>
+                  <Button variant="voice" size="default" onClick={() => { createCancelledRef.current = false; setCreating('create'); setCreateVal(''); }}>
+                    <Plus /> {t('settings.hotword.newVersionBtn')}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => { createCancelledRef.current = false; setCreating('import'); setCreateVal(''); }}>
+                    <Upload /> {t('settings.hotword.importBtn')}
+                  </Button>
                 </>
               )}
             </div>
             {sets.map((s) => (
               <Row key={s.id}>
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <Toggle on={s.enabled} onClick={() => toggleSet(s.id, !s.enabled)} label={`启用 ${s.name}`} />
+                  <Toggle on={s.enabled} onClick={() => toggleSet(s.id, !s.enabled)} aria-label={`启用 ${s.name}`} />
                   {renaming === s.id ? (
-                    <input
+                    <Input
+                      variant="default"
+                      size="sm"
                       autoFocus
                       value={renameVal}
                       onChange={(e) => setRenameVal(e.target.value)}
                       onBlur={() => commitRename(s.id)}
                       onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { renameCancelledRef.current = true; setRenaming(null); } }}
-                      className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-1.5 py-0.5 text-sm outline-none"
+                      className="focus:border-voice"
                     />
                   ) : (
                     <button
@@ -342,46 +339,47 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                   </span>
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
-                  <button onClick={() => setSelectedId(s.id)} className="rounded p-1 text-muted-foreground hover:text-foreground" aria-label="选中编辑">
-                    <Check className={cn('w-3.5 h-3.5', selectedId === s.id ? 'text-voice' : 'opacity-40')} />
-                  </button>
-                  <button onClick={doExport} disabled={selectedId !== s.id} className="rounded p-1 text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="导出">
-                    <Download className="w-3.5 h-3.5" />
-                  </button>
-                  <button onClick={() => deleteSet(s.id, s.name)} className="rounded p-1 text-muted-foreground hover:text-red-500" aria-label="删除版本">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setSelectedId(s.id)} aria-label="选中编辑">
+                    <Check className={cn(selectedId === s.id ? 'text-voice' : 'opacity-40')} />
+                  </Button>
+                  <Button variant="ghost" size="icon-sm" onClick={doExport} disabled={selectedId !== s.id} aria-label="导出">
+                    <Download />
+                  </Button>
+                  <Button variant="destructive-ghost" size="icon-sm" onClick={() => deleteSet(s.id, s.name)} aria-label="删除版本">
+                    <Trash2 />
+                  </Button>
                 </div>
               </Row>
             ))}
           </>
         )}
-      </Card>
+      </SectionCard>
 
       {/* 选中版本的词（逐词管理体感） */}
       {selected && (
-        <Card icon={Plus} title={`${selected.name}（${words.length} ${t('settings.hotword.wordsCount')}）`}>
+        <SectionCard icon={Plus} title={`${selected.name}（${words.length} ${t('settings.hotword.wordsCount')}）`}>
           {/* 单个添加 + 导入追加/覆盖 + 挖掘 */}
           <div className="flex items-center gap-2 py-2.5">
-            <input
+            <Input
+              variant="default"
+              size="full"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addWord()}
               placeholder={t('settings.hotword.addPlaceholder')}
-              className="flex-1 min-w-0 bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
             />
-            <button onClick={addWord} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
-              <Plus className="w-4 h-4" /> {t('settings.hotword.addBtn')}
-            </button>
-            <button onClick={() => doImport('append')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title={t('settings.hotword.appendHint')}>
-              <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.appendBtn')}
-            </button>
-            <button onClick={() => doImport('overwrite')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title={t('settings.hotword.overwriteHint')}>
-              <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.overwriteBtn')}
-            </button>
-            <button onClick={mine} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
-              <Wand2 className="w-3.5 h-3.5" /> {t('settings.hotword.mineBtn')}
-            </button>
+            <Button variant="voice" size="default" onClick={addWord}>
+              <Plus /> {t('settings.hotword.addBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => doImport('append')} title={t('settings.hotword.appendHint')}>
+              <Upload /> {t('settings.hotword.appendBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => doImport('overwrite')} title={t('settings.hotword.overwriteHint')}>
+              <Upload /> {t('settings.hotword.overwriteBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={mine}>
+              <Wand2 /> {t('settings.hotword.mineBtn')}
+            </Button>
           </div>
 
           {/* 挖掘确认面板：候选默认全选，可取消勾选 / 手动补词，确认才落库 */}
@@ -422,21 +420,24 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                 })}
               </div>
               <div className="flex items-center gap-1.5">
-                <input
+                <Input
+                  variant="default"
+                  size="full"
                   value={mineInput}
                   onChange={(e) => setMineInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
                   placeholder={t('settings.hotword.manualPlaceholder')}
-                  className="flex-1 min-w-0 bg-background border border-border rounded px-2 py-1 text-xs outline-none focus:border-voice/50"
+                  className="text-xs"
                 />
-                <button onClick={addMineWord} className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">{t('settings.hotword.manualBtn')}</button>
-                <button
+                <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
+                <Button
+                  variant="voice"
+                  size="sm"
                   onClick={commitMine}
                   disabled={minePending.selected.size === 0}
-                  className="rounded-md bg-voice px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
                 >
                   {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -445,18 +446,18 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
           {words.length > 0 && (
             <div className="flex items-center gap-2 py-2 border-t border-border/40">
               <div className="relative flex-1 min-w-0">
-                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="w-full bg-background border border-border rounded pl-7 pr-2.5 py-1.5 text-sm outline-none focus:border-voice/50" />
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none z-10" />
+                <Input variant="default" size="full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="pl-7" />
               </div>
-              <select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className={cn(selectClass, 'flex-shrink-0')} aria-label="排序方式">
+              <Select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className="flex-shrink-0" aria-label="排序方式">
                 <option value="time">{t('settings.hotword.sortDefault')}</option>
                 <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
                 <option value="hits">{t('settings.hotword.sortHit')}</option>
-              </select>
+              </Select>
             </div>
           )}
 
-          {/* 卡片网格（命中数 inline） */}
+          {/* 卡片网格（命中数 inline）—— Raycast 词卡：双环容器 + hover 边框提亮 */}
           {words.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
           ) : visible.length === 0 ? (
@@ -467,10 +468,10 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                 const h = hits[w] ?? 0;
                 return (
                   <div key={w} className={cn(
-                    'relative rounded-md border bg-background px-3 py-2 pr-7 min-w-[112px] max-w-[200px] transition-colors duration-700',
+                    'raycast-ring relative rounded-md border bg-background px-3 py-2 pr-7 min-w-[112px] max-w-[200px] transition-colors duration-700',
                     recentlyAdded.has(w) ? 'border-voice bg-voice/15 ring-1 ring-voice/30' : 'border-border hover:border-foreground/25'
                   )}>
-                    <button onClick={() => removeWord(w)} className="absolute top-1 right-1 rounded p-0.5 text-muted-foreground/60 hover:text-red-500" aria-label={`删除 ${w}`}>
+                    <button onClick={() => removeWord(w)} className="absolute top-1 right-1 rounded p-0.5 text-muted-foreground/60 hover:text-destructive" aria-label={`删除 ${w}`}>
                       <X className="w-3 h-3" />
                     </button>
                     <div className="text-sm truncate">{w}</div>
@@ -480,7 +481,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
               })}
             </div>
           )}
-        </Card>
+        </SectionCard>
       )}
     </div>
   );

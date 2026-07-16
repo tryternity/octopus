@@ -13,6 +13,7 @@ import {
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import { useT, t as ti18n } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
 
 const PAGE_SIZE = 50;
 
@@ -220,13 +221,15 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               </div>
             )}
             {!loading && !noMore && items.length > 0 && (
-              <button
-                className="mx-auto my-3 flex items-center gap-1 px-4 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent border border-border transition-all"
+              <Button
+                variant="outline"
+                size="sm"
+                className="mx-auto my-3"
                 onClick={() => fetchData()}
               >
-                <ChevronDown className="w-3 h-3" />
+                <ChevronDown />
                 {t("settings.clipboardPanel.loadMore")}
-              </button>
+              </Button>
             )}
             {!loading && noMore && items.length > 0 && (
               <div className="text-center py-4 text-muted-foreground/50 text-[10px] tracking-wider">{t("settings.clipboardPanel.allLoaded")}</div>
@@ -241,18 +244,14 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
           {t("settings.clipboardPanel.totalN", { n: total })}{filter !== "all" && activeFilterLabel ? ` · ${activeFilterLabel}` : ""}
         </span>
         {hasSelection ? (
-          <button
-            className={cn(
-              "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-150",
-              confirmDelete
-                ? "bg-red-600 text-white"
-                : "border border-red-300 text-red-500 hover:bg-red-50",
-            )}
+          <Button
+            variant={confirmDelete ? "destructive" : "destructive-ghost"}
+            size="sm"
             onClick={handleBatchDelete}
           >
-            <Trash2 className="w-3 h-3" />
+            <Trash2 />
             {confirmDelete ? t("settings.clipboardPanel.confirmDeleteN", { n: selectedIds.size }) : t("settings.clipboardPanel.deleteSelected")}
-          </button>
+          </Button>
         ) : (
           <span className="text-[10px] text-muted-foreground/50 tabular-nums">{t("settings.clipboardPanel.showingN", { n: items.length })}</span>
         )}
@@ -395,16 +394,16 @@ function ClipboardRow({
     <div
       className={cn(
         "group relative flex items-center gap-2.5 pl-4 pr-3 py-2 border-b border-border/50 transition-colors cursor-pointer",
-        deletePending ? "bg-red-50/10"
+        deletePending ? "bg-destructive/10"
           : isSelected ? "bg-accent"
           : "hover:bg-muted",
       )}
       onClick={onToggleSelect}
     >
-      {/* 左缘类型色条：选中时变 stone-900，删除确认时变 red-500 */}
+      {/* 左缘类型色条：选中时变 voice，删除确认时变 destructive */}
       <div className={cn(
         "absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full transition-colors",
-        deletePending ? "bg-red-500" : showSelectEdge ? "bg-voice" : edgeClass,
+        deletePending ? "bg-destructive" : showSelectEdge ? "bg-voice" : edgeClass,
       )} />
 
       <input
@@ -425,10 +424,10 @@ function ClipboardRow({
         <Icon className={cn(
           "w-4 h-4 transition-all duration-150",
           accent,
-          copied && "scale-125 text-emerald-500",
+          copied && "scale-125 text-success",
         )} />
         {copied && (
-          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-success px-1.5 py-0.5 text-[10px] font-medium text-success-foreground shadow">
             {t("settings.clipboardPanel.copied")}
           </span>
         )}
@@ -472,7 +471,7 @@ function ClipboardRow({
               title={t("settings.clipboardPanel.copy")}
             >
               {copied ? (
-                <Check className="w-3.5 h-3.5 text-emerald-500" />
+                <Check className="w-3.5 h-3.5 text-success" />
               ) : (
                 <Copy className="w-3.5 h-3.5 text-muted-foreground" />
               )}
@@ -483,7 +482,7 @@ function ClipboardRow({
                 onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
                 title={t("settings.clipboardPanel.openLink")}
               >
-                <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
+                <LinkIcon className="w-3.5 h-3.5 text-info" />
               </button>
             )}
             {item.item_type !== "image" && item.item_type !== "file" && (
@@ -538,7 +537,7 @@ function ClipboardRow({
               className={cn(
                 "p-1 rounded transition-all",
                 deletePending
-                  ? "opacity-100 bg-red-100"
+                  ? "opacity-100 bg-destructive/15"
                   : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
               )}
               onClick={handleDeleteClick}
@@ -546,7 +545,7 @@ function ClipboardRow({
             >
               <Trash2 className={cn(
                 "w-3.5 h-3.5 transition-colors",
-                deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
+                deletePending ? "text-destructive" : "text-muted-foreground hover:text-destructive",
               )} />
             </button>
             <button

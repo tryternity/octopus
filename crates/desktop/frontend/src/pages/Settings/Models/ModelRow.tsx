@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import { CheckCircle2, Circle, Download, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useT } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
 
 export interface ModelRowData {
   name: string;
@@ -28,8 +29,6 @@ function fmtBytes(n: number): string {
   if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
   return (n / 1073741824).toFixed(2) + " GB";
 }
-
-const btnBase = "text-[11px] rounded transition-colors flex items-center gap-1";
 
 export function ModelRow({
   model,
@@ -60,9 +59,9 @@ export function ModelRow({
         "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
         "border-l-2",
         model.is_current
-          ? "border-l-emerald-500 bg-emerald-50/40"
+          ? "border-l-success bg-success/10"
           : model.is_ready
-            ? "border-l-rose-300"
+            ? "border-l-voice/50"
             : "border-l-border/40",
       )}
     >
@@ -70,9 +69,9 @@ export function ModelRow({
       <div className="flex flex-col gap-0.5 flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           {model.is_current ? (
-            <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+            <CheckCircle2 className="w-3 h-3 text-success shrink-0" />
           ) : model.is_ready ? (
-            <CheckCircle2 className="w-3 h-3 text-rose-400 shrink-0" />
+            <CheckCircle2 className="w-3 h-3 text-voice/70 shrink-0" />
           ) : (
             <Circle className="w-3 h-3 text-muted-foreground/30 shrink-0" />
           )}
@@ -95,67 +94,60 @@ export function ModelRow({
       {/* 右：操作按钮 */}
       <div className="flex items-center gap-1 flex-shrink-0">
         {showDownload ? (
-          <button
-            className={cn(
-              btnBase, "px-2.5 py-1",
-              "bg-foreground text-background hover:opacity-85",
-              busy && "opacity-40 cursor-not-allowed",
-            )}
+          <Button
+            variant="primary"
+            size="sm"
             disabled={busy}
             onClick={onDownload}
           >
-            <Download className="w-2.5 h-2.5" />
+            <Download />
             {t("settings.models.download")}
-          </button>
+          </Button>
         ) : (
           <>
             {/* 激活 / 已激活 */}
-            <button
-              className={cn(
-                btnBase, "px-2 py-0.5",
-                model.is_current
-                  ? "bg-muted text-muted-foreground/40 cursor-default"
-                  : "bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20",
-              )}
-              disabled={model.is_current}
-              onClick={onActivate}
-            >
-              {model.is_current ? t("settings.models.activated") : t("settings.models.activate")}
-            </button>
+            {model.is_current ? (
+              <Button variant="ghost" size="sm" disabled className="cursor-default">
+                {t("settings.models.activated")}
+              </Button>
+            ) : (
+              <Button variant="success" size="sm" onClick={onActivate}>
+                {t("settings.models.activate")}
+              </Button>
+            )}
 
             {/* 校验（本地已就绪） */}
             {model.is_local && model.is_ready && (
-              <button
-                className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:bg-accent")}
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 disabled={busy}
                 onClick={onVerify}
               >
-                <RefreshCw className="w-2.5 h-2.5" />
-              </button>
+                <RefreshCw />
+              </Button>
             )}
 
             {/* 删除（本地已就绪 或 云端模型） */}
             {(model.is_local && model.is_ready || !model.is_local) && (
-              <button
-                className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10")}
+              <Button
+                variant="destructive-ghost"
+                size="icon-sm"
                 disabled={busy}
                 onClick={async () => {
                   const ok = await confirm(t("settings.models.confirmDelete"), { title: "删除模型", kind: "warning" });
                   if (ok) onDelete();
                 }}
               >
-                <Trash2 className="w-2.5 h-2.5" />
-              </button>
+                <Trash2 />
+              </Button>
             )}
 
             {/* 编辑（云端模型） */}
             {!model.is_local && onEdit && (
-              <button
-                className={cn(btnBase, "px-1.5 py-0.5 text-muted-foreground hover:text-foreground hover:bg-accent")}
-                onClick={onEdit}
-              >
-                <Pencil className="w-2.5 h-2.5" />
-              </button>
+              <Button variant="ghost" size="icon-sm" onClick={onEdit}>
+                <Pencil />
+              </Button>
             )}
           </>
         )}
@@ -167,8 +159,8 @@ export function ModelRow({
 export function CurrentBanner({ label }: { label: string }) {
   const t = useT();
   return (
-    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-emerald-500 bg-emerald-50/40 text-[11px] mb-1">
-      <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-success bg-success/10 text-[11px] mb-1">
+      <CheckCircle2 className="w-3 h-3 text-success shrink-0" />
       <span className="text-muted-foreground">{t("settings.models.current")}</span>
       <span className="font-medium text-foreground">{label}</span>
     </div>

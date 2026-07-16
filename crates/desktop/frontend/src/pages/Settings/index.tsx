@@ -101,24 +101,31 @@ function Settings() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      {/* Sidebar */}
-      <div className="w-[160px] flex-shrink-0 bg-muted/40 border-r border-border flex flex-col">
-        <nav className="flex-1 pt-3">
-          {NAV_ITEMS.map(({ page: p, icon: Icon, labelKey }) => (
-            <div
-              key={p}
-              className={cn(
-                "flex items-center gap-2 px-3 mx-1.5 py-2 rounded-md cursor-pointer text-sm transition-colors",
-                page === p
-                  ? "bg-background text-foreground shadow-sm font-medium"
-                  : "text-muted-foreground hover:text-foreground hover:bg-background/50",
-              )}
-              onClick={() => setPage(p)}
-            >
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              <span className="truncate">{t(labelKey)}</span>
-            </div>
-          ))}
+      {/* Sidebar —— Raycast list 风格：选中项左侧 voice 竖条 + bg-accent 填充 */}
+      <div className="w-[176px] flex-shrink-0 border-r border-border bg-muted/30 flex flex-col raycast-ring">
+        <nav className="flex-1 space-y-0.5 pt-3">
+          {NAV_ITEMS.map(({ page: p, icon: Icon, labelKey }) => {
+            const active = page === p;
+            return (
+              <div
+                key={p}
+                className={cn(
+                  "relative flex items-center gap-2.5 mx-2 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] tracking-[0.0125em] transition-colors",
+                  active
+                    ? "bg-accent font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+                )}
+                onClick={() => setPage(p)}
+              >
+                {/* 选中态左侧 voice 竖条——Raycast list 选中签名 */}
+                {active && (
+                  <span className="absolute left-[-8px] top-1.5 bottom-1.5 w-[2px] rounded-full bg-voice" />
+                )}
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                <span className="truncate">{t(labelKey)}</span>
+              </div>
+            );
+          })}
         </nav>
       </div>
 
@@ -149,9 +156,9 @@ function Settings() {
         ) : null}
       </div>
 
-      {/* Toast */}
+      {/* Toast —— 半透明背景 + 模糊 + 边框，替代原 bg-black/80 纯黑 */}
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-lg text-sm z-50 max-w-[80%] text-center">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[80%] rounded-lg border border-border bg-background/95 px-4 py-2 text-sm text-center shadow-lg backdrop-blur-sm">
           {toast}
         </div>
       )}

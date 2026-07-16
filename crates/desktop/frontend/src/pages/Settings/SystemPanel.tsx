@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { MemoryStick, Cpu, Boxes, type LucideIcon } from "lucide-react";
+import { MemoryStick, Cpu, Boxes } from "lucide-react";
 import {
   fmtBytes,
   sparklinePoints,
@@ -9,6 +9,29 @@ import {
   sparklineDataFromNullable,
 } from "./systemStatusMath";
 import { useT } from "@/lib/i18n";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+
+/** SystemPanel 专用卡片：头部图标+标题，内容区用宽松 padding（py-3）放图表。 */
+function StatCard({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <Icon className="w-4 h-4 text-muted-foreground" />
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <div className="px-4 py-3">{children}</div>
+    </Card>
+  );
+}
 
 export interface ProcessStats {
   rss_bytes: number;
@@ -54,26 +77,6 @@ function Sparkline({ data, color, max }: { data: number[]; color: string; max?: 
         vectorEffect="non-scaling-stroke"
       />
     </svg>
-  );
-}
-
-function Card({
-  icon: Icon,
-  title,
-  children,
-}: {
-  icon: LucideIcon;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="border border-border rounded-lg overflow-hidden bg-background">
-      <div className="flex items-center gap-2 px-4 py-2.5 bg-muted/40 border-b border-border">
-        <Icon className="w-4 h-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">{title}</h3>
-      </div>
-      <div className="px-4 py-3">{children}</div>
-    </div>
   );
 }
 
@@ -139,7 +142,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 
       {/* 内存 / CPU 并排（布局 B） */}
       <div className="grid grid-cols-2 gap-3">
-        <Card icon={MemoryStick} title={hasReal ? t("settings.system.memActual") : t("settings.system.memResident")}>
+        <StatCard icon={MemoryStick} title={hasReal ? t("settings.system.memActual") : t("settings.system.memResident")}>
           <div className="text-lg font-semibold mb-1">
             {fmtBytes(memMain)}
             {hasReal && (
@@ -148,18 +151,18 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
               </span>
             )}
           </div>
-          <Sparkline data={realSeries} color="#6ab0f3" max={realMax} />
-        </Card>
-        <Card icon={Cpu} title={t("settings.system.cpuProcess")}>
+          <Sparkline data={realSeries} color="var(--color-info)" max={realMax} />
+        </StatCard>
+        <StatCard icon={Cpu} title={t("settings.system.cpuProcess")}>
           <div className="text-lg font-semibold mb-1">
             {snap.process.cpu_percent.toFixed(1)}%
           </div>
-          <Sparkline data={snap.history.cpu} color="#f3a96a" />
-        </Card>
+          <Sparkline data={snap.history.cpu} color="var(--color-warning)" />
+        </StatCard>
       </div>
 
       {/* 模型列表 */}
-      <Card icon={Boxes} title={t("settings.system.modelEstimate")}>
+      <StatCard icon={Boxes} title={t("settings.system.modelEstimate")}>
         {snap.models.length === 0 ? (
           <div className="text-xs text-muted-foreground/60">{t("settings.system.noModels")}</div>
         ) : (
@@ -167,9 +170,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
             {snap.models.map((m) => (
               <div key={m.id} className="flex items-center justify-between text-sm">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-muted-foreground/60 px-1.5 py-0.5 rounded bg-muted">
-                    {m.kind}
-                  </span>
+                  <Badge size="sm">{m.kind}</Badge>
                   <span>{m.display_name}</span>
                 </div>
                 <span className="text-xs text-muted-foreground/70">
@@ -185,7 +186,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
         <div className="text-[10px] text-muted-foreground/50">
           {t("settings.system.ocrIdleHint")}
         </div>
-      </Card>
+      </StatCard>
     </div>
   );
 }

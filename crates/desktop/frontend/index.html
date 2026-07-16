@@ -13,7 +13,7 @@
         if (themeId) {
           document.documentElement.setAttribute("data-theme", themeId);
           // 自定义主题：从 localStorage 恢复 CSS 规则
-          var builtin = ["light", "glass-dark", "nord"];
+          var builtin = ["light", "glass-dark", "nord", "raycast"];
           if (builtin.indexOf(themeId) === -1) {
             var css = localStorage.getItem("octopus-custom-theme-css");
             if (css) {

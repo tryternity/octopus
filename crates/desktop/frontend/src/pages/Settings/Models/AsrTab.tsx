@@ -5,6 +5,7 @@ import { Cloud, HardDrive, Plus } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { CloudModelForm, type CloudModelData } from "./CloudModelForm";
+import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 
 interface EngineOption {
@@ -161,10 +162,10 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
 
       <CollapsibleSection icon={Cloud} label={t("settings.models.cloudEngines")}>
         <div className="flex justify-end pb-1">
-          <button className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-voice/10 text-voice hover:bg-voice/20 transition-colors"
+          <Button variant="voice-soft" size="sm"
             onClick={() => { setEditTarget(null); setShowForm(true); }}>
-            <Plus className="w-2.5 h-2.5" /> {t("settings.models.addModel")}
-          </button>
+            <Plus /> {t("settings.models.addModel")}
+          </Button>
         </div>
         {cloudRows.map((m) => {
           const engine = cloudEngines.find((e) => e.id === m.cloudId);

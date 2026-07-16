@@ -28,7 +28,7 @@ const CACHE_KEY = "octopus-theme-id";
 const CUSTOM_CSS_KEY = "octopus-custom-theme-css";
 
 /** 内置主题 id——颜色值已在 index.css [data-theme="xxx"] 预编译。 */
-const BUILTIN_IDS = new Set(["light", "glass-dark", "nord"]);
+const BUILTIN_IDS = new Set(["light", "glass-dark", "nord", "raycast"]);
 
 /** 主题列表前端缓存——避免每次 applyThemeById 都跨进程 IPC。 */
 let themeCache: ThemeInfo[] | null = null;

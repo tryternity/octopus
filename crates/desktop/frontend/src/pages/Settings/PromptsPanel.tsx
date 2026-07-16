@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { Plus, Pencil, Check, Trash2, X, Eye } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
 
 interface Prompt {
   id: number;
@@ -87,16 +91,16 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
       <div className="max-w-[640px] flex flex-col h-full">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold">{viewing.title}</h3>
-          <button className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setViewing(null)}>
-            <X className="w-4 h-4" />
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setViewing(null)}>
+            <X />
+          </Button>
         </div>
         {viewing.description && (
           <div className="text-xs text-muted-foreground/70 mb-2">{viewing.description}</div>
         )}
-        <div className="border border-border rounded-lg overflow-hidden flex-1 min-h-0 bg-background">
+        <Card className="flex-1 min-h-0 overflow-hidden">
           <pre className="px-4 py-3 text-xs font-mono leading-relaxed whitespace-pre-wrap overflow-y-auto thin-scrollbar h-full">{viewing.content}</pre>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -107,11 +111,11 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
       <div className="max-w-[640px] flex flex-col h-full">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold">{isNew ? t("settings.prompts.newPrompt") : t("settings.prompts.editPrompt")}</h3>
-          <button className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setEditing(null)}>
-            <X className="w-4 h-4" />
-          </button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setEditing(null)}>
+            <X />
+          </Button>
         </div>
-        <div className="border border-border rounded-lg overflow-hidden flex flex-col flex-1 min-h-0 bg-background">
+        <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="px-4 py-2.5 border-b border-border">
             <input
               type="text"
@@ -130,26 +134,22 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
-          <textarea
-            className="flex-1 px-4 py-3 text-xs font-mono leading-relaxed outline-none resize-none bg-background min-h-[200px]"
+          <Textarea
+            variant="bare"
+            size="full"
+            className="flex-1 px-4 py-3 font-mono resize-none min-h-[200px]"
             placeholder={t("settings.prompts.contentPlaceholder")}
             value={content}
             onChange={(e) => setContent(e.target.value)}
           />
-        </div>
+        </Card>
         <div className="flex gap-2 mt-3">
-          <button
-            className="flex items-center gap-1 px-4 py-1.5 bg-foreground text-background rounded-md text-sm hover:opacity-85 transition-opacity"
-            onClick={save}
-          >
-            <Check className="w-3.5 h-3.5" /> {t("settings.prompts.save")}
-          </button>
-          <button
-            className="px-4 py-1.5 border border-border rounded-md text-sm hover:border-foreground/30 transition-colors"
-            onClick={() => setEditing(null)}
-          >
+          <Button variant="primary" size="default" onClick={save}>
+            <Check /> {t("settings.prompts.save")}
+          </Button>
+          <Button variant="outline" size="default" onClick={() => setEditing(null)}>
             {t("settings.prompts.cancel")}
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -160,70 +160,54 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
     <div className="max-w-[640px]">
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-semibold">{t("settings.prompts.header")}</span>
-        <button
-          className="flex items-center gap-1 px-3 py-1.5 bg-foreground text-background rounded-md text-sm hover:opacity-85 transition-opacity"
-          onClick={newPrompt}
-        >
-          <Plus className="w-3.5 h-3.5" /> {t("settings.prompts.newBtn")}
-        </button>
+        <Button variant="primary" size="default" onClick={newPrompt}>
+          <Plus /> {t("settings.prompts.newBtn")}
+        </Button>
       </div>
       {prompts.map((p) => {
         const isActive = activeId === p.id;
         return (
-          <div
+          <Card
             key={p.id}
             className={cn(
-              "border rounded-lg p-3.5 mb-2.5 transition-colors",
-              isActive ? "border-voice/40 bg-voice/[0.03]" : "border-border hover:border-foreground/20",
+              "mb-2.5 p-3.5 transition-colors",
+              isActive ? "border-voice/40 bg-voice/[0.03]" : "hover:border-foreground/20",
             )}
           >
             <div className="flex items-center gap-2 mb-1">
               <span className="text-sm font-medium">{p.title}</span>
-              {p.is_system && <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{t("settings.prompts.builtin")}</span>}
-              {isActive && <span className="text-[9px] px-1.5 py-0.5 rounded bg-voice/15 text-voice font-medium">{t("settings.prompts.activeBadge")}</span>}
+              {p.is_system && <Badge>{t("settings.prompts.builtin")}</Badge>}
+              {isActive && <Badge variant="voice">{t("settings.prompts.activeBadge")}</Badge>}
             </div>
             {p.description && <div className="text-xs text-muted-foreground/70 mb-1">{p.description}</div>}
             <div className="text-xs text-muted-foreground/50 whitespace-pre-wrap max-h-12 overflow-hidden leading-relaxed">{p.content}</div>
             <div className="flex gap-1.5 mt-2">
               {!isActive && (
-                <button
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-voice transition-colors"
-                  onClick={() => activate(p.id)}
-                >
-                  <Check className="w-3 h-3" /> {t("settings.prompts.activate")}
-                </button>
+                <Button variant="ghost" size="sm" onClick={() => activate(p.id)}>
+                  <Check /> {t("settings.prompts.activate")}
+                </Button>
               )}
               {p.is_system && (
-                <button
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => setViewing(p)}
-                >
-                  <Eye className="w-3 h-3" /> {t("settings.prompts.view")}
-                </button>
+                <Button variant="ghost" size="sm" onClick={() => setViewing(p)}>
+                  <Eye /> {t("settings.prompts.view")}
+                </Button>
               )}
               {!p.is_system && (
                 <>
-                  <button
-                    className="flex items-center gap-1 px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => editPrompt(p)}
-                  >
-                    <Pencil className="w-3 h-3" /> {t("settings.prompts.edit")}
-                  </button>
-                  <button
-                    className={cn(
-                      "flex items-center gap-1 px-2.5 py-1 text-xs rounded transition-colors",
-                      deletePendingId === p.id
-                        ? "bg-red-600 text-white"
-                        : "text-muted-foreground hover:text-red-500",
-                    )}
+                  <Button variant="ghost" size="sm" onClick={() => editPrompt(p)}>
+                    <Pencil /> {t("settings.prompts.edit")}
+                  </Button>
+                  <Button
+                    variant={deletePendingId === p.id ? "destructive" : "destructive-ghost"}
+                    size="sm"
                     onClick={() => handleDelete(p.id)}
                   >
-                    <Trash2 className="w-3 h-3" /> {deletePendingId === p.id ? t("settings.prompts.confirmDelete") : t("settings.prompts.delete")}
-                  </button>
+                    <Trash2 /> {deletePendingId === p.id ? t("settings.prompts.confirmDelete") : t("settings.prompts.delete")}
+                  </Button>
                 </>
               )}
             </div>
-          </div>
+          </Card>
         );
       })}
       {prompts.length === 0 && <div className="text-center py-12 text-muted-foreground text-sm">{t("settings.prompts.empty")}</div>}

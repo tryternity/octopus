@@ -3,7 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { Bot, Plus, RefreshCw, Check, X, Terminal, Clock } from "lucide-react";
+import { Plus, RefreshCw, Check, X, Terminal, Clock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { PillTabs } from "@/components/ui/tabs";
 
 interface AgentAdapter {
   key: string;
@@ -18,41 +22,18 @@ interface AgentPanelProps {
   showToast: (msg: string) => void;
 }
 
-const inputClass = "w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all";
-
 export default function AgentPanel({ showToast }: AgentPanelProps) {
   const t = useT();
   const [activeTab, setActiveTab] = useState<"adapters" | "tasks">("adapters");
 
+  const tabs = [
+    { key: "adapters", label: t("agentPanel.title") },
+    { key: "tasks", label: t("agentPanel.tasksTitle") },
+  ];
+
   return (
     <div className="flex flex-col h-full">
-      {/* Pill tab 条 */}
-      <div className="flex gap-1 px-2 pt-1 pb-2 border-b border-border">
-        <button
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-all duration-150",
-            activeTab === "adapters"
-              ? "bg-foreground text-background"
-              : "text-muted-foreground hover:text-foreground hover:bg-accent",
-          )}
-          onClick={() => setActiveTab("adapters")}
-        >
-          <Bot className="w-3 h-3" />
-          {t("agentPanel.title")}
-        </button>
-        <button
-          className={cn(
-            "flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-md transition-all duration-150",
-            activeTab === "tasks"
-              ? "bg-foreground text-background"
-              : "text-muted-foreground hover:text-foreground hover:bg-accent",
-          )}
-          onClick={() => setActiveTab("tasks")}
-        >
-          <Terminal className="w-3 h-3" />
-          {t("agentPanel.tasksTitle")}
-        </button>
-      </div>
+      <PillTabs items={tabs} active={activeTab} onChange={(k) => setActiveTab(k as "adapters" | "tasks")} />
 
       {/* Tab 内容 */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -103,22 +84,20 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
     <div className="space-y-4">
       {/* 操作栏 */}
       <div className="flex items-center justify-end gap-2">
-        <button
-          onClick={handleRefresh}
-          className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
+        <Button variant="outline" size="sm" onClick={handleRefresh}>
+          <RefreshCw />
           {t("agentPanel.refresh")}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="voice"
+          size="sm"
           onClick={() => setEditing({
             key: "", displayName: "", detectBinary: "", commandTemplate: "{prompt}",
           })}
-          className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus />
           {t("agentPanel.addNew")}
-        </button>
+        </Button>
       </div>
 
       {/* Adapter 列表 */}
@@ -134,19 +113,17 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
             {/* 状态色条 */}
             <div className={cn(
               "absolute left-0 top-3 bottom-3 w-[3px] rounded-full",
-              a.isAvailable ? "bg-emerald-500" : "bg-muted-foreground/30",
+              a.isAvailable ? "bg-success" : "bg-muted-foreground/30",
             )} />
 
             <div className="flex-1 min-w-0 pl-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{a.displayName}</span>
                 {a.isBuiltin && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                    {t("agentPanel.builtin")}
-                  </span>
+                  <Badge>{t("agentPanel.builtin")}</Badge>
                 )}
                 {a.isAvailable ? (
-                  <span className="text-[10px] text-emerald-500">●</span>
+                  <span className="text-[10px] text-success">●</span>
                 ) : (
                   <span className="text-[10px] text-muted-foreground/40">○</span>
                 )}
@@ -158,7 +135,7 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
             </div>
             <div className="shrink-0">
               {a.isAvailable ? (
-                <span className="text-[10px] text-emerald-500 font-mono">{t("agentPanel.installed")}</span>
+                <span className="text-[10px] text-success font-mono">{t("agentPanel.installed")}</span>
               ) : (
                 <span className="text-[10px] text-muted-foreground font-mono">{t("agentPanel.notFound")}</span>
               )}
@@ -172,17 +149,18 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
         <div className="rounded-lg border border-voice/25 bg-muted/15 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">{t("agentPanel.newAdapter")}</h3>
-            <button onClick={() => setEditing(null)} className="text-muted-foreground hover:text-foreground">
-              <X className="w-4 h-4" />
-            </button>
+            <Button variant="ghost" size="icon-sm" onClick={() => setEditing(null)}>
+              <X />
+            </Button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80 mb-1">
                 {t("agentPanel.keyLabel")}
               </label>
-              <input
-                className={inputClass}
+              <Input
+                variant="mono"
+                size="full"
                 value={editing.key || ""}
                 onChange={(e) => setEditing({ ...editing, key: e.target.value })}
                 placeholder="myagent"
@@ -192,8 +170,9 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
               <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80 mb-1">
                 {t("agentPanel.displayNameLabel")}
               </label>
-              <input
-                className={inputClass}
+              <Input
+                variant="default"
+                size="full"
                 value={editing.displayName || ""}
                 onChange={(e) => setEditing({ ...editing, displayName: e.target.value })}
                 placeholder="My Agent"
@@ -203,8 +182,9 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
               <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80 mb-1">
                 {t("agentPanel.detectBinaryLabel")}
               </label>
-              <input
-                className={inputClass}
+              <Input
+                variant="mono"
+                size="full"
                 value={editing.detectBinary || ""}
                 onChange={(e) => setEditing({ ...editing, detectBinary: e.target.value })}
                 placeholder="myagent"
@@ -214,8 +194,9 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
               <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80 mb-1">
                 {t("agentPanel.templateLabel")}
               </label>
-              <input
-                className={inputClass}
+              <Input
+                variant="mono"
+                size="full"
                 value={editing.commandTemplate || ""}
                 onChange={(e) => setEditing({ ...editing, commandTemplate: e.target.value })}
                 placeholder="myagent {prompt} {files}"
@@ -225,13 +206,10 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
           <div className="text-xs text-muted-foreground/60">
             {t("agentPanel.templateHelpPrompt")} · {t("agentPanel.templateHelpFiles")} · {t("agentPanel.templateHelpFilesAt")} · {t("agentPanel.templateHelpCwd")}
           </div>
-          <button
-            onClick={handleSave}
-            className="flex items-center gap-1.5 rounded-md bg-voice px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
-          >
-            <Check className="w-3.5 h-3.5" />
+          <Button variant="voice" size="sm" onClick={handleSave}>
+            <Check />
             {t("agentPanel.saved")}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -302,8 +280,9 @@ function TaskTab({ showToast }: { showToast: (msg: string) => void }) {
     refresh();
   };
 
+  // 状态色用 token：done=success, failed=destructive, executing=info, 其他 muted
   const statusBar = (s: string) =>
-    s === "done" ? "bg-emerald-500" : s === "failed" ? "bg-red-500" : s === "executing" ? "bg-sky-500" : "bg-muted-foreground/50";
+    s === "done" ? "bg-success" : s === "failed" ? "bg-destructive" : s === "executing" ? "bg-info" : "bg-muted-foreground/50";
   const statusText = (s: string) =>
     s === "done" ? t("agentPanel.taskStatusDone") : s === "failed" ? t("agentPanel.taskStatusFailed")
     : s === "executing" ? t("agentPanel.taskStatusExecuting") : t("agentPanel.taskStatusPending");
@@ -318,12 +297,9 @@ function TaskTab({ showToast }: { showToast: (msg: string) => void }) {
           {tasks.length > 0 ? `${tasks.length} ${t("agentPanel.tasksTitle")}` : ""}
         </span>
         {doneOrFailed.length > 0 && (
-          <button
-            onClick={handleClearAll}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
+          <Button variant="ghost" size="sm" onClick={handleClearAll}>
             {t("agentPanel.clearFinished")}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -375,16 +351,18 @@ function TaskTab({ showToast }: { showToast: (msg: string) => void }) {
               )}
 
               {/* 删除 */}
-              <button
+              <Button
+                variant="destructive-ghost"
+                size="icon-sm"
+                className="shrink-0"
                 onClick={() => handleDelete(task.id)}
-                className="shrink-0 text-muted-foreground/40 hover:text-red-500 transition-colors"
               >
-                <X className="w-3 h-3" />
-              </button>
+                <X />
+              </Button>
 
               {/* 错误提示 */}
               {task.errorMsg && task.status === "failed" && (
-                <span className="absolute left-8 -bottom-4 text-[10px] text-red-500/60 truncate max-w-[200px]">
+                <span className="absolute left-8 -bottom-4 text-[10px] text-destructive/60 truncate max-w-[200px]">
                   {task.errorMsg}
                 </span>
               )}

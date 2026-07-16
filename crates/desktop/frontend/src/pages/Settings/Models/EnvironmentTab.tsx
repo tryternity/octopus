@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { Plus, Trash2, Lock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useT } from "@/lib/i18n";
 
 const BUILTIN = ["huggingface", "modelscope", "github"];
@@ -66,35 +68,42 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
             onBlur={(e) => { if (e.target.value !== value) handleSave(key, e.target.value); }}
           />
           {!BUILTIN.includes(key) && (
-            <button
-              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
+            <Button
+              variant="destructive-ghost"
+              size="icon-sm"
+              className="opacity-0 group-hover:opacity-100"
               onClick={() => handleDelete(key)}
             >
-              <Trash2 className="w-3 h-3" />
-            </button>
+              <Trash2 />
+            </Button>
           )}
         </div>
       ))}
       {/* 新增行 */}
       <div className="flex items-center gap-2 px-3 py-1.5 mt-2 pt-2.5 border-t border-border/60">
-        <input
-          className="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background outline-none focus:border-voice/40 transition-colors"
+        <Input
+          variant="mono"
+          size="sm"
+          className="w-32 text-xs"
           placeholder={t("settings.models.env.varName")}
           value={newKey}
           onChange={(e) => setNewKey(e.target.value)}
         />
-        <input
-          className="flex-1 px-2 py-0.5 text-xs rounded border border-border bg-background outline-none focus:border-voice/40 transition-colors"
+        <Input
+          variant="mono"
+          size="full"
+          className="text-xs"
           placeholder="https://..."
           value={newValue}
           onChange={(e) => setNewValue(e.target.value)}
         />
-        <button
-          className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-foreground/5 hover:bg-foreground/10 text-foreground transition-colors"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={handleAdd}
         >
-          <Plus className="w-3 h-3" /> {t("settings.models.env.add")}
-        </button>
+          <Plus /> {t("settings.models.env.add")}
+        </Button>
       </div>
     </div>
   );

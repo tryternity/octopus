@@ -19,6 +19,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useT, t as ti18n } from "@/lib/i18n";
 import ShortcutButton from "@/components/ShortcutButton";
+import { Button } from "@/components/ui/button";
+import { Toggle as UIToggle } from "@/components/ui/toggle";
 
 interface ActionBarItem {
   id: number;
@@ -76,6 +78,8 @@ function deriveAccepts(actionType: string | undefined, explicit?: string): strin
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 // ── 统一控件样式 ──
+// ActionBar 表单用稍大 padding（px-3 py-2）比共享 Input 默认（px-2.5 py-1.5）更宽松，
+// 适配树形编辑器的密集表单。focus 规格与共享 Input 对齐（voice/50 + ring-2 voice/15）。
 const inputBase = "w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15";
 
 // ── 类型标签 ──
@@ -89,46 +93,9 @@ const TypeTag = ({ type, variant = "dot" }: { type: string; variant?: "dot" | "s
   );
 };
 
-// ── 开关 ──
+// Toggle 本地包装：适配 ActionBar 的 (checked, onChange(v)) 签名到共享 UIToggle (on, onClick)。
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) => (
-  <button
-    type="button"
-    role="switch"
-    aria-checked={checked}
-    onClick={() => onChange(!checked)}
-    className={cn(
-      "relative inline-flex h-[18px] w-8 items-center rounded-full transition-colors duration-200",
-      checked ? "bg-voice" : "bg-muted-foreground/25",
-    )}
-  >
-    <span
-      className={cn(
-        "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200",
-        checked ? "translate-x-4" : "translate-x-0.5",
-      )}
-    />
-  </button>
-);
-
-// ── 工具栏按钮 ──
-const ToolBtn = ({
-  onClick, children, title, variant = "ghost",
-}: {
-  onClick: () => void; children: React.ReactNode; title?: string;
-  variant?: "ghost" | "solid" | "outline";
-}) => (
-  <button
-    onClick={onClick}
-    title={title}
-    className={cn(
-      "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-all",
-      variant === "ghost" && "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-      variant === "outline" && "border border-border text-muted-foreground hover:bg-muted/40 hover:text-foreground",
-      variant === "solid" && "bg-voice font-medium text-white hover:opacity-90",
-    )}
-  >
-    {children}
-  </button>
+  <UIToggle on={checked} onClick={() => onChange(!checked)} />
 );
 
 // ── 编辑表单 ──
@@ -232,7 +199,7 @@ const ExtensionDropZone = ({
           </div>
           <button
             onClick={() => onChange({ ...form, actionData: "", title: "" })}
-            className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+            className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
             aria-label={ti18n("settings.actionBar.clearSelection")}
           >
             <X className="h-3.5 w-3.5" />
@@ -252,7 +219,7 @@ const ExtensionDropZone = ({
           </div>
         </>
       )}
-      {error && <p className="text-[11px] text-red-500">{error}</p>}
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
     </div>
   );
 };
@@ -488,7 +455,7 @@ const EditForm = ({
               {form.shortcut && (
                 <button
                   onClick={() => onChange({ ...form, shortcut: "" })}
-                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -535,7 +502,7 @@ const EditForm = ({
               {form.globalShortcut && (
                 <button
                   onClick={() => onChange({ ...form, globalShortcut: "" })}
-                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
                   aria-label={ti18n("settings.actionBar.clearShortcut")}
                 >
                   <X className="h-3.5 w-3.5" />
@@ -560,18 +527,12 @@ const EditForm = ({
 
       {/* 操作栏 */}
       <div className="flex justify-end gap-2.5 border-t border-border/40 pt-4">
-        <button
-          onClick={onCancel}
-          className="rounded-md border border-border px-4 py-2 text-xs transition-colors hover:bg-muted/60"
-        >
+        <Button variant="outline" size="sm" onClick={onCancel}>
           {t("settings.actionBar.cancel")}
-        </button>
-        <button
-          onClick={onSave}
-          className="rounded-md bg-voice px-5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90"
-        >
+        </Button>
+        <Button variant="voice" size="sm" onClick={onSave}>
           {t("settings.actionBar.save")}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -705,8 +666,8 @@ const TreeNodeBase = (props: NodeProps) => {
             className={cn(
               "rounded p-0.5 transition-colors disabled:opacity-25",
               props.deleteConfirmId === item.id
-                ? "bg-red-500 text-white hover:bg-red-600"
-                : "text-muted-foreground hover:text-red-500",
+                ? "bg-destructive text-destructive-foreground hover:opacity-90"
+                : "text-muted-foreground hover:text-destructive",
             )}
             aria-label={t("settings.actionBar.delete")}
             title={props.deleteConfirmId === item.id ? t("settings.actionBar.deleteConfirm") : t("settings.actionBar.delete")}
@@ -805,8 +766,8 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   }
 
   const statusColor = (r: ScriptRun) => {
-    if (r.exitCode === null) return "bg-orange-500";
-    return r.exitCode === 0 ? "bg-emerald-500" : "bg-red-500";
+    if (r.exitCode === null) return "bg-warning";
+    return r.exitCode === 0 ? "bg-success" : "bg-destructive";
   };
   const statusLabel = (r: ScriptRun) => {
     if (r.exitCode === null) return r.errorMsg || t("settings.actionBar.statusError");
@@ -816,12 +777,9 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   return (
     <div>
       <div className="mb-3 flex justify-end">
-        <button
-          onClick={handleClear}
-          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-        >
+        <Button variant="outline" size="sm" onClick={handleClear}>
           {t("settings.actionBar.cleanOldRecords")}
-        </button>
+        </Button>
       </div>
       <div className="space-y-1.5">
         {runs.map((r) => (
@@ -852,10 +810,10 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
                 )}
                 {r.stderr && (
                   <div>
-                    <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-red-500/70">stderr</p>
+                    <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-destructive/70">stderr</p>
                     <textarea
                       readOnly
-                      className="w-full min-h-[40px] resize-y bg-background border border-border rounded px-2 py-1.5 font-mono text-xs leading-relaxed text-red-600/80"
+                      className="w-full min-h-[40px] resize-y bg-background border border-border rounded px-2 py-1.5 font-mono text-xs leading-relaxed text-destructive/80"
                       value={r.stderr.slice(0, 8000)}
                     />
                   </div>
@@ -1147,29 +1105,30 @@ export default function ActionBarPanel({
                 ))}
               </div>
 
-              <ToolBtn onClick={() => setView("runs")} variant="outline">
+              <Button onClick={() => setView("runs")} variant="outline" size="sm">
                 {t("settings.actionBar.recordsBtn")}
-              </ToolBtn>
-              <ToolBtn
+              </Button>
+              <Button
                 onClick={allExpanded ? collapseAll : expandAll}
                 variant="outline"
+                size="sm"
                 title={allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
               >
-                {allExpanded ? <ChevronsDownUp className="h-3.5 w-3.5" /> : <ChevronsUpDown className="h-3.5 w-3.5" />}
+                {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
                 <span className="hidden sm:inline">
                   {allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
                 </span>
-              </ToolBtn>
-              <ToolBtn onClick={() => handleAdd(null)} variant="solid">
-                <Plus className="h-4 w-4" /> {t("settings.actionBar.addMainItem")}
-              </ToolBtn>
+              </Button>
+              <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
+                <Plus /> {t("settings.actionBar.addMainItem")}
+              </Button>
             </>
           )}
           {view !== "menu" && (
-            <ToolBtn onClick={() => setView("menu")} variant="outline">
-              <ArrowLeft className="h-3.5 w-3.5" />
+            <Button onClick={() => setView("menu")} variant="outline" size="sm">
+              <ArrowLeft />
               {ti18n("settings.actionBar.backToMenu")}
-            </ToolBtn>
+            </Button>
           )}
         </div>
       </div>
@@ -1198,9 +1157,9 @@ export default function ActionBarPanel({
             <p className="text-sm font-medium">{t("settings.actionBar.noItemsYet")}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.actionBar.noItemsHint")}</p>
           </div>
-          <ToolBtn onClick={() => handleAdd(null)} variant="solid">
-            <Plus className="h-4 w-4" /> {t("settings.actionBar.addMainItem")}
-          </ToolBtn>
+          <Button onClick={() => handleAdd(null)} variant="voice" size="default">
+            <Plus /> {t("settings.actionBar.addMainItem")}
+          </Button>
         </div>
       ) : (
         <div className="space-y-px">

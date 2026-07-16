@@ -590,18 +590,21 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（`paste_via_clipboard` 按 `files > image > text` 优先级用 `ClipboardBackup` 备份原内容——图片 `read_image`/`set_image`、文件 `read_files`/`write_files`、文本 `read_text`/`write_text`——ASR 文本粘贴后还原，旧实现只 `read_text` 导致图片/文件被空串吞掉丢失）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。
 - **`switch_input_source_on_paste`**（默认 `true`，仅 macOS）：粘贴前临时切换到 ASCII 输入源（ABC）→ 模拟 Cmd+V → 恢复原输入源（三段式文本注入，参考 VoxFlow `VoxFlowTextInsertion`）。CJK 输入法 composing 状态下模拟 Cmd+V 可能乱码/丢字符，此配置根治。实现 `crates/desktop/src/input_source.rs`——用 `osascript -l JavaScript`（JXA）在独立进程调 Carbon TIS API（v3 终版：v1 直接 FFI → SIGTRAP；v2 GCD `dispatch_sync_f` → 仍 SIGTRAP；v3 独立进程 main thread 天然满足 TIS 要求）。RAII guard `InputSourceGuard` 构造时切到 ABC（当前已是 ABC 则跳过，省 fork）、drop 时恢复。`paste_via_clipboard`（ASR 粘贴）和 `focus_tracker::simulate_paste_platform`（剪贴板浮窗双击粘贴）两条路径均接入。详见 [spec §3](superpowers/specs/2026-07-10-input-source-switch-design.md#3-线程安全分析与实现演进)。
 
-**UI 主题系统（2026-07-07，借鉴 Wox）：**
-- **配置**：`clipboard_theme` 字段（AppConfig），存主题 id（`light` / `glass-dark` / `nord` / 用户自定义）。serde 自动 load/save，`config-changed` 无条件 emit 触发全窗口热切换。
-- **3 套内置主题**（`crates/desktop/src/theme.rs`）：Warm Paper（纸质感暖灰浅色）、Obsidian Glass（黑曜石深色 `#121216`）、Nord Aurora（北极极光冷蓝 `#2e3440`）。暗色主题用**纯不透明实色**——CSS `backdrop-filter` 在 Tauri WebView 下无法实现 Wox 的原生 NSVisualEffectView 均匀模糊。
-- **token 体系**：标准 Tailwind 语义色（`background`/`foreground`/`muted`/`accent`/`border`/`voice`）+ 3 个扩展 token：`surface`（不透明背景，result_window/截图工具栏用）、`tool-icon`（result_window 工具栏图标色）、`icon-filter`（截图工具栏图标 CSS filter，暗色=`brightness(0) invert(1)` 反色黑色 SVG）。
+**UI 主题系统（2026-07-07，借鉴 Wox；2026-07-16 加 Raycast 主题 + 状态色 token + 共享组件库）：**
+- **配置**：`clipboard_theme` 字段（AppConfig），存主题 id（`light` / `glass-dark` / `nord` / `raycast` / 用户自定义）。serde 自动 load/save，`config-changed` 无条件 emit 触发全窗口热切换。
+- **4 套内置主题**（`crates/desktop/src/theme.rs`）：Warm Paper（纸质感暖灰浅色）、Obsidian Glass（黑曜石深色 `#121216`）、Nord Aurora（北极极光冷蓝 `#2e3440`）、**Raycast**（精准仪器深色 `#07080a` 近黑蓝底，voice=`#6EB5FF` 应用图标浅蓝，DESIGN.md 的 macOS 原生工具感）。暗色主题用**纯不透明实色**——CSS `backdrop-filter` 在 Tauri WebView 下无法实现 Wox 的原生 NSVisualEffectView 均匀模糊。
+- **token 体系**：标准 Tailwind 语义色（`background`/`foreground`/`muted`/`accent`/`border`/`voice`）+ 3 个扩展 token（`surface`/`tool-icon`/`icon-filter`）+ **状态语义色 token（2026-07-16 新增）**：`success`/`info`/`warning`/`destructive`（+ 对应 `-foreground`），每套主题都给值，注册到 `@theme` 让 Tailwind v4 生成 `text-success`/`bg-destructive` 等工具类。**修复了原硬编码 `emerald-500`/`rose-300`/`red-500` 不随主题切换的问题**——Models 激活态、Agent 任务状态、删除确认等全部改用 token。
+- **字体**：保持系统字体栈（`-apple-system`）。中文是主要对象，Inter/GeistMono 不覆盖中文字符（会 fallback 到 PingFang SC），加载它们只影响英文/数字部分，收益小且增加 ~160KB 包体积，不值得。Raycast 风靠配色/阴影/状态色 token 实现，不依赖字体。
+- **共享组件库 `components/ui/`（2026-07-16）**：激活项目已有的 shadcn 基础设施（cva + @radix-ui/react-slot + tailwind-merge）。统一原本散落在 8 个设置面板的本地重复定义：`Button`（cva，variant: primary/voice/outline/ghost/destructive/destructive-ghost/success/voice-soft）、`Input`/`Select`/`Textarea`（统一 focus ring 规格）、`Card`/`CardHeader`/`CardTitle`/`CardContent`、`Row`（label+hint+effect+children）、`Toggle`（统一 3 种尺寸为 1 种）、`Badge`（variant: muted/voice/success/destructive/outline）、`PillTabs`/`UnderlineTabs`/`Segmented`（统一 3 套 Tab）。hover 统一用 opacity 过渡（Raycast 签名交互）。
+- **Raycast 深度阴影（`index.css`）**：`.raycast-ring`（Level 2 双环容器）、`.raycast-btn-shadow`（Level 3 macOS 按钮压感）、`.raycast-key`（Level 4 键帽，仅 `[data-theme="raycast"]` 下生效，其他主题无效果）。
 - **图标适配两类**：SVG `<img>`（截图/剪贴板/图片查看器工具栏）用 `var(--icon-filter)` 在暗色主题反色；Lucide React 图标（编辑器/图片查看器的缩放/自适应按钮）靠父容器设 `color: var(--color-foreground)` 让 `currentColor` 继承。
 - **应用机制**（经四次性能优化，最终架构）：
-  1. `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 自定义主题 CSS 注入（零 IPC，不依赖 `__TAURI_INTERNALS__`——该对象在 `<head>` 解析时尚未注入）
+  1. `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 自定义主题 CSS 注入（零 IPC，不依赖 `__TAURI_INTERNALS__`——该对象在 `<head>` 解析时尚未注入）。内置主题白名单 `["light","glass-dark","nord","raycast"]`
   2. `main.tsx`：JS bundle 加载后执行，此时 `__TAURI_INTERNALS__` 已就绪——对非透明窗口设 `html.style.backgroundColor` 防白屏（截图窗口设半透明黑底）
-  3. `index.css`：3 套 `[data-theme="xxx"]` 预编译规则块，属性选择器命中（消除运行时 var() 覆盖开销）
+  3. `index.css`：4 套 `[data-theme="xxx"]` 预编译规则块（含状态色变量），属性选择器命中（消除运行时 var() 覆盖开销）
   4. `App.tsx`：mount 时异步 `applyThemeFromConfig` 校正（首次运行/清缓存/多窗口不同步时必需）+ 监听 `config-changed` 事件驱动
   5. 后端 `list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
-- **用户扩展**：`~/.octopus/themes/*.json` 可新增自定义主题（同 id 覆盖内置），`list_themes` 命令合并返回。
+- **用户扩展**：`~/.octopus/themes/*.json` 可新增自定义主题（同 id 覆盖内置），`list_themes` 命令合并返回。自定义主题的状态色未在 ThemeColors struct 中（继承 `@theme` 默认值=light 的状态色）。
 - **剪贴板浮窗键盘导航**（2026-07-07）：搜索框持焦模型，`↑↓` 移动选中（边界夹紧不循环）、`Enter` 粘贴（复用 `paste_clipboard_item` 双保险）、空内容 `←→` 切 tab / 有内容让位光标、`Tab` 恒定切 tab、`Ctrl+1..7` 跳 tab（写死，不用 cmd 防 Accessory 激活策略下菜单栏 key equivalent 拦截；macOS 用 `e.code` 而非 `e.key` 避免 Option+数字特殊字符）。详见 [spec](superpowers/specs/2026-07-07-clipboard-keyboard-nav-design.md)。
 
 **引擎选择（单一真相 = `app_config.asr_engine`）：**

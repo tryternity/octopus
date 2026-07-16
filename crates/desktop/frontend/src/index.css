@@ -15,6 +15,14 @@
   --color-ring: #1c1917;
   --color-voice: #d97706;
   --color-surface: #fafaf9;
+  /* 状态语义色（随主题切换，替代硬编码 emerald/rose 调色板色）。
+     注册到 @theme 让 Tailwind v4 生成 text-success / bg-success / border-success 等工具类。 */
+  --color-success: #16a34a;
+  --color-success-foreground: #ffffff;
+  --color-info: #2563eb;
+  --color-warning: #d97706;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
   --color-tool-icon: rgba(0, 0, 0, 0.55);
   --icon-filter: none;
   --radius: 0.5rem;
@@ -33,6 +41,12 @@
   --color-border: #e7e5e0;
   --color-voice: #d97706;
   --color-surface: #fafaf9;
+  --color-success: #16a34a;
+  --color-success-foreground: #ffffff;
+  --color-info: #2563eb;
+  --color-warning: #d97706;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
   --color-tool-icon: rgba(0, 0, 0, 0.55);
   --icon-filter: none;
 }
@@ -50,6 +64,12 @@
   --color-border: rgba(255, 255, 255, 0.08);
   --color-voice: #f59e0b;
   --color-surface: #1a1a1e;
+  --color-success: #5fc992;
+  --color-success-foreground: #07140c;
+  --color-info: #55b3ff;
+  --color-warning: #ffbc33;
+  --color-destructive: #ff6b6b;
+  --color-destructive-foreground: #1a0606;
   --color-tool-icon: rgba(255, 255, 255, 0.55);
   --icon-filter: brightness(0) invert(1);
 }
@@ -67,12 +87,79 @@
   --color-border: rgba(136, 192, 208, 0.15);
   --color-voice: #88c0d0;
   --color-surface: #2e3440;
+  --color-success: #a3be8c;
+  --color-success-foreground: #1d2818;
+  --color-info: #88c0d0;
+  --color-warning: #ebcb8b;
+  --color-destructive: #bf616a;
+  --color-destructive-foreground: #2a1416;
   --color-tool-icon: rgba(229, 233, 240, 0.55);
+  --icon-filter: brightness(0) invert(1);
+}
+
+/* ── Raycast ── 精准仪器深色。
+   设计意图：DESIGN.md 的 macOS 原生工具感——近黑蓝底（#07080a，非纯黑）+ 几乎不可见的
+   结构边框 + 多层 inset 阴影模拟物理深度。voice 用应用图标浅蓝 #6EB5FF（贴合 octopus 品牌，
+   落在 DESIGN.md 的 Raycast Blue 区间 hsl(210,100%,71%)）。正字距 +0.2px 补偿深底可读性。 */
+[data-theme="raycast"] {
+  --color-background: #07080a;
+  --color-foreground: #f9f9f9;
+  --color-primary: #f9f9f9;
+  --color-primary-foreground: #07080a;
+  --color-muted: rgba(255, 255, 255, 0.05);
+  --color-muted-foreground: #9c9c9d;
+  --color-accent: rgba(255, 255, 255, 0.06);
+  --color-accent-foreground: #ffffff;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-voice: #6eb5ff;
+  --color-surface: #101111;
+  --color-success: #5fc992;
+  --color-success-foreground: #07140c;
+  --color-info: #55b3ff;
+  --color-warning: #ffbc33;
+  --color-destructive: #ff6363;
+  --color-destructive-foreground: #1a0606;
+  --color-tool-icon: rgba(255, 255, 255, 0.55);
   --icon-filter: brightness(0) invert(1);
 }
 
 * {
   border-color: var(--color-border);
+}
+
+/* ── Raycast 深度阴影系统（DESIGN.md §6）──
+   多层 box-shadow 模拟 macOS 原生物理深度：外环做容器边界（替代传统边框），
+   inset 顶部高光 + 底部暗影模拟光照。仅在 raycast 主题下视觉显著；
+   其他主题这些类也安全可用（阴影更淡，不破坏现有浅色外观）。 */
+.raycast-ring {
+  /* Level 2 双环容器：外环 surface 色 + 内环 background 色 */
+  box-shadow: 0 0 0 1px var(--color-surface), inset 0 0 0 1px var(--color-background);
+}
+[data-theme="raycast"] .raycast-ring {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.2);
+}
+.raycast-btn-shadow {
+  /* Level 3 macOS 按钮压感：顶白高光 + 底暗影 */
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+[data-theme="raycast"] .raycast-btn-shadow {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.25),
+    0 1px 2px 0 rgba(0, 0, 0, 0.3);
+}
+/* Level 4 键盘键帽：仅在 raycast 主题下叠加渐变背景 + 多层阴影模拟物理按键。
+   其他主题此 class 无效果，键帽用元素自身的 bg-surface token 色保持一致。 */
+[data-theme="raycast"] .raycast-key {
+  background: linear-gradient(180deg, #121212 0%, #0d0d0d 100%);
+  box-shadow:
+    rgba(0, 0, 0, 0.4) 0 1.5px 0.5px 2.5px,
+    inset rgba(255, 255, 255, 0.08) 0 1px 0px 0px,
+    inset rgba(0, 0, 0, 0.3) 0 -1px 0px 0px;
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 body {

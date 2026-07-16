@@ -54,7 +54,7 @@ pub struct ThemeInfo {
     pub colors: ThemeColors,
 }
 
-/// 3 套内置主题。用户可在 ~/.octopus/themes/*.json 放自定义主题覆盖或新增。
+/// 4 套内置主题。用户可在 ~/.octopus/themes/*.json 放自定义主题覆盖或新增。
 ///
 /// 设计原则（ui-ux-pro-max §6 + frontend-design）：
 /// - 文字对比度 ≥ 4.5:1（AA），暗色用去饱和提亮而非反色
@@ -133,6 +133,33 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#88c0d0".into(),
                 surface: "#2e3440".into(),
                 tool_icon: "rgba(229, 233, 240, 0.55)".into(),
+                icon_filter: "brightness(0) invert(1)".into(),
+            },
+        },
+        // ── Raycast ── 精准仪器深色。
+        // 设计意图：DESIGN.md 的 macOS 原生工具感——近黑蓝底 #07080a（非纯黑，蓝冷偏移），
+        // 几乎不可见的 rgba(255,255,255,0.08) 结构边框，配多层 inset 阴影模拟物理深度。
+        // voice 用应用图标浅蓝 #6EB5FF（≈ Raycast Blue hsl(210,100%,71%)），贴合 octopus 品牌
+        // 又落在 DESIGN.md 的交互蓝区间。对比度：foreground #f9f9f9 对 background #07080a ≈ 17:1。
+        // 状态色（success/info/warning/destructive）在 index.css [data-theme="raycast"] 硬编码。
+        ThemeInfo {
+            id: "raycast".into(),
+            name: "Raycast".into(),
+            description: "精准仪器深色".into(),
+            blur: false,
+            colors: ThemeColors {
+                background: "#07080a".into(),
+                foreground: "#f9f9f9".into(),
+                primary: "#f9f9f9".into(),
+                primary_foreground: "#07080a".into(),
+                muted: "rgba(255, 255, 255, 0.05)".into(),
+                muted_foreground: "#9c9c9d".into(),
+                accent: "rgba(255, 255, 255, 0.06)".into(),
+                accent_foreground: "#ffffff".into(),
+                border: "rgba(255, 255, 255, 0.08)".into(),
+                voice: "#6eb5ff".into(),
+                surface: "#101111".into(),
+                tool_icon: "rgba(255, 255, 255, 0.55)".into(),
                 icon_filter: "brightness(0) invert(1)".into(),
             },
         },
