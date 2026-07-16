@@ -60,8 +60,11 @@ impl SearchProvider for CommandProvider {
                     cmd.keywords.clone()
                 },
                 icon: None,
-                action_type: "copy".into(),
-                action_data: serde_json::json!({ "text": cmd.name }).to_string(),
+                action_type: "copy_and_reveal".into(),
+                action_data: serde_json::json!({
+                    "text": cmd.name,
+                    "path": cmd.path,
+                }).to_string(),
                 score,
             })
             .collect()
@@ -115,8 +118,9 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source, "command");
         assert_eq!(r[0].title, "git");
-        assert_eq!(r[0].action_type, "copy");
+        assert_eq!(r[0].action_type, "copy_and_reveal");
         assert!(r[0].action_data.contains("\"text\":\"git\""));
+        assert!(r[0].action_data.contains("\"path\""), "action_data 应含 path（命令文件路径）");
         // keywords 非空 → subtitle 用 keywords
         assert_eq!(r[0].subtitle, "版本控制");
     }

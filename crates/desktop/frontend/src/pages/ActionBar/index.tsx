@@ -696,6 +696,22 @@ export default function ActionBar() {
         }
         break;
       }
+      case "copy_and_reveal": {
+        // command 查阅：复制命令名 + 在文件管理器中定位命令文件
+        const text = data.text as string;
+        const path = data.path as string;
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          if (path) {
+            await invoke("reveal_path", { path });
+          }
+          invoke("action_bar_dismiss", { reason: "copy_and_reveal" });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+        }
+        break;
+      }
     }
   };
 

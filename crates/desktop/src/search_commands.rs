@@ -99,6 +99,37 @@ pub fn open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 在文件管理器中定位文件（macOS Finder / Windows Explorer / Linux xdg-open）。
+/// command 回车时调——复制命令名 + 在 Finder 中显示命令文件位置。
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("open")
+            .args(["-R", &path])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("定位失败（exit {}）: {}", status, path));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let p = std::path::Path::new(&path);
+        let dir = p.parent().unwrap_or(p);
+        let _ = std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn();
+    }
+    Ok(())
+}
+
 /// 强制重扫应用索引：刷新内存索引 + DB 缓存。
 ///
 /// **诊断/兜底用途**——正常运行由后台 mtime 轮询线程自动触发（main.rs），
