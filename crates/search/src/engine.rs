@@ -452,13 +452,15 @@ mod tests {
     }
 
     #[test]
-    fn url_type_returned_as_quicklink_source() {
+    fn search_does_not_panic_on_all_tab() {
         setup_test_db();
-        // URL 类型菜单项在搜索结果中 source 为 "quicklink"，action_type 为 "url"
+        // 回归测试：search(query, "all") 不 panic（完整 default_providers 装配 +
+        // tab=all 时所有 Provider 参与）。本测试不验证具体 source/结果集——
+        // "URL 类型 → source=quicklink" 的行为由 menu provider 单测覆盖（见
+        // providers/menu.rs::search_menus 的 source 分支）。
+        // query="test" 与 seed action_bar_items 的标题不匹配，结果集为空是预期的。
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
-        // stub 阶段 search 返回空；本测试只验证不 panic。
-        // Task 6（MenuProvider 实现）后此测试可加内容断言。
         let _results = rt.block_on(engine.search("test", "all"));
     }
 

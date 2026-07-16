@@ -8,7 +8,6 @@ import {
   shouldTriggerDelayedSearch,
   isShellMode,
   extractShellCommand,
-  mergeResults,
   filterByTab,
   parseActionData,
   calcResultsHeight,
@@ -215,61 +214,8 @@ describe("extractShellCommand", () => {
 });
 
 // ── mergeResults ──
-
-describe("mergeResults", () => {
-  it("合并不重复的结果", () => {
-    const instant = [makeResult("app", "Chrome", 500)];
-    const delayed = [makeResult("file", "doc.pdf", 200)];
-    const merged = mergeResults(instant, delayed);
-    expect(merged).toHaveLength(2);
-    expect(merged[0].title).toBe("Chrome");
-    expect(merged[1].title).toBe("doc.pdf");
-  });
-
-  it("即时结果优先于延迟结果（去重保留即时 score）", () => {
-    const instant = [makeResult("app", "Chrome", 500)];
-    const delayed = [makeResult("app", "Chrome", 300)];
-    const merged = mergeResults(instant, delayed);
-    expect(merged).toHaveLength(1);
-    expect(merged[0].score).toBe(500); // 即时结果 score 保留
-  });
-
-  it("同 title 不同 source 不去重", () => {
-    const instant = [makeResult("app", "Chrome", 500)];
-    const delayed = [makeResult("file", "Chrome", 200)];
-    const merged = mergeResults(instant, delayed);
-    expect(merged).toHaveLength(2);
-  });
-
-  it("空输入 → 空输出", () => {
-    expect(mergeResults([], [])).toEqual([]);
-  });
-
-  it("即时为空，延迟有结果", () => {
-    const delayed = [makeResult("file", "doc.pdf", 200)];
-    const merged = mergeResults([], delayed);
-    expect(merged).toHaveLength(1);
-  });
-
-  it("合并后全局按 score 降序排序（跨来源）", () => {
-    // 即时 score 低、延迟 score 高——合并后延迟应在前
-    const instant = [
-      makeResult("app", "Chrome", 200),
-      makeResult("menu", "翻译", 150),
-    ];
-    const delayed = [
-      makeResult("file", "doc.pdf", 8000),
-      makeResult("bookmark", "GitHub", 500),
-    ];
-    const merged = mergeResults(instant, delayed);
-    expect(merged).toHaveLength(4);
-    // 8000 > 500 > 200 > 150
-    expect(merged[0].title).toBe("doc.pdf");
-    expect(merged[1].title).toBe("GitHub");
-    expect(merged[2].title).toBe("Chrome");
-    expect(merged[3].title).toBe("翻译");
-  });
-});
+// (已删除) mergeResults 函数已随 delayedResults 死状态一并移除——流式后端 emit
+// 累积 top-N 快照，前端整体替换，不再需要即时/延迟两路合并。
 
 // ── filterByTab ──
 

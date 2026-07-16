@@ -17,12 +17,23 @@ import {
   type ExpandDirection,
   type SearchResult as SearchHit,
 } from "./searchTypes";
+// 只有走 mdfind（file/bookmark Provider，慢）的 Tab 才需防抖；其他 Tab（含 all）
+// 走内存 Provider（app/menu/shell/calculator/url），亚毫秒，无需防抖。
+// all tab 虽也会跑 mdfind，但后端流式扇出——快 Provider 结果先 emit，mdfind 慢的
+// 后追加，首屏由 app/menu 等即时结果提供，故 all tab 不防抖也不阻塞首屏（spec §9 < 30ms）。
+const DEBOUNCED_TABS = new Set<TabId | "files_bookmarks" | "quick">([
+  "files",
+  "bookmarks",
+  "files_bookmarks",
+]);
+function getDebounceMs(tab: TabId): number {
+  return (DEBOUNCED_TABS as Set<string>).has(tab) ? DELAYED_SEARCH_DEBOUNCE_MS : 0;
+}
 import { executeSearchStream, cleanupSearchStream } from "./searchStream";
 import {
   determineExpandDirection,
   getTabByKey,
   getNextTab,
-  mergeResults,
   filterByTab,
   parseActionData,
   calcResultsHeight,
@@ -192,7 +203,6 @@ export default function ActionBar() {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<TabId>("all");
   const [instantResults, setInstantResults] = useState<SearchHit[]>([]);
-  const [delayedResults, setDelayedResults] = useState<SearchHit[]>([]);
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
   const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -222,8 +232,8 @@ export default function ActionBar() {
 
   // task-input 视图已移除（agent 含 {{task}} 改为联动语音）
 
-  // ── 搜索：合并结果 + 按Tab过滤（需在 resize effect 之前声明）──
-  const allResults = useMemo(() => mergeResults(instantResults, delayedResults), [instantResults, delayedResults]);
+  // ── 搜索：结果（流式后端 emit 累积 top-N，前端整体替换；无 delayed 合并）──
+  const allResults = instantResults;
 
   // 按 context.accepts 过滤菜单/quicklink 搜索结果
   // （Files 场景下 text-only 项如翻译不应出现，反之亦然）
@@ -321,7 +331,7 @@ export default function ActionBar() {
       // 每次 show 都重置基础状态——防止遗留旧状态
       const applyContext = (ctx: Context | null) => {
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
-        setQuery(""); setInstantResults([]); setDelayedResults([]);
+        setQuery(""); setInstantResults([]);
         setActiveTab("all"); setSearchSelectedIdx(0);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
@@ -434,7 +444,6 @@ export default function ActionBar() {
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
-      setDelayedResults([]);
       return;
     }
     let cancelled = false;
@@ -446,7 +455,7 @@ export default function ActionBar() {
       }).catch(() => {
         if (!cancelled) setInstantResults([]);
       });
-    }, DELAYED_SEARCH_DEBOUNCE_MS);
+    }, getDebounceMs(activeTab));
     return () => {
       cancelled = true;
       clearTimeout(timer);

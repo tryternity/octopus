@@ -75,37 +75,6 @@ export function extractShellCommand(query: string): string {
 }
 
 /**
- * 合并即时结果与延迟结果，去重（按 source+title）。
- * 即时结果优先（同 key 时保留即时结果的 score）。
- */
-export function mergeResults(
-  instant: SearchResult[],
-  delayed: SearchResult[],
-): SearchResult[] {
-  // 去重 key 包含 source + title + subtitle——不同目录同名文件（readme.md）
-  // 或重复 quicklink 才不会被误丢
-  const seen = new Set<string>();
-  const merged: SearchResult[] = [];
-  for (const r of instant) {
-    const key = `${r.source}:${r.title}:${r.subtitle}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      merged.push(r);
-    }
-  }
-  for (const r of delayed) {
-    const key = `${r.source}:${r.title}:${r.subtitle}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      merged.push(r);
-    }
-  }
-  // 全局按 score 降序排序——即时和延迟两路各自有序，但合并后需重排
-  merged.sort((a, b) => b.score - a.score);
-  return merged;
-}
-
-/**
  * 按 Tab 过滤搜索结果。
  * - "all" → 全部
  * - "apps" → source === "app"
