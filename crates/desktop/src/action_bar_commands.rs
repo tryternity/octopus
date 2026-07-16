@@ -47,6 +47,16 @@ static TRIGGER_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::Atom
 /// 隔离恢复剪贴板写入自身递增 changeCount 对下次检测的污染（现象 2 根因）。
 static CHANGE_COUNT_BASELINE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+/// 保存当前 CHANGE_COUNT_BASELINE（供 silent 路径隔离 detect 副作用）。
+pub(crate) fn save_change_count_baseline() -> i64 {
+    CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 恢复 CHANGE_COUNT_BASELINE（silent 路径 detect 后恢复原值，不污染 ActionBar 路径）。
+pub(crate) fn restore_change_count_baseline(val: i64) {
+    CHANGE_COUNT_BASELINE.store(val, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 /// 一次触发检测出的完整选中状态——后端唯一的"有什么选中"真相源。
 /// 检测完成后，下游所有操作仅读这个枚举，不再碰 changeCount / 剪贴板 / 鼠标坐标。

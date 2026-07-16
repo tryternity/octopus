@@ -73,8 +73,18 @@ pub fn cancel_silent() {
 
 /// silent 执行链路（worker 线程）。
 fn silent_run_and_paste(item_id: i64, app: &AppHandle) {
+    // detect_selection 内部会写 CHANGE_COUNT_BASELINE（全局静态量），
+    // silent 路径与 ActionBar 路径共享此 baseline 会互相污染——
+    // silent detect 的 Cmd+C 模拟 + 恢复写入产生的 changeCount 值
+    // 会让后续 ActionBar detect 误判有无选中。
+    // 解法：detect 前保存 baseline，detect 后恢复，隔离 silent 的副作用。
+    let saved_baseline = crate::action_bar_commands::save_change_count_baseline();
+
     // detect_selection 需要 AppHandle 且内部有 Cmd+C 模拟 + sleep
     let selection = crate::action_bar_commands::detect_selection(app);
+
+    // 恢复 baseline（无论 detect 结果如何，silent 路径不影响 ActionBar 的 baseline）
+    crate::action_bar_commands::restore_change_count_baseline(saved_baseline);
 
     if SILENT_CANCELLED.load(Ordering::SeqCst) {
         return;
