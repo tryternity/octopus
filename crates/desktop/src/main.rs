@@ -430,24 +430,39 @@ pub fn run() {
             // 目录 mtime，变化时才触发全量重扫（扫盘耗时数秒，仅在真实变化时发生）。
             // 内存索引通过 SearchEngine.app_index 的 RwLock 热替换，搜索走读锁零阻塞。
             std::thread::spawn(move || {
+                // 启动后 30s 首次校准（检查 DB 缓存是否过期——新装/卸载 app），之后每 2 分钟。
+                // 原方案靠目录 mtime 检测，但直接拷 .app 进 /Applications 不一定改目录 mtime，
+                // 导致新装 app 搜不到。改用"文件系统 .app 数量 vs 索引数量"对比——数量变了就 rescan。
                 std::thread::sleep(std::time::Duration::from_secs(30));
                 let watch_dirs = ["/Applications", "/System/Applications", "/Applications/Utilities"];
                 let home_apps = dirs::home_dir().map(|h| h.join("Applications"));
-                let read_mtimes = |home_apps: &Option<std::path::PathBuf>| -> Vec<Option<std::time::SystemTime>> {
-                    let mut v: Vec<Option<std::time::SystemTime>> = watch_dirs.iter()
-                        .map(|d| std::fs::metadata(d).ok().and_then(|m| m.modified().ok()))
-                        .collect();
-                    v.push(home_apps.as_ref()
-                        .and_then(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok())));
-                    v
+                // 快速计数：递归列出各目录下的 .app 数量（不提取 icon，毫秒级）
+                let count_apps = || -> usize {
+                    let mut total = 0;
+                    for dir in &watch_dirs {
+                        total += count_apps_in_dir(std::path::Path::new(dir), 0);
+                    }
+                    if let Some(ref home) = home_apps {
+                        total += count_apps_in_dir(home, 0);
+                    }
+                    total
                 };
-                let mut last = read_mtimes(&home_apps);
+                let mut last_count = count_apps();
+                // 启动首次校准：DB 缓存的 app 数量 vs 文件系统实际数量
+                if let Some(e) = octopus_search::get_engine() {
+                    let cached = e.cached_app_count();
+                    if cached != last_count {
+                        log::info!("[search] 启动校准：DB 缓存 {} 个 app vs 文件系统 {} 个，重扫", cached, last_count);
+                        let n = e.refresh_app_index();
+                        log::info!("[search] 启动校准重扫完成: {} 个应用", n);
+                    }
+                }
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(600));
-                    let now = read_mtimes(&home_apps);
-                    if now != last {
-                        last = now;
-                        log::info!("[search] 应用目录 mtime 变化，后台重扫");
+                    std::thread::sleep(std::time::Duration::from_secs(120));
+                    let now_count = count_apps();
+                    if now_count != last_count {
+                        last_count = now_count;
+                        log::info!("[search] 应用数量变化 ({}), 后台重扫", now_count);
                         if let Some(e) = octopus_search::get_engine() {
                             let n = e.refresh_app_index();
                             log::info!("[search] 后台重扫完成: {} 个应用", n);
@@ -716,6 +731,29 @@ fn build_local_engine(
             Arc::new(EmbeddedEngine::new(engine_manager.clone()))
         }
     }
+}
+
+/// 递归计数目录下的 .app 数量（深度 ≤2，不进入 .app 包内部）。
+/// 用于后台轮询快速检测新装/卸载的 app（不提取 icon，毫秒级）。
+fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
+    const MAX_DEPTH: u32 = 2;
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("app") {
+            count += 1;
+        } else if path.is_dir() {
+            count += count_apps_in_dir(&path, depth + 1);
+        }
+    }
+    count
 }
 
 fn main() {

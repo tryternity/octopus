@@ -29,6 +29,11 @@ pub async fn search_files(query: &str) -> Vec<SearchResult> {
         .lines()
         .take(20)
         .filter_map(|line| {
+            // 过滤 .app——.app 已被 AppProvider 索引覆盖，file 搜索不该重复返回
+            // （mdfind -name 会把 /Applications/Goose.app 当文件搜出来，与 app 结果重复）
+            if line.ends_with(".app") {
+                return None;
+            }
             let filename = std::path::Path::new(line)
                 .file_name()
                 .and_then(|n| n.to_str())

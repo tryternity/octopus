@@ -114,6 +114,11 @@ impl SearchEngine {
         }
     }
 
+    /// 当前内存索引里的 app 数量（供后台轮询对比文件系统数量决定是否 rescan）。
+    pub fn cached_app_count(&self) -> usize {
+        self.app_index.read().apps.len()
+    }
+
     /// 强制重扫应用索引：扫文件系统 + 写 DB 缓存 + 替换内存索引。
     /// 供后台 mtime 轮询线程（main.rs）和 reindex_apps 诊断命令复用。
     /// 返回扫描到的应用数。
@@ -162,8 +167,9 @@ impl SearchEngine {
         let futures = active.into_iter().map(|p| p.search(query, &ctx));
         let batches = join_all(futures).await;
 
-        // 合并 + 频次加权 + 排序 + 截断。
+        // 合并 + 去重 + 频次加权 + 排序 + 截断。
         let mut all: Vec<SearchResult> = batches.into_iter().flatten().collect();
+        dedup_by_identity(&mut all);
         self.frequency.boost(&mut all, query);
         all.sort_by(|a, b| b.score.cmp(&a.score));
         all.truncate(MAX_TOTAL_RESULTS);
@@ -215,6 +221,7 @@ impl SearchEngine {
             // 违反「每次 emit 是全局 top-10（已正确加权）」不变量。
             self.frequency.boost(&mut batch, query);
             collected.extend(batch);
+            dedup_by_identity(&mut collected);
             collected.sort_by(|a, b| b.score.cmp(&a.score));
             collected.truncate(MAX_TOTAL_RESULTS);
             emit(SearchBatch {
@@ -228,6 +235,35 @@ impl SearchEngine {
 /// 获取全局搜索引擎（需先 init_search_engine）。
 pub fn get_engine() -> Option<&'static SearchEngine> {
     SEARCH_ENGINE.get()
+}
+
+/// 跨 source 按身份去重——同一对象（同 path / 同 url）只保留首个（调用前已按 score 降序
+/// 或后续会排序，这里依赖调用方先排序或 tolerate 任意序，保留先出现的）。
+///
+/// 解决场景：搜 "goose" 时 AppProvider 返回 `/Applications/Goose.app`（source=app），
+/// FileProvider 的 mdfind 也返回 `/Applications/Goose.app`（source=file）——两者指向同一对象，
+/// 应合并为一条。用 action_data 里的 path/url 作为身份键。
+fn dedup_by_identity(results: &mut Vec<SearchResult>) {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    results.retain(|r| {
+        // 提取身份键：action_data JSON 里的 path / url
+        let key = identity_key(r);
+        seen.insert(key)
+    });
+}
+
+/// 从 SearchResult 提取稳定身份键（用于跨 source 去重）。
+/// app/file 用 path，bookmark/quicklink/url 用 url，menu 用 id，其余用 source+title。
+fn identity_key(r: &SearchResult) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.action_data) {
+        for field in &["path", "url"] {
+            if let Some(s) = v.get(field).and_then(|x| x.as_str()) {
+                return format!("{}|{}", field, s);
+            }
+        }
+    }
+    // fallback：source + title（title 可能重复但无更好方案）
+    format!("{}|{}", r.source, r.title)
 }
 
 #[cfg(test)]
@@ -511,5 +547,87 @@ mod tests {
         // 最终索引应是最后一次写入
         let r = rt.block_on(engine.search("app19", "apps"));
         assert!(r.iter().any(|x| x.title == "App19"), "最终应为 App19");
+    }
+
+    /// 跨 source 去重：app 和 file 指向同一 path 应合并为一条。
+    #[test]
+    fn dedup_by_identity_merges_same_path() {
+        let mut results = vec![
+            SearchResult {
+                source: "app".into(),
+                title: "Goose".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "launch_app".into(),
+                action_data: r#"{"path":"/Applications/Goose.app"}"#.into(),
+                score: 6000,
+            },
+            SearchResult {
+                source: "file".into(),
+                title: "Goose.app".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "open_file".into(),
+                action_data: r#"{"path":"/Applications/Goose.app"}"#.into(),
+                score: 5000,
+            },
+        ];
+        dedup_by_identity(&mut results);
+        assert_eq!(results.len(), 1, "同 path 的 app/file 应合并为一条");
+        assert_eq!(results[0].source, "app", "应保留先出现的（高分 app）");
+    }
+
+    /// 不同 path 不应被去重。
+    #[test]
+    fn dedup_by_identity_keeps_different_paths() {
+        let mut results = vec![
+            SearchResult {
+                source: "app".into(),
+                title: "Goose".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "launch_app".into(),
+                action_data: r#"{"path":"/Applications/Goose.app"}"#.into(),
+                score: 6000,
+            },
+            SearchResult {
+                source: "file".into(),
+                title: "notes.md".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "open_file".into(),
+                action_data: r#"{"path":"/Users/me/notes.md"}"#.into(),
+                score: 4000,
+            },
+        ];
+        dedup_by_identity(&mut results);
+        assert_eq!(results.len(), 2, "不同 path 不应去重");
+    }
+
+    /// bookmark 按 url 去重。
+    #[test]
+    fn dedup_by_identity_merges_same_url() {
+        let mut results = vec![
+            SearchResult {
+                source: "bookmark".into(),
+                title: "GitHub".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "url".into(),
+                action_data: r#"{"url":"https://github.com"}"#.into(),
+                score: 5000,
+            },
+            SearchResult {
+                source: "url".into(),
+                title: "打开 github.com".into(),
+                subtitle: "".into(),
+                icon: None,
+                action_type: "url".into(),
+                action_data: r#"{"url":"https://github.com"}"#.into(),
+                score: 4000,
+            },
+        ];
+        dedup_by_identity(&mut results);
+        assert_eq!(results.len(), 1, "同 url 应合并");
     }
 }
