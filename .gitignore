@@ -27,3 +27,4 @@ xcap
 package.json
 /.crush/
 /debug_frames/
+/.zcode/
