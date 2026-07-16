@@ -246,7 +246,9 @@ function Result() {
     setTranslating(true);
     lastTranslatedRef.current = source;
     try {
-      await invoke("translate_text", { text: source });
+      // targetType: "result" → 走旧事件名 translate-progress|done（与 CompactEditor 隔离）
+      // 2026-07-17 修复发现 6：CompactEditor 翻译事件改新事件名，不再泄漏到 Result 窗口
+      await invoke("translate_text", { text: source, targetType: "result" });
     } catch (e) {
       translatingRef.current = false;
       setTranslating(false);

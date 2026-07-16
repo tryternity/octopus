@@ -40,6 +40,13 @@ pub struct TempTabPayload {
     /// 对照译文（mode=contrast 时用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    /// 翻译 sessionId（mode=contrast 且通过流式翻译路径时用）。
+    ///
+    /// 前端 open-tab 据此把 sessionId → tabKey 映射写入 translatingSessionsRef，
+    /// 后续 `compact-editor://translate-progress|done` 事件按 sessionId 路由到该 tab。
+    /// 2026-07-17 修复发现 1（竞态）+ 8（并发错路由）：前端不再依赖单值 ref 的赋值时序。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translate_session_id: Option<String>,
 }
 
 /// 待打开的 tab（含完整数据）。open 时写入队列，前端 mount take 全部。

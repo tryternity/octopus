@@ -483,6 +483,7 @@ fn action_bar_show_result_internal(
             mode: Some("contrast".into()),
             original_text: Some(_original_text),
             translated_text: Some(result.clone()),
+            translate_session_id: None, // LLM 路径不走流式，无 sessionId
         }
     } else {
         crate::compact_editor_commands::TempTabPayload {
@@ -864,13 +865,70 @@ pub(crate) fn do_translate(text: &str, config: &octopus_infra::config::AppConfig
     }
 }
 
+/// 流式翻译事件目标——决定 emit 哪套事件名 + payload 结构。
+///
+/// 2026-07-17 修复发现 1（竞态）+ 6（跨窗口泄漏）+ 8（并发错路由）：
+/// - **CompactEditor**：emit 新事件名 `compact-editor://translate-progress|done`，
+///   payload 是 `TranslateSessionPayload { sessionId, text }`。前端按 sessionId 路由
+///   到具体 tab（Map 而非单值 ref），解决并发翻译错路由 + ActionBar 流式翻译与
+///   open-tab emit 的竞态（payload 带 sessionId 即可正确路由，不依赖 ref 时序）。
+///   新事件名与 Result 窗口订阅的旧事件名彻底隔离，解决跨窗口泄漏。
+/// - **Result**：保留旧事件名 `translate-progress|done`，payload 仍是裸 String。
+///   Result 一次只翻译一段，无需 sessionId。
+#[derive(Clone)]
+enum TranslateEmitTarget {
+    Result,
+    CompactEditor { session_id: String },
+}
+
+impl TranslateEmitTarget {
+    /// 根据 target emit 翻译进度。payload 已封装好。
+    fn emit_progress(&self, app: &AppHandle, text: &str) {
+        match self {
+            TranslateEmitTarget::Result => {
+                let _ = app.emit("translate-progress", text);
+            }
+            TranslateEmitTarget::CompactEditor { session_id } => {
+                let _ = app.emit(
+                    "compact-editor://translate-progress",
+                    TranslateSessionPayload { session_id: session_id.clone(), text: text.to_string() },
+                );
+            }
+        }
+    }
+
+    /// 根据 target emit 翻译完成。
+    fn emit_done(&self, app: &AppHandle, text: &str) {
+        match self {
+            TranslateEmitTarget::Result => {
+                let _ = app.emit("translate-done", text);
+            }
+            TranslateEmitTarget::CompactEditor { session_id } => {
+                let _ = app.emit(
+                    "compact-editor://translate-done",
+                    TranslateSessionPayload { session_id: session_id.clone(), text: text.to_string() },
+                );
+            }
+        }
+    }
+}
+
+/// CompactEditor 翻译事件 payload——带 sessionId 供前端路由。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslateSessionPayload {
+    session_id: String,
+    text: String,
+}
+
 /// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。
-/// 前端 listen "translate-progress"（增量更新）+ "translate-done"（翻译完成）。
-fn do_translate_streaming(text: &str, app: &AppHandle) {
+///
+/// `target` 决定 emit 的事件名 + payload 结构（详见 `TranslateEmitTarget`）。
+fn do_translate_streaming(text: &str, app: &AppHandle, target: TranslateEmitTarget) {
     let config = match octopus_infra::config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            let _ = app.emit("translate-done", format!("❌ 配置加载失败: {}", e));
+            target.emit_done(app, &format!("❌ 配置加载失败: {}", e));
             return;
         }
     };
@@ -897,21 +955,36 @@ fn do_translate_streaming(text: &str, app: &AppHandle) {
         if i < total - 1 { accumulated.push('\n'); }
 
         // 每段完成 emit 增量结果（前端实时更新译文区）
-        let _ = app.emit("translate-progress", &accumulated);
+        target.emit_progress(app, &accumulated);
     }
 
-    let _ = app.emit("translate-done", &accumulated);
+    target.emit_done(app, &accumulated);
 }
 
 /// 前端工具栏翻译按钮调用。fire-and-forget：立即返回，翻译结果通过事件 emit。
-/// 前端 invoke 后立即切 contrast 模式（译文区显示 loading），listen translate-progress/done 更新。
+///
+/// `target_type`：`"result"` 走旧事件名（Result 窗口），`"compact_editor"` 走新事件名
+/// （CompactEditor，带 sessionId）。返回 sessionId 供前端路由（`"result"` 时返回空串）。
+///
+/// 前端 invoke 后立即切 contrast 模式（译文区显示 loading），listen 翻译事件更新。
 #[tauri::command]
-pub fn translate_text(text: String, app: AppHandle) -> Result<(), String> {
+pub fn translate_text(text: String, target_type: String, app: AppHandle) -> Result<String, String> {
+    let target = match target_type.as_str() {
+        "compact_editor" => {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            TranslateEmitTarget::CompactEditor { session_id: session_id.clone() }
+        }
+        _ => TranslateEmitTarget::Result,
+    };
+    let session_id = match &target {
+        TranslateEmitTarget::CompactEditor { session_id } => session_id.clone(),
+        TranslateEmitTarget::Result => String::new(),
+    };
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        do_translate_streaming(&text, &app_clone);
+        do_translate_streaming(&text, &app_clone, target);
     });
-    Ok(())
+    Ok(session_id)
 }
 
 /// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
@@ -1317,11 +1390,17 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         }
 
                         let original_text = text.clone();
+                        // 生成 sessionId——写入 TempTabPayload 让前端 open-tab 时知道这次翻译的 session，
+                        // 同时传给 do_translate_streaming 的 CompactEditor target。
+                        // 解决发现 1（竞态）：payload 带 sessionId，前端按 sessionId 路由而非依赖
+                        // translatingTabKeyRef 时序，spawn emit 早于 open-tab emit 也能正确路由。
+                        let session_id = uuid::Uuid::new_v4().to_string();
                         let payload = crate::compact_editor_commands::TempTabPayload {
                             text: "【翻译】\n⏳ 正在翻译…".into(),
                             mode: Some("contrast".into()),
                             original_text: Some(original_text.clone()),
                             translated_text: Some("⏳ 正在翻译…".into()),
+                            translate_session_id: Some(session_id.clone()),
                             ..Default::default()
                         };
                         // 投递主线程——create_compact_editor_window 内含 set_dock_icon
@@ -1332,8 +1411,9 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         });
 
                         let app_clone = app.clone();
+                        let target = TranslateEmitTarget::CompactEditor { session_id };
                         std::thread::spawn(move || {
-                            do_translate_streaming(&original_text, &app_clone);
+                            do_translate_streaming(&original_text, &app_clone, target);
                         });
                         return Ok(true);
                     }
