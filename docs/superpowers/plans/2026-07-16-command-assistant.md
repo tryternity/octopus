@@ -16,46 +16,65 @@
 - notify-rs 漏事件时数量轮询兜底（2 分钟）。
 - PATH 扫描覆盖所有来源，不硬编码特定目录。
 - 同名命令按 PATH 顺序去重。
-- schema 当前最新 v35，新增 v36。
+- schema 当前最新 v35，新增 v36（统一 launcher_index 表，合并 app_index + command_index）。
 - search crate 新增依赖：`notify = "8"`。
 - 验证纪律：每任务后 cargo build + cargo test。
 
 ---
 
-### Task 1: infra schema v36 + command_index CRUD
+### Task 1: infra schema v36——统一 launcher_index 表 + 迁移 app_index + CRUD
 
 **Files:**
-- Modify: `crates/infra/src/db.rs`（v36 迁移 + CRUD）
-- Modify: `crates/infra/src/db.sql`（补表）
-- Modify: `crates/search/src/engine.rs`（v35→v36 早返回阈值更新——在 infra 改后 search 无需改）
+- Modify: `crates/infra/src/db.rs`（v36 迁移：建 launcher_index + 迁移 app_index 数据 + 删旧表 + CRUD）
+- Modify: `crates/infra/src/db.sql`（加 launcher_index 表，删 app_index 表）
 
 **Interfaces:**
-- Produces: `octopus_infra::db::{save_command_index, load_command_index, update_command_keywords, CommandRow}`
+- Produces: `octopus_infra::db::{LauncherRow, load_launcher_by_type, save_launcher_batch, update_launcher_keywords}`
+- Changes: `load_app_index`/`save_app_index` 改为 launcher_index 的 wrapper
 
-- [ ] **Step 1: db.rs 加 CommandRow + CRUD 函数 + v36 迁移**
+- [ ] **Step 1: db.rs 加 LauncherRow + 统一 CRUD 函数**
 
-在 db.rs 的 search_frequency 相关函数附近加：
+在 db.rs 的 app_index 相关函数（`load_app_index`/`save_app_index`）附近加：
 
 ```rust
-/// 命令索引表的一行。
-pub struct CommandRow {
+/// 统一启动器索引表的一行（app + command 共用）。
+pub struct LauncherRow {
+    pub r#type: String,       // "app" | "command"
     pub name: String,
     pub path: String,
-    pub source: String,
-    pub description: String,
-    pub keywords: String,
+    pub alias: String,        // app 的本地化名，command 无
+    pub icon: String,         // app 的 base64 icon，command 无
+    pub source: String,       // command 的 brew/cargo/system，app 用 "applications"
+    pub description: String,  // 英文描述
+    pub keywords: String,     // LLM 生成的中英文关键字
 }
 
-/// 全量替换命令索引（先删后插，事务原子）。
-pub fn save_command_index(rows: &[CommandRow]) -> Result<()> {
+/// 按 type 加载启动器索引行。
+pub fn load_launcher_by_type(item_type: &str) -> Result<Vec<LauncherRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT type, name, path, alias, icon, source, description, keywords
+             FROM launcher_index WHERE type = ?1"
+        )?;
+        let rows = stmt.query_map(params![item_type], |r| LauncherRow {
+            r#type: r.get(0)?, name: r.get(1)?, path: r.get(2)?, alias: r.get(3)?,
+            icon: r.get(4)?, source: r.get(5)?, description: r.get(6)?, keywords: r.get(7)?,
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    })
+}
+
+/// 按 type 全量替换启动器索引（事务原子：先删该 type 再插）。
+pub fn save_launcher_batch(item_type: &str, rows: &[LauncherRow]) -> Result<()> {
     with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM command_index", [])?;
+        tx.execute("DELETE FROM launcher_index WHERE type = ?1", params![item_type])?;
         for r in rows {
             tx.execute(
-                "INSERT OR REPLACE INTO command_index (name, path, source, description, keywords)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![r.name, r.path, r.source, r.description, r.keywords],
+                "INSERT OR REPLACE INTO launcher_index
+                 (type, name, path, alias, icon, source, description, keywords)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![item_type, r.name, r.path, r.alias, r.icon, r.source, r.description, r.keywords],
             )?;
         }
         tx.commit()?;
@@ -63,73 +82,97 @@ pub fn save_command_index(rows: &[CommandRow]) -> Result<()> {
     })
 }
 
-/// 加载全部命令索引。
-pub fn load_command_index() -> Result<Vec<CommandRow>> {
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT name, path, source, description, keywords FROM command_index"
-        )?;
-        let rows = stmt.query_map([], |r| CommandRow {
-            name: r.get(0)?, path: r.get(1)?, source: r.get(2)?,
-            description: r.get(3)?, keywords: r.get(4)?,
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    })
-}
-
-/// 更新单个命令的 keywords（LLM 生成后调）。
-pub fn update_command_keywords(name: &str, path: &str, keywords: &str) -> Result<()> {
+/// 更新单个启动器项的 keywords（LLM 生成后调）。
+pub fn update_launcher_keywords(item_type: &str, path: &str, keywords: &str) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE command_index SET keywords = ?3, updated_at = datetime('now')
-             WHERE name = ?1 AND path = ?2",
-            params![name, path, keywords],
+            "UPDATE launcher_index SET keywords = ?3, updated_at = datetime('now')
+             WHERE type = ?1 AND path = ?2",
+            params![item_type, path, keywords],
         )?;
         Ok(())
     })
 }
 ```
 
-- [ ] **Step 2: init_schema 加 v36**
+- [ ] **Step 2: 改 load_app_index / save_app_index 为 launcher_index wrapper**
+
+现有 `load_app_index` 改为：
+```rust
+pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
+    let rows = load_launcher_by_type("app")?;
+    Ok(rows.into_iter().map(|r| (r.name, r.alias, r.path, r.icon)).collect())
+}
+```
+现有 `save_app_index` 改为：
+```rust
+pub fn save_app_index(rows: &[(String, String, String, String)]) -> Result<()> {
+    let launcher_rows: Vec<LauncherRow> = rows.iter().map(|(name, alias, path, icon)| LauncherRow {
+        r#type: "app".into(), name: name.clone(), path: path.clone(),
+        alias: alias.clone(), icon: icon.clone(),
+        source: "applications".into(), description: String::new(), keywords: String::new(),
+    }).collect();
+    save_launcher_batch("app", &launcher_rows)
+}
+```
+**注意**：现有 save_app_index 签名是 `Vec<(name, alias, path, icon)>`——保持签名不变（搜索代码不破），内部转 LauncherRow。
+
+- [ ] **Step 3: init_schema 加 v36——建 launcher_index + 迁移 app_index 数据 + 删旧表**
 
 在 v35 分支后加：
-
 ```rust
-    // v35→v36：命令索引表。
+    // v35→v36：统一 launcher_index 表（合并 app_index + command_index）。
+    // 1. 建 launcher_index
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS command_index (
+        "CREATE TABLE IF NOT EXISTS launcher_index (
+            type TEXT NOT NULL,
             name TEXT NOT NULL,
             path TEXT NOT NULL,
-            source TEXT NOT NULL,
+            alias TEXT NOT NULL DEFAULT '',
+            icon TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
             description TEXT NOT NULL DEFAULT '',
             keywords TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (name, path)
+            PRIMARY KEY (type, path)
         )",
     )?;
+    // 2. 从旧 app_index 迁移数据（INSERT OR IGNORE 防重复迁移）
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO launcher_index (type, name, path, alias, icon, source)
+         SELECT 'app', name, path, alias, icon, 'applications' FROM app_index"
+    )?;
+    // 3. 删旧 app_index 表（数据已迁）
+    conn.execute_batch("DROP TABLE IF EXISTS app_index")?;
     conn.execute("PRAGMA user_version = 36", [])?;
-    log::info!("schema upgraded to v36 (command_index table)");
+    log::info!("schema upgraded to v36 (launcher_index unified table, app_index migrated)");
 ```
 
-更新早返回阈值：`if v >= 36 { return Ok(()); }`（原 v35）。更新全新库路径的 user_version=36 + 建 command_index 表。更新文件顶部注释加 `/// v36：命令索引表。`
+更新早返回阈值：`if v >= 36 { return Ok(()); }`（原 v35）。
 
-- [ ] **Step 3: db.sql 补 command_index 表**
+**全新库路径**（`v < 17` 分支末尾）：建 launcher_index（不建 app_index），user_version=36。删 db.sql 里的 app_index 建表语句，换 launcher_index。
 
-在 db.sql 末尾（search_frequency 后）加同名 CREATE TABLE。
+- [ ] **Step 4: db.sql 更新——删 app_index 建 launcher_index**
 
-- [ ] **Step 4: 测试 + 验证**
+db.sql 里找到 `CREATE TABLE IF NOT EXISTS app_index`，整段替换为 launcher_index 建表（不加 type 索引，PRIMARY KEY (type, path) 够了）。保留 app_index 的 name/alias 索引迁移到 launcher_index（加 `CREATE INDEX idx_launcher_name ON launcher_index(name)` 和 alias）。
+
+- [ ] **Step 5: 更新现有测试的 user_version 断言**
+
+grep `user_version.*35\|== 35\|v35` 在 db.rs tests，改为 36。
+
+- [ ] **Step 6: 验证**
 
 ```bash
 cargo test -p octopus-infra --lib 2>&1 | tail -5
-cargo build -p octopus-infra 2>&1 | tail -3
+cargo build -p octopus-infra -p octopus-search 2>&1 | tail -3
 ```
-Expected: 0 error；现有测试全过（含 v36 迁移后的 user_version 断言）。
+Expected: 0 error；现有测试全过（load_app_index/save_app_index wrapper 对 search crate 透明）。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.rs crates/infra/src/db.sql
-git commit -m "feat(infra): schema v36 command_index 表 + CRUD"
+git commit -m "feat(infra): schema v36 统一 launcher_index 表（合并 app_index + command_index）"
 ```
 
 ---
@@ -184,8 +227,8 @@ impl CommandIndex {
                 }
             }
         }
-        // 4. 读 DB 缓存的 keywords
-        let db_rows = octopus_infra::db::load_command_index().unwrap_or_default();
+        // 4. 读 DB 缓存的 keywords（launcher_index WHERE type='command'）
+        let db_rows = octopus_infra::db::load_launcher_by_type("command").unwrap_or_default();
         let db_map: std::collections::HashMap<String, String> = db_rows.iter()
             .map(|r| (format!("{}|{}", r.name, r.path), r.keywords.clone()))
             .collect();
@@ -195,14 +238,15 @@ impl CommandIndex {
                 e.keywords = kw.clone();
             }
         }
-        // 5. 写 DB 缓存（全量替换——PATH 变化时同步）
-        let cache: Vec<octopus_infra::db::CommandRow> = entries.iter()
-            .map(|e| octopus_infra::db::CommandRow {
-                name: e.name.clone(), path: e.path.clone(),
+        // 5. 写 DB 缓存（全量替换 type='command'——PATH 变化时同步）
+        let cache: Vec<octopus_infra::db::LauncherRow> = entries.iter()
+            .map(|e| octopus_infra::db::LauncherRow {
+                r#type: "command".into(), name: e.name.clone(), path: e.path.clone(),
+                alias: String::new(), icon: String::new(),
                 source: e.source.clone(), description: e.description.clone(),
                 keywords: e.keywords.clone(),
             }).collect();
-        let _ = octopus_infra::db::save_command_index(&cache);
+        let _ = octopus_infra::db::save_launcher_batch("command", &cache);
         log::info!("[search] 命令索引: {} 条", entries.len());
         Self { commands: entries }
     }

@@ -95,6 +95,8 @@ pub struct CommandIndex {
 
 **去重**：同名命令（如 `/usr/bin/python3` 和 `/opt/homebrew/bin/python3`）保留 PATH 顺序靠前的（`$PATH` 前面的优先级高）。
 
+**DB 缓存**（统一 launcher_index 表）：读 `launcher_index WHERE type='command'` 拿 keywords 缓存；扫描后全量替换 `type='command'` 的行（`save_launcher_batch("command", ...)`）。app 走 `type='app'`，同一张表。
+
 ### 2.3 LLM 关键字生成
 
 ```
@@ -189,21 +191,38 @@ pub fn start_app_watcher() {
 - **保留 2 分钟数量轮询**（main.rs 现有逻辑）作为 fallback——macOS FSEvents 对非用户所有文件可能漏事件
 - watcher 生命周期：fire-and-forget（随进程退出）
 
-## 3. DB schema v36
+## 3. DB schema v36——统一 launcher_index 表
+
+**合并 app_index + command_index 为 launcher_index**（用户决策：app 也该有 description/keywords，统一更合理）。
 
 ```sql
-CREATE TABLE IF NOT EXISTS command_index (
-    name TEXT NOT NULL,
-    path TEXT NOT NULL,
-    source TEXT NOT NULL,                    -- "brew"|"cargo"|"system"|"path"
-    description TEXT NOT NULL DEFAULT '',     -- 英文描述
-    keywords TEXT NOT NULL DEFAULT '',        -- LLM 生成的中英文关键字
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (name, path)
+CREATE TABLE IF NOT EXISTS launcher_index (
+    type        TEXT NOT NULL,               -- "app" | "command"
+    name        TEXT NOT NULL,               -- Chrome / fd
+    path        TEXT NOT NULL,               -- 绝对路径（UNIQUE——同一 path 不可能既是 app 又是 command）
+    alias       TEXT NOT NULL DEFAULT '',     -- app 的本地化名（微信），command 无
+    icon        TEXT NOT NULL DEFAULT '',     -- app 的 base64 icon，command 无
+    source      TEXT NOT NULL DEFAULT '',     -- command 的 brew/cargo/system，app 用 "applications"
+    description TEXT NOT NULL DEFAULT '',     -- 英文描述（command 的 whats/brew desc，app 可后补）
+    keywords    TEXT NOT NULL DEFAULT '',     -- LLM 生成的中英文关键字（app 和 command 都可补）
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (type, path)
 );
 ```
 
-迁移：`db.rs` init_schema 加 v36 分支（当前最新 v35），`CREATE TABLE IF NOT EXISTS`。db.sql 同步补表。
+**迁移**（v36）：
+1. 建 launcher_index 表
+2. 从旧 app_index 迁移数据：`INSERT INTO launcher_index (type, name, path, alias, icon, source) SELECT 'app', name, path, alias, icon, 'applications' FROM app_index`
+3. **删除旧 app_index 表**（数据已迁，保留无意义）
+4. 现有 `load_app_index`/`save_app_index` 改为读写 launcher_index WHERE type='app'
+5. command 数据走 `INSERT INTO launcher_index (type='command', ...)`
+
+**Rust struct 层保持分开**（AppIndex + CommandIndex 各自字段需求不同），但底层 DB 统一 launcher_index 表，按 type 过滤读写。CRUD 函数：
+- `load_launcher_by_type(type: &str) -> Vec<LauncherRow>` — 按 type 读
+- `save_launcher_batch(type: &str, rows: &[LauncherRow])` — 按 type 全量替换（先 DELETE WHERE type 再 INSERT）
+- `update_launcher_keywords(type: &str, path: &str, keywords: &str)` — LLM 生成后更新
+
+现有 `load_app_index`/`save_app_index` 改为调 launcher 的 wrapper（`load_launcher_by_type("app")`）。
 
 ## 4. 前端 Tab
 
