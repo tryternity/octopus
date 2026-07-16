@@ -27,6 +27,7 @@ mod cloud_pipeline;
 mod engine_dispatch;
 mod engine_embedded;
 mod extensions;
+mod file_watcher;
 #[cfg(feature = "remote-grpc")]
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
@@ -424,6 +425,10 @@ pub fn run() {
                     }
                 }
             });
+
+            // 启动 notify-rs 文件监听：app 目录变化时秒级刷新索引。
+            // macOS FSEvents 对 /System 等非用户目录可能漏事件——下面的轮询作为 fallback。
+            file_watcher::start_app_watcher();
 
             // 应用索引后台自动刷新（mtime 轮询）：用户装卸应用后无需重启即可搜到。
             // 启动后延迟 30s（避开 ASR 预热等重活），之后每 10 分钟检测 /Applications 等
