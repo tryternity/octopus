@@ -276,9 +276,36 @@ mod tests {
             return;
         }
         let entries = load_safari_bookmarks(&fixture);
-        assert!(!entries.is_empty(), "应解析出书签");
+        // fixture 含 3 个 leaf 书签：GitHub + Rust + MDN Web Docs
+        assert_eq!(entries.len(), 3, "应解析出 3 个书签，got: {:?}", entries.iter().map(|e| &e.title).collect::<Vec<_>>());
         assert!(entries.iter().all(|e| e.browser == "Safari"));
-        assert!(entries.iter().any(|e| e.url.starts_with("http")), "应有 http URL");
+        assert!(entries.iter().all(|e| e.url.starts_with("http")), "URL 应是 http");
+        // 加强：验证具体 title 集合
+        let titles: Vec<&str> = entries.iter().map(|e| e.title.as_str()).collect();
+        assert!(titles.contains(&"GitHub"), "应含 GitHub，got: {:?}", titles);
+        assert!(titles.contains(&"Rust"), "应含 Rust，got: {:?}", titles);
+        assert!(titles.contains(&"MDN Web Docs"), "应含 MDN Web Docs，got: {:?}", titles);
+    }
+
+    /// Firefox places.sqlite 查询：直接单测私有 `query_firefox_places`（绕开 home_dir 探测）。
+    /// fixture 不存在则 skip。
+    /// fixture 含 GitHub + Rust 两个真实书签 + 一个 place:% 内部 URL（应被过滤）。
+    #[test]
+    fn firefox_places_query_from_fixture() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/firefox_places.sqlite");
+        if !fixture.exists() {
+            eprintln!("skip: fixture not found at {}", fixture.display());
+            return;
+        }
+        let entries = query_firefox_places(&fixture);
+        // fixture 含 GitHub + Rust 两个真实书签 + 一个 place:% 内部 URL（type=1 但伪 URL）
+        // 查询应过滤掉 place:%，只返回 2 个真实书签
+        assert_eq!(entries.len(), 2, "应过滤 place:% 只返回 2 个书签，got: {:?}", entries.iter().map(|e| &e.title).collect::<Vec<_>>());
+        assert!(entries.iter().all(|e| e.browser == "Firefox"));
+        assert!(entries.iter().any(|e| e.title == "GitHub"), "应含 GitHub");
+        assert!(entries.iter().any(|e| e.title == "Rust"), "应含 Rust");
+        assert!(entries.iter().all(|e| e.url.starts_with("http")), "URL 应是 http");
     }
 
     #[test]
