@@ -11,5 +11,6 @@ pub mod bookmark;
 pub mod engine;
 pub mod frequency;
 pub mod provider;
+pub mod providers;
 
 pub use engine::{SearchEngine, SearchResult, init_search_engine, get_engine};
