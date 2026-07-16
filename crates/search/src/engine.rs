@@ -47,8 +47,12 @@ pub struct SearchEngine {
     frequency: FrequencyScorer,
 }
 
-/// 单次 search 返回的最大结果数。
-const MAX_RESULTS: usize = 10;
+/// 单次 search 返回的最大**总**结果数（跨所有 Provider 合并后）。
+///
+/// 这是"可滚动浏览的总量"，不是"一屏可视行数"——前端窗口高度由前端的
+/// `MAX_VISIBLE_RESULTS`（10 行）+ overflow-y-auto 滚动容器控制，与本常量无关。
+/// 设 30：足够滚动浏览多个 Provider 的结果，又不过载（每 Provider 内部已各自 take 5-10）。
+const MAX_TOTAL_RESULTS: usize = 30;
 
 static SEARCH_ENGINE: OnceLock<SearchEngine> = OnceLock::new();
 
@@ -162,7 +166,7 @@ impl SearchEngine {
         let mut all: Vec<SearchResult> = batches.into_iter().flatten().collect();
         self.frequency.boost(&mut all, query);
         all.sort_by(|a, b| b.score.cmp(&a.score));
-        all.truncate(MAX_RESULTS);
+        all.truncate(MAX_TOTAL_RESULTS);
         all
     }
 
@@ -212,7 +216,7 @@ impl SearchEngine {
             self.frequency.boost(&mut batch, query);
             collected.extend(batch);
             collected.sort_by(|a, b| b.score.cmp(&a.score));
-            collected.truncate(MAX_RESULTS);
+            collected.truncate(MAX_TOTAL_RESULTS);
             emit(SearchBatch {
                 run_id: run_id.to_string(),
                 results: collected.clone(),
