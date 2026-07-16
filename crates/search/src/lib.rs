@@ -9,5 +9,6 @@ pub mod app_index;
 pub mod file_search;
 pub mod bookmark;
 pub mod engine;
+pub mod provider;
 
 pub use engine::{SearchEngine, SearchResult, init_search_engine, get_engine};
