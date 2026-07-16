@@ -471,6 +471,58 @@ pub fn run() {
                 }
             });
 
+            // 命令索引后台 LLM 关键字生成（独立 OS 线程，blocking HTTP 不阻塞 main）。
+            // 扫描 PATH 产生的命令只有英文 description（whatis/brew desc），中文用户搜不到——
+            // 这里逐个调 LLM 生成中英文关键字，写回 DB 缓存 + 内存索引。增量：每生成一条立即落盘，
+            // 崩溃不丢全部进度。LLM 是 reqwest::blocking，但本线程本身就是独立 OS 线程，直接同步调即可
+            // （无 async runtime，不能 spawn_blocking）。
+            //
+            // config 每轮从 DB 重读（与 cleanup 线程同模式）——用户可能运行时改 polish_llm 配置。
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(60)); // 启动 60s 后开始（避开 ASR 预热等重活）
+                loop {
+                    let engine = match octopus_search::get_engine() {
+                        Some(e) => e,
+                        None => {
+                            std::thread::sleep(std::time::Duration::from_secs(300));
+                            continue;
+                        }
+                    };
+                    let pending = engine.commands_needing_keywords();
+                    if pending.is_empty() {
+                        std::thread::sleep(std::time::Duration::from_secs(600)); // 无待生成，10 分钟后再查
+                        continue;
+                    }
+                    // 每轮重读 config：polish_llm 可能在运行时被改过。
+                    let config = octopus_infra::config::load_config().unwrap_or_default();
+                    let llm_config = match crate::config::llm_config_ignore_mode(&config) {
+                        Some(c) => c,
+                        None => {
+                            std::thread::sleep(std::time::Duration::from_secs(600)); // LLM 未配置，10 分钟后重试
+                            continue;
+                        }
+                    };
+                    let system = "你是命令行工具专家。为给定命令生成简短的中英文搜索关键字，用空格分隔。只输出关键字，不要解释。包含：命令功能、同义词、中文翻译。限 30 字以内。";
+                    let mut generated = 0;
+                    for (name, path, desc) in pending.iter().take(20) { // 每轮最多 20 个
+                        let user = format!("命令: {}\n英文描述: {}", name, desc);
+                        match octopus_llm::chat_text_with_prompt(system, &user, &llm_config) {
+                            Ok(keywords) => {
+                                let keywords = keywords.trim();
+                                if !keywords.is_empty() {
+                                    engine.update_command_keywords(path, keywords);
+                                    generated += 1;
+                                }
+                            }
+                            Err(e) => log::warn!("[search] 命令 LLM 关键字生成失败 ({}): {}", name, e),
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500)); // 防限流
+                    }
+                    log::info!("[search] 命令 LLM 关键字: 本轮生成 {} 个", generated);
+                    std::thread::sleep(std::time::Duration::from_secs(30)); // 轮间隔
+                }
+            });
+
             // Start focus tracker (macOS no-op, Windows/Linux TODO)
             let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
             if let Err(e) = focus_tracker.start() {

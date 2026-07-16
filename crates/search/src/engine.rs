@@ -148,16 +148,17 @@ impl SearchEngine {
         n
     }
 
-    /// 返回内存索引中 keywords 为空的命令（name + path 列表）。
+    /// 返回内存索引中 keywords 为空且**有英文描述**的命令，三元组 (name, path, description)。
     /// 供 Task 4 后台 LLM 线程批量生成 keywords——已生成过的（DB 命中）不重复处理。
+    /// 仅返回有 description 的：LLM prompt 以英文描述为输入，空描述喂不出有效关键字。
     /// 不占用读锁返回迭代器——直接 clone 出来，避免调用方在异步 LLM 调用期间持锁。
-    pub fn commands_needing_keywords(&self) -> Vec<(String, String)> {
+    pub fn commands_needing_keywords(&self) -> Vec<(String, String, String)> {
         self.command_index
             .read()
             .commands
             .iter()
-            .filter(|c| c.keywords.is_empty())
-            .map(|c| (c.name.clone(), c.path.clone()))
+            .filter(|c| c.keywords.is_empty() && !c.description.is_empty())
+            .map(|c| (c.name.clone(), c.path.clone(), c.description.clone()))
             .collect()
     }
 
