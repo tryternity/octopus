@@ -8,6 +8,7 @@
 use std::sync::OnceLock;
 
 use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde::Serialize;
 
 use crate::frequency::FrequencyScorer;
@@ -24,6 +25,14 @@ pub struct SearchResult {
     pub action_type: String,  // "launch_app" | "open_file" | "menu" | "url" | "shell" | ...
     pub action_data: String,  // JSON
     pub score: i32,
+}
+
+/// 流式搜索的一批结果（emit 给前端）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchBatch {
+    pub run_id: String,
+    pub results: Vec<SearchResult>, // 全局 top-10（已加权+排序+截断）
 }
 
 /// 全局搜索引擎（启动时初始化一次）。
@@ -136,6 +145,56 @@ impl SearchEngine {
         all.truncate(MAX_RESULTS);
         all
     }
+
+    /// 流式搜索：每个 Provider 完成立即 emit 一批全局 top-10。
+    /// 用 FuturesUnordered 在单 task 内并发（不跨 spawn，避免 SearchContext 生命周期问题）。
+    /// emit 为 FnMut 闭包：每完成一个 Provider 就用当前全局 top-10 调用一次。
+    pub async fn search_streaming<F>(
+        &self,
+        query: &str,
+        tab: &str,
+        run_id: &str,
+        mut emit: F,
+    ) where
+        F: FnMut(SearchBatch),
+    {
+        if query.is_empty() {
+            emit(SearchBatch {
+                run_id: run_id.to_string(),
+                results: vec![],
+            });
+            return;
+        }
+
+        let ctx = SearchContext {
+            app_index: &self.app_index,
+            bookmarks: &self.bookmarks,
+            frequency: &self.frequency,
+        };
+
+        let active: Vec<_> = self
+            .providers
+            .iter()
+            .filter(|p| tab == "all" || p.matches_tab(tab))
+            .collect();
+
+        let mut futs = active
+            .into_iter()
+            .map(|p| p.search(query, &ctx))
+            .collect::<FuturesUnordered<_>>();
+
+        let mut collected: Vec<SearchResult> = Vec::new();
+        while let Some(batch) = futs.next().await {
+            collected.extend(batch);
+            self.frequency.boost(&mut collected, query);
+            collected.sort_by(|a, b| b.score.cmp(&a.score));
+            collected.truncate(MAX_RESULTS);
+            emit(SearchBatch {
+                run_id: run_id.to_string(),
+                results: collected.clone(),
+            });
+        }
+    }
 }
 
 /// 获取全局搜索引擎（需先 init_search_engine）。
@@ -148,6 +207,50 @@ mod tests {
     use super::*;
     use crate::app_index::AppEntry;
     use crate::provider::SearchProvider;
+    use std::sync::Arc;
+
+    /// Task 10：流式搜索——至少 emit 一次。
+    #[tokio::test]
+    async fn streaming_emits_at_least_once() {
+        let engine = SearchEngine::new_for_test(
+            vec![AppEntry {
+                name: "TestApp".into(),
+                path: "/Applications/TestApp.app".into(),
+                aliases: vec![],
+                icon: String::new(),
+            }],
+            vec![],
+            test_providers(),
+        );
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_clone = count.clone();
+        engine
+            .search_streaming("test", "all", "run1", move |_batch| {
+                count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert!(
+            count.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "应至少 emit 一次"
+        );
+    }
+
+    /// Task 10：空 query 时 emit 一次空 batch。
+    #[tokio::test]
+    async fn streaming_empty_query_emits_once_empty() {
+        let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let results_len = Arc::new(std::sync::atomic::AtomicUsize::new(999));
+        let (c1, r1) = (count.clone(), results_len.clone());
+        engine
+            .search_streaming("", "all", "run2", move |batch| {
+                c1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                r1.store(batch.results.len(), std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(results_len.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 
     /// 测试用默认 Provider 装配（与生产 `default_providers()` 同构）。
     /// stub 阶段各 Provider search() 返回空；Task 5-9 填实现后这些测试逐个恢复。

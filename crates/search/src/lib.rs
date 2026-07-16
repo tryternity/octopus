@@ -13,4 +13,4 @@ pub mod frequency;
 pub mod provider;
 pub mod providers;
 
-pub use engine::{SearchEngine, SearchResult, init_search_engine, get_engine};
+pub use engine::{SearchEngine, SearchResult, SearchBatch, init_search_engine, get_engine};
