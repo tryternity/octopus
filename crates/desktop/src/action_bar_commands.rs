@@ -415,14 +415,14 @@ pub fn action_bar_dismiss(app: AppHandle, reason: Option<String>) {
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
-    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false, None);
+    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false, None, false);
 }
 
 /// Run And Paste 模式：写剪贴板 + 模拟 ⌘V，不弹 CompactEditor。
 /// source_pid: silent 模式（全局快捷键）传 Some(pid) 用于 ActivateWindowByPid；
 ///             浮窗路径传 None（浮窗 hide 后系统自动还焦）。
-pub fn action_bar_run_and_paste(result: String, app: AppHandle, source_pid: Option<i32>) {
-    action_bar_show_result_internal(result, String::new(), String::new(), app, true, true, source_pid);
+pub fn action_bar_run_and_paste(result: String, app: AppHandle, source_pid: Option<i32>, is_silent: bool) {
+    action_bar_show_result_internal(result, String::new(), String::new(), app, true, true, source_pid, is_silent);
 }
 
 fn action_bar_show_result_internal(
@@ -433,24 +433,18 @@ fn action_bar_show_result_internal(
     write_clipboard: bool,
     auto_paste: bool,
     source_pid: Option<i32>,
+    is_silent: bool,
 ) {
-    // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
-    // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
-    // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
-    // 否则 depth 永久泄漏导致后续焦点协调瘫痪。
-    if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-        let _ = win.hide();
+    // silent 模式（全局快捷键）跳过 ActionBar 窗口管理——
+    // silent 路径 ActionBar 从未 show，无 depth 配对，跳过避免 FLOAT_DEPTH 状态被破坏。
+    if !is_silent {
+        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+            let _ = win.hide();
+        }
+        #[cfg(target_os = "macos")]
+        { crate::activation::after_floating_window_hide_keep_active(&app); }
+        finalize_action_bar(&app);
     }
-
-    #[cfg(target_os = "macos")]
-    { crate::activation::after_floating_window_hide_keep_active(&app); }
-
-    // 结果写入系统剪贴板——write_text 自带 suppress 不会入库
-    if write_clipboard || auto_paste {
-        write_clipboard_text(&app, &result);
-    }
-
-    finalize_action_bar(&app);
 
     // ── Run And Paste 模式：模拟 ⌘V 粘贴结果，不弹 CompactEditor ──
     if auto_paste {
@@ -1314,7 +1308,9 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
 
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
-pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
+/// is_silent: 全局快捷键 silent 模式——跳过 ActionBar 窗口管理（hide/depth/finalize），
+///            只做 LLM 调用 + run_and_paste，避免破坏 FLOAT_DEPTH 焦点协调状态。
+pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle, is_silent: bool) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -1334,12 +1330,15 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         // 流式翻译：立即隐藏浮窗 + 打开 contrast tab（译文区 loading），
                         // 后台逐段翻译，通过 emit 事件实时更新译文区。
                         // 用户无需等待，翻译结果在编辑器中逐段出现。
-                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                            let _ = win.hide();
+                        // silent 模式跳过 ActionBar 窗口管理（防 FLOAT_DEPTH 状态破坏）
+                        if !is_silent {
+                            if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                                let _ = win.hide();
+                            }
+                            #[cfg(target_os = "macos")]
+                            { crate::activation::after_floating_window_hide_keep_active(&app); }
+                            finalize_action_bar(&app);
                         }
-                        #[cfg(target_os = "macos")]
-                        { crate::activation::after_floating_window_hide_keep_active(&app); }
-                        finalize_action_bar(&app);
 
                         let original_text = text.clone();
                         let payload = crate::compact_editor_commands::TempTabPayload {
@@ -1378,7 +1377,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                             .map_err(|e| format!("LLM 线程异常: {}", e))?
                             .map_err(|e| e.to_string())?;
                         if item.auto_paste {
-                            action_bar_run_and_paste(result, app.clone(), None);
+                            action_bar_run_and_paste(result, app.clone(), None, is_silent);
                         } else {
                             action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         }
@@ -1400,7 +1399,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                 .map_err(|e| format!("LLM 线程异常: {}", e))?
                 .map_err(|e| e.to_string())?;
             if item.auto_paste {
-                action_bar_run_and_paste(result, app.clone(), None);
+                action_bar_run_and_paste(result, app.clone(), None, is_silent);
             } else {
                 action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             }
@@ -1467,7 +1466,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                 // 成功
                 if !result.stdout.is_empty() {
                     if item.auto_paste {
-                        action_bar_run_and_paste(result.stdout, app.clone(), None);
+                        action_bar_run_and_paste(result.stdout, app.clone(), None, is_silent);
                     } else if write_output {
                         write_clipboard_text(app, &result.stdout);
                         action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
@@ -1516,7 +1515,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
 /// 统一执行菜单项动作。
 #[tauri::command]
 pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app).await {
+    match execute_action_bar_inner(item_id, text, &app, false).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
