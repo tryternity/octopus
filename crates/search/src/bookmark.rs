@@ -241,13 +241,18 @@ fn query_firefox_places(db_path: &std::path::Path) -> Vec<BookmarkEntry> {
     }
 }
 
-/// 搜索书签。
+/// 搜索书签。匹配 title + URL（URL 剥掉协议/域名后缀噪声词后匹配）。
 pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchResult> {
     let mut scored: Vec<(Score, String, SearchResult)> = bookmarks
         .iter()
         .filter_map(|bm| {
+            // 优先匹配 title；title 未命中则匹配清洗后的 url（去掉噪声词）
             let score = match_score(query, &bm.title)
-                .or_else(|| match_score(query, &bm.url))?;
+                .or_else(|| {
+                    let clean_url = strip_url_noise(&bm.url);
+                    if clean_url.is_empty() { return None; }
+                    match_score(query, &clean_url)
+                })?;
             Some((score, bm.url.clone(), SearchResult {
                 source: "bookmark".into(),
                 title: bm.title.clone(),
@@ -269,9 +274,82 @@ pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchR
         .collect()
 }
 
+/// 剥掉 URL 的噪声部分用于匹配：
+/// 去协议（http:// https://）、去 www.、去域名后缀（.com .net .org .cn .io 等）。
+/// 保留域名主体 + 路径——这些才是用户会搜的有意义部分。
+/// 例："https://www.github.com/torvalds/linux" → "github/torvalds/linux"
+fn strip_url_noise(url: &str) -> String {
+    // 去协议
+    let no_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // 去 www.
+    let no_www = no_scheme.strip_prefix("www.").unwrap_or(no_scheme);
+    // 按第一个 / 分割域名和路径
+    if let Some(slash_pos) = no_www.find('/') {
+        let domain = &no_www[..slash_pos];
+        let path = &no_www[slash_pos + 1..];
+        // 域名剥后缀（取主体，去 .com/.net/.org/.cn/.io/.dev 等）
+        let domain_core = strip_domain_suffix(domain);
+        if domain_core.is_empty() && path.is_empty() {
+            return String::new();
+        }
+        format!("{}/{}", domain_core, path.trim_end_matches('/'))
+    } else {
+        // 纯域名无路径
+        strip_domain_suffix(no_www)
+    }
+}
+
+/// 域名剥掉后缀，保留主体部分。
+/// "github.com" → "github"，"api.example.co.jp" → "api.example"
+fn strip_domain_suffix(domain: &str) -> String {
+    let parts: Vec<&str> = domain.split('.').collect();
+    match parts.len() {
+        0 | 1 => domain.to_string(),
+        2 => parts[0].to_string(),  // github.com → github
+        _ => {
+            // 多段域名（api.example.co.jp）——去掉最后 1-2 段（TLD + ccTLD）
+            // 保留前 N-2 段（.co.jp / .com.cn 等双段 TLD 取 N-2，单段 TLD 也取 N-2）
+            parts[..parts.len() - 2].join(".")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_url_noise_basic() {
+        assert_eq!(strip_url_noise("https://github.com"), "github");
+        assert_eq!(strip_url_noise("http://google.com"), "google");
+        assert_eq!(strip_url_noise("https://www.example.com"), "example");
+        assert_eq!(strip_url_noise("https://github.com/torvalds/linux"), "github/torvalds/linux");
+    }
+
+    #[test]
+    fn strip_url_noise_removes_tld() {
+        assert_eq!(strip_url_noise("https://rust-lang.org"), "rust-lang");
+        assert_eq!(strip_url_noise("https://nodejs.org/docs"), "nodejs/docs");
+        assert_eq!(strip_url_noise("https://example.io"), "example");
+        assert_eq!(strip_url_noise("https://example.dev/api/v1"), "example/api/v1");
+    }
+
+    #[test]
+    fn strip_url_noise_multi_segment_domain() {
+        // 多段域名保留主体，去 ccTLD
+        assert_eq!(strip_url_noise("https://api.example.co.jp/users"), "api.example/users");
+        assert_eq!(strip_url_noise("https://baidu.com"), "baidu");
+    }
+
+    #[test]
+    fn strip_url_noise_protocol_relative() {
+        // 无协议的 URL
+        assert_eq!(strip_url_noise("github.com/ruanyf"), "github/ruanyf");
+        assert_eq!(strip_url_noise("www.google.com/search"), "google/search");
+    }
 
     #[test]
     fn search_bookmarks_matches_title() {
@@ -291,6 +369,37 @@ mod tests {
         ];
         let results = search_bookmarks("", &bookmarks);
         assert!(results.is_empty());
+    }
+
+    /// 噪声词（http/https/www/com/net/org）不该触发误匹配。
+    /// 这些在 URL 里到处都是，如果参与匹配会命中几乎所有书签。
+    #[test]
+    fn search_bookmarks_noise_words_dont_match_url() {
+        let bookmarks = vec![
+            BookmarkEntry { title: "GitHub".into(), url: "https://github.com".into(), browser: "Chrome".into() },
+            BookmarkEntry { title: "Rust".into(), url: "https://rust-lang.org".into(), browser: "Chrome".into() },
+        ];
+        // "https" 不该匹配——它被 strip 掉了，title 里也没有
+        let results = search_bookmarks("https", &bookmarks);
+        assert!(results.is_empty(), "搜 'https' 不该命中（噪声词已 strip）");
+        // "com" 不该匹配——域名后缀已 strip
+        let results = search_bookmarks("com", &bookmarks);
+        assert!(results.is_empty(), "搜 'com' 不该命中（TLD 已 strip）");
+    }
+
+    /// URL 路径里的有意义部分仍能匹配。
+    #[test]
+    fn search_bookmarks_url_path_matches() {
+        let bookmarks = vec![
+            BookmarkEntry {
+                title: "某项目".into(),
+                url: "https://github.com/torvalds/linux".into(),
+                browser: "Chrome".into(),
+            },
+        ];
+        // 标题"某项目"不含 "linux"，但 URL 路径含
+        let results = search_bookmarks("linux", &bookmarks);
+        assert!(!results.is_empty(), "搜 'linux' 应通过 URL 路径命中");
     }
 
     /// Safari plist 解析降级：文件不存在/无权限时返回空 Vec，不 panic。
