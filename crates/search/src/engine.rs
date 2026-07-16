@@ -96,6 +96,23 @@ impl SearchEngine {
         }
     }
 
+    /// 测试用构造函数（注入非空 frequency）——供 streaming boost 回归测试使用。
+    /// 与 `new_for_test` 同语义，但允许传入预构造的频次数据。
+    #[cfg(test)]
+    fn new_for_test_with_freq(
+        apps: Vec<crate::app_index::AppEntry>,
+        bookmarks: Vec<crate::bookmark::BookmarkEntry>,
+        providers: Vec<Box<dyn SearchProvider>>,
+        freqs: std::collections::HashMap<String, octopus_infra::db::FreqRow>,
+    ) -> Self {
+        SearchEngine {
+            providers,
+            app_index: parking_lot::RwLock::new(crate::app_index::AppIndex { apps }),
+            bookmarks: parking_lot::RwLock::new(bookmarks),
+            frequency: FrequencyScorer::with_test_data(freqs),
+        }
+    }
+
     /// 强制重扫应用索引：扫文件系统 + 写 DB 缓存 + 替换内存索引。
     /// 供后台 mtime 轮询线程（main.rs）和 reindex_apps 诊断命令复用。
     /// 返回扫描到的应用数。
@@ -184,9 +201,12 @@ impl SearchEngine {
             .collect::<FuturesUnordered<_>>();
 
         let mut collected: Vec<SearchResult> = Vec::new();
-        while let Some(batch) = futs.next().await {
+        while let Some(mut batch) = futs.next().await {
+            // boost 只对新到的 batch 加权一次——若对 collected 整体 boost，
+            // 先完成 Provider 的结果会被每一轮反复加分（boost 是加法性 `score += X`），
+            // 违反「每次 emit 是全局 top-10（已正确加权）」不变量。
+            self.frequency.boost(&mut batch, query);
             collected.extend(batch);
-            self.frequency.boost(&mut collected, query);
             collected.sort_by(|a, b| b.score.cmp(&a.score));
             collected.truncate(MAX_RESULTS);
             emit(SearchBatch {
@@ -256,6 +276,96 @@ mod tests {
     /// stub 阶段各 Provider search() 返回空；Task 5-9 填实现后这些测试逐个恢复。
     fn test_providers() -> Vec<Box<dyn SearchProvider>> {
         default_providers()
+    }
+
+    /// Task 10 review fix：streaming 不应反复对累积 collected 调 boost。
+    /// boost 是加法性（`score += X`），若每轮对 collected 整体加权，先完成的
+    /// Provider 结果会被后续轮次重复加分。回归断言：流式最后一次 emit 中每个结果
+    /// 的分数 == 非流式 search 中对应结果的分数（boost 只加一次）。
+    ///
+    /// 触发 bug 需要「多轮 emit」——单 Provider 单轮不会暴露。故装配两个都匹配
+    /// query、且各自结果都能被 frequency.boost 命中的 Provider，制造多 batch 场景。
+    #[tokio::test]
+    async fn streaming_boost_applied_once_not_per_round() {
+        use async_trait::async_trait;
+        use crate::provider::{SearchContext, SearchProvider};
+
+        /// Mock Provider：固定产出一条 source=app 的结果，score_key=app|<path>。
+        /// 与 AppProvider 同源（boost 不会跳过 app），但路径独立，便于隔离测试。
+        struct MockAppProvider { path: &'static str, base: i32 }
+        #[async_trait]
+        impl SearchProvider for MockAppProvider {
+            fn id(&self) -> &'static str { "app" }
+            fn matches_tab(&self, _tab: &str) -> bool { true }
+            async fn search(&self, _query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
+                vec![SearchResult {
+                    source: "app".into(),
+                    title: format!("Mock-{}", self.path),
+                    subtitle: String::new(),
+                    icon: None,
+                    action_type: "launch_app".into(),
+                    action_data: serde_json::json!({ "path": self.path }).to_string(),
+                    score: self.base,
+                }]
+            }
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mut freqs = std::collections::HashMap::new();
+        // 两个 score_key 都命中 frequency（hit_count=1，今天用过 → +3000）。
+        // query="a" 也与 FreqRow.query 匹配 → 额外 +500。总 boost = 3500/结果。
+        freqs.insert("app|/A.app".to_string(), octopus_infra::db::FreqRow {
+            hit_count: 1, last_hit_ts: now, query: "a".into(),
+        });
+        freqs.insert("app|/B.app".to_string(), octopus_infra::db::FreqRow {
+            hit_count: 1, last_hit_ts: now, query: "a".into(),
+        });
+
+        let engine = SearchEngine::new_for_test_with_freq(
+            vec![],
+            vec![],
+            vec![
+                Box::new(MockAppProvider { path: "/A.app", base: 1000 }),
+                Box::new(MockAppProvider { path: "/B.app", base: 900 }),
+            ],
+            freqs,
+        );
+
+        // 收集最后一次 emit 的所有结果（按 path 建索引）。
+        let last_snapshot: Arc<parking_lot::Mutex<Vec<SearchResult>>> =
+            Arc::new(parking_lot::Mutex::new(vec![]));
+        let snap_clone = last_snapshot.clone();
+        engine
+            .search_streaming("a", "all", "run1", move |batch| {
+                *snap_clone.lock() = batch.results.clone();
+            })
+            .await;
+
+        // 非流式 search（boost 只加一次，作为黄金参照）。
+        let non_stream = engine.search("a", "all").await;
+
+        let snap = last_snapshot.lock();
+        assert_eq!(snap.len(), non_stream.len(),
+            "streaming 最后一次 emit 的结果数应与非流式 search 一致");
+
+        // 逐 path 比对 score：bug 表现为 streaming 中先完成 Provider 的结果
+        // 被重复 boost（分数 > 非流式对应项）。
+        let score_of = |results: &[SearchResult], path: &str| -> i32 {
+            results.iter()
+                .find(|r| r.action_data.contains(path))
+                .map(|r| r.score)
+                .unwrap_or(i32::MIN)
+        };
+        for path in &["A.app", "B.app"] {
+            let s = score_of(&snap, path);
+            let ns = score_of(&non_stream, path);
+            assert_eq!(s, ns,
+                "path={} streaming score {} != non-stream {}（boost 应只加一次）",
+                path, s, ns);
+        }
     }
 
     /// 切换到 in-memory DB，避免测试读 ~/.octopus/octopus.db。
