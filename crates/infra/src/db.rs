@@ -223,12 +223,13 @@ where
 /// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
 /// v24：action_bar_items 加 shortcut 列。
 /// v35：搜索频次加权表。
+/// v36：统一 launcher_index 表（合并 app_index + 预留 command）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 35 {
+    if v >= 36 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -481,6 +482,43 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 35", [])?;
             log::info!("schema upgraded to v35 (search_frequency table)");
         }
+        // v35→v36：统一 launcher_index 表（合并 app_index + 预留 command）。
+        // 1. 建 launcher_index（IF NOT EXISTS 幂等：全新库跳过 INIT_SQL 的 app_index 段后这里补建）
+        // 2. 从旧 app_index 迁移数据（INSERT OR IGNORE 防重复迁移——主键 (type, path) 去重）
+        // 3. DROP 旧 app_index 表（数据已迁完才删，保证不丢用户 167 条应用缓存）
+        if v < 36 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS launcher_index (
+                    type        TEXT NOT NULL,
+                    name        TEXT NOT NULL,
+                    path        TEXT NOT NULL,
+                    alias       TEXT NOT NULL DEFAULT '',
+                    icon        TEXT NOT NULL DEFAULT '',
+                    source      TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    keywords    TEXT NOT NULL DEFAULT '',
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (type, path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
+                CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
+            )?;
+            // 旧表存在才迁——全新库无 app_index 表，SELECT 会报错，先检查 sqlite_master。
+            let app_index_exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
+                [], |r| r.get(0),
+            )?;
+            if app_index_exists > 0 {
+                conn.execute_batch(
+                    "INSERT OR IGNORE INTO launcher_index (type, name, path, alias, icon, source)
+                     SELECT 'app', name, path, alias, icon, 'applications' FROM app_index"
+                )?;
+                conn.execute_batch("DROP TABLE IF EXISTS app_index")?;
+                log::info!("schema v36: app_index 数据迁移至 launcher_index 完成，旧表已 DROP");
+            }
+            conn.execute("PRAGMA user_version = 36", [])?;
+            log::info!("schema upgraded to v36 (launcher_index unified table)");
+        }
         return Ok(());
     }
 
@@ -498,8 +536,26 @@ fn init_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (score_key)
         )",
     )?;
-    conn.execute("PRAGMA user_version = 35", [])?;
-    log::info!("DB initialized (v35): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // v36：launcher_index 统一表（db.sql 已含 CREATE TABLE IF NOT EXISTS，
+    // 此处幂等补建——兼容 db.sql 缺该段的早期构建）。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS launcher_index (
+            type        TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            path        TEXT NOT NULL,
+            alias       TEXT NOT NULL DEFAULT '',
+            icon        TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            keywords    TEXT NOT NULL DEFAULT '',
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (type, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
+        CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
+    )?;
+    conn.execute("PRAGMA user_version = 36", [])?;
+    log::info!("DB initialized (v36): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1715,44 +1771,120 @@ pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
 
 // ── Script Run（脚本执行记录）─────────────────────────────────────
 
-// ── App Index Cache（应用索引缓存）──────────────────────────────
+// ── Launcher Index（统一启动器索引表：app + command）──────────────
 
-/// 从 DB 加载应用索引缓存。空表返回空 Vec（触发首次扫描）。
-/// 返回 (name, alias, path, icon_base64)
-pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
+/// 统一启动器索引表的一行（app + command 共用）。
+///
+/// - `type="app"`：应用索引缓存（来自文件系统扫描）；source 固定 `"applications"`，
+///   alias 为本地化名、icon 为 base64 PNG，description/keywords 暂留空。
+/// - `type="command"`：命令索引（brew/cargo/system 等）；alias/icon 留空，
+///   source 为来源、description 为英文描述、keywords 为 LLM 生成的中英文关键字。
+#[derive(Debug, Clone)]
+pub struct LauncherRow {
+    pub r#type: String,       // "app" | "command"
+    pub name: String,
+    pub path: String,
+    pub alias: String,        // app 的本地化名，command 无
+    pub icon: String,         // app 的 base64 icon，command 无
+    pub source: String,       // command 的 brew/cargo/system，app 用 "applications"
+    pub description: String,  // 英文描述
+    pub keywords: String,     // LLM 生成的中英文关键字
+}
+
+/// 按 type 加载启动器索引行（type='app' 返回全部应用缓存，type='command' 返回命令缓存）。
+pub fn load_launcher_by_type(item_type: &str) -> Result<Vec<LauncherRow>> {
     with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT name, alias, path, icon FROM app_index")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-        })?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
-        Ok(result)
+        let mut stmt = conn.prepare(
+            "SELECT type, name, path, alias, icon, source, description, keywords
+             FROM launcher_index WHERE type = ?1",
+        )?;
+        let rows = stmt.query_map(params![item_type], |r| Ok(LauncherRow {
+            r#type: r.get(0)?,
+            name: r.get(1)?,
+            path: r.get(2)?,
+            alias: r.get(3)?,
+            icon: r.get(4)?,
+            source: r.get(5)?,
+            description: r.get(6)?,
+            keywords: r.get(7)?,
+        }))?;
+        Ok(collect_rows(rows, "load_launcher_by_type"))
     })
 }
 
-/// 全量替换应用索引缓存（原子：DELETE + INSERT 在同一事务内）。
-/// apps: (name, alias, path, icon_base64)
+/// 按 type 全量替换启动器索引（事务原子：先删该 type 再插）。
 ///
-/// **原子性保证**：DELETE 和 INSERT 都在 `tx` 内，中途 INSERT 失败（如 UNIQUE 冲突、
-/// 磁盘满）会回滚 DELETE，避免 DB 变空表导致下次启动触发全量重扫 + 期间搜索无 app。
-pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
+/// **原子性保证**：DELETE + INSERT 在同一 `unchecked_transaction` 内，
+/// 中途 INSERT 失败（如磁盘满）会回滚 DELETE，避免该 type 缓存被清空
+/// 导致下次启动触发全量重扫 + 期间搜索无结果。
+pub fn save_launcher_batch(item_type: &str, rows: &[LauncherRow]) -> Result<()> {
     with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM app_index", [])?;
+        tx.execute("DELETE FROM launcher_index WHERE type = ?1", params![item_type])?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO app_index (name, alias, path, icon) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT OR REPLACE INTO launcher_index
+                 (type, name, path, alias, icon, source, description, keywords)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
-            for (name, alias, path, icon) in apps {
-                stmt.execute(params![name, alias, path, icon])?;
+            for r in rows {
+                stmt.execute(params![
+                    item_type, r.name, r.path, r.alias, r.icon, r.source, r.description, r.keywords,
+                ])?;
             }
         }
         tx.commit()?;
         Ok(())
     })
+}
+
+/// 更新单个启动器项的 keywords（LLM 生成关键字后调用）。
+/// 按 (type, path) 定位；同时刷新 updated_at。
+pub fn update_launcher_keywords(item_type: &str, path: &str, keywords: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE launcher_index SET keywords = ?3, updated_at = datetime('now')
+             WHERE type = ?1 AND path = ?2",
+            params![item_type, path, keywords],
+        )?;
+        Ok(())
+    })
+}
+
+// ── App Index Cache（应用索引缓存）——launcher_index 的 app wrapper ──────────
+//
+// load_app_index / save_app_index 是 search crate AppIndex::scan/rescan 的契约入口。
+// 保持签名不变（四元组 name/alias/path/icon），内部转 LauncherRow 读写 launcher_index
+// 中 type='app' 的行——对 search crate 完全透明。
+
+/// 从 DB 加载应用索引缓存。空表返回空 Vec（触发首次扫描）。
+/// 返回 (name, alias, path, icon_base64)
+pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
+    let rows = load_launcher_by_type("app")?;
+    Ok(rows.into_iter().map(|r| (r.name, r.alias, r.path, r.icon)).collect())
+}
+
+/// 全量替换应用索引缓存（原子：DELETE 该 type + INSERT 在同一事务内）。
+/// apps: (name, alias, path, icon_base64)
+///
+/// **原子性保证**：转 LauncherRow 后走 [`save_launcher_batch`]，DELETE + INSERT 同事务，
+/// 中途 INSERT 失败（如磁盘满）会回滚 DELETE，避免 DB 变空表导致下次启动触发全量重扫
+/// + 期间搜索无 app。
+pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
+    let launcher_rows: Vec<LauncherRow> = apps
+        .iter()
+        .map(|(name, alias, path, icon)| LauncherRow {
+            r#type: "app".into(),
+            name: name.clone(),
+            path: path.clone(),
+            alias: alias.clone(),
+            icon: icon.clone(),
+            source: "applications".into(),
+            description: String::new(),
+            keywords: String::new(),
+        })
+        .collect();
+    save_launcher_batch("app", &launcher_rows)
 }
 
 // ── 搜索频次加权（search_frequency 表）───────────────────────────
@@ -2810,7 +2942,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 35, "全新库 init_schema 后应到 v35");
+        assert_eq!(v, 36, "全新库 init_schema 后应到 v36");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2982,9 +3114,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 35（迁移链一路走到最新）
+        // 验证：迁移后 user_version = 36（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -3021,31 +3153,50 @@ mod tests {
         }
     }
 
-    /// 回归 S2：save_app_index 原子性——中途 INSERT 失败时 DELETE 也回滚。
+    /// 回归 S2：save_app_index 全量替换语义 + launcher_index wrapper 正确性。
+    /// v36：save_app_index 是 launcher_index 的 wrapper（转 LauncherRow 后走
+    /// save_launcher_batch）。原 v34 测试断言 UNIQUE 冲突回滚，但 v36 的 save_launcher_batch
+    /// 用 INSERT OR REPLACE（按 brief），同 path 不再报错而是去重覆盖——故回归目标改为：
+    /// (1) wrapper 经 launcher_index 正确写入（type='app'、source='applications'）；
+    /// (2) 全量替换语义——新批次完全取代旧批次（DELETE 该 type + INSERT 在同事务），
+    ///     旧 App1 应消失，新批次应用就位，不残留。
     #[test]
     fn save_app_index_atomic_on_failure() {
         setup_test_db();
         // 先写入 1 个合法应用
-        save_app_index(&[("App1".into(), "".into(), "/Applications/App1.app".into(), "".into())]).unwrap();
-        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        save_app_index(&[("App1".into(), "应用1".into(), "/Applications/App1.app".into(), "icon1".into())]).unwrap();
+        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM launcher_index WHERE type='app'", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
         assert_eq!(count, 1, "初始应有 1 条记录");
 
-        // 再写入 2 个应用，其中第 2 个 path 与第 1 个相同（UNIQUE 冲突）→ INSERT 失败
-        let result = save_app_index(&[
-            ("App2".into(), "".into(), "/Applications/App2.app".into(), "".into()),
-            ("App3".into(), "".into(), "/Applications/App2.app".into(), "".into()), // path 重复
-        ]);
-        assert!(result.is_err(), "UNIQUE 冲突应返回 Err");
+        // 全量替换为 2 个新应用（App1 不在新批次中 → 应被 DELETE 清掉）
+        save_app_index(&[
+            ("App2".into(), "应用2".into(), "/Applications/App2.app".into(), "icon2".into()),
+            ("App3".into(), "应用3".into(), "/Applications/App3.app".into(), "icon3".into()),
+        ]).unwrap();
 
-        // 关键断言：DELETE 应回滚，原 App1 应保留（事务原子性）
-        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(count, 1, "失败时 DELETE 应回滚，原数据保留");
-        let name: String = with_db(|c| c.query_row("SELECT name FROM app_index", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(name, "App1", "原 App1 应保留");
+        // 关键断言：全量替换——App1 应消失，新批次 2 条就位
+        let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM launcher_index WHERE type='app'", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(count, 2, "全量替换后应有 2 条新记录，旧 App1 已清");
+        let has_app1: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM launcher_index WHERE type='app' AND name='App1'", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(has_app1, 0, "旧 App1 应被全量替换清除");
+
+        // wrapper 字段映射正确：source='applications'、alias/icon 透传
+        let (source, alias, icon): (String, String, String) = with_db(|c| c.query_row(
+            "SELECT source, alias, icon FROM launcher_index WHERE type='app' AND name='App2'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(source, "applications", "app wrapper 应填 source='applications'");
+        assert_eq!(alias, "应用2");
+        assert_eq!(icon, "icon2");
+
+        // load_app_index wrapper 读回（经 load_launcher_by_type("app") → 四元组）
+        let loaded = load_app_index().unwrap();
+        assert_eq!(loaded.len(), 2, "load_app_index 应返回 2 条");
     }
 
-    /// 回归 T9-L6：v32→v35 迁移——从无 app_index 表的 v32 库升级，
-    /// app_index 表 + icon 列、search_frequency 表均就绪。
+    /// 回归 T9-L6：v32→v36 迁移——从无 app_index 表的 v32 库升级，
+    /// launcher_index 表（含 icon/path/alias）、search_frequency 表均就绪。
+    /// v36：app_index 已被 launcher_index 取代（迁移建 launcher_index，无旧表则不迁数据）。
     #[test]
     fn migration_v32_to_v34_creates_app_index_with_icon() {
         // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index 表
@@ -3070,21 +3221,29 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 35（迁移链一路走到最新）
+        // 验证 user_version = 36（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
 
-        // 验证 app_index 表存在 + icon 列存在
-        let table_count: i64 = conn.query_row(
+        // v36：app_index 表应不存在（被 launcher_index 取代）
+        let app_index_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'", [], |r| r.get(0)
         ).unwrap();
-        assert_eq!(table_count, 1, "app_index 表应被创建");
+        assert_eq!(app_index_count, 0, "app_index 表应被 v36 迁移移除");
 
-        let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)").unwrap()
+        // 验证 launcher_index 表存在 + icon/path/alias 列存在
+        let table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(table_count, 1, "launcher_index 表应被创建");
+
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(launcher_index)").unwrap()
             .query_map([], |r| r.get::<_, String>(1)).unwrap()
             .filter_map(|r| r.ok()).collect();
-        assert!(cols.contains(&"icon".to_string()), "app_index 应有 icon 列");
-        assert!(cols.contains(&"path".to_string()), "app_index 应有 path 列");
+        assert!(cols.contains(&"icon".to_string()), "launcher_index 应有 icon 列");
+        assert!(cols.contains(&"path".to_string()), "launcher_index 应有 path 列");
+        assert!(cols.contains(&"alias".to_string()), "launcher_index 应有 alias 列");
+        assert!(cols.contains(&"type".to_string()), "launcher_index 应有 type 列");
 
         // v35 新增：search_frequency 表应一并创建
         let sf_count: i64 = conn.query_row(
@@ -3113,7 +3272,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3235,7 +3394,7 @@ mod tests {
 
     #[test]
     fn init_schema_v25_is_noop() {
-        // 已是 v27 的库再调 init_schema 应早退（不重跑、不报错）
+        // 已是 v27 的库再调 init_schema 应跑完迁移链到最新（不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("PRAGMA user_version = 27", []).unwrap();
@@ -3243,7 +3402,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -4053,7 +4212,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))

@@ -380,17 +380,24 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ── 应用索引缓存（避免每次启动扫文件系统）─────────────────
-CREATE TABLE IF NOT EXISTS app_index (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL,           -- file_stem（英文名，如 WeChat）
-    alias      TEXT NOT NULL DEFAULT '', -- 本地化名（如 微信），空=无别名
-    path       TEXT NOT NULL UNIQUE,    -- .app 绝对路径
-    icon       TEXT NOT NULL DEFAULT '', -- base64 PNG 图标（32×32），空=无图标
-    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+-- ── 启动器索引（统一 app + command 缓存，避免每次启动扫文件系统）──
+-- v36：合并原 app_index 表（升级库由 v35→v36 迁移把数据搬过来并 DROP 旧表）。
+-- type='app'：文件系统扫描的应用；type='command'：brew/cargo/system 等命令。
+-- PRIMARY KEY (type, path) 既是去重键也是按 (type, path) 单点更新 keywords 的索引。
+CREATE TABLE IF NOT EXISTS launcher_index (
+    type        TEXT NOT NULL,               -- 'app' | 'command'
+    name        TEXT NOT NULL,               -- app: file_stem（如 WeChat）; command: 命令名
+    path        TEXT NOT NULL,               -- app: .app 绝对路径; command: 可执行路径/标识
+    alias       TEXT NOT NULL DEFAULT '',     -- app 的本地化名（如 微信），command 无
+    icon        TEXT NOT NULL DEFAULT '',     -- app 的 base64 PNG 图标（32×32），command 无
+    source      TEXT NOT NULL DEFAULT '',     -- command 的来源（brew/cargo/system），app 用 'applications'
+    description TEXT NOT NULL DEFAULT '',     -- 英文描述（command 用）
+    keywords    TEXT NOT NULL DEFAULT '',     -- LLM 生成的中英文关键字（搜索增强用）
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (type, path)
 );
-CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
-CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);
+CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
+CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);
 
 -- ── 搜索频次加权（search_frequency 表）──────────────────────────
 -- 按命中次数加权搜索结果排序；score_key 为打分维度键（如查询归一化串）。
