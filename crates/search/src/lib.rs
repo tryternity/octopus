@@ -12,5 +12,6 @@ pub mod engine;
 pub mod frequency;
 pub mod provider;
 pub mod providers;
+pub mod command_index;
 
 pub use engine::{SearchEngine, SearchResult, SearchBatch, init_search_engine, get_engine};
