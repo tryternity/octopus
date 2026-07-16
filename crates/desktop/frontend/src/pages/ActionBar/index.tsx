@@ -490,11 +490,13 @@ export default function ActionBar() {
     return accepts === "file";
   };
 
-  // submenu 可见性：子项全不可见则自身也隐藏
+  // submenu 可见性：子项全不可见/全禁用则自身也隐藏
   const isSubmenuVisible = (item: ActionBarItem): boolean => {
-    const subs = menuItems.filter((i) => i.parentId === item.id && i.isEnabled);
-    if (subs.length === 0) return true;
-    return subs.some((s) =>
+    const allSubs = menuItems.filter((i) => i.parentId === item.id);
+    if (allSubs.length === 0) return true; // 无子项——叶 submenu，自身可见
+    const enabledSubs = allSubs.filter((i) => i.isEnabled);
+    if (enabledSubs.length === 0) return false; // 有子项但全禁用——隐藏
+    return enabledSubs.some((s) =>
       s.actionType === "submenu" ? isSubmenuVisible(s) : isItemVisible(s)
     );
   };
@@ -838,7 +840,7 @@ export default function ActionBar() {
                 // submenu 项同步展开子菜单预览（与 Tab 移动行为一致）
                 if (item.actionType === "submenu") {
                   submenuParentIdRef.current = item.id;
-                  const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+                  const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === item.id);
                   if (subs.length > 0 && subs[0].actionType === "url") {
                     const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
                     setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
@@ -878,7 +880,7 @@ export default function ActionBar() {
             const item = items[next];
             if (item && item.actionType === "submenu") {
               submenuParentIdRef.current = item.id;
-              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === item.id);
               if (subs.length > 0 && subs[0].actionType === "url") {
                 const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
                 setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
@@ -911,7 +913,7 @@ export default function ActionBar() {
             if (viewRef.current !== "submenu") {
               submenuParentIdRef.current = cur.id;
               setView("submenu");
-              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === cur.id);
               if (subs.length > 0 && subs[0].actionType === "url") {
                 const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
                 setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
