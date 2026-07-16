@@ -43,7 +43,8 @@ const MAX_RESULTS: usize = 10;
 
 static SEARCH_ENGINE: OnceLock<SearchEngine> = OnceLock::new();
 
-/// 生产用默认 Provider 装配：9 个 Provider 全部启用。
+/// 生产用默认 Provider 装配：7 个 Provider 全部启用（shell 另含 shell_commands +
+/// shell_history 两个辅助模块，非独立 Provider）。
 /// stub 阶段每个 Provider 的 search() 都返回空 vec；Task 5-9 填真实实现。
 fn default_providers() -> Vec<Box<dyn SearchProvider>> {
     vec![
@@ -324,8 +325,6 @@ mod tests {
         assert_eq!(results[0].source, "shell");
     }
 
-    /// Task 5（AppProvider 实现）恢复——stub 阶段 app search 返回空。
-    #[ignore]
     #[test]
     fn all_tab_returns_combined_results() {
         setup_test_db();
@@ -380,11 +379,6 @@ mod tests {
 
     /// 回归 S1：refresh_app_index 替换内存索引后，search 读到新数据。
     /// 不触达文件系统——直接操作 RwLock 验证"写后读"语义。
-    ///
-    /// Task 5（AppProvider 实现）恢复——stub 阶段 app search 返回空，
-    /// 无法验证"写后读"。但 `*engine.app_index.write() = ...` 仍需编译通过，
-    /// 故测试保留并 #[ignore]。
-    #[ignore]
     #[test]
     fn refresh_app_index_replaces_in_memory_index() {
         let engine = SearchEngine::new_for_test(
@@ -409,10 +403,6 @@ mod tests {
     }
 
     /// 回归 S1：多线程并发读 search + 写 refresh，RwLock 不死锁不 panic。
-    ///
-    /// Task 5（AppProvider 实现）恢复——stub 阶段 app search 返回空，但并发 RwLock
-    /// 压测本身仍有效（不 panic 即通过大部分逻辑）。为避免 app19 断言失败，暂 ignore。
-    #[ignore]
     #[test]
     fn app_index_rwlock_concurrent_safe() {
         let engine = std::sync::Arc::new(SearchEngine::new_for_test(

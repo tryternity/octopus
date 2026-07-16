@@ -1,9 +1,9 @@
-//! FileProvider：文件搜索（walk 文件系统）。
-//! Task 4 stub——search 返回空。Task 8 填真实实现。
+//! 文件搜索 Provider。mdfind 实时搜文件名。
 
 use async_trait::async_trait;
 
 use crate::engine::SearchResult;
+use crate::file_search::search_files;
 use crate::provider::{SearchContext, SearchProvider};
 
 pub struct FileProvider;
@@ -18,7 +18,7 @@ impl SearchProvider for FileProvider {
         matches!(tab, "files" | "files_bookmarks")
     }
 
-    async fn search(&self, _query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
-        vec![]
+    async fn search(&self, query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
+        search_files(query).await
     }
 }

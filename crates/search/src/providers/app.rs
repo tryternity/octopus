@@ -1,5 +1,4 @@
-//! AppProvider：应用搜索（来自 AppIndex 内存索引）。
-//! Task 4 stub——search 返回空。Task 5 填真实实现（match_score + app 权重 +2000）。
+//! 应用搜索 Provider。从内存 app_index 搜索，+2000 权重。
 
 use async_trait::async_trait;
 
@@ -18,7 +17,12 @@ impl SearchProvider for AppProvider {
         matches!(tab, "apps" | "quick")
     }
 
-    async fn search(&self, _query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
-        vec![]
+    async fn search(&self, query: &str, ctx: &SearchContext<'_>) -> Vec<SearchResult> {
+        let mut apps = ctx.app_index.read().search(query);
+        // 应用加权重——launcher 核心场景，应排在文件/书签前
+        for r in &mut apps {
+            r.score += 2000;
+        }
+        apps
     }
 }
