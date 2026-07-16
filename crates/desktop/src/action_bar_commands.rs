@@ -54,7 +54,7 @@ static CHANGE_COUNT_BASELINE: std::sync::atomic::AtomicI64 = std::sync::atomic::
 /// 鼠标坐标始终在检测阶段采集（无论有无选中），用于：
 ///   - 有选中 → 鼠标位置弹出
 ///   - 无选中 → 忽略，用主屏居中
-enum Selection {
+pub(crate) enum Selection {
     /// 无选中——居中搜索模式
     None,
     /// 选中文本
@@ -106,7 +106,7 @@ fn common_parent_dir(paths: &[String]) -> Option<String> {
 
 /// 检测当前选中状态。Finder 走 AppleScript，其余走 Cmd+C + changeCount。
 /// 返回的 Selection 携带全部信息（选中内容 + 鼠标坐标），下游不再碰检测细节。
-fn detect_selection(app: &AppHandle) -> Selection {
+pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）
     let mouse = get_mouse_position(app);
 
@@ -415,12 +415,14 @@ pub fn action_bar_dismiss(app: AppHandle, reason: Option<String>) {
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
-    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false);
+    action_bar_show_result_internal(result, original_text, action, app, write_clipboard, false, None);
 }
 
 /// Run And Paste 模式：写剪贴板 + 模拟 ⌘V，不弹 CompactEditor。
-pub fn action_bar_run_and_paste(result: String, app: AppHandle) {
-    action_bar_show_result_internal(result, String::new(), String::new(), app, true, true);
+/// source_pid: silent 模式（全局快捷键）传 Some(pid) 用于 ActivateWindowByPid；
+///             浮窗路径传 None（浮窗 hide 后系统自动还焦）。
+pub fn action_bar_run_and_paste(result: String, app: AppHandle, source_pid: Option<i32>) {
+    action_bar_show_result_internal(result, String::new(), String::new(), app, true, true, source_pid);
 }
 
 fn action_bar_show_result_internal(
@@ -430,6 +432,7 @@ fn action_bar_show_result_internal(
     app: AppHandle,
     write_clipboard: bool,
     auto_paste: bool,
+    source_pid: Option<i32>,
 ) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
@@ -449,18 +452,47 @@ fn action_bar_show_result_internal(
 
     finalize_action_bar(&app);
 
-    // ── Run And Paste 模式：写剪贴板 + 模拟 ⌘V，不弹 CompactEditor ──
+    // ── Run And Paste 模式：模拟 ⌘V 粘贴结果，不弹 CompactEditor ──
     if auto_paste {
-        log::info!("[action-bar] Run And Paste: result written to clipboard, simulating ⌘V");
+        // 隐藏 overlay（silent 模式的进度窗）
+        crate::overlay_window::hide_overlay_window(&app);
+
+        log::info!("[action-bar] Run And Paste: simulating ⌘V, source_pid={:?}", source_pid);
         let app_clone = app.clone();
         let paste_result = result.clone();
         std::thread::spawn(move || {
-            // 等待 clipboard 写入完成 + 窗口隐藏
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            // 如有源窗口 PID，激活它（silent 模式焦点恢复）
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(pid) = source_pid {
+                    // 用 run_on_main_thread 确保 AX API 在主线程调用
+                    let app_for_activate = app_clone.clone();
+                    let _ = app_clone.run_on_main_thread(move || {
+                        crate::activation::activate_window_by_pid(pid);
+                    });
+                    std::thread::sleep(std::time::Duration::from_millis(150)); // 等焦点稳定
+                } else {
+                    // 浮窗路径：hide 后系统自动还焦，等短暂时间
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let _ = source_pid;
+            }
+
+            // paste::paste 内部会写剪贴板 + 模拟 ⌘V + 恢复原剪贴板（write_to_clipboard=false 时）
             let config = octopus_infra::config::load_config().unwrap_or_default();
             let handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
             if let Err(e) = crate::paste::paste(&paste_result, &handle, &config) {
                 log::warn!("[action-bar] Run And Paste failed: {}", e);
+                crate::overlay_window::show_overlay_toast(
+                    &app_clone,
+                    &format!("粘贴失败: {}", e),
+                    "error",
+                    3000,
+                );
             }
         });
         return;
@@ -676,7 +708,7 @@ fn build_enriched_text(text: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
+pub(crate) fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -768,6 +800,22 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
 #[tauri::command]
 pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<(), String> {
     octopus_infra::db::set_auto_paste(id, auto_paste).map_err(|e| e.to_string())
+}
+
+/// 设置菜单项的全局快捷键（Run And Paste silent 入口）。空串清除。
+/// 保存后触发重新注册全局快捷键。
+#[tauri::command]
+pub fn set_global_shortcut(id: i64, global_shortcut: String, app: AppHandle) -> Result<(), String> {
+    octopus_infra::db::set_global_shortcut(id, &global_shortcut).map_err(|e| e.to_string())?;
+    // 重新注册全局快捷键
+    crate::action_hotkey::register_action_hotkeys(&app);
+    Ok(())
+}
+
+/// 取消当前 silent 执行（Esc 触发）。
+#[tauri::command]
+pub fn cancel_silent_action() {
+    crate::action_hotkey::cancel_silent();
 }
 
 // ── 脚本执行记录 ──
@@ -1266,7 +1314,7 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
 
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
-async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
+pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -1330,7 +1378,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                             .map_err(|e| format!("LLM 线程异常: {}", e))?
                             .map_err(|e| e.to_string())?;
                         if item.auto_paste {
-                            action_bar_run_and_paste(result, app.clone());
+                            action_bar_run_and_paste(result, app.clone(), None);
                         } else {
                             action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         }
@@ -1352,7 +1400,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 .map_err(|e| format!("LLM 线程异常: {}", e))?
                 .map_err(|e| e.to_string())?;
             if item.auto_paste {
-                action_bar_run_and_paste(result, app.clone());
+                action_bar_run_and_paste(result, app.clone(), None);
             } else {
                 action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             }
@@ -1419,7 +1467,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 // 成功
                 if !result.stdout.is_empty() {
                     if item.auto_paste {
-                        action_bar_run_and_paste(result.stdout, app.clone());
+                        action_bar_run_and_paste(result.stdout, app.clone(), None);
                     } else if write_output {
                         write_clipboard_text(app, &result.stdout);
                         action_bar_show_result(result.stdout, text, item_title, app.clone(), false);

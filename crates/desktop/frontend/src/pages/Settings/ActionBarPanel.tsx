@@ -36,6 +36,7 @@ interface ActionBarItem {
   accepts?: string;
   triggerKeyword?: string;
   autoPaste?: boolean;
+  globalShortcut?: string;
 }
 
 // ── 类型元信息 ──
@@ -497,6 +498,36 @@ const EditForm = ({
           </FormField>
         )}
 
+        {/* 全局快捷键（仅 auto_paste=true 时显示）—— silent 执行 + 粘贴入口 */}
+        {(type === "ai" || type === "script") && form.autoPaste && (
+          <FormField label="全局快捷键">
+            <input
+              type="text"
+              value={form.globalShortcut ?? ""}
+              onChange={(e) => onChange({ ...form, globalShortcut: e.target.value })}
+              onKeyDown={(e) => {
+                // 按键录制：组合键 → Tauri shortcut 字符串
+                const parts: string[] = [];
+                if (e.metaKey) parts.push("CmdOrCtrl");
+                if (e.ctrlKey) parts.push("CmdOrCtrl");
+                if (e.altKey) parts.push("Alt");
+                if (e.shiftKey) parts.push("Shift");
+                // 只在有修饰键 + 非修饰键本身时录制
+                if (parts.length > 0 && e.key.length === 1) {
+                  e.preventDefault();
+                  const shortcut = [...new Set(parts), e.key.toUpperCase()].join("+");
+                  onChange({ ...form, globalShortcut: shortcut });
+                }
+              }}
+              placeholder="按组合键录入（留空 = 不设全局快捷键）"
+              className="w-full px-2.5 py-1.5 text-[12px] bg-muted/40 border border-border/30 rounded-md text-foreground placeholder:text-muted-foreground/40 outline-none focus:border-voice/40"
+            />
+            <span className="text-[11px] text-muted-foreground/50 mt-1 block">
+              选中文本后按此快捷键，直接 silent 执行 + 粘贴结果（不弹浮窗）
+            </span>
+          </FormField>
+        )}
+
         <FormField label={t("settings.actionBar.enableLabel")}>
           <div className="flex items-center gap-2.5">
             <Toggle
@@ -925,6 +956,7 @@ export default function ActionBarPanel({
             parentId: draftParentId, shortcut, isEnabled,
           });
           await invoke("set_auto_paste", { id: newId, autoPaste: editingForm.autoPaste ?? false });
+          await invoke("set_global_shortcut", { id: newId, globalShortcut: editingForm.globalShortcut ?? "" });
           showToast(t("settings.actionBar.created"));
         } else if (editingId) {
           if (hasNewPkg) {
@@ -954,6 +986,7 @@ export default function ActionBarPanel({
             });
           }
           await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
+          await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
           showToast(t("settings.actionBar.saved"));
         }
       } else if (draftParentId !== undefined) {
@@ -974,6 +1007,7 @@ export default function ActionBarPanel({
         // 新建 AI/Script 项时也需要设置 auto_paste
         if (editingForm.actionType === "ai" || editingForm.actionType === "script") {
           await invoke("set_auto_paste", { id: createdId, autoPaste: editingForm.autoPaste ?? false });
+          await invoke("set_global_shortcut", { id: createdId, globalShortcut: editingForm.globalShortcut ?? "" });
         }
         showToast(t("settings.actionBar.created"));
       } else if (editingId) {
@@ -996,6 +1030,13 @@ export default function ActionBarPanel({
       // auto_paste 单独更新（仅 AI/脚本类型）
       if (editingId && (editingForm.actionType === "ai" || editingForm.actionType === "script")) {
         await invoke("set_auto_paste", { id: editingId, autoPaste: editingForm.autoPaste ?? false });
+        // global_shortcut 单独更新（仅 auto_paste 类型）
+        await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
+      }
+      // 新建项也需要设 global_shortcut
+      if (!editingId && (editingForm.actionType === "ai" || editingForm.actionType === "script")) {
+        // createdId 已在上面设置 auto_paste 时拿到——这里需要拿到 id
+        // 实际上 create 路径在上方已 return showToast，这里走不到
       }
 
       cancelEdit();

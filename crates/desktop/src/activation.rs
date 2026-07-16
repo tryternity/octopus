@@ -330,6 +330,42 @@ fn float_clear_state() {
     let _ = PREV_APP.lock().take();
 }
 
+/// Run And Paste silent 模式：按 PID 激活源应用窗口，确保粘贴发到正确目标。
+/// 比 osascript 更可靠——直接用 NSRunningApplication API。
+/// 返回 true=激活成功，false=PID 未找到或激活失败。
+#[cfg(target_os = "macos")]
+pub fn activate_window_by_pid(pid: i32) -> bool {
+    use objc2_app_kit::{NSWorkspace, NSRunningApplication};
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = match MainThreadMarker::new() {
+        Some(m) => m,
+        None => {
+            log::warn!("[activation] activate_window_by_pid 必须在主线程调用");
+            return false;
+        }
+    };
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    let apps = workspace.runningApplications();
+    for app in apps.iter() {
+        if app.processIdentifier() == pid {
+            // NSApplicationActivateAllWindows = 1 << 0
+            app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 0));
+            log::info!("[activation] activated pid={}", pid);
+            return true;
+        }
+    }
+    log::warn!("[activation] pid={} not found in running applications", pid);
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_window_by_pid(_pid: i32) -> bool {
+    log::warn!("[activation] activate_window_by_pid not supported on this platform");
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

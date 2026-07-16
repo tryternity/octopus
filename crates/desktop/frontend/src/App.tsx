@@ -7,6 +7,7 @@ import Clipboard from "@/pages/Clipboard";
 import Screenshot from "@/pages/Screenshot";
 import CompactEditor from "@/pages/CompactEditor";
 import ActionBar from "@/pages/ActionBar";
+import Overlay from "@/pages/Overlay";
 import { applyThemeFromConfig } from "@/lib/theme";
 
 class ErrorBoundary extends Component<
@@ -68,6 +69,8 @@ function App() {
             return <CompactEditor />;
           case "action_bar_window":
             return <ActionBar />;
+          case "overlay_window":
+            return <Overlay />;
           default:
             if (label.startsWith("screenshot_")) {
               return <Screenshot />;

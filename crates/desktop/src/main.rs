@@ -3,6 +3,8 @@
 mod activation;
 mod action_bar_window;
 mod action_bar_commands;
+mod overlay_window;
+mod action_hotkey;
 mod agent_adapter;
 mod terminal_launcher;
 mod finder_selection;
@@ -330,6 +332,8 @@ pub fn run() {
             action_bar_commands::create_action_bar_item,
             action_bar_commands::update_action_bar_item,
             action_bar_commands::set_auto_paste,
+            action_bar_commands::set_global_shortcut,
+            action_bar_commands::cancel_silent_action,
             action_bar_commands::delete_action_bar_item,
             action_bar_commands::move_action_bar_item,
             action_bar_commands::execute_action_bar,
@@ -496,6 +500,8 @@ pub fn run() {
 
             // Create + register action bar window (AI command palette)
             action_bar_window::create_action_bar_window(app.handle());
+            overlay_window::create_overlay_window(app.handle());
+            action_hotkey::register_action_hotkeys(app.handle());
             if !config.action_bar_shortcut.is_empty() {
                 if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
                     log::error!("Failed to register action bar shortcut: {}", e);

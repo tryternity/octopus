@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     accepts     TEXT NOT NULL DEFAULT 'text',
     trigger_keyword TEXT NOT NULL DEFAULT '',
     auto_paste  INTEGER NOT NULL DEFAULT 0,
+    global_shortcut TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE

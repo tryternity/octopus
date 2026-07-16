@@ -228,7 +228,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 35 {
+    if v >= 36 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -481,6 +481,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 35", [])?;
             log::info!("schema upgraded to v35 (search_frequency table)");
         }
+        // v35→v36：action_bar_items 加 global_shortcut 列（Run And Paste 全局快捷键）
+        if v < 36 {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"global_shortcut".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN global_shortcut TEXT NOT NULL DEFAULT ''", [])?;
+                log::info!("schema upgraded to v36 (action_bar_items: global_shortcut column)");
+            }
+            conn.execute("PRAGMA user_version = 36", [])?;
+        }
         return Ok(());
     }
 
@@ -498,8 +510,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (score_key)
         )",
     )?;
-    conn.execute("PRAGMA user_version = 35", [])?;
-    log::info!("DB initialized (v35): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 36", [])?;
+    log::info!("DB initialized (v36): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1479,9 +1491,10 @@ pub struct ActionBarItem {
     pub accepts: String,
     pub trigger_keyword: String,
     pub auto_paste: bool,
+    pub global_shortcut: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, auto_paste";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, auto_paste, global_shortcut";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -1501,6 +1514,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         accepts: row.get(13)?,
         trigger_keyword: row.get(14)?,
         auto_paste: row.get::<_, i32>(15)? != 0,
+        global_shortcut: row.get(16)?,
     })
 }
 
@@ -1710,6 +1724,37 @@ pub fn set_auto_paste(id: i64, auto_paste: bool) -> Result<()> {
             anyhow::bail!("菜单项不存在: {}", id);
         }
         Ok(())
+    })
+}
+
+/// 设置菜单项的全局快捷键（Run And Paste silent 入口）。空串清除。
+pub fn set_global_shortcut(id: i64, global_shortcut: &str) -> Result<()> {
+    with_db(|conn| {
+        let rows = conn.execute(
+            "UPDATE action_bar_items SET global_shortcut=?1, updated_at=datetime('now') WHERE id=?2",
+            params![global_shortcut, id],
+        )?;
+        if rows == 0 {
+            anyhow::bail!("菜单项不存在: {}", id);
+        }
+        Ok(())
+    })
+}
+
+/// 查询所有注册了全局快捷键的菜单项（auto_paste + is_enabled + global_shortcut 非空）。
+/// 启动时和设置变更后用于注册全局快捷键。
+pub fn list_action_hotkeys() -> Result<Vec<ActionBarItem>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            &format!(
+                "SELECT {} FROM action_bar_items WHERE global_shortcut != '' AND auto_paste = 1 AND is_enabled = 1",
+                ACTION_BAR_SELECT_COLS
+            )
+        )?;
+        let rows = stmt.query_map([], row_to_action_bar_item)?;
+        let mut list = Vec::new();
+        for r in rows { list.push(r?); }
+        Ok(list)
     })
 }
 
@@ -2810,7 +2855,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 35, "全新库 init_schema 后应到 v35");
+        assert_eq!(v, 36, "全新库 init_schema 后应到 v36");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2984,7 +3029,7 @@ mod tests {
 
         // 验证：迁移后 user_version = 35（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -3072,7 +3117,7 @@ mod tests {
 
         // 验证 user_version = 35（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
 
         // 验证 app_index 表存在 + icon 列存在
         let table_count: i64 = conn.query_row(
@@ -3113,7 +3158,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3243,7 +3288,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -4053,7 +4098,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 35);
+        assert_eq!(v, 36);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
