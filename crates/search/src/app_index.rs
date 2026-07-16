@@ -81,24 +81,36 @@ fn extract_app_icon(app_path: &std::path::Path) -> String {
     use base64::Engine;
     format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png_bytes))
 }
-/// 直接读 zh-Hans.lproj/InfoPlist.strings，解析 OpenStep 或 XML 格式。
-/// 文件可能是 UTF-16（多数 macOS app）或 UTF-8 编码。
+/// 收集 app 的本地化别名（用于搜索）。
+///
+/// 借鉴 wox（app_darwin.go ParseAppInfo）的分层策略：
+/// 1. **首选 mdls kMDItemDisplayName**——Spotlight 索引了系统级 locale 数据库，
+///    覆盖最全（/System/Applications 下的 Preview→"预览"、Calculator→"计算器"等
+///    系统 app 的本地化名不在 bundle .strings 里，只有 Spotlight 有）。
+/// 2. **补充读 .strings**——第三方 app 的 zh-Hans/zh_CN 本地化名（微信→WeChat）。
+///
+/// 两个来源合并去重，都作为 alias 供搜索匹配。
 fn read_localized_names(app_path: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
     let stem = app_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
+    // 1. mdls kMDItemDisplayName（首选——覆盖系统 app）
+    if let Some(display_name) = mdls_display_name(app_path) {
+        if display_name != stem && !names.contains(&display_name) {
+            names.push(display_name);
+        }
+    }
+
+    // 2. .strings 补充（第三方 app 的 zh-Hans/zh_CN 本地化名）
     for locale in &["zh-Hans.lproj", "zh_CN.lproj"] {
         let plist = app_path.join("Contents/Resources").join(locale).join("InfoPlist.strings");
         if !plist.exists() { continue; }
         let bytes = match std::fs::read(&plist) { Ok(b) => b, Err(_) => continue };
 
-        // 解码：UTF-16 LE (BOM ff fe) / UTF-16 BE (BOM fe ff) / UTF-8
         let content = decode_plist_string(&bytes);
 
-        // OpenStep 格式: "CFBundleDisplayName" = "微信";
-        // XML 格式: <key>CFBundleDisplayName</key><string>微信</string>
         for key in &["CFBundleDisplayName", "CFBundleName"] {
-            // OpenStep
+            // OpenStep 格式: "CFBundleDisplayName" = "微信";
             let pattern_openstep = format!("\"{}\" = \"", key);
             if let Some(pos) = content.find(&pattern_openstep) {
                 let rest = &content[pos + pattern_openstep.len()..];
@@ -110,7 +122,7 @@ fn read_localized_names(app_path: &std::path::Path) -> Vec<String> {
                     continue;
                 }
             }
-            // XML plist
+            // XML plist 格式
             let pattern_xml_key = format!("<key>{}</key>", key);
             if let Some(pos) = content.find(&pattern_xml_key) {
                 let after = &content[pos + pattern_xml_key.len()..];
@@ -126,7 +138,29 @@ fn read_localized_names(app_path: &std::path::Path) -> Vec<String> {
             }
         }
     }
+
     names
+}
+
+/// 用 mdls 查 Spotlight 的 kMDItemDisplayName（macOS 系统级本地化显示名）。
+/// 借鉴 wox app_darwin.go:170 getAppNameFromMdls——Spotlight 索引覆盖最全，
+/// 含系统 app 的本地化名（Preview → "预览"），这些不在 bundle .strings 里。
+#[cfg(target_os = "macos")]
+fn mdls_display_name(app_path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("mdls")
+        .args(["-name", "kMDItemDisplayName", "-raw"])
+        .arg(app_path)
+        .output()
+        .ok()?;
+    if !output.status.success() { return None; }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() || name == "(null)" || name == "null" { return None; }
+    Some(name)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mdls_display_name(_app_path: &std::path::Path) -> Option<String> {
+    None
 }
 
 /// 解码 plist 文件内容——处理 UTF-16 LE/BE 和 UTF-8。
