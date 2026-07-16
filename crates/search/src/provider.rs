@@ -6,7 +6,7 @@ use parking_lot::RwLock;
 use crate::app_index::AppIndex;
 use crate::bookmark::BookmarkEntry;
 use crate::engine::SearchResult;
-// use crate::frequency::FrequencyScorer;  // Task 3 启用
+use crate::frequency::FrequencyScorer;
 
 /// 各 Provider 共享的只读上下文。
 /// 注意：含 `RwLock` 引用——生命周期内嵌于单次 search_streaming 调用，
@@ -14,7 +14,7 @@ use crate::engine::SearchResult;
 pub struct SearchContext<'a> {
     pub app_index: &'a RwLock<AppIndex>,
     pub bookmarks: &'a RwLock<Vec<BookmarkEntry>>,
-    // pub frequency: &'a FrequencyScorer,  // Task 3 启用
+    pub frequency: &'a FrequencyScorer,
 }
 
 /// 搜索 Provider 契约。
