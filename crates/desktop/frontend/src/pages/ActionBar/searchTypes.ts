@@ -2,7 +2,7 @@
 
 /** 搜索结果（与 Rust octopus_search::SearchResult 对齐，camelCase 序列化） */
 export interface SearchResult {
-  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "shell" */
+  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "shell" | "calculator" | "url" */
   source: string;
   /** 标题（应用名 / 文件名 / 菜单标题） */
   title: string;
@@ -10,12 +10,21 @@ export interface SearchResult {
   subtitle: string;
   /** 自定义图标（base64 data URI，如应用 icon），空=用 source 默认图标 */
   icon?: string | null;
-  /** 动作类型："launch_app" | "open_file" | "menu" | "url" | "shell" */
+  /** 动作类型："launch_app" | "open_file" | "menu" | "url" | "shell" | "copy" */
   actionType: string;
   /** 动作数据（JSON 字符串） */
   actionData: string;
   /** 匹配得分（排序用，越高越优先） */
   score: number;
+}
+
+/** 流式批次事件 payload（search_stream emit 的 `search://batch` 事件体）。
+ *  后端每完成一个 Provider 即 emit 一次，前端按 runId 校验本次会话后累加合并。 */
+export interface SearchBatch {
+  /** 本次 search_stream 会话 ID（前端生成 crypto.randomUUID 传入） */
+  runId: string;
+  /** 本批次（单个 Provider）的搜索结果 */
+  results: SearchResult[];
 }
 
 /** Tab 标识 */

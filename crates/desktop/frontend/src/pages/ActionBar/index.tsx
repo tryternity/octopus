@@ -17,11 +17,11 @@ import {
   type ExpandDirection,
   type SearchResult as SearchHit,
 } from "./searchTypes";
+import { executeSearchStream, cleanupSearchStream } from "./searchStream";
 import {
   determineExpandDirection,
   getTabByKey,
   getNextTab,
-  shouldTriggerDelayedSearch,
   mergeResults,
   filterByTab,
   parseActionData,
@@ -427,47 +427,40 @@ export default function ActionBar() {
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
-  // 即时搜索（应用+菜单+Quicklinks，无防抖，纯内存索引）
+  // 流式搜索：后端 Provider 并发扇出，每完成一个 emit 当前全局 top-10（已去重排序）。
+  // 前端单路流式：150ms 防抖避免逐字符打爆后端；payload.runId 校验防旧批次串扰；
+  // 每次 batch 用最新结果整体替换（后端 emit 的是累积 top-N，不是单 Provider 增量）。
+  // tab 参数 = 当前选中 Tab，后端据此决定哪些 Provider 跑（all → 全部）。
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
-      return;
-    }
-    let cancelled = false;
-    // 始终用 "quick" tab 做即时搜索（应用+菜单+Quicklinks）
-    // 文件/书签结果由延迟搜索补充，避免每次按键触发 mdfind
-    invoke<SearchHit[]>("search_all", { query, tab: "quick" }).then((results) => {
-      if (!cancelled) setInstantResults(results);
-    }).catch(() => {
-      if (!cancelled) setInstantResults([]);
-    });
-    return () => { cancelled = true; };
-  }, [query]);
-
-  // 延迟搜索（文件+书签，150ms 防抖，query ≥ 2 字符）
-  // all/files/bookmarks tab 都需要延迟搜索结果
-  useEffect(() => {
-    if (!shouldTriggerDelayedSearch(query)) {
       setDelayedResults([]);
       return;
     }
-    // apps/shell tab 不需要文件/书签
-    if (activeTab !== "all" && activeTab !== "files" && activeTab !== "bookmarks") {
-      setDelayedResults([]);
-      return;
-    }
-    // 确定 tab 参数：all → files_bookmarks，files → files，bookmarks → bookmarks
-    const searchTab = activeTab === "files" ? "files" : activeTab === "bookmarks" ? "bookmarks" : "files_bookmarks";
     let cancelled = false;
     const timer = setTimeout(() => {
-      invoke<SearchHit[]>("search_all", { query, tab: searchTab }).then((results) => {
-        if (!cancelled) setDelayedResults(results);
+      if (cancelled) return;
+      // onBatch 收到的已是本次会话（runId 匹配）的全局 top-N 累积结果，直接替换
+      executeSearchStream(query, activeTab, (results) => {
+        if (!cancelled) setInstantResults(results);
       }).catch(() => {
-        if (!cancelled) setDelayedResults([]);
+        if (!cancelled) setInstantResults([]);
       });
     }, DELAYED_SEARCH_DEBOUNCE_MS);
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [query, activeTab]);
+
+  // 组件卸载时清理 searchStream 的全局 listen 句柄（防内存泄漏）。
+  // 注意：每次 query/activeTab 变化时 executeSearchStream 内部已 unlisten 旧监听，
+  // 此 effect 只兜底最终卸载场景。
+  useEffect(() => {
+    return () => {
+      cleanupSearchStream();
+    };
+  }, []);
 
   // 查询清空时重置搜索状态
   useEffect(() => {
@@ -677,6 +670,18 @@ export default function ActionBar() {
         } catch (e) {
           showQuickError(String(e).slice(0, 40));
           setView("main");
+        }
+        break;
+      }
+      case "copy": {
+        // calculator / url 等"复制结果"动作：actionData = {"text": "..."}
+        const text = data.text as string;
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          invoke("action_bar_dismiss", { reason: "copy" });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
         }
         break;
       }
