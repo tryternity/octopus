@@ -18,11 +18,11 @@ use crate::provider::{SearchContext, SearchProvider};
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchResult {
-    pub source: String,       // "app" | "file" | "menu" | "bookmark" | "quicklink" | "shell" | "calculator" | "url"
+    pub source: String,       // "app" | "file" | "menu" | "bookmark" | "quicklink" | "calculator" | "url"
     pub title: String,
     pub subtitle: String,
     pub icon: Option<String>, // base64 data URI（应用图标等），None=用 source 默认图标
-    pub action_type: String,  // "launch_app" | "open_file" | "menu" | "url" | "shell" | ...
+    pub action_type: String,  // "launch_app" | "open_file" | "menu" | "url" | "copy"
     pub action_data: String,  // JSON
     pub score: i32,
 }
@@ -52,16 +52,13 @@ const MAX_RESULTS: usize = 10;
 
 static SEARCH_ENGINE: OnceLock<SearchEngine> = OnceLock::new();
 
-/// 生产用默认 Provider 装配：7 个 Provider 全部启用（shell 另含 shell_commands +
-/// shell_history 两个辅助模块，非独立 Provider）。
-/// stub 阶段每个 Provider 的 search() 都返回空 vec；Task 5-9 填真实实现。
+/// 生产用默认 Provider 装配：6 个 Provider（app/file/menu/bookmark/calculator/url）。
 fn default_providers() -> Vec<Box<dyn SearchProvider>> {
     vec![
         Box::new(crate::providers::app::AppProvider),
         Box::new(crate::providers::file::FileProvider),
         Box::new(crate::providers::menu::MenuProvider),
         Box::new(crate::providers::bookmark::BookmarkProvider),
-        Box::new(crate::providers::shell::ShellProvider::new()),
         Box::new(crate::providers::calculator::CalculatorProvider),
         Box::new(crate::providers::url::UrlProvider),
     ]
@@ -131,10 +128,10 @@ impl SearchEngine {
 
     /// 综合搜索（并发）。
     ///
-    /// tab = "all" | "apps" | "files" | "shell" | "bookmarks" | "quick" | "files_bookmarks"。
+    /// tab = "all" | "apps" | "files" | "bookmarks" | "quick" | "files_bookmarks"。
     /// - "all"：所有 Provider 参与。
     /// - 其他 tab：仅 `provider.matches_tab(tab)` 为真的 Provider 参与。
-    /// - "quick"：仅即时搜索（应用+菜单+Quicklinks+shell 模式），无文件/书签。
+    /// - "quick"：仅即时搜索（应用+菜单+Quicklinks），无文件/书签。
     /// - "files_bookmarks"：仅延迟搜索（文件+书签）。
     ///
     /// 所有匹配 Provider 通过 `join_all` 并发执行，结果合并、频次加权、按 score 降序排序、截断。
@@ -393,16 +390,6 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// Task 7（ShellProvider 实现）恢复——shell search 返回透传 + 补全 + 历史。
-    #[test]
-    fn shell_mode_prefix() {
-        setup_test_db();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
-        let results = rt.block_on(engine.search("> ls", "shell"));
-        assert!(results.iter().any(|r| r.source == "shell" && r.action_type == "shell"));
-    }
-
     #[test]
     fn quick_tab_excludes_files_and_bookmarks() {
         setup_test_db();
@@ -425,16 +412,6 @@ mod tests {
         // files_bookmarks tab：AppProvider/MenuProvider matches_tab 返回 false → 不参与
         assert!(results.iter().all(|r| r.source != "app"));
         assert!(results.iter().all(|r| r.source != "menu"));
-    }
-
-    /// Task 7（ShellProvider 实现）恢复——quick tab 包含 shell 透传项。
-    #[test]
-    fn quick_tab_includes_shell_mode() {
-        setup_test_db();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
-        let results = rt.block_on(engine.search("> echo hi", "quick"));
-        assert!(results.iter().any(|r| r.source == "shell" && r.action_type == "shell"));
     }
 
     #[test]

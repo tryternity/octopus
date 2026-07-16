@@ -6,8 +6,6 @@ import {
   getVisibleTabs,
   getTabIndex,
   shouldTriggerDelayedSearch,
-  isShellMode,
-  extractShellCommand,
   filterByTab,
   parseActionData,
   calcResultsHeight,
@@ -80,7 +78,6 @@ describe("getTabByKey", () => {
     expect(getTabByKey("a")).toBe("all");
     expect(getTabByKey("d")).toBe("apps");
     expect(getTabByKey("f")).toBe("files");
-    expect(getTabByKey("s")).toBe("shell");
     expect(getTabByKey("b")).toBe("bookmarks");
     expect(getTabByKey("z")).toBe("actions");
   });
@@ -101,15 +98,15 @@ describe("getTabByKey", () => {
 // ── getVisibleTabs ──
 
 describe("getVisibleTabs", () => {
-  it("有选中（hasContext=true）→ 全部 6 个 Tab 含 actions", () => {
+  it("有选中（hasContext=true）→ 全部 5 个 Tab 含 actions", () => {
     const tabs = getVisibleTabs(true);
-    expect(tabs).toHaveLength(6);
+    expect(tabs).toHaveLength(5);
     expect(tabs.find((t) => t.id === "actions")).toBeDefined();
   });
 
-  it("无选中（hasContext=false，launch 模式）→ 5 个 Tab，无 actions", () => {
+  it("无选中（hasContext=false，launch 模式）→ 4 个 Tab，无 actions", () => {
     const tabs = getVisibleTabs(false);
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(4);
     expect(tabs.find((t) => t.id === "actions")).toBeUndefined();
   });
 });
@@ -117,20 +114,18 @@ describe("getVisibleTabs", () => {
 // ── getNextTab ──
 
 describe("getNextTab", () => {
-  it("正向循环 all → apps → files → shell → bookmarks → actions → all", () => {
+  it("正向循环 all → apps → files → bookmarks → actions → all", () => {
     expect(getNextTab("all", 1)).toBe("apps");
     expect(getNextTab("apps", 1)).toBe("files");
-    expect(getNextTab("files", 1)).toBe("shell");
-    expect(getNextTab("shell", 1)).toBe("bookmarks");
+    expect(getNextTab("files", 1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", 1)).toBe("actions");
     expect(getNextTab("actions", 1)).toBe("all");
   });
 
-  it("反向循环 all → actions → bookmarks → shell → files → apps → all", () => {
+  it("反向循环 all → actions → bookmarks → files → apps → all", () => {
     expect(getNextTab("all", -1)).toBe("actions");
     expect(getNextTab("actions", -1)).toBe("bookmarks");
-    expect(getNextTab("bookmarks", -1)).toBe("shell");
-    expect(getNextTab("shell", -1)).toBe("files");
+    expect(getNextTab("bookmarks", -1)).toBe("files");
     expect(getNextTab("files", -1)).toBe("apps");
     expect(getNextTab("apps", -1)).toBe("all");
   });
@@ -148,8 +143,7 @@ describe("getTabIndex", () => {
     expect(getTabIndex("all")).toBe(0);
     expect(getTabIndex("apps")).toBe(1);
     expect(getTabIndex("files")).toBe(2);
-    expect(getTabIndex("shell")).toBe(3);
-    expect(getTabIndex("bookmarks")).toBe(4);
+    expect(getTabIndex("bookmarks")).toBe(3);
   });
 
   it("无效 Tab 返回 -1", () => {
@@ -157,8 +151,8 @@ describe("getTabIndex", () => {
     expect(getTabIndex("invalid")).toBe(-1);
   });
 
-  it("TABS 长度为 6", () => {
-    expect(TABS.length).toBe(6);
+  it("TABS 长度为 5", () => {
+    expect(TABS.length).toBe(5);
   });
 });
 
@@ -179,40 +173,6 @@ describe("shouldTriggerDelayedSearch", () => {
   });
 });
 
-// ── isShellMode / extractShellCommand ──
-
-describe("isShellMode", () => {
-  it("以 > 开头 → true", () => {
-    expect(isShellMode(">ls")).toBe(true);
-    expect(isShellMode("> ls -la")).toBe(true);
-    expect(isShellMode("  > echo hi")).toBe(true); // 前导空格
-  });
-
-  it("不以 > 开头 → false", () => {
-    expect(isShellMode("ls")).toBe(false);
-    expect(isShellMode("")).toBe(false);
-    expect(isShellMode("echo > file")).toBe(false);
-  });
-});
-
-describe("extractShellCommand", () => {
-  it("正确提取命令", () => {
-    expect(extractShellCommand(">ls")).toBe("ls");
-    expect(extractShellCommand("> ls -la")).toBe("ls -la");
-    expect(extractShellCommand("  > echo hi")).toBe("echo hi");
-  });
-
-  it("只有 > 无命令 → 空串", () => {
-    expect(extractShellCommand(">")).toBe("");
-    expect(extractShellCommand(">   ")).toBe("");
-  });
-
-  it("非 shell 模式也能提取（去掉首字符）", () => {
-    // 非 > 开头时 slice(1) 仍然工作，但通常在 isShellMode 判定后才调用
-    expect(extractShellCommand("abc")).toBe("bc");
-  });
-});
-
 // ── mergeResults ──
 // (已删除) mergeResults 函数已随 delayedResults 死状态一并移除——流式后端 emit
 // 累积 top-N 快照，前端整体替换，不再需要即时/延迟两路合并。
@@ -223,13 +183,12 @@ describe("filterByTab", () => {
   const results: SearchResult[] = [
     makeResult("app", "Chrome"),
     makeResult("file", "doc.pdf"),
-    makeResult("shell", "ls"),
     makeResult("bookmark", "GitHub"),
     makeResult("menu", "翻译"),
   ];
 
   it("all → 全部", () => {
-    expect(filterByTab(results, "all")).toHaveLength(5);
+    expect(filterByTab(results, "all")).toHaveLength(4);
   });
 
   it("apps → 仅 app 来源", () => {
@@ -242,12 +201,6 @@ describe("filterByTab", () => {
     const filtered = filterByTab(results, "files");
     expect(filtered).toHaveLength(1);
     expect(filtered[0].source).toBe("file");
-  });
-
-  it("shell → 仅 shell 来源", () => {
-    const filtered = filterByTab(results, "shell");
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0].source).toBe("shell");
   });
 
   it("bookmarks → 仅 bookmark 来源", () => {

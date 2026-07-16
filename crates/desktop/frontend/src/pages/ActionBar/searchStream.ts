@@ -29,7 +29,7 @@ export function cleanupSearchStream(): void {
 /**
  * 发起流式搜索。
  * @param query  查询字符串（后端会 trim）
- * @param tab    当前 Tab（"all" | "apps" | "files" | "shell" | "bookmarks" | "actions"）
+ * @param tab    当前 Tab（"all" | "apps" | "files" | "bookmarks" | "actions"）
  *               —— 后端据此决定哪些 Provider 跑
  * @param onBatch 每个 Provider 批次到达时的回调（payload 已校验 runId 属于本次会话）
  */

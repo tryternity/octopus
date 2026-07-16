@@ -18,7 +18,7 @@ import {
   type SearchResult as SearchHit,
 } from "./searchTypes";
 // 只有走 mdfind（file/bookmark Provider，慢）的 Tab 才需防抖；其他 Tab（含 all）
-// 走内存 Provider（app/menu/shell/calculator/url），亚毫秒，无需防抖。
+// 走内存 Provider（app/menu/calculator/url），亚毫秒，无需防抖。
 // all tab 虽也会跑 mdfind，但后端流式扇出——快 Provider 结果先 emit，mdfind 慢的
 // 后追加，首屏由 app/menu 等即时结果提供，故 all tab 不防抖也不阻塞首屏（spec §9 < 30ms）。
 const DEBOUNCED_TABS = new Set<TabId | "files_bookmarks" | "quick">([
@@ -620,7 +620,7 @@ export default function ActionBar() {
 
     // 频次加权记录（fire-and-forget，失败不影响动作执行）。
     // spec §5.4：执行动作时记录，让 frequency.boost 在后续搜索中加权用户常用结果。
-    // 放在 switch 之前，对所有 actionType 通用（含 launch_app/open_file/menu/url/shell/copy）。
+    // 放在 switch 之前，对所有 actionType 通用（含 launch_app/open_file/menu/url/copy）。
     invoke("record_search_hit", {
       source: result.source,
       actionType: result.actionType,
@@ -680,16 +680,8 @@ export default function ActionBar() {
         break;
       }
       case "shell": {
-        const command = data.command as string;
-        if (!command) return;
-        setView("loading");
-        try {
-          await invoke<string>("execute_shell", { command });
-          invoke("action_bar_dismiss", { reason: "execute-shell" });
-        } catch (e) {
-          showQuickError(String(e).slice(0, 40));
-          setView("main");
-        }
+        // shell provider 已移除（launcher 场景下无终端上下文/无输出展示，伪需求）
+        // 保留 case 防御性兜底——若历史频次记录里残留 shell 结果触发，静默忽略
         break;
       }
       case "copy": {

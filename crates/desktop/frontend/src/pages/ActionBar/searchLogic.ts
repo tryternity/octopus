@@ -64,22 +64,11 @@ export function shouldTriggerDelayedSearch(query: string): boolean {
   return query.trim().length >= DELAYED_SEARCH_MIN_LENGTH;
 }
 
-/** 判定是否为 Shell 模式（以 > 开头，忽略前导空格）。 */
-export function isShellMode(query: string): boolean {
-  return query.trimStart().startsWith(">");
-}
-
-/** 从搜索查询中提取 Shell 命令（去掉 > 前缀）。 */
-export function extractShellCommand(query: string): string {
-  return query.trimStart().slice(1).trim();
-}
-
 /**
  * 按 Tab 过滤搜索结果。
  * - "all" → 全部
  * - "apps" → source === "app"
  * - "files" → source === "file"
- * - "shell" → source === "shell"
  * - "bookmarks" → source === "bookmark"
  */
 export function filterByTab(results: SearchResult[], tab: TabId): SearchResult[] {
@@ -87,7 +76,6 @@ export function filterByTab(results: SearchResult[], tab: TabId): SearchResult[]
   const sourceMap: Record<string, string> = {
     apps: "app",
     files: "file",
-    shell: "shell",
     bookmarks: "bookmark",
     actions: "menu",
   };
