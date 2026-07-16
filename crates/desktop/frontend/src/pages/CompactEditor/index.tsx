@@ -117,6 +117,13 @@ function CompactEditor() {
     setTabs(prev => prev.map((t, i) => (i === idx ? { ...t, text: next } : t)));
   }, []);
 
+  // 更新 contrast 模式左栏（原文）。发现 4 修复——原先 onOriginalChange 错调
+  // updateActiveTextAt 写幽灵字段 text（contrast 模式既不显示也不保存），导致用户
+  // 编辑左栏原文后切 tab 编辑丢失（重建读 originalText 旧值）。
+  const updateActiveOriginalAt = useCallback((next: string, idx: number) => {
+    setTabs(prev => prev.map((t, i) => (i === idx ? { ...t, originalText: next } : t)));
+  }, []);
+
   // 加载某 item 并新增 tab；已存在则切过去。source 决定从哪个表读 + 是否只读。
   // 基于 tabsRef.current 同步计算 next tabs（不依赖 setTabs updater 异步回调）。
   const loadAndAddTab = useCallback(async (itemId: number, source: string) => {
@@ -321,7 +328,11 @@ function CompactEditor() {
   const handleTranslateForTab = useCallback((idx: number) => {
     const tab = tabsRef.current[idx];
     if (!tab || tab.source === 'transcription') return;
-    const sourceText = tab.text || "";
+    // 发现 5 修复——contrast 模式下 tab.text 是后端脚手架（Local 为
+    // "【翻译】\n⏳ 正在翻译…"，LLM 为 "【翻译】\n{旧译文}"），直接当源文本会翻译
+    // 占位符，且 originalText: sourceText 会把原文永久覆盖成占位符。
+    // contrast 模式必须读 originalText（真原文），plain 模式读 text。
+    const sourceText = tab.mode === 'contrast' ? (tab.originalText || "") : (tab.text || "");
     if (!sourceText.trim()) return;
 
     // 立即切 contrast（译文区 loading），记录 tab key 供事件更新
@@ -426,7 +437,7 @@ function CompactEditor() {
                     readOnly={tab.source === 'transcription'}
                     fontSize={fontSize}
                     onFontSizeChange={setFontSize}
-                    onOriginalChange={(next) => updateActiveTextAt(next, i)}
+                    onOriginalChange={(next) => updateActiveOriginalAt(next, i)}
                     onTranslatedChange={(next) => setTabs(prev => prev.map((t, j) => j === i ? { ...t, translatedText: next } : t))}
                     onTranslate={() => handleTranslateForTab(i)}
                     onSave={doSave}
