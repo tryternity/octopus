@@ -223,7 +223,7 @@
 
 **文档同步**：spec §3.3（后台扫描策略）/ §3.5（submenu focusLayer 契约）/ §4.0（dismiss reason + focus-lost 宽限）/ §6.3（reindex 降级 + gather 超时 + Safari 未实现）/ §6.4 / §8（性能预算拆分）/ §9（+4 条不变量）；plan 第十四轮记录
 
-### 第十四轮（Sublime 选中检测两个现象修复）
+### 第十五轮（Sublime 选中检测两个现象修复）
 
 用户报告 Sublime 下两个现象：
 - **现象 1**：选中文本召唤 ActionBar，有时只显示输入框（无菜单条），输入文字删除后菜单才出现
@@ -252,7 +252,7 @@
 - 前端：`calcMenuHeight` / `calcTotalHeight` 纯函数 + 9 个单测（无选中→0、有选中各 view→40/78/48、搜索模式不受 context 影响）。锁住"有选中时菜单条高度必须 > 0"核心不变量
 - 后端：`extract_sublime_selection(full_text, sel_start, sel_end)` 纯函数 + 8 个单测（无选中 sel_start==sel_end→None、反向选区→None、CJK 字符偏移、空白选中→None、越界 clamp、空文本→None）。锁住"sel_start < sel_end 且非空白→Some"核心不变量，防 detect 对 Sublime 误判回退到 Cmd+C
 
-### 第十五轮（视觉重构 + 键盘导航增强 + 实测 resize + IME 统一）
+### 第十六轮（视觉重构 + 键盘导航增强 + 实测 resize + IME 统一）
 
 **视觉重构（参考 Wox 风格，CSS 变量 token 多主题适配）**：
 - 浮窗外壳：圆角 8→10px、透明度 95→90%、模糊 xl→2xl(40px)、阴影 /10→/20、宽度 380→480px

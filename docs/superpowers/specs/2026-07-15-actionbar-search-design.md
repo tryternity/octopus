@@ -2,7 +2,7 @@
 
 > 2026-07-15 · ActionBar 集成搜索输入框 + 应用启动 + 文件搜索 + Quicklinks + 书签搜索 + Run And Paste
 >
-> **实现完成** — 本文档已同步实际代码（2026-07-16，含 14 轮修复 + 搜索增强 / 键盘导航重构 / 焦点时序修复 / S1-L6 系统性审查）
+> **实现完成** — 本文档已同步实际代码（2026-07-16，含 16 轮修复 + 搜索增强 / 键盘导航重构 / 焦点时序修复 / S1-L6 系统性审查 / Sublime 选区适配 / 视觉重构 / 动作 Tab / IME 统一 / 实测 resize）
 
 ## 1. 设计目标
 
@@ -304,8 +304,8 @@ trigger_action_bar() ── 纯路由
 | 文件 | 职责 |
 |------|------|
 | `searchTypes.ts` | SearchResult/TabId/TABS/ExpandDirection/View 等类型 + 常量（含 MENU_HEIGHT_* / INPUT_HEIGHT） |
-| `searchLogic.ts` | 18 个纯逻辑函数（展开方向/Tab 循环/结果合并/过滤/高度计算/calcMenuHeight/focusLayer 切换等） |
-| `searchLogic.test.ts` | 68 个单元测试 |
+| `searchLogic.ts` | 21 个纯逻辑函数（展开方向/Tab 循环/结果合并/过滤/高度计算/calcMenuHeight/focusLayer 切换/isMoveKey/moveDirection/getVisibleTabs 等） |
+| `searchLogic.test.ts` | 81 个单元测试 |
 | `SearchPanel.tsx` | Tab 栏 + 结果列表组件 |
 | `index.tsx` | 集成：搜索输入框 + 条件渲染 + 窗口动态调整 + 键盘导航 |
 
