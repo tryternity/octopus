@@ -376,6 +376,19 @@ fn finalize_action_bar(_app: &AppHandle) {
     TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
 
+/// 对外暴露的 finalize——供 quick_execute 在 ActionBar 可见时手动收口（发现 3 修复）。
+/// quick_execute 走 keep_active hide 路径，绕开了 hide_action_bar_window 内部的 finalize，
+/// 必须显式调一次，否则 TRIGGER_IN_PROGRESS 残留卡死后续 trigger。
+pub(crate) fn finalize_action_bar_pub(app: &AppHandle) {
+    finalize_action_bar(app);
+}
+
+/// 写入 PENDING_CONTEXT——供 quick_execute 在执行前刷新上下文（发现 2 修复）。
+/// trigger_action_bar 内部各分支自己写，quick_execute 需要单独入口防止读到上次残留。
+pub(crate) fn set_pending_context(ctx: ActionBarContext) {
+    *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+}
+
 /// 重置 guard——用于 toggle 隐藏时和超时保护。
 pub fn reset_trigger_guard() {
     TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);

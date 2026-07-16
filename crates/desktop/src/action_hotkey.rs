@@ -83,10 +83,37 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
         }
     };
 
-    // 隐藏 ActionBar（如可见）
+    // ── 刷新 PENDING_CONTEXT（发现 2 修复）──
+    // quick_execute 此前不写 PENDING_CONTEXT，会读到上次 trigger_action_bar 残留的
+    // source/surrounding（甚至更早的 quick_execute 残留）。AI 动作（润色/摘要/解释）经
+    // build_enriched_text 读这些字段 → 来源/上下文与当前选中文本错位。
+    // 与 trigger_action_bar 的 Text 分支对齐：先清空，再 gather 写新值。
+    // 失败时降级到仅 text（source/surrounding=None），build_enriched_text 会跳过拼接。
+    //
+    // 注意：只在 Text 分支调（File/Folder 走 trigger 路径由 trigger_action_bar 负责），
+    // 且 gather 内部已含 run_command_with_deadline 兜底（osascript/lsof 等 500ms 超时）。
+    let mut ctx = crate::action_bar_commands::ActionBarContext::text(text.clone());
+    match crate::app_context::gather_context(&text) {
+        Ok(extra) => {
+            ctx.source = Some(extra.source);
+            ctx.surrounding = extra.surrounding;
+        }
+        Err(e) => log::warn!("[action-hotkey] context gather 失败（降级到仅 text）: {}", e),
+    }
+    crate::action_bar_commands::set_pending_context(ctx);
+
+    // 隐藏 ActionBar（如可见）——发现 3 修复：用 keep_active 变体，对齐
+    // action_bar_show_result_internal（action_bar_commands.rs:445-452）的三步：
+    //   win.hide() + after_floating_window_hide_keep_active + finalize_action_bar
+    // 原先用 hide_action_bar_window（标准 variant），was_inactive=true 时
+    // activateWithOptions(prev_app) 把源 app 拉回前台、本 app 退后台，
+    // 紧接着打开 CompactEditor 时后台 app 的 set_focus 不激活 → 用户看不到结果。
     if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
         if win.is_visible().unwrap_or(false) {
-            crate::action_bar_window::hide_action_bar_window(app);
+            let _ = win.hide();
+            #[cfg(target_os = "macos")]
+            { crate::activation::after_floating_window_hide_keep_active(app); }
+            crate::action_bar_commands::finalize_action_bar_pub(app);
         }
     }
 
