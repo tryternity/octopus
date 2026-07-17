@@ -42,7 +42,7 @@
 **Interfaces:**
 - Produces: `clipboard_preview_window::create_preview_window(app)`, `show_preview_window(app)`, `hide_preview_window(app)`, `update_clipboard_preview(app, id)`, `compute_preview_position(clip_win) -> (f64, f64)`
 
-- [ ] **Step 1: 创建 clipboard_preview_window.rs**
+- [x] **Step 1: 创建 clipboard_preview_window.rs**
 
 ```rust
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -158,7 +158,7 @@ pub fn update_clipboard_preview(app: AppHandle, id: i64) {
 
 > **注意**：`db::get_clipboard_item_by_id` 需要确认是否已存在。如果不存在，用 `db::with_db` 查询 `clipboard_history WHERE id = ?`。
 
-- [ ] **Step 2: main.rs 注册模块 + 命令**
+- [x] **Step 2: main.rs 注册模块 + 命令**
 
 在 `crates/desktop/src/main.rs` 中：
 
@@ -201,7 +201,7 @@ pub fn hide_clipboard_window(app: &AppHandle) {
 }
 ```
 
-- [ ] **Step 3: capabilities/default.json 加入预览窗口**
+- [x] **Step 3: capabilities/default.json 加入预览窗口**
 
 在 `windows` 数组中加入 `"clipboard_preview_window"`：
 
@@ -218,7 +218,7 @@ pub fn hide_clipboard_window(app: &AppHandle) {
 ]
 ```
 
-- [ ] **Step 4: 创建预览窗口（main.rs setup 阶段）**
+- [x] **Step 4: 创建预览窗口（main.rs setup 阶段）**
 
 在 `main.rs` 的 `setup` 闭包中，`create_clipboard_window` 之后加入：
 
@@ -229,7 +229,7 @@ if let Err(e) = clipboard_preview_window::create_preview_window(app.handle()) {
 }
 ```
 
-- [ ] **Step 5: 验证编译**
+- [x] **Step 5: 验证编译**
 
 ```bash
 cargo build -p octopus-desktop
@@ -237,7 +237,7 @@ cargo build -p octopus-desktop
 
 Expected: 编译通过，无 error
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -252,7 +252,7 @@ git commit -m "feat(clipboard-preview): Rust 预览窗口模块 + 定位逻辑 +
 - Create: `crates/desktop/frontend/src/pages/ClipboardPreview/index.tsx`
 - Modify: `crates/desktop/frontend/src/App.tsx`
 
-- [ ] **Step 1: 创建 ClipboardPreview 组件**
+- [x] **Step 1: 创建 ClipboardPreview 组件**
 
 写入 `crates/desktop/frontend/src/pages/ClipboardPreview/index.tsx`：
 
@@ -354,7 +354,7 @@ function formatFilePaths(refData?: string): string {
 }
 ```
 
-- [ ] **Step 2: App.tsx 加入路由**
+- [x] **Step 2: App.tsx 加入路由**
 
 在 `crates/desktop/frontend/src/App.tsx` 中：
 
@@ -369,7 +369,7 @@ case "clipboard_preview_window":
     return <ClipboardPreview />;
 ```
 
-- [ ] **Step 3: 添加 i18n key**
+- [x] **Step 3: 添加 i18n key**
 
 在 `crates/desktop/frontend/src/locales/zh-CN.yaml` 末尾追加：
 
@@ -387,13 +387,13 @@ clipboardPreview:
   empty: Select an item to preview
 ```
 
-- [ ] **Step 4: tsc 验证**
+- [x] **Step 4: tsc 验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -408,7 +408,7 @@ git commit -m "feat(clipboard-preview): 前端预览组件 + 路由 + i18n"
 - Modify: `crates/desktop/frontend/src/pages/Clipboard/index.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`
 
-- [ ] **Step 1: index.tsx — 选中变化时触发预览更新**
+- [x] **Step 1: index.tsx — 选中变化时触发预览更新**
 
 在 `crates/desktop/frontend/src/pages/Clipboard/index.tsx` 中，已有的 `selectedIndex` scroll-into-view useEffect 之后，新增：
 
@@ -425,7 +425,7 @@ useEffect(() => {
 
 确保 `invoke` 已导入（文件顶部应有 `import { invoke, listen } from "@/lib/tauri";`）。
 
-- [ ] **Step 2: ClipboardItem.tsx — hover 时触发预览更新**
+- [x] **Step 2: ClipboardItem.tsx — hover 时触发预览更新**
 
 在 `ClipboardItem.tsx` 的根 div（`onClick={handleClick}` 的同一个 div）上加入 `onMouseEnter`：
 
@@ -437,14 +437,14 @@ onMouseEnter={() => onSelect(index)}
 
 > **注意**：`onSelect` 已是 `useCallback` 稳定引用，不影响 memo。`onMouseEnter` 触发 `setSelectedIndex` 会导致两行 re-render（旧选中行 + 新选中行），与现有点击选中行为一致。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit
 cd .. && npm run build
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -455,36 +455,36 @@ git commit -m "feat(clipboard-preview): 浮窗选中/hover 联动预览窗口"
 
 ## Task 4: 最终验证 + 文档同步
 
-- [ ] **Step 1: 全量构建**
+- [x] **Step 1: 全量构建**
 
 ```bash
 cargo build -p octopus-desktop --features embedded
 cd crates/desktop/frontend && npm run build
 ```
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo test -p octopus-desktop
 ```
 
-- [ ] **Step 3: 检查遗漏**
+- [x] **Step 3: 检查遗漏**
 
 ```bash
 # 搜索前端残留硬编码（预览组件中不应有中文字符串）
 grep -rn '[\x{4e00}-\x{9fff}]' crates/desktop/frontend/src/pages/ClipboardPreview/ | grep -v '//'
 ```
 
-- [ ] **Step 4: 更新 architecture.md**
+- [x] **Step 4: 更新 architecture.md**
 
 在 architecture.md 的窗口表中加入 `clipboard_preview_window` 行，描述预览窗口的定位逻辑和生命周期。
 
-- [ ] **Step 5: 更新 spec 状态**
+- [x] **Step 5: 更新 spec 状态**
 
 将 spec 顶部状态改为「✅ 已实现」。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
