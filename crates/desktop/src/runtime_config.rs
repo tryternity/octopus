@@ -382,6 +382,12 @@ pub fn switch_active_model(
     octopus_infra::db::switch_active_model(&domain, id).map_err(|e| e.to_string())?;
     // 重载该域激活缓存（reload_active_engine 清槽 + 重 load）。
     // 失败仅告警（DB 已切换成功，缓存下次 resolve 会 fallback 重 load）。
+    //
+    // **并发不变量（code review Issue #2）**：DB 是真相源，reload 从 DB 读回（而非
+    // 从入参 id 构造缓存）。两个 switch 并发时：DB UPDATE 经 with_db 的
+    // ReentrantMutex 串行化（last-writer-wins）；两条 reload 都从 DB 读到最新值，
+    // 缓存最终 = DB 最终。**不要**优化成「按入参 id 直接写缓存」——那会引入真正的
+    // race（thread A 的 reload 可能写到 thread B 的 id 之前）。
     if let Err(e) = octopus_asr_local::config::reload_active_engine(&domain) {
         log::warn!("switch_active_model: reload_active_engine('{}') 失败：{}", domain, e);
     }

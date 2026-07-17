@@ -280,18 +280,30 @@ pub fn switch_active_model(domain: String, id: i64, app: AppHandle) -> Result<()
 4. **端到端**（手动）：设置页激活 ASR/LLM/OCR/Translate 模型 → 录音/润色/OCR/翻译验证
 5. **回归**：现有 asr-local 125 + desktop 311 + infra 114 测试全过
 
-## 10. 数据迁移（用户手工）
+## 10. 数据迁移（v37 自动迁移，code review Issue #1 修复）
 
-用户自行执行 SQL（开发期，不在代码里写迁移）：
+**最终实现**：v36→v37 迁移在 `init_schema` 中**自动完成**（对齐原计划的手工 SQL），用户无需手工干预。
+迁移块（`crates/infra/src/db.rs` v37 段）：
+
 ```sql
--- 1. 加 is_available 列
+-- 1. 旧库补 is_available 列（db.sql 新库已含，仅 ALTER 给 v36 旧库）
 ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0;
--- 2. 原 is_enabled 值（可用）迁移到 is_available
+-- 2. 原 is_enabled 值（旧「可用」语义）迁移到 is_available
 UPDATE models SET is_available = is_enabled;
--- 3. is_enabled 改为激活语义（全 0，用户重新激活）
+-- 3. is_enabled 重置为 0（新语义=激活，用户重新激活才设；保证「每域仅 1」不变量不被旧库多 is_enabled=1 破坏）
 UPDATE models SET is_enabled = 0;
--- 4. 删 app_config 的 4 个激活字段
+-- 4. 删 app_config 的 4 个废弃激活字段
 DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine');
 ```
+
+**为什么必须自动迁移**（code review Issue #1）：原计划「用户手工迁移」有隐患——若用户仅升级 app 不执行手工 SQL，
+旧库 is_enabled=1 的多行（旧「可用」语义）会保留，用户重新激活新模型时 `switch_active_model` 的
+`UPDATE ... WHERE is_available=1` 因旧库 is_available=0 而影响 0 行，旧 is_enabled=1 不被清空。
+后续用户把某模型 is_available 置 1 时，该域出现多 is_enabled=1 AND is_available=1 行，违反 §6.1
+核心不变量。自动迁移消除此隐患。
+
+回归测试：`migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation`（infra db tests）。
+
+**原计划（已废弃，保留作历史参考）**：用户自行执行 SQL（开发期，不在代码里写迁移）。
 
 db.sql 的全新库脚本和 user_version 升级由代码实现（新建库直接到新 schema）。

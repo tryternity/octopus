@@ -335,17 +335,20 @@ action_bar_commands / translation_commands 的改造与 desktop 调用层同 cra
 ### 验证结果（Task 7）
 
 - cargo build --release（server + cli + asr-local + desktop embedded,cloud）0 error 0 warning
-- infra 114 测试 / desktop 307 测试全过
-- asr-local 121 单测全过；5 个 real_model 测试失败（需用户手工迁移 DB，spec §10）
+- infra 126 测试（+12 含 v37 迁移回归）/ desktop 307 测试全过
+- asr-local 123 单测全过；5 个 real_model 测试失败（需用户手工迁移 DB，spec §10）
 - tsc --noEmit 0 error；vite build 成功
 
-### 待用户手工操作
+### DB 迁移（v37 自动迁移，code review Issue #1 修复）
 
-真实 DB `~/.octopus/octopus.db` 迁移（spec §10）：
-```sql
-ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0;
-UPDATE models SET is_available = is_enabled;
-UPDATE models SET is_enabled = 0;
-DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine');
-```
-迁移后重新激活所需模型（设置页 switch_active_model）。
+**最终实现**：v36→v37 迁移在 `init_schema` 中自动完成（对齐原计划的手工 SQL），用户无需手工干预。
+原计划「用户手工迁移」改为自动——code review Issue #1 指出若用户仅升级 app 不执行手工 SQL，
+旧库多 is_enabled=1 行（旧「可用」语义）会破坏「每域仅 1 个激活」不变量。
+
+迁移块在 `crates/infra/src/db.rs` v37 段：补 is_available 列 + `UPDATE is_available=is_enabled`
++ `UPDATE is_enabled=0` + 删 app_config 4 个废弃字段。
+
+回归测试 `migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation`（infra db tests）
++ `switch_active_model_with_id_neg1_clears_domain`（id=-1 LLM「不选择模型」路径）。
+
+迁移后用户在设置页重新激活所需模型（switch_active_model）。

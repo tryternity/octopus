@@ -227,7 +227,8 @@ where
 /// v35：搜索频次加权表。
 /// v36：统一 launcher_index 表（合并 app_index + 预留 command）+ action_bar_items 加 global_shortcut 列。
 /// v37：models 表语义重构——新增 is_available 列（可用），is_enabled 改表激活（每域仅 1）。
-///      数据迁移用户手工（开发期），代码只负责旧库补 is_available 列。
+///      旧库自动迁移（对齐 spec §10）：is_available=is_enabled（迁语义）+ is_enabled=0（重置激活）
+///      + 删 app_config 4 个废弃激活字段（asr_engine/polish_llm/ocr_model/translate_engine）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -358,9 +359,16 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 36", [])?;
             log::info!("schema upgraded to v36 (launcher_index unified table + global_shortcut column)");
         }
-        // v36→v37：models 表加 is_available 列（可用语义），is_enabled 改表激活。
-        // 旧库补列：is_available 默认 0（用户手工迁移原 is_enabled 值过来）。
-        // db.sql 新库已含 is_available 列，此处仅 ALTER 给已升到 v36 的旧库补。
+        // v36→v37：models 表语义重构——is_available（可用）+ is_enabled（激活）分离。
+        // 旧库迁移（对齐 spec §10 手工 SQL，用户无需手工干预）：
+        //   1. 加 is_available 列（默认 0）
+        //   2. 原 is_enabled 值（旧「可用」语义）迁到 is_available
+        //   3. is_enabled 全置 0（新语义=激活，用户重新激活时设）
+        //   4. 删 app_config 的 4 个激活字段（asr_engine/polish_llm/ocr_model/translate_engine）
+        //      —— 激活态统一存 DB is_enabled，app_config 这 4 个 key 已废弃。
+        // **关键不变量**：迁移后无任何行 is_enabled=1（用户重新激活才设），保证 §6.1
+        // 「每域仅 1 个 is_enabled=1」不被旧库遗留的多 is_enabled=1 行破坏。
+        // db.sql 新库已含 is_available 列 + seed 全 is_enabled=0，无需此 ALTER。
         if v < 37 {
             let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)")?
                 .query_map([], |r| r.get::<_, String>(1))?
@@ -368,10 +376,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 .collect();
             if !cols.contains(&"is_available".to_string()) {
                 conn.execute("ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0", [])?;
-                log::info!("schema v37: models 补 is_available 列（原 is_enabled 值需手工迁移到 is_available）");
+                log::info!("schema v37: models 补 is_available 列");
+            }
+            // 迁移旧 is_enabled 值（「可用」语义）到 is_available
+            let migrated = conn.execute("UPDATE models SET is_available = is_enabled", [])?;
+            // is_enabled 全重置为 0（新语义=激活，用户重新激活）
+            let cleared = conn.execute("UPDATE models SET is_enabled = 0", [])?;
+            log::info!("schema v37: 迁移 {} 行 is_available=is_enabled，重置 {} 行 is_enabled=0", migrated, cleared);
+            // 删 app_config 4 个废弃激活字段
+            let deleted = conn.execute(
+                "DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine')",
+                [],
+            )?;
+            if deleted > 0 {
+                log::info!("schema v37: 删除 app_config 中 {} 个废弃激活字段", deleted);
             }
             conn.execute("PRAGMA user_version = 37", [])?;
-            log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离)");
+            log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离 + 旧库数据迁移)");
         }
         return Ok(());
     }
@@ -1379,7 +1400,8 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
 /// 与 [`LlmModelInfo`] 字段一致（含 id、provider、category 等），区别在于：
 /// - 按 domain 参数过滤（而非写死 'llm'）
 /// - 过滤 is_local=0（只列云端模型，本地走 list_local_models_by_domain）
-/// - 不过滤 is_enabled（云端模型默认入库即 is_enabled=1；保留以便未来支持禁用）
+/// - 不过滤 is_enabled（Task 1 后云端模型 insert_cloud_model 写 is_enabled=0 不自动激活；
+///   此处保留 is_enabled 字段供前端标 current——用户 switch_active_model 激活后置 1）
 fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking, is_enabled
@@ -3298,6 +3320,101 @@ mod tests {
             [], |r| r.get(0)
         ).map_err(anyhow::Error::from)).unwrap();
         assert_eq!(old_app_index_exists, 0, "旧 app_index 表应已 DROP");
+    }
+
+    /// 回归 Issue #1（code review）：v37 迁移自动完成 spec §10 手工 SQL——
+    /// 旧库（v36）有多 is_enabled=1 行（旧「可用」语义），迁移后：
+    ///   - is_available 继承原 is_enabled 值
+    ///   - is_enabled 全重置为 0（无破坏「每域仅 1 个激活」不变量）
+    ///   - app_config 4 个废弃激活字段被删
+    /// 若迁移漏了 UPDATE，用户重新激活后会出现多 is_enabled=1 AND is_available=1 行，
+    /// 违反 §6.1 核心不变量。
+    #[test]
+    fn migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation() {
+        setup_test_db();  // 建库到最新
+
+        // 模拟 v36 旧库状态：手动造一个多 is_enabled=1 的场景（旧「可用」语义）
+        // + 插一个废弃 app_config 字段
+        with_db(|c| {
+            // 先把当前 is_available 清零，重置成「迁移前」状态：
+            // 把多条模型设为 is_enabled=1（旧「可用」语义，多个），is_available 全 0
+            c.execute("UPDATE models SET is_available = 0", [])?;
+            c.execute(
+                "UPDATE models SET is_enabled = 1 WHERE domain='asr' AND is_local=1",
+                [],
+            )?;  // 模拟旧库多条 asr 本地模型都「可用」(is_enabled=1)
+            // 插一个废弃激活字段
+            c.execute(
+                "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES ('asr_engine', 'local:zipformer:zipformer-small-ctc')",
+                [],
+            )?;
+            // 退回 v36，让 init_schema 重跑 v36→v37 迁移
+            c.execute("PRAGMA user_version = 36", [])?;
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+
+        // 验证迁移前状态：多条 asr 模型 is_enabled=1，is_available=0
+        let old_enabled_cnt: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert!(old_enabled_cnt > 1, "测试前提：旧库应有多条 is_enabled=1");
+
+        // 重跑迁移
+        with_db(|c| { init_schema(c).map_err(anyhow::Error::from) }).unwrap();
+
+        // 验证迁移后：
+        // 1. is_available 继承了原 is_enabled 值（原 is_enabled=1 的行现在 is_available=1）
+        let new_available: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_available=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(new_available, old_enabled_cnt,
+            "原 is_enabled=1 的行应迁移到 is_available=1");
+
+        // 2. is_enabled 全为 0（重置激活，无破坏不变量）
+        let new_enabled: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE is_enabled=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(new_enabled, 0,
+            "迁移后无任何 is_enabled=1（用户重新激活才设）");
+
+        // 3. get_active_model 应返回 None（无激活）
+        assert!(get_active_model("asr").unwrap().is_none(),
+            "迁移后无激活模型，get_active_model 应返回 None");
+
+        // 4. 废弃 app_config 字段已删
+        let stale_key: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM app_config WHERE config_key='asr_engine'", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(stale_key, 0, "废弃的 asr_engine 配置项应已删除");
+    }
+
+    /// 回归 Issue #7（code review）：switch_active_model 用 id=-1（LLM「不选择模型」）
+    /// 应清空该域所有 is_enabled（前端 LlmTab.tsx 传 -1 表示取消激活）。
+    /// 依赖 SQLite AUTOINCREMENT 永不产生负 id（IIF(id=-1,1,0) 无匹配行，全部置 0）。
+    #[test]
+    fn switch_active_model_with_id_neg1_clears_domain() {
+        let conn = open_init();
+        // 先激活 sensevoice（is_available=1）
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_some(),
+            "测试前提：先激活一个模型");
+
+        // 用 id=-1 调 switch_active_model（前端 LLM「不选择模型」语义）
+        switch_active_model_at(&conn, "asr", -1).unwrap();
+
+        // 验证：该域无任何 is_enabled=1 AND is_available=1
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none(),
+            "id=-1 应清空该域所有激活（IIF(id=-1,1,0) 无匹配，全置 0）");
+
+        // 原 sensevoice 的 is_enabled 应为 0（被清空）
+        let sv_enabled: i64 = conn.query_row(
+            "SELECT is_enabled FROM models WHERE id=?1", params![sv], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(sv_enabled, 0, "原激活模型应被清空");
     }
 
     /// 回归 T9-L6：v32→v36 迁移——从无 app_index 表的 v32 库升级，

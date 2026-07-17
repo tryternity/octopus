@@ -103,7 +103,6 @@ pub fn set_config(
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, mut cfg) = {
@@ -201,19 +200,9 @@ pub fn set_config(
     // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
     octopus_asr_local::config::reload_app_config();
 
-    // 审查 三2：切 asr_engine 时后台预热本地引擎（避免首次 transcribe 懒加载卡顿）。
-    // Task 2 后：asr_engine 不再经 set_config 切（走 switch_active_model），此分支保留
-    // 兜底——前端若仍调 set_config("asr_engine",...) 也能预热。
-    if key == "asr_engine" {
-        crate::runtime_config::preheat_local_engine(
-            engine_manager.inner().clone(),
-            &cfg.engine_mode,
-        );
-    }
-
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
     // 无需等下次 Toggle（用户在录音中改 polish_mode 等也能立即生效）。
-    // Task 2 后 polish_llm 不在 set_config 列表（走 switch_active_model）。
+    // Task 2 后 asr_engine / polish_llm 不在 set_config 列表（走 switch_active_model）。
     if matches!(
         key.as_str(),
         "polish_mode" | "asr_correct" | "output_simplified" | "hide_toolbar"
