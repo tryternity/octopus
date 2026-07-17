@@ -958,7 +958,8 @@ export default function ActionBarPanel({
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
-          accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
+          // submenu 用 any（两个 scope 都显示）；其他锁定为 handleAdd 设的 scopeFilter 值
+          accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
         });
@@ -1031,14 +1032,18 @@ export default function ActionBarPanel({
   const handleAdd = useCallback((parentId: number | null) => {
     setEditingId(null);
     setDraftParentId(parentId);
+    // 新建项的 accepts 锁定为当前 scopeFilter——在文本类下只能建文本类菜单，
+    // 文件类下只能建文件类。submenu 用 any（两个场景都显示）。
+    // 用户不能在表单里改 accepts——没有 UI 控件，saveEdit 时用此值。
     setEditingForm({
       title: t("settings.actionBar.newMenuItem"),
       actionType: "copy",
       actionData: "",
       isEnabled: true,
+      accepts: scopeFilter === "file" ? "file" : "text",
     });
     // 不动 tab——editingId=null + draftParentId !== undefined 表示新建模式，EditForm 全屏覆盖
-  }, []);
+  }, [scopeFilter, t]);
 
   // 主菜单字段 inline 实时保存（isEnabled / shortcut / globalShortcut / actionType）。
   // 主菜单字段少且独立于 actionData/agent 等复杂字段，inline 编辑体验好。
