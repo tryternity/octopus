@@ -666,6 +666,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   };
 
   // Esc 撤销 / Cmd/Ctrl+Z 撤销（不再关窗——ImagePreview 是 CompactEditor 的 tab）
+  // deps=[]：undo/redo 都用函数式 setState + ref（不读 annotations 闭包），监听器一次挂载即可。
+  // 原 deps [annotations] 会在标注拖动时每帧 remove+add 监听器（无谓浪费）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") { e.preventDefault(); redo(); return; }
@@ -674,7 +676,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [annotations]);
+  }, []);
 
   // 图像格式：从 dataUrl 前缀解析（data:image/png;base64,… → PNG），底部 EXIF 条显示
   const fmt = dataUrl ? (dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+)/)?.[1] ?? "").toUpperCase() : "";
