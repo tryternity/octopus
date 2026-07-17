@@ -5449,9 +5449,11 @@ name = "octopus-translation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "log",
  "ndarray 0.17.2",
  "octopus-infra",
+ "octopus-llm",
  "onnx-infra",
  "ort",
  "parking_lot",
@@ -5459,6 +5461,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokenizers",
+ "tokio",
 ]
 
 [[package]]

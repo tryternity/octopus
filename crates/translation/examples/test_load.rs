@@ -1,6 +1,7 @@
 use octopus_translation::{M2M100Engine, TranslationEngine};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let engine = M2M100Engine::load().expect("模型加载失败");
     println!("Engine: {}", engine.name());
 
@@ -9,7 +10,7 @@ fn main() {
         ("Hello world", "en", "zh"),
         ("你好世界", "zh", "en"),
     ] {
-        match engine.translate(text, src, tgt) {
+        match engine.translate(text, src, tgt).await {
             Ok(r) => println!("{}→{}: {} → {}", src, tgt, text, r),
             Err(e) => println!("{}→{} FAILED: {:?}", src, tgt, e),
         }
@@ -25,7 +26,7 @@ fn main() {
         The cherry blossoms are in full bloom this time of year. \
         We can take many beautiful photos together. \
         I am looking forward to seeing you all there.";
-    match engine.translate(long_text, "en", "zh") {
+    match engine.translate(long_text, "en", "zh").await {
         Ok(r) => println!("\nen→zh (long):\n{}", r),
         Err(e) => println!("long FAILED: {:?}", e),
     }

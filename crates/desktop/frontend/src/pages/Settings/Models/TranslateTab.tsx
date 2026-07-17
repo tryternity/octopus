@@ -1,17 +1,31 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { HardDrive } from "lucide-react";
+import { Cloud, HardDrive, Plus } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
+import { CloudModelForm, type CloudModelData } from "./CloudModelForm";
+import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 
 interface DownloadableModel {
+  id: number;
   name: string;
   repo: string;
   description: string;
   category: string;
   is_enabled: boolean;
+}
+
+interface TranslateCloudModel {
+  id: number;
+  provider: string;
+  category: string;
+  modelName: string;
+  source: string;
+  secretKey: string;
+  isStreaming: boolean;
+  isThinking: boolean;
 }
 
 interface TranslateStatus {
@@ -29,17 +43,22 @@ interface DownloadProgress {
 export default function TranslateTab({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
   const [downloadable, setDownloadable] = useState<DownloadableModel[]>([]);
+  const [cloudModels, setCloudModels] = useState<TranslateCloudModel[]>([]);
   const [status, setStatus] = useState<TranslateStatus | null>(null);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editTarget, setEditTarget] = useState<CloudModelData | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [data, st] = await Promise.all([
+      const [data, cloud, st] = await Promise.all([
         invoke<DownloadableModel[]>("list_downloadable_models", { domain: "translate" }),
+        invoke<TranslateCloudModel[]>("list_translate_cloud_models"),
         invoke<TranslateStatus>("translate_status"),
       ]);
       setDownloadable(data);
+      setCloudModels(cloud);
       setStatus(st);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
@@ -73,8 +92,9 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  const onActivate = async (name: string) => {
-    try { await invoke("set_config", { key: "translate_engine", value: `local:${name}` }); load(); }
+  // translate_engine 配置项存 DB 行 id（本地/云端统一）。激活即写 id 字符串。
+  const onActivate = async (id: number) => {
+    try { await invoke("set_config", { key: "translate_engine", value: String(id) }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
@@ -96,30 +116,90 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
+  const onDeleteCloud = async (id: number) => {
+    try { await invoke("remove_cloud_model", { id }); load(); }
+    catch (e) { showToast(String(e)); }
+  };
+
+  const onEditCloud = (m: TranslateCloudModel) => {
+    setEditTarget({
+      id: m.id, domain: "translate", provider: m.provider, category: m.category,
+      modelName: m.modelName, source: m.source, secretKey: m.secretKey,
+      isStreaming: m.isStreaming, isThinking: m.isThinking,
+    });
+    setShowForm(true);
+  };
+
   const readyCount = downloadable.filter((m) => m.is_enabled).length;
-  // translate_status 返回 engineName（如 "m2m100-418M"），用它判断 current
+  // translate_status 返回 engineName（如 "m2m100-418M" 或 cloud model_name），用它判断 current
   const currentEngineName = status?.engineName ?? "";
 
-  const rows: ModelRowData[] = downloadable.map((m) => ({
+  const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_enabled,
     is_current: m.name === currentEngineName,
     is_local: true, repo: m.repo,
   }));
 
+  const cloudRows: ModelRowData[] = cloudModels.map((m) => ({
+    name: m.modelName, provider: m.provider, category: m.category,
+    description: "", is_ready: true,
+    is_current: m.modelName === currentEngineName,
+    is_local: false, repo: "",
+    cloudId: m.id,
+  }));
+
   return (
     <div className="space-y-0.5">
       {currentEngineName && <CurrentBanner label={currentEngineName} />}
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
-        {rows.map((m) => (
+        {localRows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
-            onActivate={() => onActivate(m.name)}
+            onActivate={() => {
+              const dm = downloadable.find((d) => d.name === m.name);
+              if (dm) onActivate(dm.id);
+            }}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
             onDelete={() => onDelete(m.repo)}
           />
         ))}
       </CollapsibleSection>
+
+      <CollapsibleSection icon={Cloud} label={t("settings.models.translate.cloud.title")}>
+        <div className="flex justify-end pb-1">
+          <Button variant="voice-soft" size="sm"
+            onClick={() => { setEditTarget(null); setShowForm(true); }}>
+            <Plus /> {t("settings.models.addModel")}
+          </Button>
+        </div>
+        {cloudRows.map((m) => (
+          <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
+            onDownload={() => {}}
+            onVerify={() => {}}
+            onDelete={() => m.cloudId && onDeleteCloud(m.cloudId)}
+            onEdit={() => {
+              const cm = cloudModels.find((o) => o.id === m.cloudId);
+              if (cm) onEditCloud(cm);
+            }}
+          />
+        ))}
+        {cloudRows.length === 0 && (
+          <div className="text-[11px] text-muted-foreground/50 py-3 text-center">
+            {t("settings.models.translate.cloud.empty")}
+          </div>
+        )}
+      </CollapsibleSection>
+
+      {showForm && (
+        <CloudModelForm
+          domain="translate"
+          editModel={editTarget}
+          onSaved={() => { setShowForm(false); setEditTarget(null); load(); }}
+          onCancel={() => { setShowForm(false); setEditTarget(null); }}
+        />
+      )}
     </div>
   );
 }

@@ -21,6 +21,8 @@ use crate::runtime_config::SharedRuntimeConfig;
 /// 一个可下载模型的列表项。
 #[derive(Serialize)]
 pub struct DownloadableModel {
+    /// DB 行 id（translate_engine / asr_engine 等配置项按 id 存）。
+    pub id: i64,
     /// 引擎裸名（DB models.model_name）。
     pub name: String,
     /// HF repo（source），如 csukuangfj/sherpa-onnx-streaming-paraformer-zh。
@@ -56,6 +58,7 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
         // 文件系统实际检查：目录存在 → is_enabled=true（覆盖 DB 未更新的情况）
         let is_ready = r.is_enabled || octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
         out.push(DownloadableModel {
+            id: r.id,
             name: r.model_name,
             repo: r.source,
             category: r.category,
@@ -398,24 +401,30 @@ pub struct LlmProviderPreset {
 
 #[tauri::command]
 pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
-    // LLM 模型：后端先测试连接，通过才保存（is_enabled=1），失败返回错误（is_enabled=0 不入库）
-    if input.domain == "llm" && !input.model_name.is_empty() {
+    // LLM / Translate 云端模型（同为 OpenAI 兼容协议）：后端先测试连接，通过才保存
+    // （is_enabled=1），失败返回错误（is_enabled=0 不入库）。
+    if (input.domain == "llm" || input.domain == "translate") && !input.model_name.is_empty() {
         let test = test_llm_connection(&input.source, &input.secret_key, &input.model_name, input.is_thinking).await;
         if !test.ok {
             return Err(format!("模型测试失败，无法保存：{}", test.message));
         }
     }
-    octopus_infra::db::insert_cloud_model(
+    let id = octopus_infra::db::insert_cloud_model(
         &input.domain, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())
+    ).map_err(|e| e.to_string())?;
+    // ASR 域：引擎下拉经 load_config() 的 RUNTIME_CONFIG 缓存，新增/编辑/删除后必须
+    // reload_models_config 刷新缓存，否则设置页列表不显示（要等重启）。
+    // llm/translate 域直接查 DB 无缓存，reload 无害但多余。
+    octopus_asr_local::config::reload_models_config();
+    Ok(id)
 }
 
 #[tauri::command]
 pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
-    // LLM 模型：后端先测试连接，通过才更新
-    if input.domain == "llm" && !input.model_name.is_empty() {
+    // LLM / Translate 云端模型：后端先测试连接，通过才更新
+    if (input.domain == "llm" || input.domain == "translate") && !input.model_name.is_empty() {
         // secret_key 为空表示编辑时未改 key，从 DB 取真实 key 测试
         let real_key = if input.secret_key.is_empty() {
             octopus_infra::db::get_model_source_key(id)
@@ -433,12 +442,16 @@ pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), Str
         id, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())
+    ).map_err(|e| e.to_string())?;
+    octopus_asr_local::config::reload_models_config();
+    Ok(())
 }
 
 #[tauri::command]
 pub fn remove_cloud_model(id: i64) -> Result<(), String> {
-    octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())
+    octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())?;
+    octopus_asr_local::config::reload_models_config();
+    Ok(())
 }
 
 #[tauri::command]
@@ -455,6 +468,43 @@ pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String> {
     let rows = octopus_infra::db::list_llm_provider_presets().map_err(|e| e.to_string())?;
     Ok(rows.into_iter().map(|r| {
         LlmProviderPreset { provider: r.provider, base_url: r.base_url, models: r.models }
+    }).collect())
+}
+
+/// 翻译云端模型列表项（前端 TranslateTab 云端 section 用）。
+///
+/// 字段与 LLM 云端模型对齐（同为 OpenAI 兼容协议），前端 `CloudModelForm` 的
+/// translate 分支直接复用 llm 的 provider→base_url 自动填充逻辑。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateCloudModel {
+    pub id: i64,
+    pub provider: String,
+    pub category: String,
+    pub model_name: String,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+}
+
+/// 列出所有翻译云端模型（domain='translate' AND is_local=0）。
+///
+/// translate_engine 配置项存 DB 行 id，前端激活/编辑/删除均按 id 操作，
+/// 故这里必须返回 id（与 list_downloadable_models 只返回 model_name 不同）。
+#[tauri::command]
+pub fn list_translate_cloud_models() -> Result<Vec<TranslateCloudModel>, String> {
+    let rows = octopus_infra::db::list_cloud_models_by_domain("translate")
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| TranslateCloudModel {
+        id: r.id,
+        provider: r.provider,
+        category: r.category,
+        model_name: r.model_name,
+        source: r.source,
+        secret_key: r.secret_key,
+        is_streaming: r.is_streaming,
+        is_thinking: r.is_thinking,
     }).collect())
 }
 

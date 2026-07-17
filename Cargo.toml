@@ -24,9 +24,9 @@ resolver = "2"
 #   opt-level="z" → 体积优先（默认 3 速度优先），省 2~4M 换 VAD 前处理延迟微增，需 e2e 权衡
 #   panic="abort" → 不推荐：省 eh_frame ~5M，但常驻托盘 app 单处 panic 会从「unwind→app 存活」
 #                   降级成「abort→直接崩溃」，Tauri 命令保护 + Drop 资源清理均失效，代价不值。
-strip = true
-lto = "fat"
-codegen-units = 1
+#strip = true
+#lto = "fat"
+#codegen-units = 1
 
 [workspace.dependencies]
 parking_lot = "0.12"

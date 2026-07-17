@@ -196,6 +196,9 @@ settings:
       downloaded: Downloaded
       download: Download
       multiLang: Multilingual translation (100+ languages)
+      cloud:
+        title: Cloud Translation Models
+        empty: No cloud translation models yet, click the button above to add
   prompts:
     loadFailed: "Load failed:"
     activated: Activated

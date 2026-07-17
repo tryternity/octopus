@@ -17,53 +17,43 @@ pub struct TranslateStatus {
 #[tauri::command]
 pub fn translate_status() -> Result<TranslateStatus, String> {
     let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    let spec = &config.translate_engine;
 
-    if spec == "llm" {
-        return Ok(TranslateStatus {
-            strategy: "llm".into(),
-            engine_name: "LLM".into(),
-            available: true,
-        });
-    }
-
-    let models = do_discover();
-
-    if spec.is_empty() {
-        if let Some(m) = models.iter().find(|m| m.downloaded) {
-            return Ok(TranslateStatus {
-                strategy: "auto".into(),
-                engine_name: m.name.clone(),
-                available: true,
-            });
-        }
-        return Ok(TranslateStatus {
-            strategy: "auto".into(),
-            engine_name: "LLM".into(),
-            available: true,
-        });
-    }
-
-    // local:* — 提取模型名精确匹配
-    if spec.starts_with("local:") {
-        let target_name = &spec["local:".len()..];
-        return match models.into_iter().find(|m| m.downloaded && m.name == target_name) {
-            Some(m) => Ok(TranslateStatus {
-                strategy: "local".into(),
-                engine_name: m.name.clone(),
-                available: true,
-            }),
-            None => Ok(TranslateStatus {
-                strategy: "local".into(),
-                engine_name: String::new(),
-                available: false,
-            }),
-        };
-    }
+    // translate_engine 存激活翻译模型的 DB id（Task 3）；空 / 非数字 / 不存在 / 非 translate
+    // domain / 未启用 / 云端未填 secret_key → 回退到润色 LLM 兜底翻译。与 action_bar_commands
+    // 的 resolve_translate_strategy 保持语义完全对称（仅以 DB 行字段为准，不再扫本地文件）。
+    let (strategy, engine_name, available) = match config.translate_engine.parse::<i64>() {
+        Ok(id) => match octopus_infra::db::get_model_by_id(id) {
+            Ok(Some(row)) if row.domain == "translate" && row.is_enabled => {
+                if row.is_local {
+                    ("local".to_string(), row.model_name, true)
+                } else if row.secret_key.is_empty() {
+                    // 云端模型未填 secret_key → fallback（与 resolve_translate_strategy 对称，
+                    // 避免到 translate 时才静默回退到 polish_llm）
+                    (
+                        "fallback_llm".into(),
+                        config.polish_llm.clone(),
+                        !config.polish_llm.is_empty(),
+                    )
+                } else {
+                    ("cloud".to_string(), row.model_name, true)
+                }
+            }
+            _ => (
+                "fallback_llm".into(),
+                config.polish_llm.clone(),
+                !config.polish_llm.is_empty(),
+            ),
+        },
+        Err(_) => (
+            "fallback_llm".into(),
+            config.polish_llm.clone(),
+            !config.polish_llm.is_empty(),
+        ),
+    };
 
     Ok(TranslateStatus {
-        strategy: "auto".into(),
-        engine_name: "LLM".into(),
-        available: true,
+        strategy,
+        engine_name,
+        available,
     })
 }

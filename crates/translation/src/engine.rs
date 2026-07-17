@@ -1,10 +1,12 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-/// 本地翻译引擎 trait。支持多引擎扩展（m2m100 / opus-mt / 等）。
+/// 翻译引擎 trait（本地 + 云端统一）。async 以支持云端 HTTP 调用。
+#[async_trait]
 pub trait TranslationEngine: Send + Sync {
-    fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String>;
+    async fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String>;
     fn name(&self) -> &str;
 }
 

@@ -258,6 +258,7 @@ pub fn run() {
             model_commands::remove_cloud_model,
             model_commands::list_asr_cloud_presets,
             model_commands::list_llm_provider_presets,
+            model_commands::list_translate_cloud_models,
             model_commands::test_cloud_model,
             model_commands::get_model_detail,
             search_commands::search_all,
