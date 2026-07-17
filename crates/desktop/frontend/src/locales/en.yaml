@@ -153,6 +153,7 @@ settings:
     confirmDelete: Delete this model files?
     ocrRestartHint: Switched, restart to take effect
     addModel: Add Model
+    deselectModel: Deselect Model
     editModel: Edit Model
     noCloudModels: No cloud models yet
     cancel: Cancel

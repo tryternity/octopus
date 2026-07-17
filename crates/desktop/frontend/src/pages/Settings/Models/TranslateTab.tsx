@@ -133,22 +133,22 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
   };
 
   const readyCount = downloadable.filter((m) => m.is_available).length;
-  // translate_status 返回 engineName（如 "m2m100-418M" 或 cloud model_name），用它判断 current
+  // translate_status 返回 engineName 供 CurrentBanner 显示
   const currentEngineName = status?.engineName ?? "";
 
-  // Task 2 后：is_ready 用 is_available；local is_current 用 is_enabled（激活）；
-  // cloud 仍用 engineName 比对（cloud models 经 list_translate_cloud_models 无 is_enabled 字段）。
+  // review fix 问题 3+6：local/cloud is_current 都用 DB is_enabled；local 补 cloudId: m.id
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
     is_current: m.is_enabled,
     is_local: true, repo: m.repo,
+    cloudId: m.id,
   }));
 
   const cloudRows: ModelRowData[] = cloudModels.map((m) => ({
     name: m.modelName, provider: m.provider, category: m.category,
     description: "", is_ready: true,
-    is_current: m.modelName === currentEngineName,
+    is_current: m.isEnabled,
     is_local: false, repo: "",
     cloudId: m.id,
   }));
@@ -159,10 +159,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
-            onActivate={() => {
-              const dm = downloadable.find((d) => d.name === m.name);
-              if (dm) onActivate(dm.id);
-            }}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
             onDelete={() => onDelete(m.repo)}

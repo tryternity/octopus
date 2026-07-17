@@ -153,6 +153,7 @@ settings:
     confirmDelete: 确定删除此模型文件吗？
     ocrRestartHint: 已切换，重启后生效
     addModel: 添加模型
+    deselectModel: 不选择模型
     editModel: 编辑模型
     noCloudModels: 暂无云端模型，点击上方添加
     cancel: 取消

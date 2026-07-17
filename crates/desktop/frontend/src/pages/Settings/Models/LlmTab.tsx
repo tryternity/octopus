@@ -79,6 +79,15 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   return (
     <div className="space-y-0.5">
       {currentLabel && <CurrentBanner label={currentLabel} />}
+      {/* review fix 问题 4：「不选择模型」入口——用户可关闭 polish（取消 LLM 域激活） */}
+      {models.some((m) => m.current && m.name) && (
+        <div className="flex justify-end pb-0.5">
+          <Button variant="voice-soft" size="sm"
+            onClick={() => onActivate(null)}>
+            {t("settings.models.deselectModel")}
+          </Button>
+        </div>
+      )}
 
       {localRows.length > 0 && (
         <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>

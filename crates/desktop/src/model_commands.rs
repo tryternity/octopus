@@ -287,7 +287,29 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
 
 // ── 内部辅助 ──
 
-/// 写 secret_key（可选）+ is_available（文件就绪）+ reload 运行时 AsrConfig 缓存。
+/// 查模型 domain（供按域 reload ACTIVE_ENGINES）。本地模型仅在 asr/translate/ocr 域。
+fn get_model_domain(model_name: &str) -> Option<String> {
+    // 先查 ASR（list_all_asr_engines 含全量 ASR，不限 is_available）
+    if octopus_infra::db::list_all_asr_engines()
+        .ok()?
+        .iter()
+        .any(|r| r.model_name == model_name)
+    {
+        return Some("asr".to_string());
+    }
+    // 非 ASR 本地模型——直接查 DB domain
+    octopus_infra::db::get_model_domain_by_name(model_name).ok().flatten()
+}
+
+/// 按 domain 刷新 ACTIVE_ENGINES 缓存（review fix 问题 2）。
+/// model 数据写路径（download/verify/edit/remove）后调用，确保推理路径读到最新状态。
+fn reload_engine_cache(domain: &str) {
+    if let Err(e) = octopus_asr_local::config::reload_active_engine(domain) {
+        log::warn!("reload_active_engine('{}') 失败：{}", domain, e);
+    }
+}
+
+/// 写 secret_key（可选）+ is_available（文件就绪）+ 按域刷新 ACTIVE_ENGINES 缓存。
 fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> Result<(), String> {
     let model_name = match lookup_model_name(repo) {
         Ok(name) => name,
@@ -300,8 +322,10 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }
     octopus_infra::db::set_model_available(&model_name, enabled).map_err(|e| e.to_string())?;
-    // reload 只对 ASR 有意义（翻译/OCR 不走 AsrConfig）
-    octopus_asr_local::config::reload_models_config();
+    // 按域刷新 ACTIVE_ENGINES 缓存（reload_models_config 已是 no-op）
+    if let Some(domain) = get_model_domain(&model_name) {
+        reload_engine_cache(&domain);
+    }
     Ok(())
 }
 
@@ -418,10 +442,8 @@ pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
     ).map_err(|e| e.to_string())?;
-    // ASR 域：引擎下拉经 load_config() 的 RUNTIME_CONFIG 缓存，新增/编辑/删除后必须
-    // reload_models_config 刷新缓存，否则设置页列表不显示（要等重启）。
-    // llm/translate 域直接查 DB 无缓存，reload 无害但多余。
-    octopus_asr_local::config::reload_models_config();
+    // 按域刷新 ACTIVE_ENGINES 缓存（新增不影响激活态，但 reload 无害）
+    reload_engine_cache(&input.domain);
     Ok(id)
 }
 
@@ -447,14 +469,22 @@ pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), Str
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
     ).map_err(|e| e.to_string())?;
-    octopus_asr_local::config::reload_models_config();
+    // 按域刷新 ACTIVE_ENGINES（编辑可能改了激活模型的 secret_key/source）
+    reload_engine_cache(&input.domain);
     Ok(())
 }
 
 #[tauri::command]
 pub fn remove_cloud_model(id: i64) -> Result<(), String> {
+    // 删前查 domain 供 reload（删后查不到了）
+    let domain = octopus_infra::db::get_model_by_id(id)
+        .ok().flatten()
+        .map(|r| r.domain);
     octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())?;
-    octopus_asr_local::config::reload_models_config();
+    // 按域刷新 ACTIVE_ENGINES（删除的可能是激活模型 → reload 后 fallback/None）
+    if let Some(d) = domain {
+        reload_engine_cache(&d);
+    }
     Ok(())
 }
 
@@ -490,6 +520,8 @@ pub struct TranslateCloudModel {
     pub secret_key: String,
     pub is_streaming: bool,
     pub is_thinking: bool,
+    /// DB is_enabled（激活态）。供前端标 current（review fix 问题 3）。
+    pub is_enabled: bool,
 }
 
 /// 列出所有翻译云端模型（domain='translate' AND is_local=0）。
@@ -509,6 +541,7 @@ pub fn list_translate_cloud_models() -> Result<Vec<TranslateCloudModel>, String>
         secret_key: r.secret_key,
         is_streaming: r.is_streaming,
         is_thinking: r.is_thinking,
+        is_enabled: r.is_enabled,
     }).collect())
 }
 

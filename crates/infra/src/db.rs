@@ -374,24 +374,28 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 .query_map([], |r| r.get::<_, String>(1))?
                 .filter_map(|r| r.ok())
                 .collect();
+            // review fix 问题 5：事务包裹保证原子性（ALTER 不能在事务内，
+            // 但 3 条 DML + PRAGMA 在事务内——ALTER 先单独执行）
             if !cols.contains(&"is_available".to_string()) {
                 conn.execute("ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0", [])?;
                 log::info!("schema v37: models 补 is_available 列");
             }
+            let tx = conn.unchecked_transaction()?;
             // 迁移旧 is_enabled 值（「可用」语义）到 is_available
-            let migrated = conn.execute("UPDATE models SET is_available = is_enabled", [])?;
+            let migrated = tx.execute("UPDATE models SET is_available = is_enabled", [])?;
             // is_enabled 全重置为 0（新语义=激活，用户重新激活）
-            let cleared = conn.execute("UPDATE models SET is_enabled = 0", [])?;
+            let cleared = tx.execute("UPDATE models SET is_enabled = 0", [])?;
             log::info!("schema v37: 迁移 {} 行 is_available=is_enabled，重置 {} 行 is_enabled=0", migrated, cleared);
             // 删 app_config 4 个废弃激活字段
-            let deleted = conn.execute(
+            let deleted = tx.execute(
                 "DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine')",
                 [],
             )?;
             if deleted > 0 {
                 log::info!("schema v37: 删除 app_config 中 {} 个废弃激活字段", deleted);
             }
-            conn.execute("PRAGMA user_version = 37", [])?;
+            tx.execute("PRAGMA user_version = 37", [])?;
+            tx.commit()?;
             log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离 + 旧库数据迁移)");
         }
         return Ok(());
@@ -934,10 +938,19 @@ pub fn set_model_available(model_name: &str, enabled: bool) -> Result<()> {
 }
 
 fn set_model_available_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
-    conn.execute(
-        "UPDATE models SET is_available = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
-        params![if enabled { 1 } else { 0 }, model_name],
-    )?;
+    if enabled {
+        // 置可用——不动 is_enabled（用户需显式 switch_active_model 激活）
+        conn.execute(
+            "UPDATE models SET is_available = 1 WHERE model_name = ?1 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
+            params![model_name],
+        )?;
+    } else {
+        // 置不可用——同步清 is_enabled（不可用模型不能保持激活，防双激活残留）
+        conn.execute(
+            "UPDATE models SET is_available = 0, is_enabled = 0 WHERE model_name = ?1 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
+            params![model_name],
+        )?;
+    }
     Ok(())
 }
 
@@ -1272,6 +1285,18 @@ pub struct ModelRow {
     pub is_available: bool,
 }
 
+/// 按 model_name 查 domain（供 model_commands 按域 reload 缓存）。
+pub fn get_model_domain_by_name(model_name: &str) -> Result<Option<String>> {
+    with_db(|conn| {
+        let domain: Option<String> = conn.query_row(
+            "SELECT domain FROM models WHERE model_name = ?1 LIMIT 1",
+            params![model_name],
+            |r| r.get(0),
+        ).optional()?;
+        Ok(domain)
+    })
+}
+
 /// 按 id 查询 models 表行（不限 domain）。用于反查引擎配置。
 pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
     with_db(|conn| {
@@ -1291,12 +1316,14 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
     with_db(|conn| get_active_model_at(conn, domain))
 }
 
+/// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。ORDER BY id 保证确定性。
+
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
 fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Option<ModelRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, domain, provider, category, model_name, source, secret_key,
                 language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
-         FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
+         FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 ORDER BY id LIMIT 1",
     )?;
     let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
     Ok(row)
@@ -1329,9 +1356,15 @@ pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
 }
 
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+///
+/// SQL 语义（review fix 双激活 bug）：WHERE 覆盖两类行——
+/// (a) 目标行（id=?）且 is_available=1 → 激活它
+/// (b) 所有当前 is_enabled=1 的行（无论 is_available） → 清零（含残留的不可用行）
+/// 这样不可用模型上残留的 is_enabled=1 也会被清理，防止「文件丢失→重新可用→双激活」。
 fn switch_active_model_at(conn: &Connection, domain: &str, id: i64) -> Result<()> {
     conn.execute(
-        "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+        "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) \
+         WHERE domain=?2 AND ((id=?1 AND is_available=1) OR is_enabled=1)",
         params![id, domain],
     )?;
     Ok(())
@@ -3972,9 +4005,9 @@ mod tests {
         assert_eq!(active.id, fr, "激活应已切到 firered");
     }
 
-    /// §6.3 边界：switch_active_model 仅在 is_available=1 中切换——
-    /// 目标 id 是 is_available=0 的行时，UPDATE 不影响它（WHERE is_available=1 排除），
-    /// 且会把该域所有 is_available=1 的行 is_enabled 置 0（全清空）。
+    /// §6.3 边界：切到不可用模型时清空该域激活——
+    /// SQL WHERE 覆盖 (id=? AND is_available=1) OR is_enabled=1，
+    /// 不可用目标行不满足前者 → 不激活；所有 is_enabled=1 行被清零。
     #[test]
     fn switch_active_model_clears_domain_when_target_not_available() {
         let conn = open_init();
@@ -3991,16 +4024,50 @@ mod tests {
         switch_active_model_at(&conn, "asr", sv).unwrap();
         assert!(get_active_model_at(&conn, "asr").unwrap().is_some());
 
-        // 切到 paraformer-streaming（is_available=0）——WHERE is_available=1 排除它
+        // 切到 paraformer-streaming（is_available=0）——不满足 (id=? AND is_available=1)
         switch_active_model_at(&conn, "asr", ps).unwrap();
-        // 该域所有 is_available=1 的行 is_enabled=0（含 sensevoice）→ 无激活
+        // sensevoice 在 is_enabled=1 范围内 → 被清零 → 无激活
         assert!(get_active_model_at(&conn, "asr").unwrap().is_none(),
-            "切到未就绪模型应清空该域激活（IIF(id=ps,1,0) 但 ps 不在 WHERE 范围内）");
-        // paraformer-streaming 本身 is_enabled 仍 0（UPDATE 未触及它）
+            "切到未就绪模型应清空该域激活");
+        // paraformer-streaming 本身 is_enabled 仍 0（不在 WHERE 范围——既不满足激活条件也非 is_enabled=1）
         let ps_enabled: i64 = conn.query_row(
             "SELECT is_enabled FROM models WHERE id=?1", params![ps], |r| r.get(0)
         ).unwrap();
         assert_eq!(ps_enabled, 0, "未就绪模型不应被设为激活");
+    }
+
+    /// 回归 review fix 双激活 bug：不可用模型上残留的 is_enabled=1 在 switch 时被清理。
+    ///
+    /// 触发链：X 激活 → X 文件丢失(a=0) → set_model_available("X",false) 清 e →
+    /// switch 到 Y → X 不再 is_enabled=1 → X 恢复 a=1 → 不双激活。
+    #[test]
+    fn switch_clears_stale_enabled_on_unavailable_model() {
+        let conn = open_init();
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        let fr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='firered-asr2'",
+            [], |r| r.get(0)
+        ).unwrap();
+
+        // 1. 激活 sensevoice
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        // 2. sensevoice 文件丢失 → set_model_available(false) 同步清 is_enabled
+        set_model_available_at(&conn, "sensevoice-orig-small", false).unwrap();
+        let sv_e: i64 = conn.query_row("SELECT is_enabled FROM models WHERE id=?1", params![sv], |r| r.get(0)).unwrap();
+        assert_eq!(sv_e, 0, "set_model_available(false) 应清 is_enabled");
+        // 3. 激活 firered
+        switch_active_model_at(&conn, "asr", fr).unwrap();
+        // 4. sensevoice 文件恢复 → set_model_available(true)
+        set_model_available_at(&conn, "sensevoice-orig-small", true).unwrap();
+        // 5. 不双激活——sensevoice 的 is_enabled 仍 0
+        let sv_e2: i64 = conn.query_row("SELECT is_enabled FROM models WHERE id=?1", params![sv], |r| r.get(0)).unwrap();
+        assert_eq!(sv_e2, 0, "恢复可用后不应自动激活");
+        // 仅 firered 激活
+        let active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(active.id, fr, "仅 firered 激活");
     }
 
     /// §6.4 4 域统一：get_active_model / switch_active_model 对 asr/llm/ocr/translate
