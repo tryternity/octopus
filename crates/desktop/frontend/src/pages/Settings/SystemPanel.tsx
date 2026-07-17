@@ -85,6 +85,9 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
   const [snap, setSnap] = useState<SystemStatusSnapshot | null>(null);
 
   useEffect(() => {
+    // 订阅系统状态采样——开启后端 2s 周期刷新。unmount 时取消订阅，
+    // 后台采样循环在无订阅者时纯 sleep（避免闲置时持续 alloc/emit）。
+    invoke("subscribe_system_status").catch(() => { /* 失败不阻断 UI */ });
     invoke<SystemStatusSnapshot>("get_system_status")
       .then(setSnap)
       .catch((e) => showToast(t("settings.system.loadFailed") + e));
@@ -99,6 +102,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
     return () => {
       cancelled = true;
       unlisten?.();
+      invoke("unsubscribe_system_status").catch(() => {});
     };
   }, [showToast]);
 

@@ -235,6 +235,11 @@ pub struct SystemStatusSampler {
     ring: Mutex<RingBuffer>,
     current: Mutex<SystemStatusSnapshot>,
     registry: Arc<ModelMemoryRegistry>,
+    /// 订阅者计数——SystemPanel mount +1 / unmount -1。
+    /// 采样循环仅在 >0 时执行 sysinfo 刷新 + emit；无订阅者时纯 sleep，
+    /// 避免闲置时持续 alloc（sysinfo 刷新每 tick 分配 Process/HashMap 节点）。
+    /// 2026-07-17 性能优化：闲置时本采样器贡献持续 alloc 峰值。
+    subscribers: std::sync::atomic::AtomicU32,
 }
 
 impl SystemStatusSampler {
@@ -247,7 +252,28 @@ impl SystemStatusSampler {
             ring: Mutex::new(RingBuffer::new(RING_CAPACITY)),
             current: Mutex::new(SystemStatusSnapshot::default()),
             registry,
+            subscribers: std::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    /// 订阅 +1（SystemPanel mount 时调）——开启后台采样。
+    pub fn subscribe(&self) {
+        self.subscribers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 订阅 -1（SystemPanel unmount 时调）——计数归零则后台采样循环空转 sleep。
+    /// fetch_sub 后用 saturating_to 防御下溢（极端情况下 unmount 多调一次）。
+    pub fn unsubscribe(&self) {
+        let prev = self.subscribers.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        if prev == 0 {
+            // 防御：fetch_sub 之前已是 0 → 还原，避免 underflow 成 u32::MAX
+            self.subscribers.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// 是否有订阅者（采样循环每 tick 检查）。
+    fn has_subscribers(&self) -> bool {
+        self.subscribers.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
     /// 采一次样并 emit。sysinfo 失败则跳过、保留上次快照（不崩）。
@@ -362,9 +388,13 @@ impl SystemStatusSampler {
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    this.sample_and_emit(&app2);
-                }));
+                // 仅在有订阅者时采样——SystemPanel 关闭时无意义刷新会持续分配
+                // sysinfo Process/HashMap 节点 + 全局广播 emit（闲置 alloc 源）。
+                if this.has_subscribers() {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        this.sample_and_emit(&app2);
+                    }));
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(SAMPLE_INTERVAL_SECS)).await;
             }
         });
@@ -377,6 +407,19 @@ pub fn get_system_status(
     sampler: State<'_, Arc<SystemStatusSampler>>,
 ) -> SystemStatusSnapshot {
     sampler.snapshot()
+}
+
+/// SystemPanel mount 时调用——开启后台采样循环（订阅 +1）。
+/// 2026-07-17 性能优化：闲置时停止无意义 sysinfo 刷新。
+#[tauri::command]
+pub fn subscribe_system_status(sampler: State<'_, Arc<SystemStatusSampler>>) {
+    sampler.subscribe();
+}
+
+/// SystemPanel unmount 时调用——订阅 -1，归零则后台循环空转。
+#[tauri::command]
+pub fn unsubscribe_system_status(sampler: State<'_, Arc<SystemStatusSampler>>) {
+    sampler.unsubscribe();
 }
 
 #[cfg(test)]
