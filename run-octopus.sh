@@ -7,6 +7,9 @@ RELEASE="--release"
 if [[ "${1:-}" == "--debug" ]]; then
   RELEASE=""
 fi
+if [[ "${1:-}" == "--profiling" ]]; then
+  RELEASE="profiling"
+fi
 
 # 1. 杀进程并等待真正退出（避免退出时把缓存写回 / 占用文件导致 rm 失败）
 pkill -f octopus-desktop 2>/dev/null || true
