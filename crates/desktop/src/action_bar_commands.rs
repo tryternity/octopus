@@ -817,6 +817,12 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
     octopus_infra::db::clear_script_runs(keep_recent).map_err(|e| e.to_string())
 }
 
+/// 按 ID 批量删除执行记录。2026-07-17 新增——执行记录 TAB 复选框删除。
+#[tauri::command]
+pub fn delete_script_runs(ids: Vec<i64>) -> Result<(), String> {
+    octopus_infra::db::delete_script_runs(&ids).map_err(|e| e.to_string())
+}
+
 // ── 统一执行入口 ──
 
 /// 按 CJK 检测方向，返回翻译 system prompt。

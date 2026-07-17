@@ -409,8 +409,19 @@ settings:
     acceptsAny: Files + Text
     agentLabel: Agent
     scopeAll: All
-    scopeText: Selected Text
-    scopeFile: Selected Files
+    scopeText: Text
+    scopeFile: Files
+    menuManage: Commands
+    scriptRecords: Run History
+    subItemsTitle: Submenu Items
+    noSubItemsHint: No submenu items yet — click "Add Subitem" above
+    leafNoSubItemsHint: This is a leaf command (not a submenu container), no sub-items
+    selectMenuHint: Select a menu from the left
+    selectAll: Select All
+    deleteSelected: Delete Selected
+    moveUp: Move up
+    moveDown: Move down
+    edit: Edit
   clipboardPanel:
     filterAll: All
     groupType: Type
