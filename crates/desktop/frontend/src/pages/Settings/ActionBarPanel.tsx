@@ -231,7 +231,7 @@ const FormField = ({
     <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
       {label}
     </label>
-    <div className="min-w-0 min-h-0">{children}</div>
+    <div className="min-w-0">{children}</div>
     {hint && <p className="text-[11px] text-muted-foreground/60">{hint}</p>}
   </div>
 );
@@ -287,36 +287,26 @@ const EditForm = ({
   }, [capturingGlobal, form, onChange]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {/* 导航栏——返回在左，保存/取消在右 */}
-      <div className="flex items-center justify-between border-b border-border/40 pb-2">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onCancel}
-            className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {ti18n("settings.actionBar.backToMenu")}
-          </button>
-          <div className="flex items-center gap-2">
-            <span className={cn("h-2 w-2 rounded-full", meta.dot)} />
-            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-              {meta.label}
-            </span>
-          </div>
-        </div>
+    <div className="space-y-3">
+      {/* 导航栏 */}
+      <div className="flex items-center gap-3 border-b border-border/40 pb-2">
+        <button
+          onClick={onCancel}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {ti18n("settings.actionBar.backToMenu")}
+        </button>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={onCancel}>
-            {t("settings.actionBar.cancel")}
-          </Button>
-          <Button variant="voice" size="sm" onClick={onSave}>
-            {t("settings.actionBar.save")}
-          </Button>
+          <span className={cn("h-2 w-2 rounded-full", meta.dot)} />
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+            {meta.label}
+          </span>
         </div>
       </div>
 
-      {/* 单卡片紧凑表单——flex-1 min-h-0 让 textarea 弹性填充，避免外层滚动条 */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+      {/* 单卡片紧凑表单 */}
+      <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
         {/* 标题 —— 占一行 */}
         <FormField label={t("settings.actionBar.titleLabel")}>
           <input
@@ -444,12 +434,11 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 内容 textarea —— flex-1 弹性填充剩余空间，避免双滚动条。
-            showContent=false 时此区不占高度，其余字段自然撑开卡片。 */}
+        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大 */}
         {showContent && (
-          <FormField label={t("settings.actionBar.contentLabel")} className="flex min-h-0 flex-1 flex-col">
+          <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
-              className="w-full min-h-[120px] flex-1 resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+              className="w-full min-h-[240px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
               placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
@@ -508,11 +497,19 @@ const EditForm = ({
           </FormField>
         )}
       </div>
+
+      {/* 底部操作栏——右下角保存/取消 */}
+      <div className="flex justify-end gap-2.5">
+        <Button variant="outline" size="sm" onClick={onCancel}>
+          {t("settings.actionBar.cancel")}
+        </Button>
+        <Button variant="voice" size="sm" onClick={onSave}>
+          {t("settings.actionBar.save")}
+        </Button>
+      </div>
     </div>
   );
 };
-
-// ── 通用菜单行（主菜单/子菜单共用）──
 // 2026-07-17 重构：原 TreeNode 树形渲染改为左右分栏，此组件承担行渲染。
 interface MenuRowProps {
   item: ActionBarItem;
@@ -1154,7 +1151,7 @@ export default function ActionBarPanel({
   const isEditing = editingId !== null || draftParentId !== undefined;
 
   return (
-    <div className={cn("w-full min-w-0", isEditing && "h-full flex flex-col")}>
+    <div className="w-full min-w-0">
       {/* ── 顶部 TAB：命令管理 / 执行记录 ──
           替代原 view 切换。EditForm 覆盖时不显示 TAB（全屏编辑）。 */}
       {!isEditing && (
