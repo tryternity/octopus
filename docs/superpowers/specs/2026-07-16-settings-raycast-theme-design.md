@@ -18,6 +18,8 @@
 ### 主题策略：新增而非替换
 保留 light/glass-dark/nord 不动，新增第 4 套 `raycast` 主题。用户在「外观」可选。改动最小、不破坏现有体验、可回退。
 
+> **2026-07-17 追加第 5 套 `azure` 主题（Azure Mist）**——参照 DESIGN.md「HashiCorp」的明亮浅蓝方案。原 4 套里仅 light 一套明亮且偏暖灰（Warm Paper），azure 补「明亮 + 冷蓝」坐标：background `#f6f8fb` 雾蓝底、primary `#1563a8` 深靛蓝按钮锚点（HashiCorp Link Blue `#2264d6` 的 AAA 深化，白字对比度 7.6:1）、voice `#2b89ff`（DESIGN.md Bright Blue）。注册点同 raycast：`index.css [data-theme="azure"]` + `theme.ts BUILTIN_IDS` + `theme.rs builtin_themes`。状态色沿用 light 标准值。
+
 ### voice 色：应用图标浅蓝 `#6EB5FF`
 不照搬 DESIGN.md 的 Raycast Red（#FF6363），改用 octopus 应用图标的浅蓝（≈ Raycast Blue `hsl(210,100%,71%)`）。理由：贴合 octopus 自己的品牌，落在 DESIGN.md 的交互蓝区间，比红色更适合作为常用 UI 强调色（红色在大量操作按钮中会显得警示感过强）。
 
@@ -40,7 +42,7 @@
 1. **Tauri 命令签名不变**——所有 `invoke()` 调用、参数名、返回值结构零改动
 2. **主题切换链路不变**——`get_theme_id` → `applyThemeById` → `[data-theme]` → `window_bg_hex`
 3. **现有 3 套主题视觉不变**——light/glass-dark/nord 的 token 值不动，只新增状态色字段
-4. **窗口尺寸不变**——保持 800×600，不动 settings_window.rs
+4. ~~**窗口尺寸不变**——保持 800×600，不动 settings_window.rs~~（**2026-07-17 作废**：窗口默认宽度已改为 960，方便提示词查看；详见 architecture.md 设置窗口子系统）
 
 ## 降级路径
 

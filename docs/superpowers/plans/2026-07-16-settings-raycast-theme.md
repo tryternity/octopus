@@ -60,6 +60,18 @@
 - [x] `cargo build -p octopus-desktop` → 0 error 0 warning
 - [x] 影响面追踪：`rg "light.*glass-dark.*nord"` 确认只有 theme.ts 一处主题列表（已加 raycast），index.html builtin 数组已同步
 
+### Phase E：Azure Mist 主题 + 面板布局调整（2026-07-17 追加）✅
+
+后续在 `feature/ui-refinement` 分支的增量改动，沿用本 spec 的主题/组件体系：
+
+- [x] **E1 Azure Mist 主题**（第 5 套，参照 DESIGN.md「HashiCorp」明亮浅蓝）：`theme.rs builtin_themes()` 加 `azure`（background `#f6f8fb` / primary `#1563a8` 深靛蓝 / voice `#2b89ff` / muted-foreground `#656a76` DESIGN.md Dark Gray）；`index.css` 加 `[data-theme="azure"]`（状态色沿用 light）；`theme.ts BUILTIN_IDS` 加 `"azure"`。
+- [x] **E2 面板去 max-w 约束**：9 个面板根容器原锁 `max-w-[640px]`/`[560px]`，窗口拉大右侧空白。移除约束让内容随 `flex-1 min-w-0` 自适应（General/Hotword/Prompts×3/System + Models 5 Tab）。
+- [x] **E3 窗口默认宽度 800→960**：`settings_window.rs SETTINGS_WIDTH`，方便提示词查看。同步 architecture.md / desktop-app.md 尺寸描述。
+- [x] **E4 命名调整**（zh-CN，en 不动）：nav.agent「Agent 管理」→「智能体管理」、agentPanel.title/tasksTitle 同步、nav.prompts「提示词」→「提示配方」。
+- [x] **E5 去冗余页面 title**：ActionBarPanel 删页头签名色条+mono 标签（操作组左右分布：辅助操作左、新增主操作右）；PromptsPanel 列表视图删 header（保留查看/编辑上下文标题）；清理无引用死 i18n key（actionBar.editMenuItem/scriptRecords/menuManage、prompts.header、hotword.title/header/intro）。
+- [x] **E6 HotwordPanel 重写为左右分栏**：原 3-Card 垂直堆叠 → 左栏 220px 场景列表（选中 voice 竖条 + toggle + 重命名 + 导出/删除 + 底部新建/导入）+ 右栏上下分区（右上 方言模糊+新增热词操作行 / 右下 搜索+排序+词卡网格+挖掘面板）。删本地 SectionCard 组件及未用 imports。
+- [x] **验证**：`tsc --noEmit` 0 error；`vite build` 成功；`cargo build -p octopus-desktop --features embedded` 0 error 0 warning；`cargo test --bin octopus-desktop` 311 passed。
+
 ## 不做的事（明确边界）
 
 - 不动任何 Tauri 命令签名、后端数据逻辑、DB schema
