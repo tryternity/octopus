@@ -5366,6 +5366,7 @@ dependencies = [
  "log",
  "ndarray 0.17.2",
  "octopus-infra",
+ "octopus-llm",
  "onnx-infra",
  "ort",
  "parking_lot",
