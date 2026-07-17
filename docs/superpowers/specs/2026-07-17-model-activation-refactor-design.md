@@ -17,7 +17,7 @@ models 表的 `is_enabled` 字段语义混乱——它表"可用"（文件就绪
 - `is_enabled` 改表**激活**：每域仅 1 个为 1（当前选用的模型）
 - 新增 `is_available` 表**可用**：文件就绪/配置完整（替代原 is_enabled 语义），同域可多个
 - 删除 `app_config` 的 asr_engine/polish_llm/ocr_model/translate_engine 4 个字段
-- 激活查询统一：`WHERE domain=? AND is_enabled=1 LIMIT 1`
+- 激活查询统一：`WHERE domain=? AND is_enabled=1 AND is_available=1 LIMIT 1`
 - ASR RUNTIME_CONFIG 改为只缓存**激活的那一个** entry
 
 ## 2. 核心决策（brainstorming 已确认）
@@ -28,7 +28,7 @@ models 表的 `is_enabled` 字段语义混乱——它表"可用"（文件就绪
 | is_enabled 语义 | 当前激活，每域仅 1 个 |
 | app_config 4 字段 | **删除**（asr_engine/polish_llm/ocr_model/translate_engine）|
 | 激活查询 | `WHERE domain=? AND is_enabled=1 AND is_available=1 LIMIT 1` |
-| 切换引擎 | `UPDATE models SET is_enabled=IF(id=?,1,0) WHERE domain=? AND is_available=1` |
+| 切换引擎 | `UPDATE models SET is_enabled=IIF(id=?,1,0) WHERE domain=? AND is_available=1` |
 | 两个核心方法 | `load_active_engine(domain)` 写缓存；`resolve_active_engine(domain)` 读缓存 |
 | ResolvedEngine 通用化 | 加 domain 字段 + category 改 String，4 域共用 |
 | ASR 热路径 | ACTIVE_ENGINES 缓存每域激活的那一个（推理零 DB 开销）|
@@ -80,7 +80,7 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
 pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE models SET is_enabled = IF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+            "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
             params![id, domain],
         )?;
         Ok(())
@@ -206,7 +206,7 @@ pub fn switch_active_model(domain: String, id: i64, app: AppHandle) -> Result<()
 用户在设置页激活某模型：
   → invoke("switch_active_model", {domain:"asr", id:42})
   → db::switch_active_model("asr", 42)
-    UPDATE models SET is_enabled=IF(id=42,1,0) WHERE domain='asr' AND is_available=1
+    UPDATE models SET is_enabled=IIF(id=42,1,0) WHERE domain='asr' AND is_available=1
   → load_active_engine("asr")  // 重载该域缓存
   → emit config-changed（UI 刷新）
 

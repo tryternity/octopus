@@ -30,15 +30,15 @@
 **Interfaces:**
 - Produces: `get_active_model(domain) -> Result<Option<ModelRow>>`、`switch_active_model(domain, id) -> Result<()>`、`ModelRow.is_available`、`ModelEntry.is_available`
 
-- [ ] **Step 1: db.sql models 表加 is_available 列**
+- [x] **Step 1: db.sql models 表加 is_available 列**
 
 在 `is_enabled` 行后加 `is_available`，调整 seed（原 is_enabled 值表示可用→迁到 is_available，is_enabled 全 0）。user_version 升 v37。app_config seed 删 asr_engine/polish_llm/ocr_model/translate_engine 4 行。
 
-- [ ] **Step 2: db.rs ModelRow + ModelEntry 加 is_available**
+- [x] **Step 2: db.rs ModelRow + ModelEntry 加 is_available**
 
 ModelRow 和 ModelEntry 各加 `pub is_available: bool` 字段。所有构造点和 SELECT 语句补该列。
 
-- [ ] **Step 3: db.rs 新增 get_active_model + switch_active_model**
+- [x] **Step 3: db.rs 新增 get_active_model + switch_active_model**
 
 ```rust
 pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
@@ -55,7 +55,7 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
 pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE models SET is_enabled = IF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+            "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
             params![id, domain],
         )?;
         Ok(())
@@ -63,20 +63,20 @@ pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: load_models_at 改为只取激活的**
+- [x] **Step 4: load_models_at 改为只取激活的**
 
 SQL 加 `AND is_available=1 LIMIT 1`（原 `WHERE domain='asr' AND is_enabled=1` 改为新语义）。
 
-- [ ] **Step 5: config.rs AppConfig 删 4 字段**
+- [x] **Step 5: config.rs AppConfig 删 4 字段**
 
 删除 asr_engine/polish_llm/ocr_model/translate_engine 字段 + default 函数 + 相关 test。注意 default_polish_llm/default_ocr_model 函数删除。
 
-- [ ] **Step 6: 编译 + 测试**
+- [x] **Step 6: 编译 + 测试**
 
 Run: `cargo build -p octopus-infra && cargo test -p octopus-infra --lib`
 Expected: 编译会有大量下游报错（desktop/cli/asr-local 读这 4 字段）——**本 Task 只要求 infra 自身编译通过**（infra 不依赖下游）。infra 测试全过。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ---
 
