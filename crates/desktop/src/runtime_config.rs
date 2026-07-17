@@ -134,17 +134,11 @@ fn validate_switch(name: &str, engines: &[octopus_asr_local::config::EngineInfo]
 
 // ── 配置持久化（DB app_config 表）──
 
-/// 单键写入 DB（运行时由 RuntimeConfig 负责，此处仅持久化）。
-pub fn persist_asr_engine(value: &str) -> Result<(), String> {
-    octopus_infra::db::save_config_key("asr_engine", value).map_err(|e| e.to_string())
-}
+// 注：persist_asr_engine / persist_polish_llm 已移除（Task 2 后激活态存 DB models.is_enabled，
+// 不再写 app_config）。polish_mode / denoise_mode 仍在 app_config。
 
 pub fn persist_polish_mode(value: u8) -> Result<(), String> {
     octopus_infra::db::save_config_key("polish_mode", &value.to_string()).map_err(|e| e.to_string())
-}
-
-pub fn persist_polish_llm(value: &str) -> Result<(), String> {
-    octopus_infra::db::save_config_key("polish_llm", value).map_err(|e| e.to_string())
 }
 
 pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
@@ -318,20 +312,18 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read();
     // hide_toolbar / edit_shortcut 等所有字段均从共享 AppConfig 读——set_config 写镜像后立即生效。
     let edit_shortcut = g.edit_shortcut.clone();
-    // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
-    let polish_llm = g.polish_llm.clone();
-    let polish_llm_valid = {
-        let bare = octopus_infra::db::parse_model_spec(&polish_llm).model_name();
-        !bare.is_empty()
-            && octopus_infra::db::list_llm_models()
-                .map(|llms| llms.iter().any(|m| m.model_name == bare))
-                .unwrap_or(false)
-    };
+    // Task 2 后：激活引擎从 ACTIVE_ENGINES 内存缓存取（DB is_enabled=1 为真）。
+    // asr_engine 字段保留供前端兼容，值改为激活引擎的裸 model_name。
+    let asr_engine = octopus_asr_local::config::resolve_active_engine("asr")
+        .map(|r| r.name)
+        .unwrap_or_default();
+    // polish_llm_valid = LLM 域有激活模型（resolve_active_engine 命中）。
+    let polish_llm_valid = octopus_asr_local::config::resolve_active_engine("llm").is_ok();
     let translate_mode = resolve_translate_mode(
         octopus_infra::db::load_config_key("translate_mode").ok().flatten()
     );
     ToolbarState {
-        asr_engine: g.asr_engine.clone(),
+        asr_engine,
         polish_mode: polish_mode_to_u8(g.polish_mode),
         hide_toolbar: g.hide_toolbar,
         denoise_mode: g.denoise_mode,
@@ -342,29 +334,31 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 }
 
 #[tauri::command]
-pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
-    let current_raw = rc.read().asr_engine.clone();
+pub fn list_asr_engines(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
+    // current 从激活缓存取（resolve_active_engine("asr").name）。
+    let current_raw = octopus_asr_local::config::resolve_active_engine("asr")
+        .map(|r| r.name)
+        .unwrap_or_default();
     let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     Ok(build_asr_options(&current_raw, engines))
 }
 
-/// 后台预热本地 ASR 引擎（审查 三2）。switch_asr_engine / set_config 切引擎后调用——
+/// 后台预热本地 ASR 引擎（审查 三2）。switch_active_model 切 ASR 引擎后调用——
 /// 否则首次 transcribe 在 spawn_blocking 懒加载模型（反序列化 + ONNX session 创建，1~数秒卡顿）。
 /// 仅 embedded 非 cloud 引擎：engine_mode≠embedded 不走本地模型；cloud（aliyun）switch_model 会 bail。
 pub fn preheat_local_engine(
     engine_manager: std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
-    spec: &str,
     engine_mode: &str,
 ) {
     if engine_mode != "embedded" {
         return;
     }
-    let resolved = match octopus_asr_local::config::resolve_active_engine(spec) {
+    let resolved = match octopus_asr_local::config::resolve_active_engine("asr") {
         Ok(r) => r,
         Err(_) => return,
     };
     #[cfg(feature = "cloud")]
-    if resolved.category == octopus_asr_local::config::EngineCategory::Aliyun {
+    if resolved.as_engine_category() == Some(octopus_asr_local::config::EngineCategory::Aliyun) {
         return;
     }
     let name = resolved.name.clone();
@@ -374,45 +368,57 @@ pub fn preheat_local_engine(
     });
 }
 
-/// 切换 ASR 引擎：先校验 DB 存在（或兜底），再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
+/// 统一激活模型（4 域）：DB switch_active_model + 重载 ACTIVE_ENGINES 该域缓存。
+///
+/// 取代原 switch_asr_engine / switch_polish_llm / set_config(ocr_model/translate_engine)
+/// 4 个分散命令——4 域统一。ASR 域额外刷新 tray 标签 + 后台预热本地引擎。
+#[tauri::command]
+pub fn switch_active_model(
+    domain: String,
+    id: i64,
+    app_handle: tauri::AppHandle,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
+) -> Result<(), String> {
+    octopus_infra::db::switch_active_model(&domain, id).map_err(|e| e.to_string())?;
+    // 重载该域激活缓存（reload_active_engine 清槽 + 重 load）。
+    // 失败仅告警（DB 已切换成功，缓存下次 resolve 会 fallback 重 load）。
+    if let Err(e) = octopus_asr_local::config::reload_active_engine(&domain) {
+        log::warn!("switch_active_model: reload_active_engine('{}') 失败：{}", domain, e);
+    }
+    // ASR 域额外：刷新 tray + 后台预热 + emit 事件
+    if domain == "asr" {
+        let engine_mode = octopus_infra::config::load_config()
+            .map(|c| c.engine_mode)
+            .unwrap_or_else(|_| "embedded".to_string());
+        crate::tray::update_tray_engine_label(&app_handle, "", &engine_mode);
+        preheat_local_engine(engine_manager.inner().clone(), &engine_mode);
+        let _ = tauri::Emitter::emit(&app_handle, "config-changed", ());
+    }
+    Ok(())
+}
+
+/// 切换 ASR 引擎（旧命令，保留前端兼容）。
+///
+/// Task 2 后内部走统一 switch_active_model：按 model_name 查 DB 取 id → 切换。
+/// 兜底引擎（zipformer-small-ctc）走 `list_asr_model_details` 找 id，找不到时报错
+/// （兜底引擎通常在 DB 中，未激活状态）。
 #[tauri::command]
 pub fn switch_asr_engine(
     model_name: String,
-    rc: State<'_, SharedRuntimeConfig>,
+    _rc: State<'_, SharedRuntimeConfig>,
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     validate_switch(&model_name, &engines)?;
-    // 构造 3-part spec "{provider}:{category}:{model_name}"：
-    // 兜底固定 local:zipformer:NAME；其余查 DB 取 provider/category。
-    let spec = if model_name == FALLBACK_ASR_ENGINE {
-        format!("local:zipformer:{}", model_name)
-    } else {
-        let engine = engines.iter().find(|e| e.name == model_name)
-            .ok_or_else(|| format!("引擎 '{}' 不存在，未切换", model_name))?;
-        format!("{}:{}:{}", engine.provider, octopus_asr_local::config::category_label(engine.category), model_name)
-    };
-    {
-        let mut g = rc.write();
-        g.asr_engine = spec.clone();
-    }
-    let engine_mode = match octopus_infra::config::load_config() {
-        Ok(cfg) => cfg.engine_mode,
-        Err(_) => "embedded".to_string(),
-    };
-    crate::tray::update_tray_engine_label(&app_handle, &spec, &engine_mode);
-
-    if let Err(e) = persist_asr_engine(&spec) {
-        log::warn!(
-            "写回 DB 失败（asr_engine={}）：{} —— RuntimeConfig 已更新，重启后回退",
-            spec,
-            e
-        );
-    }
-    // 审查 三2：后台预热切到的本地引擎（避免首次 transcribe 懒加载卡顿）。
-    preheat_local_engine(engine_manager.inner().clone(), &spec, &engine_mode);
-    Ok(())
+    // 按 model_name 查 DB 取 id（兜底固定 zipformer-small-ctc）
+    let id = octopus_infra::db::list_asr_model_details()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|d| d.model_name == model_name)
+        .map(|d| d.id)
+        .ok_or_else(|| format!("引擎 '{}' 在 DB 中找不到 id（未就绪？）", model_name))?;
+    switch_active_model("asr".to_string(), id, app_handle, engine_manager)
 }
 
 #[tauri::command]
@@ -475,58 +481,44 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
     octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
 }
 
-/// 列出所有启用的 LLM 润色模型，并标记当前 polish_llm。
+/// 列出所有启用的 LLM 润色模型，并标记当前激活的（is_enabled=1）。
 #[tauri::command]
-pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
-    let current = rc.read().polish_llm.clone();
+pub fn list_llm_models(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
+    // current 从激活缓存取（resolve_active_engine("llm").name）。
+    let current = octopus_asr_local::config::resolve_active_engine("llm")
+        .map(|r| r.name)
+        .unwrap_or_default();
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
     Ok(build_llm_options(&current, llms))
 }
 
-/// 切换润色模型：先校验 DB 存在，再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
-/// 空 name = 选择「不选择模型」：polish_llm 置空，不查 DB（无模型 = 不润色）。
+/// 切换润色模型（旧命令，保留前端兼容）。
 ///
-/// 同步通过 `coordinator.update_runtime()` 立即生效——用户可在录音中切换，
-/// 下次点「立即润色」或停顿润色就用新模型。
+/// Task 2 后内部走统一 switch_active_model：空 name 取消激活（切换到一个不存在的 id=0
+/// 清空 is_enabled）；非空 name 按 provider+model_name 查 DB 取 id 切换。
 #[tauri::command]
 pub fn switch_polish_llm(
     model_name: String,
     provider: Option<String>,
-    rc: State<'_, SharedRuntimeConfig>,
-    coordinator: State<'_, crate::coordinator::Coordinator>,
+    _rc: State<'_, SharedRuntimeConfig>,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let spec = if model_name.is_empty() {
-        // 「不选择模型」：polish_llm 置空
-        String::new()
+    if model_name.is_empty() {
+        // 「不选择模型」：用 id=-1 取消激活（IIF(id=-1,1,0) 全域 is_enabled=0）
+        return switch_active_model("llm".to_string(), -1, app_handle, engine_manager);
+    }
+    let models = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+    // 精确匹配：有 provider 时用 provider+model_name，否则用裸名（向后兼容）
+    let model = if let Some(ref p) = provider {
+        models.into_iter()
+            .find(|m| m.model_name == model_name && m.provider == *p)
     } else {
-        let models = octopus_infra::db::list_llm_models()
-            .map_err(|e| e.to_string())?;
-        // 精确匹配：有 provider 时用 provider+model_name，否则用裸名（向后兼容）
-        let model = if let Some(ref p) = provider {
-            models.into_iter()
-                .find(|m| m.model_name == model_name && m.provider == *p)
-        } else {
-            models.into_iter()
-                .find(|m| m.model_name == model_name)
-        }
-        .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), model_name))?;
-        // 构造 3-part spec "{provider}:{category}:{model_name}"
-        format!("{}:{}:{}", model.provider, model.category, model.model_name)
-    };
-    {
-        let mut g = rc.write();
-        g.polish_llm = spec.clone();
+        models.into_iter()
+            .find(|m| m.model_name == model_name)
     }
-    if let Err(e) = persist_polish_llm(&spec) {
-        log::warn!(
-            "写回 config.yaml 失败（polish_llm={}）：{} —— 本次仍生效，重启后回退",
-            spec,
-            e
-        );
-    }
-    // 立即同步到 coordinator 的 config 快照（无需 Toggle）
-    coordinator.update_runtime();
-    Ok(())
+    .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), model_name))?;
+    switch_active_model("llm".to_string(), model.id, app_handle, engine_manager)
 }
 
 // ── 单测（纯逻辑，不触文件 IO / Tauri State）──
@@ -613,8 +605,8 @@ mod tests {
     fn build_llm_options_marks_current_and_labels() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         let opts = build_llm_options("glm-4-flashx", llms);
         assert_eq!(opts.len(), 3);
@@ -635,8 +627,8 @@ mod tests {
         // polish_llm 存为 3-part spec 时，build_llm_options 应正确提取 model_name 标记 current
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         // 3-part spec 格式
         let opts = build_llm_options("bigmodel:glm:glm-4-flashx", llms.clone());
@@ -653,7 +645,7 @@ mod tests {
         // 需求：polish_llm 空 / 裸名不在 DB / spec 格式不命中 → 首项「无模型」标 current（DB 回退）。
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         // current 空 → 无模型 current
         let opts = build_llm_options("", llms.clone());
@@ -730,8 +722,8 @@ mod tests {
     fn build_llm_options_provider_precise_current() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         // 当前选中 aliyun 的
         let opts = build_llm_options("aliyun:deepseek:deepseek-v4-flash", llms);
@@ -745,8 +737,8 @@ mod tests {
     fn build_llm_options_bare_name_matches_all_providers() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
-            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         // 裸名（无 3-part spec）→ 匹配所有同名
         let opts = build_llm_options("test-model", llms);
@@ -770,7 +762,7 @@ mod tests {
     fn llm_option_has_provider_field() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false },
+            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
         ];
         let opts = build_llm_options("test", llms);
         assert_eq!(opts[1].provider, "bigmodel", "LlmOption 应包含 provider 字段");

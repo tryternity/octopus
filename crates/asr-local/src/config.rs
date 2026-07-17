@@ -271,11 +271,12 @@ pub fn list_engines_from_db() -> Result<Vec<EngineInfo>> {
 
 // ── 激活引擎解析（4 域统一：load_active_engine / resolve_active_engine）──
 
-/// 解析后的引擎：domain + name + provider + category + entry 五件套。
+/// 解析后的引擎：domain + name + provider + category + is_thinking + entry。
 ///
 /// 4 域（asr/llm/ocr/translate）共用此结构。`category` 为 DB `models.category` 原始字符串
 /// （如 "whisper" / "Fun-ASR" / "qwen"）；ASR 内部路由按需用 [`Self::as_engine_category`]
-/// 转换为 [`EngineCategory`] 枚举。
+/// 转换为 [`EngineCategory`] 枚举。`is_thinking` 来自 DB `models.is_thinking`（LLM 专用，
+/// 其余域恒为 false）——ModelEntry 不含此字段，故提升到顶层。
 #[derive(Debug, Clone)]
 pub struct ResolvedEngine {
     /// 域标识："asr" / "llm" / "ocr" / "translate"。
@@ -286,6 +287,8 @@ pub struct ResolvedEngine {
     pub provider: String,
     /// DB models.category 原始字符串（ASR 族名 / LLM 系列 / 云端族名等）。
     pub category: String,
+    /// DB models.is_thinking（LLM reasoning 模型标记；其余域为 false）。
+    pub is_thinking: bool,
     /// 引擎配置（source / secret_key / language / is_streaming 等）。
     pub entry: ModelEntry,
 }
@@ -314,6 +317,7 @@ fn resolved_engine_from_row(row: &octopus_infra::db::ModelRow) -> ResolvedEngine
         name: row.model_name.clone(),
         provider: row.provider.clone(),
         category: row.category.clone(),
+        is_thinking: row.is_thinking,
         entry: ModelEntry {
             source: row.source.clone(),
             language: row.language.clone(),
@@ -410,6 +414,7 @@ fn fallback_resolved_engine() -> ResolvedEngine {
         name: FALLBACK_ASR_ENGINE_NAME.to_string(),
         provider: "local".to_string(),
         category: "zipformer".to_string(),
+        is_thinking: false,
         entry: ModelEntry {
             source: DEFAULT_ASR_MODEL_DIR.to_string(),
             language: "zh".to_string(),
@@ -432,6 +437,7 @@ fn fallback_engine_from_cfg(cfg: &AsrConfig) -> Option<ResolvedEngine> {
         name: FALLBACK_ASR_ENGINE_NAME.to_string(),
         provider: "local".to_string(),
         category: "zipformer".to_string(),
+        is_thinking: false,
         entry: entry.clone(),
     })
 }
@@ -640,6 +646,7 @@ mod tests {
         assert_eq!(r.name, "zipformer-small-ctc");
         assert_eq!(r.provider, "local");
         assert_eq!(r.category, "zipformer");
+        assert!(!r.is_thinking, "ASR 兜底引擎 is_thinking 应为 false");
         assert_eq!(r.entry.source, "models/zipformer");
         // category 字符串 → EngineCategory 转换
         assert_eq!(r.as_engine_category(), Some(EngineCategory::Zipformer));
@@ -668,28 +675,29 @@ mod tests {
 
     #[test]
     fn resolved_engine_from_row_maps_all_fields() {
-        // ModelRow → ResolvedEngine 全字段映射（4 域统一）
+        // ModelRow → ResolvedEngine 全字段映射（4 域统一，含 is_thinking）
         let row = octopus_infra::db::ModelRow {
             id: 42,
             domain: "llm".to_string(),
             provider: "deepseek".to_string(),
-            category: "deepseek-chat".to_string(),
-            model_name: "deepseek-chat".to_string(),
+            category: "deepseek-reasoner".to_string(),
+            model_name: "deepseek-reasoner".to_string(),
             source: "https://api.deepseek.com/v1".to_string(),
             secret_key: "sk-xxx".to_string(),
             language: String::new(),
-            description: "DeepSeek Chat".to_string(),
+            description: "DeepSeek Reasoner".to_string(),
             is_local: false,
-            is_thinking: false,
+            is_thinking: true,
             is_streaming: false,
             is_enabled: true,
             is_available: true,
         };
         let r = resolved_engine_from_row(&row);
         assert_eq!(r.domain, "llm");
-        assert_eq!(r.name, "deepseek-chat");
+        assert_eq!(r.name, "deepseek-reasoner");
         assert_eq!(r.provider, "deepseek");
-        assert_eq!(r.category, "deepseek-chat");
+        assert_eq!(r.category, "deepseek-reasoner");
+        assert!(r.is_thinking, "LLM reasoning 模型 is_thinking 应为 true");
         assert_eq!(r.entry.source, "https://api.deepseek.com/v1");
         assert_eq!(r.entry.secret_key, "sk-xxx");
         assert!(!r.entry.is_local);

@@ -41,21 +41,24 @@ fn fmt_shortcut(s: &str) -> String {
      .replace("Control+", "⌃").replace("Super+", "⌘")
 }
 
-/// 将 3-part spec（如 "local:sensevoice-orig:sensevoice-orig-small"）格式化为
-/// `model_name[provider]`，provider=local 时 i18n 为「本地」。
-fn fmt_engine_label(spec: &str) -> String {
-    let parts: Vec<&str> = spec.split(':').collect();
-    let (provider, model_name) = match parts.len() {
-        3 => (parts[0], parts[2]),
-        1 if !spec.is_empty() => ("local", parts[0]),
-        _ => return spec.to_string(),
+/// 将激活 ASR 引擎格式化为 `model_name[provider]`，provider=local 时 i18n 为「本地」。
+///
+/// Task 2 模型激活语义重构后：不再接收 spec 参数，直接从 `resolve_active_engine("asr")`
+/// 取激活引擎的 name + provider。失败（含未激活 + 兜底失败）返回空串。
+fn fmt_engine_label() -> String {
+    let resolved = match octopus_asr_local::config::resolve_active_engine("asr") {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("fmt_engine_label: resolve_active_engine('asr') 失败：{}", e);
+            return String::new();
+        }
     };
-    let provider_display = if provider == "local" {
+    let provider_display = if resolved.provider == "local" {
         crate::i18n::t("settings.models.local", &[])
     } else {
-        provider.to_string()
+        resolved.provider
     };
-    format!("{}[{}]", model_name, provider_display)
+    format!("{}[{}]", resolved.name, provider_display)
 }
 
 /// Create the system tray icon and its context menu.
@@ -71,7 +74,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(&config.asr_engine))]),
+        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]),
         false,
         None::<&str>,
     )
@@ -181,8 +184,11 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 }
 
 /// Update the engine info menu item label dynamically.
-pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_spec: &str, _engine_mode: &str) {
-    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label(engine_spec))]);
+///
+/// `engine_spec` / `engine_mode` 参数已废弃（Task 2 后从 ACTIVE_ENGINES 缓存取激活引擎），
+/// 保留以减小调用方改动。
+pub fn update_tray_engine_label(_app: &tauri::AppHandle, _engine_spec: &str, _engine_mode: &str) {
+    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]);
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
@@ -213,32 +219,6 @@ pub fn rebuild_tray_labels() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn fmt_engine_label_3part_local() {
-        crate::i18n::init("zh-CN");
-        let label = fmt_engine_label("local:sensevoice-orig:sensevoice-orig-small");
-        assert!(label.contains("sensevoice-orig-small"), "应含 model_name");
-        assert!(label.contains("["), "应含 provider 标记");
-    }
-
-    #[test]
-    fn fmt_engine_label_3part_cloud() {
-        let label = fmt_engine_label("aliyun:Fun-ASR:fun-asr-realtime");
-        assert_eq!(label, "fun-asr-realtime[aliyun]");
-    }
-
-    #[test]
-    fn fmt_engine_label_bare_name() {
-        crate::i18n::init("zh-CN");
-        let label = fmt_engine_label("zipformer-small-ctc");
-        assert!(label.contains("zipformer-small-ctc"));
-    }
-
-    #[test]
-    fn fmt_engine_label_empty() {
-        let label = fmt_engine_label("");
-        assert_eq!(label, "");
-    }
+    // fmt_engine_label 的 spec 解析逻辑已随 Task 2 模型激活重构移除（改为读
+    // resolve_active_engine("asr")），原 spec 字符串单测不再适用。
 }
