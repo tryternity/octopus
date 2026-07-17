@@ -21,6 +21,9 @@ export default function Screenshot() {
   const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
+  // ImageBitmap 缓存——已解码的 GPU 友好位图，drawImage 比直接画 HTMLImageElement 快
+  // （省每帧重新解码）。标注拖动时 draw() 每帧全屏 drawImage(bg)，是主要开销。
+  const bgBitmapRef = useRef<ImageBitmap | null>(null);
   const startPtRef = useRef({ x: 0, y: 0 });
   const moveStartRef = useRef({ x: 0, y: 0 });
   const selStartRef = useRef<Selection>({ x: 0, y: 0, w: 0, h: 0 });
@@ -82,6 +85,9 @@ export default function Screenshot() {
           setReady(true);
           URL.revokeObjectURL(url); // onload 后图片已解码到内存，释放 Object URL
           setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
+          // 异步创建 ImageBitmap 缓存——ready 时 draw 先用 HTMLImageElement 兜底，
+          // bitmap 就绪后 draw 自动切到快路径（见 draw/finalize 里 bgBitmapRef ?? bgImgRef）。
+          createImageBitmap(img).then((bm) => { bgBitmapRef.current = bm; }).catch(() => {});
         };
         img.src = url;
       })
@@ -120,7 +126,10 @@ export default function Screenshot() {
       // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
     }).then((fn) => { if (cancelled) fn(); else unlistenDone = fn; });
-    return () => { cancelled = true; unlistenFrame?.(); unlistenDone?.(); };
+    return () => {
+      cancelled = true; unlistenFrame?.(); unlistenDone?.();
+      bgBitmapRef.current?.close(); // 释放 ImageBitmap 缓存
+    };
   }, []);
 
   // 初始化 Canvas 尺寸（仅一次，避免高频重分配 GPU 缓冲区）
@@ -180,7 +189,8 @@ export default function Screenshot() {
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
-    const bg = bgImgRef.current;
+    // ImageBitmap 优先（已解码，drawImage 快），未就绪时回退 HTMLImageElement
+    const bg: CanvasImageSource | undefined = bgBitmapRef.current ?? bgImgRef.current ?? undefined;
     if (!canvas || !bg || !ready) return;
 
     const cssW = window.innerWidth;

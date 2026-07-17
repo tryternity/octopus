@@ -303,14 +303,9 @@ fn build_engine_config(dir: &std::path::Path) -> Result<octopus_paddle_ocr::Engi
 fn dynamic_to_rec_image(img: &::image::DynamicImage) -> Result<octopus_paddle_ocr::RecImage> {
     let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
-    let raw = rgb.into_raw();
-    let mut bgr = vec![0u8; raw.len()];
-    for (src, dst) in raw.chunks_exact(3).zip(bgr.chunks_exact_mut(3)) {
-        dst[0] = src[2];
-        dst[1] = src[1];
-        dst[2] = src[0];
-    }
-    octopus_paddle_ocr::RecImage::from_bgr_u8(w as usize, h as usize, bgr)
+    // 直接用 from_rgb_u8——RecImage 内部记录 color_order，as_bgr_cow() 按需做 RGB→BGR
+    // 转换（与原手动 swap 等价）。省一次 ~25MB BGR vec 分配（4K 图）+ 25M 像素循环。
+    octopus_paddle_ocr::RecImage::from_rgb_u8(w as usize, h as usize, rgb.into_raw())
         .map_err(|e| anyhow::anyhow!("Failed to create RecImage: {e}"))
 }
 

@@ -252,7 +252,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         let prompt_attn = ndarray::Array2::from_shape_vec((1, s0), vec![1i64; s0])?;
         let prompt_cache_pos: ndarray::Array1<i64> = (0..s0 as i64).collect();
 
-        let logit_vec = run_decoder_step(
+        let first_id = run_decoder_step(
             &mut decoder_session,
             &prompt_ids_arr,
             &audio_features,
@@ -265,7 +265,6 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         )?;
 
         let mut generated_ids = Vec::new();
-        let first_id = argmax(&logit_vec);
         generated_ids.push(first_id);
 
         let mut cur_len = s0;
@@ -288,7 +287,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
             let step_attn = ndarray::Array2::from_shape_vec((1, 1), vec![1i64])?;
             let step_pos = ndarray::Array1::from_vec(vec![cur_len as i64]);
 
-            let logit_vec = run_decoder_step(
+            let next_id = run_decoder_step(
                 &mut decoder_session,
                 &step_ids,
                 &audio_features,
@@ -302,7 +301,6 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
 
             cur_len += 1;
 
-            let next_id = argmax(&logit_vec);
             generated_ids.push(next_id);
 
             // 重复 token 早停：连续相同 token 达阈值 → repetition loop，提前终止
@@ -576,7 +574,7 @@ fn run_decoder_step(
     caches: &mut [ndarray::Array4<f32>],
     max_total_len: usize,
     cache_names: &[(&'static str, &'static str)],
-) -> Result<Vec<f32>> {
+) -> Result<i64> {
     let s = input_ids.shape()[1]; // sequence length of this step
 
     let mut inputs = ort::inputs! {
@@ -651,12 +649,13 @@ fn run_decoder_step(
         }
     }
 
-    // Extract logits and return only the last token's logits
+    // Extract logits and return only the last token's argmax（直接在 view 上算 argmax，
+    // 避免 to_vec() 复制整行 vocab ~606KB）。
     let (logits_shape, logits_data) = outputs[0].try_extract_tensor::<f32>()?;
     let seq_len = logits_shape[1] as usize;
     let vocab_size = logits_shape[2] as usize;
     let last_token_logits = &logits_data[(seq_len - 1) * vocab_size .. seq_len * vocab_size];
-    Ok(last_token_logits.to_vec())
+    Ok(argmax(last_token_logits))
 }
 
 /// Argmax over a slice of f32 values
