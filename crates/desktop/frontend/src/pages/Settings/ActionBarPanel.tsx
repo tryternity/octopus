@@ -223,15 +223,15 @@ const ExtensionDropZone = ({
 
 // ── 表单字段行 ──
 const FormField = ({
-  label, children, hint,
+  label, children, hint, className,
 }: {
-  label: string; children: React.ReactNode; hint?: string;
+  label: string; children: React.ReactNode; hint?: string; className?: string;
 }) => (
-  <div className="space-y-1.5">
+  <div className={cn("space-y-1.5", className)}>
     <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
       {label}
     </label>
-    <div className="min-w-0">{children}</div>
+    <div className="min-w-0 min-h-0">{children}</div>
     {hint && <p className="text-[11px] text-muted-foreground/60">{hint}</p>}
   </div>
 );
@@ -287,7 +287,7 @@ const EditForm = ({
   }, [capturingGlobal, form, onChange]);
 
   return (
-    <div className="space-y-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* 导航栏——返回在左，保存/取消在右 */}
       <div className="flex items-center justify-between border-b border-border/40 pb-2">
         <div className="flex items-center gap-3">
@@ -315,8 +315,8 @@ const EditForm = ({
         </div>
       </div>
 
-      {/* 单卡片紧凑表单——替代原 6 个分散卡片，减少垂直浪费 */}
-      <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+      {/* 单卡片紧凑表单——flex-1 min-h-0 让 textarea 弹性填充，避免外层滚动条 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 rounded-lg border border-border/50 bg-muted/15 p-4">
         {/* 标题 —— 占一行 */}
         <FormField label={t("settings.actionBar.titleLabel")}>
           <input
@@ -444,11 +444,12 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 内容 textarea —— 拉高方便写长 prompt（润色 prompt 等） */}
+        {/* 内容 textarea —— flex-1 弹性填充剩余空间，避免双滚动条。
+            showContent=false 时此区不占高度，其余字段自然撑开卡片。 */}
         {showContent && (
-          <FormField label={t("settings.actionBar.contentLabel")}>
+          <FormField label={t("settings.actionBar.contentLabel")} className="flex min-h-0 flex-1 flex-col">
             <textarea
-              className="w-full min-h-[200px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+              className="w-full min-h-[120px] flex-1 resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
               placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
@@ -1153,7 +1154,7 @@ export default function ActionBarPanel({
   const isEditing = editingId !== null || draftParentId !== undefined;
 
   return (
-    <div className="w-full min-w-0">
+    <div className={cn("w-full min-w-0", isEditing && "h-full flex flex-col")}>
       {/* ── 顶部 TAB：命令管理 / 执行记录 ──
           替代原 view 切换。EditForm 覆盖时不显示 TAB（全屏编辑）。 */}
       {!isEditing && (
