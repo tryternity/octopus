@@ -120,12 +120,15 @@ fn common_parent_dir(paths: &[String]) -> Option<String> {
 /// 返回的 Selection 携带全部信息（选中内容 + 鼠标坐标），下游不再碰检测细节。
 pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）。
-    // P2-3 修复：get_mouse_position 失败（CGEvent 权限缺失）时返回 None，
-    // 走 Selection::None 居中分支——比假坐标 (100,100) 导致弹到主屏左上角好。
-    let Some(mouse) = get_mouse_position(app) else {
-        log::warn!("[action-bar] 鼠标位置采集失败（CGEvent 权限？），fallback 居中");
-        return Selection::None;
-    };
+    // P2-3 修复（2026-07-17）：get_mouse_position 失败（CGEvent 权限缺失）时
+    // **不放弃选中检测**——用主屏中心作占位 mouse 继续 Finder/Sublime/Cmd+C 三条分支。
+    // 原先直接 return Selection::None 会把"位置失败"耦合为"放弃选中"，选中文本按热键
+    // 弹空搜索框（AI 操作全失效，比原 bug 仅位置偏移影响更大）。
+    // 占位坐标让浮窗弹到主屏中心而非鼠标旁——位置让位给可用性，但选中内容保留。
+    let mouse = get_mouse_position(app).unwrap_or_else(|| {
+        log::warn!("[action-bar] 鼠标位置采集失败（CGEvent 权限？），用主屏中心占位");
+        primary_monitor_center(app)
+    });
 
     // ── Finder 分支：AppleScript 直接拿 selection ──
     if crate::finder_selection::is_finder_frontmost() {
@@ -346,6 +349,22 @@ fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
     let _ = app.run_on_main_thread(move || {
         show_action_bar_window(&app_for_show, win_x, win_y);
     });
+}
+
+/// 主屏中心点（逻辑坐标）——给 detect_selection 在 mouse 采集失败时作占位。
+/// 与 show_action_bar_centered 的算法对齐：水平中心 + 垂直 1/5 位置。
+fn primary_monitor_center(app: &AppHandle) -> (f64, f64) {
+    match app.primary_monitor().ok().flatten() {
+        Some(m) => {
+            let scale = m.scale_factor();
+            let mon_x = m.position().x as f64 / scale;
+            let mon_y = m.position().y as f64 / scale;
+            let mon_w = m.size().width as f64 / scale;
+            let mon_h = m.size().height as f64 / scale;
+            (mon_x + mon_w / 2.0, mon_y + mon_h / 5.0)
+        }
+        None => (720.0, 180.0), // 兜底（1440×900 主屏的中心+1/5）
+    }
 }
 
 /// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
