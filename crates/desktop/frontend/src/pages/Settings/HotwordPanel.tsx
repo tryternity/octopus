@@ -227,7 +227,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   return (
     <div className="flex h-full gap-4">
       {/* ════ 左栏：场景（版本）列表 ════ */}
-      <div className="flex w-[220px] flex-shrink-0 flex-col rounded-lg border border-border bg-muted/30 raycast-ring">
+      <div className="flex w-[180px] flex-shrink-0 flex-col rounded-lg border border-border bg-muted/30 raycast-ring">
         {/* 列表区 */}
         <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {!loaded ? (
@@ -242,22 +242,15 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                 <div
                   key={s.id}
                   className={cn(
-                    'relative flex items-center gap-1.5 rounded-md px-2 py-2 transition-colors cursor-pointer',
+                    'relative rounded-md px-2 py-2 transition-colors cursor-pointer',
                     active ? 'bg-accent' : 'hover:bg-accent/60',
                   )}
                   onClick={() => setSelectedId(s.id)}
                 >
                   {/* 选中态左侧 voice 竖条——与 Settings sidebar 一致 */}
                   {active && <span className="absolute left-[-8px] top-1.5 bottom-1.5 w-[2px] rounded-full bg-voice" />}
-                  {/* Toggle 包一层拦截点击冒泡到行（避免点开关同时触发行选中） */}
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <Toggle
-                      on={s.enabled}
-                      onClick={() => toggleSet(s.id, !s.enabled)}
-                      aria-label={`启用 ${s.name}`}
-                    />
-                  </div>
-                  <div className="flex min-w-0 flex-1 flex-col">
+                  {/* 第一行：场景名称 + 词数（点击重命名） */}
+                  <div className="min-w-0">
                     {renaming === s.id ? (
                       <Input
                         variant="default"
@@ -272,24 +265,29 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                     ) : (
                       <button
                         onClick={(e) => { e.stopPropagation(); setSelectedId(s.id); startRename(s.id, s.name); }}
-                        className={cn('truncate text-left text-[13px] hover:text-voice', active && 'font-medium text-foreground')}
+                        className={cn('block w-full truncate text-left text-[13px] hover:text-voice', active && 'font-medium text-foreground')}
                         title={t('settings.hotword.renameHint')}
                       >
                         {s.name}
+                        <span className="ml-1.5 font-mono text-[10px] font-normal text-muted-foreground/60">{cnt} {t('settings.hotword.wordsCount')}</span>
                       </button>
                     )}
-                    <span className="font-mono text-[10px] text-muted-foreground/60">
-                      {cnt} {t('settings.hotword.wordsCount')}
-                    </span>
                   </div>
-                  {/* 行内操作：导出 / 删除 */}
-                  <div className="flex flex-shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="icon-sm" onClick={() => { setSelectedId(s.id); doExport(); }} aria-label="导出">
-                      <Download />
-                    </Button>
-                    <Button variant="destructive-ghost" size="icon-sm" onClick={() => deleteSet(s.id, s.name)} aria-label="删除版本">
-                      <Trash2 />
-                    </Button>
+                  {/* 第二行：左 Toggle 启用，右对齐 导出/删除（删除有 confirmDialog 二次确认） */}
+                  <div className="mt-1 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+                    <Toggle
+                      on={s.enabled}
+                      onClick={() => toggleSet(s.id, !s.enabled)}
+                      aria-label={`启用 ${s.name}`}
+                    />
+                    <div className="flex items-center gap-0.5">
+                      <Button variant="ghost" size="icon-sm" onClick={() => { setSelectedId(s.id); doExport(); }} aria-label="导出">
+                        <Download />
+                      </Button>
+                      <Button variant="destructive-ghost" size="icon-sm" onClick={() => deleteSet(s.id, s.name)} aria-label="删除版本">
+                        <Trash2 />
+                      </Button>
+                    </div>
                   </div>
                 </div>
               );
