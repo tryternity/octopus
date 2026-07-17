@@ -5,15 +5,31 @@
 //!
 //! 链路：全局热键 → detect_selection → execute_action_bar_inner → CompactEditor
 
+use std::collections::HashSet;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+/// 本模块已注册的快捷键字符串集合（菜单项 Quick Execute 快捷键）。
+///
+/// **必须维护这份清单**——`unregister_all()` 会清掉整个 global_shortcut plugin
+/// 持有的所有快捷键，包括 asr / clipboard / edit_global / polish_global /
+/// screenshot / action_bar 等其他模块注册的。曾因 `register_action_hotkeys`
+/// 用 `unregister_all()` 导致启动时其他 5 个快捷键全失效（启动顺序：其他先注册 →
+/// 本函数清空 → 只有 action_bar_shortcut 在后面重新注册成功）。
+///
+/// 改为「按清单精确 unregister」：本模块注册成功 → 加入清单；重建时遍历清单
+/// 逐个 unregister + 清单重置。DB 里已删的快捷键（结果集不含）只要曾在清单里就能
+/// 被精确注销，覆盖「用户删除菜单项快捷键后旧 handler 残留」的根因场景。
+static REGISTERED_SHORTCUTS: once_cell::sync::Lazy<Mutex<HashSet<String>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashSet::new()));
 
 /// 注册所有配置了 global_shortcut 的菜单项的全局快捷键。
 /// 启动时 + 设置变更后调用。
 ///
-/// ⚠️ **必须先 unregister_all 清空再全量重注册**：原先只遍历「当前 DB 中非空快捷键」来
-/// unregister，删除/清空场景下（DB 已是 ''，不在结果集里）旧 handler 永远残留在进程内，
-/// 直到下次重启。曾导致：用户把菜单项快捷键从 `Cmd+Shift+G` 删除后，按键仍被 octopus 吞。
+/// 重建语义：先按 `REGISTERED_SHORTCUTS` 清单精确注销本模块注册过的所有快捷键
+/// （含 DB 里已删除但仍残留的），再按当前 DB 全量重注册。**仅清本模块的**，
+/// 不影响其他模块注册的快捷键（asr/clipboard/edit_global/polish_global/screenshot/action_bar）。
 pub fn register_action_hotkeys(app: &AppHandle) {
     let items = match octopus_infra::db::list_action_hotkeys() {
         Ok(items) => items,
@@ -23,12 +39,19 @@ pub fn register_action_hotkeys(app: &AppHandle) {
         }
     };
 
-    // 全量清空所有菜单项快捷键（含已从 DB 删除但仍在进程内残留的），
-    // action_bar / clipboard / asr / edit / polish / screenshot 各自独立注册的快捷键
-    // 不受影响（它们走各自的 register_*_shortcut 路径）。
-    let _ = app.global_shortcut().unregister_all();
+    // 按清单精确注销本模块已注册的快捷键——绝不用 unregister_all（会误清其他模块）
+    let to_unregister: Vec<String> = {
+        let mut set = REGISTERED_SHORTCUTS.lock().unwrap();
+        set.drain().collect()
+    };
+    for sc_str in &to_unregister {
+        if let Ok(sc) = sc_str.parse::<Shortcut>() {
+            let _ = app.global_shortcut().unregister(sc);
+        }
+    }
 
-    // 重新注册
+    // 重新注册 + 记录到清单
+    let mut new_registered: HashSet<String> = HashSet::new();
     for item in &items {
         let shortcut_str = item.global_shortcut.clone();
         let shortcut: Shortcut = match shortcut_str.parse() {
@@ -50,10 +73,14 @@ pub fn register_action_hotkeys(app: &AppHandle) {
                 });
             }
         }) {
-            Ok(()) => log::info!("[action-hotkey] 注册: 「{}」→ {}", item.title, shortcut_str),
+            Ok(()) => {
+                log::info!("[action-hotkey] 注册: 「{}」→ {}", item.title, shortcut_str);
+                new_registered.insert(shortcut_str);
+            }
             Err(e) => log::warn!("[action-hotkey] 注册失败 「{}」 '{}': {} (可能被系统占用)", item.title, shortcut_str, e),
         }
     }
+    *REGISTERED_SHORTCUTS.lock().unwrap() = new_registered;
 }
 
 /// 快速执行链路（worker 线程）：detect → execute → CompactEditor。
