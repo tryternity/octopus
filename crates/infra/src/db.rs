@@ -1245,15 +1245,18 @@ pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
 /// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。
 /// 供 load_active_engine(domain) 使用——4 域统一激活查询。
 pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, domain, provider, category, model_name, source, secret_key,
-                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
-             FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
-        )?;
-        let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
-        Ok(row)
-    })
+    with_db(|conn| get_active_model_at(conn, domain))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Option<ModelRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, domain, provider, category, model_name, source, secret_key,
+                language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+         FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
+    )?;
+    let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
+    Ok(row)
 }
 
 /// ModelRow 行映射共享闭包（get_model_by_id / get_active_model 共用，14 列顺序一致）。
@@ -1279,13 +1282,16 @@ fn model_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRow> {
 /// 切换激活模型——单语句全量刷新某域的 is_enabled（仅在可用模型中切换）。
 /// SQLite 用 IIF（不是 MySQL 的 IF）。每域记录不多（最多几十条），全量刷新无性能问题。
 pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
-            params![id, domain],
-        )?;
-        Ok(())
-    })
+    with_db(|conn| switch_active_model_at(conn, domain, id))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn switch_active_model_at(conn: &Connection, domain: &str, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+        params![id, domain],
+    )?;
+    Ok(())
 }
 
 /// 按 spec 精确查 ASR 域某可用模型（不限激活），返回完整 ModelRow。
@@ -1295,25 +1301,28 @@ pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
 /// - 3-part：provider + category + model_name 精确匹配
 /// - 裸名：仅按 model_name 匹配（取第一条）
 pub fn get_asr_model_by_spec(provider: Option<&str>, category: Option<&str>, model_name: &str) -> Result<Option<ModelRow>> {
+    with_db(|conn| get_asr_model_by_spec_at(conn, provider, category, model_name))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn get_asr_model_by_spec_at(conn: &Connection, provider: Option<&str>, category: Option<&str>, model_name: &str) -> Result<Option<ModelRow>> {
     const SQL_FULL: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
                     language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE domain='asr' AND is_available=1 AND provider=?1 AND category=?2 AND model_name=?3 LIMIT 1";
     const SQL_NAME: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
                     language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE domain='asr' AND is_available=1 AND model_name=?1 LIMIT 1";
-    with_db(|conn| {
-        let row = match (provider, category) {
-            (Some(p), Some(c)) => {
-                let mut stmt = conn.prepare(SQL_FULL)?;
-                stmt.query_row(params![p, c, model_name], |r| model_row_mapper(r)).optional()?
-            }
-            _ => {
-                let mut stmt = conn.prepare(SQL_NAME)?;
-                stmt.query_row(params![model_name], |r| model_row_mapper(r)).optional()?
-            }
-        };
-        Ok(row)
-    })
+    let row = match (provider, category) {
+        (Some(p), Some(c)) => {
+            let mut stmt = conn.prepare(SQL_FULL)?;
+            stmt.query_row(params![p, c, model_name], |r| model_row_mapper(r)).optional()?
+        }
+        _ => {
+            let mut stmt = conn.prepare(SQL_NAME)?;
+            stmt.query_row(params![model_name], |r| model_row_mapper(r)).optional()?
+        }
+    };
+    Ok(row)
 }
 
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
@@ -3721,6 +3730,218 @@ mod tests {
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
         assert_eq!(p.secret_key, json);
+    }
+
+    // ── 模型激活语义（Task 1-2 引入）单测 ──
+    // 不变量来源：specs/2026-07-17-model-activation-refactor-design.md §3.3 / §6 / §7
+
+    /// §7 降级路径：无激活模型（is_enabled 全 0）时 get_active_model 返回 None。
+    /// seed 默认所有模型 is_enabled=0（用户激活时才设 1），故全新库应返回 None。
+    #[test]
+    fn get_active_model_returns_none_when_no_active() {
+        let conn = open_init();
+        // seed 里所有 asr 模型 is_enabled=0
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "llm").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "ocr").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "translate").unwrap().is_none());
+    }
+
+    /// §3.3 + §6.1：激活查询 WHERE domain=? AND is_enabled=1 AND is_available=1。
+    /// 仅 is_enabled=1 不够——必须 is_available=1（文件未就绪的激活模型不算）。
+    #[test]
+    fn get_active_model_requires_both_enabled_and_available() {
+        let conn = open_init();
+        // 找一个 is_available=1 的 ASR 模型（sensevoice-orig-small）并激活
+        let row: (i64,) = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'", [], |r| Ok((r.get(0)?,))
+        ).unwrap();
+        let sid = row.0;
+        switch_active_model_at(&conn, "asr", sid).unwrap();
+
+        // 命中：is_enabled=1 AND is_available=1
+        let active = get_active_model_at(&conn, "asr").unwrap().expect("应命中激活模型");
+        assert_eq!(active.id, sid);
+        assert_eq!(active.model_name, "sensevoice-orig-small");
+        assert_eq!(active.domain, "asr");
+        // §6.1 推理正确性：完整字段（source/secret_key/model_name 与 DB 一致）
+        assert!(active.source.starts_with("asr/"));
+        assert_eq!(active.is_available, true);
+        assert_eq!(active.is_enabled, true);
+
+        // 反例：手动设一个 is_enabled=1 AND is_available=0 的行 → 不应命中
+        conn.execute(
+            "UPDATE models SET is_enabled=1, is_available=0 WHERE model_name='paraformer-streaming'",
+            [],
+        ).unwrap();
+        // 仍应返回 sensevoice（is_available=1 的那个），不返回 paraformer-streaming
+        let active2 = get_active_model_at(&conn, "asr").unwrap().expect("仍应命中 sensevoice");
+        assert_eq!(active2.model_name, "sensevoice-orig-small");
+    }
+
+    /// §6.3 事务性切换：switch_active_model 单 UPDATE 原子刷新——切换后该域仅 1 个 is_enabled=1。
+    /// IIF(id=?,1,0) 语义：目标行置 1，其余可用行置 0。
+    #[test]
+    fn switch_active_model_atomic_single_active_per_domain() {
+        let conn = open_init();
+        // 两个 is_available=1 的 ASR 模型：sensevoice-orig-small + firered-asr2
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        let fr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='firered-asr2'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_ne!(sv, fr, "测试前提：两模型 id 不同");
+
+        // 先激活 sensevoice
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "切换后该域应仅 1 个 is_enabled=1 AND is_available=1");
+        let active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(active.id, sv);
+
+        // 切换到 firered——sensevoice 应自动 is_enabled=0
+        switch_active_model_at(&conn, "asr", fr).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "再切换后仍仅 1 个激活");
+        let active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(active.id, fr, "激活应已切到 firered");
+    }
+
+    /// §6.3 边界：switch_active_model 仅在 is_available=1 中切换——
+    /// 目标 id 是 is_available=0 的行时，UPDATE 不影响它（WHERE is_available=1 排除），
+    /// 且会把该域所有 is_available=1 的行 is_enabled 置 0（全清空）。
+    #[test]
+    fn switch_active_model_clears_domain_when_target_not_available() {
+        let conn = open_init();
+        // paraformer-streaming is_available=0（未就绪）
+        let ps: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='paraformer-streaming'",
+            [], |r| r.get(0)
+        ).unwrap();
+        // 先激活 sensevoice（is_available=1）确认初始有激活
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_some());
+
+        // 切到 paraformer-streaming（is_available=0）——WHERE is_available=1 排除它
+        switch_active_model_at(&conn, "asr", ps).unwrap();
+        // 该域所有 is_available=1 的行 is_enabled=0（含 sensevoice）→ 无激活
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none(),
+            "切到未就绪模型应清空该域激活（IIF(id=ps,1,0) 但 ps 不在 WHERE 范围内）");
+        // paraformer-streaming 本身 is_enabled 仍 0（UPDATE 未触及它）
+        let ps_enabled: i64 = conn.query_row(
+            "SELECT is_enabled FROM models WHERE id=?1", params![ps], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(ps_enabled, 0, "未就绪模型不应被设为激活");
+    }
+
+    /// §6.4 4 域统一：get_active_model / switch_active_model 对 asr/llm/ocr/translate
+    /// 4 个 domain 行为一致——同一 API，按 domain 过滤，互不串扰。
+    #[test]
+    fn switch_active_model_isolates_domains() {
+        let conn = open_init();
+        // ASR 域激活 sensevoice
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        // OCR 域激活 PP-OCRv6-small（is_available=1）
+        let ocr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='ocr' AND model_name='PP-OCRv6-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        switch_active_model_at(&conn, "ocr", ocr).unwrap();
+
+        // 4 域各查一次——asr/ocr 命中各自激活，llm/translate 仍 None
+        let asr_active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(asr_active.model_name, "sensevoice-orig-small");
+        assert_eq!(asr_active.domain, "asr");
+
+        let ocr_active = get_active_model_at(&conn, "ocr").unwrap().unwrap();
+        assert_eq!(ocr_active.model_name, "PP-OCRv6-small");
+        assert_eq!(ocr_active.domain, "ocr");
+
+        assert!(get_active_model_at(&conn, "llm").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "translate").unwrap().is_none());
+
+        // 域间不串扰：再切 ASR 不影响 OCR
+        let fr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='firered-asr2'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", fr).unwrap();
+        let ocr_still = get_active_model_at(&conn, "ocr").unwrap().unwrap();
+        assert_eq!(ocr_still.id, ocr, "切 ASR 不应影响 OCR 激活态");
+    }
+
+    /// get_asr_model_by_spec：3-part spec（provider+category+name）精确匹配。
+    /// 仅查 is_available=1 的（不限 is_enabled）——CLI 多模型路径专用。
+    #[test]
+    fn get_asr_model_by_spec_full_3part_matches_available() {
+        let conn = open_init();
+        // sensevoice-orig-small is_available=1（seed）
+        let row = get_asr_model_by_spec_at(&conn, Some("local"), Some("sensevoice-orig"), "sensevoice-orig-small")
+            .unwrap().expect("应命中可用模型");
+        assert_eq!(row.model_name, "sensevoice-orig-small");
+        assert_eq!(row.provider, "local");
+        assert_eq!(row.category, "sensevoice-orig");
+        assert_eq!(row.domain, "asr");
+        assert!(row.is_available);
+    }
+
+    /// get_asr_model_by_spec：裸名（provider/category=None）跨 provider/category 匹配。
+    #[test]
+    fn get_asr_model_by_spec_bare_name_matches() {
+        let conn = open_init();
+        let row = get_asr_model_by_spec_at(&conn, None, None, "sensevoice-orig-small")
+            .unwrap().expect("裸名应命中可用模型");
+        assert_eq!(row.model_name, "sensevoice-orig-small");
+    }
+
+    /// get_asr_model_by_spec：is_available=0 的模型不返回（文件未就绪不可用）。
+    #[test]
+    fn get_asr_model_by_spec_filters_unavailable() {
+        let conn = open_init();
+        // paraformer-streaming is_available=0
+        let result = get_asr_model_by_spec_at(&conn, Some("local"), Some("paraformer"), "paraformer-streaming")
+            .unwrap();
+        assert!(result.is_none(), "未就绪模型不应被查询到");
+        let result2 = get_asr_model_by_spec_at(&conn, None, None, "paraformer-streaming")
+            .unwrap();
+        assert!(result2.is_none(), "裸名查未就绪模型也应返回 None");
+    }
+
+    /// get_asr_model_by_spec：非 ASR domain 不命中（函数硬编码 domain='asr'）。
+    #[test]
+    fn get_asr_model_by_spec_rejects_non_asr_domain() {
+        let conn = open_init();
+        // PP-OCRv6-small 是 ocr domain，is_available=1，但函数只查 asr
+        let result = get_asr_model_by_spec_at(&conn, None, None, "PP-OCRv6-small")
+            .unwrap();
+        assert!(result.is_none(), "ocr domain 模型不应被 asr 查询命中");
+    }
+
+    /// get_asr_model_by_spec：不存在的 name 返回 None（不报错）。
+    #[test]
+    fn get_asr_model_by_spec_returns_none_for_unknown() {
+        let conn = open_init();
+        let result = get_asr_model_by_spec_at(&conn, None, None, "nonexistent-model-xxx")
+            .unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

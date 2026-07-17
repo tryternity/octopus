@@ -852,4 +852,82 @@ mod tests {
         // category 字符串非本地族 → None
         assert_eq!(resolve_category("local", "Fun-ASR"), None);
     }
+
+    /// §4.4 ResolvedEngine.as_engine_category：4 个云端 provider（aliyun/bytedance/
+    /// tencent/baidu）按 provider 路由，category 字符串任意（Task 2 后云端 ASR 新增）。
+    /// 大小写不敏感（eq_ignore_ascii_case）。
+    #[test]
+    fn resolve_category_routes_all_cloud_providers() {
+        // bytedance / tencent / baidu 三个云端 provider（与 aliyun 对称，Task 2 前已加）
+        assert_eq!(resolve_category("bytedance", "Doubao-ASR"), Some(EngineCategory::ByteDance));
+        assert_eq!(resolve_category("Bytedance", "anything"), Some(EngineCategory::ByteDance));
+        assert_eq!(resolve_category("tencent", "Tencent-ASR"), Some(EngineCategory::Tencent));
+        assert_eq!(resolve_category("TENCENT", "anything"), Some(EngineCategory::Tencent));
+        assert_eq!(resolve_category("baidu", "Baidu-ASR"), Some(EngineCategory::Baidu));
+        assert_eq!(resolve_category("Baidu", "anything"), Some(EngineCategory::Baidu));
+    }
+
+    /// §4.4 ResolvedEngine.as_engine_category：通过 ResolvedEngine（含 domain/provider/
+    /// category）调用 as_engine_category，验证 4 域统一结构的转换行为。
+    /// - ASR domain + 云端 provider → 对应云端 EngineCategory
+    /// - ASR domain + 本地族 category → 对应本地族 EngineCategory
+    /// - 非 ASR domain（llm/ocr/translate）→ None（category 字符串非 ASR 族）
+    #[test]
+    fn as_engine_category_converts_resolved_engine() {
+        // 云端 ASR（aliyun，category='Fun-ASR' 非 ASR 族名但 provider 路由）
+        let aliyun = ResolvedEngine {
+            domain: "asr".to_string(),
+            name: "fun-asr-2025-11-07".to_string(),
+            provider: "aliyun".to_string(),
+            category: "Fun-ASR".to_string(),
+            is_thinking: false,
+            entry: make_entry("wss://dashscope.aliyuncs.com/api-ws/v1/inference"),
+        };
+        assert_eq!(aliyun.as_engine_category(), Some(EngineCategory::Aliyun));
+
+        // 本地 ASR（zipformer）
+        let zf = ResolvedEngine {
+            domain: "asr".to_string(),
+            name: "zipformer-small-ctc".to_string(),
+            provider: "local".to_string(),
+            category: "zipformer".to_string(),
+            is_thinking: false,
+            entry: make_entry("models/zipformer"),
+        };
+        assert_eq!(zf.as_engine_category(), Some(EngineCategory::Zipformer));
+
+        // LLM domain（category='deepseek' 非 ASR 族名）→ None
+        let llm = ResolvedEngine {
+            domain: "llm".to_string(),
+            name: "deepseek-chat".to_string(),
+            provider: "deepseek".to_string(),
+            category: "deepseek".to_string(),
+            is_thinking: false,
+            entry: make_entry("https://api.deepseek.com/v1"),
+        };
+        assert_eq!(llm.as_engine_category(), None,
+            "LLM domain 的 category 字符串非 ASR 族 → None");
+
+        // OCR domain（category='paddleocr' 非 ASR 族名）→ None
+        let ocr = ResolvedEngine {
+            domain: "ocr".to_string(),
+            name: "PP-OCRv6-small".to_string(),
+            provider: "local".to_string(),
+            category: "paddleocr".to_string(),
+            is_thinking: false,
+            entry: make_entry("ocr/PP-OCRv6-small"),
+        };
+        assert_eq!(ocr.as_engine_category(), None);
+
+        // Translate domain（category='opus-mt' 非 ASR 族名）→ None
+        let tr = ResolvedEngine {
+            domain: "translate".to_string(),
+            name: "opus-mt".to_string(),
+            provider: "local".to_string(),
+            category: "opus-mt".to_string(),
+            is_thinking: false,
+            entry: make_entry("translate/opus-mt"),
+        };
+        assert_eq!(tr.as_engine_category(), None);
+    }
 }
