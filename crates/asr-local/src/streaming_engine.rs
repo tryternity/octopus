@@ -55,7 +55,7 @@ impl StreamingSession {
 
         match category {
             crate::config::EngineCategory::Paraformer => {
-                let engine = crate::streaming_paraformer::StreamingParaformer::new(bare_name)?;
+                let engine = crate::streaming_paraformer::StreamingParaformer::new_from_entry(&resolved.entry)?;
                 Ok(Self::Paraformer {
                     engine: Mutex::new(engine),
                     punct_prefix: Mutex::new(String::new()),

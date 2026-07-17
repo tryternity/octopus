@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ndarray::{Array2, Array3, ArrayD, IxDyn};
 use once_cell::sync::Lazy;
 use ort::session::Session;
@@ -526,23 +526,6 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
             .map_err(|e| anyhow::anyhow!("Decode: {}", e))?;
         Ok(text)
     }
-}
-
-/// Transcribe audio using Whisper model
-/// Input: 16kHz mono f32 samples, language code ("auto"/"zh"/"en"/...). Output: transcribed text.
-pub fn transcribe(name: &str, audio: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-    let whisper_cfg = cfg
-        .asr
-        .whisper
-        .as_ref()
-        .context("No whisper models in config")?;
-    let entry = whisper_cfg
-        .get(name)
-        .with_context(|| format!("whisper model '{}' not in DB", name))?;
-
-    let engine = WhisperEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, audio, language)
 }
 
 #[cfg(test)]

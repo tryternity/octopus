@@ -62,23 +62,13 @@ impl StreamingParaformer {
     /// Create a new streaming engine for the given model name (e.g. "paraformer-streaming").
     /// Loads ONNX sessions and vocabulary; initializes all state to zeros.
     pub fn new(engine_name: &str) -> Result<Self> {
-        let cfg = config::load_config()?;
+        let (_cat, entry) = config::resolve_engine_any(engine_name)
+            .with_context(|| format!("Failed to resolve paraformer streaming engine: {}", engine_name))?;
+        Self::new_from_entry(&entry)
+    }
 
-        let para_cfg = cfg
-            .asr
-            .paraformer
-            .as_ref()
-            .context("No paraformer models in config")?;
-        let entry = if let Some(e) = para_cfg.get(engine_name) {
-            e
-        } else {
-            para_cfg
-                .iter()
-                .next()
-                .map(|(_, v)| v)
-                .context("No paraformer model entries")?
-        };
-
+    /// 从已解析的 ModelEntry 构造（StreamingSession::new 用，避免双重 DB 查找）。
+    pub fn new_from_entry(entry: &octopus_infra::db::ModelEntry) -> Result<Self> {
         let hf_path = config::resolve_model_dir(&entry.source)?;
 
         let prefer_int8 = true;
@@ -1085,15 +1075,8 @@ mod tests {
 
         // 离线 paraformer 使用 encoder/decoder 分离模型
         // 直接用 extract_cmvn_from_metadata 测试 CMVN 是否正确
-        let cfg = config::load_config().expect("加载配置失败");
-        let para_cfg = cfg
-            .asr
-            .paraformer
-            .as_ref()
-            .expect("No paraformer models in config");
-        let entry = para_cfg
-            .get("paraformer-bilingual")
-            .expect("paraformer-bilingual not in config");
+        let (_cat, entry) = config::resolve_engine_any("paraformer-bilingual")
+            .expect("paraformer-bilingual 未在 DB 可用引擎中（需 is_available=1）");
 
         let hf_path = config::resolve_model_dir(&entry.source).expect("resolve_model_dir 失败");
         let encoder_path = hf_path.join("encoder.int8.onnx");

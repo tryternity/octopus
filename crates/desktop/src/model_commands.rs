@@ -6,7 +6,7 @@
 //!   未命中才下载，下载后自举 + 置 true。
 //! - `verify_model` 按 secret_key 清单复核，损坏置 false。
 //! - Task 2 后：is_available 表「文件就绪可用」；is_enabled 表「激活」（每域仅 1 个=1）。
-//!   写 DB（set_model_enabled → is_available）后 `reload_models_config` 让引擎下拉即时更新。
+//!   写 DB（set_model_available → is_available）后 `reload_models_config` 让引擎下拉即时更新。
 //!
 //! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr_local::manifest`，与 cli `sync-models` 共用。
 //! 复用阶段1 download crate（HfRequest/resolve_tasks/Downloader）和 resolve_model_dir。
@@ -288,7 +288,6 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
 // ── 内部辅助 ──
 
 /// 写 secret_key（可选）+ is_available（文件就绪）+ reload 运行时 AsrConfig 缓存。
-/// `set_model_enabled` 函数名沿用旧名，实际写 is_available 列（Task 1 后语义分离）。
 fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> Result<(), String> {
     let model_name = match lookup_model_name(repo) {
         Ok(name) => name,
@@ -300,7 +299,7 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
     if let Some(json) = manifest_json {
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }
-    octopus_infra::db::set_model_enabled(&model_name, enabled).map_err(|e| e.to_string())?;
+    octopus_infra::db::set_model_available(&model_name, enabled).map_err(|e| e.to_string())?;
     // reload 只对 ASR 有意义（翻译/OCR 不走 AsrConfig）
     octopus_asr_local::config::reload_models_config();
     Ok(())

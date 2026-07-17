@@ -73,7 +73,7 @@ enum Commands {
         #[arg(long)]
         mirror: Option<String>,
     },
-    /// 同步本地模型状态：扫描所有本地 ASR 模型，就绪的算 sha256 清单写入 secret_key + 置 is_enabled=true；未就绪置 false
+    /// 同步本地模型状态：扫描所有本地 ASR 模型，就绪的算 sha256 清单写入 secret_key + 置 is_available=true；未就绪置 false
     SyncModels,
 }
 
@@ -125,7 +125,7 @@ fn run_sync_models() -> Result<()> {
                 let count =
                     serde_json::from_str::<octopus_asr_local::manifest::Manifest>(&manifest)?.len();
                 octopus_infra::db::set_model_secret_key(&r.model_name, &manifest)?;
-                octopus_infra::db::set_model_enabled(&r.model_name, true)?;
+                octopus_infra::db::set_model_available(&r.model_name, true)?;
                 ready += 1;
                 println!(
                     "✓ {} [{}]: 就绪，{} 个文件已记录清单到 secret_key",
@@ -133,10 +133,10 @@ fn run_sync_models() -> Result<()> {
                 );
             }
             Err(_) => {
-                octopus_infra::db::set_model_enabled(&r.model_name, false)?;
+                octopus_infra::db::set_model_available(&r.model_name, false)?;
                 missing += 1;
                 println!(
-                    "✗ {} [{}]: 文件未就绪，置 is_enabled=false",
+                    "✗ {} [{}]: 文件未就绪，置 is_available=false",
                     r.model_name, r.source
                 );
             }

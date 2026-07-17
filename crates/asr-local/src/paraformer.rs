@@ -271,23 +271,6 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
     }
 }
 
-/// Transcribe audio using Paraformer model (offline mode)
-/// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-    let para_cfg = cfg
-        .asr
-        .paraformer
-        .as_ref()
-        .context("No paraformer models in config")?;
-    let entry = para_cfg
-        .get(name)
-        .with_context(|| format!("paraformer model '{}' not in DB", name))?;
-
-    let engine = ParaformerEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, samples, language)
-}
-
 /// Extract CMVN normalization parameters from encoder ONNX model metadata.
 /// Returns (neg_mean, inv_stddev, encoder_output_size).
 /// The inv_stddev values are pre-scaled by sqrt(encoder_output_size).

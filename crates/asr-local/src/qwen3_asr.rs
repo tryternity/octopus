@@ -9,7 +9,7 @@
 //!   4. decoder.int8.onnx: autoregressive LLM with KV-cache deltas (28 layers)
 //!   5. BPE decode using Qwen2 tokenizer (vocab.json + merges.txt)
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ndarray::{Array2, Array3, ArrayView3, ArrayView4};
 use once_cell::sync::Lazy;
 use std::sync::Arc;
@@ -329,27 +329,6 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         Ok(text)
     }
 }
-
-/// Transcribe audio using Qwen3-ASR model
-/// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-
-    // Find qwen3-asr model entry
-    let qwen_cfg = cfg
-        .asr
-        .qwen3_asr
-        .as_ref()
-        .context("No qwen3-asr models in config")?;
-    let entry = qwen_cfg
-        .get(name)
-        .with_context(|| format!("qwen3-asr model '{}' not in DB", name))?;
-
-    let engine = Qwen3AsrEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, samples, language)
-}
-
-
 
 // ── Tokenizer helpers ──
 

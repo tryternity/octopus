@@ -37,7 +37,7 @@ impl DispatchEngine {
 impl TranscriptionEngine for DispatchEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
         // 按 spec 解析 category 动态路由
-        let is_cloud = octopus_asr_local::config::resolve_engine_category(engine)
+        let is_cloud = octopus_asr_local::config::resolve_engine_category_any(engine)
             .map(|c| c == octopus_asr_local::config::EngineCategory::Aliyun)
             .unwrap_or(false);
 

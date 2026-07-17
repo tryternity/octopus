@@ -113,20 +113,14 @@ impl AsrEngineManager {
             &format!("asr:{bare_name}"),
         );
 
-        let cfg = config::load_config()?;
-        // 先在激活配置（load_config 仅含激活 ASR）中查找；未命中则查 DB 任意可用引擎
-        // （CLI `--model` 多模型场景：用户可选非激活引擎）。
-        // 两条路径都返回 owned ModelEntry（resolve_engine_in_config 返回引用需 clone）。
+        // 查 DB 任意可用 ASR 引擎（不限激活）。CLI `--model` 多模型场景：用户可选非激活引擎。
         let (category, entry): (config::EngineCategory, config::ModelEntry) =
-            match config::resolve_engine_in_config(&cfg, model_name) {
-                Some((cat, _bare, entry)) => (cat, entry.clone()),
-                None => match config::resolve_engine_any(model_name) {
-                    Some((cat, entry)) => (cat, entry),
-                    None => anyhow::bail!(
-                        "Unknown engine model: {} (不在激活配置或 DB 可用引擎中)",
-                        model_name
-                    ),
-                },
+            match config::resolve_engine_any(model_name) {
+                Some((cat, entry)) => (cat, entry),
+                None => anyhow::bail!(
+                    "Unknown engine model: {} (不在 DB 可用引擎中)",
+                    model_name
+                ),
             };
 
         let new_eng: Arc<dyn OfflineAsrEngine> = match category {

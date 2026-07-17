@@ -37,36 +37,9 @@ pub struct StreamingZipformer {
 impl StreamingZipformer {
     /// Create a new streaming engine for the given model name (e.g. "zipformer-small-ctc").
     pub fn new(engine_name: &str) -> Result<Self> {
-        let cfg = config::load_config()?;
-
-        // DB zipformer section 查找；section 缺失时用本地打包兜底（DEFAULT_ASR_MODEL_DIR）
-        let entry_owned;
-        let entry = if let Some(zip_cfg) = cfg.asr.zipformer.as_ref() {
-            if let Some(e) = zip_cfg.get(engine_name) {
-                e
-            } else {
-                entry_owned = zip_cfg
-                    .iter()
-                    .next()
-                    .map(|(_, v)| v.clone())
-                    .context("No zipformer model entries")?;
-                &entry_owned
-            }
-        } else {
-            entry_owned = octopus_infra::db::ModelEntry {
-                source: octopus_infra::consts::DEFAULT_ASR_MODEL_DIR.to_string(),
-                language: "zh".to_string(),
-                description: String::new(),
-                secret_key: String::new(),
-                is_local: true,
-                is_enabled: true,
-                is_available: true,
-                is_streaming: true,
-            };
-            &entry_owned
-        };
-
-        Self::new_from_entry(entry)
+        let (_cat, entry) = config::resolve_engine_any(engine_name)
+            .with_context(|| format!("Failed to resolve zipformer streaming engine: {}", engine_name))?;
+        Self::new_from_entry(&entry)
     }
 
     /// 从已解析的 ModelEntry 构造（StreamingSession::new 使用，避免双重 DB 查找）。
@@ -510,20 +483,8 @@ pub struct StreamingZipformerTransducer {
 impl StreamingZipformerTransducer {
     /// 根据引擎裸名创建流式 Transducer session。
     pub fn new(engine_name: &str) -> Result<Self> {
-        let cfg = config::load_config()?;
-        let entry = if let Some(zip_cfg) = cfg.asr.zipformer.as_ref() {
-            if let Some(e) = zip_cfg.get(engine_name) {
-                e.clone()
-            } else {
-                zip_cfg
-                    .iter()
-                    .next()
-                    .map(|(_, v)| v.clone())
-                    .context("No zipformer model entries")?
-            }
-        } else {
-            anyhow::bail!("No zipformer section in config for Transducer");
-        };
+        let (_cat, entry) = config::resolve_engine_any(engine_name)
+            .with_context(|| format!("Failed to resolve zipformer transducer engine: {}", engine_name))?;
         Self::new_from_entry(&entry)
     }
 

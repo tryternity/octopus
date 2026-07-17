@@ -214,7 +214,7 @@ async fn handle_ws(
     use futures_util::StreamExt;
 
     // Validate engine
-    if octopus_asr_local::config::resolve_engine_category(&engine).is_none() {
+    if octopus_asr_local::config::resolve_engine_category_any(&engine).is_none() {
         let _ = socket
             .send(Message::Text(
                 event_to_json(&TranscriptEvent::Error(format!(

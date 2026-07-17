@@ -113,18 +113,6 @@ fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec
     options
 }
 
-/// 校验引擎名可切换：兜底名恒允许（不依赖 DB），其余须在 engines 列表中。
-fn validate_switch(name: &str, engines: &[octopus_asr_local::config::EngineInfo]) -> Result<(), String> {
-    if name == FALLBACK_ASR_ENGINE {
-        return Ok(());
-    }
-    if engines.iter().any(|e| e.name == name) {
-        Ok(())
-    } else {
-        Err(format!("引擎 '{}' 不存在，未切换", name))
-    }
-}
-
 // ── 配置持久化（DB app_config 表）──
 
 // 注：persist_asr_engine / persist_polish_llm 已移除（Task 2 后激活态存 DB models.is_enabled，
@@ -375,30 +363,6 @@ pub fn switch_active_model(
     Ok(())
 }
 
-/// 切换 ASR 引擎（旧命令，保留前端兼容）。
-///
-/// Task 2 后内部走统一 switch_active_model：按 model_name 查 DB 取 id → 切换。
-/// 兜底引擎（zipformer-small-ctc）走 `list_asr_model_details` 找 id，找不到时报错
-/// （兜底引擎通常在 DB 中，未激活状态）。
-#[tauri::command]
-pub fn switch_asr_engine(
-    model_name: String,
-    _rc: State<'_, SharedRuntimeConfig>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
-    validate_switch(&model_name, &engines)?;
-    // 按 model_name 查 DB 取 id（兜底固定 zipformer-small-ctc）
-    let id = octopus_infra::db::list_asr_model_details()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|d| d.model_name == model_name)
-        .map(|d| d.id)
-        .ok_or_else(|| format!("引擎 '{}' 在 DB 中找不到 id（未就绪？）", model_name))?;
-    switch_active_model("asr".to_string(), id, app_handle, engine_manager)
-}
-
 #[tauri::command]
 pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     let pm = u8_to_polish_mode(mode).ok_or_else(|| format!("polish_mode={} 非法（应为 0/1/2）", mode))?;
@@ -465,35 +429,6 @@ pub fn list_llm_models(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOpt
     // Task 2 后：current 直接用 DB 行的 is_enabled（build_llm_options 内部处理）。
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
     Ok(build_llm_options(llms))
-}
-
-/// 切换润色模型（旧命令，保留前端兼容）。
-///
-/// Task 2 后内部走统一 switch_active_model：空 name 取消激活（切换到一个不存在的 id=0
-/// 清空 is_enabled）；非空 name 按 provider+model_name 查 DB 取 id 切换。
-#[tauri::command]
-pub fn switch_polish_llm(
-    model_name: String,
-    provider: Option<String>,
-    _rc: State<'_, SharedRuntimeConfig>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    if model_name.is_empty() {
-        // 「不选择模型」：用 id=-1 取消激活（IIF(id=-1,1,0) 全域 is_enabled=0）
-        return switch_active_model("llm".to_string(), -1, app_handle, engine_manager);
-    }
-    let models = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
-    // 精确匹配：有 provider 时用 provider+model_name，否则用裸名（向后兼容）
-    let model = if let Some(ref p) = provider {
-        models.into_iter()
-            .find(|m| m.model_name == model_name && m.provider == *p)
-    } else {
-        models.into_iter()
-            .find(|m| m.model_name == model_name)
-    }
-    .ok_or_else(|| format!("润色模型 '{}:{}' 不存在，未切换", provider.as_deref().unwrap_or("?"), model_name))?;
-    switch_active_model("llm".to_string(), model.id, app_handle, engine_manager)
 }
 
 // ── 单测（纯逻辑，不触文件 IO / Tauri State）──
@@ -598,20 +533,6 @@ mod tests {
         assert!(opts[0].current, "无激活 → 无模型 current");
         assert_eq!(opts[0].name, "");
         assert!(!opts[1].current);
-    }
-
-    #[test]
-    fn validate_switch_allows_fallback_even_when_absent() {
-        use octopus_asr_local::config::EngineCategory;
-        let engines = vec![
-            mk_engine("whisper-small", "local", EngineCategory::Whisper, false, false),
-        ];
-        // 兜底名即使不在 engines 也允许
-        assert!(validate_switch("zipformer-small-ctc", &engines).is_ok());
-        // 在列表中的允许
-        assert!(validate_switch("whisper-small", &engines).is_ok());
-        // 不在列表且非兜底 → 拒绝
-        assert!(validate_switch("nonexistent", &engines).is_err());
     }
 
     // ── translate_mode 校验 ──
