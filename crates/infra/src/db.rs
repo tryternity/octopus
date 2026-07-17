@@ -928,13 +928,12 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
 }
 
 /// 写某本地模型的 is_available（文件就绪/可用）。写 DB。
-/// 注：函数名保留 set_model_enabled 避免大面积改名（调用方 model_commands 等），
-/// 语义从原 is_enabled 迁移到 is_available。
-pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
-    with_db(|conn| set_model_enabled_at(conn, model_name, enabled))
+/// 原名 set_model_enabled，2026-07-17 改名为 set_model_available（语义对齐 is_available 列）。
+pub fn set_model_available(model_name: &str, enabled: bool) -> Result<()> {
+    with_db(|conn| set_model_available_at(conn, model_name, enabled))
 }
 
-fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
+fn set_model_available_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
     conn.execute(
         "UPDATE models SET is_available = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
         params![if enabled { 1 } else { 0 }, model_name],
@@ -3866,14 +3865,14 @@ mod tests {
     }
 
     #[test]
-    fn set_model_enabled_persists() {
+    fn set_model_available_persists() {
         let conn = open_init();
-        set_model_enabled_at(&conn, "paraformer-streaming", true).unwrap();
+        set_model_available_at(&conn, "paraformer-streaming", true).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
         assert!(p.is_available);
         // 关掉再读
-        set_model_enabled_at(&conn, "paraformer-streaming", false).unwrap();
+        set_model_available_at(&conn, "paraformer-streaming", false).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
         assert!(!p.is_available);

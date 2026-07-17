@@ -12,7 +12,7 @@ pub use octopus_infra::db::{parse_model_spec, AsrConfig, AsrSection, ModelEntry,
 // ── Config loading ──
 
 /// 运行时缓存：首次从 DB 读出后缓存，避免每次识别重复开连接查询。
-/// 可重载（见 [`reload_models_config`]）：模型管理页 set_model_enabled 后调用，让
+/// 可重载（见 [`reload_models_config`]）：模型管理页 set_model_available 后调用，让
 /// 引擎下拉即时反映新的就绪状态。
 static RUNTIME_CONFIG: RwLock<Option<Arc<AsrConfig>>> = RwLock::new(None);
 
@@ -42,7 +42,7 @@ pub fn load_config() -> Result<AsrConfig> {
 /// 重载 AsrConfig 缓存（models 表）：从 DB 重读替换。
 ///
 /// 推理路径用（`load_config` → `resolve_engine_in_config` / 各引擎 transcribe）。
-/// desktop 在 set_model_enabled / set_model_secret_key / add/edit/remove_cloud_model
+/// desktop 在 set_model_available / set_model_secret_key / add/edit/remove_cloud_model
 /// 写 DB 后调用，让推理路径的激活模型缓存（`RUNTIME_CONFIG`，仅 is_enabled=1 AND is_available=1）
 /// 反映变化。**管理列表不走此缓存**——`list_engines_from_db` 直查 DB 即时反映，无需 reload。
 ///
