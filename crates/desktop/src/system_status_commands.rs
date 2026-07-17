@@ -321,8 +321,10 @@ impl SystemStatusSampler {
             *self.current.lock() = snap.clone();
             snap
         };
-        // emit 在所有 sampler 锁之外：序列化 60 点历史 + 模型列表不持锁
-        let _ = app.emit("system-status", snap);
+        // emit_to 定向到 settings_window——system-status 仅 SystemPanel 订阅。
+        // 原先用 app.emit 全局广播，每个 webview 都反序列化 60 点历史 + 模型列表。
+        // settings_window 不存在时 emit_to 返回 Err，let _ = 吞掉（无订阅者时本就不该到达）。
+        let _ = app.emit_to("settings_window", "system-status", snap);
     }
 
     /// 当前完整快照（首屏 invoke 用）。

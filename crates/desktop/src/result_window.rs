@@ -255,7 +255,8 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         // show-result 渲染（#container 默认 opacity:0，提前 show 不产生空窗闪烁）。
         let _ = window.show();
         if need_emit {
-            let _ = window.emit("show-result", text);
+            // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
+            let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
         }
     }
 }
@@ -265,6 +266,10 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
 /// caret = 光标在扁平文本里的 char 偏移（insertion=true 时前端据此定位闪烁光标，使其跟在最后插入的文字后
 /// 右移）；insertion=false 时前端忽略 caret（传 0 即可，光标回末尾）。
 /// payload 对象 `{ text, insertion, caret }`，前端 handler 在 Task 7 同步改为读对象。
+///
+/// **emit_to 定向**（2026-07-17 性能优化）：流式识别期间每 tick 触发，原先 `window.emit`
+/// 走全局广播到所有 webview（Emitter::emit 默认实现），每个窗口都反序列化 payload。
+/// 改用 emit_to 只发给 result_window，避免无关节点解析大文本。
 pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret: usize) {
     // 同 show_result：判 ready + 写 pending 进同一锁，消除与 result_window_ready 的竞态。
     let need_emit = {
@@ -277,8 +282,9 @@ pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret:
         }
     };
     if need_emit {
-        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            let _ = window.emit(
+        if app.get_webview_window(WINDOW_LABEL).is_some() {
+            let _ = app.emit_to(
+                WINDOW_LABEL,
                 "update-result",
                 serde_json::json!({ "text": text, "insertion": insertion, "caret": caret }),
             );
@@ -291,7 +297,7 @@ pub fn clear_result(app: &tauri::AppHandle) {
     *PENDING_TEXT.lock() = None;
     if WINDOW_READY.load(Ordering::Relaxed) {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            let _ = window.emit("clear-result", ());
+            let _ = app.emit_to(WINDOW_LABEL, "clear-result", ());
             let window_clone = window.clone();
             let current_session = SESSION_COUNTER.load(Ordering::Relaxed);
             tauri::async_runtime::spawn(async move {
