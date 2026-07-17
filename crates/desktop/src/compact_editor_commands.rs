@@ -25,9 +25,23 @@ pub struct OpenTabPayload {
 }
 
 /// 临时 tab 打开参数（不写 DB）。mode=None 为单栏（现有行为），mode="contrast" 为翻译对照。
+///
+/// **R1 修复（2026-07-17）**：emit 时直接序列化此结构体（替代手写 json!），故加入
+/// item_id / source / is_temp 字段以匹配前端 OpenTabPayload 类型——open_temp_compact_editor
+/// 调用时这三项固定（item_id=0, source="temp", is_temp=true），由 open_temp_compact_editor
+/// 在 emit 前补齐。
 #[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TempTabPayload {
+    /// item_id 固定 0（temp tab 不写 DB）。emit 时补齐。
+    #[serde(default)]
+    pub item_id: i64,
+    /// source 固定 "temp"。emit 时补齐。
+    #[serde(default)]
+    pub source: String,
+    /// is_temp 固定 true。emit 时补齐。
+    #[serde(default)]
+    pub is_temp: bool,
     /// 单栏文本（mode=None 时用）
     #[serde(default)]
     pub text: String,
@@ -40,6 +54,13 @@ pub struct TempTabPayload {
     /// 对照译文（mode=contrast 时用）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    /// 翻译 sessionId（mode=contrast 且通过流式翻译路径时用）。
+    ///
+    /// 前端 open-tab 据此把 sessionId → tabKey 映射写入 translatingSessionsRef，
+    /// 后续 `compact-editor://translate-progress|done` 事件按 sessionId 路由到该 tab。
+    /// 2026-07-17 修复发现 1（竞态）+ 8（并发错路由）：前端不再依赖单值 ref 的赋值时序。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translate_session_id: Option<String>,
 }
 
 /// 待打开的 tab（含完整数据）。open 时写入队列，前端 mount take 全部。
@@ -67,6 +88,11 @@ pub struct PendingTabFull {
     /// 对照译文
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translated_text: Option<String>,
+    /// 翻译 sessionId（流式 contrast tab 携带，前端据此建 translatingSessionsRef 映射）。
+    /// 2026-07-17 修复 R1：原先此结构无此字段，store_pending_temp 漏传 →
+    /// 新窗口路径下前端拿不到 sessionId → 翻译事件无法路由 → 永久 loading。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translate_session_id: Option<String>,
 }
 
 /// 待开 tab 队列（支持批量双开）。open 时 push，前端 mount take 全部。
@@ -99,10 +125,13 @@ fn push_pending_tab(item_id: i64, source: &str) {
         mode: None,
         original_text: None,
         translated_text: None,
+        translate_session_id: None, // 普通 tab（DB 查询）不走翻译，无 sessionId
     });
 }
 
 /// 存储临时 tab（不查 DB，payload 直接传入）。
+/// source 参数保留以兼容调用方语义（pending 队列按 source 路由），item_id/is_temp
+/// 在此固定（temp tab 不写 DB）。
 pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
     PENDING_TABS.lock().push(PendingTabFull {
         item_id: 0,
@@ -115,27 +144,35 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
         mode: payload.mode,
         original_text: payload.original_text,
         translated_text: payload.translated_text,
+        translate_session_id: payload.translate_session_id,
     });
 }
 
 /// 打开 CompactEditor 并定位到一个临时 tab（不写 DB）。
 /// payload.mode=None 为单栏（现有行为）；payload.mode="contrast" 为翻译对照（左原文右译文）。
 /// 窗口已存在 → emit 推送新 temp tab；窗口不存在 → store_pending_temp + 建窗。
+///
+/// **R1 修复（2026-07-17）**：窗口已存在路径原先用手写 serde_json::json! emit，
+/// 漏掉 translateSessionId 字段 → 前端拿不到 sessionId → 翻译事件无法路由 →
+/// 永久 loading。现改为 emit 整个 TempTabPayload（serde rename camelCase 已与
+/// 前端 OpenTabPayload 兼容），消除手写 JSON 漂移。
 pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload) {
+    // 补齐 emit 所需的固定字段——调用方只关心 text/mode/originalText/translatedText/
+    // translate_session_id，item_id/source/is_temp 由本函数固定（temp tab 不写 DB）。
+    let mut emit_payload = payload.clone();
+    emit_payload.item_id = 0;
+    emit_payload.source = "temp".into();
+    emit_payload.is_temp = true;
+
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.emit("compact-editor://open-tab", serde_json::json!({
-            "itemId": 0,
-            "source": "temp",
-            "text": payload.text,
-            "isTemp": true,
-            "mode": payload.mode,
-            "originalText": payload.original_text,
-            "translatedText": payload.translated_text,
-        }));
+        // 直接 emit TempTabPayload——序列化字段名（camelCase）与前端 OpenTabPayload
+        // 类型兼容（itemId/source/isTemp/text/mode/originalText/translatedText/translateSessionId）。
+        // 不再手写 json!，避免字段漂移（R1 回归根因）。
+        let _ = window.emit("compact-editor://open-tab", emit_payload);
         let _ = window.show();
         let _ = window.set_focus();
     } else {
-        store_pending_temp(payload.clone(), "temp");
+        store_pending_temp(emit_payload, "temp");
         create_compact_editor_window(app, None);
     }
 }

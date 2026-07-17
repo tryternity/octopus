@@ -1069,8 +1069,8 @@ export default function ActionBarPanel({
           menu 视图：左组放过滤/查看/折叠，右组单独放「新增」主操作；
           其他视图：返回按钮靠左。justify-between 让两组分到两端，避免左侧空白。 */}
       <div className="mb-6 flex items-center justify-between gap-4">
-        {/* 左组 */}
-        <div className="flex shrink-0 items-center gap-1.5">
+        {/* 左组：辅助操作（场景过滤 / 记录 / 展开）；无页面 title，靠左侧导航标识当前页 */}
+        <div className="flex min-w-0 items-center gap-1.5">
           {view === "menu" && (
             <>
               {/* 场景过滤——分段控件 */}
@@ -1110,6 +1110,15 @@ export default function ActionBarPanel({
                 </span>
               </Button>
             </>
+          )}
+        </div>
+
+        {/* 右：主操作（新增 / 返回） */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {view === "menu" && (
+            <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
+              <Plus /> {t("settings.actionBar.addMainItem")}
+            </Button>
           )}
           {view !== "menu" && (
             <Button onClick={() => setView("menu")} variant="outline" size="sm">

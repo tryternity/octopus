@@ -232,8 +232,11 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
             guard.take().map(|p| p.0)
         };
         if let Some(prev_app) = app_opt {
+            // NSApplicationActivateAllWindows = 1 << 0。
+            // ActivateIgnoringOtherApps (1 << 1) 在 macOS 14+ 已 deprecated 且"will have no effect"
+            // （Apple 官方头文件明确标注），项目内 activate_window_by_pid / activate_self 已统一用 1 << 0。
             let _ = prev_app.activateWithOptions(
-                objc2_app_kit::NSApplicationActivationOptions(1 << 1),
+                objc2_app_kit::NSApplicationActivationOptions(1 << 0),
             );
         } else {
             use objc2::MainThreadMarker;

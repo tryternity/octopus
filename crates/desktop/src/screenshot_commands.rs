@@ -720,7 +720,8 @@ fn activate_prev_app(win: &tauri::WebviewWindow) {
     };
     let _ = win.run_on_main_thread(move || {
         if let Some(app) = app_opt {
-            let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
+            // NSApplicationActivateAllWindows = 1 << 0（1 << 1 在 macOS 14+ deprecated，详见 activation.rs）
+            let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 0));
             log::info!("Scroll screenshot: activated previous app on main thread, success={}", success);
         } else {
             log::info!("Scroll screenshot: no previous app to activate, deactivating ourselves");
@@ -790,7 +791,8 @@ fn activate_app_by_pid(ah: &tauri::AppHandle, pid: i32) {
     if let Some(win) = ah.webview_windows().values().next() {
         let _ = win.run_on_main_thread(move || {
             if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
-                let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
+                // NSApplicationActivateAllWindows = 1 << 0（1 << 1 在 macOS 14+ deprecated）
+                let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 0));
                 if success {
                     log::debug!("[scroll] activated app pid={} for scroll focus", pid);
                 }
