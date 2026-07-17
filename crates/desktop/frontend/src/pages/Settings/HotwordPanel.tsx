@@ -273,18 +273,22 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                       </button>
                     )}
                   </div>
-                  {/* 第二行：左 Toggle 启用，右对齐 导出/删除（删除有 confirmDialog 二次确认） */}
-                  <div className="mt-1 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
-                    <Toggle
-                      on={s.enabled}
-                      onClick={() => toggleSet(s.id, !s.enabled)}
-                      aria-label={`启用 ${s.name}`}
-                    />
+                  {/* 第二行：左 Toggle 启用，右对齐 导出/删除。
+                      不在外层 stopPropagation——点空白区域仍可切换场景，
+                      stopPropagation 移到各控件自身防误触。 */}
+                  <div className="mt-1 flex items-center justify-between">
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <Toggle
+                        on={s.enabled}
+                        onClick={() => toggleSet(s.id, !s.enabled)}
+                        aria-label={`启用 ${s.name}`}
+                      />
+                    </div>
                     <div className="flex items-center gap-0.5">
-                      <Button variant="ghost" size="icon-sm" onClick={() => { setSelectedId(s.id); doExport(); }} aria-label="导出">
+                      <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setSelectedId(s.id); doExport(); }} aria-label="导出">
                         <Download />
                       </Button>
-                      <Button variant="destructive-ghost" size="icon-sm" onClick={() => deleteSet(s.id, s.name)} aria-label="删除版本">
+                      <Button variant="destructive-ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); deleteSet(s.id, s.name); }} aria-label="删除版本">
                         <Trash2 />
                       </Button>
                     </div>
