@@ -287,9 +287,9 @@ const EditForm = ({
   }, [capturingGlobal, form, onChange]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {/* 导航栏 */}
-      <div className="flex items-center gap-3 border-b border-border/40 pb-3">
+      <div className="flex items-center gap-3 border-b border-border/40 pb-2">
         <button
           onClick={onCancel}
           className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -305,8 +305,9 @@ const EditForm = ({
         </div>
       </div>
 
-      {/* 基础信息卡片 */}
-      <div className="space-y-4 rounded-lg border border-border/50 bg-muted/15 p-4">
+      {/* 单卡片紧凑表单——替代原 6 个分散卡片，减少垂直浪费 */}
+      <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+        {/* 标题 —— 占一行 */}
         <FormField label={t("settings.actionBar.titleLabel")}>
           <input
             className={inputBase}
@@ -328,49 +329,148 @@ const EditForm = ({
           />
         </FormField>
 
-        <FormField
-          label={t("settings.actionBar.typeLabel")}
-          hint={t(meta.descKey) + (isSystem ? " · " + t("settings.actionBar.builtinTypeLocked") : "")}
-        >
-          <select
-            className={cn(inputBase, "disabled:opacity-60")}
-            value={type}
-            disabled={isSystem}
-            onChange={(e) => {
-              const newType = e.target.value;
-              // 改类型时重算 accepts——防止旧值残留（如 agent→ai 后仍 accepts="file"）
-              onChange({ ...form, actionType: newType, accepts: deriveAccepts(newType, undefined) });
-            }}
-          >
-            {ACTION_TYPES.map((at) => (
-              <option key={at.value} value={at.value}>{t(at.labelKey)}</option>
-            ))}
-          </select>
-        </FormField>
-      </div>
+        {/* 类型 + 启用 —— 一行 */}
+        <div className="grid grid-cols-2 gap-3">
+          <FormField label={t("settings.actionBar.typeLabel")}>
+            <select
+              className={cn(inputBase, "disabled:opacity-60")}
+              value={type}
+              disabled={isSystem}
+              onChange={(e) => {
+                const newType = e.target.value;
+                onChange({ ...form, actionType: newType, accepts: deriveAccepts(newType, undefined) });
+              }}
+            >
+              {ACTION_TYPES.map((at) => (
+                <option key={at.value} value={at.value}>{t(at.labelKey)}</option>
+              ))}
+            </select>
+          </FormField>
+          <FormField label={t("settings.actionBar.enableLabel")}>
+            <div className="flex h-[38px] items-center gap-2.5">
+              <Toggle
+                checked={form.isEnabled ?? true}
+                onChange={(v) => onChange({ ...form, isEnabled: v })}
+              />
+              <span className="text-xs text-muted-foreground">
+                {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
+              </span>
+            </div>
+          </FormField>
+        </div>
 
-      {/* 类型特定配置卡片 */}
-      {showContent && (
-        <div className="space-y-4 rounded-lg border border-border/50 bg-muted/15 p-4">
+        {/* 快捷键 + 全局快捷键 —— 一行（仅叶子菜单 submenu 不显示） */}
+        {showShortcut && (
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label={t("settings.actionBar.shortcutLabel")}>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
+                <input
+                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                  placeholder="—"
+                  maxLength={1}
+                  value={form.shortcut || ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.toLowerCase();
+                    const filtered = raw.replace(/[^0-9a-z]/g, "").slice(-1);
+                    onChange({ ...form, shortcut: filtered });
+                  }}
+                />
+                {form.shortcut && (
+                  <button
+                    onClick={() => onChange({ ...form, shortcut: "" })}
+                    className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </FormField>
+            <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+              <div className="flex items-center gap-2">
+                <ShortcutButton
+                  shortcut={form.globalShortcut ?? ""}
+                  capturing={capturingGlobal}
+                  onClick={() => setCapturingGlobal((v) => !v)}
+                />
+                {form.globalShortcut && (
+                  <button
+                    onClick={() => onChange({ ...form, globalShortcut: "" })}
+                    className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    aria-label={ti18n("settings.actionBar.clearShortcut")}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </FormField>
+          </div>
+        )}
+
+        {/* 内容 textarea —— 一行（仅 ai/url/script 等需要内容的类型） */}
+        {showContent && (
           <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
-              className="w-full min-h-[120px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+              className="w-full min-h-[100px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
               placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
             />
           </FormField>
-        </div>
-      )}
+        )}
 
-      {type === "extension" && (
-        <div className="rounded-lg border border-border/50 bg-muted/15 p-4">
-          <ExtensionDropZone form={form} onChange={onChange} />
-        </div>
-      )}
+        {/* 类型特定配置 —— 条件区，inline 在同一卡片内，不再单独卡片 */}
+        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
 
-      {type === "script" && (
-        <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+        {type === "url" && (
+          <FormField label={t("settings.actionBar.triggerKeywordLabel")}>
+            <div className="flex items-center gap-2">
+              <input
+                className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                placeholder="tr"
+                value={form.triggerKeyword || ""}
+                onChange={(e) => {
+                  const val = e.target.value.trim().toLowerCase();
+                  onChange({ ...form, triggerKeyword: val });
+                }}
+              />
+              <span className="text-[11px] text-muted-foreground/60">
+                {t("settings.actionBar.triggerKeywordHint")}
+              </span>
+            </div>
+          </FormField>
+        )}
+
+        {type === "agent" && (
+          <FormField label={t("settings.actionBar.agentLabel")}>
+            <select
+              className={inputBase}
+              value={form.agent || ""}
+              onChange={(e) => onChange({ ...form, agent: e.target.value })}
+            >
+              <option value="">{t("settings.actionBar.selectAgent")}</option>
+              {adapters.filter((a) => a.isAvailable).map((a) => (
+                <option key={a.key} value={a.key}>{a.displayName}</option>
+              ))}
+            </select>
+          </FormField>
+        )}
+
+        {type === "copy_path" && (
+          <FormField label={t("settings.actionBar.pathFormat")}>
+            <select
+              className={inputBase}
+              value={form.actionData || "plain"}
+              onChange={(e) => onChange({ ...form, actionData: e.target.value })}
+            >
+              <option value="plain">{t("settings.actionBar.pathFormatPlain")}</option>
+              <option value="url">{t("settings.actionBar.pathFormatUrl")}</option>
+              <option value="quoted">{t("settings.actionBar.pathFormatQuoted")}</option>
+            </select>
+          </FormField>
+        )}
+
+        {type === "script" && (
           <FormField label={t("settings.actionBar.execOptions")}>
             <div className="space-y-2.5">
               <div className="flex items-center gap-2.5">
@@ -394,136 +494,11 @@ const EditForm = ({
               )}
             </div>
           </FormField>
-        </div>
-      )}
-
-      {type === "agent" && (
-        <div className="rounded-lg border border-border/50 bg-muted/15 p-4">
-          <FormField label={t("settings.actionBar.agentLabel")}>
-            <select
-              className={inputBase}
-              value={form.agent || ""}
-              onChange={(e) => onChange({ ...form, agent: e.target.value })}
-            >
-              <option value="">{t("settings.actionBar.selectAgent")}</option>
-              {adapters.filter((a) => a.isAvailable).map((a) => (
-                <option key={a.key} value={a.key}>{a.displayName}</option>
-              ))}
-            </select>
-          </FormField>
-        </div>
-      )}
-
-      {type === "copy_path" && (
-        <div className="rounded-lg border border-border/50 bg-muted/15 p-4">
-          <FormField label={t("settings.actionBar.pathFormat")}>
-            <select
-              className={inputBase}
-              value={form.actionData || "plain"}
-              onChange={(e) => onChange({ ...form, actionData: e.target.value })}
-            >
-              <option value="plain">{t("settings.actionBar.pathFormatPlain")}</option>
-              <option value="url">{t("settings.actionBar.pathFormatUrl")}</option>
-              <option value="quoted">{t("settings.actionBar.pathFormatQuoted")}</option>
-            </select>
-          </FormField>
-        </div>
-      )}
-
-      {/* 通用配置 */}
-      <div className="space-y-4 rounded-lg border border-border/50 bg-muted/15 p-4">
-        {showShortcut && (
-          <FormField label={t("settings.actionBar.shortcutLabel")}>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1">
-                <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
-                <input
-                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                  placeholder="—"
-                  maxLength={1}
-                  value={form.shortcut || ""}
-                  onChange={(e) => {
-                    const raw = e.target.value.toLowerCase();
-                    const filtered = raw.replace(/[^0-9a-z]/g, "").slice(-1);
-                    onChange({ ...form, shortcut: filtered });
-                  }}
-                />
-              </div>
-              {form.shortcut && (
-                <button
-                  onClick={() => onChange({ ...form, shortcut: "" })}
-                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-              <span className="text-[11px] text-muted-foreground/60">
-                {t("settings.actionBar.shortcutHint")}
-              </span>
-            </div>
-          </FormField>
         )}
-
-        {/* Quicklink 关键词触发（仅 URL 类型） */}
-        {type === "url" && (
-          <FormField label={t("settings.actionBar.triggerKeywordLabel")}>
-            <div className="flex items-center gap-2">
-              <input
-                className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                placeholder="tr"
-                value={form.triggerKeyword || ""}
-                onChange={(e) => {
-                  const val = e.target.value.trim().toLowerCase();
-                  onChange({ ...form, triggerKeyword: val });
-                }}
-              />
-              <span className="text-[11px] text-muted-foreground/60">
-                {t("settings.actionBar.triggerKeywordHint")}
-              </span>
-            </div>
-          </FormField>
-        )}
-
-        {/* 全局快捷键（所有叶子命令，非 submenu）——设置后可跳过 ActionBar 直接执行 */}
-        {type !== "submenu" && (
-          <FormField
-            label={ti18n("settings.actionBar.globalShortcutLabel")}
-            hint={ti18n("settings.actionBar.globalShortcutHint")}
-          >
-            <div className="flex items-center gap-2">
-              <ShortcutButton
-                shortcut={form.globalShortcut ?? ""}
-                capturing={capturingGlobal}
-                onClick={() => setCapturingGlobal((v) => !v)}
-              />
-              {form.globalShortcut && (
-                <button
-                  onClick={() => onChange({ ...form, globalShortcut: "" })}
-                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  aria-label={ti18n("settings.actionBar.clearShortcut")}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-          </FormField>
-        )}
-
-        <FormField label={t("settings.actionBar.enableLabel")}>
-          <div className="flex items-center gap-2.5">
-            <Toggle
-              checked={form.isEnabled ?? true}
-              onChange={(v) => onChange({ ...form, isEnabled: v })}
-            />
-            <span className="text-xs text-muted-foreground">
-              {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
-            </span>
-          </div>
-        </FormField>
       </div>
 
       {/* 操作栏 */}
-      <div className="flex justify-end gap-2.5 border-t border-border/40 pt-4">
+      <div className="flex justify-end gap-2.5">
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("settings.actionBar.cancel")}
         </Button>
