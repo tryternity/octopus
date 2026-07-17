@@ -51,7 +51,7 @@ impl Serialize for PolishMode {
 
 /// 应用完整配置，读取自 ~/.octopus/config.yaml，字段缺失时使用默认值。
 ///
-/// 各端按需读取字段：cli 只用 microphone；desktop 用全部；asr 用 asr_engine 解析引擎。
+/// 各端按需读取字段：cli 只用 microphone；desktop 用全部；asr 引擎激活态走 DB is_enabled。
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     /// ASR 引擎模式: embedded | websocket | grpc
@@ -65,11 +65,6 @@ pub struct AppConfig {
     /// gRPC 端点（engine_mode = grpc 时使用）
     #[serde(default = "default_grpc_endpoint")]
     pub grpc_endpoint: String,
-
-    /// ASR 引擎选择：DB models 表中的 name（精确匹配）；空/不匹配则回退兜底引擎。
-    /// 显式参数（cli --model、server 请求 engine、AsrEngineManager.switch_model）优先级更高，不走此字段。
-    #[serde(default)]
-    pub asr_engine: String,
 
     /// 语言: auto | zh | en | ja | ko
     #[serde(default = "default_language")]
@@ -123,13 +118,6 @@ pub struct AppConfig {
     /// 停顿驱动中间润色的静音阈值（毫秒）：静音达此值即触发全量润色（mode=2 only）
     #[serde(default = "default_pause_polish_threshold_ms")]
     pub pause_polish_threshold_ms: f64,
-
-    /// 当前润色使用的 LLM 模型，格式为 "PREFIX:NAME" 或 3-part（见 `parse_model_spec`）：
-    /// - "local:NAME" → is_local=true AND name（本地 LLM，如 Ollama）
-    /// - "PROVIDER:CATEGORY:MODEL_NAME" → 精确匹配（如 "bigmodel:glm:glm-4-flashx"）
-    /// - "NAME"（无冒号）→ 仅按 name（向后兼容）
-    #[serde(default = "default_polish_llm")]
-    pub polish_llm: String,
 
     /// 是否使用 ASR 硬件加速
     #[serde(default = "default_asr_hardware_accelerated")]
@@ -214,16 +202,6 @@ pub struct AppConfig {
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
-
-    /// OCR 模型（当前激活），对应 ~/.octopus/models/ocr/<name>/ 目录名。
-    /// 默认 "PP-OCRv6-small"。OCR 引擎 OnceLock 单例缓存，改后重启生效。
-    #[serde(default = "default_ocr_model")]
-    pub ocr_model: String,
-
-    /// 翻译引擎：激活的 models 表行 id（domain='translate'）。
-    /// "" = 未激活 → fallback polish_llm；旧值 "local:xxx"/"llm" 不迁移 → fallback。
-    #[serde(default)]
-    pub translate_engine: String,
 }
 
 fn default_engine_mode() -> String {
@@ -261,11 +239,6 @@ fn default_polish_min_interval() -> f64 {
 }
 fn default_pause_polish_threshold_ms() -> f64 {
     600.0
-}
-fn default_polish_llm() -> String {
-    // 3-part（provider:category:model_name），与 db.sql 的 bigmodel glm seed 对齐，
-    // 避免每次启动 parse_model_spec 把默认值当 2-part 旧格式走 warn + NameOnly 兜底。
-    "bigmodel:glm:glm-4-flashx".into()
 }
 fn default_asr_hardware_accelerated() -> bool {
     false
@@ -319,9 +292,6 @@ fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
 
-fn default_ocr_model() -> String {
-    "PP-OCRv6-small".into()
-}
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -332,8 +302,6 @@ impl Default for AppConfig {
             engine_mode: default_engine_mode(),
             remote_url: default_remote_url(),
             grpc_endpoint: default_grpc_endpoint(),
-            // 未配置 asr_engine → 空，由 asr::resolve_active_engine 回退 to 兜底引擎
-            asr_engine: String::new(),
             language: default_language(),
             ui_language: default_ui_language(),
             asr_shortcut: default_asr_shortcut(),
@@ -346,7 +314,6 @@ impl Default for AppConfig {
             polish_mode: PolishMode::default(),
             polish_min_interval: default_polish_min_interval(),
             pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
-            polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
             // fuzzy_dialect 默认空 = 仅基础规则（平翘舌+前后鼻音）
@@ -366,8 +333,6 @@ impl Default for AppConfig {
             action_bar_shortcut: default_action_bar_shortcut(),
             action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
-            ocr_model: default_ocr_model(),
-            translate_engine: String::new(),
         }
     }
 }
@@ -414,22 +379,19 @@ mod tests {
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
         assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
         assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+S");
-        assert_eq!(cfg.ocr_model, "PP-OCRv6-small");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 
     #[test]
     fn app_config_serialize_round_trip_preserves_overrides() {
         // 构造一个带覆盖值的 AppConfig（从 yaml 解析）
-        let yaml = "asr_engine: whisper-small\npolish_mode: 2\nmicrophone: \"My Mic\"\n";
+        let yaml = "polish_mode: 2\nmicrophone: \"My Mic\"\n";
         let cfg: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.asr_engine, "whisper-small");
         assert_eq!(cfg.polish_mode, PolishMode::Intermediate);
 
         // 序列化回 yaml，再解析，字段应保留
         let reserialized = serde_yaml::to_string(&cfg).unwrap();
         let cfg2: AppConfig = serde_yaml::from_str(&reserialized).unwrap();
-        assert_eq!(cfg2.asr_engine, "whisper-small");
         assert_eq!(cfg2.polish_mode, PolishMode::Intermediate);
         assert_eq!(cfg2.microphone, "My Mic");
 

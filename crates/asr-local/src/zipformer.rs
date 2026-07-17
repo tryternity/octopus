@@ -1494,6 +1494,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+                is_available: true,
             is_streaming: true,
             description: "test".to_string(),
         };
@@ -1525,6 +1526,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+                is_available: true,
             is_streaming: true,
             description: "test".to_string(),
         };

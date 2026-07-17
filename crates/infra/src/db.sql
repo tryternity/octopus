@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS models (
     is_local      INTEGER NOT NULL DEFAULT 0,             -- 是否为本地模型 (0=否, 1=是)
     is_thinking   INTEGER NOT NULL DEFAULT 0,             -- LLM 专用：是否为思考（reasoning）模型
     is_streaming  INTEGER NOT NULL DEFAULT 0,             -- 是否支持流式 (0=否, 1=是)
-    is_enabled    INTEGER NOT NULL DEFAULT 1,             -- 是否启用 (0=禁用, 1=启用)
+    is_available  INTEGER NOT NULL DEFAULT 0,             -- 可用：文件就绪/配置完整（0=未就绪, 1=就绪），同域可多个
+    is_enabled    INTEGER NOT NULL DEFAULT 0,             -- 激活：当前选用的那一个（每域仅 1 个=1）
     description   TEXT    NOT NULL DEFAULT '',            -- 描述
     UNIQUE(domain, provider, category, model_name)        -- domain + provider + category + model_name 作为唯一键
 );
@@ -25,11 +26,10 @@ CREATE TABLE IF NOT EXISTS models (
 -- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
 
 -- ── 本地 ASR 模型（is_local=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）──
--- is_enabled 表「文件就绪」：seed 初始全部未就绪（is_enabled=0），用户在模型管理页下载后置 true。
--- 默认/兜底引擎 zipformer-small-ctc（随应用本地打包）由代码写死（asr/config.rs FALLBACK_ASR_ENGINE_NAME），
---   不在 seed/DB 中——app_config.asr_engine 空/匹配不到时 fallback_engine 硬构造，不依赖本表。
--- 清单以 2026-06-22 实时数据库 is_local=1 行为准重生成（旧随包 zipformer-small-ctc 等已移除）。
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
+-- is_available 表「文件就绪」：seed 初始大部分未就绪（is_available=0），用户下载后置 true。
+-- is_enabled 表「激活」：seed 全 0，用户在管理页激活某模型时 switch_active_model 置 1（每域仅 1 个）。
+-- 默认/兜底引擎 zipformer-small-ctc（随应用本地打包）由代码写死（asr/config.rs FALLBACK_ASR_ENGINE_NAME）。
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
 VALUES
     ('asr','local','moonshine','moonshine-base-en','asr/moonshine-base-en','en','Moonshine Base EN (274M)',1,0,0),
     ('asr','local','moonshine','moonshine-tiny-en','asr/moonshine-tiny-en','en','Moonshine Tiny EN (119M)',1,0,0),
@@ -49,15 +49,13 @@ VALUES
 -- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。
 
 -- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
--- source = 路径标识 ocr/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
 VALUES
     ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
     ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
 
 -- ── 翻译模型（domain='translate'）─────────────────────────────────
--- source = 路径标识 translate/{name}；secret_key = 下载清单 manifest JSON（v28 迁移时填充）
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
 VALUES
     ('translate','local','opus-mt','opus-mt','translate/opus-mt','auto','opus-mt 中英互译（轻量快速，~500M）',1,0,0),
     ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);
@@ -135,7 +133,6 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('engine_mode',              'embedded',                             'ASR 引擎模式: embedded | websocket | grpc'),
     ('remote_url',               'ws://127.0.0.1:3000/ws/stream',        'WebSocket 远程地址（engine_mode=websocket 时使用）'),
     ('grpc_endpoint',            'http://127.0.0.1:50051',               'gRPC 端点（engine_mode=grpc 时使用）'),
-    ('asr_engine',               '',                                     'ASR 引擎选择（DB models 表 model_name 精确匹配；空=代码兜底引擎 zipformer-small-ctc，随包打包）'),
     ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
     ('asr_shortcut',             'CmdOrCtrl+Shift+A',                      '全局 ASR 激活/关闭快捷键'),
     ('edit_shortcut',            'CmdOrCtrl+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
@@ -150,7 +147,6 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('polish_mode',              '0',                                    '润色模式: 0=关闭 / 1=仅最终 / 2=中间+最终'),
     ('polish_min_interval',      '5',                                    '中间润色最小间隔（秒，节流用）'),
     ('pause_polish_threshold_ms','600',                                  '停顿驱动中间润色的静音阈值（毫秒，必须 > 500）'),
-    ('polish_llm',               '',                                     '润色 LLM 模型 spec（PREFIX:CATEGORY:NAME）'),
     ('asr_hardware_accelerated', 'false',                                '是否使用 ASR 硬件加速'),
     ('asr_correct',              'false',                                '是否对 ASR 输出进行纠错'),
     ('output_simplified',        'true',                                 'ASR 输出字形: true=简体 / false=繁体'),
@@ -222,7 +218,6 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_theme',        'light', 'UI 主题 id'),
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
-    ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键'),
     ('action_bar_shortcut',   'CmdOrCtrl+Shift+Space', 'AI 命令面板快捷键'),
     ('action_bar_search_engine', 'google', 'AI 命令面板搜索引擎');

@@ -397,7 +397,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
 
 /// 列出所有可用模型，让用户输入数字选择
 fn select_model() -> Result<String> {
-    let engines = octopus_asr_local::config::list_engines()?;
+    let engines = octopus_asr_local::config::list_engines_from_db()?;
     if engines.is_empty() {
         anyhow::bail!("No ASR engines configured in DB");
     }
@@ -448,7 +448,9 @@ fn run_e2e(language: &str) -> Result<()> {
     let model = select_model()?;
     let bare = octopus_asr_local::config::parse_model_spec(&model).model_name().to_string();
     // Use streaming mode for Paraformer and Zipformer models
-    let category = octopus_asr_local::config::resolve_engine_category(&model);
+    // CLI 多模型选择：用户可选非激活引擎，用 resolve_engine_category_any 查所有可用引擎
+    // （resolve_engine_category 仅匹配激活的）。
+    let category = octopus_asr_local::config::resolve_engine_category_any(&model);
     if category == Some(octopus_asr_local::config::EngineCategory::Paraformer) {
         return run_e2e_streaming_paraformer(&bare);
     }
@@ -508,15 +510,16 @@ fn show_config() -> Result<()> {
     );
 
     let config = octopus_asr_local::config::load_config()?;
-    let app_cfg = octopus_infra::config::load_config()?;
-    match octopus_asr_local::config::resolve_active_engine(&app_cfg.asr_engine) {
+    // Task 2 后：激活引擎从 DB is_enabled=1 查（load_active_engine 写 ACTIVE_ENGINES 缓存）。
+    let _ = octopus_asr_local::config::load_active_engine("asr");
+    match octopus_asr_local::config::resolve_active_engine("asr") {
         Ok(r) => println!(
-            "ASR active: {} (category: {:?}, from config.yaml asr_engine='{}')",
-            r.name, r.category, app_cfg.asr_engine
+            "ASR active: {} (category: {:?}, provider: {})",
+            r.name, r.category, r.provider
         ),
         Err(e) => println!(
-            "ASR active: <resolve error: {}> (asr_engine='{}')",
-            e, app_cfg.asr_engine
+            "ASR active: <resolve error: {}>",
+            e
         ),
     }
 
@@ -978,7 +981,8 @@ fn stream_test(wav_path: &str, model: &str) -> Result<()> {
     );
 
     let bare = octopus_asr_local::config::parse_model_spec(model).model_name();
-    let category = octopus_asr_local::config::resolve_engine_category(model);
+    // CLI 多模型选择：查所有可用引擎（resolve_engine_category 仅匹配激活的）。
+    let category = octopus_asr_local::config::resolve_engine_category_any(model);
     match category {
         Some(octopus_asr_local::config::EngineCategory::Zipformer) => {
             stream_test_zipformer(samples, duration, bare)

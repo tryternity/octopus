@@ -31,7 +31,7 @@ ONNX 标准格式，软链到 HF 缓存。DB config 按 model_name 选择 DB con
 - **全局单例**（`OnceLock`），懒加载模型
 - `instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次
 - 内部 `Mutex<Option<RapidOcr>>` 提供可变性（`run` 需 `&mut self`）；`None` 表示模型已 idle 释放、下次 `run_ocr` 自动重载
-- 模型名从 `app_config.ocr_model` 读取（默认 PP-OCRv5），存 `model_name: String` 供释放时拼 probe id
+- 模型名从 DB 激活模型读（`get_active_model("ocr")`，2026-07-17 重构后；ocr crate 不依赖 asr-local 故直查 DB 等价 resolve_active_engine。默认 PP-OCRv6-small），存 `model_name: String` 供释放时拼 probe id
 
 ### 3.1 内存管理：idle 60s 自动释放（2026-07-08）
 

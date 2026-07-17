@@ -40,12 +40,14 @@ pub struct ModelEntry {
     #[serde(default)]
     pub is_enabled: bool,
     #[serde(default)]
+    pub is_available: bool,
+    #[serde(default)]
     pub is_streaming: bool,
     #[serde(default)]
     pub description: String,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
 pub struct AsrSection {
     pub whisper: Option<HashMap<String, ModelEntry>>,
     /// 原版 SenseVoice-Small（FunASR 4 输入 ONNX，非 sherpa 简化版）。provider='local' + category='sensevoice-orig' 路由入此。
@@ -78,7 +80,7 @@ pub struct AsrSection {
 }
 
 /// DB models 表配置（domain='asr'；由 db::load_models 构造）。
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
 pub struct AsrConfig {
     pub asr: AsrSection,
 }
@@ -224,22 +226,18 @@ where
 /// v24：action_bar_items 加 shortcut 列。
 /// v35：搜索频次加权表。
 /// v36：统一 launcher_index 表（合并 app_index + 预留 command）+ action_bar_items 加 global_shortcut 列。
+/// v37：models 表语义重构——新增 is_available 列（可用），is_enabled 改表激活（每域仅 1）。
+///      旧库自动迁移（对齐 spec §10）：is_available=is_enabled（迁语义）+ is_enabled=0（重置激活）
+///      + 删 app_config 4 个废弃激活字段（asr_engine/polish_llm/ocr_model/translate_engine）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 36 {
-        // 自愈检查：开发期中间 binary 可能跳设 user_version=36 但迁移没跑完
-        // （app_index 残留 + launcher_index 可能缺失）。检测到 app_index 残留则补跑。
-        let app_index_exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
-            [], |r| r.get(0),
-        )?;
-        if app_index_exists == 0 {
-            return Ok(()); // 已最新，无 app_index 残留
-        }
-        log::warn!("schema v36 but app_index still exists——self-healing migration");
+    if v >= 37 {
+        // v37+ 已最新，直接返回。
+        // 注：app_index 自愈检查已移除——v37 库都经过 v36 迁移段（含 app_index 处理）。
+        return Ok(());
     }
     if v >= 17 {
         // v17→v31 的历史迁移已清理（2026-07-16）——这些一次性迁移（FTS5 backfill、
@@ -361,6 +359,41 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 36", [])?;
             log::info!("schema upgraded to v36 (launcher_index unified table + global_shortcut column)");
         }
+        // v36→v37：models 表语义重构——is_available（可用）+ is_enabled（激活）分离。
+        // 旧库迁移（对齐 spec §10 手工 SQL，用户无需手工干预）：
+        //   1. 加 is_available 列（默认 0）
+        //   2. 原 is_enabled 值（旧「可用」语义）迁到 is_available
+        //   3. is_enabled 全置 0（新语义=激活，用户重新激活时设）
+        //   4. 删 app_config 的 4 个激活字段（asr_engine/polish_llm/ocr_model/translate_engine）
+        //      —— 激活态统一存 DB is_enabled，app_config 这 4 个 key 已废弃。
+        // **关键不变量**：迁移后无任何行 is_enabled=1（用户重新激活才设），保证 §6.1
+        // 「每域仅 1 个 is_enabled=1」不被旧库遗留的多 is_enabled=1 行破坏。
+        // db.sql 新库已含 is_available 列 + seed 全 is_enabled=0，无需此 ALTER。
+        if v < 37 {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"is_available".to_string()) {
+                conn.execute("ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0", [])?;
+                log::info!("schema v37: models 补 is_available 列");
+            }
+            // 迁移旧 is_enabled 值（「可用」语义）到 is_available
+            let migrated = conn.execute("UPDATE models SET is_available = is_enabled", [])?;
+            // is_enabled 全重置为 0（新语义=激活，用户重新激活）
+            let cleared = conn.execute("UPDATE models SET is_enabled = 0", [])?;
+            log::info!("schema v37: 迁移 {} 行 is_available=is_enabled，重置 {} 行 is_enabled=0", migrated, cleared);
+            // 删 app_config 4 个废弃激活字段
+            let deleted = conn.execute(
+                "DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine')",
+                [],
+            )?;
+            if deleted > 0 {
+                log::info!("schema v37: 删除 app_config 中 {} 个废弃激活字段", deleted);
+            }
+            conn.execute("PRAGMA user_version = 37", [])?;
+            log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离 + 旧库数据迁移)");
+        }
         return Ok(());
     }
 
@@ -396,8 +429,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
         CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
     )?;
-    conn.execute("PRAGMA user_version = 36", [])?;
-    log::info!("DB initialized (v36): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 37", [])?;
+    log::info!("DB initialized (v37): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -742,9 +775,11 @@ pub fn load_models() -> Result<AsrConfig> {
 }
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
+    // 新语义：is_enabled=1 表激活（每域仅 1 个），is_available=1 表可用。
+    // 推理路径只需激活的那一个——LIMIT 1（虽然每域只有一个 is_enabled=1，加 LIMIT 保险）。
     let mut stmt = conn.prepare(
         "SELECT provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming
-         FROM models WHERE domain='asr' AND is_enabled = 1",
+         FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1 LIMIT 1",
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -787,6 +822,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             secret_key,
             is_local: is_local != 0,
             is_enabled: is_enabled != 0,
+            is_available: true, // load_models_at 只取 is_available=1 的行
             is_streaming: is_streaming != 0,
         };
         // provider='aliyun' → asr.aliyun；provider='bytedance' → asr.bytedance；
@@ -828,6 +864,7 @@ pub struct LocalAsrModelRow {
     pub secret_key: String,
     pub description: String,
     pub is_enabled: bool,
+    pub is_available: bool,
     pub is_streaming: bool,
 }
 
@@ -838,7 +875,7 @@ pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
 
 fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
          FROM models WHERE domain='asr' AND is_local = 1",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -850,7 +887,8 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
             secret_key: row.get(4)?,
             description: row.get(5)?,
             is_enabled: row.get::<_, i32>(6)? != 0,
-            is_streaming: row.get::<_, i32>(7)? != 0,
+            is_available: row.get::<_, i32>(7)? != 0,
+            is_streaming: row.get::<_, i32>(8)? != 0,
         })
     })?;
     let mut out = Vec::new();
@@ -865,7 +903,7 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
 pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
              FROM models WHERE domain=?1 AND is_local = 1",
         )?;
         let rows = stmt.query_map(params![domain], |row| {
@@ -877,7 +915,8 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
                 secret_key: row.get(4)?,
                 description: row.get(5)?,
                 is_enabled: row.get::<_, i32>(6)? != 0,
-                is_streaming: row.get::<_, i32>(7)? != 0,
+                is_available: row.get::<_, i32>(7)? != 0,
+                is_streaming: row.get::<_, i32>(8)? != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -888,14 +927,16 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
     })
 }
 
-/// 写某本地模型的 is_enabled。写 DB。
+/// 写某本地模型的 is_available（文件就绪/可用）。写 DB。
+/// 注：函数名保留 set_model_enabled 避免大面积改名（调用方 model_commands 等），
+/// 语义从原 is_enabled 迁移到 is_available。
 pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
     with_db(|conn| set_model_enabled_at(conn, model_name, enabled))
 }
 
 fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
     conn.execute(
-        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
+        "UPDATE models SET is_available = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
         params![if enabled { 1 } else { 0 }, model_name],
     )?;
     Ok(())
@@ -916,7 +957,8 @@ fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> R
 
 // ── 云端模型 CRUD（用户自建，domain='asr'|'llm' AND is_local=0）──
 
-/// 新增云端模型。is_enabled=1（前端已测试通过才保存）。返回新行 id。
+/// 新增云端模型。is_available=1（前端已测试通过才保存=可用）；is_enabled=0（不自动激活，
+/// 用户在管理页显式激活）。返回新行 id。
 pub fn insert_cloud_model(
     domain: &str, provider: &str, category: &str,
     model_name: &str, source: &str, secret_key: &str,
@@ -924,8 +966,8 @@ pub fn insert_cloud_model(
 ) -> Result<i64> {
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local, is_enabled, is_streaming, is_thinking)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8)",
+            "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local, is_available, is_enabled, is_streaming, is_thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, 0, ?7, ?8)",
             params![domain, provider, category, model_name, source, secret_key,
                     is_streaming as i32, is_thinking as i32],
         )?;
@@ -1008,29 +1050,84 @@ pub fn get_model_flags(id: i64) -> Result<(bool, bool)> {
 
 /// 批量查 ASR 域所有模型的 id / model_name / source / secret_key / is_streaming / is_thinking。
 /// 替代 N+1 的 get_model_id + get_model_source_key + get_model_flags。
+/// Task 2 后补 provider/category 字段（同名不同 provider 的 ASR 模型需精确匹配）+ is_enabled。
 pub struct ModelDetailRow {
     pub id: i64,
     pub model_name: String,
+    pub provider: String,
+    pub category: String,
     pub source: String,
     pub secret_key: String,
     pub is_streaming: bool,
     pub is_thinking: bool,
+    /// DB models.is_enabled（激活态）。供前端标 current（每域仅 1 个=1）。
+    pub is_enabled: bool,
 }
 
 pub fn list_asr_model_details() -> Result<Vec<ModelDetailRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, model_name, source, secret_key, is_streaming, is_thinking
+            "SELECT id, model_name, provider, category, source, secret_key, is_streaming, is_thinking, is_enabled
              FROM models WHERE domain='asr'",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ModelDetailRow {
                 id: r.get(0)?,
                 model_name: r.get(1)?,
-                source: r.get(2)?,
-                secret_key: r.get(3)?,
-                is_streaming: r.get::<_, i32>(4)? != 0,
-                is_thinking: r.get::<_, i32>(5)? != 0,
+                provider: r.get(2)?,
+                category: r.get(3)?,
+                source: r.get(4)?,
+                secret_key: r.get(5)?,
+                is_streaming: r.get::<_, i32>(6)? != 0,
+                is_thinking: r.get::<_, i32>(7)? != 0,
+                is_enabled: r.get::<_, i32>(8)? != 0,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    })
+}
+
+/// ASR 域全量模型行（管理列表用，不过滤 is_enabled，不分 local/cloud）。
+/// 对应 `EngineInfo` 所需字段（name/provider/category/description/is_local）。
+/// 与 `load_models`（过滤 is_enabled=1、按 section 分组、供推理缓存）区分：
+/// 设置页/工具栏列表直查此函数，不经 RUNTIME_CONFIG 缓存，新增/编辑/删除后即时反映。
+pub struct AsrEngineRow {
+    pub model_name: String,
+    pub provider: String,
+    pub category: String,
+    pub description: String,
+    pub is_local: bool,
+    /// Task 2 后补：DB 行 id（供前端 switch_active_model）。
+    pub id: i64,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+    /// DB models.is_enabled（激活态）。
+    pub is_enabled: bool,
+}
+
+/// 列出 ASR 域所有模型（管理列表用）。不过滤 is_enabled，不分 local/cloud。
+pub fn list_all_asr_engines() -> Result<Vec<AsrEngineRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT model_name, provider, category, description, is_local,
+                    id, source, secret_key, is_streaming, is_thinking, is_enabled
+             FROM models WHERE domain='asr'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AsrEngineRow {
+                model_name: r.get(0)?,
+                provider: r.get(1)?,
+                category: r.get(2)?,
+                description: r.get(3)?,
+                is_local: r.get::<_, i32>(4)? != 0,
+                id: r.get(5)?,
+                source: r.get(6)?,
+                secret_key: r.get(7)?,
+                is_streaming: r.get::<_, i32>(8)? != 0,
+                is_thinking: r.get::<_, i32>(9)? != 0,
+                is_enabled: r.get::<_, i32>(10)? != 0,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -1103,7 +1200,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
             let mut stmt = conn.prepare(
                 "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND provider=?1 AND category=?2 AND model_name=?3 AND is_enabled = 1",
+                 WHERE domain='llm' AND provider=?1 AND category=?2 AND model_name=?3 AND is_available = 1",
             )?;
             let mut rows = stmt.query_map(params![provider, category, model_name], |row| {
                 Ok((
@@ -1121,7 +1218,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
             let mut stmt = conn.prepare(
                 "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND model_name=?1 AND is_enabled = 1
+                 WHERE domain='llm' AND model_name=?1 AND is_available = 1
                  ORDER BY is_local DESC",
             )?;
             let mut rows = stmt.query_map(params![model_name], |row| {
@@ -1153,7 +1250,11 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
     }))
 }
 
-/// models 表的通用行（用于翻译引擎按 id 查询，不限于 llm domain）。
+/// models 表的通用行（用于翻译引擎按 id 查询、激活模型查询，不限于 llm domain）。
+///
+/// 含全字段（含 language/description）——供 [`get_active_model`] 构造完整
+/// [`ModelEntry`]（无字段缺失，4 域统一）。比 LocalAsrModelRow 更通用：不限 domain、
+/// 不限 is_local。
 #[derive(Debug, Clone)]
 pub struct ModelRow {
     pub id: i64,
@@ -1163,37 +1264,109 @@ pub struct ModelRow {
     pub model_name: String,
     pub source: String,
     pub secret_key: String,
+    pub language: String,
+    pub description: String,
     pub is_local: bool,
     pub is_thinking: bool,
     pub is_streaming: bool,
     pub is_enabled: bool,
+    pub is_available: bool,
 }
 
-/// 按 id 查询 models 表行（不限 domain）。用于 translate_engine 存 DB id 时反查引擎。
+/// 按 id 查询 models 表行（不限 domain）。用于反查引擎配置。
 pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, domain, provider, category, model_name, source, secret_key,
-                    is_local, is_thinking, is_streaming, is_enabled
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE id = ?1",
         )?;
-        let row = stmt.query_row(params![id], |r| {
-            Ok(ModelRow {
-                id: r.get(0)?,
-                domain: r.get(1)?,
-                provider: r.get(2)?,
-                category: r.get(3)?,
-                model_name: r.get(4)?,
-                source: r.get(5)?,
-                secret_key: r.get(6)?,
-                is_local: r.get::<_, i64>(7)? != 0,
-                is_thinking: r.get::<_, i64>(8)? != 0,
-                is_streaming: r.get::<_, i64>(9)? != 0,
-                is_enabled: r.get::<_, i64>(10)? != 0,
-            })
-        }).optional()?;
+        let row = stmt.query_row(params![id], |r| model_row_mapper(r)).optional()?;
         Ok(row)
     })
+}
+
+/// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。
+/// 供 load_active_engine(domain) 使用——4 域统一激活查询。
+pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
+    with_db(|conn| get_active_model_at(conn, domain))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Option<ModelRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, domain, provider, category, model_name, source, secret_key,
+                language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+         FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
+    )?;
+    let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
+    Ok(row)
+}
+
+/// ModelRow 行映射共享闭包（get_model_by_id / get_active_model 共用，14 列顺序一致）。
+fn model_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRow> {
+    Ok(ModelRow {
+        id: r.get(0)?,
+        domain: r.get(1)?,
+        provider: r.get(2)?,
+        category: r.get(3)?,
+        model_name: r.get(4)?,
+        source: r.get(5)?,
+        secret_key: r.get(6)?,
+        language: r.get(7)?,
+        description: r.get(8)?,
+        is_local: r.get::<_, i64>(9)? != 0,
+        is_thinking: r.get::<_, i64>(10)? != 0,
+        is_streaming: r.get::<_, i64>(11)? != 0,
+        is_enabled: r.get::<_, i64>(12)? != 0,
+        is_available: r.get::<_, i64>(13)? != 0,
+    })
+}
+
+/// 切换激活模型——单语句全量刷新某域的 is_enabled（仅在可用模型中切换）。
+/// SQLite 用 IIF（不是 MySQL 的 IF）。每域记录不多（最多几十条），全量刷新无性能问题。
+pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
+    with_db(|conn| switch_active_model_at(conn, domain, id))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn switch_active_model_at(conn: &Connection, domain: &str, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+        params![id, domain],
+    )?;
+    Ok(())
+}
+
+/// 按 spec 精确查 ASR 域某可用模型（不限激活），返回完整 ModelRow。
+///
+/// 供 CLI `--model` 显式路径 / 多模型场景用——[`get_active_model`] 只返回激活的一个。
+/// spec 支持 3-part（`provider:category:model_name`）或裸 model_name：
+/// - 3-part：provider + category + model_name 精确匹配
+/// - 裸名：仅按 model_name 匹配（取第一条）
+pub fn get_asr_model_by_spec(provider: Option<&str>, category: Option<&str>, model_name: &str) -> Result<Option<ModelRow>> {
+    with_db(|conn| get_asr_model_by_spec_at(conn, provider, category, model_name))
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
+fn get_asr_model_by_spec_at(conn: &Connection, provider: Option<&str>, category: Option<&str>, model_name: &str) -> Result<Option<ModelRow>> {
+    const SQL_FULL: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+             FROM models WHERE domain='asr' AND is_available=1 AND provider=?1 AND category=?2 AND model_name=?3 LIMIT 1";
+    const SQL_NAME: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+             FROM models WHERE domain='asr' AND is_available=1 AND model_name=?1 LIMIT 1";
+    let row = match (provider, category) {
+        (Some(p), Some(c)) => {
+            let mut stmt = conn.prepare(SQL_FULL)?;
+            stmt.query_row(params![p, c, model_name], |r| model_row_mapper(r)).optional()?
+        }
+        _ => {
+            let mut stmt = conn.prepare(SQL_NAME)?;
+            stmt.query_row(params![model_name], |r| model_row_mapper(r)).optional()?
+        }
+    };
+    Ok(row)
 }
 
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
@@ -1208,13 +1381,15 @@ pub struct LlmModelInfo {
     pub secret_key: String,
     pub is_streaming: bool,
     pub is_thinking: bool,
+    pub is_enabled: bool,
 }
 
-/// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
+/// 列出所有可用的 LLM 润色模型（domain='llm' AND is_available=1），按 is_local 降序、category 升序排序。
+/// 管理列表用——含未激活（is_enabled=0）的可用模型。is_enabled 字段供前端标 current。
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking FROM models
-         WHERE domain='llm' AND is_enabled = 1
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking, is_enabled FROM models
+         WHERE domain='llm' AND is_available = 1
          ORDER BY is_local DESC, category",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1228,6 +1403,7 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
             secret_key: row.get::<_, String>(6)?,
             is_streaming: row.get::<_, i32>(7)? != 0,
             is_thinking: row.get::<_, i32>(8)? != 0,
+            is_enabled: row.get::<_, i32>(9)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -1247,10 +1423,11 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
 /// 与 [`LlmModelInfo`] 字段一致（含 id、provider、category 等），区别在于：
 /// - 按 domain 参数过滤（而非写死 'llm'）
 /// - 过滤 is_local=0（只列云端模型，本地走 list_local_models_by_domain）
-/// - 不过滤 is_enabled（云端模型默认入库即 is_enabled=1；保留以便未来支持禁用）
+/// - 不过滤 is_enabled（Task 1 后云端模型 insert_cloud_model 写 is_enabled=0 不自动激活；
+///   此处保留 is_enabled 字段供前端标 current——用户 switch_active_model 激活后置 1）
 fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking, is_enabled
          FROM models WHERE domain = ?1 AND is_local = 0
          ORDER BY category, model_name",
     )?;
@@ -1265,6 +1442,7 @@ fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec
             secret_key: row.get::<_, String>(6)?,
             is_streaming: row.get::<_, i32>(7)? != 0,
             is_thinking: row.get::<_, i32>(8)? != 0,
+            is_enabled: row.get::<_, i32>(9)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -1285,12 +1463,14 @@ pub struct OcrModelInfo {
     pub model_name: String,
     pub description: String,
     pub is_local: bool,
+    /// Task 2 后：DB models.is_enabled（激活态，每域仅 1 个=1）。供前端标 current。
+    pub is_enabled: bool,
 }
 
 /// 列出所有 OCR 模型（domain='ocr'，含未就绪的——前端列表需展示全部供下载/切换）。
 fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT model_name, description, is_local FROM models
+        "SELECT model_name, description, is_local, is_enabled FROM models
          WHERE domain='ocr'",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1298,6 +1478,7 @@ fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
             model_name: row.get::<_, String>(0)?,
             description: row.get::<_, String>(1)?,
             is_local: row.get::<_, i32>(2)? != 0,
+            is_enabled: row.get::<_, i32>(3)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -2889,7 +3070,6 @@ mod tests {
         cfg.engine_mode = "websocket".into();
         cfg.remote_url = "http://rt:9999".into();
         cfg.grpc_endpoint = "http://grpc:50051".into();
-        cfg.asr_engine = "local:zipformer:sentinel".into();
         cfg.language = "en".into();
         cfg.asr_shortcut = "Alt+1".into();
         cfg.paste_method = "direct".into();
@@ -2901,7 +3081,6 @@ mod tests {
         cfg.polish_mode = PolishMode::Intermediate;
         cfg.polish_min_interval = 7.5;
         cfg.pause_polish_threshold_ms = 999.0;
-        cfg.polish_llm = "local:sentinel-llm".into();
         cfg.asr_hardware_accelerated = false;
         cfg.asr_correct = false;
         cfg.output_simplified = false;
@@ -2916,7 +3095,6 @@ mod tests {
         cfg.clipboard_max_age_days = 7;
         cfg.clipboard_enabled = false;
         cfg.screenshot_shortcut = "Alt+6".into();
-        cfg.ocr_model = "sentinel-ocr".into();
 
         save_app_config_at(&conn, &cfg).unwrap();
         let loaded = load_app_config_at(&conn).unwrap();
@@ -2932,7 +3110,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 36, "全新库 init_schema 后应到 v36");
+        assert_eq!(v, 37, "全新库 init_schema 后应到 v37");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3184,6 +3362,101 @@ mod tests {
         assert_eq!(old_app_index_exists, 0, "旧 app_index 表应已 DROP");
     }
 
+    /// 回归 Issue #1（code review）：v37 迁移自动完成 spec §10 手工 SQL——
+    /// 旧库（v36）有多 is_enabled=1 行（旧「可用」语义），迁移后：
+    ///   - is_available 继承原 is_enabled 值
+    ///   - is_enabled 全重置为 0（无破坏「每域仅 1 个激活」不变量）
+    ///   - app_config 4 个废弃激活字段被删
+    /// 若迁移漏了 UPDATE，用户重新激活后会出现多 is_enabled=1 AND is_available=1 行，
+    /// 违反 §6.1 核心不变量。
+    #[test]
+    fn migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation() {
+        setup_test_db();  // 建库到最新
+
+        // 模拟 v36 旧库状态：手动造一个多 is_enabled=1 的场景（旧「可用」语义）
+        // + 插一个废弃 app_config 字段
+        with_db(|c| {
+            // 先把当前 is_available 清零，重置成「迁移前」状态：
+            // 把多条模型设为 is_enabled=1（旧「可用」语义，多个），is_available 全 0
+            c.execute("UPDATE models SET is_available = 0", [])?;
+            c.execute(
+                "UPDATE models SET is_enabled = 1 WHERE domain='asr' AND is_local=1",
+                [],
+            )?;  // 模拟旧库多条 asr 本地模型都「可用」(is_enabled=1)
+            // 插一个废弃激活字段
+            c.execute(
+                "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES ('asr_engine', 'local:zipformer:zipformer-small-ctc')",
+                [],
+            )?;
+            // 退回 v36，让 init_schema 重跑 v36→v37 迁移
+            c.execute("PRAGMA user_version = 36", [])?;
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+
+        // 验证迁移前状态：多条 asr 模型 is_enabled=1，is_available=0
+        let old_enabled_cnt: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert!(old_enabled_cnt > 1, "测试前提：旧库应有多条 is_enabled=1");
+
+        // 重跑迁移
+        with_db(|c| { init_schema(c).map_err(anyhow::Error::from) }).unwrap();
+
+        // 验证迁移后：
+        // 1. is_available 继承了原 is_enabled 值（原 is_enabled=1 的行现在 is_available=1）
+        let new_available: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_available=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(new_available, old_enabled_cnt,
+            "原 is_enabled=1 的行应迁移到 is_available=1");
+
+        // 2. is_enabled 全为 0（重置激活，无破坏不变量）
+        let new_enabled: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM models WHERE is_enabled=1", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(new_enabled, 0,
+            "迁移后无任何 is_enabled=1（用户重新激活才设）");
+
+        // 3. get_active_model 应返回 None（无激活）
+        assert!(get_active_model("asr").unwrap().is_none(),
+            "迁移后无激活模型，get_active_model 应返回 None");
+
+        // 4. 废弃 app_config 字段已删
+        let stale_key: i64 = with_db(|c| c.query_row(
+            "SELECT COUNT(*) FROM app_config WHERE config_key='asr_engine'", [], |r| r.get(0)
+        ).map_err(anyhow::Error::from)).unwrap();
+        assert_eq!(stale_key, 0, "废弃的 asr_engine 配置项应已删除");
+    }
+
+    /// 回归 Issue #7（code review）：switch_active_model 用 id=-1（LLM「不选择模型」）
+    /// 应清空该域所有 is_enabled（前端 LlmTab.tsx 传 -1 表示取消激活）。
+    /// 依赖 SQLite AUTOINCREMENT 永不产生负 id（IIF(id=-1,1,0) 无匹配行，全部置 0）。
+    #[test]
+    fn switch_active_model_with_id_neg1_clears_domain() {
+        let conn = open_init();
+        // 先激活 sensevoice（is_available=1）
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_some(),
+            "测试前提：先激活一个模型");
+
+        // 用 id=-1 调 switch_active_model（前端 LLM「不选择模型」语义）
+        switch_active_model_at(&conn, "asr", -1).unwrap();
+
+        // 验证：该域无任何 is_enabled=1 AND is_available=1
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none(),
+            "id=-1 应清空该域所有激活（IIF(id=-1,1,0) 无匹配，全置 0）");
+
+        // 原 sensevoice 的 is_enabled 应为 0（被清空）
+        let sv_enabled: i64 = conn.query_row(
+            "SELECT is_enabled FROM models WHERE id=?1", params![sv], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(sv_enabled, 0, "原激活模型应被清空");
+    }
+
     /// 回归 T9-L6：v32→v36 迁移——从无 app_index 表的 v32 库升级，
     /// launcher_index 表（含 icon/path/alias）、search_frequency 表均就绪。
     /// v36：app_index 已被 launcher_index 取代（迁移建 launcher_index，无旧表则不迁数据）。
@@ -3211,9 +3484,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 36（迁移链一路走到最新）
+        // 验证 user_version = 37（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
 
         // v36：app_index 表应不存在（被 launcher_index 取代）
         let app_index_count: i64 = conn.query_row(
@@ -3262,7 +3535,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3392,7 +3665,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3457,39 +3730,30 @@ mod tests {
     #[test]
     fn seed_then_load_round_trips() {
         let conn = open_init();
-        // 强制启用所有模型做断言测试
-        conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
+        // 新语义：is_enabled=激活（每域仅 1），is_available=可用。
+        // 激活 zipformer 模型（先置 available，再置 enabled）
+        conn.execute("UPDATE models SET is_available = 1 WHERE model_name='zipformer' AND domain='asr'", []).unwrap();
+        conn.execute("UPDATE models SET is_enabled = IIF(model_name='zipformer', 1, 0) WHERE domain='asr' AND is_available=1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
-        // c796cbc 后本地 zipformer 2 条（zipformer / zipformer-large）；
-        // 兜底 zipformer-small-ctc 移出 seed，由代码（asr/config.rs FALLBACK_ASR_ENGINE_NAME）写死
-        let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
-        assert_eq!(zf.len(), 2);
+        // load_models_at 只返回激活的那一个（LIMIT 1）
+        let zf = cfg.asr.zipformer.as_ref().expect("zipformer section（激活的）");
+        assert_eq!(zf.len(), 1);
         let zp = zf.get("zipformer").unwrap();
         assert_eq!(zp.source, "asr/zipformer");
         assert!(zp.is_local, "ASR 模型应为本地模型");
-        assert!(zp.is_enabled, "测试强制 is_enabled=1，此处应为 true");
+        assert!(zp.is_available, "激活模型应 is_available=true");
         assert!(zp.is_streaming, "Zipformer 模型应支持流式");
-        assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
-        let whisper = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
-        assert!(!whisper.is_streaming, "Whisper 模型不应支持流式");
-        // c796cbc 后本地 paraformer 4 条：bilingual / multi-zh / streaming / zh
-        assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 4);
-        assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
-        // moonshine ASR（base + tiny）
-        assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
-        // 云端 ASR 已移除 seed（v31），用户自建
-        assert!(cfg.asr.aliyun.is_none(), "aliyun 云端 ASR 不再 seed");
-        assert!(cfg.asr.bytedance.is_none(), "bytedance 云端 ASR 不再 seed");
-        assert!(cfg.asr.tencent.is_none(), "tencent 云端 ASR 不再 seed");
-        assert!(cfg.asr.baidu.is_none(), "baidu 云端 ASR 不再 seed");
+        // 非激活的 section 不应出现
+        assert!(cfg.asr.whisper.is_none(), "whisper 未激活不应出现");
+        assert!(cfg.asr.paraformer.is_none(), "paraformer 未激活不应出现");
     }
 
     #[test]
     fn test_load_llm_model() {
         let conn = open_init();
-        // LLM 不再 seed（v31），插入测试数据
+        // LLM 不再 seed（v31），插入测试数据（is_available=1 表示可用）
         conn.execute_batch(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_available)
              VALUES
              ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','GLM-4 FlashX',0,0,1),
              ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','DeepSeek V4 Flash',1,0,1),
@@ -3541,7 +3805,7 @@ mod tests {
 
         // 插入 is_local=1 的 LLM 行，验证精确命中
         conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_available)
              VALUES ('llm', 'ollama', 'qwen', 'qwen3-8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
             [],
         )
@@ -3607,12 +3871,12 @@ mod tests {
         set_model_enabled_at(&conn, "paraformer-streaming", true).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
-        assert!(p.is_enabled);
+        assert!(p.is_available);
         // 关掉再读
         set_model_enabled_at(&conn, "paraformer-streaming", false).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
-        assert!(!p.is_enabled);
+        assert!(!p.is_available);
     }
 
     #[test]
@@ -3625,12 +3889,224 @@ mod tests {
         assert_eq!(p.secret_key, json);
     }
 
+    // ── 模型激活语义（Task 1-2 引入）单测 ──
+    // 不变量来源：specs/2026-07-17-model-activation-refactor-design.md §3.3 / §6 / §7
+
+    /// §7 降级路径：无激活模型（is_enabled 全 0）时 get_active_model 返回 None。
+    /// seed 默认所有模型 is_enabled=0（用户激活时才设 1），故全新库应返回 None。
+    #[test]
+    fn get_active_model_returns_none_when_no_active() {
+        let conn = open_init();
+        // seed 里所有 asr 模型 is_enabled=0
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "llm").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "ocr").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "translate").unwrap().is_none());
+    }
+
+    /// §3.3 + §6.1：激活查询 WHERE domain=? AND is_enabled=1 AND is_available=1。
+    /// 仅 is_enabled=1 不够——必须 is_available=1（文件未就绪的激活模型不算）。
+    #[test]
+    fn get_active_model_requires_both_enabled_and_available() {
+        let conn = open_init();
+        // 找一个 is_available=1 的 ASR 模型（sensevoice-orig-small）并激活
+        let row: (i64,) = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'", [], |r| Ok((r.get(0)?,))
+        ).unwrap();
+        let sid = row.0;
+        switch_active_model_at(&conn, "asr", sid).unwrap();
+
+        // 命中：is_enabled=1 AND is_available=1
+        let active = get_active_model_at(&conn, "asr").unwrap().expect("应命中激活模型");
+        assert_eq!(active.id, sid);
+        assert_eq!(active.model_name, "sensevoice-orig-small");
+        assert_eq!(active.domain, "asr");
+        // §6.1 推理正确性：完整字段（source/secret_key/model_name 与 DB 一致）
+        assert!(active.source.starts_with("asr/"));
+        assert_eq!(active.is_available, true);
+        assert_eq!(active.is_enabled, true);
+
+        // 反例：手动设一个 is_enabled=1 AND is_available=0 的行 → 不应命中
+        conn.execute(
+            "UPDATE models SET is_enabled=1, is_available=0 WHERE model_name='paraformer-streaming'",
+            [],
+        ).unwrap();
+        // 仍应返回 sensevoice（is_available=1 的那个），不返回 paraformer-streaming
+        let active2 = get_active_model_at(&conn, "asr").unwrap().expect("仍应命中 sensevoice");
+        assert_eq!(active2.model_name, "sensevoice-orig-small");
+    }
+
+    /// §6.3 事务性切换：switch_active_model 单 UPDATE 原子刷新——切换后该域仅 1 个 is_enabled=1。
+    /// IIF(id=?,1,0) 语义：目标行置 1，其余可用行置 0。
+    #[test]
+    fn switch_active_model_atomic_single_active_per_domain() {
+        let conn = open_init();
+        // 两个 is_available=1 的 ASR 模型：sensevoice-orig-small + firered-asr2
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        let fr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='firered-asr2'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_ne!(sv, fr, "测试前提：两模型 id 不同");
+
+        // 先激活 sensevoice
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "切换后该域应仅 1 个 is_enabled=1 AND is_available=1");
+        let active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(active.id, sv);
+
+        // 切换到 firered——sensevoice 应自动 is_enabled=0
+        switch_active_model_at(&conn, "asr", fr).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "再切换后仍仅 1 个激活");
+        let active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(active.id, fr, "激活应已切到 firered");
+    }
+
+    /// §6.3 边界：switch_active_model 仅在 is_available=1 中切换——
+    /// 目标 id 是 is_available=0 的行时，UPDATE 不影响它（WHERE is_available=1 排除），
+    /// 且会把该域所有 is_available=1 的行 is_enabled 置 0（全清空）。
+    #[test]
+    fn switch_active_model_clears_domain_when_target_not_available() {
+        let conn = open_init();
+        // paraformer-streaming is_available=0（未就绪）
+        let ps: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='paraformer-streaming'",
+            [], |r| r.get(0)
+        ).unwrap();
+        // 先激活 sensevoice（is_available=1）确认初始有激活
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_some());
+
+        // 切到 paraformer-streaming（is_available=0）——WHERE is_available=1 排除它
+        switch_active_model_at(&conn, "asr", ps).unwrap();
+        // 该域所有 is_available=1 的行 is_enabled=0（含 sensevoice）→ 无激活
+        assert!(get_active_model_at(&conn, "asr").unwrap().is_none(),
+            "切到未就绪模型应清空该域激活（IIF(id=ps,1,0) 但 ps 不在 WHERE 范围内）");
+        // paraformer-streaming 本身 is_enabled 仍 0（UPDATE 未触及它）
+        let ps_enabled: i64 = conn.query_row(
+            "SELECT is_enabled FROM models WHERE id=?1", params![ps], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(ps_enabled, 0, "未就绪模型不应被设为激活");
+    }
+
+    /// §6.4 4 域统一：get_active_model / switch_active_model 对 asr/llm/ocr/translate
+    /// 4 个 domain 行为一致——同一 API，按 domain 过滤，互不串扰。
+    #[test]
+    fn switch_active_model_isolates_domains() {
+        let conn = open_init();
+        // ASR 域激活 sensevoice
+        let sv: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='sensevoice-orig-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+        // OCR 域激活 PP-OCRv6-small（is_available=1）
+        let ocr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='ocr' AND model_name='PP-OCRv6-small'",
+            [], |r| r.get(0)
+        ).unwrap();
+
+        switch_active_model_at(&conn, "asr", sv).unwrap();
+        switch_active_model_at(&conn, "ocr", ocr).unwrap();
+
+        // 4 域各查一次——asr/ocr 命中各自激活，llm/translate 仍 None
+        let asr_active = get_active_model_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(asr_active.model_name, "sensevoice-orig-small");
+        assert_eq!(asr_active.domain, "asr");
+
+        let ocr_active = get_active_model_at(&conn, "ocr").unwrap().unwrap();
+        assert_eq!(ocr_active.model_name, "PP-OCRv6-small");
+        assert_eq!(ocr_active.domain, "ocr");
+
+        assert!(get_active_model_at(&conn, "llm").unwrap().is_none());
+        assert!(get_active_model_at(&conn, "translate").unwrap().is_none());
+
+        // 域间不串扰：再切 ASR 不影响 OCR
+        let fr: i64 = conn.query_row(
+            "SELECT id FROM models WHERE domain='asr' AND model_name='firered-asr2'",
+            [], |r| r.get(0)
+        ).unwrap();
+        switch_active_model_at(&conn, "asr", fr).unwrap();
+        let ocr_still = get_active_model_at(&conn, "ocr").unwrap().unwrap();
+        assert_eq!(ocr_still.id, ocr, "切 ASR 不应影响 OCR 激活态");
+    }
+
+    /// get_asr_model_by_spec：3-part spec（provider+category+name）精确匹配。
+    /// 仅查 is_available=1 的（不限 is_enabled）——CLI 多模型路径专用。
+    #[test]
+    fn get_asr_model_by_spec_full_3part_matches_available() {
+        let conn = open_init();
+        // sensevoice-orig-small is_available=1（seed）
+        let row = get_asr_model_by_spec_at(&conn, Some("local"), Some("sensevoice-orig"), "sensevoice-orig-small")
+            .unwrap().expect("应命中可用模型");
+        assert_eq!(row.model_name, "sensevoice-orig-small");
+        assert_eq!(row.provider, "local");
+        assert_eq!(row.category, "sensevoice-orig");
+        assert_eq!(row.domain, "asr");
+        assert!(row.is_available);
+    }
+
+    /// get_asr_model_by_spec：裸名（provider/category=None）跨 provider/category 匹配。
+    #[test]
+    fn get_asr_model_by_spec_bare_name_matches() {
+        let conn = open_init();
+        let row = get_asr_model_by_spec_at(&conn, None, None, "sensevoice-orig-small")
+            .unwrap().expect("裸名应命中可用模型");
+        assert_eq!(row.model_name, "sensevoice-orig-small");
+    }
+
+    /// get_asr_model_by_spec：is_available=0 的模型不返回（文件未就绪不可用）。
+    #[test]
+    fn get_asr_model_by_spec_filters_unavailable() {
+        let conn = open_init();
+        // paraformer-streaming is_available=0
+        let result = get_asr_model_by_spec_at(&conn, Some("local"), Some("paraformer"), "paraformer-streaming")
+            .unwrap();
+        assert!(result.is_none(), "未就绪模型不应被查询到");
+        let result2 = get_asr_model_by_spec_at(&conn, None, None, "paraformer-streaming")
+            .unwrap();
+        assert!(result2.is_none(), "裸名查未就绪模型也应返回 None");
+    }
+
+    /// get_asr_model_by_spec：非 ASR domain 不命中（函数硬编码 domain='asr'）。
+    #[test]
+    fn get_asr_model_by_spec_rejects_non_asr_domain() {
+        let conn = open_init();
+        // PP-OCRv6-small 是 ocr domain，is_available=1，但函数只查 asr
+        let result = get_asr_model_by_spec_at(&conn, None, None, "PP-OCRv6-small")
+            .unwrap();
+        assert!(result.is_none(), "ocr domain 模型不应被 asr 查询命中");
+    }
+
+    /// get_asr_model_by_spec：不存在的 name 返回 None（不报错）。
+    #[test]
+    fn get_asr_model_by_spec_returns_none_for_unknown() {
+        let conn = open_init();
+        let result = get_asr_model_by_spec_at(&conn, None, None, "nonexistent-model-xxx")
+            .unwrap();
+        assert!(result.is_none());
+    }
+
     #[test]
     fn list_llm_models_filters_disabled_and_sorts() {
         let conn = open_init();
-        // LLM 不再 seed（v31），插入测试数据
+        // LLM 不再 seed（v31），插入测试数据（is_available=1 表示可用）
         conn.execute_batch(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_available)
              VALUES
              ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','',0,1),
              ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','',0,1),
@@ -3639,9 +4115,9 @@ mod tests {
              ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1),
              ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1)"
         ).unwrap();
-        // 禁用 aliyun provider 下全部 3 条
+        // 禁用 aliyun provider 下全部 3 条（is_available=0）
         conn.execute(
-            "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND provider='aliyun'",
+            "UPDATE models SET is_available = 0 WHERE domain='llm' AND provider='aliyun'",
             [],
         ).unwrap();
         let list = list_llm_models_at(&conn).unwrap();
@@ -3657,17 +4133,17 @@ mod tests {
     #[test]
     fn list_llm_models_at_empty_when_all_disabled() {
         let conn = open_init();
-        // seed 全 is_enabled=0（默认）
+        // seed 无 LLM 数据（用户自建）
         let list = list_llm_models_at(&conn).unwrap();
-        assert!(list.is_empty(), "全禁用时返回空");
+        assert!(list.is_empty(), "无 LLM 数据时返回空");
     }
 
     #[test]
     fn list_ocr_models_returns_all() {
         let conn = open_init();
         let list = list_ocr_models_at(&conn).unwrap();
-        // seed 2 条 OCR（PP-OCRv6-small is_enabled=1 + PP-OCRv5 is_enabled=0），全部返回
-        assert_eq!(list.len(), 2, "seed 2 条 OCR，不过滤 is_enabled");
+        // seed 2 条 OCR，全部返回（list_ocr_models_at 不过滤 is_available/is_enabled）
+        assert_eq!(list.len(), 2, "seed 2 条 OCR，全量返回");
         assert!(list.iter().any(|m| m.model_name == "PP-OCRv6-small"));
         assert!(list.iter().any(|m| m.model_name == "PP-OCRv5"));
     }
@@ -3675,10 +4151,10 @@ mod tests {
     #[test]
     fn list_ocr_models_includes_all_even_disabled() {
         let conn = open_init();
-        conn.execute("UPDATE models SET is_enabled = 0 WHERE domain='ocr'", []).unwrap();
+        conn.execute("UPDATE models SET is_available = 0 WHERE domain='ocr'", []).unwrap();
         let list = list_ocr_models_at(&conn).unwrap();
-        // 即使全部 is_enabled=0，仍返回全部（前端需展示供切换）
-        assert_eq!(list.len(), 2, "全禁用时仍返回全部 OCR 模型");
+        // 即使全部 is_available=0，仍返回全部（前端需展示供切换）
+        assert_eq!(list.len(), 2, "全不可用时仍返回全部 OCR 模型");
     }
 
     #[test]
@@ -3872,7 +4348,6 @@ mod tests {
         use crate::config::PolishMode;
         let conn = open_init();
         let mut cfg = load_app_config_at(&conn).unwrap();
-        cfg.asr_engine = "whisper-small".into();
         cfg.polish_mode = PolishMode::Intermediate;
         cfg.microphone = "My Mic".into();
         cfg.segment_silence = 350.0;
@@ -3881,7 +4356,6 @@ mod tests {
         save_app_config_at(&conn, &cfg).unwrap();
 
         let cfg2 = load_app_config_at(&conn).unwrap();
-        assert_eq!(cfg2.asr_engine, "whisper-small");
         assert_eq!(cfg2.polish_mode, PolishMode::Intermediate);
         assert_eq!(cfg2.microphone, "My Mic");
         assert_eq!(cfg2.segment_silence, 350.0);
@@ -3896,11 +4370,11 @@ mod tests {
         let conn = open_init();
         conn.execute(
             "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
-            params!["asr_engine", "sensevoice-test"],
+            params!["language", "ja"],
         ).unwrap();
         let cfg = load_app_config_at(&conn).unwrap();
-        assert_eq!(cfg.asr_engine, "sensevoice-test");
-        assert_eq!(cfg.language, "auto"); // 其余不变
+        assert_eq!(cfg.language, "ja");
+        assert_eq!(cfg.engine_mode, "embedded"); // 其余不变
     }
 
     #[test]
@@ -4314,7 +4788,7 @@ mod tests {
         let translate_rows: Vec<LocalAsrModelRow> = {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
                      FROM models WHERE domain='translate' AND is_local = 1",
                 )
                 .unwrap();
@@ -4327,7 +4801,8 @@ mod tests {
                     secret_key: row.get(4)?,
                     description: row.get(5)?,
                     is_enabled: row.get::<_, i32>(6)? != 0,
-                    is_streaming: row.get::<_, i32>(7)? != 0,
+                    is_available: row.get::<_, i32>(7)? != 0,
+                    is_streaming: row.get::<_, i32>(8)? != 0,
                 })
             }).unwrap();
             rows.filter_map(|r| r.ok()).collect()

@@ -24,22 +24,23 @@ pub struct ConfigResponse {
 }
 
 #[tauri::command]
-pub async fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, String> {
-    // DB 查询 + cpal 麦克风枚举移入 spawn_blocking——避免阻塞 UI 线程
-    let g = rc.read().clone(); // AppConfig clone，释放 read lock
-
+pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, String> {
+    // DB 查询 + cpal 麦克风枚举移入 spawn_blocking——避免阻塞 UI 线程。
+    // Task 2 后：激活引擎从 ACTIVE_ENGINES 缓存取，不再读 AppConfig 4 个字段。
     let result = tokio::task::spawn_blocking(move || -> Result<ConfigResponse, String> {
         let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
         let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
-        let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
-        let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
+        let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
+        // Task 2 后：current 直接用 DB 行 is_enabled（build_asr_options 内部处理，
+        // 不再需要外部传 current spec 字符串做 name 匹配）。
+        let asr_engines = crate::runtime_config::build_asr_options_public(engines);
 
         let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
-        let llm_models = crate::runtime_config::build_llm_options_public(&g.polish_llm, llms);
+        let llm_models = crate::runtime_config::build_llm_options_public(llms);
 
         let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
-        let ocr_models = crate::runtime_config::build_ocr_options_public(&g.ocr_model, ocrs);
+        let ocr_models = crate::runtime_config::build_ocr_options_public(ocrs);
 
         let microphones = list_microphones();
 
@@ -94,7 +95,6 @@ pub fn set_config(
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, mut cfg) = {
@@ -192,20 +192,12 @@ pub fn set_config(
     // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
     octopus_asr_local::config::reload_app_config();
 
-    // 审查 三2：切 asr_engine 时后台预热本地引擎（避免首次 transcribe 懒加载卡顿）。
-    if key == "asr_engine" {
-        crate::runtime_config::preheat_local_engine(
-            engine_manager.inner().clone(),
-            &cfg.asr_engine,
-            &cfg.engine_mode,
-        );
-    }
-
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
-    // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）
+    // 无需等下次 Toggle（用户在录音中改 polish_mode 等也能立即生效）。
+    // Task 2 后 asr_engine / polish_llm 不在 set_config 列表（走 switch_active_model）。
     if matches!(
         key.as_str(),
-        "polish_llm" | "polish_mode" | "asr_correct" | "output_simplified" | "hide_toolbar"
+        "polish_mode" | "asr_correct" | "output_simplified" | "hide_toolbar"
     ) {
         coordinator.update_runtime();
     }
@@ -329,9 +321,8 @@ fn apply_config_value(
         "polish_global_shortcut" => {
             cfg.polish_global_shortcut = value.as_str().ok_or("polish_global_shortcut 需要字符串")?.to_string();
         }
-        "ocr_model" => {
-            cfg.ocr_model = value.as_str().ok_or("ocr_model 需要字符串")?.to_string();
-        }
+        // Task 2 后：asr_engine / polish_llm / ocr_model / translate_engine 已从 AppConfig 删除，
+        // 激活态统一走 switch_active_model 命令（DB models.is_enabled）。set_config 不再处理这 4 个 key。
         "clipboard_shortcut" => {
             cfg.clipboard_shortcut = value.as_str().ok_or("clipboard_shortcut 需要字符串")?.to_string();
         }
@@ -368,21 +359,6 @@ fn apply_config_value(
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }
-        "asr_engine" => {
-            let bare_name = value.as_str().ok_or("asr_engine 需要字符串")?;
-            // 前端传裸 model_name，需构造 3-part spec
-            cfg.asr_engine = build_asr_engine_spec(bare_name)?;
-        }
-        "polish_llm" => {
-            let bare_name = value.as_str().ok_or("polish_llm 需要字符串")?;
-            // 前端传裸 model_name，空串=不选择模型，其余构造 3-part spec
-            cfg.polish_llm = build_polish_llm_spec(bare_name)?;
-        }
-        "translate_engine" => {
-            cfg.translate_engine = value.as_str()
-                .ok_or("translate_engine 必须为字符串")?
-                .to_string();
-        }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
     Ok(())
@@ -403,39 +379,8 @@ pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
     octopus_infra::db::delete_env_var(&key).map_err(|e| e.to_string())
 }
 
-/// 将前端传来的裸 model_name 构造为 3-part ASR spec "{provider}:{category}:{model_name}"。
-/// 兜底引擎固定 "local:zipformer:NAME"；其余查 DB 取 provider/category。
-fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {
-    use crate::runtime_config::FALLBACK_ASR_ENGINE;
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
-    if bare_name == FALLBACK_ASR_ENGINE {
-        Ok(format!("local:zipformer:{}", bare_name))
-    } else {
-        let engine = engines.iter().find(|e| e.name == bare_name)
-            .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
-        Ok(format!(
-            "{}:{}:{}",
-            engine.provider,
-            octopus_asr_local::config::category_label(engine.category),
-            bare_name
-        ))
-    }
-}
-
-/// 将前端传来的裸 model_name 构造为 3-part LLM spec "{provider}:{category}:{model_name}"。
-/// 空串 = 「不选择模型」，直接返回空。
-fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
-    if bare_name.is_empty() {
-        Ok(String::new())
-    } else {
-        let model = octopus_infra::db::list_llm_models()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|m| m.model_name == bare_name)
-            .ok_or_else(|| format!("润色模型 '{}' 不存在", bare_name))?;
-        Ok(format!("{}:{}:{}", model.provider, model.category, model.model_name))
-    }
-}
+// Task 2 后：build_asr_engine_spec / build_polish_llm_spec 已移除（激活态走
+// switch_active_model 命令，不再经 set_config + spec 构造）。
 
 // ── get_history 命令 ──
 
@@ -499,7 +444,7 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
 /// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 

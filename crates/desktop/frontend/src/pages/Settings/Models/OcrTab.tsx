@@ -7,10 +7,13 @@ import { ModelRow, CurrentBanner, type ModelRowData } from "./ModelRow";
 import { useT } from "@/lib/i18n";
 
 interface DownloadableModel {
+  id: number;
   name: string;
   repo: string;
   description: string;
   category: string;
+  // Task 2 后：is_available=就绪；is_enabled=激活
+  is_available: boolean;
   is_enabled: boolean;
 }
 
@@ -75,13 +78,14 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  const isCurrent = (name: string) => ocrModels.some((m) => m.current && m.name === name);
+  // Task 2 后：currentLabel 仍从 get_config 的 ocr_models（带 current 标记）取。
   const currentLabel = ocrModels.find((m) => m.current)?.label ?? "";
-  const readyCount = downloadable.filter((m) => m.is_enabled).length;
+  const readyCount = downloadable.filter((m) => m.is_available).length;
 
-  const onActivate = async (name: string) => {
+  // Task 2 后：统一走 switch_active_model(domain, id)。
+  const onActivate = async (id: number) => {
     try {
-      await invoke("set_config", { key: "ocr_model", value: name });
+      await invoke("switch_active_model", { domain: "ocr", id });
       showToast(t("settings.models.ocrRestartHint"));
       load();
     } catch (e) { showToast(t("settings.models.switchFailed") + e); }
@@ -105,10 +109,12 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
+  // Task 2 后：is_ready 用 is_available；is_current 用 is_enabled（激活）。
   const rows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_enabled,
-    is_current: isCurrent(m.name), is_local: true, repo: m.repo,
+    description: m.description, is_ready: m.is_available,
+    is_current: m.is_enabled, is_local: true, repo: m.repo,
+    cloudId: m.id,
   }));
 
   return (
@@ -117,7 +123,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {rows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
-            onActivate={() => onActivate(m.name)}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
             onDelete={() => onDelete(m.repo)}

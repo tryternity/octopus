@@ -34,17 +34,22 @@ pub enum StreamingSession {
 }
 
 impl StreamingSession {
-    /// 根据引擎 spec 创建流式 session。
+    /// 创建流式 session（基于 ASR 域的激活引擎）。
+    ///
+    /// `engine_spec` 已废弃（保留以减小调用方改动）——Task 2 模型激活语义重构后，
+    /// 流式 session 一律基于 ASR 域激活引擎（`resolve_active_engine("asr")`），
+    /// 不再按 spec 查任意引擎。调用方传激活引擎的 spec 即可（兼容旧代码）。
     ///
     /// `language` 决定段间分隔符（英文空格 / 其他中文逗号，见 [`sentence_separator`]）。
     ///
-    /// 使用 `resolve_active_engine`（带兜底）而非 `resolve_engine_category`（无兜底），
+    /// 使用 `resolve_active_engine("asr")`（带兜底）而非 `resolve_engine_category`（无兜底），
     /// 与 `is_streaming_engine` 的判定对称——否则 DB 未命中时 `is_streaming_engine` 兜底成功
     /// （返回 true → 进 streaming 路径），但此处无兜底失败 → streaming session 创建失败。
     pub fn new(engine_spec: &str, language: &str) -> Result<Self> {
-        let resolved = crate::config::resolve_active_engine(engine_spec)
-            .context(format!("Failed to resolve streaming engine: {}", engine_spec))?;
-        let category = resolved.category;
+        let resolved = crate::config::resolve_active_engine("asr")
+            .with_context(|| format!("Failed to resolve active ASR engine for streaming (legacy spec='{}' ignored)", engine_spec))?;
+        let category = resolved.as_engine_category()
+            .with_context(|| format!("Active ASR engine '{}' category='{}' 非已知 ASR 族", resolved.name, resolved.category))?;
         let bare_name = resolved.name.as_str();
         let separator = sentence_separator(language);
 
@@ -81,8 +86,8 @@ impl StreamingSession {
             }
             other => {
                 anyhow::bail!(
-                    "Engine '{}' ({:?}) does not support streaming. Only Paraformer and Zipformer are supported.",
-                    engine_spec, other
+                    "Active ASR engine '{}' ({:?}) does not support streaming. Only Paraformer and Zipformer are supported.",
+                    bare_name, other
                 )
             }
         }

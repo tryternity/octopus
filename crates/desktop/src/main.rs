@@ -86,10 +86,6 @@ pub fn run() {
         log::warn!("config load failed ({}), using defaults", e);
         octopus_infra::config::AppConfig::default()
     });
-    info!(
-        "Config: engine={}, mode={}, asr_shortcut={}",
-        config.asr_engine, config.engine_mode, config.asr_shortcut
-    );
 
     // 初始化嵌入式 DB（建表 + seed 默认引擎）。asr 的 load_config 首次调用时也会
     // lazy init，这里显式预热（日志早出 + 错误前置）。模型配置唯一来源即此 DB。
@@ -97,6 +93,20 @@ pub fn run() {
     if let Err(e) = octopus_asr_local::db::ensure_db() {
         log::error!("DB init failed: {}, storage disabled", e);
     }
+
+    // Task 2 模型激活语义重构：启动时加载 4 域激活引擎到 ACTIVE_ENGINES 内存缓存。
+    // 后续所有使用方（推理 / tray / 管理页 / 流式判定）经 resolve_active_engine(domain)
+    // 纯读此缓存。ASR 域带兜底（zipformer-small-ctc），其余域无激活仅告警不阻断。
+    for domain in ["asr", "llm", "ocr", "translate"] {
+        match octopus_asr_local::config::load_active_engine(domain) {
+            Ok(r) => info!("Active {} engine: {} [{}]", domain, r.name, r.provider),
+            Err(e) => log::warn!("Active {} engine 未激活：{}", domain, e),
+        }
+    }
+    info!(
+        "Config: mode={}, asr_shortcut={}",
+        config.engine_mode, config.asr_shortcut
+    );
     // 创建模型路径软链（HF cache → ~/.octopus/models/{domain}/{name}/）
     if let Err(e) = model_migrate::create_model_symlinks() {
         log::warn!("模型路径迁移失败（非致命）: {e:?}");
@@ -105,11 +115,11 @@ pub fn run() {
     octopus_search::init_search_engine();
 
     // 校验引擎模式
-    if config.engine_mode == "embedded" && !config::is_streaming_engine(&config) {
-        log::info!(
-            "引擎 '{}' 使用 VAD 分段伪流式模式",
-            config.asr_engine
-        );
+    if config.engine_mode == "embedded" && !config::is_streaming_engine() {
+        let active_name = octopus_asr_local::config::resolve_active_engine("asr")
+            .map(|r| r.name)
+            .unwrap_or_else(|_| "<未激活>".to_string());
+        log::info!("引擎 '{}' 使用 VAD 分段伪流式模式", active_name);
     }
 
     // 润色配置校验（三档模式）
@@ -122,7 +132,7 @@ pub fn run() {
                 coordinator::MIN_POLISH_INTERVAL_SEC
             );
         }
-        match crate::config::llm_config(&config) {
+        match crate::config::llm_config(config.polish_mode) {
             Some(llm_cfg) => {
                 let mode_str = match config.polish_mode {
                     PolishMode::FinalOnly => "仅最终润色",
@@ -149,10 +159,13 @@ pub fn run() {
                 }
             }
             None => {
+                let active_llm = octopus_asr_local::config::resolve_active_engine("llm")
+                    .map(|r| r.name)
+                    .unwrap_or_default();
                 log::warn!(
-                    "polish_mode={:?} 但未找到有效的 LLM 配置（请检查 polish_llm: \"{}\" 或数据库中的 API Key 字段）",
+                    "polish_mode={:?} 但未找到有效的 LLM 配置（当前激活 LLM=\"{}\"，请检查 DB 中的 API Key 字段）",
                     config.polish_mode,
-                    config.polish_llm
+                    active_llm
                 );
             }
         }
@@ -214,6 +227,7 @@ pub fn run() {
             runtime_config::toolbar_state,
             runtime_config::list_asr_engines,
             runtime_config::switch_asr_engine,
+            runtime_config::switch_active_model,
             runtime_config::set_polish_mode,
             runtime_config::list_llm_models,
             runtime_config::switch_polish_llm,
@@ -508,8 +522,8 @@ pub fn run() {
                         continue;
                     }
                     // 每轮重读 config：polish_llm 可能在运行时被改过。
-                    let config = octopus_infra::config::load_config().unwrap_or_default();
-                    let llm_config = match crate::config::llm_config_ignore_mode(&config) {
+                    let _config = octopus_infra::config::load_config().unwrap_or_default();
+                    let llm_config = match crate::config::llm_config_ignore_mode() {
                         Some(c) => c,
                         None => {
                             std::thread::sleep(std::time::Duration::from_secs(600)); // LLM 未配置，10 分钟后重试
@@ -588,14 +602,14 @@ pub fn run() {
             // Initialize engine manager
             let engine_manager = Arc::new(octopus_asr_local::engine::AsrEngineManager::new());
 
-            // 一次性解析 config.asr_engine → ResolvedEngine，用于 preheat 判定。
-            let resolved_engine = octopus_asr_local::config::resolve_active_engine(&config.asr_engine);
+            // 一次性解析激活 ASR 引擎 → ResolvedEngine，用于 preheat 判定。
+            let resolved_engine = octopus_asr_local::config::resolve_active_engine("asr");
 
-            // 云引擎判定（仅用于 preheat 守卫）：启动时 asr_engine 解析为 Aliyun → 跳过本地预热。
+            // 云引擎判定（仅用于 preheat 守卫）：启动时激活引擎为 Aliyun → 跳过本地预热。
             // 运行时引擎路由由 DispatchEngine 按 spec 动态分发，不依赖此判定。
             #[cfg(feature = "cloud")]
             let is_cloud_aliyun = resolved_engine.as_ref()
-                .map(|r| r.category == octopus_asr_local::config::EngineCategory::Aliyun)
+                .map(|r| r.as_engine_category() == Some(octopus_asr_local::config::EngineCategory::Aliyun))
                 .unwrap_or(false);
 
             // Preheat 仅本地 embedded 离线引擎：
@@ -605,7 +619,7 @@ pub fn run() {
             //   与流式 Session 并存 → 双重加载浪费内存（~100-300MB）。流式引擎在首次录音时由
             //   prepare_streaming_session 懒加载进 StreamingSessionManager，无需启动预热。
             let do_preheat = config.engine_mode == "embedded"
-                && !config::is_streaming_engine(&config);
+                && !config::is_streaming_engine();
             #[cfg(feature = "cloud")]
             let do_preheat = do_preheat && !is_cloud_aliyun;
 

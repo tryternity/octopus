@@ -16,39 +16,32 @@ pub struct TranslateStatus {
 
 #[tauri::command]
 pub fn translate_status() -> Result<TranslateStatus, String> {
-    let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-
-    // translate_engine 存激活翻译模型的 DB id（Task 3）；空 / 非数字 / 不存在 / 非 translate
-    // domain / 未启用 / 云端未填 secret_key → 回退到润色 LLM 兜底翻译。与 action_bar_commands
-    // 的 resolve_translate_strategy 保持语义完全对称（仅以 DB 行字段为准，不再扫本地文件）。
-    let (strategy, engine_name, available) = match config.translate_engine.parse::<i64>() {
-        Ok(id) => match octopus_infra::db::get_model_by_id(id) {
-            Ok(Some(row)) if row.domain == "translate" && row.is_enabled => {
-                if row.is_local {
-                    ("local".to_string(), row.model_name, true)
-                } else if row.secret_key.is_empty() {
-                    // 云端模型未填 secret_key → fallback（与 resolve_translate_strategy 对称，
-                    // 避免到 translate 时才静默回退到 polish_llm）
-                    (
-                        "fallback_llm".into(),
-                        config.polish_llm.clone(),
-                        !config.polish_llm.is_empty(),
-                    )
-                } else {
-                    ("cloud".to_string(), row.model_name, true)
-                }
+    // Task 2 后：翻译激活模型从 ACTIVE_ENGINES 缓存取（resolve_active_engine("translate")）。
+    // 未激活 / 云端未填 secret_key → fallback 到激活的润色 LLM（resolve_active_engine("llm")）。
+    // 与 action_bar_commands 的 resolve_translate_strategy 保持语义完全对称。
+    let (strategy, engine_name, available) = match octopus_asr_local::config::resolve_active_engine("translate") {
+        Ok(row) => {
+            if row.entry.is_local {
+                ("local".to_string(), row.name, true)
+            } else if row.entry.secret_key.is_empty() {
+                // 云端模型未填 secret_key → fallback（与 resolve_translate_strategy 对称）
+                let llm_available = octopus_asr_local::config::resolve_active_engine("llm").is_ok();
+                let llm_name = octopus_asr_local::config::resolve_active_engine("llm")
+                    .map(|r| r.name)
+                    .unwrap_or_default();
+                ("fallback_llm".into(), llm_name, llm_available)
+            } else {
+                ("cloud".to_string(), row.name, true)
             }
-            _ => (
-                "fallback_llm".into(),
-                config.polish_llm.clone(),
-                !config.polish_llm.is_empty(),
-            ),
-        },
-        Err(_) => (
-            "fallback_llm".into(),
-            config.polish_llm.clone(),
-            !config.polish_llm.is_empty(),
-        ),
+        }
+        Err(_) => {
+            // translate 域未激活 → fallback 到激活 LLM
+            let llm_available = octopus_asr_local::config::resolve_active_engine("llm").is_ok();
+            let llm_name = octopus_asr_local::config::resolve_active_engine("llm")
+                .map(|r| r.name)
+                .unwrap_or_default();
+            ("fallback_llm".into(), llm_name, llm_available)
+        }
     };
 
     Ok(TranslateStatus {
