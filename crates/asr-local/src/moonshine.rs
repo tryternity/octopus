@@ -278,15 +278,6 @@ fn decode_moonshine_tokens(token_ids: &[i64], vocab: &[String]) -> String {
     text.replace('\u{2581}', " ").trim_start().to_string()
 }
 
-/// CLI 顶层 transcribe 入口。
-pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-    let entry = config::pick_entry(&cfg, config::EngineCategory::Moonshine, name)
-        .with_context(|| format!("Moonshine 模型 '{}' 未在配置中找到", name))?;
-    let engine = MoonshineEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, samples, language)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

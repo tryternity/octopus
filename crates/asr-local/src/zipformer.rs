@@ -624,24 +624,6 @@ impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
     }
 }
 
-/// Transcribe audio using Zipformer model
-/// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-    let zip_cfg = cfg
-        .asr
-        .zipformer
-        .as_ref()
-        .context("No zipformer models in config")?;
-
-    let entry = zip_cfg
-        .get(name)
-        .with_context(|| format!("zipformer model '{}' not in DB", name))?;
-
-    let engine = ZipformerCtcEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, samples, language)
-}
-
 /// 将 token id 序列解码为文本（CTC / Transducer 共用）。
 /// 支持 BBPE 和 SentencePiece byte-fallback 两种模式。
 pub(crate) fn decode_token_ids(vocab: &[String], is_bbpe: bool, token_ids: &[usize]) -> String {
