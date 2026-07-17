@@ -819,6 +819,8 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
 /// 本结构**不过滤 is_enabled**，供模型管理页列出「所有可下载模型（含未就绪）」。
 #[derive(Debug, Clone)]
 pub struct LocalAsrModelRow {
+    /// DB 行 id（translate_engine / asr_engine 等配置项按 id 存）。
+    pub id: i64,
     pub category: String,
     pub model_name: String,
     pub source: String,
@@ -836,18 +838,19 @@ pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
 
 fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
     let mut stmt = conn.prepare(
-        "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
          FROM models WHERE domain='asr' AND is_local = 1",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(LocalAsrModelRow {
-            category: row.get(0)?,
-            model_name: row.get(1)?,
-            source: row.get(2)?,
-            secret_key: row.get(3)?,
-            description: row.get(4)?,
-            is_enabled: row.get::<_, i32>(5)? != 0,
-            is_streaming: row.get::<_, i32>(6)? != 0,
+            id: row.get(0)?,
+            category: row.get(1)?,
+            model_name: row.get(2)?,
+            source: row.get(3)?,
+            secret_key: row.get(4)?,
+            description: row.get(5)?,
+            is_enabled: row.get::<_, i32>(6)? != 0,
+            is_streaming: row.get::<_, i32>(7)? != 0,
         })
     })?;
     let mut out = Vec::new();
@@ -862,18 +865,19 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
 pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
              FROM models WHERE domain=?1 AND is_local = 1",
         )?;
         let rows = stmt.query_map(params![domain], |row| {
             Ok(LocalAsrModelRow {
-                category: row.get(0)?,
-                model_name: row.get(1)?,
-                source: row.get(2)?,
-                secret_key: row.get(3)?,
-                description: row.get(4)?,
-                is_enabled: row.get::<_, i32>(5)? != 0,
-                is_streaming: row.get::<_, i32>(6)? != 0,
+                id: row.get(0)?,
+                category: row.get(1)?,
+                model_name: row.get(2)?,
+                source: row.get(3)?,
+                secret_key: row.get(4)?,
+                description: row.get(5)?,
+                is_enabled: row.get::<_, i32>(6)? != 0,
+                is_streaming: row.get::<_, i32>(7)? != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -1236,6 +1240,43 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
 /// 从 DB 列出启用的 LLM 模型（经 with_db，供 Tauri 命令调用）。
 pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
     with_db(list_llm_models_at)
+}
+
+/// 云端模型通用列表项（不限 domain，仅 is_local=0）。供 TranslateTab 等复用 llm 风格的云端 section。
+///
+/// 与 [`LlmModelInfo`] 字段一致（含 id、provider、category 等），区别在于：
+/// - 按 domain 参数过滤（而非写死 'llm'）
+/// - 过滤 is_local=0（只列云端模型，本地走 list_local_models_by_domain）
+/// - 不过滤 is_enabled（云端模型默认入库即 is_enabled=1；保留以便未来支持禁用）
+fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec<LlmModelInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking
+         FROM models WHERE domain = ?1 AND is_local = 0
+         ORDER BY category, model_name",
+    )?;
+    let rows = stmt.query_map(params![domain], |row| {
+        Ok(LlmModelInfo {
+            id: row.get::<_, i64>(0)?,
+            provider: row.get::<_, String>(1)?,
+            category: row.get::<_, String>(2)?,
+            model_name: row.get::<_, String>(3)?,
+            is_local: row.get::<_, i32>(4)? != 0,
+            source: row.get::<_, String>(5)?,
+            secret_key: row.get::<_, String>(6)?,
+            is_streaming: row.get::<_, i32>(7)? != 0,
+            is_thinking: row.get::<_, i32>(8)? != 0,
+        })
+    })?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// 从 DB 列出某 domain 的云端模型（is_local=0，经 with_db）。供 Tauri 命令调用。
+pub fn list_cloud_models_by_domain(domain: &str) -> Result<Vec<LlmModelInfo>> {
+    with_db(|conn| list_cloud_models_by_domain_at(conn, domain))
 }
 
 /// OCR 模型列表项（菜单用，仅含显示字段）。
@@ -2794,21 +2835,13 @@ mod tests {
     #[test]
     fn get_model_by_id_returns_translate_row() {
         setup_test_db();
-        // list_local_models_by_domain 返回 LocalAsrModelRow（无 id），用 model_name
-        // 在 DB 里反查 id，再走 get_model_by_id。
+        // list_local_models_by_domain 现在也返回 id（DB 行 id），直接用，无需再反查。
         let local = list_local_models_by_domain("translate").unwrap();
         let first = local
             .iter()
             .find(|r| r.model_name == "opus-mt")
             .expect("seed 应有 opus-mt 本地翻译模型");
-        let id: i64 = with_db(|conn| {
-            Ok(conn.query_row(
-                "SELECT id FROM models WHERE domain='translate' AND model_name='opus-mt'",
-                [],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        let id = first.id;
         let got = get_model_by_id(id).unwrap().expect("应查到 id 对应的行");
         assert_eq!(got.id, id);
         assert_eq!(got.domain, "translate");
@@ -4267,19 +4300,20 @@ mod tests {
         let translate_rows: Vec<LocalAsrModelRow> = {
             let mut stmt = conn
                 .prepare(
-                    "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
                      FROM models WHERE domain='translate' AND is_local = 1",
                 )
                 .unwrap();
             let rows = stmt.query_map([], |row| {
                 Ok(LocalAsrModelRow {
-                    category: row.get(0)?,
-                    model_name: row.get(1)?,
-                    source: row.get(2)?,
-                    secret_key: row.get(3)?,
-                    description: row.get(4)?,
-                    is_enabled: row.get::<_, i32>(5)? != 0,
-                    is_streaming: row.get::<_, i32>(6)? != 0,
+                    id: row.get(0)?,
+                    category: row.get(1)?,
+                    model_name: row.get(2)?,
+                    source: row.get(3)?,
+                    secret_key: row.get(4)?,
+                    description: row.get(5)?,
+                    is_enabled: row.get::<_, i32>(6)? != 0,
+                    is_streaming: row.get::<_, i32>(7)? != 0,
                 })
             }).unwrap();
             rows.filter_map(|r| r.ok()).collect()

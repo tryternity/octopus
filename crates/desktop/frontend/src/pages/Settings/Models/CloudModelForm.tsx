@@ -5,9 +5,11 @@ import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 
+export type CloudModelDomain = "asr" | "llm" | "translate";
+
 export interface CloudModelData {
   id?: number;
-  domain: "asr" | "llm";
+  domain: CloudModelDomain;
   provider: string;
   category: string;
   modelName: string;
@@ -58,7 +60,7 @@ export function CloudModelForm({
   onSaved,
   onCancel,
 }: {
-  domain: "asr" | "llm";
+  domain: CloudModelDomain;
   editModel?: CloudModelData | null;
   onCancel: () => void;
   onSaved: () => void;
@@ -77,6 +79,9 @@ export function CloudModelForm({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // llm 与 translate 共用 OpenAI 兼容的 provider preset（provider→base_url 自动填充 + 参考模型列表）
+  const isLlmLike = domain === "llm" || domain === "translate";
+
   useEffect(() => {
     if (domain === "asr") {
       invoke<AsrPreset[]>("list_asr_cloud_presets").then(setAsrPresets).catch(() => {});
@@ -85,15 +90,15 @@ export function CloudModelForm({
     }
   }, [domain]);
 
-  // LLM: provider 变更 → 自动填 base_url
+  // LLM / Translate: provider 变更 → 自动填 base_url
   useEffect(() => {
-    if (domain === "llm" && provider) {
+    if (isLlmLike && provider) {
       const preset = llmPresets.find((p) => p.provider === provider);
       if (preset) {
         setSource(preset.baseUrl);
       }
     }
-  }, [provider, domain, llmPresets, editModel]);
+  }, [provider, isLlmLike, llmPresets, editModel]);
 
   // ASR: provider+category 变更 → 自动填 source
   useEffect(() => {
@@ -195,7 +200,7 @@ export function CloudModelForm({
           {/* Provider */}
           <div>
             <div className={labelClass}>Provider</div>
-            {domain === "llm" ? (
+            {isLlmLike ? (
               <Select variant="default" size="full" value={provider}
                 onChange={(e) => setProvider(e.target.value)}>
                 <option value="">-- 选择 --</option>
@@ -215,7 +220,7 @@ export function CloudModelForm({
             )}
           </div>
 
-          {/* Category (ASR only, LLM auto from provider) */}
+          {/* Category (ASR only, LLM/Translate auto from provider) */}
           {domain === "asr" && availableCategories.length > 0 && (
             <div>
               <div className={labelClass}>Category</div>
@@ -231,10 +236,10 @@ export function CloudModelForm({
 
           {/* Source / Base URL */}
           <div>
-            <div className={labelClass}>{domain === "llm" ? "Base URL" : "Source"}</div>
+            <div className={labelClass}>{isLlmLike ? "Base URL" : "Source"}</div>
             <Input variant="default" size="full" value={source}
               onChange={(e) => setSource(e.target.value)}
-              placeholder={domain === "llm" ? "https://api.example.com/v1" : ""} />
+              placeholder={isLlmLike ? "https://api.example.com/v1" : ""} />
           </div>
 
           {/* Model Name */}
@@ -245,7 +250,7 @@ export function CloudModelForm({
                 onChange={(e) => setModelName(e.target.value)} placeholder="选择或输入" />
             ) : (
               <Input variant="default" size="full" value={modelName}
-                onChange={(e) => setModelName(e.target.value)} placeholder={domain === "llm" ? "如 deepseek-chat" : "选择或输入"} />
+                onChange={(e) => setModelName(e.target.value)} placeholder={isLlmLike ? "如 deepseek-chat" : "选择或输入"} />
             )}
             {referenceModels.length > 0 && (
               <datalist id="ref-models">
@@ -268,7 +273,7 @@ export function CloudModelForm({
                 onChange={(e) => setIsStreaming(e.target.checked)} />
               Streaming
             </label>
-            {domain === "llm" && (
+            {isLlmLike && (
               <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                 <input type="checkbox" checked={isThinking}
                   onChange={(e) => setIsThinking(e.target.checked)} />
@@ -290,8 +295,8 @@ export function CloudModelForm({
 
         {/* Actions */}
         <div className="flex justify-between items-center gap-2 mt-5">
-          {/* 测试连接（仅 LLM——ASR 的 source 不是 HTTP base_url） */}
-          {domain === "llm" ? (
+          {/* 测试连接（仅 LLM/Translate——ASR 的 source 不是 HTTP base_url） */}
+          {isLlmLike ? (
             <Button variant="outline" size="sm"
               disabled={!source || !secretKey || testing}
               onClick={handleTest}>
