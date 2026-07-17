@@ -972,11 +972,14 @@ fn cache_translate_done(session_id: &str, text: &str) {
 
 /// 前端查询翻译结果（兜底 listener 未注册阶段的 done 事件丢失）。
 ///
+/// **仅在 invoke 兜底分支调用**（`registerTranslateSession` 内 pending 未命中时）。
+/// listener 主路径（已收到 done）走 `forget_translate_result` 清理，不经过本命令。
+///
 /// 前端 CompactEditor mount 完成后，对每个 pending / open-tab 携带的 sessionId 调一次：
 /// - 返回 Some → session 已 done，直接显示译文终止态
 /// - 返回 None → session 未开始 / 进行中 / done 已被取走，等 listener（已注册必接管）
 ///
-/// 取走后立即清理（session 一次性）。
+/// 查询同时取走（remove），session 一次性消费。
 ///
 /// **单次锁原子操作**（2026-07-17 修复瑕疵 2）：原先 get + remove 分两次 lock 存在
 /// TOCTOU 间隙，合并为单次锁 + remove。
