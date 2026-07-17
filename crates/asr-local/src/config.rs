@@ -14,8 +14,8 @@ pub use octopus_infra::db::{parse_model_spec, AsrConfig, AsrSection, ModelEntry,
 /// 读取 ASR 模型配置（直接查 DB，无缓存）。
 ///
 /// **Task 3 后**：RUNTIME_CONFIG 缓存已移除——推理路径统一走 `resolve_engine_any`
-/// / `resolve_active_engine`（查 DB）。本函数仅供测试 / `resolve_engine_in_config`
-/// 内部使用，生产代码不再调用。
+/// / `resolve_active_engine`（查 DB）。本函数仅供测试 / `resolve_engine_in_config` /
+/// `cli show_config` 使用，推理路径不再调用。
 pub fn load_config() -> Result<AsrConfig> {
     crate::db::ensure_db()?;
     crate::db::load_models()
