@@ -203,12 +203,13 @@ impl OpusMTEngine {
     }
 }
 
+#[async_trait::async_trait]
 impl TranslationEngine for OpusMTEngine {
     fn name(&self) -> &str {
         "opus-mt"
     }
 
-    fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> Result<String> {
+    async fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> Result<String> {
         // 规范化 CJK 邻接空格：opus-mt tokenizer (WhitespaceSplit + Metaspace) 对带空格
         // 中文会在句中产生独立 ▁ token，偏离训练分布（中文为连续字符）→ decoder 过早 EOS
         // → 译文截断为第一段（如「要看 猫…」只译出 "It depends."）。详见 normalize_cjk_spaces。

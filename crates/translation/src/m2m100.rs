@@ -196,12 +196,13 @@ impl M2M100Engine {
     }
 }
 
+#[async_trait::async_trait]
 impl TranslationEngine for M2M100Engine {
     fn name(&self) -> &str {
         "m2m100-418M"
     }
 
-    fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
+    async fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
         if text.trim().is_empty() {
             return Ok(String::new());
         }
