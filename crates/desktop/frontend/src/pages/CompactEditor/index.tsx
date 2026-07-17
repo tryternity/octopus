@@ -240,6 +240,10 @@ function CompactEditor() {
         if (translatingSessionsRef.current.size === 0) {
           setTranslating(false);
         }
+        // 疑点 A 根治（2026-07-17）：listener 主路径（无论 key 是否存在）都通知后端
+        // 丢弃缓存。done 已到达 → 后端缓存使命完成，立即释放。避免稳态常驻 64 条至 LRU 挤出。
+        // fire-and-forget：失败不影响功能（后端 64 上限兜底）。
+        invoke("forget_translate_result", { sessionId: p.sessionId }).catch(() => {});
         if (!key) {
           // R2 兜底：done 到达但映射未建立 → 缓存为 done 终止态，待 open-tab 写入 Map 时回放
           pendingTranslateEventsRef.current.set(p.sessionId, { text: p.text, done: true });

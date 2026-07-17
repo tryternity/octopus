@@ -957,8 +957,11 @@ const TRANSLATE_RESULTS_MAX: usize = 64;
 /// 缓存 session 的 done 终止态译文。仅 done 时调用（progress 不缓存）。
 fn cache_translate_done(session_id: &str, text: &str) {
     let mut map = TRANSLATE_RESULTS.lock().unwrap();
-    // session 严格一次性：超上限时删任意一个都安全（被删的 session 主路径靠 listener 已收 done）。
-    // 非真 LRU 但无害——缓存项是一次性消耗品，取走即删（见 get_translate_result）。
+    // 超上限随机删一个。非真 LRU，理论上可能删到尚未被 forget/get 的活跃 session
+    // （极低概率：需 64 积压 + 挤出命中未取走条目）。但 listener 主路径会调
+    // forget_translate_result 清理，加上翻译完成频率低（用户手动触发），稳态
+    // 远低于 64 上限，挤出几乎不发生。即使发生，listener 主路径已显示译文，
+    // 仅影响后续 invoke 兜底查询。
     if map.len() >= TRANSLATE_RESULTS_MAX && !map.contains_key(session_id) {
         if let Some(first_key) = map.keys().next().cloned() {
             map.remove(&first_key);
@@ -980,6 +983,20 @@ fn cache_translate_done(session_id: &str, text: &str) {
 #[tauri::command]
 pub fn get_translate_result(session_id: String) -> Option<CachedTranslateResult> {
     TRANSLATE_RESULTS.lock().unwrap().remove(&session_id)
+}
+
+/// 通知后端丢弃某 session 的翻译结果缓存——listener 正常收到 done 时调用。
+///
+/// **为何需要**（2026-07-17 疑点 A 根治）：`get_translate_result` 仅在 invoke 兜底
+/// 分支调用，listener 主路径（key 存在、直接 setTabs）不查缓存 → 后端 done 条目
+/// 永不被取走，稳态常驻 64 条至 LRU 挤出。此命令让 listener 主路径显式清理——
+/// "我已收到 done，你丢弃"幂等语义。session_id 不存在时静默成功。
+///
+/// 与 `get_translate_result` 的区别：get 返回值（兜底场景需要显示译文），
+/// forget 纯清理（listener 已显示，只需后端释放）。
+#[tauri::command]
+pub fn forget_translate_result(session_id: String) {
+    TRANSLATE_RESULTS.lock().unwrap().remove(&session_id);
 }
 
 /// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。
