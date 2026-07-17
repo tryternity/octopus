@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { Undo2, Redo2, ZoomIn, ZoomOut, Eraser, Check, Save, Eye, Columns2, FileText, Languages, Loader2 } from "lucide-react";
@@ -89,8 +89,9 @@ export function MarkdownPane({
     return () => { if (clearTimerRef.current) clearTimeout(clearTimerRef.current); };
   }, []);
 
-  // charCount 仅在 text 变化时重算（避免大文档逐键 O(n) spread）
-  const charCount = useMemo(() => [...text].length, [text]);
+  // charCount 用 UTF-16 单元数（text.length）——避免 [...text] 每键 O(n) 展开
+  // 码点数组。大文档逐键 GC 压力可观。emoji 计数差异（如 😀 算 2）用户无感。
+  const charCount = text.length;
 
   // ── Splitter 拖拽逻辑（内联，CM6 不卸载）──
   const onDividerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
