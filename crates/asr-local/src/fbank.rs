@@ -30,7 +30,7 @@ static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
 });
 
 /// 80-bin log-fbank + LFR(m=7/n=6) → [T,560]（原版 SenseVoice 用）。
-pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
+pub fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
     let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97)?;
     let lfr = feature::apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
@@ -50,7 +50,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
 /// FireRed 配置 2026-07-09 经 FireRedTeam/FireRedASR `data/asr_feat.py` 确认（knf 默认
 /// preemph=0.97 / povey 窗，asr_feat.py 仅覆盖 dither/num_bins/snip_edges），由旧行为
 /// preemph=0.0+hamming 改为 0.97+povey 对齐训练。
-pub(crate) fn compute_fbank(samples: &[f32], window: &[f32], preemph_coeff: f32) -> Result<Array2<f32>> {
+pub fn compute_fbank(samples: &[f32], window: &[f32], preemph_coeff: f32) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
     } else {
@@ -134,3 +134,8 @@ pub(crate) fn compute_fbank(samples: &[f32], window: &[f32], preemph_coeff: f32)
 // apply_lfr 已抽取至 feature.rs
 
 // hamming_window / mel_filterbank_fbank / apply_lfr 已抽取至 feature.rs（C1 修复）
+
+// ── 性能基准用 re-export（z_perf Step 0a，2026-07-17）────────────────────────
+// feature 模块为 pub(crate)，但 bench（外部 crate）需要构造窗函数。re-export 最小集，
+// 不改 feature 模块可见性，避免污染对外 API。
+pub use crate::feature::{apply_lfr, hamming_window, povey_window};
