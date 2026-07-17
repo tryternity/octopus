@@ -161,7 +161,7 @@ pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
 |---|---|---|
 | **推理获取模型**（各引擎 transcribe / LLM polish / OCR / 翻译）| 读 cfg.asr_engine / load_llm_model(cfg.polish_llm) 等 | `resolve_active_engine(domain)` |
 | **tray 显示引擎名** | `config.asr_engine` → fmt_engine_label | `resolve_active_engine("asr").name` |
-| **管理页"当前使用"高亮** | build_*_options 比对 cfg.asr_engine 等 | `resolve_active_engine(domain).name` 比对 |
+| **管理页"当前使用"高亮** | build_*_options 比对 cfg.asr_engine 等 | build_*_options 直接用 DB 行 `is_enabled` 字段（每行自带激活态，不再外部传 current 字符串匹配 name——同名不同 provider 不串扰） |
 | **流式判定**（is_streaming_engine）| resolve_active_engine(&cfg.asr_engine) | `resolve_active_engine("asr").entry.is_streaming` |
 | **设置页激活操作** | set_config asr_engine/polish_llm/... | `switch_active_model(domain, id)` + `load_active_engine(domain)` |
 
@@ -299,8 +299,8 @@ switch_active_model，wrapper 仅遗留兼容）：按 name 查 DB 取 id → �
 
 **desktop**（调用层，统一走 resolve_active_engine）：
 - `config.rs`（`is_streaming_engine` 改 `resolve_active_engine("asr").entry.is_streaming`；`llm_config_ignore_mode` 改 `resolve_active_engine("llm")` 转 CompatibleLlmConfig）
-- `settings_commands.rs`（get_config 的 asr_engines/llm_models/ocr_models current 判定改 resolve_active_engine + apply_config_value 删 4 case）
-- `runtime_config.rs`（build_*_options current 用 resolve_active_engine(domain)；switch_* 命令统一为 switch_active_model）
+- `settings_commands.rs`（get_config 的 asr_engines/llm_models/ocr_models current 判定：build_*_options 内部直接读 DB 行 is_enabled，不再外部传 current 字符串 + apply_config_value 删 4 case）
+- `runtime_config.rs`（build_*_options 去掉 current 参数，用 DB 行 is_enabled 标 current；switch_* 命令统一为 switch_active_model）
 - `model_commands.rs`（add/edit/remove cloud model 写 is_available）
 - `action_bar_commands.rs`（翻译策略 resolve 用 resolve_active_engine("translate")）
 - `translation_commands.rs`（translate_status 用 resolve_active_engine）

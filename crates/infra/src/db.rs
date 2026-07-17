@@ -1050,29 +1050,37 @@ pub fn get_model_flags(id: i64) -> Result<(bool, bool)> {
 
 /// 批量查 ASR 域所有模型的 id / model_name / source / secret_key / is_streaming / is_thinking。
 /// 替代 N+1 的 get_model_id + get_model_source_key + get_model_flags。
+/// Task 2 后补 provider/category 字段（同名不同 provider 的 ASR 模型需精确匹配）+ is_enabled。
 pub struct ModelDetailRow {
     pub id: i64,
     pub model_name: String,
+    pub provider: String,
+    pub category: String,
     pub source: String,
     pub secret_key: String,
     pub is_streaming: bool,
     pub is_thinking: bool,
+    /// DB models.is_enabled（激活态）。供前端标 current（每域仅 1 个=1）。
+    pub is_enabled: bool,
 }
 
 pub fn list_asr_model_details() -> Result<Vec<ModelDetailRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, model_name, source, secret_key, is_streaming, is_thinking
+            "SELECT id, model_name, provider, category, source, secret_key, is_streaming, is_thinking, is_enabled
              FROM models WHERE domain='asr'",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ModelDetailRow {
                 id: r.get(0)?,
                 model_name: r.get(1)?,
-                source: r.get(2)?,
-                secret_key: r.get(3)?,
-                is_streaming: r.get::<_, i32>(4)? != 0,
-                is_thinking: r.get::<_, i32>(5)? != 0,
+                provider: r.get(2)?,
+                category: r.get(3)?,
+                source: r.get(4)?,
+                secret_key: r.get(5)?,
+                is_streaming: r.get::<_, i32>(6)? != 0,
+                is_thinking: r.get::<_, i32>(7)? != 0,
+                is_enabled: r.get::<_, i32>(8)? != 0,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -1089,13 +1097,22 @@ pub struct AsrEngineRow {
     pub category: String,
     pub description: String,
     pub is_local: bool,
+    /// Task 2 后补：DB 行 id（供前端 switch_active_model）。
+    pub id: i64,
+    pub source: String,
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+    /// DB models.is_enabled（激活态）。
+    pub is_enabled: bool,
 }
 
 /// 列出 ASR 域所有模型（管理列表用）。不过滤 is_enabled，不分 local/cloud。
 pub fn list_all_asr_engines() -> Result<Vec<AsrEngineRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT model_name, provider, category, description, is_local
+            "SELECT model_name, provider, category, description, is_local,
+                    id, source, secret_key, is_streaming, is_thinking, is_enabled
              FROM models WHERE domain='asr'",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -1105,6 +1122,12 @@ pub fn list_all_asr_engines() -> Result<Vec<AsrEngineRow>> {
                 category: r.get(2)?,
                 description: r.get(3)?,
                 is_local: r.get::<_, i32>(4)? != 0,
+                id: r.get(5)?,
+                source: r.get(6)?,
+                secret_key: r.get(7)?,
+                is_streaming: r.get::<_, i32>(8)? != 0,
+                is_thinking: r.get::<_, i32>(9)? != 0,
+                is_enabled: r.get::<_, i32>(10)? != 0,
             })
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
@@ -1440,12 +1463,14 @@ pub struct OcrModelInfo {
     pub model_name: String,
     pub description: String,
     pub is_local: bool,
+    /// Task 2 后：DB models.is_enabled（激活态，每域仅 1 个=1）。供前端标 current。
+    pub is_enabled: bool,
 }
 
 /// 列出所有 OCR 模型（domain='ocr'，含未就绪的——前端列表需展示全部供下载/切换）。
 fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT model_name, description, is_local FROM models
+        "SELECT model_name, description, is_local, is_enabled FROM models
          WHERE domain='ocr'",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1453,6 +1478,7 @@ fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
             model_name: row.get::<_, String>(0)?,
             description: row.get::<_, String>(1)?,
             is_local: row.get::<_, i32>(2)? != 0,
+            is_enabled: row.get::<_, i32>(3)? != 0,
         })
     })?;
     let mut list = Vec::new();

@@ -63,33 +63,32 @@ fn mask_key(key: &str) -> String {
 /// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
 /// current_effective 为空时视作兜底。current 可能为 3-part spec（"provider:category:name"）或裸名，
 /// 统一用 parse_model_spec 提取裸 model_name 后比较。
-fn build_asr_options(
-    current_effective: &str,
-    engines: Vec<octopus_asr_local::config::EngineInfo>,
-) -> Vec<EngineOption> {
-    let effective_bare = octopus_infra::db::parse_model_spec(current_effective).model_name();
-    let effective = if effective_bare.is_empty() {
-        FALLBACK_ASR_ENGINE
-    } else {
-        effective_bare
-    };
+/// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 直接用
+/// `EngineInfo.is_enabled` 字段（来自 DB models.is_enabled）。
+///
+/// Task 2 后：不再接收外部 `current_effective` spec 字符串做 name 匹配——EngineInfo
+/// 自带 is_enabled，直接用它标 current。兜底 zipformer-small-ctc 的 current 判定：
+/// DB 无任何 ASR is_enabled=1 时，fallback 引擎视为当前（与 resolve_active_engine
+/// 的 ASR 兜底语义对称）。
+fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec<EngineOption> {
+    // 是否有 DB 激活的 ASR 模型（is_enabled=1）
+    let has_active = engines.iter().any(|e| e.is_enabled);
+
     let mut options = Vec::with_capacity(engines.len() + 1);
-    // 兜底固定第一
+    // 兜底固定第一。current：DB 无激活时 fallback 引擎视为当前。
     options.push(EngineOption {
         id: 0,
         name: FALLBACK_ASR_ENGINE.to_string(),
         provider: "local".to_string(),
         category: "zipformer".to_string(),
         is_local: true,
-        current: effective == FALLBACK_ASR_ENGINE,
+        current: !has_active,
         label: engine_label(true, "zipformer", "local", FALLBACK_ASR_ENGINE),
         source: String::new(),
         secret_key: String::new(),
         is_streaming: true,
         is_thinking: false,
     });
-    // 批量查 DB 所有 ASR 模型详情（替代 N+1 查询）
-    let db_details = octopus_infra::db::list_asr_model_details().unwrap_or_default();
 
     // DB 模型（跳过同名兜底，避免重复）
     for e in engines {
@@ -97,24 +96,18 @@ fn build_asr_options(
             continue;
         }
         let cat = octopus_asr_local::config::category_label(e.category);
-        // 从批量查询结果中查找匹配
-        let detail = db_details.iter().find(|d| d.model_name == e.name);
-        let (id, source, secret_key, is_streaming, is_thinking) = match detail {
-            Some(d) => (d.id, d.source.clone(), mask_key(&d.secret_key), d.is_streaming, d.is_thinking),
-            None => (0i64, String::new(), String::new(), false, false),
-        };
         options.push(EngineOption {
-            id,
-            current: e.name == effective,
+            id: e.id,
+            current: e.is_enabled,
             name: e.name.clone(),
             provider: e.provider.clone(),
             category: cat.to_string(),
             is_local: e.is_local,
             label: engine_label(e.is_local, cat, &e.provider, &e.name),
-            source,
-            secret_key,
-            is_streaming,
-            is_thinking,
+            source: e.source.clone(),
+            secret_key: mask_key(&e.secret_key),
+            is_streaming: e.is_streaming,
+            is_thinking: e.is_thinking,
         });
     }
     options
@@ -207,32 +200,25 @@ pub struct OcrOption {
     pub is_local: bool,
 }
 
-/// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = polish_llm 置空），
-/// 其后为 DB 启用的 LLM。current 按 polish_llm 裸 model_name 标记；current 无效（空 / 不在 DB）
-/// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 3-part spec
-/// （"provider:category:model_name"）或裸名，统一用 parse_model_spec 提取 model_name 后比较。
-fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
-    let parsed = octopus_infra::db::parse_model_spec(current);
-    let current_bare = parsed.model_name();
-    // current 可能是 3-part spec（"provider:category:model_name"）或裸名。
-    // 用完整 provider+model_name 精确匹配，避免同 model_name 不同 provider 都标 current。
-    let (cur_provider, cur_cat) = match &parsed {
-        octopus_infra::db::ModelSpec::Full { provider, category, .. } => {
-            (Some(*provider), Some(*category))
-        }
-        _ => (None, None),
-    };
-    // current 有效 = 裸名非空且在 DB 列表中；否则回退无模型（首项 current）。
-    let current_valid = !current_bare.is_empty() && llms.iter().any(|m| m.model_name == current_bare);
+/// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = 无激活），
+/// 其后为 DB 可用的 LLM。current 直接用 DB 行的 `is_enabled` 字段（每域仅 1 个=1，
+/// 无激活时首项「不选择模型」标 current）。
+///
+/// Task 2 后：不再接收外部 `current` spec 字符串做 name 匹配——DB 行自带 is_enabled，
+/// 直接用它标 current。避免同 model_name 不同 provider 都标 current 的 bug
+/// （如 aliyun:deepseek-v4-flash 激活时 deepseek:deepseek-v4-flash 不应被标 current）。
+fn build_llm_options(llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
+    // 是否有激活模型（is_enabled=1）——无激活时首项「不选择模型」标 current
+    let has_active = llms.iter().any(|m| m.is_enabled);
     let mut options = Vec::with_capacity(llms.len() + 1);
-    // 首项：「不选择模型」（name 空）。current 无效时为选中态。
+    // 首项：「不选择模型」（name 空）。无激活时为选中态。
     options.push(LlmOption {
         id: 0,
         name: String::new(),
         provider: String::new(),
         category: String::new(),
         is_local: false,
-        current: !current_valid,
+        current: !has_active,
         label: "不选择模型".to_string(),
         source: String::new(),
         secret_key: String::new(),
@@ -241,15 +227,9 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
     });
     for m in llms {
         let label = engine_label(m.is_local, &m.category, &m.provider, &m.model_name);
-        // 精确匹配：有 3-part 信息时用 provider+model_name，否则用裸名
-        let is_current = if let (Some(p), _) = (cur_provider, cur_cat) {
-            m.model_name == current_bare && m.provider == p
-        } else {
-            m.model_name == current_bare
-        };
         options.push(LlmOption {
             id: m.id,
-            current: is_current,
+            current: m.is_enabled,
             label,
             name: m.model_name.clone(),
             provider: m.provider.clone(),
@@ -266,25 +246,23 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
 
 /// 公开包装（供 settings_commands 调用）。
 pub fn build_asr_options_public(
-    current_effective: &str,
     engines: Vec<octopus_asr_local::config::EngineInfo>,
 ) -> Vec<EngineOption> {
-    build_asr_options(current_effective, engines)
+    build_asr_options(engines)
 }
 
-pub fn build_llm_options_public(
-    current: &str,
-    llms: Vec<octopus_infra::db::LlmModelInfo>,
-) -> Vec<LlmOption> {
-    build_llm_options(current, llms)
+pub fn build_llm_options_public(llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
+    build_llm_options(llms)
 }
 
-/// 构造 OCR 选项列表（纯逻辑）：DB 启用的 OCR 模型，current 按裸 model_name 标记。
+/// 构造 OCR 选项列表（纯逻辑）：DB 可用的 OCR 模型，current 直接用 DB 行的 `is_enabled`。
 /// 不做「不选择」首项（OCR 必须有一个）。label 优先 description，空则 model_name。
-fn build_ocr_options(current: &str, ocrs: Vec<octopus_infra::db::OcrModelInfo>) -> Vec<OcrOption> {
+///
+/// Task 2 后：不再接收外部 `current` 字符串做 name 匹配——DB 行自带 is_enabled。
+fn build_ocr_options(ocrs: Vec<octopus_infra::db::OcrModelInfo>) -> Vec<OcrOption> {
     ocrs.into_iter()
         .map(|m| OcrOption {
-            current: m.model_name == current,
+            current: m.is_enabled,
             label: if m.description.is_empty() {
                 m.model_name.clone()
             } else {
@@ -298,11 +276,8 @@ fn build_ocr_options(current: &str, ocrs: Vec<octopus_infra::db::OcrModelInfo>) 
 }
 
 /// 公开包装（供 settings_commands 调用）。
-pub fn build_ocr_options_public(
-    current: &str,
-    ocrs: Vec<octopus_infra::db::OcrModelInfo>,
-) -> Vec<OcrOption> {
-    build_ocr_options(current, ocrs)
+pub fn build_ocr_options_public(ocrs: Vec<octopus_infra::db::OcrModelInfo>) -> Vec<OcrOption> {
+    build_ocr_options(ocrs)
 }
 
 // ── Tauri 命令 ──
@@ -335,12 +310,9 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 
 #[tauri::command]
 pub fn list_asr_engines(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
-    // current 从激活缓存取（resolve_active_engine("asr").name）。
-    let current_raw = octopus_asr_local::config::resolve_active_engine("asr")
-        .map(|r| r.name)
-        .unwrap_or_default();
+    // Task 2 后：current 直接用 DB 行的 is_enabled（build_asr_options 内部处理）。
     let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
-    Ok(build_asr_options(&current_raw, engines))
+    Ok(build_asr_options(engines))
 }
 
 /// 后台预热本地 ASR 引擎（审查 三2）。switch_active_model 切 ASR 引擎后调用——
@@ -487,15 +459,12 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
     octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
 }
 
-/// 列出所有启用的 LLM 润色模型，并标记当前激活的（is_enabled=1）。
+/// 列出所有可用的 LLM 润色模型，并标记当前激活的（DB is_enabled=1）。
 #[tauri::command]
 pub fn list_llm_models(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
-    // current 从激活缓存取（resolve_active_engine("llm").name）。
-    let current = octopus_asr_local::config::resolve_active_engine("llm")
-        .map(|r| r.name)
-        .unwrap_or_default();
+    // Task 2 后：current 直接用 DB 行的 is_enabled（build_llm_options 内部处理）。
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
-    Ok(build_llm_options(&current, llms))
+    Ok(build_llm_options(llms))
 }
 
 /// 切换润色模型（旧命令，保留前端兼容）。
@@ -546,134 +515,96 @@ mod tests {
     #[test]
     fn build_asr_options_injects_fallback_first_and_dedups() {
         use octopus_asr_local::config::{EngineCategory, EngineInfo};
-        // 场景 1：DB 无兜底 → 注入到首位
+        // 场景 1：whisper-small 激活（is_enabled=true）→ 兜底非 current，whisper-small current
         let engines = vec![
-            EngineInfo { name: "whisper-small".into(), provider: "bigmodel".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            mk_engine("whisper-small", "bigmodel", EngineCategory::Whisper, false, true),
         ];
-        let opts = build_asr_options("whisper-small", engines);
+        let opts = build_asr_options(engines);
         assert_eq!(opts[0].name, "zipformer-small-ctc");
         assert_eq!(opts[0].label, "本地:zipformer:zipformer-small-ctc");
         assert!(opts[0].is_local);
-        assert!(!opts[0].current, "current=whisper-small，兜底非当前");
+        assert!(!opts[0].current, "有激活模型 → 兜底非当前");
         assert_eq!(opts[1].name, "whisper-small");
-        assert!(opts[1].current);
+        assert!(opts[1].current, "whisper-small is_enabled=true → current");
         // 远程引擎 label = "{provider}:{category}:{name}"（保留 provider 区分供应商）
         assert_eq!(opts[1].label, "bigmodel:whisper:whisper-small");
 
-        // 场景 2：current 为空 → 兜底为当前
-        let opts2 = build_asr_options("", vec![]);
+        // 场景 2：无激活模型（全 is_enabled=false）→ 兜底为当前
+        let opts2 = build_asr_options(vec![]);
         assert_eq!(opts2.len(), 1);
         assert_eq!(opts2[0].name, "zipformer-small-ctc");
-        assert!(opts2[0].current, "空 asr_engine → 兜底当前");
+        assert!(opts2[0].current, "无激活 → 兜底当前");
 
         // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
         let engines3 = vec![
-            EngineInfo { name: "zipformer-small-ctc".into(), provider: "local".into(), category: EngineCategory::Zipformer, is_local: true, description: String::new() },
-            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            mk_engine("zipformer-small-ctc", "local", EngineCategory::Zipformer, true, false),
+            mk_engine("whisper-small", "local", EngineCategory::Whisper, false, true),
         ];
-        let opts3 = build_asr_options("zipformer-small-ctc", engines3);
+        let opts3 = build_asr_options(engines3);
         assert_eq!(
             opts3.iter().filter(|o| o.name == "zipformer-small-ctc").count(),
             1,
             "DB 已含兜底时去重"
         );
         assert_eq!(opts3[0].name, "zipformer-small-ctc");
-        assert!(opts3[0].current);
+        assert!(!opts3[0].current, "DB 有 whisper-small 激活，兜底非 current");
+        assert!(opts3[1].current, "whisper-small 激活");
     }
 
     #[test]
-    fn build_asr_options_current_in_spec_format() {
-        // asr_engine 存为 3-part spec 时，build_asr_options 应正确提取裸名标记 current
-        use octopus_asr_local::config::{EngineCategory, EngineInfo};
-        let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
-            name: name.into(), provider: "local".into(), category: cat, is_local, description: String::new(),
-        };
-        // local spec 格式
-        let opts = build_asr_options("local:zipformer:zipformer-small-ctc", vec![
-            mk("zipformer-small-ctc", EngineCategory::Zipformer, true),
-            mk("whisper-small", EngineCategory::Whisper, false),
-        ]);
-        assert!(opts[0].current, "local: 3-part spec 应正确标记 current");
-
-        // aliyun spec 格式（云端）
-        let opts2 = build_asr_options("aliyun:Fun-ASR:fun-asr-x", vec![
-            mk("zipformer-small-ctc", EngineCategory::Zipformer, true),
-            mk("whisper-small", EngineCategory::Whisper, false),
-            EngineInfo { name: "fun-asr-x".into(), provider: "aliyun".into(), category: EngineCategory::Aliyun, is_local: false, description: String::new() },
-        ]);
-        // opts2 = [注入兜底, whisper-small, fun-asr-x]
-        assert_eq!(opts2.len(), 3);
-        assert_eq!(opts2[2].name, "fun-asr-x");
-        assert!(opts2[2].current, "aliyun: 3-part spec 应正确标记 current");
+    fn build_asr_options_uses_is_enabled_not_name_match() {
+        // Task 2 后修复的核心 bug：同名不同 provider 的 ASR 模型按 DB is_enabled 标 current，
+        // 不再用 current spec 字符串按 name 匹配（避免同 name 都标 current）。
+        use octopus_asr_local::config::EngineCategory;
+        let engines = vec![
+            mk_engine("deepseek-v4-flash", "aliyun", EngineCategory::Aliyun, false, true),
+            mk_engine("deepseek-v4-flash", "deepseek", EngineCategory::Aliyun, false, false),
+        ];
+        let opts = build_asr_options(engines);
+        let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
+        assert_eq!(currents.len(), 1, "同 name 不同 provider 只应有一个 current（is_enabled 精确）");
+        assert_eq!(currents[0].provider, "aliyun", "current 应是 is_enabled=true 的 aliyun 行");
     }
 
     #[test]
     fn build_llm_options_marks_current_and_labels() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            mk_llm("glm-4-flashx", "bigmodel", "glm", false, true),
+            mk_llm("ollama-local", "ollama", "qwen", true, false),
         ];
-        let opts = build_llm_options("glm-4-flashx", llms);
+        let opts = build_llm_options(llms);
         assert_eq!(opts.len(), 3);
-        // opts[0] = 首项「不选择模型」，current 有效时非 current
+        // opts[0] = 首项「不选择模型」，有激活时非 current
         assert_eq!(opts[0].label, "不选择模型");
         assert_eq!(opts[0].name, "");
-        assert!(!opts[0].current, "current=glm 有效 → 无模型项非 current");
-        // opts[1] = glm current；远程 label = "{provider}:{category}:{name}"
+        assert!(!opts[0].current, "有激活 → 无模型项非 current");
+        // opts[1] = glm current（is_enabled=true）；远程 label = "{provider}:{category}:{name}"
         assert!(opts[1].current);
         assert_eq!(opts[1].label, "bigmodel:glm:glm-4-flashx");
-        // opts[2] = ollama；本地 label = "本地:{category}:{name}"
+        // opts[2] = ollama（is_enabled=false）；本地 label = "本地:{category}:{name}"
         assert!(!opts[2].current);
         assert_eq!(opts[2].label, "本地:qwen:ollama-local");
     }
 
     #[test]
-    fn build_llm_options_current_in_spec_format() {
-        // polish_llm 存为 3-part spec 时，build_llm_options 应正确提取 model_name 标记 current
+    fn build_llm_options_none_current_when_no_active() {
+        // 需求：无激活 LLM（全 is_enabled=false）→ 首项「无模型」标 current。
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            mk_llm("glm-4-flashx", "bigmodel", "glm", false, false),
         ];
-        // 3-part spec 格式
-        let opts = build_llm_options("bigmodel:glm:glm-4-flashx", llms.clone());
-        assert!(!opts[0].current, "无模型项非 current");
-        assert!(opts[1].current, "3-part spec 应正确标记 current（glm）");
-
-        // ollama 本地 3-part spec
-        let opts2 = build_llm_options("ollama:qwen:ollama-local", llms);
-        assert!(opts2[2].current, "3-part spec 应正确标记 current（ollama）");
-    }
-
-    #[test]
-    fn build_llm_options_none_current_when_polish_llm_empty_or_not_in_db() {
-        // 需求：polish_llm 空 / 裸名不在 DB / spec 格式不命中 → 首项「无模型」标 current（DB 回退）。
-        use octopus_infra::db::LlmModelInfo;
-        let llms = vec![
-            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-        ];
-        // current 空 → 无模型 current
-        let opts = build_llm_options("", llms.clone());
-        assert!(opts[0].current, "空 polish_llm → 无模型 current");
+        let opts = build_llm_options(llms);
+        assert!(opts[0].current, "无激活 → 无模型 current");
         assert_eq!(opts[0].name, "");
         assert!(!opts[1].current);
-
-        // current 裸名不在 DB → 无模型 current
-        let opts2 = build_llm_options("ghost-model", llms.clone());
-        assert!(opts2[0].current, "polish_llm 不在 DB → 无模型 current");
-        assert!(!opts2[1].current);
-
-        // current 3-part spec 但 model_name 不命中 DB → 无模型 current
-        let opts3 = build_llm_options("bigmodel:glm:ghost-model", llms);
-        assert!(opts3[0].current, "3-part spec 但不命中 DB → 无模型 current");
     }
 
     #[test]
     fn validate_switch_allows_fallback_even_when_absent() {
-        use octopus_asr_local::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::EngineCategory;
         let engines = vec![
-            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            mk_engine("whisper-small", "local", EngineCategory::Whisper, false, false),
         ];
         // 兜底名即使不在 engines 也允许
         assert!(validate_switch("zipformer-small-ctc", &engines).is_ok());
@@ -721,45 +652,32 @@ mod tests {
         assert_eq!(resolve_translate_mode(Some("12s".into())), "12s");
     }
 
-    // ── TDD 防御：provider 精确匹配（修复 bug：同名多 provider 都标 current）──
+    // ── Task 2 后：同名不同 provider 只标一个 current（DB is_enabled 精确）──
 
-    /// 同 model_name 不同 provider，3-part spec 只标一个 current。
+    /// 同 model_name 不同 provider，只 is_enabled=true 的标 current。
+    /// 这正是用户报告的 bug 场景（aliyun:deepseek-v4-flash 激活时 deepseek:deepseek-v4-flash
+    /// 不应被标 current）。
     #[test]
-    fn build_llm_options_provider_precise_current() {
+    fn build_llm_options_is_enabled_precise_current() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "aliyun".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-            LlmModelInfo { model_name: "deepseek-v4-flash".into(), provider: "deepseek".into(), category: "deepseek".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            mk_llm("deepseek-v4-flash", "aliyun", "deepseek", false, true),
+            mk_llm("deepseek-v4-flash", "deepseek", "deepseek", false, false),
         ];
-        // 当前选中 aliyun 的
-        let opts = build_llm_options("aliyun:deepseek:deepseek-v4-flash", llms);
+        let opts = build_llm_options(llms);
         let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
         assert_eq!(currents.len(), 1, "同名不同 provider 只应有一个 current");
-        assert_eq!(currents[0].provider, "aliyun", "current 应精确匹配 aliyun provider");
-    }
-
-    /// 裸名（无 provider 信息）向后兼容：同 model_name 多 provider 时都标 current（旧行为）。
-    #[test]
-    fn build_llm_options_bare_name_matches_all_providers() {
-        use octopus_infra::db::LlmModelInfo;
-        let llms = vec![
-            LlmModelInfo { model_name: "test-model".into(), provider: "a".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-            LlmModelInfo { model_name: "test-model".into(), provider: "b".into(), category: "cat".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
-        ];
-        // 裸名（无 3-part spec）→ 匹配所有同名
-        let opts = build_llm_options("test-model", llms);
-        let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
-        assert_eq!(currents.len(), 2, "裸名无 provider 信息时，同名都标 current（向后兼容）");
+        assert_eq!(currents[0].provider, "aliyun", "current 应是 is_enabled=true 的 aliyun 行");
     }
 
     /// EngineOption 包含 provider 字段。
     #[test]
     fn engine_option_has_provider_field() {
-        use octopus_asr_local::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::EngineCategory;
         let engines = vec![
-            EngineInfo { name: "whisper-small".into(), provider: "aliyun".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            mk_engine("whisper-small", "aliyun", EngineCategory::Whisper, false, false),
         ];
-        let opts = build_asr_options("whisper-small", engines);
+        let opts = build_asr_options(engines);
         assert_eq!(opts[1].provider, "aliyun", "EngineOption 应包含 provider 字段");
     }
 
@@ -768,9 +686,73 @@ mod tests {
     fn llm_option_has_provider_field() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { model_name: "test".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false, id: 0, source: String::new(), secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false },
+            mk_llm("test", "bigmodel", "glm", false, false),
         ];
-        let opts = build_llm_options("test", llms);
+        let opts = build_llm_options(llms);
         assert_eq!(opts[1].provider, "bigmodel", "LlmOption 应包含 provider 字段");
+    }
+
+    /// build_ocr_options 用 DB is_enabled 标 current（Task 2 后）。
+    #[test]
+    fn build_ocr_options_uses_is_enabled_for_current() {
+        let ocrs = vec![
+            octopus_infra::db::OcrModelInfo {
+                model_name: "PP-OCRv6-small".into(), description: "v6".into(), is_local: true, is_enabled: true,
+            },
+            octopus_infra::db::OcrModelInfo {
+                model_name: "PP-OCRv5".into(), description: "v5".into(), is_local: true, is_enabled: false,
+            },
+        ];
+        let opts = build_ocr_options(ocrs);
+        assert_eq!(opts.len(), 2);
+        assert!(opts.iter().find(|o| o.name == "PP-OCRv6-small").unwrap().current);
+        assert!(!opts.iter().find(|o| o.name == "PP-OCRv5").unwrap().current);
+    }
+
+    // ── 测试 helper：减少 EngineInfo / LlmModelInfo 字面量样板 ──
+
+    /// 构造 EngineInfo（默认 id=0, source/secret_key 空, is_streaming=false, is_thinking=false）。
+    fn mk_engine(
+        name: &str,
+        provider: &str,
+        category: octopus_asr_local::config::EngineCategory,
+        is_local: bool,
+        is_enabled: bool,
+    ) -> octopus_asr_local::config::EngineInfo {
+        octopus_asr_local::config::EngineInfo {
+            name: name.into(),
+            provider: provider.into(),
+            category,
+            description: String::new(),
+            is_local,
+            id: 0,
+            source: String::new(),
+            secret_key: String::new(),
+            is_streaming: false,
+            is_thinking: false,
+            is_enabled,
+        }
+    }
+
+    /// 构造 LlmModelInfo（默认 id=0, source/secret_key 空, is_streaming=false, is_thinking=false）。
+    fn mk_llm(
+        model_name: &str,
+        provider: &str,
+        category: &str,
+        is_local: bool,
+        is_enabled: bool,
+    ) -> octopus_infra::db::LlmModelInfo {
+        octopus_infra::db::LlmModelInfo {
+            model_name: model_name.into(),
+            provider: provider.into(),
+            category: category.into(),
+            is_local,
+            id: 0,
+            source: String::new(),
+            secret_key: String::new(),
+            is_streaming: false,
+            is_thinking: false,
+            is_enabled,
+        }
     }
 }

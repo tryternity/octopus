@@ -258,6 +258,16 @@ pub struct EngineInfo {
     pub category: EngineCategory,
     pub description: String,
     pub is_local: bool,
+    /// DB 行 id（Task 2 后补，供前端 switch_active_model(domain, id) 用）。
+    pub id: i64,
+    /// DB models.source（Task 2 后补，供前端展示 / 编辑回填）。
+    pub source: String,
+    /// DB models.secret_key（Task 2 后补，脱敏后供前端编辑回填）。
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+    /// DB models.is_enabled（激活态，每域仅 1 个=1）。供前端标 current。
+    pub is_enabled: bool,
 }
 
 /// EngineCategory → category 字符串（与 DB models.category 一致，用于排序、显示、构造 spec）。
@@ -313,6 +323,12 @@ pub fn list_engines_from_db() -> Result<Vec<EngineInfo>> {
                 category: cat,
                 description: r.description,
                 is_local: r.is_local,
+                id: r.id,
+                source: r.source,
+                secret_key: r.secret_key,
+                is_streaming: r.is_streaming,
+                is_thinking: r.is_thinking,
+                is_enabled: r.is_enabled,
             })
         })
         .collect();
@@ -656,11 +672,17 @@ mod tests {
     #[test]
     fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
         use EngineCategory::*;
+        // mk_engine_info helper 局部构造（避免每个 case 写全 11 字段）
+        let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
+            name: name.into(), provider: "local".into(), category: cat, is_local,
+            description: String::new(), id: 0, source: String::new(),
+            secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false,
+        };
         let mut engines = vec![
-            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: Whisper, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-multi".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
-            EngineInfo { name: "paraformer-x".into(), provider: "local".into(), category: Paraformer, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-small-ctc".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
+            mk("whisper-small", Whisper, false),
+            mk("zipformer-multi", Zipformer, true),
+            mk("paraformer-x", Paraformer, false),
+            mk("zipformer-small-ctc", Zipformer, true),
         ];
         order_engine_infos(&mut engines);
         let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();

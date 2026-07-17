@@ -32,23 +32,15 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
         let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
         let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
-        // current 从 ACTIVE_ENGINES 缓存取激活引擎裸名。
-        let asr_current = octopus_asr_local::config::resolve_active_engine("asr")
-            .map(|r| r.name)
-            .unwrap_or_default();
-        let asr_engines = crate::runtime_config::build_asr_options_public(&asr_current, engines);
+        // Task 2 后：current 直接用 DB 行 is_enabled（build_asr_options 内部处理，
+        // 不再需要外部传 current spec 字符串做 name 匹配）。
+        let asr_engines = crate::runtime_config::build_asr_options_public(engines);
 
         let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
-        let llm_current = octopus_asr_local::config::resolve_active_engine("llm")
-            .map(|r| r.name)
-            .unwrap_or_default();
-        let llm_models = crate::runtime_config::build_llm_options_public(&llm_current, llms);
+        let llm_models = crate::runtime_config::build_llm_options_public(llms);
 
         let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
-        let ocr_current = octopus_asr_local::config::resolve_active_engine("ocr")
-            .map(|r| r.name)
-            .unwrap_or_default();
-        let ocr_models = crate::runtime_config::build_ocr_options_public(&ocr_current, ocrs);
+        let ocr_models = crate::runtime_config::build_ocr_options_public(ocrs);
 
         let microphones = list_microphones();
 

@@ -301,6 +301,47 @@ TranslateTab: `invoke("set_config", {key:"translate_engine"...})` → `invoke("s
 
 ---
 
+## Task 9: build_*_options current 判定改用 DB is_enabled（用户反馈 bug 修复）
+
+> 用户反馈：aliyun:aliyun:deepseek-v4-flash 激活时，deepseek:deepseek:deepseek-v4-flash 也被标「已激活」。
+> 根因：Task 3-6 改造时 build_llm_options/build_asr_options 仍接收外部 current spec 字符串按 name 匹配，
+> 同 name 不同 provider 都匹配。正确做法：DB 行自带 is_enabled（每行唯一），直接用它标 current。
+
+**Files:**
+- Modify: `crates/infra/src/db.rs`（AsrEngineRow / OcrModelInfo / ModelDetailRow 补 is_enabled + provider/category）
+- Modify: `crates/asr-local/src/config.rs`（EngineInfo 补全字段：id/source/secret_key/is_streaming/is_thinking/is_enabled）
+- Modify: `crates/desktop/src/runtime_config.rs`（3 个 build_*_options 去 current 参数，用 DB is_enabled 标 current）
+- Modify: `crates/desktop/src/settings_commands.rs`（get_config 调用点去 current 参数）
+
+- [x] **Step 1: infra 数据结构补字段**
+  - AsrEngineRow 补 id/source/secret_key/is_streaming/is_thinking/is_enabled（SQL 同步）
+  - OcrModelInfo 补 is_enabled（SQL 同步）
+  - ModelDetailRow 补 provider/category/is_enabled（SQL 同步）
+- [x] **Step 2: asr-local EngineInfo 补全字段**
+  - 原 EngineInfo 仅 5 字段（name/provider/category/description/is_local），补全到 11 字段
+    （含 id/source/secret_key/is_streaming/is_thinking/is_enabled）
+  - list_engines_from_db 从 AsrEngineRow 填充全字段
+- [x] **Step 3: runtime_config 3 个 build_*_options 重写**
+  - build_llm_options(llms)：去 current 参数，current = m.is_enabled
+  - build_asr_options(engines)：去 current_effective 参数，current = e.is_enabled
+    （build_asr_options 重回纯函数——不再调 list_asr_model_details，字段从 EngineInfo 取）
+  - build_ocr_options(ocrs)：去 current 参数，current = m.is_enabled
+  - 兜底 ASR current 判定：DB 无任何 is_enabled=1 时 fallback 视为当前（与 resolve_active_engine 对称）
+- [x] **Step 4: 调用点适配**
+  - list_asr_engines / list_llm_models 命令：不再传 current_raw
+  - settings_commands get_config：不再传 asr_current/llm_current/ocr_current
+- [x] **Step 5: 重写单测**
+  - mk_engine / mk_llm helper 减少 11 字段字面量样板
+  - build_llm_options_is_enabled_precise_current（同名不同 provider 回归测试，锁定 bug 修复）
+  - build_asr_options_uses_is_enabled_not_name_match（同名不同 provider 回归测试）
+  - build_ocr_options_uses_is_enabled_for_current
+  - 删过时的 build_*_options_current_in_spec_format（3-part spec 匹配逻辑已废弃）
+- [x] **Step 6: 验证 + Commit**
+
+**验证**：infra 126 / asr-local 123 / desktop 306 / cli 4 测试全过；release build 0 error 0 warning。
+
+---
+
 ## Self-Review 注意事项
 
 1. **load_config 双用途处理**（Task 2 Step 5 关键）：各引擎 transcribe（whisper/paraformer 等）直接 `load_config().asr.{section}.get(name)` 取配置。RUNTIME_CONFIG 改后只缓存激活的那一个——但 transcribe 实际只被 AsrEngineManager::switch_model 调（它已缓存引擎实例，name=激活的），所以单条缓存能命中。CLI `--model xxx` 显式指定路径需保留按 name 查任意引擎的能力（新增 get_model_by_name 或 load_config 查 is_available=1 全量）。**实现时先保留 load_config 原样观察编译**。
