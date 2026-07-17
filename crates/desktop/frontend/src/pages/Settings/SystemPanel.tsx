@@ -119,7 +119,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
   );
 
   return (
-    <div className="max-w-[640px] space-y-3">
+    <div className="space-y-3">
       {/* 顶部汇总 */}
       <div className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-muted/40 border border-border">
         {/* 双指标：macOS 主显 real（phys_footprint，真实占用），RSS 作辅；其他平台只显 RSS。 */}

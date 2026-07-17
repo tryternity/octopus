@@ -71,7 +71,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   const cloudRows = rows.filter((r) => !r.is_local);
 
   return (
-    <div className="space-y-0.5 max-w-[560px]">
+    <div className="space-y-0.5">
       {currentLabel && <CurrentBanner label={currentLabel} />}
 
       {localRows.length > 0 && (

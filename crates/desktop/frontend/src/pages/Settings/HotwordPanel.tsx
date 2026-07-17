@@ -258,7 +258,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const enabledTokens = new Set(dialect.split(',').map((s) => s.trim()));
 
   return (
-    <div className="max-w-[640px]">
+    <div>
       <div className="mb-5">
         <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">{t('settings.hotword.title')}</div>
         <h2 className="mt-0.5 text-lg font-semibold tracking-tight">{t('settings.hotword.header')}</h2>

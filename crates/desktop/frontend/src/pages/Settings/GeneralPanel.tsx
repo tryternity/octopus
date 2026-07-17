@@ -95,7 +95,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   ];
 
   return (
-    <div className="max-w-[640px]">
+    <div>
       <UnderlineTabs
         items={tabs}
         active={activeTab}

@@ -88,7 +88,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   // ── 查看视图（只读）──
   if (viewing) {
     return (
-      <div className="max-w-[640px] flex flex-col h-full">
+      <div className="flex flex-col h-full">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold">{viewing.title}</h3>
           <Button variant="ghost" size="icon-sm" onClick={() => setViewing(null)}>
@@ -108,7 +108,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   // ── 编辑器 ──
   if (editing) {
     return (
-      <div className="max-w-[640px] flex flex-col h-full">
+      <div className="flex flex-col h-full">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold">{isNew ? t("settings.prompts.newPrompt") : t("settings.prompts.editPrompt")}</h3>
           <Button variant="ghost" size="icon-sm" onClick={() => setEditing(null)}>
@@ -157,7 +157,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
 
   // ── 列表 ──
   return (
-    <div className="max-w-[640px]">
+    <div>
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-semibold">{t("settings.prompts.header")}</span>
         <Button variant="primary" size="default" onClick={newPrompt}>
