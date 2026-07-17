@@ -384,11 +384,13 @@ function CompactEditor() {
       return; // 已有缓存命中，无需再查后端
     }
     // R2 残余疑点根治：listener 未注册阶段（webview 加载中）Tauri fire-and-forget 丢弃了
-    // done 事件 → pendingTranslateEventsRef 无从记录。主动 invoke 后端缓存兜底——
-    // - 已完成 → 直接显示，session 结束
-    // - 进行中 → 显示当前累积，listener 已注册（本函数被调时 listener 必然就绪）
-    // - None → session 未开始或已清理，等 listener
-    invoke<{ text: string; done: boolean } | null>("get_translate_result", { sessionId }).then((r) => {
+    // done 事件 → pendingTranslateEventsRef 无从记录。主动 invoke 后端 done 缓存兜底——
+    // - 返回 Some → session 已 done，直接显示终止态译文 + 清理 session
+    // - 返回 None → session 未开始 / 进行中 / done 已被取走，等 listener（已注册必接管）
+    //
+    // 后端只缓存 done 终止态（不缓存 progress）——多段翻译时 progress 增量交给 listener
+    // 实时更新，避免 invoke 旧快照覆盖 listener 更新的译文（瑕疵 1）。
+    invoke<{ text: string } | null>("get_translate_result", { sessionId }).then((r) => {
       if (!r) return;
       // session 可能已被 done handler 清理——二次检查
       if (!translatingSessionsRef.current.has(sessionId)) return;
@@ -397,11 +399,9 @@ function CompactEditor() {
       );
       tabsRef.current = next;
       setTabs(next);
-      if (r.done) {
-        translatingSessionsRef.current.delete(sessionId);
-        if (translatingSessionsRef.current.size === 0) {
-          setTranslating(false);
-        }
+      translatingSessionsRef.current.delete(sessionId);
+      if (translatingSessionsRef.current.size === 0) {
+        setTranslating(false);
       }
     }).catch(() => { /* 后端查询失败不阻断——listener 仍可能收到事件 */ });
   }, []);
