@@ -409,11 +409,16 @@ pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
             return Err(format!("模型测试失败，无法保存：{}", test.message));
         }
     }
-    octopus_infra::db::insert_cloud_model(
+    let id = octopus_infra::db::insert_cloud_model(
         &input.domain, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())
+    ).map_err(|e| e.to_string())?;
+    // ASR 域：引擎下拉经 load_config() 的 RUNTIME_CONFIG 缓存，新增/编辑/删除后必须
+    // reload_models_config 刷新缓存，否则设置页列表不显示（要等重启）。
+    // llm/translate 域直接查 DB 无缓存，reload 无害但多余。
+    octopus_asr_local::config::reload_models_config();
+    Ok(id)
 }
 
 #[tauri::command]
@@ -437,12 +442,16 @@ pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), Str
         id, &input.provider, &input.category,
         &input.model_name, &input.source, &input.secret_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())
+    ).map_err(|e| e.to_string())?;
+    octopus_asr_local::config::reload_models_config();
+    Ok(())
 }
 
 #[tauri::command]
 pub fn remove_cloud_model(id: i64) -> Result<(), String> {
-    octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())
+    octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())?;
+    octopus_asr_local::config::reload_models_config();
+    Ok(())
 }
 
 #[tauri::command]
