@@ -60,6 +60,7 @@ impl StreamingZipformer {
                 secret_key: String::new(),
                 is_local: true,
                 is_enabled: true,
+                is_available: true,
                 is_streaming: true,
             };
             &entry_owned
@@ -1040,6 +1041,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+                is_available: true,
             is_streaming: true,
             description: "test".to_string(),
         };
@@ -1050,14 +1052,16 @@ mod tests {
 
         // 通过 config 临时添加 entry 来测试
         // 这里直接用 accept_samples 增量送入
-        let cfg = config::load_config().unwrap();
-        let zip_cfg = cfg.asr.zipformer.as_ref().unwrap();
-        // 用 DB 中第一个 zipformer entry（如果已配置）
+        // load_config 可能返回空（DB 无激活模型 is_enabled=1 AND is_available=1）——用 ok 兜底
+        let cfg = config::load_config().unwrap_or_default();
+        let zip_cfg = cfg.asr.zipformer.as_ref();
+        // 用 DB 中第一个 zipformer entry（如果已配置），否则用前面手动构造的 entry
         let test_entry = zip_cfg
-            .values()
-            .find(|e| e.source.contains("zh-int8-2025-06-30"))
-            .or_else(|| zip_cfg.values().next())
-            .cloned()
+            .and_then(|zc| zc
+                .values()
+                .find(|e| e.source.contains("zh-int8-2025-06-30"))
+                .or_else(|| zc.values().next())
+                .cloned())
             .unwrap_or(entry);
 
         let source = test_entry.source.clone();
@@ -1070,9 +1074,10 @@ mod tests {
         // 用 new(engine_name) 需要匹配 DB name，这里直接测试接口
         // 找到 DB name
         let engine_name = zip_cfg
-            .iter()
-            .find(|(_, e)| e.source.contains("zh-int8-2025-06-30"))
-            .map(|(k, _)| k.clone())
+            .and_then(|zc| zc
+                .iter()
+                .find(|(_, e)| e.source.contains("zh-int8-2025-06-30"))
+                .map(|(k, _)| k.clone()))
             .unwrap_or_else(|| "zipformer".to_string());
 
         let mut engine = StreamingZipformerTransducer::new(&engine_name).unwrap();

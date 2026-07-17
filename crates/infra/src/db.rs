@@ -47,7 +47,7 @@ pub struct ModelEntry {
     pub description: String,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
 pub struct AsrSection {
     pub whisper: Option<HashMap<String, ModelEntry>>,
     /// 原版 SenseVoice-Small（FunASR 4 输入 ONNX，非 sherpa 简化版）。provider='local' + category='sensevoice-orig' 路由入此。
@@ -80,7 +80,7 @@ pub struct AsrSection {
 }
 
 /// DB models 表配置（domain='asr'；由 db::load_models 构造）。
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize, Clone)]
 pub struct AsrConfig {
     pub asr: AsrSection,
 }

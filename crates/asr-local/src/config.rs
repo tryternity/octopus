@@ -343,6 +343,7 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+            is_available: true,
             is_streaming: true,
         },
     }
@@ -422,8 +423,13 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
     let app_cfg = load_app_config_cached();
 
     // qwen3-asr 含 CoreML 不支持的动态算子 → 跳过 EP，纯 CPU。
+    // 激活引擎从 DB is_enabled=1 查（Task 2 后改为走 ACTIVE_ENGINES 缓存）。
+    let active_cat = octopus_infra::db::get_active_model("asr")
+        .ok()
+        .flatten()
+        .and_then(|r| resolve_category(&r.provider, &r.category));
     let skip_coreml = app_cfg.asr_hardware_accelerated
-        && resolve_engine_category(&app_cfg.asr_engine) == Some(EngineCategory::Qwen3Asr);
+        && active_cat == Some(EngineCategory::Qwen3Asr);
     onnx_infra::apply_session_acceleration(builder, skip_coreml)
 }
 
@@ -440,6 +446,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+                is_available: true,
             is_streaming: false,
         }
     }
@@ -478,6 +485,7 @@ mod tests {
                 secret_key: String::new(),
                 is_local: false,
                 is_enabled: true,
+                is_available: true,
                 is_streaming: false,
             },
         );
