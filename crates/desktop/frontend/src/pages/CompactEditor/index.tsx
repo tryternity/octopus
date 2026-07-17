@@ -381,7 +381,29 @@ function CompactEditor() {
           setTranslating(false);
         }
       }
+      return; // 已有缓存命中，无需再查后端
     }
+    // R2 残余疑点根治：listener 未注册阶段（webview 加载中）Tauri fire-and-forget 丢弃了
+    // done 事件 → pendingTranslateEventsRef 无从记录。主动 invoke 后端缓存兜底——
+    // - 已完成 → 直接显示，session 结束
+    // - 进行中 → 显示当前累积，listener 已注册（本函数被调时 listener 必然就绪）
+    // - None → session 未开始或已清理，等 listener
+    invoke<{ text: string; done: boolean } | null>("get_translate_result", { sessionId }).then((r) => {
+      if (!r) return;
+      // session 可能已被 done handler 清理——二次检查
+      if (!translatingSessionsRef.current.has(sessionId)) return;
+      const next = tabsRef.current.map((t) =>
+        t.key === tabKey ? { ...t, translatedText: r.text } : t
+      );
+      tabsRef.current = next;
+      setTabs(next);
+      if (r.done) {
+        translatingSessionsRef.current.delete(sessionId);
+        if (translatingSessionsRef.current.size === 0) {
+          setTranslating(false);
+        }
+      }
+    }).catch(() => { /* 后端查询失败不阻断——listener 仍可能收到事件 */ });
   }, []);
 
   // 工具栏翻译按钮：fire-and-forget——立即切 contrast（译文 loading），后台翻译 emit 更新
