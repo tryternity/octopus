@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const SETTINGS_WIDTH: f64 = 960.0;
-const SETTINGS_HEIGHT: f64 = 600.0;
+const SETTINGS_HEIGHT: f64 = 700.0;
 const MIN_WIDTH: f64 = 640.0;
 const MIN_HEIGHT: f64 = 480.0;
 const WINDOW_LABEL: &str = "settings_window";
