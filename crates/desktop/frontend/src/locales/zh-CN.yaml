@@ -409,8 +409,8 @@ settings:
     acceptsAny: 文件 + 文本
     agentLabel: Agent
     scopeAll: 全部
-    scopeText: 选中文本
-    scopeFile: 选中文件(夹)
+    scopeText: 文本类
+    scopeFile: 文件类
     menuManage: 命令管理
     scriptRecords: 执行记录
     subItemsTitle: 子菜单项

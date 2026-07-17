@@ -544,7 +544,7 @@ interface MenuRowProps {
   isFirst: boolean;
   isLast: boolean;
   deleteConfirmId: number | null;
-  subCount?: number;        // 子项数（仅 submenu 主菜单显示徽章）
+  isMain?: boolean;         // 主菜单（加亮加粗）；子菜单不传
   onSelect?: () => void;    // 主菜单点击选中
   onMove: (dir: number) => void;
   onEdit: () => void;
@@ -578,17 +578,12 @@ const MenuRow = (props: MenuRowProps) => {
         {/* 标题行 */}
         <div className="flex items-center gap-1.5">
           <span className={cn(
-            "flex-1 truncate text-sm",
+            "flex-1 truncate",
+            props.isMain ? "text-sm font-semibold" : "text-sm",
             item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
           )}>
             {item.title}
           </span>
-          {/* 子项计数（仅 submenu + 有子项） */}
-          {item.actionType === "submenu" && props.subCount !== undefined && props.subCount > 0 && (
-            <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-              {props.subCount}
-            </span>
-          )}
         </div>
         {/* 类型 + 内置 小字行 */}
         <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
@@ -1174,8 +1169,8 @@ export default function ActionBarPanel({
         /* ── 左右分栏：左主菜单列表 + 右选中菜单详情/子菜单 ── */
         <div className="flex gap-4">
           {/* 左栏：主菜单列表 */}
-          <div className="flex w-64 shrink-0 flex-col gap-2">
-            {/* 场景过滤——分段控件 */}
+          <div className="flex w-52 shrink-0 flex-col gap-2">
+            {/* 场景过滤——分段控件。语义=该菜单项在什么场景下显示。 */}
             <Segmented
               items={[
                 { key: "all", label: t("settings.actionBar.scopeAll") },
@@ -1200,9 +1195,7 @@ export default function ActionBarPanel({
                   isFirst={i === 0}
                   isLast={i === mainItems.length - 1}
                   deleteConfirmId={deleteConfirmId}
-                  subCount={item.actionType === "submenu"
-                    ? items.filter((s) => s.parentId === item.id).length
-                    : undefined}
+                  isMain
                   onSelect={() => setSelectedMainMenuId(item.id)}
                   onMove={(dir) => handleMove(item.id, dir)}
                   onEdit={() => startEdit(item)}
