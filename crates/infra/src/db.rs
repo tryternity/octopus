@@ -1288,6 +1288,34 @@ pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
     })
 }
 
+/// 按 spec 精确查 ASR 域某可用模型（不限激活），返回完整 ModelRow。
+///
+/// 供 CLI `--model` 显式路径 / 多模型场景用——[`get_active_model`] 只返回激活的一个。
+/// spec 支持 3-part（`provider:category:model_name`）或裸 model_name：
+/// - 3-part：provider + category + model_name 精确匹配
+/// - 裸名：仅按 model_name 匹配（取第一条）
+pub fn get_asr_model_by_spec(provider: Option<&str>, category: Option<&str>, model_name: &str) -> Result<Option<ModelRow>> {
+    const SQL_FULL: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+             FROM models WHERE domain='asr' AND is_available=1 AND provider=?1 AND category=?2 AND model_name=?3 LIMIT 1";
+    const SQL_NAME: &str = "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
+             FROM models WHERE domain='asr' AND is_available=1 AND model_name=?1 LIMIT 1";
+    with_db(|conn| {
+        let row = match (provider, category) {
+            (Some(p), Some(c)) => {
+                let mut stmt = conn.prepare(SQL_FULL)?;
+                stmt.query_row(params![p, c, model_name], |r| model_row_mapper(r)).optional()?
+            }
+            _ => {
+                let mut stmt = conn.prepare(SQL_NAME)?;
+                stmt.query_row(params![model_name], |r| model_row_mapper(r)).optional()?
+            }
+        };
+        Ok(row)
+    })
+}
+
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LlmModelInfo {

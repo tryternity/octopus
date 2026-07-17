@@ -192,10 +192,61 @@ pub fn resolve_engine_in_config<'a, 'b>(
 
 /// Resolve a model spec (e.g. "local:zipformer-small-ctc", "zipformer:zipformer-small-ctc",
 /// or bare "zipformer-small-ctc") to its [`EngineCategory`] by looking up DB models.
-/// Returns `None` if the spec doesn't match any enabled ASR model.
+///
+/// Task 2 后：`load_config` 只含激活的那一个 ASR entry——本函数仅匹配激活引擎。
+/// CLI `--model` / 多模型显式路径用 [`resolve_engine_category_any`]（查所有可用引擎）。
+/// Returns `None` if the spec doesn't match the active ASR model.
 pub fn resolve_engine_category(spec: &str) -> Option<EngineCategory> {
     let config = load_config().ok()?;
     resolve_engine_in_config(&config, spec).map(|(cat, _, _)| cat)
+}
+
+/// 解析 spec → EngineCategory（查 DB 所有可用 ASR 引擎，不限激活）。
+///
+/// 供 CLI `--model` 显式路径 / 多模型场景用——不依赖激活态（load_config 只含激活）。
+/// 直接查 `list_all_asr_engines`（DB is_available=1 的全部 ASR），按 spec 匹配。
+pub fn resolve_engine_category_any(spec: &str) -> Option<EngineCategory> {
+    let parsed = parse_model_spec(spec);
+    let rows = octopus_infra::db::list_all_asr_engines().ok()?;
+    match parsed {
+        ModelSpec::Full { provider, category, model_name } => {
+            rows.into_iter()
+                .find(|r| r.provider == provider && r.category == category && r.model_name == model_name)
+                .and_then(|r| resolve_category(&r.provider, &r.category))
+        }
+        ModelSpec::NameOnly(model_name) => {
+            rows.into_iter()
+                .find(|r| r.model_name == model_name)
+                .and_then(|r| resolve_category(&r.provider, &r.category))
+        }
+    }
+}
+
+/// 解析 spec → (EngineCategory, ModelEntry)，查 DB 所有可用 ASR 引擎（不限激活）。
+///
+/// 供 AsrEngineManager::load_engine_into_cache 用——用户经 CLI `--model` 或其他多模型
+/// 入口选了非激活引擎时，[`resolve_engine_in_config`]（load_config 只含激活）找不到，
+/// 此函数直接查 DB 任意可用引擎。spec 支持 3-part 或裸名。
+pub fn resolve_engine_any(spec: &str) -> Option<(EngineCategory, ModelEntry)> {
+    let parsed = parse_model_spec(spec);
+    let (provider, category, model_name) = match parsed {
+        ModelSpec::Full { provider, category, model_name } => (Some(provider), Some(category), model_name),
+        ModelSpec::NameOnly(model_name) => (None, None, model_name),
+    };
+    let row = octopus_infra::db::get_asr_model_by_spec(provider, category, model_name).ok()?;
+    let row = row?;
+    let cat = resolve_category(&row.provider, &row.category)?;
+    let entry = ModelEntry {
+        source: row.source,
+        language: row.language,
+        description: row.description,
+        secret_key: row.secret_key,
+        is_local: row.is_local,
+        is_enabled: row.is_enabled,
+        is_available: row.is_available,
+        is_streaming: row.is_streaming,
+    };
+    Some((cat, entry))
 }
 
 // ── List all available engines ──
