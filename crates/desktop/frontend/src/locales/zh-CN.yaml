@@ -417,6 +417,8 @@ settings:
     noSubItemsHint: 该菜单暂无子项，点上方「新增子项」添加
     leafNoSubItemsHint: 该菜单是叶子命令（非子菜单容器），无子项
     selectMenuHint: 请从左侧选择一个菜单
+    selectAll: 全选
+    deleteSelected: 删除选中
     moveUp: 上移
     moveDown: 下移
     edit: 编辑

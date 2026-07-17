@@ -643,6 +643,7 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   const [runs, setRuns] = useState<ScriptRun[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   const refresh = useCallback(async () => {
     try {
@@ -665,6 +666,31 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
       showToast(t("settings.actionBar.cleanFailed") + e);
     }
   }, [showToast, refresh]);
+
+  const toggleSelect = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const allSelected = runs.length > 0 && selectedIds.size === runs.length;
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds(allSelected ? new Set() : new Set(runs.map((r) => r.id)));
+  }, [allSelected, runs]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      await invoke("delete_script_runs", { ids: Array.from(selectedIds) });
+      showToast(t("settings.actionBar.deleted"));
+      setSelectedIds(new Set());
+      refresh();
+    } catch (e) {
+      showToast(t("settings.actionBar.deleteFailed") + e);
+    }
+  }, [selectedIds, showToast, refresh]);
 
   if (!loaded) {
     return <p className="py-12 text-center text-sm text-muted-foreground">{t("settings.actionBar.loadingRecords")}</p>;
@@ -690,17 +716,47 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
 
   return (
     <div>
-      <div className="mb-3 flex justify-end">
-        <Button variant="outline" size="sm" onClick={handleClear}>
-          {t("settings.actionBar.cleanOldRecords")}
+      {/* 顶部工具栏：全选 + 删除选中 + 清理旧记录 */}
+      <div className="mb-3 flex items-center gap-3">
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={toggleSelectAll}
+            className="h-3.5 w-3.5 accent-voice"
+          />
+          {t("settings.actionBar.selectAll")}
+        </label>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={selectedIds.size === 0}
+          onClick={handleDeleteSelected}
+        >
+          {t("settings.actionBar.deleteSelected")} ({selectedIds.size})
         </Button>
+        <div className="ml-auto">
+          <Button variant="outline" size="sm" onClick={handleClear}>
+            {t("settings.actionBar.cleanOldRecords")}
+          </Button>
+        </div>
       </div>
       <div className="space-y-1.5">
         {runs.map((r) => (
-          <div key={r.id} className="rounded-lg border border-border bg-muted/15 overflow-hidden">
+          <div key={r.id} className={cn(
+            "rounded-lg border bg-muted/15 overflow-hidden transition-colors",
+            selectedIds.has(r.id) ? "border-voice/40" : "border-border",
+          )}>
+            <div className="flex items-center gap-3 px-3 py-2">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(r.id)}
+                onChange={() => toggleSelect(r.id)}
+                className="h-3.5 w-3.5 shrink-0 accent-voice"
+              />
             <button
               onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
-              className="flex w-full items-center gap-3 px-3.5 py-2 text-left"
+              className="flex flex-1 items-center gap-3 text-left"
             >
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusColor(r))} />
               <span className="shrink-0 text-xs font-medium">{r.itemTitle || t("settings.actionBar.untitled")}</span>
@@ -710,6 +766,7 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
                 {r.durationMs != null ? `${r.durationMs}ms` : "—"}
               </span>
             </button>
+            </div>
             {expandedId === r.id && (
               <div className="space-y-2 border-t border-border/50 px-3.5 py-2.5">
                 {r.stdout && (

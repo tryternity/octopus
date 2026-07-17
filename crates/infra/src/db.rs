@@ -1982,6 +1982,20 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<()> {
     })
 }
 
+/// 按 ID 批量删除执行记录。2026-07-17 新增——执行记录 TAB 的复选框删除。
+pub fn delete_script_runs(ids: &[i64]) -> Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    with_db(|conn| {
+        // 逐条 DELETE（IDs 数量有限，100 条上限不需 IN 子句优化）
+        let tx = conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM script_runs WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 // ── Agent Adapter（用户自定义 agent 适配器）──────────────────────
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

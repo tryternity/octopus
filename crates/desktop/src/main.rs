@@ -344,6 +344,7 @@ pub fn run() {
             action_bar_commands::execute_action_bar,
             action_bar_commands::list_script_runs,
             action_bar_commands::clear_script_runs,
+            action_bar_commands::delete_script_runs,
             action_bar_commands::list_agent_adapters,
             action_bar_commands::create_agent_adapter,
             action_bar_commands::update_agent_adapter,
