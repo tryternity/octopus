@@ -813,7 +813,7 @@ export default function ActionBarPanel({
   const [loaded, setLoaded] = useState(false);
   // tab: 命令管理 / 执行记录（替代原 view）。edit 走独立 editingId 判定（inline 全屏 EditForm）
   const [tab, setTab] = useState<"menu" | "runs">("menu");
-  const [scopeFilter, setScopeFilter] = useState<"all" | "text" | "file">("all");
+  const [scopeFilter, setScopeFilter] = useState<"text" | "file">("text");
   // 左栏选中主菜单 id——首次进 menu tab 默认选第一个；删除/过滤后自动 fallback
   const [selectedMainMenuId, setSelectedMainMenuId] = useState<number | null>(null);
   // 标题 inline 输入的本地 draft——避免每按键 IPC（IME 中文输入会被打断）。
@@ -841,7 +841,6 @@ export default function ActionBarPanel({
 
   // accepts 过滤
   const isItemInScope = (item: ActionBarItem): boolean => {
-    if (scopeFilter === "all") return true;
     const accepts = item.accepts || "text";
     if (scopeFilter === "text") return accepts === "text" || accepts === "any";
     return accepts === "file" || accepts === "any";
@@ -959,7 +958,8 @@ export default function ActionBarPanel({
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
-          accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
+          // submenu 用 any（两个 scope 都显示）；其他锁定为 handleAdd 设的 scopeFilter 值
+          accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
         });
@@ -1032,14 +1032,18 @@ export default function ActionBarPanel({
   const handleAdd = useCallback((parentId: number | null) => {
     setEditingId(null);
     setDraftParentId(parentId);
+    // 新建项的 accepts 锁定为当前 scopeFilter——在文本类下只能建文本类菜单，
+    // 文件类下只能建文件类。submenu 用 any（两个场景都显示）。
+    // 用户不能在表单里改 accepts——没有 UI 控件，saveEdit 时用此值。
     setEditingForm({
       title: t("settings.actionBar.newMenuItem"),
       actionType: "copy",
       actionData: "",
       isEnabled: true,
+      accepts: scopeFilter === "file" ? "file" : "text",
     });
     // 不动 tab——editingId=null + draftParentId !== undefined 表示新建模式，EditForm 全屏覆盖
-  }, []);
+  }, [scopeFilter, t]);
 
   // 主菜单字段 inline 实时保存（isEnabled / shortcut / globalShortcut / actionType）。
   // 主菜单字段少且独立于 actionData/agent 等复杂字段，inline 编辑体验好。
@@ -1203,12 +1207,11 @@ export default function ActionBarPanel({
             {/* 场景过滤——分段控件。语义=该菜单项在什么场景下显示。 */}
             <Segmented
               items={[
-                { key: "all", label: t("settings.actionBar.scopeAll") },
                 { key: "text", label: t("settings.actionBar.scopeText") },
                 { key: "file", label: t("settings.actionBar.scopeFile") },
               ]}
               active={scopeFilter}
-              onChange={(k) => setScopeFilter(k as "all" | "text" | "file")}
+              onChange={(k) => setScopeFilter(k as "text" | "file")}
             />
 
             <Button onClick={() => handleAdd(null)} variant="voice" size="sm" className="w-full">

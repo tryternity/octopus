@@ -43,7 +43,7 @@
 
 ### 2.3 左栏：主菜单列表
 
-- 顶部 `Segmented` 场景过滤（全部 / 文本类 / 文件类——「文本类」「文件类」描述菜单项类型归属，不再用「选中文本」等令人困惑的操作性词汇）
+- 顶部 `Segmented` 场景过滤（文本类 / 文件类——无「全部」选项，因为实际没有场景会显示全部命令；「文本类」「文件类」描述菜单项类型归属，不再用「选中文本」等令人困惑的操作性词汇；默认「文本类」）
 - 「+ 新增主菜单」voice 主操作按钮
 - 左栏宽度 `w-52`（shrink-0）
 - **MenuRow 两行结构**（CSS grid 4 列）：
@@ -136,7 +136,8 @@ CSS grid 布局 `[grid-template-columns: auto auto 1fr auto]`：
 
 1. **数据模型不变**——`items: ActionBarItem[]`、`parentId` 树形关系、所有 CRUD 命令原样复用
 2. **选中态跨 EditForm 保留**——`selectedMainMenuId` 在父组件 state
-3. **scope 过滤兼容**——左栏 mainItems 按 scope 过滤，过滤变化 fallback 第一个
+3. **scope 过滤兼容**——左栏 mainItems 按 scope 过滤（仅「文本类」/「文件类」无「全部」），过滤变化 fallback 第一个
+6. **新建 accepts 锁定 scope**——`handleAdd` 按 `scopeFilter` 设 `accepts`（text/file），submenu 用 `any`；用户不能在表单改 accepts（无 UI 控件）；在文本类下只能建文本类菜单
 4. **EditForm 复用**——子菜单编辑仍走全屏表单（字段/逻辑不变，仅布局重排）
 5. **inline 编辑 saveFailed 回滚**——catch 也调 `refresh()` 重置到后端真实状态
 
