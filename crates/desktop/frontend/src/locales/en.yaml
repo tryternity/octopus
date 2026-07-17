@@ -214,7 +214,6 @@ settings:
     save: Save
     testConnection: Test Connection
     cancel: Cancel
-    header: Prompts
     newBtn: New
     builtin: Built-in
     activeBadge: Active
@@ -284,9 +283,6 @@ settings:
     addedN: Added ${n} words
     allExist: Selected words already exist
     addFailed2: "Add failed:"
-    title: Voice Recognition · Hotword Correction
-    header: Hotword Management
-    intro: Manage multi-version hotwords by scene, check to stack. Currently ${n} active words.
     dialectFuzzy: Dialect Fuzzy
     versionsN: Hotword Versions (${n})
     loading: Loading…
@@ -392,9 +388,6 @@ settings:
     deleteFailed: "Delete failed:"
     moveFailed: "Move failed:"
     titleMain: Command Palette ·
-    editMenuItem: Edit Menu Item
-    scriptRecords: Script Execution Records
-    menuManage: Menu Management
     aiTitle: AI Command Palette Menu
     aiIntro: Select text → invoke two-level menu via global hotkey. ${total} items, ${enabled} enabled.
     recordsBtn: Execution Records

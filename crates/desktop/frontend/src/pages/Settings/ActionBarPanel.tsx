@@ -1065,21 +1065,11 @@ export default function ActionBarPanel({
 
   return (
     <div className="w-full min-w-0">
-      {/* ── 页头 ── */}
+      {/* ── 操作栏（无页面 title，靠左侧导航标识当前页）──
+          menu 视图：左组放过滤/查看/折叠，右组单独放「新增」主操作；
+          其他视图：返回按钮靠左。justify-between 让两组分到两端，避免左侧空白。 */}
       <div className="mb-6 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          {/* 签名色条——琥珀竖线 */}
-          <div className="h-4 w-[3px] rounded-full bg-voice" />
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
-            {view === "edit"
-              ? t("settings.actionBar.editMenuItem")
-              : view === "runs"
-                ? t("settings.actionBar.scriptRecords")
-                : t("settings.actionBar.menuManage")}
-          </span>
-        </div>
-
-        {/* 操作组 */}
+        {/* 左组 */}
         <div className="flex shrink-0 items-center gap-1.5">
           {view === "menu" && (
             <>
@@ -1119,9 +1109,6 @@ export default function ActionBarPanel({
                   {allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
                 </span>
               </Button>
-              <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
-                <Plus /> {t("settings.actionBar.addMainItem")}
-              </Button>
             </>
           )}
           {view !== "menu" && (
@@ -1131,6 +1118,13 @@ export default function ActionBarPanel({
             </Button>
           )}
         </div>
+
+        {/* 右组：新增主操作 */}
+        {view === "menu" && (
+          <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
+            <Plus /> {t("settings.actionBar.addMainItem")}
+          </Button>
+        )}
       </div>
 
       {/* ── 内容区 ── */}

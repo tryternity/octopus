@@ -158,8 +158,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   // ── 列表 ──
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-semibold">{t("settings.prompts.header")}</span>
+      <div className="flex items-center justify-end mb-3">
         <Button variant="primary" size="default" onClick={newPrompt}>
           <Plus /> {t("settings.prompts.newBtn")}
         </Button>
