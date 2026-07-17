@@ -226,11 +226,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_config::toolbar_state,
             runtime_config::list_asr_engines,
-            runtime_config::switch_asr_engine,
             runtime_config::switch_active_model,
             runtime_config::set_polish_mode,
             runtime_config::list_llm_models,
-            runtime_config::switch_polish_llm,
             runtime_config::set_denoise_mode,
             runtime_config::set_translate_mode,
             coordinator::cancel_recording,
