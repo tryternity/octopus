@@ -1177,6 +1177,29 @@ impl Stitcher {
     pub fn height(&self) -> u32 { self.canvas_h }
     pub fn canvas_w(&self) -> u32 { self.canvas_w }
 
+    /// 消费 self 一次性 move 出 canvas——避免 `canvas().clone()` 复制整张画布。
+    ///
+    /// 2026-07-17 性能优化（P0-2）：screenshot_commands stop 路径原先 3 次
+    /// `canvas().clone()`（每次复制 1920×5000 RGBA ≈ 38MB，3 次 ≈ 114MB 峰值）。
+    /// 改用本方法后无 clone——优先 move canvas_cache（若已构建），否则从 canvas_buf
+    /// 重建一次。调用方消费 self 后不能再访问 Stitcher。
+    pub fn into_canvas(mut self) -> RgbaImage {
+        // 优先复用已构建的 cache（避免重建）
+        if let Some(img) = self.canvas_cache.take() {
+            return img;
+        }
+        match RgbaImage::from_raw(self.canvas_w, self.canvas_h, std::mem::take(&mut self.canvas_buf)) {
+            Some(img) => img,
+            None => {
+                log::error!(
+                    "into_canvas: canvas_buf 长度不匹配 {}x{} buf_len={}",
+                    self.canvas_w, self.canvas_h, self.canvas_buf.len()
+                );
+                RgbaImage::new(1, 1)
+            }
+        }
+    }
+
     /// 从 canvas_buf 中提取指定行范围 [y_start, y_start+height) 的 RGBA 字节切片。
     /// 用于生成预览，避免 clone 整个 canvas_buf。
     pub fn canvas_buf_slice(&self, y_start: u32, height: u32) -> Vec<u8> {

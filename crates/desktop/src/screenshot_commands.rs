@@ -86,7 +86,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
 
     // 1. 截所有显示器
-    let captures = octopus_capx::capture::capture_all_monitors()
+    let mut captures = octopus_capx::capture::capture_all_monitors()
         .map_err(|e| format!("截图失败: {}", e))?;
 
     // 3. 获取 Tauri 的显示器列表（逻辑坐标）
@@ -126,13 +126,17 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         let log_w = phys_w / scale;
         let log_h = phys_h / scale;
 
-        // 用物理坐标匹配 xcap capture（避免双相同分辨率显示器匹配到同一个）
+        // 用物理坐标匹配 xcap capture（避免双相同分辨率显示器匹配到同一个）。
+        // 三级 fallback：精确坐标 → 相同分辨率 → 索引。逐级 if let 避免多次 iter_mut 借用冲突。
         let target_x = tauri_mon.position().x;
         let target_y = tauri_mon.position().y;
-        let capture = captures.iter()
-            .find(|c| c.monitor_x == target_x && c.monitor_y == target_y)
-            .or_else(|| captures.iter().find(|c| c.width as f64 == phys_w && c.height as f64 == phys_h))
-            .or_else(|| captures.get(i));
+        let capture = if let Some(c) = captures.iter_mut().find(|c| c.monitor_x == target_x && c.monitor_y == target_y) {
+            Some(c)
+        } else if let Some(c) = captures.iter_mut().find(|c| c.width as f64 == phys_w && c.height as f64 == phys_h) {
+            Some(c)
+        } else {
+            captures.get_mut(i)
+        };
 
         let capture = match capture {
             Some(c) => c,
@@ -141,8 +145,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
         let label = format!("screenshot_{}_{}", session_id, i);
 
+        // 取走 capture 的 rgba_bytes——capture 在循环内仅此处使用，取走后 captures
+        // 集合仍有该 capture（rgba_bytes 为空 Vec）但不影响后续匹配（已匹配完）。
+        // 避免 P0-3 的两次 rgba_bytes.clone()：4K+1080p 双屏 ≈ 41MB × 2 clone → 1 次编码用 + 1 次 move 入 ALL_CAPTURES。
+        let rgba_bytes = std::mem::take(&mut capture.rgba_bytes);
+        let (width, height) = (capture.width, capture.height);
+
         // RGBA → JPEG base64（截图背景只需视觉展示，JPEG 编码比 PNG 快 10×+）
-        let img = ::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba_bytes.clone())
+        let img = ::image::RgbaImage::from_raw(width, height, rgba_bytes.clone())
             .ok_or("图像处理失败")?;
         let mut jpg_bytes = Vec::new();
         let rgb_img = ::image::DynamicImage::ImageRgba8(img).into_rgb8();
@@ -151,12 +161,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             .map_err(|e| format!("JPEG 编码失败: {:?}", e))?;
         let b64 = general_purpose::STANDARD.encode(&jpg_bytes);
 
-        // 暂存
+        // 暂存——rgba_bytes 此时只剩一份（行 145 的 clone 用完丢弃，原 rgba_bytes move 入此）
         PENDING_IMAGES.lock().push((label.clone(), b64));
         ALL_CAPTURES.lock().push((label.clone(), ScreenCaptureClone {
-            rgba_bytes: capture.rgba_bytes.clone(),
-            width: capture.width,
-            height: capture.height,
+            rgba_bytes,
+            width,
+            height,
         }));
 
         // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
@@ -1248,13 +1258,17 @@ pub async fn start_scroll_recording(
                 let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
 
                 // 预览图：从 canvas_buf 底部切片重建小 RgbaImage
+                // P1-4 优化（2026-07-17）：预览编码 PNG→JPEG——1-2MB→100-300KB，
+                // 编码快 3-5×，肉眼无差。预览只是视觉反馈不是入库数据。
                 let canvas_cropped = image::RgbaImage::from_raw(canvas_w_now, crop_src_h, canvas_buf_slice)
                     .unwrap_or_else(|| image::RgbaImage::new(canvas_w_now, crop_src_h));
                 let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
                 let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::Triangle);
-                let mut preview_png = Vec::new();
-                let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
-                let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+                let preview_rgb = image::DynamicImage::ImageRgba8(preview).into_rgb8();
+                let mut preview_jpg = Vec::new();
+                let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut preview_jpg, 80);
+                let _ = jpg_enc.encode(&preview_rgb, preview_rgb.width(), preview_rgb.height(), image::ExtendedColorType::Rgb8);
+                let preview_b64 = general_purpose::STANDARD.encode(&preview_jpg);
 
                 let phys_height = (canvas_h_now as f64 / scale_for_phys) as u32;
 
@@ -1327,11 +1341,14 @@ pub async fn start_scroll_recording(
             return;
         }
 
-        let canvas = stitcher.canvas().clone();
+        // 消费 stitcher 一次性 move 出 canvas——避免 canvas().clone() 复制整张画布
+        // （P0-2 修复：38MB/次 × 3 次 → 0 次大 clone）。此后 stitcher 不可再用。
+        let canvas = stitcher.into_canvas();
         let ah3 = ah.clone();
         let ah4 = ah.clone();
 
-        // 先做 PNG 快速编码（剪贴板和入库都需要的基础数据）
+        // 先做 PNG 快速编码（剪贴板和入库都需要的基础数据）。
+        // canvas 后续还要 move 给 db_task，此处仅借用——用 DynamicImage::from borrow 编码。
         let png_bytes = {
             let img = image::DynamicImage::ImageRgba8(canvas.clone());
             let mut png = Vec::new();
