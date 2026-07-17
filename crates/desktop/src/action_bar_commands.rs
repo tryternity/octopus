@@ -351,28 +351,11 @@ fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
     });
 }
 
-/// 主屏中心点（逻辑坐标）——给 detect_selection 在 mouse 采集失败时作占位。
-/// 与 show_action_bar_centered 的算法对齐：水平中心 + 垂直 1/5 位置。
-fn primary_monitor_center(app: &AppHandle) -> (f64, f64) {
+/// 主屏逻辑坐标矩形 (x, y, w, h)——共享给 primary_monitor_center 与
+/// show_action_bar_centered，避免两处重复「primary_monitor + scale 换算」四行
+/// （P3-2 DRY）。fallback (0,0,1440,900) 与原 show_action_bar_centered 一致。
+fn primary_monitor_logical_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
     match app.primary_monitor().ok().flatten() {
-        Some(m) => {
-            let scale = m.scale_factor();
-            let mon_x = m.position().x as f64 / scale;
-            let mon_y = m.position().y as f64 / scale;
-            let mon_w = m.size().width as f64 / scale;
-            let mon_h = m.size().height as f64 / scale;
-            (mon_x + mon_w / 2.0, mon_y + mon_h / 5.0)
-        }
-        None => (720.0, 180.0), // 兜底（1440×900 主屏的中心+1/5）
-    }
-}
-
-/// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
-fn show_action_bar_centered(app: &AppHandle) {
-    const WIN_W: f64 = 480.0;
-
-    // 强制用主显示器
-    let (mon_x, mon_y, mon_w, mon_h) = match app.primary_monitor().ok().flatten() {
         Some(m) => {
             let scale = m.scale_factor();
             (
@@ -383,7 +366,27 @@ fn show_action_bar_centered(app: &AppHandle) {
             )
         }
         None => (0.0, 0.0, 1440.0, 900.0),
-    };
+    }
+}
+
+/// 主屏占位 mouse 坐标——给 detect_selection 在 mouse 采集失败时用。
+///
+/// **P3-1 注释精度修正（2026-07-17）**：占位坐标 = (水平中心, 垂直 1/5 位置)，
+/// 经下游 `show_action_bar_at_mouse_with_pos` 的 `my - 42` 后，浮窗最终位置比
+/// `show_action_bar_centered` 严格 1/5 高 42px（42 是 my-42 的"浮窗在鼠标上方"偏移）。
+/// 视觉差异可忽略（900px 屏占 4.7%），仍在上 1/5 区域内，非严格对齐但功能等价。
+/// 水平方向经 `mx - 240` 后与 centered 完全一致。
+fn primary_monitor_center(app: &AppHandle) -> (f64, f64) {
+    let (mon_x, mon_y, mon_w, mon_h) = primary_monitor_logical_rect(app);
+    (mon_x + mon_w / 2.0, mon_y + mon_h / 5.0)
+}
+
+/// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
+fn show_action_bar_centered(app: &AppHandle) {
+    const WIN_W: f64 = 480.0;
+
+    // 强制用主显示器（共享 primary_monitor_logical_rect，P3-2 DRY）
+    let (mon_x, mon_y, mon_w, mon_h) = primary_monitor_logical_rect(app);
 
     let win_x = mon_x + (mon_w - WIN_W) / 2.0;
     // 上 1/5 位置
