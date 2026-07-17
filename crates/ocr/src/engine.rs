@@ -53,9 +53,12 @@ impl OcrEngine {
             return Ok(e.clone());
         }
 
-        let model_name = octopus_infra::db::load_config_key("ocr_model")
+        // Task 2 后：OCR 激活模型从 DB models.is_enabled=1 查（resolve_active_engine 逻辑的
+        // 等价直查——ocr crate 不依赖 asr-local，避免循环）。无激活 fallback 默认模型。
+        let model_name = octopus_infra::db::get_active_model("ocr")
             .ok()
             .flatten()
+            .map(|r| r.model_name)
             .unwrap_or_else(|| model::DEFAULT_OCR_MODEL.to_string());
 
         if !model::is_model_ready(&model_name) {

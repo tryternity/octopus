@@ -413,14 +413,14 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
 }
 
 /// 当前 OCR 引擎/模型元数据：engine 固定 paddle（ocr_rs 基于 PaddleOCR）；
-/// model 从 app_config.ocr_model 读，默认 PP-OCRv6-small。insert_ocr_clipboard_item
-/// 与 ocr_screenshot 两处复用，保证 ocr 条目 meta 一致。
+/// model 从 OCR 域激活模型（resolve_active_engine("ocr")）取，默认 PP-OCRv6-small。
+/// insert_ocr_clipboard_item 与 ocr_screenshot 两处复用，保证 ocr 条目 meta 一致。
 /// 返回 (engine, model) 元组，匹配 insert_ocr_item(text, engine, model) 签名。
 pub(crate) fn current_ocr_meta() -> (String, String) {
-    let model_name = octopus_infra::db::load_config_key("ocr_model")
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| octopus_ocr::model::DEFAULT_OCR_MODEL.to_string());
+    // Task 2 后：OCR 激活模型从 ACTIVE_ENGINES 缓存取（无激活 fallback 默认）。
+    let model_name = octopus_asr_local::config::resolve_active_engine("ocr")
+        .map(|r| r.name)
+        .unwrap_or_else(|_| octopus_ocr::model::DEFAULT_OCR_MODEL.to_string());
     ("paddle".to_string(), model_name)
 }
 

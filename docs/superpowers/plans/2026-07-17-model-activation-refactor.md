@@ -89,7 +89,7 @@ Expected: 编译会有大量下游报错（desktop/cli/asr-local 读这 4 字段
 - Consumes: Task 1 的 get_active_model
 - Produces: `load_active_engine(domain) -> Result<ResolvedEngine>`、`resolve_active_engine(domain) -> Result<ResolvedEngine>`、通用化 `ResolvedEngine { domain, name, provider, category: String, entry }`
 
-- [ ] **Step 1: ResolvedEngine 通用化**
+- [x] **Step 1: ResolvedEngine 通用化**
 
 ```rust
 pub struct ResolvedEngine {
@@ -103,21 +103,21 @@ pub struct ResolvedEngine {
 
 加 `as_engine_category()` helper（ASR 专用，category 字符串→EngineCategory）。
 
-- [ ] **Step 2: ACTIVE_ENGINES 替换 RUNTIME_CONFIG**
+- [x] **Step 2: ACTIVE_ENGINES 替换 RUNTIME_CONFIG**
 
 ```rust
 static ACTIVE_ENGINES: RwLock<HashMap<String, Arc<ResolvedEngine>>> = RwLock::new(HashMap::new());
 ```
 
-- [ ] **Step 3: load_active_engine(domain)**
+- [x] **Step 3: load_active_engine(domain)**
 
 从 DB get_active_model(domain) → 构造 ResolvedEngine → 写 ACTIVE_ENGINES。缓存命中直接返回。
 
-- [ ] **Step 4: resolve_active_engine(domain)**
+- [x] **Step 4: resolve_active_engine(domain)**
 
 读 ACTIVE_ENGINES。缓存未命中 fallback 到 load_active_engine。ASR 域无激活时 fallback 兜底引擎（zipformer-small-ctc），其余域返回 Err。
 
-- [ ] **Step 5: load_config 的处理（关键决策）**
+- [x] **Step 5: load_config 的处理（关键决策）**
 
 `load_config()`（返回 AsrConfig 集合）当前服务于两个用途：
 - (a) 推理取激活引擎配置——被 resolve_active_engine / 各引擎 transcribe 用
@@ -133,12 +133,12 @@ static ACTIVE_ENGINES: RwLock<HashMap<String, Arc<ResolvedEngine>>> = RwLock::ne
 
 `reload_models_config` 改名为 `reload_active_engine(domain)`——清 ACTIVE_ENGINES 该域槽 + 重新 load。
 
-- [ ] **Step 6: 编译 asr-local**
+- [x] **Step 6: 编译 asr-local**
 
 Run: `cargo build -p octopus-asr-local`
 Expected: 0 error（下游 desktop/cli 报错预期，Task 3+ 修）。
 
-- [ ] **Step 7: 测试 + Commit**
+- [x] **Step 7: 测试 + Commit**
 
 Run: `cargo test -p octopus-asr-local --lib`
 
@@ -154,7 +154,7 @@ Run: `cargo test -p octopus-asr-local --lib`
 - Modify: `crates/desktop/src/runtime_config.rs`（switch_* 统一 switch_active_model；build_*_options current 改）
 - Modify: `crates/desktop/src/main.rs`（启动 load_active_engine 4 域 + switch_model 用 resolve_active_engine）
 
-- [ ] **Step 1: config.rs is_streaming_engine + llm_config 改造**
+- [x] **Step 1: config.rs is_streaming_engine + llm_config 改造**
 
 ```rust
 pub fn is_streaming_engine() -> bool {  // 删 cfg 参数
@@ -172,31 +172,31 @@ pub fn llm_config_ignore_mode() -> Option<CompatibleLlmConfig> {  // 删 cfg 参
 }
 ```
 
-- [ ] **Step 2: coordinator.rs 删 asr_engine 写回**
+- [x] **Step 2: coordinator.rs 删 asr_engine 写回**
 
 第 293-296、537-541 行 `config.asr_engine = match resolve_active_engine(...)` 整块删除。下游 begin_recording 改为不依赖 config.asr_engine（用 resolve_active_engine("asr") 按需取）。
 
-- [ ] **Step 3: tray.rs fmt_engine_label 改**
+- [x] **Step 3: tray.rs fmt_engine_label 改**
 
 `fmt_engine_label(spec)` 改为 `fmt_engine_label()` 无参，内部 `resolve_active_engine("asr").name`。
 
-- [ ] **Step 4: settings_commands.rs apply_config_value 删 4 case + current 判定**
+- [x] **Step 4: settings_commands.rs apply_config_value 删 4 case + current 判定**
 
 删 asr_engine/polish_llm/ocr_model/translate_engine 的 set_config case。build_*_options 的 current 判定改为比对 DB 行 is_enabled 字段。
 
-- [ ] **Step 5: runtime_config.rs switch_* 统一**
+- [x] **Step 5: runtime_config.rs switch_* 统一**
 
 switch_asr_engine/switch_polish_llm 改为内部调 `switch_active_model(domain, id)` + `load_active_engine(domain)`。或新增统一 `switch_active_model` Tauri 命令。
 
-- [ ] **Step 6: main.rs 启动 + switch_model**
+- [x] **Step 6: main.rs 启动 + switch_model**
 
 启动时 `load_active_engine("asr/llm/ocr/translate")`。`em.switch_model(&active_model)` 的 active_model 改为 `resolve_active_engine("asr").name`。
 
-- [ ] **Step 7: 编译 + 测试**
+- [x] **Step 7: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop --bin octopus-desktop`
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ---
 
@@ -207,19 +207,19 @@ Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopu
 - Modify: `crates/desktop/src/translation_commands.rs`（translate_status 用 resolve_active_engine）
 - Modify: `crates/desktop/src/model_commands.rs`（add/edit/remove cloud model 写 is_available）
 
-- [ ] **Step 1: action_bar_commands resolve_translate_strategy 改**
+- [x] **Step 1: action_bar_commands resolve_translate_strategy 改**
 
 从 `config.translate_engine.parse::<i64>()` + get_model_by_id 改为 `resolve_active_engine("translate")`。
 
-- [ ] **Step 2: translation_commands translate_status 改**
+- [x] **Step 2: translation_commands translate_status 改**
 
 从读 config.polish_llm 改为 resolve_active_engine。
 
-- [ ] **Step 3: model_commands add/edit cloud model 写 is_available**
+- [x] **Step 3: model_commands add/edit cloud model 写 is_available**
 
 insert_cloud_model/update_cloud_model 的 is_available 写入（原 is_enabled 语义）。is_enabled 新增默认 0（不自动激活）。
 
-- [ ] **Step 4: 编译 + 测试 + Commit**
+- [x] **Step 4: 编译 + 测试 + Commit**
 
 ---
 
@@ -229,15 +229,15 @@ insert_cloud_model/update_cloud_model 的 is_available 写入（原 is_enabled �
 - Modify: `crates/cli/src/main.rs`（resolve_active_engine("asr") 无需 asr_engine 参数；select_model 适配）
 - Modify: `crates/server/src/main.rs`（resolve_active_engine("asr")）
 
-- [ ] **Step 1: cli main.rs**
+- [x] **Step 1: cli main.rs**
 
 resolve_active_engine(&app_cfg.asr_engine) → resolve_active_engine("asr")。select_model 的引擎列表用 list_engines_from_db（已直查 DB）。
 
-- [ ] **Step 2: server main.rs**
+- [x] **Step 2: server main.rs**
 
 同 cli。
 
-- [ ] **Step 3: 编译 + Commit**
+- [x] **Step 3: 编译 + Commit**
 
 ---
 
@@ -249,24 +249,24 @@ resolve_active_engine(&app_cfg.asr_engine) → resolve_active_engine("asr")。se
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/OcrTab.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/Models/TranslateTab.tsx`
 
-- [ ] **Step 1: 4 Tab 激活操作统一为 switch_active_model**
+- [x] **Step 1: 4 Tab 激活操作统一为 switch_active_model**
 
 AsrTab: `invoke("switch_asr_engine", {modelName})` → `invoke("switch_active_model", {domain:"asr", id})`
 LlmTab: `invoke("switch_polish_llm", ...)` → `invoke("switch_active_model", {domain:"llm", id})`
 OcrTab: `invoke("set_config", {key:"ocr_model"...})` → `invoke("switch_active_model", {domain:"ocr", id})`
 TranslateTab: `invoke("set_config", {key:"translate_engine"...})` → `invoke("switch_active_model", {domain:"translate", id})`
 
-- [ ] **Step 2: current 判定改用后端返回的 is_enabled 字段**
+- [x] **Step 2: current 判定改用后端返回的 is_enabled 字段**
 
-- [ ] **Step 3: tsc + vite build + Commit**
+- [x] **Step 3: tsc + vite build + Commit**
 
 ---
 
 ## Task 7: 文档同步 + 全量验证
 
-- [ ] architecture.md 同步（三层模型语义 + 两个核心方法 + 删 4 字段）
-- [ ] 全量 `cargo build --release` + 全 crate test + tsc + vite
-- [ ] Commit
+- [x] architecture.md 同步（三层模型语义 + 两个核心方法 + 删 4 字段）
+- [x] 全量 `cargo build --release` + 全 crate test + tsc + vite
+- [x] Commit
 
 ---
 
@@ -276,3 +276,76 @@ TranslateTab: `invoke("set_config", {key:"translate_engine"...})` → `invoke("s
 2. **SharedRuntimeConfig 清理**（Task 3）：switch_asr_engine/switch_polish_llm 写 SharedRuntimeConfig.asr_engine/polish_llm——删字段后这些写入逻辑要清。SharedRuntimeConfig 是 `Arc<RwLock<AppConfig>>`，AppConfig 删字段后自动联动。
 3. **编译顺序**：Task 1 完成后下游全报错（删了 4 字段）。**建议 Task 1-3 连续完成**（infra → asr-local → desktop 核心调用层），中间不 commit 到 main。Task 4-6 修剩余调用点。最后 Task 7 全量验证。
 4. **ResolvedEngine.category 从枚举改 String**：ASR 内部大量用 EngineCategory 枚举 match（engine.rs switch_model、streaming 判定等）。ResolvedEngine.category 改 String 后这些地方要加 `as_engine_category()` 转换。保留 EngineCategory 枚举不变，只改 ResolvedEngine 存储格式。
+
+---
+
+## 实施记录（Task 2-7 实际偏差 + 新增决策）
+
+> 本节为 2026-07-17 实施完成后回写，反映实际实现。
+
+### 新增辅助函数 / 字段（spec 之外）
+
+1. **infra ModelRow 补 language + description**（Task 2a，commit `2c651e84`）：
+   load_active_engine 从 ModelRow 构造 ModelEntry 需全字段，原 ModelRow 缺 language/description。
+   决策：扩展 ModelRow（非用户初始 spec，但最简——4 域统一从 ModelRow 完整构造）。
+
+2. **ResolvedEngine 补 is_thinking 字段**（commit `bde37096`）：
+   LLM domain 的 is_thinking 字段 ModelEntry 不含（仅 ModelRow 有），故提升到 ResolvedEngine
+   顶层。`llm_config_ignore_mode` 用 `resolved.is_thinking` 构造 CompatibleLlmConfig。
+
+3. **ACTIVE_ENGINES 用 LazyLock 而非 const**（commit `7b2462c3`）：
+   `HashMap::new()` 非 const，`RwLock::new(HashMap::new())` 不能直接 `static`。改用
+   `std::sync::LazyLock<RwLock<HashMap<...>>>`。
+
+4. **infra 新增 get_asr_model_by_spec + asr-local 新增 resolve_engine_any**（commit `aad7bd98`）：
+   CLI `--model` 多模型路径修复——load_config（仅激活）找不到非激活引擎时，engine.rs 的
+   load_engine_into_cache fallback 到 resolve_engine_any（查 DB 任意可用 ASR）。
+   原计划只提到「新增 get_model_by_name」，实际新增两个对称函数（category_any + engine_any）。
+
+5. **asr-local 新增 resolve_engine_category_any**（commit `aad7bd98`）：
+   CLI 多模型场景判定流式类型用，查 DB 所有可用 ASR（不限激活）。
+
+### Task 3 偏差
+
+1. **switch_asr_engine / switch_polish_llm 保留为 wrapper**（非删除）：
+   spec §4.6 说「原命令统一为此一个」，但实际保留旧命令作 wrapper（按 name 查 DB id → 调
+   switch_active_model）。原因：前端 AsrTab/LlmTab 仍可能调旧命令，wrapper 保证向后兼容。
+   Task 6 前端迁移到 switch_active_model 后，旧命令仅遗留（可在后续清理）。
+
+2. **switch_polish_llm「不选择模型」用 id=-1**：
+   LLM 域允许无激活（polish_mode=Disabled 时）。空 model_name → switch_active_model("llm", -1)，
+   SQL `IIF(id=-1,1,0)` 全域 is_enabled=0（取消激活）。reload_active_engine 会 warn（无激活），
+   但 switch_active_model 命令仍返回 Ok。
+
+3. **preheat_local_engine 去掉 spec 参数**：
+   改为内部 resolve_active_engine("asr")。spec 参数废弃。
+
+### Task 4 实际并入 Task 3
+
+action_bar_commands / translation_commands 的改造与 desktop 调用层同 crate，实际在 Task 3
+一起完成。Task 4 仅剩 model_commands 的 DownloadableModel.is_available 字段分离（commit `99e4484f`）。
+
+### Task 6 偏差
+
+1. **TranslateTab cloud 模型仍用 engineName 比对 current**：
+   list_translate_cloud_models 命令返回的 TranslateCloudModel 无 is_enabled 字段（非 LlmOption
+   结构）。cloud 模型的 current 判定仍用 translate_status 返回的 engineName 比对 model_name。
+   本地 translate 模型已改用 is_enabled（DB 行带此字段）。
+
+### 验证结果（Task 7）
+
+- cargo build --release（server + cli + asr-local + desktop embedded,cloud）0 error 0 warning
+- infra 114 测试 / desktop 307 测试全过
+- asr-local 121 单测全过；5 个 real_model 测试失败（需用户手工迁移 DB，spec §10）
+- tsc --noEmit 0 error；vite build 成功
+
+### 待用户手工操作
+
+真实 DB `~/.octopus/octopus.db` 迁移（spec §10）：
+```sql
+ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0;
+UPDATE models SET is_available = is_enabled;
+UPDATE models SET is_enabled = 0;
+DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine');
+```
+迁移后重新激活所需模型（设置页 switch_active_model）。
