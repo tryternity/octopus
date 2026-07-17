@@ -166,11 +166,13 @@ impl SharedAudioState {
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     if is_recording.load(Ordering::Relaxed) {
-                        let mono: Vec<f32> = data
-                            .chunks(channels)
-                            .map(|c| c.iter().sum::<f32>() / channels as f32)
-                            .collect();
-                        samples.lock().extend_from_slice(&mono);
+                        // 直接 extend 到 samples（chunks(channels).map 的 size_hint 精确，
+                        // extend 一次 reserve 正确容量），避免中间 Vec<f32> 分配。
+                        // 回调约每 5-10ms 一次，省下每帧一次堆分配 + 析构。
+                        samples.lock().extend(
+                            data.chunks(channels)
+                                .map(|c| c.iter().sum::<f32>() / channels as f32),
+                        );
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -180,14 +182,12 @@ impl SharedAudioState {
                 &config.into(),
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     if is_recording.load(Ordering::Relaxed) {
-                        let mono: Vec<f32> = data
-                            .chunks(channels)
-                            .map(|c| {
+                        samples.lock().extend(
+                            data.chunks(channels).map(|c| {
                                 c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
                                     / channels as f32
-                            })
-                            .collect();
-                        samples.lock().extend_from_slice(&mono);
+                            }),
+                        );
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -197,16 +197,14 @@ impl SharedAudioState {
                 &config.into(),
                 move |data: &[u16], _: &cpal::InputCallbackInfo| {
                     if is_recording.load(Ordering::Relaxed) {
-                        let mono: Vec<f32> = data
-                            .chunks(channels)
-                            .map(|c| {
+                        samples.lock().extend(
+                            data.chunks(channels).map(|c| {
                                 c.iter()
                                     .map(|&s| (s as f32 - 32768.0) / 32768.0)
                                     .sum::<f32>()
                                     / channels as f32
-                            })
-                            .collect();
-                        samples.lock().extend_from_slice(&mono);
+                            }),
+                        );
                     }
                 },
                 |err| error!("Audio error: {}", err),
