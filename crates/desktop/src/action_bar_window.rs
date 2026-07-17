@@ -24,7 +24,15 @@ pub fn create_action_bar_window(app: &AppHandle) {
     .resizable(false)
     .shadow(false)
     .visible(false)
-    .build();
+    .build()
+    .map_err(|e| {
+        // P2-2 修复：原 `let _ = ...build()` 静默吞错——此后所有 show/hide 调用
+        // get_webview_window 返回 None 静默 no-op，用户按热键无反应且无任何提示，
+        // 极难定位。记 error 让启动日志至少能看出建窗失败。
+        log::error!("[action-bar] 窗口创建失败: {e}");
+        e
+    })
+    .ok();
 }
 
 /// 在指定坐标显示浮窗（鼠标上方）。emit 事件让前端刷新 context。
@@ -86,11 +94,21 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
 }
 
 /// 焦点诊断 + 巩固（须在主线程调用）：记录 isKeyWindow；若 consolidate 且已失焦则 set_focus 夺回。
+///
+/// **P1-1 修复（2026-07-17）**：开头加 `is_visible` 守卫——`get_webview_window` 对隐藏窗口
+/// 仍返回 Some（窗口对象生命周期 ≠ 可见性），150ms 巩固线程若在用户 dismiss 后触发，
+/// 原先会对已隐藏窗口 `set_focus()` 触发 NSWindow ordering / app 激活，把刚回到源 app
+/// 的用户重新带到 octopus。加守卫后跳过已 dismiss 的窗口，保留对可见窗口的夺焦逻辑
+/// （Sublime `subl --command` 延迟抢焦的核心修复）。
 #[cfg(target_os = "macos")]
 fn check_and_consolidate_focus(app: &AppHandle, at_ms: u64, consolidate: bool) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        // 已 dismiss 的窗口跳过——consolidate=true 分支会 set_focus，对隐藏窗口夺焦是 bug
+        if !win.is_visible().unwrap_or(false) {
+            return;
+        }
         if let Ok(ns_ptr) = win.ns_window() {
             let ns_win: *mut AnyObject = ns_ptr as *mut AnyObject;
             unsafe {

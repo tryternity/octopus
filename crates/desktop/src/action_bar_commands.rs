@@ -119,8 +119,16 @@ fn common_parent_dir(paths: &[String]) -> Option<String> {
 /// 检测当前选中状态。Finder 走 AppleScript，其余走 Cmd+C + changeCount。
 /// 返回的 Selection 携带全部信息（选中内容 + 鼠标坐标），下游不再碰检测细节。
 pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
-    // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）
-    let mouse = get_mouse_position(app);
+    // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）。
+    // P2-3 修复（2026-07-17）：get_mouse_position 失败（CGEvent 权限缺失）时
+    // **不放弃选中检测**——用主屏中心作占位 mouse 继续 Finder/Sublime/Cmd+C 三条分支。
+    // 原先直接 return Selection::None 会把"位置失败"耦合为"放弃选中"，选中文本按热键
+    // 弹空搜索框（AI 操作全失效，比原 bug 仅位置偏移影响更大）。
+    // 占位坐标让浮窗弹到主屏中心而非鼠标旁——位置让位给可用性，但选中内容保留。
+    let mouse = get_mouse_position(app).unwrap_or_else(|| {
+        log::warn!("[action-bar] 鼠标位置采集失败（CGEvent 权限？），用主屏中心占位");
+        primary_monitor_center(app)
+    });
 
     // ── Finder 分支：AppleScript 直接拿 selection ──
     if crate::finder_selection::is_finder_frontmost() {
@@ -343,12 +351,11 @@ fn show_action_bar_at_mouse_with_pos(app: &AppHandle, mouse: (f64, f64)) {
     });
 }
 
-/// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
-fn show_action_bar_centered(app: &AppHandle) {
-    const WIN_W: f64 = 480.0;
-
-    // 强制用主显示器
-    let (mon_x, mon_y, mon_w, mon_h) = match app.primary_monitor().ok().flatten() {
+/// 主屏逻辑坐标矩形 (x, y, w, h)——共享给 primary_monitor_center 与
+/// show_action_bar_centered，避免两处重复「primary_monitor + scale 换算」四行
+/// （P3-2 DRY）。fallback (0,0,1440,900) 与原 show_action_bar_centered 一致。
+fn primary_monitor_logical_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
+    match app.primary_monitor().ok().flatten() {
         Some(m) => {
             let scale = m.scale_factor();
             (
@@ -359,7 +366,27 @@ fn show_action_bar_centered(app: &AppHandle) {
             )
         }
         None => (0.0, 0.0, 1440.0, 900.0),
-    };
+    }
+}
+
+/// 主屏占位 mouse 坐标——给 detect_selection 在 mouse 采集失败时用。
+///
+/// **P3-1 注释精度修正（2026-07-17）**：占位坐标 = (水平中心, 垂直 1/5 位置)，
+/// 经下游 `show_action_bar_at_mouse_with_pos` 的 `my - 42` 后，浮窗最终位置比
+/// `show_action_bar_centered` 严格 1/5 高 42px（42 是 my-42 的"浮窗在鼠标上方"偏移）。
+/// 视觉差异可忽略（900px 屏占 4.7%），仍在上 1/5 区域内，非严格对齐但功能等价。
+/// 水平方向经 `mx - 240` 后与 centered 完全一致。
+fn primary_monitor_center(app: &AppHandle) -> (f64, f64) {
+    let (mon_x, mon_y, mon_w, mon_h) = primary_monitor_logical_rect(app);
+    (mon_x + mon_w / 2.0, mon_y + mon_h / 5.0)
+}
+
+/// 无选中时在主屏幕居中显示浮窗——水平居中，垂直位于屏幕上 1/5 位置（类似 Alfred/Wox）。
+fn show_action_bar_centered(app: &AppHandle) {
+    const WIN_W: f64 = 480.0;
+
+    // 强制用主显示器（共享 primary_monitor_logical_rect，P3-2 DRY）
+    let (mon_x, mon_y, mon_w, mon_h) = primary_monitor_logical_rect(app);
 
     let win_x = mon_x + (mon_w - WIN_W) / 2.0;
     // 上 1/5 位置
@@ -677,7 +704,7 @@ fn build_enriched_text(text: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
+pub(crate) fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -694,14 +721,17 @@ pub(crate) fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
         // 原点主屏左上角，y 轴向下。与 Tauri LogicalPosition 坐标系一致。
         // 不除 scale——Quartz 已是逻辑坐标。
         log::info!("[action-bar] mouse location={},{}", point.x, point.y);
-        return (point.x, point.y);
+        return Some((point.x, point.y));
     }
-    (100.0, 100.0)
+    // P2-3 修复：CGEvent 失败（输入监控/辅助功能权限缺失）返回 None，
+    // 调用方 detect_selection fallback 到 Selection::None 居中——
+    // 原先返回 (100,100) 假坐标会让浮窗弹到主屏左上角，与 None 分支居中体验不一致。
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
-fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
-    (100.0, 100.0)
+fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
+    None
 }
 
 // ── 菜单管理命令（设置页 CRUD）──

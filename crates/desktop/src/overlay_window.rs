@@ -44,10 +44,26 @@ struct OverlayPayload {
 /// 在鼠标附近显示 overlay 窗口（不调 set_focus，不抢焦点）。
 fn show_at_mouse(app: &AppHandle, payload: &OverlayPayload) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
-        // 鼠标位置（简化：用 CGEvent 读位置）
-        let (mx, my) = crate::action_bar_commands::get_mouse_position(app);
-        let win_x = mx - 160.0; // overlay 宽 320，居中
-        let win_y = my - 60.0;  // 鼠标上方
+        // P2-3：get_mouse_position 失败时 fallback 中心显示（不再用 100,100 假坐标）。
+        // overlay 宽 320 高 ~80，居中即取主屏中心位置。
+        let (win_x, win_y) = match crate::action_bar_commands::get_mouse_position(app) {
+            Some((mx, my)) => (mx - 160.0, my - 60.0), // 鼠标上方居中
+            None => {
+                // fallback：主屏中心（overlay 用于 ASR 录音指示，位置精度让位给可用性）
+                let (cx, cy) = app.primary_monitor()
+                    .ok()
+                    .flatten()
+                    .and_then(|m| {
+                        let scale = m.scale_factor();
+                        let pos = m.position();
+                        let sz = m.size();
+                        Some(((pos.x as f64 + sz.width as f64 / scale / 2.0) - 160.0,
+                              (pos.y as f64 + sz.height as f64 / scale / 2.0) - 40.0))
+                    })
+                    .unwrap_or((400.0, 300.0));
+                (cx, cy)
+            }
+        };
 
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(win_x, win_y),
