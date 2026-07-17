@@ -38,7 +38,8 @@ pub fn load_config() -> Result<AsrConfig> {
 ///
 /// 推理路径用（`load_config` → `resolve_active_engine` / 各引擎 transcribe）。
 /// desktop 在 set_model_enabled / set_model_secret_key / add/edit/remove_cloud_model
-/// 写 DB 后调用，让推理路径的激活态缓存（`RUNTIME_CONFIG`，仅 is_enabled=1）反映变化。
+/// 写 DB 后调用，让推理路径的可用模型缓存（`RUNTIME_CONFIG`，仅 is_enabled=1）
+/// 反映变化——resolve_active_engine 从中按 app_config.asr_engine 挑激活引擎。
 /// **管理列表不走此缓存**——`list_engines_from_db` 直查 DB 即时反映，无需 reload。
 pub fn reload_models_config() {
     match crate::db::load_models() {
@@ -237,8 +238,8 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
 /// 列出 ASR 域所有引擎——**直查 DB，不经 RUNTIME_CONFIG 缓存**。
 ///
 /// 管理列表（设置页 / 工具栏 / CLI select）专用：新增 / 编辑 / 删除云端模型后即时反映，
-/// 不依赖 `reload_models_config`。与 `list_engines`（经 `load_config` → RUNTIME_CONFIG，
-/// 仅 `is_enabled=1`、供推理缓存）区分——后者保留给需要"激活态视图"的场景。
+/// 不依赖 `reload_models_config`。RUNTIME_CONFIG（`load_config`，仅 is_enabled=1 可用模型）
+/// 仅供推理路径——`resolve_active_engine` 从可用集合里按 `app_config.asr_engine` 挑激活引擎。
 ///
 /// 推理路径（`resolve_engine_in_config` / `resolve_active_engine` / 各引擎 transcribe）
 /// **不**走此函数，继续用 `load_config`。
