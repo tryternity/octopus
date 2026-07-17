@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -64,6 +64,11 @@ const ACTION_TYPES = [
   { value: "copy_path",  labelKey: "settings.actionBar.typeCopyPath" },
   { value: "copy",       labelKey: "settings.actionBar.typeCopy" },
 ];
+
+// inline 类型 select 用——排除 extension（前端伪类型，后端不识别，
+// inline 写库会让菜单变砖）。extension 仅 EditForm 经特殊路径处理。
+// 2026-07-17 review Critical #3 修复。
+const INLINE_ACTION_TYPES = ACTION_TYPES.filter((at) => at.value !== "extension");
 
 function deriveAccepts(actionType: string | undefined, explicit?: string): string {
   if (explicit) return explicit;
@@ -784,6 +789,13 @@ export default function ActionBarPanel({
   const [scopeFilter, setScopeFilter] = useState<"all" | "text" | "file">("all");
   // 左栏选中主菜单 id——首次进 menu tab 默认选第一个；删除/过滤后自动 fallback
   const [selectedMainMenuId, setSelectedMainMenuId] = useState<number | null>(null);
+  // 标题 inline 输入的本地 draft——避免每按键 IPC（IME 中文输入会被打断）。
+  // null = 显示 selectedMain.title（已落库值）；非 null = 用户正在输入的草稿。
+  // onBlur 或 300ms debounce 后 flush 到 updateMainInline，然后置回 null。
+  // 2026-07-17 review Critical #1 修复。
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const titleDraftRef = useRef<string | null>(null);
+  titleDraftRef.current = titleDraft;
   // 主菜单 inline 编辑（右栏顶部表单）的实时字段镜像 + 录制态
   const [inlineCapturingShortcut, setInlineCapturingShortcut] = useState(false);
   const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
@@ -1028,7 +1040,10 @@ export default function ActionBarPanel({
       }
       refresh();
     } catch (e) {
+      // 失败时也 refresh——把 UI 重置回后端真实状态（防 input/Toggle 视觉态停在
+      // 用户输入的新值但实际未落库的混乱）。2026-07-17 review Important #5 修复。
       showToast(t("settings.actionBar.saveFailed") + e);
+      refresh();
     }
   }, [selectedMain, refresh, showToast]);
 
@@ -1085,6 +1100,26 @@ export default function ActionBarPanel({
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
   }, [inlineCapturingShortcut, selectedMain, updateMainInline]);
+
+  // 标题 draft 的 debounce flush——300ms 无输入后落库。
+  // 用 ref + setTimeout 避免闭包陈旧。selectedMain 切换时手动清 draft（下面 effect）。
+  // 2026-07-17 review Critical #1 修复。
+  useEffect(() => {
+    if (titleDraft === null) return;
+    const timer = setTimeout(() => {
+      const draft = titleDraftRef.current;
+      if (draft !== null) {
+        updateMainInline({ title: draft });
+        setTitleDraft(null);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [titleDraft, updateMainInline]);
+
+  // 切换选中主菜单时清空 draft——防 draft 留在新选中菜单的标题里
+  useEffect(() => {
+    setTitleDraft(null);
+  }, [effectiveSelectedId]);
 
   // editingId !== null 或 draftParentId !== undefined → EditForm 全屏覆盖（不分 tab）
   const isEditing = editingId !== null || draftParentId !== undefined;
@@ -1185,11 +1220,11 @@ export default function ActionBarPanel({
               <div className="space-y-4">
                 {/* ── 主菜单 inline 编辑表单 ── */}
                 <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
-                  {/* 标题（可直接编辑） */}
+                  {/* 标题（可直接编辑）—— local draft + debounce 300ms 落库（IME 安全） */}
                   <FormField label={t("settings.actionBar.titleLabel")}>
                     <input
                       className={inputBase}
-                      value={selectedMain.title}
+                      value={titleDraft ?? selectedMain.title}
                       maxLength={12}
                       onChange={(e) => {
                         const MAX = 12;
@@ -1202,7 +1237,13 @@ export default function ActionBarPanel({
                           weight += w;
                           ok += ch;
                         }
-                        updateMainInline({ title: ok });
+                        setTitleDraft(ok);
+                      }}
+                      onBlur={() => {
+                        if (titleDraft !== null) {
+                          updateMainInline({ title: titleDraft });
+                          setTitleDraft(null);
+                        }
                       }}
                     />
                   </FormField>
@@ -1213,10 +1254,18 @@ export default function ActionBarPanel({
                       <select
                         className={cn(inputBase, "disabled:opacity-60")}
                         value={selectedMain.actionType}
-                        disabled={selectedMain.isSystem}
-                        onChange={(e) => updateMainInline({ actionType: e.target.value })}
+                        disabled={selectedMain.isSystem || selectedMain.actionType === "submenu"}
+                        onChange={(e) => {
+                          const newType = e.target.value;
+                          // 改类型时同步重算 accepts（防 agent→ai 后 accepts 残留 "file"
+                          // 致 scope 过滤错）。2026-07-17 review Minor #12 修复。
+                          updateMainInline({
+                            actionType: newType,
+                            accepts: deriveAccepts(newType, undefined),
+                          });
+                        }}
                       >
-                        {ACTION_TYPES.map((at) => (
+                        {INLINE_ACTION_TYPES.map((at) => (
                           <option key={at.value} value={at.value}>{ti18n(at.labelKey)}</option>
                         ))}
                       </select>
