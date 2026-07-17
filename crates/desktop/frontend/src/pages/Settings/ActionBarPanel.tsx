@@ -1067,22 +1067,24 @@ export default function ActionBarPanel({
     <div className="w-full min-w-0">
       {/* ── 页头 ── */}
       <div className="mb-6 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          {/* 签名色条——琥珀竖线 */}
-          <div className="h-4 w-[3px] rounded-full bg-voice" />
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
-            {view === "edit"
-              ? t("settings.actionBar.editMenuItem")
-              : view === "runs"
-                ? t("settings.actionBar.scriptRecords")
-                : t("settings.actionBar.menuManage")}
-          </span>
-        </div>
+        {/* 左：签名色条 + 标签 + 辅助操作（场景过滤 / 记录 / 展开） */}
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex items-center gap-2">
+            {/* 签名色条——琥珀竖线 */}
+            <div className="h-4 w-[3px] rounded-full bg-voice" />
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
+              {view === "edit"
+                ? t("settings.actionBar.editMenuItem")
+                : view === "runs"
+                  ? t("settings.actionBar.scriptRecords")
+                  : t("settings.actionBar.menuManage")}
+            </span>
+          </div>
 
-        {/* 操作组 */}
-        <div className="flex shrink-0 items-center gap-1.5">
           {view === "menu" && (
             <>
+              {/* 分隔——标签与辅助操作视觉分组 */}
+              <div className="h-4 w-px bg-border/60" />
               {/* 场景过滤——分段控件 */}
               <div className="flex items-center rounded-md border border-border overflow-hidden">
                 {(["all", "text", "file"] as const).map((s) => (
@@ -1119,10 +1121,16 @@ export default function ActionBarPanel({
                   {allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
                 </span>
               </Button>
-              <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
-                <Plus /> {t("settings.actionBar.addMainItem")}
-              </Button>
             </>
+          )}
+        </div>
+
+        {/* 右：主操作（新增 / 返回） */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {view === "menu" && (
+            <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
+              <Plus /> {t("settings.actionBar.addMainItem")}
+            </Button>
           )}
           {view !== "menu" && (
             <Button onClick={() => setView("menu")} variant="outline" size="sm">
