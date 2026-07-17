@@ -927,9 +927,9 @@ impl TranslateEmitTarget {
                     "compact-editor://translate-progress",
                     TranslateSessionPayload { session_id: session_id.clone(), text: text.to_string() },
                 );
-                // 同步写入结果缓存——progress 也算"已知结果"，前端 listener 未就绪时
-                // 可通过 get_translate_result 拉到当前累积译文（R2 残余疑点根治）。
-                cache_translate_result(session_id, text, false);
+                // 不缓存 progress——多段翻译时 listener 已注册必接管 progress 增量，
+                // 缓存 progress 会让 invoke 回调的旧快照覆盖 listener 更新的译文（瑕疵 1）。
+                // progress 增量实时性交给 listener；缓存只兜 done 终止态（瑕疵 3：避免残留）。
             }
         }
     }
@@ -945,7 +945,7 @@ impl TranslateEmitTarget {
                     "compact-editor://translate-done",
                     TranslateSessionPayload { session_id: session_id.clone(), text: text.to_string() },
                 );
-                cache_translate_result(session_id, text, true);
+                cache_translate_done(session_id, text);
             }
         }
     }
@@ -959,61 +959,78 @@ struct TranslateSessionPayload {
     text: String,
 }
 
-/// 翻译结果缓存条目——R2 残余疑点根治。
+/// 翻译结果缓存条目——R2 残余疑点根治（仅缓存 done 终止态）。
 ///
 /// **背景**：Tauri v2 对未注册 listener 不缓存事件（fire-and-forget）。新窗口路径下
 /// webview 加载（JS bundle + React mount + 三个串行 await listen）需数百 ms，与
 /// `do_translate_streaming` spawn 线程并行；缓存命中 + 短文本时 done 可 < 100ms，
 /// 落在 listener 注册前 → 事件直接丢失 → tab 永久 loading。
 ///
-/// **根治**：后端缓存每个 CompactEditor session 的最新结果（progress / done）。
-/// 前端 mount 完成后通过 `get_translate_result(sessionId)` 主动拉取——
-/// - 已完成（done=true）→ 直接显示，绕过事件丢失
-/// - 进行中（done=false）→ 显示当前累积，listener 已注册，后续事件正常到达
+/// **根治**：后端仅缓存每个 CompactEditor session 的 **done 终止态**。前端 mount 完成后
+/// 通过 `get_translate_result(sessionId)` 主动拉取——返回 Some → 直接显示，绕过事件丢失。
+///
+/// **为何只缓存 done 不缓存 progress**（2026-07-17 优化）：
+/// - 多段翻译时 progress 增量靠 listener 实时更新；若 invoke 回调返回旧 progress 快照
+///   会覆盖 listener 已更新的译文（瑕疵 1：译文瞬时回退闪烁）
+/// - listener 未注册阶段丢失 progress 无影响——下一段 progress 会到达，listener 接管
+/// - 唯一竞态：单段短文本 + 缓存命中 < 100ms done 落在 listener 注册前 → done 缓存兜底
+/// - 不缓存 progress 顺带根治瑕疵 3（listener 正常收到 done 时后端无 progress 残留）
 ///
 /// Result 路径不缓存（无 sessionId，且 Result 窗口常驻不涉及此竞态）。
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CachedTranslateResult {
     text: String,
-    done: bool,
 }
 
-/// 翻译结果缓存：session_id → 最新结果。带上限避免无限增长。
+/// 翻译结果缓存：session_id → done 终止态译文。带上限避免无限增长。
 static TRANSLATE_RESULTS: once_cell::sync::Lazy<Mutex<std::collections::HashMap<String, CachedTranslateResult>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 const TRANSLATE_RESULTS_MAX: usize = 64;
 
-fn cache_translate_result(session_id: &str, text: &str, done: bool) {
+/// 缓存 session 的 done 终止态译文。仅 done 时调用（progress 不缓存）。
+fn cache_translate_done(session_id: &str, text: &str) {
     let mut map = TRANSLATE_RESULTS.lock().unwrap();
-    // 简易 LRU：超上限时随便删一个最早的（HashMap 无序，删除任意一个即可——
-    // 译 session 是一次性的，被删也只影响兜底查询，主路径靠 listener 仍能拿结果）。
+    // 超上限随机删一个。非真 LRU，理论上可能删到尚未被 forget/get 的活跃 session
+    // （极低概率：需 64 积压 + 挤出命中未取走条目）。但 listener 主路径会调
+    // forget_translate_result 清理，加上翻译完成频率低（用户手动触发），稳态
+    // 远低于 64 上限，挤出几乎不发生。即使发生，listener 主路径已显示译文，
+    // 仅影响后续 invoke 兜底查询。
     if map.len() >= TRANSLATE_RESULTS_MAX && !map.contains_key(session_id) {
         if let Some(first_key) = map.keys().next().cloned() {
             map.remove(&first_key);
         }
     }
-    map.insert(session_id.to_string(), CachedTranslateResult { text: text.to_string(), done });
+    map.insert(session_id.to_string(), CachedTranslateResult { text: text.to_string() });
 }
 
-/// 前端查询翻译结果（兜底 listener 未注册阶段的事件丢失）。
+/// 前端查询翻译结果（兜底 listener 未注册阶段的 done 事件丢失）。
 ///
 /// 前端 CompactEditor mount 完成后，对每个 pending / open-tab 携带的 sessionId 调一次：
-/// - 返回 Some(done=true) → 直接显示结果，session 结束
-/// - 返回 Some(done=false) → 显示当前累积进度，listener 接管后续
-/// - 返回 None → session 未开始或已结束被清理，等 listener
+/// - 返回 Some → session 已 done，直接显示译文终止态
+/// - 返回 None → session 未开始 / 进行中 / done 已被取走，等 listener（已注册必接管）
 ///
-/// 返回 `Option<CachedTranslateResult>` 序列化为 null 或 `{text, done}`。
+/// 取走后立即清理（session 一次性）。
+///
+/// **单次锁原子操作**（2026-07-17 修复瑕疵 2）：原先 get + remove 分两次 lock 存在
+/// TOCTOU 间隙，合并为单次锁 + remove。
 #[tauri::command]
 pub fn get_translate_result(session_id: String) -> Option<CachedTranslateResult> {
-    let result = TRANSLATE_RESULTS.lock().unwrap().get(&session_id).cloned();
-    if let Some(ref r) = result {
-        if r.done {
-            // done 已被前端取走 → 清理缓存（session 一次性）
-            TRANSLATE_RESULTS.lock().unwrap().remove(&session_id);
-        }
-    }
-    result
+    TRANSLATE_RESULTS.lock().unwrap().remove(&session_id)
+}
+
+/// 通知后端丢弃某 session 的翻译结果缓存——listener 正常收到 done 时调用。
+///
+/// **为何需要**（2026-07-17 疑点 A 根治）：`get_translate_result` 仅在 invoke 兜底
+/// 分支调用，listener 主路径（key 存在、直接 setTabs）不查缓存 → 后端 done 条目
+/// 永不被取走，稳态常驻 64 条至 LRU 挤出。此命令让 listener 主路径显式清理——
+/// "我已收到 done，你丢弃"幂等语义。session_id 不存在时静默成功。
+///
+/// 与 `get_translate_result` 的区别：get 返回值（兜底场景需要显示译文），
+/// forget 纯清理（listener 已显示，只需后端释放）。
+#[tauri::command]
+pub fn forget_translate_result(session_id: String) {
+    TRANSLATE_RESULTS.lock().unwrap().remove(&session_id);
 }
 
 /// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。

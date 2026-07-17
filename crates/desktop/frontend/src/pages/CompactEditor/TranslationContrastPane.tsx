@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import {
@@ -125,8 +125,9 @@ export function TranslationContrastPane({
     ? `${splitRatio * 100}% 1px ${(1 - splitRatio) * 100}%`
     : "1fr";
 
-  const origCharCount = useMemo(() => [...originalText].length, [originalText]);
-  const transCharCount = useMemo(() => [...translatedText].length, [translatedText]);
+  // UTF-16 单元数代替 [...text] 码点展开（每键 O(n) → O(1)）。emoji 计数差异用户无感。
+  const origCharCount = originalText.length;
+  const transCharCount = translatedText.length;
 
   const renderPane = (
     label: string,

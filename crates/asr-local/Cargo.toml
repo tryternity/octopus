@@ -57,3 +57,17 @@ ort = { version = "2.0.0-rc.12", features = ["directml"] }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# 性能基准：fbank FFT + LFR（z_perf Step 0a，2026-07-17）
+# 跑法：cargo bench -p octopus-asr-local --bench fbank -- --save-baseline <name>
+[[bench]]
+name = "fbank"
+harness = false
+
+# 性能基准：streaming paraformer ort 推理热路径（z_perf Step 1，2026-07-17）
+# 跑法：cargo bench -p octopus-asr-local --bench streaming_paraformer -- --save-baseline <name>
+# 前置：HF cache 须有 csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en
+[[bench]]
+name = "streaming_paraformer"
+harness = false

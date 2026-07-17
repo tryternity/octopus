@@ -14,6 +14,16 @@ resolver = "2"
 #   panic="abort" → 不推荐：省 eh_frame ~5M，但常驻托盘 app 单处 panic 会从「unwind→app 存活」
 #                   降级成「abort→直接崩溃」，Tauri 命令保护 + Drop 资源清理均失效，代价不值。
 [profile.release]
+# Release profile：缩减打包体积 + 提升运行时性能（2026-07-17 启用，z_perf Step 4）。
+# 三选项均为链接期/符号表层优化，不改运行时语义：
+#   strip         → 删符号表（__LINKEDIT 16.4M 基本全回收）
+#   lto="fat"     → 跨 crate 死代码消除 + 去重 + 更强内联（ort 推理 + fbank FFT 直接受益）
+#   codegen-units → 配合 lto，单 codegen unit 最强内联
+# 代价：首编链接时间 +1~3 分钟。换 runtime 提速见 docs/superpowers/specs/2026-07-17-perf-release-lto.md
+# 未启用（按需）：
+#   opt-level="z" → 体积优先（默认 3 速度优先），省 2~4M 换 VAD 前处理延迟微增，需 e2e 权衡
+#   panic="abort" → 不推荐：省 eh_frame ~5M，但常驻托盘 app 单处 panic 会从「unwind→app 存活」
+#                   降级成「abort→直接崩溃」，Tauri 命令保护 + Drop 资源清理均失效，代价不值。
 #strip = true
 #lto = "fat"
 #codegen-units = 1
