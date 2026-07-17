@@ -95,36 +95,59 @@ pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
 ### 4.1 `load_active_engine(domain)` —— 写缓存（DB → 内存）
 
 ```rust
+// ACTIVE_ENGINES 用 LazyLock（HashMap::new 非 const，不能直接 static）
+static ACTIVE_ENGINES: std::sync::LazyLock<RwLock<HashMap<String, Arc<ResolvedEngine>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
 /// 从 DB 加载指定域的激活模型并缓存到内存。
-/// 仅在启动时 + 管理页激活模型时调用。
+/// 缓存命中直接返回（不强制重读 DB）；ASR 域无激活 fallback 兜底引擎；其余域返回 Err。
 pub fn load_active_engine(domain: &str) -> Result<ResolvedEngine> {
-    // 读缓存命中则返回
     if let Some(arc) = ACTIVE_ENGINES.read().unwrap().get(domain) {
         return Ok(arc.as_ref().clone());
     }
-    // 从 DB 取激活模型（is_enabled=1 AND is_available=1 LIMIT 1）
-    let row = octopus_infra::db::get_active_model(domain)?
-        .ok_or_else(|| anyhow!("域 {} 无激活模型", domain))?;
-    let resolved = resolve_engine_from_row(domain, &row)?;
-    ACTIVE_ENGINES.write().unwrap().insert(domain.to_string(), Arc::new(resolved.clone()));
-    Ok(resolved)
+    crate::db::ensure_db()?;
+    match octopus_infra::db::get_active_model(domain)? {
+        Some(row) => {
+            let resolved = resolved_engine_from_row(&row);
+            ACTIVE_ENGINES.write().unwrap().insert(domain.to_string(), Arc::new(resolved.clone()));
+            Ok(resolved)
+        }
+        None => {
+            if domain == "asr" {
+                let resolved = fallback_resolved_engine(); // zipformer-small-ctc 兜底
+                ACTIVE_ENGINES.write().unwrap().insert(domain.to_string(), Arc::new(resolved.clone()));
+                Ok(resolved)
+            } else {
+                anyhow::bail!("域 '{}' 无激活模型，请在设置页激活", domain)
+            }
+        }
+    }
+}
+
+/// 重载指定域的激活缓存（清槽 + 重 load）。switch_active_model 写 DB 后调。
+/// ASR 域同步 reload_models_config（引擎实例化路径用 load_config）保持两缓存一致。
+pub fn reload_active_engine(domain: &str) -> Result<ResolvedEngine> {
+    ACTIVE_ENGINES.write().unwrap().remove(domain);
+    if domain == "asr" { reload_models_config(); }
+    load_active_engine(domain)
 }
 ```
 
-- 缓存结构改为 `HashMap<domain, Arc<ResolvedEngine>>`（4 域各一个槽位）
-- 调用时机：① 应用启动（main.rs 初始化 4 域）；② 设置页激活模型后（switch_active_model 之后调）
+- 缓存结构 `LazyLock<RwLock<HashMap<domain, Arc<ResolvedEngine>>>>`（4 域各一个槽位）
+- `LazyLock` 而非 const：`HashMap::new()` 非 const 函数，不能直接 `static`
+- 调用时机：① 应用启动（main.rs 初始化 4 域）；② 设置页激活模型后（switch_active_model 之后 reload_active_engine）
+- ASR 域 fallback：`fallback_resolved_engine()` 优先 `load_config` 缓存的 zipformer-small-ctc，否则硬构造（`DEFAULT_ASR_MODEL_DIR`）
 
 ### 4.2 `resolve_active_engine(domain)` —— 读缓存（内存取唯一激活态）
 
 ```rust
 /// 从内存缓存取指定域的唯一激活模型。
 /// 各个使用方（推理 / tray / 管理页当前态 / 流式判定）都调此方法。
-/// ASR 域带兜底引擎 fallback（zipformer-small-ctc），其余域无激活返回 Err。
+/// 纯读缓存——缓存未命中 fallback 到 load_active_engine（含 ASR 兜底）。
 pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
     if let Some(arc) = ACTIVE_ENGINES.read().unwrap().get(domain) {
         return Ok(arc.as_ref().clone());
     }
-    // 缓存未命中（启动尚未 load / 被清）→ 走 load_active_engine 兜底
     load_active_engine(domain)
 }
 ```
@@ -150,40 +173,67 @@ pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
 pub struct ResolvedEngine {
     pub domain: String,        // 新增：asr/llm/ocr/translate
     pub name: String,          // model_name
-    pub provider: String,
+    pub provider: String,      // 新增：DB models.provider（local/aliyun/deepseek 等）
     pub category: String,      // 改为 String（原 EngineCategory 枚举仅 ASR 有意义）
-    pub entry: ModelEntry,     // source/secret_key/is_streaming 等
+    pub is_thinking: bool,     // 新增（Task 2）：DB models.is_thinking（LLM reasoning 模型标记）
+                               // ModelEntry 不含此字段，故提升到 ResolvedEngine 顶层
+    pub entry: ModelEntry,     // source/secret_key/language/is_streaming 等
+}
+
+impl ResolvedEngine {
+    /// category 字符串 → EngineCategory（ASR 内部路由用）。
+    /// 仅 ASR domain 有意义；LLM/OCR/Translate domain 返回 None。
+    pub fn as_engine_category(&self) -> Option<EngineCategory> {
+        resolve_category(&self.provider, &self.category)
+    }
 }
 ```
 
 - LLM/OCR/Translate 的 ResolvedEngine 的 category 就是 DB 的 category 字符串
 - ASR 的 EngineCategory 枚举保留给 ASR 内部路由用（从 ResolvedEngine.category 字符串转换）
+- `is_thinking` 提升原因：`CompatibleLlmConfig`（LLM polish 用）需此字段，但 `ModelEntry` 不含——直接从 `ModelRow.is_thinking` 提升到 ResolvedEngine 顶层，避免 LLM 特化逻辑污染 ModelEntry
 
 ### 4.5 infra 层改动
 
-- `ModelRow` 加 `is_available` 字段
-- `get_active_model(domain)` / `switch_active_model(domain, id)`（§3.3）
+- `ModelRow` 加 `is_available` 字段 + `language`/`description` 字段（Task 2a，供 load_active_engine 完整构造 ModelEntry）
+- `get_active_model(domain)` / `switch_active_model(domain, id)`（§3.3）—— 两者均拆出 `_at` 裸连接版本供测试
+- `get_asr_model_by_spec(provider, category, name)`（Task 5 新增）—— CLI `--model` 多模型路径用，查 ASR 域任意可用模型（不限激活）
 - `AppConfig` 删 asr_engine/polish_llm/ocr_model/translate_engine 4 字段
-- `load_llm_model(spec)` 废弃（被 `resolve_active_engine("llm")` 替代），或保留供 CLI `--model` 显式指定路径用
-- `settings_commands.rs::apply_config_value` 删 4 个 case
+- `load_llm_model(spec)` 保留（被 `resolve_active_engine("llm")` 替代，但保留供向后兼容 / 显式 spec 查询）
+- `settings_commands.rs::apply_config_value` 删 4 个 case（Task 3）+ 删 set_config 的 `asr_engine` preheat 死代码分支（code review Issue #3）
 
 ### 4.6 切换引擎逻辑（4 域统一）
 
 ```rust
 #[tauri::command]
-pub fn switch_active_model(domain: String, id: i64, app: AppHandle) -> Result<(), String> {
+pub fn switch_active_model(
+    domain: String,
+    id: i64,
+    app_handle: tauri::AppHandle,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
+) -> Result<(), String> {
     octopus_infra::db::switch_active_model(&domain, id).map_err(|e| e.to_string())?;
-    // 重新加载该域的激活缓存
-    octopus_asr_local::config::load_active_engine(&domain).map_err(|e| e.to_string())?;
-    // ASR 域额外：emit config-changed 让 tray/UI 刷新
+    // 重载该域激活缓存（reload_active_engine 清槽 + 重 load）。
+    // 并发不变量（code review Issue #2）：DB 是真相源，reload 从 DB 读回（而非入参 id）。
+    if let Err(e) = octopus_asr_local::config::reload_active_engine(&domain) {
+        log::warn!("switch_active_model: reload_active_engine('{}') 失败：{}", domain, e);
+    }
+    // ASR 域额外：刷新 tray + 后台预热 + emit 事件
     if domain == "asr" {
-        let _ = app.emit("config-changed", ());
+        // ... tray::update_tray_engine_label + preheat_local_engine + emit config-changed
     }
     Ok(())
 }
 ```
 
-原 `switch_asr_engine` / `switch_polish_llm` / `switch_ocr_model` 命令统一为此一个。
+**id=-1 特殊语义（LLM「不选择模型」）**：前端 LlmTab.tsx 传 `id=-1` 取消激活。SQL
+`UPDATE ... SET is_enabled=IIF(id=-1,1,0) WHERE domain='llm' AND is_available=1` ——
+SQLite AUTOINCREMENT 不产生负 id，故 IIF 无匹配行，该域所有 is_available=1 行 is_enabled=0
+（全清空）。回归测试 `switch_active_model_with_id_neg1_clears_domain`。
+
+**原 switch_asr_engine / switch_polish_llm 保留为 wrapper**（Task 6 前端已迁移到
+switch_active_model，wrapper 仅遗留兼容）：按 name 查 DB 取 id → 调 switch_active_model。
+后续可在 follow-up 清理。
 
 ### 4.7 coordinator.rs 的 asr_engine 写回删除
 
@@ -194,6 +244,7 @@ pub fn switch_active_model(domain: String, id: i64, app: AppHandle) -> Result<()
 - 4 个 Tab 的激活操作统一：`invoke("switch_active_model", {domain, id})`
 - `current` 判定：后端返回的模型列表带 `is_enabled` 字段，前端直接用它标 current（不再比对 engineName）
 - TranslateTab 的 `set_config({key:"translate_engine"...})` 改为 switch_active_model
+- LlmTab「不选择模型」传 `id=-1`（取消激活，详见 §4.6）
 
 ## 5. 数据流（重构后）
 

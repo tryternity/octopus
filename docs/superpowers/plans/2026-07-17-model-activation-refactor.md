@@ -264,9 +264,40 @@ TranslateTab: `invoke("set_config", {key:"translate_engine"...})` → `invoke("s
 
 ## Task 7: 文档同步 + 全量验证
 
-- [x] architecture.md 同步（三层模型语义 + 两个核心方法 + 删 4 字段）
+- [x] architecture.md 同步（两层模型语义 + 两个核心方法 + 删 4 字段）
 - [x] 全量 `cargo build --release` + 全 crate test + tsc + vite
 - [x] Commit
+
+---
+
+## Task 8: 单测补全 + code review 反馈修复（实施后追加）
+
+> Task 7 完成后，补充 spec §3.3/§6/§7 不变量单测（tests-after，非严格 TDD）+ code review 反馈。
+
+**Files:**
+- Modify: `crates/infra/src/db.rs`（_at 拆分 + 10+2 测试 + v37 自动迁移）
+- Modify: `crates/asr-local/src/config.rs`（2 测试：云 provider + as_engine_category）
+- Modify: `crates/desktop/src/runtime_config.rs`（switch_active_model 并发不变量注释）
+- Modify: `crates/desktop/src/settings_commands.rs`（删 set_config 死代码分支 + 移除 engine_manager 参数）
+
+- [x] **Step 1: 单测补全**（commit `6abbbe55`）
+  - infra 10 个测试：get_active_model（4 个）+ switch_active_model（3 个）+ get_asr_model_by_spec（5 个，对 _at 拆分版）
+  - asr-local 2 个测试：resolve_category 云 provider 路由 + as_engine_category 集成
+- [x] **Step 2: code review Issue #1 修复**（v37 迁移自动化）
+  - 原 v37 迁移仅 ALTER 加列，旧库 is_enabled=1 多行（旧「可用」语义）不清理 → 用户重新激活后破坏「每域仅 1」不变量
+  - 改为自动完成 spec §10 手工 SQL：UPDATE is_available=is_enabled + UPDATE is_enabled=0 + DELETE app_config 4 字段
+  - 回归测试 `migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation`
+- [x] **Step 3: code review Issue #7 修复**（id=-1 单测）
+  - 新增 `switch_active_model_with_id_neg1_clears_domain`，锁定 LlmTab.tsx 的 -1 契约
+- [x] **Step 4: code review Minor #2/#3/#5 修复**
+  - #2 switch_active_model 加并发不变量注释（DB 是真相源，reload 读回）
+  - #3 删 settings_commands set_config unreachable asr_engine 分支 + 未用 engine_manager 参数
+  - #5 list_cloud_models_by_domain_at 注释修正（Task 1 后 insert_cloud_model 写 is_enabled=0）
+- [x] **Step 5: Commit + 文档同步**（commit `240bee9a`）
+  - spec §10 改为「v37 自动迁移」+ plan 验证结果更新（infra 126 测试）
+
+**延后项（Minor，后续 follow-up）**：
+- code review Issue #4：`set_model_enabled` 改名 `set_model_available`（需动 4 处调用点）
 
 ---
 
