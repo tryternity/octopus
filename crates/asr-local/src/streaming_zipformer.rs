@@ -333,9 +333,11 @@ impl StreamingZipformer {
 
     /// Run one chunk through the model. Returns true if new tokens were produced.
     fn run_chunk(&mut self, chunk: &Array2<f32>) -> Result<bool> {
-        let (chunk_vec, _) = chunk.clone().into_raw_vec_and_offset();
-        let chunk_input =
-            ndarray::Array3::from_shape_vec((1, self.chunk_len, Z_NUM_BINS), chunk_vec)?;
+        // 零拷贝 reshape：(chunk_len, Z_NUM_BINS) → (1, chunk_len, Z_NUM_BINS)。
+        // chunk 由调用方 `Array2::zeros` 构造为 C-contiguous，into_shape 无需 copy
+        // （对齐 paraformer encoder 输入 into_shape 零拷贝模式）。省每 chunk ~24KB
+        // clone + raw_vec 重建。
+        let chunk_input = chunk.view().into_shape_with_order(ndarray::Ix3(1, self.chunk_len, Z_NUM_BINS))?;
 
         let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
 

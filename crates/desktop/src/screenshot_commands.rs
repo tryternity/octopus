@@ -1297,7 +1297,9 @@ pub async fn start_scroll_recording(
                 );
                 let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
                 let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
-                let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
+                // finalize 预览与实时帧（line 1254）用同一 Triangle 滤波——
+                // CatmullRom（4-tap）比 Triangle（2-tap）慢 3-5×，finalize 关键路径无感差异。
+                let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::Triangle);
                 let mut preview_png = Vec::new();
                 let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
                 general_purpose::STANDARD.encode(&preview_png)

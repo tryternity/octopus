@@ -538,15 +538,23 @@ impl StreamingParaformer {
             .slice_mut(ndarray::s![cache_rows.., ..])
             .assign(&features);
 
-        // Save last (left+right) rows back to feat_cache
+        // Save last (left+right) rows back to feat_cache——复用预分配（容量恒定
+        // cache_rows × feat_dim），省每 chunk 17.5KB 堆分配。AGENTS.md 热路径同款
+        // copy_from_slice 模式（对齐 decoder_caches 优化）。
         let total_rows = combined.nrows();
         let save_start = total_rows.saturating_sub(cache_rows);
-        let new_cache: Vec<f32> = combined
-            .slice(ndarray::s![save_start..total_rows, ..])
-            .iter()
-            .cloned()
-            .collect();
-        self.feat_cache = new_cache;
+        let new_cache_view = combined.slice(ndarray::s![save_start..total_rows, ..]);
+        if let Some(src) = new_cache_view.as_slice() {
+            // C-contiguous 快路径：整体 memcpy
+            self.feat_cache.copy_from_slice(src);
+        } else {
+            // 回退：逐元素拷贝（理论不会走到，combined 是 owned C-order）
+            let mut i = 0;
+            for &v in new_cache_view.iter() {
+                self.feat_cache[i] = v;
+                i += 1;
+            }
+        }
 
         Ok(combined)
     }
