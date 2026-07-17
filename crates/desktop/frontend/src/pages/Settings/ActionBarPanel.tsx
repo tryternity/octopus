@@ -561,47 +561,30 @@ const MenuRow = (props: MenuRowProps) => {
     <div
       onClick={props.onSelect}
       className={cn(
-        "group relative flex items-center gap-2 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
+        "group relative grid items-center gap-x-2 gap-y-0.5 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
+        "[grid-template-columns:auto_auto_1fr_auto]",
         selected ? "bg-voice/12" : "hover:bg-muted/40",
         props.onSelect && "cursor-pointer",
       )}
     >
-      {/* 签名元素：左侧类型色条（选中态加粗强调） */}
-      <div className={cn("h-5 w-[3px] shrink-0 rounded-full transition-all self-stretch", meta.bar, selected && "h-full")} />
+      {/* 签名元素：左侧类型色条（col 1，跨两行） */}
+      <div className={cn("row-span-2 h-full w-[3px] shrink-0 self-stretch rounded-full transition-all", meta.bar)} />
 
-      {/* 序号 + 内容（两行结构：标题行 + 类型/内置小字行） */}
-      <span className="w-6 shrink-0 self-start pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
+      {/* 序号（col 2，跨两行） */}
+      <span className="row-span-2 self-start pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
         {pad2(index)}
       </span>
 
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        {/* 标题行 */}
-        <div className="flex items-center gap-1.5">
-          <span className={cn(
-            "flex-1 truncate",
-            props.isMain ? "text-sm font-semibold" : "text-sm",
-            item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
-          )}>
-            {item.title}
-          </span>
-        </div>
-        {/* 类型 + 内置 小字行 */}
-        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
-          <TypeTag type={item.actionType} />
-          {item.isSystem && (
-            <span className="text-muted-foreground/40">
-              · {t("settings.actionBar.builtin")}
-            </span>
-          )}
-          {!item.isEnabled && (
-            <span className="text-muted-foreground/40">
-              · {t("settings.actionBar.hidden")}
-            </span>
-          )}
-        </div>
-      </div>
+      {/* 标题行（col 3） */}
+      <span className={cn(
+        "min-w-0 truncate",
+        props.isMain ? "text-sm font-semibold" : "text-sm",
+        item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
+      )}>
+        {item.title}
+      </span>
 
-      {/* 悬浮操作栏 */}
+      {/* 悬浮操作栏（col 4，第一行） */}
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
         <button
           onClick={(e) => { e.stopPropagation(); props.onMove(-1); }}
@@ -644,6 +627,21 @@ const MenuRow = (props: MenuRowProps) => {
             <Trash2 className="h-3.5 w-3.5" />
           )}
         </button>
+      </div>
+
+      {/* 第二行：类型 + 内置/隐藏 小字（col 3-4 跨两列，给足空间防 wrap） */}
+      <div className="col-span-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+        <TypeTag type={item.actionType} />
+        {item.isSystem && (
+          <span className="text-muted-foreground/40">
+            · {t("settings.actionBar.builtin")}
+          </span>
+        )}
+        {!item.isEnabled && (
+          <span className="text-muted-foreground/40">
+            · {t("settings.actionBar.hidden")}
+          </span>
+        )}
       </div>
     </div>
   );
