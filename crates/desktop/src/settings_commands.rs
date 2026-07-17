@@ -452,11 +452,8 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
         return Err("本地模型无需连接测试".into());
     }
 
-    // 远程引擎：从 DB 取配置（source = WS endpoint, secret_key = API Key）
-    let asr_cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(&bare_name).model_name().to_string();
-    let entry = asr_cfg.asr.aliyun.as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
+    // 远程引擎：从 DB 取配置（resolve_engine_any 查任意可用 ASR）
+    let (_cat, entry) = octopus_asr_local::config::resolve_engine_any(&bare_name)
         .ok_or_else(|| format!("远程 ASR 模型 '{}' 未在 DB 配置", bare_name))?;
 
     if entry.secret_key.is_empty() {

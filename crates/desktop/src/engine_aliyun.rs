@@ -80,21 +80,14 @@ impl AliyunEngine {
 #[async_trait]
 impl TranscriptionEngine for AliyunEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
-        // 1. 从 DB 解析 engine spec → endpoint + secret_key。
-        //    显式查 asr.aliyun section，未命中精确 bail（不静默回退 zipformer，
-        //    避免报错指向错误名字）。
-        let cfg = octopus_asr_local::config::load_config()?;
+        // 1. 从 DB 解析 engine spec → endpoint + secret_key（resolve_engine_any 查任意可用 ASR）。
         let model_name = octopus_infra::db::parse_model_spec(engine)
             .model_name()
             .to_string();
-        let entry = cfg
-            .asr
-            .aliyun
-            .as_ref()
-            .and_then(|m| m.get(model_name.as_str()))
+        let (_cat, entry) = octopus_asr_local::config::resolve_engine_any(engine)
             .with_context(|| {
                 format!(
-                    "aliyun ASR 模型 '{}' 未在 DB（asr.aliyun section）配置",
+                    "aliyun ASR 模型 '{}' 未在 DB 配置",
                     model_name
                 )
             })?;

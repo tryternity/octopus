@@ -7,48 +7,35 @@ use anyhow::{bail, Result};
 use crate::cloud_types::CloudStreamHandle;
 use octopus_asr_local::config::{self, EngineCategory};
 
-/// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
-fn resolve_cloud_entry<'a>(
-    section: Option<&'a std::collections::HashMap<String, octopus_infra::db::ModelEntry>>,
-    provider: &'a str,
-    model_name: &'a str,
-) -> Result<&'a octopus_infra::db::ModelEntry> {
-    let entry = section
-        .and_then(|m| m.get(model_name))
+/// 解析 spec → ModelEntry（resolve_engine_any 查 DB 任意可用 ASR，不限激活），
+/// 校验 secret_key 非空，返回 (entry, model_name)。
+fn resolve_cloud_entry(engine_spec: &str, provider: &str) -> Result<(octopus_infra::db::ModelEntry, String)> {
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let (_cat, entry) = config::resolve_engine_any(engine_spec)
         .ok_or_else(|| anyhow::anyhow!("{} ASR 模型 '{}' 未在 DB 配置", provider, model_name))?;
     if entry.secret_key.is_empty() {
         bail!("{} ASR 模型 '{}' 的 secret_key 为空", provider, model_name);
     }
-    Ok(entry)
+    Ok((entry, model_name))
 }
 
 /// 解析 Aliyun（DashScope）配置（endpoint + key + model_name）。
 fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String)> {
-    let cfg = config::load_config()?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+    let (entry, model_name) = resolve_cloud_entry(engine_spec, "aliyun")?;
+    Ok((entry.source, entry.secret_key, model_name))
 }
 
 /// 解析 ByteDance（豆包）配置（resource_id + api_key + model_name）。
 fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String)> {
-    let cfg = config::load_config()?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+    let (entry, model_name) = resolve_cloud_entry(engine_spec, "bytedance")?;
+    Ok((entry.source, entry.secret_key, model_name))
 }
 
 /// 解析 Tencent（腾讯云）配置（appid:secretid + secret_key + engine_model_type）。
 fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String)> {
-    let cfg = config::load_config()?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
+    let (entry, model_name) = resolve_cloud_entry(engine_spec, "tencent")?;
     if !entry.source.contains(':') {
         bail!(
             "tencent ASR 模型 '{}' 的 source 字段格式应为 appid:secretid（当前='{}'）",
@@ -56,20 +43,16 @@ fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String)>
             entry.source
         );
     }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+    Ok((entry.source, entry.secret_key, model_name))
 }
 
 /// 解析 Baidu（百度云）配置（appid + api_key + dev_pid）。
 fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String)> {
-    let cfg = config::load_config()?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
+    let (entry, model_name) = resolve_cloud_entry(engine_spec, "baidu")?;
     if entry.source.is_empty() {
         bail!("baidu ASR 模型 '{}' 的 source 字段（AppID）为空", model_name);
     }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+    Ok((entry.source, entry.secret_key, model_name))
 }
 
 /// 根据 spec 解析配置 + 打开对应云端 WS session（同步返回句柄）。
@@ -83,7 +66,7 @@ pub fn open_cloud_session(
     language: &str,
     pre_roll: Vec<f32>,
 ) -> Result<CloudStreamHandle> {
-    match config::resolve_engine_category(asr_engine) {
+    match config::resolve_engine_category_any(asr_engine) {
         Some(EngineCategory::Aliyun) => {
             let (endpoint, key, model) = resolve_aliyun_config(asr_engine)?;
             crate::aliyun_stream::open(endpoint, key, model, language.to_string(), pre_roll)
@@ -111,7 +94,7 @@ pub fn open_cloud_session(
             crate::baidu_stream::open(appid, appkey, dev_pid, language.to_string(), pre_roll)
                 .map_err(|e| anyhow::anyhow!("{}", e))
         }
-        None => bail!("spec='{}' 未匹配任何已配置 ASR 引擎（resolve_engine_category 返回 None）", asr_engine),
+        None => bail!("spec='{}' 未匹配任何已配置 ASR 引擎（resolve_engine_category_any 返回 None）", asr_engine),
         _ => bail!("当前引擎非云端（spec='{}'），无法开启 WSS", asr_engine),
     }
 }
@@ -122,7 +105,7 @@ mod tests {
 
     #[test]
     fn open_cloud_session_rejects_unresolvable_spec() {
-        // 不存在的 spec → resolve_engine_category 返回 None → Err。
+        // 不存在的 spec → resolve_engine_category_any 返回 None → Err。
         // 无需 tokio runtime（在 spawn 前就返回 Err），不依赖 DB 是否有该引擎条目。
         let res = open_cloud_session("nonexistent:foo:bar", "zh", Vec::new());
         assert!(res.is_err());
@@ -137,7 +120,7 @@ mod tests {
 
     #[test]
     fn open_cloud_session_rejects_local_spec() {
-        // 本地/非云端 spec（whisper）→ resolve_engine_category 返回 None 或 Some(本地族)，
+        // 本地/非云端 spec（whisper）→ resolve_engine_category_any 返回 None 或 Some(本地族)，
         // 两种情况下 open_cloud_session 都应返回 Err（不进入任何 provider open 分支）。
         // 不依赖 DB 是否实际有 whisper 条目：None 走 None 分支、本地族走 `_` 分支，均 Err。
         // 无需 tokio runtime（在 spawn 前就返回 Err）。

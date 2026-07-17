@@ -11,53 +11,21 @@ pub use octopus_infra::db::{parse_model_spec, AsrConfig, AsrSection, ModelEntry,
 
 // ── Config loading ──
 
-/// 运行时缓存：首次从 DB 读出后缓存，避免每次识别重复开连接查询。
-/// 可重载（见 [`reload_models_config`]）：模型管理页 set_model_available 后调用，让
-/// 引擎下拉即时反映新的就绪状态。
-static RUNTIME_CONFIG: RwLock<Option<Arc<AsrConfig>>> = RwLock::new(None);
-
-/// 读取模型配置（唯一来源：~/.octopus/octopus.db 的 models 表）。
-/// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存。
-/// cli/server/desktop 三端统一走此路径，不再读 model.json。
+/// 读取 ASR 模型配置（直接查 DB，无缓存）。
 ///
-/// Task 2 后：models 表 `is_enabled=1` 表激活（每域仅 1 个），故本函数返回的
-/// AsrConfig **只含激活的那一个 ASR entry**（infra::db::load_models_at 已 LIMIT 1）。
-/// 引擎实例化（engine.rs::load_engine_into_cache）经 [`resolve_engine_in_config`]
-/// 按 spec 在此缓存中查找——传激活的 name 即命中。
+/// **Task 3 后**：RUNTIME_CONFIG 缓存已移除——推理路径统一走 `resolve_engine_any`
+/// / `resolve_active_engine`（查 DB）。本函数仅供测试 / `resolve_engine_in_config`
+/// 内部使用，生产代码不再调用。
 pub fn load_config() -> Result<AsrConfig> {
-    // 读锁：已缓存则 clone 返回
-    if let Some(arc) = RUNTIME_CONFIG.read().unwrap().as_ref() {
-        return Ok(arc.as_ref().clone());
-    }
     crate::db::ensure_db()?;
-    let cfg = crate::db::load_models()?;
-    // 写锁：double-check，避免并发首次 miss 重复 load（load_models 幂等，双重保险）
-    let mut slot = RUNTIME_CONFIG.write().unwrap();
-    if slot.is_none() {
-        *slot = Some(Arc::new(cfg.clone()));
-    }
-    Ok(cfg)
+    crate::db::load_models()
 }
 
-/// 重载 AsrConfig 缓存（models 表）：从 DB 重读替换。
-///
-/// 推理路径用（`load_config` → `resolve_engine_in_config` / 各引擎 transcribe）。
-/// desktop 在 set_model_available / set_model_secret_key / add/edit/remove_cloud_model
-/// 写 DB 后调用，让推理路径的激活模型缓存（`RUNTIME_CONFIG`，仅 is_enabled=1 AND is_available=1）
-/// 反映变化。**管理列表不走此缓存**——`list_engines_from_db` 直查 DB 即时反映，无需 reload。
-///
-/// 注：激活态切换（switch_active_model）走 [`reload_active_engine`] 重载 `ACTIVE_ENGINES`；
-/// 本函数仅重载 ASR 的 `load_config` 缓存（引擎实例化路径用）。
+/// no-op（Task 3 后 RUNTIME_CONFIG 已移除，推理路径不经缓存）。
+/// 保留函数体避免调用方（model_commands / cli sync-models）编译错误——它们的
+/// reload 调用现在是 no-op（DB 直查，无需刷新缓存）。
 pub fn reload_models_config() {
-    match crate::db::load_models() {
-        Ok(c) => {
-            *RUNTIME_CONFIG.write().unwrap() = Some(Arc::new(c));
-            log::debug!("AsrConfig cache reloaded from DB");
-        }
-        Err(e) => {
-            log::warn!("reload_models_config: 重载失败，保留旧缓存：{:?}", e);
-        }
-    }
+    // No-op: RUNTIME_CONFIG removed. Engine instantiation uses resolve_engine_any (DB direct).
 }
 
 // ── HF cache helpers ──
@@ -467,15 +435,21 @@ pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
 /// 兜底引擎固定裸名。
 const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small-ctc";
 
-/// ASR 兜底引擎（无 DB 激活时）：优先用 `load_config` 缓存的 zipformer-small-ctc
+/// ASR 兜底引擎（无 DB 激活时）：优先用 DB 可用的 zipformer-small-ctc
 /// （用户可能改过 source），否则硬构造（本地打包路径）。
 fn fallback_resolved_engine() -> ResolvedEngine {
-    if let Ok(cfg) = load_config() {
-        if let Some(r) = fallback_engine_from_cfg(&cfg) {
-            return r;
-        }
+    // 查 DB 任意可用 ASR 的 zipformer-small-ctc（不限激活）
+    if let Some((_cat, entry)) = resolve_engine_any(FALLBACK_ASR_ENGINE_NAME) {
+        return ResolvedEngine {
+            domain: "asr".to_string(),
+            name: FALLBACK_ASR_ENGINE_NAME.to_string(),
+            provider: "local".to_string(),
+            category: "zipformer".to_string(),
+            is_thinking: false,
+            entry,
+        };
     }
-    // DB 无 zipformer section（极端情况）仍可用——靠本地打包路径硬构造
+    // DB 无 zipformer-small-ctc（极端情况）仍可用——靠本地打包路径硬构造
     ResolvedEngine {
         domain: "asr".to_string(),
         name: FALLBACK_ASR_ENGINE_NAME.to_string(),
@@ -496,7 +470,8 @@ fn fallback_resolved_engine() -> ResolvedEngine {
 }
 
 /// 从已加载的 AsrConfig 取 zipformer-small-ctc 条目构造兜底 ResolvedEngine。
-/// 配置中无该条目时返回 None（调用方走硬构造兜底）。纯函数，便于单测。
+/// 配置中无该条目时返回 None（调用方走硬构造兜底）。纯函数，仅供单测。
+#[cfg(test)]
 fn fallback_engine_from_cfg(cfg: &AsrConfig) -> Option<ResolvedEngine> {
     let entry = cfg.asr.zipformer.as_ref()?.get(FALLBACK_ASR_ENGINE_NAME)?;
     Some(ResolvedEngine {
