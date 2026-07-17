@@ -199,8 +199,7 @@ function CompactEditor() {
           // action bar 流式翻译开的 contrast tab——译文区 loading，
           // 用 sessionId 建立映射（发现 1+8 修复：不再依赖单值 ref 时序）
           if (newTab.mode === 'contrast' && (newTab.translatedText || "").startsWith("⏳") && newTab.translateSessionId) {
-            translatingSessionsRef.current.set(newTab.translateSessionId, tempKey);
-            setTranslating(true);
+            registerTranslateSession(newTab.translateSessionId, tempKey);
           }
           const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
@@ -219,7 +218,11 @@ function CompactEditor() {
       const fnProgress = await listen("compact-editor://translate-progress", (payload) => {
         const p = payload as TranslateSessionPayload;
         const key = translatingSessionsRef.current.get(p.sessionId);
-        if (!key) return;
+        if (!key) {
+          // R2 兜底：tabKey 映射尚未建立（spawn emit 早于 open-tab 处理）→ 缓存等回放
+          pendingTranslateEventsRef.current.set(p.sessionId, { text: p.text, done: false });
+          return;
+        }
         const next = tabsRef.current.map((t) =>
           t.key === key ? { ...t, translatedText: p.text } : t
         );
@@ -237,7 +240,11 @@ function CompactEditor() {
         if (translatingSessionsRef.current.size === 0) {
           setTranslating(false);
         }
-        if (!key) return;
+        if (!key) {
+          // R2 兜底：done 到达但映射未建立 → 缓存为 done 终止态，待 open-tab 写入 Map 时回放
+          pendingTranslateEventsRef.current.set(p.sessionId, { text: p.text, done: true });
+          return;
+        }
         const next = tabsRef.current.map((t) =>
           t.key === key ? { ...t, translatedText: p.text } : t
         );
@@ -256,11 +263,10 @@ function CompactEditor() {
         // 图片 tab 按 itemId 加载不受影响，文本必须靠此补全。详见 mergePendingTabs 单测。
         const mapped = pendingTabs.map(pendingToTab);
         // action bar 流式翻译开的 pending contrast tab——译文区 loading，
-        // 用 sessionId 建立映射（发现 1+8 修复）
+        // 用 sessionId 建立映射（发现 1+8 修复 + R2 兜底回放）
         const loadingContrast = mapped.find(t => t.mode === 'contrast' && (t.translatedText || "").startsWith("⏳"));
         if (loadingContrast && loadingContrast.translateSessionId) {
-          translatingSessionsRef.current.set(loadingContrast.translateSessionId, loadingContrast.key);
-          setTranslating(true);
+          registerTranslateSession(loadingContrast.translateSessionId, loadingContrast.key);
         }
         const next = mergePendingTabs(tabsRef.current, mapped);
         tabsRef.current = next;
@@ -346,6 +352,37 @@ function CompactEditor() {
   // 改为 Map 后按 sessionId 路由，每个翻译 session 独立。toolbar / ActionBar / Quick Execute
   // 任一路径触发的翻译都通过 translate_text 命令返回 sessionId，前端把 sessionId → tabKey 写入此 Map。
   const translatingSessionsRef = useRef<Map<string, string>>(new Map());
+  // R2 修复（2026-07-17）：兜底新窗口路径下的 spawn-emit-早于-mount 竞态。
+  // 后端 execute_action_bar_inner Local 分支 spawn translate 线程与 open_temp_compact_editor
+  // 投递并行，新窗口路径下 React mount + 串行 await listen 耗时数百 ms，spawn 线程
+  // 缓存命中可 < 100ms emit done → done 在 sessionId 写入 Map 前到达 → get 返回 undefined
+  // → 永久 loading。缓存未知 sessionId 的最新 progress + done，sessionId 写入 Map 时回放。
+  // 仅缓存最近一次 progress（中间增量可丢，回放最终态即可）+ 一次 done（终止信号）。
+  const pendingTranslateEventsRef = useRef<Map<string, { text: string; done: boolean }>>(new Map());
+
+  // 把 sessionId → tabKey 写入 Map，并回放该 session 缓存的事件（R2 兜底）。
+  // 三处调用：open-tab handler / pending-take / handleTranslateForTab。
+  const registerTranslateSession = useCallback((sessionId: string, tabKey: string) => {
+    translatingSessionsRef.current.set(sessionId, tabKey);
+    setTranslating(true);
+    // 回放缓存——若 spawn emit 早于本调用到达，progress/done 已存在 pendingTranslateEventsRef
+    const cached = pendingTranslateEventsRef.current.get(sessionId);
+    if (cached) {
+      pendingTranslateEventsRef.current.delete(sessionId);
+      const next = tabsRef.current.map((t) =>
+        t.key === tabKey ? { ...t, translatedText: cached.text } : t
+      );
+      tabsRef.current = next;
+      setTabs(next);
+      if (cached.done) {
+        // 缓存的是 done 终止态——同步清理 session 状态
+        translatingSessionsRef.current.delete(sessionId);
+        if (translatingSessionsRef.current.size === 0) {
+          setTranslating(false);
+        }
+      }
+    }
+  }, []);
 
   // 工具栏翻译按钮：fire-and-forget——立即切 contrast（译文 loading），后台翻译 emit 更新
   const handleTranslateForTab = useCallback((idx: number) => {
@@ -372,7 +409,9 @@ function CompactEditor() {
     // 且后端生成 sessionId 返回，前端据 sessionId 路由到该 tab。
     invoke<string>("translate_text", { text: sourceText, targetType: "compact_editor" }).then((sessionId) => {
       if (sessionId) {
-        translatingSessionsRef.current.set(sessionId, tab.key);
+        // 注意：invoke 返回时 spawn 线程已开始，done 可能已到（被 handler 缓存到 pendingTranslateEventsRef）。
+        // registerTranslateSession 会回放缓存，保证 tabKey 建立后立即同步译文。
+        registerTranslateSession(sessionId, tab.key);
       }
     }).catch((e) => {
       console.error("翻译启动失败:", e);

@@ -483,7 +483,7 @@ fn action_bar_show_result_internal(
             mode: Some("contrast".into()),
             original_text: Some(_original_text),
             translated_text: Some(result.clone()),
-            translate_session_id: None, // LLM 路径不走流式，无 sessionId
+            ..Default::default() // translate_session_id=None（LLM 路径不走流式）；item_id/source/is_temp 由 open_temp_compact_editor 补齐
         }
     } else {
         crate::compact_editor_commands::TempTabPayload {

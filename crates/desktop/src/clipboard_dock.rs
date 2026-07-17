@@ -76,7 +76,8 @@ pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edg
 
 /// 读鼠标位置 + 窗口几何，判定是否在 dock 边缘内。返回 (in_bar, want_ignore)。
 fn probe_position(window: &tauri::WebviewWindow, edge: &'static str) -> Option<(bool, bool)> {
-    let (mx, my) = window.cursor_position().ok()?;
+    let cursor = window.cursor_position().ok()?;
+    let (mx, my) = (cursor.x, cursor.y);
     let pos = window.outer_position().ok()?;
     let (wx, wy) = (pos.x as f64, pos.y as f64);
     let sf = window.scale_factor().unwrap_or(1.0);

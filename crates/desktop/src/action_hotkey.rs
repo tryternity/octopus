@@ -102,6 +102,20 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
     }
     crate::action_bar_commands::set_pending_context(ctx);
 
+    // gather_context 内部 subl --command / osascript 会激活源 app（trigger_action_bar
+    // 的注释明确指出这点）。trigger 路径靠随后的 ActionBar show + set_focus 夺回焦点，
+    // 但 quick_execute 不 show ActionBar——gather 完成后 app 可能仍是后台，紧接着打开
+    // CompactEditor（set_focus 不激活后台 app）→ 用户看不到结果。
+    // R3 修复（2026-07-17）：投递主线程 activate_self 把本 app 带回前台，
+    // 让随后的 CompactEditor show+set_focus 能正确夺焦。activate_self 必须主线程执行
+    // （NSApplication::sharedApplication 要求），worker 线程直接调会被跳过。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            crate::activation::activate_self();
+        });
+    }
+
     // 隐藏 ActionBar（如可见）——发现 3 修复：用 keep_active 变体，对齐
     // action_bar_show_result_internal（action_bar_commands.rs:445-452）的三步：
     //   win.hide() + after_floating_window_hide_keep_active + finalize_action_bar
