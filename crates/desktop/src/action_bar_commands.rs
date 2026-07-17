@@ -119,8 +119,13 @@ fn common_parent_dir(paths: &[String]) -> Option<String> {
 /// 检测当前选中状态。Finder 走 AppleScript，其余走 Cmd+C + changeCount。
 /// 返回的 Selection 携带全部信息（选中内容 + 鼠标坐标），下游不再碰检测细节。
 pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
-    // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）
-    let mouse = get_mouse_position(app);
+    // 鼠标坐标在检测开始时就采集（后续 Cmd+C 等 sleep 不影响坐标）。
+    // P2-3 修复：get_mouse_position 失败（CGEvent 权限缺失）时返回 None，
+    // 走 Selection::None 居中分支——比假坐标 (100,100) 导致弹到主屏左上角好。
+    let Some(mouse) = get_mouse_position(app) else {
+        log::warn!("[action-bar] 鼠标位置采集失败（CGEvent 权限？），fallback 居中");
+        return Selection::None;
+    };
 
     // ── Finder 分支：AppleScript 直接拿 selection ──
     if crate::finder_selection::is_finder_frontmost() {
@@ -677,7 +682,7 @@ fn build_enriched_text(text: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
+pub(crate) fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -694,14 +699,17 @@ pub(crate) fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
         // 原点主屏左上角，y 轴向下。与 Tauri LogicalPosition 坐标系一致。
         // 不除 scale——Quartz 已是逻辑坐标。
         log::info!("[action-bar] mouse location={},{}", point.x, point.y);
-        return (point.x, point.y);
+        return Some((point.x, point.y));
     }
-    (100.0, 100.0)
+    // P2-3 修复：CGEvent 失败（输入监控/辅助功能权限缺失）返回 None，
+    // 调用方 detect_selection fallback 到 Selection::None 居中——
+    // 原先返回 (100,100) 假坐标会让浮窗弹到主屏左上角，与 None 分支居中体验不一致。
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
-fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
-    (100.0, 100.0)
+fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
+    None
 }
 
 // ── 菜单管理命令（设置页 CRUD）──
