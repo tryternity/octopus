@@ -287,9 +287,9 @@ const EditForm = ({
   }, [capturingGlobal, form, onChange]);
 
   return (
-    <div className="space-y-3">
+    <div className="flex h-full flex-col gap-3">
       {/* 导航栏 */}
-      <div className="flex items-center gap-3 border-b border-border/40 pb-2">
+      <div className="flex shrink-0 items-center gap-3 border-b border-border/40 pb-2">
         <button
           onClick={onCancel}
           className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -305,8 +305,8 @@ const EditForm = ({
         </div>
       </div>
 
-      {/* 单卡片紧凑表单 */}
-      <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+      {/* 单卡片紧凑表单——flex-1 overflow-y-auto 内部滚动，消除外层双滚动条 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-border/50 bg-muted/15 p-4">
         {/* 标题 —— 占一行 */}
         <FormField label={t("settings.actionBar.titleLabel")}>
           <input
@@ -434,21 +434,7 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大 */}
-        {showContent && (
-          <FormField label={t("settings.actionBar.contentLabel")}>
-            <textarea
-              className="w-full min-h-[240px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-              placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
-              value={form.actionData || ""}
-              onChange={(e) => onChange({ ...form, actionData: e.target.value })}
-            />
-          </FormField>
-        )}
-
-        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
-        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
-
+        {/* 搜索关键词（仅 URL）—— 放在内容前面 */}
         {type === "url" && (
           <FormField label={t("settings.actionBar.triggerKeywordLabel")}>
             <div className="flex items-center gap-2">
@@ -467,6 +453,21 @@ const EditForm = ({
             </div>
           </FormField>
         )}
+
+        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大 */}
+        {showContent && (
+          <FormField label={t("settings.actionBar.contentLabel")}>
+            <textarea
+              className="w-full min-h-[190px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+              placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
+              value={form.actionData || ""}
+              onChange={(e) => onChange({ ...form, actionData: e.target.value })}
+            />
+          </FormField>
+        )}
+
+        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
+        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
 
         {type === "agent" && (
           <FormField label={t("settings.actionBar.agentLabel")}>
@@ -498,8 +499,8 @@ const EditForm = ({
         )}
       </div>
 
-      {/* 底部操作栏——右下角保存/取消 */}
-      <div className="flex justify-end gap-2.5">
+      {/* 底部操作栏——右下角保存/取消（shrink-0 不被压缩） */}
+      <div className="flex shrink-0 justify-end gap-2.5">
         <Button variant="outline" size="sm" onClick={onCancel}>
           {t("settings.actionBar.cancel")}
         </Button>
@@ -1151,7 +1152,7 @@ export default function ActionBarPanel({
   const isEditing = editingId !== null || draftParentId !== undefined;
 
   return (
-    <div className="w-full min-w-0">
+    <div className={cn("w-full min-w-0", isEditing && "h-full flex flex-col")}>
       {/* ── 顶部 TAB：命令管理 / 执行记录 ──
           替代原 view 切换。EditForm 覆盖时不显示 TAB（全屏编辑）。 */}
       {!isEditing && (
