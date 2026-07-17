@@ -32,7 +32,7 @@ pub async fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResp
         let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
         let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
-        let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+        let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
         let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
 
         let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
@@ -407,7 +407,7 @@ pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
 /// 兜底引擎固定 "local:zipformer:NAME"；其余查 DB 取 provider/category。
 fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {
     use crate::runtime_config::FALLBACK_ASR_ENGINE;
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     if bare_name == FALLBACK_ASR_ENGINE {
         Ok(format!("local:zipformer:{}", bare_name))
     } else {
@@ -499,7 +499,7 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
 /// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 

@@ -397,7 +397,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
 
 /// 列出所有可用模型，让用户输入数字选择
 fn select_model() -> Result<String> {
-    let engines = octopus_asr_local::config::list_engines()?;
+    let engines = octopus_asr_local::config::list_engines_from_db()?;
     if engines.is_empty() {
         anyhow::bail!("No ASR engines configured in DB");
     }

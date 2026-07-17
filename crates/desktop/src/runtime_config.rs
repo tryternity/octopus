@@ -344,7 +344,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     let current_raw = rc.read().asr_engine.clone();
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     Ok(build_asr_options(&current_raw, engines))
 }
 
@@ -382,7 +382,7 @@ pub fn switch_asr_engine(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
     validate_switch(&model_name, &engines)?;
     // 构造 3-part spec "{provider}:{category}:{model_name}"：
     // 兜底固定 local:zipformer:NAME；其余查 DB 取 provider/category。

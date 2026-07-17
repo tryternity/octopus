@@ -1037,6 +1037,38 @@ pub fn list_asr_model_details() -> Result<Vec<ModelDetailRow>> {
     })
 }
 
+/// ASR 域全量模型行（管理列表用，不过滤 is_enabled，不分 local/cloud）。
+/// 对应 `EngineInfo` 所需字段（name/provider/category/description/is_local）。
+/// 与 `load_models`（过滤 is_enabled=1、按 section 分组、供推理缓存）区分：
+/// 设置页/工具栏列表直查此函数，不经 RUNTIME_CONFIG 缓存，新增/编辑/删除后即时反映。
+pub struct AsrEngineRow {
+    pub model_name: String,
+    pub provider: String,
+    pub category: String,
+    pub description: String,
+    pub is_local: bool,
+}
+
+/// 列出 ASR 域所有模型（管理列表用）。不过滤 is_enabled，不分 local/cloud。
+pub fn list_all_asr_engines() -> Result<Vec<AsrEngineRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT model_name, provider, category, description, is_local
+             FROM models WHERE domain='asr'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AsrEngineRow {
+                model_name: r.get(0)?,
+                provider: r.get(1)?,
+                category: r.get(2)?,
+                description: r.get(3)?,
+                is_local: r.get::<_, i32>(4)? != 0,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    })
+}
+
 /// 读取 ASR 云端参考模型列表。
 /// 返回 Vec<(provider, category, models_str)>，models_str 为分号分隔。
 pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {

@@ -36,8 +36,10 @@ pub fn load_config() -> Result<AsrConfig> {
 
 /// 重载 AsrConfig 缓存（models 表）：从 DB 重读替换。
 ///
-/// desktop 在 set_model_enabled / set_model_secret_key 写 DB 后调用，让引擎下拉
-/// （`list_engines` → `load_config`）即时反映新的 is_enabled。对齐 [`reload_app_config`]。
+/// 推理路径用（`load_config` → `resolve_active_engine` / 各引擎 transcribe）。
+/// desktop 在 set_model_enabled / set_model_secret_key / add/edit/remove_cloud_model
+/// 写 DB 后调用，让推理路径的激活态缓存（`RUNTIME_CONFIG`，仅 is_enabled=1）反映变化。
+/// **管理列表不走此缓存**——`list_engines_from_db` 直查 DB 即时反映，无需 reload。
 pub fn reload_models_config() {
     match crate::db::load_models() {
         Ok(c) => {
@@ -199,18 +201,6 @@ pub struct EngineInfo {
     pub is_local: bool,
 }
 
-/// EngineCategory 对应的 provider 字符串（与 DB models.provider 一致，用于构造 3-part spec）。
-/// 本地族 → "local"；Aliyun → "aliyun"；ByteDance → "bytedance"；Tencent → "tencent"。
-fn provider_of(c: &EngineCategory) -> &'static str {
-    match c {
-        EngineCategory::Aliyun => "aliyun",
-        EngineCategory::ByteDance => "bytedance",
-        EngineCategory::Tencent => "tencent",
-        EngineCategory::Baidu => "baidu",
-        _ => "local",
-    }
-}
-
 /// EngineCategory → category 字符串（与 DB models.category 一致，用于排序、显示、构造 spec）。
 ///
 /// 三端（asr / desktop / cli）共享此唯一映射。Aliyun 对应 DB 的 `Fun-ASR` 模型族
@@ -244,26 +234,29 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
 }
 
 /// 从 DB models 表列出所有已配置的 ASR 引擎
-pub fn list_engines() -> Result<Vec<EngineInfo>> {
-    let config = load_config()?;
-    let mut engines = Vec::new();
-
-    // 复用 all_sections（与 resolve_engine_in_config 的 NameOnly 遍历共享同一 section 顺序，
-    // 避免两份手写副本发散）。
-    for (section, category) in all_sections(&config) {
-        if let Some(map) = section {
-            for (name, entry) in map {
-                engines.push(EngineInfo {
-                    name: name.clone(),
-                    provider: provider_of(&category).to_string(),
-                    category,
-                    description: entry.description.clone(),
-                    is_local: entry.is_local,
-                });
-            }
-        }
-    }
-
+/// 列出 ASR 域所有引擎——**直查 DB，不经 RUNTIME_CONFIG 缓存**。
+///
+/// 管理列表（设置页 / 工具栏 / CLI select）专用：新增 / 编辑 / 删除云端模型后即时反映，
+/// 不依赖 `reload_models_config`。与 `list_engines`（经 `load_config` → RUNTIME_CONFIG，
+/// 仅 `is_enabled=1`、供推理缓存）区分——后者保留给需要"激活态视图"的场景。
+///
+/// 推理路径（`resolve_engine_in_config` / `resolve_active_engine` / 各引擎 transcribe）
+/// **不**走此函数，继续用 `load_config`。
+pub fn list_engines_from_db() -> Result<Vec<EngineInfo>> {
+    let rows = octopus_infra::db::list_all_asr_engines()?;
+    let mut engines: Vec<EngineInfo> = rows
+        .into_iter()
+        .filter_map(|r| {
+            // provider+category → EngineCategory（provider_of 的逆映射）
+            resolve_category(&r.provider, &r.category).map(|cat| EngineInfo {
+                name: r.model_name,
+                provider: r.provider,
+                category: cat,
+                description: r.description,
+                is_local: r.is_local,
+            })
+        })
+        .collect();
     order_engine_infos(&mut engines);
     Ok(engines)
 }
