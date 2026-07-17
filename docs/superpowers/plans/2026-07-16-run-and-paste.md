@@ -36,8 +36,15 @@
 
 **根因 1 — 删除快捷键不注销**：
 - `register_action_hotkeys` 旧实现遍历 `list_action_hotkeys()` 结果（已 `WHERE global_shortcut != ''`）逐个 unregister，**删空场景下旧值不在结果集里 → 永远残留**
-- 修复：开头改用 `app.global_shortcut().unregister_all()` 全量清空再重注册
+- ~~修复：开头改用 `app.global_shortcut().unregister_all()` 全量清空再重注册~~（**回归**，见下方根因 1b）
 - 文件：`crates/desktop/src/action_hotkey.rs::register_action_hotkeys`
+
+**根因 1b — `unregister_all()` 误清其他模块（2026-07-17 二次修复）✅**：
+- 上条根因 1 改用 `unregister_all()` 有 Critical 回归：它清的是整个 global_shortcut plugin 持有的**所有**快捷键不分注册者。启动顺序：asr/clipboard/edit_global/polish_global/screenshot 先注册 → `register_action_hotkeys` 调 `unregister_all()` 清光 → 只有后注册的 action_bar_shortcut 幸存，前 5 个全失效
+- 原注释错误声称「对其他模块无副作用」——作废
+- 修复：维护进程内 `REGISTERED_SHORTCUTS: HashSet<String>` 清单，「重建时遍历清单逐个 unregister + 清单重置 + 重注册时回填」。既覆盖根因 1 的残留场景（DB 已删的只要曾在清单就能精确注销），又不误伤其他模块
+- 文件：`crates/desktop/src/action_hotkey.rs`（commit `6a2e7c05`）
+- 验证：cargo build 0 error 0 warning；cargo test 311 passed
 
 **根因 2 — fallback 误触 ActionBar**：
 - `quick_execute` 旧实现「无选中 → fallback `trigger_action_bar`」，但菜单项热键语义是「对这段文本执行动作」，没文本就不该继续

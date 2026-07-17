@@ -5,6 +5,8 @@
 > **实现完成** — auto_paste 已清理，由 global_shortcut 字段决定是否启用快速执行
 >
 > **2026-07-17 修订** — 修两个 bug：①注册清理从「按 DB 当前值逐个 unregister」改为 `unregister_all()` 全量清空，避免删除/清空快捷键后旧 handler 残留；②去掉"无选中 → fallback ActionBar 浮窗"分支，菜单项热键语义严格限定为「对选中文本执行动作」，无选中静默失败，不再劫持系统快捷键（详见 §3.3、§4、§7、§8）
+>
+> **2026-07-17 二次修订（回归修复）** — 上条修订①的 `unregister_all()` 方案有 Critical 回归：它清的是整个 global_shortcut plugin 持有的**所有**快捷键不分注册者，导致启动时其他模块（asr/clipboard/edit_global/polish_global/screenshot）已注册的快捷键被本函数清光，5 个全失效。改为维护进程内 `REGISTERED_SHORTCUTS: HashSet<String>` 清单，「按清单精确 unregister + 清单重置 + 重注册回填」——既覆盖原 bug（DB 已删的只要曾在清单就能精确注销），又不误伤其他模块。修订①关于「`unregister_all()` 无副作用」的论断作废。
 
 ## 1. 设计目标
 
@@ -42,23 +44,25 @@ ALTER TABLE action_bar_items ADD COLUMN global_shortcut TEXT NOT NULL DEFAULT ''
 
 ```rust
 pub fn register_action_hotkeys(app: &AppHandle) {
-    // 1. 先 unregister_all() 全量清空所有已注册的菜单项快捷键
+    // 1. 遍历进程内 REGISTERED_SHORTCUTS 清单逐个 unregister + 清单重置
+    //    （绝不用 unregister_all()——会误清其他模块 asr/clipboard/.../action_bar 的快捷键）
     // 2. 查 DB：WHERE global_shortcut != '' AND is_enabled = 1
-    // 3. 逐个 register + on_shortcut 回调
+    // 3. 逐个 register + on_shortcut 回调；成功则回填清单
     //    回调 → spawn worker → quick_execute(item_id, app)
 }
 ```
 
-### 3.3 必须全量清空（2026-07-17 修订）
+### 3.3 按清单精确注销（2026-07-17 二次修订）
 
-⚠️ **注销必须用 `unregister_all()` 全量清空**，不能只按 DB 当前值逐个 `unregister`。
+⚠️ **绝不用 `unregister_all()`**——它清的是整个 global_shortcut plugin 持有的**所有**快捷键，不分注册者。
 
-旧实现遍历 `list_action_hotkeys()` 结果（已过滤 `global_shortcut != ''`）逐个注销，对**删除 / 清空**场景失效：
+历史沿革（两次踩坑）：
 
-- 用户把菜单项快捷键从 `CmdOrCtrl+Shift+G` 清空 → DB 变 `''` → 查询结果集不含此项 → unregister 循环跳过 → 旧 handler 永久残留在进程内（直到下次重启）
-- 残留 handler 仍会触发，不仅菜单项热键"删不掉"，还会劫持系统快捷键（Finder 的 `Cmd+Shift+G`「前往文件夹」被吞）
+1. **初版**：遍历 `list_action_hotkeys()` 结果（已过滤 `global_shortcut != ''`）逐个注销。对**删除 / 清空**场景失效——用户把菜单项快捷键从 `CmdOrCtrl+Shift+G` 清空 → DB 变 `''` → 查询结果集不含此项 → unregister 循环跳过 → 旧 handler 永久残留在进程内（还会劫持系统快捷键，Finder `Cmd+Shift+G`「前往文件夹」被吞）。
+2. **2026-07-17 一次修订（回归）**：改为 `unregister_all()` 全量清空。注释错误声称「对其他模块无副作用」——实际上 `unregister_all()` 清的是 plugin 持有的所有快捷键。启动顺序：asr/clipboard/edit_global/polish_global/screenshot 先注册 → 本函数 `unregister_all()` 清光 → 只有后注册的 action_bar_shortcut 幸存，前 5 个全失效（Critical 回归）。
+3. **2026-07-17 二次修订（当前）**：维护进程内 `REGISTERED_SHORTCUTS: HashSet<String>` 清单。「重建时遍历清单逐个 unregister + 清单重置 + 重注册时回填」——既覆盖初版的残留场景（DB 已删的只要曾在清单就能精确注销），又不误伤其他模块。
 
-`unregister_all()` 是全量重建语义，对 action_bar / clipboard / asr / edit / polish / screenshot 各自独立注册的快捷键**无副作用**——它们走各自的 `register_*_shortcut` 路径，由各自调用方负责生命周期。但需注意：**`register_action_hotkeys` 调用时机**必须是「重建菜单项热键集合」而非「增量更新」，目前 `set_global_shortcut` 保存后全量重调一次，满足该约束。
+约束不变：**`register_action_hotkeys` 调用时机**必须是「重建菜单项热键集合」而非「增量更新」，目前 `set_global_shortcut` 保存后全量重调一次，满足该约束。
 
 ## 4. Quick Execute 链路
 
@@ -116,7 +120,7 @@ pub fn register_action_hotkeys(app: &AppHandle) {
 3. Quick Execute 的 detect 不污染 ActionBar 的 CHANGE_COUNT_BASELINE
 4. **非文本选中（None/File/Folder）时静默失败**——不 fallback 弹浮窗（2026-07-17 修订，详见 §4）
 5. 全局快捷键注册失败（系统占用）不阻断其他快捷键
-6. **菜单项热键集合的全量一致性**——`register_action_hotkeys` 调用后，进程内注册集合与当前 DB 中 `global_shortcut != '' AND is_enabled = 1` 的项严格相等（通过 `unregister_all()` + 全量重注册保证，2026-07-17 修订，详见 §3.3）
+6. **菜单项热键集合的全量一致性**——`register_action_hotkeys` 调用后，进程内注册集合与当前 DB 中 `global_shortcut != '' AND is_enabled = 1` 的项严格相等（通过 `REGISTERED_SHORTCUTS` 清单精确注销 + 全量重注册保证，2026-07-17 二次修订，详见 §3.3）
 
 ## 8. 降级
 
