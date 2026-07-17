@@ -40,6 +40,8 @@ pub struct ModelEntry {
     #[serde(default)]
     pub is_enabled: bool,
     #[serde(default)]
+    pub is_available: bool,
+    #[serde(default)]
     pub is_streaming: bool,
     #[serde(default)]
     pub description: String,
@@ -224,22 +226,17 @@ where
 /// v24：action_bar_items 加 shortcut 列。
 /// v35：搜索频次加权表。
 /// v36：统一 launcher_index 表（合并 app_index + 预留 command）+ action_bar_items 加 global_shortcut 列。
+/// v37：models 表语义重构——新增 is_available 列（可用），is_enabled 改表激活（每域仅 1）。
+///      数据迁移用户手工（开发期），代码只负责旧库补 is_available 列。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 36 {
-        // 自愈检查：开发期中间 binary 可能跳设 user_version=36 但迁移没跑完
-        // （app_index 残留 + launcher_index 可能缺失）。检测到 app_index 残留则补跑。
-        let app_index_exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
-            [], |r| r.get(0),
-        )?;
-        if app_index_exists == 0 {
-            return Ok(()); // 已最新，无 app_index 残留
-        }
-        log::warn!("schema v36 but app_index still exists——self-healing migration");
+    if v >= 37 {
+        // v37+ 已最新，直接返回。
+        // 注：app_index 自愈检查已移除——v37 库都经过 v36 迁移段（含 app_index 处理）。
+        return Ok(());
     }
     if v >= 17 {
         // v17→v31 的历史迁移已清理（2026-07-16）——这些一次性迁移（FTS5 backfill、
@@ -361,6 +358,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 36", [])?;
             log::info!("schema upgraded to v36 (launcher_index unified table + global_shortcut column)");
         }
+        // v36→v37：models 表加 is_available 列（可用语义），is_enabled 改表激活。
+        // 旧库补列：is_available 默认 0（用户手工迁移原 is_enabled 值过来）。
+        // db.sql 新库已含 is_available 列，此处仅 ALTER 给已升到 v36 的旧库补。
+        if v < 37 {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"is_available".to_string()) {
+                conn.execute("ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0", [])?;
+                log::info!("schema v37: models 补 is_available 列（原 is_enabled 值需手工迁移到 is_available）");
+            }
+            conn.execute("PRAGMA user_version = 37", [])?;
+            log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离)");
+        }
         return Ok(());
     }
 
@@ -396,8 +408,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
         CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
     )?;
-    conn.execute("PRAGMA user_version = 36", [])?;
-    log::info!("DB initialized (v36): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 37", [])?;
+    log::info!("DB initialized (v37): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -742,9 +754,11 @@ pub fn load_models() -> Result<AsrConfig> {
 }
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
+    // 新语义：is_enabled=1 表激活（每域仅 1 个），is_available=1 表可用。
+    // 推理路径只需激活的那一个——LIMIT 1（虽然每域只有一个 is_enabled=1，加 LIMIT 保险）。
     let mut stmt = conn.prepare(
         "SELECT provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming
-         FROM models WHERE domain='asr' AND is_enabled = 1",
+         FROM models WHERE domain='asr' AND is_enabled=1 AND is_available=1 LIMIT 1",
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -787,6 +801,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             secret_key,
             is_local: is_local != 0,
             is_enabled: is_enabled != 0,
+            is_available: true, // load_models_at 只取 is_available=1 的行
             is_streaming: is_streaming != 0,
         };
         // provider='aliyun' → asr.aliyun；provider='bytedance' → asr.bytedance；
@@ -828,6 +843,7 @@ pub struct LocalAsrModelRow {
     pub secret_key: String,
     pub description: String,
     pub is_enabled: bool,
+    pub is_available: bool,
     pub is_streaming: bool,
 }
 
@@ -838,7 +854,7 @@ pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
 
 fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
          FROM models WHERE domain='asr' AND is_local = 1",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -850,7 +866,8 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
             secret_key: row.get(4)?,
             description: row.get(5)?,
             is_enabled: row.get::<_, i32>(6)? != 0,
-            is_streaming: row.get::<_, i32>(7)? != 0,
+            is_available: row.get::<_, i32>(7)? != 0,
+            is_streaming: row.get::<_, i32>(8)? != 0,
         })
     })?;
     let mut out = Vec::new();
@@ -865,7 +882,7 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
 pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
              FROM models WHERE domain=?1 AND is_local = 1",
         )?;
         let rows = stmt.query_map(params![domain], |row| {
@@ -877,7 +894,8 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
                 secret_key: row.get(4)?,
                 description: row.get(5)?,
                 is_enabled: row.get::<_, i32>(6)? != 0,
-                is_streaming: row.get::<_, i32>(7)? != 0,
+                is_available: row.get::<_, i32>(7)? != 0,
+                is_streaming: row.get::<_, i32>(8)? != 0,
             })
         })?;
         let mut out = Vec::new();
@@ -888,14 +906,16 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
     })
 }
 
-/// 写某本地模型的 is_enabled。写 DB。
+/// 写某本地模型的 is_available（文件就绪/可用）。写 DB。
+/// 注：函数名保留 set_model_enabled 避免大面积改名（调用方 model_commands 等），
+/// 语义从原 is_enabled 迁移到 is_available。
 pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
     with_db(|conn| set_model_enabled_at(conn, model_name, enabled))
 }
 
 fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
     conn.execute(
-        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
+        "UPDATE models SET is_available = ?1 WHERE model_name = ?2 AND is_local = 1 AND domain IN ('asr','translate','ocr')",
         params![if enabled { 1 } else { 0 }, model_name],
     )?;
     Ok(())
@@ -916,7 +936,8 @@ fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> R
 
 // ── 云端模型 CRUD（用户自建，domain='asr'|'llm' AND is_local=0）──
 
-/// 新增云端模型。is_enabled=1（前端已测试通过才保存）。返回新行 id。
+/// 新增云端模型。is_available=1（前端已测试通过才保存=可用）；is_enabled=0（不自动激活，
+/// 用户在管理页显式激活）。返回新行 id。
 pub fn insert_cloud_model(
     domain: &str, provider: &str, category: &str,
     model_name: &str, source: &str, secret_key: &str,
@@ -924,8 +945,8 @@ pub fn insert_cloud_model(
 ) -> Result<i64> {
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local, is_enabled, is_streaming, is_thinking)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8)",
+            "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local, is_available, is_enabled, is_streaming, is_thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, 0, ?7, ?8)",
             params![domain, provider, category, model_name, source, secret_key,
                     is_streaming as i32, is_thinking as i32],
         )?;
@@ -1135,7 +1156,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
             let mut stmt = conn.prepare(
                 "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND provider=?1 AND category=?2 AND model_name=?3 AND is_enabled = 1",
+                 WHERE domain='llm' AND provider=?1 AND category=?2 AND model_name=?3 AND is_available = 1",
             )?;
             let mut rows = stmt.query_map(params![provider, category, model_name], |row| {
                 Ok((
@@ -1153,7 +1174,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
             let mut stmt = conn.prepare(
                 "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND model_name=?1 AND is_enabled = 1
+                 WHERE domain='llm' AND model_name=?1 AND is_available = 1
                  ORDER BY is_local DESC",
             )?;
             let mut rows = stmt.query_map(params![model_name], |row| {
@@ -1199,14 +1220,15 @@ pub struct ModelRow {
     pub is_thinking: bool,
     pub is_streaming: bool,
     pub is_enabled: bool,
+    pub is_available: bool,
 }
 
-/// 按 id 查询 models 表行（不限 domain）。用于 translate_engine 存 DB id 时反查引擎。
+/// 按 id 查询 models 表行（不限 domain）。用于反查引擎配置。
 pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, domain, provider, category, model_name, source, secret_key,
-                    is_local, is_thinking, is_streaming, is_enabled
+                    is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE id = ?1",
         )?;
         let row = stmt.query_row(params![id], |r| {
@@ -1222,9 +1244,51 @@ pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
                 is_thinking: r.get::<_, i64>(8)? != 0,
                 is_streaming: r.get::<_, i64>(9)? != 0,
                 is_enabled: r.get::<_, i64>(10)? != 0,
+                is_available: r.get::<_, i64>(11)? != 0,
             })
         }).optional()?;
         Ok(row)
+    })
+}
+
+/// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。
+/// 供 load_active_engine(domain) 使用——4 域统一激活查询。
+pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    is_local, is_thinking, is_streaming, is_enabled, is_available
+             FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
+        )?;
+        let row = stmt.query_row(params![domain], |r| {
+            Ok(ModelRow {
+                id: r.get(0)?,
+                domain: r.get(1)?,
+                provider: r.get(2)?,
+                category: r.get(3)?,
+                model_name: r.get(4)?,
+                source: r.get(5)?,
+                secret_key: r.get(6)?,
+                is_local: r.get::<_, i64>(7)? != 0,
+                is_thinking: r.get::<_, i64>(8)? != 0,
+                is_streaming: r.get::<_, i64>(9)? != 0,
+                is_enabled: r.get::<_, i64>(10)? != 0,
+                is_available: r.get::<_, i64>(11)? != 0,
+            })
+        }).optional()?;
+        Ok(row)
+    })
+}
+
+/// 切换激活模型——单语句全量刷新某域的 is_enabled（仅在可用模型中切换）。
+/// SQLite 用 IIF（不是 MySQL 的 IF）。每域记录不多（最多几十条），全量刷新无性能问题。
+pub fn switch_active_model(domain: &str, id: i64) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE models SET is_enabled = IIF(id=?1, 1, 0) WHERE domain=?2 AND is_available=1",
+            params![id, domain],
+        )?;
+        Ok(())
     })
 }
 
@@ -1240,13 +1304,15 @@ pub struct LlmModelInfo {
     pub secret_key: String,
     pub is_streaming: bool,
     pub is_thinking: bool,
+    pub is_enabled: bool,
 }
 
-/// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
+/// 列出所有可用的 LLM 润色模型（domain='llm' AND is_available=1），按 is_local 降序、category 升序排序。
+/// 管理列表用——含未激活（is_enabled=0）的可用模型。is_enabled 字段供前端标 current。
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking FROM models
-         WHERE domain='llm' AND is_enabled = 1
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking, is_enabled FROM models
+         WHERE domain='llm' AND is_available = 1
          ORDER BY is_local DESC, category",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1260,6 +1326,7 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
             secret_key: row.get::<_, String>(6)?,
             is_streaming: row.get::<_, i32>(7)? != 0,
             is_thinking: row.get::<_, i32>(8)? != 0,
+            is_enabled: row.get::<_, i32>(9)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -1282,7 +1349,7 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
 /// - 不过滤 is_enabled（云端模型默认入库即 is_enabled=1；保留以便未来支持禁用）
 fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking
+        "SELECT id, provider, category, model_name, is_local, source, secret_key, is_streaming, is_thinking, is_enabled
          FROM models WHERE domain = ?1 AND is_local = 0
          ORDER BY category, model_name",
     )?;
@@ -1297,6 +1364,7 @@ fn list_cloud_models_by_domain_at(conn: &Connection, domain: &str) -> Result<Vec
             secret_key: row.get::<_, String>(6)?,
             is_streaming: row.get::<_, i32>(7)? != 0,
             is_thinking: row.get::<_, i32>(8)? != 0,
+            is_enabled: row.get::<_, i32>(9)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -2907,7 +2975,6 @@ mod tests {
         cfg.engine_mode = "websocket".into();
         cfg.remote_url = "http://rt:9999".into();
         cfg.grpc_endpoint = "http://grpc:50051".into();
-        cfg.asr_engine = "local:zipformer:sentinel".into();
         cfg.language = "en".into();
         cfg.asr_shortcut = "Alt+1".into();
         cfg.paste_method = "direct".into();
@@ -2919,7 +2986,6 @@ mod tests {
         cfg.polish_mode = PolishMode::Intermediate;
         cfg.polish_min_interval = 7.5;
         cfg.pause_polish_threshold_ms = 999.0;
-        cfg.polish_llm = "local:sentinel-llm".into();
         cfg.asr_hardware_accelerated = false;
         cfg.asr_correct = false;
         cfg.output_simplified = false;
@@ -2934,7 +3000,6 @@ mod tests {
         cfg.clipboard_max_age_days = 7;
         cfg.clipboard_enabled = false;
         cfg.screenshot_shortcut = "Alt+6".into();
-        cfg.ocr_model = "sentinel-ocr".into();
 
         save_app_config_at(&conn, &cfg).unwrap();
         let loaded = load_app_config_at(&conn).unwrap();
@@ -2950,7 +3015,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 36, "全新库 init_schema 后应到 v36");
+        assert_eq!(v, 37, "全新库 init_schema 后应到 v37");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3229,9 +3294,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 36（迁移链一路走到最新）
+        // 验证 user_version = 37（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
 
         // v36：app_index 表应不存在（被 launcher_index 取代）
         let app_index_count: i64 = conn.query_row(
@@ -3280,7 +3345,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3410,7 +3475,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 36);
+        assert_eq!(v, 37);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3475,39 +3540,30 @@ mod tests {
     #[test]
     fn seed_then_load_round_trips() {
         let conn = open_init();
-        // 强制启用所有模型做断言测试
-        conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
+        // 新语义：is_enabled=激活（每域仅 1），is_available=可用。
+        // 激活 zipformer 模型（先置 available，再置 enabled）
+        conn.execute("UPDATE models SET is_available = 1 WHERE model_name='zipformer' AND domain='asr'", []).unwrap();
+        conn.execute("UPDATE models SET is_enabled = IIF(model_name='zipformer', 1, 0) WHERE domain='asr' AND is_available=1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
-        // c796cbc 后本地 zipformer 2 条（zipformer / zipformer-large）；
-        // 兜底 zipformer-small-ctc 移出 seed，由代码（asr/config.rs FALLBACK_ASR_ENGINE_NAME）写死
-        let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
-        assert_eq!(zf.len(), 2);
+        // load_models_at 只返回激活的那一个（LIMIT 1）
+        let zf = cfg.asr.zipformer.as_ref().expect("zipformer section（激活的）");
+        assert_eq!(zf.len(), 1);
         let zp = zf.get("zipformer").unwrap();
         assert_eq!(zp.source, "asr/zipformer");
         assert!(zp.is_local, "ASR 模型应为本地模型");
-        assert!(zp.is_enabled, "测试强制 is_enabled=1，此处应为 true");
+        assert!(zp.is_available, "激活模型应 is_available=true");
         assert!(zp.is_streaming, "Zipformer 模型应支持流式");
-        assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
-        let whisper = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
-        assert!(!whisper.is_streaming, "Whisper 模型不应支持流式");
-        // c796cbc 后本地 paraformer 4 条：bilingual / multi-zh / streaming / zh
-        assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 4);
-        assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
-        // moonshine ASR（base + tiny）
-        assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
-        // 云端 ASR 已移除 seed（v31），用户自建
-        assert!(cfg.asr.aliyun.is_none(), "aliyun 云端 ASR 不再 seed");
-        assert!(cfg.asr.bytedance.is_none(), "bytedance 云端 ASR 不再 seed");
-        assert!(cfg.asr.tencent.is_none(), "tencent 云端 ASR 不再 seed");
-        assert!(cfg.asr.baidu.is_none(), "baidu 云端 ASR 不再 seed");
+        // 非激活的 section 不应出现
+        assert!(cfg.asr.whisper.is_none(), "whisper 未激活不应出现");
+        assert!(cfg.asr.paraformer.is_none(), "paraformer 未激活不应出现");
     }
 
     #[test]
     fn test_load_llm_model() {
         let conn = open_init();
-        // LLM 不再 seed（v31），插入测试数据
+        // LLM 不再 seed（v31），插入测试数据（is_available=1 表示可用）
         conn.execute_batch(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_available)
              VALUES
              ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','GLM-4 FlashX',0,0,1),
              ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','DeepSeek V4 Flash',1,0,1),
@@ -3559,7 +3615,7 @@ mod tests {
 
         // 插入 is_local=1 的 LLM 行，验证精确命中
         conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_available)
              VALUES ('llm', 'ollama', 'qwen', 'qwen3-8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
             [],
         )
@@ -3625,12 +3681,12 @@ mod tests {
         set_model_enabled_at(&conn, "paraformer-streaming", true).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
-        assert!(p.is_enabled);
+        assert!(p.is_available);
         // 关掉再读
         set_model_enabled_at(&conn, "paraformer-streaming", false).unwrap();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
         let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
-        assert!(!p.is_enabled);
+        assert!(!p.is_available);
     }
 
     #[test]
@@ -3646,9 +3702,9 @@ mod tests {
     #[test]
     fn list_llm_models_filters_disabled_and_sorts() {
         let conn = open_init();
-        // LLM 不再 seed（v31），插入测试数据
+        // LLM 不再 seed（v31），插入测试数据（is_available=1 表示可用）
         conn.execute_batch(
-            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_available)
              VALUES
              ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','',0,1),
              ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','',0,1),
@@ -3657,9 +3713,9 @@ mod tests {
              ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1),
              ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','',0,1)"
         ).unwrap();
-        // 禁用 aliyun provider 下全部 3 条
+        // 禁用 aliyun provider 下全部 3 条（is_available=0）
         conn.execute(
-            "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND provider='aliyun'",
+            "UPDATE models SET is_available = 0 WHERE domain='llm' AND provider='aliyun'",
             [],
         ).unwrap();
         let list = list_llm_models_at(&conn).unwrap();
@@ -3675,17 +3731,17 @@ mod tests {
     #[test]
     fn list_llm_models_at_empty_when_all_disabled() {
         let conn = open_init();
-        // seed 全 is_enabled=0（默认）
+        // seed 无 LLM 数据（用户自建）
         let list = list_llm_models_at(&conn).unwrap();
-        assert!(list.is_empty(), "全禁用时返回空");
+        assert!(list.is_empty(), "无 LLM 数据时返回空");
     }
 
     #[test]
     fn list_ocr_models_returns_all() {
         let conn = open_init();
         let list = list_ocr_models_at(&conn).unwrap();
-        // seed 2 条 OCR（PP-OCRv6-small is_enabled=1 + PP-OCRv5 is_enabled=0），全部返回
-        assert_eq!(list.len(), 2, "seed 2 条 OCR，不过滤 is_enabled");
+        // seed 2 条 OCR，全部返回（list_ocr_models_at 不过滤 is_available/is_enabled）
+        assert_eq!(list.len(), 2, "seed 2 条 OCR，全量返回");
         assert!(list.iter().any(|m| m.model_name == "PP-OCRv6-small"));
         assert!(list.iter().any(|m| m.model_name == "PP-OCRv5"));
     }
@@ -3693,10 +3749,10 @@ mod tests {
     #[test]
     fn list_ocr_models_includes_all_even_disabled() {
         let conn = open_init();
-        conn.execute("UPDATE models SET is_enabled = 0 WHERE domain='ocr'", []).unwrap();
+        conn.execute("UPDATE models SET is_available = 0 WHERE domain='ocr'", []).unwrap();
         let list = list_ocr_models_at(&conn).unwrap();
-        // 即使全部 is_enabled=0，仍返回全部（前端需展示供切换）
-        assert_eq!(list.len(), 2, "全禁用时仍返回全部 OCR 模型");
+        // 即使全部 is_available=0，仍返回全部（前端需展示供切换）
+        assert_eq!(list.len(), 2, "全不可用时仍返回全部 OCR 模型");
     }
 
     #[test]
@@ -3890,7 +3946,6 @@ mod tests {
         use crate::config::PolishMode;
         let conn = open_init();
         let mut cfg = load_app_config_at(&conn).unwrap();
-        cfg.asr_engine = "whisper-small".into();
         cfg.polish_mode = PolishMode::Intermediate;
         cfg.microphone = "My Mic".into();
         cfg.segment_silence = 350.0;
@@ -3899,7 +3954,6 @@ mod tests {
         save_app_config_at(&conn, &cfg).unwrap();
 
         let cfg2 = load_app_config_at(&conn).unwrap();
-        assert_eq!(cfg2.asr_engine, "whisper-small");
         assert_eq!(cfg2.polish_mode, PolishMode::Intermediate);
         assert_eq!(cfg2.microphone, "My Mic");
         assert_eq!(cfg2.segment_silence, 350.0);
@@ -3914,11 +3968,11 @@ mod tests {
         let conn = open_init();
         conn.execute(
             "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
-            params!["asr_engine", "sensevoice-test"],
+            params!["language", "ja"],
         ).unwrap();
         let cfg = load_app_config_at(&conn).unwrap();
-        assert_eq!(cfg.asr_engine, "sensevoice-test");
-        assert_eq!(cfg.language, "auto"); // 其余不变
+        assert_eq!(cfg.language, "ja");
+        assert_eq!(cfg.engine_mode, "embedded"); // 其余不变
     }
 
     #[test]
@@ -4332,7 +4386,7 @@ mod tests {
         let translate_rows: Vec<LocalAsrModelRow> = {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_streaming
+                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
                      FROM models WHERE domain='translate' AND is_local = 1",
                 )
                 .unwrap();
@@ -4345,7 +4399,8 @@ mod tests {
                     secret_key: row.get(4)?,
                     description: row.get(5)?,
                     is_enabled: row.get::<_, i32>(6)? != 0,
-                    is_streaming: row.get::<_, i32>(7)? != 0,
+                    is_available: row.get::<_, i32>(7)? != 0,
+                    is_streaming: row.get::<_, i32>(8)? != 0,
                 })
             }).unwrap();
             rows.filter_map(|r| r.ok()).collect()
