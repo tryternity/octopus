@@ -50,7 +50,7 @@ settings:
     agent: Agent 管理
     hotword: 热词管理
     models: 模型管理
-    prompts: 提 示 词
+    prompts: 提示配方
     system: 系统状态
   effect:
     now: 立即

@@ -1,4 +1,4 @@
-//! 设置窗口：独立 Tauri 窗口，原生标题栏，800×600 可调大小。
+//! 设置窗口：独立 Tauri 窗口，原生标题栏，960×600 可调大小。
 //!
 //! 单例管理：已打开则 set_focus，不重复创建。
 //! macOS：打开设置窗口时切换到 Regular 激活策略（Dock 显示图标），
@@ -7,7 +7,7 @@
 use parking_lot::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-const SETTINGS_WIDTH: f64 = 800.0;
+const SETTINGS_WIDTH: f64 = 960.0;
 const SETTINGS_HEIGHT: f64 = 600.0;
 const MIN_WIDTH: f64 = 640.0;
 const MIN_HEIGHT: f64 = 480.0;
