@@ -27,6 +27,9 @@ resolver = "2"
 #strip = true
 #lto = "fat"
 #codegen-units = 1
+[profile.profiling]
+inherits="release"
+debug=true # 日常开发 release 打开 debug 选项，体积+但可 profile
 
 [workspace.dependencies]
 parking_lot = "0.12"
