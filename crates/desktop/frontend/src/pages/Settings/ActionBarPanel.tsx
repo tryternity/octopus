@@ -288,20 +288,30 @@ const EditForm = ({
 
   return (
     <div className="space-y-3">
-      {/* 导航栏 */}
-      <div className="flex items-center gap-3 border-b border-border/40 pb-2">
-        <button
-          onClick={onCancel}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          {ti18n("settings.actionBar.backToMenu")}
-        </button>
+      {/* 导航栏——返回在左，保存/取消在右 */}
+      <div className="flex items-center justify-between border-b border-border/40 pb-2">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onCancel}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {ti18n("settings.actionBar.backToMenu")}
+          </button>
+          <div className="flex items-center gap-2">
+            <span className={cn("h-2 w-2 rounded-full", meta.dot)} />
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+              {meta.label}
+            </span>
+          </div>
+        </div>
         <div className="flex items-center gap-2">
-          <span className={cn("h-2 w-2 rounded-full", meta.dot)} />
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-            {meta.label}
-          </span>
+          <Button variant="outline" size="sm" onClick={onCancel}>
+            {t("settings.actionBar.cancel")}
+          </Button>
+          <Button variant="voice" size="sm" onClick={onSave}>
+            {t("settings.actionBar.save")}
+          </Button>
         </div>
       </div>
 
@@ -407,11 +417,38 @@ const EditForm = ({
           </div>
         )}
 
-        {/* 内容 textarea —— 一行（仅 ai/url/script 等需要内容的类型） */}
+        {/* 执行选项（仅 script）—— 放在内容前面 */}
+        {type === "script" && (
+          <FormField label={t("settings.actionBar.execOptions")}>
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2.5">
+                <Toggle
+                  checked={form.isAsync ?? true}
+                  onChange={(v) => onChange({
+                    ...form, isAsync: v,
+                    writeOutputToClipboard: v ? false : form.writeOutputToClipboard,
+                  })}
+                />
+                <span className="text-xs text-muted-foreground">{t("settings.actionBar.asyncExec")}</span>
+              </div>
+              {!(form.isAsync ?? true) && (
+                <div className="flex items-center gap-2.5">
+                  <Toggle
+                    checked={form.writeOutputToClipboard ?? false}
+                    onChange={(v) => onChange({ ...form, writeOutputToClipboard: v })}
+                  />
+                  <span className="text-xs text-muted-foreground">{t("settings.actionBar.writeToClipboard")}</span>
+                </div>
+              )}
+            </div>
+          </FormField>
+        )}
+
+        {/* 内容 textarea —— 拉高方便写长 prompt（润色 prompt 等） */}
         {showContent && (
           <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
-              className="w-full min-h-[100px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+              className="w-full min-h-[200px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
               placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
@@ -419,7 +456,7 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 类型特定配置 —— 条件区，inline 在同一卡片内，不再单独卡片 */}
+        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
         {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
 
         {type === "url" && (
@@ -469,42 +506,6 @@ const EditForm = ({
             </select>
           </FormField>
         )}
-
-        {type === "script" && (
-          <FormField label={t("settings.actionBar.execOptions")}>
-            <div className="space-y-2.5">
-              <div className="flex items-center gap-2.5">
-                <Toggle
-                  checked={form.isAsync ?? true}
-                  onChange={(v) => onChange({
-                    ...form, isAsync: v,
-                    writeOutputToClipboard: v ? false : form.writeOutputToClipboard,
-                  })}
-                />
-                <span className="text-xs text-muted-foreground">{t("settings.actionBar.asyncExec")}</span>
-              </div>
-              {!(form.isAsync ?? true) && (
-                <div className="flex items-center gap-2.5">
-                  <Toggle
-                    checked={form.writeOutputToClipboard ?? false}
-                    onChange={(v) => onChange({ ...form, writeOutputToClipboard: v })}
-                  />
-                  <span className="text-xs text-muted-foreground">{t("settings.actionBar.writeToClipboard")}</span>
-                </div>
-              )}
-            </div>
-          </FormField>
-        )}
-      </div>
-
-      {/* 操作栏 */}
-      <div className="flex justify-end gap-2.5">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          {t("settings.actionBar.cancel")}
-        </Button>
-        <Button variant="voice" size="sm" onClick={onSave}>
-          {t("settings.actionBar.save")}
-        </Button>
       </div>
     </div>
   );
