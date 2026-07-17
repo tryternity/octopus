@@ -257,6 +257,9 @@ export default function ActionBar() {
   // 动态调整窗口高度 + 位置（展开方向）
   // 用 generation token 防"快速 Tab 切换"时异步乱序——只让最后一次 resize 生效
   const resizeGenRef = useRef(0);
+  // 上次 resize 时的目标高度——搜索流式 batch 触发 effect 时，若 totalHeight 未变则跳过
+  // setSize（避免每 batch setSize+setPosition 抖动 + focus 争夺）。2026-07-17 性能优化。
+  const lastTotalHeightRef = useRef<number | null>(null);
   useEffect(() => {
     const win = getCurrentWindow();
     const inSearch = hasQuery(query);
@@ -287,26 +290,33 @@ export default function ActionBar() {
       }
     }
 
+    // 高度未变 → 跳过本次 resize（搜索流多 batch 但 length 未涨 / 仅 query 文本变化等场景）
+    // 仍保留 focus 恢复（input 可能因别的操作失焦）
+    const heightChanged = lastTotalHeightRef.current !== totalHeight;
+    lastTotalHeightRef.current = totalHeight;
+
     // 序列化：每次只执行最新一代 resize
     const gen = ++resizeGenRef.current;
     const apply = async () => {
       if (gen !== resizeGenRef.current) return; // 已被更新一代取代
-      // 阶段 1：用估算常量初步 setSize，让 DOM 按新窗口尺寸重排
-      await win.setSize(new LogicalSize(WINDOW_WIDTH, totalHeight));
-      if (gen !== resizeGenRef.current) return;
-      if (targetX !== null && targetY !== null) {
-        await win.setPosition(new LogicalPosition(targetX, targetY));
-      }
+      if (heightChanged) {
+        // 阶段 1：用估算常量初步 setSize，让 DOM 按新窗口尺寸重排
+        await win.setSize(new LogicalSize(WINDOW_WIDTH, totalHeight));
+        if (gen !== resizeGenRef.current) return;
+        if (targetX !== null && targetY !== null) {
+          await win.setPosition(new LogicalPosition(targetX, targetY));
+        }
 
-      // 阶段 2：实测根容器实际高度，精确修正窗口。
-      // setSize resolve 后 webview 已按新尺寸重排，scrollHeight 是准确的。
-      // 不再依赖估算常量——跨平台/DPR/分辨率/字体变化自适应，无闪烁（paint 前完成修正）。
-      // +2px 圆角预留：rounded-[10px] 底部弧线会裁剪最后一点内容，scrollHeight 不含此视觉空间。
-      const el = actionBarRef.current;
-      if (el) {
-        const actual = Math.ceil(el.scrollHeight) + 2;
-        if (Math.abs(actual - totalHeight) > 1) {
-          await win.setSize(new LogicalSize(WINDOW_WIDTH, actual));
+        // 阶段 2：实测根容器实际高度，精确修正窗口。
+        // setSize resolve 后 webview 已按新尺寸重排，scrollHeight 是准确的。
+        // 不再依赖估算常量——跨平台/DPR/分辨率/字体变化自适应，无闪烁（paint 前完成修正）。
+        // +2px 圆角预留：rounded-[10px] 底部弧线会裁剪最后一点内容，scrollHeight 不含此视觉空间。
+        const el = actionBarRef.current;
+        if (el) {
+          const actual = Math.ceil(el.scrollHeight) + 2;
+          if (Math.abs(actual - totalHeight) > 1) {
+            await win.setSize(new LogicalSize(WINDOW_WIDTH, actual));
+          }
         }
       }
 
