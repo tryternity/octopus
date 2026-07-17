@@ -129,21 +129,62 @@ pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {
 /// 恒返回 (0,0) —— 轮询会判定光标恒在小条外（除非小条恰好在屏幕原点），整窗被设为穿透、
 /// 小条内按钮无法点击。这是 Wayland 协议层限制（非焦点窗口不可读全局输入），目前无解，
 /// 用户可改用 XWayland 运行以恢复 X11 行为。
+///
+/// **双频率状态机**（2026-07-17 性能优化）：
+/// - **慢检测模式（200ms tick）**：窗口隐藏 / 长篇态（整窗可交互）时使用，仅检查
+///   `is_visible` + `RESULT_CLICK_THROUGH` 是否需要升级到高频。原实现 33ms tick 即使
+///   窗口隐藏也每 tick 跑 4 次 IPC（get_webview_window + is_visible +
+///   cursor_position + outer_position），导致闲置时 ~7% CPU + libpas scavenger
+///   持续 spin（每 IPC 涉及 NSWindow 引用 / autoreleasepool / 序列化临时分配）。
+/// - **高频跟踪模式（33ms tick）**：仅当窗口可见 + 精简态（click-through 开启）
+///   进入，按光标位置实时切换 setIgnoresMouseEvents。鼠标移出小条立即降级回穿透，
+///   用户体验无变化（33ms = 30 FPS，超过人手移动感知上限）。
+/// - 进入高频模式前重置 interval（`set_at_now`），避免 burst tick 补累积欠债。
 pub fn start_click_through_poller(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
+        // 慢检测间隔：仅查"是否需要进入高频模式"，200ms 足够（用户展开精简态后 200ms 内
+        // 开始响应不影响感知）。窗口隐藏 / 长篇态时 idle 开销 ≈ 0（IPC 仅 is_visible）。
+        let mut slow_poll = tokio::time::interval(std::time::Duration::from_millis(200));
+        // 高频跟踪间隔：精简态可见时管理穿透切换，33ms = 30 FPS。
+        let mut fast_poll = tokio::time::interval(std::time::Duration::from_millis(33));
         let mut cur_ignore = false; // 当前是否正在穿透（ignore mouse events）
+        let mut in_fast_mode = false;
+
         loop {
-            poll.tick().await;
-            let Some(win) = app.get_webview_window(WINDOW_LABEL) else { continue };
-            // 窗口隐藏或长篇态（整窗可交互）时不穿透
+            if !in_fast_mode {
+                // ── 慢检测模式 ──
+                slow_poll.tick().await;
+                let Some(win) = app.get_webview_window(WINDOW_LABEL) else { continue };
+                let visible = win.is_visible().unwrap_or(false);
+                let need_through = RESULT_CLICK_THROUGH.load(Ordering::Relaxed);
+                if !visible || !need_through {
+                    // 不需要穿透：清理残留状态，留在慢模式
+                    if cur_ignore {
+                        set_result_ignores_mouse(&win, false);
+                        cur_ignore = false;
+                    }
+                    continue;
+                }
+                // 升级到高频模式：重置 fast_poll 避免补累积 tick
+                fast_poll.reset();
+                in_fast_mode = true;
+            }
+
+            // ── 高频跟踪模式 ──
+            fast_poll.tick().await;
+            let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
+                in_fast_mode = false;
+                continue;
+            };
             let visible = win.is_visible().unwrap_or(false);
             let need_through = RESULT_CLICK_THROUGH.load(Ordering::Relaxed);
             if !visible || !need_through {
+                // 降级条件触发：清理穿透状态 + 回慢模式
                 if cur_ignore {
                     set_result_ignores_mouse(&win, false);
                     cur_ignore = false;
                 }
+                in_fast_mode = false;
                 continue;
             }
             // 精简态 + 可见：读全局鼠标位置，判是否在顶部小条矩形内
