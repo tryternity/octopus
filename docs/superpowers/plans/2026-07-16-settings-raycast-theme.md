@@ -69,8 +69,10 @@
 - [x] **E3 窗口默认宽度 800→960**：`settings_window.rs SETTINGS_WIDTH`，方便提示词查看。同步 architecture.md / desktop-app.md 尺寸描述。
 - [x] **E4 命名调整**（zh-CN，en 不动）：nav.agent「Agent 管理」→「智能体管理」、agentPanel.title/tasksTitle 同步、nav.prompts「提示词」→「提示配方」。
 - [x] **E5 去冗余页面 title**：ActionBarPanel 删页头签名色条+mono 标签（操作组左右分布：辅助操作左、新增主操作右）；PromptsPanel 列表视图删 header（保留查看/编辑上下文标题）；清理无引用死 i18n key（actionBar.editMenuItem/scriptRecords/menuManage、prompts.header、hotword.title/header/intro）。
-- [x] **E6 HotwordPanel 重写为左右分栏**：原 3-Card 垂直堆叠 → 左栏 220px 场景列表（选中 voice 竖条 + toggle + 重命名 + 导出/删除 + 底部新建/导入）+ 右栏上下分区（右上 方言模糊+新增热词操作行 / 右下 搜索+排序+词卡网格+挖掘面板）。删本地 SectionCard 组件及未用 imports。
-- [x] **验证**：`tsc --noEmit` 0 error；`vite build` 成功；`cargo build -p octopus-desktop --features embedded` 0 error 0 warning；`cargo test --bin octopus-desktop` 311 passed。
+- [x] **E6 HotwordPanel 重写为左右分栏**：原 3-Card 垂直堆叠 → 左栏场景列表（选中 voice 竖条 + 底部新建/导入）+ 右栏上下分区（右上 方言模糊+新增热词操作行 / 右下 搜索+排序+词卡网格+挖掘面板）。删本地 SectionCard 组件及未用 imports。**左栏宽度经实机调整：初版 220px 过宽，改为 180px** 确保右栏 4 个热词卡片从容排列；场景行改两行布局（第一行场景名+词数，第二行左 Toggle 右对齐下载/删除，删除走 confirmDialog 二次确认）。
+- [x] **验证**：
+  - 编译/单测：`tsc --noEmit` 0 error；`vite build` 成功；`cargo build -p octopus-desktop --features embedded` 0 error 0 warning；`cargo test --bin octopus-desktop` 311 passed。
+  - 运行时（2026-07-17 实机确认）：✅ Azure Mist 主题视觉（primary 深靛蓝按钮 / voice sky blue 录音指示 / CodeMirror 链接）；✅ 热词左右分栏交互（行选中 / toggle 隔离 / 重命名 / 挖掘面板 / 180px 左栏 + 4 卡排列）；✅ 热键修复回归（启动后 asr/clipboard/edit_global/polish_global/screenshot 五个快捷键正常，未被 register_action_hotkeys 误清）。
 
 ## 不做的事（明确边界）
 
