@@ -65,7 +65,7 @@
 **Interfaces:**
 - Produces: `TranslationEngine` trait、`TranslationManager`、`M2M100Tokenizer`
 
-- [ ] **Step 1: 创建 Cargo.toml**
+- [x] **Step 1: 创建 Cargo.toml**
 
 ```toml
 [package]
@@ -92,7 +92,7 @@ ort = { version = "2.0.0-rc.12", features = ["cuda"] }
 ort = { version = "2.0.0-rc.12", features = ["directml"] }
 ```
 
-- [ ] **Step 2: 创建 src/lib.rs**
+- [x] **Step 2: 创建 src/lib.rs**
 
 ```rust
 pub mod engine;
@@ -107,7 +107,7 @@ pub use discovery::{discover_translation_models, list_downloadable_translation_m
     TranslationModelInfo, DownloadableTranslationModel};
 ```
 
-- [ ] **Step 3: 创建 src/engine.rs**
+- [x] **Step 3: 创建 src/engine.rs**
 
 ```rust
 use anyhow::Result;
@@ -153,7 +153,7 @@ impl TranslationManager {
 }
 ```
 
-- [ ] **Step 4: 创建 src/tokenizer.rs**
+- [x] **Step 4: 创建 src/tokenizer.rs**
 
 ```rust
 use anyhow::{Context, Result};
@@ -236,7 +236,7 @@ impl M2M100Tokenizer {
 }
 ```
 
-- [ ] **Step 5: 创建占位的 m2m100.rs 和 discovery.rs**
+- [x] **Step 5: 创建占位的 m2m100.rs 和 discovery.rs**
 
 ```rust
 // src/m2m100.rs（Task 2 完整实现）
@@ -293,7 +293,7 @@ pub fn list_downloadable_translation_models() -> Vec<DownloadableTranslationMode
 }
 ```
 
-- [ ] **Step 6: 加入 workspace members**
+- [x] **Step 6: 加入 workspace members**
 
 在根 `Cargo.toml` 的 `members` 数组中加入 `"crates/translation"`：
 
@@ -301,12 +301,12 @@ pub fn list_downloadable_translation_models() -> Vec<DownloadableTranslationMode
 members = ["crates/infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation"]
 ```
 
-- [ ] **Step 7: 编译验证**
+- [x] **Step 7: 编译验证**
 
 Run: `cargo build -p octopus-translation`
 Expected: 编译通过（sentencepiece static 编译可能需要较长时间）
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/translation/ Cargo.toml
@@ -325,7 +325,7 @@ git commit -m "feat(translation): create octopus-translation crate skeleton"
 - Consumes: Task 1 的 `TranslationEngine` trait、`M2M100Tokenizer`
 - Produces: 可运行的 `M2M100Engine::load()` + `translate()` 方法
 
-- [ ] **Step 1: 实现 M2M100Engine::load()**
+- [x] **Step 1: 实现 M2M100Engine::load()**
 
 完整替换 `src/m2m100.rs`：
 
@@ -491,12 +491,12 @@ impl TranslationEngine for M2M100Engine {
 
 > **注意**：ONNX tensor 的 `try_extract_tensor` / `try_into_array` 返回维度可能需要调整。ORT 2.0 API 中 tensor 形状是 `[batch, seq, dim]`，`try_into_array()` 返回 `ArrayD<f32>`。实现时根据编译器错误调整 `insert_axis` / `view` 操作。
 
-- [ ] **Step 2: 编译验证（修复类型错误）**
+- [x] **Step 2: 编译验证（修复类型错误）**
 
 Run: `cargo build -p octopus-translation`
 Expected: 编译通过。可能有 ndarray / ort API 类型不匹配，逐步修复。
 
-- [ ] **Step 3: 写集成测试**
+- [x] **Step 3: 写集成测试**
 
 创建 `crates/translation/tests/m2m100_test.rs`：
 
@@ -523,12 +523,12 @@ fn test_m2m100_en_to_zh() {
 }
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test -p octopus-translation -- --nocapture`
 Expected: 两个测试通过，输出翻译结果
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/translation/
@@ -547,7 +547,7 @@ git commit -m "feat(translation): m2m100 ONNX engine with greedy decoding"
 **Interfaces:**
 - Produces: `discover_translation_models()` 返回已下载模型列表，`AppConfig.translate_engine` 字段
 
-- [ ] **Step 1: 完整实现 discovery.rs**
+- [x] **Step 1: 完整实现 discovery.rs**
 
 替换 `src/discovery.rs`：
 
@@ -645,7 +645,7 @@ fn find_model_path(repo: &str) -> Option<PathBuf> {
 }
 ```
 
-- [ ] **Step 2: AppConfig 加 translate_engine 字段**
+- [x] **Step 2: AppConfig 加 translate_engine 字段**
 
 在 `crates/infra/src/config.rs` 的 `AppConfig` struct 中（L226 `ocr_model` 之后）加入：
 
@@ -661,12 +661,12 @@ fn find_model_path(repo: &str) -> Option<PathBuf> {
             translate_engine: String::new(),
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-translation -p octopus-infra`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/translation/src/discovery.rs crates/infra/src/config.rs
@@ -688,7 +688,7 @@ git commit -m "feat(translation): model discovery + translate_engine config fiel
 - Consumes: Task 2-3 的引擎 + 发现 + 配置
 - Produces: 翻译 Tauri 命令 + action bar 本地翻译路径
 
-- [ ] **Step 1: Cargo.toml 加依赖**
+- [x] **Step 1: Cargo.toml 加依赖**
 
 在 `crates/desktop/Cargo.toml` 的 `[dependencies]` 中加入：
 
@@ -696,7 +696,7 @@ git commit -m "feat(translation): model discovery + translate_engine config fiel
 octopus-translation = { path = "../translation" }
 ```
 
-- [ ] **Step 2: 创建 translation_commands.rs**
+- [x] **Step 2: 创建 translation_commands.rs**
 
 ```rust
 use octopus_translation::{
@@ -772,7 +772,7 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
 }
 ```
 
-- [ ] **Step 3: 注册 Tauri 命令**
+- [x] **Step 3: 注册 Tauri 命令**
 
 在 `crates/desktop/src/main.rs` 中找到 `tauri::generate_handler!` 列表，加入：
 
@@ -788,7 +788,7 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
 mod translation_commands;
 ```
 
-- [ ] **Step 4: 改造 action bar 翻译分支**
+- [x] **Step 4: 改造 action bar 翻译分支**
 
 在 `crates/desktop/src/action_bar_commands.rs` 的 `execute_action_bar_inner` 函数中（L659-671），修改 `"ai"` 分支：
 
@@ -877,7 +877,7 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
 }
 ```
 
-- [ ] **Step 5: apply_config_value 加 translate_engine**
+- [x] **Step 5: apply_config_value 加 translate_engine**
 
 在 `crates/desktop/src/settings_commands.rs` 的 `apply_config_value` 函数中（L388 `_ =>` 之前）加入：
 
@@ -889,12 +889,12 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
         }
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features embedded`
 Expected: 编译通过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/ crates/translation/
@@ -912,7 +912,7 @@ git commit -m "feat(desktop): translation engine integration + action bar local 
 **Interfaces:**
 - Consumes: Task 4 的 Tauri 命令
 
-- [ ] **Step 1: ModelsPanel 传 showToast 给 TranslateTab**
+- [x] **Step 1: ModelsPanel 传 showToast 给 TranslateTab**
 
 在 `crates/desktop/frontend/src/pages/Settings/ModelsPanel.tsx` 中，找到 TranslateTab 渲染处（约 L45），改为：
 
@@ -924,7 +924,7 @@ git commit -m "feat(desktop): translation engine integration + action bar local 
 
 检查 ModelsPanel 是否已接收 `showToast`。如果是，直接传。如果不是，需要从父组件传入。
 
-- [ ] **Step 2: 重写 TranslateTab.tsx**
+- [x] **Step 2: 重写 TranslateTab.tsx**
 
 完整替换 `TranslateTab.tsx`，参照 AsrTab 模式。代码较长，以下是完整组件：
 
@@ -1125,12 +1125,12 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
 }
 ```
 
-- [ ] **Step 3: 前端编译验证**
+- [x] **Step 3: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: 无类型错误
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/
@@ -1145,38 +1145,38 @@ git commit -m "feat(frontend): TranslateTab model management + engine selector U
 - Modify: `docs/architecture.md`
 - Modify: spec 状态
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo build -p octopus-translation -p octopus-infra`
 Expected: 编译通过
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `cargo test -p octopus-translation -p octopus-infra`
 Expected: 全部 PASS
 
-- [ ] **Step 3: Desktop 编译检查**
+- [x] **Step 3: Desktop 编译检查**
 
 Run: `cargo check -p octopus-desktop --features embedded`
 Expected: 编译通过
 
-- [ ] **Step 4: 前端编译检查**
+- [x] **Step 4: 前端编译检查**
 
 Run: `cd crates/desktop/frontend && ./node_modules/.bin/tsc --noEmit`
 Expected: 无错误
 
-- [ ] **Step 5: 更新 architecture.md**
+- [x] **Step 5: 更新 architecture.md**
 
 在 `docs/architecture.md` 中加入翻译引擎模块描述：
 - workspace crate 列表加 `crates/translation/`
 - 模块表加 `octopus-translation`（m2m100 本地翻译引擎）
 - action bar 翻译流程描述更新（本地引擎优先 + LLM fallback）
 
-- [ ] **Step 6: 更新 spec 状态**
+- [x] **Step 6: 更新 spec 状态**
 
 将 `docs/superpowers/specs/2026-07-12-local-translation-engine-design.md` 状态改为"已实现"。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docs/

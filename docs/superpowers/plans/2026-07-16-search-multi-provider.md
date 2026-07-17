@@ -70,7 +70,7 @@
 - Produces: `octopus_infra::db::load_search_frequency() -> Result<HashMap<String, FreqRow>>`
 - Produces: `octopus_infra::db::FreqRow { hit_count: i64, last_hit_ts: i64, query: String }`
 
-- [ ] **Step 1: search crate 加依赖**
+- [x] **Step 1: search crate 加依赖**
 
 修改 `crates/search/Cargo.toml`，在 `[dependencies]` 末尾加：
 
@@ -81,7 +81,7 @@ evalexpr = "11"
 plist = "1"
 ```
 
-- [ ] **Step 2: 写 db.rs 频次表 record/load 的失败测试**
+- [x] **Step 2: 写 db.rs 频次表 record/load 的失败测试**
 
 在 `crates/infra/src/db.rs` 文件末尾的 `#[cfg(test)] mod tests`（如无则在文件末尾新建）里加：
 
@@ -113,12 +113,12 @@ fn search_frequency_table_exists_after_init() {
 }
 ```
 
-- [ ] **Step 3: 跑测试验证失败**
+- [x] **Step 3: 跑测试验证失败**
 
 Run: `cargo test -p octopus-infra --lib search_frequency 2>&1 | tail -20`
 Expected: FAIL（表不存在 / 函数未定义）
 
-- [ ] **Step 4: db.rs 加 FreqRow + record/load 函数**
+- [x] **Step 4: db.rs 加 FreqRow + record/load 函数**
 
 在 `crates/infra/src/db.rs` 找一个合适位置（如 app_index 相关函数附近）加：
 
@@ -176,7 +176,7 @@ pub fn load_search_frequency() -> Result<std::collections::HashMap<String, FreqR
 }
 ```
 
-- [ ] **Step 5: db.rs 加 schema v35 迁移**
+- [x] **Step 5: db.rs 加 schema v35 迁移**
 
 在 `crates/infra/src/db.rs` 的 `init_schema` 函数里，找到 v34 收尾的 `conn.execute("PRAGMA user_version = 34", [])?;`（约 :475 行），在其后加：
 
@@ -198,17 +198,17 @@ pub fn load_search_frequency() -> Result<std::collections::HashMap<String, FreqR
 并把函数顶部的 `if v >= 34 { return Ok(()); }` 改为 `if v >= 35 { return Ok(()); }`。
 同时更新 `init_schema` 上方注释（v34 行附近）加一行 `/// v35：搜索频次加权表。`。
 
-- [ ] **Step 6: 跑测试验证通过**
+- [x] **Step 6: 跑测试验证通过**
 
 Run: `cargo test -p octopus-infra --lib search_frequency 2>&1 | tail -10`
 Expected: PASS
 
-- [ ] **Step 7: 编译 infra**
+- [x] **Step 7: 编译 infra**
 
 Run: `cargo build -p octopus-infra 2>&1 | tail -10`
 Expected: 0 error 0 warning
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/search/Cargo.toml crates/infra/src/db.rs
@@ -228,7 +228,7 @@ git commit -m "feat(search): schema v35 search_frequency table + record/load fns
 - Produces: `crate::provider::{SearchProvider, SearchContext}`
 - Consumes: `crate::engine::SearchResult`、`crate::app_index::AppIndex`、`crate::bookmark::BookmarkEntry`
 
-- [ ] **Step 1: 写 provider.rs trait 定义 + SearchContext**
+- [x] **Step 1: 写 provider.rs trait 定义 + SearchContext**
 
 创建 `crates/search/src/provider.rs`：
 
@@ -279,7 +279,7 @@ pub trait SearchProvider: Send + Sync {
 }
 ```
 
-- [ ] **Step 2: lib.rs 导出 provider 模块（暂时注释 frequency，下个任务建）**
+- [x] **Step 2: lib.rs 导出 provider 模块（暂时注释 frequency，下个任务建）**
 
 修改 `crates/search/src/lib.rs`，在现有 `pub mod` 列表后加：
 
@@ -299,12 +299,12 @@ pub struct SearchContext<'a> {
 }
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -15`
 Expected: 0 error（warning 允许：未使用 trait）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/search/src/provider.rs crates/search/src/lib.rs
@@ -325,7 +325,7 @@ git commit -m "feat(search): SearchProvider trait + SearchContext"
 - Produces: `crate::frequency::make_score_key(source: &str, action_type: &str, action_data: &str) -> String`
 - Consumes: `octopus_infra::db::{load_search_frequency, record_search_frequency, FreqRow}`
 
-- [ ] **Step 1: 写 make_score_key + FrequencyScorer 的失败测试**
+- [x] **Step 1: 写 make_score_key + FrequencyScorer 的失败测试**
 
 创建 `crates/search/src/frequency.rs`，先写测试模块（文件主体空，仅 trait stub）：
 
@@ -403,12 +403,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试验证失败**
+- [x] **Step 2: 跑测试验证失败**
 
 Run: `cargo test -p octopus-search --lib frequency 2>&1 | tail -15`
 Expected: FAIL（make_score_key / FrequencyScorer 未定义）
 
-- [ ] **Step 3: 实现 frequency.rs**
+- [x] **Step 3: 实现 frequency.rs**
 
 在 `crates/search/src/frequency.rs` 顶部（tests mod 之前）加实现：
 
@@ -516,7 +516,7 @@ fn now_ts() -> i64 {
 }
 ```
 
-- [ ] **Step 4: lib.rs 导出 frequency + provider 启用字段**
+- [x] **Step 4: lib.rs 导出 frequency + provider 启用字段**
 
 `crates/search/src/lib.rs` 取消 frequency 的注释：
 ```rust
@@ -533,17 +533,17 @@ pub struct SearchContext<'a> {
 ```
 并在 provider.rs 顶部 `use` 加 `use crate::frequency::FrequencyScorer;`。
 
-- [ ] **Step 5: 跑测试验证通过**
+- [x] **Step 5: 跑测试验证通过**
 
 Run: `cargo test -p octopus-search --lib frequency 2>&1 | tail -15`
 Expected: PASS（3 个测试全过）
 
-- [ ] **Step 6: 编译 search crate**
+- [x] **Step 6: 编译 search crate**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/search/src/frequency.rs crates/search/src/lib.rs crates/search/src/provider.rs
@@ -563,12 +563,12 @@ git commit -m "feat(search): FrequencyScorer + make_score_key (7-day decay)"
 - Produces: `SearchEngine::new_with_providers(providers, app_index, bookmarks, frequency)`（测试用）
 - Produces: `SearchEngine::search`（行为不变，内部走 providers）
 
-- [ ] **Step 1: 确认现有测试基线（先跑一遍现有测试全过）**
+- [x] **Step 1: 确认现有测试基线（先跑一遍现有测试全过）**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -20`
 Expected: 现有 engine.rs 9 个测试 + matcher/bookmark 测试全 PASS（记录数量，重构后对比）
 
-- [ ] **Step 2: 重写 engine.rs 的 SearchEngine 结构体 + search**
+- [x] **Step 2: 重写 engine.rs 的 SearchEngine 结构体 + search**
 
 修改 `crates/search/src/engine.rs`。把现有 `SearchEngine` 结构体（:26-40）和 `search` 方法（:67-125）替换为：
 
@@ -673,7 +673,7 @@ fn test_providers() -> Vec<Box<dyn SearchProvider>> {
 ```
 然后测试改成 `SearchEngine::new_for_test(apps, bookmarks, test_providers())`。
 
-- [ ] **Step 3: 此步会编译失败——因为 providers 子模块还没建。先建空 stub。**
+- [x] **Step 3: 此步会编译失败——因为 providers 子模块还没建。先建空 stub。**
 
 创建以下空 stub 文件（让编译过，下几个任务填实现）：
 
@@ -727,7 +727,7 @@ fn matches_tab(&self, _tab: &str) -> bool { false }  // 仅由 search() 的 tab=
 
 `crates/search/src/lib.rs` 加 `pub mod providers;`。
 
-- [ ] **Step 4: 改现有 engine.rs 测试适配新签名**
+- [x] **Step 4: 改现有 engine.rs 测试适配新签名**
 
 把 engine.rs tests mod 里所有 `SearchEngine::new_for_test(vec![...], vec![...])` 改为加第三参 `test_providers()`。对于依赖 shell 行为的测试（`shell_mode_prefix`、`quick_tab_includes_shell_mode`），此时会失败（shell stub 返回空）——**暂时 `#[ignore]`，Task 7 实现 shell 后恢复**。
 
@@ -740,7 +740,7 @@ let engine = SearchEngine::new_for_test(vec![], vec![], test_providers());
 #[test] fn shell_mode_prefix() { ... }
 ```
 
-- [ ] **Step 5: 编译 + 跑测试**
+- [x] **Step 5: 编译 + 跑测试**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -20`
 Expected: 0 error（warning 可能多，后续任务消化）
@@ -748,7 +748,7 @@ Expected: 0 error（warning 可能多，后续任务消化）
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -20`
 Expected: 非 shell 测试通过；shell 测试 ignored
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/search/src/engine.rs crates/search/src/providers/ crates/search/src/lib.rs
@@ -766,7 +766,7 @@ git commit -m "refactor(search): SearchEngine 用 providers Vec + join_all（行
 **Interfaces:**
 - Consumes: `crate::app_index::AppIndex::search`、`crate::file_search::search_files`
 
-- [ ] **Step 1: 实现 AppProvider**
+- [x] **Step 1: 实现 AppProvider**
 
 替换 `crates/search/src/providers/app.rs`：
 
@@ -799,7 +799,7 @@ impl SearchProvider for AppProvider {
 }
 ```
 
-- [ ] **Step 2: 实现 FileProvider**
+- [x] **Step 2: 实现 FileProvider**
 
 替换 `crates/search/src/providers/file.rs`：
 
@@ -828,23 +828,23 @@ impl SearchProvider for FileProvider {
 }
 ```
 
-- [ ] **Step 3: 移除 engine.rs 里被搬走的 app/file 逻辑**
+- [x] **Step 3: 移除 engine.rs 里被搬走的 app/file 逻辑**
 
 engine.rs 的 `search` 方法里原来的 `if tab == "all" || tab == "apps" || tab == "quick" { ... app_index ... }` 和 `if tab == "all" || tab == "files" ... { search_files }` 两段删除（已被 Provider 取代）。但注意：原代码 `tab == "all"` 时 app/file/bookmark 都跑——这由 search() 的 `tab == "all" || p.matches_tab(tab)` 保证。**但** app 的 matches_tab 是 `apps|quick`，不含 all——靠 search() 的 `tab=="all"` 兜底。✅
 
 确认 engine.rs `search` 方法现在只有 providers 调度逻辑（Task 4 Step 2 写的版本），没有内联 source 逻辑。
 
-- [ ] **Step 4: 跑测试验证**
+- [x] **Step 4: 跑测试验证**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -20`
 Expected: app 相关测试（all_tab_returns_combined_results、refresh_app_index_replaces_in_memory_index 等）PASS
 
-- [ ] **Step 5: 编译**
+- [x] **Step 5: 编译**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/search/src/providers/app.rs crates/search/src/providers/file.rs crates/search/src/engine.rs
@@ -862,7 +862,7 @@ git commit -m "feat(search): AppProvider + FileProvider 实现（从 engine 搬�
 **Interfaces:**
 - Consumes: `octopus_infra::db::list_action_bar_items`、`crate::bookmark::search_bookmarks`
 
-- [ ] **Step 1: 实现 MenuProvider（搬 search_menus_and_quicklinks + search_quicklink_keywords）**
+- [x] **Step 1: 实现 MenuProvider（搬 search_menus_and_quicklinks + search_quicklink_keywords）**
 
 替换 `crates/search/src/providers/menu.rs`：
 
@@ -971,7 +971,7 @@ fn url_encode_param(s: &str) -> String {
 
 engine.rs tests mod 里 `url_encode_param_basic` 和 `url_encode_param_safe_chars`、`quicklink_keyword_*` 测试搬到 `providers/menu.rs` 的 `#[cfg(test)] mod tests`。
 
-- [ ] **Step 2: 实现 BookmarkProvider**
+- [x] **Step 2: 实现 BookmarkProvider**
 
 替换 `crates/search/src/providers/bookmark.rs`：
 
@@ -1001,7 +1001,7 @@ impl SearchProvider for BookmarkProvider {
 }
 ```
 
-- [ ] **Step 3: 编译 + 跑全部测试**
+- [x] **Step 3: 编译 + 跑全部测试**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -15`
 Expected: 0 error
@@ -1009,7 +1009,7 @@ Expected: 0 error
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -25`
 Expected: 搬过来的 url_encode/quicklink 测试 PASS；非 shell 测试全 PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/search/src/providers/menu.rs crates/search/src/providers/bookmark.rs crates/search/src/engine.rs
@@ -1029,7 +1029,7 @@ git commit -m "feat(search): MenuProvider + BookmarkProvider 实现（从 engine
 **Interfaces:**
 - Produces: `ShellProvider::new()`（持有 ShellHistoryCache）
 
-- [ ] **Step 1: 实现 shell_commands.rs（BUILTIN_COMMANDS 表）**
+- [x] **Step 1: 实现 shell_commands.rs（BUILTIN_COMMANDS 表）**
 
 替换 `crates/search/src/providers/shell_commands.rs`：
 
@@ -1101,7 +1101,7 @@ pub static BUILTIN_COMMANDS: &[CmdDef] = &[
 ];
 ```
 
-- [ ] **Step 2: 实现 shell_history.rs（ShellHistoryCache）**
+- [x] **Step 2: 实现 shell_history.rs（ShellHistoryCache）**
 
 替换 `crates/search/src/providers/shell_history.rs`：
 
@@ -1212,7 +1212,7 @@ mod tests {
 
 > 移除 once_cell 引用（用 std `OnceLock`，省依赖）。删掉顶部 `use once_cell...`。
 
-- [ ] **Step 3: 实现 ShellProvider**
+- [x] **Step 3: 实现 ShellProvider**
 
 替换 `crates/search/src/providers/shell.rs`：
 
@@ -1373,7 +1373,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 恢复 engine.rs shell 测试（去 #[ignore]）**
+- [x] **Step 4: 恢复 engine.rs shell 测试（去 #[ignore]）**
 
 engine.rs tests mod 里 `shell_mode_prefix`、`quick_tab_includes_shell_mode` 去掉 `#[ignore]`。注意：`shell_mode_prefix` 测试断言 `results.len() == 1`——现在 shell provider 返回的可能是多条（透传+补全+历史）。**修改断言**：只验证"有 shell source 且含透传项"：
 
@@ -1390,17 +1390,17 @@ fn shell_mode_prefix() {
 
 `quick_tab_includes_shell_mode` 同理改断言。
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -25`
 Expected: shell 测试全 PASS（含新的 4 个 + 恢复的 2 个）
 
-- [ ] **Step 6: 编译**
+- [x] **Step 6: 编译**
 
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/search/src/providers/shell.rs crates/search/src/providers/shell_commands.rs crates/search/src/providers/shell_history.rs crates/search/src/engine.rs
@@ -1420,7 +1420,7 @@ git commit -m "feat(search): ShellProvider 修复裸命令匹配 + 补全 + 历�
 - Produces: `crate::bookmark::load_safari_bookmarks(path) -> Vec<BookmarkEntry>`（从 stub 变真实）
 - Produces: `crate::bookmark::load_firefox_bookmarks() -> Vec<BookmarkEntry>`
 
-- [ ] **Step 1: 写 Safari 解析失败测试（fixture）**
+- [x] **Step 1: 写 Safari 解析失败测试（fixture）**
 
 创建测试用 plist fixture（简化版 Safari 结构）。先在 `crates/search/src/bookmark.rs` tests mod 加：
 
@@ -1447,7 +1447,7 @@ fn safari_nonexistent_returns_empty() {
 }
 ```
 
-- [ ] **Step 2: 生成 Safari fixture**
+- [x] **Step 2: 生成 Safari fixture**
 
 用 Python/手写一个最小 plist。在 `crates/search/tests/fixtures/` 建目录，写一个 XML plist（plist crate 能读 XML 和 binary）：
 
@@ -1481,7 +1481,7 @@ fn safari_nonexistent_returns_empty() {
 </plist>
 ```
 
-- [ ] **Step 3: 实现 load_safari_bookmarks**
+- [x] **Step 3: 实现 load_safari_bookmarks**
 
 修改 `crates/search/src/bookmark.rs`，替换原 stub `load_safari_bookmarks`（:82-90）：
 
@@ -1531,7 +1531,7 @@ fn walk_safari(node: &plist::Value, out: &mut Vec<BookmarkEntry>) {
 }
 ```
 
-- [ ] **Step 4: 修改 load_all_bookmarks 调 Safari（真路径）+ 加 Firefox**
+- [x] **Step 4: 修改 load_all_bookmarks 调 Safari（真路径）+ 加 Firefox**
 
 替换 `crates/search/src/bookmark.rs` 的 `load_all_bookmarks`（:13-38）：
 
@@ -1563,7 +1563,7 @@ pub fn load_all_bookmarks() -> Vec<BookmarkEntry> {
 }
 ```
 
-- [ ] **Step 5: 实现 load_firefox_bookmarks**
+- [x] **Step 5: 实现 load_firefox_bookmarks**
 
 在 `crates/search/src/bookmark.rs` 加：
 
@@ -1634,7 +1634,7 @@ fn query_firefox_places(db_path: &std::path::Path) -> Vec<BookmarkEntry> {
 }
 ```
 
-- [ ] **Step 6: search crate 加 rusqlite 依赖**
+- [x] **Step 6: search crate 加 rusqlite 依赖**
 
 `crates/search/Cargo.toml` `[dependencies]` 加：
 ```toml
@@ -1643,7 +1643,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 
 （与 infra 同版本，避免重复链接）
 
-- [ ] **Step 7: 跑测试 + 编译**
+- [x] **Step 7: 跑测试 + 编译**
 
 Run: `cargo test -p octopus-search --lib bookmark 2>&1 | tail -15`
 Expected: safari_plist_parsed_from_fixture PASS；其他保留 PASS
@@ -1651,7 +1651,7 @@ Expected: safari_plist_parsed_from_fixture PASS；其他保留 PASS
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/search/src/bookmark.rs crates/search/Cargo.toml crates/search/tests/fixtures/
@@ -1666,7 +1666,7 @@ git commit -m "feat(search): BookmarkProvider 加 Safari (plist) + Firefox (plac
 - Modify: `crates/search/src/providers/calculator.rs`
 - Modify: `crates/search/src/providers/url.rs`
 
-- [ ] **Step 1: 实现 CalculatorProvider**
+- [x] **Step 1: 实现 CalculatorProvider**
 
 替换 `crates/search/src/providers/calculator.rs`：
 
@@ -1802,7 +1802,7 @@ mod tests {
 
 > **删除** Step 1 代码里 CalculatorProvider tests mod 中多余的 `let_placeholder!();` 这一行（这是写 plan 时的笔误占位，实现时不要写）。
 
-- [ ] **Step 2: 实现 UrlProvider**
+- [x] **Step 2: 实现 UrlProvider**
 
 替换 `crates/search/src/providers/url.rs`：
 
@@ -1900,7 +1900,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 跑测试 + 编译**
+- [x] **Step 3: 跑测试 + 编译**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -25`
 Expected: calculator 4 个 + url 3 个测试 PASS
@@ -1908,7 +1908,7 @@ Expected: calculator 4 个 + url 3 个测试 PASS
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/search/src/providers/calculator.rs crates/search/src/providers/url.rs
@@ -1927,7 +1927,7 @@ git commit -m "feat(search): CalculatorProvider (evalexpr) + UrlProvider"
 - Produces: `SearchEngine::search_streaming(query, tab, run_id, emit_fn)`
 - Produces: `crate::engine::SearchBatch`
 
-- [ ] **Step 1: 加 SearchBatch 结构 + 导出**
+- [x] **Step 1: 加 SearchBatch 结构 + 导出**
 
 `crates/search/src/engine.rs` 在 SearchResult 定义后加：
 
@@ -1941,7 +1941,7 @@ pub struct SearchBatch {
 }
 ```
 
-- [ ] **Step 2: 实现 search_streaming**
+- [x] **Step 2: 实现 search_streaming**
 
 `crates/search/src/engine.rs` 的 `impl SearchEngine` 里加（在 `search` 方法后）：
 
@@ -1989,7 +1989,7 @@ pub struct SearchBatch {
 use futures::stream::{StreamExt, FuturesUnordered};
 ```
 
-- [ ] **Step 3: 写流式测试**
+- [x] **Step 3: 写流式测试**
 
 engine.rs tests mod 加：
 
@@ -2060,7 +2060,7 @@ async fn streaming_empty_query_emits_once_empty() {
 }
 ```
 
-- [ ] **Step 4: 跑测试 + 编译**
+- [x] **Step 4: 跑测试 + 编译**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -20`
 Expected: 流式 2 个测试 PASS
@@ -2068,7 +2068,7 @@ Expected: 流式 2 个测试 PASS
 Run: `cargo build -p octopus-search 2>&1 | tail -10`
 Expected: 0 error（若有生命周期报错，调整 ctx 构造位置）
 
-- [ ] **Step 5: lib.rs 导出 SearchBatch**
+- [x] **Step 5: lib.rs 导出 SearchBatch**
 
 `crates/search/src/lib.rs` 的 `pub use engine::{...}` 加 `SearchBatch`：
 
@@ -2076,7 +2076,7 @@ Expected: 0 error（若有生命周期报错，调整 ctx 构造位置）
 pub use engine::{SearchEngine, SearchResult, SearchBatch, init_search_engine, get_engine};
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/search/src/engine.rs crates/search/src/lib.rs
@@ -2091,7 +2091,7 @@ git commit -m "feat(search): search_streaming (FuturesUnordered) + SearchBatch"
 - Modify: `crates/desktop/src/search_commands.rs`
 - Modify: `crates/desktop/src/main.rs:260-265`
 
-- [ ] **Step 1: 加 search_stream 命令**
+- [x] **Step 1: 加 search_stream 命令**
 
 `crates/desktop/src/search_commands.rs` 加：
 
@@ -2143,7 +2143,7 @@ pub async fn record_search_hit(
 }
 ```
 
-- [ ] **Step 2: engine.rs 暴露 record_frequency**
+- [x] **Step 2: engine.rs 暴露 record_frequency**
 
 `crates/search/src/engine.rs` 的 `impl SearchEngine` 加：
 
@@ -2154,7 +2154,7 @@ pub async fn record_search_hit(
     }
 ```
 
-- [ ] **Step 3: main.rs 注册新命令**
+- [x] **Step 3: main.rs 注册新命令**
 
 `crates/desktop/src/main.rs:260-265` 的命令列表加：
 
@@ -2163,12 +2163,12 @@ pub async fn record_search_hit(
             search_commands::record_search_hit,
 ```
 
-- [ ] **Step 4: 编译 desktop**
+- [x] **Step 4: 编译 desktop**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -15`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/search_commands.rs crates/desktop/src/main.rs crates/search/src/engine.rs
@@ -2184,7 +2184,7 @@ git commit -m "feat(desktop): search_stream + record_search_hit Tauri 命令"
 - Create: `crates/desktop/frontend/src/pages/ActionBar/searchStream.ts`
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`
 
-- [ ] **Step 1: searchTypes.ts 扩展类型**
+- [x] **Step 1: searchTypes.ts 扩展类型**
 
 修改 `crates/desktop/frontend/src/pages/ActionBar/searchTypes.ts`：
 
@@ -2209,7 +2209,7 @@ export interface SearchBatch {
 }
 ```
 
-- [ ] **Step 2: 建 searchStream.ts 封装**
+- [x] **Step 2: 建 searchStream.ts 封装**
 
 创建 `crates/desktop/frontend/src/pages/ActionBar/searchStream.ts`：
 
@@ -2252,7 +2252,7 @@ export async function executeSearchStream(
 }
 ```
 
-- [ ] **Step 3: index.tsx 接入流式**
+- [x] **Step 3: index.tsx 接入流式**
 
 修改 `crates/desktop/frontend/src/pages/ActionBar/index.tsx`：
 - 找到现有即时/延迟搜索调用 `invoke("search_all", ...)` 的地方（index.tsx:439 即时、:463 延迟）
@@ -2275,7 +2275,7 @@ await executeSearchStream(query, "all", setSearchResults);
 
 **防抖保留**：即时搜索用 input onChange 直接触发 executeSearchStream；如果原来有延迟搜索的 debounce 逻辑，可保留但都用 executeSearchStream。关键是**不再调 search_all**。
 
-- [ ] **Step 4: index.tsx 加 copy action 分支**
+- [x] **Step 4: index.tsx 加 copy action 分支**
 
 找到 `executeSearchResult`（index.tsx:612-680），在 actionType 分支里加：
 
@@ -2287,7 +2287,7 @@ await executeSearchStream(query, "all", setSearchResults);
 }
 ```
 
-- [ ] **Step 5: 类型检查 + 构建**
+- [x] **Step 5: 类型检查 + 构建**
 
 Run:
 ```bash
@@ -2295,7 +2295,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -20 && npm run build 
 ```
 Expected: tsc 0 error，build 成功
 
-- [ ] **Step 6: 全量编译验证（Rust + 前端）**
+- [x] **Step 6: 全量编译验证（Rust + 前端）**
 
 Run:
 ```bash
@@ -2304,7 +2304,7 @@ cargo build -p octopus-search -p octopus-desktop 2>&1 | tail -15
 ```
 Expected: 0 error 0 warning
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/searchTypes.ts crates/desktop/frontend/src/pages/ActionBar/searchStream.ts crates/desktop/frontend/src/pages/ActionBar/index.tsx
@@ -2320,7 +2320,7 @@ git commit -m "feat(frontend): 流式搜索接入 + copy action + 类型扩展"
 - Modify: `docs/architecture.md`（搜索相关章节）
 - Modify: `docs/superpowers/specs/2026-07-16-search-multi-provider-design.md`（状态→实现完成）
 
-- [ ] **Step 1: 检查 capabilities 是否需要改**
+- [x] **Step 1: 检查 capabilities 是否需要改**
 
 Run: `cat crates/desktop/capabilities/default.json | grep -A5 "windows\|core:event"`
 - search_stream/record_search_hit 是 Tauri 命令（invoke），不是新窗口事件权限
@@ -2328,7 +2328,7 @@ Run: `cat crates/desktop/capabilities/default.json | grep -A5 "windows\|core:eve
 - **预期**：ActionBar 窗口已在 capabilities 的 windows 数组里，listen 全局事件无需额外权限
 - 如 listen 报 `event.listen not allowed`，才需在 capabilities 加 event 权限
 
-- [ ] **Step 2: 跑全部测试**
+- [x] **Step 2: 跑全部测试**
 
 Run:
 ```bash
@@ -2338,22 +2338,22 @@ cargo test -p octopus-desktop --lib 2>&1 | tail -10
 ```
 Expected: 全 PASS（含 Task 4 恢复的 shell 测试）
 
-- [ ] **Step 3: 端到端手动验证清单**
+- [x] **Step 3: 端到端手动验证清单**
 
 启动 app（`cargo run --release -p octopus-desktop --features embedded`），逐项验证：
 
-- [ ] 输入 `chr`（应用前缀）→ 出 Chrome 等应用
-- [ ] 输入 `ls`（shell tab）→ **出透传项 + 补全 + 历史**（修复验证）
-- [ ] 输入 `> ls`（带前缀）→ 同上（兼容验证）
-- [ ] 切到 shell tab 输入 `git` → 出 git + git status/diff 补全
-- [ ] 切到 bookmarks tab 输入关键词 → **出 Safari/Firefox 书签**（修复验证）
-- [ ] 输入 `1+2` → 出 `= 3`（calculator）
-- [ ] 回车 calculator 结果 → 剪贴板含 `3`（copy action）
-- [ ] 输入 `github.com` → 出"打开 github.com"（url）
-- [ ] 快速连续输入 `test`/`test1`/`test2` → 无结果串扰（run_id 验证）
-- [ ] 多次启动同一应用 → 该应用排名上升（频次验证）
+- [x] 输入 `chr`（应用前缀）→ 出 Chrome 等应用
+- [x] 输入 `ls`（shell tab）→ **出透传项 + 补全 + 历史**（修复验证）
+- [x] 输入 `> ls`（带前缀）→ 同上（兼容验证）
+- [x] 切到 shell tab 输入 `git` → 出 git + git status/diff 补全
+- [x] 切到 bookmarks tab 输入关键词 → **出 Safari/Firefox 书签**（修复验证）
+- [x] 输入 `1+2` → 出 `= 3`（calculator）
+- [x] 回车 calculator 结果 → 剪贴板含 `3`（copy action）
+- [x] 输入 `github.com` → 出"打开 github.com"（url）
+- [x] 快速连续输入 `test`/`test1`/`test2` → 无结果串扰（run_id 验证）
+- [x] 多次启动同一应用 → 该应用排名上升（频次验证）
 
-- [ ] **Step 4: 更新 architecture.md**
+- [x] **Step 4: 更新 architecture.md**
 
 `docs/architecture.md` 找搜索相关章节，更新为：
 - 6 source → 7 Provider（app/file/menu/bookmark/shell/calculator/url）
@@ -2361,7 +2361,7 @@ Expected: 全 PASS（含 Task 4 恢复的 shell 测试）
 - 新增 search_stream 流式 + search_frequency 频次加权
 - 浏览器：Chrome/Edge/Safari/Firefox
 
-- [ ] **Step 5: spec 状态改为实现完成**
+- [x] **Step 5: spec 状态改为实现完成**
 
 `docs/superpowers/specs/2026-07-16-search-multi-provider-design.md` 顶部：
 ```
@@ -2373,11 +2373,11 @@ Expected: 全 PASS（含 Task 4 恢复的 shell 测试）
 ```
 并回填实际偏差到 spec（如有）。
 
-- [ ] **Step 6: review plan（强制）**
+- [x] **Step 6: review plan（强制）**
 
 回看本 plan，把实际实现的偏差、新增决策、删除/合并的子任务回写。**plan 是实施记录而非一次性待办**。
 
-- [ ] **Step 7: 最终 Commit**
+- [x] **Step 7: 最终 Commit**
 
 ```bash
 git add docs/ docs/superpowers/

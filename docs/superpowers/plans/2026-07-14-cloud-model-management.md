@@ -266,7 +266,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/model_commands.rs`（delete_cloud_model 检查是否为当前引擎）
 
-- [ ] **Step 1: delete_cloud_model 检查当前激活**
+- [x] **Step 1: delete_cloud_model 检查当前激活**
 
 删除前检查：如果被删的模型是当前 `asr_engine` / `polish_llm`，需要回退。
 
@@ -291,12 +291,12 @@ pub async fn delete_cloud_model(id: i64, rc: State<'_, SharedRuntimeConfig>) -> 
 }
 ```
 
-- [ ] **Step 2: 编译 + 测试**
+- [x] **Step 2: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ---
 

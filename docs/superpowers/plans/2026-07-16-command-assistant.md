@@ -32,7 +32,7 @@
 - Produces: `octopus_infra::db::{LauncherRow, load_launcher_by_type, save_launcher_batch, update_launcher_keywords}`
 - Changes: `load_app_index`/`save_app_index` 改为 launcher_index 的 wrapper
 
-- [ ] **Step 1: db.rs 加 LauncherRow + 统一 CRUD 函数**
+- [x] **Step 1: db.rs 加 LauncherRow + 统一 CRUD 函数**
 
 在 db.rs 的 app_index 相关函数（`load_app_index`/`save_app_index`）附近加：
 
@@ -95,7 +95,7 @@ pub fn update_launcher_keywords(item_type: &str, path: &str, keywords: &str) -> 
 }
 ```
 
-- [ ] **Step 2: 改 load_app_index / save_app_index 为 launcher_index wrapper**
+- [x] **Step 2: 改 load_app_index / save_app_index 为 launcher_index wrapper**
 
 现有 `load_app_index` 改为：
 ```rust
@@ -117,7 +117,7 @@ pub fn save_app_index(rows: &[(String, String, String, String)]) -> Result<()> {
 ```
 **注意**：现有 save_app_index 签名是 `Vec<(name, alias, path, icon)>`——保持签名不变（搜索代码不破），内部转 LauncherRow。
 
-- [ ] **Step 3: init_schema 加 v36——建 launcher_index + 迁移 app_index 数据 + 删旧表**
+- [x] **Step 3: init_schema 加 v36——建 launcher_index + 迁移 app_index 数据 + 删旧表**
 
 在 v35 分支后加：
 ```rust
@@ -152,15 +152,15 @@ pub fn save_app_index(rows: &[(String, String, String, String)]) -> Result<()> {
 
 **全新库路径**（`v < 17` 分支末尾）：建 launcher_index（不建 app_index），user_version=36。删 db.sql 里的 app_index 建表语句，换 launcher_index。
 
-- [ ] **Step 4: db.sql 更新——删 app_index 建 launcher_index**
+- [x] **Step 4: db.sql 更新——删 app_index 建 launcher_index**
 
 db.sql 里找到 `CREATE TABLE IF NOT EXISTS app_index`，整段替换为 launcher_index 建表（不加 type 索引，PRIMARY KEY (type, path) 够了）。保留 app_index 的 name/alias 索引迁移到 launcher_index（加 `CREATE INDEX idx_launcher_name ON launcher_index(name)` 和 alias）。
 
-- [ ] **Step 5: 更新现有测试的 user_version 断言**
+- [x] **Step 5: 更新现有测试的 user_version 断言**
 
 grep `user_version.*35\|== 35\|v35` 在 db.rs tests，改为 36。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 cargo test -p octopus-infra --lib 2>&1 | tail -5
@@ -168,7 +168,7 @@ cargo build -p octopus-infra -p octopus-search 2>&1 | tail -3
 ```
 Expected: 0 error；现有测试全过（load_app_index/save_app_index wrapper 对 search crate 透明）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.rs crates/infra/src/db.sql
@@ -186,7 +186,7 @@ git commit -m "feat(infra): schema v36 统一 launcher_index 表（合并 app_in
 **Interfaces:**
 - Produces: `crate::command_index::{CommandEntry, CommandIndex}`
 
-- [ ] **Step 1: 实现 command_index.rs**
+- [x] **Step 1: 实现 command_index.rs**
 
 ```rust
 //! CLI 命令索引：扫描 PATH 收集可执行文件 + whats/brew desc 英文描述 + DB 缓存。
@@ -360,18 +360,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: lib.rs 导出**
+- [x] **Step 2: lib.rs 导出**
 
 `crates/search/src/lib.rs` 加 `pub mod command_index;`
 
-- [ ] **Step 3: 验证**
+- [x] **Step 3: 验证**
 
 ```bash
 cargo build -p octopus-search 2>&1 | tail -5
 cargo test -p octopus-search --lib command_index 2>&1 | tail -10
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/search/src/command_index.rs crates/search/src/lib.rs
@@ -388,14 +388,14 @@ git commit -m "feat(search): CommandIndex（PATH 扫描 + 英文描述 + DB 缓�
 - Modify: `crates/search/src/provider.rs`（SearchContext 加 command_index）
 - Modify: `crates/search/src/engine.rs`（SearchEngine 加 command_index 字段 + default_providers 注册 + ctx 构造）
 
-- [ ] **Step 1: SearchContext 加 command_index 字段**
+- [x] **Step 1: SearchContext 加 command_index 字段**
 
 `provider.rs` SearchContext 加：
 ```rust
 pub command_index: &'a parking_lot::RwLock<crate::command_index::CommandIndex>,
 ```
 
-- [ ] **Step 2: SearchEngine 加 command_index 字段 + ctx 构造**
+- [x] **Step 2: SearchEngine 加 command_index 字段 + ctx 构造**
 
 engine.rs：
 - `SearchEngine` 加 `command_index: parking_lot::RwLock<crate::command_index::CommandIndex>`
@@ -405,7 +405,7 @@ engine.rs：
 - `default_providers` 加 `Box::new(crate::providers::command::CommandProvider)`
 - 加 `refresh_command_index` 方法（供后台 LLM 线程刷新）
 
-- [ ] **Step 3: 实现 CommandProvider**
+- [x] **Step 3: 实现 CommandProvider**
 
 `crates/search/src/providers/command.rs`：
 ```rust
@@ -449,20 +449,20 @@ impl SearchProvider for CommandProvider {
 }
 ```
 
-- [ ] **Step 4: mod.rs 加 `pub mod command;`**
+- [x] **Step 4: mod.rs 加 `pub mod command;`**
 
-- [ ] **Step 5: 更新所有 Provider 测试的 ctx 构造**
+- [x] **Step 5: 更新所有 Provider 测试的 ctx 构造**
 
 所有 test_ctx/test_providers helper 加 command_index 字段（用 `CommandIndex::empty()`）。
 
-- [ ] **Step 6: 验证**
+- [x] **Step 6: 验证**
 
 ```bash
 cargo build -p octopus-search 2>&1 | tail -10
 cargo test -p octopus-search --lib 2>&1 | tail -10
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -477,7 +477,7 @@ git commit -m "feat(search): CommandProvider + SearchContext command_index 字�
 - Modify: `crates/desktop/src/main.rs`（加后台 LLM 线程）
 - Modify: `crates/search/src/engine.rs`（加 `commands_needing_keywords` + `update_command_keywords` 方法）
 
-- [ ] **Step 1: engine.rs 加 LLM 支持方法**
+- [x] **Step 1: engine.rs 加 LLM 支持方法**
 
 ```rust
 impl SearchEngine {
@@ -499,7 +499,7 @@ impl SearchEngine {
 }
 ```
 
-- [ ] **Step 2: main.rs 加后台 LLM 线程**
+- [x] **Step 2: main.rs 加后台 LLM 线程**
 
 在 setup 闭包里（app_index 轮询线程附近）加：
 
@@ -550,13 +550,13 @@ std::thread::spawn(move || {
 
 **注意**：`cfg_read()` 需从 AppState 读 AppConfig——看 main.rs 现有怎么读 config（grep `state.config` 或 `AppConfig`）。如果 config 是 State，需要 app_handle.state() 拿。
 
-- [ ] **Step 3: 验证**
+- [x] **Step 3: 验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -10
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -573,11 +573,11 @@ git commit -m "feat(desktop): 命令索引后台 LLM 关键字生成线程"
 - Modify: `crates/desktop/src/main.rs`（启动 watcher + 保留轮询 fallback）
 - Modify: `crates/desktop/Cargo.toml`（加 notify）
 
-- [ ] **Step 1: Cargo.toml 加 notify**
+- [x] **Step 1: Cargo.toml 加 notify**
 
 desktop Cargo.toml `[dependencies]` 加 `notify = "8"`。
 
-- [ ] **Step 2: 实现 file_watcher.rs**
+- [x] **Step 2: 实现 file_watcher.rs**
 
 ```rust
 //! notify-rs 文件监听：app 目录变化时实时刷新索引。
@@ -626,17 +626,17 @@ pub fn start_app_watcher() {
 }
 ```
 
-- [ ] **Step 3: main.rs 启动 watcher**
+- [x] **Step 3: main.rs 启动 watcher**
 
 在 setup 闭包里（app_index 轮询线程之前）加 `file_watcher::start_app_watcher();`。**保留现有 2 分钟轮询**作为 fallback。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -10
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -652,7 +652,7 @@ git commit -m "feat(desktop): notify-rs file_watcher（app 目录秒级监听 + 
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/searchLogic.ts`
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/searchLogic.test.ts`
 
-- [ ] **Step 1: searchTypes.ts 加 commands Tab**
+- [x] **Step 1: searchTypes.ts 加 commands Tab**
 
 TabId 加 `"commands"`：
 ```ts
@@ -666,21 +666,21 @@ TABS 加（在 actions 后）：
 
 source 注释加 `"command"`。
 
-- [ ] **Step 2: searchLogic.ts filterByTab 加映射**
+- [x] **Step 2: searchLogic.ts filterByTab 加映射**
 
 sourceMap 加 `commands: "command"`。
 
-- [ ] **Step 3: searchLogic.test.ts 更新测试**
+- [x] **Step 3: searchLogic.test.ts 更新测试**
 
 Tab 数量从 5 改 6，getTabByKey/getNextTab/getTabIndex 加 commands 断言。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm test
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -691,19 +691,19 @@ git commit -m "feat(frontend): 命令 Tab（⌥C）+ filterByTab 映射"
 
 ### Task 7: 测试 + 文档同步
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 ```bash
 cargo test --workspace --lib 2>&1 | tail -20
 cd crates/desktop/frontend && npx tsc --noEmit && npm test
 ```
 
-- [ ] **Step 2: architecture.md 更新**
+- [x] **Step 2: architecture.md 更新**
 
 加命令查阅助手 + notify-rs 段落 + schema v36。
 
-- [ ] **Step 3: spec 状态改实现完成**
+- [x] **Step 3: spec 状态改实现完成**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add -A
 git commit -m "docs: 命令查阅助手 + notify-rs 文档同步"
