@@ -124,7 +124,7 @@
 - **`StreamingRunner.engine` 由 `Box` 改 `Arc`**：让 pipeline drop 时仅释放 Arc clone、manager 原 Arc 仍持有 → 引擎不销毁、下次复用。连带 server `WsStreamSession` 同步改 Arc。
 - **仅 desktop 接入**；server（每连接独立状态、连接结束即 drop，非大并发）与 cloud（独立路径）不接入——共享 ort Session 需拆动静字段而 ort 推理持 `&mut` 串行无并发收益（YAGNI）。
 - **max_cache=2 驱逐**：`set_active` 入缓存前淘汰非 active（保护正用）+ `probe(Unload)`，防用户配置多流式引擎反复切换致 OOM。
-- **模型变更懒加载覆盖**：`active_session` 检测 spec≠active 自动 switch，`switch_asr_engine` 无需主动联动本 manager。
+- **模型变更懒加载覆盖**：`active_session` 检测 spec≠active 自动 switch，`switch_active_model` 无需主动联动本 manager（2026-07-17 后统一激活命令）。
 - **状态页联动**：`switch_model` 加 `probe(Before/After)`（id=`asr:<bare>`，与离线 `load_engine_into_cache` 同前缀），驱逐时 `probe(Unload)`——见 [desktop-app.md](./desktop-app.md) §13。
 
 ## 流式尾音冲刷（Active Flush）
@@ -240,7 +240,7 @@ mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
 
 ### 3-part spec
 
-配置字符串 `asr_engine` / `polish_llm` 统一 `"{provider}:{category}:{model_name}"` 三段格式，从 DB `models` 表唯一定位（唯一键 `UNIQUE(domain, provider, category, model_name)`）。
+CLI `--model` / server 请求 `engine` / `AsrEngineManager.switch_model(spec)` 支持 3-part spec `"{provider}:{category}:{model_name}"` 格式从 DB `models` 表唯一定位（唯一键 `UNIQUE(domain, provider, category, model_name)`）。**激活态**（desktop/server 启动默认）由 DB `is_enabled=1` 决定，经 `resolve_active_engine(domain)` 读取，不再经 config 字符串（2026-07-17 重构后）。
 
 | spec | 含义 |
 |------|------|
@@ -272,8 +272,8 @@ mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
 是否走流式识别由 `models.is_streaming` 列决定：
 
 ```
-is_streaming_engine(cfg) = resolve_active_engine(cfg.asr_engine).entry.is_streaming
-                          && category != Aliyun
+is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
+                       && as_engine_category() != Aliyun
                           && category != ByteDance
                           && category != Tencent
                           && category != Baidu
@@ -285,7 +285,7 @@ is_streaming_engine(cfg) = resolve_active_engine(cfg.asr_engine).entry.is_stream
 
 **流式引擎内部分流**：`StreamingSession::new` 检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`，Transducer 走 `StreamingZipformerTransducer`。
 
-**云引擎路由**：`resolve_category(provider, category)` 按 provider 分支识别 → `EngineCategory::Aliyun`/`ByteDance`/`Tencent`/`Baidu`。Aliyun 建 `AliyunEngine`（需 `aliyun` feature，`is_streaming=0` → chunk 路径）；ByteDance/Tencent/Baidu 不建独立 engine，直接经 `is_cloud_engine` 路由到 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支）。云↔本地切换改 `app_config.asr_engine` 后**重启**生效。
+**云引擎路由**：`resolve_active_engine("asr").as_engine_category()` 按 provider 分支识别 → `EngineCategory::Aliyun`/`ByteDance`/`Tencent`/`Baidu`。Aliyun 建 `AliyunEngine`（需 `aliyun` feature，`is_streaming=0` → chunk 路径）；ByteDance/Tencent/Baidu 不建独立 engine，直接经 `is_cloud_engine` 路由到 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支）。云↔本地切换经设置页 `switch_active_model("asr", id)` 后**下次录音生效**（reload_active_engine 刷新 ACTIVE_ENGINES 缓存）。
 
 ---
 

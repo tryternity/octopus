@@ -15,7 +15,7 @@
 - Tick 线程（streaming / vad-segmented / cloud）独立 spawn，仅向同一 `tx` 发 tick 命令，不直接改 stage。
 - `tx` 包 `Mutex` 只为满足 Tauri `Send + Sync` 托管状态约束；`mpsc::Sender` 本身 `Send + !Sync`。
 
-**Coordinator 闭包持共享 `AppConfig` 句柄**（`runtime_config: SharedRuntimeConfig = Arc<RwLock<AppConfig>>`），Toggle 进入 `Idle` 时重读 `asr_engine` / `polish_mode` / `polish_llm` 并经 `resolve_active_engine` 校验有效性——保留完整 3-part spec 写回 `config.asr_engine`，失效则兜底 `local:zipformer:zipformer-small-ctc`，保证 `is_streaming_engine` 判定 / `use_streaming` 重算 / 引擎构造全用完整有效 spec。
+**Coordinator 闭包持共享 `AppConfig` 句柄**（`runtime_config: SharedRuntimeConfig = Arc<RwLock<AppConfig>>`），Toggle 进入 `Idle` 时重读 `polish_mode` 等运行时字段。激活引擎统一经 `resolve_active_engine("asr")`（coordinator helper `active_asr_engine_name()`），不再写回 `config.asr_engine`（字段已删，2026-07-17 重构后）。`is_streaming_engine()` 判定 / `use_streaming` 重算 / 引擎构造全用此 helper。
 
 ---
 
@@ -56,7 +56,7 @@
 | `SetSelection { start, end }` | 前端非编辑态拖选 | 记录 `pending_delete` + `selection_insert_offset` |
 | `StartRecording { prepare_id, selection }` | 前端响应 `prepare-record` 事件 | 校验 prepare_id 后 `begin_recording(selection)` |
 | `FallbackStart { prepare_id }` | 看门狗 200ms 超时 | 前端未响应兜底普通开 |
-| `UpdateRuntime` | 设置窗口/工具栏改 RuntimeConfig | 同步 `polish_llm` / `polish_mode` / `denoise_mode` 等到 config 快照 |
+| `UpdateRuntime` | 设置窗口/工具栏改 RuntimeConfig | 同步 `polish_mode` / `asr_correct` / `output_simplified` / `hide_toolbar` 等到 config 快照（模型激活走 switch_active_model，不经此路径） |
 
 ---
 
