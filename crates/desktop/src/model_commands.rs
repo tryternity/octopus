@@ -1,11 +1,12 @@
 //! 模型管理页 Tauri 命令：列出可下载模型 + 下载（先探查）+ 完整性复核。
 //!
 //! v2（2026-06-22）就绪逻辑重构：
-//! - 列表直读 DB（`list_all_local_asr_models`，**不过滤 is_enabled**），按 is_enabled 显示就绪。
+//! - 列表直读 DB（`list_all_local_asr_models`，**不过滤 is_enabled**），按 is_available 显示就绪。
 //! - 点下载先 `resolve_model_dir` 探查：命中则自举 sha256 清单 + 置 true（**不重下**）；
 //!   未命中才下载，下载后自举 + 置 true。
 //! - `verify_model` 按 secret_key 清单复核，损坏置 false。
-//! - is_enabled 语义 = 文件就绪可用；写 DB 后 `reload_models_config` 让引擎下拉即时更新。
+//! - Task 2 后：is_available 表「文件就绪可用」；is_enabled 表「激活」（每域仅 1 个=1）。
+//!   写 DB（set_model_enabled → is_available）后 `reload_models_config` 让引擎下拉即时更新。
 //!
 //! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr_local::manifest`，与 cli `sync-models` 共用。
 //! 复用阶段1 download crate（HfRequest/resolve_tasks/Downloader）和 resolve_model_dir。
@@ -21,7 +22,7 @@ use crate::runtime_config::SharedRuntimeConfig;
 /// 一个可下载模型的列表项。
 #[derive(Serialize)]
 pub struct DownloadableModel {
-    /// DB 行 id（translate_engine / asr_engine 等配置项按 id 存）。
+    /// DB 行 id（switch_active_model 按 id 切激活）。
     pub id: i64,
     /// 引擎裸名（DB models.model_name）。
     pub name: String,
@@ -31,7 +32,9 @@ pub struct DownloadableModel {
     pub category: String,
     /// DB 中的描述（含尺寸信息）。
     pub description: String,
-    /// 是否就绪（DB is_enabled）：true=文件完备可用，false=未就绪/未下载。
+    /// 是否就绪（DB is_available）：true=文件完备可用，false=未就绪/未下载。
+    pub is_available: bool,
+    /// 是否激活（DB is_enabled）：每域仅 1 个=1。前端标 current 用。
     pub is_enabled: bool,
 }
 
@@ -46,7 +49,7 @@ pub struct VerifyResult {
     pub message: String,
 }
 
-/// 列出所有可下载的本地模型（含未就绪，按 is_enabled 显示就绪/下载）。
+/// 列出所有可下载的本地模型（含未就绪，按 is_available 显示就绪/下载）。
 /// domain 参数："asr"（默认）| "translate" | "ocr"。
 #[tauri::command]
 pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<DownloadableModel>, String> {
@@ -55,15 +58,16 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        // 文件系统实际检查：目录存在 → is_enabled=true（覆盖 DB 未更新的情况）
-        let is_ready = r.is_enabled || octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
+        // 文件系统实际检查：目录存在 → is_available=true（覆盖 DB 未更新的情况）
+        let is_ready = r.is_available || octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
         out.push(DownloadableModel {
             id: r.id,
             name: r.model_name,
             repo: r.source,
             category: r.category,
             description: r.description,
-            is_enabled: is_ready,
+            is_available: is_ready,
+            is_enabled: r.is_enabled,
         });
     }
     Ok(out)
@@ -283,7 +287,8 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
 
 // ── 内部辅助 ──
 
-/// 写 secret_key（可选）+ is_enabled + reload 运行时 AsrConfig 缓存。
+/// 写 secret_key（可选）+ is_available（文件就绪）+ reload 运行时 AsrConfig 缓存。
+/// `set_model_enabled` 函数名沿用旧名，实际写 is_available 列（Task 1 后语义分离）。
 fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> Result<(), String> {
     let model_name = match lookup_model_name(repo) {
         Ok(name) => name,

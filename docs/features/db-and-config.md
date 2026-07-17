@@ -89,11 +89,11 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 
 唯一键 `UNIQUE(domain, provider, category, model_name)`。
 
-- 本地 ASR（is_local=1，12 行）初始**全 `is_enabled=0`**（待下载就绪）
+- 本地 ASR（is_local=1，13 行）seed：`is_available` 标就绪（sensevoice-orig-small + firered-asr2 随包 `is_available=1`，其余 `is_available=0` 待下载），`is_enabled` 全 0（用户激活时设）
 - 默认兜底引擎 `zipformer-small-ctc` 代码写死（`FALLBACK_ASR_ENGINE_NAME`）不占 seed 行
-- `load_models_at` 仅读 `domain='asr' AND is_enabled=1`
-- `domain='llm'` 经 `load_llm_model(spec)` 按 3-part spec 读
-- 引擎激活由 `app_config.asr_engine` 决定，无 `is_active` 列
+- `load_models_at` 仅读 `domain='asr' AND is_enabled=1 AND is_available=1 LIMIT 1`（激活的那一个）
+- `domain='llm'` 经 `load_llm_model(spec)` 按 3-part spec 读（CLI 显式路径用）；推理路径统一 `resolve_active_engine("llm")`
+- **引擎激活由 DB `is_enabled` 决定（2026-07-17 重构后）**：每域仅 1 个=1。`app_config` 的 `asr_engine` / `polish_llm` / `ocr_model` / `translate_engine` 4 字段已删除
 
 ### app_config（应用行为配置）
 
@@ -175,13 +175,13 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 
 ## 6. AppConfig
 
-`infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`）——应用配置统一 schema，29 字段：
+`infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`）——应用配置统一 schema。
+
+> **模型激活字段已移除（2026-07-17）**：`asr_engine` / `polish_llm` / `ocr_model` / `translate_engine` 4 字段已从 AppConfig 删除，激活态改存 DB `models.is_enabled`（每域仅 1 个=1），经 `switch_active_model(domain, id)` 切换。
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `microphone_device` | — | 麦克风设备名 |
-| `asr_engine` | `local:zipformer:zipformer-small-ctc` | 3-part 引擎 spec |
-| `polish_llm` | — | LLM 3-part spec |
 | `polish_mode` | 0 | 0 关闭 / 1 仅最终 / 2 中间+最终 |
 | `paste_method` | `clipboard` | `clipboard` / `direct` / `none` |
 | `write_to_clipboard` | `true` | 粘贴后是否留剪贴板 |
@@ -195,7 +195,6 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 | `clipboard_enabled` | `true` | 剪贴板监听 |
 | `clipboard_max_items` | 1000 | 最大保留条数 |
 | `clipboard_max_age_days` | 30 | 自动清理天数 |
-| `ocr_model` | PP-OCRv5 | OCR 模型名 |
 | `switch_input_source_on_paste` | true | 粘贴前临时切到 ABC 输入法（仅 macOS，防 CJK 乱码） |
 | 快捷键们 | — | `asr_shortcut` / `clipboard_shortcut` / `screenshot_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `action_bar_shortcut` |
 
@@ -217,13 +216,13 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 
 `type SharedRuntimeConfig = Arc<RwLock<AppConfig>>`（挂 `tauri::State`）——**完整 `AppConfig` 的唯一真相源**，取代旧 `RuntimeConfig` 部分镜像（消除字段同步遗漏，新增运行时生效字段零同步代码）。
 
-工具栏可运行时切换（无需重启）：`asr_engine` / `polish_mode` / `polish_llm` / `denoise_mode`。
+工具栏可运行时切换（无需重启）：`polish_mode` / `denoise_mode`（**模型激活**走统一 `switch_active_model(domain, id)` 命令，不再经 SharedRuntimeConfig）。
 
-8 个 Tauri 命令：`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`。
+9 个 Tauri 命令：`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / **`switch_active_model`**（2026-07-17 新增统一激活命令）/ `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`。
 
 读写共享 `AppConfig`（即时生效）+ `persist_*` best-effort 持久化回 DB（写盘失败仅 `warn`，本次仍生效、重启回退）。
 
-**`switch_asr_engine` / `switch_polish_llm`** 前端传裸 `model_name`，后端查 DB 取 `provider` / `category` 构造 3-part spec 写入，保证持久化值与 `parse_model_spec` 解析一致。
+**`switch_active_model(domain, id)`**（Task 2 后统一激活命令）：DB `switch_active_model` 单语句刷新某域 `is_enabled` → `reload_active_engine(domain)` 重载 ACTIVE_ENGINES 缓存。原 `switch_asr_engine` / `switch_polish_llm` 保留为 wrapper（前端已迁移到 switch_active_model）。
 
 ---
 

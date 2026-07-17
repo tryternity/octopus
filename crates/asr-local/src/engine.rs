@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -114,22 +114,34 @@ impl AsrEngineManager {
         );
 
         let cfg = config::load_config()?;
-        let (category, _bare, entry) = config::resolve_engine_in_config(&cfg, model_name)
-            .with_context(|| format!("Unknown engine model: {}", model_name))?;
+        // 先在激活配置（load_config 仅含激活 ASR）中查找；未命中则查 DB 任意可用引擎
+        // （CLI `--model` 多模型场景：用户可选非激活引擎）。
+        // 两条路径都返回 owned ModelEntry（resolve_engine_in_config 返回引用需 clone）。
+        let (category, entry): (config::EngineCategory, config::ModelEntry) =
+            match config::resolve_engine_in_config(&cfg, model_name) {
+                Some((cat, _bare, entry)) => (cat, entry.clone()),
+                None => match config::resolve_engine_any(model_name) {
+                    Some((cat, entry)) => (cat, entry),
+                    None => anyhow::bail!(
+                        "Unknown engine model: {} (不在激活配置或 DB 可用引擎中)",
+                        model_name
+                    ),
+                },
+            };
 
         let new_eng: Arc<dyn OfflineAsrEngine> = match category {
-            config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
-            config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(entry)?),
-            config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
-            config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
+            config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(&entry)?),
+            config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(&entry)?),
+            config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(&entry)?),
+            config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(&entry)?),
             config::EngineCategory::Zipformer => {
                 // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
                 let hf_path = config::resolve_model_dir(&entry.source)?;
                 let has_decoder = hf_path.join("decoder.onnx").exists();
                 if has_decoder {
-                    Arc::new(ZipformerTransducerEngine::new(entry)?)
+                    Arc::new(ZipformerTransducerEngine::new(&entry)?)
                 } else {
-                    Arc::new(ZipformerCtcEngine::new(entry)?)
+                    Arc::new(ZipformerCtcEngine::new(&entry)?)
                 }
             }
             // Aliyun 云端引擎由 Task 2 实现（AliyunEngine）；Task 1 阶段本地实例化无实现。
@@ -137,8 +149,8 @@ impl AsrEngineManager {
                 "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 AliyunEngine）",
                 model_name
             ),
-            config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
-            config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(entry)?),
+            config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(&entry)?),
+            config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(&entry)?),
             config::EngineCategory::ByteDance => anyhow::bail!(
                 "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
                 model_name

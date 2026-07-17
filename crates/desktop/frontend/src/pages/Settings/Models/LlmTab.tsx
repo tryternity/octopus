@@ -36,8 +36,14 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
 
   useEffect(() => { load(); }, [load]);
 
-  const onActivate = async (name: string, provider: string) => {
-    try { await invoke("switch_polish_llm", { modelName: name, provider }); load(); }
+  // Task 2 后：统一走 switch_active_model(domain, id)。空 id 取消激活（LLM 域允许无激活）。
+  const onActivate = async (id: number | null) => {
+    try {
+      // id=null 表示「不选择模型」——传 -1 让后端 switch_active_model 用 IIF(id=-1,1,0) 清空
+      const targetId = id ?? -1;
+      await invoke("switch_active_model", { domain: "llm", id: targetId });
+      load();
+    }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
@@ -78,7 +84,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>
           {localRows.map((m) => (
             <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
-              onActivate={() => onActivate(m.name, m.provider)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
+              onActivate={() => m.cloudId && onActivate(m.cloudId)} onDownload={() => {}} onVerify={() => {}} onDelete={() => {}}
             />
           ))}
         </CollapsibleSection>
@@ -93,7 +99,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         </div>
         {cloudRows.map((m) => (
           <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
-            onActivate={() => onActivate(m.name, m.provider)}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => {}}
             onVerify={() => {}}
             onDelete={() => m.cloudId && onDelete(m.cloudId)}

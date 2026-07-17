@@ -19,6 +19,11 @@ static RUNTIME_CONFIG: RwLock<Option<Arc<AsrConfig>>> = RwLock::new(None);
 /// 读取模型配置（唯一来源：~/.octopus/octopus.db 的 models 表）。
 /// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存。
 /// cli/server/desktop 三端统一走此路径，不再读 model.json。
+///
+/// Task 2 后：models 表 `is_enabled=1` 表激活（每域仅 1 个），故本函数返回的
+/// AsrConfig **只含激活的那一个 ASR entry**（infra::db::load_models_at 已 LIMIT 1）。
+/// 引擎实例化（engine.rs::load_engine_into_cache）经 [`resolve_engine_in_config`]
+/// 按 spec 在此缓存中查找——传激活的 name 即命中。
 pub fn load_config() -> Result<AsrConfig> {
     // 读锁：已缓存则 clone 返回
     if let Some(arc) = RUNTIME_CONFIG.read().unwrap().as_ref() {
@@ -36,8 +41,13 @@ pub fn load_config() -> Result<AsrConfig> {
 
 /// 重载 AsrConfig 缓存（models 表）：从 DB 重读替换。
 ///
-/// desktop 在 set_model_enabled / set_model_secret_key 写 DB 后调用，让引擎下拉
-/// （`list_engines` → `load_config`）即时反映新的 is_enabled。对齐 [`reload_app_config`]。
+/// 推理路径用（`load_config` → `resolve_engine_in_config` / 各引擎 transcribe）。
+/// desktop 在 set_model_enabled / set_model_secret_key / add/edit/remove_cloud_model
+/// 写 DB 后调用，让推理路径的激活模型缓存（`RUNTIME_CONFIG`，仅 is_enabled=1 AND is_available=1）
+/// 反映变化。**管理列表不走此缓存**——`list_engines_from_db` 直查 DB 即时反映，无需 reload。
+///
+/// 注：激活态切换（switch_active_model）走 [`reload_active_engine`] 重载 `ACTIVE_ENGINES`；
+/// 本函数仅重载 ASR 的 `load_config` 缓存（引擎实例化路径用）。
 pub fn reload_models_config() {
     match crate::db::load_models() {
         Ok(c) => {
@@ -182,10 +192,61 @@ pub fn resolve_engine_in_config<'a, 'b>(
 
 /// Resolve a model spec (e.g. "local:zipformer-small-ctc", "zipformer:zipformer-small-ctc",
 /// or bare "zipformer-small-ctc") to its [`EngineCategory`] by looking up DB models.
-/// Returns `None` if the spec doesn't match any enabled ASR model.
+///
+/// Task 2 后：`load_config` 只含激活的那一个 ASR entry——本函数仅匹配激活引擎。
+/// CLI `--model` / 多模型显式路径用 [`resolve_engine_category_any`]（查所有可用引擎）。
+/// Returns `None` if the spec doesn't match the active ASR model.
 pub fn resolve_engine_category(spec: &str) -> Option<EngineCategory> {
     let config = load_config().ok()?;
     resolve_engine_in_config(&config, spec).map(|(cat, _, _)| cat)
+}
+
+/// 解析 spec → EngineCategory（查 DB 所有可用 ASR 引擎，不限激活）。
+///
+/// 供 CLI `--model` 显式路径 / 多模型场景用——不依赖激活态（load_config 只含激活）。
+/// 直接查 `list_all_asr_engines`（DB is_available=1 的全部 ASR），按 spec 匹配。
+pub fn resolve_engine_category_any(spec: &str) -> Option<EngineCategory> {
+    let parsed = parse_model_spec(spec);
+    let rows = octopus_infra::db::list_all_asr_engines().ok()?;
+    match parsed {
+        ModelSpec::Full { provider, category, model_name } => {
+            rows.into_iter()
+                .find(|r| r.provider == provider && r.category == category && r.model_name == model_name)
+                .and_then(|r| resolve_category(&r.provider, &r.category))
+        }
+        ModelSpec::NameOnly(model_name) => {
+            rows.into_iter()
+                .find(|r| r.model_name == model_name)
+                .and_then(|r| resolve_category(&r.provider, &r.category))
+        }
+    }
+}
+
+/// 解析 spec → (EngineCategory, ModelEntry)，查 DB 所有可用 ASR 引擎（不限激活）。
+///
+/// 供 AsrEngineManager::load_engine_into_cache 用——用户经 CLI `--model` 或其他多模型
+/// 入口选了非激活引擎时，[`resolve_engine_in_config`]（load_config 只含激活）找不到，
+/// 此函数直接查 DB 任意可用引擎。spec 支持 3-part 或裸名。
+pub fn resolve_engine_any(spec: &str) -> Option<(EngineCategory, ModelEntry)> {
+    let parsed = parse_model_spec(spec);
+    let (provider, category, model_name) = match parsed {
+        ModelSpec::Full { provider, category, model_name } => (Some(provider), Some(category), model_name),
+        ModelSpec::NameOnly(model_name) => (None, None, model_name),
+    };
+    let row = octopus_infra::db::get_asr_model_by_spec(provider, category, model_name).ok()?;
+    let row = row?;
+    let cat = resolve_category(&row.provider, &row.category)?;
+    let entry = ModelEntry {
+        source: row.source,
+        language: row.language,
+        description: row.description,
+        secret_key: row.secret_key,
+        is_local: row.is_local,
+        is_enabled: row.is_enabled,
+        is_available: row.is_available,
+        is_streaming: row.is_streaming,
+    };
+    Some((cat, entry))
 }
 
 // ── List all available engines ──
@@ -197,18 +258,16 @@ pub struct EngineInfo {
     pub category: EngineCategory,
     pub description: String,
     pub is_local: bool,
-}
-
-/// EngineCategory 对应的 provider 字符串（与 DB models.provider 一致，用于构造 3-part spec）。
-/// 本地族 → "local"；Aliyun → "aliyun"；ByteDance → "bytedance"；Tencent → "tencent"。
-fn provider_of(c: &EngineCategory) -> &'static str {
-    match c {
-        EngineCategory::Aliyun => "aliyun",
-        EngineCategory::ByteDance => "bytedance",
-        EngineCategory::Tencent => "tencent",
-        EngineCategory::Baidu => "baidu",
-        _ => "local",
-    }
+    /// DB 行 id（Task 2 后补，供前端 switch_active_model(domain, id) 用）。
+    pub id: i64,
+    /// DB models.source（Task 2 后补，供前端展示 / 编辑回填）。
+    pub source: String,
+    /// DB models.secret_key（Task 2 后补，脱敏后供前端编辑回填）。
+    pub secret_key: String,
+    pub is_streaming: bool,
+    pub is_thinking: bool,
+    /// DB models.is_enabled（激活态，每域仅 1 个=1）。供前端标 current。
+    pub is_enabled: bool,
 }
 
 /// EngineCategory → category 字符串（与 DB models.category 一致，用于排序、显示、构造 spec）。
@@ -244,104 +303,185 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
 }
 
 /// 从 DB models 表列出所有已配置的 ASR 引擎
-pub fn list_engines() -> Result<Vec<EngineInfo>> {
-    let config = load_config()?;
-    let mut engines = Vec::new();
-
-    // 复用 all_sections（与 resolve_engine_in_config 的 NameOnly 遍历共享同一 section 顺序，
-    // 避免两份手写副本发散）。
-    for (section, category) in all_sections(&config) {
-        if let Some(map) = section {
-            for (name, entry) in map {
-                engines.push(EngineInfo {
-                    name: name.clone(),
-                    provider: provider_of(&category).to_string(),
-                    category,
-                    description: entry.description.clone(),
-                    is_local: entry.is_local,
-                });
-            }
-        }
-    }
-
+/// 列出 ASR 域所有引擎——**直查 DB，不经 RUNTIME_CONFIG 缓存**。
+///
+/// 管理列表（设置页 / 工具栏 / CLI select）专用：新增 / 编辑 / 删除云端模型后即时反映，
+/// 不依赖 `reload_models_config`。RUNTIME_CONFIG（`load_config`，仅 is_enabled=1 可用模型）
+/// 仅供推理路径——`resolve_active_engine` 从可用集合里按 `app_config.asr_engine` 挑激活引擎。
+///
+/// 推理路径（`resolve_engine_in_config` / `resolve_active_engine` / 各引擎 transcribe）
+/// **不**走此函数，继续用 `load_config`。
+pub fn list_engines_from_db() -> Result<Vec<EngineInfo>> {
+    let rows = octopus_infra::db::list_all_asr_engines()?;
+    let mut engines: Vec<EngineInfo> = rows
+        .into_iter()
+        .filter_map(|r| {
+            // provider+category → EngineCategory（provider_of 的逆映射）
+            resolve_category(&r.provider, &r.category).map(|cat| EngineInfo {
+                name: r.model_name,
+                provider: r.provider,
+                category: cat,
+                description: r.description,
+                is_local: r.is_local,
+                id: r.id,
+                source: r.source,
+                secret_key: r.secret_key,
+                is_streaming: r.is_streaming,
+                is_thinking: r.is_thinking,
+                is_enabled: r.is_enabled,
+            })
+        })
+        .collect();
     order_engine_infos(&mut engines);
     Ok(engines)
 }
 
-// ── 全局默认引擎解析（config.yaml.asr_engine → 具体引擎 + 兜底）──
+// ── 激活引擎解析（4 域统一：load_active_engine / resolve_active_engine）──
 
-/// 解析后的引擎：name + category + entry 三件套。
+/// 解析后的引擎：domain + name + provider + category + is_thinking + entry。
+///
+/// 4 域（asr/llm/ocr/translate）共用此结构。`category` 为 DB `models.category` 原始字符串
+/// （如 "whisper" / "Fun-ASR" / "qwen"）；ASR 内部路由按需用 [`Self::as_engine_category`]
+/// 转换为 [`EngineCategory`] 枚举。`is_thinking` 来自 DB `models.is_thinking`（LLM 专用，
+/// 其余域恒为 false）——ModelEntry 不含此字段，故提升到顶层。
 #[derive(Debug, Clone)]
 pub struct ResolvedEngine {
+    /// 域标识："asr" / "llm" / "ocr" / "translate"。
+    pub domain: String,
+    /// 裸模型名（DB models.model_name，不含 spec 前缀）。
     pub name: String,
-    pub category: EngineCategory,
+    /// 提供方（DB models.provider，如 "local" / "aliyun" / "deepseek"）。
+    pub provider: String,
+    /// DB models.category 原始字符串（ASR 族名 / LLM 系列 / 云端族名等）。
+    pub category: String,
+    /// DB models.is_thinking（LLM reasoning 模型标记；其余域为 false）。
+    pub is_thinking: bool,
+    /// 引擎配置（source / secret_key / language / is_streaming 等）。
     pub entry: ModelEntry,
 }
 
-/// 解析 config.yaml.asr_engine 为具体引擎（全局默认引擎入口）。
-///
-/// `asr_engine` 支持 spec 格式（见 [`parse_model_spec`]）：
-/// - `"local:zipformer-small-ctc"` — is_local=true AND name
-/// - `"zipformer:zipformer-small-ctc"` — category AND name
-/// - `"zipformer-small-ctc"` — 向后兼容，仅按 name
-///
-/// 解析规则：
-/// - 非空且命中 → 返回裸名（去掉前缀）+ category + entry
-/// - 空 / 匹配不到 → 回退兜底引擎（zipformer-small-ctc）
-///
-/// 返回的 `ResolvedEngine.name` 始终是**裸名**（不含 `local:` / `category:` 前缀），
-/// 下游引擎缓存和模型加载按裸名工作。
-///
-/// 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。
-/// 显式 spec 路径（cli `--model`、AsrEngineManager.switch_model、server 请求带 engine）
-/// 直接走 `resolve_engine_in_config + pick_entry`，不经此函数、不走兜底。
-pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
-    let cfg = load_config()?;
-
-    // 0. 兜底引擎短路：asr_engine 裸名为 zipformer-small-ctc（无论 spec 格式还是裸名）
-    //    时直接返回兜底——该引擎随应用本地打包，不依赖 DB 是否有条目，避免无谓 warning。
-    let bare = parse_model_spec(asr_engine).model_name();
-    if bare == FALLBACK_ASR_ENGINE_NAME {
-        return Ok(fallback_engine(&cfg));
+impl ResolvedEngine {
+    /// category 字符串 → EngineCategory（ASR 内部路由用）。
+    ///
+    /// 仅 ASR domain 有意义（whisper/paraformer/zipformer 等本地族 + aliyun/bytedance/
+    /// tencent/baidu 云端族）。LLM/OCR/Translate domain 调此方法返回 None。
+    pub fn as_engine_category(&self) -> Option<EngineCategory> {
+        resolve_category(&self.provider, &self.category)
     }
+}
 
-    // 1. 显式配置命中
-    if !asr_engine.is_empty() {
-        if let Some((category, bare_name, entry)) = resolve_engine_in_config(&cfg, asr_engine) {
-            return Ok(ResolvedEngine {
-                name: bare_name.to_string(),
-                category,
-                entry: entry.clone(),
-            });
+/// 激活引擎内存缓存：4 域各一个槽（domain → Arc<ResolvedEngine>）。
+///
+/// 启动时 [`load_active_engine`] 填充；激活切换后 [`reload_active_engine`] 刷新该域。
+/// 推理热路径（各使用方）经 [`resolve_active_engine`] 纯读此缓存——零 DB 开销。
+static ACTIVE_ENGINES: std::sync::LazyLock<RwLock<HashMap<String, Arc<ResolvedEngine>>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// 从 DB ModelRow 构造 ResolvedEngine（4 域统一）。entry 字段从 row 全字段构造。
+fn resolved_engine_from_row(row: &octopus_infra::db::ModelRow) -> ResolvedEngine {
+    ResolvedEngine {
+        domain: row.domain.clone(),
+        name: row.model_name.clone(),
+        provider: row.provider.clone(),
+        category: row.category.clone(),
+        is_thinking: row.is_thinking,
+        entry: ModelEntry {
+            source: row.source.clone(),
+            language: row.language.clone(),
+            description: row.description.clone(),
+            secret_key: row.secret_key.clone(),
+            is_local: row.is_local,
+            is_enabled: row.is_enabled,
+            is_available: row.is_available,
+            is_streaming: row.is_streaming,
+        },
+    }
+}
+
+/// 从 DB 加载指定域的激活模型并缓存到 [`ACTIVE_ENGINES`]。
+///
+/// 仅在以下时机调用：① 应用启动（main.rs 初始化 4 域）；② 设置页激活模型后
+/// （switch_active_model 写 DB 后调 [`reload_active_engine`]）。
+///
+/// 缓存命中（该 domain 已有槽）直接返回旧值——**不强制重读 DB**。需要强制刷新
+/// 用 [`reload_active_engine`]。
+///
+/// ASR 域无激活时 fallback 兜底引擎（[`FALLBACK_ASR_ENGINE_NAME`]）；其余域返回 Err。
+pub fn load_active_engine(domain: &str) -> Result<ResolvedEngine> {
+    // 读缓存命中则返回
+    if let Some(arc) = ACTIVE_ENGINES.read().unwrap().get(domain) {
+        return Ok(arc.as_ref().clone());
+    }
+    crate::db::ensure_db()?;
+    match octopus_infra::db::get_active_model(domain)? {
+        Some(row) => {
+            let resolved = resolved_engine_from_row(&row);
+            ACTIVE_ENGINES
+                .write()
+                .unwrap()
+                .insert(domain.to_string(), Arc::new(resolved.clone()));
+            Ok(resolved)
         }
-        log::warn!(
-            "config.yaml asr_engine='{}' 在 DB models 表中未匹配到，回退兜底引擎",
-            asr_engine
-        );
+        None => {
+            if domain == "asr" {
+                // ASR 兜底引擎（随应用本地打包，不依赖 DB is_enabled）
+                let resolved = fallback_resolved_engine();
+                ACTIVE_ENGINES
+                    .write()
+                    .unwrap()
+                    .insert(domain.to_string(), Arc::new(resolved.clone()));
+                Ok(resolved)
+            } else {
+                anyhow::bail!("域 '{}' 无激活模型（is_enabled=1 AND is_available=1），请在设置页激活", domain)
+            }
+        }
     }
+}
 
-    // 2. 兜底：zipformer-small-ctc
-    Ok(fallback_engine(&cfg))
+/// 重载指定域的激活缓存（先清该域槽 → 重新 [`load_active_engine`]）。
+///
+/// switch_active_model 写 DB 后调用。也会同步重载 ASR 的 `load_config` 缓存
+/// （引擎实例化路径用）——保持两条缓存一致。
+pub fn reload_active_engine(domain: &str) -> Result<ResolvedEngine> {
+    ACTIVE_ENGINES.write().unwrap().remove(domain);
+    if domain == "asr" {
+        reload_models_config();
+    }
+    load_active_engine(domain)
+}
+
+/// 从内存缓存取指定域的唯一激活模型。
+///
+/// 各个使用方（推理 / tray / 管理页当前态 / 流式判定 / LLM polish / OCR / 翻译）都调此方法。
+/// 缓存未命中（启动尚未 load / 被清）→ fallback 到 [`load_active_engine`]。
+///
+/// ASR 域带兜底引擎 fallback（[`FALLBACK_ASR_ENGINE_NAME`]）；其余域无激活返回 Err。
+pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
+    if let Some(arc) = ACTIVE_ENGINES.read().unwrap().get(domain) {
+        return Ok(arc.as_ref().clone());
+    }
+    // 缓存未命中（启动尚未 load / 被清）→ 走 load_active_engine 兜底
+    load_active_engine(domain)
 }
 
 /// 兜底引擎固定裸名。
 const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small-ctc";
 
-/// 兜底引擎：优先 DB zipformer section 的 zipformer-small-ctc，否则硬构造（本地打包路径）。
-fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
-    if let Some(zf) = cfg.asr.zipformer.as_ref() {
-        if let Some(entry) = zf.get("zipformer-small-ctc") {
-            return ResolvedEngine {
-                name: "zipformer-small-ctc".to_string(),
-                category: EngineCategory::Zipformer,
-                entry: entry.clone(),
-            };
+/// ASR 兜底引擎（无 DB 激活时）：优先用 `load_config` 缓存的 zipformer-small-ctc
+/// （用户可能改过 source），否则硬构造（本地打包路径）。
+fn fallback_resolved_engine() -> ResolvedEngine {
+    if let Ok(cfg) = load_config() {
+        if let Some(r) = fallback_engine_from_cfg(&cfg) {
+            return r;
         }
     }
     // DB 无 zipformer section（极端情况）仍可用——靠本地打包路径硬构造
     ResolvedEngine {
-        name: "zipformer-small-ctc".to_string(),
-        category: EngineCategory::Zipformer,
+        domain: "asr".to_string(),
+        name: FALLBACK_ASR_ENGINE_NAME.to_string(),
+        provider: "local".to_string(),
+        category: "zipformer".to_string(),
+        is_thinking: false,
         entry: ModelEntry {
             source: DEFAULT_ASR_MODEL_DIR.to_string(),
             language: "zh".to_string(),
@@ -349,9 +489,24 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+            is_available: true,
             is_streaming: true,
         },
     }
+}
+
+/// 从已加载的 AsrConfig 取 zipformer-small-ctc 条目构造兜底 ResolvedEngine。
+/// 配置中无该条目时返回 None（调用方走硬构造兜底）。纯函数，便于单测。
+fn fallback_engine_from_cfg(cfg: &AsrConfig) -> Option<ResolvedEngine> {
+    let entry = cfg.asr.zipformer.as_ref()?.get(FALLBACK_ASR_ENGINE_NAME)?;
+    Some(ResolvedEngine {
+        domain: "asr".to_string(),
+        name: FALLBACK_ASR_ENGINE_NAME.to_string(),
+        provider: "local".to_string(),
+        category: "zipformer".to_string(),
+        is_thinking: false,
+        entry: entry.clone(),
+    })
 }
 
 /// 按 category + name 从配置中取 entry（统一各引擎模块/AsrEngineManager 的查找逻辑）。
@@ -428,8 +583,12 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
     let app_cfg = load_app_config_cached();
 
     // qwen3-asr 含 CoreML 不支持的动态算子 → 跳过 EP，纯 CPU。
+    // 激活引擎走 ACTIVE_ENGINES 缓存（resolve_active_engine("asr")，含兜底）。
+    let active_cat = resolve_active_engine("asr")
+        .ok()
+        .and_then(|r| r.as_engine_category());
     let skip_coreml = app_cfg.asr_hardware_accelerated
-        && resolve_engine_category(&app_cfg.asr_engine) == Some(EngineCategory::Qwen3Asr);
+        && active_cat == Some(EngineCategory::Qwen3Asr);
     onnx_infra::apply_session_acceleration(builder, skip_coreml)
 }
 
@@ -446,6 +605,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+                is_available: true,
             is_streaming: false,
         }
     }
@@ -484,6 +644,7 @@ mod tests {
                 secret_key: String::new(),
                 is_local: false,
                 is_enabled: true,
+                is_available: true,
                 is_streaming: false,
             },
         );
@@ -511,11 +672,17 @@ mod tests {
     #[test]
     fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
         use EngineCategory::*;
+        // mk_engine_info helper 局部构造（避免每个 case 写全 11 字段）
+        let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
+            name: name.into(), provider: "local".into(), category: cat, is_local,
+            description: String::new(), id: 0, source: String::new(),
+            secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false,
+        };
         let mut engines = vec![
-            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: Whisper, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-multi".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
-            EngineInfo { name: "paraformer-x".into(), provider: "local".into(), category: Paraformer, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-small-ctc".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
+            mk("whisper-small", Whisper, false),
+            mk("zipformer-multi", Zipformer, true),
+            mk("paraformer-x", Paraformer, false),
+            mk("zipformer-small-ctc", Zipformer, true),
         ];
         order_engine_infos(&mut engines);
         let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
@@ -547,15 +714,20 @@ mod tests {
     fn fallback_uses_db_zipformer_small_entry() {
         // DB 有 zipformer-small-ctc 条目 → 用 DB 的 source（用户手编仍生效）
         let cfg = cfg_with_zipformer();
-        let r = fallback_engine(&cfg);
+        let r = fallback_engine_from_cfg(&cfg).expect("zipformer-small-ctc 应命中");
+        assert_eq!(r.domain, "asr");
         assert_eq!(r.name, "zipformer-small-ctc");
-        assert_eq!(r.category, EngineCategory::Zipformer);
+        assert_eq!(r.provider, "local");
+        assert_eq!(r.category, "zipformer");
+        assert!(!r.is_thinking, "ASR 兜底引擎 is_thinking 应为 false");
         assert_eq!(r.entry.source, "models/zipformer");
+        // category 字符串 → EngineCategory 转换
+        assert_eq!(r.as_engine_category(), Some(EngineCategory::Zipformer));
     }
 
     #[test]
     fn fallback_hardcodes_when_section_absent() {
-        // DB 无 zipformer section → 硬构造兜底（DEFAULT_ASR_MODEL_DIR 本地打包路径）
+        // DB 无 zipformer section → fallback_engine_from_cfg 返回 None（硬构造兜底由 fallback_resolved_engine 负责）
         let cfg = AsrConfig {
             asr: AsrSection {
                 whisper: None,
@@ -571,10 +743,39 @@ mod tests {
                 aliyun: None,
             },
         };
-        let r = fallback_engine(&cfg);
-        assert_eq!(r.name, "zipformer-small-ctc");
-        assert_eq!(r.entry.source, DEFAULT_ASR_MODEL_DIR);
-        assert_eq!(r.entry.language, "zh");
+        assert!(fallback_engine_from_cfg(&cfg).is_none());
+    }
+
+    #[test]
+    fn resolved_engine_from_row_maps_all_fields() {
+        // ModelRow → ResolvedEngine 全字段映射（4 域统一，含 is_thinking）
+        let row = octopus_infra::db::ModelRow {
+            id: 42,
+            domain: "llm".to_string(),
+            provider: "deepseek".to_string(),
+            category: "deepseek-reasoner".to_string(),
+            model_name: "deepseek-reasoner".to_string(),
+            source: "https://api.deepseek.com/v1".to_string(),
+            secret_key: "sk-xxx".to_string(),
+            language: String::new(),
+            description: "DeepSeek Reasoner".to_string(),
+            is_local: false,
+            is_thinking: true,
+            is_streaming: false,
+            is_enabled: true,
+            is_available: true,
+        };
+        let r = resolved_engine_from_row(&row);
+        assert_eq!(r.domain, "llm");
+        assert_eq!(r.name, "deepseek-reasoner");
+        assert_eq!(r.provider, "deepseek");
+        assert_eq!(r.category, "deepseek-reasoner");
+        assert!(r.is_thinking, "LLM reasoning 模型 is_thinking 应为 true");
+        assert_eq!(r.entry.source, "https://api.deepseek.com/v1");
+        assert_eq!(r.entry.secret_key, "sk-xxx");
+        assert!(!r.entry.is_local);
+        // 非 ASR domain 的 category 字符串 → as_engine_category 返回 None
+        assert_eq!(r.as_engine_category(), None);
     }
 
     // ── ModelSpec 解析测试（3-part）──
@@ -672,5 +873,83 @@ mod tests {
         assert_eq!(resolve_category("deepseek", "zipformer"), Some(EngineCategory::Zipformer));
         // category 字符串非本地族 → None
         assert_eq!(resolve_category("local", "Fun-ASR"), None);
+    }
+
+    /// §4.4 ResolvedEngine.as_engine_category：4 个云端 provider（aliyun/bytedance/
+    /// tencent/baidu）按 provider 路由，category 字符串任意（Task 2 后云端 ASR 新增）。
+    /// 大小写不敏感（eq_ignore_ascii_case）。
+    #[test]
+    fn resolve_category_routes_all_cloud_providers() {
+        // bytedance / tencent / baidu 三个云端 provider（与 aliyun 对称，Task 2 前已加）
+        assert_eq!(resolve_category("bytedance", "Doubao-ASR"), Some(EngineCategory::ByteDance));
+        assert_eq!(resolve_category("Bytedance", "anything"), Some(EngineCategory::ByteDance));
+        assert_eq!(resolve_category("tencent", "Tencent-ASR"), Some(EngineCategory::Tencent));
+        assert_eq!(resolve_category("TENCENT", "anything"), Some(EngineCategory::Tencent));
+        assert_eq!(resolve_category("baidu", "Baidu-ASR"), Some(EngineCategory::Baidu));
+        assert_eq!(resolve_category("Baidu", "anything"), Some(EngineCategory::Baidu));
+    }
+
+    /// §4.4 ResolvedEngine.as_engine_category：通过 ResolvedEngine（含 domain/provider/
+    /// category）调用 as_engine_category，验证 4 域统一结构的转换行为。
+    /// - ASR domain + 云端 provider → 对应云端 EngineCategory
+    /// - ASR domain + 本地族 category → 对应本地族 EngineCategory
+    /// - 非 ASR domain（llm/ocr/translate）→ None（category 字符串非 ASR 族）
+    #[test]
+    fn as_engine_category_converts_resolved_engine() {
+        // 云端 ASR（aliyun，category='Fun-ASR' 非 ASR 族名但 provider 路由）
+        let aliyun = ResolvedEngine {
+            domain: "asr".to_string(),
+            name: "fun-asr-2025-11-07".to_string(),
+            provider: "aliyun".to_string(),
+            category: "Fun-ASR".to_string(),
+            is_thinking: false,
+            entry: make_entry("wss://dashscope.aliyuncs.com/api-ws/v1/inference"),
+        };
+        assert_eq!(aliyun.as_engine_category(), Some(EngineCategory::Aliyun));
+
+        // 本地 ASR（zipformer）
+        let zf = ResolvedEngine {
+            domain: "asr".to_string(),
+            name: "zipformer-small-ctc".to_string(),
+            provider: "local".to_string(),
+            category: "zipformer".to_string(),
+            is_thinking: false,
+            entry: make_entry("models/zipformer"),
+        };
+        assert_eq!(zf.as_engine_category(), Some(EngineCategory::Zipformer));
+
+        // LLM domain（category='deepseek' 非 ASR 族名）→ None
+        let llm = ResolvedEngine {
+            domain: "llm".to_string(),
+            name: "deepseek-chat".to_string(),
+            provider: "deepseek".to_string(),
+            category: "deepseek".to_string(),
+            is_thinking: false,
+            entry: make_entry("https://api.deepseek.com/v1"),
+        };
+        assert_eq!(llm.as_engine_category(), None,
+            "LLM domain 的 category 字符串非 ASR 族 → None");
+
+        // OCR domain（category='paddleocr' 非 ASR 族名）→ None
+        let ocr = ResolvedEngine {
+            domain: "ocr".to_string(),
+            name: "PP-OCRv6-small".to_string(),
+            provider: "local".to_string(),
+            category: "paddleocr".to_string(),
+            is_thinking: false,
+            entry: make_entry("ocr/PP-OCRv6-small"),
+        };
+        assert_eq!(ocr.as_engine_category(), None);
+
+        // Translate domain（category='opus-mt' 非 ASR 族名）→ None
+        let tr = ResolvedEngine {
+            domain: "translate".to_string(),
+            name: "opus-mt".to_string(),
+            provider: "local".to_string(),
+            category: "opus-mt".to_string(),
+            is_thinking: false,
+            entry: make_entry("translate/opus-mt"),
+        };
+        assert_eq!(tr.as_engine_category(), None);
     }
 }

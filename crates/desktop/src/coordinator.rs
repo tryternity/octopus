@@ -192,6 +192,28 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+/// ASR 兜底引擎 spec（与 runtime_config::FALLBACK_ASR_ENGINE 一致，3-part 格式供 active_session 用）。
+const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
+
+/// 取激活 ASR 引擎名（裸名）。resolve 失败（含未激活 + 兜底失败）时返回兜底 spec。
+///
+/// Task 2 后：coordinator 不再依赖 config.asr_engine 字段（已删），统一调此函数。
+fn active_asr_engine_name() -> String {
+    octopus_asr_local::config::resolve_active_engine("asr")
+        .map(|r| r.name)
+        .unwrap_or_else(|_| FALLBACK_STREAMING_SPEC.to_string())
+}
+
+/// 取激活 LLM 引擎名（裸名）。resolve 失败（未激活）时返回空串。
+///
+/// Task 2 后：coordinator 不再依赖 config.polish_llm 字段（已删），统一调此函数。
+/// 用于 DB 记录的 model 字段——空串表示无润色 LLM 激活。
+fn active_llm_name() -> String {
+    octopus_asr_local::config::resolve_active_engine("llm")
+        .map(|r| r.name)
+        .unwrap_or_default()
+}
+
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
 ///
@@ -236,7 +258,7 @@ fn build_coordinator_loop(
     app_handle: tauri::AppHandle,
     runtime_config: crate::runtime_config::SharedRuntimeConfig,
 ) {
-    let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
+    let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine();
     let mut use_streaming = use_streaming;
     #[cfg(feature = "cloud")]
     let mut use_cloud_streaming = false;
@@ -290,18 +312,16 @@ fn build_coordinator_loop(
                             // 前端 listen prepare-record 后回推 currentSelectionRef（或 null）→ StartRecording；
                             // 200ms 未响应 → FallbackStart 普通开（selection=None）。
                             let rc = runtime_config.read();
-                            config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
-                                Ok(_) => rc.asr_engine.clone(),
-                                Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
-                            };
-                            // mic/engine_mode 开新会话时从 rc 拉最新（与 asr_engine 同策略，下次录音生效；
+                            // Task 2 后：激活引擎统一从 ACTIVE_ENGINES 缓存取（resolve_active_engine），
+                            // 不再从 rc.asr_engine 读 + 写回校正。
+                            // mic/engine_mode 开新会话时从 rc 拉最新（下次录音生效；
                             // mic/引擎不能会话中热切）。
                             config.microphone = rc.microphone.clone();
                             config.engine_mode = rc.engine_mode.clone();
                             sync_runtime_fields(&mut config, &rc);
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
-                                && crate::config::is_streaming_engine(&config);
+                                && crate::config::is_streaming_engine();
                             #[cfg(feature = "cloud")]
                             {
                                 use_cloud_streaming = is_cloud_engine(&config);
@@ -394,8 +414,9 @@ fn build_coordinator_loop(
                             polish_status,
                         } = &stage
                         {
-                            let polish_model = if polish_status == "done" {
-                                Some(config.polish_llm.as_str())
+                            let polish_model: Option<String> = if polish_status == "done" {
+                                let name = active_llm_name();
+                                if name.is_empty() { None } else { Some(name) }
                             } else {
                                 None
                             };
@@ -412,7 +433,7 @@ fn build_coordinator_loop(
                                 segments: segments.clone(),
                                 polished_text: polished_for_db.map(|s| s.to_string()),
                                 polish_status: polish_status.clone(),
-                                polish_model: polish_model.map(|s| s.to_string()),
+                                polish_model: polish_model.clone(),
                                 duration_ms: Some(duration_ms),
                             };
                             if let Err(e) = get_db_sender().send(cmd) {
@@ -449,12 +470,12 @@ fn build_coordinator_loop(
                     }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
-                        // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
-                        // asr_engine 不在此路径（需要重建引擎实例，必须走 Toggle）。
+                        // 无需等下次 Toggle。用于 polish_mode 等运行时可变字段。
+                        // Task 2 后 polish_llm 不在 config（走 switch_active_model + ACTIVE_ENGINES 缓存）。
                         let rc = runtime_config.read();
                         sync_runtime_fields(&mut config, &rc);
-                        debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
-                               config.polish_llm, config.polish_mode);
+                        debug!("UpdateRuntime: active llm='{}', polish_mode={:?}",
+                               active_llm_name(), config.polish_mode);
                     }
                     Command::SetCaret { offset } => {
                         // 非编辑态点击定位光标：调 stage_transcript.set_caret（劈段/段界/clamp）。
@@ -535,16 +556,13 @@ fn build_coordinator_loop(
                             continue;
                         }
                         let rc = runtime_config.read();
-                        config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
-                            Ok(_) => rc.asr_engine.clone(),
-                            Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
-                        };
+                        // Task 2 后：激活引擎统一从 ACTIVE_ENGINES 缓存取，不再写回 config。
                         config.microphone = rc.microphone.clone();
                         config.engine_mode = rc.engine_mode.clone();
                         sync_runtime_fields(&mut config, &rc);
                         drop(rc);
                         use_streaming = config.engine_mode == "embedded"
-                            && crate::config::is_streaming_engine(&config);
+                            && crate::config::is_streaming_engine();
                         #[cfg(feature = "cloud")]
                         {
                             use_cloud_streaming = is_cloud_engine(&config);
@@ -665,7 +683,6 @@ impl Coordinator {
 /// （音频处理路径有独立 cfg 读取，会话中切换影响降噪器状态）。
 fn sync_runtime_fields(config: &mut AppConfig, shared: &AppConfig) {
     config.polish_mode = shared.polish_mode;
-    config.polish_llm = shared.polish_llm.clone();
     config.asr_correct = shared.asr_correct;
     config.output_simplified = shared.output_simplified;
     config.hide_toolbar = shared.hide_toolbar;
@@ -824,7 +841,7 @@ fn prepare_cloud_streaming_session(
 
                 let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
                     vad,
-                    config.asr_engine.clone(),
+                    active_asr_engine_name(),
                     config.language.clone(),
                     config.pause_polish_threshold_ms,
                 );
@@ -874,12 +891,12 @@ fn prepare_streaming_session(
 ) {
     // 流式引擎复用（②）：从 StreamingSessionManager 取常驻引擎 Arc + reset 清状态，
     // 不再每次录音 StreamingSession::new 重载 Session。模型变更由 active_session 懒加载覆盖，
-    // 故 switch_asr_engine 无需主动联动。streaming_manager 经 app_handle.state 取（main 注入）。
-    const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
+    // 故 switch_active_model 无需主动联动。streaming_manager 经 app_handle.state 取（main 注入）。
+    let asr_engine = active_asr_engine_name();
     let streaming_manager = app_handle
         .state::<std::sync::Arc<StreamingSessionManager>>();
     let streaming_engine = match streaming_manager
-        .active_session(&config.asr_engine, &config.language)
+        .active_session(&asr_engine, &config.language)
     {
         Ok(arc) => {
             arc.reset();
@@ -888,7 +905,7 @@ fn prepare_streaming_session(
         Err(e) => {
             warn!(
                 "流式引擎 '{}' 取用失败 ({}), 降级到默认引擎 '{}'",
-                config.asr_engine, e, FALLBACK_STREAMING_SPEC
+                asr_engine, e, FALLBACK_STREAMING_SPEC
             );
             match streaming_manager
                 .active_session(FALLBACK_STREAMING_SPEC, &config.language)
@@ -977,7 +994,7 @@ fn prepare_vad_segmented_session(
     match crate::pipeline::VadSegmentedPipeline::new(
         engine.clone(),
         config.language.clone(),
-        config.asr_engine.clone(),
+        active_asr_engine_name(),
         config.segment_silence,
     ) {
         Ok(pipeline) => {
@@ -1400,7 +1417,7 @@ fn start_final_polish_or_paste(
         return;
     }
 
-    match crate::config::llm_config(config) {
+    match crate::config::llm_config(config.polish_mode) {
         None => {
             // 无需润色，直接粘贴
             do_paste(
@@ -1616,7 +1633,7 @@ fn finalize_cloud(
     }
 
     // 确保 DB 记录已 INSERT（在 dispatch 之前——AgentBridge 也应进 ASR 历史）
-    if let Err(e) = update_transcription_raw(&mut transcript, &config.asr_engine, "streaming") {
+    if let Err(e) = update_transcription_raw(&mut transcript, &active_asr_engine_name(), "streaming") {
         warn!("CloudStreaming finalize INSERT failed: {}", e);
     }
 
@@ -1777,11 +1794,13 @@ fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicB
 
 // ── CloudStreaming（aliyun feature）──
 
-/// 判定 config.asr_engine 是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
+/// 判定激活 ASR 引擎是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
 #[cfg(feature = "cloud")]
-fn is_cloud_engine(config: &AppConfig) -> bool {
+fn is_cloud_engine(_config: &AppConfig) -> bool {
     use octopus_asr_local::config::EngineCategory;
-    let cat = octopus_asr_local::config::resolve_engine_category(&config.asr_engine);
+    let cat = octopus_asr_local::config::resolve_active_engine("asr")
+        .ok()
+        .and_then(|r| r.as_engine_category());
     matches!(
         cat,
         Some(EngineCategory::Aliyun)
@@ -1822,9 +1841,9 @@ fn spawn_polish_thread(
     // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
     let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
-        crate::config::llm_config_ignore_mode(config)
+        crate::config::llm_config_ignore_mode()
     } else {
-        crate::config::llm_config(config)
+        crate::config::llm_config(config.polish_mode)
     };
     let llm_config = match llm_config {
         Some(c) => c,
@@ -1984,7 +2003,7 @@ fn handle_discard(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
     app_handle: &tauri::AppHandle,
-    config: &AppConfig,
+    _config: &AppConfig,
 ) {
     // Pasting 阶段粘贴已在进行（enigo Cmd+V 已发或正发），无法撤回 → no-op
     if matches!(stage, Stage::Pasting { .. }) {
@@ -2004,7 +2023,7 @@ fn handle_discard(
     let polished_info = |t: &Transcript| -> (Option<String>, String, Option<String>) {
         let text = t.finish_text();
         if !text.is_empty() && !t.has_raw() {
-            (Some(text), "done".to_string(), Some(config.polish_llm.clone()))
+            (Some(text), "done".to_string(), Some(active_llm_name()))
         } else {
             (None, "off".to_string(), None)
         }
@@ -2185,7 +2204,7 @@ fn handle_polish_done(
                             id: transcript.id,
                             text: transcript.finish_text(),
                             status: "done".to_string(),
-                            model: Some(config.polish_llm.clone()),
+                            model: Some(active_llm_name()),
                             segments: transcript.segments_json(),
                         }
                     };
@@ -2257,7 +2276,7 @@ fn handle_polish_done(
                         id: transcript.id,
                         text: transcript.finish_text(),
                         status: "done".to_string(),
-                        model: Some(config.polish_llm.clone()),
+                        model: Some(active_llm_name()),
                         segments: transcript.segments_json(),
                     }
                 };
@@ -2317,7 +2336,7 @@ fn handle_polish_now(
         return;
     }
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
-    if crate::config::llm_config_ignore_mode(config).is_none() {
+    if crate::config::llm_config_ignore_mode().is_none() {
         warn!("PolishNow: no LLM config available");
         // 不覆盖浮窗识别文本——以 polish-error 红色气泡提示，保留原文显示
         let _ = app_handle.emit("polish-error", "未配置润色模型");
@@ -2327,7 +2346,7 @@ fn handle_polish_now(
     // 确保 DB 记录已 INSERT：CloudStreaming 路径只在 Finished 事件时 INSERT，
     // 如果从未触发 Finished，PolishDone 的 UpdatePolished（UPDATE）会静默 0 行。
     // 本地路径中 Streaming/VadSegmented 已在 accept_samples 时 INSERT，此处 no-op。
-    if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
+    if let Err(e) = update_transcription_raw(transcript, &active_asr_engine_name(), "streaming") {
         warn!("PolishNow ensure INSERT failed: {}", e);
     }
     let input = transcript.take_polish_input();
@@ -2481,7 +2500,7 @@ fn apply_pipeline_events(
     for ev in events {
         match ev {
             PipelineEvent::PersistRaw { engine_mode } => {
-                if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, engine_mode) {
+                if let Err(e) = update_transcription_raw(transcript, &active_asr_engine_name(), engine_mode) {
                     warn!("DB ({}) failed: {}", engine_mode, e);
                 }
             }

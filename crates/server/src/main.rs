@@ -298,10 +298,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // 全局默认引擎：以 config.yaml.asr_engine 为准（DB name 精确匹配），
-    // 空/匹配不到 → 回退兜底 zipformer-small-ctc（见 asr::config::resolve_active_engine）。
-    let app_cfg = octopus_infra::config::load_config()?;
-    let active_model = octopus_asr_local::config::resolve_active_engine(&app_cfg.asr_engine)?.name;
+    // 全局默认引擎：DB models.is_enabled=1 的 ASR 模型（Task 2 后），
+    // 无激活 → 回退兜底 zipformer-small-ctc（见 asr::config::resolve_active_engine）。
+    let _app_cfg = octopus_infra::config::load_config()?;
+    // 启动时加载 ASR 域激活引擎到内存缓存。
+    octopus_asr_local::config::load_active_engine("asr")?;
+    let active_model = octopus_asr_local::config::resolve_active_engine("asr")?.name;
 
     // server 多模型并发：缓存上限放大到 8，避免频繁淘汰重载（每引擎数百 MB）。
     let engine_manager = Arc::new(AsrEngineManager::new_with_capacity(8));
