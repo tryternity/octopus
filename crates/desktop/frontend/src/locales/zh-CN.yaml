@@ -411,6 +411,15 @@ settings:
     scopeAll: 全部
     scopeText: 选中文本
     scopeFile: 选中文件(夹)
+    menuManage: 命令管理
+    scriptRecords: 执行记录
+    subItemsTitle: 子菜单项
+    noSubItemsHint: 该菜单暂无子项，点上方「新增子项」添加
+    leafNoSubItemsHint: 该菜单是叶子命令（非子菜单容器），无子项
+    selectMenuHint: 请从左侧选择一个菜单
+    moveUp: 上移
+    moveDown: 下移
+    edit: 编辑
   clipboardPanel:
     filterAll: 全部
     groupType: 类型

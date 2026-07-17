@@ -1,13 +1,9 @@
-import { useState, useEffect, useCallback, memo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  ChevronRight,
-  ChevronDown,
-  ChevronsUpDown,
-  ChevronsDownUp,
   ArrowUp,
   ArrowDown,
   Trash2,
@@ -21,6 +17,7 @@ import { useT, t as ti18n } from "@/lib/i18n";
 import ShortcutButton from "@/components/ShortcutButton";
 import { Button } from "@/components/ui/button";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
+import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
 
 interface ActionBarItem {
   id: number;
@@ -538,176 +535,117 @@ const EditForm = ({
   );
 };
 
-// ── 树节点 ──
-interface NodeProps {
+// ── 通用菜单行（主菜单/子菜单共用）──
+// 2026-07-17 重构：原 TreeNode 树形渲染改为左右分栏，此组件承担行渲染。
+interface MenuRowProps {
   item: ActionBarItem;
-  siblings: ActionBarItem[];
-  allItems: ActionBarItem[];
-  index: number;
-  depth: number;
-  parentLabel?: string;
-  expanded: Set<number>;
-  editingId: number | null;
-  editingForm: Partial<ActionBarItem>;
-  onToggle: (id: number) => void;
-  onStartEdit: (item: ActionBarItem) => void;
-  onMove: (id: number, dir: number) => void;
-  onDelete: (id: number) => void;
-  onAdd: (parentId: number | null) => void;
-  onFormChange: (f: Partial<ActionBarItem>) => void;
-  onSaveEdit: () => void;
-  onCancelEdit: () => void;
+  index: number;            // 1-based 序号
+  selected: boolean;        // 主菜单选中态（子菜单恒 false）
+  isFirst: boolean;
+  isLast: boolean;
   deleteConfirmId: number | null;
-  draftParentId: number | null | undefined;
+  subCount?: number;        // 子项数（仅 submenu 主菜单显示徽章）
+  onSelect?: () => void;    // 主菜单点击选中
+  onMove: (dir: number) => void;
+  onEdit: () => void;
+  onDelete: () => void;
 }
 
-const TreeNodeBase = (props: NodeProps) => {
+const MenuRow = (props: MenuRowProps) => {
   const t = useT();
-  const { item, siblings, allItems, index, depth, parentLabel, expanded, editingId } = props;
-  const isFirst = siblings[0]?.id === item.id;
-  const isLast = siblings[siblings.length - 1]?.id === item.id;
-  const subs = allItems.filter((i) => i.parentId === item.id);
-  const isSubmenu = item.actionType === "submenu";
-  const isOpen = expanded.has(item.id);
-  const isEditing = editingId === item.id;
-  const indexLabel = depth === 0 ? pad2(index) : `${parentLabel}.${index}`;
+  const { item, index, selected, isFirst, isLast, deleteConfirmId } = props;
   const meta = TYPE_META[item.actionType] ?? TYPE_META.copy;
+  const isDeleting = deleteConfirmId === item.id;
 
   return (
-    <div>
-      <div
-        className={cn(
-          "group relative flex items-center gap-2 rounded-md py-1.5 pl-0 pr-1.5 transition-colors",
-          isEditing ? "bg-voice/[0.06]" : isSubmenu ? "cursor-pointer hover:bg-muted/40" : "hover:bg-muted/40",
-        )}
-        onClick={() => { if (isSubmenu) props.onToggle(item.id); }}
-      >
-        {/* 签名元素：左侧类型色条 */}
-        <div className={cn("h-5 w-[3px] shrink-0 rounded-full", meta.bar)} />
-
-        {/* 展开箭头 */}
-        <button
-          onClick={(e) => { e.stopPropagation(); props.onToggle(item.id); }}
-          tabIndex={isSubmenu ? 0 : -1}
-          className={cn(
-            "flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground",
-            !isSubmenu && "invisible pointer-events-none",
-          )}
-          aria-label={isOpen ? t("settings.actionBar.collapse") : t("settings.actionBar.expand")}
-        >
-          {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </button>
-
-        {/* 序号 */}
-        <span className="w-7 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
-          {indexLabel}
-        </span>
-
-        {/* 标题 */}
-        <span className={cn(
-          "flex-1 truncate text-sm",
-          item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
-        )}>
-          {item.title}
-        </span>
-
-        {/* 子项计数 */}
-        {isSubmenu && subs.length > 0 && (
-          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-            {subs.length}
-          </span>
-        )}
-
-        {/* 类型标签 */}
-        <TypeTag type={item.actionType} />
-
-        {/* 快捷键徽章 */}
-        {item.shortcut && (
-          <span className="shrink-0 rounded bg-voice/10 px-1 py-0.5 font-mono text-[10px] text-voice/80">
-            ⌥{item.shortcut}
-          </span>
-        )}
-
-        {/* 内置标记 */}
-        {item.isSystem && (
-          <span className="shrink-0 text-[10px] text-muted-foreground/40">
-            {t("settings.actionBar.builtin")}
-          </span>
-        )}
-
-        {/* 悬浮操作栏 */}
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-          <button
-            onClick={(e) => { e.stopPropagation(); props.onMove(item.id, -1); }}
-            disabled={isFirst}
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-25"
-            aria-label="Move up"
-          >
-            <ArrowUp className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); props.onMove(item.id, 1); }}
-            disabled={isLast}
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-25"
-            aria-label="Move down"
-          >
-            <ArrowDown className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); props.onStartEdit(item); }}
-            className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-            aria-label={t("settings.actionBar.edit")}
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); props.onDelete(item.id); }}
-            disabled={item.isSystem}
-            className={cn(
-              "rounded p-0.5 transition-colors disabled:opacity-25",
-              props.deleteConfirmId === item.id
-                ? "bg-destructive text-destructive-foreground hover:opacity-90"
-                : "text-muted-foreground hover:text-destructive",
-            )}
-            aria-label={t("settings.actionBar.delete")}
-            title={props.deleteConfirmId === item.id ? t("settings.actionBar.deleteConfirm") : t("settings.actionBar.delete")}
-          >
-            {props.deleteConfirmId === item.id ? (
-              <span className="px-1 text-[10px] font-medium">{t("settings.actionBar.confirm")}</span>
-            ) : (
-              <Trash2 className="h-3.5 w-3.5" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* 子树 */}
-      {isSubmenu && isOpen && (
-        <div className="relative ml-[10px] border-l border-border/40 pl-3">
-          {subs.map((sub, i) => (
-            <TreeNode
-              key={sub.id}
-              {...props}
-              item={sub}
-              siblings={subs}
-              index={i + 1}
-              depth={depth + 1}
-              parentLabel={String(index)}
-            />
-          ))}
-          <button
-            onClick={(e) => { e.stopPropagation(); props.onAdd(item.id); }}
-            className="my-1 flex w-full items-center gap-1.5 rounded-md border border-dashed border-border py-1.5 pl-2 text-xs text-muted-foreground transition-colors hover:border-voice/40 hover:text-voice"
-          >
-            <Plus className="h-3 w-3" /> {t("settings.actionBar.addSubItem")}
-          </button>
-        </div>
+    <div
+      onClick={props.onSelect}
+      className={cn(
+        "group relative flex items-center gap-2 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
+        selected ? "bg-voice/12" : "hover:bg-muted/40",
+        props.onSelect && "cursor-pointer",
       )}
+    >
+      {/* 签名元素：左侧类型色条（选中态加粗强调） */}
+      <div className={cn("h-5 w-[3px] shrink-0 rounded-full transition-all", meta.bar, selected && "h-7")} />
+
+      {/* 序号 */}
+      <span className="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
+        {pad2(index)}
+      </span>
+
+      {/* 标题 */}
+      <span className={cn(
+        "flex-1 truncate text-sm",
+        item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
+      )}>
+        {item.title}
+      </span>
+
+      {/* 子项计数（仅 submenu + 有子项） */}
+      {item.actionType === "submenu" && props.subCount !== undefined && props.subCount > 0 && (
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          {props.subCount}
+        </span>
+      )}
+
+      {/* 类型标签 */}
+      <TypeTag type={item.actionType} />
+
+      {/* 内置标记 */}
+      {item.isSystem && (
+        <span className="shrink-0 text-[10px] text-muted-foreground/40">
+          {t("settings.actionBar.builtin")}
+        </span>
+      )}
+
+      {/* 悬浮操作栏 */}
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+        <button
+          onClick={(e) => { e.stopPropagation(); props.onMove(-1); }}
+          disabled={isFirst}
+          className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-25"
+          aria-label={t("settings.actionBar.moveUp")}
+        >
+          <ArrowUp className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); props.onMove(1); }}
+          disabled={isLast}
+          className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-25"
+          aria-label={t("settings.actionBar.moveDown")}
+        >
+          <ArrowDown className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); props.onEdit(); }}
+          className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          aria-label={t("settings.actionBar.edit")}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); props.onDelete(); }}
+          disabled={item.isSystem}
+          className={cn(
+            "rounded p-0.5 transition-colors disabled:opacity-25",
+            isDeleting
+              ? "bg-destructive text-destructive-foreground hover:opacity-90"
+              : "text-muted-foreground hover:text-destructive",
+          )}
+          aria-label={t("settings.actionBar.delete")}
+          title={isDeleting ? t("settings.actionBar.deleteConfirm") : t("settings.actionBar.delete")}
+        >
+          {isDeleting ? (
+            <span className="px-1 text-[10px] font-medium">{t("settings.actionBar.confirm")}</span>
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
     </div>
   );
 };
-
-const TreeNode = memo(TreeNodeBase);
 
 // ── 执行记录 ──
 interface ScriptRun {
@@ -837,13 +775,18 @@ export default function ActionBarPanel({
 }) {
   const t = useT();
   const [items, setItems] = useState<ActionBarItem[]>([]);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingForm, setEditingForm] = useState<Partial<ActionBarItem>>({});
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined);
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"menu" | "runs" | "edit">("menu");
+  // tab: 命令管理 / 执行记录（替代原 view）。edit 走独立 editingId 判定（inline 全屏 EditForm）
+  const [tab, setTab] = useState<"menu" | "runs">("menu");
   const [scopeFilter, setScopeFilter] = useState<"all" | "text" | "file">("all");
+  // 左栏选中主菜单 id——首次进 menu tab 默认选第一个；删除/过滤后自动 fallback
+  const [selectedMainMenuId, setSelectedMainMenuId] = useState<number | null>(null);
+  // 主菜单 inline 编辑（右栏顶部表单）的实时字段镜像 + 录制态
+  const [inlineCapturingShortcut, setInlineCapturingShortcut] = useState(false);
+  const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -875,19 +818,24 @@ export default function ActionBarPanel({
     i.actionType === "submenu" ? isSubmenuInScope(i) : isItemInScope(i)
   ));
 
-  const toggle = useCallback((id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
+  // selectedMainMenuId 兜底：未选 / 被删 / 不在 scope 过滤结果 → fallback 第一个
+  const effectiveSelectedId = selectedMainMenuId !== null && mainItems.some((m) => m.id === selectedMainMenuId)
+    ? selectedMainMenuId
+    : mainItems[0]?.id ?? null;
+  const selectedMain = effectiveSelectedId !== null
+    ? items.find((i) => i.id === effectiveSelectedId) ?? null
+    : null;
+  // 选中主菜单的子菜单列表
+  const selectedSubs = selectedMain !== null
+    ? items.filter((i) => i.parentId === selectedMain.id)
+    : [];
 
-  const submenuIds = items.filter((i) => i.actionType === "submenu").map((i) => i.id);
-  const allExpanded = submenuIds.length > 0 && submenuIds.every((id) => expanded.has(id));
-
-  const expandAll = useCallback(() => setExpanded(new Set(submenuIds)), [submenuIds]);
-  const collapseAll = useCallback(() => setExpanded(new Set()), []);
+  // 首次加载完 / scope 过滤变化时，selectedMainMenuId 自动跟第一个 mainItem
+  useEffect(() => {
+    if (tab === "menu" && effectiveSelectedId === null && mainItems.length > 0) {
+      setSelectedMainMenuId(mainItems[0].id);
+    }
+  }, [tab, effectiveSelectedId, mainItems]);
 
   const startEdit = useCallback((item: ActionBarItem) => {
     setDraftParentId(undefined);
@@ -898,14 +846,13 @@ export default function ActionBarPanel({
     const isExt = item.actionType === "script" && p.length > 0 && !p.startsWith("#") &&
       (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p));
     setEditingForm({ ...item, actionType: isExt ? "extension" : item.actionType });
-    setView("edit");
+    // 不动 tab——用 editingId !== null 判定 EditForm 全屏覆盖
   }, []);
 
   const cancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingForm({});
     setDraftParentId(undefined);
-    setView("menu");
   }, []);
 
   const saveEdit = useCallback(async () => {
@@ -1052,92 +999,114 @@ export default function ActionBarPanel({
       actionData: "",
       isEnabled: true,
     });
-    setView("edit");
+    // 不动 tab——editingId=null + draftParentId !== undefined 表示新建模式，EditForm 全屏覆盖
   }, []);
 
-  const nodeCommon = {
-    allItems: items, expanded, editingId, editingForm,
-    onToggle: toggle, onStartEdit: startEdit, onMove: handleMove,
-    onDelete: handleDelete, onAdd: handleAdd, onFormChange: setEditingForm,
-    onSaveEdit: saveEdit, onCancelEdit: cancelEdit,
-    deleteConfirmId, draftParentId,
-  };
+  // 主菜单字段 inline 实时保存（isEnabled / shortcut / globalShortcut / actionType）。
+  // 主菜单字段少且独立于 actionData/agent 等复杂字段，inline 编辑体验好。
+  // 复用 update_action_bar_item + set_global_shortcut，参数从原 item 派生。
+  const updateMainInline = useCallback(async (patch: Partial<ActionBarItem>) => {
+    if (selectedMain === null) return;
+    const merged = { ...selectedMain, ...patch };
+    try {
+      await invoke("update_action_bar_item", {
+        id: merged.id,
+        title: merged.title,
+        icon: merged.icon || "",
+        actionType: merged.actionType || "copy",
+        actionData: merged.actionData || "",
+        isEnabled: merged.isEnabled,
+        isAsync: merged.isAsync ?? true,
+        writeOutputToClipboard: merged.writeOutputToClipboard ?? false,
+        shortcut: merged.actionType !== "submenu" ? (merged.shortcut || "") : "",
+        agent: merged.agent || "",
+        accepts: deriveAccepts(merged.actionType, merged.accepts),
+        triggerKeyword: merged.triggerKeyword || "",
+      });
+      if (merged.actionType !== "submenu") {
+        await invoke("set_global_shortcut", { id: merged.id, globalShortcut: merged.globalShortcut ?? "" });
+      }
+      refresh();
+    } catch (e) {
+      showToast(t("settings.actionBar.saveFailed") + e);
+    }
+  }, [selectedMain, refresh, showToast]);
+
+  // inline 全局快捷键录制（复用 EditForm 范式）
+  useEffect(() => {
+    if (!inlineCapturingGlobal || selectedMain === null) return;
+    const handler = async (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") { setInlineCapturingGlobal(false); return; }
+      if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
+      if (e.key === "Backspace" || e.key === "Delete") {
+        updateMainInline({ globalShortcut: "" });
+        setInlineCapturingGlobal(false);
+        return;
+      }
+      const parts: string[] = [];
+      if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
+      if (e.altKey) parts.push("Alt");
+      if (e.shiftKey) parts.push("Shift");
+      const keyName = e.code.startsWith("Key") ? e.code.slice(3) : e.code;
+      parts.push(keyName);
+      const sc = parts.join("+");
+      try {
+        await invoke("check_shortcut", { shortcut: sc });
+        updateMainInline({ globalShortcut: sc });
+      } catch (err) {
+        console.warn("[action-bar] inline global shortcut check failed:", err);
+      }
+      setInlineCapturingGlobal(false);
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [inlineCapturingGlobal, selectedMain, updateMainInline]);
+
+  // inline Alt+字符快捷键录制（与 EditForm 同范式）
+  useEffect(() => {
+    if (!inlineCapturingShortcut || selectedMain === null) return;
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") { setInlineCapturingShortcut(false); return; }
+      if (e.key === "Backspace" || e.key === "Delete") {
+        updateMainInline({ shortcut: "" });
+        setInlineCapturingShortcut(false);
+        return;
+      }
+      const ch = e.key.toLowerCase();
+      if (/^[0-9a-z]$/.test(ch)) {
+        updateMainInline({ shortcut: ch });
+        setInlineCapturingShortcut(false);
+      }
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [inlineCapturingShortcut, selectedMain, updateMainInline]);
+
+  // editingId !== null 或 draftParentId !== undefined → EditForm 全屏覆盖（不分 tab）
+  const isEditing = editingId !== null || draftParentId !== undefined;
 
   return (
     <div className="w-full min-w-0">
-      {/* ── 操作栏（无页面 title，靠左侧导航标识当前页）──
-          menu 视图：左组放过滤/查看/折叠，右组单独放「新增」主操作；
-          其他视图：返回按钮靠左。justify-between 让两组分到两端，避免左侧空白。 */}
-      <div className="mb-6 flex items-center justify-between gap-4">
-        {/* 左组：辅助操作（场景过滤 / 记录 / 展开）；无页面 title，靠左侧导航标识当前页 */}
-        <div className="flex min-w-0 items-center gap-1.5">
-          {view === "menu" && (
-            <>
-              {/* 场景过滤——分段控件 */}
-              <div className="flex items-center rounded-md border border-border overflow-hidden">
-                {(["all", "text", "file"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setScopeFilter(s)}
-                    className={cn(
-                      "px-2.5 py-1.5 text-xs transition-colors",
-                      scopeFilter === s
-                        ? "bg-voice/12 text-voice font-medium"
-                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                    )}
-                  >
-                    {s === "all"
-                      ? t("settings.actionBar.scopeAll")
-                      : s === "text"
-                        ? t("settings.actionBar.scopeText")
-                        : t("settings.actionBar.scopeFile")}
-                  </button>
-                ))}
-              </div>
-
-              <Button onClick={() => setView("runs")} variant="outline" size="sm">
-                {t("settings.actionBar.recordsBtn")}
-              </Button>
-              <Button
-                onClick={allExpanded ? collapseAll : expandAll}
-                variant="outline"
-                size="sm"
-                title={allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
-              >
-                {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
-                <span className="hidden sm:inline">
-                  {allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
-                </span>
-              </Button>
-            </>
-          )}
-        </div>
-
-        {/* 右：主操作（新增 / 返回） */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          {view === "menu" && (
-            <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
-              <Plus /> {t("settings.actionBar.addMainItem")}
-            </Button>
-          )}
-          {view !== "menu" && (
-            <Button onClick={() => setView("menu")} variant="outline" size="sm">
-              <ArrowLeft />
-              {ti18n("settings.actionBar.backToMenu")}
-            </Button>
-          )}
-        </div>
-
-        {/* 右组：新增主操作 */}
-        {view === "menu" && (
-          <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
-            <Plus /> {t("settings.actionBar.addMainItem")}
-          </Button>
-        )}
-      </div>
+      {/* ── 顶部 TAB：命令管理 / 执行记录 ──
+          替代原 view 切换。EditForm 覆盖时不显示 TAB（全屏编辑）。 */}
+      {!isEditing && (
+        <UnderlineTabs
+          items={[
+            { key: "menu", label: t("settings.actionBar.menuManage") },
+            { key: "runs", label: t("settings.actionBar.scriptRecords") },
+          ]}
+          active={tab}
+          onChange={(k) => setTab(k as "menu" | "runs")}
+          className="mb-4"
+        />
+      )}
 
       {/* ── 内容区 ── */}
-      {view === "edit" ? (
+      {isEditing ? (
         <EditForm
           form={editingForm}
           isSystem={(editingId !== null && items.find((i) => i.id === editingId)?.isSystem) ?? false}
@@ -1145,7 +1114,7 @@ export default function ActionBarPanel({
           onSave={saveEdit}
           onCancel={cancelEdit}
         />
-      ) : view === "runs" ? (
+      ) : tab === "runs" ? (
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
@@ -1165,17 +1134,201 @@ export default function ActionBarPanel({
           </Button>
         </div>
       ) : (
-        <div className="space-y-px">
-          {mainItems.map((item, i) => (
-            <TreeNode
-              key={item.id}
-              {...nodeCommon}
-              item={item}
-              siblings={mainItems}
-              index={i + 1}
-              depth={0}
+        /* ── 左右分栏：左主菜单列表 + 右选中菜单详情/子菜单 ── */
+        <div className="flex gap-4">
+          {/* 左栏：主菜单列表 */}
+          <div className="flex w-64 shrink-0 flex-col gap-2">
+            {/* 场景过滤——分段控件 */}
+            <Segmented
+              items={[
+                { key: "all", label: t("settings.actionBar.scopeAll") },
+                { key: "text", label: t("settings.actionBar.scopeText") },
+                { key: "file", label: t("settings.actionBar.scopeFile") },
+              ]}
+              active={scopeFilter}
+              onChange={(k) => setScopeFilter(k as "all" | "text" | "file")}
             />
-          ))}
+
+            <Button onClick={() => handleAdd(null)} variant="voice" size="sm" className="w-full">
+              <Plus /> {t("settings.actionBar.addMainItem")}
+            </Button>
+
+            <div className="min-h-0 flex-1 space-y-px overflow-y-auto">
+              {mainItems.map((item, i) => (
+                <MenuRow
+                  key={item.id}
+                  item={item}
+                  index={i + 1}
+                  selected={effectiveSelectedId === item.id}
+                  isFirst={i === 0}
+                  isLast={i === mainItems.length - 1}
+                  deleteConfirmId={deleteConfirmId}
+                  subCount={item.actionType === "submenu"
+                    ? items.filter((s) => s.parentId === item.id).length
+                    : undefined}
+                  onSelect={() => setSelectedMainMenuId(item.id)}
+                  onMove={(dir) => handleMove(item.id, dir)}
+                  onEdit={() => startEdit(item)}
+                  onDelete={() => handleDelete(item.id)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* 右栏：选中主菜单 inline 编辑 + 子菜单列表 */}
+          <div className="min-w-0 flex-1">
+            {selectedMain === null ? (
+              <div className="flex h-full items-center justify-center py-20 text-sm text-muted-foreground">
+                {t("settings.actionBar.selectMenuHint")}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* ── 主菜单 inline 编辑表单 ── */}
+                <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
+                  {/* 标题（可直接编辑） */}
+                  <FormField label={t("settings.actionBar.titleLabel")}>
+                    <input
+                      className={inputBase}
+                      value={selectedMain.title}
+                      maxLength={12}
+                      onChange={(e) => {
+                        const MAX = 12;
+                        const raw = e.target.value;
+                        let weight = 0;
+                        let ok = "";
+                        for (const ch of raw) {
+                          const w = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(ch) ? 2 : 1;
+                          if (weight + w > MAX) break;
+                          weight += w;
+                          ok += ch;
+                        }
+                        updateMainInline({ title: ok });
+                      }}
+                    />
+                  </FormField>
+
+                  {/* 类型 + 快捷键 + 全局快捷键 + 启用 一行紧凑布局 */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label={t("settings.actionBar.typeLabel")}>
+                      <select
+                        className={cn(inputBase, "disabled:opacity-60")}
+                        value={selectedMain.actionType}
+                        disabled={selectedMain.isSystem}
+                        onChange={(e) => updateMainInline({ actionType: e.target.value })}
+                      >
+                        {ACTION_TYPES.map((at) => (
+                          <option key={at.value} value={at.value}>{ti18n(at.labelKey)}</option>
+                        ))}
+                      </select>
+                    </FormField>
+
+                    {selectedMain.actionType !== "submenu" && (
+                      <FormField label={t("settings.actionBar.shortcutLabel")}>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
+                          <button
+                            onClick={() => setInlineCapturingShortcut((v) => !v)}
+                            className={cn(
+                              "w-10 text-center bg-background border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all",
+                              inlineCapturingShortcut
+                                ? "border-voice ring-2 ring-voice/15"
+                                : "border-border focus:border-voice/50 focus:ring-2 focus:ring-voice/15",
+                            )}
+                          >
+                            {selectedMain.shortcut || "—"}
+                          </button>
+                          {selectedMain.shortcut && (
+                            <button
+                              onClick={() => updateMainInline({ shortcut: "" })}
+                              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </FormField>
+                    )}
+                  </div>
+
+                  {selectedMain.actionType !== "submenu" && (
+                    <FormField
+                      label={ti18n("settings.actionBar.globalShortcutLabel")}
+                      hint={ti18n("settings.actionBar.globalShortcutHint")}
+                    >
+                      <div className="flex items-center gap-2">
+                        <ShortcutButton
+                          shortcut={selectedMain.globalShortcut ?? ""}
+                          capturing={inlineCapturingGlobal}
+                          onClick={() => setInlineCapturingGlobal((v) => !v)}
+                        />
+                        {selectedMain.globalShortcut && (
+                          <button
+                            onClick={() => updateMainInline({ globalShortcut: "" })}
+                            className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            aria-label={ti18n("settings.actionBar.clearShortcut")}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </FormField>
+                  )}
+
+                  <FormField label={t("settings.actionBar.enableLabel")}>
+                    <div className="flex items-center gap-2.5">
+                      <Toggle
+                        checked={selectedMain.isEnabled}
+                        onChange={(v) => updateMainInline({ isEnabled: v })}
+                      />
+                      <span className="text-xs text-muted-foreground">
+                        {selectedMain.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
+                      </span>
+                    </div>
+                  </FormField>
+                </div>
+
+                {/* ── 子菜单列表（仅 submenu 类型展示） ── */}
+                {selectedMain.actionType === "submenu" ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
+                        {t("settings.actionBar.subItemsTitle")}
+                      </h4>
+                      <Button onClick={() => handleAdd(selectedMain.id)} variant="outline" size="sm">
+                        <Plus /> {t("settings.actionBar.addSubItem")}
+                      </Button>
+                    </div>
+                    {selectedSubs.length === 0 ? (
+                      <div className="flex items-center justify-center rounded-md border border-dashed border-border py-8 text-xs text-muted-foreground">
+                        {t("settings.actionBar.noSubItemsHint")}
+                      </div>
+                    ) : (
+                      <div className="space-y-px">
+                        {selectedSubs.map((sub, i) => (
+                          <MenuRow
+                            key={sub.id}
+                            item={sub}
+                            index={i + 1}
+                            selected={false}
+                            isFirst={i === 0}
+                            isLast={i === selectedSubs.length - 1}
+                            deleteConfirmId={deleteConfirmId}
+                            onMove={(dir) => handleMove(sub.id, dir)}
+                            onEdit={() => startEdit(sub)}
+                            onDelete={() => handleDelete(sub.id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center rounded-md border border-dashed border-border py-8 text-xs text-muted-foreground">
+                    {t("settings.actionBar.leafNoSubItemsHint")}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

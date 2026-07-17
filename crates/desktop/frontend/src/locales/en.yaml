@@ -411,6 +411,15 @@ settings:
     scopeAll: All
     scopeText: Selected Text
     scopeFile: Selected Files
+    menuManage: Commands
+    scriptRecords: Run History
+    subItemsTitle: Submenu Items
+    noSubItemsHint: No submenu items yet — click "Add Subitem" above
+    leafNoSubItemsHint: This is a leaf command (not a submenu container), no sub-items
+    selectMenuHint: Select a menu from the left
+    moveUp: Move up
+    moveDown: Move down
+    edit: Edit
   clipboardPanel:
     filterAll: All
     groupType: Type
