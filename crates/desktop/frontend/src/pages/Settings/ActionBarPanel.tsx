@@ -65,11 +65,6 @@ const ACTION_TYPES = [
   { value: "copy",       labelKey: "settings.actionBar.typeCopy" },
 ];
 
-// inline 类型 select 用——排除 extension（前端伪类型，后端不识别，
-// inline 写库会让菜单变砖）。extension 仅 EditForm 经特殊路径处理。
-// 2026-07-17 review Critical #3 修复。
-const INLINE_ACTION_TYPES = ACTION_TYPES.filter((at) => at.value !== "extension");
-
 function deriveAccepts(actionType: string | undefined, explicit?: string): string {
   if (explicit) return explicit;
   if (actionType === "agent" || actionType === "copy_path") return "file";
@@ -572,37 +567,44 @@ const MenuRow = (props: MenuRowProps) => {
       )}
     >
       {/* 签名元素：左侧类型色条（选中态加粗强调） */}
-      <div className={cn("h-5 w-[3px] shrink-0 rounded-full transition-all", meta.bar, selected && "h-7")} />
+      <div className={cn("h-5 w-[3px] shrink-0 rounded-full transition-all self-stretch", meta.bar, selected && "h-full")} />
 
-      {/* 序号 */}
-      <span className="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
+      {/* 序号 + 内容（两行结构：标题行 + 类型/内置小字行） */}
+      <span className="w-6 shrink-0 self-start pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
         {pad2(index)}
       </span>
 
-      {/* 标题 */}
-      <span className={cn(
-        "flex-1 truncate text-sm",
-        item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
-      )}>
-        {item.title}
-      </span>
-
-      {/* 子项计数（仅 submenu + 有子项） */}
-      {item.actionType === "submenu" && props.subCount !== undefined && props.subCount > 0 && (
-        <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-          {props.subCount}
-        </span>
-      )}
-
-      {/* 类型标签 */}
-      <TypeTag type={item.actionType} />
-
-      {/* 内置标记 */}
-      {item.isSystem && (
-        <span className="shrink-0 text-[10px] text-muted-foreground/40">
-          {t("settings.actionBar.builtin")}
-        </span>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        {/* 标题行 */}
+        <div className="flex items-center gap-1.5">
+          <span className={cn(
+            "flex-1 truncate text-sm",
+            item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
+          )}>
+            {item.title}
+          </span>
+          {/* 子项计数（仅 submenu + 有子项） */}
+          {item.actionType === "submenu" && props.subCount !== undefined && props.subCount > 0 && (
+            <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+              {props.subCount}
+            </span>
+          )}
+        </div>
+        {/* 类型 + 内置 小字行 */}
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+          <TypeTag type={item.actionType} />
+          {item.isSystem && (
+            <span className="text-muted-foreground/40">
+              · {t("settings.actionBar.builtin")}
+            </span>
+          )}
+          {!item.isEnabled && (
+            <span className="text-muted-foreground/40">
+              · {t("settings.actionBar.hidden")}
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* 悬浮操作栏 */}
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
@@ -1220,12 +1222,13 @@ export default function ActionBarPanel({
               <div className="space-y-4">
                 {/* ── 主菜单 inline 编辑表单 ── */}
                 <div className="space-y-3 rounded-lg border border-border/50 bg-muted/15 p-4">
-                  {/* 标题（可直接编辑）—— local draft + debounce 300ms 落库（IME 安全） */}
-                  <FormField label={t("settings.actionBar.titleLabel")}>
+                  {/* 标题 + 保存按钮 + 启用 toggle 一行（toggle 居右） */}
+                  <div className="flex items-center gap-2">
                     <input
-                      className={inputBase}
+                      className={cn(inputBase, "flex-1")}
                       value={titleDraft ?? selectedMain.title}
                       maxLength={12}
+                      placeholder={t("settings.actionBar.titleLabel")}
                       onChange={(e) => {
                         const MAX = 12;
                         const raw = e.target.value;
@@ -1239,39 +1242,44 @@ export default function ActionBarPanel({
                         }
                         setTitleDraft(ok);
                       }}
-                      onBlur={() => {
-                        if (titleDraft !== null) {
+                      onKeyDown={(e) => {
+                        // Enter 即时保存
+                        if (e.key === "Enter" && titleDraft !== null) {
+                          e.preventDefault();
                           updateMainInline({ title: titleDraft });
                           setTitleDraft(null);
                         }
                       }}
                     />
-                  </FormField>
+                    {/* 保存按钮——仅 draft 非空时显示可点（视觉提示有未保存改动） */}
+                    <Button
+                      variant="voice"
+                      size="sm"
+                      disabled={titleDraft === null}
+                      onClick={() => {
+                        if (titleDraft !== null) {
+                          updateMainInline({ title: titleDraft });
+                          setTitleDraft(null);
+                        }
+                      }}
+                    >
+                      {t("settings.actionBar.save")}
+                    </Button>
+                    {/* 启用 toggle 居右 */}
+                    <div className="flex items-center gap-1.5">
+                      <Toggle
+                        checked={selectedMain.isEnabled}
+                        onChange={(v) => updateMainInline({ isEnabled: v })}
+                      />
+                    </div>
+                  </div>
 
-                  {/* 类型 + 快捷键 + 全局快捷键 + 启用 一行紧凑布局 */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField label={t("settings.actionBar.typeLabel")}>
-                      <select
-                        className={cn(inputBase, "disabled:opacity-60")}
-                        value={selectedMain.actionType}
-                        disabled={selectedMain.isSystem || selectedMain.actionType === "submenu"}
-                        onChange={(e) => {
-                          const newType = e.target.value;
-                          // 改类型时同步重算 accepts（防 agent→ai 后 accepts 残留 "file"
-                          // 致 scope 过滤错）。2026-07-17 review Minor #12 修复。
-                          updateMainInline({
-                            actionType: newType,
-                            accepts: deriveAccepts(newType, undefined),
-                          });
-                        }}
-                      >
-                        {INLINE_ACTION_TYPES.map((at) => (
-                          <option key={at.value} value={at.value}>{ti18n(at.labelKey)}</option>
-                        ))}
-                      </select>
-                    </FormField>
+                  {/* 类型不在此显示——左侧 MenuRow 小字行已有。
+                      改类型走 EditForm（点行内编辑按钮）。 */}
 
-                    {selectedMain.actionType !== "submenu" && (
+                  {/* 叶子菜单（非 submenu）：快捷键 + 全局快捷键 一行 */}
+                  {selectedMain.actionType !== "submenu" && (
+                    <div className="grid grid-cols-2 gap-3">
                       <FormField label={t("settings.actionBar.shortcutLabel")}>
                         <div className="flex items-center gap-1">
                           <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
@@ -1296,44 +1304,27 @@ export default function ActionBarPanel({
                           )}
                         </div>
                       </FormField>
-                    )}
-                  </div>
 
-                  {selectedMain.actionType !== "submenu" && (
-                    <FormField
-                      label={ti18n("settings.actionBar.globalShortcutLabel")}
-                      hint={ti18n("settings.actionBar.globalShortcutHint")}
-                    >
-                      <div className="flex items-center gap-2">
-                        <ShortcutButton
-                          shortcut={selectedMain.globalShortcut ?? ""}
-                          capturing={inlineCapturingGlobal}
-                          onClick={() => setInlineCapturingGlobal((v) => !v)}
-                        />
-                        {selectedMain.globalShortcut && (
-                          <button
-                            onClick={() => updateMainInline({ globalShortcut: "" })}
-                            className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={ti18n("settings.actionBar.clearShortcut")}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </FormField>
-                  )}
-
-                  <FormField label={t("settings.actionBar.enableLabel")}>
-                    <div className="flex items-center gap-2.5">
-                      <Toggle
-                        checked={selectedMain.isEnabled}
-                        onChange={(v) => updateMainInline({ isEnabled: v })}
-                      />
-                      <span className="text-xs text-muted-foreground">
-                        {selectedMain.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
-                      </span>
+                      <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+                        <div className="flex items-center gap-2">
+                          <ShortcutButton
+                            shortcut={selectedMain.globalShortcut ?? ""}
+                            capturing={inlineCapturingGlobal}
+                            onClick={() => setInlineCapturingGlobal((v) => !v)}
+                          />
+                          {selectedMain.globalShortcut && (
+                            <button
+                              onClick={() => updateMainInline({ globalShortcut: "" })}
+                              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={ti18n("settings.actionBar.clearShortcut")}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </FormField>
                     </div>
-                  </FormField>
+                  )}
                 </div>
 
                 {/* ── 子菜单列表（仅 submenu 类型展示） ── */}
