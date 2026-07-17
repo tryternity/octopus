@@ -1206,7 +1206,11 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
     }))
 }
 
-/// models 表的通用行（用于翻译引擎按 id 查询，不限于 llm domain）。
+/// models 表的通用行（用于翻译引擎按 id 查询、激活模型查询，不限于 llm domain）。
+///
+/// 含全字段（含 language/description）——供 [`get_active_model`] 构造完整
+/// [`ModelEntry`]（无字段缺失，4 域统一）。比 LocalAsrModelRow 更通用：不限 domain、
+/// 不限 is_local。
 #[derive(Debug, Clone)]
 pub struct ModelRow {
     pub id: i64,
@@ -1216,6 +1220,8 @@ pub struct ModelRow {
     pub model_name: String,
     pub source: String,
     pub secret_key: String,
+    pub language: String,
+    pub description: String,
     pub is_local: bool,
     pub is_thinking: bool,
     pub is_streaming: bool,
@@ -1228,25 +1234,10 @@ pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, domain, provider, category, model_name, source, secret_key,
-                    is_local, is_thinking, is_streaming, is_enabled, is_available
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE id = ?1",
         )?;
-        let row = stmt.query_row(params![id], |r| {
-            Ok(ModelRow {
-                id: r.get(0)?,
-                domain: r.get(1)?,
-                provider: r.get(2)?,
-                category: r.get(3)?,
-                model_name: r.get(4)?,
-                source: r.get(5)?,
-                secret_key: r.get(6)?,
-                is_local: r.get::<_, i64>(7)? != 0,
-                is_thinking: r.get::<_, i64>(8)? != 0,
-                is_streaming: r.get::<_, i64>(9)? != 0,
-                is_enabled: r.get::<_, i64>(10)? != 0,
-                is_available: r.get::<_, i64>(11)? != 0,
-            })
-        }).optional()?;
+        let row = stmt.query_row(params![id], |r| model_row_mapper(r)).optional()?;
         Ok(row)
     })
 }
@@ -1257,26 +1248,31 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, domain, provider, category, model_name, source, secret_key,
-                    is_local, is_thinking, is_streaming, is_enabled, is_available
+                    language, description, is_local, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 LIMIT 1",
         )?;
-        let row = stmt.query_row(params![domain], |r| {
-            Ok(ModelRow {
-                id: r.get(0)?,
-                domain: r.get(1)?,
-                provider: r.get(2)?,
-                category: r.get(3)?,
-                model_name: r.get(4)?,
-                source: r.get(5)?,
-                secret_key: r.get(6)?,
-                is_local: r.get::<_, i64>(7)? != 0,
-                is_thinking: r.get::<_, i64>(8)? != 0,
-                is_streaming: r.get::<_, i64>(9)? != 0,
-                is_enabled: r.get::<_, i64>(10)? != 0,
-                is_available: r.get::<_, i64>(11)? != 0,
-            })
-        }).optional()?;
+        let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
         Ok(row)
+    })
+}
+
+/// ModelRow 行映射共享闭包（get_model_by_id / get_active_model 共用，14 列顺序一致）。
+fn model_row_mapper(r: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRow> {
+    Ok(ModelRow {
+        id: r.get(0)?,
+        domain: r.get(1)?,
+        provider: r.get(2)?,
+        category: r.get(3)?,
+        model_name: r.get(4)?,
+        source: r.get(5)?,
+        secret_key: r.get(6)?,
+        language: r.get(7)?,
+        description: r.get(8)?,
+        is_local: r.get::<_, i64>(9)? != 0,
+        is_thinking: r.get::<_, i64>(10)? != 0,
+        is_streaming: r.get::<_, i64>(11)? != 0,
+        is_enabled: r.get::<_, i64>(12)? != 0,
+        is_available: r.get::<_, i64>(13)? != 0,
     })
 }
 
