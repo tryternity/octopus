@@ -3,6 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+// TranslationEngine trait 需在作用域内才能调 `engine.translate(...).await`（本地 + 云端引擎）。
+use octopus_translation::TranslationEngine;
 
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
@@ -799,27 +801,41 @@ fn auto_translate_prompt(text: &str) -> &'static str {
     }
 }
 
+/// 翻译策略——只决定路径，不预加载引擎。
+///
+/// `translate_engine` 配置项现在存 DB models 行的 id（Task 3 `get_model_by_id`）。
+/// 策略解析阶段只查 DB + 基本校验，真正引擎加载延迟到 `do_translate` 里
+/// （opus-mt 需按文本方向加载子目录、m2m100/云端按需实例化）。
 enum TranslateStrategy {
-    /// 本地翻译引擎 spec（如 "local:m2m100"），引擎加载延迟到后台线程
-    Local(String),
-    Llm,
+    /// 本地翻译模型（opus-mt / m2m100 等），engine 字段延迟加载。
+    LocalModel { row: octopus_infra::db::ModelRow },
+    /// 云端 LLM 翻译模型（OpenAI 兼容协议），engine 字段延迟加载。
+    CloudModel { row: octopus_infra::db::ModelRow },
+    /// 无激活翻译模型 / 未填 key / 未配置润色 LLM → 走润色 LLM 兜底翻译。
+    FallbackLlm,
 }
 
-fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> TranslateStrategy {
-    match config.translate_engine.as_str() {
-        "llm" => TranslateStrategy::Llm,
-        spec if spec.starts_with("local:") => TranslateStrategy::Local(spec.to_string()),
-        _ => {
-            // 自动：优先 opus-mt（轻量），其次 m2m100，否则 LLM
-            let models = octopus_translation::discover_translation_models();
-            if models.iter().any(|m| m.name == "opus-mt" && m.downloaded) {
-                TranslateStrategy::Local("local:opus-mt".into())
-            } else if models.iter().any(|m| m.name == "m2m100-418M" && m.downloaded) {
-                TranslateStrategy::Local("local:m2m100-418M".into())
-            } else {
-                TranslateStrategy::Llm
-            }
-        }
+/// 解析翻译策略。async 仅因未来可能涉及异步 DB 访问；当前 DB 同步，
+/// 但保留 async 签名以匹配 `do_translate` 的 async 上下文（无需 spawn_blocking）。
+async fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> TranslateStrategy {
+    // translate_engine 存激活模型的 DB id；空 / 非数字 / 不存在 → fallback
+    let Ok(id) = config.translate_engine.parse::<i64>() else {
+        return TranslateStrategy::FallbackLlm;
+    };
+    let Ok(Some(row)) = octopus_infra::db::get_model_by_id(id) else {
+        return TranslateStrategy::FallbackLlm;
+    };
+    // 防御：models 表行 domain 必须是 translate、必须启用
+    if row.domain != "translate" || !row.is_enabled {
+        return TranslateStrategy::FallbackLlm;
+    }
+    if row.is_local {
+        TranslateStrategy::LocalModel { row }
+    } else if row.secret_key.is_empty() {
+        // 云端模型未填 secret_key → fallback（避免到 translate 时才报错）
+        TranslateStrategy::FallbackLlm
+    } else {
+        TranslateStrategy::CloudModel { row }
     }
 }
 
@@ -835,31 +851,49 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
 }
 
 /// 执行翻译（公共逻辑）：解析引擎策略 + 执行翻译。
-/// 供 do_translate_streaming 和 finalize 翻译路径复用。
-pub(crate) fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
+/// 供 do_translate_streaming（worker 线程 block_on）和 coordinator 终翻路径复用。
+///
+/// async 化以支持 Task 1 的 async `TranslationEngine::translate`（云端引擎走 HTTP）。
+/// 两个调用点都在非 tokio 线程（worker / coordinator），通过
+/// `tauri::async_runtime::block_on` 进入——不可新建 `tokio::runtime::Runtime`（嵌套 panic）。
+pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
     let (source_lang, target_lang) = detect_translate_direction(text);
-    match resolve_translate_strategy(config) {
-        TranslateStrategy::Local(spec) => {
-            // opus-mt 需要方向信息来加载对应子目录
-            if spec.starts_with("local:opus-mt") {
+    match resolve_translate_strategy(config).await {
+        TranslateStrategy::LocalModel { row } => {
+            // opus-mt 按方向加载子目录（zh-en / en-zh）
+            if row.model_name.starts_with("opus-mt") {
                 let engine = octopus_translation::load_opus_mt(source_lang, target_lang)
                     .map_err(|e| e.to_string())?;
-                return engine.translate(text, source_lang, target_lang)
+                return engine.translate(text, source_lang, target_lang).await
                     .map_err(|e| e.to_string());
             }
-            // m2m100 等其他引擎
-            let manager = octopus_translation::TranslationManager::new(&spec);
+            // m2m100 等其他本地引擎：按 model_name 构造 spec 加载
+            let manager = octopus_translation::TranslationManager::new(&format!("local:{}", row.model_name));
             let engine = manager.engine()
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| "翻译引擎加载失败".to_string())?;
-            engine.translate(text, source_lang, target_lang)
+                .ok_or_else(|| "本地翻译引擎加载失败".to_string())?;
+            engine.translate(text, source_lang, target_lang).await
                 .map_err(|e| e.to_string())
         }
-        TranslateStrategy::Llm => {
+        TranslateStrategy::CloudModel { row } => {
+            // 云端引擎（OpenAI 兼容）——内部 reqwest::blocking，由外层 block_on 隔离
+            let engine = octopus_translation::CloudLlmEngine::new(
+                &row.provider, &row.model_name, &row.source, &row.secret_key, row.is_thinking,
+            );
+            engine.translate(text, source_lang, target_lang).await
+                .map_err(|e| e.to_string())
+        }
+        TranslateStrategy::FallbackLlm => {
             let llm_config = crate::config::llm_config_ignore_mode(config)
-                .ok_or_else(|| "翻译引擎未配置，请在设置中配置本地翻译模型或 LLM".to_string())?;
-            let prompt = auto_translate_prompt(text);
-            octopus_llm::chat_text_with_prompt(prompt, text, &llm_config, None)
+                .ok_or_else(|| "翻译 fallback LLM 未配置，请在设置中配置润色模型".to_string())?;
+            let prompt = auto_translate_prompt(text); // &'static str，满足 'static move
+            let text_owned = text.to_string();
+            let llm_config_owned = llm_config.clone();
+            // LLM 调用是同步阻塞 HTTP——spawn_blocking 防卡 tokio runtime
+            tokio::task::spawn_blocking(move || {
+                octopus_llm::chat_text_with_prompt(prompt, &text_owned, &llm_config_owned, None)
+            }).await
+                .map_err(|e| format!("LLM 线程异常: {}", e))?
                 .map_err(|e| e.to_string())
         }
     }
@@ -1004,7 +1038,10 @@ fn do_translate_streaming(text: &str, app: &AppHandle, target: TranslateEmitTarg
             if i < total - 1 { accumulated.push('\n'); }
             continue;
         }
-        match do_translate(seg, &config) {
+        // tauri::async_runtime::block_on 复用 Tauri 全局 tokio runtime（cloud_pipeline.rs:122 同模式）。
+        // 本函数在 std::thread::spawn 的 worker 线程跑（translate_text / execute_action 都这样调），
+        // 非 tokio worker 线程，block_on 不会嵌套 panic。不可用 `tokio::runtime::Runtime::new()`。
+        match tauri::async_runtime::block_on(do_translate(seg, &config)) {
             Ok(t) => {
                 accumulated.push_str(&t);
             }
@@ -1438,16 +1475,17 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                 let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false);
-                match resolve_translate_strategy(&config) {
-                    TranslateStrategy::Local(_) => {
-                        // 流式翻译：隐藏浮窗（仅 ActionBar 可见时）+ 打开 contrast tab
+                match resolve_translate_strategy(&config).await {
+                    TranslateStrategy::LocalModel { .. } | TranslateStrategy::CloudModel { .. } => {
+                        // 本地 / 云端模型都走流式翻译（CompactEditor contrast tab，体验更好）。
+                        // 隐藏浮窗（仅 ActionBar 可见时）+ 打开 contrast tab。
                         if action_bar_visible {
                             if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
                                 let _ = win.hide();
                             }
                             #[cfg(target_os = "macos")]
-                            { crate::activation::after_floating_window_hide_keep_active(&app); }
-                            finalize_action_bar(&app);
+                            { crate::activation::after_floating_window_hide_keep_active(app); }
+                            finalize_action_bar(app);
                         }
 
                         let original_text = text.clone();
@@ -1478,7 +1516,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         });
                         return Ok(true);
                     }
-                    TranslateStrategy::Llm => {
+                    TranslateStrategy::FallbackLlm => {
                         let llm_config = crate::config::llm_config_ignore_mode(&config)
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
                         // 翻译用纯 text（不含 enriched 上下文标签）：

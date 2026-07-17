@@ -1494,10 +1494,14 @@ fn do_paste(
     let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
         crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
         // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
-        // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）
+        // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）。
+        // do_translate 已 async 化（云端引擎走 HTTP）——coordinator 非 tokio 线程，
+        // 用 tauri::async_runtime::block_on 进入（cloud_pipeline.rs:122 同模式，不可新建 Runtime）。
         let text_ref = text_to_paste;
         text_to_paste_owned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::action_bar_commands::do_translate(text_ref, config)
+            tauri::async_runtime::block_on(
+                crate::action_bar_commands::do_translate(text_ref, config)
+            )
         }))
         .unwrap_or_else(|p| {
             let msg = if let Some(s) = p.downcast_ref::<&str>() { (*s).to_string() }
