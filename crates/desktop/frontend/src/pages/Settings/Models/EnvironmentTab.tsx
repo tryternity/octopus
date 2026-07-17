@@ -49,7 +49,7 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
   };
 
   return (
-    <div className="space-y-1.5 max-w-[560px]">
+    <div className="space-y-1.5">
       <p className="text-[11px] text-muted-foreground/70 mb-2">
         {t("settings.models.env.hintPrefix")} <code className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">{"{" + t("settings.models.env.hintVar") + "}"}</code> {t("settings.models.env.hintSuffix")}
       </p>

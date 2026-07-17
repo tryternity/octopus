@@ -128,7 +128,7 @@
 
 ## 8. 设置窗口子系统
 
-`settings_commands` + `settings_window`——独立 Tauri 窗口（原生标题栏、800×600 可调）。
+`settings_commands` + `settings_window`——独立 Tauri 窗口（原生标题栏、960×600 可调）。
 
 **`set_config(key, value)`**（通用字段写入器）：
 - `apply_config_value` 做字段类型/范围校验

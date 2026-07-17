@@ -1065,26 +1065,14 @@ export default function ActionBarPanel({
 
   return (
     <div className="w-full min-w-0">
-      {/* ── 页头 ── */}
+      {/* ── 操作栏（无页面 title，靠左侧导航标识当前页）──
+          menu 视图：左组放过滤/查看/折叠，右组单独放「新增」主操作；
+          其他视图：返回按钮靠左。justify-between 让两组分到两端，避免左侧空白。 */}
       <div className="mb-6 flex items-center justify-between gap-4">
-        {/* 左：签名色条 + 标签 + 辅助操作（场景过滤 / 记录 / 展开） */}
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex items-center gap-2">
-            {/* 签名色条——琥珀竖线 */}
-            <div className="h-4 w-[3px] rounded-full bg-voice" />
-            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
-              {view === "edit"
-                ? t("settings.actionBar.editMenuItem")
-                : view === "runs"
-                  ? t("settings.actionBar.scriptRecords")
-                  : t("settings.actionBar.menuManage")}
-            </span>
-          </div>
-
+        {/* 左组：辅助操作（场景过滤 / 记录 / 展开）；无页面 title，靠左侧导航标识当前页 */}
+        <div className="flex min-w-0 items-center gap-1.5">
           {view === "menu" && (
             <>
-              {/* 分隔——标签与辅助操作视觉分组 */}
-              <div className="h-4 w-px bg-border/60" />
               {/* 场景过滤——分段控件 */}
               <div className="flex items-center rounded-md border border-border overflow-hidden">
                 {(["all", "text", "file"] as const).map((s) => (
@@ -1139,6 +1127,13 @@ export default function ActionBarPanel({
             </Button>
           )}
         </div>
+
+        {/* 右组：新增主操作 */}
+        {view === "menu" && (
+          <Button onClick={() => handleAdd(null)} variant="voice" size="sm">
+            <Plus /> {t("settings.actionBar.addMainItem")}
+          </Button>
+        )}
       </div>
 
       {/* ── 内容区 ── */}

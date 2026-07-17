@@ -108,7 +108,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
   }));
 
   return (
-    <div className="space-y-0.5 max-w-[560px]">
+    <div className="space-y-0.5">
       {currentEngineName && <CurrentBanner label={currentEngineName} />}
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {rows.map((m) => (

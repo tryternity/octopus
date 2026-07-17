@@ -146,7 +146,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   };
 
   return (
-    <div className="space-y-0.5 max-w-[560px]">
+    <div className="space-y-0.5">
       {currentLabel && <CurrentBanner label={currentLabel} />}
 
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
