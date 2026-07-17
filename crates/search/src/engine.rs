@@ -292,11 +292,24 @@ pub fn get_engine() -> Option<&'static SearchEngine> {
 /// 解决场景：搜 "goose" 时 AppProvider 返回 `/Applications/Goose.app`（source=app），
 /// FileProvider 的 mdfind 也返回 `/Applications/Goose.app`（source=file）——两者指向同一对象，
 /// 应合并为一条。用 action_data 里的 path/url 作为身份键。
+///
+/// **P1-9 优化（2026-07-17）**：流式搜索每 batch 对累积 collected 全量 dedup，
+/// 原先每条都重新 `serde_json::from_str::<Value>` 解析 action_data——同一结果在
+/// 后续 batch 被反复解析。加 `key_cache` 按 action_data 内容缓存身份键，避免
+/// 重复 JSON 解析。HashSet 按 action_data 字符串引用去重（同 action_data 必同 key）。
 fn dedup_by_identity(results: &mut Vec<SearchResult>) {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // action_data → identity_key 缓存：同一 action_data 跨 batch 不重解析。
+    // 用 owned String key（action_data.clone）避免 retain 闭包的 &r 逃逸。
+    let mut key_cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     results.retain(|r| {
-        // 提取身份键：action_data JSON 里的 path / url
-        let key = identity_key(r);
+        let key = if let Some(k) = key_cache.get(&r.action_data) {
+            k.clone()
+        } else {
+            let k = identity_key(r);
+            key_cache.insert(r.action_data.clone(), k.clone());
+            k
+        };
         seen.insert(key)
     });
 }

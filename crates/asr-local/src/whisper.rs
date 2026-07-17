@@ -38,6 +38,33 @@ static WHISPER_CACHE_NAMES: Lazy<Vec<(&'static str, &'static str, &'static str, 
             .collect()
     });
 
+/// decoder 各层 KV cache **输出名**（进程级单例）。
+///
+/// P1-6 修复（2026-07-17）：原 update_decoder_kv / extract_kv 每个 token step
+/// 每层 format!("present.{}.decoder.key/value", layer)——base 模型 6 层 × 100 token
+/// = 1200-2400 次堆分配。同 WHISPER_CACHE_NAMES 思路 leak 一次，热路径直接索引。
+/// 仅 decoder KV（encoder KV 不变，extract_kv 只在首帧调一次，影响小但仍用此缓存统一）。
+static WHISPER_PRESENT_NAMES: Lazy<Vec<(&'static str, &'static str, &'static str, &'static str)>> =
+    Lazy::new(|| {
+        (0..32)
+            .flat_map(|layer| {
+                let dk: &'static str = Box::leak(
+                    format!("present.{}.decoder.key", layer).into_boxed_str(),
+                );
+                let dv: &'static str = Box::leak(
+                    format!("present.{}.decoder.value", layer).into_boxed_str(),
+                );
+                let ek: &'static str = Box::leak(
+                    format!("present.{}.encoder.key", layer).into_boxed_str(),
+                );
+                let ev: &'static str = Box::leak(
+                    format!("present.{}.encoder.value", layer).into_boxed_str(),
+                );
+                [(dk, dv, ek, ev)]
+            })
+            .collect()
+    });
+
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
 static WHISPER_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
@@ -132,26 +159,24 @@ impl KvCache {
         dec_out: &ort::session::SessionOutputs,
         layer: usize,
     ) -> Result<(ArrayD<f32>, ArrayD<f32>, ArrayD<f32>, ArrayD<f32>)> {
-        let dk_name = format!("present.{}.decoder.key", layer);
-        let dv_name = format!("present.{}.decoder.value", layer);
-        let ek_name = format!("present.{}.encoder.key", layer);
-        let ev_name = format!("present.{}.encoder.value", layer);
-        let (shape, data) = dec_out[dk_name.as_str()].try_extract_tensor::<f32>()?;
+        // P1-6 优化（2026-07-17）：用预算 &'static str 替代每帧 format!。
+        let (dk_name, dv_name, ek_name, ev_name) = WHISPER_PRESENT_NAMES[layer];
+        let (shape, data) = dec_out[dk_name].try_extract_tensor::<f32>()?;
         let dk = ArrayD::from_shape_vec(
             IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
             data.to_vec(),
         )?;
-        let (shape, data) = dec_out[dv_name.as_str()].try_extract_tensor::<f32>()?;
+        let (shape, data) = dec_out[dv_name].try_extract_tensor::<f32>()?;
         let dv = ArrayD::from_shape_vec(
             IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
             data.to_vec(),
         )?;
-        let (shape, data) = dec_out[ek_name.as_str()].try_extract_tensor::<f32>()?;
+        let (shape, data) = dec_out[ek_name].try_extract_tensor::<f32>()?;
         let ek = ArrayD::from_shape_vec(
             IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
             data.to_vec(),
         )?;
-        let (shape, data) = dec_out[ev_name.as_str()].try_extract_tensor::<f32>()?;
+        let (shape, data) = dec_out[ev_name].try_extract_tensor::<f32>()?;
         let ev = ArrayD::from_shape_vec(
             IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
             data.to_vec(),
@@ -181,14 +206,18 @@ impl KvCache {
 
     fn update_decoder_kv(&mut self, dec_out: &ort::session::SessionOutputs, n_layers: usize) -> Result<()> {
         for layer in 0..n_layers {
-            let dk_name = format!("present.{}.decoder.key", layer);
-            let dv_name = format!("present.{}.decoder.value", layer);
-            let (shape, data) = dec_out[dk_name.as_str()].try_extract_tensor::<f32>()?;
+            // P1-6 优化：用预算 &'static str 替代每 token format!——base 模型 6 层 × 100
+            // token = 1200 次 format! → 0 次（仅查 &'static str 索引）。
+            // to_vec() 仍保留——ORT 张量生命周期跟随 SessionOutputs，跨 token step
+            // 存 decoder_keys[layer] 必须 owned（同 moonshine/qwen3 的 ValueView 也需
+            // Arc 计数克隆，这里用 Vec clone 等价）。
+            let (dk_name, dv_name, _, _) = WHISPER_PRESENT_NAMES[layer];
+            let (shape, data) = dec_out[dk_name].try_extract_tensor::<f32>()?;
             self.decoder_keys[layer] = ArrayD::from_shape_vec(
                 IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
                 data.to_vec(),
             )?;
-            let (shape, data) = dec_out[dv_name.as_str()].try_extract_tensor::<f32>()?;
+            let (shape, data) = dec_out[dv_name].try_extract_tensor::<f32>()?;
             self.decoder_values[layer] = ArrayD::from_shape_vec(
                 IxDyn(&shape.iter().map(|&d| d as usize).collect::<Vec<_>>()),
                 data.to_vec(),

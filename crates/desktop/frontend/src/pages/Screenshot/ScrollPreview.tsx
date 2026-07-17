@@ -46,7 +46,7 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
       </div>
       {/* 预览图 */}
       <div style={{ flex: 1, overflow: "hidden", borderRadius: 6, display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "rgba(0,0,0,0.3)" }}>
-        <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
+        <img src={`data:image/jpeg;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
       </div>
       {/* 按钮区：保存 复制 取消 */}
       <div style={{ display: "flex", gap: 6, height: 32 }}>

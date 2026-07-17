@@ -4,6 +4,18 @@
 
 use log::debug;
 
+/// dock 状态内存缓存——P1-8 修复（2026-07-17）。
+///
+/// 原先 `load_dock_state` 每次都走 DB SELECT，clipboard_window 的 Moved 事件
+/// 拖拽期间 ~60Hz 触发 → 拖一次产生数百次 DB round-trip（SQLite 单行 SELECT
+/// 本身不慢，但 acquire ReentrantMutex + prepare statement 是纯浪费）。
+///
+/// 改为内存镜像：`save_dock_state` 同步更新缓存 + DB；`load_dock_state` 优先
+/// 读缓存，首次或缓存未命中时回退 DB 并填缓存。窗口 label 数量极少（当前
+/// 仅 clipboard_window），缓存规模可控。
+static DOCK_CACHE: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// 保存窗口位置到 app_config。
 /// key 格式：`window_pos.{label}`，value 格式：`"x,y"`（逻辑坐标）。
 pub fn save_window_position(label: &str, x: f64, y: f64) {
@@ -88,7 +100,7 @@ fn parse_position(value: &str) -> Option<(f64, f64)> {
     Some((x, y))
 }
 
-/// 保存窗口 dock 状态到 app_config。
+/// 保存窗口 dock 状态到 app_config + 同步更新内存缓存。
 /// key 格式：`window_dock.{label}`，value: "right" | "left" | "none"。
 pub fn save_dock_state(label: &str, edge: &str) {
     let key = format!("window_dock.{}", label);
@@ -97,19 +109,32 @@ pub fn save_dock_state(label: &str, edge: &str) {
     } else {
         debug!("Saved dock state {}: {}", label, edge);
     }
+    // 同步内存缓存——load_dock_state 后续走缓存不触 DB
+    DOCK_CACHE.lock().unwrap().insert(label.to_string(), edge.to_string());
 }
 
-/// 从 app_config 读取窗口 dock 状态。
+/// 读取窗口 dock 状态——优先内存缓存，首次/未命中回退 DB 并填缓存。
+///
+/// P1-8 修复（2026-07-17）：clipboard_window 的 Moved 事件 ~60Hz 触发，
+/// 原先每次走 DB SELECT，拖拽产生数百次 DB round-trip。改内存优先避免。
 pub fn load_dock_state(label: &str) -> Option<String> {
+    // 1. 内存命中（高频路径，零 DB）
+    if let Some(edge) = DOCK_CACHE.lock().unwrap().get(label).cloned() {
+        if edge.is_empty() { return None; }
+        return Some(edge);
+    }
+    // 2. 未命中：查 DB 并填缓存
     let key = format!("window_dock.{}", label);
     let value = octopus_infra::db::load_config_key(&key).ok().flatten()?;
     let edge = value.trim().to_string();
     if edge.is_empty() {
-        None
-    } else {
-        debug!("Loaded dock state {}: {}", label, edge);
-        Some(edge)
+        // 空值也缓存（避免反复查 DB），但 load 返回 None
+        DOCK_CACHE.lock().unwrap().insert(label.to_string(), String::new());
+        return None;
     }
+    debug!("Loaded dock state from DB (cache miss): {} {}", label, edge);
+    DOCK_CACHE.lock().unwrap().insert(label.to_string(), edge.clone());
+    Some(edge)
 }
 
 #[cfg(test)]

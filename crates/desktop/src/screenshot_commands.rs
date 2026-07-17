@@ -1258,13 +1258,17 @@ pub async fn start_scroll_recording(
                 let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
 
                 // 预览图：从 canvas_buf 底部切片重建小 RgbaImage
+                // P1-4 优化（2026-07-17）：预览编码 PNG→JPEG——1-2MB→100-300KB，
+                // 编码快 3-5×，肉眼无差。预览只是视觉反馈不是入库数据。
                 let canvas_cropped = image::RgbaImage::from_raw(canvas_w_now, crop_src_h, canvas_buf_slice)
                     .unwrap_or_else(|| image::RgbaImage::new(canvas_w_now, crop_src_h));
                 let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
                 let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::Triangle);
-                let mut preview_png = Vec::new();
-                let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
-                let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+                let preview_rgb = image::DynamicImage::ImageRgba8(preview).into_rgb8();
+                let mut preview_jpg = Vec::new();
+                let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut preview_jpg, 80);
+                let _ = jpg_enc.encode(&preview_rgb, preview_rgb.width(), preview_rgb.height(), image::ExtendedColorType::Rgb8);
+                let preview_b64 = general_purpose::STANDARD.encode(&preview_jpg);
 
                 let phys_height = (canvas_h_now as f64 / scale_for_phys) as u32;
 
