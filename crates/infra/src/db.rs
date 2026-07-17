@@ -3,7 +3,7 @@
 // 全局单连接（OnceLock<Mutex<Connection>>），首次 ensure_db 时初始化。
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 收集 query_map 结果，遇到失败行时 log::warn 并跳过（而非静默丢弃）。
@@ -1147,6 +1147,49 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
         is_local: is_local != 0,
         is_enabled: is_enabled != 0,
     }))
+}
+
+/// models 表的通用行（用于翻译引擎按 id 查询，不限于 llm domain）。
+#[derive(Debug, Clone)]
+pub struct ModelRow {
+    pub id: i64,
+    pub domain: String,
+    pub provider: String,
+    pub category: String,
+    pub model_name: String,
+    pub source: String,
+    pub secret_key: String,
+    pub is_local: bool,
+    pub is_thinking: bool,
+    pub is_streaming: bool,
+    pub is_enabled: bool,
+}
+
+/// 按 id 查询 models 表行（不限 domain）。用于 translate_engine 存 DB id 时反查引擎。
+pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, domain, provider, category, model_name, source, secret_key,
+                    is_local, is_thinking, is_streaming, is_enabled
+             FROM models WHERE id = ?1",
+        )?;
+        let row = stmt.query_row(params![id], |r| {
+            Ok(ModelRow {
+                id: r.get(0)?,
+                domain: r.get(1)?,
+                provider: r.get(2)?,
+                category: r.get(3)?,
+                model_name: r.get(4)?,
+                source: r.get(5)?,
+                secret_key: r.get(6)?,
+                is_local: r.get::<_, i64>(7)? != 0,
+                is_thinking: r.get::<_, i64>(8)? != 0,
+                is_streaming: r.get::<_, i64>(9)? != 0,
+                is_enabled: r.get::<_, i64>(10)? != 0,
+            })
+        }).optional()?;
+        Ok(row)
+    })
 }
 
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
@@ -2743,6 +2786,47 @@ mod tests {
             Ok(inner_v)
         });
         assert!(outer.is_ok(), "with_db 重入不应死锁: {:?}", outer);
+    }
+
+    /// `get_model_by_id` 按 id 反查 models 行——translate_engine 配置链路核心。
+    /// seed 后 opus-mt 是 translate domain 的本地模型，先取它的 DB id 再反查，
+    /// 不假设自增起始值（避免被前面的 seed 行数变化打穿）。
+    #[test]
+    fn get_model_by_id_returns_translate_row() {
+        setup_test_db();
+        // list_local_models_by_domain 返回 LocalAsrModelRow（无 id），用 model_name
+        // 在 DB 里反查 id，再走 get_model_by_id。
+        let local = list_local_models_by_domain("translate").unwrap();
+        let first = local
+            .iter()
+            .find(|r| r.model_name == "opus-mt")
+            .expect("seed 应有 opus-mt 本地翻译模型");
+        let id: i64 = with_db(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM models WHERE domain='translate' AND model_name='opus-mt'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+        let got = get_model_by_id(id).unwrap().expect("应查到 id 对应的行");
+        assert_eq!(got.id, id);
+        assert_eq!(got.domain, "translate");
+        assert_eq!(got.model_name, "opus-mt");
+        assert!(got.is_local);
+        // opus-mt seed 的 provider/category 固定
+        assert_eq!(got.provider, "local");
+        assert_eq!(got.category, "opus-mt");
+        // list_local_models_by_domain 与 get_model_by_id 的 is_enabled 取值一致（都不过滤）
+        assert_eq!(got.is_enabled, first.is_enabled);
+    }
+
+    /// `get_model_by_id` 查不存在的 id 应返回 None（optional() 路径）。
+    #[test]
+    fn get_model_by_id_missing_returns_none() {
+        setup_test_db();
+        let got = get_model_by_id(9_999_999).unwrap();
+        assert!(got.is_none(), "不存在的 id 应返回 None");
     }
 
     /// AppConfig 全字段 DB 往返：save → load 必须完整还原每个字段。

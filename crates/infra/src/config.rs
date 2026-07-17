@@ -220,7 +220,8 @@ pub struct AppConfig {
     #[serde(default = "default_ocr_model")]
     pub ocr_model: String,
 
-    /// 翻译引擎："" = 自动（有本地用本地，否则 LLM），"local:m2m100" = 指定本地，"llm" = 强制 LLM
+    /// 翻译引擎：激活的 models 表行 id（domain='translate'）。
+    /// "" = 未激活 → fallback polish_llm；旧值 "local:xxx"/"llm" 不迁移 → fallback。
     #[serde(default)]
     pub translate_engine: String,
 }

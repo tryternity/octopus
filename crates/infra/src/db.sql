@@ -248,7 +248,9 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
     ('aliyun', '{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","models":["qwen-plus","qwen-turbo","qwen-max","deepseek-v4-flash"]}', '阿里云 DashScope', 'llm_provider'),
     ('bigmodel', '{"base_url":"https://open.bigmodel.cn/api/paas/v4","models":["glm-4-flashx","glm-4.5-flash","glm-4-flash"]}', '智谱 BigModel', 'llm_provider'),
     ('openai', '{"base_url":"https://api.openai.com/v1","models":["gpt-4o","gpt-4o-mini","gpt-4-turbo"]}', 'OpenAI', 'llm_provider'),
-    ('ollama', '{"base_url":"http://localhost:11434/v1","models":[]}', 'Ollama 本地', 'llm_provider');
+    ('ollama', '{"base_url":"http://localhost:11434/v1","models":[]}', 'Ollama 本地', 'llm_provider'),
+    ('moonshot', '{"base_url":"https://api.moonshot.cn/v1","models":["moonshot-v1-8k","moonshot-v1-32k","moonshot-v1-128k"]}', 'Moonshot/Kimi', 'llm_provider'),
+    ('minimax', '{"base_url":"https://api.minimaxi.com/v1","models":["MiniMax-M3"]}', 'MiniMax', 'llm_provider');
 
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。
