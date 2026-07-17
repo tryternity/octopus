@@ -23,10 +23,13 @@ interface EngineOption {
 }
 
 interface DownloadableModel {
+  id: number;
   name: string;
   repo: string;
   description: string;
   category: string;
+  // Task 2 后：is_available=就绪（文件完备）；is_enabled=激活（每域仅 1 个=1）
+  is_available: boolean;
   is_enabled: boolean;
 }
 
@@ -87,11 +90,13 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  const isCurrent = (name: string) => engines.some((e) => e.current && e.name === name);
+  // Task 2 后：currentLabel 仍从 get_config 的 asr_engines（带 current 标记）取。
   const currentLabel = engines.find((e) => e.current)?.label ?? "";
 
-  const onActivate = (name: string) =>
-    invoke("switch_asr_engine", { modelName: name }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
+  // Task 2 后：统一走 switch_active_model(domain, id)。本地模型 id 来自 DownloadableModel，
+  // 云端模型 id 来自 EngineOption。
+  const onActivate = (id: number) =>
+    invoke("switch_active_model", { domain: "asr", id }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
 
   const onDownload = (repo: string) => {
     if (busyRepo) return;
@@ -111,16 +116,17 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
-  const readyCount = downloadable.filter((m) => m.is_enabled).length;
+  const readyCount = downloadable.filter((m) => m.is_available).length;
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<CloudModelData | null>(null);
 
-  // 合并本地 + 云端
+  // 合并本地 + 云端。Task 2 后：is_ready 用 is_available；is_current 用 is_enabled（激活）。
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_enabled,
-    is_current: isCurrent(m.name), is_local: true, repo: m.repo,
+    description: m.description, is_ready: m.is_available,
+    is_current: m.is_enabled, is_local: true, repo: m.repo,
+    cloudId: m.id,
   }));
 
   const cloudEngines = engines.filter((e) => !e.is_local);
@@ -152,7 +158,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
-            onActivate={() => onActivate(m.name)}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
             onDelete={() => onDelete(m.repo)}
@@ -171,7 +177,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           const engine = cloudEngines.find((e) => e.id === m.cloudId);
           return (
           <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={!!busyRepo}
-            onActivate={() => onActivate(m.name)}
+            onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => {}}
             onVerify={() => {}}
             onDelete={() => m.cloudId && onDeleteCloud(m.cloudId)}

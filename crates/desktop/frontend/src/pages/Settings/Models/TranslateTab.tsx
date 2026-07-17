@@ -14,6 +14,8 @@ interface DownloadableModel {
   repo: string;
   description: string;
   category: string;
+  // Task 2 后：is_available=就绪；is_enabled=激活
+  is_available: boolean;
   is_enabled: boolean;
 }
 
@@ -92,9 +94,9 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  // translate_engine 配置项存 DB 行 id（本地/云端统一）。激活即写 id 字符串。
+  // Task 2 后：统一走 switch_active_model(domain, id)。
   const onActivate = async (id: number) => {
-    try { await invoke("set_config", { key: "translate_engine", value: String(id) }); load(); }
+    try { await invoke("switch_active_model", { domain: "translate", id }); load(); }
     catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
@@ -130,14 +132,16 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     setShowForm(true);
   };
 
-  const readyCount = downloadable.filter((m) => m.is_enabled).length;
+  const readyCount = downloadable.filter((m) => m.is_available).length;
   // translate_status 返回 engineName（如 "m2m100-418M" 或 cloud model_name），用它判断 current
   const currentEngineName = status?.engineName ?? "";
 
+  // Task 2 后：is_ready 用 is_available；local is_current 用 is_enabled（激活）；
+  // cloud 仍用 engineName 比对（cloud models 经 list_translate_cloud_models 无 is_enabled 字段）。
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_enabled,
-    is_current: m.name === currentEngineName,
+    description: m.description, is_ready: m.is_available,
+    is_current: m.is_enabled,
     is_local: true, repo: m.repo,
   }));
 
