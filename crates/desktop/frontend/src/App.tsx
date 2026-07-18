@@ -10,6 +10,7 @@ import CompactEditor from "@/pages/CompactEditor";
 import ActionBar from "@/pages/ActionBar";
 import Overlay from "@/pages/Overlay";
 import VaultPicker from "@/pages/VaultPicker";
+import PasswordGeneratorWindow from "@/pages/PasswordGenerator";
 import { applyThemeFromConfig } from "@/lib/theme";
 
 class ErrorBoundary extends Component<
@@ -62,10 +63,10 @@ function App() {
   }, []);
 
   // follow-up #10: 拉取 vault feature 状态（永远注册的命令，后端 cfg 反射）。
-  // 仅在 vault_picker_window 标签下需要——其他窗口不渲染 vault UI，
-  // 跳过 invoke 以省一次 IPC。
+  // 仅在 vault 相关窗口（vault_picker_window / password_generator_window）标签下需要——
+  // 其他窗口不渲染 vault UI，跳过 invoke 以省一次 IPC。
   useEffect(() => {
-    if (label !== "vault_picker_window") {
+    if (label !== "vault_picker_window" && label !== "password_generator_window") {
       setVaultEnabled(false);
       return;
     }
@@ -94,6 +95,9 @@ function App() {
             return <Overlay />;
           case "vault_picker_window":
             return vaultEnabled ? <VaultPicker /> : null;
+          case "password_generator_window":
+            // 生成器独立浮窗（Actionbar 触发，外壳 B）
+            return vaultEnabled ? <PasswordGeneratorWindow /> : null;
           default:
             if (label.startsWith("screenshot_")) {
               return <Screenshot />;

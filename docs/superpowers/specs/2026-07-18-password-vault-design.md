@@ -1002,20 +1002,23 @@ label 改为 `TOTP（Base32 或 otpauth URL）`。
 ┌─────────────────────────────────────────┐
 │ <PasswordGenerator> 共享主体             │ ← 纯内容：Segmented 模式 + 显示区 + 强度条
 │   props: onUsePassword?(pwd)            │   + 模式专属配置 + 操作栏
-│         onAutotype?(pwd)  future        │   操作按钮按 props 动态显示
+│         onAutotype?(pwd)                │   操作按钮按 props 动态显示
 └─────────────────────────────────────────┘
         ▲                            ▲
         │                            │
 ┌───────┴────────┐          ┌────────┴────────┐
-│ 外壳 A：Modal   │          │ 外壳 B：独立窗口  │ future
-│ CipherEditor   │          │ Actionbar 触发   │
-│ ✅ 已落地       │          │ P2 待办          │
-└────────────────┘          └─────────────────┘
+│ 外壳 A：Modal   │          │ 外壳 B：独立浮窗  │ ✅ 2026-07-19 落地
+│ CipherEditor   │          │ ActionBar 触发   │
+│ ✅ 已落地       │          │ Actionbar 搜索框 │
+└────────────────┘          │ 右侧按钮触发     │
+                            └─────────────────┘
 ```
 
 **已落地（外壳 A）**：`CipherEditor` 密码字段右侧 🔑 按钮 → 弹 `<PasswordGeneratorModal>` 半透明遮罩 + 居中卡片。点「使用此密码」写回 password 字段并关闭。
 
-**未来扩展（外壳 B）**：`PasswordGenerator` 已预留 `onAutotype` prop——未来 Actionbar 加按钮触发独立 Tauri 窗口（参考 `compact_editor_window.rs` 模板）时，窗口 root 直接渲染主体组件，`onAutotype` 触发 `vault_autotype_password` 命令（与现有 vault autotype 机制复用）。无需重构主体。
+**已落地（外壳 B）**（2026-07-19）：ActionBar 搜索框右侧的 🔑 按钮 → invoke `open_password_generator` → 后端 `password_generator_window::show_password_generator_window` 显示透明浮窗（位置跟随鼠标 + 边界保护）。浮窗 root `pages/PasswordGenerator/index.tsx` 渲染 `<PasswordGenerator onAutotype={...}>` 主体。点 Auto-type → invoke `password_generator_autotype` → 后端 hide 浮窗 + `autotype_login("", pwd, true, None)` 注入前台浏览器（username 留空，press_enter=true）。点使用后自动 hide 浮窗（用户决策，与 VaultPicker 一致）。
+
+**安全**：autotype_login 走 verify_focused(None) 最小防御（前台 ≠ octopus 自身），与 vault_autotype 一致。hide 期间焦点被抢的已知窗口见 §4.5。
 
 **架构演进史**（避免下次重构踩同样坑）：
 - 初版：`password_generator_window` 独立 Tauri 窗口 + `Cmd+Shift+G` 全局热键 + `pages/PasswordGenerator/`
@@ -1743,6 +1746,10 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 ├── CipherEditor.tsx            # 新建/编辑 cipher 表单（密码字段右侧眼睛/生成/复制 3 按钮 + grid 两列布局）
 ├── PasswordGenerator.tsx       # 生成器共享主体（Segmented 模式 + 显示 + 强度 + 配置 + 操作栏，跨场景复用）
 ├── PasswordGeneratorModal.tsx  # 生成器 Modal 外壳（外壳 A，CipherEditor 场景）
+
+# 独立窗口（外壳 B，2026-07-19 落地）
+crates/desktop/frontend/src/pages/PasswordGenerator/
+└── index.tsx                   # 生成器独立浮窗 root（ActionBar 触发；渲染共享主体，Auto-type 注入浏览器）
 ├── UnlockDialog.tsx            # 解锁弹窗
 ├── SetupWizard.tsx             # 首次初始化向导（含 12 位 + 4 类校验）
 ├── HealthReport.tsx            # 健康报告
@@ -1774,10 +1781,9 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 }
 ```
 
-> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——生成器当前走
-> CipherEditor Modal（主体组件 `PasswordGenerator.tsx` 可复用），setup 走 VaultPanel
-> 内联向导（不弹独立窗口）。**未来扩展**：Actionbar 触发的独立生成器窗口场景可能恢复
-> `password_generator_window`，渲染同一个 `<PasswordGenerator>` 主体（详见 §5.2 架构图）。
+> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——setup 走 VaultPanel
+> 内联向导（不弹独立窗口）。**`password_generator_window` 已恢复**（2026-07-19，作为透明
+> 浮窗外壳 B，由 ActionBar 触发）——capabilities/default.json 的 windows 数组已含此 label。
 
 ## 附录 D：全局热键
 

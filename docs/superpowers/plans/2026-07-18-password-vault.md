@@ -6883,3 +6883,43 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 | 次-1 心跳以 focus 为基准 | 设计选择，"窗口聚焦即续命"；spec/architecture 已注释说明 |
 | 次-3 suppress_next 竞态 | 竞态存在但报告归因 iCloud 不准；ConcealedType 标记本已让 iCloud 跳过 |
 
+
+---
+
+## 修订：ActionBar 密码生成器集成（外壳 B 落地，2026-07-19）
+
+落地 spec §5.2 架构图中的外壳 B（P1 计划：ActionBar 加内置按钮触发独立生成器浮窗）。
+
+### 设计决策（与用户协商）
+
+- **触发方式**：ActionBar 搜索框右侧内置按钮（独立于 DB items），onClick → invoke `open_password_generator`。用户要全局快捷键可在命令面板配置（ActionBar 通用机制）
+- **窗口形态**：**透明 always-on-top 浮窗**（非独立 Tauri 普通窗口）——避免独立窗口"hide 才能让浏览器回前台"的焦点切换问题；浮窗透明且不抢键盘焦点，浏览器始终在前台
+- **位置**：跟随鼠标（前台浏览器输入框附近通常有鼠标），边界保护防超出屏幕。未来增强为跟随浏览器 frame
+- **Auto-type 行为**：点使用后自动 hide 浮窗（用户决策，与 VaultPicker 一致）；username 留空（生成器场景无 username），press_enter=true（生成后通常需立即提交）
+
+### 改动（commit 待写）
+
+- 新增 `crates/desktop/src/password_generator_window.rs`：浮窗创建（480×480 透明 always_on_top）+ `show_password_generator_window` + `compute_window_position`（跟随鼠标 + 边界 clamp）
+- 新增 `crates/desktop/frontend/src/pages/PasswordGenerator/index.tsx`：浮窗 root，渲染 `<PasswordGenerator onAutotype={...}>` + 顶部标题栏（X 关闭）
+- `crates/desktop/src/vault_commands.rs` 新增 2 命令：
+  - `open_password_generator`：算位置 + show 浮窗
+  - `password_generator_autotype(password)`：hide 浮窗 → `autotype_login("", pwd, true, None)` 注入前台
+- `crates/desktop/src/main.rs`：注册新模块 + 2 命令（vault feature gated，与 vault_autotype 同）
+- `crates/desktop/capabilities/default.json`：windows 数组加 `password_generator_window`
+- `crates/desktop/frontend/src/App.tsx`：加路由分支 + vault feature 探针覆盖新窗口
+- `crates/desktop/frontend/src/pages/ActionBar/index.tsx`：搜索框右侧加内置 🔑 按钮
+
+### 共享主体复用
+
+- `pages/Settings/Vault/PasswordGenerator.tsx` 主体零改动——`onAutotype` prop 已在 2026-07-19 重构时预留
+- 外壳 A（CipherEditor Modal）+ 外壳 B（独立浮窗）渲染同一主体
+
+### 验证
+
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+### 已知窗口（与 vault_autotype 同）
+
+- autotype focus 校验走 verify_focused(None) 最小防御——hide 期间焦点被抢到第三方 app 时密码会打到错误窗口
+- spec §4.5 已记录该已知窗口；未来增强为浏览器白名单

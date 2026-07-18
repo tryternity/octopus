@@ -849,6 +849,51 @@ pub fn register_vault_autotype_shortcut(
     Ok(())
 }
 
+// === 密码生成器独立浮窗（外壳 B：Actionbar 触发场景）===
+//
+// 与 CipherEditor Modal（外壳 A）渲染同一个 <PasswordGenerator> 主体，
+// 但本场景生成后直接 Auto-type 到前台浏览器（不经 vault cipher）。
+// 详见 spec §5.2「跨场景复用主体 + Modal/独立窗口外壳」。
+
+/// 唤起密码生成器浮窗（Actionbar 内置按钮触发）。
+///
+/// 浮窗位置跟随鼠标（前台浏览器输入框附近），边界保护防超出屏幕。
+/// toggle 语义：已存在 → show + 移动到新位置；不存在 → 创建。
+#[tauri::command]
+pub fn open_password_generator(app: AppHandle) -> Result<(), String> {
+    let (x, y) = crate::password_generator_window::compute_window_position(&app);
+    crate::password_generator_window::show_password_generator_window(&app, x, y);
+    Ok(())
+}
+
+/// Auto-type 生成的密码到前台 app（password_generator_window 场景）。
+///
+/// 流程：
+/// 1. hide password_generator_window → 浏览器回前台
+/// 2. autotype_login("", password, true, None) —— sleep + verify_focused + 注入
+///
+/// **username 留空**：生成器场景没有 username（与 vault_autotype 不同）。
+/// **press_enter=true**：用户主动点 Auto-type 通常需要立即提交表单。
+///
+/// 安全：verify_focused(None) 走最小防御（前台 ≠ octopus 自身）。若 hide 期间焦点
+/// 被抢到第三方 app，密码会打到错误窗口——已知窗口（同 vault_autotype），详见 spec §4.5。
+#[tauri::command]
+pub fn password_generator_autotype(
+    app: AppHandle,
+    password: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    // 1. hide 浮窗让浏览器回前台
+    if let Some(win) = app.get_webview_window(crate::password_generator_window::WINDOW_LABEL) {
+        let _ = win.hide();
+    }
+    // 2. sleep + verify_focused + 注入
+    autotype::autotype_login("", &password, true, None)
+        .map_err(|_| crate::vault_error::serialize(&crate::vault_error::VaultError::AutoTypeFailed))?;
+    log::info!("[password-generator] autotype 完成（{} 字符）", password.len());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
