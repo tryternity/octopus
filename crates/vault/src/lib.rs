@@ -25,3 +25,4 @@ pub mod matcher;
 pub mod health;
 pub mod importer;
 pub mod migrate;
+pub mod meta_lock;
