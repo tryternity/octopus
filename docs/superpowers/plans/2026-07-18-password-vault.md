@@ -6797,7 +6797,7 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 | # | 严重度 | 不修原因 |
 |---|---|---|
 | #4 vault_meta 非原子 RMW | 🟡 中 | 实际并发概率极低（单进程桌面 app，需双 modal 同时操作）；记入 spec "已知工程折衷" |
-| #7 TOTP 拒绝短 secret + 硬编码 | 🟡 中 | 涉及 totp-rs features + UI 改动，单独迭代（follow-up） |
+| #7 TOTP 拒绝短 secret + 硬编码 | ✅ 已修（2026-07-19 follow-up） | 启用 otpauth feature + new_unchecked / from_url_unchecked 放宽 80bit 限制 + from_input 智能分发 otpauth:// URL / 裸 Base32 |
 | #9 K_machine 派生 file_key 弱 | 🟡 中 | 已知工程折衷（adhoc 签名 keychain 失效）；spec §2.5 补威胁模型说明 |
 | #10 bundle_id AppleScript 注入 | 🟢 低 | 当前是 dead code，无调用点；加防御性注释，未来启用时强制白名单 |
 | 次-1 心跳以 focus 为基准 | 🟡 中 | 设计选择（窗口聚焦即续命），补注释说明 |

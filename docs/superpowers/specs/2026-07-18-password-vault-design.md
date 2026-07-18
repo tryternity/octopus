@@ -924,32 +924,53 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 
 ### 5.1 TOTP（RFC 6238）
 
+支持两种输入（2026-07-19 修复 #7）：
+
 ```rust
 // crates/vault/src/totp.rs
-use totp_rs::{Algorithm, TOTP, Secret};
-
-pub struct TotpGenerator { inner: TOTP }
+pub struct TotpGenerator {
+    inner: TOTP,
+    step: u64,  // 秒，按 otpauth period 或默认 30
+}
 
 impl TotpGenerator {
-    pub fn from_base32(secret: &str) -> Result<Self> {
-        let bytes = Secret::Encoded(secret.to_string()).to_bytes()?;
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes)?;
-        Ok(Self { inner: totp })
-    }
+    /// 裸 Base32 secret（默认参数：SHA1/6/30/skew=1）
+    /// 用 new_unchecked 放宽 totp-rs 默认 ≥128bit 限制，支持 RFC 6238 下限的 80bit
+    pub fn from_base32(secret: &str) -> Result<Self>;
 
-    pub fn current(&self) -> String {
-        self.inner.generate_current().unwrap()
-    }
+    /// otpauth:// URL 解析（支持 SHA256/SHA512、digits=8、period=60 变体）
+    /// GitHub / 银行 / Authy 导出等场景必需
+    pub fn from_otpauth_url(url: &str) -> Result<Self>;
 
-    pub fn seconds_remaining(&self) -> u64 {
-        30 - (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 30)
-    }
+    /// 智能分发：otpauth:// 开头 → URL 解析；否则 → 裸 Base32
+    /// 前端用户粘贴任一格式都能识别
+    pub fn from_input(input: &str) -> Result<Self>;
+
+    pub fn current(&self) -> Result<String>;
+    pub fn seconds_remaining(&self) -> u64;  // 按 self.step 算
 }
 ```
 
-**算法固定**：HMAC-SHA1, 30s, 6 位, ±1 步漂移（totp-rs 默认 skew=1）。
+**Cargo 配置**：`totp-rs = { version = "5", default-features = false, features = ["otpauth"] }`
+- otpauth feature 启用 `TOTP::from_url_unchecked` 解析 otpauth:// URL
+- `new_unchecked` / `from_url_unchecked` 跳过 totp-rs 强制 ≥128bit 校验
 
-**输入格式**：cipher 的 `data.totp` 存 Base32 secret（如 `JBSWY3DPEHPK3PXP`），不存完整 `otpauth://` URL。导入 Bitwarden JSON 时提取 secret 部分。
+**输入格式**：cipher 的 `data.totp` 可存两种格式：
+- 裸 Base32 secret（如 `JBSWY3DPEHPK3PXP`，80bit 标准 secret）
+- 完整 `otpauth://` URL（`otpauth://totp/?secret=...&algorithm=SHA256&digits=8&period=60`）
+
+前端 CipherEditor totp 字段 placeholder 显示 `JBSWY3DPEHPK3PXP 或 otpauth://totp/...`，
+label 改为 `TOTP（Base32 或 otpauth URL）`。
+
+**后端调用**：`vault_generate_totp` 命令统一走 `TotpGenerator::from_input(totp_secret)`，
+无需 cipher 知道存的是哪种格式。
+
+> **踩坑警示**：首发版 `default-features = false` 关闭 otpauth，且用 `TOTP::new()` 接受
+> totp-rs 强制的 ≥128bit 限制，拒绝 RFC 6238 下限的 80bit 标准 secret（JBSWY3DPEHPK3PXP
+> 解码后仅 10 字节）。大量服务实际下发 80bit secret（GitHub / Google Authenticator），
+> 用户根本添加不了。测试代码用 32 字符（160bit）的复制版本绕过——注释自承问题。
+
+**算法**：默认 HMAC-SHA1, 30s, 6 位, ±1 步漂移（skew=1）；otpauth URL 解析时按 URL 参数。
 
 **调用时机**：
 - Auto-Type 完密码后：生成 6 位码 → 复制到剪贴板（30s 清空）→ toast 提示

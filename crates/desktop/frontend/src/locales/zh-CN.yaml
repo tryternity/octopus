@@ -99,7 +99,7 @@ settings:
       urlLabel: 网址（每行一个）
       usernameLabel: 用户名
       passwordLabel: 密码
-      totpLabel: TOTP Secret（Base32）
+      totpLabel: TOTP（Base32 或 otpauth URL）
       notesLabel: 备注
       favoriteLabel: 收藏
       save: 保存

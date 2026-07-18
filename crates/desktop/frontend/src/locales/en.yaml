@@ -99,7 +99,7 @@ settings:
       urlLabel: URLs (one per line)
       usernameLabel: Username
       passwordLabel: Password
-      totpLabel: TOTP Secret (Base32)
+      totpLabel: TOTP (Base32 or otpauth URL)
       notesLabel: Notes
       favoriteLabel: Favorite
       save: Save

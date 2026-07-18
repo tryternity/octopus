@@ -552,7 +552,11 @@ pub fn vault_generate_totp(
     let totp_secret = login
         .totp
         .ok_or_else(|| vault_error::serialize(&VaultError::InvalidInput("无 TOTP secret".into())))?;
-    let gen = octopus_vault::totp::TotpGenerator::from_base32(&totp_secret)
+    // from_input 智能分发（修复 #7）：
+    // - otpauth:// 开头 → 解析完整 URL（SHA256/SHA512、digits=8、period=60 等）
+    // - 否则 → 裸 Base32 secret，默认 SHA1/6/30
+    // 两种输入都接受 RFC 6238 下限的 80bit secret（new_unchecked / from_url_unchecked）
+    let gen = octopus_vault::totp::TotpGenerator::from_input(&totp_secret)
         .map_err(vault_error::to_tauri_error)?;
     Ok(TotpResultDto {
         code: gen.current().map_err(vault_error::to_tauri_error)?,
