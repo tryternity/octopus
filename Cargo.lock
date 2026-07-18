@@ -5378,6 +5378,7 @@ dependencies = [
  "octopus-ocr",
  "octopus-search",
  "octopus-translation",
+ "octopus-vault",
  "once_cell",
  "parking_lot",
  "percent-encoding",

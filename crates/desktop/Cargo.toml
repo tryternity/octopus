@@ -100,6 +100,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
 octopus-clipboard = { path = "../clipboard" }
 
+# 密码 vault（AppState + 解锁态管理）
+octopus-vault = { path = "../vault" }
+
 # file:// URI 百分号解码（Linux X11/Wayland 的 text/uri-list 文件路径）
 percent-encoding = "2"
 

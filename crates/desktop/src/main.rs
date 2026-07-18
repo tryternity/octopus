@@ -3,6 +3,10 @@
 mod activation;
 mod action_bar_window;
 mod action_bar_commands;
+// vault（Task 16+）：AppState + Tauri 命令 + 自动填写
+pub mod vault_state;
+pub mod vault_commands;
+pub mod autotype;
 mod overlay_window;
 mod action_hotkey;
 mod agent_adapter;
@@ -701,6 +705,15 @@ pub fn run() {
             let runtime_config: runtime_config::SharedRuntimeConfig =
                 std::sync::Arc::new(parking_lot::RwLock::new(config.clone()));
             app.manage(runtime_config.clone());
+
+            // vault AppState：进程内持有解锁态的 user_vault_key / app_key。
+            // 先 bootstrap_app_key（用 K_machine 尝试解 app_key）再 manage——
+            // 这样从 Tauri State 取到 session 时 app_key 已就位（若本机已初始化）。
+            let vault_session: vault_state::SharedVaultSession = std::sync::Arc::new(
+                parking_lot::RwLock::new(vault_state::VaultSession::default()),
+            );
+            vault_state::bootstrap_app_key(&vault_session);
+            app.manage(vault_session);
 
             // 3. Create Coordinator
             let coordinator = Coordinator::new(
