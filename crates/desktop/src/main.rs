@@ -7,6 +7,7 @@ mod action_bar_commands;
 pub mod vault_state;
 pub mod vault_commands;
 pub mod vault_secret_access;
+pub mod vault_error;
 pub mod autotype;
 mod overlay_window;
 mod action_hotkey;

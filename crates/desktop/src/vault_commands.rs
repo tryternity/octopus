@@ -16,6 +16,7 @@ use octopus_vault::importer::ImportReport;
 use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, RepromptType};
 
 use crate::autotype;
+use crate::vault_error::{self, VaultError};
 use crate::vault_state::SharedVaultSession;
 
 // === DTO ===
@@ -82,16 +83,19 @@ pub struct TotpResultDto {
 
 // === AppState key 取用辅助 ===
 
-/// 从 AppState 取 user_vault_key（必须解锁），否则返回 Err。
-fn require_user_vault_key(state: &State<'_, SharedVaultSession>) -> Result<Arc<DerivedKey>, String> {
+/// 从 AppState 取 user_vault_key（必须解锁），否则返回 [`VaultError::Locked`]。
+///
+/// 直接返回精确的 `VaultError`（而非走字符串启发式 `classify`）——这是命令层
+/// 已知语义的最精确分类点。调用方用 `.map_err(|e| vault_error::serialize(&e))?`
+/// 转 Tauri 的 `Result<_, String>`。
+fn require_user_vault_key(
+    state: &State<'_, SharedVaultSession>,
+) -> Result<Arc<DerivedKey>, VaultError> {
     let session = state.read();
     if !session.is_user_vault_unlocked() {
-        return Err("vault 未解锁".into());
+        return Err(VaultError::Locked);
     }
-    session
-        .user_vault_key
-        .clone()
-        .ok_or_else(|| "vault 未解锁".to_string())
+    session.user_vault_key.clone().ok_or(VaultError::Locked)
 }
 
 /// 从 AppState 取 app_key（启动时已 bootstrap，不应为空）。
@@ -102,13 +106,14 @@ fn require_user_vault_key(state: &State<'_, SharedVaultSession>) -> Result<Arc<D
 /// 提供裸 `SharedVaultSession` 版本（非命令层调用点：`vault_secret_access`、
 /// 未来其它内部消费方）。Tauri 命令层若需用，从 `state.inner()` 取 `&SharedVaultSession`
 /// 传入即可。
+///
+/// 返回 [`VaultError::KeychainUnavailable`] 表达「app_key 不可用」——通常意味着
+/// bootstrap 失败（keychain 拒访）或 vault 未初始化。
 pub(crate) fn require_app_key_from_session(
     session: &SharedVaultSession,
-) -> Result<Arc<DerivedKey>, String> {
+) -> Result<Arc<DerivedKey>, VaultError> {
     let s = session.read();
-    s.app_key
-        .clone()
-        .ok_or_else(|| "vault app_key 不可用".to_string())
+    s.app_key.clone().ok_or(VaultError::KeychainUnavailable)
 }
 
 // === DTO ↔ Domain 转换 ===
@@ -158,8 +163,8 @@ fn cipher_to_dto(c: Cipher) -> CipherDto {
     }
 }
 
-fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, String> {
-    let login = dto.login.ok_or_else(|| "login 必填".to_string())?;
+fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, VaultError> {
+    let login = dto.login.ok_or_else(|| VaultError::InvalidInput("login 必填".into()))?;
     Ok(CipherInput {
         folder_id: dto.folder_id,
         favorite: dto.favorite,
@@ -203,7 +208,7 @@ fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, String> {
 
 #[tauri::command]
 pub fn vault_status(state: State<'_, SharedVaultSession>) -> Result<VaultStatusDto, String> {
-    let initialized = octopus_vault::unlock::is_initialized().map_err(|e| e.to_string())?;
+    let initialized = octopus_vault::unlock::is_initialized().map_err(vault_error::to_tauri_error)?;
     let user_vault_unlocked = state.read().is_user_vault_unlocked();
     Ok(VaultStatusDto {
         initialized,
@@ -213,7 +218,8 @@ pub fn vault_status(state: State<'_, SharedVaultSession>) -> Result<VaultStatusD
 
 #[tauri::command]
 pub fn vault_setup(state: State<'_, SharedVaultSession>, password: String) -> Result<(), String> {
-    let keys = octopus_vault::unlock::setup_vault(&password).map_err(|e| e.to_string())?;
+    let keys =
+        octopus_vault::unlock::setup_vault(&password).map_err(vault_error::to_tauri_error)?;
     let mut session = state.write();
     session.set_user_vault_unlocked(Arc::new(keys.user_vault_key));
     session.app_key = Some(Arc::new(keys.app_key));
@@ -222,8 +228,8 @@ pub fn vault_setup(state: State<'_, SharedVaultSession>, password: String) -> Re
 
 #[tauri::command]
 pub fn vault_unlock(state: State<'_, SharedVaultSession>, password: String) -> Result<(), String> {
-    let keys =
-        octopus_vault::unlock::unlock_with_master_password(&password).map_err(|e| e.to_string())?;
+    let keys = octopus_vault::unlock::unlock_with_master_password(&password)
+        .map_err(vault_error::to_tauri_error)?;
     let mut session = state.write();
     session.set_user_vault_unlocked(Arc::new(keys.user_vault_key));
     session.app_key = Some(Arc::new(keys.app_key));
@@ -243,7 +249,7 @@ pub fn vault_change_password(
     new_password: String,
 ) -> Result<(), String> {
     let keys = octopus_vault::unlock::change_master_password(&old_password, &new_password)
-        .map_err(|e| e.to_string())?;
+        .map_err(vault_error::to_tauri_error)?;
     // 改密码成功后用返回的 keys 刷新 session（即使之前是 locked 也 re-unlock）。
     // user_vault_key / app_key 在改密码流程中不变（INV-7），但显式刷一下让
     // 「先 lock 再改密码」也能用——跟 setup_vault / vault_unlock 一致。
@@ -256,8 +262,9 @@ pub fn vault_change_password(
 
 #[tauri::command]
 pub fn vault_list_ciphers(state: State<'_, SharedVaultSession>) -> Result<Vec<CipherDto>, String> {
-    let key = require_user_vault_key(&state)?;
-    let ciphers = octopus_vault::storage::list_ciphers(&key).map_err(|e| e.to_string())?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    let ciphers =
+        octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
     Ok(ciphers.into_iter().map(cipher_to_dto).collect())
 }
 
@@ -266,10 +273,10 @@ pub fn vault_get_cipher(
     state: State<'_, SharedVaultSession>,
     id: i64,
 ) -> Result<CipherDto, String> {
-    let key = require_user_vault_key(&state)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(id, &key)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("cipher {} 不存在", id))?;
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(id)))?;
     Ok(cipher_to_dto(cipher))
 }
 
@@ -278,9 +285,9 @@ pub fn vault_create_cipher(
     state: State<'_, SharedVaultSession>,
     input: CipherInputDto,
 ) -> Result<i64, String> {
-    let key = require_user_vault_key(&state)?;
-    let domain = dto_to_input(input)?;
-    octopus_vault::storage::create_cipher(&domain, &key).map_err(|e| e.to_string())
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    let domain = dto_to_input(input).map_err(|e| vault_error::serialize(&e))?;
+    octopus_vault::storage::create_cipher(&domain, &key).map_err(vault_error::to_tauri_error)
 }
 
 /// password_history 上限（避免无界增长）。FIFO 截断：丢最老的。
@@ -350,18 +357,19 @@ pub fn vault_update_cipher(
     id: i64,
     input: CipherInputDto,
 ) -> Result<(), String> {
-    let key = require_user_vault_key(&state)?;
-    let domain = dto_to_input(input)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    let domain = dto_to_input(input).map_err(|e| vault_error::serialize(&e))?;
 
     // MVP：前端 CipherInputDto 不管理 password_history，编辑 cipher 时
     // 直接保留数据库中已有的历史，避免每次保存都把 history 清成 []。
     // （final-review I3）+ password 变化时自动追加条目（follow-up #2）
-    let domain = match octopus_vault::storage::load_cipher(id, &key).map_err(|e| e.to_string())? {
-        Some(existing) => merge_password_history(domain, &existing),
-        None => domain,
-    };
+    let domain =
+        match octopus_vault::storage::load_cipher(id, &key).map_err(vault_error::to_tauri_error)? {
+            Some(existing) => merge_password_history(domain, &existing),
+            None => domain,
+        };
 
-    octopus_vault::storage::save_cipher(id, &domain, &key).map_err(|e| e.to_string())
+    octopus_vault::storage::save_cipher(id, &domain, &key).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]
@@ -372,15 +380,15 @@ pub fn vault_delete_cipher(
 ) -> Result<(), String> {
     // permanent=true 不需要 user_vault_key（只是删行）
     if permanent {
-        octopus_vault::storage::permanent_delete(id).map_err(|e| e.to_string())
+        octopus_vault::storage::permanent_delete(id).map_err(vault_error::to_tauri_error)
     } else {
-        octopus_vault::storage::soft_delete(id).map_err(|e| e.to_string())
+        octopus_vault::storage::soft_delete(id).map_err(vault_error::to_tauri_error)
     }
 }
 
 #[tauri::command]
 pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: i64) -> Result<(), String> {
-    octopus_vault::storage::restore(id).map_err(|e| e.to_string())
+    octopus_vault::storage::restore(id).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]
@@ -393,29 +401,32 @@ pub fn vault_generate_totp(
     state: State<'_, SharedVaultSession>,
     cipher_id: i64,
 ) -> Result<TotpResultDto, String> {
-    let key = require_user_vault_key(&state)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "cipher 不存在".to_string())?;
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
     // CipherData 当前仅 Login 单变体；预留 unreachable arm 以便未来扩展。
     #[allow(unreachable_patterns)]
     let login = match cipher.data {
         CipherData::Login(l) => l,
-        _ => return Err("非 Login 类型".into()),
+        _ => return Err(vault_error::serialize(&VaultError::InvalidInput("非 Login 类型".into()))),
     };
-    let totp_secret = login.totp.ok_or_else(|| "无 TOTP secret".to_string())?;
+    let totp_secret = login
+        .totp
+        .ok_or_else(|| vault_error::serialize(&VaultError::InvalidInput("无 TOTP secret".into())))?;
     let gen = octopus_vault::totp::TotpGenerator::from_base32(&totp_secret)
-        .map_err(|e| e.to_string())?;
+        .map_err(vault_error::to_tauri_error)?;
     Ok(TotpResultDto {
-        code: gen.current().map_err(|e| e.to_string())?,
+        code: gen.current().map_err(vault_error::to_tauri_error)?,
         seconds_remaining: gen.seconds_remaining(),
     })
 }
 
 #[tauri::command]
 pub fn vault_health_report(state: State<'_, SharedVaultSession>) -> Result<HealthReport, String> {
-    let key = require_user_vault_key(&state)?;
-    let ciphers = octopus_vault::storage::list_ciphers(&key).map_err(|e| e.to_string())?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    let ciphers =
+        octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
     Ok(octopus_vault::health::generate_report(&ciphers))
 }
 
@@ -424,15 +435,19 @@ pub fn vault_import_bitwarden(
     state: State<'_, SharedVaultSession>,
     json: String,
 ) -> Result<ImportReport, String> {
-    let key = require_user_vault_key(&state)?;
-    octopus_vault::importer::import_bitwarden_json(&json, &key).map_err(|e| e.to_string())
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    // 内部 anyhow 错误可能含 JSON parse 详情 / SQL 片段——统一映射到 ImportFailed
+    // 的稳定 message，不透传内部细节。
+    octopus_vault::importer::import_bitwarden_json(&json, &key)
+        .map_err(|_| vault_error::serialize(&VaultError::ImportFailed(String::new())))
 }
 
 #[tauri::command]
 pub fn vault_export(state: State<'_, SharedVaultSession>) -> Result<String, String> {
-    let key = require_user_vault_key(&state)?;
-    let ciphers = octopus_vault::storage::list_ciphers(&key).map_err(|e| e.to_string())?;
-    octopus_vault::importer::export_vault_json(&ciphers).map_err(|e| e.to_string())
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    let ciphers =
+        octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    octopus_vault::importer::export_vault_json(&ciphers).map_err(vault_error::to_tauri_error)
 }
 
 // === Auto-Type 命令（Task 19） ===
@@ -455,12 +470,12 @@ pub fn vault_autotype(
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
 ) -> Result<AutoTypeResultDto, String> {
-    let key = require_user_vault_key(&state)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
 
     // 1. 取 cipher
     let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "cipher 不存在".to_string())?;
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
 
     // 2. reprompt 确认（如有）—— 由前端在调本命令前弹密码框；本命令不直接处理
 
@@ -472,7 +487,11 @@ pub fn vault_autotype(
             l.username.clone().unwrap_or_default(),
             l.password.clone().unwrap_or_default(),
         ),
-        _ => return Err("非 Login 类型".into()),
+        _ => {
+            return Err(vault_error::serialize(&VaultError::InvalidInput(
+                "非 Login 类型".into(),
+            )))
+        }
     };
 
     // 4. Auto-Type
@@ -482,13 +501,14 @@ pub fn vault_autotype(
             message: "已填充".into(),
             fallback_to_clipboard: false,
         }),
-        Err(e) => {
+        Err(_) => {
             // fallback：复制密码到剪贴板（必须先 suppress_next 防 watcher 入库）
+            // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
             let _ = autotype::copy_concealed(&password);
             Ok(AutoTypeResultDto {
                 filled: false,
-                message: format!("Auto-Type 失败，已复制密码到剪贴板（30s 清空）: {}", e),
+                message: VaultError::AutoTypeFailed.user_message().to_string(),
                 fallback_to_clipboard: true,
             })
         }
@@ -502,16 +522,16 @@ pub fn vault_autotype(
 pub fn vault_detect_and_match(
     state: State<'_, SharedVaultSession>,
 ) -> Result<Vec<CipherDto>, String> {
-    let key = require_user_vault_key(&state)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
 
     let url_str = autotype::current_browser_url()
-        .map_err(|e| e.to_string())?
+        .map_err(vault_error::to_tauri_error)?
         .unwrap_or_default();
     if url_str.is_empty() {
         // URL 检测失败 → 返回 last-N-used（按 updated_at DESC）让用户手动选
         // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
         return octopus_vault::storage::list_ciphers(&key)
-            .map_err(|e| e.to_string())
+            .map_err(vault_error::to_tauri_error)
             .map(|cs| {
                 let mut filtered: Vec<Cipher> = cs
                     .into_iter()
@@ -527,8 +547,9 @@ pub fn vault_detect_and_match(
             });
     }
 
-    let url = url::Url::parse(&url_str).map_err(|e| format!("URL 解析失败: {}", e))?;
-    let ciphers = octopus_vault::storage::list_ciphers(&key).map_err(|e| e.to_string())?;
+    let url = url::Url::parse(&url_str).map_err(|e| vault_error::to_tauri_error(anyhow::anyhow!(e)))?;
+    let ciphers =
+        octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
 
     // 默认等价域名（MVP）
     let equivalent = octopus_vault::matcher::psl::default_equivalent_domains();
@@ -554,21 +575,23 @@ pub fn vault_copy_password(
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
 ) -> Result<(), String> {
-    let key = require_user_vault_key(&state)?;
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "cipher 不存在".to_string())?;
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
 
     // CipherData 当前仅 Login 单变体；保留 unreachable arm 以便未来扩展。
     #[allow(irrefutable_let_patterns)]
     if let CipherData::Login(l) = cipher.data {
         if let Some(pwd) = l.password {
             clipboard.suppress_next(); // BEFORE copy_concealed
-            autotype::copy_concealed(&pwd).map_err(|e| e.to_string())?;
+            autotype::copy_concealed(&pwd).map_err(vault_error::to_tauri_error)?;
             return Ok(());
         }
     }
-    Err("无密码".into())
+    Err(vault_error::serialize(&VaultError::InvalidInput(
+        "无密码".into(),
+    )))
 }
 
 // === 全局热键注册（Task 19） ===

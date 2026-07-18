@@ -66,15 +66,20 @@ pub fn try_decrypt_secret(
     }
 
     // 加密格式但 app_key 不可用 → 报错（让调用方提示用户解锁）
-    // 复用 vault_commands::require_app_key_from_session 保持单一 chokepoint（follow-up #7）
-    let app_key: Arc<DerivedKey> =
-        crate::vault_commands::require_app_key_from_session(session)?;
+    // 复用 vault_commands::require_app_key_from_session 保持单一 chokepoint（follow-up #7）。
+    // 该函数现在返回 VaultError（user-safe message）；这里透传其 JSON 序列化形式
+    // 给调用方（仍是 Result<_, String>，但内容是稳定的 `{ code, message }`）。
+    let app_key: Arc<DerivedKey> = crate::vault_commands::require_app_key_from_session(session)
+        .map_err(|e| crate::vault_error::serialize(&e))?;
 
-    let plaintext = app_key
-        .decrypt(raw)
-        .map_err(|e| format!("secret_key 解密失败: {}", e))?;
-    String::from_utf8(plaintext.to_vec())
-        .map_err(|e| format!("secret_key 解密后非 UTF-8: {}", e))
+    // decrypt 失败属内部细节（nonce mismatch / tag 等）——映射为 InternalError 的
+    // user-safe message，不透传。
+    let plaintext = app_key.decrypt(raw).map_err(|_| {
+        crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+    })?;
+    String::from_utf8(plaintext.to_vec()).map_err(|_| {
+        crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+    })
 }
 
 /// 进程级便捷版：raw 字符串自动用全局 session 解密。
@@ -155,6 +160,9 @@ mod tests {
     }
 
     /// v1: 前缀 + app_key=None（vault 未解锁 / app_key 缺失）→ 返回 Err。
+    ///
+    /// follow-up #9 起：错误信息是 VaultError::KeychainUnavailable 的稳定 JSON
+    /// `{ code: "keychain_unavailable", message: ... }`——不再透传内部细节。
     #[test]
     fn encrypted_without_app_key_errors() {
         let key = make_key(7);
@@ -164,9 +172,10 @@ mod tests {
         let result = try_decrypt_secret(&encrypted, &session);
         assert!(result.is_err(), "vault 已启用但 app_key 不可用应返回 Err");
         let err = result.unwrap_err();
+        // 新契约：JSON 序列化的 VaultError，code=keychain_unavailable
         assert!(
-            err.contains("app_key 不可用") || err.contains("vault"),
-            "错误信息应提示 app_key 不可用 / 解锁 vault，got: {}",
+            err.contains("keychain_unavailable") || err.contains("密钥串"),
+            "错误信息应含 keychain_unavailable 稳定 code / 密钥串 message，got: {}",
             err
         );
     }
