@@ -9,7 +9,8 @@ tonic-build = { version = "0.12", optional = true }
 
 [dependencies]
 # Tauri
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+# devtools: dev build 下 WebView 可 Cmd+I 开 Inspector 调前端；release build 自动剔除
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "devtools"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-store = "2"

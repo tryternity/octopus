@@ -57,9 +57,6 @@ pub fn create_result_window(app: &tauri::AppHandle) {
 
     match builder.build() {
         Ok(window) => {
-            #[cfg(debug_assertions)]
-            window.open_devtools();
-
             // 恢复上次位置（不可见时 fallback 到顶部居中）
             crate::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
                 if let Ok(Some(m)) = w.primary_monitor() {

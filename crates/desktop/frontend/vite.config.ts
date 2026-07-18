@@ -21,7 +21,12 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
   },
   server: {
+    // Tauri dev 模式期望固定端口——devUrl 指向这里，strictPort 避免被占时
+    // vite 静默改用 1421 导致 Tauri 连不上。
     port: 1420,
+    strictPort: true,
+    // 不清屏，保留 cargo run 的 stdout 日志。
+    clearScreen: false,
   },
   test: {
     environment: "jsdom",
