@@ -4,9 +4,12 @@
 
 **Goal:** 为 octopus 引入密码管理功能：加密 vault + 密码生成器 + macOS Auto-Type + TOTP + Bitwarden 导入，并顺手加密现有 `models.secret_key`。
 
-**Architecture:** 新增 `crates/vault/`（纯逻辑库，依赖 infra），暴露加密 / 存储 / 生成器 / 匹配 / 健康检查 / 导入的纯函数 API；`crates/desktop/` 加 `vault_commands.rs` + `autotype/` 模块包装为 Tauri 命令；前端在 Settings 下加 VaultPanel + 独立 PasswordGenerator 浮窗。加密用 Argon2id + HMAC-SHA512 简化 BIP44 派生 + AES-256-GCM；密钥双层（user_vault_key + app_key），app_key 用 K_machine（OS Keychain）和 master_root_key 双密文存储，本机启动无感。
+**Architecture:** 新增 `crates/vault/`（纯逻辑库，依赖 infra），暴露加密 / 存储 / 生成器 / 匹配 / 健康检查 / 导入的纯函数 API；`crates/desktop/` 加 `vault_commands.rs` + `autotype/` 模块包装为 Tauri 命令；前端在 Settings 下加 VaultPanel，**密码生成器内嵌 CipherEditor**（不再有独立浮窗）。加密用 Argon2id + HMAC-SHA512 简化 BIP44 派生 + AES-256-GCM；密钥双层（user_vault_key + app_key），app_key 用 K_machine（**本地加密文件 `~/.octopus/machine-key.enc`**）和 master_root_key 双密文存储，本机启动无感。
 
-**Tech Stack:** Rust（argon2 / aes-gcm / hkdf / hmac / sha2 / zeroize / keyring / publicsuffix / totp-rs / zxcvbn / data-encoding / regex）+ Tauri 2 + React 19 + TypeScript + Tailwind 4 + Radix UI + enigo 0.6（已有）
+**Tech Stack:** Rust（argon2 / aes-gcm / hkdf / hmac / sha2 / zeroize / publicsuffix / totp-rs / zxcvbn / data-encoding / regex / uuid）+ Tauri 2 + React 19 + TypeScript + Tailwind 4 + Radix UI + enigo 0.6（已有）。**不再用 `keyring` crate**（K_machine 改本地加密文件，详见 spec §2.5）。
+
+> **状态**：21 个 Task 全部完成 ✅；实施期 follow-up 修订见末尾「Follow-up Work」节。
+> 同步修订详见 spec 顶部「同步修订」段。
 
 ## Global Constraints
 
@@ -16,16 +19,18 @@
 - **派生 label**：固定为 `b"octopus/v1/user-vault"` / `b"octopus/v1/app-secrets"` / `b"octopus/v1/sync"` / `b"octopus/v1/send"`
 - **KDF salt**：32B 随机，存 `vault_meta.kdf_salt`，**不用 email**
 - **密文格式**：所有加密字段统一 `v1:<base64(nonce[12B] || ciphertext || tag[16B])>`
-- **密钥管理**：所有 key 用 `Zeroizing<[u8; 32]>` 包装；master_password / master_root_key 派生完毕立即 zeroize；K_machine 永不落盘明文，只在 OS Keychain
+- **密钥管理**：所有 key 用 `Zeroizing<[u8; 32]>` 包装；master_password / master_root_key 派生完毕立即 zeroize；K_machine 永不落盘明文——存为 `~/.octopus/machine-key.enc`（file_key 由 `HKDF-SHA256(machine_id, USER)` 派生）
 - **schema 升级**：v37 → v38，新增 3 张表（vault_meta / vault_ciphers / vault_folders）；不 ALTER models.secret_key（用 `v1:` 前缀判别）
 - **不兼容旧 schema / 旧明文 secret_key**：首次 init vault 时一次性把现有 is_local=0 的明文 API Key 用 app_key 加密回写
-- **错误返回**：Tauri 命令统一 `Result<T, String>` + `.map_err(|e| e.to_string())`；vault crate 内部用 `anyhow::Result`（与项目现有风格一致，**不用 thiserror**，spec 7.2 的 `VaultError` enum 调整为 anyhow 风格）
+- **错误返回**：Tauri 命令统一 `Result<T, String>`，String 为 `VaultError` 序列化的 JSON `{code, message}`（spec §7.2）；vault crate 内部用 `anyhow::Result`（与项目现有风格一致，**不用 thiserror**）
 - **TOTP**：HMAC-SHA1, 30s, 6 位, ±1 步漂移
 - **Auto-Type**：默认 `press_enter=false`；模拟键盘前必须 100ms 焦点等待
 - **剪贴板**：用现有 `ClipboardHandle::write_text`（自动 suppress_next 跳过自身监听器）+ 单独写 `org.nspasteboard.ConcealedType` 给第三方工具；30s 自动清空
 - **CSPRNG**：所有随机性必须来自 `rand::rngs::OsRng`
 - **平台范围**：MVP 仅 macOS（AppleScript + enigo CGEvent）；Windows/Linux 编译通过但运行时返回 `Err("not implemented")`
 - **跨 crate 依赖方向**：infra ← vault ← desktop；**vault 不依赖 tauri / tokio**
+- **feature gate**：`octopus-desktop` 加 `vault` cargo feature（默认开），关掉后 vault 模块整体 cfg 掉（详见 spec 附录 E）
+- **锁定超时**：可配置（`AppConfig.vault_lock_timeout_secs`，默认 180s/3min），以 `last_active_at` 为基准 + 前端 30s 心跳（spec §2.7）
 
 ---
 
@@ -48,17 +53,18 @@
 | `src/storage/mod.rs` | VaultStore 类型 + transaction 包装 |
 | `src/storage/meta.rs` | vault_meta CRUD（含 KDF 参数、双密文 app_key） |
 | `src/storage/cipher.rs` | vault_ciphers CRUD（密文层） |
-| `src/storage/folder.rs` | vault_folders CRUD（MVP 不在 UI 用，但提供 API） |
+| `src/storage/folder.rs` | vault_folders CRUD（folder 名用 user_vault_key 加密） |
 | `src/types.rs` | Cipher / CipherData / LoginData / LoginUri / MatchType / Field / CipherInput |
 | `src/unlock.rs` | 解锁态管理：K_machine 双密文、5 大流程 |
-| `src/keychain.rs` | K_machine 在 OS Keychain 的存取（keyring crate 包装） |
-| `src/generator/mod.rs` | GeneratorConfig enum + dispatch |
+| `src/keychain.rs` | K_machine 在本地加密文件 `~/.octopus/machine-key.enc` 的存取（file_key 由 HKDF-SHA256 派生） |
+| `src/migrate.rs` | 一次性迁移 models.secret_key（init vault 时触发） |
+| `src/generator/mod.rs` | GeneratorConfig enum + dispatch（返回 Result） |
 | `src/generator/random.rs` | Random 模式（保证字符类型至少 1 次） |
 | `src/generator/passphrase_en.rs` | EFF 7776 词表 |
-| `src/generator/passphrase_zh.rs` | 中文 4096 双字词表 |
+| `src/generator/passphrase_zh.rs` | 中文 4096 双字词表（jieba 词频） |
 | `src/generator/pin.rs` | PIN 模式 |
 | `src/generator/eff_wordlist.rs` | include_str! EFF 词表 |
-| `src/generator/zh_wordlist_4096.rs` | include_str! 中文词表 |
+| `src/generator/zh_wordlist_4096.rs` | jieba 词频 TOP 4096 |
 | `src/totp.rs` | RFC 6238 TOTP 生成 |
 | `src/matcher/mod.rs` | find_matching_ciphers + 5 种策略 |
 | `src/matcher/psl.rs` | eTLD+1 提取 + 默认等价域名 |
@@ -69,74 +75,81 @@
 | `src/importer/bitwarden.rs` | Bitwarden unencrypted JSON 导入 |
 | `src/importer/exporter.rs` | 导出 Bitwarden JSON |
 
-**crates/desktop/src/**（已有 crate，新增模块）
+**crates/desktop/src/**（已有 crate，新增模块，全部 `#[cfg(feature = "vault")]` 门控）
 
 | 文件 | 职责 |
 |---|---|
-| `vault_commands.rs` | Tauri 命令（setup/unlock/lock/CRUD/autotype/totp/generate/health/import/export） |
-| `vault_state.rs` | AppState 扩展（`Arc<RwLock<VaultSession>>`） |
+| `vault_commands.rs` | Tauri 命令（setup/unlock/lock/heartbeat/lock_timeout/CRUD/folder CRUD/autotype/totp/generate/health/import/export） |
+| `vault_state.rs` | AppState 扩展（`SharedVaultSession = Arc<RwLock<VaultSession>>`，含 last_active_at） |
+| `vault_error.rs` | VaultError enum + classify(anyhow) + JSON 序列化 |
+| `vault_secret_access.rs` | secret_key 解密 chokepoint（**总是编译**，feature off 退化为 raw 返回） |
 | `autotype/mod.rs` | AutoType trait + dispatch |
 | `autotype/macos.rs` | macOS 实现（enigo + AppleScript） |
 | `autotype/url_detect.rs` | 6 浏览器 AppleScript URL 检测 |
 | `autotype/clipboard.rs` | concealed 剪贴板写入（30s 自动清空） |
 
-**crates/desktop/frontend/src/pages/**（已有，新增）
+**crates/desktop/frontend/src/pages/Settings/Vault/**（已有，新增）
 
 | 文件 | 职责 |
 |---|---|
-| `Settings/VaultPanel.tsx` | vault 主面板（列表 + 编辑 + 健康报告 tab） |
-| `Settings/Vault/CipherEditor.tsx` | cipher 新建/编辑表单 |
-| `Settings/Vault/UnlockDialog.tsx` | 解锁弹窗 |
-| `Settings/Vault/SetupWizard.tsx` | 首次初始化向导 |
-| `Settings/Vault/HealthReport.tsx` | 健康报告 |
-| `Settings/Vault/ImportExport.tsx` | 导入导出 |
-| `PasswordGenerator/index.tsx` | 独立浮窗（全局热键唤起） |
+| `VaultPanel.tsx` | vault 主面板（含 folder 侧边栏 + lock timeout 设置 + 30s 心跳） |
+| `Vault/CipherEditor.tsx` | cipher 新建/编辑表单（含内嵌生成器按钮 + folder dropdown） |
+| `Vault/UnlockDialog.tsx` | 解锁弹窗 |
+| `Vault/SetupWizard.tsx` | 首次初始化向导（12 位 + 4 类校验） |
+| `Vault/HealthReport.tsx` | 健康报告 |
+| `Vault/ImportExport.tsx` | 导入导出 |
+| `Vault/FolderSidebar.tsx` | folder 侧边栏（All / Favorites / Folders / Trash） |
+| `Vault/FolderPromptDialog.tsx` | 新建/重命名 folder 弹窗 |
+| `Vault/buildConfig.ts` + `.test.ts` | 生成器配置（前端 clamp 输入到合法范围） |
+| `Vault/validateMasterPassword.ts` + `.test.ts` | 主密码强度校验（12 位 + 4 类） |
+| `Vault/classifyError.ts` | VaultError JSON 解析 |
+
+> **已废弃**：`pages/PasswordGenerator/index.tsx` 独立浮窗（生成器内嵌 CipherEditor）。
 
 ### 修改文件
 
 | 文件 | 改动 |
 |---|---|
 | `Cargo.toml` | workspace.members 加 `"crates/vault"` |
-| `crates/desktop/Cargo.toml` | 加 `octopus-vault = { path = "../vault" }` |
+| `crates/desktop/Cargo.toml` | 加 `octopus-vault = { path = "../vault", optional = true }` + `url = { optional = true }` + `[features] vault = ["dep:octopus-vault", "dep:url"]`（默认开） |
 | `crates/infra/src/db.sql` | 新增 3 张 vault 表（末尾追加） |
-| `crates/infra/src/db.rs` | init_schema 加 `if v < 38` 段（仿 v36 模式）；加 vault struct + CRUD |
-| `crates/desktop/src/main.rs` | invoke_handler! 加 vault_commands；setup 加 vault_state；register vault shortcuts |
-| `crates/desktop/src/lib.rs`（或 main.rs） | `pub mod vault_commands; pub mod vault_state; pub mod autotype;` |
-| `crates/desktop/capabilities/default.json` | windows 数组加 `"password_generator_window"` |
-| `crates/desktop/frontend/src/App.tsx` | switch 加 `password_generator_window` case |
-| `crates/desktop/frontend/src/pages/Settings/index.tsx` | NAV_ITEMS 加 vault + PageName 类型扩展 |
+| `crates/infra/src/db.rs` | init_schema 加 `if v < 38` 段（仿 v36 模式）；加 vault struct + CRUD；加 `set_test_db` thread_local override |
+| `crates/desktop/src/main.rs` | invoke_handler! 加 vault_commands（cfg gate）+ `feature_flags::is_vault_enabled`；setup 加 vault_state；register vault autotype shortcut（仅 Cmd+Shift+L） |
+| `crates/desktop/src/lib.rs`（或 main.rs） | `#[cfg(feature="vault")] pub mod vault_commands / vault_state / vault_error / autotype; pub mod vault_secret_access;` |
+| `crates/desktop/capabilities/default.json` | windows 数组加 `"vault_picker_window"` |
+| `crates/desktop/frontend/src/App.tsx` + `pages/Settings/index.tsx` | 条件渲染 vault UI（基于 `is_vault_enabled` 探针） |
 | `crates/desktop/frontend/src/locales/zh-CN.yaml` / `en.yaml` | 加 `settings.nav.vault` + `settings.vault.*` keys |
-| `crates/infra/src/config.rs` | 加 `vault_autotype_shortcut` + `vault_generator_shortcut`（默认 `CmdOrCtrl+Shift+L` / `CmdOrCtrl+Shift+G`） |
+| `crates/infra/src/config.rs` | 加 `vault_autotype_shortcut`（默认 `CmdOrCtrl+Shift+L`）+ `vault_generator_shortcut`（已废弃，保留兼容旧 DB）+ `vault_lock_timeout_secs`（默认 180） |
 
 ---
 
-## Task 概览（21 个任务）
+## Task 概览（21 个任务 + Follow-up Work）
 
-按依赖序：
+按依赖序（**全部完成 ✅**，commit 见末尾 Follow-up Work）：
 
-| # | Task | 依赖 |
+| # | Task | 状态 |
 |---|---|---|
-| 1 | vault crate 骨架 + workspace 调整 | — |
-| 2 | crypto: kdf.rs（Argon2id） | 1 |
-| 3 | crypto: hierarchy.rs（HMAC-SHA512 child） | 1 |
-| 4 | crypto: symmetric.rs（AES-256-GCM + v1: 格式） | 1 |
-| 5 | infra schema v38 + struct + CRUD | — |
-| 6 | vault types.rs（Cipher / LoginData / MatchType 等） | 1 |
-| 7 | vault storage: meta.rs + cipher.rs + folder.rs | 5, 6 |
-| 8 | vault keychain.rs（K_machine 存取） | 1 |
-| 9 | vault unlock.rs（5 大流程 + 双密文） | 2, 3, 4, 7, 8 |
-| 10 | vault generator: random.rs + pin.rs | 1 |
-| 11 | vault generator: passphrase_en.rs + zh.rs（词表） | 1 |
-| 12 | vault totp.rs | 1 |
-| 13 | vault matcher: 5 种策略 + eTLD+1 | 6 |
-| 14 | vault health: strength + duplicate | 6, 12 |
-| 15 | vault importer: Bitwarden JSON | 6, 7 |
-| 16 | desktop vault_state + AppState 集成 | 9 |
-| 17 | desktop vault_commands: setup/unlock/lock/CRUD/generate/totp/health/import/export | 9-15, 16 |
-| 18 | desktop autotype: url_detect + macos + clipboard | 16, 17 |
-| 19 | desktop vault_commands: autotype 命令 + 全局热键注册 | 17, 18 |
-| 20 | desktop 一次性迁移 models.secret_key | 9, 16 |
-| 21 | 前端 VaultPanel + SetupWizard + UnlockDialog + PasswordGenerator + i18n | 17 |
+| 1 | vault crate 骨架 + workspace 调整 | ✅ |
+| 2 | crypto: kdf.rs（Argon2id） | ✅ |
+| 3 | crypto: hierarchy.rs（HMAC-SHA512 child） | ✅ |
+| 4 | crypto: symmetric.rs（AES-256-GCM + v1: 格式） | ✅ |
+| 5 | infra schema v38 + struct + CRUD | ✅ |
+| 6 | vault types.rs（Cipher / LoginData / MatchType 等） | ✅ |
+| 7 | vault storage: meta.rs + cipher.rs + folder.rs | ✅ |
+| 8 | vault keychain.rs（K_machine 存取）—— 后续改为本地文件 | ✅ |
+| 9 | vault unlock.rs（5 大流程 + 双密文） | ✅ |
+| 10 | vault generator: random.rs + pin.rs | ✅ |
+| 11 | vault generator: passphrase_en.rs + zh.rs（词表） | ✅ |
+| 12 | vault totp.rs | ✅ |
+| 13 | vault matcher: 5 种策略 + eTLD+1 | ✅ |
+| 14 | vault health: strength + duplicate | ✅ |
+| 15 | vault importer: Bitwarden JSON | ✅ |
+| 16 | desktop vault_state + AppState 集成 | ✅ |
+| 17 | desktop vault_commands: setup/unlock/lock/CRUD/generate/totp/health/import/export | ✅ |
+| 18 | desktop autotype: url_detect + macos + clipboard | ✅ |
+| 19 | desktop vault_commands: autotype 命令 + 全局热键注册（仅 Cmd+Shift+L） | ✅ |
+| 20 | desktop 一次性迁移 models.secret_key（+ follow-up #7 chokepoint） | ✅ |
+| 21 | 前端 VaultPanel + SetupWizard + UnlockDialog + CipherEditor 内嵌生成器 + i18n | ✅ |
 
 ---
 
@@ -152,7 +165,7 @@
 **Interfaces:**
 - Produces: 一个可 `cargo build -p octopus-vault` 编译通过的空 crate，`pub mod` 全部声明但暂时为空
 
-- [ ] **Step 1: 在 workspace 根 Cargo.toml 加 member**
+- [x] **Step 1: 在 workspace 根 Cargo.toml 加 member**
 
 打开 `Cargo.toml`，找到第 2 行的 members 数组，在 `"crates/search"` 后追加 `"crates/vault"`：
 
@@ -160,7 +173,7 @@
 members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault"]
 ```
 
-- [ ] **Step 2: 创建 crates/vault/Cargo.toml**
+- [x] **Step 2: 创建 crates/vault/Cargo.toml**
 
 ```toml
 [package]
@@ -204,7 +217,7 @@ parking_lot = { workspace = true }
 regex = "1"
 ```
 
-- [ ] **Step 3: 创建 crates/vault/src/lib.rs（仅声明子模块，全部 mod 暂为空文件）**
+- [x] **Step 3: 创建 crates/vault/src/lib.rs（仅声明子模块，全部 mod 暂为空文件）**
 
 ```rust
 //! octopus-vault：密码 vault 核心库。
@@ -233,7 +246,7 @@ pub mod health;
 pub mod importer;
 ```
 
-- [ ] **Step 4: 创建空的子模块文件**
+- [x] **Step 4: 创建空的子模块文件**
 
 为每个 `pub mod` 创建对应文件，文件内容暂时只有一行注释：
 
@@ -251,12 +264,12 @@ echo "//! 占位" > crates/vault/src/health/mod.rs
 echo "//! 占位" > crates/vault/src/importer/mod.rs
 ```
 
-- [ ] **Step 5: 验证编译通过**
+- [x] **Step 5: 验证编译通过**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error 0 warning（可能有 unused 警告，忽略）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Cargo.toml crates/vault/
@@ -275,7 +288,7 @@ git commit -m "feat(vault): Task 1 - crate 骨架 + workspace 调整"
 - Consumes: `argon2` crate
 - Produces: `pub fn derive_master_root_key(password: &[u8], salt: &[u8], params: &Argon2Params) -> anyhow::Result<DerivedKey>`、`pub struct Argon2Params { pub iterations: u32, pub memory_kib: u32, pub parallelism: u32 }`、`impl Default for Argon2Params`（返回 spec 默认值 t=3, m=65536, p=4）、`pub struct DerivedKey(pub Zeroizing<[u8; 32]>)`
 
-- [ ] **Step 1: 在 crypto/mod.rs 暴露模块 + DerivedKey 类型**
+- [x] **Step 1: 在 crypto/mod.rs 暴露模块 + DerivedKey 类型**
 
 替换 `crates/vault/src/crypto/mod.rs` 内容：
 
@@ -300,7 +313,7 @@ impl DerivedKey {
 }
 ```
 
-- [ ] **Step 2: 写 kdf.rs 测试（先 fail）**
+- [x] **Step 2: 写 kdf.rs 测试（先 fail）**
 
 新建 `crates/vault/src/crypto/kdf.rs`：
 
@@ -415,7 +428,7 @@ use zeroize::Zeroizing;
 
 （与 super::DerivedKey 一起 use）
 
-- [ ] **Step 3: 修正 hierarchy.rs 和 symmetric.rs 占位文件**
+- [x] **Step 3: 修正 hierarchy.rs 和 symmetric.rs 占位文件**
 
 这两个文件 `pub mod` 已被声明但还没实现，先放空内容避免编译失败：
 
@@ -425,7 +438,7 @@ echo "//! 占位：Task 4 填充" > crates/vault/src/crypto/symmetric.rs
 echo "//! 占位：Task 4 填充" > crates/vault/src/crypto/util.rs
 ```
 
-- [ ] **Step 4: 运行测试，验证失败**
+- [x] **Step 4: 运行测试，验证失败**
 
 Run: `cargo test -p octopus-vault --lib crypto::kdf`
 Expected: PASS（5 个测试全过——因为我们直接写了实现 + 测试，按 TDD 应该先 fail 再 pass。**注意**：Task 1 已经把 mod 都声明了，导致 hierarchy / symmetric / util 在 Task 2 阶段必须存在为占位）
@@ -435,7 +448,7 @@ Expected: PASS（5 个测试全过——因为我们直接写了实现 + 测试�
 Run: `cargo test -p octopus-vault --lib crypto::kdf -- --nocapture`
 Expected: `5 passed`，包含 `test_default_params_match_spec / test_kdf_deterministic / test_different_password_different_key / test_different_salt_different_key / test_invalid_salt_length`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/vault/src/crypto/
@@ -453,7 +466,7 @@ git commit -m "feat(vault): Task 2 - Argon2id KDF"
 - Consumes: `crate::crypto::DerivedKey`、`hmac` / `sha2` crate
 - Produces: `impl DerivedKey { pub fn child(&self, label: &[u8]) -> DerivedKey }`、固定常量：`LABEL_USER_VAULT / LABEL_APP_SECRETS / LABEL_SYNC / LABEL_SEND`
 
-- [ ] **Step 1: 写 hierarchy.rs 测试（在文件内）**
+- [x] **Step 1: 写 hierarchy.rs 测试（在文件内）**
 
 替换 `crates/vault/src/crypto/hierarchy.rs`：
 
@@ -546,7 +559,7 @@ mod tests {
 
 注：`crate::zeroize::Zeroizing` 路径——zeroize 是 crate 依赖，需要在 lib.rs 顶部 re-export。Step 2 处理。
 
-- [ ] **Step 2: 在 lib.rs re-export Zeroizing（方便子模块写 `crate::zeroize::Zeroizing`）**
+- [x] **Step 2: 在 lib.rs re-export Zeroizing（方便子模块写 `crate::zeroize::Zeroizing`）**
 
 修改 `crates/vault/src/lib.rs` 顶部加：
 
@@ -556,12 +569,12 @@ pub use zeroize::Zeroizing;
 
 （放在 `pub mod` 声明之前）
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib crypto::hierarchy -- --nocapture`
 Expected: 5 passed
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/vault/src/crypto/hierarchy.rs crates/vault/src/lib.rs
@@ -583,7 +596,7 @@ git commit -m "feat(vault): Task 3 - HMAC-SHA512 child 派生"
   - `pub const CIPHERTEXT_PREFIX: &str = "v1:"`
   - `util::random_bytes(len: usize) -> Vec<u8>`、`util::random_32() -> [u8; 32]`、`util::base64_encode(bytes: &[u8]) -> String`、`util::base64_decode(s: &str) -> Result<Vec<u8>>`
 
-- [ ] **Step 1: 写 util.rs**
+- [x] **Step 1: 写 util.rs**
 
 替换 `crates/vault/src/crypto/util.rs`：
 
@@ -643,7 +656,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 写 symmetric.rs（含测试）**
+- [x] **Step 2: 写 symmetric.rs（含测试）**
 
 替换 `crates/vault/src/crypto/symmetric.rs`：
 
@@ -777,12 +790,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib crypto -- --nocapture`
 Expected: util (3) + symmetric (7) + hierarchy (5) + kdf (5) = 20 passed
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/vault/src/crypto/
@@ -817,7 +830,7 @@ git commit -m "feat(vault): Task 4 - AES-256-GCM 对称加密 + 工具函数"
   - `pub fn list_vault_folders() -> Result<Vec<VaultFolder>>`
   - `pub fn insert_vault_folder(name: &str) -> Result<i64>`
 
-- [ ] **Step 1: db.sql 末尾追加 3 张表**
+- [x] **Step 1: db.sql 末尾追加 3 张表**
 
 打开 `crates/infra/src/db.sql`，跳到文件末尾（行 407 后），追加：
 
@@ -879,7 +892,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 );
 ```
 
-- [ ] **Step 2: init_schema 加 v38 升级段**
+- [x] **Step 2: init_schema 加 v38 升级段**
 
 打开 `crates/infra/src/db.rs`，找到第 436 行 `conn.execute("PRAGMA user_version = 37", [])?;`。
 
@@ -952,7 +965,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 
 (c) 修改全新库分支的 user_version 设置：找到 INIT_SQL 分支末尾的 `PRAGMA user_version = 37`（行 436），改为 `PRAGMA user_version = 38`（因为 INIT_SQL 已包含 vault 表，新库直接到 v38）
 
-- [ ] **Step 3: 写 VaultMeta / VaultCipher / VaultFolder struct**
+- [x] **Step 3: 写 VaultMeta / VaultCipher / VaultFolder struct**
 
 在 `crates/infra/src/db.rs` 文件末尾追加（参考 ActionBarItem 模式，行 1660+）：
 
@@ -1037,7 +1050,7 @@ pub struct VaultCipherInput {
 }
 ```
 
-- [ ] **Step 4: 写 CRUD 函数（仿 ActionBarItem 的双层 API）**
+- [x] **Step 4: 写 CRUD 函数（仿 ActionBarItem 的双层 API）**
 
 继续在文件末尾追加：
 
@@ -1285,12 +1298,12 @@ pub fn insert_vault_folder(name: &str) -> Result<i64> {
 }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo build -p octopus-infra`
 Expected: 0 error 0 warning
 
-- [ ] **Step 6: 写 schema 升级测试（在 db.rs 内联 #[cfg(test)]）**
+- [x] **Step 6: 写 schema 升级测试（在 db.rs 内联 #[cfg(test)]）**
 
 在 `crates/infra/src/db.rs` 文件末尾（或现有 tests mod 内）追加：
 
@@ -1486,17 +1499,17 @@ pub fn list_vault_ciphers() -> Result<Vec<VaultCipher>> {
 }
 ```
 
-- [ ] **Step 7: 运行测试**
+- [x] **Step 7: 运行测试**
 
 Run: `cargo test -p octopus-infra --lib vault_schema_tests -- --nocapture`
 Expected: 3 passed
 
-- [ ] **Step 8: 整 workspace 编译验证**
+- [x] **Step 8: 整 workspace 编译验证**
 
 Run: `cargo build`
 Expected: 0 error
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -1524,7 +1537,7 @@ git commit -m "feat(vault): Task 5 - schema v38 + VaultMeta/VaultCipher/VaultFol
   - `pub struct CipherInput { folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt }`（新建/更新用）
   - 序列化辅助：`Cipher::to_encrypted_strings(&self, key: &DerivedKey) -> Result<CipherEncStrings>`、`CipherEncStrings::decrypt(key) -> Result<Cipher>`
 
-- [ ] **Step 1: 写 types.rs**
+- [x] **Step 1: 写 types.rs**
 
 替换 `crates/vault/src/types.rs`：
 
@@ -1928,12 +1941,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib types::tests -- --nocapture`
 Expected: 4 passed
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/vault/src/types.rs
@@ -1962,7 +1975,7 @@ git commit -m "feat(vault): Task 6 - Cipher/LoginData/MatchType 数据模型"
   - `pub fn save_cipher(id: i64, input: &CipherInput, key: &DerivedKey) -> Result<()>`
   - `pub fn soft_delete(id: i64) -> Result<()>`、`restore(id)`、`permanent_delete(id)`
 
-- [ ] **Step 1: storage/mod.rs**
+- [x] **Step 1: storage/mod.rs**
 
 ```rust
 //! vault 存储层：把 types::Cipher 的加解密与 infra CRUD 结合。
@@ -1976,7 +1989,7 @@ pub use meta::{read_vault_meta, save_vault_meta, update_security_stamp};
 pub use folder::{list_folders, create_folder};
 ```
 
-- [ ] **Step 2: storage/meta.rs**
+- [x] **Step 2: storage/meta.rs**
 
 ```rust
 //! vault_meta 表的薄包装（直接转发 infra）。
@@ -1997,7 +2010,7 @@ pub fn update_security_stamp(stamp: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: storage/cipher.rs**
+- [x] **Step 3: storage/cipher.rs**
 
 ```rust
 //! vault_ciphers 表的高层 API：Cipher 加解密 + CRUD。
@@ -2071,7 +2084,7 @@ pub fn permanent_delete(id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: storage/folder.rs**
+- [x] **Step 4: storage/folder.rs**
 
 ```rust
 //! vault_folders 表的薄包装（MVP UI 不暴露，但提供 API）。
@@ -2090,12 +2103,12 @@ pub fn create_folder(name_encrypted: &str) -> Result<i64> {
 }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error 0 warning
 
-- [ ] **Step 6: 写集成测试（测试 storage 层加解密往返）**
+- [x] **Step 6: 写集成测试（测试 storage 层加解密往返）**
 
 新建 `crates/vault/tests/storage.rs`（集成测试，独立 .rs 文件）：
 
@@ -2196,14 +2209,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 7: 运行 lib 编译**
+- [x] **Step 7: 运行 lib 编译**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error
 
 集成测试 `test_cipher_crud_round_trip_with_real_db` 默认 `#[ignore]`，正常 `cargo test` 不会跑。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/vault/src/storage/
@@ -2212,7 +2225,14 @@ git commit -m "feat(vault): Task 7 - storage 层（meta/cipher/folder）"
 
 ---
 
-## Task 8: vault keychain.rs（K_machine 在 OS Keychain 存取）
+## Task 8: vault keychain.rs（K_machine 存取）
+
+> **⚠️ Follow-up 修订（commit `0def2450`）**：原计划用 OS Keychain（`keyring` crate），
+> 实施时发现 macOS 对 adhoc 签名 binary 写 Keychain 是 session-only（重启即丢），
+> 改为本地加密文件 `~/.octopus/machine-key.enc`，file_key 由
+> `HKDF-SHA256(IOPlatformUUID + USER)` 派生。`keyring` 依赖从 vault/Cargo.toml 移除。
+> **公开 API 名字不变**（`load_or_create_machine_key` 等），但内部实现全改。
+> 下文的 keyring 代码块是历史记录，**实际实现见 `crates/vault/src/keychain.rs`**。
 
 **Files:**
 - Create: `crates/vault/src/keychain.rs`
@@ -2227,7 +2247,7 @@ git commit -m "feat(vault): Task 7 - storage 层（meta/cipher/folder）"
   - `pub fn save_machine_key(key: &[u8; 32]) -> Result<()>`
   - `pub fn delete_machine_key() -> Result<()>`
 
-- [ ] **Step 1: 写 keychain.rs**
+- [x] **Step 1: 写 keychain.rs**
 
 ```rust
 //! K_machine 在 OS Keychain 的存取。
@@ -2322,12 +2342,12 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
 
 把上面整段替换到 load_machine_key 函数。
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error
 
-- [ ] **Step 3: 写测试（需真实 Keychain，CI 默认 ignore）**
+- [x] **Step 3: 写测试（需真实 Keychain，CI 默认 ignore）**
 
 在 keychain.rs 末尾追加：
 
@@ -2365,7 +2385,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/vault/src/keychain.rs
@@ -2391,7 +2411,7 @@ git commit -m "feat(vault): Task 8 - K_machine 在 OS Keychain 存取"
   - `pub fn change_master_password(old: &str, new: &str) -> Result<()>`（流程 E）
   - `pub fn regenerate_security_stamp() -> Result<String>`
 
-- [ ] **Step 1: 写 unlock.rs 完整实现**
+- [x] **Step 1: 写 unlock.rs 完整实现**
 
 ```rust
 //! vault 解锁态管理。
@@ -2669,7 +2689,7 @@ mod tests {
 
 **注意 Step 1 还需要**：在 `crypto/mod.rs` 或 `crypto/hierarchy.rs` 加 `impl DerivedKey { pub fn from_raw(arr: [u8; 32]) -> Self }`。
 
-- [ ] **Step 2: 在 crypto/mod.rs 加 DerivedKey::from_raw**
+- [x] **Step 2: 在 crypto/mod.rs 加 DerivedKey::from_raw**
 
 修改 `crates/vault/src/crypto/mod.rs`，给 `impl DerivedKey` 块加方法：
 
@@ -2686,7 +2706,7 @@ impl DerivedKey {
 }
 ```
 
-- [ ] **Step 3: 在 vault/Cargo.toml 加 uuid 依赖**
+- [x] **Step 3: 在 vault/Cargo.toml 加 uuid 依赖**
 
 修改 `crates/vault/Cargo.toml`，在 `[dependencies]` 加：
 
@@ -2694,12 +2714,12 @@ impl DerivedKey {
 uuid = { version = "1", features = ["v4"] }
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error 0 warning
 
-- [ ] **Step 5: 写集成测试（本地手动运行）**
+- [x] **Step 5: 写集成测试（本地手动运行）**
 
 新建 `crates/vault/tests/unlock.rs`：
 
@@ -2745,7 +2765,7 @@ fn test_full_setup_unlock_cycle() {
 }
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/vault/src/unlock.rs crates/vault/src/crypto/mod.rs crates/vault/Cargo.toml crates/vault/tests/
@@ -2770,7 +2790,7 @@ git commit -m "feat(vault): Task 9 - 5 大解锁流程 + 双密文 K_machine"
   - `pub struct RandomConfig { length: u32, uppercase: bool, lowercase: bool, numbers: bool, symbols: bool, avoid_ambiguous: bool }`
   - `pub struct PinConfig { length: u32 }`
 
-- [ ] **Step 1: generator/mod.rs**
+- [x] **Step 1: generator/mod.rs**
 
 ```rust
 //! 密码生成器：Random / PassphraseEn / PassphraseZh / PIN。
@@ -2899,7 +2919,7 @@ fn default_sep_dash() -> String { "-".into() }
 fn default_sep_empty() -> String { "".into() }
 ```
 
-- [ ] **Step 2: generator/random.rs**
+- [x] **Step 2: generator/random.rs**
 
 ```rust
 //! 随机字符密码：保证每种启用字符类型至少出现 1 次。
@@ -3033,7 +3053,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: generator/pin.rs**
+- [x] **Step 3: generator/pin.rs**
 
 ```rust
 //! 纯数字 PIN。
@@ -3073,7 +3093,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 占位 passphrase 文件（Task 11 实现）**
+- [x] **Step 4: 占位 passphrase 文件（Task 11 实现）**
 
 ```bash
 echo "//! 占位：Task 11 填充" > crates/vault/src/generator/passphrase_en.rs
@@ -3082,12 +3102,12 @@ echo "//! 占位：Task 11 填充" > crates/vault/src/generator/eff_wordlist.rs
 echo "//! 占位：Task 11 填充" > crates/vault/src/generator/zh_wordlist_4096.rs
 ```
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib generator -- --nocapture`
 Expected: random (5) + pin (2) = 7 passed
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/vault/src/generator/
@@ -3106,7 +3126,7 @@ git commit -m "feat(vault): Task 10 - 密码生成器 Random + PIN 模式"
 
 **注意**：EFF 完整词表 7776 词太大，本 Task 用脚本生成完整列表（每个词一行）。中文词表需要外部选词，本 Task 先放 100 词占位（标 TODO 提示后续扩充到 4096）。
 
-- [ ] **Step 1: 用脚本下载/生成 EFF 词表**
+- [x] **Step 1: 用脚本下载/生成 EFF 词表**
 
 EFF 长词表 7776 词（CC BY 3.0）。从 https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt 下载，写脚本提取每行第二个字段（dice_ware_id,word 中的 word）：
 
@@ -3138,7 +3158,7 @@ RUST_EOF
 grep -c '"' crates/vault/src/generator/eff_wordlist.rs  # 应 ~7776
 ```
 
-- [ ] **Step 2: 写 passphrase_en.rs**
+- [x] **Step 2: 写 passphrase_en.rs**
 
 ```rust
 //! 英文 passphrase：EFF 7776 词，可加数字、大写、分隔符。
@@ -3217,7 +3237,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 写 zh_wordlist_4096.rs 占位（100 词，标 TODO 扩到 4096）**
+- [x] **Step 3: 写 zh_wordlist_4096.rs 占位（100 词，标 TODO 扩到 4096）**
 
 ```rust
 //! 中文 passphrase 双字词表（目标 4096 词，12 bit/词）。
@@ -3244,7 +3264,7 @@ pub const ZH_WORDLIST_4096: &[&str] = &[
 ];
 ```
 
-- [ ] **Step 4: 写 passphrase_zh.rs**
+- [x] **Step 4: 写 passphrase_zh.rs**
 
 ```rust
 //! 中文 passphrase：双字词组合，可加数字、符号。
@@ -3324,12 +3344,12 @@ mod tests {
 use rand::Rng;
 ```
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib generator -- --nocapture`
 Expected: random (5) + pin (2) + en (3) + zh (3) = 13 passed（test_wordlist_size_4096_after_completion 标 #[ignore]）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/vault/data/ crates/vault/src/generator/
@@ -3348,7 +3368,7 @@ git commit -m "feat(vault): Task 11 - Passphrase EN (EFF) + ZH (4096 词表占�
   - `pub struct TotpGenerator { inner: totp_rs::TOTP }`（无法构造含具体 secret）
   - `impl TotpGenerator { pub fn from_base32(secret: &str) -> Result<Self>; pub fn current(&self) -> Result<String>; pub fn seconds_remaining(&self) -> u64 }`
 
-- [ ] **Step 1: 写 totp.rs**
+- [x] **Step 1: 写 totp.rs**
 
 ```rust
 //! TOTP（RFC 6238）生成。
@@ -3426,12 +3446,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib totp -- --nocapture`
 Expected: 4 passed
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/vault/src/totp.rs
@@ -3453,7 +3473,7 @@ git commit -m "feat(vault): Task 12 - TOTP 生成（RFC 6238）"
   - `pub fn etld_plus_one(host: &str) -> Option<String>`
   - `pub fn default_equivalent_domains() -> Vec<Vec<String>>`
 
-- [ ] **Step 1: matcher/psl.rs**
+- [x] **Step 1: matcher/psl.rs**
 
 ```rust
 //! eTLD+1 提取（用公共后缀列表 PSL）。
@@ -3553,7 +3573,7 @@ pub fn etld_plus_one(host: &str) -> Option<String> {
 }
 ```
 
-- [ ] **Step 2: matcher/mod.rs**
+- [x] **Step 2: matcher/mod.rs**
 
 ```rust
 //! URL 匹配：5 种策略 + 等价域名。
@@ -3798,7 +3818,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 在 vault/Cargo.toml 加 url crate**
+- [x] **Step 3: 在 vault/Cargo.toml 加 url crate**
 
 修改 `crates/vault/Cargo.toml`，加：
 
@@ -3806,12 +3826,12 @@ mod tests {
 url = "2"
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib matcher -- --nocapture`
 Expected: psl (3) + mod (10) = 13 passed
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/vault/Cargo.toml crates/vault/src/matcher/
@@ -3837,7 +3857,7 @@ git commit -m "feat(vault): Task 13 - URL 匹配（5 种策略 + 简化 eTLD+1�
   - `pub struct HealthReport { weak_count: usize, duplicate_groups: usize, duplicate_cipher_count: usize, total_logins: usize, average_score: f64 }`
   - `pub fn generate_report(ciphers: &[Cipher]) -> HealthReport`
 
-- [ ] **Step 1: health/strength.rs**
+- [x] **Step 1: health/strength.rs**
 
 ```rust
 //! zxcvbn 密码强度评估。
@@ -3939,7 +3959,7 @@ pub fn evaluate(password: &str) -> PasswordStrength {
 }
 ```
 
-- [ ] **Step 2: health/duplicate.rs**
+- [x] **Step 2: health/duplicate.rs**
 
 ```rust
 //! 重复密码检测（内存 SHA-256，不持久化 hash）。
@@ -4060,7 +4080,7 @@ mod tests {
 
 **注意**：`data-encoding` 已在 Cargo.toml，但默认 features 只包含 BASE64。需要确认 `HEXLOWER` 可用——`data-encoding 2.x` 默认包含 HEXLOWER，OK。
 
-- [ ] **Step 3: health/mod.rs**
+- [x] **Step 3: health/mod.rs**
 
 ```rust
 //! 健康报告：弱密码 + 重复密码汇总。
@@ -4178,16 +4198,16 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 在 vault/Cargo.toml 加 sha2**
+- [x] **Step 4: 在 vault/Cargo.toml 加 sha2**
 
 修改 Cargo.toml：`sha2 = "0.10"` 已经存在（Task 1 已加），无需改。
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib health -- --nocapture`
 Expected: strength (4) + duplicate (4) + mod (2) = 10 passed
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/vault/src/health/
@@ -4210,7 +4230,7 @@ git commit -m "feat(vault): Task 14 - 健康检查（zxcvbn 强度 + 重复密�
   - `pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportReport>`
   - `pub fn export_vault_json(ciphers: &[Cipher]) -> Result<String>`
 
-- [ ] **Step 1: importer/mod.rs**
+- [x] **Step 1: importer/mod.rs**
 
 ```rust
 //! 导入导出：Bitwarden unencrypted JSON。
@@ -4222,7 +4242,7 @@ pub use bitwarden::{import_bitwarden_json, ImportReport};
 pub use exporter::export_vault_json;
 ```
 
-- [ ] **Step 2: importer/bitwarden.rs**
+- [x] **Step 2: importer/bitwarden.rs**
 
 ```rust
 //! Bitwarden unencrypted JSON 导入。
@@ -4437,7 +4457,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: importer/exporter.rs**
+- [x] **Step 3: importer/exporter.rs**
 
 ```rust
 //! 导出 vault 为 Bitwarden unencrypted JSON。
@@ -4599,12 +4619,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test -p octopus-vault --lib importer -- --nocapture`
 Expected: bitwarden (4) + exporter (2) = 6 passed
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/vault/src/importer/
@@ -4628,7 +4648,7 @@ git commit -m "feat(vault): Task 15 - Bitwarden unencrypted JSON 导入导出"
   - `pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 15 * 60`
   - 启动流程：app launch 时调 `vault::unlock::unlock_app_key_local()` 把 app_key 注入
 
-- [ ] **Step 1: 在 desktop Cargo.toml 加依赖**
+- [x] **Step 1: 在 desktop Cargo.toml 加依赖**
 
 修改 `crates/desktop/Cargo.toml`，在 `[dependencies]` 加：
 
@@ -4636,7 +4656,7 @@ git commit -m "feat(vault): Task 15 - Bitwarden unencrypted JSON 导入导出"
 octopus-vault = { path = "../vault" }
 ```
 
-- [ ] **Step 2: 写 vault_state.rs**
+- [x] **Step 2: 写 vault_state.rs**
 
 ```rust
 //! vault 解锁态管理。
@@ -4718,7 +4738,7 @@ pub fn bootstrap_app_key(session: &SharedVaultSession) {
 }
 ```
 
-- [ ] **Step 3: 在 main.rs 注册 mod 和 AppState**
+- [x] **Step 3: 在 main.rs 注册 mod 和 AppState**
 
 在 `crates/desktop/src/main.rs` 顶部 `mod` 声明区加（找一个已有 `mod action_bar_commands;` 的位置）：
 
@@ -4730,7 +4750,7 @@ pub mod autotype;
 
 （vault_commands 和 autotype 在后续 Task 创建，先声明）
 
-- [ ] **Step 4: 在 main.rs setup 注入 AppState**
+- [x] **Step 4: 在 main.rs setup 注入 AppState**
 
 找到 setup 闭包内的 `app.manage(...)` 区段（根据调研在 main.rs 行 379+），在合适位置加：
 
@@ -4742,7 +4762,7 @@ vault_state::bootstrap_app_key(&vault_session);
 app.manage(vault_session);
 ```
 
-- [ ] **Step 5: 创建占位的 vault_commands.rs 和 autotype/mod.rs**
+- [x] **Step 5: 创建占位的 vault_commands.rs 和 autotype/mod.rs**
 
 ```bash
 mkdir -p crates/desktop/src/autotype
@@ -4750,14 +4770,14 @@ echo "//! 占位：Task 17 填充" > crates/desktop/src/vault_commands.rs
 echo "//! 占位：Task 18 填充" > crates/desktop/src/autotype/mod.rs
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -50`
 Expected: 0 error
 
 可能有 unused 警告（vault_commands 和 autotype 占位），但 0 error。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/Cargo.toml crates/desktop/src/vault_state.rs crates/desktop/src/main.rs crates/desktop/src/vault_commands.rs crates/desktop/src/autotype/
@@ -4790,7 +4810,7 @@ git commit -m "feat(vault): Task 16 - desktop AppState + app_key 启动注入"
   - `vault_import_bitwarden(state, json) -> ImportReport`
   - `vault_export(state) -> String`
 
-- [ ] **Step 1: 写 vault_commands.rs（完整）**
+- [x] **Step 1: 写 vault_commands.rs（完整）**
 
 ```rust
 //! vault Tauri 命令层。
@@ -5134,7 +5154,7 @@ pub fn vault_export(state: State<'_, SharedVaultSession>) -> Result<String, Stri
 }
 ```
 
-- [ ] **Step 2: 在 main.rs invoke_handler! 注册命令**
+- [x] **Step 2: 在 main.rs invoke_handler! 注册命令**
 
 打开 `crates/desktop/src/main.rs`，找到 `tauri::generate_handler![` 块（行 226）。在 `action_bar_commands::*` 之后或 `extensions::*` 之前加：
 
@@ -5158,12 +5178,12 @@ crate::vault_commands::vault_import_bitwarden,
 crate::vault_commands::vault_export,
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -30`
 Expected: 0 error
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/vault_commands.rs crates/desktop/src/main.rs
@@ -5188,7 +5208,7 @@ git commit -m "feat(vault): Task 17 - desktop vault Tauri 命令层"
   - `pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Result<()>`
   - `pub fn copy_to_clipboard_concealed(text: &str, ttl_secs: u64) -> Result<()>`
 
-- [ ] **Step 1: autotype/url_detect.rs（macOS AppleScript）**
+- [x] **Step 1: autotype/url_detect.rs（macOS AppleScript）**
 
 ```rust
 //! 用 AppleScript 取当前浏览器 active tab URL。
@@ -5299,7 +5319,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: autotype/macos.rs（enigo 键盘模拟）**
+- [x] **Step 2: autotype/macos.rs（enigo 键盘模拟）**
 
 ```rust
 //! macOS Auto-Type：用 enigo 模拟键盘输入。
@@ -5362,7 +5382,7 @@ pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Resu
 
 **注意**：enigo 0.6 API。检查 crates/desktop/src/paste.rs 的实际用法以校准。`Enigo::new` 在 0.6 可能签名不同——根据调研 `paste.rs:140` 的用法是 `Enigo::new(&Settings::default())?`，OK。但 `key()` 是 `Direction::Press / Release / Click`，需 `use enigo::Direction`。
 
-- [ ] **Step 3: autotype/clipboard.rs（concealed 写入 + 30s 自动清空）**
+- [x] **Step 3: autotype/clipboard.rs（concealed 写入 + 30s 自动清空）**
 
 ```rust
 //! 剪贴板 concealed 写入：30 秒后自动清空。
@@ -5444,7 +5464,7 @@ mod tests {
 
 **注意**：objc2 API 调用方式可能需要调整。根据调研，`crates/desktop/src/action_bar_commands.rs:545-555` 用了 `objc2::msg_send!` + `runtime::AnyObject` 取 NSPasteboard，但这里用 `objc2-app-kit` 的强类型 API。实施时根据实际编译报错调整——可以参考 `crates/clipboard/` 里是否已有 NSPasteboard 封装。
 
-- [ ] **Step 4: autotype/mod.rs（trait + dispatch）**
+- [x] **Step 4: autotype/mod.rs（trait + dispatch）**
 
 ```rust
 //! Auto-Type：跨平台键盘模拟 + URL 检测。
@@ -5486,12 +5506,12 @@ pub fn copy_concealed_with_ttl(_t: &str, _ttl: std::time::Duration) -> anyhow::R
 }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -30`
 Expected: 0 error（objc2 API 可能需要调整，根据编译报错修正）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/autotype/
@@ -5501,6 +5521,12 @@ git commit -m "feat(vault): Task 18 - macOS Auto-Type + URL 检测 + concealed �
 ---
 
 ## Task 19: desktop autotype Tauri 命令 + 全局热键注册
+
+> **⚠️ Follow-up 修订（commit `ecca9b04`）**：原计划注册两个全局热键（Cmd+Shift+L autotype +
+> Cmd+Shift+G 生成器浮窗）+ `password_generator_window` 浮窗。**实施时生成器热键 + 浮窗全删除**——
+> 生成器 UI 内嵌 CipherEditor。`AppConfig.vault_generator_shortcut` 字段保留仅为兼容旧 DB，
+> 运行时不消费。当前唯一 vault 全局热键是 `Cmd+Shift+L`。
+> 下文涉及 generator shortcut / password_generator_window 的代码块是历史记录。
 
 **Files:**
 - Modify: `crates/desktop/src/vault_commands.rs`（加 autotype 命令）
@@ -5514,7 +5540,7 @@ git commit -m "feat(vault): Task 18 - macOS Auto-Type + URL 检测 + concealed �
   - `vault_copy_password(state, id) -> ()`（复制密码到 concealed 剪贴板）
 - 全局热键：Cmd+Shift+L → autotype, Cmd+Shift+G → 浮窗
 
-- [ ] **Step 1: 在 vault_commands.rs 加 autotype 命令**
+- [x] **Step 1: 在 vault_commands.rs 加 autotype 命令**
 
 追加到 `crates/desktop/src/vault_commands.rs` 末尾：
 
@@ -5619,7 +5645,7 @@ pub fn vault_copy_password(
 }
 ```
 
-- [ ] **Step 2: 在 desktop Cargo.toml 加 url crate**
+- [x] **Step 2: 在 desktop Cargo.toml 加 url crate**
 
 修改 `crates/desktop/Cargo.toml`，加：
 
@@ -5627,7 +5653,7 @@ pub fn vault_copy_password(
 url = "2"
 ```
 
-- [ ] **Step 3: 在 main.rs invoke_handler 注册新命令**
+- [x] **Step 3: 在 main.rs invoke_handler 注册新命令**
 
 在 Task 17 注册的 vault 命令列表后加：
 
@@ -5637,7 +5663,7 @@ crate::vault_commands::vault_detect_and_match,
 crate::vault_commands::vault_copy_password,
 ```
 
-- [ ] **Step 4: 在 infra config.rs 加 vault 热键字段**
+- [x] **Step 4: 在 infra config.rs 加 vault 热键字段**
 
 打开 `crates/infra/src/config.rs`，找到 `action_bar_shortcut` 字段（行 194-196 附近），加：
 
@@ -5663,7 +5689,7 @@ fn default_vault_generator_shortcut() -> String {
 }
 ```
 
-- [ ] **Step 5: 在 main.rs 启动时注册 vault 全局热键**
+- [x] **Step 5: 在 main.rs 启动时注册 vault 全局热键**
 
 找到 main.rs 中 `register_action_bar_shortcut` 调用的位置（约行 594-598），仿照加：
 
@@ -5742,12 +5768,12 @@ pub fn register_vault_generator_shortcut(
 
 **注意**：`emit` 和 `WebviewWindowBuilder` 的 import 路径需要根据实际 tauri 2 API 调整。`use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};` 通常是需要的。
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -30`
 Expected: 0 error
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/Cargo.toml crates/desktop/src/vault_commands.rs crates/desktop/src/main.rs crates/infra/src/config.rs
@@ -5767,11 +5793,11 @@ git commit -m "feat(vault): Task 19 - autotype 命令 + 全局热键注册"
 - Consumes: Task 9 的 app_key、infra 的 models 表 CRUD
 - Produces: `pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize>`
 
-- [ ] **Step 1: 在 vault/lib.rs 声明 mod**
+- [x] **Step 1: 在 vault/lib.rs 声明 mod**
 
 修改 `crates/vault/src/lib.rs`，加 `pub mod migrate;`
 
-- [ ] **Step 2: 写 migrate.rs**
+- [x] **Step 2: 写 migrate.rs**
 
 ```rust
 //! 一次性迁移：把 models.secret_key 的明文 API Key 用 app_key 加密回写。
@@ -5812,7 +5838,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 在 infra db.rs 加迁移辅助函数**
+- [x] **Step 3: 在 infra db.rs 加迁移辅助函数**
 
 打开 `crates/infra/src/db.rs`，在文件末尾追加：
 
@@ -5847,7 +5873,7 @@ pub fn update_model_secret_key(model_id: i64, new_secret_key: &str) -> Result<()
 }
 ```
 
-- [ ] **Step 4: 在 unlock.rs setup_vault 末尾调迁移**
+- [x] **Step 4: 在 unlock.rs setup_vault 末尾调迁移**
 
 打开 `crates/vault/src/unlock.rs`，找到 `setup_vault` 函数末尾（在 `Ok(UnlockedKeys { ... })` 之前）加：
 
@@ -5860,12 +5886,12 @@ pub fn update_model_secret_key(model_id: i64, new_secret_key: &str) -> Result<()
     }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo build -p octopus-vault`
 Expected: 0 error
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/vault/src/migrate.rs crates/vault/src/lib.rs crates/vault/src/unlock.rs crates/infra/src/db.rs
@@ -5874,7 +5900,18 @@ git commit -m "feat(vault): Task 20 - 一次性迁移 models.secret_key 为加�
 
 ---
 
-## Task 21: 前端 VaultPanel + SetupWizard + UnlockDialog + PasswordGenerator + i18n
+## Task 21: 前端 VaultPanel + SetupWizard + UnlockDialog + CipherEditor 内嵌生成器 + i18n
+
+> **⚠️ Follow-up 修订（多个 commit）**：
+> - **生成器位置**（`ecca9b04`）：`pages/PasswordGenerator/index.tsx` 独立浮窗废弃——
+>   生成器 UI 内嵌 CipherEditor，`buildConfig.ts` + 测试移到 `pages/Settings/Vault/`。
+> - **folder UI**（`4e5c3540`）：新增 FolderSidebar + FolderPromptDialog + CipherEditor folder dropdown。
+> - **lock timeout 设置 UI**（`651e8db3`）：VaultPanel 加 30s/1/3/5/15min/Never 选项 + 30s 心跳。
+> - **主密码校验**（`1c46a9d9`）：SetupWizard + UnlockDialog 用 `validateMasterPassword.ts`（12 位 + 4 类）。
+> - **错误分类**（`23eedb35`）：所有调用点用 `classifyError.ts` 解析 VaultError JSON。
+> - **feature gate**（`d70aa426`）：Settings/index.tsx + App.tsx 条件渲染 vault UI（基于 is_vault_enabled 探针）。
+>
+> 下文涉及 `PasswordGenerator/` 独立浮窗的代码块是历史记录。
 
 **Files:**
 - Create: `crates/desktop/frontend/src/pages/Settings/VaultPanel.tsx`
@@ -5895,7 +5932,7 @@ git commit -m "feat(vault): Task 20 - 一次性迁移 models.secret_key 为加�
 - Consumes: Task 17/19 的 Tauri 命令
 - Produces: 完整 UI 流程
 
-- [ ] **Step 1: 在 i18n yaml 加 vault keys**
+- [x] **Step 1: 在 i18n yaml 加 vault keys**
 
 打开 `crates/desktop/frontend/src/locales/zh-CN.yaml`，加：
 
@@ -5993,7 +6030,7 @@ git commit -m "feat(vault): Task 20 - 一次性迁移 models.secret_key 为加�
 
 在 `en.yaml` 加对应英文翻译（结构同上）。
 
-- [ ] **Step 2: 修改 Settings/index.tsx NAV_ITEMS**
+- [x] **Step 2: 修改 Settings/index.tsx NAV_ITEMS**
 
 打开 `crates/desktop/frontend/src/pages/Settings/index.tsx`，找到 NAV_ITEMS（约行 39-48），加：
 
@@ -6022,7 +6059,7 @@ case "vault":
 import VaultPanel from "./VaultPanel";
 ```
 
-- [ ] **Step 3: 写 VaultPanel.tsx（主面板）**
+- [x] **Step 3: 写 VaultPanel.tsx（主面板）**
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -6129,7 +6166,7 @@ export default function VaultPanel() {
 }
 ```
 
-- [ ] **Step 4: 写 SetupWizard.tsx**
+- [x] **Step 4: 写 SetupWizard.tsx**
 
 ```tsx
 import { useState } from "react";
@@ -6198,7 +6235,7 @@ export default function SetupWizard({ onCompleted }: { onCompleted: () => Promis
 }
 ```
 
-- [ ] **Step 5: 写 UnlockDialog.tsx**
+- [x] **Step 5: 写 UnlockDialog.tsx**
 
 ```tsx
 import { useState } from "react";
@@ -6248,7 +6285,7 @@ export default function UnlockDialog({ onSuccess }: { onSuccess: () => Promise<v
 }
 ```
 
-- [ ] **Step 6: 写 CipherList.tsx + CipherEditor.tsx + HealthReport.tsx + ImportExport.tsx**
+- [x] **Step 6: 写 CipherList.tsx + CipherEditor.tsx + HealthReport.tsx + ImportExport.tsx**
 
 由于篇幅限制，这些组件的实现可以参照已有 `ActionBarPanel.tsx` 的模式（list + edit form）。每个文件基础结构如下：
 
@@ -6361,7 +6398,7 @@ export default function CipherList() {
 
 **ImportExport.tsx**: 文件选择 + 调 `vault_import_bitwarden` / `vault_export` 触发下载。
 
-- [ ] **Step 7: 修改 capabilities/default.json**
+- [x] **Step 7: 修改 capabilities/default.json**
 
 打开 `crates/desktop/capabilities/default.json`，windows 数组加 `"password_generator_window"`：
 
@@ -6385,7 +6422,7 @@ export default function CipherList() {
 }
 ```
 
-- [ ] **Step 8: 修改 App.tsx 加 password_generator_window case**
+- [x] **Step 8: 修改 App.tsx 加 password_generator_window case**
 
 打开 `crates/desktop/frontend/src/App.tsx`，找到 switch（行 60-84），加 case：
 
@@ -6400,7 +6437,7 @@ case "password_generator_window":
 import PasswordGenerator from "./pages/PasswordGenerator";
 ```
 
-- [ ] **Step 9: 写 PasswordGenerator 浮窗组件**
+- [x] **Step 9: 写 PasswordGenerator 浮窗组件**
 
 新建 `crates/desktop/frontend/src/pages/PasswordGenerator/index.tsx`:
 
@@ -6519,17 +6556,17 @@ export default function PasswordGenerator() {
 }
 ```
 
-- [ ] **Step 10: 前端构建验证**
+- [x] **Step 10: 前端构建验证**
 
 Run: `cd crates/desktop/frontend && bun run build`
 Expected: 0 error
 
-- [ ] **Step 11: 整 workspace 编译验证**
+- [x] **Step 11: 整 workspace 编译验证**
 
 Run: `cargo build`
 Expected: 0 error 0 warning（前端类型不匹配会反映到 ts build）
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add crates/desktop/frontend/ crates/desktop/capabilities/default.json
@@ -6538,56 +6575,116 @@ git commit -m "feat(vault): Task 21 - 前端 VaultPanel + SetupWizard + UnlockDi
 
 ---
 
+## Follow-up Work（post-initial 21 tasks）
+
+21 个 Task 完成后，又基于 self-review / dogfooding / 集成测试发现的问题做了一波修订。
+全部已落地。下面按 commit 时序列出。
+
+### 测试 & 修复（早期 wave）
+
+- [x] **Test Wave 1**（commit `7fd81953`）：+17 tests，引入 `set_test_db` thread_local override
+  注入 in-memory 连接（与 octopus-infra 既有测试隔离），解决原 plan「`with_db` 集成测试 `#[ignore]`」caveat。
+- [x] **Test Wave 2**（commit `8c8631af`）：+22 tests，发现并修复 `update_model_secret_key` SQL bug。
+- [x] **Keychain mock**（commit `4f74a327`）：在 keychain.rs 加 `set_test_keychain` thread_local override，
+  un-ignore 4 个原本 `#[ignore]` 的 unlock 测试（不再依赖真实 macOS Keychain）。
+- [x] **ZH wordlist 4096**（commit `e5e68cf6`）：jieba 词频 TOP 4096（原 plan 占位 100 词）。
+- [x] **Final review fixes**（commit `674f009e`）：C1 serde（FolderDto serialize）+ I1 spec 同步 +
+  I2 flaky 测试修复 + I3 password_history 自动追加 + I4 unlock 路径 + M1/M2 小修。
+
+### Dogfooding 反馈（#2-#9）
+
+- [x] **#4 Auto-Type picker UI**（commit `9d191a41`）：dead-hotkey 修复——Cmd+Shift+L 触发后浮窗
+  偶发不响应。
+- [x] **#2/#3/#5**（commit `079cbeab`）：password_history 自动追加（密码变更时）+ change_password
+  后强制 re-unlock（旧 VaultSession 失效）+ TOTP 30s 倒计时轮询（cipher 详情页）。
+- [x] **#7/#8**（commit `e77ad7c1`）：secret_key 解密统一 chokepoint
+  （`crates/desktop/src/vault_secret_access.rs`，4 个云端推理调用点都走 `try_decrypt_secret_global`）+
+  `detect_and_match` 列表上限（防匹配过多卡 UI）。
+- [x] **#9 VaultError**（commit `23eedb35`）：新建 `crates/desktop/src/vault_error.rs`，11 个用户安全
+  错误变体 + `classify(anyhow)` 启发式映射 + JSON `{code, message}` 序列化。前端 `classifyError.ts`
+  程序化处理。详见 spec §7.2。
+
+### 架构性修订（#6/#10 + 关键 bug）
+
+- [x] **#10 cargo feature gate**（commit `d70aa426`）：`octopus-desktop` 加 `vault` cargo feature
+  （默认开），关掉后 vault 模块整体 cfg 掉。`vault_secret_access` 总是编译（chokepoint 不能断），
+  feature off 时退化为 raw 原样返回。前端通过 `feature_flags::is_vault_enabled()` 运行时探针。
+  详见 spec 附录 E。
+- [x] **#6 folder UI**（commit `4e5c3540`）：原 plan folder 仅 schema 预留，实施时补完整 UI——
+  4 个 Tauri 命令（list/create/rename/delete）+ FolderSidebar + FolderPromptDialog +
+  CipherEditor folder dropdown + folder 名用 user_vault_key 加密（修复早期明文 bug）。
+  详见 spec §3.4。
+- [x] **主密码强度校验**（commit `1c46a9d9`）：落实 spec 文案承诺——12 字符 + 必含 4 字符类，
+  前端 `validateMasterPassword.ts` + 后端 `vault_setup` / `vault_change_password` 双校验。
+- [x] **Panic → Result**（commit `a42dedd9`）：5 个生成器函数全改 `Result<String>`，`assert!` 换
+  `ensure!`（panic 会崩 Tauri 主进程使 vault 整体不可用）。详见 spec §5.2.2 + INV-G8。
+- [x] **K_machine 改本地文件**（commit `0def2450`）：macOS adhoc 签名 binary 写 Keychain 是
+  session-only（重启即丢），改为 `~/.octopus/machine-key.enc`（file_key = HKDF(machine_id+USER)）。
+  `keyring` 依赖从 vault/Cargo.toml 移除。详见 spec §2.5。
+- [x] **心跳 + 焦点失活**（commit `752419ec`）：锁定从「固定 5min，从 unlocked_at 起算」改为
+  「以 last_active_at 为基准 + 前端 30s 心跳」——vault tab 离开 + 时间到 → 自动锁。
+- [x] **Lock timeout 可配**（commit `651e8db3`）：`AppConfig.vault_lock_timeout_secs`，UI 提供
+  30s/1min/3min/5min/15min/Never 选项，默认 3min（偏激进）。详见 spec §2.7。
+- [x] **生成器内嵌 CipherEditor**（commit `ecca9b04`）：删除全局热键 Cmd+Shift+G + 独立
+  password_generator_window 浮窗。生成器 UI 内嵌 CipherEditor 密码字段旁。
+  `AppConfig.vault_generator_shortcut` 字段保留仅为兼容旧 DB，运行时不消费。
+  详见 spec §5.2 + 附录 B/D。
+
+---
+
 ## Self-Review
 
 ### Spec coverage
 
-| Spec 章节 | 对应 Task | 覆盖 |
+| Spec 章节 | 对应 Task / Follow-up | 覆盖 |
 |---|---|---|
 | 0. 目标与范围 | 全部 Task | ✅ |
-| 1. 架构总览 | Task 1, 16 | ✅ |
-| 2. 加密层 | Task 2, 3, 4, 9 | ✅ |
-| 3. 数据模型 | Task 5, 6, 7 | ✅ |
-| 4. URL 匹配 + Auto-Type | Task 13, 18, 19 | ✅ |
-| 5. TOTP + 生成器 + 健康 | Task 10, 11, 12, 14 | ✅ |
-| 6. Bitwarden 导入 + 同步 | Task 15 | ✅ |
-| 7. 降级 + 错误 + 不变量 | 散布在所有 Task | ✅ |
-| 附录 A: Tauri 命令清单 | Task 17, 19 | ✅ |
-| 附录 B: 前端组件 | Task 21 | ✅ |
+| 1. 架构总览（含 feature gate） | Task 1, 16 + FU #10 | ✅ |
+| 2. 加密层（含 K_machine 本地文件 / 可配置锁定） | Task 2, 3, 4, 8, 9 + FU K_machine/heartbeat/timeout | ✅ |
+| 3. 数据模型（含 folder UI 完整） | Task 5, 6, 7 + FU #6 | ✅ |
+| 4. URL 匹配 + Auto-Type | Task 13, 18, 19 + FU #4/#8 | ✅ |
+| 5. TOTP + 生成器（内嵌 + Result）+ 健康 | Task 10, 11, 12, 14 + FU ZH4096/panic→Result/inline | ✅ |
+| 6. Bitwarden 导入 + 同步 | Task 15 + FU history auto-append (#2) | ✅ |
+| 7. 降级 + 错误（VaultError）+ 不变量 | 全部 + FU #9 | ✅ |
+| 附录 A: Tauri 命令清单 | Task 17, 19 + FU heartbeat/folder/feature_flags | ✅ |
+| 附录 B: 前端组件 | Task 21 + FU folder UI | ✅ |
 | 附录 C: capabilities | Task 21 | ✅ |
-| 附录 D: 全局热键 | Task 19 | ✅ |
-| 顺手改进：models.secret_key 加密 | Task 20 | ✅ |
+| 附录 D: 全局热键（仅 Cmd+Shift+L） | Task 19 + FU ecca9b04 | ✅ |
+| 附录 E: cargo feature gate | FU #10 | ✅ |
+| 顺手改进：models.secret_key 加密 + chokepoint | Task 20 + FU #7 | ✅ |
 
 ### 类型一致性
 
 - `DerivedKey` 在 Task 2 定义，Task 3/4/9/15/20 使用 ✅
 - `Cipher / CipherInput / CipherData / LoginData` 在 Task 6 定义，Task 7/9/13/14/15 使用 ✅
 - `Argon2Params` 在 Task 2 定义，Task 9 使用 ✅
-- `VaultSession / SharedVaultSession` 在 Task 16 定义，Task 17/19 使用 ✅
-- DTO 命名：`CipherDto / CipherInputDto / VaultStatusDto / AutoTypeResultDto / TotpResultDto`（Task 17/19）✅
+- `VaultSession / SharedVaultSession` 在 Task 16 定义，Task 17/19 使用 ✅；FU 加 `last_active_at: Option<Instant>`
+- DTO 命名：`CipherDto / CipherInputDto / VaultStatusDto / AutoTypeResultDto / TotpResultDto / FolderDto`（Task 17/19 + FU #6）✅
+- `VaultError` enum（FU #9）在 vault_error.rs 定义，所有 vault_commands 调用点经 `classify` 翻译 ✅
 
-### 占位符扫描
+### 原 caveat 落地情况
 
-- 中文 4096 词表占位 100 词（Task 11）：明确标 `TODO` + `#[ignore]` 测试，要求实施时补全。这不是 plan 缺陷，是已知未完成项。
-- `psl.rs` eTLD+1 用简化版（不依赖 PSL）：MVP 接受局限（不正确处理 `.co.uk`），已注明。
-- `CipherEditor.tsx` / `HealthReport.tsx` / `ImportExport.tsx` 给出骨架但不完整：实施者按 ActionBarPanel.tsx 模式填充。
+1. **`with_db` 集成测试** → **已解决**（FU Test Wave 1，`set_test_db` thread_local override）
+2. **objc2 API** → 实施时按编译报错调整（commit 散落在 Task 18 系列）
+3. **enigo API** → 实施时对照 paste.rs 调整（Task 18 系列）
+4. **Tauri 2 Emitter/WebviewWindowBuilder API** → 实施时按报错调整
+5. **中文词表** → **已解决**（FU `e5e68cf6`，jieba 词频 TOP 4096 直接 commit 进 git，无 curl 依赖）
 
-### 已知 caveat
+### 仍待办（backlog，非 plan 缺陷）
 
-1. **`with_db` 集成测试**：Task 7/9 的集成测试 `#[ignore]`，因 octopus-infra 用全局 `~/.octopus/octopus.db`。改进方向：在 Task 5 给 db.rs 加 `#[cfg(test)] pub fn with_test_db_path(path: &str)`，让测试可隔离。
-2. **objc2 API**：Task 18 clipboard.rs 的 NSPasteboard 写入代码可能需要根据实际编译报错微调。
-3. **enigo API**：Task 18 macos.rs 的 `Enigo::new` / `key(Direction::Click)` 需对照 desktop/src/paste.rs 实际用法。
-4. **Tauri 2 Emitter/WebviewWindowBuilder API**：Task 19 的 import 路径可能需调整。
-5. **中文词表生成**：Task 11 的 EFF 词表用 `curl` 下载——CI 环境可能受限，需要把数据文件提交到 git。
+- Quick Access vault tab（`Cmd+Shift+V`）—— P2 未实现
+- HIBP 泄露查询 —— P2
+- CSV/1Password/KeePass 导入 —— P1
+- Windows/Linux Auto-Type —— P1/P2
+- SecureNote / Card / Identity cipher 类型 —— 未来
 
 ---
 
 ## 执行选择
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-18-password-vault.md`. Two execution options:
+Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史记录）：
 
-**1. Subagent-Driven (recommended)** - 每个 Task 派独立 subagent，Task 间 review，迭代快。适合本 plan 因为：21 个 Task 颗粒度合适；每个 Task 测试自包含；加密相关 Task 需仔细 review。
+**1. Subagent-Driven (已采用)** - 每个 Task 派独立 subagent，Task 间 review。
+**2. Inline Execution** - 备选。
 
-**2. Inline Execution** - 当前 session 内按顺序执行，批量 checkpoint review。适合：希望快速推进；不需要中途切换 context；不介意 conversation 长度增长。
-
-Which approach?
+实际采用 Subagent-Driven + 多轮 self-review follow-up。

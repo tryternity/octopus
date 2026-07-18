@@ -18,7 +18,8 @@ octopus/
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
 │   ├── desktop/     # Tauri 桌面应用 (octopus-desktop)
 │   ├── download/    # 模型下载 (octopus-download)
-│   └── dlp/         # 视频音频下载 (octopus-dlp)
+│   ├── dlp/         # 视频音频下载 (octopus-dlp)
+│   └── vault/       # 密码保险库纯逻辑库 (octopus-vault，2026-07-18 新增)
 ├── docs/            # 文档
 └── usage.md         # 快速使用指南
 ```
@@ -27,7 +28,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v37。**模型激活语义重构**（2026-07-17，Task 1-7）：models 表 `is_enabled` 改表「激活」（每域仅 1 个=1），新增 `is_available` 表「可用」（原 is_enabled 语义，同域可多个）；删除 app_config 的 `asr_engine`/`polish_llm`/`ocr_model`/`translate_engine` 4 个激活字段——激活态统一存 DB `is_enabled`，4 域（asr/llm/ocr/translate）经 `get_active_model(domain)` + `switch_active_model(domain, id)` 查询/切换。详见 §「模型激活语义」。**迁移机制**（2026-07-16 重构）：v17→v31 的历史迁移代码已清理（原 v30→v31 有无 guard 裸块 `DELETE FROM models WHERE domain='llm'`，每次启动清空用户 LLM 配置——已修）。现 `init_schema` 只保留 v32→v37 活跃迁移（trigger_keyword/auto_paste/global_shortcut → app_index → search_frequency → launcher_index 统一表 → models is_available/is_enabled 语义分离）+ 全新库走 db.sql 建表+seed + `fill_manifests`（填本地模型 manifest，含 `{huggingface}`/`{modelscope}` 运行时模板变量，不能移入 db.sql）。**v37 迁移自动完成**（code review Issue #1 修复）：`UPDATE is_available=is_enabled`（迁语义）+ `UPDATE is_enabled=0`（重置激活，保证「每域仅 1」不变量不被旧库多 is_enabled=1 破坏）+ 删 app_config 4 个废弃字段；用户无需手工 SQL。回归测试 `migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation`。**自愈机制**：`user_version >= 36` 时检查 `app_index` 表是否残留（开发期中间 binary 可能跳设版本号而迁移没跑完），残留则补跑 v36 迁移（建 launcher_index + 迁数据 + DROP 旧表）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE。`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化），回归测试 `with_db_reentrant_no_deadlock` 守护。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v38（v37→v38 新增 vault 三表，详见 §「Password Vault」）。**模型激活语义重构**（2026-07-17，Task 1-7）：models 表 `is_enabled` 改表「激活」（每域仅 1 个=1），新增 `is_available` 表「可用」（原 is_enabled 语义，同域可多个）；删除 app_config 的 `asr_engine`/`polish_llm`/`ocr_model`/`translate_engine` 4 个激活字段——激活态统一存 DB `is_enabled`，4 域（asr/llm/ocr/translate）经 `get_active_model(domain)` + `switch_active_model(domain, id)` 查询/切换。详见 §「模型激活语义」。**迁移机制**（2026-07-16 重构）：v17→v31 的历史迁移代码已清理（原 v30→v31 有无 guard 裸块 `DELETE FROM models WHERE domain='llm'`，每次启动清空用户 LLM 配置——已修）。现 `init_schema` 只保留 v32→v37 活跃迁移（trigger_keyword/auto_paste/global_shortcut → app_index → search_frequency → launcher_index 统一表 → models is_available/is_enabled 语义分离）+ 全新库走 db.sql 建表+seed + `fill_manifests`（填本地模型 manifest，含 `{huggingface}`/`{modelscope}` 运行时模板变量，不能移入 db.sql）。**v37 迁移自动完成**（code review Issue #1 修复）：`UPDATE is_available=is_enabled`（迁语义）+ `UPDATE is_enabled=0`（重置激活，保证「每域仅 1」不变量不被旧库多 is_enabled=1 破坏）+ 删 app_config 4 个废弃字段；用户无需手工 SQL。回归测试 `migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation`。**自愈机制**：`user_version >= 36` 时检查 `app_index` 表是否残留（开发期中间 binary 可能跳设版本号而迁移没跑完），残留则补跑 v36 迁移（建 launcher_index + 迁数据 + DROP 旧表）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE。`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化），回归测试 `with_db_reentrant_no_deadlock` 守护。
 
 ### 测试数据库隔离（⚠️ 勿让 cargo test 污染开发库）
 
@@ -819,6 +820,23 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **feature-level 二道防线**（2026-06-20）：除上述代码层 `#[cfg]` 按平台注册，`crates/asr-local/Cargo.toml` 的 ort feature 也按平台条件化（target-specific dependency：mac=coreml / linux=cuda / win=directml，base 仅 `download-binaries`）。cuda/directml feature 在 mac 关闭 → 即便代码层 cfg gate 被退化、误在 mac 注册 CUDA EP，ort `register()` 也会因 feature off 直接返回 `MissingFeature`、不走 FFI dlopen-libcuda（segfault 那条路径），从而不崩。详见 [spec](superpowers/specs/2026-06-21-archived-spec.md)（📄 `2026-06-21-archived-spec.md#ort-cross-platform-feature-design` §7.3，已归档）。
 - **两层降级**：① EP 注册失败（驱动/库缺失）→ 捕获 `Err` 回退纯 CPU session，进程不崩；② **qwen3-asr 显式跳过 CoreML**——其动态算子 CoreML **不报错而是把图分区**跑（CoreML 跑支持的算子、CPU 跑剩下的，CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），故检测 active 引擎 `category=qwen3-asr` 时主动走 CPU。zipformer 等静态图照常吃满 CoreML。
 - **VAD 免加速**：Silero VAD 极小（1.8MB）+ 实时性要求极高，上 GPU 的上下文切换开销远超收益，固定 CPU，不受 `asr_hardware_accelerated` 影响。
+
+## Password Vault（2026-07-18 起）
+
+新引入 `crates/vault/`（纯逻辑库，依赖 infra）+ desktop 内嵌命令/autotype 层 + 前端 `pages/Settings/Vault/`。完整设计见 [password-vault spec](superpowers/specs/2026-07-18-password-vault-design.md)。
+
+- **加密**：Argon2id（t=3, m=64MiB, p=4）+ HMAC-SHA512 派生树（简化 BIP44，取前 32B）+ AES-256-GCM（12B nonce + 16B tag，统一 `v1:base64(...)` 格式）。
+- **双层 key**：`user_vault_key`（加密 cipher）+ `app_key`（加密 API Key，顺手解决 `models.secret_key` 明文问题）。
+- **Y+ 方案**：app_key 双密文——`app_key_local_enc`（用 K_machine 加密，本机无感启动）+ `app_key_sync_enc`（用 master_root_key 加密，跨机同步）。换机 / K_machine 丢失时走流程 C 解 sync_enc + 重建 local_enc。
+- **K_machine**：`~/.octopus/machine-key.enc`（AES-256-GCM 加密，file_key 由 `HKDF-SHA256(machine_id + USER)` 派生）。**原计划用 OS Keychain，实施时改本地文件**——macOS 对 adhoc 签名 binary 写 Keychain 是 session-only（重启即丢），跨平台不一致。威胁模型不变：仅拿到 DB（无本机文件）解不开 app_key。
+- **schema v38**：新增 `vault_meta`（单行，KDF 参数 + 双密文 app_key + security_stamp）/ `vault_ciphers`（密文 cipher）/ `vault_folders`（folder 名用 user_vault_key 加密）3 张表。FK `vault_ciphers.folder_id → vault_folders.id ON DELETE SET NULL`（删 folder 时其下 cipher 回到根目录）。
+- **全局热键**：仅 `Cmd+Shift+L`（Auto-Type picker，默认 `vault_autotype_shortcut`）。**生成器已移到 CipherEditor 内嵌**（密码字段旁按钮 → inline popover），原 `Cmd+Shift+G` 浮窗 + `password_generator_window` 已废弃；`AppConfig.vault_generator_shortcut` 字段保留仅为兼容旧 DB。
+- **锁定**：可配置（30s/1min/3min/5min/15min/Never，默认 3min，存 `AppConfig.vault_lock_timeout_secs`）。**心跳机制**：前端 VaultPanel mount 后每 30s 调 `vault_heartbeat` 刷新 `last_active_at`；unmount 后心跳停止，超时自动锁。超时基准是 `last_active_at`（焦点失活语义），不是 `unlocked_at`。
+- **错误处理**：vault crate 内部用 `anyhow`；Tauri 命令边界用 `vault_error.rs` 的 `VaultError` enum（11 个用户安全变体 + `classify(anyhow)` 启发式映射 + JSON `{code, message}` 序列化），前端 `classifyError.ts` 程序化处理。
+- **feature gate**：`octopus-desktop` 加 `vault` cargo feature（默认开），关掉后 vault 模块整体 cfg 掉（`vault_state` / `vault_commands` / `autotype` / `vault_error`）。`vault_secret_access.rs` **总是编译**——它是云端推理热路径（AliyunEngine / LLM polish / 云端翻译 / Settings）的 secret_key 解密 chokepoint（`try_decrypt_secret_global`），feature off 时退化为 raw 原样返回。前端通过 `feature_flags::is_vault_enabled()` 运行时探针条件渲染 vault UI。
+- **生成器永不 panic**：5 个生成函数（random/passphraseEn/passphraseZh/pin/dispatch）全 `Result<String>`，输入校验用 `ensure!`（不是 `assert!`）——panic 会崩 Tauri 主进程使整个 vault 不可用。前端 `buildConfig.ts` clamp 输入到合法范围（random 5-128、zh 词数 3-8、en 词数 3-10、pin 1-32）。
+- **主密码强度**：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 `validateMasterPassword.ts` + 后端双校验。
+- **测试基础设施**：`set_test_db`（octopus-infra）+ `set_test_keychain`（octopus-vault）thread_local override，让单元测试可在 in-memory DB / in-memory Keychain 上隔离运行。
 
 ## 性能优化批次（2026-07-17）
 
