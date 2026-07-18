@@ -61,7 +61,13 @@ settings:
       passwordLabel: Master Password
       passwordConfirm: Confirm Master Password
       passwordMismatch: Entries do not match
-      weakPassword: "Master password too weak (recommended: at least 12 chars with upper/lower/digit/symbol)"
+      weakPassword: "Master password too weak (min 12 chars, must include upper/lower/digit/symbol)"
+      errTooShort: Master password must be at least 12 characters
+      errMissingUppercase: Master password must include at least one uppercase letter (A-Z)
+      errMissingLowercase: Master password must include at least one lowercase letter (a-z)
+      errMissingDigit: Master password must include at least one digit (0-9)
+      errMissingSymbol: Master password must include at least one symbol (e.g. !@#$%^&*)
+      strengthHint: "The master password protects every password in your vault — strength matters. Use 12+ chars with mixed types, or a multi-word passphrase"
       warning: Master password cannot be recovered; losing it makes the vault undecryptable
       submit: Create Vault
     unlock:

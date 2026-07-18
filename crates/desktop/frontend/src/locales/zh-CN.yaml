@@ -61,7 +61,13 @@ settings:
       passwordLabel: 主密码
       passwordConfirm: 确认主密码
       passwordMismatch: 两次输入不一致
-      weakPassword: 主密码过弱（建议至少 12 位，含大小写数字符号）
+      weakPassword: 主密码过弱（至少 12 位，且必须包含大小写字母、数字、符号）
+      errTooShort: 主密码至少需要 12 位
+      errMissingUppercase: 主密码必须包含至少一个大写字母（A-Z）
+      errMissingLowercase: 主密码必须包含至少一个小写字母（a-z）
+      errMissingDigit: 主密码必须包含至少一个数字（0-9）
+      errMissingSymbol: 主密码必须包含至少一个符号（如 !@#$%^&* 等）
+      strengthHint: 主密码保护 vault 中所有密码，强度至关重要。建议用 12+ 位含大小写数字符号，或多词短语
       warning: 主密码不可找回，遗忘后将无法解密保险库
       submit: 创建保险库
     unlock:
