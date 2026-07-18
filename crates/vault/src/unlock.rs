@@ -281,10 +281,15 @@ pub fn regenerate_security_stamp() -> Result<String> {
 mod tests {
     use super::*;
 
-    /// 注入干净 in-memory DB（含 vault_meta 表，无数据）。
+    /// 注入干净 in-memory DB（含 vault_meta 表，无数据）+ 干净 in-memory Keychain。
+    ///
+    /// 同时挂上 thread-local 的 DB 和 Keychain 覆盖，让 setup_vault /
+    /// unlock_with_master_password 等原本依赖 OS Keychain 的流程可在 CI / 无
+    /// Keychain 环境跑。多个测试互不影响（thread_local 隔离 + 各自空 store）。
     fn setup_clean_db() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
         octopus_infra::db::set_test_db(conn);
+        keychain::set_test_keychain();
     }
 
     /// 纯函数测试：meta_to_kdf_params 把 VaultMeta 的 i64 字段映射为 Argon2Params 的 u32 字段。
@@ -344,14 +349,13 @@ mod tests {
         assert!(is_initialized().expect("is_initialized should be true after meta saved"));
     }
 
-    /// setup_vault 完整流程：会调 keychain::load_or_create_machine_key（macOS Keychain），
-    /// 在 CI / 无 Keychain 环境会失败。本地手动运行：
-    ///   cargo test -p octopus-vault --lib unlock::tests::test_setup_vault -- --ignored --nocapture
+    /// setup_vault 完整流程：会调 keychain::load_or_create_machine_key，
+    /// 走 thread-local in-memory Keychain 覆盖（setup_clean_db 已挂上）。
     #[test]
-    #[ignore]
     fn test_setup_vault_creates_meta_and_keys() {
         setup_clean_db();
-        // 清掉可能残留的 Keychain entry（防止之前测试遗留）
+        // 清掉可能残留的 Keychain entry（防止之前测试遗留）——
+        // 已是 in-memory 覆盖，no-op；保留以防有人误改 setup。
         let _ = keychain::delete_machine_key();
 
         let keys = setup_vault("test-password-123").expect("setup_vault");
@@ -371,10 +375,8 @@ mod tests {
         let _ = keychain::delete_machine_key();
     }
 
-    /// setup_vault + unlock_with_master_password 往返（需 Keychain）。
-    /// 本地手动运行：cargo test -p octopus-vault --lib unlock::tests::test_unlock_with_master -- --ignored
+    /// setup_vault + unlock_with_master_password 往返。
     #[test]
-    #[ignore]
     fn test_unlock_with_master_after_setup() {
         setup_clean_db();
         let _ = keychain::delete_machine_key();
@@ -392,10 +394,8 @@ mod tests {
         let _ = keychain::delete_machine_key();
     }
 
-    /// unlock_with_master_password 用错误密码应失败（需 setup 后才有 vault_meta，故需 Keychain）。
-    /// 本地手动运行：cargo test -p octopus-vault --lib unlock::tests::test_unlock_wrong_password_fails -- --ignored
+    /// unlock_with_master_password 用错误密码应失败（需 setup 后才有 vault_meta）。
     #[test]
-    #[ignore]
     fn test_unlock_wrong_password_fails() {
         setup_clean_db();
         let _ = keychain::delete_machine_key();

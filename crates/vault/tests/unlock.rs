@@ -1,16 +1,18 @@
 //! vault::unlock 集成测试。
 //!
-//! ⚠️ 需要真实 ~/.octopus/octopus.db + OS Keychain 权限。
-//! 默认 #[ignore]，需 --ignored 跑。
-//! 测试会修改 ~/.octopus/octopus.db，建议在测试环境用。
+//! 走 thread-local in-memory DB（`set_test_db`）+ in-memory Keychain
+//! （`set_test_keychain`）覆盖，无需 OS Keychain / 真实 ~/.octopus/octopus.db。
+//! 测试完全隔离，可安全地在 CI 上跑。
 
+use octopus_vault::keychain;
 use octopus_vault::unlock;
 
 #[test]
-#[ignore]
 fn test_full_setup_unlock_cycle() {
-    // 清理（如果之前有遗留）
-    // 注意：实际项目应加 reset_vault() 工具函数
+    // 注入 in-memory DB + in-memory Keychain，与单元测试同构。
+    let conn = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
+    octopus_infra::db::set_test_db(conn);
+    keychain::set_test_keychain();
 
     // 1. setup_vault
     let keys = unlock::setup_vault("test-password-123").expect("setup");
