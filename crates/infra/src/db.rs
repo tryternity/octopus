@@ -234,9 +234,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 37 {
-        // v37+ 已最新，直接返回。
-        // 注：app_index 自愈检查已移除——v37 库都经过 v36 迁移段（含 app_index 处理）。
+    if v >= 38 {
+        // v38+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
@@ -398,6 +397,59 @@ fn init_schema(conn: &Connection) -> Result<()> {
             tx.commit()?;
             log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离 + 旧库数据迁移)");
         }
+        // v37 → v38：新增 3 张 vault 表（2026-07-18 Password Vault）。
+        // db.sql 新库已含 vault 表；此处 IF NOT EXISTS 是为兼容跳过 INIT_SQL 的路径。
+        if v < 38 {
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS vault_meta (
+                    id                          INTEGER PRIMARY KEY CHECK (id = 1),
+                    kdf_type                    INTEGER NOT NULL,
+                    kdf_salt                    BLOB NOT NULL,
+                    kdf_iterations              INTEGER NOT NULL,
+                    kdf_memory_kib              INTEGER NOT NULL,
+                    kdf_parallelism             INTEGER NOT NULL,
+                    protected_user_vault_key    TEXT NOT NULL,
+                    app_key_local_enc           TEXT NOT NULL,
+                    app_key_sync_enc            TEXT NOT NULL,
+                    security_stamp              TEXT NOT NULL,
+                    equivalent_domains          TEXT NOT NULL DEFAULT '[]',
+                    public_key                  TEXT,
+                    protected_private_key       TEXT,
+                    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS vault_folders (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name        TEXT NOT NULL,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE IF NOT EXISTS vault_ciphers (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folder_id           INTEGER DEFAULT NULL,
+                    favorite            INTEGER NOT NULL DEFAULT 0,
+                    atype               INTEGER NOT NULL,
+                    name                TEXT NOT NULL,
+                    notes               TEXT DEFAULT NULL,
+                    data                TEXT NOT NULL,
+                    fields              TEXT DEFAULT NULL,
+                    password_history    TEXT DEFAULT NULL,
+                    reprompt            INTEGER NOT NULL DEFAULT 0,
+                    deleted_at          TEXT DEFAULT NULL,
+                    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
+                    ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);
+                ",
+            )?;
+            conn.execute("PRAGMA user_version = 38", [])?;
+            log::info!("schema v37 → v38：新增 vault 表（vault_meta / vault_ciphers / vault_folders）");
+        }
         return Ok(());
     }
 
@@ -433,8 +485,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
         CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
     )?;
-    conn.execute("PRAGMA user_version = 37", [])?;
-    log::info!("DB initialized (v37): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 38", [])?;
+    log::info!("DB initialized (v38): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2952,6 +3004,354 @@ fn is_leap(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
+// ============================================================================
+// Password Vault 模型（schema v38，2026-07-18）
+// ============================================================================
+//
+// 双层 API 模式（同 ActionBarItem）：
+// - 公开 `with_db` 包装函数（业务层调用，单连接线程安全）
+// - 私有 `_at` 内部函数（接 `&Connection`，便于测试和复用）
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VaultMeta {
+    pub id: i64,
+    pub kdf_type: i64,
+    pub kdf_salt: Vec<u8>,
+    pub kdf_iterations: i64,
+    pub kdf_memory_kib: i64,
+    pub kdf_parallelism: i64,
+    pub protected_user_vault_key: String,
+    pub app_key_local_enc: String,
+    pub app_key_sync_enc: String,
+    pub security_stamp: String,
+    pub equivalent_domains: String,
+    pub public_key: Option<String>,
+    pub protected_private_key: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VaultCipher {
+    pub id: i64,
+    pub folder_id: Option<i64>,
+    pub favorite: bool,
+    pub atype: i64,
+    pub name: String,
+    pub notes: Option<String>,
+    pub data: String,
+    pub fields: Option<String>,
+    pub password_history: Option<String>,
+    pub reprompt: i64,
+    pub deleted_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VaultFolder {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct VaultMetaInput {
+    pub kdf_type: i64,
+    pub kdf_salt: Vec<u8>,
+    pub kdf_iterations: i64,
+    pub kdf_memory_kib: i64,
+    pub kdf_parallelism: i64,
+    pub protected_user_vault_key: String,
+    pub app_key_local_enc: String,
+    pub app_key_sync_enc: String,
+    pub security_stamp: String,
+    pub equivalent_domains: String,
+    pub public_key: Option<String>,
+    pub protected_private_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VaultCipherInput {
+    pub folder_id: Option<i64>,
+    pub favorite: bool,
+    pub atype: i64,
+    pub name: String,
+    pub notes: Option<String>,
+    pub data: String,
+    pub fields: Option<String>,
+    pub password_history: Option<String>,
+    pub reprompt: i64,
+}
+
+const VAULT_META_COLS: &str = "id, kdf_type, kdf_salt, kdf_iterations, kdf_memory_kib, kdf_parallelism, \
+                               protected_user_vault_key, app_key_local_enc, app_key_sync_enc, security_stamp, \
+                               equivalent_domains, public_key, protected_private_key, created_at, updated_at";
+
+const VAULT_CIPHER_COLS: &str = "id, folder_id, favorite, atype, name, notes, data, fields, \
+                                 password_history, reprompt, deleted_at, created_at, updated_at";
+
+fn row_to_vault_meta(row: &rusqlite::Row) -> rusqlite::Result<VaultMeta> {
+    Ok(VaultMeta {
+        id: row.get(0)?,
+        kdf_type: row.get(1)?,
+        kdf_salt: row.get(2)?,
+        kdf_iterations: row.get(3)?,
+        kdf_memory_kib: row.get(4)?,
+        kdf_parallelism: row.get(5)?,
+        protected_user_vault_key: row.get(6)?,
+        app_key_local_enc: row.get(7)?,
+        app_key_sync_enc: row.get(8)?,
+        security_stamp: row.get(9)?,
+        equivalent_domains: row.get(10)?,
+        public_key: row.get(11)?,
+        protected_private_key: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn row_to_vault_cipher(row: &rusqlite::Row) -> rusqlite::Result<VaultCipher> {
+    Ok(VaultCipher {
+        id: row.get(0)?,
+        folder_id: row.get(1)?,
+        favorite: row.get::<_, i32>(2)? != 0,
+        atype: row.get(3)?,
+        name: row.get(4)?,
+        notes: row.get(5)?,
+        data: row.get(6)?,
+        fields: row.get(7)?,
+        password_history: row.get(8)?,
+        reprompt: row.get(9)?,
+        deleted_at: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+// ── vault_meta CRUD ──
+
+pub fn load_vault_meta() -> Result<Option<VaultMeta>> {
+    with_db(load_vault_meta_at)
+}
+
+fn load_vault_meta_at(conn: &Connection) -> Result<Option<VaultMeta>> {
+    let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_meta WHERE id = 1", VAULT_META_COLS))?;
+    let mut rows = stmt.query([])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row_to_vault_meta(row)?)),
+        None => Ok(None),
+    }
+}
+
+pub fn upsert_vault_meta(input: &VaultMetaInput) -> Result<()> {
+    with_db(|conn| upsert_vault_meta_at(conn, input))
+}
+
+fn upsert_vault_meta_at(conn: &Connection, input: &VaultMetaInput) -> Result<()> {
+    conn.execute(
+        "INSERT INTO vault_meta (id, kdf_type, kdf_salt, kdf_iterations, kdf_memory_kib, kdf_parallelism,
+                                  protected_user_vault_key, app_key_local_enc, app_key_sync_enc, security_stamp,
+                                  equivalent_domains, public_key, protected_private_key)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            kdf_type = excluded.kdf_type,
+            kdf_salt = excluded.kdf_salt,
+            kdf_iterations = excluded.kdf_iterations,
+            kdf_memory_kib = excluded.kdf_memory_kib,
+            kdf_parallelism = excluded.kdf_parallelism,
+            protected_user_vault_key = excluded.protected_user_vault_key,
+            app_key_local_enc = excluded.app_key_local_enc,
+            app_key_sync_enc = excluded.app_key_sync_enc,
+            security_stamp = excluded.security_stamp,
+            equivalent_domains = excluded.equivalent_domains,
+            public_key = excluded.public_key,
+            protected_private_key = excluded.protected_private_key,
+            updated_at = datetime('now')",
+        params![
+            input.kdf_type,
+            input.kdf_salt,
+            input.kdf_iterations,
+            input.kdf_memory_kib,
+            input.kdf_parallelism,
+            input.protected_user_vault_key,
+            input.app_key_local_enc,
+            input.app_key_sync_enc,
+            input.security_stamp,
+            input.equivalent_domains,
+            input.public_key,
+            input.protected_private_key,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_vault_security_stamp(stamp: &str) -> Result<()> {
+    with_db(|conn| update_vault_security_stamp_at(conn, stamp))
+}
+
+fn update_vault_security_stamp_at(conn: &Connection, stamp: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE vault_meta SET security_stamp = ?1, updated_at = datetime('now') WHERE id = 1",
+        params![stamp],
+    )?;
+    Ok(())
+}
+
+// ── vault_ciphers CRUD ──
+
+pub fn list_vault_ciphers() -> Result<Vec<VaultCipher>> {
+    with_db(list_vault_ciphers_at)
+}
+
+fn list_vault_ciphers_at(conn: &Connection) -> Result<Vec<VaultCipher>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM vault_ciphers ORDER BY updated_at DESC",
+        VAULT_CIPHER_COLS
+    ))?;
+    let rows = stmt.query_map([], row_to_vault_cipher)?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+pub fn load_vault_cipher(id: i64) -> Result<Option<VaultCipher>> {
+    with_db(|conn| load_vault_cipher_at(conn, id))
+}
+
+fn load_vault_cipher_at(conn: &Connection, id: i64) -> Result<Option<VaultCipher>> {
+    let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_ciphers WHERE id = ?1", VAULT_CIPHER_COLS))?;
+    let mut rows = stmt.query(params![id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row_to_vault_cipher(row)?)),
+        None => Ok(None),
+    }
+}
+
+pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<i64> {
+    with_db(|conn| insert_vault_cipher_at(conn, input))
+}
+
+fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO vault_ciphers (folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            input.folder_id,
+            input.favorite as i32,
+            input.atype,
+            input.name,
+            input.notes,
+            input.data,
+            input.fields,
+            input.password_history,
+            input.reprompt,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_vault_cipher(id: i64, input: &VaultCipherInput) -> Result<()> {
+    with_db(|conn| update_vault_cipher_at(conn, id, input))
+}
+
+fn update_vault_cipher_at(conn: &Connection, id: i64, input: &VaultCipherInput) -> Result<()> {
+    conn.execute(
+        "UPDATE vault_ciphers SET
+            folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
+            fields = ?7, password_history = ?8, reprompt = ?9, updated_at = datetime('now')
+         WHERE id = ?10",
+        params![
+            input.folder_id,
+            input.favorite as i32,
+            input.atype,
+            input.name,
+            input.notes,
+            input.data,
+            input.fields,
+            input.password_history,
+            input.reprompt,
+            id,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn soft_delete_vault_cipher(id: i64) -> Result<()> {
+    with_db(|conn| soft_delete_vault_cipher_at(conn, id))
+}
+
+fn soft_delete_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+pub fn restore_vault_cipher(id: i64) -> Result<()> {
+    with_db(|conn| restore_vault_cipher_at(conn, id))
+}
+
+fn restore_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+pub fn permanent_delete_vault_cipher(id: i64) -> Result<()> {
+    with_db(|conn| permanent_delete_vault_cipher_at(conn, id))
+}
+
+fn permanent_delete_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM vault_ciphers WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ── vault_folders CRUD ──
+
+pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
+    with_db(list_vault_folders_at)
+}
+
+fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, sort_order, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(VaultFolder {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            sort_order: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    })?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+pub fn insert_vault_folder(name: &str) -> Result<i64> {
+    with_db(|conn| insert_vault_folder_at(conn, name))
+}
+
+fn insert_vault_folder_at(conn: &Connection, name: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO vault_folders (name) VALUES (?1)",
+        params![name],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3142,7 +3542,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 37, "全新库 init_schema 后应到 v37");
+        assert_eq!(v, 38, "全新库 init_schema 后应到 v38");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3516,9 +3916,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 37（迁移链一路走到最新）
+        // 验证 user_version = 38（迁移链一路走到最新）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 37);
+        assert_eq!(v, 38);
 
         // v36：app_index 表应不存在（被 launcher_index 取代）
         let app_index_count: i64 = conn.query_row(
@@ -3567,7 +3967,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 37);
+        assert_eq!(v, 38);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3697,7 +4097,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 37);
+        assert_eq!(v, 38);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -5029,5 +5429,129 @@ mod tests {
         })
         .unwrap_or(false);
         assert!(exists, "search_frequency 表应在 schema v35 后存在");
+    }
+}
+
+#[cfg(test)]
+mod vault_schema_tests {
+    use super::*;
+
+    /// 在内存 DB 上执行 db.sql，得到含全部 schema（含 vault v38 表）的连接。
+    fn test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("db.sql")).unwrap();
+        conn.execute("PRAGMA user_version = 38", []).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_vault_meta_upsert_and_load() {
+        let conn = test_db();
+        // 全新库无 meta 行
+        assert!(load_vault_meta_at(&conn).unwrap().is_none());
+
+        let input = VaultMetaInput {
+            kdf_type: 0,
+            kdf_salt: vec![1u8; 32],
+            kdf_iterations: 3,
+            kdf_memory_kib: 65_536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:aaa".into(),
+            app_key_local_enc: "v1:bbb".into(),
+            app_key_sync_enc: "v1:ccc".into(),
+            security_stamp: "stamp-1".into(),
+            equivalent_domains: "[]".into(),
+            public_key: None,
+            protected_private_key: None,
+        };
+        upsert_vault_meta_at(&conn, &input).unwrap();
+
+        let loaded = load_vault_meta_at(&conn).unwrap().unwrap();
+        assert_eq!(loaded.id, 1);
+        assert_eq!(loaded.kdf_type, 0);
+        assert_eq!(loaded.kdf_salt, vec![1u8; 32]);
+        assert_eq!(loaded.kdf_iterations, 3);
+        assert_eq!(loaded.kdf_memory_kib, 65_536);
+        assert_eq!(loaded.kdf_parallelism, 4);
+        assert_eq!(loaded.protected_user_vault_key, "v1:aaa");
+        assert_eq!(loaded.app_key_local_enc, "v1:bbb");
+        assert_eq!(loaded.app_key_sync_enc, "v1:ccc");
+        assert_eq!(loaded.security_stamp, "stamp-1");
+        assert_eq!(loaded.equivalent_domains, "[]");
+        assert!(loaded.public_key.is_none());
+        assert!(loaded.protected_private_key.is_none());
+
+        // Upsert（覆盖）—— security_stamp 变更，其他字段保持。
+        let mut input2 = input.clone();
+        input2.security_stamp = "stamp-2".into();
+        upsert_vault_meta_at(&conn, &input2).unwrap();
+        let loaded2 = load_vault_meta_at(&conn).unwrap().unwrap();
+        assert_eq!(loaded2.security_stamp, "stamp-2");
+        // 仍是单行
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vault_meta", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_vault_cipher_crud() {
+        let conn = test_db();
+        let input = VaultCipherInput {
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:enc-name".into(),
+            notes: None,
+            data: "v1:enc-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+        };
+        let id = insert_vault_cipher_at(&conn, &input).unwrap();
+        assert!(id > 0);
+
+        let loaded = load_vault_cipher_at(&conn, id).unwrap().unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.name, "v1:enc-name");
+        assert_eq!(loaded.atype, 1);
+        assert!(!loaded.favorite);
+        assert!(loaded.deleted_at.is_none());
+
+        // 更新
+        let mut input2 = input.clone();
+        input2.name = "v1:enc-name-2".into();
+        input2.favorite = true;
+        update_vault_cipher_at(&conn, id, &input2).unwrap();
+        let loaded2 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
+        assert_eq!(loaded2.name, "v1:enc-name-2");
+        assert!(loaded2.favorite);
+
+        // 软删除
+        soft_delete_vault_cipher_at(&conn, id).unwrap();
+        let loaded3 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
+        assert!(loaded3.deleted_at.is_some(), "软删除后 deleted_at 应非空");
+
+        // 恢复
+        restore_vault_cipher_at(&conn, id).unwrap();
+        let loaded4 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
+        assert!(loaded4.deleted_at.is_none(), "恢复后 deleted_at 应为空");
+
+        // 物理删除
+        permanent_delete_vault_cipher_at(&conn, id).unwrap();
+        assert!(load_vault_cipher_at(&conn, id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_vault_meta_check_constraint() {
+        let conn = test_db();
+        // 尝试插入 id=2 应失败（CHECK id=1）
+        let result = conn.execute(
+            "INSERT INTO vault_meta (id, kdf_type, kdf_salt, kdf_iterations, kdf_memory_kib, kdf_parallelism,
+                                      protected_user_vault_key, app_key_local_enc, app_key_sync_enc, security_stamp)
+             VALUES (2, 0, X'00', 0, 0, 0, '', '', '', '')",
+            [],
+        );
+        assert!(result.is_err(), "CHECK(id=1) 应阻止 id=2 的插入");
     }
 }

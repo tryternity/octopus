@@ -405,3 +405,58 @@ CREATE TABLE IF NOT EXISTS search_frequency (
     last_hit_ts INTEGER NOT NULL DEFAULT 0,  -- 最近命中 Unix 秒
     PRIMARY KEY (score_key)
 );
+
+-- ============================================================================
+-- Password Vault（schema v38，2026-07-18 新增）
+-- ============================================================================
+
+-- vault 元数据：单行（CHECK id=1）。
+-- KDF 参数 + 双层密钥的"保护壳"（master_root_key / K_machine 双密文 app_key）。
+CREATE TABLE IF NOT EXISTS vault_meta (
+    id                          INTEGER PRIMARY KEY CHECK (id = 1),
+    kdf_type                    INTEGER NOT NULL,            -- 0=Argon2id（MVP 仅支持 0）
+    kdf_salt                    BLOB NOT NULL,               -- 32 字节随机盐
+    kdf_iterations              INTEGER NOT NULL,            -- Argon2id: t (默认 3)
+    kdf_memory_kib              INTEGER NOT NULL,            -- Argon2id: m (默认 65536 = 64 MiB)
+    kdf_parallelism             INTEGER NOT NULL,            -- Argon2id: p (默认 4)
+    protected_user_vault_key    TEXT NOT NULL,               -- v1:base64(...)，被 master_root_key 加密
+    app_key_local_enc           TEXT NOT NULL,               -- 被 K_machine 加密（本机无感启动）
+    app_key_sync_enc            TEXT NOT NULL,               -- 被 master_root_key 加密（跨机同步）
+    security_stamp              TEXT NOT NULL,               -- 改主密码 / 改 KDF 时刷新（UUID v4）
+    equivalent_domains          TEXT NOT NULL DEFAULT '[]',  -- JSON 数组的数组
+    public_key                  TEXT,
+    protected_private_key       TEXT,
+    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- vault 密码条目。所有敏感字段（name/notes/data/fields/password_history）均为密文 v1:base64(...)。
+CREATE TABLE IF NOT EXISTS vault_ciphers (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id           INTEGER DEFAULT NULL,            -- 预留：未来 FK vault_folders(id)
+    favorite            INTEGER NOT NULL DEFAULT 0,
+    atype               INTEGER NOT NULL,                -- 1=Login（MVP 仅此）
+    name                TEXT NOT NULL,                   -- 密文 v1:base64(...)
+    notes               TEXT DEFAULT NULL,               -- 密文
+    data                TEXT NOT NULL,                   -- 密文 JSON（uris/username/password/totp）
+    fields              TEXT DEFAULT NULL,               -- 密文 JSON（自定义字段）
+    password_history    TEXT DEFAULT NULL,               -- 密文 JSON（密码历史）
+    reprompt            INTEGER NOT NULL DEFAULT 0,      -- 0=None 1=Password
+    deleted_at          TEXT DEFAULT NULL,               -- 回收站软删除
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
+    ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);
+
+-- vault 文件夹（schema 预留，MVP UI 不暴露，但 vault_ciphers.folder_id 已有 FK）。
+CREATE TABLE IF NOT EXISTS vault_folders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,                    -- 密文 v1:base64(...)
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
