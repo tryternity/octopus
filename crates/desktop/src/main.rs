@@ -395,6 +395,8 @@ pub fn run() {
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_lock,
             #[cfg(feature = "vault")]
+            crate::vault_commands::vault_heartbeat,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_change_password,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_list_ciphers,

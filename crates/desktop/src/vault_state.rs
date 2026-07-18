@@ -38,7 +38,11 @@ pub fn try_global_session() -> Option<SharedVaultSession> {
 
 /// user_vault_key 超时阈值（15 分钟）。
 /// 仅 user_vault_key 受此约束——app_key 不超时（进程生命周期内常驻）。
-pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 15 * 60;
+///
+/// 5 分钟：用户离开保险库页面 / 关闭设置窗口后，5 分钟内回来不需重新输主密码；
+/// 超过 5 分钟视为已离开太久，防偷窥。配合 VaultPanel unmount 时的主动 lock，
+/// 实现「关闭设置窗口立即锁 / 离开 5 分钟超时锁」的双层防护。
+pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 5 * 60;
 
 /// Tauri AppState：进程内持有解锁态的 vault keys。
 ///
@@ -51,7 +55,11 @@ pub struct VaultSession {
     pub user_vault_key: Option<Arc<DerivedKey>>,
     /// None = 未初始化 / 启动失败（少见）
     pub app_key: Option<Arc<DerivedKey>>,
+    /// 解锁时刻（首次输主密码时设）
     pub unlocked_at: Option<Instant>,
+    /// 最后一次心跳时刻——前端保险库 tab 处于前台时每 30s 调一次 vault_heartbeat。
+    /// 超过 5min 未心跳视为「保险库 tab 已离开」，触发超时锁。
+    pub last_active_at: Option<Instant>,
 }
 
 impl Default for VaultSession {
@@ -60,35 +68,63 @@ impl Default for VaultSession {
             user_vault_key: None,
             app_key: None,
             unlocked_at: None,
+            last_active_at: None,
         }
     }
 }
 
 impl VaultSession {
-    /// user_vault_key 是否仍处于解锁有效期内（非空且未超时）。
-    pub fn is_user_vault_unlocked(&self) -> bool {
+    /// user_vault_key 是否仍处于解锁有效期内（非空且 last_active_at 未超时）。
+    ///
+    /// **注意：需要 `&mut self`**——超时分支会主动清零 user_vault_key
+    /// （Zeroizing Drop 立即生效），避免过期 key 在内存残留到下次访问。
+    ///
+    /// 超时基准是 `last_active_at`（前端心跳维护），而非 `unlocked_at`：
+    /// 只要保险库 tab 在前台就持续心跳，永不超时；
+    /// tab 切走 / 窗口关闭 / 应用失焦满 5 分钟 → 心跳停止 → 自动锁定。
+    pub fn is_user_vault_unlocked(&mut self) -> bool {
         if self.user_vault_key.is_none() {
             return false;
         }
-        // 超时检查
-        if let Some(t) = self.unlocked_at {
+        // 超时检查：超时则主动清零（不仅返回 false，还 free key）
+        // 用 last_active_at 作为「最近活动」基准
+        if let Some(t) = self.last_active_at {
             if t.elapsed() > Duration::from_secs(DEFAULT_USER_VAULT_TIMEOUT_SECS) {
+                self.user_vault_key = None;
+                self.unlocked_at = None;
+                self.last_active_at = None;
+                log::info!(
+                    "vault user_vault_key 失活超 {}s，已主动清零",
+                    DEFAULT_USER_VAULT_TIMEOUT_SECS
+                );
                 return false;
             }
         }
         true
     }
 
-    /// 写入 user_vault_key 并刷新 unlocked_at。Task 17 在用户输主密码成功后调。
+    /// 写入 user_vault_key 并初始化 unlocked_at + last_active_at。
+    /// Task 17 在用户输主密码成功后调。
     pub fn set_user_vault_unlocked(&mut self, key: Arc<DerivedKey>) {
+        let now = Instant::now();
         self.user_vault_key = Some(key);
-        self.unlocked_at = Some(Instant::now());
+        self.unlocked_at = Some(now);
+        self.last_active_at = Some(now);
+    }
+
+    /// 前端保险库 tab 处于前台时每 30s 调用一次，刷新 last_active_at。
+    /// 前端卸载（切 tab / 关窗口）后心跳停止，5 分钟后自动锁定。
+    pub fn heartbeat(&mut self) {
+        if self.user_vault_key.is_some() {
+            self.last_active_at = Some(Instant::now());
+        }
     }
 
     /// 锁定 user_vault_key（仅清 user_vault_key，不动 app_key）。
     pub fn lock_user_vault(&mut self) {
         self.user_vault_key = None;
         self.unlocked_at = None;
+        self.last_active_at = None;
     }
 }
 
@@ -111,5 +147,94 @@ pub fn bootstrap_app_key(session: &SharedVaultSession) {
         Err(e) => {
             log::warn!("vault app_key 解锁失败: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use octopus_vault::crypto::DerivedKey;
+    use octopus_vault::Zeroizing;
+
+    fn make_key(byte: u8) -> Arc<DerivedKey> {
+        Arc::new(DerivedKey(Zeroizing::new([byte; 32])))
+    }
+
+    #[test]
+    fn test_timeout_default_is_5min() {
+        assert_eq!(DEFAULT_USER_VAULT_TIMEOUT_SECS, 5 * 60);
+    }
+
+    #[test]
+    fn test_unlocked_within_timeout() {
+        let mut session = VaultSession::default();
+        assert!(!session.is_user_vault_unlocked());
+
+        session.set_user_vault_unlocked(make_key(1));
+        assert!(session.is_user_vault_unlocked());
+    }
+
+    #[test]
+    fn test_timeout_proactively_zeroes_key() {
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+        assert!(session.user_vault_key.is_some());
+
+        // 人为把 last_active_at 设到很久以前（>5min）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(6 * 60));
+
+        // is_user_vault_unlocked 应返回 false 并清零
+        assert!(!session.is_user_vault_unlocked());
+        assert!(session.user_vault_key.is_none(), "key 应被主动清零");
+        assert!(session.unlocked_at.is_none());
+        assert!(session.last_active_at.is_none());
+    }
+
+    #[test]
+    fn test_heartbeat_resets_timeout() {
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+
+        // 假装 4 分钟过去（未超时）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
+        assert!(session.is_user_vault_unlocked());
+
+        // 心跳刷新
+        session.heartbeat();
+        // 再次假装 4 分钟过去（自上次心跳起）—— 仍未超时
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
+        assert!(session.is_user_vault_unlocked());
+
+        // 假装 6 分钟过去（超时）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(6 * 60));
+        assert!(!session.is_user_vault_unlocked());
+    }
+
+    #[test]
+    fn test_heartbeat_ignored_when_locked() {
+        // 未解锁时调 heartbeat 不应崩溃也不应设 last_active_at
+        let mut session = VaultSession::default();
+        session.heartbeat();
+        assert!(session.last_active_at.is_none());
+    }
+
+    #[test]
+    fn test_lock_user_vault_clears_key() {
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+        session.lock_user_vault();
+        assert!(session.user_vault_key.is_none());
+        assert!(session.unlocked_at.is_none());
+        assert!(session.last_active_at.is_none());
+        assert!(!session.is_user_vault_unlocked());
+    }
+
+    #[test]
+    fn test_boundary_exactly_5min_still_unlocked() {
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+        // 5:00 整 - 1s 还在有效期内（边界 > 而非 >=）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(5 * 60 - 1));
+        assert!(session.is_user_vault_unlocked());
     }
 }

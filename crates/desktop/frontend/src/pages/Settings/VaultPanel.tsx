@@ -43,6 +43,23 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
 
   useEffect(() => {
     refreshStatus();
+    // 心跳：保险库 tab 在前台时每 30s 调一次 vault_heartbeat，
+    // 防止 last_active_at 超过 5min 超时。tab 切走 / 窗口关闭 →
+    // useEffect cleanup 清 interval，心跳停止，5min 后自动锁定。
+    const heartbeatInterval = window.setInterval(() => {
+      invoke("vault_heartbeat").catch(() => {
+        // 静默失败（可能在锁定 / 测试中）
+      });
+    }, 30 * 1000);
+
+    // unmount 时主动锁定保险库——关闭设置窗口 / 切换到其他设置 tab
+    // 都会触发 unmount，确保离开页面后必须重新输主密码（防偷窥）。
+    return () => {
+      window.clearInterval(heartbeatInterval);
+      invoke("vault_lock").catch(() => {
+        // 静默失败：可能在测试 / 关闭 app 期间，无需打扰用户
+      });
+    };
   }, [refreshStatus]);
 
   const handleLock = useCallback(async () => {

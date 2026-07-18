@@ -92,7 +92,7 @@ pub struct TotpResultDto {
 fn require_user_vault_key(
     state: &State<'_, SharedVaultSession>,
 ) -> Result<Arc<DerivedKey>, VaultError> {
-    let session = state.read();
+    let mut session = state.write();
     if !session.is_user_vault_unlocked() {
         return Err(VaultError::Locked);
     }
@@ -210,7 +210,8 @@ fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, VaultError> {
 #[tauri::command]
 pub fn vault_status(state: State<'_, SharedVaultSession>) -> Result<VaultStatusDto, String> {
     let initialized = octopus_vault::unlock::is_initialized().map_err(vault_error::to_tauri_error)?;
-    let user_vault_unlocked = state.read().is_user_vault_unlocked();
+    // 用 write() 因为 is_user_vault_unlocked 超时时会主动清零 key
+    let user_vault_unlocked = state.write().is_user_vault_unlocked();
     Ok(VaultStatusDto {
         initialized,
         user_vault_unlocked,
@@ -240,6 +241,16 @@ pub fn vault_unlock(state: State<'_, SharedVaultSession>, password: String) -> R
 #[tauri::command]
 pub fn vault_lock(state: State<'_, SharedVaultSession>) -> Result<(), String> {
     state.write().lock_user_vault();
+    Ok(())
+}
+
+/// 前端保险库 tab 处于前台时每 30s 调用一次，刷新 last_active_at 防止超时锁定。
+///
+/// 前端卸载（切 tab / 关窗口）后心跳停止，5 分钟后 is_user_vault_unlocked
+/// 自动返回 false 并清零 key。
+#[tauri::command]
+pub fn vault_heartbeat(state: State<'_, SharedVaultSession>) -> Result<(), String> {
+    state.write().heartbeat();
     Ok(())
 }
 
