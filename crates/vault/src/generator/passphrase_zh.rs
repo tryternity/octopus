@@ -70,9 +70,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_wordlist_size_4096_after_completion() {
-        // TODO: 词表补全到 4096 后启用此测试
         assert_eq!(
             ZH_WORDLIST_4096.len(),
             4096,
