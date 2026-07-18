@@ -392,6 +392,10 @@ pub fn run() {
             crate::vault_commands::vault_health_report,
             crate::vault_commands::vault_import_bitwarden,
             crate::vault_commands::vault_export,
+            // Task 19: Auto-Type 命令
+            crate::vault_commands::vault_autotype,
+            crate::vault_commands::vault_detect_and_match,
+            crate::vault_commands::vault_copy_password,
             translation_commands::discover_translation_models,
             translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
@@ -615,6 +619,26 @@ pub fn run() {
             if !config.action_bar_shortcut.is_empty() {
                 if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
                     log::error!("Failed to register action bar shortcut: {}", e);
+                }
+            }
+
+            // vault Auto-Type 热键（默认 Cmd+Shift+L）—— Task 19
+            if !config.vault_autotype_shortcut.is_empty() {
+                if let Err(e) = crate::vault_commands::register_vault_autotype_shortcut(
+                    app.handle(),
+                    &config.vault_autotype_shortcut,
+                ) {
+                    log::warn!("注册 vault autotype 热键失败: {}", e);
+                }
+            }
+
+            // vault 生成器热键（默认 Cmd+Shift+G）—— Task 19
+            if !config.vault_generator_shortcut.is_empty() {
+                if let Err(e) = crate::vault_commands::register_vault_generator_shortcut(
+                    app.handle(),
+                    &config.vault_generator_shortcut,
+                ) {
+                    log::warn!("注册 vault generator 热键失败: {}", e);
                 }
             }
 

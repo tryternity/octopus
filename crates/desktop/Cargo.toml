@@ -103,6 +103,9 @@ octopus-clipboard = { path = "../clipboard" }
 # 密码 vault（AppState + 解锁态管理）
 octopus-vault = { path = "../vault" }
 
+# URL 解析（vault_detect_and_match 用 url::Url 解析浏览器 URL）
+url = "2"
+
 # file:// URI 百分号解码（Linux X11/Wayland 的 text/uri-list 文件路径）
 percent-encoding = "2"
 

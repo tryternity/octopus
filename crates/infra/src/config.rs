@@ -202,6 +202,14 @@ pub struct AppConfig {
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
+
+    /// vault Auto-Type 全局热键。默认 CmdOrCtrl+Shift+L。
+    #[serde(default = "default_vault_autotype_shortcut")]
+    pub vault_autotype_shortcut: String,
+
+    /// vault 密码生成器浮窗热键。默认 CmdOrCtrl+Shift+G。
+    #[serde(default = "default_vault_generator_shortcut")]
+    pub vault_generator_shortcut: String,
 }
 
 fn default_engine_mode() -> String {
@@ -291,6 +299,12 @@ fn default_action_bar_search_engine() -> String {
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
+fn default_vault_autotype_shortcut() -> String {
+    "CmdOrCtrl+Shift+L".into()
+}
+fn default_vault_generator_shortcut() -> String {
+    "CmdOrCtrl+Shift+G".into()
+}
 
 fn default_segment_silence() -> f64 {
     400.0
@@ -333,6 +347,8 @@ impl Default for AppConfig {
             action_bar_shortcut: default_action_bar_shortcut(),
             action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
+            vault_autotype_shortcut: default_vault_autotype_shortcut(),
+            vault_generator_shortcut: default_vault_generator_shortcut(),
         }
     }
 }
