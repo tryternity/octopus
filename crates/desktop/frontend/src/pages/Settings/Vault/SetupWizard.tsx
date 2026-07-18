@@ -73,7 +73,8 @@ export default function SetupWizard({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mx-auto max-w-md space-y-4">
+    <div className="flex h-full items-center justify-center overflow-y-auto py-8">
+      <form onSubmit={handleSubmit} className="w-full max-w-md space-y-4">
       {/* 小号 uppercase 标题——控制台风 */}
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-foreground">
@@ -132,7 +133,8 @@ export default function SetupWizard({
       >
         {busy ? "..." : t("settings.vault.setup.submit")}
       </Button>
-    </form>
+      </form>
+    </div>
   );
 }
 
