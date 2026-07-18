@@ -1,8 +1,17 @@
 //! 剪贴板 concealed 写入：30 秒后自动清空。
 //!
-//! 走 octopus-clipboard 的 ClipboardHandle::write_text（自动 suppress_next，
-//! 跳过自身 clipboard_history 监听器），同时单独写 org.nspasteboard.ConcealedType
-//! 让第三方剪贴板工具（Maccy / Paste / iCloud Universal Clipboard）跳过。
+//! **实现**（订正次-2：原文件头注释「走 ClipboardHandle::write_text」与实际代码不符）：
+//! 直接走 NSPasteboard 强类型 API（`objc2-app-kit`），**不**经过 `ClipboardHandle`。
+//! 因此不会自动 `suppress_next`——suppress 必须由调用方在调本函数前手动调
+//! `handle.suppress_next()`，否则 octopus 自身 `clipboard_history` watcher 会把
+//! 密码写入 FTS 索引（详见 vault_commands.rs:650 / 732）。
+//!
+//! 单独写 `org.nspasteboard.ConcealedType` 标记让第三方剪贴板工具
+//! （Maccy / Paste / iCloud Universal Clipboard）跳过收集。
+//!
+//! **定时清空**（订正次-2）：用 `tauri::async_runtime::spawn` + `tokio::time::sleep`，
+//! 与项目其他定时任务一致（避免裸 `std::thread::spawn` 的不可取消 + 多复制竞争定时器）。
+//! 注意仍存在 suppress flag 被提前消费的竞态（见 vault_commands.rs:732 注释）。
 
 use anyhow::Result;
 use std::time::Duration;
@@ -44,10 +53,9 @@ pub fn copy_concealed_with_ttl(text: &str, ttl: Duration) -> Result<()> {
     // 方式：通过 ClipboardHandle::suppress_next（需 AppState 提供 handle 引用）
     // 此处由调用方在调本函数前手动调 handle.suppress_next()
 
-    // spawn 定时清空（默认 30s）
-    let ttl_secs = ttl.as_secs();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(ttl_secs));
+    // spawn 定时清空（默认 30s）——走 tauri::async_runtime + tokio::time（订正次-2）
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(ttl).await;
         let _ = clear_clipboard();
     });
 

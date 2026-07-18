@@ -82,8 +82,16 @@ impl VaultSession {
     ///   - `0`  = 永不超时（用户选了 "Never"，UI 应警告）
     ///   - `>0` = 离开焦点后多少秒锁定
     ///
-    /// **注意：需要 `&mut self`**——超时分支会主动清零 user_vault_key
-    /// （Zeroizing Drop 立即生效），避免过期 key 在内存残留到下次访问。
+    /// **注意：需要 `&mut self`**——超时分支会主动丢弃 session 持有的 `Arc<DerivedKey>`
+    /// 强引用。
+    ///
+    /// **Zeroizing Drop 触发时机**（订正 #8 误导注释）：
+    /// - 若此时无飞行中 Tauri 命令持有 Arc 克隆 → refcount 立即归零 → Drop 立即 zeroize
+    /// - 若有命令持有克隆（如 `vault_autotype` 注入按键期间，可能持有数秒）→
+    ///   key 在该命令返回栈帧销毁后才被 zeroize
+    ///
+    /// 即"立即生效"仅在无并发命令时成立。深度防御的完整方案需要取消令牌让飞行中
+    /// 命令在 lock 时中止——当前未实现，视为已知窗口（autotype 数秒）。
     ///
     /// 超时基准是 `last_active_at`（前端心跳维护），而非 `unlocked_at`：
     /// 只要保险库 tab 在前台就持续心跳，永不超时；

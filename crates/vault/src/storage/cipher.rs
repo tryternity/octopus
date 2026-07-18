@@ -7,13 +7,33 @@ use octopus_infra::db::{self, VaultCipherInput};
 use crate::crypto::DerivedKey;
 use crate::types::{decrypt_cipher_row, Cipher, CipherInput};
 
-pub fn list_ciphers(key: &DerivedKey) -> Result<Vec<Cipher>> {
+/// 列表查询 + 批量解密。
+///
+/// **单行容错**（修复 #6）：单行解密失败不会让整表 Err——失败的 row 记 log + 收集
+/// 到 `failures` 返回，调用方可 toast 提示用户「X 条记录解密失败已跳过」。
+///
+/// 失败常见原因：DB 部分写入、bit-flip、跨版本迁移残留、cipher 字段损坏。
+/// 任一都不应让用户看不到其他完好的 N-1 条。
+///
+/// 返回 `(成功的 cipher 列表, 失败的 cipher_id 列表)`。
+pub fn list_ciphers(key: &DerivedKey) -> Result<(Vec<Cipher>, Vec<i64>)> {
     let rows = db::list_vault_ciphers()?;
     let mut out = Vec::with_capacity(rows.len());
+    let mut failures: Vec<i64> = Vec::new();
     for row in rows {
-        out.push(decrypt_cipher_row(&row, key)?);
+        match decrypt_cipher_row(&row, key) {
+            Ok(c) => out.push(c),
+            Err(e) => {
+                log::warn!(
+                    "cipher id={} 解密失败，已跳过（其他条目继续可见）：{}",
+                    row.id,
+                    e
+                );
+                failures.push(row.id);
+            }
+        }
     }
-    Ok(out)
+    Ok((out, failures))
 }
 
 pub fn load_cipher(id: i64, key: &DerivedKey) -> Result<Option<Cipher>> {
@@ -155,14 +175,14 @@ mod tests {
         let key = make_key(9);
 
         // 空库
-        let empty = list_ciphers(&key).expect("list empty");
+        let (empty, _) = list_ciphers(&key).expect("list empty");
         assert!(empty.is_empty());
 
         // 插两条
         let id_a = create_cipher(&sample_input("SiteA"), &key).expect("create a");
         let id_b = create_cipher(&sample_input("SiteB"), &key).expect("create b");
 
-        let all = list_ciphers(&key).expect("list");
+        let (all, _) = list_ciphers(&key).expect("list");
         assert_eq!(all.len(), 2);
         let names: Vec<String> = all.iter().map(|c| c.name.clone()).collect();
         assert!(names.contains(&"SiteA".to_string()));
@@ -295,7 +315,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(1));
         save_cipher(id_a, &sample_input("A-bumped"), &key).expect("save a");
 
-        let all = list_ciphers(&key).expect("list");
+        let (all, _) = list_ciphers(&key).expect("list");
         assert_eq!(all.len(), 3, "应有 3 行");
         // A 是最近 updated → 应排在第 0 位
         assert_eq!(all[0].id, id_a, "最近 save 的 A 应排第 0");
@@ -327,7 +347,7 @@ mod tests {
         let loaded = load_cipher(id, &key).expect("load").expect("should still exist");
         assert!(loaded.deleted_at.is_some(), "软删后 deleted_at 应有值");
         // list 也仍能拿到（不过滤）
-        let all = list_ciphers(&key).expect("list");
+        let (all, _) = list_ciphers(&key).expect("list");
         assert!(all.iter().any(|c| c.id == id), "软删后 list 应仍包含该行");
     }
 }
