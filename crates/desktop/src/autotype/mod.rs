@@ -20,7 +20,12 @@ pub fn activate_app(_bundle_id: &str) -> anyhow::Result<()> {
     anyhow::bail!("Auto-Type 尚未实现此平台")
 }
 #[cfg(not(target_os = "macos"))]
-pub fn autotype_login(_u: &str, _p: &str, _enter: bool) -> anyhow::Result<()> {
+pub fn autotype_login(
+    _u: &str,
+    _p: &str,
+    _enter: bool,
+    _expected_bundle_id: Option<&str>,
+) -> anyhow::Result<()> {
     anyhow::bail!("Auto-Type 尚未实现此平台")
 }
 #[cfg(not(target_os = "macos"))]

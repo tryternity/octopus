@@ -321,8 +321,11 @@ pub fn vault_list_ciphers(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<Vec<CipherDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_list_ciphers: {} 条记录解密失败已跳过", failures.len());
+    }
     Ok(ciphers.into_iter().map(cipher_to_dto).collect())
 }
 
@@ -563,8 +566,11 @@ pub fn vault_health_report(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<HealthReport, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_health_report: {} 条记录解密失败已跳过", failures.len());
+    }
     Ok(octopus_vault::health::generate_report(&ciphers))
 }
 
@@ -587,8 +593,11 @@ pub fn vault_export(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<String, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_export: {} 条记录解密失败已跳过（未导出）", failures.len());
+    }
     octopus_vault::importer::export_vault_json(&ciphers).map_err(vault_error::to_tauri_error)
 }
 
@@ -612,6 +621,7 @@ pub fn vault_autotype(
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
+    master_password: Option<String>,
 ) -> Result<AutoTypeResultDto, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
@@ -620,7 +630,22 @@ pub fn vault_autotype(
         .map_err(vault_error::to_tauri_error)?
         .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
 
-    // 2. reprompt 确认（如有）—— 由前端在调本命令前弹密码框；本命令不直接处理
+    // 2. reprompt 强制校验（后端，不可绕过）—— cipher.reprompt == Password 时
+    //    必须传 master_password 且密码正确；否则拒绝（防 DevTools / 篡改前端绕过）。
+    //    不像首发版那样把 reprompt 委托给前端——前端校验是不可信的。
+    if cipher.reprompt == RepromptType::Password {
+        match master_password {
+            Some(pwd) => {
+                // 密码错或 vault 异常 → InvalidMasterPassword（user-safe 消息，不透传内部细节）
+                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                    vault_error::serialize(&VaultError::InvalidMasterPassword)
+                })?;
+            }
+            None => {
+                return Err(vault_error::serialize(&VaultError::RepromptRequired));
+            }
+        }
+    }
 
     // 3. 提取 username / password
     // CipherData 当前仅 Login 单变体；预留 unreachable arm 以便未来扩展 SecureNote/Card/Identity。
@@ -638,7 +663,10 @@ pub fn vault_autotype(
     };
 
     // 4. Auto-Type
-    match autotype::autotype_login(&username, &password, false) {
+    // expected_bundle_id=None：最小防御，只校验前台不是 octopus 自身（防 VaultPicker
+    // 未 hide 时密码打到 octopus 自己窗口的泄露）。完整白名单需前端在 hide 前调
+    // url_detect 拿到浏览器 bundle_id 并传入，未来增强。
+    match autotype::autotype_login(&username, &password, false, None) {
         Ok(()) => Ok(AutoTypeResultDto {
             filled: true,
             message: "已填充".into(),
@@ -676,7 +704,13 @@ pub fn vault_detect_and_match(
         // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
         return octopus_vault::storage::list_ciphers(&key)
             .map_err(vault_error::to_tauri_error)
-            .map(|cs| {
+            .map(|(cs, failures)| {
+                if !failures.is_empty() {
+                    log::warn!(
+                        "vault_detect_and_match (fallback): {} 条记录解密失败已跳过",
+                        failures.len()
+                    );
+                }
                 let mut filtered: Vec<Cipher> = cs
                     .into_iter()
                     .filter(|c| c.deleted_at.is_none())
@@ -692,8 +726,14 @@ pub fn vault_detect_and_match(
     }
 
     let url = url::Url::parse(&url_str).map_err(|e| vault_error::to_tauri_error(anyhow::anyhow!(e)))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!(
+            "vault_detect_and_match (url-match): {} 条记录解密失败已跳过",
+            failures.len()
+        );
+    }
 
     // 默认等价域名（MVP）
     let equivalent = octopus_vault::matcher::psl::default_equivalent_domains();

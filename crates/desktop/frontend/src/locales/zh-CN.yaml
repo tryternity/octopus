@@ -148,6 +148,8 @@ settings:
       fillFail: 自动填充失败，已复制到剪贴板
       uninitTitle: 保险库未初始化
       uninitHint: 请先在「设置 → 密码保险库」中创建保险库
+      repromptTitle: 再次验证主密码
+      repromptHint: 「${name}」标记为高敏感，自动填充前需再次输入主密码确认
     generator:
       title: 密码生成器
       mode:

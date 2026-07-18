@@ -279,6 +279,27 @@ fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
     Ok(())
 }
 
+/// 仅校验主密码是否正确，不做解锁副作用。
+///
+/// 用于二次验证场景（如 reprompt 保护的高敏感 cipher 自动填充）：调用方已经
+/// 解锁过 vault（有 user_vault_key 在 session 里），但需要再次确认用户是
+/// 真正的主人才能执行高敏感操作。
+///
+/// 实现与 [`unlock_with_master_password`] 共享前半段——派生 master_root_key +
+/// 尝试解密 protected_user_vault_key；解密成功（AES-GCM tag 校验通过）即密码正确。
+///
+/// 返回 `Ok(())` 表示密码正确，`Err(...)` 表示密码错或 vault 异常。
+pub fn verify_master_password(password: &str) -> Result<()> {
+    let meta = meta::read_vault_meta()
+        .context("读取 vault_meta 失败")?
+        .context("vault 未初始化")?;
+    let params = meta_to_kdf_params(&meta);
+    let master_root_key = derive_master_root_key(password.as_bytes(), &meta.kdf_salt, &params)?;
+    // 尝试解密——AES-GCM tag 校验失败即密码错
+    master_root_key.decrypt(&meta.protected_user_vault_key)?;
+    Ok(())
+}
+
 /// 仅刷新 security_stamp 并返回新值。
 pub fn regenerate_security_stamp() -> Result<String> {
     let new_stamp = Uuid::new_v4().to_string();

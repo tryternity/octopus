@@ -148,6 +148,8 @@ settings:
       fillFail: Auto-fill failed, copied to clipboard
       uninitTitle: Vault not initialized
       uninitHint: Create the vault under "Settings → Password Vault" first
+      repromptTitle: Verify master password
+      repromptHint: "${name} is marked sensitive; re-enter your master password to auto-fill"
     generator:
       title: Password Generator
       mode:

@@ -26,6 +26,8 @@ pub enum VaultError {
     Locked,
     /// 主密码错误（unlock / change_password）。
     InvalidMasterPassword,
+    /// reprompt 保护的高敏感 cipher 操作未提供 master_password——前端应弹密码框。
+    RepromptRequired,
     /// 指定 id 的 cipher 不存在（已删除 / id 错）。
     CipherNotFound(i64),
     /// 通用用户输入错误（DTO 校验失败等）。
@@ -51,6 +53,7 @@ impl VaultError {
             Self::NotInitialized => "密码库尚未初始化，请先在设置中创建",
             Self::Locked => "密码库已锁定，请输入主密码解锁",
             Self::InvalidMasterPassword => "主密码错误",
+            Self::RepromptRequired => "该条目需要再次验证主密码",
             Self::CipherNotFound(_) => "未找到该密码条目",
             Self::InvalidInput(_) => "输入无效，请检查后重试",
             Self::TotpInvalidSecret => "TOTP 密钥格式无效（应为 Base32 字符串）",
@@ -68,6 +71,7 @@ impl VaultError {
             Self::NotInitialized => "not_initialized",
             Self::Locked => "locked",
             Self::InvalidMasterPassword => "invalid_master_password",
+            Self::RepromptRequired => "reprompt_required",
             Self::CipherNotFound(_) => "cipher_not_found",
             Self::InvalidInput(_) => "invalid_input",
             Self::TotpInvalidSecret => "totp_invalid",

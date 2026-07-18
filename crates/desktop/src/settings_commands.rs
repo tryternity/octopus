@@ -464,8 +464,11 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
     {
         // follow-up #7：secret_key 可能是 v1: 加密格式（vault 启用后 Task 20 迁移过），
         // 透明解密得到明文 API Key。本地 / 未迁移明文 → no-op 返回原值。
-        let secret_key_plain =
-            crate::vault_secret_access::try_decrypt_secret_global(&entry.secret_key);
+        // 安全修复 #5：vault 启用但解密失败 → Err，不把密文当 bearer 发到云端。
+        let secret_key_plain = crate::vault_secret_access::try_decrypt_secret_global(
+            &entry.secret_key,
+        )
+        .map_err(|_| "云端推理失败：保险库未解锁或密文损坏，请先解锁保险库".to_string())?;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut req = entry.source.clone().into_client_request()
             .map_err(|e| format!("WS 端点无效: {}", e))?;
