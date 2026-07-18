@@ -24,3 +24,4 @@ pub mod totp;
 pub mod matcher;
 pub mod health;
 pub mod importer;
+pub mod migrate;

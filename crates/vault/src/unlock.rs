@@ -61,7 +61,7 @@ fn meta_to_kdf_params(meta: &VaultMeta) -> Argon2Params {
 ///   - 生成 K_machine（OS Keychain）
 ///   - 双密文 app_key 落盘
 ///   - 落盘 vault_meta
-///   - 不迁移 models.secret_key（迁移由 Task 20 单独负责）
+///   - 一次性迁移现有明文 models.secret_key 为 app_key 加密格式（Task 20）
 pub fn setup_vault(password: &str) -> Result<UnlockedKeys> {
     ensure!(!is_initialized()?, "vault 已初始化");
 
@@ -101,8 +101,12 @@ pub fn setup_vault(password: &str) -> Result<UnlockedKeys> {
     };
     meta::save_vault_meta(&input)?;
 
-    // 注意：Task 20 将在此处插入 migrate_secret_keys_to_encrypted(&app_key) 调用，
-    // 用于把 models.secret_key 从明文迁移到 app_key 加密。当前 Task 9 暂不实现。
+    // 一次性迁移现有明文 secret_key（仅首次 init vault 时触发）
+    match crate::migrate::migrate_secret_keys_to_encrypted(&app_key) {
+        Ok(n) if n > 0 => log::info!("已迁移 {} 个 model 的 secret_key 为加密格式", n),
+        Ok(_) => log::debug!("无明文 secret_key 需迁移"),
+        Err(e) => log::warn!("secret_key 迁移失败（不阻塞 setup）: {}", e),
+    }
 
     Ok(UnlockedKeys {
         user_vault_key,

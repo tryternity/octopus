@@ -3352,6 +3352,35 @@ fn insert_vault_folder_at(conn: &Connection, name: &str) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+/// 返回所有需要迁移的 model：(id, 明文 secret_key)。
+/// 仅 is_local=0 且不以 v1: 开头的行。
+pub fn list_models_for_secret_migration() -> Result<Vec<(i64, String)>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, secret_key FROM models WHERE is_local = 0 AND secret_key != '' AND secret_key NOT LIKE 'v1:%'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 更新指定 model 的 secret_key 字段。
+pub fn update_model_secret_key(model_id: i64, new_secret_key: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE models SET secret_key = ?, updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![new_secret_key, model_id],
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
