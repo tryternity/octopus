@@ -6819,3 +6819,67 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 - bun run test: 304 pass
 - cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
 
+---
+
+## 修订：#7 TOTP follow-up（2026-07-19，commit 1754d649）
+
+针对「未修复」表中标为"单独迭代"的 #7 单独做的 follow-up：
+
+### 已修
+
+- [x] **启用 totp-rs otpauth feature**（Cargo.toml）：原 `default-features=false` 关闭 otpauth，无法解析 otpauth:// URL
+- [x] **`TotpGenerator::from_base32` 改用 `new_unchecked`**：跳过 totp-rs 强制 ≥128bit 限制，支持 RFC 6238 下限的 80bit 标准 secret（`JBSWY3DPEHPK3PXP` 解码 10 字节）
+- [x] **新增 `from_otpauth_url`**：解析完整 URL（SHA256/SHA512、digits=8、period=60 等变体），GitHub/银行/Authy 导出场景必需
+- [x] **新增 `from_input` 智能分发**：前端用户粘贴任一格式（`otpauth://` 开头 → URL；否则 → 裸 Base32）都能识别
+- [x] **`seconds_remaining` 按 `self.step` 算**：支持非 30s period
+- [x] **后端 `vault_generate_totp` 改用 `from_input`**：cipher 无需知道存的是哪种格式
+- [x] **前端 CipherEditor totp 字段** placeholder 显示 `JBSWY3DPEHPK3PXP 或 otpauth://totp/...`，label 改为 `TOTP（Base32 或 otpauth URL）`
+- [x] **6 个新测试**：`test_short_80bit_secret_accepted`（80bit 标准 secret）、`test_otpauth_url_full_parse`、`test_otpauth_url_sha256_8digits_60s`（银行/Authy 非标准变体）、`test_otpauth_url_minimal`、`test_from_input_dispatch`（智能分发 + 大小写不敏感 + trim）、`test_otpauth_url_invalid`
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 135 pass（+6 TOTP 测试）
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+---
+
+## 修订：复审 A-F 修复 + #4 #10 收尾（2026-07-19，commit 086b6890 / 2622d0ab）
+
+收到外部复审报告（针对 commit 48eb2034），6 个遗留/新引入问题全部复查成立，全部修。
+
+### 复审 A-F 修复（commit 086b6890）
+
+| 字母 | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| A | 🔴 高 | vault_copy_password 缺 reprompt 校验（#3 的孪生缺口） | 加 master_password 参数 + 强制校验；前端 copyOnly 路径也走 reprompt view |
+| B | 🟠 中 | #2 verify_focused(None) 第三方 app 注入未闭合 | **仅文档化**：spec §4.5 加"已知窗口（B 复审遗留）"段，明确 username 可能泄漏 + 残留风险 |
+| C | 🟡 中 | clipboard TTL 误清用户后续复制 | 新增 `clear_clipboard_if_matches(expected)`：读 NSPasteboard.stringForType 比对，相同才清 |
+| D | 🟡 中 | verify_focused osascript 失败 fail-open | `unwrap_or_default()` → `?` 传播 bail（fail-closed） |
+| E | 🟢 低 | 硬编码 com.octopus.desktop 与 tauri.conf 耦合 | 提取 `OCTOPUS_BUNDLE_ID` 常量 + `test_octopus_bundle_id_matches_tauri_config` 测试锁死 |
+| F | 🟢 低 | config.rs 解密失败返空串与其他 3 处不一致 | log message 改为更明显的"保险库未解锁或密文损坏"（签名约束保留） |
+
+### 后续收尾（commit 2622d0ab）
+
+| # | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| #4 | 🟡 中 | vault_meta 非原子 RMW | 新增 `meta_lock.rs`：进程内 `OnceLock<Mutex<()>>`，串行化 change_master_password + refresh_app_key_local_enc 的 read-modify-write 整段；测试 `test_lock_serializes_concurrent_writers` |
+| #10 | 🟢 低 | activate_app bundle_id AppleScript 注入 | `validate_bundle_id`：char-level 校验 `[A-Za-z0-9.-]` 长度 1-256；测试覆盖合法格式 + 引号/分号/反引号/中文等注入尝试 |
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 136 pass（+1 meta_lock 测试）
+- cargo test -p octopus-desktop validate_bundle_id: 2 pass（accept_legal + reject_injection）
+- cargo test -p octopus-desktop test_octopus_bundle_id: 1 pass（常量一致性）
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 仍未修（仅文档化）
+
+剩 3 个：
+
+| # | 不修原因 |
+|---|---|
+| #9 K_machine 派生 file_key 弱 | 已知工程折衷（adhoc 签名 keychain 失效），spec §2.5 已补威胁模型 |
+| 次-1 心跳以 focus 为基准 | 设计选择，"窗口聚焦即续命"；spec/architecture 已注释说明 |
+| 次-3 suppress_next 竞态 | 竞态存在但报告归因 iCloud 不准；ConcealedType 标记本已让 iCloud 跳过 |
+

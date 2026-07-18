@@ -503,6 +503,7 @@ pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool;
 | INV-8 | TOTP：HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
 | INV-9 | 锁定超时以 `last_active_at` 为基准（非 `unlocked_at`）；前端心跳维护 `last_active_at`，vault tab 离开 + 配置时间到 → 自动锁。`timeout_secs=0` 表示永不锁定（UI 警告）。 |
 | INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。 |
+| INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc`）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4）。防双 modal 并发导致整行覆盖丢失字段 → 永久数据损坏。 |
 
 ---
 
@@ -924,6 +925,8 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
 | INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
 | INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
+| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。当前 activate_app 是 dead code（无生产调用），但白名单作为防御性校验先就位 |
+| INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通 |
 
 ### 4.8 跨平台扩展计划
 
@@ -1298,7 +1301,7 @@ UI 展示：弱密码列表、重复密码组、平均强度评分。点击任�
 | INV-G3 | Passphrase EN 必须用 EFF 大词表（7776 词） |
 | INV-G4 | Passphrase ZH 必须用 jieba 词频 TOP 4096 双字词 |
 | INV-G5 | 不存生成器历史 |
-| INV-G6 | TOTP 算法固定 HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
+| INV-G6 | TOTP 默认参数：HMAC-SHA1, 30s, 6 位, ±1 步漂移。**2026-07-19 修复 #7**：支持 otpauth:// URL 变体（SHA256/SHA512、digits=8、period=60），secret 长度 ≥ 80bit（RFC 6238 下限，原 totp-rs 默认 ≥128bit 过严拒绝标准 secret） |
 | INV-G7 | 健康检查的 SHA-256 hash 不持久化到 DB |
 | INV-G8 | **生成器所有 5 个公开函数返回 `Result<String>`，永不 panic**（输入校验用 `ensure!` 而非 `assert!`）—— panic 会崩 Tauri 主进程，使整个 vault 不可用 |
 
