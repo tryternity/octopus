@@ -46,9 +46,9 @@ const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "hotword", icon: Type, labelKey: "settings.nav.hotword" },
   { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
   { page: "agent", icon: Bot, labelKey: "settings.nav.agent" },
-  { page: "system", icon: Activity, labelKey: "settings.nav.system" },
   // follow-up #10: vault nav 仅在 vault feature on 时显示（isVaultEnabled 控制）。
   { page: "vault", icon: Lock, labelKey: "settings.nav.vault" },
+  { page: "system", icon: Activity, labelKey: "settings.nav.system" },
 ];
 
 function Settings() {
