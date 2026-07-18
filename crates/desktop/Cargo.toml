@@ -100,11 +100,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
 octopus-clipboard = { path = "../clipboard" }
 
-# 密码 vault（AppState + 解锁态管理）
-octopus-vault = { path = "../vault" }
+# 密码 vault（AppState + 解锁态管理）—— follow-up #10: vault feature gate，
+# 关闭后整个 password manager 不编入（更小 binary、无 Keychain 访问）。
+octopus-vault = { path = "../vault", optional = true }
 
-# URL 解析（vault_detect_and_match 用 url::Url 解析浏览器 URL）
-url = "2"
+# URL 解析（vault_detect_and_match 用 url::Url 解析浏览器 URL）—— vault 专用。
+# url crate 同时也是 octopus-vault 的依赖，feature off 时此处 optional 让它彻底切掉。
+url = { version = "2", optional = true }
 
 # file:// URI 百分号解码（Linux X11/Wayland 的 text/uri-list 文件路径）
 percent-encoding = "2"
@@ -113,8 +115,17 @@ percent-encoding = "2"
 zip = "2"
 
 [features]
-default = ["embedded"]
+default = ["embedded", "vault"]
 embedded = ["octopus-asr-local"]
+# follow-up #10: vault feature gate。关闭后所有 vault 模块不编入：
+# - octopus-vault 依赖切掉（更小 binary、无 Keychain 访问、无密码管理 UI）
+# - vault_state / vault_commands / autotype / vault_error 模块整体 cfg 掉
+# - 全局热键 Cmd+Shift+L / Cmd+Shift+G 不注册
+# - AppState 不注入 SharedVaultSession
+# 注意：vault_secret_access 模块**总是**编译——它给云端推理热路径（Aliyun / LLM polish /
+# 云端翻译）提供 `try_decrypt_secret_global` 入口；feature off 时该函数退化为返回 raw
+# 原值（无 vault 即不可能有 v1: 加密格式），4 个调用点无需 cfg gate。
+vault = ["dep:octopus-vault", "dep:url"]
 remote-ws = ["tokio-tungstenite", "futures-util"]
 remote-grpc = ["tonic", "prost", "tonic-build"]
 # 云端 ASR WS 流式识别（Aliyun / ByteDance / Tencent / Baidu）：

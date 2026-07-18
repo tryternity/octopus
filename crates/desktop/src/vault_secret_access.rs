@@ -20,13 +20,29 @@
 //! 但本模块按「前缀判定」而非「is_local 判定」，因为：
 //! 1. 本地 manifest JSON 不会以 `v1:` 开头（迁移 SQL 含 `is_local=0` 守卫）
 //! 2. 调用方已知自己在处理云端 Key（`ResolvedEngine.entry.is_local == false`）
+//!
+//! follow-up #10: vault feature gate。本模块**总是**编译（不被 cfg 掉）——
+//! 它是云端推理热路径（AliyunEngine / config::llm_config_ignore_mode / 云端翻译）
+//! 的统一 chokepoint，4 个调用点不希望加 cfg gate。feature off 时整模块退化为
+//! 「raw 原样返回」的 no-op（没 vault 即不可能有 v1: 加密格式）。
+//!
+//! 公开 API 在两条 feature 路径下签名一致——调用方无感知。
 
+#[cfg(feature = "vault")]
 use std::sync::Arc;
 
+#[cfg(feature = "vault")]
 use octopus_vault::crypto::symmetric::CIPHERTEXT_PREFIX;
+#[cfg(feature = "vault")]
 use octopus_vault::crypto::DerivedKey;
 
+#[cfg(feature = "vault")]
 use crate::vault_state::SharedVaultSession;
+
+// ===== feature = "vault"：真实实现 =====
+//
+// 仅 vault feature on 时编译——这些函数引用 octopus_vault 内部类型（DerivedKey /
+// CIPHERTEXT_PREFIX / app_key.decrypt），feature off 时这些类型不存在。
 
 /// 按 model_name 读 DB secret_key，透明解密 `v1:` 前缀。
 ///
@@ -36,6 +52,7 @@ use crate::vault_state::SharedVaultSession;
 /// 3. raw 以 `v1:` 开头但 vault 未初始化 / app_key 不可用 → 返回 Err
 ///    （让调用方决定是否 fallback——通常显示「请先解锁 vault」）
 /// 4. raw 以 `v1:` 开头且 app_key 可用 → `app_key.decrypt(raw)` 返回明文 API Key
+#[cfg(feature = "vault")]
 pub fn read_model_secret_key(
     model_name: &str,
     session: &SharedVaultSession,
@@ -56,6 +73,7 @@ pub fn read_model_secret_key(
 ///
 /// `session` 可通过 [`crate::vault_state::try_global_session`] 在非 Tauri-State
 /// 调用点取（AliyunEngine / config::llm_config_ignore_mode 等）。
+#[cfg(feature = "vault")]
 pub fn try_decrypt_secret(
     raw: &str,
     session: &SharedVaultSession,
@@ -90,6 +108,7 @@ pub fn try_decrypt_secret(
 /// 注意：与 [`try_decrypt_secret`] 不同，本函数在 vault 已启用但 app_key 不可用时
 /// 不返回 Err——而是返回 raw（让上层推理路径继续走，最终由云端 401 报错暴露）。
 /// 这样在 vault 未启用 / 启动早期 / 测试环境都不会破坏现有行为。
+#[cfg(feature = "vault")]
 pub fn try_decrypt_secret_global(raw: &str) -> String {
     match crate::vault_state::try_global_session() {
         Some(session) => match try_decrypt_secret(raw, &session) {
@@ -106,7 +125,22 @@ pub fn try_decrypt_secret_global(raw: &str) -> String {
     }
 }
 
-#[cfg(test)]
+// ===== feature != "vault"：no-op 退化 =====
+//
+// follow-up #10: vault feature off 时，octopus_vault crate 不存在，无法解密。
+// 但 v1: 加密格式只可能由 vault 写入——vault 从未编入即不可能有 v1: 数据，
+// 因此 raw 原样返回是正确行为（与 vault on + 未初始化时的语义一致）。
+//
+// 4 个调用点（engine_aliyun / settings_commands / config / action_bar_commands）
+// 都通过 try_decrypt_secret_global，无需 cfg gate。
+
+#[cfg(not(feature = "vault"))]
+pub fn try_decrypt_secret_global(raw: &str) -> String {
+    // No vault → 无加密可能 → 原样返回（legacy 明文 / pre-vault API Key）。
+    raw.to_string()
+}
+
+#[cfg(all(test, feature = "vault"))]
 mod tests {
     use super::*;
     use crate::vault_state::{SharedVaultSession, VaultSession};

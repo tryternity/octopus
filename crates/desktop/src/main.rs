@@ -4,10 +4,17 @@ mod activation;
 mod action_bar_window;
 mod action_bar_commands;
 // vault（Task 16+）：AppState + Tauri 命令 + 自动填写
+// follow-up #10: vault feature gate——关闭后所有 vault 模块整体 cfg 掉。
+// 例外：vault_secret_access **总是**编译（云端推理热路径 chokepoint，feature off 时
+// 退化为返回 raw 原值的 no-op）。
+#[cfg(feature = "vault")]
 pub mod vault_state;
+#[cfg(feature = "vault")]
 pub mod vault_commands;
 pub mod vault_secret_access;
+#[cfg(feature = "vault")]
 pub mod vault_error;
+#[cfg(feature = "vault")]
 pub mod autotype;
 mod overlay_window;
 mod action_hotkey;
@@ -377,27 +384,49 @@ pub fn run() {
             extensions::list_extensions,
             extensions::delete_extension,
             extensions::refresh_extensions,
-            // vault 命令（2026-07-18）
+            // follow-up #10: vault feature gate——feature off 时这些命令不注册，
+            // 前端通过 is_vault_enabled() 检测后整段隐藏 vault UI。
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_status,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_setup,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_unlock,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_lock,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_change_password,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_list_ciphers,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_get_cipher,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_create_cipher,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_update_cipher,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_delete_cipher,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_restore_cipher,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_generate,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_generate_totp,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_health_report,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_import_bitwarden,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_export,
             // Task 19: Auto-Type 命令
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_autotype,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_detect_and_match,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_password,
+            // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
+            feature_flags::is_vault_enabled,
             translation_commands::discover_translation_models,
             translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
@@ -625,22 +654,26 @@ pub fn run() {
             }
 
             // vault Auto-Type 热键（默认 Cmd+Shift+L）—— Task 19
-            if !config.vault_autotype_shortcut.is_empty() {
-                if let Err(e) = crate::vault_commands::register_vault_autotype_shortcut(
-                    app.handle(),
-                    &config.vault_autotype_shortcut,
-                ) {
-                    log::warn!("注册 vault autotype 热键失败: {}", e);
+            // follow-up #10: vault feature gate——feature off 时整段跳过（命令模块不存在）。
+            #[cfg(feature = "vault")]
+            {
+                if !config.vault_autotype_shortcut.is_empty() {
+                    if let Err(e) = crate::vault_commands::register_vault_autotype_shortcut(
+                        app.handle(),
+                        &config.vault_autotype_shortcut,
+                    ) {
+                        log::warn!("注册 vault autotype 热键失败: {}", e);
+                    }
                 }
-            }
 
-            // vault 生成器热键（默认 Cmd+Shift+G）—— Task 19
-            if !config.vault_generator_shortcut.is_empty() {
-                if let Err(e) = crate::vault_commands::register_vault_generator_shortcut(
-                    app.handle(),
-                    &config.vault_generator_shortcut,
-                ) {
-                    log::warn!("注册 vault generator 热键失败: {}", e);
+                // vault 生成器热键（默认 Cmd+Shift+G）—— Task 19
+                if !config.vault_generator_shortcut.is_empty() {
+                    if let Err(e) = crate::vault_commands::register_vault_generator_shortcut(
+                        app.handle(),
+                        &config.vault_generator_shortcut,
+                    ) {
+                        log::warn!("注册 vault generator 热键失败: {}", e);
+                    }
                 }
             }
 
@@ -752,15 +785,23 @@ pub fn run() {
             // vault AppState：进程内持有解锁态的 user_vault_key / app_key。
             // 先 bootstrap_app_key（用 K_machine 尝试解 app_key）再 manage——
             // 这样从 Tauri State 取到 session 时 app_key 已就位（若本机已初始化）。
-            let vault_session: vault_state::SharedVaultSession = std::sync::Arc::new(
-                parking_lot::RwLock::new(vault_state::VaultSession::default()),
-            );
-            vault_state::bootstrap_app_key(&vault_session);
-            app.manage(vault_session.clone());
-            // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
-            // （AliyunEngine::transcribe / config::llm_config_ignore_mode / 云端翻译）
-            // 解密 v1: 前缀的 secret_key。
-            vault_state::set_global_session(vault_session);
+            //
+            // follow-up #10: vault feature gate——feature off 时整段跳过：
+            //   - 不 manage SharedVaultSession（vault_state 模块未编入）
+            //   - 不 set_global_session（try_global_session 返回 None →
+            //     vault_secret_access::try_decrypt_secret_global 退化为 raw passthrough）
+            #[cfg(feature = "vault")]
+            {
+                let vault_session: vault_state::SharedVaultSession = std::sync::Arc::new(
+                    parking_lot::RwLock::new(vault_state::VaultSession::default()),
+                );
+                vault_state::bootstrap_app_key(&vault_session);
+                app.manage(vault_session.clone());
+                // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
+                // （AliyunEngine::transcribe / config::llm_config_ignore_mode / 云端翻译）
+                // 解密 v1: 前缀的 secret_key。
+                vault_state::set_global_session(vault_session);
+            }
 
             // 3. Create Coordinator
             let coordinator = Coordinator::new(
@@ -898,4 +939,34 @@ fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
 
 fn main() {
     run();
+}
+
+/// follow-up #10: cargo feature 探针模块。
+///
+/// 放独立子模块是为了避开 tauri::command 宏与同模块 generate_handler! 之间的
+/// 「macro-expanded macro_export 不能被绝对路径引用」限制（issue #52234）。
+/// 命令本身永远注册，不被 vault feature gate——前端据此决定是否渲染 vault UI。
+mod feature_flags {
+    /// 返回编译期 `cfg!(feature = "vault")`。
+    ///
+    /// 前端 Settings/index.tsx / App.tsx 启动时 invoke 此命令，按返回值决定是否渲染
+    /// VaultPanel nav / password_generator_window / vault_picker_window 路由。
+    #[tauri::command]
+    pub fn is_vault_enabled() -> bool {
+        cfg!(feature = "vault")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// follow-up #10: 验证 is_vault_enabled 与 cfg!(feature = "vault") 一致。
+        ///
+        /// 此测试在两条 feature 路径下都编译（is_vault_enabled 始终注册）。
+        /// feature on → true；feature off → false。
+        #[test]
+        fn test_is_vault_enabled_reflects_cfg() {
+            assert_eq!(is_vault_enabled(), cfg!(feature = "vault"));
+        }
+    }
 }

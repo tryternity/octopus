@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen as rawListen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Event } from "@tauri-apps/api/event";
@@ -47,6 +47,7 @@ const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "models", icon: Box, labelKey: "settings.nav.models" },
   { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
   { page: "system", icon: Activity, labelKey: "settings.nav.system" },
+  // follow-up #10: vault nav 仅在 vault feature on 时显示（isVaultEnabled 控制）。
   { page: "vault", icon: Lock, labelKey: "settings.nav.vault" },
 ];
 
@@ -55,6 +56,8 @@ function Settings() {
   const [page, setPage] = useState<PageName>("settings");
   const [configResp, setConfigResp] = useState<ConfigResponse | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // follow-up #10: vault feature 探针。null = 未拉取；false 时隐藏 vault nav。
+  const [isVaultEnabled, setIsVaultEnabled] = useState<boolean | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -76,6 +79,10 @@ function Settings() {
     invoke<string>("get_initial_page").then((page) => {
       if (page) setPage(page as PageName);
     }).catch(() => {});
+    // follow-up #10: vault feature 探针（命令永远注册，后端 cfg 反射）。
+    invoke<boolean>("is_vault_enabled")
+      .then(setIsVaultEnabled)
+      .catch(() => setIsVaultEnabled(false));
     let unlisten: UnlistenFn;
     let unlistenNav: UnlistenFn;
     let cancelled = false;
@@ -93,6 +100,20 @@ function Settings() {
     return () => { cancelled = true; unlisten?.(); unlistenNav?.(); };
   }, [refreshConfig]);
 
+  // follow-up #10: vault feature off 时从 nav 列表过滤掉 vault。
+  // 用 useMemo 避免每次 render 重新 filter。
+  const visibleNavItems = useMemo(() => {
+    if (isVaultEnabled === false) {
+      return NAV_ITEMS.filter((item) => item.page !== "vault");
+    }
+    return NAV_ITEMS;
+  }, [isVaultEnabled]);
+
+  // follow-up #10: 如果当前 page 是 vault 但 feature 被关掉（或探针返回 false），
+  // 应回退到 settings 主面板——避免渲染一个 backend 命令不存在的 VaultPanel。
+  const effectivePage: PageName =
+    page === "vault" && isVaultEnabled === false ? "settings" : page;
+
   const setVal = useCallback(async (key: string, value: string | number | boolean) => {
     try {
       await invoke("set_config", { key, value });
@@ -107,8 +128,8 @@ function Settings() {
       {/* Sidebar —— Raycast list 风格：选中项左侧 voice 竖条 + bg-accent 填充 */}
       <div className="w-[176px] flex-shrink-0 border-r border-border bg-muted/30 flex flex-col raycast-ring">
         <nav className="flex-1 space-y-0.5 pt-3">
-          {NAV_ITEMS.map(({ page: p, icon: Icon, labelKey }) => {
-            const active = page === p;
+          {visibleNavItems.map(({ page: p, icon: Icon, labelKey }) => {
+            const active = effectivePage === p;
             return (
               <div
                 key={p}
@@ -134,29 +155,29 @@ function Settings() {
 
       {/* Content */}
       <div className="flex-1 min-w-0 overflow-y-auto bg-background p-6">
-        {page === "clipboard" ? (
+        {effectivePage === "clipboard" ? (
           <ClipboardPanel showToast={showToast} />
-        ) : page === "system" ? (
+        ) : effectivePage === "system" ? (
           <SystemPanel showToast={showToast} />
         ) : !configResp ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.loading")}</div>
-        ) : page === "settings" ? (
+        ) : effectivePage === "settings" ? (
           <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} />
-        ) : page === "models" ? (
+        ) : effectivePage === "models" ? (
           <ModelsPanel showToast={showToast} />
-        ) : page === "prompts" ? (
+        ) : effectivePage === "prompts" ? (
           <PromptsPanel showToast={showToast} />
-        ) : page === "actionbar" ? (
+        ) : effectivePage === "actionbar" ? (
           <ActionBarPanel showToast={showToast} />
-        ) : page === "agent" ? (
+        ) : effectivePage === "agent" ? (
           <AgentPanel showToast={showToast} />
-        ) : page === "hotword" ? (
+        ) : effectivePage === "hotword" ? (
           <HotwordPanel
             dialect={(configResp.config.fuzzy_dialect as string) || ""}
             setVal={setVal}
             showToast={showToast}
           />
-        ) : page === "vault" ? (
+        ) : effectivePage === "vault" ? (
           <VaultPanel showToast={showToast} />
         ) : null}
       </div>

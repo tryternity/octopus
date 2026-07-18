@@ -204,10 +204,18 @@ pub struct AppConfig {
     pub screenshot_shortcut: String,
 
     /// vault Auto-Type 全局热键。默认 CmdOrCtrl+Shift+L。
+    ///
+    /// follow-up #10：仅在 `octopus-desktop` 启用 `vault` cargo feature 时实际使用
+    /// （main.rs setup() 里 cfg-gate 了热键注册）。feature off 时此字段仍存在
+    /// （serde 友好 + ~50B 开销可忽略），但仅落库 / 序列化，不被消费。
     #[serde(default = "default_vault_autotype_shortcut")]
     pub vault_autotype_shortcut: String,
 
     /// vault 密码生成器浮窗热键。默认 CmdOrCtrl+Shift+G。
+    ///
+    /// follow-up #10：仅在 `octopus-desktop` 启用 `vault` cargo feature 时实际使用
+    /// （main.rs setup() 里 cfg-gate 了热键注册）。feature off 时此字段仍存在
+    /// （serde 友好 + ~50B 开销可忽略），但仅落库 / 序列化，不被消费。
     #[serde(default = "default_vault_generator_shortcut")]
     pub vault_generator_shortcut: String,
 }

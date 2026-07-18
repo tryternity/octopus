@@ -361,6 +361,11 @@ pub(crate) fn current_secret_key(model_name: &str) -> Result<String, String> {
 ///
 /// 流程：先按 model_name 查所有 cloud models（asr/llm/translate/ocr），再 fallback
 /// 到本地 manifest。找不到返回 Err（让调用方决定）。
+///
+/// follow-up #10: 仅在 vault feature on 时被 `vault_secret_access::read_model_secret_key`
+/// 调用——feature off 时 dead code，加 cfg_attr 让 dead_code lint 静默（保留函数以便
+/// feature 切换时无需改动 model_commands）。
+#[cfg_attr(not(feature = "vault"), allow(dead_code))]
 pub(crate) fn current_secret_key_any(model_name: &str) -> Result<String, String> {
     // 1. cloud 行（is_local=0）：跨 4 个 domain 查
     for domain in &["asr", "llm", "translate", "ocr"] {
