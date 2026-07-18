@@ -114,6 +114,8 @@ settings:
       trigger: Auto-Fill
       noMatch: No matching password item for current page
       fillFail: Auto-fill failed, copied to clipboard
+      uninitTitle: Vault not initialized
+      uninitHint: Create the vault under "Settings → Password Vault" first
     generator:
       title: Password Generator
       mode:

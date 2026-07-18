@@ -482,7 +482,14 @@ pub fn vault_copy_password(
 // === 全局热键注册（Task 19） ===
 
 /// 注册 vault Auto-Type 全局热键（默认 CmdOrCtrl+Shift+L）。
-/// 触发时 emit `vault://autotype-triggered` 事件——前端（Task 21）接收后弹 cipher 选择浮窗。
+///
+/// 触发时新建/聚焦 `vault_picker_window`：窗口 mount 后 useEffect 调
+/// `vault_detect_and_match` 取匹配 cipher，用户选择后调 `vault_autotype` /
+/// `vault_copy_password`。窗口已存在时 show + set_focus + emit
+/// `vault://picker-refresh`（前端监听后重新拉取，保证每次按热键都拿到最新数据）。
+///
+/// 注：原实现只 emit `vault://autotype-triggered` 而前端无监听，导致热键「死键」。
+/// （follow-up #4 修复）
 pub fn register_vault_autotype_shortcut(
     app: &AppHandle,
     shortcut_str: &str,
@@ -495,9 +502,26 @@ pub fn register_vault_autotype_shortcut(
         .on_shortcut(shortcut, move |_app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
                 log::info!("vault autotype 触发");
-                // TODO: Task 21 前端接收事件后弹选择浮窗，调 vault_detect_and_match +
-                //       vault_autotype。当前先 emit 一个事件。
-                let _ = app_handle.emit("vault://autotype-triggered", ());
+                // toggle 语义：已存在 → show + set_focus + 通知前端刷新；
+                // 不存在 → 新建（前端 mount 后自动调 vault_detect_and_match）。
+                use tauri::Manager;
+                if let Some(win) = app_handle.get_webview_window("vault_picker_window") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                    let _ = app_handle.emit("vault://picker-refresh", ());
+                } else {
+                    let _ = tauri::WebviewWindowBuilder::new(
+                        &app_handle,
+                        "vault_picker_window",
+                        tauri::WebviewUrl::App("index.html".into()),
+                    )
+                    .title("Vault Auto-Type")
+                    .inner_size(400.0, 360.0)
+                    .resizable(false)
+                    .decorations(false)
+                    .always_on_top(true)
+                    .build();
+                }
             }
         })
         .map_err(|e| format!("注册热键 '{}' 失败: {}", shortcut_str, e))?;

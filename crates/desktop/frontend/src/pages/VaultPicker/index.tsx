@@ -1,0 +1,305 @@
+import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { Copy, Type as TypeIcon, Lock, RefreshCw, X } from "lucide-react";
+import { useT } from "@/lib/i18n";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { classifyError } from "./classifyError";
+
+/**
+ * VaultPicker —— vault Auto-Type cipher 选择浮窗（label=vault_picker_window）。
+ *
+ * 流程：
+ *   1. 全局热键 CmdOrCtrl+Shift+L → 后端 `register_vault_autotype_shortcut`
+ *      show + set_focus 窗口并 emit `vault://picker-refresh`（首次则 build 窗口）。
+ *   2. 窗口 mount / 收到 refresh → 调 `vault_detect_and_match` 取匹配 cipher。
+ *   3. 用户点击 → `vault_autotype`（默认）或 `vault_copy_password`（按住修饰键）。
+ *   4. 选中后 hide 窗口（保留实例，下次热键更快）；Escape 也 hide。
+ *   5. vault 未解锁 → 显示内联解锁表单（成功后自动 refresh）。
+ *   6. vault 未初始化 → 提示去 Settings 初始化（picker 无法独立 setup）。
+ *
+ * 关键约定：
+ *   - hide 而非 close：复用实例，避免每次按热键都重建 React 树。
+ *   - 错误分类用纯函数 classifyError（单测见 classifyError.test.ts），
+ *     后端契约：require_user_vault_key → "vault 未解锁"；
+ *     octopus_vault::unlock 内部错误含 "vault 未初始化"。
+ */
+
+interface LoginDataDto {
+  uris: { uri: string; match_type: number | null }[];
+  username: string | null;
+  password: string | null;
+  totp: string | null;
+}
+
+interface CipherDto {
+  id: number;
+  name: string;
+  favorite: boolean;
+  login: LoginDataDto | null;
+}
+
+type ViewState =
+  | { kind: "loading" }
+  | { kind: "list"; ciphers: CipherDto[] }
+  | { kind: "locked" }
+  | { kind: "uninit" }
+  | { kind: "error"; message: string };
+
+export default function VaultPicker() {
+  const t = useT();
+  const [view, setView] = useState<ViewState>({ kind: "loading" });
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setView({ kind: "loading" });
+    setUnlockError(null);
+    try {
+      const list = await invoke<CipherDto[]>("vault_detect_and_match");
+      setView({ kind: "list", ciphers: list });
+    } catch (e) {
+      setView(classifyError(e));
+    }
+  }, []);
+
+  // 首次 mount → 立刻拉取匹配 cipher。
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // 后端 show 窗口时 emit `vault://picker-refresh` → 重新拉取（保证每次都拿最新数据）。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      const u = await listen("vault://picker-refresh", () => {
+        refresh();
+      });
+      unlisten = u;
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, [refresh]);
+
+  // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
+  useEffect(() => {
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        void getCurrentWindow().hide();
+      }
+    };
+    window.addEventListener("keydown", keyHandler);
+    return () => {
+      window.removeEventListener("keydown", keyHandler);
+    };
+  }, []);
+
+  const handleUnlock = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!unlockPassword) return;
+      setBusy(true);
+      setUnlockError(null);
+      try {
+        await invoke("vault_unlock", { password: unlockPassword });
+        setUnlockPassword("");
+        await refresh();
+      } catch (err) {
+        setUnlockError(t("settings.vault.unlock.wrongPassword"));
+        void err;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [unlockPassword, refresh, t],
+  );
+
+  const handlePick = useCallback(
+    async (c: CipherDto, copyOnly: boolean) => {
+      setBusy(true);
+      try {
+        if (copyOnly) {
+          await invoke("vault_copy_password", { cipherId: c.id });
+        } else {
+          await invoke("vault_autotype", { cipherId: c.id });
+        }
+        await getCurrentWindow().hide();
+      } catch (e) {
+        setView(classifyError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
+  // === locked: 内联解锁表单 ===
+  if (view.kind === "locked") {
+    return (
+      <form onSubmit={handleUnlock} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Lock className="size-4" />
+            <span className="text-sm font-medium">
+              {t("settings.vault.unlock.title")}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => getCurrentWindow().hide()}
+          >
+            <X />
+          </Button>
+        </div>
+        <Input
+          type="password"
+          value={unlockPassword}
+          onChange={(e) => setUnlockPassword(e.target.value)}
+          placeholder={t("settings.vault.unlock.passwordLabel")}
+          autoFocus
+          autoComplete="current-password"
+        />
+        {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
+        <Button
+          type="submit"
+          variant="voice"
+          disabled={busy || !unlockPassword}
+        >
+          {busy ? "..." : t("settings.vault.unlock.submit")}
+        </Button>
+      </form>
+    );
+  }
+
+  // === uninit: 提示去 Settings 初始化 ===
+  if (view.kind === "uninit") {
+    return (
+      <div className="flex h-screen flex-col gap-2 bg-background p-4 text-foreground">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Lock className="size-4" />
+            <span className="text-sm font-medium">
+              {t("settings.vault.autotype.uninitTitle")}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => getCurrentWindow().hide()}
+          >
+            <X />
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.vault.autotype.uninitHint")}
+        </p>
+      </div>
+    );
+  }
+
+  // === error / list / loading: 共用外壳 ===
+  return (
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      {/* 顶部标题栏 */}
+      <div className="flex items-center justify-between border-b border-border px-4 py-2">
+        <span className="text-sm font-medium">
+          {t("settings.vault.autotype.trigger")}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={refresh}
+            title={t("settings.vault.generator.regenerate")}
+            disabled={busy}
+          >
+            <RefreshCw />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => getCurrentWindow().hide()}
+          >
+            <X />
+          </Button>
+        </div>
+      </div>
+
+      {/* 内容区 */}
+      <div className="flex-1 overflow-auto">
+        {view.kind === "loading" && (
+          <div className="px-4 py-3 text-sm text-muted-foreground">...</div>
+        )}
+
+        {view.kind === "list" && view.ciphers.length === 0 && (
+          <div className="px-4 py-3 text-sm text-muted-foreground">
+            {t("settings.vault.autotype.noMatch")}
+          </div>
+        )}
+
+        {view.kind === "list" &&
+          view.ciphers.map((c) => (
+            <div
+              key={c.id}
+              className="group flex items-center gap-2 border-b border-border/50 px-4 py-2 last:border-b-0 hover:bg-accent"
+            >
+              <button
+                type="button"
+                className="flex flex-1 items-center gap-2 text-left outline-none"
+                onClick={() => handlePick(c, false)}
+                disabled={busy}
+                title={t("settings.vault.autotype.trigger")}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{c.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {c.login?.username || "—"}
+                  </div>
+                </div>
+              </button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlePick(c, false);
+                }}
+                disabled={busy}
+                title={t("settings.vault.autotype.trigger")}
+              >
+                <TypeIcon />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlePick(c, true);
+                }}
+                disabled={busy}
+                title={t("settings.vault.generator.copy")}
+              >
+                <Copy />
+              </Button>
+            </div>
+          ))}
+
+        {view.kind === "error" && (
+          <div className="px-4 py-3 text-sm text-destructive">{view.message}</div>
+        )}
+      </div>
+    </div>
+  );
+}

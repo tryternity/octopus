@@ -9,6 +9,7 @@ import CompactEditor from "@/pages/CompactEditor";
 import ActionBar from "@/pages/ActionBar";
 import Overlay from "@/pages/Overlay";
 import PasswordGenerator from "@/pages/PasswordGenerator";
+import VaultPicker from "@/pages/VaultPicker";
 import { applyThemeFromConfig } from "@/lib/theme";
 
 class ErrorBoundary extends Component<
@@ -74,6 +75,8 @@ function App() {
             return <Overlay />;
           case "password_generator_window":
             return <PasswordGenerator />;
+          case "vault_picker_window":
+            return <VaultPicker />;
           default:
             if (label.startsWith("screenshot_")) {
               return <Screenshot />;
