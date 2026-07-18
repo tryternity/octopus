@@ -3424,10 +3424,15 @@ pub fn list_models_for_secret_migration() -> Result<Vec<(i64, String)>> {
 }
 
 /// 更新指定 model 的 secret_key 字段。
+///
+/// 注意：models 表无 `updated_at` 列（与 prompts / vault_meta 等带时间戳的表不同）。
+/// 早期版本误把 `updated_at = datetime('now')` 写进 UPDATE，导致整个迁移路径抛
+/// "no such column: updated_at"——调用方（unlock.rs setup_vault）虽 catch 不阻塞，
+/// 但用户的明文 secret_key 永远迁不掉。Wave 2 测试发现此 bug 后修复：仅更新 secret_key。
 pub fn update_model_secret_key(model_id: i64, new_secret_key: &str) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE models SET secret_key = ?, updated_at = datetime('now') WHERE id = ?",
+            "UPDATE models SET secret_key = ? WHERE id = ?",
             rusqlite::params![new_secret_key, model_id],
         )?;
         Ok(())

@@ -6,6 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
 import { Segmented } from "@/components/ui/tabs";
+import {
+  buildPayload,
+  DEFAULT_RANDOM,
+  DEFAULT_EN,
+  DEFAULT_ZH,
+  DEFAULT_PIN,
+  type Mode,
+  type GeneratorPayload,
+  type RandomConfig as RandomCfg,
+  type PassphraseEnConfig as EnCfg,
+  type PassphraseZhConfig as ZhCfg,
+  type PinConfig as PinCfg,
+} from "./buildConfig";
 
 /**
  * PasswordGenerator —— 独立浮窗（label=password_generator_window）。
@@ -14,47 +27,17 @@ import { Segmented } from "@/components/ui/tabs";
  * 新建/聚焦此窗口。
  *
  * 4 种生成模式（对应 octopus_vault::generator::GeneratorConfig 变体，
- * 后端用 #[serde(tag="mode", rename_all="lowercase")] 内标签）：
+ * 后端用 #[serde(tag="mode", rename_all="camelCase")] 内标签）：
  *   random       随机字符（length + uppercase/lowercase/numbers/symbols/avoid_ambiguous）
  *   passphraseEn 英文短语（word_count + separator + capitalize + include_number）
  *   passphraseZh 中文短语（word_count + separator + include_number + include_symbol）
  *   pin          数字 PIN（length）
  *
+ * 配置组装（mode → 后端 payload）抽到 ./buildConfig.ts，配套单元测试覆盖
+ * 各 mode 分发与 serde 约定（见 buildConfig.test.ts，回归门 for final-review C1）。
+ *
  * 切模式即重新生成；显示区可复制。
  */
-
-type Mode = "random" | "passphraseEn" | "passphraseZh" | "pin";
-
-interface RandomCfg {
-  length: number;
-  uppercase: boolean;
-  lowercase: boolean;
-  numbers: boolean;
-  symbols: boolean;
-  avoid_ambiguous: boolean;
-}
-interface EnCfg {
-  word_count: number;
-  separator: string;
-  capitalize: boolean;
-  include_number: boolean;
-}
-interface ZhCfg {
-  word_count: number;
-  separator: string;
-  include_number: boolean;
-  include_symbol: boolean;
-}
-interface PinCfg {
-  length: number;
-}
-
-// 内标签序列化：所有变体字段扁平在外层，带 mode 字段。
-type GeneratorPayload =
-  | ({ mode: "random" } & RandomCfg)
-  | ({ mode: "passphraseEn" } & EnCfg)
-  | ({ mode: "passphraseZh" } & ZhCfg)
-  | ({ mode: "pin" } & PinCfg);
 
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) => (
   <UIToggle on={checked} onClick={() => onChange(!checked)} />
@@ -85,51 +68,25 @@ export default function PasswordGenerator() {
   const [result, setResult] = useState("");
   const [copied, setCopied] = useState(false);
 
-  // 各模式本地配置
-  const [randomCfg, setRandomCfg] = useState<RandomCfg>({
-    length: 16,
-    uppercase: true,
-    lowercase: true,
-    numbers: true,
-    symbols: false,
-    avoid_ambiguous: true,
-  });
-  const [enCfg, setEnCfg] = useState<EnCfg>({
-    word_count: 3,
-    separator: "-",
-    capitalize: true,
-    include_number: true,
-  });
-  const [zhCfg, setZhCfg] = useState<ZhCfg>({
-    word_count: 4,
-    separator: "",
-    include_number: true,
-    include_symbol: false,
-  });
-  const [pinCfg, setPinCfg] = useState<PinCfg>({ length: 6 });
+  // 各模式本地配置（默认值与 Rust 端 *Config::default() 对齐，定义于 buildConfig.ts）
+  const [randomCfg, setRandomCfg] = useState<RandomCfg>(DEFAULT_RANDOM);
+  const [enCfg, setEnCfg] = useState<EnCfg>(DEFAULT_EN);
+  const [zhCfg, setZhCfg] = useState<ZhCfg>(DEFAULT_ZH);
+  const [pinCfg, setPinCfg] = useState<PinCfg>(DEFAULT_PIN);
 
-  const buildPayload = useCallback((): GeneratorPayload => {
-    switch (mode) {
-      case "random":
-        return { mode: "random", ...randomCfg };
-      case "passphraseEn":
-        return { mode: "passphraseEn", ...enCfg };
-      case "passphraseZh":
-        return { mode: "passphraseZh", ...zhCfg };
-      case "pin":
-        return { mode: "pin", ...pinCfg };
-    }
+  const buildPayloadCb = useCallback((): GeneratorPayload => {
+    return buildPayload(mode, randomCfg, enCfg, zhCfg, pinCfg);
   }, [mode, randomCfg, enCfg, zhCfg, pinCfg]);
 
   const regenerate = useCallback(async () => {
     try {
-      const pwd = await invoke<string>("vault_generate", { cfg: buildPayload() });
+      const pwd = await invoke<string>("vault_generate", { cfg: buildPayloadCb() });
       setResult(pwd);
       setCopied(false);
     } catch (e) {
       setResult(String(e));
     }
-  }, [buildPayload]);
+  }, [buildPayloadCb]);
 
   // 初始 + 模式/配置变化时重新生成
   useEffect(() => {
