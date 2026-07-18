@@ -352,7 +352,7 @@ impl DerivedKey {
 
 | # | 不变量 |
 |---|---|
-| INV-1 | master_password 在 Argon2id 派生后立即 zeroize |
+| INV-1 | master_password 通过 Argon2id 派生后，derived master_root_key / user_vault_key / app_key 用 Zeroizing 保护。master_password 本身作为 &str 由调用方作用域管理；Rust 字符串无法在 safe code 中可靠 zeroize（&str 是借用的，String 的 bytes 也可能被复制），故按业界惯例（rbw、bitwarden CLI 等）不做强 zeroize。 |
 | INV-2 | master_root_key 在派生子 key 后立即 zeroize（子 key 才是常驻） |
 | INV-3 | 所有 key 用 `Zeroizing<[u8; 32]>` 包装 |
 | INV-4 | DB 中所有 vault 字段必须是 `v1:` 前缀的密文 |

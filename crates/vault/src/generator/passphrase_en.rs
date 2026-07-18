@@ -14,6 +14,11 @@ pub fn generate(cfg: &PassphraseEnConfig) -> String {
     let mut rng = OsRng;
     let words: Vec<String> = (0..cfg.word_count)
         .map(|_| EFF_WORDLIST.choose(&mut rng).unwrap().to_string())
+        // EFF 列表中有 4 个带连字符的词（yo-yo / drop-down / felt-tip / t-shirt）。
+        // 由于 separator 默认 '-'，且 capitalize 会把首个字母大写，连字符词会
+        // 让生成的 passphrase 在 split('-') 后无法逐词校验。这里把连字符去掉
+        // （yo-yo → yoyo），既保持源词熵不变，又让默认 '-' 分隔符语义清晰。
+        .map(|w| w.replace('-', ""))
         .map(|w| {
             if cfg.capitalize {
                 let mut c = w.chars();
@@ -73,14 +78,21 @@ mod tests {
             include_number: false,
             ..Default::default()
         };
+        // generate() 会把所选 EFF 词的连字符去掉（yo-yo → yoyo），
+        // 因此校验时也要用去连字符的 EFF 集合比对。
+        let eff_deshyd: Vec<String> = EFF_WORDLIST
+            .iter()
+            .map(|w| w.replace('-', ""))
+            .collect();
         for _ in 0..50 {
             let s = generate(&cfg);
             for word in s.split('-') {
                 let lower = word.to_lowercase();
                 assert!(
-                    EFF_WORDLIST.iter().any(|w| *w == lower),
-                    "词 {} 不在 EFF 列表",
-                    word
+                    eff_deshyd.iter().any(|w| w == &lower),
+                    "词 {} 不在 EFF 列表（generated: {}）",
+                    word,
+                    s
                 );
             }
         }

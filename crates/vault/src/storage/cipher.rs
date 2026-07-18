@@ -71,7 +71,7 @@ pub fn permanent_delete(id: i64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{CipherData, CipherType, Field, LoginData, LoginUri, RepromptType};
+    use crate::types::{CipherData, CipherType, LoginData, LoginUri, RepromptType};
 
     fn make_key(byte: u8) -> DerivedKey {
         DerivedKey(crate::Zeroizing::new([byte; 32]))
@@ -99,10 +99,6 @@ mod tests {
             reprompt: RepromptType::None,
         }
     }
-
-    // 让未使用告警在测试模块内不出现（fields / Field 当前未直接断言，但保留以便后续扩展）。
-    #[allow(dead_code)]
-    fn _ensure_field_used(_f: Field) {}
 
     // 注意：以下测试需要真实 DB（会写入 ~/.octopus/octopus.db）。
     // 在 CI 环境可能失败。如果 ~/.octopus 不可写，整个测试模块 #[ignore]。

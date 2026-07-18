@@ -10,7 +10,7 @@ pub mod zh_wordlist_4096;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "lowercase")]
+#[serde(tag = "mode", rename_all = "camelCase")]
 pub enum GeneratorConfig {
     Random(RandomConfig),
     PassphraseEn(PassphraseEnConfig),
@@ -137,4 +137,62 @@ fn default_sep_dash() -> String {
 }
 fn default_sep_empty() -> String {
     "".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 防止前端/Rust serde 模式标签失配（详见 final-review C1）。
+    /// 前端 PasswordGenerator.tsx 用 camelCase (`passphraseEn` / `passphraseZh`)，
+    /// 因此 `rename_all = "camelCase"` 后变体应序列化为对应标签。
+    #[test]
+    fn test_generator_config_serde_modes() {
+        // PassphraseZh
+        let cfg = GeneratorConfig::PassphraseZh(PassphraseZhConfig::default());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            json.contains(r#""mode":"passphraseZh""#),
+            "actual: {}",
+            json
+        );
+        let parsed: GeneratorConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, GeneratorConfig::PassphraseZh(_)));
+
+        // PassphraseEn
+        let cfg = GeneratorConfig::PassphraseEn(PassphraseEnConfig::default());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            json.contains(r#""mode":"passphraseEn""#),
+            "actual: {}",
+            json
+        );
+        let parsed: GeneratorConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, GeneratorConfig::PassphraseEn(_)));
+
+        // Random
+        let cfg = GeneratorConfig::Random(RandomConfig::default());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""mode":"random""#), "actual: {}", json);
+        let parsed: GeneratorConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, GeneratorConfig::Random(_)));
+
+        // Pin
+        let cfg = GeneratorConfig::Pin(PinConfig::default());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""mode":"pin""#), "actual: {}", json);
+        let parsed: GeneratorConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, GeneratorConfig::Pin(_)));
+
+        // 反序列化前端实际发出的 payload（camelCase 标签 + 扁平字段）
+        let frontend_payload = r#"{"mode":"passphraseZh","word_count":4,"separator":"","include_number":true,"include_symbol":false}"#;
+        let parsed: GeneratorConfig = serde_json::from_str(frontend_payload)
+            .expect("前端 passphraseZh payload 必须可反序列化");
+        assert!(matches!(parsed, GeneratorConfig::PassphraseZh(_)));
+
+        let frontend_payload = r#"{"mode":"passphraseEn","word_count":3,"separator":"-","capitalize":true,"include_number":true}"#;
+        let parsed: GeneratorConfig = serde_json::from_str(frontend_payload)
+            .expect("前端 passphraseEn payload 必须可反序列化");
+        assert!(matches!(parsed, GeneratorConfig::PassphraseEn(_)));
+    }
 }

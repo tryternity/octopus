@@ -231,14 +231,15 @@ pub fn vault_lock(state: State<'_, SharedVaultSession>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn vault_change_password(
-    state: State<'_, SharedVaultSession>,
+    _state: State<'_, SharedVaultSession>,
     old_password: String,
     new_password: String,
 ) -> Result<(), String> {
     octopus_vault::unlock::change_master_password(&old_password, &new_password)
         .map_err(|e| e.to_string())?;
-    // 改密码后不主动解锁 user_vault（让用户重新输）
-    state.write().lock_user_vault();
+    // 用户刚刚证明了知道旧主密码，不要主动锁会话。
+    // user_vault_key / app_key 在改密码流程中不变（INV-7），保持原样即可。
+    // （final-review I4）
     Ok(())
 }
 
@@ -278,7 +279,16 @@ pub fn vault_update_cipher(
     input: CipherInputDto,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state)?;
-    let domain = dto_to_input(input)?;
+    let mut domain = dto_to_input(input)?;
+
+    // MVP：前端 CipherInputDto 不管理 password_history，编辑 cipher 时
+    // 直接保留数据库中已有的历史，避免每次保存都把 history 清成 []。
+    // （final-review I3）
+    if let Some(existing) = octopus_vault::storage::load_cipher(id, &key).map_err(|e| e.to_string())?
+    {
+        domain.password_history = existing.password_history;
+    }
+
     octopus_vault::storage::save_cipher(id, &domain, &key).map_err(|e| e.to_string())
 }
 

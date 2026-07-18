@@ -9,7 +9,9 @@ use crate::types::{Cipher, CipherData};
 
 #[derive(Debug, Serialize)]
 pub struct DuplicateGroup {
-    /// SHA-256(password)，用于分组
+    /// SHA-256(password)，仅用于分组；不跨 IPC 输出，避免泄露哈希。
+    /// （final-review #5/M2）
+    #[serde(skip_serializing)]
     pub password_hash: String,
     pub cipher_ids: Vec<i64>,
 }
