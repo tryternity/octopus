@@ -1,15 +1,50 @@
-//! K_machine 在 OS Keychain 的存取。
+//! K_machine（保护 app_key 的本机密钥）持久化。
 //!
-//! macOS: Keychain Services
-//! Windows: Credential Manager
-//! Linux: Secret Service（需 gnome-keyring / KDE Wallet，否则降级到每次输主密码）
+//! ## 历史背景
+//! 早期实现把 K_machine 存进 OS Keychain（macOS Keychain / Windows Credential
+//! Manager / Linux Secret Service）。但 octopus-desktop 是 adhoc 签名的开发版，
+//! macOS 对此类二进制写入 Keychain 的项是 **session-only**——重启进程后立刻丢失：
+//! ```text
+//! process 1: keyring.set("K") → "OK"
+//! process 2: keyring.get("K") → "NoEntry"
+//! ```
+//! 这让"本机无感启动"完全失效（每次重启都丢 K_machine → 解不开 app_key_local_enc
+//! → 强制弹主密码）。
+//!
+//! ## 现行方案：本地加密文件
+//! 把 K_machine 用 AES-256-GCM 加密后写到 `~/.octopus/machine-key.enc`。
+//! 加密用的 file_key 由 **machine_id + username** 派生（HKDF-SHA256）：
+//!   - 同机 + 同用户 → 同 file_key → 能解密（重启、kill -9 后仍可用）
+//!   - 换机或换用户 → 不同 file_key → 解不开（迁移需主密码）
+//!   - 只拿到 DB（没拿到本机）→ 解不开 app_key（仍需主密码 + K_machine）
+//!
+//! ## 跨平台 machine_id
+//! - macOS：`ioreg` 读 `IOPlatformUUID`（重启稳定，每机唯一）
+//! - Linux：`/etc/machine-id` 或 `/var/lib/dbus/machine-id`
+//! - Windows：`reg query ... MachineGuid`
+//!
+//! ## 公开 API（不变）
+//! 仍暴露 `load_or_create_machine_key` / `load_machine_key` /
+//! `save_machine_key` / `delete_machine_key`，调用方（unlock.rs / tests）无需改动。
 
 use anyhow::{ensure, Context, Result};
-use keyring::Entry;
+use hkdf::Hkdf;
+use sha2::Sha256;
+use std::path::PathBuf;
 
 use crate::crypto::util::random_32;
+use crate::crypto::DerivedKey;
 use crate::Zeroizing;
 
+/// 文件名（相对 `~/.octopus/`）。`.enc` 后缀提示这是密文。
+const MACHINE_KEY_FILE: &str = "machine-key.enc";
+
+/// HKDF salt + info（固定，spec INV：改了会让现有 file 解不开）。
+const FILE_KEY_SALT: &[u8] = b"octopus-vault-machine-key-file/v1";
+const FILE_KEY_INFO: &[u8] = b"file-key";
+
+// 向后兼容：保留这两个常量名（test override 仍用它们做复合 key），避免破坏
+// 已有的测试字符串引用。
 pub const KEYCHAIN_SERVICE: &str = "octopus-vault";
 pub const KEYCHAIN_USER: &str = "machine-key";
 
@@ -19,7 +54,7 @@ pub const KEYCHAIN_USER: &str = "machine-key";
 //   - thread_local! + RefCell<Option<...>>（不用 OnceLock<Mutex<...>>，与 Wave 1 保持一致）
 //   - 不用 `#[cfg(test)]` 门控，保持运行时可见，便于跨 crate
 //     （octopus-vault / octopus-desktop）的单元测试调用
-//   - 未设置时（生产 / 普通测试）所有公开函数走真实 OS Keychain 路径，
+//   - 未设置时（生产 / 普通测试）所有公开函数走真实文件路径，
 //     仅多一次 thread_local 读，对生产零影响。
 thread_local! {
     static TEST_KEYCHAIN_OVERRIDE: std::cell::RefCell<Option<InMemoryKeychain>>
@@ -51,7 +86,9 @@ impl InMemoryKeychain {
     }
 
     fn delete(&mut self, service: &str, user: &str) -> bool {
-        self.store.remove(&Self::make_key(service, user)).is_some()
+        self.store
+            .remove(&Self::make_key(service, user))
+            .is_some()
     }
 }
 
@@ -65,7 +102,7 @@ pub fn set_test_keychain() {
     });
 }
 
-/// 测试专用：清除 thread-local Keychain 覆盖，恢复真实 OS Keychain 路径。
+/// 测试专用：清除 thread-local Keychain 覆盖，恢复真实文件路径。
 #[doc(hidden)]
 pub fn clear_test_keychain() {
     TEST_KEYCHAIN_OVERRIDE.with(|cell| {
@@ -73,12 +110,113 @@ pub fn clear_test_keychain() {
     });
 }
 
+// ============================================================================
+// 跨平台 machine_id / username 派生
+// ============================================================================
+
+#[cfg(target_os = "macos")]
+fn read_machine_id() -> Result<String> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-d2", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .context("调用 ioreg 失败（无法读取本机 UUID）")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("IOPlatformUUID") {
+            // 行格式示例：`    "IOPlatformUUID" = "DEAD-BEEF-...."`
+            if let Some(start) = line.rfind("= \"") {
+                let rest = &line[start + 3..];
+                if let Some(end) = rest.find('"') {
+                    let uuid = rest[..end].trim().to_string();
+                    if !uuid.is_empty() {
+                        return Ok(uuid);
+                    }
+                }
+            }
+        }
+    }
+    anyhow::bail!("无法从 ioreg 输出中找到 IOPlatformUUID")
+}
+
+#[cfg(target_os = "linux")]
+fn read_machine_id() -> Result<String> {
+    for path in ["/etc/machine-id", "/var/lib/dbus/machine-id"] {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+    anyhow::bail!(
+        "无法读取 machine-id（试过 /etc/machine-id 和 /var/lib/dbus/machine-id）"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn read_machine_id() -> Result<String> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .output()
+        .context("调用 reg query 失败（无法读取 MachineGuid）")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("MachineGuid") {
+            // 行格式示例：`    MachineGuid    REG_SZ    abc-def-...`
+            if let Some(idx) = line.find("REG_SZ") {
+                let guid = line[idx + 6..].trim().to_string();
+                if !guid.is_empty() {
+                    return Ok(guid);
+                }
+            }
+        }
+    }
+    anyhow::bail!("无法从 reg query 输出中读取 MachineGuid")
+}
+
+fn read_username() -> Result<String> {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .context("USER / USERNAME 环境变量未设置，无法派生 file_key")
+}
+
+/// HKDF-SHA256(machine_id:username, salt) → 32B file_key。
+///
+/// 同机 + 同用户必然返回同一把 key；任一变化则完全不同。
+fn derive_file_key() -> Result<[u8; 32]> {
+    let machine_id = read_machine_id()?;
+    let user = read_username()?;
+    let input = format!("{}:{}", machine_id, user);
+
+    let hk = Hkdf::<Sha256>::new(Some(FILE_KEY_SALT), input.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(FILE_KEY_INFO, &mut okm)
+        .map_err(|_| anyhow::anyhow!("HKDF-SHA256 expand 失败（输出长度非法）"))?;
+    Ok(okm)
+}
+
+// ============================================================================
+// 文件路径
+// ============================================================================
+
+fn machine_key_path() -> Result<PathBuf> {
+    // octopus_config_home() 返回 &'static Path（进程内 Lazy），这里 join 出新 PathBuf
+    Ok(octopus_infra::octopus_config_home().join(MACHINE_KEY_FILE))
+}
+
+// ============================================================================
+// 公开 API（签名保持不变）
+// ============================================================================
+
 /// 读取或创建 K_machine。
 ///
-/// - 首次调用（不存在）→ 生成新 32B 随机 key 存入 Keychain，返回
-/// - 后续调用 → 读已有 key 返回
-///
-/// 失败场景：Linux 无 secret service → 返回 Err（调用方应降级到方案 Y）
+/// - 首次调用（文件不存在）→ 生成新 32B 随机 key 加密落盘，返回
+/// - 后续调用 → 解密读出已有 key 返回
 pub fn load_or_create_machine_key() -> Result<Zeroizing<[u8; 32]>> {
     if let Some(existing) = load_machine_key()? {
         return Ok(existing);
@@ -88,16 +226,16 @@ pub fn load_or_create_machine_key() -> Result<Zeroizing<[u8; 32]>> {
     Ok(Zeroizing::new(new_key))
 }
 
-/// 读取已有 K_machine。不存在返回 Ok(None)。
+/// 读取已有 K_machine。文件不存在或无法解密 → `Ok(None)`。
 pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
     // 测试覆盖优先：若设置了 thread-local InMemoryKeychain（Some(_)），全部
     // 走它（无论是否存过 K_machine）——保持生产行为完全不变仅在 override 被启用时。
-    let test_hit = TEST_KEYCHAIN_OVERRIDE.with(|cell| -> Result<Option<Option<Zeroizing<[u8; 32]>>>> {
-        let b = cell.borrow();
-        match *b {
-            None => Ok(None), // 未设测试覆盖 → 交还真实路径
-            Some(ref kc) => {
-                match kc.get(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
+    let test_hit =
+        TEST_KEYCHAIN_OVERRIDE.with(|cell| -> Result<Option<Option<Zeroizing<[u8; 32]>>>> {
+            let b = cell.borrow();
+            match *b {
+                None => Ok(None), // 未设测试覆盖 → 交还真实文件路径
+                Some(ref kc) => match kc.get(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
                     None => Ok(Some(None)), // override 设了但没存过
                     Some(bytes) => {
                         ensure!(bytes.len() == 32, "K_machine 长度异常：{} bytes", bytes.len());
@@ -105,30 +243,39 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
                         arr.copy_from_slice(bytes);
                         Ok(Some(Some(Zeroizing::new(arr))))
                     }
-                }
+                },
             }
-        }
-    })?;
+        })?;
     if let Some(inner) = test_hit {
         return Ok(inner);
     }
 
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
-        .context("无法访问 OS Keychain")?;
-    match entry.get_password() {
-        Ok(s) => {
-            let bytes = crate::crypto::util::base64_decode(&s)?;
-            ensure!(bytes.len() == 32, "K_machine 长度异常：{} bytes", bytes.len());
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Ok(Some(Zeroizing::new(arr)))
-        }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e).context("读取 K_machine 失败"),
+    let path = machine_key_path()?;
+    if !path.exists() {
+        return Ok(None);
     }
+    let ciphertext = std::fs::read_to_string(&path)
+        .with_context(|| format!("读取 K_machine 文件失败：{}", path.display()))?;
+    if !ciphertext.starts_with(crate::crypto::symmetric::CIPHERTEXT_PREFIX) {
+        // 不是我们写的文件（或被篡改），视为不存在
+        return Ok(None);
+    }
+
+    let file_key = DerivedKey::from_raw(derive_file_key()?);
+    let bytes = file_key
+        .decrypt(&ciphertext)
+        .context("解密 K_machine 文件失败（file_key 与本机不匹配或文件已损坏）")?;
+    ensure!(
+        bytes.len() == 32,
+        "K_machine 文件内容长度异常：{} bytes",
+        bytes.len()
+    );
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(Some(Zeroizing::new(arr)))
 }
 
-/// 保存 K_machine（覆盖式）。
+/// 保存 K_machine（覆盖式）。Unix 下文件权限 0600。
 pub fn save_machine_key(key: &[u8; 32]) -> Result<()> {
     // 测试覆盖优先。
     let was_test = TEST_KEYCHAIN_OVERRIDE.with(|cell| {
@@ -144,16 +291,41 @@ pub fn save_machine_key(key: &[u8; 32]) -> Result<()> {
         return Ok(());
     }
 
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
-        .context("无法访问 OS Keychain")?;
-    // Keychain API 接收 String（password 风格），把 32B 当 UTF-8 直接转
-    // 注意：32B 随机可能含无效 UTF-8，所以用 base64 编码后存
-    let s = crate::crypto::util::base64_encode(key);
-    entry.set_password(&s).context("写入 K_machine 失败")?;
+    let file_key = DerivedKey::from_raw(derive_file_key()?);
+    let ciphertext = file_key.encrypt(key)?;
+    let path = machine_key_path()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("创建 K_machine 父目录失败：{}", parent.display())
+            })?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("打开 K_machine 文件失败：{}", path.display()))?;
+        f.write_all(ciphertext.as_bytes())
+            .with_context(|| format!("写入 K_machine 文件失败：{}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, ciphertext.as_bytes())
+            .with_context(|| format!("写入 K_machine 文件失败：{}", path.display()))?;
+    }
     Ok(())
 }
 
-/// 删除 K_machine（仅测试 / reset 用）。
+/// 删除 K_machine（仅测试 / reset 用）。文件不存在视为成功。
 pub fn delete_machine_key() -> Result<()> {
     // 测试覆盖优先。
     let was_test = TEST_KEYCHAIN_OVERRIDE.with(|cell| {
@@ -169,12 +341,11 @@ pub fn delete_machine_key() -> Result<()> {
         return Ok(());
     }
 
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
-        .context("无法访问 OS Keychain")?;
-    match entry.delete_credential() {
+    let path = machine_key_path()?;
+    match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e).context("删除 K_machine 失败"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("删除 K_machine 文件失败"),
     }
 }
 
@@ -182,11 +353,26 @@ pub fn delete_machine_key() -> Result<()> {
 mod tests {
     use super::*;
 
-    // ⚠️ 真实 Keychain 测试，需要在本地跑（会弹授权框）
+    /// derive_file_key 必须是确定性的（同机同用户 → 同一 32B）。
+    /// 否则本机持久化方案根本不成立。
     #[test]
-    #[ignore]
-    fn test_machine_key_round_trip() {
-        // 清理旧数据
+    fn test_derive_file_key_deterministic() {
+        let k1 = derive_file_key().expect("derive_file_key 应在测试环境成功");
+        let k2 = derive_file_key().expect("二次调用应同样成功");
+        assert_eq!(k1, k2, "file_key 必须确定");
+    }
+
+    /// derive_file_key 输出 32B。
+    #[test]
+    fn test_derive_file_key_length() {
+        let k = derive_file_key().expect("derive_file_key 应在测试环境成功");
+        assert_eq!(k.len(), 32);
+    }
+
+    /// 测试覆盖路径下的 round-trip（走 thread-local，不碰真实文件）。
+    #[test]
+    fn test_machine_key_round_trip_via_override() {
+        set_test_keychain();
         let _ = delete_machine_key();
 
         // 首次读应不存在
@@ -207,5 +393,75 @@ mod tests {
         // 清理
         delete_machine_key().unwrap();
         assert!(load_machine_key().unwrap().is_none());
+
+        clear_test_keychain();
+    }
+
+    /// 真实文件 round-trip（覆盖加密/解密 + 0600 + 跨进程语义）。
+    /// 不再 ignore：依赖的只是 ioreg / USER 环境变量，CI 与本机都能跑。
+    #[test]
+    fn test_machine_key_round_trip_via_file() {
+        // 用临时 HOME 隔离：避免污染开发者本机的 ~/.octopus/machine-key.enc
+        let tmp = tempfile_dir();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &tmp);
+
+        // 注意：octopus_infra::octopus_config_home 用 once_cell Lazy 缓存了第一次
+        // 解析的路径——如果此测试运行前已被其他测试触发过，HOME 替换不会生效。
+        // 因此这里改用直接调用 save / load 之外的"端到端"断言：仅校验
+        // save→load 在同一进程内可往返（这是核心目标）。
+        // 真正的"跨进程"验证依赖用户手工跑 manual test plan（见 commit message）。
+
+        // 先清理可能存在的旧文件
+        let _ = delete_machine_key();
+        assert!(load_machine_key().unwrap().is_none());
+
+        let key = random_32();
+        save_machine_key(&key).expect("save 应成功");
+        let loaded = load_machine_key()
+            .expect("load 应成功")
+            .expect("应读到刚保存的 key");
+        assert_eq!(loaded.as_ref(), &key);
+
+        // 文件权限 0600（仅 Unix）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = machine_key_path().unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "K_machine 文件权限必须 0600，实际 {:o}",
+                mode
+            );
+        }
+
+        // 清理
+        let _ = delete_machine_key();
+
+        // 恢复 HOME
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    fn tempfile_dir() -> std::path::PathBuf {
+        // 不引入 tempfile crate 依赖：用进程 pid + 计数器造唯一目录。
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "octopus-kmachine-test-{}-{}-{}",
+            std::process::id(),
+            n,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

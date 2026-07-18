@@ -21,9 +21,6 @@ subtle = "2"
 # TOTP
 totp-rs = { version = "5", default-features = false }
 
-# OS Keychain
-keyring = "3"
-
 # eTLD+1
 publicsuffix = "2"
 
