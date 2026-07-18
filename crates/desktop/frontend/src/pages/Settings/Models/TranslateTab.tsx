@@ -28,6 +28,7 @@ interface TranslateCloudModel {
   secretKey: string;
   isStreaming: boolean;
   isThinking: boolean;
+  isEnabled: boolean;
 }
 
 interface TranslateStatus {
