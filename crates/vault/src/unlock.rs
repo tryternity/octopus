@@ -281,10 +281,131 @@ pub fn regenerate_security_stamp() -> Result<String> {
 mod tests {
     use super::*;
 
+    /// 注入干净 in-memory DB（含 vault_meta 表，无数据）。
+    fn setup_clean_db() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
+        octopus_infra::db::set_test_db(conn);
+    }
+
+    /// 纯函数测试：meta_to_kdf_params 把 VaultMeta 的 i64 字段映射为 Argon2Params 的 u32 字段。
     #[test]
-    fn test_uninitialized_vault_status() {
-        // 注意：依赖 ~/.octopus/octopus.db 实际状态
-        // 这里仅测函数签名和错误处理，不真正调用 setup_vault
-        let _ = is_initialized();
+    fn test_meta_to_kdf_params_conversion() {
+        let meta = VaultMeta {
+            id: 1,
+            kdf_type: 0,
+            kdf_salt: vec![0u8; 32],
+            kdf_iterations: 3,
+            kdf_memory_kib: 65_536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: String::new(),
+            app_key_local_enc: String::new(),
+            app_key_sync_enc: String::new(),
+            security_stamp: String::new(),
+            equivalent_domains: "[]".into(),
+            public_key: None,
+            protected_private_key: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let params = meta_to_kdf_params(&meta);
+        assert_eq!(params.iterations, 3);
+        assert_eq!(params.memory_kib, 65_536);
+        assert_eq!(params.parallelism, 4);
+    }
+
+    /// DB-only 测试：未初始化时 is_initialized 返回 false。
+    /// 不触发 Keychain（无 vault_meta 行 → 早返回 None）。
+    #[test]
+    fn test_is_initialized_false_initially() {
+        setup_clean_db();
+        assert!(!is_initialized().expect("is_initialized should succeed on empty DB"));
+    }
+
+    /// 直接写 vault_meta（不经 setup_vault / Keychain），验证 is_initialized 变为 true。
+    /// 这样 DB-only 测试就覆盖了 is_initialized 的「true」分支，无需 OS Keychain。
+    #[test]
+    fn test_is_initialized_true_after_meta_written() {
+        setup_clean_db();
+        let input = VaultMetaInput {
+            kdf_type: 0,
+            kdf_salt: vec![1u8; 32],
+            kdf_iterations: 3,
+            kdf_memory_kib: 65_536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:dummy".into(),
+            app_key_local_enc: "v1:dummy".into(),
+            app_key_sync_enc: "v1:dummy".into(),
+            security_stamp: "stamp".into(),
+            equivalent_domains: "[]".into(),
+            public_key: None,
+            protected_private_key: None,
+        };
+        meta::save_vault_meta(&input).expect("save meta");
+        assert!(is_initialized().expect("is_initialized should be true after meta saved"));
+    }
+
+    /// setup_vault 完整流程：会调 keychain::load_or_create_machine_key（macOS Keychain），
+    /// 在 CI / 无 Keychain 环境会失败。本地手动运行：
+    ///   cargo test -p octopus-vault --lib unlock::tests::test_setup_vault -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_setup_vault_creates_meta_and_keys() {
+        setup_clean_db();
+        // 清掉可能残留的 Keychain entry（防止之前测试遗留）
+        let _ = keychain::delete_machine_key();
+
+        let keys = setup_vault("test-password-123").expect("setup_vault");
+        // 32B 派生 key
+        assert_eq!(keys.user_vault_key.as_bytes().len(), 32);
+        assert_eq!(keys.app_key.as_bytes().len(), 32);
+        // 应不同于对方（不同 label 派生）
+        assert_ne!(
+            keys.user_vault_key.as_bytes(),
+            keys.app_key.as_bytes(),
+            "user_vault_key 与 app_key 应是不同 label 派生"
+        );
+        // vault_meta 已写入 → is_initialized=true
+        assert!(is_initialized().expect("is_initialized after setup"));
+
+        // 清理 Keychain（避免污染下次测试或真实用户）
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// setup_vault + unlock_with_master_password 往返（需 Keychain）。
+    /// 本地手动运行：cargo test -p octopus-vault --lib unlock::tests::test_unlock_with_master -- --ignored
+    #[test]
+    #[ignore]
+    fn test_unlock_with_master_after_setup() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let pw = "correct-horse-battery-staple";
+        let setup_keys = setup_vault(pw).expect("setup");
+        // 清掉 K_machine 强制走流程 C（输主密码）
+        let _ = keychain::delete_machine_key();
+
+        let unlocked = unlock_with_master_password(pw).expect("unlock");
+        // 同样派生 → 应拿到同一把 user_vault_key
+        assert_eq!(setup_keys.user_vault_key.as_bytes(), unlocked.user_vault_key.as_bytes());
+        assert_eq!(setup_keys.app_key.as_bytes(), unlocked.app_key.as_bytes());
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// unlock_with_master_password 用错误密码应失败（需 setup 后才有 vault_meta，故需 Keychain）。
+    /// 本地手动运行：cargo test -p octopus-vault --lib unlock::tests::test_unlock_wrong_password_fails -- --ignored
+    #[test]
+    #[ignore]
+    fn test_unlock_wrong_password_fails() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let _ = setup_vault("right-password").expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        let result = unlock_with_master_password("wrong-password");
+        assert!(result.is_err(), "错误主密码应解密失败");
+
+        let _ = keychain::delete_machine_key();
     }
 }

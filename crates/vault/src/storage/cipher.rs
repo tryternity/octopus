@@ -72,6 +72,7 @@ pub fn permanent_delete(id: i64) -> Result<()> {
 mod tests {
     use super::*;
     use crate::types::{CipherData, CipherType, LoginData, LoginUri, RepromptType};
+    use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
         DerivedKey(crate::Zeroizing::new([byte; 32]))
@@ -100,17 +101,20 @@ mod tests {
         }
     }
 
-    // 注意：以下测试需要真实 DB（会写入 ~/.octopus/octopus.db）。
-    // 在 CI 环境可能失败。如果 ~/.octopus 不可写，整个测试模块 #[ignore]。
-    // 用户本地手动运行：cargo test -p octopus-vault --lib storage::cipher -- --nocapture --ignored
+    /// 注入干净 in-memory DB（含 vault_ciphers 表，无数据）。
+    fn setup_clean_db() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
+        db::set_test_db(conn);
+    }
+
+    // 使用 set_test_db 注入 in-memory DB，无需写入 ~/.octopus/octopus.db，CI 友好。
     #[test]
-    #[ignore]
     fn test_cipher_crud_round_trip_with_real_db() {
+        setup_clean_db();
         let key = make_key(7);
         let input = sample_input("TestSite");
 
-        // 清理可能存在的旧数据（id 自增，但不假设具体 id）
-        // 直接 create + load + verify
+        // create + load + verify
         let id = create_cipher(&input, &key).expect("create");
         assert!(id > 0);
 
@@ -142,5 +146,29 @@ mod tests {
         // 物理删除
         permanent_delete(id).expect("perm delete");
         assert!(load_cipher(id, &key).expect("load").is_none());
+    }
+
+    /// list_ciphers：空库返回空；插入两条后应能解密回两条。
+    #[test]
+    fn list_ciphers_returns_all_and_decrypts() {
+        setup_clean_db();
+        let key = make_key(9);
+
+        // 空库
+        let empty = list_ciphers(&key).expect("list empty");
+        assert!(empty.is_empty());
+
+        // 插两条
+        let id_a = create_cipher(&sample_input("SiteA"), &key).expect("create a");
+        let id_b = create_cipher(&sample_input("SiteB"), &key).expect("create b");
+
+        let all = list_ciphers(&key).expect("list");
+        assert_eq!(all.len(), 2);
+        let names: Vec<String> = all.iter().map(|c| c.name.clone()).collect();
+        assert!(names.contains(&"SiteA".to_string()));
+        assert!(names.contains(&"SiteB".to_string()));
+        let ids: Vec<i64> = all.iter().map(|c| c.id).collect();
+        assert!(ids.contains(&id_a));
+        assert!(ids.contains(&id_b));
     }
 }

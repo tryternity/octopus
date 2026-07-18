@@ -120,6 +120,50 @@ static TEST_MODE: AtomicBool = AtomicBool::new(false);
 
 static DB: OnceLock<parking_lot::ReentrantMutex<Connection>> = OnceLock::new();
 
+// 测试专用：thread-local 的 DB 连接覆盖。
+//
+// 与 `init_test_db()`（进程级 in-memory，OnceLock 单连接跨测试共享）互补：
+// 本覆盖让**每个测试线程**装一份独立的 in-memory 连接，避免测试间数据互相污染。
+//
+// 不用 `#[cfg(test)]` 门控——与 `init_test_db()` 同样保持运行时可见，便于跨 crate
+// （octopus-vault / octopus-desktop）的单元测试调用。未设置时 with_db 走全局
+// OnceLock 路径，对生产无影响（仅多一次 thread_local 读）。
+thread_local! {
+    static TEST_DB_OVERRIDE: std::cell::RefCell<
+        Option<std::sync::Arc<parking_lot::ReentrantMutex<Connection>>>
+    > = std::cell::RefCell::new(None);
+}
+
+/// 测试专用：注入一个 in-memory 连接（建表 + 标 v38），后续 `with_db` 调用会使用它。
+///
+/// 调用方需自备 `rusqlite::Connection::open_in_memory()`——这样测试可控制是否 preload
+/// 数据。多次调用替换前一次注入的连接（不累积）。
+#[doc(hidden)]
+pub fn set_test_db(conn: Connection) {
+    // 与 ensure_db → open_db_conn → init_schema 的初始化路径保持一致：
+    // 1. 设置 PRAGMA（WAL/busy_timeout/foreign_keys）
+    // 2. 跑 INIT_SQL 建表 + seed（IF NOT EXISTS 幂等）
+    // 3. 直接标 v38（跳过迁移分支）
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+    )
+    .expect("set_test_db: set PRAGMA");
+    conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
+    conn.execute("PRAGMA user_version = 38", [])
+        .expect("set_test_db: set user_version");
+    TEST_DB_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
+    });
+}
+
+/// 测试专用：清除 thread-local DB 覆盖，恢复全局 OnceLock 路径。
+#[doc(hidden)]
+pub fn clear_test_db() {
+    TEST_DB_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
 const INIT_SQL: &str = include_str!("db.sql");
 
@@ -200,6 +244,15 @@ pub fn with_db<F, R>(f: F) -> Result<R>
 where
     F: FnOnce(&Connection) -> Result<R>,
 {
+    // 测试覆盖路径：若当前线程已注入 test DB 连接，优先用它（不走全局 OnceLock）。
+    // 让每个测试线程隔离数据，避免相互污染。生产环境 thread_local 恒为 None，
+    // 仅多一次 TLS 读，无实质开销。
+    let override_conn: Option<std::sync::Arc<parking_lot::ReentrantMutex<Connection>>> =
+        TEST_DB_OVERRIDE.with(|cell| cell.borrow().clone());
+    if let Some(mutex) = override_conn {
+        let guard = mutex.lock();
+        return f(&guard);
+    }
     if DB.get().is_none() {
         ensure_db()?;
     }

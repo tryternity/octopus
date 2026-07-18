@@ -539,3 +539,225 @@ pub fn register_vault_generator_shortcut(
         .map_err(|e| format!("注册热键 '{}' 失败: {}", shortcut_str, e))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use octopus_vault::types::{
+        CipherData, CipherType, Field, LoginData, LoginUri, MatchType, PasswordHistoryEntry,
+        RepromptType,
+    };
+
+    /// 构造一份字段齐全的 Cipher（Login 类型 + favorite + notes + fields）。
+    fn sample_cipher() -> Cipher {
+        Cipher {
+            id: 42,
+            folder_id: Some(7),
+            favorite: true,
+            atype: CipherType::Login,
+            name: "Example Login".into(),
+            notes: Some("some notes".into()),
+            data: CipherData::Login(LoginData {
+                uris: vec![LoginUri {
+                    uri: "https://example.com".into(),
+                    match_type: Some(MatchType::Domain),
+                }],
+                username: Some("user1".into()),
+                password: Some("s3cret".into()),
+                totp: Some("JBSWY3DPEHPK3PXP".into()),
+                password_revision_date: None,
+            }),
+            fields: vec![Field {
+                name: "custom".into(),
+                value: Some("v".into()),
+                field_type: 0,
+            }],
+            password_history: vec![PasswordHistoryEntry {
+                password: "old".into(),
+                last_used_at: "2026-01-01".into(),
+            }],
+            reprompt: RepromptType::Password,
+            deleted_at: None,
+            created_at: "2026-01-01T00:00:00".into(),
+            updated_at: "2026-01-02T00:00:00".into(),
+        }
+    }
+
+    /// 构造一份字段齐全的 CipherInputDto（前端 → 后端输入）。
+    fn sample_input_dto() -> CipherInputDto {
+        CipherInputDto {
+            folder_id: Some(3),
+            favorite: false,
+            name: "New Entry".into(),
+            notes: None,
+            login: Some(LoginDataDto {
+                uris: vec![LoginUriDto {
+                    uri: "https://test.com".into(),
+                    match_type: Some(0),
+                }],
+                username: Some("u".into()),
+                password: Some("p".into()),
+                totp: None,
+            }),
+            fields: vec![FieldDto {
+                name: "f".into(),
+                value: None,
+                field_type: 1,
+            }],
+            reprompt: Some(1),
+        }
+    }
+
+    /// cipher_to_dto：所有字段应原样保留（id/folder_id/favorite/name/notes/login/fields/...）。
+    #[test]
+    fn test_cipher_to_dto_preserves_all_fields() {
+        let cipher = sample_cipher();
+        let dto = cipher_to_dto(cipher.clone());
+
+        assert_eq!(dto.id, 42);
+        assert_eq!(dto.folder_id, Some(7));
+        assert!(dto.favorite);
+        assert_eq!(dto.atype, 1, "Login 应映射为 atype=1");
+        assert_eq!(dto.name, "Example Login");
+        assert_eq!(dto.notes.as_deref(), Some("some notes"));
+        assert_eq!(dto.reprompt, 1, "RepromptType::Password 应映射为 1");
+        assert_eq!(dto.deleted_at, None);
+        assert_eq!(dto.created_at, "2026-01-01T00:00:00");
+        assert_eq!(dto.updated_at, "2026-01-02T00:00:00");
+
+        // login sub-fields
+        let login = dto.login.expect("login should be Some for Login cipher");
+        assert_eq!(login.uris.len(), 1);
+        assert_eq!(login.uris[0].uri, "https://example.com");
+        assert_eq!(login.uris[0].match_type, Some(0), "MatchType::Domain 应映射为 0");
+        assert_eq!(login.username.as_deref(), Some("user1"));
+        assert_eq!(login.password.as_deref(), Some("s3cret"));
+        assert_eq!(login.totp.as_deref(), Some("JBSWY3DPEHPK3PXP"));
+
+        // fields
+        assert_eq!(dto.fields.len(), 1);
+        assert_eq!(dto.fields[0].name, "custom");
+        assert_eq!(dto.fields[0].value.as_deref(), Some("v"));
+        assert_eq!(dto.fields[0].field_type, 0);
+    }
+
+    /// cipher_to_dto：空 uris / 无 notes 边界情况。
+    #[test]
+    fn test_cipher_to_dto_handles_empty_optionals() {
+        let mut cipher = sample_cipher();
+        cipher.notes = None;
+        // CipherData 当前仅 Login 单变体；保留不可达 arm 以便未来扩展。
+        #[allow(irrefutable_let_patterns)]
+        if let CipherData::Login(ref mut l) = cipher.data {
+            l.uris.clear();
+            l.totp = None;
+        }
+        let dto = cipher_to_dto(cipher);
+        assert!(dto.notes.is_none());
+        let login = dto.login.expect("login present");
+        assert!(login.uris.is_empty());
+        assert!(login.totp.is_none());
+    }
+
+    /// dto_to_input：完整 DTO → CipherInput，字段应保留；login 必须存在。
+    #[test]
+    fn test_dto_to_input_preserves_fields() {
+        let dto = sample_input_dto();
+        let input = dto_to_input(dto).expect("conversion should succeed");
+
+        assert_eq!(input.folder_id, Some(3));
+        assert!(!input.favorite);
+        assert_eq!(input.name, "New Entry");
+        assert!(input.notes.is_none());
+        assert!(matches!(input.atype, CipherType::Login));
+        assert!(matches!(input.reprompt, RepromptType::Password));
+
+        // login data
+        #[allow(irrefutable_let_patterns)]
+        let CipherData::Login(login) = input.data else {
+            panic!("应为 Login");
+        };
+        assert_eq!(login.uris.len(), 1);
+        assert_eq!(login.uris[0].uri, "https://test.com");
+        assert_eq!(
+            login.uris[0].match_type,
+            Some(MatchType::Domain),
+            "match_type=0 应转回 MatchType::Domain"
+        );
+        assert_eq!(login.username.as_deref(), Some("u"));
+        assert_eq!(login.password.as_deref(), Some("p"));
+        assert!(login.totp.is_none());
+
+        // fields
+        assert_eq!(input.fields.len(), 1);
+        assert_eq!(input.fields[0].name, "f");
+        assert!(input.fields[0].value.is_none());
+        assert_eq!(input.fields[0].field_type, 1);
+
+        // password_history 应初始化为空（dto 不携带，由 update 命令补）
+        assert!(input.password_history.is_empty());
+    }
+
+    /// dto_to_input：reprompt=None 时默认 RepromptType::None。
+    #[test]
+    fn test_dto_to_input_defaults_reprompt_to_none() {
+        let mut dto = sample_input_dto();
+        dto.reprompt = None;
+        let input = dto_to_input(dto).expect("convert");
+        assert!(matches!(input.reprompt, RepromptType::None));
+    }
+
+    /// dto_to_input：login=None 时应失败（MVP 仅支持 Login）。
+    #[test]
+    fn test_dto_to_input_requires_login() {
+        let mut dto = sample_input_dto();
+        dto.login = None;
+        let result = dto_to_input(dto);
+        assert!(result.is_err(), "dto_to_input 应在 login 缺失时返回 Err");
+    }
+
+    /// cipher_to_dto + dto_to_input 双向：dto_to_input 的产物再回 dto，核心字段一致。
+    /// 这覆盖了「同一份数据在两套 DTO 间不丢字段」的核心不变量。
+    #[test]
+    fn test_round_trip_dto_to_input_then_back() {
+        let dto_in = sample_input_dto();
+        // 记下关键期望值（dto_to_input 会消费 dto_in，无法后续比对）
+        let exp_folder = dto_in.folder_id;
+        let exp_favorite = dto_in.favorite;
+        let exp_name = dto_in.name.clone();
+        let exp_notes = dto_in.notes.clone();
+        let exp_reprompt = dto_in.reprompt.unwrap_or(0);
+        let exp_username = dto_in.login.as_ref().and_then(|l| l.username.clone());
+        let exp_fields_len = dto_in.fields.len();
+        let input = dto_to_input(dto_in).expect("convert");
+
+        // 构造一个完整 Cipher（补 id/时间戳/password_history——dto_to_input 不产出这些）
+        let cipher = Cipher {
+            id: 99,
+            folder_id: input.folder_id,
+            favorite: input.favorite,
+            atype: input.atype,
+            name: input.name.clone(),
+            notes: input.notes.clone(),
+            data: input.data.clone(),
+            fields: input.fields.clone(),
+            password_history: vec![],
+            reprompt: input.reprompt,
+            deleted_at: None,
+            created_at: "2026-01-01T00:00:00".into(),
+            updated_at: "2026-01-01T00:00:00".into(),
+        };
+        let dto_out = cipher_to_dto(cipher);
+
+        assert_eq!(dto_out.folder_id, exp_folder);
+        assert_eq!(dto_out.favorite, exp_favorite);
+        assert_eq!(dto_out.name, exp_name);
+        assert_eq!(dto_out.notes, exp_notes);
+        assert_eq!(dto_out.reprompt, exp_reprompt);
+        assert_eq!(
+            dto_out.login.as_ref().and_then(|l| l.username.clone()),
+            exp_username
+        );
+        assert_eq!(dto_out.fields.len(), exp_fields_len);
+    }
+}

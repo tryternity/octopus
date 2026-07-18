@@ -41,3 +41,7 @@ log = "0.4"
 parking_lot = { workspace = true }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# 与 octopus-infra 同版本——用于 set_test_db 注入 in-memory 连接，不进入发布构建。
+rusqlite = { version = "0.31", features = ["bundled"] }
