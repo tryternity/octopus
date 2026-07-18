@@ -30,6 +30,7 @@ interface TranslateCloudModel {
   isThinking: boolean;
   // 后端 TranslateCloudModel（model_commands.rs）的 is_enabled 字段（camelCase 序列化），
   // review fix 问题 3：local/cloud is_current 都用 DB is_enabled。
+  // main 上的 584f6456 "fix bug" 也加了同一字段——合并两边都修了同一个 bug。
   isEnabled: boolean;
 }
 
