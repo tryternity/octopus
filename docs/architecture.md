@@ -281,6 +281,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
    - `CGEvent::location()` → **逻辑坐标（points）**，原点主屏左上角 y 向下。**不除 scale**。与 Tauri `LogicalPosition` 一致。
    - `Monitor::position()` / `Monitor::size()` → **物理像素**（Retina 下如 3840×2160）。**必须除 `scale_factor()`**（Retina=2.0）。
    - 曾误把 CGEvent 当物理坐标除 scale → 浮窗位置偏到完全无关的地方、副屏选中浮窗出现在主屏。`crates/desktop/src/action_bar_commands.rs::get_mouse_position`、`compact_editor_window.rs`、`window_position.rs` 均已修复。**碰撞检测**：浮窗定位后检查鼠标所在显示器边缘（Monitor position/size ÷ scale_factor 转逻辑坐标），右溢出贴右边缘、左溢出贴左边缘，防止浮窗被屏幕截断。
+
+**开发模式（HMR 热重载，2026-07-19 引入）：** `./run-octopus-dev.sh` 启 vite dev server (port 1420) + `cargo run` debug profile。改前端 → vite HMR 秒级推送 WebView，**不重编 Rust**。机制：`tauri.conf.json` 加 `build.devUrl: "http://localhost:1420"`，Tauri 在 debug build（`debug_assertions=true`）下自动把所有 `WebviewUrl::App(...)` 映射到 devUrl（query string 保留）；release build 完全忽略该字段，走 `frontendDist` 嵌入。`vite.config.ts` 加 `strictPort: true`（防 vite 静默改用 1421 致 Tauri 连不上）+ `clearScreen: false`（保留 cargo 日志）。`Cargo.toml` tauri 依赖启用 `devtools` feature → WebView 右键 Inspect Element 调试前端。**注意**：dev 模式（debug build）下 `#[cfg(debug_assertions)]` 代码会激活，曾经 `result_window.rs` 无条件 `window.open_devtools()` 弹 Inspector 挡住语音识别窗口，已删除（改按需右键开）。release 流程 `./run-octopus.sh` 完全不变。
 **AI 命令面板（action_bar_window + 菜单 DB + 脚本执行 + Extension Package）：**
 `action_bar_window` 迷你浮窗（2026-07-08，菜单 DB 化 2026-07-09），全局热键触发。选中文本→模拟 Cmd+C→弹出两级菜单→AI/搜索/翻译/网页/脚本→CompactEditor 展示结果。仅 macOS 支持，capabilities 白名单必须包含 `action_bar_window`。
 

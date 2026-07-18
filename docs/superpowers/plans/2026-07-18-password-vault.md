@@ -4,7 +4,7 @@
 
 **Goal:** 为 octopus 引入密码管理功能：加密 vault + 密码生成器 + macOS Auto-Type + TOTP + Bitwarden 导入，并顺手加密现有 `models.secret_key`。
 
-**Architecture:** 新增 `crates/vault/`（纯逻辑库，依赖 infra），暴露加密 / 存储 / 生成器 / 匹配 / 健康检查 / 导入的纯函数 API；`crates/desktop/` 加 `vault_commands.rs` + `autotype/` 模块包装为 Tauri 命令；前端在 Settings 下加 VaultPanel，**密码生成器内嵌 CipherEditor**（不再有独立浮窗）。加密用 Argon2id + HMAC-SHA512 简化 BIP44 派生 + AES-256-GCM；密钥双层（user_vault_key + app_key），app_key 用 K_machine（**本地加密文件 `~/.octopus/machine-key.enc`**）和 master_root_key 双密文存储，本机启动无感。
+**Architecture:** 新增 `crates/vault/`（纯逻辑库，依赖 infra），暴露加密 / 存储 / 生成器 / 匹配 / 健康检查 / 导入的纯函数 API；`crates/desktop/` 加 `vault_commands.rs` + `autotype/` 模块包装为 Tauri 命令；前端在 Settings 下加 VaultPanel，**密码生成器为共享主体组件（`PasswordGenerator.tsx`）+ Modal 外壳**（跨场景复用，未来 Actionbar 独立窗口场景也可用）。加密用 Argon2id + HMAC-SHA512 简化 BIP44 派生 + AES-256-GCM；密钥双层（user_vault_key + app_key），app_key 用 K_machine（**本地加密文件 `~/.octopus/machine-key.enc`**）和 master_root_key 双密文存储，本机启动无感。
 
 **Tech Stack:** Rust（argon2 / aes-gcm / hkdf / hmac / sha2 / zeroize / publicsuffix / totp-rs / zxcvbn / data-encoding / regex / uuid）+ Tauri 2 + React 19 + TypeScript + Tailwind 4 + Radix UI + enigo 0.6（已有）。**不再用 `keyring` crate**（K_machine 改本地加密文件，详见 spec §2.5）。
 
@@ -92,8 +92,10 @@
 
 | 文件 | 职责 |
 |---|---|
-| `VaultPanel.tsx` | vault 主面板（含 folder 侧边栏 + lock timeout 设置 + 30s 心跳） |
-| `Vault/CipherEditor.tsx` | cipher 新建/编辑表单（含内嵌生成器按钮 + folder dropdown） |
+| `VaultPanel.tsx` | vault 主面板（顶部 PillTabs 切 list/health/io + lock timeout 设置 + 30s 心跳） |
+| `Vault/CipherEditor.tsx` | cipher 新建/编辑表单（密码字段右侧眼睛/生成/复制 3 按钮 + grid 两列布局 + Modal 生成器） |
+| `Vault/PasswordGenerator.tsx` | 生成器共享主体（跨场景复用，预留 onAutotype 给未来 Actionbar 场景） |
+| `Vault/PasswordGeneratorModal.tsx` | 生成器 Modal 外壳（CipherEditor 场景） |
 | `Vault/UnlockDialog.tsx` | 解锁弹窗 |
 | `Vault/SetupWizard.tsx` | 首次初始化向导（12 位 + 4 类校验） |
 | `Vault/HealthReport.tsx` | 健康报告 |
@@ -104,7 +106,9 @@
 | `Vault/validateMasterPassword.ts` + `.test.ts` | 主密码强度校验（12 位 + 4 类） |
 | `Vault/classifyError.ts` | VaultError JSON 解析 |
 
-> **已废弃**：`pages/PasswordGenerator/index.tsx` 独立浮窗（生成器内嵌 CipherEditor）。
+> **演进**（2026-07-19 修订）：`pages/PasswordGenerator/index.tsx` 独立浮窗 → CipherEditor
+> 内嵌抽屉（`ecca9b04`）→ 共享主体 + Modal 外壳（本次重构）。主体 `PasswordGenerator.tsx`
+> 跨场景复用，未来 Actionbar 独立窗口场景直接渲染主体即可。
 
 ### 修改文件
 
@@ -6572,6 +6576,85 @@ Expected: 0 error 0 warning（前端类型不匹配会反映到 ts build）
 git add crates/desktop/frontend/ crates/desktop/capabilities/default.json
 git commit -m "feat(vault): Task 21 - 前端 VaultPanel + SetupWizard + UnlockDialog + PasswordGenerator + i18n"
 ```
+
+---
+
+## 修订：UI 重设计 + 生成器架构升级 + dev 模式（2026-07-19）
+
+针对首发版 UI 细节做的迭代，全部已落地（未 commit 时记录）。按主题分组：
+
+### A. CipherEditor UI 重设计
+
+- [x] **密码眼睛/复制按钮 bug 修复**：`CopyButton` 原内部硬编码 `absolute right-1`，被放进
+  flex 容器后与眼睛按钮位置完全重叠 → 点眼睛触发复制。修复：加 `className` prop，
+  密码字段传 inline 样式走 flex 流。username 字段保持原 absolute（默认）。
+- [x] **3 按钮并排**：眼睛 / 生成 / 复制统一 `px-1.5 py-1 + size-3.5`，激活态 `text-foreground`。
+- [x] **移除「高级」折叠 + 「生成」文字**：urls / folder / notes 直接平铺展示。
+- [x] **grid 两列布局**：用户名 | 密码 一行，TOTP | 文件夹 一行；网址 / 备注 各占整行。
+- [x] **textarea `size="full"` 修复**：`Input`/`Textarea`/`Select` 默认 `max-w-[220px]`，
+  之前 textarea 看似只占左半列就是这个原因。所有 vault 输入控件加 `size="full"`。
+- [x] **删 header meta "全部已加密 · N 个条目"**：与 Tab 栏 + footer 加密提示信息冗余。
+
+### B. VaultPanel 改 Tab
+
+- [x] **footer link → 顶部 PillTabs**：3 个 Tab（密码条目 / 密码健康 / 导入导出），
+  复用 `components/ui/tabs.tsx` 的 PillTabs（与 ModelsPanel 同款）。修复"点进健康回不到
+  主页"的脱节问题。
+- [x] **footer 只保留"端到端加密"提示**。
+
+### C. 生成器架构升级（核心）
+
+- [x] **新建 `PasswordGenerator.tsx`（共享主体）**：从原 `PasswordGenerator/index.tsx`
+  （`git show ecca9b04^:` 可取回）迁移完整要素——Segmented 模式切换 + 显示区 + 强度条 +
+  4 种模式专属配置（滑杆/toggle/number input）+ 操作栏。Props 设计：
+  `onUsePassword?`（modal 场景）/ `onAutotype?`（未来 Actionbar 场景）/ `showToast`。
+- [x] **新建 `PasswordGeneratorModal.tsx`（外壳 A）**：半透明遮罩 + 居中卡片（480px）+ × 关闭
+  + Esc 关闭 + 点遮罩关闭。内部渲染 `<PasswordGenerator>`。
+- [x] **CipherEditor.tsx 删除内嵌抽屉**：~50 行抽屉 + 相关 state（genMode/genResult/genBusy/
+  regenerate/applyGenerated）全部删除，改为 modal 调用。
+- [x] **架构动机**：用户要求"未来 Actionbar 也能召唤生成器，给网页注册新账号时填初始密码"。
+  抽共享主体后，未来 Actionbar 独立 Tauri 窗口场景（外壳 B）只需在窗口 root 渲染主体，
+  无需重构。
+
+### D. 强度评估算法修复（密码学正确性）
+
+- [x] **算法替换**：`estimateStrength(s)` （ASCII 字符种类 + 长度启发式）→
+  `estimateStrengthByConfig(mode, cfg)`（按生成参数算熵）。
+- [x] **根因**：原算法对中文短语结构性歧视——4 个中文双字词 = 8 字符 + 中文算 1 类字符
+  → 永远评 1 分（极弱），实际熵 48 bit 比英文 3 词（39 bit）还高。
+- [x] **新算法**：
+  - random: `length × log2(charset_size)`
+  - passphraseEn: `word_count × log2(7776)`
+  - passphraseZh: `word_count × log2(4096)`
+  - pin: `length × log2(10)`
+- [x] **评分映射**：< 28 极弱 / 28-35 弱 / 36-59 一般 / 60-127 强 / ≥ 128 极强。
+
+### E. dev 模式基础设施（工程改进，跨 vault 全局）
+
+- [x] **`tauri.conf.json` 加 `devUrl` + `beforeDevCommand`**：debug build 下 Tauri 自动把
+  所有 `WebviewUrl::App(...)` 映射到 `http://localhost:1420`（query string 保留）。
+- [x] **`vite.config.ts` 加 `strictPort: true` + `clearScreen: false`**。
+- [x] **`Cargo.toml` 启用 tauri `devtools` feature**：WebView 右键 Inspect Element 可用。
+- [x] **新建 `run-octopus-dev.sh`**：后台启 vite + `cargo run`（debug profile）+ 退出 trap kill vite。
+- [x] **devtools 自动弹窗修复**：删 `result_window.rs:60-61` 的
+  `#[cfg(debug_assertions)] window.open_devtools()`——dev 模式下会自动弹 Inspector 挡住
+  语音识别结果窗口。改为按需开（右键 Inspect）。
+- [x] **价值**：改前端秒级 HMR 生效，不重编 Rust（release 流程完全不变）。
+
+### F. 其他小修复
+
+- [x] **HealthReport `${count}` 未替换 bug**：`t("settings.vault.health.total")` 漏传
+  `{ count: report.total_logins }` → 页面显示原始 `${count}`。
+- [x] **中文词表回归测试**：加 `test_wordlist_no_duplicates` + `test_wordlist_all_two_cjk_chars`
+  锁死「4096 词无重复 + 全 2 字 CJK」不变量（progress.md 记录早期 100 词版本曾有 '现在' 重复）。
+
+### 验证
+
+- `bunx tsc --noEmit`：0 error
+- `bun run test`：304 tests pass
+- `cargo test -p octopus-vault --lib passphrase_zh`：9 tests pass
+- `cargo check -p octopus-desktop --features "embedded cloud"`：0 error 0 warning
+- HMR 端到端验证：改前端 → vite 推送 → WebView 自动刷新 → 无 Rust 重编
 
 ---
 

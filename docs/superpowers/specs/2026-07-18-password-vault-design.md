@@ -936,12 +936,35 @@ impl TotpGenerator {
 - Auto-Type 完密码后：生成 6 位码 → 复制到剪贴板（30s 清空）→ toast 提示
 - VaultPanel cipher 详情：实时显示 6 位码 + 倒计时圆环 + 复制按钮
 
-### 5.2 密码生成器（内嵌 CipherEditor，不再有独立浮窗）
+### 5.2 密码生成器（跨场景复用主体 + Modal/独立窗口外壳）
 
-**UI 入口**（follow-up 修订）：生成器 UI 内嵌在 `CipherEditor` 的密码字段旁——点击按钮弹出
-inline popover 选模式 + 配置 + 生成。**原计划**的 `Cmd+Shift+G` 全局热键 + 独立
-`password_generator_window` 浮窗 + `pages/PasswordGenerator/` 目录**均已废弃**。
-前端配置代码 `buildConfig.ts` 移到 `pages/Settings/Vault/`，输入由前端 clamp 到合法范围。
+**架构**（2026-07-19 重构，commit 见 plan 修订段）：生成器拆为**共享主体组件** + **场景外壳**两层：
+
+```
+┌─────────────────────────────────────────┐
+│ <PasswordGenerator> 共享主体             │ ← 纯内容：Segmented 模式 + 显示区 + 强度条
+│   props: onUsePassword?(pwd)            │   + 模式专属配置 + 操作栏
+│         onAutotype?(pwd)  future        │   操作按钮按 props 动态显示
+└─────────────────────────────────────────┘
+        ▲                            ▲
+        │                            │
+┌───────┴────────┐          ┌────────┴────────┐
+│ 外壳 A：Modal   │          │ 外壳 B：独立窗口  │ future
+│ CipherEditor   │          │ Actionbar 触发   │
+│ ✅ 已落地       │          │ P2 待办          │
+└────────────────┘          └─────────────────┘
+```
+
+**已落地（外壳 A）**：`CipherEditor` 密码字段右侧 🔑 按钮 → 弹 `<PasswordGeneratorModal>` 半透明遮罩 + 居中卡片。点「使用此密码」写回 password 字段并关闭。
+
+**未来扩展（外壳 B）**：`PasswordGenerator` 已预留 `onAutotype` prop——未来 Actionbar 加按钮触发独立 Tauri 窗口（参考 `compact_editor_window.rs` 模板）时，窗口 root 直接渲染主体组件，`onAutotype` 触发 `vault_autotype_password` 命令（与现有 vault autotype 机制复用）。无需重构主体。
+
+**架构演进史**（避免下次重构踩同样坑）：
+- 初版：`password_generator_window` 独立 Tauri 窗口 + `Cmd+Shift+G` 全局热键 + `pages/PasswordGenerator/`
+- 2026-07-18：删除独立窗口，改为 CipherEditor 内嵌抽屉（`ecca9b04`）——为简化首发版
+- 2026-07-19：再重构为「共享主体 + Modal/独立窗口外壳」——主体可复用，外壳按场景换，未来 Actionbar 集成无需重复实现
+
+前端配置代码 `buildConfig.ts` 在 `pages/Settings/Vault/`，输入由前端 clamp 到合法范围。
 
 #### 5.2.1 配置（4 种模式）
 
@@ -1116,6 +1139,29 @@ pub fn generate(cfg: &PassphraseZhConfig) -> Result<String> {
 - 强度指示器（实时）
 
 用户偶尔需要回看？通过 cipher 的 password_history（user_vault_key 加密）。
+
+#### 5.2.6 生成器内部强度评估（前端独立算法）
+
+生成器 modal 内的强度条用**前端独立算法**（`estimateStrengthByConfig`），不走后端
+`vault_evaluate_password`（zxcvbn）。原因：生成器知道自己用什么 mode + config，按参数
+算熵比从字符串猜准确得多。
+
+```
+random       length × log2(charset_size)
+             charset = uppercase(26) + lowercase(26) + numbers(10) + symbols(~32)
+passphraseEn word_count × log2(7776)   // EFF 大词表
+passphraseZh word_count × log2(4096)   // jieba 双字词词频 TOP
+pin          length × log2(10)
+```
+
+评分映射（0-4）：< 28 bit 极弱 / 28-35 弱 / 36-59 一般 / 60-127 强 / ≥ 128 极强。
+
+**写回 cipher 后**：`CipherEditor` 的 `PasswordStrengthBar` 会再走后端 `vault_evaluate_password`
+做精确评估——双层评估，生成时即时反馈 + 持久化前精确测量。
+
+> **踩坑警示**：曾经用「字符种类 + 字符长度」启发式算法（ASCII 思维），对中文短语结构性
+> 歧视——把中文当 1 类字符 + 4 个双字词只算 8 字符 → 永远评 1 分（极弱），实际熵 48 bit
+> 比英文 3 词（39 bit）还高。修复见 commit（plan 修订段记录）。
 
 ### 5.3 密码健康检查（本地）
 
@@ -1632,9 +1678,11 @@ pub fn feature_flags::is_vault_enabled() -> bool;
 
 ```
 crates/desktop/frontend/src/pages/Settings/Vault/
-├── VaultPanel.tsx              # 主面板（含 folder 侧边栏 + lock timeout 设置）
+├── VaultPanel.tsx              # 主面板（顶部 PillTabs 切 list/health/io + lock timeout 设置）
 ├── CipherList.tsx              # cipher 列表
-├── CipherEditor.tsx            # 新建/编辑 cipher 表单（含内嵌生成器按钮 + folder dropdown）
+├── CipherEditor.tsx            # 新建/编辑 cipher 表单（密码字段右侧眼睛/生成/复制 3 按钮 + grid 两列布局）
+├── PasswordGenerator.tsx       # 生成器共享主体（Segmented 模式 + 显示 + 强度 + 配置 + 操作栏，跨场景复用）
+├── PasswordGeneratorModal.tsx  # 生成器 Modal 外壳（外壳 A，CipherEditor 场景）
 ├── UnlockDialog.tsx            # 解锁弹窗
 ├── SetupWizard.tsx             # 首次初始化向导（含 12 位 + 4 类校验）
 ├── HealthReport.tsx            # 健康报告
@@ -1649,7 +1697,9 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 └── classifyError.ts            # VaultError JSON 解析（向后兼容旧字符串）
 ```
 
-> **原计划的 `pages/PasswordGenerator/` 独立浮窗目录已废弃**——生成器 UI 内嵌 CipherEditor。
+> **架构演进**：`pages/PasswordGenerator/` 独立浮窗（首发版）→ CipherEditor 内嵌抽屉
+> （`ecca9b04`）→ 共享主体 + Modal 外壳（2026-07-19 重构，主体复用，未来 Actionbar 独立
+> 窗口场景也能用）。
 > **`pages/QuickAccess/` vault tab 仍未实现**（P2 待办）。
 
 ## 附录 C：能力配置（capabilities/default.json）
@@ -1664,8 +1714,10 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 }
 ```
 
-> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——生成器内嵌 CipherEditor，
-> setup 走 VaultPanel 内联向导（不弹独立窗口）。
+> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——生成器当前走
+> CipherEditor Modal（主体组件 `PasswordGenerator.tsx` 可复用），setup 走 VaultPanel
+> 内联向导（不弹独立窗口）。**未来扩展**：Actionbar 触发的独立生成器窗口场景可能恢复
+> `password_generator_window`，渲染同一个 `<PasswordGenerator>` 主体（详见 §5.2 架构图）。
 
 ## 附录 D：全局热键
 
@@ -1675,7 +1727,8 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 
 热键注册沿用 `action_bar_window.rs` 的 `register_action_bar_shortcut` 机制，vault feature off 时整段跳过。
 
-> **已废弃热键**：`Cmd+Shift+G`（生成器浮窗，已移到 CipherEditor 内嵌）、
+> **已废弃热键**：`Cmd+Shift+G`（生成器独立浮窗，已改为 CipherEditor Modal——主体组件
+> `PasswordGenerator.tsx` 复用，未来 Actionbar 场景恢复独立窗口时不再需要全局热键）、
 > `Cmd+Shift+V`（Quick Access vault tab，未实现）。`AppConfig.vault_generator_shortcut`
 > 字段保留仅为兼容旧 DB，运行时不消费。
 
