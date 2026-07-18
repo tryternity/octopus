@@ -341,7 +341,10 @@ fn lookup_model_name(source: &str) -> Result<String, String> {
 }
 
 /// 读某模型当前 secret_key（DB），搜索所有 domain。
-fn current_secret_key(model_name: &str) -> Result<String, String> {
+///
+/// 仅查 is_local=1 行（本地模型 manifest）。云端模型（is_local=0）的 secret_key
+/// 请用 [`current_secret_key_any`]（follow-up #7 chokepoint 用，含 cloud 行）。
+pub(crate) fn current_secret_key(model_name: &str) -> Result<String, String> {
     for domain in &["asr", "translate", "ocr"] {
         let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
         if let Some(r) = rows.iter().find(|r| r.model_name == model_name) {
@@ -349,6 +352,26 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
         }
     }
     Err(format!("未找到模型 '{model_name}'"))
+}
+
+/// 读任意 domain / is_local 的模型 secret_key（DB raw 值，**不解密**）。
+///
+/// follow-up #7 引入：vault chokepoint `vault_secret_access::read_model_secret_key`
+/// 需要查 cloud 行（is_local=0）——`current_secret_key` 仅查本地 manifest，不够用。
+///
+/// 流程：先按 model_name 查所有 cloud models（asr/llm/translate/ocr），再 fallback
+/// 到本地 manifest。找不到返回 Err（让调用方决定）。
+pub(crate) fn current_secret_key_any(model_name: &str) -> Result<String, String> {
+    // 1. cloud 行（is_local=0）：跨 4 个 domain 查
+    for domain in &["asr", "llm", "translate", "ocr"] {
+        let rows = octopus_infra::db::list_cloud_models_by_domain(domain)
+            .map_err(|e| e.to_string())?;
+        if let Some(r) = rows.iter().find(|r| r.model_name == model_name) {
+            return Ok(r.secret_key.clone());
+        }
+    }
+    // 2. fallback：本地 manifest（is_local=1）
+    current_secret_key(model_name)
 }
 
 /// 按 source（路径标识）反查 model_name + secret_key，搜索所有 domain。

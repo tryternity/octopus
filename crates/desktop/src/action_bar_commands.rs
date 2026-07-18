@@ -908,8 +908,14 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
         }
         TranslateStrategy::CloudModel { resolved } => {
             // 云端引擎（OpenAI 兼容）——内部 reqwest::blocking，由外层 block_on 隔离
+            //
+            // follow-up #7：secret_key 可能是 v1: 加密格式（vault 启用后 Task 20 迁移过），
+            // 透明解密得到明文 API Key。本地 / 未迁移明文 → no-op 返回原值。
+            let secret_key_plain = crate::vault_secret_access::try_decrypt_secret_global(
+                &resolved.entry.secret_key,
+            );
             let engine = octopus_translation::CloudLlmEngine::new(
-                &resolved.provider, &resolved.name, &resolved.entry.source, &resolved.entry.secret_key, resolved.is_thinking,
+                &resolved.provider, &resolved.name, &resolved.entry.source, &secret_key_plain, resolved.is_thinking,
             );
             engine.translate(text, source_lang, target_lang).await
                 .map_err(|e| e.to_string())

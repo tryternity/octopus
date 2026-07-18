@@ -13,6 +13,29 @@ use parking_lot::RwLock;
 
 use octopus_vault::crypto::DerivedKey;
 
+/// 进程级全局 session 句柄（clone 自 manage() 注入 Tauri State 的那份 Arc）。
+///
+/// 用于 cloud API 推理热路径（AliyunEngine::transcribe / config::llm_config_ignore_mode /
+/// action_bar 云端翻译）——这些位置拿不到 Tauri `State<SharedVaultSession>`，但需要
+/// 解密 `v1:` 前缀的 secret_key（follow-up #7）。
+///
+/// 启动时由 [`set_global_session`] 注入；未注入或 vault 未初始化时 [`try_global_session`]
+/// 返回 None，调用方按「vault 未启用」语义走原 raw 路径（明文 / 本地 manifest）。
+static GLOBAL_SESSION: std::sync::OnceLock<SharedVaultSession> = std::sync::OnceLock::new();
+
+/// 注入全局 session 句柄。main.rs 在 `app.manage(vault_session)` 之后调用一次。
+///
+/// 用 OnceLock：进程级单例，重复调用（如测试）幂等——后一次调用被忽略。
+pub fn set_global_session(session: SharedVaultSession) {
+    let _ = GLOBAL_SESSION.set(session);
+}
+
+/// 取全局 session 句柄（clone Arc，零拷贝）。
+/// 未注入返回 None——调用方按 vault 未启用处理（返回 raw secret_key）。
+pub fn try_global_session() -> Option<SharedVaultSession> {
+    GLOBAL_SESSION.get().cloned()
+}
+
 /// user_vault_key 超时阈值（15 分钟）。
 /// 仅 user_vault_key 受此约束——app_key 不超时（进程生命周期内常驻）。
 pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 15 * 60;

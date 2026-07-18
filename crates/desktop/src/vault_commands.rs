@@ -95,11 +95,18 @@ fn require_user_vault_key(state: &State<'_, SharedVaultSession>) -> Result<Arc<D
 }
 
 /// 从 AppState 取 app_key（启动时已 bootstrap，不应为空）。
-#[allow(dead_code)] // Task 20+ 会接入 app_key 调用方
-fn require_app_key(state: &State<'_, SharedVaultSession>) -> Result<Arc<DerivedKey>, String> {
-    let session = state.read();
-    session
-        .app_key
+///
+/// follow-up #7 起被 `vault_secret_access::try_decrypt_secret` 复用——cloud 推理热路径
+/// 需要用 app_key 解 `v1:` 前缀的 secret_key。
+///
+/// 提供裸 `SharedVaultSession` 版本（非命令层调用点：`vault_secret_access`、
+/// 未来其它内部消费方）。Tauri 命令层若需用，从 `state.inner()` 取 `&SharedVaultSession`
+/// 传入即可。
+pub(crate) fn require_app_key_from_session(
+    session: &SharedVaultSession,
+) -> Result<Arc<DerivedKey>, String> {
+    let s = session.read();
+    s.app_key
         .clone()
         .ok_or_else(|| "vault app_key 不可用".to_string())
 }
@@ -278,6 +285,17 @@ pub fn vault_create_cipher(
 
 /// password_history 上限（避免无界增长）。FIFO 截断：丢最老的。
 pub const PASSWORD_HISTORY_MAX: usize = 20;
+
+/// `vault_detect_and_match` URL 检测失败时的 fallback 上限（follow-up #8）。
+///
+/// URL 检测失败时按 `updated_at DESC` 取最近使用过的 N 条，让用户手动选——
+/// 避免大 vault（500+）全量返回的噪音和延迟。
+pub const VAULT_DETECT_FALLBACK_LIMIT: usize = 20;
+
+/// `vault_detect_and_match` URL 匹配命中时的上限（follow-up #8）。
+///
+/// 同域可能挂很多 cipher（如多个测试账号），仍限制数量避免列表过长。
+pub const VAULT_DETECT_MATCH_LIMIT: usize = 50;
 
 /// 在保存前合并现有 history 并按需追加新条目。
 ///
@@ -478,7 +496,8 @@ pub fn vault_autotype(
 }
 
 /// 检测当前浏览器 URL + 返回匹配 cipher 列表。
-/// URL 检测失败时返回全部 cipher（让用户手动选）。
+/// URL 检测失败时返回最近使用的若干 cipher（follow-up #8：take 20），
+/// URL 匹配命中时也限制数量（take 50，避免大域共享导致列表过长）。
 #[tauri::command]
 pub fn vault_detect_and_match(
     state: State<'_, SharedVaultSession>,
@@ -489,10 +508,23 @@ pub fn vault_detect_and_match(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     if url_str.is_empty() {
-        // URL 检测失败 → 返回全部 cipher 让用户手动选
+        // URL 检测失败 → 返回 last-N-used（按 updated_at DESC）让用户手动选
+        // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
         return octopus_vault::storage::list_ciphers(&key)
             .map_err(|e| e.to_string())
-            .map(|cs| cs.into_iter().map(cipher_to_dto).collect());
+            .map(|cs| {
+                let mut filtered: Vec<Cipher> = cs
+                    .into_iter()
+                    .filter(|c| c.deleted_at.is_none())
+                    .collect();
+                // updated_at DESC：最近用过的（vault_autotype 每次访问会 bump）排在前面
+                filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                filtered
+                    .into_iter()
+                    .take(VAULT_DETECT_FALLBACK_LIMIT)
+                    .map(cipher_to_dto)
+                    .collect()
+            });
     }
 
     let url = url::Url::parse(&url_str).map_err(|e| format!("URL 解析失败: {}", e))?;
@@ -502,7 +534,13 @@ pub fn vault_detect_and_match(
     let equivalent = octopus_vault::matcher::psl::default_equivalent_domains();
 
     let matched = octopus_vault::matcher::find_matching_ciphers(&url, &ciphers, &equivalent);
-    Ok(matched.into_iter().cloned().map(cipher_to_dto).collect())
+    // follow-up #8：URL 匹配也限制数量（同域可能挂很多 cipher）
+    Ok(matched
+        .into_iter()
+        .take(VAULT_DETECT_MATCH_LIMIT)
+        .cloned()
+        .map(cipher_to_dto)
+        .collect())
 }
 
 /// 复制指定 cipher 的密码到 concealed 剪贴板。
@@ -961,5 +999,205 @@ mod tests {
         // 注意：每次 save 时 existing.updated_at 是上一轮 save 写入的时间戳，
         // 这里只验证数量 + 最新一条是上一轮的密码（p24）。
         assert_eq!(loaded.password_history.last().unwrap().password, "p24");
+    }
+
+    // === Follow-up #7: secret_key 透明解密集成测试 ===
+
+    /// 用真实 setup_vault 得到 user_vault_key + app_key（含真实 keychain 注入路径）。
+    /// 与 setup_test_vault_with_key 对称，但额外返回 app_key——follow-up #7 的
+    /// secret_key 解密要用 app_key。
+    fn setup_test_vault_with_keys() -> (Arc<DerivedKey>, Arc<DerivedKey>) {
+        use rusqlite::Connection;
+        octopus_infra::db::set_test_db(Connection::open_in_memory().expect("in-memory DB"));
+        octopus_vault::keychain::set_test_keychain();
+        let _ = octopus_vault::keychain::delete_machine_key();
+
+        let keys = octopus_vault::unlock::setup_vault("test-master-pw").expect("setup_vault");
+        let _ = octopus_vault::keychain::delete_machine_key();
+        (Arc::new(keys.user_vault_key), Arc::new(keys.app_key))
+    }
+
+    /// 构造一个 app_key 已注入的 SharedVaultSession。
+    fn session_with_app_key(app_key: Arc<DerivedKey>) -> SharedVaultSession {
+        use parking_lot::RwLock;
+        let mut s = crate::vault_state::VaultSession::default();
+        s.app_key = Some(app_key);
+        Arc::new(RwLock::new(s))
+    }
+
+    /// 向 models 表插一行云端模型（is_local=0）+ 指定 secret_key，返回新行 id。
+    /// 仅提供 NOT NULL 无默认值的字段；UNIQUE 通过 model_name 随机后缀避免冲突。
+    fn insert_cloud_test_model(secret_key: &str) -> i64 {
+        use rusqlite::params;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let suffix = SEQ.fetch_add(1, Ordering::SeqCst);
+        let model_name = format!("test-cloud-model-{}", suffix);
+
+        octopus_infra::db::with_db(|conn| {
+            conn.execute(
+                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    "llm",
+                    "test_provider",
+                    "test_category",
+                    model_name,
+                    "https://test-source.example.com",
+                    secret_key,
+                    0, // is_local=0 → 云端模型
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .expect("insert test cloud model should succeed")
+    }
+
+    /// 直接按 model_name 读 models.secret_key 原值（验证迁移效果用）。
+    fn read_cloud_model_secret_by_name(model_name: &str) -> String {
+        use rusqlite::params;
+        octopus_infra::db::with_db(|conn| {
+            let v: String = conn.query_row(
+                "SELECT secret_key FROM models WHERE model_name = ?",
+                params![model_name],
+                |r| r.get(0),
+            )?;
+            Ok(v)
+        })
+        .expect("read secret_key should succeed")
+    }
+
+    /// 端到端集成测试：Task 20 迁移后，read_model_secret_key 能还原明文 API Key。
+    ///
+    /// 流程（模拟 vault setup → cloud key 加密迁移 → 推理热路径消费）：
+    ///   1. setup_vault → 得到 app_key
+    ///   2. 插入一行 cloud model（is_local=0）含明文 secret_key
+    ///   3. 调 migrate_secret_keys_to_encrypted(app_key) → DB 中 secret_key 变 v1: 密文
+    ///   4. 调 read_model_secret_key(model_name, &session) → 应返回原明文 API Key
+    ///
+    /// 若 chokepoint 缺失（推理热路径直接读 DB 原值），返回的会是 "v1:..." 密文 →
+    /// 上层 HTTP Bearer 会把加密 blob 当 API Key 发出去 → 401。
+    #[test]
+    fn test_read_model_secret_key_round_trip_after_migration() {
+        let (_user_key, app_key) = setup_test_vault_with_keys();
+        let session = session_with_app_key(app_key.clone());
+
+        // 1. 插入云端模型（明文 secret_key）
+        let plaintext = "sk-test-cloud-api-key-12345";
+        // 取 model_name（insert_cloud_test_model 内部生成，需要回读）
+        let _id = insert_cloud_test_model(plaintext);
+        // 拿到 model_name（按 secret_key 反查，确保后续 read 找得到）
+        let model_name =
+            octopus_infra::db::with_db(|conn| {
+                let n: String = conn.query_row(
+                    "SELECT model_name FROM models WHERE secret_key = ?",
+                    rusqlite::params![plaintext],
+                    |r| r.get(0),
+                )?;
+                Ok(n)
+            })
+            .expect("find model_name");
+
+        // 2. 迁移前：secret_key 仍是明文
+        assert_eq!(read_cloud_model_secret_by_name(&model_name), plaintext);
+
+        // 3. 迁移：migrate_secret_keys_to_encrypted 把所有 is_local=0 行加密
+        let count = octopus_vault::migrate::migrate_secret_keys_to_encrypted(&app_key)
+            .expect("migrate");
+        assert!(count >= 1, "至少应迁移 1 行");
+
+        // 迁移后：DB 里是 v1: 密文（不再是明文）
+        let migrated = read_cloud_model_secret_by_name(&model_name);
+        assert!(
+            migrated.starts_with("v1:"),
+            "迁移后 secret_key 应以 v1: 开头，got: {}",
+            migrated
+        );
+        assert_ne!(migrated, plaintext, "迁移后 DB 不应再存明文");
+
+        // 4. chokepoint 应还原明文（这是 #7 修复的核心断言）
+        let decrypted = super::require_app_key_from_session(&session).ok();
+        assert!(decrypted.is_some(), "app_key 应可取");
+
+        // 直接调 read_model_secret_key（ chokepoint 入口）
+        let result = crate::vault_secret_access::read_model_secret_key(&model_name, &session)
+            .expect("read_model_secret_key 应成功");
+        assert_eq!(
+            result, plaintext,
+            "read_model_secret_key 应还原为原明文 API Key"
+        );
+    }
+    /// 未迁移的明文 secret_key：read_model_secret_key 应原样返回（向后兼容）。
+    #[test]
+    fn test_read_model_secret_key_passthrough_plaintext() {
+        let (_user_key, app_key) = setup_test_vault_with_keys();
+        let session = session_with_app_key(app_key);
+
+        let plaintext = "sk-plain-unmigrated-key";
+        let _id = insert_cloud_test_model(plaintext);
+        let model_name =
+            octopus_infra::db::with_db(|conn| {
+                let n: String = conn.query_row(
+                    "SELECT model_name FROM models WHERE secret_key = ?",
+                    rusqlite::params![plaintext],
+                    |r| r.get(0),
+                )?;
+                Ok(n)
+            })
+            .expect("find model_name");
+
+        // 未调 migrate → DB 仍是明文 → read_model_secret_key 原样返回
+        let result = crate::vault_secret_access::read_model_secret_key(&model_name, &session)
+            .expect("read should succeed");
+        assert_eq!(result, plaintext);
+    }
+
+    /// 本地模型 manifest JSON（is_local=1）：read_model_secret_key 应原样返回。
+    /// 迁移跳过 is_local=1 行（migrate.rs 的 SQL 含 is_local=0 守卫），且 helper
+    /// 按 v1: 前缀判定——manifest JSON 不以 v1: 开头，直接 passthrough。
+    #[test]
+    fn test_read_model_secret_key_local_manifest_passthrough() {
+        let (_user_key, app_key) = setup_test_vault_with_keys();
+        let session = session_with_app_key(app_key.clone());
+
+        // 插入一行本地模型（is_local=1，secret_key 是 manifest JSON）
+        use rusqlite::params;
+        let manifest = r#"{"version":"1.0","files":[{"path":"a.onnx","sha256":"abc"}]}"#;
+        let model_name = "test-local-manifest-model";
+        octopus_infra::db::with_db(|conn| {
+            conn.execute(
+                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    "asr",
+                    "local",
+                    "whisper",
+                    model_name,
+                    "test/repo",
+                    manifest,
+                    1,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("insert local model");
+
+        // 跑 migrate（不应动 is_local=1 行）
+        let _ = octopus_vault::migrate::migrate_secret_keys_to_encrypted(&app_key)
+            .expect("migrate");
+
+        // helper 应原样返回 manifest JSON（不解密）
+        let result = crate::vault_secret_access::read_model_secret_key(model_name, &session)
+            .expect("read should succeed");
+        assert_eq!(result, manifest);
+    }
+
+    // === Follow-up #8: detect_and_match fallback 限制 ===
+
+    /// 常量应为 spec 规定的值（20 / 50）。
+    #[test]
+    fn test_detect_match_limits_are_spec_values() {
+        assert_eq!(VAULT_DETECT_FALLBACK_LIMIT, 20);
+        assert_eq!(VAULT_DETECT_MATCH_LIMIT, 50);
     }
 }

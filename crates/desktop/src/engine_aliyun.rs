@@ -108,7 +108,10 @@ impl TranscriptionEngine for AliyunEngine {
         }
 
         let endpoint = entry.source.clone();
-        let key = entry.secret_key.clone();
+        // follow-up #7：secret_key 可能是 v1: 加密格式（vault 启用后 Task 20 迁移过），
+        // 用全局 session 透明解密。本地 / 未迁移明文 → no-op 返回原值。
+        let key =
+            crate::vault_secret_access::try_decrypt_secret_global(&entry.secret_key);
         let model = model_name;
         let samples = samples.to_vec();
         let language = language.to_string();

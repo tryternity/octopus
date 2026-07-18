@@ -39,10 +39,21 @@ pub fn llm_config(polish_mode: PolishMode) -> Option<octopus_llm::CompatibleLlmC
 /// 不检查 polish_mode 的 LLM 配置（供「立即润色」用——忽略 mode 直接润色）。
 ///
 /// 从 LLM 域激活模型（`resolve_active_engine("llm")`）取配置构造 CompatibleLlmConfig。
+///
+/// follow-up #7：若 secret_key 以 `v1:` 开头（vault 已启用并迁移过），用全局 session
+/// 透明解密。解密失败（vault 未初始化 / app_key 不可用）→ 回退 raw 值（让上层 HTTP
+/// 调用暴露具体错误，而非在此吞掉）。
 pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
     match octopus_asr_local::config::resolve_active_engine("llm") {
         Ok(resolved) => {
-            if resolved.entry.secret_key.is_empty() {
+            // 仅云端模型（is_local=0）的 secret_key 才可能是 v1: 加密格式；
+            // 本地模型（Ollama 等）secret_key 为空 / 未迁移明文 → 透明解密对它们是 no-op。
+            let secret_key = if resolved.entry.is_local {
+                resolved.entry.secret_key.clone()
+            } else {
+                crate::vault_secret_access::try_decrypt_secret_global(&resolved.entry.secret_key)
+            };
+            if secret_key.is_empty() {
                 log::info!(
                     "LLM 激活模型 '{}' 其 API Key (secret_key) 为空，适用于本地不需要 key 的模型（如 Ollama 等）",
                     resolved.name
@@ -52,7 +63,7 @@ pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
                 provider: resolved.provider,
                 model: resolved.name,
                 base_url: resolved.entry.source,
-                secret_key: resolved.entry.secret_key,
+                secret_key,
                 is_thinking: resolved.is_thinking,
                 is_local: resolved.entry.is_local,
                 is_enabled: resolved.entry.is_enabled,

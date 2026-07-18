@@ -6,6 +6,7 @@ mod action_bar_commands;
 // vault（Task 16+）：AppState + Tauri 命令 + 自动填写
 pub mod vault_state;
 pub mod vault_commands;
+pub mod vault_secret_access;
 pub mod autotype;
 mod overlay_window;
 mod action_hotkey;
@@ -754,7 +755,11 @@ pub fn run() {
                 parking_lot::RwLock::new(vault_state::VaultSession::default()),
             );
             vault_state::bootstrap_app_key(&vault_session);
-            app.manage(vault_session);
+            app.manage(vault_session.clone());
+            // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
+            // （AliyunEngine::transcribe / config::llm_config_ignore_mode / 云端翻译）
+            // 解密 v1: 前缀的 secret_key。
+            vault_state::set_global_session(vault_session);
 
             // 3. Create Coordinator
             let coordinator = Coordinator::new(
