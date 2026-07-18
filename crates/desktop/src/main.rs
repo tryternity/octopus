@@ -682,15 +682,8 @@ pub fn run() {
                     }
                 }
 
-                // vault 生成器热键（默认 Cmd+Shift+G）—— Task 19
-                if !config.vault_generator_shortcut.is_empty() {
-                    if let Err(e) = crate::vault_commands::register_vault_generator_shortcut(
-                        app.handle(),
-                        &config.vault_generator_shortcut,
-                    ) {
-                        log::warn!("注册 vault generator 热键失败: {}", e);
-                    }
-                }
+                // 密码生成器不再注册全局热键——已改为 CipherEditor 内嵌按钮。
+                // AppConfig.vault_generator_shortcut 字段保留仅为兼容旧 DB，不再消费。
             }
 
             // Initialize engine manager
@@ -966,7 +959,7 @@ mod feature_flags {
     /// 返回编译期 `cfg!(feature = "vault")`。
     ///
     /// 前端 Settings/index.tsx / App.tsx 启动时 invoke 此命令，按返回值决定是否渲染
-    /// VaultPanel nav / password_generator_window / vault_picker_window 路由。
+    /// VaultPanel nav / vault_picker_window 路由。
     #[tauri::command]
     pub fn is_vault_enabled() -> bool {
         cfg!(feature = "vault")

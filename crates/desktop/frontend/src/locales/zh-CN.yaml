@@ -100,6 +100,8 @@ settings:
       notesLabel: 备注
       favoriteLabel: 收藏
       save: 保存
+      generate: 生成
+      useGenerated: 使用此密码
       cancel: 取消
       delete: 删除
       permanentDelete: 永久删除

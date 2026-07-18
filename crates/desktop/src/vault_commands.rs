@@ -763,42 +763,6 @@ pub fn register_vault_autotype_shortcut(
     Ok(())
 }
 
-/// 注册 vault 密码生成器浮窗全局热键（默认 CmdOrCtrl+Shift+G）。
-/// 触发时新建 webview window "password_generator_window"。
-pub fn register_vault_generator_shortcut(
-    app: &AppHandle,
-    shortcut_str: &str,
-) -> Result<(), String> {
-    let shortcut: Shortcut = shortcut_str
-        .parse()
-        .map_err(|e| format!("解析热键 '{}' 失败: {}", shortcut_str, e))?;
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut(shortcut, move |_app, _scut, event| {
-            if event.state() == ShortcutState::Pressed {
-                log::info!("vault generator 触发");
-                // 已存在 → show + set_focus；不存在 → 新建。toggle 语义避免重复 build 报错。
-                use tauri::Manager;
-                if let Some(win) = app_handle.get_webview_window("password_generator_window") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                } else {
-                    let _ = tauri::WebviewWindowBuilder::new(
-                        &app_handle,
-                        "password_generator_window",
-                        tauri::WebviewUrl::App("index.html".into()),
-                    )
-                    .title("密码生成器")
-                    .inner_size(480.0, 360.0)
-                    .resizable(false)
-                    .build();
-                }
-            }
-        })
-        .map_err(|e| format!("注册热键 '{}' 失败: {}", shortcut_str, e))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

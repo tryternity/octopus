@@ -100,6 +100,8 @@ settings:
       notesLabel: Notes
       favoriteLabel: Favorite
       save: Save
+      generate: Generate
+      useGenerated: Use this
       cancel: Cancel
       delete: Delete
       permanentDelete: Delete Permanently

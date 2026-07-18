@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
+import {
+  buildPayload,
+  DEFAULT_RANDOM,
+  DEFAULT_EN,
+  DEFAULT_ZH,
+  DEFAULT_PIN,
+  type Mode,
+} from "./buildConfig";
 import type { CipherDto } from "./CipherList";
 import type { FolderDto } from "./folderTypes";
 
@@ -99,6 +107,26 @@ const Toggle = ({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 
 const inputCls = "w-full";
 
+/**
+ * 后端 vault_error::serialize 返回的 JSON 字符串：`{ code, message }`。
+ * 见 crates/desktop/src/vault_error.rs。任何 reject 都先尝试解出 message，失败
+ * 退回 String(err)（向后兼容旧裸字符串错误）。
+ */
+function extractErrorMessage(raw: unknown): string {
+  const str = String(raw).trim();
+  if (str.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(str) as { message?: unknown };
+      if (typeof parsed.message === "string" && parsed.message.length > 0) {
+        return parsed.message;
+      }
+    } catch {
+      // 落到默认返回
+    }
+  }
+  return str;
+}
+
 export default function CipherEditor({
   cipherId,
   folders,
@@ -123,6 +151,34 @@ export default function CipherEditor({
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
+
+  // 内嵌密码生成器：点击「生成」按钮弹出 inline 面板，确认后写回 password 字段。
+  // 简化版——固定使用各模式默认配置，不暴露 length/wordCount 等可调项。
+  // 复杂配置需求由独立浮窗时代过去；这里只覆盖「快速生成一个强密码」主路径。
+  const [showGenerator, setShowGenerator] = useState(false);
+  const [genMode, setGenMode] = useState<Mode>("passphraseZh");
+  const [genResult, setGenResult] = useState<string>("");
+  const [genBusy, setGenBusy] = useState(false);
+
+  const regenerate = useCallback(async (mode: Mode) => {
+    setGenBusy(true);
+    try {
+      // buildPayload 入参为 (mode, random, en, zh, pin)；此处全部传默认值，
+      // 仅切换 mode 决定走哪个变体。Rust 端 #[serde(tag="mode")] 反序列化。
+      const payload = buildPayload(mode, DEFAULT_RANDOM, DEFAULT_EN, DEFAULT_ZH, DEFAULT_PIN);
+      const pwd = await invoke<string>("vault_generate", { cfg: payload });
+      setGenResult(pwd);
+    } catch (e) {
+      showToast(extractErrorMessage(e));
+    } finally {
+      setGenBusy(false);
+    }
+  }, [showToast]);
+
+  const applyGenerated = useCallback(() => {
+    setPassword(genResult);
+    setShowGenerator(false);
+  }, [genResult]);
 
   // follow-up #5: 对已保存 cipher 轮询 TOTP code（仅显示，不参与表单提交）
   const totpResult = useTotpPoller(cipherId);
@@ -285,9 +341,25 @@ export default function CipherEditor({
             <Input value={username} onChange={(e) => setUsername(e.target.value)} className={inputCls} />
           </div>
           <div className="space-y-1.5">
-            <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-              {t("settings.vault.editor.passwordLabel")}
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                {t("settings.vault.editor.passwordLabel")}
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showGenerator;
+                  setShowGenerator(next);
+                  // 首次展开且尚无结果 → 立即生成一次，避免空面板。
+                  if (next && !genResult) {
+                    regenerate(genMode);
+                  }
+                }}
+                className="text-xs text-primary hover:underline"
+              >
+                {t("settings.vault.editor.generate")}
+              </button>
+            </div>
             <Input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -295,6 +367,56 @@ export default function CipherEditor({
               type="text"
               autoComplete="off"
             />
+            {showGenerator && (
+              <div className="space-y-2 rounded-md border border-border/50 bg-card p-3">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={genMode}
+                    onChange={(e) => {
+                      const m = e.target.value as Mode;
+                      setGenMode(m);
+                      // 切模式立即重生成——避免显示旧模式的结果造成误解。
+                      regenerate(m);
+                    }}
+                    className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+                  >
+                    <option value="passphraseZh">{t("settings.vault.generator.mode.passphraseZh")}</option>
+                    <option value="passphraseEn">{t("settings.vault.generator.mode.passphraseEn")}</option>
+                    <option value="random">{t("settings.vault.generator.mode.random")}</option>
+                    <option value="pin">{t("settings.vault.generator.mode.pin")}</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => regenerate(genMode)}
+                    disabled={genBusy}
+                    className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                    title={t("settings.vault.generator.regenerate")}
+                  >
+                    <RefreshCw className="size-3.5" />
+                  </button>
+                  <code className="flex-1 break-all font-mono text-sm">
+                    {genBusy ? "..." : genResult}
+                  </code>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowGenerator(false)}
+                    className="px-2 py-1 text-xs text-muted-foreground hover:underline"
+                  >
+                    {t("settings.vault.editor.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={applyGenerated}
+                    disabled={!genResult || genBusy}
+                    className="rounded-md bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {t("settings.vault.editor.useGenerated")}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

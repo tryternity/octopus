@@ -1,13 +1,13 @@
 /**
- * PasswordGenerator 配置构造——纯函数，从组件状态组装出后端 payload。
+ * 密码生成器配置构造——纯函数，从组件状态组装出后端 payload。
  *
- * 抽离自 index.tsx 是为了：
- *   1. 单元测试——buildConfig 仅是 switch + 展开对象，无 React / Tauri 依赖，
- *      vitest 直接覆盖各 mode 分支。
- *   2. 锁定契约——Rust 端 octopus_vault::generator::GeneratorConfig 用
- *      `#[serde(tag = "mode", rename_all = "camelCase")]` 内标签，4 种变体序列化为
- *      `random` / `passphraseEn` / `passphraseZh` / `pin`。final-review C1 曾因
- *      前后端命名约定不一致导致反序列化失败，本文件 + 配套测试是回归门。
+ * 最初是为独立浮窗 PasswordGenerator/index.tsx 抽离（便于单测）；
+ * 浮窗已删除，生成器内嵌进 CipherEditor，本文件继续作为契约层复用。
+ *
+ * 锁定契约——Rust 端 octopus_vault::generator::GeneratorConfig 用
+ * `#[serde(tag = "mode", rename_all = "camelCase")]` 内标签，4 种变体序列化为
+ * `random` / `passphraseEn` / `passphraseZh` / `pin`。final-review C1 曾因
+ * 前后端命名约定不一致导致反序列化失败，本文件 + 配套测试是回归门。
  *
  * 字段命名约定：模式标签（mode）走 camelCase，其余字段维持 snake_case
  * （与 Rust 端 #[serde(default)] 默认值一致），所有变体字段扁平在外层（内标签 adjacently
