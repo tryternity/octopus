@@ -984,6 +984,140 @@ mod tests {
         assert_eq!(dto_out.fields.len(), exp_fields_len);
     }
 
+    // === 边界 case：match_type 全覆盖 + 失败回退 ===
+
+    /// cipher_to_dto：多个 URI 各带不同的 match_type（Some(Domain)/Some(Host)/None）。
+    /// 关键不变量：Some 应映射为 Some(0)/Some(1)，None 必须保持 None（不能用 0 替代）。
+    #[test]
+    fn test_cipher_to_dto_preserves_uri_match_types() {
+        let mut cipher = sample_cipher();
+        cipher.data = CipherData::Login(LoginData {
+            uris: vec![
+                LoginUri {
+                    uri: "https://a.com".into(),
+                    match_type: Some(MatchType::Domain), // → 0
+                },
+                LoginUri {
+                    uri: "https://b.com".into(),
+                    match_type: Some(MatchType::Host), // → 1
+                },
+                LoginUri {
+                    uri: "https://c.com".into(),
+                    match_type: None, // 必须保持 None
+                },
+            ],
+            username: None,
+            password: None,
+            totp: None,
+            password_revision_date: None,
+        });
+        let dto = cipher_to_dto(cipher);
+        let login = dto.login.expect("login present");
+        assert_eq!(login.uris.len(), 3);
+        assert_eq!(login.uris[0].match_type, Some(0), "Domain → 0");
+        assert_eq!(login.uris[1].match_type, Some(1), "Host → 1");
+        assert_eq!(login.uris[2].match_type, None, "None 必须保持 None");
+    }
+
+    /// dto_to_input：覆盖所有 6 种合法 match_type（0..=5）均能正确映射。
+    /// 这是「同一份数据在两套 DTO 间不丢字段」的扩展验证（覆盖完整枚举而非仅 Domain）。
+    #[test]
+    fn test_dto_to_input_preserves_all_match_types() {
+        let mut dto = sample_input_dto();
+        dto.login = Some(LoginDataDto {
+            uris: vec![
+                LoginUriDto { uri: "u0".into(), match_type: Some(0) }, // Domain
+                LoginUriDto { uri: "u1".into(), match_type: Some(1) }, // Host
+                LoginUriDto { uri: "u2".into(), match_type: Some(2) }, // Exact
+                LoginUriDto { uri: "u3".into(), match_type: Some(3) }, // StartsWith
+                LoginUriDto { uri: "u4".into(), match_type: Some(4) }, // RegularExpression
+                LoginUriDto { uri: "u5".into(), match_type: Some(5) }, // Never
+                LoginUriDto { uri: "u_none".into(), match_type: None },
+            ],
+            username: None,
+            password: None,
+            totp: None,
+        });
+        let input = dto_to_input(dto).expect("convert");
+        #[allow(irrefutable_let_patterns)]
+        let CipherData::Login(login) = input.data else {
+            panic!("应为 Login");
+        };
+        assert_eq!(login.uris.len(), 7);
+        assert_eq!(login.uris[0].match_type, Some(MatchType::Domain));
+        assert_eq!(login.uris[1].match_type, Some(MatchType::Host));
+        assert_eq!(login.uris[2].match_type, Some(MatchType::Exact));
+        assert_eq!(login.uris[3].match_type, Some(MatchType::StartsWith));
+        assert_eq!(login.uris[4].match_type, Some(MatchType::RegularExpression));
+        assert_eq!(login.uris[5].match_type, Some(MatchType::Never));
+        assert_eq!(login.uris[6].match_type, None, "None 必须原样保留");
+    }
+
+    /// dto_to_input：非法 match_type（99）应回退为 None（MatchType::try_from 失败 → .ok() = None）。
+    /// 关键：不能 panic，不能整条转换失败——仅该 URI 的 match_type 降级为 None。
+    #[test]
+    fn test_dto_to_input_invalid_match_type_falls_back_to_none() {
+        let mut dto = sample_input_dto();
+        dto.login = Some(LoginDataDto {
+            uris: vec![
+                LoginUriDto { uri: "valid".into(), match_type: Some(0) },
+                LoginUriDto { uri: "invalid".into(), match_type: Some(99) },
+            ],
+            username: None,
+            password: None,
+            totp: None,
+        });
+        let input = dto_to_input(dto).expect("整条转换应成功（单 URI match_type 非法不影响整体）");
+        #[allow(irrefutable_let_patterns)]
+        let CipherData::Login(login) = input.data else {
+            panic!("应为 Login");
+        };
+        assert_eq!(login.uris.len(), 2);
+        assert_eq!(login.uris[0].match_type, Some(MatchType::Domain));
+        assert_eq!(
+            login.uris[1].match_type,
+            None,
+            "非法 match_type=99 应回退为 None"
+        );
+    }
+
+    /// dto_to_input：folder_id=None 时 CipherInput.folder_id 应为 None（不要回退到 0）。
+    #[test]
+    fn test_dto_to_input_preserves_none_folder_id() {
+        let mut dto = sample_input_dto();
+        dto.folder_id = None;
+        let input = dto_to_input(dto).expect("convert");
+        assert_eq!(input.folder_id, None);
+    }
+
+    /// dto_to_input：空 fields vec 应原样保留（不应被替换为默认值或 panic）。
+    #[test]
+    fn test_dto_to_input_preserves_empty_fields() {
+        let mut dto = sample_input_dto();
+        dto.fields = vec![];
+        let input = dto_to_input(dto).expect("convert");
+        assert!(input.fields.is_empty());
+    }
+
+    /// cipher_to_dto：empty collections（fields、uris）应转为空数组而非保持为空。
+    /// （DTO 结构本身用 Vec<FieldDto>，天然为 []；此处显式断言该不变量。）
+    #[test]
+    fn test_cipher_to_dto_empty_collections_to_empty_arrays() {
+        let mut cipher = sample_cipher();
+        cipher.fields = vec![];
+        cipher.data = CipherData::Login(LoginData {
+            uris: vec![],
+            username: None,
+            password: None,
+            totp: None,
+            password_revision_date: None,
+        });
+        let dto = cipher_to_dto(cipher);
+        assert!(dto.fields.is_empty(), "empty fields 应映射为 []");
+        let login = dto.login.expect("login present");
+        assert!(login.uris.is_empty(), "empty uris 应映射为 []");
+    }
+
     // === Follow-up #2: password_history 自动追加 ===
 
     /// 用真实 in-memory DB + set_test_keychain 跑 setup_vault，得到 user_vault_key，

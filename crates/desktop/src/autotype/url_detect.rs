@@ -102,4 +102,38 @@ mod tests {
     fn test_script_for_browser_firefox() {
         assert!(script_for_browser("org.mozilla.firefox").is_some());
     }
+
+    /// Chromium 系（Chrome / Edge / Brave）共享同一份 AppleScript——
+    /// 都基于 Chrome 的 AppleScript 字典。三者返回必须相同（不只是 is_some）。
+    #[test]
+    fn test_script_for_browser_chromium_family_shares_script() {
+        let chrome = script_for_browser("com.google.Chrome");
+        let edge = script_for_browser("com.microsoft.edgemac");
+        let brave = script_for_browser("com.brave.Browser");
+        assert!(chrome.is_some(), "Chrome 应支持");
+        assert_eq!(chrome, edge, "Edge 应与 Chrome 共享脚本");
+        assert_eq!(chrome, brave, "Brave 应与 Chrome 共享脚本");
+        // 字面量应引用 Google Chrome 应用名
+        assert!(
+            chrome.unwrap().contains("Google Chrome"),
+            "Chromium 系脚本应指向 Google Chrome"
+        );
+    }
+
+    /// Arc 浏览器应被识别为独立分支（不同 AppleScript 字典）。
+    #[test]
+    fn test_script_for_browser_arc() {
+        let arc = script_for_browser("company.thebrowser.Browser");
+        assert!(arc.is_some(), "Arc 应支持");
+        assert!(
+            arc.unwrap().contains("Arc"),
+            "Arc 脚本应指向 Arc 应用名（而非 Chrome）"
+        );
+    }
+
+    /// 空 bundle id → None（不应误匹配默认分支）。
+    #[test]
+    fn test_script_for_browser_empty_bundle_id_returns_none() {
+        assert!(script_for_browser("").is_none());
+    }
 }

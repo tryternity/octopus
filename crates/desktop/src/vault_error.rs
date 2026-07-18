@@ -378,4 +378,113 @@ mod tests {
             VaultError::InternalError.user_message()
         );
     }
+
+    // === 边界 case：classify 多关键字 / 大小写 / 错误链 ===
+
+    /// TOTP：classify 有 3 个 alternative（base32 / 格式 / invalid），
+    /// 原测试只覆盖 base32——这里补 "格式" 和 "invalid" 分支。
+    #[test]
+    fn classify_totp_invalid_secret_alternatives() {
+        // "格式" 分支
+        let e = err_with_chain(&["TOTP secret 格式不对"]);
+        assert_eq!(classify(&e), VaultError::TotpInvalidSecret);
+        // "invalid" 分支
+        let e = err_with_chain(&["totp invalid secret"]);
+        assert_eq!(classify(&e), VaultError::TotpInvalidSecret);
+    }
+
+    /// TOTP 但只含 "totp" 关键字（无 base32/格式/invalid）→ 不应识别为 TotpInvalidSecret，
+    /// 应兜底 InternalError。验证「与」条件而非「或」。
+    #[test]
+    fn classify_totp_keyword_alone_is_not_totp_error() {
+        let e = err_with_chain(&["totp generator internal state"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InternalError,
+            "仅 'totp' 关键字（无 base32/格式/invalid）不应识别为 TotpInvalidSecret"
+        );
+    }
+
+    /// 大小写不敏感：head 含大写 "Keychain" 应被小写化后匹配。
+    #[test]
+    fn classify_is_case_insensitive() {
+        let e = err_with_chain(&["Keychain access denied by macOS"]);
+        assert_eq!(classify(&e), VaultError::KeychainUnavailable);
+
+        let e = err_with_chain(&["CLIPBOARD write failed"]);
+        assert_eq!(classify(&e), VaultError::ClipboardError);
+    }
+
+    /// 错误链透传：head 是 SQL 错误（不含 vault 关键字），
+    /// 但 .context("vault 已锁定") 应让链匹配 Locked。这是「启发式需读全链」的核心动机。
+    #[test]
+    fn classify_reads_full_chain_not_just_head() {
+        let e = err_with_chain(&[
+            "rusqlite Error: database query failed", // head：无 vault 关键字
+            "vault 已锁定",                            // .context(...)
+        ]);
+        assert_eq!(
+            classify(&e),
+            VaultError::Locked,
+            "head 无关键字时应穿透到 .context(...) 链层匹配"
+        );
+    }
+
+    /// CipherNotFound 必须同时含 "cipher" 和 ("不存在" 或 "not found")。
+    /// 仅含其一不应误识别。
+    #[test]
+    fn classify_cipher_not_found_requires_both_keywords() {
+        // 仅 cipher，无 not found / 不存在
+        let e = err_with_chain(&["cipher list query returned 0 rows"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InternalError,
+            "仅 'cipher'（无 not found）不应识别为 CipherNotFound"
+        );
+        // 仅 not found，无 cipher
+        let e = err_with_chain(&["model not found in db"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InternalError,
+            "仅 'not found'（无 cipher）不应识别为 CipherNotFound"
+        );
+    }
+
+    /// 优先级顺序验证：cipher + locked 同时出现时，
+    /// Locked 在前判定 → 应返回 Locked（实现里 Locked 早于 CipherNotFound）。
+    /// 这固化了 classify 的隐式优先级（防止未来重排破坏前端契约）。
+    #[test]
+    fn classify_priority_locked_before_cipher_not_found() {
+        let e = err_with_chain(&["vault locked, cipher 42 not found"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::Locked,
+            "Locked 分支应先于 CipherNotFound 判定"
+        );
+    }
+
+    /// serialize：带空 message 的 InvalidInput 应回退到 user_message（不能用空字符串）。
+    #[test]
+    fn serialize_invalid_input_empty_message_falls_back() {
+        let s = serialize(&VaultError::InvalidInput(String::new()));
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v["code"], "invalid_input");
+        assert_eq!(
+            v["message"],
+            VaultError::InvalidInput(String::new()).user_message(),
+            "空 message 应回退到 user_message 而非空字符串"
+        );
+    }
+
+    /// serialize：带空 message 的 ImportFailed 同样应回退。
+    #[test]
+    fn serialize_import_failed_empty_message_falls_back() {
+        let s = serialize(&VaultError::ImportFailed(String::new()));
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid JSON");
+        assert_eq!(v["code"], "import_failed");
+        assert_eq!(
+            v["message"],
+            VaultError::ImportFailed(String::new()).user_message()
+        );
+    }
 }

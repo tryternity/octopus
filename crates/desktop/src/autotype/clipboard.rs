@@ -71,4 +71,23 @@ mod tests {
     fn test_default_ttl_is_30s() {
         assert_eq!(DEFAULT_TTL, Duration::from_secs(30));
     }
+
+    /// INV-A4 核心不变量：concealed marker 字面量必须固定——
+    /// 第三方剪贴板工具（Maccy / Paste / iCloud Universal Clipboard）按这两个
+    /// 字符串识别 concealed 内容并跳过收集，改一个字符就失效。
+    #[test]
+    fn test_concealed_marker_constants_are_fixed() {
+        assert_eq!(CONCEALED_MARKER, "octopus-vault-concealed");
+        assert_eq!(CONCEALED_TYPE, "org.nspasteboard.ConcealedType");
+    }
+
+    /// CONCEALED_TYPE 是 NSPasteboard 跨工具协议约定的字面量——
+    /// 形如 "org.nspasteboard.<Type>"，验证它属于该命名空间。
+    #[test]
+    fn test_concealed_type_in_nspasteboard_namespace() {
+        assert!(
+            CONCEALED_TYPE.starts_with("org.nspasteboard."),
+            "CONCEALED_TYPE 应在 NSPasteboard 协议命名空间下"
+        );
+    }
 }

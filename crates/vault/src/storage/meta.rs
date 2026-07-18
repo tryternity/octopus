@@ -106,4 +106,68 @@ mod tests {
         assert_eq!(loaded.kdf_iterations, 3);
         assert_eq!(loaded.app_key_local_enc, "v1:local-enc");
     }
+
+    /// update_security_stamp 多次连续更新：每次都覆盖前值。
+    /// 固化「单行表 + UPDATE WHERE id=1」的不变量（不会插新行）。
+    #[test]
+    fn update_security_stamp_overwrites_previous_value() {
+        setup_clean_db();
+        save_vault_meta(&sample_input()).expect("save");
+
+        update_security_stamp("stamp-A").expect("update A");
+        assert_eq!(
+            read_vault_meta().unwrap().unwrap().security_stamp,
+            "stamp-A"
+        );
+
+        update_security_stamp("stamp-B").expect("update B");
+        assert_eq!(
+            read_vault_meta().unwrap().unwrap().security_stamp,
+            "stamp-B"
+        );
+
+        // 仍只有一行
+        let loaded = read_vault_meta().unwrap().unwrap();
+        assert_eq!(loaded.id, 1, "单行表，多次 update 不应新增行");
+    }
+
+    /// update_security_stamp 在无 vault_meta 行时的行为：
+    /// 底层 SQL `UPDATE vault_meta SET ... WHERE id = 1` 不匹配任何行 → 静默 no-op，
+    /// 返回 Ok(())（不报错）。这是当前实现细节，本测试固化之——避免未来误改为
+    /// "无行时报错"，破坏解锁流程（解锁流程会先 read_vault_meta 判定是否存在，
+    /// 此处只是兜底）。
+    #[test]
+    fn update_security_stamp_on_missing_meta_is_silent_noop() {
+        setup_clean_db();
+        // 无 vault_meta 行（read_vault_meta 应返回 None）
+        assert!(read_vault_meta().unwrap().is_none(), "前置：无 vault_meta 行");
+
+        // update 应返回 Ok（不报错）
+        let result = update_security_stamp("anything");
+        assert!(result.is_ok(), "无 vault_meta 行时 update 应 Ok（静默 no-op）");
+
+        // 验证确实没插入新行
+        assert!(
+            read_vault_meta().unwrap().is_none(),
+            "update 不应在无行时插入新行"
+        );
+    }
+
+    /// update_security_stamp 空 stamp 字面量：合法（不校验非空），覆盖原有值。
+    #[test]
+    fn update_security_stamp_accepts_empty_string() {
+        setup_clean_db();
+        save_vault_meta(&sample_input()).expect("save");
+        assert_eq!(
+            read_vault_meta().unwrap().unwrap().security_stamp,
+            "stamp-1"
+        );
+
+        update_security_stamp("").expect("update with empty");
+        assert_eq!(
+            read_vault_meta().unwrap().unwrap().security_stamp,
+            "",
+            "空 stamp 应被原样写入"
+        );
+    }
 }
