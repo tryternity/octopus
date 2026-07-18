@@ -147,6 +147,31 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 }
 
 /**
+ * 统一的 inline SVG icon——尺寸/对齐/颜色继承父级 currentColor。
+ * 用 `<img src>` 引 public/icons/*.svg（Font Awesome by @fontawesome）。
+ *
+ * 用法：`<IconImg name="copy" className="size-3.5" />`
+ */
+function IconImg({
+  name,
+  className = "size-4",
+  alt = "",
+}: {
+  name: "copy" | "see-eye" | "generate-key";
+  className?: string;
+  alt?: string;
+}) {
+  return (
+    <img
+      src={`/icons/${name}.svg`}
+      alt={alt}
+      className={`shrink-0 select-none ${className}`}
+      draggable={false}
+    />
+  );
+}
+
+/**
  * 复制按钮——绝对定位在 Input 右侧。空文本时返回 null（避免点击复制空字符串）。
  * 复制成功走 showToast 反馈。`showToast` 由调用方注入（保持与父级 toast 同源）。
  */
@@ -173,10 +198,10 @@ function CopyButton({
           // 剪贴板被拒（无焦点等）→ 静默
         }
       }}
-      className="absolute right-1 top-1/2 -translate-y-1/2 px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
+      className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
       title={t(labelKey)}
     >
-      ⎘
+      <IconImg name="copy" className="size-3.5" alt={t(labelKey)} />
     </button>
   );
 }
@@ -524,8 +549,9 @@ export default function CipherEditor({
                   regenerate(genMode);
                 }
               }}
-              className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
             >
+              <IconImg name="generate-key" className="size-3.5" />
               {t("settings.vault.editor.generate")}
             </button>
           </div>
@@ -534,21 +560,23 @@ export default function CipherEditor({
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full font-mono-vault px-16"
+              className="w-full font-mono-vault pr-20"
               autoComplete="off"
             />
-            <div className="absolute right-1 top-1/2 flex -translate-y-1/2">
+            <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1">
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                className="px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
+                className={`flex items-center rounded p-1 transition-colors hover:bg-accent ${
+                  showPassword ? "text-foreground" : "text-muted-foreground"
+                }`}
                 title={
                   showPassword
                     ? t("settings.vault.editor.hide")
                     : t("settings.vault.editor.show")
                 }
               >
-                {showPassword ? "🙈" : "👁"}
+                <IconImg name="see-eye" className="size-4" />
               </button>
               <CopyButton
                 text={password}
@@ -636,10 +664,10 @@ export default function CipherEditor({
                       // 剪贴板拒绝 → 静默
                     }
                   }}
-                  className="transition-colors hover:text-foreground"
+                  className="flex items-center transition-colors hover:text-foreground"
                   title={t("settings.vault.totp.copyCode")}
                 >
-                  ⎘
+                  <IconImg name="copy" className="size-3.5" alt={t("settings.vault.totp.copyCode")} />
                 </button>
               </div>
             </div>
