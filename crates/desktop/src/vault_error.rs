@@ -149,16 +149,31 @@ pub fn classify(err: &anyhow::Error) -> VaultError {
     if combined.contains("autotype") || combined.contains("自动填充") {
         return VaultError::AutoTypeFailed;
     }
+    // 密码生成器输入校验（length / word_count / 字符集为空）——ensure! 文案以
+    // "必须" / "至少需要" 开头。把 head 错误文案完整透传给前端（这些都是我们自己
+    // 写的用户友好文案，无内部细节）。
+    if combined.contains("必须") || combined.contains("至少需要") {
+        return VaultError::InvalidInput(msg);
+    }
     VaultError::InternalError
 }
 
 /// 序列化 `VaultError` 为 Tauri 用的 JSON 字符串：`{ code, message }`。
 ///
 /// 前端可对 `code` 分支处理（如 locked → 弹解锁框），`message` 直接展示。
+///
+/// 对携带动态消息的变体（`InvalidInput` / `ImportFailed`）直接使用其 payload——
+/// 这些消息由我们自己控制（如生成器校验文案），用户友好且不含内部细节。
+/// 其它变体走 `user_message()`（稳定文案）。
 pub fn serialize(err: &VaultError) -> String {
+    let message = match err {
+        VaultError::InvalidInput(m) if !m.is_empty() => m.clone(),
+        VaultError::ImportFailed(m) if !m.is_empty() => m.clone(),
+        _ => err.user_message().to_string(),
+    };
     serde_json::json!({
         "code": err.code(),
-        "message": err.user_message(),
+        "message": message,
     })
     .to_string()
 }
@@ -272,6 +287,29 @@ mod tests {
 
         let e = err_with_chain(&["自动填充失败"]);
         assert_eq!(classify(&e), VaultError::AutoTypeFailed);
+    }
+
+    /// InvalidInput：密码生成器 ensure! 文案以 "必须" / "至少需要" 开头。
+    /// 需把完整的 head 错误文案透传给前端（我们自己写的用户友好文案）。
+    #[test]
+    fn classify_generator_invalid_input() {
+        let e = err_with_chain(&["密码长度必须 ≥ 5（当前 4）"]);
+        let classified = classify(&e);
+        assert_eq!(classified.code(), "invalid_input");
+        assert_eq!(
+            serialize(&classified),
+            serde_json::json!({
+                "code": "invalid_input",
+                "message": "密码长度必须 ≥ 5（当前 4）"
+            })
+            .to_string()
+        );
+
+        let e = err_with_chain(&["至少需要启用一种字符类型（大写/小写/数字/符号）"]);
+        assert_eq!(classify(&e).code(), "invalid_input");
+
+        let e = err_with_chain(&["中文短语词数必须 ≤ 8（当前 9）"]);
+        assert_eq!(classify(&e).code(), "invalid_input");
     }
 
     /// 兜底：不可分类的错误（SQL error、文件路径、加密内部）→ InternalError。

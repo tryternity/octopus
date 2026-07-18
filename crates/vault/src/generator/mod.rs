@@ -7,6 +7,7 @@ pub mod passphrase_zh;
 pub mod eff_wordlist;
 pub mod zh_wordlist_4096;
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +106,7 @@ impl Default for PassphraseZhConfig {
     }
 }
 
-pub fn generate(cfg: &GeneratorConfig) -> String {
+pub fn generate(cfg: &GeneratorConfig) -> Result<String> {
     match cfg {
         GeneratorConfig::Random(c) => random::generate(c),
         GeneratorConfig::PassphraseEn(c) => passphrase_en::generate(c),

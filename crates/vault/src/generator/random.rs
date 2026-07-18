@@ -1,5 +1,6 @@
 //! 随机字符密码：保证每种启用字符类型至少出现 1 次。
 
+use anyhow::{ensure, Result};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 
@@ -40,9 +41,17 @@ fn build_charset(cfg: &RandomConfig) -> Vec<char> {
     s.chars().collect()
 }
 
-pub fn generate(cfg: &RandomConfig) -> String {
-    assert!(cfg.length >= 5, "length 必须 >= 5");
-    assert!(cfg.length <= 128, "length 必须 <= 128");
+pub fn generate(cfg: &RandomConfig) -> Result<String> {
+    ensure!(
+        cfg.length >= 5,
+        "密码长度必须 ≥ 5（当前 {}）",
+        cfg.length
+    );
+    ensure!(
+        cfg.length <= 128,
+        "密码长度必须 ≤ 128（当前 {}）",
+        cfg.length
+    );
 
     let mut rng = OsRng;
     let mut result: Vec<char> = Vec::with_capacity(cfg.length as usize);
@@ -92,7 +101,10 @@ pub fn generate(cfg: &RandomConfig) -> String {
     }
 
     let charset = build_charset(cfg);
-    assert!(!charset.is_empty(), "至少选一种字符集");
+    ensure!(
+        !charset.is_empty(),
+        "至少需要启用一种字符类型（大写/小写/数字/符号）"
+    );
     while (result.len() as u32) < cfg.length {
         if let Some(c) = charset.choose(&mut rng) {
             result.push(*c);
@@ -100,7 +112,7 @@ pub fn generate(cfg: &RandomConfig) -> String {
     }
 
     result.shuffle(&mut rng);
-    result.into_iter().collect()
+    Ok(result.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -111,7 +123,7 @@ mod tests {
     fn test_length_within_bounds() {
         let cfg = RandomConfig::default();
         for _ in 0..100 {
-            let s = generate(&cfg);
+            let s = generate(&cfg).unwrap();
             assert_eq!(s.len(), 16);
         }
     }
@@ -120,7 +132,7 @@ mod tests {
     fn test_avoid_ambiguous_default() {
         let cfg = RandomConfig::default();
         for _ in 0..200 {
-            let s = generate(&cfg);
+            let s = generate(&cfg).unwrap();
             assert!(!s.contains('l'), "不应含 l: {}", s);
             assert!(!s.contains('1'), "不应含 1: {}", s);
             assert!(!s.contains('O'), "不应含 O: {}", s);
@@ -139,7 +151,7 @@ mod tests {
             avoid_ambiguous: false,
         };
         for _ in 0..100 {
-            let s = generate(&cfg);
+            let s = generate(&cfg).unwrap();
             assert!(s.chars().any(|c| c.is_uppercase()), "缺大写: {}", s);
             assert!(s.chars().any(|c| c.is_lowercase()), "缺小写: {}", s);
             assert!(s.chars().any(|c| c.is_ascii_digit()), "缺数字: {}", s);
@@ -162,17 +174,53 @@ mod tests {
             symbols: false,
             avoid_ambiguous: false,
         };
-        let s = generate(&cfg);
+        let s = generate(&cfg).unwrap();
         assert!(s.chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]
-    #[should_panic(expected = "length 必须 >= 5")]
-    fn test_too_short_panics() {
+    fn test_too_short_errors() {
         let cfg = RandomConfig {
-            length: 3,
+            length: 4,
             ..Default::default()
         };
-        generate(&cfg);
+        assert!(generate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_too_long_errors() {
+        let cfg = RandomConfig {
+            length: 129,
+            ..Default::default()
+        };
+        assert!(generate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_no_charset_selected_errors() {
+        let cfg = RandomConfig {
+            length: 16,
+            uppercase: false,
+            lowercase: false,
+            numbers: false,
+            symbols: false,
+            avoid_ambiguous: false,
+        };
+        assert!(generate(&cfg).is_err());
+    }
+
+    #[test]
+    fn test_length_bounds_ok() {
+        // 边界值：5 与 128 都应成功
+        let cfg_min = RandomConfig {
+            length: 5,
+            ..Default::default()
+        };
+        assert!(generate(&cfg_min).is_ok());
+        let cfg_max = RandomConfig {
+            length: 128,
+            ..Default::default()
+        };
+        assert!(generate(&cfg_max).is_ok());
     }
 }

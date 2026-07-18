@@ -436,7 +436,7 @@ pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: i64) -> R
 
 #[tauri::command]
 pub fn vault_generate(cfg: GeneratorConfig) -> Result<String, String> {
-    Ok(octopus_vault::generator::generate(&cfg))
+    octopus_vault::generator::generate(&cfg).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]

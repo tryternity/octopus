@@ -21,6 +21,30 @@ import {
 } from "./buildConfig";
 
 /**
+ * 后端 vault_error::serialize 返回的 JSON 字符串：`{ code, message }`。
+ * 见 crates/desktop/src/vault_error.rs。任何 reject 都先尝试解出 message，失败
+ * 退回 String(err)（向后兼容旧裸字符串错误）。
+ */
+function extractErrorMessage(raw: unknown): string {
+  const str = String(raw).trim();
+  if (str.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(str) as { message?: unknown };
+      if (typeof parsed.message === "string" && parsed.message.length > 0) {
+        return parsed.message;
+      }
+    } catch {
+      // 落到默认返回
+    }
+  }
+  return str;
+}
+
+/** 把 value 钳制到 [min, max]——用于数字输入，避免后端报错。 */
+const clamp = (value: number, min: number, max: number): number =>
+  Math.max(min, Math.min(max, value));
+
+/**
  * PasswordGenerator —— 独立浮窗（label=password_generator_window）。
  *
  * 全局快捷键 CmdOrCtrl+Shift+G 触发；后端 register_vault_generator_shortcut
@@ -66,6 +90,7 @@ export default function PasswordGenerator() {
   const t = useT();
   const [mode, setMode] = useState<Mode>("passphraseZh");
   const [result, setResult] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // 各模式本地配置（默认值与 Rust 端 *Config::default() 对齐，定义于 buildConfig.ts）
@@ -82,9 +107,12 @@ export default function PasswordGenerator() {
     try {
       const pwd = await invoke<string>("vault_generate", { cfg: buildPayloadCb() });
       setResult(pwd);
+      setErrorMsg(null);
       setCopied(false);
     } catch (e) {
-      setResult(String(e));
+      // 后端返回 {code, message} JSON；解出 message 显示，旧裸字符串向后兼容。
+      setResult("");
+      setErrorMsg(extractErrorMessage(e));
     }
   }, [buildPayloadCb]);
 
@@ -122,7 +150,11 @@ export default function PasswordGenerator() {
 
       {/* 显示区 */}
       <div className="min-h-[72px] select-text break-all rounded-md border border-border bg-muted/30 p-3 font-mono text-lg">
-        {result || "..."}
+        {errorMsg ? (
+          <span className="font-sans text-sm text-destructive">{errorMsg}</span>
+        ) : (
+          result || "..."
+        )}
       </div>
 
       {/* 强度条 */}
@@ -153,10 +185,15 @@ export default function PasswordGenerator() {
               </label>
               <input
                 type="range"
-                min={4}
-                max={64}
+                min={5}
+                max={128}
                 value={randomCfg.length}
-                onChange={(e) => setRandomCfg({ ...randomCfg, length: Number(e.target.value) })}
+                onChange={(e) =>
+                  setRandomCfg({
+                    ...randomCfg,
+                    length: clamp(Number(e.target.value), 5, 128),
+                  })
+                }
                 className="flex-1 accent-voice"
               />
               <span className="w-8 text-right text-sm tabular-nums">{randomCfg.length}</span>
@@ -172,7 +209,27 @@ export default function PasswordGenerator() {
                 <label key={key} className="flex items-center gap-2">
                   <Toggle
                     checked={val as boolean}
-                    onChange={(v) => setRandomCfg({ ...randomCfg, [key]: v })}
+                    onChange={(v) => {
+                      // 字符类型 toggle：uppercase/lowercase/numbers/symbols 至少要保留一个。
+                      // avoid_ambiguous 是过滤开关，不参与字符集构成，可独立切换。
+                      const isCharsetFlag =
+                        key === "uppercase" ||
+                        key === "lowercase" ||
+                        key === "numbers" ||
+                        key === "symbols";
+                      if (!v && isCharsetFlag) {
+                        const othersOn =
+                          (key !== "uppercase" && randomCfg.uppercase) ||
+                          (key !== "lowercase" && randomCfg.lowercase) ||
+                          (key !== "numbers" && randomCfg.numbers) ||
+                          (key !== "symbols" && randomCfg.symbols);
+                        if (!othersOn) {
+                          // 全关会让后端 charset 为空——拒绝这次切换，保留至少一个。
+                          return;
+                        }
+                      }
+                      setRandomCfg({ ...randomCfg, [key]: v });
+                    }}
                   />
                   <span className="text-muted-foreground">
                     {t(`settings.vault.generator.${key === "avoid_ambiguous" ? "avoidAmbiguous" : key}`)}
@@ -191,10 +248,15 @@ export default function PasswordGenerator() {
               </label>
               <input
                 type="number"
-                min={2}
+                min={3}
                 max={10}
                 value={enCfg.word_count}
-                onChange={(e) => setEnCfg({ ...enCfg, word_count: Number(e.target.value) || 3 })}
+                onChange={(e) =>
+                  setEnCfg({
+                    ...enCfg,
+                    word_count: clamp(Number(e.target.value) || 3, 3, 10),
+                  })
+                }
                 className="w-16 rounded-md border border-border bg-background px-2 py-1 text-sm tabular-nums"
               />
               <label className="ml-2 w-16 text-[11px] uppercase tracking-wide text-muted-foreground/70">
@@ -234,10 +296,15 @@ export default function PasswordGenerator() {
               </label>
               <input
                 type="number"
-                min={2}
-                max={10}
+                min={3}
+                max={8}
                 value={zhCfg.word_count}
-                onChange={(e) => setZhCfg({ ...zhCfg, word_count: Number(e.target.value) || 4 })}
+                onChange={(e) =>
+                  setZhCfg({
+                    ...zhCfg,
+                    word_count: clamp(Number(e.target.value) || 4, 3, 8),
+                  })
+                }
                 className="w-16 rounded-md border border-border bg-background px-2 py-1 text-sm tabular-nums"
               />
               <label className="ml-2 w-16 text-[11px] uppercase tracking-wide text-muted-foreground/70">
@@ -276,10 +343,12 @@ export default function PasswordGenerator() {
             </label>
             <input
               type="range"
-              min={4}
-              max={12}
+              min={1}
+              max={32}
               value={pinCfg.length}
-              onChange={(e) => setPinCfg({ ...pinCfg, length: Number(e.target.value) })}
+              onChange={(e) =>
+                setPinCfg({ ...pinCfg, length: clamp(Number(e.target.value), 1, 32) })
+              }
               className="flex-1 accent-voice"
             />
             <span className="w-8 text-right text-sm tabular-nums">{pinCfg.length}</span>
