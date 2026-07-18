@@ -120,4 +120,46 @@ mod tests {
             ZH_WORDLIST_4096.len()
         );
     }
+
+    /// 词表必须无重复——早期 100 词版本曾有 '现在' 重复（progress.md 记录），
+    /// 扩到 4096 时已清理；此测试锁死该不变量防回归。
+    /// 重复会降低实际熵（用户以为 48 bit，实际可能更低）+ 让生成结果偶尔显得「怪」。
+    #[test]
+    fn test_wordlist_no_duplicates() {
+        let mut sorted: Vec<&str> = ZH_WORDLIST_4096.to_vec();
+        sorted.sort_unstable();
+        let total = sorted.len();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            total,
+            "词表存在重复：原 {} 词去重后 {} 词",
+            total,
+            sorted.len()
+        );
+    }
+
+    /// 每个词必须恰好 2 个 CJK 字符（U+4E00..U+9FA5）——
+    /// 词表面板提示「双字词」，违反会让用户困惑 + 影响视觉一致性。
+    #[test]
+    fn test_wordlist_all_two_cjk_chars() {
+        for (i, word) in ZH_WORDLIST_4096.iter().enumerate() {
+            assert_eq!(
+                word.chars().count(),
+                2,
+                "索引 {} 的词 {:?} 不是 2 字符",
+                i,
+                word
+            );
+            for c in word.chars() {
+                let cp = c as u32;
+                assert!(
+                    (0x4E00..=0x9FA5).contains(&cp),
+                    "词 {:?} 含非 CJK 字符 U+{:04X}",
+                    word,
+                    cp
+                );
+            }
+        }
+    }
 }

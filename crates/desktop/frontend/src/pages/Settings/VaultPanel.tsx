@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Lock } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
+import { PillTabs } from "@/components/ui/tabs";
 import SetupWizard from "./Vault/SetupWizard";
 import UnlockDialog from "./Vault/UnlockDialog";
 import CipherList from "./Vault/CipherList";
@@ -15,22 +16,16 @@ import ImportExport from "./Vault/ImportExport";
  * 三态机：
  *   !initialized        → SetupWizard（首次创建主密码）
  *   !unlocked           → UnlockDialog（输入主密码解锁）
- *   unlocked            → 主面板（list / health / io 三视图，由 footer link 切换）
+ *   unlocked            → 主面板（list / health / io 三视图，顶部 Tab 切换）
  *
  * 状态从后端 `vault_status` 拉。setup/unlock 成功后 refresh。
  *
- * 视觉：控制台布局——紧凑 header（VAULT 字标 + 加密 meta）+ body（sidebar + 主区）
- * + footer（health / io 内联链接）。原 UnderlineTabs 已移除，改为 footer link。
+ * 视觉：控制台布局——紧凑 header（VAULT 字标 + 加密 meta）+ Tab 栏（3 视图切换）
+ * + body（sidebar + 主区）+ footer（端到端加密提示）。
  */
 interface VaultStatus {
   initialized: boolean;
   user_vault_unlocked: boolean;
-}
-
-// 与 CipherList 内的 CipherDto 对齐（仅取 id 用于计数，避免重复定义全字段）
-interface CipherIdDto {
-  id: number;
-  deleted_at: string | null;
 }
 
 type View = "list" | "health" | "io";
@@ -41,8 +36,6 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
   const [view, setView] = useState<View>("list");
   // 自动锁定超时（秒）—— 0=永不，30-3600。归属 vault 自身配置，挂在 VaultPanel 顶部。
   const [lockTimeout, setLockTimeout] = useState<number>(180);
-  // header meta 用：当前未软删条目数。解锁后拉一次，每次回到 list 视图刷新。
-  const [cipherCount, setCipherCount] = useState<number>(0);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -52,16 +45,6 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
       showToast(t("settings.loadFailed") + String(e));
     }
   }, [showToast, t]);
-
-  // 拉取未软删条目计数（header meta 显示）。仅解锁后调，失败静默——计数非关键路径。
-  const refreshCipherCount = useCallback(async () => {
-    try {
-      const list = await invoke<CipherIdDto[]>("vault_list_ciphers");
-      setCipherCount(list.filter((c) => !c.deleted_at).length);
-    } catch {
-      // 静默失败：保留 0，不阻塞 UI
-    }
-  }, []);
 
   useEffect(() => {
     refreshStatus();
@@ -132,19 +115,7 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
     };
   }, [refreshStatus]);
 
-  // 解锁后拉一次条目计数（header meta 用）。status 变化（解锁/锁定）时重拉。
-  useEffect(() => {
-    if (status?.user_vault_unlocked) {
-      refreshCipherCount();
-    }
-  }, [status?.user_vault_unlocked, refreshCipherCount]);
-
-  // 回到 list 视图时刷新计数（编辑/增删后回到 list 反映最新数）
-  useEffect(() => {
-    if (view === "list" && status?.user_vault_unlocked) {
-      refreshCipherCount();
-    }
-  }, [view, status?.user_vault_unlocked, refreshCipherCount]);
+  // 解锁后无需额外拉数据——Tab 内容由各自组件（CipherList/HealthReport/ImportExport）自管。
 
   // 加载当前自动锁定超时（与后端 AppConfig.vault_lock_timeout_secs 一致）
   useEffect(() => {
@@ -199,15 +170,12 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header row —— 紧凑控制台风：左 VAULT 字标 + meta，右 超时下拉 + Lock */}
+      {/* Header row —— 紧凑控制台风：左 VAULT 字标，右 超时下拉 + Lock */}
       <div className="flex items-start justify-between border-b border-border pb-3">
         <div className="min-w-0">
           <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-foreground">
             {t("settings.vault.title")}
           </h2>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {t("settings.vault.headerMeta", { count: cipherCount })}
-          </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {/* 自动锁定超时——归属 vault 配置（非通用 Settings 表单） */}
@@ -248,8 +216,19 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         </div>
       </div>
 
+      {/* Tab 栏——3 个视图切换（PillTabs，与 ModelsPanel 同款）。 */}
+      <PillTabs
+        items={[
+          { key: "list", label: t("settings.vault.list.title") },
+          { key: "health", label: t("settings.vault.health.title") },
+          { key: "io", label: t("settings.vault.importExport.title") },
+        ]}
+        active={view}
+        onChange={(k) => setView(k as View)}
+      />
+
       {/* Body: sidebar + main —— sidebar 在 CipherList 内渲染（folder 选择 + 计数） */}
-      <div className="min-h-0 flex-1 pt-3">
+      <div className="min-h-0 flex-1 overflow-hidden">
         {view === "list" && <CipherList showToast={showToast} />}
         {view === "health" && (
           <div className="h-full overflow-auto">
@@ -263,30 +242,9 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         )}
       </div>
 
-      {/* Footer —— 单行内联链接，替代原 UnderlineTabs */}
-      <div className="flex items-center gap-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-        <button
-          onClick={() => setView("health")}
-          className={
-            view === "health"
-              ? "font-medium text-foreground"
-              : "transition-colors hover:text-foreground"
-          }
-        >
-          {t("settings.vault.health.title")}
-        </button>
-        <span className="text-border">·</span>
-        <button
-          onClick={() => setView("io")}
-          className={
-            view === "io"
-              ? "font-medium text-foreground"
-              : "transition-colors hover:text-foreground"
-          }
-        >
-          {t("settings.vault.importExport.title")}
-        </button>
-        <span className="ml-auto">{t("settings.vault.footerEncrypted")}</span>
+      {/* Footer —— 端到端加密提示（本地 AES-256-GCM + Argon2id） */}
+      <div className="border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <span>{t("settings.vault.footerEncrypted")}</span>
       </div>
     </div>
   );

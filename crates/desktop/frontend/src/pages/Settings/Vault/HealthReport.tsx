@@ -64,7 +64,7 @@ export default function HealthReport({ showToast }: { showToast: (msg: string) =
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-lg border border-border/50 bg-muted/15 p-3">
           <p className="text-[11px] uppercase tracking-wide text-muted-foreground/70">
-            {t("settings.vault.health.total")}
+            {t("settings.vault.health.total", { count: report.total_logins })}
           </p>
           <p className="mt-1 text-2xl font-semibold tabular-nums">{report.total_logins}</p>
         </div>

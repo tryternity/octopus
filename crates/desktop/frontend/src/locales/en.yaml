@@ -56,7 +56,6 @@ settings:
   vault:
     title: Password Vault
     description: End-to-end encrypted storage for your login credentials with web form auto-fill
-    headerMeta: "all encrypted · ${count} entries"
     footerEncrypted: end-to-end encrypted
     createVaultTitle: CREATE VAULT
     unlockVaultTitle: UNLOCK VAULT
@@ -110,7 +109,6 @@ settings:
       delete: Delete
       permanentDelete: Delete Permanently
       folderLabel: Folder
-      advanced: Advanced
       show: Show
       hide: Hide
       copy: Copy

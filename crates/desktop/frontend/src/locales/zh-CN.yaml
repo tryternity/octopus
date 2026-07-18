@@ -56,7 +56,6 @@ settings:
   vault:
     title: 密码保险库
     description: 端到端加密存储你的登录凭证，自动填充网页登录表单
-    headerMeta: 全部已加密 · ${count} 个条目
     footerEncrypted: 端到端加密
     createVaultTitle: 初始化保险库
     unlockVaultTitle: 解锁保险库
@@ -110,7 +109,6 @@ settings:
       delete: 删除
       permanentDelete: 永久删除
       folderLabel: 文件夹
-      advanced: 高级
       show: 显示
       hide: 隐藏
       copy: 复制

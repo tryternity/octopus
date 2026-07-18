@@ -1,18 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
-import {
-  buildPayload,
-  DEFAULT_RANDOM,
-  DEFAULT_EN,
-  DEFAULT_ZH,
-  DEFAULT_PIN,
-  type Mode,
-} from "./buildConfig";
+import PasswordGeneratorModal from "./PasswordGeneratorModal";
 import type { CipherDto } from "./CipherList";
 import type { FolderDto } from "./folderTypes";
 
@@ -28,11 +21,13 @@ import type { FolderDto } from "./folderTypes";
  *
  * 设计（frontend-design skill, "Identity Card" 范式）：
  *   - 顶部「身份卡头部」：站点色块 + 首字母 + name/url + ★
- *   - 重点字段（username / password）单列大块 + 复制按钮 + 显示/隐藏
+ *   - 用户名 | 密码 同行（grid-cols-2）；密码右侧三按钮：眼睛/生成/复制
+ *   - TOTP | 文件夹 同行（grid-cols-2）
+ *   - 网址 / 备注 各占整行（textarea resize-y）
  *   - 密码强度条：debounce 300ms 调 vault_evaluate_password
- *   - 生成器：password 下方抽屉式展开，不再独立弹层
- *   - TOTP 卡：secret 输入 + 实时验证码大字号（24px tracking）整合为一张卡
- *   - 高级（urls / folder / notes）默认折叠在 ▸ 高级 下
+ *   - 生成器：点 🔑 弹 PasswordGeneratorModal（主体复用 PasswordGenerator 组件，
+ *     未来 Actionbar 独立窗口场景也能复用同一主体）
+ *   - urls / folder / notes 平铺展示（无折叠）
  */
 
 interface LoginUriDto {
@@ -172,19 +167,26 @@ function IconImg({
 }
 
 /**
- * 复制按钮——绝对定位在 Input 右侧。空文本时返回 null（避免点击复制空字符串）。
+ * 复制按钮。空文本时返回 null（避免点击复制空字符串）。
  * 复制成功走 showToast 反馈。`showToast` 由调用方注入（保持与父级 toast 同源）。
+ *
+ * 定位：默认 `absolute right-1 top-1/2 -translate-y-1/2`——单独贴 Input 右侧
+ * （username 字段）。密码字段右侧有多个按钮并排（眼睛 + 复制），改走 flex 流，
+ * 调用方传 `className` 覆盖默认 absolute 样式，否则 absolute 会脱离 flex 容器
+ * 覆盖到眼睛按钮上（曾出现 bug：点眼睛触发复制）。
  */
 function CopyButton({
   text,
   showToast,
   t,
   labelKey,
+  className,
 }: {
   text: string;
   showToast: (msg: string) => void;
   t: (k: string) => string;
   labelKey: string;
+  className?: string;
 }) {
   if (!text) return null;
   return (
@@ -198,7 +200,10 @@ function CopyButton({
           // 剪贴板被拒（无焦点等）→ 静默
         }
       }}
-      className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
+      className={
+        className ??
+        "absolute right-1 top-1/2 flex -translate-y-1/2 items-center px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
+      }
       title={t(labelKey)}
     >
       <IconImg name="copy" className="size-3.5" alt={t(labelKey)} />
@@ -330,37 +335,12 @@ export default function CipherEditor({
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
 
-  // 新增 UI 状态：密码可见性、高级折叠
+  // 密码可见性
   const [showPassword, setShowPassword] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // 内嵌密码生成器：点击「生成」按钮弹出 inline 面板，确认后写回 password 字段。
-  // 简化版——固定使用各模式默认配置，不暴露 length/wordCount 等可调项。
-  // 复杂配置需求由独立浮窗时代过去；这里只覆盖「快速生成一个强密码」主路径。
+  // 密码生成器 modal——点密码字段右侧 🔑 弹出 PasswordGeneratorModal。
+  // 生成器主体（模式/配置/强度）封装在 PasswordGenerator 组件里，跨场景复用。
   const [showGenerator, setShowGenerator] = useState(false);
-  const [genMode, setGenMode] = useState<Mode>("passphraseZh");
-  const [genResult, setGenResult] = useState<string>("");
-  const [genBusy, setGenBusy] = useState(false);
-
-  const regenerate = useCallback(async (mode: Mode) => {
-    setGenBusy(true);
-    try {
-      // buildPayload 入参为 (mode, random, en, zh, pin)；此处全部传默认值，
-      // 仅切换 mode 决定走哪个变体。Rust 端 #[serde(tag="mode")] 反序列化。
-      const payload = buildPayload(mode, DEFAULT_RANDOM, DEFAULT_EN, DEFAULT_ZH, DEFAULT_PIN);
-      const pwd = await invoke<string>("vault_generate", { cfg: payload });
-      setGenResult(pwd);
-    } catch (e) {
-      showToast(extractErrorMessage(e));
-    } finally {
-      setGenBusy(false);
-    }
-  }, [showToast]);
-
-  const applyGenerated = useCallback(() => {
-    setPassword(genResult);
-    setShowGenerator(false);
-  }, [genResult]);
 
   // follow-up #5: 对已保存 cipher 轮询 TOTP code（仅显示，不参与表单提交）
   const totpResult = useTotpPoller(cipherId);
@@ -464,6 +444,15 @@ export default function CipherEditor({
 
   return (
     <div className="flex h-full flex-col gap-3">
+      {/* 密码生成器 modal——fixed 定位，脱离文档流覆盖整窗。
+          点密码字段右侧 🔑 弹出，onUsePassword 写回 password 字段。 */}
+      <PasswordGeneratorModal
+        open={showGenerator}
+        onClose={() => setShowGenerator(false)}
+        onUsePassword={(pwd) => setPassword(pwd)}
+        showToast={showToast}
+      />
+
       {/* 顶部导航 */}
       <div className="flex shrink-0 items-center gap-3 border-b border-border/40 pb-2">
         <button
@@ -479,7 +468,7 @@ export default function CipherEditor({
       </div>
 
       {/* 主卡片 */}
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-lg border border-border/50 bg-muted/15 p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-border/50 bg-muted/15 p-4">
         {/* 身份卡头部 */}
         <div className="flex items-start gap-3 pb-3">
           <div
@@ -516,144 +505,100 @@ export default function CipherEditor({
           </button>
         </div>
 
-        {/* 用户名 */}
-        <div className="space-y-1">
-          <FieldLabel>{t("settings.vault.editor.usernameLabel")}</FieldLabel>
-          <div className="relative">
-            <Input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full font-mono-vault pr-9"
-              autoComplete="off"
-            />
-            <CopyButton
-              text={username}
-              showToast={showToast}
-              t={t}
-              labelKey="settings.vault.editor.copy"
-            />
-          </div>
-        </div>
-
-        {/* 密码 */}
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <FieldLabel>{t("settings.vault.editor.passwordLabel")}</FieldLabel>
-            <button
-              type="button"
-              onClick={() => {
-                const next = !showGenerator;
-                setShowGenerator(next);
-                // 首次展开且尚无结果 → 立即生成一次，避免空面板。
-                if (next && !genResult) {
-                  regenerate(genMode);
-                }
-              }}
-              className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <IconImg name="generate-key" className="size-3.5" />
-              {t("settings.vault.editor.generate")}
-            </button>
-          </div>
-          <div className="relative">
-            <Input
-              type={showPassword ? "text" : "password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full font-mono-vault pr-20"
-              autoComplete="off"
-            />
-            <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className={`flex items-center rounded p-1 transition-colors hover:bg-accent ${
-                  showPassword ? "text-foreground" : "text-muted-foreground"
-                }`}
-                title={
-                  showPassword
-                    ? t("settings.vault.editor.hide")
-                    : t("settings.vault.editor.show")
-                }
-              >
-                <IconImg name="see-eye" className="size-4" />
-              </button>
+        {/* 行：用户名 | 密码（两列等宽） */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* 用户名 */}
+          <div className="min-w-0 space-y-1">
+            <FieldLabel>{t("settings.vault.editor.usernameLabel")}</FieldLabel>
+            <div className="relative">
+              <Input
+                size="full"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full font-mono-vault pr-9"
+                autoComplete="off"
+              />
               <CopyButton
-                text={password}
+                text={username}
                 showToast={showToast}
                 t={t}
                 labelKey="settings.vault.editor.copy"
               />
             </div>
           </div>
-          {/* 强度条 */}
-          <PasswordStrengthBar password={password} showToast={showToast} />
+
+          {/* 密码 + 强度条（强度条只跟密码相关，放同列） */}
+          <div className="min-w-0 space-y-1">
+            <FieldLabel>{t("settings.vault.editor.passwordLabel")}</FieldLabel>
+            <div className="relative">
+              <Input
+                size="full"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full font-mono-vault pr-24"
+                autoComplete="off"
+              />
+              {/* 三按钮并排：眼睛（显示） / 生成（toggle 抽屉） / 复制。
+                  统一 px-1.5 py-1 + size-3.5，激活态用 text-foreground。 */}
+              <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className={`flex items-center rounded px-1.5 py-1 transition-colors hover:bg-accent ${
+                    showPassword ? "text-foreground" : "text-muted-foreground"
+                  }`}
+                  title={
+                    showPassword
+                      ? t("settings.vault.editor.hide")
+                      : t("settings.vault.editor.show")
+                  }
+                >
+                  <IconImg name="see-eye" className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowGenerator(true)}
+                  className="flex items-center rounded px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title={t("settings.vault.editor.generate")}
+                >
+                  <IconImg name="generate-key" className="size-3.5" />
+                </button>
+                <CopyButton
+                  text={password}
+                  showToast={showToast}
+                  t={t}
+                  labelKey="settings.vault.editor.copy"
+                  className="flex items-center px-1.5 py-1 text-muted-foreground transition-colors hover:text-foreground"
+                />
+              </div>
+            </div>
+            {/* 强度条 */}
+            <PasswordStrengthBar password={password} showToast={showToast} />
+          </div>
         </div>
 
-        {/* 生成器抽屉 */}
-        {showGenerator && (
-          <div className="ml-2 border-l border-border/40 pl-3">
-            <div className="flex items-center gap-2 py-1.5">
-              <select
-                value={genMode}
-                onChange={(e) => {
-                  const m = e.target.value as Mode;
-                  setGenMode(m);
-                  // 切模式立即重生成——避免显示旧模式的结果造成误解。
-                  regenerate(m);
-                }}
-                className="rounded border border-border bg-background px-2 py-0.5 text-[11px]"
-              >
-                <option value="passphraseZh">{t("settings.vault.generator.mode.passphraseZh")}</option>
-                <option value="passphraseEn">{t("settings.vault.generator.mode.passphraseEn")}</option>
-                <option value="random">{t("settings.vault.generator.mode.random")}</option>
-                <option value="pin">{t("settings.vault.generator.mode.pin")}</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => regenerate(genMode)}
-                disabled={genBusy}
-                className="px-1.5 py-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-                title={t("settings.vault.generator.regenerate")}
-              >
-                <RefreshCw className="size-3" />
-              </button>
-              <code className="flex-1 break-all font-mono-vault text-xs">
-                {genBusy ? "..." : genResult}
-              </code>
-              <button
-                type="button"
-                onClick={applyGenerated}
-                disabled={!genResult || genBusy}
-                className="rounded bg-foreground px-2 py-0.5 text-[11px] text-background transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                {t("settings.vault.editor.useGenerated")}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* TOTP 卡 */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground/60">
-            <span className="h-px flex-1 bg-border" />
-            TOTP
-            <span className="h-px flex-1 bg-border" />
-          </div>
-          <Input
-            value={totp}
-            onChange={(e) => setTotp(e.target.value)}
-            placeholder="JBSWY3DPEHPK3PXP"
-            className="w-full font-mono-vault"
-            autoComplete="off"
-          />
-          {totpResult && (
-            <div className="flex items-center gap-3 rounded-md bg-muted/30 p-2.5">
-              <span className="font-mono-vault text-2xl tracking-[0.3em] tabular-nums">
-                {totpResult.code.slice(0, 3)} {totpResult.code.slice(3)}
-              </span>
-              <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                <span>⏱ {totpResult.seconds_remaining}s</span>
+        {/* 行：TOTP | 文件夹（两列等宽） */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* TOTP */}
+          <div className="min-w-0 space-y-1">
+            <FieldLabel>{t("settings.vault.editor.totpLabel")}</FieldLabel>
+            <Input
+              size="full"
+              value={totp}
+              onChange={(e) => setTotp(e.target.value)}
+              placeholder="JBSWY3DPEHPK3PXP"
+              className="w-full font-mono-vault"
+              autoComplete="off"
+            />
+            {totpResult && (
+              <div className="flex items-center gap-2 rounded-md bg-muted/30 px-2 py-1.5">
+                <span className="font-mono-vault text-lg tracking-[0.2em] tabular-nums">
+                  {totpResult.code.slice(0, 3)} {totpResult.code.slice(3)}
+                </span>
+                <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+                  ⏱ {totpResult.seconds_remaining}s
+                </span>
                 <button
                   type="button"
                   onClick={async () => {
@@ -664,66 +609,57 @@ export default function CipherEditor({
                       // 剪贴板拒绝 → 静默
                     }
                   }}
-                  className="flex items-center transition-colors hover:text-foreground"
+                  className="flex items-center text-muted-foreground transition-colors hover:text-foreground"
                   title={t("settings.vault.totp.copyCode")}
                 >
                   <IconImg name="copy" className="size-3.5" alt={t("settings.vault.totp.copyCode")} />
                 </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* 文件夹 */}
+          <div className="min-w-0 space-y-1">
+            <FieldLabel>{t("settings.vault.editor.folderLabel")}</FieldLabel>
+            <Select
+              size="full"
+              value={folderId?.toString() ?? ""}
+              onChange={(e) =>
+                setFolderId(e.target.value ? Number(e.target.value) : null)
+              }
+              className="w-full"
+            >
+              <option value="">{t("settings.vault.folder.folderNone")}</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id.toString()}>
+                  {f.name}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
 
-        {/* 高级（折叠） */}
-        <button
-          type="button"
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex w-full items-center gap-1 text-[10px] uppercase tracking-widest text-muted-foreground/60 transition-colors hover:text-foreground"
-        >
-          <span>{showAdvanced ? "▾" : "▸"}</span>
-          {t("settings.vault.editor.advanced")}
-        </button>
-        {showAdvanced && (
-          <div className="space-y-3">
-            {/* URLs */}
-            <div className="space-y-1">
-              <FieldLabel>{t("settings.vault.editor.urlLabel")}</FieldLabel>
-              <Textarea
-                value={urls}
-                onChange={(e) => setUrls(e.target.value)}
-                className="min-h-[60px] w-full resize-y font-mono-vault text-xs"
-                placeholder={"https://example.com/login"}
-              />
-            </div>
-            {/* Folder */}
-            <div className="space-y-1">
-              <FieldLabel>{t("settings.vault.editor.folderLabel")}</FieldLabel>
-              <Select
-                value={folderId?.toString() ?? ""}
-                onChange={(e) =>
-                  setFolderId(e.target.value ? Number(e.target.value) : null)
-                }
-                className="w-full"
-              >
-                <option value="">{t("settings.vault.folder.folderNone")}</option>
-                {folders.map((f) => (
-                  <option key={f.id} value={f.id.toString()}>
-                    {f.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {/* Notes */}
-            <div className="space-y-1">
-              <FieldLabel>{t("settings.vault.editor.notesLabel")}</FieldLabel>
-              <Textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="min-h-[60px] w-full resize-y"
-              />
-            </div>
-          </div>
-        )}
+        {/* 网址（整行） */}
+        <div className="space-y-1">
+          <FieldLabel>{t("settings.vault.editor.urlLabel")}</FieldLabel>
+          <Textarea
+            size="full"
+            value={urls}
+            onChange={(e) => setUrls(e.target.value)}
+            className="w-full min-h-[60px] resize-y font-mono-vault text-xs"
+            placeholder={"https://example.com/login"}
+          />
+        </div>
+        {/* 备注（整行） */}
+        <div className="space-y-1">
+          <FieldLabel>{t("settings.vault.editor.notesLabel")}</FieldLabel>
+          <Textarea
+            size="full"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className="w-full min-h-[60px] resize-y"
+          />
+        </div>
       </div>
 
       {/* 底部按钮 */}
