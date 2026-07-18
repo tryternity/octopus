@@ -15,4 +15,9 @@ impl DerivedKey {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// 从已知 32B 数组构造（用于把 K_machine 包装成 DerivedKey）。
+    pub fn from_raw(arr: [u8; 32]) -> Self {
+        DerivedKey(Zeroizing::new(arr))
+    }
 }

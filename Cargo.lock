@@ -5587,6 +5587,7 @@ dependencies = [
  "sha2",
  "subtle",
  "totp-rs",
+ "uuid",
  "zeroize",
  "zxcvbn",
 ]
