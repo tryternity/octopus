@@ -1,0 +1,39 @@
+[package]
+name = "octopus-vault"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 项目内依赖
+octopus-infra = { path = "../infra" }
+
+# 加密
+argon2 = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+data-encoding = "2"
+subtle = "2"
+
+# TOTP
+totp-rs = { version = "5", default-features = false }
+
+# OS Keychain
+keyring = "3"
+
+# eTLD+1
+publicsuffix = "2"
+
+# 强度评估
+zxcvbn = "3"
+
+# 序列化/工具
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+parking_lot = { workspace = true }
+regex = "1"
