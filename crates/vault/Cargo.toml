@@ -8,7 +8,7 @@ edition = "2021"
 octopus-infra = { path = "../infra" }
 
 # 加密
-argon2 = "0.5"
+argon2 = { version = "0.5", features = ["std"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
