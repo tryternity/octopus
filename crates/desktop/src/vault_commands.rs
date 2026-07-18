@@ -505,6 +505,31 @@ pub fn vault_generate(cfg: GeneratorConfig) -> Result<String, String> {
     octopus_vault::generator::generate(&cfg).map_err(vault_error::to_tauri_error)
 }
 
+/// 评估密码强度（zxcvbn 评分 + 熵）。
+///
+/// 前端 CipherEditor 在密码字段下方实时展示强度条：debounce 300ms 后调用本命令，
+/// 避免每键都跑 zxcvbn（前端不打包 zxcvbn，统一走后端单点）。
+///
+/// 不需要 user_vault_key——评估是纯计算，不接触 vault 数据。
+#[cfg(feature = "vault")]
+#[tauri::command]
+pub fn vault_evaluate_password(password: String) -> PasswordStrengthDto {
+    let s = octopus_vault::health::strength::evaluate(&password);
+    PasswordStrengthDto {
+        score: s.score,
+        entropy_bits: s.entropy_bits,
+    }
+}
+
+/// `vault_evaluate_password` 返回 DTO（仅暴露 score + entropy，前端强度条够用）。
+#[cfg(feature = "vault")]
+#[derive(serde::Serialize)]
+pub struct PasswordStrengthDto {
+    /// zxcvbn 评分 0-4
+    pub score: u8,
+    pub entropy_bits: f64,
+}
+
 #[tauri::command]
 pub fn vault_generate_totp(
     state: State<'_, SharedVaultSession>,

@@ -110,6 +110,11 @@ settings:
       delete: Delete
       permanentDelete: Delete Permanently
       folderLabel: Folder
+      advanced: Advanced
+      show: Show
+      hide: Hide
+      copy: Copy
+      copied: Copied
     folder:
       section: Folders
       allItems: All Items

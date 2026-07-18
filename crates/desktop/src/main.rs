@@ -427,6 +427,8 @@ pub fn run() {
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_generate,
             #[cfg(feature = "vault")]
+            crate::vault_commands::vault_evaluate_password,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_generate_totp,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_health_report,
