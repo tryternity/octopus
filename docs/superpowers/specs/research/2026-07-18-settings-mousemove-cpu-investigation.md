@@ -138,6 +138,10 @@ strip = "none"
 
 构建命令：`cargo build --profile profiling -p octopus-desktop --features "embedded cloud"`
 
+构建产物 ~104MB（vs 普通 release ~97MB，含符号信息约多 7MB）。
+
+⚠️ **已知偏差**：当前 `profiling` inherits `release`（空），但仓库 main 上 `[profile.release]` 已经被 vault 改造为空，LTO 配置移到独立的 `[profile.optimize]`。因此 profiling profile **不带 LTO 优化**——perf 测量时的火焰图可能跟用户实际 release build 的内联情况不一致。如果需要测量带 LTO 的真实性能，临时把 `inherits = "release"` 改为 `inherits = "optimize"`（但链接时间 +1~3 分钟）。
+
 ### 6.2 samply 采样流程（已知问题：macOS 26 栈 unwind 损坏）
 
 ```bash
