@@ -356,6 +356,19 @@ file_key = HKDF-SHA256(
 - 同机 + 同用户 → 同 `file_key` → 能解密（重启、kill -9 后仍可用）
 - 换机或换用户 → 不同 `file_key` → 解不开（迁移需主密码）
 
+**已知工程折衷**（2026-07-19 安全审查 #9 补遗，spec 原未覆盖）：
+**本方案不防「同机同用户恶意/root 进程」**——`IOPlatformUUID`（ioreg）和 `$USER`
+都是任何本机同用户进程公开可读的，文件 0600 仅防其他用户、不防同用户/root。
+任意同用户进程（恶意脚本、被劫持插件）读 `machine-key.enc` + `ioreg` 拿 UUID +
+读 `$USER` → HKDF 复算 `file_key` → 解出 `K_machine` → 解 `app_key_local_enc`
+→ 解密所有 `models.secret_key`。原先期望的"另一应用想使用钥匙串"系统弹窗保护
+完全失效。
+
+缓解方向（**P2 单独迭代**）：
+- UI 明示"本机加密仅防拆盘/备份，不防本机恶意进程"
+- 优先恢复 OS Keychain 路径（正式签名后）
+- 考虑要求主密码派生参与 `file_key`（牺牲无感启动）
+
 **公开 API 不变**：`load_or_create_machine_key` / `load_machine_key` /
 `save_machine_key` / `delete_machine_key`，调用方（unlock.rs / tests）无需改动。
 测试用 `set_test_keychain` thread_local override 注入 in-memory 替身。
@@ -819,29 +832,24 @@ MVP 不暴露编辑 UI，未来加设置页即可。
 
 ### 4.5 Auto-Type 实现（enigo 跨平台）
 
+**焦点安全**（2026-07-19 修复 #2）：`autotype_login` 加 `expected_bundle_id: Option<&str>`
+参数——注入 username 前 + password 前各调一次 `verify_focused`：
+- `Some(id)`：严格白名单，前台必须 == 指定 bundle id
+- `None`：最小防御，仅校验前台不是 octopus 自身（`com.octopus.desktop`），
+  防 VaultPicker 未 hide 时密码打到 octopus 窗口
+
+调用方 `vault_autotype` 命令当前传 `None`——前端 VaultPicker `handlePick` 已改为
+**先 hide 浮窗再 invoke**（首发版反了，hide 在 invoke 之后）。
+
 ```rust
-// crates/desktop/src/autotype/mod.rs
-use enigo::{Enigo, Key, KeyboardControllable};
-
-pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Result<()> {
-    let mut enigo = Enigo::new();
-
-    #[cfg(target_os = "macos")]
-    activate_frontmost_browser()?;
-
-    // 留 100ms 给浏览器获得焦点
-    std::thread::sleep(Duration::from_millis(100));
-
-    enigo.key_sequence(username);
-    enigo.key_down(Key::Tab); enigo.key_up(Key::Tab);
-    enigo.key_sequence(password);
-
-    if press_enter {
-        enigo.key_down(Key::Tab); enigo.key_up(Key::Tab);
-        enigo.key_down(Key::Return); enigo.key_up(Key::Return);
-    }
-    Ok(())
-}
+// crates/desktop/src/autotype/macos.rs（签名 4 参数，原 3 参数已废弃）
+pub fn autotype_login(
+    username: &str,
+    password: &str,
+    press_enter: bool,
+    expected_bundle_id: Option<&str>,  // 焦点校验（修复 #2）
+) -> Result<()>
+```
 ```
 
 **密码字段（masked input）**：enigo 在 macOS 用 CGEvent 输入，浏览器收到的是真实按键事件，能正常进 password 框。比浏览器扩展的 DOM 填充更可靠（不会被 React 受控组件拒绝）。
@@ -894,12 +902,13 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | # | 不变量 |
 |---|---|
 | INV-A1 | URL 检测失败时必须 fallback 到手动选择，不能 silently fail |
-| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走） |
+| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走）—— 2026-07-19 修复 #2 落地：`verify_focused` 在注入前后各校验一次 |
 | INV-A3 | 模拟键盘前必须有 100ms+ 焦点等待 |
 | INV-A4 | 剪贴板复制必须有 30s 自动清空 + concealed 标记 |
 | INV-A5 | octopus 自身 clipboard 监听器必须跳过 concealed 内容 |
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
-| INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 |
+| INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
+| INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
 
 ### 4.8 跨平台扩展计划
 
@@ -1402,7 +1411,8 @@ pub trait VaultSync {
 | F18 | schema 升级失败（v37→v38） | 回滚 user_version + 报错 | "数据库升级失败" |
 | F19 | 主密码强度不达标（< 12 字符或缺字符类） | 前端实时校验阻止提交 + 后端再校验 | 红字提示具体原因 |
 | F20 | vault_meta 表损坏/不存在 | 引导重新初始化或导入备份 | Setup 页 |
-| F21 | vault feature 编译关掉 | 前端 `is_vault_enabled()` 返回 false → 整段 vault UI 隐藏；`try_decrypt_secret_global` 退化为 raw 返回 | 无 vault UI |
+| F21 | vault feature 编译关掉 | 前端 `is_vault_enabled()` 返回 false → 整段 vault UI 隐藏；`try_decrypt_secret_global` 退化为 `Ok(raw)` 返回（旧 DB 无 v1: 加密格式） | 无 vault UI |
+| F22 | vault 启用但解密失败（app_key 不可用 / 密文损坏） | `try_decrypt_secret_global` 返 `Err`（2026-07-19 修复 #5）；4 个调用点 fail-soft：云端推理跳过 + 提示"请先解锁保险库"，**不再把密文当 Bearer 发到云端** | 提示 + 跳过本次推理 |
 
 ### 7.2 错误类型（双轨制）
 
@@ -1421,6 +1431,7 @@ pub enum VaultError {
     NotInitialized,              // vault 尚未初始化
     Locked,                      // 已初始化但未解锁
     InvalidMasterPassword,       // 主密码错误
+    RepromptRequired,            // reprompt 保护的高敏感 cipher 操作未提供 master_password（2026-07-19 #3）
     CipherNotFound(i64),         // 指定 id 不存在
     InvalidInput(String),        // 通用用户输入错误
     TotpInvalidSecret,           // TOTP secret 非 Base32
