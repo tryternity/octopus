@@ -93,6 +93,19 @@ settings:
       cancel: 取消
       delete: 删除
       permanentDelete: 永久删除
+      folderLabel: 文件夹
+    folder:
+      section: 文件夹
+      allItems: 所有条目
+      favorites: 收藏
+      trash: 回收站
+      empty: 暂无文件夹
+      newFolder: 新建文件夹
+      renameFolder: 重命名
+      deleteFolder: 删除文件夹
+      folderNone: （无）
+      folderDeleteWarning: 文件夹内的条目将移到根目录
+      folderNamePrompt: 输入文件夹名称
     health:
       title: 密码健康
       weak: 弱密码

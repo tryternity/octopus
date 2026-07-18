@@ -93,6 +93,19 @@ settings:
       cancel: Cancel
       delete: Delete
       permanentDelete: Delete Permanently
+      folderLabel: Folder
+    folder:
+      section: Folders
+      allItems: All Items
+      favorites: Favorites
+      trash: Trash
+      empty: No folders yet
+      newFolder: New Folder
+      renameFolder: Rename
+      deleteFolder: Delete Folder
+      folderNone: (none)
+      folderDeleteWarning: Items in this folder will move to root
+      folderNamePrompt: Enter folder name
     health:
       title: Password Health
       weak: Weak Passwords

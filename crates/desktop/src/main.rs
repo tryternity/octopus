@@ -408,6 +408,15 @@ pub fn run() {
             crate::vault_commands::vault_delete_cipher,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_restore_cipher,
+            // follow-up #6: folder CRUD
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_list_folders,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_create_folder,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_rename_folder,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_delete_folder,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_generate,
             #[cfg(feature = "vault")]

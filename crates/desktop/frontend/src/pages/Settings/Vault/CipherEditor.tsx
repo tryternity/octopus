@@ -4,9 +4,10 @@ import { ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
-import { Input, Textarea } from "@/components/ui/input";
+import { Input, Select, Textarea } from "@/components/ui/input";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
 import type { CipherDto } from "./CipherList";
+import type { FolderDto } from "./folderTypes";
 
 /**
  * CipherEditor —— 新建/编辑一条 Login cipher。
@@ -100,10 +101,12 @@ const inputCls = "w-full";
 
 export default function CipherEditor({
   cipherId,
+  folders,
   onClose,
   showToast,
 }: {
   cipherId: number | null;
+  folders: FolderDto[];
   onClose: () => Promise<void>;
   showToast: (msg: string) => void;
 }) {
@@ -115,6 +118,8 @@ export default function CipherEditor({
   const [totp, setTotp] = useState("");
   const [notes, setNotes] = useState("");
   const [favorite, setFavorite] = useState(false);
+  // follow-up #6：folder_id 状态（null = 无 folder / 根目录）
+  const [folderId, setFolderId] = useState<number | null>(null);
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
@@ -133,6 +138,7 @@ export default function CipherEditor({
       setTotp(c.login?.totp ?? "");
       setNotes(c.notes ?? "");
       setFavorite(c.favorite);
+      setFolderId(c.folder_id);
       setDeletedAt(c.deleted_at);
     } catch (e) {
       showToast(String(e));
@@ -151,7 +157,7 @@ export default function CipherEditor({
       .filter((s) => s.length > 0)
       .map((uri) => ({ uri, match_type: null }));
     return {
-      folder_id: null,
+      folder_id: folderId,
       favorite,
       name: name.trim() || "(untitled)",
       notes: notes.trim() || null,
@@ -187,7 +193,7 @@ export default function CipherEditor({
       setBusy(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cipherId, name, urls, username, password, totp, notes, favorite, showToast, onClose, t]);
+  }, [cipherId, name, urls, username, password, totp, notes, favorite, folderId, showToast, onClose, t]);
 
   const handleDelete = useCallback(
     async (permanent: boolean) => {
@@ -237,6 +243,26 @@ export default function CipherEditor({
             {t("settings.vault.editor.nameLabel")}
           </label>
           <Input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} autoFocus />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+            {t("settings.vault.editor.folderLabel")}
+          </label>
+          <Select
+            value={folderId?.toString() ?? ""}
+            onChange={(e) =>
+              setFolderId(e.target.value ? Number(e.target.value) : null)
+            }
+            className={inputCls}
+          >
+            <option value="">{t("settings.vault.folder.folderNone")}</option>
+            {folders.map((f) => (
+              <option key={f.id} value={f.id.toString()}>
+                {f.name}
+              </option>
+            ))}
+          </Select>
         </div>
 
         <div className="space-y-1.5">

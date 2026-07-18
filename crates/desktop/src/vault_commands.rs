@@ -13,6 +13,7 @@ use octopus_vault::crypto::DerivedKey;
 use octopus_vault::generator::GeneratorConfig;
 use octopus_vault::health::HealthReport;
 use octopus_vault::importer::ImportReport;
+use octopus_vault::storage::FolderDto;
 use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, RepromptType};
 
 use crate::autotype;
@@ -266,6 +267,48 @@ pub fn vault_list_ciphers(state: State<'_, SharedVaultSession>) -> Result<Vec<Ci
     let ciphers =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
     Ok(ciphers.into_iter().map(cipher_to_dto).collect())
+}
+
+// === Folder 命令（follow-up #6） ===
+//
+// folder.name 与 cipher.name 一致——以 user_vault_key 加密存盘，命令边界只接收 / 返回明文。
+// vault_delete_folder 不需要 key（仅删行；FK ON DELETE SET NULL 让 cipher 回到根目录），
+// 但仍要求 vault 已解锁——避免未解锁会话误触。
+
+#[tauri::command]
+pub fn vault_list_folders(state: State<'_, SharedVaultSession>) -> Result<Vec<FolderDto>, String> {
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    octopus_vault::storage::folder::list_folders(&key).map_err(vault_error::to_tauri_error)
+}
+
+#[tauri::command]
+pub fn vault_create_folder(
+    state: State<'_, SharedVaultSession>,
+    name: String,
+) -> Result<i64, String> {
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    octopus_vault::storage::folder::create_folder(&name, &key).map_err(vault_error::to_tauri_error)
+}
+
+#[tauri::command]
+pub fn vault_rename_folder(
+    state: State<'_, SharedVaultSession>,
+    id: i64,
+    name: String,
+) -> Result<(), String> {
+    let key = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    octopus_vault::storage::folder::rename_folder(id, &name, &key)
+        .map_err(vault_error::to_tauri_error)
+}
+
+#[tauri::command]
+pub fn vault_delete_folder(
+    state: State<'_, SharedVaultSession>,
+    id: i64,
+) -> Result<(), String> {
+    // 不需要 user_vault_key（只删行），但仍要求 vault 已解锁——避免未解锁会话误触。
+    let _ = require_user_vault_key(&state).map_err(|e| vault_error::serialize(&e))?;
+    octopus_vault::storage::folder::delete_folder(id).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]

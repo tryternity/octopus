@@ -3405,6 +3405,30 @@ fn insert_vault_folder_at(conn: &Connection, name: &str) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+/// 重命名 folder（参数应是已用 user_vault_key.encrypt 加密过的密文）。
+///
+/// follow-up #6：folder.name 与 cipher.name 一致存密文；调用方负责加解密。
+pub fn update_vault_folder_name(id: i64, new_name_encrypted: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE vault_folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![new_name_encrypted, id],
+        )?;
+        Ok(())
+    })
+}
+
+/// 删除 folder。FK 配置 `ON DELETE SET NULL`——本表内的 cipher 不受影响，
+/// 仅其 folder_id 被置为 NULL（条目回到根目录）。
+///
+/// follow-up #6。
+pub fn delete_vault_folder(id: i64) -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM vault_folders WHERE id = ?1", params![id])?;
+        Ok(())
+    })
+}
+
 /// 返回所有需要迁移的 model：(id, 明文 secret_key)。
 /// 仅 is_local=0 且不以 v1: 开头的行。
 pub fn list_models_for_secret_migration() -> Result<Vec<(i64, String)>> {
