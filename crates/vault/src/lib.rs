@@ -11,6 +11,8 @@
 //!
 //! 依赖方向：infra ← vault ← desktop
 
+pub use zeroize::Zeroizing;
+
 pub mod crypto;
 pub mod error;
 pub mod storage;
