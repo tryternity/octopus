@@ -27,6 +27,9 @@ keyring = "3"
 # eTLD+1
 publicsuffix = "2"
 
+# URL parsing（matcher 用）
+url = "2"
+
 # 强度评估
 zxcvbn = "3"
 
