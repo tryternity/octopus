@@ -28,6 +28,9 @@ interface TranslateCloudModel {
   secretKey: string;
   isStreaming: boolean;
   isThinking: boolean;
+  // 后端 TranslateCloudModel（model_commands.rs）的 is_enabled 字段（camelCase 序列化），
+  // review fix 问题 3：local/cloud is_current 都用 DB is_enabled。
+  isEnabled: boolean;
 }
 
 interface TranslateStatus {

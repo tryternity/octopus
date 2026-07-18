@@ -52,6 +52,95 @@ settings:
     models: Models
     prompts: Prompts
     system: System
+    vault: Password Vault
+  vault:
+    title: Password Vault
+    description: End-to-end encrypted storage for your login credentials with web form auto-fill
+    setup:
+      title: Initialize Password Vault
+      passwordLabel: Master Password
+      passwordConfirm: Confirm Master Password
+      passwordMismatch: Entries do not match
+      weakPassword: "Master password too weak (recommended: at least 12 chars with upper/lower/digit/symbol)"
+      warning: Master password cannot be recovered; losing it makes the vault undecryptable
+      submit: Create Vault
+    unlock:
+      title: Unlock Vault
+      passwordLabel: Master Password
+      submit: Unlock
+      wrongPassword: Wrong master password
+    lock: Lock Vault
+    changePassword: Change Master Password
+    list:
+      title: Password Items
+      empty: No password items yet
+      search: Search name / URL / username
+      addNew: Add
+      favorite: Favorite
+      deleted: Deleted
+      restore: Restore
+    editor:
+      titleNew: New Password Item
+      titleEdit: Edit Password Item
+      nameLabel: Name
+      urlLabel: URLs (one per line)
+      usernameLabel: Username
+      passwordLabel: Password
+      totpLabel: TOTP Secret (Base32)
+      notesLabel: Notes
+      favoriteLabel: Favorite
+      save: Save
+      cancel: Cancel
+      delete: Delete
+      permanentDelete: Delete Permanently
+    health:
+      title: Password Health
+      weak: Weak Passwords
+      weakCount: ${count} weak passwords
+      duplicates: Duplicate Passwords
+      duplicatesCount: ${count} duplicate groups
+      total: ${count} logins total
+      averageScore: Average strength ${score} / 4
+    importExport:
+      title: Import / Export
+      importLabel: Import from Bitwarden JSON
+      exportLabel: Export as Bitwarden JSON
+      exportWarning: Exported file contains plaintext of all passwords, store it safely
+      importSuccess: "Import done: ${imported} succeeded, ${skipped} skipped"
+    totp:
+      copyCode: Copy verification code
+      secondsRemaining: Refreshes in ${secs}s
+    autotype:
+      trigger: Auto-Fill
+      noMatch: No matching password item for current page
+      fillFail: Auto-fill failed, copied to clipboard
+    generator:
+      title: Password Generator
+      mode:
+        random: Random Characters
+        passphraseEn: English Passphrase
+        passphraseZh: Chinese Passphrase
+        pin: Numeric PIN
+      length: Length
+      uppercase: Uppercase
+      lowercase: Lowercase
+      numbers: Numbers
+      symbols: Symbols
+      avoidAmbiguous: Avoid ambiguous characters
+      wordCount: Word count
+      separator: Separator
+      capitalize: Capitalize
+      includeNumber: Include number
+      includeSymbol: Include symbol
+      regenerate: Regenerate
+      copy: Copy
+      strength: Strength
+      strengthLevels:
+        0: Very weak
+        1: Weak
+        2: Fair
+        3: Strong
+        4: Very strong
   effect:
     now: Now
     nextRecording: Next Recording

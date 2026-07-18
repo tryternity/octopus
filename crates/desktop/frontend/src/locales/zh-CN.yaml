@@ -52,6 +52,95 @@ settings:
     models: 模型管理
     prompts: 提示配方
     system: 系统状态
+    vault: 密码保险库
+  vault:
+    title: 密码保险库
+    description: 端到端加密存储你的登录凭证，自动填充网页登录表单
+    setup:
+      title: 初始化密码保险库
+      passwordLabel: 主密码
+      passwordConfirm: 确认主密码
+      passwordMismatch: 两次输入不一致
+      weakPassword: 主密码过弱（建议至少 12 位，含大小写数字符号）
+      warning: 主密码不可找回，遗忘后将无法解密保险库
+      submit: 创建保险库
+    unlock:
+      title: 解锁保险库
+      passwordLabel: 主密码
+      submit: 解锁
+      wrongPassword: 主密码错误
+    lock: 锁定保险库
+    changePassword: 修改主密码
+    list:
+      title: 密码条目
+      empty: 还没有密码条目
+      search: 搜索名称/URL/用户名
+      addNew: 添加
+      favorite: 收藏
+      deleted: 已删除
+      restore: 恢复
+    editor:
+      titleNew: 新建密码条目
+      titleEdit: 编辑密码条目
+      nameLabel: 名称
+      urlLabel: 网址（每行一个）
+      usernameLabel: 用户名
+      passwordLabel: 密码
+      totpLabel: TOTP Secret（Base32）
+      notesLabel: 备注
+      favoriteLabel: 收藏
+      save: 保存
+      cancel: 取消
+      delete: 删除
+      permanentDelete: 永久删除
+    health:
+      title: 密码健康
+      weak: 弱密码
+      weakCount: ${count} 个弱密码
+      duplicates: 重复密码
+      duplicatesCount: ${count} 组重复
+      total: 共 ${count} 个登录
+      averageScore: 平均强度 ${score} / 4
+    importExport:
+      title: 导入导出
+      importLabel: 从 Bitwarden JSON 导入
+      exportLabel: 导出为 Bitwarden JSON
+      exportWarning: 导出文件包含所有密码的明文，请妥善保管
+      importSuccess: 导入完成：${imported} 成功，${skipped} 跳过
+    totp:
+      copyCode: 复制验证码
+      secondsRemaining: ${secs} 秒后刷新
+    autotype:
+      trigger: 自动填充
+      noMatch: 没有匹配当前页面的密码条目
+      fillFail: 自动填充失败，已复制到剪贴板
+    generator:
+      title: 密码生成器
+      mode:
+        random: 随机字符
+        passphraseEn: 英文短语
+        passphraseZh: 中文短语
+        pin: 数字 PIN
+      length: 长度
+      uppercase: 大写字母
+      lowercase: 小写字母
+      numbers: 数字
+      symbols: 符号
+      avoidAmbiguous: 避免易混字符
+      wordCount: 词数
+      separator: 分隔符
+      capitalize: 首字母大写
+      includeNumber: 含数字
+      includeSymbol: 含符号
+      regenerate: 重新生成
+      copy: 复制
+      strength: 强度
+      strengthLevels:
+        0: 极弱
+        1: 弱
+        2: 一般
+        3: 强
+        4: 极强
   effect:
     now: 立即
     nextRecording: 下次录音

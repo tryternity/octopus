@@ -11,6 +11,7 @@ import {
   Command,
   Type,
   Bot,
+  Lock,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ import SystemPanel from "./SystemPanel";
 import ActionBarPanel from "./ActionBarPanel";
 import AgentPanel from "./AgentPanel";
 import { HotwordPanel } from "./HotwordPanel";
+import VaultPanel from "./VaultPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -34,7 +36,7 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword" | "vault";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "settings", icon: SettingsIcon, labelKey: "settings.nav.general" },
@@ -45,6 +47,7 @@ const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "models", icon: Box, labelKey: "settings.nav.models" },
   { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
   { page: "system", icon: Activity, labelKey: "settings.nav.system" },
+  { page: "vault", icon: Lock, labelKey: "settings.nav.vault" },
 ];
 
 function Settings() {
@@ -153,6 +156,8 @@ function Settings() {
             setVal={setVal}
             showToast={showToast}
           />
+        ) : page === "vault" ? (
+          <VaultPanel showToast={showToast} />
         ) : null}
       </div>
 

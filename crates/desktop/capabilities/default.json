@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "result_window", "settings_window", "clipboard_window", "compact_editor_window", "action_bar_window", "overlay_window", "screenshot_*"],
+  "windows": ["main", "result_window", "settings_window", "clipboard_window", "compact_editor_window", "action_bar_window", "overlay_window", "screenshot_*", "password_generator_window"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
