@@ -44,6 +44,53 @@ interface CipherInputDto {
   reprompt: number | null;
 }
 
+interface TotpResult {
+  code: string;
+  seconds_remaining: number;
+}
+
+/**
+ * useTotpPoller —— 对指定 cipher 轮询 TOTP code。
+ *
+ * 每 5s 调一次 `vault_generate_totp`，并返回 `{ code, seconds_remaining }`。
+ * - `cipherId === null` 或后端返回无 totp secret 时返回 `null`。
+ * - 卸载 / cipherId 变化时自动 cleanup。
+ *
+ * 不在 form 层做 30s concealed clear——TOTP 本身就 30s 轮换，无需像 password 那样保护。
+ * 复制按钮直接 `navigator.clipboard.writeText`，与 vault_copy_password 模式分离。
+ * （follow-up #5）
+ */
+function useTotpPoller(cipherId: number | null): TotpResult | null {
+  const [result, setResult] = useState<TotpResult | null>(null);
+
+  useEffect(() => {
+    if (cipherId === null) {
+      setResult(null);
+      return;
+    }
+    let cancelled = false;
+
+    async function fetchTotp() {
+      try {
+        const r = await invoke<TotpResult>("vault_generate_totp", { cipherId });
+        if (!cancelled) setResult(r);
+      } catch {
+        // 无 totp secret / cipher 不存在 / vault 锁定 → 静默置空
+        if (!cancelled) setResult(null);
+      }
+    }
+
+    fetchTotp();
+    const interval = setInterval(fetchTotp, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [cipherId]);
+
+  return result;
+}
+
 // Toggle 适配：把 ActionBarPanel 范式 (checked, onChange) 转到共享 UIToggle (on, onClick)。
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) => (
   <UIToggle on={checked} onClick={() => onChange(!checked)} />
@@ -71,6 +118,9 @@ export default function CipherEditor({
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
+
+  // follow-up #5: 对已保存 cipher 轮询 TOTP code（仅显示，不参与表单提交）
+  const totpResult = useTotpPoller(cipherId);
 
   const loadCipher = useCallback(async () => {
     if (cipherId === null) return;
@@ -233,6 +283,28 @@ export default function CipherEditor({
             placeholder="JBSWY3DPEHPK3PXP"
             autoComplete="off"
           />
+          {totpResult && (
+            <div className="flex items-center gap-2 pt-1">
+              <span className="font-mono text-lg tracking-widest">{totpResult.code}</span>
+              <span className="text-xs text-muted-foreground">
+                ({totpResult.seconds_remaining}s)
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(totpResult.code);
+                    showToast(t("settings.vault.totp.copyCode"));
+                  } catch (e) {
+                    showToast(String(e));
+                  }
+                }}
+                className="ml-2 text-xs underline"
+              >
+                {t("settings.vault.totp.copyCode")}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="space-y-1.5">

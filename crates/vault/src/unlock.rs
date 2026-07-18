@@ -183,7 +183,11 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
 ///
 /// 副作用：重写 3 个密文 + 刷新 security_stamp。
 /// 不重加密 vault_ciphers（因为 user_vault_key 不变）。
-pub fn change_master_password(old_password: &str, new_password: &str) -> Result<()> {
+///
+/// 返回：解出来的 `UnlockedKeys`（user_vault_key + app_key，均不变），
+/// 让调用方（desktop）能直接刷 session，避免「先 lock 再改密码」后无法继续用。
+/// （follow-up #3）
+pub fn change_master_password(old_password: &str, new_password: &str) -> Result<UnlockedKeys> {
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
         .context("vault 未初始化")?;
@@ -236,7 +240,12 @@ pub fn change_master_password(old_password: &str, new_password: &str) -> Result<
         protected_private_key: meta.protected_private_key,
     };
     meta::save_vault_meta(&input)?;
-    Ok(())
+
+    // user_vault_key / app_key 在改密码流程中不变（INV-7），原样返回让 caller 刷 session。
+    Ok(UnlockedKeys {
+        user_vault_key,
+        app_key,
+    })
 }
 
 /// 用本机 K_machine 重新加密 app_key → 写入 app_key_local_enc。
@@ -405,6 +414,80 @@ mod tests {
 
         let result = unlock_with_master_password("wrong-password");
         assert!(result.is_err(), "错误主密码应解密失败");
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    // === Follow-up #3: change_master_password 返回 UnlockedKeys ===
+
+    /// setup → unlock → change_master_password → 返回的 user_vault_key
+    /// 应与 setup 派生的同一把（INV-7：改密码不改 user_vault_key）。
+    #[test]
+    fn test_change_master_password_returns_same_keys() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let old_pw = "old-master-password";
+        let new_pw = "new-master-password";
+
+        let setup_keys = setup_vault(old_pw).expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        let keys = change_master_password(old_pw, new_pw).expect("change password");
+        // user_vault_key / app_key 不应随 master 变化
+        assert_eq!(
+            keys.user_vault_key.as_bytes(),
+            setup_keys.user_vault_key.as_bytes(),
+            "改密码后 user_vault_key 应不变"
+        );
+        assert_eq!(
+            keys.app_key.as_bytes(),
+            setup_keys.app_key.as_bytes(),
+            "改密码后 app_key 应不变"
+        );
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// 改密码后旧密码应解不开，新密码应能解开 → 验证 master_root_key 确实换了。
+    #[test]
+    fn test_change_master_password_swaps_master_key() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let setup_keys = setup_vault("pw-old").expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        change_master_password("pw-old", "pw-new").expect("change");
+
+        // 旧密码应失败
+        let _ = keychain::delete_machine_key();
+        assert!(
+            unlock_with_master_password("pw-old").is_err(),
+            "旧主密码改密后应解不开"
+        );
+        // 新密码应成功，且拿到同一把 user_vault_key
+        let unlocked = unlock_with_master_password("pw-new").expect("new pw unlocks");
+        assert_eq!(
+            unlocked.user_vault_key.as_bytes(),
+            setup_keys.user_vault_key.as_bytes(),
+            "新主密码解出的 user_vault_key 应与 setup 一致"
+        );
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// change_master_password 用错误旧密码应失败。
+    #[test]
+    fn test_change_master_password_wrong_old_fails() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let _ = setup_vault("correct-old").expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        let result = change_master_password("wrong-old", "anything");
+        assert!(result.is_err(), "错误旧密码应导致 change 失败");
 
         let _ = keychain::delete_machine_key();
     }

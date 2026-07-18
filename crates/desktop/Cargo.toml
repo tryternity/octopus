@@ -151,3 +151,5 @@ glib = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
+# 仅测试时用 in-memory SQLite 注入 vault DB（与 octopus-vault 测试同构）
+rusqlite = { version = "0.31", features = ["bundled"] }

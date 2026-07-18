@@ -5385,6 +5385,7 @@ dependencies = [
  "prost 0.13.5",
  "reqwest 0.12.28",
  "rubato 0.16.2",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
