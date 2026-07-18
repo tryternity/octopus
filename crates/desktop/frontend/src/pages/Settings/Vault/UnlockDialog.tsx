@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
  * UnlockDialog —— 已初始化但锁定时，输入主密码解锁。
  *
  * 后端 `vault_unlock(password)` 失败统一显示 wrongPassword。
+ *
+ * 视觉（UI 重设计）：小号 uppercase 标题 + 全宽 primary 按钮。
  */
 export default function UnlockDialog({
   onSuccess,
@@ -40,7 +42,14 @@ export default function UnlockDialog({
 
   return (
     <form onSubmit={handleSubmit} className="mx-auto max-w-md space-y-4">
-      <h2 className="text-xl font-semibold">{t("settings.vault.unlock.title")}</h2>
+      <div>
+        <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-foreground">
+          {t("settings.vault.unlockVaultTitle")}
+        </h2>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {t("settings.vault.description")}
+        </p>
+      </div>
       <div className="space-y-1.5">
         <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
           {t("settings.vault.unlock.passwordLabel")}
@@ -55,7 +64,12 @@ export default function UnlockDialog({
         />
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <Button type="submit" variant="voice" disabled={busy || !password}>
+      <Button
+        type="submit"
+        variant="primary"
+        className="w-full uppercase tracking-wide"
+        disabled={busy || !password}
+      >
         {busy ? "..." : t("settings.vault.unlock.submit")}
       </Button>
     </form>

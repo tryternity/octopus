@@ -56,6 +56,10 @@ settings:
   vault:
     title: 密码保险库
     description: 端到端加密存储你的登录凭证，自动填充网页登录表单
+    headerMeta: 全部已加密 · ${count} 个条目
+    footerEncrypted: 端到端加密
+    createVaultTitle: 初始化保险库
+    unlockVaultTitle: 解锁保险库
     setup:
       title: 初始化密码保险库
       passwordLabel: 主密码

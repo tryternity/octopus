@@ -56,6 +56,10 @@ settings:
   vault:
     title: Password Vault
     description: End-to-end encrypted storage for your login credentials with web form auto-fill
+    headerMeta: "all encrypted · ${count} entries"
+    footerEncrypted: end-to-end encrypted
+    createVaultTitle: CREATE VAULT
+    unlockVaultTitle: UNLOCK VAULT
     setup:
       title: Initialize Password Vault
       passwordLabel: Master Password

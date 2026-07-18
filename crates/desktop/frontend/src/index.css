@@ -210,6 +210,15 @@ html, body {
   overflow: hidden;
 }
 
+/* ── Vault 凭证数据等宽字体 ──
+   设计意图：让用户在视觉上立刻区分「数据」(cipher 名 / 用户名 / 密码掩码 / TOTP / URL)
+   vs「文字」(描述 / 按钮标签 / 提示)。tabular-nums 保证 TOTP/计数等数字位对齐。
+   仅用于 vault 内的凭证展示，不用于普通正文。 */
+.font-mono-vault {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-feature-settings: "tnum" 1;
+}
+
 #root {
   width: 100%;
   height: 100%;

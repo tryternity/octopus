@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { Plus, Search, Star, Trash2 } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -21,11 +21,15 @@ import type {
 /**
  * CipherList —— 密码条目列表 + 新建入口 + folder 侧栏（follow-up #6）。
  *
- * 布局：左侧 FolderSidebar（所有/收藏/folders/回收站）+ 右侧搜索+列表。
+ * 布局：左侧 FolderSidebar（所有/收藏/folders/回收站）+ 右侧搜索 + 卡片网格。
  *
  * 后端 `vault_list_ciphers` 一次拉全量（含已软删除的）。
  * 搜索过滤：name / username / uri 任一命中；同时叠加 sidebar 选择。
- * 单击行进入 CipherEditor（新建或编辑）。
+ * 单击卡片进入 CipherEditor（新建或编辑）。
+ *
+ * 视觉（UI 重设计）：表格行 → 封印条卡片。每张卡左侧 3px 竖条（封印），
+ * 颜色编码状态：默认 fg/30、收藏 fg（满）、弱密码 warning、已删 虚线无填充。
+ * 凭证数据（name / username / password 掩码）用 .font-mono-vault 等宽字。
  */
 
 // 与后端 CipherDto 对齐（vault_commands.rs，snake_case，无 rename_all）
@@ -71,6 +75,8 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const [prompt, setPrompt] = useState<PromptOptions | null>(null);
   // pending rename 目标（与 prompt 配对：confirm 时按是否设此区分新建 vs 重命名）
   const [renameTarget, setRenameTarget] = useState<FolderDto | null>(null);
+  // 刚被点击的卡片 id——短暂高亮（active 态 bg-accent）
+  const [activeId, setActiveId] = useState<number | null>(null);
 
   const refreshCiphers = useCallback(async () => {
     try {
@@ -237,7 +243,8 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
         onDeleteFolder={handleDeleteFolder}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        {/* 搜索 + 新建 —— 单行紧凑 */}
         <div className="flex shrink-0 items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -255,7 +262,8 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* 卡片网格区 */}
+        <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto pr-1">
           {!loaded ? (
             <p className="py-12 text-center text-sm text-muted-foreground">
               {t("settings.loading")}
@@ -265,51 +273,17 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
               <p className="text-sm font-medium">{t("settings.vault.list.empty")}</p>
             </div>
           ) : (
-            <div className="space-y-px">
+            <div className="space-y-1.5">
               {filtered.map((c) => (
-                <button
+                <CipherCard
                   key={c.id}
-                  onClick={() => setEditing(c.id)}
-                  className={cn(
-                    "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors",
-                    "hover:bg-muted/40",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "row-span-2 h-full max-h-[28px] w-[3px] shrink-0 self-stretch rounded-full",
-                      c.deleted_at
-                        ? "bg-muted-foreground/40"
-                        : c.favorite
-                          ? "bg-amber-500"
-                          : "bg-voice/50",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={cn(
-                          "truncate text-sm font-medium",
-                          c.deleted_at && "text-muted-foreground/60 line-through",
-                        )}
-                      >
-                        {c.name}
-                      </span>
-                      {c.favorite && (
-                        <Star className="size-3 shrink-0 fill-amber-500 text-amber-500" />
-                      )}
-                    </div>
-                    <div className="truncate text-xs text-muted-foreground/70">
-                      {c.login?.username || "—"}
-                    </div>
-                  </div>
-                  {c.deleted_at && (
-                    <span className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-destructive">
-                      {t("settings.vault.list.deleted")}
-                    </span>
-                  )}
-                  <Trash2 className="size-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100" />
-                </button>
+                  cipher={c}
+                  active={activeId === c.id}
+                  onClick={() => {
+                    setActiveId(c.id);
+                    setEditing(c.id);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -325,4 +299,127 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
       )}
     </div>
   );
+}
+
+/**
+ * CipherCard —— 封印条卡片。
+ *
+ * 左侧 3px 竖条（封印）+ 顶部小圆节点，颜色编码状态：
+ *   已删 → 虚线无填充（border-dashed）
+ *   收藏 → fg 满色 + 右上角 ★
+ *   弱密码 → warning 色（TODO: 当前未接入 weak_cipher_ids，始终 false）
+ *   默认 → fg/30
+ *
+ * 凭证数据（name / username / password 掩码）用 .font-mono-vault 等宽字。
+ */
+function CipherCard({
+  cipher,
+  active,
+  onClick,
+}: {
+  cipher: CipherDto;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const t = useT();
+
+  // TODO(v2): 接入 HealthReport 的 weak_cipher_ids 做弱密码高亮。
+  // 当前 isWeak 始终 false——避免在卡片层重复拉健康报告。
+  // 后续可由 VaultPanel 拉一次 weak list 透传下来，或新增轻量 vault_weak_ids 命令。
+  const isWeak = false;
+
+  const sealColor = cipher.deleted_at
+    ? "border-l-[3px] border-dashed border-muted-foreground/40 bg-transparent"
+    : isWeak
+      ? "bg-warning"
+      : cipher.favorite
+        ? "bg-foreground"
+        : "bg-foreground/30";
+
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group relative w-full overflow-hidden rounded-md border border-border bg-background p-3 pl-5 text-left transition-colors",
+        "hover:bg-accent/50",
+        active && "bg-accent",
+        cipher.deleted_at && "opacity-60",
+      )}
+    >
+      {/* 封印条：左侧 3px 竖条 + 顶部圆节点 */}
+      {cipher.deleted_at ? (
+        <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sealColor)} />
+      ) : (
+        <>
+          <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sealColor)} />
+          <span
+            className={cn(
+              "absolute left-[-2.5px] top-[10px] size-2 rounded-full",
+              sealColor,
+            )}
+          />
+        </>
+      )}
+
+      {/* 收藏星标 */}
+      {cipher.favorite && (
+        <span className="absolute right-2 top-2 text-[11px] leading-none text-foreground/60">
+          ★
+        </span>
+      )}
+
+      {/* 名称（等宽） */}
+      <div
+        className={cn(
+          "font-mono-vault pr-4 text-sm font-medium text-foreground",
+          cipher.deleted_at && "line-through",
+        )}
+      >
+        {cipher.name}
+      </div>
+
+      {/* 用户名（等宽） */}
+      {cipher.login?.username && (
+        <div className="font-mono-vault mt-0.5 truncate text-xs text-muted-foreground">
+          {cipher.login.username}
+        </div>
+      )}
+
+      {/* 密码掩码 + 更新时间（掩码等宽） */}
+      <div className="mt-1 flex items-center gap-3 text-[11px] text-muted-foreground/80">
+        {cipher.login?.password && (
+          <span className="font-mono-vault tracking-widest">
+            {"•".repeat(Math.min(12, cipher.login.password.length))}
+          </span>
+        )}
+        <span>{relativeTime(cipher.updated_at, t)}</span>
+        {cipher.deleted_at && (
+          <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-destructive">
+            {t("settings.vault.list.deleted")}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+/** 相对时间简表（"2d" / "1w" / "3min"）——纯展示，无 i18n 严格要 求 */
+function relativeTime(iso: string, _t: (k: string) => string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return "";
+  const diffMs = Date.now() - ts;
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  const wk = Math.floor(day / 7);
+  if (wk < 4) return `${wk}w`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `${mo}mo`;
+  const yr = Math.floor(day / 365);
+  return `${yr}y`;
 }
