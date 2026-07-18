@@ -218,6 +218,22 @@ pub struct AppConfig {
     /// （serde 友好 + ~50B 开销可忽略），但仅落库 / 序列化，不被消费。
     #[serde(default = "default_vault_generator_shortcut")]
     pub vault_generator_shortcut: String,
+
+    /// vault 离开焦点后的锁定超时（秒）。默认 180 = 3 分钟。
+    ///
+    /// 含义：保险库 tab 离开前台（切 tab / 关窗口 / 应用失焦）超过此秒数后，
+    /// 自动锁定 user_vault_key（zeroize）。在前台时前端每 30s 调
+    /// `vault_heartbeat` 刷新 last_active_at，永不超时。
+    ///
+    /// 可选值：30 / 60 / 180 / 300 / 900（30s / 1min / 3min / 5min / 15min）。
+    /// 0 = 永不超时（不推荐，但允许）。
+    ///
+    /// 安全 vs 易用参考：
+    ///   - 1Password 默认 5min，可调 1-30min
+    ///   - Bitwarden 默认 15min
+    ///   - octopus 默认 3min（折中），用户可改
+    #[serde(default = "default_vault_lock_timeout_secs")]
+    pub vault_lock_timeout_secs: u64,
 }
 
 fn default_engine_mode() -> String {
@@ -313,6 +329,9 @@ fn default_vault_autotype_shortcut() -> String {
 fn default_vault_generator_shortcut() -> String {
     "CmdOrCtrl+Shift+G".into()
 }
+fn default_vault_lock_timeout_secs() -> u64 {
+    180 // 3 分钟（焦点失活后）
+}
 
 fn default_segment_silence() -> f64 {
     400.0
@@ -357,6 +376,7 @@ impl Default for AppConfig {
             screenshot_shortcut: default_screenshot_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_generator_shortcut: default_vault_generator_shortcut(),
+            vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
         }
     }
 }

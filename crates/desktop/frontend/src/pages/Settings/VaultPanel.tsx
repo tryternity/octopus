@@ -31,6 +31,8 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
   const t = useT();
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [tab, setTab] = useState<Tab>("ciphers");
+  // 自动锁定超时（秒）—— 0=永不，30-3600。归属 vault 自身配置，挂在 VaultPanel 顶部。
+  const [lockTimeout, setLockTimeout] = useState<number>(180);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -44,8 +46,8 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
   useEffect(() => {
     refreshStatus();
     // 心跳：保险库 tab 在前台时每 30s 调一次 vault_heartbeat，
-    // 防止 last_active_at 超过 5min 超时。tab 切走 / 窗口关闭 →
-    // useEffect cleanup 清 interval，心跳停止，5min 后自动锁定。
+    // 刷新 last_active_at 防止自动锁定。tab 切走 / 窗口关闭 →
+    // useEffect cleanup 清 interval，心跳停止，超过 lockTimeout 后自动锁定。
     const heartbeatInterval = window.setInterval(() => {
       invoke("vault_heartbeat").catch(() => {
         // 静默失败（可能在锁定 / 测试中）
@@ -61,6 +63,30 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
       });
     };
   }, [refreshStatus]);
+
+  // 加载当前自动锁定超时（与后端 AppConfig.vault_lock_timeout_secs 一致）
+  useEffect(() => {
+    invoke<number>("vault_get_lock_timeout")
+      .then(setLockTimeout)
+      .catch(() => {
+        // 静默失败：保留默认 180，不阻塞 UI
+      });
+  }, []);
+
+  const handleLockTimeoutChange = useCallback(
+    async (secs: number) => {
+      // 乐观更新——后端校验失败再回滚到旧值。
+      const prev = lockTimeout;
+      setLockTimeout(secs);
+      try {
+        await invoke("vault_set_lock_timeout", { secs });
+      } catch (e) {
+        setLockTimeout(prev);
+        showToast(String(e));
+      }
+    },
+    [lockTimeout, showToast],
+  );
 
   const handleLock = useCallback(async () => {
     try {
@@ -101,10 +127,43 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
             {t("settings.vault.description")}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={handleLock}>
-          <Lock />
-          {t("settings.vault.lock")}
-        </Button>
+        <div className="flex items-center gap-3">
+          {/* 自动锁定超时——归属 vault 配置（非通用 Settings 表单） */}
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor="vault-lock-timeout"
+                className="text-xs text-muted-foreground"
+              >
+                {t("settings.vault.lockTimeoutLabel")}
+              </label>
+              <select
+                id="vault-lock-timeout"
+                value={lockTimeout}
+                onChange={(e) => handleLockTimeoutChange(Number(e.target.value))}
+                className="border bg-background px-2 py-1 text-xs rounded"
+              >
+                <option value={30}>30s</option>
+                <option value={60}>1min</option>
+                <option value={180}>
+                  3min ({t("settings.vault.lockTimeoutRecommended")})
+                </option>
+                <option value={300}>5min</option>
+                <option value={900}>15min</option>
+                <option value={0}>{t("settings.vault.lockTimeoutNever")}</option>
+              </select>
+            </div>
+            {lockTimeout === 0 && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 max-w-[260px] text-right">
+                {t("settings.vault.lockTimeoutWarning")}
+              </span>
+            )}
+          </div>
+          <Button variant="outline" size="sm" onClick={handleLock}>
+            <Lock />
+            {t("settings.vault.lock")}
+          </Button>
+        </div>
       </div>
 
       <UnderlineTabs

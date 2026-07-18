@@ -77,6 +77,10 @@ settings:
       wrongPassword: Wrong master password
     lock: Lock Vault
     changePassword: Change Master Password
+    lockTimeoutLabel: Auto-lock
+    lockTimeoutRecommended: recommended
+    lockTimeoutNever: Never
+    lockTimeoutWarning: "⚠️ Never reduces security — anyone with your unlocked computer can access the vault"
     list:
       title: Password Items
       empty: No password items yet

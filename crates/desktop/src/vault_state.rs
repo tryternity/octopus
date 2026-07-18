@@ -36,12 +36,13 @@ pub fn try_global_session() -> Option<SharedVaultSession> {
     GLOBAL_SESSION.get().cloned()
 }
 
-/// user_vault_key 超时阈值（15 分钟）。
-/// 仅 user_vault_key 受此约束——app_key 不超时（进程生命周期内常驻）。
+/// user_vault_key 默认超时阈值（仅供历史 / 测试参考用）。
 ///
-/// 5 分钟：用户离开保险库页面 / 关闭设置窗口后，5 分钟内回来不需重新输主密码；
-/// 超过 5 分钟视为已离开太久，防偷窥。配合 VaultPanel unmount 时的主动 lock，
-/// 实现「关闭设置窗口立即锁 / 离开 5 分钟超时锁」的双层防护。
+/// 实际运行时超时由 `AppConfig.vault_lock_timeout_secs` 决定，通过
+/// [`VaultSession::is_user_vault_unlocked`] 的参数传入。保留本常量是
+/// 为了向后兼容历史测试与文档参考——不再用于实际超时判定。
+///
+/// 仅 user_vault_key 受此约束——app_key 不超时（进程生命周期内常驻）。
 pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 5 * 60;
 
 /// Tauri AppState：进程内持有解锁态的 vault keys。
@@ -58,7 +59,8 @@ pub struct VaultSession {
     /// 解锁时刻（首次输主密码时设）
     pub unlocked_at: Option<Instant>,
     /// 最后一次心跳时刻——前端保险库 tab 处于前台时每 30s 调一次 vault_heartbeat。
-    /// 超过 5min 未心跳视为「保险库 tab 已离开」，触发超时锁。
+    /// 超过 `vault_lock_timeout_secs` 未心跳视为「保险库 tab 已离开」，触发超时锁
+    /// （0 表示永不锁定）。超时阈值来自 `AppConfig.vault_lock_timeout_secs`。
     pub last_active_at: Option<Instant>,
 }
 
@@ -76,27 +78,32 @@ impl Default for VaultSession {
 impl VaultSession {
     /// user_vault_key 是否仍处于解锁有效期内（非空且 last_active_at 未超时）。
     ///
+    /// `timeout_secs` 由运行时 config 提供（`AppConfig.vault_lock_timeout_secs`）：
+    ///   - `0`  = 永不超时（用户选了 "Never"，UI 应警告）
+    ///   - `>0` = 离开焦点后多少秒锁定
+    ///
     /// **注意：需要 `&mut self`**——超时分支会主动清零 user_vault_key
     /// （Zeroizing Drop 立即生效），避免过期 key 在内存残留到下次访问。
     ///
     /// 超时基准是 `last_active_at`（前端心跳维护），而非 `unlocked_at`：
     /// 只要保险库 tab 在前台就持续心跳，永不超时；
-    /// tab 切走 / 窗口关闭 / 应用失焦满 5 分钟 → 心跳停止 → 自动锁定。
-    pub fn is_user_vault_unlocked(&mut self) -> bool {
+    /// tab 切走 / 窗口关闭 / 应用失焦满 `timeout_secs` → 心跳停止 → 自动锁定。
+    pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool {
         if self.user_vault_key.is_none() {
             return false;
+        }
+        if timeout_secs == 0 {
+            // 永不锁定（用户显式选了 "Never"）
+            return true;
         }
         // 超时检查：超时则主动清零（不仅返回 false，还 free key）
         // 用 last_active_at 作为「最近活动」基准
         if let Some(t) = self.last_active_at {
-            if t.elapsed() > Duration::from_secs(DEFAULT_USER_VAULT_TIMEOUT_SECS) {
+            if t.elapsed() > Duration::from_secs(timeout_secs) {
                 self.user_vault_key = None;
                 self.unlocked_at = None;
                 self.last_active_at = None;
-                log::info!(
-                    "vault user_vault_key 失活超 {}s，已主动清零",
-                    DEFAULT_USER_VAULT_TIMEOUT_SECS
-                );
+                log::info!("vault user_vault_key 失活超 {}s，已主动清零", timeout_secs);
                 return false;
             }
         }
@@ -113,7 +120,8 @@ impl VaultSession {
     }
 
     /// 前端保险库 tab 处于前台时每 30s 调用一次，刷新 last_active_at。
-    /// 前端卸载（切 tab / 关窗口）后心跳停止，5 分钟后自动锁定。
+    /// 前端卸载（切 tab / 关窗口）后心跳停止，超过 `vault_lock_timeout_secs`
+    /// （运行时配置，0=永不）后自动锁定。
     pub fn heartbeat(&mut self) {
         if self.user_vault_key.is_some() {
             self.last_active_at = Some(Instant::now());
@@ -168,10 +176,10 @@ mod tests {
     #[test]
     fn test_unlocked_within_timeout() {
         let mut session = VaultSession::default();
-        assert!(!session.is_user_vault_unlocked());
+        assert!(!session.is_user_vault_unlocked(180));
 
         session.set_user_vault_unlocked(make_key(1));
-        assert!(session.is_user_vault_unlocked());
+        assert!(session.is_user_vault_unlocked(180));
     }
 
     #[test]
@@ -180,11 +188,11 @@ mod tests {
         session.set_user_vault_unlocked(make_key(1));
         assert!(session.user_vault_key.is_some());
 
-        // 人为把 last_active_at 设到很久以前（>5min）
-        session.last_active_at = Some(Instant::now() - Duration::from_secs(6 * 60));
+        // 人为把 last_active_at 设到很久以前（>180s = 3min）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
 
         // is_user_vault_unlocked 应返回 false 并清零
-        assert!(!session.is_user_vault_unlocked());
+        assert!(!session.is_user_vault_unlocked(180));
         assert!(session.user_vault_key.is_none(), "key 应被主动清零");
         assert!(session.unlocked_at.is_none());
         assert!(session.last_active_at.is_none());
@@ -195,19 +203,19 @@ mod tests {
         let mut session = VaultSession::default();
         session.set_user_vault_unlocked(make_key(1));
 
-        // 假装 4 分钟过去（未超时）
-        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
-        assert!(session.is_user_vault_unlocked());
+        // 假装 2 分钟过去（未超时，阈值 180s）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(2 * 60));
+        assert!(session.is_user_vault_unlocked(180));
 
         // 心跳刷新
         session.heartbeat();
-        // 再次假装 4 分钟过去（自上次心跳起）—— 仍未超时
-        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
-        assert!(session.is_user_vault_unlocked());
+        // 再次假装 2 分钟过去（自上次心跳起）—— 仍未超时
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(2 * 60));
+        assert!(session.is_user_vault_unlocked(180));
 
-        // 假装 6 分钟过去（超时）
-        session.last_active_at = Some(Instant::now() - Duration::from_secs(6 * 60));
-        assert!(!session.is_user_vault_unlocked());
+        // 假装 4 分钟过去（超时，阈值 180s）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(4 * 60));
+        assert!(!session.is_user_vault_unlocked(180));
     }
 
     #[test]
@@ -226,15 +234,43 @@ mod tests {
         assert!(session.user_vault_key.is_none());
         assert!(session.unlocked_at.is_none());
         assert!(session.last_active_at.is_none());
-        assert!(!session.is_user_vault_unlocked());
+        assert!(!session.is_user_vault_unlocked(180));
     }
 
     #[test]
-    fn test_boundary_exactly_5min_still_unlocked() {
+    fn test_boundary_exactly_3min_still_unlocked() {
         let mut session = VaultSession::default();
         session.set_user_vault_unlocked(make_key(1));
-        // 5:00 整 - 1s 还在有效期内（边界 > 而非 >=）
-        session.last_active_at = Some(Instant::now() - Duration::from_secs(5 * 60 - 1));
-        assert!(session.is_user_vault_unlocked());
+        // 3:00 整 - 1s 还在有效期内（边界 > 而非 >=，阈值 180s）
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(180 - 1));
+        assert!(session.is_user_vault_unlocked(180));
+    }
+
+    /// `timeout_secs == 0` 表示永不锁定——即使 `last_active_at` 很久以前，
+    /// `is_user_vault_unlocked` 也应返回 true 且不清零 key。
+    #[test]
+    fn test_timeout_zero_means_never_lock() {
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+        // 假装很久没心跳
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(3600));
+        // timeout=0 → 永不锁定
+        assert!(session.is_user_vault_unlocked(0));
+        assert!(session.user_vault_key.is_some(), "timeout=0 时 key 不应被清");
+    }
+
+    /// 显式 timeout 参数控制超时行为——同一份 session 状态在不同 timeout 下结果不同。
+    #[test]
+    fn test_timeout_param_overrides_default() {
+        // 即使 session 按默认 180s 设计，显式 timeout 参数才是真正的判定基准。
+        let mut session = VaultSession::default();
+        session.set_user_vault_unlocked(make_key(1));
+        // 2 分钟前的活动：timeout=60 应锁；timeout=180 不应锁。
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(120));
+        assert!(!session.is_user_vault_unlocked(60));
+
+        session.set_user_vault_unlocked(make_key(2));
+        session.last_active_at = Some(Instant::now() - Duration::from_secs(120));
+        assert!(session.is_user_vault_unlocked(180));
     }
 }

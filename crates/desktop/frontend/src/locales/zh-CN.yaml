@@ -77,6 +77,10 @@ settings:
       wrongPassword: 主密码错误
     lock: 锁定保险库
     changePassword: 修改主密码
+    lockTimeoutLabel: 自动锁定
+    lockTimeoutRecommended: 推荐
+    lockTimeoutNever: 永不
+    lockTimeoutWarning: ⚠️ 永不锁定降低安全性——任何拿到你已解锁电脑的人都能查看保险库
     list:
       title: 密码条目
       empty: 还没有密码条目

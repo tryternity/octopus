@@ -398,6 +398,11 @@ pub fn run() {
             crate::vault_commands::vault_heartbeat,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_change_password,
+            // 自动锁定超时配置（UI 在 VaultPanel 内联）
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_get_lock_timeout,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_set_lock_timeout,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_list_ciphers,
             #[cfg(feature = "vault")]
