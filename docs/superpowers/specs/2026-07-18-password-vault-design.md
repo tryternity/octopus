@@ -832,10 +832,10 @@ MVP 不暴露编辑 UI，未来加设置页即可。
 
 ### 4.5 Auto-Type 实现（enigo 跨平台）
 
-**焦点安全**（2026-07-19 修复 #2）：`autotype_login` 加 `expected_bundle_id: Option<&str>`
+**焦点安全**（2026-07-19 修复 #2 + 复审 D/E 加固）：`autotype_login` 加 `expected_bundle_id: Option<&str>`
 参数——注入 username 前 + password 前各调一次 `verify_focused`：
 - `Some(id)`：严格白名单，前台必须 == 指定 bundle id
-- `None`：最小防御，仅校验前台不是 octopus 自身（`com.octopus.desktop`），
+- `None`：最小防御，仅校验前台不是 octopus 自身（`OCTOPUS_BUNDLE_ID` 常量），
   防 VaultPicker 未 hide 时密码打到 octopus 窗口
 
 调用方 `vault_autotype` 命令当前传 `None`——前端 VaultPicker `handlePick` 已改为
@@ -850,7 +850,22 @@ pub fn autotype_login(
     expected_bundle_id: Option<&str>,  // 焦点校验（修复 #2）
 ) -> Result<()>
 ```
-```
+
+**fail-closed**（修复 D）：`verify_focused` 中 osascript 失败（权限缺失/被回收）时
+直接 `bail!`，不 `unwrap_or_default` 放行——避免安全校验在权限缺失时静默失效。
+
+**bundle id 常量**（修复 E）：`OCTOPUS_BUNDLE_ID = "com.octopus.desktop"` 单点定义，
+加测试 `test_octopus_bundle_id_matches_tauri_config` 锁死与 tauri.conf.json identifier 一致。
+
+**已知窗口（B 复审遗留）**：`expected_bundle_id=None` 仅防"打到 octopus 自身"，
+**未完全闭合第三方 app 注入**：
+1. **username 可能泄漏**：注入 username 后、password 前 verify_focused 之间若焦点被抢，
+   username 已打到错误窗口（password 被 verify_focused 挡住）
+2. **password 残留风险**：verify_focused 与 enigo.text(password) 之间的极短窗口理论上可被命中
+
+完整闭合需要前端 hide 前调 url_detect 拿浏览器 bundle_id 并传入 `Some(...)`——
+当前未实现，作为已知窗口记录。建议未来增强为白名单（Chrome/Safari/Firefox/Edge/Brave/Arc
+任一即可），既能校验又避免硬编码单个浏览器。
 
 **密码字段（masked input）**：enigo 在 macOS 用 CGEvent 输入，浏览器收到的是真实按键事件，能正常进 password 框。比浏览器扩展的 DOM 填充更可靠（不会被 React 受控组件拒绝）。
 

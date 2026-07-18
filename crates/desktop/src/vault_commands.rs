@@ -763,11 +763,28 @@ pub fn vault_copy_password(
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
+    master_password: Option<String>,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
         .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+
+    // reprompt 强制校验（修复 A：复制路径同样返回明文密码，必须与 vault_autotype 对称）。
+    // DevTools 可直接 invoke('vault_copy_password', {cipherId: X}) 拿到明文，若不校验
+    // 则攻击面从 autotype 平移到 copy。
+    if cipher.reprompt == RepromptType::Password {
+        match master_password {
+            Some(pwd) => {
+                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                    vault_error::serialize(&VaultError::InvalidMasterPassword)
+                })?;
+            }
+            None => {
+                return Err(vault_error::serialize(&VaultError::RepromptRequired));
+            }
+        }
+    }
 
     // CipherData 当前仅 Login 单变体；保留 unreachable arm 以便未来扩展。
     #[allow(irrefutable_let_patterns)]

@@ -54,20 +54,39 @@ pub fn copy_concealed_with_ttl(text: &str, ttl: Duration) -> Result<()> {
     // 此处由调用方在调本函数前手动调 handle.suppress_next()
 
     // spawn 定时清空（默认 30s）——走 tauri::async_runtime + tokio::time（订正次-2）
+    //
+    // **防误清**（修复 C）：把写入内容 snapshot 到 task，清除前读 pasteboard 比对，
+    // 相同才 clearContents——用户在 TTL 期间复制其他内容时不会被误清。
+    // 仍存在的窗口：多复制时多个独立 task（未实现单一定时器 + cancellation），
+    // 但单次复制场景的误清问题已解决（最常见的失败场景）。
+    let snapshot = text.to_string();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(ttl).await;
-        let _ = clear_clipboard();
+        let _ = clear_clipboard_if_matches(&snapshot);
     });
 
     Ok(())
 }
 
-fn clear_clipboard() -> Result<()> {
+/// 仅当当前 pasteboard 文本 == `expected` 时清空（修复 C：防误清用户后续复制）。
+///
+/// 读 NSPasteboard 内容比对：
+/// - 相同 → clearContents 清空（这次清空是本次复制的 TTL 责任）
+/// - 不同 → 不动（用户在 TTL 期间已复制了别的内容，不能覆盖）
+/// - 读失败 → 仍清（保守：防密码残留，宁可错清用户笔记也不留密码）
+fn clear_clipboard_if_matches(expected: &str) -> Result<()> {
     let pb = NSPasteboard::generalPasteboard();
-    pb.clearContents();
-    let empty = NSString::from_str("");
     let string_type = unsafe { NSPasteboardTypeString };
-    pb.setString_forType(&empty, string_type);
+    let current = pb.stringForType(string_type);
+    let should_clear = match current {
+        Some(s) => s.to_string() == expected,
+        None => true, // 读失败 → 保守清空（防密码残留）
+    };
+    if should_clear {
+        pb.clearContents();
+        let empty = NSString::from_str("");
+        pb.setString_forType(&empty, string_type);
+    }
     Ok(())
 }
 

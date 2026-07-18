@@ -11,6 +11,16 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
 const FOCUS_WAIT: Duration = Duration::from_millis(100);
 
+/// octopus 自身 bundle id（与 tauri.conf.json identifier 必须一致）。
+///
+/// 修复 E：原硬编码字符串散在 verify_focused 内，identifier 改动不会编译报错。
+/// 现在集中定义 + 加测试断言与 tauri 配置一致。
+///
+/// 注意：tauri::generate_context! 在编译期把 tauri.conf.json 的 identifier 嵌入，
+/// 但运行时取它需要走 tauri::App::config().identifier()。本常量在 autotype 模块
+/// 独立可用（不依赖 Tauri runtime），所以是必要的"软约束"——靠测试锁死。
+pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
+
 /// 把指定 bundle_id 的 app 激活到前台。
 pub fn activate_app(bundle_id: &str) -> Result<()> {
     let script = format!(r#"tell application id "{}" to activate"#, bundle_id);
@@ -82,10 +92,14 @@ pub fn autotype_login(
 /// - `Some(expected)`：前台必须 == expected，否则 bail（严格白名单）
 /// - `None`：前台只需 ≠ octopus 自身 bundle id（最小防御，防焦点抢到 octopus 窗口）
 ///
+/// **fail-closed**（修复 D）：osascript 失败（权限缺失/被回收）时 bail，不静默放行。
+/// 避免安全校验在权限缺失时失效。
+///
 /// 不一致时返回 Err——调用方应放弃按键注入，降级到剪贴板路径。
 fn verify_focused(expected_bundle_id: Option<&str>) -> Result<()> {
+    // osascript 失败 → 直接 bail（fail-closed，修复 D）
     let actual = super::url_detect::frontmost_bundle_id()
-        .unwrap_or_default()
+        .context("无法读取前台 bundle id（osascript 权限缺失?），fail-closed")?
         .trim()
         .to_string();
     match expected_bundle_id {
@@ -99,9 +113,8 @@ fn verify_focused(expected_bundle_id: Option<&str>) -> Result<()> {
             }
         }
         None => {
-            // octopus 自身 bundle id（main.rs identifier 一致）
-            // 校验失败时 bail——焦点在 octopus 自己说明 VaultPicker 没 hide 或焦点被抢回
-            if actual == "com.octopus.desktop" {
+            // 修复 E：用 OCTOPUS_BUNDLE_ID 常量，避免硬编码散落
+            if actual == OCTOPUS_BUNDLE_ID {
                 anyhow::bail!(
                     "焦点仍在 octopus 自身（VaultPicker 未 hide?）——放弃按键注入防泄露"
                 );
@@ -109,4 +122,28 @@ fn verify_focused(expected_bundle_id: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 修复 E：常量必须与 tauri.conf.json identifier 一致。
+    /// tauri.conf.json 改 identifier 时，本测试会失败提醒同步。
+    ///
+    /// 用 include_str! 编译期读 tauri.conf.json 文本，正则匹配 identifier 字段。
+    /// 比 generate_context!().config().identifier 简单（不依赖 Tauri runtime 类型）。
+    #[test]
+    fn test_octopus_bundle_id_matches_tauri_config() {
+        let conf = include_str!("../../tauri.conf.json");
+        // 简单子串匹配——identifier 字段在 conf 里唯一
+        let needle = "\"identifier\": \"com.octopus.desktop\"";
+        assert!(
+            conf.contains(needle),
+            "tauri.conf.json 缺少 identifier={}——OCTOPUS_BUNDLE_ID 校验会失效",
+            needle
+        );
+        // 顺带校验常量本身
+        assert_eq!(OCTOPUS_BUNDLE_ID, "com.octopus.desktop");
+    }
 }

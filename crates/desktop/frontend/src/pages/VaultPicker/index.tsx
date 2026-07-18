@@ -126,11 +126,11 @@ export default function VaultPicker() {
   const handlePick = useCallback(
     async (c: CipherDto, copyOnly: boolean) => {
       // reprompt 保护的高敏感 cipher：弹密码框，确认后再调后端
-      // （后端 vault_autotype 会强制再次校验 master_password，不可绕过）
-      if (c.reprompt === 1 && !copyOnly) {
+      // （后端 vault_autotype / vault_copy_password 都会强制再次校验 master_password，不可绕过）
+      if (c.reprompt === 1) {
         setUnlockPassword("");
         setUnlockError(null);
-        setView({ kind: "reprompt", cipher: c, copyOnly: false });
+        setView({ kind: "reprompt", cipher: c, copyOnly });
         return;
       }
       await runAutotype(c, copyOnly, undefined);
@@ -145,7 +145,10 @@ export default function VaultPicker() {
       setBusy(true);
       try {
         if (copyOnly) {
-          await invoke("vault_copy_password", { cipherId: c.id });
+          await invoke("vault_copy_password", {
+            cipherId: c.id,
+            masterPassword: masterPassword ?? null,
+          });
         } else {
           // 关键：autotype 前先 hide 浮窗，让浏览器回到前台。
           // 后端 vault_autotype 会 sleep + 校验前台不是 octopus 自身（防钓鱼注入），
@@ -238,9 +241,10 @@ export default function VaultPicker() {
       e.preventDefault();
       if (!unlockPassword) return;
       const cipher = view.cipher;
+      const copyOnly = view.copyOnly;
       const pwd = unlockPassword;
       setView({ kind: "autotyping" });
-      await runAutotype(cipher, false, pwd);
+      await runAutotype(cipher, copyOnly, pwd);
     };
     return (
       <form onSubmit={submitReprompt} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">

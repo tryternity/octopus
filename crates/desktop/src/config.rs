@@ -58,8 +58,13 @@ pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
                 ) {
                     Ok(plain) => plain,
                     Err(e) => {
+                        // 修复 F：与其他 3 处 fail-soft 不一致（那里返清晰 Err），
+                        // 但 llm_config_ignore_mode 签名是 Option（非 Result），改签名
+                        // 会扩散到所有调用方。最小修复：log 用更明显的"保险库未解锁"
+                        // message（而非"返回空 key 让调用方 401"），让运维/用户排查更直接。
                         log::warn!(
-                            "LLM secret_key 解密失败，返回空 key 让调用方 401（避免密文入云端 log）：{}",
+                            "LLM secret_key 解密失败——保险库未解锁或密文损坏，\
+                             LLM 调用将以空 key 触发 401（避免密文入云端 log）：{}",
                             e
                         );
                         String::new()
