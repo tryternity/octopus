@@ -6771,3 +6771,51 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 **2. Inline Execution** - 备选。
 
 实际采用 Subagent-Driven + 多轮 self-review follow-up。
+
+
+---
+
+## 修订：安全审查复查 + 修复（2026-07-19）
+
+收到外部安全审查报告，10 个 Critical/High + 9 个次要。逐条回读源码核实后：
+**9 个完全成立 / 1 个部分成立（#10 dead code）/ 3 个次要部分成立**。
+
+### 已修复（9 个，3 个独立 commit）
+
+| # | 严重度 | 问题 | 修复 commit |
+|---|---|---|---|
+| #1 | 🔴 真高危 | PSL 域名匹配钓鱼（多段 TLD 退化） | e82c9f19 接入 publicsuffix crate |
+| #2 | 🟠 高 | autotype 焦点竞态 | b15e6c94 autotype_login 加 expected_bundle_id 校验 |
+| #3 | 🟠 高 | reprompt 后端绕过（前端实际也没实现） | b15e6c94 后端强制 master_password 校验 + 前端 reprompt view |
+| #5 | 🟠 高 | 解密失败回退发密文（密文进云端 log） | b15e6c94 try_decrypt_secret_global 返 Result |
+| #6 | 🟡 中 | list_ciphers 单行失败带垮整表 | e8a37159 返回 (Vec, Vec<failure>) 部分结果 |
+| #8 | 🟡 中 | lock 不擦飞行中 Arc（注释误导） | e8a37159 vault_state.rs 注释订正 |
+| 次-2 | 🟡 中 | 裸 std::thread::spawn TTL | e8a37159 改 tauri::async_runtime + tokio::time |
+
+### 未修复（仅文档化）
+
+| # | 严重度 | 不修原因 |
+|---|---|---|
+| #4 vault_meta 非原子 RMW | 🟡 中 | 实际并发概率极低（单进程桌面 app，需双 modal 同时操作）；记入 spec "已知工程折衷" |
+| #7 TOTP 拒绝短 secret + 硬编码 | 🟡 中 | 涉及 totp-rs features + UI 改动，单独迭代（follow-up） |
+| #9 K_machine 派生 file_key 弱 | 🟡 中 | 已知工程折衷（adhoc 签名 keychain 失效）；spec §2.5 补威胁模型说明 |
+| #10 bundle_id AppleScript 注入 | 🟢 低 | 当前是 dead code，无调用点；加防御性注释，未来启用时强制白名单 |
+| 次-1 心跳以 focus 为基准 | 🟡 中 | 设计选择（窗口聚焦即续命），补注释说明 |
+| 次-3 suppress_next 竞态 | 🟢 低 | 竞态存在但报告归因 iCloud 不准（实际是本机其他剪贴板事件） |
+
+### 复查细节
+
+- 所有报告引用的代码事实全部准确（仅个别行号略偏）
+- 报告严重度评估偏激进——"永久数据丢失""key 长期残留"等措辞高估了实际触发概率
+- 报告 #3 描述"前端处理 reprompt"不准确——前端实际也没实现，比报告更严重
+- 报告 #10 "目前真实存在"夸大——activate_app 是 dead code 无调用点
+- 报告次-3 "iCloud Universal Clipboard 先消费 suppress"不准——ConcealedType 标记本已让 iCloud 跳过，真正消费者是本机其他剪贴板事件
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 129 pass（+2 PSL 钓鱼场景测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error
+- bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+

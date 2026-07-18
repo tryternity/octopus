@@ -732,6 +732,16 @@ end tell
 
 ### 4.3 URL 匹配算法（5 种策略）
 
+**eTLD+1 提取**（2026-07-19 安全修复 #1）：用 `publicsuffix` crate + 内嵌 Mozilla PSL
+（`crates/vault/data/public_suffix_list.dat`，~330KB），正确处理多段 TLD
+（`.co.uk / .com.cn / .co.jp`）；IP 字面量精确匹配（`parse::<IpAddr>` 判断）；
+PSL 查不到时返回 host 本身（fail-closed）。
+
+> **踩坑警示**：首发版用「按 `.` 分段取最后两段」简化算法，导致钓鱼漏洞——
+> `barclays.co.uk` 与 `evil-attacker.co.uk` 都退化为 `co.uk` 互相匹配，
+> autotype 会把银行密码注入钓鱼站。Cargo.toml 早就有 `publicsuffix = "2"` 但代码
+> 故意不用。修复后增加 `test_phishing_protection_multilevel_tld` 测试锁死不变量。
+
 ```rust
 // crates/vault/src/matcher/mod.rs
 
