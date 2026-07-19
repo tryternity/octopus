@@ -6923,3 +6923,37 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 
 - autotype focus 校验走 verify_focused(None) 最小防御——hide 期间焦点被抢到第三方 app 时密码会打到错误窗口
 - spec §4.5 已记录该已知窗口；未来增强为浏览器白名单
+
+---
+
+## 修订：ActionBar UI 调整（2026-07-19）
+
+随密码生成器外壳 B 落地，做了几个 ActionBar UI 调整 + 一个回归修复。
+
+### 改动
+
+- [x] **生成器 Tab 顺序**（commit 2c6ca38f）：Segmented items 重排为 random → passphraseEn → passphraseZh → pin（原 zh/en/random/pin）；默认 mode 从 passphraseZh 改为 random（与主流密码管理器对齐）
+- [x] **生成器取消按钮**（commit 2cbaae38）：PasswordGenerator 主体加 onCancel? prop（可选，提供才显示），独立浮窗场景传 onCancel=handleClose（hide 浮窗）；CipherEditor Modal 不传（已有 × 关闭 + 点遮罩）
+- [x] **独立窗口 toast 系统**（commit 031a591c）：提取 Settings 局部 toast 为可复用 hook（lib/useToast.tsx），PasswordGeneratorWindow 复制操作有"已复制"反馈
+- [x] **浮窗位置跟随浏览器 frame**（commit 031a591c）：CGWindowListCopyWindowInfo + owner name 白名单匹配前台浏览器；三级 fallback（浏览器 frame → 鼠标 → 屏幕顶部居中）
+- [x] **删除 Settings UI 的 copy 菜单类型**（commit fb65d3ef）：用户改用 Cmd+C；i18n 删 typeCopy；ActionBarPanel TYPE_META/ACTION_TYPES 删 copy；新建默认 actionType copy → url（后续按层级区分）
+- [x] **子菜单 → 父菜单 文案**（commit fb65d3ef）：i18n typeSubmenu 改文案（DB 字段仍 submenu，纯 i18n 改动）
+- [x] **新建菜单项默认类型按层级**（commit 172de750）：主菜单默认 submenu（父菜单），子菜单默认 script（执行动作）
+- [x] **回归修复**（commit 78a85cc5）：executeSearchResult 的 case "copy" 被误改为 legacy 提示，破坏 calculator/command 复制功能——恢复原逻辑 + 加注释区分两个 switch
+
+### 关键踩坑（避免下次重蹈）
+
+**executeItem vs executeSearchResult 的 case "copy" 是两回事**：
+- `executeItem`（line 568）：执行 ActionBar DB 菜单项 → 后端 `execute_action_bar` → 后端删 `"copy" =>` 分支**是对的**（用户配置 copy 类型已禁止）
+- `executeSearchResult`（line 628）：执行搜索结果 → 前端 switch → **case "copy" 必须保留！**
+  calculator/command 的 search result 走这里（actionType="copy"，actionData={text:...}）
+  纯前端 clipboard.writeText，与用户配置的 copy 菜单类型无关
+
+删除 Settings UI 类型时只动 TYPE_META/ACTION_OPTIONS + 后端 execute_action_bar，
+**不要动 executeSearchResult 的运行时 case**——搜索结果的 actionType 是各 Provider
+自由产出的（calculator.rs:55 / command.rs:7），与用户配置菜单解耦。
+
+### 验证
+
+- cargo build / cargo test -p octopus-vault --lib (136) / -p octopus-infra --lib (130)
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
