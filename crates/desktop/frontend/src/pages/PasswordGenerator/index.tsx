@@ -75,7 +75,11 @@ export default function PasswordGeneratorWindow() {
               {t("settings.loading")}
             </div>
           ) : (
-            <PasswordGenerator onAutotype={handleAutotype} showToast={showToast} />
+            <PasswordGenerator
+              onAutotype={handleAutotype}
+              onCancel={handleClose}
+              showToast={showToast}
+            />
           )}
         </div>
       </div>

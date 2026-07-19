@@ -119,6 +119,8 @@ export interface PasswordGeneratorProps {
   onUsePassword?: (pwd: string) => void;
   /** 「Auto-type」回调——Actionbar 独立窗口场景触发自动输入到网页（future）。提供才显示该按钮。 */
   onAutotype?: (pwd: string) => void;
+  /** 「取消」回调——关闭浮窗/Modal 不做任何操作。提供才显示该按钮。 */
+  onCancel?: () => void;
   /** 复制到剪贴板反馈。 */
   showToast: (msg: string) => void;
 }
@@ -126,6 +128,7 @@ export interface PasswordGeneratorProps {
 export default function PasswordGenerator({
   onUsePassword,
   onAutotype,
+  onCancel,
   showToast,
 }: PasswordGeneratorProps) {
   const t = useT();
@@ -401,8 +404,13 @@ export default function PasswordGenerator({
         )}
       </div>
 
-      {/* 操作栏——按钮按 props 动态显示 */}
+      {/* 操作栏——取消（如有）独立左侧，其他按钮按 props 动态显示 */}
       <div className="flex gap-2">
+        {onCancel && (
+          <Button variant="ghost" onClick={onCancel}>
+            {t("settings.vault.editor.cancel")}
+          </Button>
+        )}
         <Button variant="outline" className="flex-1" onClick={regenerate}>
           <RefreshCw />
           {t("settings.vault.generator.regenerate")}
