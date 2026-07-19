@@ -504,8 +504,10 @@ pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool;
 | INV-9 | 锁定超时以 `last_active_at` 为基准（非 `unlocked_at`）；前端心跳维护 `last_active_at`，vault tab 离开 + 配置时间到 → 自动锁。`timeout_secs=0` 表示永不锁定（UI 警告）。 |
 | INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。**2026-07-19 第四轮 #1 落地**：后端 `crates/vault/src/validate.rs::validate_master_password` 在 setup_vault + change_master_password 入口强制校验，防 DevTools 绕过。 |
 | INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc` / `regenerate_security_stamp` / `setup_vault` / 任何 `save_vault_meta` / `update_security_stamp` 调用）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4 + 复审 #2 下沉）。**锁下沉到 `save_vault_meta` / `update_security_stamp` 内部**（ReentrantMutex 同线程可重入），调用方无需显式持锁——RMW 路径仍显式持锁保证读到的数据在写之前不被其他写者改动。防并发导致整行覆盖丢失字段 → 永久数据损坏。 |
-| INV-12 | 暴力破解退避：所有主密码验证路径（unlock / verify / change_password 旧密码校验）必须经 `attempt_guard` 计数 + 指数退避（0/1/2/4/8/16/30s）。**2026-07-19 第四轮 #3 落地**：`crates/vault/src/attempt_guard.rs`。进程内（重启重置，不做持久化锁定防 DoS）。 |
+| INV-12 | 暴力破解退避：所有主密码验证路径（unlock / verify / change_password 旧密码校验）必须经 `attempt_guard` 计数 + 指数退避（0/1/2/4/8/16/30s）。**成功路径必须 reset**（2026-07-19 第五轮 B1 补完整：`unlock_with_master_password` + `change_master_password` 成功后都调 `guard().reset()`——旧实现 change 成功路径漏调，连续输错旧密码改密成功后下次 unlock 被退避挡）。`verify_master_password` 是二次确认不调 reset（不清 unlock 路径的计数）。**2026-07-19 第四轮 #3 + 第五轮 B1 落地**：`crates/vault/src/attempt_guard.rs`。进程内（重启重置，不做持久化锁定防 DoS）。 |
 | INV-13 | 迁移 `models.secret_key` 到加密格式必须是事务化（`unchecked_transaction` 整批）+ 调用方传播错误不吞。**2026-07-19 第四轮 #5 落地**：防半迁移永久明文残留。 |
+| INV-14 | `setup_vault` 失败必须可恢复（2026-07-19 第五轮 A1 落地）：迁移失败时显式调 `infra::db::delete_vault_meta_row()` 回滚 vault_meta，让 `is_initialized()` 回到 false，用户可重新走 setup。**已知残余窗口**：save_vault_meta 与 migrate 不在同一事务，进程崩溃/断电在 migrate 执行窗口内可能留「vault_meta 已落盘 + secret_key 仍明文 + delete 未执行」状态（毫秒级窗口，崩溃概率极低，接受）。彻底闭合需重构 meta 模块所有写路径，工程成本远大于收益。 |
+| INV-15 | 密码校验与副作用的错误语义必须分离（2026-07-19 第五轮 B2 落地）：`unlock_with_master_password` 拆两阶段——密码校验阶段（decrypt user_vault_key / app_key）失败才 `record_failure`；副作用阶段（`refresh_app_key_local_enc`）失败仅返 Err 不调 `record_failure`（密码是对的，用户可立即重试不被退避挡）。unlock 仍返 Err（caller 不建立 session）。 |
 
 ---
 
@@ -1431,7 +1433,7 @@ pub trait VaultSync {
 |---|---|
 | INV-I1 | Bitwarden 导入仅支持 unencrypted JSON（MVP） |
 | INV-I2 | 导入失败时已成功的 cipher 不回滚（中断容忍） |
-| INV-I3 | 导入按 name + 第一条 uri 去重（Bitwarden 的 id 在 octopus 无意义）。**2026-07-19 第四轮 #2 落地**：`importer/bitwarden.rs` 导入前预加载库内 ciphers 构 seen HashSet（key=name+first_uri），重复跳过。reprompt 字段也正确导入/导出（第四轮 #4）。 |
+| INV-I3 | 导入按 name + 第一条 uri 去重（Bitwarden 的 id 在 octopus 无意义）。**2026-07-19 第四轮 #2 落地**：`importer/bitwarden.rs` 导入前预加载库内 ciphers 构 seen HashSet（key=name+first_uri），重复跳过。reprompt 字段也正确导入/导出（第四轮 #4）。**2026-07-19 第五轮 O2 补完整**：seen HashSet 算时 filter `deleted_at.is_none()`——软删行不参与去重，否则用户软删后再导入同一份备份被静默 skip 永远恢复不了（`list_vault_ciphers` 不过滤软删是设计如此，回收站视图需要，由 importer 在 dedup 点显式 filter）。 |
 | INV-I4 | 导出明文 JSON 必须明确警告用户 |
 | INV-I5 | 手动同步不引入任何网络请求（纯本地文件读写） |
 
@@ -1581,8 +1583,10 @@ export function validateMasterPassword(pwd: string): MasterPasswordValidation {
 
 ### 7.5 不变量汇总（全局）
 
-见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。新增 INV-9 / INV-10（§2.8）、INV-D6 / INV-D7（§3.8）、
-INV-G8（§5.4）。
+见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。截至 2026-07-19 第六轮审查收敛，不变量已覆盖到 INV-15：
+INV-9 / INV-10（§2.8 主密码强度）、INV-11（meta 写锁）、INV-12（退避 + 成功路径 reset）、
+INV-13（迁移事务化）、INV-14（setup 失败可恢复）、INV-15（密码校验与副作用错误语义分离）；
+INV-D6 / INV-D7（§3.8 数据层）；INV-G8（§5.4 生成器 + 健康检查）。
 
 ### 7.6 关键测试场景
 

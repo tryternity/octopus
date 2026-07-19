@@ -7013,7 +7013,7 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 ### 🟢 low（4 项）
 
 - [x] **#9 list_folders 无单行容错**：返回 (Vec<FolderDto>, Vec<i64>) 部分结果（照搬 cipher.rs 修复 #6 模式）
-- [x] **#10 child() chain code 未 zeroize**：crypto/hierarchy.rs 64B HMAC 输出包装 Zeroizing<[u8;64]>
+- [x] **#10 child() chain code 未 zeroize**：crypto/hierarchy.rs 64B HMAC 输出包装 Zeroizing<[u8;64]>（**注**：第五轮 A2 发现此修复未达目标——只清拷贝、原件 GenericArray 仍残留栈帧；已改为启用 generic-array zeroize feature + `Zeroizing::new(mac.finalize().into_bytes())` 包装原件，详见下方第五轮段）
 - [x] **#11 空 cipher_uri 匹配任意**：matcher/mod.rs match_uri_one 加 early return（trim().is_empty() → false）
 - [x] **#12 DuplicateGroup Debug 打印 hash**：health/duplicate.rs 手写 Debug impl redact password_hash
 
