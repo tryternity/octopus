@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 40", [])
+    conn.execute("PRAGMA user_version = 41", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -282,12 +282,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 40 {
-        // v40+ 已最新，直接返回。
+    if v >= 41 {
+        // v41+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
-        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v40。
+        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v41。
         // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
         // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
         // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
@@ -304,10 +304,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 log::info!("schema v40: action_bar_items 补 need_voice 列");
             }
         }
+        // v40→v41：load_external_seeds 增加 PPT 子菜单去重（修早期 INSERT OR IGNORE
+        // 无 UNIQUE 留下的多条「制作 PPT」记录）。重新跑 load_external_seeds 即可自愈。
         fill_manifests(conn)?;
         crate::seeds::load_external_seeds(conn)?;
-        conn.execute("PRAGMA user_version = 40", [])?;
-        log::info!("schema upgraded to v40 (action_bar_items.need_voice + seed 自愈)");
+        conn.execute("PRAGMA user_version = 41", [])?;
+        log::info!("schema upgraded to v41 (PPT 子菜单去重 + seed 自愈)");
         return Ok(());
     }
 
@@ -317,8 +319,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 40", [])?;
-    log::info!("DB initialized (v40): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 41", [])?;
+    log::info!("DB initialized (v41): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -3433,7 +3435,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 40, "全新库 init_schema 后应到 v40");
+        assert_eq!(v, 41, "全新库 init_schema 后应到 v40");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3711,9 +3713,9 @@ mod tests {
         // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 40
+        // 验证 user_version = 41
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 40);
+        assert_eq!(v, 41);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -3758,7 +3760,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 40);
+        assert_eq!(v, 41);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3888,7 +3890,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 40);
+        assert_eq!(v, 41);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -3916,7 +3918,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 40);
+        assert_eq!(v, 41);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -5342,7 +5344,7 @@ mod vault_schema_tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("db.sql")).unwrap();
-        conn.execute("PRAGMA user_version = 40", []).unwrap();
+        conn.execute("PRAGMA user_version = 41", []).unwrap();
         conn
     }
 

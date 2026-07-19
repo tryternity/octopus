@@ -109,8 +109,11 @@ fn load_llm_providers_seed(conn: &Connection) -> Result<()> {
 ///
 /// **自愈策略**（2026-07-19 v40 修复）：早期版本用 INSERT WHERE NOT EXISTS，
 /// 一旦菜单项存在（即使 action_data 为空）就跳过——导致 Task 1 实施期插过的
-/// action_data='' 永远填不上 prompt。新版用「INSERT OR IGNORE 保证存在」+
-/// 「UPDATE WHERE action_data='' 自愈填充」+「UPDATE need_voice=1 强制刷新」。
+/// action_data='' 的 PPT 菜单永远填不上 prompt。新版分四步：
+///   1. 插 Agent 主菜单（WHERE NOT EXISTS 防重）
+///   2. **去重 PPT 子菜单**（历史 bug 可能留多条；保留 id 最小的）
+///   3. 插 PPT 子菜单（WHERE NOT EXISTS 防重）
+///   4. UPDATE 自愈——空 action_data 补 prompt、need_voice 强制 1、用户改过的保留
 fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
     let make_ppt_prompt = seeds_dir().join("agent_actions/make-ppt.prompt.md");
     let prompt_content = std::fs::read_to_string(&make_ppt_prompt)
@@ -132,14 +135,30 @@ fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
         )
         .context("查 Agent 主菜单 id")?;
 
-    // 3. 插 PPT 子菜单（INSERT OR IGNORE：已存在则跳过插入，但后续 UPDATE 会兜底）
+    // 3. 去重 PPT 子菜单：早期版本 INSERT OR IGNORE（无 UNIQUE 约束）曾留下多条 PPT 子菜单。
+    //    保留 id 最小的（最早创建的），其余删除。
     conn.execute(
-        "INSERT OR IGNORE INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
-         VALUES (?1, '制作 PPT', 'presentation', 'agent', ?2, 'pi', 'file', 0, 1, 1)",
+        "DELETE FROM action_bar_items
+         WHERE title = '制作 PPT' AND parent_id = ?1
+           AND id NOT IN (
+               SELECT MIN(id) FROM action_bar_items
+               WHERE title = '制作 PPT' AND parent_id = ?1
+           )",
+        rusqlite::params![agent_id],
+    ).context("去重 PPT 子菜单")?;
+
+    // 4. 插 PPT 子菜单（WHERE NOT EXISTS——还没创建则插入）
+    conn.execute(
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
+         SELECT ?1, '制作 PPT', 'presentation', 'agent', ?2, 'pi', 'file', 0, 1, 1
+         WHERE NOT EXISTS (
+             SELECT 1 FROM action_bar_items
+             WHERE title='制作 PPT' AND parent_id = ?1
+         )",
         rusqlite::params![agent_id, prompt_content],
     ).context("插入 PPT 子菜单")?;
 
-    // 4. 自愈：现有 PPT 菜单项如果 action_data 为空（早期版本残留）或 need_voice 未开，补上。
+    // 5. 自愈：现有 PPT 菜单项如果 action_data 为空（早期版本残留）或 need_voice 未开，补上。
     //    用户在设置里改过的 action_data（非空）保留；need_voice 总是强制设为 1（PPT 菜单语义）。
     conn.execute(
         "UPDATE action_bar_items
@@ -381,6 +400,41 @@ mod load_tests {
             .query_row("SELECT need_voice FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(need_voice, 1, "need_voice 仍应强制为 1");
+    }
+
+    /// v40 去重：早期 INSERT OR IGNORE（无 UNIQUE）曾留下多条 PPT 子菜单。
+    /// load 应保留 id 最小的，删除其余。
+    #[test]
+    fn load_agent_action_seeds_dedupes_duplicate_ppt_items() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        // 模拟早期 bug：Agent 下挂 3 条「制作 PPT」
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts)
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file')",
+            [],
+        ).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        for _ in 0..3 {
+            conn.execute(
+                "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system)
+                 VALUES (?1, '制作 PPT', 'presentation', 'agent', '', 'pi', 'file', 0, 1)",
+                rusqlite::params![agent_id],
+            ).unwrap();
+        }
+        let before_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before_count, 3, "测试前置：3 条重复");
+
+        load_agent_action_seeds(&conn).unwrap();
+
+        let after_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_count, 1, "去重后应只剩 1 条");
     }
 
     /// load_external_seeds 永远 Ok——单个 seed 失败仅 log::error。
