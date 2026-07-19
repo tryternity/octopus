@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import { Toast, useToast } from "@/lib/useToast";
 import PasswordGenerator from "@/pages/Settings/Vault/PasswordGenerator";
 
 /**
@@ -16,12 +17,16 @@ import PasswordGenerator from "@/pages/Settings/Vault/PasswordGenerator";
  *
  * 用户决策（2026-07-19）：点使用后自动 hide（与 VaultPicker 一致）。
  *
- * 视觉：透明 always_on_top 浮窗，本组件负责顶部标题栏（X 关闭）+ 主体容器。
+ * 视觉：透明 always_on_top 浮窗，本组件负责顶部标题栏（X 关闭）+ 主体容器 + 底部 toast。
  * 透明窗口的 html/body 背景不设——让 transparent:true 真正透明。
  * 主体放卡片里形成视觉边界（用户能看到浮窗边界）。
+ *
+ * Toast 系统（2026-07-19）：用 lib/useToast 提供"已复制"等反馈。PasswordGenerator
+ * 主体的 `showToast` prop 接这里。
  */
 export default function PasswordGeneratorWindow() {
   const t = useT();
+  const { toast, showToast } = useToast();
   const [busy, setBusy] = useState(false);
 
   const handleClose = useCallback(() => {
@@ -47,7 +52,7 @@ export default function PasswordGeneratorWindow() {
   );
 
   return (
-    <div className="flex h-screen flex-col bg-background p-3 text-foreground">
+    <div className="relative flex h-screen flex-col bg-background p-3 text-foreground">
       {/* 顶部标题栏 */}
       <div className="mb-2 flex shrink-0 items-center justify-between">
         <span className="text-sm font-medium">
@@ -70,10 +75,13 @@ export default function PasswordGeneratorWindow() {
               {t("settings.loading")}
             </div>
           ) : (
-            <PasswordGenerator onAutotype={handleAutotype} showToast={() => {}} />
+            <PasswordGenerator onAutotype={handleAutotype} showToast={showToast} />
           )}
         </div>
       </div>
+
+      {/* Toast 反馈（复制成功等） */}
+      <Toast toast={toast} />
     </div>
   );
 }

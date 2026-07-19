@@ -857,12 +857,16 @@ pub fn register_vault_autotype_shortcut(
 
 /// 唤起密码生成器浮窗（Actionbar 内置按钮触发）。
 ///
-/// 浮窗位置跟随鼠标（前台浏览器输入框附近），边界保护防超出屏幕。
+/// 浮窗位置：优先跟随前台浏览器 frame（CGWindowList 读窗口），fallback 鼠标 → 屏幕顶部居中。
 /// toggle 语义：已存在 → show + 移动到新位置；不存在 → 创建。
 #[tauri::command]
 pub fn open_password_generator(app: AppHandle) -> Result<(), String> {
-    let (x, y) = crate::password_generator_window::compute_window_position(&app);
-    crate::password_generator_window::show_password_generator_window(&app, x, y);
+    let pos = crate::password_generator_window::compute_window_position(&app);
+    log::info!(
+        "[password-generator] open: position=({:.0},{:.0}) source={:?}",
+        pos.x, pos.y, pos.source
+    );
+    crate::password_generator_window::show_password_generator_window(&app, pos.x, pos.y);
     Ok(())
 }
 
