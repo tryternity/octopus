@@ -1716,10 +1716,8 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             write_clipboard_text(app, &formatted);
             Ok(false)
         }
-        "copy" => {
-            write_clipboard_text(app, &text);
-            Ok(false)
-        }
+        // "copy" 类型已从 Settings UI 删除（2026-07-19）——用户改用 Cmd+C。
+        // 旧 DB 残留的 actionType="copy" 菜单走 _ 分支返回错误，提示用户去 Settings 改类型。
         _ => Err(format!("未知动作类型: {}", item.action_type)),
     }
 }

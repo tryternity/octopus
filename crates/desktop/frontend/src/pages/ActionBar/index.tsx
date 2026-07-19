@@ -695,15 +695,10 @@ export default function ActionBar() {
         break;
       }
       case "copy": {
-        // calculator / url 等"复制结果"动作：actionData = {"text": "..."}
-        const text = data.text as string;
-        if (!text) return;
-        try {
-          await navigator.clipboard.writeText(text);
-          invoke("action_bar_dismiss", { reason: "copy" });
-        } catch (e) {
-          showQuickError(String(e).slice(0, 40));
-        }
+        // 历史遗留 copy 类型——已从 Settings UI 删除，但旧 DB 可能残留。
+        // 用户触发时静默 dismiss + 提示去 Settings 改类型。
+        invoke("action_bar_dismiss", { reason: "legacy_copy" });
+        showQuickError("此菜单类型已废弃，请在设置中改为其他类型");
         break;
       }
       case "copy_and_reveal": {

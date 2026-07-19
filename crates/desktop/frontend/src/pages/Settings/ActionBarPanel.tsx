@@ -49,7 +49,6 @@ const TYPE_META: Record<
   url:        { bar: "bg-sky-500",        dot: "bg-sky-500",     label: "URL",     descKey: "settings.actionBar.typeUrlDesc",        placeholderKey: "settings.actionBar.typeUrlPlaceholder" },
   script:     { bar: "bg-emerald-500",    dot: "bg-emerald-500", label: "SCRIPT",  descKey: "settings.actionBar.typeScriptDesc",     placeholderKey: "settings.actionBar.typeScriptPlaceholder" },
   extension:  { bar: "bg-amber-500",      dot: "bg-amber-500",   label: "EXT",     descKey: "settings.actionBar.typeExtensionDesc",  placeholderKey: "" },
-  copy:       { bar: "bg-stone-400",      dot: "bg-stone-400",   label: "COPY",    descKey: "settings.actionBar.typeCopyDesc",       placeholderKey: "" },
   agent:      { bar: "bg-rose-500",       dot: "bg-rose-500",    label: "AGENT",   descKey: "settings.actionBar.typeAgentDesc",      placeholderKey: "settings.actionBar.typeAgentPlaceholder" },
   copy_path:  { bar: "bg-cyan-500",       dot: "bg-cyan-500",    label: "PATH",    descKey: "settings.actionBar.typeCopyPathDesc",   placeholderKey: "" },
 };
@@ -62,7 +61,6 @@ const ACTION_TYPES = [
   { value: "extension",  labelKey: "settings.actionBar.typeExtension" },
   { value: "agent",      labelKey: "settings.actionBar.typeAgent" },
   { value: "copy_path",  labelKey: "settings.actionBar.typeCopyPath" },
-  { value: "copy",       labelKey: "settings.actionBar.typeCopy" },
 ];
 
 function deriveAccepts(actionType: string | undefined, explicit?: string): string {
@@ -81,7 +79,8 @@ const inputBase = "w-full bg-background border border-border rounded-md px-3 py-
 
 // ── 类型标签 ──
 const TypeTag = ({ type, variant = "dot" }: { type: string; variant?: "dot" | "solid" }) => {
-  const meta = TYPE_META[type] ?? TYPE_META.copy;
+  // fallback 到 url——历史 DB 残留的未知类型（如已删除的 copy）显示为灰色 UNKNOWN
+  const meta = TYPE_META[type] ?? { bar: "bg-stone-400", dot: "bg-stone-400", label: type.toUpperCase().slice(0, 8) || "UNKNOWN", descKey: "", placeholderKey: "" };
   return (
     <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
       {variant === "dot" && <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />}
@@ -240,9 +239,9 @@ const EditForm = ({
   form, isSystem, onChange, onSave, onCancel,
 }: EditFormProps) => {
   const t = useT();
-  const type = form.actionType || "copy";
+  const type = form.actionType || "url";
   const meta = TYPE_META[type];
-  const showContent = type !== "submenu" && type !== "copy" && type !== "extension" && type !== "copy_path";
+  const showContent = type !== "submenu" && type !== "extension" && type !== "copy_path";
   const showShortcut = type !== "submenu";
   const [adapters, setAdapters] = useState<{key:string;displayName:string;isAvailable:boolean}[]>([]);
   const [capturingGlobal, setCapturingGlobal] = useState(false);
@@ -529,7 +528,7 @@ interface MenuRowProps {
 const MenuRow = (props: MenuRowProps) => {
   const t = useT();
   const { item, index, selected, isFirst, isLast, deleteConfirmId } = props;
-  const meta = TYPE_META[item.actionType] ?? TYPE_META.copy;
+  const meta = TYPE_META[item.actionType] ?? { bar: "bg-stone-400", dot: "bg-stone-400", label: (item.actionType || "unknown").toUpperCase().slice(0, 8), descKey: "", placeholderKey: "" };
   const isDeleting = deleteConfirmId === item.id;
 
   return (
@@ -952,7 +951,7 @@ export default function ActionBarPanel({
           parentId: draftParentId,
           title: editingForm.title || t("settings.actionBar.newMenuItem"),
           icon: "",
-          actionType: editingForm.actionType || "copy",
+          actionType: editingForm.actionType || "url",
           actionData: editingForm.actionData || "",
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
@@ -973,7 +972,7 @@ export default function ActionBarPanel({
           id: editingId,
           title: editingForm.title || "",
           icon: editingForm.icon || "",
-          actionType: editingForm.actionType || "copy",
+          actionType: editingForm.actionType || "url",
           actionData: editingForm.actionData || "",
           isEnabled: editingForm.isEnabled ?? true,
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
@@ -1037,7 +1036,7 @@ export default function ActionBarPanel({
     // 用户不能在表单里改 accepts——没有 UI 控件，saveEdit 时用此值。
     setEditingForm({
       title: t("settings.actionBar.newMenuItem"),
-      actionType: "copy",
+      actionType: "url",
       actionData: "",
       isEnabled: true,
       accepts: scopeFilter === "file" ? "file" : "text",
@@ -1056,7 +1055,7 @@ export default function ActionBarPanel({
         id: merged.id,
         title: merged.title,
         icon: merged.icon || "",
-        actionType: merged.actionType || "copy",
+        actionType: merged.actionType || "url",
         actionData: merged.actionData || "",
         isEnabled: merged.isEnabled,
         isAsync: merged.isAsync ?? true,
