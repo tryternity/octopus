@@ -638,6 +638,8 @@ agentPanel:
   notFound: ❌ 未找到
   builtin: 内置
   default: 默认
+  defaultAgentLabel: 当前默认：
+  noDefault: 未设置默认 Agent（菜单 agent 为空时将 fallback 到第一个可用）
   setDefault: 设为默认
   unsetDefault: 取消默认
   defaultSet: 已设为默认 Agent（全局唯一）

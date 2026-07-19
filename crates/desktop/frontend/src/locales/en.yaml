@@ -638,6 +638,8 @@ agentPanel:
   notFound: ❌ Not found
   builtin: Built-in
   default: Default
+  defaultAgentLabel: "Current default:"
+  noDefault: No default Agent (empty menu agent will fallback to first available)
   setDefault: Set as default
   unsetDefault: Unset default
   defaultSet: Set as default Agent (global unique)

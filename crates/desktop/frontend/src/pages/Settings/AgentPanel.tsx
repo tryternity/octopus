@@ -100,22 +100,53 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
 
   return (
     <div className="space-y-4">
-      {/* 操作栏 */}
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={handleRefresh}>
-          <RefreshCw />
-          {t("agentPanel.refresh")}
-        </Button>
-        <Button
-          variant="voice"
-          size="sm"
-          onClick={() => setEditing({
-            key: "", displayName: "", detectBinary: "", commandTemplate: "{prompt}",
-          })}
-        >
-          <Plus />
-          {t("agentPanel.addNew")}
-        </Button>
+      {/* 操作栏——左侧默认 agent 提示，右侧操作按钮 */}
+      <div className="flex items-center justify-between gap-2">
+        {(() => {
+          const def = adapters.find((a) => a.isDefault);
+          if (!def) {
+            return (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-muted-foreground/30 bg-muted/30 text-[11px]">
+                <Star className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                <span className="text-muted-foreground">{t("agentPanel.noDefault")}</span>
+              </div>
+            );
+          }
+          return (
+            <div className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 text-[11px]",
+              def.isAvailable
+                ? "border-voice bg-voice/[0.08]"
+                : "border-muted-foreground/30 bg-muted/30",
+            )}>
+              <Star className={cn(
+                "w-3 h-3 shrink-0",
+                def.isAvailable ? "fill-voice text-voice" : "text-muted-foreground/50",
+              )} />
+              <span className="text-muted-foreground">{t("agentPanel.defaultAgentLabel")}</span>
+              <span className="font-medium text-foreground">{def.displayName}</span>
+              {!def.isAvailable && (
+                <span className="text-muted-foreground/60">（{t("agentPanel.notFound")}）</span>
+              )}
+            </div>
+          );
+        })()}
+        <div className="flex items-center gap-2 shrink-0">
+          <Button variant="outline" size="sm" onClick={handleRefresh}>
+            <RefreshCw />
+            {t("agentPanel.refresh")}
+          </Button>
+          <Button
+            variant="voice"
+            size="sm"
+            onClick={() => setEditing({
+              key: "", displayName: "", detectBinary: "", commandTemplate: "{prompt}",
+            })}
+          >
+            <Plus />
+            {t("agentPanel.addNew")}
+          </Button>
+        </div>
       </div>
 
       {/* Adapter 列表 */}
