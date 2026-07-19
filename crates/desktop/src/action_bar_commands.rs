@@ -1717,13 +1717,14 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             }
         }
         "agent" => {
-            // agent 桥接：渲染命令 → Terminal.app 启动
-            let adapter_key = item.agent.clone();
-            let adapters = crate::agent_adapter::list_adapters();
-            let adapter = adapters.into_iter().find(|a| a.key == adapter_key)
-                .ok_or_else(|| format!("Agent adapter '{}' 不存在", adapter_key))?;
-            if !adapter.is_available {
-                return Err(format!("{} 未安装（未在 PATH 找到 `{}`）", adapter.display_name, adapter.detect_binary));
+            // agent 桥接：渲染命令 → Terminal.app 启动。
+            // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用。
+            let (adapter, source) = crate::agent_adapter::resolve_effective_adapter(&item.agent)?;
+            if source != "menu" {
+                log::info!(
+                    "[action-bar] agent 菜单 '{}' 走 fallback（source={}，命中 '{}'）",
+                    item.title, source, adapter.key
+                );
             }
             let prompt = render_agent_prompt(&item.action_data, &text, &app_state_files);
             let cwd = derive_cwd(&app_state_files);
@@ -1784,10 +1785,8 @@ pub fn list_agent_adapters() -> Result<Vec<crate::agent_adapter::AgentAdapter>, 
 pub fn create_agent_adapter(
     key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<i64, String> {
-    // 拒绝与内置 adapter 同名——避免 find() 永远命中内置项
-    if crate::agent_adapter::is_builtin_key(&key) {
-        return Err(format!("key '{}' 与内置 adapter 冲突", key));
-    }
+    // DB UNIQUE(key) 约束拦截同名——内置（is_system=1）已 seed 入表，
+    // 用户尝试 create 同 key 直接被 UNIQUE 拒绝。
     octopus_infra::db::insert_agent_adapter_record(&key, &display_name, &detect_binary, &command_template)
         .map_err(|e| e.to_string())
 }
@@ -1796,12 +1795,22 @@ pub fn create_agent_adapter(
 pub fn update_agent_adapter(
     id: i64, key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<(), String> {
-    // 与 create 对称：拒绝改名为内置 key
-    if crate::agent_adapter::is_builtin_key(&key) {
-        return Err(format!("key '{}' 与内置 adapter 冲突", key));
-    }
+    // DB UNIQUE(key) 约束拦截。内置项（is_system=1）的 key 字段仍允许更新
+    // （detect_binary / command_template 可能因版本变化需要调整），但不允许删除。
     octopus_infra::db::update_agent_adapter_record(id, &key, &display_name, &detect_binary, &command_template)
         .map_err(|e| e.to_string())
+}
+
+/// 设为默认 agent（全局唯一）。
+#[tauri::command]
+pub fn set_default_agent(id: i64) -> Result<(), String> {
+    octopus_infra::db::set_default_agent(id).map_err(|e| e.to_string())
+}
+
+/// 清除默认 agent（菜单 agent='' 时走 fallback 到第一个可用）。
+#[tauri::command]
+pub fn clear_default_agent() -> Result<(), String> {
+    octopus_infra::db::clear_default_agent().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -3,18 +3,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
-import { Plus, RefreshCw, Check, X, Terminal, Clock } from "lucide-react";
+import { Plus, RefreshCw, Check, X, Terminal, Clock, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { PillTabs } from "@/components/ui/tabs";
 
 interface AgentAdapter {
+  id: number;
   key: string;
   displayName: string;
   detectBinary: string;
   commandTemplate: string;
-  isBuiltin: boolean;
+  isSystem: boolean;
+  isDefault: boolean;
   isAvailable: boolean;
 }
 
@@ -80,6 +82,22 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
     }
   };
 
+  // 设为默认 / 取消默认（全局唯一）
+  const handleToggleDefault = async (a: AgentAdapter) => {
+    try {
+      if (a.isDefault) {
+        await invoke("clear_default_agent");
+        showToast(t("agentPanel.defaultCleared"));
+      } else {
+        await invoke("set_default_agent", { id: a.id });
+        showToast(t("agentPanel.defaultSet"));
+      }
+      refresh();
+    } catch (e) {
+      showToast(t("agentPanel.defaultFailed") + String(e));
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* 操作栏 */}
@@ -108,19 +126,26 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
             className={cn(
               "group relative flex items-start gap-3 rounded-lg border p-3.5 transition-colors",
               a.isAvailable ? "border-voice/25 bg-voice/[0.03]" : "border-border",
+              a.isDefault && "border-voice/40",
             )}
           >
             {/* 状态色条 */}
             <div className={cn(
               "absolute left-0 top-3 bottom-3 w-[3px] rounded-full",
-              a.isAvailable ? "bg-success" : "bg-muted-foreground/30",
+              a.isAvailable ? (a.isDefault ? "bg-voice" : "bg-success") : "bg-muted-foreground/30",
             )} />
 
             <div className="flex-1 min-w-0 pl-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{a.displayName}</span>
-                {a.isBuiltin && (
+                {a.isSystem && (
                   <Badge>{t("agentPanel.builtin")}</Badge>
+                )}
+                {a.isDefault && (
+                  <Badge variant="voice">
+                    <Star className="w-3 h-3 mr-1" />
+                    {t("agentPanel.default")}
+                  </Badge>
                 )}
                 {a.isAvailable ? (
                   <span className="text-[10px] text-success">●</span>
@@ -133,11 +158,22 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                 {a.commandTemplate}
               </div>
             </div>
-            <div className="shrink-0">
+            <div className="shrink-0 flex flex-col items-end gap-1.5">
               {a.isAvailable ? (
                 <span className="text-[10px] text-success font-mono">{t("agentPanel.installed")}</span>
               ) : (
                 <span className="text-[10px] text-muted-foreground font-mono">{t("agentPanel.notFound")}</span>
+              )}
+              {/* 设为默认 / 取消默认按钮：仅可用 agent 显示（不可用不能被设为默认） */}
+              {a.isAvailable && (
+                <Button
+                  variant={a.isDefault ? "outline" : "ghost"}
+                  size="sm"
+                  onClick={() => handleToggleDefault(a)}
+                >
+                  <Star className={cn("w-3.5 h-3.5", a.isDefault && "fill-voice text-voice")} />
+                  {a.isDefault ? t("agentPanel.unsetDefault") : t("agentPanel.setDefault")}
+                </Button>
               )}
             </div>
           </div>

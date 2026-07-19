@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 41", [])
+    conn.execute("PRAGMA user_version = 42", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -282,12 +282,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 41 {
-        // v41+ 已最新，直接返回。
+    if v >= 42 {
+        // v42+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
-        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v41。
+        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v42。
         // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
         // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
         // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
@@ -304,12 +304,35 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 log::info!("schema v40: action_bar_items 补 need_voice 列");
             }
         }
-        // v40→v41：load_external_seeds 增加 PPT 子菜单去重（修早期 INSERT OR IGNORE
-        // 无 UNIQUE 留下的多条「制作 PPT」记录）。重新跑 load_external_seeds 即可自愈。
+        // v41→v42：agent_adapters 加 is_system + is_default 列（内置 agent 入表，
+        // 取代 Rust 常量；is_default 全局默认 agent，唯一约束由代码层保证）。
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(agent_adapters)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"is_system".to_string()) {
+                conn.execute("ALTER TABLE agent_adapters ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0", [])?;
+                log::info!("schema v42: agent_adapters 补 is_system 列");
+            }
+            if !cols.contains(&"is_default".to_string()) {
+                conn.execute("ALTER TABLE agent_adapters ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0", [])?;
+                log::info!("schema v42: agent_adapters 补 is_default 列");
+            }
+        }
+        // v42 内置 agent seed：Pi/Claude 之前在 Rust 常量里硬编码（builtin_adapters），
+        // 现在统一入 DB。INSERT OR IGNORE 跳过用户已建同名项；缺列的旧表由 ALTER 已补。
+        // 注意：此 seed 在 v42 升级时跑一次。后续 db.sql 内 INSERT OR IGNORE 也是幂等。
+        conn.execute(
+            "INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
+                ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
+                ('pi',     'Pi',          'pi',     'pi {files_at} {prompt}',           1, 1)",
+            [],
+        ).context("seed Pi/Claude 入 agent_adapters")?;
         fill_manifests(conn)?;
         crate::seeds::load_external_seeds(conn)?;
-        conn.execute("PRAGMA user_version = 41", [])?;
-        log::info!("schema upgraded to v41 (PPT 子菜单去重 + seed 自愈)");
+        conn.execute("PRAGMA user_version = 42", [])?;
+        log::info!("schema upgraded to v42 (agent_adapters.is_system/is_default + 内置 agent seed)");
         return Ok(());
     }
 
@@ -319,8 +342,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 41", [])?;
-    log::info!("DB initialized (v41): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 42", [])?;
+    log::info!("DB initialized (v42): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2096,7 +2119,7 @@ pub fn delete_script_runs(ids: &[i64]) -> Result<()> {
     })
 }
 
-// ── Agent Adapter（用户自定义 agent 适配器）──────────────────────
+// ── Agent Adapter（agent 适配器：内置 + 用户自定义）──────────────────────
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAdapterRecord {
@@ -2105,12 +2128,16 @@ pub struct AgentAdapterRecord {
     pub display_name: String,
     pub detect_binary: String,
     pub command_template: String,
+    pub is_system: bool,
+    pub is_default: bool,
 }
+
+const AGENT_ADAPTER_SELECT_COLS: &str = "id, key, display_name, detect_binary, command_template, is_system, is_default";
 
 pub fn list_agent_adapter_records() -> Result<Vec<AgentAdapterRecord>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, key, display_name, detect_binary, command_template FROM agent_adapters ORDER BY id"
+            &format!("SELECT {} FROM agent_adapters ORDER BY is_system DESC, id ASC", AGENT_ADAPTER_SELECT_COLS)
         )?;
         let rows = stmt.query_map([], |r| Ok(AgentAdapterRecord {
             id: r.get(0)?,
@@ -2118,6 +2145,8 @@ pub fn list_agent_adapter_records() -> Result<Vec<AgentAdapterRecord>> {
             display_name: r.get(2)?,
             detect_binary: r.get(3)?,
             command_template: r.get(4)?,
+            is_system: r.get::<_, i32>(5)? != 0,
+            is_default: r.get::<_, i32>(6)? != 0,
         }))?;
         let mut list = Vec::new();
         for r in rows { list.push(r?); }
@@ -2125,16 +2154,68 @@ pub fn list_agent_adapter_records() -> Result<Vec<AgentAdapterRecord>> {
     })
 }
 
+/// 按 key 查单条 adapter。
+pub fn load_agent_adapter_by_key(key: &str) -> Result<Option<AgentAdapterRecord>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            &format!("SELECT {} FROM agent_adapters WHERE key=?1", AGENT_ADAPTER_SELECT_COLS)
+        )?;
+        let mut rows = stmt.query_map(params![key], |r| Ok(AgentAdapterRecord {
+            id: r.get(0)?,
+            key: r.get(1)?,
+            display_name: r.get(2)?,
+            detect_binary: r.get(3)?,
+            command_template: r.get(4)?,
+            is_system: r.get::<_, i32>(5)? != 0,
+            is_default: r.get::<_, i32>(6)? != 0,
+        }))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
+}
+
 pub fn insert_agent_adapter_record(
     key: &str, display_name: &str, detect_binary: &str, command_template: &str,
 ) -> Result<i64> {
     with_db(|conn| {
+        // 用户自建项 is_system=0；is_default 由 set_default_agent 单独管
         conn.execute(
-            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES (?1, ?2, ?3, ?4, 0, 0)",
             params![key, display_name, detect_binary, command_template],
         )?;
         Ok(conn.last_insert_rowid())
     })
+}
+
+/// 设为默认 agent（全局唯一）。先把全部置 0，再把目标置 1。
+pub fn set_default_agent(id: i64) -> Result<()> {
+    with_db(|conn| set_default_agent_at(conn, id))
+}
+
+/// 接裸连接版本（供测试用）。
+fn set_default_agent_at(conn: &Connection, id: i64) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_adapters WHERE id=?1", params![id], |r| r.get(0)
+    )?;
+    if exists == 0 {
+        anyhow::bail!("agent adapter id={} 不存在", id);
+    }
+    conn.execute("UPDATE agent_adapters SET is_default=0", [])?;
+    conn.execute("UPDATE agent_adapters SET is_default=1 WHERE id=?1", params![id])?;
+    Ok(())
+}
+
+/// 清除默认（无默认 agent；菜单 agent='' 时将走 fallback 到「第一个可用」）。
+pub fn clear_default_agent() -> Result<()> {
+    with_db(clear_default_agent_at)
+}
+
+/// 接裸连接版本（供测试用）。
+fn clear_default_agent_at(conn: &Connection) -> Result<()> {
+    conn.execute("UPDATE agent_adapters SET is_default=0", [])?;
+    Ok(())
 }
 
 pub fn update_agent_adapter_record(
@@ -2150,10 +2231,20 @@ pub fn update_agent_adapter_record(
 }
 
 pub fn delete_agent_adapter_record(id: i64) -> Result<()> {
-    with_db(|conn| {
-        conn.execute("DELETE FROM agent_adapters WHERE id=?1", params![id])?;
-        Ok(())
-    })
+    with_db(|conn| delete_agent_adapter_record_at(conn, id))
+}
+
+/// 接裸连接版本（供测试用）。
+fn delete_agent_adapter_record_at(conn: &Connection, id: i64) -> Result<()> {
+    // 内置不可删（与 update 对称保护）
+    let is_system: i32 = conn.query_row(
+        "SELECT is_system FROM agent_adapters WHERE id=?1", params![id], |r| r.get(0)
+    ).context("agent adapter 不存在")?;
+    if is_system != 0 {
+        anyhow::bail!("系统内置 agent 不可删除");
+    }
+    conn.execute("DELETE FROM agent_adapters WHERE id=?1", params![id])?;
+    Ok(())
 }
 
 // ── Agent Task（agent × 语音识别联动）──────────────────────
@@ -3435,7 +3526,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 41, "全新库 init_schema 后应到 v40");
+        assert_eq!(v, 42, "全新库 init_schema 后应到 v40");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3527,20 +3618,19 @@ mod tests {
     #[test]
     fn agent_adapter_crud_roundtrip() {
         let conn = open_init();
+        // v42 起 db.sql seed 内置 Pi + Claude（2 行），用 WHERE 过滤到测试项验证 CRUD
         conn.execute(
             "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES ('myagent', 'My Agent', 'myagent-bin', 'myagent {prompt}')",
             [],
         ).unwrap();
         let id = conn.last_insert_rowid();
 
-        let rows: Vec<(i64, String, String, String, String)> = conn.prepare(
-            "SELECT id, key, display_name, detect_binary, command_template FROM agent_adapters ORDER BY id"
-        ).unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
-        .filter_map(|r| r.ok()).collect();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].1, "myagent");
-        assert_eq!(rows[0].4, "myagent {prompt}");
+        let row: (String, String, String, String) = conn.query_row(
+            "SELECT key, display_name, detect_binary, command_template FROM agent_adapters WHERE id=?1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!(row.0, "myagent");
+        assert_eq!(row.3, "myagent {prompt}");
 
         conn.execute(
             "UPDATE agent_adapters SET key='myagent2', display_name='My Agent 2', detect_binary='myagent2-bin', command_template='myagent2 {prompt} {files}' WHERE id=?1",
@@ -3552,8 +3642,11 @@ mod tests {
         assert_eq!(updated_key, "myagent2");
 
         conn.execute("DELETE FROM agent_adapters WHERE id=?1", params![id]).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_adapters", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 0);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_adapters WHERE key='myagent2'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "删除后该 key 不存在");
     }
 
     #[test]
@@ -3569,6 +3662,74 @@ mod tests {
             [],
         );
         assert!(result.is_err(), "duplicate key should be rejected");
+    }
+
+    /// v42 seed：Pi + Claude 应自动入表，is_system=1。
+    #[test]
+    fn agent_adapter_seed_inserts_builtin_pi_claude() {
+        let conn = open_init();
+        let claude: (i64, String) = conn.query_row(
+            "SELECT is_system, command_template FROM agent_adapters WHERE key='claude'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(claude.0, 1, "claude is_system 应为 1");
+        assert_eq!(claude.1, "claude --add-dir {cwd} {prompt}");
+
+        let pi: (i64, i64) = conn.query_row(
+            "SELECT is_system, is_default FROM agent_adapters WHERE key='pi'",
+            [], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(pi.0, 1, "pi is_system 应为 1");
+        assert_eq!(pi.1, 1, "pi 默认 is_default=1（PPT 菜单等场景的兜底）");
+    }
+
+    /// set_default_agent 必须保证全局唯一（先清零再置 1）。
+    #[test]
+    fn set_default_agent_is_mutually_exclusive() {
+        let conn = open_init();
+        // 先插一个用户自定义 agent
+        conn.execute(
+            "INSERT INTO agent_adapters (key, display_name, detect_binary, command_template) VALUES ('custom', 'Custom', 'custom-bin', 'custom {prompt}')",
+            [],
+        ).unwrap();
+        let custom_id: i64 = conn.query_row(
+            "SELECT id FROM agent_adapters WHERE key='custom'", [], |r| r.get(0),
+        ).unwrap();
+
+        // 初始：pi 是 default
+        let pi_default: i64 = conn.query_row(
+            "SELECT is_default FROM agent_adapters WHERE key='pi'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(pi_default, 1);
+
+        // 设 custom 为 default
+        set_default_agent_at(&conn, custom_id).unwrap();
+        let defaults: Vec<String> = conn.prepare(
+            "SELECT key FROM agent_adapters WHERE is_default=1"
+        ).unwrap()
+        .query_map([], |r| r.get::<_, String>(0)).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        assert_eq!(defaults.len(), 1, "全局只能有 1 个 default");
+        assert_eq!(defaults[0], "custom");
+    }
+
+    /// clear_default_agent 把所有 is_default 置 0。
+    #[test]
+    fn clear_default_agent_zeroes_all() {
+        let conn = open_init();
+        clear_default_agent_at(&conn).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_adapters WHERE is_default=1", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// 内置 agent（is_system=1）不可删除。
+    #[test]
+    fn delete_agent_adapter_rejects_system() {
+        let conn = open_init();
+        let result = delete_agent_adapter_record_at(&conn, 1);  // id=1 是 claude（首条 seed）
+        assert!(result.is_err(), "内置 agent 删除应被拒绝");
     }
 
     #[test]
@@ -3713,9 +3874,9 @@ mod tests {
         // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 41
+        // 验证 user_version = 42
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 41);
+        assert_eq!(v, 42);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -3760,7 +3921,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 41);
+        assert_eq!(v, 42);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3890,7 +4051,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 41);
+        assert_eq!(v, 42);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -3918,7 +4079,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 41);
+        assert_eq!(v, 42);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -5344,7 +5505,7 @@ mod vault_schema_tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("db.sql")).unwrap();
-        conn.execute("PRAGMA user_version = 41", []).unwrap();
+        conn.execute("PRAGMA user_version = 42", []).unwrap();
         conn
     }
 

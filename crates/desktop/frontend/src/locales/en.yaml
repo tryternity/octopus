@@ -637,6 +637,12 @@ agentPanel:
   installed: ✅ Installed
   notFound: ❌ Not found
   builtin: Built-in
+  default: Default
+  setDefault: Set as default
+  unsetDefault: Unset default
+  defaultSet: Set as default Agent (global unique)
+  defaultCleared: Default Agent cleared
+  defaultFailed: "Operation failed: "
   keyLabel: Key (unique identifier)
   displayNameLabel: Display Name
   detectBinaryLabel: Detect Binary

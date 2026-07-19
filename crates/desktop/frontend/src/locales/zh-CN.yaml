@@ -637,6 +637,12 @@ agentPanel:
   installed: ✅ 已安装
   notFound: ❌ 未找到
   builtin: 内置
+  default: 默认
+  setDefault: 设为默认
+  unsetDefault: 取消默认
+  defaultSet: 已设为默认 Agent（全局唯一）
+  defaultCleared: 已取消默认 Agent
+  defaultFailed: "操作失败："
   keyLabel: Key（唯一标识）
   displayNameLabel: 显示名称
   detectBinaryLabel: 检测二进制名

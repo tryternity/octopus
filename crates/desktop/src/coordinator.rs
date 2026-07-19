@@ -1333,24 +1333,52 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
     let prompt = crate::action_bar_commands::render_agent_prompt(&ctx.prompt_template, transcribed_text, &ctx.files);
 
     let adapters = crate::agent_adapter::list_adapters();
-    let adapter = match adapters.into_iter().find(|a| a.key == task.agent_key) {
-        Some(a) => a,
-        None => {
-            let msg = format!("Agent adapter '{}' 不存在", task.agent_key);
-            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-            // show 错误信息保留显示，仅 tray 复位
-            crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
-            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-            return;
+    // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用
+    let adapter = {
+        // 1. 菜单指定
+        if !task.agent_key.is_empty() {
+            if let Some(a) = adapters.iter().find(|a| a.key == task.agent_key && a.is_available) {
+                a.clone()
+            } else {
+                log::warn!(
+                    "[agent-task] 菜单指定 '{}' 不可用/不存在，fallback",
+                    task.agent_key
+                );
+                // 2. 系统默认
+                if let Some(a) = adapters.iter().find(|a| a.is_default && a.is_available) {
+                    a.clone()
+                } else {
+                    // 3. 第一个可用
+                    match adapters.iter().find(|a| a.is_available) {
+                        Some(a) => a.clone(),
+                        None => {
+                            let msg = format!(
+                                "没有可用的 agent（菜单指定='{}'；默认不可用；列表全部未安装）",
+                                task.agent_key
+                            );
+                            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
+                            crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                            return;
+                        }
+                    }
+                }
+            }
+        } else {
+            // agent_key 为空——直接走默认 / fallback
+            if let Some(a) = adapters.iter().find(|a| a.is_default && a.is_available) {
+                a.clone()
+            } else if let Some(a) = adapters.iter().find(|a| a.is_available) {
+                a.clone()
+            } else {
+                let msg = "没有可用的 agent（菜单未指定；默认不可用；列表全部未安装）".to_string();
+                let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
+                crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
         }
     };
-    if !adapter.is_available {
-        let msg = format!("{} 未安装", adapter.display_name);
-        let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-        crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-        return;
-    }
 
     // Terminal.app 启动投递到后台线程，避免阻塞协调器（osascript 可能数秒）
     let command = crate::agent_adapter::render_command(&adapter.command_template, &prompt, &ctx.files, &ctx.cwd);

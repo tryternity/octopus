@@ -377,6 +377,8 @@ pub fn run() {
             action_bar_commands::create_agent_adapter,
             action_bar_commands::update_agent_adapter,
             action_bar_commands::delete_agent_adapter,
+            action_bar_commands::set_default_agent,
+            action_bar_commands::clear_default_agent,
             action_bar_commands::refresh_agent_detection,
             action_bar_commands::trigger_agent_voice,
             action_bar_commands::list_agent_tasks,

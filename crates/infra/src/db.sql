@@ -322,9 +322,17 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
     display_name     TEXT NOT NULL,
     detect_binary    TEXT NOT NULL,
     command_template TEXT NOT NULL,
+    is_system        INTEGER NOT NULL DEFAULT 0,
+    is_default       INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 种子：内置 agent（is_system=1，用户不可删除，仅可改 is_default）
+-- is_default 由代码层保证唯一（set_default_agent 时先把全部置 0 再置目标为 1）
+INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
+    ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
+    ('pi',     'Pi',          'pi',     'pi {files_at} {prompt}',           1, 1);  -- Pi 默认（PPT 菜单等场景的兜底）
 
 -- ── Agent Task（agent × 语音识别联动）──────────────────────
 CREATE TABLE IF NOT EXISTS agent_tasks (
