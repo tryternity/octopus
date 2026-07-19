@@ -39,6 +39,8 @@ interface CipherDto {
   name: string;
   favorite: boolean;
   login: LoginDataDto | null;
+  /** 0=None / 1=Password（reprompt 保护的高敏感 cipher，自动填充前需再次输入主密码） */
+  reprompt?: number;
 }
 
 type ViewState =
@@ -46,7 +48,9 @@ type ViewState =
   | { kind: "list"; ciphers: CipherDto[] }
   | { kind: "locked" }
   | { kind: "uninit" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean }
+  | { kind: "autotyping" };
 
 export default function VaultPicker() {
   const t = useT();
@@ -121,14 +125,40 @@ export default function VaultPicker() {
 
   const handlePick = useCallback(
     async (c: CipherDto, copyOnly: boolean) => {
+      // reprompt 保护的高敏感 cipher：弹密码框，确认后再调后端
+      // （后端 vault_autotype / vault_copy_password 都会强制再次校验 master_password，不可绕过）
+      if (c.reprompt === 1) {
+        setUnlockPassword("");
+        setUnlockError(null);
+        setView({ kind: "reprompt", cipher: c, copyOnly });
+        return;
+      }
+      await runAutotype(c, copyOnly, undefined);
+    },
+    [],
+  );
+
+  /** 实际调 vault_autotype / vault_copy_password——reprompt 通过后也走这里。
+   *  masterPassword 仅在 reprompt 场景传入。*/
+  const runAutotype = useCallback(
+    async (c: CipherDto, copyOnly: boolean, masterPassword: string | undefined) => {
       setBusy(true);
       try {
         if (copyOnly) {
-          await invoke("vault_copy_password", { cipherId: c.id });
+          await invoke("vault_copy_password", {
+            cipherId: c.id,
+            masterPassword: masterPassword ?? null,
+          });
         } else {
-          await invoke("vault_autotype", { cipherId: c.id });
+          // 关键：autotype 前先 hide 浮窗，让浏览器回到前台。
+          // 后端 vault_autotype 会 sleep + 校验前台不是 octopus 自身（防钓鱼注入），
+          // 若浮窗未 hide 则校验失败 → fallback 到剪贴板。
+          await getCurrentWindow().hide();
+          await invoke("vault_autotype", {
+            cipherId: c.id,
+            masterPassword: masterPassword ?? null,
+          });
         }
-        await getCurrentWindow().hide();
       } catch (e) {
         setView(classifyError(e));
       } finally {
@@ -201,6 +231,67 @@ export default function VaultPicker() {
         <p className="text-xs text-muted-foreground">
           {t("settings.vault.autotype.uninitHint")}
         </p>
+      </div>
+    );
+  }
+
+  // === reprompt: 高敏感 cipher 二次输入主密码 ===
+  if (view.kind === "reprompt") {
+    const submitReprompt: React.FormEventHandler = async (e) => {
+      e.preventDefault();
+      if (!unlockPassword) return;
+      const cipher = view.cipher;
+      const copyOnly = view.copyOnly;
+      const pwd = unlockPassword;
+      setView({ kind: "autotyping" });
+      await runAutotype(cipher, copyOnly, pwd);
+    };
+    return (
+      <form onSubmit={submitReprompt} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Lock className="size-4" />
+            <span className="text-sm font-medium">
+              {t("settings.vault.autotype.repromptTitle")}
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => refresh()}
+          >
+            <X />
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t("settings.vault.autotype.repromptHint", { name: view.cipher.name })}
+        </p>
+        <Input
+          type="password"
+          value={unlockPassword}
+          onChange={(e) => setUnlockPassword(e.target.value)}
+          placeholder={t("settings.vault.unlock.passwordLabel")}
+          autoFocus
+          autoComplete="current-password"
+        />
+        {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
+        <Button
+          type="submit"
+          variant="voice"
+          disabled={busy || !unlockPassword}
+        >
+          {busy ? "..." : t("settings.vault.autotype.trigger")}
+        </Button>
+      </form>
+    );
+  }
+
+  // === autotyping: 等后端注入完成 ===
+  if (view.kind === "autotyping") {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background text-xs text-muted-foreground">
+        {t("settings.loading")}
       </div>
     );
   }

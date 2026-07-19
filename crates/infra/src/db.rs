@@ -3521,7 +3521,7 @@ mod tests {
     fn action_bar_insert_with_shortcut() {
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "copy", "", true, false, "q", "", "text", "", true,
+            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.shortcut, "q");
@@ -5208,8 +5208,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false, "", "", "text", "").unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -5227,8 +5227,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "", "", "text", "", true).unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

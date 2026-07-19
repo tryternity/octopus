@@ -356,6 +356,19 @@ file_key = HKDF-SHA256(
 - 同机 + 同用户 → 同 `file_key` → 能解密（重启、kill -9 后仍可用）
 - 换机或换用户 → 不同 `file_key` → 解不开（迁移需主密码）
 
+**已知工程折衷**（2026-07-19 安全审查 #9 补遗，spec 原未覆盖）：
+**本方案不防「同机同用户恶意/root 进程」**——`IOPlatformUUID`（ioreg）和 `$USER`
+都是任何本机同用户进程公开可读的，文件 0600 仅防其他用户、不防同用户/root。
+任意同用户进程（恶意脚本、被劫持插件）读 `machine-key.enc` + `ioreg` 拿 UUID +
+读 `$USER` → HKDF 复算 `file_key` → 解出 `K_machine` → 解 `app_key_local_enc`
+→ 解密所有 `models.secret_key`。原先期望的"另一应用想使用钥匙串"系统弹窗保护
+完全失效。
+
+缓解方向（**P2 单独迭代**）：
+- UI 明示"本机加密仅防拆盘/备份，不防本机恶意进程"
+- 优先恢复 OS Keychain 路径（正式签名后）
+- 考虑要求主密码派生参与 `file_key`（牺牲无感启动）
+
 **公开 API 不变**：`load_or_create_machine_key` / `load_machine_key` /
 `save_machine_key` / `delete_machine_key`，调用方（unlock.rs / tests）无需改动。
 测试用 `set_test_keychain` thread_local override 注入 in-memory 替身。
@@ -490,6 +503,7 @@ pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool;
 | INV-8 | TOTP：HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
 | INV-9 | 锁定超时以 `last_active_at` 为基准（非 `unlocked_at`）；前端心跳维护 `last_active_at`，vault tab 离开 + 配置时间到 → 自动锁。`timeout_secs=0` 表示永不锁定（UI 警告）。 |
 | INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。 |
+| INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc`）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4）。防双 modal 并发导致整行覆盖丢失字段 → 永久数据损坏。 |
 
 ---
 
@@ -732,6 +746,16 @@ end tell
 
 ### 4.3 URL 匹配算法（5 种策略）
 
+**eTLD+1 提取**（2026-07-19 安全修复 #1）：用 `publicsuffix` crate + 内嵌 Mozilla PSL
+（`crates/vault/data/public_suffix_list.dat`，~330KB），正确处理多段 TLD
+（`.co.uk / .com.cn / .co.jp`）；IP 字面量精确匹配（`parse::<IpAddr>` 判断）；
+PSL 查不到时返回 host 本身（fail-closed）。
+
+> **踩坑警示**：首发版用「按 `.` 分段取最后两段」简化算法，导致钓鱼漏洞——
+> `barclays.co.uk` 与 `evil-attacker.co.uk` 都退化为 `co.uk` 互相匹配，
+> autotype 会把银行密码注入钓鱼站。Cargo.toml 早就有 `publicsuffix = "2"` 但代码
+> 故意不用。修复后增加 `test_phishing_protection_multilevel_tld` 测试锁死不变量。
+
 ```rust
 // crates/vault/src/matcher/mod.rs
 
@@ -809,30 +833,40 @@ MVP 不暴露编辑 UI，未来加设置页即可。
 
 ### 4.5 Auto-Type 实现（enigo 跨平台）
 
+**焦点安全**（2026-07-19 修复 #2 + 复审 D/E 加固）：`autotype_login` 加 `expected_bundle_id: Option<&str>`
+参数——注入 username 前 + password 前各调一次 `verify_focused`：
+- `Some(id)`：严格白名单，前台必须 == 指定 bundle id
+- `None`：最小防御，仅校验前台不是 octopus 自身（`OCTOPUS_BUNDLE_ID` 常量），
+  防 VaultPicker 未 hide 时密码打到 octopus 窗口
+
+调用方 `vault_autotype` 命令当前传 `None`——前端 VaultPicker `handlePick` 已改为
+**先 hide 浮窗再 invoke**（首发版反了，hide 在 invoke 之后）。
+
 ```rust
-// crates/desktop/src/autotype/mod.rs
-use enigo::{Enigo, Key, KeyboardControllable};
-
-pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Result<()> {
-    let mut enigo = Enigo::new();
-
-    #[cfg(target_os = "macos")]
-    activate_frontmost_browser()?;
-
-    // 留 100ms 给浏览器获得焦点
-    std::thread::sleep(Duration::from_millis(100));
-
-    enigo.key_sequence(username);
-    enigo.key_down(Key::Tab); enigo.key_up(Key::Tab);
-    enigo.key_sequence(password);
-
-    if press_enter {
-        enigo.key_down(Key::Tab); enigo.key_up(Key::Tab);
-        enigo.key_down(Key::Return); enigo.key_up(Key::Return);
-    }
-    Ok(())
-}
+// crates/desktop/src/autotype/macos.rs（签名 4 参数，原 3 参数已废弃）
+pub fn autotype_login(
+    username: &str,
+    password: &str,
+    press_enter: bool,
+    expected_bundle_id: Option<&str>,  // 焦点校验（修复 #2）
+) -> Result<()>
 ```
+
+**fail-closed**（修复 D）：`verify_focused` 中 osascript 失败（权限缺失/被回收）时
+直接 `bail!`，不 `unwrap_or_default` 放行——避免安全校验在权限缺失时静默失效。
+
+**bundle id 常量**（修复 E）：`OCTOPUS_BUNDLE_ID = "com.octopus.desktop"` 单点定义，
+加测试 `test_octopus_bundle_id_matches_tauri_config` 锁死与 tauri.conf.json identifier 一致。
+
+**已知窗口（B 复审遗留）**：`expected_bundle_id=None` 仅防"打到 octopus 自身"，
+**未完全闭合第三方 app 注入**：
+1. **username 可能泄漏**：注入 username 后、password 前 verify_focused 之间若焦点被抢，
+   username 已打到错误窗口（password 被 verify_focused 挡住）
+2. **password 残留风险**：verify_focused 与 enigo.text(password) 之间的极短窗口理论上可被命中
+
+完整闭合需要前端 hide 前调 url_detect 拿浏览器 bundle_id 并传入 `Some(...)`——
+当前未实现，作为已知窗口记录。建议未来增强为白名单（Chrome/Safari/Firefox/Edge/Brave/Arc
+任一即可），既能校验又避免硬编码单个浏览器。
 
 **密码字段（masked input）**：enigo 在 macOS 用 CGEvent 输入，浏览器收到的是真实按键事件，能正常进 password 框。比浏览器扩展的 DOM 填充更可靠（不会被 React 受控组件拒绝）。
 
@@ -884,12 +918,15 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | # | 不变量 |
 |---|---|
 | INV-A1 | URL 检测失败时必须 fallback 到手动选择，不能 silently fail |
-| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走） |
+| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走）—— 2026-07-19 修复 #2 落地：`verify_focused` 在注入前后各校验一次 |
 | INV-A3 | 模拟键盘前必须有 100ms+ 焦点等待 |
 | INV-A4 | 剪贴板复制必须有 30s 自动清空 + concealed 标记 |
 | INV-A5 | octopus 自身 clipboard 监听器必须跳过 concealed 内容 |
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
-| INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 |
+| INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
+| INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
+| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。当前 activate_app 是 dead code（无生产调用），但白名单作为防御性校验先就位 |
+| INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通 |
 
 ### 4.8 跨平台扩展计划
 
@@ -905,32 +942,53 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 
 ### 5.1 TOTP（RFC 6238）
 
+支持两种输入（2026-07-19 修复 #7）：
+
 ```rust
 // crates/vault/src/totp.rs
-use totp_rs::{Algorithm, TOTP, Secret};
-
-pub struct TotpGenerator { inner: TOTP }
+pub struct TotpGenerator {
+    inner: TOTP,
+    step: u64,  // 秒，按 otpauth period 或默认 30
+}
 
 impl TotpGenerator {
-    pub fn from_base32(secret: &str) -> Result<Self> {
-        let bytes = Secret::Encoded(secret.to_string()).to_bytes()?;
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes)?;
-        Ok(Self { inner: totp })
-    }
+    /// 裸 Base32 secret（默认参数：SHA1/6/30/skew=1）
+    /// 用 new_unchecked 放宽 totp-rs 默认 ≥128bit 限制，支持 RFC 6238 下限的 80bit
+    pub fn from_base32(secret: &str) -> Result<Self>;
 
-    pub fn current(&self) -> String {
-        self.inner.generate_current().unwrap()
-    }
+    /// otpauth:// URL 解析（支持 SHA256/SHA512、digits=8、period=60 变体）
+    /// GitHub / 银行 / Authy 导出等场景必需
+    pub fn from_otpauth_url(url: &str) -> Result<Self>;
 
-    pub fn seconds_remaining(&self) -> u64 {
-        30 - (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 30)
-    }
+    /// 智能分发：otpauth:// 开头 → URL 解析；否则 → 裸 Base32
+    /// 前端用户粘贴任一格式都能识别
+    pub fn from_input(input: &str) -> Result<Self>;
+
+    pub fn current(&self) -> Result<String>;
+    pub fn seconds_remaining(&self) -> u64;  // 按 self.step 算
 }
 ```
 
-**算法固定**：HMAC-SHA1, 30s, 6 位, ±1 步漂移（totp-rs 默认 skew=1）。
+**Cargo 配置**：`totp-rs = { version = "5", default-features = false, features = ["otpauth"] }`
+- otpauth feature 启用 `TOTP::from_url_unchecked` 解析 otpauth:// URL
+- `new_unchecked` / `from_url_unchecked` 跳过 totp-rs 强制 ≥128bit 校验
 
-**输入格式**：cipher 的 `data.totp` 存 Base32 secret（如 `JBSWY3DPEHPK3PXP`），不存完整 `otpauth://` URL。导入 Bitwarden JSON 时提取 secret 部分。
+**输入格式**：cipher 的 `data.totp` 可存两种格式：
+- 裸 Base32 secret（如 `JBSWY3DPEHPK3PXP`，80bit 标准 secret）
+- 完整 `otpauth://` URL（`otpauth://totp/?secret=...&algorithm=SHA256&digits=8&period=60`）
+
+前端 CipherEditor totp 字段 placeholder 显示 `JBSWY3DPEHPK3PXP 或 otpauth://totp/...`，
+label 改为 `TOTP（Base32 或 otpauth URL）`。
+
+**后端调用**：`vault_generate_totp` 命令统一走 `TotpGenerator::from_input(totp_secret)`，
+无需 cipher 知道存的是哪种格式。
+
+> **踩坑警示**：首发版 `default-features = false` 关闭 otpauth，且用 `TOTP::new()` 接受
+> totp-rs 强制的 ≥128bit 限制，拒绝 RFC 6238 下限的 80bit 标准 secret（JBSWY3DPEHPK3PXP
+> 解码后仅 10 字节）。大量服务实际下发 80bit secret（GitHub / Google Authenticator），
+> 用户根本添加不了。测试代码用 32 字符（160bit）的复制版本绕过——注释自承问题。
+
+**算法**：默认 HMAC-SHA1, 30s, 6 位, ±1 步漂移（skew=1）；otpauth URL 解析时按 URL 参数。
 
 **调用时机**：
 - Auto-Type 完密码后：生成 6 位码 → 复制到剪贴板（30s 清空）→ toast 提示
@@ -944,20 +1002,23 @@ impl TotpGenerator {
 ┌─────────────────────────────────────────┐
 │ <PasswordGenerator> 共享主体             │ ← 纯内容：Segmented 模式 + 显示区 + 强度条
 │   props: onUsePassword?(pwd)            │   + 模式专属配置 + 操作栏
-│         onAutotype?(pwd)  future        │   操作按钮按 props 动态显示
+│         onAutotype?(pwd)                │   操作按钮按 props 动态显示
 └─────────────────────────────────────────┘
         ▲                            ▲
         │                            │
 ┌───────┴────────┐          ┌────────┴────────┐
-│ 外壳 A：Modal   │          │ 外壳 B：独立窗口  │ future
-│ CipherEditor   │          │ Actionbar 触发   │
-│ ✅ 已落地       │          │ P2 待办          │
-└────────────────┘          └─────────────────┘
+│ 外壳 A：Modal   │          │ 外壳 B：独立浮窗  │ ✅ 2026-07-19 落地
+│ CipherEditor   │          │ ActionBar 触发   │
+│ ✅ 已落地       │          │ Actionbar 搜索框 │
+└────────────────┘          │ 右侧按钮触发     │
+                            └─────────────────┘
 ```
 
 **已落地（外壳 A）**：`CipherEditor` 密码字段右侧 🔑 按钮 → 弹 `<PasswordGeneratorModal>` 半透明遮罩 + 居中卡片。点「使用此密码」写回 password 字段并关闭。
 
-**未来扩展（外壳 B）**：`PasswordGenerator` 已预留 `onAutotype` prop——未来 Actionbar 加按钮触发独立 Tauri 窗口（参考 `compact_editor_window.rs` 模板）时，窗口 root 直接渲染主体组件，`onAutotype` 触发 `vault_autotype_password` 命令（与现有 vault autotype 机制复用）。无需重构主体。
+**已落地（外壳 B）**（2026-07-19）：ActionBar 搜索框右侧的 🔑 按钮 → invoke `open_password_generator` → 后端 `password_generator_window::show_password_generator_window` 显示透明浮窗（位置跟随鼠标 + 边界保护）。浮窗 root `pages/PasswordGenerator/index.tsx` 渲染 `<PasswordGenerator onAutotype={...}>` 主体。点 Auto-type → invoke `password_generator_autotype` → 后端 hide 浮窗 + `autotype_login("", pwd, true, None)` 注入前台浏览器（username 留空，press_enter=true）。点使用后自动 hide 浮窗（用户决策，与 VaultPicker 一致）。
+
+**安全**：autotype_login 走 verify_focused(None) 最小防御（前台 ≠ octopus 自身），与 vault_autotype 一致。hide 期间焦点被抢的已知窗口见 §4.5。
 
 **架构演进史**（避免下次重构踩同样坑）：
 - 初版：`password_generator_window` 独立 Tauri 窗口 + `Cmd+Shift+G` 全局热键 + `pages/PasswordGenerator/`
@@ -1243,7 +1304,7 @@ UI 展示：弱密码列表、重复密码组、平均强度评分。点击任�
 | INV-G3 | Passphrase EN 必须用 EFF 大词表（7776 词） |
 | INV-G4 | Passphrase ZH 必须用 jieba 词频 TOP 4096 双字词 |
 | INV-G5 | 不存生成器历史 |
-| INV-G6 | TOTP 算法固定 HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
+| INV-G6 | TOTP 默认参数：HMAC-SHA1, 30s, 6 位, ±1 步漂移。**2026-07-19 修复 #7**：支持 otpauth:// URL 变体（SHA256/SHA512、digits=8、period=60），secret 长度 ≥ 80bit（RFC 6238 下限，原 totp-rs 默认 ≥128bit 过严拒绝标准 secret） |
 | INV-G7 | 健康检查的 SHA-256 hash 不持久化到 DB |
 | INV-G8 | **生成器所有 5 个公开函数返回 `Result<String>`，永不 panic**（输入校验用 `ensure!` 而非 `assert!`）—— panic 会崩 Tauri 主进程，使整个 vault 不可用 |
 
@@ -1392,7 +1453,8 @@ pub trait VaultSync {
 | F18 | schema 升级失败（v37→v38） | 回滚 user_version + 报错 | "数据库升级失败" |
 | F19 | 主密码强度不达标（< 12 字符或缺字符类） | 前端实时校验阻止提交 + 后端再校验 | 红字提示具体原因 |
 | F20 | vault_meta 表损坏/不存在 | 引导重新初始化或导入备份 | Setup 页 |
-| F21 | vault feature 编译关掉 | 前端 `is_vault_enabled()` 返回 false → 整段 vault UI 隐藏；`try_decrypt_secret_global` 退化为 raw 返回 | 无 vault UI |
+| F21 | vault feature 编译关掉 | 前端 `is_vault_enabled()` 返回 false → 整段 vault UI 隐藏；`try_decrypt_secret_global` 退化为 `Ok(raw)` 返回（旧 DB 无 v1: 加密格式） | 无 vault UI |
+| F22 | vault 启用但解密失败（app_key 不可用 / 密文损坏） | `try_decrypt_secret_global` 返 `Err`（2026-07-19 修复 #5）；4 个调用点 fail-soft：云端推理跳过 + 提示"请先解锁保险库"，**不再把密文当 Bearer 发到云端** | 提示 + 跳过本次推理 |
 
 ### 7.2 错误类型（双轨制）
 
@@ -1411,6 +1473,7 @@ pub enum VaultError {
     NotInitialized,              // vault 尚未初始化
     Locked,                      // 已初始化但未解锁
     InvalidMasterPassword,       // 主密码错误
+    RepromptRequired,            // reprompt 保护的高敏感 cipher 操作未提供 master_password（2026-07-19 #3）
     CipherNotFound(i64),         // 指定 id 不存在
     InvalidInput(String),        // 通用用户输入错误
     TotpInvalidSecret,           // TOTP secret 非 Base32
@@ -1683,6 +1746,10 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 ├── CipherEditor.tsx            # 新建/编辑 cipher 表单（密码字段右侧眼睛/生成/复制 3 按钮 + grid 两列布局）
 ├── PasswordGenerator.tsx       # 生成器共享主体（Segmented 模式 + 显示 + 强度 + 配置 + 操作栏，跨场景复用）
 ├── PasswordGeneratorModal.tsx  # 生成器 Modal 外壳（外壳 A，CipherEditor 场景）
+
+# 独立窗口（外壳 B，2026-07-19 落地）
+crates/desktop/frontend/src/pages/PasswordGenerator/
+└── index.tsx                   # 生成器独立浮窗 root（ActionBar 触发；渲染共享主体，Auto-type 注入浏览器）
 ├── UnlockDialog.tsx            # 解锁弹窗
 ├── SetupWizard.tsx             # 首次初始化向导（含 12 位 + 4 类校验）
 ├── HealthReport.tsx            # 健康报告
@@ -1714,10 +1781,9 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 }
 ```
 
-> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——生成器当前走
-> CipherEditor Modal（主体组件 `PasswordGenerator.tsx` 可复用），setup 走 VaultPanel
-> 内联向导（不弹独立窗口）。**未来扩展**：Actionbar 触发的独立生成器窗口场景可能恢复
-> `password_generator_window`，渲染同一个 `<PasswordGenerator>` 主体（详见 §5.2 架构图）。
+> 原计划的 `password_generator_window` + `vault_setup_window` 已废弃——setup 走 VaultPanel
+> 内联向导（不弹独立窗口）。**`password_generator_window` 已恢复**（2026-07-19，作为透明
+> 浮窗外壳 B，由 ActionBar 触发）——capabilities/default.json 的 windows 数组已含此 label。
 
 ## 附录 D：全局热键
 

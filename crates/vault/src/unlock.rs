@@ -188,6 +188,10 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
 /// 让调用方（desktop）能直接刷 session，避免「先 lock 再改密码」后无法继续用。
 /// （follow-up #3）
 pub fn change_master_password(old_password: &str, new_password: &str) -> Result<UnlockedKeys> {
+    // 修复 #4：加 meta 写锁，串行化 read-modify-write 整段。
+    // 防止并发调用（双 modal / Tauri 同步命令并发）导致整行覆盖丢失其他字段。
+    let _guard = crate::meta_lock::acquire_meta_write_lock();
+
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
         .context("vault 未初始化")?;
@@ -251,6 +255,10 @@ pub fn change_master_password(old_password: &str, new_password: &str) -> Result<
 /// 用本机 K_machine 重新加密 app_key → 写入 app_key_local_enc。
 /// 用于流程 C 末尾，让本机下次启动可走流程 B。
 fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
+    // 修复 #4：与 change_master_password 共享 meta 写锁（两者都改 vault_meta）。
+    // 串行化防止 read-modify-write 整行覆盖交错导致数据损坏。
+    let _guard = crate::meta_lock::acquire_meta_write_lock();
+
     let k_machine = match keychain::load_machine_key()? {
         Some(k) => k,
         None => keychain::load_or_create_machine_key()?,
@@ -276,6 +284,27 @@ fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
         protected_private_key: meta.protected_private_key,
     };
     meta::save_vault_meta(&input)?;
+    Ok(())
+}
+
+/// 仅校验主密码是否正确，不做解锁副作用。
+///
+/// 用于二次验证场景（如 reprompt 保护的高敏感 cipher 自动填充）：调用方已经
+/// 解锁过 vault（有 user_vault_key 在 session 里），但需要再次确认用户是
+/// 真正的主人才能执行高敏感操作。
+///
+/// 实现与 [`unlock_with_master_password`] 共享前半段——派生 master_root_key +
+/// 尝试解密 protected_user_vault_key；解密成功（AES-GCM tag 校验通过）即密码正确。
+///
+/// 返回 `Ok(())` 表示密码正确，`Err(...)` 表示密码错或 vault 异常。
+pub fn verify_master_password(password: &str) -> Result<()> {
+    let meta = meta::read_vault_meta()
+        .context("读取 vault_meta 失败")?
+        .context("vault 未初始化")?;
+    let params = meta_to_kdf_params(&meta);
+    let master_root_key = derive_master_root_key(password.as_bytes(), &meta.kdf_salt, &params)?;
+    // 尝试解密——AES-GCM tag 校验失败即密码错
+    master_root_key.decrypt(&meta.protected_user_vault_key)?;
     Ok(())
 }
 

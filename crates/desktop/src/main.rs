@@ -16,6 +16,8 @@ pub mod vault_secret_access;
 pub mod vault_error;
 #[cfg(feature = "vault")]
 pub mod autotype;
+#[cfg(feature = "vault")]
+pub mod password_generator_window;
 mod overlay_window;
 mod action_hotkey;
 mod agent_adapter;
@@ -443,6 +445,11 @@ pub fn run() {
             crate::vault_commands::vault_detect_and_match,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_password,
+            // 密码生成器独立浮窗（Actionbar 触发，外壳 B；详见 spec §5.2）
+            #[cfg(feature = "vault")]
+            crate::vault_commands::open_password_generator,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::password_generator_autotype,
             // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
             feature_flags::is_vault_enabled,
             translation_commands::discover_translation_models,

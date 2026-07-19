@@ -99,7 +99,7 @@ settings:
       urlLabel: 网址（每行一个）
       usernameLabel: 用户名
       passwordLabel: 密码
-      totpLabel: TOTP Secret（Base32）
+      totpLabel: TOTP（Base32 或 otpauth URL）
       notesLabel: 备注
       favoriteLabel: 收藏
       save: 保存
@@ -148,6 +148,8 @@ settings:
       fillFail: 自动填充失败，已复制到剪贴板
       uninitTitle: 保险库未初始化
       uninitHint: 请先在「设置 → 密码保险库」中创建保险库
+      repromptTitle: 再次验证主密码
+      repromptHint: 「${name}」标记为高敏感，自动填充前需再次输入主密码确认
     generator:
       title: 密码生成器
       mode:
@@ -440,8 +442,8 @@ settings:
     emptyVersion: 空版本，添加或导入热词。
     noMatch: 无匹配热词
   actionBar:
-    typeSubmenu: 子菜单
-    typeSubmenuDesc: 本身不执行动作，展开后显示其子菜单项
+    typeSubmenu: 父菜单
+    typeSubmenuDesc: 菜单容器，本身不执行动作，展开后显示其子菜单项
     typeAi: AI（LLM 处理）
     typeAiDesc: 选中文本发送给 LLM，结果展示在浮窗。填 auto_translate 自动判断中英互译
     typeAiPlaceholder: system prompt，或 auto_translate
@@ -453,8 +455,6 @@ settings:
     typeScriptPlaceholder: …选中文本在 $OCTOPUS_TEXT 环境变量中
     typeExtension: 扩展包
     typeExtensionDesc: 从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）
-    typeCopy: 复制
-    typeCopyDesc: 将选中文本复制到剪贴板
     typeAgent: Agent（文件桥接）
     typeAgentDesc: Finder 选中文件后，将文件路径 + 任务交给外部 CLI agent（如 Claude Code / pi）在终端中执行。内容填 prompt 模板，支持 {{task}} 和 {{files}} 占位符
     typeAgentPlaceholder: "{{task}}\n\n文件列表：\n{{files}}"

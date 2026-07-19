@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
@@ -695,15 +695,10 @@ export default function ActionBar() {
         break;
       }
       case "copy": {
-        // calculator / url 等"复制结果"动作：actionData = {"text": "..."}
-        const text = data.text as string;
-        if (!text) return;
-        try {
-          await navigator.clipboard.writeText(text);
-          invoke("action_bar_dismiss", { reason: "copy" });
-        } catch (e) {
-          showQuickError(String(e).slice(0, 40));
-        }
+        // 历史遗留 copy 类型——已从 Settings UI 删除，但旧 DB 可能残留。
+        // 用户触发时静默 dismiss + 提示去 Settings 改类型。
+        invoke("action_bar_dismiss", { reason: "legacy_copy" });
+        showQuickError("此菜单类型已废弃，请在设置中改为其他类型");
         break;
       }
       case "copy_and_reveal": {
@@ -1000,7 +995,18 @@ export default function ActionBar() {
     }
   }, [subItems.length, view]);
 
-  // 搜索输入框组件——高度 = INPUT_HEIGHT（44px），字号 15px，视觉重心
+  // 搜索输入框组件——高度 = INPUT_HEIGHT（44px），字号 15px，视觉重心。
+  // 右侧加内置「密码生成器」按钮（独立于 DB 菜单项），点击 → invoke → 后端开浮窗。
+  const handleOpenPasswordGenerator = useCallback(async () => {
+    try {
+      await invoke("open_password_generator");
+      // 关闭 ActionBar 浮窗，让生成器浮窗替代它（生成器浮窗会显示在鼠标附近）
+      await getCurrentWindow().hide();
+    } catch (e) {
+      console.error("open_password_generator failed:", e);
+    }
+  }, []);
+
   const searchInputEl = (
     <div
       className={cn(
@@ -1021,6 +1027,20 @@ export default function ActionBar() {
         autoCorrect="off"
         spellCheck={false}
       />
+      {/* 内置按钮：密码生成器（独立于 DB items）*/}
+      <button
+        type="button"
+        onClick={handleOpenPasswordGenerator}
+        title={t("settings.vault.generator.title")}
+        className="flex items-center justify-center rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground shrink-0"
+      >
+        <img
+          src="/icons/generate-key.svg"
+          alt={t("settings.vault.generator.title")}
+          className="size-[18px]"
+          draggable={false}
+        />
+      </button>
     </div>
   );
 

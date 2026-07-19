@@ -29,7 +29,7 @@ fn run_osascript(script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn frontmost_bundle_id() -> Result<String> {
+pub fn frontmost_bundle_id() -> Result<String> {
     // NSWorkspace 通过 osascript 取
     let script = r#"
     tell application "System Events"

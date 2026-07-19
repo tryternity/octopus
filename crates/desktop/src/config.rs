@@ -48,10 +48,28 @@ pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
         Ok(resolved) => {
             // 仅云端模型（is_local=0）的 secret_key 才可能是 v1: 加密格式；
             // 本地模型（Ollama 等）secret_key 为空 / 未迁移明文 → 透明解密对它们是 no-op。
+            // 安全修复 #5：vault 启用但解密失败时**返回空字符串**（不返回密文），
+            // 让 LLM 调用 401 暴露 vault 锁定问题，而不是把密文发到云端污染 access log。
             let secret_key = if resolved.entry.is_local {
                 resolved.entry.secret_key.clone()
             } else {
-                crate::vault_secret_access::try_decrypt_secret_global(&resolved.entry.secret_key)
+                match crate::vault_secret_access::try_decrypt_secret_global(
+                    &resolved.entry.secret_key,
+                ) {
+                    Ok(plain) => plain,
+                    Err(e) => {
+                        // 修复 F：与其他 3 处 fail-soft 不一致（那里返清晰 Err），
+                        // 但 llm_config_ignore_mode 签名是 Option（非 Result），改签名
+                        // 会扩散到所有调用方。最小修复：log 用更明显的"保险库未解锁"
+                        // message（而非"返回空 key 让调用方 401"），让运维/用户排查更直接。
+                        log::warn!(
+                            "LLM secret_key 解密失败——保险库未解锁或密文损坏，\
+                             LLM 调用将以空 key 触发 401（避免密文入云端 log）：{}",
+                            e
+                        );
+                        String::new()
+                    }
+                }
             };
             if secret_key.is_empty() {
                 log::info!(

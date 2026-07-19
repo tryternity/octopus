@@ -587,7 +587,7 @@ export default function CipherEditor({
               size="full"
               value={totp}
               onChange={(e) => setTotp(e.target.value)}
-              placeholder="JBSWY3DPEHPK3PXP"
+              placeholder="JBSWY3DPEHPK3PXP 或 otpauth://totp/..."
               className="w-full font-mono-vault"
               autoComplete="off"
             />

@@ -1,8 +1,17 @@
 //! 剪贴板 concealed 写入：30 秒后自动清空。
 //!
-//! 走 octopus-clipboard 的 ClipboardHandle::write_text（自动 suppress_next，
-//! 跳过自身 clipboard_history 监听器），同时单独写 org.nspasteboard.ConcealedType
-//! 让第三方剪贴板工具（Maccy / Paste / iCloud Universal Clipboard）跳过。
+//! **实现**（订正次-2：原文件头注释「走 ClipboardHandle::write_text」与实际代码不符）：
+//! 直接走 NSPasteboard 强类型 API（`objc2-app-kit`），**不**经过 `ClipboardHandle`。
+//! 因此不会自动 `suppress_next`——suppress 必须由调用方在调本函数前手动调
+//! `handle.suppress_next()`，否则 octopus 自身 `clipboard_history` watcher 会把
+//! 密码写入 FTS 索引（详见 vault_commands.rs:650 / 732）。
+//!
+//! 单独写 `org.nspasteboard.ConcealedType` 标记让第三方剪贴板工具
+//! （Maccy / Paste / iCloud Universal Clipboard）跳过收集。
+//!
+//! **定时清空**（订正次-2）：用 `tauri::async_runtime::spawn` + `tokio::time::sleep`，
+//! 与项目其他定时任务一致（避免裸 `std::thread::spawn` 的不可取消 + 多复制竞争定时器）。
+//! 注意仍存在 suppress flag 被提前消费的竞态（见 vault_commands.rs:732 注释）。
 
 use anyhow::Result;
 use std::time::Duration;
@@ -44,22 +53,40 @@ pub fn copy_concealed_with_ttl(text: &str, ttl: Duration) -> Result<()> {
     // 方式：通过 ClipboardHandle::suppress_next（需 AppState 提供 handle 引用）
     // 此处由调用方在调本函数前手动调 handle.suppress_next()
 
-    // spawn 定时清空（默认 30s）
-    let ttl_secs = ttl.as_secs();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(ttl_secs));
-        let _ = clear_clipboard();
+    // spawn 定时清空（默认 30s）——走 tauri::async_runtime + tokio::time（订正次-2）
+    //
+    // **防误清**（修复 C）：把写入内容 snapshot 到 task，清除前读 pasteboard 比对，
+    // 相同才 clearContents——用户在 TTL 期间复制其他内容时不会被误清。
+    // 仍存在的窗口：多复制时多个独立 task（未实现单一定时器 + cancellation），
+    // 但单次复制场景的误清问题已解决（最常见的失败场景）。
+    let snapshot = text.to_string();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(ttl).await;
+        let _ = clear_clipboard_if_matches(&snapshot);
     });
 
     Ok(())
 }
 
-fn clear_clipboard() -> Result<()> {
+/// 仅当当前 pasteboard 文本 == `expected` 时清空（修复 C：防误清用户后续复制）。
+///
+/// 读 NSPasteboard 内容比对：
+/// - 相同 → clearContents 清空（这次清空是本次复制的 TTL 责任）
+/// - 不同 → 不动（用户在 TTL 期间已复制了别的内容，不能覆盖）
+/// - 读失败 → 仍清（保守：防密码残留，宁可错清用户笔记也不留密码）
+fn clear_clipboard_if_matches(expected: &str) -> Result<()> {
     let pb = NSPasteboard::generalPasteboard();
-    pb.clearContents();
-    let empty = NSString::from_str("");
     let string_type = unsafe { NSPasteboardTypeString };
-    pb.setString_forType(&empty, string_type);
+    let current = pb.stringForType(string_type);
+    let should_clear = match current {
+        Some(s) => s.to_string() == expected,
+        None => true, // 读失败 → 保守清空（防密码残留）
+    };
+    if should_clear {
+        pb.clearContents();
+        let empty = NSString::from_str("");
+        pb.setString_forType(&empty, string_type);
+    }
     Ok(())
 }
 

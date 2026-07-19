@@ -99,7 +99,7 @@ settings:
       urlLabel: URLs (one per line)
       usernameLabel: Username
       passwordLabel: Password
-      totpLabel: TOTP Secret (Base32)
+      totpLabel: TOTP (Base32 or otpauth URL)
       notesLabel: Notes
       favoriteLabel: Favorite
       save: Save
@@ -148,6 +148,8 @@ settings:
       fillFail: Auto-fill failed, copied to clipboard
       uninitTitle: Vault not initialized
       uninitHint: Create the vault under "Settings → Password Vault" first
+      repromptTitle: Verify master password
+      repromptHint: "${name} is marked sensitive; re-enter your master password to auto-fill"
     generator:
       title: Password Generator
       mode:
@@ -440,8 +442,8 @@ settings:
     emptyVersion: Empty version, add or import hotwords.
     noMatch: No matching hotwords
   actionBar:
-    typeSubmenu: Submenu
-    typeSubmenuDesc: Does not execute action itself, expands to show child menu items
+    typeSubmenu: Parent Menu
+    typeSubmenuDesc: Menu container, does not execute action itself, expands to show child menu items
     typeAi: AI (LLM Processing)
     typeAiDesc: Send selected text to LLM, show result in float window. Use auto_translate for auto language detection
     typeAiPlaceholder: system prompt, or auto_translate
@@ -453,8 +455,6 @@ settings:
     typeScriptPlaceholder: …selected text in $OCTOPUS_TEXT env var
     typeExtension: Extension Package
     typeExtensionDesc: Import from .octopusext.zip or folder (contains config.yaml + scripts)
-    typeCopy: Copy
-    typeCopyDesc: Copy selected text to clipboard
     typeAgent: Agent (File Bridge)
     typeAgentDesc: After selecting files in Finder, pass file paths + task to an external CLI agent (e.g. Claude Code / pi) to execute in terminal. Content is a prompt template supporting {{task}} and {{files}} placeholders
     typeAgentPlaceholder: "{{task}}\n\nFiles:\n{{files}}"

@@ -321,8 +321,11 @@ pub fn vault_list_ciphers(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<Vec<CipherDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_list_ciphers: {} 条记录解密失败已跳过", failures.len());
+    }
     Ok(ciphers.into_iter().map(cipher_to_dto).collect())
 }
 
@@ -549,7 +552,11 @@ pub fn vault_generate_totp(
     let totp_secret = login
         .totp
         .ok_or_else(|| vault_error::serialize(&VaultError::InvalidInput("无 TOTP secret".into())))?;
-    let gen = octopus_vault::totp::TotpGenerator::from_base32(&totp_secret)
+    // from_input 智能分发（修复 #7）：
+    // - otpauth:// 开头 → 解析完整 URL（SHA256/SHA512、digits=8、period=60 等）
+    // - 否则 → 裸 Base32 secret，默认 SHA1/6/30
+    // 两种输入都接受 RFC 6238 下限的 80bit secret（new_unchecked / from_url_unchecked）
+    let gen = octopus_vault::totp::TotpGenerator::from_input(&totp_secret)
         .map_err(vault_error::to_tauri_error)?;
     Ok(TotpResultDto {
         code: gen.current().map_err(vault_error::to_tauri_error)?,
@@ -563,8 +570,11 @@ pub fn vault_health_report(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<HealthReport, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_health_report: {} 条记录解密失败已跳过", failures.len());
+    }
     Ok(octopus_vault::health::generate_report(&ciphers))
 }
 
@@ -587,8 +597,11 @@ pub fn vault_export(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<String, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!("vault_export: {} 条记录解密失败已跳过（未导出）", failures.len());
+    }
     octopus_vault::importer::export_vault_json(&ciphers).map_err(vault_error::to_tauri_error)
 }
 
@@ -612,6 +625,7 @@ pub fn vault_autotype(
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
+    master_password: Option<String>,
 ) -> Result<AutoTypeResultDto, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
@@ -620,7 +634,22 @@ pub fn vault_autotype(
         .map_err(vault_error::to_tauri_error)?
         .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
 
-    // 2. reprompt 确认（如有）—— 由前端在调本命令前弹密码框；本命令不直接处理
+    // 2. reprompt 强制校验（后端，不可绕过）—— cipher.reprompt == Password 时
+    //    必须传 master_password 且密码正确；否则拒绝（防 DevTools / 篡改前端绕过）。
+    //    不像首发版那样把 reprompt 委托给前端——前端校验是不可信的。
+    if cipher.reprompt == RepromptType::Password {
+        match master_password {
+            Some(pwd) => {
+                // 密码错或 vault 异常 → InvalidMasterPassword（user-safe 消息，不透传内部细节）
+                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                    vault_error::serialize(&VaultError::InvalidMasterPassword)
+                })?;
+            }
+            None => {
+                return Err(vault_error::serialize(&VaultError::RepromptRequired));
+            }
+        }
+    }
 
     // 3. 提取 username / password
     // CipherData 当前仅 Login 单变体；预留 unreachable arm 以便未来扩展 SecureNote/Card/Identity。
@@ -638,7 +667,10 @@ pub fn vault_autotype(
     };
 
     // 4. Auto-Type
-    match autotype::autotype_login(&username, &password, false) {
+    // expected_bundle_id=None：最小防御，只校验前台不是 octopus 自身（防 VaultPicker
+    // 未 hide 时密码打到 octopus 自己窗口的泄露）。完整白名单需前端在 hide 前调
+    // url_detect 拿到浏览器 bundle_id 并传入，未来增强。
+    match autotype::autotype_login(&username, &password, false, None) {
         Ok(()) => Ok(AutoTypeResultDto {
             filled: true,
             message: "已填充".into(),
@@ -676,7 +708,13 @@ pub fn vault_detect_and_match(
         // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
         return octopus_vault::storage::list_ciphers(&key)
             .map_err(vault_error::to_tauri_error)
-            .map(|cs| {
+            .map(|(cs, failures)| {
+                if !failures.is_empty() {
+                    log::warn!(
+                        "vault_detect_and_match (fallback): {} 条记录解密失败已跳过",
+                        failures.len()
+                    );
+                }
                 let mut filtered: Vec<Cipher> = cs
                     .into_iter()
                     .filter(|c| c.deleted_at.is_none())
@@ -692,8 +730,14 @@ pub fn vault_detect_and_match(
     }
 
     let url = url::Url::parse(&url_str).map_err(|e| vault_error::to_tauri_error(anyhow::anyhow!(e)))?;
-    let ciphers =
+    let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!(
+            "vault_detect_and_match (url-match): {} 条记录解密失败已跳过",
+            failures.len()
+        );
+    }
 
     // 默认等价域名（MVP）
     let equivalent = octopus_vault::matcher::psl::default_equivalent_domains();
@@ -719,11 +763,28 @@ pub fn vault_copy_password(
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
+    master_password: Option<String>,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
         .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+
+    // reprompt 强制校验（修复 A：复制路径同样返回明文密码，必须与 vault_autotype 对称）。
+    // DevTools 可直接 invoke('vault_copy_password', {cipherId: X}) 拿到明文，若不校验
+    // 则攻击面从 autotype 平移到 copy。
+    if cipher.reprompt == RepromptType::Password {
+        match master_password {
+            Some(pwd) => {
+                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                    vault_error::serialize(&VaultError::InvalidMasterPassword)
+                })?;
+            }
+            None => {
+                return Err(vault_error::serialize(&VaultError::RepromptRequired));
+            }
+        }
+    }
 
     // CipherData 当前仅 Login 单变体；保留 unreachable arm 以便未来扩展。
     #[allow(irrefutable_let_patterns)]
@@ -785,6 +846,55 @@ pub fn register_vault_autotype_shortcut(
             }
         })
         .map_err(|e| format!("注册热键 '{}' 失败: {}", shortcut_str, e))?;
+    Ok(())
+}
+
+// === 密码生成器独立浮窗（外壳 B：Actionbar 触发场景）===
+//
+// 与 CipherEditor Modal（外壳 A）渲染同一个 <PasswordGenerator> 主体，
+// 但本场景生成后直接 Auto-type 到前台浏览器（不经 vault cipher）。
+// 详见 spec §5.2「跨场景复用主体 + Modal/独立窗口外壳」。
+
+/// 唤起密码生成器浮窗（Actionbar 内置按钮触发）。
+///
+/// 浮窗位置：优先跟随前台浏览器 frame（CGWindowList 读窗口），fallback 鼠标 → 屏幕顶部居中。
+/// toggle 语义：已存在 → show + 移动到新位置；不存在 → 创建。
+#[tauri::command]
+pub fn open_password_generator(app: AppHandle) -> Result<(), String> {
+    let pos = crate::password_generator_window::compute_window_position(&app);
+    log::info!(
+        "[password-generator] open: position=({:.0},{:.0}) source={:?}",
+        pos.x, pos.y, pos.source
+    );
+    crate::password_generator_window::show_password_generator_window(&app, pos.x, pos.y);
+    Ok(())
+}
+
+/// Auto-type 生成的密码到前台 app（password_generator_window 场景）。
+///
+/// 流程：
+/// 1. hide password_generator_window → 浏览器回前台
+/// 2. autotype_login("", password, true, None) —— sleep + verify_focused + 注入
+///
+/// **username 留空**：生成器场景没有 username（与 vault_autotype 不同）。
+/// **press_enter=true**：用户主动点 Auto-type 通常需要立即提交表单。
+///
+/// 安全：verify_focused(None) 走最小防御（前台 ≠ octopus 自身）。若 hide 期间焦点
+/// 被抢到第三方 app，密码会打到错误窗口——已知窗口（同 vault_autotype），详见 spec §4.5。
+#[tauri::command]
+pub fn password_generator_autotype(
+    app: AppHandle,
+    password: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    // 1. hide 浮窗让浏览器回前台
+    if let Some(win) = app.get_webview_window(crate::password_generator_window::WINDOW_LABEL) {
+        let _ = win.hide();
+    }
+    // 2. sleep + verify_focused + 注入
+    autotype::autotype_login("", &password, true, None)
+        .map_err(|_| crate::vault_error::serialize(&crate::vault_error::VaultError::AutoTypeFailed))?;
+    log::info!("[password-generator] autotype 完成（{} 字符）", password.len());
     Ok(())
 }
 

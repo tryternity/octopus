@@ -6771,3 +6771,155 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 **2. Inline Execution** - 备选。
 
 实际采用 Subagent-Driven + 多轮 self-review follow-up。
+
+
+---
+
+## 修订：安全审查复查 + 修复（2026-07-19）
+
+收到外部安全审查报告，10 个 Critical/High + 9 个次要。逐条回读源码核实后：
+**9 个完全成立 / 1 个部分成立（#10 dead code）/ 3 个次要部分成立**。
+
+### 已修复（9 个，3 个独立 commit）
+
+| # | 严重度 | 问题 | 修复 commit |
+|---|---|---|---|
+| #1 | 🔴 真高危 | PSL 域名匹配钓鱼（多段 TLD 退化） | e82c9f19 接入 publicsuffix crate |
+| #2 | 🟠 高 | autotype 焦点竞态 | b15e6c94 autotype_login 加 expected_bundle_id 校验 |
+| #3 | 🟠 高 | reprompt 后端绕过（前端实际也没实现） | b15e6c94 后端强制 master_password 校验 + 前端 reprompt view |
+| #5 | 🟠 高 | 解密失败回退发密文（密文进云端 log） | b15e6c94 try_decrypt_secret_global 返 Result |
+| #6 | 🟡 中 | list_ciphers 单行失败带垮整表 | e8a37159 返回 (Vec, Vec<failure>) 部分结果 |
+| #8 | 🟡 中 | lock 不擦飞行中 Arc（注释误导） | e8a37159 vault_state.rs 注释订正 |
+| 次-2 | 🟡 中 | 裸 std::thread::spawn TTL | e8a37159 改 tauri::async_runtime + tokio::time |
+
+### 未修复（仅文档化）
+
+| # | 严重度 | 不修原因 |
+|---|---|---|
+| #4 vault_meta 非原子 RMW | 🟡 中 | 实际并发概率极低（单进程桌面 app，需双 modal 同时操作）；记入 spec "已知工程折衷" |
+| #7 TOTP 拒绝短 secret + 硬编码 | ✅ 已修（2026-07-19 follow-up） | 启用 otpauth feature + new_unchecked / from_url_unchecked 放宽 80bit 限制 + from_input 智能分发 otpauth:// URL / 裸 Base32 |
+| #9 K_machine 派生 file_key 弱 | 🟡 中 | 已知工程折衷（adhoc 签名 keychain 失效）；spec §2.5 补威胁模型说明 |
+| #10 bundle_id AppleScript 注入 | 🟢 低 | 当前是 dead code，无调用点；加防御性注释，未来启用时强制白名单 |
+| 次-1 心跳以 focus 为基准 | 🟡 中 | 设计选择（窗口聚焦即续命），补注释说明 |
+| 次-3 suppress_next 竞态 | 🟢 低 | 竞态存在但报告归因 iCloud 不准（实际是本机其他剪贴板事件） |
+
+### 复查细节
+
+- 所有报告引用的代码事实全部准确（仅个别行号略偏）
+- 报告严重度评估偏激进——"永久数据丢失""key 长期残留"等措辞高估了实际触发概率
+- 报告 #3 描述"前端处理 reprompt"不准确——前端实际也没实现，比报告更严重
+- 报告 #10 "目前真实存在"夸大——activate_app 是 dead code 无调用点
+- 报告次-3 "iCloud Universal Clipboard 先消费 suppress"不准——ConcealedType 标记本已让 iCloud 跳过，真正消费者是本机其他剪贴板事件
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 129 pass（+2 PSL 钓鱼场景测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error
+- bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+---
+
+## 修订：#7 TOTP follow-up（2026-07-19，commit 1754d649）
+
+针对「未修复」表中标为"单独迭代"的 #7 单独做的 follow-up：
+
+### 已修
+
+- [x] **启用 totp-rs otpauth feature**（Cargo.toml）：原 `default-features=false` 关闭 otpauth，无法解析 otpauth:// URL
+- [x] **`TotpGenerator::from_base32` 改用 `new_unchecked`**：跳过 totp-rs 强制 ≥128bit 限制，支持 RFC 6238 下限的 80bit 标准 secret（`JBSWY3DPEHPK3PXP` 解码 10 字节）
+- [x] **新增 `from_otpauth_url`**：解析完整 URL（SHA256/SHA512、digits=8、period=60 等变体），GitHub/银行/Authy 导出场景必需
+- [x] **新增 `from_input` 智能分发**：前端用户粘贴任一格式（`otpauth://` 开头 → URL；否则 → 裸 Base32）都能识别
+- [x] **`seconds_remaining` 按 `self.step` 算**：支持非 30s period
+- [x] **后端 `vault_generate_totp` 改用 `from_input`**：cipher 无需知道存的是哪种格式
+- [x] **前端 CipherEditor totp 字段** placeholder 显示 `JBSWY3DPEHPK3PXP 或 otpauth://totp/...`，label 改为 `TOTP（Base32 或 otpauth URL）`
+- [x] **6 个新测试**：`test_short_80bit_secret_accepted`（80bit 标准 secret）、`test_otpauth_url_full_parse`、`test_otpauth_url_sha256_8digits_60s`（银行/Authy 非标准变体）、`test_otpauth_url_minimal`、`test_from_input_dispatch`（智能分发 + 大小写不敏感 + trim）、`test_otpauth_url_invalid`
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 135 pass（+6 TOTP 测试）
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+---
+
+## 修订：复审 A-F 修复 + #4 #10 收尾（2026-07-19，commit 086b6890 / 2622d0ab）
+
+收到外部复审报告（针对 commit 48eb2034），6 个遗留/新引入问题全部复查成立，全部修。
+
+### 复审 A-F 修复（commit 086b6890）
+
+| 字母 | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| A | 🔴 高 | vault_copy_password 缺 reprompt 校验（#3 的孪生缺口） | 加 master_password 参数 + 强制校验；前端 copyOnly 路径也走 reprompt view |
+| B | 🟠 中 | #2 verify_focused(None) 第三方 app 注入未闭合 | **仅文档化**：spec §4.5 加"已知窗口（B 复审遗留）"段，明确 username 可能泄漏 + 残留风险 |
+| C | 🟡 中 | clipboard TTL 误清用户后续复制 | 新增 `clear_clipboard_if_matches(expected)`：读 NSPasteboard.stringForType 比对，相同才清 |
+| D | 🟡 中 | verify_focused osascript 失败 fail-open | `unwrap_or_default()` → `?` 传播 bail（fail-closed） |
+| E | 🟢 低 | 硬编码 com.octopus.desktop 与 tauri.conf 耦合 | 提取 `OCTOPUS_BUNDLE_ID` 常量 + `test_octopus_bundle_id_matches_tauri_config` 测试锁死 |
+| F | 🟢 低 | config.rs 解密失败返空串与其他 3 处不一致 | log message 改为更明显的"保险库未解锁或密文损坏"（签名约束保留） |
+
+### 后续收尾（commit 2622d0ab）
+
+| # | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| #4 | 🟡 中 | vault_meta 非原子 RMW | 新增 `meta_lock.rs`：进程内 `OnceLock<Mutex<()>>`，串行化 change_master_password + refresh_app_key_local_enc 的 read-modify-write 整段；测试 `test_lock_serializes_concurrent_writers` |
+| #10 | 🟢 低 | activate_app bundle_id AppleScript 注入 | `validate_bundle_id`：char-level 校验 `[A-Za-z0-9.-]` 长度 1-256；测试覆盖合法格式 + 引号/分号/反引号/中文等注入尝试 |
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 136 pass（+1 meta_lock 测试）
+- cargo test -p octopus-desktop validate_bundle_id: 2 pass（accept_legal + reject_injection）
+- cargo test -p octopus-desktop test_octopus_bundle_id: 1 pass（常量一致性）
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 仍未修（仅文档化）
+
+剩 3 个：
+
+| # | 不修原因 |
+|---|---|
+| #9 K_machine 派生 file_key 弱 | 已知工程折衷（adhoc 签名 keychain 失效），spec §2.5 已补威胁模型 |
+| 次-1 心跳以 focus 为基准 | 设计选择，"窗口聚焦即续命"；spec/architecture 已注释说明 |
+| 次-3 suppress_next 竞态 | 竞态存在但报告归因 iCloud 不准；ConcealedType 标记本已让 iCloud 跳过 |
+
+
+---
+
+## 修订：ActionBar 密码生成器集成（外壳 B 落地，2026-07-19）
+
+落地 spec §5.2 架构图中的外壳 B（P1 计划：ActionBar 加内置按钮触发独立生成器浮窗）。
+
+### 设计决策（与用户协商）
+
+- **触发方式**：ActionBar 搜索框右侧内置按钮（独立于 DB items），onClick → invoke `open_password_generator`。用户要全局快捷键可在命令面板配置（ActionBar 通用机制）
+- **窗口形态**：**透明 always-on-top 浮窗**（非独立 Tauri 普通窗口）——避免独立窗口"hide 才能让浏览器回前台"的焦点切换问题；浮窗透明且不抢键盘焦点，浏览器始终在前台
+- **位置**：跟随鼠标（前台浏览器输入框附近通常有鼠标），边界保护防超出屏幕。未来增强为跟随浏览器 frame
+- **Auto-type 行为**：点使用后自动 hide 浮窗（用户决策，与 VaultPicker 一致）；username 留空（生成器场景无 username），press_enter=true（生成后通常需立即提交）
+
+### 改动（commit 待写）
+
+- 新增 `crates/desktop/src/password_generator_window.rs`：浮窗创建（480×480 透明 always_on_top）+ `show_password_generator_window` + `compute_window_position`（跟随鼠标 + 边界 clamp）
+- 新增 `crates/desktop/frontend/src/pages/PasswordGenerator/index.tsx`：浮窗 root，渲染 `<PasswordGenerator onAutotype={...}>` + 顶部标题栏（X 关闭）
+- `crates/desktop/src/vault_commands.rs` 新增 2 命令：
+  - `open_password_generator`：算位置 + show 浮窗
+  - `password_generator_autotype(password)`：hide 浮窗 → `autotype_login("", pwd, true, None)` 注入前台
+- `crates/desktop/src/main.rs`：注册新模块 + 2 命令（vault feature gated，与 vault_autotype 同）
+- `crates/desktop/capabilities/default.json`：windows 数组加 `password_generator_window`
+- `crates/desktop/frontend/src/App.tsx`：加路由分支 + vault feature 探针覆盖新窗口
+- `crates/desktop/frontend/src/pages/ActionBar/index.tsx`：搜索框右侧加内置 🔑 按钮
+
+### 共享主体复用
+
+- `pages/Settings/Vault/PasswordGenerator.tsx` 主体零改动——`onAutotype` prop 已在 2026-07-19 重构时预留
+- 外壳 A（CipherEditor Modal）+ 外壳 B（独立浮窗）渲染同一主体
+
+### 验证
+
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+### 已知窗口（与 vault_autotype 同）
+
+- autotype focus 校验走 verify_focused(None) 最小防御——hide 期间焦点被抢到第三方 app 时密码会打到错误窗口
+- spec §4.5 已记录该已知窗口；未来增强为浏览器白名单

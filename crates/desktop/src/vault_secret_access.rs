@@ -103,25 +103,22 @@ pub fn try_decrypt_secret(
 /// 进程级便捷版：raw 字符串自动用全局 session 解密。
 ///
 /// 用于云端推理热路径（拿不到 Tauri State、也没显式 session 参数）。
-/// 全局 session 未注入（main.rs 未启动 / 测试环境）→ raw 原样返回（向后兼容）。
 ///
-/// 注意：与 [`try_decrypt_secret`] 不同，本函数在 vault 已启用但 app_key 不可用时
-/// 不返回 Err——而是返回 raw（让上层推理路径继续走，最终由云端 401 报错暴露）。
-/// 这样在 vault 未启用 / 启动早期 / 测试环境都不会破坏现有行为。
+/// **失败语义**（修复 #5：不再把密文当 token 发到云端）：
+/// - vault feature on + 全局 session 已注入 + raw 是 `v1:` 密文但 app_key 不可用
+///   → `Err("保险库锁定")`，调用方应显示"请先解锁保险库"并跳过这次推理
+/// - vault feature on + 解密失败（密文损坏）→ `Err("解密失败")`
+/// - vault feature on + raw 不以 `v1:` 开头（本地 manifest / 未迁移明文）→ `Ok(raw)`
+/// - vault feature off / 全局 session 未注入 → `Ok(raw)`（向后兼容，旧 DB 无 v1:）
+///
+/// 关键安全：vault 启用但解密失败时**绝不返回 raw 密文**——避免把 `v1:<base64>`
+/// 当作 Bearer token 发到云端（密文会进入云端 access log + 静默掩盖 vault 真正问题）。
 #[cfg(feature = "vault")]
-pub fn try_decrypt_secret_global(raw: &str) -> String {
+pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
     match crate::vault_state::try_global_session() {
-        Some(session) => match try_decrypt_secret(raw, &session) {
-            Ok(plaintext) => plaintext,
-            Err(e) => {
-                // 解密失败不 panic——记录日志，返回 raw 让上层处理
-                // （避免推理热路径因 vault 问题直接挂掉整段录音 / 翻译）
-                log::warn!("secret_key 解密失败，回退 raw 值：{}", e);
-                raw.to_string()
-            }
-        },
+        Some(session) => try_decrypt_secret(raw, &session),
         // vault 未启用 / 全局 session 未注入 → raw 原样返回（向后兼容）
-        None => raw.to_string(),
+        None => Ok(raw.to_string()),
     }
 }
 
@@ -135,9 +132,9 @@ pub fn try_decrypt_secret_global(raw: &str) -> String {
 // 都通过 try_decrypt_secret_global，无需 cfg gate。
 
 #[cfg(not(feature = "vault"))]
-pub fn try_decrypt_secret_global(raw: &str) -> String {
+pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
     // No vault → 无加密可能 → 原样返回（legacy 明文 / pre-vault API Key）。
-    raw.to_string()
+    Ok(raw.to_string())
 }
 
 #[cfg(all(test, feature = "vault"))]
@@ -233,8 +230,8 @@ mod tests {
         // 注意：单测里 GLOBAL_SESSION 不一定注入，这里只验证「未注入时」的行为。
         // 由于 OnceLock::set 是 once 语义，如果其他测试已 set 了，本测试会拿到 session——
         // 因此这里只断言「raw 不以 v1: 开头时一定原样返回」（与是否注入无关）。
-        assert_eq!(try_decrypt_secret_global("sk-plain"), "sk-plain");
-        assert_eq!(try_decrypt_secret_global(""), "");
+        assert_eq!(try_decrypt_secret_global("sk-plain").unwrap(), "sk-plain");
+        assert_eq!(try_decrypt_secret_global("").unwrap(), "");
     }
 
     /// round-trip：用 migrate 的加密路径产出的密文，本模块能解出来。

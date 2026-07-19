@@ -110,8 +110,10 @@ impl TranscriptionEngine for AliyunEngine {
         let endpoint = entry.source.clone();
         // follow-up #7：secret_key 可能是 v1: 加密格式（vault 启用后 Task 20 迁移过），
         // 用全局 session 透明解密。本地 / 未迁移明文 → no-op 返回原值。
-        let key =
-            crate::vault_secret_access::try_decrypt_secret_global(&entry.secret_key);
+        // 安全修复 #5：vault 启用但解密失败（app_key 不可用 / 密文损坏）→ Err，
+        // 不把密文当 Bearer 发到云端（会污染云端 access log）。
+        let key = crate::vault_secret_access::try_decrypt_secret_global(&entry.secret_key)
+            .map_err(|_| anyhow::anyhow!("云端 ASR 鉴权失败：保险库未解锁或密文损坏，请先解锁保险库"))?;
         let model = model_name;
         let samples = samples.to_vec();
         let language = language.to_string();

@@ -19,7 +19,10 @@ data-encoding = "2"
 subtle = "2"
 
 # TOTP
-totp-rs = { version = "5", default-features = false }
+# otpauth feature 启用 TOTP::from_url 解析 otpauth:// URL（支持 SHA256/SHA512、digits=8、period=60 变体）
+# 修复 #7：原 default-features=false 关闭 otpauth，无法解析标准 otpauth URL，
+# 且 totp-rs 默认 new() 强制 secret >= 128bit，拒绝 RFC 6238 下限的 80bit secret
+totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
 
 # eTLD+1
 publicsuffix = "2"

