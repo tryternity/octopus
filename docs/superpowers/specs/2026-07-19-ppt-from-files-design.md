@@ -1,6 +1,6 @@
 # Finder 文件 → Actionbar → Agent → PPT 制作桥接设计
 
-> **状态**：已实现 ✅（2026-07-19，commit `0146e92a`）
+> **状态**：已实现 ✅（2026-07-19，commit `1e688edc`）
 > **日期**：2026-07-19
 > **scope**：在 Finder 选中文件/文件夹 → 全局热键弹 actionbar → 点「Agent → 制作 PPT」→ 用户口述需求 → Pi（或 Claude Code）在 Terminal 中读文件 + 选 PPT skill + 生成 PPT + 打印产物路径
 > **前置文档**：
@@ -650,6 +650,43 @@ pub async fn trigger_agent_voice(
 | T-quick-1 | `quick_execute_file_selection_with_agent_task_triggers_voice` | mock detect 返回 File → 检查 coordinator.start_agent_recording 被调 |
 | T-quick-2 | `quick_execute_file_selection_with_agent_no_task_executes_directly` | mock detect 返回 File + item 无 {{task}} → 走 execute_action_bar_inner |
 | T-quick-3 | `trigger_agent_voice_core_with_hide_false_skips_hide` | hide_action_bar=false 时 hide_action_bar_window 不被调 |
+
+---
+
+## 13. 实施期修订（v40 / v41 补丁）
+
+实施后用户实测发现两个 bug，对应 schema 升级 v39→v40→v41：
+
+### 13.1 v40：`need_voice` 字段取代 `{{task}}` 字符串扫描（commit `9c5c67ae`）
+
+**Bug**：原方案让前端 / `quick_execute` / `trigger_agent_voice` 都用 `action_data.includes("{{task}}")` 判定是否触发语音。脆弱——用户实测发现早期 Task 1 残留的 `action_data=''` PPT 菜单永远进不了语音路径。
+
+**修订**：新增 `action_bar_items.need_voice INTEGER NOT NULL DEFAULT 0` 列（DB v40）。
+- `ActionBarItem.need_voice: bool` 字段贯穿全链路
+- 前端 `index.tsx`、`action_hotkey::decide_files_action`、`trigger_agent_voice` Tauri 命令**全部**从扫描字符串改为读字段
+- 设置面板 ActionBarPanel 新增「语音输入」Toggle（仅 agent 类型显示）
+- DB CRUD（`insert_action_bar_item` / `update_action_bar_item`）签名加 `need_voice: bool` 参数
+- `extensions.rs` 调用方传 `need_voice=false`（script 类型不需要）
+- seed 加载时强制 `need_voice=1`（PPT 菜单语义）
+
+### 13.2 v40：`render_command` 检测目录（commit `9c5c67ae`）
+
+**Bug**：用户实测 Pi 报 `EISDIR: illegal operation on a directory, read`——Pi 的 `@<path>` 语法只接受文件，传目录会崩。
+
+**修订**：`agent_adapter::render_command` 渲染 `{files_at}` 时检测每个路径：
+- `std::path::Path::new(f).is_dir()` = true → 不加 `@` 前缀（传裸路径）
+- 否则 → 加 `@` 前缀（正常 Pi 文件引用）
+- prompt 文本（`make-ppt.prompt.md`）补充提示：「不要用 `@<dir>`，先 `ls` 展开为文件列表」
+- `{files}` 占位符不受影响（本来就只传路径列表，文件/目录都安全）
+
+### 13.3 v41：PPT 子菜单去重 + seed 再自愈（commit `1e688edc`）
+
+**Bug**：用户 DB 残留 2 条「制作 PPT」子菜单——早期 `INSERT OR IGNORE`（表无 UNIQUE 约束）曾留下多条。
+
+**修订**：
+- `load_agent_action_seeds` 增加 dedup 步骤：`DELETE WHERE id NOT IN (SELECT MIN(id) ...)` 保留最早一条
+- seed 加载 5 步流程：插 Agent 主菜单 → 查 Agent id → **去重 PPT 子菜单** → 插 PPT 子菜单（WHERE NOT EXISTS）→ UPDATE 自愈（空 action_data 补 prompt + need_voice 强制 1）
+- v40→v41 迁移：再跑一次 `load_external_seeds`，让已 v40 的用户 DB 也吃到去重修复
 
 ---
 
