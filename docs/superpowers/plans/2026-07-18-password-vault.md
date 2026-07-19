@@ -6957,3 +6957,201 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 
 - cargo build / cargo test -p octopus-vault --lib (136) / -p octopus-infra --lib (130)
 - bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+---
+
+## 修订：第三轮复审修复（2026-07-19，commit 待写）
+
+收到第三轮复审报告，2 个新发现 + 3 个次要观察全部复查成立。
+
+### 已修
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 新发现 1 | TOTP period=0 / digits 异常 / algorithm 异常 → `current()` panic（不可信输入触发，崩 Tauri 命令） | `from_otpauth_url` 加 ensure! clamp：period>0 / digits ∈ {6,8} / algorithm ∈ {SHA1,SHA256,SHA512}；`current()` 加 last-resort 防护（step==0 bail!） |
+| 新发现 2 | #4 meta 锁未覆盖 `regenerate_security_stamp` / `setup_vault`（这两条不持锁） | 锁下沉到 `save_vault_meta` / `update_security_stamp` 内部（ReentrantMutex 同线程可重入，外层 RMW 持锁时内层 save 不死锁）|
+| 次要 B | `BROWSER_OWNER_NAMES` 与 `url_detect.rs:43` bundle_id 白名单两套独立列表，未来加浏览器需手动同步 | 注释加 reference 提示同步维护（不抽常量源，over-engineering）|
+
+### 测试
+
+- `test_period_zero_returns_err_not_panic`：period=0 返 Err 不 panic
+- `test_digits_invalid_returns_err`：digits=0/7/20 都返 Err
+- `test_algorithm_invalid_returns_err`：algorithm=MD5 返 Err
+- `test_lock_is_reentrant_same_thread`：ReentrantMutex 同线程重入不死锁（锁下沉前提）
+
+### 不成立的次要观察
+
+- 次要 C：from_otpauth_url 内部不再 lowercase——标准 URL 解析已处理大小写，不需要额外处理
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 140 pass（+4 新测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+---
+
+## 修订：第四轮审查 12 项全修（2026-07-19，commit 19153933）
+
+收到第四轮审查报告，12 个问题全部复查成立（#5 功能影响被夸大但安全属性成立 / #7 核心因果链不成立但 latent risk 存在 / #10 INV-3 适用性过宽但安全卫生缺陷真实）。全部修复。
+
+### 🔴 critical/high（7 项）
+
+- [x] **#1 后端主密码强度校验**：新建 `crates/vault/src/validate.rs`（Rust 版 validate_master_password，翻译自前端 ts）；setup_vault + change_master_password 入口调用。防 DevTools invoke('vault_setup', {password: 'a'}) 设弱密码
+- [x] **#2 Bitwarden 导入完全未去重**：importer/bitwarden.rs 导入前预加载库内 ciphers 构 seen HashSet（key=name+first_uri），重复跳过计 skipped。加 test_import_dedup_on_second_import
+- [x] **#3 缺暴力破解退避**：新建 `crates/vault/src/attempt_guard.rs`（UnlockAttemptGuard AtomicU32 + AtomicU64，退避 0/1/2/4/8/16/30s）；3 路径接入（unlock_with_master_password / verify_master_password / change_master_password 旧密码校验）；成功 reset / 失败 record_failure
+- [x] **#4 reprompt 字段导入静默丢失**：BitwardenItem (De)Serialize 加 reprompt 字段；CipherInput 构造改 RepromptType::from(item.reprompt)；exporter 写出 i64::from(c.reprompt)
+- [x] **#5 迁移非事务化+吞错**：migrate.rs 两阶段（先全部加密 Vec + 整批 unchecked_transaction）；setup_vault 不再 log::warn 吞错，return Err
+
+### 🟡 medium（3 项）
+
+- [x] **#6 save_machine_key 非原子写**：keychain.rs unix/non-unix 都改 temp file + sync_all + rename 原子替换
+- [x] **#7 测试可能删真实 machine-key.enc**：test_machine_key_round_trip_via_file 加 #[ignore]
+- [x] **#8 流程 D 无条件重写 local_enc**：refresh_app_key_local_enc 加"解密比较"短路（meta_lock 内解 app_key_local_enc == 当前 app_key 则跳过 save）
+
+### 🟢 low（4 项）
+
+- [x] **#9 list_folders 无单行容错**：返回 (Vec<FolderDto>, Vec<i64>) 部分结果（照搬 cipher.rs 修复 #6 模式）
+- [x] **#10 child() chain code 未 zeroize**：crypto/hierarchy.rs 64B HMAC 输出包装 Zeroizing<[u8;64]>（**注**：第五轮 A2 发现此修复未达目标——只清拷贝、原件 GenericArray 仍残留栈帧；已改为启用 generic-array zeroize feature + `Zeroizing::new(mac.finalize().into_bytes())` 包装原件，详见下方第五轮段）
+- [x] **#11 空 cipher_uri 匹配任意**：matcher/mod.rs match_uri_one 加 early return（trim().is_empty() → false）
+- [x] **#12 DuplicateGroup Debug 打印 hash**：health/duplicate.rs 手写 Debug impl redact password_hash
+
+### 次要观察（TOTP 小整洁，commit 45fd0a12）
+
+- [x] from_otpauth_url 去掉 url.to_string() 多余分配（AsRef<str> 直接接 &str）
+- [x] test_algorithm_invalid 注释诚实化（测的是上游解析非 clamp）
+- [x] digits 注释消除"留宽松"歧义
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 161 pass（+26 新测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 四轮审查总览
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| **小计** | **36** | **29** | **7** |
+
+---
+
+## 修订：第五轮审查 8 项（2026-07-19）
+
+收到第五轮审查报告（针对第四轮 commit 19153933 的复审），4 个新发现/回归（A1/B1/B2/A2）+ 4 个低优先级观察（O1-O4）。逐条复查源码后：**A1/B1/B2/A2/O2/O3 全部成立修复，O1/O4 文档化**（O1 工程成本远超收益；O4 与前端对齐是更重要的不变量）。
+
+### 🔴 A1 — 迁移失败后 vault_meta 不回滚 → 不可恢复（必修）
+
+**问题**：`setup_vault` 在迁移之前已独立 commit `vault_meta`（`:104 save_vault_meta`），迁移失败（`:113` `return Err`）→ vault_meta 已落盘 + secret_key 仍全明文 + `ensure!(!is_initialized())`（`:66`）阻止重跑 + 全仓库无 reset/destroy 入口 → 不可恢复的「已初始化但部分明文」状态。`unlock.rs:107-112` 修复注释声称「失败=完全未动 DB」推理错误（迁移 UPDATE 没动 DB，但 vault_meta 动了）。
+
+**修复**：
+- `infra/db.rs` 新增 `delete_vault_meta_row()`（DELETE FROM vault_meta WHERE id=1）
+- `unlock.rs setup_vault` 迁移失败时显式调 `delete_vault_meta_row()` 回滚——让 `is_initialized()` 回到 false，用户可重新走 setup
+- 不采用「save_vault_meta 与迁移合并到同事务」方案：强行合并需重构 meta 模块所有写路径，工程成本远大于「失败时显式 DELETE 回滚」
+- 即使 DELETE 本身失败也不掩盖迁移错误——返回的 Err 同时报告「迁移失败 + 回滚失败」
+
+### 🟠 B1 — change_master_password 成功后缺 guard().reset()（必修）
+
+**问题**：失败路径 `record_failure()`（`:240`）累计退避，但成功路径（`:287-292`）无 `reset()`。连续输错旧密码几次后改密成功 → 退避计数仍累计 → 下次 `vault_unlock` 被 `remaining_wait()` 挡。`unlock.rs:580` 测试自己手动 reset 并注释「避免挡住下面的成功路径」——开发者意识到污染但只补了测试。
+
+**修复**：`change_master_password` 成功路径加 `crate::attempt_guard::guard().reset()`，与 `unlock_with_master_password` 成功路径（`:201`）对称。
+
+### 🟡 B2 — refresh 副作用失败拖垮正确密码（建议修）
+
+**问题**：`unlock_with_master_password` 闭包把「密码校验（decrypt）」与「副作用（refresh_app_key_local_enc 写 local_enc）」捆绑，`match result` 在任意 Err 时 `record_failure()`。流程 C 写 local_enc 失败（save_vault_meta DB 错 / Keychain 错）→ 正确密码被判失败 + 退避 + 整个 unlock 返 Err。
+
+**修复**：分两阶段——
+1. 密码校验阶段（decrypt user_vault_key + app_key）：失败 = 密码错 → `record_failure`
+2. 副作用阶段（refresh_app_key_local_enc）：密码已校验通过（已 `reset`），此处失败仅返 Err，**不**调 `record_failure`——用户可立即重试不被退避挡
+
+### 🟢 A2 — child() chain code zeroize 未达目标（建议修）
+
+**问题**：`hierarchy.rs child()` 把 `bytes`（GenericArray<U64>）的拷贝进 `Zeroizing<[u8;64]>` 后清零，但**原件 `bytes` 自身 drop 时不清零**——后 32B chain code 仍残留栈帧。报告建议的 `finalize_into(&mut Zeroizing<[u8;64]>)` 类型不成立（finalize_into 签名是 `&mut GenericArray<u8, U64>`）。
+
+**正解**：
+- `vault/Cargo.toml` 显式启用 `generic-array = { version = "0.14", features = ["zeroize"] }`——generic-array 0.14 已实现 `impl<T: Zeroize, N: ArrayLength<T>> Zeroize for GenericArray<T, N>`（`impl_zeroize.rs`），但需要该 feature 才生效
+- `child()` 用 `Zeroizing::new(mac.finalize().into_bytes())` 包装 GenericArray 本体——`Zeroizing` DerefMut 让 `&bytes[..32]` 仍可用，scope 结束时**原件**被 zeroize（含 chain code）
+
+### 🟢 O2 — 软删参与 Bitwarden 导入去重（修）
+
+**问题**：`infra/db.rs list_vault_ciphers` SQL 无 `WHERE deleted_at IS NULL`（设计如此——回收站视图需要列出软删项），bitwarden importer 把软删项也算进 dedup seen HashSet → 用户软删后再导入同一份备份被静默 skip，无法通过导入恢复。
+
+**修复**：`bitwarden.rs import_bitwarden_json` 算 dedup seen 时加 `.filter(|c| c.deleted_at.is_none())`。**不**改 `list_vault_ciphers`——保持 infra 不过滤的设计（回收站视图需要）。
+
+### 🟢 O3 — attempt_guard.rs 注释陈旧（修）
+
+**问题**：`reset()` 注释「不重置 next_allowed_at，已无意义」但代码 `:75` 实际 `next_allowed_at.store(0)`——行为正确无害，仅注释误导。
+
+**修复**：注释订正为「重置 failures 和 next_allowed_at，让下次失败从 0 退避开始」。
+
+### 文档化（不修）
+
+| # | 不修原因 |
+|---|---|
+| **O1** 迁移 SELECT 独立连接 vs UPDATE 事务 | setup 一次性 UI 流程毫秒窗口内插入新明文行需用户在同一瞬间配置新云模型——触发概率极低。修复需重构 migrate.rs 用单事务+同一 conn，工程成本远超收益。**记入 spec §3 已知窗口**。 |
+| **O4** validate.rs 非 ASCII 字母不计入大小写类 | 与前端策略对齐（前后端一致性是更重要的不变量），且对中文用户偏严不是安全问题。报告自己也评估为「非 bug」。**注释订正**已说明策略。 |
+
+### 验证
+
+- cargo test -p octopus-vault --lib: **166 pass**（+5 新测试：B1/B2/A1/A2-deterministic/A2-zeroize-compile + O2-soft-delete-reimport）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 五轮审查总览（含本轮）
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| 第五轮（A1/B1/B2/A2 + O1-O4） | 8 | 6 | 2（O1/O4） |
+| **小计** | **44** | **35** | **9** |
+
+---
+
+## 修订：第六轮审查 4 项观察（2026-07-19）
+
+收到第六轮审查报告（针对 commit 4012efd6 / 实际修复 99cabbf8 的复审）。**8/8 修复全部正确落地，无 bug 无回归**。仅 4 个观察项（无 bug，权衡/局限说明）。
+
+### 复查结论
+
+| 观察项 | 复查 | 处理 |
+|---|---|---|
+| 🟡 **A1 崩溃窗口残余风险** | **成立（已知工程折衷）**：save commit 与 migrate 不在同一事务，进程崩溃/断电在窗口内 → vault_meta 已落盘 + secret_key 仍明文 + delete 未执行 → 需手动清 DB。窗口持续 = migrate 执行时间（毫秒级），崩溃概率极低。彻底闭合需重构 meta 模块所有写路径，工程成本远大于收益。 | 📝 spec §3.6 补「A1 崩溃窗口残余风险」段 |
+| 🟢 **B2 既有保守设计** | **成立但非回归**：B2 只动 record_failure 语义，「refresh 失败时 unlock 返 Err」是第四轮既有的保守选择。caller（vault_commands.rs:240）透传 Err 到前端，message 含 "密码正确但刷新 app_key_local_enc 失败"，与密码错的 message 有明确区分。 | 📝 文档化（B2 本身是对的） |
+| 🟢 **delete_vault_meta_row 可见性偏宽** | **成立（卫生项）**：infra crate pub fn，注释声明唯一合法调用方但语言层面无约束。 | 🔧 加 `#[doc(hidden)]` + 强化警告注释（保留 pub 让 vault 跨 crate 调用） |
+| 🟢 **测试 sleep(3s) 拖慢** | **成立（cosmetic）**：B1/B2 测试各 sleep 3s 合计 +6s。注入假时钟需把 `now_unix()` 抽 trait + 测试覆盖，代价不值得。 | 📝 文档化（cosmetic） |
+
+### 改动
+
+- `crates/infra/src/db.rs`：`delete_vault_meta_row` 加 `#[doc(hidden)]` + 警告注释强化
+- `docs/superpowers/specs/2026-07-18-password-vault-design.md` §3.6：补「A1 崩溃窗口残余风险」段
+
+### 验证
+
+- cargo build -p octopus-infra -p octopus-vault: 0 error 0 warning
+- cargo test -p octopus-vault test_delete_vault_meta_row_resets_is_initialized: 1 pass
+- （`#[doc(hidden)]` 不影响跨 crate 调用，vault 仍能调到该函数）
+
+### 六轮审查总览（含本轮）
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| 第五轮（A1/B1/B2/A2 + O1-O4） | 8 | 6 | 2（O1/O4） |
+| 第六轮（4 项观察） | 4 | 1（doc(hidden)） | 3 |
+| **总计** | **48** | **36** | **12** |
+
+**第六轮是收敛轮**——无 bug 无回归，仅卫生/文档收尾。密码保险库核心路径（crypto / 持久化 / 解锁 / 迁移 / 导入）的安全不变量与失败恢复语义已闭合。
+

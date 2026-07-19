@@ -3126,6 +3126,30 @@ fn update_vault_security_stamp_at(conn: &Connection, stamp: &str) -> Result<()> 
     Ok(())
 }
 
+/// 删除 vault_meta 单行（id=1）。
+///
+/// ⚠️ **危险操作 / 卫生约束（第六轮审查）**：此函数语义是「销毁整个 vault 元数据」，
+/// 正常流程**绝不**调用。唯一合法调用方是 `octopus_vault::unlock::setup_vault`
+/// 在迁移失败时的显式回滚路径（A1 修复，第五轮审查）。
+///
+/// `#[doc(hidden)]` 是语言层软约束——vault 是独立 crate，必须 `pub` 才能跨 crate
+/// 调用，无法降为 `pub(crate)`。hidden 标记让该函数不出现在 rustdoc / IDE 自动补全
+/// 中，防其他模块（或误用）发现后调用清空 vault。未来若 vault 收编回 infra 或
+/// 出现其他合法调用方，可重新评估可见性。
+///
+/// 背景语义：setup 流程先把 vault_meta INSERT 落盘（独立 commit），再触发
+/// `migrate_secret_keys_to_encrypted`。若迁移失败，旧实现会让 vault_meta
+/// 已初始化 + secret_key 仍全明文 + `ensure!(!is_initialized())` 阻止重跑 →
+/// 不可恢复的「已初始化但部分明文」状态。此函数让 setup 失败路径能显式清掉
+/// vault_meta，让 `is_initialized()` 回到 false，用户可重新走 setup。
+#[doc(hidden)]
+pub fn delete_vault_meta_row() -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM vault_meta WHERE id = 1", [])?;
+        Ok(())
+    })
+}
+
 // ── vault_ciphers CRUD ──
 
 pub fn list_vault_ciphers() -> Result<Vec<VaultCipher>> {

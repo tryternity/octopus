@@ -16,10 +16,11 @@ pub const WINDOW_LABEL: &str = "password_generator_window";
 const WIDTH: f64 = 480.0;
 const HEIGHT: f64 = 480.0;
 
-/// 已知浏览器 bundle id（与 autotype/url_detect.rs:43 的 script_for_browser 一致）。
+/// 已知浏览器 owner name（app display name，CGWindowList 给的是 owner name 非 bundle id）。
 ///
-/// 用于 `frontmost_browser_frame` 从 CGWindowList 里挑出浏览器窗口（按 owner name 匹配，
-/// CGWindowList 不直接给 bundle id 但给 owner name = app 名，多数浏览器 owner name 固定）。
+/// ⚠️ **与 `crates/desktop/src/autotype/url_detect.rs` 的 `script_for_browser` 是
+/// 两套独立列表**（那里按 bundle id 匹配，这里按 owner name）——新增浏览器时需同步两处。
+/// 未来可统一抽成 `BROWSERS: &[(bundle_id, owner_name)]` 常量源，当前轻量处理。
 const BROWSER_OWNER_NAMES: &[&str] = &[
     "Chrome",
     "Google Chrome",
