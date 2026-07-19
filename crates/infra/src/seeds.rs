@@ -179,7 +179,6 @@ mod tests {
 #[cfg(test)]
 mod load_tests {
     use super::*;
-    use crate::db;
 
     /// 进程级 Mutex——串行化所有「改写共享 seed 文件」的测试，防 Rust 默认并行
     /// 执行 race（load_prompt_seeds_missing_file / load_external_seeds_never_propagates
@@ -325,11 +324,5 @@ mod load_tests {
         assert!(content.contains("{{files}}"), "PPT prompt 必须含 {{files}} 占位符");
         assert!(content.contains("guizang-ppt-skill"), "应推荐 guizang skill");
         assert!(content.contains("ppt-master"), "应推荐 ppt-master skill");
-    }
-
-    /// 静态检查：db 模块符号已导出（仅用于保持 use crate::db 不被 dead_code 警告）。
-    #[test]
-    fn db_module_compiles_alongside_seeds() {
-        let _ = std::any::TypeId::of::<db::AsrEngineRow>();
     }
 }

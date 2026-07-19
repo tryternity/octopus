@@ -3874,6 +3874,90 @@ mod tests {
         assert_eq!(v, 39);
     }
 
+    /// 用户实际升级路径：v38 → v39 应正确加载外置 seed，且保护用户已编辑的 prompt。
+    #[test]
+    fn migration_v38_to_v39_loads_external_seeds_and_preserves_user_edits() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        // 模拟 v38 旧库：prompts 表已存在 id=1 行（v38 的 db.sql 内联种子，
+        // v39 已迁出为外置 seed）。用户在此基础上编辑过。
+        conn.execute(
+            "INSERT INTO prompts (id, title, category, content, description, is_system)
+             VALUES (1, '默认润色', 'voice_text_polish', 'v38 原始内容', '', 1)",
+            [],
+        ).unwrap();
+        // 模拟用户在 v38 时已编辑 prompt id=1
+        conn.execute(
+            "UPDATE prompts SET content='用户改的 prompt 内容' WHERE id=1",
+            [],
+        ).unwrap();
+        // 标 v38（用户当前状态）
+        conn.execute("PRAGMA user_version = 38", []).unwrap();
+        // 运行 init_schema（升级路径）
+        init_schema(&conn).unwrap();
+        // 验证升到 v39
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 39);
+        // 验证 Agent 主菜单 + PPT 子菜单创建
+        let agent_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_count, 1, "v38→v39 升级时应创建 Agent 主菜单");
+        let ppt_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ppt_count, 1, "v38→v39 升级时应创建 PPT 子菜单");
+        // 验证用户编辑保留（INSERT OR IGNORE 保护）
+        let prompt_content: String = conn
+            .query_row("SELECT content FROM prompts WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            prompt_content, "用户改的 prompt 内容",
+            "用户已编辑的 prompt 应保留（INSERT OR IGNORE）"
+        );
+    }
+
+    /// 已是 v39 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
+    #[test]
+    fn init_schema_already_v39_is_noop() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        // 走完整初始化路径（含 load_external_seeds）
+        init_schema(&conn).unwrap();
+        // 抓基线 row counts
+        let baseline_prompts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompts", [], |r| r.get(0))
+            .unwrap();
+        let baseline_agent: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent'",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        // 再次调 init_schema（应早返）
+        init_schema(&conn).unwrap();
+        // 验证 row counts 不变（早返 = 无 seed 加载 = 无重复插入）
+        let after_prompts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompts", [], |r| r.get(0))
+            .unwrap();
+        let after_agent: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent'",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(baseline_prompts, after_prompts, "v39+ 早返，prompts 不应重复插入");
+        assert_eq!(baseline_agent, after_agent, "v39+ 早返，Agent 菜单不应重复插入");
+    }
+
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
     /// 单词追加（去重 + normalize 拼音首字母排序）→ 单词移除 → 删版本。
     #[test]
