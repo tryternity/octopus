@@ -7,13 +7,28 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{Cipher, CipherData};
 
-#[derive(Debug, Serialize)]
+/// 一组密码相同（同 SHA-256）的 cipher。
+///
+/// 修复 #12：去掉了 `derive(Debug)`——派生的 Debug 会打印 `password_hash`
+/// （SHA-256 hex），属于敏感信息；改手写 impl 对 `password_hash` redact。
+#[derive(Serialize)]
 pub struct DuplicateGroup {
     /// SHA-256(password)，仅用于分组；不跨 IPC 输出，避免泄露哈希。
     /// （final-review #5/M2）
     #[serde(skip_serializing)]
     pub password_hash: String,
     pub cipher_ids: Vec<i64>,
+}
+
+impl std::fmt::Debug for DuplicateGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 修复 #12：password_hash 是 SHA-256 hex（敏感），Debug 输出统一 redact，
+        // 防止日志 / 错误信息意外泄露哈希。cipher_ids 不敏感，原样打印。
+        f.debug_struct("DuplicateGroup")
+            .field("password_hash", &"<redacted>")
+            .field("cipher_ids", &self.cipher_ids)
+            .finish()
+    }
 }
 
 pub fn find_duplicates(ciphers: &[Cipher]) -> Vec<DuplicateGroup> {
@@ -109,5 +124,36 @@ mod tests {
     fn test_skip_none_password() {
         let ciphers = vec![make_cipher(1, None), make_cipher(2, None)];
         assert!(find_duplicates(&ciphers).is_empty());
+    }
+
+    /// #12：Debug 输出必须 redact password_hash（SHA-256 hex，敏感），
+    /// 不能让日志 / 错误信息意外泄露哈希。cipher_ids 应正常显示。
+    #[test]
+    fn test_debug_redacts_password_hash() {
+        let ciphers = vec![
+            make_cipher(1, Some("topsecret")),
+            make_cipher(2, Some("topsecret")),
+        ];
+        let groups = find_duplicates(&ciphers);
+        assert_eq!(groups.len(), 1);
+
+        let debug_str = format!("{:?}", groups[0]);
+        assert!(
+            debug_str.contains("<redacted>"),
+            "Debug 应对 password_hash redact，got: {}",
+            debug_str
+        );
+        assert!(
+            !debug_str.contains(&groups[0].password_hash),
+            "Debug 不应泄露原始 hash：{}，got: {}",
+            groups[0].password_hash,
+            debug_str
+        );
+        // cipher_ids 不敏感，应仍可见
+        assert!(
+            debug_str.contains("cipher_ids"),
+            "Debug 应包含 cipher_ids 字段，got: {}",
+            debug_str
+        );
     }
 }

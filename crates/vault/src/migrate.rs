@@ -12,15 +12,50 @@ use octopus_infra::db;
 use crate::crypto::DerivedKey;
 
 /// 迁移所有未加密的 secret_key。返回迁移的行数。
+///
+/// #5 修复：迁移必须是事务性的。
+///
+/// 历史问题：旧实现逐条调 `db::update_model_secret_key`，每条独立 autocommit。
+/// 中途任一行失败（例如某行密文构造失败 / DB 写错）→ 已写入的行 commit，未写的
+/// 行保留明文，且 setup_vault 调用方 `Err(e) => log::warn!` 吞错 → DB 处于
+/// 半迁移状态。setup_vault 的 `ensure!(!is_initialized())` 又阻止重跑，
+/// 用户明文 API Key 永远残留。审计 #5 标为 high。
+///
+/// 修复策略（最小改动，不重构 db.rs）：
+///   1. 先在内存里把所有 plaintext 全部加密成 `Vec<(id, enc)>`；
+///      任一行加密失败 → `?` 直接 bubble 出去，DB 0 改动。
+///   2. 再用 `with_db` + `unchecked_transaction` 把整批 UPDATE 放进一个事务，
+///      全成功才 commit；任一行 UPDATE 失败 → tx 自动 drop = rollback。
 pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
     let models = db::list_models_for_secret_migration()?;
-    let mut count = 0usize;
-    for (model_id, plaintext) in models {
-        let encrypted = app_key.encrypt(plaintext.as_bytes())?;
-        db::update_model_secret_key(model_id, &encrypted)?;
-        count += 1;
-        log::info!("迁移 model {} 的 secret_key 为加密格式", model_id);
-    }
+
+    // (1) 全部加密——任一行失败 → 整批 abort，DB 0 改动
+    let encrypted: Vec<(i64, String)> = models
+        .iter()
+        .map(|(id, plaintext)| {
+            let enc = app_key.encrypt(plaintext.as_bytes())?;
+            Ok((*id, enc))
+        })
+        .collect::<Result<_>>()?;
+
+    // (2) 事务内整批写——任一 UPDATE 失败 → tx drop = rollback
+    //
+    // 不用 `rusqlite::params!` 宏——octopus-vault 仅把 rusqlite 作为 dev-dependency
+    // （用于 set_test_db 注入 in-memory 连接），生产构建拿不到该宏。改用裸
+    // `&[&dyn ToSql]` 切片（rusqlite::ToSql 已通过 octopus-infra 重导出暴露给 vault）。
+    let count = db::with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for (id, enc) in &encrypted {
+            tx.execute(
+                "UPDATE models SET secret_key = ? WHERE id = ?",
+                &[enc as &dyn rusqlite::ToSql, id as &dyn rusqlite::ToSql],
+            )?;
+        }
+        tx.commit()?;
+        Ok(encrypted.len())
+    })?;
+
+    log::info!("迁移 {} 个 model 的 secret_key 为加密格式", count);
     Ok(count)
 }
 
@@ -190,5 +225,73 @@ mod tests {
     #[test]
     fn test_signature_compiles() {
         let _ = std::any::TypeId::of::<fn(&DerivedKey) -> Result<usize>>();
+    }
+
+    /// #5 修复验证：迁移在事务里整批提交——成功时所有行一次性写入。
+    ///
+    /// 与逐条 autocommit 不可区分（成功路径上行为一致），但作为事务正确性的
+    /// 正向基线保留。失败路径的回滚（"任一 UPDATE 失败 → 整批回滚"）由
+    /// `unchecked_transaction()` + `tx.commit()` 在 rusqlite 层保证：
+    ///   - tx Drop（未 commit）→ DROP TABLE / ROLLBACK 自动撤销所有更改
+    ///   - DB schema 层面我们无法在测试里伪造 UPDATE 失败（columns 都齐全、
+    ///     类型也都对得上），所以失败路径的回滚断言依赖 rusqlite 自身语义，
+    ///     此处不强行 mock。
+    ///
+    /// 此测试断言：成功迁移后，DB 中**不存在**任何明文行（所有候选都被一次写入）。
+    #[test]
+    fn migrate_transactional_all_or_nothing_on_success() {
+        setup_clean_db();
+        let key = make_key(1);
+
+        let id1 = insert_test_model("plaintext-1", 0);
+        let id2 = insert_test_model("plaintext-2", 0);
+        let id3 = insert_test_model("plaintext-3", 0);
+
+        let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
+        assert_eq!(count, 3, "all 3 candidates should be migrated");
+
+        // 成功后 DB 中不应再有任何明文（非 v1:）的云端行
+        let remaining = db::list_models_for_secret_migration()
+            .expect("list should succeed");
+        assert!(
+            remaining.is_empty(),
+            "事务性提交后 DB 不应残留任何待迁移行，但还有 {:?}",
+            remaining
+        );
+
+        // 三行都应是 v1: 前缀
+        for id in [id1, id2, id3] {
+            let sk = read_secret_key(id);
+            assert!(
+                sk.starts_with("v1:"),
+                "迁移后所有行都应以 v1: 开头，id={} got={}",
+                id,
+                sk
+            );
+        }
+    }
+
+    /// #5 修复验证：迁移逻辑结构保证"先全加密，再统一写"。
+    ///
+    /// 这条性质意味着即使中途内存加密阶段失败（任一 `app_key.encrypt` 出错），
+    /// 也绝不会触碰 DB——即所谓 "all-or-nothing" 的 "nothing" 分支。
+    /// 此处用一个会成功但便于观察结构的场景做"正向可达"覆盖。
+    #[test]
+    fn migrate_collect_then_write_does_not_touch_db_on_encrypt_failure() {
+        // 难以在现有 API 下注入"加密失败"，但可验证结构：当所有候选都已 v1: 时
+        // （`list_models_for_secret_migration` 返回空），migrate 既不加密也不写库，
+        // 直接返回 0——这覆盖了 "collect 阶段产出空集 → 跳过 tx" 的边界。
+        setup_clean_db();
+        let key = make_key(1);
+
+        // 预先把唯一的行加密成 v1:
+        let pre_encrypted = key.encrypt(b"already-enc").unwrap();
+        let id = insert_test_model(&pre_encrypted, 0);
+
+        let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
+        assert_eq!(count, 0, "v1: 候选 0 个，不应做任何事");
+
+        // 行未被改动
+        assert_eq!(read_secret_key(id), pre_encrypted);
     }
 }

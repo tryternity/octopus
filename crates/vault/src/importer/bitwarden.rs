@@ -3,6 +3,8 @@
 //! 仅支持 type=1 (Login)。
 //! 加密导出（encrypted=true）不支持（MVP）。
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
@@ -34,6 +36,10 @@ struct BitwardenItem {
     fields: Vec<BitwardenField>,
     #[serde(default)]
     login: Option<BitwardenLogin>,
+    /// Bitwarden reprompt（0=None, 1=Password）。修复 #4：之前 serde 静默丢失，
+    /// 落库硬编码 None。`#[serde(default)]` 保证旧导出（无此字段）仍兼容。
+    #[serde(default)]
+    reprompt: i64,
 }
 
 fn default_type() -> i64 {
@@ -79,10 +85,51 @@ pub struct ImportReport {
     pub errors: Vec<String>,
 }
 
+/// 去重 key：spec §6.1 / INV-I3 要求「按 name + 第一条 uri 去重」。
+///
+/// `(name, first_uri)`：first_uri 取 `login.uris[0].uri`；无 login / 无 uri 时为 None。
+/// 这样能精确匹配 `import_bitwarden_json` 的输入与已落库 cipher——后者按
+/// `Cipher` 结构在 [`cipher_dedup_key`] 中算同样的 key。
+fn dedup_key(item: &BitwardenItem) -> (String, Option<String>) {
+    let first_uri = item
+        .login
+        .as_ref()
+        .and_then(|l| l.uris.first())
+        .map(|u| u.uri.clone());
+    (item.name.clone(), first_uri)
+}
+
+/// 已落库 Cipher → dedup key（与 [`dedup_key`] 对称，spec §6.1 / INV-I3）。
+///
+/// 与 `dedup_key(BitwardenItem)` 保持完全一致的 key 构造规则——
+/// name 取明文，first_uri 取 `login.uris[0].uri`（无则 None）。
+/// 这是 #2 重复导入判定的不变量。
+fn cipher_dedup_key(c: &crate::types::Cipher) -> (String, Option<String>) {
+    let first_uri = match &c.data {
+        CipherData::Login(l) => l.uris.first().map(|u| u.uri.clone()),
+    };
+    (c.name.clone(), first_uri)
+}
+
 pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportReport> {
     let export: BitwardenExport = serde_json::from_str(json).context("JSON 解析失败")?;
     ensure!(!export.encrypted, "不支持加密导出（仅 unencrypted JSON）");
 
+    // 修复 #2：先读出库内已有 cipher，按 (name, first_uri) 建索引避免重复落库。
+    // spec §6.1 / INV-I3 要求「按 name + 第一条 uri 去重」——重复导入同一份 JSON
+    // 不应让条目数翻倍。
+    let existing = storage::list_ciphers(key)
+        .map(|(ciphers, _failures)| {
+            // 注意：list_ciphers 返回的是已解密 Cipher（含明文 name + uris），
+            // 我们直接基于明文重算 dedup key 即可，不需要重新解密。
+            ciphers
+                .into_iter()
+                .map(|c| cipher_dedup_key(&c))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut seen: HashSet<(String, Option<String>)> = existing;
     let mut imported = 0;
     let mut skipped = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -100,6 +147,14 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             }
         };
 
+        // #2 去重：相同 (name, first_uri) 已存在（库内或本轮）→ 跳过。
+        let key_tuple = dedup_key(item);
+        if !seen.insert(key_tuple.clone()) {
+            skipped += 1;
+            continue;
+        }
+
+        // #4：从导入字段读 reprompt，不再硬编码 None。
         let input = CipherInput {
             folder_id: None,
             favorite: item.favorite,
@@ -130,7 +185,7 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
                 })
                 .collect(),
             password_history: vec![],
-            reprompt: RepromptType::None,
+            reprompt: RepromptType::from(item.reprompt),
         };
 
         match storage::create_cipher(&input, key) {
@@ -153,9 +208,17 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::RepromptType;
+    use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
         DerivedKey(crate::Zeroizing::new([byte; 32]))
+    }
+
+    /// 注入干净 in-memory DB（含 vault_ciphers 表，无数据）——与 cipher.rs 测试一致。
+    fn setup_clean_db() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
+        db::set_test_db(conn);
     }
 
     #[test]
@@ -209,5 +272,115 @@ mod tests {
         let key = make_key(1);
         let result = import_bitwarden_json("not json", &key);
         assert!(result.is_err());
+    }
+
+    /// #2：同一份 JSON 导入两次，第二次应全部 skipped（不翻倍）。
+    ///
+    /// spec §6.1 / INV-I3：按 (name, first_uri) 去重。
+    #[test]
+    fn test_import_dedup_on_second_import() {
+        setup_clean_db();
+        let key = make_key(7);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {
+                    "name": "GitHub",
+                    "type": 1,
+                    "login": {"username": "u", "password": "p",
+                              "uris": [{"uri": "https://github.com"}]}
+                },
+                {
+                    "name": "GitLab",
+                    "type": 1,
+                    "login": {"username": "u", "password": "p",
+                              "uris": [{"uri": "https://gitlab.com"}]}
+                }
+            ]
+        }"#;
+
+        // 第一次：全部导入
+        let r1 = import_bitwarden_json(json, &key).expect("first import");
+        assert_eq!(r1.imported, 2, "首次导入 2 条全部新增");
+        assert_eq!(r1.skipped, 0);
+
+        // 第二次：同样的 JSON —— 应全部去重跳过，库内不翻倍
+        let r2 = import_bitwarden_json(json, &key).expect("second import");
+        assert_eq!(r2.imported, 0, "重复导入不应新增");
+        assert_eq!(r2.skipped, 2, "应跳过 2 条已存在");
+
+        // 校验库内确实只有 2 行
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list");
+        assert_eq!(ciphers.len(), 2, "去重后库内应有 2 条，不应翻倍");
+    }
+
+    /// #2 补充：不同 name 或不同 first_uri 视为不同条目，应分别入库。
+    #[test]
+    fn test_import_distinct_keys_both_added() {
+        setup_clean_db();
+        let key = make_key(8);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {"name": "A", "type": 1,
+                 "login": {"uris": [{"uri": "https://a.com"}]}},
+                {"name": "B", "type": 1,
+                 "login": {"uris": [{"uri": "https://b.com"}]}}
+            ]
+        }"#;
+        let r = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(r.imported, 2);
+        assert_eq!(r.skipped, 0);
+    }
+
+    /// #4：导入含 `reprompt: 1` 的 JSON，落库 cipher.reprompt 应为 Password。
+    #[test]
+    fn test_import_reprompt_password_persists() {
+        setup_clean_db();
+        let key = make_key(9);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {
+                    "name": "Sensitive",
+                    "type": 1,
+                    "reprompt": 1,
+                    "login": {"username": "u", "password": "p",
+                              "uris": [{"uri": "https://example.com"}]}
+                }
+            ]
+        }"#;
+
+        let r = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(r.imported, 1);
+
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list");
+        assert_eq!(ciphers.len(), 1);
+        assert_eq!(
+            ciphers[0].reprompt,
+            RepromptType::Password,
+            "reprompt=1 应落库为 Password（修复 #4：不再硬编码 None）"
+        );
+    }
+
+    /// #4 补充：缺省 / reprompt=0 落库为 None（向后兼容）。
+    #[test]
+    fn test_import_reprompt_default_is_none() {
+        setup_clean_db();
+        let key = make_key(10);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {
+                    "name": "Normal",
+                    "type": 1,
+                    "login": {"uris": [{"uri": "https://example.com"}]}
+                }
+            ]
+        }"#;
+        let r = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(r.imported, 1);
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list");
+        assert_eq!(ciphers[0].reprompt, RepromptType::None);
     }
 }

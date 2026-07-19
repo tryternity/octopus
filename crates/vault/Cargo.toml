@@ -41,7 +41,11 @@ log = "0.4"
 parking_lot = { workspace = true }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
+# 修复 #5：migrate_secret_keys_to_encrypted 用 db::with_db + unchecked_transaction
+# 整批 UPDATE（事务化），需要直接引用 rusqlite::ToSql trait 做参数绑定。
+# 与 octopus-infra 同版本同 feature（避免重复链接两份 sqlite）。
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 # 与 octopus-infra 同版本——用于 set_test_db 注入 in-memory 连接，不进入发布构建。
-rusqlite = { version = "0.31", features = ["bundled"] }
+# （已在 [dependencies] 中；保留 [dev-dependencies] 段供后续可能新增的 dev-only 依赖）

@@ -61,6 +61,12 @@ fn match_uri_one(
     let target = url.as_str();
     let cipher_uri = &lu.uri;
 
+    // 修复 #11：空 cipher_uri 视为 Never——避免 starts_with("") / Regex::new("")
+    // 恒真匹配任意站点。Domain / Host 策略下空串也会走 fallback 路径误匹配。
+    if cipher_uri.trim().is_empty() {
+        return false;
+    }
+
     match strategy {
         MatchType::Domain => psl::etld_plus_one(url.host_str().unwrap_or(""))
             .map(|target_domain| matches_domain(&target_domain, cipher_uri, equivalent))
@@ -263,6 +269,41 @@ mod tests {
         assert_eq!(
             find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),
             1
+        );
+    }
+
+    /// #11：空 cipher_uri + StartsWith 不应匹配任意 URL（之前 starts_with("") 恒真）。
+    #[test]
+    fn test_empty_cipher_uri_startswith_does_not_match() {
+        let cipher = make_cipher(&[("", Some(MatchType::StartsWith))]);
+        let url = Url::parse("https://example.com/anything").unwrap();
+        assert_eq!(
+            find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),
+            0,
+            "空 cipher_uri 不应匹配任意站点（修复 #11）"
+        );
+    }
+
+    /// #11 补充：空 cipher_uri + RegularExpression 也不应匹配。
+    #[test]
+    fn test_empty_cipher_uri_regex_does_not_match() {
+        let cipher = make_cipher(&[("", Some(MatchType::RegularExpression))]);
+        let url = Url::parse("https://example.com").unwrap();
+        assert_eq!(
+            find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),
+            0,
+            "空 cipher_uri + Regex 不应匹配（Regex::new(\"\") 恒真——已修复）"
+        );
+    }
+
+    /// #11 补充：空白字符（仅空格）的 cipher_uri 也应视为 Never。
+    #[test]
+    fn test_whitespace_only_cipher_uri_does_not_match() {
+        let cipher = make_cipher(&[("   ", Some(MatchType::StartsWith))]);
+        let url = Url::parse("https://example.com").unwrap();
+        assert_eq!(
+            find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),
+            0
         );
     }
 }

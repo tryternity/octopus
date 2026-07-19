@@ -25,13 +25,33 @@ pub struct FolderDto {
 }
 
 /// 列出所有 folder（按 sort_order ASC）。name 自动解密。
-pub fn list_folders(key: &DerivedKey) -> Result<Vec<FolderDto>> {
+///
+/// **单行容错**（修复 #9）：照搬 `cipher::list_ciphers` 修复 #6 的模式——
+/// 单行解密失败不让整表 Err，坏行记 log + 收集到 `failures` 返回，
+/// 调用方可 toast 提示用户「X 个文件夹解密失败已跳过」。
+///
+/// 失败常见原因：DB 部分写入、bit-flip、跨版本迁移残留、name 字段损坏。
+/// 任一都不应让用户看不到其他完好的 N-1 个文件夹。
+///
+/// 返回 `(成功的 folder 列表, 失败的 folder_id 列表)`。
+pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<i64>)> {
     let rows = db::list_vault_folders()?;
     let mut out = Vec::with_capacity(rows.len());
+    let mut failures: Vec<i64> = Vec::new();
     for row in rows {
-        out.push(row_to_dto(&row, key)?);
+        match row_to_dto(&row, key) {
+            Ok(dto) => out.push(dto),
+            Err(e) => {
+                log::warn!(
+                    "folder id={} 解密失败，已跳过（其他文件夹继续可见）：{}",
+                    row.id,
+                    e
+                );
+                failures.push(row.id);
+            }
+        }
     }
-    Ok(out)
+    Ok((out, failures))
 }
 
 /// 创建 folder。`name` 是明文；内部用 `key.encrypt()` 加密后写库。
@@ -89,8 +109,9 @@ mod tests {
     fn list_folders_empty_initially() {
         setup_clean_db();
         let key = make_key(1);
-        let folders = list_folders(&key).expect("list should succeed");
+        let (folders, failures) = list_folders(&key).expect("list should succeed");
         assert!(folders.is_empty(), "fresh DB should have no folders");
+        assert!(failures.is_empty(), "fresh DB 应无失败行");
     }
 
     /// create_folder + list_folders 往返：明文名 → 加密入库 → 解密回明文。
@@ -104,7 +125,8 @@ mod tests {
         let id = create_folder("工作", &key).expect("create should succeed");
         assert!(id > 0, "new folder id should be positive");
 
-        let folders = list_folders(&key).expect("list should succeed");
+        let (folders, failures) = list_folders(&key).expect("list should succeed");
+        assert!(failures.is_empty());
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].id, id);
         assert_eq!(folders[0].name, "工作", "name 应被还原为明文");
@@ -131,7 +153,8 @@ mod tests {
         let id_b = create_folder("beta", &key).expect("create b");
         let id_c = create_folder("gamma", &key).expect("create c");
 
-        let folders = list_folders(&key).expect("list");
+        let (folders, failures) = list_folders(&key).expect("list");
+        assert!(failures.is_empty());
         assert_eq!(folders.len(), 3);
         let names: Vec<String> = folders.iter().map(|f| f.name.clone()).collect();
         assert!(names.contains(&"alpha".to_string()));
@@ -152,7 +175,8 @@ mod tests {
         let id = create_folder("old", &key).expect("create");
         rename_folder(id, "new name", &key).expect("rename");
 
-        let folders = list_folders(&key).expect("list");
+        let (folders, failures) = list_folders(&key).expect("list");
+        assert!(failures.is_empty());
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].name, "new name");
     }
@@ -167,24 +191,47 @@ mod tests {
         let id_b = create_folder("drop", &key).expect("create b");
         delete_folder(id_b).expect("delete");
 
-        let folders = list_folders(&key).expect("list");
+        let (folders, failures) = list_folders(&key).expect("list");
+        assert!(failures.is_empty());
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].id, id_a);
         assert_eq!(folders[0].name, "keep");
     }
 
-    /// 用错误的 key 解密 folder.name 应失败（验证 name 确实是被加密过的）。
+    /// 用错误的 key 解密 folder.name：修复 #9 后整表不再 Err，
+    /// 而是返回 `(空 Vec, 含该 id 的 failures)`——坏行跳过，其他行仍可见。
     #[test]
-    fn list_folders_with_wrong_key_fails() {
+    fn list_folders_with_wrong_key_skips_bad_row() {
         setup_clean_db();
         let key1 = make_key(10);
         let key2 = make_key(11);
 
-        create_folder("secret-folder", &key1).expect("create");
-        let result = list_folders(&key2);
-        assert!(
-            result.is_err(),
-            "用错误 key 解密应失败——证明 name 确实被加密"
+        let id = create_folder("secret-folder", &key1).expect("create");
+        let (folders, failures) = list_folders(&key2).expect(
+            "修复 #9 后错误 key 不应让整表 Err，而是返回部分结果",
         );
+        assert!(
+            folders.is_empty(),
+            "错误 key 下无行可解密，folders 应为空"
+        );
+        assert_eq!(failures, vec![id], "失败行 id 应进 failures");
+    }
+
+    /// #9 容错核心场景：库内 2 行，1 行用 key1 加密、1 行用 key2 加密，
+    /// 用 key1 list 时：key2 加密的行应进 failures，key1 行仍正常返回。
+    #[test]
+    fn list_folders_partial_failure_keeps_other_rows() {
+        setup_clean_db();
+        let key1 = make_key(20);
+        let key2 = make_key(21);
+
+        let id_ok = create_folder("good", &key1).expect("create good");
+        let id_bad = create_folder("corrupted", &key2).expect("create bad");
+
+        let (folders, failures) = list_folders(&key1).expect("partial result");
+        assert_eq!(folders.len(), 1, "key1 应能解密自己加密的行");
+        assert_eq!(folders[0].id, id_ok);
+        assert_eq!(folders[0].name, "good");
+        assert_eq!(failures, vec![id_bad], "key2 加密的行应进 failures");
     }
 }

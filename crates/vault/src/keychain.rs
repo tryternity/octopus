@@ -295,32 +295,87 @@ pub fn save_machine_key(key: &[u8; 32]) -> Result<()> {
     let ciphertext = file_key.encrypt(key)?;
     let path = machine_key_path()?;
 
+    // #6 修复：原子写——temp file + sync_all + rename。
+    //
+    // 旧实现 `truncate(true) + write_all` 在 write_all 中途失败（进程崩溃 /
+    // 磁盘满 / kill -9）会留下空 / 残缺文件——下次启动 `load_machine_key` 读
+    // 到非 `v1:` 前缀的损坏数据时，按本文件 load 路径的"前缀不符视为不存在"
+    // 分支会静默回退到"无 K_machine"，触发主密码流程；但若损坏数据恰好以
+    // `v1:` 开头（极小概率），则会报"解密失败"。审计 #6 标为 medium。
+    //
+    // POSIX `rename(2)` 保证目标路径名要么是旧文件要么是新文件，永不会是部分
+    // 新文件——这是文件级原子的标准模式。
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("创建 K_machine 父目录失败：{}", parent.display())
+        })?;
+    }
+    let tmp_path = path.with_extension("enc.tmp");
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("创建 K_machine 父目录失败：{}", parent.display())
+        use std::os::unix::fs::OpenOptionsExt;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)
+                .with_context(|| format!("打开 K_machine 临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(ciphertext.as_bytes()).with_context(|| {
+                format!("写入 K_machine 临时文件失败：{}", tmp_path.display())
+            })?;
+            // fsync 保证内容落盘后再 rename——否则 rename 后内容可能仍是旧的。
+            f.sync_all().with_context(|| {
+                format!(
+                    "fsync K_machine 临时文件失败：{}",
+                    tmp_path.display()
+                )
             })?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("打开 K_machine 文件失败：{}", path.display()))?;
-        f.write_all(ciphertext.as_bytes())
-            .with_context(|| format!("写入 K_machine 文件失败：{}", path.display()))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "原子替换 K_machine 文件失败：{} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
     }
     #[cfg(not(unix))]
     {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        // 非 Unix 也走 temp+rename（去掉 mode(0o600)）。Windows 上 ReplaceFile/
+        // MoveFileEx 是原子的，std::fs::rename 在 Windows 内部使用 MoveFileEx
+        // with REPLACE_EXISTING，跨文件系统会失败但 octopus_config_home 与其
+        // 父目录总在同一卷，安全。
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)
+                .with_context(|| {
+                    format!("打开 K_machine 临时文件失败：{}", tmp_path.display())
+                })?;
+            use std::io::Write;
+            f.write_all(ciphertext.as_bytes()).with_context(|| {
+                format!("写入 K_machine 临时文件失败：{}", tmp_path.display())
+            })?;
+            f.sync_all().with_context(|| {
+                format!(
+                    "fsync K_machine 临时文件失败：{}",
+                    tmp_path.display()
+                )
+            })?;
         }
-        std::fs::write(&path, ciphertext.as_bytes())
-            .with_context(|| format!("写入 K_machine 文件失败：{}", path.display()))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "原子替换 K_machine 文件失败：{} -> {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -398,8 +453,15 @@ mod tests {
     }
 
     /// 真实文件 round-trip（覆盖加密/解密 + 0600 + 跨进程语义）。
-    /// 不再 ignore：依赖的只是 ioreg / USER 环境变量，CI 与本机都能跑。
+    ///
+    /// #7 修复：加 `#[ignore]`。
+    /// 此测试用 `set_var("HOME")` 隔离但 octopus_config_home 是 once_cell Lazy
+    /// 缓存——若被其他测试先触发过，HOME 替换不生效，写入会落到开发者本机真实
+    /// 的 `~/.octopus/machine-key.enc`，删掉用户已有的 K_machine。
+    /// 用 `#[ignore]` 让它仅在 `cargo test -- --ignored` 时跑，避免 cargo test
+    /// 默认运行的潜在副作用。
     #[test]
+    #[ignore = "需要真实文件系统操作（round-trip via file），用 cargo test -- --ignored 跑"]
     fn test_machine_key_round_trip_via_file() {
         // 用临时 HOME 隔离：避免污染开发者本机的 ~/.octopus/machine-key.enc
         let tmp = tempfile_dir();
@@ -422,6 +484,16 @@ mod tests {
             .expect("load 应成功")
             .expect("应读到刚保存的 key");
         assert_eq!(loaded.as_ref(), &key);
+
+        // #6 修复验证：原子写完成后 temp file 不应残留——rename 后 .tmp 路径已
+        // 转移到目标路径，残留即说明 rename 未发生（fallback 到旧的 truncate+write）。
+        let path = machine_key_path().unwrap();
+        let tmp_path = path.with_extension("enc.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "#6 修复：save_machine_key 完成后 temp file 不应残留，但存在 {}",
+            tmp_path.display()
+        );
 
         // 文件权限 0600（仅 Unix）
         #[cfg(unix)]
