@@ -2,6 +2,9 @@
 name = "octopus-infra"
 version = "0.1.0"
 edition = "2021"
+# release 打包要带上外置 seed 文件（seeds/prompts/*.md 被 include_str! 引用，
+# 也被桌面端「复原默认」按钮按路径读取）。缺此字段时 cargo publish 只发 src/。
+include = ["src/**", "seeds/**", "Cargo.toml"]
 
 # 基础设施 crate：无项目内 crate 依赖，可被任意项目 crate 依赖。
 # 含 consts（固定常量）+ paths（octopus_config_home 等路径工具）；未来加时间等。

@@ -823,6 +823,21 @@ pub fn delete_script_runs(ids: Vec<i64>) -> Result<(), String> {
     octopus_infra::db::delete_script_runs(&ids).map_err(|e| e.to_string())
 }
 
+/// 按 prompt id 复原默认内容：读 seeds/prompts/<name>.md 文件内容并返回字符串。
+/// 不直接写 DB——前端把内容塞回 textarea，由用户点「保存」触发 `update_prompt` 才入库。
+/// id → name 映射：1 → "default-polish"，2 → "advanced-polish"。
+#[tauri::command]
+pub fn restore_prompt_from_seed(prompt_id: i64) -> Result<String, String> {
+    let name = match prompt_id {
+        1 => "default-polish",
+        2 => "advanced-polish",
+        _ => return Err(format!("prompt id {} 无对应 seed 文件", prompt_id)),
+    };
+    let path = octopus_infra::seeds::seed_prompt_path(name)
+        .ok_or_else(|| format!("seed 文件不存在: {}.md", name))?;
+    std::fs::read_to_string(&path).map_err(|e| format!("读 seed 文件失败: {}", e))
+}
+
 // ── 统一执行入口 ──
 
 /// 按 CJK 检测方向，返回翻译 system prompt。

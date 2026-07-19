@@ -1467,14 +1467,9 @@ pub fn insert_prompt(title: &str, content: &str, description: &str) -> Result<i6
     with_db(|conn| insert_prompt_at(conn, title, content, description))
 }
 
-/// 按 id 更新 prompt（拒绝 is_system=1）。
+/// 按 id 更新 prompt（允许 system prompt 编辑——配合「复原默认」按钮）。
+/// 注意：UPDATE 语句不修改 is_system 字段，即系统/用户身份保持不变。
 fn update_prompt_at(conn: &Connection, id: i64, title: &str, content: &str, description: &str) -> Result<()> {
-    let is_system: i32 = conn
-        .query_row("SELECT is_system FROM prompts WHERE id=?1", params![id], |r| r.get(0))
-        .context("prompt 不存在")?;
-    if is_system != 0 {
-        anyhow::bail!("系统内置 prompt 不可编辑");
-    }
     conn.execute(
         "UPDATE prompts SET title=?1, content=?2, description=?3, updated_at=datetime('now')
          WHERE id=?4",
@@ -4762,8 +4757,8 @@ mod tests {
         assert_eq!(updated.title, "技术写作V2");
         assert_eq!(updated.content, "rule2");
 
-        // update 系统 prompt 被拒
-        assert!(update_prompt_at(&conn, 1, "x", "y", "z").is_err());
+        // update 系统 prompt 现在允许（配合「复原默认」按钮：编辑/复原都走 update）
+        // 详见 update_prompt_at_allows_system_prompt 用例的完整断言。
 
         // delete 系统 prompt 被拒
         assert!(delete_prompt_at(&conn, 1).is_err());
@@ -4785,6 +4780,26 @@ mod tests {
         let list = list_prompts_at(&conn).unwrap();
         let dup_count = list.iter().filter(|p| p.title == "同名").count();
         assert_eq!(dup_count, 2, "title 允许重复");
+    }
+
+    /// update_prompt_at 允许更新 system prompt（is_system 字段保持不变）。
+    /// 历史：曾因「不可编辑」bail，移除拒绝以支持「复原默认」按钮（先编辑再保存）。
+    #[test]
+    fn update_prompt_at_allows_system_prompt() {
+        let conn = open_init();
+        // open_init 只建表，不 seed——需手动加载外部 seed（id=1/2 系统 prompt）
+        crate::seeds::load_external_seeds(&conn).unwrap();
+        // seed 后 id=1 是系统内置（默认润色）
+        let before = load_prompt_at(&conn, 1).unwrap().unwrap();
+        assert!(before.is_system, "seed id=1 应是 is_system=true");
+
+        // 更新系统 prompt 成功
+        update_prompt_at(&conn, 1, "改过的标题", "改过的内容", "改过的描述").unwrap();
+        let updated = load_prompt_at(&conn, 1).unwrap().unwrap();
+        assert_eq!(updated.title, "改过的标题");
+        assert_eq!(updated.content, "改过的内容");
+        assert_eq!(updated.description, "改过的描述");
+        assert!(updated.is_system, "is_system 字段应保持 true（不被翻转）");
     }
 
     // ── FTS5 搜索（trigram MATCH >=3 char，LIKE 回退 <3 char）──

@@ -352,6 +352,9 @@ settings:
     delete: Delete
     confirmDelete: Confirm Delete
     empty: No prompts yet
+    restore: Restore Default
+    restored: Restored to default (click Save to apply)
+    restoreFailed: "Restore failed:"
   history:
     polishPolished: Polished
     polishFailed: Polish Failed
