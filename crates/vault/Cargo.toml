@@ -17,6 +17,10 @@ rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 data-encoding = "2"
 subtle = "2"
+# A2 修复（第五轮审查）：显式启用 generic-array 的 zeroize feature——
+# 让 `Hmac::finalize` 返回的 GenericArray<U64> 在离开作用域时自动 zeroize，
+# 含后 32B chain code（原仅 copy 进 Zeroizing 数组被清，原件仍残留栈帧）。
+generic-array = { version = "0.14", features = ["zeroize"] }
 
 # TOTP
 # otpauth feature 启用 TOTP::from_url 解析 otpauth:// URL（支持 SHA256/SHA512、digits=8、period=60 变体）

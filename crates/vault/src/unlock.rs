@@ -110,10 +110,26 @@ pub fn setup_vault(password: &str) -> Result<UnlockedKeys> {
     // 的 `ensure!(!is_initialized())` 又阻止重跑，无重试入口。
     // 现迁移已事务化（migrate.rs #5 修复），成功=全完成，失败=完全未动 DB——
     // 直接 bubble 让用户看到"初始化失败"而非静默半迁移。
+    //
+    // **A1 修复（第五轮审查）**：迁移失败时必须回滚 vault_meta——否则 vault_meta
+    // 已落盘 + secret_key 仍全明文 + `ensure!(!is_initialized())` 阻止重跑 →
+    // 不可恢复的「已初始化但全明文」状态。`save_vault_meta` 在迁移之前已独立
+    // commit（不同表无法廉价合并到同一事务，强行合并需重构 meta 模块所有写路径），
+    // 故采用「失败时显式 DELETE vault_meta」的对称回滚：让 is_initialized() 回到
+    // false，用户可重新走 setup。即使 DELETE 本身失败也不掩盖迁移错误——
+    // 返回的 Err 同时报告「迁移失败 + 回滚失败」，让用户/开发者知道需手动介入。
     match crate::migrate::migrate_secret_keys_to_encrypted(&app_key) {
         Ok(n) if n > 0 => log::info!("已迁移 {} 个 model 的 secret_key 为加密格式", n),
         Ok(_) => log::debug!("无明文 secret_key 需迁移"),
-        Err(e) => return Err(e.context("secret_key 迁移失败")),
+        Err(migrate_err) => {
+            // 迁移失败 → 显式回滚 vault_meta，恢复 setup 可重试
+            if let Err(rollback_err) = octopus_infra::db::delete_vault_meta_row() {
+                return Err(migrate_err.context(format!(
+                    "secret_key 迁移失败，且回滚 vault_meta 也失败（需手动清 DB）：{rollback_err}"
+                )));
+            }
+            return Err(migrate_err.context("secret_key 迁移失败（已回滚 vault_meta，可重试 setup）"));
+        }
     }
 
     Ok(UnlockedKeys {
@@ -171,8 +187,18 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
     let params = meta_to_kdf_params(&meta);
     let master_root_key = derive_master_root_key(password.as_bytes(), &meta.kdf_salt, &params)?;
 
-    // 解 user_vault_key
-    let result = (|| -> Result<UnlockedKeys> {
+    // 解 user_vault_key + app_key（密码校验阶段）。
+    //
+    // B2 修复（第五轮审查）：原实现把「密码校验（decrypt）」与「refresh 副作用
+    // （写 local_enc）」捆绑在闭包里，match result 在任意 Err 时 record_failure()。
+    // 流程 C 写 local_enc 失败（save_vault_meta DB 错 / Keychain 错）会让正确密码
+    // 被判失败 + 退避，且整个 unlock 返 Err（用户输对密码却解锁失败）。
+    //
+    // 新实现分两阶段：
+    //   1. 密码校验阶段：仅做 decrypt，失败 = 密码错 → record_failure
+    //   2. 副作用阶段（refresh）：失败不调 record_failure（密码是对的），但仍返 Err。
+    //      unlock 本身确实失败（用户没拿到有效 session），但下一次立即重试不会被挡。
+    let auth_result = (|| -> Result<UnlockedKeys> {
         let user_vault_bytes = master_root_key.decrypt(&meta.protected_user_vault_key)?;
         ensure!(user_vault_bytes.len() == 32, "user_vault_key 长度异常");
         let mut uv_arr = [0u8; 32];
@@ -186,26 +212,35 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
         ak_arr.copy_from_slice(&app_key_bytes);
         let app_key = DerivedKey::from_raw(ak_arr);
 
-        // 流程 C 特有：用本机 K_machine 重新加密 app_key → 落盘
-        // 这样下次本机启动就能用流程 B 无感
-        refresh_app_key_local_enc(&app_key)?;
-
         Ok(UnlockedKeys {
             user_vault_key,
             app_key,
         })
     })();
 
-    match result {
-        Ok(keys) => {
-            crate::attempt_guard::guard().reset(); // 成功 → 重置计数
-            Ok(keys)
+    let keys = match auth_result {
+        Ok(k) => {
+            crate::attempt_guard::guard().reset(); // 密码校验成功 → 重置计数
+            k
         }
         Err(e) => {
-            crate::attempt_guard::guard().record_failure(); // 失败 → 计数 + 退避
-            Err(e)
+            crate::attempt_guard::guard().record_failure(); // 密码错 → 计数 + 退避
+            return Err(e);
         }
+    };
+
+    // 流程 C 特有：用本机 K_machine 重新加密 app_key → 落盘
+    // 这样下次本机启动就能用流程 B 无感。
+    //
+    // 密码已校验通过，此处失败属"副作用失败"——不调 record_failure（密码是对的），
+    // 但仍返 Err（unlock 未完成）。这样用户可立即重试不被退避挡。
+    if let Err(e) = refresh_app_key_local_enc(&keys.app_key) {
+        // 已 reset 过 guard，不再因副作用失败而污染退避计数
+        return Err(e.context("密码正确但刷新 app_key_local_enc 失败"));
     }
+
+    // refresh 后 keys 不变（refresh 仅改 vault_meta，不改 in-memory 派生 key）
+    Ok(keys)
 }
 
 /// 流程 E：改主密码。
@@ -283,6 +318,11 @@ pub fn change_master_password(old_password: &str, new_password: &str) -> Result<
         protected_private_key: meta.protected_private_key,
     };
     meta::save_vault_meta(&input)?;
+
+    // B1 修复（第五轮审查）：成功改密后必须 reset guard——与 unlock 成功路径
+    // (`:201`) 对称。否则用户连续输错旧密码几次后改密成功，退避计数仍累计，
+    // 下次 vault_unlock 被 remaining_wait() 挡（"尝试过于频繁"）。
+    crate::attempt_guard::guard().reset();
 
     // user_vault_key / app_key 在改密码流程中不变（INV-7），原样返回让 caller 刷 session。
     Ok(UnlockedKeys {
@@ -649,5 +689,129 @@ mod tests {
         );
 
         let _ = keychain::delete_machine_key();
+    }
+
+    // === 第五轮审查修复测试 ===
+
+    /// B1（第五轮审查）：连续输错旧密码 → 等退避窗口过后改密成功，guard 必须 reset。
+    ///
+    /// 旧实现：失败路径 `record_failure()` 累计计数，但成功路径无 `reset()` →
+    /// 连续输错几次后改密成功，下次 vault_unlock 被 `remaining_wait()` 挡。
+    /// 修复：`change_master_password` 成功路径也调 `reset()`。
+    ///
+    /// 测试时序：
+    ///   1. 错旧密码 3 次 → 累计失败计数（delay=0/1/2s）
+    ///   2. 等待退避窗口过去（最多 2s）
+    ///   3. 用正确旧密码改密成功 → 应 reset
+    ///   4. 立即再试 unlock 不会被退避挡
+    #[test]
+    fn test_change_password_resets_guard_on_success() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let old_pw = "Old-password-1!";
+        let new_pw = "New-password-2!";
+        let _ = setup_vault(old_pw).expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        // 连续输错旧密码触发退避（第 3 次失败 delay=2s）
+        for _ in 0..3 {
+            // 错旧密码会立即 record_failure（前 2 次 delay=0/1，remaining_wait 暂不挡）
+            // 第 3+ 次调用一开始就被 remaining_wait 挡 bail，但 record_failure 已累计
+            let _ = change_master_password("wrong-old-pw-WITH-STRENGTH-1!", new_pw).err();
+        }
+        // 等待最长退避窗口过去（BACKOFF_SECS[2]=2s，留足余量到 3s）
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // 用正确旧密码改密成功——B1 修复后成功路径 reset guard
+        change_master_password(old_pw, new_pw).expect("change with correct old pw");
+
+        assert!(
+            crate::attempt_guard::guard().remaining_wait().is_none(),
+            "B1 修复：改密成功后 guard 应被 reset，不再有退避窗口"
+        );
+
+        // 立即用新密码 unlock 应能成功（验证 reset 后不被挡）
+        let _ = unlock_with_master_password(new_pw).expect("unlock with new pw should work");
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// B2（第五轮审查）：refresh_app_key_local_enc 失败时**不**应污染退避计数。
+    ///
+    /// 旧实现：闭包把「密码校验」与「副作用」捆绑，任意 Err 都 record_failure()。
+    /// 修复：密码校验通过后 reset，副作用失败仅返 Err 不调 record_failure。
+    ///
+    /// 难以在当前 in-memory 测试基础设施下注入 refresh 失败（Keychain / save_vault_meta
+    /// 都不会失败），故此处做"正向可达"覆盖：unlock 成功后 guard 应是已 reset 状态。
+    /// 退避污染的回归断言靠"连续失败 + 成功解锁后 remaining_wait 应为 None"——
+    /// 与 B1 测试结构对称。
+    #[test]
+    fn test_unlock_success_clears_guard_after_wrong_attempts() {
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let pw = "Correct-password-1!";
+        let _ = setup_vault(pw).expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        // 连续输错密码触发退避
+        for _ in 0..3 {
+            let _ = unlock_with_master_password("wrong-pw").err();
+        }
+        // 等待退避窗口过去（delay 序列第 3 次 = 2s，sleep 等 3s 保证已过）
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // 用正确密码解锁——应成功且 reset
+        let _ = unlock_with_master_password(pw).expect("unlock with correct pw");
+        assert!(
+            crate::attempt_guard::guard().remaining_wait().is_none(),
+            "B2 修复：正确密码解锁后 guard 应被 reset（副作用失败不污染）"
+        );
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// A1（第五轮审查）：`delete_vault_meta_row` 显式回滚函数的单元测试。
+    ///
+    /// 验证 setup 失败路径的回滚能力——若迁移失败，setup_vault 调用此函数
+    /// 让 is_initialized() 回到 false，用户可重新走 setup。
+    /// 此处直接测 `delete_vault_meta_row` 的语义：save → is_initialized=true →
+    /// delete → is_initialized=false。
+    #[test]
+    fn test_delete_vault_meta_row_resets_is_initialized() {
+        setup_clean_db();
+
+        // 全新库 → 未初始化
+        assert!(!is_initialized().expect("fresh DB"));
+
+        // 写一行 vault_meta → 已初始化
+        let input = VaultMetaInput {
+            kdf_type: 0,
+            kdf_salt: vec![1u8; 32],
+            kdf_iterations: 3,
+            kdf_memory_kib: 65_536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:dummy".into(),
+            app_key_local_enc: "v1:dummy".into(),
+            app_key_sync_enc: "v1:dummy".into(),
+            security_stamp: "stamp".into(),
+            equivalent_domains: "[]".into(),
+            public_key: None,
+            protected_private_key: None,
+        };
+        meta::save_vault_meta(&input).expect("save");
+        assert!(is_initialized().expect("after save"));
+
+        // delete → 回到未初始化（A1 修复的核心语义）
+        octopus_infra::db::delete_vault_meta_row().expect("delete vault_meta");
+        assert!(
+            !is_initialized().expect("after delete"),
+            "A1 修复：delete_vault_meta_row 应让 is_initialized 回到 false"
+        );
+
+        // 再次 save（模拟用户重新走 setup）应能成功——无残留
+        meta::save_vault_meta(&input).expect("save again");
+        assert!(is_initialized().expect("after re-save"));
     }
 }

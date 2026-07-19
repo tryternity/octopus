@@ -7038,4 +7038,80 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 | 第二轮（A-F 复审） | 6 | 5 | 1（B） |
 | 第三轮（新发现 + 次要） | 5 | 3 | 2 |
 | 第四轮（12 项） | 12 | 12 | 0 |
-| **总计** | **36** | **29** | **7** |
+| **小计** | **36** | **29** | **7** |
+
+---
+
+## 修订：第五轮审查 8 项（2026-07-19）
+
+收到第五轮审查报告（针对第四轮 commit 19153933 的复审），4 个新发现/回归（A1/B1/B2/A2）+ 4 个低优先级观察（O1-O4）。逐条复查源码后：**A1/B1/B2/A2/O2/O3 全部成立修复，O1/O4 文档化**（O1 工程成本远超收益；O4 与前端对齐是更重要的不变量）。
+
+### 🔴 A1 — 迁移失败后 vault_meta 不回滚 → 不可恢复（必修）
+
+**问题**：`setup_vault` 在迁移之前已独立 commit `vault_meta`（`:104 save_vault_meta`），迁移失败（`:113` `return Err`）→ vault_meta 已落盘 + secret_key 仍全明文 + `ensure!(!is_initialized())`（`:66`）阻止重跑 + 全仓库无 reset/destroy 入口 → 不可恢复的「已初始化但部分明文」状态。`unlock.rs:107-112` 修复注释声称「失败=完全未动 DB」推理错误（迁移 UPDATE 没动 DB，但 vault_meta 动了）。
+
+**修复**：
+- `infra/db.rs` 新增 `delete_vault_meta_row()`（DELETE FROM vault_meta WHERE id=1）
+- `unlock.rs setup_vault` 迁移失败时显式调 `delete_vault_meta_row()` 回滚——让 `is_initialized()` 回到 false，用户可重新走 setup
+- 不采用「save_vault_meta 与迁移合并到同事务」方案：强行合并需重构 meta 模块所有写路径，工程成本远大于「失败时显式 DELETE 回滚」
+- 即使 DELETE 本身失败也不掩盖迁移错误——返回的 Err 同时报告「迁移失败 + 回滚失败」
+
+### 🟠 B1 — change_master_password 成功后缺 guard().reset()（必修）
+
+**问题**：失败路径 `record_failure()`（`:240`）累计退避，但成功路径（`:287-292`）无 `reset()`。连续输错旧密码几次后改密成功 → 退避计数仍累计 → 下次 `vault_unlock` 被 `remaining_wait()` 挡。`unlock.rs:580` 测试自己手动 reset 并注释「避免挡住下面的成功路径」——开发者意识到污染但只补了测试。
+
+**修复**：`change_master_password` 成功路径加 `crate::attempt_guard::guard().reset()`，与 `unlock_with_master_password` 成功路径（`:201`）对称。
+
+### 🟡 B2 — refresh 副作用失败拖垮正确密码（建议修）
+
+**问题**：`unlock_with_master_password` 闭包把「密码校验（decrypt）」与「副作用（refresh_app_key_local_enc 写 local_enc）」捆绑，`match result` 在任意 Err 时 `record_failure()`。流程 C 写 local_enc 失败（save_vault_meta DB 错 / Keychain 错）→ 正确密码被判失败 + 退避 + 整个 unlock 返 Err。
+
+**修复**：分两阶段——
+1. 密码校验阶段（decrypt user_vault_key + app_key）：失败 = 密码错 → `record_failure`
+2. 副作用阶段（refresh_app_key_local_enc）：密码已校验通过（已 `reset`），此处失败仅返 Err，**不**调 `record_failure`——用户可立即重试不被退避挡
+
+### 🟢 A2 — child() chain code zeroize 未达目标（建议修）
+
+**问题**：`hierarchy.rs child()` 把 `bytes`（GenericArray<U64>）的拷贝进 `Zeroizing<[u8;64]>` 后清零，但**原件 `bytes` 自身 drop 时不清零**——后 32B chain code 仍残留栈帧。报告建议的 `finalize_into(&mut Zeroizing<[u8;64]>)` 类型不成立（finalize_into 签名是 `&mut GenericArray<u8, U64>`）。
+
+**正解**：
+- `vault/Cargo.toml` 显式启用 `generic-array = { version = "0.14", features = ["zeroize"] }`——generic-array 0.14 已实现 `impl<T: Zeroize, N: ArrayLength<T>> Zeroize for GenericArray<T, N>`（`impl_zeroize.rs`），但需要该 feature 才生效
+- `child()` 用 `Zeroizing::new(mac.finalize().into_bytes())` 包装 GenericArray 本体——`Zeroizing` DerefMut 让 `&bytes[..32]` 仍可用，scope 结束时**原件**被 zeroize（含 chain code）
+
+### 🟢 O2 — 软删参与 Bitwarden 导入去重（修）
+
+**问题**：`infra/db.rs list_vault_ciphers` SQL 无 `WHERE deleted_at IS NULL`（设计如此——回收站视图需要列出软删项），bitwarden importer 把软删项也算进 dedup seen HashSet → 用户软删后再导入同一份备份被静默 skip，无法通过导入恢复。
+
+**修复**：`bitwarden.rs import_bitwarden_json` 算 dedup seen 时加 `.filter(|c| c.deleted_at.is_none())`。**不**改 `list_vault_ciphers`——保持 infra 不过滤的设计（回收站视图需要）。
+
+### 🟢 O3 — attempt_guard.rs 注释陈旧（修）
+
+**问题**：`reset()` 注释「不重置 next_allowed_at，已无意义」但代码 `:75` 实际 `next_allowed_at.store(0)`——行为正确无害，仅注释误导。
+
+**修复**：注释订正为「重置 failures 和 next_allowed_at，让下次失败从 0 退避开始」。
+
+### 文档化（不修）
+
+| # | 不修原因 |
+|---|---|
+| **O1** 迁移 SELECT 独立连接 vs UPDATE 事务 | setup 一次性 UI 流程毫秒窗口内插入新明文行需用户在同一瞬间配置新云模型——触发概率极低。修复需重构 migrate.rs 用单事务+同一 conn，工程成本远超收益。**记入 spec §3 已知窗口**。 |
+| **O4** validate.rs 非 ASCII 字母不计入大小写类 | 与前端策略对齐（前后端一致性是更重要的不变量），且对中文用户偏严不是安全问题。报告自己也评估为「非 bug」。**注释订正**已说明策略。 |
+
+### 验证
+
+- cargo test -p octopus-vault --lib: **166 pass**（+5 新测试：B1/B2/A1/A2-deterministic/A2-zeroize-compile + O2-soft-delete-reimport）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 五轮审查总览（含本轮）
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| 第五轮（A1/B1/B2/A2 + O1-O4） | 8 | 6 | 2（O1/O4） |
+| **总计** | **44** | **35** | **9** |
+

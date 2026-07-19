@@ -69,7 +69,7 @@ impl UnlockAttemptGuard {
         Some(Duration::from_secs(next - now))
     }
 
-    /// 成功解锁——重置计数（不重置 next_allowed_at，已无意义）。
+    /// 成功解锁——重置 failures 和 next_allowed_at，让下次失败从 0 退避开始。
     pub fn reset(&self) {
         self.failures.store(0, Ordering::SeqCst);
         self.next_allowed_at.store(0, Ordering::SeqCst);

@@ -852,6 +852,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **生成器永不 panic**：5 个生成函数（random/passphraseEn/passphraseZh/pin/dispatch）全 `Result<String>`，输入校验用 `ensure!`（不是 `assert!`）——panic 会崩 Tauri 主进程使整个 vault 不可用。前端 `buildConfig.ts` clamp 输入到合法范围（random 5-128、zh 词数 3-8、en 词数 3-10、pin 1-32）。
 - **主密码强度**：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 `validateMasterPassword.ts` + 后端双校验。
 - **测试基础设施**：`set_test_db`（octopus-infra）+ `set_test_keychain`（octopus-vault）thread_local override，让单元测试可在 in-memory DB / in-memory Keychain 上隔离运行。
+- **第五轮审查修复**（2026-07-19）：① **A1 setup 失败可恢复**——`setup_vault` 迁移失败时显式调 `infra::db::delete_vault_meta_row()` 回滚 vault_meta，让 `is_initialized()` 回 false 用户可重试（旧实现 vault_meta 已独立 commit + ensure! 阻止重跑 → 不可恢复的「已初始化但全明文」状态）；② **B1 change 密码成功 reset guard**——与 unlock 成功路径对称；③ **B2 副作用失败不污染退避**——`unlock_with_master_password` 拆密码校验（失败 record_failure）和 refresh（失败不 record_failure）两阶段，避免流程 C 写 local_enc 失败时正确密码被判失败 + 退避；④ **A2 chain code 真正 zeroize**——`vault/Cargo.toml` 启用 `generic-array` 的 zeroize feature，`Zeroizing::new(mac.finalize().into_bytes())` 包装原件，scope 结束时清零整个 64B（旧实现只清拷贝、原件残留栈帧）；⑤ **O2 软删不参与导入去重**——`bitwarden.rs` 算 seen HashSet 时 filter `deleted_at.is_none()`，否则用户软删后再导入同一份备份被静默 skip 永远恢复不了；⑥ O3 注释订正。O1（SELECT/UPDATE 独立连接的极小窗口）和 O4（非 ASCII 不计入大小写类）文档化未修。
 
 ## 性能优化批次（2026-07-17）
 

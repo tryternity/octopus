@@ -118,12 +118,18 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
     // 修复 #2：先读出库内已有 cipher，按 (name, first_uri) 建索引避免重复落库。
     // spec §6.1 / INV-I3 要求「按 name + 第一条 uri 去重」——重复导入同一份 JSON
     // 不应让条目数翻倍。
+    //
+    // O2 修复（第五轮审查）：必须显式跳过 `deleted_at.is_some()` 的行（软删/回收站）。
+    // `storage::list_ciphers` 不过滤软删行（设计如此——回收站视图需要列出它们），
+    // 但 dedup 不应把软删项算进 seen，否则用户软删后再导入同一份备份会被静默 skip，
+    // 永远无法通过导入恢复。
     let existing = storage::list_ciphers(key)
         .map(|(ciphers, _failures)| {
             // 注意：list_ciphers 返回的是已解密 Cipher（含明文 name + uris），
             // 我们直接基于明文重算 dedup key 即可，不需要重新解密。
             ciphers
                 .into_iter()
+                .filter(|c| c.deleted_at.is_none())
                 .map(|c| cipher_dedup_key(&c))
                 .collect::<HashSet<_>>()
         })
@@ -382,5 +388,51 @@ mod tests {
         assert_eq!(r.imported, 1);
         let (ciphers, _) = storage::list_ciphers(&key).expect("list");
         assert_eq!(ciphers[0].reprompt, RepromptType::None);
+    }
+
+    /// O2（第五轮审查）：软删除某条 cipher 后，再次导入同一份 JSON 应**重新导入**，
+    /// 不应被静默 skip。
+    ///
+    /// 旧实现：`storage::list_ciphers` 不过滤 deleted_at（设计如此，回收站视图需要），
+    /// dedup 把软删项也算进 seen → 用户软删后想通过重新导入恢复，会被去重逻辑挡住。
+    /// 修复：importer 在算 dedup seen 时显式 filter `deleted_at.is_none()`。
+    #[test]
+    fn test_import_after_soft_delete_re_imports() {
+        setup_clean_db();
+        let key = make_key(11);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {
+                    "name": "GitHub",
+                    "type": 1,
+                    "login": {"username": "u", "password": "p",
+                              "uris": [{"uri": "https://github.com"}]}
+                }
+            ]
+        }"#;
+
+        // 第一次导入：1 条新增
+        let r1 = import_bitwarden_json(json, &key).expect("first import");
+        assert_eq!(r1.imported, 1);
+
+        // 软删除该条（→ 回收站，deleted_at=Some）
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list after import");
+        assert_eq!(ciphers.len(), 1);
+        let id = ciphers[0].id;
+        storage::soft_delete(id).expect("soft delete");
+
+        // 第二次导入同一份 JSON —— 应重新导入（不被软删行去重）
+        let r2 = import_bitwarden_json(json, &key).expect("second import after soft delete");
+        assert_eq!(
+            r2.imported, 1,
+            "O2 修复：软删后再次导入应重新入库，不应被静默 skip"
+        );
+
+        // 校验：库内应有 2 行（1 软删 + 1 新），未软删的有 1 行
+        let (all, _) = storage::list_ciphers(&key).expect("list final");
+        assert_eq!(all.len(), 2, "应有 2 行（软删 1 + 新 1）");
+        let live: Vec<_> = all.iter().filter(|c| c.deleted_at.is_none()).collect();
+        assert_eq!(live.len(), 1, "应有 1 行未软删");
     }
 }

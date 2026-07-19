@@ -634,6 +634,8 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 
 **不兼容旧明文读取**：用户只一个开发者，且 vault 是新功能，开发完成后必然启用。
 
+**已知工程窗口（O1，2026-07-19）**：`migrate_secret_keys_to_encrypted` 的 SELECT（`list_models_for_secret_migration`）用独立 `with_db` 连接，与紧随其后的 UPDATE 事务不在同一连接。SELECT 快照与事务开始之间插入的新明文行会漏迁。但 setup 是一次性 UI 流程，毫秒级窗口内插入新明文行需用户在同一瞬间配置新云模型——触发概率极低。修复需重构 migrate.rs 用单事务+同一 conn，工程成本远超收益，**不做**。迁移失败本身的不可恢复问题已由 A1 修复（F23）解决。
+
 ### 3.7 AppConfig 新增字段
 
 | 字段 | 类型 | 默认 | 说明 |
@@ -1367,6 +1369,10 @@ pub fn import_bitwarden_json(
 
 **去重**：按 name + 第一条 uri 去重（Bitwarden 的 id 在 octopus 无意义）。
 
+**软删处理**（2026-07-19 O2 修复）：dedup 时显式跳过 `deleted_at.is_some()` 的行——
+`storage::list_ciphers` 不过滤软删（设计如此，回收站视图需要列出），但 importer 在算
+seen HashSet 时必须 filter，否则用户软删后再导入同一份备份会被静默 skip，无法通过导入恢复。
+
 ### 6.2 导出
 
 ```rust
@@ -1457,6 +1463,9 @@ pub trait VaultSync {
 | F20 | vault_meta 表损坏/不存在 | 引导重新初始化或导入备份 | Setup 页 |
 | F21 | vault feature 编译关掉 | 前端 `is_vault_enabled()` 返回 false → 整段 vault UI 隐藏；`try_decrypt_secret_global` 退化为 `Ok(raw)` 返回（旧 DB 无 v1: 加密格式） | 无 vault UI |
 | F22 | vault 启用但解密失败（app_key 不可用 / 密文损坏） | `try_decrypt_secret_global` 返 `Err`（2026-07-19 修复 #5）；4 个调用点 fail-soft：云端推理跳过 + 提示"请先解锁保险库"，**不再把密文当 Bearer 发到云端** | 提示 + 跳过本次推理 |
+| F23 | setup_vault 时 secret_key 迁移失败（磁盘满 / WAL busy） | **显式回滚 vault_meta**（2026-07-19 A1 修复）：迁移失败 → 调 `delete_vault_meta_row()` 清掉 vault_meta → `is_initialized()` 回到 false → 用户可重新走 setup。**旧实现**：vault_meta 已独立 commit + ensure!(!is_initialized) 阻止重跑 → 不可恢复的「已初始化但全明文」状态 | 报错 + 引导重新 setup |
+| F24 | unlock 时密码校验通过但 refresh_app_key_local_enc 副作用失败（save_vault_meta DB 错 / Keychain 错） | **不**调 record_failure（2026-07-19 B2 修复）——密码是对的，用户可立即重试不被退避挡；unlock 仍返 Err（"密码正确但刷新 app_key_local_enc 失败"） | 报错 + 立即可重试 |
+| F25 | Bitwarden 重复导入同一份 JSON 时软删条目的处理 | **dedup 跳过软删行**（2026-07-19 O2 修复）：软删后再导入同一份备份应重新入库，不被静默 skip | 重新导入成功 |
 
 ### 7.2 错误类型（双轨制）
 
@@ -1556,6 +1565,15 @@ export function validateMasterPassword(pwd: string): MasterPasswordValidation {
   return { ok: true };
 }
 ```
+
+**字符集策略（O4，2026-07-19）**：大小写类用 `is_ascii_uppercase` / `is_ascii_lowercase`——
+非 ASCII 字母（中文 / 希腊 / 西里尔等）不计入大小写类。这意味着纯中文密码（如「小明是
+个好人啊！」）无法满足 4 类要求，必须混 ASCII。这是**有意的设计选择**，不是 bug：
+1. 前后端策略对齐（前端 `/[A-Z]/` / `/[a-z]/` 同样只匹配 ASCII）——一致性是更重要的不变量
+2. 符号类已扩展支持中文全角符号（`！` / `￥` / `…` / `（` / `）` 等），覆盖中文用户输入习惯
+3. 95 可打印 ASCII × 12 位 ≈ 79 bit 熵，配合 Argon2id 已可抵抗 GPU 离线暴力
+
+中文用户若想用中文密码，建议「中文 + ASCII 字母数字符号」混合，例如「小明IsAGoodBoy1!」。
 
 后端 `vault_setup` / `vault_change_password` 同样校验，防前端绕过。
 
