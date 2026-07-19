@@ -4697,6 +4697,9 @@ mod tests {
     #[test]
     fn prompts_table_seeded_with_default() {
         let conn = open_init();
+        // prompts seed 已外置到 seeds/prompts/（v39 后 db.sql 不再内联），
+        // init_schema 在生产路径会调 load_external_seeds——测试里显式调一次。
+        crate::seeds::load_external_seeds(&conn).unwrap();
         // id=1 系统默认 prompt 存在
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM prompts WHERE id=1 AND is_system=1", [], |r| r.get(0))
@@ -4721,16 +4724,20 @@ mod tests {
     #[test]
     fn prompts_table_init_sql_idempotent() {
         let conn = open_init();
-        conn.execute_batch(INIT_SQL).unwrap();
+        // db.sql 不再内联 prompts seed——通过外置 loader 加载，二次调用幂等（OR IGNORE）。
+        crate::seeds::load_external_seeds(&conn).unwrap();
+        crate::seeds::load_external_seeds(&conn).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM prompts WHERE id=1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1, "重跑 INIT_SQL 不应重复 seed");
+        assert_eq!(count, 1, "重跑外置 seed loader 不应重复 seed");
     }
 
     #[test]
     fn prompt_crud_round_trip() {
         let conn = open_init();
+        // prompts seed 已外置到 seeds/prompts/——通过 loader 加载初始 2 条。
+        crate::seeds::load_external_seeds(&conn).unwrap();
         // list 初值：2 条系统内置（id=1 默认润色 + id=2 进阶润色（断续纠正））
         let list = list_prompts_at(&conn).unwrap();
         assert_eq!(list.len(), 2, "seed 应有 2 条系统内置 prompt");
