@@ -1034,12 +1034,16 @@ export default function ActionBarPanel({
     // 新建项的 accepts 锁定为当前 scopeFilter——在文本类下只能建文本类菜单，
     // 文件类下只能建文件类。submenu 用 any（两个场景都显示）。
     // 用户不能在表单里改 accepts——没有 UI 控件，saveEdit 时用此值。
+    //
+    // 默认 actionType 按层级区分：
+    //   - 主菜单（parentId=null）→ submenu（父菜单）——最常见的主菜单语义是分组容器
+    //   - 子菜单（parentId=某 id）→ script（脚本）——子菜单通常是实际执行动作
     setEditingForm({
       title: t("settings.actionBar.newMenuItem"),
-      actionType: "url",
+      actionType: parentId === null ? "submenu" : "script",
       actionData: "",
       isEnabled: true,
-      accepts: scopeFilter === "file" ? "file" : "text",
+      accepts: parentId === null ? "any" : (scopeFilter === "file" ? "file" : "text"),
     });
     // 不动 tab——editingId=null + draftParentId !== undefined 表示新建模式，EditForm 全屏覆盖
   }, [scopeFilter, t]);
