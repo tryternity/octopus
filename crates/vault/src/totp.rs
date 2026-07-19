@@ -56,7 +56,9 @@ impl TotpGenerator {
     pub fn from_otpauth_url(url: &str) -> Result<Self> {
         // from_url_unchecked：不强制 secret >= 128bit（修复 #7）——支持 80bit 标准 secret。
         // 与 from_base32 的 new_unchecked 对称。
-        let totp = TOTP::from_url_unchecked(url.to_string())
+        // 注意 from_url_unchecked<S: AsRef<str>> 泛型 + &str 已实现 AsRef<str>，直接传 url
+        // 无需 .to_string()（省一次堆分配，复审次要观察 #1）。
+        let totp = TOTP::from_url_unchecked(url)
             .map_err(|e| anyhow!("otpauth URL 解析失败: {}", e))?;
 
         // 复审 #1 修复：unchecked 跳过 totp-rs 全部不变量校验，畸形参数会导致
@@ -66,7 +68,8 @@ impl TotpGenerator {
         //
         // 白名单 clamp 而非范围检查：
         // - period：RFC 6238 推荐 30，常见 15/60，>0 即可（不设上限——长 period 安全但 TOTP 实用性下降）
-        // - digits：仅允许 RFC 标准的 6 或 8（Authy / 部分银行用 7 但罕见且 totp-rs 格式化支持任意 digits，留宽松）
+        // - digits：本处仅允许 RFC 标准的 6 或 8——7 digit（Authy / 部分银行）会被拒，
+        //   即使 totp-rs 格式化层支持任意 digits（实用中 7 极罕见，用户可改用 8 凑齐）
         // - algorithm：SHA1 / SHA256 / SHA512 是 totp-rs 在 steam feature off 时仅有的合法变体
         ensure!(totp.step > 0, "TOTP period 必须 > 0（当前 0 会致除零 panic）");
         ensure!(
@@ -263,10 +266,14 @@ mod tests {
     }
 
     /// 复审 #1 修复：非法 algorithm 不能 silent 通过。
+    ///
+    /// ⚠️ 此测试覆盖**偏弱**（复审次要观察 #2）：MD5 根本不在 totp-rs `Algorithm`
+    /// 枚举里，URL 解析阶段（`from_url_unchecked`）就返 Err——并非被本 crate 的
+    /// clamp 拦截。当前 otpauth feature 配置下没有能绕过 parse 阶段的非标准
+    /// algorithm（`Steam` 变体 cfg gate off 不存在），所以 clamp 分支实际未被
+    /// 真正测到。若未来启用 `steam` feature 或 totp-rs 放宽枚举，需补 Steam 单测。
     #[test]
     fn test_algorithm_invalid_returns_err() {
-        // algorithm=MD5：totp-rs URL 解析能 parse 出 Algorithm 但不在 SHA1/256/512 内
-        // （Algorithm 枚举有 Steam 但 cfg gate off；MD5 根本不在枚举里，parse 会失败）
         let url = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&algorithm=MD5";
         assert!(TotpGenerator::from_otpauth_url(url).is_err());
     }
