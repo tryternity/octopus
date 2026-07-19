@@ -1806,17 +1806,23 @@ pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapte
 
 // ── Agent Voice（语音联动）──
 
-/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
-#[tauri::command]
-pub fn trigger_agent_voice(
-    item_id: i64,
-    app: AppHandle,
-    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+/// trigger_agent_voice 的核心逻辑——Tauri 命令和 quick_execute 共用。
+///
+/// `hide_action_bar: bool` 控制是否走 hide 浮窗收口：
+/// - Tauri 命令路径（用户从 ActionBar 浮窗点击 agent 项）：ActionBar 可见 → 传 `true`，
+///   走 `hide_action_bar_window + finalize_action_bar` 统一收口（切回 Accessible + 焦点协调）。
+/// - quick_execute 路径（全局快捷键直触发）：ActionBar 本就未显示 → 传 `false`，
+///   不调 hide（hide 一个不可见窗口会触发不必要的 activateWithOptions 把源 app 拉到前台，
+///   干扰随后 CompactEditor 的 set_focus 夺焦）。
+///
+/// 关键副作用：`coordinator.start_agent_recording(task_id)` —— 启动语音录入。
+/// 不调它用户说话进不来。
+pub(crate) fn trigger_agent_voice_core(
+    item: &octopus_infra::db::ActionBarItem,
+    app: &AppHandle,
+    coordinator: &crate::coordinator::Coordinator,
+    hide_action_bar: bool,
 ) -> Result<(), String> {
-    let item = octopus_infra::db::load_action_bar_item(item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("菜单项不存在")?;
-
     let files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
         .as_ref().map(|c| c.files.clone()).unwrap_or_default();
 
@@ -1832,13 +1838,29 @@ pub fn trigger_agent_voice(
     octopus_infra::db::insert_agent_task(&task_id, &item.agent, &context)
         .map_err(|e| e.to_string())?;
 
-    // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
-    hide_action_bar_window(&app);
-    finalize_action_bar(&app);
+    if hide_action_bar {
+        // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
+        hide_action_bar_window(app);
+        finalize_action_bar(app);
+    }
 
     // 触发 agent 录音
     coordinator.start_agent_recording(task_id);
     Ok(())
+}
+
+/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
+/// Tauri 命令——薄包装，核心逻辑在 trigger_agent_voice_core。
+#[tauri::command]
+pub fn trigger_agent_voice(
+    item_id: i64,
+    app: AppHandle,
+    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+) -> Result<(), String> {
+    let item = octopus_infra::db::load_action_bar_item(item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("菜单项不存在")?;
+    trigger_agent_voice_core(&item, &app, coordinator.inner(), true)
 }
 
 #[tauri::command]

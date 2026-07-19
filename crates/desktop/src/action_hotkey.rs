@@ -83,8 +83,14 @@ pub fn register_action_hotkeys(app: &AppHandle) {
     *REGISTERED_SHORTCUTS.lock().unwrap() = new_registered;
 }
 
-/// 快速执行链路（worker 线程）：detect → execute → CompactEditor。
-/// 不弹出 ActionBar 浮窗，不直接粘贴——结果展示在 CompactEditor（与 ActionBar 路径一致）。
+/// 快速执行链路（worker 线程）：detect → 路由到 Text/Files/None 分支。
+///
+/// 与 ActionBar 路径的区别：不弹出 ActionBar 浮窗，不直接粘贴。
+/// - **Text 选中** → `handle_text_selection`（沿用原 quick_execute 全部行为：gather
+///   context、刷新 PENDING_CONTEXT、activate_self、keep_active hide、execute → CompactEditor）。
+/// - **File/Folder 选中** → `handle_files_selection`（新：写 PENDING_CONTEXT 后按
+///   `decide_files_action` 决策走 `trigger_agent_voice_core` 或 `execute_action_bar_inner`）。
+/// - **无选中** → 静默跳过（不劫持系统快捷键）。
 fn quick_execute(item_id: i64, app: &AppHandle) {
     // baseline 隔离——detect 写 CHANGE_COUNT_BASELINE，恢复原值不污染 ActionBar 路径
     let saved_baseline = crate::action_bar_commands::save_change_count_baseline();
@@ -94,22 +100,27 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
 
     crate::action_bar_commands::restore_change_count_baseline(saved_baseline);
 
-    let text = match &selection {
-        crate::action_bar_commands::Selection::Text { text, .. } => text.clone(),
-        other => {
-            // 无文本选中（如 Finder 选中文件夹、桌面空选）——菜单项热键的语义是
-            // 「对这段文本执行动作」，没文本就不该继续。原先 fallback 到 ActionBar 浮窗，
-            // 会劫持系统快捷键（Finder 的 Cmd+Shift+G「前往文件夹」被吞）并误导用户。
-            // 静默失败即可，留给用户在 ActionBar 浮窗主动弹出时再处理。
-            log::info!(
-                "[action-hotkey] 非文本选中 ({})，跳过菜单项 item_id={} 执行",
-                selection_kind_name(other),
-                item_id,
-            );
-            return;
+    match selection {
+        crate::action_bar_commands::Selection::Text { text, .. } => {
+            handle_text_selection(item_id, app, text);
         }
-    };
+        crate::action_bar_commands::Selection::File { files, .. }
+        | crate::action_bar_commands::Selection::Folder { folders: files, .. } => {
+            handle_files_selection(item_id, app, files);
+        }
+        crate::action_bar_commands::Selection::None => {
+            // 无选中（桌面空选、菜单栏点击等）——菜单项热键的语义是「对选中内容执行动作」，
+            // 无选中就不该继续。静默跳过即可。
+            log::info!("[action-hotkey] 无选中，跳过 item_id={}", item_id);
+        }
+    }
+}
 
+/// Text 选中分支——从原 quick_execute 提取（行为保持不变）。
+///
+/// 链路：刷新 PENDING_CONTEXT（含 gather_context）→ activate_self 夺焦 →
+/// keep_active hide ActionBar（如可见）→ execute_action_bar_inner → CompactEditor。
+fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     // ── 刷新 PENDING_CONTEXT（发现 2 修复）──
     // quick_execute 此前不写 PENDING_CONTEXT，会读到上次 trigger_action_bar 残留的
     // source/surrounding（甚至更早的 quick_execute 残留）。AI 动作（润色/摘要/解释）经
@@ -174,13 +185,135 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
     }
 }
 
-/// 用于日志输出——Selection 未 derive Debug，手工映射为可读字符串。
-fn selection_kind_name(sel: &crate::action_bar_commands::Selection) -> &'static str {
-    use crate::action_bar_commands::Selection;
-    match sel {
-        Selection::None => "None",
-        Selection::Text { .. } => "Text",
-        Selection::File { .. } => "File",
-        Selection::Folder { .. } => "Folder",
+/// File/Folder 选中分支——agent × Files × 语音流程入口。
+///
+/// 语义：Finder 选中文件/夹后按全局快捷键，把 `files` 写入 PENDING_CONTEXT，
+/// 然后按菜单项类型决策：
+/// - **agent + 含 `{{task}}`** → `trigger_agent_voice_core(hide_action_bar=false)`：
+///   写 agent_task → 触发音录。`hide_action_bar=false` 是因为 quick_execute 路径
+///   ActionBar 本就没显示（全局快捷键直触发，省去浮窗），不应再 hide 不可见窗口
+///   （hide 会触发 activateWithOptions 把源 app 拉到前台，干扰随后录音 UI）。
+/// - **其他（script/url/copy_path/agent-without-task）** → `execute_action_bar_inner`：
+///   用 PENDING_CONTEXT.files 渲染 `{{files}}` 后执行，结果展示在 CompactEditor。
+fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
+    // 1. 写 PENDING_CONTEXT (kind=Files)——execute_action_bar_inner 和 trigger_agent_voice_core 都从这里读 files
+    let ctx = crate::action_bar_commands::ActionBarContext::files(files.clone());
+    crate::action_bar_commands::set_pending_context(ctx);
+
+    // 2. 查 item 决定路径
+    let item = match octopus_infra::db::load_action_bar_item(item_id) {
+        Ok(Some(it)) => it,
+        Ok(None) => {
+            log::warn!("[action-hotkey] File 选中但 item_id={} 不存在", item_id);
+            return;
+        }
+        Err(e) => {
+            log::warn!("[action-hotkey] File 选中但查 item 失败: {}", e);
+            return;
+        }
+    };
+
+    // 3. 决策路径——纯函数 decide_files_action（便于单测）
+    let (should_trigger_voice, should_execute_directly) =
+        decide_files_action(&item.action_type, &item.action_data);
+
+    if should_trigger_voice {
+        // agent + {{task}} → 走音录路径
+        log::info!(
+            "[action-hotkey] File 选中 + agent + {{{{task}}}} → 触发音录 item_id={}, files={}",
+            item_id,
+            files.len(),
+        );
+        let coordinator = match app.try_state::<crate::coordinator::Coordinator>() {
+            Some(c) => c,
+            None => {
+                log::error!("[action-hotkey] Coordinator state 未找到（无法启动音录）");
+                return;
+            }
+        };
+        // hide_action_bar=false：quick_execute 路径 ActionBar 未显示，不 hide
+        if let Err(e) = crate::action_bar_commands::trigger_agent_voice_core(
+            &item,
+            app,
+            coordinator.inner(),
+            false,
+        ) {
+            log::error!("[action-hotkey] trigger_agent_voice_core 失败: {}", e);
+        }
+        return;
+    }
+
+    if should_execute_directly {
+        // 非 agent 或无 {{task}} → 直接执行（prompt 用 {{files}} 渲染）
+        log::info!(
+            "[action-hotkey] File 选中 + 直接执行 item_id={}, files={}",
+            item_id,
+            files.len(),
+        );
+        let app_clone = app.clone();
+        let result = std::thread::spawn(move || -> Result<bool, String> {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
+            // text 传空：File 场景不需要文本，execute_action_bar_inner 会从 PENDING_CONTEXT 读 files
+            rt.block_on(crate::action_bar_commands::execute_action_bar_inner(
+                item_id,
+                String::new(),
+                &app_clone,
+            ))
+        }).join();
+
+        match result {
+            Ok(Ok(true)) => log::info!("[action-hotkey] File 执行完成（结果已在 CompactEditor 展示）"),
+            Ok(Ok(false)) => log::info!("[action-hotkey] File 执行完成（无需展示）"),
+            Ok(Err(e)) => log::warn!("[action-hotkey] File 执行失败: {}", e),
+            Err(e) => log::warn!("[action-hotkey] File 执行线程异常: {:?}", e),
+        }
+    }
+}
+
+/// 决策 File/Folder 选中时的执行路径——纯函数，便于单测。
+///
+/// 输入：菜单项的 `action_type` 与 `action_data`（prompt 模板）。
+/// 输出：`(should_trigger_voice, should_execute_directly)`：
+/// - `(true, false)` → 走 `trigger_agent_voice_core`（agent + 含 `{{task}}` → 需要语音录入 task）
+/// - `(false, true)` → 走 `execute_action_bar_inner`（script/url/copy_path/agent-without-task）
+/// - `(false, false)` → 静默跳过（理论不出现：所有非 voice 路径都走 direct）
+///
+/// 语义：只有 `action_type=agent` 且 prompt 含 `{{task}}` 才需要语音，
+/// 因为 `{{task}}` 占位符期望用户口述填充。其他情况（agent 但无 `{{task}}`、
+/// script、url、copy_path 等）直接渲染执行即可，不需要等用户说话。
+fn decide_files_action(action_type: &str, action_data: &str) -> (bool, bool) {
+    if action_type == "agent" && action_data.contains("{{task}}") {
+        (true, false)
+    } else {
+        (false, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decide_files_action_agent_with_task_triggers_voice() {
+        let (voice, direct) = decide_files_action("agent", "做 PPT：{{task}}\n文件：{{files}}");
+        assert_eq!((voice, direct), (true, false));
+    }
+
+    #[test]
+    fn decide_files_action_agent_without_task_executes_directly() {
+        let (voice, direct) = decide_files_action("agent", "整理这些文件：{{files}}");
+        assert_eq!((voice, direct), (false, true));
+    }
+
+    #[test]
+    fn decide_files_action_script_type_executes_directly() {
+        let (voice, direct) = decide_files_action("script", "#shell\nls {{files}}");
+        assert_eq!((voice, direct), (false, true));
+    }
+
+    #[test]
+    fn decide_files_action_url_type_executes_directly() {
+        let (voice, direct) = decide_files_action("url", "https://example.com/?f={files}");
+        assert_eq!((voice, direct), (false, true));
     }
 }
