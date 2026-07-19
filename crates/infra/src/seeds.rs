@@ -104,20 +104,29 @@ fn load_llm_providers_seed(conn: &Connection) -> Result<()> {
 
 /// 加载 agent_actions/*.prompt.md → 在 action_bar_items 中创建对应子菜单项。
 ///
-/// 当前固定目标：Agent 主菜单（title='Agent'，accepts='file'）+ 「制作 PPT」子项。
-/// 后续可迭代为目录扫描。
+/// 当前固定目标：Agent 主菜单（title='Agent'，accepts='file'）+ 两个子菜单：
+///   - 「PPT 大纲」（v43 新增）：读文件 → 生成 Markdown 中间产物 → 停手
+///   - 「PPT 制作」（v43 改名，原「制作 PPT」）：基于大纲 .md 或源文件 → 渲染 PPT
 ///
-/// **自愈策略**（2026-07-19 v40 修复）：早期版本用 INSERT WHERE NOT EXISTS，
-/// 一旦菜单项存在（即使 action_data 为空）就跳过——导致 Task 1 实施期插过的
-/// action_data='' 的 PPT 菜单永远填不上 prompt。新版分四步：
+/// **v43 改名迁移**（2026-07-19）：
+///   老 DB 残留 `title='制作 PPT'` → 自动改名为 `'PPT 制作'`，与新增的 `'PPT 大纲'`
+///   形成对偶关系。row id 不变（不破坏用户绑定的全局快捷键）。
+///
+/// **自愈策略**（2026-07-19 v40 修复，v43 扩展到两个子菜单）：
 ///   1. 插 Agent 主菜单（WHERE NOT EXISTS 防重）
-///   2. **去重 PPT 子菜单**（历史 bug 可能留多条；保留 id 最小的）
-///   3. 插 PPT 子菜单（WHERE NOT EXISTS 防重）
-///   4. UPDATE 自愈——空 action_data 补 prompt、need_voice 强制 1、用户改过的保留
+///   2. 改名迁移：'制作 PPT' → 'PPT 制作'
+///   3. 对每个子菜单（PPT 大纲 / PPT 制作）执行：
+///      a) 去重（保留 id 最小的）
+///      b) INSERT WHERE NOT EXISTS
+///      c) UPDATE 自愈——空 action_data 补 prompt、need_voice 强制 1、agent 兜底 'pi'
 fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
     let make_ppt_prompt = seeds_dir().join("agent_actions/make-ppt.prompt.md");
-    let prompt_content = std::fs::read_to_string(&make_ppt_prompt)
+    let make_ppt_content = std::fs::read_to_string(&make_ppt_prompt)
         .with_context(|| format!("读 make-ppt.prompt.md: {:?}", make_ppt_prompt))?;
+
+    let ppt_outline_prompt = seeds_dir().join("agent_actions/ppt-outline.prompt.md");
+    let ppt_outline_content = std::fs::read_to_string(&ppt_outline_prompt)
+        .with_context(|| format!("读 ppt-outline.prompt.md: {:?}", ppt_outline_prompt))?;
 
     // 1. 插 Agent 主菜单（title 去重，accepts='file'）
     conn.execute(
@@ -135,40 +144,73 @@ fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
         )
         .context("查 Agent 主菜单 id")?;
 
-    // 3. 去重 PPT 子菜单：早期版本 INSERT OR IGNORE（无 UNIQUE 约束）曾留下多条 PPT 子菜单。
-    //    保留 id 最小的（最早创建的），其余删除。
+    // 3. v43 改名迁移：'制作 PPT' → 'PPT 制作'（row id 不变，全局快捷键不失效）
+    let renamed: usize = conn
+        .execute(
+            "UPDATE action_bar_items SET title='PPT 制作'
+             WHERE title='制作 PPT' AND parent_id=?1",
+            rusqlite::params![agent_id],
+        )
+        .context("改名 '制作 PPT' → 'PPT 制作'")?;
+    if renamed > 0 {
+        log::info!("[seeds] v43 改名 {} 条 '制作 PPT' → 'PPT 制作'", renamed);
+    }
+
+    // 4. 注入「PPT 大纲」子菜单（v43 新增）—— sort_order=-1 排在「PPT 制作」前面
+    upsert_agent_submenu(conn, agent_id, "PPT 大纲", "file-text", &ppt_outline_content, -1)?;
+
+    // 5. 注入「PPT 制作」子菜单（沿用 v40 自愈逻辑，title 同步为 'PPT 制作'）
+    upsert_agent_submenu(conn, agent_id, "PPT 制作", "presentation", &make_ppt_content, 0)?;
+
+    Ok(())
+}
+
+/// 单个 agent 子菜单的注入 + 自愈——v43 抽出来，复用给 PPT 大纲 / PPT 制作。
+///
+/// 步骤：
+///   a) 去重：同名同 parent 下保留 id 最小的（早期 INSERT OR IGNORE 无 UNIQUE 残留）
+///   b) INSERT WHERE NOT EXISTS：首次注入
+///   c) UPDATE 自愈：空 action_data 补、need_voice 强制 1、agent 空兜底 'pi'、accepts='file'
+fn upsert_agent_submenu(
+    conn: &Connection,
+    parent_id: i64,
+    title: &str,
+    icon: &str,
+    prompt_content: &str,
+    sort_order: i64,
+) -> Result<()> {
+    // a) 去重：同名同 parent 保留 id 最小的一条
     conn.execute(
         "DELETE FROM action_bar_items
-         WHERE title = '制作 PPT' AND parent_id = ?1
+         WHERE title = ?1 AND parent_id = ?2
            AND id NOT IN (
                SELECT MIN(id) FROM action_bar_items
-               WHERE title = '制作 PPT' AND parent_id = ?1
+               WHERE title = ?1 AND parent_id = ?2
            )",
-        rusqlite::params![agent_id],
-    ).context("去重 PPT 子菜单")?;
+        rusqlite::params![title, parent_id],
+    ).with_context(|| format!("去重子菜单 '{}'", title))?;
 
-    // 4. 插 PPT 子菜单（WHERE NOT EXISTS——还没创建则插入）
+    // b) INSERT WHERE NOT EXISTS
     conn.execute(
         "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
-         SELECT ?1, '制作 PPT', 'presentation', 'agent', ?2, 'pi', 'file', 0, 1, 1
+         SELECT ?1, ?2, ?3, 'agent', ?4, 'pi', 'file', ?5, 1, 1
          WHERE NOT EXISTS (
              SELECT 1 FROM action_bar_items
-             WHERE title='制作 PPT' AND parent_id = ?1
+             WHERE title=?2 AND parent_id=?1
          )",
-        rusqlite::params![agent_id, prompt_content],
-    ).context("插入 PPT 子菜单")?;
+        rusqlite::params![parent_id, title, icon, prompt_content, sort_order],
+    ).with_context(|| format!("插入子菜单 '{}'", title))?;
 
-    // 5. 自愈：现有 PPT 菜单项如果 action_data 为空（早期版本残留）或 need_voice 未开，补上。
-    //    用户在设置里改过的 action_data（非空）保留；need_voice 总是强制设为 1（PPT 菜单语义）。
+    // c) UPDATE 自愈——不动 sort_order（INSERT 已设正确值，用户改过的保留）
     conn.execute(
         "UPDATE action_bar_items
          SET action_data = CASE WHEN action_data = '' THEN ?2 ELSE action_data END,
              need_voice = 1,
              agent = CASE WHEN agent = '' THEN 'pi' ELSE agent END,
              accepts = 'file'
-         WHERE title = '制作 PPT' AND parent_id = ?1",
-        rusqlite::params![agent_id, prompt_content],
-    ).context("自愈 PPT 菜单 action_data + need_voice")?;
+         WHERE title = ?3 AND parent_id = ?1",
+        rusqlite::params![parent_id, prompt_content, title],
+    ).with_context(|| format!("自愈子菜单 '{}'", title))?;
     Ok(())
 }
 
@@ -293,7 +335,7 @@ mod load_tests {
     }
 
     #[test]
-    fn load_agent_action_seeds_creates_agent_menu_and_ppt_item() {
+    fn load_agent_action_seeds_creates_agent_menu_and_both_ppt_items() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
         load_agent_action_seeds(&conn).unwrap();
@@ -301,17 +343,84 @@ mod load_tests {
             .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agent_count, 1, "应创建 1 个 Agent 主菜单");
-        let ppt_count: i64 = conn
+
+        // v43: Agent 下应有 2 个子菜单——PPT 大纲 + PPT 制作
+        for title in ["PPT 大纲", "PPT 制作"] {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title=?1", rusqlite::params![title], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "应创建 1 个 '{}' 子菜单", title);
+            let row: (String, String, String, i64) = conn
+                .query_row(
+                    "SELECT action_type, agent, accepts, need_voice FROM action_bar_items WHERE title=?1",
+                    rusqlite::params![title],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(row.0, "agent", "{} action_type 应为 agent", title);
+            assert_eq!(row.1, "pi", "{} agent 应为 pi", title);
+            assert_eq!(row.2, "file", "{} accepts 应为 file", title);
+            assert_eq!(row.3, 1, "{} need_voice 应为 1", title);
+        }
+    }
+
+    /// v43 sort_order：PPT 大纲排在前（-1），PPT 制作排在后（0）—— 形成"先大纲后制作"的对偶顺序。
+    #[test]
+    fn load_agent_action_seeds_orders_ppt_outline_before_make_ppt() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        load_agent_action_seeds(&conn).unwrap();
+        let outline_sort: i64 = conn
+            .query_row("SELECT sort_order FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
+            .unwrap();
+        let make_sort: i64 = conn
+            .query_row("SELECT sort_order FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
+            .unwrap();
+        assert!(outline_sort < make_sort, "PPT 大纲 sort_order ({}) 应 < PPT 制作 ({})", outline_sort, make_sort);
+    }
+
+    /// v43 改名迁移：老 DB 残留 '制作 PPT' → 应改名为 'PPT 制作'，row id 保持不变
+    /// （不破坏用户绑定的全局快捷键）。
+    #[test]
+    fn load_agent_action_seeds_renames_legacy_make_ppt_title() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        // 模拟老 DB：Agent + '制作 PPT'（带全局快捷键）
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts, global_shortcut)
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file', '')",
+            [],
+        ).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, global_shortcut)
+             VALUES (?1, '制作 PPT', 'presentation', 'agent', '老 prompt', 'pi', 'file', 0, 1, 'cmd+shift+p')",
+            rusqlite::params![agent_id],
+        ).unwrap();
+        let legacy_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+
+        load_agent_action_seeds(&conn).unwrap();
+
+        // '制作 PPT' 应已消失
+        let legacy_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ppt_count, 1, "应创建 1 个 PPT 子菜单");
-        let ppt: (String, String, String) = conn
-            .query_row("SELECT action_type, agent, accepts FROM action_bar_items WHERE title='制作 PPT'", [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        assert_eq!(legacy_count, 0, "老标题 '制作 PPT' 应已改名为 'PPT 制作'");
+
+        // 'PPT 制作' 应存在且 row id 保持不变（快捷键不失效）
+        let renamed: (i64, String, String) = conn
+            .query_row(
+                "SELECT id, action_data, global_shortcut FROM action_bar_items WHERE title='PPT 制作'",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
-        assert_eq!(ppt.0, "agent");
-        assert_eq!(ppt.1, "pi");
-        assert_eq!(ppt.2, "file");
+        assert_eq!(renamed.0, legacy_id, "改名后 row id 应保持不变");
+        assert_eq!(renamed.1, "老 prompt", "非空 action_data 应保留（不被 seed 覆盖）");
+        assert_eq!(renamed.2, "cmd+shift+p", "全局快捷键应保留");
     }
 
     #[test]
@@ -324,17 +433,20 @@ mod load_tests {
             .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agent_count, 1, "重跑后 Agent 仍只有 1 个");
+        for title in ["PPT 大纲", "PPT 制作"] {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title=?1", rusqlite::params![title], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "重跑后 '{}' 仍只有 1 个", title);
+        }
     }
 
-    /// v40 自愈：早期版本（INSERT WHERE NOT EXISTS）若先插过 action_data='' 的 PPT 菜单，
-    /// 后续加载无法补内容。新版用 INSERT OR IGNORE + UPDATE 兜底修复。
-    /// 模拟场景：先插一个 action_data='' 的 PPT 菜单，再调 load_agent_action_seeds，
-    /// 验证 action_data 被填上 + need_voice=1。
+    /// v40 自愈（v43 适配改名）：模拟老 DB 状态——插 '制作 PPT' action_data=''，
+    /// 跑 load 后应改名为 'PPT 制作' 且 action_data 被补上 + need_voice=1。
     #[test]
     fn load_agent_action_seeds_self_heals_empty_action_data() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
-        // 先插 Agent 主菜单 + 一个 action_data='' 的 PPT 子项（模拟早期 bug 残留）
         conn.execute(
             "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts)
              VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file')",
@@ -354,30 +466,29 @@ mod load_tests {
             .unwrap();
         assert_eq!(before_data, "", "测试前置：PPT 菜单 action_data 为空");
 
-        // 跑 load——应自愈
         load_agent_action_seeds(&conn).unwrap();
 
+        // 改名后查 'PPT 制作'
         let after_data: String = conn
-            .query_row("SELECT action_data FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
             .unwrap();
         assert!(!after_data.is_empty(), "自愈后 action_data 应非空");
         assert!(after_data.contains("{{task}}"), "自愈后 action_data 应含 {{task}}");
 
         let need_voice: i64 = conn
-            .query_row("SELECT need_voice FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .query_row("SELECT need_voice FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(need_voice, 1, "自愈后 need_voice 应为 1");
     }
 
-    /// v40 自愈：用户改过 action_data（非空）→ 加载时保留用户内容，不覆盖。
+    /// v40 自愈（v43 适配改名）：用户改过 action_data（非空）→ 加载时改名 + 保留内容。
     #[test]
     fn load_agent_action_seeds_preserves_user_edited_action_data() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
-        // 用户已自定义 PPT prompt
         conn.execute(
             "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
-             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file', 0, 0)",  // Agent 父菜单
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file', 0, 0)",
             [],
         ).unwrap();
         let agent_id: i64 = conn
@@ -392,23 +503,21 @@ mod load_tests {
         load_agent_action_seeds(&conn).unwrap();
 
         let after_data: String = conn
-            .query_row("SELECT action_data FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(after_data, "用户自定义 prompt", "用户改过的 action_data 应保留");
-        // need_voice 仍会被强制设为 1（PPT 菜单语义）
         let need_voice: i64 = conn
-            .query_row("SELECT need_voice FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .query_row("SELECT need_voice FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(need_voice, 1, "need_voice 仍应强制为 1");
     }
 
-    /// v40 去重：早期 INSERT OR IGNORE（无 UNIQUE）曾留下多条 PPT 子菜单。
-    /// load 应保留 id 最小的，删除其余。
+    /// v40 去重（v43 适配改名）：早期 INSERT OR IGNORE（无 UNIQUE）曾留下多条 PPT 子菜单。
+    /// 模拟老 DB 有 3 条 '制作 PPT'，跑 load 后改名 + 去重到只剩 1 条 'PPT 制作'。
     #[test]
     fn load_agent_action_seeds_dedupes_duplicate_ppt_items() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
-        // 模拟早期 bug：Agent 下挂 3 条「制作 PPT」
         conn.execute(
             "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts)
              VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file')",
@@ -431,10 +540,43 @@ mod load_tests {
 
         load_agent_action_seeds(&conn).unwrap();
 
-        let after_count: i64 = conn
+        let after_make_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_make_count, 1, "去重 + 改名后应只剩 1 条 'PPT 制作'");
+        let legacy_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(after_count, 1, "去重后应只剩 1 条");
+        assert_eq!(legacy_count, 0, "老标题应全被改名");
+    }
+
+    /// v43：PPT 大纲子菜单也应支持自愈（模拟空 action_data）
+    #[test]
+    fn load_agent_action_seeds_self_heals_ppt_outline_empty_action_data() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts)
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file')",
+            [],
+        ).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system)
+             VALUES (?1, 'PPT 大纲', 'file-text', 'agent', '', 'pi', 'file', -1, 1)",
+            rusqlite::params![agent_id],
+        ).unwrap();
+
+        load_agent_action_seeds(&conn).unwrap();
+
+        let after_data: String = conn
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!after_data.is_empty(), "PPT 大纲自愈后 action_data 应非空");
+        assert!(after_data.contains("{{task}}"), "PPT 大纲 prompt 应含 {{task}}");
+        assert!(after_data.contains("outline"), "PPT 大纲 prompt 应含 outline 文件名规范");
     }
 
     /// load_external_seeds 永远 Ok——单个 seed 失败仅 log::error。
@@ -456,9 +598,9 @@ mod load_tests {
         assert!(result.is_ok(), "load_external_seeds 不应传播单 seed 错误: {:?}", result);
     }
 
-    /// PPT prompt 必须包含 {{task}} / {{files}} 占位符（octopus 的 render_agent_prompt
-    /// 只替换这两个），且必须推荐 guizang-ppt-skill 与 ppt-master 两个候选 skill
-    /// （spec § 3 要求的核心 skill 清单）。
+    /// make-ppt.prompt.md 必须包含 {{task}} / {{files}} 占位符（octopus 的 render_agent_prompt
+    /// 只替换这两个），推荐 guizang-ppt-skill 与 ppt-master，且 v43 起新增「Markdown 大纲」
+    /// 识别章节（让「PPT 制作」能识别 .md 输入并跳过 Step 1）。
     #[test]
     fn make_ppt_prompt_contains_required_placeholders() {
         let path = seeds_dir().join("agent_actions/make-ppt.prompt.md");
@@ -467,5 +609,18 @@ mod load_tests {
         assert!(content.contains("{{files}}"), "PPT prompt 必须含 {{files}} 占位符");
         assert!(content.contains("guizang-ppt-skill"), "应推荐 guizang skill");
         assert!(content.contains("ppt-master"), "应推荐 ppt-master skill");
+        assert!(content.contains("Markdown 大纲"), "v43: 应含 .md 输入识别章节");
+    }
+
+    /// v43 新增 ppt-outline.prompt.md 必须包含的占位符和关键约束。
+    #[test]
+    fn ppt_outline_prompt_contains_required_placeholders() {
+        let path = seeds_dir().join("agent_actions/ppt-outline.prompt.md");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("{{task}}"), "PPT 大纲 prompt 必须含 {{task}} 占位符");
+        assert!(content.contains("{{files}}"), "PPT 大纲 prompt 必须含 {{files}} 占位符");
+        assert!(content.contains("guizang-ppt-skill"), "应提 guizang skill（作下游参考）");
+        assert!(content.contains("outline"), "应含 outline 文件名规范");
+        assert!(content.contains("必须停止"), "应含强制停止指令（生成 md 后不继续生成 PPT）");
     }
 }

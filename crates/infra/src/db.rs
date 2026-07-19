@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 42", [])
+    conn.execute("PRAGMA user_version = 43", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -277,17 +277,19 @@ where
 /// schema 变更流程：改 db.sql + 升下方 user_version 数值。
 /// v38：vault_* 表（2026-07-18 Password Vault，db.sql 已含）。
 /// v40：外置 seed 加载机制（prompts/llm_providers/agent_actions）+ Agent 菜单 + PPT。
+/// v43：PPT 两阶段——「制作 PPT」改名「PPT 制作」+ 新增「PPT 大纲」子菜单。
+///      纯 seed 重跑（无 schema 变更），bump user_version 触发 load_external_seeds。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 42 {
-        // v42+ 已最新，直接返回。
+    if v >= 43 {
+        // v43+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
-        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v42。
+        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v43。
         // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
         // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
         // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
@@ -330,9 +332,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [],
         ).context("seed Pi/Claude 入 agent_adapters")?;
         fill_manifests(conn)?;
+        // v42→v43：bump user_version 触发 load_external_seeds 重跑。
+        // 本身无 schema 变更，目的纯粹是让 v43 的「制作 PPT → PPT 制作」改名 +
+        // 新增「PPT 大纲」子菜单能进到已 v42 的老 DB（load_external_seeds 只在
+        // schema 升级时跑一次，不 bump 就永远不执行）。
         crate::seeds::load_external_seeds(conn)?;
-        conn.execute("PRAGMA user_version = 42", [])?;
-        log::info!("schema upgraded to v42 (agent_adapters.is_system/is_default + 内置 agent seed)");
+        conn.execute("PRAGMA user_version = 43", [])?;
+        log::info!("schema upgraded to v43 (PPT 两阶段 seed 重跑: 制作 PPT 改名 + 新增 PPT 大纲)");
         return Ok(());
     }
 
@@ -342,8 +348,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 42", [])?;
-    log::info!("DB initialized (v42): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 43", [])?;
+    log::info!("DB initialized (v43): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -3544,13 +3550,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v40() {
+    fn init_schema_fresh_db_builds_v43() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 42, "全新库 init_schema 后应到 v40");
+        assert_eq!(v, 43, "全新库 init_schema 后应到 v43");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3569,13 +3575,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(agent_cnt, 1, "v39→v40 升级后应注入 Agent 主菜单");
-        let ppt_cnt: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(ppt_cnt, 1, "v39→v40 升级后应注入「制作 PPT」子项");
+        // v43: Agent 下应有两个子菜单——PPT 大纲 + PPT 制作
+        for title in ["PPT 大纲", "PPT 制作"] {
+            let cnt: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM action_bar_items WHERE title=?1",
+                    rusqlite::params![title],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(cnt, 1, "v39→v40 升级后应注入「{}」子项", title);
+        }
     }
 
     #[test]
@@ -3778,12 +3788,13 @@ mod tests {
     #[test]
     fn action_bar_non_submenu_accepts_default_text() {
         // db.sql 中非 submenu 类型 seed 项的 accepts 为 'text'（列默认值）。
-        // 排除 v40 外置 seed 注入的「制作 PPT」（action_type='agent', accepts='file'）——
-        // 它有独立测试覆盖。
+        // 排除 v40/v43 外置 seed 注入的 Agent 子菜单（action_type='agent', accepts='file'）——
+        // 它们有独立测试覆盖。
         let conn = open_init();
         let non_submenu: Vec<(String, String)> = conn.prepare(
             "SELECT action_type, accepts FROM action_bar_items
-             WHERE action_type != 'submenu' AND title != '制作 PPT' ORDER BY id"
+             WHERE action_type != 'submenu'
+               AND title NOT IN ('PPT 大纲', 'PPT 制作') ORDER BY id"
         ).unwrap()
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
         .filter_map(|r| r.ok()).collect();
@@ -3898,9 +3909,9 @@ mod tests {
         // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 42
+        // 验证 user_version = 43
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 42);
+        assert_eq!(v, 43);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -3945,7 +3956,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 42);
+        assert_eq!(v, 43);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4075,7 +4086,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 42);
+        assert_eq!(v, 43);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4099,11 +4110,11 @@ mod tests {
         conn.execute("PRAGMA user_version = 38", []).unwrap();
         // 运行 init_schema（升级路径）
         init_schema(&conn).unwrap();
-        // 验证升到 v40
+        // 验证升到 v43
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 42);
+        assert_eq!(v, 43);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4112,13 +4123,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(agent_count, 1, "v38→v40 升级时应创建 Agent 主菜单");
-        let ppt_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(ppt_count, 1, "v38→v40 升级时应创建 PPT 子菜单");
+        // v43: Agent 下应有两个子菜单——PPT 大纲 + PPT 制作
+        for title in ["PPT 大纲", "PPT 制作"] {
+            let cnt: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM action_bar_items WHERE title=?1",
+                    rusqlite::params![title],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(cnt, 1, "v38→v40 升级时应创建「{}」子菜单", title);
+        }
         // 验证用户编辑保留（INSERT OR IGNORE 保护）
         let prompt_content: String = conn
             .query_row("SELECT content FROM prompts WHERE id=1", [], |r| r.get(0))
@@ -4127,6 +4142,71 @@ mod tests {
             prompt_content, "用户改的 prompt 内容",
             "用户已编辑的 prompt 应保留（INSERT OR IGNORE）"
         );
+    }
+
+    /// v42→v43 升级路径：用户 DB 已是 v42（有「制作 PPT」老菜单），重启 octopus 后
+    /// 应自动：(1) bump 到 v43；(2) 改名「制作 PPT」→「PPT 制作」；(3) 新增「PPT 大纲」。
+    /// row id 不变（保快捷键）。这是 v43 的核心保证——不删 ~/.octopus/octopus.db 重建也能生效。
+    #[test]
+    fn migration_v42_to_v43_renames_and_adds_ppt_outline() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        // 模拟 v42 状态：先跑一次完整 init_schema 让它升到 v43（拿到「PPT 制作」+「PPT 大纲」），
+        // 然后手工把它「倒回」v42 状态——删掉 PPT 大纲、把 PPT 制作改回老标题、user_version=42。
+        init_schema(&conn).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        // 记下 PPT 制作 row id（应该是改名前的「制作 PPT」对应行）
+        let ppt_make_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
+            .unwrap();
+        // 删 PPT 大纲（模拟 v42 时还不存在）
+        conn.execute("DELETE FROM action_bar_items WHERE title='PPT 大纲'", []).unwrap();
+        // 把 PPT 制作改回老标题（模拟 v42 残留）
+        conn.execute(
+            "UPDATE action_bar_items SET title='制作 PPT' WHERE id=?1",
+            rusqlite::params![ppt_make_id],
+        ).unwrap();
+        // 倒回 v42
+        conn.execute("PRAGMA user_version = 42", []).unwrap();
+
+        // 验证模拟成功——v42 状态：只有「制作 PPT」，没有「PPT 大纲」
+        let legacy_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy_count, 1);
+        let outline_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(outline_count, 0, "测试前置：v42 状态下不应有 PPT 大纲");
+
+        // 现在跑 init_schema（模拟用户重启 octopus）
+        init_schema(&conn).unwrap();
+
+        // 验证升到 v43
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 43);
+
+        // 「制作 PPT」应消失
+        let after_legacy: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_legacy, 0, "v43 升级后老标题应消失");
+
+        // 「PPT 制作」存在且 row id 不变
+        let (after_id,): (i64,) = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='PPT 制作'", [], |r| Ok((r.get(0)?,)))
+            .unwrap();
+        assert_eq!(after_id, ppt_make_id, "PPT 制作 row id 应保持不变（保快捷键）");
+
+        // 「PPT 大纲」被新增
+        let after_outline: i64 = conn
+            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_outline, 1, "v43 升级后应新增 PPT 大纲子菜单");
     }
 
     /// 已是 v40 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
@@ -5529,7 +5609,7 @@ mod vault_schema_tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("db.sql")).unwrap();
-        conn.execute("PRAGMA user_version = 42", []).unwrap();
+        conn.execute("PRAGMA user_version = 43", []).unwrap();
         conn
     }
 

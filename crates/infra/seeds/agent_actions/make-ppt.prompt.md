@@ -39,6 +39,20 @@
 
 **不要尝试联网搜索其他 PPT skill——只用本 prompt 列出的 4 个。**
 
+# 特殊输入：Markdown 大纲
+
+若 {{files}} 含 `.md` 文件，**视为用户已经 review 过的 PPT 大纲**（来自「PPT 大纲」菜单的中间产物），按以下规则处理：
+
+1. **跳过 guizang Step 1 的 7 个澄清问题**，直接进入 Step 2（拷模板）+ Step 3（按每页 H2 填充）
+2. **front matter 的 `style` 字段决定用哪种风格**：
+   - `style: A` → 电子杂志风（guizang-ppt-skill 默认 / lewislulu）
+   - `style: B` → 瑞士国际主义风（guizang-ppt-skill 风格 B）
+3. **每个 `## Pxx` 是一页**，下面的 `-` bullet 是该页要点
+4. **不要二次总结、不要改变页数和顺序**——用户的编辑是故意的，照搬即可
+5. 大纲 front matter 里若没有 `audience` / `duration_min` / `style`，按默认值（30min / style A）处理
+
+> 如果 `.md` 文件看起来不像 PPT 大纲（无 front matter、无 `## Pxx` 结构），按普通文本文件处理，正常走 Step 1。
+
 # 文件读取约束
 
 - 若传入的是**文件夹**：递归列出文件（`ls -R` 或 walk），跳过 `.git` / `node_modules` / 二进制文件（图片/视频/可执行文件）
