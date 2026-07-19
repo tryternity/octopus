@@ -134,7 +134,7 @@ thread_local! {
     > = std::cell::RefCell::new(None);
 }
 
-/// 测试专用：注入一个 in-memory 连接（建表 + 标 v39），后续 `with_db` 调用会使用它。
+/// 测试专用：注入一个 in-memory 连接（建表 + 标 v40），后续 `with_db` 调用会使用它。
 ///
 /// 调用方需自备 `rusqlite::Connection::open_in_memory()`——这样测试可控制是否 preload
 /// 数据。多次调用替换前一次注入的连接（不累积）。
@@ -143,13 +143,13 @@ pub fn set_test_db(conn: Connection) {
     // 与 ensure_db → open_db_conn → init_schema 的初始化路径保持一致：
     // 1. 设置 PRAGMA（WAL/busy_timeout/foreign_keys）
     // 2. 跑 INIT_SQL 建表 + seed（IF NOT EXISTS 幂等）
-    // 3. 直接标 v39（跳过迁移分支）
+    // 3. 直接标 v40（跳过迁移分支）
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 39", [])
+    conn.execute("PRAGMA user_version = 40", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -268,35 +268,46 @@ where
 /// - `v >= 39`：最新，no-op。
 /// - `17 <= v < 39`：开发期历史库（唯一用户已 ≥v38）。db.sql 对这些库已 no-op
 ///   （所有表/列/vault 表均由 db.sql `CREATE TABLE IF NOT EXISTS` 覆盖），仅补跑外置
-///   seed 升到 v39。历史 v17→v37 的 ALTER / DROP / 数据迁移分支已删除——这些表/列
+///   seed 升到 v40。历史 v17→v37 的 ALTER / DROP / 数据迁移分支已删除——这些表/列
 ///   在 db.sql 内已存在（vault_*、launcher_index、search_frequency、global_shortcut、
 ///   trigger_keyword、models.is_available）。`auto_paste` 列已废弃（代码不再读写），
 ///   不在新 schema 中出现。
-/// - `v < 17`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v39。
+/// - `v < 17`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v40。
 ///
 /// schema 变更流程：改 db.sql + 升下方 user_version 数值。
 /// v38：vault_* 表（2026-07-18 Password Vault，db.sql 已含）。
-/// v39：外置 seed 加载机制（prompts/llm_providers/agent_actions）+ Agent 菜单 + PPT。
+/// v40：外置 seed 加载机制（prompts/llm_providers/agent_actions）+ Agent 菜单 + PPT。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 39 {
-        // v39+ 已最新，直接返回。
+    if v >= 40 {
+        // v40+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
-        // v17+ 旧库（开发期唯一用户已 ≥v38）——直接跑外置 seed 升到 v39。
+        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v40。
         // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
         // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
         // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
         // 若有 schema 缺列（理论不可能，开发期），由 fill_manifests / set_test_db 兜底。
         conn.execute_batch(INIT_SQL).ok();
+        // v39→v40：action_bar_items 加 need_voice 列（agent 类型用，取代 {{task}} 字符串扫描）
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"need_voice".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN need_voice INTEGER NOT NULL DEFAULT 0", [])?;
+                log::info!("schema v40: action_bar_items 补 need_voice 列");
+            }
+        }
         fill_manifests(conn)?;
         crate::seeds::load_external_seeds(conn)?;
-        conn.execute("PRAGMA user_version = 39", [])?;
-        log::info!("schema upgraded to v39 (外置 seed 加载机制 + Agent 菜单 + PPT)");
+        conn.execute("PRAGMA user_version = 40", [])?;
+        log::info!("schema upgraded to v40 (action_bar_items.need_voice + seed 自愈)");
         return Ok(());
     }
 
@@ -306,8 +317,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 39", [])?;
-    log::info!("DB initialized (v39): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 40", [])?;
+    log::info!("DB initialized (v40): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1542,9 +1553,10 @@ pub struct ActionBarItem {
     pub accepts: String,
     pub trigger_keyword: String,
     pub global_shortcut: String,
+    pub need_voice: bool,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut, need_voice";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -1564,6 +1576,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         accepts: row.get(13)?,
         trigger_keyword: row.get(14)?,
         global_shortcut: row.get(15)?,
+        need_voice: row.get::<_, i32>(16)? != 0,
     })
 }
 
@@ -1662,8 +1675,9 @@ pub fn insert_action_bar_item(
     accepts: &str,
     trigger_keyword: &str,
     is_enabled: bool,
+    need_voice: bool,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled, need_voice))
 }
 
 fn insert_action_bar_item_at(
@@ -1680,6 +1694,7 @@ fn insert_action_bar_item_at(
     accepts: &str,
     trigger_keyword: &str,
     is_enabled: bool,
+    need_voice: bool,
 ) -> Result<i64> {
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
@@ -1692,9 +1707,9 @@ fn insert_action_bar_item_at(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12, ?14)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1712,8 +1727,9 @@ pub fn update_action_bar_item(
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
+    need_voice: bool,
 ) -> Result<()> {
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice))
 }
 
 fn update_action_bar_item_at(
@@ -1730,6 +1746,7 @@ fn update_action_bar_item_at(
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
+    need_voice: bool,
 ) -> Result<()> {
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
     if row.is_system && row.action_type != action_type {
@@ -1741,8 +1758,8 @@ fn update_action_bar_item_at(
         anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
     }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, updated_at=datetime('now') WHERE id=?12",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, need_voice=?12, updated_at=datetime('now') WHERE id=?13",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, need_voice as i32, id],
     )?;
     Ok(())
 }
@@ -3284,7 +3301,7 @@ mod tests {
     fn action_bar_insert_with_shortcut() {
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true,
+            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true, false,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.shortcut, "q");
@@ -3294,7 +3311,7 @@ mod tests {
     fn action_bar_update_shortcut() {
         let conn = open_init();
         update_action_bar_item_at(
-            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "",
+            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "", false,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, 5).unwrap().unwrap();
         assert_eq!(item.shortcut, "p");
@@ -3304,9 +3321,9 @@ mod tests {
     fn action_bar_shortcut_conflict_rejected() {
         let conn = open_init();
         // id=2 设快捷键 't'
-        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "").unwrap();
+        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "", false).unwrap();
         // id=5 也想用 't' → 应失败
-        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "");
+        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "", false);
         assert!(result.is_err());
     }
 
@@ -3410,13 +3427,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v39() {
+    fn init_schema_fresh_db_builds_v40() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 39, "全新库 init_schema 后应到 v39");
+        assert_eq!(v, 40, "全新库 init_schema 后应到 v40");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3427,21 +3444,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 6, "六张核心表都应建好");
-        // v39 外置 seed：Agent 主菜单 + 制作 PPT 子项已注入
+        // v40 外置 seed：Agent 主菜单 + 制作 PPT 子项已注入
         let agent_cnt: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL",
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(agent_cnt, 1, "v39 应注入 Agent 主菜单");
+        assert_eq!(agent_cnt, 1, "v39→v40 升级后应注入 Agent 主菜单");
         let ppt_cnt: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ppt_cnt, 1, "v39 应注入「制作 PPT」子项");
+        assert_eq!(ppt_cnt, 1, "v39→v40 升级后应注入「制作 PPT」子项");
     }
 
     #[test]
@@ -3557,7 +3574,7 @@ mod tests {
         // init_schema 完成后，db.sql seed 的 submenu 项（AI / 搜索）accepts='any'
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        // v39 后 Agent 主菜单也是 submenu（accepts='file'）——按 title 过滤，只测 db.sql
+        // v40 后 Agent 主菜单也是 submenu（accepts='file'）——按 title 过滤，只测 db.sql
         // 中明确设 accepts='any' 的「AI」+「搜索」两项。
         let submenu_accepts: Vec<String> = conn.prepare(
             "SELECT accepts FROM action_bar_items
@@ -3574,7 +3591,7 @@ mod tests {
     #[test]
     fn action_bar_non_submenu_accepts_default_text() {
         // db.sql 中非 submenu 类型 seed 项的 accepts 为 'text'（列默认值）。
-        // 排除 v39 外置 seed 注入的「制作 PPT」（action_type='agent', accepts='file'）——
+        // 排除 v40 外置 seed 注入的「制作 PPT」（action_type='agent', accepts='file'）——
         // 它有独立测试覆盖。
         let conn = open_init();
         let non_submenu: Vec<(String, String)> = conn.prepare(
@@ -3630,7 +3647,7 @@ mod tests {
         assert_eq!(loaded.len(), 2, "load_app_index 应返回 2 条");
     }
 
-    // 历史 v36 自愈 + v36→v37 语义迁移测试已删除（v39 schema 重整，迁移分支移除）：
+    // 历史 v36 自愈 + v36→v37 语义迁移测试已删除（v40 schema 重整，迁移分支移除）：
     // - v36_self_heal_when_launcher_missing_but_version_set
     // - migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation
     // 这些迁移只在 v17→v37 旧库升级路径上有意义；新 schema 全部由 db.sql + 外置 seed
@@ -3666,13 +3683,13 @@ mod tests {
         assert_eq!(sv_enabled, 0, "原激活模型应被清空");
     }
 
-    /// 回归：v32-vintage 库（已有 action_bar_items 但仅缺其他表）经 init_schema 升到 v39，
-    /// db.sql CREATE TABLE IF NOT EXISTS 把所有缺表补齐。验证 v39 schema 完整性。
+    /// 回归：v32-vintage 库（已有 action_bar_items 但仅缺其他表）经 init_schema 升到 v40，
+    /// db.sql CREATE TABLE IF NOT EXISTS 把所有缺表补齐。验证 v40 schema 完整性。
     ///
     /// 历史 v32→v34/v35/v36 的迁移逻辑已删除（schema 由 db.sql 统一覆盖），本测试只保留
-    /// 升级到 v39 的 smoke check：launcher_index / search_frequency 表存在，列齐全。
+    /// 升级到 v40 的 smoke check：launcher_index / search_frequency 表存在，列齐全。
     #[test]
-    fn migration_v32_db_upgrades_to_v39() {
+    fn migration_v32_db_upgrades_to_v40() {
         // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index / launcher_index
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -3694,11 +3711,11 @@ mod tests {
         // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 39
+        // 验证 user_version = 40
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 39);
+        assert_eq!(v, 40);
 
-        // v39：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
+        // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'", [], |r| r.get(0)
         ).unwrap();
@@ -3724,7 +3741,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true,
+            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true, false,
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -3741,7 +3758,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 39);
+        assert_eq!(v, 40);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -3862,8 +3879,8 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v27_db_upgrades_to_v39() {
-        // v27 库再调 init_schema 应靠 v ≥ 17 分支升到 v39（不报错）
+    fn init_schema_v27_db_upgrades_to_v40() {
+        // v27 库再调 init_schema 应靠 v ≥ 17 分支升到 v40（不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("PRAGMA user_version = 27", []).unwrap();
@@ -3871,16 +3888,16 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 39);
+        assert_eq!(v, 40);
     }
 
-    /// 用户实际升级路径：v38 → v39 应正确加载外置 seed，且保护用户已编辑的 prompt。
+    /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
     #[test]
-    fn migration_v38_to_v39_loads_external_seeds_and_preserves_user_edits() {
+    fn migration_v38_to_v40_loads_external_seeds_and_preserves_user_edits() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         // 模拟 v38 旧库：prompts 表已存在 id=1 行（v38 的 db.sql 内联种子，
-        // v39 已迁出为外置 seed）。用户在此基础上编辑过。
+        // v40 已迁出为外置 seed）。用户在此基础上编辑过。
         conn.execute(
             "INSERT INTO prompts (id, title, category, content, description, is_system)
              VALUES (1, '默认润色', 'voice_text_polish', 'v38 原始内容', '', 1)",
@@ -3895,11 +3912,11 @@ mod tests {
         conn.execute("PRAGMA user_version = 38", []).unwrap();
         // 运行 init_schema（升级路径）
         init_schema(&conn).unwrap();
-        // 验证升到 v39
+        // 验证升到 v40
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 39);
+        assert_eq!(v, 40);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -3907,14 +3924,14 @@ mod tests {
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(agent_count, 1, "v38→v39 升级时应创建 Agent 主菜单");
+        assert_eq!(agent_count, 1, "v38→v40 升级时应创建 Agent 主菜单");
         let ppt_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ppt_count, 1, "v38→v39 升级时应创建 PPT 子菜单");
+        assert_eq!(ppt_count, 1, "v38→v40 升级时应创建 PPT 子菜单");
         // 验证用户编辑保留（INSERT OR IGNORE 保护）
         let prompt_content: String = conn
             .query_row("SELECT content FROM prompts WHERE id=1", [], |r| r.get(0))
@@ -3925,9 +3942,9 @@ mod tests {
         );
     }
 
-    /// 已是 v39 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
+    /// 已是 v40 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
     #[test]
-    fn init_schema_already_v39_is_noop() {
+    fn init_schema_already_v40_is_noop() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         // 走完整初始化路径（含 load_external_seeds）
@@ -3954,8 +3971,8 @@ mod tests {
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(baseline_prompts, after_prompts, "v39+ 早返，prompts 不应重复插入");
-        assert_eq!(baseline_agent, after_agent, "v39+ 早返，Agent 菜单不应重复插入");
+        assert_eq!(baseline_prompts, after_prompts, "v40+ 早返，prompts 不应重复插入");
+        assert_eq!(baseline_agent, after_agent, "v40+ 早返，Agent 菜单不应重复插入");
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -4776,7 +4793,7 @@ mod tests {
     #[test]
     fn prompts_table_seeded_with_default() {
         let conn = open_init();
-        // prompts seed 已外置到 seeds/prompts/（v39 后 db.sql 不再内联），
+        // prompts seed 已外置到 seeds/prompts/（v40 后 db.sql 不再内联），
         // init_schema 在生产路径会调 load_external_seeds——测试里显式调一次。
         crate::seeds::load_external_seeds(&conn).unwrap();
         // id=1 系统默认 prompt 存在
@@ -4982,8 +4999,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "").unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "", false).unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -5001,8 +5018,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true).unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);
@@ -5325,7 +5342,7 @@ mod vault_schema_tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("db.sql")).unwrap();
-        conn.execute("PRAGMA user_version = 39", []).unwrap();
+        conn.execute("PRAGMA user_version = 40", []).unwrap();
         conn
     }
 

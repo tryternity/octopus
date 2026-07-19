@@ -36,6 +36,7 @@ interface ActionBarItem {
   accepts?: string;
   triggerKeyword?: string;
   globalShortcut?: string;
+  needVoice?: boolean;
 }
 
 // ── 类型元信息 ──
@@ -469,18 +470,29 @@ const EditForm = ({
         {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
 
         {type === "agent" && (
-          <FormField label={t("settings.actionBar.agentLabel")}>
-            <select
-              className={inputBase}
-              value={form.agent || ""}
-              onChange={(e) => onChange({ ...form, agent: e.target.value })}
-            >
-              <option value="">{t("settings.actionBar.selectAgent")}</option>
-              {adapters.filter((a) => a.isAvailable).map((a) => (
-                <option key={a.key} value={a.key}>{a.displayName}</option>
-              ))}
-            </select>
-          </FormField>
+          <>
+            <FormField label={t("settings.actionBar.agentLabel")}>
+              <select
+                className={inputBase}
+                value={form.agent || ""}
+                onChange={(e) => onChange({ ...form, agent: e.target.value })}
+              >
+                <option value="">{t("settings.actionBar.selectAgent")}</option>
+                {adapters.filter((a) => a.isAvailable).map((a) => (
+                  <option key={a.key} value={a.key}>{a.displayName}</option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label={t("settings.actionBar.voiceInput")}>
+              <div className="flex items-center gap-2.5">
+                <Toggle
+                  checked={form.needVoice ?? false}
+                  onChange={(v) => onChange({ ...form, needVoice: v })}
+                />
+                <span className="text-xs text-muted-foreground">{t("settings.actionBar.voiceInputDesc")}</span>
+              </div>
+            </FormField>
+          </>
         )}
 
         {type === "copy_path" && (
@@ -961,6 +973,7 @@ export default function ActionBarPanel({
           accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
+          needVoice: editingForm.actionType === "agent" ? (editingForm.needVoice ?? false) : false,
         });
         // 新建非 submenu 项时设置全局快捷键（Quick Execute）
         if (editingForm.actionType !== "submenu") {
@@ -981,6 +994,7 @@ export default function ActionBarPanel({
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
+          needVoice: editingForm.actionType === "agent" ? (editingForm.needVoice ?? false) : false,
         });
         // global_shortcut 单独更新（非 submenu 类型）
         if (editingForm.actionType !== "submenu") {
@@ -1068,6 +1082,7 @@ export default function ActionBarPanel({
         agent: merged.agent || "",
         accepts: deriveAccepts(merged.actionType, merged.accepts),
         triggerKeyword: merged.triggerKeyword || "",
+        needVoice: merged.needVoice ?? false,
       });
       if (merged.actionType !== "submenu") {
         await invoke("set_global_shortcut", { id: merged.id, globalShortcut: merged.globalShortcut ?? "" });

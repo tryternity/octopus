@@ -276,6 +276,7 @@ pub fn install_extension(
             "",
             "text",
             "",
+            false,  // need_voice——script 类型不需要语音
         )
         .map_err(|e| e.to_string())?;
         Ok(id)
@@ -293,6 +294,7 @@ pub fn install_extension(
             "text",
             "",
             is_enabled,
+            false,  // need_voice——script 类型不需要语音
         )
         .map_err(|e| e.to_string())
     }

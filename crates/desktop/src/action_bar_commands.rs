@@ -755,6 +755,7 @@ pub fn create_action_bar_item(
     accepts: String,
     trigger_keyword: Option<String>,
     is_enabled: Option<bool>,
+    need_voice: Option<bool>,
 ) -> Result<i64, String> {
     // 同级菜单项最多 35 个（9 数字 + 26 字母快捷键上限）
     let all = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
@@ -762,7 +763,7 @@ pub fn create_action_bar_item(
     if sibling_count >= 35 {
         return Err("同级菜单项已达上限 35 个（快捷键 1-9 + a-z）".into());
     }
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true))
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true), need_voice.unwrap_or(false))
         .map_err(|e| e.to_string())
 }
 
@@ -780,8 +781,17 @@ pub fn update_action_bar_item(
     agent: String,
     accepts: String,
     trigger_keyword: Option<String>,
+    need_voice: Option<bool>,
 ) -> Result<(), String> {
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""))
+    // 保留原 need_voice（用户没传时）：load 旧值传入
+    let need_voice = match need_voice {
+        Some(v) => v,
+        None => octopus_infra::db::load_action_bar_item(id)
+            .map_err(|e| e.to_string())?
+            .map(|i| i.need_voice)
+            .unwrap_or(false),
+    };
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), need_voice)
         .map_err(|e| e.to_string())
 }
 
@@ -1849,8 +1859,11 @@ pub(crate) fn trigger_agent_voice_core(
     Ok(())
 }
 
-/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
+/// agent 项 need_voice=true 时：创建 agent_task → 隐藏浮窗 → 触发音录。
 /// Tauri 命令——薄包装，核心逻辑在 trigger_agent_voice_core。
+///
+/// 2026-07-19 v40 改：判定从「action_data 含 {{task}}」改为「need_voice 字段」，
+/// 避免前端扫描 prompt 字符串的脆弱性。need_voice 由 seed 或用户在设置面板勾选。
 #[tauri::command]
 pub fn trigger_agent_voice(
     item_id: i64,
@@ -1860,6 +1873,9 @@ pub fn trigger_agent_voice(
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
+    if !item.need_voice {
+        return Err(format!("菜单项「{}」未启用语音输入（need_voice=false）", item.title));
+    }
     trigger_agent_voice_core(&item, &app, coordinator.inner(), true)
 }
 

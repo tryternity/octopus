@@ -78,9 +78,26 @@ fn which(binary: &str) -> bool {
 /// prompt: 渲染后的 prompt（含 task）
 /// files: POSIX 路径列表
 /// cwd: 工作目录
+///
+/// **目录处理**（2026-07-19 v40 修复）：Pi 的 `@<path>` 语法只接受文件，传目录会 EISDIR 崩。
+/// `{files_at}` 渲染时检测每个路径：是目录则降级为不加 `@`（让 prompt 文本里的路径
+/// 引导 agent 自己 `ls`）；是文件则正常加 `@`。
+/// `{files}` 不加 `@`，本来就只是路径列表，文件/目录都安全。
 pub fn render_command(template: &str, prompt: &str, files: &[String], cwd: &str) -> String {
     let files_str = files.iter().map(|f| shell_quote(f)).collect::<Vec<_>>().join(" ");
-    let files_at_str = files.iter().map(|f| format!("@{}", shell_quote(f))).collect::<Vec<_>>().join(" ");
+    // files_at：文件加 @ 前缀，目录不加（pi @<dir> 会 EISDIR 崩）
+    let files_at_str = files.iter()
+        .map(|f| {
+            let quoted = shell_quote(f);
+            if std::path::Path::new(f).is_dir() {
+                // 目录：直接传裸路径，agent 在 prompt 指引下自己 walk
+                quoted
+            } else {
+                format!("@{}", quoted)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     template
         .replace("{prompt}", &shell_escape_single(prompt))
         .replace("{files_at}", &files_at_str)
@@ -123,6 +140,30 @@ mod tests {
             "/Users/x",
         );
         assert_eq!(cmd, "pi @'/a.pdf' @'/b.pdf' 'make ppt'");
+    }
+
+    /// v40 修复：Pi `@<dir>` 会 EISDIR 崩。render_command 检测目录，目录不加 @ 前缀。
+    #[test]
+    fn test_render_command_pi_directory_no_at_prefix() {
+        // 用 tempdir 造一个真实目录（pi 检测 std::path::Path::is_dir()）
+        let tmp = std::env::temp_dir().join(format!("octopus-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir_path = tmp.to_string_lossy().to_string();
+        let file_path = tmp.join("a.pdf").to_string_lossy().to_string();
+        std::fs::write(&file_path, "").unwrap();
+
+        let cmd = render_command(
+            "pi {files_at} {prompt}",
+            "make ppt",
+            &[dir_path.clone(), file_path.clone()],
+            "/Users/x",
+        );
+        // 期望：目录不加 @，文件加 @
+        let expected = format!("pi '{}' @'{}' 'make ppt'", dir_path, file_path);
+        assert_eq!(cmd, expected);
+
+        // 清理
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

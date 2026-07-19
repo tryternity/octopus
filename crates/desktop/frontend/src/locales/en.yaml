@@ -535,6 +535,8 @@ settings:
     acceptsFile: Files
     acceptsAny: Files + Text
     agentLabel: Agent
+    voiceInput: Voice Input
+    voiceInputDesc: Auto-start recording on trigger; ASR result is injected as {{task}}
     scopeAll: All
     scopeText: Text
     scopeFile: Files

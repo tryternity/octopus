@@ -4,6 +4,8 @@
 
 {{files}}
 
+> 若上方清单含目录路径（不是单个文件），请用 `ls <dir>` / `find <dir> -type f` 递归列出目录下所有支持的文本文件（md/txt/docx/pdf/code），跳过 `.git` / `node_modules` / 二进制文件。**不要尝试用 `@<dir>` 方式读取目录**——会 EISDIR 报错，必须先展开为文件列表再逐个读。
+
 # 用户的额外指令
 
 {{task}}

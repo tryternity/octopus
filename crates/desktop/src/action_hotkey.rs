@@ -215,12 +215,12 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
 
     // 3. 决策路径——纯函数 decide_files_action（便于单测）
     let (should_trigger_voice, should_execute_directly) =
-        decide_files_action(&item.action_type, &item.action_data);
+        decide_files_action(&item.action_type, item.need_voice);
 
     if should_trigger_voice {
-        // agent + {{task}} → 走音录路径
+        // agent + need_voice → 走音录路径
         log::info!(
-            "[action-hotkey] File 选中 + agent + {{{{task}}}} → 触发音录 item_id={}, files={}",
+            "[action-hotkey] File 选中 + agent + need_voice → 触发音录 item_id={}, files={}",
             item_id,
             files.len(),
         );
@@ -278,11 +278,14 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
 /// - `(false, true)` → 走 `execute_action_bar_inner`（script/url/copy_path/agent-without-task）
 /// - `(false, false)` → 静默跳过（理论不出现：所有非 voice 路径都走 direct）
 ///
-/// 语义：只有 `action_type=agent` 且 prompt 含 `{{task}}` 才需要语音，
-/// 因为 `{{task}}` 占位符期望用户口述填充。其他情况（agent 但无 `{{task}}`、
-/// script、url、copy_path 等）直接渲染执行即可，不需要等用户说话。
-fn decide_files_action(action_type: &str, action_data: &str) -> (bool, bool) {
-    if action_type == "agent" && action_data.contains("{{task}}") {
+/// 语义：只有 `action_type=agent` 且 `need_voice=true` 才需要语音，
+/// 因为用户在设置面板勾选了「需要语音输入」（agent 菜单的 prompt 含 {{task}}）。
+/// 其他情况（agent 但 need_voice=false、script、url、copy_path 等）直接渲染执行即可。
+///
+/// 2026-07-19 v40 改：判定从「action_data 含 {{task}}」改为「need_voice 字段」，
+/// 避免扫描 prompt 字符串的脆弱性。need_voice 在 ActionBarItem.need_voice 字段。
+fn decide_files_action(action_type: &str, need_voice: bool) -> (bool, bool) {
+    if action_type == "agent" && need_voice {
         (true, false)
     } else {
         (false, true)
@@ -294,26 +297,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decide_files_action_agent_with_task_triggers_voice() {
-        let (voice, direct) = decide_files_action("agent", "做 PPT：{{task}}\n文件：{{files}}");
+    fn decide_files_action_agent_with_need_voice_triggers_voice() {
+        let (voice, direct) = decide_files_action("agent", true);
         assert_eq!((voice, direct), (true, false));
     }
 
     #[test]
-    fn decide_files_action_agent_without_task_executes_directly() {
-        let (voice, direct) = decide_files_action("agent", "整理这些文件：{{files}}");
+    fn decide_files_action_agent_without_need_voice_executes_directly() {
+        let (voice, direct) = decide_files_action("agent", false);
         assert_eq!((voice, direct), (false, true));
     }
 
     #[test]
     fn decide_files_action_script_type_executes_directly() {
-        let (voice, direct) = decide_files_action("script", "#shell\nls {{files}}");
+        let (voice, direct) = decide_files_action("script", false);
         assert_eq!((voice, direct), (false, true));
     }
 
     #[test]
     fn decide_files_action_url_type_executes_directly() {
-        let (voice, direct) = decide_files_action("url", "https://example.com/?f={files}");
+        let (voice, direct) = decide_files_action("url", false);
         assert_eq!((voice, direct), (false, true));
     }
 }

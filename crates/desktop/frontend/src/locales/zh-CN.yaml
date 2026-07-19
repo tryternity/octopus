@@ -535,6 +535,8 @@ settings:
     acceptsFile: 文件
     acceptsAny: 文件 + 文本
     agentLabel: Agent
+    voiceInput: 语音输入
+    voiceInputDesc: 触发后自动开始录音，识别结果作为 {{task}} 注入 prompt
     scopeAll: 全部
     scopeText: 文本类
     scopeFile: 文件类

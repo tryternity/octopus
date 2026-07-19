@@ -106,6 +106,11 @@ fn load_llm_providers_seed(conn: &Connection) -> Result<()> {
 ///
 /// 当前固定目标：Agent 主菜单（title='Agent'，accepts='file'）+ 「制作 PPT」子项。
 /// 后续可迭代为目录扫描。
+///
+/// **自愈策略**（2026-07-19 v40 修复）：早期版本用 INSERT WHERE NOT EXISTS，
+/// 一旦菜单项存在（即使 action_data 为空）就跳过——导致 Task 1 实施期插过的
+/// action_data='' 永远填不上 prompt。新版用「INSERT OR IGNORE 保证存在」+
+/// 「UPDATE WHERE action_data='' 自愈填充」+「UPDATE need_voice=1 强制刷新」。
 fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
     let make_ppt_prompt = seeds_dir().join("agent_actions/make-ppt.prompt.md");
     let prompt_content = std::fs::read_to_string(&make_ppt_prompt)
@@ -127,16 +132,24 @@ fn load_agent_action_seeds(conn: &Connection) -> Result<()> {
         )
         .context("查 Agent 主菜单 id")?;
 
-    // 3. 插 PPT 子菜单（title+parent 去重，prompt 文件内容通过参数绑定）
+    // 3. 插 PPT 子菜单（INSERT OR IGNORE：已存在则跳过插入，但后续 UPDATE 会兜底）
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system)
-         SELECT ?1, '制作 PPT', 'presentation', 'agent', ?2, 'pi', 'file', 0, 1
-         WHERE NOT EXISTS (
-             SELECT 1 FROM action_bar_items
-             WHERE title='制作 PPT' AND parent_id = ?1
-         )",
+        "INSERT OR IGNORE INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
+         VALUES (?1, '制作 PPT', 'presentation', 'agent', ?2, 'pi', 'file', 0, 1, 1)",
         rusqlite::params![agent_id, prompt_content],
     ).context("插入 PPT 子菜单")?;
+
+    // 4. 自愈：现有 PPT 菜单项如果 action_data 为空（早期版本残留）或 need_voice 未开，补上。
+    //    用户在设置里改过的 action_data（非空）保留；need_voice 总是强制设为 1（PPT 菜单语义）。
+    conn.execute(
+        "UPDATE action_bar_items
+         SET action_data = CASE WHEN action_data = '' THEN ?2 ELSE action_data END,
+             need_voice = 1,
+             agent = CASE WHEN agent = '' THEN 'pi' ELSE agent END,
+             accepts = 'file'
+         WHERE title = '制作 PPT' AND parent_id = ?1",
+        rusqlite::params![agent_id, prompt_content],
+    ).context("自愈 PPT 菜单 action_data + need_voice")?;
     Ok(())
 }
 
@@ -292,6 +305,82 @@ mod load_tests {
             .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(agent_count, 1, "重跑后 Agent 仍只有 1 个");
+    }
+
+    /// v40 自愈：早期版本（INSERT WHERE NOT EXISTS）若先插过 action_data='' 的 PPT 菜单，
+    /// 后续加载无法补内容。新版用 INSERT OR IGNORE + UPDATE 兜底修复。
+    /// 模拟场景：先插一个 action_data='' 的 PPT 菜单，再调 load_agent_action_seeds，
+    /// 验证 action_data 被填上 + need_voice=1。
+    #[test]
+    fn load_agent_action_seeds_self_heals_empty_action_data() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        // 先插 Agent 主菜单 + 一个 action_data='' 的 PPT 子项（模拟早期 bug 残留）
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts)
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file')",
+            [],
+        ).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system)
+             VALUES (?1, '制作 PPT', 'presentation', 'agent', '', 'pi', 'file', 0, 1)",
+            rusqlite::params![agent_id],
+        ).unwrap();
+        // 验证模拟状态
+        let before_data: String = conn
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before_data, "", "测试前置：PPT 菜单 action_data 为空");
+
+        // 跑 load——应自愈
+        load_agent_action_seeds(&conn).unwrap();
+
+        let after_data: String = conn
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert!(!after_data.is_empty(), "自愈后 action_data 应非空");
+        assert!(after_data.contains("{{task}}"), "自愈后 action_data 应含 {{task}}");
+
+        let need_voice: i64 = conn
+            .query_row("SELECT need_voice FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(need_voice, 1, "自愈后 need_voice 应为 1");
+    }
+
+    /// v40 自愈：用户改过 action_data（非空）→ 加载时保留用户内容，不覆盖。
+    #[test]
+    fn load_agent_action_seeds_preserves_user_edited_action_data() {
+        let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
+        let conn = fresh_db();
+        // 用户已自定义 PPT prompt
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system, need_voice)
+             VALUES (NULL, 'Agent', 'bot', 'submenu', '', 5, 1, 'file', 0, 0)",  // Agent 父菜单
+            [],
+        ).unwrap();
+        let agent_id: i64 = conn
+            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order, is_system)
+             VALUES (?1, '制作 PPT', 'presentation', 'agent', '用户自定义 prompt', 'pi', 'file', 0, 1)",
+            rusqlite::params![agent_id],
+        ).unwrap();
+
+        load_agent_action_seeds(&conn).unwrap();
+
+        let after_data: String = conn
+            .query_row("SELECT action_data FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after_data, "用户自定义 prompt", "用户改过的 action_data 应保留");
+        // need_voice 仍会被强制设为 1（PPT 菜单语义）
+        let need_voice: i64 = conn
+            .query_row("SELECT need_voice FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(need_voice, 1, "need_voice 仍应强制为 1");
     }
 
     /// load_external_seeds 永远 Ok——单个 seed 失败仅 log::error。
