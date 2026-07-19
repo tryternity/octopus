@@ -129,7 +129,7 @@ export default function PasswordGenerator({
   showToast,
 }: PasswordGeneratorProps) {
   const t = useT();
-  const [mode, setMode] = useState<Mode>("passphraseZh");
+  const [mode, setMode] = useState<Mode>("random");
   const [result, setResult] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -184,9 +184,9 @@ export default function PasswordGenerator({
       {/* 模式切换 */}
       <Segmented
         items={[
-          { key: "passphraseZh", label: t("settings.vault.generator.mode.passphraseZh") },
-          { key: "passphraseEn", label: t("settings.vault.generator.mode.passphraseEn") },
           { key: "random", label: t("settings.vault.generator.mode.random") },
+          { key: "passphraseEn", label: t("settings.vault.generator.mode.passphraseEn") },
+          { key: "passphraseZh", label: t("settings.vault.generator.mode.passphraseZh") },
           { key: "pin", label: t("settings.vault.generator.mode.pin") },
         ]}
         active={mode}
