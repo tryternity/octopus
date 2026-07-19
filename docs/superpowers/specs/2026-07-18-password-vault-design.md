@@ -502,8 +502,10 @@ pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool;
 | INV-7 | 改主密码不重加密 vault_ciphers（user_vault_key 不变） |
 | INV-8 | TOTP：HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
 | INV-9 | 锁定超时以 `last_active_at` 为基准（非 `unlocked_at`）；前端心跳维护 `last_active_at`，vault tab 离开 + 配置时间到 → 自动锁。`timeout_secs=0` 表示永不锁定（UI 警告）。 |
-| INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。 |
+| INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。**2026-07-19 第四轮 #1 落地**：后端 `crates/vault/src/validate.rs::validate_master_password` 在 setup_vault + change_master_password 入口强制校验，防 DevTools 绕过。 |
 | INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc` / `regenerate_security_stamp` / `setup_vault` / 任何 `save_vault_meta` / `update_security_stamp` 调用）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4 + 复审 #2 下沉）。**锁下沉到 `save_vault_meta` / `update_security_stamp` 内部**（ReentrantMutex 同线程可重入），调用方无需显式持锁——RMW 路径仍显式持锁保证读到的数据在写之前不被其他写者改动。防并发导致整行覆盖丢失字段 → 永久数据损坏。 |
+| INV-12 | 暴力破解退避：所有主密码验证路径（unlock / verify / change_password 旧密码校验）必须经 `attempt_guard` 计数 + 指数退避（0/1/2/4/8/16/30s）。**2026-07-19 第四轮 #3 落地**：`crates/vault/src/attempt_guard.rs`。进程内（重启重置，不做持久化锁定防 DoS）。 |
+| INV-13 | 迁移 `models.secret_key` 到加密格式必须是事务化（`unchecked_transaction` 整批）+ 调用方传播错误不吞。**2026-07-19 第四轮 #5 落地**：防半迁移永久明文残留。 |
 
 ---
 
@@ -1421,7 +1423,7 @@ pub trait VaultSync {
 |---|---|
 | INV-I1 | Bitwarden 导入仅支持 unencrypted JSON（MVP） |
 | INV-I2 | 导入失败时已成功的 cipher 不回滚（中断容忍） |
-| INV-I3 | 导入按 name + 第一条 uri 去重 |
+| INV-I3 | 导入按 name + 第一条 uri 去重（Bitwarden 的 id 在 octopus 无意义）。**2026-07-19 第四轮 #2 落地**：`importer/bitwarden.rs` 导入前预加载库内 ciphers 构 seen HashSet（key=name+first_uri），重复跳过。reprompt 字段也正确导入/导出（第四轮 #4）。 |
 | INV-I4 | 导出明文 JSON 必须明确警告用户 |
 | INV-I5 | 手动同步不引入任何网络请求（纯本地文件读写） |
 
@@ -1501,7 +1503,15 @@ pub fn serialize(err: &VaultError) -> String;
 
 ### 7.3 主密码错误防护
 
+**2026-07-19 第四轮 #3 落地**：`crates/vault/src/attempt_guard.rs` 实现 `UnlockAttemptGuard`（进程级 OnceLock 单例），退避序列 `0/1/2/4/8/16/30s`。3 个解锁路径接入：
+- `unlock_with_master_password`（流程 C/D）：入口退避检查 + 失败 record_failure / 成功 reset
+- `verify_master_password`（reprompt 二次验证）：同上
+- `change_master_password` 旧密码校验：同上
+
+进程内计数（重启重置，不做持久化锁定防 DoS）。
+
 ```rust
+// crates/vault/src/attempt_guard.rs
 pub struct UnlockAttemptGuard {
     failures: AtomicU32,
     next_allowed_at: AtomicU64,
@@ -1516,7 +1526,8 @@ impl UnlockAttemptGuard {
         self.next_allowed_at.store(now_unix() + delay_secs as u64, Ordering::SeqCst);
         Duration::from_secs(delay_secs as u64)
     }
-    // ... check_allowed, reset
+    pub fn remaining_wait(&self) -> Option<Duration>;  // Some(d) = 等待 d，None = 可尝试
+    pub fn reset(&self);                                // 成功后重置
 }
 ```
 

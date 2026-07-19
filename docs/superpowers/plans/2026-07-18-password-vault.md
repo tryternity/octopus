@@ -6989,3 +6989,53 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 - cargo test -p octopus-infra --lib: 130 pass
 - bunx tsc --noEmit: 0 error; bun run test: 304 pass
 - cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+---
+
+## 修订：第四轮审查 12 项全修（2026-07-19，commit 19153933）
+
+收到第四轮审查报告，12 个问题全部复查成立（#5 功能影响被夸大但安全属性成立 / #7 核心因果链不成立但 latent risk 存在 / #10 INV-3 适用性过宽但安全卫生缺陷真实）。全部修复。
+
+### 🔴 critical/high（7 项）
+
+- [x] **#1 后端主密码强度校验**：新建 `crates/vault/src/validate.rs`（Rust 版 validate_master_password，翻译自前端 ts）；setup_vault + change_master_password 入口调用。防 DevTools invoke('vault_setup', {password: 'a'}) 设弱密码
+- [x] **#2 Bitwarden 导入完全未去重**：importer/bitwarden.rs 导入前预加载库内 ciphers 构 seen HashSet（key=name+first_uri），重复跳过计 skipped。加 test_import_dedup_on_second_import
+- [x] **#3 缺暴力破解退避**：新建 `crates/vault/src/attempt_guard.rs`（UnlockAttemptGuard AtomicU32 + AtomicU64，退避 0/1/2/4/8/16/30s）；3 路径接入（unlock_with_master_password / verify_master_password / change_master_password 旧密码校验）；成功 reset / 失败 record_failure
+- [x] **#4 reprompt 字段导入静默丢失**：BitwardenItem (De)Serialize 加 reprompt 字段；CipherInput 构造改 RepromptType::from(item.reprompt)；exporter 写出 i64::from(c.reprompt)
+- [x] **#5 迁移非事务化+吞错**：migrate.rs 两阶段（先全部加密 Vec + 整批 unchecked_transaction）；setup_vault 不再 log::warn 吞错，return Err
+
+### 🟡 medium（3 项）
+
+- [x] **#6 save_machine_key 非原子写**：keychain.rs unix/non-unix 都改 temp file + sync_all + rename 原子替换
+- [x] **#7 测试可能删真实 machine-key.enc**：test_machine_key_round_trip_via_file 加 #[ignore]
+- [x] **#8 流程 D 无条件重写 local_enc**：refresh_app_key_local_enc 加"解密比较"短路（meta_lock 内解 app_key_local_enc == 当前 app_key 则跳过 save）
+
+### 🟢 low（4 项）
+
+- [x] **#9 list_folders 无单行容错**：返回 (Vec<FolderDto>, Vec<i64>) 部分结果（照搬 cipher.rs 修复 #6 模式）
+- [x] **#10 child() chain code 未 zeroize**：crypto/hierarchy.rs 64B HMAC 输出包装 Zeroizing<[u8;64]>
+- [x] **#11 空 cipher_uri 匹配任意**：matcher/mod.rs match_uri_one 加 early return（trim().is_empty() → false）
+- [x] **#12 DuplicateGroup Debug 打印 hash**：health/duplicate.rs 手写 Debug impl redact password_hash
+
+### 次要观察（TOTP 小整洁，commit 45fd0a12）
+
+- [x] from_otpauth_url 去掉 url.to_string() 多余分配（AsRef<str> 直接接 &str）
+- [x] test_algorithm_invalid 注释诚实化（测的是上游解析非 clamp）
+- [x] digits 注释消除"留宽松"歧义
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 161 pass（+26 新测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+
+### 四轮审查总览
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| **总计** | **36** | **29** | **7** |
