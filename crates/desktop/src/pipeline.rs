@@ -236,6 +236,10 @@ impl StreamingPipeline {
         // VAD 说话状态变化 → Speaking 事件
         let speaking = self.engine.silence_duration() < 0.3;
         if speaking != self.prev_speaking {
+            crate::perf_log::log(&format!(
+                "[SPEAKING] local {} silence={:.2}",
+                speaking, self.engine.silence_duration(),
+            ));
             self.prev_speaking = speaking;
             events.push(PipelineEvent::Speaking(speaking));
         }
@@ -545,6 +549,10 @@ impl VadSegmentedPipeline {
         let speaking = self.has_speech && self.silence_duration < 0.3;
         if speaking != self.prev_speaking {
             log::info!("[vad-seg] speaking {} → {} (has_speech={}, silence={:.2})", self.prev_speaking, speaking, self.has_speech, self.silence_duration);
+            crate::perf_log::log(&format!(
+                "[SPEAKING] vad-seg {} has_speech={} silence={:.2}",
+                speaking, self.has_speech, self.silence_duration,
+            ));
             self.prev_speaking = speaking;
             events.push(PipelineEvent::Speaking(speaking));
         }

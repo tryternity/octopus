@@ -135,6 +135,10 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     if (idleTimerRef.current) { clearTimeout(idleTimerRef.current); idleTimerRef.current = null; }
     clearDivertedTimer();
 
+    const view0 = viewRef.current;
+    const textLen = view0?.state.doc.length ?? -1;
+    void invoke("perf_log_cmd", { msg: `[FE] doCommit text_len=${textLen}` });
+
     const view = viewRef.current;
     if (!view) return;
     const docText = view.state.doc.toString();
@@ -200,6 +204,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
             if (!editingRef.current) {
               editingRef.current = true;
               clearDivertedTimer(); // 进入编辑态时清 diverted 定时器（防覆盖用户输入）
+              void invoke("perf_log_cmd", { msg: "[FE] enter_edit_mode invoked" });
               invoke("enter_edit_mode");
             }
             hasEditedRef.current = true;
