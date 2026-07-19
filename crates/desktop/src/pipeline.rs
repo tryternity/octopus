@@ -196,12 +196,17 @@ pub struct StreamingPipeline {
     last_error: Option<String>,
     /// 上一 tick 的 has_speech 状态（变化时产 Speaking 事件）
     prev_speaking: bool,
+    /// 诊断打点节流（spec 2026-07-19 第二轮）：[TICK-DETAIL] 1Hz 节流。
+    last_detail_log: std::time::Instant,
 }
 
 impl StreamingPipeline {
     /// 构造 pipeline。`engine` 由调用方创建（`LocalPipelineEngine` 或 `CloudPipelineEngine`）。
     pub fn new(engine: Box<dyn StreamingPipelineEngine>) -> anyhow::Result<Self> {
-        Ok(Self { engine, last_error: None, prev_speaking: false })
+        Ok(Self {
+            engine, last_error: None, prev_speaking: false,
+            last_detail_log: std::time::Instant::now(),
+        })
     }
 
     /// 喂一帧已降噪 16k 样本：engine 产事件 → apply_engine_full，返回 tick 事件流（2d 合并）。
@@ -274,6 +279,16 @@ impl StreamingPipeline {
                 "[BE tick] total={}ms infer={}ms samples={} changed={} is_cloud={}",
                 total_ms, infer_ms, samples.len(), changed, is_cloud
             ));
+        }
+        // 诊断（spec 2026-07-19 第二轮）：tick 详情 1Hz 节流，验证假设 B（绿条延迟亮 + 不出字）
+        // 包含 silence / speaking / changed / events 数。配合 streaming_runner.rs 内部 [runner] debug 互补。
+        if self.last_detail_log.elapsed() >= std::time::Duration::from_secs(1) {
+            crate::perf_log::log(&format!(
+                "[TICK-DETAIL] pipeline-local silence={:.2} speaking={} prev_speaking={} changed={} events={} infer_events={} samples={} infer_ms={} is_cloud={}",
+                self.engine.silence_duration(), speaking, self.prev_speaking, changed, events.len(),
+                infer_ms, samples.len(), infer_ms, is_cloud,
+            ));
+            self.last_detail_log = std::time::Instant::now();
         }
         events
     }
@@ -394,6 +409,8 @@ pub(crate) struct VadSegmentedPipeline {
     segment_cut_this_tick: bool,
     /// 上一 tick 的 has_speech 状态（变化时产 Speaking 事件）
     prev_speaking: bool,
+    /// 诊断打点节流（spec 2026-07-19 第二轮）：[TICK-DETAIL] 1Hz 节流。
+    last_detail_log: std::time::Instant,
 }
 
 impl VadSegmentedPipeline {
@@ -419,6 +436,7 @@ impl VadSegmentedPipeline {
             completed_results: HashMap::new(),
             tx, rx, segment_cut_this_tick: false,
             prev_speaking: false,
+            last_detail_log: std::time::Instant::now(),
         })
     }
 
@@ -562,6 +580,16 @@ impl VadSegmentedPipeline {
         }
         if segment_cut {
             events.push(PipelineEvent::Polish { silence: f64::INFINITY });
+        }
+        // 诊断（spec 2026-07-19 第二轮）：tick 详情 1Hz 节流，验证假设 B
+        if self.last_detail_log.elapsed() >= std::time::Duration::from_secs(1) {
+            crate::perf_log::log(&format!(
+                "[TICK-DETAIL] pipeline-vad-seg silence={:.2} has_speech={} speaking={} prev_speaking={} changed={} events={} samples={} active_count={} buffer_s={:.1}",
+                self.silence_duration, self.has_speech, speaking, self.prev_speaking, changed, events.len(),
+                samples.len(), self.active_count,
+                self.audio_buffer.len() as f64 / 16000.0,
+            ));
+            self.last_detail_log = std::time::Instant::now();
         }
         events
     }

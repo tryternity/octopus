@@ -487,6 +487,9 @@ fn build_coordinator_loop(
                         ));
                         commit_edit_apply(&mut stage, &text, &dirty_ranges, has_edited, caret, selection, &app_handle);
                         editing = false;
+                        // 诊断（spec 2026-07-19 第二轮）：commit_edit_apply 后 transcript 状态
+                        // 与 transcript.rs 的 [CARET] commit_edit 打点互补——这里 stage 维度，
+                        // 那里 transcript 字段维度
                     }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
@@ -1930,6 +1933,11 @@ fn check_and_trigger_polish(
     }
     // 取润色输入（段模型快照）+ 标记 pending（take_polish_input 内部已置 pending）+ 送 LLM
     let input = transcript.take_polish_input();
+    // 诊断（spec 2026-07-19 第二轮）：自动润色触发，验证假设 A
+    crate::perf_log::log(&format!(
+        "[POLISH] auto-trigger t={} silence={:.2} mode={:?} segs={}",
+        transcript.id, silence_duration, config.polish_mode, input.segments.len(),
+    ));
     spawn_polish_thread(input, config, tx, false, transcript.id);
 }
 
@@ -2199,6 +2207,10 @@ fn handle_polish_done(
                 "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
                 session_id, transcript.id
             );
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage=StoppingPolish discarded_reason=session_mismatch polish_sid={} cur_id={}",
+                session_id, transcript.id,
+            ));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2211,8 +2223,12 @@ fn handle_polish_done(
                     use tauri::Emitter;
                     let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                     transcript.on_polish_failed();
+                    crate::perf_log::log("[POLISH] done stage=StoppingPolish result=empty → on_polish_failed");
                 } else {
                     transcript.polish_apply(&polished);
+                    crate::perf_log::log(&format!(
+                        "[POLISH] done stage=StoppingPolish result=ok polished_len={}", polished.chars().count(),
+                    ));
                     let cmd = if transcript.has_edit() {
                         DbCommand::UpdateEditedSegments {
                             id: transcript.id,
@@ -2238,6 +2254,9 @@ fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", &e);
                 transcript.on_polish_failed();
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage=StoppingPolish result=err err_len={}", e.chars().count(),
+                ));
             }
         }
         use tauri::Emitter;
@@ -2248,6 +2267,8 @@ fn handle_polish_done(
         return;
     }
 
+    // 在借用 transcript 之前算出 stage_name，避免后续打点同时借 stage（不可变）与 transcript（可变）
+    let sname = stage_name(stage);
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
@@ -2255,7 +2276,10 @@ fn handle_polish_done(
         #[cfg(feature = "cloud")]
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
-            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
+            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", sname);
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage={} ignored_reason=not_recording_stage", sname,
+            ));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2269,6 +2293,10 @@ fn handle_polish_done(
             "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
             session_id, transcript.id
         );
+        crate::perf_log::log(&format!(
+            "[POLISH] done stage={} discarded_reason=session_mismatch polish_sid={} cur_id={}",
+            sname, session_id, transcript.id,
+        ));
         use tauri::Emitter;
         let _ = app_handle.emit("polish-done", ());
         return;
@@ -2280,9 +2308,15 @@ fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                 transcript.on_polish_failed();
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage={} result=empty → on_polish_failed", sname,
+                ));
             } else {
                 // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
                 transcript.polish_apply(&polished);
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage={} result=ok polished_len={}", sname, polished.chars().count(),
+                ));
                 // 含 Edited 段→UpdateEditedSegments（保持 edited/text/segments 一致）；否则 UpdatePolished（现状）
                 let cmd = if transcript.has_edit() {
                     DbCommand::UpdateEditedSegments {
@@ -2313,6 +2347,9 @@ fn handle_polish_done(
             use tauri::Emitter;
             let _ = app_handle.emit("polish-error", &e);
             transcript.on_polish_failed();
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage={} result=err err_len={}", sname, e.chars().count(),
+            ));
         }
     }
     // 通知前端：润色完成（成功/失败均通知，前端恢复「立即润色」按钮）
@@ -2341,17 +2378,22 @@ fn handle_polish_now(
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
+            crate::perf_log::log(&format!(
+                "[POLISH] PolishNow-ignored stage={} (no transcript)", stage_name(stage),
+            ));
             let _ = app_handle.emit("polish-done", ());
             return;
         }
     };
     if transcript.full().is_empty() {
         debug!("PolishNow skipped: transcript empty");
+        crate::perf_log::log("[POLISH] PolishNow-skipped reason=empty");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
     if transcript.polish_pending() {
         debug!("PolishNow skipped: polish already pending");
+        crate::perf_log::log("[POLISH] PolishNow-skipped reason=already_pending");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
@@ -2370,6 +2412,12 @@ fn handle_polish_now(
         warn!("PolishNow ensure INSERT failed: {}", e);
     }
     let input = transcript.take_polish_input();
+    // 诊断（spec 2026-07-19 第二轮）：手动润色触发，验证假设 G（编辑期间 PolishNow → PolishDone 覆盖用户编辑）
+    crate::perf_log::log(&format!(
+        "[POLISH] PolishNow-manual-trigger t={} chars={}",
+        transcript.id,
+        input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>(),
+    ));
     info!("PolishNow triggered, polishing {} chars", input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>());
     spawn_polish_thread(input, config, tx, true, transcript.id);
 }

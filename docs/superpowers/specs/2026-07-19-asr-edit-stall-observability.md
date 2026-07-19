@@ -147,9 +147,99 @@ Command::StreamingTick => {
 
 ## 状态
 
-**已实现，待用户复现验证。**
+**第二轮已实现，待用户复现验证。**
 
-下次复现"绿条不亮"时，翻 `~/.octopus/logs/asr.log` 对应时段，按上面 4 种情况判读。**确认根因后**，可决定是否进入下一轮：
+下次复现"绿条不亮""commit 后识别不恢复"时，翻 `~/.octopus/logs/asr.log` 对应时段，按下面 4+4 种情况判读。**确认根因后**，可决定是否进入下一轮：
 - 缓解恢复延迟（缩短 IDLE_TIMEOUT / 优化 Speaking 判定时机）
 - 改硬暂停语义（如编辑态仍跑 VAD 监听）
 - 调 VAD 阈值/预滚
+- 修 commit_edit 与 polish 状态机交互（见第二轮假设 A/G）
+- 修 engine_cumulative 与 segments 失配（见第二轮假设 F）
+
+---
+
+# 第二轮：commit 后识别不恢复（用户澄清场景）
+
+## 用户场景修正
+
+第一轮把"识别停止"理解为"编辑期间绿条不亮"（设计性硬暂停），但用户澄清真正的 bug：
+
+> 编辑时是识别停止，但我已经不编辑了，是需要在这里插入继续说话识别的。应该是他没有识别过来，我已经不在编辑态了？
+
+即：**编辑完成（已退出 editing）后继续说话，识别没有恢复**。
+
+## 用户当前配置
+
+- **mode=0/1（不自动润色）**：第一轮的"polish_pending 卡住"假设（A）**在自动润色路径下才成立**，mode=0/1 下不会自动 `take_polish_input` → 排除假设 A 的自动触发路径（但手动点「立即润色」仍可能触发，见假设 G）
+
+## 重新评估的根因（mode=0/1 下）
+
+### 假设 B（高置信度）：VAD 状态冻结 + commit 后灌 5 秒静音
+
+**证据链**：
+- `StreamingRunner` 字段 `silence_duration`/`flushed`/`seen_speech`/`vad` LSTM 内部状态——**编辑期间全部冻结**（push_samples 不被调，streaming_runner.rs:226-270）
+- `audio.trim_buffer(5.0)` 只裁到最近 5 秒（audio.rs:315-324），保留的是**编辑期间的音频**（多为静音/键盘噪声）
+- commit 后第一 tick：`drain_samples` 拿这 5 秒 → `push_samples` 跑 VAD → 多数 chunk 静音 → `silence_duration += ~5.0`（streaming_runner.rs:116）
+- `speaking = silence_duration < 0.3 = false`（pipeline.rs:237）→ 不 emit Speaking(true) → **绿条不亮**
+- 引擎 `flush(true)` 出 prefix（delta 空）→ `changed=false` → 不 emit Emit → **不出字**
+- **会自愈**：用户持续说话，speech_chunks≥2 时 silence_duration 清零 → speaking 翻 true → 亮。但 VAD LSTM 被 5 秒静音推到静音稳态，开口头几帧 prob 可能 <0.5 → **额外延迟**
+
+### 假设 F（中置信度）：commit 后 engine_cumulative 与 segments 失配
+
+**证据链**：
+- `commit_edit`（transcript.rs:311-336）改 segments 但**不动 engine_cumulative / engine_consumed_chars**
+- 引擎下次返回 full 仍以旧 engine_cumulative 为前缀 → `apply_engine_full` 走前缀分支（L124-126）→ delta = `full.skip(engine_consumed_chars)`
+- 用户编辑删了字：engine_cumulative 比新 segments 长，新 full 与 engine_cumulative 不再是前缀关系 → **走 diverted 分支**（L127-144）→ 差异进 `diverted_pending`，<500 字不展示
+- 用户编辑加了字：engine_cumulative 短，新 full 是 engine_cumulative + 编辑前的旧 delta → 提取出的 delta 是**已经被用户编辑覆盖过的旧文本** → push_delta_at_caret 把它作为 Raw 段插到 caret_gap → **文字重复或错位**
+
+### 假设 D（中置信度）：caret_gap 落点 + 前端 CM6 滚动看不到
+
+- commit_edit_apply 调 `set_caret(caret)` 或 `set_selection(s,e)`，caret_gap 落到中插位置
+- push_delta_at_caret 把新字插到 caret_gap → 文本进 transcript → emit Emit → 前端 setText
+- 但前端 CM6 滚动位置可能没跟到中插位置 → 用户视觉看不到新字
+
+### 假设 G（低置信度）：editing=true 期间「立即润色」PolishDone 到达
+
+- mode=0/1 下用户不会自动触发 polish_pending，但**手动点「立即润色」会**（PolishNow）
+- 若用户：识别→点立即润色→立即开始编辑→commit→PolishDone 后到达 → 与假设 A 同构的 bug
+
+## 第二轮新增打点
+
+### 新增 4 类 prefix
+
+| prefix | 触发 | 字段 | 落点 |
+|---|---|---|---|
+| `[POLISH]` | polish 状态机关键节点 | `take_polish_input` / `polish_apply` / `on_polish_failed` / `PolishDone` 各分支 / `PolishNow` / `auto-trigger` | coordinator.rs + transcript.rs |
+| `[TICK-DETAIL]` | tick 详情（1Hz 节流） | pipeline-local / pipeline-vad-seg 两路径，含 silence/has_speech/speaking/changed/events/samples | pipeline.rs |
+| `[APPLY]` | `apply_engine_full` 关键分支 | is_prefix / diverted / polish_pending / delta_len / cum_len / shown_len | transcript.rs |
+| `[CARET]` | caret_gap 落点变化 | set_caret / set_selection / commit_edit / push_delta_at_caret | transcript.rs |
+
+### asr-local 边界处理
+
+asr-local 是底层 crate（不依赖 desktop，架构反向）。runner 内部状态（seen_speech / flushed）用 `log::debug!` 写 stderr，desktop 层 pipeline.rs 的 `[TICK-DETAIL]` 写文件做对账。如未来需要 asr-local 也写文件，把 perf_log 提升到 infra。
+
+## 4 个新假设的日志判读（第二轮）
+
+| 假设 | 日志特征 |
+|---|---|
+| **B (VAD 冻结)** | commit 后几个 tick `[TICK-DETAIL] speaking=false silence=X.XX has_speech=false`，silence 持续大；用户开口后逐渐 silence→0 has_speech→true。如果延迟过久（>5s）说明 VAD LSTM 状态问题严重 |
+| **F (engine_cumulative 失配)** | `[APPLY] branch=diverted is_prefix=false diverted_len>0` 持续，或 `branch=prefix delta_len>0` 但 `[CARET] insert` 后前端 text 没变（重复字 / 错位） |
+| **D (caret 落点)** | `[CARET] commit_edit caret_gap=<中间值>` 后 `[CARET] insert gap=<中间值>` 正常但前端看不见（CM6 滚动问题）—— 后端日志看似正常 |
+| **G (润色冲突)** | `[POLISH]` 系列事件出现，特别是 `take_polish_input` 后用户编辑期间 `polish_apply` 到达 |
+
+## 完整 prefix 列表（第一轮 + 第二轮）
+
+### 阈值性能日志（临时，根因定位后移除）
+- `[BE tick]`：tick 总耗时 > 30ms
+- `[FE writeDoc]`：writeDoc dispatch > 8ms 或文本 > 800 字
+
+### 状态机诊断日志（长期保留）
+- `[STATE]`：editing 翻转（5 处精确 + 心跳兜底）
+- `[HEARTBEAT]`：tick 线程 1Hz 节流
+- `[SPEAKING]`：VAD 翻转 + emit
+- `[FE]`：前端 enter/commit/isSpeaking/isRecording 翻转
+- `[WARN]`：dispatch_tick stage 不匹配
+- `[POLISH]`（第二轮）：润色状态机
+- `[TICK-DETAIL]`（第二轮）：tick 详情 1Hz 节流
+- `[APPLY]`（第二轮）：apply_engine_full 分支
+- `[CARET]`（第二轮）：caret_gap 落点

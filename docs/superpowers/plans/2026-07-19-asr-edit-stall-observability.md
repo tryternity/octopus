@@ -142,4 +142,86 @@ main 分支对照 `npx tsc -b` 同样报 `vite.config.ts(29,5): error TS2769`—
 
 ## 状态
 
-**实现 + 验证完成。** 等用户在 worktree 分支跑应用、复现问题、翻 `~/.octopus/logs/asr.log` 验证诊断效果，再决定下一步（缓解恢复延迟 / 改硬暂停语义 / 调 VAD）。
+**第一轮实现 + 验证完成。** 等用户在 worktree 分支跑应用、复现问题、翻 `~/.octopus/logs/asr.log` 验证诊断效果，再决定下一步（缓解恢复延迟 / 改硬暂停语义 / 调 VAD）。
+
+---
+
+# 第二轮：commit 后识别不恢复（用户澄清场景）
+
+> 用户反馈：**真正的 bug 是「commit 后识别没恢复」**——编辑已退出，继续说话但识别不来。
+> 当前 mode=0/1（不自动润色）→ 第一轮假设 A 自动触发路径排除，需重新评估。
+
+## 第二轮任务分解
+
+### Task R1: transcript.rs 加 `[APPLY]` / `[CARET]` / `[POLISH]` 打点 ✅
+
+- `apply_engine_full`：入口 + diverted 分支 + 成功路径，打 `[APPLY]`（is_prefix/delta_len/diverted_len/polish_pending/cum_len/shown_len）
+- `push_delta_at_caret`：新段插入时打 `[CARET] insert gap=...`
+- `commit_edit`：三个返回点都打 `[CARET] commit_edit ...`
+- `set_caret` / `set_selection`：打 `[CARET] set_caret ...` / `[CARET] set_selection ...`
+- `take_polish_input` / `polish_apply` / `on_polish_failed`：打 `[POLISH] ...`
+
+**验证**：transcript::tests::* 全过（commit/apply/caret 相关测试均通过）。
+
+**实际偏差**：无。
+
+### Task R2: streaming_runner.rs 加 `log::debug!`（stderr） ✅
+
+- `push_samples` 在 detect_silence_gap 后打 `[runner] silence=... has_speech=... seen_speech=... should_flush=... flushed=... samples=...`
+- **crate 边界**：asr-local 不依赖 desktop，runner 内部状态用 `log::debug!` 写 stderr；desktop 层 pipeline.rs 的 `[TICK-DETAIL]` 写文件做对账
+- **设计决定**：把 perf_log 提升到 infra 是更干净的方案，但会扩大改动面（移动文件 + 改 ~20 处调用），违背"只加诊断打点"的边界。本轮采用 stderr；如未来需要 asr-local 也写文件，再做 crate 重构
+
+**实际偏差**：原本计划加 `last_detail_log` 字段做节流，但发现 asr-local 无文件 logger 后改为 `log::debug!`（不需要节流字段）。已回退字段添加。
+
+### Task R3: pipeline.rs 加 `[TICK-DETAIL]`（1Hz 节流，文件落盘） ✅
+
+- `StreamingPipeline` / `VadSegmentedPipeline` 各加 `last_detail_log: Instant` 字段
+- `StreamingPipeline::tick` 末尾打 `[TICK-DETAIL] pipeline-local silence=... speaking=... prev_speaking=... changed=... events=... infer_events=... samples=... infer_ms=... is_cloud=...`
+- `VadSegmentedPipeline::tick` 末尾打 `[TICK-DETAIL] pipeline-vad-seg silence=... has_speech=... speaking=... prev_speaking=... changed=... events=... samples=... active_count=... buffer_s=...`
+
+**验证**：pipeline::tests::* 全过，含 Speaking 相关 4 个测试。
+
+**实际偏差**：无。
+
+### Task R4: coordinator.rs 补 polish 打点 ✅
+
+- `handle_polish_done` 各分支（StoppingPolish 路径 + active stage 路径）：session_mismatch / empty → on_polish_failed / ok polished_len / err err_len / ignored_reason=not_recording_stage
+- `handle_polish_now`：ignored / skipped(empty/already_pending) / manual-trigger
+- `check_and_trigger_polish`：auto-trigger（mode=2 才会到这）
+- `commit_edit_apply` 末尾：注释说明与 transcript `[CARET] commit_edit` 互补
+
+**实际偏差**：编译期 borrow checker 报错——`stage_name(stage)` 在 `transcript` 借用期间调用。修复：在 match 之前算出 `let sname = stage_name(stage);`，后续该函数内全用 `sname`。
+
+### Task R5: perf_log.rs doc 更新 prefix 列表 ✅
+
+- 加 `[POLISH]` / `[TICK-DETAIL]` / `[APPLY]` / `[CARET]` 4 个新 prefix 说明
+- 加 crate 边界说明（asr-local 用 stderr，desktop 层用文件）
+
+### Task R6: 编译 + 测试验证 ✅
+
+```bash
+cargo build -p octopus-desktop --features embedded  # 12.65s, 0 error 0 warning
+cargo test -p octopus-desktop                        # 375 passed; 0 failed
+cargo test -p octopus-asr-local --lib streaming_runner  # 10 passed（相关测试）
+```
+
+asr-local 5 个 `_real_model` 测试失败——main 分支同样失败（缺 ONNX 模型文件），与本次改动无关。
+
+**实际偏差**：无。
+
+### Task R7: 文档同步（本轮） ✅
+
+- 更新 spec：追加「第二轮：commit 后识别不恢复」章节，4 个新假设（B/F/D/G）+ 4 类新 prefix + 完整 prefix 列表
+- 更新本 plan：第二轮任务记录
+
+### Task R8: 提交（不 push） ⏳
+
+在 worktree 分支 `fix/asr-edit-stall-observe` 上 commit 第二轮改动。
+
+## 第二轮不做的事
+
+- 不动任何业务逻辑（只加 log）
+- 不删第一轮打点
+- 不改前端（纯后端）
+- 不 push、不开 PR
+- 不把 perf_log 移到 infra（避免扩大改动面，留待未来）
