@@ -1276,7 +1276,8 @@ mod tests {
         octopus_vault::keychain::set_test_keychain();
         let _ = octopus_vault::keychain::delete_machine_key();
 
-        let keys = octopus_vault::unlock::setup_vault("test-master-pw").expect("setup_vault");
+        let keys = octopus_vault::unlock::setup_vault("Test-master-pw1!")
+            .expect("setup_vault");
         let _ = octopus_vault::keychain::delete_machine_key();
         Arc::new(keys.user_vault_key)
     }
@@ -1399,7 +1400,8 @@ mod tests {
         octopus_vault::keychain::set_test_keychain();
         let _ = octopus_vault::keychain::delete_machine_key();
 
-        let keys = octopus_vault::unlock::setup_vault("test-master-pw").expect("setup_vault");
+        let keys = octopus_vault::unlock::setup_vault("Test-master-pw1!")
+            .expect("setup_vault");
         let _ = octopus_vault::keychain::delete_machine_key();
         (Arc::new(keys.user_vault_key), Arc::new(keys.app_key))
     }
