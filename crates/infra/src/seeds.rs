@@ -314,6 +314,19 @@ mod load_tests {
         assert!(result.is_ok(), "load_external_seeds 不应传播单 seed 错误: {:?}", result);
     }
 
+    /// PPT prompt 必须包含 {{task}} / {{files}} 占位符（octopus 的 render_agent_prompt
+    /// 只替换这两个），且必须推荐 guizang-ppt-skill 与 ppt-master 两个候选 skill
+    /// （spec § 3 要求的核心 skill 清单）。
+    #[test]
+    fn make_ppt_prompt_contains_required_placeholders() {
+        let path = seeds_dir().join("agent_actions/make-ppt.prompt.md");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("{{task}}"), "PPT prompt 必须含 {{task}} 占位符");
+        assert!(content.contains("{{files}}"), "PPT prompt 必须含 {{files}} 占位符");
+        assert!(content.contains("guizang-ppt-skill"), "应推荐 guizang skill");
+        assert!(content.contains("ppt-master"), "应推荐 ppt-master skill");
+    }
+
     /// 静态检查：db 模块符号已导出（仅用于保持 use crate::db 不被 dead_code 警告）。
     #[test]
     fn db_module_compiles_alongside_seeds() {
