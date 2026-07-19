@@ -699,3 +699,126 @@ pub async fn trigger_agent_voice(
 - ❌ **多 PPT 风格分支菜单**：一个 prompt + agent 决策已够；用户需要可自建多个菜单项
 - ❌ **约束 agent 输出路径**：prompt 建议已够
 - 💡 **后续可加 Agent 主菜单其他子菜单项**：「整理这个文件夹」「总结文档」「翻译全部」——同样的 agent 桥接机制，纯新增 prompt 文件
+
+---
+
+## 14. v43 修订：两阶段大纲工作流（PPT 大纲 + PPT 制作）
+
+### 14.1 设计动机
+
+用户实测反馈：直接通过「PPT 制作」一步生成 PPT，质量不稳定——即使 pi 使用了 guizang-ppt-skill，也只能说比无 skill 好一点点。根本原因：
+
+- guizang SKILL.md 内部虽然有「大纲协助（叙事弧）」章节，但**大纲是隐式状态**——agent 内部脑补完就直接进 Step 2 拷模板、Step 3 填内容
+- **用户拿不到中间产物**，无法增删页、改要点、补关键数据、调层级——没有 human review 卡点，质量完全靠大模型一次性理解
+
+### 14.2 两阶段拆分
+
+把原「制作 PPT」拆成**两个对偶菜单**：
+
+```
+[选中文件/目录] → PPT 大纲 → outline.md（agent 停手）
+                              ↓ 用户用编辑器增删页 / 改要点
+                              ↓ 要继续调整？直接在 Terminal 里给 agent 打字
+[选中 .md]      → PPT 制作 → 最终 PPT（跳过 guizang Step 1，按大纲渲染）
+```
+
+| 菜单 | sort_order | icon | 行为 |
+|---|---|---|---|
+| **PPT 大纲**（v43 新增） | -1 | `file-text` | 读文件 → 生成 Markdown 中间产物 → **停手** |
+| **PPT 制作**（v43 改名，原「制作 PPT」） | 0 | `presentation` | 输入 .md 跳过 Step 1；输入源文件正常走 Step 1 |
+
+### 14.3 Markdown 大纲 Schema（极简版）
+
+```markdown
+---
+title: <主题>
+audience: <受众，如「产品经理」「技术评审」>
+duration_min: 30        # 驱动页数预算：15min≈10页 / 30min≈20页 / 45min≈25-30页
+style: A                # A=电子杂志风 / B=瑞士国际主义风
+---
+
+## P01 · Hook · <页标题>
+- 一句话要点
+- 一句话要点
+
+## P02 · Context · <页标题>
+- ...
+
+（按叙事弧 Hook → Context → Core → Shift → Takeaway 组织）
+```
+
+**设计取舍**：经过与完整版 schema 对比，用户选择极简版——4 个 front matter 字段 + 每页 H2 + 自然语言 bullet。`layout` / `theme` / `image_slot` 等版式决策仍交给 guizang 自己脑补，避免用户编辑时学一堆字段。
+
+### 14.4 细化机制：交给 Terminal，不在 octopus 侧做
+
+**关键发现**：Pi / Claude 的现有模板（`pi {files_at} {prompt}` / `claude --add-dir {cwd} {prompt}`）都没带 `-p`/`--print`，所以 agent 跑完初始 prompt 后**停在交互式 TUI 等用户继续打字**。session 按 cwd 隐式持久化：
+- Pi: `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl`
+- Claude: `~/.claude/projects/<encoded-cwd>/*.jsonl`
+- 两边都支持 `--continue` / `--resume <id>` / `--session-id <id>`
+
+**v43 的细化责任归属**：
+- v1 生成后，agent 在 Terminal 里交互式 TUI **本就停着**
+- 用户要细化：直接在 Terminal 打字「在 v1 基础上加入 XX」→ agent 改 v1 → 满意后切走
+- octopus **不管第二轮**——无需记 session_id、无需双模式 prompt、无需版本号
+- 关掉 Terminal 后又想改：用户自己 `cd <cwd> && pi --continue`（Pi/Claude 的原生能力）
+
+**砍掉的过度设计**（plan v2 曾考虑）：
+- ❌ 版本号 `-v1` / `-v2` / `-vN+1`
+- ❌ 双模式 prompt（初次生成 / 细化迭代）
+- ❌ "保留前一版"逻辑
+- ❌ octopus 侧的 session_id 跟踪
+- ❌ `{session_id}` / `{continue_flag}` 占位符
+
+### 14.5 v43 改名迁移
+
+`制作 PPT` → `PPT 制作`（与新增的 `PPT 大纲` 形成对偶）。**row id 保持不变**——不破坏用户在「设置」里绑定的全局快捷键。
+
+实现：`load_agent_action_seeds` 步骤 3 加一句 `UPDATE ... SET title='PPT 制作' WHERE title='制作 PPT'`。
+
+### 14.6 seeds.rs 重构
+
+v43 抽出 `upsert_agent_submenu(conn, parent_id, title, icon, prompt_content, sort_order)` 共用函数，复用给 PPT 大纲 / PPT 制作两个子菜单的「去重 + INSERT + 自愈」3 步流程。原 v40 的硬编码 INSERT + UPDATE 拆解后更清晰。
+
+### 14.7 make-ppt.prompt.md 的 .md 输入识别
+
+在「文件读取约束」之前新增章节「**特殊输入：Markdown 大纲**」：
+
+- 检测 `{{files}}` 是否含 `.md` 文件
+- 是 → 跳过 guizang Step 1 的 7 个澄清问题，按每页 H2 直接渲染
+- 否 → 正常走 Step 1（从需求开始问）
+
+明确约束：「**不要二次总结、不要改变页数和顺序**——用户的编辑是故意的」。
+
+### 14.8 影响面（5 个文件）
+
+| 文件 | 改动 |
+|---|---|
+| `crates/infra/seeds/agent_actions/ppt-outline.prompt.md` | **新增**：大纲生成 prompt |
+| `crates/infra/seeds/agent_actions/make-ppt.prompt.md` | 加「特殊输入：Markdown 大纲」章节 |
+| `crates/infra/src/seeds.rs` | 改名迁移 + upsert_agent_submenu 抽取 + 新增 PPT 大纲注入 |
+| `crates/infra/src/db.rs` | **schema v42→v43 bump**（触发 seed 重跑）+ 测试断言更新 + v42→v43 升级测试 |
+| `docs/` | spec §14 / plan v43 / architecture |
+
+**不动**：`render_agent_prompt` / `coordinator.rs` / `action_bar_commands.rs` / `agent_adapter.rs` / 前端代码 / db.sql（表结构不变）
+
+### 14.9 Schema v42 → v43（纯触发 seed 重跑）
+
+**问题**：v43 没有表结构变更，只改了 seed（改名 + 新增）。但 `init_schema` 的 `if v >= 42 { return Ok(()) }` 早返会让已 v42 的老 DB 永远不重新加载 seed——用户实测发现菜单不出现。
+
+**修复**：bump `user_version` 42 → 43，纯粹为了触发 `load_external_seeds(conn)` 重跑：
+- 已 v42 的用户重启 octopus 后自动升级到 v43
+- seed 重跑完成「制作 PPT」→「PPT 制作」改名 + 新增「PPT 大纲」子菜单
+- row id 不变（保快捷键）
+
+`init_schema` 改动：
+```rust
+if v >= 43 {  // 原 v42
+    return Ok(());
+}
+// ...
+conn.execute("PRAGMA user_version = 43", [])?;  // 原 42（v17+ 分支）
+// ...
+conn.execute("PRAGMA user_version = 43", [])?;  // 原 42（v<17 全新库分支）
+```
+
+测试覆盖：`migration_v42_to_v43_renames_and_adds_ppt_outline` —— 模拟 v42 老库（手工倒回「制作 PPT」标题 + 删 PPT 大纲），跑 init_schema，验证 bump + 改名 + 新增 + row id 不变 4 个不变量。

@@ -1486,3 +1486,85 @@ mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
 - [x] Spec § 11 Quick Execute 扩展 3 条分支全部覆盖
 - [x] init_schema 历史迁移分支已删，v39 正常工作
 - [x] tsc + cargo build + cargo test 全 0 error / 0 warning
+
+---
+
+## Task 7（v43 追加）：两阶段大纲工作流
+
+**背景**：用户实测后反馈，直接出 PPT 质量不稳定——agent 内部大纲是隐式状态，用户拿不到中间产物做 review。详见 spec §14。
+
+### Step 7.1: 新增 `ppt-outline.prompt.md`
+
+- 文件：`crates/infra/seeds/agent_actions/ppt-outline.prompt.md`
+- 内容：读文件 → 按叙事弧整理成 Markdown 大纲 → 强制停止
+- schema：极简版（4 个 front matter 字段 + 每页 H2 + bullet）
+- 占位符：`{{task}}` `{{files}}` 必须出现
+
+**状态**：[x] 完成。文件已创建。
+
+### Step 7.2: 修改 `make-ppt.prompt.md` 加 .md 识别
+
+- 在「文件读取约束」之前插入「**特殊输入：Markdown 大纲**」章节
+- 检测 `{{files}}` 含 `.md` 时跳过 guizang Step 1
+- 明确「不要二次总结、不要改变页数和顺序」
+
+**状态**：[x] 完成。
+
+### Step 7.3: 改 `seeds.rs`（改名 + 抽函数 + 新增子菜单）
+
+- 改名迁移：`制作 PPT` → `PPT 制作`（row id 不变，保快捷键）
+- 抽 `upsert_agent_submenu(conn, parent_id, title, icon, prompt_content, sort_order)` 共用函数
+- 新增 PPT 大纲子菜单注入（sort_order=-1，icon=`file-text`）
+- PPT 制作沿用 sort_order=0
+
+**状态**：[x] 完成。
+
+### Step 7.3.1: Schema v42 → v43 bump（修复 seed 不生效）
+
+- **问题**：v43 没有表结构变更，但 `init_schema` 的 `if v >= 42` 早返会让已 v42 的老 DB 永远不重新加载 seed——用户实测菜单不出现
+- **修复**：bump `user_version` 42 → 43，纯粹为触发 `load_external_seeds(conn)` 重跑
+- 同步修：`set_test_db` / `vault_schema_tests::test_db` / 4 处 `assert_eq!(v, 42)` 断言 → 43
+- 测试名 `init_schema_fresh_db_builds_v40` → `_v43`
+- 新增 `migration_v42_to_v43_renames_and_adds_ppt_outline` 守护真实升级路径
+
+**状态**：[x] 完成。
+
+### Step 7.4: 更新测试
+
+- 4 个旧测试断言 `'制作 PPT'` → `'PPT 制作'`
+- 新增 4 个测试：
+  - `load_agent_action_seeds_creates_agent_menu_and_both_ppt_items`
+  - `load_agent_action_seeds_orders_ppt_outline_before_make_ppt`
+  - `load_agent_action_seeds_renames_legacy_make_ppt_title`
+  - `load_agent_action_seeds_self_heals_ppt_outline_empty_action_data`
+- 新增 prompt 测试：`ppt_outline_prompt_contains_required_placeholders`
+- 扩展 `make_ppt_prompt_contains_required_placeholders` 加 `Markdown 大纲` 断言
+- db.rs 3 处 PPT 断言同步更新
+
+**状态**：[x] 完成。`cargo test -p octopus-infra --lib`：154 passed / 0 failed。
+
+### Step 7.5: 文档同步
+
+- [x] spec §14 新增
+- [x] plan Task 7 新增（即本节）
+- [ ] architecture.md 同步（Step 7.6）
+
+### Step 7.6: architecture.md 同步
+
+在 agent 章节追加「PPT 两阶段大纲工作流（2026-07-19，v43）」段落，覆盖：
+- 菜单对偶关系（PPT 大纲 + PPT 制作）+ sort_order/icon
+- md schema 极简版（4 front matter 字段 + H2 + bullet）
+- 细化机制（Terminal 交互式，不在 octopus 侧）——关键决策
+- 砍掉的过度设计清单（版本号 / 双模式 prompt / session 跟踪）
+- 改名迁移（row id 不变，保快捷键）
+- seeds.rs `upsert_agent_submenu` 重构
+
+**状态**：[x] 完成。
+
+### Step 7.7: 最终验证
+
+- [x] `cargo build -p octopus-infra`：0 error 0 warning
+- [x] `cargo test -p octopus-infra --lib`：154 passed
+- [x] `cargo build -p octopus-desktop`：下游不受影响
+- [ ] 端到端（用户手动）：选源文件 → PPT 大纲 → 编辑 → PPT 制作
+
