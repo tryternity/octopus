@@ -134,7 +134,7 @@ thread_local! {
     > = std::cell::RefCell::new(None);
 }
 
-/// 测试专用：注入一个 in-memory 连接（建表 + 标 v38），后续 `with_db` 调用会使用它。
+/// 测试专用：注入一个 in-memory 连接（建表 + 标 v39），后续 `with_db` 调用会使用它。
 ///
 /// 调用方需自备 `rusqlite::Connection::open_in_memory()`——这样测试可控制是否 preload
 /// 数据。多次调用替换前一次注入的连接（不累积）。
@@ -143,13 +143,13 @@ pub fn set_test_db(conn: Connection) {
     // 与 ensure_db → open_db_conn → init_schema 的初始化路径保持一致：
     // 1. 设置 PRAGMA（WAL/busy_timeout/foreign_keys）
     // 2. 跑 INIT_SQL 建表 + seed（IF NOT EXISTS 幂等）
-    // 3. 直接标 v38（跳过迁移分支）
+    // 3. 直接标 v39（跳过迁移分支）
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 38", [])
+    conn.execute("PRAGMA user_version = 39", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -262,284 +262,52 @@ where
 }
 
 
-/// 初始化 schema（开发期简化版）：以 db.sql 为唯一表结构真相，无历史迁移链。
+/// 初始化 schema：以 db.sql 为唯一表结构真相，外置 seed 加载机制注入长文本。
 ///
-/// - v17（已最新）: 跳过
-/// - 其他（v0 全新库）: 跑 INIT_SQL 建表 + seed → 一次性 yaml 配置导入 → v17
+/// **分支**：
+/// - `v >= 39`：最新，no-op。
+/// - `17 <= v < 39`：开发期历史库（唯一用户已 ≥v38）。db.sql 对这些库已 no-op
+///   （所有表/列/vault 表均由 db.sql `CREATE TABLE IF NOT EXISTS` 覆盖），仅补跑外置
+///   seed 升到 v39。历史 v17→v37 的 ALTER / DROP / 数据迁移分支已删除——这些表/列
+///   在 db.sql 内已存在（vault_*、launcher_index、search_frequency、global_shortcut、
+///   trigger_keyword、models.is_available）。`auto_paste` 列已废弃（代码不再读写），
+///   不在新 schema 中出现。
+/// - `v < 17`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v39。
 ///
-/// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
-/// schema 变更流程：改 db.sql + 升下方 user_version 数值，勿新增 ALTER 迁移分支。
-/// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
-/// v18：FTS5 backfill（历史行补入索引），搜索走 MATCH。
-/// v19：新增 action_bar_items 表（db.sql IF NOT EXISTS 自动创建）。
-/// v20：paste_input_source_switch。
-/// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。
-/// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
-/// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
-/// v24：action_bar_items 加 shortcut 列。
-/// v35：搜索频次加权表。
-/// v36：统一 launcher_index 表（合并 app_index + 预留 command）+ action_bar_items 加 global_shortcut 列。
-/// v37：models 表语义重构——新增 is_available 列（可用），is_enabled 改表激活（每域仅 1）。
-///      旧库自动迁移（对齐 spec §10）：is_available=is_enabled（迁语义）+ is_enabled=0（重置激活）
-///      + 删 app_config 4 个废弃激活字段（asr_engine/polish_llm/ocr_model/translate_engine）。
+/// schema 变更流程：改 db.sql + 升下方 user_version 数值。
+/// v38：vault_* 表（2026-07-18 Password Vault，db.sql 已含）。
+/// v39：外置 seed 加载机制（prompts/llm_providers/agent_actions）+ Agent 菜单 + PPT。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 38 {
-        // v38+ 已最新，直接返回。
+    if v >= 39 {
+        // v39+ 已最新，直接返回。
         return Ok(());
     }
     if v >= 17 {
-        // v17→v31 的历史迁移已清理（2026-07-16）——这些一次性迁移（FTS5 backfill、
-        // env seed、热词迁移、问豆包 seed、action_bar 列扩展、模型路径统一、
-        // 云端模型删 seed 等）只对 v<31 的旧库有意义。真实用户的 DB 早已 ≥v31，
-        // 全新库走 db.sql 直接到最新 schema。v31 中有个无 guard 的裸块
-        // `DELETE FROM models WHERE domain='llm'`（原 v30→v31 迁移）会在每次
-        // 启动时清空用户配置的 LLM 模型——正是用户报告的 bug 根因。
-        //
-        // 全新库（v<17）仍需：建表+seed（INIT_SQL）+ 填充本地模型 manifest。
+        // v17+ 旧库（开发期唯一用户已 ≥v38）——直接跑外置 seed 升到 v39。
+        // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
+        // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
+        // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
+        // 若有 schema 缺列（理论不可能，开发期），由 fill_manifests / set_test_db 兜底。
         conn.execute_batch(INIT_SQL).ok();
         fill_manifests(conn)?;
-        // v31→v32：action_bar_items 加 trigger_keyword + auto_paste。
-        // 注意：auto_paste 列现已废弃（Quick Execute 改由 global_shortcut 是否为空决定），
-        // 代码不再读写该列；此处 ALTER 仅为兼容已升级到 v32 的旧库，列本身将在未来 schema 重整时清理。
-        {
-            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
-                .query_map([], |r| r.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            if !cols.contains(&"trigger_keyword".to_string()) {
-                conn.execute("ALTER TABLE action_bar_items ADD COLUMN trigger_keyword TEXT NOT NULL DEFAULT ''", [])?;
-            }
-            if !cols.contains(&"auto_paste".to_string()) {
-                conn.execute("ALTER TABLE action_bar_items ADD COLUMN auto_paste INTEGER NOT NULL DEFAULT 0", [])?;
-            }
-            conn.execute("PRAGMA user_version = 32", [])?;
-            log::info!("schema upgraded to v32 (action_bar_items: trigger_keyword + auto_paste [deprecated])");
-        }
-        // v32→v33：app_index 缓存表（含 icon 列）+ 早期 v33 库补 icon 列
-        {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS app_index (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name       TEXT NOT NULL,
-                    alias      TEXT NOT NULL DEFAULT '',
-                    path       TEXT NOT NULL UNIQUE,
-                    icon       TEXT NOT NULL DEFAULT '',
-                    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_app_index_name ON app_index(name);
-                CREATE INDEX IF NOT EXISTS idx_app_index_alias ON app_index(alias);"
-            )?;
-            // 早期 v33 库（CREATE 时无 icon 列）补列——CREATE TABLE IF NOT EXISTS 对已存在表是 no-op，
-            // 此时需 ALTER 补 icon。新建库 CREATE 已含 icon，此检查为 no-op。
-            let cols: Vec<String> = conn.prepare("PRAGMA table_info(app_index)")?
-                .query_map([], |r| r.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            if !cols.contains(&"icon".to_string()) {
-                conn.execute("ALTER TABLE app_index ADD COLUMN icon TEXT NOT NULL DEFAULT ''", [])?;
-                log::info!("schema patched: app_index add icon column");
-            }
-            conn.execute("PRAGMA user_version = 34", [])?;
-            log::info!("schema upgraded to v34 (app_index cache table with icon)");
-        }
-        // v34→v35：搜索频次加权表（search_frequency）。
-        // 表由 db.sql IF NOT EXISTS 自动创建（此处保留建表是为兼容跳过 INIT_SQL 的路径）。
-        if v < 35 {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS search_frequency (
-                    score_key TEXT NOT NULL,
-                    query TEXT NOT NULL DEFAULT '',
-                    hit_count INTEGER NOT NULL DEFAULT 0,
-                    last_hit_ts INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (score_key)
-                )",
-            )?;
-            conn.execute("PRAGMA user_version = 35", [])?;
-            log::info!("schema upgraded to v35 (search_frequency table)");
-        }
-        // v35→v36：统一 launcher_index 表（合并 app_index + 预留 command）
-        // + action_bar_items 加 global_shortcut 列（Run And Paste 全局快捷键）。
-        // 幂等 + 自愈：不只看 user_version（开发期可能被中间 binary 跳设到 36 而迁移没跑完），
-        // 还检查 app_index 是否残留（有旧表就有数据要迁）。
-        let app_index_exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
-            [], |r| r.get(0),
-        )?;
-        if v < 36 || app_index_exists > 0 {
-            // 1. 建 launcher_index（IF NOT EXISTS 幂等——INIT_SQL 可能已建）
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS launcher_index (
-                    type        TEXT NOT NULL,
-                    name        TEXT NOT NULL,
-                    path        TEXT NOT NULL,
-                    alias       TEXT NOT NULL DEFAULT '',
-                    icon        TEXT NOT NULL DEFAULT '',
-                    source      TEXT NOT NULL DEFAULT '',
-                    description TEXT NOT NULL DEFAULT '',
-                    keywords    TEXT NOT NULL DEFAULT '',
-                    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (type, path)
-                );
-                CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
-                CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
-            )?;
-            // 2. app_index 残留则迁——INSERT OR IGNORE 幂等防重复
-            if app_index_exists > 0 {
-                conn.execute_batch(
-                    "INSERT OR IGNORE INTO launcher_index (type, name, path, alias, icon, source)
-                     SELECT 'app', name, path, alias, icon, 'applications' FROM app_index"
-                )?;
-                conn.execute_batch("DROP TABLE IF EXISTS app_index")?;
-                log::info!("schema v36: app_index 数据迁移至 launcher_index 完成，旧表已 DROP");
-            }
-            // 3. action_bar_items 加 global_shortcut 列（Run And Paste 全局快捷键）。
-            //    db.sql 新库已含该列；此处 ALTER 仅为给已升到 v35/v36 的旧库补列。
-            {
-                let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
-                    .query_map([], |r| r.get::<_, String>(1))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                if !cols.contains(&"global_shortcut".to_string()) {
-                    conn.execute("ALTER TABLE action_bar_items ADD COLUMN global_shortcut TEXT NOT NULL DEFAULT ''", [])?;
-                    log::info!("schema v36: action_bar_items 补 global_shortcut 列");
-                }
-            }
-            conn.execute("PRAGMA user_version = 36", [])?;
-            log::info!("schema upgraded to v36 (launcher_index unified table + global_shortcut column)");
-        }
-        // v36→v37：models 表语义重构——is_available（可用）+ is_enabled（激活）分离。
-        // 旧库迁移（对齐 spec §10 手工 SQL，用户无需手工干预）：
-        //   1. 加 is_available 列（默认 0）
-        //   2. 原 is_enabled 值（旧「可用」语义）迁到 is_available
-        //   3. is_enabled 全置 0（新语义=激活，用户重新激活时设）
-        //   4. 删 app_config 的 4 个激活字段（asr_engine/polish_llm/ocr_model/translate_engine）
-        //      —— 激活态统一存 DB is_enabled，app_config 这 4 个 key 已废弃。
-        // **关键不变量**：迁移后无任何行 is_enabled=1（用户重新激活才设），保证 §6.1
-        // 「每域仅 1 个 is_enabled=1」不被旧库遗留的多 is_enabled=1 行破坏。
-        // db.sql 新库已含 is_available 列 + seed 全 is_enabled=0，无需此 ALTER。
-        if v < 37 {
-            let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)")?
-                .query_map([], |r| r.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            // review fix 问题 5：事务包裹保证原子性（ALTER 不能在事务内，
-            // 但 3 条 DML + PRAGMA 在事务内——ALTER 先单独执行）
-            if !cols.contains(&"is_available".to_string()) {
-                conn.execute("ALTER TABLE models ADD COLUMN is_available INTEGER NOT NULL DEFAULT 0", [])?;
-                log::info!("schema v37: models 补 is_available 列");
-            }
-            let tx = conn.unchecked_transaction()?;
-            // 迁移旧 is_enabled 值（「可用」语义）到 is_available
-            let migrated = tx.execute("UPDATE models SET is_available = is_enabled", [])?;
-            // is_enabled 全重置为 0（新语义=激活，用户重新激活）
-            let cleared = tx.execute("UPDATE models SET is_enabled = 0", [])?;
-            log::info!("schema v37: 迁移 {} 行 is_available=is_enabled，重置 {} 行 is_enabled=0", migrated, cleared);
-            // 删 app_config 4 个废弃激活字段
-            let deleted = tx.execute(
-                "DELETE FROM app_config WHERE config_key IN ('asr_engine','polish_llm','ocr_model','translate_engine')",
-                [],
-            )?;
-            if deleted > 0 {
-                log::info!("schema v37: 删除 app_config 中 {} 个废弃激活字段", deleted);
-            }
-            tx.execute("PRAGMA user_version = 37", [])?;
-            tx.commit()?;
-            log::info!("schema upgraded to v37 (models is_available/is_enabled 语义分离 + 旧库数据迁移)");
-        }
-        // v37 → v38：新增 3 张 vault 表（2026-07-18 Password Vault）。
-        // db.sql 新库已含 vault 表；此处 IF NOT EXISTS 是为兼容跳过 INIT_SQL 的路径。
-        if v < 38 {
-            conn.execute_batch(
-                "
-                CREATE TABLE IF NOT EXISTS vault_meta (
-                    id                          INTEGER PRIMARY KEY CHECK (id = 1),
-                    kdf_type                    INTEGER NOT NULL,
-                    kdf_salt                    BLOB NOT NULL,
-                    kdf_iterations              INTEGER NOT NULL,
-                    kdf_memory_kib              INTEGER NOT NULL,
-                    kdf_parallelism             INTEGER NOT NULL,
-                    protected_user_vault_key    TEXT NOT NULL,
-                    app_key_local_enc           TEXT NOT NULL,
-                    app_key_sync_enc            TEXT NOT NULL,
-                    security_stamp              TEXT NOT NULL,
-                    equivalent_domains          TEXT NOT NULL DEFAULT '[]',
-                    public_key                  TEXT,
-                    protected_private_key       TEXT,
-                    created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                CREATE TABLE IF NOT EXISTS vault_folders (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name        TEXT NOT NULL,
-                    sort_order  INTEGER NOT NULL DEFAULT 0,
-                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                CREATE TABLE IF NOT EXISTS vault_ciphers (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    folder_id           INTEGER DEFAULT NULL,
-                    favorite            INTEGER NOT NULL DEFAULT 0,
-                    atype               INTEGER NOT NULL,
-                    name                TEXT NOT NULL,
-                    notes               TEXT DEFAULT NULL,
-                    data                TEXT NOT NULL,
-                    fields              TEXT DEFAULT NULL,
-                    password_history    TEXT DEFAULT NULL,
-                    reprompt            INTEGER NOT NULL DEFAULT 0,
-                    deleted_at          TEXT DEFAULT NULL,
-                    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                    FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
-                    ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
-                CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);
-                ",
-            )?;
-            conn.execute("PRAGMA user_version = 38", [])?;
-            log::info!("schema v37 → v38：新增 vault 表（vault_meta / vault_ciphers / vault_folders）");
-        }
+        crate::seeds::load_external_seeds(conn)?;
+        conn.execute("PRAGMA user_version = 39", [])?;
+        log::info!("schema upgraded to v39 (外置 seed 加载机制 + Agent 菜单 + PPT)");
         return Ok(());
     }
 
+    // v<17 全新库：建表 + 外置 seed + manifest
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
-    // v35：搜索频次加权表（新建库直接建表，不依赖迁移分支）。
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS search_frequency (
-            score_key TEXT NOT NULL,
-            query TEXT NOT NULL DEFAULT '',
-            hit_count INTEGER NOT NULL DEFAULT 0,
-            last_hit_ts INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (score_key)
-        )",
-    )?;
-    // v36：launcher_index 统一表（db.sql 已含 CREATE TABLE IF NOT EXISTS，
-    // 此处幂等补建——兼容 db.sql 缺该段的早期构建）。
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS launcher_index (
-            type        TEXT NOT NULL,
-            name        TEXT NOT NULL,
-            path        TEXT NOT NULL,
-            alias       TEXT NOT NULL DEFAULT '',
-            icon        TEXT NOT NULL DEFAULT '',
-            source      TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            keywords    TEXT NOT NULL DEFAULT '',
-            updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (type, path)
-        );
-        CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
-        CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);",
-    )?;
-    conn.execute("PRAGMA user_version = 38", [])?;
-    log::info!("DB initialized (v38): schema + seed + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    crate::seeds::load_external_seeds(conn)?;
+    conn.execute("PRAGMA user_version = 39", [])?;
+    log::info!("DB initialized (v39): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -3647,13 +3415,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v25() {
+    fn init_schema_fresh_db_builds_v39() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 38, "全新库 init_schema 后应到 v38");
+        assert_eq!(v, 39, "全新库 init_schema 后应到 v39");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3664,6 +3432,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 6, "六张核心表都应建好");
+        // v39 外置 seed：Agent 主菜单 + 制作 PPT 子项已注入
+        let agent_cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_cnt, 1, "v39 应注入 Agent 主菜单");
+        let ppt_cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ppt_cnt, 1, "v39 应注入「制作 PPT」子项");
     }
 
     #[test]
@@ -3776,16 +3559,18 @@ mod tests {
 
     #[test]
     fn action_bar_submenu_accepts_default_any() {
-        // init_schema 运行 v25→v26 迁移，submenu 项的 accepts 升级为 'any'
+        // init_schema 完成后，db.sql seed 的 submenu 项（AI / 搜索）accepts='any'
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
+        // v39 后 Agent 主菜单也是 submenu（accepts='file'）——按 title 过滤，只测 db.sql
+        // 中明确设 accepts='any' 的「AI」+「搜索」两项。
         let submenu_accepts: Vec<String> = conn.prepare(
-            "SELECT accepts FROM action_bar_items WHERE action_type='submenu' ORDER BY id"
+            "SELECT accepts FROM action_bar_items
+             WHERE action_type='submenu' AND title IN ('AI','搜索') ORDER BY id"
         ).unwrap()
         .query_map([], |r| r.get::<_, String>(0)).unwrap()
         .filter_map(|r| r.ok()).collect();
-        // 至少有 seed 的 AI(id=1) 和 搜索(id=3) 两个 submenu
-        assert!(submenu_accepts.len() >= 2, "seed 应有 submenu 项");
+        assert_eq!(submenu_accepts.len(), 2, "应有 AI + 搜索 两个 submenu（accepts='any'）");
         for a in &submenu_accepts {
             assert_eq!(a, "any", "submenu accepts 应为 'any'，实际: {}", a);
         }
@@ -3793,10 +3578,13 @@ mod tests {
 
     #[test]
     fn action_bar_non_submenu_accepts_default_text() {
-        // 非 submenu 类型 seed 的 accepts 保持 'text'（列默认值）
+        // db.sql 中非 submenu 类型 seed 项的 accepts 为 'text'（列默认值）。
+        // 排除 v39 外置 seed 注入的「制作 PPT」（action_type='agent', accepts='file'）——
+        // 它有独立测试覆盖。
         let conn = open_init();
         let non_submenu: Vec<(String, String)> = conn.prepare(
-            "SELECT action_type, accepts FROM action_bar_items WHERE action_type != 'submenu' ORDER BY id"
+            "SELECT action_type, accepts FROM action_bar_items
+             WHERE action_type != 'submenu' AND title != '制作 PPT' ORDER BY id"
         ).unwrap()
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
         .filter_map(|r| r.ok()).collect();
@@ -3847,129 +3635,12 @@ mod tests {
         assert_eq!(loaded.len(), 2, "load_app_index 应返回 2 条");
     }
 
-    /// 自愈场景：user_version 已是 36 但 launcher_index 不存在 + app_index 残留
-    /// （开发期中间 binary 跳设 user_version=36 而迁移未跑完）。
-    /// init_schema 应检测 launcher_index 缺失并补跑迁移 + DROP 旧 app_index。
-    #[test]
-    fn v36_self_heal_when_launcher_missing_but_version_set() {
-        setup_test_db();  // 确保正常迁移到 v36 + launcher_index 存在
-
-        // 模拟半途损坏状态：手动删 launcher_index + 重建 app_index + 强设 user_version=36
-        with_db(|c| {
-            c.execute_batch("DROP TABLE launcher_index")?;
-            c.execute_batch(
-                "CREATE TABLE app_index (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                    alias TEXT NOT NULL DEFAULT '', path TEXT NOT NULL UNIQUE,
-                    indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    icon TEXT NOT NULL DEFAULT ''
-                )"
-            )?;
-            c.execute("INSERT INTO app_index (name, alias, path, icon) VALUES ('TestApp', '测试', '/Applications/TestApp.app', 'icon')", [])?;
-            c.execute("PRAGMA user_version = 36", [])?;
-            Ok::<_, anyhow::Error>(())
-        }).unwrap();
-
-        // 验证损坏状态
-        let launcher_cnt: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'",
-            [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(launcher_cnt, 0, "损坏状态：launcher_index 应不存在");
-
-        // 重新跑 init_schema——应自愈（检测 launcher 缺失 → 建表 → 迁移 app_index → DROP）
-        with_db(|c| { init_schema(c).map_err(anyhow::Error::from) }).unwrap();
-
-        // 验证自愈成功
-        let launcher_exists: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'",
-            [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(launcher_exists, 1, "自愈后 launcher_index 应存在");
-
-        let app_count: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM launcher_index WHERE type='app'", [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(app_count, 1, "app_index 数据应已迁移到 launcher_index");
-
-        let migrated_name: String = with_db(|c| c.query_row(
-            "SELECT name FROM launcher_index WHERE type='app' AND path='/Applications/TestApp.app'",
-            [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(migrated_name, "TestApp");
-
-        let old_app_index_exists: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'",
-            [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(old_app_index_exists, 0, "旧 app_index 表应已 DROP");
-    }
-
-    /// 回归 Issue #1（code review）：v37 迁移自动完成 spec §10 手工 SQL——
-    /// 旧库（v36）有多 is_enabled=1 行（旧「可用」语义），迁移后：
-    ///   - is_available 继承原 is_enabled 值
-    ///   - is_enabled 全重置为 0（无破坏「每域仅 1 个激活」不变量）
-    ///   - app_config 4 个废弃激活字段被删
-    /// 若迁移漏了 UPDATE，用户重新激活后会出现多 is_enabled=1 AND is_available=1 行，
-    /// 违反 §6.1 核心不变量。
-    #[test]
-    fn migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation() {
-        setup_test_db();  // 建库到最新
-
-        // 模拟 v36 旧库状态：手动造一个多 is_enabled=1 的场景（旧「可用」语义）
-        // + 插一个废弃 app_config 字段
-        with_db(|c| {
-            // 先把当前 is_available 清零，重置成「迁移前」状态：
-            // 把多条模型设为 is_enabled=1（旧「可用」语义，多个），is_available 全 0
-            c.execute("UPDATE models SET is_available = 0", [])?;
-            c.execute(
-                "UPDATE models SET is_enabled = 1 WHERE domain='asr' AND is_local=1",
-                [],
-            )?;  // 模拟旧库多条 asr 本地模型都「可用」(is_enabled=1)
-            // 插一个废弃激活字段
-            c.execute(
-                "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES ('asr_engine', 'local:zipformer:zipformer-small-ctc')",
-                [],
-            )?;
-            // 退回 v36，让 init_schema 重跑 v36→v37 迁移
-            c.execute("PRAGMA user_version = 36", [])?;
-            Ok::<_, anyhow::Error>(())
-        }).unwrap();
-
-        // 验证迁移前状态：多条 asr 模型 is_enabled=1，is_available=0
-        let old_enabled_cnt: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_enabled=1", [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert!(old_enabled_cnt > 1, "测试前提：旧库应有多条 is_enabled=1");
-
-        // 重跑迁移
-        with_db(|c| { init_schema(c).map_err(anyhow::Error::from) }).unwrap();
-
-        // 验证迁移后：
-        // 1. is_available 继承了原 is_enabled 值（原 is_enabled=1 的行现在 is_available=1）
-        let new_available: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM models WHERE domain='asr' AND is_available=1", [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(new_available, old_enabled_cnt,
-            "原 is_enabled=1 的行应迁移到 is_available=1");
-
-        // 2. is_enabled 全为 0（重置激活，无破坏不变量）
-        let new_enabled: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM models WHERE is_enabled=1", [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(new_enabled, 0,
-            "迁移后无任何 is_enabled=1（用户重新激活才设）");
-
-        // 3. get_active_model 应返回 None（无激活）
-        assert!(get_active_model("asr").unwrap().is_none(),
-            "迁移后无激活模型，get_active_model 应返回 None");
-
-        // 4. 废弃 app_config 字段已删
-        let stale_key: i64 = with_db(|c| c.query_row(
-            "SELECT COUNT(*) FROM app_config WHERE config_key='asr_engine'", [], |r| r.get(0)
-        ).map_err(anyhow::Error::from)).unwrap();
-        assert_eq!(stale_key, 0, "废弃的 asr_engine 配置项应已删除");
-    }
+    // 历史 v36 自愈 + v36→v37 语义迁移测试已删除（v39 schema 重整，迁移分支移除）：
+    // - v36_self_heal_when_launcher_missing_but_version_set
+    // - migration_v36_to_v37_migrates_is_enabled_semantics_and_clears_activation
+    // 这些迁移只在 v17→v37 旧库升级路径上有意义；新 schema 全部由 db.sql + 外置 seed
+    // 覆盖（launcher_index / models.is_available / models.is_enabled 均在 db.sql）。
+    // switch_active_model 的核心不变量（每域仅 1 个 is_enabled=1）由下列测试覆盖。
 
     /// 回归 Issue #7（code review）：switch_active_model 用 id=-1（LLM「不选择模型」）
     /// 应清空该域所有 is_enabled（前端 LlmTab.tsx 传 -1 表示取消激活）。
@@ -4000,12 +3671,14 @@ mod tests {
         assert_eq!(sv_enabled, 0, "原激活模型应被清空");
     }
 
-    /// 回归 T9-L6：v32→v36 迁移——从无 app_index 表的 v32 库升级，
-    /// launcher_index 表（含 icon/path/alias）、search_frequency 表均就绪。
-    /// v36：app_index 已被 launcher_index 取代（迁移建 launcher_index，无旧表则不迁数据）。
+    /// 回归：v32-vintage 库（已有 action_bar_items 但仅缺其他表）经 init_schema 升到 v39，
+    /// db.sql CREATE TABLE IF NOT EXISTS 把所有缺表补齐。验证 v39 schema 完整性。
+    ///
+    /// 历史 v32→v34/v35/v36 的迁移逻辑已删除（schema 由 db.sql 统一覆盖），本测试只保留
+    /// 升级到 v39 的 smoke check：launcher_index / search_frequency 表存在，列齐全。
     #[test]
-    fn migration_v32_to_v34_creates_app_index_with_icon() {
-        // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index 表
+    fn migration_v32_db_upgrades_to_v39() {
+        // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index / launcher_index
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE action_bar_items (
@@ -4016,7 +3689,6 @@ mod tests {
                 is_enabled INTEGER NOT NULL DEFAULT 1, is_async INTEGER NOT NULL DEFAULT 1,
                 write_output_to_clipboard INTEGER NOT NULL DEFAULT 0, shortcut TEXT NOT NULL DEFAULT '',
                 agent TEXT NOT NULL DEFAULT '', trigger_keyword TEXT NOT NULL DEFAULT '',
-                auto_paste INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -4024,20 +3696,14 @@ mod tests {
         ).unwrap();
         conn.execute("PRAGMA user_version = 32", []).unwrap();
 
-        // 运行迁移
+        // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 38（迁移链一路走到最新）
+        // 验证 user_version = 39
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 38);
+        assert_eq!(v, 39);
 
-        // v36：app_index 表应不存在（被 launcher_index 取代）
-        let app_index_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_index'", [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(app_index_count, 0, "app_index 表应被 v36 迁移移除");
-
-        // 验证 launcher_index 表存在 + icon/path/alias 列存在
+        // v39：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'", [], |r| r.get(0)
         ).unwrap();
@@ -4051,11 +3717,11 @@ mod tests {
         assert!(cols.contains(&"alias".to_string()), "launcher_index 应有 alias 列");
         assert!(cols.contains(&"type".to_string()), "launcher_index 应有 type 列");
 
-        // v35 新增：search_frequency 表应一并创建
+        // search_frequency 表存在
         let sf_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_frequency'", [], |r| r.get(0)
         ).unwrap();
-        assert_eq!(sf_count, 1, "search_frequency 表应被 v35 迁移创建");
+        assert_eq!(sf_count, 1, "search_frequency 表应存在");
     }
 
     #[test]
@@ -4072,13 +3738,15 @@ mod tests {
 
     #[test]
     fn migration_v26_to_v27_creates_agent_tasks_table() {
+        // 旧 v26→v27 迁移已删（schema 由 db.sql 统一覆盖）；本测试降级为 smoke check：
+        // DROP agent_tasks 后 init_schema 应靠 db.sql CREATE IF NOT EXISTS 重建表。
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("DROP TABLE agent_tasks", []).unwrap();
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 38);
+        assert_eq!(v, 39);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4199,8 +3867,8 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v25_is_noop() {
-        // 已是 v27 的库再调 init_schema 应跑完迁移链到最新（不报错）
+    fn init_schema_v27_db_upgrades_to_v39() {
+        // v27 库再调 init_schema 应靠 v ≥ 17 分支升到 v39（不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("PRAGMA user_version = 27", []).unwrap();
@@ -4208,7 +3876,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 38);
+        assert_eq!(v, 39);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -5551,7 +5219,7 @@ mod vault_schema_tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("db.sql")).unwrap();
-        conn.execute("PRAGMA user_version = 38", []).unwrap();
+        conn.execute("PRAGMA user_version = 39", []).unwrap();
         conn
     }
 
