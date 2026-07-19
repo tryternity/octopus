@@ -503,7 +503,7 @@ pub fn is_user_vault_unlocked(&mut self, timeout_secs: u64) -> bool;
 | INV-8 | TOTP：HMAC-SHA1, 30s, 6 位, ±1 步漂移 |
 | INV-9 | 锁定超时以 `last_active_at` 为基准（非 `unlocked_at`）；前端心跳维护 `last_active_at`，vault tab 离开 + 配置时间到 → 自动锁。`timeout_secs=0` 表示永不锁定（UI 警告）。 |
 | INV-10 | 主密码强度：≥ 12 字符 + 必含 4 字符类（大写/小写/数字/符号），前端 + 后端双校验。 |
-| INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc`）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4）。防双 modal 并发导致整行覆盖丢失字段 → 永久数据损坏。 |
+| INV-11 | vault_meta 写操作（`change_master_password` / `refresh_app_key_local_enc` / `regenerate_security_stamp` / `setup_vault` / 任何 `save_vault_meta` / `update_security_stamp` 调用）必须持有 `meta_lock::acquire_meta_write_lock()` 串行化（2026-07-19 修复 #4 + 复审 #2 下沉）。**锁下沉到 `save_vault_meta` / `update_security_stamp` 内部**（ReentrantMutex 同线程可重入），调用方无需显式持锁——RMW 路径仍显式持锁保证读到的数据在写之前不被其他写者改动。防并发导致整行覆盖丢失字段 → 永久数据损坏。 |
 
 ---
 
@@ -1304,7 +1304,7 @@ UI 展示：弱密码列表、重复密码组、平均强度评分。点击任�
 | INV-G3 | Passphrase EN 必须用 EFF 大词表（7776 词） |
 | INV-G4 | Passphrase ZH 必须用 jieba 词频 TOP 4096 双字词 |
 | INV-G5 | 不存生成器历史 |
-| INV-G6 | TOTP 默认参数：HMAC-SHA1, 30s, 6 位, ±1 步漂移。**2026-07-19 修复 #7**：支持 otpauth:// URL 变体（SHA256/SHA512、digits=8、period=60），secret 长度 ≥ 80bit（RFC 6238 下限，原 totp-rs 默认 ≥128bit 过严拒绝标准 secret） |
+| INV-G6 | TOTP 默认参数：HMAC-SHA1, 30s, 6 位, ±1 步漂移。**2026-07-19 修复 #7**：支持 otpauth:// URL 变体（SHA256/SHA512、digits=8、period=60），secret 长度 ≥ 80bit（RFC 6238 下限，原 totp-rs 默认 ≥128bit 过严拒绝标准 secret）。**复审 #1 加固**（2026-07-19）：`from_otpauth_url` 解析后 clamp period>0 / digits ∈ {6,8} / algorithm ∈ {SHA1,SHA256,SHA512}——unchecked 跳过 totp-rs 全部不变量校验，畸形输入会致 `current()` 内部 `time/step` 除零 panic 或 `10_u32.pow(digits)` overflow panic（不可信输入不能 panic）。 |
 | INV-G7 | 健康检查的 SHA-256 hash 不持久化到 DB |
 | INV-G8 | **生成器所有 5 个公开函数返回 `Result<String>`，永不 panic**（输入校验用 `ensure!` 而非 `assert!`）—— panic 会崩 Tauri 主进程，使整个 vault 不可用 |
 

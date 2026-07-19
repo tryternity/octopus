@@ -11,7 +11,7 @@
 //!
 //! 输出：当前数字码（按 digits 长度）+ 剩余秒数（按 step 长度）。
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, Secret, TOTP};
 
@@ -58,6 +58,30 @@ impl TotpGenerator {
         // 与 from_base32 的 new_unchecked 对称。
         let totp = TOTP::from_url_unchecked(url.to_string())
             .map_err(|e| anyhow!("otpauth URL 解析失败: {}", e))?;
+
+        // 复审 #1 修复：unchecked 跳过 totp-rs 全部不变量校验，畸形参数会导致
+        // current() 内部 panic（period=0 → time/self.step 整除 panic；digits 异常 →
+        // 10_u32.pow(digits) overflow panic）。不可信输入（用户粘贴 / Bitwarden 导入）
+        // 不能 panic——这里是命令边界，panic 会崩 Tauri 命令甚至进程。
+        //
+        // 白名单 clamp 而非范围检查：
+        // - period：RFC 6238 推荐 30，常见 15/60，>0 即可（不设上限——长 period 安全但 TOTP 实用性下降）
+        // - digits：仅允许 RFC 标准的 6 或 8（Authy / 部分银行用 7 但罕见且 totp-rs 格式化支持任意 digits，留宽松）
+        // - algorithm：SHA1 / SHA256 / SHA512 是 totp-rs 在 steam feature off 时仅有的合法变体
+        ensure!(totp.step > 0, "TOTP period 必须 > 0（当前 0 会致除零 panic）");
+        ensure!(
+            totp.digits == 6 || totp.digits == 8,
+            "TOTP digits 仅支持 6 或 8（当前 {}）",
+            totp.digits
+        );
+        ensure!(
+            matches!(
+                totp.algorithm,
+                Algorithm::SHA1 | Algorithm::SHA256 | Algorithm::SHA512
+            ),
+            "TOTP algorithm 仅支持 SHA1/SHA256/SHA512"
+        );
+
         let step = totp.step; // 先取，避免下面 move 后访问
         Ok(Self { inner: totp, step })
     }
@@ -77,6 +101,12 @@ impl TotpGenerator {
     }
 
     pub fn current(&self) -> Result<String> {
+        // last-resort 防护：step=0 时 generate_current 内部 time/step 会除零 panic。
+        // from_otpauth_url 已 clamp period>0，from_base32 硬编码 30——理论均安全，
+        // 但未来重构可能漏过，这里兜底返回 Err 而非 panic（panic 在 Tauri 命令边界致命）。
+        if self.step == 0 {
+            anyhow::bail!("TOTP step=0（无效配置，应被 from_otpauth_url clamp 拦截）");
+        }
         Ok(self.inner.generate_current().context("TOTP 生成失败")?)
     }
 
@@ -202,5 +232,42 @@ mod tests {
     fn test_otpauth_url_invalid() {
         assert!(TotpGenerator::from_otpauth_url("otpauth://totp/?nosecret=here").is_err());
         assert!(TotpGenerator::from_otpauth_url("https://example.com/not-otpauth").is_err());
+    }
+
+    /// 复审 #1 修复：period=0 不能 panic（不可信输入触发，会崩 Tauri 命令）。
+    /// from_otpauth_url 应返 Err，current() 也应返 Err（last-resort 防护）。
+    #[test]
+    fn test_period_zero_returns_err_not_panic() {
+        let url = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&period=0";
+        let result = TotpGenerator::from_otpauth_url(url);
+        assert!(
+            result.is_err(),
+            "period=0 应被 clamp 拦截返 Err（不 panic）"
+        );
+    }
+
+    /// 复审 #1 修复：畸形 digits 不能 panic。
+    #[test]
+    fn test_digits_invalid_returns_err() {
+        // digits=0：format!("{1:00$}", 0, ...) → 空串，不 panic 但无意义，应被 clamp 拒
+        let url = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&digits=0";
+        assert!(TotpGenerator::from_otpauth_url(url).is_err());
+
+        // digits=20：10_u32.pow(20) overflow panic（u32 max ~4.3e9 < 1e20），应被 clamp 拒
+        let url2 = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&digits=20";
+        assert!(TotpGenerator::from_otpauth_url(url2).is_err());
+
+        // digits=7：非标准（Authy 等罕见），按 RFC 仅允许 6/8，拒绝
+        let url3 = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&digits=7";
+        assert!(TotpGenerator::from_otpauth_url(url3).is_err());
+    }
+
+    /// 复审 #1 修复：非法 algorithm 不能 silent 通过。
+    #[test]
+    fn test_algorithm_invalid_returns_err() {
+        // algorithm=MD5：totp-rs URL 解析能 parse 出 Algorithm 但不在 SHA1/256/512 内
+        // （Algorithm 枚举有 Steam 但 cfg gate off；MD5 根本不在枚举里，parse 会失败）
+        let url = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&algorithm=MD5";
+        assert!(TotpGenerator::from_otpauth_url(url).is_err());
     }
 }

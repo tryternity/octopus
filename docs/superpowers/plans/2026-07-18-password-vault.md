@@ -6957,3 +6957,35 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 
 - cargo build / cargo test -p octopus-vault --lib (136) / -p octopus-infra --lib (130)
 - bunx tsc --noEmit: 0 error; bun run test: 304 pass
+
+---
+
+## 修订：第三轮复审修复（2026-07-19，commit 待写）
+
+收到第三轮复审报告，2 个新发现 + 3 个次要观察全部复查成立。
+
+### 已修
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 新发现 1 | TOTP period=0 / digits 异常 / algorithm 异常 → `current()` panic（不可信输入触发，崩 Tauri 命令） | `from_otpauth_url` 加 ensure! clamp：period>0 / digits ∈ {6,8} / algorithm ∈ {SHA1,SHA256,SHA512}；`current()` 加 last-resort 防护（step==0 bail!） |
+| 新发现 2 | #4 meta 锁未覆盖 `regenerate_security_stamp` / `setup_vault`（这两条不持锁） | 锁下沉到 `save_vault_meta` / `update_security_stamp` 内部（ReentrantMutex 同线程可重入，外层 RMW 持锁时内层 save 不死锁）|
+| 次要 B | `BROWSER_OWNER_NAMES` 与 `url_detect.rs:43` bundle_id 白名单两套独立列表，未来加浏览器需手动同步 | 注释加 reference 提示同步维护（不抽常量源，over-engineering）|
+
+### 测试
+
+- `test_period_zero_returns_err_not_panic`：period=0 返 Err 不 panic
+- `test_digits_invalid_returns_err`：digits=0/7/20 都返 Err
+- `test_algorithm_invalid_returns_err`：algorithm=MD5 返 Err
+- `test_lock_is_reentrant_same_thread`：ReentrantMutex 同线程重入不死锁（锁下沉前提）
+
+### 不成立的次要观察
+
+- 次要 C：from_otpauth_url 内部不再 lowercase——标准 URL 解析已处理大小写，不需要额外处理
+
+### 验证
+
+- cargo test -p octopus-vault --lib: 140 pass（+4 新测试）
+- cargo test -p octopus-infra --lib: 130 pass
+- bunx tsc --noEmit: 0 error; bun run test: 304 pass
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
