@@ -7113,5 +7113,45 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 | 第三轮（新发现 + 次要） | 5 | 3 | 2 |
 | 第四轮（12 项） | 12 | 12 | 0 |
 | 第五轮（A1/B1/B2/A2 + O1-O4） | 8 | 6 | 2（O1/O4） |
-| **总计** | **44** | **35** | **9** |
+| **小计** | **44** | **35** | **9** |
+
+---
+
+## 修订：第六轮审查 4 项观察（2026-07-19）
+
+收到第六轮审查报告（针对 commit 4012efd6 / 实际修复 99cabbf8 的复审）。**8/8 修复全部正确落地，无 bug 无回归**。仅 4 个观察项（无 bug，权衡/局限说明）。
+
+### 复查结论
+
+| 观察项 | 复查 | 处理 |
+|---|---|---|
+| 🟡 **A1 崩溃窗口残余风险** | **成立（已知工程折衷）**：save commit 与 migrate 不在同一事务，进程崩溃/断电在窗口内 → vault_meta 已落盘 + secret_key 仍明文 + delete 未执行 → 需手动清 DB。窗口持续 = migrate 执行时间（毫秒级），崩溃概率极低。彻底闭合需重构 meta 模块所有写路径，工程成本远大于收益。 | 📝 spec §3.6 补「A1 崩溃窗口残余风险」段 |
+| 🟢 **B2 既有保守设计** | **成立但非回归**：B2 只动 record_failure 语义，「refresh 失败时 unlock 返 Err」是第四轮既有的保守选择。caller（vault_commands.rs:240）透传 Err 到前端，message 含 "密码正确但刷新 app_key_local_enc 失败"，与密码错的 message 有明确区分。 | 📝 文档化（B2 本身是对的） |
+| 🟢 **delete_vault_meta_row 可见性偏宽** | **成立（卫生项）**：infra crate pub fn，注释声明唯一合法调用方但语言层面无约束。 | 🔧 加 `#[doc(hidden)]` + 强化警告注释（保留 pub 让 vault 跨 crate 调用） |
+| 🟢 **测试 sleep(3s) 拖慢** | **成立（cosmetic）**：B1/B2 测试各 sleep 3s 合计 +6s。注入假时钟需把 `now_unix()` 抽 trait + 测试覆盖，代价不值得。 | 📝 文档化（cosmetic） |
+
+### 改动
+
+- `crates/infra/src/db.rs`：`delete_vault_meta_row` 加 `#[doc(hidden)]` + 警告注释强化
+- `docs/superpowers/specs/2026-07-18-password-vault-design.md` §3.6：补「A1 崩溃窗口残余风险」段
+
+### 验证
+
+- cargo build -p octopus-infra -p octopus-vault: 0 error 0 warning
+- cargo test -p octopus-vault test_delete_vault_meta_row_resets_is_initialized: 1 pass
+- （`#[doc(hidden)]` 不影响跨 crate 调用，vault 仍能调到该函数）
+
+### 六轮审查总览（含本轮）
+
+| 轮次 | 问题数 | 已修 | 部分修/文档化 |
+|---|---|---|---|
+| 第一轮（10C+3次） | 13 | 9 | 4 |
+| 第二轮（A-F 复审） | 6 | 5 | 1（B） |
+| 第三轮（新发现 + 次要） | 5 | 3 | 2 |
+| 第四轮（12 项） | 12 | 12 | 0 |
+| 第五轮（A1/B1/B2/A2 + O1-O4） | 8 | 6 | 2（O1/O4） |
+| 第六轮（4 项观察） | 4 | 1（doc(hidden)） | 3 |
+| **总计** | **48** | **36** | **12** |
+
+**第六轮是收敛轮**——无 bug 无回归，仅卫生/文档收尾。密码保险库核心路径（crypto / 持久化 / 解锁 / 迁移 / 导入）的安全不变量与失败恢复语义已闭合。
 

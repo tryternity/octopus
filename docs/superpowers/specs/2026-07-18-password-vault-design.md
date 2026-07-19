@@ -636,6 +636,8 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 
 **已知工程窗口（O1，2026-07-19）**：`migrate_secret_keys_to_encrypted` 的 SELECT（`list_models_for_secret_migration`）用独立 `with_db` 连接，与紧随其后的 UPDATE 事务不在同一连接。SELECT 快照与事务开始之间插入的新明文行会漏迁。但 setup 是一次性 UI 流程，毫秒级窗口内插入新明文行需用户在同一瞬间配置新云模型——触发概率极低。修复需重构 migrate.rs 用单事务+同一 conn，工程成本远超收益，**不做**。迁移失败本身的不可恢复问题已由 A1 修复（F23）解决。
 
+**A1 崩溃窗口残余风险（第六轮审查）**：A1 用「失败时显式 DELETE vault_meta」回滚，覆盖了 migrate 返 Err 的软件失败（A1 核心目标，已达成）。但因 `save_vault_meta` 与 migrate 不在同一事务（commit message 已说明「不同表无法廉价合并」），存在硬失败崩溃窗口：save_vault_meta commit 已落盘 → migrate 执行中 → 进程崩溃/断电 → delete 未执行 → vault_meta 已初始化 + secret_key 仍明文 → 需手动清 DB。窗口持续 = migrate 执行时间（少量 key 毫秒级，崩溃概率极低）。这是「尽力回滚」相对「原子事务」的固有局限，**接受**——彻底闭合需重构 meta 模块所有写路径，工程成本远大于收益。
+
 ### 3.7 AppConfig 新增字段
 
 | 字段 | 类型 | 默认 | 说明 |
