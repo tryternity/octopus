@@ -704,16 +704,42 @@ pub fn vault_autotype(
 /// 检测当前浏览器 URL + 返回匹配 cipher 列表。
 /// URL 检测失败时返回最近使用的若干 cipher（follow-up #8：take 20），
 /// URL 匹配命中时也限制数量（take 50，避免大域共享导致列表过长）。
+///
+/// **URL 来源**（2026-07-19 e2e 修复）：优先读 `picker_url_cache`——热键 callback 在
+/// show VaultPicker **之前**抓的 URL（此时浏览器还前台）。缓存空（用户手动刷新 / 热键
+/// callback 抓失败）才走 `current_browser_url()` 现抓——此时若 VaultPicker 在前台，
+/// 会取到 octopus-desktop 自身，URL 检测失败走 fallback，符合"手动刷新无前台浏览器"语义。
 #[tauri::command]
 pub fn vault_detect_and_match(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
+    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
 ) -> Result<Vec<CipherDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
-    let url_str = autotype::current_browser_url()
-        .map_err(vault_error::to_tauri_error)?
-        .unwrap_or_default();
+    // 优先读热键 callback 预抓的 URL（修 e2e 时序 bug）
+    let cached_url: Option<String> = url_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|s| !s.is_empty());
+    // 取完清空——下次热键会重新抓；手动刷新场景（无热键）走 current_browser_url()
+    if let Ok(mut guard) = url_cache.lock() {
+        *guard = None;
+    }
+
+    let url_str = match cached_url {
+        Some(u) => {
+            log::debug!("vault_detect_and_match: 用热键预抓 URL");
+            u
+        }
+        None => {
+            log::debug!("vault_detect_and_match: 缓存空，现抓 URL");
+            autotype::current_browser_url()
+                .map_err(vault_error::to_tauri_error)?
+                .unwrap_or_default()
+        }
+    };
     if url_str.is_empty() {
         // URL 检测失败 → 返回 last-N-used（按 updated_at DESC）让用户手动选
         // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
@@ -834,9 +860,36 @@ pub fn register_vault_autotype_shortcut(
         .on_shortcut(shortcut, move |_app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
                 log::info!("vault autotype 触发");
+                // **修 e2e 时序 bug**（2026-07-19）：show VaultPicker **之前**先抓 URL。
+                //
+                // 原实现 show + set_focus 之后才 emit 让前端 detect URL——此时
+                // VaultPicker 已抢前台，frontmost_bundle_id 取到 octopus-desktop 自己，
+                // URL 检测必然失败 → 走 fallback 列出最近 20 条 cipher（用户看到全部密码）。
+                //
+                // 现在先抓 URL（此时浏览器还在前台），存入 picker_url_cache；
+                // vault_detect_and_match 优先读缓存。失败也不阻塞——detect 端会 fallback。
+                use tauri::Manager;
+                let cached_url: Option<String> =
+                    match crate::autotype::current_browser_url() {
+                        Ok(Some(u)) if !u.is_empty() => Some(u),
+                        _ => None,
+                    };
+                if let Some(cache) =
+                    app_handle.try_state::<crate::vault_state::SharedPickerUrlCache>()
+                {
+                    if let Ok(mut guard) = cache.lock() {
+                        *guard = cached_url.clone();
+                    }
+                }
+                log::debug!(
+                    "[vault-picker] 热键触发，预抓 URL: {:?}",
+                    cached_url
+                        .as_deref()
+                        .map(|s| s.chars().take(80).collect::<String>())
+                );
+
                 // toggle 语义：已存在 → show + set_focus + 通知前端刷新；
                 // 不存在 → 新建（前端 mount 后自动调 vault_detect_and_match）。
-                use tauri::Manager;
                 if let Some(win) = app_handle.get_webview_window("vault_picker_window") {
                     let _ = win.show();
                     let _ = win.set_focus();
