@@ -695,10 +695,18 @@ export default function ActionBar() {
         break;
       }
       case "copy": {
-        // 历史遗留 copy 类型——已从 Settings UI 删除，但旧 DB 可能残留。
-        // 用户触发时静默 dismiss + 提示去 Settings 改类型。
-        invoke("action_bar_dismiss", { reason: "legacy_copy" });
-        showQuickError("此菜单类型已废弃，请在设置中改为其他类型");
+        // 搜索结果 copy 动作（calculator 计算结果、command 命令助手复制命令名）：
+        // actionData = {"text": "..."}——纯前端 clipboard.writeText，不走后端命令。
+        // 注意：这与「Settings UI 的 copy 菜单类型」（已删除）是两回事——后者走 executeItem
+        // → 后端 execute_action_bar，本 case 仅服务于搜索结果的运行时 actionType="copy"。
+        const text = data.text as string;
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          invoke("action_bar_dismiss", { reason: "copy" });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+        }
         break;
       }
       case "copy_and_reveal": {

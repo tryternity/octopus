@@ -341,7 +341,18 @@ pub fn vault_list_folders(
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<Vec<FolderDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    octopus_vault::storage::folder::list_folders(&key).map_err(vault_error::to_tauri_error)
+    // 修复 #9：list_folders 现返回 (folders, failures)——单行解密失败不让整表 Err。
+    // 失败行记 log，前端只看到完好的 folders（坏行由用户重新创建/修复）。
+    let (folders, failures) =
+        octopus_vault::storage::folder::list_folders(&key).map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!(
+            "vault_list_folders: {} 个文件夹解密失败已跳过（ids={:?}）",
+            failures.len(),
+            failures
+        );
+    }
+    Ok(folders)
 }
 
 #[tauri::command]

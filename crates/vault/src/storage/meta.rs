@@ -1,4 +1,10 @@
 //! vault_meta 表的薄包装（直接转发 infra）。
+//!
+//! **meta 写锁**（复审 #2 修复，2026-07-19）：两个写函数（save_vault_meta /
+//! update_security_stamp）内部都自动 `acquire_meta_write_lock()`——覆盖所有 meta
+//! 写路径（含 change_master_password / refresh_app_key_local_enc /
+//! regenerate_security_stamp / setup_vault），调用方无需显式持锁。
+//! ReentrantMutex 让外层 RMW 已持锁时内层 save 再次 lock 不死锁。
 
 use anyhow::Result;
 use octopus_infra::db::{self, VaultMeta, VaultMetaInput};
@@ -8,10 +14,15 @@ pub fn read_vault_meta() -> Result<Option<VaultMeta>> {
 }
 
 pub fn save_vault_meta(input: &VaultMetaInput) -> Result<()> {
+    // 锁下沉到写函数内部——覆盖所有调用路径（复审 #2）。
+    // ReentrantMutex 让 change_master_password 外层已持锁时内层再次 lock 不死锁。
+    let _guard = crate::meta_lock::acquire_meta_write_lock();
     Ok(db::upsert_vault_meta(input)?)
 }
 
 pub fn update_security_stamp(stamp: &str) -> Result<()> {
+    // 同 save_vault_meta——单字段 UPDATE 也加锁，防与整行覆盖写交错丢字段。
+    let _guard = crate::meta_lock::acquire_meta_write_lock();
     Ok(db::update_vault_security_stamp(stamp)?)
 }
 

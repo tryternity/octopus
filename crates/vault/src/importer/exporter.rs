@@ -23,6 +23,8 @@ struct BitwardenItem {
     item_type: i64,
     fields: Vec<BitwardenField>,
     login: Option<BitwardenLogin>,
+    /// 修复 #4：之前导出端未写 reprompt，导致 round-trip 丢失。Bitwarden 用 i64 表示。
+    reprompt: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +92,8 @@ pub fn export_vault_json(ciphers: &[Cipher]) -> Result<String> {
                     })
                     .collect(),
                 login,
+                // #4：导出 reprompt，避免 round-trip 丢失（与 bitwarden.rs 导入端对称）。
+                reprompt: i64::from(c.reprompt),
             }
         })
         .collect();
@@ -173,5 +177,30 @@ mod tests {
         let json = export_vault_json(&[c]).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["items"].as_array().unwrap().len(), 0);
+    }
+
+    /// #4：导出 reprompt=Password（i64=1）应出现在 JSON 中——之前完全缺失。
+    #[test]
+    fn test_export_includes_reprompt() {
+        let mut c = make_login_cipher("Sensitive");
+        c.reprompt = RepromptType::Password;
+        let json = export_vault_json(&[c]).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["items"][0]["reprompt"], 1,
+            "导出应含 reprompt=1（修复 #4：导出端不再丢失该字段）"
+        );
+    }
+
+    /// #4 round-trip：导出 → 重新导入应保留 reprompt 状态。
+    #[test]
+    fn test_export_reprompt_round_trip_parse() {
+        let mut c = make_login_cipher("Sensitive");
+        c.reprompt = RepromptType::Password;
+        let json = export_vault_json(&[c]).unwrap();
+        // 重新解析回 Bitwarden JSON 格式（导入端 struct 在 bitwarden.rs，此处只校验 JSON 字段存在）
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["items"][0]["reprompt"], 1);
+        assert_eq!(parsed["items"][0]["name"], "Sensitive");
     }
 }
