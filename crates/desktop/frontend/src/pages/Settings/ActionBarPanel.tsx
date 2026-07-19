@@ -454,7 +454,30 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大 */}
+        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
+        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
+
+        {/* Agent 选择 —— 仅 agent 类型，在内容前一行。
+            选「默认 Agent」(空值) 时，运行时按三层 fallback 解析（详见 agent_adapter.rs）。
+            need_voice 不暴露给用户——保存时后端按 action_data 含 {{task}} 自动判定。 */}
+        {type === "agent" && (
+          <FormField label={t("settings.actionBar.agentLabel")}>
+            <select
+              className={inputBase}
+              value={form.agent || ""}
+              onChange={(e) => onChange({ ...form, agent: e.target.value })}
+            >
+              <option value="">{t("settings.actionBar.defaultAgentOption")}</option>
+              {adapters.map((a) => (
+                <option key={a.key} value={a.key}>
+                  {a.displayName}{a.isAvailable ? "" : `（${t("settings.actionBar.agentNotInstalled")}）`}
+                </option>
+              ))}
+            </select>
+          </FormField>
+        )}
+
+        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大（放最后一行） */}
         {showContent && (
           <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
@@ -464,35 +487,6 @@ const EditForm = ({
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
             />
           </FormField>
-        )}
-
-        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
-        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
-
-        {type === "agent" && (
-          <>
-            <FormField label={t("settings.actionBar.agentLabel")}>
-              <select
-                className={inputBase}
-                value={form.agent || ""}
-                onChange={(e) => onChange({ ...form, agent: e.target.value })}
-              >
-                <option value="">{t("settings.actionBar.selectAgent")}</option>
-                {adapters.filter((a) => a.isAvailable).map((a) => (
-                  <option key={a.key} value={a.key}>{a.displayName}</option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label={t("settings.actionBar.voiceInput")}>
-              <div className="flex items-center gap-2.5">
-                <Toggle
-                  checked={form.needVoice ?? false}
-                  onChange={(v) => onChange({ ...form, needVoice: v })}
-                />
-                <span className="text-xs text-muted-foreground">{t("settings.actionBar.voiceInputDesc")}</span>
-              </div>
-            </FormField>
-          </>
         )}
 
         {type === "copy_path" && (
@@ -973,7 +967,6 @@ export default function ActionBarPanel({
           accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
-          needVoice: editingForm.actionType === "agent" ? (editingForm.needVoice ?? false) : false,
         });
         // 新建非 submenu 项时设置全局快捷键（Quick Execute）
         if (editingForm.actionType !== "submenu") {
@@ -994,7 +987,6 @@ export default function ActionBarPanel({
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
-          needVoice: editingForm.actionType === "agent" ? (editingForm.needVoice ?? false) : false,
         });
         // global_shortcut 单独更新（非 submenu 类型）
         if (editingForm.actionType !== "submenu") {
@@ -1082,7 +1074,6 @@ export default function ActionBarPanel({
         agent: merged.agent || "",
         accepts: deriveAccepts(merged.actionType, merged.accepts),
         triggerKeyword: merged.triggerKeyword || "",
-        needVoice: merged.needVoice ?? false,
       });
       if (merged.actionType !== "submenu") {
         await invoke("set_global_shortcut", { id: merged.id, globalShortcut: merged.globalShortcut ?? "" });

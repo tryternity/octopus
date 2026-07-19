@@ -526,7 +526,6 @@ settings:
     addMainItem: Add Main Menu Item
     noItemsYet: No menu items yet
     noItemsHint: Add your first main menu item to start configuring your command palette.
-    selectAgent: Select agent…
     pathFormat: Path Format
     pathFormatPlain: Plain
     pathFormatUrl: file:// URL
@@ -535,8 +534,8 @@ settings:
     acceptsFile: Files
     acceptsAny: Files + Text
     agentLabel: Agent
-    voiceInput: Voice Input
-    voiceInputDesc: Auto-start recording on trigger; ASR result is injected as {{task}}
+    defaultAgentOption: "Default Agent (fallback: system default → first available)"
+    agentNotInstalled: not installed
     scopeAll: All
     scopeText: Text
     scopeFile: Files

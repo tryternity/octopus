@@ -526,7 +526,6 @@ settings:
     addMainItem: 新增主菜单项
     noItemsYet: 还没有菜单项
     noItemsHint: 新增第一个主菜单项，开始配置你的命令面板。
-    selectAgent: 选择 agent…
     pathFormat: 路径格式
     pathFormatPlain: 纯路径
     pathFormatUrl: file:// URL
@@ -535,8 +534,8 @@ settings:
     acceptsFile: 文件
     acceptsAny: 文件 + 文本
     agentLabel: Agent
-    voiceInput: 语音输入
-    voiceInputDesc: 触发后自动开始录音，识别结果作为 {{task}} 注入 prompt
+    defaultAgentOption: "默认 Agent（菜单未指定时按系统默认 → 第一个可用 fallback）"
+    agentNotInstalled: 未安装
     scopeAll: 全部
     scopeText: 文本类
     scopeFile: 文件类
