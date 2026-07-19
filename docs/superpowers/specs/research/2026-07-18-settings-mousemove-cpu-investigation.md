@@ -129,8 +129,8 @@ octopus-desktop 业务代码在 mousemove 期主线程只占 3%（`tao::send_eve
 
 ```toml
 [profile.profiling]
-inherits = "release"
-# 强制把 DWARF 符号嵌进 binary（samply/atos 直接可读，无需 dSYM）
+# inherits optimize：拿到与生产一致的 LTO/内联，再叠符号信息
+inherits = "optimize"
 debug = "full"
 split-debuginfo = "off"
 strip = "none"
@@ -138,9 +138,9 @@ strip = "none"
 
 构建命令：`cargo build --profile profiling -p octopus-desktop --features "embedded cloud"`
 
-构建产物 ~104MB（vs 普通 release ~97MB，含符号信息约多 7MB）。
+或直接用脚本：`./run-octopus.sh --profiling`
 
-⚠️ **已知偏差**：当前 `profiling` inherits `release`（空），但仓库 main 上 `[profile.release]` 已经被 vault 改造为空，LTO 配置移到独立的 `[profile.optimize]`。因此 profiling profile **不带 LTO 优化**——perf 测量时的火焰图可能跟用户实际 release build 的内联情况不一致。如果需要测量带 LTO 的真实性能，临时把 `inherits = "release"` 改为 `inherits = "optimize"`（但链接时间 +1~3 分钟）。
+构建产物 ~104MB（含 DWARF 符号，体积 vs 普通 release 多约 7MB）。inherits `optimize` 保证 perf 测量时的 LTO 内联情况与生产 binary 一致——火焰图看到的函数边界/内联展开与用户实际跑的 release build 相同。代价：链接时间 +1~3 分钟（LTO）。
 
 ### 6.2 samply 采样流程（已知问题：macOS 26 栈 unwind 损坏）
 

@@ -10,27 +10,32 @@ octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，使用 
 
 ### 构建
 
-```bash
-# 构建全部（含 library）
-cargo build --release
+⚠️ **Cargo profile 三层结构**（详见 `docs/architecture.md`）：
+- `--release`：默认 release，**不带 LTO/strip**（链接快，开发期迭代用）
+- `--profile optimize`：在 release 上叠 LTO/strip/codegen-units=1，**生产构建必用**
+- `--profile profiling`：带 DWARF 符号，samply/xctrace 性能分析用
 
-# 仅构建 server + cli（最常用）
+```bash
+# 构建全部（含 library）—— 生产构建用 optimize
+cargo build --profile optimize
+
+# 仅构建 server + cli（最常用）—— 开发期可省 LTO 用 release
 cargo build --release -p octopus-server -p octopus-cli
 
 # 仅构建 library
 cargo build --release -p octopus-asr-local
 
-# 构建桌面应用（embedded 模式，默认）
-cargo run --release -p octopus-desktop --features embedded
+# 构建桌面应用（embedded 模式，默认）—— 生产构建
+cargo run --profile optimize -p octopus-desktop --features embedded
 
 # 构建桌面应用（含云端 ASR：阿里云/字节跳动/腾讯）
-cargo run --release -p octopus-desktop --features embedded,cloud
+cargo run --profile optimize -p octopus-desktop --features embedded,cloud
 
 # 构建桌面应用（WebSocket 远程模式）
-cargo run --release -p octopus-desktop --features remote-ws
+cargo run --profile optimize -p octopus-desktop --features remote-ws
 
 # 构建桌面应用（gRPC 远程模式）
-cargo run --release -p octopus-desktop --features remote-grpc
+cargo run --profile optimize -p octopus-desktop --features remote-grpc
 ```
 
 ### 开发运行
