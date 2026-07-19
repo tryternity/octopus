@@ -1,6 +1,6 @@
 # Finder 文件 → Actionbar → Agent → PPT 制作桥接设计
 
-> **状态**：设计中（待实现）
+> **状态**：已实现 ✅（2026-07-19，commit `0146e92a`）
 > **日期**：2026-07-19
 > **scope**：在 Finder 选中文件/文件夹 → 全局热键弹 actionbar → 点「Agent → 制作 PPT」→ 用户口述需求 → Pi（或 Claude Code）在 Terminal 中读文件 + 选 PPT skill + 生成 PPT + 打印产物路径
 > **前置文档**：
@@ -69,21 +69,23 @@ octopus 是**桥接器**。本次的价值是：
 
 ### 2.2 改动清单
 
-| # | 文件 | 性质 | 备注 |
-|---|---|---|---|
-| 1 | `crates/infra/seeds/prompts/default-polish.md` | 新建 | 默认润色 prompt（从 db.sql 抽出） |
-| 2 | `crates/infra/seeds/prompts/advanced-polish.md` | 新建 | 进阶润色 prompt（从 db.sql 抽出） |
-| 3 | `crates/infra/seeds/llm_providers.json` | 新建 | 7 个 LLM provider 配置（从 db.sql 抽出） |
-| 4 | `crates/infra/seeds/agent_actions/make-ppt.prompt.md` | 新建 | PPT 制作 prompt 模板 |
-| 5 | `crates/infra/src/db.rs` | 修改 | `init_schema` 简化（删历史迁移）+ `load_external_seeds` 加载函数 |
-| 6 | `crates/infra/src/db.sql` | 修改 | 删除 3 类内联 seed + 保留 schema 和其他短 seed |
-| 7 | `crates/infra/Cargo.toml` | 修改 | `package.include` 加 `seeds/` 目录（release 打包） |
-| 8 | `crates/desktop/src/action_bar_commands.rs` | 修改 | 新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 |
-| 9 | `crates/desktop/frontend/src/pages/Settings/PromptsPanel.tsx` | 修改 | system prompt 支持编辑 + 「复原默认」按钮 |
-| 10 | `crates/desktop/src/action_hotkey.rs` | 修改 | `quick_execute` 扩展支持 Files + agent + {{task}} 触发音录（详见 § 11） |
-| 11 | i18n key（zh-CN.yaml / en.yaml） | 修改 | 「复原默认」+ 相关文案中英 |
-| 12 | `docs/features/make-ppt.md` | 新建 | 用户向文档 |
-| 13 | `docs/architecture.md` | 修改 | 同步外置 seed + Agent 菜单 + PPT 桥接 + quick_execute 扩展 |
+| # | 文件 | 性质 | 备注 | 状态 |
+|---|---|---|---|---|
+| 1 | `crates/infra/seeds/prompts/default-polish.md` | 新建 | 默认润色 prompt（从 db.sql 抽出） | ✅ |
+| 2 | `crates/infra/seeds/prompts/advanced-polish.md` | 新建 | 进阶润色 prompt（从 db.sql 抽出） | ✅ |
+| 3 | `crates/infra/seeds/llm_providers.json` | 新建 | 7 个 LLM provider 配置（从 db.sql 抽出） | ✅ |
+| 4 | `crates/infra/seeds/agent_actions/make-ppt.prompt.md` | 新建 | PPT 制作 prompt 模板 | ✅ |
+| 5 | `crates/infra/src/db.rs` | 修改 | `init_schema` 简化（删历史迁移）+ `load_external_seeds` 加载函数 | ✅ |
+| 6 | `crates/infra/src/db.sql` | 修改 | 删除 3 类内联 seed + 保留 schema 和其他短 seed | ✅ |
+| 7 | `crates/infra/Cargo.toml` | 修改 | `package.include` 加 `seeds/` 目录（release 打包） | ✅ |
+| 8 | `crates/desktop/src/action_bar_commands.rs` | 修改 | 新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 | ✅ |
+| 9 | `crates/desktop/frontend/src/pages/Settings/PromptsPanel.tsx` | 修改 | system prompt 支持编辑 + 「复原默认」按钮 | ✅ |
+| 10 | `crates/desktop/src/action_hotkey.rs` | 修改 | `quick_execute` 扩展支持 Files + agent + {{task}} 触发音录（详见 § 11） | ✅ |
+| 11 | i18n key（zh-CN.yaml / en.yaml） | 修改 | 「复原默认」+ 相关文案中英 | ✅ |
+| 12 | `docs/features/make-ppt.md` | 新建 | 用户向文档 | ✅ |
+| 13 | `docs/architecture.md` | 修改 | 同步外置 seed + Agent 菜单 + PPT 桥接 + quick_execute 扩展 | ✅ |
+| 14 | `crates/desktop/frontend/vite.config.ts` | 修改（实施期发现） | vite 7→8 breaking：`clearScreen` 从 `server` 子字段迁到顶层；`defineConfig` 从 `vite` 导入（非 `vitest/config`）修复 tsc 编译错误 | ✅ |
+| 15 | `crates/infra/src/seeds.rs` | 新建（实施期细化） | 独立模块承载所有 loader 函数 + 测试（spec § 4.4 原描述为 db.rs 内部函数，实施时拆为独立模块更聚焦） | ✅ |
 
 ### 2.3 「Agent」主菜单结构
 
@@ -418,22 +420,26 @@ WHERE NOT EXISTS (
 
 ### 7.1 单元测试矩阵
 
-| # | 测试 | 验证什么 |
-|---|---|---|
-| 1 | `migration_v38_to_v39_runs_external_seeds` | v38 库 → v39 升级时正确读 seeds/ 文件、插入 prompts/llm_providers/Agent 菜单 |
-| 2 | `migration_v0_to_v39_fresh_db` | 全新库走 INIT_SQL + 外置 seed 一次到位 |
-| 3 | `migration_v39_skipped_on_already_v39` | 已 v39 的库直接 return，不读 seed 文件 |
-| 4 | `external_seed_missing_file_does_not_break_schema` | seeds/ 目录被删时 schema 仍升级成功（log error 跳过） |
-| 5 | `seed_idempotent_on_repeated_init` | 连续调 init_schema 两次，菜单/prompts 不重复 |
-| 6 | `restore_prompt_from_seed_returns_correct_content` | `seed_prompt_path("default-polish")` 返回文件内容 |
-| 7 | `render_make_ppt_prompt_replaces_placeholders` | `{{task}}` `{{files}}` 正确替换 |
-| 8 | `agent_menu_visible_only_in_file_context`（前端 vitest） | text 场景 Agent 主菜单不可见；file 场景可见 |
-| 9 | `quick_execute_file_selection_with_agent_task_triggers_voice` | File 选中 + agent + `{{task}}` → 触发音录路径（详见 § 11.7） |
-| 10 | `quick_execute_file_selection_with_agent_no_task_executes_directly` | File 选中 + agent 无 `{{task}}` → 直接执行路径 |
-| 11 | `trigger_agent_voice_core_with_hide_false_skips_hide` | hide_action_bar=false 时 hide 不被调用（quick_execute 路径） |
-| 12 | `update_prompt_at_allows_system_when_restored`（infra） | update_prompt_at 移除 is_system 拒绝（让 system prompt 可编辑） |
+下表对照实施后实际落地的测试名。设计阶段的 12 项矩阵在实施时按 TDD 细化拆分（一项设计测试可能对应多个实际测试），表末附最终通过统计。
 
-**测试隔离**（参考 `db.rs:33` 既有约定）：测试时 seeds 文件路径必须能用 `CARGO_MANIFEST_DIR` 找到，避免 `cargo test` 时找不到文件。
+| # | 设计意图 | 实际测试名 | 位置 | 状态 |
+|---|---|---|---|---|
+| 1 | v38→v39 升级 | `migration_v38_to_v39_loads_external_seeds_and_preserves_user_edits` | `db.rs` | ✅ |
+| 2 | 全新库 → v39 | `init_schema_fresh_db_builds_v39` | `db.rs` | ✅ |
+| 3 | 已 v39 → no-op | `init_schema_already_v39_is_noop` | `db.rs` | ✅ |
+| 4 | seed 缺失不阻塞 | `load_external_seeds_never_propagates_errors` + `load_prompt_seeds_missing_file_returns_err` | `seeds.rs` | ✅ |
+| 5 | 幂等 | `load_prompt_seeds_is_idempotent_via_insert_or_ignore` + `load_llm_providers_seed_skips_existing_keys` + `load_agent_action_seeds_is_idempotent` | `seeds.rs` | ✅ |
+| 6 | seed 路径函数 | `seed_prompt_path_returns_some_for_known_name` + `seed_prompt_path_returns_none_for_unknown_name` | `seeds.rs` | ✅ |
+| 7 | PPT prompt 占位符 | `make_ppt_prompt_contains_required_placeholders` | `seeds.rs` | ✅ |
+| 8 | 前端 accepts 过滤 | （未单测，project convention——前端逻辑靠 E2E） | — | ⏭ |
+| 9 | File + agent + {{task}} → voice | `decide_files_action_agent_with_task_triggers_voice` | `action_hotkey.rs` | ✅ |
+| 10 | File + agent 无 {{task}} → direct | `decide_files_action_agent_without_task_executes_directly` + `decide_files_action_script_type_executes_directly` + `decide_files_action_url_type_executes_directly` | `action_hotkey.rs` | ✅ |
+| 11 | hide_action_bar=false 路径 | （纯函数 `decide_files_action` 覆盖；Tauri/Coordinator 耦合部分不单测，project convention） | — | ⏭ |
+| 12 | system prompt 可编辑 | `update_prompt_at_allows_system_prompt` | `db.rs` | ✅ |
+
+**实际通过统计**：`cargo test -p octopus-infra` 143 PASS / 0 FAIL；`cargo test -p octopus-desktop --lib` 375 PASS / 0 FAIL；前端 vitest 304 PASS / 0 FAIL。
+
+**测试隔离**（参考 `db.rs:33` 既有约定）：测试时 seeds 文件路径必须能用 `CARGO_MANIFEST_DIR` 找到，避免 `cargo test` 时找不到文件。`seeds.rs` 的 `load_tests` mod 用 `SEEDS_FILE_MUTEX` 序列化 seed 文件读写测试，防并行 runner 竞态。
 
 ### 7.2 手工 E2E 验收清单
 

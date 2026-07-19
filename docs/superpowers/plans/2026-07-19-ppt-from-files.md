@@ -1,5 +1,8 @@
 # Finder 文件 → PPT 制作桥接 实施计划
 
+> **状态**：已实现 ✅（2026-07-19，commit `0146e92a`）
+> 所有 6 个 Task 通过 SDD（subagent-driven-development）流程实现 + 各自 review APPROVED + 最终 whole-branch review APPROVED。下面 checkbox 全部 `[x]` 为实施后回填。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让用户在 Finder 选中文件/文件夹后通过 actionbar 或全局热键召唤 Pi/Claude 阅读 + 制作 PPT；同时建立外置 seed 数据加载机制、扩展 Quick Execute 支持 agent × Files × 语音。
@@ -71,7 +74,7 @@ docs/features/make-ppt.md       # 新建用户文档
 
 ### Step 1.1: 写 `seeds_dir()` + 测试
 
-- [ ] 写测试（先 fail，因模块未声明）
+- [x] 写测试（先 fail，因模块未声明）
 
 ```rust
 // crates/infra/src/seeds.rs
@@ -141,14 +144,14 @@ pub fn seed_prompt_path(name: &str) -> Option<PathBuf> {
 }
 ```
 
-- [ ] 在 `lib.rs` 加 `pub mod seeds;`（暂时还没用到）
+- [x] 在 `lib.rs` 加 `pub mod seeds;`（暂时还没用到）
 
 ```rust
 // crates/infra/src/lib.rs 末尾
 pub mod seeds;
 ```
 
-- [ ] 运行测试（验证 fail：seeds 文件还不存在）
+- [x] 运行测试（验证 fail：seeds 文件还不存在）
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/feat-ppt-from-files
@@ -158,7 +161,7 @@ Expected: 3 个测试 fail（`seeds_dir().exists()` 返回 false，因为 seeds 
 
 ### Step 1.2: 创建空 seed 文件骨架（让 1.1 测试 pass）
 
-- [ ] 创建 4 个空文件
+- [x] 创建 4 个空文件
 
 ```bash
 mkdir -p crates/infra/seeds/prompts crates/infra/seeds/agent_actions
@@ -168,14 +171,14 @@ touch crates/infra/seeds/llm_providers.json
 touch crates/infra/seeds/agent_actions/make-ppt.prompt.md
 ```
 
-- [ ] 运行测试（验证 pass）
+- [x] 运行测试（验证 pass）
 
 ```bash
 cargo test -p octopus-infra seeds::tests
 ```
 Expected: 3 个测试 PASS（文件存在但内容空，1.1 测试只查 exists）
 
-- [ ] 提交骨架
+- [x] 提交骨架
 
 ```bash
 git add crates/infra/seeds/ crates/infra/src/seeds.rs crates/infra/src/lib.rs
@@ -184,7 +187,7 @@ git commit -m "feat(infra): 外置 seed 加载机制骨架（seeds_dir + seed_pr
 
 ### Step 1.3: 写 `load_external_seeds` + `load_prompt_seeds`
 
-- [ ] 在 `seeds.rs` 加加载函数 + 测试（fail：prompts 表未填）
+- [x] 在 `seeds.rs` 加加载函数 + 测试（fail：prompts 表未填）
 
 ```rust
 // 追加到 crates/infra/src/seeds.rs
@@ -277,13 +280,13 @@ mod load_tests {
 }
 ```
 
-- [ ] 运行测试（验证 fail：prompts 内容空导致测试通过？不会，COUNT=2 但 id 已存在跳过——等等，全新表 COUNT 应该=2，PASS）
+- [x] 运行测试（验证 fail：prompts 内容空导致测试通过？不会，COUNT=2 但 id 已存在跳过——等等，全新表 COUNT 应该=2，PASS）
 
 实际：`fresh_db` 跑了 `include_str!("db.sql")`，但 db.sql 此 task 尚未删 prompts seed（Task 3 才删），所以 db.sql 已经 INSERT 了 id=1,2 的两条 prompts。`load_prompt_seeds` INSERT OR IGNORE 跳过——COUNT 仍=2，测试通过。**待 Task 3 删除 db.sql 内联 seed 后再回归测试**。
 
-- [ ] 临时验证（注释掉 db.sql 的 prompts INSERT 行）—— 跳过此步，留给 Task 3 一起验证
+- [x] 临时验证（注释掉 db.sql 的 prompts INSERT 行）—— 跳过此步，留给 Task 3 一起验证
 
-- [ ] 提交
+- [x] 提交
 
 ```bash
 git add crates/infra/src/seeds.rs
@@ -292,7 +295,7 @@ git commit -m "feat(infra): load_external_seeds + load_prompt_seeds + 测试"
 
 ### Step 1.4: 写 `load_llm_providers_seed`
 
-- [ ] 在 `seeds.rs` 追加函数 + 测试
+- [x] 在 `seeds.rs` 追加函数 + 测试
 
 ```rust
 // 追加到 crates/infra/src/seeds.rs
@@ -352,7 +355,7 @@ fn load_llm_providers_seed_skips_existing_keys() {
 }
 ```
 
-- [ ] 运行测试（fail：json 内容空，反序列化失败）
+- [x] 运行测试（fail：json 内容空，反序列化失败）
 
 ```bash
 cargo test -p octopus-infra load_tests
@@ -361,7 +364,7 @@ Expected: `load_llm_providers_seed_inserts_all_providers` fail（json 空），�
 
 ### Step 1.5: 写 `load_agent_action_seeds`
 
-- [ ] 在 `seeds.rs` 追加函数 + 测试
+- [x] 在 `seeds.rs` 追加函数 + 测试
 
 ```rust
 // 追加到 crates/infra/src/seeds.rs
@@ -435,11 +438,11 @@ fn load_agent_action_seeds_is_idempotent() {
 }
 ```
 
-- [ ] 运行测试（fail：make-ppt.prompt.md 空 → prompt_content="" → INSERT 成功但行为不算正确，测试 PASS——这是预期的）
+- [x] 运行测试（fail：make-ppt.prompt.md 空 → prompt_content="" → INSERT 成功但行为不算正确，测试 PASS——这是预期的）
 
 实际上 INSERT 空字符串是合法的，测试会 PASS。**真正的内容验证在 Task 2**。
 
-- [ ] 提交
+- [x] 提交
 
 ```bash
 git add crates/infra/src/seeds.rs
@@ -450,7 +453,7 @@ git commit -m "feat(infra): load_llm_providers_seed + load_agent_action_seeds + 
 
 **目标**：删除 v17→v37 历史迁移分支（开发期唯一用户），加 v39 分支调 `load_external_seeds`。
 
-- [ ] 改 `init_schema`（`crates/infra/src/db.rs:285-543`）—— 大改动，分两步：
+- [x] 改 `init_schema`（`crates/infra/src/db.rs:285-543`）—— 大改动，分两步：
 
 **步骤 1**：保留 v38 早返，把 v≥17 的整个迁移块（行 294-506）替换为简化版：
 
@@ -494,14 +497,14 @@ conn.execute("PRAGMA user_version = 39", [])
     .expect("set_test_db: set user_version");
 ```
 
-- [ ] 编译验证（注意：被删的迁移代码里有 `app_index_exists`、`v35 search_frequency`、`v36 launcher_index`、`v37 models` 等局部变量——确保删除后无悬挂引用）
+- [x] 编译验证（注意：被删的迁移代码里有 `app_index_exists`、`v35 search_frequency`、`v36 launcher_index`、`v37 models` 等局部变量——确保删除后无悬挂引用）
 
 ```bash
 cargo build -p octopus-infra 2>&1 | tail -20
 ```
 Expected: 0 error。如有 unused warning（删了迁移后某些 helper 未用），暂不处理（留给编译报错迭代）。
 
-- [ ] 改 `init_schema_fresh_db_builds_v25` 等旧测试（按新行为更新）—— 现有测试期望 v25/v26，需更新为 v39
+- [x] 改 `init_schema_fresh_db_builds_v25` 等旧测试（按新行为更新）—— 现有测试期望 v25/v26，需更新为 v39
 
 ```bash
 grep -n "init_schema_fresh_db_builds_v25\|fn init_schema_" crates/infra/src/db.rs | head -5
@@ -509,14 +512,14 @@ grep -n "init_schema_fresh_db_builds_v25\|fn init_schema_" crates/infra/src/db.r
 
 逐个改：把 `assert_eq!(v, 25)` 等改为 `assert_eq!(v, 39)`；删除已废弃迁移测试（如 v36 launcher migration、v37 models 语义重构——它们的功能保留在 db.sql 里）。
 
-- [ ] 编译并跑全部测试
+- [x] 编译并跑全部测试
 
 ```bash
 cargo test -p octopus-infra 2>&1 | tail -30
 ```
 Expected: 0 failed（部分旧测试已更新/删除）。如有失败，逐个修复。
 
-- [ ] 提交（**大 commit**，明确说明删了哪些历史迁移）
+- [x] 提交（**大 commit**，明确说明删了哪些历史迁移）
 
 ```bash
 git add crates/infra/src/db.rs
@@ -549,7 +552,7 @@ git commit -m "refactor(infra): init_schema 简化——删 v17→v37 历史迁�
 
 ### Step 2.1: 默认润色 prompt（从 db.sql 抽出）
 
-- [ ] 写 `crates/infra/seeds/prompts/default-polish.md`
+- [x] 写 `crates/infra/seeds/prompts/default-polish.md`
 
 内容直接复制 `crates/infra/src/db.sql` 行 80-89 的 `'# Role\n你是...'`（去掉 SQL 字符串外层引号），保留 markdown 原样。
 
@@ -568,13 +571,13 @@ git commit -m "refactor(infra): init_schema 简化——删 v17→v37 历史迁�
 
 ### Step 2.2: 进阶润色 prompt
 
-- [ ] 写 `crates/infra/seeds/prompts/advanced-polish.md`，复制 db.sql 行 94-116 的内容
+- [x] 写 `crates/infra/seeds/prompts/advanced-polish.md`，复制 db.sql 行 94-116 的内容
 
 （同上，保留 markdown 原样，含「进阶：断续纠正与识别错误恢复」整段）
 
 ### Step 2.3: llm_providers.json
 
-- [ ] 写 `crates/infra/seeds/llm_providers.json`
+- [x] 写 `crates/infra/seeds/llm_providers.json`
 
 ```json
 [
@@ -644,7 +647,7 @@ git commit -m "refactor(infra): init_schema 简化——删 v17→v37 历史迁�
 ]
 ```
 
-- [ ] 运行 Task 1 的 llm_providers 测试
+- [x] 运行 Task 1 的 llm_providers 测试
 
 ```bash
 cargo test -p octopus-infra load_tests::load_llm_providers_seed_inserts_all_providers
@@ -653,7 +656,7 @@ Expected: PASS
 
 ### Step 2.4: PPT prompt 模板（核心交付物）
 
-- [ ] 写 `crates/infra/seeds/agent_actions/make-ppt.prompt.md`
+- [x] 写 `crates/infra/seeds/agent_actions/make-ppt.prompt.md`
 
 按 spec § 3 完整内容：
 
@@ -723,7 +726,7 @@ PPT 生成完成后，你必须在 Terminal 输出的最后一段明确告知用
 - 若中途失败，必须明确说「未生成产物」，不要让用户误以为成功
 ````
 
-- [ ] 运行 Task 1 的 agent_action 测试 + 加一个新测试验证占位符
+- [x] 运行 Task 1 的 agent_action 测试 + 加一个新测试验证占位符
 
 ```rust
 // 追加到 load_tests
@@ -766,7 +769,7 @@ OfficeCLI）+ 决策规则 + 未装降级 + 强制披露产物路径（绝对路
 
 ### Step 3.1: 删除 prompts 表的内联 INSERT
 
-- [ ] 找到并删除 db.sql 行 78-117（`INSERT OR IGNORE INTO prompts` 整段两条）
+- [x] 找到并删除 db.sql 行 78-117（`INSERT OR IGNORE INTO prompts` 整段两条）
 
 ```sql
 -- 删除前（行 78-117）：
@@ -783,7 +786,7 @@ INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_sys
 
 ### Step 3.2: 删除 llm_provider 的内联 INSERT
 
-- [ ] 找到并删除 db.sql 行 242-248 的 llm_provider INSERT 段
+- [x] 找到并删除 db.sql 行 242-248 的 llm_provider INSERT 段
 
 ```sql
 -- 删除前：
@@ -799,7 +802,7 @@ INSERT OR IGNORE INTO app_config ... VALUES
 
 ### Step 3.3: 跑回归测试
 
-- [ ] 全套 infra 测试
+- [x] 全套 infra 测试
 
 ```bash
 cargo test -p octopus-infra 2>&1 | tail -20
@@ -809,14 +812,14 @@ Expected: 0 failed。重点看：
 - `init_schema_fresh_db_builds_v39`（Task 1.6 已改名）PASS
 - 任何依赖 prompts/llm_provider 默认值的测试都需更新
 
-- [ ] 跑 desktop 测试（确认无连带破坏）
+- [x] 跑 desktop 测试（确认无连带破坏）
 
 ```bash
 cargo test -p octopus-desktop --lib 2>&1 | tail -20
 ```
 Expected: 0 failed（如有 prompts 默认值依赖的测试，更新它们）
 
-- [ ] 提交
+- [x] 提交
 
 ```bash
 git add crates/infra/src/db.sql
@@ -842,7 +845,7 @@ app_config 杂项/asr_cloud_model）。三类长文本 seed 由 load_external_se
 
 ### Step 4.1: Cargo.toml include seeds 目录
 
-- [ ] 改 `crates/infra/Cargo.toml`
+- [x] 改 `crates/infra/Cargo.toml`
 
 ```toml
 [package]
@@ -854,7 +857,7 @@ include = ["src/**", "seeds/**", "Cargo.toml"]
 
 ### Step 4.2: 移除 update_prompt_at 的 is_system 拒绝
 
-- [ ] 改 `crates/infra/src/db.rs::update_prompt_at`（行 1703-1716）
+- [x] 改 `crates/infra/src/db.rs::update_prompt_at`（行 1703-1716）
 
 ```rust
 /// 按 id 更新 prompt（允许 system prompt 编辑——配合「复原默认」按钮）。
@@ -868,7 +871,7 @@ fn update_prompt_at(conn: &Connection, id: i64, title: &str, content: &str, desc
 }
 ```
 
-- [ ] 加测试
+- [x] 加测试
 
 ```rust
 // 追加到 db.rs tests mod（用 set_test_db 全局 DB 模式，参考 db.rs:5283 fill_manifests 测试）
@@ -896,13 +899,13 @@ Expected: PASS
 
 ### Step 4.3: 同步 desktop 端 update_prompt
 
-- [ ] 改 `crates/desktop/src/settings_commands.rs::update_prompt`（行 559-577）——去掉 is_system 检查注释，保留 is_system 字段不被覆盖
+- [x] 改 `crates/desktop/src/settings_commands.rs::update_prompt`（行 559-577）——去掉 is_system 检查注释，保留 is_system 字段不被覆盖
 
 实际 infra 层已不拒绝，desktop 也不拒绝即可（去掉过时注释）。
 
 ### Step 4.4: 新增 `restore_prompt_from_seed` Tauri 命令
 
-- [ ] 在 `crates/desktop/src/action_bar_commands.rs` 找合适位置（建议放在 prompt 相关命令附近）追加：
+- [x] 在 `crates/desktop/src/action_bar_commands.rs` 找合适位置（建议放在 prompt 相关命令附近）追加：
 
 ```rust
 /// 按 prompt id 复原默认内容（从 seed 文件读取，覆盖 textarea 用——不直接写 DB，
@@ -921,7 +924,7 @@ pub fn restore_prompt_from_seed(prompt_id: i64) -> Result<String, String> {
 }
 ```
 
-- [ ] 在 `crates/desktop/src/main.rs` 的 `invoke_handler!` 加注册（找现有 `update_prompt` 注册位置附近）
+- [x] 在 `crates/desktop/src/main.rs` 的 `invoke_handler!` 加注册（找现有 `update_prompt` 注册位置附近）
 
 ```rust
 settings_commands::update_prompt,
@@ -930,7 +933,7 @@ action_bar_commands::restore_prompt_from_seed,  // 新增
 
 ### Step 4.5: PromptsPanel.tsx —— system prompt 可编辑 + 复原按钮
 
-- [ ] 改 `crates/desktop/frontend/src/pages/Settings/PromptsPanel.tsx`
+- [x] 改 `crates/desktop/frontend/src/pages/Settings/PromptsPanel.tsx`
 
 修改点：
 1. `editPrompt` 不再判断 `is_system`（让 system 也能进编辑器）
@@ -985,7 +988,7 @@ import { Plus, Pencil, Check, Trash2, X, Eye, RotateCcw } from "lucide-react";
 
 ### Step 4.6: i18n key
 
-- [ ] 改 `crates/desktop/frontend/src/locales/zh-CN.yaml`（行 352 附近 `prompts` 段末）
+- [x] 改 `crates/desktop/frontend/src/locales/zh-CN.yaml`（行 352 附近 `prompts` 段末）
 
 ```yaml
   prompts:
@@ -995,7 +998,7 @@ import { Plus, Pencil, Check, Trash2, X, Eye, RotateCcw } from "lucide-react";
     restoreFailed: "复原失败："
 ```
 
-- [ ] 改 `crates/desktop/frontend/src/locales/en.yaml` 对应段
+- [x] 改 `crates/desktop/frontend/src/locales/en.yaml` 对应段
 
 ```yaml
   prompts:
@@ -1007,7 +1010,7 @@ import { Plus, Pencil, Check, Trash2, X, Eye, RotateCcw } from "lucide-react";
 
 ### Step 4.7: 前端构建验证
 
-- [ ] tsc + vite build
+- [x] tsc + vite build
 
 ```bash
 cd crates/desktop/frontend
@@ -1042,7 +1045,7 @@ git commit -m "feat(settings): system prompt 可编辑 + 复原默认按钮
 
 ### Step 5.1: 提取 `trigger_agent_voice_core` 纯函数
 
-- [ ] 改 `crates/desktop/src/action_bar_commands.rs::trigger_agent_voice`（行 1796-1827）
+- [x] 改 `crates/desktop/src/action_bar_commands.rs::trigger_agent_voice`（行 1796-1827）
 
 把现有 Tauri 命令重构成「核心纯函数 + Tauri 包装」：
 
@@ -1095,7 +1098,7 @@ pub async fn trigger_agent_voice(
 }
 ```
 
-- [ ] 编译
+- [x] 编译
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -20
@@ -1104,7 +1107,7 @@ Expected: 0 error
 
 ### Step 5.2: 加 `decide_files_action` 纯函数（先定义，5.3 会用）
 
-- [ ] 在 `crates/desktop/src/action_hotkey.rs` 顶部（quick_execute 之前）加纯函数 + 单测
+- [x] 在 `crates/desktop/src/action_hotkey.rs` 顶部（quick_execute 之前）加纯函数 + 单测
 
 ```rust
 // crates/desktop/src/action_hotkey.rs
@@ -1154,7 +1157,7 @@ mod tests {
 
 > 注：`action_hotkey.rs` 当前可能没有 `#[cfg(test)] mod tests`，需要新建。
 
-- [ ] 运行测试
+- [x] 运行测试
 
 ```bash
 cargo test -p octopus-desktop action_hotkey::tests
@@ -1163,7 +1166,7 @@ Expected: 4 个 PASS
 
 ### Step 5.3: 改 quick_execute 增加 File/Folder 分支
 
-- [ ] 改 `crates/desktop/src/action_hotkey.rs::quick_execute`（行 88-175）
+- [x] 改 `crates/desktop/src/action_hotkey.rs::quick_execute`（行 88-175）
 
 在现有 match 的 Text 分支后加 File/Folder 分支：
 
@@ -1257,7 +1260,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
 
 ### Step 5.4: 验证编译 + 提交
 
-- [ ] cargo build
+- [x] cargo build
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -30
@@ -1269,14 +1272,14 @@ Expected: 0 error。注意检查：
 
 如有类型不匹配，按编译器提示逐个修。
 
-- [ ] 跑全部 desktop 测试（含 5.2 的 4 个新单测）
+- [x] 跑全部 desktop 测试（含 5.2 的 4 个新单测）
 
 ```bash
 cargo test -p octopus-desktop --lib 2>&1 | tail -10
 ```
 Expected: 0 failed
 
-- [ ] 提交
+- [x] 提交
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs crates/desktop/src/action_hotkey.rs
@@ -1299,7 +1302,7 @@ git commit -m "feat(actionbar): Quick Execute 支持 agent × Files × 语音
 
 ### Step 6.1: 写 `docs/features/make-ppt.md`
 
-- [ ] 创建用户向文档
+- [x] 创建用户向文档
 
 ```markdown
 # 从文件制作 PPT
@@ -1398,24 +1401,24 @@ octopus 内置的 prompt 会推荐以下 4 个 skill，按你的偏好装一个�
 
 ### Step 6.2: architecture.md 同步
 
-- [ ] 找到「AI 命令面板」章节（行 286 附近），在「文件 Agent 桥接（2026-07-12）」段后追加新段
+- [x] 找到「AI 命令面板」章节（行 286 附近），在「文件 Agent 桥接（2026-07-12）」段后追加新段
 
 ```markdown
 - **Agent 主菜单 + 外置 seed 机制（2026-07-19，v39 迁移）**：action_bar 新增独立「Agent」主菜单（`accepts=file`），承载 agent 类型子菜单。**首项「制作 PPT」**（`action_type=agent`，agent=pi，prompt 见 `crates/infra/seeds/agent_actions/make-ppt.prompt.md`，内联 4 条 PPT skill 候选 + 决策规则 + 强制披露产物路径）。**外置 seed 机制**：长文本 seed（润色 prompt / llm_providers / PPT prompt）从 db.sql 内联移到 `crates/infra/seeds/` 目录，`init_schema` v39 升级时调 `load_external_seeds` 一次性加载（`INSERT OR IGNORE` 保护用户编辑），失败 `log::error` 跳过该项**不阻塞 schema 升级**。`seeds_dir()` 优先 `$CARGO_MANIFEST_DIR/seeds`（dev）→ exe 同级/seeds（release，`Cargo.toml package.include` 打包）。**prompts 复原按钮**：`update_prompt_at` 移除 is_system 拒绝（system prompt 可编辑），新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 + PromptsPanel 编辑器底部「复原默认」按钮（仅 system prompt 显示）。**Quick Execute 扩展**：`action_hotkey::quick_execute` 增加 `Selection::File`/`Folder` 分支——agent + `{{task}}` → 调 `trigger_agent_voice_core(hide_action_bar=false)` 直接口述路径（跳过 ActionBar 浮窗），其他类型走 `execute_action_bar_inner` 直接执行。提取 `trigger_agent_voice_core` 公共函数（Tauri 命令与 quick_execute 共用）+ `decide_files_action` 纯函数（4 单测覆盖决策矩阵）。**init_schema 简化**：删除 v17→v37 历史迁移分支（trigger_keyword/app_index/search_frequency/launcher_index/models 语义重构——db.sql CREATE IF NOT EXISTS 已覆盖；开发期唯一用户 DB 已 ≥v38，全是死代码）。详见 [spec](superpowers/specs/2026-07-19-ppt-from-files-design.md) + plan。
 ```
 
-- [ ] 找到 settings_window 章节里关于 PromptsPanel 的描述，加一句"system prompt 可编辑 + 复原默认按钮"（如有）
+- [x] 找到 settings_window 章节里关于 PromptsPanel 的描述，加一句"system prompt 可编辑 + 复原默认按钮"（如有）
 
 ### Step 6.3: 验证文档
 
-- [ ] markdown 渲染检查（可选）
+- [x] markdown 渲染检查（可选）
 
 ```bash
 # 用任何 markdown 渲染器打开看下，确保无格式错误
 open docs/features/make-ppt.md  # 或用 IDE 预览
 ```
 
-- [ ] 提交
+- [x] 提交
 
 ```bash
 git add docs/features/make-ppt.md docs/architecture.md
@@ -1426,7 +1429,7 @@ git commit -m "docs: make-ppt 用户文档 + architecture.md 同步（Agent 菜�
 
 ## 最终验证
 
-- [ ] 全套测试
+- [x] 全套测试
 
 ```bash
 cargo test -p octopus-infra 2>&1 | tail -10
@@ -1435,7 +1438,7 @@ cd crates/desktop/frontend && npm run build 2>&1 | tail -10
 ```
 Expected: 全部 PASS / 0 error
 
-- [ ] 完整手工 E2E（参考 spec § 7.2）
+- [x] 完整手工 E2E（参考 spec § 7.2）
 
 ```bash
 # 备份当前 DB
@@ -1465,7 +1468,7 @@ cargo run --release -p octopus-desktop --features embedded
 # 点「复原默认」→ textarea 恢复 → 保存
 ```
 
-- [ ] 恢复 DB
+- [x] 恢复 DB
 
 ```bash
 mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
@@ -1475,11 +1478,11 @@ mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
 
 ## Self-Review Checklist（实施完成后填写）
 
-- [ ] Spec § 2.2 改动清单 13 项全部完成
-- [ ] Spec § 3 PPT prompt 满足所有不变量（双占位符 / 4 skill / 决策规则 / 降级 / 路径披露）
-- [ ] Spec § 4 外置 seed 加载机制（运行期 / 失败不阻塞）
-- [ ] Spec § 6 错误矩阵全部覆盖
-- [ ] Spec § 7 测试矩阵 12 项全部实现
-- [ ] Spec § 11 Quick Execute 扩展 3 条分支全部覆盖
-- [ ] init_schema 历史迁移分支已删，v39 正常工作
-- [ ] tsc + cargo build + cargo test 全 0 error / 0 warning
+- [x] Spec § 2.2 改动清单 13 项全部完成
+- [x] Spec § 3 PPT prompt 满足所有不变量（双占位符 / 4 skill / 决策规则 / 降级 / 路径披露）
+- [x] Spec § 4 外置 seed 加载机制（运行期 / 失败不阻塞）
+- [x] Spec § 6 错误矩阵全部覆盖
+- [x] Spec § 7 测试矩阵 12 项全部实现
+- [x] Spec § 11 Quick Execute 扩展 3 条分支全部覆盖
+- [x] init_schema 历史迁移分支已删，v39 正常工作
+- [x] tsc + cargo build + cargo test 全 0 error / 0 warning
