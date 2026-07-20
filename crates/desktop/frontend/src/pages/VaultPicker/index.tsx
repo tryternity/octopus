@@ -44,13 +44,16 @@ interface CipherDto {
 }
 
 /** 三模式 autotype（2026-07-20）。
- *  - UsernamePassword: 完整填（username + Tab + password），焦点须在 username 框
- *  - PasswordOnly（默认）: 仅填密码，焦点已在 password 框
- *  - UsernameOnly: 仅填用户名，焦点在 username 框
+ *  - usernamePassword: 完整填（username + Tab + password），焦点须在 username 框
+ *  - passwordOnly（默认）: 仅填密码，焦点已在 password 框
+ *  - usernameOnly: 仅填用户名，焦点在 username 框
  *
  *  背后原因：webmail SPA（mail.163.com 等）的 Tab 切焦点不可靠。给用户三种独立控制，
- *  据当前光标位置选合适模式。Bitwarden/1Password 桌面助手默认也是 PasswordOnly。*/
-type AutotypeMode = "UsernamePassword" | "PasswordOnly" | "UsernameOnly";
+ *  据当前光标位置选合适模式。Bitwarden/1Password 桌面助手默认也是 PasswordOnly。
+ *
+ *  字面值 camelCase：后端 AutoTypeMode enum 标了 serde(rename_all = "camelCase")，
+ *  Tauri 命令边界序列化时 Rust 端期望 camelCase 字符串。*/
+type AutotypeMode = "usernamePassword" | "passwordOnly" | "usernameOnly";
 
 type ViewState =
   | { kind: "loading" }
@@ -133,7 +136,7 @@ export default function VaultPicker() {
   );
 
   const handlePick = useCallback(
-    async (c: CipherDto, copyOnly: boolean, mode: AutotypeMode = "PasswordOnly") => {
+    async (c: CipherDto, copyOnly: boolean, mode: AutotypeMode = "passwordOnly") => {
       // reprompt 保护的高敏感 cipher：弹密码框，确认后再调后端
       // （后端 vault_autotype / vault_copy_password 都会强制再次校验 master_password，不可绕过）
       if (c.reprompt === 1) {
@@ -367,7 +370,7 @@ export default function VaultPicker() {
               <button
                 type="button"
                 className="flex flex-1 items-center gap-2 text-left outline-none min-w-0"
-                onClick={() => handlePick(c, false, "PasswordOnly")}
+                onClick={() => handlePick(c, false, "passwordOnly")}
                 disabled={busy}
                 title={t("settings.vault.autotype.mode.passwordOnly")}
               >
@@ -388,7 +391,7 @@ export default function VaultPicker() {
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, false, "UsernamePassword");
+                  handlePick(c, false, "usernamePassword");
                 }}
                 disabled={busy}
                 title={t("settings.vault.autotype.mode.usernamePassword")}
@@ -402,7 +405,7 @@ export default function VaultPicker() {
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, false, "PasswordOnly");
+                  handlePick(c, false, "passwordOnly");
                 }}
                 disabled={busy}
                 title={t("settings.vault.autotype.mode.passwordOnly")}
@@ -416,7 +419,7 @@ export default function VaultPicker() {
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, false, "UsernameOnly");
+                  handlePick(c, false, "usernameOnly");
                 }}
                 disabled={busy}
                 title={t("settings.vault.autotype.mode.usernameOnly")}
@@ -430,7 +433,7 @@ export default function VaultPicker() {
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, true, "PasswordOnly");
+                  handlePick(c, true, "passwordOnly");
                 }}
                 disabled={busy}
                 title={t("settings.vault.generator.copy")}
