@@ -554,7 +554,8 @@ pub fn create_prompt(
         .map_err(|e| e.to_string())
 }
 
-/// 更新用户 prompt（拒绝 is_system=true）。
+/// 更新 prompt（允许 system prompt 编辑——配合「复原默认」按钮；is_system 字段在 SQL
+/// UPDATE 中不被修改，系统/用户身份保持不变）。
 #[tauri::command]
 pub fn update_prompt(
     id: i64,

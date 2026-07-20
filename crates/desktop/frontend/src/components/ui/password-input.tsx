@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Eye, EyeOff, Eraser } from "lucide-react";
 import { Input, type inputVariants } from "./input";
-import { cva, type VariantProps } from "class-variance-authority";
+import { type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 

@@ -36,6 +36,7 @@ interface ActionBarItem {
   accepts?: string;
   triggerKeyword?: string;
   globalShortcut?: string;
+  needVoice?: boolean;
 }
 
 // ── 类型元信息 ──
@@ -453,7 +454,30 @@ const EditForm = ({
           </FormField>
         )}
 
-        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大 */}
+        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
+        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
+
+        {/* Agent 选择 —— 仅 agent 类型，在内容前一行。
+            选「默认 Agent」(空值) 时，运行时按三层 fallback 解析（详见 agent_adapter.rs）。
+            need_voice 不暴露给用户——保存时后端按 action_data 含 {{task}} 自动判定。 */}
+        {type === "agent" && (
+          <FormField label={t("settings.actionBar.agentLabel")}>
+            <select
+              className={inputBase}
+              value={form.agent || ""}
+              onChange={(e) => onChange({ ...form, agent: e.target.value })}
+            >
+              <option value="">{t("settings.actionBar.defaultAgentOption")}</option>
+              {adapters.map((a) => (
+                <option key={a.key} value={a.key}>
+                  {a.displayName}{a.isAvailable ? "" : `（${t("settings.actionBar.agentNotInstalled")}）`}
+                </option>
+              ))}
+            </select>
+          </FormField>
+        )}
+
+        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大（放最后一行） */}
         {showContent && (
           <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
@@ -462,24 +486,6 @@ const EditForm = ({
               value={form.actionData || ""}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
             />
-          </FormField>
-        )}
-
-        {/* 类型特定配置 —— 条件区，inline 在同一卡片内 */}
-        {type === "extension" && <ExtensionDropZone form={form} onChange={onChange} />}
-
-        {type === "agent" && (
-          <FormField label={t("settings.actionBar.agentLabel")}>
-            <select
-              className={inputBase}
-              value={form.agent || ""}
-              onChange={(e) => onChange({ ...form, agent: e.target.value })}
-            >
-              <option value="">{t("settings.actionBar.selectAgent")}</option>
-              {adapters.filter((a) => a.isAvailable).map((a) => (
-                <option key={a.key} value={a.key}>{a.displayName}</option>
-              ))}
-            </select>
           </FormField>
         )}
 

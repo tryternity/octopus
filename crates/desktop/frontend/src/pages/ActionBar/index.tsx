@@ -81,6 +81,7 @@ interface ActionBarItem {
   shortcut?: string;
   agent?: string;
   accepts?: string;
+  needVoice?: boolean;
 }
 
 const AI_TIMEOUT_MS = 10000;
@@ -593,9 +594,10 @@ export default function ActionBar() {
       return;
     }
 
-    // agent 类型：含 {{task}} → 联动语音录音；否则直接执行
+    // agent 类型：need_voice=true → 联动语音录音；否则直接执行
+    // 2026-07-19 v40 改：从扫描 actionData.includes("{{task}}") 改为 needVoice 字段
     if (item.actionType === "agent") {
-      if (item.actionData.includes("{{task}}")) {
+      if (item.needVoice) {
         setView("loading");
         try {
           await invoke("trigger_agent_voice", { itemId: item.id });

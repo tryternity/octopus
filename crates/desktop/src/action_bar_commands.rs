@@ -741,6 +741,13 @@ pub fn list_action_bar_items() -> Result<Vec<octopus_infra::db::ActionBarItem>, 
     octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())
 }
 
+/// 推导 need_voice：agent 类型且 action_data 含 `{{task}}` → true；否则 false。
+/// 由 create/update_action_bar_item 在保存时统一调用，**前端不再传 need_voice 字段**
+/// （2026-07-19 v43 修订——回滚前端 toggle，保留 DB 字段，保存时自动判定）。
+fn derive_need_voice(action_type: &str, action_data: &str) -> bool {
+    action_type == "agent" && action_data.contains("{{task}}")
+}
+
 #[tauri::command]
 pub fn create_action_bar_item(
     parent_id: Option<i64>,
@@ -762,7 +769,8 @@ pub fn create_action_bar_item(
     if sibling_count >= 35 {
         return Err("同级菜单项已达上限 35 个（快捷键 1-9 + a-z）".into());
     }
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true))
+    let need_voice = derive_need_voice(&action_type, &action_data);
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true), need_voice)
         .map_err(|e| e.to_string())
 }
 
@@ -781,7 +789,9 @@ pub fn update_action_bar_item(
     accepts: String,
     trigger_keyword: Option<String>,
 ) -> Result<(), String> {
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""))
+    // need_voice 自动从 action_type + action_data 推导（前端不再传）
+    let need_voice = derive_need_voice(&action_type, &action_data);
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), need_voice)
         .map_err(|e| e.to_string())
 }
 
@@ -821,6 +831,21 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_script_runs(ids: Vec<i64>) -> Result<(), String> {
     octopus_infra::db::delete_script_runs(&ids).map_err(|e| e.to_string())
+}
+
+/// 按 prompt id 复原默认内容：读 seeds/prompts/<name>.md 文件内容并返回字符串。
+/// 不直接写 DB——前端把内容塞回 textarea，由用户点「保存」触发 `update_prompt` 才入库。
+/// id → name 映射：1 → "default-polish"，2 → "advanced-polish"。
+#[tauri::command]
+pub fn restore_prompt_from_seed(prompt_id: i64) -> Result<String, String> {
+    let name = match prompt_id {
+        1 => "default-polish",
+        2 => "advanced-polish",
+        _ => return Err(format!("prompt id {} 无对应 seed 文件", prompt_id)),
+    };
+    let path = octopus_infra::seeds::seed_prompt_path(name)
+        .ok_or_else(|| format!("seed 文件不存在: {}.md", name))?;
+    std::fs::read_to_string(&path).map_err(|e| format!("读 seed 文件失败: {}", e))
 }
 
 // ── 统一执行入口 ──
@@ -1692,13 +1717,14 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             }
         }
         "agent" => {
-            // agent 桥接：渲染命令 → Terminal.app 启动
-            let adapter_key = item.agent.clone();
-            let adapters = crate::agent_adapter::list_adapters();
-            let adapter = adapters.into_iter().find(|a| a.key == adapter_key)
-                .ok_or_else(|| format!("Agent adapter '{}' 不存在", adapter_key))?;
-            if !adapter.is_available {
-                return Err(format!("{} 未安装（未在 PATH 找到 `{}`）", adapter.display_name, adapter.detect_binary));
+            // agent 桥接：渲染命令 → Terminal.app 启动。
+            // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用。
+            let (adapter, source) = crate::agent_adapter::resolve_effective_adapter(&item.agent)?;
+            if source != "menu" {
+                log::info!(
+                    "[action-bar] agent 菜单 '{}' 走 fallback（source={}，命中 '{}'）",
+                    item.title, source, adapter.key
+                );
             }
             let prompt = render_agent_prompt(&item.action_data, &text, &app_state_files);
             let cwd = derive_cwd(&app_state_files);
@@ -1759,10 +1785,8 @@ pub fn list_agent_adapters() -> Result<Vec<crate::agent_adapter::AgentAdapter>, 
 pub fn create_agent_adapter(
     key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<i64, String> {
-    // 拒绝与内置 adapter 同名——避免 find() 永远命中内置项
-    if crate::agent_adapter::is_builtin_key(&key) {
-        return Err(format!("key '{}' 与内置 adapter 冲突", key));
-    }
+    // DB UNIQUE(key) 约束拦截同名——内置（is_system=1）已 seed 入表，
+    // 用户尝试 create 同 key 直接被 UNIQUE 拒绝。
     octopus_infra::db::insert_agent_adapter_record(&key, &display_name, &detect_binary, &command_template)
         .map_err(|e| e.to_string())
 }
@@ -1771,12 +1795,22 @@ pub fn create_agent_adapter(
 pub fn update_agent_adapter(
     id: i64, key: String, display_name: String, detect_binary: String, command_template: String,
 ) -> Result<(), String> {
-    // 与 create 对称：拒绝改名为内置 key
-    if crate::agent_adapter::is_builtin_key(&key) {
-        return Err(format!("key '{}' 与内置 adapter 冲突", key));
-    }
+    // DB UNIQUE(key) 约束拦截。内置项（is_system=1）的 key 字段仍允许更新
+    // （detect_binary / command_template 可能因版本变化需要调整），但不允许删除。
     octopus_infra::db::update_agent_adapter_record(id, &key, &display_name, &detect_binary, &command_template)
         .map_err(|e| e.to_string())
+}
+
+/// 设为默认 agent（全局唯一）。
+#[tauri::command]
+pub fn set_default_agent(id: i64) -> Result<(), String> {
+    octopus_infra::db::set_default_agent(id).map_err(|e| e.to_string())
+}
+
+/// 清除默认 agent（菜单 agent='' 时走 fallback 到第一个可用）。
+#[tauri::command]
+pub fn clear_default_agent() -> Result<(), String> {
+    octopus_infra::db::clear_default_agent().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1791,17 +1825,23 @@ pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapte
 
 // ── Agent Voice（语音联动）──
 
-/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
-#[tauri::command]
-pub fn trigger_agent_voice(
-    item_id: i64,
-    app: AppHandle,
-    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+/// trigger_agent_voice 的核心逻辑——Tauri 命令和 quick_execute 共用。
+///
+/// `hide_action_bar: bool` 控制是否走 hide 浮窗收口：
+/// - Tauri 命令路径（用户从 ActionBar 浮窗点击 agent 项）：ActionBar 可见 → 传 `true`，
+///   走 `hide_action_bar_window + finalize_action_bar` 统一收口（切回 Accessible + 焦点协调）。
+/// - quick_execute 路径（全局快捷键直触发）：ActionBar 本就未显示 → 传 `false`，
+///   不调 hide（hide 一个不可见窗口会触发不必要的 activateWithOptions 把源 app 拉到前台，
+///   干扰随后 CompactEditor 的 set_focus 夺焦）。
+///
+/// 关键副作用：`coordinator.start_agent_recording(task_id)` —— 启动语音录入。
+/// 不调它用户说话进不来。
+pub(crate) fn trigger_agent_voice_core(
+    item: &octopus_infra::db::ActionBarItem,
+    app: &AppHandle,
+    coordinator: &crate::coordinator::Coordinator,
+    hide_action_bar: bool,
 ) -> Result<(), String> {
-    let item = octopus_infra::db::load_action_bar_item(item_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("菜单项不存在")?;
-
     let files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
         .as_ref().map(|c| c.files.clone()).unwrap_or_default();
 
@@ -1817,13 +1857,35 @@ pub fn trigger_agent_voice(
     octopus_infra::db::insert_agent_task(&task_id, &item.agent, &context)
         .map_err(|e| e.to_string())?;
 
-    // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
-    hide_action_bar_window(&app);
-    finalize_action_bar(&app);
+    if hide_action_bar {
+        // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
+        hide_action_bar_window(app);
+        finalize_action_bar(app);
+    }
 
     // 触发 agent 录音
     coordinator.start_agent_recording(task_id);
     Ok(())
+}
+
+/// agent 项 need_voice=true 时：创建 agent_task → 隐藏浮窗 → 触发音录。
+/// Tauri 命令——薄包装，核心逻辑在 trigger_agent_voice_core。
+///
+/// 2026-07-19 v40 改：判定从「action_data 含 {{task}}」改为「need_voice 字段」，
+/// 避免前端扫描 prompt 字符串的脆弱性。need_voice 由 seed 或用户在设置面板勾选。
+#[tauri::command]
+pub fn trigger_agent_voice(
+    item_id: i64,
+    app: AppHandle,
+    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+) -> Result<(), String> {
+    let item = octopus_infra::db::load_action_bar_item(item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("菜单项不存在")?;
+    if !item.need_voice {
+        return Err(format!("菜单项「{}」未启用语音输入（need_voice=false）", item.title));
+    }
+    trigger_agent_voice_core(&item, &app, coordinator.inner(), true)
 }
 
 #[tauri::command]
@@ -1860,6 +1922,23 @@ mod tests {
     static TRIGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     // ── render_agent_prompt ──
+
+    #[test]
+    fn derive_need_voice_agent_with_task_placeholder() {
+        assert!(derive_need_voice("agent", "做 PPT：{{task}}\n文件：{{files}}"));
+    }
+
+    #[test]
+    fn derive_need_voice_agent_without_task_placeholder() {
+        assert!(!derive_need_voice("agent", "整理这些文件：{{files}}"));
+    }
+
+    #[test]
+    fn derive_need_voice_non_agent_type() {
+        // 非 agent 类型——即使含 {{task}} 也不是语音项
+        assert!(!derive_need_voice("script", "#shell\necho {{task}}"));
+        assert!(!derive_need_voice("url", "https://example.com/?q={{task}}"));
+    }
 
     #[test]
     fn test_render_agent_prompt_with_task_and_files() {

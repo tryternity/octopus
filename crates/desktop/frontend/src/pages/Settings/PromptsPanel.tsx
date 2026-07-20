@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Plus, Pencil, Check, Trash2, X, Eye } from "lucide-react";
+import { Plus, Pencil, Check, Trash2, X, Eye, RotateCcw } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -147,6 +147,21 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
           <Button variant="primary" size="default" onClick={save}>
             <Check /> {t("settings.prompts.save")}
           </Button>
+          {editing.is_system && (
+            <Button
+              variant="outline"
+              size="default"
+              onClick={async () => {
+                try {
+                  const restored = await invoke<string>("restore_prompt_from_seed", { promptId: editing.id });
+                  setContent(restored);
+                  showToast(t("settings.prompts.restored"));
+                } catch (e) { showToast(t("settings.prompts.restoreFailed") + e); }
+              }}
+            >
+              <RotateCcw /> {t("settings.prompts.restore")}
+            </Button>
+          )}
           <Button variant="outline" size="default" onClick={() => setEditing(null)}>
             {t("settings.prompts.cancel")}
           </Button>
@@ -187,9 +202,14 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
                 </Button>
               )}
               {p.is_system && (
-                <Button variant="ghost" size="sm" onClick={() => setViewing(p)}>
-                  <Eye /> {t("settings.prompts.view")}
-                </Button>
+                <>
+                  <Button variant="ghost" size="sm" onClick={() => setViewing(p)}>
+                    <Eye /> {t("settings.prompts.view")}
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => editPrompt(p)}>
+                    <Pencil /> {t("settings.prompts.edit")}
+                  </Button>
+                </>
               )}
               {!p.is_system && (
                 <>

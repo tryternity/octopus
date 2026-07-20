@@ -19,6 +19,7 @@
 | [compact-editor.md](./compact-editor.md) | 统一编辑器 | tab 栏（文本/图片/语音）、编辑保存、与剪贴板历史联动 |
 | [db-and-config.md](./db-and-config.md) | 数据持久化与配置 | SQLite schema（models + transcriptions + clipboard_history）、config.yaml、RuntimeConfig、DB 写入队列 actor |
 | [desktop-app.md](./desktop-app.md) | 桌面应用集成 | Tauri 2 架构、窗口管理、快捷键、托盘菜单、平台特性（macOS/Windows/Linux） |
+| [make-ppt.md](./make-ppt.md) | 从文件制作 PPT | Actionbar 召唤外部 Agent（Pi/Claude Code）读文件 + 口述风格 → 生成 PPT；4 个 PPT skill 候选、产物路径披露、Quick Execute 直接口述路径 |
 
 ## 维护规则
 
