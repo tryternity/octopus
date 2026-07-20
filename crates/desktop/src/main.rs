@@ -333,6 +333,7 @@ pub fn run() {
             screenshot_commands::confirm_screenshot,
             screenshot_commands::cancel_screenshot,
             screenshot_commands::get_screenshot_image,
+            screenshot_commands::get_screenshot_image_size,
             screenshot_commands::show_screenshot_window,
             screenshot_commands::confirm_screenshot_with_data,
             screenshot_commands::save_screenshot_dialog,

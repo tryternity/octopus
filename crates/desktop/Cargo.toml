@@ -118,6 +118,11 @@ zip = "2"
 [features]
 default = ["embedded", "vault"]
 embedded = ["octopus-asr-local"]
+# 生产 build 必须启用，让 tauri 走 frontendDist（嵌入 dist）而非 devUrl（vite dev server）。
+# tauri build.rs: `cfg(dev) = !has_feature("custom-protocol")`——不启用时所有 build（含
+# release）都走 devUrl=http://localhost:1420，没 vite 就 WebView 崩溃。
+# 仅 dev build（./run-octopus-dev.sh）不启用，配合 vite HMR。
+custom-protocol = ["tauri/custom-protocol"]
 # follow-up #10: vault feature gate。关闭后所有 vault 模块不编入：
 # - octopus-vault 依赖切掉（更小 binary、无 Keychain 访问、无密码管理 UI）
 # - vault_state / vault_commands / autotype / vault_error 模块整体 cfg 掉

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
+import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type Annotation, type Tool, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
@@ -75,21 +76,23 @@ export default function Screenshot() {
   })();
 
   useEffect(() => {
-    invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel })
-      .then((buf) => {
-        const img = new Image();
-        const blob = new Blob([buf], { type: "image/jpeg" });
-        const url = URL.createObjectURL(blob);
-        img.onload = () => {
-          bgImgRef.current = img;
-          setReady(true);
-          URL.revokeObjectURL(url); // onload 后图片已解码到内存，释放 Object URL
-          setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
-          // 异步创建 ImageBitmap 缓存——ready 时 draw 先用 HTMLImageElement 兜底，
-          // bitmap 就绪后 draw 自动切到快路径（见 draw/finalize 里 bgBitmapRef ?? bgImgRef）。
-          createImageBitmap(img).then((bm) => { bgBitmapRef.current = bm; }).catch(() => {});
-        };
-        img.src = url;
+    // 2026-07-20 perf：后端直接传 RGBA bytes（省 ~3s JPEG 编码 + base64 round-trip）。
+    // ImageData 构造需要宽高，并行拉 size。
+    Promise.all([
+      invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel }),
+      invoke<[number, number]>("get_screenshot_image_size", { label: winLabel }),
+    ])
+      .then(([buf, [w, h]]) => {
+        const rgba = new Uint8ClampedArray(buf);
+        const imgData = new ImageData(rgba, w, h);
+        // createImageBitmap(ImageData) 直接 GPU-friendly，省去 Image onload 异步等待。
+        return createImageBitmap(imgData);
+      })
+      .then((bm) => {
+        bgBitmapRef.current = bm;
+        setReady(true);
+        // show 窗口（不再 setTimeout 50ms——RGBA 路径同步可用了）。
+        invoke("show_screenshot_window").catch(() => {});
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
@@ -596,9 +599,13 @@ export default function Screenshot() {
   }
 
   async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
-    if (!sel || !bgImgRef.current) return null;
-    const bg = bgImgRef.current;
-    const scale = bg.naturalWidth / window.innerWidth;
+    // 2026-07-20 perf：bg 现在是 ImageBitmap（直接 RGBA），优先用它；
+    // bgImgRef 仅 legacy 兜底（理论上不再被设置）。
+    const bg = bgBitmapRef.current ?? bgImgRef.current;
+    if (!sel || !bg) return null;
+    const bgW = "naturalWidth" in bg ? bg.naturalWidth : bg.width;
+    const bgH = "naturalHeight" in bg ? bg.naturalHeight : bg.height;
+    const scale = bgW / window.innerWidth;
 
     // 合并已确认标注 + 未提交的文字输入（避免 onBlur 竞态丢失）
     const allAnns = [...annotations];
@@ -608,8 +615,8 @@ export default function Screenshot() {
     }
 
     const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = bg.naturalWidth;
-    tmpCanvas.height = bg.naturalHeight;
+    tmpCanvas.width = bgW;
+    tmpCanvas.height = bgH;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
     // 先处理 blur（像素马赛克降采样），再画其他标注
@@ -657,22 +664,6 @@ export default function Screenshot() {
     });
   }
 
-  async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const blob = new Blob([buffer], { type: "image/png" });
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string;
-        const base64 = dataUrl.substring(dataUrl.indexOf(",") + 1);
-        resolve(base64);
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error("FileReader failed"));
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
-
   function doPin() {
     if (!sel || isPinningRef.current) return;
     isPinningRef.current = true;
@@ -682,20 +673,27 @@ export default function Screenshot() {
         return;
       }
       try {
-        const base64Str = await arrayBufferToBase64(bytes);
-        invoke("pin_screenshot", {
-          label: winLabel,
-          x: sel.x,
-          y: sel.y,
-          w: sel.w,
-          h: sel.h,
-          imgBase64: base64Str,
-        }).catch((e) => {
+        // 2026-07-20 perf：自定义二进制协议（省 base64 round-trip ~50-200ms）
+        // 协议：[u32 BE: label_len][label UTF-8][f64 BE: x][f64 BE: y][f64 BE: w][f64 BE: h][PNG bytes]
+        // 整个 ArrayBuffer 作为 invoke args，Tauri 走 application/octet-stream Raw body。
+        const labelBytes = new TextEncoder().encode(winLabel);
+        const headerLen = 4 + labelBytes.length + 32;  // u32 + label + 4×f64
+        const buf = new ArrayBuffer(headerLen + bytes.byteLength);
+        const view = new DataView(buf);
+        let off = 0;
+        view.setUint32(off, labelBytes.length); off += 4;
+        new Uint8Array(buf, off, labelBytes.length).set(labelBytes); off += labelBytes.length;
+        view.setFloat64(off, sel.x); off += 8;
+        view.setFloat64(off, sel.y); off += 8;
+        view.setFloat64(off, sel.w); off += 8;
+        view.setFloat64(off, sel.h); off += 8;
+        new Uint8Array(buf, off).set(new Uint8Array(bytes));
+        rawInvoke("pin_screenshot", buf).catch((e) => {
           console.error("Pin screenshot failed:", e);
           isPinningRef.current = false;
         });
       } catch (err) {
-        console.error("Failed to convert arraybuffer to base64:", err);
+        console.error("Failed to encode pin payload:", err);
         isPinningRef.current = false;
       }
     }).catch(() => {

@@ -26,16 +26,18 @@ cargo build --release -p octopus-server -p octopus-cli
 cargo build --release -p octopus-asr-local
 
 # 构建桌面应用（embedded 模式，默认）—— 生产构建
-cargo run --profile optimize -p octopus-desktop --features embedded
+# ⚠️ 必须 --features custom-protocol，否则 tauri 走 devUrl=http://localhost:1420
+# （cfg(dev) = !has_feature("custom-protocol")，跟 release/debug profile 无关）
+cargo run --profile optimize -p octopus-desktop --features embedded,custom-protocol
 
 # 构建桌面应用（含云端 ASR：阿里云/字节跳动/腾讯）
-cargo run --profile optimize -p octopus-desktop --features embedded,cloud
+cargo run --profile optimize -p octopus-desktop --features embedded,cloud,custom-protocol
 
 # 构建桌面应用（WebSocket 远程模式）
-cargo run --profile optimize -p octopus-desktop --features remote-ws
+cargo run --profile optimize -p octopus-desktop --features remote-ws,custom-protocol
 
 # 构建桌面应用（gRPC 远程模式）
-cargo run --profile optimize -p octopus-desktop --features remote-grpc
+cargo run --profile optimize -p octopus-desktop --features remote-grpc,custom-protocol
 ```
 
 ### 开发运行

@@ -31,9 +31,12 @@ pub struct EncodedImage {
 }
 
 /// 单次编码尝试策略：lossless WebP / 有损 WebP(q) / JPEG(q)。
-/// 由 `consts::IMAGE_SAVE_QUALITY` 解析得到（lossless 除外——它是正常尺寸的首选，
-/// 不进降级常量，由 `encode_to_webp` 按尺寸插入链首）。
+/// 由 `consts::IMAGE_SAVE_QUALITY` 解析得到。
+///
+/// 注：`WebpLossless` 不再默认插入链首（2026-07-20 perf：lossless 对大图极慢，
+/// 3176×1866 = 6s，有损 q80 = 50ms，100x 加速）。保留 variant 供未来按场景启用。
 enum EncodeAttempt {
+    #[allow(dead_code)]
     WebpLossless,
     WebpLossy(u8),
     Jpeg(u8),
@@ -96,15 +99,17 @@ fn parse_image_fallbacks(s: &str) -> Vec<EncodeAttempt> {
         .collect()
 }
 
-/// DynamicImage → WebP 编码 + 缩略图 WebP 20%（240×240 Triangle）。
+/// DynamicImage → 主图编码（按 `IMAGE_SAVE_QUALITY` 链）+ 缩略图 WebP 20%（240×240 Triangle）。
 ///
 /// 接收已解码的 `DynamicImage`，**不再**做 PNG 解码（旧实现接收 PNG bytes 内部
 /// `load_from_memory` 解码，致「RGBA→PNG(编码)→RGBA(解码)→WebP(编码)」冗余；
 /// watcher / screenshot / migration 手里本就有解码好的图像，直接传入省一次 PNG 解码）。
 ///
-/// **编码降级链**（`consts::IMAGE_SAVE_QUALITY`，如 `"webp:80;jpeg:80"`，按 `;` 分割、
-/// `:` 解析格式与质量，依次尝试直至首个成功）：正常尺寸先试 lossless WebP（最佳质量），
-/// 失败后走降级链；超长图（>16383px，VP8 尺寸上限）lossless 必失败，跳过直接进降级链。
+/// **函数名 `encode_to_webp` 历史遗留**：实际按 `consts::IMAGE_SAVE_QUALITY` 链编码，
+/// 2026-07-20 后默认 `"jpeg:85;webp:80"` —— JPEG 优先（8.6x 快于 WebP lossy，体积翻倍可接受）。
+/// 返回 BLOB 可能是 JPEG 或 WebP（兜底），`image_data.blob` 字段不区分格式，前端用 MIME sniff。
+///
+/// **编码链**：按 `consts::IMAGE_SAVE_QUALITY` 顺序尝试，首个成功即返回。
 /// 每次 WebP/JPEG 编码经 `catch_unwind` 兜底，防超大图编码 panic。返回的 BLOB 可能是
 /// WebP 或 JPEG（兜底产物），统一存入 `image_data.blob`。
 pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
@@ -112,12 +117,13 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // 组装尝试链：正常尺寸链首插 lossless；超长图（VP8 上限）跳过。
-    let mut chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
+    // 组装尝试链：有损优先（截图/剪贴板历史场景对画质要求不高，lossless 编码对大图极慢，
+    // 实测 3176×1866 lossless = 6s，有损 q80 ≈ 50ms，100x 加速）。
+    // 超长图（VP8 尺寸上限 16383）仍走降级链，lossless 本就必失败。
+    // IMAGE_SAVE_QUALITY 默认 "jpeg:85;webp:80" 已是有损链，无需 insert lossless。
+    let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
     if w > 16383 || h > 16383 {
-        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), skipping lossless", w, h);
-    } else {
-        chain.insert(0, EncodeAttempt::WebpLossless);
+        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), relying on fallback chain", w, h);
     }
 
     let webp_blob = chain
@@ -132,13 +138,22 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
         })
         .ok_or_else(|| anyhow::anyhow!("All image encoding failed for {}×{}", w, h))?;
 
-    // 缩略图：resize 240×240 → WebP 20%（固定有损，不进降级链）。
-    // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时。
-    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
+    // 缩略图：thumbnail 240×240（nearest-neighbor，快 N 倍）→ 按 THUMB_SAVE_QUALITY 编码。
+    // 2026-07-20 perf：原用 `resize(240, 240, Triangle)` —— Triangle 是双线性卷积，
+    // release build 实测 3176×1866 = 15ms，但 debug build 高达 674ms。
+    // `thumbnail(240, 240)` 用 nearest-neighbor，release 7ms，debug ~50ms，肉眼基本无差异。
+    let thumb_img = img.thumbnail(240, 240);
     let thumb_rgba = thumb_img.to_rgba8();
-    let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
-    let thumb_blob = thumb_encoder.encode(20.0);
-    let thumb_blob = thumb_blob.to_vec();
+    let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
+    let (tw, th) = (thumb_rgba.width(), thumb_rgba.height());
+    let thumb_blob = thumb_chain
+        .iter()
+        .find_map(|attempt| {
+            let dyn_thumb = ::image::DynamicImage::ImageRgba8(thumb_rgba.clone());
+            attempt.try_encode(&dyn_thumb, &thumb_rgba)
+        })
+        .ok_or_else(|| anyhow::anyhow!("All thumb encoding failed for {}×{}", tw, th))?;
+    log::info!("[clipboard] thumb encoded: {} bytes ({}×{})", thumb_blob.len(), tw, th);
 
     Ok(EncodedImage { webp_blob, thumb_blob })
 }
@@ -186,17 +201,28 @@ mod tests {
         let encoded = encode_to_webp(&img).unwrap();
         assert!(!encoded.webp_blob.is_empty());
         assert!(!encoded.thumb_blob.is_empty());
-        assert_eq!(&encoded.webp_blob[..4], b"RIFF");
-        assert_eq!(&encoded.thumb_blob[..4], b"RIFF");
+        // 主 blob 按 IMAGE_SAVE_QUALITY 链首个成功格式（默认 jpeg:85 → SOI magic [FF D8 FF]）
+        // 缩略图按 THUMB_SAVE_QUALITY 链（默认 jpeg:10 → 也是 SOI magic）
+        // 链可配置，不强制 magic；测试只验证非空 + 至少匹配已知 magic 之一
+        for blob in [&encoded.webp_blob, &encoded.thumb_blob] {
+            let head = &blob[..4];
+            let is_jpeg = head.starts_with(&[0xFF, 0xD8, 0xFF]);
+            let is_webp = head == b"RIFF";
+            assert!(is_jpeg || is_webp, "blob head = {:02X?}", head);
+        }
     }
 
     #[test]
     fn test_parse_image_fallbacks() {
-        // 标准常量解析为降级链
+        // 标准常量解析为编码链（2026-07-20 起默认 jpeg:85，无 fallback）
         let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
-        assert_eq!(chain.len(), 2);
-        assert!(matches!(chain[0], EncodeAttempt::WebpLossy(80)));
-        assert!(matches!(chain[1], EncodeAttempt::Jpeg(80)));
+        assert_eq!(chain.len(), 1);
+        assert!(matches!(chain[0], EncodeAttempt::Jpeg(85)));
+
+        // thumb 链（默认 jpeg:10）
+        let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
+        assert_eq!(thumb_chain.len(), 1);
+        assert!(matches!(thumb_chain[0], EncodeAttempt::Jpeg(10)));
 
         // 容错：空白容忍、未知格式跳过、质量非数字跳过
         assert_eq!(parse_image_fallbacks(" webp : 70 ; png:90 ; jpeg:60 ; bad").len(), 2);
