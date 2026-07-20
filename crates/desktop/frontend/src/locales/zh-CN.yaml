@@ -366,6 +366,9 @@ settings:
     delete: 删除
     confirmDelete: 确认删除
     empty: 暂无提示词
+    restore: 复原默认
+    restored: 已恢复为默认内容（点击保存生效）
+    restoreFailed: "复原失败："
   history:
     polishPolished: 已润色
     polishFailed: 润色失败
@@ -537,7 +540,6 @@ settings:
     addMainItem: 新增主菜单项
     noItemsYet: 还没有菜单项
     noItemsHint: 新增第一个主菜单项，开始配置你的命令面板。
-    selectAgent: 选择 agent…
     pathFormat: 路径格式
     pathFormatPlain: 纯路径
     pathFormatUrl: file:// URL
@@ -546,6 +548,8 @@ settings:
     acceptsFile: 文件
     acceptsAny: 文件 + 文本
     agentLabel: Agent
+    defaultAgentOption: "默认 Agent（菜单未指定时按系统默认 → 第一个可用 fallback）"
+    agentNotInstalled: 未安装
     scopeAll: 全部
     scopeText: 文本类
     scopeFile: 文件类
@@ -646,6 +650,14 @@ agentPanel:
   installed: ✅ 已安装
   notFound: ❌ 未找到
   builtin: 内置
+  default: 默认
+  defaultAgentLabel: 当前默认：
+  noDefault: 未设置默认 Agent（菜单 agent 为空时将 fallback 到第一个可用）
+  setDefault: 设为默认
+  unsetDefault: 取消默认
+  defaultSet: 已设为默认 Agent（全局唯一）
+  defaultCleared: 已取消默认 Agent
+  defaultFailed: "操作失败："
   keyLabel: Key（唯一标识）
   displayNameLabel: 显示名称
   detectBinaryLabel: 检测二进制名

@@ -1,68 +1,96 @@
-//! Agent 适配器注册表——内置白名单 + DB 用户自定义 + PATH 检测 + 命令模板渲染。
+//! Agent 适配器注册表——纯 DB 驱动 + PATH 检测 + 命令模板渲染 + 三层 fallback。
+//!
+//! 2026-07-19 v42 改：Pi / Claude 不再在 Rust 常量里硬编码，由 db.sql seed
+//! 进 agent_adapters 表（is_system=1）。本模块仅负责读 DB + which 检测 + 渲染。
 
 /// Agent 适配器——描述一个 CLI agent 的检测与启动方式。
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAdapter {
+    pub id: i64,
     pub key: String,
     pub display_name: String,
     pub detect_binary: String,
     pub command_template: String,
-    pub is_builtin: bool,
+    pub is_system: bool,
+    pub is_default: bool,
     pub is_available: bool,
 }
 
-/// 检查 key 是否为内置 adapter（零进程开销，不走 which）。
-pub fn is_builtin_key(key: &str) -> bool {
-    builtin_adapters().iter().any(|a| a.key == key)
-}
-
-/// 内置白名单（一期）
-fn builtin_adapters() -> Vec<AgentAdapter> {
-    vec![
-        AgentAdapter {
-            key: "claude".into(),
-            display_name: "Claude Code".into(),
-            detect_binary: "claude".into(),
-            command_template: "claude --add-dir {cwd} {prompt}".into(),
-            is_builtin: true,
-            is_available: false,
-        },
-        AgentAdapter {
-            key: "pi".into(),
-            display_name: "Pi".into(),
-            detect_binary: "pi".into(),
-            command_template: "pi {files_at} {prompt}".into(),
-            is_builtin: true,
-            is_available: false,
-        },
-    ]
-}
-
-/// 合并内置 + DB 用户自定义 adapter，逐个检测 PATH。
+/// 列出全部 adapter（内置 + 用户自定义），逐个 which 检测安装状态。
 pub fn list_adapters() -> Vec<AgentAdapter> {
-    let mut adapters = builtin_adapters();
-    if let Ok(custom) = octopus_infra::db::list_agent_adapter_records() {
-        for r in custom {
-            adapters.push(AgentAdapter {
-                key: r.key,
-                display_name: r.display_name,
-                detect_binary: r.detect_binary,
-                command_template: r.command_template,
-                is_builtin: false,
-                is_available: false,
-            });
+    let records = octopus_infra::db::list_agent_adapter_records().unwrap_or_default();
+    records.into_iter().map(|r| {
+        let is_available = which(&r.detect_binary);
+        AgentAdapter {
+            id: r.id,
+            key: r.key,
+            display_name: r.display_name,
+            detect_binary: r.detect_binary,
+            command_template: r.command_template,
+            is_system: r.is_system,
+            is_default: r.is_default,
+            is_available,
         }
-    }
-    for a in adapters.iter_mut() {
-        a.is_available = which(&a.detect_binary);
-    }
-    adapters
+    }).collect()
 }
 
 /// 重新检测所有 adapter（设置页「刷新检测」按钮用）。
 pub fn refresh_detection() -> Vec<AgentAdapter> {
     list_adapters()
+}
+
+/// 解析菜单项 agent_key 到最终使用的 adapter——三层 fallback：
+///
+/// 1. **菜单指定**：传入的 key 非空 → 查 DB 该 key 存在 + which(detect_binary) 可用 → 用之
+/// 2. **系统默认**：菜单 key 不可用 / 空 → 查 agent_adapters WHERE is_default=1 → 该 adapter 可用 → 用之
+/// 3. **第一个可用**：默认也不可用 → 取 list 中第一个 is_available=true 的 → 用之
+/// 4. 都不可用 → 返回 Err，调用方应报错给用户
+///
+/// 返回 (adapter, effective_source)：effective_source 用于日志/调试，
+/// 标识走了哪一层（"menu" / "default" / "fallback_first"）。
+pub fn resolve_effective_adapter(menu_agent_key: &str) -> Result<(AgentAdapter, &'static str), String> {
+    let adapters = list_adapters();
+
+    // 1. 菜单指定
+    if !menu_agent_key.is_empty() {
+        if let Some(a) = adapters.iter().find(|a| a.key == menu_agent_key) {
+            if a.is_available {
+                return Ok((a.clone(), "menu"));
+            }
+            log::warn!(
+                "[agent-adapter] 菜单指定 agent '{}' 不可用（PATH 找不到 `{}`），fallback 到默认",
+                a.key, a.detect_binary
+            );
+        } else {
+            log::warn!(
+                "[agent-adapter] 菜单指定 agent '{}' 不存在，fallback 到默认",
+                menu_agent_key
+            );
+        }
+    }
+
+    // 2. 系统默认
+    if let Some(a) = adapters.iter().find(|a| a.is_default) {
+        if a.is_available {
+            return Ok((a.clone(), "default"));
+        }
+        log::warn!(
+            "[agent-adapter] 默认 agent '{}' 不可用（PATH 找不到 `{}`），fallback 到第一个可用",
+            a.key, a.detect_binary
+        );
+    }
+
+    // 3. 第一个可用
+    if let Some(a) = adapters.iter().find(|a| a.is_available) {
+        return Ok((a.clone(), "fallback_first"));
+    }
+
+    // 4. 都不可用
+    Err(format!(
+        "没有可用的 agent（菜单指定='{}'；默认不可用；列表全部未安装）",
+        menu_agent_key
+    ))
 }
 
 /// which <binary> —— 检测 PATH 中是否存在二进制。
@@ -78,9 +106,26 @@ fn which(binary: &str) -> bool {
 /// prompt: 渲染后的 prompt（含 task）
 /// files: POSIX 路径列表
 /// cwd: 工作目录
+///
+/// **目录处理**（2026-07-19 v40 修复）：Pi 的 `@<path>` 语法只接受文件，传目录会 EISDIR 崩。
+/// `{files_at}` 渲染时检测每个路径：是目录则降级为不加 `@`（让 prompt 文本里的路径
+/// 引导 agent 自己 `ls`）；是文件则正常加 `@`。
+/// `{files}` 不加 `@`，本来就只是路径列表，文件/目录都安全。
 pub fn render_command(template: &str, prompt: &str, files: &[String], cwd: &str) -> String {
     let files_str = files.iter().map(|f| shell_quote(f)).collect::<Vec<_>>().join(" ");
-    let files_at_str = files.iter().map(|f| format!("@{}", shell_quote(f))).collect::<Vec<_>>().join(" ");
+    // files_at：文件加 @ 前缀，目录不加（pi @<dir> 会 EISDIR 崩）
+    let files_at_str = files.iter()
+        .map(|f| {
+            let quoted = shell_quote(f);
+            if std::path::Path::new(f).is_dir() {
+                // 目录：直接传裸路径，agent 在 prompt 指引下自己 walk
+                quoted
+            } else {
+                format!("@{}", quoted)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
     template
         .replace("{prompt}", &shell_escape_single(prompt))
         .replace("{files_at}", &files_at_str)
@@ -125,6 +170,30 @@ mod tests {
         assert_eq!(cmd, "pi @'/a.pdf' @'/b.pdf' 'make ppt'");
     }
 
+    /// v40 修复：Pi `@<dir>` 会 EISDIR 崩。render_command 检测目录，目录不加 @ 前缀。
+    #[test]
+    fn test_render_command_pi_directory_no_at_prefix() {
+        // 用 tempdir 造一个真实目录（pi 检测 std::path::Path::is_dir()）
+        let tmp = std::env::temp_dir().join(format!("octopus-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let dir_path = tmp.to_string_lossy().to_string();
+        let file_path = tmp.join("a.pdf").to_string_lossy().to_string();
+        std::fs::write(&file_path, "").unwrap();
+
+        let cmd = render_command(
+            "pi {files_at} {prompt}",
+            "make ppt",
+            &[dir_path.clone(), file_path.clone()],
+            "/Users/x",
+        );
+        // 期望：目录不加 @，文件加 @
+        let expected = format!("pi '{}' @'{}' 'make ppt'", dir_path, file_path);
+        assert_eq!(cmd, expected);
+
+        // 清理
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn test_shell_escape_single_with_quote() {
         let escaped = shell_escape_single("it's a test");
@@ -143,19 +212,8 @@ mod tests {
         assert_eq!(shell_escape_single(""), "''");
     }
 
-    #[test]
-    fn test_builtin_adapters_has_claude_and_pi() {
-        let builtins = builtin_adapters();
-        let keys: Vec<&str> = builtins.iter().map(|a| a.key.as_str()).collect();
-        assert!(keys.contains(&"claude"));
-        assert!(keys.contains(&"pi"));
-    }
-
-    #[test]
-    fn test_builtin_adapters_are_marked_builtin() {
-        let builtins = builtin_adapters();
-        assert!(builtins.iter().all(|a| a.is_builtin));
-    }
+    // builtin_adapters + is_builtin 已删除（v42 改为纯 DB 驱动）。
+    // Pi/Claude 内置由 db.sql seed 保证，测试覆盖在 infra crate 的 db.rs。
 
     #[test]
     fn test_render_command_empty_files() {

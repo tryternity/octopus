@@ -1,4 +1,5 @@
-import { defineConfig } from "vitest/config";
+/// <reference types="vitest" />
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import yaml from "@modyfi/vite-plugin-yaml";
@@ -14,6 +15,8 @@ import path from "path";
 const config = {
   plugins: [react(), tailwindcss(), yaml()],
   base: "./",
+  // 不清屏，保留 cargo run 的 stdout 日志（vite 8：顶层字段，不再属于 server）。
+  clearScreen: false,
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -29,8 +32,6 @@ const config = {
     // vite 静默改用 1421 导致 Tauri 连不上。
     port: 1420,
     strictPort: true,
-    // 不清屏，保留 cargo run 的 stdout 日志。
-    clearScreen: false,
   },
   test: {
     environment: "jsdom",
