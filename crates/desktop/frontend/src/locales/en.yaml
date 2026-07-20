@@ -156,6 +156,9 @@ settings:
         usernamePassword: Fill username + password (cursor must be in username field)
         passwordOnly: Fill password only into current focus
         usernameOnly: Fill username only into current focus
+      copyUsername: Copy username
+      revealPassword: Reveal password
+      hidePassword: Hide password
     generator:
       title: Password Generator
       mode:

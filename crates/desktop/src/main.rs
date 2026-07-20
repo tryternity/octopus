@@ -445,6 +445,8 @@ pub fn run() {
             crate::vault_commands::vault_detect_and_match,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_password,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_copy_username,
             // 密码生成器独立浮窗（Actionbar 触发，外壳 B；详见 spec §5.2）
             #[cfg(feature = "vault")]
             crate::vault_commands::open_password_generator,

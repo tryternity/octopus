@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, Keyboard, KeyRound, AtSign, Lock, RefreshCw, X } from "lucide-react";
+import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,9 @@ export default function VaultPicker() {
   const [view, setView] = useState<ViewState>({ kind: "loading" });
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
+  // 密码可见性——按 cipher id 独立 toggle（多个 cipher 互不影响）。
+  // 默认全部 mask（•••••）防浮窗一闪而过被旁人偷看。
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<number, boolean>>({});
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -361,88 +364,137 @@ export default function VaultPicker() {
         )}
 
         {view.kind === "list" &&
-          view.ciphers.map((c) => (
-            <div
-              key={c.id}
-              className="group flex items-center gap-1 border-b border-border/50 px-4 py-2 last:border-b-0 hover:bg-accent"
-            >
-              {/* 行主体：点击触发 PasswordOnly（最常用，webmail SPA 首选） */}
-              <button
-                type="button"
-                className="flex flex-1 items-center gap-2 text-left outline-none min-w-0"
-                onClick={() => handlePick(c, false, "passwordOnly")}
-                disabled={busy}
-                title={t("settings.vault.autotype.mode.passwordOnly")}
+          view.ciphers.map((c) => {
+            const username = c.login?.username || "";
+            const password = c.login?.password || "";
+            const revealed = !!revealedPasswords[c.id];
+            return (
+              <div
+                key={c.id}
+                className="border-b border-border/50 last:border-b-0 hover:bg-accent"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{c.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {c.login?.username || "—"}
+                {/* 第一段：名称行 + 复制(无) + 完整填充(⌨)
+                    名称行无对应复制按钮（整个条目的"名"不属于字段），右侧只放一个
+                    完整填充图标，与下面两段的 autotype 列对齐。 */}
+                <div className="flex items-center gap-1 px-4 pt-2">
+                  <div className="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {c.name}
                   </div>
+                  {/* 占位与下方 copy 列对齐 */}
+                  <div className="size-7 shrink-0" aria-hidden />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "usernamePassword");
+                    }}
+                    disabled={busy}
+                    title={t("settings.vault.autotype.mode.usernamePassword")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Keyboard className="size-4" />
+                  </Button>
                 </div>
-              </button>
-              {/* 3 个 autotype 模式 + 1 个 copy——按当前光标位置选合适图标。
-                  视觉策略：PasswordOnly（KeyRound）用 voice 色高亮（签名元素，
-                  webmail SPA 默认场景），其他保持 muted-foreground 让用户知道
-                  是次要选项。hover 时统一切到 foreground 色。 */}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, false, "usernamePassword");
-                }}
-                disabled={busy}
-                title={t("settings.vault.autotype.mode.usernamePassword")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <Keyboard className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, false, "passwordOnly");
-                }}
-                disabled={busy}
-                title={t("settings.vault.autotype.mode.passwordOnly")}
-                className="text-voice hover:text-voice"
-              >
-                <KeyRound className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, false, "usernameOnly");
-                }}
-                disabled={busy}
-                title={t("settings.vault.autotype.mode.usernameOnly")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <AtSign className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, true, "passwordOnly");
-                }}
-                disabled={busy}
-                title={t("settings.vault.generator.copy")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <Copy className="size-4" />
-              </Button>
-            </div>
-          ))}
+
+                {/* 第二段：用户名行 + 复制(📋) + 仅填用户名(@) */}
+                <div className="flex items-center gap-1 px-4 py-1">
+                  <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {username || "—"}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void invoke("vault_copy_username", { cipherId: c.id });
+                    }}
+                    disabled={busy || !username}
+                    title={t("settings.vault.autotype.copyUsername")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "usernameOnly");
+                    }}
+                    disabled={busy || !username}
+                    title={t("settings.vault.autotype.mode.usernameOnly")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <AtSign className="size-4" />
+                  </Button>
+                </div>
+
+                {/* 第三段：密码行 + 复制(📋) + 仅填密码(🔑)
+                    默认 mask 显示（••••），点眼睛切换可见。 */}
+                <div className="flex items-center gap-1 px-4 pb-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRevealedPasswords((m) => ({ ...m, [c.id]: !m[c.id] }))
+                    }
+                    disabled={!password}
+                    title={
+                      revealed
+                        ? t("settings.vault.autotype.hidePassword")
+                        : t("settings.vault.autotype.revealPassword")
+                    }
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left outline-none"
+                  >
+                    <span className="truncate text-xs text-muted-foreground">
+                      {password
+                        ? revealed
+                          ? password
+                          : "•".repeat(Math.max(6, Math.min(12, password.length)))
+                        : "—"}
+                    </span>
+                    {password &&
+                      (revealed ? (
+                        <EyeOff className="size-3 shrink-0 text-muted-foreground/60" />
+                      ) : (
+                        <Eye className="size-3 shrink-0 text-muted-foreground/60" />
+                      ))}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, true, "passwordOnly");
+                    }}
+                    disabled={busy || !password}
+                    title={t("settings.vault.generator.copy")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "passwordOnly");
+                    }}
+                    disabled={busy || !password}
+                    title={t("settings.vault.autotype.mode.passwordOnly")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <KeyRound className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
 
         {view.kind === "error" && (
           <div className="px-4 py-3 text-sm text-destructive">{view.message}</div>

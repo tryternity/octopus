@@ -904,6 +904,39 @@ pub fn vault_copy_password(
     )))
 }
 
+/// 复制指定 cipher 的用户名到剪贴板。
+///
+/// 与 `vault_copy_password` 对称，但用户名通常不敏感——**不强制 reprompt**
+/// （reprompt 保护的是密码等高敏感字段，用户名一般可见）。
+///
+/// 用户场景（2026-07-20 三段式 UI）：cipher 行的"用户名"段右侧 📋 图标。
+#[tauri::command]
+pub fn vault_copy_username(
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
+    clipboard: State<'_, Arc<ClipboardHandle>>,
+    cipher_id: i64,
+) -> Result<(), String> {
+    let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
+    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+
+    #[allow(irrefutable_let_patterns)]
+    if let CipherData::Login(l) = cipher.data {
+        if let Some(username) = l.username {
+            // 用户名不算高敏感（不在 reprompt 保护范围），但走 concealed 写入避免
+            // 进 clipboard_history FTS 索引库（被搜索到也是隐私泄露）。
+            clipboard.suppress_next();
+            autotype::copy_concealed(&username).map_err(vault_error::to_tauri_error)?;
+            return Ok(());
+        }
+    }
+    Err(vault_error::serialize(&VaultError::InvalidInput(
+        "无用户名".into(),
+    )))
+}
+
 // === 全局热键注册（Task 19） ===
 
 /// 注册 vault Auto-Type 全局热键（默认 CmdOrCtrl+Shift+L）。
