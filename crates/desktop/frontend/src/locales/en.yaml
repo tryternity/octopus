@@ -229,6 +229,8 @@ settings:
     clipboardShortcut: Clipboard Float
     actionBarShortcut: Quick Panel
     actionBarShortcutHint: Press this key after selecting text
+    vaultAutotypeShortcut: Summon Vault
+    vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
     screenshotShortcut: Screenshot OCR
     screenshotShortcutHint: Capture screen region and recognize text
     recording: Voice Recognition

@@ -97,10 +97,12 @@ pub fn set_config(
     coordinator: State<'_, crate::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, mut cfg) = {
         let g = rc.read();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.clone())
     };
+    // vault feature off 时 old_vault_autotype_sc 不被读，避免 unused warning。
+    let _ = &old_vault_autotype_sc;
     apply_config_value(&mut cfg, &key, &value)?;
 
     // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
@@ -172,6 +174,21 @@ pub fn set_config(
         }
         if let Err(e) = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &cfg.action_bar_shortcut) {
             let _ = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &old_action_bar_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    // vault_autotype_shortcut 热重载（2026-07-20 配置化）。
+    // vault feature off 时整段跳过——register_vault_autotype_shortcut 不存在。
+    #[cfg(feature = "vault")]
+    if key == "vault_autotype_shortcut" && cfg.vault_autotype_shortcut != old_vault_autotype_sc {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_vault_autotype_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Err(e) = crate::vault_commands::register_vault_autotype_shortcut(&app_handle, &cfg.vault_autotype_shortcut) {
+            // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
+            let _ = crate::vault_commands::register_vault_autotype_shortcut(&app_handle, &old_vault_autotype_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
