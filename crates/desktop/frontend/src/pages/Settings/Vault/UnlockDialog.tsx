@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Lock } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -9,7 +10,11 @@ import { PasswordInput } from "@/components/ui/password-input";
  *
  * 后端 `vault_unlock(password)` 失败统一显示 wrongPassword。
  *
- * 视觉（UI 重设计）：小号 uppercase 标题 + 全宽 primary 按钮。
+ * **布局**（2026-07-20 e2e 反馈对齐 VaultPicker locked 视图）：
+ *   - 顶部 border-b 标题栏（absolute 居中"解锁保险库"）
+ *   - 中间表单区垂直居中：PasswordInput（size=full，带 Eye/Eraser）+ Button（w-full）
+ *   - PasswordInput 与 Button 等宽——视觉协调
+ *   - 删除了原版的"端到端加密存储..."副标题（信息冗余，用户已知）
  */
 export default function UnlockDialog({
   onSuccess,
@@ -41,39 +46,38 @@ export default function UnlockDialog({
   }
 
   return (
-    <div className="flex h-full items-center justify-center">
-      <form onSubmit={handleSubmit} className="w-full max-w-md space-y-4">
-        <div>
-          <h2 className="text-xs font-semibold uppercase tracking-[0.15em] text-foreground">
-            {t("settings.vault.unlockVaultTitle")}
-          </h2>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {t("settings.vault.description")}
-          </p>
-        </div>
-        <div className="space-y-1.5">
-          <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-            {t("settings.vault.unlock.passwordLabel")}
-          </label>
-          <PasswordInput
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onClear={() => setError(null)}
-            className="w-full"
-            autoFocus
-            autoComplete="current-password"
-          />
-        </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+    <form onSubmit={handleSubmit} className="flex h-full flex-col">
+      {/* 标题栏：absolute 居中标题 + 左侧 size-7 占位（保持对称） */}
+      <div className="relative flex items-center border-b border-border/40 px-4 py-3">
+        <div className="size-7" aria-hidden />
+        <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
+          <Lock className="size-4" />
+          <span className="text-sm font-medium">
+            {t("settings.vault.unlock.title")}
+          </span>
+        </span>
+      </div>
+      {/* 表单内容垂直居中，宽度限 320px 视觉更紧凑 */}
+      <div className="mx-auto flex w-full max-w-[320px] flex-1 flex-col justify-center gap-3 px-6 py-6">
+        <PasswordInput
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onClear={() => setError(null)}
+          placeholder={t("settings.vault.unlock.passwordLabel")}
+          autoFocus
+          autoComplete="current-password"
+          size="full"
+        />
+        {error && <p className="text-xs text-destructive">{error}</p>}
         <Button
           type="submit"
-          variant="primary"
-          className="w-full uppercase tracking-wide"
+          variant="voice"
           disabled={busy || !password}
+          className="w-full"
         >
           {busy ? "..." : t("settings.vault.unlock.submit")}
         </Button>
-      </form>
-    </div>
+      </div>
+    </form>
   );
 }
