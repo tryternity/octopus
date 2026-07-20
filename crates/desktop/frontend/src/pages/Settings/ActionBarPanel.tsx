@@ -511,6 +511,8 @@ const EditForm = ({
   );
 };
 // 2026-07-17 重构：原 TreeNode 树形渲染改为左右分栏，此组件承担行渲染。
+// 2026-07-20 扩展：右栏子菜单列表传 showShortcuts=true 时，标题右侧填上 local + global
+// 快捷键槽（点击进入 inline 录制），避免原 1fr 列右侧大面积空白。左栏主菜单不传→布局不变。
 interface MenuRowProps {
   item: ActionBarItem;
   index: number;            // 1-based 序号
@@ -523,6 +525,11 @@ interface MenuRowProps {
   onMove: (dir: number) => void;
   onEdit: () => void;
   onDelete: () => void;
+  // ── 快捷键槽（右栏子菜单列表专用，2026-07-20）──
+  showShortcuts?: boolean;                                    // true 时渲染快捷键列
+  onCaptureShortcut?: (kind: "local" | "global") => void;    // 点击槽位进入录制
+  capturingKind?: "local" | "global" | null;                  // 当前行处于录制的 kind
+  onClearShortcut?: (kind: "local" | "global") => void;       // 清除快捷键
 }
 
 const MenuRow = (props: MenuRowProps) => {
@@ -530,13 +537,18 @@ const MenuRow = (props: MenuRowProps) => {
   const { item, index, selected, isFirst, isLast, deleteConfirmId } = props;
   const meta = TYPE_META[item.actionType] ?? { bar: "bg-stone-400", dot: "bg-stone-400", label: (item.actionType || "unknown").toUpperCase().slice(0, 8), descKey: "", placeholderKey: "" };
   const isDeleting = deleteConfirmId === item.id;
+  // 子菜单项行（非 submenu 类型）才显示快捷键槽——submenu 是容器，本身无快捷键
+  const showShortcuts = !!props.showShortcuts && item.actionType !== "submenu";
 
   return (
     <div
       onClick={props.onSelect}
       className={cn(
         "group relative grid items-center gap-x-2 gap-y-0.5 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
-        "[grid-template-columns:auto_auto_1fr_auto]",
+        // 默认 4 列；showShortcuts 时 5 列（多一列放快捷键槽）
+        showShortcuts
+          ? "[grid-template-columns:auto_auto_minmax(60px,1fr)_auto_auto]"
+          : "[grid-template-columns:auto_auto_1fr_auto]",
         selected ? "bg-voice/12" : "hover:bg-muted/40",
         props.onSelect && "cursor-pointer",
       )}
@@ -558,7 +570,63 @@ const MenuRow = (props: MenuRowProps) => {
         {item.title}
       </span>
 
-      {/* 悬浮操作栏（col 4，第一行） */}
+      {/* 快捷键槽（col 4，仅 showShortcuts 时）——local ⌥+字符 + global ShortcutButton */}
+      {showShortcuts && (
+        <div className="flex shrink-0 items-center justify-end gap-2">
+          {/* local 快捷键：⌥ + 单字符 / 占位 */}
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/50 font-mono">⌥</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); props.onCaptureShortcut?.("local"); }}
+              className={cn(
+                "min-w-[22px] text-center rounded border px-1 py-0.5 text-[11px] font-mono transition-all",
+                props.capturingKind === "local"
+                  ? "border-voice ring-2 ring-voice/15 bg-voice/5 text-voice animate-pulse"
+                  : item.shortcut
+                    ? "border-border bg-muted/40 text-foreground hover:border-foreground/30"
+                    : "border-dashed border-muted-foreground/30 text-muted-foreground/40 hover:border-foreground/30 hover:text-muted-foreground/70",
+              )}
+              title={t("settings.actionBar.shortcutHint")}
+            >
+              {props.capturingKind === "local"
+                ? "…"
+                : (item.shortcut || "—")}
+            </button>
+            {item.shortcut && props.capturingKind !== "local" && (
+              <button
+                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("local"); }}
+                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                aria-label={t("settings.actionBar.clearShortcut")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+
+          {/* 分隔点 */}
+          <span className="text-muted-foreground/30 text-[10px]">·</span>
+
+          {/* global 快捷键：ShortcutButton（含录制态自渲染） */}
+          <div className="flex items-center gap-0.5">
+            <ShortcutButton
+              shortcut={item.globalShortcut ?? ""}
+              capturing={props.capturingKind === "global"}
+              onClick={() => props.onCaptureShortcut?.("global")}
+            />
+            {item.globalShortcut && props.capturingKind !== "global" && (
+              <button
+                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
+                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                aria-label={t("settings.actionBar.clearShortcut")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 悬浮操作栏（最后一列，第一行） */}
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
         <button
           onClick={(e) => { e.stopPropagation(); props.onMove(-1); }}
@@ -603,8 +671,8 @@ const MenuRow = (props: MenuRowProps) => {
         </button>
       </div>
 
-      {/* 第二行：类型 + 内置/隐藏 小字（col 3-4 跨两列，给足空间防 wrap） */}
-      <div className="col-span-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+      {/* 第二行：类型 + 内置/隐藏 小字（跨最后两列，给足空间防 wrap） */}
+      <div className={cn("flex items-center gap-1.5 text-[10px] text-muted-foreground/60", showShortcuts ? "col-span-2" : "col-span-2")}>
         <TypeTag type={item.actionType} />
         {item.isSystem && (
           <span className="text-muted-foreground/40">
@@ -825,6 +893,9 @@ export default function ActionBarPanel({
   // 主菜单 inline 编辑（右栏顶部表单）的实时字段镜像 + 录制态
   const [inlineCapturingShortcut, setInlineCapturingShortcut] = useState(false);
   const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
+  // 子菜单项行内快捷键录制目标——{id, kind} 或 null。同时只允许一个槽录制。
+  // 2026-07-20：右栏子菜单列表每行直接编辑快捷键，避免为每个子项开 EditForm 弹窗。
+  const [subCapturing, setSubCapturing] = useState<{ id: number; kind: "local" | "global" } | null>(null);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -1048,12 +1119,11 @@ export default function ActionBarPanel({
     // 不动 tab——editingId=null + draftParentId !== undefined 表示新建模式，EditForm 全屏覆盖
   }, [scopeFilter, t]);
 
-  // 主菜单字段 inline 实时保存（isEnabled / shortcut / globalShortcut / actionType）。
-  // 主菜单字段少且独立于 actionData/agent 等复杂字段，inline 编辑体验好。
-  // 复用 update_action_bar_item + set_global_shortcut，参数从原 item 派生。
-  const updateMainInline = useCallback(async (patch: Partial<ActionBarItem>) => {
-    if (selectedMain === null) return;
-    const merged = { ...selectedMain, ...patch };
+  // 任意 item 的 inline 更新（主菜单 + 子菜单共用）。patch 合并到 item 后调后端
+  // update_action_bar_item + set_global_shortcut，失败 refresh 重置 UI。
+  // 2026-07-20：从 updateMainInline 抽出参数化版本，子菜单项行内编辑快捷键复用。
+  const updateItemInline = useCallback(async (item: ActionBarItem, patch: Partial<ActionBarItem>) => {
+    const merged = { ...item, ...patch };
     try {
       await invoke("update_action_bar_item", {
         id: merged.id,
@@ -1079,7 +1149,13 @@ export default function ActionBarPanel({
       showToast(t("settings.actionBar.saveFailed") + e);
       refresh();
     }
-  }, [selectedMain, refresh, showToast]);
+  }, [refresh, showToast]);
+
+  // 主菜单 inline 更新——updateItemInline 的 selectedMain wrapper（保留所有现有调用点不变）。
+  const updateMainInline = useCallback((patch: Partial<ActionBarItem>) => {
+    if (selectedMain === null) return;
+    void updateItemInline(selectedMain, patch);
+  }, [selectedMain, updateItemInline]);
 
   // inline 全局快捷键录制（复用 EditForm 范式）
   useEffect(() => {
@@ -1134,6 +1210,57 @@ export default function ActionBarPanel({
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
   }, [inlineCapturingShortcut, selectedMain, updateMainInline]);
+
+  // 子菜单项行内快捷键录制（与主菜单 inline 录制同范式，但 target 来自 selectedSubs，
+  // 按 subCapturing.id 定位）。同一时刻只允许一个槽录制（subCapturing 单值）。
+  // 2026-07-20：右栏子菜单列表每行直接编辑快捷键。
+  useEffect(() => {
+    if (subCapturing === null) return;
+    const target = selectedSubs.find((s) => s.id === subCapturing.id);
+    if (!target) { setSubCapturing(null); return; }
+    const handler = async (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") { setSubCapturing(null); return; }
+      if (subCapturing.kind === "global") {
+        // 全局快捷键：修饰键单独按下不放行（等组合）；Backspace/Delete 清除
+        if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
+        if (e.key === "Backspace" || e.key === "Delete") {
+          updateItemInline(target, { globalShortcut: "" });
+          setSubCapturing(null);
+          return;
+        }
+        const parts: string[] = [];
+        if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
+        if (e.altKey) parts.push("Alt");
+        if (e.shiftKey) parts.push("Shift");
+        const keyName = e.code.startsWith("Key") ? e.code.slice(3) : e.code;
+        parts.push(keyName);
+        const sc = parts.join("+");
+        try {
+          await invoke("check_shortcut", { shortcut: sc });
+          updateItemInline(target, { globalShortcut: sc });
+        } catch (err) {
+          console.warn("[action-bar] sub inline global shortcut check failed:", err);
+        }
+        setSubCapturing(null);
+      } else {
+        // 局部快捷键：单字符 0-9a-z；Backspace/Delete 清除
+        if (e.key === "Backspace" || e.key === "Delete") {
+          updateItemInline(target, { shortcut: "" });
+          setSubCapturing(null);
+          return;
+        }
+        const ch = e.key.toLowerCase();
+        if (/^[0-9a-z]$/.test(ch)) {
+          updateItemInline(target, { shortcut: ch });
+          setSubCapturing(null);
+        }
+      }
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [subCapturing, selectedSubs, updateItemInline]);
 
   // 标题 draft 的 debounce flush——300ms 无输入后落库。
   // 用 ref + setTimeout 避免闭包陈旧。selectedMain 切换时手动清 draft（下面 effect）。
@@ -1385,6 +1512,13 @@ export default function ActionBarPanel({
                             onMove={(dir) => handleMove(sub.id, dir)}
                             onEdit={() => startEdit(sub)}
                             onDelete={() => handleDelete(sub.id)}
+                            // 快捷键槽：每行直接显示 + 内联录制（2026-07-20）
+                            showShortcuts
+                            capturingKind={subCapturing?.id === sub.id ? subCapturing.kind : null}
+                            onCaptureShortcut={(kind) => setSubCapturing({ id: sub.id, kind })}
+                            onClearShortcut={(kind) =>
+                              updateItemInline(sub, kind === "local" ? { shortcut: "" } : { globalShortcut: "" })
+                            }
                           />
                         ))}
                       </div>
