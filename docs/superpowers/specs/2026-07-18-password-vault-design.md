@@ -644,7 +644,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `vault_autotype_shortcut` | String | `"CmdOrCtrl+Shift+L"` | Auto-Type picker 全局热键 |
+| `vault_autotype_shortcut` | String | `"CmdOrCtrl+Shift+L"` | Auto-Type picker 全局热键。**2026-07-20 配置化**：设置 → 通用 → 快捷键 tab 可改，热重载（与 asr/edit/polish/clipboard/screenshot/action_bar 6 个快捷键同模式——unregister old + register new + 失败恢复 old）。feature off 时快捷键 Row 不渲染 |
 | `vault_generator_shortcut` | String | `"CmdOrCtrl+Shift+G"` | **已废弃**（保留仅为兼容旧 DB，运行时不消费——生成器已内嵌） |
 | `vault_lock_timeout_secs` | u64 | `180`（3min） | 锁定超时；UI 选项 30s/1min/3min/5min/15min/Never；`0` = 永不锁定 |
 
@@ -718,6 +718,30 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 导致 `username + Tab + password` 模式在 password 框填不进。给用户三种独立控制
 模式，按当前光标位置选合适图标。与 Bitwarden/1Password 桌面助手默认行为对齐
 （默认 PasswordOnly）。
+
+**VaultPicker 内联新建（方案 C，2026-07-20）**：list 视图（不论是否匹配）底部都
+有「新增保险箱」入口（ciphers.length===0 时是 voice 全宽按钮，否则是 dashed border
+轻量入口）。点击进入 `CreateCipherView`：
+
+- 极简 4 字段表单（name / url / username / password），不做 CipherEditor 的高级功能
+  （folder / TOTP / fields / favorite）——浮窗场景要快，复杂编辑去 Settings
+- URL 字段从 `vault_get_cached_url` 命令读 `picker_url_cache` 预填（热键 callback 抓的）
+- name 字段从 URL hostname 自动提取（用户可改）
+- username 用普通 Input；password 用 PasswordInput（带 Eye/Eraser）
+- 保存调 `vault_create_cipher` → onSuccess refresh 回 list 视图
+
+**方案 A（bookmarklet 真正自动采集）**：长期方向——macOS 桌面 app 无权限读浏览器 DOM
+字段值（仅扩展能做），bookmarklet 是折衷方案（用户在登录页点书签触发 JS 抓 DOM →
+deep-link 回调 octopus → 入库）。**未实现**，作为后续工作。
+
+**浮窗可拖动**（2026-07-20）：VaultPicker 所有视图的标题栏加
+`data-tauri-drag-region="deep"` + `cursor-grab active:cursor-grabbing`，与 Clipboard
+浮窗完全同模式。`="deep"` 让标题栏内按钮（X / 返回 / 刷新）click 仍工作。
+
+**窗口动态高度**（2026-07-20 e2e 反馈）：后端 `inner_size` 初始 `400×200`，前端
+`useEffect` 按 `view.kind` 动态 `setSize`——locked 200 / reprompt 220 / uninit 130 /
+create 360 / list `36 + ciphers*88 + 32 + 8`（含底部新建按钮）/ loading 110。避免
+紧凑内容也占满 360px 导致上下大片空白。
 
 ### 4.2 URL 检测（macOS AppleScript）
 

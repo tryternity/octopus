@@ -7275,3 +7275,94 @@ camelCase 字符串；但前端 TS type 字面值用了 PascalCase `"PasswordOnl
 （热键 callback 时序、hide + invoke 竞态、Tab 切焦点 SPA 兼容性）——这类问题静态代码
 审查很难发现，必须实际操作。后续 vault 类工作必须把 e2e 测试纳入标准验证流程。
 
+---
+
+## 修订：UI 调整轮 + 快捷键配置化 + 方案 C（2026-07-20）
+
+继 e2e 反馈四轮后，又做了一轮 UI 调整 + 两个新功能（快捷键配置化、VaultPicker
+内联新建 cipher）。
+
+### UI 调整轮（解锁界面 + PasswordInput + 标题居中 + 文案）
+
+- `8aceb164` style: VaultPicker locked/reprompt/uninit 紧凑居中 + Input/Button 等宽
+- `2a2196e3` fix: VaultPicker 动态窗口高度 + Input size=full 解决 max-w-[220px] 限制
+  - **关键 bug**：Input 组件默认 size="default" 带 max-w-[220px]，加 className="w-full"
+    被覆盖——必须传 size="full" 才真正等宽
+  - 后端 inner_size 改 400×200，前端 useEffect 按 view.kind 动态 setSize
+- `e6174f07` style: VaultPicker 4 个视图标题居中（absolute + 左侧同等宽占位对称）
+- `2968c307` feat: 抽 PasswordInput 组件（Eye + Eraser suffix 按钮）——主密码很长，
+  输错一个字符要全删重输很累。Eye 看明文定位错字符，Eraser 一键清空重输。
+  应用到 VaultPicker locked/reprompt + Settings UnlockDialog + SetupWizard（2 处）
+- `b545fc22` style: UnlockDialog 对齐 VaultPicker 浮窗布局（删副标题 + 居中 + 等宽）
+
+### 快捷键配置化（commit `be8243e5`）
+
+需求：vault AutoType 全局热键 `Cmd+Shift+L` 在 设置 → 通用 → 快捷键 tab 配置化，
+与其他 6 个快捷键（asr/edit/polish/clipboard/screenshot/action_bar）一致。
+
+实现：
+- `settings_commands.rs set_config_value` 加 vault_autotype_shortcut 热重载分支
+  - `#[cfg(feature = "vault")]` gate——feature off 时 register_vault_autotype_shortcut
+    不存在
+  - 同模式：unregister old + register new + 失败恢复 old + 不持久化
+- `GeneralPanel.tsx` shortcut tab 加 vault autotype Row
+  - 位置：actionBarShortcut 之后（浮窗触发类语义聚类）
+  - feature off 时不渲染（isVaultEnabled 控制，传自 Settings/index.tsx）
+
+### 方案 C：VaultPicker 内联新建 cipher（commit `b8f4990e`）
+
+brainstorming 结论：macOS 桌面 app **无权限读浏览器 DOM 字段值**——真正自动采集只有
+浏览器扩展能做（vaultwarden 也不做采集，它是 Bitwarden 兼容服务端）。短期可做的方案：
+
+- **方案 A**（bookmarklet）：长期方向，未实现
+- **方案 B**（浏览器扩展）：独立项目，大工程
+- **方案 C**（VaultPicker 内联新建）：低成本，立即价值——本次实现
+- **方案 D**（手动 Settings 录入）：现状
+
+方案 C 实现：
+- VaultPicker 加 create view state + CreateCipherView 子组件
+- 入口：无匹配时（voice 全宽按钮）+ 有匹配时底部 dashed border 轻量入口
+  - 文案统一为「新增保险箱」（commit `758a7145`，原「+ 为当前站点新建」抽象，改简短）
+- CreateCipherView：极简 4 字段（name/url/username/password）
+  - URL 从新增命令 `vault_get_cached_url` 预填（复用 picker_url_cache，不清空）
+  - name 自动从 URL hostname 提取
+- 不做 CipherEditor 的高级功能（folder/TOTP/fields/favorite）——浮窗场景要快
+
+### Bug 修复（commit `23b8e148` + `4f556700`）
+
+- CreateCipherView 漏 import Input → 运行时报 `Can't find variable: Input`
+  （tsc 因 JSX 全局类型未报错，运行时才崩）
+- VaultPicker 5 个视图标题栏加 `data-tauri-drag-region="deep"`——浮窗可拖动
+  （遮住信息时拖走，与 Clipboard 浮窗同模式）
+- list 视图高度估算漏算底部新建按钮 32px → 「+ 为当前站点新建」被遮挡
+- `vault_detect_and_match` 内部清 cache 太早 → CreateCipherView 后续 mount 时
+  `vault_get_cached_url` 拿到 None → URL 字段不预填。修：去掉 detect 清 cache 逻辑
+  （cache 在热键 callback 每次覆盖，CreateCipherView 永远能拿到最近一次热键抓的 URL）
+
+### 验证
+
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+- cargo test -p octopus-desktop: 381 pass
+- tsc: 0 error
+- bun run test: 304 pass
+
+### 累计 commit（2026-07-20）
+
+| commit | 说明 |
+|---|---|
+| `be8243e5` | vault_autotype_shortcut 配置化（设置页快捷键栏） |
+| `b8f4990e` | 方案 C——VaultPicker 内联新建 cipher |
+| `23b8e148` | Input import 修 + 5 标题栏加拖动 |
+| `4f556700` | list 高度加底部新建按钮 + URL cache 保留 |
+| `758a7145` | 文案「+ 为当前站点新建」→「新增保险箱」|
+| `8aceb164`/`2a2196e3`/`e6174f07`/`2968c307`/`b545fc22` | UI 调整（紧凑居中 / 等宽 / 标题居中 / PasswordInput / UnlockDialog）|
+
+### 方案 A 后续工作（未实现）
+
+bookmarklet 真正自动采集——用户在登录页填完密码点书签 → JS 抓 DOM 字段 → deep-link
+回调 octopus → 入库。需要：
+1. 注册自定义 URL scheme（tauri `deep-link` plugin）
+2. 生成 bookmarklet JS（用户从设置页拖到书签栏）
+3. 确认框 + 入库流程
+4. 安全考量（URL scheme 不暴露明文 → 通过剪贴板 concealed 传递）
+
