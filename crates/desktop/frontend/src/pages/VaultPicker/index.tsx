@@ -7,6 +7,7 @@ import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } fro
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { classifyError } from "./classifyError";
 
 /**
@@ -258,10 +259,10 @@ export default function VaultPicker() {
         </div>
         {/* 表单内容垂直居中 */}
         <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-4">
-          <Input
-            type="password"
+          <PasswordInput
             value={unlockPassword}
             onChange={(e) => setUnlockPassword(e.target.value)}
+            onClear={() => setUnlockError(null)}
             placeholder={t("settings.vault.unlock.passwordLabel")}
             autoFocus
             autoComplete="current-password"
@@ -355,10 +356,10 @@ export default function VaultPicker() {
           <p className="text-xs text-muted-foreground">
             {t("settings.vault.autotype.repromptHint", { name: view.cipher.name })}
           </p>
-          <Input
-            type="password"
+          <PasswordInput
             value={unlockPassword}
             onChange={(e) => setUnlockPassword(e.target.value)}
+            onClear={() => setUnlockError(null)}
             placeholder={t("settings.vault.unlock.passwordLabel")}
             autoFocus
             autoComplete="current-password"

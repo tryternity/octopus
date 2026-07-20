@@ -78,6 +78,11 @@ settings:
       passwordLabel: 主密码
       submit: 解锁
       wrongPassword: 主密码错误
+    # PasswordInput 组件按钮文案（Eye 切换显示 / Eraser 清空）
+    passwordInput:
+      reveal: 显示密码
+      hide: 隐藏密码
+      clear: 清空
     lock: 锁定保险库
     changePassword: 修改主密码
     lockTimeoutLabel: 自动锁定

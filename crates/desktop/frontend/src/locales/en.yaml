@@ -78,6 +78,11 @@ settings:
       passwordLabel: Master Password
       submit: Unlock
       wrongPassword: Wrong master password
+    # PasswordInput component button labels (Eye toggle / Eraser clear)
+    passwordInput:
+      reveal: Reveal password
+      hide: Hide password
+      clear: Clear
     lock: Lock Vault
     changePassword: Change Master Password
     lockTimeoutLabel: Auto-lock

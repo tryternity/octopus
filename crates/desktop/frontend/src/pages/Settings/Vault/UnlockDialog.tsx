@@ -2,7 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 /**
  * UnlockDialog —— 已初始化但锁定时，输入主密码解锁。
@@ -55,10 +55,10 @@ export default function UnlockDialog({
           <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
             {t("settings.vault.unlock.passwordLabel")}
           </label>
-          <Input
-            type="password"
+          <PasswordInput
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            onClear={() => setError(null)}
             className="w-full"
             autoFocus
             autoComplete="current-password"
