@@ -150,6 +150,15 @@ settings:
       uninitHint: 请先在「设置 → 密码保险库」中创建保险库
       repromptTitle: 再次验证主密码
       repromptHint: 「${name}」标记为高敏感，自动填充前需再次输入主密码确认
+      # 三模式 autotype（2026-07-20）：webmail SPA 的 Tab 切焦点不可靠，
+      # 给用户三种独立控制——按当前光标位置选合适模式。
+      mode:
+        usernamePassword: 填充用户名 + 密码（焦点须在用户名框）
+        passwordOnly: 仅填充密码到当前焦点
+        usernameOnly: 仅填充用户名到当前焦点
+      copyUsername: 复制用户名
+      revealPassword: 显示密码
+      hidePassword: 隐藏密码
     generator:
       title: 密码生成器
       mode:

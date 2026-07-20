@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, Type as TypeIcon, Lock, RefreshCw, X } from "lucide-react";
+import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,13 +43,25 @@ interface CipherDto {
   reprompt?: number;
 }
 
+/** 三模式 autotype（2026-07-20）。
+ *  - usernamePassword: 完整填（username + Tab + password），焦点须在 username 框
+ *  - passwordOnly（默认）: 仅填密码，焦点已在 password 框
+ *  - usernameOnly: 仅填用户名，焦点在 username 框
+ *
+ *  背后原因：webmail SPA（mail.163.com 等）的 Tab 切焦点不可靠。给用户三种独立控制，
+ *  据当前光标位置选合适模式。Bitwarden/1Password 桌面助手默认也是 PasswordOnly。
+ *
+ *  字面值 camelCase：后端 AutoTypeMode enum 标了 serde(rename_all = "camelCase")，
+ *  Tauri 命令边界序列化时 Rust 端期望 camelCase 字符串。*/
+type AutotypeMode = "usernamePassword" | "passwordOnly" | "usernameOnly";
+
 type ViewState =
   | { kind: "loading" }
   | { kind: "list"; ciphers: CipherDto[] }
   | { kind: "locked" }
   | { kind: "uninit" }
   | { kind: "error"; message: string }
-  | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean }
+  | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean; mode: AutotypeMode }
   | { kind: "autotyping" };
 
 export default function VaultPicker() {
@@ -57,6 +69,9 @@ export default function VaultPicker() {
   const [view, setView] = useState<ViewState>({ kind: "loading" });
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
+  // 密码可见性——按 cipher id 独立 toggle（多个 cipher 互不影响）。
+  // 默认全部 mask（•••••）防浮窗一闪而过被旁人偷看。
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<number, boolean>>({});
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -124,24 +139,33 @@ export default function VaultPicker() {
   );
 
   const handlePick = useCallback(
-    async (c: CipherDto, copyOnly: boolean) => {
+    async (c: CipherDto, copyOnly: boolean, mode: AutotypeMode = "passwordOnly") => {
       // reprompt 保护的高敏感 cipher：弹密码框，确认后再调后端
       // （后端 vault_autotype / vault_copy_password 都会强制再次校验 master_password，不可绕过）
       if (c.reprompt === 1) {
         setUnlockPassword("");
         setUnlockError(null);
-        setView({ kind: "reprompt", cipher: c, copyOnly });
+        setView({ kind: "reprompt", cipher: c, copyOnly, mode });
         return;
       }
-      await runAutotype(c, copyOnly, undefined);
+      await runAutotype(c, copyOnly, mode, undefined);
     },
     [],
   );
 
   /** 实际调 vault_autotype / vault_copy_password——reprompt 通过后也走这里。
-   *  masterPassword 仅在 reprompt 场景传入。*/
+   *  masterPassword 仅在 reprompt 场景传入。
+   *
+   *  **2026-07-20 e2e 修复**：不要 await getCurrentWindow().hide()——hide 会让
+   *  webview 进入 terminated 状态，紧接着的 invoke 永远到不了后端（race condition）。
+   *  hide 改由后端 vault_autotype 自己做（用 AppHandle 拿窗口引用）。*/
   const runAutotype = useCallback(
-    async (c: CipherDto, copyOnly: boolean, masterPassword: string | undefined) => {
+    async (
+      c: CipherDto,
+      copyOnly: boolean,
+      mode: AutotypeMode,
+      masterPassword: string | undefined,
+    ) => {
       setBusy(true);
       try {
         if (copyOnly) {
@@ -149,14 +173,14 @@ export default function VaultPicker() {
             cipherId: c.id,
             masterPassword: masterPassword ?? null,
           });
-        } else {
-          // 关键：autotype 前先 hide 浮窗，让浏览器回到前台。
-          // 后端 vault_autotype 会 sleep + 校验前台不是 octopus 自身（防钓鱼注入），
-          // 若浮窗未 hide 则校验失败 → fallback 到剪贴板。
+          // copy 后 hide 浮窗（copy 不像 autotype 需要后端做焦点管理，前端 hide 安全）
           await getCurrentWindow().hide();
+        } else {
+          // autotype 由后端 hide——前端不调 hide，避免 invoke 失联
           await invoke("vault_autotype", {
             cipherId: c.id,
             masterPassword: masterPassword ?? null,
+            mode,
           });
         }
       } catch (e) {
@@ -242,9 +266,10 @@ export default function VaultPicker() {
       if (!unlockPassword) return;
       const cipher = view.cipher;
       const copyOnly = view.copyOnly;
+      const mode = view.mode;
       const pwd = unlockPassword;
       setView({ kind: "autotyping" });
-      await runAutotype(cipher, copyOnly, pwd);
+      await runAutotype(cipher, copyOnly, mode, pwd);
     };
     return (
       <form onSubmit={submitReprompt} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
@@ -339,53 +364,137 @@ export default function VaultPicker() {
         )}
 
         {view.kind === "list" &&
-          view.ciphers.map((c) => (
-            <div
-              key={c.id}
-              className="group flex items-center gap-2 border-b border-border/50 px-4 py-2 last:border-b-0 hover:bg-accent"
-            >
-              <button
-                type="button"
-                className="flex flex-1 items-center gap-2 text-left outline-none"
-                onClick={() => handlePick(c, false)}
-                disabled={busy}
-                title={t("settings.vault.autotype.trigger")}
+          view.ciphers.map((c) => {
+            const username = c.login?.username || "";
+            const password = c.login?.password || "";
+            const revealed = !!revealedPasswords[c.id];
+            return (
+              <div
+                key={c.id}
+                className="border-b border-border/50 last:border-b-0 hover:bg-accent"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{c.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {c.login?.username || "—"}
+                {/* 第一段：名称行 + 复制(无) + 完整填充(⌨)
+                    名称行无对应复制按钮（整个条目的"名"不属于字段），右侧只放一个
+                    完整填充图标，与下面两段的 autotype 列对齐。 */}
+                <div className="flex items-center gap-1 px-4 pt-2">
+                  <div className="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {c.name}
                   </div>
+                  {/* 占位与下方 copy 列对齐 */}
+                  <div className="size-7 shrink-0" aria-hidden />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "usernamePassword");
+                    }}
+                    disabled={busy}
+                    title={t("settings.vault.autotype.mode.usernamePassword")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Keyboard className="size-4" />
+                  </Button>
                 </div>
-              </button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, false);
-                }}
-                disabled={busy}
-                title={t("settings.vault.autotype.trigger")}
-              >
-                <TypeIcon />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePick(c, true);
-                }}
-                disabled={busy}
-                title={t("settings.vault.generator.copy")}
-              >
-                <Copy />
-              </Button>
-            </div>
-          ))}
+
+                {/* 第二段：用户名行 + 复制(📋) + 仅填用户名(@) */}
+                <div className="flex items-center gap-1 px-4 py-1">
+                  <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {username || "—"}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void invoke("vault_copy_username", { cipherId: c.id });
+                    }}
+                    disabled={busy || !username}
+                    title={t("settings.vault.autotype.copyUsername")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "usernameOnly");
+                    }}
+                    disabled={busy || !username}
+                    title={t("settings.vault.autotype.mode.usernameOnly")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <AtSign className="size-4" />
+                  </Button>
+                </div>
+
+                {/* 第三段：密码行 + 复制(📋) + 仅填密码(🔑)
+                    默认 mask 显示（••••），点眼睛切换可见。 */}
+                <div className="flex items-center gap-1 px-4 pb-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRevealedPasswords((m) => ({ ...m, [c.id]: !m[c.id] }))
+                    }
+                    disabled={!password}
+                    title={
+                      revealed
+                        ? t("settings.vault.autotype.hidePassword")
+                        : t("settings.vault.autotype.revealPassword")
+                    }
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left outline-none"
+                  >
+                    <span className="truncate text-xs text-muted-foreground">
+                      {password
+                        ? revealed
+                          ? password
+                          : "•".repeat(Math.max(6, Math.min(12, password.length)))
+                        : "—"}
+                    </span>
+                    {password &&
+                      (revealed ? (
+                        <EyeOff className="size-3 shrink-0 text-muted-foreground/60" />
+                      ) : (
+                        <Eye className="size-3 shrink-0 text-muted-foreground/60" />
+                      ))}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, true, "passwordOnly");
+                    }}
+                    disabled={busy || !password}
+                    title={t("settings.vault.generator.copy")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Copy className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePick(c, false, "passwordOnly");
+                    }}
+                    disabled={busy || !password}
+                    title={t("settings.vault.autotype.mode.passwordOnly")}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <KeyRound className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
 
         {view.kind === "error" && (
           <div className="px-4 py-3 text-sm text-destructive">{view.message}</div>

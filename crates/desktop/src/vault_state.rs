@@ -146,6 +146,21 @@ impl VaultSession {
 
 pub type SharedVaultSession = Arc<RwLock<VaultSession>>;
 
+/// 热键触发时抓到的浏览器 URL 缓存（共享可变状态）。
+///
+/// **修复 VaultPicker 时序 bug**（2026-07-19 e2e 测试）：
+/// 原实现热键 callback `show + set_focus(vault_picker_window)` **之后**才 emit 让前端
+/// 调 `vault_detect_and_match`——此时 VaultPicker 已抢前台，`frontmost_bundle_id()` 取到
+/// 的是 octopus-desktop 自己，`script_for_browser(octopus_id)` = None → URL 检测失败 →
+/// 走 fallback 列出最近 20 条 cipher，用户看到的是全部密码而非当前站点匹配项。
+///
+/// 修复：热键 callback 在 show VaultPicker **之前**先抓 URL，存入此 Mutex；
+/// `vault_detect_and_match` 优先读缓存，没有才走原 `current_browser_url()` 路径（兼容
+/// 已 show 后用户手动刷新的场景——此时浏览器仍非前台，会 fallback，符合预期）。
+///
+/// 用 Mutex 而非 RwLock：写多读少 + 短临界区；URL 字符串 Clone 廉价。
+pub type SharedPickerUrlCache = Arc<std::sync::Mutex<Option<String>>>;
+
 /// 启动时调一次：尝试用 K_machine 解 app_key 注入。
 ///
 /// - 成功 → AppState 的 app_key 字段填好，后续 Task 17+ 直接读
