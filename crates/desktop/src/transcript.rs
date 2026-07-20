@@ -136,6 +136,12 @@ impl Transcript {
             self.diverted_pending.push_str(&diff);
             self.engine_cumulative = full.to_string();
             self.engine_consumed_chars = full.chars().count();
+            // 诊断（spec 2026-07-19 第二轮）：diverted 分支，验证假设 F
+            crate::perf_log::log(&format!(
+                "[APPLY] t={} branch=diverted is_prefix=false full_len={} lcp={} diff_len={} diverted_pending_len={} polish_pending={} sel_del={}",
+                self.id, full.chars().count(), lcp, diff.chars().count(),
+                self.diverted_pending.chars().count(), self.polish_pending, selection_deleted,
+            ));
             if self.diverted_pending.chars().count() < DIVERTED_PENDING_LIMIT {
                 // diverted 延迟确认——但如果选区刚被删，文本确实变了，须返回 true 让前端刷新
                 return selection_deleted;
@@ -156,6 +162,14 @@ impl Transcript {
             if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
             else { self.push_delta_at_caret(&combined_delta); }
         }
+        // 诊断（spec 2026-07-19 第二轮）：apply 成功路径，验证假设 F + polish_pending 卡 delta
+        crate::perf_log::log(&format!(
+            "[APPLY] t={} branch=prefix is_prefix={} delta_len={} diverted_len={} polish_pending={} cum_len={} shown_len={} sel_del={}",
+            self.id, is_prefix, combined_delta.chars().count(),
+            self.diverted_pending.chars().count(), self.polish_pending,
+            self.engine_cumulative.chars().count(), self.finish_text().chars().count(),
+            selection_deleted,
+        ));
         if selection_deleted || is_prefix {
             log::debug!(
                 "[seldbg] emit t={} delta='{}' final='{}' gap={} segs={}",
@@ -194,6 +208,11 @@ impl Transcript {
         } else {
             self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() });
             self.caret_gap = gap + 1;
+            // 诊断（spec 2026-07-19 第二轮）：新段插入位置，验证假设 D（caret 落点看不到）
+            crate::perf_log::log(&format!(
+                "[CARET] insert gap={} segs={} is_inserting={} (new Raw segment)",
+                self.caret_gap, self.segments.len(), self.is_inserting(),
+            ));
         }
     }
 
@@ -231,6 +250,11 @@ impl Transcript {
         }
         self.pending_delete = None;
         self.selection_insert_offset = None;
+        // 诊断（spec 2026-07-19 第二轮）：caret 落点
+        crate::perf_log::log(&format!(
+            "[CARET] set_caret off={} gap={} segs={} is_inserting={}",
+            char_off, self.caret_gap, self.segments.len(), self.is_inserting(),
+        ));
     }
 
     /// 删除扁平 char 范围 [start,end)。先 split_at(start) 再 split_at(end)，drain 中间段，
@@ -251,6 +275,11 @@ impl Transcript {
         self.pending_delete = Some((start, end));
         self.selection_insert_offset = Some(start);
         self.caret_gap = self.split_at(start);
+        // 诊断（spec 2026-07-19 第二轮）：选区落点
+        crate::perf_log::log(&format!(
+            "[CARET] set_selection range=[{},{}] gap={} segs={} is_inserting={}",
+            start, end, self.caret_gap, self.segments.len(), self.is_inserting(),
+        ));
     }
 
     /// 当前 caret 在 finish_text 的 char offset（前端光标像素定位用）。
@@ -315,7 +344,14 @@ impl Transcript {
         }
         self.pending_delete = None;
         self.selection_insert_offset = None;
-        if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
+        if flat.is_empty() {
+            self.segments.clear(); self.caret_gap = 0;
+            crate::perf_log::log(&format!(
+                "[CARET] commit_edit(empty) segs=0 caret_gap=0 cum_len={} polish_pending={}",
+                self.engine_cumulative.chars().count(), self.polish_pending,
+            ));
+            return;
+        }
         if dirty_ranges.is_empty() {
             if has_edited {
                 self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
@@ -328,11 +364,24 @@ impl Transcript {
                 self.segments = rebuild_segments(&old_segments, flat, &[]);
                 self.caret_gap = self.segments.len();
             }
+            crate::perf_log::log(&format!(
+                "[CARET] commit_edit(no_dirty) segs={} caret_gap={} cum_len={} polish_pending={} has_edited={}",
+                self.segments.len(), self.caret_gap,
+                self.engine_cumulative.chars().count(), self.polish_pending, has_edited,
+            ));
             return;
         }
         let old_segments = self.segments.clone();
         self.segments = rebuild_segments(&old_segments, flat, dirty_ranges);
         self.caret_gap = self.segments.len();
+        // 诊断（spec 2026-07-19 第二轮）：commit 后 transcript 状态
+        // 验证假设 F（engine_cumulative 与新 segments 失配）+ 假设 D（caret 落点）+ 假设 A（polish_pending 残留）
+        crate::perf_log::log(&format!(
+            "[CARET] commit_edit segs={} caret_gap={} cum_len={} polish_pending={} dirty={} has_edited={}",
+            self.segments.len(), self.caret_gap,
+            self.engine_cumulative.chars().count(), self.polish_pending,
+            dirty_ranges.len(), has_edited,
+        ));
     }
 
     /// 是否含 Raw 段（mode=2 中间润色触发判定，替代旧 has_increase）。
@@ -358,6 +407,11 @@ impl Transcript {
         self.polish_caret_at_tail = self.selection_insert_offset.is_none()
             && self.caret_gap >= self.segments.len();
         self.polish_pending = true;
+        // 诊断（spec 2026-07-19 第二轮）：润色发起，验证假设 A/G
+        crate::perf_log::log(&format!(
+            "[POLISH] take_polish_input t={} segs={} caret_at_tail={} caret_off={}",
+            self.id, self.segments.len(), self.polish_caret_at_tail, self.polish_caret_offset,
+        ));
         PolishInput { segments: self.polish_snapshot.clone() }
     }
 
@@ -367,6 +421,7 @@ impl Transcript {
         let snapshot = std::mem::take(&mut self.polish_snapshot);
         let caret_off = self.polish_caret_offset;
         let at_tail = self.polish_caret_at_tail;
+        let pending_len = self.pending_delta.chars().count();
         self.polish_pending = false;
         self.segments = rebuild_after_polish(&snapshot, full);
         if at_tail {
@@ -381,6 +436,12 @@ impl Transcript {
         let pending = std::mem::take(&mut self.pending_delta);
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
         self.last_polish_time = Instant::now();
+        // 诊断（spec 2026-07-19 第二轮）：润色完成回填，验证假设 A/G（用户编辑被 polish_apply 覆盖）
+        crate::perf_log::log(&format!(
+            "[POLISH] polish_apply t={} full_len={} at_tail={} segs={} caret_gap={} pending_delta_flushed={}",
+            self.id, full.chars().count(), at_tail,
+            self.segments.len(), self.caret_gap, pending_len,
+        ));
     }
 
     /// 润色失败：清 pending；flush pending_delta（保留新语音）。segments 不变。
@@ -394,6 +455,11 @@ impl Transcript {
         self.polish_snapshot.clear();
         let pending = std::mem::take(&mut self.pending_delta);
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
+        // 诊断（spec 2026-07-19 第二轮）
+        crate::perf_log::log(&format!(
+            "[POLISH] on_polish_failed t={} pending_delta_flushed={}",
+            self.id, pending.chars().count(),
+        ));
     }
 
     pub fn polish_pending(&self) -> bool { self.polish_pending }

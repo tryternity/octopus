@@ -274,6 +274,13 @@ fn build_coordinator_loop(
             // C3 两阶段 Toggle：Idle→Toggle 进等待，存 prepare_id 校验前端 StartRecording / 看门狗
             // FallbackStart。前端 200ms 内回推选区→StartRecording；超时→FallbackStart 普通开。
             let mut pending_prepare: Option<i64> = None;
+            // 诊断打点局部状态（spec 2026-07-19-asr-edit-stall-observability）：
+            // - last_heartbeat / ticks_since_heartbeat：1Hz 节流 `[HEARTBEAT]`，证明 tick 线程在跑
+            // - last_editing_logged：检测 editing 翻转，打 `[STATE]`（与 5 处精确触发点互补，
+            //   覆盖 EnterEditMode/CommitEdit/Toggle/Cancel/Discard 之外的间接复位路径）
+            let mut hb_last = std::time::Instant::now();
+            let mut hb_ticks: u64 = 0;
+            let mut last_editing_logged: Option<bool> = None;
 
             loop {
                 let cmd = match rx.recv() {
@@ -292,6 +299,10 @@ fn build_coordinator_loop(
                                 commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
                             }
                             editing = false;
+                            crate::perf_log::log(&format!(
+                                "[STATE] toggle-during-edit committed then stopping (stage={})",
+                                stage_name(&stage),
+                            ));
                         }
                         if !matches!(stage, Stage::Idle) {
                             // 活跃录音态 → 停录音（handle_toggle 走非 Idle 分支）
@@ -350,6 +361,7 @@ fn build_coordinator_loop(
                         if let Stage::Streaming { transcript, .. } = &mut stage {
                             transcript.set_mode(config.polish_mode);
                         }
+                        log_tick_heartbeat(&stage, editing, &mut last_editing_logged, &mut hb_last, &mut hb_ticks);
                         if editing {
                             audio.trim_buffer(5.0); // 编辑期保留最后 5 秒音频（恢复后送 ASR，VAD 截静音）
                         } else {
@@ -365,6 +377,7 @@ fn build_coordinator_loop(
                         if let Stage::Streaming { transcript, .. } = &mut stage {
                             transcript.set_mode(config.polish_mode);
                         }
+                        log_tick_heartbeat(&stage, editing, &mut last_editing_logged, &mut hb_last, &mut hb_ticks);
                         if editing {
                             audio.trim_buffer(5.0);
                         } else {
@@ -381,6 +394,7 @@ fn build_coordinator_loop(
                         {
                             transcript.set_mode(config.polish_mode);
                         }
+                        log_tick_heartbeat(&stage, editing, &mut last_editing_logged, &mut hb_last, &mut hb_ticks);
                         if editing {
                             audio.trim_buffer(5.0);
                         } else {
@@ -392,6 +406,7 @@ fn build_coordinator_loop(
                         if editing {
                             editing = false;
                             edit_buffer = None;
+                            crate::perf_log::log("[STATE] cancel-during-edit cleared");
                         }
                         pending_prepare = None;
                         handle_cancel(&mut stage, &audio, &app_handle);
@@ -400,6 +415,7 @@ fn build_coordinator_loop(
                         if editing {
                             editing = false;
                             edit_buffer = None;
+                            crate::perf_log::log("[STATE] discard-during-edit cleared");
                         }
                         pending_prepare = None;
                         handle_discard(&mut stage, &audio, &app_handle, &config);
@@ -465,8 +481,15 @@ fn build_coordinator_loop(
                         handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
                     }
                     Command::CommitEdit { text, dirty_ranges, has_edited, caret, selection } => {
+                        crate::perf_log::log(&format!(
+                            "[STATE] commit_edit stage={} text_len={} has_edited={}",
+                            stage_name(&stage), text.chars().count(), has_edited,
+                        ));
                         commit_edit_apply(&mut stage, &text, &dirty_ranges, has_edited, caret, selection, &app_handle);
                         editing = false;
+                        // 诊断（spec 2026-07-19 第二轮）：commit_edit_apply 后 transcript 状态
+                        // 与 transcript.rs 的 [CARET] commit_edit 打点互补——这里 stage 维度，
+                        // 那里 transcript 字段维度
                     }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
@@ -1938,6 +1961,11 @@ fn check_and_trigger_polish(
     }
     // 取润色输入（段模型快照）+ 标记 pending（take_polish_input 内部已置 pending）+ 送 LLM
     let input = transcript.take_polish_input();
+    // 诊断（spec 2026-07-19 第二轮）：自动润色触发，验证假设 A
+    crate::perf_log::log(&format!(
+        "[POLISH] auto-trigger t={} silence={:.2} mode={:?} segs={}",
+        transcript.id, silence_duration, config.polish_mode, input.segments.len(),
+    ));
     spawn_polish_thread(input, config, tx, false, transcript.id);
 }
 
@@ -2207,6 +2235,10 @@ fn handle_polish_done(
                 "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
                 session_id, transcript.id
             );
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage=StoppingPolish discarded_reason=session_mismatch polish_sid={} cur_id={}",
+                session_id, transcript.id,
+            ));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2219,8 +2251,12 @@ fn handle_polish_done(
                     use tauri::Emitter;
                     let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                     transcript.on_polish_failed();
+                    crate::perf_log::log("[POLISH] done stage=StoppingPolish result=empty → on_polish_failed");
                 } else {
                     transcript.polish_apply(&polished);
+                    crate::perf_log::log(&format!(
+                        "[POLISH] done stage=StoppingPolish result=ok polished_len={}", polished.chars().count(),
+                    ));
                     let cmd = if transcript.has_edit() {
                         DbCommand::UpdateEditedSegments {
                             id: transcript.id,
@@ -2246,6 +2282,9 @@ fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", &e);
                 transcript.on_polish_failed();
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage=StoppingPolish result=err err_len={}", e.chars().count(),
+                ));
             }
         }
         use tauri::Emitter;
@@ -2256,6 +2295,8 @@ fn handle_polish_done(
         return;
     }
 
+    // 在借用 transcript 之前算出 stage_name，避免后续打点同时借 stage（不可变）与 transcript（可变）
+    let sname = stage_name(stage);
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
@@ -2263,7 +2304,10 @@ fn handle_polish_done(
         #[cfg(feature = "cloud")]
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
-            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
+            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", sname);
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage={} ignored_reason=not_recording_stage", sname,
+            ));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2277,6 +2321,10 @@ fn handle_polish_done(
             "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
             session_id, transcript.id
         );
+        crate::perf_log::log(&format!(
+            "[POLISH] done stage={} discarded_reason=session_mismatch polish_sid={} cur_id={}",
+            sname, session_id, transcript.id,
+        ));
         use tauri::Emitter;
         let _ = app_handle.emit("polish-done", ());
         return;
@@ -2288,9 +2336,15 @@ fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                 transcript.on_polish_failed();
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage={} result=empty → on_polish_failed", sname,
+                ));
             } else {
                 // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
                 transcript.polish_apply(&polished);
+                crate::perf_log::log(&format!(
+                    "[POLISH] done stage={} result=ok polished_len={}", sname, polished.chars().count(),
+                ));
                 // 含 Edited 段→UpdateEditedSegments（保持 edited/text/segments 一致）；否则 UpdatePolished（现状）
                 let cmd = if transcript.has_edit() {
                     DbCommand::UpdateEditedSegments {
@@ -2321,6 +2375,9 @@ fn handle_polish_done(
             use tauri::Emitter;
             let _ = app_handle.emit("polish-error", &e);
             transcript.on_polish_failed();
+            crate::perf_log::log(&format!(
+                "[POLISH] done stage={} result=err err_len={}", sname, e.chars().count(),
+            ));
         }
     }
     // 通知前端：润色完成（成功/失败均通知，前端恢复「立即润色」按钮）
@@ -2349,17 +2406,22 @@ fn handle_polish_now(
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
+            crate::perf_log::log(&format!(
+                "[POLISH] PolishNow-ignored stage={} (no transcript)", stage_name(stage),
+            ));
             let _ = app_handle.emit("polish-done", ());
             return;
         }
     };
     if transcript.full().is_empty() {
         debug!("PolishNow skipped: transcript empty");
+        crate::perf_log::log("[POLISH] PolishNow-skipped reason=empty");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
     if transcript.polish_pending() {
         debug!("PolishNow skipped: polish already pending");
+        crate::perf_log::log("[POLISH] PolishNow-skipped reason=already_pending");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
@@ -2378,6 +2440,12 @@ fn handle_polish_now(
         warn!("PolishNow ensure INSERT failed: {}", e);
     }
     let input = transcript.take_polish_input();
+    // 诊断（spec 2026-07-19 第二轮）：手动润色触发，验证假设 G（编辑期间 PolishNow → PolishDone 覆盖用户编辑）
+    crate::perf_log::log(&format!(
+        "[POLISH] PolishNow-manual-trigger t={} chars={}",
+        transcript.id,
+        input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>(),
+    ));
     info!("PolishNow triggered, polishing {} chars", input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>());
     spawn_polish_thread(input, config, tx, true, transcript.id);
 }
@@ -2396,6 +2464,7 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
             // 用户可对其修订。允许进入（editing=true）；edit_buffer 不在此初始化。
             // 提交走 commit_edit_apply 的 Idle 分支，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE 落库。
             *editing = true;
+            crate::perf_log::log("[STATE] enter_edit stage=Idle transcript_id=—");
             info!("Entered edit mode in Idle (no active transcript)");
             return;
         }
@@ -2404,9 +2473,14 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
             return;
         }
     };
+    let transcript_id = transcript.id;
     *editing = true;
     *edit_buffer = Some(transcript.display_text());
-    info!("Entered edit mode (transcript id={})", transcript.id);
+    crate::perf_log::log(&format!(
+        "[STATE] enter_edit stage={} transcript_id={}",
+        stage_name(stage), transcript_id,
+    ));
+    info!("Entered edit mode (transcript id={})", transcript_id);
 }
 
 /// 提交编辑：写回 transcript（commit_edit + dirty ranges 劈段）+ 光标/选区恢复 + UPDATE edited_text + 刷新展示。
@@ -2516,6 +2590,38 @@ fn stage_name(stage: &Stage) -> &'static str {
     }
 }
 
+/// tick 线程诊断打点（spec 2026-07-19-asr-edit-stall-observability）：
+/// - 检测 `editing` 翻转（覆盖 5 处精确触发点之外的间接复位路径），翻转即打 `[STATE]`
+/// - 距上次心跳 ≥ 1s 打 `[HEARTBEAT]`（1Hz 节流），证明 tick 线程在跑 + 当前 stage/editing
+/// 调用方：三个 Tick 分支（StreamingTick / VadSegmentedTick / CloudStreamingTick）入口。
+fn log_tick_heartbeat(
+    stage: &Stage,
+    editing: bool,
+    last_editing_logged: &mut Option<bool>,
+    hb_last: &mut std::time::Instant,
+    hb_ticks: &mut u64,
+) {
+    // editing 翻转即打（错过快速 enter→commit 是要避免的，心跳节流兜底，但翻转必须立即落）
+    if *last_editing_logged != Some(editing) {
+        crate::perf_log::log(&format!(
+            "[STATE] editing {} -> {} (stage={})",
+            last_editing_logged.map(|b| b.to_string()).unwrap_or_else(|| "—".into()),
+            editing,
+            stage_name(stage),
+        ));
+        *last_editing_logged = Some(editing);
+    }
+    *hb_ticks += 1;
+    if hb_last.elapsed() >= std::time::Duration::from_secs(1) {
+        crate::perf_log::log(&format!(
+            "[HEARTBEAT] stage={} editing={} ticks_in_window={}",
+            stage_name(stage), editing, hb_ticks,
+        ));
+        *hb_last = std::time::Instant::now();
+        *hb_ticks = 0;
+    }
+}
+
 /// pipeline 事件 → 端动作（DB/emit/polish/错误上报）。2d 统一路由，消除三路径重复。（spec §3.5）
 fn apply_pipeline_events(
     events: Vec<crate::pipeline::PipelineEvent>,
@@ -2546,6 +2652,7 @@ fn apply_pipeline_events(
                 crate::result_window::update_result(app_handle, &e, false, 0);
             }
             PipelineEvent::Speaking(speaking) => {
+                crate::perf_log::log(&format!("[SPEAKING] emit {}", speaking));
                 let _ = app_handle.emit("update-speaking", speaking);
             }
         }
@@ -2582,7 +2689,15 @@ fn dispatch_tick(
                 finalize_after_stop(stage, tr, config, app_handle, tx);
             }
         }
-        _ => {}
+        _ => {
+            // tick 到达但 stage 不是活跃识别态——通常是异常路径（如 Polishing/Pasting 阶段
+            // 还收到 Tick），打点帮助诊断"绿条为何不亮"是不是因为 stage 漂移。
+            crate::perf_log::log(&format!(
+                "[WARN] dispatch_tick stage={} not active, tick dropped (samples_drained={})",
+                stage_name(stage),
+                samples.len(),
+            ));
+        }
     }
 }
 
