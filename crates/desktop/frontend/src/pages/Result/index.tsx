@@ -115,11 +115,17 @@ function Result() {
       const speaking = typeof payload === "boolean" ? payload : (payload as any)?.payload ?? false;
       if (speaking) {
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
-        setIsSpeaking(true);
+        setIsSpeaking((prev) => {
+          if (!prev) void invoke("perf_log_cmd", { msg: "[FE] isSpeaking false -> true" });
+          return true;
+        });
       } else {
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
         speakingTimer.current = setTimeout(() => {
-          setIsSpeaking(false);
+          setIsSpeaking((prev) => {
+            if (prev) void invoke("perf_log_cmd", { msg: "[FE] isSpeaking true -> false (200ms debounce)" });
+            return false;
+          });
         }, 200);
       }
     });
@@ -163,7 +169,10 @@ function Result() {
           const t = p as string;
           const isPlaceholder = t === "正在聆听…" || t === "正在聆听..." || t === "Listening…" || t === "Listening...";
           setVisible(true);
-          setIsRecording(true);
+          setIsRecording((prev) => {
+            if (!prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording false -> true (show-result)" });
+            return true;
+          });
           setTranslateMode('off');
           setTranslatedText("");
           translatingRef.current = false;
@@ -188,12 +197,18 @@ function Result() {
           setText("");
           caretRef.current = null;
           setVisible(false);
-          setIsRecording(false);
+          setIsRecording((prev) => {
+            if (prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording true -> false (clear-result)" });
+            return false;
+          });
           setAsrEditorResetKey(k => k + 1);
         }],
         ["hide-result", () => {
           setVisible(false);
-          setIsRecording(false);
+          setIsRecording((prev) => {
+            if (prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording true -> false (hide-result)" });
+            return false;
+          });
           setAsrEditorResetKey(k => k + 1);
         }],
         ["config-changed", () => refreshActive()],

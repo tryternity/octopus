@@ -234,6 +234,14 @@ impl StreamingRunner {
             &mut self.silence_duration,
             &mut self.flushed,
         );
+        // 诊断（spec 2026-07-19 第二轮，假设 B）：runner 内部状态。写 stderr（log::debug!）；
+        // desktop 层 pipeline.rs 的 [TICK-DETAIL] 写文件做对账。这里只补 seen_speech/flushed
+        // 这两个 runner 私有状态，与 desktop 的 silence/has_speech 互补。
+        log::debug!(
+            "[runner] silence={:.2} has_speech={} seen_speech={} should_flush={} flushed={} samples={}",
+            self.silence_duration, has_speech, self.seen_speech, should_flush, self.flushed,
+            samples_16k.len(),
+        );
         // 开口前门控：VAD 在场时，首个 has_speech 锁存 seen_speech；未锁存前不喂 engine（丢弃
         // 启动噪声，避免 spurious "嗯"）。VAD 缺失则不门控，退回原行为喂全部（测试/模型缺失兼容）。
         let gate_active = self.vad.is_some();
