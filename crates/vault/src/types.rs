@@ -136,8 +136,8 @@ pub enum CipherData {
 /// 解密后的 cipher 完整对象。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cipher {
-    pub id: i64,
-    pub folder_id: Option<i64>,
+    pub id: String, // UUID v4 字符串（2026-07-21 v44：支持 git 同步）
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub atype: CipherType,
     pub name: String,
@@ -151,10 +151,10 @@ pub struct Cipher {
     pub updated_at: String,
 }
 
-/// 新建/更新 cipher 的输入（不带 id/时间戳）。
+/// 新建/更新 cipher 的输入（不带 id/时间戳——id 由调用方在 create_cipher 时生成 UUID）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CipherInput {
-    pub folder_id: Option<i64>,
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub atype: CipherType,
     pub name: String,
@@ -276,8 +276,8 @@ pub fn decrypt_cipher_row(
     };
 
     Ok(Cipher {
-        id: row.id,
-        folder_id: row.folder_id,
+        id: row.id.clone(),
+        folder_id: row.folder_id.clone(),
         favorite: row.favorite,
         atype: row.atype.into(),
         name,
@@ -338,7 +338,7 @@ mod tests {
 
         // 构造一个 VaultCipher 行模拟解密路径
         let row = octopus_infra::db::VaultCipher {
-            id: 1,
+            id: "test-uuid-1".to_string(),
             folder_id: None,
             favorite: false,
             atype: 1,

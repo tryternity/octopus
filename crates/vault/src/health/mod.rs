@@ -10,7 +10,7 @@ use crate::types::{Cipher, CipherData};
 #[derive(Debug, Serialize)]
 pub struct HealthReport {
     pub weak_count: usize,
-    pub weak_cipher_ids: Vec<i64>,
+    pub weak_cipher_ids: Vec<String>,
     pub duplicate_groups: Vec<duplicate::DuplicateGroup>,
     pub total_logins: usize,
     pub average_score: f64,
@@ -35,7 +35,7 @@ pub fn generate_report(ciphers: &[Cipher]) -> HealthReport {
                 total_score += s.score as f64;
                 score_count += 1;
                 if s.score < 3 {
-                    weak_cipher_ids.push(c.id);
+                    weak_cipher_ids.push(c.id.clone());
                 }
             }
         }
@@ -64,9 +64,9 @@ mod tests {
     use super::*;
     use crate::types::{CipherType, LoginData, LoginUri, RepromptType};
 
-    fn make_cipher(id: i64, password: &str) -> Cipher {
+    fn make_cipher(id: &str, password: &str) -> Cipher {
         Cipher {
-            id,
+            id: id.to_string(),
             folder_id: None,
             favorite: false,
             atype: CipherType::Login,
@@ -94,9 +94,9 @@ mod tests {
     #[test]
     fn test_report_aggregates() {
         let ciphers = vec![
-            make_cipher(1, "password"),                        // 弱 + 重复
-            make_cipher(2, "password"),                        // 弱 + 重复
-            make_cipher(3, "Tr0ub4dour&3-something-very-long"), // 强
+            make_cipher("c1", "password"),                        // 弱 + 重复
+            make_cipher("c2", "password"),                        // 弱 + 重复
+            make_cipher("c3", "Tr0ub4dour&3-something-very-long"), // 强
         ];
         let report = generate_report(&ciphers);
         assert_eq!(report.total_logins, 3);
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn test_report_excludes_deleted() {
-        let mut ciphers = vec![make_cipher(1, "weak")];
+        let mut ciphers = vec![make_cipher("c1", "weak")];
         ciphers[0].deleted_at = Some("2026-07-18".into());
         let report = generate_report(&ciphers);
         assert_eq!(report.total_logins, 0);

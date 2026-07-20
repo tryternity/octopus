@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 43", [])
+    conn.execute("PRAGMA user_version = 44", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -284,18 +284,29 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 43 {
-        // v43+ 已最新，直接返回。
+    if v >= 44 {
+        // v44+ 已最新，直接返回。
         return Ok(());
     }
-    if v >= 17 {
-        // v17+ 旧库（开发期唯一用户已 ≥v38）——补 need_voice 列 + 跑外置 seed 升到 v43。
-        // 历史 v17→v37 迁移分支（trigger_keyword / app_index / search_frequency /
-        // launcher_index / models 语义重构 / vault 表）已删除：db.sql CREATE TABLE
-        // IF NOT EXISTS 对这些库已 no-op；列已存在；vault 表已在 db.sql 内。
-        // 若有 schema 缺列（理论不可能，开发期），由 fill_manifests / set_test_db 兜底。
+    // v43→v44：vault_ciphers / vault_folders 的 id 从 INTEGER AUTOINCREMENT 改
+    // TEXT（UUID 字符串），支持 git 同步跨设备无冲突。
+    //
+    // 迁移策略（保守，不丢数据）：
+    //   1. 检查 vault_ciphers 是否还是 INTEGER（旧 schema）—— SQLite 没有直接
+    //      查 PRIMARY KEY 类型的 API，但 PRAGMA table_info 会返 type 列；
+    //      type="TEXT" 表示已迁移过（开发期中间 binary 可能跳过），跳过；
+    //      type="INTEGER" 表示旧 schema，跑迁移。
+    //   2. 建新表 + 复制（每行 randomblob(16) 转 hex 当 UUID）+ 修 folder_id 引用
+    //   3. DROP 旧表 + RENAME 新表
+    //
+    // 注意：vault 是 2026-07-18 v38 引入的；v<38 的旧库走 v<17 分支（db.sql 建
+    // 新表已经是 TEXT PRIMARY KEY），不会触发此迁移——只有 v38/v43 的老 vault
+    // 库需要此迁移。
+    if v >= 17 && v <= 43 {
+        // 先跑之前的 v40/v42 升级（需要补 need_voice / agent_adapters 列），
+        // 然后跑 v44 vault UUID 迁移。
         conn.execute_batch(INIT_SQL).ok();
-        // v39→v40：action_bar_items 加 need_voice 列（agent 类型用，取代 {{task}} 字符串扫描）
+        // v39→v40：action_bar_items 加 need_voice 列
         {
             let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
                 .query_map([], |r| r.get::<_, String>(1))?
@@ -306,8 +317,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 log::info!("schema v40: action_bar_items 补 need_voice 列");
             }
         }
-        // v41→v42：agent_adapters 加 is_system + is_default 列（内置 agent 入表，
-        // 取代 Rust 常量；is_default 全局默认 agent，唯一约束由代码层保证）。
+        // v41→v42：agent_adapters 加 is_system + is_default 列
         {
             let cols: Vec<String> = conn.prepare("PRAGMA table_info(agent_adapters)")?
                 .query_map([], |r| r.get::<_, String>(1))?
@@ -322,9 +332,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 log::info!("schema v42: agent_adapters 补 is_default 列");
             }
         }
-        // v42 内置 agent seed：Pi/Claude 之前在 Rust 常量里硬编码（builtin_adapters），
-        // 现在统一入 DB。INSERT OR IGNORE 跳过用户已建同名项；缺列的旧表由 ALTER 已补。
-        // 注意：此 seed 在 v42 升级时跑一次。后续 db.sql 内 INSERT OR IGNORE 也是幂等。
+        // v42 内置 agent seed
         conn.execute(
             "INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
                 ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
@@ -332,15 +340,89 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [],
         ).context("seed Pi/Claude 入 agent_adapters")?;
         fill_manifests(conn)?;
-        // v42→v43：bump user_version 触发 load_external_seeds 重跑。
-        // 本身无 schema 变更，目的纯粹是让 v43 的「制作 PPT → PPT 制作」改名 +
-        // 新增「PPT 大纲」子菜单能进到已 v42 的老 DB（load_external_seeds 只在
-        // schema 升级时跑一次，不 bump 就永远不执行）。
         crate::seeds::load_external_seeds(conn)?;
-        conn.execute("PRAGMA user_version = 43", [])?;
-        log::info!("schema upgraded to v43 (PPT 两阶段 seed 重跑: 制作 PPT 改名 + 新增 PPT 大纲)");
+
+        // **v43→v44: vault_ciphers / vault_folders id 改 UUID 字符串（git 同步）**
+        // 见上方注释。检查 vault_ciphers.id 类型——INTEGER 表示旧 schema 需迁移。
+        let cipher_id_type: String = conn
+            .query_row(
+                "SELECT type FROM pragma_table_info('vault_ciphers') WHERE name = 'id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "TEXT".to_string()); // 表不存在或查询失败时按已迁移处理
+        if cipher_id_type == "INTEGER" {
+            log::info!("schema v44: 迁移 vault_ciphers / vault_folders id INTEGER → TEXT (UUID)");
+            // 用 hex(randomblob(16)) 作伪 UUID（足够唯一，非标准 v4 但跨设备无冲突）
+            // 真正的 v4 UUID 在 vault crate 的 create_cipher 时生成；这里只是给
+            // 旧 i64 行分配一个临时全局唯一 id 让迁移通过。
+
+            // 1. folders 先迁移（cipher 引用 folder_id，要等 folder 新 id 就位）
+            conn.execute_batch(
+                "CREATE TABLE vault_folders_new (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    sort_order  INTEGER NOT NULL DEFAULT 0,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO vault_folders_new (id, name, sort_order, created_at, updated_at)
+                SELECT lower(hex(randomblob(16))), name, sort_order, created_at, updated_at
+                FROM vault_folders;
+                -- 临时映射表：old_rowid → new_uuid
+                CREATE TABLE _vault_folder_id_map (old_id INTEGER, new_id TEXT);
+                INSERT INTO _vault_folder_id_map (old_id, new_id)
+                SELECT rowid, id FROM vault_folders_new;",
+            )?;
+
+            // 2. cipher 迁移，folder_id 按映射翻译（NULL 保留 NULL）
+            conn.execute_batch(
+                "CREATE TABLE vault_ciphers_new (
+                    id                  TEXT PRIMARY KEY,
+                    folder_id           TEXT DEFAULT NULL,
+                    favorite            INTEGER NOT NULL DEFAULT 0,
+                    atype               INTEGER NOT NULL,
+                    name                TEXT NOT NULL,
+                    notes               TEXT DEFAULT NULL,
+                    data                TEXT NOT NULL,
+                    fields              TEXT DEFAULT NULL,
+                    password_history    TEXT DEFAULT NULL,
+                    reprompt            INTEGER NOT NULL DEFAULT 0,
+                    deleted_at          TEXT DEFAULT NULL,
+                    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO vault_ciphers_new (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, created_at, updated_at)
+                SELECT
+                    lower(hex(randomblob(16))),
+                    (SELECT new_id FROM _vault_folder_id_map WHERE old_id = vault_ciphers.folder_id),
+                    favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, created_at, updated_at
+                FROM vault_ciphers;",
+            )?;
+
+            // 3. DROP 旧表 + RENAME 新表 + 重建索引（DROP TABLE 不连带索引）
+            conn.execute_batch(
+                "DROP TABLE vault_ciphers;
+                 DROP TABLE vault_folders;
+                 ALTER TABLE vault_ciphers_new RENAME TO vault_ciphers;
+                 ALTER TABLE vault_folders_new RENAME TO vault_folders;
+                 DROP TABLE _vault_folder_id_map;
+                 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
+                     ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
+                 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);",
+            )?;
+            log::info!("schema v44: vault id INTEGER → TEXT 迁移完成");
+        } else {
+            log::debug!("schema v44: vault_ciphers.id 已是 TEXT，跳过 UUID 迁移");
+        }
+
+        conn.execute("PRAGMA user_version = 44", [])?;
+        log::info!("schema upgraded to v44 (vault_ciphers/folders id 改 UUID 字符串)");
         return Ok(());
     }
+    // v>=17 && v>43 的 case 不会到这里（已被 line 289 的 `if v >= 44 return` 拦截）。
+    // 老分支 `if v >= 17` 已删除（重复执行 v40/v42 升级 + 设 v43，与上面 v44 分支
+    // 重复，且会让下次启动再次进入 v44 分支做无谓检查）。
 
     // v<17 全新库：建表 + 外置 seed + manifest
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
@@ -348,8 +430,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 43", [])?;
-    log::info!("DB initialized (v43): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 44", [])?;
+    log::info!("DB initialized (v44): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2965,8 +3047,8 @@ pub struct VaultMeta {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VaultCipher {
-    pub id: i64,
-    pub folder_id: Option<i64>,
+    pub id: String, // UUID v4 字符串（2026-07-21 v39：支持 git 同步）
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub atype: i64,
     pub name: String,
@@ -2982,7 +3064,7 @@ pub struct VaultCipher {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VaultFolder {
-    pub id: i64,
+    pub id: String, // UUID v4 字符串
     pub name: String,
     pub sort_order: i64,
     pub created_at: String,
@@ -3007,7 +3089,8 @@ pub struct VaultMetaInput {
 
 #[derive(Debug, Clone)]
 pub struct VaultCipherInput {
-    pub folder_id: Option<i64>,
+    pub id: String, // UUID v4 字符串——调用方生成（不再 AUTOINCREMENT）
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub atype: i64,
     pub name: String,
@@ -3175,11 +3258,11 @@ fn list_vault_ciphers_at(conn: &Connection) -> Result<Vec<VaultCipher>> {
     Ok(list)
 }
 
-pub fn load_vault_cipher(id: i64) -> Result<Option<VaultCipher>> {
+pub fn load_vault_cipher(id: &str) -> Result<Option<VaultCipher>> {
     with_db(|conn| load_vault_cipher_at(conn, id))
 }
 
-fn load_vault_cipher_at(conn: &Connection, id: i64) -> Result<Option<VaultCipher>> {
+fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
     let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_ciphers WHERE id = ?1", VAULT_CIPHER_COLS))?;
     let mut rows = stmt.query(params![id])?;
     match rows.next()? {
@@ -3188,15 +3271,16 @@ fn load_vault_cipher_at(conn: &Connection, id: i64) -> Result<Option<VaultCipher
     }
 }
 
-pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<i64> {
+pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| insert_vault_cipher_at(conn, input))
 }
 
-fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<i64> {
+fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_ciphers (folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
+            input.id,
             input.folder_id,
             input.favorite as i32,
             input.atype,
@@ -3208,14 +3292,14 @@ fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result
             input.reprompt,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(())
 }
 
-pub fn update_vault_cipher(id: i64, input: &VaultCipherInput) -> Result<()> {
+pub fn update_vault_cipher(id: &str, input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| update_vault_cipher_at(conn, id, input))
 }
 
-fn update_vault_cipher_at(conn: &Connection, id: i64, input: &VaultCipherInput) -> Result<()> {
+fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
@@ -3237,11 +3321,11 @@ fn update_vault_cipher_at(conn: &Connection, id: i64, input: &VaultCipherInput) 
     Ok(())
 }
 
-pub fn soft_delete_vault_cipher(id: i64) -> Result<()> {
+pub fn soft_delete_vault_cipher(id: &str) -> Result<()> {
     with_db(|conn| soft_delete_vault_cipher_at(conn, id))
 }
 
-fn soft_delete_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+fn soft_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
         params![id],
@@ -3249,11 +3333,11 @@ fn soft_delete_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn restore_vault_cipher(id: i64) -> Result<()> {
+pub fn restore_vault_cipher(id: &str) -> Result<()> {
     with_db(|conn| restore_vault_cipher_at(conn, id))
 }
 
-fn restore_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+fn restore_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
         params![id],
@@ -3261,11 +3345,11 @@ fn restore_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-pub fn permanent_delete_vault_cipher(id: i64) -> Result<()> {
+pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
     with_db(|conn| permanent_delete_vault_cipher_at(conn, id))
 }
 
-fn permanent_delete_vault_cipher_at(conn: &Connection, id: i64) -> Result<()> {
+fn permanent_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM vault_ciphers WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -3296,22 +3380,24 @@ fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
     Ok(list)
 }
 
-pub fn insert_vault_folder(name: &str) -> Result<i64> {
-    with_db(|conn| insert_vault_folder_at(conn, name))
+/// 创建 folder（调用方生成 UUID）。
+/// 2026-07-21 v39：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步）。
+pub fn insert_vault_folder(id: &str, name: &str) -> Result<()> {
+    with_db(|conn| insert_vault_folder_at(conn, id, name))
 }
 
-fn insert_vault_folder_at(conn: &Connection, name: &str) -> Result<i64> {
+fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_folders (name) VALUES (?1)",
-        params![name],
+        "INSERT INTO vault_folders (id, name) VALUES (?1, ?2)",
+        params![id, name],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(())
 }
 
 /// 重命名 folder（参数应是已用 user_vault_key.encrypt 加密过的密文）。
 ///
 /// follow-up #6：folder.name 与 cipher.name 一致存密文；调用方负责加解密。
-pub fn update_vault_folder_name(id: i64, new_name_encrypted: &str) -> Result<()> {
+pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str) -> Result<()> {
     with_db(|conn| {
         conn.execute(
             "UPDATE vault_folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -3325,7 +3411,7 @@ pub fn update_vault_folder_name(id: i64, new_name_encrypted: &str) -> Result<()>
 /// 仅其 folder_id 被置为 NULL（条目回到根目录）。
 ///
 /// follow-up #6。
-pub fn delete_vault_folder(id: i64) -> Result<()> {
+pub fn delete_vault_folder(id: &str) -> Result<()> {
     with_db(|conn| {
         conn.execute("DELETE FROM vault_folders WHERE id = ?1", params![id])?;
         Ok(())
@@ -3556,7 +3642,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 43, "全新库 init_schema 后应到 v43");
+        assert_eq!(v, 44, "全新库 init_schema 后应到 v44");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -3911,7 +3997,7 @@ mod tests {
 
         // 验证 user_version = 43
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 43);
+        assert_eq!(v, 44);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -3956,7 +4042,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 43);
+        assert_eq!(v, 44);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4086,7 +4172,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 43);
+        assert_eq!(v, 44);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4114,7 +4200,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 43);
+        assert_eq!(v, 44);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4188,7 +4274,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 43);
+        assert_eq!(v, 44);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -5666,7 +5752,9 @@ mod vault_schema_tests {
     #[test]
     fn test_vault_cipher_crud() {
         let conn = test_db();
+        let id = "crud-test-uuid-1";
         let input = VaultCipherInput {
+            id: id.to_string(),
             folder_id: None,
             favorite: false,
             atype: 1,
@@ -5677,8 +5765,7 @@ mod vault_schema_tests {
             password_history: None,
             reprompt: 0,
         };
-        let id = insert_vault_cipher_at(&conn, &input).unwrap();
-        assert!(id > 0);
+        insert_vault_cipher_at(&conn, &input).unwrap();
 
         let loaded = load_vault_cipher_at(&conn, id).unwrap().unwrap();
         assert_eq!(loaded.id, id);

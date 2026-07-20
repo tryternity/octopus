@@ -124,7 +124,7 @@ mod tests {
 
     fn make_cipher(uris: &[(&str, Option<MatchType>)]) -> Cipher {
         Cipher {
-            id: 1,
+            id: "matcher-test-uuid".to_string(),
             folder_id: None,
             favorite: false,
             atype: crate::types::CipherType::Login,

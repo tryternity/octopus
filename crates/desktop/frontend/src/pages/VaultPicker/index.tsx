@@ -37,7 +37,7 @@ interface LoginDataDto {
 }
 
 interface CipherDto {
-  id: number;
+  id: string; // UUID 字符串（2026-07-21 v44：支持 git 同步）
   name: string;
   favorite: boolean;
   login: LoginDataDto | null;

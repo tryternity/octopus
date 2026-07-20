@@ -14,9 +14,11 @@ use crate::crypto::DerivedKey;
 /// 文件夹 DTO：name 已解密为明文。
 ///
 /// `id` / `sort_order` / 时间戳直接透传自 DB row。
+///
+/// 2026-07-21 v44：id 从 i64 改 String（UUID 字符串）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FolderDto {
-    pub id: i64,
+    pub id: String,
     /// 已解密的明文名称（DB 中存的是 `v1:` 前缀密文）。
     pub name: String,
     pub sort_order: i64,
@@ -34,10 +36,10 @@ pub struct FolderDto {
 /// 任一都不应让用户看不到其他完好的 N-1 个文件夹。
 ///
 /// 返回 `(成功的 folder 列表, 失败的 folder_id 列表)`。
-pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<i64>)> {
+pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
     let rows = db::list_vault_folders()?;
     let mut out = Vec::with_capacity(rows.len());
-    let mut failures: Vec<i64> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
     for row in rows {
         match row_to_dto(&row, key) {
             Ok(dto) => out.push(dto),
@@ -56,14 +58,14 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<i64>)> {
 
 /// 创建 folder。`name` 是明文；内部用 `key.encrypt()` 加密后写库。
 ///
-/// 返回新插入行的 id。
-pub fn create_folder(name: &str, key: &DerivedKey) -> Result<i64> {
+/// 调用方必须先生成 UUID 传入（2026-07-21 v44：不再 AUTOINCREMENT）。
+pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(name.as_bytes())?;
-    Ok(db::insert_vault_folder(&encrypted)?)
+    Ok(db::insert_vault_folder(id, &encrypted)?)
 }
 
 /// 重命名 folder。`new_name` 是明文；内部加密后写库。
-pub fn rename_folder(id: i64, new_name: &str, key: &DerivedKey) -> Result<()> {
+pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(new_name.as_bytes())?;
     Ok(db::update_vault_folder_name(id, &encrypted)?)
 }
@@ -72,7 +74,7 @@ pub fn rename_folder(id: i64, new_name: &str, key: &DerivedKey) -> Result<()> {
 ///
 /// vault_ciphers.folder_id 的 FK 是 `ON DELETE SET NULL`——本文件夹下的 cipher
 /// 不会被删，只是 folder_id 被置为 NULL（回到根目录）。
-pub fn delete_folder(id: i64) -> Result<()> {
+pub fn delete_folder(id: &str) -> Result<()> {
     Ok(db::delete_vault_folder(id)?)
 }
 
@@ -81,7 +83,7 @@ fn row_to_dto(row: &VaultFolder, key: &DerivedKey) -> Result<FolderDto> {
     let name_bytes = key.decrypt(&row.name)?;
     let name = String::from_utf8(name_bytes.to_vec())?;
     Ok(FolderDto {
-        id: row.id,
+        id: row.id.clone(),
         name,
         sort_order: row.sort_order,
         created_at: row.created_at.clone(),
@@ -122,8 +124,8 @@ mod tests {
         setup_clean_db();
         let key = make_key(7);
 
-        let id = create_folder("工作", &key).expect("create should succeed");
-        assert!(id > 0, "new folder id should be positive");
+        let id = "11111111-1111-4111-8111-111111111111";
+        create_folder(id, "工作", &key).expect("create should succeed");
 
         let (folders, failures) = list_folders(&key).expect("list should succeed");
         assert!(failures.is_empty());
@@ -149,9 +151,12 @@ mod tests {
         setup_clean_db();
         let key = make_key(2);
 
-        let id_a = create_folder("alpha", &key).expect("create a");
-        let id_b = create_folder("beta", &key).expect("create b");
-        let id_c = create_folder("gamma", &key).expect("create c");
+        let id_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let id_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let id_c = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        create_folder(id_a, "alpha", &key).expect("create a");
+        create_folder(id_b, "beta", &key).expect("create b");
+        create_folder(id_c, "gamma", &key).expect("create c");
 
         let (folders, failures) = list_folders(&key).expect("list");
         assert!(failures.is_empty());
@@ -160,10 +165,10 @@ mod tests {
         assert!(names.contains(&"alpha".to_string()));
         assert!(names.contains(&"beta".to_string()));
         assert!(names.contains(&"gamma".to_string()));
-        let ids: Vec<i64> = folders.iter().map(|f| f.id).collect();
-        assert!(ids.contains(&id_a));
-        assert!(ids.contains(&id_b));
-        assert!(ids.contains(&id_c));
+        let ids: Vec<String> = folders.iter().map(|f| f.id.clone()).collect();
+        assert!(ids.contains(&id_a.to_string()));
+        assert!(ids.contains(&id_b.to_string()));
+        assert!(ids.contains(&id_c.to_string()));
     }
 
     /// rename_folder：明文新名 → 加密入库 → list 看到新明文。
@@ -172,7 +177,8 @@ mod tests {
         setup_clean_db();
         let key = make_key(3);
 
-        let id = create_folder("old", &key).expect("create");
+        let id = "33333333-3333-4333-8333-333333333333";
+        create_folder(id, "old", &key).expect("create");
         rename_folder(id, "new name", &key).expect("rename");
 
         let (folders, failures) = list_folders(&key).expect("list");
@@ -187,8 +193,10 @@ mod tests {
         setup_clean_db();
         let key = make_key(4);
 
-        let id_a = create_folder("keep", &key).expect("create a");
-        let id_b = create_folder("drop", &key).expect("create b");
+        let id_a = "44444444-4444-4444-8444-444444444444";
+        let id_b = "55555555-5555-4555-8555-555555555555";
+        create_folder(id_a, "keep", &key).expect("create a");
+        create_folder(id_b, "drop", &key).expect("create b");
         delete_folder(id_b).expect("delete");
 
         let (folders, failures) = list_folders(&key).expect("list");
@@ -206,7 +214,8 @@ mod tests {
         let key1 = make_key(10);
         let key2 = make_key(11);
 
-        let id = create_folder("secret-folder", &key1).expect("create");
+        let id = "10101010-1010-4110-8110-101010101010";
+        create_folder(id, "secret-folder", &key1).expect("create");
         let (folders, failures) = list_folders(&key2).expect(
             "修复 #9 后错误 key 不应让整表 Err，而是返回部分结果",
         );
@@ -214,7 +223,7 @@ mod tests {
             folders.is_empty(),
             "错误 key 下无行可解密，folders 应为空"
         );
-        assert_eq!(failures, vec![id], "失败行 id 应进 failures");
+        assert_eq!(failures, vec![id.to_string()], "失败行 id 应进 failures");
     }
 
     /// #9 容错核心场景：库内 2 行，1 行用 key1 加密、1 行用 key2 加密，
@@ -225,13 +234,15 @@ mod tests {
         let key1 = make_key(20);
         let key2 = make_key(21);
 
-        let id_ok = create_folder("good", &key1).expect("create good");
-        let id_bad = create_folder("corrupted", &key2).expect("create bad");
+        let id_ok = "20202020-2020-4220-8220-202020202020";
+        let id_bad = "21212121-2121-4321-8321-212121212121";
+        create_folder(id_ok, "good", &key1).expect("create good");
+        create_folder(id_bad, "corrupted", &key2).expect("create bad");
 
         let (folders, failures) = list_folders(&key1).expect("partial result");
         assert_eq!(folders.len(), 1, "key1 应能解密自己加密的行");
         assert_eq!(folders[0].id, id_ok);
         assert_eq!(folders[0].name, "good");
-        assert_eq!(failures, vec![id_bad], "key2 加密的行应进 failures");
+        assert_eq!(failures, vec![id_bad.to_string()], "key2 加密的行应进 failures");
     }
 }

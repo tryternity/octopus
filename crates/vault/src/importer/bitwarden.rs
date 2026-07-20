@@ -194,7 +194,9 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             reprompt: RepromptType::from(item.reprompt),
         };
 
-        match storage::create_cipher(&input, key) {
+        // 2026-07-21 v44：create_cipher 接收调用方生成的 UUID（不再 AUTOINCREMENT）
+        let new_id = uuid::Uuid::new_v4().to_string();
+        match storage::create_cipher(&new_id, &input, key) {
             Ok(_) => imported += 1,
             Err(e) => {
                 errors.push(format!("Item {} ({}): {}", idx, item.name, e));
@@ -419,8 +421,8 @@ mod tests {
         // 软删除该条（→ 回收站，deleted_at=Some）
         let (ciphers, _) = storage::list_ciphers(&key).expect("list after import");
         assert_eq!(ciphers.len(), 1);
-        let id = ciphers[0].id;
-        storage::soft_delete(id).expect("soft delete");
+        let id = ciphers[0].id.clone();
+        storage::soft_delete(&id).expect("soft delete");
 
         // 第二次导入同一份 JSON —— 应重新导入（不被软删行去重）
         let r2 = import_bitwarden_json(json, &key).expect("second import after soft delete");

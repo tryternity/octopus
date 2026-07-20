@@ -16,10 +16,12 @@ use crate::types::{decrypt_cipher_row, Cipher, CipherInput};
 /// 任一都不应让用户看不到其他完好的 N-1 条。
 ///
 /// 返回 `(成功的 cipher 列表, 失败的 cipher_id 列表)`。
-pub fn list_ciphers(key: &DerivedKey) -> Result<(Vec<Cipher>, Vec<i64>)> {
+///
+/// 2026-07-21 v44：failures 类型从 `Vec<i64>` 改 `Vec<String>`（UUID 字符串）。
+pub fn list_ciphers(key: &DerivedKey) -> Result<(Vec<Cipher>, Vec<String>)> {
     let rows = db::list_vault_ciphers()?;
     let mut out = Vec::with_capacity(rows.len());
-    let mut failures: Vec<i64> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
     for row in rows {
         match decrypt_cipher_row(&row, key) {
             Ok(c) => out.push(c),
@@ -36,7 +38,7 @@ pub fn list_ciphers(key: &DerivedKey) -> Result<(Vec<Cipher>, Vec<i64>)> {
     Ok((out, failures))
 }
 
-pub fn load_cipher(id: i64, key: &DerivedKey) -> Result<Option<Cipher>> {
+pub fn load_cipher(id: &str, key: &DerivedKey) -> Result<Option<Cipher>> {
     let row = match db::load_vault_cipher(id)? {
         Some(r) => r,
         None => return Ok(None),
@@ -44,10 +46,13 @@ pub fn load_cipher(id: i64, key: &DerivedKey) -> Result<Option<Cipher>> {
     Ok(Some(decrypt_cipher_row(&row, key)?))
 }
 
-pub fn create_cipher(input: &CipherInput, key: &DerivedKey) -> Result<i64> {
+/// 创建 cipher——调用方必须先 `Uuid::new_v4().to_string()` 生成 id 传入。
+/// 2026-07-21 v44：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步跨设备无冲突）。
+pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
     let enc = input.encrypt_strings(key)?;
     let db_input = VaultCipherInput {
-        folder_id: input.folder_id,
+        id: id.to_string(),
+        folder_id: input.folder_id.clone(),
         favorite: input.favorite,
         atype: input.atype.into(),
         name: enc.name,
@@ -60,10 +65,13 @@ pub fn create_cipher(input: &CipherInput, key: &DerivedKey) -> Result<i64> {
     Ok(db::insert_vault_cipher(&db_input)?)
 }
 
-pub fn save_cipher(id: i64, input: &CipherInput, key: &DerivedKey) -> Result<()> {
+pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
     let enc = input.encrypt_strings(key)?;
     let db_input = VaultCipherInput {
-        folder_id: input.folder_id,
+        // update 不需要 id（id 是 WHERE 条件），但 VaultCipherInput struct 现在含 id 字段
+        // ——填占位（不会被 update_vault_cipher 使用，只 WHERE id = ? 用外部传入的 id）
+        id: id.to_string(),
+        folder_id: input.folder_id.clone(),
         favorite: input.favorite,
         atype: input.atype.into(),
         name: enc.name,
@@ -76,15 +84,15 @@ pub fn save_cipher(id: i64, input: &CipherInput, key: &DerivedKey) -> Result<()>
     Ok(db::update_vault_cipher(id, &db_input)?)
 }
 
-pub fn soft_delete(id: i64) -> Result<()> {
+pub fn soft_delete(id: &str) -> Result<()> {
     Ok(db::soft_delete_vault_cipher(id)?)
 }
 
-pub fn restore(id: i64) -> Result<()> {
+pub fn restore(id: &str) -> Result<()> {
     Ok(db::restore_vault_cipher(id)?)
 }
 
-pub fn permanent_delete(id: i64) -> Result<()> {
+pub fn permanent_delete(id: &str) -> Result<()> {
     Ok(db::permanent_delete_vault_cipher(id)?)
 }
 
@@ -135,8 +143,8 @@ mod tests {
         let input = sample_input("TestSite");
 
         // create + load + verify
-        let id = create_cipher(&input, &key).expect("create");
-        assert!(id > 0);
+        let id = "77777777-7777-4777-8777-777777777777";
+        create_cipher(id, &input, &key).expect("create");
 
         let loaded = load_cipher(id, &key).expect("load").expect("should exist");
         assert_eq!(loaded.name, "TestSite");
@@ -179,17 +187,19 @@ mod tests {
         assert!(empty.is_empty());
 
         // 插两条
-        let id_a = create_cipher(&sample_input("SiteA"), &key).expect("create a");
-        let id_b = create_cipher(&sample_input("SiteB"), &key).expect("create b");
+        let id_a = "99999999-9999-4999-8999-999999999999";
+        let id_b = "88888888-8888-4888-8888-888888888888";
+        create_cipher(id_a, &sample_input("SiteA"), &key).expect("create a");
+        create_cipher(id_b, &sample_input("SiteB"), &key).expect("create b");
 
         let (all, _) = list_ciphers(&key).expect("list");
         assert_eq!(all.len(), 2);
         let names: Vec<String> = all.iter().map(|c| c.name.clone()).collect();
         assert!(names.contains(&"SiteA".to_string()));
         assert!(names.contains(&"SiteB".to_string()));
-        let ids: Vec<i64> = all.iter().map(|c| c.id).collect();
-        assert!(ids.contains(&id_a));
-        assert!(ids.contains(&id_b));
+        let ids: Vec<String> = all.iter().map(|c| c.id.clone()).collect();
+        assert!(ids.contains(&id_a.to_string()));
+        assert!(ids.contains(&id_b.to_string()));
     }
 
     /// 最小化 CipherInput（空 uris，None username/password/totp）仍能 create + load。
@@ -216,7 +226,8 @@ mod tests {
             reprompt: RepromptType::None,
         };
 
-        let id = create_cipher(&input, &key).expect("create");
+        let id = "11111111-1111-4111-8111-111111111111";
+        create_cipher(id, &input, &key).expect("create");
         let loaded = load_cipher(id, &key).expect("load").expect("should exist");
         assert_eq!(loaded.name, "Minimal");
         #[allow(irrefutable_let_patterns)]
@@ -257,7 +268,8 @@ mod tests {
             reprompt: RepromptType::None,
         };
 
-        let id = create_cipher(&input, &key).expect("create");
+        let id = "22222222-2222-4222-8222-222222222222";
+        create_cipher(id, &input, &key).expect("create");
         let loaded = load_cipher(id, &key).expect("load").expect("should exist");
         #[allow(irrefutable_let_patterns)]
         let CipherData::Login(login) = loaded.data else {
@@ -277,7 +289,8 @@ mod tests {
     fn save_cipher_preserves_id_and_overwrites_fields() {
         setup_clean_db();
         let key = make_key(3);
-        let id = create_cipher(&sample_input("Initial"), &key).expect("create");
+        let id = "33333333-3333-4333-8333-333333333333";
+        create_cipher(id, &sample_input("Initial"), &key).expect("create");
 
         // save with same id, different name
         let mut updated = sample_input("Updated");
@@ -294,7 +307,7 @@ mod tests {
     fn load_cipher_nonexistent_returns_ok_none() {
         setup_clean_db();
         let key = make_key(4);
-        let result = load_cipher(99999, &key).expect("应返回 Ok(None) 而非 Err");
+        let result = load_cipher("nonexistent-uuid", &key).expect("应返回 Ok(None) 而非 Err");
         assert!(result.is_none());
     }
 
@@ -306,9 +319,12 @@ mod tests {
     fn list_ciphers_orders_by_updated_at_desc() {
         setup_clean_db();
         let key = make_key(5);
-        let id_a = create_cipher(&sample_input("A"), &key).expect("create a");
-        let id_b = create_cipher(&sample_input("B"), &key).expect("create b");
-        let id_c = create_cipher(&sample_input("C"), &key).expect("create c");
+        let id_a = "55555555-5555-4555-8555-555555555555";
+        let id_b = "66666666-6666-4666-8666-666666666666";
+        let id_c = "77777777-7777-4777-8777-777777777777";
+        create_cipher(id_a, &sample_input("A"), &key).expect("create a");
+        create_cipher(id_b, &sample_input("B"), &key).expect("create b");
+        create_cipher(id_c, &sample_input("C"), &key).expect("create c");
 
         // 让 A 最新（最后 save）—— sleep 1s 确保 updated_at 字符串不同
         // （DB 用 datetime('now')，精度到秒）
@@ -320,9 +336,9 @@ mod tests {
         // A 是最近 updated → 应排在第 0 位
         assert_eq!(all[0].id, id_a, "最近 save 的 A 应排第 0");
         // 剩下 B / C 按 created 顺序（同秒）—— 只验证 A 在最前即可（其余顺序与实现细节耦合）
-        let rest_ids: Vec<i64> = all[1..].iter().map(|c| c.id).collect();
-        assert!(rest_ids.contains(&id_b));
-        assert!(rest_ids.contains(&id_c));
+        let rest_ids: Vec<String> = all[1..].iter().map(|c| c.id.clone()).collect();
+        assert!(rest_ids.contains(&id_b.to_string()));
+        assert!(rest_ids.contains(&id_c.to_string()));
         // 不变量：列表中前一行的 updated_at >= 后一行
         for w in all.windows(2) {
             assert!(
@@ -340,7 +356,8 @@ mod tests {
     fn soft_delete_marks_but_keeps_row_in_list() {
         setup_clean_db();
         let key = make_key(6);
-        let id = create_cipher(&sample_input("ToDelete"), &key).expect("create");
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        create_cipher(id, &sample_input("ToDelete"), &key).expect("create");
 
         soft_delete(id).expect("soft delete");
         // load 应仍能拿到（deleted_at=Some）

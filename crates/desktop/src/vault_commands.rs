@@ -52,8 +52,8 @@ pub struct FieldDto {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct CipherDto {
-    pub id: i64,
-    pub folder_id: Option<i64>,
+    pub id: String, // UUID v4 字符串（2026-07-21 v44：支持 git 同步）
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub atype: i64,
     pub name: String,
@@ -68,7 +68,7 @@ pub struct CipherDto {
 
 #[derive(serde::Deserialize)]
 pub struct CipherInputDto {
-    pub folder_id: Option<i64>,
+    pub folder_id: Option<String>,
     pub favorite: bool,
     pub name: String,
     pub notes: Option<String>,
@@ -144,8 +144,8 @@ fn cipher_to_dto(c: Cipher) -> CipherDto {
         ),
     };
     CipherDto {
-        id: c.id,
-        folder_id: c.folder_id,
+        id: c.id.clone(),
+        folder_id: c.folder_id.clone(),
         favorite: c.favorite,
         atype,
         name: c.name,
@@ -360,20 +360,24 @@ pub fn vault_create_folder(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     name: String,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    octopus_vault::storage::folder::create_folder(&name, &key).map_err(vault_error::to_tauri_error)
+    // 2026-07-21 v44：调用方生成 UUID（不再 AUTOINCREMENT）
+    let new_id = uuid::Uuid::new_v4().to_string();
+    octopus_vault::storage::folder::create_folder(&new_id, &name, &key)
+        .map_err(vault_error::to_tauri_error)?;
+    Ok(new_id)
 }
 
 #[tauri::command]
 pub fn vault_rename_folder(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    id: i64,
+    id: String,
     name: String,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    octopus_vault::storage::folder::rename_folder(id, &name, &key)
+    octopus_vault::storage::folder::rename_folder(&id, &name, &key)
         .map_err(vault_error::to_tauri_error)
 }
 
@@ -381,23 +385,23 @@ pub fn vault_rename_folder(
 pub fn vault_delete_folder(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    id: i64,
+    id: String,
 ) -> Result<(), String> {
     // 不需要 user_vault_key（只删行），但仍要求 vault 已解锁——避免未解锁会话误触。
     let _ = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    octopus_vault::storage::folder::delete_folder(id).map_err(vault_error::to_tauri_error)
+    octopus_vault::storage::folder::delete_folder(&id).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]
 pub fn vault_get_cipher(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    id: i64,
+    id: String,
 ) -> Result<CipherDto, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let cipher = octopus_vault::storage::load_cipher(id, &key)
+    let cipher = octopus_vault::storage::load_cipher(&id, &key)
         .map_err(vault_error::to_tauri_error)?
-        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(id)))?;
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(id.clone())))?;
     Ok(cipher_to_dto(cipher))
 }
 
@@ -406,10 +410,14 @@ pub fn vault_create_cipher(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     input: CipherInputDto,
-) -> Result<i64, String> {
+) -> Result<String, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let domain = dto_to_input(input).map_err(|e| vault_error::serialize(&e))?;
-    octopus_vault::storage::create_cipher(&domain, &key).map_err(vault_error::to_tauri_error)
+    // 2026-07-21 v44：调用方生成 UUID 字符串 id（不再 AUTOINCREMENT）
+    let new_id = uuid::Uuid::new_v4().to_string();
+    octopus_vault::storage::create_cipher(&new_id, &domain, &key)
+        .map_err(vault_error::to_tauri_error)?;
+    Ok(new_id)
 }
 
 /// password_history 上限（避免无界增长）。FIFO 截断：丢最老的。
@@ -506,7 +514,7 @@ fn merge_password_history(
 pub fn vault_update_cipher(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    id: i64,
+    id: String,
     input: CipherInputDto,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
@@ -516,31 +524,31 @@ pub fn vault_update_cipher(
     // 直接保留数据库中已有的历史，避免每次保存都把 history 清成 []。
     // （final-review I3）+ password 变化时自动追加条目（follow-up #2）
     let domain =
-        match octopus_vault::storage::load_cipher(id, &key).map_err(vault_error::to_tauri_error)? {
+        match octopus_vault::storage::load_cipher(&id, &key).map_err(vault_error::to_tauri_error)? {
             Some(existing) => merge_password_history(domain, &existing),
             None => domain,
         };
 
-    octopus_vault::storage::save_cipher(id, &domain, &key).map_err(vault_error::to_tauri_error)
+    octopus_vault::storage::save_cipher(&id, &domain, &key).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]
 pub fn vault_delete_cipher(
     _state: State<'_, SharedVaultSession>,
-    id: i64,
+    id: String,
     permanent: bool,
 ) -> Result<(), String> {
     // permanent=true 不需要 user_vault_key（只是删行）
     if permanent {
-        octopus_vault::storage::permanent_delete(id).map_err(vault_error::to_tauri_error)
+        octopus_vault::storage::permanent_delete(&id).map_err(vault_error::to_tauri_error)
     } else {
-        octopus_vault::storage::soft_delete(id).map_err(vault_error::to_tauri_error)
+        octopus_vault::storage::soft_delete(&id).map_err(vault_error::to_tauri_error)
     }
 }
 
 #[tauri::command]
-pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: i64) -> Result<(), String> {
-    octopus_vault::storage::restore(id).map_err(vault_error::to_tauri_error)
+pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: String) -> Result<(), String> {
+    octopus_vault::storage::restore(&id).map_err(vault_error::to_tauri_error)
 }
 
 #[tauri::command]
@@ -577,12 +585,12 @@ pub struct PasswordStrengthDto {
 pub fn vault_generate_totp(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    cipher_id: i64,
+    cipher_id: String,
 ) -> Result<TotpResultDto, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+    let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
-        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id.clone())))?;
     // CipherData 当前仅 Login 单变体；预留 unreachable arm 以便未来扩展。
     #[allow(unreachable_patterns)]
     let login = match cipher.data {
@@ -665,7 +673,7 @@ pub fn vault_autotype(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
-    cipher_id: i64,
+    cipher_id: String,
     master_password: Option<String>,
     mode: Option<AutoTypeMode>,
 ) -> Result<AutoTypeResultDto, String> {
@@ -695,9 +703,9 @@ pub fn vault_autotype(
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
     // 1. 取 cipher
-    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+    let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
-        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id.clone())))?;
 
     // 2. reprompt 强制校验（后端，不可绕过）—— cipher.reprompt == Password 时
     //    必须传 master_password 且密码正确；否则拒绝（防 DevTools / 篡改前端绕过）。
@@ -886,13 +894,13 @@ pub fn vault_copy_password(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
-    cipher_id: i64,
+    cipher_id: String,
     master_password: Option<String>,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+    let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
-        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id.clone())))?;
 
     // reprompt 强制校验（修复 A：复制路径同样返回明文密码，必须与 vault_autotype 对称）。
     // DevTools 可直接 invoke('vault_copy_password', {cipherId: X}) 拿到明文，若不校验
@@ -935,12 +943,12 @@ pub fn vault_copy_username(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
-    cipher_id: i64,
+    cipher_id: String,
 ) -> Result<(), String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
-    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+    let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
-        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id.clone())))?;
 
     #[allow(irrefutable_let_patterns)]
     if let CipherData::Login(l) = cipher.data {
@@ -1095,8 +1103,8 @@ mod tests {
     /// 构造一份字段齐全的 Cipher（Login 类型 + favorite + notes + fields）。
     fn sample_cipher() -> Cipher {
         Cipher {
-            id: 42,
-            folder_id: Some(7),
+            id: "test-cipher-42".to_string(),
+            folder_id: Some("test-folder-7".to_string()),
             favorite: true,
             atype: CipherType::Login,
             name: "Example Login".into(),
@@ -1130,7 +1138,7 @@ mod tests {
     /// 构造一份字段齐全的 CipherInputDto（前端 → 后端输入）。
     fn sample_input_dto() -> CipherInputDto {
         CipherInputDto {
-            folder_id: Some(3),
+            folder_id: Some("test-folder-3".to_string()),
             favorite: false,
             name: "New Entry".into(),
             notes: None,
@@ -1158,8 +1166,8 @@ mod tests {
         let cipher = sample_cipher();
         let dto = cipher_to_dto(cipher.clone());
 
-        assert_eq!(dto.id, 42);
-        assert_eq!(dto.folder_id, Some(7));
+        assert_eq!(dto.id, "test-cipher-42");
+        assert_eq!(dto.folder_id.as_deref(), Some("test-folder-7"));
         assert!(dto.favorite);
         assert_eq!(dto.atype, 1, "Login 应映射为 atype=1");
         assert_eq!(dto.name, "Example Login");
@@ -1209,7 +1217,7 @@ mod tests {
         let dto = sample_input_dto();
         let input = dto_to_input(dto).expect("conversion should succeed");
 
-        assert_eq!(input.folder_id, Some(3));
+        assert_eq!(input.folder_id.as_deref(), Some("test-folder-3"));
         assert!(!input.favorite);
         assert_eq!(input.name, "New Entry");
         assert!(input.notes.is_none());
@@ -1266,7 +1274,7 @@ mod tests {
     fn test_round_trip_dto_to_input_then_back() {
         let dto_in = sample_input_dto();
         // 记下关键期望值（dto_to_input 会消费 dto_in，无法后续比对）
-        let exp_folder = dto_in.folder_id;
+        let exp_folder = dto_in.folder_id.clone();
         let exp_favorite = dto_in.favorite;
         let exp_name = dto_in.name.clone();
         let exp_notes = dto_in.notes.clone();
@@ -1277,8 +1285,8 @@ mod tests {
 
         // 构造一个完整 Cipher（补 id/时间戳/password_history——dto_to_input 不产出这些）
         let cipher = Cipher {
-            id: 99,
-            folder_id: input.folder_id,
+            id: "round-trip-99".to_string(),
+            folder_id: input.folder_id.clone(),
             favorite: input.favorite,
             atype: input.atype,
             name: input.name.clone(),
@@ -1490,7 +1498,8 @@ mod tests {
         let key = setup_test_vault_with_key();
 
         // 1. create with "A"
-        let id = octopus_vault::storage::create_cipher(&login_input("site", "A"), &key)
+        let id = "history-test-1";
+        octopus_vault::storage::create_cipher(id, &login_input("site", "A"), &key)
             .expect("create");
 
         // 2. update → "B" → history 1 条
@@ -1537,7 +1546,8 @@ mod tests {
     #[test]
     fn test_vault_update_cipher_history_cap() {
         let key = setup_test_vault_with_key();
-        let id = octopus_vault::storage::create_cipher(&login_input("site", "p0"), &key)
+        let id = "history-cap-test";
+        octopus_vault::storage::create_cipher(id, &login_input("site", "p0"), &key)
             .expect("create");
 
         // 连续改 25 次密码（p0 → p1 → ... → p25）

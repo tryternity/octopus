@@ -117,7 +117,7 @@ mod tests {
 
     fn make_login_cipher(name: &str) -> Cipher {
         Cipher {
-            id: 1,
+            id: format!("exporter-{}", name),
             folder_id: None,
             favorite: false,
             atype: CipherType::Login,

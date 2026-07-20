@@ -29,7 +29,8 @@ pub enum VaultError {
     /// reprompt 保护的高敏感 cipher 操作未提供 master_password——前端应弹密码框。
     RepromptRequired,
     /// 指定 id 的 cipher 不存在（已删除 / id 错）。
-    CipherNotFound(i64),
+    /// 2026-07-21 v44：i64 → String（UUID 字符串）
+    CipherNotFound(String),
     /// 通用用户输入错误（DTO 校验失败等）。
     InvalidInput(String),
     /// TOTP secret 不是合法 Base32。
@@ -102,7 +103,7 @@ impl std::error::Error for VaultError {}
 /// - `"vault 未初始化"` / `"not initialized"` → `NotInitialized`
 /// - `"vault 未解锁"` / `"vault 已锁定"` / `"locked"` → `Locked`
 /// - `"旧主密码错误"` / `"主密码错误"` / `"invalid master"` → `InvalidMasterPassword`
-/// - `"cipher"` + (`"不存在"` / `"not found"`) → `CipherNotFound(0)`（id 提取留待后续）
+/// - `"cipher"` + (`"不存在"` / `"not found"`) → `CipherNotFound("<unknown>")`（id 提取留待后续）
 /// - `"totp"` + (`"base32"` / `"格式"` / `"invalid"`) → `TotpInvalidSecret`
 /// - `"keychain"` / `"密钥串"` → `KeychainUnavailable`
 /// - `"clipboard"` / `"剪贴板"` → `ClipboardError`
@@ -135,9 +136,9 @@ pub fn classify(err: &anyhow::Error) -> VaultError {
     }
     if combined.contains("cipher") && (combined.contains("不存在") || combined.contains("not found"))
     {
-        // id 提取较脆弱（cipher id 可能不出现在错误链里），统一返回 0——
+        // id 提取较脆弱（cipher id 可能不出现在错误链里），统一返回 "<unknown>"——
         // 前端按 code=cipher_not_found 处理即可，不需要 id。
-        return VaultError::CipherNotFound(0);
+        return VaultError::CipherNotFound("<unknown>".into());
     }
     if combined.contains("totp")
         && (combined.contains("base32") || combined.contains("格式") || combined.contains("invalid"))
@@ -250,10 +251,10 @@ mod tests {
     #[test]
     fn classify_cipher_not_found() {
         let e = err_with_chain(&["cipher 42 不存在"]);
-        assert_eq!(classify(&e), VaultError::CipherNotFound(0));
+        assert_eq!(classify(&e), VaultError::CipherNotFound("<unknown>".into()));
 
         let e = err_with_chain(&["cipher 42 not found"]);
-        assert_eq!(classify(&e), VaultError::CipherNotFound(0));
+        assert_eq!(classify(&e), VaultError::CipherNotFound("<unknown>".into()));
     }
 
     /// TotpInvalidSecret：totp.rs 的 `"TOTP secret Base32 解码失败"` context。
@@ -360,7 +361,7 @@ mod tests {
         assert_eq!(VaultError::NotInitialized.code(), "not_initialized");
         assert_eq!(VaultError::Locked.code(), "locked");
         assert_eq!(VaultError::InvalidMasterPassword.code(), "invalid_master_password");
-        assert_eq!(VaultError::CipherNotFound(0).code(), "cipher_not_found");
+        assert_eq!(VaultError::CipherNotFound("<unknown>".into()).code(), "cipher_not_found");
         assert_eq!(VaultError::InvalidInput("x".into()).code(), "invalid_input");
         assert_eq!(VaultError::TotpInvalidSecret.code(), "totp_invalid");
         assert_eq!(VaultError::ImportFailed("x".into()).code(), "import_failed");

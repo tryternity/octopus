@@ -49,8 +49,8 @@ interface FieldDto {
   field_type: number;
 }
 export interface CipherDto {
-  id: number;
-  folder_id: number | null;
+  id: string; // UUID 字符串（2026-07-21 v44）
+  folder_id: string | null;
   favorite: boolean;
   atype: number;
   name: string;

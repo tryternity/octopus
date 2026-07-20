@@ -17,7 +17,7 @@ pub struct DuplicateGroup {
     /// （final-review #5/M2）
     #[serde(skip_serializing)]
     pub password_hash: String,
-    pub cipher_ids: Vec<i64>,
+    pub cipher_ids: Vec<String>,
 }
 
 impl std::fmt::Debug for DuplicateGroup {
@@ -32,7 +32,7 @@ impl std::fmt::Debug for DuplicateGroup {
 }
 
 pub fn find_duplicates(ciphers: &[Cipher]) -> Vec<DuplicateGroup> {
-    let mut map: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for c in ciphers {
         // CipherData 当前仅 Login 单变体；保留 if let 以便未来扩展 SecureNote/Card/Identity。
         #[allow(irrefutable_let_patterns)]
@@ -42,7 +42,7 @@ pub fn find_duplicates(ciphers: &[Cipher]) -> Vec<DuplicateGroup> {
                 hasher.update(pwd.as_bytes());
                 let hash = hasher.finalize();
                 let hash_hex = data_encoding::HEXLOWER.encode(&hash);
-                map.entry(hash_hex).or_default().push(c.id);
+                map.entry(hash_hex).or_default().push(c.id.clone());
             }
         }
     }
@@ -60,9 +60,9 @@ mod tests {
     use super::*;
     use crate::types::{CipherType, LoginData, RepromptType};
 
-    fn make_cipher(id: i64, password: Option<&str>) -> Cipher {
+    fn make_cipher(id: &str, password: Option<&str>) -> Cipher {
         Cipher {
-            id,
+            id: id.to_string(),
             folder_id: None,
             favorite: false,
             atype: CipherType::Login,
@@ -87,9 +87,9 @@ mod tests {
     #[test]
     fn test_no_duplicates() {
         let ciphers = vec![
-            make_cipher(1, Some("a")),
-            make_cipher(2, Some("b")),
-            make_cipher(3, Some("c")),
+            make_cipher("c1", Some("a")),
+            make_cipher("c2", Some("b")),
+            make_cipher("c3", Some("c")),
         ];
         assert!(find_duplicates(&ciphers).is_empty());
     }
@@ -97,10 +97,10 @@ mod tests {
     #[test]
     fn test_finds_duplicates() {
         let ciphers = vec![
-            make_cipher(1, Some("same")),
-            make_cipher(2, Some("same")),
-            make_cipher(3, Some("different")),
-            make_cipher(4, Some("same")),
+            make_cipher("c1", Some("same")),
+            make_cipher("c2", Some("same")),
+            make_cipher("c3", Some("different")),
+            make_cipher("c4", Some("same")),
         ];
         let groups = find_duplicates(&ciphers);
         assert_eq!(groups.len(), 1);
@@ -110,11 +110,11 @@ mod tests {
     #[test]
     fn test_multiple_duplicate_groups() {
         let ciphers = vec![
-            make_cipher(1, Some("a")),
-            make_cipher(2, Some("a")),
-            make_cipher(3, Some("b")),
-            make_cipher(4, Some("b")),
-            make_cipher(5, Some("unique")),
+            make_cipher("c1", Some("a")),
+            make_cipher("c2", Some("a")),
+            make_cipher("c3", Some("b")),
+            make_cipher("c4", Some("b")),
+            make_cipher("c5", Some("unique")),
         ];
         let groups = find_duplicates(&ciphers);
         assert_eq!(groups.len(), 2);
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_skip_none_password() {
-        let ciphers = vec![make_cipher(1, None), make_cipher(2, None)];
+        let ciphers = vec![make_cipher("c1", None), make_cipher("c2", None)];
         assert!(find_duplicates(&ciphers).is_empty());
     }
 
@@ -131,8 +131,8 @@ mod tests {
     #[test]
     fn test_debug_redacts_password_hash() {
         let ciphers = vec![
-            make_cipher(1, Some("topsecret")),
-            make_cipher(2, Some("topsecret")),
+            make_cipher("redact-1", Some("topsecret")),
+            make_cipher("redact-2", Some("topsecret")),
         ];
         let groups = find_duplicates(&ciphers);
         assert_eq!(groups.len(), 1);

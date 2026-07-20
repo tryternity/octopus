@@ -6,7 +6,7 @@
  */
 
 export interface FolderDto {
-  id: number;
+  id: string; // UUID 字符串（2026-07-21 v44）
   name: string;
   sort_order: number;
   created_at: string;
@@ -18,17 +18,17 @@ export interface FolderDto {
  * - "all"：所有未删条目（不含回收站）
  * - "favorites"：收藏且未删
  * - "trash"：已软删
- * - number：指定 folder_id（未删条目）
+ * - string：指定 folder_id（UUID 字符串，未删条目）
  */
-export type FolderSelection = "all" | "favorites" | "trash" | number;
+export type FolderSelection = "all" | "favorites" | "trash" | string;
 
 /**
  * Sidebar 各项的条目计数（用于角标）。
- * key 是 folder_id（number）或上述特殊 selection 字符串。
+ * key 是 folder_id（string UUID）或上述特殊 selection 字符串。
  */
 export type FolderCounts = {
   all: number;
   favorites: number;
   trash: number;
-  [folderId: number]: number;
+  [folderId: string]: number;
 };

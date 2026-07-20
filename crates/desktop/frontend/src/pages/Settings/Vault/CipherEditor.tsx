@@ -46,7 +46,7 @@ interface FieldDto {
   field_type: number;
 }
 interface CipherInputDto {
-  folder_id: number | null;
+  folder_id: string | null;
   favorite: boolean;
   name: string;
   notes: string | null;

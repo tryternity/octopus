@@ -400,9 +400,10 @@ CREATE TABLE IF NOT EXISTS vault_meta (
 );
 
 -- vault 密码条目。所有敏感字段（name/notes/data/fields/password_history）均为密文 v1:base64(...)。
+-- id 用 UUID v4 字符串（2026-07-21 v39：从 INTEGER AUTOINCREMENT 改 TEXT，支持 git 同步跨设备无冲突）。
 CREATE TABLE IF NOT EXISTS vault_ciphers (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    folder_id           INTEGER DEFAULT NULL,            -- 预留：未来 FK vault_folders(id)
+    id                  TEXT PRIMARY KEY,                -- UUID v4 字符串（不再自增——支持 git 同步）
+    folder_id           TEXT DEFAULT NULL,               -- FK vault_folders(id)，UUID 字符串
     favorite            INTEGER NOT NULL DEFAULT 0,
     atype               INTEGER NOT NULL,                -- 1=Login（MVP 仅此）
     name                TEXT NOT NULL,                   -- 密文 v1:base64(...)
@@ -421,9 +422,9 @@ CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
     ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);
 
--- vault 文件夹（schema 预留，MVP UI 不暴露，但 vault_ciphers.folder_id 已有 FK）。
+-- vault 文件夹（id UUID 字符串，与 vault_ciphers 一致）。
 CREATE TABLE IF NOT EXISTS vault_folders (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          TEXT PRIMARY KEY,                -- UUID v4 字符串
     name        TEXT NOT NULL,                    -- 密文 v1:base64(...)
     sort_order  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
