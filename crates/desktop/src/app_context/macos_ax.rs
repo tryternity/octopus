@@ -95,7 +95,11 @@ impl super::ContextProvider for AxProvider {
 }
 
 /// 通过 NSWorkspace 获取前台应用 (pid, bundle_id, name)。
-fn frontmost_app() -> Option<(i32, Option<String>, String)> {
+///
+/// 2026-07-20 perf：从私有改为 pub(crate)，供 finder_selection / sublime_plugin
+/// 复用——原各自用 osascript 跑相同 System Events 脚本（每个 ~200-400ms），
+/// 改用 NSWorkspace 直调（< 1ms）。
+pub(crate) fn frontmost_app() -> Option<(i32, Option<String>, String)> {
     use objc2_app_kit::NSWorkspace;
 
     let workspace = NSWorkspace::sharedWorkspace();
@@ -113,6 +117,13 @@ fn frontmost_app() -> Option<(i32, Option<String>, String)> {
         .unwrap_or_else(|| format!("pid:{}", pid));
 
     Some((pid, bundle_id, name))
+}
+
+/// 前台 app 的 bundle id（NSWorkspace 直调，< 1ms）。
+/// 替代 osascript "tell System Events to get bundle id of frontmost process"
+/// （后者启动 osascript ~200-400ms）。
+pub(crate) fn frontmost_bundle_id() -> Option<String> {
+    frontmost_app().and_then(|(_, bid, _)| bid)
 }
 
 /// 将 AX 错误码翻译为人类可读描述。

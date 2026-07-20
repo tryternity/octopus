@@ -40,15 +40,13 @@ fn run_osascript_timeout(script: &str) -> Result<String, String> {
 }
 
 /// 前台 app 是否为 Finder（com.apple.finder）。
+///
+/// 2026-07-20 perf：从 osascript 改 NSWorkspace.frontmostApplication.bundleIdentifier
+/// 直调（< 1ms vs osascript 启动 ~200-400ms）。
 pub fn is_finder_frontmost() -> bool {
     #[cfg(target_os = "macos")]
     {
-        match run_osascript_timeout(
-            r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#,
-        ) {
-            Ok(bid) => bid.trim() == "com.apple.finder",
-            Err(_) => false,
-        }
+        crate::app_context::macos_ax::frontmost_bundle_id().as_deref() == Some("com.apple.finder")
     }
     #[cfg(not(target_os = "macos"))]
     {

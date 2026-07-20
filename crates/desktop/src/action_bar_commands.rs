@@ -198,9 +198,22 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
 
     let focus = FocusTracker::new();
     focus.simulate_copy();
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // 2026-07-20 perf：原固定 sleep(200ms) 等剪贴板更新，改 polling。
+    // macOS Cmd+C 剪贴板写入通常 < 50ms 完成；polling 每 5ms 检查 changeCount，命中即退出。
+    // 超时 80ms：实测 macOS Cmd+C 命中 changeCount 最坏 ~30-50ms，留 80ms 兜底防系统忙时
+    // 延迟。无选中时 Cmd+C 不写剪贴板，poll 会等满 80ms——比原 200ms 省 120ms。
+    // 80ms 是权衡值：太短可能错过系统繁忙时的延迟（误判有选中为无选中），太长无收益。
+    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
+    let mut change_count_after = change_count_before;
+    while std::time::Instant::now() < poll_deadline {
+        change_count_after = pasteboard_change_count();
+        if change_count_after > change_count_before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 
-    let change_count_after = pasteboard_change_count();
+    let change_count_after = change_count_after;
     log::info!("[action-bar][detect] after: changeCount={}", change_count_after);
     // 无选中退出：更新 baseline 到当前 changeCount（含本次 Cmd+C 可能的无效写入）
     if change_count_after <= change_count_before {

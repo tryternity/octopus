@@ -110,19 +110,21 @@ fn simulate_copy_platform() {
     // Cmd+C 会发给 octopus webview 而非源应用。先确保 frontmost 是非 octopus 进程。
     // （注：Sublime 的"无选中复制当前行"是独立问题，由 detect_selection 的 Sublime
     // 插件分支处理，不靠此 Cmd+C。本保护针对其他应用的 octopus frontmost 边角场景。）
+    //
+    // 2026-07-20 perf：原固定 `delay 0.15` 在每个 Cmd+C 都等待（含 octopus 不是
+    // frontmost 的正常情况），改为仅在「octopus 是 frontmost 需切焦点」时 delay。
+    // 正常情况省 150ms。
     let script = r#"tell application "System Events"
         set p to first process whose frontmost is true
         if name of p is "octopus" then
             repeat with q in (every process whose background only is false)
                 if name of q is not "octopus" and name of q is not "osascript" then
                     set frontmost of q to true
-                    set p to q
+                    delay 0.15
                     exit repeat
                 end if
             end repeat
         end if
-        set frontmost of p to true
-        delay 0.15
         keystroke "c" using command down
     end tell"#;
     match Command::new("osascript").args(["-e", script]).output() {

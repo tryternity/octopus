@@ -138,19 +138,15 @@ pub fn try_sublime_plugin_context(
 }
 
 /// 前台是否为 Sublime Text。
+///
+/// 2026-07-20 perf：从 osascript 改 NSWorkspace 直调（< 1ms vs osascript 启动 ~200ms）。
+/// Sublime 的 bundle id 是 `com.sublimetext.4` / `com.sublimetext.3`。
 pub fn is_sublime_frontmost() -> bool {
     #[cfg(target_os = "macos")]
     {
-        let script = r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#;
-        let mut cmd = std::process::Command::new("osascript");
-        cmd.args(["-e", script]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        match super::run_command_with_deadline(cmd, deadline) {
-            Some(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().contains("sublimetext")
-            }
-            _ => false,
-        }
+        super::macos_ax::frontmost_bundle_id()
+            .map(|bid| bid.contains("sublimetext"))
+            .unwrap_or(false)
     }
     #[cfg(not(target_os = "macos"))]
     {

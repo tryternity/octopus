@@ -86,7 +86,7 @@ pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
 #[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
-mod macos_ax;
+pub(crate) mod macos_ax;
 #[cfg(target_os = "macos")]
 pub mod sublime_plugin;
 #[cfg(target_os = "windows")]
