@@ -493,11 +493,11 @@ settings:
     asyncExec: 异步执行（不等待结果，后台运行）
     writeToClipboard: 结果写入剪贴板
     shortcutLabel: 快捷键
-    shortcutHint: action bar 打开时按 Alt+此键直接执行
+    shortcutHint: 局部快捷键，需要在菜单中执行
     triggerKeywordLabel: 搜索关键词
     triggerKeywordHint: 在搜索框输入「关键词 查询」触发，URL 中用 {query} 代表查询
     globalShortcutLabel: 全局快捷键
-    globalShortcutHint: 选中文本后按此快捷键，跳过 ActionBar 直接执行，结果展示在编辑器
+    globalShortcutHint: 全局快捷键，无需菜单直接执行
     clearShortcut: 清除快捷键
     enableLabel: 启用
     showInMenu: 显示在菜单中

@@ -16,10 +16,12 @@ export default function ShortcutButton({
   shortcut,
   capturing,
   onClick,
+  title,
 }: {
   shortcut: string;
   capturing: boolean;
   onClick: () => void;
+  title?: string;
 }) {
   const t = useT();
   if (capturing) {
@@ -27,6 +29,7 @@ export default function ShortcutButton({
       <button
         className="px-3 py-1.5 rounded-md text-xs font-medium text-voice bg-voice/5 border border-voice/40 cursor-pointer animate-pulse"
         onClick={onClick}
+        title={title}
       >
         {t("settings.general.shortcutRecordingHint")}
       </button>
@@ -37,6 +40,7 @@ export default function ShortcutButton({
     <button
       className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-muted/40 hover:border-foreground/30 cursor-pointer transition-colors group"
       onClick={onClick}
+      title={title}
     >
       {shortcut === "" ? (
         <span className="px-1.5 py-0.5 text-[11px] text-muted-foreground/50">—</span>

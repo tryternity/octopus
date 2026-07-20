@@ -493,11 +493,11 @@ settings:
     asyncExec: Async execution (no wait, runs in background)
     writeToClipboard: Write result to clipboard
     shortcutLabel: Shortcut
-    shortcutHint: Press Alt+this key when action bar is open to execute directly
+    shortcutHint: Local shortcut, requires the menu to be open
     triggerKeywordLabel: Search Keyword
     triggerKeywordHint: Type "keyword query" in search box to trigger. Use {query} in URL
     globalShortcutLabel: Global Shortcut
-    globalShortcutHint: Press this shortcut with text selected to run directly, skipping the action bar. Result opens in the editor.
+    globalShortcutHint: Global shortcut, runs without opening the menu
     clearShortcut: Clear shortcut
     enableLabel: Enable
     showInMenu: Show in menu
