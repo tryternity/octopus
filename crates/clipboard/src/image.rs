@@ -138,15 +138,22 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
         })
         .ok_or_else(|| anyhow::anyhow!("All image encoding failed for {}×{}", w, h))?;
 
-    // 缩略图：thumbnail 240×240（nearest-neighbor，快 N 倍）→ WebP 20%。
+    // 缩略图：thumbnail 240×240（nearest-neighbor，快 N 倍）→ 按 THUMB_SAVE_QUALITY 编码。
     // 2026-07-20 perf：原用 `resize(240, 240, Triangle)` —— Triangle 是双线性卷积，
     // release build 实测 3176×1866 = 15ms，但 debug build 高达 674ms。
     // `thumbnail(240, 240)` 用 nearest-neighbor，release 7ms，debug ~50ms，肉眼基本无差异。
     let thumb_img = img.thumbnail(240, 240);
     let thumb_rgba = thumb_img.to_rgba8();
-    let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
-    let thumb_blob = thumb_encoder.encode(20.0);
-    let thumb_blob = thumb_blob.to_vec();
+    let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
+    let (tw, th) = (thumb_rgba.width(), thumb_rgba.height());
+    let thumb_blob = thumb_chain
+        .iter()
+        .find_map(|attempt| {
+            let dyn_thumb = ::image::DynamicImage::ImageRgba8(thumb_rgba.clone());
+            attempt.try_encode(&dyn_thumb, &thumb_rgba)
+        })
+        .ok_or_else(|| anyhow::anyhow!("All thumb encoding failed for {}×{}", tw, th))?;
+    log::info!("[clipboard] thumb encoded: {} bytes ({}×{})", thumb_blob.len(), tw, th);
 
     Ok(EncodedImage { webp_blob, thumb_blob })
 }
@@ -194,23 +201,28 @@ mod tests {
         let encoded = encode_to_webp(&img).unwrap();
         assert!(!encoded.webp_blob.is_empty());
         assert!(!encoded.thumb_blob.is_empty());
-        // 主 blob 按链首个成功格式：默认 jpeg:85 → SOI magic [FF D8 FF]
-        // （链可配置，不强制 RIFF，测试只验证非空 + 至少匹配已知 magic 之一）
-        let head = &encoded.webp_blob[..4];
-        let is_jpeg = head.starts_with(&[0xFF, 0xD8, 0xFF]);
-        let is_webp = head == b"RIFF";
-        assert!(is_jpeg || is_webp, "blob head = {:02X?}", head);
-        // 缩略图固定 WebP（独立于主链，不受 IMAGE_SAVE_QUALITY 影响）
-        assert_eq!(&encoded.thumb_blob[..4], b"RIFF");
+        // 主 blob 按 IMAGE_SAVE_QUALITY 链首个成功格式（默认 jpeg:85 → SOI magic [FF D8 FF]）
+        // 缩略图按 THUMB_SAVE_QUALITY 链（默认 jpeg:10 → 也是 SOI magic）
+        // 链可配置，不强制 magic；测试只验证非空 + 至少匹配已知 magic 之一
+        for blob in [&encoded.webp_blob, &encoded.thumb_blob] {
+            let head = &blob[..4];
+            let is_jpeg = head.starts_with(&[0xFF, 0xD8, 0xFF]);
+            let is_webp = head == b"RIFF";
+            assert!(is_jpeg || is_webp, "blob head = {:02X?}", head);
+        }
     }
 
     #[test]
     fn test_parse_image_fallbacks() {
-        // 标准常量解析为编码链（2026-07-20 起默认 jpeg:85;webp:80）
+        // 标准常量解析为编码链（2026-07-20 起默认 jpeg:85，无 fallback）
         let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
-        assert_eq!(chain.len(), 2);
+        assert_eq!(chain.len(), 1);
         assert!(matches!(chain[0], EncodeAttempt::Jpeg(85)));
-        assert!(matches!(chain[1], EncodeAttempt::WebpLossy(80)));
+
+        // thumb 链（默认 jpeg:10）
+        let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
+        assert_eq!(thumb_chain.len(), 1);
+        assert!(matches!(thumb_chain[0], EncodeAttempt::Jpeg(10)));
 
         // 容错：空白容忍、未知格式跳过、质量非数字跳过
         assert_eq!(parse_image_fallbacks(" webp : 70 ; png:90 ; jpeg:60 ; bad").len(), 2);

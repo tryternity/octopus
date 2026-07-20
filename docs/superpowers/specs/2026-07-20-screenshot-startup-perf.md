@@ -153,7 +153,7 @@ WebP lossless 对大图（5M+ px）编码极慢（实测 3176×1866 = 6 秒）�
 | nearest + JPEG q60 | 8ms | 3344 bytes |
 | Triangle + WebP q20（原方案）| 15ms | 452 bytes |
 
-**结论：缩略图保留 WebP**——nearest resize 后 WebP 体积碾压 JPEG（0.4KB vs 3KB），速度差异可忽略。
+**结论（修订 2026-07-20）：缩略图也用 JPEG**——主图和缩略图共用同一套编码链设计（`IMAGE_SAVE_QUALITY` / `THUMB_SAVE_QUALITY`），统一格式降低 DB blob 的格式多样性。thumb q10 极轻质量（240×240 不要求细节，肉眼几乎无差），benchmark 显示 thumb 用 JPEG vs WebP 速度差异可忽略（1ms 内）。
 
 ## 修复方案
 
@@ -165,7 +165,7 @@ WebP lossless 对大图（5M+ px）编码极慢（实测 3176×1866 = 6 秒）�
 
 ### 改动 2：缩略图 resize 改 nearest
 
-`img.resize(240, 240, Triangle)` → `img.thumbnail(240, 240)`（image crate 内置 nearest-neighbor）。缩略图仍编码为 WebP（体积优势）。
+`img.resize(240, 240, Triangle)` → `img.thumbnail(240, 240)`（image crate 内置 nearest-neighbor）。缩略图按 `THUMB_SAVE_QUALITY` 链编码（默认 JPEG q10）。
 
 ### 改动 3：custom-protocol feature（release build 修复）
 
