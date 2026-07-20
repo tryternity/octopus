@@ -75,21 +75,23 @@ export default function Screenshot() {
   })();
 
   useEffect(() => {
-    invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel })
-      .then((buf) => {
-        const img = new Image();
-        const blob = new Blob([buf], { type: "image/jpeg" });
-        const url = URL.createObjectURL(blob);
-        img.onload = () => {
-          bgImgRef.current = img;
-          setReady(true);
-          URL.revokeObjectURL(url); // onload 后图片已解码到内存，释放 Object URL
-          setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
-          // 异步创建 ImageBitmap 缓存——ready 时 draw 先用 HTMLImageElement 兜底，
-          // bitmap 就绪后 draw 自动切到快路径（见 draw/finalize 里 bgBitmapRef ?? bgImgRef）。
-          createImageBitmap(img).then((bm) => { bgBitmapRef.current = bm; }).catch(() => {});
-        };
-        img.src = url;
+    // 2026-07-20 perf：后端直接传 RGBA bytes（省 ~3s JPEG 编码 + base64 round-trip）。
+    // ImageData 构造需要宽高，并行拉 size。
+    Promise.all([
+      invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel }),
+      invoke<[number, number]>("get_screenshot_image_size", { label: winLabel }),
+    ])
+      .then(([buf, [w, h]]) => {
+        const rgba = new Uint8ClampedArray(buf);
+        const imgData = new ImageData(rgba, w, h);
+        // createImageBitmap(ImageData) 直接 GPU-friendly，省去 Image onload 异步等待。
+        return createImageBitmap(imgData);
+      })
+      .then((bm) => {
+        bgBitmapRef.current = bm;
+        setReady(true);
+        // show 窗口（不再 setTimeout 50ms——RGBA 路径同步可用了）。
+        invoke("show_screenshot_window").catch(() => {});
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
@@ -596,9 +598,13 @@ export default function Screenshot() {
   }
 
   async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
-    if (!sel || !bgImgRef.current) return null;
-    const bg = bgImgRef.current;
-    const scale = bg.naturalWidth / window.innerWidth;
+    // 2026-07-20 perf：bg 现在是 ImageBitmap（直接 RGBA），优先用它；
+    // bgImgRef 仅 legacy 兜底（理论上不再被设置）。
+    const bg = bgBitmapRef.current ?? bgImgRef.current;
+    if (!sel || !bg) return null;
+    const bgW = "naturalWidth" in bg ? bg.naturalWidth : bg.width;
+    const bgH = "naturalHeight" in bg ? bg.naturalHeight : bg.height;
+    const scale = bgW / window.innerWidth;
 
     // 合并已确认标注 + 未提交的文字输入（避免 onBlur 竞态丢失）
     const allAnns = [...annotations];
@@ -608,8 +614,8 @@ export default function Screenshot() {
     }
 
     const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = bg.naturalWidth;
-    tmpCanvas.height = bg.naturalHeight;
+    tmpCanvas.width = bgW;
+    tmpCanvas.height = bgH;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
     // 先处理 blur（像素马赛克降采样），再画其他标注

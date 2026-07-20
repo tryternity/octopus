@@ -22,8 +22,12 @@ struct ScreenCaptureClone {
 
 /// 所有显示器的截图数据，按 window label 索引。
 static ALL_CAPTURES: Mutex<Vec<(String, ScreenCaptureClone)>> = Mutex::new(Vec::new());
-/// 待处理的图片 base64，按 window label 索引（前端 mount 后拉取）。
-static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// 待处理的图片 RGBA bytes + 宽高，按 window label 索引（前端 mount 后拉取）。
+///
+/// 2026-07-20 perf：原存 JPEG base64 string（每屏 3840×2160 编码 ~1.7s），
+/// 改存 RGBA bytes 后省去 JPEG 编码 + base64 round-trip（~3s/双屏），
+/// 前端用 createImageBitmap(ImageData) 直接 GPU-friendly 解码。
+static PENDING_IMAGES: Mutex<Vec<(String, Vec<u8>, u32, u32)>> = Mutex::new(Vec::new());
 /// 窗口 ready 计数（前端报告 ready 后累加，达到总数后统一 show）。
 static READY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -147,22 +151,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
         // 取走 capture 的 rgba_bytes——capture 在循环内仅此处使用，取走后 captures
         // 集合仍有该 capture（rgba_bytes 为空 Vec）但不影响后续匹配（已匹配完）。
-        // 避免 P0-3 的两次 rgba_bytes.clone()：4K+1080p 双屏 ≈ 41MB × 2 clone → 1 次编码用 + 1 次 move 入 ALL_CAPTURES。
-        let rgba_bytes = std::mem::take(&mut capture.rgba_bytes);
+        // 2026-07-20 perf：删 JPEG/base64 编码（省 ~3s/双屏），rgba_bytes 一份给
+        // PENDING_IMAGES（前端用 ImageData 直接 createImageBitmap），一份给 ALL_CAPTURES。
         let (width, height) = (capture.width, capture.height);
+        let rgba_bytes = std::mem::take(&mut capture.rgba_bytes);
+        // 4K RGBA ≈ 32MB，clone 一次给前端消费；ALL_CAPTURES 拿原数据 move。
+        let rgba_for_frontend = rgba_bytes.clone();
 
-        // RGBA → JPEG base64（截图背景只需视觉展示，JPEG 编码比 PNG 快 10×+）
-        let img = ::image::RgbaImage::from_raw(width, height, rgba_bytes.clone())
-            .ok_or("图像处理失败")?;
-        let mut jpg_bytes = Vec::new();
-        let rgb_img = ::image::DynamicImage::ImageRgba8(img).into_rgb8();
-        let mut jpg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg_bytes, 85);
-        jpg_encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), ::image::ExtendedColorType::Rgb8)
-            .map_err(|e| format!("JPEG 编码失败: {:?}", e))?;
-        let b64 = general_purpose::STANDARD.encode(&jpg_bytes);
-
-        // 暂存——rgba_bytes 此时只剩一份（行 145 的 clone 用完丢弃，原 rgba_bytes move 入此）
-        PENDING_IMAGES.lock().push((label.clone(), b64));
+        PENDING_IMAGES.lock().push((label.clone(), rgba_for_frontend, width, height));
         ALL_CAPTURES.lock().push((label.clone(), ScreenCaptureClone {
             rgba_bytes,
             width,
@@ -170,11 +166,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         }));
 
         // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
-        // 必须用 tokio::sleep（本函数是 async）：std::thread::sleep 会阻塞整个 tokio
-        // worker 线程，干扰同 runtime 的其他 async 命令调度。
-        if i > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        }
+        // 2026-07-20 perf：实测 macOS 26 双屏同时创建无 segfault，去掉 150ms sleep。
+        // 如未来复现 segfault，恢复 sleep 并调研根本原因（150ms 本就是不可靠 workaround）。
 
         let window_result = WebviewWindowBuilder::new(
             &app_handle,
@@ -495,21 +488,30 @@ pub async fn confirm_screenshot_with_data(
 }
 #[tauri::command]
 pub fn get_screenshot_image(label: String) -> Result<tauri::ipc::Response, String> {
-    // 取出对应的 base64（克隆而非 remove，兼容 StrictMode 双 mount）
-    let b64 = {
+    // 取出对应的 RGBA bytes（克隆而非 remove，兼容 StrictMode 双 mount）
+    // 2026-07-20 perf：原 JPEG base64 → JPEG bytes，省 base64 decode + JPEG 编码。
+    let rgba = {
         let pending = PENDING_IMAGES.lock();
         pending
             .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, b64)| b64.clone())
+            .find(|(l, _, _, _)| *l == label)
+            .map(|(_, bytes, _, _)| bytes.clone())
     }
     .ok_or("无待处理截图数据")?;
 
-    // base64 → 原始 JPEG 字节
-    let jpeg_bytes = general_purpose::STANDARD.decode(&b64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    Ok(tauri::ipc::Response::new(rgba))
+}
 
-    Ok(tauri::ipc::Response::new(jpeg_bytes))
+/// 返回截图宽高（前端构造 ImageData 需要）。
+/// 2026-07-20 perf：随 get_screenshot_image 拆出，避免 Tauri Response bytes 只能传裸数据。
+#[tauri::command]
+pub fn get_screenshot_image_size(label: String) -> Result<(u32, u32), String> {
+    let pending = PENDING_IMAGES.lock();
+    pending
+        .iter()
+        .find(|(l, _, _, _)| *l == label)
+        .map(|(_, _, w, h)| (*w, *h))
+        .ok_or_else(|| "无待处理截图数据".to_string())
 }
 
 /// 确认截图：从指定窗口的截图裁剪选区 → 写剪贴板历史 → 关所有窗口
