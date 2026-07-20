@@ -164,6 +164,17 @@ settings:
       copyUsername: 复制用户名
       revealPassword: 显示密码
       hidePassword: 隐藏密码
+      # 为当前站点新建（方案 C，2026-07-20）
+      createForThisSite: 为当前站点新建
+      createTitle: 新建条目
+      createSubmit: 保存
+      back: 返回
+      fieldName: 名称
+      fieldUrl: 网址
+      fieldUsername: 用户名
+      fieldPassword: 密码
+      createErrMissingFields: 名称和网址不能为空
+      createErrFailed: "保存失败："
     generator:
       title: 密码生成器
       mode:

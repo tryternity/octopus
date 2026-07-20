@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } from "lucide-react";
+import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, ArrowLeft, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -63,7 +63,8 @@ type ViewState =
   | { kind: "uninit" }
   | { kind: "error"; message: string }
   | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean; mode: AutotypeMode }
-  | { kind: "autotyping" };
+  | { kind: "autotyping" }
+  | { kind: "create" };
 
 export default function VaultPicker() {
   const t = useT();
@@ -125,6 +126,11 @@ export default function VaultPicker() {
         break;
       case "autotyping":
         height = 110;
+        break;
+      case "create":
+        // 标题栏 36 + 4 字段（name/url/username/password，每字段 label+input ~52）+
+        // Button 36 + padding 32 + 错误提示预留 20 ≈ 340
+        height = 360;
         break;
       case "list": {
         // 标题栏 36 + 每个 cipher 三段约 88px + 空状态 60
@@ -389,6 +395,14 @@ export default function VaultPicker() {
     );
   }
 
+  // === create: 为当前站点新建 cipher（2026-07-20 方案 C）===
+  // 极简 4 字段表单——name/url/username/password。不做 CipherEditor 的高级功能
+  // （folder / TOTP / fields / favorite）——VaultPicker 浮窗场景要快，复杂编辑去
+  // Settings → Vault → CipherEditor。
+  if (view.kind === "create") {
+    return <CreateCipherView onBack={() => refresh()} onSuccess={() => refresh()} />;
+  }
+
   // === error / list / loading: 共用外壳 ===
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -429,8 +443,16 @@ export default function VaultPicker() {
         )}
 
         {view.kind === "list" && view.ciphers.length === 0 && (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            {t("settings.vault.autotype.noMatch")}
+          <div className="flex flex-col items-center gap-3 px-4 py-6 text-sm text-muted-foreground">
+            <span>{t("settings.vault.autotype.noMatch")}</span>
+            <Button
+              type="button"
+              variant="voice"
+              className="w-full"
+              onClick={() => setView({ kind: "create" })}
+            >
+              {t("settings.vault.autotype.createForThisSite")}
+            </Button>
           </div>
         )}
 
@@ -567,6 +589,17 @@ export default function VaultPicker() {
             );
           })}
 
+        {/* list 视图底部「为当前站点新建」入口——已有匹配也允许加新账号 */}
+        {view.kind === "list" && view.ciphers.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setView({ kind: "create" })}
+            className="w-full border-t border-dashed border-border/50 px-4 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            + {t("settings.vault.autotype.createForThisSite")}
+          </button>
+        )}
+
         {view.kind === "error" && (
           <div className="px-4 py-3 text-sm text-destructive">{view.message}</div>
         )}
@@ -574,3 +607,180 @@ export default function VaultPicker() {
     </div>
   );
 }
+
+// === CreateCipherView：为当前站点新建 cipher 的内联表单 ===
+//
+// 2026-07-20 方案 C：VaultPicker 浮窗内新建——解决用户首次为某站点建密码时
+// "去 Settings → Vault → 新建 → 手动复制 URL → 粘贴" 的繁琐流程。
+//
+// 极简 4 字段（name / url / username / password），不做 CipherEditor 的高级功能。
+// URL 从 vault_get_cached_url 预填（热键 callback 抓的），name 从 URL hostname
+// 自动提取（用户可改）。
+
+/** 从 URL 提取 hostname 作为默认 name——失败时退到空字符串让用户手填。 */
+function hostnameFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    // mail.163.com → "163 邮箱" 太复杂，直接返 hostname 让用户改
+    return u.hostname;
+  } catch {
+    return "";
+  }
+}
+
+function CreateCipherView({
+  onBack,
+  onSuccess,
+}: {
+  onBack: () => void;
+  onSuccess: () => void;
+}) {
+  const t = useT();
+  const [url, setUrl] = useState<string>("");
+  const [name, setName] = useState<string>("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // mount 时从后端拿缓存的 URL 预填
+  useEffect(() => {
+    invoke<string | null>("vault_get_cached_url")
+      .then((cached) => {
+        if (cached) {
+          setUrl(cached);
+          setName(hostnameFromUrl(cached));
+        }
+      })
+      .catch(() => {
+        // 静默失败——用户可手填
+      });
+  }, []);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !url.trim()) {
+      setError(t("settings.vault.autotype.createErrMissingFields"));
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("vault_create_cipher", {
+        input: {
+          folderId: null,
+          favorite: false,
+          name: name.trim(),
+          notes: null,
+          login: {
+            uris: [{ uri: url.trim(), matchType: null }],
+            username: username || null,
+            password: password || null,
+            totp: null,
+          },
+          fields: [],
+          reprompt: null,
+        },
+      });
+      // 成功 → 回 list 视图（onSuccess 触发 refresh）
+      onSuccess();
+    } catch (e) {
+      setError(t("settings.vault.autotype.createErrFailed") + String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSave} className="flex h-screen flex-col bg-background text-foreground">
+      {/* 标题栏：左侧返回 + 中间标题 + 右侧关闭 */}
+      <div className="relative flex items-center border-b border-border/40 px-2 py-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={onBack}
+          title={t("settings.vault.autotype.back")}
+        >
+          <ArrowLeft className="size-4" />
+        </Button>
+        <span className="absolute left-1/2 -translate-x-1/2 text-sm font-medium">
+          {t("settings.vault.autotype.createTitle")}
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => getCurrentWindow().hide()}
+          className="ml-auto"
+        >
+          <X className="size-4" />
+        </Button>
+      </div>
+      {/* 表单内容 */}
+      <div className="flex-1 overflow-auto px-4 py-3">
+        <div className="space-y-2.5">
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              {t("settings.vault.autotype.fieldName")}
+            </label>
+            <Input
+              size="full"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="163 邮箱"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              {t("settings.vault.autotype.fieldUrl")}
+            </label>
+            <Input
+              size="full"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://mail.163.com/"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              {t("settings.vault.autotype.fieldUsername")}
+            </label>
+            <Input
+              size="full"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+              {t("settings.vault.autotype.fieldPassword")}
+            </label>
+            <PasswordInput
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onClear={() => setError(null)}
+              size="full"
+              autoComplete="new-password"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+      </div>
+      {/* 底部保存按钮 */}
+      <div className="border-t border-border/40 px-4 py-2">
+        <Button
+          type="submit"
+          variant="voice"
+          className="w-full"
+          disabled={busy || !name.trim() || !url.trim()}
+        >
+          {busy ? "..." : t("settings.vault.autotype.createSubmit")}
+        </Button>
+      </div>
+    </form>
+  );
+}
+

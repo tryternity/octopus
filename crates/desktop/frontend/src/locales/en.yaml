@@ -164,6 +164,17 @@ settings:
       copyUsername: Copy username
       revealPassword: Reveal password
       hidePassword: Hide password
+      # Create cipher for current site (Plan C, 2026-07-20)
+      createForThisSite: Create for this site
+      createTitle: New Item
+      createSubmit: Save
+      back: Back
+      fieldName: Name
+      fieldUrl: URL
+      fieldUsername: Username
+      fieldPassword: Password
+      createErrMissingFields: Name and URL are required
+      createErrFailed: "Save failed: "
     generator:
       title: Password Generator
       mode:

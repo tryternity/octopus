@@ -856,6 +856,25 @@ pub fn vault_detect_and_match(
         .collect())
 }
 
+/// 取当前缓存的浏览器 URL（热键 callback 预抓的），用于「为当前站点新建 cipher」场景。
+///
+/// 2026-07-20 新增：VaultPicker 浮窗里点「为当前站点新建」时，前端需要拿到当前 URL
+/// 预填到表单。复用 picker_url_cache（不重新抓——hide 浮窗后浏览器已非前台）。
+///
+/// 返回 `Option<String>`：Some(url) 有缓存，None 缓存空（用户可手动输 URL）。
+/// **不清空缓存**——紧接着的 vault_detect_and_match 可能还要用（虽然新建场景通常
+/// 已经过了 detect 阶段）。读 + clone 廉价。
+#[tauri::command]
+pub fn vault_get_cached_url(
+    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
+) -> Result<Option<String>, String> {
+    Ok(url_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|s| !s.is_empty()))
+}
+
 /// 复制指定 cipher 的密码到 concealed 剪贴板。
 ///
 /// `suppress_next()` 必须在 `copy_concealed` 之前调用——`copy_concealed` 直接写 NSPasteboard，
