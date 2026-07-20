@@ -96,7 +96,6 @@ pub fn paste_to_pid(pid: i32) -> Result<()> {
 }
 
 /// Cmd+C（复制）——定向发给指定 pid（Electron app 用）。
-#[allow(dead_code)]  // detect_selection 将来用
 pub fn copy_to_pid(pid: i32) -> Result<()> {
     send_key_combo_to_pid(KeyModifier::Command, keycodes::C, pid)
 }

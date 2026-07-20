@@ -111,11 +111,16 @@ fn simulate_paste_platform() {
 #[cfg(target_os = "macos")]
 fn simulate_copy_platform() {
     // 2026-07-20 perf：原 osascript（~200ms 启动 + delay 0.15）改用 keystroke 模块（CGEvent < 5ms）。
-    // 「octopus 是 frontmost 时切非 octopus 进程」的保护暂去掉——octopus 是 frontmost 是边角场景
-    // （热键触发后短暂成为 frontmost），即便发生，Cmd+C 发给 octopus 自己也只导致剪贴板不变，
-    // detect_selection 会判为无选中，不影响功能正确性。如未来发现该边角场景需恢复保护，
-    // 用 NSWorkspace + osascript set frontmost 实现（本次不动 restore_focus 的 osascript）。
-    if let Err(e) = crate::keystroke::copy() {
+    // 2026-07-21 Electron 兼容：跟 simulate_paste 一样，读 frontmost pid 用 post_to_pid 定向发 Cmd+C
+    // （Electron app 不接收全局 CGEventPost(HID)）。
+    // 已知限制：微信内置浏览器（WKWebView 嵌套）即使 post_to_pid 也不响应外部 Cmd+C——
+    // WKWebView 有自己的事件处理，不响应注入的键盘事件。此场景需后续用 AX API 或其他方式处理。
+    let pid = crate::app_context::macos_ax::frontmost_app().map(|(pid, _, _)| pid);
+    let result = match pid {
+        Some(pid) => crate::keystroke::copy_to_pid(pid),
+        None => crate::keystroke::copy(),
+    };
+    if let Err(e) = result {
         log::warn!("simulate_copy: {}", e);
     }
 }
