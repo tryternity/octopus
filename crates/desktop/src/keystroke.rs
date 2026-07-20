@@ -11,6 +11,11 @@
 //! 发的菜单快捷键——它们的 Chromium 事件处理路径跟原生 app 不同。改用 `CGEventPostToPid(pid)`
 //! 定向发给目标进程，绕过全局事件路由，Electron app 也能接收。
 //!
+//! **WKWebView 嵌套兼容（2026-07-21）**：微信内置浏览器等 WKWebView 嵌套组件不响应
+//! 外部注入的 CGEvent（不论全局 post 还是 post_to_pid）。此类 app 回退到 osascript
+//! `keystroke`（通过 System Events 高层 API 走完整菜单路由，~200ms 但兼容性好）。
+//! 由 [`WKWEBVIEW_FALLBACK_APPS`] bundle id 列表驱动。
+//!
 //! 其他平台 no-op + warn。
 
 use anyhow::Result;
@@ -58,10 +63,31 @@ pub enum KeyModifier {
     CommandShift,
 }
 
+/// 需要 osascript fallback 的 app bundle id 列表。
+///
+/// 这些 app 内嵌 WKWebView 或类似组件，不响应外部注入的 CGEvent（不论全局 post
+/// 还是 post_to_pid）。osascript `keystroke` 通过 System Events 走完整菜单路由，
+/// 兼容性最好但慢（~200ms）。
+///
+/// 2026-07-21 实测：微信（`com.tencent.xinWeChat`）内置浏览器选中文字时，
+/// CGEventPostToPid 的 Cmd+C 不触发复制（changeCount 不变），osascript 正常。
+const WKWEBVIEW_FALLBACK_APPS: &[&str] = &[
+    "com.tencent.xinWeChat",  // 微信（内置浏览器 WKWebView 嵌套）
+];
+
+/// 检查 bundle id 是否需要 osascript fallback（WKWebView 嵌套 app）。
+pub fn needs_osascript_fallback(bundle_id: Option<&str>) -> bool {
+    match bundle_id {
+        Some(bid) => WKWEBVIEW_FALLBACK_APPS.iter().any(|&fallback| bid == fallback),
+        None => false,
+    }
+}
+
 /// 发送「修饰键 + 字符键」组合——全局广播（`CGEventPost(HID)`）。
 ///
-/// 适用于原生 macOS app（Sublime/iTerm2/微信等）。
+/// 适用于原生 macOS app（Sublime/iTerm2 等）。
 /// **Electron app**（豆包/VS Code）不接收全局 CGEvent，需用 [`send_key_combo_to_pid`]。
+/// **WKWebView 嵌套 app**（微信内置浏览器）不响应任何 CGEvent，需用 [`send_via_osascript`]。
 pub fn send_key_combo(modifier: KeyModifier, key_code: u8) -> Result<()> {
     send_key_combo_impl(modifier, key_code, None)
 }
@@ -78,6 +104,38 @@ pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> R
         return send_key_combo(modifier, key_code);
     }
     send_key_combo_impl(modifier, key_code, Some(pid))
+}
+
+/// 通过 osascript 发送按键（System Events `keystroke`）。
+///
+/// **WKWebView 嵌套 app 兼容**：微信内置浏览器等不响应 CGEvent（不论全局 post
+/// 还是 post_to_pid），osascript 通过 System Events 高层 API 走完整菜单路由。
+///
+/// 代价：osascript 进程启动 ~200ms（vs CGEvent < 5ms）。
+///
+/// `key_char` 是按键字符（如 "c" / "v"），`using` 是修饰键（如 "command down"）。
+#[cfg(target_os = "macos")]
+pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
+    use std::process::Command;
+    let script = format!(
+        r#"tell application "System Events" to keystroke "{}" using {}"#,
+        key_char, using
+    );
+    let out = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| anyhow::anyhow!("osascript 启动失败: {}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("osascript keystroke 失败: {}", stderr);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub fn send_via_osascript(_key_char: &str, _using: &str) -> Result<()> {
+    Ok(())
 }
 
 /// Cmd+C（复制）——全局广播。
@@ -98,6 +156,22 @@ pub fn paste_to_pid(pid: i32) -> Result<()> {
 /// Cmd+C（复制）——定向发给指定 pid（Electron app 用）。
 pub fn copy_to_pid(pid: i32) -> Result<()> {
     send_key_combo_to_pid(KeyModifier::Command, keycodes::C, pid)
+}
+
+/// Cmd+C（复制）——osascript（WKWebView 嵌套 app 用）。
+pub fn copy_via_osascript() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    { send_via_osascript("c", "command down") }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
+}
+
+/// Cmd+V（粘贴）——osascript（WKWebView 嵌套 app 用）。
+pub fn paste_via_osascript() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    { send_via_osascript("v", "command down") }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
 }
 
 /// Cmd+X（剪切）。
@@ -183,5 +257,36 @@ fn check_accessibility_trusted() -> bool {
     }
     // null options = 不弹权限对话框，只查当前状态
     unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_needs_osascript_fallback_wechat() {
+        assert!(needs_osascript_fallback(Some("com.tencent.xinWeChat")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_sublime() {
+        assert!(!needs_osascript_fallback(Some("com.sublimetext.4")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_doubao() {
+        assert!(!needs_osascript_fallback(Some("com.electron.doubao")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_none() {
+        assert!(!needs_osascript_fallback(None));
+    }
+
+    #[test]
+    fn test_wkwebview_fallback_list_contains_wechat() {
+        assert!(WKWEBVIEW_FALLBACK_APPS.contains(&"com.tencent.xinWeChat"));
+        assert!(!WKWEBVIEW_FALLBACK_APPS.contains(&"com.sublimetext.4"));
+    }
 }
 
