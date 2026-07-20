@@ -449,6 +449,8 @@ pub fn run() {
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_detect_and_match,
             #[cfg(feature = "vault")]
+            crate::vault_commands::vault_get_cached_url,
+            #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_password,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_username,

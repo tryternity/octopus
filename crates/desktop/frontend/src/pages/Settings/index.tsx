@@ -162,7 +162,7 @@ function Settings() {
         ) : !configResp ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.loading")}</div>
         ) : effectivePage === "settings" ? (
-          <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} />
+          <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} isVaultEnabled={isVaultEnabled !== false} />
         ) : effectivePage === "models" ? (
           <ModelsPanel showToast={showToast} />
         ) : effectivePage === "prompts" ? (

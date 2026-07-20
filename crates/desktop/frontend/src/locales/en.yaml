@@ -164,6 +164,17 @@ settings:
       copyUsername: Copy username
       revealPassword: Reveal password
       hidePassword: Hide password
+      # Create cipher for current site (Plan C, 2026-07-20)
+      createForThisSite: Add to Vault
+      createTitle: New Item
+      createSubmit: Save
+      back: Back
+      fieldName: Name
+      fieldUrl: URL
+      fieldUsername: Username
+      fieldPassword: Password
+      createErrMissingFields: Name and URL are required
+      createErrFailed: "Save failed: "
     generator:
       title: Password Generator
       mode:
@@ -229,6 +240,8 @@ settings:
     clipboardShortcut: Clipboard Float
     actionBarShortcut: Quick Panel
     actionBarShortcutHint: Press this key after selecting text
+    vaultAutotypeShortcut: Summon Vault
+    vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
     screenshotShortcut: Screenshot OCR
     screenshotShortcutHint: Capture screen region and recognize text
     recording: Voice Recognition

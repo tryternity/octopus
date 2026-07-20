@@ -164,6 +164,17 @@ settings:
       copyUsername: 复制用户名
       revealPassword: 显示密码
       hidePassword: 隐藏密码
+      # 为当前站点新建（方案 C，2026-07-20）
+      createForThisSite: 新增保险箱
+      createTitle: 新建条目
+      createSubmit: 保存
+      back: 返回
+      fieldName: 名称
+      fieldUrl: 网址
+      fieldUsername: 用户名
+      fieldPassword: 密码
+      createErrMissingFields: 名称和网址不能为空
+      createErrFailed: "保存失败："
     generator:
       title: 密码生成器
       mode:
@@ -229,6 +240,8 @@ settings:
     clipboardShortcut: 剪贴板浮窗
     actionBarShortcut: 快捷操作面板
     actionBarShortcutHint: 选中文本后按此键唤起
+    vaultAutotypeShortcut: 召唤密码箱
+    vaultAutotypeShortcutHint: 在浏览器登录页按此键，自动匹配并填充密码
     screenshotShortcut: 截图OCR
     screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
