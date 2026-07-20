@@ -236,19 +236,22 @@ export default function VaultPicker() {
         onSubmit={handleUnlock}
         className="flex h-screen flex-col bg-background text-foreground"
       >
-        {/* 标题栏 */}
-        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
-          <div className="flex items-center gap-2">
+        {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位保持对称 */}
+        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+          {/* 左侧占位——与右侧 X 按钮等宽，让 absolute 标题真正居中 */}
+          <div className="size-7" aria-hidden />
+          <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
               {t("settings.vault.unlock.title")}
             </span>
-          </div>
+          </span>
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             onClick={() => getCurrentWindow().hide()}
+            className="ml-auto"
           >
             <X />
           </Button>
@@ -284,18 +287,20 @@ export default function VaultPicker() {
   if (view.kind === "uninit") {
     return (
       <div className="flex h-screen flex-col bg-background text-foreground">
-        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
-          <div className="flex items-center gap-2">
+        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+          <div className="size-7" aria-hidden />
+          <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
               {t("settings.vault.autotype.uninitTitle")}
             </span>
-          </div>
+          </span>
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             onClick={() => getCurrentWindow().hide()}
+            className="ml-auto"
           >
             <X />
           </Button>
@@ -326,19 +331,21 @@ export default function VaultPicker() {
         onSubmit={submitReprompt}
         className="flex h-screen flex-col bg-background text-foreground"
       >
-        {/* 标题栏 */}
-        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
-          <div className="flex items-center gap-2">
+        {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位 */}
+        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+          <div className="size-7" aria-hidden />
+          <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
               {t("settings.vault.autotype.repromptTitle")}
             </span>
-          </div>
+          </span>
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             onClick={() => refresh()}
+            className="ml-auto"
           >
             <X />
           </Button>
@@ -385,12 +392,15 @@ export default function VaultPicker() {
   // === error / list / loading: 共用外壳 ===
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      {/* 顶部标题栏 */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <span className="text-sm font-medium">
+      {/* 顶部标题栏：absolute 居中标题 + 右侧 Refresh + X 按钮 + 左侧同等宽占位 */}
+      <div className="relative flex items-center border-b border-border px-4 py-2">
+        {/* 左侧占位——与右侧 2 个 icon-sm 按钮（gap-1）等宽，让 absolute 标题真正居中。
+            2 个 icon-sm 按钮（约 24px each）+ gap-1（4px）≈ 52px */}
+        <div className="w-[52px]" aria-hidden />
+        <span className="absolute left-1/2 -translate-x-1/2 text-sm font-medium">
           {t("settings.vault.autotype.trigger")}
         </span>
-        <div className="flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
           <Button
             type="button"
             variant="ghost"
