@@ -7275,3 +7275,115 @@ camelCase 字符串；但前端 TS type 字面值用了 PascalCase `"PasswordOnl
 （热键 callback 时序、hide + invoke 竞态、Tab 切焦点 SPA 兼容性）——这类问题静态代码
 审查很难发现，必须实际操作。后续 vault 类工作必须把 e2e 测试纳入标准验证流程。
 
+---
+
+## 修订：UI 调整轮 + 快捷键配置化 + 方案 C（2026-07-20）
+
+继 e2e 反馈四轮后，又做了一轮 UI 调整 + 两个新功能（快捷键配置化、VaultPicker
+内联新建 cipher）。
+
+### UI 调整轮（解锁界面 + PasswordInput + 标题居中 + 文案）
+
+- `8aceb164` style: VaultPicker locked/reprompt/uninit 紧凑居中 + Input/Button 等宽
+- `2a2196e3` fix: VaultPicker 动态窗口高度 + Input size=full 解决 max-w-[220px] 限制
+  - **关键 bug**：Input 组件默认 size="default" 带 max-w-[220px]，加 className="w-full"
+    被覆盖——必须传 size="full" 才真正等宽
+  - 后端 inner_size 改 400×200，前端 useEffect 按 view.kind 动态 setSize
+- `e6174f07` style: VaultPicker 4 个视图标题居中（absolute + 左侧同等宽占位对称）
+- `2968c307` feat: 抽 PasswordInput 组件（Eye + Eraser suffix 按钮）——主密码很长，
+  输错一个字符要全删重输很累。Eye 看明文定位错字符，Eraser 一键清空重输。
+  应用到 VaultPicker locked/reprompt + Settings UnlockDialog + SetupWizard（2 处）
+- `b545fc22` style: UnlockDialog 对齐 VaultPicker 浮窗布局（删副标题 + 居中 + 等宽）
+
+### 快捷键配置化（commit `be8243e5`）
+
+需求：vault AutoType 全局热键 `Cmd+Shift+L` 在 设置 → 通用 → 快捷键 tab 配置化，
+与其他 6 个快捷键（asr/edit/polish/clipboard/screenshot/action_bar）一致。
+
+实现：
+- `settings_commands.rs set_config_value` 加 vault_autotype_shortcut 热重载分支
+  - `#[cfg(feature = "vault")]` gate——feature off 时 register_vault_autotype_shortcut
+    不存在
+  - 同模式：unregister old + register new + 失败恢复 old + 不持久化
+- `GeneralPanel.tsx` shortcut tab 加 vault autotype Row
+  - 位置：actionBarShortcut 之后（浮窗触发类语义聚类）
+  - feature off 时不渲染（isVaultEnabled 控制，传自 Settings/index.tsx）
+
+### 方案 C：VaultPicker 内联新建 cipher（commit `b8f4990e`）
+
+brainstorming 结论：macOS 桌面 app **无权限读浏览器 DOM 字段值**——真正自动采集只有
+浏览器扩展能做（vaultwarden 也不做采集，它是 Bitwarden 兼容服务端）。短期可做的方案：
+
+- **方案 A**（bookmarklet）：长期方向，未实现
+- **方案 B**（浏览器扩展）：独立项目，大工程
+- **方案 C**（VaultPicker 内联新建）：低成本，立即价值——本次实现
+- **方案 D**（手动 Settings 录入）：现状
+
+方案 C 实现：
+- VaultPicker 加 create view state + CreateCipherView 子组件
+- 入口：无匹配时（voice 全宽按钮）+ 有匹配时底部 dashed border 轻量入口
+  - 文案统一为「新增保险箱」（commit `758a7145`，原「+ 为当前站点新建」抽象，改简短）
+- CreateCipherView：极简 4 字段（name/url/username/password）
+  - URL 从新增命令 `vault_get_cached_url` 预填（复用 picker_url_cache，不清空）
+  - name 自动从 URL hostname 提取
+- 不做 CipherEditor 的高级功能（folder/TOTP/fields/favorite）——浮窗场景要快
+
+### Bug 修复（commit `23b8e148` + `4f556700`）
+
+- CreateCipherView 漏 import Input → 运行时报 `Can't find variable: Input`
+  （tsc 因 JSX 全局类型未报错，运行时才崩）
+- VaultPicker 5 个视图标题栏加 `data-tauri-drag-region="deep"`——浮窗可拖动
+  （遮住信息时拖走，与 Clipboard 浮窗同模式）
+- list 视图高度估算漏算底部新建按钮 32px → 「+ 为当前站点新建」被遮挡
+- `vault_detect_and_match` 内部清 cache 太早 → CreateCipherView 后续 mount 时
+  `vault_get_cached_url` 拿到 None → URL 字段不预填。修：去掉 detect 清 cache 逻辑
+  （cache 在热键 callback 每次覆盖，CreateCipherView 永远能拿到最近一次热键抓的 URL）
+
+### 验证
+
+- cargo build -p octopus-desktop --features 'embedded cloud vault': 0 error 0 warning
+- cargo test -p octopus-desktop: 381 pass
+- tsc: 0 error
+- bun run test: 304 pass
+
+### 累计 commit（2026-07-20）
+
+| commit | 说明 |
+|---|---|
+| `be8243e5` | vault_autotype_shortcut 配置化（设置页快捷键栏） |
+| `b8f4990e` | 方案 C——VaultPicker 内联新建 cipher |
+| `23b8e148` | Input import 修 + 5 标题栏加拖动 |
+| `4f556700` | list 高度加底部新建按钮 + URL cache 保留 |
+| `758a7145` | 文案「+ 为当前站点新建」→「新增保险箱」|
+| `8aceb164`/`2a2196e3`/`e6174f07`/`2968c307`/`b545fc22` | UI 调整（紧凑居中 / 等宽 / 标题居中 / PasswordInput / UnlockDialog）|
+
+### 方案 A 后续工作（**决定不做**，2026-07-20 brainstorming 评估）
+
+bookmarklet 真正自动采集——经过多轮 brainstorming 评估决定**不做**。
+
+**评估过的传输方案**：
+
+| 方案 | 否决理由 |
+|---|---|
+| P1 明文走 URL | ❌ URL 历史明文密码 |
+| P2 加密走 URL + 静态密钥 | ❌ 静态密钥泄漏 → 历史可解 |
+| P2+ master_password 派生密钥 | ❌ bookmarklet 永久固定，重置 master_password 后要重装书签 |
+| P4 加密走剪贴板 + URL 敲门 | ❌ 与 P2 等价安全但实现更复杂 |
+| P6 本地 HTTP server | ❌ Safari 不支持 HTTPS→HTTP 127.0.0.1 fetch（mixed content 拦截）|
+| P6+ 一次性密钥 + Safari 配对码 fallback | ❌ macOS 防火墙对监听端口敏感（每次按热键弹对话框）+ Safari fallback 复杂 |
+
+**根本约束**：
+1. **bookmarklet 与 octopus 是「单向、一次性、无握手」通信**——动态密钥握手在物理上不成立（bookmarklet 无法主动向 octopus 请求）
+2. **Safari 不允许 HTTPS 页面 fetch HTTP 127.0.0.1**——本地 HTTP server 方案在 Safari 失效
+3. **macOS 防火墙对监听端口敏感**——即使绑 127.0.0.1 也可能弹对话框
+
+**方案 A 的实际收益**（对比已落地的方案 C）：
+- 方案 C：Cmd+Shift+L → 新增保险箱 → 手输用户名/密码 → 保存（4 步）
+- 方案 A：装书签 → 在登录页填完密码 → 点书签 → 切到 octopus 确认（4 步）
+
+方案 A 只省"手输用户名密码"那一步，但代价是 8-12 小时工程 + 几个边界 case bug + Safari 兼容问题。性价比低。
+
+**vaultwarden 对比**：vaultwarden 是 Bitwarden 兼容服务端，本身不做采集——所有采集工作由浏览器扩展做。octopus 桌面 app 与 Bitwarden 桌面 app 同类，都不自动采集，靠扩展或手动录入。
+
+**真正自动采集的方向**：浏览器扩展（方案 B）——独立项目，跨平台 native messaging，能监听 form submit 自动捕获。Bitwarden/1Password 走的路。如果将来真有强需求再做。
+

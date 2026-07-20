@@ -18,9 +18,12 @@ interface GeneralPanelProps {
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
   showToast: (msg: string) => void;
   refreshConfig: () => Promise<void>;
+  /** vault feature 是否启用——控制 vault autotype 快捷键 Row 是否渲染。
+   *  feature off 时不应让用户配置一个无效快捷键。 */
+  isVaultEnabled?: boolean;
 }
 
-export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig }: GeneralPanelProps) {
+export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, active_prompt_id, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "voice">("general");
@@ -196,6 +199,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <Row label={t("settings.general.actionBarShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.actionBarShortcutHint")}>
               <ShortcutButton shortcut={cfg.action_bar_shortcut as string} capturing={capturingKey === "action_bar_shortcut"} onClick={() => startShortcutCapture("action_bar_shortcut")} />
             </Row>
+            {isVaultEnabled && (
+              <Row label={t("settings.general.vaultAutotypeShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.vaultAutotypeShortcutHint")}>
+                <ShortcutButton shortcut={cfg.vault_autotype_shortcut as string} capturing={capturingKey === "vault_autotype_shortcut"} onClick={() => startShortcutCapture("vault_autotype_shortcut")} />
+              </Row>
+            )}
             <Row label={t("settings.general.screenshotShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.screenshotShortcutHint")}>
               <ShortcutButton shortcut={cfg.screenshot_shortcut as string} capturing={capturingKey === "screenshot_shortcut"} onClick={() => startShortcutCapture("screenshot_shortcut")} />
             </Row>

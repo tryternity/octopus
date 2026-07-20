@@ -790,10 +790,11 @@ pub fn vault_detect_and_match(
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|s| !s.is_empty());
-    // 取完清空——下次热键会重新抓；手动刷新场景（无热键）走 current_browser_url()
-    if let Ok(mut guard) = url_cache.lock() {
-        *guard = None;
-    }
+    // **2026-07-20 修正**：不在 detect_and_match 里清空 cache——
+    // 因为 CreateCipherView（新建场景）也要读这个 cache 预填 URL，detect 提前清掉
+    // 会让新建表单 URL 空。cache 在热键 callback 每次覆盖（新热键 → 新 URL），
+    // 用户手动刷新（无新热键）会一直用旧 cache——可接受，因为浮窗显示期间用户
+    // 几乎不会切浏览器 tab。
 
     let url_str = match cached_url {
         Some(u) => {
@@ -854,6 +855,25 @@ pub fn vault_detect_and_match(
         .cloned()
         .map(cipher_to_dto)
         .collect())
+}
+
+/// 取当前缓存的浏览器 URL（热键 callback 预抓的），用于「为当前站点新建 cipher」场景。
+///
+/// 2026-07-20 新增：VaultPicker 浮窗里点「为当前站点新建」时，前端需要拿到当前 URL
+/// 预填到表单。复用 picker_url_cache（不重新抓——hide 浮窗后浏览器已非前台）。
+///
+/// 返回 `Option<String>`：Some(url) 有缓存，None 缓存空（用户可手动输 URL）。
+/// **不清空缓存**——紧接着的 vault_detect_and_match 可能还要用（虽然新建场景通常
+/// 已经过了 detect 阶段）。读 + clone 廉价。
+#[tauri::command]
+pub fn vault_get_cached_url(
+    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
+) -> Result<Option<String>, String> {
+    Ok(url_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|s| !s.is_empty()))
 }
 
 /// 复制指定 cipher 的密码到 concealed 剪贴板。
