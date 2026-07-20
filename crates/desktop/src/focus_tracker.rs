@@ -95,7 +95,15 @@ fn simulate_paste_platform() {
     // 切输入源可能短暂抢焦点（Carbon TIS API），等 50ms 让焦点稳定再发 keystroke
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    if let Err(e) = crate::keystroke::paste() {
+    // 2026-07-21 Electron 兼容：读 frontmost pid，用 post_to_pid 定向发 Cmd+V
+    // （全局 CGEventPost(HID) 不触发 Electron/Chromium 的菜单快捷键）。
+    // frontmost_app() 返回 None 时 fallback 到全局 post（极少发生）。
+    let pid = crate::app_context::macos_ax::frontmost_app().map(|(pid, _, _)| pid);
+    let result = match pid {
+        Some(pid) => crate::keystroke::paste_to_pid(pid),
+        None => crate::keystroke::paste(),
+    };
+    if let Err(e) = result {
         log::warn!("simulate_paste: {}", e);
     }
 }

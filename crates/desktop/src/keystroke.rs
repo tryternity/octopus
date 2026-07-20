@@ -7,6 +7,10 @@
 //! ⚠️ CGEvent.post() 在 AX 权限缺失时会静默失败（不报错但没发出去），故本模块主动
 //! 调 `AXIsProcessTrustedWithOptions` 检查，缺失时 bail。
 //!
+//! **Electron 兼容（2026-07-21）**：Electron app（豆包/VS Code 等）不接收 CGEvent.post(HID)
+//! 发的菜单快捷键——它们的 Chromium 事件处理路径跟原生 app 不同。改用 `CGEventPostToPid(pid)`
+//! 定向发给目标进程，绕过全局事件路由，Electron app 也能接收。
+//!
 //! 其他平台 no-op + warn。
 
 use anyhow::Result;
@@ -54,31 +58,47 @@ pub enum KeyModifier {
     CommandShift,
 }
 
-/// 发送「修饰键 + 字符键」组合。
+/// 发送「修饰键 + 字符键」组合——全局广播（`CGEventPost(HID)`）。
 ///
-/// macOS：CGEvent new_keyboard_event + set_flags + post(HID)。
-/// 其他平台：no-op + warn（Windows/Linux 未来用 enigo 实现）。
+/// 适用于原生 macOS app（Sublime/iTerm2/微信等）。
+/// **Electron app**（豆包/VS Code）不接收全局 CGEvent，需用 [`send_key_combo_to_pid`]。
 pub fn send_key_combo(modifier: KeyModifier, key_code: u8) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        send_key_combo_macos(modifier, key_code)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (modifier, key_code);
-        log::warn!("[keystroke] 模拟按键仅 macOS 支持");
-        Ok(())
-    }
+    send_key_combo_impl(modifier, key_code, None)
 }
 
-/// Cmd+C（复制）。
+/// 发送「修饰键 + 字符键」组合——定向发给指定进程（`CGEventPostToPid`）。
+///
+/// **Electron 兼容**：Electron app 不接收 `CGEventPost(HID)` 的全局事件——
+/// Chromium 的事件处理路径与原生 app 不同，全局 CGEvent 发的菜单快捷键不触发。
+/// `CGEventPostToPid` 绕过全局事件路由，直接投递到目标进程的 HID 队列。
+///
+/// `pid` 传 0 等同于全局广播（fallback 行为）。
+pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> Result<()> {
+    if pid <= 0 {
+        return send_key_combo(modifier, key_code);
+    }
+    send_key_combo_impl(modifier, key_code, Some(pid))
+}
+
+/// Cmd+C（复制）——全局广播。
 pub fn copy() -> Result<()> {
     send_key_combo(KeyModifier::Command, keycodes::C)
 }
 
-/// Cmd+V（粘贴）。
+/// Cmd+V（粘贴）——全局广播。
 pub fn paste() -> Result<()> {
     send_key_combo(KeyModifier::Command, keycodes::V)
+}
+
+/// Cmd+V（粘贴）——定向发给指定 pid（Electron app 用）。
+pub fn paste_to_pid(pid: i32) -> Result<()> {
+    send_key_combo_to_pid(KeyModifier::Command, keycodes::V, pid)
+}
+
+/// Cmd+C（复制）——定向发给指定 pid（Electron app 用）。
+#[allow(dead_code)]  // detect_selection 将来用
+pub fn copy_to_pid(pid: i32) -> Result<()> {
+    send_key_combo_to_pid(KeyModifier::Command, keycodes::C, pid)
 }
 
 /// Cmd+X（剪切）。
@@ -95,8 +115,21 @@ pub fn select_all() -> Result<()> {
 
 // ── macOS 实现 ────────────────────────────────────────────────────
 
+fn send_key_combo_impl(modifier: KeyModifier, key_code: u8, pid: Option<i32>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        send_key_combo_macos(modifier, key_code, pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (modifier, key_code, pid);
+        log::warn!("[keystroke] 模拟按键仅 macOS 支持");
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn send_key_combo_macos(modifier: KeyModifier, key_code: u8) -> Result<()> {
+fn send_key_combo_macos(modifier: KeyModifier, key_code: u8, pid: Option<i32>) -> Result<()> {
     use core_graphics::event::CGEventFlags;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -118,8 +151,8 @@ fn send_key_combo_macos(modifier: KeyModifier, key_code: u8) -> Result<()> {
         }
     };
 
-    send_one_key(&source, key_code as u16, true, flags)?;
-    send_one_key(&source, key_code as u16, false, flags)?;
+    send_one_key(&source, key_code as u16, true, flags, pid)?;
+    send_one_key(&source, key_code as u16, false, flags, pid)?;
     Ok(())
 }
 
@@ -129,12 +162,16 @@ fn send_one_key(
     key_code: u16,
     key_down: bool,
     flags: core_graphics::event::CGEventFlags,
+    pid: Option<i32>,
 ) -> Result<()> {
     use core_graphics::event::{CGEvent, CGEventTapLocation};
     let event = CGEvent::new_keyboard_event(source.clone(), key_code, key_down)
         .map_err(|_| anyhow::anyhow!("CGEvent::new_keyboard_event 失败 (key={:#x} down={})", key_code, key_down))?;
     event.set_flags(flags);
-    event.post(CGEventTapLocation::HID);
+    match pid {
+        Some(pid) => event.post_to_pid(pid),
+        None => event.post(CGEventTapLocation::HID),
+    }
     Ok(())
 }
 
@@ -148,3 +185,4 @@ fn check_accessibility_trusted() -> bool {
     // null options = 不弹权限对话框，只查当前状态
     unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
 }
+
