@@ -193,10 +193,16 @@ export default function VaultPicker() {
   );
 
   // === locked: 内联解锁表单 ===
+  // 布局：标题栏置顶，表单内容垂直居中（浮窗固定 360px 高，内容少，居中避免空白堆积
+  // 在底部）。Input 和 Button 都 w-full 等宽，视觉协调。
   if (view.kind === "locked") {
     return (
-      <form onSubmit={handleUnlock} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
-        <div className="flex items-center justify-between">
+      <form
+        onSubmit={handleUnlock}
+        className="flex h-screen flex-col bg-background text-foreground"
+      >
+        {/* 标题栏 */}
+        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
           <div className="flex items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
@@ -212,22 +218,29 @@ export default function VaultPicker() {
             <X />
           </Button>
         </div>
-        <Input
-          type="password"
-          value={unlockPassword}
-          onChange={(e) => setUnlockPassword(e.target.value)}
-          placeholder={t("settings.vault.unlock.passwordLabel")}
-          autoFocus
-          autoComplete="current-password"
-        />
-        {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
-        <Button
-          type="submit"
-          variant="voice"
-          disabled={busy || !unlockPassword}
-        >
-          {busy ? "..." : t("settings.vault.unlock.submit")}
-        </Button>
+        {/* 表单内容垂直居中 */}
+        <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-4">
+          <Input
+            type="password"
+            value={unlockPassword}
+            onChange={(e) => setUnlockPassword(e.target.value)}
+            placeholder={t("settings.vault.unlock.passwordLabel")}
+            autoFocus
+            autoComplete="current-password"
+            className="w-full"
+          />
+          {unlockError && (
+            <p className="text-xs text-destructive">{unlockError}</p>
+          )}
+          <Button
+            type="submit"
+            variant="voice"
+            disabled={busy || !unlockPassword}
+            className="w-full"
+          >
+            {busy ? "..." : t("settings.vault.unlock.submit")}
+          </Button>
+        </div>
       </form>
     );
   }
@@ -235,8 +248,8 @@ export default function VaultPicker() {
   // === uninit: 提示去 Settings 初始化 ===
   if (view.kind === "uninit") {
     return (
-      <div className="flex h-screen flex-col gap-2 bg-background p-4 text-foreground">
-        <div className="flex items-center justify-between">
+      <div className="flex h-screen flex-col bg-background text-foreground">
+        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
           <div className="flex items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
@@ -252,9 +265,11 @@ export default function VaultPicker() {
             <X />
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.vault.autotype.uninitHint")}
-        </p>
+        <div className="flex flex-1 items-center px-6 py-4">
+          <p className="text-xs text-muted-foreground">
+            {t("settings.vault.autotype.uninitHint")}
+          </p>
+        </div>
       </div>
     );
   }
@@ -272,8 +287,12 @@ export default function VaultPicker() {
       await runAutotype(cipher, copyOnly, mode, pwd);
     };
     return (
-      <form onSubmit={submitReprompt} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
-        <div className="flex items-center justify-between">
+      <form
+        onSubmit={submitReprompt}
+        className="flex h-screen flex-col bg-background text-foreground"
+      >
+        {/* 标题栏 */}
+        <div className="flex items-center justify-between border-b border-border/40 px-4 py-2">
           <div className="flex items-center gap-2">
             <Lock className="size-4" />
             <span className="text-sm font-medium">
@@ -289,25 +308,32 @@ export default function VaultPicker() {
             <X />
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {t("settings.vault.autotype.repromptHint", { name: view.cipher.name })}
-        </p>
-        <Input
-          type="password"
-          value={unlockPassword}
-          onChange={(e) => setUnlockPassword(e.target.value)}
-          placeholder={t("settings.vault.unlock.passwordLabel")}
-          autoFocus
-          autoComplete="current-password"
-        />
-        {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
-        <Button
-          type="submit"
-          variant="voice"
-          disabled={busy || !unlockPassword}
-        >
-          {busy ? "..." : t("settings.vault.autotype.trigger")}
-        </Button>
+        {/* 内容垂直居中 */}
+        <div className="flex flex-1 flex-col justify-center gap-3 px-6 py-4">
+          <p className="text-xs text-muted-foreground">
+            {t("settings.vault.autotype.repromptHint", { name: view.cipher.name })}
+          </p>
+          <Input
+            type="password"
+            value={unlockPassword}
+            onChange={(e) => setUnlockPassword(e.target.value)}
+            placeholder={t("settings.vault.unlock.passwordLabel")}
+            autoFocus
+            autoComplete="current-password"
+            className="w-full"
+          />
+          {unlockError && (
+            <p className="text-xs text-destructive">{unlockError}</p>
+          )}
+          <Button
+            type="submit"
+            variant="voice"
+            disabled={busy || !unlockPassword}
+            className="w-full"
+          >
+            {busy ? "..." : t("settings.vault.autotype.trigger")}
+          </Button>
+        </div>
       </form>
     );
   }
