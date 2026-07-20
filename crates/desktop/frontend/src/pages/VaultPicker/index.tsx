@@ -134,10 +134,17 @@ export default function VaultPicker() {
         height = 360;
         break;
       case "list": {
-        // 标题栏 36 + 每个 cipher 三段约 88px + 空状态 60
+        // 标题栏 36 + 每个 cipher 三段约 88px + 底部「+ 为当前站点新建」按钮 32px
+        // （ciphers>0 时显示）+ 空状态 60（含 voice 全宽按钮约 88px）
         const ciphers = "ciphers" in view ? view.ciphers.length : 0;
-        const contentH = ciphers === 0 ? 60 : ciphers * 88;
-        height = Math.min(560, Math.max(140, 36 + contentH + 16));
+        if (ciphers === 0) {
+          // 空状态：标题 36 + 居中提示文字 + voice 全宽按钮 36 + padding 40 ≈ 150
+          height = 170;
+        } else {
+          const contentH = ciphers * 88;
+          // 36（标题）+ contentH + 32（底部新建按钮）+ 8（间距）
+          height = Math.min(560, 36 + contentH + 32 + 8);
+        }
         break;
       }
       default:

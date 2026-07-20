@@ -790,10 +790,11 @@ pub fn vault_detect_and_match(
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|s| !s.is_empty());
-    // 取完清空——下次热键会重新抓；手动刷新场景（无热键）走 current_browser_url()
-    if let Ok(mut guard) = url_cache.lock() {
-        *guard = None;
-    }
+    // **2026-07-20 修正**：不在 detect_and_match 里清空 cache——
+    // 因为 CreateCipherView（新建场景）也要读这个 cache 预填 URL，detect 提前清掉
+    // 会让新建表单 URL 空。cache 在热键 callback 每次覆盖（新热键 → 新 URL），
+    // 用户手动刷新（无新热键）会一直用旧 cache——可接受，因为浮窗显示期间用户
+    // 几乎不会切浏览器 tab。
 
     let url_str = match cached_url {
         Some(u) => {
