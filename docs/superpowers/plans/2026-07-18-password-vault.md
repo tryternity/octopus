@@ -7155,3 +7155,123 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 
 **第六轮是收敛轮**——无 bug 无回归，仅卫生/文档收尾。密码保险库核心路径（crypto / 持久化 / 解锁 / 迁移 / 导入）的安全不变量与失败恢复语义已闭合。
 
+---
+
+## 修订：e2e 测试反馈四轮修复（2026-07-20）
+
+六轮安全审查后开始手动 e2e 测试，发现一系列实际可用性问题（不是安全 bug，是 UX/可用性
+bug），全部修复。下面按反馈顺序记录。
+
+### 反馈 1：VaultPicker 列出全部 cipher 而非 URL 匹配项（commit `77e3ca01`）
+
+**现象**：在 https://mail.163.com/ 密码框按 Cmd+Shift+L，浮窗列出**全部** cipher（fallback
+路径），而非期望的 2 个 163 cipher。
+
+**根因**：`register_vault_autotype_shortcut` callback 在 `show + set_focus(vault_picker_window)`
+**之后**才 emit picker-refresh 让前端调 `vault_detect_and_match`——此时 VaultPicker 已抢
+前台，`frontmost_bundle_id()` 取到的是 octopus-desktop 自身，`script_for_browser(octopus_id)`
+= None → URL 检测失败 → 走 fallback。
+
+**修复**：
+- `vault_state.rs` 新增 `SharedPickerUrlCache = Arc<Mutex<Option<String>>>`
+- `main.rs` `app.manage(picker_url_cache)` 注册状态
+- 热键 callback 在 show 浮窗**之前**先抓 URL 存入 cache
+- `vault_detect_and_match` 加 `url_cache: State` 参数，优先读缓存（读后即清），缓存空才
+  走原 `current_browser_url()` 现抓
+
+不变量：**INV-A11**。
+
+### 反馈 2：选中 cipher 后 autotype 未填充（commit `19743a50` + `c846b06d` + `12f5b566`）
+
+**现象**：点击 cipher 后浮窗消失（hide 成功）但浏览器没填充密码。
+
+**多轮诊断 + 修复**：
+
+**轮 1（FOCUS_WAIT + verify_focused 重试）**：FOCUS_WAIT 100ms → 300ms（hide always_on_top
+后焦点回切实测需 200-400ms）；`verify_focused` 单次失败改短轮询重试（500ms 窗口内每 50ms
+重试，最多 ~6 次）。
+
+**轮 2（AX 权限 + activate）**：日志显示 `AX 权限：true` + `frontmost=com.google.Chrome`
++ enigo 返 Ok——但密码没进框。加 `AXIsProcessTrustedWithOptions` 检查 + AppleScript activate
+前台浏览器（hide 后 DOM focus 可能丢失，activate 强制刷新窗口焦点）。
+
+**轮 3（Tab 切焦点不可靠，三模式 autotype）**：用户报告"username + Tab + password"在
+mail.163.com 上 Tab 切不到 password 框。这是密码管理器经典问题（webmail SPA 自己拦截 Tab
+或密码框是 iframe）。改为三模式：
+
+```rust
+pub enum AutoTypeMode {
+    UsernamePassword,  // 旧行为，假设焦点在 username 框且网站 Tab 正常
+    PasswordOnly,      // 默认，仅注入 password 到当前焦点
+    UsernameOnly,      // 仅注入 username 到当前焦点
+}
+```
+
+`vault_autotype` 命令加 `mode: Option<AutoTypeMode>` 参数；`autotype_login_with_mode` 按
+模式分支注入逻辑；旧 `autotype_login` 改 wrapper（username 空 → PasswordOnly，否则
+UsernamePassword）。默认 PasswordOnly——与 Bitwarden/1Password 桌面助手对齐。
+
+**轮 4（hide 移到后端）**：用户反馈修完三模式后又不能填了——日志显示**完全没有
+`[vault-autotype] invoke 进入`**。根因：前端 `runAutotype` 流程
+`await getCurrentWindow().hide() + await invoke("vault_autotype")` 中，hide 让 webview
+进入 terminated 状态，紧接着的 invoke 永远到不了后端（race condition，日志里看到的
+`web content process terminated` 就是这个）。偶尔 work 是 timing race。
+
+修复：`vault_autotype` 命令加 `app: AppHandle` 参数，进入后立刻
+`app.get_webview_window("vault_picker_window").hide()`——此时 invoke 已在 Rust 代码路径，
+hide 只是窗口管理不影响后续注入。
+
+不变量：**INV-A12**（hide 后端做）+ **INV-A13**（默认 PasswordOnly）。
+
+**Tauri 命令参数 camelCase 坑**：commit `12f5b566` 修了一个 Tauri 2 反序列化问题——
+后端 `AutoTypeMode` enum 标了 `#[serde(rename_all = "camelCase")]`，期望 `passwordOnly` 等
+camelCase 字符串；但前端 TS type 字面值用了 PascalCase `"PasswordOnly"`——TS 类型检查不报错
+（都是字符串字面值），运行时 Tauri 反序列化才报错。前端字面值改 camelCase 修复。
+
+### 反馈 3：三段式 UI（commit `dbd65d90`）
+
+**现象**：用户反馈单行 + 4 图标的紧凑布局信息密度过高，操作不够明确。
+
+**重构**：每个 cipher 显示成 3 段，复制/填充图标分两列对齐——用户一眼看出"左列都是
+复制，右列都是触发填充"。
+
+```
+名称行    →  [空]    ⌨  (完整填充)
+用户名行  →  📋      @  (复制用户名 / 仅填用户名)
+密码行    →  📋      🔑 (复制密码 / 仅填密码)
+```
+
+要点：
+- 复制图标（📋）挪到前面（左列），autotype 图标（⌨ / @ / 🔑）挪到后面（右列）
+- 两列在视觉上垂直对齐——形成"复制列"和"填充列"的隐喻
+- 名称行加 `size-7` 占位与下方 copy 列对齐
+- 密码默认 mask（`••••••`，长度 clamp 6-12），点文本切换 Eye/EyeOff
+- 各 cipher 的密码可见性独立维护（`Record<cipherId, boolean>`）
+- 去掉 KeyRound 的 voice 色高亮（三段式布局本身已清晰，不需要颜色签名）
+
+**后端新增**：`vault_copy_username` 命令——与 `vault_copy_password` 对称，但 username 通常
+不敏感，**不强制 reprompt**（reprompt 保护的是密码等高敏感字段）。走 `copy_concealed`
+写 concealed 剪贴板（防进 clipboard_history FTS 索引库）。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features 'embedded cloud vault'`: 0 error 0 warning
+- `cargo test -p octopus-desktop`: 375 pass / 0 fail
+- `cargo test -p octopus-vault --lib`: 166 pass
+- `bunx tsc --noEmit`: 0 error
+- `bun run test`: 304 pass
+
+### e2e 反馈累计 commit
+
+| commit | 说明 |
+|---|---|
+| `77e3ca01` | VaultPicker 热键时序 bug——show 浮窗前先抓 URL |
+| `19743a50` | 三模式 autotype（webmail SPA Tab 不可靠） |
+| `c846b06d` | hide VaultPicker 移到后端（前端 await hide + invoke 竞态） |
+| `12f5b566` | 前端 autotype mode 字面值改 camelCase |
+| `dbd65d90` | VaultPicker 三段式 UI（复制/填充图标分两列对齐） |
+
+**核心经验**：六轮安全审查发现的都是单点代码缺陷，e2e 测试发现的则是**跨层时序问题**
+（热键 callback 时序、hide + invoke 竞态、Tab 切焦点 SPA 兼容性）——这类问题静态代码
+审查很难发现，必须实际操作。后续 vault 类工作必须把 e2e 测试纳入标准验证流程。
+
