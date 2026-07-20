@@ -661,6 +661,7 @@ pub struct AutoTypeResultDto {
 /// 自动 suppress，不手动抑制会导致自身 clipboard_history watcher 把密码写进 FTS 库。
 #[tauri::command]
 pub fn vault_autotype(
+    app: AppHandle,
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
@@ -675,6 +676,22 @@ pub fn vault_autotype(
         master_password.is_some(),
         mode
     );
+
+    // **2026-07-20 e2e 修复**：hide VaultPicker 必须在后端做，不能由前端 await。
+    //
+    // 原前端流程 `await getCurrentWindow().hide(); await invoke("vault_autotype")`
+    // 有竞态：hide() 让 webview 进入 terminated 状态，紧接着的 invoke 永远到不了
+    // 后端（日志看到 web content process terminated 但没有 [vault-autotype] invoke）。
+    // 偶尔能 work 是因为 webview 还没完全 terminate 时 invoke 跑完了。
+    //
+    // 修复：vault_autotype 命令自己拿 AppHandle 隐藏 VaultPicker，确保 hide 之后
+    // 还有完整的 Rust 代码路径执行注入（不依赖 webview）。
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("vault_picker_window") {
+        let _ = win.hide();
+        log::debug!("[vault-autotype] VaultPicker 已 hide");
+    }
+
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
     // 1. 取 cipher

@@ -148,7 +148,11 @@ export default function VaultPicker() {
   );
 
   /** 实际调 vault_autotype / vault_copy_password——reprompt 通过后也走这里。
-   *  masterPassword 仅在 reprompt 场景传入。*/
+   *  masterPassword 仅在 reprompt 场景传入。
+   *
+   *  **2026-07-20 e2e 修复**：不要 await getCurrentWindow().hide()——hide 会让
+   *  webview 进入 terminated 状态，紧接着的 invoke 永远到不了后端（race condition）。
+   *  hide 改由后端 vault_autotype 自己做（用 AppHandle 拿窗口引用）。*/
   const runAutotype = useCallback(
     async (
       c: CipherDto,
@@ -163,11 +167,10 @@ export default function VaultPicker() {
             cipherId: c.id,
             masterPassword: masterPassword ?? null,
           });
-        } else {
-          // 关键：autotype 前先 hide 浮窗，让浏览器回到前台。
-          // 后端 vault_autotype 会 sleep + 校验前台不是 octopus 自身（防钓鱼注入），
-          // 若浮窗未 hide 则校验失败 → fallback 到剪贴板。
+          // copy 后 hide 浮窗（copy 不像 autotype 需要后端做焦点管理，前端 hide 安全）
           await getCurrentWindow().hide();
+        } else {
+          // autotype 由后端 hide——前端不调 hide，避免 invoke 失联
           await invoke("vault_autotype", {
             cipherId: c.id,
             masterPassword: masterPassword ?? null,
