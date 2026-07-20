@@ -6,7 +6,6 @@ import { listen } from "@tauri-apps/api/event";
 import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { classifyError } from "./classifyError";
 
