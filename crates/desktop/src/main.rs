@@ -448,6 +448,8 @@ pub fn run() {
             crate::vault_commands::vault_detect_and_match,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_copy_password,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_copy_username,
             // 密码生成器独立浮窗（Actionbar 触发，外壳 B；详见 spec §5.2）
             #[cfg(feature = "vault")]
             crate::vault_commands::open_password_generator,
@@ -818,6 +820,11 @@ pub fn run() {
                 );
                 vault_state::bootstrap_app_key(&vault_session);
                 app.manage(vault_session.clone());
+                // VaultPicker URL 缓存：热键触发时（show 浮窗之前）抓 URL 存入，
+                // vault_detect_and_match 优先读此缓存（修 e2e 发现的抢前台 bug）。
+                let picker_url_cache: vault_state::SharedPickerUrlCache =
+                    std::sync::Arc::new(std::sync::Mutex::new(None));
+                app.manage(picker_url_cache);
                 // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
                 // （AliyunEngine::transcribe / config::llm_config_ignore_mode / 云端翻译）
                 // 解密 v1: 前缀的 secret_key。

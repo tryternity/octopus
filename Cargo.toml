@@ -21,12 +21,14 @@ codegen-units = 1
 #                   降级成「abort→直接崩溃」，Tauri 命令保护 + Drop 资源清理均失效，代价不值。
 
 [profile.profiling]
-inherits = "release"
+# perf 测量用——inherits optimize 拿到与生产一致的 LTO/内联，再叠符号信息。
+# 这样火焰图的内联情况与用户实际 release build 一致。
+inherits = "optimize"
 # 强制把 DWARF 符号嵌进 binary（samply/atos 直接可读，无需 dSYM）
 #   debug="full"          → 完整 DWARF（行号 + 函数名 + 参数）
 #   split-debuginfo="off" → 不分离到 dSYM（macOS 默认 "packed" 会把符号挪到 .dSYM 目录）
-#   strip="none"          → 保留所有符号（覆盖 release 的 strip 选项）
-# 代价：binary 体积从 ~97MB 涨到 ~300-500MB，但只用于 perf session。
+#   strip="none"          → 保留所有符号（覆盖 optimize 的 strip=true）
+# 代价：链接时间 +1~3 分钟（LTO），binary ~104MB（含符号）。
 debug = "full"
 split-debuginfo = "off"
 strip = "none"

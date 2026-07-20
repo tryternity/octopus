@@ -672,28 +672,52 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 1. desktop/autotype 触发器收到热键事件
    （沿用 action_bar_window.rs 的热键注册机制）
    ↓
-2. 检查 vault 解锁状态（AppState）
-   - user_vault_key 在内存 → 跳到 3
-   - 不在 → 弹解锁窗口 → 输主密码
+2. **预抓 URL**（2026-07-20 e2e 修复）：
+   热键 callback 立即调 `current_browser_url()` 抓当前浏览器 URL（此时浏览器还前台），
+   存入 `SharedPickerUrlCache = Arc<Mutex<Option<String>>>`（app.manage 注入的共享状态）。
+   ⚠️ 关键时序：必须在 show VaultPicker **之前**抓——show 后 VaultPicker 抢前台，
+   `frontmost_bundle_id()` 会取到 octopus-desktop 自己 → URL 检测失败 → fallback 列出
+   最近 20 条 cipher（用户看到全部密码而非当前站点匹配项）。
    ↓
-3. AppleScript 取当前浏览器 URL
+3. show VaultPicker 浮窗 + emit picker-refresh（通知前端拉取 cipher 列表）
    ↓
-4. 内存中匹配 cipher（vault::matcher::find_matching_ciphers）
-   - 0 个：显示"无匹配 cipher" 浮窗 + 全 cipher 列表
-   - 1 个：跳到 5
-   - N 个：弹选择浮窗，按最近使用排序 → 跳到 5
+4. 前端 mount / 收到 refresh → 调 `vault_detect_and_match` 取匹配 cipher
+   - 优先读 `SharedPickerUrlCache`（热键预抓的 URL，读后即清，下次热键重新抓）
+   - 缓存空（手动刷新 / 热键抓失败）→ 现抓 `current_browser_url()`
+   - 0 个匹配：显示"无匹配 cipher" + fallback 列出最近 20 条（按 updated_at DESC）
+   - N 个匹配：弹选择浮窗，按最近使用排序
    ↓
-5. （如 cipher.reprompt=1）弹主密码确认框，验证后继续
-   （如 cipher.reprompt=0）直接跳到 6
+5. 用户点击 cipher 的字段行（三段式 UI，2026-07-20）：
+   - 名称行 ⌨ → 完整填充（username + Tab + password）
+   - 用户名行 📋 / @ → 复制用户名 / 仅填用户名
+   - 密码行 📋 / 🔑 → 复制密码 / 仅填密码
+   - 点密码文本 → 切换 mask / 可见
    ↓
-6. 执行 Auto-Type
-   6a. AppleScript 把浏览器带到前台
-   6b. enigo 模拟键盘：username + Tab + password
+6. （如 cipher.reprompt=1）弹主密码确认框，验证后继续
+   （如 cipher.reprompt=0）直接跳到 7
+   ↓
+7. 后端执行（`vault_autotype` 命令）：
+   7a. **后端 hide VaultPicker**（2026-07-20 e2e 修复）：
+       命令签名加 `app: AppHandle`，进入后立刻 `app.get_webview_window("vault_picker_window").hide()`。
+       ⚠️ 不能由前端 `await getCurrentWindow().hide()` + 后续 invoke——hide 触发 webview
+       terminated 状态，紧接着的 invoke 永远到不了后端（race condition）。
+   7b. FOCUS_WAIT 300ms（让浏览器回切前台）+ verify_focused 轮询重试（500ms 窗口）
+   7c. AppleScript activate 前台 app（强制刷新窗口焦点 + DOM focus）
+   7d. 按 mode 注入：
+       - `UsernamePassword`：username → Tab → password（旧行为）
+       - `PasswordOnly`（默认）：仅注入 password 到当前焦点
+       - `UsernameOnly`：仅注入 username 到当前焦点
        默认不按 Enter（避免误触发提交，可配置）
-   6c. （若有 TOTP）生成 6 位码，写入剪贴板（30s 后清空）
+   7e. （若有 TOTP）生成 6 位码，写入剪贴板（30s 后清空）
    ↓
-7. 收尾：关闭浮窗，更新 cipher.updated_at（记录最近使用）
+8. 收尾：cipher.updated_at bump（记录最近使用）
 ```
+
+**三模式 autotype 的设计动机**（2026-07-20 e2e 反馈）：webmail SPA
+（mail.163.com 等）的 Tab 切焦点不可靠——SPA 自己拦截 Tab 或密码框是 iframe，
+导致 `username + Tab + password` 模式在 password 框填不进。给用户三种独立控制
+模式，按当前光标位置选合适图标。与 Bitwarden/1Password 桌面助手默认行为对齐
+（默认 PasswordOnly）。
 
 ### 4.2 URL 检测（macOS AppleScript）
 
@@ -841,27 +865,62 @@ MVP 不暴露编辑 UI，未来加设置页即可。
 
 ### 4.5 Auto-Type 实现（enigo 跨平台）
 
-**焦点安全**（2026-07-19 修复 #2 + 复审 D/E 加固）：`autotype_login` 加 `expected_bundle_id: Option<&str>`
-参数——注入 username 前 + password 前各调一次 `verify_focused`：
+**焦点安全**（2026-07-19 修复 #2 + 复审 D/E 加固 + 2026-07-20 e2e 修复）：
+`autotype_login_with_mode` 加 `expected_bundle_id: Option<&str>` 参数——注入前后各调
+`verify_focused`：
 - `Some(id)`：严格白名单，前台必须 == 指定 bundle id
 - `None`：最小防御，仅校验前台不是 octopus 自身（`OCTOPUS_BUNDLE_ID` 常量），
   防 VaultPicker 未 hide 时密码打到 octopus 窗口
 
-调用方 `vault_autotype` 命令当前传 `None`——前端 VaultPicker `handlePick` 已改为
-**先 hide 浮窗再 invoke**（首发版反了，hide 在 invoke 之后）。
+调用方 `vault_autotype` 命令当前传 `None`。**hide VaultPicker 由后端做**（2026-07-20
+e2e 修复，见 §4.1 步骤 7a）——前端 `await getCurrentWindow().hide() + await invoke` 的
+串行写法会让 hide 触发 webview terminated，invoke 失联（race condition）。
+
+**三模式 API**（2026-07-20 e2e 反馈）：
 
 ```rust
-// crates/desktop/src/autotype/macos.rs（签名 4 参数，原 3 参数已废弃）
-pub fn autotype_login(
+// crates/desktop/src/autotype/macos.rs
+pub fn autotype_login_with_mode(
     username: &str,
     password: &str,
+    mode: crate::vault_commands::AutoTypeMode,  // 三模式
     press_enter: bool,
-    expected_bundle_id: Option<&str>,  // 焦点校验（修复 #2）
+    expected_bundle_id: Option<&str>,  // 焦点校验
 ) -> Result<()>
+
+// 旧 API（wrapper，保留兼容）：username 空 → PasswordOnly，否则 UsernamePassword
+pub fn autotype_login(username, password, press_enter, expected_bundle_id) -> Result<()>
 ```
+
+`AutoTypeMode` enum（`vault_commands.rs`，`#[serde(rename_all = "camelCase")]`）：
+
+| 模式 | 行为 | 适用场景 |
+|---|---|---|
+| `UsernamePassword` | username → Tab → password → (Enter?) | 旧行为，网站 Tab 切焦点正常 |
+| `PasswordOnly`（默认）| 仅注入 password 到当前焦点 | webmail SPA / 用户已手动点密码框 |
+| `UsernameOnly` | 仅注入 username 到当前焦点 | 换用户名场景 |
+
+默认 `PasswordOnly`——webmail SPA 首选，与现代密码管理器（Bitwarden/1Password 桌面
+助手）默认行为对齐。
+
+**焦点管理时序**（2026-07-20 e2e 多轮修复，沉淀的经验）：
+
+| 阶段 | 时长/操作 | 失败处理 |
+|---|---|---|
+| 热键 callback | show 浮窗**之前**抓 URL 存 cache | 抓失败 fallback 到 detect 时现抓 |
+| `vault_autotype` 入口 | 后端 hide VaultPicker | hide 失败仅记日志不阻塞 |
+| FOCUS_WAIT | 300ms（原 100ms 不够）| — |
+| verify_focused 轮询 | 500ms 窗口内每 50ms 重试，最多 ~6 次 | 超时 bail → fallback 剪贴板 |
+| AppleScript activate | 强制刷新前台 app 的窗口焦点 + DOM focus | 失败仅记日志 |
+| verify_focused 通过 | enigo 按 mode 注入 | enigo Ok 失败 → fallback 剪贴板 |
 
 **fail-closed**（修复 D）：`verify_focused` 中 osascript 失败（权限缺失/被回收）时
 直接 `bail!`，不 `unwrap_or_default` 放行——避免安全校验在权限缺失时静默失效。
+
+**AX 权限检查**（2026-07-20 e2e 诊断）：注入前主动调 `AXIsProcessTrustedWithOptions(nil)`
+检查 macOS Accessibility 权限。enigo 用 CGEvent 注入，**权限缺失时静默失败**（返 Ok 但
+浏览器收不到按键），不主动检查的话这个问题完全不可见。检查不通过仅 warn 不 bail——
+让 enigo 继续尝试（可能触发系统权限框）。
 
 **bundle id 常量**（修复 E）：`OCTOPUS_BUNDLE_ID = "com.octopus.desktop"` 单点定义，
 加测试 `test_octopus_bundle_id_matches_tauri_config` 锁死与 tauri.conf.json identifier 一致。
@@ -880,8 +939,7 @@ pub fn autotype_login(
 
 **Enter 键配置**：
 - 默认 `press_enter=false`（避免误触发提交）
-- cipher 可单独配置（未来加字段）
-- MVP 全局配置即可（VaultPanel 设置项）
+- 生成器场景（`password_generator_autotype`）传 `true`——用户主动生成密码通常立即提交
 
 ### 4.6 剪贴板路径（fallback / TOTP）
 
@@ -926,15 +984,18 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | # | 不变量 |
 |---|---|
 | INV-A1 | URL 检测失败时必须 fallback 到手动选择，不能 silently fail |
-| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走）—— 2026-07-19 修复 #2 落地：`verify_focused` 在注入前后各校验一次 |
-| INV-A3 | 模拟键盘前必须有 100ms+ 焦点等待 |
+| INV-A2 | Auto-Type 前必须确认目标窗口仍是浏览器（用户可能切走）—— 2026-07-19 修复 #2 落地：`verify_focused` 在注入前后各校验一次；2026-07-20 e2e 修复：verify_focused 单次失败改短轮询重试（500ms 窗口内每 50ms 重试，最多 ~6 次） |
+| INV-A3 | 模拟键盘前必须有焦点等待——**2026-07-20 e2e 修复**：原 100ms 在 macOS hide always_on_top 后不够（实测需 200-400ms），改 300ms。配 verify_focused 轮询重试兜底 |
 | INV-A4 | 剪贴板复制必须有 30s 自动清空 + concealed 标记 |
 | INV-A5 | octopus 自身 clipboard 监听器必须跳过 concealed 内容 |
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
 | INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
 | INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
-| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。当前 activate_app 是 dead code（无生产调用），但白名单作为防御性校验先就位 |
-| INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通 |
+| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。**2026-07-20 e2e 修复**：autotype_login_with_mode 内 AppleScript activate 前台 app 复用此校验 |
+| INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password` / `vault_copy_username`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通。**例外**：`vault_copy_username` 不强制 reprompt（username 通常不敏感） |
+| INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → fallback 列出最近 20 条。URL 存 `SharedPickerUrlCache` 共享状态 |
+| INV-A12 | **hide VaultPicker 必须由后端做**（2026-07-20 e2e 修复）：前端 `await hide() + await invoke` 串行写法会让 hide 触发 webview terminated，invoke 失联（race condition）。`vault_autotype` 命令加 `app: AppHandle` 参数，进入后立刻 hide |
+| INV-A13 | **Auto-Type 默认 PasswordOnly**（2026-07-20 e2e 修复）：webmail SPA 的 Tab 切焦点不可靠（SPA 自己拦截 Tab 或密码框是 iframe），`UsernamePassword` 模式在 webmail 上失败。给用户三种独立控制（UsernamePassword / PasswordOnly / UsernameOnly），按当前光标位置选合适图标。与 Bitwarden/1Password 桌面助手默认行为对齐 |
 
 ### 4.8 跨平台扩展计划
 
@@ -1583,9 +1644,10 @@ export function validateMasterPassword(pwd: string): MasterPasswordValidation {
 
 ### 7.5 不变量汇总（全局）
 
-见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。截至 2026-07-19 第六轮审查收敛，不变量已覆盖到 INV-15：
+见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。截至 2026-07-20 e2e 修复，不变量已覆盖到 INV-15 + INV-A13：
 INV-9 / INV-10（§2.8 主密码强度）、INV-11（meta 写锁）、INV-12（退避 + 成功路径 reset）、
 INV-13（迁移事务化）、INV-14（setup 失败可恢复）、INV-15（密码校验与副作用错误语义分离）；
+INV-A1 ~ INV-A13（§4.7 URL 匹配 + Auto-Type，含 2026-07-20 e2e 修复的 INV-A11/A12/A13）；
 INV-D6 / INV-D7（§3.8 数据层）；INV-G8（§5.4 生成器 + 健康检查）。
 
 ### 7.6 关键测试场景

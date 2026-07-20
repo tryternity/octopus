@@ -167,17 +167,17 @@
 ## 10. 构建命令
 
 ```bash
-# 构建桌面应用（embedded 模式，默认）
-cargo run --release -p octopus-desktop --features embedded
+# 构建桌面应用（embedded 模式，默认）—— 生产构建用 --profile optimize
+cargo run --profile optimize -p octopus-desktop --features embedded
 
 # 构建桌面应用（含云端 ASR：阿里云/字节跳动/腾讯/百度）
-cargo run --release -p octopus-desktop --features embedded,cloud
+cargo run --profile optimize -p octopus-desktop --features embedded,cloud
 
 # 构建桌面应用（WebSocket 远程模式）
-cargo run --release -p octopus-desktop --features remote-ws
+cargo run --profile optimize -p octopus-desktop --features remote-ws
 
 # 构建桌面应用（gRPC 远程模式）
-cargo run --release -p octopus-desktop --features remote-grpc
+cargo run --profile optimize -p octopus-desktop --features remote-grpc
 
 # 推荐（会清 WebView 缓存）
 ./run-octopus.sh

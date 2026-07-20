@@ -415,6 +415,35 @@ pub fn vault_create_cipher(
 /// password_history 上限（避免无界增长）。FIFO 截断：丢最老的。
 pub const PASSWORD_HISTORY_MAX: usize = 20;
 
+/// Auto-Type 模式（2026-07-20 三模式）。
+///
+/// **背景**：webmail SPA（mail.163.com 等）的 Tab 键切焦点不可靠——SPA 自己拦截 Tab
+/// 或密码框是 iframe，导致 `username + Tab + password` 的密码进不了密码框。
+///
+/// 解决方案：让用户据当前光标位置选合适模式——
+/// - `UsernamePassword`：旧行为，username + Tab + password。仅当焦点在 username 框
+///   且网站 Tab 行为正常时用。
+/// - `PasswordOnly`：只输 password 到当前焦点。最常用——用户手动点密码框后触发。
+/// - `UsernameOnly`：只输 username 到当前焦点。用于"换用户名"场景。
+///
+/// Tauri 命令签名 camelCase 映射：`mode: "PasswordOnly"` 等。
+/// 默认（前端不传 / null）：`PasswordOnly`——最稳健，webmail SPA 首选。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoTypeMode {
+    UsernamePassword,
+    PasswordOnly,
+    UsernameOnly,
+}
+
+impl Default for AutoTypeMode {
+    fn default() -> Self {
+        // 默认 PasswordOnly：webmail SPA 最稳健，且与现代密码管理器
+        // （Bitwarden/1Password 桌面助手）默认行为对齐。
+        AutoTypeMode::PasswordOnly
+    }
+}
+
 /// `vault_detect_and_match` URL 检测失败时的 fallback 上限（follow-up #8）。
 ///
 /// URL 检测失败时按 `updated_at DESC` 取最近使用过的 N 条，让用户手动选——
@@ -632,12 +661,37 @@ pub struct AutoTypeResultDto {
 /// 自动 suppress，不手动抑制会导致自身 clipboard_history watcher 把密码写进 FTS 库。
 #[tauri::command]
 pub fn vault_autotype(
+    app: AppHandle,
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
     master_password: Option<String>,
+    mode: Option<AutoTypeMode>,
 ) -> Result<AutoTypeResultDto, String> {
+    let mode = mode.unwrap_or_default();
+    log::info!(
+        "[vault-autotype] invoke 进入：cipher_id={}，reprompt_required={}，mode={:?}",
+        cipher_id,
+        master_password.is_some(),
+        mode
+    );
+
+    // **2026-07-20 e2e 修复**：hide VaultPicker 必须在后端做，不能由前端 await。
+    //
+    // 原前端流程 `await getCurrentWindow().hide(); await invoke("vault_autotype")`
+    // 有竞态：hide() 让 webview 进入 terminated 状态，紧接着的 invoke 永远到不了
+    // 后端（日志看到 web content process terminated 但没有 [vault-autotype] invoke）。
+    // 偶尔能 work 是因为 webview 还没完全 terminate 时 invoke 跑完了。
+    //
+    // 修复：vault_autotype 命令自己拿 AppHandle 隐藏 VaultPicker，确保 hide 之后
+    // 还有完整的 Rust 代码路径执行注入（不依赖 webview）。
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("vault_picker_window") {
+        let _ = win.hide();
+        log::debug!("[vault-autotype] VaultPicker 已 hide");
+    }
+
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
     // 1. 取 cipher
@@ -681,13 +735,26 @@ pub fn vault_autotype(
     // expected_bundle_id=None：最小防御，只校验前台不是 octopus 自身（防 VaultPicker
     // 未 hide 时密码打到 octopus 自己窗口的泄露）。完整白名单需前端在 hide 前调
     // url_detect 拿到浏览器 bundle_id 并传入，未来增强。
-    match autotype::autotype_login(&username, &password, false, None) {
-        Ok(()) => Ok(AutoTypeResultDto {
-            filled: true,
-            message: "已填充".into(),
-            fallback_to_clipboard: false,
-        }),
-        Err(_) => {
+    //
+    // mode（2026-07-20 三模式）：webmail SPA 的 Tab 切焦点不可靠，让用户据当前
+    // 光标位置选合适模式。默认 PasswordOnly——最稳健。
+    log::info!(
+        "[vault-autotype] 调 autotype_login：mode={:?} username_len={} password_len={}",
+        mode,
+        username.len(),
+        password.len()
+    );
+    match autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
+        Ok(()) => {
+            log::info!("[vault-autotype] autotype_login Ok（已填充，mode={:?}）", mode);
+            Ok(AutoTypeResultDto {
+                filled: true,
+                message: "已填充".into(),
+                fallback_to_clipboard: false,
+            })
+        }
+        Err(e) => {
+            log::warn!("[vault-autotype] autotype_login 失败 → fallback 剪贴板：{}", e);
             // fallback：复制密码到剪贴板（必须先 suppress_next 防 watcher 入库）
             // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
@@ -704,16 +771,42 @@ pub fn vault_autotype(
 /// 检测当前浏览器 URL + 返回匹配 cipher 列表。
 /// URL 检测失败时返回最近使用的若干 cipher（follow-up #8：take 20），
 /// URL 匹配命中时也限制数量（take 50，避免大域共享导致列表过长）。
+///
+/// **URL 来源**（2026-07-19 e2e 修复）：优先读 `picker_url_cache`——热键 callback 在
+/// show VaultPicker **之前**抓的 URL（此时浏览器还前台）。缓存空（用户手动刷新 / 热键
+/// callback 抓失败）才走 `current_browser_url()` 现抓——此时若 VaultPicker 在前台，
+/// 会取到 octopus-desktop 自身，URL 检测失败走 fallback，符合"手动刷新无前台浏览器"语义。
 #[tauri::command]
 pub fn vault_detect_and_match(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
+    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
 ) -> Result<Vec<CipherDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
-    let url_str = autotype::current_browser_url()
-        .map_err(vault_error::to_tauri_error)?
-        .unwrap_or_default();
+    // 优先读热键 callback 预抓的 URL（修 e2e 时序 bug）
+    let cached_url: Option<String> = url_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|s| !s.is_empty());
+    // 取完清空——下次热键会重新抓；手动刷新场景（无热键）走 current_browser_url()
+    if let Ok(mut guard) = url_cache.lock() {
+        *guard = None;
+    }
+
+    let url_str = match cached_url {
+        Some(u) => {
+            log::debug!("vault_detect_and_match: 用热键预抓 URL");
+            u
+        }
+        None => {
+            log::debug!("vault_detect_and_match: 缓存空，现抓 URL");
+            autotype::current_browser_url()
+                .map_err(vault_error::to_tauri_error)?
+                .unwrap_or_default()
+        }
+    };
     if url_str.is_empty() {
         // URL 检测失败 → 返回 last-N-used（按 updated_at DESC）让用户手动选
         // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
@@ -811,6 +904,39 @@ pub fn vault_copy_password(
     )))
 }
 
+/// 复制指定 cipher 的用户名到剪贴板。
+///
+/// 与 `vault_copy_password` 对称，但用户名通常不敏感——**不强制 reprompt**
+/// （reprompt 保护的是密码等高敏感字段，用户名一般可见）。
+///
+/// 用户场景（2026-07-20 三段式 UI）：cipher 行的"用户名"段右侧 📋 图标。
+#[tauri::command]
+pub fn vault_copy_username(
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
+    clipboard: State<'_, Arc<ClipboardHandle>>,
+    cipher_id: i64,
+) -> Result<(), String> {
+    let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
+    let cipher = octopus_vault::storage::load_cipher(cipher_id, &key)
+        .map_err(vault_error::to_tauri_error)?
+        .ok_or_else(|| vault_error::serialize(&VaultError::CipherNotFound(cipher_id)))?;
+
+    #[allow(irrefutable_let_patterns)]
+    if let CipherData::Login(l) = cipher.data {
+        if let Some(username) = l.username {
+            // 用户名不算高敏感（不在 reprompt 保护范围），但走 concealed 写入避免
+            // 进 clipboard_history FTS 索引库（被搜索到也是隐私泄露）。
+            clipboard.suppress_next();
+            autotype::copy_concealed(&username).map_err(vault_error::to_tauri_error)?;
+            return Ok(());
+        }
+    }
+    Err(vault_error::serialize(&VaultError::InvalidInput(
+        "无用户名".into(),
+    )))
+}
+
 // === 全局热键注册（Task 19） ===
 
 /// 注册 vault Auto-Type 全局热键（默认 CmdOrCtrl+Shift+L）。
@@ -834,9 +960,36 @@ pub fn register_vault_autotype_shortcut(
         .on_shortcut(shortcut, move |_app, _scut, event| {
             if event.state() == ShortcutState::Pressed {
                 log::info!("vault autotype 触发");
+                // **修 e2e 时序 bug**（2026-07-19）：show VaultPicker **之前**先抓 URL。
+                //
+                // 原实现 show + set_focus 之后才 emit 让前端 detect URL——此时
+                // VaultPicker 已抢前台，frontmost_bundle_id 取到 octopus-desktop 自己，
+                // URL 检测必然失败 → 走 fallback 列出最近 20 条 cipher（用户看到全部密码）。
+                //
+                // 现在先抓 URL（此时浏览器还在前台），存入 picker_url_cache；
+                // vault_detect_and_match 优先读缓存。失败也不阻塞——detect 端会 fallback。
+                use tauri::Manager;
+                let cached_url: Option<String> =
+                    match crate::autotype::current_browser_url() {
+                        Ok(Some(u)) if !u.is_empty() => Some(u),
+                        _ => None,
+                    };
+                if let Some(cache) =
+                    app_handle.try_state::<crate::vault_state::SharedPickerUrlCache>()
+                {
+                    if let Ok(mut guard) = cache.lock() {
+                        *guard = cached_url.clone();
+                    }
+                }
+                log::debug!(
+                    "[vault-picker] 热键触发，预抓 URL: {:?}",
+                    cached_url
+                        .as_deref()
+                        .map(|s| s.chars().take(80).collect::<String>())
+                );
+
                 // toggle 语义：已存在 → show + set_focus + 通知前端刷新；
                 // 不存在 → 新建（前端 mount 后自动调 vault_detect_and_match）。
-                use tauri::Manager;
                 if let Some(win) = app_handle.get_webview_window("vault_picker_window") {
                     let _ = win.show();
                     let _ = win.set_focus();
@@ -848,7 +1001,9 @@ pub fn register_vault_autotype_shortcut(
                         tauri::WebviewUrl::App("index.html".into()),
                     )
                     .title("Vault Auto-Type")
-                    .inner_size(400.0, 360.0)
+                    // 初始 400×200（locked/uninit 紧凑视图）。list 视图内容多时前端
+                    // useEffect 据 cipher 数量动态调 set_size 撑高（2026-07-20 e2e 反馈）。
+                    .inner_size(400.0, 200.0)
                     .resizable(false)
                     .decorations(false)
                     .always_on_top(true)
