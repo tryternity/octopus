@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
@@ -103,6 +104,40 @@ export default function VaultPicker() {
       unlisten?.();
     };
   }, [refresh]);
+
+  // **2026-07-20 e2e 反馈**：按 view 动态调整浮窗高度，避免小内容也占满固定高度
+  // 导致上下大片空白。后端初始 200px（紧凑视图），list 视图按 cipher 数撑高。
+  // 高度估算：标题栏 36 + padding + 各视图内容高 + 上下留白
+  useEffect(() => {
+    let height: number;
+    switch (view.kind) {
+      case "loading":
+        height = 110;
+        break;
+      case "locked":
+      case "reprompt":
+        // 标题栏 36 + Input 36 + Button 36 + gap+padding ~60 + 副文（reprompt） ~24
+        height = view.kind === "reprompt" ? 220 : 200;
+        break;
+      case "uninit":
+      case "error":
+        height = 130;
+        break;
+      case "autotyping":
+        height = 110;
+        break;
+      case "list": {
+        // 标题栏 36 + 每个 cipher 三段约 88px + 空状态 60
+        const ciphers = "ciphers" in view ? view.ciphers.length : 0;
+        const contentH = ciphers === 0 ? 60 : ciphers * 88;
+        height = Math.min(560, Math.max(140, 36 + contentH + 16));
+        break;
+      }
+      default:
+        height = 200;
+    }
+    void getCurrentWindow().setSize(new LogicalSize(400, height));
+  }, [view]);
 
   // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
   useEffect(() => {
@@ -227,7 +262,7 @@ export default function VaultPicker() {
             placeholder={t("settings.vault.unlock.passwordLabel")}
             autoFocus
             autoComplete="current-password"
-            className="w-full"
+            size="full"
           />
           {unlockError && (
             <p className="text-xs text-destructive">{unlockError}</p>
@@ -320,7 +355,7 @@ export default function VaultPicker() {
             placeholder={t("settings.vault.unlock.passwordLabel")}
             autoFocus
             autoComplete="current-password"
-            className="w-full"
+            size="full"
           />
           {unlockError && (
             <p className="text-xs text-destructive">{unlockError}</p>

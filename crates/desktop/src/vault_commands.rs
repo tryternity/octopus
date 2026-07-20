@@ -1001,7 +1001,9 @@ pub fn register_vault_autotype_shortcut(
                         tauri::WebviewUrl::App("index.html".into()),
                     )
                     .title("Vault Auto-Type")
-                    .inner_size(400.0, 360.0)
+                    // 初始 400×200（locked/uninit 紧凑视图）。list 视图内容多时前端
+                    // useEffect 据 cipher 数量动态调 set_size 撑高（2026-07-20 e2e 反馈）。
+                    .inner_size(400.0, 200.0)
                     .resizable(false)
                     .decorations(false)
                     .always_on_top(true)
