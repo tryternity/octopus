@@ -21,6 +21,17 @@ pub const SEGMENT_DURATION_S: f64 = 20.0;
 /// 200ms ≈ 一个音节，给 ASR 引擎足够声学线索补全段首残字。原为 config 字段，因属实现细节改为常量。
 pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 
-/// 图片编码降级链：lossless WebP 失败后依次尝试的 `<格式>:<质量>` 列表（`;` 分割）。
-/// 由 `clipboard::image::encode_to_webp` 解析。新增条目只需改本常量（如 `webp:80;webp:50;jpeg:80`）。
-pub const IMAGE_SAVE_QUALITY: &str = "webp:80;jpeg:80";
+/// 图片编码格式链：`<格式>:<质量>` 列表（`;` 分割），`clipboard::image::encode_to_webp` 按序尝试首个成功。
+///
+/// 2026-07-20 perf（基于 img-bench 实测，3176×1866 截图）：
+///
+/// | 编码          | 耗时    | 体积    | 备注                  |
+/// |---------------|---------|---------|-----------------------|
+/// | WebP lossless | 1510ms  | 316KB   | 原 default，慢        |
+/// | WebP q80      | 483ms   | 997KB   | 体积小但慢            |
+/// | JPEG q85      | 56ms    | 1888KB  | **8.6x 加速** ✅ 推荐 |
+/// | JPEG q60      | 48ms    | 821KB   | 体积更小，画质略损    |
+///
+/// 改 JPEG 优先：截图/剪贴板历史场景对画质要求够用（用户感知不到 q85 vs lossless），
+/// 体积翻倍可接受（每图 2MB vs 1MB），换 8-10x 加速。WebP 仍兜底（JPEG 失败时）。
+pub const IMAGE_SAVE_QUALITY: &str = "jpeg:85;webp:80";

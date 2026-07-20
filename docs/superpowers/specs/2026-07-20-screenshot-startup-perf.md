@@ -98,3 +98,97 @@
 4. 前端 `Screenshot/index.tsx` 改用 `createImageBitmap(ImageData)`
 5. 删除 `inter-window sleep(150ms)`
 6. 验证：cargo build + cargo test + 实测截图 timing
+
+---
+
+# 第二部分：截图保存性能优化（点确认后的卡顿）
+
+## 背景
+
+启动问题修完后，用户反馈：**点确认按钮后仍卡 1-6 秒**（取决于截图尺寸）。截图越大卡越久。
+
+## 测量数据（debug build，release 数据见下）
+
+`confirm_screenshot` 内 `save_screenshot_to_history` 各阶段 timing：
+
+| 尺寸 | sha256 | decode PNG | **encode_to_webp** | 总计 |
+|---|---|---|---|---|
+| 1338×670 | 5ms | 40ms | **966ms** | 1011ms |
+| 1512×804 | 6ms | 53ms | **1176ms** | 1235ms |
+| **3176×1866** | 48ms | 276ms | **6074ms** | **6398ms** |
+
+**主元凶：encode_to_webp 占 90%+**，且与尺寸强相关。
+
+## 病灶 1：Lossless WebP 优先 + 慢
+
+`crates/clipboard/src/image.rs:120` 原代码无条件把 `WebpLossless` 插入链首：
+
+```rust
+chain.insert(0, EncodeAttempt::WebpLossless);
+```
+
+WebP lossless 对大图（5M+ px）编码极慢（实测 3176×1866 = 6 秒）。但**截图历史根本不需要 lossless 质量**——给用户看 + 偶尔 OCR。
+
+## 病灶 2：缩略图 resize 用 Triangle 卷积
+
+`img.resize(240, 240, FilterType::Triangle)` —— Triangle 双线性卷积，debug build 对 3244×1760 = 674ms。
+
+## WebP vs JPEG benchmark（/tmp/img-bench 实测，release build）
+
+| 编码 | 3176×1866 耗时 | 体积 | bytes/px |
+|---|---|---|---|
+| WebP lossless | 1510ms | 316KB | 0.05 |
+| WebP lossy q80 | 483ms | 997KB | 0.17 |
+| WebP lossy q60 | 412ms | 595KB | 0.10 |
+| **JPEG q85** | **55ms** | 1888KB | 0.32 |
+| **JPEG q60** | **48ms** | 821KB | 0.14 |
+
+**结论：JPEG 8.6x 快于 WebP lossy**。WebP 唯一优势是体积（同等画质小一半），但截图历史库不缺空间。`image` crate 的纯 Rust JPEG 实现高度优化（DCT），`webp` crate 绑定的 libwebp 反而慢（VP8 帧内预测复杂）。
+
+缩略图对比（240×240 nearest resize）：
+
+| Thumb 方案 | 耗时 | 体积 |
+|---|---|---|
+| nearest + WebP q20 | 7ms | 464 bytes |
+| nearest + JPEG q60 | 8ms | 3344 bytes |
+| Triangle + WebP q20（原方案）| 15ms | 452 bytes |
+
+**结论：缩略图保留 WebP**——nearest resize 后 WebP 体积碾压 JPEG（0.4KB vs 3KB），速度差异可忽略。
+
+## 修复方案
+
+### 改动 1：去 Lossless WebP，链首改 JPEG
+
+`crates/clipboard/src/image.rs`：删除 `chain.insert(0, EncodeAttempt::WebpLossless)`，让链按 `IMAGE_SAVE_QUALITY` 配置走。
+
+`crates/infra/src/consts.rs`：`IMAGE_SAVE_QUALITY` 从 `"webp:80;jpeg:80"` 改为 `"jpeg:85;webp:80"`（JPEG 优先 + WebP 兜底）。
+
+### 改动 2：缩略图 resize 改 nearest
+
+`img.resize(240, 240, Triangle)` → `img.thumbnail(240, 240)`（image crate 内置 nearest-neighbor）。缩略图仍编码为 WebP（体积优势）。
+
+### 改动 3：custom-protocol feature（release build 修复）
+
+调查中发现的关键 bug：tauri 用 `cfg(dev) = !has_feature("custom-protocol")` 决定走 devUrl 还是 frontendDist。**vault 引入 dev 模式后，所有 build（含 release）都不启用 custom-protocol → 都走 devUrl** → 没 vite 就 WebView 崩溃。
+
+修复：
+- `crates/desktop/Cargo.toml` 加 `custom-protocol = ["tauri/custom-protocol"]` feature
+- `run-octopus.sh` 非 `--debug` 模式自动加 `--features custom-protocol`
+- `run-octopus-dev.sh` 不加（配合 vite HMR）
+
+## 实测收益（release build，3176×1866 大图）
+
+| 阶段 | 优化前 | 优化后 | 加速 |
+|---|---|---|---|
+| encode_to_webp（主图）| 6074ms (lossless) | **57ms** (JPEG q85) | **106x** |
+| thumb resize | ~600ms (Triangle) | **6ms** (nearest) | **100x** |
+| encode 总计 | 6+ 秒 | **66ms** | **92x** |
+| save_screenshot_to_history 总计 | 6+ 秒 | **~96ms** | **65x** |
+
+用户感知：点确认后从"卡 6 秒"变成"几乎瞬间完成"。
+
+## 验证
+
+- `cargo test -p octopus-clipboard`：16 passed（含新增 `test_parse_image_fallbacks` JPEG-first 断言）
+- `cargo test -p octopus-desktop`：375 passed
+- 实测 release binary 截图保存：< 100ms（之前 6+ 秒）

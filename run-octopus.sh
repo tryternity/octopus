@@ -52,4 +52,12 @@ cd "../"
 # --debug：debug build 快链接 + devtools。
 # --no-lto：纯 release（无 LTO），开发期迭代最快。
 # --profiling：profiling profile（带符号，samply/xctrace 用）。
-RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run ${RELEASE} -p octopus-desktop --features "embedded cloud"
+#
+# ⚠️ custom-protocol feature（2026-07-20）：tauri 用 cfg(dev) = !custom-protocol 决定走 devUrl
+# 还是 frontendDist。debug build 想走 vite HMR（devUrl），生产 build 必须启用 custom-protocol
+# 才会走嵌入 dist（否则 WebView 找不到 localhost:1420 崩溃）。
+FEATURES="embedded cloud"
+if [[ "${1:-}" != "--debug" ]]; then
+  FEATURES="$FEATURES custom-protocol"
+fi
+RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run ${RELEASE} -p octopus-desktop --features "$FEATURES"
