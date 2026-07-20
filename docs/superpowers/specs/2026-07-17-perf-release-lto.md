@@ -8,7 +8,7 @@ z_perf skill Step 0 指出工程 `[profile.release]` 是默认值（`lto`/`codeg
 
 ## 改动
 
-- `Cargo.toml`（root）：取消注释 `strip = true` / `lto = "fat"` / `codegen-units = 1`
+- `Cargo.toml`（root）：LTO/strip/codegen-units 配置移到独立的 `[profile.optimize]`（inherits release），生产构建用 `cargo build --profile optimize`；默认 `[profile.release]` 保持空，开发期 `--release` 快链接迭代。详见 `docs/architecture.md` §Cargo profiles 三层结构。
 - `crates/asr-local/Cargo.toml`：加 criterion dev-dep + `[[bench]] fbank`
 - `crates/asr-local/src/fbank.rs`：
   - `compute_fbank` / `compute_fbank_features` 从 `pub(crate)` 提为 `pub`（bench 可达）

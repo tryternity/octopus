@@ -5,20 +5,22 @@
 ## 编译打包
 
 ```bash
-# 编译 server 和 CLI（release 模式）
+# 编译 server 和 CLI（开发期 release，无 LTO，链接快）
 cargo build --release -p octopus-server -p octopus-cli
 
-# 编译全部（含 library）
-cargo build --release
+# 编译全部（生产构建，带 LTO/strip）
+cargo build --profile optimize
 
 # 仅编译 library
 cargo build --release -p octopus-asr-local
 
-# 桌面测试
-cargo run --release -p octopus-desktop --features embedded
+# 桌面测试（生产构建）
+cargo run --profile optimize -p octopus-desktop --features embedded
 ```
 
-编译产物位于 `target/release/`：
+⚠️ **profile 区分**：`--release`（无 LTO，开发期迭代）vs `--profile optimize`（带 LTO/strip，生产构建）vs `--profile profiling`（带符号，perf 分析）。详见 `docs/architecture.md`。
+
+编译产物位于 `target/release/` 或 `target/optimize/`：
 
 | 文件 | 说明 |
 |------|------|

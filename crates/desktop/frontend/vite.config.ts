@@ -7,7 +7,11 @@ import path from "path";
 // 单一 config：vitest 自动读 vite.config.ts 的 test 字段。
 // 此前 vitest.config.ts 与本文件并存时，vitest 4 加载了本文件（无 test 段 → 默认 node
 // 环境）导致 DOM 测试（i18n/markdown/caret）document is not defined。合并到一处消除冲突。
-export default defineConfig({
+//
+// vitest 4 的 defineConfig 类型在 server.clearScreen 上与 vite 8 的 ServerOptions 冲突
+//（vitest 重导出了一份 ServerOptions$1 不含 clearScreen），运行时 vite 仍正确处理该字段。
+// 用对象字面量 + 显式类型注释绕开重载推断。
+const config = {
   plugins: [react(), tailwindcss(), yaml()],
   base: "./",
   resolve: {
@@ -32,4 +36,6 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
-});
+};
+
+export default defineConfig(config as never);
