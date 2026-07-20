@@ -12,10 +12,6 @@
 
 use octopus_llm::{polish, set_system_prompt};
 
-fn default_polish_llm() -> String {
-    "bigmodel:glm:glm-4-flashx".to_string()
-}
-
 fn main() -> anyhow::Result<()> {
     // 1. 从 DB 加载激活的润色 prompt
     octopus_asr_local::db::ensure_db()?;
@@ -25,20 +21,19 @@ fn main() -> anyhow::Result<()> {
     set_system_prompt(&prompt_record.content);
     println!("✓ 已加载 prompt（id={} title={}）", prompt_record.id, prompt_record.title);
 
-    // 2. 加载 polish_llm 配置（从 app_config 读 polish_llm spec）
-    let cfg = octopus_infra::config::load_config().unwrap_or_default();
-    let polish_llm = if cfg.polish_llm.is_empty() {
-        default_polish_llm()
-    } else {
-        cfg.polish_llm.clone()
-    };
-
-    println!("正在从数据库加载 LLM 配置: {}...", polish_llm);
-    let config = match octopus_asr_local::db::load_llm_model(&polish_llm)? {
-        Some(c) => c,
-        None => {
-            anyhow::bail!("数据库中未找到 LLM 模型 '{}' 的配置", polish_llm);
-        }
+    // 2. 加载 LLM 激活模型配置（Task 2 重构后：从 ACTIVE_ENGINES 内存缓存取，不再读 AppConfig.polish_llm）
+    octopus_asr_local::config::reload_active_engine("llm").ok();
+    let resolved = octopus_asr_local::config::resolve_active_engine("llm")
+        .map_err(|e| anyhow::anyhow!("LLM 域无激活模型（{}）。请在设置中激活一个 LLM 模型", e))?;
+    println!("正在使用激活的 LLM 模型: {}...", resolved.name);
+    let config = octopus_llm::CompatibleLlmConfig {
+        provider: resolved.provider.clone(),
+        model: resolved.name.clone(),
+        base_url: resolved.entry.source.clone(),
+        secret_key: resolved.entry.secret_key.clone(),
+        is_thinking: resolved.is_thinking,
+        is_local: resolved.entry.is_local,
+        is_enabled: resolved.entry.is_enabled,
     };
 
     let key_preview = if config.secret_key.len() > 6 {

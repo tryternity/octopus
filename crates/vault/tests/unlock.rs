@@ -15,7 +15,7 @@ fn test_full_setup_unlock_cycle() {
     keychain::set_test_keychain();
 
     // 1. setup_vault
-    let keys = unlock::setup_vault("test-password-123").expect("setup");
+    let keys = unlock::setup_vault("Test-password-123").expect("setup");
     assert_eq!(keys.user_vault_key.as_bytes().len(), 32);
     assert_eq!(keys.app_key.as_bytes().len(), 32);
 
@@ -26,7 +26,7 @@ fn test_full_setup_unlock_cycle() {
     assert_eq!(app_key_local.as_bytes(), keys.app_key.as_bytes());
 
     // 3. 主密码解锁（应该能拿到同样的 user_vault_key 和 app_key）
-    let keys2 = unlock::unlock_with_master_password("test-password-123").expect("master unlock");
+    let keys2 = unlock::unlock_with_master_password("Test-password-123").expect("master unlock");
     assert_eq!(
         keys2.user_vault_key.as_bytes(),
         keys.user_vault_key.as_bytes()
@@ -34,14 +34,14 @@ fn test_full_setup_unlock_cycle() {
     assert_eq!(keys2.app_key.as_bytes(), keys.app_key.as_bytes());
 
     // 4. 错误密码应失败
-    assert!(unlock::unlock_with_master_password("wrong-password").is_err());
+    assert!(unlock::unlock_with_master_password("Wrong-password-1!").is_err());
 
     // 5. 改主密码
-    unlock::change_master_password("test-password-123", "new-pwd-456").expect("change pwd");
+    unlock::change_master_password("Test-password-123", "New-pwd-456!").expect("change pwd");
 
     // 6. 旧密码失败，新密码成功
-    assert!(unlock::unlock_with_master_password("test-password-123").is_err());
-    let keys3 = unlock::unlock_with_master_password("new-pwd-456").expect("new pwd unlock");
+    assert!(unlock::unlock_with_master_password("Test-password-123").is_err());
+    let keys3 = unlock::unlock_with_master_password("New-pwd-456!").expect("new pwd unlock");
     assert_eq!(
         keys3.user_vault_key.as_bytes(),
         keys.user_vault_key.as_bytes()
