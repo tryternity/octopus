@@ -576,9 +576,33 @@ const MenuRow = (props: MenuRowProps) => {
         {item.title}
       </span>
 
-      {/* 快捷键槽（col 4，仅 showShortcuts 时）——local ⌥+字符 + global ShortcutButton */}
+      {/* 快捷键槽（col 4，仅 showShortcuts 时）——global 在前 + local 贴右
+          顺序对调（2026-07-20）：global 录制时 ShortcutButton 文字变长，放在左边
+          可向左扩展挤标题而不动 local 槽；local 贴右紧邻操作按钮，宽度恒定。 */}
       {showShortcuts && (
         <div className="flex shrink-0 items-center justify-end gap-2">
+          {/* global 快捷键：ShortcutButton（含录制态自渲染） */}
+          <div className="flex items-center gap-0.5">
+            <ShortcutButton
+              shortcut={item.globalShortcut ?? ""}
+              capturing={props.capturingKind === "global"}
+              onClick={() => props.onCaptureShortcut?.("global")}
+              title={t("settings.actionBar.globalShortcutHint")}
+            />
+            {item.globalShortcut && props.capturingKind !== "global" && (
+              <button
+                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
+                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                aria-label={t("settings.actionBar.clearShortcut")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+
+          {/* 分隔点 */}
+          <span className="text-muted-foreground/30 text-[10px]">·</span>
+
           {/* local 快捷键：⌥ + 单字符 / 占位 */}
           <div className="flex items-center gap-0.5">
             <span className="text-[10px] text-muted-foreground/50 font-mono">⌥</span>
@@ -601,27 +625,6 @@ const MenuRow = (props: MenuRowProps) => {
             {item.shortcut && props.capturingKind !== "local" && (
               <button
                 onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("local"); }}
-                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                aria-label={t("settings.actionBar.clearShortcut")}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-
-          {/* 分隔点 */}
-          <span className="text-muted-foreground/30 text-[10px]">·</span>
-
-          {/* global 快捷键：ShortcutButton（含录制态自渲染） */}
-          <div className="flex items-center gap-0.5">
-            <ShortcutButton
-              shortcut={item.globalShortcut ?? ""}
-              capturing={props.capturingKind === "global"}
-              onClick={() => props.onCaptureShortcut?.("global")}
-            />
-            {item.globalShortcut && props.capturingKind !== "global" && (
-              <button
-                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
                 className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
                 aria-label={t("settings.actionBar.clearShortcut")}
               >
