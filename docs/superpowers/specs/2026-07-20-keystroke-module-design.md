@@ -74,8 +74,13 @@ Cargo.toml 加 `elcapitan` feature（core-graphics 的 `post_to_pid` API 在此 
 
 实测：6/6 应用全部正常（含 2 个 Electron app）。
 
-## 已知限制 + 后续
+## 已知限制 + 后续（2026-07-21 更新）
 
-- **restore_focus 仍用 osascript**（System Events），下一步实验 NSRunningApplication.activate
-- **autotype activate_app**（scope 3）不在本次范围——autotype 的 osascript activate 不属于 keystroke 范畴
-- **detect_selection 的 simulate_copy**：目前仍走全局 `post(HID)`，Electron app 中选中文字触发 action bar 时可能检测不到。如需修复，改用 `copy_to_pid`（API 已备好）
+~~- **restore_focus 仍用 osascript**~~ → **已完成**：改用 NSRunningApplication.activate（< 1ms）
+~~- **autotype activate_app**（scope 3）~~ → **已完成**：改用 NSRunningApplication.runningApplicationsWithBundleIdentifier + activate（< 1ms）
+~~- **detect_selection 的 simulate_copy**~~ → **已完成**：改用三级 dispatch（WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid）
+
+**新增 WKWebView 嵌套 app 兼容**（2026-07-21）：
+微信内置浏览器（WKWebView 嵌套）不响应任何 CGEvent（全局 post 和 post_to_pid 都不行）。
+`keystroke.rs` 加 `WKWEBVIEW_FALLBACK_APPS` 列表 + `needs_osascript_fallback()`，
+`simulate_copy/paste` 改为三级 dispatch：WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid。
