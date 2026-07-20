@@ -1547,7 +1547,7 @@ mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
 
 - [x] spec §14 新增
 - [x] plan Task 7 新增（即本节）
-- [ ] architecture.md 同步（Step 7.6）
+- [x] architecture.md 同步（Step 7.6，已含 v43 章节）
 
 ### Step 7.6: architecture.md 同步
 
@@ -1564,7 +1564,7 @@ mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
 ### Step 7.7: 最终验证
 
 - [x] `cargo build -p octopus-infra`：0 error 0 warning
-- [x] `cargo test -p octopus-infra --lib`：154 passed
+- [x] `cargo test -p octopus-infra --lib`：155 passed（含 v42→v43 升级路径测试）
 - [x] `cargo build -p octopus-desktop`：下游不受影响
 - [ ] 端到端（用户手动）：选源文件 → PPT 大纲 → 编辑 → PPT 制作
 
