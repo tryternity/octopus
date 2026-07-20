@@ -7357,12 +7357,33 @@ brainstorming 结论：macOS 桌面 app **无权限读浏览器 DOM 字段值**�
 | `758a7145` | 文案「+ 为当前站点新建」→「新增保险箱」|
 | `8aceb164`/`2a2196e3`/`e6174f07`/`2968c307`/`b545fc22` | UI 调整（紧凑居中 / 等宽 / 标题居中 / PasswordInput / UnlockDialog）|
 
-### 方案 A 后续工作（未实现）
+### 方案 A 后续工作（**决定不做**，2026-07-20 brainstorming 评估）
 
-bookmarklet 真正自动采集——用户在登录页填完密码点书签 → JS 抓 DOM 字段 → deep-link
-回调 octopus → 入库。需要：
-1. 注册自定义 URL scheme（tauri `deep-link` plugin）
-2. 生成 bookmarklet JS（用户从设置页拖到书签栏）
-3. 确认框 + 入库流程
-4. 安全考量（URL scheme 不暴露明文 → 通过剪贴板 concealed 传递）
+bookmarklet 真正自动采集——经过多轮 brainstorming 评估决定**不做**。
+
+**评估过的传输方案**：
+
+| 方案 | 否决理由 |
+|---|---|
+| P1 明文走 URL | ❌ URL 历史明文密码 |
+| P2 加密走 URL + 静态密钥 | ❌ 静态密钥泄漏 → 历史可解 |
+| P2+ master_password 派生密钥 | ❌ bookmarklet 永久固定，重置 master_password 后要重装书签 |
+| P4 加密走剪贴板 + URL 敲门 | ❌ 与 P2 等价安全但实现更复杂 |
+| P6 本地 HTTP server | ❌ Safari 不支持 HTTPS→HTTP 127.0.0.1 fetch（mixed content 拦截）|
+| P6+ 一次性密钥 + Safari 配对码 fallback | ❌ macOS 防火墙对监听端口敏感（每次按热键弹对话框）+ Safari fallback 复杂 |
+
+**根本约束**：
+1. **bookmarklet 与 octopus 是「单向、一次性、无握手」通信**——动态密钥握手在物理上不成立（bookmarklet 无法主动向 octopus 请求）
+2. **Safari 不允许 HTTPS 页面 fetch HTTP 127.0.0.1**——本地 HTTP server 方案在 Safari 失效
+3. **macOS 防火墙对监听端口敏感**——即使绑 127.0.0.1 也可能弹对话框
+
+**方案 A 的实际收益**（对比已落地的方案 C）：
+- 方案 C：Cmd+Shift+L → 新增保险箱 → 手输用户名/密码 → 保存（4 步）
+- 方案 A：装书签 → 在登录页填完密码 → 点书签 → 切到 octopus 确认（4 步）
+
+方案 A 只省"手输用户名密码"那一步，但代价是 8-12 小时工程 + 几个边界 case bug + Safari 兼容问题。性价比低。
+
+**vaultwarden 对比**：vaultwarden 是 Bitwarden 兼容服务端，本身不做采集——所有采集工作由浏览器扩展做。octopus 桌面 app 与 Bitwarden 桌面 app 同类，都不自动采集，靠扩展或手动录入。
+
+**真正自动采集的方向**：浏览器扩展（方案 B）——独立项目，跨平台 native messaging，能监听 form submit 自动捕获。Bitwarden/1Password 走的路。如果将来真有强需求再做。
 

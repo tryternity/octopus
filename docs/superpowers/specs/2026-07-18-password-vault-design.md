@@ -730,9 +730,13 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 - username 用普通 Input；password 用 PasswordInput（带 Eye/Eraser）
 - 保存调 `vault_create_cipher` → onSuccess refresh 回 list 视图
 
-**方案 A（bookmarklet 真正自动采集）**：长期方向——macOS 桌面 app 无权限读浏览器 DOM
-字段值（仅扩展能做），bookmarklet 是折衷方案（用户在登录页点书签触发 JS 抓 DOM →
-deep-link 回调 octopus → 入库）。**未实现**，作为后续工作。
+**方案 A（bookmarklet 真正自动采集）**：**决定不做**（2026-07-20 brainstorming 评估）。
+macOS 桌面 app 无权限读浏览器 DOM 字段值（仅扩展能做），bookmarklet 是折衷方案
+（用户在登录页点书签触发 JS 抓 DOM → deep-link 回调 octopus → 入库）。评估了 6 种
+传输方案全部否决（详见 plan 文档「方案 A 决策」段）——根本约束是 bookmarklet 与
+octopus 单向无握手通信 + Safari 不允许 HTTPS 页面 fetch 127.0.0.1 + macOS 防火墙
+对监听端口敏感。性价比低（方案 C 已覆盖 80% 场景）。真正自动采集方向是浏览器扩展
+（方案 B，独立项目）。
 
 **浮窗可拖动**（2026-07-20）：VaultPicker 所有视图的标题栏加
 `data-tauri-drag-region="deep"` + `cursor-grab active:cursor-grabbing`，与 Clipboard
