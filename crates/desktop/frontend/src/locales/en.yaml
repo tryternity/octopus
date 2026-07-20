@@ -150,6 +150,12 @@ settings:
       uninitHint: Create the vault under "Settings → Password Vault" first
       repromptTitle: Verify master password
       repromptHint: "${name} is marked sensitive; re-enter your master password to auto-fill"
+      # Three autotype modes (2026-07-20): Tab between fields is unreliable on
+      # webmail SPAs; user picks the mode matching current cursor position.
+      mode:
+        usernamePassword: Fill username + password (cursor must be in username field)
+        passwordOnly: Fill password only into current focus
+        usernameOnly: Fill username only into current focus
     generator:
       title: Password Generator
       mode:

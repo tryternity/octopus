@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
-import { Copy, Type as TypeIcon, Lock, RefreshCw, X } from "lucide-react";
+import { Copy, Keyboard, KeyRound, AtSign, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,13 +43,22 @@ interface CipherDto {
   reprompt?: number;
 }
 
+/** 三模式 autotype（2026-07-20）。
+ *  - UsernamePassword: 完整填（username + Tab + password），焦点须在 username 框
+ *  - PasswordOnly（默认）: 仅填密码，焦点已在 password 框
+ *  - UsernameOnly: 仅填用户名，焦点在 username 框
+ *
+ *  背后原因：webmail SPA（mail.163.com 等）的 Tab 切焦点不可靠。给用户三种独立控制，
+ *  据当前光标位置选合适模式。Bitwarden/1Password 桌面助手默认也是 PasswordOnly。*/
+type AutotypeMode = "UsernamePassword" | "PasswordOnly" | "UsernameOnly";
+
 type ViewState =
   | { kind: "loading" }
   | { kind: "list"; ciphers: CipherDto[] }
   | { kind: "locked" }
   | { kind: "uninit" }
   | { kind: "error"; message: string }
-  | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean }
+  | { kind: "reprompt"; cipher: CipherDto; copyOnly: boolean; mode: AutotypeMode }
   | { kind: "autotyping" };
 
 export default function VaultPicker() {
@@ -124,16 +133,16 @@ export default function VaultPicker() {
   );
 
   const handlePick = useCallback(
-    async (c: CipherDto, copyOnly: boolean) => {
+    async (c: CipherDto, copyOnly: boolean, mode: AutotypeMode = "PasswordOnly") => {
       // reprompt 保护的高敏感 cipher：弹密码框，确认后再调后端
       // （后端 vault_autotype / vault_copy_password 都会强制再次校验 master_password，不可绕过）
       if (c.reprompt === 1) {
         setUnlockPassword("");
         setUnlockError(null);
-        setView({ kind: "reprompt", cipher: c, copyOnly });
+        setView({ kind: "reprompt", cipher: c, copyOnly, mode });
         return;
       }
-      await runAutotype(c, copyOnly, undefined);
+      await runAutotype(c, copyOnly, mode, undefined);
     },
     [],
   );
@@ -141,7 +150,12 @@ export default function VaultPicker() {
   /** 实际调 vault_autotype / vault_copy_password——reprompt 通过后也走这里。
    *  masterPassword 仅在 reprompt 场景传入。*/
   const runAutotype = useCallback(
-    async (c: CipherDto, copyOnly: boolean, masterPassword: string | undefined) => {
+    async (
+      c: CipherDto,
+      copyOnly: boolean,
+      mode: AutotypeMode,
+      masterPassword: string | undefined,
+    ) => {
       setBusy(true);
       try {
         if (copyOnly) {
@@ -157,6 +171,7 @@ export default function VaultPicker() {
           await invoke("vault_autotype", {
             cipherId: c.id,
             masterPassword: masterPassword ?? null,
+            mode,
           });
         }
       } catch (e) {
@@ -242,9 +257,10 @@ export default function VaultPicker() {
       if (!unlockPassword) return;
       const cipher = view.cipher;
       const copyOnly = view.copyOnly;
+      const mode = view.mode;
       const pwd = unlockPassword;
       setView({ kind: "autotyping" });
-      await runAutotype(cipher, copyOnly, pwd);
+      await runAutotype(cipher, copyOnly, mode, pwd);
     };
     return (
       <form onSubmit={submitReprompt} className="flex h-screen flex-col gap-3 bg-background p-4 text-foreground">
@@ -342,14 +358,15 @@ export default function VaultPicker() {
           view.ciphers.map((c) => (
             <div
               key={c.id}
-              className="group flex items-center gap-2 border-b border-border/50 px-4 py-2 last:border-b-0 hover:bg-accent"
+              className="group flex items-center gap-1 border-b border-border/50 px-4 py-2 last:border-b-0 hover:bg-accent"
             >
+              {/* 行主体：点击触发 PasswordOnly（最常用，webmail SPA 首选） */}
               <button
                 type="button"
-                className="flex flex-1 items-center gap-2 text-left outline-none"
-                onClick={() => handlePick(c, false)}
+                className="flex flex-1 items-center gap-2 text-left outline-none min-w-0"
+                onClick={() => handlePick(c, false, "PasswordOnly")}
                 disabled={busy}
-                title={t("settings.vault.autotype.trigger")}
+                title={t("settings.vault.autotype.mode.passwordOnly")}
               >
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{c.name}</div>
@@ -358,18 +375,23 @@ export default function VaultPicker() {
                   </div>
                 </div>
               </button>
+              {/* 3 个 autotype 模式 + 1 个 copy——按当前光标位置选合适图标。
+                  视觉策略：PasswordOnly（KeyRound）用 voice 色高亮（签名元素，
+                  webmail SPA 默认场景），其他保持 muted-foreground 让用户知道
+                  是次要选项。hover 时统一切到 foreground 色。 */}
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, false);
+                  handlePick(c, false, "UsernamePassword");
                 }}
                 disabled={busy}
-                title={t("settings.vault.autotype.trigger")}
+                title={t("settings.vault.autotype.mode.usernamePassword")}
+                className="text-muted-foreground hover:text-foreground"
               >
-                <TypeIcon />
+                <Keyboard className="size-4" />
               </Button>
               <Button
                 type="button"
@@ -377,12 +399,41 @@ export default function VaultPicker() {
                 size="icon-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handlePick(c, true);
+                  handlePick(c, false, "PasswordOnly");
+                }}
+                disabled={busy}
+                title={t("settings.vault.autotype.mode.passwordOnly")}
+                className="text-voice hover:text-voice"
+              >
+                <KeyRound className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlePick(c, false, "UsernameOnly");
+                }}
+                disabled={busy}
+                title={t("settings.vault.autotype.mode.usernameOnly")}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <AtSign className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handlePick(c, true, "PasswordOnly");
                 }}
                 disabled={busy}
                 title={t("settings.vault.generator.copy")}
+                className="text-muted-foreground hover:text-foreground"
               >
-                <Copy />
+                <Copy className="size-4" />
               </Button>
             </div>
           ))}

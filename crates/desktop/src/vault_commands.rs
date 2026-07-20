@@ -415,6 +415,35 @@ pub fn vault_create_cipher(
 /// password_history 上限（避免无界增长）。FIFO 截断：丢最老的。
 pub const PASSWORD_HISTORY_MAX: usize = 20;
 
+/// Auto-Type 模式（2026-07-20 三模式）。
+///
+/// **背景**：webmail SPA（mail.163.com 等）的 Tab 键切焦点不可靠——SPA 自己拦截 Tab
+/// 或密码框是 iframe，导致 `username + Tab + password` 的密码进不了密码框。
+///
+/// 解决方案：让用户据当前光标位置选合适模式——
+/// - `UsernamePassword`：旧行为，username + Tab + password。仅当焦点在 username 框
+///   且网站 Tab 行为正常时用。
+/// - `PasswordOnly`：只输 password 到当前焦点。最常用——用户手动点密码框后触发。
+/// - `UsernameOnly`：只输 username 到当前焦点。用于"换用户名"场景。
+///
+/// Tauri 命令签名 camelCase 映射：`mode: "PasswordOnly"` 等。
+/// 默认（前端不传 / null）：`PasswordOnly`——最稳健，webmail SPA 首选。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoTypeMode {
+    UsernamePassword,
+    PasswordOnly,
+    UsernameOnly,
+}
+
+impl Default for AutoTypeMode {
+    fn default() -> Self {
+        // 默认 PasswordOnly：webmail SPA 最稳健，且与现代密码管理器
+        // （Bitwarden/1Password 桌面助手）默认行为对齐。
+        AutoTypeMode::PasswordOnly
+    }
+}
+
 /// `vault_detect_and_match` URL 检测失败时的 fallback 上限（follow-up #8）。
 ///
 /// URL 检测失败时按 `updated_at DESC` 取最近使用过的 N 条，让用户手动选——
@@ -637,7 +666,15 @@ pub fn vault_autotype(
     clipboard: State<'_, Arc<ClipboardHandle>>,
     cipher_id: i64,
     master_password: Option<String>,
+    mode: Option<AutoTypeMode>,
 ) -> Result<AutoTypeResultDto, String> {
+    let mode = mode.unwrap_or_default();
+    log::info!(
+        "[vault-autotype] invoke 进入：cipher_id={}，reprompt_required={}，mode={:?}",
+        cipher_id,
+        master_password.is_some(),
+        mode
+    );
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
     // 1. 取 cipher
@@ -681,13 +718,26 @@ pub fn vault_autotype(
     // expected_bundle_id=None：最小防御，只校验前台不是 octopus 自身（防 VaultPicker
     // 未 hide 时密码打到 octopus 自己窗口的泄露）。完整白名单需前端在 hide 前调
     // url_detect 拿到浏览器 bundle_id 并传入，未来增强。
-    match autotype::autotype_login(&username, &password, false, None) {
-        Ok(()) => Ok(AutoTypeResultDto {
-            filled: true,
-            message: "已填充".into(),
-            fallback_to_clipboard: false,
-        }),
-        Err(_) => {
+    //
+    // mode（2026-07-20 三模式）：webmail SPA 的 Tab 切焦点不可靠，让用户据当前
+    // 光标位置选合适模式。默认 PasswordOnly——最稳健。
+    log::info!(
+        "[vault-autotype] 调 autotype_login：mode={:?} username_len={} password_len={}",
+        mode,
+        username.len(),
+        password.len()
+    );
+    match autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
+        Ok(()) => {
+            log::info!("[vault-autotype] autotype_login Ok（已填充，mode={:?}）", mode);
+            Ok(AutoTypeResultDto {
+                filled: true,
+                message: "已填充".into(),
+                fallback_to_clipboard: false,
+            })
+        }
+        Err(e) => {
+            log::warn!("[vault-autotype] autotype_login 失败 → fallback 剪贴板：{}", e);
             // fallback：复制密码到剪贴板（必须先 suppress_next 防 watcher 入库）
             // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
