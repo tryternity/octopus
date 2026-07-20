@@ -578,45 +578,45 @@ pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), Strin
 /// 贴图到桌面：裁剪选区 → 创建原生浮动窗口显示截图
 #[tauri::command]
 pub async fn pin_screenshot(
-    label: String,
-    x: f64, y: f64, w: f64, h: f64,
-    img_base64: Option<String>,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // 2026-07-20 perf：自定义二进制协议（仿 Solana ts sdk 风格），省 base64 round-trip。
+    // 协议：[u32 BE: label_len][label UTF-8][f64 BE: x][f64 BE: y][f64 BE: w][f64 BE: h][PNG bytes]
+    // label_len 后跟 label 字节，4 个 f64 是选区几何（CSS 像素），剩余字节是 composeAndCropBytes 产出的 PNG。
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("pin_screenshot expects raw binary body".into());
+    };
+    if body.len() < 4 {
+        return Err("pin_screenshot body too short".into());
+    }
+    let label_len = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    if body.len() < 4 + label_len + 32 {
+        return Err(format!("pin_screenshot body truncated: need at least {} bytes, got {}", 4 + label_len + 32, body.len()));
+    }
+    let label = String::from_utf8(body[4..4 + label_len].to_vec())
+        .map_err(|e| format!("label UTF-8 decode failed: {}", e))?;
+    let mut off = 4 + label_len;
+    let read_f64 = |off: &mut usize| -> f64 {
+        let v = f64::from_be_bytes([
+            body[*off], body[*off+1], body[*off+2], body[*off+3],
+            body[*off+4], body[*off+5], body[*off+6], body[*off+7],
+        ]);
+        *off += 8;
+        v
+    };
+    let x = read_f64(&mut off);
+    let y = read_f64(&mut off);
+    let w = read_f64(&mut off);
+    let h = read_f64(&mut off);
+    let png_bytes: Vec<u8> = body[off..].to_vec();
+    if png_bytes.is_empty() {
+        return Err("pin_screenshot: missing PNG bytes".into());
+    }
+
     let sel_win = app_handle
         .get_webview_window(&label)
         .ok_or("截图窗口不存在")?;
-
-    let png_bytes = if let Some(base64_str) = img_base64 {
-        use base64::prelude::*;
-        BASE64_STANDARD.decode(&base64_str)
-            .map_err(|e| format!("Base64 解码失败: {}", e))?
-    } else {
-        let full = {
-            let mut all = ALL_CAPTURES.lock();
-            all.iter()
-                .position(|(l, _)| *l == label)
-                .map(|i| all.remove(i).1)
-        }
-        .ok_or("无截图数据")?;
-
-        let scale = sel_win.scale_factor().unwrap_or(1.0);
-        let fake_full = octopus_capx::capture::ScreenCapture {
-            rgba_bytes: full.rgba_bytes.clone(),
-            width: full.width,
-            height: full.height,
-            monitor_x: 0,
-            monitor_y: 0,
-        };
-        octopus_capx::capture::crop_region(
-            &fake_full,
-            (x * scale) as u32,
-            (y * scale) as u32,
-            (w * scale) as u32,
-            (h * scale) as u32,
-        )
-        .map_err(|e| format!("裁剪失败: {}", e))?
-    };
 
     ALL_CAPTURES.lock().clear();
     PENDING_IMAGES.lock().clear();

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
+import { invoke as rawInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type Annotation, type Tool, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
 import { ToolButton } from "./ToolButton";
@@ -663,22 +664,6 @@ export default function Screenshot() {
     });
   }
 
-  async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const blob = new Blob([buffer], { type: "image/png" });
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string;
-        const base64 = dataUrl.substring(dataUrl.indexOf(",") + 1);
-        resolve(base64);
-      };
-      reader.onerror = () => {
-        reject(reader.error || new Error("FileReader failed"));
-      };
-      reader.readAsDataURL(blob);
-    });
-  }
-
   function doPin() {
     if (!sel || isPinningRef.current) return;
     isPinningRef.current = true;
@@ -688,20 +673,27 @@ export default function Screenshot() {
         return;
       }
       try {
-        const base64Str = await arrayBufferToBase64(bytes);
-        invoke("pin_screenshot", {
-          label: winLabel,
-          x: sel.x,
-          y: sel.y,
-          w: sel.w,
-          h: sel.h,
-          imgBase64: base64Str,
-        }).catch((e) => {
+        // 2026-07-20 perf：自定义二进制协议（省 base64 round-trip ~50-200ms）
+        // 协议：[u32 BE: label_len][label UTF-8][f64 BE: x][f64 BE: y][f64 BE: w][f64 BE: h][PNG bytes]
+        // 整个 ArrayBuffer 作为 invoke args，Tauri 走 application/octet-stream Raw body。
+        const labelBytes = new TextEncoder().encode(winLabel);
+        const headerLen = 4 + labelBytes.length + 32;  // u32 + label + 4×f64
+        const buf = new ArrayBuffer(headerLen + bytes.byteLength);
+        const view = new DataView(buf);
+        let off = 0;
+        view.setUint32(off, labelBytes.length); off += 4;
+        new Uint8Array(buf, off, labelBytes.length).set(labelBytes); off += labelBytes.length;
+        view.setFloat64(off, sel.x); off += 8;
+        view.setFloat64(off, sel.y); off += 8;
+        view.setFloat64(off, sel.w); off += 8;
+        view.setFloat64(off, sel.h); off += 8;
+        new Uint8Array(buf, off).set(new Uint8Array(bytes));
+        rawInvoke("pin_screenshot", buf).catch((e) => {
           console.error("Pin screenshot failed:", e);
           isPinningRef.current = false;
         });
       } catch (err) {
-        console.error("Failed to convert arraybuffer to base64:", err);
+        console.error("Failed to encode pin payload:", err);
         isPinningRef.current = false;
       }
     }).catch(() => {
