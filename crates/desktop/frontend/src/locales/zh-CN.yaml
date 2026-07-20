@@ -165,7 +165,7 @@ settings:
       revealPassword: 显示密码
       hidePassword: 隐藏密码
       # 为当前站点新建（方案 C，2026-07-20）
-      createForThisSite: 为当前站点新建
+      createForThisSite: 新增保险箱
       createTitle: 新建条目
       createSubmit: 保存
       back: 返回
