@@ -51,89 +51,64 @@ fn restore_focus_platform() {
     use std::process::Command;
 
     // 打印当前前台
-    if let Ok(out) = Command::new("osascript")
+    let frontmost_name = Command::new("osascript")
         .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
         .output()
-    {
-        log::info!("restore_focus: current frontmost = {}", String::from_utf8_lossy(&out.stdout).trim());
-    }
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    log::info!("restore_focus: current frontmost = {}", frontmost_name);
 
-    // 如果前台是 octopus，切到上一个应用
-    let script = r#"tell application "System Events"
-        set frontMost to name of first process whose frontmost is true
-        if frontMost is "octopus" then
-            repeat with p in (every process whose background only is false)
-                if name of p is not "octopus" and name of p is not "osascript" then
-                    set frontmost of p to true
-                    return name of p
-                end if
-            end repeat
-        end if
-    end tell"#;
-    match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => log::info!("restore_focus: switch result = {}", String::from_utf8_lossy(&out.stdout).trim()),
-        Err(e) => log::warn!("restore_focus: osascript failed: {}", e),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn simulate_paste_platform() {
-    use std::process::Command;
-    // 三段式文本注入：切到 ASCII 输入源 → Cmd+V → guard drop 时恢复。
-    // 避免 CJK IME composing 状态下粘贴出乱码（参考 VoxFlow VoxFlowTextInsertion）。
-    let _ime_guard = crate::input_source::switch_to_ascii_for_paste();
-    // 强制前台进程重新获取 key window 焦点，再 keystroke
-    // 用 System Events 的 process 属性而非 application name（避免 -1728）
-    let script = r#"tell application "System Events"
-        set p to first process whose frontmost is true
-        set frontmost of p to true
-        delay 0.15
-        keystroke "v" using command down
-    end tell"#;
-    log::info!("simulate_paste: osascript frontmost + keystroke");
-    match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => {
-            if !out.status.success() {
-                log::warn!("simulate_paste failed: {}", String::from_utf8_lossy(&out.stderr));
-            } else {
-                log::info!("simulate_paste: done");
-            }
-        }
-        Err(e) => log::warn!("simulate_paste: {}", e),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn simulate_copy_platform() {
-    use std::process::Command;
-    // 深度防御：热键触发后 octopus 可能短暂成为 frontmost。若抓到 octopus 自己，
-    // Cmd+C 会发给 octopus webview 而非源应用。先确保 frontmost 是非 octopus 进程。
-    // （注：Sublime 的"无选中复制当前行"是独立问题，由 detect_selection 的 Sublime
-    // 插件分支处理，不靠此 Cmd+C。本保护针对其他应用的 octopus frontmost 边角场景。）
-    //
-    // 2026-07-20 perf：原固定 `delay 0.15` 在每个 Cmd+C 都等待（含 octopus 不是
-    // frontmost 的正常情况），改为仅在「octopus 是 frontmost 需切焦点」时 delay。
-    // 正常情况省 150ms。
+    // 2026-07-20 perf+fix：原仅当 octopus 是 frontmost 时才切换。
+    // 但 macOS frontmost app ≠ key window holder——hide clipboard_window 后，即便 Sublime
+    // 是 frontmost，它的窗口可能还不是 key window（CGEvent 发 Cmd+V 进 NSApp.sendEvent 队列
+    // 但不触发 menu shortcut 匹配）。改为：无条件 set frontmost，触发目标 app 的
+    // windowDidBecomeKey，让窗口成为 key window。
     let script = r#"tell application "System Events"
         set p to first process whose frontmost is true
         if name of p is "octopus" then
             repeat with q in (every process whose background only is false)
                 if name of q is not "octopus" and name of q is not "osascript" then
                     set frontmost of q to true
-                    delay 0.15
+                    set p to q
                     exit repeat
                 end if
             end repeat
+        else
+            -- 无条件 re-set frontmost，触发 windowDidBecomeKey
+            set frontmost of p to true
         end if
-        keystroke "c" using command down
+        return name of p
     end tell"#;
     match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => {
-            if !out.status.success() {
-                log::warn!("simulate_copy failed: {}", String::from_utf8_lossy(&out.stderr));
-            }
-        }
-        Err(e) => log::warn!("simulate_copy: {}", e),
+        Ok(out) => log::info!("restore_focus: activate result = '{}'", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(e) => log::warn!("restore_focus: osascript failed: {}", e),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_paste_platform() {
+    // 2026-07-20 perf：原 osascript（~200ms 启动）改用 keystroke 模块（CGEvent < 5ms）。
+    // IME guard 仍保留——切到 ASCII 输入源再 paste，避免 CJK IME composing 状态下粘贴乱码。
+    let _ime_guard = crate::input_source::switch_to_ascii_for_paste();
+
+    // 切输入源可能短暂抢焦点（Carbon TIS API），等 50ms 让焦点稳定再发 keystroke
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    if let Err(e) = crate::keystroke::paste() {
+        log::warn!("simulate_paste: {}", e);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_copy_platform() {
+    // 2026-07-20 perf：原 osascript（~200ms 启动 + delay 0.15）改用 keystroke 模块（CGEvent < 5ms）。
+    // 「octopus 是 frontmost 时切非 octopus 进程」的保护暂去掉——octopus 是 frontmost 是边角场景
+    // （热键触发后短暂成为 frontmost），即便发生，Cmd+C 发给 octopus 自己也只导致剪贴板不变，
+    // detect_selection 会判为无选中，不影响功能正确性。如未来发现该边角场景需恢复保护，
+    // 用 NSWorkspace + osascript set frontmost 实现（本次不动 restore_focus 的 osascript）。
+    if let Err(e) = crate::keystroke::copy() {
+        log::warn!("simulate_copy: {}", e);
     }
 }
 
