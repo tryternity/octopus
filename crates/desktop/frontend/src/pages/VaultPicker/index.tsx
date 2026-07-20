@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Copy, Keyboard, KeyRound, AtSign, Eye, EyeOff, ArrowLeft, Lock, RefreshCw, X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { classifyError } from "./classifyError";
 
@@ -243,7 +244,10 @@ export default function VaultPicker() {
         className="flex h-screen flex-col bg-background text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位保持对称 */}
-        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+        <div
+          className="relative flex cursor-grab items-center border-b border-border/40 px-4 py-2 active:cursor-grabbing"
+          data-tauri-drag-region="deep"
+        >
           {/* 左侧占位——与右侧 X 按钮等宽，让 absolute 标题真正居中 */}
           <div className="size-7" aria-hidden />
           <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
@@ -293,7 +297,10 @@ export default function VaultPicker() {
   if (view.kind === "uninit") {
     return (
       <div className="flex h-screen flex-col bg-background text-foreground">
-        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+        <div
+          className="relative flex cursor-grab items-center border-b border-border/40 px-4 py-2 active:cursor-grabbing"
+          data-tauri-drag-region="deep"
+        >
           <div className="size-7" aria-hidden />
           <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
             <Lock className="size-4" />
@@ -338,7 +345,10 @@ export default function VaultPicker() {
         className="flex h-screen flex-col bg-background text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位 */}
-        <div className="relative flex items-center border-b border-border/40 px-4 py-2">
+        <div
+          className="relative flex cursor-grab items-center border-b border-border/40 px-4 py-2 active:cursor-grabbing"
+          data-tauri-drag-region="deep"
+        >
           <div className="size-7" aria-hidden />
           <span className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
             <Lock className="size-4" />
@@ -407,7 +417,10 @@ export default function VaultPicker() {
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       {/* 顶部标题栏：absolute 居中标题 + 右侧 Refresh + X 按钮 + 左侧同等宽占位 */}
-      <div className="relative flex items-center border-b border-border px-4 py-2">
+      <div
+        className="relative flex cursor-grab items-center border-b border-border px-4 py-2 active:cursor-grabbing"
+        data-tauri-drag-region="deep"
+      >
         {/* 左侧占位——与右侧 2 个 icon-sm 按钮（gap-1）等宽，让 absolute 标题真正居中。
             2 个 icon-sm 按钮（约 24px each）+ gap-1（4px）≈ 52px */}
         <div className="w-[52px]" aria-hidden />
@@ -694,7 +707,10 @@ function CreateCipherView({
   return (
     <form onSubmit={handleSave} className="flex h-screen flex-col bg-background text-foreground">
       {/* 标题栏：左侧返回 + 中间标题 + 右侧关闭 */}
-      <div className="relative flex items-center border-b border-border/40 px-2 py-2">
+      <div
+        className="relative flex cursor-grab items-center border-b border-border/40 px-2 py-2 active:cursor-grabbing"
+        data-tauri-drag-region="deep"
+      >
         <Button
           type="button"
           variant="ghost"
