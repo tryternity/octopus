@@ -1,5 +1,12 @@
 # ASR Result 窗流式卡顿诊断 + writeDoc 增量修复
 
+> **[2026-07-19 更新]** `perf_log` 模块的职责已被
+> [`2026-07-19-asr-edit-stall-observability.md`](./2026-07-19-asr-edit-stall-observability.md)
+> 扩展为**双重职责**：本 spec 描述的阈值性能日志（`[BE tick]`/`[FE writeDoc]`）仍生效，
+> 但「根因定位后可整体移除」仅适用于这部分；诊断日志（`[STATE]`/`[HEARTBEAT]`/`[SPEAKING]`/
+> `[POLISH]`/`[TICK-DETAIL]`/`[APPLY]`/`[CARET]` 等）是长期保留的可观测性。
+> **writeDoc 增量修复（前缀追加 O(delta)）作为正式修复保留**。
+>
 > Result 窗（语音识别浮窗）录音出字时偶发卡死/卡顿，等一阵恢复，不稳定复现。
 > 定位到前端 CM6 `writeDoc` 整篇全量替换 O(n) 是主嫌；改增量追加 O(delta)，并加双端性能打点写 `~/.octopus/logs/asr.log` 待日志确认根因。
 
