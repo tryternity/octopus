@@ -50,15 +50,64 @@ pub fn clear_test_vault_root() {
 
 // === 路径辅助 ===
 
-/// `~/.octopus/.vault/`——vault git 同步仓库根目录。
-pub fn vault_root() -> PathBuf {
+/// `~/.octopus/.sync/`——所有同步数据的 git repo 根目录。
+///
+/// 2026-07-22 改造：从 `.vault` 重命名为 `.sync`，子目录化（`vault/` / 未来 `hotword/` / `prompts/`）。
+/// 用户已同意删旧 `.vault/` 重建，不做向后兼容。
+pub fn sync_root() -> PathBuf {
     #[cfg(test)]
     {
         if let Some(p) = TEST_VAULT_ROOT.with(|cell| cell.borrow().clone()) {
             return p;
         }
     }
-    octopus_infra::octopus_config_home().join(".vault")
+    octopus_infra::octopus_config_home().join(".sync")
+}
+
+/// `~/.octopus/.sync/vault/`——vault 数据子目录（meta/outline/ciphers/folders）。
+///
+/// git repo 在 `sync_root()`（`.sync/`），不在 vault 子目录——这样未来 hotword/prompts
+/// 也在同一个 git repo 下，一个 sync 同步所有用户数据。
+pub fn vault_dir() -> PathBuf {
+    sync_root().join("vault")
+}
+
+/// 兼容别名——大量旧代码引用 `vault_root()`，逐步迁移到 `vault_dir()`。
+/// 语义等同 vault_dir()（vault 数据目录，非 git repo 根）。
+pub fn vault_root() -> PathBuf {
+    vault_dir()
+}
+
+/// 把 SQLite `datetime('now')` 格式（`"2026-07-21 15:11:22"`）转为 Unix 毫秒。
+///
+/// SQLite 的 UTC 时间，直接解析为毫秒——outline 用数值比较（旧版 ISO 字符串比较不可靠）。
+/// 解析失败返 0（让 merge_outlines 退化到「双方都 0 取本地」语义，安全）。
+fn iso_to_unix_ms(s: &str) -> i64 {
+    // 格式："2026-07-21 15:11:22" 或 "2026-07-21T15:11:22Z" 等变体
+    // 手写解析避免引入 chrono 依赖
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 {
+        return 0;
+    }
+    // 日期部分：YYYY-MM-DD HH:MM:SS（位置固定）
+    let y: i64 = s[0..4].parse().unwrap_or(1970);
+    let mo: i64 = s[5..7].parse().unwrap_or(1);
+    let d: i64 = s[8..10].parse().unwrap_or(1);
+    let h: i64 = s[11..13].parse().unwrap_or(0);
+    let mi: i64 = s[14..16].parse().unwrap_or(0);
+    let se: i64 = s[17..19].parse().unwrap_or(0);
+    // 简化天数累积——不考虑闰年精度（同条 cipher 在两台机器上写入时间相差 < 1 天，
+    // 累积误差 < 86400s 不影响 merge 决策）。准确算法需要完整日历库，不值得。
+    // 这里用 civil_to_days 公式（Howard Hinnant），精度无损。
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = (y2 - era * 400) as u64;
+    let doy = (153 * ((if mo > 2 { mo - 3 } else { mo + 9 }) as u64) + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe as i64 - 719468;
+    let secs = days * 86400 + h * 3600 + mi * 60 + se;
+    secs * 1000
 }
 
 /// `~/.octopus/.vault/meta.json`——vault_meta 同步字段。
@@ -231,6 +280,7 @@ impl CipherFile {
             password_history: self.encrypted.password_history.clone(),
             reprompt: self.plaintext_meta.reprompt,
             deleted_at: self.plaintext_meta.deleted_at.clone(),
+            sync_md5: None, // 由调用方算 md5 填入（pull 时 fingerprint::cipher_md5）
             created_at: self.plaintext_meta.created_at.clone(),
             updated_at: self.plaintext_meta.updated_at.clone(),
         }
@@ -265,6 +315,7 @@ impl FolderFile {
             id: self.id.clone(),
             name: self.encrypted_name.clone(),
             sort_order: self.sort_order,
+            sync_md5: None, // 由调用方算 md5 填入
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
         }
@@ -441,20 +492,18 @@ pub fn export_all_to_files(
     let meta_file = MetaFile::from_vault_meta(meta);
     write_meta_file(&meta_file)?;
 
-    // 3. 写所有 cipher / folder 文件 + 收集 (uuid, sha)
+    // 3. 写所有 cipher / folder 文件 + 收集 (uuid, md5)
     // BTreeMap 保证 outline.json 序列化顺序稳定（避免每次 sync 产生空 commit）
     let mut cipher_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
     for c in ciphers {
         write_cipher_file(c)?;
-        // sha 用文件内容算（不含格式化差异）——读回刚写的文件
-        let path = cipher_file_path(&c.id);
-        let content = std::fs::read_to_string(&path)?;
-        let sha = sha256_hex(&content);
+        // md5 从 cipher.sync_md5 取（写命令时算好），fallback 临时算
+        let md5 = c.sync_md5.clone().unwrap_or_else(|| crate::sync::fingerprint::cipher_md5(c));
         cipher_entries.insert(
             c.id.clone(),
             OutlineEntry {
-                sha,
-                updated_at: c.updated_at.clone(),
+                md5,
+                updated_ms: iso_to_unix_ms(&c.updated_at),
             },
         );
     }
@@ -462,14 +511,12 @@ pub fn export_all_to_files(
     let mut folder_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
     for f in folders {
         write_folder_file(f)?;
-        let path = folder_file_path(&f.id);
-        let content = std::fs::read_to_string(&path)?;
-        let sha = sha256_hex(&content);
+        let md5 = f.sync_md5.clone().unwrap_or_else(|| crate::sync::fingerprint::folder_md5(f));
         folder_entries.insert(
             f.id.clone(),
             OutlineEntry {
-                sha,
-                updated_at: f.updated_at.clone(),
+                md5,
+                updated_ms: iso_to_unix_ms(&f.updated_at),
             },
         );
     }
@@ -484,6 +531,115 @@ pub fn export_all_to_files(
     write_outline_file(&outline)?;
 
     Ok(outline)
+}
+
+/// 增量导出——sync_now 用，只写真正变化的文件（不清空目录）。
+///
+/// 与 `export_all_to_files` 的区别：
+/// - `export_all_to_files`：清空目录 + 全写（首次启用同步时用，目录为空无对比基础）
+/// - `incremental_export`：读旧 outline + 对比 sync_md5 → 只写变化文件 + 删 SQLite 无的
+///
+/// outline.sha 字段值改用 SQLite 的 `sync_md5`（md5 内容指纹），而不是文件字节 sha256。
+/// 这样跨设备同一条 cipher 的 outline.sha 相同（md5 是逻辑内容指纹）。
+///
+/// 返回 (new_outline, changed_count)——changed_count 是实际写/删的文件数。
+pub fn incremental_export(
+    meta: &VaultMeta,
+    ciphers: &[VaultCipher],
+    folders: &[VaultFolder],
+) -> Result<(Outline, usize)> {
+    let root = vault_root();
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("创建 vault 目录失败：{}", root.display()))?;
+
+    // 1. 写 meta.json（每次都写——meta 变更频率极低，重写无浪费）
+    let meta_file = MetaFile::from_vault_meta(meta);
+    write_meta_file(&meta_file)?;
+
+    // 2. 读旧 outline 做 diff
+    let old_outline = read_outline_file().unwrap_or_default();
+    let mut changed = 0usize;
+
+    // 3. cipher：对比 md5，只写变化的
+    let mut cipher_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    let cipher_id_set: std::collections::HashSet<&str> = ciphers.iter().map(|c| c.id.as_str()).collect();
+    for c in ciphers {
+        let new_md5 = c.sync_md5.clone().unwrap_or_else(|| {
+            // sync_md5 为 None（旧库迁移未回填）——临时算
+            crate::sync::fingerprint::cipher_md5(c)
+        });
+        let old_entry = old_outline.ciphers.get(&c.id);
+        let needs_write = match old_entry {
+            None => true, // 新增
+            Some(old) => old.md5 != new_md5, // md5 变了
+        };
+        if needs_write {
+            write_cipher_file(c)?;
+            changed += 1;
+        }
+        cipher_entries.insert(
+            c.id.clone(),
+            OutlineEntry {
+                md5: new_md5,
+                updated_ms: iso_to_unix_ms(&c.updated_at),
+            },
+        );
+    }
+    // 删 SQLite 无但 outline 有的 cipher 文件
+    for old_uuid in old_outline.ciphers.keys() {
+        if !cipher_id_set.contains(old_uuid.as_str()) {
+            let _ = delete_cipher_file(old_uuid); // 文件可能已不存在，忽略错误
+            changed += 1;
+        }
+    }
+
+    // 4. folder：同
+    let mut folder_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    let folder_id_set: std::collections::HashSet<&str> = folders.iter().map(|f| f.id.as_str()).collect();
+    for f in folders {
+        let new_md5 = f.sync_md5.clone().unwrap_or_else(|| {
+            crate::sync::fingerprint::folder_md5(f)
+        });
+        let old_entry = old_outline.folders.get(&f.id);
+        let needs_write = match old_entry {
+            None => true,
+            Some(old) => old.md5 != new_md5,
+        };
+        if needs_write {
+            write_folder_file(f)?;
+            changed += 1;
+        }
+        folder_entries.insert(
+            f.id.clone(),
+            OutlineEntry {
+                md5: new_md5,
+                updated_ms: iso_to_unix_ms(&f.updated_at),
+            },
+        );
+    }
+    for old_uuid in old_outline.folders.keys() {
+        if !folder_id_set.contains(old_uuid.as_str()) {
+            let _ = delete_folder_file(old_uuid);
+            changed += 1;
+        }
+    }
+
+    // 5. 写新 outline
+    // vault_version 只在 changed > 0 时 +1（用户反馈：无变化 sync 不应递增版本）
+    let new_vault_version = if changed > 0 {
+        old_outline.vault_version.wrapping_add(1)
+    } else {
+        old_outline.vault_version
+    };
+    let outline = Outline {
+        version: 1,
+        vault_version: new_vault_version,
+        ciphers: cipher_entries,
+        folders: folder_entries,
+    };
+    write_outline_file(&outline)?;
+
+    Ok((outline, changed))
 }
 
 /// 从文件系统全量导入——clone_initial（B 机首次同步）时用。
@@ -562,9 +718,10 @@ mod tests {
     impl VaultRootGuard {
         fn new() -> Self {
             let tmp = TempDir::new().expect("create tempdir");
-            // vault_root 下加 .vault 子目录——与生产路径结构一致
-            let vault_path = tmp.path().join(".vault");
-            set_test_vault_root(vault_path);
+            // sync_root 指向 tempdir/.sync（与生产路径结构一致）
+            // vault_dir = sync_root/vault，文件操作自动走子目录
+            let sync_path = tmp.path().join(".sync");
+            set_test_vault_root(sync_path);
             Self { _tmp: tmp }
         }
     }
@@ -608,6 +765,7 @@ mod tests {
             password_history: None,
             reprompt: 0,
             deleted_at: None,
+            sync_md5: None,
             created_at: "2026-07-21T10:00:00".into(),
             updated_at: "2026-07-21T10:00:00".into(),
         }
@@ -686,6 +844,7 @@ mod tests {
             id: "c3d4e5f6-a7b8-4901-9003-cdefg345678".into(),
             name: "v1:enc-folder".into(),
             sort_order: 0,
+            sync_md5: None,
             created_at: "2026-07-21T00:00:00".into(),
             updated_at: "2026-07-21T00:00:00".into(),
         }];
@@ -712,5 +871,109 @@ mod tests {
         assert_eq!(h1.len(), 64); // 32 bytes hex = 64 chars
         let h3 = sha256_hex("world");
         assert_ne!(h1, h3);
+    }
+
+    // === incremental_export 测试（2026-07-21 md5 增量同步） ===
+
+    use crate::sync::fingerprint::cipher_md5;
+
+    /// 增量 export：相同数据二次 export 应 0 变更（不重写文件）。
+    #[test]
+    fn incremental_export_zero_changes_on_unchanged_data() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let ciphers = vec![sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456")];
+
+        // 首次 export——全写
+        let (_, changed1) = incremental_export(&meta, &ciphers, &[]).expect("first export");
+        assert_eq!(changed1, 1, "首次应写 1 个 cipher 文件");
+
+        // 二次 export——数据相同应 0 变更
+        let (_, changed2) = incremental_export(&meta, &ciphers, &[]).expect("second export");
+        assert_eq!(
+            changed2, 0,
+            "数据未变时增量 export 应 0 变更（md5 一致跳过）"
+        );
+    }
+
+    /// 增量 export：改 1 条 cipher 只写 1 个文件。
+    #[test]
+    fn incremental_export_writes_only_changed_cipher() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+        let c2 = sample_cipher("b2c3d4e5-f6a7-4890-9002-bcdef234567");
+
+        // 首次写 2 个
+        let (_, changed1) = incremental_export(&meta, &[c1.clone(), c2.clone()], &[]).expect("first");
+        assert_eq!(changed1, 2);
+
+        // 改 c1 的 name → c1 md5 变；c2 不动
+        let mut c1_modified = c1.clone();
+        c1_modified.name = "v1:different-name".into();
+        c1_modified.sync_md5 = Some(cipher_md5(&c1_modified));
+        let (_, changed2) =
+            incremental_export(&meta, &[c1_modified, c2], &[]).expect("second");
+        assert_eq!(
+            changed2, 1,
+            "只改 1 条 cipher 应只写 1 个文件，实际 {}", changed2
+        );
+    }
+
+    /// 增量 export：SQLite 无但 outline 有 → 删文件。
+    #[test]
+    fn incremental_export_deletes_missing_cipher_file() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+
+        // 首次写 c1
+        let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists());
+
+        // 二次：SQLite 无 cipher → 文件应被删
+        let (_, changed) = incremental_export(&meta, &[], &[]).expect("second");
+        assert_eq!(changed, 1, "应删 1 个文件");
+        assert!(
+            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists(),
+            "SQLite 无的 cipher 文件应被删"
+        );
+    }
+
+    /// 增量 export：outline.sha 用 SQLite sync_md5（md5 内容指纹）。
+    #[test]
+    fn incremental_export_uses_sync_md5_in_outline() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let mut c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+        c1.sync_md5 = Some(cipher_md5(&c1));
+
+        let (outline, _) = incremental_export(&meta, &[c1.clone()], &[]).expect("export");
+        let entry = outline.ciphers.get("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap();
+        assert_eq!(
+            entry.md5, c1.sync_md5.unwrap(),
+            "outline.md5 应等于 cipher.sync_md5（md5 内容指纹）"
+        );
+    }
+
+    /// vault_version 只在 changed > 0 时 +1（用户反馈：无变化 sync 不应递增版本）。
+    #[test]
+    fn incremental_export_vault_version_only_increments_on_change() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+
+        // 首次——有变化，version 应 +1（从 0 → 1）
+        let (outline1, changed1) = incremental_export(&meta, &[c1.clone()], &[]).expect("first");
+        assert_eq!(changed1, 1);
+        assert_eq!(outline1.vault_version, 1, "首次有变化应 +1");
+
+        // 二次——无变化，version 应保持 1（不递增）
+        let (outline2, changed2) = incremental_export(&meta, &[c1], &[]).expect("second");
+        assert_eq!(changed2, 0);
+        assert_eq!(
+            outline2.vault_version, 1,
+            "无变化时 vault_version 不应递增（用户反馈：每次同步都 +1 是 bug）"
+        );
     }
 }

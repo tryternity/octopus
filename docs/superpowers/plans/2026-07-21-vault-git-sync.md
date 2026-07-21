@@ -533,15 +533,15 @@ T1-T5 全部完成（2026-07-21）。T6 文档同步 + 测试收尾。
 
 ### 测试基线
 
-最终基线（T1-T11 全部完成后）：
+最终基线（T1-T12 全部完成后）：
 
-- vault: **247 pass**（166 base + 81 sync：privacy 33 + engine 13 + error 9 + outline 7 + store 9 + git 13 + unlock 等）
-- desktop: **387 pass**（含 classify 回归测试）
+- vault: **253 pass**（含 fingerprint 7 + incremental_export 4 + outline 序列化等）
+- desktop: **387 pass**
 - 前端: tsc + vite build 0 error
 - cargo build: 0 error 0 warning
-- 真实网络集成测试（`#[ignore]`）：5 个（GitHub/Gitee 公有库检测、不存在库、SSH key 验证等）
+- 真实网络集成测试（`#[ignore]`）：5 个
 
-历史基线演进：T1-T6 完成 200 → T7 私有库检测 230 → T8 HTTPS→SSH 238 → T9 非交互 prompt 240 → T10 空远程 241 → T11 outline 稳定 247。
+历史基线演进：T1-T6 完成 200 → T7 私有库检测 230 → T8 HTTPS→SSH 238 → T9 非交互 prompt 240 → T10 空远程 241 → T11 outline 稳定 247 → T12 md5 增量 253。
 
 ---
 
@@ -809,3 +809,64 @@ T10 全部完成（2026-07-21）。vault 测试 240 → 241 pass（新增 1 个 
 T11 全部完成（2026-07-21，commit `2ac4c028`）。vault 测试 241 → 247 pass（新增 6 个：1 个 outline 序列化稳定 + 5 个 count_outline_changes）。0 error 0 warning。
 
 **触发场景**：用户实测报告「每次同步都是'同步完成：拉取 0 条，推送 4 条'，应该连推送都没有啊，因为本地和 remote 是已经同步过的」。git log 3 个连续 sync commit diff 只有 outline.json 的 HashMap key 顺序变化。
+
+---
+
+## Task 12: md5 增量同步协议（2026-07-21 增补）
+
+**目标**：`push_to_files` 从「全量重写 ciphers/ 目录」改为「md5 diff + 只写变化的文件」——解决 git history 噪音 + 性能浪费。详见 [spec §4.12](../specs/2026-07-21-vault-git-sync-design.md#412-md5-增量同步协议2026-07-21-增补)。
+
+**Files:**
+- `crates/vault/Cargo.toml`（加 md-5 依赖）
+- `crates/vault/src/sync/fingerprint.rs`（新建——md5 计算）
+- `crates/infra/src/db.sql` + `db.rs`（schema v44→v45：sync_md5 字段 + VaultCipher/VaultFolder struct + INSERT/UPDATE）
+- `crates/vault/src/storage/cipher.rs` + `folder.rs`（写命令填 sync_md5）
+- `crates/vault/src/sync/store.rs`（incremental_export 新函数）
+- `crates/vault/src/sync/engine.rs`（push_to_files 改用 incremental_export）
+
+### Steps
+
+- [x] **12.1 fingerprint 模块**
+  - `cipher_md5(&VaultCipher) -> String` + `folder_md5(&VaultFolder) -> String`
+  - `cipher_md5_from_input(id, &VaultCipherInput)` + `folder_md5_from_fields(id, name, sort_order)`
+  - 字段固定顺序 `|` 分隔，不含 created_at/updated_at
+
+- [x] **12.2 schema v44→v45 迁移**
+  - vault_ciphers / vault_folders 加 sync_md5 TEXT 字段
+  - ALTER TABLE 检查列存在（开发期中间 binary 可能跳版本号）
+  - 不回填——首次 sync 当作「需写文件」处理（旧数据 sync_md5=NULL）
+  - 全新库 db.sql 已含字段，直接设 v45
+
+- [x] **12.3 写命令填 sync_md5**
+  - storage::create_cipher / save_cipher：构造 VaultCipherInput 后算 md5 填入
+  - storage::soft_delete / restore：DB 操作后读完整 row 重算 md5（deleted_at 变了）
+  - storage::create_folder / rename_folder：算 md5 传入 db 函数
+  - pull 从文件读 cipher 写 SQLite：也算 md5 填入
+
+- [x] **12.4 incremental_export**
+  - 读旧 outline + 对比 sync_md5 → 只写变化文件 + 删 SQLite 无的
+  - 返 (new_outline, changed_count)
+  - outline.sha 字段值改用 SQLite sync_md5（不是文件字节 sha256）
+  - 保留 export_all_to_files 给 push_initial（首次启用同步）
+
+- [x] **12.5 push_to_files 改用 incremental_export**
+  - 删原 count_outline_changes 函数 + 5 个测试（被 incremental_export 取代）
+  - push_to_files 直接返 incremental_export 的 changed_count
+
+- [x] **12.6 测试**
+  - fingerprint 7 个测试（确定性 / 时间戳不变 / 内容变 / None 字段 / folder / md5 格式）
+  - incremental_export 4 个测试（0 变更 / 只写变化 / 删文件 / outline 用 sync_md5）
+
+### 关键设计决策
+
+1. **md5 不是安全 hash**：纯 diff 工具，碰撞无实际风险（cipher 数 < 10万）
+2. **不含时间戳**：created_at/updated_at 跨设备必然不同，含了会导致永久 diff
+3. **密文字段安全**：cipher 只在创建机器加密一次，sync 搬运密文——跨设备一致（详见 spec §2.4）
+4. **不回填 md5**：避免在 infra 层引入 md5 依赖，让首次 sync 自然填上
+5. **outline.sha 字段名不变**：值从「文件字节 sha」变成「逻辑内容 md5」——向后兼容（旧 outline 首次 sync 会被覆盖）
+
+### 实施记录
+
+T12 全部完成（2026-07-21）。vault 测试 247 → 253 pass（新增 11 个：7 fingerprint + 4 incremental_export；删除 5 个 count_outline_changes）。0 error 0 warning。
+
+**架构演进伏笔**：fingerprint.rs + incremental_export 的设计为未来扩展 hotword/prompts 同步打基础——同一种 md5 diff 模式可复用（目前不抽象 trait，YAGNI）。

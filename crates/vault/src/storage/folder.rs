@@ -61,13 +61,23 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
 /// 调用方必须先生成 UUID 传入（2026-07-21 v44：不再 AUTOINCREMENT）。
 pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(name.as_bytes())?;
-    Ok(db::insert_vault_folder(id, &encrypted)?)
+    // 新建 folder sort_order=0（db.sql DEFAULT）——md5 用 0 算
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0);
+    Ok(db::insert_vault_folder(id, &encrypted, &md5)?)
 }
 
 /// 重命名 folder。`new_name` 是明文；内部加密后写库。
 pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(new_name.as_bytes())?;
-    Ok(db::update_vault_folder_name(id, &encrypted)?)
+    // rename 不改 sort_order——读当前值算 md5
+    let sort_order = db::list_vault_folders()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|f| f.id == id)
+        .map(|f| f.sort_order)
+        .unwrap_or(0);
+    let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order);
+    Ok(db::update_vault_folder_name(id, &encrypted, &md5)?)
 }
 
 /// 删除 folder。

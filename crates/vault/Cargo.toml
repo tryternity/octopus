@@ -13,6 +13,8 @@ aes-gcm = { version = "0.10", features = ["std"] }
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+# md5 用于 sync 增量同步的内容指纹（不是安全用途——纯 diff 工具）
+md-5 = "0.10"
 rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 data-encoding = "2"

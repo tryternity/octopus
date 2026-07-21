@@ -413,6 +413,7 @@ CREATE TABLE IF NOT EXISTS vault_ciphers (
     password_history    TEXT DEFAULT NULL,               -- 密文 JSON（密码历史）
     reprompt            INTEGER NOT NULL DEFAULT 0,      -- 0=None 1=Password
     deleted_at          TEXT DEFAULT NULL,               -- 回收站软删除
+    sync_md5            TEXT,                            -- md5 内容指纹（增量同步 diff，详见 vault::sync::fingerprint）
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
@@ -427,6 +428,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
     id          TEXT PRIMARY KEY,                -- UUID v4 字符串
     name        TEXT NOT NULL,                    -- 密文 v1:base64(...)
     sort_order  INTEGER NOT NULL DEFAULT 0,
+    sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff）
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

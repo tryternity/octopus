@@ -61,7 +61,10 @@ pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
+        sync_md5: None, // 下面算好填入
     };
+    let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
+    let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
     Ok(db::insert_vault_cipher(&db_input)?)
 }
 
@@ -80,16 +83,31 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
+        sync_md5: None,
     };
+    let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
+    let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
     Ok(db::update_vault_cipher(id, &db_input)?)
 }
 
 pub fn soft_delete(id: &str) -> Result<()> {
-    Ok(db::soft_delete_vault_cipher(id)?)
+    db::soft_delete_vault_cipher(id)?;
+    // deleted_at 变 → md5 变。读完整 row 重算 sync_md5。
+    if let Some(row) = db::load_vault_cipher(id)? {
+        let md5 = crate::sync::fingerprint::cipher_md5(&row);
+        db::update_cipher_sync_md5(id, &md5)?;
+    }
+    Ok(())
 }
 
 pub fn restore(id: &str) -> Result<()> {
-    Ok(db::restore_vault_cipher(id)?)
+    db::restore_vault_cipher(id)?;
+    // deleted_at 变 → md5 变。读完整 row 重算 sync_md5。
+    if let Some(row) = db::load_vault_cipher(id)? {
+        let md5 = crate::sync::fingerprint::cipher_md5(&row);
+        db::update_cipher_sync_md5(id, &md5)?;
+    }
+    Ok(())
 }
 
 pub fn permanent_delete(id: &str) -> Result<()> {

@@ -349,6 +349,7 @@ mod tests {
             password_history: enc.password_history,
             reprompt: 0,
             deleted_at: None,
+            sync_md5: None,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         };

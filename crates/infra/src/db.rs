@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 44", [])
+    conn.execute("PRAGMA user_version = 45", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -284,10 +284,37 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 44 {
-        // v44+ 已最新，直接返回。
+    if v >= 45 {
+        // v45+ 已最新，直接返回。
         return Ok(());
     }
+
+    // v44→v45：vault_ciphers / vault_folders 加 sync_md5 字段（md5 内容指纹，
+    // 用于增量同步 diff）。详见 vault::sync::fingerprint。
+    //
+    // 迁移策略：只加字段，不回填 md5（旧数据 sync_md5 = NULL）。
+    // 首次 sync_now 时检测到 NULL 当作「需要写文件」处理（增量 push 重写一次），
+    // 之后正常增量。避免在 infra 层引入 md5 依赖（md5 逻辑在 vault crate）。
+    //
+    // ALTER TABLE ADD COLUMN 需检查列是否存在（开发期中间 binary 可能跳过版本号）。
+    if v == 44 {
+        let has_cipher_md5 = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
+            .exists([])?;
+        if !has_cipher_md5 {
+            conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
+        }
+        let has_folder_md5 = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
+            .exists([])?;
+        if !has_folder_md5 {
+            conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
+        }
+        conn.execute("PRAGMA user_version = 45", [])?;
+        log::info!("schema upgraded to v45 (vault_ciphers/folders 加 sync_md5 字段)");
+        return Ok(());
+    }
+
     // v43→v44：vault_ciphers / vault_folders 的 id 从 INTEGER AUTOINCREMENT 改
     // TEXT（UUID 字符串），支持 git 同步跨设备无冲突。
     //
@@ -418,9 +445,30 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
         conn.execute("PRAGMA user_version = 44", [])?;
         log::info!("schema upgraded to v44 (vault_ciphers/folders id 改 UUID 字符串)");
+        // 不 return——fall through 到 v45 迁移（同一次启动完成 v44+v45）
+    }
+
+    // v44→v45：vault_ciphers / vault_folders 加 sync_md5 字段。
+    // 覆盖两种入口：① v44 迁移段完成后 fall through；② 单独 v==44 库启动。
+    // 全新库（v<17）走下方 execute_batch(INIT_SQL) 建表（db.sql 已含 sync_md5），不走这里。
+    // ALTER TABLE ADD COLUMN 检查列存在（开发期中间 binary 可能跳过版本号）。
+    if v >= 17 {
+        let has_cipher_md5 = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
+            .exists([])?;
+        if !has_cipher_md5 {
+            conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
+        }
+        let has_folder_md5 = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
+            .exists([])?;
+        if !has_folder_md5 {
+            conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
+        }
+        conn.execute("PRAGMA user_version = 45", [])?;
+        log::info!("schema upgraded to v45 (vault_ciphers/folders 加 sync_md5 字段)");
         return Ok(());
     }
-    // v>=17 && v>43 的 case 不会到这里（已被 line 289 的 `if v >= 44 return` 拦截）。
     // 老分支 `if v >= 17` 已删除（重复执行 v40/v42 升级 + 设 v43，与上面 v44 分支
     // 重复，且会让下次启动再次进入 v44 分支做无谓检查）。
 
@@ -430,8 +478,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    conn.execute("PRAGMA user_version = 44", [])?;
-    log::info!("DB initialized (v44): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含 sync_md5 字段（v45 schema），直接设 v45
+    conn.execute("PRAGMA user_version = 45", [])?;
+    log::info!("DB initialized (v45): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -3058,6 +3107,7 @@ pub struct VaultCipher {
     pub password_history: Option<String>,
     pub reprompt: i64,
     pub deleted_at: Option<String>,
+    pub sync_md5: Option<String>, // md5 内容指纹（v45：增量同步 diff，详见 vault::sync::fingerprint）
     pub created_at: String,
     pub updated_at: String,
 }
@@ -3067,6 +3117,7 @@ pub struct VaultFolder {
     pub id: String, // UUID v4 字符串
     pub name: String,
     pub sort_order: i64,
+    pub sync_md5: Option<String>, // md5 内容指纹（v45）
     pub created_at: String,
     pub updated_at: String,
 }
@@ -3099,6 +3150,9 @@ pub struct VaultCipherInput {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
+    /// md5 内容指纹（v45：增量同步 diff，由调用方算好传入）。
+    /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
+    pub sync_md5: Option<String>,
 }
 
 const VAULT_META_COLS: &str = "id, kdf_type, kdf_salt, kdf_iterations, kdf_memory_kib, kdf_parallelism, \
@@ -3106,7 +3160,7 @@ const VAULT_META_COLS: &str = "id, kdf_type, kdf_salt, kdf_iterations, kdf_memor
                                equivalent_domains, public_key, protected_private_key, created_at, updated_at";
 
 const VAULT_CIPHER_COLS: &str = "id, folder_id, favorite, atype, name, notes, data, fields, \
-                                 password_history, reprompt, deleted_at, created_at, updated_at";
+                                 password_history, reprompt, deleted_at, sync_md5, created_at, updated_at";
 
 fn row_to_vault_meta(row: &rusqlite::Row) -> rusqlite::Result<VaultMeta> {
     Ok(VaultMeta {
@@ -3141,8 +3195,9 @@ fn row_to_vault_cipher(row: &rusqlite::Row) -> rusqlite::Result<VaultCipher> {
         password_history: row.get(8)?,
         reprompt: row.get(9)?,
         deleted_at: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        sync_md5: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }
 
@@ -3277,8 +3332,8 @@ pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<()> {
 
 fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, sync_md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             input.id,
             input.folder_id,
@@ -3290,6 +3345,7 @@ fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result
             input.fields,
             input.password_history,
             input.reprompt,
+            input.sync_md5,
         ],
     )?;
     Ok(())
@@ -3303,8 +3359,8 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
-            fields = ?7, password_history = ?8, reprompt = ?9, updated_at = datetime('now')
-         WHERE id = ?10",
+            fields = ?7, password_history = ?8, reprompt = ?9, sync_md5 = ?10, updated_at = datetime('now')
+         WHERE id = ?11",
         params![
             input.folder_id,
             input.favorite as i32,
@@ -3315,6 +3371,7 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
             input.fields,
             input.password_history,
             input.reprompt,
+            input.sync_md5,
             id,
         ],
     )?;
@@ -3326,6 +3383,7 @@ pub fn soft_delete_vault_cipher(id: &str) -> Result<()> {
 }
 
 fn soft_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
+    // deleted_at 变 → md5 必须重算（调用方应在 soft_delete 后调 update_cipher_sync_md5）
     conn.execute(
         "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
         params![id],
@@ -3338,11 +3396,24 @@ pub fn restore_vault_cipher(id: &str) -> Result<()> {
 }
 
 fn restore_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
+    // deleted_at 变 → md5 必须重算（调用方应在 restore 后调 update_cipher_sync_md5）
     conn.execute(
         "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
         params![id],
     )?;
     Ok(())
+}
+
+/// 仅更新 sync_md5（soft_delete / restore 后 cipher 内容变了，md5 需重算）。
+/// 调用方先 SELECT 拿到完整 row → 算 md5 → 调本函数写回。
+pub fn update_cipher_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
+            params![sync_md5, id],
+        )?;
+        Ok(())
+    })
 }
 
 pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
@@ -3362,15 +3433,16 @@ pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
 
 fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, sort_order, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
+        "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(VaultFolder {
             id: row.get(0)?,
             name: row.get(1)?,
             sort_order: row.get(2)?,
-            created_at: row.get(3)?,
-            updated_at: row.get(4)?,
+            sync_md5: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
         })
     })?;
     let mut list = Vec::new();
@@ -3382,14 +3454,14 @@ fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
 
 /// 创建 folder（调用方生成 UUID）。
 /// 2026-07-21 v39：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步）。
-pub fn insert_vault_folder(id: &str, name: &str) -> Result<()> {
-    with_db(|conn| insert_vault_folder_at(conn, id, name))
+pub fn insert_vault_folder(id: &str, name: &str, sync_md5: &str) -> Result<()> {
+    with_db(|conn| insert_vault_folder_at(conn, id, name, sync_md5))
 }
 
-fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str) -> Result<()> {
+fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str, sync_md5: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_folders (id, name) VALUES (?1, ?2)",
-        params![id, name],
+        "INSERT INTO vault_folders (id, name, sync_md5) VALUES (?1, ?2, ?3)",
+        params![id, name, sync_md5],
     )?;
     Ok(())
 }
@@ -3397,11 +3469,12 @@ fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str) -> Result<()>
 /// 重命名 folder（参数应是已用 user_vault_key.encrypt 加密过的密文）。
 ///
 /// follow-up #6：folder.name 与 cipher.name 一致存密文；调用方负责加解密。
-pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str) -> Result<()> {
+/// sync_md5 由调用方算好传入（name 变 → md5 变）。
+pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str, sync_md5: &str) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE vault_folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![new_name_encrypted, id],
+            "UPDATE vault_folders SET name = ?1, sync_md5 = ?2, updated_at = datetime('now') WHERE id = ?3",
+            params![new_name_encrypted, sync_md5, id],
         )?;
         Ok(())
     })

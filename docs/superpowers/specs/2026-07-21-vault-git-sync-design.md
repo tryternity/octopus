@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1 已实现（T1-T11 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + outline 序列化稳定性 / SyncReport 真实变更数；待 e2e 测试）
+> **状态**：Phase 1 已实现（T1-T12 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议；待 e2e 测试）
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -709,6 +709,102 @@ HTTPS URL → try_convert_https_to_ssh()
 
 ---
 
+### 4.12 md5 增量同步协议（2026-07-21 增补）
+
+**动机**：原 `push_to_files` 全量重写 ciphers/ + folders/ 目录——即使内容无变化也
+重写所有文件，导致 git history 噪音 + 性能浪费。改用 md5 内容指纹做增量 diff。
+
+**md5 = 逻辑内容指纹（不是安全 hash）**
+
+md5 在这里纯粹是 diff 工具，与加密破解无关。对 cipher/folder 的**逻辑字段**按固定
+格式拼接算 md5，**不含** `created_at` / `updated_at`（时间戳跨设备必然不同）：
+
+```
+// cipher md5 输入（| 分隔，固定字段顺序）
+id | folder_id | favorite | atype | name | notes | data | fields |
+password_history | reprompt | deleted_at
+
+// folder md5 输入
+id | name | sort_order
+```
+
+`|` 分隔避免字段歧义；Option<String> 统一为空字符串；确定性保证相同逻辑内容 → 相同 md5。
+
+**跨设备一致性**：cipher 只在创建机器加密一次，sync 搬运密文（不重新加密），所以密文
+字段跨设备字节一致——md5 也一致。详见 §2.4。
+
+**SQLite 加 sync_md5 字段（schema v44 → v45）**
+
+```sql
+ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT;
+ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT;
+```
+
+- 写命令（create/update/soft_delete/restore）时计算并填入
+- pull 时从文件读出 cipher 写 SQLite 也填 md5
+- 迁移策略：只加字段，不回填（旧数据 sync_md5 = NULL，首次 sync 当作「需写文件」处理）
+
+**Outline 字段命名**（2026-07-22 修订，不做旧文件兼容——用户已同意删旧 .vault 重建）
+
+```rust
+pub struct OutlineEntry {
+    pub md5: String,        // 逻辑内容 md5（32 字符 hex）——之前叫 sha，改名避免歧义
+    pub updated_ms: i64,    // Unix 毫秒时间戳——之前 updated_at 是 ISO 字符串
+}
+```
+
+字段语义：
+- `md5`：SQLite `sync_md5` 字段的值（不是文件字节 sha256）。跨设备同一条 cipher md5 相同。
+- `updated_ms`：cipher/folder 的 `updated_at`（SQLite `datetime('now')` 格式）经
+  `iso_to_unix_ms()` 转换的 Unix 毫秒。merge 冲突时数值比较（ISO 字符串比较不可靠）。
+- 不做旧 outline.json 兼容——旧字段名 `sha` / `updated_at` 已删，旧文件反序列化会失败，
+  用户需删 `.vault/` 重建（已在 AGENTS.md 提示）。
+
+**vault_version 只在有变化时 +1**（2026-07-22 修复）
+
+之前 `incremental_export` 无条件 `wrapping_add(1)`——用户反馈「数据库没变更但每次
+sync vault_version 都 +1」。修复：只在 `changed > 0` 时 +1，无变化保持原值。
+
+**incremental_export 流程**（替代原 export_all_to_files 的全量重写）
+
+```
+1. 读 SQLite 全部 ciphers + folders（含 sync_md5）
+2. 读旧 outline
+3. 对 SQLite 每行：
+   - outline 有同 id + md5 == sync_md5 → 跳过（无变化）
+   - outline 有同 id + md5 != sync_md5 → 重写文件 + 更新 outline entry
+   - outline 无同 id → 写新文件 + 加 outline entry
+4. outline 有但 SQLite 无 → 删文件 + 删 outline entry
+5. vault_version = changed > 0 ? old + 1 : old
+6. 写新 outline
+```
+
+不清空目录——只动真正变化的文件。返回 (new_outline, changed_count)。
+
+**目录结构**（2026-07-22 改造，为未来 hotword/prompts 扩展）
+
+```
+~/.octopus/.sync/             ← git repo 根（之前是 .vault）
+├── .git/
+└── vault/                    ← vault 数据子目录（之前在根）
+    ├── meta.json
+    ├── outline.json
+    ├── ciphers/<2hex>/<uuid>.json
+    └── folders/<uuid>.json
+```
+
+`sync_root() = ~/.octopus/.sync/`（git repo），`vault_dir() = sync_root/vault/`（数据）。
+未来 hotword/prompts 直接加 `.sync/hotword/` / `.sync/prompts/`，共用同一个 git repo。
+代码层面 `vault_root()` 保留为 `vault_dir()` 别名（向后兼容旧调用方）。
+
+**export_all_to_files 保留**：仅 `push_initial`（首次启用同步）用——那时目录为空，
+无对比基础，全量写合理。`sync_now` 走 `incremental_export`。
+
+**新增模块**：`crates/vault/src/sync/fingerprint.rs`（cipher_md5 + folder_md5 +
+cipher_md5_from_input + folder_md5_from_fields）。
+
+---
+
 ## 5. 不变量
 
 | # | 不变量 | 说明 |
@@ -730,6 +826,8 @@ HTTPS URL → try_convert_https_to_ssh()
 | INV-S15 | sync_now 必须识别空远程仓库（NoUpstream）并走首次 push -u | 见 §4.11——用户新建空 repo 后首次点同步不能失败 |
 | INV-S16 | outline.json 序列化必须可重现（相同输入 → 字节相同） | `Outline.ciphers`/`folders` 用 BTreeMap（字典序），HashMap 迭代顺序随机会导致 git 误判为变化产生空 commit |
 | INV-S17 | SyncReport.pushed 必须是实际变更数（新增/修改/删除），不是总数 | 否则误导用户「每次同步都推 N 条」（用户已踩坑）|
+| INV-S18 | sync_now 必须用 md5 增量 diff，不能全量重写文件 | 见 §4.12——全量重写产生 git history 噪音 + 性能浪费。md5 内容指纹保证跨设备一致 |
+| INV-S19 | outline.vault_version 只在 changed > 0 时 +1 | 用户反馈：无变化 sync 也 +1 是 bug——会让 git history 产生无意义版本号 |
 
 ---
 

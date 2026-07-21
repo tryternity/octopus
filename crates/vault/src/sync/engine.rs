@@ -25,7 +25,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use octopus_infra::db::{self, VaultCipherInput, VaultMetaInput};
+use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMetaInput};
 
 use crate::sync::error::SyncError;
 use crate::sync::git;
@@ -104,7 +104,7 @@ pub struct SyncStatus {
 /// 查询同步状态——UI 初始化时调用。
 pub fn get_sync_status() -> SyncStatus {
     let git_available = git::check_git_available();
-    let root = store::vault_root();
+    let root = store::sync_root();
     let syncing = is_syncing();
 
     if !git_available || !root.exists() || !git::is_git_repo(&root) {
@@ -156,7 +156,7 @@ pub fn enable_sync() -> Result<(), SyncError> {
         return Err(SyncError::GitNotInstalled);
     }
 
-    let root = store::vault_root();
+    let root = store::sync_root();
     if root.exists() && git::is_git_repo(&root) {
         return Err(SyncError::Other(anyhow::anyhow!(
             "同步已初始化，请先禁用同步再重新启用"
@@ -169,9 +169,11 @@ pub fn enable_sync() -> Result<(), SyncError> {
 
 /// 初始化本地仓库——从 SQLite 导出全部到文件系统 → git init + commit（不 push）。
 fn push_initial() -> Result<(), SyncError> {
-    let root = store::vault_root();
-    std::fs::create_dir_all(&root)
-        .with_context(|| format!("创建 vault 目录失败：{}", root.display()))
+    let sync_root = store::sync_root();
+    let vault_dir = store::vault_dir();
+    // 创建两层目录：.sync/（git repo 根）+ .sync/vault/（vault 数据）
+    std::fs::create_dir_all(&vault_dir)
+        .with_context(|| format!("创建 vault 目录失败：{}", vault_dir.display()))
         .map_err(SyncError::Other)?;
 
     // 1. 从 SQLite 读全部数据
@@ -185,13 +187,13 @@ fn push_initial() -> Result<(), SyncError> {
     let ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
     let folders = db::list_vault_folders().map_err(SyncError::Other)?;
 
-    // 2. 导出到文件系统
+    // 2. 导出到文件系统（写 .sync/vault/ 下）
     store::export_all_to_files(&meta, &ciphers, &folders)?;
 
-    // 3. git init + commit（不 push——还没配 remote）
-    git::git_init(&root)?;
-    git::git_add_all(&root)?;
-    git::git_commit(&root, "init vault")?;
+    // 3. git init + commit（在 .sync/ 根——git 自动跟踪 vault/ 子目录）
+    git::git_init(&sync_root)?;
+    git::git_add_all(&sync_root)?;
+    git::git_commit(&sync_root, "init vault")?;
 
     log::info!(
         "[sync] push_initial 完成（未 push）：{} ciphers, {} folders",
@@ -212,7 +214,7 @@ fn push_initial() -> Result<(), SyncError> {
 /// - 本地路径 → 拒绝
 /// - SSH / Ambiguous / NetworkError → 放行（SSH 无法匿名嗅探，歧义/网络错误不阻断用户）
 pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
-    let root = store::vault_root();
+    let root = store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -351,7 +353,7 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
 
 /// 删除 remote。
 pub fn remove_remote(name: &str) -> Result<(), SyncError> {
-    let root = store::vault_root();
+    let root = store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -362,7 +364,7 @@ pub fn remove_remote(name: &str) -> Result<(), SyncError> {
 
 /// 列出所有 remote（name → url）。
 pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
-    let root = store::vault_root();
+    let root = store::sync_root();
     if !git::is_git_repo(&root) {
         return Ok(vec![]);
     }
@@ -394,7 +396,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // HTTPS → SSH 自动改写
     let effective_url = maybe_rewrite_to_ssh(remote_url)?;
 
-    let root = store::vault_root();
+    let root = store::sync_root();
     // 确保父目录存在
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent)
@@ -402,7 +404,8 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
             .map_err(SyncError::Other)?;
     }
 
-    // 1. git clone（clone 会创建 .vault 目录；用 effective_url 走 SSH）
+    // 1. git clone（clone 会创建 .sync 目录；用 effective_url 走 SSH）
+    // clone 后 .sync/ 是 git repo 根，包含远程仓库的所有内容（如 vault/ 子目录）
     git::git_clone(&effective_url, &root)?;
 
     // 2. 读 meta.json → upsert vault_meta
@@ -430,6 +433,24 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
     for c in &ciphers {
+        // 从文件读出的 cipher——算 md5 填 sync_md5（保证与 row 版本一致）
+        let row = VaultCipher {
+            id: c.id.clone(),
+            folder_id: c.folder_id.clone(),
+            favorite: c.favorite,
+            atype: c.atype,
+            name: c.name.clone(),
+            notes: c.notes.clone(),
+            data: c.data.clone(),
+            fields: c.fields.clone(),
+            password_history: c.password_history.clone(),
+            reprompt: c.reprompt,
+            deleted_at: None, // 文件读出的 cipher 未软删
+            sync_md5: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let md5 = crate::sync::fingerprint::cipher_md5(&row);
         let input = VaultCipherInput {
             id: c.id.clone(),
             folder_id: c.folder_id.clone(),
@@ -441,13 +462,15 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
             fields: c.fields.clone(),
             password_history: c.password_history.clone(),
             reprompt: c.reprompt,
+            sync_md5: Some(md5),
         };
         // upsert：先 try update，失败则 insert
         upsert_cipher(&input)?;
     }
     for f in &folders {
-        // upsert folder：先 try update name，失败则 insert
-        upsert_folder(&f.id, &f.name)?;
+        // upsert folder：先 try update name，失败则 insert。sort_order 用 0（默认）
+        let md5 = crate::sync::fingerprint::folder_md5_from_fields(&f.id, &f.name, 0);
+        upsert_folder(&f.id, &f.name, &md5)?;
     }
 
     log::info!(
@@ -472,16 +495,16 @@ fn upsert_cipher(input: &VaultCipherInput) -> Result<(), SyncError> {
 }
 
 /// Upsert folder——存在则 rename，不存在则 insert。
-fn upsert_folder(id: &str, encrypted_name: &str) -> Result<(), SyncError> {
+fn upsert_folder(id: &str, encrypted_name: &str, sync_md5: &str) -> Result<(), SyncError> {
     // infra 没有直接 upsert folder——用 list 检查存在性
     let exists = db::list_vault_folders()
         .map_err(SyncError::Other)?
         .iter()
         .any(|f| f.id == id);
     if exists {
-        db::update_vault_folder_name(id, encrypted_name).map_err(SyncError::Other)?;
+        db::update_vault_folder_name(id, encrypted_name, sync_md5).map_err(SyncError::Other)?;
     } else {
-        db::insert_vault_folder(id, encrypted_name).map_err(SyncError::Other)?;
+        db::insert_vault_folder(id, encrypted_name, sync_md5).map_err(SyncError::Other)?;
     }
     Ok(())
 }
@@ -509,7 +532,7 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         return Err(SyncError::GitNotInstalled);
     }
 
-    let root = store::vault_root();
+    let root = store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -557,17 +580,17 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 4. push 阶段：SQLite → 文件系统
     let pushed = push_to_files()?;
 
-    // 5. commit
-    let root = store::vault_root();
+    // 5. commit（无变化时 git_commit 返 false，不阻断流程）
+    let root = store::sync_root();
     git::git_add_all(&root)?;
-    let committed = git::git_commit(&root, "sync")?;
+    let _committed = git::git_commit(&root, "sync")?;
 
-    // 6. push to all remotes（用户自定义的任意 remote）
+    // 6. push to all remotes（无条件 push——git push 在零变化时返 Everything up-to-date，幂等无副作用）
     // 首次推送用 -u 设 upstream；后续普通 push
-    if committed {
+    {
         let remotes = git::git_remote_list(&root).unwrap_or_default();
         if remotes.is_empty() {
-            log::warn!("[sync] 本地有 commit 但无 remote 配置——跳过 push");
+            log::warn!("[sync] 无 remote 配置——跳过 push");
         }
         for (name, _url) in &remotes {
             let push_result = if is_first_push {
@@ -586,10 +609,10 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         pulled,
         pushed,
         deleted: 0,
-        message: if committed {
-            format!("同步完成：拉取 {} 条，推送 {} 条", pulled, pushed)
+        message: if is_first_push {
+            "首次同步完成，已推送到远程".to_string()
         } else {
-            "已是最新，无需同步".to_string()
+            format!("同步完成：拉取 {} 条，推送 {} 条", pulled, pushed)
         }
     };
     log::info!("[sync] sync_now 完成：{}", report.message);
@@ -620,6 +643,8 @@ fn pull_from_files() -> Result<usize, SyncError> {
         if needs_update {
             if let Ok(cipher_file) = store::read_cipher_file(uuid) {
                 let row = cipher_file.to_vault_cipher();
+                // 从文件读出的 cipher 算 md5 填 sync_md5
+                let md5 = crate::sync::fingerprint::cipher_md5(&row);
                 let input = VaultCipherInput {
                     id: row.id.clone(),
                     folder_id: row.folder_id.clone(),
@@ -631,6 +656,7 @@ fn pull_from_files() -> Result<usize, SyncError> {
                     fields: row.fields.clone(),
                     password_history: row.password_history.clone(),
                     reprompt: row.reprompt,
+                    sync_md5: Some(md5),
                 };
                 upsert_cipher(&input)?;
                 count += 1;
@@ -642,7 +668,12 @@ fn pull_from_files() -> Result<usize, SyncError> {
     for (uuid, _entry) in &remote_outline.folders {
         if !db_folder_ids.contains(uuid.as_str()) {
             if let Ok(folder_file) = store::read_folder_file(uuid) {
-                upsert_folder(&folder_file.id, &folder_file.encrypted_name)?;
+                let md5 = crate::sync::fingerprint::folder_md5_from_fields(
+                    &folder_file.id,
+                    &folder_file.encrypted_name,
+                    0,
+                );
+                upsert_folder(&folder_file.id, &folder_file.encrypted_name, &md5)?;
                 count += 1;
             }
         }
@@ -709,53 +740,20 @@ fn push_to_files() -> Result<usize, SyncError> {
     let ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
     let folders = db::list_vault_folders().map_err(SyncError::Other)?;
 
-    // 读旧 outline 对比 sha——算实际变更数
-    let old_outline = store::read_outline_file().unwrap_or_default();
-
-    // 全量写文件系统（cipher 数量通常 < 1000，全量写毫秒级）
-    let new_outline = store::export_all_to_files(&meta, &ciphers, &folders)?;
-
-    // 对比新旧 outline——sha 不同（含新增）算变更
-    let changed = count_outline_changes(&old_outline, &new_outline);
+    // 增量导出——只写 sync_md5 变化的文件，删 SQLite 无的。
+    // 返实际变更文件数（不是总数），SyncReport 据此显示「推送 N 条」。
+    let (_new_outline, changed) = store::incremental_export(&meta, &ciphers, &folders)?;
     Ok(changed)
-}
-
-/// 对比两个 outline，返 cipher + folder 中 sha 变化（含新增/删除）的条目数。
-fn count_outline_changes(
-    old: &crate::sync::outline::Outline,
-    new: &crate::sync::outline::Outline,
-) -> usize {
-    let mut count = 0;
-    // ciphers：新增 or sha 变
-    for (uuid, entry) in &new.ciphers {
-        match old.ciphers.get(uuid) {
-            None => count += 1, // 新增
-            Some(old_entry) if old_entry.sha != entry.sha => count += 1, // sha 变
-            _ => {}
-        }
-    }
-    // 删除的也算（旧有新无）
-    count += old.ciphers.keys().filter(|k| !new.ciphers.contains_key(*k)).count();
-    // folders 同
-    for (uuid, entry) in &new.folders {
-        match old.folders.get(uuid) {
-            None => count += 1,
-            Some(old_entry) if old_entry.sha != entry.sha => count += 1,
-            _ => {}
-        }
-    }
-    count += old.folders.keys().filter(|k| !new.folders.contains_key(*k)).count();
-    count
 }
 
 // === T4.9: disable_sync ===
 
-/// 禁用同步——删除 `~/.octopus/.vault/`（保留 SQLite 数据）。
+/// 禁用同步——删除 `~/.octopus/.sync/`（git repo 根 + 所有子目录，保留 SQLite 数据）。
 pub fn disable_sync() -> Result<(), SyncError> {
-    let root = store::vault_root();
+    let root = store::sync_root();
     if root.exists() {
         std::fs::remove_dir_all(&root)
-            .with_context(|| format!("删除 vault 目录失败：{}", root.display()))
+            .with_context(|| format!("删除 sync 目录失败：{}", root.display()))
             .map_err(SyncError::Other)?;
     }
     log::info!("[sync] 同步已禁用，本地 SQLite 数据保留");
@@ -827,83 +825,148 @@ mod tests {
         assert_eq!(maybe_rewrite_to_ssh(local).unwrap(), local);
     }
 
-    // === count_outline_changes（2026-07-21 增补） ===
+    // === 集成测试（2026-07-22 增补）===
+    //
+    // 这些测试是为了抓住设计层面的偏离——之前 bug：
+    // 1. .git 建在 vault/ 而非 .sync/（每个子目录独立 repo）
+    // 2. outline.json 字段名 sha 而非 md5
+    // 3. vault_version 无变化时也 +1
+    // 都是设计偏离，单元测试本应抓住但当时没写。
 
-    use crate::sync::outline::{Outline, OutlineEntry};
+    use octopus_infra::db::VaultMetaInput;
 
-    fn outline_entry(sha: &str) -> OutlineEntry {
-        OutlineEntry {
-            sha: sha.into(),
-            updated_at: "2026-07-21T10:00:00".into(),
+    /// 集成测试 guard——隔离 sync_root + 内存 DB + 预置 vault_meta。
+    struct IntegrationGuard {
+        _tmp: tempfile::TempDir,
+    }
+    impl IntegrationGuard {
+        fn new() -> Self {
+            let tmp = tempfile::TempDir::new().expect("tempdir");
+            let sync_path = tmp.path().join(".sync");
+            store::set_test_vault_root(sync_path);
+
+            // 内存 DB + 预置 vault_meta（不经 setup_vault / Keychain）
+            let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+            octopus_infra::db::set_test_db(conn);
+            let input = VaultMetaInput {
+                kdf_type: 0,
+                kdf_salt: vec![1u8; 32],
+                kdf_iterations: 3,
+                kdf_memory_kib: 65_536,
+                kdf_parallelism: 4,
+                protected_user_vault_key: "v1:dummy-uvk".into(),
+                app_key_local_enc: "v1:dummy-local".into(),
+                app_key_sync_enc: "v1:dummy-sync".into(),
+                security_stamp: "stamp-test".into(),
+                equivalent_domains: "[]".into(),
+                public_key: None,
+                protected_private_key: None,
+            };
+            octopus_infra::db::upsert_vault_meta(&input).expect("setup vault_meta");
+
+            Self { _tmp: tmp }
+        }
+    }
+    impl Drop for IntegrationGuard {
+        fn drop(&mut self) {
+            store::clear_test_vault_root();
         }
     }
 
+    /// enable_sync 后 .git 应在 sync_root（.sync/），不在 vault_dir（.sync/vault/）。
+    /// 回归测试：之前 bug 是 .git 建在 vault/ 下，变成每子目录独立 repo。
     #[test]
-    fn count_changes_zero_when_identical() {
-        // 完全相同 → 0 变更
-        let old = Outline {
-            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
-            ..Default::default()
-        };
-        let new = old.clone();
-        assert_eq!(count_outline_changes(&old, &new), 0);
+    fn enable_sync_creates_git_in_sync_root_not_vault_dir() {
+        let g = IntegrationGuard::new();
+        // enable_sync 需要 git 可用——CI 没装 git 时跳过
+        if !git::check_git_available() {
+            eprintln!("[skip] git not available");
+            return;
+        }
+
+        enable_sync().expect("enable_sync 应成功");
+
+        let sync_root = store::sync_root();
+        let vault_dir = store::vault_dir();
+
+        // .git 必须在 sync_root
+        assert!(
+            sync_root.join(".git").exists(),
+            ".git 必须在 sync_root（{}），实际不存在",
+            sync_root.display()
+        );
+        // .git 不能在 vault_dir（之前的 bug）
+        assert!(
+            !vault_dir.join(".git").exists(),
+            ".git 不能在 vault_dir（{}）——这是之前的 bug，每个子目录变成独立 repo",
+            vault_dir.display()
+        );
+        let _ = g;
     }
 
+    /// enable_sync 后 vault 数据文件应在 .sync/vault/ 下，不在 .sync/ 根。
     #[test]
-    fn count_changes_detects_new_cipher() {
-        let old = Outline::default();
-        let new = Outline {
-            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
-            ..Default::default()
-        };
-        assert_eq!(count_outline_changes(&old, &new), 1);
+    fn enable_sync_writes_vault_data_in_vault_subdir() {
+        let g = IntegrationGuard::new();
+        if !git::check_git_available() {
+            eprintln!("[skip] git not available");
+            return;
+        }
+
+        enable_sync().expect("enable_sync");
+
+        let sync_root = store::sync_root();
+        let vault_dir = store::vault_dir();
+
+        // meta.json / outline.json 在 vault_dir 下
+        assert!(vault_dir.join("meta.json").exists(), "meta.json 应在 vault_dir 下");
+        assert!(vault_dir.join("outline.json").exists(), "outline.json 应在 vault_dir 下");
+        // meta.json / outline.json 不在 sync_root 根
+        assert!(!sync_root.join("meta.json").exists(), "meta.json 不能在 sync_root 根");
+        assert!(!sync_root.join("outline.json").exists(), "outline.json 不能在 sync_root 根");
+        let _ = g;
     }
 
+    /// outline.json 序列化的字段名是 `md5` + `updated_ms`，不是 `sha` + `updated_at`。
+    /// 回归测试：之前字段名歧义（sha 值是 md5），用户反馈后改正。
+    ///
+    /// 不走 enable_sync（空 DB 时 outline 是空 object 无法验证字段名）——直接
+    /// 构造一个含 cipher 的 outline 序列化，检查字段名。
     #[test]
-    fn count_changes_detects_modified_cipher() {
-        let old = Outline {
-            ciphers: [("c1".into(), outline_entry("sha-old"))].into_iter().collect(),
-            ..Default::default()
-        };
-        let new = Outline {
-            ciphers: [("c1".into(), outline_entry("sha-new"))].into_iter().collect(),
-            ..Default::default()
-        };
-        assert_eq!(count_outline_changes(&old, &new), 1);
-    }
+    fn outline_json_uses_md5_and_updated_ms_field_names() {
+        use crate::sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
 
-    #[test]
-    fn count_changes_detects_deleted_cipher() {
-        let old = Outline {
-            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
-            ..Default::default()
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::from([(
+                "uuid-1".to_string(),
+                OutlineEntry {
+                    md5: "abc123".to_string(),
+                    updated_ms: 1234567890,
+                },
+            )]),
+            folders: BTreeMap::new(),
         };
-        let new = Outline::default();
-        assert_eq!(count_outline_changes(&old, &new), 1);
-    }
+        let json = serde_json::to_string(&outline).expect("serialize");
 
-    #[test]
-    fn count_changes_mixed_cipher_and_folder() {
-        let old: Outline = Outline {
-            ciphers: [
-                ("c1".into(), outline_entry("sha-old")),
-                ("c2-deleted".into(), outline_entry("sha2")),
-            ]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        };
-        let new: Outline = Outline {
-            ciphers: [
-                ("c1".into(), outline_entry("sha-new")), // 修改
-                ("c3-new".into(), outline_entry("sha3")), // 新增
-            ]
-            .into_iter()
-            .collect(),
-            folders: [("f1".into(), outline_entry("sha-f1"))].into_iter().collect(),
-            ..Default::default()
-        };
-        // c1 修改 + c3 新增 + c2 删除 + f1 新增 = 4
-        assert_eq!(count_outline_changes(&old, &new), 4);
+        // 字段名必须是 md5 + updated_ms（不是 sha + updated_at）
+        assert!(
+            json.contains("\"md5\""),
+            "outline.json 应含 \"md5\" 字段，实际：{}", json
+        );
+        assert!(
+            json.contains("\"updated_ms\""),
+            "outline.json 应含 \"updated_ms\" 字段，实际：{}", json
+        );
+        assert!(
+            !json.contains("\"sha\""),
+            "outline.json 不应含旧字段名 \"sha\"，实际：{}", json
+        );
+        assert!(
+            !json.contains("\"updated_at\""),
+            "outline.json 不应含旧字段名 \"updated_at\"，实际：{}", json
+        );
     }
 }

@@ -578,7 +578,6 @@ mod tests {
         assert!(!committed2, "无变化时应返 false");
     }
 
-    #[test]
     /// `git_merge_ff` 检测空 upstream——首次推送场景。
     /// 模拟：本地 commit 后 merge --ff-only origin/main（remote 不存在 main）。
     #[test]
@@ -603,6 +602,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn git_status_detects_changes() {
         if !has_git() {
             return;
