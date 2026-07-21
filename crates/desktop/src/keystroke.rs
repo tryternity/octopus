@@ -114,21 +114,38 @@ pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> R
 /// 代价：osascript 进程启动 ~200ms（vs CGEvent < 5ms）。
 ///
 /// `key_char` 是按键字符（如 "c" / "v"），`using` 是修饰键（如 "command down"）。
+///
+/// **2026-07-21 调试**：日志显示连续微信操作时 keystroke 有时不触发 changeCount
+/// 递增（926→926 失败 vs 923→925 成功，+2 说明一次成功触发写入两次）。
+/// 加返回值日志 + frontmost process name 输出，便于定位是否 keystroke 根本没投递。
 #[cfg(target_os = "macos")]
 pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
     use std::process::Command;
+    // 显式指定 frontmost process，并输出 process name + 是否成功投递
     let script = format!(
-        r#"tell application "System Events" to keystroke "{}" using {}"#,
-        key_char, using
+        r#"tell application "System Events"
+            set frontProc to first process whose frontmost is true
+            set procName to name of frontProc
+            keystroke "{key}" using {using}
+            return procName
+        end tell"#,
+        key = key_char, using = using
     );
+    let t0 = std::time::Instant::now();
     let out = Command::new("osascript")
         .args(["-e", &script])
         .output()
         .map_err(|e| anyhow::anyhow!("osascript 启动失败: {}", e))?;
+    let elapsed = t0.elapsed();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("osascript keystroke 失败: {}", stderr);
     }
+    let proc_name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    log::info!(
+        "[osascript] keystroke '{}' using {} → frontmost='{}', elapsed={:?}",
+        key_char, using, proc_name, elapsed
+    );
     Ok(())
 }
 
