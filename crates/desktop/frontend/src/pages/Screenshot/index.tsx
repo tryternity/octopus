@@ -262,11 +262,16 @@ export default function Screenshot() {
           ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
         }
 
-        // 尺寸标注（左上角或左下角，取决于工具栏位置）
+        // 尺寸标注位置：避免与工具栏重叠。
+        //   工具栏 below → 数字放上方（选区顶部上方）
+        //   工具栏 above → 数字放下方（选区底部下方）
+        //   工具栏 inside（选区内部底部）→ 数字放上方（选区顶部，远离工具栏）
         const label = `${Math.round(w * dpr)} × ${Math.round(h * dpr)}`;
         ctx.font = "12px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
-        const labelY = toolbarBelow ? (y - 24) : (y + h + 6);
+        const labelY = (toolbarBelow || (!toolbarBelow && !toolbarAbove))
+          ? (y - 24)  // 工具栏 below 或 inside → 数字在上方
+          : (y + h + 6);  // 工具栏 above → 数字在下方
         const labelVisibleY = Math.max(0, labelY);
         ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
         ctx.fillRect(x, labelVisibleY, tw + 8, 18);
@@ -727,18 +732,37 @@ export default function Screenshot() {
     return { x, y, w, h };
   }
 
-  // 工具栏位置：默认选区下方居中，下方空间不够时放上方居中
+  // 工具栏位置：默认选区下方居中，下方空间不够时放上方，上下都不够时放选区内部底部。
+  //
+  // 2026-07-21 fix：全屏截图（sel 覆盖整个窗口）时，下方空间 = innerHeight - (sel.y + sel.h + 8)
+  // 可能为负，上方空间 = sel.y 可能 = 0。原逻辑只考虑上下两选，钳位后工具栏会被推到
+  // 屏幕底部 Dock 区域或顶部菜单栏区域，难以点击。新增第三选「选区内部底部」兜底，
+  // 保证工具栏永远在可见且可点击的位置。
   const belowSpace = sel ? window.innerHeight - (sel.y + sel.h + 8) : 0;
-  const toolbarBelow = sel ? belowSpace >= 44 : true;
+  const aboveSpace = sel ? sel.y : 0;
+  const TOOLBAR_H = 44;
+  const toolbarBelow = sel ? belowSpace >= TOOLBAR_H : true;
+  const toolbarAbove = !toolbarBelow && aboveSpace >= TOOLBAR_H;
+  // 三种放置位置的 y 坐标：
+  //   below: 选区下方 8px 处
+  //   above: 选区上方（工具栏高度 + 4px 间距）
+  //   inside: 选区内部底部（留 8px 内边距，工具栏覆盖在选区上——选区本身被遮一小条
+  //          但工具栏可点击。比落在屏幕外/Dock 上好得多）
   const toolbarY = sel
-    ? Math.max(0, Math.min(
-        toolbarBelow ? sel.y + sel.h + 8 : sel.y - 48,
-        window.innerHeight - 44
-      ))
+    ? toolbarBelow
+      ? Math.min(sel.y + sel.h + 8, window.innerHeight - TOOLBAR_H)
+      : toolbarAbove
+        ? sel.y - TOOLBAR_H - 4
+        : Math.max(sel.y, sel.y + sel.h - TOOLBAR_H - 8)  // 选区内部底部
     : 0;
   // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响
   const toolbarCenterX = sel ? sel.x + sel.w / 2 : 0;
-  const popoverY = toolbarY + 44;  // 浮窗始终在工具栏下方
+  // 浮窗默认在工具栏下方。若工具栏在"选区内部底部"或屏幕底部，浮窗往下会超出屏幕，
+  // 此时改放工具栏上方（toolbarY - 浮窗高度）。浮窗实际高度由内容决定，这里用 200 估算
+  // （ToolPropsPopover 含色板/滑块，实测 < 200px），由 popover 组件内部 clamp 兜底。
+  const popoverY = toolbarBelow || toolbarAbove
+    ? toolbarY + 44
+    : Math.max(0, toolbarY - 200);  // 工具栏在选区内部时浮窗往上弹
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
