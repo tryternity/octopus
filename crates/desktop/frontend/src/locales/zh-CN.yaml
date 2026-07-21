@@ -607,8 +607,10 @@ settings:
     deleted: 已删除
     openFailed: "打开失败："
     clickToCopy: 单击复制
+    clickToPaste: 单击粘贴
     copied: 已复制
     copy: 复制
+    paste: 粘贴
     openLink: 打开链接
     edit: 编辑
     preview: 预览

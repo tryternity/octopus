@@ -77,15 +77,20 @@ function ClipboardItemRow({
     }
   };
 
-  // 单击：选中条目（不复制）
+  // 单击：选中条目 + 复制（copy_clipboard_item，不隐藏浮窗、不触发粘贴）。
+  // 2026-07-21：原仅选中，现加复制——单击即拷贝到剪贴板，配合图标按钮改为粘贴。
   const handleClick = () => {
     if (deletePending) return;
     onSelect(index);
+    // 复制到剪贴板 + 动效
+    invoke("copy_clipboard_item", { id: item.id }).then(() => {
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(console.error);
   };
 
-  // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item，
-  // 后端串起 hide clipboard_window + focus_tracker.restore_focus + simulate_paste）。
-  // 仅浮窗双击走此路；显式「复制」按钮仍调 copy_clipboard_item（不隐藏窗口、不触发粘贴）。
+  // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item）。
   const handleDoubleClick = async () => {
     try {
       await invoke("paste_clipboard_item", { id: item.id });
@@ -108,15 +113,13 @@ function ClipboardItemRow({
     }
   };
 
-  // 单击左侧类型图标 → 复制（copy_clipboard_item，不隐藏浮窗、不触发粘贴）。
-  // 触效：icon 放大回弹 + 闪绿；右侧弹「{t("clipboard.copied")}」气泡 1.5s。
-  const handleCopy = async (e: React.MouseEvent) => {
+  // 图标按钮（左侧类型图标 + 右侧复制图标）→ 粘贴（paste_clipboard_item，
+  // 跟双击一样：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴到前台应用光标处）。
+  // 2026-07-21：原调 copy_clipboard_item（仅拷贝不粘贴），现改为 paste（回写到应用）。
+  const handlePaste = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await invoke("copy_clipboard_item", { id: item.id });
-      setCopied(true);
-      if (copyTimer.current) clearTimeout(copyTimer.current);
-      copyTimer.current = setTimeout(() => setCopied(false), 1500);
+      await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }
@@ -174,13 +177,13 @@ function ClipboardItemRow({
         <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-voice/50" />
       )}
 
-      {/* 类型图标(单击复制)：左列跨两行垂直居中、放大一档(w-4→w-5)，作为条目「头像」。
-          外层 flex = 图标列 + 右侧两行内容栏。 */}
+      {/* 类型图标(单击粘贴)：左列跨两行垂直居中、放大一档(w-4→w-5)，作为条目「头像」。
+          2026-07-21：图标按钮从「复制」改为「粘贴」（回写到应用光标处），单击条目改为复制。 */}
       <button
         type="button"
-        onClick={handleCopy}
+        onClick={handlePaste}
         onDoubleClick={(e) => e.stopPropagation()}
-        title={t("clipboard.clickToCopy")}
+        title={t("clipboard.clickToPaste")}
         className="relative flex-shrink-0 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
@@ -225,8 +228,8 @@ function ClipboardItemRow({
               "p-0.5 transition-opacity hover:scale-110",
               copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
             )}
-            onClick={handleCopy}
-            title={t("clipboard.copy")}
+            onClick={handlePaste}
+            title={t("clipboard.paste")}
           >
             {copied ? (
               <Check className="w-3.5 h-3.5 text-emerald-500" />

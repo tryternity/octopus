@@ -607,8 +607,10 @@ settings:
     deleted: Deleted
     openFailed: "Open failed:"
     clickToCopy: Click to copy
+    clickToPaste: Click to paste
     copied: Copied
     copy: Copy
+    paste: Paste
     openLink: Open Link
     edit: Edit
     preview: Preview
