@@ -8,6 +8,7 @@
 //! - 密码健康检查（health/）
 //! - Bitwarden 导入（importer/）
 //! - TOTP、解锁态管理
+//! - **Git 同步（sync/，2026-07-21 Phase 1）**——GitHub/Gitee private repo 多设备同步
 //!
 //! 依赖方向：infra ← vault ← desktop
 
@@ -28,3 +29,4 @@ pub mod migrate;
 pub mod meta_lock;
 pub mod validate;
 pub mod attempt_guard;
+pub mod sync;
