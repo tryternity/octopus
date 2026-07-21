@@ -63,6 +63,28 @@ pub fn mel_filterbank(
     filters
 }
 
+/// 为 mel filterbank 预计算每个 bin 的非零频率区间 `[start, end)`。
+///
+/// mel 三角滤波器高度稀疏——每行（如 257 个频率点）只有 ~3-4 个连续非零 bin，
+/// 其余 ~99% 是 0。原始扫描 `for k in 0..n_freqs { sum += power[k] * fb_row[k]; }`
+/// 会做大量无效乘 0。
+///
+/// 预计算 `(start, end)` 后扫描改为 `for k in start..end`，跳过 ~90% 无效乘加。
+/// 区间内全非零（三角滤波在 `[left_hz, right_hz]` 内单调升再降，无内部空洞）。
+///
+/// 2026-07-21 P0-8：抽取自 qwen3_asr.rs，统一 fbank.rs / paraformer.rs /
+/// streaming_paraformer.rs 复用。qwen3_asr.rs 原有实现保留（已稳定运行）。
+pub fn mel_filterbank_ranges(filters: &[Vec<f64>]) -> Vec<(usize, usize)> {
+    filters
+        .iter()
+        .map(|row| {
+            let start = row.iter().position(|&v| v != 0.0).unwrap_or(row.len());
+            let end = row.len() - row.iter().rev().position(|&v| v != 0.0).unwrap_or(row.len());
+            (start, end)
+        })
+        .collect()
+}
+
 // ── LFR (Low Frame Rate) stacking ──
 
 /// LFR 堆叠：将相邻 window_size 帧拼接为单帧，步进 window_shift。

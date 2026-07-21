@@ -27,6 +27,11 @@ pub(crate) static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
     // sherpa-onnx 默认 high_freq = -400（即 Nyquist - 400 = 7600 Hz）
     feature::mel_filterbank(FBANK_NUM_BINS, FBANK_FFT_SIZE, FBANK_SAMPLE_RATE, -400.0)
 });
+/// P0-8（2026-07-21）：mel filterbank 稀疏化——预计算每行非零 [start, end) 区间，
+/// mel 滤波内层循环只扫该区间（vs 全 257 freqs），跳过 ~90% ×0 无效乘加。
+/// 范式同 qwen3_asr.rs / fbank.rs。
+pub(crate) static MEL_FILTERBANK_RANGE: Lazy<Vec<(usize, usize)>> =
+    Lazy::new(|| feature::mel_filterbank_ranges(&MEL_FILTERBANK));
 // 预规划的 512 点正向 FFT — 所有 fbank 提取共用，避免每次特征计算重复规划（堆分配 + twiddle 计算）。
 // 对流式热路径（StreamingParaformer）尤为关键：每个 chunk 都会调用。
 pub(crate) static FBANK_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
@@ -511,11 +516,12 @@ pub(crate) fn compute_fbank(
             power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
         }
 
-        // 6. Mel 滤波器组 + log
+        // 6. Mel 滤波器组 + log（稀疏：只扫每行非零 [start, end) 区间，P0-8）
         for mi in 0..FBANK_NUM_BINS {
             let mut sum = 0.0f64;
             let fb_row = &MEL_FILTERBANK[mi];
-            for k in 0..n_freqs {
+            let (start, end) = MEL_FILTERBANK_RANGE[mi];
+            for k in start..end {
                 sum += power_spectrum[k] * fb_row[k];
             }
             fbank_data[fi * FBANK_NUM_BINS + mi] = (sum as f32 + 1e-10).ln();

@@ -9,7 +9,7 @@ use crate::config;
 use crate::paraformer::{
     apply_lfr, decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
     FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS, LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE,
-    MEL_FILTERBANK, POVEY_WINDOW,
+    MEL_FILTERBANK, MEL_FILTERBANK_RANGE, POVEY_WINDOW,
 };
 
 // ── Streaming chunk parameters (from sherpa-onnx) ──
@@ -363,7 +363,8 @@ impl StreamingParaformer {
             for mi in 0..FBANK_NUM_BINS {
                 let mut sum = 0.0f64;
                 let fb_row = &MEL_FILTERBANK[mi];
-                for k in 0..n_freqs {
+                let (start, end) = MEL_FILTERBANK_RANGE[mi];
+                for k in start..end {
                     sum += power_spectrum[k] * fb_row[k];
                 }
                 self.fbank_cache.push((sum as f32 + 1e-10).ln());
