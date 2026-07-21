@@ -1026,7 +1026,7 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
 | INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
 | INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
-| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。**2026-07-20 e2e 修复**：autotype_login_with_mode 内 AppleScript activate 前台 app 复用此校验 |
+| INV-A9 | ~~`activate_app(bundle_id)` 调用前必须 `validate_bundle_id`~~（activate_app 已于 2026-07-22 删除——dead code）。**`validate_bundle_id` 仍保留**：被 `autotype_login_with_mode` 内的 osascript activate 前台 app 复用（白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入） |
 | INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password` / `vault_copy_username`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通。**例外**：`vault_copy_username` 不强制 reprompt（username 通常不敏感） |
 | INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → ~~fallback 列出最近 20 条~~（2026-07-21 安全加固改为空列表 + 搜索框）。URL 存 `SharedPickerUrlCache` 共享状态 |
 | INV-A12 | **URL 检测失败时不返回 fallback 列表**（2026-07-21 安全加固）：原 `vault_detect_and_match` URL 检测失败时返回最近 20 条 cipher 有钓鱼风险——用户可能"顺手"误选密码注入到钓鱼站。现返回空列表，用户通过搜索框主动搜索（`vault_search_ciphers` 全量模糊匹配 name/username/URIs）。合法场景（桌面应用/不支持浏览器）仍可通过搜索找到密码 |
