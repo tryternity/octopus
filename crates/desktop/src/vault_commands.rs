@@ -1026,7 +1026,7 @@ pub fn register_vault_autotype_shortcut(
                     let _ = tauri::WebviewWindowBuilder::new(
                         &app_handle,
                         "vault_picker_window",
-                        tauri::WebviewUrl::App("index.html".into()),
+                        tauri::WebviewUrl::App("vault-picker.html".into()),
                     )
                     .title("Vault Auto-Type")
                     // 初始 400×200（locked/uninit 紧凑视图）。list 视图内容多时前端

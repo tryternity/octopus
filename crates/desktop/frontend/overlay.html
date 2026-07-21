@@ -3,16 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>octopus</title>
+    <title>octopus-overlay</title>
     <script>
-      // 阻断式主题恢复 + 背景色注入——在 body 解析前执行。
-      // bg 参数是裸 hex（如 "2e3440"），由 Rust 建窗时从主题配置注入。
-      // 直接设 #hex 而非 var(--color-background)——不依赖 CSS 加载，首帧即有色。
+      // 阻断式主题恢复（透明窗口，无 bg 参数）。
       try {
         var themeId = localStorage.getItem("octopus-theme-id");
         if (themeId) {
           document.documentElement.setAttribute("data-theme", themeId);
-          // 自定义主题：从 localStorage 恢复 CSS 规则
           var builtin = ["light", "glass-dark", "nord", "raycast"];
           if (builtin.indexOf(themeId) === -1) {
             var css = localStorage.getItem("octopus-custom-theme-css");
@@ -24,9 +21,6 @@
             }
           }
         }
-        // 背景色：仅从 URL bg 参数读取裸 hex（非透明窗口由 Rust 注入）。
-        // 透明窗口（result/clipboard/screenshot）无 bg 参数——不设背景色，保持透明。
-        // 不用 localStorage 兜底——透明窗口会误取到上次非透明窗口的缓存，破坏穿透。
         var params = new URLSearchParams(window.location.search);
         var bg = params.get("bg");
         if (bg) {
@@ -38,6 +32,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <script type="module" src="/src/entries/overlay-main.tsx"></script>
   </body>
 </html>

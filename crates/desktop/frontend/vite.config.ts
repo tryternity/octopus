@@ -27,13 +27,20 @@ const config = {
     emptyOutDir: true,
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
-      // Multi-entry：screenshot.html 是截图窗口独立入口，仅含截图依赖闭包
-      // （~200KB），与主入口 index.html（~1.27MB，含 CodeMirror/markdown-it/
-      // lucide-react）分离。Rolldown 自动按 import 闭包分析共享 chunk
-      // （react/react-dom/tauri-api 等两 entry 共用部分会自动 dedupe 到共享 chunk）。
+      // Multi-entry 架构：每窗口独立 HTML + main.tsx，依赖图自然隔离。
+      // 设计原则：产物边界 = 依赖边界 = 职责边界。
+      // Rolldown 自动按 import 闭包 dedupe 共享 chunk（react-vendor / tauri-vendor
+      // / codemirror / markdown / lucide 等被多 entry 引用的部分自动落到共享 chunk）。
       input: {
-        main: "index.html",
         screenshot: "screenshot.html",
+        result: "result.html",
+        settings: "settings.html",
+        clipboard: "clipboard.html",
+        "compact-editor": "compact-editor.html",
+        "action-bar": "action-bar.html",
+        overlay: "overlay.html",
+        "vault-picker": "vault-picker.html",
+        "password-generator": "password-generator.html",
       },
     },
   },

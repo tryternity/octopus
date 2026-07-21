@@ -36,7 +36,8 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     let builder = tauri::WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::default(),
+        // 独立 entry（multi-entry 架构）：result.html 仅含 Result 依赖闭包
+        tauri::WebviewUrl::App("result.html".into()),
     )
     .title("Result")
     .inner_size(RESULT_WIDTH, RESULT_HEIGHT)

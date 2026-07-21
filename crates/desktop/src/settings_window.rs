@@ -64,11 +64,11 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         *PENDING_PAGE.lock() = Some(page);
     }
 
-    // 背景色 hex URL 注入——index.html 首帧即有色，零 CSS 依赖
+    // 背景色 hex URL 注入——settings.html 首帧即有色，零 CSS 依赖
     let url = if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
-        format!("index.html?bg={}", bg)
+        format!("settings.html?bg={}", bg)
     } else {
-        "index.html".to_string()
+        "settings.html".to_string()
     };
 
     let _ = WebviewWindowBuilder::new(

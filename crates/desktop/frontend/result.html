@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>octopus-result</title>
+    <script>
+      // 阻断式主题恢复 + 背景色注入——在 body 解析前执行（与 index.html 同范式）。
+      // result 是透明窗口，无 bg 参数（保持透明）。
+      try {
+        var themeId = localStorage.getItem("octopus-theme-id");
+        if (themeId) {
+          document.documentElement.setAttribute("data-theme", themeId);
+          var builtin = ["light", "glass-dark", "nord", "raycast"];
+          if (builtin.indexOf(themeId) === -1) {
+            var css = localStorage.getItem("octopus-custom-theme-css");
+            if (css) {
+              var s = document.createElement("style");
+              s.id = "octopus-custom-theme";
+              s.textContent = css;
+              document.head.appendChild(s);
+            }
+          }
+        }
+        // 非透明窗口（settings/compact_editor/vault_picker/password_generator）
+        // 由 Rust 建窗时注入 bg=hex 参数。透明窗口（result/clipboard/action_bar/overlay）
+        // 无 bg 参数——不设背景色，保持透明（不读 localStorage 兜底以避免穿透）。
+        var params = new URLSearchParams(window.location.search);
+        var bg = params.get("bg");
+        if (bg) {
+          var color = bg.startsWith("#") || bg.startsWith("rgb") ? bg : "#" + bg;
+          document.documentElement.style.backgroundColor = color;
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/entries/result-main.tsx"></script>
+  </body>
+</html>

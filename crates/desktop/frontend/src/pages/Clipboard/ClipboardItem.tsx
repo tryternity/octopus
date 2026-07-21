@@ -6,7 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/clipboard";
-import SaveImagePopover from "./SaveImagePopover";
+import SaveImagePopover from "@/components/SaveImagePopover";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 function ClipboardItemRow({

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { X } from "lucide-react";
 import { useT } from "@/lib/i18n";
-import PasswordGenerator from "./PasswordGenerator";
+import PasswordGenerator from "@/components/PasswordGenerator";
 
 /**
  * PasswordGeneratorModal —— 密码生成器 modal 外壳（外壳 A）。

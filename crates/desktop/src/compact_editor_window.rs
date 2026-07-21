@@ -105,7 +105,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     // 前端 mount 后经 get_pending_compact_tabs 批量拉取含 text 的完整数据。
     let mut url = if let Some(p) = pending {
         let mut u = format!(
-            "index.html?itemId={}&source={}&itemType={}",
+            "compact-editor.html?itemId={}&source={}&itemType={}",
             p.item_id, p.source, p.item_type
         );
         // 图片类型注入原始尺寸——前端 ImagePreview 首帧即有正确宽高，消除布局突变
@@ -114,9 +114,9 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         }
         u
     } else {
-        "index.html".to_string()
+        "compact-editor.html".to_string()
     };
-    // 背景色 hex 注入——index.html <head> 脚本同步设为 #hex，零 CSS 依赖消除白屏
+    // 背景色 hex 注入——compact-editor.html <head> 脚本同步设为 #hex，零 CSS 依赖消除白屏
     if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
         let sep = if url.contains('?') { "&" } else { "?" };
         url.push_str(&format!("{}bg={}", sep, bg));
