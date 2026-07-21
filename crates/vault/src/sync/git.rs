@@ -163,10 +163,25 @@ pub fn git_fetch_all(path: &Path) -> Result<(), SyncError> {
     Ok(())
 }
 
+/// `git merge --ff-only <ref>` 的结果——区分 3 种情况让上层精确处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeFfResult {
+    /// 成功 fast-forward（远程领先本地，已合并到本地）。
+    FastForwarded,
+    /// 不能 ff——远程与本地分叉，需 rebase 兜底。
+    CannotFastForward,
+    /// upstream 不存在——远程仓库是空的（首次推送场景）。
+    /// 跳过 merge/rebase，直接 push -u 设 upstream。
+    NoUpstream,
+}
+
 /// `git merge --ff-only <ref>`——fast-forward 合并。
 ///
-/// 返 Ok(true) 成功 ff，Ok(false) 不能 ff（需 rebase）。
-pub fn git_merge_ff(path: &Path, ref_name: &str) -> Result<bool, SyncError> {
+/// 返 [`MergeFfResult`] 让上层区分 3 种情况：
+/// - `FastForwarded`：远程领先，已合并到本地
+/// - `CannotFastForward`：分叉，上层走 rebase
+/// - `NoUpstream`：远程无此分支（首次推送场景），上层跳过 merge 直接 push -u
+pub fn git_merge_ff(path: &Path, ref_name: &str) -> Result<MergeFfResult, SyncError> {
     let result = run_git_allow_codes(
         path,
         &["merge", "--ff-only", ref_name],
@@ -174,8 +189,21 @@ pub fn git_merge_ff(path: &Path, ref_name: &str) -> Result<bool, SyncError> {
         &[], // ff-only 失败时 stderr 含 "Not possible to fast-forward"
     );
     match result {
-        Ok(_) => Ok(true),
-        Err(SyncError::GitError(_)) => Ok(false), // 不能 ff——非致命，让上层走 rebase
+        Ok(_) => Ok(MergeFfResult::FastForwarded),
+        Err(SyncError::GitError(stderr)) => {
+            let lower = stderr.to_lowercase();
+            // "not something we can merge" / "invalid upstream" / "not a valid ref"
+            // 都表示远程没有该分支（首次推送场景）
+            if lower.contains("not something we can merge")
+                || lower.contains("invalid upstream")
+                || lower.contains("not a valid ref")
+                || lower.contains("unknown revision")
+            {
+                Ok(MergeFfResult::NoUpstream)
+            } else {
+                Ok(MergeFfResult::CannotFastForward)
+            }
+        }
         Err(e) => Err(e),
     }
 }
@@ -551,6 +579,30 @@ mod tests {
     }
 
     #[test]
+    /// `git_merge_ff` 检测空 upstream——首次推送场景。
+    /// 模拟：本地 commit 后 merge --ff-only origin/main（remote 不存在 main）。
+    #[test]
+    fn git_merge_ff_returns_no_upstream_when_branch_missing() {
+        if !has_git() {
+            return;
+        }
+        let tmp = init_repo();
+        let path = tmp.path();
+
+        // 本地 commit
+        std::fs::write(path.join("f"), "x").unwrap();
+        git_add_all(path).unwrap();
+        git_commit(path, "init").unwrap();
+
+        // merge --ff-only origin/main（remote 没配过，更没有 main 分支）
+        let result = git_merge_ff(path, "origin/main").expect("merge_ff 不应 Err");
+        assert_eq!(
+            result, MergeFfResult::NoUpstream,
+            "远程无 main 分支应识别为 NoUpstream（首次推送场景），实际：{:?}",
+            result
+        );
+    }
+
     fn git_status_detects_changes() {
         if !has_git() {
             return;

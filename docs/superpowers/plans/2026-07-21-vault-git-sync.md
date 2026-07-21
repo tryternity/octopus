@@ -706,3 +706,45 @@ T8 全部完成（2026-07-21）。vault 测试 230 → 239（新增 9 个：7 �
 T9 全部完成（2026-07-21）。vault 测试 239 → 240（新增 1 个 classify_credentials_required）。0 error 0 warning。
 
 **触发场景**：用户实测报告「点同步后控制台输出 `Username for 'https://github.com':` 然后无限转圈」——根本原因是 sync_now 走 fetch/push 时 git 试图从 TTY 读用户名，但 Tauri 后端无 TTY。
+
+---
+
+## Task 10: 空远程仓库首次推送（2026-07-21 增补）
+
+**目标**：用户在 GitHub/Gitee 新建空仓库（不勾 README）后首次点同步，原流程的 `git merge --ff-only origin/main` 因 `origin/main` 不存在报错。详见 [spec §4.11](../specs/2026-07-21-vault-git-sync-design.md#411-空远程仓库首次推送2026-07-21-增补)。
+
+**Files:**
+- `crates/vault/src/sync/git.rs`（`MergeFfResult` enum + `git_merge_ff` 签名变更）
+- `crates/vault/src/sync/engine.rs`（sync_now 分流 + 首次 push -u）
+
+### Steps
+
+- [x] **10.1 MergeFfResult enum**
+  - 替换 `git_merge_ff` 返回类型从 `Result<bool, _>` → `Result<MergeFfResult, _>`
+  - 3 个变体：`FastForwarded` / `CannotFastForward` / `NoUpstream`
+  - NoUpstream 判关键字：`not something we can merge` / `invalid upstream` / `not a valid ref` / `unknown revision`
+
+- [x] **10.2 sync_now 分流**
+  - `NoUpstream` → 设 `is_first_push = true`，跳过 merge/rebase
+  - `FastForwarded` → 继续 pull/push 正常流程
+  - `CannotFastForward` → rebase 兜底（原逻辑）
+
+- [x] **10.3 首次 push 用 -u**
+  - `is_first_push = true` 时调 `git_push_set_upstream`（`git push -u origin main`）
+  - 设完 upstream 后后续 sync_now 走正常 `git_push`
+
+- [x] **10.4 测试**
+  - `git_merge_ff_returns_no_upstream_when_branch_missing`：本地 init + commit + merge 不存在的 origin/main → 断言 NoUpstream
+
+### 关键设计决策
+
+1. **错误信号即状态信号**：让 git 自然报错后从 stderr 判断状态——比 fetch 前 ls-remote 预检测简单（少一次网络往返）
+2. **enum 而非 bool**：bool 只能区分 ff vs 不能 ff，无法表达 NoUpstream 三态——必须 enum
+3. **首次 push 用 -u**：符合 git 习惯，后续 sync_now 走正常 push
+4. **不预检测**：直接试 merge 是最自然的状态探测——fetch 后 origin/main ref 已在本地（如果存在）
+
+### 实施记录
+
+T10 全部完成（2026-07-21）。vault 测试 240 → 241 pass（新增 1 个 NoUpstream 测试）。0 error 0 warning。
+
+**触发场景**：用户实测报告「同步错误：git 错误：fatal: invalid upstream 'origin/main'。我只是在远程建立了一个空仓库，还没有任何分支，需要支持这种场景」。

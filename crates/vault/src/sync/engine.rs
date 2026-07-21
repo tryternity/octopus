@@ -485,21 +485,35 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 1. fetch
     git::git_fetch_all(&root)?;
 
-    // 2. merge --ff-only
+    // 2. merge --ff-only（区分 3 种结果）
+    // - FastForwarded：远程领先，已合并
+    // - CannotFastForward：分叉 → rebase 兜底
+    // - NoUpstream：远程是空仓库（首次推送场景）→ 跳过 merge/rebase，直接 push -u
     let merge_result = git::git_merge_ff(&root, "origin/main")?;
-    if !merge_result {
-        // 不能 ff → rebase 兜底
-        log::info!("[sync] merge --ff-only 失败，走 rebase 路径");
-        match git::git_rebase(&root, "origin/main") {
-            Ok(()) => log::info!("[sync] rebase 成功"),
-            Err(e) => {
-                log::error!("[sync] rebase 失败，需手动介入：{}", e);
-                return Err(e);
+    let is_first_push = matches!(merge_result, git::MergeFfResult::NoUpstream);
+    if !is_first_push {
+        match merge_result {
+            git::MergeFfResult::FastForwarded => {
+                log::debug!("[sync] ff-only merge 成功")
             }
+            git::MergeFfResult::CannotFastForward => {
+                log::info!("[sync] merge --ff-only 失败（分叉），走 rebase 路径");
+                match git::git_rebase(&root, "origin/main") {
+                    Ok(()) => log::info!("[sync] rebase 成功"),
+                    Err(e) => {
+                        log::error!("[sync] rebase 失败，需手动介入：{}", e);
+                        return Err(e);
+                    }
+                }
+            }
+            git::MergeFfResult::NoUpstream => unreachable!("已由 is_first_push 处理"),
         }
+    } else {
+        log::info!("[sync] 远程无 main 分支（首次推送场景），跳过 merge/rebase");
     }
 
     // 3. pull 阶段：文件系统 → SQLite
+    // 首次推送时远程是空的，outline 也是默认空——pull 不会引入数据
     let pulled = pull_from_files()?;
 
     // 4. push 阶段：SQLite → 文件系统
@@ -511,14 +525,20 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     let committed = git::git_commit(&root, "sync")?;
 
     // 6. push to all remotes（用户自定义的任意 remote）
+    // 首次推送用 -u 设 upstream；后续普通 push
     if committed {
         let remotes = git::git_remote_list(&root).unwrap_or_default();
         if remotes.is_empty() {
             log::warn!("[sync] 本地有 commit 但无 remote 配置——跳过 push");
         }
         for (name, _url) in &remotes {
-            match git::git_push(&root, name, "main") {
-                Ok(()) => log::debug!("[sync] pushed to {}", name),
+            let push_result = if is_first_push {
+                git::git_push_set_upstream(&root, name, "main")
+            } else {
+                git::git_push(&root, name, "main")
+            };
+            match push_result {
+                Ok(()) => log::debug!("[sync] pushed to {} (first_push={})", name, is_first_push),
                 Err(e) => log::warn!("[sync] push to {} 失败：{}", name, e),
             }
         }

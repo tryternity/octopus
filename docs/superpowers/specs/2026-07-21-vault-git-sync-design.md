@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1 已实现（T1-T9 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护；待 e2e 测试）
+> **状态**：Phase 1 已实现（T1-T10 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送；待 e2e 测试）
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -618,6 +618,39 @@ HTTPS URL → try_convert_https_to_ssh()
 
 ---
 
+### 4.11 空远程仓库首次推送（2026-07-21 增补）
+
+**动机**：用户在 GitHub/Gitee 新建仓库时通常**不勾选**「Initialize with README」
+——这是个空仓库，没有任何分支。用户首次点同步时，sync_now 流程的
+`git merge --ff-only origin/main` 报 `merge: origin/main - not something we can merge`
+（origin/main 不存在）。必须识别这种场景并跳过 merge/rebase，直接走首次 push。
+
+**状态机**（`MergeFfResult` enum）：
+
+| 状态 | 触发条件 | sync_now 行为 |
+|---|---|---|
+| `FastForwarded` | `git merge --ff-only` 成功 | 远程领先本地，已合并 → 继续 pull/push/commit |
+| `CannotFastForward` | merge 失败 + stderr 不含 "upstream"/"merge" 关键字 | 本地远程分叉 → rebase 兜底 |
+| `NoUpstream` | merge 失败 + stderr 含 `not something we can merge` / `invalid upstream` / `not a valid ref` / `unknown revision` | 远程空仓库 → **跳过 merge/rebase**，直接 commit + `git push -u origin main` |
+
+**NoUpstream 关键字判断**：源自 git 实测 stderr——
+- `merge: origin/main - not something we can merge`（macOS git 2.x 主流版本）
+- 兼容 `invalid upstream` / `not a valid ref` / `unknown revision`（不同 git 版本/翻译变体）
+
+**首次 push 用 `-u`**：`git push -u origin main` 同时设 upstream——后续 push 不需要 -u。
+后续 sync_now 走 `FastForwarded` 或 `CannotFastForward` 正常路径。
+
+**API 变化**：
+- `git::git_merge_ff` 返回类型从 `Result<bool, _>` 改为 `Result<MergeFfResult, _>`
+  （bool 只能区分 ff 成功 vs 不能 ff，无法表达 NoUpstream）
+- `engine::sync_now` 按 `MergeFfResult` 分流，记录 `is_first_push` 标志位决定 push 用 -u 还是普通 push
+
+**为什么不用预检测（fetch 前 ls-remote）**：让 git 自然报错后再判断更简单——
+预检测要额外网络往返，且 fetch 之后 origin/main ref 已经在本地（如果存在），
+直接试 merge 是最自然的判断方式。
+
+---
+
 ## 5. 不变量
 
 | # | 不变量 | 说明 |
@@ -636,6 +669,7 @@ HTTPS URL → try_convert_https_to_ssh()
 | INV-S12 | 本地路径（`file://` / `/abs/path`）禁止作为同步 remote | 同步意义为 0，且暴露本地文件结构 |
 | INV-S13 | github.com / gitee.com HTTPS URL 在 SSH key 可用时应自动转 SSH | 见 §4.9——避免 GitHub HTTPS 密码认证已禁用的死局 |
 | INV-S14 | 所有 git 命令必须非交互（禁用 prompt + stdin /dev/null） | 见 §4.10——Tauri 后端进程 stdin 脱离终端，交互 prompt 会让 UI 卡死 |
+| INV-S15 | sync_now 必须识别空远程仓库（NoUpstream）并走首次 push -u | 见 §4.11——用户新建空 repo 后首次点同步不能失败 |
 
 ---
 
