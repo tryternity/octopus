@@ -278,6 +278,15 @@ html, body {
   background: rgba(120, 113, 108, 0.15);
 }
 
+/* Vault 同步 indeterminate 进度条——条从左到右再循环（2026-07-21） */
+@keyframes vault-sync-progress {
+  0%   { left: -33%; }
+  100% { left: 100%; }
+}
+.vault-sync-progress-bar {
+  animation: vault-sync-progress 1.2s ease-in-out infinite;
+}
+
 /* ASR 结果窗非编辑态闪烁光标（中插态/录音态显示，点击定位） */
 @keyframes asr-caret-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 .asr-caret {

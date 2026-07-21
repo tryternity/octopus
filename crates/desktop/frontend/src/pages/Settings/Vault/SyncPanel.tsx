@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { RefreshCw, Plus, Trash2, GitBranch, Download, AlertCircle } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import type { ToastVariant } from "@/lib/useToast";
@@ -26,6 +27,14 @@ interface SyncStatus {
   remotes: [string, string][];
   last_sync: string | null;
   last_commit_sha: string | null;
+  /** 当前是否在后台同步——UI 据此显进度条（2026-07-21） */
+  syncing: boolean;
+}
+
+/** vault-sync-done 事件 payload */
+interface SyncDonePayload {
+  report: SyncReport | null;
+  error: string | null;
 }
 
 interface SyncReport {
@@ -70,6 +79,26 @@ export default function SyncPanel({
     refreshStatus();
   }, [refreshStatus]);
 
+  // === 后台同步完成事件（2026-07-21）===
+  // vault_sync_now 是 async spawn——命令秒回，结果通过 vault-sync-done 事件投递。
+  // 用户可能在同步期间切走 / 关窗 / 重开——listen 在 mount 时注册，重开会重新订阅。
+  // syncing 状态从 status.syncing（后端 AtomicBool）查得，不依赖事件保活。
+  useEffect(() => {
+    const unlisten = listen<SyncDonePayload>("vault-sync-done", (event) => {
+      const { report, error } = event.payload;
+      if (error) {
+        showToast(error, "error");
+      } else if (report) {
+        showToast(report.message || t("settings.vault.sync.syncSuccess"));
+      }
+      // 刷新状态——status.syncing 会变回 false
+      refreshStatus();
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [showToast, t, refreshStatus]);
+
   // === 操作 ===
 
   const handleEnable = useCallback(async () => {
@@ -99,18 +128,20 @@ export default function SyncPanel({
     }
   }, [cloneUrl, showToast, t, refreshStatus]);
 
+  // 立即同步——非阻塞触发，结果通过 vault-sync-done 事件投递（2026-07-21）。
+  // 命令本身秒回，UI 立即切到进度条状态（status.syncing），用户可继续其他操作。
   const handleSyncNow = useCallback(async () => {
-    setBusy(true);
+    // 乐观更新 UI——立即显示进度条（不等下次 status 查询）
+    setStatus((prev) => (prev ? { ...prev, syncing: true } : prev));
     try {
-      const report = await invoke<SyncReport>("vault_sync_now");
-      showToast(report.message || t("settings.vault.sync.syncSuccess"));
-      await refreshStatus();
+      await invoke("vault_sync_now");
+      // 不在这里 showToast——结果由 vault-sync-done 事件回调处理
     } catch (e) {
+      // 启动失败（极少见：spawn_blocking 错）——回滚 syncing + 显示错误
+      setStatus((prev) => (prev ? { ...prev, syncing: false } : prev));
       showToast(String(e), "error");
-    } finally {
-      setBusy(false);
     }
-  }, [showToast, t, refreshStatus]);
+  }, []);
 
   const handleDisable = useCallback(async () => {
     if (!confirm(t("settings.vault.sync.disableConfirm"))) return;
@@ -296,21 +327,29 @@ export default function SyncPanel({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="voice"
-            size="sm"
-            onClick={handleSyncNow}
-            disabled={busy}
-          >
-            {busy ? (
-              t("settings.vault.sync.syncing")
-            ) : (
-              <>
-                <RefreshCw className="size-3.5" />
-                {t("settings.vault.sync.syncNow")}
-              </>
-            )}
-          </Button>
+          {status.syncing ? (
+            // 同步中——indeterminate 进度条 + 文案，不阻塞其他操作（2026-07-21）
+            <div
+              className="flex h-8 min-w-[140px] items-center gap-2 rounded-md border border-voice/30 bg-voice/10 px-3 text-xs font-medium text-voice"
+              role="status"
+              aria-live="polite"
+            >
+              <span>{t("settings.vault.sync.syncing")}</span>
+              <div className="relative h-1 flex-1 overflow-hidden rounded-full bg-voice/20">
+                <div className="vault-sync-progress-bar absolute inset-y-0 w-1/3 rounded-full bg-voice" />
+              </div>
+            </div>
+          ) : (
+            <Button
+              variant="voice"
+              size="sm"
+              onClick={handleSyncNow}
+              disabled={busy}
+            >
+              <RefreshCw className="size-3.5" />
+              {t("settings.vault.sync.syncNow")}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

@@ -44,6 +44,37 @@ fn sync_lock() -> &'static std::sync::Mutex<bool> {
     SYNC_LOCK.get_or_init(|| std::sync::Mutex::new(false))
 }
 
+/// 同步中标记——AtomicBool 让 get_sync_status 能查到「正在同步」状态。
+///
+/// 与 SYNC_LOCK 的区别：
+/// - SYNC_LOCK：Mutex<bool> 串行化同步，guard 出作用域自动释放
+/// - SYNCING：AtomicBool 显式标记，让 UI 查询状态时能区分「正在同步」vs「idle」
+///
+/// 设置点：sync_now 入口 try_sync_lock 成功后设 true，函数退出（Ok/Err）时设 false。
+static SYNCING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 查询当前是否正在同步——供 UI 显示进度条。
+pub fn is_syncing() -> bool {
+    SYNCING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// RAII 守卫——sync_now 入口 `let _g = SyncingGuard::set();`，退出时自动清零。
+///
+/// 不直接复用 Mutex guard——SYNCING 是 AtomicBool 给 UI 查询用，
+/// Mutex guard 是同步串行化。两者职责不同，分开维护。
+struct SyncingGuard;
+impl SyncingGuard {
+    fn set() -> Self {
+        SYNCING.store(true, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+impl Drop for SyncingGuard {
+    fn drop(&mut self) {
+        SYNCING.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// 尝试获取同步锁——返 Ok(guard) 成功，Err 表示同步进行中。
 pub fn try_sync_lock() -> Result<std::sync::MutexGuard<'static, bool>, SyncError> {
     sync_lock()
@@ -66,12 +97,15 @@ pub struct SyncStatus {
     pub last_sync: Option<String>,
     /// 最近一次 commit 的 SHA（如果有）
     pub last_commit_sha: Option<String>,
+    /// 当前是否正在后台同步——UI 据此显进度条（2026-07-21 增补）
+    pub syncing: bool,
 }
 
 /// 查询同步状态——UI 初始化时调用。
 pub fn get_sync_status() -> SyncStatus {
     let git_available = git::check_git_available();
     let root = store::vault_root();
+    let syncing = is_syncing();
 
     if !git_available || !root.exists() || !git::is_git_repo(&root) {
         return SyncStatus {
@@ -80,6 +114,7 @@ pub fn get_sync_status() -> SyncStatus {
             remotes: vec![],
             last_sync: None,
             last_commit_sha: None,
+            syncing,
         };
     }
 
@@ -96,6 +131,7 @@ pub fn get_sync_status() -> SyncStatus {
         remotes,
         last_commit_sha,
         last_sync,
+        syncing,
     }
 }
 
@@ -466,6 +502,8 @@ pub struct SyncReport {
 /// Phase 1 唯一触发方式（手动按钮）。Phase 2 会加自动同步。
 pub fn sync_now() -> Result<SyncReport, SyncError> {
     let _guard = try_sync_lock()?;
+    // 标记 syncing = true，函数退出（Ok/Err）时自动 false
+    let _syncing_guard = SyncingGuard::set();
 
     if !git::check_git_available() {
         return Err(SyncError::GitNotInstalled);
