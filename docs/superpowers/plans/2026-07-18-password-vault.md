@@ -7383,6 +7383,16 @@ brainstorming 结论：macOS 桌面 app **无权限读浏览器 DOM 字段值**�
 | `2ee8ce8c` | 统一 VaultPicker list view 布局（命中/未命中一致） |
 | `5ce47d37` | 修复高度/搜索切换/预填值三个问题 |
 
+**累计 commit（2026-07-22）**：窗口优化 + 文档同步
+
+| commit | 说明 |
+|---|---|
+| `a2be8049`→`6d04b46d` | 固定列表区 2 条高度 + 宽度 400→320 + 搜索框禁首字母大写 + 圆角 transparent + 固定高度 360 + 删除动态 setSize |
+| `b77ab773` | 窗口加 transparent(true) 让 CSS rounded 圆角生效 |
+| `c4da6ee3` | result_window 精简态注释 520×116 → 720×116 修正 |
+| `9b045de9` | architecture.md 记录 transparent + setSize 方案对比表 |
+| `3ad91f70` | 文档同步 VaultPicker 窗口优化（spec + architecture） |
+
 ### 方案 A 后续工作（**决定不做**，2026-07-20 brainstorming 评估）
 
 bookmarklet 真正自动采集——经过多轮 brainstorming 评估决定**不做**。
