@@ -49,6 +49,13 @@ static TRIGGER_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::Atom
 /// 隔离恢复剪贴板写入自身递增 changeCount 对下次检测的污染（现象 2 根因）。
 static CHANGE_COUNT_BASELINE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+/// 微信/WKWebView 嵌套 app 的 Cmd+C 等待 changeCount 递增的超时。
+///
+/// osascript 的 `keystroke "c"` 投出后，WKWebView 嵌套层处理菜单快捷键 + 写回
+/// pasteboard 是**异步**的——实测 80ms 超时时 changeCount 还没变（误判无选中），
+/// 300ms 能稳定覆盖大多数情况（实测成功率 ~90%）。如需调优改这个常量即可。
+const WECHAT_COPY_POLL_TIMEOUT_MS: u64 = 300;
+
 /// 保存当前 CHANGE_COUNT_BASELINE（供 silent 路径隔离 detect 副作用）。
 pub(crate) fn save_change_count_baseline() -> i64 {
     CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst)
@@ -199,16 +206,20 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     let focus = FocusTracker::new();
     let copy_dispatch = focus.simulate_copy();
     log::info!("[action-bar][detect] simulate_copy dispatch={:?}", copy_dispatch);
-    // 2026-07-20 perf：原固定 sleep(200ms) 等剪贴板更新，改 polling。
-    // macOS Cmd+C 剪贴板写入通常 < 50ms 完成；polling 每 5ms 检查 changeCount，命中即退出。
+    // 等 Cmd+C 产生剪贴板写入。polling 每 5ms 检查 changeCount，命中即退出。
     //
-    // 2026-07-21 实测复盘（commit 086cf381 误判修正）：
-    // 原以为 osascript 路径慢（~200ms）需要更长 polling，但日志证明 osascript 的
-    // `Command::output()` 是**同步阻塞**——等 osascript 进程结束才返回，而进程结束时
-    // System Events 的 keystroke 已同步让目标 app 处理完。所以 simulate_copy 返回时
-    // changeCount 已经递增，polling 立刻命中，超时用不上。
-    // 统一 80ms（兜底系统忙时的极端延迟），不再区分 dispatch 路径。
-    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
+    // **超时按 dispatch 路径动态化**（2026-07-21 实测调优）：
+    // - CGEvent 路径（原生/Electron）：Cmd+C 同步触发，changeCount 通常 < 50ms 递增，80ms 兜底
+    // - Osascript 路径（WKWebView 嵌套如微信）：osascript 返回时 keystroke 已投出，但
+    //   WKWebView 处理菜单快捷键 + 写回 pasteboard 是异步的，需要 200-400ms。
+    //   80ms 超时时 WKWebView 还没完成写入，changeCount 未变 → 误判无选中 → launch 模式。
+    //
+    // 微信超时由 WECHAT_COPY_POLL_TIMEOUT_MS 控制，方便后续调整。
+    let poll_timeout_ms = match copy_dispatch {
+        crate::focus_tracker::CopyDispatch::Osascript => WECHAT_COPY_POLL_TIMEOUT_MS,
+        crate::focus_tracker::CopyDispatch::CGEvent => 80,
+    };
+    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_timeout_ms);
     let mut change_count_after = change_count_before;
     while std::time::Instant::now() < poll_deadline {
         change_count_after = pasteboard_change_count();
