@@ -455,6 +455,8 @@ fn merge_outlines(local: Outline, remote: Outline) -> Outline {
 
 **删除传播**：git 本身记录删除（`git rm` 后 commit）。pull 时如果远程删了某 cipher 文件，本地 checkout 后文件就没了——SQLite 同步时检测到 outline 有 uuid 但文件不存在 → 软删 SQLite 行（设 deleted_at）。
 
+**序列化稳定性**（INV-S16，2026-07-21）：`Outline.ciphers`/`folders` 用 **BTreeMap**（字典序迭代）——保证相同输入产生字节相同的 outline.json，避免 git 误判为变化产生空 commit。HashMap 迭代顺序随机，每次写盘 JSON 字节不同（用户已踩坑，详见 plan T11）。
+
 ### 4.7 失败场景与降级
 
 | 场景 | 失败处理 |
@@ -838,6 +840,38 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 - 转换前先 `ssh -T` 预检——SSH key 不可用则保留 HTTPS（不阻断用户）
 
 **验证**：7 个 URL 转换单元测试 + 1 个 SSH key 验证 `#[ignore]` 集成测试 + 1 个 rewrite 不改非 github/gitee URL 测试
+
+### T9: 非交互 prompt 防护（2026-07-21 增补，详见 §4.10）
+
+- `crates/vault/src/sync/git.rs` 加 `git_command(args)` helper 统一构造非交互 Command
+- 三层防御：`GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=` + `SSH_ASKPASS=` + stdin → `/dev/null`
+- `run_git` / `run_git_allow_codes` / `git_ls_remote` / `git_ls_remote_with_timeout` 全部接入
+- `crates/vault/src/sync/error.rs` 加 `SyncError::CredentialsRequired` + classify 识别 5 个关键字
+- 不实现 UI 凭据输入（不接触凭证原则 + 工程量 + SSH key 更优）
+
+**验证**：`classify_credentials_required` 单测覆盖 GitHub HTTPS 失败两种典型 stderr
+
+### T10: 空远程仓库首次推送（2026-07-21 增补，详见 §4.11）
+
+- `crates/vault/src/sync/git.rs` 加 `MergeFfResult` enum（FastForwarded/CannotFastForward/NoUpstream）
+- `git_merge_ff` 返回类型 `Result<bool, _>` → `Result<MergeFfResult, _>`
+- NoUpstream 判 stderr 关键字：`not something we can merge` / `invalid upstream` / `not a valid ref` / `unknown revision`
+- `engine::sync_now` 检测 NoUpstream → 跳过 merge/rebase → commit + `git push -u origin main`
+
+**验证**：`git_merge_ff_returns_no_upstream_when_branch_missing`（本地 init+commit+merge 不存在的 origin/main → 断言 NoUpstream）
+
+### T11: outline 序列化稳定性 + SyncReport 真实变更数（2026-07-21 增补）
+
+- `crates/vault/src/sync/outline.rs` Outline.ciphers/folders：HashMap → BTreeMap（字典序稳定）
+- `crates/vault/src/sync/store.rs` export_all_to_files 内部 entries 同步改 BTreeMap
+- `engine::push_to_files` 改返实际变更数：对比新旧 outline 的 sha 差异（新增/修改/删除各算 1）
+- `engine::count_outline_changes(old, new) -> usize` helper
+
+**验证**：
+- `outline_serialization_is_deterministic`（HashMap 时随机失败，BTreeMap 必过）
+- `count_outline_changes_*` 5 个场景（zero/new/modified/deleted/mixed）
+
+**触发场景**：用户实测「每次同步都是拉取 0 条推送 4 条」——根因是 HashMap 顺序随机让 outline.json 字节变化触发空 commit，加 push_to_files 误返总数。
 
 ---
 

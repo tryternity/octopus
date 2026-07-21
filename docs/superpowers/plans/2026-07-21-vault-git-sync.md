@@ -460,11 +460,24 @@ T1 (UUID 改造) ──→ T2 (文件存储) ──→ T3 (git wrapper) ──�
                   └─ T2 依赖 T1 的 UUID id                   │
                                        └─ T4 依赖 T2+T3 ────┘
                                                                               ↓
-                                            T7 (私有库检测，增补) ←─ 依赖 T4 add_remote / clone_from
+                    ┌─────────────────────────────────────────────────────────────────────────┐
+                    ↓                ↓                        ↓                              ↓
+              T7 (私有库检测)    T8 (HTTPS→SSH)        T9 (非交互 prompt)          T11 (outline 稳定)
+              依赖 T4 入口        依赖 T4 入口 +          依赖所有 git 命令             依赖 T4 push_to_files
+                                  T3 git wrapper
+                                                              ↓
+                                                        T10 (空远程首次推送)
+                                                        依赖 T4 sync_now + T9 git_command
 ```
 
 T1 必须先做（其他都依赖 UUID 字符串 id）。T2/T3 可并行。T4 依赖 T2+T3。T5 依赖 T4。
-T7 增补任务，依赖 T4 已有的 `add_remote` / `clone_from` 入口（守卫挂在入口前）。
+
+增补任务依赖：
+- **T7**：T4 `add_remote` / `clone_from` 入口（守卫挂在入口前）
+- **T8**：T4 入口 + T3 git wrapper（用 ssh -T 和 git remote set-url）
+- **T9**：所有 git 命令路径（git_command helper 接入 4 个底层入口）+ T8 引入的 `verify_ssh_key_for_host`
+- **T10**：T4 sync_now + T9（错误识别依赖 classify_git_error）
+- **T11**：T4 push_to_files + T2 store（Outline struct 定义在 outline.rs，export 在 store.rs）
 
 ## 预估工程量
 
@@ -477,9 +490,13 @@ T7 增补任务，依赖 T4 已有的 `add_remote` / `clone_from` 入口（守�
 | T5 UI | 300 行 | 2-3 小时 |
 | T6 文档测试 | 300 行 | 1-2 小时 |
 | T7 私有库检测 | 600 行（含测试）| 2-3 小时 |
-| **总计** | **~2600 行** | **12-19 小时** |
+| T8 HTTPS→SSH 自动改写 | 400 行（含 sync_now 兜底）| 2-3 小时 |
+| T9 非交互 prompt 防护 | 100 行（git_command helper + CredentialsRequired）| 0.5-1 小时 |
+| T10 空远程首次推送 | 80 行（MergeFfResult enum + sync_now 分流）| 0.5-1 小时 |
+| T11 outline 稳定性 + 报告数 | 150 行（BTreeMap + count_outline_changes）| 0.5-1 小时 |
+| **总计** | **~3330 行** | **13-21 小时** |
 
-（spec 估的 1300 行偏少——加上 schema 迁移 + 测试 + UI + 私有库检测实际接近 2600 行）
+（spec 估的 1300 行偏少——加上 schema 迁移 + 测试 + UI + 私有库检测 + 同步健壮性套件实际接近 3330 行）
 
 ## 风险提示
 
@@ -516,10 +533,15 @@ T1-T5 全部完成（2026-07-21）。T6 文档同步 + 测试收尾。
 
 ### 测试基线
 
-- vault: **230 pass**（166 base + 64 sync：含新增 privacy 33 + engine 3 + error 8 + outline 6 + store 9 + git 10）
-- desktop: **381 pass**
-- 前端: **304 pass**
-- cargo build + tsc + vite build: 0 error 0 warning
+最终基线（T1-T11 全部完成后）：
+
+- vault: **247 pass**（166 base + 81 sync：privacy 33 + engine 13 + error 9 + outline 7 + store 9 + git 13 + unlock 等）
+- desktop: **387 pass**（含 classify 回归测试）
+- 前端: tsc + vite build 0 error
+- cargo build: 0 error 0 warning
+- 真实网络集成测试（`#[ignore]`）：5 个（GitHub/Gitee 公有库检测、不存在库、SSH key 验证等）
+
+历史基线演进：T1-T6 完成 200 → T7 私有库检测 230 → T8 HTTPS→SSH 238 → T9 非交互 prompt 240 → T10 空远程 241 → T11 outline 稳定 247。
 
 ---
 
@@ -748,3 +770,42 @@ T9 全部完成（2026-07-21）。vault 测试 239 → 240（新增 1 个 classi
 T10 全部完成（2026-07-21）。vault 测试 240 → 241 pass（新增 1 个 NoUpstream 测试）。0 error 0 warning。
 
 **触发场景**：用户实测报告「同步错误：git 错误：fatal: invalid upstream 'origin/main'。我只是在远程建立了一个空仓库，还没有任何分支，需要支持这种场景」。
+
+---
+
+## Task 11: outline 序列化稳定性 + SyncReport 真实变更数（2026-07-21 增补）
+
+**目标**：修两个叠加 bug——(A) outline.json 因 HashMap 顺序随机导致字节级变化，git 误判为变化产生空 commit；(B) push_to_files 返总数而非变更数，SyncReport 误导用户。详见 [spec INV-S16/17](../specs/2026-07-21-vault-git-sync-design.md#5-不变量)。
+
+**Files:**
+- `crates/vault/src/sync/outline.rs`（HashMap → BTreeMap）
+- `crates/vault/src/sync/store.rs`（export_all_to_files entries 同步改 BTreeMap）
+- `crates/vault/src/sync/engine.rs`（push_to_files 对比 outline + count_outline_changes）
+
+### Steps
+
+- [x] **11.1 outline BTreeMap**
+  - `Outline.ciphers` / `Outline.folders`：`HashMap<String, OutlineEntry>` → `BTreeMap<...>`
+  - `Default::default()` + 所有测试同步
+  - store.rs `export_all_to_files` 内部 entries 也改 BTreeMap，删 unused HashMap import
+
+- [x] **11.2 push_to_files 对比变更**
+  - 读旧 outline（`store::read_outline_file().unwrap_or_default()`）
+  - export 后拿新 outline
+  - `count_outline_changes(old, new) -> usize` 对比 cipher + folder 的 sha 变化（新增/修改/删除各算 1）
+
+- [x] **11.3 测试**
+  - `outline_serialization_is_deterministic`：同输入两次序列化字节一致 + aaa 在 zzz 前（BTreeMap 字典序）
+  - `count_outline_changes_*` 5 个场景（zero / new / modified / deleted / mixed）
+
+### 关键设计决策
+
+1. **BTreeMap 而非手动 sort keys**：BTreeMap 是天然有序容器，零运行时开销，避免每次写盘前手动排序
+2. **对比新旧 outline 算变更数**：而非「文件 mtime 变化」——mtime 在 git add -A 后意义不大，sha 才是权威
+3. **删除也算变更**：cipher 被软删（SQLite deleted_at）→ export 时不写文件 → outline 没 entry → 旧有新无 = 1 变更
+
+### 实施记录
+
+T11 全部完成（2026-07-21，commit `2ac4c028`）。vault 测试 241 → 247 pass（新增 6 个：1 个 outline 序列化稳定 + 5 个 count_outline_changes）。0 error 0 warning。
+
+**触发场景**：用户实测报告「每次同步都是'同步完成：拉取 0 条，推送 4 条'，应该连推送都没有啊，因为本地和 remote 是已经同步过的」。git log 3 个连续 sync commit diff 只有 outline.json 的 HashMap key 顺序变化。
