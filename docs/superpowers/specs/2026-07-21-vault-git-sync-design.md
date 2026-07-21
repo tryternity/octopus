@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：设计阶段
+> **状态**：Phase 1 已实现（T1-T5 完成，待 e2e 测试）
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >

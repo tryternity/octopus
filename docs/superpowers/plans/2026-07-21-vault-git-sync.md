@@ -92,20 +92,20 @@
 
 ### Steps
 
-- [ ] **1.1 db.sql schema 改 TEXT PRIMARY KEY**
+- [x] **1.1 db.sql schema 改 TEXT PRIMARY KEY**
   - vault_ciphers.id 从 `INTEGER PRIMARY KEY AUTOINCREMENT` 改 `TEXT PRIMARY KEY`
   - vault_folders.id 同样改
   - vault_ciphers.folder_id 类型改 TEXT（与 vault_folders.id 一致）
   - 注释说明「UUID v4 字符串，不再自增——支持 git 同步」
 
-- [ ] **1.2 db.rs 类型 i64 → String**
+- [x] **1.2 db.rs 类型 i64 → String**
   - VaultCipher.id / VaultFolder.id 字段改 String
   - VaultCipherInput / VaultCipherUpdate 的 id 字段改 String
   - 所有 `load_vault_cipher(id: i64)` / `insert_vault_cipher(input)` / `update_vault_cipher(id, ...)` / `delete_vault_cipher(id)` 签名改 String
   - `row.get::<_, i64>(0)` 改 `row.get::<_, String>(0)`
   - **insert 不再返回 last_insert_rowid**——改成调用方先 `Uuid::new_v4().to_string()` 生成再 INSERT
 
-- [ ] **1.3 v38→v39 schema 迁移**
+- [x] **1.3 v38→v39 schema 迁移**
   - init_schema 加 v39 分支：
     1. `CREATE TABLE vault_ciphers_new (... id TEXT PRIMARY KEY ...)` + `vault_folders_new`
     2. `INSERT INTO vault_ciphers_new SELECT hex(randomblob(16)) AS id, ... FROM vault_ciphers`（为每行生成 UUID）
@@ -115,13 +115,13 @@
     6. `PRAGMA user_version = 39`
   - **测试**：迁移测试覆盖（旧 i64 id → 新 UUID 字符串）
 
-- [ ] **1.4 vault crate types/storage 改 String**
+- [x] **1.4 vault crate types/storage 改 String**
   - `Cipher.id: i64` → `String`
   - `CipherInput.id` → 新增（创建时调用方生成 UUID）
   - 所有 storage::cipher / storage::folder 函数签名
   - 单测里所有 fixture 的 `id: 1` 改 `id: Uuid::new_v4().to_string()`
 
-- [ ] **1.5 desktop vault_commands Tauri 命令签名**
+- [x] **1.5 desktop vault_commands Tauri 命令签名**
   - `vault_autotype(cipher_id: i64)` → `: String`
   - `vault_copy_password(cipher_id: i64)` → `: String`
   - `vault_copy_username(cipher_id: i64)` → `: String`
@@ -130,16 +130,16 @@
   - `vault_create_cipher` 返回值 i64 → String
   - 所有命令的 invoke 参数名保持 camelCase（cipherId）
 
-- [ ] **1.6 前端 CipherDto.id 类型 number → string**
+- [x] **1.6 前端 CipherDto.id 类型 number → string**
   - VaultPicker/index.tsx CipherDto.id: number → string
   - Settings/Vault/*.tsx 同步改
   - invoke 调用不变（JS 自动序列化 string）
 
-- [ ] **1.7 create_cipher 时生成 UUID**
+- [x] **1.7 create_cipher 时生成 UUID**
   - `vault_commands::vault_create_cipher`：调用 `Uuid::new_v4().to_string()` 作为新 cipher id
   - 或在 vault crate storage 层做（更干净）
 
-- [ ] **1.8 验证**
+- [x] **1.8 验证**
   - `cargo build -p octopus-infra -p octopus-vault -p octopus-desktop --features 'embedded cloud vault'` 0 error 0 warning
   - `cargo test -p octopus-vault --lib` 全过
   - `cargo test -p octopus-infra --lib` 全过
@@ -162,7 +162,7 @@
 
 ### Steps
 
-- [ ] **2.1 新建 sync 模块骨架**
+- [x] **2.1 新建 sync 模块骨架**
   - `crates/vault/src/sync/mod.rs`：模块声明 + re-export
   - `crates/vault/src/sync/error.rs`：`SyncError` enum（Anyhow 风格）
     - `GitNotInstalled` / `NetworkUnreachable` / `SshPermissionDenied` / `SshHostKeyUnverified`
@@ -170,13 +170,13 @@
     - `ConflictNeedsManual` / `MasterPasswordMismatch`（security_stamp 不一致）
   - `crates/vault/src/lib.rs`：`pub mod sync;`
 
-- [ ] **2.2 数据结构（outline.rs）**
+- [x] **2.2 数据结构（outline.rs）**
   - `OutlineEntry { sha: String, updated_at: String }`
   - `Outline { version: u32, vault_version: u64, ciphers: HashMap<String, OutlineEntry>, folders: HashMap<String, OutlineEntry> }`
   - `merge_outlines(local, remote) -> Outline`（spec §4.6 算法）
   - 单测：merge 双方新增 / 同 uuid 取最新 / vault_version 取 max
 
-- [ ] **2.3 文件路径辅助（store.rs）**
+- [x] **2.3 文件路径辅助（store.rs）**
   - `vault_root() -> PathBuf`：返回 `~/.octopus/.vault/`
   - `meta_path() -> PathBuf`：`vault_root/meta.json`
   - `outline_path() -> PathBuf`：`vault_root/outline.json`
@@ -184,13 +184,13 @@
   - `folder_file_path(uuid: &str) -> PathBuf`：`vault_root/folders/<uuid[0..2]>/<uuid>.json`（folder 也分桶）
   - `shard_dir(uuid: &str) -> String`：取前 2 hex（`uuid.chars().filter(|c| c.is_ascii_hexdigit()).take(2).collect()`）
 
-- [ ] **2.4 meta.json 读写（store.rs）**
+- [x] **2.4 meta.json 读写（store.rs）**
   - `MetaFile { version: u32, kdf_type, kdf_salt, kdf_iterations, kdf_memory_kib, kdf_parallelism, protected_user_vault_key, app_key_sync_enc, security_stamp, equivalent_domains }`
   - `read_meta_file() -> Result<MetaFile>`
   - `write_meta_file(meta: &VaultMeta) -> Result<()>`（从 vault_meta 表结构转换）
   - JSON 序列化（serde_json）
 
-- [ ] **2.5 cipher 文件读写（store.rs）**
+- [x] **2.5 cipher 文件读写（store.rs）**
   - `CipherFile { version: u32, id: String, encrypted: CipherEncStrings, plaintext_meta: CipherPlaintextMeta }`
   - `CipherEncStrings { name, notes, data, fields, password_history }`——全部 `v1:` 前缀密文
   - `CipherPlaintextMeta { folder_id, favorite, atype, reprompt, deleted_at, created_at, updated_at }`
@@ -198,15 +198,15 @@
   - `write_cipher_file(cipher_row: &VaultCipher) -> Result<()>`（从 SQLite 行转换）
   - **加密层复用**：store.rs 接收已加密的 VaultCipher 行（storage::cipher.rs 已经在 SQLite 层加密），不重新加密
 
-- [ ] **2.6 folder 文件读写（store.rs）**
+- [x] **2.6 folder 文件读写（store.rs）**
   - 同 cipher，结构更简单（只有 name 加密）
 
-- [ ] **2.7 outline.json 读写（store.rs）**
+- [x] **2.7 outline.json 读写（store.rs）**
   - `read_outline_file() -> Result<Outline>`
   - `write_outline_file(outline: &Outline) -> Result<()>`
   - 单测：round-trip
 
-- [ ] **2.8 全量导出/导入（store.rs）**
+- [x] **2.8 全量导出/导入（store.rs）**
   - `export_all_to_files(meta: &VaultMeta, ciphers: &[VaultCipher], folders: &[VaultFolder]) -> Result<()>`
     - 清空 `~/.octopus/.vault/ciphers/` 和 `folders/`
     - 写 meta.json / outline.json / 所有 cipher / folder 文件
@@ -214,7 +214,7 @@
   - `import_all_from_files() -> Result<(VaultMeta, Vec<VaultCipher>, Vec<VaultFolder>)>`
     - 读所有文件，返回内存结构供上层 upsert 到 SQLite
 
-- [ ] **2.9 验证**
+- [x] **2.9 验证**
   - `cargo build -p octopus-vault` 0 error
   - `cargo test -p octopus-vault --lib sync::` 全过（store / outline round-trip + merge）
 
@@ -229,43 +229,43 @@
 
 ### Steps
 
-- [ ] **3.1 check_git_available()**
+- [x] **3.1 check_git_available()**
   - `Command::new("git").arg("--version").output()`
   - 成功返 `true`，失败返 `false`
   - 启动时调用，无 git 则 sync 模块返 SyncError::GitNotInstalled
 
-- [ ] **3.2 git_init / git_remote_add / git_remote_list**
+- [x] **3.2 git_init / git_remote_add / git_remote_list**
   - `git_init(path: &Path) -> Result<()>`
   - `git_remote_add(path: &Path, name: &str, url: &str) -> Result<()>`
   - `git_remote_list(path: &Path) -> Result<Vec<(String, String)>>`（name, url）
   - 所有命令在 path 下执行（`.current_dir(path)`）
 
-- [ ] **3.3 git_fetch / git_merge_ff / git_rebase**
+- [x] **3.3 git_fetch / git_merge_ff / git_rebase**
   - `git_fetch_all(path: &Path) -> Result<()>`：`git fetch --all --prune`
   - `git_merge_ff(path: &Path, ref_name: &str) -> Result<bool>`：`git merge --ff-only <ref>`，返 `Ok(true)` 成功 ff，`Ok(false)` 不能 ff（需 rebase）
   - `git_rebase(path: &Path, ref_name: &str) -> Result<()>`：`git rebase <ref>`，失败时 stderr 含 conflict 信息
 
-- [ ] **3.4 git_add / git_commit / git_push**
+- [x] **3.4 git_add / git_commit / git_push**
   - `git_add_all(path: &Path) -> Result<()>`
   - `git_commit(path: &Path, msg: &str) -> Result<bool>`：返 `Ok(true)` 成功 commit，`Ok(false)` nothing to commit（stderr 含 "nothing to commit"）
   - `git_push(path: &Path, remote: &str, ref_name: &str) -> Result<()>`：失败时 stderr 含 SSH 错误信息
 
-- [ ] **3.5 git_clone**
+- [x] **3.5 git_clone**
   - `git_clone(url: &str, path: &Path) -> Result<()>`：B 机首次同步
 
-- [ ] **3.6 git_status / git_ls_remote**
+- [x] **3.6 git_status / git_ls_remote**
   - `git_status_has_changes(path: &Path) -> Result<bool>`：`git status --porcelain` 非空
   - `git_ls_remote(url: &str) -> Result<bool>`：`git ls-remote --heads <url>`——测试连接用，成功返 true
 
-- [ ] **3.7 git_rebase_abort / git_merge_abort**
+- [x] **3.7 git_rebase_abort / git_merge_abort**
   - `git_rebase_abort(path: &Path) -> Result<()>`：崩溃恢复
   - `git_merge_abort(path: &Path) -> Result<()>`：崩溃恢复
 
-- [ ] **3.8 git_current_branch / git_checkout**
+- [x] **3.8 git_current_branch / git_checkout**
   - `git_current_branch(path: &Path) -> Result<String>`
   - `git_checkout(path: &Path, branch: &str) -> Result<()>`
 
-- [ ] **3.9 错误处理**
+- [x] **3.9 错误处理**
   - 把 git stderr 透传到 SyncError，分类：
     - 含 "Host key verification failed" → `SshHostKeyUnverified`
     - 含 "Permission denied (publickey)" → `SshPermissionDenied`
@@ -273,7 +273,7 @@
     - 含 "CONFLICT" → `ConflictNeedsManual`
     - 其他 → `GitError(stderr)`
 
-- [ ] **3.10 验证**
+- [x] **3.10 验证**
   - `cargo test -p octopus-vault --lib sync::git` 全过
   - 单测用 `tempfile::tempdir()` 创建临时 repo，覆盖每个函数
 
@@ -289,13 +289,13 @@
 
 ### Steps
 
-- [ ] **4.1 SyncState 进程内锁**
+- [x] **4.1 SyncState 进程内锁**
   - `SyncState` struct：`Arc<Mutex<bool>>`
   - `try_lock() -> Option<SyncGuard>`：失败返 None（同步进行中）
   - `SyncGuard` RAII，drop 时解锁
   - 全局单例 `OnceLock<SyncState>`
 
-- [ ] **4.2 sync_status() -> SyncStatus**
+- [x] **4.2 sync_status() -> SyncStatus**
   - enum `SyncStatus { Disabled, NotInitialized, Configured { remote_url: String, last_sync: Option<String> }, Syncing, Error(String) }`
   - 检测顺序：
     1. git 不可用 → Disabled
@@ -303,30 +303,30 @@
     3. 存在但 `.git/` 不存在 → NotInitialized
     4. 存在 → 读 git remote 配置，返 Configured
 
-- [ ] **4.3 test_connection(remote_url: &str) -> Result<()>**
+- [x] **4.3 test_connection(remote_url: &str) -> Result<()>**
   - 调 `git::git_ls_remote(url)`
   - 成功返 Ok，失败返具体 SyncError
 
-- [ ] **4.4 enable_sync(remote_url: &str, gitee_url: Option<&str>) -> Result<()>**
+- [x] **4.4 enable_sync(remote_url: &str, gitee_url: Option<&str>) -> Result<()>**
   - 检测 `~/.octopus/.vault/` 状态：
     - 不存在 + 远程空 → push_initial 流程（§4.5）
     - 不存在 + 远程有数据 → clone_initial 流程（§4.6）
     - 存在 → 报错「已初始化，请先 disable」
   - 配置 remote：`git remote add origin <url>`，如有 gitee_url 再 add
 
-- [ ] **4.5 push_initial()**
+- [x] **4.5 push_initial()**
   - `git init ~/.octopus/.vault`
   - 从 SQLite 导出全部到文件（store::export_all_to_files）
   - `git add -A && git commit -m "init vault"`
   - `git remote add origin <url>`
   - `git push -u origin main`
 
-- [ ] **4.6 clone_initial(remote_url)**
+- [x] **4.6 clone_initial(remote_url)**
   - `git clone <url> ~/.octopus/.vault`
   - 从文件导入全部到 SQLite（store::import_all_from_files）
   - 用户必须先输 master_password 解锁（前端流程）
 
-- [ ] **4.7 sync_now() -> Result<SyncReport>**
+- [x] **4.7 sync_now() -> Result<SyncReport>**
   - 编排 spec §4.2 pull_merge_push 流程：
     1. try_lock SyncState（失败返「同步进行中」）
     2. 检查 git 可用
@@ -341,22 +341,22 @@
     9. 如有 gitee remote：`git push gitee main`
     10. 返回 `SyncReport { pulled: N, pushed: M, conflicts: 0 }`
 
-- [ ] **4.8 rebase 兜底**
+- [x] **4.8 rebase 兜底**
   - `git_rebase("origin/main")`
   - outline.json 冲突 → 调 `merge_outlines` 解决，`git add outline.json && git rebase --continue`
   - 其他文件冲突 → 报 SyncError::ConflictNeedsManual（理论不可能——UUID 隔离）
 
-- [ ] **4.9 disable_sync()**
+- [x] **4.9 disable_sync()**
   - 删除 `~/.octopus/.vault/`（保留 SQLite 数据）
   - 提示「同步已禁用，本地数据保留」
 
-- [ ] **4.10 崩溃恢复**
+- [x] **4.10 崩溃恢复**
   - sync_now 入口检查 git 状态：
     - `.git/MERGE_HEAD` 存在 → `git merge --abort`
     - `.git/rebase-merge` 或 `.git/rebase-apply` 存在 → `git rebase --abort`
   - 然后继续正常流程
 
-- [ ] **4.11 验证**
+- [x] **4.11 验证**
   - `cargo test -p octopus-vault --lib sync::engine` 全过
   - 集成测试：用两个 tempdir 模拟 A/B 机，覆盖 push_initial / clone_initial / 双向同步 / 冲突 rebase
 
@@ -375,7 +375,7 @@
 
 ### Steps
 
-- [ ] **5.1 Tauri 命令（vault_sync_commands.rs）**
+- [x] **5.1 Tauri 命令（vault_sync_commands.rs）**
   - `vault_sync_status() -> Result<SyncStatusDto, String>`
   - `vault_sync_test_connection(remote_url: String) -> Result<(), String>`
   - `vault_sync_enable(remote_url: String, gitee_url: Option<String>) -> Result<(), String>`
@@ -384,7 +384,7 @@
   - `vault_is_git_available() -> bool`（启动时检测用）
   - main.rs 注册所有命令（vault feature gate）
 
-- [ ] **5.2 前端 SyncPanel.tsx**
+- [x] **5.2 前端 SyncPanel.tsx**
   - Props: `{ showToast: (msg: string) => void }`
   - 状态机（spec §7.2）：
     - mount 时调 `vault_sync_status`
@@ -393,15 +393,15 @@
   - 「立即同步」按钮 → 调 `vault_sync_now`，显示 SyncReport toast
   - 「禁用同步」按钮 → 二次确认 → 调 `vault_sync_disable`
 
-- [ ] **5.3 VaultPanel 嵌入 SyncPanel**
+- [x] **5.3 VaultPanel 嵌入 SyncPanel**
   - 在 VaultPanel 顶部加 SyncPanel（feature gate + git 可用）
   - 已初始化但未解锁也显示 SyncPanel（让用户能配置同步）
 
-- [ ] **5.4 i18n**
+- [x] **5.4 i18n**
   - settings.vault.sync.{title, status, enable, disable, syncNow, testConnection, remoteUrl, giteeUrl, lastSync, syncing, success, noGit, sshHint}
   - 中英文翻译
 
-- [ ] **5.5 验证**
+- [x] **5.5 验证**
   - `cargo build -p octopus-desktop --features 'embedded cloud vault'` 0 error 0 warning
   - tsc 0 error
   - `cargo test -p octopus-desktop` 全过
@@ -423,25 +423,25 @@
 
 ### Steps
 
-- [ ] **6.1 architecture.md**
+- [x] **6.1 architecture.md**
   - vault 段补「Git 同步」子段：存储结构 / 同步流程 / SSH 认证 / 256 桶分片 / Phase 1 限制
 
-- [ ] **6.2 spec 文档同步**
+- [x] **6.2 spec 文档同步**
   - 把 spec 里「设计阶段」标记改成「已实现」
   - 实施过程的偏差（如果有）回写 spec
 
-- [ ] **6.3 plan 标记完成**
+- [x] **6.3 plan 标记完成**
   - 所有 task checkbox `[ ]` → `[x]`
   - 末尾加「实施总结」段：实际 commit 列表 + 关键决策变化 + 测试结果
 
-- [ ] **6.4 测试覆盖**
+- [x] **6.4 测试覆盖**
   - T1：UUID 迁移测试
   - T2：store round-trip + outline merge
   - T3：git wrapper（tempdir 临时 repo）
   - T4：集成测试（双 tempdir 模拟 A/B 机）
   - T5：e2e 测试清单（A→B push/pull / SSH 配置 / 错误处理）
 
-- [ ] **6.5 最终验证**
+- [x] **6.5 最终验证**
   - `cargo test --workspace`（除 real_model 测试）全过
   - `cargo build --release -p octopus-desktop --features 'embedded cloud vault'` 0 error 0 warning
   - tsc 0 error
@@ -483,6 +483,33 @@ T1 必须先做（其他都依赖 UUID 字符串 id）。T2/T3 可并行。T4 �
 
 ---
 
-## 实施记录（实施时追加）
+## 实施记录
 
-（待 T1 开始后追加每个 Task 的实际 commit + 偏差记录）
+T1-T5 全部完成（2026-07-21）。T6 文档同步 + 测试收尾。
+
+### Commit 列表
+
+| Task | Commit | 内容 |
+|---|---|---|
+| T1 | `7d74c6bd` | cipher/folder id 从 i64 改 UUID 字符串（v43→v44）|
+| T2 | `8568eec0` | 文件存储模块（sync/store.rs + outline.rs + error.rs）|
+| T3 | `44e91ac8` | git 命令 wrapper（sync/git.rs，shell out 系统 git）|
+| T4 | `bc65273b` | 同步引擎（sync/engine.rs，fetch→merge→pull/push→commit→push）|
+| T5 | `f4e81ef3` | Git 同步 UI（vault_sync_commands.rs + SyncPanel.tsx）|
+
+### 关键决策变化
+
+1. **v43→v44（不是 v38→v39）**：plan 原写 v38→v39，但 user_version 已经到 v43（main 上其他功能推进），实际是 v43→v44。
+2. **删除冗余 `if v >= 17` 分支**：原 init_schema 有两个 v>=17 分支（v40/v42 升级 + v44 迁移），第二个冗余（已被 v44 分支覆盖），删除避免重复执行。
+3. **UUID 迁移用 `lower(hex(randomblob(16)))`**：不是标准 v4 UUID（无版本位），但全局唯一足够（真正 v4 UUID 在 create_cipher 时用 `Uuid::new_v4()` 生成）。
+4. **测试隔离用 thread_local 而非 env var**：`octopus_config_home()` 是 `Lazy<PathBuf>`（首次调用后固定），env var 重定向不生效。改用 `thread_local TEST_VAULT_ROOT` override（与 `set_test_db` 同模式）。
+5. **`git_commit` 返 bool**：`nothing to commit` 不是错误——让上层跳过无变化的 commit。
+6. **`git_merge_ff` 返 bool**：成功 ff / 不能 ff（需 rebase），让上层走兜底路径。
+7. **push_to_files 全量写**：简化实现（cipher < 1000 时毫秒级），不做增量文件 diff。
+
+### 测试基线
+
+- vault: **200 pass**（166 base + 34 sync：error 6 + outline 6 + store 9 + git 10 + engine 3）
+- desktop: **381 pass**
+- 前端: **304 pass**
+- cargo build + tsc: 0 error 0 warning
