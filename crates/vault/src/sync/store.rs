@@ -1,4 +1,4 @@
-//! 文件存储：`~/.octopus/.vault/` 下 meta.json / outline.json /
+//! 文件存储：`~/.octopus/.sync/vault/` 下 meta.json / outline.json /
 //! ciphers/<桶>/<uuid>.json / folders/<uuid>.json 的读写。
 //!
 //! **加密层零改动**——store.rs 接收已加密的 VaultCipher / VaultFolder 行（storage
@@ -8,68 +8,49 @@
 //! 文件结构（详见 sync/mod.rs 模块注释）：
 //! - meta.json：vault_meta 同步字段（KDF 参数 + protected_user_vault_key +
 //!   app_key_sync_enc + security_stamp）
-//! - outline.json：uuid → sha256 增量索引
+//! - outline.json：uuid → md5 增量索引
 //! - ciphers/<前2hex>/<uuid>.json：单 cipher 加密 blob
 //! - folders/<uuid>.json：folder 加密 blob（folder 也分桶，与 cipher 一致）
+//!
+//! 2026-07-22 抽离：通用路径/hash 工具（sync_root / shard_dir / sha256_hex /
+//! md5_hex / iso_to_unix_ms / 测试隔离 thread_local）已搬到 `octopus_sync::store`。
+//! 本模块只保留 vault 业务数据文件格式 + 路径。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use octopus_infra::db::{VaultCipher, VaultFolder, VaultMeta};
-use sha2::{Digest, Sha256};
 
-use crate::sync::outline::{Outline, OutlineEntry};
+use octopus_sync::outline::{Outline, OutlineEntry};
+// 通用工具：sync_root（git repo 根）/ shard_dir（分桶）/ iso_to_unix_ms（时间转换）
+use octopus_sync::store as sync_store;
 
-// === 测试隔离 ===
-
-// 测试专用：thread_local 覆盖 vault_root（与 infra::db::set_test_db 同模式）。
+// === 测试隔离（薄封装，转发到 octopus_sync::store） ===
 //
-// 进程内 `octopus_config_home` 是 Lazy 固定值（首次调用后不变），无法用 env var
-// 重定向。用 thread_local override 让每个测试线程独立隔离。
-// （`thread_local!` 是宏，doc comment 不生效，用普通注释。）
-#[cfg(test)]
-thread_local! {
-    static TEST_VAULT_ROOT: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
-}
+// 旧代码用 `set_test_vault_root` / `clear_test_vault_root` 做测试隔离——这两个函数
+// 内部转发到 `octopus_sync::store::set_test_sync_root` / `clear_test_sync_root`，
+// 保持 vault crate 旧测试代码改动最小（只改 import）。
 
-/// 测试专用：设置临时 vault_root（TempDir 路径）。
+/// 测试专用：设置临时 vault 数据根（转发到 sync crate 的 sync_root override）。
 #[cfg(test)]
 pub fn set_test_vault_root(path: PathBuf) {
-    TEST_VAULT_ROOT.with(|cell| {
-        *cell.borrow_mut() = Some(path);
-    });
+    sync_store::set_test_sync_root(path);
 }
 
-/// 测试专用：清除 vault_root override。
+/// 测试专用：清除 vault 数据根 override（转发到 sync crate）。
 #[cfg(test)]
 pub fn clear_test_vault_root() {
-    TEST_VAULT_ROOT.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
+    sync_store::clear_test_sync_root();
 }
 
-// === 路径辅助 ===
-
-/// `~/.octopus/.sync/`——所有同步数据的 git repo 根目录。
-///
-/// 2026-07-22 改造：从 `.vault` 重命名为 `.sync`，子目录化（`vault/` / 未来 `hotword/` / `prompts/`）。
-/// 用户已同意删旧 `.vault/` 重建，不做向后兼容。
-pub fn sync_root() -> PathBuf {
-    #[cfg(test)]
-    {
-        if let Some(p) = TEST_VAULT_ROOT.with(|cell| cell.borrow().clone()) {
-            return p;
-        }
-    }
-    octopus_infra::octopus_config_home().join(".sync")
-}
+// === vault 业务路径（基于 sync crate 的 sync_root） ===
 
 /// `~/.octopus/.sync/vault/`——vault 数据子目录（meta/outline/ciphers/folders）。
 ///
-/// git repo 在 `sync_root()`（`.sync/`），不在 vault 子目录——这样未来 hotword/prompts
-/// 也在同一个 git repo 下，一个 sync 同步所有用户数据。
+/// git repo 在 `octopus_sync::store::sync_root()`（`.sync/`），不在 vault 子目录——
+/// 这样 hotword/prompts 等其他同步数据也在同一个 git repo 下。
 pub fn vault_dir() -> PathBuf {
-    sync_root().join("vault")
+    sync_store::sync_root().join("vault")
 }
 
 /// 兼容别名——大量旧代码引用 `vault_root()`，逐步迁移到 `vault_dir()`。
@@ -78,64 +59,21 @@ pub fn vault_root() -> PathBuf {
     vault_dir()
 }
 
-/// 把 SQLite `datetime('now')` 格式（`"2026-07-21 15:11:22"`）转为 Unix 毫秒。
-///
-/// SQLite 的 UTC 时间，直接解析为毫秒——outline 用数值比较（旧版 ISO 字符串比较不可靠）。
-/// 解析失败返 0（让 merge_outlines 退化到「双方都 0 取本地」语义，安全）。
-fn iso_to_unix_ms(s: &str) -> i64 {
-    // 格式："2026-07-21 15:11:22" 或 "2026-07-21T15:11:22Z" 等变体
-    // 手写解析避免引入 chrono 依赖
-    let s = s.trim();
-    let bytes = s.as_bytes();
-    if bytes.len() < 19 {
-        return 0;
-    }
-    // 日期部分：YYYY-MM-DD HH:MM:SS（位置固定）
-    let y: i64 = s[0..4].parse().unwrap_or(1970);
-    let mo: i64 = s[5..7].parse().unwrap_or(1);
-    let d: i64 = s[8..10].parse().unwrap_or(1);
-    let h: i64 = s[11..13].parse().unwrap_or(0);
-    let mi: i64 = s[14..16].parse().unwrap_or(0);
-    let se: i64 = s[17..19].parse().unwrap_or(0);
-    // 简化天数累积——不考虑闰年精度（同条 cipher 在两台机器上写入时间相差 < 1 天，
-    // 累积误差 < 86400s 不影响 merge 决策）。准确算法需要完整日历库，不值得。
-    // 这里用 civil_to_days 公式（Howard Hinnant），精度无损。
-    let y2 = if mo <= 2 { y - 1 } else { y };
-    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = (y2 - era * 400) as u64;
-    let doy = (153 * ((if mo > 2 { mo - 3 } else { mo + 9 }) as u64) + 2) / 5 + d as u64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe as i64 - 719468;
-    let secs = days * 86400 + h * 3600 + mi * 60 + se;
-    secs * 1000
-}
-
-/// `~/.octopus/.vault/meta.json`——vault_meta 同步字段。
+/// `~/.octopus/.sync/vault/meta.json`——vault_meta 同步字段。
 pub fn meta_path() -> PathBuf {
     vault_root().join("meta.json")
 }
 
-/// `~/.octopus/.vault/outline.json`——增量索引。
+/// `~/.octopus/.sync/vault/outline.json`——增量索引。
 pub fn outline_path() -> PathBuf {
     vault_root().join("outline.json")
 }
 
-/// 取 uuid 的前 2 个 hex 字符作分桶目录名。
-///
-/// uuid v4 形如 `a1b2c3d4-...-e5f6`，filter 出 hex 字符取前 2 → `a1`。
-/// 256 个桶，每桶 10000 cipher 时平均 40 文件（git ls-tree 毫秒级）。
-pub fn shard_dir(uuid: &str) -> String {
-    uuid.chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .take(2)
-        .collect()
-}
-
-/// cipher 文件路径：`ciphers/<前2hex>/<uuid>.json`。
+/// cipher 文件路径：`ciphers/<前2hex>/<uuid>.json`（shard_dir 来自 sync crate）。
 pub fn cipher_file_path(uuid: &str) -> PathBuf {
     vault_root()
         .join("ciphers")
-        .join(shard_dir(uuid))
+        .join(sync_store::shard_dir(uuid))
         .join(format!("{}.json", uuid))
 }
 
@@ -143,7 +81,7 @@ pub fn cipher_file_path(uuid: &str) -> PathBuf {
 pub fn folder_file_path(uuid: &str) -> PathBuf {
     vault_root()
         .join("folders")
-        .join(shard_dir(uuid))
+        .join(sync_store::shard_dir(uuid))
         .join(format!("{}.json", uuid))
 }
 
@@ -445,20 +383,7 @@ pub fn delete_folder_file(uuid: &str) -> Result<()> {
     }
 }
 
-// === sha256 工具 ===
-
-/// 算字符串的 sha256（hex），用于 outline 增量索引。
-pub fn sha256_hex(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    let result = hasher.finalize();
-    // hex encode
-    let mut hex = String::with_capacity(64);
-    for byte in result {
-        hex.push_str(&format!("{:02x}", byte));
-    }
-    hex
-}
+// sha256_hex 已搬到 `octopus_sync::store::sha256_hex`（通用 hash 工具）
 
 // === 全量导出/导入 ===
 
@@ -503,7 +428,7 @@ pub fn export_all_to_files(
             c.id.clone(),
             OutlineEntry {
                 md5,
-                updated_ms: iso_to_unix_ms(&c.updated_at),
+                updated_ms: sync_store::iso_to_unix_ms(&c.updated_at),
             },
         );
     }
@@ -516,7 +441,7 @@ pub fn export_all_to_files(
             f.id.clone(),
             OutlineEntry {
                 md5,
-                updated_ms: iso_to_unix_ms(&f.updated_at),
+                updated_ms: sync_store::iso_to_unix_ms(&f.updated_at),
             },
         );
     }
@@ -581,7 +506,7 @@ pub fn incremental_export(
             c.id.clone(),
             OutlineEntry {
                 md5: new_md5,
-                updated_ms: iso_to_unix_ms(&c.updated_at),
+                updated_ms: sync_store::iso_to_unix_ms(&c.updated_at),
             },
         );
     }
@@ -613,7 +538,7 @@ pub fn incremental_export(
             f.id.clone(),
             OutlineEntry {
                 md5: new_md5,
-                updated_ms: iso_to_unix_ms(&f.updated_at),
+                updated_ms: sync_store::iso_to_unix_ms(&f.updated_at),
             },
         );
     }
@@ -771,12 +696,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shard_dir_takes_first_2_hex() {
-        assert_eq!(shard_dir("a1b2c3d4-..."), "a1");
-        assert_eq!(shard_dir("abcdef"), "ab");
-        assert_eq!(shard_dir("zz12"), "12"); // 非 hex 字符被 filter 掉
-    }
+    // shard_dir 测试已随函数搬到 octopus_sync::store
 
     #[test]
     fn cipher_file_path_uses_shard() {
@@ -863,15 +783,7 @@ mod tests {
         assert!(ids.contains(&"b2c3d4e5-f6a7-4890-9002-bcdef234567"));
     }
 
-    #[test]
-    fn sha256_hex_is_deterministic() {
-        let h1 = sha256_hex("hello");
-        let h2 = sha256_hex("hello");
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64); // 32 bytes hex = 64 chars
-        let h3 = sha256_hex("world");
-        assert_ne!(h1, h3);
-    }
+    // sha256_hex 测试已随函数搬到 octopus_sync::store
 
     // === incremental_export 测试（2026-07-21 md5 增量同步） ===
 

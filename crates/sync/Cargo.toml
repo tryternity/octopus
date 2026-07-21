@@ -1,0 +1,32 @@
+[package]
+name = "octopus-sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 项目内依赖
+octopus-infra = { path = "../infra" }
+
+# hash 工具（不是安全用途——纯内容指纹 diff）
+sha2 = "0.10"
+# md5 用于 sync 增量同步的内容指纹（不是安全用途——纯 diff 工具）
+md-5 = "0.10"
+
+# 私有库检测（调 GitHub/Gitee API 查 private 字段）
+# 用同步 HTTP 客户端——与 sync 模块的阻塞 shell-out 风格一致，不引入 async runtime
+ureq = { version = "2", features = ["json", "tls"] }
+
+# URL parsing（matcher 用）
+url = "2"
+
+# 序列化/工具
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+parking_lot = { workspace = true }
+regex = "1"
+
+[dev-dependencies]
+# sync 模块测试用 tempfile 隔离文件系统
+tempfile = "3"

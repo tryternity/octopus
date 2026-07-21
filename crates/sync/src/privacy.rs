@@ -23,8 +23,8 @@
 //! 未认证查询私有库返 404（与"不存在"无法区分，是有意设计避免信息泄漏）。
 //! 所以 Phase 1 只能"确认公有"，不能"确认私有"。Phase 2 加 PAT 后能区分。
 
-use crate::sync::error::SyncError;
-use crate::sync::git::{git_ls_remote_with_timeout, LsRemoteResult};
+use crate::error::SyncError;
+use crate::git::{git_ls_remote_with_timeout, LsRemoteResult};
 use std::time::Duration;
 
 // === 判定结果 ===
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     #[ignore = "真实 ssh -T GitHub——需联网且本机已配 SSH key"]
     fn integration_verify_ssh_key_for_github() {
-        let ok = crate::sync::git::verify_ssh_key_for_host("github.com").unwrap();
+        let ok = crate::git::verify_ssh_key_for_host("github.com").unwrap();
         assert!(ok, "本机 SSH key 应能认证 GitHub");
     }
 }

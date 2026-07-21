@@ -26,10 +26,11 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMetaInput};
+// 通用 sync 基础设施（2026-07-22 抽离到 octopus_sync）
+use octopus_sync::error::SyncError;
+use octopus_sync::git;
+use octopus_sync::privacy::{self, PrivacyVerdict};
 
-use crate::sync::error::SyncError;
-use crate::sync::git;
-use crate::sync::privacy::{self, PrivacyVerdict};
 use crate::sync::store;
 
 // === T4.1: SyncState 进程内锁 ===
@@ -104,7 +105,7 @@ pub struct SyncStatus {
 /// 查询同步状态——UI 初始化时调用。
 pub fn get_sync_status() -> SyncStatus {
     let git_available = git::check_git_available();
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     let syncing = is_syncing();
 
     if !git_available || !root.exists() || !git::is_git_repo(&root) {
@@ -156,7 +157,7 @@ pub fn enable_sync() -> Result<(), SyncError> {
         return Err(SyncError::GitNotInstalled);
     }
 
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if root.exists() && git::is_git_repo(&root) {
         return Err(SyncError::Other(anyhow::anyhow!(
             "同步已初始化，请先禁用同步再重新启用"
@@ -169,7 +170,7 @@ pub fn enable_sync() -> Result<(), SyncError> {
 
 /// 初始化本地仓库——从 SQLite 导出全部到文件系统 → git init + commit（不 push）。
 fn push_initial() -> Result<(), SyncError> {
-    let sync_root = store::sync_root();
+    let sync_root = octopus_sync::store::sync_root();
     let vault_dir = store::vault_dir();
     // 创建两层目录：.sync/（git repo 根）+ .sync/vault/（vault 数据）
     std::fs::create_dir_all(&vault_dir)
@@ -214,7 +215,7 @@ fn push_initial() -> Result<(), SyncError> {
 /// - 本地路径 → 拒绝
 /// - SSH / Ambiguous / NetworkError → 放行（SSH 无法匿名嗅探，歧义/网络错误不阻断用户）
 pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -353,7 +354,7 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
 
 /// 删除 remote。
 pub fn remove_remote(name: &str) -> Result<(), SyncError> {
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -364,7 +365,7 @@ pub fn remove_remote(name: &str) -> Result<(), SyncError> {
 
 /// 列出所有 remote（name → url）。
 pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Ok(vec![]);
     }
@@ -396,7 +397,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // HTTPS → SSH 自动改写
     let effective_url = maybe_rewrite_to_ssh(remote_url)?;
 
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     // 确保父目录存在
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent)
@@ -532,7 +533,7 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         return Err(SyncError::GitNotInstalled);
     }
 
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
@@ -581,7 +582,7 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     let pushed = push_to_files()?;
 
     // 5. commit（无变化时 git_commit 返 false，不阻断流程）
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     git::git_add_all(&root)?;
     let _committed = git::git_commit(&root, "sync")?;
 
@@ -750,7 +751,7 @@ fn push_to_files() -> Result<usize, SyncError> {
 
 /// 禁用同步——删除 `~/.octopus/.sync/`（git repo 根 + 所有子目录，保留 SQLite 数据）。
 pub fn disable_sync() -> Result<(), SyncError> {
-    let root = store::sync_root();
+    let root = octopus_sync::store::sync_root();
     if root.exists() {
         std::fs::remove_dir_all(&root)
             .with_context(|| format!("删除 sync 目录失败：{}", root.display()))
@@ -886,7 +887,7 @@ mod tests {
 
         enable_sync().expect("enable_sync 应成功");
 
-        let sync_root = store::sync_root();
+        let sync_root = octopus_sync::store::sync_root();
         let vault_dir = store::vault_dir();
 
         // .git 必须在 sync_root
@@ -915,7 +916,7 @@ mod tests {
 
         enable_sync().expect("enable_sync");
 
-        let sync_root = store::sync_root();
+        let sync_root = octopus_sync::store::sync_root();
         let vault_dir = store::vault_dir();
 
         // meta.json / outline.json 在 vault_dir 下
@@ -934,7 +935,7 @@ mod tests {
     /// 构造一个含 cipher 的 outline 序列化，检查字段名。
     #[test]
     fn outline_json_uses_md5_and_updated_ms_field_names() {
-        use crate::sync::outline::{Outline, OutlineEntry};
+        use octopus_sync::outline::{Outline, OutlineEntry};
         use std::collections::BTreeMap;
 
         let outline = Outline {

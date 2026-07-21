@@ -5550,6 +5550,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "octopus-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "md-5",
+ "octopus-infra",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "ureq 2.12.1",
+ "url",
+]
+
+[[package]]
 name = "octopus-translation"
 version = "0.1.0"
 dependencies = [
@@ -5582,8 +5600,8 @@ dependencies = [
  "hkdf",
  "hmac",
  "log",
- "md-5",
  "octopus-infra",
+ "octopus-sync",
  "parking_lot",
  "publicsuffix",
  "rand 0.8.6",
@@ -5595,7 +5613,6 @@ dependencies = [
  "subtle",
  "tempfile",
  "totp-rs",
- "ureq 2.12.1",
  "url",
  "uuid",
  "zeroize",

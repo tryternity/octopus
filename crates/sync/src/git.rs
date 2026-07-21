@@ -12,7 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::sync::error::{classify_git_error, SyncError};
+use crate::error::{classify_git_error, SyncError};
 
 // === 辅助 ===
 

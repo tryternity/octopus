@@ -2,7 +2,7 @@
 //!
 //! md5 在这里**纯粹是内容指纹**，与加密破解无关。用于：
 //! - 写 SQLite 时算 md5 存入 `sync_md5` 字段
-//! - sync_now 时对比 SQLite.md5 vs outline.sha，决定是否需要重写文件
+//! - sync_now 时对比 SQLite.md5 vs outline.md5，决定是否需要重写文件
 //!
 //! **拼接格式**（确定性 + 无歧义）：
 //! - 字段按固定顺序拼接
@@ -11,22 +11,13 @@
 //! - **不含** `created_at` / `updated_at`（时间戳跨设备必然不同，会导致永久 diff）
 //!
 //! **跨设备一致性**：cipher 只在创建机器加密一次，sync 搬运密文（不重新加密），
-//! 所以密文字段（name/data 等）跨设备字节一致——md5 也一致。详见 spec §2.4。
+//! 所以密文字段跨设备字节一致——md5 也一致。详见 spec §2.4。
+//!
+//! 2026-07-22 抽离：`md5_hex` hash 工具已搬到 `octopus_sync::store::md5_hex`，
+//! 本模块只保留 vault 业务数据的指纹拼接逻辑（cipher_md5 / folder_md5）。
 
-use md5::{Digest, Md5};
 use octopus_infra::db::{VaultCipher, VaultCipherInput, VaultFolder};
-
-/// 把字节算 md5，返 hex 字符串（32 字符小写）。
-fn md5_hex(bytes: &[u8]) -> String {
-    let mut hasher = Md5::new();
-    hasher.update(bytes);
-    let result = hasher.finalize();
-    let mut s = String::with_capacity(32);
-    for b in result.iter() {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
+use octopus_sync::store::md5_hex;
 
 /// cipher 的逻辑内容 md5——不含 created_at/updated_at。
 ///
@@ -199,12 +190,5 @@ mod tests {
         assert_eq!(md5_a, folder_md5(&f1));
     }
 
-    #[test]
-    fn md5_hex_returns_32_chars_lowercase() {
-        let h = md5_hex(b"hello");
-        assert_eq!(h.len(), 32);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        // md5("hello") 的已知值：5d41402abc4b2a76b9719d911017c592
-        assert_eq!(h, "5d41402abc4b2a76b9719d911017c592");
-    }
+    // md5_hex 测试已随函数搬到 octopus_sync::store
 }
