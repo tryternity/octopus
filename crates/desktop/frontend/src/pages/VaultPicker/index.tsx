@@ -135,46 +135,13 @@ export default function VaultPicker() {
 
   // **2026-07-20 e2e 反馈**：按 view 动态调整浮窗高度，避免小内容也占满固定高度
   // 导致上下大片空白。后端初始 200px（紧凑视图），list 视图按 cipher 数撑高。
-  // 高度估算：标题栏 36 + padding + 各视图内容高 + 上下留白
+  // 固定窗口高度——所有 view 共用（与 create view 同高，list 稍留余量）。
+  // 不再用 setSize 动态切换高度（transparent 窗口 + 简化设计）。
+  // list view 内容区固定 2 条高度，create view 4 字段表单也刚好放得下。
+  // locked/uninit/error/autotyping 等短内容 view 会有下方留白（可接受）。
   useEffect(() => {
-    let height: number;
-    switch (view.kind) {
-      case "loading":
-        height = 110;
-        break;
-      case "locked":
-      case "reprompt":
-        // 标题栏 36 + Input 36 + Button 36 + gap+padding ~60 + 副文（reprompt） ~24
-        height = view.kind === "reprompt" ? 220 : 200;
-        break;
-      case "uninit":
-      case "error":
-        height = 130;
-        break;
-      case "autotyping":
-        height = 110;
-        break;
-      case "create":
-        // 标题栏 36 + 4 字段（name/url/username/password，每字段 label+input ~52）+
-        // Button 36 + padding 32 + 错误提示预留 20 ≈ 340
-        height = 360;
-        break;
-      case "list": {
-        // 2026-07-21 统一布局：搜索框 + 新建按钮 + 列表区（固定 2 条高度）。
-        // 列表区固定 2 × 88 = 176px，不管内容是空/1 条/N 条——空时留白、
-        // 1 条时下方留白、超过 2 条滚动条出现让用户知道有多条。
-        // 新增（create view）切换回来时整体高度不变（create 360 > list 高度，
-        // setSize 把窗口缩到 list 高度，但因为是固定值不会跳变）。
-        const listH = 2 * 88;  // 固定 2 条
-        // 36（标题）+ 52（搜索框）+ 8（间距）+ 32（新建按钮）+ listH + 8（padding）
-        height = 36 + 52 + 8 + 32 + listH + 8;
-        break;
-      }
-      default:
-        height = 200;
-    }
-    void getCurrentWindow().setSize(new LogicalSize(320, height));
-  }, [view]);
+    void getCurrentWindow().setSize(new LogicalSize(320, 360));
+  }, []);
 
   // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
   useEffect(() => {
