@@ -1,11 +1,29 @@
 # Session 交接文档
 
-> 生成时间：2026-07-20
+> 生成时间：2026-07-21（基于 2026-07-20 续写）
 > 当前 worktree：`/Users/wudarui/workspace/agent/octopus/.worktrees/daily-bug-fix`
 > 分支：`fix/daily-bug-fix-actionbar-launch`
-> HEAD：`9def44ef`（与 main + origin 完全同步）
 
 ## 本次 Session 完成的工作
+
+### 0. 截图启动性能 v2 + 全窗口独立 entry 架构（2026-07-21 新增）
+
+**两个 commit**：
+- `87a4c16a` perf(screenshot): bundle 拆分 + i18n 解阻塞 + 多屏并行截图
+- `78c08a4c` chore(screenshot): 清理 App.tsx 中已废弃的 screenshot 路由分支
+- `（待提交）` feat(frontend): 全窗口独立 entry 架构（9 entries）
+
+| 优化 | 改动 | 效果 |
+|---|---|---|
+| **screenshot 独立 entry** | screenshot.html + screenshot-main.tsx | bundle 1.27MB → 291KB（降 77%） |
+| **i18n localStorage 缓存** | lib/i18n.ts + main.tsx | 消除 get_config IPC 阻塞渲染（-10~50ms） |
+| **capture_all_monitors 并行** | capx/capture.rs + screenshot_commands.rs | 双屏 4K ~800ms → ~400ms（thread::scope + spawn_blocking） |
+| **8 窗口独立 entry** | 9 HTML + 9 entries/xxx-main.tsx + lib/mountApp.tsx | 所有窗口加载量普遍减小 50-77%（CodeMirror/lucide 不再污染其他窗口） |
+| **跨页组件抽取** | components/SaveImagePopover + components/PasswordGenerator | pages/ 不再互相 import，依赖方向正确 |
+
+**架构原则**：产物边界 = 依赖边界 = 职责边界。详见：
+- [2026-07-21-screenshot-startup-perf-v2.md](docs/superpowers/specs/2026-07-21-screenshot-startup-perf-v2.md)
+- [2026-07-21-multi-entry-architecture.md](docs/superpowers/specs/2026-07-21-multi-entry-architecture.md)
 
 ### 1. 性能优化批次（截图 + Action Bar + 按键模拟）
 

@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { X } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Toast, useToast } from "@/lib/useToast";
-import PasswordGenerator from "@/pages/Settings/Vault/PasswordGenerator";
+import PasswordGenerator from "@/components/PasswordGenerator";
 
 /**
  * PasswordGeneratorWindow —— 独立浮窗 root（外壳 B：Actionbar 触发场景）。

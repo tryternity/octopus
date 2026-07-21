@@ -17,7 +17,7 @@ pub fn create_overlay_window(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        WebviewUrl::default(),
+        WebviewUrl::App("overlay.html".into()),
     )
     .title("")
     .inner_size(320.0, 48.0)

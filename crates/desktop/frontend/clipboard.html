@@ -3,11 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>octopus-screenshot</title>
+    <title>octopus-clipboard</title>
     <script>
-      // 阻断式主题恢复 + 背景色注入——在 body 解析前执行。
-      // 与 index.html 同范式：首帧即应用正确主题，避免 React mount 前的 FOUC。
-      // screenshot 是透明窗口，无 bg 参数（保持透明，不设背景色）。
+      // 阻断式主题恢复（透明窗口，无 bg 参数）。
       try {
         var themeId = localStorage.getItem("octopus-theme-id");
         if (themeId) {
@@ -23,11 +21,17 @@
             }
           }
         }
+        var params = new URLSearchParams(window.location.search);
+        var bg = params.get("bg");
+        if (bg) {
+          var color = bg.startsWith("#") || bg.startsWith("rgb") ? bg : "#" + bg;
+          document.documentElement.style.backgroundColor = color;
+        }
       } catch (e) {}
     </script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/entries/screenshot-main.tsx"></script>
+    <script type="module" src="/src/entries/clipboard-main.tsx"></script>
   </body>
 </html>

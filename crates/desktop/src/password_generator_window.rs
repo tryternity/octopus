@@ -39,7 +39,7 @@ pub fn create_password_generator_window(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        WebviewUrl::App("index.html".into()),
+        WebviewUrl::App("password-generator.html".into()),
     )
     .title("密码生成器")
     .inner_size(WIDTH, HEIGHT)

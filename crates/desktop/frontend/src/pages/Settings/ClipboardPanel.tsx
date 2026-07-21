@@ -10,7 +10,7 @@ import {
   LayoutGrid, Search, Trash2, Download, FolderOpen,
   ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check,
 } from "lucide-react";
-import SaveImagePopover from "../Clipboard/SaveImagePopover";
+import SaveImagePopover from "@/components/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import { useT, t as ti18n } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";

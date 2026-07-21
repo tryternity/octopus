@@ -29,7 +29,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        WebviewUrl::default(),
+        WebviewUrl::App("clipboard.html".into()),
     )
     .title("剪贴板历史")
     .inner_size(300.0, 600.0)

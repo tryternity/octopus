@@ -13,7 +13,7 @@ pub fn create_action_bar_window(app: &AppHandle) {
     let _ = WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        WebviewUrl::default(),
+        WebviewUrl::App("action-bar.html".into()),
     )
     .title("")
     .inner_size(480.0, 76.0) // 宽 480（大气 + 不遮挡），初始高度由 resize effect 调整

@@ -215,7 +215,30 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **截图流程**：`start_screenshot` → `capture_all_monitors` 截所有显示器（**2026-07-21 并行化**：`std::thread::scope` 每 monitor 一个 spawned thread，双屏 4K 从串行 ~800ms → 并行 ~400ms；xcap 0.9.6 底层是 `CGWindowListCreateImage` 而非 ScreenCaptureKit，无线程亲和性约束，`Monitor` 内部仅 `CGDirectDisplayID=u32` 天然 `Send`。调用方 `tokio::task::spawn_blocking(capture_all_monitors).await` 隔离 Tokio worker）→ 每屏创建不可见窗口 → 前端 `get_screenshot_image` + `get_screenshot_image_size` 并行拉取（**2026-07-20 perf**：原返回 JPEG base64，前端 `URL.createObjectURL` 加载，**改直接返回 RGBA bytes** + 宽高，前端 `createImageBitmap(new ImageData(rgba, w, h))` 直接 GPU-friendly，省 ~3 秒 JPEG 编码 + base64 round-trip）→ Canvas 渲染 → `show_screenshot_window` 显示 → 选区下方弹出标注工具栏 → Enter 确认：Canvas `toBlob` → `Uint8Array` Raw body 传后端 → PNG SHA-256 去重 → 主图编码（按 IMAGE_SAVE_QUALITY，默认 JPEG q85）+ 缩略图（nearest resize + THUMB_SAVE_QUALITY 默认 JPEG q10）→ DB image_data + clipboard_history + 系统剪贴板 → 关所有窗口。
 
-**截图窗口独立 entry（2026-07-21）**：截图窗口用独立 HTML（`screenshot.html` → `screenshot-main.tsx`），仅含截图依赖闭包（React + tauri api + annotation + Screenshot，~291KB），与主入口 `index.html`（~1MB，含 CodeMirror/markdown-it/lucide-react）物理隔离。Rust 端 `WebviewUrl::App("screenshot.html")`。Vite multi-entry + Rolldown 自动按 import 闭包分析共享 chunk（react-vendor / tauri-vendor 等）。截图窗口加载量从 1.27MB → 291KB（**降 77%**），ready 时间 ~3s（含 force show 兜底）→ <1s。设计原则：**产物边界 = 依赖边界 = 职责边界**——截图域不应被编辑器域依赖污染。
+**全窗口独立 entry 架构（2026-07-21）**：所有 9 个窗口各自独立 HTML + `src/entries/xxx-main.tsx`，依赖图自然隔离。设计原则：**产物边界 = 依赖边界 = 职责边界**——每窗口的 import 闭包只含自己需要的依赖，CodeMirror 只进 compact-editor/result、lucide-react 只进 settings/vault-picker/password-generator，互不污染。
+
+| 窗口 | HTML | 专属 chunk（实测） | 主导依赖 |
+|---|---|---|---|
+| screenshot_* | screenshot.html | 27 KB | annotation + Screenshot |
+| result_window | result.html | 18 KB | CodeMirror 基础 + SvgIcon |
+| settings_window | settings.html | 170 KB | lucide-react 重度 + radix-ui + ui/* |
+| clipboard_window | clipboard.html | 20 KB | lucide + useClipboardHistory |
+| compact_editor_window | compact-editor.html | 400 KB | CodeMirror 全套 + lezer + markdown-it + ImagePreview |
+| action_bar_window | action-bar.html | 23 KB | lucide + search/urlDetect |
+| overlay_window | overlay.html | 1.5 KB | 极简（lucide 3 icons） |
+| vault_picker_window | vault-picker.html | 15 KB | lucide + password-input |
+| password_generator_window | password-generator.html | 2 KB | 复用 components/PasswordGenerator |
+
+**共享 chunk**（Rolldown 自动 dedupe）：React/ReactDOM（~258 KB `window-*.js`）、@tauri-apps/api、lib/i18n、lib/theme、lib/utils、annotation（screenshot + compact-editor 共用）、createLucideIcon（settings + vault + password-generator 共用）。
+
+**架构变化**：
+- `index.html` / `src/main.tsx` / `src/App.tsx` 退役删除（原 label switch 路由不再需要）
+- 所有 entry 共用 `src/lib/mountApp.tsx`：同步恢复 theme/locale + ErrorBoundary + 后台 IPC 校正（主题 + locale）
+- 跨页共享组件从 `pages/` 上移到 `components/`：`SaveImagePopover`（原 `pages/Clipboard/`，被 Settings/Clipboard 共用）、`PasswordGenerator` + `buildConfig`（原 `pages/Settings/Vault/`，被 Settings/CipherEditor 和独立 PasswordGenerator 窗口共用）
+- vault-picker/password-generator entry 含 vault feature probe（`is_vault_enabled` 防御性检查，逻辑从原 App.tsx 迁移）
+- vite.config.ts `rollupOptions.input` 9 entry，Rolldown 自动 dedupe（无需 manualChunks 对象配置——Vite 8 rolldown 只支持函数形式，且自动 dedupe 已足够）
+
+**优化前对比**：单 bundle 1.27MB 服务所有窗口（main chunk 含 CodeMirror + markdown-it + lucide-react 并集，截图窗口根本不用）。截图窗口加载量 1.27 MB → 291 KB（降 77%）；其他窗口也类似比例减小，各自只加载自己的依赖闭包。
 
 **启动时同步状态恢复（2026-07-21）**：所有窗口启动时同步从 localStorage 恢复主题（`restoreCachedTheme`）+ locale（`restoreCachedLocale`），零 IPC 阻塞渲染。后台 `initI18n` 只做 DB→前端校正（与缓存不一致时才 `setLocale` 触发重渲染）。与原 `initI18n().finally(render)`（等 `get_config` IPC resolve 才 render）对比，消除截图窗口白屏 ~10-50ms。范式对齐 `lib/theme.ts` 的 `restoreCachedTheme` + `applyThemeFromConfig`。
 

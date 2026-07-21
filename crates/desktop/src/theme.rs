@@ -250,7 +250,7 @@ pub fn get_theme_id() -> Result<String, String> {
 
 /// 返回指定窗口应使用的背景色 hex（不含 #），用于 URL 注入。
 /// 非透明窗口（settings/compact_editor）返回主题背景色；透明窗口返回 None。
-/// 前端 index.html 脚本读 URL bg 参数直接设 #hex——零 CSS 依赖，首帧即有色。
+/// 各窗口 HTML 脚本读 URL bg 参数直接设 #hex——零 CSS 依赖，首帧即有色。
 pub fn window_bg_hex(window_label: &str) -> Option<String> {
     // 白名单：只有常规非透明窗口需要背景色。透明窗口（result/clipboard/screenshot）
     // 不注入——它们靠 transparent:true + body transparent 实现穿透/遮罩。
@@ -274,6 +274,6 @@ pub fn window_bg_hex(window_label: &str) -> Option<String> {
     if let Some(hex) = bg.strip_prefix('#') {
         return Some(hex.to_string());
     }
-    // rgba/rgb 格式——原样返回（前端 index.html 判断有无 # 决定是否加 #）
+    // rgba/rgb 格式——原样返回（各窗口 HTML 脚本判断有无 # 决定是否加 #）
     Some(bg.clone())
 }
