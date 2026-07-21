@@ -70,13 +70,13 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const [selected, setSelected] = useState<FolderSelection>("all");
   const [query, setQuery] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [editing, setEditing] = useState<number | "new" | null>(null);
+  const [editing, setEditing] = useState<string | "new" | null>(null);
   // folder prompt dialog 状态：null=关闭，对象=打开（标题/初值不同区分新建/重命名）
   const [prompt, setPrompt] = useState<PromptOptions | null>(null);
   // pending rename 目标（与 prompt 配对：confirm 时按是否设此区分新建 vs 重命名）
   const [renameTarget, setRenameTarget] = useState<FolderDto | null>(null);
   // 刚被点击的卡片 id——短暂高亮（active 态 bg-accent）
-  const [activeId, setActiveId] = useState<number | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
 
   const refreshCiphers = useCallback(async () => {
     try {
