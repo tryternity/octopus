@@ -48,52 +48,45 @@ fn start_platform_listener() {
 
 #[cfg(target_os = "macos")]
 fn restore_focus_platform() {
-    // 2026-07-21 perf：原用 osascript（两次 osascript 进程，每次 ~200ms，共 ~400ms）。
-    // 改用 NSRunningApplication（objc2-app-kit，直调 < 1ms）。
+    // 2026-07-21 revert：曾改用 NSRunningApplication.activate（< 1ms），但实测发现
+    // activate 不触发 windowDidBecomeKey（macOS 已知差异：activate 是 app 级激活，
+    // 不是 window 级 key 切换），导致 CGEvent 发 Cmd+V 不触发菜单快捷键——
+    // Sublime 等原生 app 粘贴失败。回退到 osascript set frontmost（走 System Events
+    // 完整路径，触发 windowDidBecomeKey）。
     //
-    // 逻辑（与原 osascript 等价）：
-    //   1. 读 frontmost app（NSWorkspace）
-    //   2. 如果是 octopus 自己，找另一个非 octopus 的前台 app 来激活
-    //   3. 否则，无条件 re-activate frontmost app（触发 windowDidBecomeKey，
-    //      让窗口成为 key window——这对 CGEvent 发 Cmd+V 触发菜单快捷键至关重要）
-    use objc2_app_kit::{NSRunningApplication, NSWorkspace, NSApplicationActivationOptions};
+    // 性能代价：osascript 两次进程（~400ms），但这是焦点恢复的正确语义。
+    // 未来如需优化，研究 NSApp.activate 或 NSWindow.makeKey 的组合方案。
+    use std::process::Command;
 
-    let workspace = NSWorkspace::sharedWorkspace();
-    let frontmost = workspace.frontmostApplication();
-    let frontmost_name = frontmost.as_ref().and_then(|a| a.localizedName()).map(|s| s.to_string()).unwrap_or_default();
+    // 打印当前前台
+    let frontmost_name = Command::new("osascript")
+        .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
     log::info!("restore_focus: current frontmost = {}", frontmost_name);
 
-    // 判断是否是 octopus 自己
-    let is_octopus = frontmost.as_ref()
-        .and_then(|a| a.bundleIdentifier())
-        .map(|s| s.to_string())
-        .as_deref()
-        .map(|bid| bid.contains("octopus"))
-        .unwrap_or(false)
-        || frontmost_name == "octopus";
-
-    let target: Option<objc2::rc::Retained<NSRunningApplication>> = if is_octopus {
-        // 找另一个非 octopus 的前台 app
-        let apps = workspace.runningApplications();
-        apps.into_iter()
-            .find(|app| {
-                let is_bg = app.activationPolicy() == objc2_app_kit::NSApplicationActivationPolicy::Prohibited;
-                if is_bg { return false; }
-                let name = app.localizedName().map(|s| s.to_string()).unwrap_or_default();
-                name != "octopus" && !name.is_empty()
-            })
-    } else {
-        // 无条件 re-activate frontmost（触发 windowDidBecomeKey）
-        frontmost.clone()
-    };
-
-    if let Some(app) = target {
-        // NSApplicationActivateAllWindows = 1 << 0（项目统一值，见 activation.rs 注释）
-        let _ = app.activateWithOptions(NSApplicationActivationOptions(1 << 0));
-        let name = app.localizedName().map(|s| s.to_string()).unwrap_or_default();
-        log::info!("restore_focus: activated '{}'", name);
-    } else {
-        log::warn!("restore_focus: no target app to activate");
+    // 无条件 re-set frontmost（触发 windowDidBecomeKey）
+    // octopus 是 frontmost 时找另一个 app；否则对当前 frontmost re-activate
+    let script = r#"tell application "System Events"
+        set p to first process whose frontmost is true
+        if name of p is "octopus" then
+            repeat with q in (every process whose background only is false)
+                if name of q is not "octopus" and name of q is not "osascript" then
+                    set frontmost of q to true
+                    set p to q
+                    exit repeat
+                end if
+            end repeat
+        else
+            set frontmost of p to true
+        end if
+        return name of p
+    end tell"#;
+    match Command::new("osascript").args(["-e", script]).output() {
+        Ok(out) => log::info!("restore_focus: activate result = '{}'", String::from_utf8_lossy(&out.stdout).trim()),
+        Err(e) => log::warn!("restore_focus: osascript failed: {}", e),
     }
 }
 
