@@ -517,10 +517,9 @@ export default function VaultPicker() {
             </button>
 
             {/* 列表区：搜索框有内容 → searchResults（全量搜索）；空 → view.ciphers（URL 匹配或空）。
-                固定 2 条高度（176px）——不管内容多少整体大小不变。超过 2 条滚动条出现。
-                滚动条强制常显（overflow: scroll 而非 auto）——macOS 默认 hover 才出现，
-                但此页面用户需要知道是否有更多数据。 */}
-            <div className="flex-1" style={{ height: "176px", overflowY: "scroll" }}>
+                固定 2 条高度（176px）——不管内容多少整体大小不变。
+                overflow-y: auto——内容溢出时 macOS 默认 hover 显示滚动条（鼠标进入列表区即出现）。 */}
+            <div className="flex-1" style={{ height: "176px", overflowY: "auto" }}>
               {(searchQuery.trim() !== "" ? searchResults : view.ciphers).map((c) => {
                 const username = c.login?.username || "";
                 const password = c.login?.password || "";
