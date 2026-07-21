@@ -79,6 +79,7 @@ export default function VaultPicker() {
   // 搜索模式（URL 检测失败 → 空列表时用户手动搜索，2026-07-21 安全加固）
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<CipherDto[]>([]);
+  // searchTimerRef: debounce 150ms 搜索
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debouncedSearch = useCallback((q: string) => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -102,14 +103,10 @@ export default function VaultPicker() {
     setView({ kind: "loading" });
     setUnlockError(null);
     try {
-      // 并行拉匹配 cipher + 当前 URL（URL 命中时预填搜索框）
-      const [list, url] = await Promise.all([
-        invoke<CipherDto[]>("vault_detect_and_match"),
-        invoke<string | null>("vault_get_cached_url"),
-      ]);
-      const urlStr = url || "";
-      // URL 命中 → 搜索框预填 URL（展示命中来源）；未命中 → 空（用户手动搜索）
-      setSearchQuery(urlStr);
+      const list = await invoke<CipherDto[]>("vault_detect_and_match");
+      // 搜索框初始为空——命中时直接展示 URL 匹配的 cipher 列表（view.ciphers），
+      // 用户输入搜索词后切换到全量搜索结果（searchResults），清空则回到原始列表。
+      setSearchQuery("");
       setSearchResults([]);
       setView({ kind: "list", ciphers: list });
     } catch (e) {
@@ -518,15 +515,10 @@ export default function VaultPicker() {
               + {t("settings.vault.autotype.createForThisSite")}
             </button>
 
-            {/* 列表区：URL 命中显示 view.ciphers；用户搜索后显示 searchResults。
-                max-height 5 条（5 × 88px = 440px），超出滚动。空时显示提示。 */}
-            <div className="flex-1 overflow-y-auto" style={{ maxHeight: "440px" }}>
-              {(view.ciphers.length > 0 || searchResults.length > 0
-                ? view.ciphers.length > 0
-                  ? view.ciphers
-                  : searchResults
-                : []
-              ).map((c) => {
+            {/* 列表区：搜索框有内容 → searchResults（全量搜索）；空 → view.ciphers（URL 匹配或空）。
+                max-height 5 条（5 × 88px + 3px 余量），超出滚动。 */}
+            <div className="flex-1 overflow-y-auto" style={{ maxHeight: "443px" }}>
+              {(searchQuery.trim() !== "" ? searchResults : view.ciphers).map((c) => {
                 const username = c.login?.username || "";
                 const password = c.login?.password || "";
                 const revealed = !!revealedPasswords[c.id];
@@ -654,8 +646,9 @@ export default function VaultPicker() {
                 );
               })}
 
-              {/* 空列表提示（URL 未命中 + 搜索框空时）*/}
-              {view.ciphers.length === 0 && searchResults.length === 0 && searchQuery.trim() === "" && (
+              {/* 空列表提示（搜索框空 + URL 未命中）。
+                  搜索框有内容但无结果时不提示（用户看到列表空自然知道）。*/}
+              {searchQuery.trim() === "" && view.ciphers.length === 0 && (
                 <div className="py-4 text-center text-xs text-muted-foreground">
                   {t("settings.vault.autotype.noMatch")}
                 </div>
