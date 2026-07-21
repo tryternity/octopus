@@ -16,10 +16,33 @@ use crate::sync::error::{classify_git_error, SyncError};
 
 // === 辅助 ===
 
+/// 构造一个非交互的 git Command（设禁用 prompt 的环境变量 + stdin /dev/null）。
+///
+/// **关键不变量**：octopus 在 Tauri 后端进程里跑 git，**stdin 脱离终端**——任何
+/// 交互式凭据 prompt（用户名/密码）都会让进程卡死，UI 上看到的是"无限转圈"，
+/// 用户根本无法输入。
+///
+/// 禁用 prompt 的三层防御：
+/// 1. `GIT_TERMINAL_PROMPT=0`——git 遇到 HTTPS 凭据需求立即失败（不读 stdin）
+/// 2. `GIT_ASKPASS=` + `SSH_ASKPASS=`——禁用外部 askpass 程序（macOS Keychain 等）
+/// 3. stdin `/dev/null`——双保险，即使前两个被忽略 git 也立即读到 EOF 失败
+///
+/// 失败后由 classify_git_error 把"terminal prompts disabled"/"Authentication failed"
+/// 等错误信息翻译为 SyncError，前端 toast 显示用户可读消息。
+fn git_command(args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        // stdin → /dev/null：git 读不到任何输入立即失败，而非阻塞等 TTY
+        .stdin(std::process::Stdio::null());
+    cmd
+}
+
 /// 跑 git 命令——成功返 stdout，失败返 SyncError（按 stderr 分类）。
 fn run_git(path: &Path, args: &[&str]) -> Result<String, SyncError> {
-    let output = Command::new("git")
-        .args(args)
+    let output = git_command(args)
         .current_dir(path)
         .output()
         .context("git 命令调用失败（git 未安装?）")
@@ -42,8 +65,7 @@ fn run_git_allow_codes(
     allow_exit_codes: &[i32],
     allow_stderr_contains: &[&str],
 ) -> Result<String, SyncError> {
-    let output = Command::new("git")
-        .args(args)
+    let output = git_command(args)
         .current_dir(path)
         .output()
         .context("git 命令调用失败")
@@ -101,6 +123,16 @@ pub fn git_remote_add(path: &Path, name: &str, url: &str) -> Result<(), SyncErro
 /// `git remote remove <name>`——删除 remote。
 pub fn git_remote_remove(path: &Path, name: &str) -> Result<(), SyncError> {
     run_git(path, &["remote", "remove", name])?;
+    Ok(())
+}
+
+/// `git remote set-url <name> <url>`——改 remote 的 URL。
+///
+/// 用于 sync_now 兜底改写：当 .git/config 里的 remote URL 是 HTTPS（用户在自动
+/// 改写功能加上之前 add 的，或 SSH key 后装的），sync_now 入口先 set-url 改成 SSH，
+/// 避免 push 时卡在 GitHub HTTPS 用户名 prompt。
+pub fn git_remote_set_url(path: &Path, name: &str, url: &str) -> Result<(), SyncError> {
+    run_git(path, &["remote", "set-url", name, url])?;
     Ok(())
 }
 
@@ -232,10 +264,11 @@ pub fn git_status_has_changes(path: &Path) -> Result<bool, SyncError> {
 /// `git ls-remote --heads <url>`——测试连接（成功返 true）。
 ///
 /// 不需要本地 repo——直接对远程 URL 操作。用于「测试连接」按钮。
+///
+/// **关键**：用 `git_command` 构造（禁用 prompt + stdin /dev/null）——
+/// 避免私有 HTTPS 库的凭据 prompt 卡死 Tauri 后端进程（用户已踩坑）。
 pub fn git_ls_remote(url: &str) -> Result<bool, SyncError> {
-    // ls-remote 不需要 current_dir，但 Command 要求一个工作目录——用 /tmp 兜底
-    let output = Command::new("git")
-        .args(["ls-remote", "--heads", url])
+    let output = git_command(&["ls-remote", "--heads", url])
         .output()
         .context("git ls-remote 调用失败")
         .map_err(SyncError::Other)?;
@@ -245,6 +278,50 @@ pub fn git_ls_remote(url: &str) -> Result<bool, SyncError> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(classify_git_error(&stderr))
     }
+}
+
+/// 验证本机 SSH key 能否认证指定 host（HTTPS → SSH 自动转换的前置检查）。
+///
+/// 跑 `ssh -T -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new git@<host>`：
+/// - **GitHub**：返 exit 1 + stderr "Hi <user>! You've successfully authenticated..."
+///   （GitHub 不允许 shell 访问，exit 1 但 stderr 是问候语）
+/// - **Gitee**：返 exit 0 + 类似问候
+/// - **失败**：exit 255 + "Permission denied (publickey)" / "Could not resolve hostname" 等
+///
+/// 返 `Ok(true)` = SSH key 可用；`Ok(false)` = 不可用（key 未配 / host 不通）；
+/// `Err` = ssh 命令本身调不动（系统无 ssh）。
+///
+/// 关键：`-T` 禁用 TTY 分配（避免阻塞）；`StrictHostKeyChecking=accept-new`
+/// 自动接受首次连接的 host key（用户不必先手动 ssh -T 一次）。
+pub fn verify_ssh_key_for_host(host: &str) -> Result<bool, SyncError> {
+    use std::process::Command;
+    let output = Command::new("ssh")
+        .args([
+            "-T",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes", // 永不交互——避免卡密码 prompt
+            format!("git@{}", host).as_str(),
+        ])
+        .output()
+        .context("ssh 命令调用失败（系统未装 ssh?）")
+        .map_err(SyncError::Other)?;
+
+    // GitHub: exit 1 + stderr 含 "successfully authenticated"（不允许 shell，故 exit 非 0）
+    // Gitee: exit 0
+    // 失败: exit 255（Permission denied / host unreachable）
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let combined = format!("{} {}", stdout, stderr).to_lowercase();
+
+    // 关键成功标志（覆盖 GitHub / Gitee 两种问候）
+    let success = combined.contains("successfully authenticated")
+        || combined.contains("welcome to gitee")
+        || combined.contains("you've successfully authenticated");
+    Ok(success)
 }
 
 /// `git ls-remote` 结果——区分成功（返 refs）、失败、超时。
@@ -273,12 +350,7 @@ pub struct LsRemoteResult {
 pub fn git_ls_remote_with_timeout(url: &str, timeout_secs: u64) -> Result<LsRemoteResult, SyncError> {
     use std::time::{Duration, Instant};
 
-    let mut child = Command::new("git")
-        .args(["ls-remote", "--heads", url])
-        // 关键：禁用凭据 prompt——私有 HTTPS 库遇 401/404 会立即失败
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "")
-        .env("SSH_ASKPASS", "")
+    let mut child = git_command(&["ls-remote", "--heads", url])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -510,6 +582,23 @@ mod tests {
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].0, "origin");
         assert_eq!(remotes[0].1, "git@github.com:user/repo.git");
+    }
+
+    /// `git remote set-url` 把 HTTPS remote 改成 SSH（sync_now 兜底逻辑的基础）。
+    #[test]
+    fn git_remote_set_url_updates_url() {
+        if !has_git() {
+            return;
+        }
+        let tmp = init_repo();
+        let path = tmp.path();
+
+        git_remote_add(path, "origin", "https://github.com/user/repo.git").expect("add remote");
+        git_remote_set_url(path, "origin", "git@github.com:user/repo.git").expect("set-url");
+
+        let remotes = git_remote_list(path).expect("list");
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].1, "git@github.com:user/repo.git", "set-url 后应是新 URL");
     }
 
     #[test]

@@ -19,6 +19,12 @@ pub enum SyncError {
     SshPermissionDenied(String),
     /// SSH host key 未验证（首次连 github.com 等）。
     SshHostKeyUnverified,
+    /// HTTPS 凭据需求——remote 要求用户名/密码/PAT，但 octopus 禁用了交互 prompt。
+    ///
+    /// 典型 stderr：`could not read Username for 'https://...'` / `Authentication failed`
+    /// / `Password authentication is not supported`。
+    /// GitHub 自 2021-08 起禁用 HTTPS 密码认证——必须用 SSH key 或 PAT。
+    CredentialsRequired(String),
     /// 远程仓库不存在 / URL 错误。
     RemoteNotFound(String),
     /// `~/.octopus/.vault/` 未初始化（git init 未跑）。
@@ -57,6 +63,10 @@ impl std::fmt::Display for SyncError {
             SyncError::SshHostKeyUnverified => write!(
                 f,
                 "SSH host key 未验证——请在终端运行 `ssh -T git@github.com`（或对应 host）确认"
+            ),
+            SyncError::CredentialsRequired(_msg) => write!(
+                f,
+                "远程仓库需要认证但无法交互输入——请配 SSH key（推荐）或使用 SSH/PAT URL，避免 HTTPS 凭据"
             ),
             SyncError::RemoteNotFound(msg) => write!(f, "远程仓库不存在或 URL 错误：{}", msg),
             SyncError::RepoNotInitialized => write!(f, "同步仓库未初始化"),
@@ -99,6 +109,15 @@ pub fn classify_git_error(stderr: &str) -> SyncError {
     let lower = stderr.to_lowercase();
     if lower.contains("host key verification failed") || lower.contains("authenticity of host") {
         SyncError::SshHostKeyUnverified
+    } else if lower.contains("terminal prompts disabled")
+        || lower.contains("could not read username")
+        || lower.contains("could not read password")
+        || lower.contains("authentication failed")
+        || lower.contains("password authentication is not supported")
+        || lower.contains("invalid username or token")
+    {
+        // HTTPS 凭据需求——octopus 禁用了交互 prompt，git 无法读输入直接失败
+        SyncError::CredentialsRequired(stderr.to_string())
     } else if lower.contains("permission denied (publickey)")
         || lower.contains("permission denied")
         || lower.contains("could not read from remote repository")
@@ -149,6 +168,21 @@ mod tests {
     fn classify_repo_not_found() {
         let e = classify_git_error("repository not found");
         assert!(matches!(e, SyncError::RemoteNotFound(_)));
+    }
+
+    #[test]
+    fn classify_credentials_required() {
+        // GitHub HTTPS 失败的典型 stderr——octopus 禁用 prompt 后 git 立即失败
+        let e = classify_git_error(
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+        );
+        assert!(matches!(e, SyncError::CredentialsRequired(_)));
+
+        // push 失败带完整错误链
+        let e = classify_git_error(
+            "remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/owner/repo/'",
+        );
+        assert!(matches!(e, SyncError::CredentialsRequired(_)));
     }
 
     #[test]

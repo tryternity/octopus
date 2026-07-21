@@ -180,10 +180,12 @@ pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
-    // 私有库守卫——硬阻断公有库
+    // 私有库守卫——硬阻断公有库（用原始 URL 检测，避免 SSH 转换后检测逻辑混乱）
     ensure_private_repo(url)?;
-    git::git_remote_add(&root, name, url)?;
-    log::info!("[sync] 添加 remote: {} → {}", name, url);
+    // HTTPS → SSH 自动改写（github.com / gitee.com 的 HTTPS URL，且本机 SSH key 可用）
+    let effective_url = maybe_rewrite_to_ssh(url)?;
+    git::git_remote_add(&root, name, &effective_url)?;
+    log::info!("[sync] 添加 remote: {} → {}（effective: {}）", name, url, effective_url);
     Ok(())
 }
 
@@ -213,6 +215,100 @@ fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
         PrivacyVerdict::NetworkError(msg) => {
             log::warn!("[sync] 仓库可见性检测网络错误（放行）: {} —— {}", url, msg);
             Ok(())
+        }
+    }
+}
+
+/// HTTPS → SSH 自动改写（2026-07-21 增补）。
+///
+/// 对 `github.com` / `gitee.com` 的 HTTPS URL，先验证本机 SSH key 能认证该 host：
+/// - SSH key 可用 → 返 SSH URL（scp-like）
+/// - SSH key 不可用 / ssh 命令失败 → 返原 HTTPS URL（让用户后续 push 失败时得到原始错误）
+///
+/// 对其他 URL（SSH 协议 / 自建 host / 本地路径）→ 直接返原值。
+///
+/// 设计动机：GitHub 自 2021-08 禁用 HTTPS 密码认证，仅支持 PAT。
+/// 用户从浏览器复制的 URL 默认 HTTPS——自动转 SSH 用 `~/.ssh/` 私钥，
+/// 避免「Password authentication is not supported」死局（用户已踩坑）。
+///
+/// **不做静默转换失败**：SSH 验证失败时返原 URL，但后续 push 失败的错误信息
+/// 会被前端 toast 显示（含 GitHub 的 "Password authentication is not supported"），
+/// 用户能据此判断要配 SSH key 还是要换 URL。
+fn maybe_rewrite_to_ssh(url: &str) -> Result<String, SyncError> {
+    let Some(ssh_url) = privacy::try_convert_https_to_ssh(url) else {
+        return Ok(url.to_string());
+    };
+    // 解析 SSH URL 拿 host 做 ssh -T 预检
+    let parsed = privacy::GitRemoteUrl::parse(&ssh_url)?;
+    log::info!(
+        "[sync] 检测到 {} HTTPS URL，验证 SSH key 后尝试转 SSH: {}",
+        parsed.host, url
+    );
+    match git::verify_ssh_key_for_host(&parsed.host) {
+        Ok(true) => {
+            log::info!(
+                "[sync] SSH key 可用，HTTPS → SSH: {} → {}",
+                url, ssh_url
+            );
+            Ok(ssh_url)
+        }
+        Ok(false) => {
+            log::warn!(
+                "[sync] SSH key 不可用（保留 HTTPS，后续 push 可能失败）: {}",
+                url
+            );
+            Ok(url.to_string())
+        }
+        Err(e) => {
+            log::warn!(
+                "[sync] SSH 预检失败（保留 HTTPS）: {} —— {}",
+                url, e
+            );
+            Ok(url.to_string())
+        }
+    }
+}
+
+/// sync_now 入口对每个 remote 检查并自动改写 HTTPS → SSH（2026-07-21 增补）。
+///
+/// 解决场景：用户在自动改写功能**加上之前**已经 `git remote add` 过 HTTPS URL，
+/// `.git/config` 里是 HTTPS——sync_now 时 push 会卡在 GitHub 用户名 prompt
+/// （GitHub 已禁用 HTTPS 密码认证）。或用户先加的 HTTPS，后来才装的 SSH key。
+///
+/// 流程：遍历 .git/config 里的所有 remote：
+/// - HTTPS URL 且 SSH key 可用 → `git remote set-url` 改 SSH
+/// - HTTPS URL 且 SSH key 不可用 → 不动（保留 HTTPS，让 push 错误由 toast 暴露）
+/// - SSH URL / 自建 host / 本地路径 → 不动
+///
+/// 错误处理：单个 remote 改写失败不影响其他 remote，只记日志。
+pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
+    let remotes = match git::git_remote_list(root) {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[sync] 列 remote 失败，跳过 SSH 改写：{}", e);
+            return;
+        }
+    };
+    for (name, url) in &remotes {
+        match maybe_rewrite_to_ssh(url) {
+            Ok(rewritten) if rewritten != *url => {
+                // 改写后 URL 不同——set-url
+                match git::git_remote_set_url(root, name, &rewritten) {
+                    Ok(()) => log::info!(
+                        "[sync] sync_now 自动改写 remote {}：{} → {}",
+                        name, url, rewritten
+                    ),
+                    Err(e) => log::warn!(
+                        "[sync] sync_now 自动改写 remote {} 失败（保留 HTTPS）：{}",
+                        name, e
+                    ),
+                }
+            }
+            Ok(_) => { /* URL 未变（已是 SSH / SSH key 不可用 / 非 github/gitee） */ }
+            Err(e) => log::warn!(
+                "[sync] remote {} 改写检测失败（保留 {}）：{}",
+                name, url, e
+            ),
         }
     }
 }
@@ -253,9 +349,14 @@ pub fn clone_from(remote_url: &str) -> Result<(), SyncError> {
 ///
 /// **私有库守卫**（2026-07-21）：clone 前先校验 URL——避免从公有库 clone 进来
 /// （如果远程是公有库，说明用户配错了 remote；clone 完才发现为时已晚）。
+///
+/// **HTTPS → SSH 自动改写**（2026-07-21）：同 add_remote，github.com / gitee.com
+/// 的 HTTPS URL 在 SSH key 可用时转 SSH，避免 clone 时遇到 HTTPS 认证失败。
 fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
-    // 私有库守卫——硬阻断公有库（在 git_clone 之前，避免误 clone 进来）
+    // 私有库守卫——硬阻断公有库（用原始 URL 检测）
     ensure_private_repo(remote_url)?;
+    // HTTPS → SSH 自动改写
+    let effective_url = maybe_rewrite_to_ssh(remote_url)?;
 
     let root = store::vault_root();
     // 确保父目录存在
@@ -265,8 +366,8 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
             .map_err(SyncError::Other)?;
     }
 
-    // 1. git clone（clone 会创建 .vault 目录）
-    git::git_clone(remote_url, &root)?;
+    // 1. git clone（clone 会创建 .vault 目录；用 effective_url 走 SSH）
+    git::git_clone(&effective_url, &root)?;
 
     // 2. 读 meta.json → upsert vault_meta
     let meta_file = store::read_meta_file()?;
@@ -377,6 +478,9 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
 
     // 0. 清理崩溃残留
     git::cleanup_in_progress_ops(&root)?;
+
+    // 0.5 兜底：把已有 HTTPS remote 自动改成 SSH（避免 GitHub HTTPS 卡用户名 prompt）
+    ensure_remotes_use_ssh_when_possible(&root);
 
     // 1. fetch
     git::git_fetch_all(&root)?;
@@ -613,5 +717,21 @@ mod tests {
     #[test]
     fn ensure_private_rejects_unknown_scheme() {
         assert!(ensure_private_repo("git://host/repo.git").is_err());
+    }
+
+    // === maybe_rewrite_to_ssh（2026-07-21 增补） ===
+
+    /// 非 github/gitee URL 不改写（自建 host、SSH URL、本地路径都应原样返回）。
+    #[test]
+    fn rewrite_preserves_non_github_gitee_urls() {
+        // SSH URL 不改写
+        let ssh = "git@github.com:owner/repo.git";
+        assert_eq!(maybe_rewrite_to_ssh(ssh).unwrap(), ssh);
+        // 自建 host 不改写（即使 HTTPS）
+        let self_hosted = "https://gitlab.com/owner/repo.git";
+        assert_eq!(maybe_rewrite_to_ssh(self_hosted).unwrap(), self_hosted);
+        // 本地路径不改写
+        let local = "/abs/path/to/repo";
+        assert_eq!(maybe_rewrite_to_ssh(local).unwrap(), local);
     }
 }

@@ -379,6 +379,43 @@ fn http_get_json(url: &str, timeout_secs: u64) -> HttpResult {
     }
 }
 
+// === HTTPS → SSH 自动转换（2026-07-21 增补） ===
+
+/// 支持 HTTPS → SSH 自动转换的 host 白名单。
+///
+/// 仅这些 host 的 HTTPS URL 会被尝试转 SSH——它们是主流托管平台，
+/// 双协议一定可用、SSH 端口（22）必然开放。自建 GitLab/Gitea 不在列
+/// （SSH 端口可能被封 / 改端口 / 未启用）。
+const HTTPS_TO_SSH_HOSTS: &[&str] = &["github.com", "gitee.com"];
+
+/// 把 github.com / gitee.com 的 HTTPS URL 转成 SSH URL（scp-like）。
+///
+/// 转换规则（owner/repo 从 path 最后两段提取）：
+/// - `https://github.com/owner/repo` → `git@github.com:owner/repo.git`
+/// - `https://github.com/owner/repo.git` → `git@github.com:owner/repo.git`
+/// - `https://user:token@github.com/owner/repo` → `git@github.com:owner/repo.git`（丢 userinfo）
+/// - `https://gitee.com/owner/repo` → `git@gitee.com:owner/repo.git`
+///
+/// 返回 `None` 的情况：
+/// - URL 不是 HTTPS 协议
+/// - host 不在白名单（github.com/gitee.com）
+/// - 解析不出 owner/repo（路径太短）
+///
+/// 设计动机：GitHub 自 2021-08 起禁用 HTTPS 密码认证，仅支持 PAT。
+/// 用户从浏览器复制的 URL 默认是 HTTPS——octopus 自动转 SSH 用 `~/.ssh/` 私钥，
+/// 避免「HTTPS 不支持密码认证」的死局（用户已踩坑）。
+pub fn try_convert_https_to_ssh(url: &str) -> Option<String> {
+    let parsed = GitRemoteUrl::parse(url).ok()?;
+    if parsed.scheme != GitScheme::Https {
+        return None;
+    }
+    if !HTTPS_TO_SSH_HOSTS.contains(&parsed.host.as_str()) {
+        return None;
+    }
+    let (owner, repo) = parsed.owner_repo?;
+    Some(format!("git@{}:{}/{}.git", parsed.host, owner, repo))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,5 +648,82 @@ mod tests {
             "不存在/私有库应是 Ambiguous: {:?}",
             v
         );
+    }
+
+    // === try_convert_https_to_ssh（2026-07-21 增补） ===
+
+    #[test]
+    fn convert_github_https_to_ssh() {
+        assert_eq!(
+            try_convert_https_to_ssh("https://github.com/owner/repo.git").as_deref(),
+            Some("git@github.com:owner/repo.git"),
+        );
+        // 无 .git 后缀也要能转
+        assert_eq!(
+            try_convert_https_to_ssh("https://github.com/owner/repo").as_deref(),
+            Some("git@github.com:owner/repo.git"),
+        );
+    }
+
+    #[test]
+    fn convert_gitee_https_to_ssh() {
+        assert_eq!(
+            try_convert_https_to_ssh("https://gitee.com/owner/repo.git").as_deref(),
+            Some("git@gitee.com:owner/repo.git"),
+        );
+    }
+
+    #[test]
+    fn convert_https_with_userinfo_strips_credentials() {
+        // 用户在 URL 内嵌 token 的写法——转 SSH 后必须丢 userinfo
+        assert_eq!(
+            try_convert_https_to_ssh("https://user:token@github.com/owner/repo.git").as_deref(),
+            Some("git@github.com:owner/repo.git"),
+        );
+    }
+
+    #[test]
+    fn convert_returns_none_for_ssh_input() {
+        // 已经是 SSH URL——不应再转
+        assert_eq!(try_convert_https_to_ssh("git@github.com:owner/repo.git"), None);
+        assert_eq!(
+            try_convert_https_to_ssh("ssh://git@github.com/owner/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn convert_returns_none_for_self_hosted() {
+        // 自建 GitLab/Gitea 不在白名单
+        assert_eq!(
+            try_convert_https_to_ssh("https://github.mycompany.com/owner/repo.git"),
+            None,
+            "自建 GitHub Enterprise 不应自动转——SSH 端口可能不通"
+        );
+        assert_eq!(
+            try_convert_https_to_ssh("https://gitlab.com/owner/repo.git"),
+            None,
+            "gitlab.com 不在白名单（避免误改用户特意配的 HTTPS）"
+        );
+    }
+
+    #[test]
+    fn convert_returns_none_for_file_url() {
+        assert_eq!(try_convert_https_to_ssh("file:///path/to/repo"), None);
+        assert_eq!(try_convert_https_to_ssh("/abs/path"), None);
+    }
+
+    #[test]
+    fn convert_returns_none_for_empty_or_invalid() {
+        assert_eq!(try_convert_https_to_ssh(""), None);
+        // path 只有一段，没有 owner/repo
+        assert_eq!(try_convert_https_to_ssh("https://github.com/onlyone"), None);
+    }
+
+    #[test]
+    #[ignore = "真实 ssh -T GitHub——需联网且本机已配 SSH key"]
+    fn integration_verify_ssh_key_for_github() {
+        let ok = crate::sync::git::verify_ssh_key_for_host("github.com").unwrap();
+        assert!(ok, "本机 SSH key 应能认证 GitHub");
     }
 }
