@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1 已实现（T1-T5 完成，待 e2e 测试）
+> **状态**：Phase 1 已实现（T1-T9 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护；待 e2e 测试）
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -35,6 +35,7 @@
 | cipher id 改 UUID 字符串（前置改造） | Bitwarden 协议兼容（已弃，加密格式不通） |
 | macOS / Linux 支持 | Windows 测试（shell out git 跨平台一致） |
 | 远程已存在 repo 时 clone + 解锁即用 | 远程 repo 自动创建（用户手动建）|
+| **私有库检测守卫**（§4.8，add_remote/clone 拒绝公有库） | PAT 认证后的精确私有库识别（Phase 2 加 PAT 才能区分 404 歧义）|
 
 ### 0.3 非目标
 
@@ -215,14 +216,16 @@ CREATE TABLE vault_folders (
 );
 ```
 
-### 3.3 schema 版本升级 v38 → v39
+### 3.3 schema 版本升级 v43 → v44
 
-v39 迁移：
+> **修正**：spec 原写 v38→v39，但实施时 user_version 已经到 v43（main 上其他功能推进），实际是 v43→v44。详见 [plan §关键决策变化](../plans/2026-07-21-vault-git-sync.md#关键决策变化)。
+
+v44 迁移：
 1. 新建 `vault_ciphers_new` 和 `vault_folders_new`（id TEXT PRIMARY KEY）
 2. 旧表数据 → 新表（为每行生成 UUID，写一份 `old_id_to_uuid` 映射暂存）
 3. 修复 `vault_ciphers.folder_id` 引用（按映射翻译）
 4. DROP 旧表，RENAME 新表
-5. `PRAGMA user_version = 39`
+5. `PRAGMA user_version = 44`
 
 ### 3.4 vault 文件存储格式（新增模块，T2）
 
@@ -466,6 +469,10 @@ fn merge_outlines(local: Outline, remote: Outline) -> Outline {
 | cipher 文件解密失败 | user_vault_key 不匹配 → 跳过该 cipher + 记 failures 列表（与现有 list_ciphers 一致）|
 | 同步中 app 崩溃 | git repo 状态可能不干净（merge in progress）→ 下次同步前 `git merge --abort` 清理 |
 | 用户中途换主密码 | security_stamp 不一致 → 拒绝同步，提示「远程 vault 用了不同主密码」|
+| add_remote/clone 输入公有库 | §4.8 私有库守卫硬阻断 → `PublicRepoRejected`，提示用户改 Private 或换 URL |
+| add_remote/clone 输入本地路径 | §4.8 私有库守卫 → `LocalPathRejected`，提示用户用 GitHub/Gitee URL |
+| GitHub API 限流（60/h/IP） | §4.8 检测返 `Ambiguous`（不阻断）→ 用户可继续或换用 SSH |
+| 私有库检测网络错误 | §4.8 检测返 `NetworkError`（不阻断）→ 用户可继续或稍后重试 |
 
 ---
 
@@ -514,6 +521,103 @@ owner/repo 从 URL path 最后两段提取，去 `.git` 后缀 + trailing `/`。
 
 ---
 
+### 4.9 HTTPS → SSH 自动改写（2026-07-21 增补）
+
+**动机**：用户从浏览器复制的 GitHub/Gitee URL 默认是 HTTPS，但 GitHub 自 2021-08
+起禁用 HTTPS 密码认证仅支持 PAT。用户已踩坑：`Password authentication is not
+supported for Git operations`。用户机器通常已配 SSH key（开发者几乎必然），
+所以 octopus 自动把 HTTPS URL 改写成 SSH URL，让 `~/.ssh/` 私钥接管认证。
+
+**范围**：仅 `github.com` / `gitee.com`（主流平台双协议必可用，SSH 端口 22 必开放）。
+自建 GitLab/Gitea / GitHub Enterprise 不在列（SSH 端口可能被封 / 改端口）。
+
+**流程**（add_remote / clone_initial 入口，私有库守卫之后）：
+
+```
+HTTPS URL → try_convert_https_to_ssh()
+  ├─ 非 github/gitee / 已是 SSH / 本地路径 → 返原 URL（不改写）
+  └─ github/gitee HTTPS URL → 生成 SSH URL → verify_ssh_key_for_host(host)
+       ├─ SSH key 可用 → 返 SSH URL（实际 add/clone 用 SSH）
+       └─ SSH key 不可用 / ssh 命令失败 → 返原 HTTPS URL（保留，后续 push 错误由 toast 暴露）
+```
+
+**URL 转换规则**：
+
+| HTTPS URL | SSH URL |
+|---|---|
+| `https://github.com/owner/repo` | `git@github.com:owner/repo.git` |
+| `https://github.com/owner/repo.git` | `git@github.com:owner/repo.git` |
+| `https://user:token@github.com/owner/repo` | `git@github.com:owner/repo.git`（丢 userinfo）|
+| `https://gitee.com/owner/repo` | `git@gitee.com:owner/repo.git` |
+
+**SSH key 预检**：`ssh -T -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes git@<host>`
+- GitHub 返 exit 1 + stderr `Hi <user>! You've successfully authenticated...`（不允许 shell 故 exit 非 0）
+- Gitee 返 exit 0 + 类似问候
+- 失败返 exit 255 + `Permission denied (publickey)` / `Could not resolve hostname`
+
+关键 SSH 选项：
+- `-T`：禁用 TTY 分配（避免阻塞）
+- `BatchMode=yes`：永不交互（避免卡密码 prompt）
+- `StrictHostKeyChecking=accept-new`：首次连接自动接受 host key（省去用户先手动 `ssh -T` 一次）
+
+**存储形式**：转 SSH 后直接存（`.git/config` 里是 SSH URL，Remote 列表显示也是 SSH）。
+用户在 SyncPanel 看到的 URL 是 SSH 形式——与实际生效协议一致，避免认知混淆。
+如果用户输 HTTPS 但看到 SSH，是预期的（自动转换的副作用）。
+
+**失败不阻断**：SSH key 验证失败时不阻断用户——保留 HTTPS URL，让后续 push 失败的
+错误（如 `Password authentication is not supported`）通过 toast 暴露，用户能据此
+判断是配 SSH key 还是改 URL。
+
+**新增 API**：
+- `privacy::try_convert_https_to_ssh(url) -> Option<String>`：纯函数 URL 转换
+- `git::verify_ssh_key_for_host(host) -> Result<bool, SyncError>`：shell out `ssh -T`
+- `git::git_remote_set_url(path, name, url)`：shell out `git remote set-url`
+- `engine::maybe_rewrite_to_ssh(url) -> Result<String, SyncError>`：组合转换 + 预检
+- `engine::ensure_remotes_use_ssh_when_possible(root)`：sync_now 入口对已有 remote 兜底改写
+
+**sync_now 兜底（避免盲区）**：`add_remote` 时改写只对**新加的** remote 生效——
+但用户可能在自动改写功能加上**之前**就 `git remote add` 了 HTTPS URL（`.git/config`
+里写死 HTTPS），或 SSH key 是后装的。sync_now 入口在 `cleanup_in_progress_ops`
+之后、`fetch` 之前调 `ensure_remotes_use_ssh_when_possible`：遍历所有 remote，
+对 github/gitee HTTPS URL 且本机 SSH key 可用的 → `git remote set-url` 改 SSH，
+单个 remote 改写失败不影响其他 remote（只记日志）。
+
+---
+
+### 4.10 非交互 prompt 防护（2026-07-21 增补）
+
+**动机**：octopus 在 Tauri 后端进程里跑 git，**stdin 脱离终端**——任何交互式
+凭据 prompt（用户名/密码）都会让进程卡死，UI 上看到的是"无限转圈"，用户根本
+无法输入。用户已踩坑：HTTPS GitHub 库 push 时 git 输出 `Username for 'https://github.com':`
+然后无限等待。
+
+**不变量（INV-S14）**：所有 git 命令都必须**非交互**——禁用 prompt + stdin /dev/null。
+
+**实现**：`git_command(args)` helper 统一构造 Command，设 3 层防御：
+1. `GIT_TERMINAL_PROMPT=0`——git 遇 HTTPS 凭据需求立即失败（不读 stdin）
+2. `GIT_ASKPASS=` + `SSH_ASKPASS=`——禁用外部 askpass 程序（macOS Keychain 等）
+3. stdin → `/dev/null`——双保险，即使前两个被忽略 git 也立即读到 EOF 失败
+
+**统一接入**：`run_git` / `run_git_allow_codes` / `git_ls_remote` /
+`git_ls_remote_with_timeout` 全部用 `git_command` 构造，**所有** git 命令都默认非交互。
+
+**错误分类**：禁用 prompt 后 git 失败的 stderr 含特定字符串，`classify_git_error`
+识别后归 `SyncError::CredentialsRequired`，前端 toast 显示"远程仓库需要认证但无法
+交互输入——请配 SSH key（推荐）或使用 SSH/PAT URL"，引导用户改用 SSH key。
+识别关键字：
+- `terminal prompts disabled`
+- `could not read username/password`
+- `authentication failed`
+- `password authentication is not supported`
+- `invalid username or token`
+
+**为什么不实现 UI 凭据输入**：
+- 安全：octopus 设计原则是不接触凭证（spec §1.5），让 git/ssh/keychain 全自动
+- 工程量：UI 凭据输入要处理密码存储 / Keychain 集成 / 多 remote 凭据管理，复杂度高
+- 替代方案更优：SSH key 一次配置永久有效，PAT 也可用，HTTPS 用户名密码体验最差
+
+---
+
 ## 5. 不变量
 
 | # | 不变量 | 说明 |
@@ -528,6 +632,10 @@ owner/repo 从 URL path 最后两段提取，去 `.git` 后缀 + trailing `/`。
 | INV-S8 | 同步过程中必须持 SyncState 锁 | 防并发触发 |
 | INV-S9 | 远程 security_stamp ≠ 本地时拒绝同步 | 防主密码不一致 |
 | INV-S10 | cipher 文件加密用 user_vault_key（不是 app_key）| 与 SQLite 一致 |
+| INV-S11 | add_remote / clone_from 入口必须拒绝公有库 | 见 §4.8——密文泄露给攻击者做离线爆破仍是失败 |
+| INV-S12 | 本地路径（`file://` / `/abs/path`）禁止作为同步 remote | 同步意义为 0，且暴露本地文件结构 |
+| INV-S13 | github.com / gitee.com HTTPS URL 在 SSH key 可用时应自动转 SSH | 见 §4.9——避免 GitHub HTTPS 密码认证已禁用的死局 |
+| INV-S14 | 所有 git 命令必须非交互（禁用 prompt + stdin /dev/null） | 见 §4.10——Tauri 后端进程 stdin 脱离终端，交互 prompt 会让 UI 卡死 |
 
 ---
 
@@ -535,13 +643,14 @@ owner/repo 从 URL path 最后两段提取，去 `.git` 后缀 + trailing `/`。
 
 ```
 crates/vault/src/
-├── sync/                           # 新增模块（T2-T4）
+├── sync/                           # 新增模块（T2-T7）
 │   ├── mod.rs                      # 公共 API + SyncState
-│   ├── git.rs                      # git 命令 wrapper（shell out）
+│   ├── git.rs                      # git 命令 wrapper（shell out）+ ls-remote 带超时
 │   ├── store.rs                    # 文件存储（meta/outline/ciphers 读写）
 │   ├── outline.rs                  # outline.json 数据结构 + merge 算法
-│   ├── engine.rs                   # 同步引擎（pull_merge_push / push_initial / clone_initial）
-│   └── error.rs                    # SyncError enum
+│   ├── engine.rs                   # 同步引擎（pull_merge_push / push_initial / clone_initial + 私有库守卫）
+│   ├── privacy.rs                  # 私有库检测（URL 解析 + GitHub/Gitee API + ls-remote 嗅探，T7）
+│   └── error.rs                    # SyncError enum（含 PublicRepoRejected / LocalPathRejected）
 ├── storage/                        # 现有 SQLite 存储（零改动）
 ├── crypto/                         # 现有加密层（零改动）
 └── ...
@@ -601,6 +710,12 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 
 同步失败时 toast 显示具体原因（网络不可达 / SSH 失败 / 冲突需手动介入等），不阻塞 vault 其他功能。
 
+私有库检测失败（add_remote / clone_from 入口）显示 `SyncError::to_string()`：
+- **公有库拒绝** → "拒绝添加公有库 {url} 作为同步仓库——密码箱必须使用私有库..."
+- **本地路径拒绝** → "本地路径不能作为同步 remote——请使用 GitHub/Gitee 私有库或自建 Git 服务的 URL"
+
+「添加 remote」「clone」按钮 busy 时分别显示 spinner / "检测仓库可见性..."（检测可能 1-3s）。两处表单下方常驻 `privacyHint` 文案，让用户预先知道检测策略。
+
 ---
 
 ## 8. 实施分阶段（Phase 1 任务）
@@ -613,7 +728,7 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 - `crates/vault/src/storage/`: 所有 CRUD 函数签名更新
 - `crates/desktop/src/vault_commands.rs`: 所有 Tauri 命令签名更新
 - 前端 CipherDto.id 类型 `number` → `string`
-- v38 → v39 schema 迁移：旧数据生成 UUID
+- v43 → v44 schema 迁移：旧数据生成 UUID
 
 **验证**：cargo test -p octopus-vault -p octopus-infra -p octopus-desktop 全过
 
@@ -667,6 +782,26 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 - spec 文档同步实际实现差异
 - plan 文档记录实施过程
 - 补单元测试 + 集成测试
+
+### T7: 私有库检测守卫（2026-07-21 增补，详见 §4.8）
+
+- 新增 `crates/vault/src/sync/privacy.rs`（URL 解析 + 检测引擎 + PrivacyVerdict enum）
+- `crates/vault/src/sync/git.rs` 加 `git_ls_remote_with_timeout`（spawn + try_wait 轮询 + kill 超时）
+- `crates/vault/src/sync/error.rs` 加 `PublicRepoRejected` / `LocalPathRejected`
+- `crates/vault/src/sync/engine.rs` `add_remote` + `clone_initial` 入口加 `ensure_private_repo` 守卫
+- 前端 SyncPanel：spinner + `privacyHint` + `checkingPrivacy` 文案
+- 依赖：`ureq`（同步 HTTP 客户端，查 GitHub/Gitee API）
+
+**验证**：30 个新单元测试 + 3 个 `#[ignore]` 真实网络集成测试（GitHub/Gitee 公有库检测、不存在库 404 歧义）
+
+### T8: HTTPS → SSH 自动改写（2026-07-21 增补，详见 §4.9）
+
+- `crates/vault/src/sync/privacy.rs` 加 `try_convert_https_to_ssh`（纯函数，仅 github/gitee）
+- `crates/vault/src/sync/git.rs` 加 `verify_ssh_key_for_host`（shell out `ssh -T -o BatchMode=yes`）
+- `crates/vault/src/sync/engine.rs` 加 `maybe_rewrite_to_ssh`，在 add_remote + clone_initial 入口调用
+- 转换前先 `ssh -T` 预检——SSH key 不可用则保留 HTTPS（不阻断用户）
+
+**验证**：7 个 URL 转换单元测试 + 1 个 SSH key 验证 `#[ignore]` 集成测试 + 1 个 rewrite 不改非 github/gitee URL 测试
 
 ---
 
