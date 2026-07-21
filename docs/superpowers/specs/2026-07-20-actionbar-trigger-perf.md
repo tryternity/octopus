@@ -87,5 +87,6 @@ File              —         →     204ms
 
 ## 未做的方向（后续可继续）
 
-- **CGEvent 替代 osascript 发 Cmd+C**：simulate_copy 还剩 ~200ms 是 osascript 启动固定开销。改用 Rust 直接 CGEvent post keystroke 可省 ~150ms。但 CGEvent 发带 modifier 的组合键代码较复杂（需手动设 CGEventFlagCommand flag + keyDown/keyUp）。
-- 当前 ~300ms 已接近 PopClip/Raycast 体感（< 200ms 用户感知"即时"），如果用户后续反馈仍慢再做。
+~~- **CGEvent 替代 osascript 发 Cmd+C**~~ → **已完成**（2026-07-20/21）：抽 `keystroke` 模块用 CGEvent 直调（< 5ms），详见 [keystroke spec](2026-07-20-keystroke-module-design.md)。simulate_copy 改为三级 dispatch（WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid），detect_selection 无选中场景进一步降到 ~100ms。
+
+当前所有方向已完成，无遗留后续。

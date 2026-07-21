@@ -7,6 +7,15 @@
 //! ⚠️ CGEvent.post() 在 AX 权限缺失时会静默失败（不报错但没发出去），故本模块主动
 //! 调 `AXIsProcessTrustedWithOptions` 检查，缺失时 bail。
 //!
+//! **Electron 兼容（2026-07-21）**：Electron app（豆包/VS Code 等）不接收 CGEvent.post(HID)
+//! 发的菜单快捷键——它们的 Chromium 事件处理路径跟原生 app 不同。改用 `CGEventPostToPid(pid)`
+//! 定向发给目标进程，绕过全局事件路由，Electron app 也能接收。
+//!
+//! **WKWebView 嵌套兼容（2026-07-21）**：微信内置浏览器等 WKWebView 嵌套组件不响应
+//! 外部注入的 CGEvent（不论全局 post 还是 post_to_pid）。此类 app 回退到 osascript
+//! `keystroke`（通过 System Events 高层 API 走完整菜单路由，~200ms 但兼容性好）。
+//! 由 [`WKWEBVIEW_FALLBACK_APPS`] bundle id 列表驱动。
+//!
 //! 其他平台 no-op + warn。
 
 use anyhow::Result;
@@ -54,31 +63,115 @@ pub enum KeyModifier {
     CommandShift,
 }
 
-/// 发送「修饰键 + 字符键」组合。
+/// 需要 osascript fallback 的 app bundle id 列表。
 ///
-/// macOS：CGEvent new_keyboard_event + set_flags + post(HID)。
-/// 其他平台：no-op + warn（Windows/Linux 未来用 enigo 实现）。
-pub fn send_key_combo(modifier: KeyModifier, key_code: u8) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        send_key_combo_macos(modifier, key_code)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (modifier, key_code);
-        log::warn!("[keystroke] 模拟按键仅 macOS 支持");
-        Ok(())
+/// 这些 app 内嵌 WKWebView 或类似组件，不响应外部注入的 CGEvent（不论全局 post
+/// 还是 post_to_pid）。osascript `keystroke` 通过 System Events 走完整菜单路由，
+/// 兼容性最好但慢（~200ms）。
+///
+/// 2026-07-21 实测：微信（`com.tencent.xinWeChat`）内置浏览器选中文字时，
+/// CGEventPostToPid 的 Cmd+C 不触发复制（changeCount 不变），osascript 正常。
+const WKWEBVIEW_FALLBACK_APPS: &[&str] = &[
+    "com.tencent.xinWeChat",  // 微信（内置浏览器 WKWebView 嵌套）
+];
+
+/// 检查 bundle id 是否需要 osascript fallback（WKWebView 嵌套 app）。
+pub fn needs_osascript_fallback(bundle_id: Option<&str>) -> bool {
+    match bundle_id {
+        Some(bid) => WKWEBVIEW_FALLBACK_APPS.iter().any(|&fallback| bid == fallback),
+        None => false,
     }
 }
 
-/// Cmd+C（复制）。
+/// 发送「修饰键 + 字符键」组合——全局广播（`CGEventPost(HID)`）。
+///
+/// 适用于原生 macOS app（Sublime/iTerm2 等）。
+/// **Electron app**（豆包/VS Code）不接收全局 CGEvent，需用 [`send_key_combo_to_pid`]。
+/// **WKWebView 嵌套 app**（微信内置浏览器）不响应任何 CGEvent，需用 [`send_via_osascript`]。
+pub fn send_key_combo(modifier: KeyModifier, key_code: u8) -> Result<()> {
+    send_key_combo_impl(modifier, key_code, None)
+}
+
+/// 发送「修饰键 + 字符键」组合——定向发给指定进程（`CGEventPostToPid`）。
+///
+/// **Electron 兼容**：Electron app 不接收 `CGEventPost(HID)` 的全局事件——
+/// Chromium 的事件处理路径与原生 app 不同，全局 CGEvent 发的菜单快捷键不触发。
+/// `CGEventPostToPid` 绕过全局事件路由，直接投递到目标进程的 HID 队列。
+///
+/// `pid` 传 0 等同于全局广播（fallback 行为）。
+pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> Result<()> {
+    if pid <= 0 {
+        return send_key_combo(modifier, key_code);
+    }
+    send_key_combo_impl(modifier, key_code, Some(pid))
+}
+
+/// 通过 osascript 发送按键（System Events `keystroke`）。
+///
+/// **WKWebView 嵌套 app 兼容**：微信内置浏览器等不响应 CGEvent（不论全局 post
+/// 还是 post_to_pid），osascript 通过 System Events 高层 API 走完整菜单路由。
+///
+/// 代价：osascript 进程启动 ~200ms（vs CGEvent < 5ms）。
+///
+/// `key_char` 是按键字符（如 "c" / "v"），`using` 是修饰键（如 "command down"）。
+#[cfg(target_os = "macos")]
+pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
+    use std::process::Command;
+    let script = format!(
+        r#"tell application "System Events" to keystroke "{}" using {}"#,
+        key_char, using
+    );
+    let out = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| anyhow::anyhow!("osascript 启动失败: {}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("osascript keystroke 失败: {}", stderr);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub fn send_via_osascript(_key_char: &str, _using: &str) -> Result<()> {
+    Ok(())
+}
+
+/// Cmd+C（复制）——全局广播。
 pub fn copy() -> Result<()> {
     send_key_combo(KeyModifier::Command, keycodes::C)
 }
 
-/// Cmd+V（粘贴）。
+/// Cmd+V（粘贴）——全局广播。
 pub fn paste() -> Result<()> {
     send_key_combo(KeyModifier::Command, keycodes::V)
+}
+
+/// Cmd+V（粘贴）——定向发给指定 pid（Electron app 用）。
+pub fn paste_to_pid(pid: i32) -> Result<()> {
+    send_key_combo_to_pid(KeyModifier::Command, keycodes::V, pid)
+}
+
+/// Cmd+C（复制）——定向发给指定 pid（Electron app 用）。
+pub fn copy_to_pid(pid: i32) -> Result<()> {
+    send_key_combo_to_pid(KeyModifier::Command, keycodes::C, pid)
+}
+
+/// Cmd+C（复制）——osascript（WKWebView 嵌套 app 用）。
+pub fn copy_via_osascript() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    { send_via_osascript("c", "command down") }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
+}
+
+/// Cmd+V（粘贴）——osascript（WKWebView 嵌套 app 用）。
+pub fn paste_via_osascript() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    { send_via_osascript("v", "command down") }
+    #[cfg(not(target_os = "macos"))]
+    { Ok(()) }
 }
 
 /// Cmd+X（剪切）。
@@ -95,8 +188,21 @@ pub fn select_all() -> Result<()> {
 
 // ── macOS 实现 ────────────────────────────────────────────────────
 
+fn send_key_combo_impl(modifier: KeyModifier, key_code: u8, pid: Option<i32>) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        send_key_combo_macos(modifier, key_code, pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (modifier, key_code, pid);
+        log::warn!("[keystroke] 模拟按键仅 macOS 支持");
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn send_key_combo_macos(modifier: KeyModifier, key_code: u8) -> Result<()> {
+fn send_key_combo_macos(modifier: KeyModifier, key_code: u8, pid: Option<i32>) -> Result<()> {
     use core_graphics::event::CGEventFlags;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
@@ -118,8 +224,8 @@ fn send_key_combo_macos(modifier: KeyModifier, key_code: u8) -> Result<()> {
         }
     };
 
-    send_one_key(&source, key_code as u16, true, flags)?;
-    send_one_key(&source, key_code as u16, false, flags)?;
+    send_one_key(&source, key_code as u16, true, flags, pid)?;
+    send_one_key(&source, key_code as u16, false, flags, pid)?;
     Ok(())
 }
 
@@ -129,12 +235,16 @@ fn send_one_key(
     key_code: u16,
     key_down: bool,
     flags: core_graphics::event::CGEventFlags,
+    pid: Option<i32>,
 ) -> Result<()> {
     use core_graphics::event::{CGEvent, CGEventTapLocation};
     let event = CGEvent::new_keyboard_event(source.clone(), key_code, key_down)
         .map_err(|_| anyhow::anyhow!("CGEvent::new_keyboard_event 失败 (key={:#x} down={})", key_code, key_down))?;
     event.set_flags(flags);
-    event.post(CGEventTapLocation::HID);
+    match pid {
+        Some(pid) => event.post_to_pid(pid),
+        None => event.post(CGEventTapLocation::HID),
+    }
     Ok(())
 }
 
@@ -148,3 +258,35 @@ fn check_accessibility_trusted() -> bool {
     // null options = 不弹权限对话框，只查当前状态
     unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_needs_osascript_fallback_wechat() {
+        assert!(needs_osascript_fallback(Some("com.tencent.xinWeChat")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_sublime() {
+        assert!(!needs_osascript_fallback(Some("com.sublimetext.4")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_doubao() {
+        assert!(!needs_osascript_fallback(Some("com.electron.doubao")));
+    }
+
+    #[test]
+    fn test_needs_osascript_fallback_none() {
+        assert!(!needs_osascript_fallback(None));
+    }
+
+    #[test]
+    fn test_wkwebview_fallback_list_contains_wechat() {
+        assert!(WKWEBVIEW_FALLBACK_APPS.contains(&"com.tencent.xinWeChat"));
+        assert!(!WKWEBVIEW_FALLBACK_APPS.contains(&"com.sublimetext.4"));
+    }
+}
+

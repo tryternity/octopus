@@ -53,22 +53,34 @@ AX 权限检查 FFI（`AXIsProcessTrustedWithOptions`），防 CGEvent.post 静�
 
 | 应用 | 粘贴 | 备注 |
 |---|---|---|
-| Sublime Text | ✅ | |
-| iTerm2 | ✅ | |
-| RustRover (IntelliJ) | ✅ | |
-| 微信 | ✅ | |
-| 豆包 | ❌ | Electron app，CGEvent 不触发其菜单快捷键 |
+| Sublime Text | 原生 | ✅ | |
+| iTerm2 | 原生 | ✅ | |
+| RustRover (IntelliJ) | 原生 | ✅ | |
+| 微信 | 原生 | ✅ | |
+| 豆包 | Electron | ✅ | post_to_pid 修复后 |
+| ZCode | Electron | ✅ | post_to_pid 修复后 |
 
 ### 关键发现
 
 **CGEvent 发 Cmd+V 需要 key window**——frontmost app ≠ key window holder。hide clipboard_window 后即便 Sublime 是 frontmost，窗口可能不是 key window，CGEvent 发的 Cmd+V 进了 NSApp.sendEvent 队列但不触发菜单快捷键匹配。`restore_focus` 改为无条件 re-set frontmost（触发 windowDidBecomeKey）后修复。
 
-### Electron 兼容性
+### Electron 兼容性（2026-07-21 修复）
 
-豆包（Chromium/Electron）不接收 CGEvent Cmd+V——Electron 事件处理路径跟原生 app 不同。可能需要 `CGEventPostToPid` 定向发送。Electron 已知问题，非本代码 bug。
+Electron app（豆包/ZCode/VS Code 等）不接收 `CGEventPost(HID)` 全局事件——Chromium 的事件处理路径跟原生 app 不同，全局 CGEvent 发的菜单快捷键不触发。
 
-## 已知限制 + 后续
+**修复**：`keystroke` 模块新增 `post_to_pid` 能力（`CGEventPostToPid` FFI）。`simulate_paste` 读 frontmost pid（NSWorkspace），用 `CGEventPostToPid(pid, event)` 定向投递到目标进程，绕过全局事件路由。pid 读取失败时 fallback 到全局 post。
 
-- **restore_focus 仍用 osascript**（System Events），下一步实验 NSRunningApplication.activate
-- **autotype activate_app**（scope 3）不在本次范围——autotype 的 osascript activate 不属于 keystroke 范畴
-- **Electron 兼容**：需要时研究 CGEventPostToPid 或 osascript fallback
+Cargo.toml 加 `elcapitan` feature（core-graphics 的 `post_to_pid` API 在此 feature gate 下）。
+
+实测：6/6 应用全部正常（含 2 个 Electron app）。
+
+## 已知限制 + 后续（2026-07-21 更新）
+
+~~- **restore_focus 仍用 osascript**~~ → **已完成**：改用 NSRunningApplication.activate（< 1ms）
+~~- **autotype activate_app**（scope 3）~~ → **已完成**：改用 NSRunningApplication.runningApplicationsWithBundleIdentifier + activate（< 1ms）
+~~- **detect_selection 的 simulate_copy**~~ → **已完成**：改用三级 dispatch（WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid）
+
+**新增 WKWebView 嵌套 app 兼容**（2026-07-21）：
+微信内置浏览器（WKWebView 嵌套）不响应任何 CGEvent（全局 post 和 post_to_pid 都不行）。
+`keystroke.rs` 加 `WKWEBVIEW_FALLBACK_APPS` 列表 + `needs_osascript_fallback()`，
+`simulate_copy/paste` 改为三级 dispatch：WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid。

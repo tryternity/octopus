@@ -48,22 +48,15 @@ fn start_platform_listener() {
 
 #[cfg(target_os = "macos")]
 fn restore_focus_platform() {
+    // 2026-07-21：osascript set frontmost 走 System Events 完整路径，触发 windowDidBecomeKey。
+    // NSRunningApplication.activate 不触发 windowDidBecomeKey（app 级 ≠ window 级 key），
+    // 故保留 osascript。
+    //
+    // 优化：去掉单独的「读 frontmost name」osascript（~200ms 纯日志用途），
+    // 把 name 读取合并到 set frontmost 的同一个 osascript 脚本里（已有 return name of p）。
+    // 省 ~200ms（两次 osascript → 一次）。
     use std::process::Command;
 
-    // 打印当前前台
-    let frontmost_name = Command::new("osascript")
-        .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    log::info!("restore_focus: current frontmost = {}", frontmost_name);
-
-    // 2026-07-20 perf+fix：原仅当 octopus 是 frontmost 时才切换。
-    // 但 macOS frontmost app ≠ key window holder——hide clipboard_window 后，即便 Sublime
-    // 是 frontmost，它的窗口可能还不是 key window（CGEvent 发 Cmd+V 进 NSApp.sendEvent 队列
-    // 但不触发 menu shortcut 匹配）。改为：无条件 set frontmost，触发目标 app 的
-    // windowDidBecomeKey，让窗口成为 key window。
     let script = r#"tell application "System Events"
         set p to first process whose frontmost is true
         if name of p is "octopus" then
@@ -75,13 +68,15 @@ fn restore_focus_platform() {
                 end if
             end repeat
         else
-            -- 无条件 re-set frontmost，触发 windowDidBecomeKey
             set frontmost of p to true
         end if
         return name of p
     end tell"#;
     match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => log::info!("restore_focus: activate result = '{}'", String::from_utf8_lossy(&out.stdout).trim()),
+        Ok(out) => {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            log::info!("restore_focus: activated '{}'", name);
+        }
         Err(e) => log::warn!("restore_focus: osascript failed: {}", e),
     }
 }
@@ -95,7 +90,13 @@ fn simulate_paste_platform() {
     // 切输入源可能短暂抢焦点（Carbon TIS API），等 50ms 让焦点稳定再发 keystroke
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    if let Err(e) = crate::keystroke::paste() {
+    // 2026-07-21 三级 dispatch：
+    //   1. WKWebView 嵌套 app（微信内置浏览器）→ osascript（~200ms，走 System Events 菜单路由）
+    //   2. Electron app（豆包/ZCode）→ CGEventPostToPid（定向，< 5ms）
+    //   3. 原生 app → CGEventPostToPid（或全局 post fallback）
+    let frontmost = crate::app_context::macos_ax::frontmost_app();
+    let result = dispatch_paste(frontmost);
+    if let Err(e) = result {
         log::warn!("simulate_paste: {}", e);
     }
 }
@@ -103,12 +104,41 @@ fn simulate_paste_platform() {
 #[cfg(target_os = "macos")]
 fn simulate_copy_platform() {
     // 2026-07-20 perf：原 osascript（~200ms 启动 + delay 0.15）改用 keystroke 模块（CGEvent < 5ms）。
-    // 「octopus 是 frontmost 时切非 octopus 进程」的保护暂去掉——octopus 是 frontmost 是边角场景
-    // （热键触发后短暂成为 frontmost），即便发生，Cmd+C 发给 octopus 自己也只导致剪贴板不变，
-    // detect_selection 会判为无选中，不影响功能正确性。如未来发现该边角场景需恢复保护，
-    // 用 NSWorkspace + osascript set frontmost 实现（本次不动 restore_focus 的 osascript）。
-    if let Err(e) = crate::keystroke::copy() {
+    // 2026-07-21 三级 dispatch（跟 simulate_paste 同策略）：
+    //   1. WKWebView 嵌套 app → osascript
+    //   2. Electron app → CGEventPostToPid
+    //   3. 原生 app → CGEventPostToPid
+    let frontmost = crate::app_context::macos_ax::frontmost_app();
+    let result = dispatch_copy(frontmost);
+    if let Err(e) = result {
         log::warn!("simulate_copy: {}", e);
+    }
+}
+
+/// 三级 dispatch：根据 frontmost app 类型选最佳按键发送方式。
+///
+/// 调用方先读 `frontmost_app()`（一次 IPC），传入这里复用，避免重复调用。
+#[cfg(target_os = "macos")]
+fn dispatch_copy(frontmost: Option<(i32, Option<String>, String)>) -> anyhow::Result<()> {
+    match &frontmost {
+        Some((_, bid, _)) if crate::keystroke::needs_osascript_fallback(bid.as_deref()) => {
+            log::info!("simulate_copy: WKWebView app {:?} → osascript", bid);
+            crate::keystroke::copy_via_osascript()
+        }
+        Some((pid, _, _)) => crate::keystroke::copy_to_pid(*pid),
+        None => crate::keystroke::copy(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_paste(frontmost: Option<(i32, Option<String>, String)>) -> anyhow::Result<()> {
+    match &frontmost {
+        Some((_, bid, _)) if crate::keystroke::needs_osascript_fallback(bid.as_deref()) => {
+            log::info!("simulate_paste: WKWebView app {:?} → osascript", bid);
+            crate::keystroke::paste_via_osascript()
+        }
+        Some((pid, _, _)) => crate::keystroke::paste_to_pid(*pid),
+        None => crate::keystroke::paste(),
     }
 }
 

@@ -63,21 +63,21 @@ pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
 ///
 /// 当前 activate_app 是 dead code（无生产调用），但未来 Actionbar 集成密码生成器
 /// 独立窗口等场景会用到——白名单作为防御性校验，启用前先就位。
+///
+/// 2026-07-21 perf：从 osascript 改用 NSRunningApplication.activate（< 1ms vs ~200ms）。
+/// bundle_id 白名单校验仍保留（虽然不再有注入风险——objc2 不拼字符串）。
 pub fn activate_app(bundle_id: &str) -> Result<()> {
     validate_bundle_id(bundle_id)?;
-    let script = format!(r#"tell application id "{}" to activate"#, bundle_id);
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .context("osascript 调用失败")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "activate {} 失败: {}",
-            bundle_id,
-            String::from_utf8_lossy(&output.stderr)
-        );
+    use objc2_app_kit::{NSRunningApplication, NSApplicationActivationOptions};
+    use objc2_foundation::NSString;
+
+    let ns_bid = NSString::from_str(bundle_id);
+    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&ns_bid);
+    if apps.count() == 0 {
+        anyhow::bail!("未找到 bundle_id={} 的运行中的应用", bundle_id);
     }
+    let app = apps.objectAtIndex(0);
+    let _ = app.activateWithOptions(NSApplicationActivationOptions(1 << 0));
     Ok(())
 }
 
