@@ -30,6 +30,7 @@ mod app_context;
 mod audio;
 mod config;
 mod clipboard_commands;
+mod clipboard_queue;
 mod compact_editor_commands;
 mod compact_editor_window;
 
@@ -674,13 +675,26 @@ pub fn run() {
             {
                 let app_handle_for_watcher = app.handle().clone();
                 let watcher_handle = clipboard_handle.clone();
+
+                // 启动后台 worker：watcher 回调只 enqueue（<1μs），编码/入库在 worker 异步做。
+                // 避免 watcher 线程被 WebP 编码 + DB 写阻塞（连续复制时延迟入库）。
+                let emit_handle = app_handle_for_watcher.clone();
+                clipboard_queue::start_clipboard_worker(
+                    clipboard_handle.clone(),
+                    Arc::new(move || {
+                        let _ = emit_handle.emit("clipboard://changed", ());
+                    }),
+                );
+
                 match octopus_clipboard::ClipboardWatcher::start(watcher_handle, move || {
-                    octopus_clipboard::watcher::handle_clipboard_change(
-                        app_handle_for_watcher
-                            .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
-                            .inner(),
-                    );
-                    let _ = app_handle_for_watcher.emit("clipboard://changed", ());
+                    // 旧代码：直接在 watcher 线程同步处理（阻塞）
+                    // octopus_clipboard::watcher::handle_clipboard_change(...);
+                    // let _ = app_handle_for_watcher.emit("clipboard://changed", ());
+                    //
+                    // 新代码：只 enqueue 信号，worker 异步处理。
+                    // suppress 检查仍在这里做（watcher 的 ChangeHandler 已处理），
+                    // 到这里说明是"用户真实复制"——enqueue 让 worker 处理。
+                    clipboard_queue::enqueue();
                 }) {
                     Ok(watcher) => { app.manage(watcher); }
                     Err(e) => log::error!("Failed to start clipboard watcher: {}", e),

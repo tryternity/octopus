@@ -672,21 +672,22 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
 pub async fn copy_image_to_clipboard(
     request: tauri::ipc::Request<'_>,
     handle: State<'_, Arc<ClipboardHandle>>,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
     };
     let png_bytes = png_bytes.clone();
-    // write_image（PNG 解码 + set_image）和 watcher 入库都是 CPU 密集操作，
-    // 全部移入 spawn_blocking 避免阻塞 Tauri 命令返回
+    // write_image（PNG 解码 + set_image）是 CPU 密集，移入 spawn_blocking 避免阻塞 IPC。
+    // 入库改走 clipboard_queue（与 watcher 同路径，后台 worker 异步处理 + emit）。
     let handle_clone = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
         handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
-        octopus_clipboard::watcher::handle_clipboard_change(handle_clone.as_ref());
+        // write_image 触发 NSPasteboard 变化 → watcher 会收到通知 → enqueue。
+        // 但有时通知有延迟，这里主动 enqueue 一次确保 worker 处理。
+        crate::clipboard_queue::enqueue();
         Ok::<(), String>(())
     }).await.map_err(|e| e.to_string())??;
-    let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
 
