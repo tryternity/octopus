@@ -89,8 +89,13 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     crate::tray::update_tray_screenshot_label(true);
 
 
-    // 1. 截所有显示器
-    let mut captures = octopus_capx::capture::capture_all_monitors()
+    // 1. 截所有显示器（多屏并行）。
+    // spawn_blocking：capture_all_monitors 内部 std::thread::scope 并行截图，
+    // 整体仍为 CPU/IO 密集（CGWindowListCreateImage + GPU 回读 + BGRA→RGBA swap），
+    // 隔离 Tokio worker 避免阻塞录音/VAD/剪贴板监听（与同文件 L298/L439/L477 同范式）。
+    let mut captures = tokio::task::spawn_blocking(octopus_capx::capture::capture_all_monitors)
+        .await
+        .map_err(|e| format!("截图任务 join 失败: {}", e))?
         .map_err(|e| format!("截图失败: {}", e))?;
 
     // 3. 获取 Tauri 的显示器列表（逻辑坐标）
@@ -172,7 +177,11 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         let window_result = WebviewWindowBuilder::new(
             &app_handle,
             &label,
-            WebviewUrl::App("index.html?screenshot=1".into()),
+            // 截图窗口独立 entry（screenshot.html → screenshot-main.tsx）：
+            // 只含 React + tauri api + annotation + Screenshot（~200KB），
+            // 不带 CodeMirror/markdown-it/lucide-react（主入口才用）。
+            // 截图窗口 ready 时间 ~3s → <1s。
+            WebviewUrl::App("screenshot.html".into()),
         )
         .title("")
         .decorations(false)
