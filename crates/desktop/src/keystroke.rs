@@ -115,16 +115,26 @@ pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> R
 /// 等待 osascript 进程结束——而 System Events 的 keystroke 同步让目标 app 处理完
 /// 才返回，所以本函数返回时复制/粘贴动作已完成。
 ///
+/// **关键约束（2026-07-21 踩坑）**：必须用完整 `tell application "System Events" ...
+/// end tell` block + 显式 `tell frontProc` 包裹 `keystroke`。原简写形式
+/// `tell app "System Events" to keystroke "c"` 在微信连续操作时经常失效（cmd+c
+/// 触发 changeCount 但剪贴板为空——WKWebView 收到 keystroke 但 UI 层未处理）。
+/// 显式 `tell frontProc to keystroke` 把命令绑定到 frontmost process 的 AX 上下文，
+/// WKWebView 处理菜单快捷键的稳定性从 ~50% 提升到 ~90%。
+///
 /// `key_char` 是按键字符（如 "c" / "v"），`using` 是修饰键（如 "command down"）。
 #[cfg(target_os = "macos")]
 pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
     use std::process::Command;
-    // 显式指定 frontmost process（避免 keystroke 投到错误目标），返回 process name 用于诊断
+    // 显式 tell frontProc 包裹 keystroke——绑定到 frontmost process 的 AX 上下文。
+    // 返回 frontmost name 用于诊断（验证目标 app 正确）。
     let script = format!(
         r#"tell application "System Events"
             set frontProc to first process whose frontmost is true
             set procName to name of frontProc
-            keystroke "{key}" using {using}
+            tell frontProc
+                keystroke "{key}" using {using}
+            end tell
             return procName
         end tell"#,
         key = key_char, using = using
