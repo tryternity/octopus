@@ -4,6 +4,29 @@
 > 覆盖范围：Rust ASR 核心 / Rust 桌面端 IPC+并发 / 前端 React+CM6 / DB+IO+内存
 > 工作目录：`/Users/wudarui/workspace/agent/octopus/.worktrees/daily-bug-fix`
 
+## P0 执行结果（2026-07-21）
+
+9 条 P0 假设的处理决策与 commit：
+
+| P0 | 决策 | commit | 备注 |
+|---|---|---|---|
+| P0-1 DB 连接池 | ⏭️ **跳过** | - | 用户决策：不引入 r2d2 依赖，P0-2 spawn_blocking 已隔离主要阻塞 |
+| P0-2 async spawn_blocking | ✅ 完成 | `7c9b6bf4` | query/stats/get_image_thumb/get_image_full 4 命令包 spawn_blocking |
+| P0-3 paste sleep → polling | ⏭️ **跳过** | - | 用户决策：低 ROI 高风险（无可靠 polling 信号源） |
+| P0-4 FTS rebuild 增量化 | ✅ 完成 | `7c9b6bf4` | 移除启动时无条件 rebuild（触发器事务原子性已保证一致） |
+| P0-5 watcher 编码后台 actor | ✅ 完成 | `a654afb9` | mpsc + worker 线程，watcher 回调只 enqueue（<1μs） |
+| P0-6 Result Toolbar memo | ✅ 完成 | `7c9b6bf4` | 抽取 Toolbar.tsx + memo，流式期间省全树 reconcile |
+| P0-7 Screenshot RAF 节流 | ✅ 完成 | `7c9b6bf4` | draw useCallback deps 用 ref 读 + scheduleDraw RAF 合批 |
+| P0-8 fbank mel 稀疏化 | ✅ 完成 | `f96d7223` `e822fac6` | 全 5 路径：fbank/paraformer/streaming_paraformer/zipformer 标准 mel + whisper mel |
+| P0-9 Zipformer fbank 增量化 | ⏭️ **跳过** | - | ROI < 3%（fbank 占 9% × P0-8 已省 65% = 剩 3%），midpoint+edge-reflect 边界复杂、CTC+Transducer 双路径风险高 |
+
+**额外修复**（审计外发现）：
+- 🔥 微信 osascript Cmd+C 失效：polling 超时按 dispatch 路径动态化，微信 300ms 常量（commit `b813c13d`，已同步 main）
+
+**统计**：9 条 P0 中 6 条实施、3 条经评估后跳过（均有明确理由）。
+
+---
+
 ## 核心发现（5 大优先级方向）
 
 | # | 方向 | 跨范围重叠 | 预估总收益 | 验证成本 |
