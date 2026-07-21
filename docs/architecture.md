@@ -355,7 +355,15 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **跨平台贴图窗口（pin_window）：** 截图后「钉住」功能——创建原生浮动窗口置顶显示截图，支持拖拽（左键）、缩放（滚轮，以鼠标位置为锚点）、关闭（hover 右上角红色关闭按钮）。绕过 WebView 直接用原生窗口，单窗内存 < 5MB。三平台各自实现 `PinWindow` trait（`create(png_data, x, y, w, h)`）：**macOS** 自定义 `PinNSWindow`（`define_class!`）+ `PinNSImageView`（拖拽经 `performWindowDragWithEvent`、缩放改 frame）+ `PinCloseBtnView`（NSImageView 子类，预渲染 PNG 图标规避 `drawRect:` 崩溃）；`NSTrackingArea`（`MouseEnteredAndExited | ActiveAlways | InVisibleRect`）检测 hover 显示/隐藏关闭按钮；静态 `PIN_WINDOWS: Mutex<Vec<SendWindow>>` 跟踪窗口 + `setReleasedWhenClosed(false)` 防悬空 + 关闭时延迟 `cleanup`。**Windows** Win32 `WS_EX_TOPMOST|LAYERED|TOOLWINDOW` + `UpdateLayeredWindow`（预乘 BGRA + GDI `StretchBlt` HALFTONE 缩放）；`WM_MOUSEMOVE`+`TrackMouseEvent` 检测 hover，GDI 绘制关闭按钮到 layered DC；每窗独立线程跑 `GetMessageW` 循环（显式判 0/-1）；GDI 资源经 `run_gdi_calls` 闭包 + defer 清理防泄漏。**Linux** GTK3 Toplevel + Cairo 自绘（`scroll-event` 缩放锚定 `event.coords()` + `win.move_()`；`motion-notify`/`leave-notify` 检测 hover，Cairo 绘制关闭按钮）。右键关闭菜单已三平台移除（hover 按钮体验更优）。`screenshot_commands::pin_screenshot` 双路径：前端 `composeAndCropBytes` 合成带标注/马赛克的 Canvas PNG → `FileReader.readAsDataURL` 转 base64 → 后端解码（`img_base64: Option<String>`）；None 时 fallback 到后端 `ALL_CAPTURES` 裁剪（不含标注）。前端 `isPinningRef` 防重复点击锁。详见 [spec](docs/superpowers/specs/2026-07-06-cross-platform-pin-window-design.md)。
 
-**透明窗口点击穿透（统一方案，3 处使用点）：** octopus 有三处透明窗口需要「部分区域可交互、其余区域鼠标穿透到下层 app」——它们的核心矛盾相同（`setIgnoresMouseEvents(true)` 是全窗口开关，设了之后可交互区域也收不到事件），解法统一为 **Rust 后台轮询读全局鼠标位置，按区域切换穿透**：
+**透明窗口圆角 + 动态尺寸方案（2026-07-22 验证）：** macOS `transparent(true)` + `decorations(false)` 窗口可实现 CSS 圆角 + 动态 setSize，**不冲突**（与 result_window 早期踩坑结论不同——那次 setSize 失效可能是 macOS 版本/SDK 差异或其他因素）。
+
+| 方案 | 适用场景 | 关键配置 | 备注 |
+|---|---|---|---|
+| **transparent + setSize** | 需要圆角 + 动态高度切换（如 VaultPicker） | `transparent(true)` + `decorations(false)` + 前端 CSS `rounded-[10px] overflow-hidden bg-background` + `setSize(LogicalSize(w, h))` | 窗口本身透明，CSS 容器提供圆角不透明背景。setSize 正常工作（2026-07-22 实测 VaultPicker 确认） |
+| **CSS 伪装 + 点击穿透** | 透明窗口固定尺寸，需要"视觉尺寸切换 + 穿透"（如 result_window 精简/长篇态） | 窗口物理固定 + 前端 CSS 切容器 + Rust 轮询 `setIgnoreCursorEvents` | result_window 采用此方案。如不需要穿透，优先用上面的 transparent + setSize |
+| **非透明 + setSize** | 不需要圆角，需要动态尺寸（如 VaultPicker 早期版本） | 无 `transparent(true)` + `decorations(false)` + `setSize` | 窗口有直角不透明背景，无圆角效果 |
+
+**选择建议**：需要圆角的悬浮窗 → transparent + setSize（验证可行）；需要穿透 → CSS 伪装 + 点击穿透；都不需要 → 普通 setSize。**透明窗口点击穿透（统一方案，3 处使用点）：** octopus 有三处透明窗口需要「部分区域可交互、其余区域鼠标穿透到下层 app」——它们的核心矛盾相同（`setIgnoresMouseEvents(true)` 是全窗口开关，设了之后可交互区域也收不到事件），解法统一为 **Rust 后台轮询读全局鼠标位置，按区域切换穿透**：
 
 | 使用点 | 可交互区域 | 穿透区域 | 实现 | 坐标方案 |
 |--------|-----------|---------|------|---------|
