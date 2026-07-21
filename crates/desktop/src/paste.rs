@@ -2,7 +2,9 @@
 
 use crate::config::AppConfig;
 use anyhow::Result;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use enigo::{Enigo, Keyboard, Settings};
+#[cfg(not(target_os = "macos"))]
+use enigo::{Direction, Key};
 use log::info;
 use octopus_clipboard::ClipboardHandle;
 use std::time::Duration;
@@ -137,28 +139,23 @@ fn paste_via_clipboard(
         None
     };
 
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| anyhow::anyhow!("Enigo init failed: {}", e))?;
-
+    // 2026-07-20 perf：原 enigo 三段式（Press Mod → Click V → Release Mod）改用统一
+    // keystroke 模块（macOS 走 CGEvent，与 focus_tracker 共用）。其他平台 keystroke
+    // 是 no-op，保留 enigo fallback（仅非 macOS 走 enigo）。
     #[cfg(target_os = "macos")]
-    let mod_key = Key::Meta;
+    {
+        crate::keystroke::paste()?;
+    }
     #[cfg(not(target_os = "macos"))]
-    let mod_key = Key::Control;
-
-    #[cfg(target_os = "macos")]
-    let v_key = Key::Other(9);
-    #[cfg(not(target_os = "macos"))]
-    let v_key = Key::Unicode('v');
-
-    enigo
-        .key(mod_key, Direction::Press)
-        .map_err(|e| anyhow::anyhow!("Mod press: {}", e))?;
-    enigo
-        .key(v_key, Direction::Click)
-        .map_err(|e| anyhow::anyhow!("V click: {}", e))?;
-    enigo
-        .key(mod_key, Direction::Release)
-        .map_err(|e| anyhow::anyhow!("Mod release: {}", e))?;
+    {
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| anyhow::anyhow!("Enigo init failed: {}", e))?;
+        let mod_key = Key::Control;
+        let v_key = Key::Unicode('v');
+        enigo.key(mod_key, Direction::Press).map_err(|e| anyhow::anyhow!("Mod press: {}", e))?;
+        enigo.key(v_key, Direction::Click).map_err(|e| anyhow::anyhow!("V click: {}", e))?;
+        enigo.key(mod_key, Direction::Release).map_err(|e| anyhow::anyhow!("Mod release: {}", e))?;
+    }
 
     std::thread::sleep(PASTE_RESTORE_DELAY);
 

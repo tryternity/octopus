@@ -57,6 +57,7 @@ mod model_migrate;
 mod search_commands;
 mod hotword_commands;
 mod input_source;
+mod keystroke;
 mod paste;
 mod pin_window;
 mod perf_log;
