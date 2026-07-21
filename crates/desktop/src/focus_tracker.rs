@@ -48,27 +48,15 @@ fn start_platform_listener() {
 
 #[cfg(target_os = "macos")]
 fn restore_focus_platform() {
-    // 2026-07-21 revert：曾改用 NSRunningApplication.activate（< 1ms），但实测发现
-    // activate 不触发 windowDidBecomeKey（macOS 已知差异：activate 是 app 级激活，
-    // 不是 window 级 key 切换），导致 CGEvent 发 Cmd+V 不触发菜单快捷键——
-    // Sublime 等原生 app 粘贴失败。回退到 osascript set frontmost（走 System Events
-    // 完整路径，触发 windowDidBecomeKey）。
+    // 2026-07-21：osascript set frontmost 走 System Events 完整路径，触发 windowDidBecomeKey。
+    // NSRunningApplication.activate 不触发 windowDidBecomeKey（app 级 ≠ window 级 key），
+    // 故保留 osascript。
     //
-    // 性能代价：osascript 两次进程（~400ms），但这是焦点恢复的正确语义。
-    // 未来如需优化，研究 NSApp.activate 或 NSWindow.makeKey 的组合方案。
+    // 优化：去掉单独的「读 frontmost name」osascript（~200ms 纯日志用途），
+    // 把 name 读取合并到 set frontmost 的同一个 osascript 脚本里（已有 return name of p）。
+    // 省 ~200ms（两次 osascript → 一次）。
     use std::process::Command;
 
-    // 打印当前前台
-    let frontmost_name = Command::new("osascript")
-        .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    log::info!("restore_focus: current frontmost = {}", frontmost_name);
-
-    // 无条件 re-set frontmost（触发 windowDidBecomeKey）
-    // octopus 是 frontmost 时找另一个 app；否则对当前 frontmost re-activate
     let script = r#"tell application "System Events"
         set p to first process whose frontmost is true
         if name of p is "octopus" then
@@ -85,7 +73,10 @@ fn restore_focus_platform() {
         return name of p
     end tell"#;
     match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => log::info!("restore_focus: activate result = '{}'", String::from_utf8_lossy(&out.stdout).trim()),
+        Ok(out) => {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            log::info!("restore_focus: activated '{}'", name);
+        }
         Err(e) => log::warn!("restore_focus: osascript failed: {}", e),
     }
 }
