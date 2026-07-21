@@ -277,11 +277,25 @@ pub static BBPE_TABLE: Lazy<HashMap<&'static str, u8>> = Lazy::new(|| {
     m
 });
 
+/// P0-8（2026-07-21）：whisper mel filterbank 稀疏化——预计算每行非零 [start, end)。
+/// WHISPER_MEL_FILTERBANK 是 [[f64; 201]; 80] 固定数组（硬编码自 OpenAI whisper 模型），
+/// 转 Vec<Vec<f64>> 后复用 mel_filterbank_ranges 计算稀疏区间。
+static WHISPER_MEL_FILTERBANK_RANGE: Lazy<Vec<(usize, usize)>> = Lazy::new(|| {
+    let as_vec: Vec<Vec<f64>> = crate::whisper_mel_matrix::WHISPER_MEL_FILTERBANK
+        .iter()
+        .map(|row| row.to_vec())
+        .collect();
+    crate::feature::mel_filterbank_ranges(&as_vec)
+});
+
 static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| crate::feature::povey_window(Z_FRAME_LEN));
 static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
     // C1 修复：改用 mel 空间 filterbank 权重（对齐 paraformer / kaldi_native_fbank）
     crate::feature::mel_filterbank(Z_NUM_BINS, Z_FFT_SIZE, Z_SAMPLE_RATE, Z_SAMPLE_RATE as f64 / 2.0)
 });
+/// P0-8（2026-07-21）：mel filterbank 稀疏化——预计算每行非零 [start, end) 区间。
+static MEL_FILTERBANK_RANGE: Lazy<Vec<(usize, usize)>> =
+    Lazy::new(|| crate::feature::mel_filterbank_ranges(&MEL_FILTERBANK));
 
 // ── Fbank constants (matching standard Kaldi Native Fbank defaults) ──
 pub(crate) const Z_FFT_SIZE: usize = 512;
@@ -1115,7 +1129,8 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
         for mi in 0..Z_NUM_BINS {
             let mut sum = 0.0f64;
             let fb_row = &crate::whisper_mel_matrix::WHISPER_MEL_FILTERBANK[mi];
-            for k in 0..201 {
+            let (start, end) = WHISPER_MEL_FILTERBANK_RANGE[mi];
+            for k in start..end {
                 sum += power_spectrum[k] * fb_row[k];
             }
             fbank_data[fi * Z_NUM_BINS + mi] = sum as f32;
@@ -1228,7 +1243,8 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
         for mi in 0..Z_NUM_BINS {
             let mut sum = 0.0f64;
             let fb_row = &MEL_FILTERBANK[mi];
-            for k in 0..n_freqs {
+            let (start, end) = MEL_FILTERBANK_RANGE[mi];
+            for k in start..end {
                 sum += power_spectrum[k] * fb_row[k];
             }
             fbank_data[fi * Z_NUM_BINS + mi] = (sum as f32 + 1.1920929e-7).ln();
