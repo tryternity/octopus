@@ -874,3 +874,5 @@ imagePreview:
     mosaic: 遮挡
     thickness: 粗细
     solidFill: 实心填充
+vaultPicker:
+  searchPlaceholder: 搜索密码条目（名称 / 用户名 / 网址）...

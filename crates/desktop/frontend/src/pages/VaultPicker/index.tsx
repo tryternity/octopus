@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
@@ -76,6 +76,27 @@ export default function VaultPicker() {
   // 默认全部 mask（•••••）防浮窗一闪而过被旁人偷看。
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  // 搜索模式（URL 检测失败 → 空列表时用户手动搜索，2026-07-21 安全加固）
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<CipherDto[]>([]);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSearch = useCallback((q: string) => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(async () => {
+      const trimmed = q.trim();
+      if (!trimmed) {
+        setSearchResults([]);
+        return;
+      }
+      try {
+        const results = await invoke<CipherDto[]>("vault_search_ciphers", { query: trimmed });
+        setSearchResults(results);
+      } catch (e) {
+        console.error("vault_search_ciphers failed:", e);
+        setSearchResults([]);
+      }
+    }, 150);
+  }, []);
 
   const refresh = useCallback(async () => {
     setView({ kind: "loading" });
@@ -463,8 +484,25 @@ export default function VaultPicker() {
         )}
 
         {view.kind === "list" && view.ciphers.length === 0 && (
-          <div className="flex flex-col items-center gap-3 px-4 py-6 text-sm text-muted-foreground">
-            <span>{t("settings.vault.autotype.noMatch")}</span>
+          <div className="flex flex-col gap-2 px-3 py-3">
+            {/* 2026-07-21 安全加固：URL 检测失败时显示搜索框而非 fallback 列表（防钓鱼）。
+                用户主动搜索 = 有意识的选择，避免"顺手"误选密码注入到钓鱼站。 */}
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                debouncedSearch(e.target.value);
+              }}
+              placeholder={t("vaultPicker.searchPlaceholder")}
+              autoFocus
+              className="flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            {searchQuery.trim() === "" && (
+              <div className="py-2 text-center text-xs text-muted-foreground">
+                {t("settings.vault.autotype.noMatch")}
+              </div>
+            )}
             <Button
               type="button"
               variant="voice"
@@ -477,7 +515,7 @@ export default function VaultPicker() {
         )}
 
         {view.kind === "list" &&
-          view.ciphers.map((c) => {
+          (view.ciphers.length > 0 ? view.ciphers : searchResults).map((c) => {
             const username = c.login?.username || "";
             const password = c.login?.password || "";
             const revealed = !!revealedPasswords[c.id];

@@ -452,12 +452,6 @@ impl Default for AutoTypeMode {
     }
 }
 
-/// `vault_detect_and_match` URL 检测失败时的 fallback 上限（follow-up #8）。
-///
-/// URL 检测失败时按 `updated_at DESC` 取最近使用过的 N 条，让用户手动选——
-/// 避免大 vault（500+）全量返回的噪音和延迟。
-pub const VAULT_DETECT_FALLBACK_LIMIT: usize = 20;
-
 /// `vault_detect_and_match` URL 匹配命中时的上限（follow-up #8）。
 ///
 /// 同域可能挂很多 cipher（如多个测试账号），仍限制数量避免列表过长。
@@ -776,8 +770,66 @@ pub fn vault_autotype(
     }
 }
 
+/// 模糊搜索 cipher（URL 检测失败时用户手动搜索用，2026-07-21 安全加固新增）。
+///
+/// 匹配 name / username / URIs，大小写不敏感，子串包含即命中。
+/// 按 `updated_at DESC` 排序（最近用的排前面），限制 20 条避免大 vault 全量返回。
+///
+/// 安全语义：vault_detect_and_match URL 检测失败时返回空列表，用户必须在此
+/// 主动输入搜索词——是有意识的选择，避免钓鱼场景下"顺手"误选密码。
+#[tauri::command]
+pub fn vault_search_ciphers(
+    query: String,
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
+) -> Result<Vec<CipherDto>, String> {
+    let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
+    let query_lower = query.trim().to_lowercase();
+    if query_lower.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (ciphers, failures) = octopus_vault::storage::list_ciphers(&key)
+        .map_err(vault_error::to_tauri_error)?;
+    if !failures.is_empty() {
+        log::warn!(
+            "vault_search_ciphers: {} 条记录解密失败已跳过",
+            failures.len()
+        );
+    }
+    let mut filtered: Vec<Cipher> = ciphers
+        .into_iter()
+        .filter(|c| {
+            if c.deleted_at.is_some() {
+                return false;
+            }
+            // name 匹配
+            if c.name.to_lowercase().contains(&query_lower) {
+                return true;
+            }
+            // username / URIs 匹配（从 LoginData 提取）
+            #[allow(unreachable_patterns)]
+            match &c.data {
+                octopus_vault::types::CipherData::Login(l) => {
+                    if let Some(u) = &l.username {
+                        if u.to_lowercase().contains(&query_lower) {
+                            return true;
+                        }
+                    }
+                    l.uris.iter().any(|lu| {
+                        lu.uri.to_lowercase().contains(&query_lower)
+                    })
+                }
+                _ => false,
+            }
+        })
+        .collect();
+    // updated_at DESC（最近用的排前面）
+    filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(filtered.into_iter().take(20).map(cipher_to_dto).collect())
+}
+
 /// 检测当前浏览器 URL + 返回匹配 cipher 列表。
-/// URL 检测失败时返回最近使用的若干 cipher（follow-up #8：take 20），
+/// URL 检测失败时返回空列表（2026-07-21 安全加固，原返回最近 20 条有钓鱼风险）。
 /// URL 匹配命中时也限制数量（take 50，避免大域共享导致列表过长）。
 ///
 /// **URL 来源**（2026-07-19 e2e 修复）：优先读 `picker_url_cache`——热键 callback 在
@@ -817,29 +869,13 @@ pub fn vault_detect_and_match(
         }
     };
     if url_str.is_empty() {
-        // URL 检测失败 → 返回 last-N-used（按 updated_at DESC）让用户手动选
-        // （follow-up #8：限制为 20 条，避免大 vault 全量返回 500+ 条的噪音/延迟）
-        return octopus_vault::storage::list_ciphers(&key)
-            .map_err(vault_error::to_tauri_error)
-            .map(|(cs, failures)| {
-                if !failures.is_empty() {
-                    log::warn!(
-                        "vault_detect_and_match (fallback): {} 条记录解密失败已跳过",
-                        failures.len()
-                    );
-                }
-                let mut filtered: Vec<Cipher> = cs
-                    .into_iter()
-                    .filter(|c| c.deleted_at.is_none())
-                    .collect();
-                // updated_at DESC：最近用过的（vault_autotype 每次访问会 bump）排在前面
-                filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-                filtered
-                    .into_iter()
-                    .take(VAULT_DETECT_FALLBACK_LIMIT)
-                    .map(cipher_to_dto)
-                    .collect()
-            });
+        // 2026-07-21 安全加固：URL 检测失败时不再返回 fallback 列表（防钓鱼）。
+        // 原行为返回 last-20-used 让用户手动选——但钓鱼场景下用户可能误选密码
+        // 注入到钓鱼站。现改为返回空列表，用户在 VaultPicker 输入搜索词后由
+        // vault_search_ciphers 模糊匹配（用户主动搜索 = 有意识的选择，非"顺手"误选）。
+        // 合法场景（桌面应用/不支持浏览器）仍可通过搜索找到密码。
+        log::debug!("vault_detect_and_match: URL 检测失败，返回空列表（用户可搜索）");
+        return Ok(Vec::new());
     }
 
     let url = url::Url::parse(&url_str).map_err(|e| vault_error::to_tauri_error(anyhow::anyhow!(e)))?;
@@ -1771,7 +1807,6 @@ mod tests {
     /// 常量应为 spec 规定的值（20 / 50）。
     #[test]
     fn test_detect_match_limits_are_spec_values() {
-        assert_eq!(VAULT_DETECT_FALLBACK_LIMIT, 20);
         assert_eq!(VAULT_DETECT_MATCH_LIMIT, 50);
     }
 }
