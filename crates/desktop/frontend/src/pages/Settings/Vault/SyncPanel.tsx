@@ -135,6 +135,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       setRemotes(r);
       showToast(t("settings.vault.sync.remoteAdded"));
     } catch (e) {
+      // 私有库检测失败 / git 错误等——直接展示后端 Display 字符串（含用户可读建议）
       showToast(String(e));
     } finally {
       setBusy(false);
@@ -238,16 +239,24 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
                   onClick={handleClone}
                   disabled={busy || !cloneUrl.trim()}
                 >
-                  {t("settings.vault.sync.clone")}
+                  {busy ? (
+                    t("settings.vault.sync.checkingPrivacy")
+                  ) : (
+                    t("settings.vault.sync.clone")
+                  )}
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setShowClone(false)}
+                  disabled={busy}
                 >
                   ✕
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground/70">
+                {t("settings.vault.sync.privacyHint")}
+              </p>
             </>
           ) : (
             <Button
@@ -383,9 +392,18 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
             title={t("settings.vault.sync.addRemote")}
             className="shrink-0"
           >
-            <Plus className="size-4" />
+            {busy ? (
+              <RefreshCw className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
           </Button>
         </div>
+
+        {/* 私有库检测提示（2026-07-21）——常驻，避免用户输公有库被拒后困惑 */}
+        <p className="text-xs text-muted-foreground/70">
+          {t("settings.vault.sync.privacyHint")}
+        </p>
       </div>
 
       {/* SSH 提示 */}

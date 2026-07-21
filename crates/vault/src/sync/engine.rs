@@ -29,6 +29,7 @@ use octopus_infra::db::{self, VaultCipherInput, VaultMetaInput};
 
 use crate::sync::error::SyncError;
 use crate::sync::git;
+use crate::sync::privacy::{self, PrivacyVerdict};
 use crate::sync::store;
 
 // === T4.1: SyncState 进程内锁 ===
@@ -169,14 +170,51 @@ fn push_initial() -> Result<(), SyncError> {
 /// 添加 remote——用户自由输入 URL，不限制 GitHub/Gitee/自建。
 ///
 /// name 是用户自定义的 remote 名称（如 origin / backup / work），如果重复返 Err。
+///
+/// **私有库检测**（2026-07-21）：入口处校验 URL——
+/// - 公有库（GitHub/Gitee API 确认 public / HTTPS ls-remote 能匿名拉到 refs）→ 拒绝
+/// - 本地路径 → 拒绝
+/// - SSH / Ambiguous / NetworkError → 放行（SSH 无法匿名嗅探，歧义/网络错误不阻断用户）
 pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
     let root = store::vault_root();
     if !git::is_git_repo(&root) {
         return Err(SyncError::RepoNotInitialized);
     }
+    // 私有库守卫——硬阻断公有库
+    ensure_private_repo(url)?;
     git::git_remote_add(&root, name, url)?;
     log::info!("[sync] 添加 remote: {} → {}", name, url);
     Ok(())
+}
+
+/// 私有库守卫——检测 URL，公有库直接返 Err。
+///
+/// 其他 verdict（Private / Ambiguous / SshUnverifiable / NetworkError）放行，
+/// 仅记录日志让用户能看到检测过程。
+fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
+    let verdict = privacy::check_privacy(url)?;
+    match verdict {
+        PrivacyVerdict::Public => {
+            log::warn!("[sync] 拒绝公有库: {}", url);
+            Err(SyncError::PublicRepoRejected(url.to_string()))
+        }
+        PrivacyVerdict::Private => {
+            log::info!("[sync] 确认私有库: {}", url);
+            Ok(())
+        }
+        PrivacyVerdict::Ambiguous(reason) => {
+            log::info!("[sync] 仓库可见性不明（放行）: {} —— {}", url, reason);
+            Ok(())
+        }
+        PrivacyVerdict::SshUnverifiable => {
+            log::info!("[sync] SSH URL 无法自动检测（放行，由用户保证私有）: {}", url);
+            Ok(())
+        }
+        PrivacyVerdict::NetworkError(msg) => {
+            log::warn!("[sync] 仓库可见性检测网络错误（放行）: {} —— {}", url, msg);
+            Ok(())
+        }
+    }
 }
 
 /// 删除 remote。
@@ -212,7 +250,13 @@ pub fn clone_from(remote_url: &str) -> Result<(), SyncError> {
 ///
 /// **注意**：clone 后用户必须输 master_password 解锁（前端流程），unlock 后
 /// 才能解密 cipher。本函数只做 clone + 文件 → SQLite upsert，不做加密验证。
+///
+/// **私有库守卫**（2026-07-21）：clone 前先校验 URL——避免从公有库 clone 进来
+/// （如果远程是公有库，说明用户配错了 remote；clone 完才发现为时已晚）。
 fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
+    // 私有库守卫——硬阻断公有库（在 git_clone 之前，避免误 clone 进来）
+    ensure_private_repo(remote_url)?;
+
     let root = store::vault_root();
     // 确保父目录存在
     if let Some(parent) = root.parent() {
@@ -547,5 +591,27 @@ mod tests {
         assert_eq!(r.pulled, 0);
         assert_eq!(r.pushed, 0);
         assert_eq!(r.deleted, 0);
+    }
+
+    /// 私有库守卫：本地路径直接拒绝（不依赖 git / 网络）。
+    #[test]
+    fn ensure_private_rejects_local_path() {
+        let err = ensure_private_repo("/Users/me/repo").unwrap_err();
+        assert!(matches!(err, SyncError::LocalPathRejected));
+        let err = ensure_private_repo("file:///path/to/repo").unwrap_err();
+        assert!(matches!(err, SyncError::LocalPathRejected));
+    }
+
+    /// 私有库守卫：SSH URL 放行（无法自动检测）。
+    #[test]
+    fn ensure_private_allows_ssh() {
+        ensure_private_repo("git@github.com:owner/repo.git").expect("SSH 应放行");
+        ensure_private_repo("ssh://git@github.com/owner/repo.git").expect("SSH 应放行");
+    }
+
+    /// 私有库守卫：未知 scheme 拒绝。
+    #[test]
+    fn ensure_private_rejects_unknown_scheme() {
+        assert!(ensure_private_repo("git://host/repo.git").is_err());
     }
 }

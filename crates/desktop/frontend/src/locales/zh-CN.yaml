@@ -123,6 +123,9 @@ settings:
       clone: 克隆
       firstPushDesc: 初始化本地仓库并导出当前数据。之后添加远程仓库地址推送。
       cloneDesc: 从已有的远程仓库克隆数据到本机（换电脑时使用）
+      # 私有库检测（2026-07-21）
+      privacyHint: 为保证安全，密码箱必须使用私有库。HTTPS 地址会自动检测，检测到公有库将被拒绝；SSH 地址无法自动检测，请自行确认仓库是 Private。
+      checkingPrivacy: 检测仓库可见性...
     list:
       title: 密码条目
       empty: 还没有密码条目

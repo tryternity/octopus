@@ -23,10 +23,11 @@ use crate::sync::outline::{Outline, OutlineEntry};
 
 // === 测试隔离 ===
 
-/// 测试专用：thread_local 覆盖 vault_root（与 infra::db::set_test_db 同模式）。
-///
-/// 进程内 `octopus_config_home` 是 Lazy 固定值（首次调用后不变），无法用 env var
-/// 重定向。用 thread_local override 让每个测试线程独立隔离。
+// 测试专用：thread_local 覆盖 vault_root（与 infra::db::set_test_db 同模式）。
+//
+// 进程内 `octopus_config_home` 是 Lazy 固定值（首次调用后不变），无法用 env var
+// 重定向。用 thread_local override 让每个测试线程独立隔离。
+// （`thread_local!` 是宏，doc comment 不生效，用普通注释。）
 #[cfg(test)]
 thread_local! {
     static TEST_VAULT_ROOT: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);

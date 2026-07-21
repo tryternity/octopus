@@ -509,7 +509,50 @@ T1-T5 全部完成（2026-07-21）。T6 文档同步 + 测试收尾。
 
 ### 测试基线
 
-- vault: **200 pass**（166 base + 34 sync：error 6 + outline 6 + store 9 + git 10 + engine 3）
+- vault: **230 pass**（166 base + 64 sync：含新增 privacy 33 + engine 3 + error 8 + outline 6 + store 9 + git 10）
 - desktop: **381 pass**
 - 前端: **304 pass**
-- cargo build + tsc: 0 error 0 warning
+- cargo build + tsc + vite build: 0 error 0 warning
+
+---
+
+## Task 7: 私有库检测（2026-07-21 增补）
+
+**目标**：`add_remote` / `clone_from` 入口拦截公有库——AES-256-GCM 加密虽强，但密文泄露给攻击者做离线爆破仍是失败。详见 [spec §4.8](../specs/2026-07-21-vault-git-sync-design.md#48-私有库检测守卫2026-07-21-增补)。
+
+### Steps
+
+| # | 文件 | 变更 |
+|---|---|---|
+| 1 | `crates/vault/Cargo.toml` | 加 `ureq = { version = "2", features = ["json", "tls"] }` |
+| 2 | `crates/vault/src/sync/git.rs` | 新增 `git_ls_remote_with_timeout`（spawn + try_wait 轮询 + kill 超时控制，设 `GIT_TERMINAL_PROMPT=0`） |
+| 3 | `crates/vault/src/sync/privacy.rs`（新建） | `GitRemoteUrl::parse`（HTTPS/SSH scp-like/SSH explicit/file）+ `check_privacy` 分流（github.com/gitee.com 走 API，其他 HTTPS 走 ls-remote，SSH 放行，file 拒绝）|
+| 4 | `crates/vault/src/sync/error.rs` | 加 `PublicRepoRejected(url)` + `LocalPathRejected`，补 Display |
+| 5 | `crates/vault/src/sync/engine.rs` | `add_remote` + `clone_initial` 入口调 `ensure_private_repo(url)` 守卫；`PublicRepoRejected` 硬阻断 |
+| 6 | `crates/vault/src/sync/mod.rs` | 注册 `pub mod privacy` |
+| 7 | `crates/desktop/frontend/src/pages/Settings/Vault/SyncPanel.tsx` | 「添加 remote」按钮 busy 时显 spinner；clone 按钮 busy 时显 `checkingPrivacy`；两处表单下加 `privacyHint` 常驻提示 |
+| 8 | `crates/desktop/frontend/src/locales/{en,zh-CN}.yaml` | 加 `privacyHint` + `checkingPrivacy` |
+
+### 验证命令
+
+```bash
+cargo build --release -p octopus-vault -p octopus-desktop
+cargo test -p octopus-vault --lib
+cargo test -p octopus-desktop --lib
+cd crates/desktop/frontend && npx tsc --noEmit && npx vite build
+# 集成测试（手动，需联网）
+cargo test -p octopus-vault --lib sync::privacy::tests::integration_ -- --ignored
+```
+
+### 关键设计决策
+
+1. **未认证 API 只能"确认公有"**：GitHub/Gitee 私有库未认证查询返 404（与"不存在"无法区分），Phase 1 不带 PAT，所以 404 归 Ambiguous 放行
+2. **ls-remote 而非 HTTP HEAD**：自建 GitLab/Gitea 等也兼容（git 协议层面统一）；API 路径仅覆盖 github.com/gitee.com
+3. **超时用代码层 spawn + try_wait 轮询**：macOS 无 `timeout` 命令，且 `mpsc`+`thread` 方案超时后无法 kill 子进程会留僵尸
+4. **`GIT_TERMINAL_PROMPT=0`**：私有 HTTPS 库 ls-remote 会被拦住要用户名，必须设 0 让 git 立即失败而非卡死
+5. **网络错误放行不阻断**：检测失败归 Ambiguous/NetworkError 都放行——用户加 remote 频率低，宁可少阻断也不卡 UI
+6. **本地路径直接拒绝**：同步意义为 0，且暴露本地文件结构
+
+### 实施记录
+
+T7 全部完成（2026-07-21）。vault 测试从 200 → 230（新增 30 个，含 3 个 `#[ignore]` 真实网络集成测试）。0 error 0 warning。

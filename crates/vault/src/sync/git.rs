@@ -247,6 +247,90 @@ pub fn git_ls_remote(url: &str) -> Result<bool, SyncError> {
     }
 }
 
+/// `git ls-remote` 结果——区分成功（返 refs）、失败、超时。
+///
+/// 私有库检测（2026-07-21）用 exit 0 + 非空 refs 判定「公有」。
+#[derive(Debug, Clone)]
+pub struct LsRemoteResult {
+    /// 成功列出 refs（公有库可访问）。
+    pub success: bool,
+    /// refs 数量（success 时 > 0）。
+    pub refs_count: usize,
+    /// 失败时的 stderr（用于分类 / 调试）。
+    pub stderr: String,
+}
+
+/// `git ls-remote --heads <url>`——带超时（macOS 无 `timeout` 命令，必须代码层控制）。
+///
+/// 超时返回 `Ok(LsRemoteResult { success: false, stderr: "timeout" })`，不返 Err
+/// （超时本质是网络问题，由上层 `Ambiguous` 兜底，不当作"硬失败"）。
+///
+/// **关键环境变量**：`GIT_TERMINAL_PROMPT=0`——私有 HTTPS 库会被 git 拦住要用户名，
+/// 设 0 后立即失败而非卡死等输入（实测见 spec §5）。
+///
+/// 实现：`spawn` 起子进程 → 主线程轮询 `try_wait` → 超时后 `kill` 子进程。
+/// 用 `spawn`+`kill`（而非 `mpsc`+`thread`）——超时后能真正终结 git 进程，不留僵尸。
+pub fn git_ls_remote_with_timeout(url: &str, timeout_secs: u64) -> Result<LsRemoteResult, SyncError> {
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new("git")
+        .args(["ls-remote", "--heads", url])
+        // 关键：禁用凭据 prompt——私有 HTTPS 库遇 401/404 会立即失败
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("git ls-remote 调用失败（spawn）")
+        .map_err(SyncError::Other)?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => break false, // 已退出
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    break true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(SyncError::Other(anyhow::anyhow!(
+                    "git try_wait 失败: {}",
+                    e
+                )));
+            }
+        }
+    };
+
+    if timed_out {
+        // 超时——kill 子进程避免僵尸；忽略 kill 本身的错误
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(LsRemoteResult {
+            success: false,
+            refs_count: 0,
+            stderr: format!("git ls-remote 超时（{}s）", timeout_secs),
+        });
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("git ls-remote 读取输出失败")
+        .map_err(SyncError::Other)?;
+    let refs_count = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok(LsRemoteResult {
+        success: output.status.success(),
+        refs_count,
+        stderr,
+    })
+}
+
 // === T3.7: 崩溃恢复 ===
 
 /// `git merge --abort`——取消进行中的 merge（崩溃恢复）。

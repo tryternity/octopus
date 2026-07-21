@@ -123,6 +123,9 @@ settings:
       clone: Clone
       firstPushDesc: Initialize local repo and export current data. Then add a remote URL to push.
       cloneDesc: Clone data from an existing remote repo to this machine (for new devices).
+      # Private repo check (2026-07-21)
+      privacyHint: For security, the vault must use a private repo. HTTPS URLs are auto-checked and public repos will be rejected. SSH URLs cannot be auto-checked—please confirm the repo is Private yourself.
+      checkingPrivacy: Checking repo visibility...
     list:
       title: Password Items
       empty: No password items yet

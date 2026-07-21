@@ -469,6 +469,51 @@ fn merge_outlines(local: Outline, remote: Outline) -> Outline {
 
 ---
 
+### 4.8 私有库检测守卫（2026-07-21 增补）
+
+**动机**：vault 同步用 AES-256-GCM 加密，理论上密文推到公网也安全。但密文泄露给攻击者做离线爆破仍是失败——主密码弱时 KDF（Argon2id）也挡不住算力攻击。所以 `add_remote` / `clone_from` 入口必须拦截公有库。
+
+**策略（Phase 1：未认证 API + ls-remote 兜底）**：
+
+| URL 类型 | 检测方法 | 判定 |
+|---|---|---|
+| `file://` 或本地路径 | 直接拒绝 | 暴露本地路径无意义 |
+| `github.com` / `gitee.com` HTTPS | HTTP API 查 `private` 字段 | 200 + `private:false` → Public（拒绝）；其他 → Ambiguous（放行） |
+| 其他 host HTTPS | `git ls-remote --heads`（带 10s 超时） | exit 0 + refs → Public（拒绝）；其他 → Ambiguous（放行） |
+| SSH (`git@host:...`) | 无法匿名嗅探 | SshUnverifiable（放行 + UI 强提示） |
+
+**关键不变量**：检测到公有必拒；歧义/私有/网络错误一律放行（不阻断用户），因为不会泄露给公众。
+
+**GitHub/Gitee 404 歧义**：未认证查询私有库返 404（与"不存在"无法区分，是有意设计避免信息泄漏）。所以 Phase 1 只能"确认公有"，不能"确认私有"。Phase 2 加 PAT 后能区分。
+
+**ls-remote 关键实现细节**：
+- macOS 无 `timeout` 命令——代码层 `spawn` + `try_wait` 轮询 + 超时 `child.kill()`
+- 必须设环境变量 `GIT_TERMINAL_PROMPT=0`——私有 HTTPS 库遇 401/404 会被 git 拦住要用户名，设 0 后立即失败而非卡死等输入
+- GitHub/Gitee HTTPS 公有库 ls-remote 直接 exit 0 + 完整 refs 列表（匿名可读）
+
+**URL 解析（`privacy::GitRemoteUrl`）**：支持 5 种格式——
+- `https://github.com/owner/repo.git`
+- `https://user:token@github.com/owner/repo.git`（去 userinfo）
+- `git@github.com:owner/repo.git`（scp-like，正则）
+- `ssh://git@github.com/owner/repo.git`
+- `file://` / `/abs/path` / `./rel/path` / `~/path`（→ File）
+
+owner/repo 从 URL path 最后两段提取，去 `.git` 后缀 + trailing `/`。
+
+**新 SyncError 变体**：
+- `PublicRepoRejected(url)` → "拒绝添加公有库 {url}——密码箱必须使用私有库..."
+- `LocalPathRejected` → "本地路径不能作为同步 remote..."
+
+**UI 提示**：添加 remote 表单 + clone 表单下方常驻私有库检测说明（`privacyHint`），busy 状态文案 `checkingPrivacy`。检测失败时直接展示 `SyncError.to_string()`（已有路径，无新逻辑）。
+
+**实测验证**（spec 编写时实测）：
+- `https://github.com/octocat/Hello-World.git` → API 200 + `private:false` → Public，被拒
+- `https://github.com/octocat/nonexistent-xyz.git` → API 404 → Ambiguous，放行
+- `git@github.com:owner/repo.git` → SshUnverifiable，放行 + UI 提示
+- GitHub API 未认证限流：60/h/IP（用户加 remote 频率低，足够）
+
+---
+
 ## 5. 不变量
 
 | # | 不变量 | 说明 |

@@ -31,6 +31,15 @@ pub enum SyncError {
     ConflictNeedsManual(String),
     /// security_stamp 不一致——远程 vault 用了不同主密码。
     MasterPasswordMismatch,
+    /// 检测到公有库——禁止作为 vault 同步仓库（含 URL）。
+    ///
+    /// 私有库检测（2026-07-21）：AES-256-GCM 加密虽强，但密文泄露给攻击者做
+    /// 离线爆破仍是失败（弱主密码会被破）。入口处必须拦截公有库。
+    PublicRepoRejected(String),
+    /// 本地路径不能作为同步 remote——`file://` / `/abs/path` / `./rel/path`。
+    ///
+    /// 同步意义为 0（本地路径无需 git remote），且会暴露本地文件结构。
+    LocalPathRejected,
     /// 其他 git 错误（stderr 透传）。
     GitError(String),
     /// 其他 IO / 序列化错误。
@@ -57,6 +66,14 @@ impl std::fmt::Display for SyncError {
                 write!(f, "合并冲突需手动介入（请在终端打开 ~/.octopus/.vault/ 解决）：{}", msg)
             }
             SyncError::MasterPasswordMismatch => write!(f, "远程 vault 用了不同主密码"),
+            SyncError::PublicRepoRejected(url) => write!(
+                f,
+                "拒绝添加公有库 {} 作为同步仓库——密码箱必须使用私有库。请到 GitHub/Gitee 把仓库改为 Private，或换一个私有库地址",
+                url
+            ),
+            SyncError::LocalPathRejected => {
+                write!(f, "本地路径不能作为同步 remote——请使用 GitHub/Gitee 私有库或自建 Git 服务的 URL")
+            }
             SyncError::GitError(msg) => write!(f, "git 错误：{}", msg),
             SyncError::Other(e) => write!(f, "同步错误：{}", e),
         }
@@ -155,5 +172,18 @@ mod tests {
         assert!(SyncError::SshHostKeyUnverified
             .to_string()
             .contains("ssh -T git@github.com"));
+    }
+
+    #[test]
+    fn display_public_repo_rejected_includes_url() {
+        let msg = SyncError::PublicRepoRejected("https://github.com/x/y.git".to_string()).to_string();
+        assert!(msg.contains("https://github.com/x/y.git"));
+        assert!(msg.contains("私有库"));
+    }
+
+    #[test]
+    fn display_local_path_rejected_hint() {
+        let msg = SyncError::LocalPathRejected.to_string();
+        assert!(msg.contains("GitHub/Gitee"));
     }
 }
