@@ -225,7 +225,11 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
         }
         Err(e) => {
             crate::attempt_guard::guard().record_failure(); // 密码错 → 计数 + 退避
-            return Err(e);
+            // 加 context 让 desktop::vault_error::classify 识别为 InvalidMasterPassword。
+            // 裸 decrypt 错误文案是 "AES-256-GCM 解密失败：密文可能已损坏或 key 不匹配"，
+            // classify 兜底为 InternalError → 用户看到"内部错误"而非"主密码错误"。
+            // 与 change_master_password:276 对称（那里用 .context("旧主密码错误")）。
+            return Err(e.context("主密码错误"));
         }
     };
 
@@ -421,7 +425,8 @@ pub fn verify_master_password(password: &str) -> Result<()> {
         }
         Err(e) => {
             crate::attempt_guard::guard().record_failure();
-            Err(e)
+            // 加 context 让 classify 识别为 InvalidMasterPassword（见 unlock_with_master_password 同款修复）
+            Err(e.context("主密码错误"))
         }
     }
 }

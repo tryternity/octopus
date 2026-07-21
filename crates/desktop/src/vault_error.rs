@@ -247,6 +247,26 @@ mod tests {
         assert_eq!(classify(&e), VaultError::InvalidMasterPassword);
     }
 
+    /// InvalidMasterPassword 防回归：unlock_with_master_password / verify_master_password
+    /// 输错密码时返 `decrypt 失败 + .context("主密码错误")` 链。
+    ///
+    /// 历史 bug（2026-07-21 修复）：unlock 路径曾裸返 decrypt 错误，classify 兜底为
+    /// InternalError → 用户输错密码看到"内部错误"而非"主密码错误"。本测试固化修复：
+    /// 解密失败的错误链只要 context 含"主密码错误"就必须识别为 InvalidMasterPassword。
+    #[test]
+    fn classify_unlock_wrong_password_with_context() {
+        // 真实 decrypt 错误链：head 是 AES-GCM 失败细节，.context("主密码错误") 在链尾
+        let e = err_with_chain(&[
+            "AES-256-GCM 解密失败：密文可能已损坏或 key 不匹配",
+            "主密码错误",
+        ]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InvalidMasterPassword,
+            "输错密码的错误链应识别为 InvalidMasterPassword，而非兜底 InternalError"
+        );
+    }
+
     /// CipherNotFound：command 层抛 `"cipher 42 不存在"`。
     #[test]
     fn classify_cipher_not_found() {
