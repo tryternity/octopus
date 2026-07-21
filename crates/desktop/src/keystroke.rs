@@ -111,15 +111,33 @@ pub fn send_key_combo_to_pid(modifier: KeyModifier, key_code: u8, pid: i32) -> R
 /// **WKWebView 嵌套 app 兼容**：微信内置浏览器等不响应 CGEvent（不论全局 post
 /// 还是 post_to_pid），osascript 通过 System Events 高层 API 走完整菜单路由。
 ///
-/// 代价：osascript 进程启动 ~200ms（vs CGEvent < 5ms）。
+/// 代价：osascript 进程启动 ~200ms（vs CGEvent < 5ms）。`Command::output()` 同步
+/// 等待 osascript 进程结束——而 System Events 的 keystroke 同步让目标 app 处理完
+/// 才返回，所以本函数返回时复制/粘贴动作已完成。
+///
+/// **关键约束（2026-07-21 踩坑，已验证）**：
+/// 必须用完整 `tell application "System Events" ... end tell` block，但 **不要**
+/// 用 `tell frontProc` 显式包裹 `keystroke`。验证过的最佳版本：
+///   set frontProc to first process whose frontmost is true
+///   keystroke "c" using command down  ← 在 System Events 块作用域内，不显式 tell frontProc
+/// 加 `tell frontProc ... end tell` 反而让 keystroke 失效（changeCount +0）——
+/// 推测：`tell frontProc` 把命令绑定到 process 的 AX 上下文，但 WKWebView 嵌套层
+/// 的 menu bar 不归 WeChat process 的 AX 拥有，所以 Cmd+C 没触发菜单。
 ///
 /// `key_char` 是按键字符（如 "c" / "v"），`using` 是修饰键（如 "command down"）。
 #[cfg(target_os = "macos")]
 pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
     use std::process::Command;
+    // 不用 tell frontProc 包裹 keystroke！见函数 doc 注释的踩坑记录。
+    // 完整 tell block + set frontProc（用于诊断）+ keystroke 在 System Events 作用域内。
     let script = format!(
-        r#"tell application "System Events" to keystroke "{}" using {}"#,
-        key_char, using
+        r#"tell application "System Events"
+            set frontProc to first process whose frontmost is true
+            set procName to name of frontProc
+            keystroke "{key}" using {using}
+            return procName
+        end tell"#,
+        key = key_char, using = using
     );
     let out = Command::new("osascript")
         .args(["-e", &script])
@@ -129,6 +147,8 @@ pub fn send_via_osascript(key_char: &str, using: &str) -> Result<()> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("osascript keystroke 失败: {}", stderr);
     }
+    let proc_name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    log::info!("[osascript] keystroke '{}' using {} → frontmost='{}'", key_char, using, proc_name);
     Ok(())
 }
 

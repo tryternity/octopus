@@ -10,15 +10,21 @@ pub async fn query_clipboard_history(
     page: u32,
     size: u32,
 ) -> Result<Vec<ClipboardItem>, String> {
-    octopus_infra::db::with_db(|conn| {
-        let qf = QueryFilter {
-            filter,
-            search,
-            page: page.max(1),
-            size: size.max(1),
-        };
-        octopus_clipboard::store::query_history(conn, &qf)
+    // spawn_blocking：with_db 持全局 ReentrantMutex，watcher 写大图（WebP 编码 ~50-200ms）
+    // 期间会阻塞读查询。包 spawn_blocking 避免卡住 Tokio worker 影响其他 IPC。
+    tokio::task::spawn_blocking(move || {
+        octopus_infra::db::with_db(|conn| {
+            let qf = QueryFilter {
+                filter,
+                search,
+                page: page.max(1),
+                size: size.max(1),
+            };
+            octopus_clipboard::store::query_history(conn, &qf)
+        })
     })
+    .await
+    .map_err(|e| format!("join error: {}", e))?
     .map_err(|e| e.to_string())
 }
 
@@ -161,15 +167,20 @@ pub async fn clipboard_stats(
     filter: String,
     search: Option<String>,
 ) -> Result<i64, String> {
-    octopus_infra::db::with_db(|conn| {
-        let qf = QueryFilter {
-            filter,
-            search,
-            page: 1,
-            size: 1,
-        };
-        octopus_clipboard::store::count_history(conn, &qf)
+    // spawn_blocking：与 query_clipboard_history 同模式，避免 watcher 长写阻塞读。
+    tokio::task::spawn_blocking(move || {
+        octopus_infra::db::with_db(|conn| {
+            let qf = QueryFilter {
+                filter,
+                search,
+                page: 1,
+                size: 1,
+            };
+            octopus_clipboard::store::count_history(conn, &qf)
+        })
     })
+    .await
+    .map_err(|e| format!("join error: {}", e))?
     .map_err(|e| e.to_string())
 }
 
@@ -586,29 +597,34 @@ pub async fn insert_clipboard_text_item(
 /// 前端直接 `<img src={...}>`，省掉膨胀与转换开销（剪贴板窗口滚动时每个图片条目都触发）。
 #[tauri::command]
 pub async fn get_image_thumb(id: i64) -> Result<String, String> {
-    let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+    // spawn_blocking：两次 with_db 调用（item + thumb blob），可能在 watcher 写大图时阻塞。
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let item = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, id)
+        })
+        .map_err(|e| e.to_string())?;
+
+        let item = item.ok_or("条目不存在")?;
+        if item.item_type != octopus_clipboard::ItemType::Image {
+            return Err("非图片条目".into());
+        }
+
+        let blob_hash = item.ref_data.clone()
+            .ok_or("图片元数据缺失")?;
+
+        let thumb_blob = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_image_thumb(conn, &blob_hash)
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "缩略图不存在".to_string())?;
+
+        Ok(format!(
+            "data:image/webp;base64,{}",
+            general_purpose::STANDARD.encode(&thumb_blob)
+        ))
     })
-    .map_err(|e| e.to_string())?;
-
-    let item = item.ok_or("条目不存在")?;
-    if item.item_type != octopus_clipboard::ItemType::Image {
-        return Err("非图片条目".into());
-    }
-
-    let blob_hash = item.ref_data.clone()
-        .ok_or("图片元数据缺失")?;
-
-    let thumb_blob = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_image_thumb(conn, &blob_hash)
-    })
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "缩略图不存在".to_string())?;
-
-    Ok(format!(
-        "data:image/webp;base64,{}",
-        general_purpose::STANDARD.encode(&thumb_blob)
-    ))
+    .await
+    .map_err(|e| format!("join error: {}", e))?
 }
 
 /// 取图片全分辨率（image_data.blob）→ data URL（base64 + WebP 前缀）。
@@ -617,24 +633,32 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
 /// 仅取 blob（全分辨率）而非 thumb。返回 data URL 同样为避免 IPC 序列化膨胀。
 #[tauri::command]
 pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
-    let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, id)
+    // spawn_blocking：两次 with_db（item + blob，4MB WebP 读取），watcher 写时可能阻塞。
+    // ipc::Response 不便从 spawn_blocking 闭包返回（非简单 Send），只把 DB 读包进去。
+    let blob: Vec<u8> = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let item = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, id)
+        })
+        .map_err(|e| e.to_string())?;
+
+        let item = item.ok_or("条目不存在")?;
+        if item.item_type != octopus_clipboard::ItemType::Image {
+            return Err("非图片条目".into());
+        }
+
+        let blob_hash = item.ref_data.clone()
+            .ok_or("图片元数据缺失")?;
+
+        let blob = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+        })
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "图片数据缺失".to_string())?;
+
+        Ok(blob)
     })
-    .map_err(|e| e.to_string())?;
-
-    let item = item.ok_or("条目不存在")?;
-    if item.item_type != octopus_clipboard::ItemType::Image {
-        return Err("非图片条目".into());
-    }
-
-    let blob_hash = item.ref_data.clone()
-        .ok_or("图片元数据缺失")?;
-
-    let blob = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_image_blob(conn, &blob_hash)
-    })
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| "图片数据缺失".to_string())?;
+    .await
+    .map_err(|e| format!("join error: {}", e))??;
 
     // 返回原始 WebP 字节（Raw body），前端用 URL.createObjectURL 加载
     Ok(tauri::ipc::Response::new(blob))

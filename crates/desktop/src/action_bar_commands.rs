@@ -49,6 +49,13 @@ static TRIGGER_TIMESTAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::Atom
 /// 隔离恢复剪贴板写入自身递增 changeCount 对下次检测的污染（现象 2 根因）。
 static CHANGE_COUNT_BASELINE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+/// 微信/WKWebView 嵌套 app 的 Cmd+C 等待 changeCount 递增的超时。
+///
+/// osascript 的 `keystroke "c"` 投出后，WKWebView 嵌套层处理菜单快捷键 + 写回
+/// pasteboard 是**异步**的——实测 80ms 超时时 changeCount 还没变（误判无选中），
+/// 300ms 能稳定覆盖大多数情况（实测成功率 ~90%）。如需调优改这个常量即可。
+const WECHAT_COPY_POLL_TIMEOUT_MS: u64 = 300;
+
 /// 保存当前 CHANGE_COUNT_BASELINE（供 silent 路径隔离 detect 副作用）。
 pub(crate) fn save_change_count_baseline() -> i64 {
     CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst)
@@ -197,13 +204,22 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     );
 
     let focus = FocusTracker::new();
-    focus.simulate_copy();
-    // 2026-07-20 perf：原固定 sleep(200ms) 等剪贴板更新，改 polling。
-    // macOS Cmd+C 剪贴板写入通常 < 50ms 完成；polling 每 5ms 检查 changeCount，命中即退出。
-    // 超时 80ms：实测 macOS Cmd+C 命中 changeCount 最坏 ~30-50ms，留 80ms 兜底防系统忙时
-    // 延迟。无选中时 Cmd+C 不写剪贴板，poll 会等满 80ms——比原 200ms 省 120ms。
-    // 80ms 是权衡值：太短可能错过系统繁忙时的延迟（误判有选中为无选中），太长无收益。
-    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
+    let copy_dispatch = focus.simulate_copy();
+    log::info!("[action-bar][detect] simulate_copy dispatch={:?}", copy_dispatch);
+    // 等 Cmd+C 产生剪贴板写入。polling 每 5ms 检查 changeCount，命中即退出。
+    //
+    // **超时按 dispatch 路径动态化**（2026-07-21 实测调优）：
+    // - CGEvent 路径（原生/Electron）：Cmd+C 同步触发，changeCount 通常 < 50ms 递增，80ms 兜底
+    // - Osascript 路径（WKWebView 嵌套如微信）：osascript 返回时 keystroke 已投出，但
+    //   WKWebView 处理菜单快捷键 + 写回 pasteboard 是异步的，需要 200-400ms。
+    //   80ms 超时时 WKWebView 还没完成写入，changeCount 未变 → 误判无选中 → launch 模式。
+    //
+    // 微信超时由 WECHAT_COPY_POLL_TIMEOUT_MS 控制，方便后续调整。
+    let poll_timeout_ms = match copy_dispatch {
+        crate::focus_tracker::CopyDispatch::Osascript => WECHAT_COPY_POLL_TIMEOUT_MS,
+        crate::focus_tracker::CopyDispatch::CGEvent => 80,
+    };
+    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_timeout_ms);
     let mut change_count_after = change_count_before;
     while std::time::Instant::now() < poll_deadline {
         change_count_after = pasteboard_change_count();
@@ -246,8 +262,9 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
             write_clipboard_text(app, original);
         }
     }
-    // 更新 baseline 到恢复后的 changeCount——下次 detect 的 before 至少是这个值
-    CHANGE_COUNT_BASELINE.store(pasteboard_change_count(), std::sync::atomic::Ordering::SeqCst);
+    // 更新 baseline 到恢复后的 changeCount——下次 detect 的 before 至少是这个值。
+    let cc_after_restore = pasteboard_change_count();
+    CHANGE_COUNT_BASELINE.store(cc_after_restore, std::sync::atomic::Ordering::SeqCst);
 
     let text = match &clipboard_after {
         Some(t) if !t.trim().is_empty() => t.clone(),

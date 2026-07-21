@@ -9,6 +9,16 @@
 
 pub struct FocusTracker;
 
+/// simulate_copy 实际走的 dispatch 路径。调用方据此调整后续行为
+/// （如 changeCount polling 超时——osascript 路径需要等 ~200ms+ WKWebView 回写）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyDispatch {
+    /// WKWebView 嵌套 app（微信等）→ osascript。慢路径（~200ms osascript + 异步回写剪贴板）。
+    Osascript,
+    /// 原生/Electron app → CGEventPostToPid。快路径（< 5ms，changeCount 通常 < 50ms 递增）。
+    CGEvent,
+}
+
 impl FocusTracker {
     pub fn new() -> Self {
         FocusTracker
@@ -30,9 +40,16 @@ impl FocusTracker {
         simulate_paste_platform();
     }
 
-    /// 模拟复制按键（Cmd+C / Ctrl+C）。
+    /// 模拟复制按键（Cmd+C / Ctrl+C）。返回实际走的 dispatch 路径。
+    #[cfg(target_os = "macos")]
+    pub fn simulate_copy(&self) -> CopyDispatch {
+        simulate_copy_platform()
+    }
+
+    /// 非 macOS 平台暂未实现 dispatch 路径区分，统一返回 CGEvent 语义。
+    #[cfg(not(target_os = "macos"))]
     pub fn simulate_copy(&self) {
-        simulate_copy_platform();
+        simulate_copy_platform()
     }
 }
 
@@ -102,31 +119,40 @@ fn simulate_paste_platform() {
 }
 
 #[cfg(target_os = "macos")]
-fn simulate_copy_platform() {
+fn simulate_copy_platform() -> CopyDispatch {
     // 2026-07-20 perf：原 osascript（~200ms 启动 + delay 0.15）改用 keystroke 模块（CGEvent < 5ms）。
     // 2026-07-21 三级 dispatch（跟 simulate_paste 同策略）：
     //   1. WKWebView 嵌套 app → osascript
     //   2. Electron app → CGEventPostToPid
     //   3. 原生 app → CGEventPostToPid
+    //
+    // 2026-07-21 fix：返回 dispatch 路径给调用方，让 detect_selection 据此选 polling 超时
+    // （osascript 路径需要等 ~200ms+ WKWebView 回写，CGEvent 路径 80ms 足够）。
     let frontmost = crate::app_context::macos_ax::frontmost_app();
-    let result = dispatch_copy(frontmost);
+    let (result, dispatch) = dispatch_copy(frontmost);
     if let Err(e) = result {
-        log::warn!("simulate_copy: {}", e);
+        log::warn!("simulate_copy: {} (dispatch={:?})", e, dispatch);
     }
+    dispatch
 }
 
 /// 三级 dispatch：根据 frontmost app 类型选最佳按键发送方式。
 ///
 /// 调用方先读 `frontmost_app()`（一次 IPC），传入这里复用，避免重复调用。
+/// 返回 `(result, dispatch_path)`——dispatch_path 让调用方调整后续行为（如 polling 超时）。
 #[cfg(target_os = "macos")]
-fn dispatch_copy(frontmost: Option<(i32, Option<String>, String)>) -> anyhow::Result<()> {
+fn dispatch_copy(
+    frontmost: Option<(i32, Option<String>, String)>,
+) -> (anyhow::Result<()>, CopyDispatch) {
     match &frontmost {
         Some((_, bid, _)) if crate::keystroke::needs_osascript_fallback(bid.as_deref()) => {
             log::info!("simulate_copy: WKWebView app {:?} → osascript", bid);
-            crate::keystroke::copy_via_osascript()
+            (crate::keystroke::copy_via_osascript(), CopyDispatch::Osascript)
         }
-        Some((pid, _, _)) => crate::keystroke::copy_to_pid(*pid),
-        None => crate::keystroke::copy(),
+        Some((pid, _, _)) => {
+            (crate::keystroke::copy_to_pid(*pid), CopyDispatch::CGEvent)
+        }
+        None => (crate::keystroke::copy(), CopyDispatch::CGEvent),
     }
 }
 

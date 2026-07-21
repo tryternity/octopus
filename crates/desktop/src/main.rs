@@ -510,12 +510,12 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&ext_dir);
             }
 
-            // 启动时重建 FTS5 索引，清理上次运行遗留的空洞
-            if let Err(e) = octopus_infra::db::with_db(|conn| {
-                octopus_clipboard::store::rebuild_fts_index(conn)
-            }) {
-                log::warn!("Startup FTS5 rebuild failed: {}", e);
-            }
+            // 2026-07-21 perf：移除启动时无条件 rebuild FTS5 索引。
+            // 原代码每次冷启动都跑 `INSERT INTO clipboard_history_fts VALUES('rebuild')`，
+            // 在 10MB DB 上耗时 50-200ms。但触发器（clip_fts_ai/ad/au）在事务内执行，
+            // 事务原子性保证 FTS 与主表一致——除非 DB 文件物理损坏，rebuild 也救不回来。
+            // cleanup.rs 删除行时仍会条件 rebuild（`if deleted > 0 || reclaimed > 0`），
+            // 首次启动的 populate 由 schema 初始化时的种子数据触发器自动处理。
 
             // 启动时应用方言模糊规则（须先于热词装载：规则影响索引 key 归一化，
             // 先 set rules 再 reload_hotwords 建索引，最终索引用新规则）。
