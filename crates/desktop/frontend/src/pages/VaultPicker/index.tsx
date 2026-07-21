@@ -160,22 +160,20 @@ export default function VaultPicker() {
         height = 360;
         break;
       case "list": {
-        // 2026-07-21 统一布局：搜索框 + 新建按钮 + 列表区（max 5 条可视滚动）。
-        // 标题栏 36 + 搜索框区（input 36 + padding 16 = 52）+ 新建按钮（~32）+
-        // 列表区（最多 5 × 88 = 440，但窗口高度自适应实际条数）。
-        const ciphers = "ciphers" in view ? view.ciphers.length : 0;
-        // 实际条数：URL 命中用 view.ciphers，未命中看 searchResults（初始 0）
-        const effectiveCount = ciphers;
-        const listH = Math.min(5, Math.max(1, effectiveCount)) * 88;
+        // 2026-07-21 统一布局：搜索框 + 新建按钮 + 列表区（固定 2 条高度）。
+        // 列表区固定 2 × 88 = 176px，不管内容是空/1 条/N 条——空时留白、
+        // 1 条时下方留白、超过 2 条滚动条出现让用户知道有多条。
+        // 新增（create view）切换回来时整体高度不变（create 360 > list 高度，
+        // setSize 把窗口缩到 list 高度，但因为是固定值不会跳变）。
+        const listH = 2 * 88;  // 固定 2 条
         // 36（标题）+ 52（搜索框）+ 8（间距）+ 32（新建按钮）+ listH + 8（padding）
-        // 空列表时 listH 用 1 条的空间（放提示文字）
-        height = Math.min(600, 36 + 52 + 8 + 32 + listH + 8);
+        height = 36 + 52 + 8 + 32 + listH + 8;
         break;
       }
       default:
         height = 200;
     }
-    void getCurrentWindow().setSize(new LogicalSize(400, height));
+    void getCurrentWindow().setSize(new LogicalSize(360, height));
   }, [view]);
 
   // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
@@ -516,8 +514,8 @@ export default function VaultPicker() {
             </button>
 
             {/* 列表区：搜索框有内容 → searchResults（全量搜索）；空 → view.ciphers（URL 匹配或空）。
-                max-height 5 条（5 × 88px + 3px 余量），超出滚动。 */}
-            <div className="flex-1 overflow-y-auto" style={{ maxHeight: "443px" }}>
+                固定 2 条高度（176px）——不管内容多少整体大小不变。超过 2 条滚动条出现。 */}
+            <div className="flex-1 overflow-y-auto" style={{ height: "176px" }}>
               {(searchQuery.trim() !== "" ? searchResults : view.ciphers).map((c) => {
                 const username = c.login?.username || "";
                 const password = c.login?.password || "";
