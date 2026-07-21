@@ -5,8 +5,13 @@
 //!
 //! vault_version 是 monotonic 递增整数，每次本地改动 +1，用于检测「远程版本比
 //! 本地旧」（防 push 旧数据覆盖）。
+//!
+//! **BTreeMap 而非 HashMap**（2026-07-21 修复）：BTreeMap 按 key 字典序迭代，
+//! serde 序列化为 JSON object 时 key 顺序稳定——保证相同输入产生字节相同的
+//! outline.json，避免 git 误判为变化产生空 commit（用户实测「每次同步都推 4 条」
+//! 的根因之一）。HashMap 迭代顺序随机，每次写盘 JSON 字节不同。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// outline 单条条目——uuid 对应的文件 sha + 最后更新时间。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -24,10 +29,10 @@ pub struct Outline {
     pub version: u32,
     /// vault 整体版本（monotonic 递增，每次本地改动 +1）。
     pub vault_version: u64,
-    /// cipher uuid → 条目。
-    pub ciphers: HashMap<String, OutlineEntry>,
-    /// folder uuid → 条目。
-    pub folders: HashMap<String, OutlineEntry>,
+    /// cipher uuid → 条目。BTreeMap 保证 JSON 序列化顺序稳定。
+    pub ciphers: BTreeMap<String, OutlineEntry>,
+    /// folder uuid → 条目。BTreeMap 保证 JSON 序列化顺序稳定。
+    pub folders: BTreeMap<String, OutlineEntry>,
 }
 
 impl Default for Outline {
@@ -35,8 +40,8 @@ impl Default for Outline {
         Self {
             version: 1,
             vault_version: 0,
-            ciphers: HashMap::new(),
-            folders: HashMap::new(),
+            ciphers: BTreeMap::new(),
+            folders: BTreeMap::new(),
         }
     }
 }
@@ -45,7 +50,7 @@ impl Default for Outline {
 ///
 /// 返回 merged outline。vault_version 取 max。
 ///
-/// 设计：cipher 和 folder 各自独立 merge（HashMap key 是 uuid，全局唯一无冲突）。
+/// 设计：cipher 和 folder 各自独立 merge（key 是 uuid，全局唯一无冲突）。
 /// 对于「本地有 + 远程无」的 uuid——保留（远程可能还没 push）。
 /// 对于「本地无 + 远程有」的 uuid——加入（远程新增）。
 /// 对于「双方都有」——取 updated_at 更新的。
@@ -97,11 +102,11 @@ mod tests {
     fn merge_both_add_new() {
         // 本地有 c1，远程有 c2 → 合并后两个都有
         let local = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha1", "2026-07-21T10:00:00"))]),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha1", "2026-07-21T10:00:00"))]),
             ..Default::default()
         };
         let remote = Outline {
-            ciphers: HashMap::from([("c2".into(), entry("sha2", "2026-07-21T11:00:00"))]),
+            ciphers: BTreeMap::from([("c2".into(), entry("sha2", "2026-07-21T11:00:00"))]),
             ..Default::default()
         };
         let merged = merge_outlines(&local, &remote);
@@ -114,11 +119,11 @@ mod tests {
     fn merge_same_uuid_takes_newer() {
         // 双方都有 c1，远程更新 → 取远程
         let local = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha-old", "2026-07-21T10:00:00"))]),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha-old", "2026-07-21T10:00:00"))]),
             ..Default::default()
         };
         let remote = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha-new", "2026-07-21T11:00:00"))]),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha-new", "2026-07-21T11:00:00"))]),
             ..Default::default()
         };
         let merged = merge_outlines(&local, &remote);
@@ -128,11 +133,11 @@ mod tests {
     #[test]
     fn merge_same_uuid_keeps_local_if_newer() {
         let local = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha-new", "2026-07-21T11:00:00"))]),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha-new", "2026-07-21T11:00:00"))]),
             ..Default::default()
         };
         let remote = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha-old", "2026-07-21T10:00:00"))]),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha-old", "2026-07-21T10:00:00"))]),
             ..Default::default()
         };
         let merged = merge_outlines(&local, &remote);
@@ -156,13 +161,13 @@ mod tests {
     #[test]
     fn merge_folders_independent_from_ciphers() {
         let local = Outline {
-            ciphers: HashMap::from([("c1".into(), entry("sha1", "2026-07-21T10:00:00"))]),
-            folders: HashMap::new(),
+            ciphers: BTreeMap::from([("c1".into(), entry("sha1", "2026-07-21T10:00:00"))]),
+            folders: BTreeMap::new(),
             ..Default::default()
         };
         let remote = Outline {
-            ciphers: HashMap::new(),
-            folders: HashMap::from([("f1".into(), entry("sha-f1", "2026-07-21T10:00:00"))]),
+            ciphers: BTreeMap::new(),
+            folders: BTreeMap::from([("f1".into(), entry("sha-f1", "2026-07-21T10:00:00"))]),
             ..Default::default()
         };
         let merged = merge_outlines(&local, &remote);
@@ -175,11 +180,11 @@ mod tests {
         let outline = Outline {
             version: 1,
             vault_version: 42,
-            ciphers: HashMap::from([
+            ciphers: BTreeMap::from([
                 ("c1".into(), entry("sha1", "2026-07-21T10:00:00")),
                 ("c2".into(), entry("sha2", "2026-07-21T11:00:00")),
             ]),
-            folders: HashMap::from([("f1".into(), entry("sha-f1", "2026-07-21T09:00:00"))]),
+            folders: BTreeMap::from([("f1".into(), entry("sha-f1", "2026-07-21T09:00:00"))]),
         };
         let json = serde_json::to_string(&outline).unwrap();
         let parsed: Outline = serde_json::from_str(&json).unwrap();
@@ -188,5 +193,32 @@ mod tests {
         assert_eq!(parsed.ciphers.len(), 2);
         assert_eq!(parsed.folders.len(), 1);
         assert_eq!(parsed.ciphers["c1"].sha, "sha1");
+    }
+
+    /// BTreeMap 序列化顺序稳定——同样输入两次序列化结果字节一致。
+    /// 回归测试：HashMap 时这个测试会随机失败（顺序不稳定）。
+    #[test]
+    fn outline_serialization_is_deterministic() {
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::from([
+                ("zzz".into(), entry("sha-z", "2026-07-21T10:00:00")),
+                ("aaa".into(), entry("sha-a", "2026-07-21T10:00:00")),
+                ("mmm".into(), entry("sha-m", "2026-07-21T10:00:00")),
+            ]),
+            folders: BTreeMap::new(),
+        };
+        let json1 = serde_json::to_string(&outline).unwrap();
+        let json2 = serde_json::to_string(&outline).unwrap();
+        assert_eq!(json1, json2, "同输入序列化应字节一致");
+
+        // BTreeMap 按 key 字典序——aaa 应排在 zzz 前
+        let aaa_pos = json1.find("\"aaa\"").unwrap();
+        let zzz_pos = json1.find("\"zzz\"").unwrap();
+        assert!(
+            aaa_pos < zzz_pos,
+            "BTreeMap 应按字典序排列：aaa 应在 zzz 前"
+        );
     }
 }

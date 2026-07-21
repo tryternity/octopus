@@ -12,7 +12,6 @@
 //! - ciphers/<前2hex>/<uuid>.json：单 cipher 加密 blob
 //! - folders/<uuid>.json：folder 加密 blob（folder 也分桶，与 cipher 一致）
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -443,7 +442,8 @@ pub fn export_all_to_files(
     write_meta_file(&meta_file)?;
 
     // 3. 写所有 cipher / folder 文件 + 收集 (uuid, sha)
-    let mut cipher_entries: HashMap<String, OutlineEntry> = HashMap::new();
+    // BTreeMap 保证 outline.json 序列化顺序稳定（避免每次 sync 产生空 commit）
+    let mut cipher_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
     for c in ciphers {
         write_cipher_file(c)?;
         // sha 用文件内容算（不含格式化差异）——读回刚写的文件
@@ -459,7 +459,7 @@ pub fn export_all_to_files(
         );
     }
 
-    let mut folder_entries: HashMap<String, OutlineEntry> = HashMap::new();
+    let mut folder_entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
     for f in folders {
         write_folder_file(f)?;
         let path = folder_file_path(&f.id);

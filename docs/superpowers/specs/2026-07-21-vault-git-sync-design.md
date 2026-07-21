@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1 已实现（T1-T10 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送；待 e2e 测试）
+> **状态**：Phase 1 已实现（T1-T11 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + outline 序列化稳定性 / SyncReport 真实变更数；待 e2e 测试）
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -670,6 +670,8 @@ HTTPS URL → try_convert_https_to_ssh()
 | INV-S13 | github.com / gitee.com HTTPS URL 在 SSH key 可用时应自动转 SSH | 见 §4.9——避免 GitHub HTTPS 密码认证已禁用的死局 |
 | INV-S14 | 所有 git 命令必须非交互（禁用 prompt + stdin /dev/null） | 见 §4.10——Tauri 后端进程 stdin 脱离终端，交互 prompt 会让 UI 卡死 |
 | INV-S15 | sync_now 必须识别空远程仓库（NoUpstream）并走首次 push -u | 见 §4.11——用户新建空 repo 后首次点同步不能失败 |
+| INV-S16 | outline.json 序列化必须可重现（相同输入 → 字节相同） | `Outline.ciphers`/`folders` 用 BTreeMap（字典序），HashMap 迭代顺序随机会导致 git 误判为变化产生空 commit |
+| INV-S17 | SyncReport.pushed 必须是实际变更数（新增/修改/删除），不是总数 | 否则误导用户「每次同步都推 N 条」（用户已踩坑）|
 
 ---
 

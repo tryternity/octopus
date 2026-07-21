@@ -661,7 +661,9 @@ fn cipher_sha_mismatch(uuid: &str, db_ciphers: &[db::VaultCipher]) -> bool {
 
 /// Push 阶段：SQLite 最新数据 → 文件系统 + 更新 outline。
 ///
-/// 返回写入的 cipher+folder 数量。
+/// 返回**实际变更**的 cipher+folder 数量（对比旧 outline 的 sha，新增或修改才算）。
+/// 不是总数——避免「每次同步都推 4 条」的误导（用户反馈：本地和 remote 已同步，
+/// 应该连推送都没有）。
 fn push_to_files() -> Result<usize, SyncError> {
     let meta = db::load_vault_meta()
         .map_err(SyncError::Other)?
@@ -669,11 +671,43 @@ fn push_to_files() -> Result<usize, SyncError> {
     let ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
     let folders = db::list_vault_folders().map_err(SyncError::Other)?;
 
-    // 直接全量写（简化——cipher 数量通常 < 1000，全量写毫秒级）
-    // outline 在 export_all_to_files 内部已生成
-    let _outline = store::export_all_to_files(&meta, &ciphers, &folders)?;
+    // 读旧 outline 对比 sha——算实际变更数
+    let old_outline = store::read_outline_file().unwrap_or_default();
 
-    Ok(ciphers.len() + folders.len())
+    // 全量写文件系统（cipher 数量通常 < 1000，全量写毫秒级）
+    let new_outline = store::export_all_to_files(&meta, &ciphers, &folders)?;
+
+    // 对比新旧 outline——sha 不同（含新增）算变更
+    let changed = count_outline_changes(&old_outline, &new_outline);
+    Ok(changed)
+}
+
+/// 对比两个 outline，返 cipher + folder 中 sha 变化（含新增/删除）的条目数。
+fn count_outline_changes(
+    old: &crate::sync::outline::Outline,
+    new: &crate::sync::outline::Outline,
+) -> usize {
+    let mut count = 0;
+    // ciphers：新增 or sha 变
+    for (uuid, entry) in &new.ciphers {
+        match old.ciphers.get(uuid) {
+            None => count += 1, // 新增
+            Some(old_entry) if old_entry.sha != entry.sha => count += 1, // sha 变
+            _ => {}
+        }
+    }
+    // 删除的也算（旧有新无）
+    count += old.ciphers.keys().filter(|k| !new.ciphers.contains_key(*k)).count();
+    // folders 同
+    for (uuid, entry) in &new.folders {
+        match old.folders.get(uuid) {
+            None => count += 1,
+            Some(old_entry) if old_entry.sha != entry.sha => count += 1,
+            _ => {}
+        }
+    }
+    count += old.folders.keys().filter(|k| !new.folders.contains_key(*k)).count();
+    count
 }
 
 // === T4.9: disable_sync ===
@@ -753,5 +787,85 @@ mod tests {
         // 本地路径不改写
         let local = "/abs/path/to/repo";
         assert_eq!(maybe_rewrite_to_ssh(local).unwrap(), local);
+    }
+
+    // === count_outline_changes（2026-07-21 增补） ===
+
+    use crate::sync::outline::{Outline, OutlineEntry};
+
+    fn outline_entry(sha: &str) -> OutlineEntry {
+        OutlineEntry {
+            sha: sha.into(),
+            updated_at: "2026-07-21T10:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn count_changes_zero_when_identical() {
+        // 完全相同 → 0 变更
+        let old = Outline {
+            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
+            ..Default::default()
+        };
+        let new = old.clone();
+        assert_eq!(count_outline_changes(&old, &new), 0);
+    }
+
+    #[test]
+    fn count_changes_detects_new_cipher() {
+        let old = Outline::default();
+        let new = Outline {
+            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
+            ..Default::default()
+        };
+        assert_eq!(count_outline_changes(&old, &new), 1);
+    }
+
+    #[test]
+    fn count_changes_detects_modified_cipher() {
+        let old = Outline {
+            ciphers: [("c1".into(), outline_entry("sha-old"))].into_iter().collect(),
+            ..Default::default()
+        };
+        let new = Outline {
+            ciphers: [("c1".into(), outline_entry("sha-new"))].into_iter().collect(),
+            ..Default::default()
+        };
+        assert_eq!(count_outline_changes(&old, &new), 1);
+    }
+
+    #[test]
+    fn count_changes_detects_deleted_cipher() {
+        let old = Outline {
+            ciphers: [("c1".into(), outline_entry("sha1"))].into_iter().collect(),
+            ..Default::default()
+        };
+        let new = Outline::default();
+        assert_eq!(count_outline_changes(&old, &new), 1);
+    }
+
+    #[test]
+    fn count_changes_mixed_cipher_and_folder() {
+        let old: Outline = Outline {
+            ciphers: [
+                ("c1".into(), outline_entry("sha-old")),
+                ("c2-deleted".into(), outline_entry("sha2")),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let new: Outline = Outline {
+            ciphers: [
+                ("c1".into(), outline_entry("sha-new")), // 修改
+                ("c3-new".into(), outline_entry("sha3")), // 新增
+            ]
+            .into_iter()
+            .collect(),
+            folders: [("f1".into(), outline_entry("sha-f1"))].into_iter().collect(),
+            ..Default::default()
+        };
+        // c1 修改 + c3 新增 + c2 删除 + f1 新增 = 4
+        assert_eq!(count_outline_changes(&old, &new), 4);
     }
 }
