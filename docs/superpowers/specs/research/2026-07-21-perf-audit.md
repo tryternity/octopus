@@ -16,14 +16,14 @@
 | P0-4 FTS rebuild 增量化 | ✅ 完成 | `7c9b6bf4` | 移除启动时无条件 rebuild（触发器事务原子性已保证一致） |
 | P0-5 watcher 编码后台 actor | ✅ 完成 | `a654afb9` | mpsc + worker 线程，watcher 回调只 enqueue（<1μs） |
 | P0-6 Result Toolbar memo | ✅ 完成 | `7c9b6bf4` | 抽取 Toolbar.tsx + memo，流式期间省全树 reconcile |
-| P0-7 Screenshot RAF 节流 | ✅ 完成 | `7c9b6bf4` | draw useCallback deps 用 ref 读 + scheduleDraw RAF 合批 |
+| P0-7 Screenshot RAF 节流 | ❌ **reverted** | `10ba7e05` | 用户实测破坏截图功能（选区不高亮、滚动截图不滚动、预览不一致）。根因：Screenshot 是复杂 canvas + 多模式状态机，draw 引用随 state 变化有多处隐式 redraw 契约（scrollPreview 更新、scrolling mode 切换、annotation 编辑），ref 化后这些路径不再触发 draw。教训：复杂状态机的"性能优化"必须先用 React Profiler 实测确认是瓶颈，不能基于"代码模式可疑"就改 |
 | P0-8 fbank mel 稀疏化 | ✅ 完成 | `f96d7223` `e822fac6` | 全 5 路径：fbank/paraformer/streaming_paraformer/zipformer 标准 mel + whisper mel |
 | P0-9 Zipformer fbank 增量化 | ⏭️ **跳过** | - | ROI < 3%（fbank 占 9% × P0-8 已省 65% = 剩 3%），midpoint+edge-reflect 边界复杂、CTC+Transducer 双路径风险高 |
 
 **额外修复**（审计外发现）：
 - 🔥 微信 osascript Cmd+C 失效：polling 超时按 dispatch 路径动态化，微信 300ms 常量（commit `b813c13d`，已同步 main）
 
-**统计**：9 条 P0 中 6 条实施、3 条经评估后跳过（均有明确理由）。
+**统计**：9 条 P0 中 5 条实施、1 条实施后 reverted（P0-7 破坏功能）、3 条经评估后跳过（均有明确理由）。
 
 ---
 
