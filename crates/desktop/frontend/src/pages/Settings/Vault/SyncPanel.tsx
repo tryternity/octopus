@@ -6,7 +6,6 @@ import { useT } from "@/lib/i18n";
 import type { ToastVariant } from "@/lib/useToast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Row } from "@/components/ui/row";
 
 /**
  * SyncPanel —— 密码箱 Git 同步设置面板（独立 Tab）。

@@ -76,7 +76,7 @@ interface PasswordStrength {
  * 复制按钮直接 `navigator.clipboard.writeText`，与 vault_copy_password 模式分离。
  * （follow-up #5）
  */
-function useTotpPoller(cipherId: number | null): TotpResult | null {
+function useTotpPoller(cipherId: string | null): TotpResult | null {
   const [result, setResult] = useState<TotpResult | null>(null);
 
   useEffect(() => {
@@ -316,7 +316,7 @@ export default function CipherEditor({
   onClose,
   showToast,
 }: {
-  cipherId: number | null;
+  cipherId: string | null;
   folders: FolderDto[];
   onClose: () => Promise<void>;
   showToast: (msg: string) => void;
@@ -330,7 +330,7 @@ export default function CipherEditor({
   const [notes, setNotes] = useState("");
   const [favorite, setFavorite] = useState(false);
   // follow-up #6：folder_id 状态（null = 无 folder / 根目录）
-  const [folderId, setFolderId] = useState<number | null>(null);
+  const [folderId, setFolderId] = useState<string | null>(null);
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
@@ -623,9 +623,9 @@ export default function CipherEditor({
             <FieldLabel>{t("settings.vault.editor.folderLabel")}</FieldLabel>
             <Select
               size="full"
-              value={folderId?.toString() ?? ""}
+              value={folderId ?? ""}
               onChange={(e) =>
-                setFolderId(e.target.value ? Number(e.target.value) : null)
+                setFolderId(e.target.value || null)
               }
               className="w-full"
             >

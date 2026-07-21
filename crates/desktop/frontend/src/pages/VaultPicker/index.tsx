@@ -74,7 +74,7 @@ export default function VaultPicker() {
   const [unlockError, setUnlockError] = useState<string | null>(null);
   // 密码可见性——按 cipher id 独立 toggle（多个 cipher 互不影响）。
   // 默认全部 mask（•••••）防浮窗一闪而过被旁人偷看。
-  const [revealedPasswords, setRevealedPasswords] = useState<Record<number, boolean>>({});
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
