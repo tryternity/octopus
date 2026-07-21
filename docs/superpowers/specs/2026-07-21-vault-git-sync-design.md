@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1 已实现（T1-T12 完成，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议；待 e2e 测试）
+> **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离）已实现，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议；待 e2e 测试
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -806,6 +806,85 @@ sync vault_version 都 +1」。修复：只在 `changed > 0` 时 +1，无变化�
 
 **新增模块**：`crates/vault/src/sync/fingerprint.rs`（cipher_md5 + folder_md5 +
 cipher_md5_from_input + folder_md5_from_fields）。
+
+---
+
+### 4.13 热词同步协议（2026-07-22 增补）
+
+**动机**：`.sync/` 目录扩展第一个非 vault 数据类型——热词版本（hotword_sets）跨设备同步。
+复用 §4.12 的 md5 增量同步模式，但热词**明文存储**（不含密码等高敏感信息，当前 SQLite 也是明文）。
+
+**数据模型变更（schema v45 → v46）**
+
+```sql
+-- hotword_sets.id 从 INTEGER AUTOINCREMENT 改 TEXT UUID（与 vault_ciphers 一致）
+-- 加 sync_md5 TEXT 字段（md5 内容指纹，增量 diff 用）
+ALTER TABLE hotword_sets ... id TEXT PRIMARY KEY ... sync_md5 TEXT
+```
+
+- 默认「通用」版本用固定 UUID `00000000-0000-0000-0000-000000000001`——跨设备一致
+- 迁移策略：建新表 + 复制（每行 random UUID；「通用」集映射到固定 UUID）+ DROP/RENAME
+- sync_md5 不回填（NULL），首次 sync 时由 sync crate 计算填入
+
+**md5 指纹拼接**
+
+```
+// hotword set md5 输入（| 分隔，固定字段顺序）
+name | enabled | words_text
+```
+
+- **不含** id / created_at / updated_at / sync_md5
+- `words_text` 已经过 `normalize_words_text`（拼音首字母排序 + 去重）——跨设备字节一致
+- md5 计算在 `octopus_sync::hotword::hotword_set_md5`（不在 infra——保持 infra 无 md5 依赖）
+
+**目录结构**
+
+```
+~/.octopus/.sync/hotword/
+├── outline.json              { version, vault_version, ciphers: {uuid: {md5, updated_ms}} }
+└── sets/<2hex>/<uuid>.json   单个热词版本（明文 JSON）
+```
+
+- 复用 vault 的 `Outline` struct——热词用 `ciphers` 字段存 set entries（字段名内部细节，`folders` 留空）
+- `vault_version` 字段语义复用为「hotword_version」（变更计数器）
+
+**HotwordSetFile 格式（明文 JSON）**
+
+```rust
+pub struct HotwordSetFile {
+    pub version: u32,         // = 1
+    pub id: String,           // UUID
+    pub name: String,         // 明文
+    pub enabled: bool,
+    pub words_text: String,   // 已 normalize
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+**sync 流程集成**
+
+sync_now 同时同步 vault + hotword（同一个 git repo，同一次 fetch/merge/commit/push）：
+- pull 阶段：vault pull_from_files + hotword pull_hotwords_from_files
+- push 阶段：vault push_to_files + hotword push_hotwords_to_files
+- 热词 sync 失败**不阻断 vault**（`match { Ok(n), Err(e) => log::warn + 0 }`）
+
+**写命令回填 sync_md5**
+
+desktop 命令层 `refill_sync_md5` helper：写操作后读完整 row 算 md5 再 update。
+读 row 而非用命令参数算——因为 `words_text` 在 DB 内 normalize（拼音首字母排序 + 去重），
+命令层传入的原始词序与 DB 存的不同，读 row 拿到 normalize 后的值才能算准 md5。
+
+**crate 抽离**（2026-07-22）
+
+通用 sync 代码抽到独立 `crates/sync/`（octopus-sync）：
+- git.rs / outline.rs / error.rs / privacy.rs / store.rs（通用工具）从 vault 搬来
+- hotword.rs（热词 sync 模块）新建
+- 跨 crate 依赖：infra ← sync ← vault ← desktop
+
+**新增模块**：`crates/sync/src/hotword.rs`（hotword_set_md5 + HotwordSetFile +
+export_all_hotwords + incremental_export_hotwords + import_hotwords_from_files +
+pull_hotwords_from_files + push_hotwords_to_files）。
 
 ---
 

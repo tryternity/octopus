@@ -10,7 +10,7 @@
 
 **Spec:** [2026-07-21-vault-git-sync-design.md](../specs/2026-07-21-vault-git-sync-design.md)
 
-> **状态**：Phase 1（vault 同步 T1-T12）已完成。Phase 2（热词同步 + sync crate 抽离，Task 13）规划中——2026-07-22 批准，尚未编码。
+> **状态**：Phase 1（vault 同步 T1-T12）+ Phase 2（热词同步 + sync crate 抽离，Task 13）均已完成（2026-07-22）。待 e2e 测试。
 
 ## Global Constraints
 
@@ -1000,7 +1000,7 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.1.1 新建 crate 骨架**
+- [x] **13.1.1 新建 crate 骨架**
   - `Cargo.toml` members 加 `"crates/sync"`
   - `crates/sync/Cargo.toml`：
     - `[package]` name = "octopus-sync"，edition/workspace 继承
@@ -1008,14 +1008,14 @@ Phase C (热词 sync 实现，依赖 A+B)
     - `[dev-dependencies]`：`tempfile = "3"`
   - `crates/sync/src/lib.rs`：`pub mod error; pub mod git; pub mod outline; pub mod privacy; pub mod store;` + re-export
 
-- [ ] **13.1.2 搬 git.rs / outline.rs / error.rs / privacy.rs**
+- [x] **13.1.2 搬 git.rs / outline.rs / error.rs / privacy.rs**
   - 4 个文件整体从 `crates/vault/src/sync/` 复制到 `crates/sync/src/`
   - 内部 `use crate::sync::error::...` → `use crate::error::...`（去掉 sync:: 前缀）
   - 内部 `use crate::sync::git::...` → `use crate::git::...`
   - 这 4 个文件**零 octopus_vault 依赖**（调研已确认），搬过去只改 crate 内路径
   - privacy.rs 测试中 `crate::sync::git::verify_ssh_key_for_host` → `crate::git::verify_ssh_key_for_host`
 
-- [ ] **13.1.3 抽 store.rs 通用部分到 sync crate**
+- [x] **13.1.3 抽 store.rs 通用部分到 sync crate**
   - 新建 `crates/sync/src/store.rs`，只含以下通用项（业务相关的 vault_dir/cipher_file_path 等留 vault）：
     - `sync_root() -> PathBuf`（依赖 `octopus_infra::octopus_config_home`）
     - `shard_dir(uuid: &str) -> String`
@@ -1025,7 +1025,7 @@ Phase C (热词 sync 实现，依赖 A+B)
     - `TEST_SYNC_ROOT` thread_local + `set_test_sync_root` + `clear_test_sync_root`（从 vault 的 `TEST_VAULT_ROOT` / `set_test_vault_root` / `clear_test_vault_root` 改名搬来）
   - **关键**：`sync_root()` 改名后所有 vault 引用方（store.rs/engine.rs）改成调 sync crate 的 `sync_root`
 
-- [ ] **13.1.4 验证**
+- [x] **13.1.4 验证**
   - `cargo build -p octopus-sync` 0 error 0 warning
   - `cargo test -p octopus-sync --lib` 全过（git/outline/error/privacy 测试随文件搬来）
 
@@ -1048,27 +1048,27 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.2.1 加 sync 依赖**
+- [x] **13.2.1 加 sync 依赖**
   - `crates/vault/Cargo.toml` `[dependencies]` 加 `octopus-sync = { path = "../sync" }`
   - 移除 vault 独占的 md-5 依赖（md5_hex 已搬 sync crate，vault 通过 sync crate 间接依赖）—— **验证**：sha2 保留（vault store 还有 sha256 用途？检查后再定，可能也搬走）
 
-- [ ] **13.2.2 删除已搬走的文件**
+- [x] **13.2.2 删除已搬走的文件**
   - 删 `crates/vault/src/sync/git.rs` / `outline.rs` / `error.rs` / `privacy.rs`
   - mod.rs 删除对应 `pub mod` 声明
 
-- [ ] **13.2.3 store.rs 保留 vault 业务部分**
+- [x] **13.2.3 store.rs 保留 vault 业务部分**
   - 删除 `sync_root` / `shard_dir` / `sha256_hex` / `TEST_VAULT_ROOT` / `set_test_vault_root` / `clear_test_vault_root` / `iso_to_unix_ms`（已搬 sync crate）
   - 保留 `vault_dir` / `vault_root` / `meta_path` / `outline_path` / `cipher_file_path` / `folder_file_path` / `MetaFile` / `CipherFile` / `FolderFile` / `export_all_to_files` / `incremental_export` / `import_*` 等 vault 业务函数
   - `vault_dir()` 内部调 `octopus_sync::store::sync_root().join("vault")`
   - `cipher_file_path` / `folder_file_path` 调 `octopus_sync::store::shard_dir`
   - 测试 helper `VaultRootGuard` 改用 `octopus_sync::store::set_test_sync_root` / `clear_test_sync_root`
 
-- [ ] **13.2.4 fingerprint.rs 改用 sync crate 的 md5_hex**
+- [x] **13.2.4 fingerprint.rs 改用 sync crate 的 md5_hex**
   - 删除 private `md5_hex` 函数
   - `cipher_md5` / `folder_md5` / `cipher_md5_from_input` / `folder_md5_from_fields` 改用 `octopus_sync::store::md5_hex`
   - md5_hex 测试（`md5_hex_returns_32_chars_lowercase`）随函数搬走，已在 sync crate 覆盖
 
-- [ ] **13.2.5 engine.rs 更新引用**
+- [x] **13.2.5 engine.rs 更新引用**
   - 所有 `store::sync_root()` → `octopus_sync::store::sync_root()`
   - `git::*` → `octopus_sync::git::*`
   - `error::SyncError` / `classify_git_error` → `octopus_sync::error::*`
@@ -1076,15 +1076,15 @@ Phase C (热词 sync 实现，依赖 A+B)
   - `outline::Outline` → `octopus_sync::outline::Outline`
   - 测试中 `store::set_test_vault_root` → `octopus_sync::store::set_test_sync_root`
 
-- [ ] **13.2.6 mod.rs re-export**
+- [x] **13.2.6 mod.rs re-export**
   - 删搬走的 re-export，保留 vault 业务项
   - 新增 re-export（方便外部用 `octopus_vault::sync::SyncError` 等）：`pub use octopus_sync::{error::SyncError, git, outline::Outline};`
 
-- [ ] **13.2.7 desktop crate 适配**
+- [x] **13.2.7 desktop crate 适配**
   - `crates/desktop/Cargo.toml` 加 `octopus-sync = { path = "../sync" }`（vault_sync_commands 可能直接用 sync 类型）
   - `crates/desktop/src/vault_sync_commands.rs` 引用路径更新（如有）
 
-- [ ] **13.2.8 验证（Phase A 收尾，无功能变化）**
+- [x] **13.2.8 验证（Phase A 收尾，无功能变化）**
   - `cargo build --workspace` 0 error 0 warning
   - `cargo test -p octopus-sync --lib` 全过
   - `cargo test -p octopus-vault --lib` 全过（257 pass 基线不变）
@@ -1102,12 +1102,12 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.3.1 db.sql schema 改 TEXT**
+- [x] **13.3.1 db.sql schema 改 TEXT**
   - `hotword_sets.id`：`INTEGER PRIMARY KEY AUTOINCREMENT` → `TEXT PRIMARY KEY`
   - 加 `sync_md5 TEXT` 字段（在 updated_at 后）
   - 默认「通用」版本 INSERT 语句：`INSERT OR IGNORE INTO hotword_sets(id, name, enabled, words_text, sync_md5) VALUES('<固定-uuid>', '通用', 1, '', NULL)`——固定 UUID（如 `"00000000-0000-0000-0000-000000000001"`）保证跨设备一致（「通用」是默认集，两台机器都该有同一个 id）
 
-- [ ] **13.3.2 v45→v46 迁移逻辑**
+- [x] **13.3.2 v45→v46 迁移逻辑**
   - init_schema 加 `if v == 45` 分支：
     1. `CREATE TABLE hotword_sets_new (... id TEXT PRIMARY KEY ..., sync_md5 TEXT)`
     2. `INSERT INTO hotword_sets_new SELECT lower(hex(randomblob(16))) AS id, name, enabled, words_text, created_at, updated_at, NULL FROM hotword_sets`（为每行生成 UUID，sync_md5 留 NULL）
@@ -1115,11 +1115,11 @@ Phase C (热词 sync 实现，依赖 A+B)
     4. `PRAGMA user_version = 46`
   - **测试**：迁移测试覆盖（旧 i64 id → 新 UUID 字符串 + sync_md5=NULL）
 
-- [ ] **13.3.3 全新库 v=46 早返**
+- [x] **13.3.3 全新库 v=46 早返**
   - init_schema 最新早返分支 `if v >= 46 { return Ok(()) }`
   - 全新库 INIT_SQL 已含新 schema，设 v46
 
-- [ ] **13.3.4 验证**
+- [x] **13.3.4 验证**
   - `cargo test -p octopus-infra --lib` 全过（含新迁移测试）
 
 ---
@@ -1133,13 +1133,13 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.4.1 HotwordSet struct + row mapper**
+- [x] **13.4.1 HotwordSet struct + row mapper**
   - `HotwordSet.id: i64` → `String`
   - `HOTWORD_SET_COLS` 加 `sync_md5`：`"id, name, enabled, words_text, created_at, updated_at, sync_md5"`
   - `row_to_hotword_set`：`id: row.get(0)?`（自动 String）+ 加 `sync_md5: row.get(6)?`
   - struct 加 `pub sync_md5: Option<String>` 字段
 
-- [ ] **13.4.2 CRUD 函数签名改 String**
+- [x] **13.4.2 CRUD 函数签名改 String**
   - 影响的函数（来自调研）：
     - `get_hotword_set(id: i64)` → `(id: &str)`
     - `insert_hotword_set(name)` → 改为 `insert_hotword_set(id: &str, name: &str)`（调用方生成 UUID）—— **不再返回 last_insert_rowid**
@@ -1153,7 +1153,7 @@ Phase C (热词 sync 实现，依赖 A+B)
     - 各 `_at` 内层函数同步改
   - `list_hotword_sets` 的 `ORDER BY id ASC` 改 `ORDER BY name ASC`（UUID 字符串排序无意义，按 name 排对用户友好）
 
-- [ ] **13.4.3 验证**
+- [x] **13.4.3 验证**
   - `cargo build -p octopus-infra` 0 error
   - `cargo test -p octopus-infra --lib` 全过（hotword 测试 fixture 改 String id）
 
@@ -1169,7 +1169,7 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.5.1 Tauri 命令签名**
+- [x] **13.5.1 Tauri 命令签名**
   - 来自调研的 11 个命令，id 参数 i64 → String：
     - `create_hotword_set(name: String)` → 返回 `Result<String, String>`（生成 UUID）+ 内部调 `Uuid::new_v4().to_string()` 传入 `insert_hotword_set`
     - `rename_hotword_set(id: String, name: String)`
@@ -1181,7 +1181,7 @@ Phase C (热词 sync 实现，依赖 A+B)
     - `import_hotwords`：`target_set_id: Option<i64>` → `Option<String>`，返回 `Result<String, String>`
     - `export_hotwords(set_id: i64)` → `set_id: String`
 
-- [ ] **13.5.2 前端 HotwordPanel.tsx 类型**
+- [x] **13.5.2 前端 HotwordPanel.tsx 类型**
   - `interface HotwordSet { id: number → string }`
   - `selectedId: number | null` → `string | null`
   - `renaming: number | null` → `string | null`
@@ -1189,7 +1189,7 @@ Phase C (热词 sync 实现，依赖 A+B)
   - callback 参数 `(id: number, ...)` → `(id: string, ...)`
   - invoke 参数 `{ id, ... }` 不变（JS 自动序列化）
 
-- [ ] **13.5.3 验证**
+- [x] **13.5.3 验证**
   - `cargo build -p octopus-desktop` 0 error 0 warning
   - `cargo test -p octopus-desktop` 全过
   - tsc + vite build 0 error
@@ -1206,24 +1206,24 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.6.1 新建 hotword 模块**
+- [x] **13.6.1 新建 hotword 模块**
   - `crates/sync/src/lib.rs` 加 `pub mod hotword;`
   - `crates/sync/src/hotword.rs`：
     - doc comment 说明热词同步协议（明文 + md5 增量 + `.sync/hotword/` 目录）
 
-- [ ] **13.6.2 热词 fingerprint**
+- [x] **13.6.2 热词 fingerprint**
   - `hotword_set_md5(h: &HotwordSet) -> String`：拼接 `name | enabled | words_text`（不含 id / created_at / updated_at / sync_md5）
   - `hotword_set_md5_from_fields(name, enabled, words_text) -> String`：写命令填 md5 用（避免重复读 row）
   - 用 `crate::store::md5_hex`
   - **words_text 已 normalize**（拼音首字母排序 + 去重），跨设备字节一致
 
-- [ ] **13.6.3 hotword_dir + 文件路径**
+- [x] **13.6.3 hotword_dir + 文件路径**
   - `hotword_dir() -> PathBuf`：`sync_root().join("hotword")`
   - `hotword_outline_path() -> PathBuf`：`hotword_dir().join("outline.json")`
   - `hotword_set_file_path(uuid: &str) -> PathBuf`：`hotword_dir().join("sets").join(shard_dir(uuid)).join(format!("{}.json", uuid))`
   - 用 `crate::store::{sync_root, shard_dir}`
 
-- [ ] **13.6.4 HotwordSetFile struct**
+- [x] **13.6.4 HotwordSetFile struct**
   - ```rust
     pub struct HotwordSetFile {
         pub version: u32,          // = 1
@@ -1240,7 +1240,7 @@ Phase C (热词 sync 实现，依赖 A+B)
   - `write_hotword_set_file(h: &HotwordSetFile) -> Result<()>`
   - `remove_hotword_set_file(uuid) -> Result<()>`
 
-- [ ] **13.6.5 增量 export/import**
+- [x] **13.6.5 增量 export/import**
   - `incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usize)>`：
     - 读旧 outline（`hotword_outline_path`）
     - 对每行：对比 sync_md5 → 跳过/重写/新增
@@ -1250,7 +1250,7 @@ Phase C (热词 sync 实现，依赖 A+B)
   - `export_all_hotwords(sets: &[HotwordSet]) -> Result<Outline>`：首次启用同步用（全量写）
   - `import_hotwords_from_files() -> Result<Vec<HotwordSetFile>>`：pull 用（读所有文件）
 
-- [ ] **13.6.6 outline 读写**
+- [x] **13.6.6 outline 读写**
   - `read_hotword_outline() -> Result<Outline>`
   - `write_hotword_outline(o: &Outline) -> Result<()>`
   - 复用 `crate::outline::{Outline, OutlineEntry}`（vault 的 outline 结构通用——version/vault_version/ciphers/folders；热词用 ciphers 字段存 hotword set entries，或新增泛型）
@@ -1260,7 +1260,7 @@ Phase C (热词 sync 实现，依赖 A+B)
     - **推荐方案 A**（YAGNI，字段名内部细节，outline.json 内容是 `{version, vault_version, ciphers: {uuid: {md5, updated_ms}}}`——热词 outline.json 的 `ciphers` 实际存 hotword sets，语义偏移但功能正确，加注释说明）
   - 热词 outline 的 `vault_version` 字段语义改为「hotword_version」（累计变更计数），字段名不改（复用结构）
 
-- [ ] **13.6.7 验证**
+- [x] **13.6.7 验证**
   - `cargo build -p octopus-sync` 0 error
   - `cargo test -p octopus-sync --lib hotword` 全过
 
@@ -1276,30 +1276,30 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.7.1 热词 pull_from_files**
+- [x] **13.7.1 热词 pull_from_files**
   - 读 `~/.octopus/.sync/hotword/outline.json`（merge 后的）
   - 对比 SQLite 现有 hotword_sets：找出新增/修改/删除
   - upsert SQLite（用 infra 的 CRUD 函数）
   - 返回 pulled count
 
-- [ ] **13.7.2 热词 push_to_files**
+- [x] **13.7.2 热词 push_to_files**
   - 读 SQLite 全部 hotword_sets（含 sync_md5）
   - 调 `incremental_export_hotwords`
   - 写新 outline
   - 返回 pushed count
 
-- [ ] **13.7.3 集成主 sync_now**
+- [x] **13.7.3 集成主 sync_now**
   - `crates/vault/src/sync/engine.rs` sync_now 流程：
     - pull 阶段（merge ff 后）：除 vault pull 外，加 hotword pull_from_files
     - push 阶段：除 vault incremental_export 外，加 hotword push_to_files
   - SyncReport 加 `hotwords_pulled: usize` + `hotwords_pushed: usize` 字段
   - **注意**：热词 upsert SQLite 需要 `octopus_infra::db` 的 upsert 能力——infra 已有 insert/update，可能需要加 `upsert_hotword_set`（ON CONFLICT(id) DO UPDATE）
 
-- [ ] **13.7.4 enable_sync / clone_initial 适配**
+- [x] **13.7.4 enable_sync / clone_initial 适配**
   - `enable_sync`（push_initial）：除 export_all_to_files 外，加 `export_all_hotwords`
   - `clone_initial`（import_all_from_files）：除 vault import 外，加 `import_hotwords_from_files` + upsert SQLite
 
-- [ ] **13.7.5 验证**
+- [x] **13.7.5 验证**
   - `cargo test -p octopus-vault --lib sync::engine` 全过
   - 集成测试：双 tempdir A/B 机热词同步（A 创建热词集 → sync → B clone → 看到热词集）
 
@@ -1315,7 +1315,7 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.8.1 DB 函数加 sync_md5 参数**
+- [x] **13.8.1 DB 函数加 sync_md5 参数**
   - insert/update 类函数加 `sync_md5: &str` 参数：
     - `insert_hotword_set(id, name, sync_md5)`
     - `rename_hotword_set(id, name, sync_md5)`——name 变了 md5 变
@@ -1324,13 +1324,13 @@ Phase C (热词 sync 实现，依赖 A+B)
     - `add_word_to_set` / `add_words_to_set` / `remove_word_from_set`——words_text 变了，内部算 md5（或返回新 md5 让调用方填）
   - **决策**：md5 在 desktop 命令层算（调 `octopus_sync::hotword::hotword_set_md5_from_fields`），传入 DB 函数——保持 infra 不依赖 sync crate
 
-- [ ] **13.8.2 desktop 命令层算 md5**
+- [x] **13.8.2 desktop 命令层算 md5**
   - 每个 Tauri 写命令（create/rename/toggle/add_word/remove_word/set_words/import）：
     - 操作前算新 md5（用命令参数 + 预期新状态）
     - 或操作后读完整 row 算 md5 再 update（更简单，多一次 DB 读但逻辑清晰）
   - **推荐**：操作后读 row 算 md5 再 update（add_word 等操作 words_text 在 DB 内 normalize，命令层不知道结果，读出来算最准）
 
-- [ ] **13.8.3 验证**
+- [x] **13.8.3 验证**
   - `cargo test -p octopus-desktop` 全过
   - 手动 e2e：创建热词集 → 查 SQLite sync_md5 非 NULL
 
@@ -1342,23 +1342,23 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **测试清单：**
 
-- [ ] **13.9.1 fingerprint 测试**（13.6 内）
+- [x] **13.9.1 fingerprint 测试**（13.6 内）
   - `hotword_set_md5_is_deterministic`
   - `hotword_set_md5_ignores_timestamps`
   - `hotword_set_md5_changes_on_content_change`（name/enabled/words_text 各变一次）
   - `hotword_set_md5_normalizes_equivalent_words`（"b a" 和 "a b" normalize 后 md5 相同）
 
-- [ ] **13.9.2 增量 export 测试**（13.6 内）
+- [x] **13.9.2 增量 export 测试**（13.6 内）
   - `incremental_export_zero_changes`（sync_md5 一致不写文件）
   - `incremental_export_writes_only_changed`（改 name → 只重写该文件）
   - `incremental_export_deletes_missing`（SQLite 删了 → 删文件）
   - `incremental_export_outline_uses_sync_md5`
 
-- [ ] **13.9.3 迁移测试**（13.3 内）
+- [x] **13.9.3 迁移测试**（13.3 内）
   - `migrate_v45_to_v46_hotword_id_to_uuid`（旧 i64 id → 新 UUID + sync_md5=NULL）
   - `migrate_preserves_words_text`
 
-- [ ] **13.9.4 集成测试**（13.7 内）
+- [x] **13.9.4 集成测试**（13.7 内）
   - `hotword_sync_a_to_b`（A 机创建 → sync → B 机 clone → 看到热词集 + words_text 一致）
   - `hotword_sync_bidirectional`（A 改 name + B 加词 → 双向 sync → 两边都有最新）
   - `hotword_sync_delete_propagates`（A 删热词集 → sync → B 也删了）
@@ -1376,19 +1376,19 @@ Phase C (热词 sync 实现，依赖 A+B)
 
 **Steps:**
 
-- [ ] **13.10.1 spec §4.13 热词同步协议**
+- [x] **13.10.1 spec §4.13 热词同步协议**
   - 数据结构（HotwordSetFile + outline 复用）
   - md5 指纹拼接格式
   - 明文同步理由（热词不含高敏感信息）
   - 增量 export 流程（复用 §4.12 模式）
   - 与 vault sync 的集成点（sync_now 同时处理 vault + hotword）
 
-- [ ] **13.10.2 architecture.md**
+- [x] **13.10.2 architecture.md**
   - workspace crate 列表加 octopus-sync
   - 依赖关系图更新（infra ← sync ← vault ← desktop）
   - 热词 sync 段（目录结构 + 流程）
 
-- [ ] **13.10.3 plan 实施记录**
+- [x] **13.10.3 plan 实施记录**
   - 各 Task checkbox 标记完成
   - 实施过程的偏差回写
   - 测试基线更新（vault 257 → ?，sync 新 crate ? pass，desktop 387 → ?）
@@ -1417,3 +1417,57 @@ Phase C (热词 sync 实现，依赖 A+B)
 - **13.3 迁移风险低**：hotword_sets 与其他表无外键，迁移独立
 - **13.6/13.7 outline 复用决策**：热词复用 vault 的 Outline struct（ciphers 字段名误导）——如果实施时发现混淆，再考虑泛型化
 - **13.8 md5 计算时机**：操作后读 row 算 md5 多一次 DB 读，但保证准确（words_text 在 DB 内 normalize）
+
+---
+
+## Task 13 实施记录
+
+Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B（热词 id 改 UUID）+ Phase C（热词 sync 实现）。
+
+### Commit 列表
+
+| 子 Task | Commit | 内容 |
+|---|---|---|
+| 13.1-13.2 | `2348bd22` | Phase A：抽离 octopus-sync crate（git/outline/error/privacy + store 工具） |
+| 13.3-13.5 | `66979c86` | Phase B：热词 id 改 TEXT UUID + sync_md5 字段（schema v46 + CRUD + Tauri + 前端）+ T12 遗留修复 |
+| 13.6-13.8 | `a924bffe` | Phase C：热词 git 同步实现（fingerprint + store + engine + 写命令填 md5） |
+| 13.9 | `896d26df` | 集成测试（A→B 同步 + 双向 + 删除传播 + v46 迁移） |
+
+### 关键决策变化与实施发现
+
+1. **跨 crate 测试隔离不能用 `#[cfg(test)]`**：sync crate 的 `set_test_sync_root` / `sync_root()` thread_local 检查最初用 `#[cfg(test)]` gate——但下游 crate（vault）测试编译时，sync crate 是非 test 模式，cfg(test) 不生效，thread_local 检查被跳过，测试读到真实 `~/.octopus/.sync/`。修复：改为 `#[doc(hidden)] pub`（始终编译，与 infra `set_test_db` 同模式）。
+
+2. **v46 迁移段位置 bug**：初版把 v46 迁移段放在 `v >= 17 && v <= 43` 完整迁移分支**之前**，导致 v17-v43 老库被 v46 段（`if v >= 17`）拦截，跳过 vault UUID 迁移 + seed 加载。修复：v46 段移到 `v >= 17 && v <= 43` 分支**之后**（fall-through 点）。
+
+3. **vault sync_md5 ALTER 容错**：v46 段的 vault_ciphers/folders sync_md5 兜底 ALTER，在纯热词测试库（无 vault 表）会失败。修复：ALTER 前先检查表存在（`pragma_table_info` 返回行数）。
+
+4. **T12 遗留 3 问题**（干净 tree 上 infra 测试编译就失败）：
+   - `VaultCipherInput` fixture 缺 `sync_md5` 字段（E0063）
+   - 6 处 `assert_eq!(v, 44)` 应随版本升级更新（T12 升 v45 时漏改，又升 v46 时再漏——现统一改 46）
+   - `agent_id` unused warning
+
+5. **热词「通用」默认集用固定 UUID**：`00000000-0000-0000-0000-000000000001`——跨设备一致，两台机器的「通用」集 sync 时 id 相同不冲突。迁移时旧「通用」集（INTEGER id）也映射到此固定 UUID。
+
+6. **热词 md5 在 desktop 命令层算（不在 infra）**：保持 infra 无 md5 依赖（与 vault cipher sync_md5 在 vault crate 算同一思路）。desktop `refill_sync_md5` helper 读完整 row 算 md5 再 update——因为 words_text 在 DB 内 normalize（拼音首字母排序 + 去重），命令层传入的原始词序与 DB 存的不同。
+
+7. **热词 sync 失败不阻断 vault**：sync_now 的热词 pull/push 用 `match { Ok(n) => n, Err(e) => { log::warn; 0 } }`——热词同步出错只记日志，不让整个 sync_now 失败（vault 数据更关键）。
+
+### 测试基线
+
+最终基线（Task 13 完成后）：
+
+- sync: **91 pass**（git 14 + outline 7 + error 9 + privacy 25 + store 9 + hotword 21 + 4 ignored）—— 新 crate
+- infra: **158 pass**（含 v46 迁移测试 + hotword upsert/默认 UUID 测试）
+- vault: **193 pass** + 1 ignored（git/outline/error/privacy 的 64 个测试搬到 sync crate）
+- desktop: **387 pass**
+- 前端: tsc + vite build 0 error
+- cargo build: 0 error 0 warning
+
+历史基线演进：T12 完成 vault 257 → Task 13 抽离后 vault 193 + sync 70（测试随代码搬迁）→ hotword 模块 +17 → 集成测试 +4 → sync 91。
+
+### 待 e2e 验证
+
+- A 机创建热词版本 → sync → B 机 clone → 看到热词集 + words_text 一致
+- A 改 name + B 加词 → 双向 sync → 两边都有最新
+- A 删热词集 → sync → B 也删了
+- 真实 GitHub private repo + SSH key 端到端
