@@ -744,10 +744,15 @@ octopus 单向无握手通信 + Safari 不允许 HTTPS 页面 fetch 127.0.0.1 + 
 `data-tauri-drag-region="deep"` + `cursor-grab active:cursor-grabbing`，与 Clipboard
 浮窗完全同模式。`="deep"` 让标题栏内按钮（X / 返回 / 刷新）click 仍工作。
 
-**窗口动态高度**（2026-07-20 e2e 反馈）：后端 `inner_size` 初始 `400×200`，前端
-`useEffect` 按 `view.kind` 动态 `setSize`——locked 200 / reprompt 220 / uninit 130 /
-create 360 / list `36 + ciphers*88 + 32 + 8`（含底部新建按钮）/ loading 110。避免
-紧凑内容也占满 360px 导致上下大片空白。
+**窗口固定高度**（2026-07-22 简化）：后端 `inner_size` 初始 `320×360`，前端
+`useEffect` 一次性 `setSize(320, 360)` 固定不再动态切换。所有 view 共用同一高度——
+list（搜索框 + 新建按钮 + 2 条列表区 176px）/ create（4 字段表单）/ locked /
+uninit 等短内容下方留白。窗口 `transparent(true)` + CSS `rounded-[10px]
+overflow-hidden` 实现圆角（2026-07-22 验证 transparent + setSize 不冲突）。
+
+**历史**（已废弃）：原按 `view.kind` 动态 `setSize`（locked 200 / list `ciphers*88` /
+create 360），后因 UI 统一布局改为固定高度——list 和 create 高度本来就差不多，
+动态切换不必要。
 
 ### 4.2 URL 检测（macOS AppleScript）
 
