@@ -90,3 +90,59 @@ File              —         →     204ms
 ~~- **CGEvent 替代 osascript 发 Cmd+C**~~ → **已完成**（2026-07-20/21）：抽 `keystroke` 模块用 CGEvent 直调（< 5ms），详见 [keystroke spec](2026-07-20-keystroke-module-design.md)。simulate_copy 改为三级 dispatch（WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid），detect_selection 无选中场景进一步降到 ~100ms。
 
 当前所有方向已完成，无遗留后续。
+
+## 2026-07-21 补充：微信 WKWebView polling 超时演变（实测调优）
+
+原「80ms 超时」描述仅适用于 **CGEvent 路径**（原生/Electron app，Cmd+C 同步触发，changeCount < 50ms 递增）。微信等 WKWebView 嵌套 app 走 **osascript 路径**，超时需要更长。
+
+### 演变过程
+
+| 阶段 | polling 超时 | 微信成功率 | 备注 |
+|---|---|---|---|
+| `01b7f689` 初版 | 统一 80ms | ~50% | 仅测原生 app（Safari/Notes/Terminal），微信场景漏测 |
+| `086cf381` 第 1 次修 | Osascript=400ms | ~90% | dispatch path 返回值 + 动态超时 |
+| `0f8cf673` 误判撤销 | 统一 80ms | 完全失效 | 误以为"osascript 同步阻塞已含等待"，撤销 |
+| `b813c13d` 最终版 | Osascript=**300ms**（常量）| ~90% | 用户实测确认 |
+
+### 关键约束（osascript 脚本结构）
+
+`keystroke.rs::send_via_osascript` 的 AppleScript 脚本结构有严格约束：
+
+```applescript
+-- ✅ 正确（稳定 ~90%）：
+tell application "System Events"
+    set frontProc to first process whose frontmost is true
+    set procName to name of frontProc
+    keystroke "c" using command down   -- 在 System Events 块作用域内
+    return procName
+end tell
+
+-- ❌ 错误（完全失效，changeCount +0）：
+tell application "System Events"
+    set frontProc to first process whose frontmost is true
+    tell frontProc                        -- 加了 tell frontProc 包裹
+        keystroke "c" using command down
+    end tell
+end tell
+```
+
+机制推测：`tell frontProc` 把命令绑定到 WeChat process 的 AX 上下文，但 WKWebView 嵌套的 menu bar 不归 WeChat process 的 AX 拥有 → Cmd+C 没走菜单路由。
+
+### 设计：dispatch path 返回值
+
+`focus_tracker.rs::simulate_copy` 返回 `CopyDispatch` 枚举（`Osascript` / `CGEvent`），让 `detect_selection` 据此选 polling 超时：
+
+```rust
+let poll_timeout_ms = match copy_dispatch {
+    CopyDispatch::Osascript => WECHAT_COPY_POLL_TIMEOUT_MS,  // 300
+    CopyDispatch::CGEvent => 80,
+};
+```
+
+常量 `WECHAT_COPY_POLL_TIMEOUT_MS = 300` 在 `action_bar_commands.rs` 顶部，方便后续根据实测调整。
+
+### 教训
+
+1. **用户实测数据优先于代码理论**：多次"复盘"都建立在错误假设上（osascript 行为没真正理解）
+2. **「无意中起作用」的改动要识别并固化**：脚本结构改动（加 `set frontProc`）是无意中修复的，需理解机制才能避免回归
+3. **跨 dispatch path 的超时不能一刀切**：CGEvent 同步快（< 50ms），osascript 异步慢（200-400ms）

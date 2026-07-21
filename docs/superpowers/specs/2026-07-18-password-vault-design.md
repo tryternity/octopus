@@ -676,16 +676,18 @@ CREATE TABLE IF NOT EXISTS vault_folders (
    热键 callback 立即调 `current_browser_url()` 抓当前浏览器 URL（此时浏览器还前台），
    存入 `SharedPickerUrlCache = Arc<Mutex<Option<String>>>`（app.manage 注入的共享状态）。
    ⚠️ 关键时序：必须在 show VaultPicker **之前**抓——show 后 VaultPicker 抢前台，
-   `frontmost_bundle_id()` 会取到 octopus-desktop 自己 → URL 检测失败 → fallback 列出
-   最近 20 条 cipher（用户看到全部密码而非当前站点匹配项）。
+   `frontmost_bundle_id()` 会取到 octopus-desktop 自己 → URL 检测失败 → 显示空列表
+   （2026-07-21 安全加固前是 fallback 列出最近 20 条，有钓鱼风险；现改为空列表 +
+   搜索框，用户主动搜索才有意识选择）。
    ↓
 3. show VaultPicker 浮窗 + emit picker-refresh（通知前端拉取 cipher 列表）
    ↓
 4. 前端 mount / 收到 refresh → 调 `vault_detect_and_match` 取匹配 cipher
    - 优先读 `SharedPickerUrlCache`（热键预抓的 URL，读后即清，下次热键重新抓）
    - 缓存空（手动刷新 / 热键抓失败）→ 现抓 `current_browser_url()`
-   - 0 个匹配：显示"无匹配 cipher" + fallback 列出最近 20 条（按 updated_at DESC）
+   - 0 个匹配：显示"无匹配 cipher" + **搜索框**（2026-07-21 安全加固，原 fallback 列出最近 20 条有钓鱼风险——用户主动搜索 = 有意识的选择）
    - N 个匹配：弹选择浮窗，按最近使用排序
+   - **统一布局**（2026-07-21）：无论命中与否，UI 都是「搜索框 + 新建按钮 + 列表区（max 5 条可视滚动）」。搜索框空 → 显示 URL 匹配列表；有内容 → 全量搜索（`vault_search_ciphers`）；清空 → 回原始列表
    ↓
 5. 用户点击 cipher 的字段行（三段式 UI，2026-07-20）：
    - 名称行 ⌨ → 完整填充（username + Tab + password）
@@ -1021,7 +1023,8 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
 | INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。**2026-07-20 e2e 修复**：autotype_login_with_mode 内 AppleScript activate 前台 app 复用此校验 |
 | INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password` / `vault_copy_username`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通。**例外**：`vault_copy_username` 不强制 reprompt（username 通常不敏感） |
-| INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → fallback 列出最近 20 条。URL 存 `SharedPickerUrlCache` 共享状态 |
+| INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → ~~fallback 列出最近 20 条~~（2026-07-21 安全加固改为空列表 + 搜索框）。URL 存 `SharedPickerUrlCache` 共享状态 |
+| INV-A12 | **URL 检测失败时不返回 fallback 列表**（2026-07-21 安全加固）：原 `vault_detect_and_match` URL 检测失败时返回最近 20 条 cipher 有钓鱼风险——用户可能"顺手"误选密码注入到钓鱼站。现返回空列表，用户通过搜索框主动搜索（`vault_search_ciphers` 全量模糊匹配 name/username/URIs）。合法场景（桌面应用/不支持浏览器）仍可通过搜索找到密码 |
 | INV-A12 | **hide VaultPicker 必须由后端做**（2026-07-20 e2e 修复）：前端 `await hide() + await invoke` 串行写法会让 hide 触发 webview terminated，invoke 失联（race condition）。`vault_autotype` 命令加 `app: AppHandle` 参数，进入后立刻 hide |
 | INV-A13 | **Auto-Type 默认 PasswordOnly**（2026-07-20 e2e 修复）：webmail SPA 的 Tab 切焦点不可靠（SPA 自己拦截 Tab 或密码框是 iframe），`UsernamePassword` 模式在 webmail 上失败。给用户三种独立控制（UsernamePassword / PasswordOnly / UsernameOnly），按当前光标位置选合适图标。与 Bitwarden/1Password 桌面助手默认行为对齐 |
 

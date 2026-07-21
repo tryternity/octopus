@@ -6,9 +6,10 @@ use parking_lot::Mutex;
 use tauri::{Emitter, Manager};
 
 // 窗口物理固定 720×480：setSize/setFrame 在 transparent + decorations(false) 悬浮窗上被
-// NSWindow 拒绝（min/max 全放宽到 [100,4000]、720×480 完全在区间内仍读回 520×116，实锤），
-// 故放弃运行时改尺寸，改用「CSS 伪装 + 点击穿透」——精简态只渲染顶部 520×116 小条，
-// 下方透明区由轮询线程 setIgnoreCursorEvents 穿透到后方应用；长篇态容器撑满 720×480。
+// NSWindow 拒绝（min/max 全放宽到 [100,4000]、720×480 完全在区间内仍 setSize 无效），
+// 故放弃运行时改尺寸，改用「CSS 伪装 + 点击穿透」——精简态只渲染顶部 720×116 小条
+// （与窗口同宽），下方透明区由轮询线程 setIgnoreCursorEvents 穿透到后方应用；
+// 长篇态容器撑满 720×480。
 const RESULT_WIDTH: f64 = 720.0;
 const RESULT_HEIGHT: f64 = 480.0;
 const WINDOW_LABEL: &str = "result_window";
@@ -97,7 +98,7 @@ pub fn result_window_ready(app_handle: tauri::AppHandle) {
 
 /// 切换 Result 窗口的点击穿透模式（CSS 伪装方案：窗口物理固定 720×480）。
 /// - expanded=true（长篇）：整窗可交互，关闭穿透。
-/// - expanded=false（精简）：仅顶部 520×116 小条可点，下方透明区穿透到后方应用。
+/// - expanded=false（精简）：仅顶部 720×116 小条可点（与窗口同宽），下方透明区穿透到后方应用。
 /// 精简态的穿透由 start_click_through_poller 按光标位置实时切换。
 #[tauri::command]
 pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {

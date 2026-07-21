@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
@@ -76,12 +76,38 @@ export default function VaultPicker() {
   // 默认全部 mask（•••••）防浮窗一闪而过被旁人偷看。
   const [revealedPasswords, setRevealedPasswords] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  // 搜索模式（URL 检测失败 → 空列表时用户手动搜索，2026-07-21 安全加固）
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<CipherDto[]>([]);
+  // searchTimerRef: debounce 150ms 搜索
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedSearch = useCallback((q: string) => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(async () => {
+      const trimmed = q.trim();
+      if (!trimmed) {
+        setSearchResults([]);
+        return;
+      }
+      try {
+        const results = await invoke<CipherDto[]>("vault_search_ciphers", { query: trimmed });
+        setSearchResults(results);
+      } catch (e) {
+        console.error("vault_search_ciphers failed:", e);
+        setSearchResults([]);
+      }
+    }, 150);
+  }, []);
 
   const refresh = useCallback(async () => {
     setView({ kind: "loading" });
     setUnlockError(null);
     try {
       const list = await invoke<CipherDto[]>("vault_detect_and_match");
+      // 搜索框初始为空——命中时直接展示 URL 匹配的 cipher 列表（view.ciphers），
+      // 用户输入搜索词后切换到全量搜索结果（searchResults），清空则回到原始列表。
+      setSearchQuery("");
+      setSearchResults([]);
       setView({ kind: "list", ciphers: list });
     } catch (e) {
       setView(classifyError(e));
@@ -109,49 +135,13 @@ export default function VaultPicker() {
 
   // **2026-07-20 e2e 反馈**：按 view 动态调整浮窗高度，避免小内容也占满固定高度
   // 导致上下大片空白。后端初始 200px（紧凑视图），list 视图按 cipher 数撑高。
-  // 高度估算：标题栏 36 + padding + 各视图内容高 + 上下留白
+  // 固定窗口高度——所有 view 共用（与 create view 同高，list 稍留余量）。
+  // 不再用 setSize 动态切换高度（transparent 窗口 + 简化设计）。
+  // list view 内容区固定 2 条高度，create view 4 字段表单也刚好放得下。
+  // locked/uninit/error/autotyping 等短内容 view 会有下方留白（可接受）。
   useEffect(() => {
-    let height: number;
-    switch (view.kind) {
-      case "loading":
-        height = 110;
-        break;
-      case "locked":
-      case "reprompt":
-        // 标题栏 36 + Input 36 + Button 36 + gap+padding ~60 + 副文（reprompt） ~24
-        height = view.kind === "reprompt" ? 220 : 200;
-        break;
-      case "uninit":
-      case "error":
-        height = 130;
-        break;
-      case "autotyping":
-        height = 110;
-        break;
-      case "create":
-        // 标题栏 36 + 4 字段（name/url/username/password，每字段 label+input ~52）+
-        // Button 36 + padding 32 + 错误提示预留 20 ≈ 340
-        height = 360;
-        break;
-      case "list": {
-        // 标题栏 36 + 每个 cipher 三段约 88px + 底部「+ 为当前站点新建」按钮 32px
-        // （ciphers>0 时显示）+ 空状态 60（含 voice 全宽按钮约 88px）
-        const ciphers = "ciphers" in view ? view.ciphers.length : 0;
-        if (ciphers === 0) {
-          // 空状态：标题 36 + 居中提示文字 + voice 全宽按钮 36 + padding 40 ≈ 150
-          height = 170;
-        } else {
-          const contentH = ciphers * 88;
-          // 36（标题）+ contentH + 32（底部新建按钮）+ 8（间距）
-          height = Math.min(560, 36 + contentH + 32 + 8);
-        }
-        break;
-      }
-      default:
-        height = 200;
-    }
-    void getCurrentWindow().setSize(new LogicalSize(400, height));
-  }, [view]);
+    void getCurrentWindow().setSize(new LogicalSize(320, 360));
+  }, []);
 
   // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
   useEffect(() => {
@@ -248,7 +238,7 @@ export default function VaultPicker() {
     return (
       <form
         onSubmit={handleUnlock}
-        className="flex h-screen flex-col bg-background text-foreground"
+        className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位保持对称 */}
         <div
@@ -303,7 +293,7 @@ export default function VaultPicker() {
   // === uninit: 提示去 Settings 初始化 ===
   if (view.kind === "uninit") {
     return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
         <div
           className="relative flex cursor-grab items-center border-b border-border/40 px-4 py-2 active:cursor-grabbing"
           data-tauri-drag-region="deep"
@@ -349,7 +339,7 @@ export default function VaultPicker() {
     return (
       <form
         onSubmit={submitReprompt}
-        className="flex h-screen flex-col bg-background text-foreground"
+        className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位 */}
         <div
@@ -422,7 +412,7 @@ export default function VaultPicker() {
 
   // === error / list / loading: 共用外壳 ===
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
       {/* 顶部标题栏：absolute 居中标题 + 右侧 Refresh + X 按钮 + 左侧同等宽占位 */}
       <div
         className="relative flex cursor-grab items-center border-b border-border px-4 py-2 active:cursor-grabbing"
@@ -462,162 +452,178 @@ export default function VaultPicker() {
           <div className="px-4 py-3 text-sm text-muted-foreground">...</div>
         )}
 
-        {view.kind === "list" && view.ciphers.length === 0 && (
-          <div className="flex flex-col items-center gap-3 px-4 py-6 text-sm text-muted-foreground">
-            <span>{t("settings.vault.autotype.noMatch")}</span>
-            <Button
+        {view.kind === "list" && (
+          <div className="flex h-full flex-col">
+            {/* 统一搜索框（始终显示）。
+                URL 命中时预填 URL（用户可改）；未命中时为空（用户手动搜索）。
+                搜索结果替换列表——用户主动搜索 = 有意识选择，防钓鱼误选。 */}
+            <div className="px-3 py-2">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  debouncedSearch(e.target.value);
+                }}
+                placeholder={t("vaultPicker.searchPlaceholder")}
+                autoFocus={view.ciphers.length === 0}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </div>
+
+            {/* 新建当前站点按钮（始终在搜索框下方）*/}
+            <button
               type="button"
-              variant="voice"
-              className="w-full"
               onClick={() => setView({ kind: "create" })}
+              className="mx-3 mb-1 rounded-md border border-dashed border-border/50 px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {t("settings.vault.autotype.createForThisSite")}
-            </Button>
+              + {t("settings.vault.autotype.createForThisSite")}
+            </button>
+
+            {/* 列表区：搜索框有内容 → searchResults（全量搜索）；空 → view.ciphers（URL 匹配或空）。
+                固定 2 条高度（176px）——不管内容多少整体大小不变。
+                overflow-y: auto——内容溢出时 macOS 默认 hover 显示滚动条（鼠标进入列表区即出现）。 */}
+            <div className="flex-1" style={{ height: "176px", overflowY: "auto" }}>
+              {(searchQuery.trim() !== "" ? searchResults : view.ciphers).map((c) => {
+                const username = c.login?.username || "";
+                const password = c.login?.password || "";
+                const revealed = !!revealedPasswords[c.id];
+                return (
+                  <div
+                    key={c.id}
+                    className="border-b border-border/50 last:border-b-0 hover:bg-accent"
+                  >
+                    {/* 第一段：名称行 + 复制(无) + 完整填充(⌨) */}
+                    <div className="flex items-center gap-1 px-4 pt-2">
+                      <div className="min-w-0 flex-1 truncate text-sm font-semibold">
+                        {c.name}
+                      </div>
+                      <div className="size-7 shrink-0" aria-hidden />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePick(c, false, "usernamePassword");
+                        }}
+                        disabled={busy}
+                        title={t("settings.vault.autotype.mode.usernamePassword")}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <Keyboard className="size-4" />
+                      </Button>
+                    </div>
+
+                    {/* 第二段：用户名行 + 复制(📋) + 仅填用户名(@) */}
+                    <div className="flex items-center gap-1 px-4 py-1">
+                      <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                        {username || "—"}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void invoke("vault_copy_username", { cipherId: c.id });
+                        }}
+                        disabled={busy || !username}
+                        title={t("settings.vault.autotype.copyUsername")}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="size-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePick(c, false, "usernameOnly");
+                        }}
+                        disabled={busy || !username}
+                        title={t("settings.vault.autotype.mode.usernameOnly")}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <AtSign className="size-4" />
+                      </Button>
+                    </div>
+
+                    {/* 第三段：密码行 + 复制(📋) + 仅填密码(🔑) */}
+                    <div className="flex items-center gap-1 px-4 pb-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRevealedPasswords((m) => ({ ...m, [c.id]: !m[c.id] }))
+                        }
+                        disabled={!password}
+                        title={
+                          revealed
+                            ? t("settings.vault.autotype.hidePassword")
+                            : t("settings.vault.autotype.revealPassword")
+                        }
+                        className="flex min-w-0 flex-1 items-center gap-1 text-left outline-none"
+                      >
+                        <span className="truncate text-xs text-muted-foreground">
+                          {password
+                            ? revealed
+                              ? password
+                              : "•".repeat(Math.max(6, Math.min(12, password.length)))
+                            : "—"}
+                        </span>
+                        {password &&
+                          (revealed ? (
+                            <EyeOff className="size-3 shrink-0 text-muted-foreground/60" />
+                          ) : (
+                            <Eye className="size-3 shrink-0 text-muted-foreground/60" />
+                          ))}
+                      </button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePick(c, true, "passwordOnly");
+                        }}
+                        disabled={busy || !password}
+                        title={t("settings.vault.generator.copy")}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="size-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePick(c, false, "passwordOnly");
+                        }}
+                        disabled={busy || !password}
+                        title={t("settings.vault.autotype.mode.passwordOnly")}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <KeyRound className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* 空列表提示（搜索框空 + URL 未命中）。
+                  搜索框有内容但无结果时不提示（用户看到列表空自然知道）。*/}
+              {searchQuery.trim() === "" && view.ciphers.length === 0 && (
+                <div className="py-4 text-center text-xs text-muted-foreground">
+                  {t("settings.vault.autotype.noMatch")}
+                </div>
+              )}
+            </div>
           </div>
-        )}
-
-        {view.kind === "list" &&
-          view.ciphers.map((c) => {
-            const username = c.login?.username || "";
-            const password = c.login?.password || "";
-            const revealed = !!revealedPasswords[c.id];
-            return (
-              <div
-                key={c.id}
-                className="border-b border-border/50 last:border-b-0 hover:bg-accent"
-              >
-                {/* 第一段：名称行 + 复制(无) + 完整填充(⌨)
-                    名称行无对应复制按钮（整个条目的"名"不属于字段），右侧只放一个
-                    完整填充图标，与下面两段的 autotype 列对齐。 */}
-                <div className="flex items-center gap-1 px-4 pt-2">
-                  <div className="min-w-0 flex-1 truncate text-sm font-semibold">
-                    {c.name}
-                  </div>
-                  {/* 占位与下方 copy 列对齐 */}
-                  <div className="size-7 shrink-0" aria-hidden />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePick(c, false, "usernamePassword");
-                    }}
-                    disabled={busy}
-                    title={t("settings.vault.autotype.mode.usernamePassword")}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Keyboard className="size-4" />
-                  </Button>
-                </div>
-
-                {/* 第二段：用户名行 + 复制(📋) + 仅填用户名(@) */}
-                <div className="flex items-center gap-1 px-4 py-1">
-                  <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                    {username || "—"}
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void invoke("vault_copy_username", { cipherId: c.id });
-                    }}
-                    disabled={busy || !username}
-                    title={t("settings.vault.autotype.copyUsername")}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Copy className="size-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePick(c, false, "usernameOnly");
-                    }}
-                    disabled={busy || !username}
-                    title={t("settings.vault.autotype.mode.usernameOnly")}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <AtSign className="size-4" />
-                  </Button>
-                </div>
-
-                {/* 第三段：密码行 + 复制(📋) + 仅填密码(🔑)
-                    默认 mask 显示（••••），点眼睛切换可见。 */}
-                <div className="flex items-center gap-1 px-4 pb-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRevealedPasswords((m) => ({ ...m, [c.id]: !m[c.id] }))
-                    }
-                    disabled={!password}
-                    title={
-                      revealed
-                        ? t("settings.vault.autotype.hidePassword")
-                        : t("settings.vault.autotype.revealPassword")
-                    }
-                    className="flex min-w-0 flex-1 items-center gap-1 text-left outline-none"
-                  >
-                    <span className="truncate text-xs text-muted-foreground">
-                      {password
-                        ? revealed
-                          ? password
-                          : "•".repeat(Math.max(6, Math.min(12, password.length)))
-                        : "—"}
-                    </span>
-                    {password &&
-                      (revealed ? (
-                        <EyeOff className="size-3 shrink-0 text-muted-foreground/60" />
-                      ) : (
-                        <Eye className="size-3 shrink-0 text-muted-foreground/60" />
-                      ))}
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePick(c, true, "passwordOnly");
-                    }}
-                    disabled={busy || !password}
-                    title={t("settings.vault.generator.copy")}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Copy className="size-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePick(c, false, "passwordOnly");
-                    }}
-                    disabled={busy || !password}
-                    title={t("settings.vault.autotype.mode.passwordOnly")}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <KeyRound className="size-4" />
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-
-        {/* list 视图底部「为当前站点新建」入口——已有匹配也允许加新账号 */}
-        {view.kind === "list" && view.ciphers.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setView({ kind: "create" })}
-            className="w-full border-t border-dashed border-border/50 px-4 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            + {t("settings.vault.autotype.createForThisSite")}
-          </button>
         )}
 
         {view.kind === "error" && (
@@ -712,7 +718,7 @@ function CreateCipherView({
   }
 
   return (
-    <form onSubmit={handleSave} className="flex h-screen flex-col bg-background text-foreground">
+    <form onSubmit={handleSave} className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
       {/* 标题栏：左侧返回 + 中间标题 + 右侧关闭 */}
       <div
         className="relative flex cursor-grab items-center border-b border-border/40 px-2 py-2 active:cursor-grabbing"
