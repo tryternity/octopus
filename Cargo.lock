@@ -5378,6 +5378,7 @@ dependencies = [
  "octopus-llm",
  "octopus-ocr",
  "octopus-search",
+ "octopus-sync",
  "octopus-translation",
  "octopus-vault",
  "once_cell",

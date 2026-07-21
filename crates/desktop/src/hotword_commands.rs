@@ -13,6 +13,24 @@ fn reload_after_write() {
     }
 }
 
+/// 写操作后回填 sync_md5——读完整 row 算 md5 再 update。
+///
+/// 为什么读 row 而非用命令参数算：words_text 在 DB 内 normalize（拼音首字母排序 + 去重），
+/// 命令层传入的原始词序与 DB 存的不同——读 row 拿到 normalize 后的 words_text 才能算准 md5。
+///
+/// 失败仅告警，不阻断写操作（sync 时会检测到 NULL 重算）。
+fn refill_sync_md5(id: &str) {
+    match db::get_hotword_set(id) {
+        Ok(h) => {
+            let md5 = octopus_sync::hotword::hotword_set_md5(&h);
+            if let Err(e) = db::update_hotword_set_sync_md5(id, &md5) {
+                log::warn!("[hotword] 回填 sync_md5 失败 {}: {}", id, e);
+            }
+        }
+        Err(e) => log::warn!("[hotword] 读 row 算 md5 失败 {}: {}", id, e),
+    }
+}
+
 // ── 版本 CRUD ──
 
 #[tauri::command]
@@ -25,12 +43,15 @@ pub fn list_hotword_sets() -> Result<Vec<HotwordSet>, String> {
 pub fn create_hotword_set(name: String) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
     Ok(id)
 }
 
 #[tauri::command]
 pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
-    db::rename_hotword_set(&id, &name).map_err(|e| e.to_string())
+    db::rename_hotword_set(&id, &name).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -43,6 +64,7 @@ pub fn delete_hotword_set(id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
     db::toggle_hotword_set(&id, enabled).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
     reload_after_write();
     Ok(())
 }
@@ -52,6 +74,7 @@ pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn add_word_to_set(id: String, word: String) -> Result<bool, String> {
     let added = db::add_word_to_set(&id, &word).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
     reload_after_write();
     Ok(added)
 }
@@ -59,6 +82,7 @@ pub fn add_word_to_set(id: String, word: String) -> Result<bool, String> {
 #[tauri::command]
 pub fn remove_word_from_set(id: String, word: String) -> Result<(), String> {
     db::remove_word_from_set(&id, &word).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
     reload_after_write();
     Ok(())
 }
@@ -82,6 +106,7 @@ pub fn list_hotword_candidates() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn add_words_to_set(id: String, words: Vec<String>) -> Result<usize, String> {
     let added = db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
+    refill_sync_md5(&id);
     reload_after_write();
     Ok(added)
 }
@@ -116,6 +141,7 @@ pub async fn import_hotwords(
                 let id = Uuid::new_v4().to_string();
                 db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
                 db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
+                refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
             }
@@ -123,12 +149,14 @@ pub async fn import_hotwords(
                 let id = target_set_id.ok_or("append 模式需 target_set_id")?;
                 let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
+                refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
                 db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
+                refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
             }

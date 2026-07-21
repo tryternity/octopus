@@ -2751,6 +2751,23 @@ fn upsert_hotword_set_at(conn: &Connection, h: &HotwordSet) -> Result<()> {
     Ok(())
 }
 
+/// 只更新 sync_md5 字段（写命令后回填用——desktop 命令层算好 md5 调此函数）。
+///
+/// 与 upsert 的区别：upsert 全字段覆盖（sync pull 用），本函数只动 sync_md5
+/// （本地写命令后补充指纹，不覆盖其他字段）。
+pub fn update_hotword_set_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
+    with_db(|conn| {
+        let n = conn.execute(
+            "UPDATE hotword_sets SET sync_md5 = ?1 WHERE id = ?2",
+            params![sync_md5, id],
+        )?;
+        if n == 0 {
+            anyhow::bail!("热词版本不存在");
+        }
+        Ok(())
+    })
+}
+
 /// 纠错热路径用——取所有 enabled 版本的 words_text 切词去重并集（构造 HotwordIndex 用）。
 pub fn list_active_hotword_words() -> Result<Vec<String>> {
     with_db(|conn| list_active_hotword_words_at(conn))

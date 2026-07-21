@@ -24,6 +24,7 @@
 
 pub mod error;
 pub mod git;
+pub mod hotword;
 pub mod outline;
 pub mod privacy;
 pub mod store;

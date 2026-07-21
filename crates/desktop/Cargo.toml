@@ -105,6 +105,10 @@ octopus-clipboard = { path = "../clipboard" }
 # 关闭后整个 password manager 不编入（更小 binary、无 Keychain 访问）。
 octopus-vault = { path = "../vault", optional = true }
 
+# sync 基础设施——热词写命令回填 sync_md5 用（hotword_set_md5）。
+# 非 optional：热词功能不依赖 vault feature，但需要算 md5 指纹。
+octopus-sync = { path = "../sync" }
+
 # URL 解析（vault_detect_and_match 用 url::Url 解析浏览器 URL）—— vault 专用。
 # url crate 同时也是 octopus-vault 的依赖，feature off 时此处 optional 让它彻底切掉。
 url = { version = "2", optional = true }

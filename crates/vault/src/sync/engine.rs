@@ -191,7 +191,17 @@ fn push_initial() -> Result<(), SyncError> {
     // 2. 导出到文件系统（写 .sync/vault/ 下）
     store::export_all_to_files(&meta, &ciphers, &folders)?;
 
-    // 3. git init + commit（在 .sync/ 根——git 自动跟踪 vault/ 子目录）
+    // 2.5 热词全量导出（v46：push_initial 同时导出 vault + hotword）
+    match octopus_infra::db::list_hotword_sets() {
+        Ok(hotword_sets) => {
+            if let Err(e) = octopus_sync::hotword::export_all_hotwords(&hotword_sets) {
+                log::warn!("[sync] 热词初始导出失败（不阻断 vault）：{}", e);
+            }
+        }
+        Err(e) => log::warn!("[sync] 读热词列表失败（跳过热词初始导出）：{}", e),
+    }
+
+    // 3. git init + commit（在 .sync/ 根——git 自动跟踪 vault/ + hotword/ 子目录）
     git::git_init(&sync_root)?;
     git::git_add_all(&sync_root)?;
     git::git_commit(&sync_root, "init vault")?;
@@ -474,6 +484,23 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         upsert_folder(&f.id, &f.name, &md5)?;
     }
 
+    // 4. 读所有热词版本文件 → upsert SQLite（v46：clone 同时导入 vault + hotword）
+    match octopus_sync::hotword::import_hotwords_from_files() {
+        Ok(hotword_files) => {
+            for file in &hotword_files {
+                let h = file.to_hotword_set(None);
+                let md5 = octopus_sync::hotword::hotword_set_md5(&h);
+                let mut h = h;
+                h.sync_md5 = Some(md5);
+                if let Err(e) = octopus_infra::db::upsert_hotword_set(&h) {
+                    log::warn!("[sync] 热词版本 {} upsert 失败：{}", file.id, e);
+                }
+            }
+            log::info!("[sync] clone_initial：{} 热词版本导入 SQLite", hotword_files.len());
+        }
+        Err(e) => log::warn!("[sync] 热词导入失败（不阻断 vault clone）：{}", e),
+    }
+
     log::info!(
         "[sync] clone_initial 完成：{} ciphers, {} folders 导入 SQLite",
         ciphers.len(),
@@ -518,6 +545,9 @@ pub struct SyncReport {
     pub pulled: usize,
     pub pushed: usize,
     pub deleted: usize,
+    /// 热词同步统计（v46 新增——sync_now 同时同步 vault + hotword）。
+    pub hotwords_pulled: usize,
+    pub hotwords_pushed: usize,
     pub message: String,
 }
 
@@ -577,9 +607,25 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 3. pull 阶段：文件系统 → SQLite
     // 首次推送时远程是空的，outline 也是默认空——pull 不会引入数据
     let pulled = pull_from_files()?;
+    // 热词 pull（v46：sync_now 同时同步 vault + hotword）
+    let hotwords_pulled = match octopus_sync::hotword::pull_hotwords_from_files() {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("[sync] 热词 pull 失败（不阻断 vault 同步）：{}", e);
+            0
+        }
+    };
 
     // 4. push 阶段：SQLite → 文件系统
     let pushed = push_to_files()?;
+    // 热词 push
+    let hotwords_pushed = match octopus_sync::hotword::push_hotwords_to_files() {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("[sync] 热词 push 失败（不阻断 vault 同步）：{}", e);
+            0
+        }
+    };
 
     // 5. commit（无变化时 git_commit 返 false，不阻断流程）
     let root = octopus_sync::store::sync_root();
@@ -610,10 +656,15 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         pulled,
         pushed,
         deleted: 0,
+        hotwords_pulled,
+        hotwords_pushed,
         message: if is_first_push {
             "首次同步完成，已推送到远程".to_string()
         } else {
-            format!("同步完成：拉取 {} 条，推送 {} 条", pulled, pushed)
+            format!(
+                "同步完成：vault 拉取 {} 条/推送 {} 条，热词拉取 {} 条/推送 {} 条",
+                pulled, pushed, hotwords_pulled, hotwords_pushed
+            )
         }
     };
     log::info!("[sync] sync_now 完成：{}", report.message);

@@ -40,6 +40,8 @@ interface SyncReport {
   pulled: number;
   pushed: number;
   deleted: number;
+  hotwordsPulled: number;
+  hotwordsPushed: number;
   message: string;
 }
 
