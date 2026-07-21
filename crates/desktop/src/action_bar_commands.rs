@@ -197,13 +197,20 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     );
 
     let focus = FocusTracker::new();
-    focus.simulate_copy();
+    let copy_dispatch = focus.simulate_copy();
     // 2026-07-20 perf：原固定 sleep(200ms) 等剪贴板更新，改 polling。
     // macOS Cmd+C 剪贴板写入通常 < 50ms 完成；polling 每 5ms 检查 changeCount，命中即退出。
-    // 超时 80ms：实测 macOS Cmd+C 命中 changeCount 最坏 ~30-50ms，留 80ms 兜底防系统忙时
-    // 延迟。无选中时 Cmd+C 不写剪贴板，poll 会等满 80ms——比原 200ms 省 120ms。
-    // 80ms 是权衡值：太短可能错过系统繁忙时的延迟（误判有选中为无选中），太长无收益。
-    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(80);
+    //
+    // 2026-07-21 fix 回归：polling 超时按 dispatch 路径动态化。
+    // - CGEvent 路径（原生/Electron）：changeCount 通常 < 50ms 递增，80ms 兜底足够
+    // - Osascript 路径（微信等 WKWebView 嵌套）：osascript ~200ms + System Events
+    //   菜单路由 → WKWebView 渲染线程回写剪贴板，整链路可能 200-400ms
+    //   原 80ms 在微信场景下提前超时 → 误判无选中 → actionbar 退化成 launch 模式（回归 bug）
+    let poll_timeout_ms = match copy_dispatch {
+        crate::focus_tracker::CopyDispatch::Osascript => 400,
+        crate::focus_tracker::CopyDispatch::CGEvent => 80,
+    };
+    let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_timeout_ms);
     let mut change_count_after = change_count_before;
     while std::time::Instant::now() < poll_deadline {
         change_count_after = pasteboard_change_count();
