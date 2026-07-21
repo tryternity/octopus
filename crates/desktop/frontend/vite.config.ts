@@ -26,6 +26,16 @@ const config = {
     outDir: "../dist",
     emptyOutDir: true,
     chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      // Multi-entry：screenshot.html 是截图窗口独立入口，仅含截图依赖闭包
+      // （~200KB），与主入口 index.html（~1.27MB，含 CodeMirror/markdown-it/
+      // lucide-react）分离。Rolldown 自动按 import 闭包分析共享 chunk
+      // （react/react-dom/tauri-api 等两 entry 共用部分会自动 dedupe 到共享 chunk）。
+      input: {
+        main: "index.html",
+        screenshot: "screenshot.html",
+      },
+    },
   },
   server: {
     // Tauri dev 模式期望固定端口——devUrl 指向这里，strictPort 避免被占时
