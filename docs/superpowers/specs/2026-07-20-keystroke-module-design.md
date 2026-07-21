@@ -84,3 +84,17 @@ Cargo.toml 加 `elcapitan` feature（core-graphics 的 `post_to_pid` API 在此 
 微信内置浏览器（WKWebView 嵌套）不响应任何 CGEvent（全局 post 和 post_to_pid 都不行）。
 `keystroke.rs` 加 `WKWEBVIEW_FALLBACK_APPS` 列表 + `needs_osascript_fallback()`，
 `simulate_copy/paste` 改为三级 dispatch：WKWebView→osascript / Electron→post_to_pid / 原生→post_to_pid。
+
+**osascript 脚本结构严格约束**（2026-07-21 实测踩坑）：
+`send_via_osascript` 必须用完整 `tell application "System Events" ... end tell` block，但**不要**用 `tell frontProc` 显式包裹 `keystroke`。`tell frontProc` 会让 keystroke 绑定到 process 的 AX 上下文，但 WKWebView 嵌套的 menu bar 不归该 process 拥有 → Cmd+C 失效（changeCount +0）。验证过的最佳版本：
+
+```applescript
+tell application "System Events"
+    set frontProc to first process whose frontmost is true
+    set procName to name of frontProc
+    keystroke "c" using command down   -- 在 System Events 块作用域内（不 tell frontProc）
+    return procName
+end tell
+```
+
+**dispatch path 返回值**：`simulate_copy` 返回 `CopyDispatch` 枚举（`Osascript` / `CGEvent`），调用方（`detect_selection`）据此选 polling 超时（osascript 路径需 300ms，CGEvent 路径 80ms）。详见 [actionbar-trigger-perf spec](2026-07-20-actionbar-trigger-perf.md) §2026-07-21 补充。

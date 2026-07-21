@@ -136,6 +136,7 @@
   - VaultPicker/index.tsx CipherDto.id: number → string
   - Settings/Vault/*.tsx 同步改
   - invoke 调用不变（JS 自动序列化 string）
+  - **follow-up（2026-07-21）**：v44 合并到 main 后发现 1.6 漏改了几个 state/prop 类型，导致 `tsc -b` 报 8 个错误（`CipherList.editing/activeId` 仍是 `number|null`、`CipherEditor.cipherId/folderId` 仍是 `number|null`、`VaultPicker.revealedPasswords` 仍是 `Record<number,>`、`SyncPanel` 未用 `Row` import）。已在 commit `94d85a16` 补齐——这是 Task 1.6 的遗漏，类型层面修复，无运行时行为变化。
 
 - [x] **1.7 create_cipher 时生成 UUID**
   - `vault_commands::vault_create_cipher`：调用 `Uuid::new_v4().to_string()` 作为新 cipher id
