@@ -22,6 +22,7 @@
 //! 详见 spec：`docs/superpowers/specs/2026-07-21-vault-git-sync-design.md`
 
 pub mod error;
+pub mod git;
 pub mod outline;
 pub mod store;
 
