@@ -113,6 +113,16 @@ settings:
       syncSuccess: Sync complete
       syncUpToDate: Up to date
       gitRequired: Git is required for sync
+      # List-based remote management (2026-07-21 revision)
+      remotes: Remotes
+      noRemotes: No remotes yet. Add one to start syncing.
+      addRemote: Add Remote
+      removeRemote: Remove
+      remoteAdded: Remote added
+      cloneFromRemote: Clone from Remote
+      clone: Clone
+      firstPushDesc: Initialize local repo and export current data. Then add a remote URL to push.
+      cloneDesc: Clone data from an existing remote repo to this machine (for new devices).
     list:
       title: Password Items
       empty: No password items yet

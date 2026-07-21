@@ -110,12 +110,11 @@ pub fn test_connection(remote_url: &str) -> Result<(), SyncError> {
 
 // === T4.4-T4.5: enable_sync / push_initial ===
 
-/// 启用同步——检测远程状态决定走 push_initial（A 机首次）还是 clone_initial（B 机首次）。
+/// 启用同步——初始化本地 git repo + 从 SQLite 导出全部数据 + 首次 commit。
 ///
-/// 参数：
-/// - `remote_url`：主 remote URL（如 `git@github.com:user/vault.git`）
-/// - `gitee_url`：可选 Gitee mirror URL
-pub fn enable_sync(remote_url: &str, gitee_url: Option<&str>) -> Result<(), SyncError> {
+/// **不 push**（push 需要先配 remote——用户通过 add_remote 添加）。
+/// 用户在 UI 里点「启用同步」后看到空 remote 列表，自己添加 remote URL。
+pub fn enable_sync() -> Result<(), SyncError> {
     if !git::check_git_available() {
         return Err(SyncError::GitNotInstalled);
     }
@@ -127,43 +126,12 @@ pub fn enable_sync(remote_url: &str, gitee_url: Option<&str>) -> Result<(), Sync
         )));
     }
 
-    // 检测远程是否有数据
-    let remote_has_data = match git::git_ls_remote(remote_url)? {
-        true => {
-            // ls-remote 成功——进一步检查是否有 refs（空 repo 返空 stdout）
-            // git_ls_remote 返 bool，实际需要看 stdout 是否非空
-            // 重新跑一次看输出
-            let output = std::process::Command::new("git")
-                .args(["ls-remote", "--heads", remote_url])
-                .output()
-                .map_err(|e| SyncError::Other(anyhow::Error::from(e)))?;
-            if output.status.success() {
-                !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-            } else {
-                false
-            }
-        }
-        false => false,
-    };
-
-    if remote_has_data {
-        // B 机首次：clone
-        clone_initial(remote_url)?;
-    } else {
-        // A 机首次：push
-        push_initial(remote_url)?;
-    }
-
-    // 配置 Gitee mirror（如果提供）
-    if let Some(gitee) = gitee_url {
-        git::git_remote_add(&root, "gitee", gitee)?;
-    }
-
+    push_initial()?;
     Ok(())
 }
 
-/// A 机首次推送——从 SQLite 导出全部到文件系统 → git init + commit + push。
-fn push_initial(remote_url: &str) -> Result<(), SyncError> {
+/// 初始化本地仓库——从 SQLite 导出全部到文件系统 → git init + commit（不 push）。
+fn push_initial() -> Result<(), SyncError> {
     let root = store::vault_root();
     std::fs::create_dir_all(&root)
         .with_context(|| format!("创建 vault 目录失败：{}", root.display()))
@@ -183,15 +151,59 @@ fn push_initial(remote_url: &str) -> Result<(), SyncError> {
     // 2. 导出到文件系统
     store::export_all_to_files(&meta, &ciphers, &folders)?;
 
-    // 3. git init + commit + push
+    // 3. git init + commit（不 push——还没配 remote）
     git::git_init(&root)?;
-    git::git_remote_add(&root, "origin", remote_url)?;
     git::git_add_all(&root)?;
     git::git_commit(&root, "init vault")?;
-    git::git_push_set_upstream(&root, "origin", "main")?;
 
-    log::info!("[sync] push_initial 完成：{} ciphers, {} folders", ciphers.len(), folders.len());
+    log::info!(
+        "[sync] push_initial 完成（未 push）：{} ciphers, {} folders",
+        ciphers.len(),
+        folders.len()
+    );
     Ok(())
+}
+
+// === Remote 管理（列表式，不写死 GitHub/Gitee） ===
+
+/// 添加 remote——用户自由输入 URL，不限制 GitHub/Gitee/自建。
+///
+/// name 是用户自定义的 remote 名称（如 origin / backup / work），如果重复返 Err。
+pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
+    let root = store::vault_root();
+    if !git::is_git_repo(&root) {
+        return Err(SyncError::RepoNotInitialized);
+    }
+    git::git_remote_add(&root, name, url)?;
+    log::info!("[sync] 添加 remote: {} → {}", name, url);
+    Ok(())
+}
+
+/// 删除 remote。
+pub fn remove_remote(name: &str) -> Result<(), SyncError> {
+    let root = store::vault_root();
+    if !git::is_git_repo(&root) {
+        return Err(SyncError::RepoNotInitialized);
+    }
+    git::git_remote_remove(&root, name)?;
+    log::info!("[sync] 删除 remote: {}", name);
+    Ok(())
+}
+
+/// 列出所有 remote（name → url）。
+pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
+    let root = store::vault_root();
+    if !git::is_git_repo(&root) {
+        return Ok(vec![]);
+    }
+    git::git_remote_list(&root)
+}
+
+/// 从指定 remote URL clone 仓库（B 机首次同步）。
+///
+/// 用户先 add_remote 再 clone_from，或者直接 clone（会自动配 origin）。
+pub fn clone_from(remote_url: &str) -> Result<(), SyncError> {
+    clone_initial(remote_url)
 }
 
 // === T4.6: clone_initial ===
@@ -350,15 +362,16 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     git::git_add_all(&root)?;
     let committed = git::git_commit(&root, "sync")?;
 
-    // 6. push to origin
+    // 6. push to all remotes（用户自定义的任意 remote）
     if committed {
-        git::git_push(&root, "origin", "main")?;
-        // 如果配了 gitee，也 push
         let remotes = git::git_remote_list(&root).unwrap_or_default();
-        if remotes.iter().any(|(name, _)| name == "gitee") {
-            match git::git_push(&root, "gitee", "main") {
-                Ok(()) => log::debug!("[sync] pushed to gitee"),
-                Err(e) => log::warn!("[sync] gitee push 失败（origin 已成功）：{}", e),
+        if remotes.is_empty() {
+            log::warn!("[sync] 本地有 commit 但无 remote 配置——跳过 push");
+        }
+        for (name, _url) in &remotes {
+            match git::git_push(&root, name, "main") {
+                Ok(()) => log::debug!("[sync] pushed to {}", name),
+                Err(e) => log::warn!("[sync] push to {} 失败：{}", name, e),
             }
         }
     }

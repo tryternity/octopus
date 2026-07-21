@@ -475,6 +475,14 @@ pub fn run() {
             crate::vault_sync_commands::vault_sync_disable,
             #[cfg(feature = "vault")]
             crate::vault_sync_commands::vault_is_git_available,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_add_remote,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_remove_remote,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_list_remotes,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_clone,
             // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
             feature_flags::is_vault_enabled,
             translation_commands::discover_translation_models,

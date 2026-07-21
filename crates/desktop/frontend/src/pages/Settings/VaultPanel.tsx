@@ -29,7 +29,7 @@ interface VaultStatus {
   user_vault_unlocked: boolean;
 }
 
-type View = "list" | "health" | "io";
+type View = "list" | "health" | "io" | "sync";
 
 export default function VaultPanel({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
@@ -217,17 +217,13 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         </div>
       </div>
 
-      {/* Git 同步段（2026-07-21 Phase 1） */}
-      <div className="border-b border-border/40 pb-3">
-        <SyncPanel showToast={showToast} />
-      </div>
-
-      {/* Tab 栏——3 个视图切换（PillTabs，与 ModelsPanel 同款）。 */}
+      {/* Tab 栏——4 个视图切换（PillTabs，与 ModelsPanel 同款）。 */}
       <PillTabs
         items={[
           { key: "list", label: t("settings.vault.list.title") },
           { key: "health", label: t("settings.vault.health.title") },
           { key: "io", label: t("settings.vault.importExport.title") },
+          { key: "sync", label: t("settings.vault.sync.title") },
         ]}
         active={view}
         onChange={(k) => setView(k as View)}
@@ -244,6 +240,11 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         {view === "io" && (
           <div className="h-full overflow-auto">
             <ImportExport showToast={showToast} />
+          </div>
+        )}
+        {view === "sync" && (
+          <div className="h-full overflow-auto">
+            <SyncPanel showToast={showToast} />
           </div>
         )}
       </div>

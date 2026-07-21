@@ -24,13 +24,11 @@ pub fn vault_sync_test_connection(remote_url: String) -> Result<(), String> {
     vault_sync::test_connection(&remote_url).map_err(sync_err_to_string)
 }
 
-/// 启用同步——自动检测走 push_initial（A 机）还是 clone_initial（B 机）。
+/// 启用同步——初始化本地 git repo + 导出 SQLite 数据 + 首次 commit。
+/// 不 push（用户需先 add_remote）。
 #[tauri::command]
-pub fn vault_sync_enable(
-    remote_url: String,
-    gitee_url: Option<String>,
-) -> Result<(), String> {
-    vault_sync::enable_sync(&remote_url, gitee_url.as_deref()).map_err(sync_err_to_string)
+pub fn vault_sync_enable() -> Result<(), String> {
+    vault_sync::enable_sync().map_err(sync_err_to_string)
 }
 
 /// 手动触发同步——编排 pull + push 流程。
@@ -49,4 +47,28 @@ pub fn vault_sync_disable() -> Result<(), String> {
 #[tauri::command]
 pub fn vault_is_git_available() -> bool {
     octopus_vault::sync::git::check_git_available()
+}
+
+/// 添加 remote——用户自由输入 URL + 名称，不限制 GitHub/Gitee/自建。
+#[tauri::command]
+pub fn vault_sync_add_remote(name: String, url: String) -> Result<(), String> {
+    vault_sync::add_remote(&name, &url).map_err(sync_err_to_string)
+}
+
+/// 删除 remote。
+#[tauri::command]
+pub fn vault_sync_remove_remote(name: String) -> Result<(), String> {
+    vault_sync::remove_remote(&name).map_err(sync_err_to_string)
+}
+
+/// 列出所有 remote（name → url）。
+#[tauri::command]
+pub fn vault_sync_list_remotes() -> Result<Vec<(String, String)>, String> {
+    vault_sync::list_remotes().map_err(sync_err_to_string)
+}
+
+/// 从指定 remote URL clone 仓库（B 机首次同步）。
+#[tauri::command]
+pub fn vault_sync_clone(remote_url: String) -> Result<(), String> {
+    vault_sync::clone_from(&remote_url).map_err(sync_err_to_string)
 }

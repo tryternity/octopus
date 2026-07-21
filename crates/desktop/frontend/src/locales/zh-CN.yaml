@@ -113,6 +113,16 @@ settings:
       syncSuccess: 同步完成
       syncUpToDate: 已是最新
       gitRequired: 需要 git 才能使用同步功能
+      # 列表式 Remote 管理（2026-07-21 修订）
+      remotes: 远程仓库
+      noRemotes: 暂无远程仓库，添加一个开始同步
+      addRemote: 添加远程仓库
+      removeRemote: 删除
+      remoteAdded: 远程仓库已添加
+      cloneFromRemote: 从远程仓库克隆
+      clone: 克隆
+      firstPushDesc: 初始化本地仓库并导出当前数据。之后添加远程仓库地址推送。
+      cloneDesc: 从已有的远程仓库克隆数据到本机（换电脑时使用）
     list:
       title: 密码条目
       empty: 还没有密码条目

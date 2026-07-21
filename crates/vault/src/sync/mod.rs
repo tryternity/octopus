@@ -27,7 +27,10 @@ pub mod git;
 pub mod outline;
 pub mod store;
 
-pub use engine::{disable_sync, enable_sync, get_sync_status, sync_now, test_connection, SyncReport, SyncStatus};
+pub use engine::{
+    add_remote, clone_from, disable_sync, enable_sync, get_sync_status, list_remotes,
+    remove_remote, sync_now, test_connection, SyncReport, SyncStatus,
+};
 pub use error::SyncError;
 pub use outline::{Outline, OutlineEntry};
 pub use store::{
