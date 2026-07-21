@@ -174,6 +174,62 @@ security_stamp            TEXT NOT NULL,
 
 ---
 
+### 2.4 跨设备密钥一致性（加密链路论证）
+
+**核心问题**：A 机用 user_vault_key 加密的 cipher 密文，sync 到 B 机后，B 机能反解吗？
+
+**答案：能**——前提是 B 机输入与 A 机**相同的主密码**。整个 git 同步方案成立的基础就是这个论证。
+
+#### 密钥派生链（确定性，无随机成分）
+
+```
+setup 时（A 机）：
+  主密码（明文）+ kdf_salt（32B 随机，但存 meta.json 同步）
+       ↓ Argon2id（参数 iterations/memory/parallelism 也同步）
+  master_root_key（32B，确定性派生——相同输入永远相同输出）
+       ↓ HKDF 派生
+  user_vault_key（32B，确定性）+ app_key（32B，确定性）
+       ↓
+  user_vault_key 加密所有 cipher/folder 密文字段
+
+sync 后（B 机）：
+  meta.json 含：kdf_salt + kdf 参数 + protected_user_vault_key（用 master_root_key 加密）
+       ↓
+  B 机解锁（输入相同主密码）：
+    主密码 + kdf_salt（从 meta.json 读）→ Argon2id → master_root_key（与 A 机相同）
+      ↓ 解密 protected_user_vault_key
+    user_vault_key（与 A 机相同）
+      ↓ 解密 cipher 密文
+    明文 ✅
+```
+
+**关键性质**：
+- `master_root_key` 是**纯函数派生**——输入（主密码 + kdf_salt + KDF 参数）相同，输出永远相同，无随机成分
+- `user_vault_key` 是 master_root_key 的 HKDF 子密钥，也是确定性派生
+- 所以 A 机和 B 机的 `user_vault_key` **字节级相同**
+
+#### 密文跨设备一致性
+
+**cipher 只在创建它的机器上加密一次**——加密后的密文字符串（`v1:base64(nonce||ct||tag)`）原样存进 SQLite，sync 时搬运的就是这个密文字符串。
+
+- A 机创建 cipher X → 加密成密文 C_a → SQLite + .vault/ciphers/X.json
+- sync → B 机 pull → 把 C_a 写进 SQLite（**不重新加密**）
+- B 机存的密文也是 C_a，用相同的 user_vault_key 解密 → 明文
+
+**例外**：换主密码（`change_master_password`）会重新派生 master_root_key，但 **user_vault_key 不变**（见 `unlock.rs:324` 注释「不重加密 vault_ciphers，因为 user_vault_key 不变」）——所以换密码后密文仍然一致，不需要全量重加密。
+
+#### security_stamp 守护主密码一致性
+
+如果 A 机和 B 机用了**不同主密码**，派生出的 master_root_key 不同，解密 `protected_user_vault_key` 会失败（AES-GCM tag 校验不过）。但这会让用户看到晦涩的「解密失败」错误。
+
+`security_stamp`（UUID v4）在 `setup_vault` 时随机生成，存 meta.json 同步字段。**两台机器的 stamp 必须相同**——否则 sync 时直接拒绝并报 `SyncError::MasterPasswordMismatch`（「远程 vault 用了不同主密码」），给用户清晰提示。
+
+#### 与 md5 同步协议的关系（§4.12 待实现）
+
+未来 md5 同步协议对 cipher 字段算 md5 时，**包含密文字段**（name/data/notes 等）——因为密文跨设备一致，md5 也一致，diff 准确。md5 不是安全 hash（碰撞无实际风险），纯粹是内容指纹。
+
+---
+
 ## 3. 数据模型变更
 
 ### 3.1 cipher id 从 i64 改 UUID 字符串（前置改造，T1）
