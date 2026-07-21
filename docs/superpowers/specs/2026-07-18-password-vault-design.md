@@ -744,10 +744,15 @@ octopus 单向无握手通信 + Safari 不允许 HTTPS 页面 fetch 127.0.0.1 + 
 `data-tauri-drag-region="deep"` + `cursor-grab active:cursor-grabbing`，与 Clipboard
 浮窗完全同模式。`="deep"` 让标题栏内按钮（X / 返回 / 刷新）click 仍工作。
 
-**窗口动态高度**（2026-07-20 e2e 反馈）：后端 `inner_size` 初始 `400×200`，前端
-`useEffect` 按 `view.kind` 动态 `setSize`——locked 200 / reprompt 220 / uninit 130 /
-create 360 / list `36 + ciphers*88 + 32 + 8`（含底部新建按钮）/ loading 110。避免
-紧凑内容也占满 360px 导致上下大片空白。
+**窗口固定高度**（2026-07-22 简化）：后端 `inner_size` 初始 `320×360`，前端
+`useEffect` 一次性 `setSize(320, 360)` 固定不再动态切换。所有 view 共用同一高度——
+list（搜索框 + 新建按钮 + 2 条列表区 176px）/ create（4 字段表单）/ locked /
+uninit 等短内容下方留白。窗口 `transparent(true)` + CSS `rounded-[10px]
+overflow-hidden` 实现圆角（2026-07-22 验证 transparent + setSize 不冲突）。
+
+**历史**（已废弃）：原按 `view.kind` 动态 `setSize`（locked 200 / list `ciphers*88` /
+create 360），后因 UI 统一布局改为固定高度——list 和 create 高度本来就差不多，
+动态切换不必要。
 
 ### 4.2 URL 检测（macOS AppleScript）
 
@@ -1021,7 +1026,7 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | INV-A6 | 默认不按 Enter（避免误触发提交） |
 | INV-A7 | 弹主密码确认框（reprompt=1 的 cipher）验证不通过则中止 —— 2026-07-19 修复 #3：后端 `vault_autotype` 强制校验 `master_password`，不可绕过 |
 | INV-A8 | eTLD+1 必须用 Mozilla PSL（公共后缀列表），不能用「分段取末两段」简化算法——2026-07-19 修复 #1：钓鱼漏洞（`barclays.co.uk` vs `evil-attacker.co.uk`）；IP 字面量精确匹配 |
-| INV-A9 | `activate_app(bundle_id)` 调用前必须 `validate_bundle_id`（2026-07-19 修复 #10）：白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入。**2026-07-20 e2e 修复**：autotype_login_with_mode 内 AppleScript activate 前台 app 复用此校验 |
+| INV-A9 | ~~`activate_app(bundle_id)` 调用前必须 `validate_bundle_id`~~（activate_app 已于 2026-07-22 删除——dead code）。**`validate_bundle_id` 仍保留**：被 `autotype_login_with_mode` 内的 osascript activate 前台 app 复用（白名单 `[A-Za-z0-9.-]` 长度 1-256，防 AppleScript 字符串字面量注入） |
 | INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password` / `vault_copy_username`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通。**例外**：`vault_copy_username` 不强制 reprompt（username 通常不敏感） |
 | INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → ~~fallback 列出最近 20 条~~（2026-07-21 安全加固改为空列表 + 搜索框）。URL 存 `SharedPickerUrlCache` 共享状态 |
 | INV-A12 | **URL 检测失败时不返回 fallback 列表**（2026-07-21 安全加固）：原 `vault_detect_and_match` URL 检测失败时返回最近 20 条 cipher 有钓鱼风险——用户可能"顺手"误选密码注入到钓鱼站。现返回空列表，用户通过搜索框主动搜索（`vault_search_ciphers` 全量模糊匹配 name/username/URIs）。合法场景（桌面应用/不支持浏览器）仍可通过搜索找到密码 |

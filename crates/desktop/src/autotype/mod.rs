@@ -9,16 +9,12 @@ pub mod macos;
 pub mod url_detect;
 
 #[cfg(target_os = "macos")]
-pub use macos::{activate_app, autotype_login, autotype_login_with_mode};
+pub use macos::{autotype_login, autotype_login_with_mode};
 #[cfg(target_os = "macos")]
 pub use url_detect::current_browser_url;
 #[cfg(target_os = "macos")]
 pub use clipboard::{copy_concealed, copy_concealed_with_ttl};
 
-#[cfg(not(target_os = "macos"))]
-pub fn activate_app(_bundle_id: &str) -> anyhow::Result<()> {
-    anyhow::bail!("Auto-Type 尚未实现此平台")
-}
 #[cfg(not(target_os = "macos"))]
 pub fn autotype_login(
     _u: &str,
