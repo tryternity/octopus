@@ -190,9 +190,11 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     let now_count = pasteboard_change_count();
     let baseline = CHANGE_COUNT_BASELINE.load(std::sync::atomic::Ordering::SeqCst);
     let change_count_before = now_count.max(baseline);
+    // 额外标记 now 是否已超过 baseline（说明上次 detect 后有未跟踪的写入）
+    let drift = now_count > baseline;
     log::info!(
-        "[action-bar][detect] before: now={} baseline={} → use={}, clip_text_len={}",
-        now_count, baseline, change_count_before,
+        "[action-bar][detect] before: now={} baseline={} → use={}, drift={}, clip_text_len={}",
+        now_count, baseline, change_count_before, drift,
         clipboard_before_text.as_deref().map(|t| t.len()).unwrap_or(0)
     );
 
@@ -253,8 +255,17 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
             write_clipboard_text(app, original);
         }
     }
-    // 更新 baseline 到恢复后的 changeCount——下次 detect 的 before 至少是这个值
-    CHANGE_COUNT_BASELINE.store(pasteboard_change_count(), std::sync::atomic::Ordering::SeqCst);
+    // 更新 baseline 到恢复后的 changeCount——下次 detect 的 before 至少是这个值。
+    //
+    // 2026-07-21 调试连续微信选中失效：
+    // osascript 路径（WKWebView 嵌套）可能存在延迟写入，导致 baseline 错位。
+    // 在恢复剪贴板后、设 baseline 前加观察日志，便于定位真实 changeCount 序列。
+    let cc_after_restore = pasteboard_change_count();
+    log::info!(
+        "[action-bar][baseline] dispatch={:?} before_use={} detected={} after_restore={}",
+        copy_dispatch, change_count_before, change_count_after, cc_after_restore
+    );
+    CHANGE_COUNT_BASELINE.store(cc_after_restore, std::sync::atomic::Ordering::SeqCst);
 
     let text = match &clipboard_after {
         Some(t) if !t.trim().is_empty() => t.clone(),
