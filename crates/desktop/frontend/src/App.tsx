@@ -5,7 +5,6 @@ import { invoke } from "@tauri-apps/api/core";
 import Result from "@/pages/Result";
 import Settings from "@/pages/Settings";
 import Clipboard from "@/pages/Clipboard";
-import Screenshot from "@/pages/Screenshot";
 import CompactEditor from "@/pages/CompactEditor";
 import ActionBar from "@/pages/ActionBar";
 import Overlay from "@/pages/Overlay";
@@ -99,9 +98,8 @@ function App() {
             // 生成器独立浮窗（Actionbar 触发，外壳 B）
             return vaultEnabled ? <PasswordGeneratorWindow /> : null;
           default:
-            if (label.startsWith("screenshot_")) {
-              return <Screenshot />;
-            }
+            // screenshot_* 窗口走独立 entry（screenshot.html → screenshot-main.tsx），
+            // 不经过 App.tsx 路由——保留 fallback 兜底未识别 label。
             return (
               <div className="p-4 text-foreground">
                 <p className="text-sm text-muted-foreground">Window: {label}</p>
