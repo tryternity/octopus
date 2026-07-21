@@ -173,7 +173,7 @@ export default function VaultPicker() {
       default:
         height = 200;
     }
-    void getCurrentWindow().setSize(new LogicalSize(360, height));
+    void getCurrentWindow().setSize(new LogicalSize(320, height));
   }, [view]);
 
   // Escape → 隐藏窗口；保留实例以便下次热键直接 show。
@@ -271,7 +271,7 @@ export default function VaultPicker() {
     return (
       <form
         onSubmit={handleUnlock}
-        className="flex h-screen flex-col bg-background text-foreground"
+        className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位保持对称 */}
         <div
@@ -326,7 +326,7 @@ export default function VaultPicker() {
   // === uninit: 提示去 Settings 初始化 ===
   if (view.kind === "uninit") {
     return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
+      <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
         <div
           className="relative flex cursor-grab items-center border-b border-border/40 px-4 py-2 active:cursor-grabbing"
           data-tauri-drag-region="deep"
@@ -372,7 +372,7 @@ export default function VaultPicker() {
     return (
       <form
         onSubmit={submitReprompt}
-        className="flex h-screen flex-col bg-background text-foreground"
+        className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground"
       >
         {/* 标题栏：absolute 居中标题 + 右侧 X 按钮 + 左侧同等宽占位 */}
         <div
@@ -445,7 +445,7 @@ export default function VaultPicker() {
 
   // === error / list / loading: 共用外壳 ===
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
+    <div className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
       {/* 顶部标题栏：absolute 居中标题 + 右侧 Refresh + X 按钮 + 左侧同等宽占位 */}
       <div
         className="relative flex cursor-grab items-center border-b border-border px-4 py-2 active:cursor-grabbing"
@@ -500,6 +500,9 @@ export default function VaultPicker() {
                 }}
                 placeholder={t("vaultPicker.searchPlaceholder")}
                 autoFocus={view.ciphers.length === 0}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>
@@ -514,8 +517,10 @@ export default function VaultPicker() {
             </button>
 
             {/* 列表区：搜索框有内容 → searchResults（全量搜索）；空 → view.ciphers（URL 匹配或空）。
-                固定 2 条高度（176px）——不管内容多少整体大小不变。超过 2 条滚动条出现。 */}
-            <div className="flex-1 overflow-y-auto" style={{ height: "176px" }}>
+                固定 2 条高度（176px）——不管内容多少整体大小不变。超过 2 条滚动条出现。
+                滚动条强制常显（overflow: scroll 而非 auto）——macOS 默认 hover 才出现，
+                但此页面用户需要知道是否有更多数据。 */}
+            <div className="flex-1" style={{ height: "176px", overflowY: "scroll" }}>
               {(searchQuery.trim() !== "" ? searchResults : view.ciphers).map((c) => {
                 const username = c.login?.username || "";
                 const password = c.login?.password || "";
@@ -747,7 +752,7 @@ function CreateCipherView({
   }
 
   return (
-    <form onSubmit={handleSave} className="flex h-screen flex-col bg-background text-foreground">
+    <form onSubmit={handleSave} className="flex h-screen flex-col overflow-hidden rounded-[10px] border border-border/40 bg-background shadow-2xl shadow-black/20 text-foreground">
       {/* 标题栏：左侧返回 + 中间标题 + 右侧关闭 */}
       <div
         className="relative flex cursor-grab items-center border-b border-border/40 px-2 py-2 active:cursor-grabbing"
