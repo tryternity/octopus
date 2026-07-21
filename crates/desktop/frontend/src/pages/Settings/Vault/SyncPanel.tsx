@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Plus, Trash2, GitBranch, Download, AlertCircle } from "lucide-react";
 import { useT } from "@/lib/i18n";
+import type { ToastVariant } from "@/lib/useToast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row } from "@/components/ui/row";
@@ -34,7 +35,11 @@ interface SyncReport {
   message: string;
 }
 
-export default function SyncPanel({ showToast }: { showToast: (msg: string) => void }) {
+export default function SyncPanel({
+  showToast,
+}: {
+  showToast: (msg: string, variant?: ToastVariant) => void;
+}) {
   const t = useT();
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -74,7 +79,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       showToast(t("settings.vault.sync.enableSuccess"));
       await refreshStatus();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -88,7 +93,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       showToast(t("settings.vault.sync.enableSuccess"));
       await refreshStatus();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -101,7 +106,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       showToast(report.message || t("settings.vault.sync.syncSuccess"));
       await refreshStatus();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -116,7 +121,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       setRemotes([]);
       await refreshStatus();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -136,7 +141,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
       showToast(t("settings.vault.sync.remoteAdded"));
     } catch (e) {
       // 私有库检测失败 / git 错误等——直接展示后端 Display 字符串（含用户可读建议）
-      showToast(String(e));
+      showToast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -150,7 +155,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
         const r = await invoke<[string, string][]>("vault_sync_list_remotes");
         setRemotes(r);
       } catch (e) {
-        showToast(String(e));
+        showToast(String(e), "error");
       } finally {
         setBusy(false);
       }
@@ -165,7 +170,7 @@ export default function SyncPanel({ showToast }: { showToast: (msg: string) => v
         await invoke("vault_sync_test_connection", { remoteUrl: url });
         showToast(t("settings.vault.sync.connectionOk"));
       } catch (e) {
-        showToast(String(e));
+        showToast(String(e), "error");
       } finally {
         setBusy(false);
       }

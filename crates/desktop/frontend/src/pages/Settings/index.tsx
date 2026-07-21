@@ -12,8 +12,10 @@ import {
   Type,
   Bot,
   Lock,
+  X,
   type LucideIcon,
 } from "lucide-react";
+import type { ToastVariant } from "@/lib/useToast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import ClipboardPanel from "./ClipboardPanel";
@@ -55,14 +57,18 @@ function Settings() {
   const t = useT();
   const [page, setPage] = useState<PageName>("settings");
   const [configResp, setConfigResp] = useState<ConfigResponse | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  // toast 反馈（2026-07-21 修订）：success 自动消失，error 不自动消失需用户关闭
+  const [toast, setToast] = useState<{ msg: string; variant: ToastVariant } | null>(null);
   // follow-up #10: vault feature 探针。null = 未拉取；false 时隐藏 vault nav。
   const [isVaultEnabled, setIsVaultEnabled] = useState<boolean | null>(null);
 
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
+  const showToast = useCallback((msg: string, variant: ToastVariant = "success") => {
+    setToast({ msg, variant });
+    if (variant === "error") return; // error 不自动消失——让用户看清楚后手动关闭
     setTimeout(() => setToast(null), 2000);
   }, []);
+
+  const dismissToast = useCallback(() => setToast(null), []);
 
   const refreshConfig = useCallback(async () => {
     try {
@@ -183,9 +189,28 @@ function Settings() {
       </div>
 
       {/* Toast —— 半透明背景 + 模糊 + 边框，替代原 bg-black/80 纯黑 */}
+      {/* 2026-07-21：error 不自动消失 + 显 X 关闭按钮（用户反馈错误信息看不清） */}
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[80%] rounded-lg border border-border bg-background/95 px-4 py-2 text-sm text-center shadow-lg backdrop-blur-sm">
-          {toast}
+        <div
+          className={[
+            "fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex max-w-[80%] items-center gap-2 rounded-lg px-4 py-2 text-sm shadow-lg backdrop-blur-sm",
+            toast.variant === "error"
+              ? "border border-destructive/50 bg-destructive/10 text-destructive"
+              : "border border-border bg-background/95 text-center",
+          ].join(" ")}
+          role={toast.variant === "error" ? "alert" : "status"}
+        >
+          <span className="break-words">{toast.msg}</span>
+          {toast.variant === "error" && (
+            <button
+              type="button"
+              onClick={dismissToast}
+              aria-label="关闭"
+              className="shrink-0 rounded-sm p-0.5 hover:bg-destructive/20"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
         </div>
       )}
     </div>

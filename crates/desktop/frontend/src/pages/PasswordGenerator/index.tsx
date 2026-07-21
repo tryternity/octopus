@@ -26,7 +26,7 @@ import PasswordGenerator from "@/components/PasswordGenerator";
  */
 export default function PasswordGeneratorWindow() {
   const t = useT();
-  const { toast, showToast } = useToast();
+  const { toast, showToast, dismissToast } = useToast();
   const [busy, setBusy] = useState(false);
 
   const handleClose = useCallback(() => {
@@ -85,7 +85,7 @@ export default function PasswordGeneratorWindow() {
       </div>
 
       {/* Toast 反馈（复制成功等） */}
-      <Toast toast={toast} />
+      <Toast toast={toast} onClose={dismissToast} />
     </div>
   );
 }
