@@ -19,7 +19,7 @@
 主要场景：
 1. 用户在 GitHub/Gitee 建 private repo `vault`
 2. 配 SSH key（开发者几乎必然已配）
-3. octopus 在 `~/.octopus/.vault/` 初始化 git repo + remote add
+3. octopus 在 `~/.octopus/.sync/` 初始化 git repo + remote add（vault 数据在 `.sync/vault/` 子目录）
 4. 改密码后点「同步」按钮 → 自动 pull + commit + push
 5. 换电脑 → 安装 octopus → 输主密码 → 配 remote → 同步 → 全部 cipher 出现
 
@@ -80,7 +80,7 @@
 
 ### 1.4 方案演进（Contents API → 直接 git）
 
-最初考虑用 GitHub Contents API（PUT/GET 单文件）+ outline.json 索引。但用户提议「直接在 `~/.octopus/.vault/` 建 git repo」后，发现这条路线更优：
+最初考虑用 GitHub Contents API（PUT/GET 单文件）+ outline.json 索引。但用户提议「直接在 `~/.octopus/` 下建 git repo」（实施时定在 `.sync/`）后，发现这条路线更优：
 
 | 维度 | Contents API | 直接 git repo |
 |---|---|---|
@@ -212,7 +212,7 @@ sync 后（B 机）：
 
 **cipher 只在创建它的机器上加密一次**——加密后的密文字符串（`v1:base64(nonce||ct||tag)`）原样存进 SQLite，sync 时搬运的就是这个密文字符串。
 
-- A 机创建 cipher X → 加密成密文 C_a → SQLite + .vault/ciphers/X.json
+- A 机创建 cipher X → 加密成密文 C_a → SQLite + .sync/vault/ciphers/X.json
 - sync → B 机 pull → 把 C_a 写进 SQLite（**不重新加密**）
 - B 机存的密文也是 C_a，用相同的 user_vault_key 解密 → 明文
 
@@ -285,18 +285,22 @@ v44 迁移：
 
 ### 3.4 vault 文件存储格式（新增模块，T2）
 
-`~/.octopus/.vault/` 是 git repo，结构：
+> **目录结构**（2026-07-22 T12 重构）：从 `.vault/`（单层）改为 `.sync/vault/`（双层）——
+> git repo 在 `.sync/` 根，vault 数据在子目录。详见 §4.12「目录结构」段。
+
+`~/.octopus/.sync/` 是 git repo，结构：
 
 ```
-~/.octopus/.vault/
-├── .git/                               ← git 元数据
-├── meta.json                           ← vault_meta 同步字段
-├── outline.json                        ← 增量索引
-└── ciphers/
-    ├── a1/                             ← uuid 前 2 hex 分桶
-    │   ├── <full-uuid1>.json
-    │   └── <full-uuid2>.json
-    └── b2/
+~/.octopus/.sync/                        ← git repo 根（sync_root）
+├── .git/                                ← git 元数据
+└── vault/                               ← vault 数据子目录（vault_dir）
+    ├── meta.json                        ← vault_meta 同步字段
+    ├── outline.json                     ← 增量索引（md5 + updated_ms）
+    └── ciphers/
+        ├── a1/                          ← uuid 前 2 hex 分桶
+        │   ├── <full-uuid1>.json
+        │   └── <full-uuid2>.json
+        └── b2/
 ```
 
 #### 3.4.1 meta.json
@@ -404,7 +408,7 @@ v44 迁移：
 触发后的流程（`vault_sync_now` 命令）：
 
 ```
-1. 检查 ~/.octopus/.vault/ 是否已初始化（git repo + remote 配置）
+1. 检查 ~/.octopus/.sync/ 是否已初始化（git repo + remote 配置）
 2. 检查 git --version（无 git 则报错）
 3. 加锁（防并发同步——见 §4.5）
 4. 执行 sync_flow()：
@@ -953,7 +957,7 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 - 新增 `crates/vault/src/sync/engine.rs`
 - 实现 `sync_now() -> Result<SyncReport>`：编排 fetch → merge → 文件系统 ↔ SQLite 双向同步 → commit → push
 - 实现 `enable_sync(remote_url) -> Result<()>`：首次配置（push_initial 或 clone_initial）
-- 实现 `disable_sync() -> Result<()>`：删 `~/.octopus/.vault/`（保留 SQLite）
+- 实现 `disable_sync() -> Result<()>`：删 `~/.octopus/.sync/`（保留 SQLite）
 - 实现 `sync_status() -> SyncStatus`：返回当前状态
 - `SyncState` 进程内锁
 
@@ -1026,6 +1030,27 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 - `count_outline_changes_*` 5 个场景（zero/new/modified/deleted/mixed）
 
 **触发场景**：用户实测「每次同步都是拉取 0 条推送 4 条」——根因是 HashMap 顺序随机让 outline.json 字节变化触发空 commit，加 push_to_files 误返总数。
+
+### T12: md5 增量同步协议 + .sync/vault/ 目录结构（2026-07-22 增补，详见 §4.12）
+
+- `crates/vault/src/sync/fingerprint.rs`（新建）——md5 计算（cipher_md5 / folder_md5 等）
+- schema v44→v45：vault_ciphers / vault_folders 加 `sync_md5` 字段
+- `store::incremental_export` 替代全量重写——读旧 outline + 对比 md5 + 只写变化文件
+- `OutlineEntry.sha`→`md5`、`updated_at`→`updated_ms`（Unix 毫秒 i64）
+- `vault_version` 只在 changed > 0 时 +1（之前无条件 +1 是 bug）
+- `.vault/` → `.sync/vault/`——`sync_root()` + `vault_dir()` 分离，为未来 hotword/prompts 扩展
+- push 无条件执行（git push 幂等），不再用「这次 sync 是否新 commit」判断
+
+**验证**：
+- fingerprint 7 个测试（md5 确定性/时间戳不变/内容变/None 字段/folder/格式）
+- incremental_export 5 个测试（0 变更/只写变化/删文件/outline 用 sync_md5/vault_version 不递增）
+- 集成测试 3 个（.git 在 sync_root / vault 数据在子目录 / outline 字段名 md5+updated_ms）
+
+**触发场景**：
+- 用户反馈「无变化时 vault_version 也 +1」
+- 用户反馈「目录结构不对，没按要求 vault 子目录」
+- 用户反馈「outline 字段 sha 应改 md5，updated_at 应改毫秒数」
+- 用户反馈「首次同步报已是最新无需同步」（push 决策用 committed 判断是错的）
 
 ---
 

@@ -495,9 +495,10 @@ T1 必须先做（其他都依赖 UUID 字符串 id）。T2/T3 可并行。T4 �
 | T9 非交互 prompt 防护 | 100 行（git_command helper + CredentialsRequired）| 0.5-1 小时 |
 | T10 空远程首次推送 | 80 行（MergeFfResult enum + sync_now 分流）| 0.5-1 小时 |
 | T11 outline 稳定性 + 报告数 | 150 行（BTreeMap + count_outline_changes）| 0.5-1 小时 |
-| **总计** | **~3330 行** | **13-21 小时** |
+| T12 md5 增量同步 + 目录重构 | 800 行（fingerprint + incremental_export + .sync/vault/ + 字段重命名 + 集成测试）| 3-4 小时 |
+| **总计** | **~4130 行** | **16-25 小时** |
 
-（spec 估的 1300 行偏少——加上 schema 迁移 + 测试 + UI + 私有库检测 + 同步健壮性套件实际接近 3330 行）
+（spec 估的 1300 行偏少——加上 schema 迁移 + 测试 + UI + 私有库检测 + 同步健壮性套件 + md5 协议实际接近 4130 行）
 
 ## 风险提示
 
@@ -536,13 +537,13 @@ T1-T5 全部完成（2026-07-21）。T6 文档同步 + 测试收尾。
 
 最终基线（T1-T12 全部完成后）：
 
-- vault: **253 pass**（含 fingerprint 7 + incremental_export 4 + outline 序列化等）
+- vault: **257 pass**（含 fingerprint 7 + incremental_export 5 + 集成测试 3 + outline 序列化等）
 - desktop: **387 pass**
 - 前端: tsc + vite build 0 error
 - cargo build: 0 error 0 warning
 - 真实网络集成测试（`#[ignore]`）：5 个
 
-历史基线演进：T1-T6 完成 200 → T7 私有库检测 230 → T8 HTTPS→SSH 238 → T9 非交互 prompt 240 → T10 空远程 241 → T11 outline 稳定 247 → T12 md5 增量 253。
+历史基线演进：T1-T6 完成 200 → T7 私有库检测 230 → T8 HTTPS→SSH 238 → T9 非交互 prompt 240 → T10 空远程 241 → T11 outline 稳定 247 → T12 md5 增量 + 目录重构 + 集成测试 257。
 
 ---
 
@@ -858,16 +859,57 @@ T11 全部完成（2026-07-21，commit `2ac4c028`）。vault 测试 241 → 247 
   - fingerprint 7 个测试（确定性 / 时间戳不变 / 内容变 / None 字段 / folder / md5 格式）
   - incremental_export 4 个测试（0 变更 / 只写变化 / 删文件 / outline 用 sync_md5）
 
+- [x] **12.7 .sync/vault/ 目录结构重构**（2026-07-22 增补）
+  - 用户反馈：「目录结构不对，没按要求 vault 子目录，还是放在根目录下面」
+  - `store::sync_root() = ~/.octopus/.sync/`（git repo 根）
+  - `store::vault_dir() = sync_root/vault/`（vault 数据子目录）
+  - `vault_root()` 保留为 `vault_dir()` 别名（向后兼容旧调用方）
+  - engine.rs 所有 git 命令（init/fetch/push/commit/remote/clone）改用 sync_root
+  - 文件操作（meta/outline/ciphers/folders）走 vault_dir
+  - VaultRootGuard 测试 helper 改用 .sync 路径
+
+- [x] **12.8 outline 字段重命名 + vault_version 修复**（2026-07-22 增补）
+  - 用户反馈：「sha 改为 md5」「updated_at 改为毫秒数好比较」「vault_version 每次都 +1」
+  - `OutlineEntry.sha` → `md5`（字段名与值一致，不做旧文件兼容）
+  - `OutlineEntry.updated_at`（ISO 字符串）→ `updated_ms`（i64 Unix 毫秒）
+  - `merge_outlines` 用 updated_ms 数值比较替代 ISO 字符串比较
+  - `iso_to_unix_ms()` helper（civil_to_days 公式，无 chrono 依赖）
+  - `incremental_export` vault_version 只在 changed > 0 时 +1
+
+- [x] **12.9 push 逻辑简化**（2026-07-22 增补）
+  - 用户反馈：「第一次同步，就报已是最新无需同步」
+  - 根因：之前用 `committed`（这次 sync 是否新 commit）判断 push——首次同步时
+    enable_sync 已 commit init vault，sync_now 没新 commit 就跳过 push
+  - 用户指出：「如果 git 有本地变更没推送，就可以 push。甚至直接 push，
+    push 零变化也是 ok 的」
+  - 修复：无条件 push——git push 幂等，零变化返 Everything up-to-date
+  - 删掉中间方案 `git_needs_push` 函数（rev-list ahead/behind 预判——多余）
+
+- [x] **12.10 集成测试**（2026-07-22 增补）
+  - 用户反馈：「这些问题你写测试就应该可以发现，需要多写测试」
+  - `enable_sync_creates_git_in_sync_root_not_vault_dir`——验证 .git 位置
+  - `enable_sync_writes_vault_data_in_vault_subdir`——验证 vault 数据在子目录
+  - `outline_json_uses_md5_and_updated_ms_field_names`——验证字段名
+  - `incremental_export_vault_version_only_increments_on_change`——验证版本不递增
+  - IntegrationGuard：内存 DB + tempdir + 预置 vault_meta
+
 ### 关键设计决策
 
 1. **md5 不是安全 hash**：纯 diff 工具，碰撞无实际风险（cipher 数 < 10万）
 2. **不含时间戳**：created_at/updated_at 跨设备必然不同，含了会导致永久 diff
 3. **密文字段安全**：cipher 只在创建机器加密一次，sync 搬运密文——跨设备一致（详见 spec §2.4）
 4. **不回填 md5**：避免在 infra 层引入 md5 依赖，让首次 sync 自然填上
-5. **outline.sha 字段名不变**：值从「文件字节 sha」变成「逻辑内容 md5」——向后兼容（旧 outline 首次 sync 会被覆盖）
+5. **outline 字段名最终改为 md5/updated_ms**（之前曾考虑保留 sha 字段名做兼容，用户明确说不做兼容）
+6. **push 无条件执行**：git push 幂等，不需要预判是否领先——用户原话「直接 push，push 零变化也是 ok 的」
 
 ### 实施记录
 
-T12 全部完成（2026-07-21）。vault 测试 247 → 253 pass（新增 11 个：7 fingerprint + 4 incremental_export；删除 5 个 count_outline_changes）。0 error 0 warning。
+T12 全部完成（2026-07-22，commit `3c71c83c`）。vault 测试 247 → 257 pass。0 error 0 warning。
+
+**触发场景汇总**（4 个用户实测反馈）：
+1. 「目录结构不对，没按要求 vault 子目录」→ 12.7 目录重构
+2. 「sha 改 md5，updated_at 改毫秒数」+ 「vault_version 每次 +1」→ 12.8 字段重命名 + 版本修复
+3. 「第一次同步报已是最新」→ 12.9 push 逻辑简化
+4. 「这些问题测试应该可以发现」→ 12.10 补集成测试
 
 **架构演进伏笔**：fingerprint.rs + incremental_export 的设计为未来扩展 hotword/prompts 同步打基础——同一种 md5 diff 模式可复用（目前不抽象 trait，YAGNI）。
