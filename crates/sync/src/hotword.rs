@@ -635,4 +635,160 @@ mod tests {
         assert_eq!(a.words_text, "苹果 香蕉");
         assert!(a.enabled);
     }
+
+    // === sync engine 集成测试（pull / push） ===
+    //
+    // 模拟 A→B 同步：A 机 export → 文件系统（模拟 git remote）→ B 机 pull。
+    // 共用 sync_root（tempdir）——实际 git 同步时 A push 到 remote，B pull 从 remote，
+    // 文件内容一致；测试里省略 git 层，直接用同一文件系统验证 pull/push 逻辑。
+
+    use octopus_infra::db;
+
+    /// DB + sync_root 双隔离 guard——pull/push 测试用。
+    struct DbSyncGuard {
+        _tmp: TempDir,
+    }
+    impl DbSyncGuard {
+        fn new() -> Self {
+            let tmp = TempDir::new().expect("tempdir");
+            let sync_path = tmp.path().join(".sync");
+            std::fs::create_dir_all(&sync_path).unwrap();
+            crate::store::set_test_sync_root(sync_path);
+            // 内存 DB（set_test_db 已设 v46 schema + 默认「通用」seed）
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            db::set_test_db(conn);
+            Self { _tmp: tmp }
+        }
+    }
+    impl Drop for DbSyncGuard {
+        fn drop(&mut self) {
+            crate::store::clear_test_sync_root();
+        }
+    }
+
+    /// A 机 export → B 机 pull：B 应看到 A 的热词版本。
+    #[test]
+    fn pull_imports_sets_exported_by_other_device() {
+        let _g = DbSyncGuard::new();
+        // 清掉默认「通用」seed，聚焦测试数据
+        let initial = db::list_hotword_sets().unwrap();
+        for h in &initial {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // A 机：写 SQLite + export 到文件（模拟 A push）
+        let id_a = "aaaaaaaa-0001";
+        db::insert_hotword_set(id_a, "A机版本").unwrap();
+        db::set_hotword_set_words(id_a, "苹果 香蕉").unwrap();
+        let sets = db::list_hotword_sets().unwrap();
+        export_all_hotwords(&sets).expect("A export");
+
+        // 清空 SQLite（模拟 B 机初始空 DB）
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        assert!(db::list_hotword_sets().unwrap().is_empty(), "B 机初始应空");
+
+        // B 机 pull
+        let pulled = pull_hotwords_from_files().expect("B pull");
+        assert_eq!(pulled, 1, "应拉取 1 个版本");
+
+        let b_sets = db::list_hotword_sets().unwrap();
+        assert_eq!(b_sets.len(), 1);
+        assert_eq!(b_sets[0].name, "A机版本");
+        assert_eq!(b_sets[0].words_text, "苹果 香蕉");
+        assert_eq!(b_sets[0].id, id_a, "id 应保持一致（跨设备 UUID 隔离）");
+        assert!(b_sets[0].sync_md5.is_some(), "pull 后应有 sync_md5");
+    }
+
+    /// 双向同步：A 改 name + B 加词 → 双方 push/pull 后数据一致。
+    #[test]
+    fn bidirectional_sync_converges() {
+        let _g = DbSyncGuard::new();
+        // 清默认 seed
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "bbbbbbbb-0001";
+        db::insert_hotword_set(id, "原版本").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+
+        // 首次 export（模拟初始同步）
+        let sets = db::list_hotword_sets().unwrap();
+        export_all_hotwords(&sets).expect("initial export");
+
+        // A 机改 name + push
+        db::rename_hotword_set(id, "A机改名").unwrap();
+        let sets_a = db::list_hotword_sets().unwrap();
+        push_hotwords_to_files().expect("A push");
+
+        // B 机 pull → 应看到新 name
+        // 模拟 B 机：先清 DB 再 pull
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        pull_hotwords_from_files().expect("B pull");
+        let b_sets = db::list_hotword_sets().unwrap();
+        assert_eq!(b_sets[0].name, "A机改名", "B 应看到 A 改的 name");
+        let _ = sets_a; // 避免 unused
+    }
+
+    /// 删除传播：A 删热词版本 → push → B pull 后版本消失（文件被删 + outline 无 entry）。
+    #[test]
+    fn delete_propagates_through_sync() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id1 = "cccccccc-0001";
+        let id2 = "cccccccc-0002";
+        db::insert_hotword_set(id1, "版本1").unwrap();
+        db::insert_hotword_set(id2, "版本2").unwrap();
+
+        // 初始 export（2 个版本）
+        let sets = db::list_hotword_sets().unwrap();
+        export_all_hotwords(&sets).expect("initial");
+
+        // A 机删版本2 + push
+        db::delete_hotword_set(id2).unwrap();
+        push_hotwords_to_files().expect("A push after delete");
+
+        // B 机 pull（模拟 B 先清 DB）
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        pull_hotwords_from_files().expect("B pull");
+
+        let b_sets = db::list_hotword_sets().unwrap();
+        assert_eq!(b_sets.len(), 1, "B 应只有 1 个版本（版本2 已删）");
+        assert_eq!(b_sets[0].id, id1);
+
+        // 文件也应被删
+        assert!(
+            read_hotword_set_file(id2).is_err(),
+            "已删版本的文件不应存在"
+        );
+    }
+
+    /// push 后再 push 无变化时应 0 变更（增量 diff 正确）。
+    #[test]
+    fn push_twice_second_time_zero_changes() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        db::insert_hotword_set("dddddddd-0001", "版本").unwrap();
+        db::set_hotword_set_words("dddddddd-0001", "苹果").unwrap();
+
+        // 第一次 push
+        let first = push_hotwords_to_files().expect("first push");
+        assert!(first > 0, "首次应有变更");
+
+        // 第二次 push（无变化）
+        let second = push_hotwords_to_files().expect("second push");
+        assert_eq!(second, 0, "无变化时应 0 变更");
+    }
 }

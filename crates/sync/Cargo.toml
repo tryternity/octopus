@@ -30,3 +30,6 @@ regex = "1"
 [dev-dependencies]
 # sync 模块测试用 tempfile 隔离文件系统
 tempfile = "3"
+# 集成测试用 set_test_db 注入内存 DB（hotword pull/push 测试）
+# 与 octopus-infra 同版本同 feature（避免重复链接两份 sqlite）
+rusqlite = { version = "0.31", features = ["bundled"] }

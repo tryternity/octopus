@@ -498,18 +498,29 @@ fn init_schema(conn: &Connection) -> Result<()> {
             }
         }
 
-        // vault_ciphers/folders sync_md5 兜底（v45 补丁——确保 vault 表也有 sync_md5）
-        let has_cipher_md5 = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
+        // vault_ciphers/folders sync_md5 兜底（v45 补丁——确保 vault 表也有 sync_md5）。
+        // 表可能不存在（如纯热词测试库只建了 hotword_sets）——先检查表存在再 ALTER。
+        let vault_ciphers_exists: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers')")?
             .exists([])?;
-        if !has_cipher_md5 {
-            conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
+        if vault_ciphers_exists {
+            let has_cipher_md5 = conn
+                .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
+                .exists([])?;
+            if !has_cipher_md5 {
+                conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
+            }
         }
-        let has_folder_md5 = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
+        let vault_folders_exists: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_folders')")?
             .exists([])?;
-        if !has_folder_md5 {
-            conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
+        if vault_folders_exists {
+            let has_folder_md5 = conn
+                .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
+                .exists([])?;
+            if !has_folder_md5 {
+                conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
+            }
         }
 
         conn.execute("PRAGMA user_version = 46", [])?;
@@ -4609,6 +4620,67 @@ mod tests {
             general.id, "00000000-0000-0000-0000-000000000001",
             "「通用」版本必须用固定 UUID，保证跨设备 sync 时 id 一致"
         );
+    }
+
+    /// v45→v46 迁移：hotword_sets.id INTEGER→TEXT UUID + sync_md5 字段。
+    /// 模拟 v45 库（INTEGER id），跑迁移后验证：id 变 TEXT + sync_md5 列存在 + 数据保留。
+    #[test]
+    fn migrate_v45_to_v46_hotword_id_to_uuid() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 建 v45 schema 的 hotword_sets（INTEGER id，无 sync_md5）
+        conn.execute_batch(
+            "CREATE TABLE hotword_sets (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                words_text  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO hotword_sets (name, enabled, words_text) VALUES ('通用', 1, '苹果');
+            INSERT INTO hotword_sets (name, enabled, words_text) VALUES ('工作', 1, '会议');
+            PRAGMA user_version = 45;",
+        ).unwrap();
+
+        // 跑迁移
+        init_schema(&conn).unwrap();
+
+        // 验证 user_version = 46
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 46);
+
+        // id 类型应为 TEXT
+        let id_type: String = conn
+            .query_row(
+                "SELECT type FROM pragma_table_info('hotword_sets') WHERE name = 'id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(id_type, "TEXT", "迁移后 id 应为 TEXT");
+
+        // sync_md5 列应存在
+        let has_md5: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('hotword_sets') WHERE name = 'sync_md5'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_md5, "迁移后应有 sync_md5 列");
+
+        // 数据保留（2 条 + 迁移不丢）
+        let sets = list_hotword_sets_at(&conn).unwrap();
+        assert_eq!(sets.len(), 2, "迁移不应丢数据");
+        // 「通用」应有固定 UUID
+        let general = sets.iter().find(|s| s.name == "通用").unwrap();
+        assert_eq!(general.id, "00000000-0000-0000-0000-000000000001");
+        assert_eq!(general.words_text, "苹果");
+        // sync_md5 迁移后为 NULL（首次 sync 时填）
+        assert!(general.sync_md5.is_none());
+
+        // 「工作」应是随机 UUID（非固定）
+        let work = sets.iter().find(|s| s.name == "工作").unwrap();
+        assert_eq!(work.words_text, "会议");
+        assert_ne!(work.id, "00000000-0000-0000-0000-000000000001", "非「通用」应有独立 UUID");
     }
 
     #[test]

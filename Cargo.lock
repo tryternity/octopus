@@ -5560,6 +5560,7 @@ dependencies = [
  "octopus-infra",
  "parking_lot",
  "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
