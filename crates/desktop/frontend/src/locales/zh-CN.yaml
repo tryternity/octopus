@@ -89,6 +89,30 @@ settings:
     lockTimeoutRecommended: 推荐
     lockTimeoutNever: 永不
     lockTimeoutWarning: ⚠️ 永不锁定降低安全性——任何拿到你已解锁电脑的人都能查看保险库
+    # Git 同步（2026-07-21 Phase 1）
+    sync:
+      title: Git 同步
+      notAvailable: 系统未安装 git，同步功能不可用
+      notInitialized: 未启用
+      enabled: 已启用
+      lastSync: 上次同步
+      remoteUrl: GitHub 仓库地址
+      remoteUrlPlaceholder: git@github.com:yourname/vault.git
+      giteeUrl: Gitee 镜像（可选）
+      giteeUrlPlaceholder: git@gitee.com:yourname/vault.git
+      enable: 启用同步
+      disable: 禁用同步
+      disableConfirm: 确认禁用同步？本地数据保留，但远程仓库不删除。
+      syncNow: 立即同步
+      testConnection: 测试连接
+      testing: 测试中...
+      syncing: 同步中...
+      sshHint: 首次同步前，请在终端运行 ssh -T git@github.com（或对应 host）验证 host key
+      connectionOk: 连接成功
+      enableSuccess: 同步已启用
+      syncSuccess: 同步完成
+      syncUpToDate: 已是最新
+      gitRequired: 需要 git 才能使用同步功能
     list:
       title: 密码条目
       empty: 还没有密码条目

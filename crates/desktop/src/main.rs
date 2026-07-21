@@ -11,9 +11,12 @@ mod action_bar_commands;
 pub mod vault_state;
 #[cfg(feature = "vault")]
 pub mod vault_commands;
+#[cfg(feature = "vault")]
 pub mod vault_secret_access;
 #[cfg(feature = "vault")]
 pub mod vault_error;
+#[cfg(feature = "vault")]
+pub mod vault_sync_commands;
 #[cfg(feature = "vault")]
 pub mod autotype;
 #[cfg(feature = "vault")]
@@ -458,6 +461,19 @@ pub fn run() {
             crate::vault_commands::open_password_generator,
             #[cfg(feature = "vault")]
             crate::vault_commands::password_generator_autotype,
+            // Vault Git 同步（2026-07-21 Phase 1）
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_status,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_test_connection,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_enable,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_now,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_disable,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_is_git_available,
             // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
             feature_flags::is_vault_enabled,
             translation_commands::discover_translation_models,

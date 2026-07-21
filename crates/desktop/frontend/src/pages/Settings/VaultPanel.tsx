@@ -9,6 +9,7 @@ import UnlockDialog from "./Vault/UnlockDialog";
 import CipherList from "./Vault/CipherList";
 import HealthReport from "./Vault/HealthReport";
 import ImportExport from "./Vault/ImportExport";
+import SyncPanel from "./Vault/SyncPanel";
 
 /**
  * VaultPanel —— 密码保险库主面板（Settings 内一页）。
@@ -214,6 +215,11 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
             {t("settings.vault.lock")}
           </Button>
         </div>
+      </div>
+
+      {/* Git 同步段（2026-07-21 Phase 1） */}
+      <div className="border-b border-border/40 pb-3">
+        <SyncPanel showToast={showToast} />
       </div>
 
       {/* Tab 栏——3 个视图切换（PillTabs，与 ModelsPanel 同款）。 */}

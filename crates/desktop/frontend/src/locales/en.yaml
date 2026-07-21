@@ -89,6 +89,30 @@ settings:
     lockTimeoutRecommended: recommended
     lockTimeoutNever: Never
     lockTimeoutWarning: "⚠️ Never reduces security — anyone with your unlocked computer can access the vault"
+    # Git sync (2026-07-21 Phase 1)
+    sync:
+      title: Git Sync
+      notAvailable: Git not installed, sync unavailable
+      notInitialized: Not enabled
+      enabled: Enabled
+      lastSync: Last sync
+      remoteUrl: GitHub repo URL
+      remoteUrlPlaceholder: git@github.com:yourname/vault.git
+      giteeUrl: Gitee mirror (optional)
+      giteeUrlPlaceholder: git@gitee.com:yourname/vault.git
+      enable: Enable Sync
+      disable: Disable Sync
+      disableConfirm: Disable sync? Local data is kept but remote repo is not deleted.
+      syncNow: Sync Now
+      testConnection: Test Connection
+      testing: Testing...
+      syncing: Syncing...
+      sshHint: Before first sync, run ssh -T git@github.com (or your host) to verify host key
+      connectionOk: Connection OK
+      enableSuccess: Sync enabled
+      syncSuccess: Sync complete
+      syncUpToDate: Up to date
+      gitRequired: Git is required for sync
     list:
       title: Password Items
       empty: No password items yet
