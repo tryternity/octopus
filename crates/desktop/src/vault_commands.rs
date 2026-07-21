@@ -1071,6 +1071,7 @@ pub fn register_vault_autotype_shortcut(
                     .resizable(false)
                     .decorations(false)
                     .always_on_top(true)
+                    .transparent(true)
                     .build();
                 }
             }

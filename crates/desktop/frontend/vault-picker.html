@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>octopus-vault-picker</title>
     <script>
-      // 阻断式主题恢复 + 背景色注入（非透明窗口，Rust 注入 bg）。
+      // 阻断式主题恢复。透明窗口（transparent:true）——窗口本身无背景，
+      // CSS 容器 rounded-[10px] + bg-background 提供圆角不透明背景。
+      // 不注入 bg 参数（与 result/clipboard/screenshot 等透明窗口一致）。
       try {
         var themeId = localStorage.getItem("octopus-theme-id");
         if (themeId) {
