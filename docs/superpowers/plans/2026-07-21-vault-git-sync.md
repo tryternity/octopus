@@ -4,7 +4,7 @@
 
 **Goal:** 为 octopus 密码箱增加多设备同步——用 git repo（GitHub/Gitee private repo）作为后端，SSH key 认证（系统已配），每 cipher 单独加密文件 + 256 桶分片 + outline.json 增量索引。
 
-**Architecture:** 复用现有 vault 加密层（user_vault_key + AES-256-GCM，零改动）；新增 `crates/vault/src/sync/` 模块（git 命令 wrapper + 文件存储 + 同步引擎）；新增 `crates/desktop/src/vault_sync_commands.rs`（Tauri 命令）；新增前端 `Settings/Vault/SyncPanel.tsx`（同步配置 UI）。前置改造：cipher/folder id 从 i64 改 UUID 字符串（v38→v39 schema 迁移）。
+**Architecture:** 复用现有 vault 加密层（user_vault_key + AES-256-GCM，零改动）；sync 模块最初在 `crates/vault/src/sync/`，Task 13 后通用部分抽到独立 `crates/sync/`（octopus-sync），vault 只保留业务 sync 逻辑；新增 `crates/desktop/src/vault_sync_commands.rs`（Tauri 命令）；新增前端 `Settings/Vault/SyncPanel.tsx`（同步配置 UI）。前置改造：cipher/folder id 从 i64 改 UUID 字符串（v43→v44），热词 id 同样改 UUID（v45→v46）。
 
 **Tech Stack:** Rust（uuid / serde / anyhow——已用）+ shell out 系统 `git` 命令（无新依赖）+ Tauri 2 + React 19 + TypeScript + Tailwind 4。
 
@@ -19,15 +19,14 @@
 - **加密层零改动**：复用现有 `user_vault_key`（派生自 master_password），密文格式 `v1:<base64(nonce||ct||tag)>` 与 SQLite 完全一致
 - **git 实现**：shell out 系统 `git` 命令（不嵌入 libgit2）；无 git 则同步功能禁用
 - **认证**：Phase 1 只支持 SSH key（用户系统已配），octopus 完全不接触凭证
-- **cipher id**：UUID v4 字符串（前置改造 v38→v39），不再用 i64 自增
-- **分片**：`ciphers/<uuid 前 2 hex>/<full-uuid>.json`，256 桶
-- **outline.json**：`{version, vault_version, ciphers: {uuid: {sha, updated_at}}, folders: {...}}`——增量同步索引
+- **cipher/folder/hotword id**：UUID v4 字符串（cipher/folder v43→v44，hotword v45→v46），不再用 i64 自增
+- **分片**：`ciphers/<uuid 前 2 hex>/<full-uuid>.json`，256 桶（热词 `sets/<2hex>/<uuid>.json` 同样分桶）
+- **outline.json**：`{version, vault_version, ciphers: {uuid: {md5, updated_ms}}, folders: {...}}`——增量同步索引（md5 内容指纹，非 sha256；updated_ms Unix 毫秒，非 ISO 字符串。§4.12 修订）
 - **同步触发**：手动（Phase 1）；Phase 2 才加自动
 - **冲突处理**：UUID 隔离 + `git merge --ff-only` + rebase 兜底
 - **多 remote**：支持 GitHub + Gitee 双 remote（用户自配）
 - **commit message**：统一 `sync` 或 `init vault`，不暴露操作细节
-- **跨 crate 依赖方向**（Phase 1）：infra ← vault ← desktop；sync 模块在 vault crate 内
-- **跨 crate 依赖方向**（Phase 2 / Task 13 后）：infra ← sync ← vault ← desktop；通用 sync 代码抽到独立 `crates/sync/`（octopus-sync），vault 通过依赖 sync crate 复用
+- **跨 crate 依赖方向**：infra ← sync ← vault ← desktop；通用 sync 代码在独立 `crates/sync/`（octopus-sync），vault 通过依赖 sync crate 复用（Task 13 抽离）
 - **错误返回**：Tauri 命令统一 `Result<T, String>`（与现有 vault_commands 一致）；vault crate 内部用 `anyhow::Result`
 - **feature gate**：sync 模块在 vault feature 下（继承现有 vault feature gate）
 - **平台范围**：macOS / Linux 优先；Windows 测试覆盖（shell out git 跨平台一致）
@@ -38,7 +37,9 @@
 
 ### 新增文件
 
-**crates/vault/src/sync/**（新模块）
+> 注：下表是 Phase 1（T1-T6）设计时的文件清单。Task 13 后 git/outline/error/privacy/store(通用) 搬到 `crates/sync/`，vault::sync 只保留 engine/fingerprint/store(业务)。当前真实结构详见 spec §6。
+
+**crates/vault/src/sync/**（Phase 1 新模块，Task 13 后部分搬到 sync crate）
 
 | 文件 | 职责 |
 |---|---|
@@ -66,7 +67,7 @@
 | 文件 | 改动 |
 |---|---|
 | `crates/infra/src/db.sql` | vault_ciphers / vault_folders 的 id 改 TEXT PRIMARY KEY |
-| `crates/infra/src/db.rs` | i64 → String 类型；v38→v39 schema 迁移逻辑 |
+| `crates/infra/src/db.rs` | i64 → String 类型；v43→v44 schema 迁移逻辑（设计阶段估 v38→v39，实施时已到 v43）|
 | `crates/vault/src/types.rs` | Cipher.id / CipherInput / Folder.id 改 String |
 | `crates/vault/src/storage/*.rs` | 所有 CRUD 签名 i64 → String |
 | `crates/vault/src/lib.rs` | re-export sync 模块 |

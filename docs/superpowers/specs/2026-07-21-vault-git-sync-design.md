@@ -30,12 +30,13 @@
 | 直接 git repo 同步（shell out 系统 git） | GitHub Contents API（已评估，方案 B 胜出） |
 | GitHub + Gitee 双 remote 支持（用户自配） | PAT 认证（Phase 2，先用 SSH key） |
 | 每 cipher 单独加密文件 + 256 桶分片 | 单文件整体加密（增量同步差，已弃） |
-| outline.json 增量索引（sha256 去重） | git2-rs 嵌入式（Send/Sync 问题） |
+| outline.json 增量索引（md5 内容指纹去重，§4.12） | git2-rs 嵌入式（Send/Sync 问题） |
 | 手动同步按钮 | 自动同步（Phase 2） |
-| cipher id 改 UUID 字符串（前置改造） | Bitwarden 协议兼容（已弃，加密格式不通） |
+| cipher/folder/hotword id 改 UUID 字符串（前置改造） | Bitwarden 协议兼容（已弃，加密格式不通） |
 | macOS / Linux 支持 | Windows 测试（shell out git 跨平台一致） |
 | 远程已存在 repo 时 clone + 解锁即用 | 远程 repo 自动创建（用户手动建）|
 | **私有库检测守卫**（§4.8，add_remote/clone 拒绝公有库） | PAT 认证后的精确私有库识别（Phase 2 加 PAT 才能区分 404 歧义）|
+| **热词同步**（§4.13，Task 13，明文 + md5 增量） | prompts/其他数据类型同步（未来扩展）|
 
 ### 0.3 非目标
 
@@ -224,9 +225,9 @@ sync 后（B 机）：
 
 `security_stamp`（UUID v4）在 `setup_vault` 时随机生成，存 meta.json 同步字段。**两台机器的 stamp 必须相同**——否则 sync 时直接拒绝并报 `SyncError::MasterPasswordMismatch`（「远程 vault 用了不同主密码」），给用户清晰提示。
 
-#### 与 md5 同步协议的关系（§4.12 待实现）
+#### 与 md5 同步协议的关系（§4.12 已实现）
 
-未来 md5 同步协议对 cipher 字段算 md5 时，**包含密文字段**（name/data/notes 等）——因为密文跨设备一致，md5 也一致，diff 准确。md5 不是安全 hash（碰撞无实际风险），纯粹是内容指纹。
+md5 同步协议对 cipher 字段算 md5 时，**包含密文字段**（name/data/notes 等）——因为密文跨设备一致，md5 也一致，diff 准确。md5 不是安全 hash（碰撞无实际风险），纯粹是内容指纹。
 
 ---
 
@@ -911,31 +912,45 @@ pull_hotwords_from_files + push_hotwords_to_files）。
 | INV-S17 | SyncReport.pushed 必须是实际变更数（新增/修改/删除），不是总数 | 否则误导用户「每次同步都推 N 条」（用户已踩坑）|
 | INV-S18 | sync_now 必须用 md5 增量 diff，不能全量重写文件 | 见 §4.12——全量重写产生 git history 噪音 + 性能浪费。md5 内容指纹保证跨设备一致 |
 | INV-S19 | outline.vault_version 只在 changed > 0 时 +1 | 用户反馈：无变化 sync 也 +1 是 bug——会让 git history 产生无意义版本号 |
+| INV-S20 | hotword_sets.id 必须是 UUID 字符串（v46） | 与 cipher 一致，跨设备无冲突。默认「通用」集用固定 UUID `00000000-...-0001` |
+| INV-S21 | 热词文件明文存储（不加密） | 热词不含密码等高敏感信息（当前 SQLite 也是明文）。见 §4.13 |
+| INV-S22 | 热词 sync 失败不阻断 vault sync | sync_now 中热词 pull/push 出错只 log::warn，vault 数据更关键。见 §4.13 |
+| INV-S23 | 热词写命令后必须回填 sync_md5 | desktop `refill_sync_md5` 读 row 算 md5（words_text 在 DB 内 normalize，命令层原始词序不同）|
 
 ---
 
 ## 6. 模块结构
 
+> 2026-07-22 Task 13 后：通用 sync 代码抽到独立 `crates/sync/`（octopus-sync），
+> vault crate 只保留 vault 业务数据的 sync 逻辑（engine + fingerprint + store 业务部分）。
+
 ```
+crates/sync/src/                    # 通用 git 同步基础设施（2026-07-22 从 vault 抽离）
+├── lib.rs                          # 模块入口 + re-export
+├── git.rs                          # git 命令 wrapper（shell out）+ ls-remote 带超时
+├── outline.rs                      # outline.json 数据结构（BTreeMap 稳定序列化）+ merge 算法
+├── error.rs                        # SyncError enum（含 PublicRepoRejected / LocalPathRejected / CredentialsRequired）
+├── privacy.rs                      # 私有库检测（URL 解析 + GitHub/Gitee API + ls-remote 嗅探 + HTTPS→SSH 改写）
+├── store.rs                        # 通用工具：sync_root / shard_dir / sha256_hex / md5_hex / iso_to_unix_ms + 测试隔离 thread_local
+└── hotword.rs                      # 热词同步（md5 指纹 + HotwordSetFile + export/import + pull/push engine，§4.13）
+
 crates/vault/src/
-├── sync/                           # 新增模块（T2-T7）
-│   ├── mod.rs                      # 公共 API + SyncState
-│   ├── git.rs                      # git 命令 wrapper（shell out）+ ls-remote 带超时
-│   ├── store.rs                    # 文件存储（meta/outline/ciphers 读写）
-│   ├── outline.rs                  # outline.json 数据结构 + merge 算法
-│   ├── engine.rs                   # 同步引擎（pull_merge_push / push_initial / clone_initial + 私有库守卫）
-│   ├── privacy.rs                  # 私有库检测（URL 解析 + GitHub/Gitee API + ls-remote 嗅探，T7）
-│   └── error.rs                    # SyncError enum（含 PublicRepoRejected / LocalPathRejected）
+├── sync/                           # vault 业务 sync 模块（通用部分已抽到 octopus-sync）
+│   ├── mod.rs                      # 公共 API + SyncState + re-export octopus_sync 类型
+│   ├── engine.rs                   # vault 同步引擎（sync_now / push_initial / clone_initial + 私有库守卫 + 热词集成）
+│   ├── fingerprint.rs              # cipher_md5 / folder_md5（md5_hex 用 octopus_sync::store）
+│   └── store.rs                    # vault 文件存储（MetaFile / CipherFile / FolderFile / export_all / incremental_export）
 ├── storage/                        # 现有 SQLite 存储（零改动）
 ├── crypto/                         # 现有加密层（零改动）
 └── ...
 
 crates/desktop/src/
-├── vault_sync_commands.rs          # 新增 Tauri 命令（vault_sync_now / vault_sync_status 等）
+├── vault_sync_commands.rs          # Tauri 命令（vault_sync_now / vault_sync_status 等）
+├── hotword_commands.rs             # 热词命令（写命令后 refill_sync_md5 回填指纹）
 └── ...
 
 crates/desktop/frontend/src/pages/Settings/Vault/
-├── SyncPanel.tsx                   # 新增同步设置 UI（T5）
+├── SyncPanel.tsx                   # 同步设置 UI
 └── ...
 ```
 
@@ -1098,6 +1113,8 @@ VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检
 **验证**：`git_merge_ff_returns_no_upstream_when_branch_missing`（本地 init+commit+merge 不存在的 origin/main → 断言 NoUpstream）
 
 ### T11: outline 序列化稳定性 + SyncReport 真实变更数（2026-07-21 增补）
+
+> 注：以下路径为 T11 实施时的位置，Task 13 后 outline.rs 已搬到 `crates/sync/src/outline.rs`。
 
 - `crates/vault/src/sync/outline.rs` Outline.ciphers/folders：HashMap → BTreeMap（字典序稳定）
 - `crates/vault/src/sync/store.rs` export_all_to_files 内部 entries 同步改 BTreeMap

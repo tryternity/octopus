@@ -84,21 +84,26 @@ cargo test -p octopus-desktop
 ```
 crates/
 ├── infra/     # octopus-infra — 基础设施层，无项目内依赖
+├── sync/      # octopus-sync — 通用 git 同步基础设施（git wrapper / outline / error / privacy / store 工具 / hotword 模块）
 ├── asr/       # octopus-asr-local — 核心推理库（所有上层依赖此 crate）
 ├── llm/       # octopus-llm — LLM 润色客户端
 ├── cli/       # octopus-cli — 命令行工具
 ├── server/    # octopus-server — HTTP/WebSocket 服务
 ├── desktop/   # octopus-desktop — Tauri 2 桌面应用
+├── vault/     # octopus-vault — 密码保险库纯逻辑库（加密 / Auto-Type / TOTP / vault git 同步）
 └── dlp/       # octopus-dlp — 视频音频下载工具
 ```
 
 ### 依赖关系
 
 ```
-infra ← (asr, llm, cli, server, desktop, dlp)  — 所有 crate 都依赖 infra
+infra ← (sync, asr, llm, cli, server, desktop, vault, dlp)  — 所有 crate 都依赖 infra
+sync ← (vault, desktop)  — vault 复用 sync 通用代码；desktop 热词命令算 md5
 asr ← (cli, server, desktop via "embedded" feature)
 llm ← (asr via dev-dep, desktop)
+vault ← (desktop via "vault" feature)
 desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | cloud (云端 ASR WS 流式：Aliyun/ByteDance/Tencent/Baidu)
+desktop → feature-gated: vault (=vault + keychain + TOTP)
 ```
 
 **infra 是唯一无项目内依赖的 crate**，任何跨 crate 共享的内容应放在 infra。
@@ -238,9 +243,13 @@ docs/
 
 ```
 ~/.octopus/
-├── octopus.db          # SQLite（唯一存储：models 表 + transcriptions 表）
+├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets 等表，schema v46）
 ├── config.yaml         # 应用配置（缺失用默认值）
 ├── VOICE_POLISH.md     # 自定义润色 prompt（可选，覆盖内置默认）
+├── .sync/              # git 同步仓库根（GitHub/Gitee private repo 的本地 clone）
+│   ├── .git/
+│   ├── vault/          # vault 数据（加密）：meta.json + outline.json + ciphers/<2hex>/<uuid>.json + folders/
+│   └── hotword/        # 热词数据（明文）：outline.json + sets/<2hex>/<uuid>.json
 └── models/
     ├── silero_vad_v4.onnx   # VAD（固定路径，不进 DB）
     └── zipformer/           # 默认 ASR（兜底引擎，27M）
