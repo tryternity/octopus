@@ -3,9 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
-import { SvgIcon, type IconName } from "@/components/SvgIcon";
+import { type IconName } from "@/components/SvgIcon";
 import { parseShortcut, matchShortcut } from "./shortcut";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
+import { Toolbar, type ToolDef } from "./Toolbar";
 import { TranslationPane } from "./TranslationPane";
 import {
   type TranslateMode,
@@ -459,7 +460,7 @@ function Result() {
     win.startDragging();
   };
 
-  const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
+  const tools: ToolDef[] = [
     { id: "close", icon: "close", label: t("result.close"), onClick: () => invoke("discard_recording") },
     { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
@@ -496,35 +497,11 @@ function Result() {
           </div>
         )}
         {/* Toolbar */}
-        <div
-          className={cn(
-            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
-            toolbarState.hide_toolbar === false
-              ? "opacity-100"
-              : toolbarVisible ? "opacity-100" : "opacity-0",
-          )}
-          onMouseDown={onDragStart}
-        >
-          {tools.map(({ id, icon, label, active, disabled, onClick }) => (
-            <button
-              key={id}
-              className={cn(
-                "tool-btn w-[20px] h-[20px] flex items-center justify-center rounded-[4px] transition-colors cursor-default",
-                "hover:text-[#007aff] hover:bg-black/[0.05]",
-                active && "text-[#007aff]!",
-                disabled && "cursor-default hover:bg-transparent",
-              )}
-              style={{ color: active ? "#007aff" : "var(--color-tool-icon)", opacity: disabled ? 0.35 : 1 }}
-              title={label}
-              aria-label={label}
-              disabled={disabled}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={onClick}
-            >
-              <SvgIcon name={icon} size={16} />
-            </button>
-          ))}
-        </div>
+        <Toolbar
+          tools={tools}
+          opacityClass={toolbarState.hide_toolbar === false || toolbarVisible ? "opacity-100" : "opacity-0"}
+          onDragStart={onDragStart}
+        />
         {/* Drag handle */}
         <div className="flex items-center justify-center h-2">
           <div
