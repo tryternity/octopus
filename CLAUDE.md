@@ -16,3 +16,14 @@
 - 读：`~/.octopus/config.yaml`、`~/.octopus/record.txt` 等
 - 写：直接写 `~/.octopus/` 下对应文件
 - 原因：`config/` 经符号链接访问时，自动安全分类器无法判断目标在仓库外，可能误判为"向仓库提交密钥"而拦截；用绝对路径 `~/.octopus/` 可避免误拦。
+
+# Git 同步纪律（强制）
+
+**在 worktree 上编码时，必须得到用户明确指令才能把代码同步到主干（main）。**
+
+- ✅ 允许：在 worktree 分支上 commit、merge main 进分支、本地多 commit 累积
+- ❌ 禁止：未经明确指令就把分支 push 到 origin/main 或任何让分支改动进入主干的操作
+
+「明确指令」：用户原话含「同步到 main」「push 到 main」「合并到主干」「branch -> main」等清晰表述。模糊表述（如「同步一下」「处理一下」）不算，需追问确认。
+
+被用户纠正后立即停下，不要因「测试都过了」「文档都同步了」就继续推。详见 AGENTS.md「Git 同步纪律」段。
