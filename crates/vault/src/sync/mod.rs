@@ -21,11 +21,13 @@
 //!
 //! 详见 spec：`docs/superpowers/specs/2026-07-21-vault-git-sync-design.md`
 
+pub mod engine;
 pub mod error;
 pub mod git;
 pub mod outline;
 pub mod store;
 
+pub use engine::{disable_sync, enable_sync, get_sync_status, sync_now, test_connection, SyncReport, SyncStatus};
 pub use error::SyncError;
 pub use outline::{Outline, OutlineEntry};
 pub use store::{
