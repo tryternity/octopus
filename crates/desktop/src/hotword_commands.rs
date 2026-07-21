@@ -189,3 +189,124 @@ pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Re
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 干净 DB（set_test_db 内部跑 INIT_SQL 建 v46 schema + 默认「通用」seed）。
+    fn setup_db() {
+        octopus_infra::db::set_test_db(
+            rusqlite::Connection::open_in_memory().expect("in-memory DB"),
+        );
+    }
+
+    /// create_hotword_set 后 sync_md5 应被回填（非 NULL），且值与 hotword_set_md5 一致。
+    #[test]
+    fn create_hotword_set_refills_sync_md5() {
+        setup_db();
+        let id = create_hotword_set("测试版本A".into()).expect("create");
+        let h = db::get_hotword_set(&id).expect("get");
+        assert!(h.sync_md5.is_some(), "create 后 sync_md5 应被回填");
+        // 回填值应等于当前内容的 md5
+        let expected = octopus_sync::hotword::hotword_set_md5(&h);
+        assert_eq!(h.sync_md5.as_deref(), Some(expected.as_str()));
+    }
+
+    /// rename 后 sync_md5 应更新（name 变 → md5 变）。
+    #[test]
+    fn rename_hotword_set_updates_sync_md5() {
+        setup_db();
+        let id = create_hotword_set("原名".into()).expect("create");
+        let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        rename_hotword_set(id.clone(), "新名".into()).expect("rename");
+        let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        assert_ne!(md5_before, md5_after, "rename 后 md5 应变化");
+    }
+
+    /// toggle enabled 后 sync_md5 应更新（enabled 变 → md5 变）。
+    #[test]
+    fn toggle_hotword_set_updates_sync_md5() {
+        setup_db();
+        let id = create_hotword_set("版本".into()).expect("create");
+        let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        toggle_hotword_set(id.clone(), false).expect("toggle off");
+        let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        assert_ne!(md5_before, md5_after, "toggle enabled 后 md5 应变化");
+        assert!(!db::get_hotword_set(&id).unwrap().enabled);
+    }
+
+    /// add_word / remove_word 后 sync_md5 应更新（words_text 变 → md5 变）。
+    #[test]
+    fn word_operations_update_sync_md5() {
+        setup_db();
+        let id = create_hotword_set("版本".into()).expect("create");
+        let md5_empty = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        // add_word
+        let added = add_word_to_set(id.clone(), "苹果".into()).expect("add");
+        assert!(added);
+        let md5_one = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        assert_ne!(md5_empty, md5_one, "加词后 md5 应变化");
+
+        // 再加一词
+        add_word_to_set(id.clone(), "香蕉".into()).expect("add 2");
+        let md5_two = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        assert_ne!(md5_one, md5_two, "再加词 md5 应变化");
+
+        // remove_word
+        remove_word_from_set(id.clone(), "苹果".into()).expect("remove");
+        let md5_removed = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        assert_ne!(md5_two, md5_removed, "删词后 md5 应变化");
+    }
+
+    /// add_words（批量）后 sync_md5 应更新。
+    #[test]
+    fn add_words_updates_sync_md5() {
+        setup_db();
+        let id = create_hotword_set("版本".into()).expect("create");
+        let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+
+        let n = add_words_to_set(
+            id.clone(),
+            vec!["葡萄".into(), "橘子".into()],
+        )
+        .expect("add_words");
+        assert_eq!(n, 2);
+        let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        assert_ne!(md5_before, md5_after, "批量加词后 md5 应变化");
+    }
+
+    /// sync_md5 应等于算 md5 用的标准输入（name|enabled|words_text）。
+    /// 验证回填的值能被 incremental_export 正确识别为「无变化」（跨设备一致性的基础）。
+    #[test]
+    fn refilled_md5_matches_incremental_export() {
+        setup_db();
+        let id = create_hotword_set("版本X".into()).expect("create");
+        add_word_to_set(id.clone(), "苹果".into()).expect("add");
+        toggle_hotword_set(id.clone(), false).expect("disable");
+
+        let h = db::get_hotword_set(&id).unwrap();
+        // 先算 recomputed（借用 h），再取 db_md5（移动 sync_md5）
+        let recomputed = octopus_sync::hotword::hotword_set_md5(&h);
+        let db_md5 = h.sync_md5.expect("应已回填");
+
+        assert_eq!(
+            db_md5, recomputed,
+            "DB 中回填的 sync_md5 应与重新计算的值一致"
+        );
+    }
+
+    /// refill_sync_md5 对不存在的 id 应安全（仅 log::warn 不 panic）。
+    #[test]
+    fn refill_sync_md5_handles_missing_id_gracefully() {
+        setup_db();
+        // 不存在的 id——不应 panic
+        refill_sync_md5("nonexistent-uuid-xxxx");
+        // 函数无返回值，只要不 panic 即通过
+    }
+}

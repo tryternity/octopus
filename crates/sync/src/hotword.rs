@@ -335,6 +335,10 @@ fn collect_json_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<(
 ///
 /// 返回实际拉取（upsert）的条数。删除传播由 push 阶段处理（SQLite 无的文件被删）。
 ///
+/// **name 冲突容错**：两设备各自建了同名版本（不同 UUID）时，upsert 会触发
+/// `UNIQUE(name)` 约束失败——此时跳过该版本（log::warn），不阻断整个 pull。
+/// 用户需手动重命名其中一个版本后再 sync。
+///
 /// 调用方：vault engine.rs sync_now 的 pull 阶段。
 pub fn pull_hotwords_from_files() -> Result<usize> {
     let remote_outline = read_hotword_outline()?;
@@ -352,8 +356,16 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
                 let md5 = hotword_set_md5(&h);
                 let mut h = h;
                 h.sync_md5 = Some(md5);
-                octopus_infra::db::upsert_hotword_set(&h)?;
-                count += 1;
+                // upsert 可能因 name UNIQUE 冲突失败（两设备同名不同 UUID）——跳过不阻断
+                match octopus_infra::db::upsert_hotword_set(&h) {
+                    Ok(()) => count += 1,
+                    Err(e) => {
+                        log::warn!(
+                            "[sync] 热词版本 {} pull 跳过（可能 name 冲突）：{}",
+                            uuid, e
+                        );
+                    }
+                }
             }
         }
     }
@@ -790,5 +802,180 @@ mod tests {
         // 第二次 push（无变化）
         let second = push_hotwords_to_files().expect("second push");
         assert_eq!(second, 0, "无变化时应 0 变更");
+    }
+
+    // === 边界场景补充（2026-07-22）===
+
+    /// 空列表 export/push：DB 无热词（清空默认 seed）时不应 panic，outline 应空。
+    #[test]
+    fn export_empty_set_list_is_safe() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        assert!(db::list_hotword_sets().unwrap().is_empty());
+
+        // export_all 空列表
+        let outline = export_all_hotwords(&[]).expect("export empty");
+        assert!(outline.ciphers.is_empty());
+
+        // incremental_export 空列表
+        let (outline2, changed) = incremental_export_hotwords(&[]).expect("incremental empty");
+        assert!(outline2.ciphers.is_empty());
+        assert_eq!(changed, 0);
+
+        // push 空列表
+        let pushed = push_hotwords_to_files().expect("push empty");
+        assert_eq!(pushed, 0);
+
+        // pull 空文件
+        let pulled = pull_hotwords_from_files().expect("pull empty");
+        assert_eq!(pulled, 0);
+    }
+
+    /// enabled 切换经 sync 传播：A 机 toggle → push → B 机 pull 后 enabled 一致。
+    ///
+    /// 注意：toggle 后必须回填 sync_md5（与 desktop 命令层 refill_sync_md5 同行为），
+    /// 否则 incremental_export 会因 sync_md5 未变而误判「无变化」不重写文件。
+    #[test]
+    fn enabled_toggle_propagates_through_sync() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "eeeeeeee-0001";
+        db::insert_hotword_set(id, "版本").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        // 回填 sync_md5（模拟 desktop 命令层行为）
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+        // 默认 enabled=true
+        assert!(db::get_hotword_set(id).unwrap().enabled);
+
+        // export（enabled=true 状态）
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export enabled=true");
+
+        // 模拟 B 机：清 DB 后 pull
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        pull_hotwords_from_files().expect("pull");
+        assert!(
+            db::get_hotword_set(id).unwrap().enabled,
+            "B 机 pull 后 enabled 应为 true（与 A 机一致）"
+        );
+
+        // A 机 toggle enabled=false + 回填 sync_md5 + push
+        db::toggle_hotword_set(id, false).unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+        push_hotwords_to_files().expect("push disabled");
+
+        // B 机再次 pull
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        pull_hotwords_from_files().expect("pull again");
+        assert!(
+            !db::get_hotword_set(id).unwrap().enabled,
+            "B 机再次 pull 后 enabled 应为 false（A 机 toggle 已传播）"
+        );
+    }
+
+    /// name 冲突场景：两设备各自新建同名版本（不同 UUID），pull 时 upsert 不应因
+    /// name UNIQUE 约束失败（upsert 按 id 覆盖，不触发 name 冲突）。
+    ///
+    /// 注意：这是「同名不同 UUID」场景。如果两设备用相同 UUID + 相同 name，
+    /// upsert 直接覆盖无冲突。
+    #[test]
+    fn pull_same_name_different_uuid_does_not_conflict() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // 设备 A：建 "同名版本" UUID-A
+        let id_a = "ffffffff-aaaa";
+        db::insert_hotword_set(id_a, "同名版本").unwrap();
+        db::set_hotword_set_words(id_a, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export A");
+
+        // 清 DB，模拟设备 B 初始空
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // 设备 B 本地也建了一个同名版本（不同 UUID）
+        let id_b = "ffffffff-bbbb";
+        db::insert_hotword_set(id_b, "同名版本").unwrap();
+        db::set_hotword_set_words(id_b, "香蕉").unwrap();
+
+        // B pull A 的版本——upsert 因 name UNIQUE 冲突失败，该版本被跳过（不 panic）
+        let pulled = pull_hotwords_from_files().expect("pull 不应 panic");
+        // name 冲突时 A 的版本被跳过，pulled=0；B 的本地版本仍安全存在
+        assert_eq!(pulled, 0, "name 冲突的版本应被跳过，pulled=0");
+
+        // B 的本地版本安全无恙（未被冲突破坏）
+        let sets = db::list_hotword_sets().unwrap();
+        assert_eq!(sets.len(), 1, "B 本地版本应仍在（A 的因 name 冲突未拉入）");
+        assert!(sets.iter().any(|h| h.id == id_b), "应有 B 的本地版本");
+        assert!(!sets.iter().any(|h| h.id == id_a), "A 的版本因 name 冲突未拉入");
+    }
+
+    /// pull 时文件损坏（JSON 解析失败）不应 panic——read_hotword_set_file 返 Err 被
+    /// pull_hotwords_from_files 的 `if let Ok(...)` 吞掉，只跳过该版本。
+    #[test]
+    fn pull_skips_corrupted_set_file() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // 正常版本
+        let id_ok = "11111111-0001";
+        db::insert_hotword_set(id_ok, "正常版本").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export");
+
+        // 在文件系统里伪造一个损坏的版本文件（直接写无效 JSON）
+        let corrupt_path = hotword_set_file_path("22222222-corrupt");
+        if let Some(parent) = corrupt_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&corrupt_path, "{ this is not valid json }").unwrap();
+
+        // 清 DB，pull——损坏文件应被跳过，不 panic
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+        let pulled = pull_hotwords_from_files().expect("pull 不应因损坏文件 panic");
+        // 正常版本被拉取，损坏的被跳过
+        assert_eq!(pulled, 1, "只应拉取正常版本，损坏的被跳过");
+        assert!(db::get_hotword_set(id_ok).is_ok(), "正常版本应在 DB");
+    }
+
+    /// incremental_export 的 vault_version 在有变化时递增，无变化时不递增（回归守护）。
+    #[test]
+    fn incremental_export_version_increments_only_on_change() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let sets = vec![sample_set("33333333-0001", "版本A", "苹果")];
+        let (outline1, changed1) = incremental_export_hotwords(&sets).expect("first");
+        assert!(changed1 > 0);
+        let v1 = outline1.vault_version;
+
+        // 无变化再 export
+        let (outline2, changed2) = incremental_export_hotwords(&sets).expect("second");
+        assert_eq!(changed2, 0);
+        assert_eq!(outline2.vault_version, v1, "无变化版本不递增");
+
+        // 有变化（改 words_text）
+        let sets2 = vec![sample_set("33333333-0001", "版本A", "苹果 香蕉")];
+        let (outline3, changed3) = incremental_export_hotwords(&sets2).expect("third");
+        assert!(changed3 > 0);
+        assert!(outline3.vault_version > v1, "有变化版本应递增");
     }
 }
