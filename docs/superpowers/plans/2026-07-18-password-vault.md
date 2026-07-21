@@ -7357,6 +7357,32 @@ brainstorming 结论：macOS 桌面 app **无权限读浏览器 DOM 字段值**�
 | `758a7145` | 文案「+ 为当前站点新建」→「新增保险箱」|
 | `8aceb164`/`2a2196e3`/`e6174f07`/`2968c307`/`b545fc22` | UI 调整（紧凑居中 / 等宽 / 标题居中 / PasswordInput / UnlockDialog）|
 
+### 2026-07-21 follow-up：安全加固——URL 检测失败时不再 fallback（防钓鱼）
+
+**问题**：`vault_detect_and_match` URL 检测失败时返回最近 20 条 cipher（fallback）。钓鱼场景下用户可能"顺手"误选密码注入到钓鱼站。
+
+**修复**：
+- `vault_detect_and_match` URL 检测失败时返回**空列表**（不再 fallback 20 条）
+- 新增 `vault_search_ciphers` 命令——全量模糊匹配 name/username/URIs，按 updated_at DESC，take 20
+- VaultPicker 统一布局：搜索框（始终显示）+ 新建按钮 + 列表区（max 5 条可视滚动，maxHeight 443px）
+  - 搜索框空 → 显示 URL 匹配列表（view.ciphers）
+  - 有内容 → 全量搜索结果（searchResults，debounce 150ms）
+  - 清空 → 回原始列表
+- 删除 `VAULT_DETECT_FALLBACK_LIMIT` 常量
+
+**安全语义**：
+- 正常浏览器（facebook.com）：URL 匹配自动列出（不变）
+- URL 检测失败（桌面应用/不支持浏览器）：空列表 + 搜索框，用户主动搜索 = 有意识的选择
+- 钓鱼场景：用户必须主动搜索，不会"顺手"误选
+
+**累计 commit（2026-07-21）**：
+
+| commit | 说明 |
+|---|---|
+| `62338f51` | vault_detect_and_match fallback 返回空 + vault_search_ciphers 命令 + VaultPicker 搜索 UI |
+| `2ee8ce8c` | 统一 VaultPicker list view 布局（命中/未命中一致） |
+| `5ce47d37` | 修复高度/搜索切换/预填值三个问题 |
+
 ### 方案 A 后续工作（**决定不做**，2026-07-20 brainstorming 评估）
 
 bookmarklet 真正自动采集——经过多轮 brainstorming 评估决定**不做**。
