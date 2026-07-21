@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
@@ -39,14 +39,6 @@ export default function Screenshot() {
   const [ready, setReady] = useState(false);
   const [tool, setTool] = useState<Tool>("none");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  // 2026-07-21 perf：draw 函数通过 ref 读最新状态，让 useCallback 引用稳定（不依赖
-  // annotations/sel/selectedAnn）。这样 setAnnotations/setSel 不会触发 useEffect draw
-  // （消除双绘），鼠标交互期间通过 scheduleDraw RAF 合批（消除高频重绘）。
-  // ref 由下方 useLayoutEffect 同步——paint 前更新，draw 读到的总是最新值。
-  const annotationsRef = useRef<Annotation[]>([]);
-  const selRef = useRef<Selection | null>(null);
-  const selectedAnnRef = useRef<number | null>(null);
-  const rafRef = useRef<number | null>(null);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
   const [showPopover, setShowPopover] = useState(false);
@@ -198,10 +190,6 @@ export default function Screenshot() {
     }
   };
 
-  // 2026-07-21 perf：draw deps 仅 ready/dpr/tool/textDraft（影响绘制方式的稳定值）。
-  // annotations/sel/mode/selectedAnn 通过 ref 读——这些高频变化的状态不再触发 draw
-  // 引用变更，从而避免 useEffect 重跑形成双绘（原 setAnnotations → draw 引用变 →
-  // useEffect draw + onMouseMove 直接 draw = 每帧 2 次）。
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     // ImageBitmap 优先（已解码，drawImage 快），未就绪时回退 HTMLImageElement
@@ -213,12 +201,6 @@ export default function Screenshot() {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
-
-    // 高频状态从 ref 读（避免 useCallback deps 变化）
-    const mode = modeRef.current;
-    const sel = selRef.current;
-    const annotations = annotationsRef.current;
-    const selectedAnn = selectedAnnRef.current;
 
     // 滚动模式：Canvas 只画绿色边框，遮罩用 DOM div 实现（避免 Canvas clearRect 残留）
     if (mode === "scrolling" && sel) {
@@ -281,13 +263,10 @@ export default function Screenshot() {
         }
 
         // 尺寸标注（左上角或左下角，取决于工具栏位置）
-        // toolbarBelow 派生自 sel（同 L771 的 toolbarBelow 变量逻辑），draw 内重算
-        // 避免 useCallback deps 依赖它（它随 sel 变化，会让 draw 引用不稳定）。
-        const tbBelow = (window.innerHeight - (y + h + 8)) >= 44;
         const label = `${Math.round(w * dpr)} × ${Math.round(h * dpr)}`;
         ctx.font = "12px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
-        const labelY = tbBelow ? (y - 24) : (y + h + 6);
+        const labelY = toolbarBelow ? (y - 24) : (y + h + 6);
         const labelVisibleY = Math.max(0, labelY);
         ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
         ctx.fillRect(x, labelVisibleY, tw + 8, 18);
@@ -297,23 +276,8 @@ export default function Screenshot() {
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
     }
-  }, [ready, dpr, tool, textDraft]);
+  }, [sel, mode, ready, dpr, annotations, textDraft, tool, selectedAnn]);
 
-  // scheduleDraw：RAF 合批。鼠标高频 mousemove 期间多次调用只会在下一帧 draw 一次。
-  const scheduleDraw = useCallback(() => {
-    if (rafRef.current != null) return; // 已有待执行 RAF，跳过
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      draw();
-    });
-  }, [draw]);
-
-  // 同步 ref：每次 state 变化后、paint 前更新 ref，draw 读到的总是最新值。
-  // useLayoutEffect 保证 paint 前同步（避免闪现旧状态）。
-  useLayoutEffect(() => { annotationsRef.current = annotations; selRef.current = sel; selectedAnnRef.current = selectedAnn; });
-
-  // draw 仅在依赖值变化时触发（ready/dpr/tool/textDraft），
-  // annotations/sel/selectedAnn 变化由调用方主动 scheduleDraw。
   useEffect(() => { draw(); }, [draw]);
 
   function getHandles(s: Selection): [number, number][] {
@@ -443,7 +407,7 @@ export default function Screenshot() {
       } else {
         drawingRef.current = { ...drawingRef.current, x2: mx, y2: my };
       }
-      scheduleDraw();
+      draw();
       return;
     }
 
@@ -461,11 +425,7 @@ export default function Screenshot() {
       };
       const newAnns = [...anns];
       newAnns[idx] = moved;
-      // 2026-07-21 perf：拖动期间直接更新 ref + scheduleDraw（RAF 合批），
-      // 跳过 setAnnotations 的 React 重渲染——视觉反馈由 Canvas 直接提供。
-      // mouseUp 时一次性 setAnnotations 提交到 React state。
-      annotationsRef.current = newAnns;
-      scheduleDraw();
+      setAnnotations(newAnns);
       return;
     }
 
@@ -505,8 +465,6 @@ export default function Screenshot() {
 
   function onMouseUp() {
     if (annMoveStartRef.current) {
-      // 拖动结束时提交 ref → state（拖动期间只更新 ref + scheduleDraw，避免高频 setAnnotations）
-      setAnnotations(annotationsRef.current);
       annMoveStartRef.current = null;
       return;
     }
