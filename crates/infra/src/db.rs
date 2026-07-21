@@ -149,7 +149,7 @@ pub fn set_test_db(conn: Connection) {
     )
     .expect("set_test_db: set PRAGMA");
     conn.execute_batch(INIT_SQL).expect("set_test_db: INIT_SQL");
-    conn.execute("PRAGMA user_version = 45", [])
+    conn.execute("PRAGMA user_version = 46", [])
         .expect("set_test_db: set user_version");
     TEST_DB_OVERRIDE.with(|cell| {
         *cell.borrow_mut() = Some(std::sync::Arc::new(parking_lot::ReentrantMutex::new(conn)));
@@ -284,8 +284,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 45 {
-        // v45+ 已最新，直接返回。
+    if v >= 46 {
+        // v46+ 已最新，直接返回。
         return Ok(());
     }
 
@@ -310,9 +310,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         if !has_folder_md5 {
             conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
         }
-        conn.execute("PRAGMA user_version = 45", [])?;
-        log::info!("schema upgraded to v45 (vault_ciphers/folders 加 sync_md5 字段)");
-        return Ok(());
+        // 不设 user_version 也不 return——fall through 到 v46 段（同一次启动完成 v44→v45→v46）
     }
 
     // v43→v44：vault_ciphers / vault_folders 的 id 从 INTEGER AUTOINCREMENT 改
@@ -445,14 +443,62 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
         conn.execute("PRAGMA user_version = 44", [])?;
         log::info!("schema upgraded to v44 (vault_ciphers/folders id 改 UUID 字符串)");
-        // 不 return——fall through 到 v45 迁移（同一次启动完成 v44+v45）
+        // 不 return——fall through 到 v45→v46 迁移（同一次启动完成 v44+v45+v46）
     }
 
-    // v44→v45：vault_ciphers / vault_folders 加 sync_md5 字段。
-    // 覆盖两种入口：① v44 迁移段完成后 fall through；② 单独 v==44 库启动。
-    // 全新库（v<17）走下方 execute_batch(INIT_SQL) 建表（db.sql 已含 sync_md5），不走这里。
-    // ALTER TABLE ADD COLUMN 检查列存在（开发期中间 binary 可能跳过版本号）。
+    // v45→v46：hotword_sets.id INTEGER→TEXT UUID + sync_md5 字段 + vault sync_md5 兜底。
+    //
+    // **位置在 `v >= 17 && v <= 43` 完整迁移分支之后**——覆盖所有 v>=17 的库：
+    //   - v17-v43 老库：上方完整迁移后 fall through 到此
+    //   - v44 库：上方 v44→v45 vault sync_md5 补丁后 fall through 到此
+    //   - v45 库：直接进入此段
+    // 全新库（v<17）走下方 INIT_SQL（db.sql 已含新 schema），不走这里。
     if v >= 17 {
+        // hotword_sets id 迁移——检查类型决定是否建新表
+        let hotword_id_type: String = conn
+            .query_row(
+                "SELECT type FROM pragma_table_info('hotword_sets') WHERE name = 'id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "TEXT".to_string()); // 表不存在或查询失败时按已迁移处理
+
+        if hotword_id_type == "INTEGER" {
+            log::info!("schema v46: 迁移 hotword_sets.id INTEGER → TEXT (UUID)");
+            conn.execute_batch(
+                "CREATE TABLE hotword_sets_new (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL UNIQUE,
+                    enabled     INTEGER NOT NULL DEFAULT 1,
+                    words_text  TEXT NOT NULL DEFAULT '',
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    sync_md5    TEXT
+                );
+                INSERT INTO hotword_sets_new (id, name, enabled, words_text, created_at, updated_at, sync_md5)
+                SELECT
+                    CASE WHEN name = '通用'
+                         THEN '00000000-0000-0000-0000-000000000001'
+                         ELSE lower(hex(randomblob(16)))
+                    END,
+                    name, enabled, words_text, created_at, updated_at, NULL
+                FROM hotword_sets;
+                DROP TABLE hotword_sets;
+                ALTER TABLE hotword_sets_new RENAME TO hotword_sets;",
+            )?;
+            log::info!("schema v46: hotword_sets id INTEGER → TEXT 迁移完成");
+        } else {
+            // 已是 TEXT 但可能缺 sync_md5 列（开发期中间 binary）——检查并补
+            let has_md5 = conn
+                .prepare("SELECT 1 FROM pragma_table_info('hotword_sets') WHERE name = 'sync_md5'")?
+                .exists([])?;
+            if !has_md5 {
+                conn.execute("ALTER TABLE hotword_sets ADD COLUMN sync_md5 TEXT", [])?;
+                log::info!("schema v46: hotword_sets 补 sync_md5 列");
+            }
+        }
+
+        // vault_ciphers/folders sync_md5 兜底（v45 补丁——确保 vault 表也有 sync_md5）
         let has_cipher_md5 = conn
             .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
             .exists([])?;
@@ -465,12 +511,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
         if !has_folder_md5 {
             conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
         }
-        conn.execute("PRAGMA user_version = 45", [])?;
-        log::info!("schema upgraded to v45 (vault_ciphers/folders 加 sync_md5 字段)");
+
+        conn.execute("PRAGMA user_version = 46", [])?;
+        log::info!("schema upgraded to v46 (hotword_sets id 改 UUID + sync_md5 字段)");
         return Ok(());
     }
-    // 老分支 `if v >= 17` 已删除（重复执行 v40/v42 升级 + 设 v43，与上面 v44 分支
-    // 重复，且会让下次启动再次进入 v44 分支做无谓检查）。
 
     // v<17 全新库：建表 + 外置 seed + manifest
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
@@ -478,9 +523,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含 sync_md5 字段（v45 schema），直接设 v45
-    conn.execute("PRAGMA user_version = 45", [])?;
-    log::info!("DB initialized (v45): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含 sync_md5 字段 + hotword_sets TEXT id（v46 schema），直接设 v46
+    conn.execute("PRAGMA user_version = 46", [])?;
+    log::info!("DB initialized (v46): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2470,15 +2515,18 @@ pub fn delete_agent_task(id: &str) -> Result<()> {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotwordSet {
-    pub id: i64,
+    pub id: String,
     pub name: String,
     pub enabled: bool,
     pub words_text: String,
     pub created_at: String,
     pub updated_at: String,
+    /// md5 内容指纹（v46：增量同步 diff，由调用方算好传入）。
+    /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
+    pub sync_md5: Option<String>,
 }
 
-const HOTWORD_SET_COLS: &str = "id, name, enabled, words_text, created_at, updated_at";
+const HOTWORD_SET_COLS: &str = "id, name, enabled, words_text, created_at, updated_at, sync_md5";
 
 fn row_to_hotword_set(row: &rusqlite::Row) -> rusqlite::Result<HotwordSet> {
     Ok(HotwordSet {
@@ -2488,17 +2536,18 @@ fn row_to_hotword_set(row: &rusqlite::Row) -> rusqlite::Result<HotwordSet> {
         words_text: row.get(3)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
+        sync_md5: row.get(6)?,
     })
 }
 
-/// 列出全部版本（按 id 升序）。设置页渲染用。
+/// 列出全部版本（按 name 升序——UUID 字符串排序无意义，按 name 对用户友好）。设置页渲染用。
 pub fn list_hotword_sets() -> Result<Vec<HotwordSet>> {
     with_db(|conn| list_hotword_sets_at(conn))
 }
 
 fn list_hotword_sets_at(conn: &Connection) -> Result<Vec<HotwordSet>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {c} FROM hotword_sets ORDER BY id ASC",
+        "SELECT {c} FROM hotword_sets ORDER BY name ASC",
         c = HOTWORD_SET_COLS
     ))?;
     let rows = stmt.query_map([], row_to_hotword_set)?;
@@ -2510,36 +2559,39 @@ fn list_hotword_sets_at(conn: &Connection) -> Result<Vec<HotwordSet>> {
 }
 
 /// 单条查询（rename/toggle 后回读、命令层透传用）。
-pub fn get_hotword_set(id: i64) -> Result<HotwordSet> {
-    with_db(|conn| {
-        conn.query_row(
-            &format!("SELECT {c} FROM hotword_sets WHERE id=?1", c = HOTWORD_SET_COLS),
-            params![id],
-            row_to_hotword_set,
-        )
-        .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))
-    })
+pub fn get_hotword_set(id: &str) -> Result<HotwordSet> {
+    with_db(|conn| get_hotword_set_at(conn, id))
 }
 
-/// 新建空版本。重名由 name UNIQUE 约束拒绝（→ Err）。
-pub fn insert_hotword_set(name: &str) -> Result<i64> {
-    with_db(|conn| insert_hotword_set_at(conn, name))
+fn get_hotword_set_at(conn: &Connection, id: &str) -> Result<HotwordSet> {
+    conn.query_row(
+        &format!("SELECT {c} FROM hotword_sets WHERE id=?1", c = HOTWORD_SET_COLS),
+        params![id],
+        row_to_hotword_set,
+    )
+    .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))
 }
 
-fn insert_hotword_set_at(conn: &Connection, name: &str) -> Result<i64> {
+/// 新建空版本。调用方先 `Uuid::new_v4().to_string()` 生成 id 传入（不再 AUTOINCREMENT）。
+/// 重名由 name UNIQUE 约束拒绝（→ Err）。
+pub fn insert_hotword_set(id: &str, name: &str) -> Result<()> {
+    with_db(|conn| insert_hotword_set_at(conn, id, name))
+}
+
+fn insert_hotword_set_at(conn: &Connection, id: &str, name: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO hotword_sets (name) VALUES (?1)",
-        params![name],
+        "INSERT INTO hotword_sets (id, name) VALUES (?1, ?2)",
+        params![id, name],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(())
 }
 
 /// 改名。同时刷新 updated_at。
-pub fn rename_hotword_set(id: i64, name: &str) -> Result<()> {
+pub fn rename_hotword_set(id: &str, name: &str) -> Result<()> {
     with_db(|conn| rename_hotword_set_at(conn, id, name))
 }
 
-fn rename_hotword_set_at(conn: &Connection, id: i64, name: &str) -> Result<()> {
+fn rename_hotword_set_at(conn: &Connection, id: &str, name: &str) -> Result<()> {
     let n = conn.execute(
         "UPDATE hotword_sets SET name=?1, updated_at=datetime('now') WHERE id=?2",
         params![name, id],
@@ -2551,11 +2603,11 @@ fn rename_hotword_set_at(conn: &Connection, id: i64, name: &str) -> Result<()> {
 }
 
 /// 勾选/取消勾选（enabled=true 时纳入并集）。刷新 updated_at。
-pub fn toggle_hotword_set(id: i64, enabled: bool) -> Result<()> {
+pub fn toggle_hotword_set(id: &str, enabled: bool) -> Result<()> {
     with_db(|conn| toggle_hotword_set_at(conn, id, enabled))
 }
 
-fn toggle_hotword_set_at(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
+fn toggle_hotword_set_at(conn: &Connection, id: &str, enabled: bool) -> Result<()> {
     let n = conn.execute(
         "UPDATE hotword_sets SET enabled=?1, updated_at=datetime('now') WHERE id=?2",
         params![if enabled { 1 } else { 0 }, id],
@@ -2567,11 +2619,11 @@ fn toggle_hotword_set_at(conn: &Connection, id: i64, enabled: bool) -> Result<()
 }
 
 /// 删除版本。
-pub fn delete_hotword_set(id: i64) -> Result<()> {
+pub fn delete_hotword_set(id: &str) -> Result<()> {
     with_db(|conn| delete_hotword_set_at(conn, id))
 }
 
-fn delete_hotword_set_at(conn: &Connection, id: i64) -> Result<()> {
+fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
     let n = conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
     if n == 0 {
         anyhow::bail!("热词版本不存在");
@@ -2580,7 +2632,7 @@ fn delete_hotword_set_at(conn: &Connection, id: i64) -> Result<()> {
 }
 
 /// 覆盖写 words_text（已 normalize）。导入「覆盖」模式用。
-pub fn set_hotword_set_words(id: i64, words_text: &str) -> Result<()> {
+pub fn set_hotword_set_words(id: &str, words_text: &str) -> Result<()> {
     with_db(|conn| {
         let normalized = crate::hotword_text::normalize_words_text(words_text);
         let n = conn.execute(
@@ -2595,11 +2647,11 @@ pub fn set_hotword_set_words(id: i64, words_text: &str) -> Result<()> {
 }
 
 /// 追加一词到指定版本（并集 + normalize）。重复词去重无副作用，返回是否实际新增。
-pub fn add_word_to_set(id: i64, word: &str) -> Result<bool> {
+pub fn add_word_to_set(id: &str, word: &str) -> Result<bool> {
     with_db(|conn| add_word_to_set_at(conn, id, word))
 }
 
-fn add_word_to_set_at(conn: &Connection, id: i64, word: &str) -> Result<bool> {
+fn add_word_to_set_at(conn: &Connection, id: &str, word: &str) -> Result<bool> {
     let cur: String = conn
         .query_row(
             "SELECT words_text FROM hotword_sets WHERE id=?1",
@@ -2618,7 +2670,7 @@ fn add_word_to_set_at(conn: &Connection, id: i64, word: &str) -> Result<bool> {
 }
 
 /// 批量追加多词（挖掘/导入追加用），返回实际新增条数。
-pub fn add_words_to_set(id: i64, words: &[String]) -> Result<usize> {
+pub fn add_words_to_set(id: &str, words: &[String]) -> Result<usize> {
     with_db(|conn| {
         let cur: String = conn
             .query_row(
@@ -2641,11 +2693,11 @@ pub fn add_words_to_set(id: i64, words: &[String]) -> Result<usize> {
 }
 
 /// 从指定版本移除一词（normalize 重排）。
-pub fn remove_word_from_set(id: i64, word: &str) -> Result<()> {
+pub fn remove_word_from_set(id: &str, word: &str) -> Result<()> {
     with_db(|conn| remove_word_from_set_at(conn, id, word))
 }
 
-fn remove_word_from_set_at(conn: &Connection, id: i64, word: &str) -> Result<()> {
+fn remove_word_from_set_at(conn: &Connection, id: &str, word: &str) -> Result<()> {
     let cur: String = conn
         .query_row(
             "SELECT words_text FROM hotword_sets WHERE id=?1",
@@ -2658,6 +2710,43 @@ fn remove_word_from_set_at(conn: &Connection, id: i64, word: &str) -> Result<()>
     conn.execute(
         "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
         params![normalized, id],
+    )?;
+    Ok(())
+}
+
+/// upsert 热词版本——sync pull 从文件读回写 SQLite 用（v46 新增）。
+///
+/// `id` 已存在时按全字段覆盖（name/enabled/words_text/created_at/updated_at/sync_md5），
+/// 不存在时插入。name UNIQUE 冲突时返 Err（跨设备同名版本合并需上层处理）。
+///
+/// 与普通 insert/update 的区别：
+/// - insert：只新建（不覆盖），调用方生成 id
+/// - update 系列：只改单字段（rename/toggle/set_words）
+/// - upsert：全字段覆盖——sync 拉到远程版本时直接整体写入，不关心本地是否已有
+pub fn upsert_hotword_set(h: &HotwordSet) -> Result<()> {
+    with_db(|conn| upsert_hotword_set_at(conn, h))
+}
+
+fn upsert_hotword_set_at(conn: &Connection, h: &HotwordSet) -> Result<()> {
+    conn.execute(
+        "INSERT INTO hotword_sets (id, name, enabled, words_text, created_at, updated_at, sync_md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            enabled=excluded.enabled,
+            words_text=excluded.words_text,
+            created_at=excluded.created_at,
+            updated_at=excluded.updated_at,
+            sync_md5=excluded.sync_md5",
+        params![
+            h.id,
+            h.name,
+            if h.enabled { 1 } else { 0 },
+            h.words_text,
+            h.created_at,
+            h.updated_at,
+            h.sync_md5,
+        ],
     )?;
     Ok(())
 }
@@ -3715,7 +3804,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 44, "全新库 init_schema 后应到 v44");
+        assert_eq!(v, 46, "全新库 init_schema 后应到 v46");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -4070,7 +4159,7 @@ mod tests {
 
         // 验证 user_version = 43
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 44);
+        assert_eq!(v, 46);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -4115,7 +4204,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 44);
+        assert_eq!(v, 46);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4245,7 +4334,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 44);
+        assert_eq!(v, 46);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4273,7 +4362,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 44);
+        assert_eq!(v, 46);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4313,7 +4402,7 @@ mod tests {
         // 模拟 v42 状态：先跑一次完整 init_schema 让它升到 v43（拿到「PPT 制作」+「PPT 大纲」），
         // 然后手工把它「倒回」v42 状态——删掉 PPT 大纲、把 PPT 制作改回老标题、user_version=42。
         init_schema(&conn).unwrap();
-        let agent_id: i64 = conn
+        let _agent_id: i64 = conn
             .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
             .unwrap();
         // 记下 PPT 制作 row id（应该是改名前的「制作 PPT」对应行）
@@ -4347,7 +4436,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 44);
+        assert_eq!(v, 46);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -4410,43 +4499,99 @@ mod tests {
         // db.sql 现含默认「通用」版本 seed；本测试聚焦 CRUD 逻辑，清掉种子避免干扰 [0]/len 断言。
         conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
 
-        // create
-        let id = insert_hotword_set_at(&conn, "项目A").unwrap();
-        assert!(id > 0);
+        // create（调用方生成 UUID——v46 改造：id 不再 AUTOINCREMENT）
+        let id = "test-uuid-项目A-001".to_string();
+        insert_hotword_set_at(&conn, &id, "项目A").unwrap();
 
         // list
         let sets = list_hotword_sets_at(&conn).unwrap();
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].name, "项目A");
+        assert_eq!(sets[0].id, id);
         assert!(sets[0].enabled);
         assert_eq!(sets[0].words_text, "");
+        assert!(sets[0].sync_md5.is_none()); // 新建时 sync_md5 = NULL
 
         // 重名 → 唯一冲突
-        assert!(insert_hotword_set_at(&conn, "项目A").is_err());
+        assert!(insert_hotword_set_at(&conn, "test-uuid-项目A-002", "项目A").is_err());
 
         // rename
-        rename_hotword_set_at(&conn, id, "项目A2").unwrap();
+        rename_hotword_set_at(&conn, &id, "项目A2").unwrap();
         assert_eq!(list_hotword_sets_at(&conn).unwrap()[0].name, "项目A2");
 
         // toggle enabled
-        toggle_hotword_set_at(&conn, id, false).unwrap();
+        toggle_hotword_set_at(&conn, &id, false).unwrap();
         assert!(!list_hotword_sets_at(&conn).unwrap()[0].enabled);
-        toggle_hotword_set_at(&conn, id, true).unwrap();
+        toggle_hotword_set_at(&conn, &id, true).unwrap();
 
         // add_word（normalize：序 + 去重）
-        add_word_to_set_at(&conn, id, "吴大锐").unwrap();
-        add_word_to_set_at(&conn, id, "八爪鱼").unwrap();
-        add_word_to_set_at(&conn, id, "八爪鱼").unwrap(); // 重复 → 去重
+        add_word_to_set_at(&conn, &id, "吴大锐").unwrap();
+        add_word_to_set_at(&conn, &id, "八爪鱼").unwrap();
+        add_word_to_set_at(&conn, &id, "八爪鱼").unwrap(); // 重复 → 去重
         let s = list_hotword_sets_at(&conn).unwrap()[0].clone();
         assert_eq!(s.words_text, "八爪鱼 吴大锐"); // BZY < WDR
 
         // remove_word
-        remove_word_from_set_at(&conn, id, "八爪鱼").unwrap();
+        remove_word_from_set_at(&conn, &id, "八爪鱼").unwrap();
         assert_eq!(list_hotword_sets_at(&conn).unwrap()[0].words_text, "吴大锐");
 
         // delete set
-        delete_hotword_set_at(&conn, id).unwrap();
+        delete_hotword_set_at(&conn, &id).unwrap();
         assert!(list_hotword_sets_at(&conn).unwrap().is_empty());
+    }
+
+    /// upsert（v46 新增）——sync pull 用。覆盖 + 新建两种路径。
+    #[test]
+    fn hotword_set_upsert_roundtrip() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        // 新建路径——id 不存在，INSERT
+        let h1 = HotwordSet {
+            id: "upsert-uuid-1".into(),
+            name: "版本X".into(),
+            enabled: true,
+            words_text: "苹果".into(),
+            created_at: "2026-07-22 10:00:00".into(),
+            updated_at: "2026-07-22 10:00:00".into(),
+            sync_md5: Some("md5-abc".into()),
+        };
+        upsert_hotword_set_at(&conn, &h1).unwrap();
+        let loaded = get_hotword_set_at(&conn, "upsert-uuid-1").unwrap();
+        assert_eq!(loaded.name, "版本X");
+        assert_eq!(loaded.words_text, "苹果");
+        assert_eq!(loaded.sync_md5.as_deref(), Some("md5-abc"));
+
+        // 覆盖路径——同 id，改 name/words_text/sync_md5
+        let h2 = HotwordSet {
+            id: "upsert-uuid-1".into(),
+            name: "版本X改".into(),
+            enabled: false,
+            words_text: "苹果 香蕉".into(),
+            created_at: "2026-07-22 10:00:00".into(),
+            updated_at: "2026-07-22 11:00:00".into(),
+            sync_md5: Some("md5-def".into()),
+        };
+        upsert_hotword_set_at(&conn, &h2).unwrap();
+        let loaded2 = get_hotword_set_at(&conn, "upsert-uuid-1").unwrap();
+        assert_eq!(loaded2.name, "版本X改");
+        assert!(!loaded2.enabled);
+        assert_eq!(loaded2.words_text, "苹果 香蕉");
+        assert_eq!(loaded2.sync_md5.as_deref(), Some("md5-def"));
+    }
+
+    /// 「通用」默认版本用固定 UUID——跨设备一致（v46 设计）。
+    #[test]
+    fn default_general_set_uses_fixed_uuid() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        let sets = list_hotword_sets_at(&conn).unwrap();
+        let general = sets.iter().find(|s| s.name == "通用").expect("应有「通用」seed");
+        assert_eq!(
+            general.id, "00000000-0000-0000-0000-000000000001",
+            "「通用」版本必须用固定 UUID，保证跨设备 sync 时 id 一致"
+        );
     }
 
     #[test]
@@ -5837,6 +5982,7 @@ mod vault_schema_tests {
             fields: None,
             password_history: None,
             reprompt: 0,
+            sync_md5: None,
         };
         insert_vault_cipher_at(&conn, &input).unwrap();
 

@@ -9,7 +9,7 @@ import { Input, Select } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
 interface HotwordSet {
-  id: number;
+  id: string;
   name: string;
   enabled: boolean;
   wordsText: string;
@@ -35,11 +35,11 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'time' | 'alpha' | 'hits'>('time');
-  const [renaming, setRenaming] = useState<number | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
@@ -102,21 +102,21 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     if (!name || !mode) return;
     try {
       const id = mode === 'create'
-        ? await invoke<number>('create_hotword_set', { name })
-        : await invoke<number>('import_hotwords', { mode: 'new', newName: name });
+        ? await invoke<string>('create_hotword_set', { name })
+        : await invoke<string>('import_hotwords', { mode: 'new', newName: name });
       await refresh();
       setSelectedId(id);
       showToast(mode === 'create' ? t('settings.hotword.newVersion') : t('settings.hotword.importedVersion'));
     } catch (e) { showToast(mode === 'create' ? t('settings.hotword.newFailed') + e : t('settings.hotword.importFailed') + e); }
   }, [createVal, creating, refresh, showToast]);
 
-  const toggleSet = useCallback(async (id: number, enabled: boolean) => {
+  const toggleSet = useCallback(async (id: string, enabled: boolean) => {
     try { await invoke('toggle_hotword_set', { id, enabled }); await refresh(); }
     catch (e) { showToast(t('settings.hotword.switchFailed') + e); }
   }, [refresh, showToast]);
 
-  const startRename = (id: number, cur: string) => { renameCancelledRef.current = false; setRenaming(id); setRenameVal(cur); };
-  const commitRename = useCallback(async (id: number) => {
+  const startRename = (id: string, cur: string) => { renameCancelledRef.current = false; setRenaming(id); setRenameVal(cur); };
+  const commitRename = useCallback(async (id: string) => {
     if (renameCancelledRef.current) { renameCancelledRef.current = false; return; } // Escape 取消：吞掉卸载触发的 blur
     const name = renameVal.trim();
     if (!name) { setRenaming(null); return; }
@@ -125,7 +125,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     setRenaming(null);
   }, [renameVal, refresh, showToast]);
 
-  const deleteSet = useCallback(async (id: number, name: string) => {
+  const deleteSet = useCallback(async (id: string, name: string) => {
     if (!(await confirmDialog(t('settings.hotword.deleteConfirmMsg', { name }), { title: t('settings.hotword.deleteConfirmTitle'), kind: 'warning' }))) return;
     try { await invoke('delete_hotword_set', { id }); await refresh(); }
     catch (e) { showToast(t('settings.hotword.deleteFailed') + e); }

@@ -297,17 +297,23 @@ CREATE TABLE IF NOT EXISTS hotwords (
 CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);
 
 -- ── ASR 热词版本（多场景词表，多选叠加）──────────────────────
+-- id 用 TEXT UUID（v46 改造）：支持 git 同步跨设备无冲突，与 vault_ciphers 一致。
+-- sync_md5：内容指纹（md5），增量同步 diff 用，由 sync crate 计算填入（不在 infra 算）。
 CREATE TABLE IF NOT EXISTS hotword_sets (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          TEXT    PRIMARY KEY,             -- UUID v4 字符串（不再自增——支持 git 同步）
     name        TEXT    NOT NULL UNIQUE,
     enabled     INTEGER NOT NULL DEFAULT 1,   -- 0/1 是否勾选生效
     words_text  TEXT    NOT NULL DEFAULT '',
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    sync_md5    TEXT                              -- md5 内容指纹（增量同步 diff，NULL 表示待算）
 );
 
--- 默认「通用」版本：全新库开箱即用（升级库由 v22→v23 迁移补建/合并，ON CONFLICT 幂等不覆盖既有词）。
-INSERT OR IGNORE INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '');
+-- 默认「通用」版本：固定 UUID（跨设备一致——两台机器的「通用」集 sync 时 id 相同不冲突）。
+-- 全新库开箱即用；升级库由 v45→v46 迁移把旧 i64 id 转为 random UUID（「通用」集会获得新 UUID，
+-- 首次 sync 时与远程的固定 UUID 版本合并——name UNIQUE 约束保证不重复）。
+INSERT OR IGNORE INTO hotword_sets(id, name, enabled, words_text, sync_md5)
+VALUES('00000000-0000-0000-0000-000000000001', '通用', 1, '', NULL);
 
 -- ── ASR 热词全局命中计数（词级，不绑版本）────────────────────
 CREATE TABLE IF NOT EXISTS hotword_hits (

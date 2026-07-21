@@ -1,7 +1,8 @@
 //! 热词版本管理后端命令——版本 CRUD + 单词增删 + 导入导出 + 挖掘到版本。
-//! 底层：hotword_sets（版本纯文本）+ hotword_hits（全局命中）。
+//! 底层：hotword_sets（版本纯文本，v46 id 改 UUID 字符串）+ hotword_hits（全局命中）。
 
 use octopus_infra::db::{self, HotwordSet};
+use uuid::Uuid;
 
 /// 写库后统一 reload corrector 热词索引（enabled 版本并集）。
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
@@ -19,27 +20,29 @@ pub fn list_hotword_sets() -> Result<Vec<HotwordSet>, String> {
     db::list_hotword_sets().map_err(|e| e.to_string())
 }
 
+/// 新建热词版本。v46：id 由后端生成 UUID（不再 AUTOINCREMENT），返回 String。
 #[tauri::command]
-pub fn create_hotword_set(name: String) -> Result<i64, String> {
-    let id = db::insert_hotword_set(&name).map_err(|e| e.to_string())?;
+pub fn create_hotword_set(name: String) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 #[tauri::command]
-pub fn rename_hotword_set(id: i64, name: String) -> Result<(), String> {
-    db::rename_hotword_set(id, &name).map_err(|e| e.to_string())
+pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
+    db::rename_hotword_set(&id, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn delete_hotword_set(id: i64) -> Result<(), String> {
-    db::delete_hotword_set(id).map_err(|e| e.to_string())?;
+pub fn delete_hotword_set(id: String) -> Result<(), String> {
+    db::delete_hotword_set(&id).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(())
 }
 
 #[tauri::command]
-pub fn toggle_hotword_set(id: i64, enabled: bool) -> Result<(), String> {
-    db::toggle_hotword_set(id, enabled).map_err(|e| e.to_string())?;
+pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
+    db::toggle_hotword_set(&id, enabled).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(())
 }
@@ -47,15 +50,15 @@ pub fn toggle_hotword_set(id: i64, enabled: bool) -> Result<(), String> {
 // ── 单词增删（系统透明维护 words_text）──
 
 #[tauri::command]
-pub fn add_word_to_set(id: i64, word: String) -> Result<bool, String> {
-    let added = db::add_word_to_set(id, &word).map_err(|e| e.to_string())?;
+pub fn add_word_to_set(id: String, word: String) -> Result<bool, String> {
+    let added = db::add_word_to_set(&id, &word).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(added)
 }
 
 #[tauri::command]
-pub fn remove_word_from_set(id: i64, word: String) -> Result<(), String> {
-    db::remove_word_from_set(id, &word).map_err(|e| e.to_string())?;
+pub fn remove_word_from_set(id: String, word: String) -> Result<(), String> {
+    db::remove_word_from_set(&id, &word).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(())
 }
@@ -77,8 +80,8 @@ pub fn list_hotword_candidates() -> Result<Vec<String>, String> {
 
 /// 批量追加多词到指定版本（挖掘确认 / 手动批量）。返回实际新增条数。
 #[tauri::command]
-pub fn add_words_to_set(id: i64, words: Vec<String>) -> Result<usize, String> {
-    let added = db::add_words_to_set(id, &words).map_err(|e| e.to_string())?;
+pub fn add_words_to_set(id: String, words: Vec<String>) -> Result<usize, String> {
+    let added = db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(added)
 }
@@ -86,15 +89,15 @@ pub fn add_words_to_set(id: i64, words: Vec<String>) -> Result<usize, String> {
 // ── 导入 / 导出（照搬 save_image_dialog 的 spawn_blocking + dialog 范式）──
 
 /// 导入 txt：mode = "new"（新建版本，需 new_name）/ "append"（追加到 target_set_id）
-/// / "overwrite"（覆盖 target_set_id 的 words_text）。返回目标版本 id。
+/// / "overwrite"（覆盖 target_set_id 的 words_text）。返回目标版本 id（v46: String UUID）。
 #[tauri::command]
 pub async fn import_hotwords(
     app_handle: tauri::AppHandle,
     mode: String,
-    target_set_id: Option<i64>,
+    target_set_id: Option<String>,
     new_name: Option<String>,
-) -> Result<i64, String> {
-    tokio::task::spawn_blocking(move || -> Result<i64, String> {
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
         use tauri_plugin_dialog::DialogExt;
         let path = app_handle
             .dialog()
@@ -110,21 +113,22 @@ pub async fn import_hotwords(
         match mode.as_str() {
             "new" => {
                 let name = new_name.unwrap_or_else(|| "导入版本".to_string());
-                let id = db::insert_hotword_set(&name).map_err(|e| e.to_string())?;
-                db::set_hotword_set_words(id, &content).map_err(|e| e.to_string())?;
+                let id = Uuid::new_v4().to_string();
+                db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
+                db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
                 reload_after_write();
                 Ok(id)
             }
             "append" => {
                 let id = target_set_id.ok_or("append 模式需 target_set_id")?;
                 let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
-                db::add_words_to_set(id, &words).map_err(|e| e.to_string())?;
+                db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
                 reload_after_write();
                 Ok(id)
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
-                db::set_hotword_set_words(id, &content).map_err(|e| e.to_string())?;
+                db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
                 reload_after_write();
                 Ok(id)
             }
@@ -137,9 +141,9 @@ pub async fn import_hotwords(
 
 /// 导出某版本 words_text 到 txt（用户选保存路径）。
 #[tauri::command]
-pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: i64) -> Result<(), String> {
+pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let set = db::get_hotword_set(set_id).map_err(|e| e.to_string())?;
+        let set = db::get_hotword_set(&set_id).map_err(|e| e.to_string())?;
         use tauri_plugin_dialog::DialogExt;
         let save_path = app_handle
             .dialog()
