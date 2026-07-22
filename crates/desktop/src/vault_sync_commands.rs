@@ -112,3 +112,17 @@ pub fn vault_sync_list_remotes() -> Result<Vec<(String, String)>, String> {
 pub fn vault_sync_clone(remote_url: String) -> Result<(), String> {
     vault_sync::clone_from(&remote_url).map_err(sync_err_to_string)
 }
+
+/// stamp 冲突解决：以远程为准（本地 meta 被污染时用）。
+/// 用户输入远程 vault 的主密码验证后，用远程 meta 覆盖本地。
+#[tauri::command]
+pub fn vault_sync_resolve_remote(password: String) -> Result<(), String> {
+    vault_sync::resolve_with_remote(&password).map_err(sync_err_to_string)
+}
+
+/// stamp 冲突解决：以本地为准（远程 meta 被污染时用）。
+/// 用户输入本地 vault 的主密码验证后，把本地 meta push 覆盖远程。
+#[tauri::command]
+pub fn vault_sync_resolve_local(password: String) -> Result<(), String> {
+    vault_sync::resolve_with_local(&password).map_err(sync_err_to_string)
+}

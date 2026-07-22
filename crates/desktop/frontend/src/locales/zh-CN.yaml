@@ -139,6 +139,18 @@ settings:
       # 私有库检测（2026-07-21）
       privacyHint: 为保证安全，密码箱必须使用私有库。HTTPS 地址会自动检测，检测到公有库将被拒绝；SSH 地址无法自动检测，请自行确认仓库是 Private。
       checkingPrivacy: 检测仓库可见性...
+      # stamp 冲突解决（2026-07-22）
+      conflictTitle: 主密码冲突
+      conflictDesc: 远程和本地的 vault 主密码不一致，请选择以哪边为准覆盖另一边。两条路线都需要验证对应主密码。
+      useRemote: 以远程为准
+      useLocal: 以本地为准
+      useRemoteHint: 输入远程 vault 的主密码，验证后用远程数据覆盖本地
+      useLocalHint: 输入本地 vault 的主密码，验证后用本地数据覆盖远程
+      resolvePwdPlaceholder: 输入主密码
+      resolveBack: 返回
+      resolveConfirm: 确认
+      resolveSuccess: 冲突已解决，正在重新同步
+      resolveFailed: "解决失败："
     list:
       title: 密码条目
       empty: 还没有密码条目

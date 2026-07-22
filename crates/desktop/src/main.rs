@@ -488,6 +488,10 @@ pub fn run() {
             crate::vault_sync_commands::vault_sync_list_remotes,
             #[cfg(feature = "vault")]
             crate::vault_sync_commands::vault_sync_clone,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_resolve_remote,
+            #[cfg(feature = "vault")]
+            crate::vault_sync_commands::vault_sync_resolve_local,
             // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
             feature_flags::is_vault_enabled,
             translation_commands::discover_translation_models,
