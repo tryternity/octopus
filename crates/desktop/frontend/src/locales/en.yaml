@@ -648,6 +648,14 @@ settings:
     groupStatus: Status
     filterFavorite: Favorites
     filterNonFavorite: Non-Favorites
+    filterTrash: Trash
+    restore: Restore
+    permanentDelete: Delete Permanently
+    emptyTrash: Empty Trash
+    trashEmpty: Trash is empty
+    restored: Restored
+    permanentlyDeleted: Permanently deleted
+    trashEmptied: Trash emptied
     loadFailed: "Load failed:"
     deletedN: Deleted ${n} records
     deleteFailed: "Delete failed:"

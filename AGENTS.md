@@ -83,25 +83,44 @@ cargo test -p octopus-desktop
 
 ```
 crates/
-├── infra/     # octopus-infra — 基础设施层，无项目内依赖
-├── sync/      # octopus-sync — 通用 git 同步基础设施（git wrapper / outline / error / privacy / store 工具 / hotword 模块）
-├── asr/       # octopus-asr-local — 核心推理库（所有上层依赖此 crate）
-├── llm/       # octopus-llm — LLM 润色客户端
-├── cli/       # octopus-cli — 命令行工具
-├── server/    # octopus-server — HTTP/WebSocket 服务
-├── desktop/   # octopus-desktop — Tauri 2 桌面应用
-├── vault/     # octopus-vault — 密码保险库纯逻辑库（加密 / Auto-Type / TOTP / vault git 同步）
-└── dlp/       # octopus-dlp — 视频音频下载工具
+├── infra/        # octopus-infra — 基础设施层，无项目内依赖（DB / config / consts / paths / cpu）
+├── onnx-infra/   # onnx-infra — ONNX Runtime 封装（ort session 管理 / 维度推断）
+├── sync/         # octopus-sync — 通用 git 同步基础设施（git wrapper / outline / error / privacy / store 工具 / hotword 模块）
+├── scheduler/    # octopus-scheduler — 通用后台调度器（定时任务 + CPU 空闲检测，依赖 infra）
+├── asr/          # octopus-asr-local — 核心推理库（Whisper/SenseVoice/Paraformer/Zipformer + Silero VAD）
+├── asr-cloud/    # octopus-asr-cloud — 云端 ASR 协议层（Aliyun/ByteDance/Tencent/Baidu WS 流式 + 批引擎）
+├── clipboard/    # octopus-clipboard — 剪贴板历史管理（监听 / 存储 / FTS5 / image_data / 软删回收站）
+├── ocr/          # octopus-ocr — OCR 图片识别（统一接口，分发到 paddle-ocr）
+├── paddle-ocr/   # octopus-paddle-ocr — PaddleOCR ONNX 推理（PP-OCRv6 检测+识别）
+├── capx/         # octopus-capx — 屏幕截图（xcap 封装 / 滚动截图 / 区域选区）
+├── translation/  # octopus-translation — 翻译引擎（本地 OPUS-MT + 云端 API）
+├── search/       # octopus-search — 独立搜索引擎（应用索引 / 快捷指令 / 历史搜索）
+├── llm/          # octopus-llm — LLM 润色客户端
+├── vault/        # octopus-vault — 密码保险库纯逻辑库（加密 / Auto-Type / TOTP / vault git 同步）
+├── download/     # octopus-download — 通用下载器（分块并发 + 断点续传 + 校验 + 镜像）
+├── cli/          # octopus-cli — 命令行工具
+├── server/       # octopus-server — HTTP/WebSocket 服务
+├── desktop/      # octopus-desktop — Tauri 2 桌面应用（聚合所有上层 crate）
+└── dlp/          # octopus-dlp — 视频音频下载转码 sidecar（yt-dlp 封装）
 ```
 
 ### 依赖关系
 
 ```
-infra ← (sync, asr, llm, cli, server, desktop, vault, dlp)  — 所有 crate 都依赖 infra
+infra ← (所有 crate)  — infra 是唯一无项目内依赖的 crate
+onnx-infra ← (asr)  — ASR 引擎依赖 ONNX Runtime 封装
 sync ← (vault, desktop)  — vault 复用 sync 通用代码；desktop 热词命令算 md5
+scheduler ← (desktop)  — desktop setup 创建 Scheduler 实例 + 注册定时任务
 asr ← (cli, server, desktop via "embedded" feature)
+asr-cloud ← (desktop via "cloud" feature)
+clipboard ← (desktop)
+ocr ← (desktop) → paddle-ocr  — ocr 分发到 paddle-ocr 实现
+capx ← (desktop)
+translation ← (desktop)
+search ← (desktop)
 llm ← (asr via dev-dep, desktop)
 vault ← (desktop via "vault" feature)
+download ← (desktop)
 desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | cloud (云端 ASR WS 流式：Aliyun/ByteDance/Tencent/Baidu)
 desktop → feature-gated: vault (=vault + keychain + TOTP)
 ```

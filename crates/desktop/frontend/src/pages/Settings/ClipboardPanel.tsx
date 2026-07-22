@@ -9,6 +9,7 @@ import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
   ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check,
+  RotateCcw,
 } from "lucide-react";
 import SaveImagePopover from "@/components/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -33,6 +34,7 @@ const FILTER_GROUPS: { labelKey?: string; items: { value: string; icon: any; lab
   { labelKey: "settings.clipboardPanel.groupStatus", items: [
     { value: "favorite", icon: Star, labelKey: "settings.clipboardPanel.filterFavorite", svg: "favorite" },
     { value: "unfavorite", icon: Star, labelKey: "settings.clipboardPanel.filterNonFavorite", svg: "un-favorite" },
+    { value: "trash", icon: Trash2, labelKey: "settings.clipboardPanel.filterTrash" },
   ] },
 ];
 
@@ -45,6 +47,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [noMore, setNoMore] = useState(false);
 
@@ -113,6 +116,41 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const selectableItems = items.filter((i) => !i.is_favorite);
   const allChecked = selectableItems.length > 0 && selectableItems.every((i) => selectedIds.has(i.id));
   const hasSelection = selectedIds.size > 0;
+  const isTrash = filter === "trash";
+
+  // 回收站操作
+  const handleRestore = async (id: number) => {
+    try {
+      await invoke("restore_clipboard_item", { id });
+      showToast(t("settings.clipboardPanel.restored"));
+      fetchData(true);
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
+  const handlePermanentDelete = async (id: number) => {
+    try {
+      await invoke("permanent_delete_clipboard_item", { id });
+      showToast(t("settings.clipboardPanel.permanentlyDeleted"));
+      fetchData(true);
+    } catch (e) {
+      showToast(String(e));
+    }
+  };
+
+  const handleEmptyTrash = async () => {
+    setBusy(true);
+    try {
+      await invoke("empty_clipboard_trash");
+      showToast(t("settings.clipboardPanel.trashEmptied"));
+      fetchData(true);
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const activeFilterLabel = (() => {
     const item = FILTER_GROUPS.flatMap(g => g.items).find(it => it.value === filter);
     if (!item) return undefined;
@@ -182,34 +220,54 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               <ClipboardEmptyIcon />
             </div>
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">{t("settings.clipboardPanel.empty")}</p>
-              <p className="text-xs text-muted-foreground/70 mt-1">
-                {search ? t("settings.clipboardPanel.emptySearch", { search }) : t("settings.clipboardPanel.emptyHint")}
+              <p className="text-sm text-muted-foreground font-medium">
+                {isTrash ? t("settings.clipboardPanel.trashEmpty") : t("settings.clipboardPanel.empty")}
               </p>
+              {!isTrash && (
+                <p className="text-xs text-muted-foreground/70 mt-1">
+                  {search ? t("settings.clipboardPanel.emptySearch", { search }) : t("settings.clipboardPanel.emptyHint")}
+                </p>
+              )}
             </div>
           </div>
         ) : (
           <div className="flex flex-col">
-            {/* 列表 header：全选（sticky） */}
+            {/* 列表 header：全选（sticky）——回收站模式显示「全部清空」 */}
             <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background/95 backdrop-blur-sm group/header">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="w-3.5 h-3.5 accent-primary"
-                  checked={allChecked}
-                  onChange={(e) => toggleSelectAll(e.target.checked)}
-                />
-                <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
-                  {hasSelection ? t("settings.clipboardPanel.selectedN", { n: selectedIds.size }) : t("settings.clipboardPanel.selectAll")}
-                </span>
-              </label>
+              {isTrash ? (
+                <Button
+                  variant="destructive-ghost"
+                  size="sm"
+                  disabled={busy || items.length === 0}
+                  onClick={handleEmptyTrash}
+                  className="ml-auto"
+                >
+                  <Trash2 />
+                  {t("settings.clipboardPanel.emptyTrash")}
+                </Button>
+              ) : (
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-3.5 h-3.5 accent-primary"
+                    checked={allChecked}
+                    onChange={(e) => toggleSelectAll(e.target.checked)}
+                  />
+                  <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
+                    {hasSelection ? t("settings.clipboardPanel.selectedN", { n: selectedIds.size }) : t("settings.clipboardPanel.selectAll")}
+                  </span>
+                </label>
+              )}
             </div>
             {items.map((item) => (
               <ClipboardRow
                 key={item.id}
                 item={item}
                 isSelected={selectedIds.has(item.id)}
+                isTrash={isTrash}
                 onToggleSelect={() => toggleSelect(item.id)}
+                onRestore={() => handleRestore(item.id)}
+                onPermanentDelete={() => handlePermanentDelete(item.id)}
                 onChanged={() => fetchData(true)}
                 showToast={showToast}
               />
@@ -265,13 +323,19 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
 function ClipboardRow({
   item,
   isSelected,
+  isTrash,
   onToggleSelect,
+  onRestore,
+  onPermanentDelete,
   onChanged,
   showToast,
 }: {
   item: ClipboardItem;
   isSelected: boolean;
+  isTrash: boolean;
   onToggleSelect: () => void;
+  onRestore: () => void;
+  onPermanentDelete: () => void;
   onChanged: () => void;
   showToast: (msg: string) => void;
 }) {
@@ -461,106 +525,127 @@ function ClipboardRow({
         {/* 第二行：时间戳 + 操作（复制居首，最常用） */}
         <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
           <span className="text-[10px] text-muted-foreground tabular-nums">{item.created_at}</span>
-          <div className="flex flex-shrink-0 items-center gap-0.5">
-            <button
-              className={cn(
-                "p-1 rounded transition-opacity hover:scale-110",
-                copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-              )}
-              onClick={handleCopy}
-              title={t("settings.clipboardPanel.copy")}
-            >
-              {copied ? (
-                <Check className="w-3.5 h-3.5 text-success" />
-              ) : (
-                <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-              )}
-            </button>
-            {isUrl && (
+          {isTrash ? (
+            // 回收站模式：还原 + 永久删除
+            <div className="flex flex-shrink-0 items-center gap-0.5">
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
-                title={t("settings.clipboardPanel.openLink")}
+                onClick={(e) => { e.stopPropagation(); onRestore(); }}
+                title={t("settings.clipboardPanel.restore")}
               >
-                <LinkIcon className="w-3.5 h-3.5 text-info" />
+                <RotateCcw className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
               </button>
-            )}
-            {item.item_type !== "image" && item.item_type !== "file" && (
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={handleEditOrPreview}
-                title={t("settings.clipboardPanel.edit")}
+                onClick={(e) => { e.stopPropagation(); onPermanentDelete(); }}
+                title={t("settings.clipboardPanel.permanentDelete")}
               >
-                <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-destructive" />
               </button>
-            )}
-            {item.item_type === "image" && (
+            </div>
+          ) : (
+            // 正常模式：复制/链接/编辑/删除/收藏
+            <div className="flex flex-shrink-0 items-center gap-0.5">
               <button
-                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={handleEditOrPreview}
-                title={t("settings.clipboardPanel.preview")}
-              >
-                <img src="icons/eye-edit.svg" alt={t("settings.clipboardPanel.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
-              </button>
-            )}
-            {item.item_type === "image" && (
-              <div className="relative">
-                <button
-                  ref={saveBtnRef}
-                  className={cn(
-                    "p-1 rounded transition-opacity hover:scale-110",
-                    showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-                  )}
-                  onClick={handleSaveImage}
-                  title={t("settings.clipboardPanel.saveToFile")}
-                >
-                  <Download className={cn(
-                    "w-3.5 h-3.5 text-muted-foreground",
-                    showSavePopover && "text-foreground",
-                  )} />
-                </button>
-                {showSavePopover && (
-                  <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
+                className={cn(
+                  "p-1 rounded transition-opacity hover:scale-110",
+                  copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
                 )}
-              </div>
-            )}
-            {item.item_type === "file" && (
-              <button
-                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={handleOpenFile}
-                title={t("settings.clipboardPanel.openFile")}
+                onClick={handleCopy}
+                title={t("settings.clipboardPanel.copy")}
               >
-                <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                {copied ? (
+                  <Check className="w-3.5 h-3.5 text-success" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                )}
               </button>
-            )}
-            <button
-              className={cn(
-                "p-1 rounded transition-all",
-                deletePending
-                  ? "opacity-100 bg-destructive/15"
-                  : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
+              {isUrl && (
+                <button
+                  className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                  onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
+                  title={t("settings.clipboardPanel.openLink")}
+                >
+                  <LinkIcon className="w-3.5 h-3.5 text-info" />
+                </button>
               )}
-              onClick={handleDeleteClick}
-              title={deletePending ? t("settings.clipboardPanel.deleteConfirm") : t("settings.clipboardPanel.delete")}
-            >
-              <Trash2 className={cn(
-                "w-3.5 h-3.5 transition-colors",
-                deletePending ? "text-destructive" : "text-muted-foreground hover:text-destructive",
-              )} />
-            </button>
-            <button
-              className={cn(
-                "p-1 rounded transition-opacity hover:scale-110",
-                item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+              {item.item_type !== "image" && item.item_type !== "file" && (
+                <button
+                  className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                  onClick={handleEditOrPreview}
+                  title={t("settings.clipboardPanel.edit")}
+                >
+                  <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                </button>
               )}
-              onClick={handleFavorite}
-            >
-              <Star className={cn(
-                "w-3.5 h-3.5",
-                item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground",
-              )} />
-            </button>
-          </div>
+              {item.item_type === "image" && (
+                <button
+                  className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                  onClick={handleEditOrPreview}
+                  title={t("settings.clipboardPanel.preview")}
+                >
+                  <img src="icons/eye-edit.svg" alt={t("settings.clipboardPanel.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
+                </button>
+              )}
+              {item.item_type === "image" && (
+                <div className="relative">
+                  <button
+                    ref={saveBtnRef}
+                    className={cn(
+                      "p-1 rounded transition-opacity hover:scale-110",
+                      showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+                    )}
+                    onClick={handleSaveImage}
+                    title={t("settings.clipboardPanel.saveToFile")}
+                  >
+                    <Download className={cn(
+                      "w-3.5 h-3.5 text-muted-foreground",
+                      showSavePopover && "text-foreground",
+                    )} />
+                  </button>
+                  {showSavePopover && (
+                    <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
+                  )}
+                </div>
+              )}
+              {item.item_type === "file" && (
+                <button
+                  className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                  onClick={handleOpenFile}
+                  title={t("settings.clipboardPanel.openFile")}
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+                </button>
+              )}
+              <button
+                className={cn(
+                  "p-1 rounded transition-all",
+                  deletePending
+                    ? "opacity-100 bg-destructive/15"
+                    : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
+                )}
+                onClick={handleDeleteClick}
+                title={deletePending ? t("settings.clipboardPanel.deleteConfirm") : t("settings.clipboardPanel.delete")}
+              >
+                <Trash2 className={cn(
+                  "w-3.5 h-3.5 transition-colors",
+                  deletePending ? "text-destructive" : "text-muted-foreground hover:text-destructive",
+                )} />
+              </button>
+              <button
+                className={cn(
+                  "p-1 rounded transition-opacity hover:scale-110",
+                  item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+                )}
+                onClick={handleFavorite}
+              >
+                <Star className={cn(
+                  "w-3.5 h-3.5",
+                  item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground",
+                )} />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

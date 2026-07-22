@@ -87,6 +87,9 @@ pub struct ClipboardItem {
     pub has_thumbnail: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<String>,
+    /// 软删时间戳（v47）。None=活跃；Some=已进回收站。图片始终 None（不软删）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 /// 查询过滤条件

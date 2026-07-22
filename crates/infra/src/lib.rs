@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod consts;
+pub mod cpu;
 pub mod net;
 pub mod paths;
 pub mod db;

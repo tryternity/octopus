@@ -132,13 +132,17 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     is_rich         INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT    NOT NULL,
     has_thumbnail   INTEGER NOT NULL DEFAULT 0,
-    segments        TEXT                       -- 段 JSON（仅 voice，段模型真相源）
+    segments        TEXT,                      -- 段 JSON（仅 voice，段模型真相源）
+    deleted_at      TEXT DEFAULT NULL          -- 软删时间戳（v47）。NULL=活跃；非空=已进回收站。
+                                               -- 图片不软删（image_data 引用计数约束），deleted_at 对图片始终 NULL。
+                                               -- 热词挖掘 list_recent_text 故意不过滤此列——软删内容仍是热词来源（INV-C1）。
 );
 
 CREATE INDEX IF NOT EXISTS idx_clip_created   ON clipboard_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clip_type      ON clipboard_history(item_type);
 CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
+CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(deleted_at);
 
 -- ── 图片 BLOB 存储（image_data 表）─────────────────────────────────────────
 -- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。

@@ -1,0 +1,12 @@
+[package]
+name = "octopus-scheduler"
+version = "0.1.0"
+edition = "2021"
+
+# 通用调度 crate：后台线程定时触发注册的任务，CPU 空闲时才执行。
+# 依赖 infra 提供 is_cpu_idle 能力。不依赖任何业务 crate（删除/同步等逻辑由调用方闭包注入）。
+
+[dependencies]
+octopus-infra = { path = "../infra" }
+parking_lot = { workspace = true }
+log = "0.4"

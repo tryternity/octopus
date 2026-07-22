@@ -109,6 +109,9 @@ octopus-vault = { path = "../vault", optional = true }
 # 非 optional：热词功能不依赖 vault feature，但需要算 md5 指纹。
 octopus-sync = { path = "../sync" }
 
+# 通用后台调度器（回收站 TTL 清理等定时任务，CPU 空闲时执行）。
+octopus-scheduler = { path = "../scheduler" }
+
 # URL 解析（vault_detect_and_match 用 url::Url 解析浏览器 URL）—— vault 专用。
 # url crate 同时也是 octopus-vault 的依赖，feature off 时此处 optional 让它彻底切掉。
 url = { version = "2", optional = true }

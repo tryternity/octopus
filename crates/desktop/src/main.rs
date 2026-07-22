@@ -319,6 +319,12 @@ pub fn run() {
             clipboard_commands::delete_clipboard_items,
             clipboard_commands::clear_clipboard_history,
             clipboard_commands::clear_clipboard_history_by_filter,
+            // 回收站操作（2026-07-22 v47 软删）
+            clipboard_commands::restore_clipboard_item,
+            clipboard_commands::restore_clipboard_items,
+            clipboard_commands::permanent_delete_clipboard_item,
+            clipboard_commands::permanent_delete_clipboard_items,
+            clipboard_commands::empty_clipboard_trash,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
             clipboard_commands::paste_clipboard_item,
@@ -565,6 +571,23 @@ pub fn run() {
                     }
                 }
             });
+
+            // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
+            // 第一个任务：回收站自动清理——满足任一条件永久删除：
+            //   1. TTL 超期：软删超过 3 天
+            //   2. 容量超限：回收站超过 500 条，删最老的超出部分
+            // 与上面的 cleanup 线程（按 age/count 清活跃项）互补。
+            {
+                let mut scheduler = octopus_scheduler::Scheduler::new();
+                scheduler.register_task("trash_purge", 600, Box::new(|| {
+                    if let Err(e) = octopus_infra::db::with_db(|conn| {
+                        octopus_clipboard::store::purge_trash(conn, 3, 500)
+                    }) {
+                        log::warn!("Trash purge failed: {}", e);
+                    }
+                }));
+                scheduler.spawn();
+            }
 
             // 启动 notify-rs 文件监听：app 目录变化时秒级刷新索引。
             // macOS FSEvents 对 /System 等非用户目录可能漏事件——下面的轮询作为 fallback。

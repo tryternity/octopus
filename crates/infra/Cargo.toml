@@ -19,3 +19,4 @@ anyhow = "1"
 log = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 pinyin = "0.10"
+sysinfo = "0.32"

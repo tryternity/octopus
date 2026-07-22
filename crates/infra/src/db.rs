@@ -284,8 +284,29 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 46 {
-        // v46+ 已最新，直接返回。
+    if v >= 47 {
+        // v47+ 已最新，直接返回。
+        return Ok(());
+    }
+
+    // v46→v47：clipboard_history 加 deleted_at 列（软删/回收站）。
+    // 单独提前处理 v46 库——下面的 v44/v45/v46 迁移段以 v<=46 为入口，
+    // v46 库不需要跑那些迁移，只需补 deleted_at 列后直接跳 v47 返回。
+    if v == 46 {
+        let has_clip_table = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clipboard_history'")?
+            .exists([])?;
+        if has_clip_table {
+            let has_deleted_at = conn
+                .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'deleted_at'")?
+                .exists([])?;
+            if !has_deleted_at {
+                conn.execute("ALTER TABLE clipboard_history ADD COLUMN deleted_at TEXT", [])?;
+                log::info!("schema v47: clipboard_history 补 deleted_at 列");
+            }
+        }
+        conn.execute("PRAGMA user_version = 47", [])?;
+        log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
         return Ok(());
     }
 
@@ -525,6 +546,32 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
         conn.execute("PRAGMA user_version = 46", [])?;
         log::info!("schema upgraded to v46 (hotword_sets id 改 UUID + sync_md5 字段)");
+        // fall through 到 v47 段（不 return）——同一次启动完成 v44→v45→v46→v47
+    }
+
+    // v46→v47：clipboard_history 加 deleted_at 列（软删/回收站）。
+    //
+    // ALTER TABLE ADD COLUMN 需检查列是否存在（开发期中间 binary 可能跳过版本号）。
+    // 图片不软删（image_data 引用计数约束），deleted_at 对图片始终 NULL——靠应用层保证，
+    // schema 层不加 CHECK 约束（SQLite CHECK 对 item_type='image' AND deleted_at NOT NULL 的
+    // 限制会影响 INSERT 性能，不值得）。
+    //
+    // 测试库可能只有 hotword_sets 没有 clipboard_history——先检查表存在再 ALTER。
+    if v >= 17 && v <= 46 {
+        let has_clip_table = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clipboard_history'")?
+            .exists([])?;
+        if has_clip_table {
+            let has_deleted_at = conn
+                .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'deleted_at'")?
+                .exists([])?;
+            if !has_deleted_at {
+                conn.execute("ALTER TABLE clipboard_history ADD COLUMN deleted_at TEXT", [])?;
+                log::info!("schema v47: clipboard_history 补 deleted_at 列");
+            }
+        }
+        conn.execute("PRAGMA user_version = 47", [])?;
+        log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
         return Ok(());
     }
 
@@ -534,9 +581,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含 sync_md5 字段 + hotword_sets TEXT id（v46 schema），直接设 v46
-    conn.execute("PRAGMA user_version = 46", [])?;
-    log::info!("DB initialized (v46): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含 sync_md5 字段 + hotword_sets TEXT id（v46 schema）+ deleted_at（v47），直接设 v47
+    conn.execute("PRAGMA user_version = 47", [])?;
+    log::info!("DB initialized (v47): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2797,11 +2844,18 @@ fn list_active_hotword_words_at(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// 取最近 limit 条 ASR/文本记录的 content（挖掘候选用）。
+///
+/// **INV-C1（热词来源不断）**：故意不过滤 `deleted_at`——软删内容仍是热词来源，
+/// 这是剪贴板软删/回收站功能的核心目的。用户把文本删进回收站后，这里仍能读到它，
+/// 热词挖掘继续工作。只有永久删除（`DELETE FROM`）才会让行真正消失、挖不到。
+/// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 deleted_at），
+/// 活跃和软删混在同一条时间线，不会互相挤占名额。
 pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT content FROM clipboard_history
              WHERE item_type IN ('voice','text','ocr') AND content IS NOT NULL AND content != ''
+             -- 故意不过滤 deleted_at（INV-C1：软删内容仍是热词来源）
              ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
@@ -3846,7 +3900,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 46, "全新库 init_schema 后应到 v46");
+        assert_eq!(v, 47, "全新库 init_schema 后应到 v47");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -4201,7 +4255,7 @@ mod tests {
 
         // 验证 user_version = 43
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -4246,7 +4300,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4376,7 +4430,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4404,7 +4458,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4478,7 +4532,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -4659,9 +4713,9 @@ mod tests {
         // 跑迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 46
+        // 验证 user_version = 47（v46→v47 迁移加了 clipboard_history.deleted_at）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 46);
+        assert_eq!(v, 47);
 
         // id 类型应为 TEXT
         let id_type: String = conn
