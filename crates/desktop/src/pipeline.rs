@@ -422,10 +422,9 @@ impl VadSegmentedPipeline {
         asr_engine: String,
         segment_silence_ms: f64,
     ) -> anyhow::Result<Self> {
-        let path = octopus_asr_local::config::find_silero_vad()?;
-        let mut detect_vad = SileroVad::new(&path)?;
+        let mut detect_vad = octopus_asr_local::config::create_silero_vad()?;
         vad_preroll(&mut detect_vad);
-        let filter_vad = SileroVad::new(&path)?;
+        let filter_vad = octopus_asr_local::config::create_silero_vad()?;
         let (tx, rx) = std::sync::mpsc::channel();
         Ok(Self {
             engine, language, asr_engine, segment_silence_ms,
@@ -968,9 +967,9 @@ mod tests {
         async fn health_check(&self) -> bool { true }
     }
 
-    /// 探 silero_vad 模型存在则构造 VadSegmentedPipeline，缺失返回 None（测试 skip 不 FAIL，CI 友好）。
+    /// 探 silero_vad 可加载则构造 VadSegmentedPipeline，失败返回 None（测试 skip 不 FAIL）。
     fn try_new_vad_pipeline() -> Option<VadSegmentedPipeline> {
-        octopus_asr_local::config::find_silero_vad().ok()?;
+        octopus_asr_local::config::create_silero_vad().ok()?;
         let engine: std::sync::Arc<dyn crate::engine::TranscriptionEngine> =
             std::sync::Arc::new(DummyTranscriptionEngine);
         VadSegmentedPipeline::new(engine, "zh".into(), "sensevoice".into(), 800.0).ok()

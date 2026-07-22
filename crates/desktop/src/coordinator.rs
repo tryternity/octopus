@@ -834,10 +834,9 @@ fn prepare_cloud_streaming_session(
     selection: Option<(String, usize, usize)>,
     record_type: RecordType,
 ) {
-    match octopus_asr_local::config::find_silero_vad() {
-        Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
-            Ok(mut vad) => {
-                crate::pipeline::vad_preroll(&mut vad);
+    match octopus_asr_local::config::create_silero_vad() {
+        Ok(mut vad) => {
+            crate::pipeline::vad_preroll(&mut vad);
 
                 // 跨会话选中替换：有 selection → 种子 transcript（保留旧文本 + 删选区）。
                 // cloud 与本地 streaming/vad 共用 Stage::Streaming + Transcript，下游 paste 由
@@ -888,14 +887,9 @@ fn prepare_cloud_streaming_session(
                     transcript,
                     streaming_active: tick_active,
                 };
-            }
-            Err(e) => {
-                error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
-                let _ = audio.stop();
-            }
-        },
+        }
         Err(e) => {
-            error!("VAD not found for cloud streaming: {}, falling back to VadSegmented", e);
+            error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
             let _ = audio.stop();
         }
     }

@@ -87,22 +87,14 @@ fn transcribe_segments(
         return engine.transcribe(samples, language);
     }
 
-    let vad_path = match crate::config::find_silero_vad() {
-        Ok(p) => Some(p),
-        Err(e) => {
-            log::warn!(
-                "Silero VAD not found, falling back to full audio transcription: {}", e);
-            None
-        }
-    };
-    let vad = vad_path.and_then(|p| match crate::vad::SileroVad::new(&p) {
+    let vad = match crate::config::create_silero_vad() {
         Ok(v) => Some(v),
         Err(e) => {
             log::warn!(
                 "Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
             None
         }
-    });
+    };
 
     if let Some(mut v) = vad {
         let total_secs = samples.len() as f64 / 16000.0;

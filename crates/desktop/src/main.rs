@@ -851,13 +851,11 @@ pub fn run() {
                     }
                     // 预加载 VAD session 到全局缓存：首次 Toggle 命中缓存，消除录音启动延迟。
                     // 失败不影响启动（首次录音时 new() 会懒加载重试）。
-                    if let Ok(vad_path) = octopus_asr_local::config::find_silero_vad() {
-                        match octopus_asr_local::vad::SileroVad::new(&vad_path) {
-                            Ok(_) => info!("VAD session preheated"),
-                            Err(e) => log::warn!(
-                                "VAD 预加载失败（不影响启动，首次录音懒加载）: {}", e
-                            ),
-                        }
+                    match octopus_asr_local::config::create_silero_vad() {
+                        Ok(_) => info!("VAD session preheated"),
+                        Err(e) => log::warn!(
+                            "VAD 预加载失败（不影响启动，首次录音懒加载）: {}", e
+                        ),
                     }
                 });
             }

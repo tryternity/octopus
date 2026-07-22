@@ -465,8 +465,7 @@ fn run_e2e(language: &str) -> Result<()> {
     println!("Recorded {} samples ({:.2}s)", all_samples.len(), duration);
 
     // VAD filter
-    let vad_path = octopus_asr_local::config::find_silero_vad()?;
-    let mut vad = octopus_asr_local::vad::SileroVad::new(&vad_path)?;
+    let mut vad = octopus_asr_local::config::create_silero_vad()?;
     let speech = octopus_asr_local::audio::filter_speech(&all_samples, &mut vad, 480, 0.5);
 
     if speech.is_empty() {
@@ -523,9 +522,15 @@ fn show_config() -> Result<()> {
         ),
     }
 
-    let vad_path = octopus_asr_local::config::find_silero_vad()?;
-    let vad_size = std::fs::metadata(&vad_path)?.len() as f64 / 1_048_576.0;
-    println!("  VAD model (固定路径): {} ({:.1} MB)", vad_path.display(), vad_size);
+    match octopus_asr_local::config::find_silero_vad()? {
+        octopus_asr_local::config::VadSource::File(p) => {
+            let vad_size = std::fs::metadata(&p)?.len() as f64 / 1_048_576.0;
+            println!("  VAD model (磁盘): {} ({:.1} MB)", p.display(), vad_size);
+        }
+        octopus_asr_local::config::VadSource::Builtin => {
+            println!("  VAD model: builtin (embedded 1.7MB)");
+        }
+    }
 
     if let Some(whisper) = &config.asr.whisper {
         for (id, entry) in whisper {
