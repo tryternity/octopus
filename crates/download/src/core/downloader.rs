@@ -96,12 +96,27 @@ impl Downloader {
         if let Some(class) = classify_status(status) {
             return Err(class_to_error(class, status, url));
         }
+        // 206 Partial Content → content-range 头取 total（标准 Range 响应）
+        // 200 OK（服务端忽略 Range 返回全文，或 307 重定向后 CDN 返回 200）→
+        //   无 content-range，fallback 用 content-length 作为 total（= 全文件大小）。
+        //   此时 accept_ranges=false（plan_segments 会生成单段整文件下载）。
         let total = resp
             .headers()
             .get("content-range")
             .and_then(|v| v.to_str().ok())
             .and_then(|cr| cr.split('/').nth(1))
-            .and_then(|s| s.parse::<u64>().ok());
+            .and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| {
+                // 200 响应：content-length = 全文件大小
+                if status == 200 {
+                    resp.headers()
+                        .get("content-length")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                } else {
+                    None
+                }
+            });
         let accept_ranges = resp
             .headers()
             .get("accept-ranges")
