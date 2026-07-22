@@ -759,6 +759,8 @@ function CreateCipherView({
               onChange={(e) => setName(e.target.value)}
               placeholder="163 邮箱"
               autoFocus
+              autoCapitalize="off"
+              autoComplete="off"
             />
           </div>
           <div className="space-y-1">
@@ -770,6 +772,8 @@ function CreateCipherView({
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://mail.163.com/"
+              autoCapitalize="off"
+              autoComplete="off"
             />
           </div>
           <div className="space-y-1">
@@ -780,6 +784,7 @@ function CreateCipherView({
               size="full"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              autoCapitalize="off"
               autoComplete="off"
             />
           </div>

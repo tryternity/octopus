@@ -545,6 +545,19 @@ pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: String) -
     octopus_vault::storage::restore(&id).map_err(vault_error::to_tauri_error)
 }
 
+/// 清空回收站：批量永久删除所有软删 cipher。
+///
+/// 单条失败不中断——返回 `(deleted_count, failed_count)`，前端 toast 提示。
+#[tauri::command]
+pub fn vault_empty_trash(_state: State<'_, SharedVaultSession>) -> Result<(usize, usize), String> {
+    let (deleted, errors) =
+        octopus_vault::storage::empty_trash().map_err(vault_error::to_tauri_error)?;
+    if !errors.is_empty() {
+        log::warn!("vault_empty_trash: {} 条删除失败已跳过", errors.len());
+    }
+    Ok((deleted, errors.len()))
+}
+
 #[tauri::command]
 pub fn vault_generate(cfg: GeneratorConfig) -> Result<String, String> {
     octopus_vault::generator::generate(&cfg).map_err(vault_error::to_tauri_error)

@@ -147,6 +147,12 @@ settings:
       favorite: 收藏
       deleted: 已删除
       restore: 恢复
+      permanentDelete: 永久删除
+      emptyTrash: 全部清空
+      trashEmpty: 回收站为空
+      restored: 已还原
+      permanentlyDeleted: 已永久删除
+      trashEmptied: 回收站已清空
     editor:
       titleNew: 新建密码条目
       titleEdit: 编辑密码条目
@@ -168,6 +174,10 @@ settings:
       hide: 隐藏
       copy: 复制
       copied: 已复制
+      repromptLabel: 使用时验证主密码
+      repromptHint: 勾选后自动填充/复制密码时会要求重新输入主密码（适用于银行/邮箱等高敏感条目）
+      deleteConfirmTitle: 删除密码条目
+      deleteConfirmMessage: 将「${name}」移到回收站？可从回收站还原。
     folder:
       section: 文件夹
       allItems: 所有条目

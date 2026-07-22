@@ -147,6 +147,12 @@ settings:
       favorite: Favorite
       deleted: Deleted
       restore: Restore
+      permanentDelete: Delete Permanently
+      emptyTrash: Empty Trash
+      trashEmpty: Trash is empty
+      restored: Restored
+      permanentlyDeleted: Permanently deleted
+      trashEmptied: Trash emptied
     editor:
       titleNew: New Password Item
       titleEdit: Edit Password Item
@@ -168,6 +174,10 @@ settings:
       hide: Hide
       copy: Copy
       copied: Copied
+      repromptLabel: Require master password on use
+      repromptHint: Auto-fill/copy will ask for master password again (for sensitive items like bank/email)
+      deleteConfirmTitle: Delete password item
+      deleteConfirmMessage: Move "${name}" to trash? It can be restored from trash.
     folder:
       section: Folders
       allItems: All Items

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
-import { Plus, Search } from "lucide-react";
+import { Plus, RotateCcw, Search, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const [query, setQuery] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<string | "new" | null>(null);
+  const [busy, setBusy] = useState(false);
   // folder prompt dialog 状态：null=关闭，对象=打开（标题/初值不同区分新建/重命名）
   const [prompt, setPrompt] = useState<PromptOptions | null>(null);
   // pending rename 目标（与 prompt 配对：confirm 时按是否设此区分新建 vs 重命名）
@@ -217,6 +218,51 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
     setRenameTarget(null);
   }, []);
 
+  // === 回收站操作：还原 / 永久删除 / 全部清空 ===
+
+  const handleRestore = useCallback(
+    async (id: string) => {
+      try {
+        await invoke("vault_restore_cipher", { id });
+        showToast(t("settings.vault.list.restored"));
+        await refreshCiphers();
+      } catch (e) {
+        showToast(String(e));
+      }
+    },
+    [refreshCiphers, showToast, t],
+  );
+
+  const handlePermanentDelete = useCallback(
+    async (id: string) => {
+      try {
+        await invoke("vault_delete_cipher", { id, permanent: true });
+        showToast(t("settings.vault.list.permanentlyDeleted"));
+        await refreshCiphers();
+      } catch (e) {
+        showToast(String(e));
+      }
+    },
+    [refreshCiphers, showToast, t],
+  );
+
+  const handleEmptyTrash = useCallback(async () => {
+    setBusy(true);
+    try {
+      const [deleted, failed] = await invoke<[number, number]>("vault_empty_trash");
+      if (failed > 0) {
+        showToast(`${t("settings.vault.list.trashEmptied")} (${deleted}, ${failed} failed)`);
+      } else {
+        showToast(t("settings.vault.list.trashEmptied"));
+      }
+      await refreshCiphers();
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [refreshCiphers, showToast, t]);
+
   if (editing !== null) {
     return (
       <CipherEditor
@@ -244,7 +290,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
       />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        {/* 搜索 + 新建 —— 单行紧凑 */}
+        {/* 搜索 + 新建/清空 —— 单行紧凑 */}
         <div className="flex shrink-0 items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -256,10 +302,22 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
               size="full"
             />
           </div>
-          <Button variant="voice" size="sm" onClick={() => setEditing("new")}>
-            <Plus />
-            {t("settings.vault.list.addNew")}
-          </Button>
+          {selected === "trash" ? (
+            <Button
+              variant="destructive-ghost"
+              size="sm"
+              disabled={busy}
+              onClick={handleEmptyTrash}
+            >
+              <Trash2 />
+              {t("settings.vault.list.emptyTrash")}
+            </Button>
+          ) : (
+            <Button variant="voice" size="sm" onClick={() => setEditing("new")}>
+              <Plus />
+              {t("settings.vault.list.addNew")}
+            </Button>
+          )}
         </div>
 
         {/* 卡片网格区 */}
@@ -270,7 +328,11 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
             </p>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <p className="text-sm font-medium">{t("settings.vault.list.empty")}</p>
+              <p className="text-sm font-medium">
+                {selected === "trash"
+                  ? t("settings.vault.list.trashEmpty")
+                  : t("settings.vault.list.empty")}
+              </p>
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -279,10 +341,13 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
                   key={c.id}
                   cipher={c}
                   active={activeId === c.id}
+                  isTrash={selected === "trash"}
                   onClick={() => {
                     setActiveId(c.id);
                     setEditing(c.id);
                   }}
+                  onRestore={handleRestore}
+                  onPermanentDelete={handlePermanentDelete}
                 />
               ))}
             </div>
@@ -315,11 +380,17 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
 function CipherCard({
   cipher,
   active,
+  isTrash,
   onClick,
+  onRestore,
+  onPermanentDelete,
 }: {
   cipher: CipherDto;
   active: boolean;
+  isTrash: boolean;
   onClick: () => void;
+  onRestore: (id: string) => void;
+  onPermanentDelete: (id: string) => void;
 }) {
   const t = useT();
 
@@ -336,16 +407,10 @@ function CipherCard({
         ? "bg-foreground"
         : "bg-foreground/30";
 
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "group relative w-full overflow-hidden rounded-md border border-border bg-background p-3 pl-5 text-left transition-colors",
-        "hover:bg-accent/50",
-        active && "bg-accent",
-        cipher.deleted_at && "opacity-60",
-      )}
-    >
+  // 卡片内容：封印条 + 名称/用户名/密码掩码——正常模式和回收站模式共用。
+  // 正常模式整个卡片是 <button>（点进编辑器）；回收站模式是 <div> + 右侧操作按钮。
+  const cardContent = (
+    <>
       {/* 封印条：左侧 3px 竖条 + 顶部圆节点 */}
       {cipher.deleted_at ? (
         <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sealColor)} />
@@ -399,6 +464,52 @@ function CipherCard({
           </span>
         )}
       </div>
+    </>
+  );
+
+  // 回收站模式：div 外壳 + 右侧「还原」「永久删除」按钮
+  if (isTrash) {
+    return (
+      <div
+        className={cn(
+          "group relative flex w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-background p-3 pl-5 transition-colors",
+          "hover:bg-accent/50",
+          active && "bg-accent",
+          cipher.deleted_at && "opacity-60",
+        )}
+      >
+        <div className="min-w-0 flex-1">{cardContent}</div>
+        <div className="flex shrink-0 flex-col gap-1">
+          <button
+            onClick={() => onRestore(cipher.id)}
+            title={t("settings.vault.list.restore")}
+            className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <RotateCcw className="size-3.5" />
+          </button>
+          <button
+            onClick={() => onPermanentDelete(cipher.id)}
+            title={t("settings.vault.list.permanentDelete")}
+            className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "group relative w-full overflow-hidden rounded-md border border-border bg-background p-3 pl-5 text-left transition-colors",
+        "hover:bg-accent/50",
+        active && "bg-accent",
+        cipher.deleted_at && "opacity-60",
+      )}
+    >
+      {cardContent}
     </button>
   );
 }

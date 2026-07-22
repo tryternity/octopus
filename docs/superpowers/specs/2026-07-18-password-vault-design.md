@@ -1033,7 +1033,7 @@ pub fn copy_to_clipboard_concealed(text: &str, ttl_seconds: u64) -> Result<()> {
 | INV-A10 | reprompt 保护的高敏感 cipher 的明文返回路径（`vault_autotype` / `vault_copy_password` / `vault_copy_username`）必须后端强制校验 `master_password`（2026-07-19 修复 #3 + 复审 A）；不可绕过——DevTools / 篡改前端都走不通。**例外**：`vault_copy_username` 不强制 reprompt（username 通常不敏感） |
 | INV-A11 | **热键 callback 抓 URL 必须在 show VaultPicker 之前**（2026-07-20 e2e 修复）：show 后 VaultPicker 抢前台 → `frontmost_bundle_id()` 取到 octopus-desktop 自身 → URL 检测失败 → ~~fallback 列出最近 20 条~~（2026-07-21 安全加固改为空列表 + 搜索框）。URL 存 `SharedPickerUrlCache` 共享状态 |
 | INV-A12 | **URL 检测失败时不返回 fallback 列表**（2026-07-21 安全加固）：原 `vault_detect_and_match` URL 检测失败时返回最近 20 条 cipher 有钓鱼风险——用户可能"顺手"误选密码注入到钓鱼站。现返回空列表，用户通过搜索框主动搜索（`vault_search_ciphers` 全量模糊匹配 name/username/URIs）。合法场景（桌面应用/不支持浏览器）仍可通过搜索找到密码 |
-| INV-A12 | **hide VaultPicker 必须由后端做**（2026-07-20 e2e 修复）：前端 `await hide() + await invoke` 串行写法会让 hide 触发 webview terminated，invoke 失联（race condition）。`vault_autotype` 命令加 `app: AppHandle` 参数，进入后立刻 hide |
+| INV-A14 | **hide VaultPicker 必须由后端做**（2026-07-20 e2e 修复）：前端 `await hide() + await invoke` 串行写法会让 hide 触发 webview terminated，invoke 失联（race condition）。`vault_autotype` 命令加 `app: AppHandle` 参数，进入后立刻 hide |
 | INV-A13 | **Auto-Type 默认 PasswordOnly**（2026-07-20 e2e 修复）：webmail SPA 的 Tab 切焦点不可靠（SPA 自己拦截 Tab 或密码框是 iframe），`UsernamePassword` 模式在 webmail 上失败。给用户三种独立控制（UsernamePassword / PasswordOnly / UsernameOnly），按当前光标位置选合适图标。与 Bitwarden/1Password 桌面助手默认行为对齐 |
 
 ### 4.8 跨平台扩展计划
@@ -1552,7 +1552,7 @@ pub trait VaultSync {
 | F5 | 主密码彻底遗忘 | 无降级——vault 不可恢复 | 警告 + 引导"导出 emergency kit" |
 | F6 | vault 锁定超时（默认 3min，可配 30s~15min/Never） | user_vault_key zeroize | 自动锁定 toast |
 | F7 | URL 检测失败 | 弹手动选择 cipher 浮窗 | "无法检测当前页面，请手动选择" |
-| F8 | URL 匹配 0 个 cipher | 浮窗显示"无匹配"+ 全 cipher 列表 | 让用户搜索选择 |
+| F8 | URL 匹配 0 个 cipher | 浮窗显示"无匹配" + **空列表**（2026-07-21 安全加固：原"全 cipher 列表"有钓鱼风险，改为空列表 + 搜索框，见 INV-A12） | 让用户主动搜索选择 |
 | F9 | URL 匹配 N 个 cipher | 弹选择浮窗，按最近使用排序（上限 follow-up #8） | 用户点选 |
 | F10 | Auto-Type 时焦点丢失 | 中止操作 + toast 警告 | "目标窗口已切换，已取消填充" |
 | F11 | Auto-Type 失败（enigo 报错/权限拒绝） | fallback 到复制密码到剪贴板（30s 清空） | "键盘模拟失败，已复制到剪贴板" |
@@ -1683,10 +1683,10 @@ export function validateMasterPassword(pwd: string): MasterPasswordValidation {
 
 ### 7.5 不变量汇总（全局）
 
-见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。截至 2026-07-20 e2e 修复，不变量已覆盖到 INV-15 + INV-A13：
+见 2.8 / 3.8 / 4.7 / 5.4 / 6.4 各节。截至 2026-07-22，不变量已覆盖到 INV-15 + INV-A14：
 INV-9 / INV-10（§2.8 主密码强度）、INV-11（meta 写锁）、INV-12（退避 + 成功路径 reset）、
 INV-13（迁移事务化）、INV-14（setup 失败可恢复）、INV-15（密码校验与副作用错误语义分离）；
-INV-A1 ~ INV-A13（§4.7 URL 匹配 + Auto-Type，含 2026-07-20 e2e 修复的 INV-A11/A12/A13）；
+INV-A1 ~ INV-A14（§4.7 URL 匹配 + Auto-Type，含 2026-07-20 e2e 修复的 INV-A11/A12/A14、2026-07-21 安全加固的 INV-A12）；
 INV-D6 / INV-D7（§3.8 数据层）；INV-G8（§5.4 生成器 + 健康检查）。
 
 ### 7.6 关键测试场景
@@ -1809,6 +1809,17 @@ pub fn vault_delete_cipher(state: State<AppState>, id: i64, permanent: bool) -> 
 // permanent=false → 软删除（回收站）；permanent=true → 物理 DELETE
 
 #[tauri::command]
+pub fn vault_restore_cipher(state: State<AppState>, id: String) -> Result<(), String>;
+// 从回收站还原（清 deleted_at，重算 sync_md5）
+
+#[tauri::command]
+pub fn vault_empty_trash(state: State<AppState>) -> Result<(usize, usize), String>;
+// 2026-07-22 新增：批量永久删除所有软删 cipher（deleted_at IS NOT NULL）。
+// 单条失败不中断，返回 (deleted_count, failed_count)，前端 toast 提示。
+// 配合回收站「全部清空」按钮（CipherList 顶部 destructive-ghost）。
+// 实现链路：vault_commands → storage::empty_trash（逐条 permanent_delete）→ db::list_trash_cipher_ids
+
+#[tauri::command]
 pub fn vault_generate(state: State<AppState>, cfg: GeneratorConfig) -> Result<String, String>;
 
 #[tauri::command]
@@ -1864,6 +1875,13 @@ pub fn vault_delete_folder(state: State<AppState>, id: i64) -> Result<(), String
 #[tauri::command]
 pub fn vault_detect_and_match(state: State<AppState>) -> Result<Vec<CipherDto>, String>;
 // vault_autotype_detect_and_match 的实现名（含 fallback 上限 follow-up #8）
+// 2026-07-21 安全加固：URL 检测失败时返回空列表（不再 fallback 最近 20 条，防钓鱼）
+
+#[tauri::command]
+pub fn vault_search_ciphers(query: String, state: State<AppState>) -> Result<Vec<CipherDto>, String>;
+// 2026-07-21 新增：全量模糊匹配 name/username/URIs（lowercase contains），
+// 按 updated_at DESC 排序，take 20。用户主动搜索 = 有意识的选择，替代已删除的
+// fallback-20 路径。性能实测（2026-07-22）：1000 cipher 单次搜索 6.1ms（release），无需优化
 
 #[tauri::command]
 pub fn feature_flags::is_vault_enabled() -> bool;

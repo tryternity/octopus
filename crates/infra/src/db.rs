@@ -3443,6 +3443,20 @@ fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCiphe
     }
 }
 
+/// 查所有软删 cipher 的 id（deleted_at IS NOT NULL），轻量查询——不解密、不读字段，
+/// 仅供 `vault_empty_trash` 批量永久删除用。
+pub fn list_trash_cipher_ids() -> Result<Vec<String>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare("SELECT id FROM vault_ciphers WHERE deleted_at IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for r in rows {
+            ids.push(r?);
+        }
+        Ok(ids)
+    })
+}
+
 pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| insert_vault_cipher_at(conn, input))
 }
