@@ -26,4 +26,4 @@
 
 - [x] cargo check 0 error
 - [x] tsc 0 error
-- [ ] 文档同步（architecture.md fail-soft 说明）
+- [x] 文档同步（spec 状态改"已实现"；architecture.md 无需专门段落——fail-soft 是 `get_config` 命令内部健壮性改进，非架构级特性）

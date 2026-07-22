@@ -1,7 +1,7 @@
 # 设置页 fail-soft 健壮性改造
 
 > **日期**：2026-07-22
-> **状态**：设计阶段
+> **状态**：✅ 已实现（cargo check 0 error；tsc 0 error。models 表 SQL 错误不再拖垮整个设置页）
 
 ---
 
@@ -19,6 +19,8 @@ models 表 SQL 错误
 ```
 
 **根因**：独立的页面被不相关的数据源错误拖垮。
+
+> **注**：原文描述的 `is_local` 列错误是触发场景之一（已被 source_type 迁移 builtin-models spec §4 解决）。但 fail-soft 的价值是泛化的——任何未来 schema 变更期间或 DB 损坏导致的 models/prompts 表 SQL 错误，都不会再拖垮整个设置页。
 
 ---
 
