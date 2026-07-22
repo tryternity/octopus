@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import { useT } from "@/lib/i18n";
@@ -40,6 +40,38 @@ export default function ChangePasswordModal({
   const [confirmPwd, setConfirmPwd] = useState("");
   const [strength, setStrength] = useState<PasswordStrength | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Focus trap：Tab / Shift+Tab 在 modal 内循环，不跑到底层页面。
+  // 序列：旧密码 → 新密码 → 确认密码 → 取消 → 确认修改（disabled 时跳过）→ 回旧密码
+  const handleTab = useCallback((e: KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const card = cardRef.current;
+    if (!card) return;
+    // 收集 modal 内所有 focusable 元素（input + button:not(:disabled)）
+    const focusables = Array.from(
+      card.querySelectorAll<HTMLElement>(
+        'input:not([disabled]), button:not([disabled]):not([tabindex="-1"])',
+      ),
+    ).filter((el) => el.tabIndex !== -1);
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      // Shift+Tab：从第一个跳到最后一个
+      if (active === first || !card.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      // Tab：从最后一个跳到第一个
+      if (active === last || !card.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }, []);
 
   // 新密码强度条——debounce 300ms
   useEffect(() => {
@@ -55,11 +87,15 @@ export default function ChangePasswordModal({
     return () => clearTimeout(timer);
   }, [newPwd]);
 
-  // Esc 关闭
+  // Esc 关闭 + Tab focus trap（modal 内循环，不跑到底层页面）
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handleClose();
+      if (e.key === "Escape") {
+        handleClose();
+      } else if (e.key === "Tab") {
+        handleTab(e);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -118,6 +154,7 @@ export default function ChangePasswordModal({
       onClick={handleClose}
     >
       <div
+        ref={cardRef}
         className="w-[400px] rounded-xl border border-border bg-background p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
