@@ -20,6 +20,7 @@
 | [db-and-config.md](./db-and-config.md) | 数据持久化与配置 | SQLite schema（models + transcriptions + clipboard_history）、config.yaml、RuntimeConfig、DB 写入队列 actor |
 | [desktop-app.md](./desktop-app.md) | 桌面应用集成 | Tauri 2 架构、窗口管理、快捷键、托盘菜单、平台特性（macOS/Windows/Linux） |
 | [make-ppt.md](./make-ppt.md) | 从文件制作 PPT | Actionbar 召唤外部 Agent（Pi/Claude Code）读文件 + 口述风格 → 生成 PPT；4 个 PPT skill 候选、产物路径披露、Quick Execute 直接口述路径 |
+| [vault.md](./vault.md) | 密码保险箱 | AES-256-GCM 加密、主密码派生密钥、Auto-Type 自动填充（URL 匹配防钓鱼）、TOTP、密码生成器、健康检查、Bitwarden 导入导出、Git 跨设备同步 |
 
 ## 维护规则
 

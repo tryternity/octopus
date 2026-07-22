@@ -386,9 +386,9 @@ pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<u
     }
     total_deleted += ttl_deleted;
 
-    // 条件 2：容量超限——删最老的超出部分
+    // 条件 2：容量超限——删最老的超出部分（收藏项不计入容量、不被删）
     let trash_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_history WHERE deleted_at IS NOT NULL",
+        "SELECT COUNT(*) FROM clipboard_history WHERE deleted_at IS NOT NULL AND is_favorite = 0",
         [],
         |r| r.get(0),
     )?;
@@ -397,7 +397,7 @@ pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<u
         let cap_deleted = conn.execute(
             "DELETE FROM clipboard_history WHERE id IN (
                 SELECT id FROM clipboard_history
-                WHERE deleted_at IS NOT NULL
+                WHERE deleted_at IS NOT NULL AND is_favorite = 0
                 ORDER BY deleted_at ASC LIMIT ?
             )",
             [excess],

@@ -3,9 +3,9 @@
 > **状态**：已实现 ✅（2026-07-19，commit `1e688edc`）
 > **日期**：2026-07-19
 > **scope**：在 Finder 选中文件/文件夹 → 全局热键弹 actionbar → 点「Agent → 制作 PPT」→ 用户口述需求 → Pi（或 Claude Code）在 Terminal 中读文件 + 选 PPT skill + 生成 PPT + 打印产物路径
-> **前置文档**：
-> - [`2026-07-12-action-bar-file-agent-design.md`](./2026-07-12-action-bar-file-agent-design.md)（Finder 选中 → agent 桥接，本设计完全复用其链路）
-> - [`2026-07-13-action-bar-agent-voice-design.md`](./2026-07-13-action-bar-agent-voice-design.md)（agent × 语音联动，含 `{{task}}` 触发音录）
+> **前置文档**（已归档至 `specs/archived/`）：
+> - [`2026-07-12-action-bar-file-agent-design.md`](./archived/2026-07-12-action-bar-file-agent-design.md)（Finder 选中 → agent 桥接，本设计完全复用其链路）
+> - [`2026-07-13-action-bar-agent-voice-design.md`](./archived/2026-07-13-action-bar-agent-voice-design.md)（agent × 语音联动，含 `{{task}}` 触发音录）
 
 ---
 

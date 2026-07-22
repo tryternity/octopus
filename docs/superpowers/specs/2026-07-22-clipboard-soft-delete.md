@@ -159,7 +159,7 @@ pub deleted_at: Option<String>,
 回收站内容由通用调度 crate `octopus-scheduler` 每 10 分钟检查一次（CPU 空闲时），满足**任一**条件永久删除：
 
 1. **TTL 超期**：`deleted_at` 超过 **3 天**
-2. **容量超限**：回收站总条数超过 **500 条**，删最老的（`deleted_at ASC`）超出部分
+2. **容量超限**：回收站非收藏项超过 **500 条**，删最老的（`deleted_at ASC`）超出部分（收藏项不计入容量、不被删）
 
 ### 架构
 
@@ -172,7 +172,7 @@ crates/desktop/src/main.rs    ← setup 创建 Scheduler + 注册 trash_purge �
 
 - **infra/cpu.rs**：`global_cpu_usage() -> f32` + `is_cpu_idle(threshold) -> bool`。内部 `OnceLock<Mutex<System>>` 持久化实例（sysinfo CPU 差分需跨 tick）。SystemStatusSampler 保持自己的 System（它需要 refresh_processes/memory 等更多 API）。
 - **octopus-scheduler**：通用调度框架。后台线程每 10 分钟醒一次 → 查 `infra::cpu::is_cpu_idle(30.0)` → CPU < 30% 才执行所有到期任务。不知道业务逻辑——任务由 `register_task(name, interval, run: Box<dyn Fn()>)` 注册。
-- **purge_trash**：先删 TTL 超期（`DELETE WHERE deleted_at < datetime('now','-3 days')`），再查剩余条数，超 500 则删最老的（`DELETE WHERE id IN (SELECT id ... ORDER BY deleted_at ASC LIMIT excess)`）。物理 DELETE 触发 FTS trigger 自动清索引。
+- **purge_trash**：先删 TTL 超期（`DELETE WHERE deleted_at < datetime('now','-3 days')`），再查剩余非收藏条数，超 500 则删最老的（`DELETE WHERE id IN (SELECT id ... WHERE is_favorite=0 ORDER BY deleted_at ASC LIMIT excess)`，收藏项不计入容量、不被删）。物理 DELETE 触发 FTS trigger 自动清索引。
 - **TTL = 3 天 / max_items = 500**：写死常量，不可配。
 - **CPU 阈值 = 30%**：Scheduler 默认值，写死。
 - 与 clipboard 自有的 cleanup 线程（每小时按 age/count 清活跃项）互补：cleanup 管「太多/太老」，scheduler 管「回收站里待太久」。

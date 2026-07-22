@@ -3,7 +3,7 @@
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
 > **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离）已实现并 e2e 验证通过，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议 + §4.14 stamp 冲突解决协议
-> **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
+> **前置依赖**：[archived/2026-07-18-password-vault-design.md](./archived/2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
 > **调研依据**：本会话多轮 brainstorming + 三个并行 Explore agent 调研（vault 加密层 / GitHub API / Bitwarden 同步协议）。决策见 §1.4 路线对比。
@@ -130,7 +130,7 @@ ciphers/
 
 ## 2. 加密与密钥（复用现有，零改动）
 
-### 2.1 密钥层级（与 [vault spec §2.1](./2026-07-18-password-vault-design.md) 一致）
+### 2.1 密钥层级（与 [vault spec §2.1](./archived/2026-07-18-password-vault-design.md) 一致）
 
 ```
 master_password (用户输入)
@@ -1298,7 +1298,7 @@ B 机点「同步」：
 
 ## 参考文档
 
-- [vault 原始设计 spec](./2026-07-18-password-vault-design.md)——加密层、密钥层级、数据模型基础
+- [vault 原始设计 spec](./archived/2026-07-18-password-vault-design.md)——加密层、密钥层级、数据模型基础
 - [vault 实施计划](../plans/2026-07-18-password-vault.md)——含方案 A bookmarklet 评估（已弃）
 - Tauri deep-link plugin 文档（未采用，但评估过）
 - vaultwarden 源码 `vault/src/api/core/ciphers.rs`（Bitwarden 同步协议参考）

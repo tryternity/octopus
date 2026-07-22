@@ -7133,7 +7133,7 @@ Plan 已完成全部 21 个 Task + Follow-up Work。原文保留如下（历史�
 ### 改动
 
 - `crates/infra/src/db.rs`：`delete_vault_meta_row` 加 `#[doc(hidden)]` + 警告注释强化
-- `docs/superpowers/specs/2026-07-18-password-vault-design.md` §3.6：补「A1 崩溃窗口残余风险」段
+- `docs/superpowers/specs/archived/2026-07-18-password-vault-design.md` §3.6：补「A1 崩溃窗口残余风险」段
 
 ### 验证
 
