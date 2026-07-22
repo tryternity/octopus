@@ -126,6 +126,7 @@ export default function ChangePasswordModal({
           <h2 className="text-sm font-semibold">{t("settings.vault.changePassword")}</h2>
           <button
             type="button"
+            tabIndex={-1}
             onClick={handleClose}
             className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
