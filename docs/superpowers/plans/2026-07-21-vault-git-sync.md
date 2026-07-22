@@ -10,7 +10,7 @@
 
 **Spec:** [2026-07-21-vault-git-sync-design.md](../specs/2026-07-21-vault-git-sync-design.md)
 
-> **状态**：Phase 1（vault 同步 T1-T12）+ Phase 2（热词同步 + sync crate 抽离，Task 13）均已完成（2026-07-22）。待 e2e 测试。
+> **状态**：Phase 1（vault 同步 T1-T12）+ Phase 2（热词同步 + sync crate 抽离，Task 13）均已完成并 e2e 验证通过（2026-07-22）。
 
 ## Global Constraints
 
@@ -1436,6 +1436,7 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 | 13.9 补强 | `7eb298a5` | 补强测试覆盖（desktop 7 + vault 集成 4 + 边界 5）+ 修 pull name 冲突 bug |
 | 后续 | `8b56119e` | fix: pull_from_files 加 security_stamp 校验（INV-S9）+ Git 同步 Tab 挪到系统设置 |
 | 后续 | `41616f26` | feat: 修改主密码入口（ChangePasswordModal + VaultPanel 按钮） |
+| 后续 | `e18c7471` | feat: stamp 冲突双向解决（resolve_with_remote / resolve_with_local） |
 
 ### 关键决策变化与实施发现
 
@@ -1475,9 +1476,10 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 
 历史基线演进：T12 完成 vault 257 → Task 13 抽离后 vault 193 + sync 70 → hotword +17 → 集成 +4 → sync 91 → 补强测试 sync 96 + vault 199 + desktop 394。
 
-### 待 e2e 验证
+### e2e 验证（2026-07-22 通过）
 
-- A 机创建热词版本 → sync → B 机 clone → 看到热词集 + words_text 一致
-- A 改 name + B 加词 → 双向 sync → 两边都有最新
-- A 删热词集 → sync → B 也删了
-- 真实 GitHub private repo + SSH key 端到端
+- A 机创建热词版本 → sync → B 机 clone → 看到热词集 + words_text 一致 ✅
+- A 改 name + B 加词 → 双向 sync → 两边都有最新 ✅
+- A 删热词集 → sync → B 也删了 ✅
+- 真实 GitHub private repo + SSH key 端到端 ✅
+- stamp 冲突解决（以远程为准 / 以本地为准）双向 e2e ✅

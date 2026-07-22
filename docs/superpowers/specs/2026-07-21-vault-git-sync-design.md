@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离）已实现，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议；待 e2e 测试
+> **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离）已实现并 e2e 验证通过，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议 + §4.14 stamp 冲突解决协议
 > **前置依赖**：[2026-07-18-password-vault-design.md](./2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -531,7 +531,7 @@ fn merge_outlines(local: Outline, remote: Outline) -> Outline {
 | outline.json 损坏 | JSON parse 失败 → 重建 outline（扫所有 cipher 文件）|
 | cipher 文件解密失败 | user_vault_key 不匹配 → 跳过该 cipher + 记 failures 列表（与现有 list_ciphers 一致）|
 | 同步中 app 崩溃 | git repo 状态可能不干净（merge in progress）→ 下次同步前 `git merge --abort` 清理 |
-| 用户中途换主密码 | security_stamp 不一致 → 拒绝同步，提示「远程 vault 用了不同主密码」|
+| 用户中途换主密码 | security_stamp 不一致 → 拒绝同步，提示「远程 vault 用了不同主密码」→ 用户通过 §4.14 冲突解决选择以哪边为准 |
 | add_remote/clone 输入公有库 | §4.8 私有库守卫硬阻断 → `PublicRepoRejected`，提示用户改 Private 或换 URL |
 | add_remote/clone 输入本地路径 | §4.8 私有库守卫 → `LocalPathRejected`，提示用户用 GitHub/Gitee URL |
 | GitHub API 限流（60/h/IP） | §4.8 检测返 `Ambiguous`（不阻断）→ 用户可继续或换用 SSH |
@@ -889,6 +889,42 @@ pull_hotwords_from_files + push_hotwords_to_files）。
 
 ---
 
+### 4.14 stamp 冲突解决协议（2026-07-22 增补）
+
+**动机**：`pull_from_files` 检测到 `security_stamp` 不一致时返 `MasterPasswordMismatch`（§INV-S9），
+但此前用户无法继续同步——没有「跟上新密码」或「纠正错误 meta」的路径。两种场景：
+- **本地 meta 被污染**（如开发期 dummy 数据覆盖事故）→ 远程是对的
+- **远程 meta 被污染** → 本地是对的
+
+用户**主动选择**以哪边为准，两条路线都需要**密码验证**（防未授权覆盖）。
+
+**resolve_with_remote（以远程为准）**
+
+```
+1. 读 .sync/vault/meta.json（远程 KDF 参数 + protected_user_vault_key）
+2. 用远程 KDF 参数 + 用户输入密码派生 master_root_key
+3. 尝试解 remote protected_user_vault_key → 失败即密码错误
+4. 成功 → 用远程 9 个同步字段覆盖本地 vault_meta
+   （保留 app_key_local_enc / public_key / protected_private_key）
+5. 本地 stamp 变成 remote stamp → 后续 sync 正常
+```
+
+**resolve_with_local（以本地为准）**
+
+```
+1. 读本地 vault_meta，用本地 KDF 参数 + 密码验证（同 unlock 逻辑）
+2. 验证成功 → 把本地 meta export 到 .sync/vault/meta.json（覆盖远程脏 meta）
+3. git add + commit（"resolve: use local meta"）
+4. 下次 push 时远程 stamp 被本地覆盖
+```
+
+**UI**（SyncPanel 内联）：sync 失败且 error 含「主密码」时，状态行下显示冲突解决卡片——
+两个按钮「以远程为准」/「以本地为准」→ 展开密码输入 → 验证成功后自动重新 sync。
+
+**新增 Tauri 命令**：`vault_sync_resolve_remote(password)` / `vault_sync_resolve_local(password)`。
+
+---
+
 ## 5. 不变量
 
 | # | 不变量 | 说明 |
@@ -901,7 +937,7 @@ pull_hotwords_from_files + push_hotwords_to_files）。
 | INV-S6 | 同步前后 vault_version 必须 +1（有变化时）| 防旧版本覆盖 |
 | INV-S7 | git commit message 统一为 `sync` 或 `init vault` | 不暴露操作细节 |
 | INV-S8 | 同步过程中必须持 SyncState 锁 | 防并发触发 |
-| INV-S9 | 远程 security_stamp ≠ 本地时拒绝同步 | 防主密码不一致。`pull_from_files` 读 meta.json 前对比本地 vault_meta 的 stamp，不一致返 `SyncError::MasterPasswordMismatch` 拒绝覆盖（2026-07-22 实现——曾因缺此校验，dummy meta.json 覆盖了真实 vault_meta 致主密码失效）|
+| INV-S9 | 远程 security_stamp ≠ 本地时拒绝同步 | 防主密码不一致。`pull_from_files` 读 meta.json 前对比本地 vault_meta 的 stamp，不一致返 `SyncError::MasterPasswordMismatch` 拒绝覆盖（2026-07-22 实现——曾因缺此校验，dummy meta.json 覆盖了真实 vault_meta 致主密码失效）。冲突解决见 §4.14 |
 | INV-S10 | cipher 文件加密用 user_vault_key（不是 app_key）| 与 SQLite 一致 |
 | INV-S11 | add_remote / clone_from 入口必须拒绝公有库 | 见 §4.8——密文泄露给攻击者做离线爆破仍是失败 |
 | INV-S12 | 本地路径（`file://` / `/abs/path`）禁止作为同步 remote | 同步意义为 0，且暴露本地文件结构 |
