@@ -201,6 +201,7 @@ pub async fn download_model(
             dest: dest.clone(),
             expected_hash: if file.sha256.is_empty() { None }
                 else { Some(octopus_download::Hash::Sha256(file.sha256.clone())) },
+            expected_size: if file.size > 0 { Some(file.size) } else { None },
         };
 
         let (prog_tx, mut prog_rx) = mpsc::channel::<octopus_download::Progress>(64);

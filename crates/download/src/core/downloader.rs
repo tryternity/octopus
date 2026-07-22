@@ -53,6 +53,22 @@ pub struct DownloadTask {
     pub mirrors: Vec<String>,
     pub dest: PathBuf,
     pub expected_hash: Option<Hash>,
+    /// 预期文件大小（来自 manifest），作为 probe 拿不到 content-length 时的 fallback。
+    /// 某些 CDN（如 CloudFront）对非 LFS 小文件返回 200 无 content-length，
+    /// 此时用 manifest 的 size 预分配文件 + 校验。
+    pub expected_size: Option<u64>,
+}
+
+impl Default for DownloadTask {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            mirrors: Vec::new(),
+            dest: PathBuf::new(),
+            expected_hash: None,
+            expected_size: None,
+        }
+    }
 }
 
 /// probe 结果。
@@ -346,9 +362,12 @@ impl Downloader {
         cancel: Option<&CancellationToken>,
     ) -> Result<(), DownloadError> {
         let probe = self.probe(url).await?;
-        let total = probe
-            .total
-            .ok_or_else(|| transient(TransientKind::Network, "no content-length"))?;
+        // total 优先用 probe 结果（content-range/content-length）；拿不到时 fallback
+        // 到 manifest 的 expected_size（某些 CDN 200 响应无 content-length 头，
+        // 如 CloudFront 对非 LFS 小文件的 200 chunked 响应）。
+        let total = probe.total.or(task.expected_size).ok_or_else(|| {
+            transient(TransientKind::Network, "no content-length and no expected_size")
+        })?;
 
         // 规划：加载 sidecar 复用进度，否则重新规划。
         // sidecar 的 url_hash 基于 dest（镜像无关），故镜像源也可复用——这是设计意图：
@@ -789,6 +808,7 @@ mod tests {
             mirrors: vec![],
             dest: dest.clone(),
             expected_hash: Some(Hash::Sha256(hex)),
+            ..Default::default()
         };
         let dl = Downloader::new(DownloadConfig::default()).unwrap();
         let (tx, mut rx) = mpsc::channel(16);
@@ -822,7 +842,7 @@ mod tests {
             url: bad.url("/f"),
             mirrors: vec![good.url("/f")],
             dest,
-            expected_hash: None,
+            expected_hash: None, ..Default::default()
         };
         let dl = Downloader::new(DownloadConfig::default()).unwrap();
         let (tx, _rx) = mpsc::channel(16);
@@ -846,7 +866,7 @@ mod tests {
             url: server.url("/f"),
             mirrors: vec![],
             dest,
-            expected_hash: None,
+            expected_hash: None, ..Default::default()
         };
         let dl = Downloader::new(DownloadConfig::default()).unwrap();
         let token = CancellationToken::new();
@@ -900,7 +920,7 @@ mod tests {
             url: server.url("/f"),
             mirrors: vec![],
             dest: dest.clone(),
-            expected_hash: None,
+            expected_hash: None, ..Default::default()
         };
         let dl = Downloader::new(DownloadConfig::default()).unwrap();
         let (tx, _rx) = mpsc::channel(16);
