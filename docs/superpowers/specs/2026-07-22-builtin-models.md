@@ -9,7 +9,7 @@
 
 1. **models 表 `is_local` 改为 `source_type`**——统一三种来源：builtin(0) / local(1) / cloud(2) ✅
 2. **VAD 内嵌**——1.7MB `include_bytes!` 编译进二进制，从内存加载，不落盘 ✅
-3. **builtin 模型自动下载**——zipformer（27MB）首次启动检测缺失 → 下载页 → 用户点「后台下载」→ 进系统 ✅
+3. **builtin 模型自动下载**——zipformer-small（27MB）首次启动检测缺失 → 下载页 → 用户点「下载并进入系统」→ 全部完成后自动进入系统 ✅
 
 ## 1. source_type 枚举
 
@@ -82,19 +82,29 @@ pub enum VadSource {
 
 1. app 启动 → `ensure_db()` 之后
    - `ensure_db` 内调 `ensure_builtin_seed()`：幂等 `INSERT OR IGNORE` builtin 兜底引擎行 + `fill_manifests`（每次启动跑，防止历史库迁移时漏注入）
-2. 查 DB `WHERE source_type=0` 的模型（`list_builtin_models()`）
-3. 逐个检查本地文件是否存在（`resolve_model_dir(source)` 命中？）—— `check_builtin_models_missing()`
+2. **完整性校验 + is_available 同步**（`sync_builtin_models_availability`，preheat 之前）：
+   - 查 DB `WHERE source_type=0` 的模型（`list_builtin_models()`）
+   - 逐个校验：`resolve_model_dir` 命中 + manifest 所有文件 sha256 通过（`verify_against_manifest`）→ ready
+   - ready != is_available → `set_model_available` 同步
+   - 结果缓存在 `OnceLock`（供 setup 阶段 check 复用，避免重复 sha256）
+3. **缺失检测**（`check_builtin_models_missing`，setup 内）：读 OnceLock 缓存 → 返回缺失列表
 4. 有缺失 → 显示下载页（独立 Tauri 窗口 `download_window`，不阻断主窗口创建）
-5. 下载页列出缺失模型 + 大小 + 「后台下载」按钮
-6. 用户点「后台下载」→ 关闭下载页 → 进系统 → 复用 `model_commands::download_model`（manifest 驱动）串行下载
+5. 下载页列出缺失模型 + 大小 + 「下载并进入系统」按钮
+6. 用户点「下载并进入系统」→ 串行下载 → 全部完成后自动关闭下载窗进入系统
+   - 复用 `model_commands::download_model`（manifest 驱动）
+   - **增量下载**：循环内按单文件 sha256 校验，完好文件跳过（只下损坏/缺失的）
 7. 下载完成 → `download_model` 内 `set_model_available(name, true)` → emit `download-done` 通知前端刷新
+
+**模型管理页额外行为**：
+- 校验（verify）失败 → 自动触发下载修复
+- 激活（activate）前先校验完整性，损坏/缺失 → 自动下载修复后才激活
 
 ### 3.2 下载页 UI
 
 简单页面：
 - 标题：「需要下载内置模型」
 - 列表：模型名 + 大小 + 状态（待下载/下载中/完成）
-- 按钮：「后台下载并进入系统」/「稍后下载」
+- 按钮：「下载并进入系统」/「稍后下载」
 - 用户选「稍后下载」→ ASR 无兜底引擎，用户可后续手动下载
 
 ### 3.3 下载实现
