@@ -6,6 +6,7 @@ import { useT } from "@/lib/i18n";
 import type { ToastVariant } from "@/lib/useToast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 
 /**
  * SyncPanel —— 密码箱 Git 同步设置面板（独立 Tab）。
@@ -53,6 +54,12 @@ export default function SyncPanel({
   const t = useT();
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  // sync 错误（存 state 而非仅 toast——stamp 冲突时需据此显示冲突解决 UI）
+  const [syncError, setSyncError] = useState<string | null>(null);
+  // 冲突解决：resolveMode 控制密码输入展开（null / "remote" / "local"）
+  const [resolveMode, setResolveMode] = useState<"remote" | "local" | null>(null);
+  const [resolvePwd, setResolvePwd] = useState("");
+  const [resolving, setResolving] = useState(false);
 
   // Remote 列表状态
   const [remotes, setRemotes] = useState<[string, string][]>([]);
@@ -89,8 +96,10 @@ export default function SyncPanel({
       const { report, error } = event.payload;
       if (error) {
         showToast(error, "error");
+        setSyncError(error);
       } else if (report) {
         showToast(report.message || t("settings.vault.sync.syncSuccess"));
+        setSyncError(null);
       }
       // 刷新状态——status.syncing 会变回 false
       refreshStatus();
@@ -143,6 +152,29 @@ export default function SyncPanel({
       showToast(String(e), "error");
     }
   }, []);
+
+  // === stamp 冲突解决（2026-07-22）===
+  const handleResolve = useCallback(async () => {
+    if (!resolveMode || !resolvePwd) return;
+    setResolving(true);
+    try {
+      const cmd = resolveMode === "remote"
+        ? "vault_sync_resolve_remote"
+        : "vault_sync_resolve_local";
+      await invoke(cmd, { password: resolvePwd });
+      showToast(t("settings.vault.sync.resolveSuccess"), "success");
+      // 清理冲突态
+      setSyncError(null);
+      setResolveMode(null);
+      setResolvePwd("");
+      // 重新同步
+      setStatus((prev) => (prev ? { ...prev, syncing: true } : prev));
+      await invoke("vault_sync_now");
+    } catch (e) {
+      showToast(t("settings.vault.sync.resolveFailed") + String(e), "error");
+    }
+    setResolving(false);
+  }, [resolveMode, resolvePwd, showToast, t]);
 
   const handleDisable = useCallback(async () => {
     if (!confirm(t("settings.vault.sync.disableConfirm"))) return;
@@ -361,6 +393,78 @@ export default function SyncPanel({
           </Button>
         </div>
       </div>
+
+      {/* stamp 冲突解决——sync 失败且 error 含「不同主密码」时显示 */}
+      {syncError && syncError.includes("主密码") && (
+        <div className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-destructive">
+                {t("settings.vault.sync.conflictTitle")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                {t("settings.vault.sync.conflictDesc")}
+              </p>
+            </div>
+          </div>
+
+          {resolveMode === null ? (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={() => setResolveMode("remote")}
+              >
+                {t("settings.vault.sync.useRemote")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={() => setResolveMode("local")}
+              >
+                {t("settings.vault.sync.useLocal")}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] text-muted-foreground">
+                {resolveMode === "remote"
+                  ? t("settings.vault.sync.useRemoteHint")
+                  : t("settings.vault.sync.useLocalHint")}
+              </p>
+              <PasswordInput
+                variant="default"
+                size="full"
+                value={resolvePwd}
+                onChange={(e) => setResolvePwd(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleResolve()}
+                placeholder={t("settings.vault.sync.resolvePwdPlaceholder")}
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setResolveMode(null); setResolvePwd(""); }}
+                >
+                  {t("settings.vault.sync.resolveBack")}
+                </Button>
+                <Button
+                  variant="voice"
+                  size="sm"
+                  onClick={handleResolve}
+                  disabled={!resolvePwd || resolving}
+                >
+                  {resolving ? "..." : t("settings.vault.sync.resolveConfirm")}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Remote 列表 */}
       <div className="space-y-2">

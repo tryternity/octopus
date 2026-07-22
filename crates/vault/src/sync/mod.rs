@@ -41,7 +41,8 @@ pub use octopus_sync::privacy;
 
 pub use engine::{
     add_remote, clone_from, disable_sync, enable_sync, get_sync_status, list_remotes,
-    remove_remote, sync_now, test_connection, SyncReport, SyncStatus,
+    remove_remote, resolve_with_local, resolve_with_remote, sync_now, test_connection,
+    SyncReport, SyncStatus,
 };
 pub use store::{
     cipher_file_path, folder_file_path, meta_path, outline_path, vault_dir, vault_root,

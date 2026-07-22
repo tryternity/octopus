@@ -139,6 +139,17 @@ settings:
       # Private repo check (2026-07-21)
       privacyHint: For security, the vault must use a private repo. HTTPS URLs are auto-checked and public repos will be rejected. SSH URLs cannot be auto-checked—please confirm the repo is Private yourself.
       checkingPrivacy: Checking repo visibility...
+      conflictTitle: Master Password Conflict
+      conflictDesc: Remote and local vault use different master passwords. Choose which side is authoritative. Both paths require verifying the corresponding master password.
+      useRemote: Use Remote
+      useLocal: Use Local
+      useRemoteHint: Enter the remote vault master password to overwrite local with remote
+      useLocalHint: Enter the local vault master password to overwrite remote with local
+      resolvePwdPlaceholder: Enter master password
+      resolveBack: Back
+      resolveConfirm: Confirm
+      resolveSuccess: Conflict resolved, re-syncing
+      resolveFailed: "Resolve failed: "
     list:
       title: Password Items
       empty: No password items yet

@@ -25,7 +25,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMetaInput};
+use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMeta, VaultMetaInput};
 // 通用 sync 基础设施（2026-07-22 抽离到 octopus_sync）
 use octopus_sync::error::SyncError;
 use octopus_sync::git;
@@ -775,6 +775,110 @@ fn pull_from_files() -> Result<usize, SyncError> {
     }
 
     Ok(count)
+}
+
+// === stamp 冲突解决（2026-07-22）===
+//
+// pull_from_files 检测到 security_stamp 不一致时返 MasterPasswordMismatch，
+// 用户通过 resolve_with_remote / resolve_with_local 主动选择以哪边为准。
+
+/// 以远程为准——本地 vault_meta 被污染（如开发期 dummy 数据覆盖），远程是对的。
+///
+/// 用户输入远程 vault 的主密码，验证通过后用远程 meta 的同步字段覆盖本地
+/// （保留 app_key_local_enc / public_key / protected_private_key）。
+/// 本地 stamp 变成 remote stamp → 后续 sync 正常。
+///
+/// **密码验证**：用远程 KDF 参数（salt + Argon2Params）+ 用户输入密码派生
+/// master_root_key，尝试解 remote protected_user_vault_key——失败即密码错误。
+pub fn resolve_with_remote(password: &str) -> Result<(), SyncError> {
+    use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
+
+    // 1. 读远程 meta.json
+    let remote_meta = store::read_meta_file()?;
+    let (kdf_type, salt, iters, mem, par, uvk, app_sync, stamp, equiv) =
+        remote_meta.to_sync_fields();
+
+    // 2. 用远程 KDF 参数 + 密码派生 master_root_key，验证密码
+    let params = Argon2Params {
+        iterations: iters as u32,
+        memory_kib: mem as u32,
+        parallelism: par as u32,
+    };
+    let master = derive_master_root_key(password.as_bytes(), &salt, &params)
+        .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;
+    // 验证密码：解 protected_user_vault_key，失败即密码错
+    let _uvk_bytes = master.decrypt(&uvk).map_err(|_| {
+        SyncError::Other(anyhow::anyhow!("密码错误——无法解远程 protected_user_vault_key"))
+    })?;
+
+    // 3. 密码正确 → 用远程 9 个同步字段覆盖本地 vault_meta
+    let local_meta = db::load_vault_meta().map_err(SyncError::Other)?;
+    let (local_enc, pub_key, priv_key) = match local_meta {
+        Some(ref m) => (
+            m.app_key_local_enc.clone(),
+            m.public_key.clone(),
+            m.protected_private_key.clone(),
+        ),
+        None => (String::new(), None, None),
+    };
+    let meta_input = VaultMetaInput {
+        kdf_type,
+        kdf_salt: salt,
+        kdf_iterations: iters,
+        kdf_memory_kib: mem,
+        kdf_parallelism: par,
+        protected_user_vault_key: uvk,
+        app_key_local_enc: local_enc, // 保留本地 K_machine 加密的
+        app_key_sync_enc: app_sync,
+        security_stamp: stamp,
+        equivalent_domains: equiv,
+        public_key: pub_key,
+        protected_private_key: priv_key,
+    };
+    db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    log::info!("[sync] resolve_with_remote 完成——本地 vault_meta 已用远程覆盖");
+    Ok(())
+}
+
+/// 以本地为准——远程 meta 被污染，本地是对的。
+///
+/// 用户输入本地 vault 的主密码验证后，重新 export 本地 meta 到 `.sync/vault/meta.json`
+/// 覆盖远程的脏 meta，git add + commit。下次 push 时远程 stamp 被本地覆盖。
+///
+/// **密码验证**：用本地 KDF 参数 + 密码派生 master_root_key，解本地
+/// protected_user_vault_key——失败即密码错误（和 unlock 同逻辑）。
+pub fn resolve_with_local(password: &str) -> Result<(), SyncError> {
+    use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
+
+    // 1. 读本地 vault_meta，用本地 KDF 参数验证密码
+    let local_meta: VaultMeta = db::load_vault_meta()
+        .map_err(SyncError::Other)?
+        .ok_or_else(|| SyncError::Other(anyhow::anyhow!("本地 vault_meta 不存在")))?;
+    let params = Argon2Params {
+        iterations: local_meta.kdf_iterations as u32,
+        memory_kib: local_meta.kdf_memory_kib as u32,
+        parallelism: local_meta.kdf_parallelism as u32,
+    };
+    let master = derive_master_root_key(password.as_bytes(), &local_meta.kdf_salt, &params)
+        .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;
+    // 验证密码
+    let _uvk_bytes = master.decrypt(&local_meta.protected_user_vault_key).map_err(|_| {
+        SyncError::Other(anyhow::anyhow!("密码错误——无法解本地 protected_user_vault_key"))
+    })?;
+
+    // 2. 密码正确 → 重新 export 本地 meta 到文件系统覆盖远程的脏 meta
+    let root = octopus_sync::store::sync_root();
+    if !git::is_git_repo(&root) {
+        return Err(SyncError::RepoNotInitialized);
+    }
+    let meta_file = store::MetaFile::from_vault_meta(&local_meta);
+    store::write_meta_file(&meta_file)?;
+
+    // 3. git add + commit
+    git::git_add_all(&root)?;
+    git::git_commit(&root, "resolve: use local meta")?;
+    log::info!("[sync] resolve_with_local 完成——远程 meta 已用本地覆盖");
+    Ok(())
 }
 
 /// 检测 cipher 文件 sha 是否与 DB 中不匹配（需要更新）。
