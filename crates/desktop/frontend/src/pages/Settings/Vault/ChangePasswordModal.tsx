@@ -184,6 +184,12 @@ export default function ChangePasswordModal({
                 {t("settings.vault.setup.strengthHint")}
               </p>
             )}
+            {/* 新旧密码相同提示 */}
+            {newPwd && oldPwd && newPwd === oldPwd && (
+              <p className="pt-1 text-[11px] text-destructive">
+                {t("settings.vault.changePasswordSameAsOld")}
+              </p>
+            )}
           </div>
 
           {/* 确认新密码 */}

@@ -92,6 +92,7 @@ settings:
     changePasswordConfirm: Confirm New Password
     changePasswordConfirmPlaceholder: Re-enter new password
     changePasswordMismatch: Passwords do not match
+    changePasswordSameAsOld: New password must differ from the current one
     changePasswordCancel: Cancel
     changePasswordConfirmBtn: Confirm Change
     changePasswordSubmitting: Changing...

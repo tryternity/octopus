@@ -21,7 +21,7 @@ import { useT } from "@/lib/i18n";
  * **可访问性**：
  * - Eye/Eraser 按钮 `type="button"`（不会触发外层 form submit）
  * - 按钮 title 提供操作描述（hover 显示 + 屏幕阅读器读）
- * - 按钮 tabIndex 默认参与 Tab 序列
+ * - 按钮 `tabIndex={-1}`——不参与 Tab 序列（避免从 input 按 Tab 跳到按钮而非下一个 input）
  *
  * **样式**：Input 加 `pr-12`（48px 右内边距）让文字不被按钮遮住；按钮 absolute
  * 定位到右侧。Eraser 仅在 value 非空时显示——空输入框右侧的 × 看着别扭。
@@ -71,6 +71,7 @@ const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputProps>(
         <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => setRevealed((v) => !v)}
             disabled={disabled}
             className={cn(
@@ -94,6 +95,7 @@ const PasswordInput = React.forwardRef<HTMLInputElement, PasswordInputProps>(
           {showClear && hasValue && (
             <button
               type="button"
+              tabIndex={-1}
               onClick={handleClear}
               disabled={disabled}
               className={cn(

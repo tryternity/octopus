@@ -92,6 +92,7 @@ settings:
     changePasswordConfirm: 确认新密码
     changePasswordConfirmPlaceholder: 再次输入新密码
     changePasswordMismatch: 两次输入的新密码不一致
+    changePasswordSameAsOld: 新密码不能与旧密码相同
     changePasswordCancel: 取消
     changePasswordConfirmBtn: 确认修改
     changePasswordSubmitting: 修改中...
