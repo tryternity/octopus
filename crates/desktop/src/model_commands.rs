@@ -76,6 +76,47 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
     Ok(out)
 }
 
+/// 模型文件信息（供 DownloadPopover 展示文件级列表 + 进度）。
+#[derive(Serialize)]
+pub struct ModelFile {
+    /// manifest 里的相对路径（如 "model.int8.onnx"）
+    pub path: String,
+    /// 文件大小（字节，来自 manifest）
+    pub size: u64,
+    /// 文件存在且 sha256 校验通过 = true
+    pub exists: bool,
+}
+
+/// 列出某模型的所有文件（manifest 解析 + 逐文件 sha256 校验）。
+/// 供 DownloadPopover 浮层展示文件级列表 + 「已存在=100%」状态。
+#[tauri::command]
+pub fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
+    let (model_name, secret_key) = lookup_model_by_source(&repo)?;
+    let _ = model_name;
+    if secret_key.is_empty() {
+        return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
+    }
+    let manifest: Manifest = serde_json::from_str(&secret_key)
+        .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+
+    let dir = octopus_asr_local::config::resolve_model_dir(&repo).ok();
+
+    Ok(manifest
+        .iter()
+        .map(|(path, file)| {
+            let exists = dir
+                .as_ref()
+                .map(|d| octopus_asr_local::manifest::verify_file_sha256(&d.join(path), &file.sha256))
+                .unwrap_or(false);
+            ModelFile {
+                path: path.clone(),
+                size: file.size,
+                exists,
+            }
+        })
+        .collect())
+}
+
 /// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
 #[cfg(test)]
 fn resolve_env_template(url: &str) -> String {
@@ -164,7 +205,7 @@ pub async fn download_model(
     }
 
     // 2. 读 DB manifest
-    let (model_name, secret_key) = lookup_model_by_source(&repo)?;
+    let (_model_name, secret_key) = lookup_model_by_source(&repo)?;
     if secret_key.is_empty() {
         return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
     }
@@ -180,22 +221,27 @@ pub async fn download_model(
     // 4. 目标目录：~/.octopus/models/{repo}/
     let dest_base = octopus_infra::paths::octopus_config_home().join("models").join(&repo);
 
-    // 5. 逐文件下载——循环内按单文件 sha256 校验，完好的跳过（只下损坏/缺失的）
-    let dl = octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
-        .map_err(|e| format!("初始化下载器失败: {e:?}"))?;
+    // 5. 并发下载（JoinSet + Semaphore 限 4 并发）
+    use std::sync::Arc;
+    use tokio::task::JoinSet;
+    let dl = Arc::new(
+        octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
+            .map_err(|e| format!("初始化下载器失败: {e:?}"))?,
+    );
 
-    let total_files = manifest.len();
-    let (tx, mut rx) = mpsc::channel::<octopus_download::Progress>(64);
+    // 主进度 channel：每个并发 task 推 (file_path, Progress) tuple
+    let (tx, mut rx) = mpsc::channel::<(String, octopus_download::Progress)>(64);
 
-    // 进度转发
+    // 进度转发——按 file 分发 emit（供前端文件级进度展示）
     let fwd_handle = app_handle.clone();
     let fwd_repo = repo.clone();
     tokio::spawn(async move {
-        while let Some(p) = rx.recv().await {
+        while let Some((file, p)) = rx.recv().await {
             let _ = fwd_handle.emit(
                 "download-progress",
                 serde_json::json!({
                     "repo": &fwd_repo,
+                    "file": &file,
                     "downloaded": p.downloaded_bytes,
                     "total": p.total_bytes,
                     "speed": p.speed_bps,
@@ -204,69 +250,109 @@ pub async fn download_model(
         }
     });
 
-    for (i, (path, file)) in manifest.iter().enumerate() {
-        let dest = dest_base.join(path);
+    let sem = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut join_set: JoinSet<std::result::Result<String, String>> = JoinSet::new();
 
-        // 增量下载：探查阶段已校验过完整性的场景（known_broken = Some），
-        // 完好文件（不在 broken 列表里）直接跳过，不重复算 sha256。
-        // 全新下载（known_broken = None）或文件在 broken 列表里 → 下载。
+    for (path, file) in manifest.iter() {
+        // 增量下载：known_broken 非空时跳过完好文件
         if let Some(ref broken) = known_broken {
             if !broken.contains(path) {
-                continue; // 完好文件跳过
+                let _ = app_handle.emit(
+                    "download-file",
+                    serde_json::json!({ "repo": &repo, "file": path, "status": "skip" }),
+                );
+                continue;
             }
         }
 
+        // emit start
         let _ = app_handle.emit(
             "download-file",
-            serde_json::json!({
-                "repo": &repo,
-                "index": i + 1,
-                "total": total_files,
-                "file": path,
-            }),
+            serde_json::json!({ "repo": &repo, "file": path, "status": "start" }),
         );
 
-        // 解析模板变量
+        // 准备 task 参数
         let url = resolve_env_template_with(&file.source, &env_vars);
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
         let dest = dest_base.join(path);
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
 
         let task = octopus_download::DownloadTask {
-            url: url.clone(),
+            url,
             mirrors: vec![],
             dest: dest.clone(),
             expected_hash: if file.sha256.is_empty() { None }
                 else { Some(octopus_download::Hash::Sha256(file.sha256.clone())) },
             expected_size: if file.size > 0 { Some(file.size) } else { None },
+            ..Default::default()
         };
 
-        let (prog_tx, mut prog_rx) = mpsc::channel::<octopus_download::Progress>(64);
-        let tx2 = tx.clone();
-        tokio::spawn(async move {
-            while let Some(p) = prog_rx.recv().await {
-                let _ = tx2.send(p).await;
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let task_dl = Arc::clone(&dl);
+        let task_tx = tx.clone();
+        let task_path = path.clone();
+        let task_repo = repo.clone();
+        let task_handle = app_handle.clone();
+
+        join_set.spawn(async move {
+            let _permit = permit; // RAII 限并发
+
+            // 单文件 progress 转发（包装 file path 推到主 channel）
+            let (prog_tx, mut prog_rx) = mpsc::channel::<octopus_download::Progress>(64);
+            let fwd_tx = task_tx.clone();
+            let fwd_path = task_path.clone();
+            tokio::spawn(async move {
+                while let Some(p) = prog_rx.recv().await {
+                    let _ = fwd_tx.send((fwd_path.clone(), p)).await;
+                }
+            });
+
+            match task_dl.download(&task, prog_tx, None).await {
+                Ok(()) => {
+                    let _ = task_handle.emit(
+                        "download-file",
+                        serde_json::json!({ "repo": &task_repo, "file": &task_path, "status": "done" }),
+                    );
+                    Ok(task_path)
+                }
+                Err(e) => {
+                    let _ = task_handle.emit(
+                        "download-file",
+                        serde_json::json!({ "repo": &task_repo, "file": &task_path, "status": "error" }),
+                    );
+                    Err(format!("下载 {} 失败: {e:?}", task_path))
+                }
             }
         });
-
-        dl.download(&task, prog_tx, None)
-            .await
-            .map_err(|e| format!("下载 {path} 失败: {e:?}"))?;
     }
     drop(tx);
 
-    // 6. 置 is_available=true + emit done
-    apply_model_state(&repo, None, true)?;
-    let _ = app_handle.emit(
-        "download-done",
-        serde_json::json!({ "repo": &repo, "already_ready": false }),
-    );
-    let _ = model_name; // 避免 unused warning
-    Ok(())
+    // 等全部完成 + 收集错误
+    let mut errors = Vec::new();
+    while let Some(res) = join_set.join_next().await {
+        match res {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("task panic: {e}")),
+        }
+    }
+
+    // 6. 结果处理
+    if errors.is_empty() {
+        apply_model_state(&repo, None, true)?;
+        let _ = app_handle.emit(
+            "download-done",
+            serde_json::json!({ "repo": &repo, "already_ready": false }),
+        );
+        Ok(())
+    } else {
+        let _ = app_handle.emit(
+            "download-done",
+            serde_json::json!({ "repo": &repo, "error": errors.join("; ") }),
+        );
+        Err(errors.join("; "))
+    }
 }
 
 /// 完整性复核：按 secret_key 清单 sha256 校验；清单空则自举；损坏置 false。

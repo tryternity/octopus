@@ -292,6 +292,7 @@ pub fn run() {
             settings_commands::set_env_var,
             settings_commands::delete_env_var_cmd,
             model_commands::list_downloadable_models,
+            model_commands::list_model_files,
             model_commands::download_model,
             builtin_models::check_builtin_models,
             download_window::close_download_window,

@@ -1,8 +1,10 @@
-import { cn } from "@/lib/utils";
-import { CheckCircle2, Circle, Download, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { useState, useRef } from "react";
+import { cn, fmtBytes } from "@/lib/utils";
+import { CheckCircle2, Circle, Download, FileDown, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
+import DownloadPopover from "@/components/DownloadPopover";
 
 export interface ModelRowData {
   name: string;
@@ -22,13 +24,6 @@ interface DownloadProgress {
   repo: string;
   downloaded: number;
   total: number;
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return n + " B";
-  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
-  return (n / 1073741824).toFixed(2) + " GB";
 }
 
 export function ModelRow({
@@ -53,6 +48,8 @@ export function ModelRow({
   const t = useT();
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
   const showDownload = model.source_type !== 2 && !model.is_ready;
+  const [showPopover, setShowPopover] = useState(false);
+  const filesBtnRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div
@@ -150,6 +147,29 @@ export function ModelRow({
               <Button variant="ghost" size="icon-sm" onClick={onEdit}>
                 <Pencil />
               </Button>
+            )}
+
+            {/* 文件列表浮层（本地+builtin）—— hover/click 展示文件级进度 */}
+            {model.source_type !== 2 && (
+              <div className="relative">
+                <Button
+                  ref={filesBtnRef}
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setShowPopover((v) => !v)}
+                  onMouseEnter={() => setShowPopover(true)}
+                >
+                  <FileDown />
+                </Button>
+                {showPopover && (
+                  <DownloadPopover
+                    repo={model.repo}
+                    modelName={model.name}
+                    triggerRef={filesBtnRef}
+                    onClose={() => setShowPopover(false)}
+                  />
+                )}
+              </div>
             )}
           </>
         )}

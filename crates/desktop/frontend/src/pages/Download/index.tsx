@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Download, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, fmtBytes } from "@/lib/utils";
 
 /** 后端 BuiltinModelInfo（builtin_models.rs::BuiltinModelInfo）。 */
 interface BuiltinModelInfo {
@@ -36,13 +36,6 @@ interface ModelState {
   status: ModelStatus;
   progress: { downloaded: number; total: number } | null;
   error: string | null;
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return n + " B";
-  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
-  return (n / 1073741824).toFixed(2) + " GB";
 }
 
 export default function DownloadPage() {
