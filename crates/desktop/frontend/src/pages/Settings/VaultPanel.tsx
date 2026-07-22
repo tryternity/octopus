@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Lock } from "lucide-react";
+import { Lock, KeyRound } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { PillTabs } from "@/components/ui/tabs";
@@ -9,6 +9,7 @@ import UnlockDialog from "./Vault/UnlockDialog";
 import CipherList from "./Vault/CipherList";
 import HealthReport from "./Vault/HealthReport";
 import ImportExport from "./Vault/ImportExport";
+import ChangePasswordModal from "./Vault/ChangePasswordModal";
 
 /**
  * VaultPanel —— 密码保险库主面板（Settings 内一页）。
@@ -30,12 +31,13 @@ interface VaultStatus {
 
 type View = "list" | "health" | "io";
 
-export default function VaultPanel({ showToast }: { showToast: (msg: string) => void }) {
+export default function VaultPanel({ showToast }: { showToast: (msg: string, variant?: "success" | "error") => void }) {
   const t = useT();
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [view, setView] = useState<View>("list");
   // 自动锁定超时（秒）—— 0=永不，30-3600。归属 vault 自身配置，挂在 VaultPanel 顶部。
   const [lockTimeout, setLockTimeout] = useState<number>(180);
+  const [changePwdOpen, setChangePwdOpen] = useState(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -209,6 +211,10 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
               </span>
             )}
           </div>
+          <Button variant="outline" size="sm" onClick={() => setChangePwdOpen(true)}>
+            <KeyRound />
+            {t("settings.vault.changePassword")}
+          </Button>
           <Button variant="outline" size="sm" onClick={handleLock}>
             <Lock />
             {t("settings.vault.lock")}
@@ -247,6 +253,13 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
       <div className="border-t border-border pt-2 text-[11px] text-muted-foreground">
         <span>{t("settings.vault.footerEncrypted")}</span>
       </div>
+
+      {/* 修改主密码弹窗 */}
+      <ChangePasswordModal
+        open={changePwdOpen}
+        onClose={() => setChangePwdOpen(false)}
+        showToast={showToast}
+      />
     </div>
   );
 }

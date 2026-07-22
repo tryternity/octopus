@@ -85,6 +85,18 @@ settings:
       clear: 清空
     lock: 锁定保险库
     changePassword: 修改主密码
+    changePasswordOld: 旧密码
+    changePasswordOldPlaceholder: 输入当前主密码
+    changePasswordNew: 新密码
+    changePasswordNewPlaceholder: 至少 12 位，含大小写字母、数字、符号
+    changePasswordConfirm: 确认新密码
+    changePasswordConfirmPlaceholder: 再次输入新密码
+    changePasswordMismatch: 两次输入的新密码不一致
+    changePasswordCancel: 取消
+    changePasswordConfirmBtn: 确认修改
+    changePasswordSubmitting: 修改中...
+    changePasswordSuccess: 主密码已修改
+    changePasswordFailed: 修改失败：
     lockTimeoutLabel: 自动锁定
     lockTimeoutRecommended: 推荐
     lockTimeoutNever: 永不

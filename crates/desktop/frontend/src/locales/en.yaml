@@ -85,6 +85,18 @@ settings:
       clear: Clear
     lock: Lock Vault
     changePassword: Change Master Password
+    changePasswordOld: Current Password
+    changePasswordOldPlaceholder: Enter current master password
+    changePasswordNew: New Password
+    changePasswordNewPlaceholder: At least 12 chars, with upper/lowercase, digits, symbols
+    changePasswordConfirm: Confirm New Password
+    changePasswordConfirmPlaceholder: Re-enter new password
+    changePasswordMismatch: Passwords do not match
+    changePasswordCancel: Cancel
+    changePasswordConfirmBtn: Confirm Change
+    changePasswordSubmitting: Changing...
+    changePasswordSuccess: Master password changed
+    changePasswordFailed: "Change failed:"
     lockTimeoutLabel: Auto-lock
     lockTimeoutRecommended: recommended
     lockTimeoutNever: Never
