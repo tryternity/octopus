@@ -31,20 +31,25 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
         let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
         let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
-        let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
-        // Task 2 后：current 直接用 DB 行 is_enabled（build_asr_options 内部处理，
-        // 不再需要外部传 current spec 字符串做 name 匹配）。
+        // 各数据源独立容错：一个表查询失败不拖垮其他数据源（fail-soft）。
+        // app_config（load_config）失败是致命的 → 仍用 ? 传播。
+        // models/prompts 查询失败 → 返回空数组 + log warn，让页面降级渲染而非白屏。
+        let engines = octopus_asr_local::config::list_engines_from_db()
+            .unwrap_or_else(|e| { log::warn!("get_config: ASR 引擎查询失败: {}", e); vec![] });
         let asr_engines = crate::runtime_config::build_asr_options_public(engines);
 
-        let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+        let llms = octopus_infra::db::list_llm_models()
+            .unwrap_or_else(|e| { log::warn!("get_config: LLM 查询失败: {}", e); vec![] });
         let llm_models = crate::runtime_config::build_llm_options_public(llms);
 
-        let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
+        let ocrs = octopus_infra::db::list_ocr_models()
+            .unwrap_or_else(|e| { log::warn!("get_config: OCR 查询失败: {}", e); vec![] });
         let ocr_models = crate::runtime_config::build_ocr_options_public(ocrs);
 
         let microphones = list_microphones();
 
-        let prompt_records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
+        let prompt_records = octopus_infra::db::list_prompts()
+            .unwrap_or_else(|e| { log::warn!("get_config: prompts 查询失败: {}", e); vec![] });
         let prompts = prompt_records
             .into_iter()
             .map(|r| PromptInfo {
