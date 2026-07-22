@@ -6,17 +6,19 @@ import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
 import { useT, setLocale } from "@/lib/i18n";
+import type { ToastVariant } from "@/lib/useToast";
 import ShortcutButton from "@/components/ShortcutButton";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Row } from "@/components/ui/row";
 import { Toggle } from "@/components/ui/toggle";
 import { Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
+import SyncPanel from "./Vault/SyncPanel";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
-  showToast: (msg: string) => void;
+  showToast: (msg: string, variant?: ToastVariant) => void;
   refreshConfig: () => Promise<void>;
   /** vault feature 是否启用——控制 vault autotype 快捷键 Row 是否渲染。
    *  feature off 时不应让用户配置一个无效快捷键。 */
@@ -26,7 +28,7 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, active_prompt_id, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "voice">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "voice" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
 
   useEffect(() => {
@@ -95,6 +97,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
     { key: "voice", label: t("settings.general.tabVoice") },
+    { key: "sync", label: t("settings.general.tabSync") },
   ];
 
   return (
@@ -275,6 +278,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             </CardContent>
           </Card>
         </>
+      )}
+      {activeTab === "sync" && (
+        <div className="h-[calc(100vh-200px)] overflow-auto">
+          <SyncPanel showToast={showToast} />
+        </div>
       )}
     </div>
   );

@@ -9,7 +9,6 @@ import UnlockDialog from "./Vault/UnlockDialog";
 import CipherList from "./Vault/CipherList";
 import HealthReport from "./Vault/HealthReport";
 import ImportExport from "./Vault/ImportExport";
-import SyncPanel from "./Vault/SyncPanel";
 
 /**
  * VaultPanel —— 密码保险库主面板（Settings 内一页）。
@@ -29,7 +28,7 @@ interface VaultStatus {
   user_vault_unlocked: boolean;
 }
 
-type View = "list" | "health" | "io" | "sync";
+type View = "list" | "health" | "io";
 
 export default function VaultPanel({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
@@ -217,13 +216,13 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         </div>
       </div>
 
-      {/* Tab 栏——4 个视图切换（PillTabs，与 ModelsPanel 同款）。 */}
+      {/* Tab 栏——3 个视图切换（PillTabs，与 ModelsPanel 同款）。
+          Git 同步已挪到系统设置 GeneralPanel 的 sync 子 Tab（不依赖 vault 解锁）。 */}
       <PillTabs
         items={[
           { key: "list", label: t("settings.vault.list.title") },
           { key: "health", label: t("settings.vault.health.title") },
           { key: "io", label: t("settings.vault.importExport.title") },
-          { key: "sync", label: t("settings.vault.sync.title") },
         ]}
         active={view}
         onChange={(k) => setView(k as View)}
@@ -240,11 +239,6 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string) => 
         {view === "io" && (
           <div className="h-full overflow-auto">
             <ImportExport showToast={showToast} />
-          </div>
-        )}
-        {view === "sync" && (
-          <div className="h-full overflow-auto">
-            <SyncPanel showToast={showToast} />
           </div>
         )}
       </div>

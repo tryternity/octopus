@@ -247,6 +247,7 @@ settings:
     tabGeneral: General
     tabShortcut: Shortcuts
     tabVoice: Voice
+    tabSync: Git Sync
     appearance: Appearance
     theme: Theme
     themeHint: Floating window & color scheme

@@ -247,6 +247,7 @@ settings:
     tabGeneral: 一般
     tabShortcut: 快捷键
     tabVoice: 语音
+    tabSync: Git 同步
     appearance: 外观
     theme: 主题
     themeHint: 浮窗与窗口配色

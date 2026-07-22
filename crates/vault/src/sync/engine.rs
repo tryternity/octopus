@@ -732,11 +732,23 @@ fn pull_from_files() -> Result<usize, SyncError> {
     }
 
     // meta.json → upsert vault_meta（同步 KDF 参数 + sync keys）
+    //
+    // **security_stamp 守卫**（INV-S9，2026-07-22 修复）：远程 meta.json 的 stamp
+    // 必须与本地一致才允许覆盖——否则意味着远程 vault 用了不同主密码，覆盖会破坏
+    // 本地加密参数（曾导致主密码验证失败：dummy meta.json 覆盖了真实 vault_meta）。
     if let Ok(meta_file) = store::read_meta_file() {
         let (kdf_type, salt, iters, mem, par, uvk, app_sync, stamp, equiv) =
             meta_file.to_sync_fields();
-        // 保留本地 app_key_local_enc / public_key——只更新同步字段
+
+        // 本地 vault_meta 已存在时，校验 stamp 一致
         let local_meta = db::load_vault_meta().map_err(SyncError::Other)?;
+        if let Some(ref local) = local_meta {
+            if local.security_stamp != stamp {
+                return Err(SyncError::MasterPasswordMismatch);
+            }
+        }
+
+        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key
         let (local_enc, pub_key, priv_key) = match local_meta {
             Some(ref m) => (
                 m.app_key_local_enc.clone(),
@@ -1190,6 +1202,89 @@ mod tests {
                 );
             }
         }
+        let _ = g;
+    }
+
+    /// security_stamp 守卫（INV-S9）：pull_from_files 读到 stamp 不一致的 meta.json 时
+    /// 必须拒绝覆盖 vault_meta——否则会用错误主密码的加密参数破坏本地数据。
+    ///
+    /// 回归守护：曾因缺少此校验，dummy meta.json（stamp-1）覆盖了真实 vault_meta
+    /// （真实 UUID stamp），导致用户主密码验证失败。
+    #[test]
+    fn pull_rejects_mismatched_security_stamp() {
+        let g = IntegrationGuard::new();
+        // IntegrationGuard 预置的 vault_meta security_stamp = "stamp-test"
+
+        // 手动写一个 stamp 不一致的 meta.json 到 .sync/vault/
+        let meta_file = store::MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+            kdf_iterations: 3,
+            kdf_memory_kib: 65536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:dummy-uvk".into(),
+            app_key_sync_enc: "v1:dummy-sync".into(),
+            security_stamp: "DIFFERENT-STAMP-XXX".into(), // 与本地 "stamp-test" 不一致
+            equivalent_domains: "[]".into(),
+        };
+        store::write_meta_file(&meta_file).expect("write meta");
+
+        // pull_from_files 应返 MasterPasswordMismatch，不覆盖 vault_meta
+        let result = pull_from_files();
+        assert!(
+            matches!(result, Err(SyncError::MasterPasswordMismatch)),
+            "stamp 不一致应拒绝覆盖，实际：{:?}",
+            result
+        );
+
+        // 验证本地 vault_meta 没被破坏
+        let local = octopus_infra::db::load_vault_meta().unwrap().unwrap();
+        assert_eq!(
+            local.security_stamp, "stamp-test",
+            "本地 stamp 不应被覆盖"
+        );
+        assert_eq!(
+            local.protected_user_vault_key, "v1:dummy-uvk",
+            "本地 protected_user_vault_key 不应被覆盖（仍是 IntegrationGuard 预置值）"
+        );
+        let _ = g;
+    }
+
+    /// security_stamp 一致时 pull_from_files 应正常覆盖 vault_meta（合法同步场景）。
+    #[test]
+    fn pull_allows_matching_security_stamp() {
+        let g = IntegrationGuard::new();
+
+        // 写一个 stamp 一致（stamp-test）的 meta.json
+        let meta_file = store::MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+            kdf_iterations: 3,
+            kdf_memory_kib: 65536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:new-uvk-from-remote".into(),
+            app_key_sync_enc: "v1:new-sync".into(),
+            security_stamp: "stamp-test".into(), // 与本地一致
+            equivalent_domains: "[]".into(),
+        };
+        store::write_meta_file(&meta_file).expect("write meta");
+
+        // pull 应成功（stamp 一致），不返 Err
+        let result = pull_from_files();
+        assert!(
+            result.is_ok(),
+            "stamp 一致应允许覆盖，实际：{:?}",
+            result
+        );
+
+        // vault_meta 应被更新为 meta.json 的值
+        let local = octopus_infra::db::load_vault_meta().unwrap().unwrap();
+        assert_eq!(
+            local.protected_user_vault_key, "v1:new-uvk-from-remote",
+            "stamp 一致时 vault_meta 应被 meta.json 覆盖"
+        );
         let _ = g;
     }
 }
