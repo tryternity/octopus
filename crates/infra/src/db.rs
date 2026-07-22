@@ -1141,7 +1141,8 @@ pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
 fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
-         FROM models WHERE domain='asr' AND source_type IN (0,1)",
+         FROM models WHERE domain='asr' AND source_type IN (0,1)
+         ORDER BY source_type ASC, category, model_name",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(LocalAsrModelRow {
@@ -1169,7 +1170,8 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
-             FROM models WHERE domain=?1 AND source_type IN (0,1)",
+             FROM models WHERE domain=?1 AND source_type IN (0,1)
+             ORDER BY source_type ASC, category, model_name",
         )?;
         let rows = stmt.query_map(params![domain], |row| {
             Ok(LocalAsrModelRow {
