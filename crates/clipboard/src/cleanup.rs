@@ -9,7 +9,7 @@ pub struct CleanupResult {
 
 /// 执行自动清理：
 /// 1. 按天数删除（is_favorite=0）——图片物理删，文本软删
-/// 2. 按数量删除（is_favorite=0，超出限额按 created_at ASC）——同上分流
+/// 2. 按数量删除（总条数超 max_items）——**先永久删回收站最老的，再软删活跃项**
 /// 3. 孤立 blob 回收
 /// 4. FTS5 索引重建（仅在有物理删除 / 回收时；纯软删不破坏 FTS，无需重建）
 pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Result<CleanupResult> {
@@ -21,7 +21,7 @@ pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Resu
     deleted += soft + phys;
     physical_deleted += phys;
 
-    // 2. 按数量删除
+    // 2. 按数量删除（先清回收站，再清活跃项）
     let (soft, phys) = delete_by_count(conn, max_items)?;
     deleted += soft + phys;
     physical_deleted += phys;
@@ -64,12 +64,19 @@ fn delete_by_age(conn: &Connection, max_age_days: u32) -> Result<(usize, usize)>
     Ok((soft, phys))
 }
 
-/// 按数量清理（is_favorite=0，超额按 created_at ASC）：图片物理 DELETE，文本软删 UPDATE。
+/// 按数量清理（总条数超 max_items 时）。
+///
+/// **清理顺序**（用户要求：先清回收站，再清正常项）：
+/// 1. 计算总条数（活跃 + 回收站，is_favorite=0）
+/// 2. 超出 max_items 的部分，**先永久删回收站最老的**（物理 DELETE，腾出空间）
+/// 3. 如果回收站清空后仍超限，**再软删活跃文本**（进回收站）
+///
+/// 图片在回收站和活跃区都走物理删（image_data 引用计数约束）。
 /// 返回 (soft_deleted, physical_deleted)。
 fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> {
-    // 计数只看活跃（非软删）非收藏项——软删的已在回收站，不占名额
+    // 总条数 = 活跃 + 回收站（非收藏）
     let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0 AND deleted_at IS NULL",
+        "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0",
         [],
         |r| r.get(0),
     )?;
@@ -78,28 +85,55 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
         return Ok((0, 0));
     }
 
-    let excess = total - max_items as i64;
-    // 图片物理删（超额部分中最老的图片）
-    let phys = conn.execute(
-        "DELETE FROM clipboard_history
-         WHERE id IN (
-             SELECT id FROM clipboard_history
-             WHERE is_favorite = 0 AND item_type = 'image' AND deleted_at IS NULL
-             ORDER BY created_at ASC LIMIT ?
-         )",
-        [excess],
-    )?;
-    // 文本软删（超额部分中最老的文本）
-    let soft = conn.execute(
-        "UPDATE clipboard_history SET deleted_at = datetime('now')
-         WHERE id IN (
-             SELECT id FROM clipboard_history
-             WHERE is_favorite = 0 AND item_type != 'image' AND deleted_at IS NULL
-             ORDER BY created_at ASC LIMIT ?
-         )",
-        [excess],
-    )?;
-    Ok((soft, phys))
+    let mut excess = total - max_items as i64;
+    let mut phys = 0usize;
+
+    // 第一步：先永久删回收站最老的（物理 DELETE 腾空间）
+    if excess > 0 {
+        let trash_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0 AND deleted_at IS NOT NULL",
+            [], |r| r.get(0),
+        )?;
+        if trash_count > 0 {
+            let to_delete = excess.min(trash_count);
+            phys += conn.execute(
+                "DELETE FROM clipboard_history WHERE id IN (
+                    SELECT id FROM clipboard_history
+                    WHERE is_favorite = 0 AND deleted_at IS NOT NULL
+                    ORDER BY deleted_at ASC LIMIT ?
+                )",
+                [to_delete],
+            )?;
+            excess -= to_delete;
+        }
+    }
+
+    // 第二步：回收站清空后仍超限 → 永久删活跃项（物理 DELETE）。
+    // 不走软删——容量超限时软删进回收站毫无意义（回收站本身就在超限，下一轮又被永久删）。
+    if excess > 0 {
+        // 活跃图片物理删（最老的）
+        phys += conn.execute(
+            "DELETE FROM clipboard_history
+             WHERE id IN (
+                 SELECT id FROM clipboard_history
+                 WHERE is_favorite = 0 AND item_type = 'image' AND deleted_at IS NULL
+                 ORDER BY created_at ASC LIMIT ?
+             )",
+            [excess],
+        )?;
+        // 活跃文本永久删（最老的）
+        phys += conn.execute(
+            "DELETE FROM clipboard_history
+             WHERE id IN (
+                 SELECT id FROM clipboard_history
+                 WHERE is_favorite = 0 AND item_type != 'image' AND deleted_at IS NULL
+                 ORDER BY created_at ASC LIMIT ?
+             )",
+            [excess],
+        )?;
+    }
+
+    Ok((0, phys))
 }
 
 #[cfg(test)]

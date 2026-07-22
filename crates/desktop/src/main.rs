@@ -560,11 +560,15 @@ pub fn run() {
                 }
             }
 
-            // 后台定时清理（每小时）：从 DB 重读最新 config（用户可能在运行时改了限额）。
-            // cleanup 在无删除时只做几次 COUNT，很轻；有删除才重建 FTS。
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(3600));
+            // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
+            // 统一管所有剪贴板定时清理（2026-07-22 合并了原每小时固定线程）。
+            //
+            // 任务 1 — clipboard_cleanup：按天数 + 按数量清理（用户可配的 max_age_days / max_items）。
+            //   容量超限时先永久删回收站最老的，不够再软删活跃文本。
+            // 任务 2 — trash_purge：回收站 TTL（3 天）+ 容量上限（500 条）自动永久删。
+            {
+                let mut scheduler = octopus_scheduler::Scheduler::new();
+                scheduler.register_task("clipboard_cleanup", 600, Box::new(|| {
                     let cfg = octopus_infra::config::load_config().unwrap_or_default();
                     let max_age = cfg.clipboard_max_age_days as u32;
                     let max_items = cfg.clipboard_max_items as u32;
@@ -573,16 +577,7 @@ pub fn run() {
                     }) {
                         log::warn!("Scheduled clipboard cleanup failed: {}", e);
                     }
-                }
-            });
-
-            // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
-            // 第一个任务：回收站自动清理——满足任一条件永久删除：
-            //   1. TTL 超期：软删超过 3 天
-            //   2. 容量超限：回收站超过 500 条，删最老的超出部分
-            // 与上面的 cleanup 线程（按 age/count 清活跃项）互补。
-            {
-                let mut scheduler = octopus_scheduler::Scheduler::new();
+                }));
                 scheduler.register_task("trash_purge", 600, Box::new(|| {
                     if let Err(e) = octopus_infra::db::with_db(|conn| {
                         octopus_clipboard::store::purge_trash(conn, 3, 500)
