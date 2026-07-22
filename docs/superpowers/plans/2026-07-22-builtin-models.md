@@ -83,7 +83,7 @@
 - [x] cargo test -p octopus-vault migrate：8 pass
 - [x] cargo test -p octopus-desktop --bins：394 pass
 - [x] tsc 0 error + vite build 成功
-- [ ] e2e：模型管理页正常显示 + ASR 正常 + 云端模型正常（待用户验证）
+- [x] e2e：模型管理页正常显示 + ASR 正常 + 云端模型正常（用户验证通过 2026-07-22）
 
 ---
 
@@ -160,6 +160,32 @@
 - [x] **激活前校验**：onActivate 先 verify_model，损坏/缺失自动 download_model 修复
 - [x] **校验失败自动下载**：onVerify ok=false 时自动触发 onDownloadInternal
 - [x] **CLI download 删除**：resolve_tasks HF API 路径无需求，删除 CLI download 子命令 + hf/ 模块
+
+---
+
+## Step 4：下载增强（多文件并发 + DownloadPopover 浮层，2026-07-23）
+
+### Task 4.1：后端多文件并发下载
+- [x] download_model 串行 for 改为 JoinSet + Semaphore(4) 并发
+- [x] Downloader 用 Arc 共享（&self 方法跨 task 安全）
+- [x] download-progress 事件加 file 字段（并发后按文件区分进度）
+- [x] download-file 事件改语义 {repo, file, status}（start/done/error/skip）
+- [x] 清理重复 dest 定义 + create_dir_all（L234-237 bug）
+
+### Task 4.2：DownloadPopover 组件（文件级进度浮层）
+- [x] 新建 components/DownloadPopover.tsx：文件列表 + 文件级进度条
+- [x] 复用 SaveImagePopover 的 outside-click + absolute 定位骨架
+- [x] 新增 list_model_files Tauri 命令（manifest 文件 + sha256 校验 exists）
+- [x] fmtBytes 提取到 lib/utils（4 处重复定义统一）
+
+### Task 4.3：ModelRow 集成 hover 浮层
+- [x] 本地+builtin 模型行加 FileDown 图标按钮
+- [x] hover/click 弹出 DownloadPopover 展示文件列表 + 进度
+
+### Task 4.4：验证
+- [x] cargo build 0 error 0 warning + desktop 394 pass
+- [x] tsc OK + vite build OK
+- [ ] e2e（待用户验证）：hover 模型行看文件列表 + 并发下载 + 文件级进度
 
 ---
 

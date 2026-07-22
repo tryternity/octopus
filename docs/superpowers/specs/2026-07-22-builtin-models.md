@@ -90,14 +90,24 @@ pub enum VadSource {
 3. **缺失检测**（`check_builtin_models_missing`，setup 内）：读 OnceLock 缓存 → 返回缺失列表
 4. 有缺失 → 显示下载页（独立 Tauri 窗口 `download_window`，不阻断主窗口创建）
 5. 下载页列出缺失模型 + 大小 + 「下载并进入系统」按钮
-6. 用户点「下载并进入系统」→ 串行下载 → 全部完成后自动关闭下载窗进入系统
+6. 用户点「下载并进入系统」→ 并发下载 → 全部完成后自动关闭下载窗进入系统
    - 复用 `model_commands::download_model`（manifest 驱动）
-   - **增量下载**：循环内按单文件 sha256 校验，完好文件跳过（只下损坏/缺失的）
+   - **多文件并发**：`JoinSet` + `Semaphore(4)` 限并发，manifest 各文件并行下载
+   - **增量下载**：known_broken 集合跳过完好文件（只下损坏/缺失的）
 7. 下载完成 → `download_model` 内 `set_model_available(name, true)` → emit `download-done` 通知前端刷新
 
 **模型管理页额外行为**：
 - 校验（verify）失败 → 自动触发下载修复
 - 激活（activate）前先校验完整性，损坏/缺失 → 自动下载修复后才激活
+- **DownloadPopover 浮层**（hover 文件按钮）：展示模型所有文件的列表 + 文件级进度
+  - `list_model_files` 命令返回 `[{path, size, exists}]`（exists = sha256 校验通过）
+  - 监听 `download-progress`（文件级，带 `file` 字段）+ `download-file`（状态 start/done/error/skip）
+  - 已存在文件显示 100% 绿勾，下载中显示进度条，待下载显示文件大小
+
+**下载事件设计**（并发场景）：
+- `download-progress`：`{repo, file, downloaded, total, speed}`——按文件区分进度
+- `download-file`：`{repo, file, status}`——status = start/done/error/skip
+- `download-done`：`{repo, already_ready?, error?}`——整个模型下载完成/失败
 
 ### 3.2 下载页 UI
 
