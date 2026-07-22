@@ -242,14 +242,14 @@ fn ensure_builtin_seed(conn: &Connection) -> Result<()> {
     }
     conn.execute(
         "INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-         VALUES ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh',
-                 'zipformer-small-ctc 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
+         VALUES ('asr','local','zipformer','zipformer-small','asr/zipformer-small','zh',
+                 'zipformer-small 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
         [],
     )?;
     // 若 builtin 行 secret_key 为空，填 manifest（首次或迁移漏填时）
     let needs_manifest: bool = conn
         .query_row(
-            "SELECT secret_key = '' OR secret_key IS NULL FROM models WHERE model_name='zipformer-small-ctc'",
+            "SELECT secret_key = '' OR secret_key IS NULL FROM models WHERE model_name='zipformer-small'",
             [], |r| r.get::<_, i32>(0),
         )
         .map(|v| v != 0)
@@ -367,11 +367,11 @@ fn migrate_v47_to_v48(conn: &Connection) -> Result<()> {
     if has_models {
         conn.execute(
             "INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-             VALUES ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh',
-                     'zipformer-small-ctc 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
+             VALUES ('asr','local','zipformer','zipformer-small','asr/zipformer-small','zh',
+                     'zipformer-small 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
             [],
         )?;
-        // 为 builtin + local 模型填充 manifest（含新增的 zipformer-small-ctc）
+        // 为 builtin + local 模型填充 manifest（含新增的 zipformer-small）
         fill_manifests(conn)?;
     }
     conn.execute("PRAGMA user_version = 48", [])?;
@@ -4158,16 +4158,16 @@ mod tests {
         // 验证 builtin 兜底引擎 seed 行被注入（source_type=0）
         let builtin_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM models WHERE model_name='zipformer-small-ctc' AND source_type=0",
+                "SELECT COUNT(*) FROM models WHERE model_name='zipformer-small' AND source_type=0",
                 [], |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(builtin_count, 1, "v48 迁移应注入 zipformer-small-ctc builtin seed 行");
+        assert_eq!(builtin_count, 1, "v48 迁移应注入 zipformer-small builtin seed 行");
 
         // 验证 manifest 已填充（secret_key 非空——fill_manifests 覆盖 source_type IN (0,1)）
         let manifest: String = conn
             .query_row(
-                "SELECT secret_key FROM models WHERE model_name='zipformer-small-ctc'",
+                "SELECT secret_key FROM models WHERE model_name='zipformer-small'",
                 [], |r| r.get(0),
             )
             .unwrap();
@@ -5001,7 +5001,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // v48: 13 local ASR + 1 builtin (zipformer-small-ctc) = 14
+        // v48: 13 local ASR + 1 builtin (zipformer-small) = 14
         assert_eq!(count, 14);
     }
 
@@ -5137,10 +5137,10 @@ mod tests {
         let names: Vec<&str> = rows.iter().map(|r| r.model_name.as_str()).collect();
         assert!(names.contains(&"paraformer-streaming"), "未过滤 is_enabled=0");
         assert!(rows.iter().any(|r| !r.is_enabled), "应含未就绪模型");
-        // v48 后含 1 条 builtin（zipformer-small-ctc, source_type=0）+ 13 条 local = 14 条
+        // v48 后含 1 条 builtin（zipformer-small, source_type=0）+ 13 条 local = 14 条
         assert_eq!(rows.len(), 14, "本地 ASR 清单应含 14 条（13 local + 1 builtin）");
-        // builtin 兜底引擎 source 是 'models/zipformer'（随包路径），local 是 HF repo id
-        assert!(names.contains(&"zipformer-small-ctc"), "应含 builtin 兜底引擎");
+        // builtin 兜底引擎 source 是 'asr/zipformer-small'（与其他 local 模型同 domain/name 格式）
+        assert!(names.contains(&"zipformer-small"), "应含 builtin 兜底引擎");
     }
 
     #[test]
@@ -6120,11 +6120,10 @@ mod tests {
         fill_manifests(&conn).unwrap();
 
         let asr_rows = list_all_local_asr_models_at(&conn).unwrap();
-        // v48: 含 1 条 builtin（zipformer-small-ctc, source='models/zipformer'），
-        // 其余 local 的 source 以 asr/ 开头
-        assert!(asr_rows.iter().all(|r| r.source.contains('/')),
-            "ASR models source 应为路径形式（含 /）");
-        assert!(asr_rows.iter().any(|r| r.model_name == "zipformer-small-ctc"),
+        // v48: 含 1 条 builtin（zipformer-small, source='asr/zipformer-small'）+ 13 local
+        assert!(asr_rows.iter().all(|r| r.source.starts_with("asr/")),
+            "ASR models source 应以 asr/ 开头（builtin + local 统一格式）");
+        assert!(asr_rows.iter().any(|r| r.model_name == "zipformer-small"),
             "应含 builtin 兜底引擎");
 
         // 用新函数查 translate

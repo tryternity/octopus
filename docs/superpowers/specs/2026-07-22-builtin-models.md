@@ -35,15 +35,15 @@ source_type INTEGER NOT NULL DEFAULT 1  -- 0=builtin(内置) 1=local(用户下�
 
 ### 1.3 兜底引擎入 DB
 
-当前兜底 zipformer CTC（`zipformer-small-ctc`）不在 DB 里——代码硬编码。改为 **DB 里加 source_type=0 的行**：
+当前兜底 zipformer CTC（`zipformer-small`）不在 DB 里——代码硬编码。改为 **DB 里加 source_type=0 的行**：
 
 ```sql
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, secret_key, is_available, is_streaming)
-VALUES ('asr', 'local', 'zipformer', 'zipformer-small-ctc', 'models/zipformer', 'zh',
-        'zipformer-small-ctc 兜底引擎（27M，内置，开箱即用）', 0, '<manifest>', 1, 1);
+VALUES ('asr', 'local', 'zipformer', 'zipformer-small', 'asr/zipformer-small', 'zh',
+        'zipformer-small 兜底引擎（27M，内置，开箱即用）', 0, '<manifest>', 1, 1);
 ```
 
-secret_key（manifest）由 `fill_manifests` 从 model_manifests.rs 填充——需新增 `zipformer-small-ctc` 的 manifest 常量（指向 HF repo `csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01`）。
+secret_key（manifest）由 `fill_manifests` 从 model_manifests.rs 填充——需新增 `zipformer-small` 的 manifest 常量（指向 HF repo `csukuangfj/sherpa-onnx-streaming-zipformer-small-zh-int8-2025-04-01`）。
 
 VAD **不进 DB**（保持现状——VAD 是固定路径/内嵌，不属于 models 表的引擎管理范畴）。
 
@@ -117,7 +117,7 @@ ALTER TABLE models RENAME COLUMN is_local TO source_type;
 -- 数据迁移：is_local=0 → source_type=2（cloud），is_local=1 → source_type=1（local）
 UPDATE models SET source_type = CASE WHEN source_type = 0 THEN 2 ELSE 1 END;
 -- 注入 builtin 兜底引擎 seed 行（source_type=0）
-INSERT OR IGNORE INTO models (...) VALUES ('asr',...,'zipformer-small-ctc','models/zipformer',... ,0,0,1);
+INSERT OR IGNORE INTO models (...) VALUES ('asr',...,'zipformer-small','asr/zipformer-small',... ,0,0,1);
 -- 填充 manifest
 fill_manifests(conn);
 PRAGMA user_version = 48;

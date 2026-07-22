@@ -15,7 +15,7 @@ use serde::Serialize;
 pub struct BuiltinModelInfo {
     /// DB model_name（如 "zipformer-small-ctc"）
     pub name: String,
-    /// DB source（路径标识，如 "models/zipformer"）—— 传给 download_model 的 repo 参数
+    /// DB source（路径标识，如 "asr/zipformer-small"）—— 传给 download_model 的 repo 参数
     pub source: String,
     /// 描述（DB description）
     pub description: String,

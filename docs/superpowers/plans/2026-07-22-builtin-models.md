@@ -91,11 +91,11 @@
 
 ### Task 3.1：zipformer builtin 入 DB ✅
 **文件**: `crates/infra/src/db.sql` + `model_manifests.rs` + `db.rs`
-- [x] db.sql seed 加 zipformer-small-ctc 行（source_type=0, source='models/zipformer'）
+- [x] db.sql seed 加 zipformer-small 行（source_type=0, source='asr/zipformer-small'）
 - [x] model_manifests.rs 加 ZIPFORMER_SMALL_CTC 常量（3 文件：bbpe.model + model.int8.onnx + tokens.txt，27M）
-  - HF repo: `csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01`
-  - sha256 + size 由本地 ~/.octopus/models/zipformer/ 实际文件计算
-- [x] asr_manifest match 加 "zipformer-small-ctc" 分支
+  - HF repo: `csukuangfj/sherpa-onnx-streaming-zipformer-small-zh-int8-2025-04-01`
+  - sha256 + size 由本地 ~/.octopus/asr/zipformer-small/ 实际文件计算
+- [x] asr_manifest match 加 "zipformer-small" 分支
 - [x] fill_manifests 已覆盖 source_type IN (0,1)（Step 2 改的 SQL，builtin 自动包含）
 - [x] migrate_v47_to_v48 内 INSERT builtin seed + fill_manifests
 - [x] **ensure_builtin_seed() 兜底**（ensure_db 每次启动跑 INSERT OR IGNORE）——

@@ -54,7 +54,7 @@
 | 解码循环 | 逐帧 argmax | 每 encoder frame 跑 joiner→argmax；非 blank 发射+滑窗更新+重跑 decoder；blank 移下一 frame；内循环安全上限 20 次/frame |
 | token_buf | 无 | 初始化 `[-1,...,-1,0]`（长度=context_size），结束后剥离 context padding |
 | encoder_dim | — | 动态读（zh=512, xlarge=768） |
-| 典型模型 | `zipformer-ctc` / `zipformer-small-ctc` / `zipformer-multi` | `sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30`（154M）/ `zh-xlarge-int8-2025-06-30`（726M） |
+| 典型模型 | `zipformer-ctc` / `zipformer-small` / `zipformer-multi` | `sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30`（154M）/ `zh-xlarge-int8-2025-06-30`（726M） |
 
 两者实现 `ZipformerStreamOps` trait，`StreamingSession` 通过 trait 统一分发 `accept_samples`/`flush`/`finish`/`reset`。共享 `load_vocab`、`initial_encoder_states`、`decode_token_ids`（支持 BBPE + SentencePiece byte-fallback）。
 
@@ -229,7 +229,7 @@ mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
 
 | 级 | 路径 | 用途 |
 |----|------|------|
-| 1 | `~/.octopus/<source>` | builtin 模型（如 `models/zipformer`，首次启动下载到此） |
+| 1 | `~/.octopus/<source>` | builtin 模型（如 `asr/zipformer-small`，首次启动下载到此） |
 | 2 | 绝对路径 | `source` 是绝对路径且存在 |
 | 3 | `~/.octopus/models/<source>` | cli download 下的本地模型（优先于旧 hf-cli 缓存） |
 | 4 | `find_hf_cache`（`~/.cache/huggingface/hub/models--<repo>/snapshots/<hash>/`） | 兼容旧 hf-cli |
@@ -244,7 +244,7 @@ CLI `--model` / server 请求 `engine` / `AsrEngineManager.switch_model(spec)` �
 
 | spec | 含义 |
 |------|------|
-| `"local:zipformer:zipformer-small-ctc"` | 本地 zipformer |
+| `"local:zipformer:zipformer-small"` | 本地 zipformer |
 | `"aliyun:Fun-ASR:fun-asr-realtime"` | 云端 DashScope FunASR（run-task） |
 | `"aliyun:Qwen-ASR:qwen3-asr-flash-realtime"` | 云端 Qwen-ASR Realtime（OpenAI Realtime） |
 | `"aliyun:Paraformer-Realtime:paraformer-realtime-v2"` | 云端 Paraformer 实时（run-task） |
@@ -261,10 +261,10 @@ CLI `--model` / server 请求 `engine` / `AsrEngineManager.switch_model(spec)` �
 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。显式 spec 路径（cli `--model`、`AsrEngineManager.switch_model`、server 请求带 engine）直接走 `resolve_engine_in_config + pick_entry`，**不走兜底**（匹配不到直接报错）。
 
 解析规则：
-1. **兜底引擎优先查 DB**：裸名为 `zipformer-small-ctc`（`FALLBACK_ASR_ENGINE_NAME`）时先 `resolve_engine_any` 查 DB（source_type=0 builtin 行），命中则用 DB entry（含真实 is_available 状态）
+1. **兜底引擎优先查 DB**：裸名为 `zipformer-small`（`FALLBACK_ASR_ENGINE_NAME`）时先 `resolve_engine_any` 查 DB（source_type=0 builtin 行），命中则用 DB entry（含真实 is_available 状态）
 2. DB 无此行（极端情况，如 DB 损坏）→ 硬构造兜底 entry（source_type=0, source=`DEFAULT_ASR_MODEL_DIR`）
 3. 非空且命中 → 返回裸名（去掉前缀）+ category + entry
-4. 空/不匹配 → 回退兜底 `zipformer-small-ctc`
+4. 空/不匹配 → 回退兜底 `zipformer-small`
 
 返回的 `ResolvedEngine.name` 始终是**裸名**（不含 `local:`/`category:` 前缀）。
 
@@ -282,7 +282,7 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 
 **seed**：zipformer×2 + paraformer×4 + Qwen-ASR Realtime = 流式（`is_streaming=1`）；whisper / sensevoice-orig / firered / qwen3-asr×2 / moonshine×2 / 云端全部 = 非流式。
 
-**云端引擎显式排除**——其 `is_streaming=1` 表示支持云端 WS 流式，而非本地 `StreamingSession`。`StreamingSession::new` 失败时降级到默认引擎 `local:zipformer:zipformer-small-ctc` 重试。
+**云端引擎显式排除**——其 `is_streaming=1` 表示支持云端 WS 流式，而非本地 `StreamingSession`。`StreamingSession::new` 失败时降级到默认引擎 `local:zipformer:zipformer-small` 重试。
 
 **流式引擎内部分流**：`StreamingSession::new` 检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`，Transducer 走 `StreamingZipformerTransducer`。
 

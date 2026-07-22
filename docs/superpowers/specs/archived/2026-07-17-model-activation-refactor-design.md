@@ -114,7 +114,7 @@ pub fn load_active_engine(domain: &str) -> Result<ResolvedEngine> {
         }
         None => {
             if domain == "asr" {
-                let resolved = fallback_resolved_engine(); // zipformer-small-ctc 兜底
+                let resolved = fallback_resolved_engine(); // zipformer-small 兜底
                 ACTIVE_ENGINES.write().unwrap().insert(domain.to_string(), Arc::new(resolved.clone()));
                 Ok(resolved)
             } else {
@@ -136,7 +136,7 @@ pub fn reload_active_engine(domain: &str) -> Result<ResolvedEngine> {
 - 缓存结构 `LazyLock<RwLock<HashMap<domain, Arc<ResolvedEngine>>>>`（4 域各一个槽位）
 - `LazyLock` 而非 const：`HashMap::new()` 非 const 函数，不能直接 `static`
 - 调用时机：① 应用启动（main.rs 初始化 4 域）；② 设置页激活模型后（switch_active_model 之后 reload_active_engine）
-- ASR 域 fallback：`fallback_resolved_engine()` 优先 `load_config` 缓存的 zipformer-small-ctc，否则硬构造（`DEFAULT_ASR_MODEL_DIR`）
+- ASR 域 fallback：`fallback_resolved_engine()` 优先 `load_config` 缓存的 zipformer-small，否则硬构造（`DEFAULT_ASR_MODEL_DIR`）
 
 ### 4.2 `resolve_active_engine(domain)` —— 读缓存（内存取唯一激活态）
 
@@ -279,7 +279,7 @@ switch_active_model，wrapper 仅遗留兼容）：按 name 查 DB 取 id → �
 
 | 场景 | 行为 |
 |---|---|
-| 某域无 is_enabled=1（未激活） | ASR fallback 兜底引擎（zipformer-small-ctc）；LLM/OCR/Translate 返回 None，调用方报错提示去设置页激活 |
+| 某域无 is_enabled=1（未激活） | ASR fallback 兜底引擎（zipformer-small）；LLM/OCR/Translate 返回 None，调用方报错提示去设置页激活 |
 | 激活模型 is_available=0（文件未就绪） | ASR fallback 兜底；其余报错 |
 | DB 查询失败 | ASR 用缓存的 ACTIVE_ENGINE（旧值）；其余报错 |
 

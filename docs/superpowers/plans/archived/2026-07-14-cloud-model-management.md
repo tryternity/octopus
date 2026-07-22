@@ -279,7 +279,7 @@ pub async fn delete_cloud_model(id: i64, rc: State<'_, SharedRuntimeConfig>) -> 
     let current_asr = rc.read().asr_engine.clone();
     if current_asr.contains(&model.model_name) {
         // 回退到兜底引擎
-        *rc.write() 的 asr_engine = "local:zipformer:zipformer-small-ctc";
+        *rc.write() 的 asr_engine = "local:zipformer:zipformer-small";
     }
     let current_llm = rc.read().polish_llm.clone();
     if current_llm.contains(&model.model_name) {

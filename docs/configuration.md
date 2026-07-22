@@ -60,7 +60,7 @@ octopus 配置分两部分：
 
 | provider | category | 代表 model_name | 说明 |
 |---|---|---|---|
-| local | zipformer | `zipformer` / `zipformer-large` | 流式 CTC（`zipformer-small-ctc` 为本地打包**兜底引擎**，不在 seed、代码构造） |
+| local | zipformer | `zipformer` / `zipformer-large` | 流式 CTC（`zipformer-small` 为 builtin **兜底引擎** source_type=0，seed + 首次启动下载） |
 | local | paraformer | `paraformer-{streaming,zh,bilingual,multi-zh}` | 流式 ×4 |
 | local | sensevoice-orig | `sensevoice-orig-small`（`WisemeAI/sensevoice-small-quant`） | 原版 FunASR 4 输入，**is_available=1**（随包就绪），`skip_corrector` |
 | local | firered | `firered-asr2`（`VidraAI/FireRedASR2-onnx`） | FireRedASR2-AED CTC，**is_available=1**（随包就绪） |
@@ -101,7 +101,7 @@ octopus 配置分两部分：
 
 > **远程 API Key 配置方式（`secret_key`）**：LLM / 云端 ASR 的所有参数（包括 Base URL / WS 端点 和 API Key）全部存储在 DB `models` 表。`source` 存端点 URL，`secret_key` 存 API Key。可通过 SQLite 客户端手动填入（具体填法见下方「阿里云云端 API」小节）。
 
-> **引擎激活由 DB `is_enabled` 决定（2026-07-17 重构后）**：`models` 表 `is_enabled=1` 表激活（每域仅 1 个），`is_available=1` 表可用（文件就绪）。`zipformer-small-ctc` 是兜底引擎——ASR 域无激活模型时自动回退到它（靠本地打包路径，开箱可用）。详见下方「模型激活」节。
+> **引擎激活由 DB `is_enabled` 决定（2026-07-17 重构后）**：`models` 表 `is_enabled=1` 表激活（每域仅 1 个），`is_available=1` 表可用（文件就绪）。`zipformer-small` 是兜底引擎（source_type=0 builtin）——ASR 域无激活模型时自动回退到它，首次启动若文件缺失弹下载窗自动下载。详见下方「模型激活」节。
 
 ### 阿里云云端 API 接入
 
@@ -260,7 +260,7 @@ octopus-cli config
 
 | source 形态 | 解析结果 | 示例 |
 |---|---|---|
-| 本地相对路径 | `~/.octopus/<source>` | `models/zipformer` → `~/.octopus/models/zipformer` |
+| 本地相对路径 | `~/.octopus/models/<source>` | `asr/zipformer-small` → `~/.octopus/models/asr/zipformer-small` |
 | HF repo 名 | `~/.cache/huggingface/hub/` | `onnx-community/whisper-small.en` → HF 缓存 |
 
 ### 手编 DB
@@ -327,7 +327,7 @@ octopus-cli config
 |------|------|------|
 | **查询激活** | 代码内 `resolve_active_engine(domain)` | DB `WHERE domain=? AND is_enabled=1 AND is_available=1 LIMIT 1`，结果缓存在 `ACTIVE_ENGINES` 内存 |
 | **切换激活** | 设置页模型管理 → 点击「激活」 | Tauri 命令 `switch_active_model(domain, id)` → DB `UPDATE SET is_enabled=IIF(id=?,1,0) WHERE domain=? AND is_available=1`（单语句原子刷新）→ `reload_active_engine` 重载缓存 |
-| **ASR 兜底** | ASR 域无激活时 | 自动回退 `zipformer-small-ctc`（随应用本地打包，开箱可用）；其余域无激活返回 Err |
+| **ASR 兜底** | ASR 域无激活时 | 自动回退 `zipformer-small`（builtin source_type=0，首次启动下载）；其余域无激活返回 Err |
 
 - **`is_available` vs `is_enabled`**：`is_available=1` = 文件就绪/配置完整（可被选择，同域可多个）；`is_enabled=1` = 当前激活（每域仅 1 个）。下载模型后置 `is_available=1`，激活模型时置 `is_enabled=1`。
 - **CLI `--model` 显式路径**：cli 多模型场景用 `resolve_engine_any(spec)` 查 DB 任意可用 ASR（不限激活），支持 3-part spec `"{provider}:{category}:{model_name}"` 或裸名。

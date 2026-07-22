@@ -32,7 +32,7 @@ pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
 
 /// 前 3 级模型目录查找（基于给定 octopus_home，可单测；不依赖全局 `$HOME`）。
 ///
-/// 1. `octopus_home/<source>`（随包小模型，如 `models/zipformer`）
+/// 1. `octopus_home/<source>`（随包小模型，如 `models/silero_vad_v4.onnx`）
 /// 2. 绝对路径（`source` 本身是绝对路径）
 /// 3. `octopus_home/models/<source>`（download 下的 HF 模型，source 如 `onnx-community/whisper-small`）
 ///
@@ -57,7 +57,7 @@ fn resolve_local_in(source: &str, octopus_home: &Path) -> Option<PathBuf> {
 }
 
 /// 解析模型目录：前 3 级本地查找（随包 / 绝对路径 / download 下载），回退 HF 缓存。
-/// - source 为本地相对路径（如 "models/zipformer"）→ octopus_config_home/source
+/// - source 为 domain/name 路径标识（如 "asr/zipformer-small"）→ ~/.octopus/models/<source>
 /// - source 为绝对路径 → 直接用
 /// - source 为 HF repo 名（如 "onnx-community/whisper-small"）→ 优先 ~/.octopus/models/<source>（download 下到这里），
 ///   否则 find_hf_cache（兼容已用 hf-cli 下的 ~/.cache/huggingface）

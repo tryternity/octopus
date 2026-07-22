@@ -702,7 +702,7 @@ pub fn start_agent_recording(&self, task_id: String) {
         let rc = runtime_config.read();
         config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
             Ok(_) => rc.asr_engine.clone(),
-            Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
+            Err(_) => "local:zipformer:zipformer-small".to_string(),
         };
         config.microphone = rc.microphone.clone();
         config.engine_mode = rc.engine_mode.clone();

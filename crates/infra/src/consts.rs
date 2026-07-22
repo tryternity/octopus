@@ -8,9 +8,9 @@
 /// 固定加载、随应用打包，不读配置 / HF 缓存——唯一 VAD 方案。
 pub const SILERO_VAD_PATH: &str = "models/silero_vad_v4.onnx";
 
-/// 兜底（默认）ASR 模型目录相对路径（~/.octopus/models/zipformer）。
-/// zipformer-small-ctc 的 source，27M，随应用打包，开箱即用。
-pub const DEFAULT_ASR_MODEL_DIR: &str = "models/zipformer";
+/// 兜底（默认）ASR 模型 source（路径标识，domain/name 格式，与其他 local 模型一致）。
+/// zipformer-small 的 source，27M，builtin（source_type=0），首次启动下载。
+pub const DEFAULT_ASR_MODEL_DIR: &str = "asr/zipformer-small";
 
 /// VAD 伪流式连续语音强制截断阈值（秒）。缓冲区达到此时长仍未静音 → 强制切断送识别。
 /// 兜底逻辑——正常人不会连续说这么久。原为 config 字段，因属实现细节（用户不可感知）改为常量。

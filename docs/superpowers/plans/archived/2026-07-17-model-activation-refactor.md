@@ -115,7 +115,7 @@ static ACTIVE_ENGINES: RwLock<HashMap<String, Arc<ResolvedEngine>>> = RwLock::ne
 
 - [x] **Step 4: resolve_active_engine(domain)**
 
-读 ACTIVE_ENGINES。缓存未命中 fallback 到 load_active_engine。ASR 域无激活时 fallback 兜底引擎（zipformer-small-ctc），其余域返回 Err。
+读 ACTIVE_ENGINES。缓存未命中 fallback 到 load_active_engine。ASR 域无激活时 fallback 兜底引擎（zipformer-small），其余域返回 Err。
 
 - [x] **Step 5: load_config 的处理（关键决策）**
 

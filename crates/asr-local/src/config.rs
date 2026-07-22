@@ -177,8 +177,8 @@ pub fn resolve_engine_in_config<'a, 'b>(
     }
 }
 
-/// Resolve a model spec (e.g. "local:zipformer-small-ctc", "zipformer:zipformer-small-ctc",
-/// or bare "zipformer-small-ctc") to its [`EngineCategory`] by looking up DB models.
+/// Resolve a model spec (e.g. "local:zipformer-small", "zipformer:zipformer-small",
+/// or bare "zipformer-small") to its [`EngineCategory`] by looking up DB models.
 ///
 /// Task 2 后：`load_config` 只含激活的那一个 ASR entry——本函数仅匹配激活引擎。
 /// CLI `--model` / 多模型显式路径用 [`resolve_engine_category_any`]（查所有可用引擎）。
@@ -453,12 +453,12 @@ pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
 }
 
 /// 兜底引擎固定裸名。
-const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small-ctc";
+const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small";
 
-/// ASR 兜底引擎（无 DB 激活时）：优先用 DB 可用的 zipformer-small-ctc
+/// ASR 兜底引擎（无 DB 激活时）：优先用 DB 可用的 zipformer-small
 /// （用户可能改过 source），否则硬构造（本地打包路径）。
 fn fallback_resolved_engine() -> ResolvedEngine {
-    // 查 DB 任意可用 ASR 的 zipformer-small-ctc（不限激活）
+    // 查 DB 任意可用 ASR 的 zipformer-small（不限激活）
     if let Some((_cat, entry)) = resolve_engine_any(FALLBACK_ASR_ENGINE_NAME) {
         return ResolvedEngine {
             domain: "asr".to_string(),
@@ -469,7 +469,7 @@ fn fallback_resolved_engine() -> ResolvedEngine {
             entry,
         };
     }
-    // DB 无 zipformer-small-ctc（极端情况）仍可用——靠本地打包路径硬构造
+    // DB 无 zipformer-small（极端情况）仍可用——靠本地打包路径硬构造
     // source_type=0（builtin）—— 兜底引擎属于内置分类
     ResolvedEngine {
         domain: "asr".to_string(),
@@ -490,7 +490,7 @@ fn fallback_resolved_engine() -> ResolvedEngine {
     }
 }
 
-/// 从已加载的 AsrConfig 取 zipformer-small-ctc 条目构造兜底 ResolvedEngine。
+/// 从已加载的 AsrConfig 取 zipformer-small 条目构造兜底 ResolvedEngine。
 /// 配置中无该条目时返回 None（调用方走硬构造兜底）。纯函数，仅供单测。
 #[cfg(test)]
 fn fallback_engine_from_cfg(cfg: &AsrConfig) -> Option<ResolvedEngine> {
@@ -606,10 +606,10 @@ mod tests {
         }
     }
 
-    /// 构造含 zipformer-small-ctc（本地路径）+ zipformer-multi（HF）的配置。
+    /// 构造含 zipformer-small（本地路径）+ zipformer-multi（HF）的配置。
     fn cfg_with_zipformer() -> AsrConfig {
         let mut zip = HashMap::new();
-        zip.insert("zipformer-small-ctc".to_string(), make_entry("models/zipformer"));
+        zip.insert("zipformer-small".to_string(), make_entry("asr/zipformer-small"));
         zip.insert("zipformer-multi".to_string(), make_entry("hf/zipformer-multi"));
         AsrConfig {
             asr: AsrSection {
@@ -678,13 +678,13 @@ mod tests {
             mk("whisper-small", Whisper, 2),       // cloud
             mk("zipformer-multi", Zipformer, 1),   // local
             mk("paraformer-x", Paraformer, 2),     // cloud
-            mk("zipformer-small-ctc", Zipformer, 0), // builtin
+            mk("zipformer-small", Zipformer, 0), // builtin
         ];
         order_engine_infos(&mut engines);
         let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
         // source_type 升序：builtin(0) → local(1) → cloud(2)。
-        // builtin 仅 zipformer-small-ctc；local 仅 zipformer-multi；cloud: paraformer-x < whisper-small（category 字母序）
-        assert_eq!(names, vec!["zipformer-small-ctc", "zipformer-multi", "paraformer-x", "whisper-small"]);
+        // builtin 仅 zipformer-small；local 仅 zipformer-multi；cloud: paraformer-x < whisper-small（category 字母序）
+        assert_eq!(names, vec!["zipformer-small", "zipformer-multi", "paraformer-x", "whisper-small"]);
     }
 
     #[test]
@@ -709,15 +709,15 @@ mod tests {
 
     #[test]
     fn fallback_uses_db_zipformer_small_entry() {
-        // DB 有 zipformer-small-ctc 条目 → 用 DB 的 source（用户手编仍生效）
+        // DB 有 zipformer-small 条目 → 用 DB 的 source（用户手编仍生效）
         let cfg = cfg_with_zipformer();
-        let r = fallback_engine_from_cfg(&cfg).expect("zipformer-small-ctc 应命中");
+        let r = fallback_engine_from_cfg(&cfg).expect("zipformer-small 应命中");
         assert_eq!(r.domain, "asr");
-        assert_eq!(r.name, "zipformer-small-ctc");
+        assert_eq!(r.name, "zipformer-small");
         assert_eq!(r.provider, "local");
         assert_eq!(r.category, "zipformer");
         assert!(!r.is_thinking, "ASR 兜底引擎 is_thinking 应为 false");
-        assert_eq!(r.entry.source, "models/zipformer");
+        assert_eq!(r.entry.source, "asr/zipformer-small");
         // category 字符串 → EngineCategory 转换
         assert_eq!(r.as_engine_category(), Some(EngineCategory::Zipformer));
     }
@@ -780,22 +780,22 @@ mod tests {
     #[test]
     fn parse_spec_full_3part() {
         assert_eq!(
-            parse_model_spec("local:zipformer:zipformer-small-ctc"),
-            ModelSpec::Full { provider: "local", category: "zipformer", model_name: "zipformer-small-ctc" }
+            parse_model_spec("local:zipformer:zipformer-small"),
+            ModelSpec::Full { provider: "local", category: "zipformer", model_name: "zipformer-small" }
         );
     }
 
     #[test]
     fn parse_spec_bare_name() {
-        assert_eq!(parse_model_spec("zipformer-small-ctc"), ModelSpec::NameOnly("zipformer-small-ctc"));
+        assert_eq!(parse_model_spec("zipformer-small"), ModelSpec::NameOnly("zipformer-small"));
     }
 
     #[test]
     fn resolve_full_3part_finds_local_model() {
         let cfg = cfg_with_zipformer(); // make_entry sets source_type=1 (local)
-        let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer:zipformer-small-ctc").unwrap();
+        let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer:zipformer-small").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
-        assert_eq!(name, "zipformer-small-ctc");
+        assert_eq!(name, "zipformer-small");
         assert!(entry.is_local());
     }
 
@@ -828,9 +828,9 @@ mod tests {
     fn resolve_bare_name_finds_anywhere() {
         // 裸名跨 section 搜，命中第一条匹配（不限 source_type）
         let cfg = cfg_with_zipformer();
-        let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small-ctc").unwrap();
+        let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
-        assert_eq!(name, "zipformer-small-ctc");
+        assert_eq!(name, "zipformer-small");
     }
 
     #[test]
@@ -907,11 +907,11 @@ mod tests {
         // 本地 ASR（zipformer）
         let zf = ResolvedEngine {
             domain: "asr".to_string(),
-            name: "zipformer-small-ctc".to_string(),
+            name: "zipformer-small".to_string(),
             provider: "local".to_string(),
             category: "zipformer".to_string(),
             is_thinking: false,
-            entry: make_entry("models/zipformer"),
+            entry: make_entry("asr/zipformer-small"),
         };
         assert_eq!(zf.as_engine_category(), Some(EngineCategory::Zipformer));
 

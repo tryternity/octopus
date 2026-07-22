@@ -90,7 +90,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 唯一键 `UNIQUE(domain, provider, category, model_name)`。
 
 - 本地 ASR（source_type=1，13 行）seed：`is_available` 标就绪（sensevoice-orig-small + firered-asr2 随包 `is_available=1`，其余 `is_available=0` 待下载），`is_enabled` 全 0（用户激活时设）
-- builtin 兜底引擎 `zipformer-small-ctc`（source_type=0，27M）：seed 占一行，首次启动由 `ensure_builtin_seed` 注入 + `fill_manifests` 填 manifest，`check_builtin_models_missing` 检测缺失弹下载窗（详见 spec 2026-07-22-builtin-models.md §3）
+- builtin 兜底引擎 `zipformer-small`（source_type=0，27M）：seed 占一行，首次启动由 `ensure_builtin_seed` 注入 + `fill_manifests` 填 manifest，`check_builtin_models_missing` 检测缺失弹下载窗（详见 spec 2026-07-22-builtin-models.md §3）
 - `load_models_at` 仅读 `domain='asr' AND is_enabled=1 AND is_available=1 LIMIT 1`（激活的那一个）
 - `domain='llm'` 经 `load_llm_model(spec)` 按 3-part spec 读（CLI 显式路径用）；推理路径统一 `resolve_active_engine("llm")`
 - **引擎激活由 DB `is_enabled` 决定（2026-07-17 重构后）**：每域仅 1 个=1。`app_config` 的 `asr_engine` / `polish_llm` / `ocr_model` / `translate_engine` 4 字段已删除
