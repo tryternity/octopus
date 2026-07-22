@@ -57,6 +57,14 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Manifest) -> Result<()> {
     Ok(())
 }
 
+/// 校验单个文件 sha256 是否匹配（文件不存在或 hash 不对返回 false）。
+pub fn verify_file_sha256(path: &Path, expected_sha256: &str) -> bool {
+    hex_sha256_file(path)
+        .ok()
+        .map(|h| h == expected_sha256)
+        .unwrap_or(false)
+}
+
 /// 按 manifest 复核 dir 下文件，返回损坏/缺失的相对路径列表。
 pub fn verify_against_manifest(dir: &Path, manifest: &Manifest) -> Vec<String> {
     manifest

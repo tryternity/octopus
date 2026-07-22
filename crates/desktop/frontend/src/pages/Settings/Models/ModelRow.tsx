@@ -129,13 +129,14 @@ export function ModelRow({
               </Button>
             )}
 
-            {/* 删除（local 已就绪 或 云端模型；builtin 不可删——文件损坏用校验+重新下载） */}
-            {(model.source_type === 1 && model.is_ready || model.source_type === 2) && (
+            {/* 删除（local 已就绪 或 云端模型；builtin 始终灰掉占位——文件损坏用校验+重新下载） */}
+            {(model.source_type !== 2 && model.is_ready || model.source_type === 2) && (
               <Button
                 variant="destructive-ghost"
                 size="icon-sm"
-                disabled={busy}
+                disabled={busy || model.source_type === 0}
                 onClick={async () => {
+                  if (model.source_type === 0) return; // builtin 不可删
                   const ok = await confirm(t("settings.models.confirmDelete"), { title: "删除模型", kind: "warning" });
                   if (ok) onDelete();
                 }}

@@ -116,9 +116,9 @@ pub async fn download_model(
     _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ 校验完整性后置 true。
-    //    secret_key 非空时校验 manifest sha256——损坏/缺失的文件走重新下载（fall through）。
-    //    secret_key 为空时 bootstrap 生成校验清单。
+    // 1. 探查：目录存在 → 校验完整性。
+    //    全部完好 → 置可用返回；有损坏/缺失 → fall through，下载循环内按单文件 sha256 跳过完好的。
+    //    目录不存在 → fall through 全量下载。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
         let existing_key = current_secret_key_for_source(&repo);
         if existing_key.is_empty() {
@@ -154,11 +154,11 @@ pub async fn download_model(
             );
             return Ok(());
         }
-        // 有损坏/缺失文件 → 记日志，fall through 到下载流程（逐文件重下）
+        // 有损坏/缺失 → fall through 到下载循环，循环内按单文件 sha256 跳过完好的只下损坏的
         log::info!("[download_model] {} 有 {} 个文件损坏/缺失，重新下载: {:?}", repo, broken.len(), broken);
     }
 
-    // 2. 未命中：读 DB manifest，逐文件按 source URL 下载。
+    // 2. 读 DB manifest
     let (model_name, secret_key) = lookup_model_by_source(&repo)?;
     if secret_key.is_empty() {
         return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
@@ -175,7 +175,7 @@ pub async fn download_model(
     // 4. 目标目录：~/.octopus/models/{repo}/
     let dest_base = octopus_infra::paths::octopus_config_home().join("models").join(&repo);
 
-    // 5. 逐文件下载
+    // 5. 逐文件下载——循环内按单文件 sha256 校验，完好的跳过（只下损坏/缺失的）
     let dl = octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
         .map_err(|e| format!("初始化下载器失败: {e:?}"))?;
 
@@ -200,6 +200,22 @@ pub async fn download_model(
     });
 
     for (i, (path, file)) in manifest.iter().enumerate() {
+        // 单文件 sha256 校验——完好的跳过（只下损坏/缺失的）
+        let dest = dest_base.join(path);
+        if dest.exists() {
+            let sha_clone = file.sha256.clone();
+            let dest_clone = dest.clone();
+            let ok = tokio::task::spawn_blocking(move || {
+                octopus_asr_local::manifest::verify_file_sha256(&dest_clone, &sha_clone)
+            })
+            .await
+            .unwrap_or(false);
+            if ok {
+                log::info!("[download_model] {} 跳过完好文件 {}", repo, path);
+                continue;
+            }
+        }
+
         let _ = app_handle.emit(
             "download-file",
             serde_json::json!({
@@ -212,6 +228,9 @@ pub async fn download_model(
 
         // 解析模板变量
         let url = resolve_env_template_with(&file.source, &env_vars);
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
         let dest = dest_base.join(path);
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
