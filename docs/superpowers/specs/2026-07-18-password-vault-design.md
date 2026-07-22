@@ -128,6 +128,9 @@ crates/
         │   ├── ImportExport.tsx
         │   ├── FolderSidebar.tsx  folder 侧边栏
         │   ├── FolderPromptDialog.tsx
+        │   ├── ChangePasswordModal.tsx  修改主密码弹窗（旧/新/确认 + 强度条）
+        │   ├── PasswordGeneratorModal.tsx  生成器弹窗外壳
+        │   ├── SyncPanel.tsx     Git 同步面板（被 GeneralPanel import，不依赖 vault 解锁）
         │   ├── buildConfig.ts     生成器配置（前端 clamp 输入到合法范围）
         │   └── validateMasterPassword.ts  12 字符 + 4 字符类校验
         └── (无独立 PasswordGenerator 浮窗)

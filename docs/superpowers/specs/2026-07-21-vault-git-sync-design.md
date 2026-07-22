@@ -901,7 +901,7 @@ pull_hotwords_from_files + push_hotwords_to_files）。
 | INV-S6 | 同步前后 vault_version 必须 +1（有变化时）| 防旧版本覆盖 |
 | INV-S7 | git commit message 统一为 `sync` 或 `init vault` | 不暴露操作细节 |
 | INV-S8 | 同步过程中必须持 SyncState 锁 | 防并发触发 |
-| INV-S9 | 远程 security_stamp ≠ 本地时拒绝同步 | 防主密码不一致 |
+| INV-S9 | 远程 security_stamp ≠ 本地时拒绝同步 | 防主密码不一致。`pull_from_files` 读 meta.json 前对比本地 vault_meta 的 stamp，不一致返 `SyncError::MasterPasswordMismatch` 拒绝覆盖（2026-07-22 实现——曾因缺此校验，dummy meta.json 覆盖了真实 vault_meta 致主密码失效）|
 | INV-S10 | cipher 文件加密用 user_vault_key（不是 app_key）| 与 SQLite 一致 |
 | INV-S11 | add_remote / clone_from 入口必须拒绝公有库 | 见 §4.8——密文泄露给攻击者做离线爆破仍是失败 |
 | INV-S12 | 本地路径（`file://` / `/abs/path`）禁止作为同步 remote | 同步意义为 0，且暴露本地文件结构 |
@@ -958,35 +958,27 @@ crates/desktop/frontend/src/pages/Settings/Vault/
 
 ## 7. UI 设计（T5）
 
-### 7.1 设置页同步段
+### 7.1 Git 同步入口位置
 
-VaultPanel 顶部加一个「同步」段（feature gate: vault 启用 + git 检测到）：
+> 2026-07-22 变更：同步面板从 VaultPanel 的 PillTabs 挪到 GeneralPanel（系统设置）的子 Tab，
+> 不依赖 vault 解锁（git 操作不碰密文，热词同步更不需要解锁）。VaultPanel 的 sync Tab 已删除。
+
+GeneralPanel 的 UnderlineTabs 第 4 个子 Tab「Git 同步」（一般 / 快捷键 / 语音 / Git 同步）：
 
 ```
-┌─ 同步 ────────────────────────────────────┐
-│ 状态：未启用                                │
-│                                            │
-│ [启用同步]                                 │
-└────────────────────────────────────────────┘
-
-点击「启用同步」后展开配置：
-
-┌─ 同步 ────────────────────────────────────┐
-│ 状态：✓ 已同步（上次：2026-07-21 12:34）   │
-│                                            │
-│ Remote URL:                                │
-│ [git@github.com:user/vault.git]            │
-│                                            │
-│ 添加 Gitee mirror（可选）:                 │
-│ [git@gitee.com:user/vault.git]            │
-│                                            │
-│ [测试连接] [立即同步] [禁用同步]          │
-│                                            │
-│ 提示：首次同步前请在终端运行              │
-│       ssh -T git@github.com                │
-│       验证 host key                        │
-└────────────────────────────────────────────┘
+┌─ 系统设置 ─────────────────────────────────────────┐
+│ [一般] [快捷键] [语音] [Git 同步]                  │
+│                                                    │
+│ ┌─ Git 同步 ──────────────────────────────────┐    │
+│ │ 状态：未启用                                  │    │
+│ │                                              │    │
+│ │ [启用同步]                                   │    │
+│ └──────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────┘
 ```
+
+点击「启用同步」后展开配置（remote 列表 + 测试连接 + 立即同步 + 禁用）。
+详细 UI 见 `SyncPanel.tsx`（组件在 `Settings/Vault/`，被 GeneralPanel import）。
 
 ### 7.2 同步状态机
 

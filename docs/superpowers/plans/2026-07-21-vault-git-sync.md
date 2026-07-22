@@ -1433,6 +1433,9 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 | 13.3-13.5 | `66979c86` | Phase B：热词 id 改 TEXT UUID + sync_md5 字段（schema v46 + CRUD + Tauri + 前端）+ T12 遗留修复 |
 | 13.6-13.8 | `a924bffe` | Phase C：热词 git 同步实现（fingerprint + store + engine + 写命令填 md5） |
 | 13.9 | `896d26df` | 集成测试（A→B 同步 + 双向 + 删除传播 + v46 迁移） |
+| 13.9 补强 | `7eb298a5` | 补强测试覆盖（desktop 7 + vault 集成 4 + 边界 5）+ 修 pull name 冲突 bug |
+| 后续 | `8b56119e` | fix: pull_from_files 加 security_stamp 校验（INV-S9）+ Git 同步 Tab 挪到系统设置 |
+| 后续 | `41616f26` | feat: 修改主密码入口（ChangePasswordModal + VaultPanel 按钮） |
 
 ### 关键决策变化与实施发现
 
@@ -1453,18 +1456,24 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 
 7. **热词 sync 失败不阻断 vault**：sync_now 的热词 pull/push 用 `match { Ok(n) => n, Err(e) => { log::warn; 0 } }`——热词同步出错只记日志，不让整个 sync_now 失败（vault 数据更关键）。
 
+8. **security_stamp 守卫缺失致主密码失效**（2026-07-22 用户实测触发）：`pull_from_files` 无条件用 `.sync/vault/meta.json` 覆盖 DB 的 vault_meta，没有 security_stamp 校验。开发期间 dummy meta.json（stamp-1）经 sync 覆盖了真实 vault_meta（真实 UUID stamp），导致主密码验证失败。**根因**：spec INV-S9 写了不变量但代码没实现。修复：pull_from_files 读 meta.json 前对比 stamp，不一致返 `MasterPasswordMismatch` 拒绝覆盖。从 git 历史恢复了真实 vault_meta。教训：**spec 写的不变量必须有测试守护 + 代码验证，不能只写不实现**。
+
+9. **Git 同步 UI 从 vault 挪到系统设置**（2026-07-22）：SyncPanel 从 VaultPanel PillTabs（受 vault 三态机保护，需解锁）挪到 GeneralPanel 的第 4 个子 Tab（一般/快捷键/语音/Git 同步）。原因：git 操作不碰密文（enable_sync/clone/sync_now 只管文件系统 + git），热词同步更不需要解锁——不应强制用户先输主密码才能管同步。
+
+10. **修改主密码入口**（2026-07-22）：后端 `vault_change_password` 已实现但前端无入口。在 VaultPanel 顶部栏加 KeyRound 按钮 + ChangePasswordModal 弹窗（旧/新/确认 + 强度条）。改密码只重写 vault_meta 的 3 个包装密文 + 刷新 stamp，user_vault_key 不变 → 现有 cipher 密文不受影响。
+
 ### 测试基线
 
-最终基线（Task 13 完成后）：
+最终基线（Task 13 + 后续修复后）：
 
-- sync: **91 pass**（git 14 + outline 7 + error 9 + privacy 25 + store 9 + hotword 21 + 4 ignored）—— 新 crate
+- sync: **96 pass**（git 14 + outline 7 + error 9 + privacy 25 + store 9 + hotword 26 + 4 ignored）
 - infra: **158 pass**（含 v46 迁移测试 + hotword upsert/默认 UUID 测试）
-- vault: **193 pass** + 1 ignored（git/outline/error/privacy 的 64 个测试搬到 sync crate）
-- desktop: **387 pass**
+- vault: **199 pass** + 1 ignored（含 stamp 守卫 2 测试 + 热词集成 4 测试）
+- desktop: **394 pass**（含 hotword_commands 7 测试）
 - 前端: tsc + vite build 0 error
 - cargo build: 0 error 0 warning
 
-历史基线演进：T12 完成 vault 257 → Task 13 抽离后 vault 193 + sync 70（测试随代码搬迁）→ hotword 模块 +17 → 集成测试 +4 → sync 91。
+历史基线演进：T12 完成 vault 257 → Task 13 抽离后 vault 193 + sync 70 → hotword +17 → 集成 +4 → sync 91 → 补强测试 sync 96 + vault 199 + desktop 394。
 
 ### 待 e2e 验证
 
