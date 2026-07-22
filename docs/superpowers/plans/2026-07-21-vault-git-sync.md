@@ -1437,6 +1437,7 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 | 后续 | `8b56119e` | fix: pull_from_files 加 security_stamp 校验（INV-S9）+ Git 同步 Tab 挪到系统设置 |
 | 后续 | `41616f26` | feat: 修改主密码入口（ChangePasswordModal + VaultPanel 按钮） |
 | 后续 | `e18c7471` | feat: stamp 冲突双向解决（resolve_with_remote / resolve_with_local） |
+| 后续 | `00b10c62` | feat: 自动同步（每小时，经 scheduler 调度，Phase 2） |
 
 ### 关键决策变化与实施发现
 
