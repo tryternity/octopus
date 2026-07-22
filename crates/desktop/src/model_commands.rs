@@ -9,7 +9,7 @@
 //!   写 DB（set_model_available → is_available）后 `reload_models_config` 让引擎下拉即时更新。
 //!
 //! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr_local::manifest`，与 cli `sync-models` 共用。
-//! 复用阶段1 download crate（HfRequest/resolve_tasks/Downloader）和 resolve_model_dir。
+//! 复用 octopus-download crate（Downloader/DownloadTask/Progress/Hash）和 resolve_model_dir。
 
 use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter, State};
