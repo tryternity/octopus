@@ -31,6 +31,7 @@ interface DownloadableModel {
   // Task 2 后：is_available=就绪（文件完备）；is_enabled=激活（每域仅 1 个=1）
   is_available: boolean;
   is_enabled: boolean;
+  source_type: number;
 }
 
 /** verify_model 返回的校验结果。ok=false 时 broken_files 含损坏/缺失文件列表。 */
@@ -108,20 +109,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
 
   const onDownload = (repo: string) => {
     if (busyRepo) return;
-    setBusyRepo(repo);
-    invoke("download_model", { repo })
-      .then(() => {
-        // invoke 成功 = 下载完成。即使 download-done 事件因 listener 时序丢失，
-        // 这里也兜底清 busyRepo + progress（与 download-done handler 对称）。
-        setBusyRepo(null);
-        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
-        load();
-      })
-      .catch((e) => {
-        setBusyRepo(null);
-        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
-        showToast(t("settings.models.downloadStartFailed") + e);
-      });
+    onDownloadInternal(repo);
   };
 
   const onVerify = async (repo: string, name: string) => {
@@ -131,14 +119,33 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
       if (result.ok) {
         showToast(result.message || t("settings.models.verifyComplete"));
+        load();
       } else {
-        // 校验失败（文件损坏/缺失）→ is_available 置 0，load 后显示下载按钮
+        // 校验失败（文件损坏/缺失）→ 自动重新下载修复
         showToast(result.message || t("settings.models.verifyFailed"));
+        setBusyRepo(null); // 清校验 busy，让 onDownload 能设下载 busy
+        await onDownloadInternal(repo);
       }
-      load();
     }
     catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
+  };
+
+  /// 下载内部实现（onVerify 校验失败时复用，避免 busyRepo 互斥）。
+  const onDownloadInternal = async (repo: string) => {
+    setBusyRepo(repo);
+    invoke("download_model", { repo })
+      .then(() => {
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        showToast(t("settings.models.downloadComplete"));
+        load();
+      })
+      .catch((e) => {
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        showToast(t("settings.models.downloadStartFailed") + e);
+      });
   };
 
   const onDelete = (repo: string) => {
@@ -154,7 +161,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, source_type: 1, repo: m.repo,
+    is_current: m.is_enabled, source_type: m.source_type, repo: m.repo,
     cloudId: m.id,
   }));
 

@@ -1131,6 +1131,8 @@ pub struct LocalAsrModelRow {
     pub is_enabled: bool,
     pub is_available: bool,
     pub is_streaming: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud（v48 新增，供前端区分行为）。
+    pub source_type: i64,
 }
 
 /// 列出全部本地 ASR 模型（domain='asr' AND source_type IN (0,1)，**不过滤 is_enabled**）。
@@ -1140,7 +1142,7 @@ pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
 
 fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
+        "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming, source_type
          FROM models WHERE domain='asr' AND source_type IN (0,1)
          ORDER BY source_type ASC, category, model_name",
     )?;
@@ -1155,6 +1157,7 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
             is_enabled: row.get::<_, i32>(6)? != 0,
             is_available: row.get::<_, i32>(7)? != 0,
             is_streaming: row.get::<_, i32>(8)? != 0,
+            source_type: row.get(9)?,
         })
     })?;
     let mut out = Vec::new();
@@ -1169,7 +1172,7 @@ fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRo
 pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming, source_type
              FROM models WHERE domain=?1 AND source_type IN (0,1)
              ORDER BY source_type ASC, category, model_name",
         )?;
@@ -1184,6 +1187,7 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
                 is_enabled: row.get::<_, i32>(6)? != 0,
                 is_available: row.get::<_, i32>(7)? != 0,
                 is_streaming: row.get::<_, i32>(8)? != 0,
+                source_type: row.get(9)?,
             })
         })?;
         let mut out = Vec::new();
@@ -1201,7 +1205,7 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
 pub fn list_builtin_models() -> Result<Vec<LocalAsrModelRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming, source_type
              FROM models WHERE source_type = 0",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1215,6 +1219,7 @@ pub fn list_builtin_models() -> Result<Vec<LocalAsrModelRow>> {
                 is_enabled: row.get::<_, i32>(6)? != 0,
                 is_available: row.get::<_, i32>(7)? != 0,
                 is_streaming: row.get::<_, i32>(8)? != 0,
+                source_type: row.get(9)?,
             })
         })?;
         let mut out = Vec::new();
@@ -6130,7 +6135,7 @@ mod tests {
         let translate_rows: Vec<LocalAsrModelRow> = {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
+                    "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming, source_type
                      FROM models WHERE domain='translate' AND source_type IN (0,1)",
                 )
                 .unwrap();
@@ -6145,6 +6150,7 @@ mod tests {
                     is_enabled: row.get::<_, i32>(6)? != 0,
                     is_available: row.get::<_, i32>(7)? != 0,
                     is_streaming: row.get::<_, i32>(8)? != 0,
+                source_type: row.get(9)?,
                 })
             }).unwrap();
             rows.filter_map(|r| r.ok()).collect()

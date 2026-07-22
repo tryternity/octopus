@@ -36,6 +36,8 @@ pub struct DownloadableModel {
     pub is_available: bool,
     /// 是否激活（DB is_enabled）：每域仅 1 个=1。前端标 current 用。
     pub is_enabled: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud。前端按此区分行为（builtin 不可删等）。
+    pub source_type: i64,
 }
 
 /// 完整性复核结果。
@@ -68,6 +70,7 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
             description: r.description,
             is_available: is_ready,
             is_enabled: r.is_enabled,
+            source_type: r.source_type,
         });
     }
     Ok(out)

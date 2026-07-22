@@ -15,6 +15,7 @@ interface DownloadableModel {
   // Task 2 后：is_available=就绪；is_enabled=激活
   is_available: boolean;
   is_enabled: boolean;
+  source_type: number;
 }
 
 interface OcrOption {
@@ -123,7 +124,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const rows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, source_type: 1, repo: m.repo,
+    is_current: m.is_enabled, source_type: m.source_type, repo: m.repo,
     cloudId: m.id,
   }));
 

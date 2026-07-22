@@ -17,6 +17,7 @@ interface DownloadableModel {
   // Task 2 后：is_available=就绪；is_enabled=激活
   is_available: boolean;
   is_enabled: boolean;
+  source_type: number;
 }
 
 interface TranslateCloudModel {
@@ -155,7 +156,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
     is_current: m.is_enabled,
-    source_type: 1, repo: m.repo,
+    source_type: m.source_type, repo: m.repo,
     cloudId: m.id,
   }));
 
