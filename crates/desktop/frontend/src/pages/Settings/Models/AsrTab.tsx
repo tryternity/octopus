@@ -101,7 +101,19 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const onDownload = (repo: string) => {
     if (busyRepo) return;
     setBusyRepo(repo);
-    invoke("download_model", { repo }).catch((e) => { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); });
+    invoke("download_model", { repo })
+      .then(() => {
+        // invoke 成功 = 下载完成。即使 download-done 事件因 listener 时序丢失，
+        // 这里也兜底清 busyRepo + progress（与 download-done handler 对称）。
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        load();
+      })
+      .catch((e) => {
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        showToast(t("settings.models.downloadStartFailed") + e);
+      });
   };
 
   const onVerify = async (repo: string, name: string) => {

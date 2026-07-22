@@ -94,7 +94,17 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const onDownload = (repo: string) => {
     if (busyRepo) return;
     setBusyRepo(repo);
-    invoke("download_model", { repo }).catch((e) => { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); });
+    invoke("download_model", { repo })
+      .then(() => {
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        load();
+      })
+      .catch((e) => {
+        setBusyRepo(null);
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+        showToast(t("settings.models.downloadStartFailed") + e);
+      });
   };
 
   const onVerify = async (repo: string, name: string) => {
