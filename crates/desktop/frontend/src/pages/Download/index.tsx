@@ -115,10 +115,12 @@ export default function DownloadPage() {
   const hasError = models.some((m) => m.status === "error");
 
   // 后台下载所有缺失模型（串行，复用 model_commands::download_model）
+  // 全部完成后自动进入系统（关闭下载窗）。
   const handleDownloadAll = async () => {
     setDownloading(true);
+    let allSuccess = true;
     for (const m of models) {
-      if (m.status === "done" || m.status === "downloading") continue;
+      if (m.status === "done") continue;
       setModels((prev) =>
         prev.map((x) =>
           x.info.source === m.info.source ? { ...x, status: "downloading", error: null } : x,
@@ -126,7 +128,16 @@ export default function DownloadPage() {
       );
       try {
         await invoke("download_model", { repo: m.info.source });
+        // invoke 成功返回 = 下载完成，直接置 done（不等 download-done 事件，避免竞态）
+        setModels((prev) =>
+          prev.map((x) =>
+            x.info.source === m.info.source
+              ? { ...x, status: "done", progress: null, error: null }
+              : x,
+          ),
+        );
       } catch (e) {
+        allSuccess = false;
         setModels((prev) =>
           prev.map((x) =>
             x.info.source === m.info.source
@@ -137,6 +148,10 @@ export default function DownloadPage() {
       }
     }
     setDownloading(false);
+    // 全部成功 → 自动进入系统
+    if (allSuccess) {
+      handleEnter();
+    }
   };
 
   // 进入系统（关闭下载窗）
@@ -174,7 +189,7 @@ export default function DownloadPage() {
       <header className="px-6 pt-6 pb-3 border-b border-border/40">
         <h1 className="text-base font-semibold tracking-tight">需要下载内置模型</h1>
         <p className="text-xs text-muted-foreground/70 mt-1 leading-relaxed">
-          语音识别的兜底引擎（zipformer-small-ctc）未随应用打包，需联网下载约 27 MB。
+          语音识别的兜底引擎（zipformer-small）未随应用打包，需联网下载约 27 MB。
           下载完成后即可离线使用。可后台下载，不阻塞使用。
         </p>
       </header>
