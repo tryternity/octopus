@@ -49,6 +49,7 @@ export default function DownloadPage() {
   const [models, setModels] = useState<ModelState[]>([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
 
   // 加载缺失的 builtin 模型列表
@@ -66,7 +67,7 @@ export default function DownloadPage() {
         setLoading(false);
       })
       .catch((e) => {
-        console.error("check_builtin_models failed", e);
+        setLoadError(String(e));
         setLoading(false);
       });
   }, []);
@@ -114,7 +115,8 @@ export default function DownloadPage() {
   const allDone = models.length > 0 && models.every((m) => m.status === "done");
   const hasError = models.some((m) => m.status === "error");
 
-  // 后台下载所有缺失模型（串行，复用 model_commands::download_model）
+  // 下载所有缺失模型（串行，复用 model_commands::download_model）
+  // 全部完成后自动进入系统（关闭下载窗）。
   // 全部完成后自动进入系统（关闭下载窗）。
   const handleDownloadAll = async () => {
     setDownloading(true);
@@ -170,6 +172,20 @@ export default function DownloadPage() {
     );
   }
 
+  // 加载失败（DB 查询失败）—— 不显示「已就绪」，显示错误 + 进入系统
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen gap-3 px-8 text-center">
+        <AlertCircle className="w-8 h-8 text-destructive" />
+        <span className="text-sm text-destructive/80">{loadError}</span>
+        <span className="text-xs text-muted-foreground/60">无法检查内置模型状态，可稍后在「系统设置 → 模型管理」重试</span>
+        <Button variant="primary" size="sm" onClick={handleEnter}>
+          进入系统
+        </Button>
+      </div>
+    );
+  }
+
   // 无缺失（理论上不会到这——setup 仅在有缺失时建窗，但防御性处理）
   if (models.length === 0) {
     return (
@@ -190,7 +206,7 @@ export default function DownloadPage() {
         <h1 className="text-base font-semibold tracking-tight">需要下载内置模型</h1>
         <p className="text-xs text-muted-foreground/70 mt-1 leading-relaxed">
           语音识别的兜底引擎（zipformer-small）未随应用打包，需联网下载约 27 MB。
-          下载完成后即可离线使用。可后台下载，不阻塞使用。
+          下载完成后即可离线使用。下载期间无法使用语音识别，完成后自动进入系统。
         </p>
       </header>
 
@@ -239,7 +255,7 @@ export default function DownloadPage() {
             ) : (
               <>
                 <Download />
-                后台下载并进入系统
+                下载并进入系统
               </>
             )}
           </Button>

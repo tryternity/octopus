@@ -108,16 +108,20 @@ pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) ->
     Ok(())
 }
 
-/// 下载模型（manifest 驱动）：先探查文件是否已就绪；未命中则读 secret_key manifest
-/// 逐文件按 source URL 下载 + sha256 校验 → 置 is_enabled=true。
+/// 下载模型（manifest 驱动）：先探查文件是否已就绪；未命中或损坏则读 secret_key manifest
+/// 逐文件按 source URL 下载 + sha256 校验 → 置 is_available=true。
 #[tauri::command]
 pub async fn download_model(
     repo: String,
     _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
+    // known_broken：探查阶段已校验过的损坏文件列表（Some = 部分损坏，下载循环跳过完好文件；
+    // None = 全新下载或目录不存在，所有文件都要下）。
+    let mut known_broken: Option<Vec<String>> = None;
+
     // 1. 探查：目录存在 → 校验完整性。
-    //    全部完好 → 置可用返回；有损坏/缺失 → fall through，下载循环内按单文件 sha256 跳过完好的。
+    //    全部完好 → 置可用返回；有损坏/缺失 → 记录 known_broken，fall through 到下载循环。
     //    目录不存在 → fall through 全量下载。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
         let existing_key = current_secret_key_for_source(&repo);
@@ -154,8 +158,9 @@ pub async fn download_model(
             );
             return Ok(());
         }
-        // 有损坏/缺失 → fall through 到下载循环，循环内按单文件 sha256 跳过完好的只下损坏的
+        // 有损坏/缺失 → fall through 到下载循环，用 broken 集合跳过完好文件（不重复算 sha256）
         log::info!("[download_model] {} 有 {} 个文件损坏/缺失，重新下载: {:?}", repo, broken.len(), broken);
+        known_broken = Some(broken);
     }
 
     // 2. 读 DB manifest
@@ -200,19 +205,14 @@ pub async fn download_model(
     });
 
     for (i, (path, file)) in manifest.iter().enumerate() {
-        // 单文件 sha256 校验——完好的跳过（只下损坏/缺失的）
         let dest = dest_base.join(path);
-        if dest.exists() {
-            let sha_clone = file.sha256.clone();
-            let dest_clone = dest.clone();
-            let ok = tokio::task::spawn_blocking(move || {
-                octopus_asr_local::manifest::verify_file_sha256(&dest_clone, &sha_clone)
-            })
-            .await
-            .unwrap_or(false);
-            if ok {
-                log::info!("[download_model] {} 跳过完好文件 {}", repo, path);
-                continue;
+
+        // 增量下载：探查阶段已校验过完整性的场景（known_broken = Some），
+        // 完好文件（不在 broken 列表里）直接跳过，不重复算 sha256。
+        // 全新下载（known_broken = None）或文件在 broken 列表里 → 下载。
+        if let Some(ref broken) = known_broken {
+            if !broken.contains(path) {
+                continue; // 完好文件跳过
             }
         }
 
@@ -259,7 +259,7 @@ pub async fn download_model(
     }
     drop(tx);
 
-    // 6. 置 is_enabled=true + emit done
+    // 6. 置 is_available=true + emit done
     apply_model_state(&repo, None, true)?;
     let _ = app_handle.emit(
         "download-done",

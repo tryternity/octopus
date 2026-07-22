@@ -117,7 +117,7 @@
 - [x] DownloadPage 组件（frontend-design skill 指导，克制功能性风格）：
   - 标题区：说明 + 27M 提示
   - ModelCard：状态色条（pending/downloading/done/error）+ 进度条（复用 ModelRow 样式）
-  - 底部：「稍后下载」+「后台下载并进入系统」+ 下载中显示「进入系统」
+  - 底部：「稍后下载」+「下载并进入系统」+ 下载中显示「进入系统」
   - listen download-progress / download-done 更新卡片状态
 
 ### Task 3.4：desktop setup 集成 ✅
@@ -133,7 +133,33 @@
 - [x] cargo test -p octopus-desktop --bins：394 pass
 - [x] tsc 0 error + vite build 成功（download.html 产物生成）
 - [x] DB 验证：cli 触发 ensure_db → builtin seed 注入（source_type=0, manifest 填充）
-- [ ] e2e（待用户验证）：删 zipformer 目录 → 启动 → 下载窗弹出 → 下载 → ASR 可用
+- [x] e2e：删 zipformer 目录 → 启动 → 下载窗弹出 → 下载 → ASR 可用（用户验证通过 2026-07-22）
+
+---
+
+## 代码审查修复（2 轮，2026-07-22）
+
+### 第 1 轮（6 个问题）
+- [x] **完整性校验**：sync_builtin_models_availability 从 stat 目录改为逐文件 sha256（与 download_model 对齐）
+- [x] **注释修正**：download_model 注释「置 is_enabled=true」→「置 is_available=true」
+- [x] **增量下载**：known_broken 集合传到下载循环，完好文件跳过不重复 sha256
+- [x] **文案如实**：下载页「后台下载」→「下载并进入系统」（前台串行，非后台）
+- [x] **建窗日志**：download_window build() 错误从 `let _ =` 吞没改为 `log::error!`
+- [x] **合并查询**：sync + check 合并为 check_and_sync_builtins 共享一次 DB 查询
+
+### 第 2 轮（3 个问题）
+- [x] **OnceLock 缓存**：sync 算一次并缓存，check 读缓存避免重复 sha256（~54MB IO/冷启动）
+- [x] **DB 失败前端显示错误**：check_and_sync_builtins 返回 Result，前端 loadError 状态显示错误（不误报「已就绪」）
+- [x] **注释残留**：download_window.rs 注释「后台下载」→「下载并进入系统」
+
+### 额外修复（e2e 发现）
+- [x] **模型名统一**：zipformer-small-ctc → zipformer-small，source models/zipformer → asr/zipformer-small
+- [x] **source_type 透传**：LocalAsrModelRow + DownloadableModel 加 source_type 字段，前端不再硬编码 1
+- [x] **busy 按行隔离**：busy={!!busyRepo} → busy={busyRepo === m.repo}
+- [x] **builtin 禁删**：删除按钮 source_type===0 时 disabled（灰掉占位，图标对齐）
+- [x] **激活前校验**：onActivate 先 verify_model，损坏/缺失自动 download_model 修复
+- [x] **校验失败自动下载**：onVerify ok=false 时自动触发 onDownloadInternal
+- [x] **CLI download 删除**：resolve_tasks HF API 路径无需求，删除 CLI download 子命令 + hf/ 模块
 
 ---
 
@@ -142,5 +168,5 @@
 - [x] plan 文档：Step 2/3 全部 Task 标记完成 + 实际偏差记录
 - [x] AGENTS.md：schema v46→v48 + zipformer 运行时布局描述更新
 - [x] features/db-and-config.md：models 表 is_local → source_type 字段 + builtin 兜底引擎描述
-- [ ] features/asr-engine.md：resolve_model_dir + 兜底引擎描述更新（随包 → 首次下载）
-- [ ] e2e 验证（用户进行中）
+- [x] features/asr-engine.md：resolve_model_dir + 兜底引擎描述更新（随包 → 首次下载）
+- [x] e2e 验证（用户验证通过 2026-07-22）
