@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
@@ -59,6 +59,15 @@ export default function Screenshot() {
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSizeState] = useState(16);
   const [toolFilled, setToolFilled] = useState(false);
+
+  // 工具栏实际宽度（useLayoutEffect 测量，用于 X 方向 clamp 防止跑出屏幕）
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarW, setToolbarW] = useState(0);
+  useLayoutEffect(() => {
+    if (toolbarRef.current) {
+      setToolbarW(toolbarRef.current.offsetWidth);
+    }
+  }, [sel, tool]);
   const toolFilledRef = useRef(false);
   const setToolColor = (c: string) => { toolColorRef.current = c; setToolColorState(c); };
   const setToolFontSize = (s: number) => { toolFontSizeRef.current = s; setToolFontSizeState(s); };
@@ -755,8 +764,15 @@ export default function Screenshot() {
         ? sel.y - TOOLBAR_H - 4
         : Math.max(sel.y, sel.y + sel.h - TOOLBAR_H - 8)  // 选区内部底部
     : 0;
-  // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响
-  const toolbarCenterX = sel ? sel.x + sel.w / 2 : 0;
+  // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响。
+  // 2026-07-22 fix：选区靠屏幕边缘时，中心点 ± 半宽会跑出屏幕。
+  // 用实测工具栏宽度做 clamp，保证工具栏完整可见。
+  // 假设左右可能有 Dock（用户可能把 Dock 放左/右边），预留 DOCK_MARGIN。
+  const DOCK_MARGIN = 80;
+  const halfW = toolbarW / 2;
+  const toolbarCenterX = sel
+    ? Math.max(DOCK_MARGIN + halfW, Math.min(sel.x + sel.w / 2, window.innerWidth - DOCK_MARGIN - halfW))
+    : 0;
   // 浮窗默认在工具栏下方。若工具栏在"选区内部底部"或屏幕底部，浮窗往下会超出屏幕，
   // 此时改放工具栏上方（toolbarY - 浮窗高度）。浮窗实际高度由内容决定，这里用 200 估算
   // （ToolPropsPopover 含色板/滑块，实测 < 200px），由 popover 组件内部 clamp 兜底。
@@ -866,6 +882,7 @@ export default function Screenshot() {
       {/* 工具栏（scrolling 模式下隐藏，操作按钮在预览图中） */}
       {sel && mode !== "scrolling" && (
         <div
+          ref={toolbarRef}
           style={{
             position: "fixed",
             left: toolbarCenterX,
