@@ -270,8 +270,8 @@ docs/
 │   ├── vault/          # vault 数据（加密）：meta.json + outline.json + ciphers/<2hex>/<uuid>.json + folders/
 │   └── hotword/        # 热词数据（明文）：outline.json + sets/<2hex>/<uuid>.json
 └── models/
-    ├── silero_vad_v4.onnx   # VAD（固定路径，不进 DB）
-    └── zipformer/           # 默认 ASR（兜底引擎，27M）
+    ├── silero_vad_v4.onnx   # VAD（可选——存在时覆盖内嵌版本；不存在用 include_bytes! 内嵌加载）
+    └── zipformer/           # 默认 ASR 兜底引擎（27M，计划改为自动下载）
 
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存
 ```
