@@ -103,9 +103,35 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const currentLabel = engines.find((e) => e.current)?.label ?? "";
 
   // Task 2 后：统一走 switch_active_model(domain, id)。本地模型 id 来自 DownloadableModel，
-  // 云端模型 id 来自 EngineOption。
-  const onActivate = (id: number) =>
-    invoke("switch_active_model", { domain: "asr", id }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
+  // 云端模型 id 来自 EngineOption。本地模型激活前先校验完整性——损坏/缺失自动下载修复。
+  const onActivate = async (id: number, repo?: string, name?: string) => {
+    // 云端模型（无 repo/name）直接激活
+    if (!repo || !name) {
+      invoke("switch_active_model", { domain: "asr", id }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
+      return;
+    }
+    if (busyRepo) return;
+    setBusyRepo(repo);
+    try {
+      // 1. 校验文件完整性
+      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
+      if (!result.ok) {
+        // 2. 损坏/缺失 → 自动下载修复
+        showToast(result.message || t("settings.models.verifyFailed"));
+        await invoke("download_model", { repo }).catch((e) => {
+          showToast(t("settings.models.downloadStartFailed") + e);
+          return; // 下载失败，不激活
+        });
+        setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
+      }
+      // 3. 校验通过（或下载修复成功）→ 激活
+      invoke("switch_active_model", { domain: "asr", id }).then(load).catch((e) => showToast(t("settings.models.switchFailed") + e));
+    } catch (e) {
+      showToast(t("settings.models.verifyFailed") + e);
+    } finally {
+      setBusyRepo(null);
+    }
+  };
 
   const onDownload = (repo: string) => {
     if (busyRepo) return;
@@ -194,7 +220,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
-            onActivate={() => m.cloudId && onActivate(m.cloudId)}
+            onActivate={() => m.cloudId && onActivate(m.cloudId, m.repo, m.name)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
             onDelete={() => onDelete(m.repo)}
