@@ -169,7 +169,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
               </Row>
               <Row label={t("settings.general.maxItems")} effect={t("settings.effect.nextStart")} hint={t("settings.general.maxItemsHint")}>
                 <Select value={cfg.clipboard_max_items as number} onChange={(e) => setVal("clipboard_max_items", parseInt(e.target.value))}>
-                  {[100, 200, 300, 500, 1000].map((v) => <option key={v} value={v}>{v} 条</option>)}
+                  {[200, 500, 1000, 2000, 5000].map((v) => <option key={v} value={v}>{v} 条</option>)}
                 </Select>
               </Row>
               <Row label={t("settings.general.autoCleanDays")} effect={t("settings.effect.nextStart")} hint={t("settings.general.autoCleanDaysHint")}>
