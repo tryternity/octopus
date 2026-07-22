@@ -109,7 +109,7 @@ settings:
       introItem1: 密码条目（加密存储，安全）
       introItem2: 文件夹
       introItem3: 热词条目（明文，不含敏感信息）
-      introPrereq: 前提：需要在 GitHub / Gitee 创建一个 Private 仓库，并配置好 SSH key（系统 git 认证）。
+      introPrereq: "前提：需要在 GitHub / Gitee 创建一个 Private 仓库，并配置好 SSH key（系统 git 认证）。"
       firstPushTitle: 首次使用（当前电脑）
       cloneTitle: 从其他电脑同步（换电脑时）
       notAvailable: 系统未安装 git，同步功能不可用

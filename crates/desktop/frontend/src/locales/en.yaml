@@ -109,7 +109,7 @@ settings:
       introItem1: Password items (encrypted, secure)
       introItem2: Folders
       introItem3: Hotword entries (plaintext, no sensitive data)
-      introPrereq: Prerequisite: create a Private repository on GitHub / Gitee and configure SSH key (system git authentication).
+      introPrereq: "Prerequisite: create a Private repository on GitHub / Gitee and configure SSH key (system git authentication)."
       firstPushTitle: First time (this computer)
       cloneTitle: Sync from another computer (new machine)
       notAvailable: Git not installed, sync unavailable
