@@ -153,6 +153,53 @@ pub fn iso_to_unix_ms(s: &str) -> i64 {
     secs * 1000
 }
 
+// === 自动同步状态持久化（2026-07-22 Phase 2）===
+
+/// 最近一次自动同步结果——存 `~/.octopus/.sync/last_auto_sync.json`。
+/// 自动同步（scheduler 每小时触发）成功/失败后写入，SyncPanel 展示。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LastAutoSync {
+    /// ISO 8601 时间戳（UTC）。
+    pub timestamp: String,
+    /// 同步是否成功。
+    pub success: bool,
+    /// 成功时的 report.message，失败时的 error.to_string()。
+    pub message: String,
+}
+
+/// `~/.octopus/.sync/last_auto_sync.json` 路径。
+fn last_auto_sync_path() -> PathBuf {
+    sync_root().join("last_auto_sync.json")
+}
+
+/// 读最近一次自动同步状态。文件不存在（从未自动同步）时返 None。
+pub fn read_last_auto_sync() -> Option<LastAutoSync> {
+    let path = last_auto_sync_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content).ok(),
+        Err(_) => None,
+    }
+}
+
+/// 写最近一次自动同步状态（覆盖写）。
+pub fn write_last_auto_sync(status: &LastAutoSync) {
+    let path = last_auto_sync_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("[sync] 创建 .sync 目录失败：{}", e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(status) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, format!("{}\n", json)) {
+                log::warn!("[sync] 写 last_auto_sync.json 失败：{}", e);
+            }
+        }
+        Err(e) => log::warn!("[sync] 序列化 last_auto_sync 失败：{}", e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

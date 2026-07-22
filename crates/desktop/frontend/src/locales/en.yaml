@@ -150,6 +150,9 @@ settings:
       resolveConfirm: Confirm
       resolveSuccess: Conflict resolved, re-syncing
       resolveFailed: "Resolve failed: "
+      autoSync: Auto
+      autoSyncOk: OK
+      autoSyncFail: Failed
     list:
       title: Password Items
       empty: No password items yet
