@@ -361,13 +361,25 @@ impl Downloader {
         progress: mpsc::Sender<Progress>,
         cancel: Option<&CancellationToken>,
     ) -> Result<(), DownloadError> {
-        let probe = self.probe(url).await?;
+        // probe 可能因网络慢/超时失败（307 重定向需两次 TLS 握手）。
+        // 若有 manifest 的 expected_size，probe 失败不中断——用它作为 total，
+        // accept_ranges=false（单段下载），让 download_segment 直接 GET 全文。
+        let probe = match self.probe(url).await {
+            Ok(p) => p,
+            Err(e) if task.expected_size.is_some() => {
+                log::warn!("[download] probe 失败（{}），用 manifest expected_size 继续: {}", task.dest.display(), e);
+                ProbeResult { total: None, accept_ranges: false, etag: None }
+            }
+            Err(e) => return Err(e),
+        };
         // total 优先用 probe 结果（content-range/content-length）；拿不到时 fallback
         // 到 manifest 的 expected_size（某些 CDN 200 响应无 content-length 头，
         // 如 CloudFront 对非 LFS 小文件的 200 chunked 响应）。
         let total = probe.total.or(task.expected_size).ok_or_else(|| {
             transient(TransientKind::Network, "no content-length and no expected_size")
         })?;
+        // probe 失败 fallback 时 accept_ranges=false，确保单段下载
+        let accept_ranges = probe.accept_ranges && probe.total.is_some();
 
         // 规划：加载 sidecar 复用进度，否则重新规划。
         // sidecar 的 url_hash 基于 dest（镜像无关），故镜像源也可复用——这是设计意图：
@@ -378,14 +390,14 @@ impl Downloader {
         let segs = match crate::core::resume::load(&task.dest, total) {
             Some(state)
                 if !state.segments.is_empty()
-                    && (probe.accept_ranges || state.segments.len() == 1) =>
+                    && (accept_ranges || state.segments.len() == 1) =>
             {
                 log::info!("resume: 侧载 sidecar，{} 段", state.segments.len());
                 state.segments
             }
             _ => plan_segments(
                 total,
-                probe.accept_ranges,
+                accept_ranges,
                 self.config.segment_size,
                 self.config.chunk_threshold,
                 self.config.max_concurrent,
