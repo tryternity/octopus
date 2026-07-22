@@ -165,10 +165,6 @@ function Settings() {
           <ClipboardPanel showToast={showToast} />
         ) : effectivePage === "system" ? (
           <SystemPanel showToast={showToast} />
-        ) : !configResp ? (
-          <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.loading")}</div>
-        ) : effectivePage === "settings" ? (
-          <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} isVaultEnabled={isVaultEnabled !== false} />
         ) : effectivePage === "models" ? (
           <ModelsPanel showToast={showToast} />
         ) : effectivePage === "prompts" ? (
@@ -177,14 +173,20 @@ function Settings() {
           <ActionBarPanel showToast={showToast} />
         ) : effectivePage === "agent" ? (
           <AgentPanel showToast={showToast} />
+        ) : effectivePage === "vault" ? (
+          <VaultPanel showToast={showToast} />
+        ) : !configResp ? (
+          /* 只有 settings(GeneralPanel) 和 hotword 真正依赖 configResp。
+             其他页面各自 invoke 独立命令，不应被 configResp 加载失败阻塞。 */
+          <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.loading")}</div>
+        ) : effectivePage === "settings" ? (
+          <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} isVaultEnabled={isVaultEnabled !== false} />
         ) : effectivePage === "hotword" ? (
           <HotwordPanel
             dialect={(configResp.config.fuzzy_dialect as string) || ""}
             setVal={setVal}
             showToast={showToast}
           />
-        ) : effectivePage === "vault" ? (
-          <VaultPanel showToast={showToast} />
         ) : null}
       </div>
 
