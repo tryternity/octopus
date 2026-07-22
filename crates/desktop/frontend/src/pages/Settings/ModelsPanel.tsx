@@ -7,7 +7,7 @@ import LlmTab from "./Models/LlmTab";
 import OcrTab from "./Models/OcrTab";
 import TranslateTab from "./Models/TranslateTab";
 
-const TAB_KEYS = ["env", "asr", "llm", "ocr", "tr"] as const;
+const TAB_KEYS = ["asr", "llm", "ocr", "tr", "env"] as const;
 const TAB_LABEL_KEYS: Record<string, string> = {
   env: "settings.models.tab.env",
   asr: "settings.models.tab.asr",
@@ -18,7 +18,7 @@ const TAB_LABEL_KEYS: Record<string, string> = {
 
 export default function ModelsPanel({ showToast }: { showToast: (msg: string) => void }) {
   const t = useT();
-  const [activeTab, setActiveTab] = useState<string>("env");
+  const [activeTab, setActiveTab] = useState<string>("asr");
 
   const tabs = TAB_KEYS.map((key) => ({ key, label: t(TAB_LABEL_KEYS[key]) }));
 
