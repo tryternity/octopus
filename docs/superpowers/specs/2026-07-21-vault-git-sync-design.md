@@ -2,7 +2,7 @@
 
 > **日期**：2026-07-21
 > **分支**：`research_password_vault`
-> **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离）已实现并 e2e 验证通过，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议 + §4.14 stamp 冲突解决协议
+> **状态**：Phase 1（T1-T12）+ Phase 2（Task 13 热词同步 + sync crate 抽离 + 自动同步）已实现并 e2e 验证通过，含 §4.8 私有库检测守卫 + §4.9 HTTPS→SSH 自动改写 + §4.10 非交互 prompt 防护 + §4.11 空远程仓库首次推送 + §4.12 md5 增量同步协议 + §4.13 热词同步协议 + §4.14 stamp 冲突解决协议 + §4.15 自动同步（scheduler 每小时）
 > **前置依赖**：[archived/2026-07-18-password-vault-design.md](./archived/2026-07-18-password-vault-design.md) 已落地
 > **目标读者**：后续实施者（plan/实现/review）
 >
@@ -31,7 +31,7 @@
 | GitHub + Gitee 双 remote 支持（用户自配） | PAT 认证（Phase 2，先用 SSH key） |
 | 每 cipher 单独加密文件 + 256 桶分片 | 单文件整体加密（增量同步差，已弃） |
 | outline.json 增量索引（md5 内容指纹去重，§4.12） | git2-rs 嵌入式（Send/Sync 问题） |
-| 手动同步按钮 | 自动同步（Phase 2） |
+| 手动同步按钮 + 自动同步（§4.15，每小时） | 实时推送（未来扩展） |
 | cipher/folder/hotword id 改 UUID 字符串（前置改造） | Bitwarden 协议兼容（已弃，加密格式不通） |
 | macOS / Linux 支持 | Windows 测试（shell out git 跨平台一致） |
 | 远程已存在 repo 时 clone + 解锁即用 | 远程 repo 自动创建（用户手动建）|
@@ -43,7 +43,7 @@
 - **不做服务端**（用 GitHub/Gitee 现成 git 服务）
 - **不做团队/多用户协作**（单用户多设备）
 - **不做 Bitwarden 协议兼容**（评估过，加密格式不兼容，工程量 3000-5000 行）
-- **不做实时推送**（手动触发 Phase 1，Phase 2 才加自动）
+- **不做实时推送**（手动 + 每小时自动同步，不做文件变更触发的实时推送）
 - **不做附件同步**（vault MVP 无附件功能）
 - **不做密码历史远程同步**（password_history 字段已含本地历史，足够）
 
@@ -404,7 +404,9 @@ v44 迁移：
 
 ### 4.1 同步触发
 
-**Phase 1：手动触发**——用户在设置页点「同步」按钮。
+**手动触发**——用户在系统设置「Git 同步」子 Tab 点「立即同步」按钮。
+
+**自动同步**（§4.15）——`octopus-scheduler` 每 10 分钟 tick，`vault_sync` 任务 interval=3600（1 小时），距上次执行超过 1 小时才触发。
 
 触发后的流程（`vault_sync_now` 命令）：
 
@@ -922,6 +924,49 @@ pull_hotwords_from_files + push_hotwords_to_files）。
 两个按钮「以远程为准」/「以本地为准」→ 展开密码输入 → 验证成功后自动重新 sync。
 
 **新增 Tauri 命令**：`vault_sync_resolve_remote(password)` / `vault_sync_resolve_local(password)`。
+
+---
+
+### 4.15 自动同步协议（2026-07-22 Phase 2）
+
+**动机**：Phase 1 仅手动触发，用户忘记同步导致多设备数据不一致。Phase 2 加自动同步——
+复用 `octopus-scheduler`（§架构「octopus-scheduler」段）定时调度。
+
+**调度机制**：
+
+```
+octopus-scheduler 每 10 分钟 tick（CPU 空闲时）
+  ↓ 检查 vault_sync 任务 is_due(3600)
+  ↓ 距上次执行 < 1 小时 → 跳过（scheduler 自带节流）
+  ↓ 距上次执行 ≥ 1 小时 → 触发
+  ↓
+std::thread::spawn（避免阻塞 scheduler tick）
+  ↓
+sync_now()（复用手动同步完整流程）
+  ↓
+结果写入 ~/.octopus/.sync/last_auto_sync.json
+```
+
+- **interval=3600**：scheduler 的 `ScheduledTask.is_due(interval)` 自带「距上次执行超过 interval 才跑」语义——无需额外读 `last_sync` 时间戳
+- **子线程**：`sync_now` 是阻塞操作（10-30s），起子线程避免阻塞 scheduler tick 影响其他任务（如 trash_purge）
+- **CPU 空闲门槛**：scheduler tick 时 `is_cpu_idle(30.0)` 检查，CPU 忙时整个 tick 跳过
+- **sync_now 内部 `try_sync_lock`**：防与手动同步并发（用户正好在手动同步时自动触发，锁竞争自动跳过）
+
+**状态持久化**（`~/.octopus/.sync/last_auto_sync.json`）：
+
+```json
+{
+  "timestamp": "2026-07-22T10:30:00Z",
+  "success": true,
+  "message": "同步完成：vault 拉取 0 条/推送 0 条..."
+}
+```
+
+- `SyncStatus.last_auto_sync` 字段（`Option<LastAutoSync>`）供前端 `get_sync_status` 读取
+- SyncPanel 状态行展示「自动同步: 成功/失败 时间」——**不弹 toast**（避免每小时打扰）
+- `None` = 从未自动同步（刚启用同步还没到第一次 tick）
+
+**新增模块**：`crates/sync/src/store.rs` 加 `LastAutoSync` struct + `read/write_last_auto_sync`。
 
 ---
 

@@ -151,6 +151,9 @@ settings:
       resolveConfirm: 确认
       resolveSuccess: 冲突已解决，正在重新同步
       resolveFailed: "解决失败："
+      autoSync: 自动同步
+      autoSyncOk: 成功
+      autoSyncFail: 失败
     list:
       title: 密码条目
       empty: 还没有密码条目

@@ -585,6 +585,39 @@ pub fn run() {
                         log::warn!("Trash purge failed: {}", e);
                     }
                 }));
+                // vault 自动同步（Phase 2，2026-07-22）：
+                // scheduler 每 10 分钟 tick，本任务 interval=3600（1 小时）——
+                // scheduler 自带「距上次执行超过 1 小时才跑」语义。
+                // sync_now 是阻塞操作（10-30s），起子线程避免阻塞 scheduler tick。
+                // 结果存 last_auto_sync.json，SyncPanel 展示，不弹 toast。
+                #[cfg(feature = "vault")]
+                scheduler.register_task("vault_sync", 3600, Box::new(|| {
+                    std::thread::spawn(|| {
+                        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                        match octopus_vault::sync::sync_now() {
+                            Ok(report) => {
+                                octopus_sync::store::write_last_auto_sync(
+                                    &octopus_sync::store::LastAutoSync {
+                                        timestamp: now,
+                                        success: true,
+                                        message: report.message,
+                                    },
+                                );
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                log::warn!("[sync] 自动同步失败：{}", msg);
+                                octopus_sync::store::write_last_auto_sync(
+                                    &octopus_sync::store::LastAutoSync {
+                                        timestamp: now,
+                                        success: false,
+                                        message: msg,
+                                    },
+                                );
+                            }
+                        }
+                    });
+                }));
                 scheduler.spawn();
             }
 

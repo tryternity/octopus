@@ -29,6 +29,14 @@ interface SyncStatus {
   last_commit_sha: string | null;
   /** 当前是否在后台同步——UI 据此显进度条（2026-07-21） */
   syncing: boolean;
+  /** 最近一次自动同步结果（Phase 2，scheduler 每小时触发） */
+  last_auto_sync: LastAutoSync | null;
+}
+
+interface LastAutoSync {
+  timestamp: string;
+  success: boolean;
+  message: string;
 }
 
 /** vault-sync-done 事件 payload */
@@ -356,6 +364,16 @@ export default function SyncPanel({
             <span className="text-muted-foreground">
               · {t("settings.vault.sync.lastSync")}:{" "}
               {status.last_sync.replace("T", " ").replace(/\+.*/, "")}
+            </span>
+          )}
+          {status.last_auto_sync && (
+            <span className={status.last_auto_sync.success ? "text-muted-foreground" : "text-destructive"}>
+              · {t("settings.vault.sync.autoSync")}:{" "}
+              {status.last_auto_sync.success
+                ? t("settings.vault.sync.autoSyncOk")
+                : t("settings.vault.sync.autoSyncFail")}
+              {" "}
+              {status.last_auto_sync.timestamp.replace("T", " ").replace(/\+.*/, "").slice(5, 16)}
             </span>
           )}
         </div>

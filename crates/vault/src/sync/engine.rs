@@ -100,6 +100,8 @@ pub struct SyncStatus {
     pub last_commit_sha: Option<String>,
     /// 当前是否正在后台同步——UI 据此显进度条（2026-07-21 增补）
     pub syncing: bool,
+    /// 最近一次自动同步结果（Phase 2，scheduler 每小时触发，None=从未自动同步）
+    pub last_auto_sync: Option<octopus_sync::store::LastAutoSync>,
 }
 
 /// 查询同步状态——UI 初始化时调用。
@@ -116,6 +118,7 @@ pub fn get_sync_status() -> SyncStatus {
             last_sync: None,
             last_commit_sha: None,
             syncing,
+            last_auto_sync: None,
         };
     }
 
@@ -133,6 +136,7 @@ pub fn get_sync_status() -> SyncStatus {
         last_commit_sha,
         last_sync,
         syncing,
+        last_auto_sync: octopus_sync::store::read_last_auto_sync(),
     }
 }
 
