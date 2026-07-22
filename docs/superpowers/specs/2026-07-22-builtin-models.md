@@ -1,15 +1,15 @@
 # 内置模型开箱即用设计（source_type 统一 + VAD 内嵌 + builtin 自动下载）
 
 > **日期**：2026-07-22
-> **状态**：设计阶段
+> **状态**：✅ 已实现（Step 1 VAD 内嵌 + Step 2 source_type + Step 3 builtin 下载，2026-07-22）
 
 ---
 
 ## 0. 目标
 
-1. **models 表 `is_local` 改为 `source_type`**——统一三种来源：builtin(0) / local(1) / cloud(2)
-2. **VAD 内嵌**——1.7MB `include_bytes!` 编译进二进制，从内存加载，不落盘
-3. **builtin 模型自动下载**——zipformer（25MB）首次启动检测缺失 → 下载页 → 用户点「后台下载」→ 进系统
+1. **models 表 `is_local` 改为 `source_type`**——统一三种来源：builtin(0) / local(1) / cloud(2) ✅
+2. **VAD 内嵌**——1.7MB `include_bytes!` 编译进二进制，从内存加载，不落盘 ✅
+3. **builtin 模型自动下载**——zipformer（27MB）首次启动检测缺失 → 下载页 → 用户点「后台下载」→ 进系统 ✅
 
 ## 1. source_type 枚举
 
@@ -81,12 +81,13 @@ pub enum VadSource {
 ### 3.1 流程
 
 1. app 启动 → `ensure_db()` 之后
-2. 查 DB `WHERE source_type=0` 的模型
-3. 逐个检查本地文件是否存在（`resolve_model_dir(source)` 命中？）
-4. 有缺失 → 显示下载页（Tauri 窗口 or 前端路由）
+   - `ensure_db` 内调 `ensure_builtin_seed()`：幂等 `INSERT OR IGNORE` builtin 兜底引擎行 + `fill_manifests`（每次启动跑，防止历史库迁移时漏注入）
+2. 查 DB `WHERE source_type=0` 的模型（`list_builtin_models()`）
+3. 逐个检查本地文件是否存在（`resolve_model_dir(source)` 命中？）—— `check_builtin_models_missing()`
+4. 有缺失 → 显示下载页（独立 Tauri 窗口 `download_window`，不阻断主窗口创建）
 5. 下载页列出缺失模型 + 大小 + 「后台下载」按钮
-6. 用户点「后台下载」→ 关闭下载页 → 进系统 → 后台 `spawn` 下载
-7. 下载完成 → `set_model_available(name, true)` → emit 事件通知前端刷新
+6. 用户点「后台下载」→ 关闭下载页 → 进系统 → 复用 `model_commands::download_model`（manifest 驱动）串行下载
+7. 下载完成 → `download_model` 内 `set_model_available(name, true)` → emit `download-done` 通知前端刷新
 
 ### 3.2 下载页 UI
 
@@ -98,68 +99,74 @@ pub enum VadSource {
 
 ### 3.3 下载实现
 
-复用 `octopus-download`（HfRequest + resolve_tasks + Downloader），与 CLI download 子命令同模式。
+**复用 `model_commands::download_model`**（manifest 驱动）：builtin 模型已在 DB（source_type=0 + manifest 填充），`download_model` 按 `source` 参数查 DB manifest → 逐文件 `octopus-download::Downloader` 下载 + sha256 校验 → `set_model_available`。
+
+不新建独立下载逻辑——builtin 与 local 模型下载路径完全一致，仅 source_type 标签不同。前端下载页 `invoke("download_model", { repo: info.source })` 触发。
 
 ---
 
-## 4. 迁移（schema v47 → v48）
+## 4. 迁移（schema v47 → v48）✅ 已实现
 
-### 4.1 ALTER TABLE
+### 4.1 migrate_v47_to_v48 helper
 
-SQLite 支持 `ALTER TABLE ... RENAME COLUMN`（3.25.0+，rusqlite bundled 版本满足）：
+迁移逻辑提取为独立函数 `migrate_v47_to_v48(conn)`，被 `init_schema` 在 **3 处**调用（v==47 库 / v==46 段末尾 / v17-v46 段末尾），确保所有老库迁移路径都能到 v48。
 
 ```sql
+-- 幂等保护：检查列是否已迁移
 ALTER TABLE models RENAME COLUMN is_local TO source_type;
 -- 数据迁移：is_local=0 → source_type=2（cloud），is_local=1 → source_type=1（local）
-UPDATE models SET source_type = source_type * 2;  -- 0→0... 不对，1→2 不对
-```
-
-等等，映射是 `0→2, 1→1`，不能简单乘。用 CASE：
-```sql
 UPDATE models SET source_type = CASE WHEN source_type = 0 THEN 2 ELSE 1 END;
+-- 注入 builtin 兜底引擎 seed 行（source_type=0）
+INSERT OR IGNORE INTO models (...) VALUES ('asr',...,'zipformer-small-ctc','models/zipformer',... ,0,0,1);
+-- 填充 manifest
+fill_manifests(conn);
+PRAGMA user_version = 48;
 ```
 
-然后 INSERT 新的 builtin 行（zipformer-small-ctc）。
+**关键约束**：v17-v46 老库走完 v46→v47 段后 `return Ok(())`，原本到不了 v48。helper 模式让 v46 段和 v17-v46 段末尾都调用 `migrate_v47_to_v48` 解决此问题。
 
-### 4.2 db.sql 全新库
+### 4.2 ensure_builtin_seed 兜底
 
-全新库直接用 `source_type` 列名 + 正确的值（builtin=0 / local=1 / cloud=2）。seed 的 ASR/translate/ocr 本地模型 source_type=1，云端不 seed。
+`ensure_db()` 每次启动调 `ensure_builtin_seed(conn)`：幂等 `INSERT OR IGNORE` builtin 行 + 检查 manifest 空则 `fill_manifests`。修复「迁移时代码不完整导致漏注入」的历史库（如本会话开发期间 DB 先迁移到 v48 但 builtin seed 代码未完成时跑过 ensure_db 的情况）。
+
+### 4.3 db.sql 全新库
+
+全新库直接用 `source_type` 列名 + 正确的值（builtin=0 / local=1 / cloud=2）。seed 的 ASR（13 local + 1 builtin）/ translate / ocr 本地模型 source_type=1，云端不 seed。
 
 ---
 
-## 5. 代码改动影响面
+## 5. 代码改动影响面（实际 ~150 处）
 
-### 5.1 is_local → source_type 重命名（~170 处）
+### 5.1 is_local → source_type 重命名
 
 | 位置 | 处数 | 改法 |
 |---|---|---|
-| `crates/infra/src/db.rs` | 65 | SQL 语句 is_local → source_type；struct 字段 is_local: bool → source_type: i64；row mapping |
-| `crates/asr-local/src/config.rs` | 22 | is_local 判断改为 source_type == 1 |
-| `crates/desktop/src/runtime_config.rs` | 21 | 同上 |
-| `crates/desktop/src/vault_*.rs` | 15 | vault secret 加密用 is_local 判断（try_decrypt_secret_global） |
-| 其他 Rust | ~29 | 各处 is_local 引用 |
-| 前端 | 18 | TypeScript interface + 条件判断 |
+| `crates/infra/src/db.rs` | ~65 | SQL 语句 is_local → source_type；7 个 struct 字段 is_local: bool → source_type: i64；row mapping |
+| `crates/asr-local/src/config.rs` | ~25 | EngineInfo 字段 + 排序 + fallback 字面量 + 测试 |
+| `crates/desktop/src/runtime_config.rs` | ~21 | 3 个 struct (EngineOption/LlmOption/OcrOption) + engine_label + 测试 helper |
+| `crates/desktop/src/config.rs` | 2 | LLM polish 热路径 `is_local` → `is_local_or_builtin()`（语义不变） |
+| `crates/desktop/src/{translation_commands,action_bar_commands,settings_commands,vault_commands}.rs` | ~10 | translate 策略对称分支 + 测试 SQL |
+| `crates/{translation,vault,llm/examples}` | ~5 | 构造点 + 测试 fixture |
+| 前端（6 文件） | 18 | TypeScript interface + 条件判断 + 硬编码值 |
 
-**关键语义变化**：原来 `is_local == true` 包含 builtin + local，现在拆开了。所有 `if is_local` 要改为 `if source_type != 2`（非云端）或 `if source_type == 1`（仅 local），取决于语义。
+**关键语义变化**：原来 `is_local == true` 包含 builtin + local，现在拆开了。所有 `if is_local` 改为 `if is_local_or_builtin()`（语义不变）或 `if source_type == 1`（仅 local）。
 
-### 5.2 Rust struct 改动
+### 5.2 Rust struct 改动（实际实现）
 
 ```rust
 // 旧
-pub struct Model {
+pub struct ModelEntry {
     pub is_local: bool,
     ...
 }
-// 新
-pub struct Model {
+// 新（字段名改 + 类型改 bool → i64）
+pub struct ModelEntry {
+    #[serde(default = "default_local_source_type")]  // = 1，向后兼容旧 YAML/JSON
     pub source_type: i64,  // 0=builtin 1=local 2=cloud
     ...
 }
-```
 
-或加一个 helper：
-```rust
-impl Model {
+impl ModelEntry {
     pub fn is_builtin(&self) -> bool { self.source_type == 0 }
     pub fn is_local(&self) -> bool { self.source_type == 1 }
     pub fn is_cloud(&self) -> bool { self.source_type == 2 }
@@ -167,22 +174,23 @@ impl Model {
 }
 ```
 
-这样旧代码 `model.is_local` 改为 `model.is_local_or_builtin()`（语义不变），或 `model.is_local()`（仅 local，更精确）。
+共 7 个 struct 改字段：`ModelEntry` / `CompatibleLlmConfig` / `AsrEngineRow` / `ModelRow` / `LlmModelInfo` / `OcrModelInfo`（`LocalAsrModelRow` 无 is_local 字段，无需改）。helper 仅加在 `ModelEntry`（语义入口），其他 struct 直接比较 `source_type: i64`。
 
 ---
 
-## 6. 实施顺序
+## 6. 实施顺序 ✅ 全部完成
 
-1. **Step 1：VAD 内嵌**（不依赖 source_type 改动，独立）
-2. **Step 2：source_type 重命名**（schema 迁移 + 全量 is_local → source_type）
-3. **Step 3：zipformer builtin 入 DB**（依赖 source_type）+ 自动下载页
+1. **Step 1：VAD 内嵌**（不依赖 source_type 改动，独立）✅ 其他 session 完成，merge 进本分支
+2. **Step 2：source_type 重命名**（schema 迁移 + 全量 is_local → source_type）✅
+3. **Step 3：zipformer builtin 入 DB**（依赖 source_type）+ 自动下载页 ✅
 
-每步 e2e 通过后再做下一步。
+Step 1 与 Step 2 在 `crates/asr-local/src/config.rs` 有重叠（VAD 改 vad 相关函数，source_type 改 ModelEntry/EngineInfo），自动合并无冲突。
 
 ---
 
-## 7. 已知风险
+## 7. 已知风险（全部已解决）
 
-- **170 处改动量大**——is_local → source_type 是全局重命名，漏一处就编译错误（好在编译器会报所有错误）
-- **vault secret 加密用 is_local**——`try_decrypt_secret_global` 判断 `is_local=0` 的云端模型 secret_key 不加密。改 source_type 后要确保 builtin(0) 和 local(1) 的 secret_key 都加密，cloud(2) 不加密
-- **启动下载页是新 UI**——需要新建 Tauri 窗口或前端路由，涉及 capabilities 注册
+- **~150 处改动量大** ✅ ——靠编译器报所有错误，一次性修完。实际改动分布见 §5.1
+- **vault secret 加密用 is_local** ✅ ——`try_decrypt_secret_global` 本身**不查 is_local**（靠 `v1:` 前缀判定），调用方 `config.rs::llm_config_ignore_mode` 用 `is_local_or_builtin()` 判断（builtin+local 走 clone，仅 cloud 走 vault 解密）。语义正确
+- **启动下载页是新 UI** ✅ ——独立 Tauri 窗口 `download_window`，capabilities/default.json 已注册，vite.config.ts 加 entry
+- **迁移幂等性** ✅ ——`migrate_v47_to_v48` helper + `ensure_builtin_seed` 双保险，历史库漏注入也能补

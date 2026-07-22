@@ -1,6 +1,7 @@
 # 内置模型开箱即用实施计划
 
 > **Spec:** `docs/superpowers/specs/2026-07-22-builtin-models.md`
+> **状态**：✅ Step 1/2/3 代码全部完成（2026-07-22），e2e 待用户验证
 > **分 3 步，每步 e2e 通过后再做下一步。**
 
 ---
@@ -139,4 +140,7 @@
 ## 文档同步
 - [x] architecture.md：models 表 source_type 描述 + builtin 模型机制
 - [x] plan 文档：Step 2/3 全部 Task 标记完成 + 实际偏差记录
-- [ ] AGENTS.md 运行时文件布局（schema v47→v48）+ features/ 相关章节（后续 z-sync-superpowers）
+- [x] AGENTS.md：schema v46→v48 + zipformer 运行时布局描述更新
+- [x] features/db-and-config.md：models 表 is_local → source_type 字段 + builtin 兜底引擎描述
+- [ ] features/asr-engine.md：resolve_model_dir + 兜底引擎描述更新（随包 → 首次下载）
+- [ ] e2e 验证（用户进行中）

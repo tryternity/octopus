@@ -229,12 +229,12 @@ mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
 
 | 级 | 路径 | 用途 |
 |----|------|------|
-| 1 | `~/.octopus/<source>` | 随包小模型（如 `models/zipformer`） |
+| 1 | `~/.octopus/<source>` | builtin 模型（如 `models/zipformer`，首次启动下载到此） |
 | 2 | 绝对路径 | `source` 是绝对路径且存在 |
-| 3 | `~/.octopus/models/<source>` | cli download 下的大模型（优先于旧 hf-cli 缓存） |
+| 3 | `~/.octopus/models/<source>` | cli download 下的本地模型（优先于旧 hf-cli 缓存） |
 | 4 | `find_hf_cache`（`~/.cache/huggingface/hub/models--<repo>/snapshots/<hash>/`） | 兼容旧 hf-cli |
 
-模型缺失时报错，提示运行 `octopus-cli download <source>`（不自动下载）。
+模型缺失时：builtin 模型（source_type=0）首次启动由下载页自动下载；其余模型报错提示运行 `octopus-cli download <source>`。
 
 ## 引擎选择
 
@@ -261,9 +261,10 @@ CLI `--model` / server 请求 `engine` / `AsrEngineManager.switch_model(spec)` �
 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。显式 spec 路径（cli `--model`、`AsrEngineManager.switch_model`、server 请求带 engine）直接走 `resolve_engine_in_config + pick_entry`，**不走兜底**（匹配不到直接报错）。
 
 解析规则：
-1. **兜底引擎短路**：裸名为 `zipformer-small-ctc`（`FALLBACK_ASR_ENGINE_NAME`）时跳过 DB 查找，直接返回硬构造兜底 entry
-2. 非空且命中 → 返回裸名（去掉前缀）+ category + entry
-3. 空/不匹配 → 回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径）
+1. **兜底引擎优先查 DB**：裸名为 `zipformer-small-ctc`（`FALLBACK_ASR_ENGINE_NAME`）时先 `resolve_engine_any` 查 DB（source_type=0 builtin 行），命中则用 DB entry（含真实 is_available 状态）
+2. DB 无此行（极端情况，如 DB 损坏）→ 硬构造兜底 entry（source_type=0, source=`DEFAULT_ASR_MODEL_DIR`）
+3. 非空且命中 → 返回裸名（去掉前缀）+ category + entry
+4. 空/不匹配 → 回退兜底 `zipformer-small-ctc`
 
 返回的 `ResolvedEngine.name` 始终是**裸名**（不含 `local:`/`category:` 前缀）。
 
