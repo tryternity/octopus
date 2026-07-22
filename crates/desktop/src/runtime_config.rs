@@ -33,18 +33,18 @@ fn u8_to_polish_mode(n: u8) -> Option<PolishMode> {
 }
 
 /// 统一显示文本（3-part）：
-/// - is_local=true  → "本地:{category}:{name}"
-/// - is_local=false → "{provider}:{category}:{name}"
+/// - source_type != 2（builtin/local）→ "本地:{category}:{name}"
+/// - source_type == 2（cloud）        → "{provider}:{category}:{name}"
 ///
 /// 远程引擎保留 provider 前缀以区分 deepseek 直连（provider=deepseek）与 aliyun
 /// 代管同名模型（provider=aliyun，category 同为 deepseek 系列）——provider 不同但
 /// category 相同，前缀用 provider 才能让用户分辨供应商。本地引擎 provider 恒为
 /// "local" 无信息量，故用 "本地" 前缀。
-fn engine_label(is_local: bool, category: &str, provider: &str, name: &str) -> String {
-    if is_local {
-        format!("本地:{}:{}", category, name)
-    } else {
+fn engine_label(source_type: i64, category: &str, provider: &str, name: &str) -> String {
+    if source_type == 2 {
         format!("{}:{}:{}", provider, category, name)
+    } else {
+        format!("本地:{}:{}", category, name)
     }
 }
 
@@ -76,14 +76,15 @@ fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec
 
     let mut options = Vec::with_capacity(engines.len() + 1);
     // 兜底固定第一。current：DB 无激活时 fallback 引擎视为当前。
+    // source_type=0（builtin）—— 兜底引擎是内置分类
     options.push(EngineOption {
         id: 0,
         name: FALLBACK_ASR_ENGINE.to_string(),
         provider: "local".to_string(),
         category: "zipformer".to_string(),
-        is_local: true,
+        source_type: 0,
         current: !has_active,
-        label: engine_label(true, "zipformer", "local", FALLBACK_ASR_ENGINE),
+        label: engine_label(0, "zipformer", "local", FALLBACK_ASR_ENGINE),
         source: String::new(),
         secret_key: String::new(),
         is_streaming: true,
@@ -102,8 +103,8 @@ fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec
             name: e.name.clone(),
             provider: e.provider.clone(),
             category: cat.to_string(),
-            is_local: e.is_local,
-            label: engine_label(e.is_local, cat, &e.provider, &e.name),
+            source_type: e.source_type,
+            label: engine_label(e.source_type, cat, &e.provider, &e.name),
             source: e.source.clone(),
             secret_key: mask_key(&e.secret_key),
             is_streaming: e.is_streaming,
@@ -153,7 +154,8 @@ pub struct EngineOption {
     pub provider: String,
     pub category: String,
     pub current: bool,
-    pub is_local: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud（详见 infra::db::ModelEntry）。
+    pub source_type: i64,
     pub label: String,
     pub source: String,
     pub secret_key: String,
@@ -168,7 +170,8 @@ pub struct LlmOption {
     pub name: String,
     pub provider: String,
     pub category: String,
-    pub is_local: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud。
+    pub source_type: i64,
     pub current: bool,
     pub label: String,
     pub source: String,
@@ -185,7 +188,8 @@ pub struct OcrOption {
     pub provider: String,
     pub label: String,
     pub current: bool,
-    pub is_local: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud。
+    pub source_type: i64,
 }
 
 /// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = 无激活），
@@ -199,13 +203,13 @@ fn build_llm_options(llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOptio
     // 是否有激活模型（is_enabled=1）——无激活时首项「不选择模型」标 current
     let has_active = llms.iter().any(|m| m.is_enabled);
     let mut options = Vec::with_capacity(llms.len() + 1);
-    // 首项：「不选择模型」（name 空）。无激活时为选中态。
+    // 首项：「不选择模型」（name 空）。无激活时为选中态。source_type=2（cloud 占位，非本地）
     options.push(LlmOption {
         id: 0,
         name: String::new(),
         provider: String::new(),
         category: String::new(),
-        is_local: false,
+        source_type: 2,
         current: !has_active,
         label: "不选择模型".to_string(),
         source: String::new(),
@@ -214,7 +218,7 @@ fn build_llm_options(llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOptio
         is_thinking: false,
     });
     for m in llms {
-        let label = engine_label(m.is_local, &m.category, &m.provider, &m.model_name);
+        let label = engine_label(m.source_type, &m.category, &m.provider, &m.model_name);
         options.push(LlmOption {
             id: m.id,
             current: m.is_enabled,
@@ -222,7 +226,7 @@ fn build_llm_options(llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOptio
             name: m.model_name.clone(),
             provider: m.provider.clone(),
             category: m.category.clone(),
-            is_local: m.is_local,
+            source_type: m.source_type,
             source: m.source.clone(),
             secret_key: mask_key(&m.secret_key),
             is_streaming: m.is_streaming,
@@ -258,7 +262,7 @@ fn build_ocr_options(ocrs: Vec<octopus_infra::db::OcrModelInfo>) -> Vec<OcrOptio
             },
             name: m.model_name,
             provider: "local".to_string(),
-            is_local: m.is_local,
+            source_type: m.source_type,
         })
         .collect()
 }
@@ -452,12 +456,12 @@ mod tests {
         use octopus_asr_local::config::{EngineCategory, EngineInfo};
         // 场景 1：whisper-small 激活（is_enabled=true）→ 兜底非 current，whisper-small current
         let engines = vec![
-            mk_engine("whisper-small", "bigmodel", EngineCategory::Whisper, false, true),
+            mk_engine("whisper-small", "bigmodel", EngineCategory::Whisper, 2, true),
         ];
         let opts = build_asr_options(engines);
         assert_eq!(opts[0].name, "zipformer-small-ctc");
         assert_eq!(opts[0].label, "本地:zipformer:zipformer-small-ctc");
-        assert!(opts[0].is_local);
+        assert_eq!(opts[0].source_type, 0, "兜底引擎 source_type 应为 0 (builtin)");
         assert!(!opts[0].current, "有激活模型 → 兜底非当前");
         assert_eq!(opts[1].name, "whisper-small");
         assert!(opts[1].current, "whisper-small is_enabled=true → current");
@@ -472,8 +476,8 @@ mod tests {
 
         // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
         let engines3 = vec![
-            mk_engine("zipformer-small-ctc", "local", EngineCategory::Zipformer, true, false),
-            mk_engine("whisper-small", "local", EngineCategory::Whisper, false, true),
+            mk_engine("zipformer-small-ctc", "local", EngineCategory::Zipformer, 1, false),
+            mk_engine("whisper-small", "local", EngineCategory::Whisper, 2, true),
         ];
         let opts3 = build_asr_options(engines3);
         assert_eq!(
@@ -492,8 +496,8 @@ mod tests {
         // 不再用 current spec 字符串按 name 匹配（避免同 name 都标 current）。
         use octopus_asr_local::config::EngineCategory;
         let engines = vec![
-            mk_engine("deepseek-v4-flash", "aliyun", EngineCategory::Aliyun, false, true),
-            mk_engine("deepseek-v4-flash", "deepseek", EngineCategory::Aliyun, false, false),
+            mk_engine("deepseek-v4-flash", "aliyun", EngineCategory::Aliyun, 2, true),
+            mk_engine("deepseek-v4-flash", "deepseek", EngineCategory::Aliyun, 2, false),
         ];
         let opts = build_asr_options(engines);
         let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
@@ -505,8 +509,8 @@ mod tests {
     fn build_llm_options_marks_current_and_labels() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            mk_llm("glm-4-flashx", "bigmodel", "glm", false, true),
-            mk_llm("ollama-local", "ollama", "qwen", true, false),
+            mk_llm("glm-4-flashx", "bigmodel", "glm", 2, true),
+            mk_llm("ollama-local", "ollama", "qwen", 1, false),
         ];
         let opts = build_llm_options(llms);
         assert_eq!(opts.len(), 3);
@@ -527,7 +531,7 @@ mod tests {
         // 需求：无激活 LLM（全 is_enabled=false）→ 首项「无模型」标 current。
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            mk_llm("glm-4-flashx", "bigmodel", "glm", false, false),
+            mk_llm("glm-4-flashx", "bigmodel", "glm", 2, false),
         ];
         let opts = build_llm_options(llms);
         assert!(opts[0].current, "无激活 → 无模型 current");
@@ -582,8 +586,8 @@ mod tests {
     fn build_llm_options_is_enabled_precise_current() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            mk_llm("deepseek-v4-flash", "aliyun", "deepseek", false, true),
-            mk_llm("deepseek-v4-flash", "deepseek", "deepseek", false, false),
+            mk_llm("deepseek-v4-flash", "aliyun", "deepseek", 2, true),
+            mk_llm("deepseek-v4-flash", "deepseek", "deepseek", 2, false),
         ];
         let opts = build_llm_options(llms);
         let currents: Vec<_> = opts.iter().filter(|o| o.current).collect();
@@ -596,7 +600,7 @@ mod tests {
     fn engine_option_has_provider_field() {
         use octopus_asr_local::config::EngineCategory;
         let engines = vec![
-            mk_engine("whisper-small", "aliyun", EngineCategory::Whisper, false, false),
+            mk_engine("whisper-small", "aliyun", EngineCategory::Whisper, 2, false),
         ];
         let opts = build_asr_options(engines);
         assert_eq!(opts[1].provider, "aliyun", "EngineOption 应包含 provider 字段");
@@ -607,7 +611,7 @@ mod tests {
     fn llm_option_has_provider_field() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            mk_llm("test", "bigmodel", "glm", false, false),
+            mk_llm("test", "bigmodel", "glm", 2, false),
         ];
         let opts = build_llm_options(llms);
         assert_eq!(opts[1].provider, "bigmodel", "LlmOption 应包含 provider 字段");
@@ -618,10 +622,10 @@ mod tests {
     fn build_ocr_options_uses_is_enabled_for_current() {
         let ocrs = vec![
             octopus_infra::db::OcrModelInfo {
-                model_name: "PP-OCRv6-small".into(), description: "v6".into(), is_local: true, is_enabled: true,
+                model_name: "PP-OCRv6-small".into(), description: "v6".into(), source_type: 1, is_enabled: true,
             },
             octopus_infra::db::OcrModelInfo {
-                model_name: "PP-OCRv5".into(), description: "v5".into(), is_local: true, is_enabled: false,
+                model_name: "PP-OCRv5".into(), description: "v5".into(), source_type: 1, is_enabled: false,
             },
         ];
         let opts = build_ocr_options(ocrs);
@@ -637,7 +641,7 @@ mod tests {
         name: &str,
         provider: &str,
         category: octopus_asr_local::config::EngineCategory,
-        is_local: bool,
+        source_type: i64,
         is_enabled: bool,
     ) -> octopus_asr_local::config::EngineInfo {
         octopus_asr_local::config::EngineInfo {
@@ -645,7 +649,7 @@ mod tests {
             provider: provider.into(),
             category,
             description: String::new(),
-            is_local,
+            source_type,
             id: 0,
             source: String::new(),
             secret_key: String::new(),
@@ -660,14 +664,14 @@ mod tests {
         model_name: &str,
         provider: &str,
         category: &str,
-        is_local: bool,
+        source_type: i64,
         is_enabled: bool,
     ) -> octopus_infra::db::LlmModelInfo {
         octopus_infra::db::LlmModelInfo {
             model_name: model_name.into(),
             provider: provider.into(),
             category: category.into(),
-            is_local,
+            source_type,
             id: 0,
             source: String::new(),
             secret_key: String::new(),

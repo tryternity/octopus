@@ -1660,7 +1660,7 @@ mod tests {
 
         octopus_infra::db::with_db(|conn| {
             conn.execute(
-                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local)
+                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, source_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
                     "llm",
@@ -1669,7 +1669,7 @@ mod tests {
                     model_name,
                     "https://test-source.example.com",
                     secret_key,
-                    0, // is_local=0 → 云端模型
+                    2, // source_type=2 → 云端模型
                 ],
             )?;
             Ok(conn.last_insert_rowid())
@@ -1790,7 +1790,7 @@ mod tests {
         let model_name = "test-local-manifest-model";
         octopus_infra::db::with_db(|conn| {
             conn.execute(
-                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local)
+                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, source_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
                     "asr",

@@ -22,7 +22,7 @@ interface OcrOption {
   provider: string;
   label: string;
   current: boolean;
-  is_local: boolean;
+  source_type: number;
 }
 
 interface DownloadProgress {
@@ -113,7 +113,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const rows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, is_local: true, repo: m.repo,
+    is_current: m.is_enabled, source_type: 1, repo: m.repo,
     cloudId: m.id,
   }));
 

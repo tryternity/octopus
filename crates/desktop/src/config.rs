@@ -46,11 +46,12 @@ pub fn llm_config(polish_mode: PolishMode) -> Option<octopus_llm::CompatibleLlmC
 pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
     match octopus_asr_local::config::resolve_active_engine("llm") {
         Ok(resolved) => {
-            // 仅云端模型（is_local=0）的 secret_key 才可能是 v1: 加密格式；
-            // 本地模型（Ollama 等）secret_key 为空 / 未迁移明文 → 透明解密对它们是 no-op。
+            // 仅云端模型（source_type=2）的 secret_key 才可能是 v1: 加密格式；
+            // 本地模型（builtin/local，Ollama 等）secret_key 为 manifest JSON 或空 / 未迁移明文
+            // → 透明解密对它们是 no-op（不会以 v1: 开头）。
             // 安全修复 #5：vault 启用但解密失败时**返回空字符串**（不返回密文），
             // 让 LLM 调用 401 暴露 vault 锁定问题，而不是把密文发到云端污染 access log。
-            let secret_key = if resolved.entry.is_local {
+            let secret_key = if resolved.entry.is_local_or_builtin() {
                 resolved.entry.secret_key.clone()
             } else {
                 match crate::vault_secret_access::try_decrypt_secret_global(
@@ -83,7 +84,7 @@ pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
                 base_url: resolved.entry.source,
                 secret_key,
                 is_thinking: resolved.is_thinking,
-                is_local: resolved.entry.is_local,
+                source_type: resolved.entry.source_type,
                 is_enabled: resolved.entry.is_enabled,
             })
         }

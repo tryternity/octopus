@@ -21,7 +21,7 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
     // 与 action_bar_commands 的 resolve_translate_strategy 保持语义完全对称。
     let (strategy, engine_name, available) = match octopus_asr_local::config::resolve_active_engine("translate") {
         Ok(row) => {
-            if row.entry.is_local {
+            if row.entry.is_local_or_builtin() {
                 ("local".to_string(), row.name, true)
             } else if row.entry.secret_key.is_empty() {
                 // 云端模型未填 secret_key → fallback（与 resolve_translate_strategy 对称）

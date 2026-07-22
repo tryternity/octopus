@@ -81,9 +81,9 @@ mod tests {
     /// 直接向 models 表插一行云端或本地模型，返回新行 id。
     ///
     /// 仅提供 NOT NULL 无默认值的字段（domain / category / model_name / source）；
-    /// secret_key / is_local 由参数显式传入；其余列走 schema DEFAULT。
+    /// secret_key / source_type 由参数显式传入；其余列走 schema DEFAULT。
     /// UNIQUE(domain, provider, category, model_name) 通过 model_name 附加随机后缀避免冲突。
-    fn insert_test_model(secret_key: &str, is_local: i64) -> i64 {
+    fn insert_test_model(secret_key: &str, source_type: i64) -> i64 {
         // 用 AtomicU64 生成的简单递增 id 作为后缀——避免引入 std::sync::Mutex 全局计数器。
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -91,16 +91,16 @@ mod tests {
 
         db::with_db(|conn| {
             conn.execute(
-                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, is_local)
+                "INSERT INTO models (domain, provider, category, model_name, source, secret_key, source_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
                 params![
                     "asr",
                     "test_provider",
                     "test_category",
-                    format!("test-model-{}-{}", suffix, is_local),
+                    format!("test-model-{}-{}", suffix, source_type),
                     "test-source",
                     secret_key,
-                    is_local,
+                    source_type,
                 ],
             )?;
             Ok(conn.last_insert_rowid())
@@ -121,14 +121,14 @@ mod tests {
         .expect("read secret_key should succeed")
     }
 
-    /// 迁移明文密钥：is_local=0 + 非 v1: 前缀的行应被加密；本地模型（is_local=1）跳过。
+    /// 迁移明文密钥：source_type=2（cloud） + 非 v1: 前缀的行应被加密；本地模型跳过。
     #[test]
     fn migrate_encrypts_plaintext_keys() {
         setup_clean_db();
         let key = make_key(1);
 
-        let id1 = insert_test_model("plaintext-api-key-1", 0);
-        let id2 = insert_test_model("plaintext-api-key-2", 0);
+        let id1 = insert_test_model("plaintext-api-key-1", 2);
+        let id2 = insert_test_model("plaintext-api-key-2", 2);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
         assert_eq!(count, 2, "both cloud models should be migrated");
@@ -154,17 +154,17 @@ mod tests {
         assert_eq!(pt2, "plaintext-api-key-2");
     }
 
-    /// is_local=1 的模型（本地 manifest JSON）不应被迁移——只有云端 API Key 才加密。
+    /// source_type=1（local）的模型（本地 manifest JSON）不应被迁移——只有云端 API Key 才加密。
     #[test]
     fn migrate_skips_local_models() {
         setup_clean_db();
         let key = make_key(1);
 
-        let cloud_id = insert_test_model("cloud-api-key", 0);
+        let cloud_id = insert_test_model("cloud-api-key", 2);
         let local_id = insert_test_model("{\"manifest\":\"json-payload\"}", 1);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
-        assert_eq!(count, 1, "only the cloud model (is_local=0) should be migrated");
+        assert_eq!(count, 1, "only the cloud model (source_type=2) should be migrated");
 
         // 云端行已加密
         assert!(read_secret_key(cloud_id).starts_with("v1:"));
@@ -180,8 +180,8 @@ mod tests {
 
         // 预先加密一行
         let encrypted = key.encrypt(b"already-encrypted-key").unwrap();
-        let enc_id = insert_test_model(&encrypted, 0);
-        let plain_id = insert_test_model("plaintext-key", 0);
+        let enc_id = insert_test_model(&encrypted, 2);
+        let plain_id = insert_test_model("plaintext-key", 2);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
         assert_eq!(count, 1, "only the plaintext row should be migrated");
@@ -198,8 +198,8 @@ mod tests {
         setup_clean_db();
         let key = make_key(1);
 
-        insert_test_model("plaintext-key-1", 0);
-        insert_test_model("plaintext-key-2", 0);
+        insert_test_model("plaintext-key-1", 2);
+        insert_test_model("plaintext-key-2", 2);
 
         let count1 = migrate_secret_keys_to_encrypted(&key).expect("first migration");
         assert_eq!(count1, 2);
@@ -215,7 +215,7 @@ mod tests {
         setup_clean_db();
         let key = make_key(1);
 
-        insert_test_model("", 0);
+        insert_test_model("", 2);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
         assert_eq!(count, 0, "empty secret_key should be skipped");
@@ -243,9 +243,9 @@ mod tests {
         setup_clean_db();
         let key = make_key(1);
 
-        let id1 = insert_test_model("plaintext-1", 0);
-        let id2 = insert_test_model("plaintext-2", 0);
-        let id3 = insert_test_model("plaintext-3", 0);
+        let id1 = insert_test_model("plaintext-1", 2);
+        let id2 = insert_test_model("plaintext-2", 2);
+        let id3 = insert_test_model("plaintext-3", 2);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
         assert_eq!(count, 3, "all 3 candidates should be migrated");
@@ -286,7 +286,7 @@ mod tests {
 
         // 预先把唯一的行加密成 v1:
         let pre_encrypted = key.encrypt(b"already-enc").unwrap();
-        let id = insert_test_model(&pre_encrypted, 0);
+        let id = insert_test_model(&pre_encrypted, 2);
 
         let count = migrate_secret_keys_to_encrypted(&key).expect("migration should succeed");
         assert_eq!(count, 0, "v1: 候选 0 个，不应做任何事");

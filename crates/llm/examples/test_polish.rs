@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
         base_url: resolved.entry.source.clone(),
         secret_key: resolved.entry.secret_key.clone(),
         is_thinking: resolved.is_thinking,
-        is_local: resolved.entry.is_local,
+        source_type: resolved.entry.source_type,
         is_enabled: resolved.entry.is_enabled,
     };
 

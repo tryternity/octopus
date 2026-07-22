@@ -1000,7 +1000,7 @@ mod tests {
             source: zh_int8.to_string_lossy().to_string(),
             language: "zh".to_string(),
             secret_key: String::new(),
-            is_local: true,
+            source_type: 1,
             is_enabled: true,
                 is_available: true,
             is_streaming: true,

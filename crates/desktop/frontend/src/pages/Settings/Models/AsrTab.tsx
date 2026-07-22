@@ -14,7 +14,7 @@ interface EngineOption {
   provider: string;
   category: string;
   current: boolean;
-  is_local: boolean;
+  source_type: number;
   label: string;
   source: string;
   secret_key: string;
@@ -125,15 +125,15 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, is_local: true, repo: m.repo,
+    is_current: m.is_enabled, source_type: 1, repo: m.repo,
     cloudId: m.id,
   }));
 
-  const cloudEngines = engines.filter((e) => !e.is_local);
+  const cloudEngines = engines.filter((e) => e.source_type === 2);
   const cloudRows: ModelRowData[] = cloudEngines.map((e) => ({
     name: e.name, provider: e.provider, category: e.category,
     description: e.label, is_ready: true,
-    is_current: e.current, is_local: false, repo: "",
+    is_current: e.current, source_type: 2, repo: "",
     cloudId: e.id,
   }));
 

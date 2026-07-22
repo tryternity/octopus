@@ -12,9 +12,9 @@ CREATE TABLE IF NOT EXISTS models (
     category      TEXT    NOT NULL,                       -- ASR 引擎族(zipformer/whisper/Fun-ASR) ; LLM 模型系列(qwen/glm/deepseek)
     model_name    TEXT    NOT NULL,                       -- 具体模型标识，精确匹配
     source        TEXT    NOT NULL,                       -- 本地模型: 路径标识(domain/name) ; 云端: wss 端点 ; LLM: API base URL
-    secret_key    TEXT    NOT NULL DEFAULT '',            -- is_local=1: 下载清单 manifest JSON ; is_local=0: API Key
+    secret_key    TEXT    NOT NULL DEFAULT '',            -- source_type IN (0,1): 下载清单 manifest JSON ; source_type=2: API Key
     language      TEXT    NOT NULL DEFAULT '',
-    is_local      INTEGER NOT NULL DEFAULT 0,             -- 是否为本地模型 (0=否, 1=是)
+    source_type   INTEGER NOT NULL DEFAULT 1,             -- 模型来源: 0=builtin(内置，开箱即用) 1=local(用户下载) 2=cloud(云端)
     is_thinking   INTEGER NOT NULL DEFAULT 0,             -- LLM 专用：是否为思考（reasoning）模型
     is_streaming  INTEGER NOT NULL DEFAULT 0,             -- 是否支持流式 (0=否, 1=是)
     is_available  INTEGER NOT NULL DEFAULT 0,             -- 可用：文件就绪/配置完整（0=未就绪, 1=就绪），同域可多个
@@ -25,11 +25,11 @@ CREATE TABLE IF NOT EXISTS models (
 
 -- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
 
--- ── 本地 ASR 模型（is_local=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）──
+-- ── 本地 ASR 模型（source_type=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）──
 -- is_available 表「文件就绪」：seed 初始大部分未就绪（is_available=0），用户下载后置 true。
 -- is_enabled 表「激活」：seed 全 0，用户在管理页激活某模型时 switch_active_model 置 1（每域仅 1 个）。
--- 默认/兜底引擎 zipformer-small-ctc（随应用本地打包）由代码写死（asr/config.rs FALLBACK_ASR_ENGINE_NAME）。
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
+-- 默认/兜底引擎 zipformer-small-ctc（source_type=0 builtin）Step 3 由 db.sql seed + fill_manifests 管理。
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
 VALUES
     ('asr','local','moonshine','moonshine-base-en','asr/moonshine-base-en','en','Moonshine Base EN (274M)',1,0,0),
     ('asr','local','moonshine','moonshine-tiny-en','asr/moonshine-tiny-en','en','Moonshine Tiny EN (119M)',1,0,0),
@@ -45,17 +45,17 @@ VALUES
     ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
     ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1);
 
--- ── 云端模型（is_local=0）不再 seed，由用户自行添加 ──
+-- ── 云端模型（source_type=2）不再 seed，由用户自行添加 ──
 -- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。
 
 -- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
 VALUES
     ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
     ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
 
 -- ── 翻译模型（domain='translate'）─────────────────────────────────
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_available, is_streaming)
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
 VALUES
     ('translate','local','opus-mt','opus-mt','translate/opus-mt','auto','opus-mt 中英互译（轻量快速，~500M）',1,0,0),
     ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);

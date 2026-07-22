@@ -915,7 +915,7 @@ async fn resolve_translate_strategy(_config: &octopus_infra::config::AppConfig) 
         Ok(r) => r,
         Err(_) => return TranslateStrategy::FallbackLlm,
     };
-    if resolved.entry.is_local {
+    if resolved.entry.is_local_or_builtin() {
         TranslateStrategy::LocalModel { resolved }
     } else if resolved.entry.secret_key.is_empty() {
         // 云端模型未填 secret_key → fallback（避免到 translate 时才报错）

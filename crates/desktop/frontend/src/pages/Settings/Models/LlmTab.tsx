@@ -13,7 +13,7 @@ interface LlmOption {
   provider: string;
   category: string;
   current: boolean;
-  is_local: boolean;
+  source_type: number;
   label: string;
   source: string;
   secret_key: string;
@@ -69,12 +69,12 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     .map((m) => ({
       name: m.name, provider: m.provider, category: m.category,
       description: m.label, is_ready: true,
-      is_current: m.current, is_local: m.is_local, repo: "",
+      is_current: m.current, source_type: m.source_type, repo: "",
       cloudId: m.id,
     }));
 
-  const localRows = rows.filter((r) => r.is_local);
-  const cloudRows = rows.filter((r) => !r.is_local);
+  const localRows = rows.filter((r) => r.source_type !== 2);
+  const cloudRows = rows.filter((r) => r.source_type === 2);
 
   return (
     <div className="space-y-0.5">

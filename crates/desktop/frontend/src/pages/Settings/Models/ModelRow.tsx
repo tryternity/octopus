@@ -11,7 +11,8 @@ export interface ModelRowData {
   description: string;
   is_ready: boolean;
   is_current: boolean;
-  is_local: boolean;
+  /** 模型来源: 0=builtin 1=local 2=cloud（!== 2 即本地/builtin） */
+  source_type: number;
   repo: string;
   /** 云端模型 id（用于编辑/删除） */
   cloudId?: number;
@@ -51,7 +52,7 @@ export function ModelRow({
 }) {
   const t = useT();
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
-  const showDownload = model.is_local && !model.is_ready;
+  const showDownload = model.source_type !== 2 && !model.is_ready;
 
   return (
     <div
@@ -117,7 +118,7 @@ export function ModelRow({
             )}
 
             {/* 校验（本地已就绪） */}
-            {model.is_local && model.is_ready && (
+            {model.source_type !== 2 && model.is_ready && (
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -129,7 +130,7 @@ export function ModelRow({
             )}
 
             {/* 删除（本地已就绪 或 云端模型） */}
-            {(model.is_local && model.is_ready || !model.is_local) && (
+            {(model.source_type !== 2 && model.is_ready || model.source_type === 2) && (
               <Button
                 variant="destructive-ghost"
                 size="icon-sm"
@@ -144,7 +145,7 @@ export function ModelRow({
             )}
 
             {/* 编辑（云端模型） */}
-            {!model.is_local && onEdit && (
+            {model.source_type === 2 && onEdit && (
               <Button variant="ghost" size="icon-sm" onClick={onEdit}>
                 <Pencil />
               </Button>

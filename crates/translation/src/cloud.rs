@@ -30,7 +30,7 @@ impl CloudLlmEngine {
                 base_url: base_url.to_string(),
                 secret_key: secret_key.to_string(),
                 is_thinking,
-                is_local: false,
+                source_type: 2,
                 is_enabled: true,
             },
             name: format!("{}:{}", provider, model),

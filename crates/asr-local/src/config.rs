@@ -209,7 +209,7 @@ pub fn resolve_engine_any(spec: &str) -> Option<(EngineCategory, ModelEntry)> {
         language: row.language,
         description: row.description,
         secret_key: row.secret_key,
-        is_local: row.is_local,
+        source_type: row.source_type,
         is_enabled: row.is_enabled,
         is_available: row.is_available,
         is_streaming: row.is_streaming,
@@ -225,7 +225,8 @@ pub struct EngineInfo {
     pub provider: String,
     pub category: EngineCategory,
     pub description: String,
-    pub is_local: bool,
+    /// 模型来源: 0=builtin 1=local 2=cloud（详见 infra::db::ModelEntry）。
+    pub source_type: i64,
     /// DB 行 id（Task 2 后补，供前端 switch_active_model(domain, id) 用）。
     pub id: i64,
     /// DB models.source（Task 2 后补，供前端展示 / 编辑回填）。
@@ -260,11 +261,11 @@ pub fn category_label(c: EngineCategory) -> &'static str {
     }
 }
 
-/// 排序：is_local 降序（true 在前）→ category 字母序 → name 字母序。
+/// 排序：source_type 升序（builtin(0) < local(1) < cloud(2)，本地在前）→ category 字母序 → name 字母序。
 fn order_engine_infos(engines: &mut [EngineInfo]) {
     engines.sort_by(|a, b| {
-        b.is_local
-            .cmp(&a.is_local)
+        a.source_type
+            .cmp(&b.source_type)
             .then_with(|| category_label(a.category).cmp(category_label(b.category)))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -290,7 +291,7 @@ pub fn list_engines_from_db() -> Result<Vec<EngineInfo>> {
                 provider: r.provider,
                 category: cat,
                 description: r.description,
-                is_local: r.is_local,
+                source_type: r.source_type,
                 id: r.id,
                 source: r.source,
                 secret_key: r.secret_key,
@@ -358,7 +359,7 @@ fn resolved_engine_from_row(row: &octopus_infra::db::ModelRow) -> ResolvedEngine
             language: row.language.clone(),
             description: row.description.clone(),
             secret_key: row.secret_key.clone(),
-            is_local: row.is_local,
+            source_type: row.source_type,
             is_enabled: row.is_enabled,
             is_available: row.is_available,
             is_streaming: row.is_streaming,
@@ -450,6 +451,7 @@ fn fallback_resolved_engine() -> ResolvedEngine {
         };
     }
     // DB 无 zipformer-small-ctc（极端情况）仍可用——靠本地打包路径硬构造
+    // source_type=0（builtin）—— 兜底引擎属于内置分类
     ResolvedEngine {
         domain: "asr".to_string(),
         name: FALLBACK_ASR_ENGINE_NAME.to_string(),
@@ -461,7 +463,7 @@ fn fallback_resolved_engine() -> ResolvedEngine {
             language: "zh".to_string(),
             description: String::new(),
             secret_key: String::new(),
-            is_local: true,
+            source_type: 0,
             is_enabled: true,
             is_available: true,
             is_streaming: true,
@@ -578,7 +580,7 @@ mod tests {
             language: "zh".to_string(),
             description: String::new(),
             secret_key: String::new(),
-            is_local: true,
+            source_type: 1,
             is_enabled: true,
                 is_available: true,
             is_streaming: false,
@@ -617,7 +619,7 @@ mod tests {
                 language: "auto".to_string(),
                 description: String::new(),
                 secret_key: String::new(),
-                is_local: false,
+                source_type: 2,
                 is_enabled: true,
                 is_available: true,
                 is_streaming: false,
@@ -645,24 +647,25 @@ mod tests {
     // resolve_local_in 测试已随函数移到 onnx-infra crate
 
     #[test]
-    fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
+    fn order_engine_infos_sorts_source_type_asc_then_category_then_name() {
         use EngineCategory::*;
         // mk_engine_info helper 局部构造（避免每个 case 写全 11 字段）
-        let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
-            name: name.into(), provider: "local".into(), category: cat, is_local,
+        let mk = |name: &str, cat: EngineCategory, source_type: i64| EngineInfo {
+            name: name.into(), provider: "local".into(), category: cat, source_type,
             description: String::new(), id: 0, source: String::new(),
             secret_key: String::new(), is_streaming: false, is_thinking: false, is_enabled: false,
         };
         let mut engines = vec![
-            mk("whisper-small", Whisper, false),
-            mk("zipformer-multi", Zipformer, true),
-            mk("paraformer-x", Paraformer, false),
-            mk("zipformer-small-ctc", Zipformer, true),
+            mk("whisper-small", Whisper, 2),       // cloud
+            mk("zipformer-multi", Zipformer, 1),   // local
+            mk("paraformer-x", Paraformer, 2),     // cloud
+            mk("zipformer-small-ctc", Zipformer, 0), // builtin
         ];
         order_engine_infos(&mut engines);
         let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
-        // is_local=true 先（zipformer-multi < zipformer-small-ctc 按 name），再 false（paraformer < whisper 按 category 字母序）
-        assert_eq!(names, vec!["zipformer-multi", "zipformer-small-ctc", "paraformer-x", "whisper-small"]);
+        // source_type 升序：builtin(0) → local(1) → cloud(2)。
+        // builtin 仅 zipformer-small-ctc；local 仅 zipformer-multi；cloud: paraformer-x < whisper-small（category 字母序）
+        assert_eq!(names, vec!["zipformer-small-ctc", "zipformer-multi", "paraformer-x", "whisper-small"]);
     }
 
     #[test]
@@ -734,7 +737,7 @@ mod tests {
             secret_key: "sk-xxx".to_string(),
             language: String::new(),
             description: "DeepSeek Reasoner".to_string(),
-            is_local: false,
+            source_type: 2,
             is_thinking: true,
             is_streaming: false,
             is_enabled: true,
@@ -748,7 +751,7 @@ mod tests {
         assert!(r.is_thinking, "LLM reasoning 模型 is_thinking 应为 true");
         assert_eq!(r.entry.source, "https://api.deepseek.com/v1");
         assert_eq!(r.entry.secret_key, "sk-xxx");
-        assert!(!r.entry.is_local);
+        assert!(r.entry.is_cloud(), "云端模型 is_cloud 应为 true");
         // 非 ASR domain 的 category 字符串 → as_engine_category 返回 None
         assert_eq!(r.as_engine_category(), None);
     }
@@ -770,11 +773,11 @@ mod tests {
 
     #[test]
     fn resolve_full_3part_finds_local_model() {
-        let cfg = cfg_with_zipformer(); // make_entry sets is_local=true
+        let cfg = cfg_with_zipformer(); // make_entry sets source_type=1 (local)
         let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer:zipformer-small-ctc").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
         assert_eq!(name, "zipformer-small-ctc");
-        assert!(entry.is_local);
+        assert!(entry.is_local());
     }
 
     #[test]
@@ -784,7 +787,7 @@ mod tests {
         let (cat, name, entry) = resolve_engine_in_config(&cfg, "aliyun:Fun-ASR:fun-asr-2025-11-07").unwrap();
         assert_eq!(cat, EngineCategory::Aliyun);
         assert_eq!(name, "fun-asr-2025-11-07");
-        assert!(!entry.is_local, "aliyun 模型非本地");
+        assert!(entry.is_cloud(), "aliyun 模型非本地");
         assert_eq!(entry.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
     }
 
@@ -804,7 +807,7 @@ mod tests {
 
     #[test]
     fn resolve_bare_name_finds_anywhere() {
-        // 裸名跨 section 搜，命中第一条匹配（不限 is_local）
+        // 裸名跨 section 搜，命中第一条匹配（不限 source_type）
         let cfg = cfg_with_zipformer();
         let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small-ctc").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
@@ -813,12 +816,12 @@ mod tests {
 
     #[test]
     fn resolve_bare_name_finds_remote_aliyun() {
-        // NameOnly 不再限 is_local——aliyun 云端条目也能命中
+        // NameOnly 不再限 source_type——aliyun 云端条目也能命中
         let cfg = cfg_with_aliyun();
         let (cat, name, entry) = resolve_engine_in_config(&cfg, "fun-asr-2025-11-07").unwrap();
         assert_eq!(cat, EngineCategory::Aliyun);
         assert_eq!(name, "fun-asr-2025-11-07");
-        assert!(!entry.is_local);
+        assert!(entry.is_cloud());
     }
 
     #[test]

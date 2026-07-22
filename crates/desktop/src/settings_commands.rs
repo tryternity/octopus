@@ -465,7 +465,7 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 
-    if engine.is_local {
+    if engine.source_type != 2 {
         return Err("本地模型无需连接测试".into());
     }
 

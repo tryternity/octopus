@@ -145,7 +145,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     name: m.name, provider: "local", category: m.category,
     description: m.description, is_ready: m.is_available,
     is_current: m.is_enabled,
-    is_local: true, repo: m.repo,
+    source_type: 1, repo: m.repo,
     cloudId: m.id,
   }));
 
@@ -153,7 +153,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     name: m.modelName, provider: m.provider, category: m.category,
     description: "", is_ready: true,
     is_current: m.isEnabled,
-    is_local: false, repo: "",
+    source_type: 2, repo: "",
     cloudId: m.id,
   }));
 
