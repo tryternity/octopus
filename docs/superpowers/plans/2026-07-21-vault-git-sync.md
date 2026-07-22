@@ -10,7 +10,7 @@
 
 **Spec:** [2026-07-21-vault-git-sync-design.md](../specs/2026-07-21-vault-git-sync-design.md)
 
-> **状态**：Phase 1（vault 同步 T1-T12）+ Phase 2（热词同步 + sync crate 抽离，Task 13）均已完成并 e2e 验证通过（2026-07-22）。
+> **状态**：Phase 1（vault 同步 T1-T12）+ Phase 2（热词同步 + sync crate 抽离 + 自动同步，Task 13）均已完成并 e2e 验证通过（2026-07-22）。
 
 ## Global Constraints
 
@@ -22,7 +22,7 @@
 - **cipher/folder/hotword id**：UUID v4 字符串（cipher/folder v43→v44，hotword v45→v46），不再用 i64 自增
 - **分片**：`ciphers/<uuid 前 2 hex>/<full-uuid>.json`，256 桶（热词 `sets/<2hex>/<uuid>.json` 同样分桶）
 - **outline.json**：`{version, vault_version, ciphers: {uuid: {md5, updated_ms}}, folders: {...}}`——增量同步索引（md5 内容指纹，非 sha256；updated_ms Unix 毫秒，非 ISO 字符串。§4.12 修订）
-- **同步触发**：手动（Phase 1）；Phase 2 才加自动
+- **同步触发**：手动 + 自动（Phase 2 已实现：scheduler `vault_sync` 任务每小时 CPU 空闲时自动同步，详见 spec §4.15）
 - **冲突处理**：UUID 隔离 + `git merge --ff-only` + rebase 兜底
 - **多 remote**：支持 GitHub + Gitee 双 remote（用户自配）
 - **commit message**：统一 `sync` 或 `init vault`，不暴露操作细节

@@ -191,6 +191,8 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 
+**自动同步**（Phase 2）：`octopus-scheduler` 的 `vault_sync` 任务（interval=3600s = 1 小时），CPU 空闲时自动调 `sync_now()` 同步 vault + 热词。结果存 `.sync/last_auto_sync.json`（SyncPanel 展示上次同步时间/结果，不弹 toast）。
+
 ---
 
 ## 11. Tauri 命令清单
