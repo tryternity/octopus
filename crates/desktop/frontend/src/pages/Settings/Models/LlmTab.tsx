@@ -99,13 +99,14 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         </CollapsibleSection>
       )}
 
-      <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
-        <div className="flex justify-end pb-1">
+      <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}
+        action={
           <Button variant="voice-soft" size="sm"
             onClick={() => { setEditTarget(null); setShowForm(true); }}>
             <Plus /> {t("settings.models.addModel")}
           </Button>
-        </div>
+        }
+      >
         {cloudRows.map((m) => (
           <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={false}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}

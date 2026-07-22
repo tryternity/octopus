@@ -228,13 +228,14 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
         ))}
       </CollapsibleSection>
 
-      <CollapsibleSection icon={Cloud} label={t("settings.models.cloudEngines")}>
-        <div className="flex justify-end pb-1">
+      <CollapsibleSection icon={Cloud} label={t("settings.models.cloudEngines")}
+        action={
           <Button variant="voice-soft" size="sm"
             onClick={() => { setEditTarget(null); setShowForm(true); }}>
             <Plus /> {t("settings.models.addModel")}
           </Button>
-        </div>
+        }
+      >
         {cloudRows.map((m) => {
           const engine = cloudEngines.find((e) => e.id === m.cloudId);
           return (
