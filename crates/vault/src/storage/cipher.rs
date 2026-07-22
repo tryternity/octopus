@@ -114,6 +114,28 @@ pub fn permanent_delete(id: &str) -> Result<()> {
     Ok(db::permanent_delete_vault_cipher(id)?)
 }
 
+/// 清空回收站：批量永久删除所有 deleted_at IS NOT NULL 的 cipher。
+///
+/// 逐条 `permanent_delete`（而非单条 DELETE FROM deleted_at）——保持与 sync_md5
+/// 一致性逻辑的对称（虽然 permanent delete 后行已不存在，md5 无需更新，但走同一
+/// 函数路径便于未来加审计/级联清理）。单条失败不中断——收集 errors 返回，让调用
+/// 方 toast 提示「清空了 N 条，M 条失败」。
+pub fn empty_trash() -> Result<(usize, Vec<String>)> {
+    let ids = db::list_trash_cipher_ids()?;
+    let mut errors: Vec<String> = Vec::new();
+    let mut deleted = 0;
+    for id in &ids {
+        match db::permanent_delete_vault_cipher(id) {
+            Ok(_) => deleted += 1,
+            Err(e) => {
+                log::warn!("empty_trash: 删除 cipher {} 失败: {}", id, e);
+                errors.push(id.clone());
+            }
+        }
+    }
+    Ok((deleted, errors))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

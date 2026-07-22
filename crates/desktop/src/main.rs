@@ -426,6 +426,8 @@ pub fn run() {
             crate::vault_commands::vault_delete_cipher,
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_restore_cipher,
+            #[cfg(feature = "vault")]
+            crate::vault_commands::vault_empty_trash,
             // follow-up #6: folder CRUD
             #[cfg(feature = "vault")]
             crate::vault_commands::vault_list_folders,

@@ -7423,3 +7423,121 @@ bookmarklet 真正自动采集——经过多轮 brainstorming 评估决定**不
 
 **真正自动采集的方向**：浏览器扩展（方案 B）——独立项目，跨平台 native messaging，能监听 form submit 自动捕获。Bitwarden/1Password 走的路。如果将来真有强需求再做。
 
+### 2026-07-22 e2e 验收（VaultPicker 全场景）
+
+**验收范围**：2026-07-21 安全加固 + 2026-07-22 窗口优化 + 搜索命令。
+
+**验收结果**：
+
+| 场景 | 状态 | 备注 |
+|---|---|---|
+| 1 安全加固（URL 检测失败 → 空列表 + 搜索） | ✅ 通过 | 桌面/Finder/不支持应用场景均显示空列表 + 搜索框可用（反钓鱼核心不变量 INV-A12a 验证通过） |
+| 2 URL 匹配正常路径 | ✅ 通过 | 三段式 cipher 行 UI + 默认 PasswordOnly 模式 + ConcealedType 隐藏剪贴板（INV-A6/A13 验证通过） |
+| 3 reprompt=1 主密码再校验 | ⏭️ 跳过 | 用户 DB 无 reprompt=1 cipher；可在 Settings 勾选后补测。代码路径（`index.tsx:328` reprompt 视图 + 后端 `vault_autotype`/`vault_copy_password` 强制校验 INV-A7）已审查 |
+| 4 窗口优化（320×360 + transparent 圆角 + 搜索框禁大写） | ✅ 通过 | 固定尺寸 + 圆角无直角黑边 + 标题栏拖动/按钮可点 + 搜索框禁大写 |
+| 5 新建 cipher（CreateCipherView） | ✅ 通过（修了 uppercase） | URL/name 预填正确；见下方 uppercase 修复 |
+| 6 边界降级 | ◑ 部分 | F6 锁超时 / F10 焦点丢失 / TOTP 均通过；**F1 库未初始化待实测**（见下方） |
+
+#### 修复：新建 cipher 表单 input 禁大写（场景 5）
+
+**问题**：新建 cipher 表单的 name/url/username input 缺 `autoCapitalize="off"`——username 首字母会被 macOS 自动大写，导致登录失败（邮箱/账号名通常小写）。
+
+**修复**：`crates/desktop/frontend/src/pages/VaultPicker/index.tsx` CreateCipherView 的 3 个 `Input`（name/url/username）补 `autoCapitalize="off"` + `autoComplete="off"`。password 的 `PasswordInput` 不动（密码大小写敏感）。
+
+**验证**：tsc 0 error。
+
+#### 待实测：F1 库未初始化（场景 6，用户方便时测）
+
+**当前状态**：代码路径已审查（`index.tsx:294` `if (view.kind === "uninit")` 渲染引导视图），但未实跑确认引导文案和视觉。
+
+**为什么没测**：需删 `~/.octopus/octopus.db` 触发未初始化状态，会丢真实 vault 数据（4 条 cipher + 已初始化）。
+
+**零风险测试方法**（临时移走 DB，不动真实数据）：
+
+```bash
+# 1. 备份（已做：~/.octopus/octopus.db.pre-f1-test-20260722092949，双保险）
+# 2. 把真 DB 临时移走（不是删除！）
+mv ~/.octopus/octopus.db ~/.octopus/octopus.db.real-backup
+mv ~/.octopus/octopus.db-shm ~/.octopus/octopus.db-shm.real-backup 2>/dev/null
+mv ~/.octopus/octopus.db-wal ~/.octopus/octopus.db-wal.real-backup 2>/dev/null
+
+# 3. 启动 app（此时 vault 未初始化）
+./run-octopus.sh
+
+# 4. 测试：按 Cmd+Shift+L → 应看到 uninit 视图（引导设置，非 locked/error/空 list）
+#    或 Settings → Vault → 应看到 Setup 页
+
+# 5. 测完恢复（关键！先关 app）
+killall octopus-desktop 2>/dev/null
+rm ~/.octopus/octopus.db ~/.octopus/octopus.db-shm ~/.octopus/octopus.db-wal 2>/dev/null
+mv ~/.octopus/octopus.db.real-backup ~/.octopus/octopus.db
+mv ~/.octopus/octopus.db-shm.real-backup ~/.octopus/octopus.db-shm 2>/dev/null
+mv ~/.octopus/octopus.db-wal.real-backup ~/.octopus/octopus.db-wal 2>/dev/null
+```
+
+**验收点**：按热键 → **uninit 视图**（不是 locked、不是 error、不是空 list），内容引导用户去初始化，不崩溃不报错。
+
+#### P3 性能假设实测结论（vault_search_ciphers）
+
+**原假设**："500+ cipher 全量解密可能慢"——措辞不准（无"全量解密"特殊场景，vault 存密文任何读都要解密），且实测**证伪**。
+
+**实测方法**：临时 bench（1000 cipher，已删，不留代码），`cargo test --release`：
+
+| 阶段 | release 耗时（1000 cipher） | 占比 |
+|---|---|---|
+| list_ciphers 解密全部 1000 条 | 6.0ms（中位数） | 99% |
+| filter + sort + take20 | < 0.2ms | 1% |
+| **端到端单次搜索** | **6.1ms** | — |
+
+**结论**：**P3 关闭**。1000 cipher 单次搜索 6ms，远低于体感阈值（debounce 150ms 的零头都不到）。线性外推 5000 cipher 也才 ~30ms。filter 部分（原担忧的）实测 <0.2ms 完全无关。
+
+**教训**：又犯了 P0-7 的错——凭"O(N) 解密 + N 大"的代码模式列假设，没实测。z_perf 护栏严格执行：任何性能假设先量再说。
+
+**真正的优化方向（如果未来需要）**：vault 解锁后 cipher 列表不变，可缓存解密结果（搜索时无需重复解密）。但这是优化不是当前问题，6ms 无需优化。
+
+### 2026-07-22 cipher 编辑器 reprompt + 删除确认 + 回收站操作
+
+2026-07-22 e2e 验收（场景 3 reprompt 跳过、场景 6 部分通过）后，补齐 CipherEditor（Settings 完整编辑器）三个可用性缺口：reprompt 选项前端控件缺失、删除无二次确认、回收站是死胡同（只能进不能还原/清空）。
+
+#### 需求说明
+
+1. **reprompt 选项**：reprompt 数据层全链路已通（DB schema v38 `reprompt` 字段 / DTO / domain `RepromptType` / 后端 `vault_autotype`、`vault_copy_password` 强制校验主密码 INV-A7），但 Settings 完整编辑器 CipherEditor **没有勾选控件**——用户无法把某条 cipher 标记为高敏感。本次只补前端控件。VaultPicker 极简新建表单（CreateCipherView 4 字段）不加——快速录入 vs 完整编辑器分工。
+2. **删除二次确认**：CipherEditor 底部「删除」按钮（首次软删 `permanent=false`）直接执行无确认，误点即丢。加 Tauri `confirm` 弹窗。永久删除（从回收站操作）不走这里，无需确认。
+3. **回收站操作**（之前是死胡同）：软删后 cipher 进回收站，但 CipherList 回收站模式下卡片是只读的——不能还原、不能永久删除、不能清空，只能逐条点进去。改为：每条卡片右侧加「还原」+「永久删除」按钮，顶部「添加」按钮在回收站模式替换为「全部清空」。回收站操作无需二次确认（用户已在回收站，意图明确）。
+
+#### 改动清单
+
+**后端**（`crates/desktop/src/vault_commands.rs` + `crates/vault/src/storage/cipher.rs` + `crates/infra/src/db.rs`）：
+- 新增 `vault_empty_trash` Tauri 命令——批量永久删所有 `deleted_at IS NOT NULL` 的 cipher，单条失败不中断，返回 `(deleted_count, failed_count)`，前端 toast 提示。
+- 新增 `storage::empty_trash`——逐条调 `permanent_delete`（走同一删除路径便于未来加审计），收集 errors 返回。
+- 新增 `db::list_trash_cipher_ids`——轻量查询 `SELECT id FROM vault_ciphers WHERE deleted_at IS NOT NULL`，不解密不读字段。
+
+**前端 CipherEditor**（`crates/desktop/frontend/src/pages/Settings/Vault/CipherEditor.tsx`）：
+- reprompt Toggle 控件：`Toggle` + label + hint，勾选 → `reprompt ? 1 : 0` 写入 `CipherInputDto.reprompt`。load 时 `setReprompt(c.reprompt === 1)`。
+- 删除二次确认：`handleDelete(permanent)` 内 `!permanent` 分支调 `confirm()`，标题「删除密码条目」，文案「将「${name}」移到回收站？可从回收站还原。」（i18n 插值用 `${name}` 语法）。
+
+**前端 CipherList**（`crates/desktop/frontend/src/pages/Settings/Vault/CipherList.tsx`）：
+- 回收站卡片结构：`isTrash` 时渲染 `<div>` 外壳（非 `<button>`）+ 右侧两个图标按钮——还原（`RotateCcw`，调 `vault_restore_cipher`）/ 永久删除（`Trash2`，调 `vault_delete_cipher permanent=true`）。
+- 顶部按钮切换：`selected === "trash"` 时「全部清空」（`destructive-ghost`，调 `vault_empty_trash`）替换「添加」。
+- 三个 handler：`handleRestore` / `handlePermanentDelete` / `handleEmptyTrash`，均无 confirm（回收站意图明确）。
+
+**i18n**（`crates/desktop/frontend/src/locales/zh-CN.yaml` + `en.yaml`）：
+- `settings.vault.editor.repromptLabel` / `repromptHint` / `deleteConfirmTitle` / `deleteConfirmMessage`（带 `${name}` 插值）。
+- `settings.vault.list.permanentDelete` / `emptyTrash` / `trashEmpty` / `restored` / `permanentlyDeleted` / `trashEmptied`。
+
+#### permanent bug 修复说明
+
+CipherEditor 删除按钮原逻辑：`deletedAt` 时文案显示「永久删除」但 `onClick` 永远传 `false`（`handleDelete(false)`），导致从 CipherEditor 点「永久删除」实际只软删（而该 cipher 已在回收站，软删无效果，用户以为删了其实没删）。
+
+修复：`onClick={() => handleDelete(!!deletedAt)}`——软删态（`deletedAt === null`）传 `false`（带 confirm 弹窗，首次软删）；已删态（`deletedAt !== null`）传 `true`（真永久删，此时从 CipherEditor 点也是永久删，无 confirm——与回收站操作一致）。
+
+#### 验证结果
+
+- `cargo check -p octopus-desktop --features embedded`：0 error 0 warning
+- `npx tsc --noEmit`（crates/desktop/frontend）：0 error
+- `cargo test -p octopus-vault --lib`：257 pass
+
+#### 不在范围
+
+- VaultPicker `CreateCipherView`（极简新建表单）不加 reprompt Toggle——快速录入 4 字段场景不做高敏感标记，需要时进 Settings 完整编辑器勾选。
+

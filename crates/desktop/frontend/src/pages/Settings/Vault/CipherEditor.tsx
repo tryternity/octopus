@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import * as React from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { ArrowLeft } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
+import { Toggle } from "@/components/ui/toggle";
 import PasswordGeneratorModal from "./PasswordGeneratorModal";
 import type { CipherDto } from "./CipherList";
 import type { FolderDto } from "./folderTypes";
@@ -332,6 +334,8 @@ export default function CipherEditor({
   // follow-up #6：folder_id 状态（null = 无 folder / 根目录）
   const [folderId, setFolderId] = useState<string | null>(null);
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
+  // reprompt=1：使用此 cipher（autotype/复制密码）时强制重新验证主密码（高敏感条目）
+  const [reprompt, setReprompt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(cipherId === null); // 新建默认 loaded
 
@@ -358,6 +362,7 @@ export default function CipherEditor({
       setFavorite(c.favorite);
       setFolderId(c.folder_id);
       setDeletedAt(c.deleted_at);
+      setReprompt(c.reprompt === 1);
     } catch (e) {
       showToast(String(e));
     }
@@ -386,7 +391,7 @@ export default function CipherEditor({
         totp: totp.trim() || null,
       },
       fields: [],
-      reprompt: 0,
+      reprompt: reprompt ? 1 : 0,
     };
   }
 
@@ -411,11 +416,22 @@ export default function CipherEditor({
       setBusy(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cipherId, name, urls, username, password, totp, notes, favorite, folderId, showToast, onClose, t]);
+  }, [cipherId, name, urls, username, password, totp, notes, favorite, folderId, reprompt, showToast, onClose, t]);
 
   const handleDelete = useCallback(
     async (permanent: boolean) => {
       if (cipherId === null) return;
+      // 首次软删（正常 → 回收站）需要二次确认；永久删从回收站操作（走 CipherList 按钮无需确认）
+      if (!permanent) {
+        const ok = await confirm(
+          t("settings.vault.editor.deleteConfirmMessage", { name }),
+          {
+            title: t("settings.vault.editor.deleteConfirmTitle"),
+            kind: "warning",
+          },
+        );
+        if (!ok) return;
+      }
       setBusy(true);
       try {
         await invoke("vault_delete_cipher", { id: cipherId, permanent });
@@ -427,7 +443,7 @@ export default function CipherEditor({
         setBusy(false);
       }
     },
-    [cipherId, onClose, showToast, t],
+    [cipherId, name, onClose, showToast, t],
   );
 
   if (!loaded) {
@@ -660,6 +676,14 @@ export default function CipherEditor({
             className="w-full min-h-[60px] resize-y"
           />
         </div>
+        {/* reprompt 开关：高敏感条目使用时强制验证主密码 */}
+        <div className="flex items-start gap-3 rounded-md border border-border/50 px-3 py-2.5">
+          <Toggle on={reprompt} onClick={() => setReprompt(!reprompt)} aria-label={t("settings.vault.editor.repromptLabel")} />
+          <div className="min-w-0 space-y-0.5">
+            <div className="text-xs font-medium text-foreground">{t("settings.vault.editor.repromptLabel")}</div>
+            <div className="text-[11px] leading-relaxed text-muted-foreground">{t("settings.vault.editor.repromptHint")}</div>
+          </div>
+        </div>
       </div>
 
       {/* 底部按钮 */}
@@ -670,7 +694,7 @@ export default function CipherEditor({
               variant="destructive-ghost"
               size="sm"
               disabled={busy}
-              onClick={() => handleDelete(false)}
+              onClick={() => handleDelete(!!deletedAt)}
             >
               {deletedAt
                 ? t("settings.vault.editor.permanentDelete")
