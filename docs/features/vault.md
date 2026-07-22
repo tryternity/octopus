@@ -188,12 +188,10 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 - md5 内容指纹（`sync_md5` 字段）做增量 diff——只 push 变化的文件
 - 跨设备密钥一致性：app_key_sync_enc 用主密码直接加密 app_key，任何设备只要知道主密码就能解
 - security_stamp 守卫：pull 时对比 stamp，不一致拒绝覆盖（防主密码改了但没同步）
-- **自动同步**（每小时）：scheduler 每 10 分钟 tick，vault_sync 任务 interval=3600 自动触发 sync_now，结果存 last_auto_sync.json（SyncPanel 展示不弹 toast）
+- **自动同步**（Phase 2，每小时）：`octopus-scheduler` 的 `vault_sync` 任务（interval=3600s），CPU 空闲时自动调 `sync_now()` 同步 vault + 热词；scheduler 每 10 分钟 tick 触发。结果存 `.sync/last_auto_sync.json`（SyncPanel 展示上次同步时间/结果，不弹 toast）
 - **stamp 冲突双向解决**：远程和本地主密码不一致时，用户选择「以远程为准」（输远程密码，用远程 meta 覆盖本地）或「以本地为准」（输本地密码，用本地 meta 覆盖远程）
 
 UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
-
-**自动同步**（Phase 2）：`octopus-scheduler` 的 `vault_sync` 任务（interval=3600s = 1 小时），CPU 空闲时自动调 `sync_now()` 同步 vault + 热词。结果存 `.sync/last_auto_sync.json`（SyncPanel 展示上次同步时间/结果，不弹 toast）。
 
 ---
 
