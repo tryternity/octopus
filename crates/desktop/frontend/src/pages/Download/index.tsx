@@ -49,6 +49,7 @@ export default function DownloadPage() {
   const [models, setModels] = useState<ModelState[]>([]);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
 
   // 加载缺失的 builtin 模型列表
@@ -66,7 +67,7 @@ export default function DownloadPage() {
         setLoading(false);
       })
       .catch((e) => {
-        console.error("check_builtin_models failed", e);
+        setLoadError(String(e));
         setLoading(false);
       });
   }, []);
@@ -167,6 +168,20 @@ export default function DownloadPage() {
       <div className="flex items-center justify-center h-screen text-muted-foreground text-sm">
         <Loader2 className="w-4 h-4 animate-spin mr-2" />
         正在检查…
+      </div>
+    );
+  }
+
+  // 加载失败（DB 查询失败）—— 不显示「已就绪」，显示错误 + 进入系统
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen gap-3 px-8 text-center">
+        <AlertCircle className="w-8 h-8 text-destructive" />
+        <span className="text-sm text-destructive/80">{loadError}</span>
+        <span className="text-xs text-muted-foreground/60">无法检查内置模型状态，可稍后在「系统设置 → 模型管理」重试</span>
+        <Button variant="primary" size="sm" onClick={handleEnter}>
+          进入系统
+        </Button>
       </div>
     );
   }

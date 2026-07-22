@@ -8,6 +8,8 @@
 //!
 //! 下载完成后 `download_model` 自动 `set_model_available(name, true)`，引擎即用。
 
+use std::sync::OnceLock;
+
 use serde::Serialize;
 
 /// 单个 builtin 模型的检测信息（供前端下载页展示）。
@@ -47,17 +49,15 @@ fn check_builtin_ready(source: &str, secret_key: &str) -> bool {
 ///
 /// 启动时调一次（sync_builtin_models_availability 和 check_builtin_models_missing 共享结果）。
 /// 返回缺失的 builtin 模型信息列表（空 = 全部就绪）。
-fn check_and_sync_builtins() -> Vec<BuiltinModelInfo> {
-    let builtins = match octopus_infra::db::list_builtin_models() {
-        Ok(rows) => rows,
-        Err(e) => {
-            // DB 失败 → 返回空（保守不阻断启动），但日志区分「查询失败」与「全部就绪」
-            log::warn!("[builtin_models] 查询 builtin 模型失败（保守跳过下载页）: {e}");
-            return Vec::new();
-        }
-    };
+/// DB 查询失败时返回 Err（供调用方区分「就绪」与「查询失败」）。
+fn check_and_sync_builtins() -> Result<Vec<BuiltinModelInfo>, String> {
+    let builtins = octopus_infra::db::list_builtin_models()
+        .map_err(|e| {
+            log::warn!("[builtin_models] 查询 builtin 模型失败: {e}");
+            format!("查询内置模型失败: {e}")
+        })?;
 
-    builtins
+    let missing = builtins
         .into_iter()
         .filter_map(|r| {
             let ready = check_builtin_ready(&r.source, &r.secret_key);
@@ -85,22 +85,37 @@ fn check_and_sync_builtins() -> Vec<BuiltinModelInfo> {
                 })
             }
         })
-        .collect()
+        .collect();
+    Ok(missing)
 }
+
+/// 启动阶段缓存：sync_builtin_models_availability 算一次并缓存，
+/// check_builtin_models_missing（同一启动周期内）直接读缓存，避免重复 sha256。
+/// check_builtin_models（Tauri 命令，下载页 invoke）不走缓存——用户可能在下载页
+/// 操作后状态已变，需实时查询。
+static STARTUP_CACHE: OnceLock<Vec<BuiltinModelInfo>> = OnceLock::new();
 
 /// 启动时同步 builtin 模型的 is_available 状态（完整性校验）。
-/// 在 preheat/load_active_engine 之前调用。结果丢弃（check_builtin_models_missing 会再调一次，开销可忽略）。
+/// 在 preheat/load_active_engine 之前调用。结果缓存供 check_builtin_models_missing 复用。
+/// DB 失败时保守不阻断（缓存空列表），日志记录。
 pub fn sync_builtin_models_availability() {
-    let _ = check_and_sync_builtins();
+    let result = check_and_sync_builtins().unwrap_or_else(|e| {
+        log::warn!("[builtin_models] sync 失败（保守跳过，不阻断启动）: {e}");
+        Vec::new()
+    });
+    let _ = STARTUP_CACHE.set(result);
 }
 
-/// 返回缺失的 builtin 模型列表（供下载页展示 + setup 判断是否弹窗）。
+/// 返回缺失的 builtin 模型列表（供 setup 判断是否弹窗）。
+/// 读启动缓存（sync_builtin_models_availability 已计算），不重复 sha256。
 pub fn check_builtin_models_missing() -> Vec<BuiltinModelInfo> {
-    check_and_sync_builtins()
+    STARTUP_CACHE.get().cloned().unwrap_or_default()
 }
 
 /// Tauri 命令：返回缺失的 builtin 模型列表（供下载页 load）。
+/// 不走启动缓存——下载页打开时可能文件状态已变（如用户刚点了下载），需实时查询。
+/// DB 查询失败时返回 Err（前端 catch 显示错误，而非误报「已就绪」）。
 #[tauri::command]
-pub fn check_builtin_models() -> Vec<BuiltinModelInfo> {
-    check_builtin_models_missing()
+pub fn check_builtin_models() -> Result<Vec<BuiltinModelInfo>, String> {
+    check_and_sync_builtins()
 }

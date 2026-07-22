@@ -5,7 +5,7 @@
 //!
 //! 详见 spec `docs/superpowers/specs/2026-07-22-builtin-models.md §3.2。
 //! 启动时 main.rs setup 检测 builtin 缺失 → [`create_download_window`]。
-//! 用户点「后台下载」/「稍后下载」→ 前端 close 窗口，主窗口（action_bar）正常使用。
+//! 用户点「下载并进入系统」/「稍后下载」→ 前端 close 窗口，主窗口（action_bar）正常使用。
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
