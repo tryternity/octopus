@@ -114,7 +114,8 @@ export default function DownloadPage() {
   const allDone = models.length > 0 && models.every((m) => m.status === "done");
   const hasError = models.some((m) => m.status === "error");
 
-  // 后台下载所有缺失模型（串行，复用 model_commands::download_model）
+  // 下载所有缺失模型（串行，复用 model_commands::download_model）
+  // 全部完成后自动进入系统（关闭下载窗）。
   // 全部完成后自动进入系统（关闭下载窗）。
   const handleDownloadAll = async () => {
     setDownloading(true);
@@ -190,7 +191,7 @@ export default function DownloadPage() {
         <h1 className="text-base font-semibold tracking-tight">需要下载内置模型</h1>
         <p className="text-xs text-muted-foreground/70 mt-1 leading-relaxed">
           语音识别的兜底引擎（zipformer-small）未随应用打包，需联网下载约 27 MB。
-          下载完成后即可离线使用。可后台下载，不阻塞使用。
+          下载完成后即可离线使用。下载期间无法使用语音识别，完成后自动进入系统。
         </p>
       </header>
 
@@ -239,7 +240,7 @@ export default function DownloadPage() {
             ) : (
               <>
                 <Download />
-                后台下载并进入系统
+                下载并进入系统
               </>
             )}
           </Button>
