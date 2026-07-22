@@ -116,6 +116,12 @@ pub fn run() {
         log::error!("DB init failed: {}, storage disabled", e);
     }
 
+    // Builtin 模型 is_available 同步（必须在 preheat/load_active_engine 之前）：
+    // builtin 兜底引擎的 is_available 反映文件真实状态。ensure_builtin_seed 注入时
+    // is_available=0，若文件已存在需置 1，否则 resolve_engine_any（要求 is_available=1）
+    // 查不到 → ASR 报 Unknown engine。详见 spec 2026-07-22-builtin-models.md §3。
+    builtin_models::sync_builtin_models_availability();
+
     // Task 2 模型激活语义重构：启动时加载 4 域激活引擎到 ACTIVE_ENGINES 内存缓存。
     // 后续所有使用方（推理 / tray / 管理页 / 流式判定）经 resolve_active_engine(domain)
     // 纯读此缓存。ASR 域带兜底（zipformer-small-ctc），其余域无激活仅告警不阻断。
@@ -779,9 +785,8 @@ pub fn run() {
             }
 
             // Builtin 模型缺失检测（spec 2026-07-22-builtin-models.md §3）：
-            // 首次启动或模型文件被删时，弹下载窗让用户下载兜底 ASR 引擎。
-            // 不阻断主窗口创建——下载窗与 action_bar 并存，用户可先下载再进系统，
-            // 或选「稍后下载」直接用（ASR 无兜底引擎，激活时报错）。
+            // is_available 同步已在顶层 preheat 前完成（sync_builtin_models_availability）。
+            // 此处仅检测缺失 → 弹下载窗（需要 app.handle，所以放 setup 钩子）。
             let missing = builtin_models::check_builtin_models_missing();
             if !missing.is_empty() {
                 log::info!(
@@ -790,6 +795,8 @@ pub fn run() {
                     missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>()
                 );
                 download_window::create_download_window(app.handle());
+            } else {
+                log::info!("[startup] builtin 模型全部就绪");
             }
 
             // Create + register action bar window (AI command palette)

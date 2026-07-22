@@ -51,6 +51,40 @@ pub fn check_builtin_models_missing() -> Vec<BuiltinModelInfo> {
         .collect()
 }
 
+/// 同步 builtin 模型的 is_available 状态：文件就绪 → 置 1，缺失 → 置 0。
+///
+/// builtin 兜底引擎的 is_available 反映本地文件是否就绪（与其他 local 模型一致）。
+/// 启动时调一次，确保 DB 状态与文件系统一致（如用户手动删了模型文件，
+/// 下次启动 is_available 回 0 → check_builtin_models_missing 会弹下载窗）。
+///
+/// 文件已就绪但 is_available=0 的情况（如首次 ensure_builtin_seed 注入后文件恰好在）：
+/// 此函数置 1，让 resolve_engine_any 能查到（它要求 is_available=1）。
+pub fn sync_builtin_models_availability() {
+    let builtins = match octopus_infra::db::list_builtin_models() {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("[builtin_models] sync availability 查询失败: {e}");
+            return;
+        }
+    };
+
+    for r in &builtins {
+        let file_ready = octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
+        if file_ready != r.is_available {
+            log::info!(
+                "[builtin_models] {} is_available {} → {}（文件{}）",
+                r.model_name,
+                r.is_available as i32,
+                file_ready as i32,
+                if file_ready { "就绪" } else { "缺失" }
+            );
+            if let Err(e) = octopus_infra::db::set_model_available(&r.model_name, file_ready) {
+                log::warn!("[builtin_models] set_model_available({}) 失败: {e}", r.model_name);
+            }
+        }
+    }
+}
+
 /// Tauri 命令：返回缺失的 builtin 模型列表（供下载页 load）。
 ///
 /// 前端用法：`invoke("check_builtin_models")` → BuiltinModelInfo[]
