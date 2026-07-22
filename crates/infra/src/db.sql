@@ -43,7 +43,9 @@ VALUES
     ('asr','local','firered','firered-asr2','asr/firered-asr2','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
     ('asr','local','whisper','whisper-small','asr/whisper-small','en','whisper-small.en, 372M',1,0,0),
     ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
-    ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1);
+    ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1),
+    -- builtin 兜底引擎（source_type=0，27M，首次启动下载；spec 2026-07-22-builtin-models.md §1.3）
+    ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh','zipformer-small-ctc 兜底引擎（27M，内置，首次启动下载）',0,0,1);
 
 -- ── 云端模型（source_type=2）不再 seed，由用户自行添加 ──
 -- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。

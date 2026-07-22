@@ -221,7 +221,42 @@ pub fn ensure_db() -> Result<()> {
     )
     .context("set WAL + busy_timeout")?;
     init_schema(&conn)?;
+    // builtin seed 幂等兜底：即使 schema 已是 v48（如迁移时代码旧未注入 builtin 行），
+    // 每次启动 INSERT OR IGNORE 确保兜底引擎行存在。详见 spec 2026-07-22-builtin-models.md §3。
+    ensure_builtin_seed(&conn)?;
     let _ = DB.set(parking_lot::ReentrantMutex::new(conn));
+    Ok(())
+}
+
+/// 幂等注入 builtin 兜底引擎 seed 行 + 填充 manifest。
+///
+/// migrate_v47_to_v48 在迁移时已调，但为防止「迁移时代码不完整导致漏注入」的历史库，
+/// ensure_db 每次启动都跑（INSERT OR IGNORE 幂等，UNIQUE 约束保证不重复）。
+/// v48+ 库仅多一次轻量 INSERT 判定 + 可能的 manifest UPDATE，开销可忽略。
+fn ensure_builtin_seed(conn: &Connection) -> Result<()> {
+    let has_models = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='models'")?
+        .exists([])?;
+    if !has_models {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
+         VALUES ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh',
+                 'zipformer-small-ctc 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
+        [],
+    )?;
+    // 若 builtin 行 secret_key 为空，填 manifest（首次或迁移漏填时）
+    let needs_manifest: bool = conn
+        .query_row(
+            "SELECT secret_key = '' OR secret_key IS NULL FROM models WHERE model_name='zipformer-small-ctc'",
+            [], |r| r.get::<_, i32>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false);
+    if needs_manifest {
+        fill_manifests(conn)?;
+    }
     Ok(())
 }
 
@@ -323,8 +358,24 @@ fn migrate_v47_to_v48(conn: &Connection) -> Result<()> {
             log::info!("schema v48: models.is_local → source_type (0→2 cloud, 1→1 local)");
         }
     }
+    // 注入 builtin 兜底引擎 seed 行（source_type=0）——老库没有这行（v47 前硬编码）。
+    // 仅当 models 表存在时执行（测试库可能只有 hotword_sets 等部分表）。
+    // INSERT OR IGNORE 幂等（UNIQUE(domain, provider, category, model_name) 约束）。
+    let has_models = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='models'")?
+        .exists([])?;
+    if has_models {
+        conn.execute(
+            "INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
+             VALUES ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh',
+                     'zipformer-small-ctc 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
+            [],
+        )?;
+        // 为 builtin + local 模型填充 manifest（含新增的 zipformer-small-ctc）
+        fill_manifests(conn)?;
+    }
     conn.execute("PRAGMA user_version = 48", [])?;
-    log::info!("schema upgraded to v48 (models.source_type)");
+    log::info!("schema upgraded to v48 (models.source_type + builtin seed)");
     Ok(())
 }
 
@@ -1121,6 +1172,37 @@ pub fn list_local_models_by_domain(domain: &str) -> Result<Vec<LocalAsrModelRow>
              FROM models WHERE domain=?1 AND source_type IN (0,1)",
         )?;
         let rows = stmt.query_map(params![domain], |row| {
+            Ok(LocalAsrModelRow {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                model_name: row.get(2)?,
+                source: row.get(3)?,
+                secret_key: row.get(4)?,
+                description: row.get(5)?,
+                is_enabled: row.get::<_, i32>(6)? != 0,
+                is_available: row.get::<_, i32>(7)? != 0,
+                is_streaming: row.get::<_, i32>(8)? != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 列出所有 builtin 模型（source_type=0，跨 domain）。
+///
+/// 供 desktop 启动时检测 builtin 模型文件是否缺失（首次启动下载场景）。
+/// 返回 LocalAsrModelRow（复用现有行 struct，含 source/model_name/secret_key 等）。
+pub fn list_builtin_models() -> Result<Vec<LocalAsrModelRow>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, category, model_name, source, secret_key, description, is_enabled, is_available, is_streaming
+             FROM models WHERE source_type = 0",
+        )?;
+        let rows = stmt.query_map([], |row| {
             Ok(LocalAsrModelRow {
                 id: row.get(0)?,
                 category: row.get(1)?,
@@ -4070,6 +4152,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(local_st, 1, "local 模型 is_local=1 应迁移为 source_type=1");
+
+        // 验证 builtin 兜底引擎 seed 行被注入（source_type=0）
+        let builtin_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE model_name='zipformer-small-ctc' AND source_type=0",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(builtin_count, 1, "v48 迁移应注入 zipformer-small-ctc builtin seed 行");
+
+        // 验证 manifest 已填充（secret_key 非空——fill_manifests 覆盖 source_type IN (0,1)）
+        let manifest: String = conn
+            .query_row(
+                "SELECT secret_key FROM models WHERE model_name='zipformer-small-ctc'",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!manifest.is_empty(), "builtin 模型的 manifest (secret_key) 应被 fill_manifests 填充");
+        assert!(manifest.contains("model.int8.onnx"), "manifest 应含 model.int8.onnx 文件条目");
     }
 
     #[test]
@@ -4898,8 +4999,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // v31: 13 local ASR only (cloud models removed from seed)
-        assert_eq!(count, 13);
+        // v48: 13 local ASR + 1 builtin (zipformer-small-ctc) = 14
+        assert_eq!(count, 14);
     }
 
     #[test]
@@ -5034,10 +5135,10 @@ mod tests {
         let names: Vec<&str> = rows.iter().map(|r| r.model_name.as_str()).collect();
         assert!(names.contains(&"paraformer-streaming"), "未过滤 is_enabled=0");
         assert!(rows.iter().any(|r| !r.is_enabled), "应含未就绪模型");
-        // c796cbc 后兜底 zipformer-small-ctc 移出 seed，本地模型 source 全是 HF repo id；
-        // 验证列出全部 13 条本地 ASR，无 models/ 开头的随包行
-        assert_eq!(rows.len(), 13, "本地 ASR 清单应含 13 条");
-        assert!(rows.iter().all(|r| r.source.contains('/')), "本地 source 均为 HF repo id 形式");
+        // v48 后含 1 条 builtin（zipformer-small-ctc, source_type=0）+ 13 条 local = 14 条
+        assert_eq!(rows.len(), 14, "本地 ASR 清单应含 14 条（13 local + 1 builtin）");
+        // builtin 兜底引擎 source 是 'models/zipformer'（随包路径），local 是 HF repo id
+        assert!(names.contains(&"zipformer-small-ctc"), "应含 builtin 兜底引擎");
     }
 
     #[test]
@@ -6017,8 +6118,12 @@ mod tests {
         fill_manifests(&conn).unwrap();
 
         let asr_rows = list_all_local_asr_models_at(&conn).unwrap();
-        assert!(asr_rows.iter().all(|r| r.source.starts_with("asr/")),
-            "ASR models source 应以 asr/ 开头");
+        // v48: 含 1 条 builtin（zipformer-small-ctc, source='models/zipformer'），
+        // 其余 local 的 source 以 asr/ 开头
+        assert!(asr_rows.iter().all(|r| r.source.contains('/')),
+            "ASR models source 应为路径形式（含 /）");
+        assert!(asr_rows.iter().any(|r| r.model_name == "zipformer-small-ctc"),
+            "应含 builtin 兜底引擎");
 
         // 用新函数查 translate
         let translate_rows: Vec<LocalAsrModelRow> = {

@@ -262,7 +262,7 @@ docs/
 
 ```
 ~/.octopus/
-├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets 等表，schema v46）
+├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets 等表，schema v48）
 ├── config.yaml         # 应用配置（缺失用默认值）
 ├── VOICE_POLISH.md     # 自定义润色 prompt（可选，覆盖内置默认）
 ├── .sync/              # git 同步仓库根（GitHub/Gitee private repo 的本地 clone）
@@ -271,7 +271,7 @@ docs/
 │   └── hotword/        # 热词数据（明文）：outline.json + sets/<2hex>/<uuid>.json
 └── models/
     ├── silero_vad_v4.onnx   # VAD（固定路径，不进 DB）
-    └── zipformer/           # 默认 ASR（兜底引擎，27M）
+    └── zipformer/           # 默认 ASR（兜底引擎 zipformer-small-ctc，27M，source_type=0 builtin，首次启动下载）
 
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存
 ```

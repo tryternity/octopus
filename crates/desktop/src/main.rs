@@ -55,6 +55,8 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod model_migrate;
+mod builtin_models;
+mod download_window;
 mod search_commands;
 mod hotword_commands;
 mod input_source;
@@ -282,6 +284,8 @@ pub fn run() {
             settings_commands::delete_env_var_cmd,
             model_commands::list_downloadable_models,
             model_commands::download_model,
+            builtin_models::check_builtin_models,
+            download_window::close_download_window,
             model_commands::verify_model,
             model_commands::delete_model,
             model_commands::set_download_mirror,
@@ -772,6 +776,20 @@ pub fn run() {
                 if let Err(e) = screenshot_commands::register_screenshot_shortcut(app.handle(), &config.screenshot_shortcut) {
                     log::error!("Failed to register screenshot shortcut: {}", e);
                 }
+            }
+
+            // Builtin 模型缺失检测（spec 2026-07-22-builtin-models.md §3）：
+            // 首次启动或模型文件被删时，弹下载窗让用户下载兜底 ASR 引擎。
+            // 不阻断主窗口创建——下载窗与 action_bar 并存，用户可先下载再进系统，
+            // 或选「稍后下载」直接用（ASR 无兜底引擎，激活时报错）。
+            let missing = builtin_models::check_builtin_models_missing();
+            if !missing.is_empty() {
+                log::info!(
+                    "[startup] builtin 模型缺失（{} 个），打开下载页: {:?}",
+                    missing.len(),
+                    missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>()
+                );
+                download_window::create_download_window(app.handle());
             }
 
             // Create + register action bar window (AI command palette)

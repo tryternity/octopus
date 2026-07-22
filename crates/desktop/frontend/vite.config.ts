@@ -41,6 +41,7 @@ const config = {
         overlay: "overlay.html",
         "vault-picker": "vault-picker.html",
         "password-generator": "password-generator.html",
+        download: "download.html",
       },
     },
   },

@@ -84,40 +84,57 @@
 
 ---
 
-## Step 3：zipformer builtin 入 DB + 自动下载页
+## Step 3：zipformer builtin 入 DB + 自动下载页 ✅ 已完成
 
-### Task 3.1：zipformer builtin 入 DB
-**文件**: `crates/infra/src/db.sql` + `model_manifests.rs`
-- [ ] db.sql seed 加 zipformer-small-ctc 行（source_type=0）
-- [ ] model_manifests.rs 加 zipformer-small-ctc manifest（HF repo + sha256）
-- [ ] fill_manifests 覆盖 source_type=0
+### Task 3.1：zipformer builtin 入 DB ✅
+**文件**: `crates/infra/src/db.sql` + `model_manifests.rs` + `db.rs`
+- [x] db.sql seed 加 zipformer-small-ctc 行（source_type=0, source='models/zipformer'）
+- [x] model_manifests.rs 加 ZIPFORMER_SMALL_CTC 常量（3 文件：bbpe.model + model.int8.onnx + tokens.txt，27M）
+  - HF repo: `csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01`
+  - sha256 + size 由本地 ~/.octopus/models/zipformer/ 实际文件计算
+- [x] asr_manifest match 加 "zipformer-small-ctc" 分支
+- [x] fill_manifests 已覆盖 source_type IN (0,1)（Step 2 改的 SQL，builtin 自动包含）
+- [x] migrate_v47_to_v48 内 INSERT builtin seed + fill_manifests
+- [x] **ensure_builtin_seed() 兜底**（ensure_db 每次启动跑 INSERT OR IGNORE）——
+  修复「迁移时代码不完整导致漏注入」的历史库幂等性问题
 
-### Task 3.2：ensure_builtin_models() + 下载命令
-**文件**: `crates/desktop/src/builtin_models.rs`（新建）
-- [ ] 查 DB source_type=0 → 检查本地文件 → 返回缺失列表
-- [ ] `download_builtin_model(name)` 命令：HfRequest + resolve_tasks + Downloader + 进度 emit
-- [ ] `check_builtin_models()` 命令：返回缺失列表
+### Task 3.2：缺失检测 + 下载命令 ✅
+**文件**: `crates/infra/src/db.rs`（list_builtin_models）+ `crates/desktop/src/builtin_models.rs`（新建）
+- [x] infra: `list_builtin_models()` 查 source_type=0（跨 domain）
+- [x] desktop: `check_builtin_models_missing()` — 查 DB + resolve_model_dir 检测缺失
+- [x] `check_builtin_models` Tauri 命令 — 返回 BuiltinModelInfo[] 给下载页
+- [x] **下载复用 model_commands::download_model**（不新建独立下载逻辑——builtin 模型已在 DB，
+  download_model 按 source 查 manifest → 下载 → set_model_available）
 
-### Task 3.3：下载页 UI
-**文件**: 前端新建 `pages/BuiltinDownload/` 或主窗口启动路由
-- [ ] 缺失 builtin 模型列表 + 大小
-- [ ] 「后台下载并进入系统」/「稍后下载」按钮
-- [ ] 下载进度（listen 后台 emit）
-- [ ] 下载完成 → set_model_available + 通知
+### Task 3.3：下载页 UI ✅
+**文件**: 前端新建 download.html + entries/download-main.tsx + pages/Download/index.tsx
+- [x] vite.config.ts input 加 "download": "download.html"
+- [x] download_window.rs（新建）：WebviewWindowBuilder 520×460，单例管理，close_download_window 命令
+- [x] capabilities/default.json windows 数组加 "download_window"
+- [x] DownloadPage 组件（frontend-design skill 指导，克制功能性风格）：
+  - 标题区：说明 + 27M 提示
+  - ModelCard：状态色条（pending/downloading/done/error）+ 进度条（复用 ModelRow 样式）
+  - 底部：「稍后下载」+「后台下载并进入系统」+ 下载中显示「进入系统」
+  - listen download-progress / download-done 更新卡片状态
 
-### Task 3.4：desktop setup 集成
+### Task 3.4：desktop setup 集成 ✅
 **文件**: `crates/desktop/src/main.rs`
-- [ ] setup 里 ensure_db 之后调 check_builtin_models
-- [ ] 缺失 → 前端路由到下载页
+- [x] setup 钩子里 action_bar_window 创建之前调 check_builtin_models_missing
+- [x] 缺失 → create_download_window（不阻断主窗口创建，并存模式）
+- [x] generate_handler! 注册 check_builtin_models + close_download_window
+- [x] mod 声明加 builtin_models + download_window
 
-### Task 3.5：验证
-- [ ] 删 zipformer → 启动 → 下载页 → 点下载 → 进系统 → 后台下载完成 → ASR 可用
-- [ ] 文件已存在 → 直接进系统
-- [ ] 选「稍后下载」→ 进系统（ASR 无兜底）
+### Task 3.5：验证 ✅
+- [x] cargo build --workspace 0 error 0 warning
+- [x] cargo test -p octopus-infra：159 pass（含 v48 迁移 + builtin seed 测试）
+- [x] cargo test -p octopus-desktop --bins：394 pass
+- [x] tsc 0 error + vite build 成功（download.html 产物生成）
+- [x] DB 验证：cli 触发 ensure_db → builtin seed 注入（source_type=0, manifest 填充）
+- [ ] e2e（待用户验证）：删 zipformer 目录 → 启动 → 下载窗弹出 → 下载 → ASR 可用
 
 ---
 
 ## 文档同步
-- [ ] AGENTS.md 运行时文件布局
-- [ ] architecture.md source_type + builtin 模型说明
-- [ ] features/ 相关章节更新
+- [x] architecture.md：models 表 source_type 描述 + builtin 模型机制
+- [x] plan 文档：Step 2/3 全部 Task 标记完成 + 实际偏差记录
+- [ ] AGENTS.md 运行时文件布局（schema v47→v48）+ features/ 相关章节（后续 z-sync-superpowers）
