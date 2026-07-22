@@ -33,6 +33,14 @@ interface DownloadableModel {
   is_enabled: boolean;
 }
 
+/** verify_model 返回的校验结果。ok=false 时 broken_files 含损坏/缺失文件列表。 */
+interface VerifyResult {
+  ok: boolean;
+  bootstrapped: boolean;
+  broken_files: string[];
+  message: string;
+}
+
 interface DownloadProgress {
   repo: string;
   downloaded: number;
@@ -119,7 +127,16 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const onVerify = async (repo: string, name: string) => {
     if (busyRepo) return;
     setBusyRepo(repo);
-    try { await invoke("verify_model", { repo, modelName: name }); showToast(t("settings.models.verifyComplete")); load(); }
+    try {
+      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
+      if (result.ok) {
+        showToast(result.message || t("settings.models.verifyComplete"));
+      } else {
+        // 校验失败（文件损坏/缺失）→ is_available 置 0，load 后显示下载按钮
+        showToast(result.message || t("settings.models.verifyFailed"));
+      }
+      load();
+    }
     catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
   };

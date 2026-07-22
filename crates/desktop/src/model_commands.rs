@@ -113,8 +113,9 @@ pub async fn download_model(
     _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
-    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ 置 true，不重下。
-    //    secret_key 非空时保留原值（含预填下载源）；空才 bootstrap 生成校验清单。
+    // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache、或软链）→ 校验完整性后置 true。
+    //    secret_key 非空时校验 manifest sha256——损坏/缺失的文件走重新下载（fall through）。
+    //    secret_key 为空时 bootstrap 生成校验清单。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
         let existing_key = current_secret_key_for_source(&repo);
         if existing_key.is_empty() {
@@ -125,15 +126,33 @@ pub async fn download_model(
                 .map_err(|e| format!("bootstrap 任务异常: {}", e))?
                 .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
             apply_model_state(&repo_clone, Some(&manifest), true)?;
-        } else {
-            // 已有 manifest → 只置 is_enabled=true，保留原 secret_key
-            apply_model_state(&repo, None, true)?;
+            let _ = app_handle.emit(
+                "download-done",
+                serde_json::json!({ "repo": &repo, "already_ready": true }),
+            );
+            return Ok(());
         }
-        let _ = app_handle.emit(
-            "download-done",
-            serde_json::json!({ "repo": &repo, "already_ready": true }),
-        );
-        return Ok(());
+        // 有 manifest → 校验所有文件 sha256
+        let dir_clone = dir.clone();
+        let key_clone = existing_key.clone();
+        let broken = tokio::task::spawn_blocking(move || {
+            let manifest: Manifest = serde_json::from_str(&key_clone)
+                .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+            Ok::<Vec<String>, String>(octopus_asr_local::manifest::verify_against_manifest(&dir_clone, &manifest))
+        })
+        .await
+        .map_err(|e| format!("校验任务异常: {}", e))??;
+        if broken.is_empty() {
+            // 全部文件完好 → 置可用
+            apply_model_state(&repo, None, true)?;
+            let _ = app_handle.emit(
+                "download-done",
+                serde_json::json!({ "repo": &repo, "already_ready": true }),
+            );
+            return Ok(());
+        }
+        // 有损坏/缺失文件 → 记日志，fall through 到下载流程（逐文件重下）
+        log::info!("[download_model] {} 有 {} 个文件损坏/缺失，重新下载: {:?}", repo, broken.len(), broken);
     }
 
     // 2. 未命中：读 DB manifest，逐文件按 source URL 下载。
