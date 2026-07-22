@@ -132,7 +132,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
       {currentLabel && <CurrentBanner label={currentLabel} />}
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {rows.map((m) => (
-          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
+          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}

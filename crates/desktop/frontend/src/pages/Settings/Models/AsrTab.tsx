@@ -186,7 +186,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
 
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
-          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
+          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
@@ -205,7 +205,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
         {cloudRows.map((m) => {
           const engine = cloudEngines.find((e) => e.id === m.cloudId);
           return (
-          <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={!!busyRepo}
+          <ModelRow key={m.provider + ":" + m.name} model={m} progress={null} busy={busyRepo === m.repo}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => {}}
             onVerify={() => {}}

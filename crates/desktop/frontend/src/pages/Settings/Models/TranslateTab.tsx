@@ -172,7 +172,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       {currentEngineName && <CurrentBanner label={currentEngineName} />}
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
-          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={!!busyRepo}
+          <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
