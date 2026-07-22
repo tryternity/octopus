@@ -277,13 +277,28 @@ export default function SyncPanel({
         <div className="space-y-2 text-center">
           <GitBranch className="mx-auto size-8 text-muted-foreground/50" />
           <h3 className="text-sm font-medium">{t("settings.vault.sync.title")}</h3>
-          <p className="text-xs text-muted-foreground">
-            {t("settings.vault.sync.sshHint")}
+        </div>
+
+        {/* 功能说明 */}
+        <div className="space-y-2 rounded-lg border border-border/50 bg-muted/30 p-4">
+          <p className="text-xs text-foreground/80">
+            {t("settings.vault.sync.introWhat")}
+          </p>
+          <ul className="space-y-1 text-[11px] text-muted-foreground">
+            <li>• {t("settings.vault.sync.introItem1")}</li>
+            <li>• {t("settings.vault.sync.introItem2")}</li>
+            <li>• {t("settings.vault.sync.introItem3")}</li>
+          </ul>
+          <p className="text-[11px] text-muted-foreground/70">
+            {t("settings.vault.sync.introPrereq")}
           </p>
         </div>
 
         {/* 首次推送（A 机） */}
         <div className="space-y-2 rounded-lg border border-border/50 p-4">
+          <p className="text-xs font-medium text-foreground">
+            {t("settings.vault.sync.firstPushTitle")}
+          </p>
           <p className="text-xs text-muted-foreground">
             {t("settings.vault.sync.firstPushDesc")}
           </p>
@@ -294,6 +309,9 @@ export default function SyncPanel({
 
         {/* 从远程克隆（B 机） */}
         <div className="space-y-2 rounded-lg border border-border/50 p-4">
+          <p className="text-xs font-medium text-foreground">
+            {t("settings.vault.sync.cloneTitle")}
+          </p>
           <p className="text-xs text-muted-foreground">
             {t("settings.vault.sync.cloneDesc")}
           </p>
@@ -346,6 +364,11 @@ export default function SyncPanel({
             </Button>
           )}
         </div>
+
+        {/* SSH 提示 */}
+        <p className="text-center text-xs text-muted-foreground/70">
+          {t("settings.vault.sync.sshHint")}
+        </p>
       </div>
     );
   }
