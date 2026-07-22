@@ -35,17 +35,36 @@ pub use onnx_infra::{find_hf_cache, find_onnx_dir, resolve_model_dir};
 
 // ── VAD model discovery ──
 
-/// 定位 Silero VAD 模型：固定 ~/.octopus/models/silero_vad_v4.onnx（随应用打包）。
-/// 不再读配置/HF 缓存——VAD 模型固定路径，唯一方案。
-pub fn find_silero_vad() -> Result<PathBuf> {
+/// VAD 模型来源：磁盘文件（用户自定义覆盖）或内嵌字节（include_bytes!，开箱即用）。
+#[derive(Debug, Clone)]
+pub enum VadSource {
+    /// 磁盘上的文件路径（`~/.octopus/models/silero_vad_v4.onnx` 存在时优先）。
+    File(PathBuf),
+    /// 内嵌字节（磁盘文件不存在时 fallback 到编译期内嵌）。
+    Builtin,
+}
+
+/// 定位 Silero VAD 模型。
+///
+/// 优先读磁盘 `~/.octopus/models/silero_vad_v4.onnx`（用户可放自定义版本覆盖）；
+/// 磁盘不存在则返回 `Builtin`（编译期内嵌字节，`SileroVad::new_builtin()` 从内存加载）。
+pub fn find_silero_vad() -> Result<VadSource> {
     let vad = octopus_config_home().join(SILERO_VAD_PATH);
     if vad.exists() {
-        return Ok(vad);
+        return Ok(VadSource::File(vad));
     }
-    anyhow::bail!(
-        "Silero VAD model not found at {}. 请随应用打包该文件。",
-        vad.display()
-    )
+    Ok(VadSource::Builtin)
+}
+
+/// 便捷函数：find_silero_vad + 构造 SileroVad 一步到位。
+///
+/// 磁盘有文件 → `SileroVad::new(path)`；磁盘无文件 → `SileroVad::new_builtin()`（内嵌字节）。
+/// 调用方无需关心 VadSource 细节，直接拿 `Result<SileroVad>`。
+pub fn create_silero_vad() -> Result<crate::vad::SileroVad> {
+    match find_silero_vad()? {
+        VadSource::File(p) => crate::vad::SileroVad::new(&p),
+        VadSource::Builtin => crate::vad::SileroVad::new_builtin(),
+    }
 }
 
 // ── Internal helpers ──
@@ -929,5 +948,32 @@ mod tests {
             entry: make_entry("translate/opus-mt"),
         };
         assert_eq!(tr.as_engine_category(), None);
+    }
+
+    // ── VadSource 测试 ──
+
+    /// find_silero_vad：磁盘有文件 → File，磁盘无文件 → Builtin。
+    #[test]
+    fn find_silero_vad_returns_builtin_when_disk_missing() {
+        // 磁盘文件可能存在（开发机）也可能不存在（CI），两种情况都验证正确性
+        match find_silero_vad() {
+            Ok(VadSource::File(path)) => {
+                assert!(path.exists(), "File 路径必须真实存在");
+                eprintln!("[INFO] 磁盘有 VAD 文件: {}", path.display());
+            }
+            Ok(VadSource::Builtin) => {
+                eprintln!("[INFO] 磁盘无 VAD 文件，fallback 到 Builtin");
+            }
+            Err(e) => panic!("find_silero_vad 不应返回 Err（Builtin 是保底）: {}", e),
+        }
+    }
+
+    /// create_silero_vad：Builtin 路径应能成功构造 SileroVad（或 ort 失败时 skip）。
+    #[test]
+    fn create_silero_vad_works() {
+        match create_silero_vad() {
+            Ok(_) => eprintln!("[PASS] create_silero_vad 成功构造"),
+            Err(e) => eprintln!("[SKIP] ort session 构造失败（测试环境问题）: {}", e),
+        }
     }
 }

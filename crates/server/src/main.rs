@@ -78,9 +78,11 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
-    let vad_path = octopus_asr_local::config::find_silero_vad()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|e| format!("error: {}", e));
+    let vad_path = match octopus_asr_local::config::find_silero_vad() {
+        Ok(octopus_asr_local::config::VadSource::File(p)) => p.display().to_string(),
+        Ok(octopus_asr_local::config::VadSource::Builtin) => "builtin (embedded)".to_string(),
+        Err(e) => format!("error: {}", e),
+    };
     Json(ModelsResponse {
         asr_engine: state.active_model.clone(),
         vad_model: vad_path,

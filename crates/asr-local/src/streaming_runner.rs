@@ -188,11 +188,9 @@ pub struct StreamingRunner {
 
 impl StreamingRunner {
     /// 构造 runner。`engine` 由调用方创建（local `StreamingSession` 或 cloud WS）。
-    /// VAD 经 `find_silero_vad` 解析模型路径，缺失则 `None`（不加标点，与现状一致）。
+    /// VAD 经 `create_silero_vad` 加载（内嵌或磁盘），失败则 `None`（不加标点）。
     pub fn new(engine: Arc<dyn StreamingEngine>, correct: bool) -> Result<Self> {
-        let mut vad = crate::config::find_silero_vad()
-            .ok()
-            .and_then(|p| SileroVad::new(&p).ok());
+        let mut vad = crate::config::create_silero_vad().ok();
         if let Some(v) = vad.as_mut() {
             preroll_vad(v);
         }

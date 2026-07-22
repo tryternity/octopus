@@ -591,7 +591,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ## 模型管理
 
-模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——设置窗口「模型管理」页（GUI）或 `octopus-cli download` 下到 `~/.octopus/models/{domain}/{name}/`，兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型（desktop 启动时 `model_migrate::create_model_symlinks` 自动创建软链——对旧 bootstrap manifest source 全空的模型回退到 `model_manifests` 预填常量取 repo 信息；`fill_manifests` 自动升级旧 manifest 补 source URL）。
+模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。VAD（silero_vad_v4.onnx 1.7MB）**内嵌二进制**（`include_bytes!` + ort `commit_from_memory`，开箱即用不读磁盘；磁盘 `~/.octopus/models/silero_vad_v4.onnx` 存在时优先用磁盘版本覆盖）；默认 ASR 兜底引擎 zipformer-small-ctc 27M（Step 3 计划自动下载）；大模型按需下载——设置窗口「模型管理」页（GUI）或 `octopus-cli download` 下到 `~/.octopus/models/{domain}/{name}/`，兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型（desktop 启动时 `model_migrate::create_model_symlinks` 自动创建软链——对旧 bootstrap manifest source 全空的模型回退到 `model_manifests` 预填常量取 repo 信息；`fill_manifests` 自动升级旧 manifest 补 source URL）。
 
 **GUI 模型管理（设置窗口页面 3，5 tab）**：`ModelsPanel` 5 tab——环境设置（环境变量编辑器，原"常量"）/语音识别/文本模型/扫描识别/翻译模型。所有 Tab 共享 `ModelRow.tsx` 组件——状态指示：绿色 ✓ = 当前激活、红色 ✓ = 已就绪可用、灰色 ⊙ = 未下载。每个模型项右侧操作按钮：下载（未下载时）、激活（已就绪非当前，已激活显示灰色）、校验（图标）、删除（`confirm()` 二次确认，删软链/目录 + `is_enabled=false`）、编辑（云端模型，铅笔图标）。名称格式 `model_name[provider]`，`local`→i18n「本地」。`CurrentBanner`（"当前使用 xxx"）在顶部显示激活模型。`CollapsibleSection` 组件可折叠。**云端模型用户自管理**（v31，无 seed）：`CloudModelForm.tsx` 弹窗——LLM 模式（provider 下拉→base_url 预填 + model_name + api_key + is_stream/is_thinking + 测试连接按钮），ASR 模式（provider→category→source 自动填 + model_name datalist 参考项 + api_key）。API Key 脱敏显示（`mask_key`：前4********后4），编辑保存空值不覆盖原 key，测试连接从 DB 取真实 key。`crates/desktop/src/model_commands.rs` 命令——
 - `list_downloadable_models(domain)`：**v3 直读 DB** `list_local_models_by_domain(domain)` + 文件系统检查（`resolve_model_dir().is_ok()` fallback，手动放置/软链的模型也显示为已就绪）。
@@ -612,8 +612,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 ├── octopus.db          # 嵌入式 SQLite（models + clipboard_history + app_config + prompts + image_data + action_bar_items + script_runs + agent_adapters 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/
-    ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载，随包）
-    ├── zipformer/           # 默认 ASR（27M，随包）
+    ├── silero_vad_v4.onnx   # VAD（1.8M，可选——磁盘存在时覆盖内嵌版本；不存在用内嵌 include_bytes!）
+    ├── zipformer/           # 默认 ASR 兜底引擎（27M，Step 3 计划自动下载）
     └── <HF repo>/           # ★ cli download 下的大模型（如 Systran/faster-whisper-large-v3/）
 
 ~/.cache/huggingface/hub/   # 旧 hf-cli 大模型缓存（兼容：resolve 第 4 级仍查此处）
@@ -702,7 +702,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **云引擎路由（`provider='aliyun'` → `AliyunEngine`，`provider='bytedance'` → 豆包流式，`provider='tencent'` → 腾讯流式，`provider='baidu'` → 百度流式）**：`resolve_active_engine("asr").as_engine_category()` 为 `Aliyun` / `ByteDance` / `Tencent` / `Baidu`（均由 `resolve_category(provider, category)` 按 provider 分支识别）。`desktop/src/main.rs` 启动时 resolve_active_engine("asr") → `Aliyun` 建 `AliyunEngine`（需开 `aliyun` feature）；`ByteDance` / `Tencent` / `Baidu` 不建独立 TranscriptionEngine（只支持流式），直接经 `is_cloud_engine` 路由到 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支）。云 ↔ 本地切换经 `switch_active_model("asr", id)` 后下次 Toggle 生效（ACTIVE_ENGINES 缓存已刷新）。
 - **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine()`（Task 2 后无参）= `resolve_active_engine("asr").entry.is_streaming && as_engine_category() != Aliyun/ByteDance/Tencent/Baidu`（seed：zipformer×2 + paraformer×4 + Qwen-ASR Realtime = 流式；whisper / sensevoice-orig / firered / qwen3-asr×2 / moonshine×2 / aliyun Fun-ASR / Paraformer / bytedance Doubao-ASR / tencent Tencent-ASR / baidu Baidu-ASR = 非流式），不再按 category 硬编码匹配。**云端引擎（Aliyun / ByteDance / Tencent / Baidu）被显式排除**——其 `is_streaming=1` 表示支持云端 WS 流式（aliyun feature），而非本地 `StreamingSession`；aliyun feature 未启用时也不会错误进本地 streaming 路径。**流式引擎内部分流**：`StreamingSession::new`（Task 2 后基于 `resolve_active_engine("asr")`，engine_spec 参数废弃保留兼容）检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`（单 session log_probs argmax），Transducer 走 `StreamingZipformerTransducer`（三 session RNN-T greedy decoding，跨 chunk 维持 `token_buf`）。**云端引擎走 `Stage::Streaming` cloud 分支（`CloudPipelineEngine`，cloud feature gated）**——Toggle 进 Idle 时 `is_cloud_engine`（检测 Aliyun / ByteDance / Tencent / Baidu）分支先于 `use_streaming` 判断并 `return`。**StreamingSession::new 失败降级**：引擎不可用时（如模型文件缺失 / category 不支持）自动降级到默认引擎 `local:zipformer:zipformer-small-ctc` 重试（warn 日志），再失败才放弃录音——避免用户选了不可用引擎后录音白白启动即失败。`run-octopus.sh` 默认启用 `--features "embedded aliyun"`，否则云端引擎不可用。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine("asr")`（带兜底），与 `is_streaming_engine` 对称——避免缓存未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
 - 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，支持 spec 格式、**不走兜底**（匹配不到直接报错）。
-- VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
+- VAD 模型内嵌二进制（`include_bytes!` + `commit_from_memory`，`find_silero_vad` 返回 `VadSource` enum：磁盘优先 → `File`，磁盘无文件 → `Builtin`），不进 DB、不读配置。
 - **手编 `models` 表 / `app_config` 表需重启进程生效**（`OnceLock` 缓存，运行中不可热更新；运行时修改走 `RuntimeConfig` + `persist_*`）。DB schema `user_version` 当前为 47（开发期简化：以 db.sql 为唯一真相，增量迁移 v17→v47 链详见上方 octopus-infra 节；schema 变更直接改 db.sql + 升 user_version，删库重初始化）。
 
 ### 云端 ASR 引擎（AliyunEngine + ByteDance 流式）

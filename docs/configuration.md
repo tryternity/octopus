@@ -434,7 +434,7 @@ system_prompt = content + "\n" + INCREMENTAL_RULE
 
 ## 模型下载
 
-随应用打包的小模型（VAD + 默认 zipformer）无需下载。其他大模型用 `huggingface-cli` 按需下载到 HF 缓存：
+VAD 模型（silero_vad_v4.onnx 1.7MB）内嵌进二进制（`include_bytes!`），无需下载。默认 ASR 兜底引擎（zipformer 27M）计划改为首次启动自动下载。其他大模型用 `huggingface-cli` 按需下载到 HF 缓存：
 
 ```bash
 # 安装 HF CLI

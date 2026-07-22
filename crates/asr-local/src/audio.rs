@@ -333,14 +333,7 @@ mod tests {
     fn segment_audio_vad_segments_in_bounds() {
         // 回归保护：pre/post speech padding 不应导致 segment 切片越界 panic。依赖真实 SileroVad
         // （无模型则 skip）；不断言具体段内容，只断言所有返回 segment 下标合法、不越界。
-        let vad_path = match crate::config::find_silero_vad() {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("[SKIP] 无 silero_vad 模型文件");
-                return;
-            }
-        };
-        let mut vad = match crate::vad::SileroVad::new(&vad_path) {
+        let mut vad = match crate::config::create_silero_vad() {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("[SKIP] SileroVad 初始化失败: {e}");
@@ -375,14 +368,7 @@ mod tests {
         // 回归：filter_speech 两端 trim（去首尾静音、保留中间），不逐帧删除（句内空洞）。
         // 依赖真实 SileroVad（无模型 skip）；不强断言非空（VAD 对纯正弦可能判静音），
         // 只验证不 panic + trim 结果长度不超输入。
-        let vad_path = match crate::config::find_silero_vad() {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("[SKIP] 无 silero_vad 模型文件");
-                return;
-            }
-        };
-        let mut vad = match crate::vad::SileroVad::new(&vad_path) {
+        let mut vad = match crate::config::create_silero_vad() {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("[SKIP] SileroVad 初始化失败: {e}");

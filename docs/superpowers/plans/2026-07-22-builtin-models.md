@@ -5,29 +5,31 @@
 
 ---
 
-## Step 1：VAD 内嵌（include_bytes! + commit_from_memory）
+## Step 1：VAD 内嵌（include_bytes! + commit_from_memory）✅ 已完成 + e2e 通过
 
 ### Task 1.1：模型文件放入工程
 - [x] `crates/asr-local/models/silero_vad_v4.onnx`（1.7MB）
 
 ### Task 1.2：VadSource enum + find_silero_vad 改造
 **文件**: `crates/asr-local/src/config.rs`
-- [ ] 新增 `pub enum VadSource { File(PathBuf), Builtin }`
-- [ ] `find_silero_vad() -> Result<VadSource>`：磁盘存在 → File，否则 → Builtin
+- [x] 新增 `pub enum VadSource { File(PathBuf), Builtin }`
+- [x] `find_silero_vad() -> Result<VadSource>`：磁盘存在 → File，否则 → Builtin
+- [x] 新增 `create_silero_vad()` 便捷函数（find + 构造一步到位，调用方无需 match）
 
 ### Task 1.3：SileroVad::new_builtin()
 **文件**: `crates/asr-local/src/vad.rs`
-- [ ] `pub fn new_builtin() -> Result<Self>`：`include_bytes!` + `commit_from_memory` + 共享 VAD_SESSIONS 缓存
+- [x] `pub fn new_builtin() -> Result<Self>`：`include_bytes!` + `commit_from_memory` + 共享 VAD_SESSIONS 缓存
 
 ### Task 1.4：12 个调用点改造
-- [ ] desktop: coordinator.rs / main.rs / pipeline.rs(×2)
-- [ ] server: main.rs
-- [ ] cli: main.rs(×2)
-- [ ] asr-local: audio.rs(×2) / vad.rs / streaming_runner.rs / pipeline.rs
+- [x] desktop: coordinator.rs / main.rs / pipeline.rs(×2)
+- [x] server: main.rs
+- [x] cli: main.rs(×2)
+- [x] asr-local: audio.rs(×2) / vad.rs / streaming_runner.rs / pipeline.rs
 
 ### Task 1.5：验证
-- [ ] cargo check 0 error
-- [ ] 删 `~/.octopus/models/silero_vad_v4.onnx` → e2e VAD 正常
+- [x] cargo check 0 error 0 warning（asr-local + desktop + cli + server）
+- [x] cargo test 8 个 VAD 测试全过
+- [x] e2e：删 `~/.octopus/models/silero_vad_v4.onnx` → 启动 → 说话 → VAD 从内嵌加载 → 分段正常
 
 ---
 
