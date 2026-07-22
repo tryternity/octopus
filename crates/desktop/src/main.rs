@@ -116,10 +116,17 @@ pub fn run() {
         log::error!("DB init failed: {}, storage disabled", e);
     }
 
-    // Builtin 模型 is_available 同步（必须在 preheat/load_active_engine 之前）：
+    // 创建模型路径软链（HF cache → ~/.octopus/models/{source}/）
+    // 必须在 sync_builtin_models_availability + preheat 之前——builtin 兜底引擎的
+    // 文件可能只在 HF cache，软链建好后 resolve_model_dir 才能命中。
+    if let Err(e) = model_migrate::create_model_symlinks() {
+        log::warn!("模型路径迁移失败（非致命）: {e:?}");
+    }
+
+    // Builtin 模型 is_available 同步（必须在 create_model_symlinks 之后、preheat 之前）：
     // builtin 兜底引擎的 is_available 反映文件真实状态。ensure_builtin_seed 注入时
-    // is_available=0，若文件已存在需置 1，否则 resolve_engine_any（要求 is_available=1）
-    // 查不到 → ASR 报 Unknown engine。详见 spec 2026-07-22-builtin-models.md §3。
+    // is_available=0，软链建好后文件就绪 → 置 1，否则 resolve_engine_any（要求
+    // is_available=1）查不到 → ASR 报 Unknown engine。详见 spec 2026-07-22-builtin-models.md §3。
     builtin_models::sync_builtin_models_availability();
 
     // Task 2 模型激活语义重构：启动时加载 4 域激活引擎到 ACTIVE_ENGINES 内存缓存。
@@ -135,10 +142,6 @@ pub fn run() {
         "Config: mode={}, asr_shortcut={}",
         config.engine_mode, config.asr_shortcut
     );
-    // 创建模型路径软链（HF cache → ~/.octopus/models/{domain}/{name}/）
-    if let Err(e) = model_migrate::create_model_symlinks() {
-        log::warn!("模型路径迁移失败（非致命）: {e:?}");
-    }
     // 初始化搜索引擎（应用索引 + 书签扫描）
     octopus_search::init_search_engine();
 
