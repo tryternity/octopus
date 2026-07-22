@@ -184,10 +184,12 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 详见 `docs/superpowers/specs/2026-07-21-vault-git-sync-design.md`。核心机制：
 
 - 用 git repo（GitHub/Gitee private repo）同步，shell out 系统 git，SSH key 认证
-- `~/.octopus/.sync/vault/` 目录：meta.json + outline.json（md5 增量索引）+ `ciphers/<2hex>/<uuid>.json`（256 桶分片）
+- `~/.octopus/.sync/` 目录：`vault/`（加密数据）+ `hotword/`（热词，明文）——所有同步数据在同一个 git repo
 - md5 内容指纹（`sync_md5` 字段）做增量 diff——只 push 变化的文件
 - 跨设备密钥一致性：app_key_sync_enc 用主密码直接加密 app_key，任何设备只要知道主密码就能解
 - security_stamp 守卫：pull 时对比 stamp，不一致拒绝覆盖（防主密码改了但没同步）
+- **自动同步**（每小时）：scheduler 每 10 分钟 tick，vault_sync 任务 interval=3600 自动触发 sync_now，结果存 last_auto_sync.json（SyncPanel 展示不弹 toast）
+- **stamp 冲突双向解决**：远程和本地主密码不一致时，用户选择「以远程为准」（输远程密码，用远程 meta 覆盖本地）或「以本地为准」（输本地密码，用本地 meta 覆盖远程）
 
 UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 
@@ -205,7 +207,8 @@ UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 | `vault_generate` / `vault_evaluate_password` / `vault_generate_totp` / `vault_health_report` | 工具 |
 | `vault_list_folders` / `vault_create_folder` / `vault_rename_folder` / `vault_delete_folder` | 文件夹 |
 | `vault_import_bitwarden` / `vault_export` | 导入导出 |
-| `vault_change_password` | 改主密码 |
+| `vault_change_password` | 改主密码（UI：VaultPanel KeyRound 按钮 → ChangePasswordModal） |
+| `vault_sync_resolve_remote` / `vault_sync_resolve_local` | stamp 冲突解决（以远程/本地为准 + 密码验证） |
 | `vault_get_lock_timeout` / `vault_set_lock_timeout` | 锁定超时 |
 | `open_password_generator` / `password_generator_autotype` | 密码生成器浮窗 |
 
@@ -222,3 +225,5 @@ UI 入口：系统设置 → Git 同步 tab（不依赖 vault 解锁）。
 | `VaultPicker` | Auto-Type 浮窗：URL 匹配列表 + 搜索 + 三段式 cipher 行 + 内联新建 |
 | `PasswordGenerator` | 密码生成器主体（Modal / 独立浮窗两个外壳共用） |
 | `UnlockDialog` / `SetupWizard` | 解锁/初始化弹窗 |
+| `Settings/Vault/ChangePasswordModal` | 修改主密码弹窗（旧/新/确认 + 强度条 + focus trap） |
+| `Settings/Vault/SyncPanel` | Git 同步面板（被 GeneralPanel 第 4 子 Tab import，不依赖 vault 解锁；含 stamp 冲突解决 UI） |
