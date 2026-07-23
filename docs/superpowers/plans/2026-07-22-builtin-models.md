@@ -189,6 +189,38 @@
 
 ---
 
+## Step 5：download crate 代码审查修复（4 轮，2026-07-23）
+
+多轮代码审查发现的 download crate（`crates/download/src/core/downloader.rs`）严重 bug 修复。
+
+### 第 1 轮：3 个严重 bug
+- [x] **hash 校验重试空转**：只重算同一文件 hash（确定性失败）→ 改为失败→删 .part→重下整个文件→再校验
+- [x] **200 全文段错位**：多段下载遇 200 时非首段写入全文前 N 字节（错位）→ 先跳过 seg.begin 字节再写段数据
+- [x] **stream 无超时**：body 流读取无 timeout（TCP stall 永久挂起）→ stream.next() 包裹 tokio::time::timeout
+
+### 第 2 轮：消除重复实现
+- [x] **方法/自由函数分叉**：修复打在仅测试调用的方法版（死代码），生产路径走自由函数（旧 buggy 逻辑）→ 方法版改为一行委托自由函数，删 130 行重复实现
+
+### 第 3 轮：流提前结束 + 守护测试
+- [x] **流提前结束静默成功**：Ok(None) break 后 written < expected 但仍返回 Ok → 加尾部校验返回 transient
+- [x] **空 chunk 过度反应**：write_len == 0 break 改为 continue
+- [x] **守护测试**：补 download_segment_short_stream_returns_transient（mock 短 body 断言 Transient）
+
+### 第 4 轮：counter 回滚 + hash 重下 + 其他
+- [x] **counter Transient 不回滚**：段级重试后 counter 虚高 >100% → RAII CounterGuard 统一兜底（drop 时未 commit 自动 fetch_sub）
+- [x] **hash 重下进度泵已停**：retry_counter 独立、pump 已 abort → 复用主 counter + 重启 pump
+- [x] **hash 重下失败跳过 sidecar 清理**：`?` 提前返回 → 显式错误处理 + 清理
+- [x] **skip 循环无 cancel**：加 cancel.is_cancelled() 检查
+- [x] **sem.acquire_owned unwrap**：改 map_err
+
+### 不修（设计取舍）
+- skip 字节不计 counter（属于其他段区间）
+- list 不做运行期探针（严格换实时性，verify/activate 兜底）
+- 416 归 Fatal（实际命中罕见）
+- counter 回滚后进度条短暂倒退（比 >100% 可接受）
+
+---
+
 ## 文档同步
 - [x] architecture.md：models 表 source_type 描述 + builtin 模型机制
 - [x] plan 文档：Step 2/3 全部 Task 标记完成 + 实际偏差记录
