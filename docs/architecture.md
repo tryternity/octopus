@@ -845,7 +845,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ## 热词多版本管理（hotword-sets）
 
-v1 扁平单表 `hotwords`（word/status/hit_count）于 2026-07-11 升级为「多版本词表 + 多选叠加 + 全局命中」（spec：[2026-07-11-hotword-sets-design.md](superpowers/specs/2026-07-11-hotword-sets-design.md)）。不同工作/场景用不同热词集合，像「主题」一样可切换，多个版本同时勾选叠加生效。
+v1 扁平单表 `hotwords`（word/status/hit_count）于 2026-07-11 升级为「多版本词表 + 多选叠加 + 全局命中」（spec：[2026-07-11-hotword-sets-design.md](superpowers/specs/2026-07-11-hotword-sets-design.md)）。旧 `hotwords` 表于 2026-07-23 从 db.sql 删除（零读写废弃表，热词数据全在 `hotword_sets.words_text`）。不同工作/场景用不同热词集合，像「主题」一样可切换，多个版本同时勾选叠加生效。
 
 - **数据层**（`infra/db.rs` + `db.sql`，schema v22→v23）：
   - `hotword_sets`（版本）：`id / name(UNIQUE) / enabled / words_text / created_at / updated_at`。`words_text` 是空格分隔的规范词文本——版本 = 一坨纯文本，**非逐词 DB 行**。

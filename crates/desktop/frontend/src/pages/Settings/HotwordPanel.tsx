@@ -500,8 +500,9 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                         <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/60 hover:text-destructive" aria-label={`删除 ${w}`}>
                           <X className="h-3 w-3" />
                         </button>
-                        <div className="truncate text-sm">{w}</div>
-                        <div className={cn('mt-1 font-mono text-[10px] tabular-nums', h > 0 ? 'text-voice' : 'text-muted-foreground/50')}>{h}</div>
+                        <div className="truncate text-sm">
+                          {w} <span className={cn('font-mono text-[10px] tabular-nums', h > 0 ? 'text-voice' : 'text-muted-foreground/50')}>{h}</span>
+                        </div>
                       </div>
                     );
                   })}

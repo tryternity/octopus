@@ -292,17 +292,6 @@ CREATE TABLE IF NOT EXISTS script_runs (
 CREATE INDEX IF NOT EXISTS idx_script_runs_started_at ON script_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 
--- ── ASR 热词（active=生效/pending=挖掘待确认）──────────────────
-CREATE TABLE IF NOT EXISTS hotwords (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    word        TEXT    NOT NULL UNIQUE,
-    status      TEXT    NOT NULL DEFAULT 'active',   -- 'active' | 'pending'
-    source      TEXT    NOT NULL DEFAULT 'manual',   -- 'manual' | 'mined'
-    hit_count   INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);
-
 -- ── ASR 热词版本（多场景词表，多选叠加）──────────────────────
 -- id 用 TEXT UUID（v46 改造）：支持 git 同步跨设备无冲突，与 vault_ciphers 一致。
 -- sync_md5：内容指纹（md5），增量同步 diff 用，由 sync crate 计算填入（不在 infra 算）。
