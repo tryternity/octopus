@@ -116,12 +116,14 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       // 1. 校验文件完整性
       const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
       if (!result.ok) {
-        // 2. 损坏/缺失 → 自动下载修复
+        // 2. 损坏/缺失 → 自动下载修复。下载失败则不激活（return 跳出）
         showToast(result.message || t("settings.models.verifyFailed"));
-        await invoke("download_model", { repo }).catch((e) => {
+        try {
+          await invoke("download_model", { repo });
+        } catch (e) {
           showToast(t("settings.models.downloadStartFailed") + e);
           return; // 下载失败，不激活
-        });
+        }
         setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });
       }
       // 3. 校验通过（或下载修复成功）→ 激活
@@ -158,9 +160,10 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   };
 
   /// 下载内部实现（onVerify 校验失败时复用，避免 busyRepo 互斥）。
+  /// return invoke 让 caller 可 await（onVerify 的 finally 不会提前清 busyRepo）。
   const onDownloadInternal = async (repo: string) => {
     setBusyRepo(repo);
-    invoke("download_model", { repo })
+    return invoke("download_model", { repo })
       .then(() => {
         setBusyRepo(null);
         setProgress((prev) => { const next = { ...prev }; delete next[repo]; return next; });

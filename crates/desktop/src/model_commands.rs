@@ -60,15 +60,15 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
-        // 文件系统实际检查：目录存在 → is_available=true（覆盖 DB 未更新的情况）
-        let is_ready = r.is_available || octopus_asr_local::config::resolve_model_dir(&r.source).is_ok();
+        // is_available 由 sync_builtin_models_availability（启动时 sha256 校验）保证准确，
+        // 不再用 resolve_model_dir 覆盖——目录存在但文件损坏时 is_available 应为 false。
         out.push(DownloadableModel {
             id: r.id,
             name: r.model_name,
             repo: r.source,
             category: r.category,
             description: r.description,
-            is_available: is_ready,
+            is_available: r.is_available,
             is_enabled: r.is_enabled,
             source_type: r.source_type,
         });
@@ -347,6 +347,8 @@ pub async fn download_model(
         );
         Ok(())
     } else {
+        // 下载失败 → 回滚 is_available=false（文件不全/损坏不应标可用）
+        let _ = apply_model_state(&repo, None, false);
         let _ = app_handle.emit(
             "download-done",
             serde_json::json!({ "repo": &repo, "error": errors.join("; ") }),
