@@ -223,39 +223,75 @@ impl Downloader {
             return Err(class_to_error(class, status, url));
         }
 
-        use std::io::{SeekFrom, Write, Seek};
-        let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
+        use std::io::{SeekFrom, Write, Seek, BufWriter};
+        let file = std::fs::OpenOptions::new().write(true).open(part_path)?;
         // classify_status 已过滤 4xx/5xx（含 416），reqwest 自动跟随 3xx，
         // 故此处仅可能是 200（服务端忽略 Range 从头覆盖该段）或 206（续传从 start）。
-        let _write_offset = if status == 200 {
-            file.seek(SeekFrom::Start(seg.begin))?;
-            seg.begin
-        } else {
-            file.seek(SeekFrom::Start(start))?;
-            start
-        };
-
-        let mut writer = std::io::BufWriter::with_capacity(self.config.buf_kb * 1024, file);
+        let mut writer = BufWriter::with_capacity(self.config.buf_kb * 1024, file);
         let mut stream = resp.bytes_stream();
         let mut written_this_call: u64 = 0;
-        // 200 路径截断：服务端忽略 Range 返回全文时，仅写入段区间 [seg.begin, seg.end]
-        let seg_capacity = if status == 200 { seg.end - seg.begin + 1 } else { u64::MAX };
-        while let Some(chunk) = stream.next().await {
-            if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
-            let mut bytes = chunk.map_err(map_reqwest_transient)?;
-            // 200 截断：丢弃超出段区间的字节
-            if status == 200 && written_this_call + bytes.len() as u64 > seg_capacity {
-                let keep = (seg_capacity - written_this_call) as usize;
-                bytes.truncate(keep);
+
+        if status == 200 {
+            // 200 全文：服务端忽略 Range，返回整个文件。
+            // 本段只需 [seg.begin, seg.end] 区间的字节——
+            // 先 seek 到段的起始位置，然后跳过流中 seg.begin 个字节。
+            writer.seek(SeekFrom::Start(seg.begin))?;
+            let mut skipped: u64 = 0;
+            while skipped < seg.begin {
+                match tokio::time::timeout(self.config.read_timeout, stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        let chunk = chunk.map_err(map_reqwest_transient)?;
+                        let remain = (seg.begin - skipped) as usize;
+                        if chunk.len() > remain {
+                            // chunk 跨越 skip 边界——保留 remain 之后的部分作为段数据
+                            let data = &chunk[remain..];
+                            // 这部分属于段数据，写入
+                            let seg_remain = ((seg.end - seg.begin + 1) - written_this_call) as usize;
+                            let write_len = data.len().min(seg_remain);
+                            if write_len > 0 {
+                                writer.write_all(&data[..write_len])?;
+                                written_this_call += write_len as u64;
+                                counter.fetch_add(write_len as u64, Ordering::Relaxed);
+                            }
+                            break;
+                        } else {
+                            skipped += chunk.len() as u64;
+                        }
+                    }
+                    Ok(None) => break, // 流提前结束
+                    Err(_) => return Err(transient(TransientKind::Timeout, "stream skip timeout")),
+                }
             }
-            if bytes.is_empty() {
-                break;
+            // 继续读取段数据（skip 完成或 chunk 边界刚好对齐）
+            let seg_capacity = seg.end - seg.begin + 1;
+            while written_this_call < seg_capacity {
+                match tokio::time::timeout(self.config.read_timeout, stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
+                        let chunk = chunk.map_err(map_reqwest_transient)?;
+                        let remain = (seg_capacity - written_this_call) as usize;
+                        let write_len = chunk.len().min(remain);
+                        if write_len == 0 { break; }
+                        writer.write_all(&chunk[..write_len])?;
+                        written_this_call += write_len as u64;
+                        counter.fetch_add(write_len as u64, Ordering::Relaxed);
+                    }
+                    Ok(None) => break,
+                    Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
+                }
             }
-            writer.write_all(&bytes)?;
-            written_this_call += bytes.len() as u64;
-            counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            if status == 200 && written_this_call >= seg_capacity {
-                break;
+        } else {
+            // 206 续传：从 start 位置开始写入
+            writer.seek(SeekFrom::Start(start))?;
+            while let Some(chunk) = stream.next().await {
+                if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
+                let bytes = chunk.map_err(map_reqwest_transient)?;
+                writer.write_all(&bytes)?;
+                written_this_call += bytes.len() as u64;
+                counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                if written_this_call >= seg.downloaded + (seg.end - seg.begin + 1) {
+                    break;
+                }
             }
         }
         writer.flush()?;
@@ -470,22 +506,43 @@ impl Downloader {
 
         done?;
 
-        // 校验
+        // 校验 + 失败重下：hash 不匹配时删 .part + sidecar 重下整个文件，而非只重算 hash。
+        // （hash 确定性：同一文件重算必然再失败；必须重新下载才有意义。）
         if let Some(expected) = &task.expected_hash {
-            let mut ok = false;
-            for _ in 0..=self.config.max_verification_retries {
+            let mut verify_ok = false;
+            for attempt in 0..=self.config.max_verification_retries {
                 if crate::core::verify::verify(&part, expected).await? {
-                    ok = true;
+                    verify_ok = true;
                     break;
                 }
-                log::warn!("hash mismatch, retrying verification");
+                if attempt < self.config.max_verification_retries {
+                    log::warn!("hash mismatch (attempt {}), 删除 .part 重新下载", attempt + 1);
+                    let _ = std::fs::remove_file(&part);
+                    crate::core::resume::remove(&task.dest);
+                    // 重新规划段 + 重下
+                    let new_segs = plan_segments(
+                        total,
+                        accept_ranges,
+                        self.config.segment_size,
+                        self.config.chunk_threshold,
+                        self.config.max_concurrent,
+                    );
+                    let _ = Downloader::ensure_part_file(&task.dest, total)?;
+                    let retry_counter = Arc::new(AtomicU64::new(0));
+                    self.download_chunked(
+                        url,
+                        &part,
+                        new_segs,
+                        Arc::clone(&retry_counter),
+                        cancel.cloned(),
+                        None,
+                        None,
+                    ).await?;
+                }
             }
-            if !ok {
-                // 先取实际 hash（part 尚在），再清理
+            if !verify_ok {
                 let actual = match expected {
-                    Hash::Sha256(_) => {
-                        crate::core::verify::compute_sha256(&part).await.unwrap_or_default()
-                    }
+                    Hash::Sha256(_) => crate::core::verify::compute_sha256(&part).await.unwrap_or_default(),
                     Hash::Etag(_) => String::new(),
                 };
                 let _ = std::fs::remove_file(&part);
@@ -738,8 +795,8 @@ mod tests {
         // .part 大小应 = total（预分配不变）
         let written = std::fs::read(&part).unwrap();
         assert_eq!(written.len(), total_len as usize, ".part 大小应 = total");
-        // seg.begin=10 处应写入全文前 10 字节
-        assert_eq!(&written[10..20], &full_body[0..10], "段区间内容正确");
+        // seg.begin=10 处应写入全文 [10,19] 字节（非 [0,9]——200 全文需跳过前 10 字节）
+        assert_eq!(&written[10..20], &full_body[10..20], "段区间内容正确（200 跳过 offset 前字节）");
     }
 
     #[test]
