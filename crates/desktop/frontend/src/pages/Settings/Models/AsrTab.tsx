@@ -113,8 +113,8 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     if (busyRepo) return;
     setBusyRepo(repo);
     try {
-      // 1. 校验文件完整性
-      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
+      // 1. 校验文件完整性（stat 快检，不强制 SHA256）
+      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name, full: false });
       if (!result.ok) {
         // 2. 损坏/缺失 → 自动下载修复。下载失败则不激活（return 跳出）
         showToast(result.message || t("settings.models.verifyFailed"));
@@ -144,7 +144,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     if (busyRepo) return;
     setBusyRepo(repo);
     try {
-      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name });
+      const result = await invoke<VerifyResult>("verify_model", { repo, modelName: name, full: true });
       if (result.ok) {
         showToast(result.message || t("settings.models.verifyComplete"));
         load();

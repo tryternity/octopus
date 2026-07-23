@@ -27,13 +27,15 @@ pub struct BuiltinModelInfo {
 
 /// 校验单个 builtin 模型：目录存在 + manifest 所有文件 sha256 通过 → true。
 ///
-/// 与 download_model 的完整性校验对齐——不只 stat 目录存在，逐文件 sha256 校验。
+/// stat 快检：用 .verified.json 缓存判断文件是否就绪（不读文件内容算 SHA256）。
+///
+/// 启动 sync 用此函数——stat 微秒级，不卡启动。
+/// 缓存未命中（首次/文件变动）时回退 SHA256（首次校验后写入缓存）。
 fn check_builtin_ready(source: &str, secret_key: &str) -> bool {
     let dir = match octopus_asr_local::config::resolve_model_dir(source) {
         Ok(d) => d,
         Err(_) => return false,
     };
-    // 无 manifest → 只看目录存在（bootstrap 路径会补 manifest）
     let manifest: octopus_asr_local::manifest::Manifest = match serde_json::from_str(secret_key) {
         Ok(m) => m,
         Err(_) => return dir.exists(),
@@ -41,8 +43,15 @@ fn check_builtin_ready(source: &str, secret_key: &str) -> bool {
     if manifest.is_empty() {
         return dir.exists();
     }
-    // 逐文件 sha256 校验
-    octopus_asr_local::manifest::verify_against_manifest(&dir, &manifest).is_empty()
+    // stat 快检：.verified.json 缓存命中 → 跳过 SHA256；未命中 → SHA256 + 写缓存
+    let mut cache = crate::model_commands::load_verified_cache(&dir);
+    let all_ok = manifest
+        .iter()
+        .all(|(path, file)| {
+            crate::model_commands::check_file_with_cache(&dir, path, &file.sha256, &mut cache)
+        });
+    crate::model_commands::save_verified_cache(&dir, &cache);
+    all_ok
 }
 
 /// 合并 sync + check：查 DB builtin 模型 → 逐个校验完整性 → 同步 is_available → 返回缺失列表。

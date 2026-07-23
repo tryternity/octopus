@@ -92,32 +92,32 @@ pub struct ModelFile {
 /// 存在模型目录下的 `.verified.json`，记录每文件的 size + mtime + sha256。
 /// 后续校验先 stat() 比对 size+mtime（微秒级），不匹配才算 SHA256。
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-struct VerifiedCache {
+pub(crate) struct VerifiedCache {
     files: std::collections::HashMap<String, VerifiedEntry>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct VerifiedEntry {
+pub(crate) struct VerifiedEntry {
     size: u64,
     mtime: u64,
     sha256: String,
 }
 
 /// 读模型目录下的 .verified.json 缓存。
-fn load_verified_cache(dir: &Path) -> VerifiedCache {
+pub(crate) fn load_verified_cache(dir: &Path) -> VerifiedCache {
     serde_json::from_str(&std::fs::read_to_string(dir.join(".verified.json")).unwrap_or_default())
         .unwrap_or_default()
 }
 
 /// 写 .verified.json 缓存。
-fn save_verified_cache(dir: &Path, cache: &VerifiedCache) {
+pub(crate) fn save_verified_cache(dir: &Path, cache: &VerifiedCache) {
     if let Ok(json) = serde_json::to_string(cache) {
         let _ = std::fs::write(dir.join(".verified.json"), json);
     }
 }
 
 /// 校验单文件是否存在且完好——优先用 sidecar 缓存（stat 快检），不匹配才算 SHA256。
-fn check_file_with_cache(dir: &Path, path: &str, expected_sha256: &str, cache: &mut VerifiedCache) -> bool {
+pub(crate) fn check_file_with_cache(dir: &Path, path: &str, expected_sha256: &str, cache: &mut VerifiedCache) -> bool {
     let full = dir.join(path);
     let meta = match std::fs::metadata(&full) {
         Ok(m) => m,
@@ -426,6 +426,20 @@ pub async fn download_model(
 
     // 6. 结果处理
     if errors.is_empty() {
+        // 下载成功 → 直接写 .verified.json（Downloader 内部已校验过 hash，不需重新校验）
+        let mut cache = load_verified_cache(&dest_base);
+        for (path, file) in manifest.iter() {
+            let full_path = dest_base.join(path);
+            if let Ok(meta) = std::fs::metadata(&full_path) {
+                let mtime = meta.modified().ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs()).unwrap_or(0);
+                cache.files.insert(path.clone(), VerifiedEntry {
+                    size: meta.len(), mtime, sha256: file.sha256.clone(),
+                });
+            }
+        }
+        save_verified_cache(&dest_base, &cache);
         apply_model_state(&repo, None, true)?;
         let _ = app_handle.emit(
             "download-done",
@@ -445,14 +459,15 @@ pub async fn download_model(
 
 /// 完整性复核：按 secret_key 清单 sha256 校验；清单空则自举；损坏置 false。
 #[tauri::command]
-pub async fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
-    // SHA-256 校验 230-740MB 模型文件是 CPU+IO 密集——移入 spawn_blocking 防阻塞 UI 线程
-    tokio::task::spawn_blocking(move || verify_model_inner(model_name, &repo))
+pub async fn verify_model(model_name: String, repo: String, full: Option<bool>) -> Result<VerifyResult, String> {
+    // full=true（手动校验按钮）→ 完整 SHA256；full=false/None（激活前）→ stat 快检
+    let full = full.unwrap_or(false);
+    tokio::task::spawn_blocking(move || verify_model_inner(model_name, &repo, full))
         .await
         .map_err(|e| format!("verify_model 任务异常: {}", e))?
 }
 
-fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, String> {
+fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<VerifyResult, String> {
     let dir = match octopus_asr_local::config::resolve_model_dir(repo) {
         Ok(d) => d,
         Err(_) => {
@@ -478,20 +493,48 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
         });
     }
 
-    // 清单非空 → 复核（用 sidecar 缓存加速——stat 快检，不匹配才算 SHA256）。
+    // 清单非空 → 复核。
+    // full=true（手动校验）：强制 SHA256 逐文件校验，不信任缓存。
+    // full=false（激活前自动校验）：stat 快检（.verified.json 缓存），不匹配才算 SHA256。
     let manifest: Manifest = serde_json::from_str(&secret_key)
         .map_err(|e| format!("校验清单解析失败（可重新下载修复）: {e:?}"))?;
     let mut cache = load_verified_cache(&dir);
-    let broken: Vec<String> = manifest
-        .iter()
-        .filter_map(|(path, file)| {
-            if check_file_with_cache(&dir, path, &file.sha256, &mut cache) {
-                None
-            } else {
-                Some(path.clone())
-            }
-        })
-        .collect();
+    let broken: Vec<String> = if full {
+        // 强制完整校验——不读缓存，直接 SHA256，结果写回缓存
+        manifest
+            .iter()
+            .filter_map(|(path, file)| {
+                let full_path = dir.join(path);
+                let ok = octopus_asr_local::manifest::verify_file_sha256(&full_path, &file.sha256);
+                if ok {
+                    // 更新缓存
+                    if let Ok(meta) = std::fs::metadata(&full_path) {
+                        let mtime = meta.modified().ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs()).unwrap_or(0);
+                        cache.files.insert(path.clone(), VerifiedEntry {
+                            size: meta.len(), mtime, sha256: file.sha256.clone(),
+                        });
+                    }
+                    None
+                } else {
+                    Some(path.clone())
+                }
+            })
+            .collect()
+    } else {
+        // stat 快检——缓存命中跳过 SHA256，不匹配才算
+        manifest
+            .iter()
+            .filter_map(|(path, file)| {
+                if check_file_with_cache(&dir, path, &file.sha256, &mut cache) {
+                    None
+                } else {
+                    Some(path.clone())
+                }
+            })
+            .collect()
+    };
     save_verified_cache(&dir, &cache);
     if broken.is_empty() {
         apply_model_state(&repo, None, true)?;
