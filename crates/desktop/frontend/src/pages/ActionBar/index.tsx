@@ -238,6 +238,26 @@ export default function ActionBar() {
   // ── 搜索：结果（流式后端 emit 累积 top-N，前端整体替换；无 delayed 合并）──
   const allResults = instantResults;
 
+  // 解析菜单项的 app_bundle_ids JSON 数组。空串/非法 JSON → 空数组（全局项）。
+  const parseAppBundleIds = (s?: string): string[] => {
+    if (!s) return [];
+    try {
+      const arr = JSON.parse(s);
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // app-aware 过滤：app_bundle_ids 为空 = 全局项永远显示；非空 = 仅当前前台 app 在列表中才显示。
+  // 拿不到前台 bundle_id 时，专属项隐藏（保守——INV-A5）。
+  const isItemVisibleForApp = (item: ActionBarItem, bundleId?: string): boolean => {
+    const ids = parseAppBundleIds(item.appBundleIds);
+    if (ids.length === 0) return true; // 全局项
+    if (!bundleId) return false; // 有绑定但拿不到前台 app → 隐藏专属项
+    return ids.includes(bundleId);
+  };
+
   // 按 context.accepts + app_bundle_ids 过滤菜单/quicklink 搜索结果
   // （Files 场景下 text-only 项如翻译不应出现，反之亦然；app 绑定的项不在当前 app 也不显示）
   // 无选中（context=null）时仅显示 accepts="any" 的 menu/quicklink 项
@@ -496,26 +516,6 @@ export default function ActionBar() {
   }, [query]);
 
   const urlResult = context ? detectActionUrl(context.text || "") : { isUrl: false, url: "" };
-
-  // 解析菜单项的 app_bundle_ids JSON 数组。空串/非法 JSON → 空数组（全局项）。
-  const parseAppBundleIds = (s?: string): string[] => {
-    if (!s) return [];
-    try {
-      const arr = JSON.parse(s);
-      return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
-    } catch {
-      return [];
-    }
-  };
-
-  // app-aware 过滤：app_bundle_ids 为空 = 全局项永远显示；非空 = 仅当前前台 app 在列表中才显示。
-  // 拿不到前台 bundle_id 时，专属项隐藏（保守——INV-A5）。
-  const isItemVisibleForApp = (item: ActionBarItem, bundleId?: string): boolean => {
-    const ids = parseAppBundleIds(item.appBundleIds);
-    if (ids.length === 0) return true; // 全局项
-    if (!bundleId) return false; // 有绑定但拿不到前台 app → 隐藏专属项
-    return ids.includes(bundleId);
-  };
 
   // accepts + app 双维度过滤：两者都通过才显示（INV-A3 独立 AND）
   const isItemVisible = (item: ActionBarItem): boolean => {

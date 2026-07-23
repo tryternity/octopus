@@ -234,7 +234,7 @@ const FormField = ({
     <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
       {label}
     </label>
-    <div className="min-w-0">{children}</div>
+    <div className="min-w-0 w-full">{children}</div>
     {hint && <p className="text-[11px] text-muted-foreground/60">{hint}</p>}
   </div>
 );
@@ -362,14 +362,15 @@ const EditForm = ({
           </FormField>
         </div>
 
-        {/* 快捷键 + 全局快捷键 —— 一行（仅叶子菜单 submenu 不显示） */}
+        {/* 快捷键 + 全局快捷键 —— 一行（仅叶子菜单 submenu 不显示）。
+            X 清除按钮始终占位（invisible），保证有值/无值时右边界对齐 */}
         {showShortcut && (
           <div className="grid grid-cols-2 gap-3">
             <FormField label={t("settings.actionBar.shortcutLabel")}>
-              <div className="flex items-center gap-1">
-                <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
+              <div className="flex w-full items-center gap-1">
+                <span className="text-xs text-muted-foreground/60 font-mono shrink-0">⌥ +</span>
                 <input
-                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15 shrink-0"
                   placeholder="—"
                   maxLength={1}
                   value={form.shortcut || ""}
@@ -379,32 +380,34 @@ const EditForm = ({
                     onChange({ ...form, shortcut: filtered });
                   }}
                 />
-                {form.shortcut && (
-                  <button
-                    onClick={() => onChange({ ...form, shortcut: "" })}
-                    className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
+                <button
+                  onClick={() => form.shortcut && onChange({ ...form, shortcut: "" })}
+                  className={cn(
+                    "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+                    form.shortcut ? "" : "invisible pointer-events-none",
+                  )}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
             </FormField>
             <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
-              <div className="flex items-center gap-2">
+              <div className="flex w-full items-center gap-2">
                 <ShortcutButton
                   shortcut={form.globalShortcut ?? ""}
                   capturing={capturingGlobal}
                   onClick={() => setCapturingGlobal((v) => !v)}
                 />
-                {form.globalShortcut && (
-                  <button
-                    onClick={() => onChange({ ...form, globalShortcut: "" })}
-                    className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    aria-label={ti18n("settings.actionBar.clearShortcut")}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                )}
+                <button
+                  onClick={() => form.globalShortcut && onChange({ ...form, globalShortcut: "" })}
+                  className={cn(
+                    "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+                    form.globalShortcut ? "" : "invisible pointer-events-none",
+                  )}
+                  aria-label={ti18n("settings.actionBar.clearShortcut")}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
             </FormField>
           </div>
@@ -480,6 +483,12 @@ const EditForm = ({
           </FormField>
         )}
 
+        {/* App 绑定——所有类型通用。空=全局命令（所有 app 显示），绑定=仅指定 app 显示 */}
+        <AppPicker
+          value={form.appBundleIds ?? ""}
+          onChange={(v) => onChange({ ...form, appBundleIds: v })}
+        />
+
         {/* 内容 textarea —— 固定高度，resize-y 可手动拉大（放最后一行） */}
         {showContent && (
           <FormField label={t("settings.actionBar.contentLabel")}>
@@ -505,12 +514,6 @@ const EditForm = ({
             </select>
           </FormField>
         )}
-
-        {/* App 绑定——所有类型通用。空=全局命令（所有 app 显示），绑定=仅指定 app 显示 */}
-        <AppPicker
-          value={form.appBundleIds ?? ""}
-          onChange={(v) => onChange({ ...form, appBundleIds: v })}
-        />
       </div>
 
       {/* 底部操作栏——右下角保存/取消（shrink-0 不被压缩） */}
@@ -598,15 +601,18 @@ const MenuRow = (props: MenuRowProps) => {
               onClick={() => props.onCaptureShortcut?.("global")}
               title={t("settings.actionBar.globalShortcutHint")}
             />
-            {item.globalShortcut && props.capturingKind !== "global" && (
-              <button
-                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
-                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                aria-label={t("settings.actionBar.clearShortcut")}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
+              className={cn(
+                "rounded p-0.5 text-muted-foreground/50 transition-opacity hover:bg-destructive/10 hover:text-destructive",
+                item.globalShortcut && props.capturingKind !== "global"
+                  ? "opacity-0 group-hover:opacity-100"
+                  : "invisible",
+              )}
+              aria-label={t("settings.actionBar.clearShortcut")}
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
 
           {/* 分隔点 */}
@@ -631,15 +637,18 @@ const MenuRow = (props: MenuRowProps) => {
                 ? "…"
                 : (item.shortcut || "—")}
             </button>
-            {item.shortcut && props.capturingKind !== "local" && (
-              <button
-                onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("local"); }}
-                className="rounded p-0.5 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                aria-label={t("settings.actionBar.clearShortcut")}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("local"); }}
+              className={cn(
+                "rounded p-0.5 text-muted-foreground/50 transition-opacity hover:bg-destructive/10 hover:text-destructive",
+                item.shortcut && props.capturingKind !== "local"
+                  ? "opacity-0 group-hover:opacity-100"
+                  : "invisible",
+              )}
+              aria-label={t("settings.actionBar.clearShortcut")}
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
         </div>
       )}
