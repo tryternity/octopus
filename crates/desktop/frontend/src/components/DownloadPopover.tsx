@@ -159,8 +159,22 @@ export default function DownloadPopover({
 
   if (loading) {
     return (
-      <div ref={ref} className="absolute right-0 top-full mt-1.5 z-50 w-80 bg-background rounded-xl border shadow-xl p-3">
-        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+      <div
+        ref={ref}
+        className="absolute right-0 top-full mt-1.5 z-50 w-80 bg-background rounded-xl border shadow-xl"
+      >
+        {/* 标题 */}
+        <div className="px-3 py-2 border-b">
+          <div className="flex items-center gap-1.5">
+            <FileDown className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium">{modelName}</span>
+          </div>
+        </div>
+        {/* 文件校验中 */}
+        <div className="px-3 py-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span>正在校验文件…</span>
+        </div>
       </div>
     );
   }
