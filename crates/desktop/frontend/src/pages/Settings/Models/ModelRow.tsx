@@ -158,30 +158,30 @@ export function ModelRow({
                 <Pencil />
               </Button>
             )}
-
-            {/* 文件列表浮层（本地+builtin）—— hover/click 展示文件级进度 */}
-            {model.source_type !== 2 && (
-              <div className="relative">
-                <Button
-                  ref={filesBtnRef}
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setShowPopover(!showPopover)}
-                  onMouseEnter={() => setShowPopover(true)}
-                >
-                  <FileDown />
-                </Button>
-                {showPopover && (
-                  <DownloadPopover
-                    repo={model.repo}
-                    modelName={model.name}
-                    triggerRef={filesBtnRef}
-                    onClose={() => setShowPopover(false)}
-                  />
-                )}
-              </div>
-            )}
           </>
+        )}
+
+        {/* 文件列表浮层（本地+builtin，无论就绪/下载中/未下载）—— hover/click 展示文件级进度 */}
+        {model.source_type !== 2 && (
+          <div className="relative">
+            <Button
+              ref={filesBtnRef}
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowPopover(!showPopover)}
+              onMouseEnter={() => setShowPopover(true)}
+            >
+              <FileDown />
+            </Button>
+            {showPopover && (
+              <DownloadPopover
+                repo={model.repo}
+                modelName={model.name}
+                triggerRef={filesBtnRef}
+                onClose={() => setShowPopover(false)}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
