@@ -595,7 +595,7 @@ async fn download_segment_once_with_client(
                     let chunk = chunk.map_err(map_reqwest_transient)?;
                     let remain = (seg_capacity - written_this_call) as usize;
                     let write_len = chunk.len().min(remain);
-                    if write_len == 0 { break; }
+                    if write_len == 0 { continue; } // 空 chunk 不代表流结束
                     writer.write_all(&chunk[..write_len])?;
                     written_this_call += write_len as u64;
                     counter.fetch_add(write_len as u64, Ordering::Relaxed);
@@ -728,6 +728,35 @@ mod tests {
         assert_eq!(written.len(), total_len as usize, ".part 大小应 = total");
         // seg.begin=10 处应写入全文 [10,19] 字节（非 [0,9]——200 全文需跳过前 10 字节）
         assert_eq!(&written[10..20], &full_body[10..20], "段区间内容正确（200 跳过 offset 前字节）");
+    }
+
+    #[tokio::test]
+    async fn download_segment_short_stream_returns_transient() {
+        // 服务端返回 206 但 body 比声明的段短（只发 80 字节，段需 100）→ 应返回 Transient 而非 Ok
+        let server = MockServer::start();
+        let short_body = vec![0xABu8; 80];
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-99");
+            then.status(206)
+                .header("Content-Range", "bytes 0-99/100")
+                .body(short_body.clone());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let _ = Downloader::ensure_part_file(&dest, 100).unwrap();
+        let part = part_path(&dest);
+        let seg = Segment { begin: 0, end: 99, downloaded: 0 };
+        let counter = AtomicU64::new(0);
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let result = dl.download_segment(&server.url("/f"), &part, seg, &counter, None).await;
+        // download_segment 有段级重试（max_retries_per_segment=3），每次都短 body，
+        // 最终重试耗尽返回 Transient。不是 Ok（静默成功）也不是 HashMismatch。
+        assert!(result.is_err(), "短流应返回错误而非静默成功");
+        let err = result.unwrap_err();
+        match err {
+            DownloadError::Transient { .. } => {} // 正确：transient 触发段级重试
+            other => panic!("期望 Transient，得到 {:?}", other),
+        }
     }
 
     #[test]
