@@ -228,3 +228,40 @@
 - [x] features/db-and-config.md：models 表 is_local → source_type 字段 + builtin 兜底引擎描述
 - [x] features/asr-engine.md：resolve_model_dir + 兜底引擎描述更新（随包 → 首次下载）
 - [x] e2e 验证（用户验证通过 2026-07-22）
+
+---
+
+## Step 6：校验性能优化（sidecar 缓存 + 分层校验，2026-07-23）
+
+### 问题
+hover 浮层 / 激活 / 启动 sync 每次都读整个文件算 SHA256（26MB ~百毫秒），明显卡顿。
+
+### 方案：`.verified.json` sidecar 缓存 + 分层校验
+
+| 场景 | 校验方式 | 耗时 |
+|------|----------|------|
+| 启动 sync | stat 快检（size+mtime 匹配缓存） | 微秒级 |
+| hover 浮层 | stat 快检 | 微秒级 |
+| 激活前自动校验 | stat 快检（verify_model full=false） | 微秒级 |
+| 手动校验按钮 | 完整 SHA256（verify_model full=true） | ~百毫秒 |
+| 下载完成后 | 直接写 `.verified.json`（Downloader 已校验 hash） | 微秒级 |
+
+### Task 6.1：sidecar 缓存
+- [x] VerifiedCache / VerifiedEntry struct（serde，存 `.verified.json`）
+- [x] check_file_with_cache：stat 快检 → 缓存命中跳过 SHA256 → 不匹配才算 + 更新缓存
+- [x] list_model_files 改 async + spawn_blocking（消除 hover 卡顿）
+- [x] verify_model_inner 也用缓存（激活不再卡顿）
+
+### Task 6.2：分层校验
+- [x] verify_model 加 `full` 参数（手动校验 full=true 强制 SHA256，激活 full=false stat 快检）
+- [x] check_builtin_ready 改为 stat 快检
+- [x] download_model 成功后直接写 `.verified.json`（不重新校验）
+- [x] VerifiedCache/Entry + check_file_with_cache 改 pub(crate) 供 builtin_models 复用
+
+### Task 6.3：UX
+- [x] loading 浮层显示标题 + 「正在校验文件…」提示（不再空白转圈）
+- [x] 测试补 counter 回滚守护断言（成功 + 失败路径）
+
+### Task 6.4：验证
+- [x] cargo build 0 error + desktop 394 pass + tsc OK
+- [ ] e2e（待用户验证）：hover/激活秒开，手动校验才读文件
