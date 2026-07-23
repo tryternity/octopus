@@ -622,6 +622,19 @@ async fn download_segment_once_with_client(
         }
     }
     writer.flush()?;
+    // 流提前结束校验：200 路径需写满 seg_capacity；206 路径需写满段剩余（end - start + 1）。
+    // 不足说明服务端提前断流（网络中断/CDN 错误），返回 transient 触发段级重试。
+    let expected_written = if status == 200 {
+        seg.end - seg.begin + 1
+    } else {
+        end - start + 1
+    };
+    if written_this_call < expected_written {
+        return Err(transient(TransientKind::Network, format!(
+            "stream ended early: wrote {} of {} bytes for segment [{},{}]",
+            written_this_call, expected_written, seg.begin, seg.end
+        )));
+    }
     // 200 截断：downloaded = 段大小；206 续传则累加
     let new_downloaded = if status == 200 { written_this_call } else { seg.downloaded + written_this_call };
     Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
