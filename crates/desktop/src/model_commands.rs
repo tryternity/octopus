@@ -89,32 +89,39 @@ pub struct ModelFile {
 
 /// 列出某模型的所有文件（manifest 解析 + 逐文件 sha256 校验）。
 /// 供 DownloadPopover 浮层展示文件级列表 + 「已存在=100%」状态。
+///
+/// sha256 校验是 CPU+IO 密集——用 spawn_blocking 移出 Tauri 命令线程，
+/// 避免 hover 浮层时阻塞（26MB 文件算 hash 约几十~百毫秒）。
 #[tauri::command]
-pub fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
-    let (model_name, secret_key) = lookup_model_by_source(&repo)?;
-    let _ = model_name;
-    if secret_key.is_empty() {
-        return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
-    }
-    let manifest: Manifest = serde_json::from_str(&secret_key)
-        .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+pub async fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
+    tokio::task::spawn_blocking(move || {
+        let (model_name, secret_key) = lookup_model_by_source(&repo)?;
+        let _ = model_name;
+        if secret_key.is_empty() {
+            return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
+        }
+        let manifest: Manifest = serde_json::from_str(&secret_key)
+            .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
 
-    let dir = octopus_asr_local::config::resolve_model_dir(&repo).ok();
+        let dir = octopus_asr_local::config::resolve_model_dir(&repo).ok();
 
-    Ok(manifest
-        .iter()
-        .map(|(path, file)| {
-            let exists = dir
-                .as_ref()
-                .map(|d| octopus_asr_local::manifest::verify_file_sha256(&d.join(path), &file.sha256))
-                .unwrap_or(false);
-            ModelFile {
-                path: path.clone(),
-                size: file.size,
-                exists,
-            }
-        })
-        .collect())
+        Ok(manifest
+            .iter()
+            .map(|(path, file)| {
+                let exists = dir
+                    .as_ref()
+                    .map(|d| octopus_asr_local::manifest::verify_file_sha256(&d.join(path), &file.sha256))
+                    .unwrap_or(false);
+                ModelFile {
+                    path: path.clone(),
+                    size: file.size,
+                    exists,
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("list_model_files 任务异常: {e}"))?
 }
 
 /// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
