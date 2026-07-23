@@ -659,6 +659,13 @@ settings:
     moveUp: Move up
     moveDown: Move down
     edit: Edit
+    appBinding: Bound apps
+    appBindingHint: Leave empty to show in all apps (global command). Bind to specific apps to show only when that app is active.
+    appBindingEmpty: Click to select apps
+    searchApps: Search apps
+    noAppsFound: No apps found
+    globalCommand: Global command
+    selectedApps: Selected
   clipboardPanel:
     filterAll: All
     groupType: Type

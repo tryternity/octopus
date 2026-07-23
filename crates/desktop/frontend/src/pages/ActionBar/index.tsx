@@ -82,6 +82,8 @@ interface ActionBarItem {
   agent?: string;
   accepts?: string;
   needVoice?: boolean;
+  /** JSON 数组字符串 ["com.apple.Safari"]，空串/undefined=全局项（所有 app 显示） */
+  appBundleIds?: string;
 }
 
 const AI_TIMEOUT_MS = 10000;
@@ -236,8 +238,8 @@ export default function ActionBar() {
   // ── 搜索：结果（流式后端 emit 累积 top-N，前端整体替换；无 delayed 合并）──
   const allResults = instantResults;
 
-  // 按 context.accepts 过滤菜单/quicklink 搜索结果
-  // （Files 场景下 text-only 项如翻译不应出现，反之亦然）
+  // 按 context.accepts + app_bundle_ids 过滤菜单/quicklink 搜索结果
+  // （Files 场景下 text-only 项如翻译不应出现，反之亦然；app 绑定的项不在当前 app 也不显示）
   // 无选中（context=null）时仅显示 accepts="any" 的 menu/quicklink 项
   const contextFilteredResults = useMemo(() => {
     return allResults.filter((r) => {
@@ -246,10 +248,13 @@ export default function ActionBar() {
       const item = menuItems.find((i) => i.id === (data.id as number));
       if (!item) return true;
       const accepts = item.accepts || "text";
-      if (accepts === "any") return true;
-      if (!context) return false; // 无选中：非 any 的 menu 项不显示
-      const isFiles = context.kind === "files";
-      return isFiles ? accepts === "file" : accepts === "text";
+      if (accepts !== "any") {
+        if (!context) return false; // 无选中：非 any 的 menu 项不显示
+        const isFiles = context.kind === "files";
+        if (isFiles ? accepts !== "file" : accepts !== "text") return false;
+      }
+      // app 过滤（与 isItemVisible 同逻辑）
+      return isItemVisibleForApp(item, context?.source?.bundleId);
     });
   }, [allResults, context, menuItems]);
 
@@ -492,15 +497,39 @@ export default function ActionBar() {
 
   const urlResult = context ? detectActionUrl(context.text || "") : { isUrl: false, url: "" };
 
-  // accepts 过滤：按选中类型（text/files）过滤菜单项可见性
+  // 解析菜单项的 app_bundle_ids JSON 数组。空串/非法 JSON → 空数组（全局项）。
+  const parseAppBundleIds = (s?: string): string[] => {
+    if (!s) return [];
+    try {
+      const arr = JSON.parse(s);
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // app-aware 过滤：app_bundle_ids 为空 = 全局项永远显示；非空 = 仅当前前台 app 在列表中才显示。
+  // 拿不到前台 bundle_id 时，专属项隐藏（保守——INV-A5）。
+  const isItemVisibleForApp = (item: ActionBarItem, bundleId?: string): boolean => {
+    const ids = parseAppBundleIds(item.appBundleIds);
+    if (ids.length === 0) return true; // 全局项
+    if (!bundleId) return false; // 有绑定但拿不到前台 app → 隐藏专属项
+    return ids.includes(bundleId);
+  };
+
+  // accepts + app 双维度过滤：两者都通过才显示（INV-A3 独立 AND）
   const isItemVisible = (item: ActionBarItem): boolean => {
     // 禁用项不显示（与搜索引擎 engine.rs 的 .filter(|r| r.is_enabled && ...) 对齐）
     if (!item.isEnabled) return false;
     if (!context) return true;
+    // accepts 过滤（选中类型 text/files）
     const accepts = item.accepts || "text";
-    if (accepts === "any") return true;
-    if (context.kind === "text") return accepts === "text";
-    return accepts === "file";
+    if (accepts !== "any") {
+      if (context.kind === "text" && accepts !== "text") return false;
+      if (context.kind === "files" && accepts !== "file") return false;
+    }
+    // app 过滤（前台 app 绑定）——accepts=any 也要过 app 过滤
+    return isItemVisibleForApp(item, context.source?.bundleId);
   };
 
   // submenu 可见性：子项全不可见/全禁用则自身也隐藏

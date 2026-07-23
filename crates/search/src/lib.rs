@@ -14,4 +14,4 @@ pub mod provider;
 pub mod providers;
 pub mod command_index;
 
-pub use engine::{SearchEngine, SearchResult, SearchBatch, init_search_engine, get_engine};
+pub use engine::{AppBrief, SearchEngine, SearchBatch, SearchResult, get_engine, init_search_engine};

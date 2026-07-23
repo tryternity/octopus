@@ -18,6 +18,7 @@ import ShortcutButton from "@/components/ShortcutButton";
 import { Button } from "@/components/ui/button";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
 import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
+import AppPicker from "./ActionBar/AppPicker";
 
 interface ActionBarItem {
   id: number;
@@ -37,6 +38,8 @@ interface ActionBarItem {
   triggerKeyword?: string;
   globalShortcut?: string;
   needVoice?: boolean;
+  /** JSON 数组字符串 ["com.apple.Safari"]，空串/undefined=全局项 */
+  appBundleIds?: string;
 }
 
 // ── 类型元信息 ──
@@ -502,6 +505,12 @@ const EditForm = ({
             </select>
           </FormField>
         )}
+
+        {/* App 绑定——所有类型通用。空=全局命令（所有 app 显示），绑定=仅指定 app 显示 */}
+        <AppPicker
+          value={form.appBundleIds ?? ""}
+          onChange={(v) => onChange({ ...form, appBundleIds: v })}
+        />
       </div>
 
       {/* 底部操作栏——右下角保存/取消（shrink-0 不被压缩） */}
@@ -1021,6 +1030,7 @@ export default function ActionBarPanel({
               agent: "",
               accepts: "text",
               triggerKeyword: "",
+              appBundleIds: editingForm.appBundleIds ?? "",
             });
           }
           await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
@@ -1041,6 +1051,7 @@ export default function ActionBarPanel({
           accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true,
+          appBundleIds: editingForm.appBundleIds ?? "",
         });
         // 新建非 submenu 项时设置全局快捷键（Quick Execute）
         if (editingForm.actionType !== "submenu") {
@@ -1061,6 +1072,7 @@ export default function ActionBarPanel({
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
+          appBundleIds: editingForm.appBundleIds ?? "",
         });
         // global_shortcut 单独更新（非 submenu 类型）
         if (editingForm.actionType !== "submenu") {
@@ -1147,6 +1159,7 @@ export default function ActionBarPanel({
         agent: merged.agent || "",
         accepts: deriveAccepts(merged.actionType, merged.accepts),
         triggerKeyword: merged.triggerKeyword || "",
+        appBundleIds: merged.appBundleIds ?? "",
       });
       if (merged.actionType !== "submenu") {
         await invoke("set_global_shortcut", { id: merged.id, globalShortcut: merged.globalShortcut ?? "" });

@@ -1,6 +1,6 @@
 //! 搜索相关 Tauri 命令。
 
-use octopus_search::{self, SearchBatch, SearchResult};
+use octopus_search::{self, AppBrief, SearchBatch, SearchResult};
 use tauri::Emitter;
 
 /// 综合搜索。
@@ -138,4 +138,12 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 pub fn reindex_apps() -> Result<usize, String> {
     let engine = octopus_search::get_engine().ok_or("搜索引擎未初始化")?;
     Ok(engine.refresh_app_index())
+}
+
+/// 列出全部已索引应用（name + bundle_id + icon），供 app-aware 菜单绑定的多选器 UI 使用。
+/// 仅返回有 bundle_id 的应用（读不到 CFBundleIdentifier 的过滤掉）。
+#[tauri::command]
+pub fn list_all_apps() -> Result<Vec<AppBrief>, String> {
+    let engine = octopus_search::get_engine().ok_or("搜索引擎未初始化")?;
+    Ok(engine.all_apps())
 }

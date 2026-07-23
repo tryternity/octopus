@@ -35,6 +35,15 @@ pub struct SearchBatch {
     pub results: Vec<SearchResult>, // 全局 top-10（已加权+排序+截断）
 }
 
+/// 应用简要信息（app-aware 多选器 UI 用）。不含 path——多选器只需 name+icon 展示 + bundle_id 做绑定 key。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppBrief {
+    pub name: String,
+    pub bundle_id: String,
+    pub icon: String, // base64 data URI，空串=无图标
+}
+
 /// 全局搜索引擎（启动时初始化一次）。
 ///
 /// `app_index` / `bookmarks` / `command_index` 用 `RwLock` 包裹——供 Provider 通过
@@ -125,6 +134,25 @@ impl SearchEngine {
     /// 当前内存索引里的 app 数量（供后台轮询对比文件系统数量决定是否 rescan）。
     pub fn cached_app_count(&self) -> usize {
         self.app_index.read().apps.len()
+    }
+
+    /// 返回全部已索引应用的简要信息（name + bundle_id + icon），供 app-aware 多选器 UI 使用。
+    /// 不含 path（多选器不需要）。按 name 排序便于前端展示。
+    pub fn all_apps(&self) -> Vec<AppBrief> {
+        let mut apps: Vec<AppBrief> = self
+            .app_index
+            .read()
+            .apps
+            .iter()
+            .filter(|a| !a.bundle_id.is_empty())
+            .map(|a| AppBrief {
+                name: a.name.clone(),
+                bundle_id: a.bundle_id.clone(),
+                icon: a.icon.clone(),
+            })
+            .collect();
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        apps
     }
 
     /// 强制重扫应用索引：扫文件系统 + 写 DB 缓存 + 替换内存索引。
@@ -344,6 +372,7 @@ mod tests {
                 path: "/Applications/TestApp.app".into(),
                 aliases: vec![],
                 icon: String::new(),
+                bundle_id: String::new(),
             }],
             vec![],
             test_providers(),
@@ -506,7 +535,7 @@ mod tests {
     fn files_bookmarks_tab_excludes_apps_and_menus() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine::new_for_test(
-            vec![AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![], icon: String::new() }],
+            vec![AppEntry { name: "TestApp".into(), path: "/Applications/TestApp.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() }],
             vec![],
             test_providers(),
         );
@@ -521,7 +550,7 @@ mod tests {
         setup_test_db();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let engine = SearchEngine::new_for_test(
-            vec![AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new() }],
+            vec![AppEntry { name: "Chrome".into(), path: "/Applications/Chrome.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() }],
             vec![],
             test_providers(),
         );
@@ -548,7 +577,7 @@ mod tests {
     #[test]
     fn refresh_app_index_replaces_in_memory_index() {
         let engine = SearchEngine::new_for_test(
-            vec![AppEntry { name: "OldApp".into(), path: "/Applications/OldApp.app".into(), aliases: vec![], icon: String::new() }],
+            vec![AppEntry { name: "OldApp".into(), path: "/Applications/OldApp.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() }],
             vec![],
             test_providers(),
         );
@@ -559,7 +588,7 @@ mod tests {
 
         // 模拟 refresh：直接替换内存索引（绕过 rescan 的文件系统扫描）
         *engine.app_index.write() = crate::app_index::AppIndex {
-            apps: vec![AppEntry { name: "NewApp".into(), path: "/Applications/NewApp.app".into(), aliases: vec![], icon: String::new() }],
+            apps: vec![AppEntry { name: "NewApp".into(), path: "/Applications/NewApp.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() }],
         };
         // 替换后：搜 new 命中，搜 old 不命中
         let r = rt.block_on(engine.search("new", "apps"));
@@ -572,7 +601,7 @@ mod tests {
     #[test]
     fn app_index_rwlock_concurrent_safe() {
         let engine = std::sync::Arc::new(SearchEngine::new_for_test(
-            vec![AppEntry { name: "App".into(), path: "/Applications/App.app".into(), aliases: vec![], icon: String::new() }],
+            vec![AppEntry { name: "App".into(), path: "/Applications/App.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() }],
             vec![],
             test_providers(),
         ));
@@ -599,6 +628,7 @@ mod tests {
                     path: format!("/Applications/App{}.app", i),
                     aliases: vec![],
                     icon: String::new(),
+                    bundle_id: String::new(),
                 }],
             };
         }
@@ -691,5 +721,32 @@ mod tests {
         ];
         dedup_by_identity(&mut results);
         assert_eq!(results.len(), 1, "同 url 应合并");
+    }
+
+    /// all_apps() 返回有 bundle_id 的应用，按 name 排序，过滤掉无 bundle_id 的。
+    #[test]
+    fn all_apps_filters_empty_bundle_id_and_sorts_by_name() {
+        let engine = SearchEngine::new_for_test(
+            vec![
+                AppEntry { name: "Zeta".into(), path: "/Applications/Zeta.app".into(), aliases: vec![], icon: String::new(), bundle_id: "com.zeta.app".into() },
+                AppEntry { name: "Alpha".into(), path: "/Applications/Alpha.app".into(), aliases: vec![], icon: String::new(), bundle_id: "com.alpha.app".into() },
+                // 无 bundle_id 的应被过滤
+                AppEntry { name: "NoBid".into(), path: "/Applications/NoBid.app".into(), aliases: vec![], icon: String::new(), bundle_id: String::new() },
+            ],
+            vec![],
+            vec![],
+        );
+        let apps = engine.all_apps();
+        assert_eq!(apps.len(), 2, "无 bundle_id 的 app 应被过滤");
+        assert_eq!(apps[0].name, "Alpha", "应按 name 排序（不区分大小写）");
+        assert_eq!(apps[0].bundle_id, "com.alpha.app");
+        assert_eq!(apps[1].name, "Zeta");
+    }
+
+    /// all_apps() 空索引返回空 Vec。
+    #[test]
+    fn all_apps_empty_index_returns_empty() {
+        let engine = SearchEngine::new_for_test(vec![], vec![], vec![]);
+        assert!(engine.all_apps().is_empty());
     }
 }

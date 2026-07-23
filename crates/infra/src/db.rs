@@ -379,13 +379,65 @@ fn migrate_v47_to_v48(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v48→v49：action_bar_items 加 app_bundle_ids 列 + launcher_index 加 bundle_id 列。
+///
+/// 两列都用于 app-aware 菜单绑定功能：
+/// - `action_bar_items.app_bundle_ids`：JSON 数组字符串，菜单项绑定哪些 app（空=全局项）
+/// - `launcher_index.bundle_id`：应用索引的 CFBundleIdentifier，app 多选器的稳定 key
+///
+/// 幂等：PRAGMA table_info 检查列不存在才 ALTER。两个表独立检查（测试库可能只有其中一个）。
+fn migrate_v48_to_v49(conn: &Connection) -> Result<()> {
+    // action_bar_items 加 app_bundle_ids 列
+    let has_app_bundle_ids = conn
+        .prepare("SELECT 1 FROM pragma_table_info('action_bar_items') WHERE name = 'app_bundle_ids'")?
+        .exists([])?;
+    if !has_app_bundle_ids {
+        let has_table = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_bar_items'")?
+            .exists([])?;
+        if has_table {
+            conn.execute(
+                "ALTER TABLE action_bar_items ADD COLUMN app_bundle_ids TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            log::info!("schema v49: action_bar_items 补 app_bundle_ids 列");
+        }
+    }
+    // launcher_index 加 bundle_id 列
+    let has_bundle_id = conn
+        .prepare("SELECT 1 FROM pragma_table_info('launcher_index') WHERE name = 'bundle_id'")?
+        .exists([])?;
+    if !has_bundle_id {
+        let has_table = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='launcher_index'")?
+            .exists([])?;
+        if has_table {
+            conn.execute(
+                "ALTER TABLE launcher_index ADD COLUMN bundle_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+            log::info!("schema v49: launcher_index 补 bundle_id 列");
+        }
+    }
+    conn.execute("PRAGMA user_version = 49", [])?;
+    log::info!("schema upgraded to v49 (action_bar_items.app_bundle_ids + launcher_index.bundle_id)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 48 {
-        // v48+ 已最新，直接返回。
+    if v >= 49 {
+        // v49+ 已最新，直接返回。
+        return Ok(());
+    }
+
+    // v48→v49：action_bar_items.app_bundle_ids + launcher_index.bundle_id（app-aware 菜单绑定）。
+    // 独立 helper——在 v==48 库、v47→v48 后、v46→v47→v48 后三处调用。
+    if v == 48 {
+        migrate_v48_to_v49(conn)?;
         return Ok(());
     }
 
@@ -394,6 +446,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 详见 spec 2026-07-22-builtin-models.md §4。
     if v == 47 {
         migrate_v47_to_v48(conn)?;
+        migrate_v48_to_v49(conn)?;
         return Ok(());
     }
 
@@ -415,8 +468,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48（v46 库同一次启动完成 v47→v48）
+        // 继续迁移到 v48→v49（v46 库同一次启动完成 v47→v48→v49）
         migrate_v47_to_v48(conn)?;
+        migrate_v48_to_v49(conn)?;
         return Ok(());
     }
 
@@ -682,8 +736,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48（v17-v46 库同一次启动完成 v47→v48）
+        // 继续迁移到 v48→v49（v17-v46 库同一次启动完成 v47→v48→v49）
         migrate_v47_to_v48(conn)?;
+        migrate_v48_to_v49(conn)?;
         return Ok(());
     }
 
@@ -693,9 +748,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含 source_type 字段（v48 schema）+ sync_md5 + hotword_sets TEXT id + deleted_at，直接设 v48
-    conn.execute("PRAGMA user_version = 48", [])?;
-    log::info!("DB initialized (v48): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含 source_type 字段（v48 schema）+ sync_md5 + hotword_sets TEXT id + deleted_at
+    // + app_bundle_ids + launcher_index.bundle_id（v49 schema），直接设 v49
+    conn.execute("PRAGMA user_version = 49", [])?;
+    log::info!("DB initialized (v49): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1969,9 +2025,11 @@ pub struct ActionBarItem {
     pub trigger_keyword: String,
     pub global_shortcut: String,
     pub need_voice: bool,
+    /// JSON 数组字符串 ["com.apple.Safari"]，空串=全局项（所有 app 显示）。app-aware 绑定。
+    pub app_bundle_ids: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut, need_voice";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut, need_voice, app_bundle_ids";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -1992,6 +2050,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         trigger_keyword: row.get(14)?,
         global_shortcut: row.get(15)?,
         need_voice: row.get::<_, i32>(16)? != 0,
+        app_bundle_ids: row.get(17)?,
     })
 }
 
@@ -2091,8 +2150,9 @@ pub fn insert_action_bar_item(
     trigger_keyword: &str,
     is_enabled: bool,
     need_voice: bool,
+    app_bundle_ids: &str,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled, need_voice))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled, need_voice, app_bundle_ids))
 }
 
 fn insert_action_bar_item_at(
@@ -2110,6 +2170,7 @@ fn insert_action_bar_item_at(
     trigger_keyword: &str,
     is_enabled: bool,
     need_voice: bool,
+    app_bundle_ids: &str,
 ) -> Result<i64> {
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
@@ -2122,9 +2183,9 @@ fn insert_action_bar_item_at(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12, ?14)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice, app_bundle_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12, ?14, ?15)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32, app_bundle_ids],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -2143,8 +2204,9 @@ pub fn update_action_bar_item(
     accepts: &str,
     trigger_keyword: &str,
     need_voice: bool,
+    app_bundle_ids: &str,
 ) -> Result<()> {
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice, app_bundle_ids))
 }
 
 fn update_action_bar_item_at(
@@ -2162,6 +2224,7 @@ fn update_action_bar_item_at(
     accepts: &str,
     trigger_keyword: &str,
     need_voice: bool,
+    app_bundle_ids: &str,
 ) -> Result<()> {
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
     if row.is_system && row.action_type != action_type {
@@ -2173,8 +2236,8 @@ fn update_action_bar_item_at(
         anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
     }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, need_voice=?12, updated_at=datetime('now') WHERE id=?13",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, need_voice as i32, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, need_voice=?12, app_bundle_ids=?13, updated_at=datetime('now') WHERE id=?14",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, need_voice as i32, app_bundle_ids, id],
     )?;
     Ok(())
 }
@@ -2245,13 +2308,14 @@ pub struct LauncherRow {
     pub source: String,       // command 的 brew/cargo/system，app 用 "applications"
     pub description: String,  // 英文描述
     pub keywords: String,     // LLM 生成的中英文关键字
+    pub bundle_id: String,    // app 的 CFBundleIdentifier（app-aware 绑定 key），command 无
 }
 
 /// 按 type 加载启动器索引行（type='app' 返回全部应用缓存，type='command' 返回命令缓存）。
 pub fn load_launcher_by_type(item_type: &str) -> Result<Vec<LauncherRow>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT type, name, path, alias, icon, source, description, keywords
+            "SELECT type, name, path, alias, icon, source, description, keywords, bundle_id
              FROM launcher_index WHERE type = ?1",
         )?;
         let rows = stmt.query_map(params![item_type], |r| Ok(LauncherRow {
@@ -2263,6 +2327,7 @@ pub fn load_launcher_by_type(item_type: &str) -> Result<Vec<LauncherRow>> {
             source: r.get(5)?,
             description: r.get(6)?,
             keywords: r.get(7)?,
+            bundle_id: r.get(8)?,
         }))?;
         Ok(collect_rows(rows, "load_launcher_by_type"))
     })
@@ -2280,12 +2345,12 @@ pub fn save_launcher_batch(item_type: &str, rows: &[LauncherRow]) -> Result<()> 
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO launcher_index
-                 (type, name, path, alias, icon, source, description, keywords)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (type, name, path, alias, icon, source, description, keywords, bundle_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for r in rows {
                 stmt.execute(params![
-                    item_type, r.name, r.path, r.alias, r.icon, r.source, r.description, r.keywords,
+                    item_type, r.name, r.path, r.alias, r.icon, r.source, r.description, r.keywords, r.bundle_id,
                 ])?;
             }
         }
@@ -2310,26 +2375,26 @@ pub fn update_launcher_keywords(item_type: &str, path: &str, keywords: &str) -> 
 // ── App Index Cache（应用索引缓存）——launcher_index 的 app wrapper ──────────
 //
 // load_app_index / save_app_index 是 search crate AppIndex::scan/rescan 的契约入口。
-// 保持签名不变（四元组 name/alias/path/icon），内部转 LauncherRow 读写 launcher_index
+// 五元组 name/alias/path/icon/bundle_id，内部转 LauncherRow 读写 launcher_index
 // 中 type='app' 的行——对 search crate 完全透明。
 
 /// 从 DB 加载应用索引缓存。空表返回空 Vec（触发首次扫描）。
-/// 返回 (name, alias, path, icon_base64)
-pub fn load_app_index() -> Result<Vec<(String, String, String, String)>> {
+/// 返回 (name, alias, path, icon_base64, bundle_id)
+pub fn load_app_index() -> Result<Vec<(String, String, String, String, String)>> {
     let rows = load_launcher_by_type("app")?;
-    Ok(rows.into_iter().map(|r| (r.name, r.alias, r.path, r.icon)).collect())
+    Ok(rows.into_iter().map(|r| (r.name, r.alias, r.path, r.icon, r.bundle_id)).collect())
 }
 
 /// 全量替换应用索引缓存（原子：DELETE 该 type + INSERT 在同一事务内）。
-/// apps: (name, alias, path, icon_base64)
+/// apps: (name, alias, path, icon_base64, bundle_id)
 ///
 /// **原子性保证**：转 LauncherRow 后走 [`save_launcher_batch`]，DELETE + INSERT 同事务，
 /// 中途 INSERT 失败（如磁盘满）会回滚 DELETE，避免 DB 变空表导致下次启动触发全量重扫
 /// + 期间搜索无 app。
-pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
+pub fn save_app_index(apps: &[(String, String, String, String, String)]) -> Result<()> {
     let launcher_rows: Vec<LauncherRow> = apps
         .iter()
-        .map(|(name, alias, path, icon)| LauncherRow {
+        .map(|(name, alias, path, icon, bundle_id)| LauncherRow {
             r#type: "app".into(),
             name: name.clone(),
             path: path.clone(),
@@ -2338,6 +2403,7 @@ pub fn save_app_index(apps: &[(String, String, String, String)]) -> Result<()> {
             source: "applications".into(),
             description: String::new(),
             keywords: String::new(),
+            bundle_id: bundle_id.clone(),
         })
         .collect();
     save_launcher_batch("app", &launcher_rows)
@@ -3918,7 +3984,7 @@ mod tests {
     fn action_bar_insert_with_shortcut() {
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true, false,
+            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true, false, "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.shortcut, "q");
@@ -3928,7 +3994,7 @@ mod tests {
     fn action_bar_update_shortcut() {
         let conn = open_init();
         update_action_bar_item_at(
-            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "", false,
+            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "", false, "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, 5).unwrap().unwrap();
         assert_eq!(item.shortcut, "p");
@@ -3938,9 +4004,9 @@ mod tests {
     fn action_bar_shortcut_conflict_rejected() {
         let conn = open_init();
         // id=2 设快捷键 't'
-        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "", false).unwrap();
+        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "", false, "").unwrap();
         // id=5 也想用 't' → 应失败
-        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "", false);
+        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "", false, "");
         assert!(result.is_err());
     }
 
@@ -4050,7 +4116,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 48, "全新库 init_schema 后应到 v48");
+        assert_eq!(v, 49, "全新库 init_schema 后应到 v49");
         // v48: models 表用 source_type（非旧 is_local）
         let has_source_type: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name='source_type'")
@@ -4132,9 +4198,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 48
+        // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
 
         // 验证列已改名
         let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)").unwrap()
@@ -4178,6 +4244,81 @@ mod tests {
             .unwrap();
         assert!(!manifest.is_empty(), "builtin 模型的 manifest (secret_key) 应被 fill_manifests 填充");
         assert!(manifest.contains("model.int8.onnx"), "manifest 应含 model.int8.onnx 文件条目");
+    }
+
+    /// v48→v49 迁移：action_bar_items 加 app_bundle_ids 列 + launcher_index 加 bundle_id 列。
+    /// 建一个 v48 库（有 action_bar_items + launcher_index 但无新列）→ 迁移 → 验证两列添加 + 默认值。
+    #[test]
+    fn migration_v48_to_v49_adds_app_bundle_ids_and_bundle_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 建一个 v48 schema：action_bar_items（无 app_bundle_ids）+ launcher_index（无 bundle_id）
+        conn.execute_batch(
+            "CREATE TABLE action_bar_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER DEFAULT NULL,
+                title TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '',
+                action_type TEXT NOT NULL, action_data TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0, is_system INTEGER NOT NULL DEFAULT 1,
+                is_enabled INTEGER NOT NULL DEFAULT 1, is_async INTEGER NOT NULL DEFAULT 1,
+                write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
+                shortcut TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '',
+                accepts TEXT NOT NULL DEFAULT 'text', trigger_keyword TEXT NOT NULL DEFAULT '',
+                global_shortcut TEXT NOT NULL DEFAULT '', need_voice INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE launcher_index (
+                type TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL,
+                alias TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                keywords TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (type, path)
+            );",
+        )
+        .unwrap();
+        // 插入测试数据
+        conn.execute(
+            "INSERT INTO action_bar_items (title, action_type, accepts) VALUES ('翻译','ai','text')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO launcher_index (type, name, path) VALUES ('app','Safari','/Applications/Safari.app')",
+            [],
+        )
+        .unwrap();
+        conn.execute("PRAGMA user_version = 48", []).unwrap();
+
+        // 运行迁移
+        init_schema(&conn).unwrap();
+
+        // 验证 user_version = 49
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 49);
+
+        // 验证 action_bar_items 有 app_bundle_ids 列，默认空串
+        let has_col: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('action_bar_items') WHERE name='app_bundle_ids'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_col, "action_bar_items 应有 app_bundle_ids 列");
+        let default_val: String = conn
+            .query_row("SELECT app_bundle_ids FROM action_bar_items WHERE title='翻译'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(default_val, "", "现有菜单项 app_bundle_ids 默认空串（全局项）");
+
+        // 验证 launcher_index 有 bundle_id 列，默认空串
+        let has_bid: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('launcher_index') WHERE name='bundle_id'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(has_bid, "launcher_index 应有 bundle_id 列");
+        let bid_val: String = conn
+            .query_row("SELECT bundle_id FROM launcher_index WHERE name='Safari'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bid_val, "", "现有应用 bundle_id 默认空串（旧缓存需重扫填充）");
     }
 
     #[test]
@@ -4407,14 +4548,14 @@ mod tests {
     fn save_app_index_atomic_on_failure() {
         setup_test_db();
         // 先写入 1 个合法应用
-        save_app_index(&[("App1".into(), "应用1".into(), "/Applications/App1.app".into(), "icon1".into())]).unwrap();
+        save_app_index(&[("App1".into(), "应用1".into(), "/Applications/App1.app".into(), "icon1".into(), "com.app1".into())]).unwrap();
         let count: i64 = with_db(|c| c.query_row("SELECT COUNT(*) FROM launcher_index WHERE type='app'", [], |r| r.get(0)).map_err(anyhow::Error::from)).unwrap();
         assert_eq!(count, 1, "初始应有 1 条记录");
 
         // 全量替换为 2 个新应用（App1 不在新批次中 → 应被 DELETE 清掉）
         save_app_index(&[
-            ("App2".into(), "应用2".into(), "/Applications/App2.app".into(), "icon2".into()),
-            ("App3".into(), "应用3".into(), "/Applications/App3.app".into(), "icon3".into()),
+            ("App2".into(), "应用2".into(), "/Applications/App2.app".into(), "icon2".into(), "com.app2".into()),
+            ("App3".into(), "应用3".into(), "/Applications/App3.app".into(), "icon3".into(), "com.app3".into()),
         ]).unwrap();
 
         // 关键断言：全量替换——App1 应消失，新批次 2 条就位
@@ -4501,9 +4642,9 @@ mod tests {
         // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
         init_schema(&conn).unwrap();
 
-        // 验证 user_version = 48
+        // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -4531,7 +4672,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true, false,
+            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true, false, "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -4548,7 +4689,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4678,7 +4819,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4706,7 +4847,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4780,7 +4921,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -4963,7 +5104,7 @@ mod tests {
 
         // 验证 user_version = 47（v46→v47 迁移加了 clipboard_history.deleted_at）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 48);
+        assert_eq!(v, 49);
 
         // id 类型应为 TEXT
         let id_type: String = conn
@@ -5975,8 +6116,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "", false).unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "", false, "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -5994,8 +6135,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true, false).unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

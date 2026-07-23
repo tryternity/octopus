@@ -660,6 +660,13 @@ settings:
     moveUp: 上移
     moveDown: 下移
     edit: 编辑
+    appBinding: 绑定应用
+    appBindingHint: 不绑定 = 在所有应用中显示（全局命令）。绑定后仅在该应用激活时出现。
+    appBindingEmpty: 点击选择应用
+    searchApps: 搜索应用
+    noAppsFound: 未找到应用
+    globalCommand: 全局命令
+    selectedApps: 已选
   clipboardPanel:
     filterAll: 全部
     groupType: 类型

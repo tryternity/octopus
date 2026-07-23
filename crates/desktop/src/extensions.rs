@@ -277,6 +277,7 @@ pub fn install_extension(
             "text",
             "",
             false,  // need_voice——script 类型不需要语音
+            "",     // app_bundle_ids——扩展导入默认全局项
         )
         .map_err(|e| e.to_string())?;
         Ok(id)
@@ -295,6 +296,7 @@ pub fn install_extension(
             "",
             is_enabled,
             false,  // need_voice——script 类型不需要语音
+            "",     // app_bundle_ids——扩展导入默认全局项
         )
         .map_err(|e| e.to_string())
     }

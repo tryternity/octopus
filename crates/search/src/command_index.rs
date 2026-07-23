@@ -61,6 +61,7 @@ impl CommandIndex {
                 alias: String::new(), icon: String::new(),
                 source: e.source.clone(), description: e.description.clone(),
                 keywords: e.keywords.clone(),
+                bundle_id: String::new(),  // command 无 bundle_id
             }).collect();
         let _ = octopus_infra::db::save_launcher_batch("command", &cache);
         log::info!("[search] 命令索引: {} 条", entries.len());

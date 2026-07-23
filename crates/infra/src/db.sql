@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     trigger_keyword TEXT NOT NULL DEFAULT '',
     global_shortcut TEXT NOT NULL DEFAULT '',
     need_voice  INTEGER NOT NULL DEFAULT 0,
+    app_bundle_ids TEXT NOT NULL DEFAULT '',   -- JSON 数组 ["com.apple.Safari"]，空=全局项（所有 app 显示）
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -371,6 +372,7 @@ CREATE TABLE IF NOT EXISTS launcher_index (
     source      TEXT NOT NULL DEFAULT '',     -- command 的来源（brew/cargo/system），app 用 'applications'
     description TEXT NOT NULL DEFAULT '',     -- 英文描述（command 用）
     keywords    TEXT NOT NULL DEFAULT '',     -- LLM 生成的中英文关键字（搜索增强用）
+    bundle_id   TEXT NOT NULL DEFAULT '',     -- app 的 CFBundleIdentifier（app-aware 绑定 key），command 无
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (type, path)
 );
