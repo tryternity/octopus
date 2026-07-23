@@ -288,7 +288,8 @@ pub async fn download_model(
             ..Default::default()
         };
 
-        let permit = sem.clone().acquire_owned().await.unwrap();
+        let permit = sem.clone().acquire_owned().await
+            .map_err(|e| format!("并发信号量获取失败: {e}"))?;
         let task_dl = Arc::clone(&dl);
         let task_tx = tx.clone();
         let task_path = path.clone();

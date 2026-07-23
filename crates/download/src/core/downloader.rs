@@ -401,7 +401,7 @@ impl Downloader {
                     log::warn!("hash mismatch (attempt {}), 删除 .part 重新下载", attempt + 1);
                     let _ = std::fs::remove_file(&part);
                     crate::core::resume::remove(&task.dest);
-                    // 重新规划段 + 重下
+                    // 重新规划段 + 重下——复用主 counter + 重启 pump 让前端看到重下进度
                     let new_segs = plan_segments(
                         total,
                         accept_ranges,
@@ -410,16 +410,46 @@ impl Downloader {
                         self.config.max_concurrent,
                     );
                     let _ = Downloader::ensure_part_file(&task.dest, total)?;
-                    let retry_counter = Arc::new(AtomicU64::new(0));
-                    self.download_chunked(
+                    // 重置主 counter 为 0（重下从头开始），重启进度泵
+                    counter.store(0, Ordering::Relaxed);
+                    let retry_pump_tx = progress.clone();
+                    let retry_pump_counter = Arc::clone(&counter);
+                    let retry_pump_cancel = cancel.cloned();
+                    let retry_pump = tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(Duration::from_millis(250));
+                        let mut est = SpeedEstimator::new();
+                        let mut last_inst = tokio::time::Instant::now();
+                        loop {
+                            interval.tick().await;
+                            if let Some(c) = &retry_pump_cancel { if c.is_cancelled() { break; } }
+                            let bytes = retry_pump_counter.load(Ordering::Relaxed);
+                            let now = tokio::time::Instant::now();
+                            let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
+                            last_inst = now;
+                            let _ = retry_pump_tx.send(Progress {
+                                downloaded_bytes: bytes,
+                                total_bytes: None, // 重下期间不设 total（避免与首次 total 冲突）
+                                speed_bps: Some(spd),
+                            }).await;
+                            if bytes >= total { break; }
+                        }
+                    });
+                    let retry_result = self.download_chunked(
                         url,
                         &part,
                         new_segs,
-                        Arc::clone(&retry_counter),
+                        Arc::clone(&counter),
                         cancel.cloned(),
                         None,
                         None,
-                    ).await?;
+                    ).await;
+                    retry_pump.abort();
+                    // 重下失败：清理 sidecar 后返回错误（不跳过清理）
+                    if let Err(e) = retry_result {
+                        let _ = std::fs::remove_file(&part);
+                        crate::core::resume::remove(&task.dest);
+                        return Err(e);
+                    }
                 }
             }
             if !verify_ok {
@@ -563,6 +593,7 @@ async fn download_segment_once_with_client(
         writer.seek(SeekFrom::Start(seg.begin))?;
         let mut skipped: u64 = 0;
         while skipped < seg.begin {
+            if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
             match tokio::time::timeout(cfg.read_timeout, stream.next()).await {
                 Ok(Some(chunk)) => {
                     let chunk = chunk.map_err(map_reqwest_transient)?;
@@ -630,6 +661,9 @@ async fn download_segment_once_with_client(
         end - start + 1
     };
     if written_this_call < expected_written {
+        // 回滚 counter：本次 fetch_add 的 written_this_call 字节无效（流提前结束），
+        // 不回滚会导致段级重试后 counter 虚高 >100%。
+        counter.fetch_sub(written_this_call as u64, Ordering::Relaxed);
         return Err(transient(TransientKind::Network, format!(
             "stream ended early: wrote {} of {} bytes for segment [{},{}]",
             written_this_call, expected_written, seg.begin, seg.end
