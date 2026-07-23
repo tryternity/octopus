@@ -12,6 +12,7 @@
 //! 复用 octopus-download crate（Downloader/DownloadTask/Progress/Hash）和 resolve_model_dir。
 
 use serde::{Serialize, Deserialize};
+use std::path::Path;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 
@@ -87,11 +88,77 @@ pub struct ModelFile {
     pub exists: bool,
 }
 
-/// 列出某模型的所有文件（manifest 解析 + 逐文件 sha256 校验）。
+/// sidecar 缓存：模型文件 SHA256 校验结果（避免每次 hover 都读整个文件算 hash）。
+/// 存在模型目录下的 `.verified.json`，记录每文件的 size + mtime + sha256。
+/// 后续校验先 stat() 比对 size+mtime（微秒级），不匹配才算 SHA256。
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct VerifiedCache {
+    files: std::collections::HashMap<String, VerifiedEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VerifiedEntry {
+    size: u64,
+    mtime: u64,
+    sha256: String,
+}
+
+/// 读模型目录下的 .verified.json 缓存。
+fn load_verified_cache(dir: &Path) -> VerifiedCache {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(".verified.json")).unwrap_or_default())
+        .unwrap_or_default()
+}
+
+/// 写 .verified.json 缓存。
+fn save_verified_cache(dir: &Path, cache: &VerifiedCache) {
+    if let Ok(json) = serde_json::to_string(cache) {
+        let _ = std::fs::write(dir.join(".verified.json"), json);
+    }
+}
+
+/// 校验单文件是否存在且完好——优先用 sidecar 缓存（stat 快检），不匹配才算 SHA256。
+fn check_file_with_cache(dir: &Path, path: &str, expected_sha256: &str, cache: &mut VerifiedCache) -> bool {
+    let full = dir.join(path);
+    let meta = match std::fs::metadata(&full) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let size = meta.len();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // size 快检——不匹配直接 false（不用算 hash）
+    if size == 0 {
+        return false;
+    }
+
+    // sidecar 快检——size + mtime 匹配则跳过 SHA256（文件没变过）
+    if let Some(entry) = cache.files.get(path) {
+        if entry.size == size && entry.mtime == mtime && entry.sha256 == expected_sha256 {
+            return true;
+        }
+    }
+
+    // 缓存未命中或不匹配——读文件算 SHA256
+    let ok = octopus_asr_local::manifest::verify_file_sha256(&full, expected_sha256);
+    if ok {
+        cache.files.insert(path.to_string(), VerifiedEntry {
+            size,
+            mtime,
+            sha256: expected_sha256.to_string(),
+        });
+    }
+    ok
+}
+
+/// 列出某模型的所有文件（manifest 解析 + 逐文件校验，sidecar 缓存加速）。
 /// 供 DownloadPopover 浮层展示文件级列表 + 「已存在=100%」状态。
 ///
-/// sha256 校验是 CPU+IO 密集——用 spawn_blocking 移出 Tauri 命令线程，
-/// 避免 hover 浮层时阻塞（26MB 文件算 hash 约几十~百毫秒）。
+/// 首次校验需读文件算 SHA256（26MB ~百毫秒），后续校验走 stat 快检（微秒级）。
 #[tauri::command]
 pub async fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
     tokio::task::spawn_blocking(move || {
@@ -105,20 +172,29 @@ pub async fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
 
         let dir = octopus_asr_local::config::resolve_model_dir(&repo).ok();
 
-        Ok(manifest
-            .iter()
-            .map(|(path, file)| {
-                let exists = dir
-                    .as_ref()
-                    .map(|d| octopus_asr_local::manifest::verify_file_sha256(&d.join(path), &file.sha256))
-                    .unwrap_or(false);
-                ModelFile {
-                    path: path.clone(),
-                    size: file.size,
-                    exists,
-                }
-            })
-            .collect())
+        let result: Vec<ModelFile> = if let Some(ref dir) = dir {
+            let mut cache = load_verified_cache(dir);
+            let out: Vec<ModelFile> = manifest
+                .iter()
+                .map(|(path, file)| {
+                    let exists = check_file_with_cache(dir, path, &file.sha256, &mut cache);
+                    ModelFile {
+                        path: path.clone(),
+                        size: file.size,
+                        exists,
+                    }
+                })
+                .collect();
+            save_verified_cache(dir, &cache);
+            out
+        } else {
+            manifest
+                .iter()
+                .map(|(path, file)| ModelFile { path: path.clone(), size: file.size, exists: false })
+                .collect()
+        };
+
+        Ok(result)
     })
     .await
     .map_err(|e| format!("list_model_files 任务异常: {e}"))?
@@ -227,6 +303,8 @@ pub async fn download_model(
 
     // 4. 目标目录：~/.octopus/models/{repo}/
     let dest_base = octopus_infra::paths::octopus_config_home().join("models").join(&repo);
+    // 清空旧 .verified.json 缓存（下载会改文件 mtime，旧缓存过期）
+    let _ = std::fs::remove_file(dest_base.join(".verified.json"));
 
     // 5. 并发下载（JoinSet + Semaphore 限 4 并发）
     use std::sync::Arc;
