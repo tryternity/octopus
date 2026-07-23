@@ -375,6 +375,17 @@ mod tests {
     }
 
     #[test]
+    fn test_hotword_leci_to_reci() {
+        // 用户报告：「乐词」应被纠正为「热词」（le-ci → re-ci，l/r 混淆）
+        // 需先开 rl 模糊规则（实际运行时 reload_fuzzy_dialect("r/l") 会设）
+        let _g = serial();
+        crate::hotword::set_fuzzy_rules(crate::hotword::FuzzyRules { rl: true, ..Default::default() });
+        let c = with_hotwords(&["热词"]);
+        let result = c.correct("乐词");
+        assert_eq!(result, "热词", "乐词应被热词纠正为热词（l/r 混淆）");
+    }
+
+    #[test]
     fn test_hotword_fuzzy_accent() {
         let _g = serial();
         let c = with_hotwords(&["卫生"]);
