@@ -16,7 +16,7 @@ use std::path::Path;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 
-use octopus_asr_local::manifest::{bootstrap_manifest, verify_against_manifest, Manifest};
+use octopus_asr_local::manifest::{bootstrap_manifest, Manifest};
 
 use crate::runtime_config::SharedRuntimeConfig;
 
@@ -478,10 +478,21 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
         });
     }
 
-    // 清单非空 → 复核。
+    // 清单非空 → 复核（用 sidecar 缓存加速——stat 快检，不匹配才算 SHA256）。
     let manifest: Manifest = serde_json::from_str(&secret_key)
         .map_err(|e| format!("校验清单解析失败（可重新下载修复）: {e:?}"))?;
-    let broken = verify_against_manifest(&dir, &manifest);
+    let mut cache = load_verified_cache(&dir);
+    let broken: Vec<String> = manifest
+        .iter()
+        .filter_map(|(path, file)| {
+            if check_file_with_cache(&dir, path, &file.sha256, &mut cache) {
+                None
+            } else {
+                Some(path.clone())
+            }
+        })
+        .collect();
+    save_verified_cache(&dir, &cache);
     if broken.is_empty() {
         apply_model_state(&repo, None, true)?;
         Ok(VerifyResult {
