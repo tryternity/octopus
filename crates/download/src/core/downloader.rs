@@ -586,6 +586,33 @@ async fn download_segment_once_with_client(
     let mut stream = resp.bytes_stream();
     let mut written_this_call: u64 = 0;
 
+    // RAII counter guard：drop 时若未 commit，自动 fetch_sub 回滚本次累加的字节。
+    // 统一覆盖所有中途失败路径（reqwest 错误 / Io 错误 / timeout / 流提前结束），
+    // 避免 counter 虚高 >100%。
+    struct CounterGuard<'a> {
+        counter: &'a AtomicU64,
+        amount: u64,
+        committed: bool,
+    }
+    impl Drop for CounterGuard<'_> {
+        fn drop(&mut self) {
+            if !self.committed && self.amount > 0 {
+                self.counter.fetch_sub(self.amount, Ordering::Relaxed);
+            }
+        }
+    }
+    let mut counter_guard = CounterGuard { counter, amount: 0, committed: false };
+
+    // 宏：累加 written + counter + guard，避免每处手写 3 行
+    macro_rules! add_written {
+        ($n:expr) => {{
+            let n = $n as u64;
+            written_this_call += n;
+            counter.fetch_add(n, Ordering::Relaxed);
+            counter_guard.amount += n;
+        }};
+    }
+
     if status == 200 {
         // 200 全文：服务端忽略 Range，返回整个文件。
         // 本段只需 [seg.begin, seg.end] 区间的字节——
@@ -605,8 +632,7 @@ async fn download_segment_once_with_client(
                         let write_len = data.len().min(seg_remain);
                         if write_len > 0 {
                             writer.write_all(&data[..write_len])?;
-                            written_this_call += write_len as u64;
-                            counter.fetch_add(write_len as u64, Ordering::Relaxed);
+                            add_written!(write_len);
                         }
                         break;
                     } else {
@@ -628,8 +654,7 @@ async fn download_segment_once_with_client(
                     let write_len = chunk.len().min(remain);
                     if write_len == 0 { continue; } // 空 chunk 不代表流结束
                     writer.write_all(&chunk[..write_len])?;
-                    written_this_call += write_len as u64;
-                    counter.fetch_add(write_len as u64, Ordering::Relaxed);
+                    add_written!(write_len);
                 }
                 Ok(None) => break,
                 Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
@@ -644,8 +669,7 @@ async fn download_segment_once_with_client(
                     if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
                     let bytes = chunk.map_err(map_reqwest_transient)?;
                     writer.write_all(&bytes)?;
-                    written_this_call += bytes.len() as u64;
-                    counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                    add_written!(bytes.len());
                 }
                 Ok(None) => break,
                 Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
@@ -661,15 +685,14 @@ async fn download_segment_once_with_client(
         end - start + 1
     };
     if written_this_call < expected_written {
-        // 回滚 counter：本次 fetch_add 的 written_this_call 字节无效（流提前结束），
-        // 不回滚会导致段级重试后 counter 虚高 >100%。
-        counter.fetch_sub(written_this_call as u64, Ordering::Relaxed);
+        // guard drop 自动回滚 counter（未 commit）
         return Err(transient(TransientKind::Network, format!(
             "stream ended early: wrote {} of {} bytes for segment [{},{}]",
             written_this_call, expected_written, seg.begin, seg.end
         )));
     }
     // 200 截断：downloaded = 段大小；206 续传则累加
+    counter_guard.committed = true; // 成功——guard 不回滚
     let new_downloaded = if status == 200 { written_this_call } else { seg.downloaded + written_this_call };
     Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
 }
