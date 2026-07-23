@@ -38,6 +38,7 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const [ocrModels, setOcrModels] = useState<OcrOption[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
+  const [activePopoverRepo, setActivePopoverRepo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -134,6 +135,8 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {rows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
+            popoverOpen={activePopoverRepo === m.repo}
+            onPopoverOpenChange={(open) => setActivePopoverRepo(open ? m.repo : null)}
             onActivate={() => m.cloudId && onActivate(m.cloudId)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}

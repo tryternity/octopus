@@ -54,6 +54,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const [engines, setEngines] = useState<EngineOption[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
+  const [activePopoverRepo, setActivePopoverRepo] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -223,6 +224,8 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${downloadable.length}`}>
         {localRows.map((m) => (
           <ModelRow key={m.repo} model={m} progress={progress[m.repo]} busy={busyRepo === m.repo}
+            popoverOpen={activePopoverRepo === m.repo}
+            onPopoverOpenChange={(open) => setActivePopoverRepo(open ? m.repo : null)}
             onActivate={() => m.cloudId && onActivate(m.cloudId, m.repo, m.name)}
             onDownload={() => onDownload(m.repo)}
             onVerify={() => onVerify(m.repo, m.name)}
