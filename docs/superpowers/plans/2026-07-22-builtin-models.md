@@ -266,4 +266,4 @@ hover 浮层 / 激活 / 启动 sync 每次都读整个文件算 SHA256（26MB ~�
 
 ### Task 6.4：验证
 - [x] cargo build 0 error + desktop 394 pass + tsc OK
-- [ ] e2e（待用户验证）：hover/激活秒开，手动校验才读文件
+- [x] e2e（用户验证通过 2026-07-23）：hover/激活秒开，手动校验才读文件
