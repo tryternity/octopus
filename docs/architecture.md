@@ -940,6 +940,48 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **流式 paraformer `raw_samples` 无界增长**——涉及 AGENTS.md 警告的 ASR 不变量，需重设计帧索引体系 + 真实音频回归测试。
 - **paddle-ocr NEON port**——4 个文件多个函数需手写 `std::arch::aarch64` NEON intrinsics + OCR 回归测试，详见 [backlog spec](superpowers/specs/archived/2026-07-17-paddle-ocr-neon-port-backlog.md)。
 
+## 打包 / 分发（macOS DMG）
+
+2026-07-23 首次建立 macOS 打包链路。此前项目一直是「裸二进制 `cargo run`」运行（无 `.app` bundle），打包后系统权限（屏幕录制/辅助功能/麦克风）从绑定 Terminal 改为绑定 octopus 本身。
+
+**打包脚本**：`scripts/build-macos-dmg.sh`
+```bash
+./scripts/build-macos-dmg.sh              # 默认 --profile optimize（LTO+strip，生产级）
+./scripts/build-macos-dmg.sh --no-lto     # release profile（无 LTO，调试打包流程用）
+./scripts/build-macos-dmg.sh --open       # 构建完冒烟测试
+```
+
+**产物路径**：
+- `.app`：`target/<profile>/bundle/macos/octopus.app`
+- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2 压缩，~40MB）
+
+**feature 组合**：`embedded,cloud,vault,custom-protocol`
+- `custom-protocol` 生产 build 必须启用，让 tauri 走 `frontendDist`（嵌入 dist）而非 `devUrl`（`cfg(dev) = !has_feature("custom-protocol")`，与 release/debug profile 无关）
+
+**打包链路关键决策**：
+
+1. **dmg bundling 不走 Tauri 自带 `bundle_dmg.sh`**（create-dmg fork）——它在部分环境失败（Finder AppleScript 美化步骤），且 Tauri 吞掉 stderr 难诊断。改为 `cargo tauri build -b app` 只生成 `.app`，再用 macOS 原生 `hdiutil create -format UDBZ` 打 dmg。
+
+2. **`beforeBuildCommand` 设 null**——Tauri 2 的 beforeBuildCommand（字符串形式 `cd frontend && npm run build`）CWD 行为不可靠（workspace 根执行时找不到 `frontend` 目录）。前端构建由脚本手动完成（与 `run-octopus.sh` 一致）。
+
+3. **resources 映射用对象形式**——seeds 目录在 `crates/infra/seeds/`（desktop crate 之外）。`tauri.conf.json` `bundle.resources` 用对象形式 `{ "../infra/seeds/": "seeds/" }`（key=source 可含 `../`，value=destination），正确落到 `Resources/seeds/` 保留子目录结构。数组形式 `["../infra/seeds/"]` 的 `..` 会被字面编码成 `_up_`，**勿用**。
+
+4. **`seeds_dir()` 三路解析**（`crates/infra/src/seeds.rs:15-44`）：(1) dev `$CARGO_MANIFEST_DIR/seeds` → (2) 裸二进制 `<exe-parent>/seeds` → (3) `.app` bundle `Contents/Resources/seeds`（exe 在 `Contents/MacOS/`，`parent().parent()` 得 `Contents/`，join `Resources/seeds`）。seeds 缺失为非致命降级（log::error 跳过，不阻塞 schema 升级），但会导致无默认润色 prompt / LLM provider 目录 / PPT agent 菜单。
+
+5. **Tauri profile 痛点**：`cargo tauri build` 无原生 `--profile`，通过 `--` 透传（`cargo tauri build -f ... -- --profile optimize`）。bundler 默认查 `target/release/`，非 release profile 需较新 tauri-cli（2.11.4+ 已支持跟随 cargo profile 定位 binary）。GitHub #15019 跟踪此问题。
+
+**运行时资源嵌 入情况**（打包无需额外处理）：
+- VAD ONNX（1.8MB）、ASR 纠正器、hans 表、db.sql、i18n yaml：`include_bytes!`/`include_str!` 编译期嵌入
+- 默认 ASR 模型（zipformer-small 27M）：首次启动从 hf-mirror.com 下载到 `~/.octopus/models/`
+- seeds（28KB，5 文件）：唯一需 resource 映射的运行时文件
+
+**当前限制**（未签名内测版）：
+- 无 Apple 代码签名 + 公证 → 用户首次打开需右键 → 打开（或系统设置允许）
+- 仅 arm64（当前机器架构），无 Universal Binary
+- 无自动更新
+
+详见 [plan](superpowers/plans/2026-07-23-macos-dmg-packaging.md)。
+
 ## 技术栈
 
 - **推理引擎**: ONNX Runtime（通过 ort crate）；可选硬件加速——按平台注册 CoreML/CUDA/DirectML execution provider（`app_config.asr_hardware_accelerated` 控制，默认 `false`，两层降级见上节），VAD 固定 CPU。config 经 `APP_CONFIG` OnceLock 缓存避免每次 session 构建重复读 DB。

@@ -94,7 +94,7 @@ const AI_TIMEOUT_MS = 10000;
  *  搜索模式不受影响（←/→ 始终移光标，搜索模式无"菜单项间移动"概念）。 */
 const ARROW_AS_TAB = true;
 
-import { indexLabel, labelToIndex } from "./label";
+import { indexLabel } from "./label";
 
 /** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
  *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。 */

@@ -9,21 +9,32 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::PathBuf;
 
-/// seeds 目录绝对路径。
-/// dev（cargo run / cargo test）：$CARGO_MANIFEST_DIR/seeds
-/// release（裸二进制）：通过 Cargo.toml `package.include` 打包到 exe 同级/seeds
+/// seeds 目录绝对路径。三路解析（命中即返回）：
+/// 1. dev（cargo run / cargo test）：`$CARGO_MANIFEST_DIR/seeds`
+/// 2. 裸二进制 release：`<exe-parent>/seeds`（`Cargo.toml package.include` 打包到 exe 同级）
+/// 3. Tauri `.app` bundle：`<exe-parent>/../Resources/seeds`——exe 在
+///    `Octopus.app/Contents/MacOS/`，resources 由 `tauri.conf.json bundle.resources` 映射到
+///    `Octopus.app/Contents/Resources/seeds/`
 pub fn seeds_dir() -> PathBuf {
     // dev 路径——编译期取 Cargo.toml 所在目录
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("seeds");
     if dev.exists() {
         return dev;
     }
-    // release 路径——exe 同级/seeds
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
+            // release 路径——exe 同级/seeds（裸二进制）
             let release = parent.join("seeds");
             if release.exists() {
                 return release;
+            }
+            // Tauri .app bundle——exe 在 Contents/MacOS/，resources 在 Contents/Resources/
+            // parent=MacOS → parent.parent()=Contents → join Resources/seeds
+            if let Some(contents) = parent.parent() {
+                let app_bundle = contents.join("Resources").join("seeds");
+                if app_bundle.exists() {
+                    return app_bundle;
+                }
             }
         }
     }
