@@ -84,9 +84,9 @@ pub enum VadSource {
    - `ensure_db` 内调 `ensure_builtin_seed()`：幂等 `INSERT OR IGNORE` builtin 兜底引擎行 + `fill_manifests`（每次启动跑，防止历史库迁移时漏注入）
 2. **完整性校验 + is_available 同步**（`sync_builtin_models_availability`，preheat 之前）：
    - 查 DB `WHERE source_type=0` 的模型（`list_builtin_models()`）
-   - 逐个校验：`resolve_model_dir` 命中 + manifest 所有文件 sha256 通过（`verify_against_manifest`）→ ready
+   - 逐个校验：**stat 快检**（`.verified.json` 缓存：size+mtime 匹配 → 就绪，不匹配才算 SHA256）
    - ready != is_available → `set_model_available` 同步
-   - 结果缓存在 `OnceLock`（供 setup 阶段 check 复用，避免重复 sha256）
+   - 结果缓存在 `OnceLock`（供 setup 阶段 check 复用，避免重复校验）
 3. **缺失检测**（`check_builtin_models_missing`，setup 内）：读 OnceLock 缓存 → 返回缺失列表
 4. 有缺失 → 显示下载页（独立 Tauri 窗口 `download_window`，不阻断主窗口创建）
 5. 下载页列出缺失模型 + 大小 + 「下载并进入系统」按钮
@@ -98,11 +98,17 @@ pub enum VadSource {
 
 **模型管理页额外行为**：
 - 校验（verify）失败 → 自动触发下载修复
-- 激活（activate）前先校验完整性，损坏/缺失 → 自动下载修复后才激活
+- 激活（activate）前先校验完整性（stat 快检），损坏/缺失 → 自动下载修复后才激活
 - **DownloadPopover 浮层**（hover 文件按钮）：展示模型所有文件的列表 + 文件级进度
-  - `list_model_files` 命令返回 `[{path, size, exists}]`（exists = sha256 校验通过）
+  - `list_model_files` 命令返回 `[{path, size, exists}]`（exists = stat 快检或 SHA256 校验通过）
   - 监听 `download-progress`（文件级，带 `file` 字段）+ `download-file`（状态 start/done/error/skip）
   - 已存在文件显示 100% 绿勾，下载中显示进度条，待下载显示文件大小
+
+**校验性能优化（分层校验 + sidecar 缓存）**：
+- `.verified.json` sidecar 缓存：模型目录下记录每文件 size + mtime + sha256
+- **stat 快检**（启动 sync / hover / 激活前）：`stat()` 拿 size+mtime，匹配缓存 → 跳过 SHA256（微秒级）
+- **完整 SHA256**（手动校验按钮 `verify_model full=true`）：强制读文件算 hash，结果写回缓存
+- **下载完成后**：直接写 `.verified.json`（Downloader 内部已校验 hash，不重算）
 
 **下载事件设计**（并发场景）：
 - `download-progress`：`{repo, file, downloaded, total, speed}`——按文件区分进度

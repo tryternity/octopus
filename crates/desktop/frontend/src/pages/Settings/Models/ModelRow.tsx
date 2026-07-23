@@ -30,6 +30,8 @@ export function ModelRow({
   model,
   progress,
   busy,
+  popoverOpen,
+  onPopoverOpenChange,
   onActivate,
   onDownload,
   onVerify,
@@ -39,6 +41,8 @@ export function ModelRow({
   model: ModelRowData;
   progress?: DownloadProgress | null;
   busy: boolean;
+  popoverOpen?: boolean;
+  onPopoverOpenChange?: (open: boolean) => void;
   onActivate: () => void;
   onDownload: () => void;
   onVerify: () => void;
@@ -48,7 +52,13 @@ export function ModelRow({
   const t = useT();
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
   const showDownload = model.source_type !== 2 && !model.is_ready;
-  const [showPopover, setShowPopover] = useState(false);
+  // 内部 fallback 状态（无外部控制时用，如云端行不需互斥）
+  const [internalOpen, setInternalOpen] = useState(false);
+  const showPopover = onPopoverOpenChange ? (popoverOpen ?? false) : internalOpen;
+  const setShowPopover = (open: boolean) => {
+    if (onPopoverOpenChange) onPopoverOpenChange(open);
+    else setInternalOpen(open);
+  };
   const filesBtnRef = useRef<HTMLButtonElement>(null);
 
   return (
@@ -148,30 +158,30 @@ export function ModelRow({
                 <Pencil />
               </Button>
             )}
-
-            {/* 文件列表浮层（本地+builtin）—— hover/click 展示文件级进度 */}
-            {model.source_type !== 2 && (
-              <div className="relative">
-                <Button
-                  ref={filesBtnRef}
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setShowPopover((v) => !v)}
-                  onMouseEnter={() => setShowPopover(true)}
-                >
-                  <FileDown />
-                </Button>
-                {showPopover && (
-                  <DownloadPopover
-                    repo={model.repo}
-                    modelName={model.name}
-                    triggerRef={filesBtnRef}
-                    onClose={() => setShowPopover(false)}
-                  />
-                )}
-              </div>
-            )}
           </>
+        )}
+
+        {/* 文件列表浮层（本地+builtin，无论就绪/下载中/未下载）—— hover/click 展示文件级进度 */}
+        {model.source_type !== 2 && (
+          <div className="relative">
+            <Button
+              ref={filesBtnRef}
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setShowPopover(!showPopover)}
+              onMouseEnter={() => setShowPopover(true)}
+            >
+              <FileDown />
+            </Button>
+            {showPopover && (
+              <DownloadPopover
+                repo={model.repo}
+                modelName={model.name}
+                triggerRef={filesBtnRef}
+                onClose={() => setShowPopover(false)}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -189,6 +189,38 @@
 
 ---
 
+## Step 5：download crate 代码审查修复（4 轮，2026-07-23）
+
+多轮代码审查发现的 download crate（`crates/download/src/core/downloader.rs`）严重 bug 修复。
+
+### 第 1 轮：3 个严重 bug
+- [x] **hash 校验重试空转**：只重算同一文件 hash（确定性失败）→ 改为失败→删 .part→重下整个文件→再校验
+- [x] **200 全文段错位**：多段下载遇 200 时非首段写入全文前 N 字节（错位）→ 先跳过 seg.begin 字节再写段数据
+- [x] **stream 无超时**：body 流读取无 timeout（TCP stall 永久挂起）→ stream.next() 包裹 tokio::time::timeout
+
+### 第 2 轮：消除重复实现
+- [x] **方法/自由函数分叉**：修复打在仅测试调用的方法版（死代码），生产路径走自由函数（旧 buggy 逻辑）→ 方法版改为一行委托自由函数，删 130 行重复实现
+
+### 第 3 轮：流提前结束 + 守护测试
+- [x] **流提前结束静默成功**：Ok(None) break 后 written < expected 但仍返回 Ok → 加尾部校验返回 transient
+- [x] **空 chunk 过度反应**：write_len == 0 break 改为 continue
+- [x] **守护测试**：补 download_segment_short_stream_returns_transient（mock 短 body 断言 Transient）
+
+### 第 4 轮：counter 回滚 + hash 重下 + 其他
+- [x] **counter Transient 不回滚**：段级重试后 counter 虚高 >100% → RAII CounterGuard 统一兜底（drop 时未 commit 自动 fetch_sub）
+- [x] **hash 重下进度泵已停**：retry_counter 独立、pump 已 abort → 复用主 counter + 重启 pump
+- [x] **hash 重下失败跳过 sidecar 清理**：`?` 提前返回 → 显式错误处理 + 清理
+- [x] **skip 循环无 cancel**：加 cancel.is_cancelled() 检查
+- [x] **sem.acquire_owned unwrap**：改 map_err
+
+### 不修（设计取舍）
+- skip 字节不计 counter（属于其他段区间）
+- list 不做运行期探针（严格换实时性，verify/activate 兜底）
+- 416 归 Fatal（实际命中罕见）
+- counter 回滚后进度条短暂倒退（比 >100% 可接受）
+
+---
+
 ## 文档同步
 - [x] architecture.md：models 表 source_type 描述 + builtin 模型机制
 - [x] plan 文档：Step 2/3 全部 Task 标记完成 + 实际偏差记录
@@ -196,3 +228,42 @@
 - [x] features/db-and-config.md：models 表 is_local → source_type 字段 + builtin 兜底引擎描述
 - [x] features/asr-engine.md：resolve_model_dir + 兜底引擎描述更新（随包 → 首次下载）
 - [x] e2e 验证（用户验证通过 2026-07-22）
+
+---
+
+## Step 6：校验性能优化（sidecar 缓存 + 分层校验，2026-07-23）
+
+### 问题
+hover 浮层 / 激活 / 启动 sync 每次都读整个文件算 SHA256（26MB ~百毫秒），明显卡顿。
+
+### 方案：`.verified.json` sidecar 缓存 + 分层校验
+
+| 场景 | 校验方式 | 耗时 |
+|------|----------|------|
+| 启动 sync | stat 快检（size+mtime 匹配缓存） | 微秒级 |
+| hover 浮层 | stat 快检 | 微秒级 |
+| 激活前自动校验 | stat 快检（verify_model full=false） | 微秒级 |
+| 手动校验按钮 | 完整 SHA256（verify_model full=true） | ~百毫秒 |
+| 下载完成后 | 直接写 `.verified.json`（Downloader 已校验 hash） | 微秒级 |
+
+### Task 6.1：sidecar 缓存
+- [x] VerifiedCache / VerifiedEntry struct（serde，存 `.verified.json`）
+- [x] check_file_with_cache：stat 快检 → 缓存命中跳过 SHA256 → 不匹配才算 + 更新缓存
+- [x] list_model_files 改 async + spawn_blocking（消除 hover 卡顿）
+- [x] verify_model_inner 也用缓存（激活不再卡顿）
+
+### Task 6.2：分层校验
+- [x] verify_model 加 `full` 参数（手动校验 full=true 强制 SHA256，激活 full=false stat 快检）
+- [x] check_builtin_ready 改为 stat 快检
+- [x] download_model 成功后直接写 `.verified.json`（不重新校验）
+- [x] VerifiedCache/Entry + check_file_with_cache 改 pub(crate) 供 builtin_models 复用
+
+### Task 6.3：UX
+- [x] loading 浮层显示标题 + 「正在校验文件…」提示（不再空白转圈）
+- [x] 测试补 counter 回滚守护断言（成功 + 失败路径）
+- [x] **popover 互斥**：hover 状态提升到父级（AsrTab/OcrTab/TranslateTab），`activePopoverRepo` 单值控制——同时只显示一个浮层
+- [x] **FileDown 全状态显示**：hover 按钮从「仅已就绪」分支提到分支外，下载中/未下载也能 hover 看文件级进度
+
+### Task 6.4：验证
+- [x] cargo build 0 error + desktop 394 pass + tsc OK
+- [x] e2e（用户验证通过 2026-07-23）：hover/激活秒开，手动校验才读文件

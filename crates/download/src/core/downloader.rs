@@ -169,6 +169,8 @@ impl Downloader {
     /// 单段下载（也是多段每一段的内核）。
     /// 写入 part_path 的 [begin, end]，从 begin+downloaded 续。
     /// progress 计入 counter。返回更新后的 Segment（downloaded 可能增加）。
+    /// 委托自由函数 download_segment_with_client——消除重复实现，确保方法版与
+    /// 生产路径（download_chunked）走同一份代码（200 跳过 begin 字节 + stream timeout）。
     pub async fn download_segment(
         &self,
         url: &str,
@@ -177,91 +179,7 @@ impl Downloader {
         counter: &AtomicU64,
         cancel: Option<&CancellationToken>,
     ) -> Result<Segment, DownloadError> {
-        let mut attempt = 0u32;
-        loop {
-            if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
-            let result = self.download_segment_once(url, part_path, &seg, counter, cancel).await;
-            match result {
-                Ok(new_seg) => return Ok(new_seg),
-                Err(DownloadError::Transient { .. }) | Err(DownloadError::Http(_)) | Err(DownloadError::Io(_)) => {
-                    attempt += 1;
-                    if attempt > self.config.max_retries_per_segment {
-                        return Err(result.unwrap_err());
-                    }
-                    let backoff = backoff(self.config.backoff_base, attempt);
-                    log::warn!("segment [{},{}] attempt {attempt} failed, retry in {backoff:?}", seg.begin, seg.end);
-                    tokio::time::sleep(backoff).await;
-                }
-                Err(other) => return Err(other), // Fatal/Cancelled/HashMismatch 直接上抛
-            }
-        }
-    }
-
-    /// 单次段下载尝试。206→续写；200→truncate 重写该段；416→该段重头。
-    async fn download_segment_once(
-        &self,
-        url: &str,
-        part_path: &Path,
-        seg: &Segment,
-        counter: &AtomicU64,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<Segment, DownloadError> {
-        let start = seg.next_offset();
-        let end = seg.end;
-        if start > end { return Ok(*seg); } // 已完成
-        // 设计决策：不注入 If-Range。续传正确性依赖最终整文件 hash 校验兜底——
-        // 若服务端内容在断点后变更，写到 .part 的旧区段会被 hash 校验抓住并重下。
-        // 注入 If-Range 反而让不支持它的服务器/镜像回退 200 全文重传，得不偿失。
-        let req = self.client.get(url).header("Range", format!("bytes={start}-{end}"));
-        let resp = tokio::time::timeout(self.config.read_timeout, req.send())
-            .await
-            .map_err(|_| transient(TransientKind::Timeout, "segment read timeout"))?
-            .map_err(map_reqwest_transient)?;
-
-        let status = resp.status().as_u16();
-        if let Some(class) = classify_status(status) {
-            return Err(class_to_error(class, status, url));
-        }
-
-        use std::io::{SeekFrom, Write, Seek};
-        let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
-        // classify_status 已过滤 4xx/5xx（含 416），reqwest 自动跟随 3xx，
-        // 故此处仅可能是 200（服务端忽略 Range 从头覆盖该段）或 206（续传从 start）。
-        let _write_offset = if status == 200 {
-            file.seek(SeekFrom::Start(seg.begin))?;
-            seg.begin
-        } else {
-            file.seek(SeekFrom::Start(start))?;
-            start
-        };
-
-        let mut writer = std::io::BufWriter::with_capacity(self.config.buf_kb * 1024, file);
-        let mut stream = resp.bytes_stream();
-        let mut written_this_call: u64 = 0;
-        // 200 路径截断：服务端忽略 Range 返回全文时，仅写入段区间 [seg.begin, seg.end]
-        let seg_capacity = if status == 200 { seg.end - seg.begin + 1 } else { u64::MAX };
-        while let Some(chunk) = stream.next().await {
-            if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
-            let mut bytes = chunk.map_err(map_reqwest_transient)?;
-            // 200 截断：丢弃超出段区间的字节
-            if status == 200 && written_this_call + bytes.len() as u64 > seg_capacity {
-                let keep = (seg_capacity - written_this_call) as usize;
-                bytes.truncate(keep);
-            }
-            if bytes.is_empty() {
-                break;
-            }
-            writer.write_all(&bytes)?;
-            written_this_call += bytes.len() as u64;
-            counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            if status == 200 && written_this_call >= seg_capacity {
-                break;
-            }
-        }
-        writer.flush()?;
-        // 200 截断：downloaded = 段大小；206 续传则累加
-        let new_downloaded = if status == 200 { written_this_call } else { seg.downloaded + written_this_call };
-        Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
+        download_segment_with_client(&self.client, &self.config, url, part_path, seg, counter, cancel).await
     }
 
     /// 并发下载多段。每段独立 task，Semaphore 限并发，进度累计到 counter。
@@ -470,22 +388,73 @@ impl Downloader {
 
         done?;
 
-        // 校验
+        // 校验 + 失败重下：hash 不匹配时删 .part + sidecar 重下整个文件，而非只重算 hash。
+        // （hash 确定性：同一文件重算必然再失败；必须重新下载才有意义。）
         if let Some(expected) = &task.expected_hash {
-            let mut ok = false;
-            for _ in 0..=self.config.max_verification_retries {
+            let mut verify_ok = false;
+            for attempt in 0..=self.config.max_verification_retries {
                 if crate::core::verify::verify(&part, expected).await? {
-                    ok = true;
+                    verify_ok = true;
                     break;
                 }
-                log::warn!("hash mismatch, retrying verification");
-            }
-            if !ok {
-                // 先取实际 hash（part 尚在），再清理
-                let actual = match expected {
-                    Hash::Sha256(_) => {
-                        crate::core::verify::compute_sha256(&part).await.unwrap_or_default()
+                if attempt < self.config.max_verification_retries {
+                    log::warn!("hash mismatch (attempt {}), 删除 .part 重新下载", attempt + 1);
+                    let _ = std::fs::remove_file(&part);
+                    crate::core::resume::remove(&task.dest);
+                    // 重新规划段 + 重下——复用主 counter + 重启 pump 让前端看到重下进度
+                    let new_segs = plan_segments(
+                        total,
+                        accept_ranges,
+                        self.config.segment_size,
+                        self.config.chunk_threshold,
+                        self.config.max_concurrent,
+                    );
+                    let _ = Downloader::ensure_part_file(&task.dest, total)?;
+                    // 重置主 counter 为 0（重下从头开始），重启进度泵
+                    counter.store(0, Ordering::Relaxed);
+                    let retry_pump_tx = progress.clone();
+                    let retry_pump_counter = Arc::clone(&counter);
+                    let retry_pump_cancel = cancel.cloned();
+                    let retry_pump = tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(Duration::from_millis(250));
+                        let mut est = SpeedEstimator::new();
+                        let mut last_inst = tokio::time::Instant::now();
+                        loop {
+                            interval.tick().await;
+                            if let Some(c) = &retry_pump_cancel { if c.is_cancelled() { break; } }
+                            let bytes = retry_pump_counter.load(Ordering::Relaxed);
+                            let now = tokio::time::Instant::now();
+                            let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
+                            last_inst = now;
+                            let _ = retry_pump_tx.send(Progress {
+                                downloaded_bytes: bytes,
+                                total_bytes: None, // 重下期间不设 total（避免与首次 total 冲突）
+                                speed_bps: Some(spd),
+                            }).await;
+                            if bytes >= total { break; }
+                        }
+                    });
+                    let retry_result = self.download_chunked(
+                        url,
+                        &part,
+                        new_segs,
+                        Arc::clone(&counter),
+                        cancel.cloned(),
+                        None,
+                        None,
+                    ).await;
+                    retry_pump.abort();
+                    // 重下失败：清理 sidecar 后返回错误（不跳过清理）
+                    if let Err(e) = retry_result {
+                        let _ = std::fs::remove_file(&part);
+                        crate::core::resume::remove(&task.dest);
+                        return Err(e);
                     }
+                }
+            }
+            if !verify_ok {
+                let actual = match expected {
+                    Hash::Sha256(_) => crate::core::verify::compute_sha256(&part).await.unwrap_or_default(),
                     Hash::Etag(_) => String::new(),
                 };
                 let _ = std::fs::remove_file(&part);
@@ -610,45 +579,121 @@ async fn download_segment_once_with_client(
         return Err(class_to_error(class, status, url));
     }
 
-    use std::io::{Seek, SeekFrom, Write};
-    let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
-    let write_offset = if status == 200 { seg.begin } else { start };
-    file.seek(SeekFrom::Start(write_offset))?;
+    use std::io::{Seek, SeekFrom, Write, BufWriter};
+    let file = std::fs::OpenOptions::new().write(true).open(part_path)?;
 
-    let mut writer = std::io::BufWriter::with_capacity(cfg.buf_kb * 1024, file);
+    let mut writer = BufWriter::with_capacity(cfg.buf_kb * 1024, file);
     let mut stream = resp.bytes_stream();
-    let mut written: u64 = 0;
-    // 200 路径截断：服务端忽略 Range 返回全文时，仅写入段区间 [seg.begin, seg.end]
-    let seg_capacity = if status == 200 { seg.end - seg.begin + 1 } else { u64::MAX };
-    while let Some(chunk) = stream.next().await {
-        if let Some(c) = cancel {
-            if c.is_cancelled() {
-                return Err(DownloadError::Cancelled);
+    let mut written_this_call: u64 = 0;
+
+    // RAII counter guard：drop 时若未 commit，自动 fetch_sub 回滚本次累加的字节。
+    // 统一覆盖所有中途失败路径（reqwest 错误 / Io 错误 / timeout / 流提前结束），
+    // 避免 counter 虚高 >100%。
+    struct CounterGuard<'a> {
+        counter: &'a AtomicU64,
+        amount: u64,
+        committed: bool,
+    }
+    impl Drop for CounterGuard<'_> {
+        fn drop(&mut self) {
+            if !self.committed && self.amount > 0 {
+                self.counter.fetch_sub(self.amount, Ordering::Relaxed);
             }
         }
-        let mut bytes = chunk.map_err(map_reqwest_transient)?;
-        // 200 截断：丢弃超出段区间的字节
-        if status == 200 && written + bytes.len() as u64 > seg_capacity {
-            let keep = (seg_capacity - written) as usize;
-            bytes.truncate(keep);
+    }
+    let mut counter_guard = CounterGuard { counter, amount: 0, committed: false };
+
+    // 宏：累加 written + counter + guard，避免每处手写 3 行
+    macro_rules! add_written {
+        ($n:expr) => {{
+            let n = $n as u64;
+            written_this_call += n;
+            counter.fetch_add(n, Ordering::Relaxed);
+            counter_guard.amount += n;
+        }};
+    }
+
+    if status == 200 {
+        // 200 全文：服务端忽略 Range，返回整个文件。
+        // 本段只需 [seg.begin, seg.end] 区间的字节——
+        // 先 seek 到段的起始位置，然后跳过流中 seg.begin 个字节。
+        writer.seek(SeekFrom::Start(seg.begin))?;
+        let mut skipped: u64 = 0;
+        while skipped < seg.begin {
+            if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
+            match tokio::time::timeout(cfg.read_timeout, stream.next()).await {
+                Ok(Some(chunk)) => {
+                    let chunk = chunk.map_err(map_reqwest_transient)?;
+                    let remain = (seg.begin - skipped) as usize;
+                    if chunk.len() > remain {
+                        // chunk 跨越 skip 边界——保留 remain 之后的部分作为段数据
+                        let data = &chunk[remain..];
+                        let seg_remain = ((seg.end - seg.begin + 1) - written_this_call) as usize;
+                        let write_len = data.len().min(seg_remain);
+                        if write_len > 0 {
+                            writer.write_all(&data[..write_len])?;
+                            add_written!(write_len);
+                        }
+                        break;
+                    } else {
+                        skipped += chunk.len() as u64;
+                    }
+                }
+                Ok(None) => break, // 流提前结束
+                Err(_) => return Err(transient(TransientKind::Timeout, "stream skip timeout")),
+            }
         }
-        if bytes.is_empty() {
-            break;
+        // 继续读取段数据
+        let seg_capacity = seg.end - seg.begin + 1;
+        while written_this_call < seg_capacity {
+            match tokio::time::timeout(cfg.read_timeout, stream.next()).await {
+                Ok(Some(chunk)) => {
+                    if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
+                    let chunk = chunk.map_err(map_reqwest_transient)?;
+                    let remain = (seg_capacity - written_this_call) as usize;
+                    let write_len = chunk.len().min(remain);
+                    if write_len == 0 { continue; } // 空 chunk 不代表流结束
+                    writer.write_all(&chunk[..write_len])?;
+                    add_written!(write_len);
+                }
+                Ok(None) => break,
+                Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
+            }
         }
-        writer.write_all(&bytes)?;
-        written += bytes.len() as u64;
-        counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        if status == 200 && written >= seg_capacity {
-            break;
+    } else {
+        // 206 续传：从 start 位置开始写入
+        writer.seek(SeekFrom::Start(start))?;
+        loop {
+            match tokio::time::timeout(cfg.read_timeout, stream.next()).await {
+                Ok(Some(chunk)) => {
+                    if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
+                    let bytes = chunk.map_err(map_reqwest_transient)?;
+                    writer.write_all(&bytes)?;
+                    add_written!(bytes.len());
+                }
+                Ok(None) => break,
+                Err(_) => return Err(transient(TransientKind::Timeout, "stream read timeout")),
+            }
         }
     }
     writer.flush()?;
-    // 200 截断：downloaded = 段大小；206 续传则累加
-    let new_downloaded = if status == 200 {
-        written
+    // 流提前结束校验：200 路径需写满 seg_capacity；206 路径需写满段剩余（end - start + 1）。
+    // 不足说明服务端提前断流（网络中断/CDN 错误），返回 transient 触发段级重试。
+    let expected_written = if status == 200 {
+        seg.end - seg.begin + 1
     } else {
-        seg.downloaded + written
+        end - start + 1
     };
+    if written_this_call < expected_written {
+        // guard drop 自动回滚 counter（未 commit）
+        return Err(transient(TransientKind::Network, format!(
+            "stream ended early: wrote {} of {} bytes for segment [{},{}]",
+            written_this_call, expected_written, seg.begin, seg.end
+        )));
+    }
+    // 200 截断：downloaded = 段大小；206 续传则累加
+    counter_guard.committed = true; // 成功——guard 不回滚
+    let new_downloaded = if status == 200 { written_this_call } else { seg.downloaded + written_this_call };
     Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
 }
 
@@ -738,8 +783,42 @@ mod tests {
         // .part 大小应 = total（预分配不变）
         let written = std::fs::read(&part).unwrap();
         assert_eq!(written.len(), total_len as usize, ".part 大小应 = total");
-        // seg.begin=10 处应写入全文前 10 字节
-        assert_eq!(&written[10..20], &full_body[0..10], "段区间内容正确");
+        // seg.begin=10 处应写入全文 [10,19] 字节（非 [0,9]——200 全文需跳过前 10 字节）
+        assert_eq!(&written[10..20], &full_body[10..20], "段区间内容正确（200 跳过 offset 前字节）");
+        // 成功路径：counter 应 = 段大小 10（guard committed 不回滚）
+        assert_eq!(counter.load(Ordering::Relaxed), 10, "成功路径 counter = 段大小");
+    }
+
+    #[tokio::test]
+    async fn download_segment_short_stream_returns_transient() {
+        // 服务端返回 206 但 body 比声明的段短（只发 80 字节，段需 100）→ 应返回 Transient 而非 Ok
+        let server = MockServer::start();
+        let short_body = vec![0xABu8; 80];
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-99");
+            then.status(206)
+                .header("Content-Range", "bytes 0-99/100")
+                .body(short_body.clone());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let _ = Downloader::ensure_part_file(&dest, 100).unwrap();
+        let part = part_path(&dest);
+        let seg = Segment { begin: 0, end: 99, downloaded: 0 };
+        let counter = AtomicU64::new(0);
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let result = dl.download_segment(&server.url("/f"), &part, seg, &counter, None).await;
+        // download_segment 有段级重试（max_retries_per_segment=3），每次都短 body，
+        // 最终重试耗尽返回 Transient。不是 Ok（静默成功）也不是 HashMismatch。
+        assert!(result.is_err(), "短流应返回错误而非静默成功");
+        let err = result.unwrap_err();
+        match err {
+            DownloadError::Transient { .. } => {} // 正确：transient 触发段级重试
+            other => panic!("期望 Transient，得到 {:?}", other),
+        }
+        // 守护 counter 回滚：每次重试收到 80B 后 Transient 回滚，重试耗尽后 counter 应为 0。
+        // 若 RAII guard 被改坏（回滚失效），counter 会虚高（80*4=320）。
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "中途失败后 counter 应回滚到 0");
     }
 
     #[test]
