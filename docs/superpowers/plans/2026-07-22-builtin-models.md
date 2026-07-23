@@ -261,6 +261,8 @@ hover 浮层 / 激活 / 启动 sync 每次都读整个文件算 SHA256（26MB ~�
 ### Task 6.3：UX
 - [x] loading 浮层显示标题 + 「正在校验文件…」提示（不再空白转圈）
 - [x] 测试补 counter 回滚守护断言（成功 + 失败路径）
+- [x] **popover 互斥**：hover 状态提升到父级（AsrTab/OcrTab/TranslateTab），`activePopoverRepo` 单值控制——同时只显示一个浮层
+- [x] **FileDown 全状态显示**：hover 按钮从「仅已就绪」分支提到分支外，下载中/未下载也能 hover 看文件级进度
 
 ### Task 6.4：验证
 - [x] cargo build 0 error + desktop 394 pass + tsc OK
