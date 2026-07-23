@@ -785,6 +785,8 @@ mod tests {
         assert_eq!(written.len(), total_len as usize, ".part 大小应 = total");
         // seg.begin=10 处应写入全文 [10,19] 字节（非 [0,9]——200 全文需跳过前 10 字节）
         assert_eq!(&written[10..20], &full_body[10..20], "段区间内容正确（200 跳过 offset 前字节）");
+        // 成功路径：counter 应 = 段大小 10（guard committed 不回滚）
+        assert_eq!(counter.load(Ordering::Relaxed), 10, "成功路径 counter = 段大小");
     }
 
     #[tokio::test]
@@ -814,6 +816,9 @@ mod tests {
             DownloadError::Transient { .. } => {} // 正确：transient 触发段级重试
             other => panic!("期望 Transient，得到 {:?}", other),
         }
+        // 守护 counter 回滚：每次重试收到 80B 后 Transient 回滚，重试耗尽后 counter 应为 0。
+        // 若 RAII guard 被改坏（回滚失效），counter 会虚高（80*4=320）。
+        assert_eq!(counter.load(Ordering::Relaxed), 0, "中途失败后 counter 应回滚到 0");
     }
 
     #[test]
