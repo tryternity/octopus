@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   determineExpandDirection,
-  getTabByKey,
   getNextTab,
   getVisibleTabs,
   getTabIndex,
@@ -68,31 +67,6 @@ describe("determineExpandDirection", () => {
 
   it("输入框在屏幕底部 → 向上展开", () => {
     expect(determineExpandDirection(890, 900)).toBe("up");
-  });
-});
-
-// ── getTabByKey ──
-
-describe("getTabByKey", () => {
-  it("正确映射快捷键字符 → TabId", () => {
-    expect(getTabByKey("a")).toBe("all");
-    expect(getTabByKey("d")).toBe("apps");
-    expect(getTabByKey("f")).toBe("files");
-    expect(getTabByKey("b")).toBe("bookmarks");
-    expect(getTabByKey("z")).toBe("actions");
-    expect(getTabByKey("c")).toBe("commands");
-  });
-
-  it("无匹配返回 null", () => {
-    expect(getTabByKey("x")).toBeNull();
-    expect(getTabByKey("")).toBeNull();
-    expect(getTabByKey("A")).toBeNull(); // 大写不匹配
-    expect(getTabByKey(" ")).toBeNull();
-  });
-
-  it("hasContext=false 时 z（actions）不匹配 → null", () => {
-    expect(getTabByKey("z", false)).toBeNull();
-    expect(getTabByKey("a", false)).toBe("all"); // 其他 Tab 仍可用
   });
 });
 

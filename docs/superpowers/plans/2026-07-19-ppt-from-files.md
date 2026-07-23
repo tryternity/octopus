@@ -669,7 +669,7 @@ Expected: PASS
 
 # 用户的额外指令
 
-{{task}}
+{{voice}}
 
 # 推荐的 PPT Skill 清单（按需选一）
 
@@ -734,7 +734,7 @@ PPT 生成完成后，你必须在 Terminal 输出的最后一段明确告知用
 fn make_ppt_prompt_contains_required_placeholders() {
     let path = seeds_dir().join("agent_actions/make-ppt.prompt.md");
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("{{task}}"), "PPT prompt 必须含 {{task}} 占位符");
+    assert!(content.contains("{{voice}}"), "PPT prompt 必须含 {{voice}} 占位符");
     assert!(content.contains("{{files}}"), "PPT prompt 必须含 {{files}} 占位符");
     assert!(content.contains("guizang-ppt-skill"), "应推荐 guizang skill");
     assert!(content.contains("ppt-master"), "应推荐 ppt-master skill");
@@ -755,7 +755,7 @@ git commit -m "feat(infra/seeds): 完整内容——润色 prompt + llm_provider
 
 PPT prompt 是核心交付物：内联 4 条 skill 候选（guizang/lewislulu/ppt-master/
 OfficeCLI）+ 决策规则 + 未装降级 + 强制披露产物路径（绝对路径）+ 文件读取约束。
-对 agent 中立（pi/claude 都能读），只用 {{task}} {{files}} 占位符。"
+对 agent 中立（pi/claude 都能读），只用 {{voice}} {{files}} 占位符。"
 ```
 
 ---
@@ -1084,7 +1084,7 @@ pub(crate) fn trigger_agent_voice_core(
     Ok(())
 }
 
-/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
+/// agent 项含 {{voice}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
 #[tauri::command]
 pub async fn trigger_agent_voice(
     item_id: i64,
@@ -1118,7 +1118,7 @@ Expected: 0 error
 /// (_, true) → 走 execute_action_bar_inner
 /// (false, false) → 静默跳过（理论不出现，所有非 voice 路径都 direct）
 fn decide_files_action(action_type: &str, action_data: &str) -> (bool, bool) {
-    if action_type == "agent" && action_data.contains("{{task}}") {
+    if action_type == "agent" && action_data.contains("{{voice}}") {
         (true, false)
     } else {
         (false, true)
@@ -1131,7 +1131,7 @@ mod tests {
 
     #[test]
     fn decide_files_action_agent_with_task_triggers_voice() {
-        let (voice, direct) = decide_files_action("agent", "做 PPT：{{task}}\n文件：{{files}}");
+        let (voice, direct) = decide_files_action("agent", "做 PPT：{{voice}}\n文件：{{files}}");
         assert_eq!((voice, direct), (true, false));
     }
 
@@ -1221,7 +1221,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
         decide_files_action(&item.action_type, &item.action_data);
 
     if should_trigger_voice {
-        log::info!("[action-hotkey] File 选中 + agent + {{task}} → 触发音录 item_id={}", item_id);
+        log::info!("[action-hotkey] File 选中 + agent + {{voice}} → 触发音录 item_id={}", item_id);
         let coordinator = match app.try_state::<crate::coordinator::Coordinator>() {
             Some(c) => c,
             None => {
@@ -1238,7 +1238,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
     }
 
     if should_execute_directly {
-        // 非 agent 或无 {{task}} → 直接执行（prompt 用 {{files}} 渲染）
+        // 非 agent 或无 {{voice}} → 直接执行（prompt 用 {{files}} 渲染）
         log::info!("[action-hotkey] File 选中 + 直接执行 item_id={}", item_id);
         let app_clone = app.clone();
         let result = std::thread::spawn(move || -> Result<bool, String> {
@@ -1287,7 +1287,7 @@ git commit -m "feat(actionbar): Quick Execute 支持 agent × Files × 语音
 
 - 提取 trigger_agent_voice_core 公共函数（Tauri 命令 + quick_execute 共用）
 - quick_execute 增加 File/Folder 分支：
-  · agent + {{task}} → 走音录路径（hide_action_bar=false，不弹浮窗）
+  · agent + {{voice}} → 走音录路径（hide_action_bar=false，不弹浮窗）
   · 其他 → 走 execute_action_bar_inner 直接执行
 - 提取 decide_files_action 纯函数 + 4 个单测覆盖决策矩阵"
 ```
@@ -1404,7 +1404,7 @@ octopus 内置的 prompt 会推荐以下 4 个 skill，按你的偏好装一个�
 - [x] 找到「AI 命令面板」章节（行 286 附近），在「文件 Agent 桥接（2026-07-12）」段后追加新段
 
 ```markdown
-- **Agent 主菜单 + 外置 seed 机制（2026-07-19，v39 迁移）**：action_bar 新增独立「Agent」主菜单（`accepts=file`），承载 agent 类型子菜单。**首项「制作 PPT」**（`action_type=agent`，agent=pi，prompt 见 `crates/infra/seeds/agent_actions/make-ppt.prompt.md`，内联 4 条 PPT skill 候选 + 决策规则 + 强制披露产物路径）。**外置 seed 机制**：长文本 seed（润色 prompt / llm_providers / PPT prompt）从 db.sql 内联移到 `crates/infra/seeds/` 目录，`init_schema` v39 升级时调 `load_external_seeds` 一次性加载（`INSERT OR IGNORE` 保护用户编辑），失败 `log::error` 跳过该项**不阻塞 schema 升级**。`seeds_dir()` 优先 `$CARGO_MANIFEST_DIR/seeds`（dev）→ exe 同级/seeds（release，`Cargo.toml package.include` 打包）。**prompts 复原按钮**：`update_prompt_at` 移除 is_system 拒绝（system prompt 可编辑），新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 + PromptsPanel 编辑器底部「复原默认」按钮（仅 system prompt 显示）。**Quick Execute 扩展**：`action_hotkey::quick_execute` 增加 `Selection::File`/`Folder` 分支——agent + `{{task}}` → 调 `trigger_agent_voice_core(hide_action_bar=false)` 直接口述路径（跳过 ActionBar 浮窗），其他类型走 `execute_action_bar_inner` 直接执行。提取 `trigger_agent_voice_core` 公共函数（Tauri 命令与 quick_execute 共用）+ `decide_files_action` 纯函数（4 单测覆盖决策矩阵）。**init_schema 简化**：删除 v17→v37 历史迁移分支（trigger_keyword/app_index/search_frequency/launcher_index/models 语义重构——db.sql CREATE IF NOT EXISTS 已覆盖；开发期唯一用户 DB 已 ≥v38，全是死代码）。详见 [spec](superpowers/specs/2026-07-19-ppt-from-files-design.md) + plan。
+- **Agent 主菜单 + 外置 seed 机制（2026-07-19，v39 迁移）**：action_bar 新增独立「Agent」主菜单（`accepts=file`），承载 agent 类型子菜单。**首项「制作 PPT」**（`action_type=agent`，agent=pi，prompt 见 `crates/infra/seeds/agent_actions/make-ppt.prompt.md`，内联 4 条 PPT skill 候选 + 决策规则 + 强制披露产物路径）。**外置 seed 机制**：长文本 seed（润色 prompt / llm_providers / PPT prompt）从 db.sql 内联移到 `crates/infra/seeds/` 目录，`init_schema` v39 升级时调 `load_external_seeds` 一次性加载（`INSERT OR IGNORE` 保护用户编辑），失败 `log::error` 跳过该项**不阻塞 schema 升级**。`seeds_dir()` 优先 `$CARGO_MANIFEST_DIR/seeds`（dev）→ exe 同级/seeds（release，`Cargo.toml package.include` 打包）。**prompts 复原按钮**：`update_prompt_at` 移除 is_system 拒绝（system prompt 可编辑），新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 + PromptsPanel 编辑器底部「复原默认」按钮（仅 system prompt 显示）。**Quick Execute 扩展**：`action_hotkey::quick_execute` 增加 `Selection::File`/`Folder` 分支——agent + `{{voice}}` → 调 `trigger_agent_voice_core(hide_action_bar=false)` 直接口述路径（跳过 ActionBar 浮窗），其他类型走 `execute_action_bar_inner` 直接执行。提取 `trigger_agent_voice_core` 公共函数（Tauri 命令与 quick_execute 共用）+ `decide_files_action` 纯函数（4 单测覆盖决策矩阵）。**init_schema 简化**：删除 v17→v37 历史迁移分支（trigger_keyword/app_index/search_frequency/launcher_index/models 语义重构——db.sql CREATE IF NOT EXISTS 已覆盖；开发期唯一用户 DB 已 ≥v38，全是死代码）。详见 [spec](superpowers/specs/2026-07-19-ppt-from-files-design.md) + plan。
 ```
 
 - [x] 找到 settings_window 章节里关于 PromptsPanel 的描述，加一句"system prompt 可编辑 + 复原默认按钮"（如有）
@@ -1498,7 +1498,7 @@ mv ~/.octopus/octopus.db.backup-v38 ~/.octopus/octopus.db
 - 文件：`crates/infra/seeds/agent_actions/ppt-outline.prompt.md`
 - 内容：读文件 → 按叙事弧整理成 Markdown 大纲 → 强制停止
 - schema：极简版（4 个 front matter 字段 + 每页 H2 + bullet）
-- 占位符：`{{task}}` `{{files}}` 必须出现
+- 占位符：`{{voice}}` `{{files}}` 必须出现
 
 **状态**：[x] 完成。文件已创建。
 

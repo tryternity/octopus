@@ -32,7 +32,6 @@ function getDebounceMs(tab: TabId): number {
 import { executeSearchStream, cleanupSearchStream } from "./searchStream";
 import {
   determineExpandDirection,
-  getTabByKey,
   getNextTab,
   filterByTab,
   parseActionData,
@@ -120,7 +119,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     )}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={onClick}
-    title={`${label} — Alt+${indexLabel(index)} 定位${shortcut ? ` · ⌘${shortcut} 执行` : ""}`}
+    title={`${label} — Alt+${indexLabel(index)} 定位${shortcut ? ` · Alt+${shortcut} 执行` : ""}`}
   >
     <span
       className={cn(
@@ -134,7 +133,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     </span>
     <span className="text-[11px] font-medium leading-none whitespace-nowrap">{label}</span>
     {shortcut && (
-      <span className="text-[9px] text-voice/60 font-mono leading-none">⌘{shortcut}</span>
+      <span className="text-[9px] text-voice/60 font-mono leading-none">⌥{shortcut}</span>
     )}
   </button>
 );
@@ -233,7 +232,7 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
-  // task-input 视图已移除（agent 含 {{task}} 改为联动语音）
+  // task-input 视图已移除（agent 含 {{voice}} 改为联动语音）
 
   // ── 搜索：结果（流式后端 emit 累积 top-N，前端整体替换；无 delayed 合并）──
   const allResults = instantResults;
@@ -624,7 +623,7 @@ export default function ActionBar() {
     }
 
     // agent 类型：need_voice=true → 联动语音录音；否则直接执行
-    // 2026-07-19 v40 改：从扫描 actionData.includes("{{task}}") 改为 needVoice 字段
+    // 2026-07-19 v40 改：从扫描 actionData.includes("{{voice}}") 改为 needVoice 字段
     if (item.actionType === "agent") {
       if (item.needVoice) {
         setView("loading");
@@ -638,7 +637,7 @@ export default function ActionBar() {
       }
       setView("loading");
       try {
-        await invoke("execute_action_bar", { itemId: item.id, text: "" });
+        await invoke("execute_action_bar", { itemId: item.id, text });
       } catch (e) {
         showQuickError(String(e).slice(0, 40));
         setView("main");
@@ -829,28 +828,11 @@ export default function ActionBar() {
 
       // ── 搜索模式键盘导航（query 非空时）──
       // 简化设计：输入框始终是焦点，Tab 键只切换 Tab 页，不改变焦点
-      // Cmd+字母 快捷定位 Tab 页
       if (hasQuery(queryRef.current)) {
         const results = filteredResultsRef.current;
 
-        // Alt + 字母 → 快捷切换 Tab 页（统一 Alt=定位/切换；Cmd/Ctrl 留给执行）
-        // Alt 改变 e.key 输出（如 Alt+A → "å"），用 codeToChar(e.code) 取物理键
-        // 无选中时隐藏"动作"Tab（菜单项需要选中内容）
-        // Alt+字母始终 preventDefault——用户意图是切 Tab，不是输入 Alt 变异字符（如 Alt+Z → "ˀ"）
-        const hasCtx = !!contextRef.current;
-        if (e.altKey) {
-          const ch = codeToChar(e.code);
-          if (ch) {
-            e.preventDefault();
-            const tabByKey = getTabByKey(ch, hasCtx);
-            if (tabByKey) {
-              setActiveTab(tabByKey);
-            }
-          }
-          return;
-        }
-
         // Tab 或（ARROW_AS_TAB 时）←/→ → 循环切换 Tab 页
+        const hasCtx = !!contextRef.current;
         const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
         if (dir !== null) {
           e.preventDefault();
@@ -885,27 +867,21 @@ export default function ActionBar() {
       // ── 菜单模式键盘导航（query 为空时）──
       // 无修饰的可打印字符已在上游统一放行，这里只处理修饰键 + 导航键。
 
-      // Cmd/Ctrl + 数字/字母 → 直接执行（按菜单项配置的 shortcut 匹配；原 Alt+字母 的功能）
-      // macOS Cmd 不改变字母输出，统一用 codeToChar(e.code) 取物理键
-      if (e.metaKey || e.ctrlKey) {
-        const ch = codeToChar(e.code);
-        if (ch) {
-          const item = menuItemsRef.current.find((i: ActionBarItem) => i.isEnabled && i.shortcut === ch);
-          if (item) {
-            e.preventDefault();
-            executeItem(item);
-          }
-        }
-        return;
-      }
-
-      // Alt + 数字/字母 → 定位菜单项（按位置 labelToIndex，选中不执行；原 无修饰数字/字母 的功能）
-      // Alt 改变 e.key 输出（如 Alt+H → "˙"），用 codeToChar(e.code) 取物理键再 labelToIndex
+      // Alt + 字母（a-z）→ 直接执行（按菜单项配置的 shortcut 匹配）
+      // Alt 改变 e.key 输出（如 Alt+H → "˙"），用 codeToChar(e.code) 取物理键
       if (e.altKey) {
         const ch = codeToChar(e.code);
         if (ch) {
-          const idx = labelToIndex(ch);
-          if (idx >= 0) {
+          // 字母 → 执行局部快捷键（匹配 item.shortcut）
+          if (/^[a-z]$/.test(ch)) {
+            e.preventDefault();
+            const item = menuItemsRef.current.find((i: ActionBarItem) => i.isEnabled && i.shortcut === ch);
+            if (item) executeItem(item);
+            return;
+          }
+          // 数字（1-9）→ 定位菜单项（按位置，最多 9 个）
+          if (/^[1-9]$/.test(ch)) {
+            const idx = parseInt(ch, 10) - 1;
             e.preventDefault();
             if (focusLayerRef.current === "sub") {
               if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
@@ -930,6 +906,7 @@ export default function ActionBar() {
                 }
               }
             }
+            return;
           }
         }
         return;

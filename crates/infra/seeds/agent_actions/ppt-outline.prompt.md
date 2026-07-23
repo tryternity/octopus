@@ -8,7 +8,7 @@
 
 # 用户的额外指令
 
-{{task}}
+{{voice}}
 
 # Markdown 大纲 schema（必须严格遵守）
 

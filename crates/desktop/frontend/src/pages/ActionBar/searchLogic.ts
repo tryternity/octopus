@@ -31,12 +31,6 @@ export function determineExpandDirection(
   return spaceBelow > threshold ? "down" : "up";
 }
 
-/** 按快捷键字符获取 Tab ID。无匹配返回 null。 */
-export function getTabByKey(key: string, hasContext = true): TabId | null {
-  const tab = getVisibleTabs(hasContext).find((t) => t.key === key);
-  return tab ? tab.id : null;
-}
-
 /** 返回当前可见的 Tab 列表。无选中（launch 模式）时隐藏"动作"Tab——菜单项需要选中内容。 */
 export function getVisibleTabs(hasContext: boolean): readonly TabDef[] {
   return hasContext ? TABS : TABS.filter((t) => t.id !== "actions");
@@ -142,9 +136,9 @@ export function hasQuery(query: string): boolean {
  * executeItem 展开 submenu 后，焦点层应切换到 "sub"。
  *
  * 设计意图（架构文档「预览不抢焦点」契约）：
- * - executeItem（点击 / Cmd+字母 / Enter on main）是终结性动作——用户明确要打开子菜单，
+ * - executeItem（点击 / Alt+字母 / Enter on main）是终结性动作——用户明确要打开子菜单，
  *   展开后按 Enter 应执行子项，故 focusLayer 应进 "sub"。
- * - Tab / Alt+字母 的「预览展开」不抢焦点（用户可能继续在 main 层移动）。
+ * - Tab / Alt+数字 的「预览展开」不抢焦点（用户可能继续在 main 层移动）。
  *
  * 本函数只处理 executeItem 路径：submenu → "sub"，其他 actionType 保持当前层。
  */

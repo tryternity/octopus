@@ -189,7 +189,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
 ///
 /// 语义：Finder 选中文件/夹后按全局快捷键，把 `files` 写入 PENDING_CONTEXT，
 /// 然后按菜单项类型决策：
-/// - **agent + 含 `{{task}}`** → `trigger_agent_voice_core(hide_action_bar=false)`：
+/// - **agent + 含 `{{voice}}`** → `trigger_agent_voice_core(hide_action_bar=false)`：
 ///   写 agent_task → 触发音录。`hide_action_bar=false` 是因为 quick_execute 路径
 ///   ActionBar 本就没显示（全局快捷键直触发，省去浮窗），不应再 hide 不可见窗口
 ///   （hide 会触发 activateWithOptions 把源 app 拉到前台，干扰随后录音 UI）。
@@ -244,7 +244,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
     }
 
     if should_execute_directly {
-        // 非 agent 或无 {{task}} → 直接执行（prompt 用 {{files}} 渲染）
+        // 非 agent 或无 {{voice}} → 直接执行（prompt 用 {{files}} 渲染）
         log::info!(
             "[action-hotkey] File 选中 + 直接执行 item_id={}, files={}",
             item_id,
@@ -274,15 +274,15 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
 ///
 /// 输入：菜单项的 `action_type` 与 `action_data`（prompt 模板）。
 /// 输出：`(should_trigger_voice, should_execute_directly)`：
-/// - `(true, false)` → 走 `trigger_agent_voice_core`（agent + 含 `{{task}}` → 需要语音录入 task）
+/// - `(true, false)` → 走 `trigger_agent_voice_core`（agent + 含 `{{voice}}` → 需要语音录入 task）
 /// - `(false, true)` → 走 `execute_action_bar_inner`（script/url/copy_path/agent-without-task）
 /// - `(false, false)` → 静默跳过（理论不出现：所有非 voice 路径都走 direct）
 ///
 /// 语义：只有 `action_type=agent` 且 `need_voice=true` 才需要语音，
-/// 因为用户在设置面板勾选了「需要语音输入」（agent 菜单的 prompt 含 {{task}}）。
+/// 因为用户在设置面板勾选了「需要语音输入」（agent 菜单的 prompt 含 {{voice}}）。
 /// 其他情况（agent 但 need_voice=false、script、url、copy_path 等）直接渲染执行即可。
 ///
-/// 2026-07-19 v40 改：判定从「action_data 含 {{task}}」改为「need_voice 字段」，
+/// 2026-07-19 v40 改：判定从「action_data 含 {{voice}}」改为「need_voice 字段」，
 /// 避免扫描 prompt 字符串的脆弱性。need_voice 在 ActionBarItem.need_voice 字段。
 fn decide_files_action(action_type: &str, need_voice: bool) -> (bool, bool) {
     if action_type == "agent" && need_voice {

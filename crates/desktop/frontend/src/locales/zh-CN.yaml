@@ -569,8 +569,8 @@ settings:
     typeExtension: 扩展包
     typeExtensionDesc: 从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）
     typeAgent: Agent（文件桥接）
-    typeAgentDesc: Finder 选中文件后，将文件路径 + 任务交给外部 CLI agent（如 Claude Code / pi）在终端中执行。内容填 prompt 模板，支持 {{task}} 和 {{files}} 占位符
-    typeAgentPlaceholder: "{{task}}\n\n文件列表：\n{{files}}"
+    typeAgentDesc: 选中文件或文本后，交给外部 CLI agent（如 Claude Code / pi）在终端中执行。内容填 prompt 模板，支持 {{voice}}（语音指令）、{{text}}（选中文本）、{{files}}（选中文件列表）占位符。含 {{voice}} 时自动联动语音录入
+    typeAgentPlaceholder: "{{voice}}\n\n选中文本：\n{{text}}\n\n文件列表：\n{{files}}"
     typeCopyPath: 复制路径
     typeCopyPathDesc: 将选中文件的路径复制到剪贴板，支持纯路径 / file:// URL / 带引号三种格式
     extensionFilter: 扩展包
@@ -589,7 +589,7 @@ settings:
     asyncExec: 异步执行（不等待结果，后台运行）
     writeToClipboard: 结果写入剪贴板
     shortcutLabel: 快捷键
-    shortcutHint: 局部快捷键，需要在菜单中执行
+    shortcutHint: Alt+字母 执行（菜单唤起后按 Alt+设定的字母）
     triggerKeywordLabel: 搜索关键词
     triggerKeywordHint: 在搜索框输入「关键词 查询」触发，URL 中用 {query} 代表查询
     globalShortcutLabel: 全局快捷键

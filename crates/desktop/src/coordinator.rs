@@ -1347,7 +1347,7 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
     };
 
     let ctx = parse_agent_context(&task.context);
-    let prompt = crate::action_bar_commands::render_agent_prompt(&ctx.prompt_template, transcribed_text, &ctx.files);
+    let prompt = crate::action_bar_commands::render_agent_prompt(&ctx.prompt_template, transcribed_text, &ctx.text, &ctx.files);
 
     let adapters = crate::agent_adapter::list_adapters();
     // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用
@@ -1422,6 +1422,7 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
 /// 解析 agent task context JSON（纯函数，可测试）。
 pub struct AgentContext {
     pub files: Vec<String>,
+    pub text: String,
     pub cwd: String,
     pub prompt_template: String,
 }
@@ -1432,6 +1433,7 @@ pub fn parse_agent_context(context_json: &str) -> AgentContext {
         files: context["files"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default(),
+        text: context["text"].as_str().unwrap_or("").to_string(),
         cwd: context["cwd"].as_str().unwrap_or("/tmp").to_string(),
         prompt_template: context["prompt_template"].as_str().unwrap_or("").to_string(),
     }
@@ -2797,11 +2799,11 @@ mod tests {
 
     #[test]
     fn parse_agent_context_full() {
-        let json = r#"{"kind":"files","files":["/a.pdf","/b.pdf"],"cwd":"/Users/x","prompt_template":"{{task}}\n\n{{files}}"}"#;
+        let json = r#"{"kind":"files","files":["/a.pdf","/b.pdf"],"cwd":"/Users/x","prompt_template":"{{voice}}\n\n{{files}}"}"#;
         let ctx = parse_agent_context(json);
         assert_eq!(ctx.files, vec!["/a.pdf", "/b.pdf"]);
         assert_eq!(ctx.cwd, "/Users/x");
-        assert_eq!(ctx.prompt_template, "{{task}}\n\n{{files}}");
+        assert_eq!(ctx.prompt_template, "{{voice}}\n\n{{files}}");
     }
 
     #[test]
@@ -2848,8 +2850,8 @@ mod tests {
 
     #[test]
     fn parse_agent_context_prompt_with_task_placeholder() {
-        let ctx = parse_agent_context(r#"{"prompt_template":"{{task}}\n\n文件列表：\n{{files}}"}"#);
-        assert!(ctx.prompt_template.contains("{{task}}"));
+        let ctx = parse_agent_context(r#"{"prompt_template":"{{voice}}\n\n文件列表：\n{{files}}"}"#);
+        assert!(ctx.prompt_template.contains("{{voice}}"));
         assert!(ctx.prompt_template.contains("{{files}}"));
     }
 }

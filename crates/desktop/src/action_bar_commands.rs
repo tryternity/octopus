@@ -771,11 +771,12 @@ pub fn list_action_bar_items() -> Result<Vec<octopus_infra::db::ActionBarItem>, 
     octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())
 }
 
-/// 推导 need_voice：agent 类型且 action_data 含 `{{task}}` → true；否则 false。
+/// 推导 need_voice：agent 类型且 action_data 含 `{{voice}}` → true；否则 false。
+/// `{{voice}}` 占位符触发语音录入（用户口述指令），识别结果填入该占位符。
 /// 由 create/update_action_bar_item 在保存时统一调用，**前端不再传 need_voice 字段**
 /// （2026-07-19 v43 修订——回滚前端 toggle，保留 DB 字段，保存时自动判定）。
 fn derive_need_voice(action_type: &str, action_data: &str) -> bool {
-    action_type == "agent" && action_data.contains("{{task}}")
+    action_type == "agent" && action_data.contains("{{voice}}")
 }
 
 #[tauri::command]
@@ -1220,12 +1221,14 @@ fn url_encode_path(path: &str) -> String {
     path.replace(' ', "%20")
 }
 
-/// 渲染 agent prompt 模板：替换 {{task}} 和 {{files}} 占位符。
-/// task: 用户输入的任务描述（无 {{task}} 占位符时忽略）
-/// files: 文件路径列表（换行分隔注入 {{files}}）
-pub fn render_agent_prompt(template: &str, task: &str, files: &[String]) -> String {
+/// 渲染 agent prompt 模板：替换 {{voice}} / {{text}} / {{files}} 占位符。
+/// - voice: 语音识别结果（用户口述的指令；注入 {{voice}}）
+/// - text: 选中的文本（注入 {{text}}）
+/// - files: 选中的文件/文件夹路径列表（换行分隔注入 {{files}}）
+pub fn render_agent_prompt(template: &str, voice: &str, text: &str, files: &[String]) -> String {
     template
-        .replace("{{task}}", task)
+        .replace("{{voice}}", voice)
+        .replace("{{text}}", text)
         .replace("{{files}}", &files.join("\n"))
 }
 
@@ -1758,7 +1761,8 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                     item.title, source, adapter.key
                 );
             }
-            let prompt = render_agent_prompt(&item.action_data, &text, &app_state_files);
+            // 非语音路径：task 为空（无用户指令输入），text 是选中文本
+            let prompt = render_agent_prompt(&item.action_data, "", &text, &app_state_files);
             let cwd = derive_cwd(&app_state_files);
             let cwd_path = std::path::Path::new(&cwd);
             let command = crate::agent_adapter::render_command(
@@ -1874,13 +1878,15 @@ pub(crate) fn trigger_agent_voice_core(
     coordinator: &crate::coordinator::Coordinator,
     hide_action_bar: bool,
 ) -> Result<(), String> {
-    let files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
-        .as_ref().map(|c| c.files.clone()).unwrap_or_default();
+    let pending = PENDING_CONTEXT.lock().unwrap();
+    let files: Vec<String> = pending.as_ref().map(|c| c.files.clone()).unwrap_or_default();
+    let selected_text: String = pending.as_ref().and_then(|c| c.text.clone()).unwrap_or_default();
 
     let cwd = derive_cwd(&files);
     let context = serde_json::json!({
         "kind": "files",
         "files": files,
+        "text": selected_text,
         "cwd": cwd,
         "prompt_template": item.action_data,
     }).to_string();
@@ -1903,7 +1909,7 @@ pub(crate) fn trigger_agent_voice_core(
 /// agent 项 need_voice=true 时：创建 agent_task → 隐藏浮窗 → 触发音录。
 /// Tauri 命令——薄包装，核心逻辑在 trigger_agent_voice_core。
 ///
-/// 2026-07-19 v40 改：判定从「action_data 含 {{task}}」改为「need_voice 字段」，
+/// 2026-07-19 v40 改：判定从「action_data 含 {{voice}}」改为「need_voice 字段」，
 /// 避免前端扫描 prompt 字符串的脆弱性。need_voice 由 seed 或用户在设置面板勾选。
 #[tauri::command]
 pub fn trigger_agent_voice(
@@ -1957,7 +1963,7 @@ mod tests {
 
     #[test]
     fn derive_need_voice_agent_with_task_placeholder() {
-        assert!(derive_need_voice("agent", "做 PPT：{{task}}\n文件：{{files}}"));
+        assert!(derive_need_voice("agent", "做 PPT：{{voice}}\n文件：{{files}}"));
     }
 
     #[test]
@@ -1967,16 +1973,17 @@ mod tests {
 
     #[test]
     fn derive_need_voice_non_agent_type() {
-        // 非 agent 类型——即使含 {{task}} 也不是语音项
-        assert!(!derive_need_voice("script", "#shell\necho {{task}}"));
-        assert!(!derive_need_voice("url", "https://example.com/?q={{task}}"));
+        // 非 agent 类型——即使含 {{voice}} 也不是语音项
+        assert!(!derive_need_voice("script", "#shell\necho {{voice}}"));
+        assert!(!derive_need_voice("url", "https://example.com/?q={{voice}}"));
     }
 
     #[test]
     fn test_render_agent_prompt_with_task_and_files() {
         let prompt = render_agent_prompt(
-            "{{task}}\n\n文件列表：\n{{files}}",
+            "{{voice}}\n\n文件列表：\n{{files}}",
             "制作PPT",
+            "",
             &["/a.pdf".into(), "/b.pdf".into()],
         );
         assert_eq!(prompt, "制作PPT\n\n文件列表：\n/a.pdf\n/b.pdf");
@@ -1984,38 +1991,52 @@ mod tests {
 
     #[test]
     fn test_render_agent_prompt_no_task_placeholder() {
-        // 无 {{task}}——task 参数被忽略
-        let prompt = render_agent_prompt("整理这些文件：{{files}}", "ignored task", &["/a".into()]);
+        // 无 {{voice}}——task 参数被忽略
+        let prompt = render_agent_prompt("整理这些文件：{{files}}", "ignored task", "", &["/a".into()]);
         assert_eq!(prompt, "整理这些文件：/a");
     }
 
     #[test]
     fn test_render_agent_prompt_no_files_placeholder() {
-        let prompt = render_agent_prompt("执行：{{task}}", "do something", &["/a".into()]);
+        let prompt = render_agent_prompt("执行：{{voice}}", "do something", "", &["/a".into()]);
         assert_eq!(prompt, "执行：do something");
     }
 
     #[test]
     fn test_render_agent_prompt_no_placeholders() {
-        let prompt = render_agent_prompt("固定命令", "ignored", &[]);
+        let prompt = render_agent_prompt("固定命令", "ignored", "", &[]);
         assert_eq!(prompt, "固定命令");
     }
 
     #[test]
     fn test_render_agent_prompt_empty_task() {
-        let prompt = render_agent_prompt("{{task}}", "", &[]);
+        let prompt = render_agent_prompt("{{voice}}", "", "", &[]);
         assert_eq!(prompt, "");
     }
 
     #[test]
+    fn test_render_agent_prompt_text_placeholder() {
+        // {{text}} 占位符 = 选中文本（独立于 {{voice}}）
+        let prompt = render_agent_prompt("阅读这段内容：\n\n{{text}}", "", "这是一段选中文字", &[]);
+        assert_eq!(prompt, "阅读这段内容：\n\n这是一段选中文字");
+    }
+
+    #[test]
+    fn test_render_agent_prompt_task_and_text_separate() {
+        // {{voice}}（用户指令）和 {{text}}（选中文本）语义分离
+        let prompt = render_agent_prompt("指令：{{voice}}\n内容：{{text}}", "归类这段话", "选中的话", &[]);
+        assert_eq!(prompt, "指令：归类这段话\n内容：选中的话");
+    }
+
+    #[test]
     fn test_render_agent_prompt_empty_files() {
-        let prompt = render_agent_prompt("文件：{{files}}", "task", &[]);
+        let prompt = render_agent_prompt("文件：{{files}}", "task", "text", &[]);
         assert_eq!(prompt, "文件：");
     }
 
     #[test]
     fn test_render_agent_prompt_multiple_files() {
-        let prompt = render_agent_prompt("{{files}}", "", &["/a".into(), "/b".into(), "/c".into()]);
+        let prompt = render_agent_prompt("{{files}}", "", "", &["/a".into(), "/b".into(), "/c".into()]);
         assert_eq!(prompt, "/a\n/b\n/c");
     }
 

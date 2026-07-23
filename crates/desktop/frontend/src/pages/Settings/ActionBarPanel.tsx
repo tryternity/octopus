@@ -69,7 +69,8 @@ const ACTION_TYPES = [
 
 function deriveAccepts(actionType: string | undefined, explicit?: string): string {
   if (explicit) return explicit;
-  if (actionType === "agent" || actionType === "copy_path") return "file";
+  if (actionType === "copy_path") return "file";
+  if (actionType === "agent") return "any"; // 2026-07-23：agent 支持文本场景（{{text}} 占位符），不再仅限文件
   if (actionType === "submenu") return "any";
   return "text";
 }
@@ -376,7 +377,7 @@ const EditForm = ({
                   value={form.shortcut || ""}
                   onChange={(e) => {
                     const raw = e.target.value.toLowerCase();
-                    const filtered = raw.replace(/[^0-9a-z]/g, "").slice(-1);
+                    const filtered = raw.replace(/[^a-z]/g, "").slice(-1);
                     onChange({ ...form, shortcut: filtered });
                   }}
                 />

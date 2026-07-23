@@ -568,8 +568,8 @@ settings:
     typeExtension: Extension Package
     typeExtensionDesc: Import from .octopusext.zip or folder (contains config.yaml + scripts)
     typeAgent: Agent (File Bridge)
-    typeAgentDesc: After selecting files in Finder, pass file paths + task to an external CLI agent (e.g. Claude Code / pi) to execute in terminal. Content is a prompt template supporting {{task}} and {{files}} placeholders
-    typeAgentPlaceholder: "{{task}}\n\nFiles:\n{{files}}"
+    typeAgentDesc: After selecting files or text, pass to an external CLI agent (e.g. Claude Code / pi) to execute in terminal. Content is a prompt template supporting {{voice}} (voice command), {{text}} (selected text), {{files}} (selected file list) placeholders. Including {{voice}} triggers voice input
+    typeAgentPlaceholder: "{{voice}}\n\nSelected text:\n{{text}}\n\nFiles:\n{{files}}"
     typeCopyPath: Copy Path
     typeCopyPathDesc: Copy selected file paths to clipboard, supports plain / file:// URL / quoted formats
     extensionFilter: Extension Package
@@ -588,7 +588,7 @@ settings:
     asyncExec: Async execution (no wait, runs in background)
     writeToClipboard: Write result to clipboard
     shortcutLabel: Shortcut
-    shortcutHint: Local shortcut, requires the menu to be open
+    shortcutHint: Alt+letter to execute (press Alt+letter when menu is open)
     triggerKeywordLabel: Search Keyword
     triggerKeywordHint: Type "keyword query" in search box to trigger. Use {query} in URL
     globalShortcutLabel: Global Shortcut

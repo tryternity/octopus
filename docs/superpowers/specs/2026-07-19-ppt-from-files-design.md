@@ -5,7 +5,7 @@
 > **scope**：在 Finder 选中文件/文件夹 → 全局热键弹 actionbar → 点「Agent → 制作 PPT」→ 用户口述需求 → Pi（或 Claude Code）在 Terminal 中读文件 + 选 PPT skill + 生成 PPT + 打印产物路径
 > **前置文档**（已归档至 `specs/archived/`）：
 > - [`2026-07-12-action-bar-file-agent-design.md`](./archived/2026-07-12-action-bar-file-agent-design.md)（Finder 选中 → agent 桥接，本设计完全复用其链路）
-> - [`2026-07-13-action-bar-agent-voice-design.md`](./archived/2026-07-13-action-bar-agent-voice-design.md)（agent × 语音联动，含 `{{task}}` 触发音录）
+> - [`2026-07-13-action-bar-agent-voice-design.md`](./archived/2026-07-13-action-bar-agent-voice-design.md)（agent × 语音联动，含 `{{voice}}` 触发音录）
 
 ---
 
@@ -26,8 +26,8 @@ octopus 已经把「Finder 选中文件 → actionbar → 让 agent 处理」链
 - `action_bar_items` 表支持 `action_type=agent`，绑定 `agent` 字段（adapter key）
 - `agent_adapter.rs` 内置 `claude`（`claude --add-dir {cwd} {prompt}`）+ `pi`（`pi {files_at} {prompt}`）
 - Finder 选中捕获 → Files context → 按 `accepts=file` 过滤菜单
-- prompt 模板双花括号占位符：`{{files}}`（POSIX 路径列表）+ `{{task}}`（语音转写文本）
-- `{{task}}` 自动触发语音录音（v27 迁移）
+- prompt 模板双花括号占位符：`{{files}}`（POSIX 路径列表）+ `{{voice}}`（语音转写文本）
+- `{{voice}}` 自动触发语音录音（v27 迁移）
 - `terminal_launcher.rs` 在 Terminal.app 新窗口拉起 agent
 
 **结论**：本次任务不需要新增任何桥接代码。octopus 的角色是「**prompt 模板分发器 + skill 知识载体**」——把"如何让 agent 制作 PPT"这个知识固化成一个开箱即用的菜单项。
@@ -80,7 +80,7 @@ octopus 是**桥接器**。本次的价值是：
 | 7 | `crates/infra/Cargo.toml` | 修改 | `package.include` 加 `seeds/` 目录（release 打包） | ✅ |
 | 8 | `crates/desktop/src/action_bar_commands.rs` | 修改 | 新增 `restore_prompt_from_seed(prompt_id)` Tauri 命令 | ✅ |
 | 9 | `crates/desktop/frontend/src/pages/Settings/PromptsPanel.tsx` | 修改 | system prompt 支持编辑 + 「复原默认」按钮 | ✅ |
-| 10 | `crates/desktop/src/action_hotkey.rs` | 修改 | `quick_execute` 扩展支持 Files + agent + {{task}} 触发音录（详见 § 11） | ✅ |
+| 10 | `crates/desktop/src/action_hotkey.rs` | 修改 | `quick_execute` 扩展支持 Files + agent + {{voice}} 触发音录（详见 § 11） | ✅ |
 | 11 | i18n key（zh-CN.yaml / en.yaml） | 修改 | 「复原默认」+ 相关文案中英 | ✅ |
 | 12 | `docs/features/make-ppt.md` | 新建 | 用户向文档 | ✅ |
 | 13 | `docs/architecture.md` | 修改 | 同步外置 seed + Agent 菜单 + PPT 桥接 + quick_execute 扩展 | ✅ |
@@ -123,7 +123,7 @@ prompt 内部分 4 段：
 [1] 任务说明         ← 你要做什么
 [2] skill 候选清单   ← 内联的 PPT skill 列表 + 选择规则
 [3] 文件信息         ← {{files}} 注入点（octopus 端替换）
-[4] 用户指令         ← {{task}} 注入点（octopus 端替换）
+[4] 用户指令         ← {{voice}} 注入点（octopus 端替换）
 ```
 
 ### 3.2 Skill 候选清单（4 条主推路线）
@@ -187,7 +187,7 @@ PPT 生成完成后，你必须在 Terminal 输出的最后一段明确告知用
 
 ### 3.7 Prompt 不变量
 
-- 只用 `{{task}}` 和 `{{files}}` 两个占位符（octopus 端 `render_agent_prompt` 只替换这两个）
+- 用 `{{voice}}`（语音指令）、`{{text}}`（选中文本）、`{{files}}`（选中文件列表）三个占位符（octopus 端 `render_agent_prompt(template, voice, text, files)` 替换；2026-07-23 三参语义分离，原 `{{task}}` 改名 `{{voice}}`）
 - prompt 内容不依赖任何 octopus 内部状态——纯文本，agent 拿到就能用
 - prompt 的安装命令必须是**确定性**的（具体 URL），不能让 agent "去 github 搜"
 - prompt 对 agent 中立（pi / claude 都能读），不写 agent 专属语法
@@ -320,9 +320,9 @@ fn seeds_dir() -> std::path::PathBuf {
 2. 按全局热键（默认 Cmd+Shift+Space）→ action bar 浮窗弹出
 3. 浮窗顶部显示「N 个文件选中」badge
 4. 浮窗菜单显示「Agent → 制作 PPT」（accepts=file 过滤后唯一可见的菜单组）
-5. 用户点「制作 PPT」→ 因 prompt 含 {{task}}，自动启动录音
+5. 用户点「制作 PPT」→ 因 prompt 含 {{voice}}，自动启动录音
 6. 用户口述：「做个瑞士风的，给老板看的」→ ASR 转写
-7. 录音停止 → ASR 文本注入 {{task}}
+7. 录音停止 → ASR 文本注入 {{voice}}
 8. octopus 在 Terminal.app 新窗口拉起：
      pi @<file1> @<file2> ... '<完整 prompt>'
 9. Pi 启动，读 prompt → 根据口述选 skill → 装或调用 → 生成 PPT
@@ -337,7 +337,7 @@ fn seeds_dir() -> std::path::PathBuf {
 | Finder 选中捕获 | `finder_selection.rs`（AppleScript） |
 | Files context 组装 | `action_bar_commands.rs::ActionBarContext::for_files` |
 | accepts 过滤 | 前端 ActionBar 浮窗 `accepts === 'file' \|\| 'any'` |
-| 含 `{{task}}` 触发音录 | `trigger_agent_voice`（v27 迁移） |
+| 含 `{{voice}}` 触发音录 | `trigger_agent_voice`（v27 迁移） |
 | ASR 文本注入 prompt | `render_agent_prompt`（action_bar_commands.rs:1169） |
 | 命令模板渲染 | `agent_adapter::render_command`（行 81） |
 | Terminal.app 拉起 | `terminal_launcher::TerminalAppLauncher` |
@@ -432,8 +432,8 @@ WHERE NOT EXISTS (
 | 6 | seed 路径函数 | `seed_prompt_path_returns_some_for_known_name` + `seed_prompt_path_returns_none_for_unknown_name` | `seeds.rs` | ✅ |
 | 7 | PPT prompt 占位符 | `make_ppt_prompt_contains_required_placeholders` | `seeds.rs` | ✅ |
 | 8 | 前端 accepts 过滤 | （未单测，project convention——前端逻辑靠 E2E） | — | ⏭ |
-| 9 | File + agent + {{task}} → voice | `decide_files_action_agent_with_task_triggers_voice` | `action_hotkey.rs` | ✅ |
-| 10 | File + agent 无 {{task}} → direct | `decide_files_action_agent_without_task_executes_directly` + `decide_files_action_script_type_executes_directly` + `decide_files_action_url_type_executes_directly` | `action_hotkey.rs` | ✅ |
+| 9 | File + agent + {{voice}} → voice | `decide_files_action_agent_with_task_triggers_voice` | `action_hotkey.rs` | ✅ |
+| 10 | File + agent 无 {{voice}} → direct | `decide_files_action_agent_without_task_executes_directly` + `decide_files_action_script_type_executes_directly` + `decide_files_action_url_type_executes_directly` | `action_hotkey.rs` | ✅ |
 | 11 | hide_action_bar=false 路径 | （纯函数 `decide_files_action` 覆盖；Tauri/Coordinator 耦合部分不单测，project convention） | — | ⏭ |
 | 12 | system prompt 可编辑 | `update_prompt_at_allows_system_prompt` | `db.rs` | ✅ |
 
@@ -513,9 +513,9 @@ mv /tmp/seeds-backup crates/infra/seeds
   热键 → detect
     ├─ Text  →（保持现状）execute_action_bar_inner
     ├─ File/Folder → 写 PENDING_CONTEXT (kind=Files)
-    │                → 查 item: 若 action_type=agent 且 prompt 含 {{task}}
+    │                → 查 item: 若 action_type=agent 且 prompt 含 {{voice}}
     │                  → 调 trigger_agent_voice（复用现有命令，触发音录）
-    │                → 否则（非 agent 或无 {{task}}）
+    │                → 否则（非 agent 或无 {{voice}}）
     │                  → execute_action_bar_inner（直接执行）
     └─ None → 静默失败（保持现状）
 ```
@@ -545,16 +545,16 @@ fn quick_execute(item_id: i64, app: &AppHandle) {
                 _ => { log::warn!("..."); return; }
             };
 
-            if item.action_type == "agent" && item.action_data.contains("{{task}}") {
-                // 含 {{task}} → 走 trigger_agent_voice 路径（触发音录）
+            if item.action_type == "agent" && item.action_data.contains("{{voice}}") {
+                // 含 {{voice}} → 走 trigger_agent_voice 路径（触发音录）
                 // 复用现有 Tauri 命令逻辑——但 trigger_agent_voice 是 #[tauri::command]，
                 // 不能直接调；提取核心逻辑为 pub fn 或直接重新实现（几行代码）
                 let coordinator = app.state::<crate::coordinator::Coordinator>();
                 trigger_agent_voice_core(item_id, app, coordinator.inner());
             } else {
-                // 非 agent 或无 {{task}} → 直接执行（url/script/copy_path/agent-无task）
+                // 非 agent 或无 {{voice}} → 直接执行（url/script/copy_path/agent-无task）
                 // 复用 Text 分支的执行逻辑
-                // 注意：agent 无 {{task}} 时 prompt 仍可能含 {{files}}，需渲染
+                // 注意：agent 无 {{voice}} 时 prompt 仍可能含 {{files}}，需渲染
                 execute_action_bar_inner_via_runtime(item_id, "".into(), app);
             }
         }
@@ -639,7 +639,7 @@ pub async fn trigger_agent_voice(
 1. `trigger_agent_voice_core` 是纯逻辑函数，无 Tauri State 依赖（参数传入 coordinator）
 2. ActionBar 浮窗路径（`hide_action_bar=true`）与 quick_execute 路径（`hide_action_bar=false`）走同一份核心逻辑
 3. quick_execute 的 File/Folder 分支不会污染 Text 分支（match 穷尽）
-4. agent 类型但无 `{{task}}` → 直接执行（prompt 用 {{files}} 渲染后丢给 agent）
+4. agent 类型但无 `{{voice}}` → 直接执行（prompt 用 {{files}} 渲染后丢给 agent）
 
 ### 11.7 测试
 
@@ -648,7 +648,7 @@ pub async fn trigger_agent_voice(
 | # | 测试 | 验证什么 |
 |---|---|---|
 | T-quick-1 | `quick_execute_file_selection_with_agent_task_triggers_voice` | mock detect 返回 File → 检查 coordinator.start_agent_recording 被调 |
-| T-quick-2 | `quick_execute_file_selection_with_agent_no_task_executes_directly` | mock detect 返回 File + item 无 {{task}} → 走 execute_action_bar_inner |
+| T-quick-2 | `quick_execute_file_selection_with_agent_no_task_executes_directly` | mock detect 返回 File + item 无 {{voice}} → 走 execute_action_bar_inner |
 | T-quick-3 | `trigger_agent_voice_core_with_hide_false_skips_hide` | hide_action_bar=false 时 hide_action_bar_window 不被调 |
 
 ---
@@ -657,9 +657,9 @@ pub async fn trigger_agent_voice(
 
 实施后用户实测发现两个 bug，对应 schema 升级 v39→v40→v41：
 
-### 13.1 v40：`need_voice` 字段取代 `{{task}}` 字符串扫描（commit `9c5c67ae`）
+### 13.1 v40：`need_voice` 字段取代 `{{voice}}` 字符串扫描（commit `9c5c67ae`）
 
-**Bug**：原方案让前端 / `quick_execute` / `trigger_agent_voice` 都用 `action_data.includes("{{task}}")` 判定是否触发语音。脆弱——用户实测发现早期 Task 1 残留的 `action_data=''` PPT 菜单永远进不了语音路径。
+**Bug**：原方案让前端 / `quick_execute` / `trigger_agent_voice` 都用 `action_data.includes("{{voice}}")` 判定是否触发语音。脆弱——用户实测发现早期 Task 1 残留的 `action_data=''` PPT 菜单永远进不了语音路径。
 
 **修订**：新增 `action_bar_items.need_voice INTEGER NOT NULL DEFAULT 0` 列（DB v40）。
 - `ActionBarItem.need_voice: bool` 字段贯穿全链路

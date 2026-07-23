@@ -2054,15 +2054,17 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
     })
 }
 
-/// 校验快捷键格式：空字符串或单个 0-9/a-z 字符。
+/// 校验快捷键格式：空字符串或单个 a-z 字符。
+/// 2026-07-23：数字不再允许（Alt+数字 1-9 改为定位菜单项，与字母执行快捷键区分）。
+/// 旧 DB 中已有的数字 shortcut 不阻断（用户编辑时前端会过滤为字母）。
 pub fn validate_shortcut(shortcut: &str) -> Result<()> {
     if shortcut.is_empty() {
         return Ok(());
     }
-    if shortcut.len() == 1 && shortcut.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+    if shortcut.len() == 1 && shortcut.chars().all(|c| c.is_ascii_lowercase()) {
         return Ok(());
     }
-    anyhow::bail!("快捷键必须为空或单个 0-9/a-z 字符");
+    anyhow::bail!("快捷键必须为空或单个 a-z 字符");
 }
 
 /// 检查快捷键是否已被其他项占用（排除指定 id）。返回冲突项（如有）。
@@ -3956,11 +3958,11 @@ mod tests {
         // 给 id=2（翻译）设快捷键 't'
         conn.execute("UPDATE action_bar_items SET shortcut='t' WHERE id=2", []).unwrap();
 
-        // validate_shortcut: 合法
+        // validate_shortcut: 合法（仅 a-z；数字 2026-07-23 起不再允许——留给 Alt+数字定位）
         assert!(validate_shortcut("").is_ok());
         assert!(validate_shortcut("t").is_ok());
-        assert!(validate_shortcut("5").is_ok());
         // validate_shortcut: 非法
+        assert!(validate_shortcut("5").is_err());  // 数字不再允许
         assert!(validate_shortcut("T").is_err());  // 大写
         assert!(validate_shortcut("ab").is_err()); // 多字符
         assert!(validate_shortcut("-").is_err());  // 非法字符
@@ -4346,7 +4348,7 @@ mod tests {
         let conn = open_init();
         conn.execute(
             "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, agent, accepts, sort_order)
-             VALUES (NULL, '测试agent', 'bot', 'agent', '{{task}}', 'claude', 'file', 0)",
+             VALUES (NULL, '测试agent', 'bot', 'agent', '{{voice}}', 'claude', 'file', 0)",
             [],
         ).unwrap();
         let id = conn.last_insert_rowid();
@@ -4672,7 +4674,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{task}}", true, false, "", "claude", "file", "", true, false, "",
+            &conn, None, "我的agent", "bot", "agent", "{{voice}}", true, false, "", "claude", "file", "", true, false, "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -4763,7 +4765,7 @@ mod tests {
     #[test]
     fn agent_task_context_json_storage() {
         let conn = open_init();
-        let complex_context = r#"{"kind":"files","files":["/a/b.pdf","/c d/e.pdf"],"cwd":"/Users/x","prompt_template":"{{task}}\n\n{{files}}"}"#;
+        let complex_context = r#"{"kind":"files","files":["/a/b.pdf","/c d/e.pdf"],"cwd":"/Users/x","prompt_template":"{{voice}}\n\n{{files}}"}"#;
         conn.execute(
             "INSERT INTO agent_tasks (id, agent_key, context) VALUES (?1, ?2, ?3)",
             params!["ctx-1", "claude", complex_context],
@@ -4774,7 +4776,7 @@ mod tests {
         assert_eq!(parsed["files"][0], "/a/b.pdf");
         assert_eq!(parsed["files"][1], "/c d/e.pdf");
         assert_eq!(parsed["cwd"], "/Users/x");
-        assert_eq!(parsed["prompt_template"], "{{task}}\n\n{{files}}");
+        assert_eq!(parsed["prompt_template"], "{{voice}}\n\n{{files}}");
         conn.execute("DELETE FROM agent_tasks WHERE id='ctx-1'", []).unwrap();
     }
 

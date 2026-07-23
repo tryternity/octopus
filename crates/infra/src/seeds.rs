@@ -473,7 +473,7 @@ mod load_tests {
             .query_row("SELECT action_data FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
             .unwrap();
         assert!(!after_data.is_empty(), "自愈后 action_data 应非空");
-        assert!(after_data.contains("{{task}}"), "自愈后 action_data 应含 {{task}}");
+        assert!(after_data.contains("{{voice}}"), "自愈后 action_data 应含 {{voice}}");
 
         let need_voice: i64 = conn
             .query_row("SELECT need_voice FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
@@ -575,7 +575,7 @@ mod load_tests {
             .query_row("SELECT action_data FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
             .unwrap();
         assert!(!after_data.is_empty(), "PPT 大纲自愈后 action_data 应非空");
-        assert!(after_data.contains("{{task}}"), "PPT 大纲 prompt 应含 {{task}}");
+        assert!(after_data.contains("{{voice}}"), "PPT 大纲 prompt 应含 {{voice}}");
         assert!(after_data.contains("outline"), "PPT 大纲 prompt 应含 outline 文件名规范");
     }
 
@@ -598,14 +598,14 @@ mod load_tests {
         assert!(result.is_ok(), "load_external_seeds 不应传播单 seed 错误: {:?}", result);
     }
 
-    /// make-ppt.prompt.md 必须包含 {{task}} / {{files}} 占位符（octopus 的 render_agent_prompt
+    /// make-ppt.prompt.md 必须包含 {{voice}} / {{files}} 占位符（octopus 的 render_agent_prompt
     /// 只替换这两个），推荐 guizang-ppt-skill 与 ppt-master，且 v43 起新增「Markdown 大纲」
     /// 识别章节（让「PPT 制作」能识别 .md 输入并跳过 Step 1）。
     #[test]
     fn make_ppt_prompt_contains_required_placeholders() {
         let path = seeds_dir().join("agent_actions/make-ppt.prompt.md");
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("{{task}}"), "PPT prompt 必须含 {{task}} 占位符");
+        assert!(content.contains("{{voice}}"), "PPT prompt 必须含 {{voice}} 占位符");
         assert!(content.contains("{{files}}"), "PPT prompt 必须含 {{files}} 占位符");
         assert!(content.contains("guizang-ppt-skill"), "应推荐 guizang skill");
         assert!(content.contains("ppt-master"), "应推荐 ppt-master skill");
@@ -617,7 +617,7 @@ mod load_tests {
     fn ppt_outline_prompt_contains_required_placeholders() {
         let path = seeds_dir().join("agent_actions/ppt-outline.prompt.md");
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("{{task}}"), "PPT 大纲 prompt 必须含 {{task}} 占位符");
+        assert!(content.contains("{{voice}}"), "PPT 大纲 prompt 必须含 {{voice}} 占位符");
         assert!(content.contains("{{files}}"), "PPT 大纲 prompt 必须含 {{files}} 占位符");
         assert!(content.contains("guizang-ppt-skill"), "应提 guizang skill（作下游参考）");
         assert!(content.contains("outline"), "应含 outline 文件名规范");

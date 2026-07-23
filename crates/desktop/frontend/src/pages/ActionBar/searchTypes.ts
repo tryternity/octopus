@@ -41,7 +41,7 @@ export interface TabDef {
 
 /**
  * Tab 栏定义（顺序即 Tab 循环顺序）。
- * Tab 键在 Tab 页之间循环；Cmd+字母 快捷定位。
+ * Tab 键在 Tab 页之间循环（Tab/Shift+Tab/←→）。
  */
 export const TABS: readonly TabDef[] = [
   { id: "all", label: "全部", key: "a" },

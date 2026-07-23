@@ -142,7 +142,7 @@ export default function AppPicker({ value, onChange }: AppPickerProps) {
 
       {/* 搜索浮层 */}
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border border-input bg-popover p-2 shadow-md">
+        <div className="absolute z-50 mt-1 w-full rounded-md border border-input bg-background p-2 shadow-lg">
           {/* 搜索框 */}
           <div className="mb-2 flex items-center gap-1.5 border-b border-border pb-1.5">
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

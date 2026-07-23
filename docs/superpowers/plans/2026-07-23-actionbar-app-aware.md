@@ -153,3 +153,74 @@
 - [x] architecture.md：schema v49 + action_bar app-aware 过滤段 + search 应用索引 bundle_id + list_all_apps
 - [x] AGENTS.md：schema v48→v49
 - [x] plan checkbox 全部更新 + 偏差记录
+- [x] architecture.md 快捷键描述同步（e2e 期间快捷键改版，见 Step 6）
+
+---
+
+## Step 6：e2e 期间的额外修复（2026-07-23）
+
+e2e 测试中发现的问题，不属于 app-aware 功能本身，但同 session 修复：
+
+### Task 6.1：AppPicker UI 调整
+
+- [x] AppPicker 从内容后移到内容前（编辑表单顺序）
+- [x] AppPicker 浮层背景 bg-popover→bg-background（实色不透明，防下层文字干扰）
+
+### Task 6.2：列表行快捷键对齐
+
+- [x] 列表行 global/local X 清除按钮始终渲染（invisible 占位），有值/无值右边界一致
+
+### Task 6.3：TDZ 修复
+
+- [x] isItemVisibleForApp / parseAppBundleIds 从 contextFilteredResults 后移到前（useMemo 引用未初始化 const）
+
+### Task 6.4：快捷键改版（Alt 键位重新分配）
+
+**动机**：设置页「快捷键」字段配的字母，用户直觉用 Alt+字母 执行，但原设计是 Cmd+字母 执行、Alt+字母 定位/切 Tab——冲突且反直觉。
+
+**改版**：
+- `Alt+字母 a-z` → 执行局部快捷键（匹配 item.shortcut）—— **原 Cmd/Ctrl+字母 执行已删除**
+- `Alt+数字 1-9` → 定位菜单项（按位置选中不执行，超出 9 项用 Tab/方向键）
+- Tab 页切换 → 只用 Tab/Shift+Tab/←→ —— **原 Alt+字母 跳 Tab 已删除**
+- tooltip/hint/徽章 ⌘→⌥
+- 删除死代码 getTabByKey + 相关测试
+
+- [x] index.tsx 键盘 handler 改版
+- [x] i18n shortcutHint 改文案
+- [x] architecture.md 3 处快捷键描述同步
+- [x] searchLogic.ts / searchTypes.ts 源码注释同步
+- [x] getTabByKey 死代码清理 + 测试删除
+- [x] vitest 90 pass（-4 getTabByKey 测试）
+
+> **偏差**：archived 的 actionbar-search spec/plan（2026-07-15）也有快捷键描述冲突，但属归档文档——本次仅在 architecture.md 活文档同步，归档文档保留历史决策记录不改动。
+
+### Task 6.5：局部快捷键约束（仅字母）
+
+- [x] 前端 input 正则 `[^0-9a-z]` → `[^a-z]`（数字不再允许）
+- [x] 后端 `validate_shortcut` 收紧到仅 a-z
+- [x] 测试 `"5"` 从合法移到非法断言
+
+### Task 6.6：agent 桥接占位符改名 + 文本场景支持
+
+**动机**：`{{task}}` 语义不直观（容易和「任务」混淆），改名 `{{voice}}`（语音识别结果）。同时新增 `{{text}}`（选中文本），让 agent 支持文本场景（原仅文件）。
+
+**占位符三参语义分离**：
+- `{{voice}}` = 语音识别结果（用户口述指令；含此占位符触发语音录入）
+- `{{text}}` = 选中的文本
+- `{{files}}` = 选中的文件/文件夹列表
+
+- [x] `render_agent_prompt` 签名 `(template, task, files)` → `(template, voice, text, files)`
+- [x] `derive_need_voice` 判定 `{{task}}` → `{{voice}}`
+- [x] agent context JSON 加 `text` 字段（语音路径保留选中文本）
+- [x] `AgentContext` struct + `parse_agent_context` 加 text 字段
+- [x] agent 默认 accepts `file` → `any`（支持文本场景）
+- [x] **fix: agent 非语音路径 text 传递**——前端 executeItem 行 640 硬编码 `text:""` 改为传 `text`（选中文本）
+- [x] 2 个 PPT seed prompt 文件 `{{task}}` → `{{voice}}`
+- [x] i18n typeAgentDesc/typeAgentPlaceholder 改 `{{voice}}` + 补 `{{text}}` 说明
+- [x] 全量 `{{task}}` → `{{voice}}` 替换（rust + yaml + ts 注释；archived 文档不改）
+- [x] architecture.md 5 段 agent 桥接描述同步 + context JSON 补 text 字段
+- [x] make-ppt.md 用户向文档同步
+- [x] ppt-from-files-design.md spec + plan 批量同步
+- [x] 测试：desktop 396 pass（含新 `{{text}}`/三参分离测试）
+
+> **用户需手动改 DB**：已有 agent 菜单项（如制作 PPT）的 action_data 里 `{{task}}` 要改成 `{{voice}}`，否则 need_voice 不触发。
