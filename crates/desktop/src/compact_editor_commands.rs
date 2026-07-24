@@ -148,6 +148,23 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
     });
 }
 
+/// 存 pending file tab（窗口首次创建时用）。source="file"，不查 DB，text 直接携带。
+pub fn store_pending_file(item_id: i64, text: String) {
+    PENDING_TABS.lock().push(PendingTabFull {
+        item_id,
+        source: "file".into(),
+        item_type: "text".into(),
+        text,
+        img_width: 0,
+        img_height: 0,
+        is_temp: false,
+        mode: None,
+        original_text: None,
+        translated_text: None,
+        translate_session_id: None,
+    });
+}
+
 /// 打开 CompactEditor 并定位到一个临时 tab（不写 DB）。
 /// payload.mode=None 为单栏（现有行为）；payload.mode="contrast" 为翻译对照（左原文右译文）。
 /// 窗口已存在 → emit 推送新 temp tab；窗口不存在 → store_pending_temp + 建窗。
@@ -158,9 +175,9 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
 /// 前端 OpenTabPayload 兼容），消除手写 JSON 漂移。
 pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload) {
     // 补齐 emit 所需的固定字段——调用方只关心 text/mode/originalText/translatedText/
-    // translate_session_id，item_id/source/is_temp 由本函数固定（temp tab 不写 DB）。
+    // translate_session_id。source/is_temp 固定；item_id 仅在调用方未设（=0）时固定为 0，
+    // 保留显式设置的值（prompt 文件查看用 md5 hash 作 item_id 实现去重）。
     let mut emit_payload = payload.clone();
-    emit_payload.item_id = 0;
     emit_payload.source = "temp".into();
     emit_payload.is_temp = true;
 

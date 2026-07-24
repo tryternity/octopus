@@ -584,6 +584,13 @@ settings:
     typeLabel: Type
     builtinTypeLocked: · Built-in item type cannot be changed
     contentLabel: Content
+    promptInline: Inline
+    promptRef: File ref
+    promptSelectFile: Select a prompt file…
+    promptDirEmpty: "Directory is empty. Place .md files in:"
+    promptFileMissing: file not found
+    promptPreview: Preview
+    promptViewMore: View more / Edit
     execOptions: Execution Options
     asyncExec: Async execution (no wait, runs in background)
     writeToClipboard: Write result to clipboard

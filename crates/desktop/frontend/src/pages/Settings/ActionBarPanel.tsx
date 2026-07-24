@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Toggle as UIToggle } from "@/components/ui/toggle";
 import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
 import AppPicker from "./ActionBar/AppPicker";
+import PromptEditor from "./ActionBar/PromptEditor";
 
 interface ActionBarItem {
   id: number;
@@ -247,6 +248,8 @@ const EditForm = ({
   const type = form.actionType || "url";
   const meta = TYPE_META[type];
   const showContent = type !== "submenu" && type !== "extension" && type !== "copy_path";
+  // agent + ai 类型的 action_data 是 prompt——用 PromptEditor（支持 @文件引用）
+  const isPromptType = type === "agent" || type === "ai";
   const showShortcut = type !== "submenu";
   const [adapters, setAdapters] = useState<{key:string;displayName:string;isAvailable:boolean}[]>([]);
   const [capturingGlobal, setCapturingGlobal] = useState(false);
@@ -490,8 +493,16 @@ const EditForm = ({
           onChange={(v) => onChange({ ...form, appBundleIds: v })}
         />
 
-        {/* 内容 textarea —— 固定高度，resize-y 可手动拉大（放最后一行） */}
-        {showContent && (
+        {/* 内容区 —— prompt 类型（agent/ai）用 PromptEditor（支持 @文件引用），其他用 textarea */}
+        {showContent && isPromptType && (
+          <PromptEditor
+            key={form.id ?? "new"}
+            value={form.actionData || ""}
+            onChange={(v) => onChange({ ...form, actionData: v })}
+            placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
+          />
+        )}
+        {showContent && !isPromptType && (
           <FormField label={t("settings.actionBar.contentLabel")}>
             <textarea
               className="w-full min-h-[190px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
