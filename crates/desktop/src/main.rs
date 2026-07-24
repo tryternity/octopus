@@ -316,6 +316,8 @@ pub fn run() {
             search_commands::reveal_path,
             search_commands::reindex_apps,
             search_commands::list_all_apps,
+            action_bar_commands::list_prompt_files,
+            action_bar_commands::open_file_in_editor,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,

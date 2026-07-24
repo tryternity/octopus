@@ -12,7 +12,7 @@ import { useT, t as ti18n } from "@/lib/i18n";
 
 export interface Tab {
   key: string;
-  source: 'clipboard' | 'transcription' | 'temp';
+  source: 'clipboard' | 'transcription' | 'temp' | 'file';
   itemId: number;
   itemType?: 'text' | 'image';
   text?: string;
@@ -201,6 +201,16 @@ function CompactEditor() {
           if (newTab.mode === 'contrast' && (newTab.translatedText || "").startsWith("⏳") && newTab.translateSessionId) {
             registerTranslateSession(newTab.translateSessionId, tempKey);
           }
+          const next = [...tabsRef.current, newTab];
+          tabsRef.current = next;
+          setTabs(next);
+          setActiveIdx(next.length - 1);
+        } else if (p.source === 'file') {
+          // 文件查看：text 随事件携带（不查 DB），按 file:<itemId> 去重
+          const fileKey = `file:${p.itemId}`;
+          const existIdx = tabsRef.current.findIndex(t => t.key === fileKey);
+          if (existIdx >= 0) { setActiveIdx(existIdx); return; } // 已存在→激活，不覆盖
+          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "" };
           const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
           setTabs(next);
