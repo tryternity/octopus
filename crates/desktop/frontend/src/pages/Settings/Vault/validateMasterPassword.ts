@@ -2,8 +2,10 @@
  * 主密码强度校验。
  *
  * 策略：长度 ≥ 12 位 + 必含 4 类字符（大写/小写/数字/符号）。
- * 字符集大小：95 (可打印 ASCII) × 12 位 ≈ 79 bit 熵，配合 Argon2id
- * (t=3, m=64MiB) 可抵抗 GPU 离线暴力（数千 GPU·年级别）。
+ *
+ * 熵估算（V1 修正）：95 (可打印 ASCII) × 12 位 ≈ 79 bit 是理论上界（假设每位
+ * 均匀随机选）。本策略只强制「4 类各含 1 个」+ 长度 12，最弱合法密码实际熵远低于
+ * 此值。Argon2id (t=3, m=64MiB) 为弱密码兜底，抵抗 GPU 离线暴力。
  *
  * 不采用纯字符种类策略（NIST SP 800-63B 反对），但与项目既有文案
  * 「至少 12 位，含大小写数字符号」保持一致。
@@ -26,12 +28,12 @@ export const MIN_MASTER_PASSWORD_LENGTH = 12;
  * 含中文用户常见的全角符号变体。
  */
 const SYMBOL_CHARS = new Set<string>([
-    // ASCII 符号（与 vault crate generator/random.rs SYMBOLS 一致）
-    ...Array.from("!@#$%^&*()-_=+[]{}<>?"),
-    // 其他常见 ASCII 符号
-    ...Array.from("~`|\\:;\"',./"),
-    // 中文用户常用全角符号
-    ...Array.from("！@#¥%……&*（）——+-=【】「」『』；：”“’‘，。、"),
+    // ASCII 符号（全集：所有非字母数字的 ASCII 可打印字符）
+    // 与后端 validate.rs is_symbol 的 ASCII 段（is_ascii_graphic && !is_ascii_alphanumeric）一致
+    ...Array.from("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"),
+    // 中文用户常用全角符号（与后端 validate.rs is_symbol 的全角段逐字对齐）
+    // V4 修复（2026-07-24）：¥ 改 ￥（U+00A5 → U+FFE5）对齐后端码点
+    ...Array.from("！￥…（）—【】「」『』；：”“’‘，。、"),
 ]);
 
 /**

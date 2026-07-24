@@ -6,9 +6,10 @@
 //!   - 跳过已 v1: 开头的行（避免重复加密）
 //!   - 迁移后字段以 v1: 前缀存密文
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octopus_infra::db;
 
+use crate::crypto::symmetric::CIPHERTEXT_PREFIX;
 use crate::crypto::DerivedKey;
 
 /// 迁移所有未加密的 secret_key。返回迁移的行数。
@@ -27,7 +28,9 @@ use crate::crypto::DerivedKey;
 ///   2. 再用 `with_db` + `unchecked_transaction` 把整批 UPDATE 放进一个事务，
 ///      全成功才 commit；任一行 UPDATE 失败 → tx 自动 drop = rollback。
 pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
-    let models = db::list_models_for_secret_migration()?;
+    // M1(b) 修复：传 CIPHERTEXT_PREFIX 而非在 db.rs 硬编码——单点维护，
+    // 升级 v2: 时只改 CIPHERTEXT_PREFIX，SQL 守卫自动跟随。
+    let models = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)?;
 
     // (1) 全部加密——任一行失败 → 整批 abort，DB 0 改动
     let encrypted: Vec<(i64, String)> = models
@@ -46,10 +49,13 @@ pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
     let count = db::with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
         for (id, enc) in &encrypted {
+            // M2 修复：UPDATE 失败带行 id（诊断信息）。context 在 ? 前附加，
+            // tx drop 时 rollback 自动触发，但错误信息已捕获不会丢失。
             tx.execute(
                 "UPDATE models SET secret_key = ? WHERE id = ?",
                 &[enc as &dyn rusqlite::ToSql, id as &dyn rusqlite::ToSql],
-            )?;
+            )
+            .with_context(|| format!("迁移 model id={} 失败", id))?;
         }
         tx.commit()?;
         Ok(encrypted.len())
@@ -251,7 +257,7 @@ mod tests {
         assert_eq!(count, 3, "all 3 candidates should be migrated");
 
         // 成功后 DB 中不应再有任何明文（非 v1:）的云端行
-        let remaining = db::list_models_for_secret_migration()
+        let remaining = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)
             .expect("list should succeed");
         assert!(
             remaining.is_empty(),
@@ -293,5 +299,29 @@ mod tests {
 
         // 行未被改动
         assert_eq!(read_secret_key(id), pre_encrypted);
+    }
+
+    /// M1(b) 回归守护：验证「加密产生的前缀」与「迁移守卫前缀」绑定。
+    ///
+    /// migrate 用 `list_models_for_secret_migration(CIPHERTEXT_PREFIX)` 跳过已加密行，
+    /// 而 encrypt 实际产生的前缀也是 CIPHERTEXT_PREFIX。这两者必须引用同一常量
+    /// （M1(b) 修复前 SQL 守卫是硬编码 'v1:%' 字面量，与 CIPHERTEXT_PREFIX 耦合
+    /// 但无引用关系——升级 v2: 时漏改一处会导致数据损坏）。
+    ///
+    /// 本测试断言不变量：encrypt 出的密文前缀 == CIPHERTEXT_PREFIX（守卫前缀）。
+    /// 若有人改了 CIPHERTEXT_PREFIX，encrypt 输出和守卫都自动跟随（因为同引用），
+    /// 此测试仍成立；若有人重新引入硬编码字面量割裂两者，此测试会暴露。
+    #[test]
+    fn encrypt_prefix_matches_migration_guard_prefix() {
+        let key = make_key(1);
+        let ciphertext = key.encrypt(b"any-plaintext").unwrap();
+        // encrypt 产生的前缀必须是 CIPHERTEXT_PREFIX
+        assert!(
+            ciphertext.starts_with(CIPHERTEXT_PREFIX),
+            "encrypt 产生的前缀 '{}' 必须等于 CIPHERTEXT_PREFIX '{}'，\
+             否则迁移守卫会漏保护（M1(b) 不变量）",
+            &ciphertext[..CIPHERTEXT_PREFIX.len().min(ciphertext.len())],
+            CIPHERTEXT_PREFIX
+        );
     }
 }

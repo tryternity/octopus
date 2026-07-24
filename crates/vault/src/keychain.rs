@@ -278,9 +278,27 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
     }
 
     let file_key = DerivedKey::from_raw(derive_file_key()?);
-    let bytes = file_key
-        .decrypt(&ciphertext)
-        .context("解密 K_machine 文件失败（file_key 与本机不匹配或文件已损坏）")?;
+    // KC1 修复（2026-07-24）：解密失败（file_key 不匹配 / 文件损坏）→ Ok(None)，
+    // 与上面「前缀不符 → Ok(None)」对称。两者语义都是「无可用 K_machine，需重建」。
+    //
+    // 换机迁移是合法触发场景：用户把整个 ~/.octopus/（含 machine-key.enc）拷到
+    // 新机器，新机 machine_id 不同 → file_key 不同 → 解密失败。若返 Err：
+    //   - unlock_app_key_local（unlock.rs:154）用 `?` 传播 → vault_state.rs:178
+    //     只 log::warn 不提示输主密码 → app 僵死在「未解锁且无提示」
+    //   - refresh_app_key_local_enc（unlock.rs:351）`?` 传播 → 主密码校验通过但
+    //     整体 Err → 用户输对密码也解不开（死循环）
+    //   - load_or_create（:237）`?` 传播 → 走不到「创建新 K_machine」分支
+    // 改 Ok(None) 后三处全部自愈：流程 B 降级提示输主密码 / 流程 C 创建新
+    // K_machine 重写 local_enc / load_or_create 走创建分支。
+    //
+    // K_machine 本就是 obfuscation 而非真秘密（模块注释 :14-30 已说明），重建
+    // 无损安全性，仅丢失「检测到文件被篡改」的诊断信息（可接受——换机是合法
+    // 场景，把诊断让位给可用性）。unlock.rs:148 文档已承诺「解密失败 → Ok(None)」，
+    // 此处让实现对齐文档。
+    let bytes = match file_key.decrypt(&ciphertext) {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
     ensure!(
         bytes.len() == 32,
         "K_machine 文件内容长度异常：{} bytes",
@@ -529,6 +547,59 @@ mod tests {
         let _ = delete_machine_key();
 
         // 恢复 HOME
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    /// KC1 回归守护：换机迁移场景——machine-key.enc 是合法 v1: 密文但用不同的
+    /// file_key 加密（模拟新机 machine_id 不同 → file_key 不同）。
+    ///
+    /// 修复前：load_machine_key 返 Err → unlock_app_key_local 用 `?` 传播 →
+    /// vault_state.rs Err 分支只 log 不提示 → app 僵死；refresh_app_key_local_enc
+    /// 传播 Err → 主密码校验通过但整体失败（死循环）。
+    ///
+    /// 修复后：load_machine_key 返 Ok(None) → 三处调用点全部自愈（降级提示
+    /// 输主密码 / 创建新 K_machine / load_or_create 走创建分支）。
+    ///
+    /// 同 via_file 测试用 #[ignore]：octopus_config_home 是 once_cell Lazy 缓存，
+    /// HOME 替换在缓存已触发后不生效，默认 cargo test 不跑避免污染开发者本机。
+    #[test]
+    #[ignore = "需要真实文件系统操作（模拟换机解密失败），用 cargo test -- --ignored 跑"]
+    fn load_machine_key_returns_none_on_decrypt_failure_machine_change() {
+        let tmp = tempfile_dir();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &tmp);
+        let _ = delete_machine_key();
+
+        // 用一把「错误」的 key（非本机 file_key）加密 32B 写成合法 v1: 密文——
+        // 模拟旧机器的 machine-key.enc 被拷到新机，file_key 不匹配。
+        let wrong_key = DerivedKey::from_raw([0xAA; 32]); // 任意非本机 file_key
+        let ciphertext = wrong_key.encrypt(&[0xBB; 32]).expect("encrypt 应成功");
+        let path = machine_key_path().unwrap();
+        // 父目录可能不存在（临时 HOME 下无 .octopus），write 不创建目录，需先建
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("创建父目录应成功");
+        }
+        std::fs::write(&path, ciphertext.as_bytes()).expect("写文件应成功");
+
+        // KC1 核心断言：解密失败应返 Ok(None)（而非 Err）
+        let result = load_machine_key().expect("解密失败应返 Ok(None)，不是 Err");
+        assert_eq!(
+            result, None,
+            "KC1: 换机解密失败应返 Ok(None)（需重建 K_machine），不能 Err 传播致启动僵死"
+        );
+
+        // 进一步验证自愈链路：load_or_create 应能创建新 K_machine（不因解密失败被堵）
+        let new_key = load_or_create_machine_key().expect("load_or_create 应成功创建新 key");
+        assert_eq!(new_key.len(), 32);
+        // 新 key 应已落盘（用本机 file_key 重新加密），再 load 应拿到同一把
+        let reloaded = load_machine_key().expect("reload 应成功").expect("应读到新 key");
+        assert_eq!(new_key.as_ref(), reloaded.as_ref());
+
+        // 清理
+        let _ = delete_machine_key();
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),

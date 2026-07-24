@@ -3969,13 +3969,24 @@ pub fn delete_vault_folder(id: &str) -> Result<()> {
 }
 
 /// 返回所有需要迁移的 model：(id, 明文 secret_key)。
-/// 仅 source_type=2（cloud）且不以 v1: 开头的行。
-pub fn list_models_for_secret_migration() -> Result<Vec<(i64, String)>> {
+/// 仅 source_type=2（cloud）且不以密文前缀（如 `v1:`）开头的行。
+///
+/// `encrypted_prefix` 由调用方传入（vault crate 传 `crypto::symmetric::CIPHERTEXT_PREFIX`），
+/// 而非在此硬编码——M1(b) 修复（2026-07-24）：之前 SQL 守卫字面量 `'v1:%'` 与
+/// CIPHERTEXT_PREFIX 是两份独立字面量，未来密文格式升级（v2:）时若只改一处会导致
+/// v2 密文被当明文再加密（数据损坏）/ v1 密文漏保护。参数化绑定后调用方传常量，
+/// 单点维护。
+///
+/// 注意：infra 不依赖 vault（依赖方向是 vault → infra），所以不能直接引用
+/// CIPHERTEXT_PREFIX 常量，必须由调用方注入。
+pub fn list_models_for_secret_migration(encrypted_prefix: &str) -> Result<Vec<(i64, String)>> {
+    // SQL LIKE 模式：前缀 + % 通配。前缀本身不含 LIKE 特殊字符（v1: 等），无需 escape。
+    let pattern = format!("{}%", encrypted_prefix);
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, secret_key FROM models WHERE source_type = 2 AND secret_key != '' AND secret_key NOT LIKE 'v1:%'",
+            "SELECT id, secret_key FROM models WHERE source_type = 2 AND secret_key != '' AND secret_key NOT LIKE ?1",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![pattern], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut out = Vec::new();

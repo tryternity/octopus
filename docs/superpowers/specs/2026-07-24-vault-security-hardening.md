@@ -521,3 +521,99 @@ totp.rs 经 #7（80bit secret）、M2（空/短 secret 拦截）、复审 #1（�
 - `engine.rs:1857` test 函数 `pull_preserves_soft_deleted_at` 内 `VaultCipherInput` 未用（另一处 1647 有用，保留）
 
 非本轮引入（分别来自 feat Task 15 / 第十二轮），但 AGENTS.md 要求 0 warning，顺手清。
+
+---
+
+## 第十八轮审查修复（2026-07-24，KC1 + AG2/KC2/KC3 文档化）
+
+### KC1: 换机迁移下 load_machine_key 解密失败返 Err 致启动僵死 + 主密码死循环（中等）
+
+**问题**：`load_machine_key`（keychain.rs:281-283）对两种"无法取出有效 K_machine"的处理不对称——前缀不符（:275-278）→ `Ok(None)`（视为不存在，可重建）；是 v1: 文件但解密失败（file_key 不匹配/损坏）→ `Err`。
+
+`file_key = HKDF(machine_id:username, salt)`，换机迁移（拷整个 `~/.octopus/` 含 machine-key.enc 到新机器）→ machine_id 变 → file_key 变 → 解密失败。返 Err 致三条死路：
+
+1. **启动僵死**：`unlock_app_key_local`（unlock.rs:154）`load_machine_key()?` 传播 Err → `vault_state.rs:178-180` 走 `Err(e) => log::warn!` 分支，既不设 app_key（:173 没走）也不走 :175 Ok(None) 的"需主密码"提示 → app 卡在"未解锁且无提示"
+2. **主密码死循环**：`unlock_with_master_password`（:244）末尾 `refresh_app_key_local_enc`（:351）`load_machine_key()?` 再次 Err → :246 返"密码正确但刷新失败"→ 用户输对密码也解不开
+3. **load_or_create 被堵**：`load_or_create_machine_key`（:237）`load_machine_key()?` 传播 Err → 走不到 :240 创建分支
+
+**修复**：keychain.rs:281-283 解密失败改 `Ok(None)`，与 :275-278 对称。单点改，三处调用全部自愈：
+- unlock.rs:154 → Ok(None) → return Ok(None) → vault_state 走"需主密码"提示 ✓
+- unlock.rs:351 → Ok(None) → None 分支 → load_or_create 创建新 K_machine 重写 local_enc ✓
+- keychain.rs:237 load_or_create → Ok(None) → 创建分支 ✓
+
+**关键依据**：unlock.rs:148 文档注释**已承诺**"解密失败 → Ok(None)"，但实现对齐文档前是 bug。K_machine 本就是 obfuscation（模块注释 :14-30 说明），重建无损安全性，仅丢失"检测篡改"诊断信息（换机是合法场景，可用性让位诊断）。
+
+**回归测试**：`load_machine_key_returns_none_on_decrypt_failure_machine_change`（#[ignore]，用错误 key 加密文件模拟换机 file_key 不匹配），验证 Ok(None) + load_or_create 自愈创建新 key。
+
+### AG2: record_failure 非原子组合（低，文档化）
+
+**问题**：`record_failure`（attempt_guard.rs:47-57）`fetch_add(1)`（计数）+ `store(now+delay)`（门）两次独立原子操作。并发失败时较晚的 store 可能被较早的较小 delay 覆盖 → next_allowed_at 偶发倒退（退避短暂偏弱）。
+
+**状态**：文档化。failures 计数原子准确，下一轮 record_failure 会重 store 正确 delay，长期退避递增。unlock 路径并发性极低（UI 串行 + attempt_guard 单例 + 三入口不真正并发）。理想可用 CAS 单调更新 deadline，非必要。
+
+### KC2: derive_file_key 无缓存（低，文档化）
+
+**问题**：`derive_file_key`（keychain.rs:207-217）每次 load/save 重新 read_machine_id（macOS spawn ioreg ~10-50ms）+ read_username + HKDF。unlock 流程多次调 load_machine_key → 多次 spawn ioreg。
+
+**状态**：文档化。可用 OnceLock 缓存 file_key，正确性无碍，仅性能优化。
+
+### KC3: setup 回滚未删 K_machine（低，文档化）
+
+**问题**：迁移失败 DELETE vault_meta 回滚（unlock.rs:129-134）后，:84 已 `load_or_create_machine_key` 创建的 K_machine 残留为孤儿。
+
+**状态**：文档化。下次 setup load_or_create 复用它（本机随机 32B 复用无损安全）。严格对称应一并删除，但无实际风险。
+
+### 正面发现（attempt_guard / keychain / unlock）
+
+- attempt_guard 真实生效 + 精确语义：三处解锁路径均接 gate（unlock.rs:183/:268/:418）+ record_failure + reset。B2 修复精确区分"密码校验失败→record_failure" vs "副作用失败→仅 Err 不污染计数"
+- change_master_password 密钥"字节不变只换保护层"（INV-7）：改密时 user_vault_key/app_key 用旧 master 解出后字节原样用新 master 重新加密，不重加密 vault_ciphers（Bitwarden 式高效）
+- verify_master_password 不调 reset（:429）：reprompt 只是二次确认，不清 unlock 路径计数
+- keychain.rs #13 诚实注释（:14-30）：如实承认 HKDF 派生 file_key 输入全公开，AES-256-GCM 实为 obfuscation——高水准安全注释
+- keychain.rs #6 原子写（:314-396）：temp file + sync_all + rename
+- 测试隔离谨慎：keychain override（thread_local）隔离真实文件；via_file 测试 #[ignore] 避免 once_cell HOME 缓存污染开发者本机；unlock 测试用 TEST_SERIALIZER mutex 串行化避免 attempt_guard 跨测试竞争
+- setup 迁移回滚（A1，:117-136）：迁移失败显式 DELETE vault_meta 恢复 setup 可重试
+
+---
+
+## 第十九轮审查修复（2026-07-24，M1/M2/V1/V4 + M1(a)/V3 文档化）
+
+### M1(b): 幂等守卫 NOT LIKE 'v1:%' 硬编码与 CIPHERTEXT_PREFIX 耦合（低-中，DRY）
+
+**问题**：`db.rs:3924` 守卫 SQL `secret_key NOT LIKE 'v1:%'` 的 `'v1:%'` 与 `crypto::symmetric::CIPHERTEXT_PREFIX = "v1:"`（symmetric.rs:13）是两份独立字面量，无引用关系。未来密文格式升级（v2:）时若只改一处会导致：v2 密文被当明文再加密（数据损坏）/ v1 密文漏保护。经典"重构时漏改"温床。
+
+**修复**：`list_models_for_secret_migration` 加 `encrypted_prefix: &str` 参数，SQL 用参数化绑定（`NOT LIKE ?1` + `format!("{}%", prefix)`）。调用方 `migrate.rs` 传 `CIPHERTEXT_PREFIX`，单点维护。infra 不依赖 vault（依赖方向 vault → infra），故不能直接引用常量，必须由调用方注入。
+
+**回归测试**：`encrypt_prefix_matches_migration_guard_prefix`——验证 encrypt 产生的前缀 == CIPHERTEXT_PREFIX（守卫前缀），若重新引入硬编码字面量割裂两者会暴露。
+
+### M1(a): 明文 API Key 以 v1: 开头永久漏迁（低，文档化）
+
+**问题**：若用户某个云端 API Key 恰好以字面量 `v1:` 开头（自研带版本前缀的 key，如 `v1:sk-xxxx`），会被守卫误判为"已加密"跳过，保持明文残留 DB。迁移是 setup 一次性触发、`ensure!(!is_initialized())` 阻止重跑，漏迁不可自愈。
+
+**状态**：文档化为已知边界。概率极低（API Key 罕见以 v1: 开头）。彻底方案是密文用不可伪造结构（固定长度/tag）而非前缀，当前前缀方案对小规模够用。
+
+### M2: 事务内 UPDATE 失败不带行信息（低，诊断）
+
+**问题**：`migrate.rs:48-53` 事务循环 UPDATE 失败 `?` bubble → tx rollback → Err 不带"哪一行 id 失败"。迁移行数少 UPDATE 失败罕见，但一旦发生调试困难。
+
+**修复**：`.with_context(|| format!("迁移 model id={} 失败", id))` 在 `?` 前附加，tx drop 时 rollback 自动触发但错误信息已捕获不丢失。
+
+### V4: 前后端符号集双份手工列举易漂移（低，UX）
+
+**问题**：前端 `validateMasterPassword.ts:28-35 SYMBOL_CHARS` 与后端 `validate.rs:45-59 is_symbol` 是双份实现。码点级差异：前端 `¥` (U+00A5) vs 后端 `￥` (U+FFE5)；前端单引号 vs 后端左右单引号。核心问题是双份维护无共享源、无交叉一致性测试。
+
+**修复**：
+- 前端 SYMBOL_CHARS 全角段统一为后端码点：`¥`(U+00A5) → `￥`(U+FFE5)；ASCII 段改为全集列举对齐后端 `is_ascii_graphic && !alphanumeric` 语义
+- 前端测试 :95 `¥` → `￥`、`——` → `—` 对齐
+- 后端补 `is_symbol_covers_all_expected_chars` 守护测试（ASCII 全集标点 + 全角全集逐字验证）
+
+### V1: "79 bit 熵"注释是乐观上界（低，文档准确性）
+
+**问题**：validate.rs:8-9 与前端 :5-6 均注释"95 可打印 ASCII × 12 位 ≈ 79 bit 熵"。但策略只强制"4 类各含 1 个"+长度 12，最弱合法密码（如 `Aa1!!!!!!!!`）实际熵远低于 79 bit（79 bit 假设每位从 95 字符随机选）。
+
+**修复**：注释改为"理论上界 ~79 bit，实际取决于用户选择；Argon2id 为弱密码兜底"（后端 + 前端）。
+
+### V3: 主密码未 normalize（低，backlog）
+
+**问题**：`derive_master_root_key` 用 `password.as_bytes()` 直接喂 Argon2id，不做 NFC normalize。组合字符（如 `é` = `e` + 组合 vs 预组合 U+00E9）不同输入方式产生不同字节 → 跨设备"看似对却解不开"。
+
+**状态**：backlog。前端 input 框通常产 NFC（浏览器 normalize），实际风险低。

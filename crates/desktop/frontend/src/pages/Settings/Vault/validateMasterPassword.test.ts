@@ -91,8 +91,8 @@ describe("validateMasterPassword", () => {
             });
         }
 
-        // 中文全角符号
-        for (const sym of ["！", "¥", "（", "）", "——", "【", "】", "。"]) {
+        // 中文全角符号（V4：¥ U+00A5 已统一为 ￥ U+FFE5，与后端 validate.rs 对齐）
+        for (const sym of ["！", "￥", "（", "）", "—", "【", "】", "。"]) {
             it(`accepts Chinese symbol: ${sym}`, () => {
                 const pwd = `Aa1${sym}Aa1Aa1Aa`; // 12+ chars (Chinese chars count as 1 each)
                 expect(validateMasterPassword(pwd).ok, pwd).toBe(true);
