@@ -1567,3 +1567,39 @@ L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 
 
 - vault: **213 pass** + 1 ignored（+4：H1 签名守护 / M1 重复+多样 / M2 空 secret / L6 软删）
 - desktop: **396 pass**
+
+---
+
+## 第三轮新发现修复（2026-07-24，N1-N4）
+
+**触发**：第二轮修复后的补充审查。
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| N1 | 超长低唯一字符循环误报 Score::4（M1 补全） | strength.rs | ✅ |
+| N2 | AES key schedule zeroize | Cargo.toml | ⏸ 反馈（aes 0.8 无 zeroize feature） |
+| N3 | rename 后 fsync 父目录（L4 补全） | sync/store.rs | ✅ |
+| N4 | resizable(true) 加 min_inner_size | vault_commands.rs | ✅ |
+
+**N1 关键**：M1 的 `unique.log2()×count` 只堵 unique=1，`"ab"×1024`（unique=2）仍误报。改取前 256 字符跑 zxcvbn 做模式识别（抓循环/键盘序列/字典词），与熵估算取较低值。
+
+**N2 反馈**：报告说「一行 Cargo feature」——复查不成立。aes 0.8.4 的 `[features]` 只有 `hazmat`，无 zeroize feature。标 follow-up 待 aes-gcm 升级。
+
+## 第四轮审查修复（2026-07-24，H2/M5/L10/L11）
+
+**触发**：深扫 sync/engine.rs + storage/cipher.rs 发现的软删同步断裂。
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| H2 | 软删密码跨设备不同步 + clone 复活 | db.rs, engine.rs, cipher.rs, fingerprint.rs | ✅ |
+| M5 | 永久删除无 tombstone 可复活 | — | ⏸ 文档化（需 tombstone 机制） |
+| L10 | upsert_folder O(N²) | — | ⏸ 未修（报告自评无碍） |
+| L11 | empty_trash 未持 SYNC_LOCK | vault_commands.rs | ✅ |
+
+**H2 核心**（高危，数据隐私）：`VaultCipherInput` 无 `deleted_at` 字段 → sync pull/clone 落库时丢弃软删状态 → 新机 clone 复活已删密码 + md5 振荡。修复：加字段 + INSERT/UPDATE SQL 加列 + pull/clone 从文件取值 + save_cipher 保留现有状态。新增 2 个回归测试。
+
+### 测试基线（截至第四轮）
+
+- vault: **216 pass** + 1 ignored（+8 累计：H1 签名 / M1 重复+多样 / M2 secret / L6 软删 / N1 循环 / H2 pull+clone）
+- infra: **160 pass**
+- desktop: **400 pass**
