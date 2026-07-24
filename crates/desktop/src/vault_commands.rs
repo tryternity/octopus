@@ -1407,8 +1407,8 @@ mod tests {
             uris: vec![
                 LoginUriDto { uri: "u0".into(), match_type: Some(0) }, // Domain
                 LoginUriDto { uri: "u1".into(), match_type: Some(1) }, // Host
-                LoginUriDto { uri: "u2".into(), match_type: Some(2) }, // Exact
-                LoginUriDto { uri: "u3".into(), match_type: Some(3) }, // StartsWith
+                LoginUriDto { uri: "u2".into(), match_type: Some(2) }, // StartsWith（Bitwarden 官方 2）
+                LoginUriDto { uri: "u3".into(), match_type: Some(3) }, // Exact（Bitwarden 官方 3）
                 LoginUriDto { uri: "u4".into(), match_type: Some(4) }, // RegularExpression
                 LoginUriDto { uri: "u5".into(), match_type: Some(5) }, // Never
                 LoginUriDto { uri: "u_none".into(), match_type: None },
@@ -1425,8 +1425,9 @@ mod tests {
         assert_eq!(login.uris.len(), 7);
         assert_eq!(login.uris[0].match_type, Some(MatchType::Domain));
         assert_eq!(login.uris[1].match_type, Some(MatchType::Host));
-        assert_eq!(login.uris[2].match_type, Some(MatchType::Exact));
-        assert_eq!(login.uris[3].match_type, Some(MatchType::StartsWith));
+        // 2026-07-24 #1 修复后对齐 Bitwarden 官方值：2=StartsWith, 3=Exact
+        assert_eq!(login.uris[2].match_type, Some(MatchType::StartsWith));
+        assert_eq!(login.uris[3].match_type, Some(MatchType::Exact));
         assert_eq!(login.uris[4].match_type, Some(MatchType::RegularExpression));
         assert_eq!(login.uris[5].match_type, Some(MatchType::Never));
         assert_eq!(login.uris[6].match_type, None, "None 必须原样保留");

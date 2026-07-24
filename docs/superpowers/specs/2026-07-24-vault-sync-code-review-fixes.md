@@ -16,7 +16,7 @@
 
 | # | 严重度 | 报告描述 | 复查结论 | 状态 |
 |---|--------|---------|---------|------|
-| 1 | 🔴 致命 | MatchType 枚举值与 Bitwarden 协议相反 | **❌ 误报** | 反馈 |
+| 1 | 🔴 致命 | MatchType 枚举值与 Bitwarden 协议相反 | ✅ 成立（2026-07-24 二次复查确认） | 已修 |
 | 2 | 🔴 致命 | sync pull 忽略 outline md5，用 updated_at 比较 | ✅ 成立 | 已修 |
 | 3 | 🔴 致命 | stamp 校验在 cipher/folder upsert 之后 | ✅ 成立 | 已修 |
 | 4 | 🔴 致命 | sync_now 吞掉 push 失败，谎报「已推送」 | ✅ 成立 | 已修 |
@@ -33,41 +33,64 @@
 
 ---
 
-## #1 MatchType —— 误报（不成立）
+## #1 MatchType 枚举值与 Bitwarden 协议相反 —— 成立（已修）
 
-**报告声称**：`Exact = 2` 应是 `StartsWith`，`StartsWith = 3` 应是 `Exact`，与 Bitwarden `UriMatchType.cs` 互换。
+> ⚠️ **核实过程披露**（2026-07-24）：
+> 第一次复查时误判为「误报」——当时**没有真正查 Bitwarden 官方源码**，凭印象
+> 断言「当前值正确」，还加了一条固化错误映射的守护测试（`try_from(2)==Exact`）。
+> 用户指出后二次复查，直接 fetch Bitwarden server 仓库
+> [`src/Core/Enums/UriMatchType.cs`](https://raw.githubusercontent.com/bitwarden/server/main/src/Core/Enums/UriMatchType.cs)
+> 确认官方值，原报告判断成立。教训：涉及外部协议的事实核查必须直接查权威源，
+> 不能凭记忆断言。
 
-**复查证据**：
+### 官方值（Bitwarden server `UriMatchType.cs`）
 
-当前代码（`types.rs:65-72`）：
-```rust
-pub enum MatchType {
-    Domain = 0,
-    Host = 1,
-    Exact = 2,
-    StartsWith = 3,
-    RegularExpression = 4,
-    Never = 5,
-}
-```
-
-Bitwarden 官方协议（[UriMatchType.cs](https://github.com/bitwarden/server/blob/main/src/Core/Enums/UriMatchType.cs)）：
 ```csharp
 public enum UriMatchType : byte {
     Domain = 0,
     Host = 1,
-    Exact = 2,
-    StartsWith = 3,
+    StartsWith = 2,   // ← 官方 2 = StartsWith
+    Exact = 3,        // ← 官方 3 = Exact
     RegularExpression = 4,
     Never = 5,
 }
 ```
 
-**完全一致**。报告把协议值记反了——Bitwarden 协议 2 就是 Exact，3 就是 StartsWith。
+### 修复前（错误）
 
-importer（`bitwarden.rs:176`）和 exporter（`exporter.rs:74`）都走标准 `i64::from(MatchType)` / `MatchType::try_from(i64)`，round-trip 正确。
+```rust
+pub enum MatchType {
+    Domain = 0,
+    Host = 1,
+    Exact = 2,        // ✗ 与官方相反
+    StartsWith = 3,   // ✗ 与官方相反
+    RegularExpression = 4,
+    Never = 5,
+}
+```
 
-**处理**：不修改代码。但加固 `test_match_type_round_trip` 测试，补 `try_from(2) == Exact` / `try_from(3) == StartsWith` 断言，防未来误改 + 防此类误报回归。
+### 实际影响
+
+Bitwarden 导入/导出 JSON 的 `login.uris[].match` 字段就是这个整数：
+- **导入**：用户在 Bitwarden 设的 Exact（官方=3）被 octopus `try_from(3)` 解析成 StartsWith；设的 StartsWith（官方=2）被解析成 Exact。两策略静默互换。
+- **导出 / git 同步后被 Bitwarden 客户端读取**：反向互换。
+- **后果**：该精确匹配的降级成前缀（安全性下降——`https://evil.com.attacker.com` 前缀命中 `evil.com`）；该前缀匹配的收窄成精确（自动填充失效）。
+
+### 修复
+
+交换枚举 discriminant：`StartsWith = 2, Exact = 3`。`From<MatchType> for i64`
+（`t as i64`）和 `TryFrom<i64>` 两个 impl 自动跟随枚举值正确。
+
+同时**删除上个 session 错加的固化测试**（`try_from(2)==Exact`），改为对齐官方值的
+守护测试（`try_from(2)==StartsWith` / `try_from(3)==Exact`）。
+
+### 历史数据影响（不迁移）
+
+`match_type` 存在 cipher.data 加密 JSON 内（`LoginUri.match_type`）。修正枚举后：
+- **octopus UI 产生的数据**：前端当前只发 `match_type: null`（默认 Domain=0），不受影响。
+- **从 Bitwarden 导入的历史数据**：之前导入时 2/3 已被错误解析，改枚举无法自动修正
+  （需解密所有 cipher 重写）。因受影响数据极少（仅手动设过非默认 match_type 的），
+  迁移成本高于收益，不做。未来导入/导出已正确。
 
 ---
 
@@ -242,6 +265,6 @@ importer（`bitwarden.rs:176`）和 exporter（`exporter.rs:74`）都走标准 `
 - `test_very_long_password_short_circuits`（8.5）
 
 加固测试：
-- `test_match_type_round_trip` 待补 `try_from(2) == Exact` 断言（防 #1 类误报）
+- `test_match_type_round_trip` 补全 2/3 断言，对齐官方值（`try_from(2)==StartsWith` / `try_from(3)==Exact`）——#1 协议修正的回归守护
 
 **测试基线**：vault 209 passed / sync 97 passed / desktop 待最终验证。

@@ -59,14 +59,25 @@ impl From<i64> for RepromptType {
     }
 }
 
-/// URI 匹配策略（直接抄 Bitwarden 5 种 + Never）。
+/// URI 匹配策略（与 Bitwarden 官方 `UriMatchType` 枚举值严格对齐）。
+///
+/// ⚠️ **2026-07-24 协议对齐修复**：之前 `Exact=2, StartsWith=3` 与官方相反，
+/// 导致 Bitwarden 导入/导出 JSON 的 `match` 字段语义静默互换（导入把官方 Exact=3
+/// 解析成 StartsWith；导出把 StartsWith=3 写成 Exact）。经核对 Bitwarden server
+/// 源码 `src/Core/Enums/UriMatchType.cs` 确认官方值，已修正。
+///
+/// 官方值（[UriMatchType.cs](https://github.com/bitwarden/server/blob/main/src/Core/Enums/UriMatchType.cs)）：
+/// ```text
+/// Domain = 0, Host = 1, StartsWith = 2, Exact = 3,
+/// RegularExpression = 4, Never = 5
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "i64", try_from = "i64")]
 pub enum MatchType {
     Domain = 0,
     Host = 1,
-    Exact = 2,
-    StartsWith = 3,
+    StartsWith = 2,
+    Exact = 3,
     RegularExpression = 4,
     Never = 5,
 }
@@ -83,8 +94,8 @@ impl TryFrom<i64> for MatchType {
         Ok(match v {
             0 => MatchType::Domain,
             1 => MatchType::Host,
-            2 => MatchType::Exact,
-            3 => MatchType::StartsWith,
+            2 => MatchType::StartsWith,
+            3 => MatchType::Exact,
             4 => MatchType::RegularExpression,
             5 => MatchType::Never,
             _ => anyhow::bail!("无效的 MatchType: {}", v),
@@ -402,16 +413,21 @@ mod tests {
         assert_eq!(MatchType::try_from(0).unwrap(), MatchType::Domain);
         assert!(MatchType::try_from(99).is_err());
 
-        // 加固（2026-07-24 代码审查 #1 误报回归守护）：
-        // 报告曾声称 Exact/StartsWith 与 Bitwarden 协议互换——实际当前值正确。
-        // 显式断言 2=Exact / 3=StartsWith，防未来误改 + 防此类误报。
-        assert_eq!(MatchType::try_from(2).unwrap(), MatchType::Exact, "Bitwarden 协议 2 = Exact");
+        // 对齐 Bitwarden 官方 UriMatchType（2026-07-24 协议修正后的回归守护）：
+        // 之前 octopus 把 Exact=2/StartsWith=3 与官方（StartsWith=2/Exact=3）弄反，
+        // 导致 Bitwarden 导入/导出的 match 字段语义静默互换。此断言对齐官方值，
+        // 防止未来再次反转。
+        assert_eq!(
+            MatchType::try_from(2).unwrap(),
+            MatchType::StartsWith,
+            "Bitwarden 官方协议 2 = StartsWith"
+        );
         assert_eq!(
             MatchType::try_from(3).unwrap(),
-            MatchType::StartsWith,
-            "Bitwarden 协议 3 = StartsWith"
+            MatchType::Exact,
+            "Bitwarden 官方协议 3 = Exact"
         );
-        assert_eq!(i64::from(MatchType::Exact), 2);
-        assert_eq!(i64::from(MatchType::StartsWith), 3);
+        assert_eq!(i64::from(MatchType::StartsWith), 2);
+        assert_eq!(i64::from(MatchType::Exact), 3);
     }
 }

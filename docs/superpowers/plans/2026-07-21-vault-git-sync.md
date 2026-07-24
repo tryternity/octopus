@@ -1489,11 +1489,15 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 
 ## 代码审查修复（2026-07-24）
 
-**触发**：用户贴了一份 vault/sync 代码审查报告（14 个问题）。复查后 #1 误报、#12 follow-up，其余 12 个 + 低优先级清理项已修。
+**触发**：用户贴了一份 vault/sync 代码审查报告（14 个问题）。
+
+**复查过程**：
+- 第一轮：14 个问题中判定 #1（MatchType）为「误报」、#12 follow-up，其余 12 个 + 低优先级清理项已修。
+- **第二轮（2026-07-24 同日）**：用户指出 #1 判断有误。直接 fetch Bitwarden server 官方源码 `UriMatchType.cs` 复核，确认原报告成立——`Exact/StartsWith` 确实与官方值相反。已补修。
 
 **详见**：[2026-07-24-vault-sync-code-review-fixes.md](../specs/2026-07-24-vault-sync-code-review-fixes.md)
 
-### 实施记录（9 个 Task）
+### 实施记录（10 个 Task）
 
 | Task | 问题 | 文件 | 状态 |
 |---|---|---|---|
@@ -1506,6 +1510,7 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 | 7 | #11/#13/#14 安全模型 | error.rs, keychain.rs, kdf.rs, unlock.rs | ✅ |
 | 8 | 8.1/8.3/8.4/8.5/8.7 清理 | types.rs, eff_wordlist.rs, matcher/mod.rs, strength.rs | ✅ |
 | 9 | 文档同步 | spec/plan/architecture | ✅ |
+| **10** | **#1 MatchType 协议对齐**（二次复查） | **types.rs** | **✅** |
 
 ### 关键设计决策
 
