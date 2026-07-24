@@ -460,6 +460,7 @@ settings:
     newPrompt: New Prompt
     editPrompt: Edit Prompt
     titlePlaceholder: Title
+    fileNameLabel: File name
     descPlaceholder: Short description (optional)
     contentPlaceholder: Prompt content…
     save: Save
@@ -604,6 +605,7 @@ settings:
     promptFileMissing: file not found
     promptPreview: Preview
     promptViewMore: View more / Edit
+    promptNewFile: New file
     execOptions: Execution Options
     asyncExec: Async execution (no wait, runs in background)
     writeToClipboard: Write result to clipboard

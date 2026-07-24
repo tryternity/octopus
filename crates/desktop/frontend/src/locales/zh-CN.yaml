@@ -461,6 +461,7 @@ settings:
     newPrompt: 新建提示词
     editPrompt: 编辑提示词
     titlePlaceholder: 标题
+    fileNameLabel: 文件名
     descPlaceholder: 简短描述（可选）
     contentPlaceholder: 提示词内容…
     save: 保存
@@ -605,6 +606,7 @@ settings:
     promptFileMissing: 文件不存在
     promptPreview: 预览内容
     promptViewMore: 查看更多 / 编辑内容
+    promptNewFile: 新建文件
     execOptions: 执行选项
     asyncExec: 异步执行（不等待结果，后台运行）
     writeToClipboard: 结果写入剪贴板

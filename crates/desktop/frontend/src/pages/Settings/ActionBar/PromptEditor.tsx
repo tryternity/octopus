@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, FileText, Inbox } from "lucide-react";
+import { FileText, Plus } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Segmented } from "@/components/ui/tabs";
 
@@ -55,6 +55,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
   // 初始值由 value 检测：以 @ 开头 = ref，否则 inline。
   // 切换不同菜单项时由父组件 key={editingId} 重新 mount，mode 自动从 value 重初始化。
   const [mode, setMode] = useState<string>(isReferenceMode(value) ? "ref" : "inline");
+  const [selectedInput, setSelectedInput] = useState(extractFileName(value));
 
   // 加载 prompt 文件列表（mount 时一次性）
   useEffect(() => {
@@ -78,6 +79,24 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
 
   const selectFile = (name: string) => {
     onChange(`@${name}`);
+  };
+
+  const createNewFile = async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      await invoke("create_prompt_file", { category: "command", name: trimmed });
+      // 刷新文件列表
+      const updated = await invoke<PromptFileInfo[]>("list_prompt_files", { category: "command" });
+      setFiles(updated);
+      // 选中新建的文件
+      onChange(`@${trimmed}`);
+      setSelectedInput(trimmed);
+      // 打开编辑器
+      invoke("open_file_in_editor", { name: trimmed, category: "command" }).catch(() => {});
+    } catch (e) {
+      console.error("create_prompt_file failed:", e);
+    }
   };
 
   return (
@@ -108,36 +127,53 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
         />
       )}
 
-      {/* 引用模式：文件选择 + 预览 */}
+      {/* 引用模式：可编辑下拉 + 加号创建 */}
       {mode === "ref" && (
         <div className="space-y-1.5">
-          {files.length === 0 ? (
-            <div className="flex flex-col items-center gap-1.5 rounded-md border border-dashed border-border py-6 text-center">
-              <Inbox className="h-5 w-5 text-muted-foreground/40" />
-              <p className="text-xs text-muted-foreground/60">
-                {t("settings.actionBar.promptDirEmpty")}
-              </p>
-              <code className="text-[10px] text-muted-foreground/40">~/.octopus/.sync/prompts/command/*.md</code>
+          {/* 可编辑输入框 + datalist（可选已有文件，也可输入新文件名）+ 加号按钮 */}
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <FileText className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+              <input
+                type="text"
+                list="prompt-file-list"
+                className="w-full bg-background border border-border rounded-md pl-8 pr-3 py-2 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                placeholder={t("settings.actionBar.promptSelectFile")}
+                value={selectedName}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSelectedInput(v);
+                  // 如果输入匹配已有文件 → 选中
+                  if (files.some((f) => f.name === v)) {
+                    selectFile(v);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  // Enter → 如果输入不匹配已有文件，创建新文件
+                  if (e.key === "Enter" && selectedInput && !files.some((f) => f.name === selectedInput)) {
+                    createNewFile(selectedInput);
+                  }
+                }}
+              />
+              <datalist id="prompt-file-list">
+                {files.map((f) => (
+                  <option key={f.name} value={f.name}>{f.fileName}</option>
+                ))}
+              </datalist>
             </div>
-          ) : (
-            <>
-              {/* 文件下拉 */}
-              <div className="relative">
-                <FileText className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                <select
-                  className="w-full appearance-none bg-background border border-border rounded-md pl-8 pr-8 py-2 text-sm outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                  value={selectedName}
-                  onChange={(e) => selectFile(e.target.value)}
-                >
-                  <option value="">{t("settings.actionBar.promptSelectFile")}</option>
-                  {files.map((f) => (
-                    <option key={f.name} value={f.name}>
-                      {f.fileName}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-              </div>
+            {/* 加号：输入了新文件名 → 创建；否则提示 */}
+            <button
+              onClick={() => {
+                if (selectedInput && !files.some((f) => f.name === selectedInput)) {
+                  createNewFile(selectedInput);
+                }
+              }}
+              className="shrink-0 rounded p-1.5 text-muted-foreground/60 transition-colors hover:bg-voice/10 hover:text-voice"
+              title={t("settings.actionBar.promptNewFile")}
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
 
               {/* 文件路径 */}
               {selectedName && (
@@ -180,8 +216,6 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
                   )}
                 </div>
               )}
-            </>
-          )}
         </div>
       )}
     </div>
