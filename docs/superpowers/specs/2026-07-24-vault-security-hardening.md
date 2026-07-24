@@ -486,3 +486,38 @@ fingerprint 是同步正确性的源头，核查扎实：
 - `cipher_md5`（sync 读 row）与 `cipher_md5_from_input`（create/save 填充）字段顺序（11 字段）、字段类型（atype/reprompt 两 struct 均 i64、favorite 均 bool）、None 处理（5 个 unwrap_or("") 对称）三者一致 → create 时填的 md5 与 sync 时读 row 算的 md5 永远对齐
 - deleted_at 纳入 md5（H2）—— S1 前提
 - 不含 created_at/updated_at —— 跨设备时间戳必然不同，排除避免永久 diff
+
+---
+
+## 第十七轮审查修复（2026-07-24，T1/T2/T4 + T3 文档化）
+
+totp.rs 经 #7（80bit secret）、M2（空/短 secret 拦截）、复审 #1（畸形参数 clamp 防 panic）多轮加固，安全防护扎实。本轮处理 3 个低危改进 + 1 个文档化。
+
+### T1: current() 与 seconds_remaining() 各自独立读时钟（低，UX）
+
+**问题**：`current()`（:129 调 `generate_current`，totp-rs 内部读 `SystemTime::now()`）与 `seconds_remaining()`（:134 显式读 `SystemTime::now()`）两次独立读时钟，非原子。生产调用方 `vault_commands.rs:626-627` 先 `current()` 后 `seconds_remaining()`，跨 step 边界时可能返回「上个 step 的 code + 新 step 的 30s 倒计时」，持续约 1 秒陈旧显示。窗口 <1ms，非安全问题。
+
+**修复**：新增 `current_with_remaining() -> Result<(String, u64)>`——显式读一次 `now`，用 `inner.generate(now)`（而非 `generate_current()`）传同一 time counter，保证 code 与 remaining 基于同一时刻。`vault_commands.rs` 改用新方法。保留 `current()` / `seconds_remaining()` 向后兼容。
+
+### T2: from_base32 不 strip 内部空格/连字符（低，UX）
+
+**问题**：用户从其他 Authenticator 导出常是分组显示（`JBSWY 3DPE HPK3 PXP` / `JBSWY-3DPE-HPK3-PXP`）。`from_input`（:114）只 `trim()` 首尾，不去内部；`Secret::Encoded.to_bytes()` 调 `base32::decode(Rfc4648)` 对含空格/连字符的串返 `None` → Err。用户需手动去空格，多数 TOTP 工具会 strip。
+
+**修复**：`from_base32` 入口 `secret.chars().filter(|c| !c.is_whitespace() && *c != '-').collect()` strip 内部空白/连字符。
+
+### T4: test_known_totp_value 名不副实（低，测试质量）
+
+**问题**：注释称「RFC 6238 测试向量」，但只 `assert_eq!(code.len(), 6)`，与 `test_totp_format_6_digits` 重复。`current()` 用 wall-clock 无法断言固定值。
+
+**修复**：改用 `inner.generate(time)` 传固定 time counter，断言 RFC 6238 附录 B 的真实 8-digit SHA1 向量（T=59→94287082, T=1111111109→07081804, T=1111111111→14050471），真正验证算法正确性。
+
+### T3: TOTP secret 未 zeroize（低，文档化，交叉引用 L21）
+
+与第十轮 L21 同一问题——`TotpGenerator.inner: TOTP`（totp-rs）持有 secret 不实现 Zeroize，是库限制。已在 L21 记录，本轮确认状态不变。
+
+### 附带：清理 vault 既有 2 个 unused import warning
+
+- `exporter.rs:188` test 模块 `Field` 未用
+- `engine.rs:1857` test 函数 `pull_preserves_soft_deleted_at` 内 `VaultCipherInput` 未用（另一处 1647 有用，保留）
+
+非本轮引入（分别来自 feat Task 15 / 第十二轮），但 AGENTS.md 要求 0 warning，顺手清。

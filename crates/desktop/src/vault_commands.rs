@@ -622,9 +622,14 @@ pub fn vault_generate_totp(
     // 两种输入都接受 RFC 6238 下限的 80bit secret（new_unchecked / from_url_unchecked）
     let gen = octopus_vault::totp::TotpGenerator::from_input(&totp_secret)
         .map_err(vault_error::to_tauri_error)?;
+    // T1 修复（2026-07-24）：用 current_with_remaining 单次读时钟，避免 current()
+    // + seconds_remaining() 各自读 SystemTime 在 step 边界不一致（陈旧 1 秒显示）。
+    let (code, seconds_remaining) = gen
+        .current_with_remaining()
+        .map_err(vault_error::to_tauri_error)?;
     Ok(TotpResultDto {
-        code: gen.current().map_err(vault_error::to_tauri_error)?,
-        seconds_remaining: gen.seconds_remaining(),
+        code,
+        seconds_remaining,
     })
 }
 

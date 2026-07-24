@@ -1854,7 +1854,7 @@ mod tests {
         let _s = test_lock();
         let g = IntegrationGuard::new();
 
-        use octopus_infra::db::{VaultCipher, VaultCipherInput};
+        use octopus_infra::db::VaultCipher;
         // 文件系统写一个软删密码（deleted_at = T）
         let soft_deleted = VaultCipher {
             id: "soft-delete-test-uuid".to_string(),
