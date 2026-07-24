@@ -39,6 +39,8 @@ interface OpenTabPayload {
   // 流式翻译 sessionId——后端 contrast tab 携带，前端据此建立 sessionId → tabKey 映射。
   // 2026-07-17 修复发现 1（竞态）+ 8（并发错路由）。
   translateSessionId?: string;
+  // file tab 源文件路径（与 PendingTabFull.filePath 对齐，e29524d6 遗漏字段补全）
+  filePath?: string;
 }
 // 后端 get_pending_compact_tabs 返回（含完整数据，前端免再查 DB）。
 interface PendingTabFull {
@@ -220,7 +222,7 @@ function CompactEditor() {
           const fileKey = `file:${p.itemId}`;
           const existIdx = tabsRef.current.findIndex(t => t.key === fileKey);
           if (existIdx >= 0) { setActiveIdx(existIdx); return; } // 已存在→激活，不覆盖
-          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "", originalText: p.text || "", filePath: (p as Record<string, unknown>).filePath as string | undefined };
+          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "", originalText: p.text || "", filePath: p.filePath };
           const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
           setTabs(next);
