@@ -33,6 +33,52 @@ impl Argon2Params {
         Params::new(self.memory_kib, self.iterations, self.parallelism, Some(32))
             .context("Argon2id 参数无效")
     }
+
+    /// 从 DB 的 i64 字段构造 Argon2Params，带范围 + 最小值校验（#14 修复）。
+    ///
+    /// 之前 `as u32` 截断发生在 Params::new 之前——负值/超大值静默回绕成弱参数，
+    /// 无任何完整性校验。现在显式检查：
+    /// - iterations/memory_kib/parallelism 必须在 u32 正范围内（i64 负值或 > u32::MAX 拒绝）
+    /// - 最小值：iterations ≥ 1, memory_kib ≥ 8（argon2 crate 要求），parallelism ≥ 1
+    ///
+    /// 威胁模型：DB 被直接改（kdf_iterations=1）可悄悄削弱 KDF。虽然单机威胁模型
+    /// 假设 DB 不被直接改，但加这层校验成本低、能至少在 Params::new 失败时报错
+    /// 而非用弱参数继续。
+    pub fn from_i64(
+        iterations: i64,
+        memory_kib: i64,
+        parallelism: i64,
+    ) -> Result<Self> {
+        ensure!(
+            (1..=u32::MAX as i64).contains(&iterations),
+            "kdf_iterations 非法（{}，应在 1..=u32::MAX）",
+            iterations
+        );
+        ensure!(
+            (8..=u32::MAX as i64).contains(&memory_kib),
+            "kdf_memory_kib 非法（{}，应 ≥ 8——argon2 crate 要求）",
+            memory_kib
+        );
+        ensure!(
+            (1..=u32::MAX as i64).contains(&parallelism),
+            "kdf_parallelism 非法（{}，应 ≥ 1）",
+            parallelism
+        );
+        Ok(Self {
+            iterations: iterations as u32,
+            memory_kib: memory_kib as u32,
+            parallelism: parallelism as u32,
+        })
+    }
+
+    /// 从 VaultMeta 行构造 Argon2Params（from_i64 的便利封装）。
+    pub fn from_meta(meta: &octopus_infra::db::VaultMeta) -> Result<Self> {
+        Self::from_i64(
+            meta.kdf_iterations,
+            meta.kdf_memory_kib,
+            meta.kdf_parallelism,
+        )
+    }
 }
 
 /// 从 master_password + 32B salt 派生 master_root_key。

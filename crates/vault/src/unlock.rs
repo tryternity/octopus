@@ -44,12 +44,9 @@ pub fn is_initialized() -> Result<bool> {
     Ok(meta::read_vault_meta()?.is_some())
 }
 
-fn meta_to_kdf_params(meta: &VaultMeta) -> Argon2Params {
-    Argon2Params {
-        iterations: meta.kdf_iterations as u32,
-        memory_kib: meta.kdf_memory_kib as u32,
-        parallelism: meta.kdf_parallelism as u32,
-    }
+fn meta_to_kdf_params(meta: &VaultMeta) -> Result<Argon2Params> {
+    // #14 修复：用 from_meta 校验 i64→u32 范围 + 最小值（防 DB 篡改削弱 KDF）
+    Argon2Params::from_meta(meta)
 }
 
 /// 流程 A：首次初始化 vault。
@@ -184,7 +181,7 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
         .context("vault 未初始化")?;
-    let params = meta_to_kdf_params(&meta);
+    let params = meta_to_kdf_params(&meta)?;
     let master_root_key = derive_master_root_key(password.as_bytes(), &meta.kdf_salt, &params)?;
 
     // 解 user_vault_key + app_key（密码校验阶段）。
@@ -269,7 +266,7 @@ pub fn change_master_password(old_password: &str, new_password: &str) -> Result<
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
         .context("vault 未初始化")?;
-    let old_params = meta_to_kdf_params(&meta);
+    let old_params = meta_to_kdf_params(&meta)?;
     let old_master = derive_master_root_key(old_password.as_bytes(), &meta.kdf_salt, &old_params)?;
 
     // 验证旧密码（用 protected_user_vault_key 解密试一下）——失败时 record_failure
@@ -415,7 +412,7 @@ pub fn verify_master_password(password: &str) -> Result<()> {
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
         .context("vault 未初始化")?;
-    let params = meta_to_kdf_params(&meta);
+    let params = meta_to_kdf_params(&meta)?;
     let master_root_key = derive_master_root_key(password.as_bytes(), &meta.kdf_salt, &params)?;
     // 尝试解密——AES-GCM tag 校验失败即密码错
     match master_root_key.decrypt(&meta.protected_user_vault_key) {
@@ -441,6 +438,14 @@ pub fn regenerate_security_stamp() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 测试串行化 mutex（unlock 测试操作全局 attempt_guard / keychain override，
+    /// 多线程并发时 setup_clean_db 的 reset 与测试主体之间有竞争，偶发失败）。
+    /// 用这个把所有 unlock 测试串行化，和 sync engine 测试同样的模式。
+    static TEST_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     /// 注入干净 in-memory DB（含 vault_meta 表，无数据）+ 干净 in-memory Keychain。
     ///
@@ -475,16 +480,35 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        let params = meta_to_kdf_params(&meta);
+        let params = meta_to_kdf_params(&meta).unwrap();
         assert_eq!(params.iterations, 3);
         assert_eq!(params.memory_kib, 65_536);
         assert_eq!(params.parallelism, 4);
+    }
+
+    /// #14 修复：from_i64 / meta_to_kdf_params 拒绝非法 i64 值（负值/0/超大值）。
+    #[test]
+    fn test_meta_to_kdf_params_rejects_invalid() {
+        use crate::crypto::kdf::Argon2Params;
+        // 合法值应通过
+        assert!(Argon2Params::from_i64(3, 65_536, 4).is_ok());
+        // iterations = 0 拒绝
+        assert!(Argon2Params::from_i64(0, 65_536, 4).is_err());
+        // iterations 负值拒绝
+        assert!(Argon2Params::from_i64(-1, 65_536, 4).is_err());
+        // memory_kib < 8 拒绝（argon2 crate 要求）
+        assert!(Argon2Params::from_i64(3, 7, 4).is_err());
+        // parallelism = 0 拒绝
+        assert!(Argon2Params::from_i64(3, 65_536, 0).is_err());
+        // 超大值（> u32::MAX）拒绝
+        assert!(Argon2Params::from_i64((u32::MAX as i64) + 1, 65_536, 4).is_err());
     }
 
     /// DB-only 测试：未初始化时 is_initialized 返回 false。
     /// 不触发 Keychain（无 vault_meta 行 → 早返回 None）。
     #[test]
     fn test_is_initialized_false_initially() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         assert!(!is_initialized().expect("is_initialized should succeed on empty DB"));
     }
@@ -493,6 +517,7 @@ mod tests {
     /// 这样 DB-only 测试就覆盖了 is_initialized 的「true」分支，无需 OS Keychain。
     #[test]
     fn test_is_initialized_true_after_meta_written() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let input = VaultMetaInput {
             kdf_type: 0,
@@ -516,6 +541,7 @@ mod tests {
     /// 走 thread-local in-memory Keychain 覆盖（setup_clean_db 已挂上）。
     #[test]
     fn test_setup_vault_creates_meta_and_keys() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         // 清掉可能残留的 Keychain entry（防止之前测试遗留）——
         // 已是 in-memory 覆盖，no-op；保留以防有人误改 setup。
@@ -542,6 +568,7 @@ mod tests {
     /// setup_vault + unlock_with_master_password 往返。
     #[test]
     fn test_unlock_with_master_after_setup() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -561,6 +588,7 @@ mod tests {
     /// unlock_with_master_password 用错误密码应失败（需 setup 后才有 vault_meta）。
     #[test]
     fn test_unlock_wrong_password_fails() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -579,6 +607,7 @@ mod tests {
     /// 应与 setup 派生的同一把（INV-7：改密码不改 user_vault_key）。
     #[test]
     fn test_change_master_password_returns_same_keys() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -607,6 +636,7 @@ mod tests {
     /// 改密码后旧密码应解不开，新密码应能解开 → 验证 master_root_key 确实换了。
     #[test]
     fn test_change_master_password_swaps_master_key() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -637,6 +667,7 @@ mod tests {
     /// change_master_password 用错误旧密码应失败。
     #[test]
     fn test_change_master_password_wrong_old_fails() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -664,6 +695,7 @@ mod tests {
     /// （若 #8 未修复，每次 refresh 都会用随机 nonce 生成新密文 → 两次必然不同）。
     #[test]
     fn test_flow_d_skips_redundant_app_key_local_enc_write() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -711,6 +743,7 @@ mod tests {
     ///   4. 立即再试 unlock 不会被退避挡
     #[test]
     fn test_change_password_resets_guard_on_success() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -753,6 +786,7 @@ mod tests {
     /// 与 B1 测试结构对称。
     #[test]
     fn test_unlock_success_clears_guard_after_wrong_attempts() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
@@ -785,6 +819,7 @@ mod tests {
     /// delete → is_initialized=false。
     #[test]
     fn test_delete_vault_meta_row_resets_is_initialized() {
+        let _s = test_lock(); // 串行化：避免 attempt_guard / keychain override 跨测试竞争
         setup_clean_db();
 
         // 全新库 → 未初始化

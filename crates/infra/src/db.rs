@@ -3883,6 +3883,26 @@ pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str, sync_md5: &s
     })
 }
 
+/// 更新 folder 的 name + sort_order + sync_md5（sync pull 用，#6 修复）。
+///
+/// 与 `update_vault_folder_name` 的区别：同时更新 sort_order，让远程 folder 的
+/// 排序变化能同步到本地（之前 pull 硬编码 sort_order=0，导致排序永不同步）。
+/// 返回受影响行数（0 表示 id 不存在——调用方可据此判断）。
+pub fn update_vault_folder_fields(
+    id: &str,
+    new_name_encrypted: &str,
+    sort_order: i64,
+    sync_md5: &str,
+) -> Result<usize> {
+    with_db(|conn| {
+        let affected = conn.execute(
+            "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, updated_at = datetime('now') WHERE id = ?4",
+            params![new_name_encrypted, sort_order, sync_md5, id],
+        )?;
+        Ok(affected)
+    })
+}
+
 /// 删除 folder。FK 配置 `ON DELETE SET NULL`——本表内的 cipher 不受影响，
 /// 仅其 folder_id 被置为 NULL（条目回到根目录）。
 ///

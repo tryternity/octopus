@@ -179,65 +179,70 @@ pub struct CipherEncStrings {
 impl Cipher {
     /// 用 user_vault_key 加密所有敏感字段。
     pub fn encrypt_strings(&self, key: &DerivedKey) -> Result<CipherEncStrings> {
-        let name = key.encrypt(self.name.as_bytes())?;
-        let notes = match &self.notes {
-            Some(n) => Some(key.encrypt(n.as_bytes())?),
-            None => None,
-        };
-        let data_json = serde_json::to_vec(&self.data)?;
-        let data = key.encrypt(&data_json)?;
-        let fields = if self.fields.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.fields)?;
-            Some(key.encrypt(&json)?)
-        };
-        let password_history = if self.password_history.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.password_history)?;
-            Some(key.encrypt(&json)?)
-        };
-        Ok(CipherEncStrings {
-            name,
-            notes,
-            data,
-            fields,
-            password_history,
-        })
+        // 8.1 清理：提取共用函数，消除与 CipherInput::encrypt_strings 的 60 行重复
+        encrypt_cipher_fields(
+            &self.name,
+            &self.notes,
+            &self.data,
+            &self.fields,
+            &self.password_history,
+            key,
+        )
     }
 }
 
 impl CipherInput {
     /// 用 user_vault_key 加密。
     pub fn encrypt_strings(&self, key: &DerivedKey) -> Result<CipherEncStrings> {
-        let name = key.encrypt(self.name.as_bytes())?;
-        let notes = match &self.notes {
-            Some(n) => Some(key.encrypt(n.as_bytes())?),
-            None => None,
-        };
-        let data_json = serde_json::to_vec(&self.data)?;
-        let data = key.encrypt(&data_json)?;
-        let fields = if self.fields.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.fields)?;
-            Some(key.encrypt(&json)?)
-        };
-        let password_history = if self.password_history.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.password_history)?;
-            Some(key.encrypt(&json)?)
-        };
-        Ok(CipherEncStrings {
-            name,
-            notes,
-            data,
-            fields,
-            password_history,
-        })
+        encrypt_cipher_fields(
+            &self.name,
+            &self.notes,
+            &self.data,
+            &self.fields,
+            &self.password_history,
+            key,
+        )
     }
+}
+
+/// 加密 cipher 的敏感字段（Cipher / CipherInput 共用，8.1 清理重复代码）。
+///
+/// 之前 Cipher::encrypt_strings 和 CipherInput::encrypt_strings 是 60 行逐字相同的
+/// 重复代码——两者加密逻辑完全一致（字段同名同类型），只是 struct 不同。
+fn encrypt_cipher_fields(
+    name: &str,
+    notes: &Option<String>,
+    data: &CipherData,
+    fields: &[Field],
+    password_history: &[PasswordHistoryEntry],
+    key: &DerivedKey,
+) -> Result<CipherEncStrings> {
+    let name = key.encrypt(name.as_bytes())?;
+    let notes = match notes {
+        Some(n) => Some(key.encrypt(n.as_bytes())?),
+        None => None,
+    };
+    let data_json = serde_json::to_vec(data)?;
+    let data = key.encrypt(&data_json)?;
+    let fields = if fields.is_empty() {
+        None
+    } else {
+        let json = serde_json::to_vec(fields)?;
+        Some(key.encrypt(&json)?)
+    };
+    let password_history = if password_history.is_empty() {
+        None
+    } else {
+        let json = serde_json::to_vec(password_history)?;
+        Some(key.encrypt(&json)?)
+    };
+    Ok(CipherEncStrings {
+        name,
+        notes,
+        data,
+        fields,
+        password_history,
+    })
 }
 
 /// 从 infra 的 VaultCipher（密文行）+ 解密 key → 解密 Cipher。
@@ -396,5 +401,17 @@ mod tests {
         assert_eq!(i64::from(MatchType::RegularExpression), 4);
         assert_eq!(MatchType::try_from(0).unwrap(), MatchType::Domain);
         assert!(MatchType::try_from(99).is_err());
+
+        // 加固（2026-07-24 代码审查 #1 误报回归守护）：
+        // 报告曾声称 Exact/StartsWith 与 Bitwarden 协议互换——实际当前值正确。
+        // 显式断言 2=Exact / 3=StartsWith，防未来误改 + 防此类误报。
+        assert_eq!(MatchType::try_from(2).unwrap(), MatchType::Exact, "Bitwarden 协议 2 = Exact");
+        assert_eq!(
+            MatchType::try_from(3).unwrap(),
+            MatchType::StartsWith,
+            "Bitwarden 协议 3 = StartsWith"
+        );
+        assert_eq!(i64::from(MatchType::Exact), 2);
+        assert_eq!(i64::from(MatchType::StartsWith), 3);
     }
 }

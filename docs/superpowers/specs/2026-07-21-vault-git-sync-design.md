@@ -361,26 +361,30 @@ v44 迁移：
   "vault_version": 42,
   "ciphers": {
     "a1b2c3d4-...": {
-      "sha": "<git blob sha1>",
-      "updated_at": "2026-07-21T..."
+      "md5": "<cipher 内容指纹 md5（fingerprint::cipher_md5）>",
+      "updated_ms": 1789123456000
     },
     "e5f6g7h8-...": {
-      "sha": "<git blob sha1>",
-      "updated_at": "2026-07-21T..."
+      "md5": "<cipher 内容指纹 md5>",
+      "updated_ms": 1789123456000
     }
   },
   "folders": {
     "i9j0k1l2-...": {
-      "sha": "<git blob sha1>",
-      "updated_at": "2026-07-21T..."
+      "md5": "<folder 内容指纹 md5>",
+      "updated_ms": 1789123456000
     }
   }
 }
 ```
 
-**作用**：客户端拉 sync 时，先 GET outline.json，对比本地 outline，按 sha 差异决定哪些 cipher 文件需要下载——**避免 git fetch 全部历史**（虽然 git pack 已增量，但 outline 让客户端能精确控制同步粒度）。
+**字段名**（2026-07-24 修正——之前文档误写 `sha`/`updated_at`）：
+- `md5`：cipher/folder 的逻辑内容指纹（`fingerprint::cipher_md5` / `folder_md5`），不含时间戳。跨设备同一条数据 md5 相同。
+- `updated_ms`：最后更新时间的 Unix 毫秒（`iso_to_unix_ms` 转换）。
 
-**vault_version**：monotonic 递增整数，每次本地改动 +1。用于检测「远程版本比本地旧」（防止 push 旧数据覆盖）。
+**作用**：客户端拉 sync 时，先读 outline.json，对比本地 outline，按 md5 差异决定哪些 cipher 文件需要下载——**避免 git fetch 全部历史**（虽然 git pack 已增量，但 outline 让客户端能精确控制同步粒度）。
+
+**vault_version**：monotonic 递增整数，每次本地改动 +1。用于检测「远程版本比本地旧」（防止 push 旧数据覆盖）。无变化时不递增（用户反馈：每次同步都 +1 是 bug）。
 
 #### 3.4.4 folders/<uuid>.json（folder 加密文件）
 

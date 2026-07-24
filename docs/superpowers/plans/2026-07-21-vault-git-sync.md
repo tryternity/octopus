@@ -1484,3 +1484,44 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 - A 删热词集 → sync → B 也删了 ✅
 - 真实 GitHub private repo + SSH key 端到端 ✅
 - stamp 冲突解决（以远程为准 / 以本地为准）双向 e2e ✅
+
+---
+
+## 代码审查修复（2026-07-24）
+
+**触发**：用户贴了一份 vault/sync 代码审查报告（14 个问题）。复查后 #1 误报、#12 follow-up，其余 12 个 + 低优先级清理项已修。
+
+**详见**：[2026-07-24-vault-sync-code-review-fixes.md](../specs/2026-07-24-vault-sync-code-review-fixes.md)
+
+### 实施记录（9 个 Task）
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| 1 | #2/#5/#6/#3/#10 pull 重构 | engine.rs, folder.rs, db.rs | ✅ |
+| 2 | #4 SyncReport push 失败 | engine.rs, SyncPanel.tsx, useToast.tsx | ✅ |
+| 3 | #7 SYNC_LOCK 覆盖写入口 | engine.rs | ✅ |
+| 4 | #10 hotword 同源吞错 | hotword.rs | ✅ |
+| 5 | #8 generator zeroize | random/pin/passphrase_en/passphrase_zh.rs | ✅ |
+| 6 | #9 salt 解码报错 | store.rs, engine.rs | ✅ |
+| 7 | #11/#13/#14 安全模型 | error.rs, keychain.rs, kdf.rs, unlock.rs | ✅ |
+| 8 | 8.1/8.3/8.4/8.5/8.7 清理 | types.rs, eff_wordlist.rs, matcher/mod.rs, strength.rs | ✅ |
+| 9 | 文档同步 | spec/plan/architecture | ✅ |
+
+### 关键设计决策
+
+- **pull 判定标准对齐**：改用 outline.md5 vs DB sync_md5（参照 hotword 模式），不引入冲突检测
+- **generator zeroize 范围**：仅清零中间材料（返回值保持 String，Tauri 边界保护意义有限）
+- **hotword 一并修**：静默吞错与 vault 同源，改法相同
+- **#12 follow-up**：返回 affected rows 影响面大，标为后续任务
+
+### 测试基线（修复后）
+
+- vault: **209 pass** + 1 ignored（+10 新测试：md5 mismatch / stamp 前置 / 损坏跳过 / folder rename / sort_order / Display PAT / salt 解码 / Argon2Params 边界 / Host 大小写 / 长密码短路）
+- sync: **97 pass** + 4 ignored（+1 新测试：Display PAT 泄露守护）
+- desktop + 前端：待最终全量验证
+
+### 未修（已知限制）
+
+1. **last-write-wins**（vault + hotword）：本地未 push 的修改可能被远程盲覆盖。Phase 2 自动同步时考虑引入冲突检测。
+2. **#12 vault_update_cipher 静默成功**：follow-up。
+3. **8.2 字符集 &[char] 重构 / 8.4 正则缓存**：follow-up（需并发设计）。

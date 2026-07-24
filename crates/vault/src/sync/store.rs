@@ -126,23 +126,44 @@ impl MetaFile {
 
     /// 转回 VaultMeta 的同步字段（不含 local_enc / public_key 等本机字段——
     /// 上层 upsert 时从本机 vault_meta 保留这些）。
-    pub fn to_sync_fields(&self) -> (i64, Vec<u8>, i64, i64, i64, String, String, String, String) {
+    ///
+    /// #9 修复（2026-07-24）：base64 salt 解码失败不再 `unwrap_or_default()` 吞错
+    /// （空 Vec 静默通过 → Argon2 用空 salt 派生 → 解 protected_user_vault_key 失败
+    /// → 误导用户反复输错密码，根因实为 salt 解码失败）。现在返 `Result`，解码失败
+    /// 显式报错。
+    pub fn to_sync_fields(&self) -> Result<MetaSyncFields> {
         use base64::Engine;
         let salt = base64::engine::general_purpose::STANDARD
             .decode(&self.kdf_salt)
-            .unwrap_or_default();
-        (
-            self.kdf_type,
-            salt,
-            self.kdf_iterations,
-            self.kdf_memory_kib,
-            self.kdf_parallelism,
-            self.protected_user_vault_key.clone(),
-            self.app_key_sync_enc.clone(),
-            self.security_stamp.clone(),
-            self.equivalent_domains.clone(),
-        )
+            .with_context(|| format!("meta.json kdf_salt base64 解码失败：{}", self.kdf_salt))?;
+        Ok(MetaSyncFields {
+            kdf_type: self.kdf_type,
+            kdf_salt: salt,
+            kdf_iterations: self.kdf_iterations,
+            kdf_memory_kib: self.kdf_memory_kib,
+            kdf_parallelism: self.kdf_parallelism,
+            protected_user_vault_key: self.protected_user_vault_key.clone(),
+            app_key_sync_enc: self.app_key_sync_enc.clone(),
+            security_stamp: self.security_stamp.clone(),
+            equivalent_domains: self.equivalent_domains.clone(),
+        })
     }
+}
+
+/// meta.json 解析出的同步字段（to_sync_fields 的结构化返回，#9 修复）。
+///
+/// 之前用 9-tuple 返回，字段位置容易搞混；改 struct 让代码自文档化。
+#[derive(Debug)]
+pub struct MetaSyncFields {
+    pub kdf_type: i64,
+    pub kdf_salt: Vec<u8>,
+    pub kdf_iterations: i64,
+    pub kdf_memory_kib: i64,
+    pub kdf_parallelism: i64,
+    pub protected_user_vault_key: String,
+    pub app_key_sync_enc: String,
+    pub security_stamp: String,
+    pub equivalent_domains: String,
 }
 
 /// cipher 文件——encrypted 字段是 user_vault_key 加密的 v1: 前缀密文（与 SQLite 一致）。
@@ -716,10 +737,37 @@ mod tests {
         assert_eq!(loaded.protected_user_vault_key, "v1:dummy-uvk");
         assert_eq!(loaded.app_key_sync_enc, "v1:dummy-sync");
         assert_eq!(loaded.security_stamp, "stamp-1");
-        // base64 salt round trip
-        let (kdf_type, salt, _, _, _, _, _, _, _) = loaded.to_sync_fields();
-        assert_eq!(kdf_type, 0);
-        assert_eq!(salt, vec![1u8; 32]);
+        // base64 salt round trip（to_sync_fields 现在返 MetaSyncFields struct，#9 修复）
+        let f = loaded.to_sync_fields().expect("to_sync_fields");
+        assert_eq!(f.kdf_type, 0);
+        assert_eq!(f.kdf_salt, vec![1u8; 32]);
+    }
+
+    /// #9 修复：kdf_salt base64 解码失败不再 unwrap_or_default 吞错——显式报错。
+    #[test]
+    fn to_sync_fields_errors_on_invalid_base64_salt() {
+        let _g = VaultRootGuard::new();
+        let meta = MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "!!!not valid base64!!!".into(), // 非法 base64
+            kdf_iterations: 3,
+            kdf_memory_kib: 65536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:dummy".into(),
+            app_key_sync_enc: "v1:dummy".into(),
+            security_stamp: "stamp".into(),
+            equivalent_domains: "[]".into(),
+        };
+        let result = meta.to_sync_fields();
+        assert!(
+            result.is_err(),
+            "#9：非法 base64 salt 应报错，不应 unwrap_or_default 吞成空 Vec"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("base64 解码失败"));
     }
 
     #[test]
