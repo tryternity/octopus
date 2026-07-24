@@ -93,6 +93,9 @@ pub struct PendingTabFull {
     /// 新窗口路径下前端拿不到 sessionId → 翻译事件无法路由 → 永久 loading。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translate_session_id: Option<String>,
+    /// file source tab 的磁盘路径（保存写回用，仅 source="file"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 /// 待开 tab 队列（支持批量双开）。open 时 push，前端 mount take 全部。
@@ -126,6 +129,7 @@ fn push_pending_tab(item_id: i64, source: &str) {
         original_text: None,
         translated_text: None,
         translate_session_id: None, // 普通 tab（DB 查询）不走翻译，无 sessionId
+        file_path: None,
     });
 }
 
@@ -145,16 +149,18 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
         original_text: payload.original_text,
         translated_text: payload.translated_text,
         translate_session_id: payload.translate_session_id,
+        file_path: None,
     });
 }
 
 /// 存 pending file tab（窗口首次创建时用）。source="file"，不查 DB，text 直接携带。
-pub fn store_pending_file(item_id: i64, text: String) {
+pub fn store_pending_file(item_id: i64, text: String, file_path: String) {
     PENDING_TABS.lock().push(PendingTabFull {
         item_id,
         source: "file".into(),
         item_type: "text".into(),
         text,
+        file_path: Some(file_path),
         img_width: 0,
         img_height: 0,
         is_temp: false,

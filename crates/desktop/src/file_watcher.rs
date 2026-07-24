@@ -10,6 +10,7 @@
 
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc;
+use tauri::Emitter;
 use std::time::{Duration, Instant};
 
 /// 监听目录——与 app_index 扫描目录保持一致。
@@ -69,5 +70,54 @@ pub fn start_app_watcher() {
         }
         // rx 关闭（watcher drop）后循环自然退出。
         log::debug!("[file_watcher] 事件循环退出");
+    });
+}
+
+/// prompt 文件监听的 debounce 窗口——外部编辑器保存可能触发多次 write 事件。
+const PROMPT_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// 启动 `~/.octopus/.sync/prompts/` 目录监听。文件修改时 emit `compact-editor://file-changed`
+/// 事件（携带文件路径），前端据此自动 reload 或提示冲突。
+/// watcher 线程持有 AppHandle，keep-alive 到 app 退出。
+pub fn start_prompt_file_watcher(app: tauri::AppHandle) {
+    let dir = octopus_infra::paths::octopus_config_home().join(".sync").join("prompts");
+    if !dir.exists() {
+        // 目录不存在先创建（首次使用）
+        let _ = std::fs::create_dir_all(&dir);
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("[file_watcher] prompt watcher init failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+        log::debug!("[file_watcher] prompt watch {} failed: {}", dir.display(), e);
+    }
+
+    std::thread::spawn(move || {
+        let _watcher = watcher; // keep-alive
+        let mut last_trigger = Instant::now();
+        for ev in rx {
+            if let Ok(e) = ev {
+                if matches!(e.kind, EventKind::Modify(_)) {
+                    if last_trigger.elapsed() > PROMPT_DEBOUNCE {
+                        last_trigger = Instant::now();
+                        // 取变化的 .md 文件路径，emit 给前端
+                        for path in &e.paths {
+                            if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                                let path_str = path.to_string_lossy().to_string();
+                                log::debug!("[file_watcher] prompt 文件变化: {}", path_str);
+                                let _ = app.emit("compact-editor://file-changed", &path_str);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        log::debug!("[file_watcher] prompt 事件循环退出");
     });
 }

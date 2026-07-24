@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke, listen } from "@/lib/tauri";
 import {
-  X, Type, Eye, Mic,
+  X, Type, Eye, Mic, FileText,
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
@@ -24,6 +24,8 @@ export interface Tab {
   translatedText?: string;
   // 流式翻译 sessionId（contrast tab 用，详见 open-tab handler）。
   translateSessionId?: string;
+  // file source tab 的磁盘路径（保存写回用）
+  filePath?: string;
 }
 interface OpenTabPayload {
   itemId: number;
@@ -50,8 +52,8 @@ interface PendingTabFull {
   originalText?: string;
   translatedText?: string;
   translateSessionId?: string;
+  filePath?: string;
 }
-// CompactEditor 翻译事件 payload——后端 emit 带 sessionId 供前端路由。
 interface TranslateSessionPayload {
   sessionId: string;
   text: string;
@@ -62,7 +64,9 @@ function pendingToTab(p: PendingTabFull): Tab {
   if (p.itemType === 'image') {
     return { key, source, itemId: p.itemId, itemType: 'image', imgWidth: p.imgWidth || 0, imgHeight: p.imgHeight || 0 };
   }
-  return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp, mode: p.mode as Tab['mode'], originalText: p.originalText, translatedText: p.translatedText, translateSessionId: p.translateSessionId };
+  // file tab 的 originalText = 加载时的磁盘内容（外部变化检测用）
+  const originalText = p.source === 'file' ? p.text : p.originalText;
+  return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp, mode: p.mode as Tab['mode'], originalText, translatedText: p.translatedText, translateSessionId: p.translateSessionId, filePath: p.filePath };
 }
 
 const FONT_KEY = "compact-editor-font-size";
@@ -79,6 +83,7 @@ function tabTitle(tab: Tab): string {
 
 function tabIcon(tab: Tab) {
   if (tab.source === 'transcription') return <Mic className="w-3 h-3 text-violet-500 flex-shrink-0" />;
+  if (tab.source === 'file') return <FileText className="w-3 h-3 text-emerald-500 flex-shrink-0" />;
   if (tab.itemType === 'image') return <Eye className="w-3 h-3 text-blue-500 flex-shrink-0" />;
   return <Type className="w-3 h-3 text-muted-foreground flex-shrink-0" />;
 }
@@ -189,6 +194,7 @@ function CompactEditor() {
     let unlisten: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let unlistenFileChanged: (() => void) | undefined;
     (async () => {
       // 1. 先注册事件监听——确保 take pending 期间发出的 emit 不会丢失
       const fn = await listen("compact-editor://open-tab", (payload) => {
@@ -210,7 +216,7 @@ function CompactEditor() {
           const fileKey = `file:${p.itemId}`;
           const existIdx = tabsRef.current.findIndex(t => t.key === fileKey);
           if (existIdx >= 0) { setActiveIdx(existIdx); return; } // 已存在→激活，不覆盖
-          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "" };
+          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "", originalText: p.text || "", filePath: (p as Record<string, unknown>).filePath as string | undefined };
           const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
           setTabs(next);
@@ -268,6 +274,31 @@ function CompactEditor() {
       if (cancelled) { fnDone(); return; }
       unlistenDone = fnDone;
 
+      // file-changed：磁盘文件被外部修改 → 匹配 file tab → 无编辑自动 reload / 有编辑提示
+      const fnFileChanged = await listen("compact-editor://file-changed", (payload) => {
+        const changedPath = payload as string;
+        const tab = tabsRef.current.find(t => t.source === 'file' && t.filePath === changedPath);
+        if (!tab) return;
+        // 用 originalText（加载时的磁盘内容）判断有无未保存编辑
+        // tab.text 是 CM6 编辑后的当前值；originalText 是加载时的值
+        const hasUnsavedEdits = (tab.text || "") !== (tab.originalText || "");
+        if (hasUnsavedEdits) {
+          // 有未保存编辑 → 不自动覆盖，打日志（后续可加 toast 提示）
+          console.warn("[compact-editor] 文件被外部修改，但 tab 有未保存编辑，不自动 reload:", changedPath);
+        } else {
+          // 无编辑 → 静默 reload
+          invoke<string>("read_file_text", { path: changedPath }).then((newText) => {
+            const next = tabsRef.current.map(t =>
+              t.key === tab.key ? { ...t, text: newText, originalText: newText } : t
+            );
+            tabsRef.current = next;
+            setTabs(next);
+          }).catch(() => {});
+        }
+      });
+      if (cancelled) { fnFileChanged(); return; }
+      unlistenFileChanged = fnFileChanged;
+
       // 2. 再 take pending tabs（此时 listen 已就绪）
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
@@ -295,6 +326,7 @@ function CompactEditor() {
       unlisten?.();
       unlistenProgress?.();
       unlistenDone?.();
+      unlistenFileChanged?.();
     };
   }, [loadAndAddTab, updateActiveTextAt]);
 
@@ -305,6 +337,18 @@ function CompactEditor() {
     // contrast 模式保存译文（右半），原文是脚手架不持久化
     const saveText = active.mode === 'contrast' ? (active.translatedText || "") : (active.text || "");
     try {
+      // file tab：写回磁盘文件
+      if (active.source === 'file' && active.filePath) {
+        await invoke("save_file", { path: active.filePath, content: saveText });
+        // 同步 originalText（保存后 = 磁盘内容，外部变化检测基准重置）
+        const next = tabsRef.current.map(t => t.key === active.key ? { ...t, originalText: saveText } : t);
+        tabsRef.current = next;
+        setTabs(next);
+        setSavedFlash(true);
+        if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+        savedFlashTimer.current = setTimeout(() => setSavedFlash(false), 1200);
+        return;
+      }
       // temp tab（图文编辑空白入口）：空→关闭 tab；非空→insert 新条目并升级为正式 clipboard tab。
       // 升级后 key/itemId/isTemp 同步（promoteTempTab），后续编辑走下方「既有条目 update」路径。
       if (active.isTemp) {

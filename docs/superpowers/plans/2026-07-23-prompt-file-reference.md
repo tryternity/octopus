@@ -51,4 +51,16 @@
 - [x] en.yaml + zh-CN.yaml 8 个新 key（promptInline/promptRef/promptSelectFile/promptDirEmpty/promptFileMissing/promptPreview/promptViewMore + contentLabel 复用）
 - [x] spec 状态更新 + §3.4 接口表 + §3.5 UI 设计 + INV-P5
 - [x] architecture.md agent/ai 段补「@文件名引用 prompt」+ hover 浮层 + open_file_in_editor
-- [ ] e2e：Tolaria action_data 改 @tolaria → 执行 → prompt 被正确展开
+- [x] e2e：Tolaria action_data 改 @tolaria → 执行 → prompt 被正确展开 ✅ 用户验证通过
+
+## Task 7：file tab 保存 + 外部变化自动 reload
+
+**文件**: `action_bar_commands.rs` + `compact_editor_commands.rs` + `file_watcher.rs` + `CompactEditor/index.tsx`
+
+- [x] `save_file(path, content)` + `read_file_text(path)` Tauri 命令
+- [x] Tab 接口加 `filePath` + `originalText`（file tab dirty 判断用）
+- [x] doSave 加 file 分支（写回磁盘 + 同步 originalText + savedFlash）
+- [x] file tab 图标 FileText（emerald 色）
+- [x] `start_prompt_file_watcher`：notify-rs 监听 prompts 目录 → emit `compact-editor://file-changed`
+- [x] 前端监听 file-changed：无编辑自动 reload / 有编辑不覆盖
+- [x] spec 补 §3.6（保存）+ §3.7（外部变化 reload）+ INV-P6/P7

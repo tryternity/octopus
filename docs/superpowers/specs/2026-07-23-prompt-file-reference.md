@@ -101,6 +101,8 @@ let prompt = resolve_prompt_reference(&item.action_data);
 |---|---|---|
 | `list_prompt_files` | `() -> Vec<PromptFileInfo>` | 扫描 `~/.octopus/.sync/prompts/*.md`，返回文件列表供设置页下拉选择 |
 | `open_file_in_editor` | `(name: String, app) -> ()` | 读文件全文 → CompactEditor 打开（source="file"，按路径 md5 去重） |
+| `save_file` | `(path: String, content: String) -> ()` | 写回磁盘文件（CompactEditor file tab 保存按钮） |
+| `read_file_text` | `(path: String) -> String` | 读文件全文（外部变化 reload 用） |
 
 ```rust
 pub struct PromptFileInfo {
@@ -125,6 +127,20 @@ pub struct PromptFileInfo {
 - **空目录状态**：Inbox 图标 + 路径指引（`~/.octopus/.sync/prompts/*.md`）
 - 父组件用 `key={form.id}` 让切换不同菜单项时 PromptEditor 重新 mount
 
+### 3.6 CompactEditor file tab 保存
+
+file tab 在 CompactEditor 里可编辑可保存（保存按钮对 file source 不禁用）：
+- **doSave file 分支**：调 `save_file(filePath, content)` 写回磁盘 + savedFlash 反馈 + 同步 `originalText`（重置 dirty 基准）
+- file tab 带 `filePath` 字段（emit + pending 两条路径传递）
+
+### 3.7 外部变化自动 reload（Sublime 风格）
+
+磁盘文件被外部编辑器修改时，CompactEditor 自动感知：
+
+- **后端** `start_prompt_file_watcher`：notify-rs 监听 `~/.octopus/.sync/prompts/`，Modify 事件 500ms debounce → emit `compact-editor://file-changed`（携带文件路径）
+- **前端** 监听 `file-changed` → 按 `filePath` 匹配 file tab → `tab.text !== tab.originalText`（有未保存编辑）→ 不覆盖（console.warn）；否则 → `read_file_text` 静默 reload + 更新 originalText
+- **dirty 判断**：file tab 带 `originalText`（加载时的磁盘内容），保存时同步更新
+
 ## 4. 不变量
 
 | # | 不变量 | 保证方式 |
@@ -134,6 +150,8 @@ pub struct PromptFileInfo {
 | INV-P3 | 引用展开发生在执行时（非保存时） | resolve 在 execute_action_bar_inner 内调，DB 存原始 `@文件名` |
 | INV-P4 | DB 存原始引用字符串（`@tolaria`），不存展开后内容 | resolve 不写回 DB |
 | INV-P5 | 同一文件在 CompactEditor 只开一个 tab（file source 去重） | item_id = 路径 md5，前端 `file:<id>` 去重，已存在激活不覆盖 |
+| INV-P6 | file tab 保存写回磁盘后 originalText 同步更新 | doSave file 分支保存后 setTabs 更新 originalText |
+| INV-P7 | 外部文件变化时有未保存编辑不自动覆盖 | tab.text !== originalText → 不 reload（console.warn） |
 
 ## 5. 文件目录
 
