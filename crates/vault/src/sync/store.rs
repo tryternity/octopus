@@ -356,6 +356,12 @@ pub fn write_meta_file(meta: &MetaFile) -> Result<()> {
     write_atomically(&meta_path(), &format!("{}\n", json))
 }
 
+/// 判断 outline.json 读取错误是否为「文件不存在」（合法场景——首次同步）。
+fn outline_not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.to_string().contains("No such file"))
+        || e.to_string().contains("No such file")
+}
+
 /// 读 outline.json。文件不存在时返回默认空 outline（首次同步）。
 pub fn read_outline_file() -> Result<Outline> {
     let path = outline_path();
@@ -534,7 +540,23 @@ pub fn incremental_export(
     write_meta_file(&meta_file)?;
 
     // 2. 读旧 outline 做 diff
-    let old_outline = read_outline_file().unwrap_or_default();
+    // M8 修复（2026-07-24）：outline.json 解析失败时不再 unwrap_or_default 吞成空——
+    // 那样删除循环（565-571）遍历空 outline → 不执行 → SQLite 已删的 cipher 文件
+    // 永久残留 → 新设备 clone 复活。改为：NotFound → 空 Outline（首次同步合法）；
+    // 解析错 → 降级为 export_all_to_files 全量重建（remove_dir_all 清所有 stale 文件）。
+    let old_outline = match read_outline_file() {
+        Ok(o) => o,
+        Err(e) if outline_not_found(&e) => Outline::default(),
+        Err(e) => {
+            log::warn!(
+                "[sync] outline.json 解析失败，降级为全量重建（清理所有 stale 文件）：{}",
+                e
+            );
+            // 全量重建——所有文件都算 changed
+            let outline = export_all_to_files(meta, ciphers, folders)?;
+            return Ok((outline, ciphers.len() + folders.len()));
+        }
+    };
     let mut changed = 0usize;
 
     // 3. cipher：对比 md5，只写变化的
@@ -928,6 +950,44 @@ mod tests {
         assert!(
             !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists(),
             "SQLite 无的 cipher 文件应被删"
+        );
+    }
+
+    /// M8 回归守护：outline.json 解析失败时降级为全量重建——
+    /// stale 文件（SQLite 已删但 outline 损坏前残留的）被 remove_dir_all 清理。
+    ///
+    /// 之前 bug：unwrap_or_default 吞解析错成空 Outline → 删除循环不执行 →
+    /// stale 文件永久残留 → 新设备 clone 复活已删密码。
+    #[test]
+    fn incremental_export_degraded_rebuild_on_corrupt_outline() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+
+        // 首次写 c1（生成正常 outline）
+        let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists());
+
+        // 破坏 outline.json（写入非法 JSON）
+        let outline_p = outline_path();
+        std::fs::write(&outline_p, "this is not valid json {{{{").unwrap();
+
+        // 二次：SQLite 无 cipher（c1 已删）→ outline 损坏 → 应降级全量重建
+        // 全量重建的 remove_dir_all 会清理 c1 的 stale 文件
+        // changed 可能是 0（SQLite 无 cipher/folder 写入），但关键断言是 stale 文件被清理
+        let (_, _changed) = incremental_export(&meta, &[], &[]).expect("degraded rebuild");
+
+        // M8 核心断言：c1 的 stale 文件应被清理（不残留 → clone 不复活）
+        assert!(
+            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists(),
+            "M8: outline 损坏时降级全量重建应清理 stale cipher 文件（之前永久残留 → clone 复活）"
+        );
+
+        // outline.json 应被重写为有效 JSON（全量重建后）
+        let outline = read_outline_file().expect("outline should be valid after rebuild");
+        assert!(
+            outline.ciphers.is_empty(),
+            "重建后 outline 应无 cipher（SQLite 为空）"
         );
     }
 

@@ -328,3 +328,23 @@
 **问题**：L12 的 `lower_group` 每次 cipher×URI 匹配重算（group 不随 cipher 变化）。
 
 **状态**：follow-up。报告自评「group 数量小，实际影响可忽略」。优化需改 4 个函数签名（find_matching_ciphers → matches_any_uri → match_uri_one → matches_domain 传预计算的 lower_equivalent），波及面 vs 收益不匹配。
+
+---
+
+## 第十轮审查修复（2026-07-24，M8/L21）
+
+### M8: incremental_export 吞 outline 解析错 → 删除不可靠 + clone 复活（中，数据完整性）
+
+**问题**：`incremental_export`（store.rs:537）`read_outline_file().unwrap_or_default()` 把 outline.json 解析失败吞成空 Outline。删除循环遍历空 outline → 不执行 → SQLite 已删的 cipher 文件永久残留 → 新设备 clone（import_all_from_files 全量 walk）读到残留文件 → 已删密码复活。
+
+**残留链条**：outline 损坏 → 删除循环不执行 → stale 文件残留 → outline 永不含该 cipher（后续 sync 只删「outline 有 / SQLite 无」的）→ 永久残留 → clone 复活。
+
+**修复**：解析错时降级为 `export_all_to_files` 全量重建（`remove_dir_all` 清所有 stale 文件，恢复一致）。NotFound → 空 Outline（首次同步合法）。与 #9（salt unwrap_or_default 修复）原则一致——不吞解析错。
+
+**新增测试** `incremental_export_degraded_rebuild_on_corrupt_outline`：验证 outline 损坏时 stale 文件被清理 + outline 重写为有效 JSON。
+
+### L21: TOTP secret 未 zeroize（低，follow-up，受 totp-rs 限制）
+
+**问题**：`TotpGenerator.inner: TOTP`（totp-rs）持有 secret: Vec<u8> 不实现 Zeroize；`secret.to_string()` 局部副本 drop 不清零。
+
+**状态**：follow-up。totp-rs 的 TOTP/Secret 不实现 Zeroize，octopus 无法零成本包装（需 fork 或 wrapping）。局部副本可部分缓解但 TOTP.inner.secret 无法清。威胁模型外（单机离线 vault）。
