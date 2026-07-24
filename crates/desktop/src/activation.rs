@@ -105,12 +105,18 @@ const REGULAR_WINDOWS: &[&str] = &[
     "compact_editor_window",
 ];
 
-/// 浮窗 show 时需临时隐藏的其他窗口（Regular + 其他浮窗），
+/// 浮窗 show 时需临时隐藏的其他 Regular 窗口，
 /// 防止 set_focus 激活 app 后这些窗口抢焦点。
+///
+/// 注意：`clipboard_window` **不在**此列表——它是 always-on-top 浮窗，
+/// dock 收缩态下一直 visible（8px 细条 + 鼠标穿透），不抢焦点。
+/// 如果列入，其他浮窗（action_bar/compact_editor）的 show→hide 周期会
+/// 把 dock 态剪贴板拖进 hide→裸 show 循环，导致 DOCK_EXPANDED 状态不一致
+/// + setIgnoresMouseEvents 残留（窗口看得见但点不动/拖不动）。
+/// 2026-07-24 修复。
 const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
     "settings_window",
     "compact_editor_window",
-    "clipboard_window",
 ];
 
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
@@ -253,6 +259,11 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
         std::mem::take(&mut *guard)
     };
     for label in hidden {
+        // 防御：clipboard_window 不应被 restore（浮窗不是 Regular，
+        // dock 收缩态一直 visible；裸 show 破坏 DOCK_EXPANDED 状态）。
+        if label == "clipboard_window" {
+            continue;
+        }
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
         }
@@ -284,6 +295,11 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
     }
 
     for label in hidden {
+        // 防御：clipboard_window 不应被 restore（浮窗不是 Regular，
+        // dock 收缩态一直 visible；裸 show 破坏 DOCK_EXPANDED 状态）。
+        if label == "clipboard_window" {
+            continue;
+        }
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
         }
@@ -305,6 +321,11 @@ pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
         std::mem::take(&mut *guard)
     };
     for label in hidden {
+        // 防御：clipboard_window 不应被 restore（浮窗不是 Regular，
+        // dock 收缩态一直 visible；裸 show 破坏 DOCK_EXPANDED 状态）。
+        if label == "clipboard_window" {
+            continue;
+        }
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
         }
