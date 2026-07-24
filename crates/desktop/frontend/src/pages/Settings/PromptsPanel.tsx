@@ -106,6 +106,9 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
             <label className="text-xs text-muted-foreground mb-1 block">{t("settings.prompts.titlePlaceholder")}</label>
             <input
               type="text"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               className="w-full text-sm outline-none bg-transparent border border-border rounded-md px-3 py-2"
               placeholder={t("settings.prompts.titlePlaceholder")}
               value={newTitle}
@@ -117,6 +120,9 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
             <div className="flex items-center gap-1.5">
               <input
                 type="text"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="flex-1 text-sm font-mono outline-none bg-transparent border border-border rounded-md px-3 py-2"
                 placeholder="my-prompt"
                 value={newFileName}
@@ -130,6 +136,9 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
             <label className="text-xs text-muted-foreground mb-1 block">{t("settings.prompts.descPlaceholder")}</label>
             <input
               type="text"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               className="w-full text-xs text-muted-foreground outline-none bg-transparent border border-border rounded-md px-3 py-2"
               placeholder={t("settings.prompts.descPlaceholder")}
               value={newDesc}

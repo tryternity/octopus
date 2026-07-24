@@ -508,6 +508,9 @@ const EditForm = ({
               className="w-full min-h-[190px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
               placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
             />
           </FormField>

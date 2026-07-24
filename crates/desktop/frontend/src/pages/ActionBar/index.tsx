@@ -1035,6 +1035,9 @@ export default function ActionBar() {
       <input
         ref={inputRef}
         type="text"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder={t("actionbar.searchPlaceholder")}

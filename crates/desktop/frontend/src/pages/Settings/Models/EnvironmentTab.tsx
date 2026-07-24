@@ -63,6 +63,9 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
             {BUILTIN.includes(key) && <Lock className="w-2.5 h-2.5 text-muted-foreground/40" />}
           </div>
           <input
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             className="flex-1 px-2 py-0.5 text-xs rounded border border-transparent bg-transparent hover:border-border focus:border-voice/40 focus:bg-background transition-colors outline-none"
             defaultValue={value}
             onBlur={(e) => { if (e.target.value !== value) handleSave(key, e.target.value); }}
