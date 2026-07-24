@@ -77,6 +77,22 @@ impl Transcript {
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+
+    /// 重连场景：清引擎层累积基准（engine_cumulative / engine_consumed_chars /
+    /// diverted_pending），与重建后的空 pipeline 状态对齐。保留 segments / caret_gap /
+    /// id / db_inserted（用户已识别文本 + 落库状态）。
+    ///
+    /// 用途：音频采集看门狗检测到 cpal 断流后自动重连——重建 pipeline（engine 状态清零）
+    /// 但复用本 transcript。若不清 engine_cumulative，首个 apply_engine_full 的 is_prefix
+    /// 判定会失败（空 engine 输出不是旧长 cum 的前缀）→ 走 diverted → 异常累积。
+    ///
+    /// 副作用：丢失引擎层纠正能力（可接受——断流本就是异常，重连后从空基准重新累积）。
+    /// 详见 spec 2026-07-24-audio-watchdog §3.5。
+    pub fn reset_engine_baseline(&mut self) {
+        self.engine_cumulative.clear();
+        self.engine_consumed_chars = 0;
+        self.diverted_pending.clear();
+    }
     /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
     pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
     /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
@@ -1406,5 +1422,44 @@ mod user_scenario_tests {
             "shown 不应因 diverted 风暴无限膨胀，max_shown={}（初始 500）",
             max_shown
         );
+    }
+
+    // ── 音频重连：engine 基准重置（spec 2026-07-24-audio-watchdog §3.5）──
+
+    #[test]
+    fn reset_engine_baseline_clears_cumulative_keeps_segments() {
+        // 重连场景：pipeline 重建（engine 状态清零）但复用 transcript。
+        // reset_engine_baseline 须清 engine 层基准（与空 engine 对齐），
+        // 保留 segments（用户已识别文本）+ id + db_inserted + caret_gap。
+        let mut t = Transcript::new(400, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("已识别的文本"); // engine_cumulative="已识别的文本", segments=[Raw]
+        t.apply_engine_full("已识别的文本纠正"); // diverted，diverted_pending 非空
+        assert!(!t.engine_cumulative.is_empty(), "前置：engine_cumulative 应非空");
+        let text_before = t.finish_text();
+        let id_before = t.id;
+        let gap_before = t.caret_gap;
+
+        t.reset_engine_baseline();
+
+        // engine 层基准清零
+        assert_eq!(t.engine_cumulative, "", "engine_cumulative 须清空");
+        assert_eq!(t.engine_consumed_chars, 0, "engine_consumed_chars 须归零");
+        assert!(t.diverted_pending.is_empty(), "diverted_pending 须清空");
+        // 用户数据保留
+        assert_eq!(t.finish_text(), text_before, "segments 文本须保留");
+        assert_eq!(t.id, id_before, "id 须保留（DB 主键续写）");
+        assert_eq!(t.caret_gap, gap_before, "caret_gap 须保留（光标位置）");
+    }
+
+    #[test]
+    fn reset_engine_baseline_then_apply_starts_fresh() {
+        // 重连后首个 apply_engine_full：空 engine 输出对空 engine_cumulative
+        // → is_prefix=true → 正常 delta 生长，不走 diverted 异常累积。
+        let mut t = Transcript::new(401, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("旧文本"); // cum="旧文本", segments=[Raw("旧文本")]
+        t.reset_engine_baseline();
+        // 模拟重连后引擎首个输出
+        assert!(t.apply_engine_full("新语音"), "重连后首词应正常 apply");
+        assert_eq!(t.finish_text(), "旧文本新语音", "新语音追加到保留文本后");
     }
 }
