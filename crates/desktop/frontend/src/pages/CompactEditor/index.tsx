@@ -8,6 +8,7 @@ import { MarkdownPane } from "./MarkdownPane";
 import { TranslationContrastPane } from "./TranslationContrastPane";
 import { mergePendingTabs } from "./mergePendingTabs";
 import { promoteTempTab } from "./promoteTempTab";
+import TabHoverCard from "./TabHoverCard";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 export interface Tab {
@@ -118,7 +119,9 @@ function CompactEditor() {
   });
   const [savedFlash, setSavedFlash] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [hoveredTabKey, setHoveredTabKey] = useState<string | null>(null);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current); }, []);
 
   const tabsRef = useRef<Tab[]>([]);
@@ -537,12 +540,20 @@ function CompactEditor() {
           {tabs.map((tab, i) => (
             <div
               key={tab.key}
-              className={`group/tab flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
+              className={`group/tab relative flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
                 i === activeIdx
                   ? "bg-background text-foreground shadow-sm border border-border"
                   : "text-muted-foreground hover:bg-accent"
               }`}
               onClick={() => setActiveIdx(i)}
+              onMouseEnter={() => {
+                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                hoverTimer.current = setTimeout(() => setHoveredTabKey(tab.key), 500);
+              }}
+              onMouseLeave={() => {
+                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                setHoveredTabKey(null);
+              }}
             >
               {tabIcon(tab)}
               <span className="max-w-[140px] truncate">{tabTitle(tab)}</span>
@@ -554,6 +565,11 @@ function CompactEditor() {
               >
                 <X className="w-3 h-3" />
               </button>
+              {hoveredTabKey === tab.key && (
+                <div className="pointer-events-none">
+                  <TabHoverCard tab={tab} />
+                </div>
+              )}
             </div>
           ))}
         </div>
