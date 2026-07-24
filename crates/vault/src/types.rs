@@ -27,10 +27,17 @@ impl From<CipherType> for i64 {
 impl From<i64> for CipherType {
     fn from(v: i64) -> Self {
         match v {
+            1 => CipherType::Login,
             2 => CipherType::SecureNote,
             3 => CipherType::Card,
             4 => CipherType::Identity,
-            _ => CipherType::Login, // 兜底为 Login（兼容未知类型）
+            other => {
+                // M4（2026-07-24）：非法值不再静默兜底——记 log 让问题可观测。
+                // 保留兜底为 Login（数据兼容性——旧库可能有未知类型，不能让读取失败），
+                // 但至少诊断时有迹可循。威胁模型假设 DB 不被直接改（单机）。
+                log::warn!("CipherType 非法值 {}，兜底为 Login", other);
+                CipherType::Login
+            }
         }
     }
 }
@@ -51,22 +58,42 @@ impl From<RepromptType> for i64 {
 
 impl From<i64> for RepromptType {
     fn from(v: i64) -> Self {
-        if v == 1 {
-            RepromptType::Password
-        } else {
-            RepromptType::None
+        match v {
+            0 => RepromptType::None,
+            1 => RepromptType::Password,
+            other => {
+                // M4（2026-07-24）：非法值不再静默降级 None——记 log 让问题可观测。
+                // 仍降级为 None（数据兼容性），但诊断时可发现 DB 被篡改的迹象。
+                // 注意：降级 None 意味着绕过二次验证——威胁模型假设 DB 不被直接改。
+                log::warn!(
+                    "RepromptType 非法值 {}，降级为 None（二次验证被绕过——检查 DB 是否被篡改）",
+                    other
+                );
+                RepromptType::None
+            }
         }
     }
 }
 
-/// URI 匹配策略（直接抄 Bitwarden 5 种 + Never）。
+/// URI 匹配策略（与 Bitwarden 官方 `UriMatchType` 枚举值严格对齐）。
+///
+/// ⚠️ **2026-07-24 协议对齐修复**：之前 `Exact=2, StartsWith=3` 与官方相反，
+/// 导致 Bitwarden 导入/导出 JSON 的 `match` 字段语义静默互换（导入把官方 Exact=3
+/// 解析成 StartsWith；导出把 StartsWith=3 写成 Exact）。经核对 Bitwarden server
+/// 源码 `src/Core/Enums/UriMatchType.cs` 确认官方值，已修正。
+///
+/// 官方值（[UriMatchType.cs](https://github.com/bitwarden/server/blob/main/src/Core/Enums/UriMatchType.cs)）：
+/// ```text
+/// Domain = 0, Host = 1, StartsWith = 2, Exact = 3,
+/// RegularExpression = 4, Never = 5
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "i64", try_from = "i64")]
 pub enum MatchType {
     Domain = 0,
     Host = 1,
-    Exact = 2,
-    StartsWith = 3,
+    StartsWith = 2,
+    Exact = 3,
     RegularExpression = 4,
     Never = 5,
 }
@@ -83,8 +110,8 @@ impl TryFrom<i64> for MatchType {
         Ok(match v {
             0 => MatchType::Domain,
             1 => MatchType::Host,
-            2 => MatchType::Exact,
-            3 => MatchType::StartsWith,
+            2 => MatchType::StartsWith,
+            3 => MatchType::Exact,
             4 => MatchType::RegularExpression,
             5 => MatchType::Never,
             _ => anyhow::bail!("无效的 MatchType: {}", v),
@@ -179,65 +206,70 @@ pub struct CipherEncStrings {
 impl Cipher {
     /// 用 user_vault_key 加密所有敏感字段。
     pub fn encrypt_strings(&self, key: &DerivedKey) -> Result<CipherEncStrings> {
-        let name = key.encrypt(self.name.as_bytes())?;
-        let notes = match &self.notes {
-            Some(n) => Some(key.encrypt(n.as_bytes())?),
-            None => None,
-        };
-        let data_json = serde_json::to_vec(&self.data)?;
-        let data = key.encrypt(&data_json)?;
-        let fields = if self.fields.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.fields)?;
-            Some(key.encrypt(&json)?)
-        };
-        let password_history = if self.password_history.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.password_history)?;
-            Some(key.encrypt(&json)?)
-        };
-        Ok(CipherEncStrings {
-            name,
-            notes,
-            data,
-            fields,
-            password_history,
-        })
+        // 8.1 清理：提取共用函数，消除与 CipherInput::encrypt_strings 的 60 行重复
+        encrypt_cipher_fields(
+            &self.name,
+            &self.notes,
+            &self.data,
+            &self.fields,
+            &self.password_history,
+            key,
+        )
     }
 }
 
 impl CipherInput {
     /// 用 user_vault_key 加密。
     pub fn encrypt_strings(&self, key: &DerivedKey) -> Result<CipherEncStrings> {
-        let name = key.encrypt(self.name.as_bytes())?;
-        let notes = match &self.notes {
-            Some(n) => Some(key.encrypt(n.as_bytes())?),
-            None => None,
-        };
-        let data_json = serde_json::to_vec(&self.data)?;
-        let data = key.encrypt(&data_json)?;
-        let fields = if self.fields.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.fields)?;
-            Some(key.encrypt(&json)?)
-        };
-        let password_history = if self.password_history.is_empty() {
-            None
-        } else {
-            let json = serde_json::to_vec(&self.password_history)?;
-            Some(key.encrypt(&json)?)
-        };
-        Ok(CipherEncStrings {
-            name,
-            notes,
-            data,
-            fields,
-            password_history,
-        })
+        encrypt_cipher_fields(
+            &self.name,
+            &self.notes,
+            &self.data,
+            &self.fields,
+            &self.password_history,
+            key,
+        )
     }
+}
+
+/// 加密 cipher 的敏感字段（Cipher / CipherInput 共用，8.1 清理重复代码）。
+///
+/// 之前 Cipher::encrypt_strings 和 CipherInput::encrypt_strings 是 60 行逐字相同的
+/// 重复代码——两者加密逻辑完全一致（字段同名同类型），只是 struct 不同。
+fn encrypt_cipher_fields(
+    name: &str,
+    notes: &Option<String>,
+    data: &CipherData,
+    fields: &[Field],
+    password_history: &[PasswordHistoryEntry],
+    key: &DerivedKey,
+) -> Result<CipherEncStrings> {
+    let name = key.encrypt(name.as_bytes())?;
+    let notes = match notes {
+        Some(n) => Some(key.encrypt(n.as_bytes())?),
+        None => None,
+    };
+    let data_json = serde_json::to_vec(data)?;
+    let data = key.encrypt(&data_json)?;
+    let fields = if fields.is_empty() {
+        None
+    } else {
+        let json = serde_json::to_vec(fields)?;
+        Some(key.encrypt(&json)?)
+    };
+    let password_history = if password_history.is_empty() {
+        None
+    } else {
+        let json = serde_json::to_vec(password_history)?;
+        Some(key.encrypt(&json)?)
+    };
+    Ok(CipherEncStrings {
+        name,
+        notes,
+        data,
+        fields,
+        password_history,
+    })
 }
 
 /// 从 infra 的 VaultCipher（密文行）+ 解密 key → 解密 Cipher。
@@ -396,5 +428,22 @@ mod tests {
         assert_eq!(i64::from(MatchType::RegularExpression), 4);
         assert_eq!(MatchType::try_from(0).unwrap(), MatchType::Domain);
         assert!(MatchType::try_from(99).is_err());
+
+        // 对齐 Bitwarden 官方 UriMatchType（2026-07-24 协议修正后的回归守护）：
+        // 之前 octopus 把 Exact=2/StartsWith=3 与官方（StartsWith=2/Exact=3）弄反，
+        // 导致 Bitwarden 导入/导出的 match 字段语义静默互换。此断言对齐官方值，
+        // 防止未来再次反转。
+        assert_eq!(
+            MatchType::try_from(2).unwrap(),
+            MatchType::StartsWith,
+            "Bitwarden 官方协议 2 = StartsWith"
+        );
+        assert_eq!(
+            MatchType::try_from(3).unwrap(),
+            MatchType::Exact,
+            "Bitwarden 官方协议 3 = Exact"
+        );
+        assert_eq!(i64::from(MatchType::StartsWith), 2);
+        assert_eq!(i64::from(MatchType::Exact), 3);
     }
 }

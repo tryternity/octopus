@@ -51,6 +51,11 @@ interface SyncReport {
   deleted: number;
   hotwordsPulled: number;
   hotwordsPushed: number;
+  /** push 失败的 remote → 错误消息（#4 修复——之前 push 失败被吞，谎报「已推送」）。
+   * 空 = 全部成功；非空 = 部分 remote 失败（本地已 commit，未上云）。 */
+  pushErrors: [string, string][];
+  /** pull 阶段因文件损坏被跳过的条目数（#10——不再静默吞错）。 */
+  skipped: number;
   message: string;
 }
 
@@ -106,7 +111,11 @@ export default function SyncPanel({
         showToast(error, "error");
         setSyncError(error);
       } else if (report) {
-        showToast(report.message || t("settings.vault.sync.syncSuccess"));
+        // #4 修复：push 部分 remote 失败时用 warning（而非 success），
+        // 让用户知道数据未上云。后端 message 已含失败 remote 名 + 「未上云」提示。
+        const variant =
+          report.pushErrors.length > 0 ? "warning" : "success";
+        showToast(report.message || t("settings.vault.sync.syncSuccess"), variant);
         setSyncError(null);
       }
       // 刷新状态——status.syncing 会变回 false

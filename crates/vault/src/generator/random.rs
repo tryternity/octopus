@@ -3,6 +3,7 @@
 use anyhow::{ensure, Result};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
+use zeroize::Zeroizing;
 
 use super::RandomConfig;
 
@@ -54,7 +55,10 @@ pub fn generate(cfg: &RandomConfig) -> Result<String> {
     );
 
     let mut rng = OsRng;
-    let mut result: Vec<char> = Vec::with_capacity(cfg.length as usize);
+    // #8 修复：中间材料用 Zeroizing——函数返回后自动清零 heap 中的明文密码字符
+    // （返回值 String 会进 Tauri IPC → JS heap，Zeroizing 在边界保护意义有限；
+    // 但生成过程中的中间材料在生成失败/异常时不应残留 heap，可被 dump 恢复）
+    let mut result: Zeroizing<Vec<char>> = Zeroizing::new(Vec::with_capacity(cfg.length as usize));
 
     // 强制每种启用类型至少 1 个
     if cfg.uppercase && !cfg.avoid_ambiguous {
@@ -112,7 +116,9 @@ pub fn generate(cfg: &RandomConfig) -> Result<String> {
     }
 
     result.shuffle(&mut rng);
-    Ok(result.into_iter().collect())
+    // 取出内部 Vec<char> 转 String——result 离开作用域时 Zeroizing 已清零 Vec 内存，
+    // 但返回的 String 是新的 heap 分配（明文密码进 Tauri IPC → JS heap，由调用方管理）
+    Ok(result.iter().collect())
 }
 
 #[cfg(test)]

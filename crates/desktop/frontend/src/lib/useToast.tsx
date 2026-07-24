@@ -22,8 +22,10 @@ import { X } from "lucide-react";
  * - success（默认）：durationMs（默认 2000ms）后自动消失
  * - error：**不自动消失**——错误信息需要用户看清楚，由用户点 X 关闭
  *   （旧实现所有 toast 都 2s 自动消失，用户来不及看清错误）
+ * - warning（2026-07-24 新增）：不自动消失，琥珀色——用于「操作部分成功但需注意」
+ *   场景（如 vault sync 部分 remote 推送失败——本地已保存但未上云）。
  */
-export type ToastVariant = "success" | "error";
+export type ToastVariant = "success" | "error" | "warning";
 
 export interface ToastState {
   msg: string;
@@ -48,8 +50,8 @@ export function useToast(durationMs: number = 2000) {
       if (timerRef.current != null) {
         window.clearTimeout(timerRef.current);
       }
-      // error 不自动消失——让用户自己关闭
-      if (variant === "error") {
+      // error / warning 不自动消失——让用户自己关闭
+      if (variant === "error" || variant === "warning") {
         timerRef.current = null;
         return;
       }
@@ -80,6 +82,7 @@ export function useToast(durationMs: number = 2000) {
  *
  * - success：半透明黑底白字（适合透明浮窗）
  * - error：红色描边 + 浅红背景 + 关闭按钮（用户手动关闭，不自动消失）
+ * - warning：琥珀色描边 + 浅琥珀背景 + 关闭按钮（不自动消失，2026-07-24 新增）
  *
  * toast 为 null 时不渲染（return null）。
  */
@@ -92,6 +95,9 @@ export function Toast({
 }) {
   if (!toast) return null;
   const isError = toast.variant === "error";
+  const isWarning = toast.variant === "warning";
+  // error / warning 都不自动消失，都需要关闭按钮
+  const dismissible = isError || isWarning;
   return (
     <div
       className={[
@@ -99,17 +105,22 @@ export function Toast({
         "rounded-md px-3 py-2 text-xs font-medium shadow-lg",
         isError
           ? "border border-destructive/50 bg-destructive/10 text-destructive"
-          : "bg-foreground/90 text-background",
+          : isWarning
+            ? "border border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+            : "bg-foreground/90 text-background",
       ].join(" ")}
       role={isError ? "alert" : "status"}
     >
       <span className="max-w-[80vw] break-words">{toast.msg}</span>
-      {isError && onClose && (
+      {dismissible && onClose && (
         <button
           type="button"
           onClick={onClose}
           aria-label="关闭"
-          className="shrink-0 rounded-sm p-0.5 hover:bg-destructive/20"
+          className={[
+            "shrink-0 rounded-sm p-0.5",
+            isError ? "hover:bg-destructive/20" : "hover:bg-amber-500/20",
+          ].join(" ")}
         >
           <X className="size-3" />
         </button>

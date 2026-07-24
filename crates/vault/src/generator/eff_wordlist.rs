@@ -1,6 +1,10 @@
 //! EFF 大词表（7776 词，CC BY 3.0）。
 //! 来源：https://www.eff.org/dice
-//! 编译时 include_str! 外部数据文件，避免源码膨胀。
+//!
+//! 8.3 注释纠正（2026-07-24）：之前注释称「include_str! 外部数据文件」但实为
+//! 7776 个字面量字符串硬编码在源码中。词表内容是公开的 EFF 数据，硬编码 vs
+//! include_str! 在功能上等价（都编译进二进制），只是组织方式不同。保持字面量
+//! 形式（无需额外的 .txt 文件 + build.rs），仅纠正注释如实表述。
 
 pub const EFF_WORDLIST: &[&str] = &[
     "abacus",

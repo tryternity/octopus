@@ -72,12 +72,14 @@ fn match_uri_one(
             .map(|target_domain| matches_domain(&target_domain, cipher_uri, equivalent))
             .unwrap_or(false),
         MatchType::Host => {
-            let target_host = url.host_str().unwrap_or("");
-            // cipher_uri 可能是 https://github.com 或 github.com
+            // 8.4 修复：host 大小写归一——DNS host 不区分大小写
+            // （github.com 应匹配 GitHub.com）。url.host_str() 已小写，
+            // 但 cipher_uri 可能含大写（用户手输），需手动 to_lowercase
+            let target_host = url.host_str().unwrap_or("").to_lowercase();
             let cipher_host = Url::parse(cipher_uri)
                 .ok()
-                .and_then(|u| u.host_str().map(String::from))
-                .unwrap_or_else(|| cipher_uri.to_string());
+                .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+                .unwrap_or_else(|| cipher_uri.to_lowercase());
             target_host == cipher_host
         }
         MatchType::Exact => target == cipher_uri,
@@ -188,6 +190,19 @@ mod tests {
         assert_eq!(
             find_matching_ciphers(&url_nomatch, std::slice::from_ref(&cipher), &[]).len(),
             0
+        );
+    }
+
+    /// 8.4 修复回归守护：Host 匹配应大小写归一（github.com 匹配 GitHub.com）。
+    /// DNS host 不区分大小写——用户在 cipher 里存大写 host 不应导致匹配失败。
+    #[test]
+    fn test_host_match_case_insensitive() {
+        let cipher = make_cipher(&[("https://GitHub.com", Some(MatchType::Host))]);
+        let url = Url::parse("https://github.com/login").unwrap();
+        assert_eq!(
+            find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),
+            1,
+            "Host 匹配应大小写归一（GitHub.com 应匹配 github.com）"
         );
     }
 

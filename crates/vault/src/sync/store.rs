@@ -126,23 +126,44 @@ impl MetaFile {
 
     /// 转回 VaultMeta 的同步字段（不含 local_enc / public_key 等本机字段——
     /// 上层 upsert 时从本机 vault_meta 保留这些）。
-    pub fn to_sync_fields(&self) -> (i64, Vec<u8>, i64, i64, i64, String, String, String, String) {
+    ///
+    /// #9 修复（2026-07-24）：base64 salt 解码失败不再 `unwrap_or_default()` 吞错
+    /// （空 Vec 静默通过 → Argon2 用空 salt 派生 → 解 protected_user_vault_key 失败
+    /// → 误导用户反复输错密码，根因实为 salt 解码失败）。现在返 `Result`，解码失败
+    /// 显式报错。
+    pub fn to_sync_fields(&self) -> Result<MetaSyncFields> {
         use base64::Engine;
         let salt = base64::engine::general_purpose::STANDARD
             .decode(&self.kdf_salt)
-            .unwrap_or_default();
-        (
-            self.kdf_type,
-            salt,
-            self.kdf_iterations,
-            self.kdf_memory_kib,
-            self.kdf_parallelism,
-            self.protected_user_vault_key.clone(),
-            self.app_key_sync_enc.clone(),
-            self.security_stamp.clone(),
-            self.equivalent_domains.clone(),
-        )
+            .with_context(|| format!("meta.json kdf_salt base64 解码失败：{}", self.kdf_salt))?;
+        Ok(MetaSyncFields {
+            kdf_type: self.kdf_type,
+            kdf_salt: salt,
+            kdf_iterations: self.kdf_iterations,
+            kdf_memory_kib: self.kdf_memory_kib,
+            kdf_parallelism: self.kdf_parallelism,
+            protected_user_vault_key: self.protected_user_vault_key.clone(),
+            app_key_sync_enc: self.app_key_sync_enc.clone(),
+            security_stamp: self.security_stamp.clone(),
+            equivalent_domains: self.equivalent_domains.clone(),
+        })
     }
+}
+
+/// meta.json 解析出的同步字段（to_sync_fields 的结构化返回，#9 修复）。
+///
+/// 之前用 9-tuple 返回，字段位置容易搞混；改 struct 让代码自文档化。
+#[derive(Debug)]
+pub struct MetaSyncFields {
+    pub kdf_type: i64,
+    pub kdf_salt: Vec<u8>,
+    pub kdf_iterations: i64,
+    pub kdf_memory_kib: i64,
+    pub kdf_parallelism: i64,
+    pub protected_user_vault_key: String,
+    pub app_key_sync_enc: String,
+    pub security_stamp: String,
+    pub equivalent_domains: String,
 }
 
 /// cipher 文件——encrypted 字段是 user_vault_key 加密的 v1: 前缀密文（与 SQLite 一致）。
@@ -262,6 +283,63 @@ impl FolderFile {
 
 // === 读写函数 ===
 
+/// 原子写文件（L4 修复，2026-07-24）。
+///
+/// 模式：temp file + write_all + sync_all + rename（POSIX rename 原子）。
+/// 复用 keychain.rs:314-388 的模式，但**不设 0600**——sync 文件需正常权限
+/// （git 同步场景，其他设备读取；与现有 std::fs::write 的 umask 行为一致）。
+///
+/// temp 文件用 `.<name>.tmp` 前缀（隐藏 + 不匹配 walk_json_files 的 .json 扫描），
+/// 保证与目标同目录（同卷，rename 原子）。
+fn write_atomically(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+    }
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("data");
+    let tmp_path = path.with_file_name(format!(".{}.tmp", file_name));
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+        // N3 修复（2026-07-24）：rename 后 fsync 父目录——POSIX 下目录项更新
+        // 需 fsync 才能扛断电，否则断电恰在 rename 后可能丢 rename（恢复后看到旧版本）。
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all(); // 目录 fsync 失败不阻断（best-effort）
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+        // Windows: MoveFileEx(REPLACE_EXISTING) 已保证可见性，无需目录 fsync
+    }
+    Ok(())
+}
+
 /// 读 meta.json。
 pub fn read_meta_file() -> Result<MetaFile> {
     let path = meta_path();
@@ -272,17 +350,10 @@ pub fn read_meta_file() -> Result<MetaFile> {
     Ok(meta)
 }
 
-/// 写 meta.json（pretty print，便于 git diff 可读）。
+/// 写 meta.json（原子写，L4 修复）。
 pub fn write_meta_file(meta: &MetaFile) -> Result<()> {
-    let path = meta_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(meta).context("序列化 meta.json 失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 meta.json 失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&meta_path(), &format!("{}\n", json))
 }
 
 /// 读 outline.json。文件不存在时返回默认空 outline（首次同步）。
@@ -300,17 +371,10 @@ pub fn read_outline_file() -> Result<Outline> {
     }
 }
 
-/// 写 outline.json。
+/// 写 outline.json（原子写，L4 修复）。
 pub fn write_outline_file(outline: &Outline) -> Result<()> {
-    let path = outline_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(outline).context("序列化 outline.json 失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 outline.json 失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&outline_path(), &format!("{}\n", json))
 }
 
 /// 读单个 cipher 文件。
@@ -323,18 +387,12 @@ pub fn read_cipher_file(uuid: &str) -> Result<CipherFile> {
     Ok(cipher)
 }
 
-/// 写单个 cipher 文件（含分桶目录创建）。
+/// 写单个 cipher 文件（原子写，L4 修复）。
 pub fn write_cipher_file(cipher: &VaultCipher) -> Result<()> {
     let path = cipher_file_path(&cipher.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建桶目录失败：{}", parent.display()))?;
-    }
     let file = CipherFile::from_vault_cipher(cipher);
     let json = serde_json::to_string_pretty(&file).context("序列化 cipher 文件失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 cipher 文件失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&path, &format!("{}\n", json))
 }
 
 /// 删除单个 cipher 文件（同步删除场景）。
@@ -358,18 +416,12 @@ pub fn read_folder_file(uuid: &str) -> Result<FolderFile> {
     Ok(folder)
 }
 
-/// 写单个 folder 文件。
+/// 写单个 folder 文件（原子写，L4 修复）。
 pub fn write_folder_file(folder: &VaultFolder) -> Result<()> {
     let path = folder_file_path(&folder.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建桶目录失败：{}", parent.display()))?;
-    }
     let file = FolderFile::from_vault_folder(folder);
     let json = serde_json::to_string_pretty(&file).context("序列化 folder 文件失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 folder 文件失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&path, &format!("{}\n", json))
 }
 
 /// 删除单个 folder 文件。
@@ -716,10 +768,37 @@ mod tests {
         assert_eq!(loaded.protected_user_vault_key, "v1:dummy-uvk");
         assert_eq!(loaded.app_key_sync_enc, "v1:dummy-sync");
         assert_eq!(loaded.security_stamp, "stamp-1");
-        // base64 salt round trip
-        let (kdf_type, salt, _, _, _, _, _, _, _) = loaded.to_sync_fields();
-        assert_eq!(kdf_type, 0);
-        assert_eq!(salt, vec![1u8; 32]);
+        // base64 salt round trip（to_sync_fields 现在返 MetaSyncFields struct，#9 修复）
+        let f = loaded.to_sync_fields().expect("to_sync_fields");
+        assert_eq!(f.kdf_type, 0);
+        assert_eq!(f.kdf_salt, vec![1u8; 32]);
+    }
+
+    /// #9 修复：kdf_salt base64 解码失败不再 unwrap_or_default 吞错——显式报错。
+    #[test]
+    fn to_sync_fields_errors_on_invalid_base64_salt() {
+        let _g = VaultRootGuard::new();
+        let meta = MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "!!!not valid base64!!!".into(), // 非法 base64
+            kdf_iterations: 3,
+            kdf_memory_kib: 65536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:dummy".into(),
+            app_key_sync_enc: "v1:dummy".into(),
+            security_stamp: "stamp".into(),
+            equivalent_domains: "[]".into(),
+        };
+        let result = meta.to_sync_fields();
+        assert!(
+            result.is_err(),
+            "#9：非法 base64 salt 应报错，不应 unwrap_or_default 吞成空 Vec"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("base64 解码失败"));
     }
 
     #[test]

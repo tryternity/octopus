@@ -4,6 +4,7 @@ use anyhow::{ensure, Result};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use zeroize::Zeroizing;
 
 use super::eff_wordlist::EFF_WORDLIST;
 use super::PassphraseEnConfig;
@@ -21,25 +22,29 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
     );
 
     let mut rng = OsRng;
-    let words: Vec<String> = (0..cfg.word_count)
-        .map(|_| EFF_WORDLIST.choose(&mut rng).unwrap().to_string())
-        // EFF 列表中有 4 个带连字符的词（yo-yo / drop-down / felt-tip / t-shirt）。
-        // 由于 separator 默认 '-'，且 capitalize 会把首个字母大写，连字符词会
-        // 让生成的 passphrase 在 split('-') 后无法逐词校验。这里把连字符去掉
-        // （yo-yo → yoyo），既保持源词熵不变，又让默认 '-' 分隔符语义清晰。
-        .map(|w| w.replace('-', ""))
-        .map(|w| {
-            if cfg.capitalize {
-                let mut c = w.chars();
-                match c.next() {
-                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    None => String::new(),
+    // #8 修复：words 中间材料用 Zeroizing——选词过程产生的明文 passphrase 组成部分
+    // 离开作用域时自动清零（防止生成失败/异常时 heap dump 恢复中间状态）
+    let words: Zeroizing<Vec<String>> = Zeroizing::new(
+        (0..cfg.word_count)
+            .map(|_| EFF_WORDLIST.choose(&mut rng).unwrap().to_string())
+            // EFF 列表中有 4 个带连字符的词（yo-yo / drop-down / felt-tip / t-shirt）。
+            // 由于 separator 默认 '-'，且 capitalize 会把首个字母大写，连字符词会
+            // 让生成的 passphrase 在 split('-') 后无法逐词校验。这里把连字符去掉
+            // （yo-yo → yoyo），既保持源词熵不变，又让默认 '-' 分隔符语义清晰。
+            .map(|w| w.replace('-', ""))
+            .map(|w| {
+                if cfg.capitalize {
+                    let mut c = w.chars();
+                    match c.next() {
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                        None => String::new(),
+                    }
+                } else {
+                    w
                 }
-            } else {
-                w
-            }
-        })
-        .collect();
+            })
+            .collect(),
+    );
 
     let mut result = words.join(&cfg.separator);
     if cfg.include_number {
