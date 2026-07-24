@@ -348,3 +348,30 @@
 **问题**：`TotpGenerator.inner: TOTP`（totp-rs）持有 secret: Vec<u8> 不实现 Zeroize；`secret.to_string()` 局部副本 drop 不清零。
 
 **状态**：follow-up。totp-rs 的 TOTP/Secret 不实现 Zeroize，octopus 无法零成本包装（需 fork 或 wrapping）。局部副本可部分缓解但 TOTP.inner.secret 无法清。威胁模型外（单机离线 vault）。
+
+---
+
+## 第十二轮审查修复（2026-07-24，E2/E3/E5）
+
+### E2: clone_initial 无本地已初始化检查（高，数据锁死）
+
+**问题**：clone_initial 不检查本地 vault_meta 已存在 → 若 B 机已设主密码但 .sync 不存在，clone 用远程 meta 覆盖本地 kdf_salt/protected_user_vault_key/security_stamp → 本地 cipher 用旧 key 加密但新 meta 的 key 解不开 → **原数据永久锁死**。enable_sync 的 .sync 检查覆盖不到此场景。
+
+**修复**：clone_initial 入口加 `db::load_vault_meta().is_some()` 检查，已存在则拒绝（要求先清本地 vault）。
+
+### E3: meta_file_not_found 字符串匹配改类型安全（低，Q1 一致性）
+
+**问题**：`contains("No such file")` 脆弱匹配（不同 io 错/locale 可能漏判）。活分支（read_meta_file 不内部转 NotFound）。
+
+**修复**：改用 `downcast_ref::<io::Error>().kind() == ErrorKind::NotFound` 类型安全匹配。
+
+### E5: upsert_folder_with_sort 新建两次写 DB（低）
+
+**问题**：不存在时先 insert（sort_order=0）再 update 补 sort_order——两次 DB 写。
+
+**修复**：infra 加 `insert_vault_folder_with_sort`（含 sort_order，一次写）。
+
+### E1/E4 文档化
+
+- **E1 硬删跨设备复活**（M5 重申）：pull 无删除传播。需 tombstone 机制，Phase 2 统一设计。软删（H2 已修）正确传播，只有硬删（permanent_delete）不传播。
+- **E4 upsert_folder O(F²)**：报告自评「folder <100，毫秒级」。pull 已有 db_folders 缓存可复用，但改签名波及 clone/pull 两路径，收益极低。
