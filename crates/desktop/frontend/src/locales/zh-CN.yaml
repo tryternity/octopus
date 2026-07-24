@@ -34,6 +34,19 @@ tab:
   image: 图片
   empty: 空
   close: 关闭
+  sourceClipboard: 剪贴板历史
+  sourceTranscription: 语音识别
+  sourceTemp: 临时（未保存）
+  sourceFile: 磁盘文件
+  metaPath: 路径
+  metaStatus: 状态
+  metaSize: 尺寸
+  metaChars: 字数
+  statusReadonly: 只读
+  statusUnsaved: 未保存
+  statusEdited: 已编辑
+  statusSaved: 已保存
+  unitChars: 字
 
 # ════════ Settings 设置 ════════
 settings:

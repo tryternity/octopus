@@ -8,6 +8,7 @@ import { MarkdownPane } from "./MarkdownPane";
 import { TranslationContrastPane } from "./TranslationContrastPane";
 import { mergePendingTabs } from "./mergePendingTabs";
 import { promoteTempTab } from "./promoteTempTab";
+import TabHoverCard from "./TabHoverCard";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 export interface Tab {
@@ -38,6 +39,8 @@ interface OpenTabPayload {
   // 流式翻译 sessionId——后端 contrast tab 携带，前端据此建立 sessionId → tabKey 映射。
   // 2026-07-17 修复发现 1（竞态）+ 8（并发错路由）。
   translateSessionId?: string;
+  // file tab 源文件路径（与 PendingTabFull.filePath 对齐，e29524d6 遗漏字段补全）
+  filePath?: string;
 }
 // 后端 get_pending_compact_tabs 返回（含完整数据，前端免再查 DB）。
 interface PendingTabFull {
@@ -118,7 +121,10 @@ function CompactEditor() {
   });
   const [savedFlash, setSavedFlash] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [hoveredTabKey, setHoveredTabKey] = useState<string | null>(null);
+  const [hoveredTabRect, setHoveredTabRect] = useState<DOMRect | null>(null);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current); }, []);
 
   const tabsRef = useRef<Tab[]>([]);
@@ -216,7 +222,7 @@ function CompactEditor() {
           const fileKey = `file:${p.itemId}`;
           const existIdx = tabsRef.current.findIndex(t => t.key === fileKey);
           if (existIdx >= 0) { setActiveIdx(existIdx); return; } // 已存在→激活，不覆盖
-          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "", originalText: p.text || "", filePath: (p as Record<string, unknown>).filePath as string | undefined };
+          const newTab: Tab = { key: fileKey, source: 'file' as const, itemId: p.itemId, itemType: 'text' as const, text: p.text || "", originalText: p.text || "", filePath: p.filePath };
           const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
           setTabs(next);
@@ -537,12 +543,24 @@ function CompactEditor() {
           {tabs.map((tab, i) => (
             <div
               key={tab.key}
-              className={`group/tab flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
+              className={`group/tab relative flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
                 i === activeIdx
                   ? "bg-background text-foreground shadow-sm border border-border"
                   : "text-muted-foreground hover:bg-accent"
               }`}
               onClick={() => setActiveIdx(i)}
+              onMouseEnter={(e) => {
+                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                const rect = e.currentTarget.getBoundingClientRect();
+                hoverTimer.current = setTimeout(() => {
+                  setHoveredTabKey(tab.key);
+                  setHoveredTabRect(rect);
+                }, 500);
+              }}
+              onMouseLeave={() => {
+                if (hoverTimer.current) clearTimeout(hoverTimer.current);
+                setHoveredTabKey(null);
+              }}
             >
               {tabIcon(tab)}
               <span className="max-w-[140px] truncate">{tabTitle(tab)}</span>
@@ -554,6 +572,9 @@ function CompactEditor() {
               >
                 <X className="w-3 h-3" />
               </button>
+              {hoveredTabKey === tab.key && hoveredTabRect && (
+                <TabHoverCard tab={tab} rect={hoveredTabRect} />
+              )}
             </div>
           ))}
         </div>

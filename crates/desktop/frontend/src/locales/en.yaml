@@ -34,6 +34,19 @@ tab:
   image: Image
   empty: Empty
   close: Close
+  sourceClipboard: Clipboard History
+  sourceTranscription: Voice Transcription
+  sourceTemp: Temporary (unsaved)
+  sourceFile: Disk File
+  metaPath: Path
+  metaStatus: Status
+  metaSize: Size
+  metaChars: Characters
+  statusReadonly: Read-only
+  statusUnsaved: Unsaved
+  statusEdited: Edited
+  statusSaved: Saved
+  unitChars: chars
 
 # ════════ Settings ════════
 settings:
