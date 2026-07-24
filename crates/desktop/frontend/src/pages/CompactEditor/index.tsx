@@ -120,6 +120,7 @@ function CompactEditor() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [translating, setTranslating] = useState(false);
   const [hoveredTabKey, setHoveredTabKey] = useState<string | null>(null);
+  const [hoveredTabRect, setHoveredTabRect] = useState<DOMRect | null>(null);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current); }, []);
@@ -546,9 +547,13 @@ function CompactEditor() {
                   : "text-muted-foreground hover:bg-accent"
               }`}
               onClick={() => setActiveIdx(i)}
-              onMouseEnter={() => {
+              onMouseEnter={(e) => {
                 if (hoverTimer.current) clearTimeout(hoverTimer.current);
-                hoverTimer.current = setTimeout(() => setHoveredTabKey(tab.key), 500);
+                const rect = e.currentTarget.getBoundingClientRect();
+                hoverTimer.current = setTimeout(() => {
+                  setHoveredTabKey(tab.key);
+                  setHoveredTabRect(rect);
+                }, 500);
               }}
               onMouseLeave={() => {
                 if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -565,10 +570,8 @@ function CompactEditor() {
               >
                 <X className="w-3 h-3" />
               </button>
-              {hoveredTabKey === tab.key && (
-                <div className="pointer-events-none">
-                  <TabHoverCard tab={tab} />
-                </div>
+              {hoveredTabKey === tab.key && hoveredTabRect && (
+                <TabHoverCard tab={tab} rect={hoveredTabRect} />
               )}
             </div>
           ))}

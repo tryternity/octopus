@@ -1,7 +1,7 @@
 # CompactEditor Tab Hover Meta 浮层设计
 
 > **日期**：2026-07-23
-> **状态**：实现中
+> **状态**：✅ 已实现（e2e 验证通过 2026-07-23）
 
 ---
 
@@ -26,10 +26,10 @@ CompactEditor 的每个 tab 对应不同来源的内容（剪贴板历史 / 语�
 **使用 frontend-design skill**
 
 - **触发**：鼠标 hover tab → 500ms 延迟后显示浮层（防抖，避免快速划过闪烁）
-- **位置**：向上弹出（`bottom-full`），tab 栏在顶部，下方有内容区不适合向下
+- **位置**：向下弹出（tab 栏下方内容区有空间）。用 **React Portal + `position: fixed`** 渲染到 `document.body`——避免被 tab 栏 `overflow-x-auto` 裁剪（原 `position: absolute` 向上弹被裁掉不可见）
 - **消失**：鼠标离开 tab → 立即隐藏（tab 栏窄，不像 PromptEditor 需要移到浮层操作）
 - **视觉**：source 色点（file=emerald / transcription=violet / clipboard=muted / temp=amber）+ source 名 + key:value meta 行
-- **宽度**：min-w-[180px] max-w-[280px]，路径超长 truncate
+- **宽度**：min-w-[180px] max-w-[280px]，文件路径 `break-all` wrap 展示（不截断尾部文件名）+ 等宽字体
 
 ### source 色条映射
 
