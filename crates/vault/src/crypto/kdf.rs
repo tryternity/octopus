@@ -91,11 +91,15 @@ pub fn derive_master_root_key(password: &[u8], salt: &[u8], params: &Argon2Param
     ensure!(salt.len() == 32, "salt 必须为 32 字节，当前 {}", salt.len());
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params.to_params()?);
-    let mut out = [0u8; 32];
+    // C1 修复（2026-07-24）：用 Zeroizing<[u8;32]> 借用写入，move 整个 Zeroizing。
+    // 之前用裸 [u8;32]（Copy 类型）→ Zeroizing::new(out) 是复制，原栈数组 drop 时
+    // 不清零（[u8;32] 的 Drop 是 no-op），成功路径残留 + 失败路径（? 提前返回）更残留。
+    // 现在 Zeroizing 持有唯一副本，任一返回路径 scope 结束都清零。
+    let mut out = Zeroizing::new([0u8; 32]);
     argon2
-        .hash_password_into(password, salt, &mut out)
+        .hash_password_into(password, salt, &mut *out)
         .context("Argon2id 派生失败")?;
-    Ok(DerivedKey(Zeroizing::new(out)))
+    Ok(DerivedKey(out))
 }
 
 #[cfg(test)]

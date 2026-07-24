@@ -411,6 +411,18 @@ pub fn clone_from(remote_url: &str) -> Result<(), SyncError> {
 /// **HTTPS → SSH 自动改写**（2026-07-21）：同 add_remote，github.com / gitee.com
 /// 的 HTTPS URL 在 SSH key 可用时转 SSH，避免 clone 时遇到 HTTPS 认证失败。
 fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
+    // E2 修复（2026-07-24）：clone 前检查本地 vault_meta 已存在——
+    // 若已设过主密码（DB 有 meta），clone 会用远程 meta 覆盖本地 kdf_salt/
+    // protected_user_vault_key/security_stamp，导致本地 cipher 用旧 user_vault_key
+    // 加密但新 meta 的 key 解不开 → 原数据永久锁死。
+    // enable_sync 的 .sync 已是 repo 检查覆盖不到此场景（.sync 不存在 + DB 有 meta）。
+    if db::load_vault_meta().map_err(SyncError::Other)?.is_some() {
+        return Err(SyncError::Other(anyhow::anyhow!(
+            "本地已初始化 vault（DB 有 vault_meta）——clone 会覆盖加密参数导致原数据锁死。\
+             请先禁用同步 + 清空本地 vault（删除 vault_meta + 所有 cipher）后再 clone"
+        )));
+    }
+
     // 私有库守卫——硬阻断公有库（用原始 URL 检测）
     ensure_private_repo(remote_url)?;
     // HTTPS → SSH 自动改写
@@ -525,9 +537,8 @@ fn upsert_cipher(input: &VaultCipherInput) -> Result<(), SyncError> {
 
 /// Upsert folder 带 sort_order（sync pull 用，#6 修复）。
 ///
-/// 存在则 update（name + sort_order + sync_md5 全字段）；不存在则 insert
-/// （先 insert 用 schema 默认 sort_order=0，再 update 补 sort_order——因
-/// insert_vault_folder 不接 sort_order 参数）。
+/// 存在则 update（name + sort_order + sync_md5 全字段）；不存在则 insert_with_sort
+/// （E5 修复：一次写，不再 insert+update 两次）。
 fn upsert_folder_with_sort(
     id: &str,
     encrypted_name: &str,
@@ -542,12 +553,9 @@ fn upsert_folder_with_sort(
         db::update_vault_folder_fields(id, encrypted_name, sort_order, sync_md5)
             .map_err(SyncError::Other)?;
     } else {
-        // 新建——先 insert（sort_order=0），再补 sort_order
-        db::insert_vault_folder(id, encrypted_name, sync_md5).map_err(SyncError::Other)?;
-        if sort_order != 0 {
-            db::update_vault_folder_fields(id, encrypted_name, sort_order, sync_md5)
-                .map_err(SyncError::Other)?;
-        }
+        // E5 修复：一次写（不再 insert+update 两次）
+        db::insert_vault_folder_with_sort(id, encrypted_name, sort_order, sync_md5)
+            .map_err(SyncError::Other)?;
     }
     Ok(())
 }
@@ -859,11 +867,14 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
 
 /// 判断 meta.json 读取错误是否为「文件不存在」（合法场景——首次同步）。
 ///
-/// `read_meta_file` 用 anyhow context 包装错误，错误链中任一层含 "No such file"
-/// 即视为文件不存在。其他错误（JSON 解析失败等）不应被吞。
+/// E3 修复（2026-07-24）：改用 downcast 类型安全匹配（与 Q1 原则一致）——
+/// 之前用 contains("No such file") 字符串匹配，在不同 io 错/locale 下可能漏判。
 fn meta_file_not_found(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.to_string().contains("No such file"))
-        || e.to_string().contains("No such file")
+    use std::io::ErrorKind;
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .map_or(false, |io| io.kind() == ErrorKind::NotFound)
+    })
 }
 
 /// 检测 cipher 是否需要 pull——对比 outline.md5 vs DB sync_md5（#2 修复）。
@@ -1807,6 +1818,28 @@ mod tests {
             m1, m2,
             "sort_order 变化应改变 folder md5（否则排序永不同步）"
         );
+    }
+
+    /// E2 回归守护：clone 时本地已有 vault_meta 应拒绝——
+    /// 否则 clone 覆盖加密参数导致本地 cipher 永久锁死。
+    #[test]
+    fn clone_rejects_when_local_vault_already_initialized() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+        // IntegrationGuard 预置了 vault_meta（security_stamp = "stamp-test"）
+        // clone_from 应在 git clone 之前就拒绝（vault_meta 已存在）
+        let result = clone_from("git@github.com:test/repo.git");
+        assert!(
+            result.is_err(),
+            "E2: 本地已初始化 vault 时 clone 应拒绝（防覆盖加密参数致数据锁死）"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("已初始化") || err_msg.contains("vault_meta"),
+            "错误消息应说明原因，实际：{}",
+            err_msg
+        );
+        let _ = g;
     }
 
     /// H2 回归守护：软删密码经 pull 同步后 deleted_at 必须存活。

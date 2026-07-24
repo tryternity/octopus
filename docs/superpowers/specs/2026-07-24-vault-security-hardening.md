@@ -245,3 +245,162 @@
 **问题**：`vault_empty_trash` 与 sync_now 并发时，刚永久删的行可能被并发 pull 重新插入（M5 的本地并发表现）。
 
 **修复**：`vault_empty_trash` 命令入口加 `try_sync_lock()`——sync 进行中返「同步进行中」。
+
+---
+
+## 第六轮审查修复（2026-07-24，M6/L12/L13-L16）
+
+### M6: 导出/导入 passwordHistory + folder round-trip（中，数据完整性）
+
+**问题**：export 端 `BitwardenItem` 无 passwordHistory / folderId，`folders: vec![]` 硬编码空；import 端 `password_history: vec![]` / `folder_id: None` 硬编码。导出→重新导入后密码历史清空 + 文件夹归属丢失。
+
+**修复**（功能改动，含 spec + TDD）：
+
+**export 端**（exporter.rs）：
+- `BitwardenItem` 加 `folderId: Option<String>` + `passwordHistory: Vec<BitwardenPasswordHistory>`
+- `BitwardenExport.folders` 不再硬编码空，输出实际 folders `[{id, name}]`
+- `export_vault_json` 签名改为 `(&[Cipher], &[FolderDto])`——需 folder 数据（已解密明文）
+- 新增 `BitwardenFolder` + `BitwardenPasswordHistory` struct
+
+**import 端**（bitwarden.rs）：
+- `BitwardenItem` 加 `folderId` + `passwordHistory`（`#[serde(default)]` 向后兼容）
+- `BitwardenExport` 加 `folders`（`#[serde(default)]`）
+- 导入逻辑：先导入 folders（建 folderId→本机 folder_id 映射，同名复用），再导入 items（folder_id 从映射取，passwordHistory 从 item 读）
+
+**调用方**（vault_commands.rs vault_export）：额外读 folders 传给 export_vault_json
+
+**Bitwarden JSON 格式映射**：
+| octopus 字段 | Bitwarden JSON 字段 | 说明 |
+|---|---|---|
+| `PasswordHistoryEntry.password` | `passwordHistory[].password` | 明文密码 |
+| `PasswordHistoryEntry.last_used_at` | `passwordHistory[].lastUsedDate` | ISO 8601 |
+| `Cipher.folder_id` | `items[].folderId` | 引用 folders.id |
+| `FolderDto { id, name }` | `folders[] { id, name }` | folder 定义 |
+
+**TDD 测试**：
+- `test_export_includes_password_history` / `test_export_includes_folders`
+- `test_import_folders_and_password_history`（round-trip）
+- `test_import_old_export_without_folders_still_works`（向后兼容）
+
+### L12: matcher 等价域名大小写归一（低-中，8.4 同类遗漏）
+
+**问题**：`matches_domain` 的 `group.contains(&cipher_domain)` 大小写敏感——用户配置含大写（Google.com）时等价域名组静默不生效。8.4 修了 Host 策略的小写归一，Domain 策略的 group 查找未对齐。
+
+**修复**：cipher_domain + equivalent groups + target_domain 全部 `to_lowercase` 归一。
+
+### L13-L16: 文档化已知限制（低，不改代码）
+
+| 项 | 说明 | 处理 |
+|---|---|---|
+| L13 | rename_folder O(N) 读全表 | 报告自评可忽略（folder 量级小） |
+| L14 | attempt_guard 退避基于 wall-clock | 报告自评可接受（单机威胁模型，调慢时钟只锁自己更久） |
+| L15 | migrate UPDATE 无 NOT LIKE 守卫 | 首启无并发改 key，竞态窗口不存在 |
+| L16 | load_or_create_machine_key 双进程首启竞态 | 单用户桌面极少并发，K_machine 复用无害 |
+
+---
+
+## 第七轮审查修复（2026-07-24，M7/L17/L18/L20）
+
+### M7: import folder 创建在 cipher batch 事务外（中，残留）
+
+**问题**：M6 的 folder 创建（逐个 autocommit）在 cipher batch 事务之前，batch 失败时已建 folder 不回滚 → 空文件夹残留。
+
+**修复**：folder 必须先于 cipher 创建（FK 约束），但记录新建的 folder_id——batch 失败时**补偿删除**（`delete_folder`）。不是延后创建（FK 不允许 cipher 先于 folder），而是失败回滚。
+
+### L17: vault_export 无 SYNC_LOCK（低，快照一致性）
+
+**修复**：vault_export 命令入口加 `try_sync_lock`——避免 list_ciphers + list_folders 两次读期间 sync_now 并发写入导致快照不一致。
+
+### L18: lastUsedDate 格式与真 Bitwarden 不兼容（低，互操作）
+
+**问题**：octopus 的 `last_used_at` 来自 SQLite `datetime('now')`（`"2026-07-24 12:00:00"` 空格分隔），Bitwarden 标准是 ISO 8601（`"2026-07-24T12:00:00.000Z"`）。octopus 自身 round-trip 安全（透传），但导出到真 Bitwarden 日期显示错位。
+
+**修复**：export 时 `normalize_to_iso8601` 归一化（空格→T + 补 `.000Z`）。import 透传（Bitwarden 的 lastUsedDate 本身是 ISO 8601）。
+
+### L20: import folder 映射 N+1 全表解密（低，性能）
+
+**问题**：M6 每个 folder 都调 `list_folders(key)` 全表解密 → K 个 folder = K 次全表。
+
+**修复**：循环外 `list_folders` 一次建 `name→id HashMap`，循环内查 HashMap。
+
+### L19: matches_domain 重复 to_lowercase（低，follow-up）
+
+**问题**：L12 的 `lower_group` 每次 cipher×URI 匹配重算（group 不随 cipher 变化）。
+
+**状态**：follow-up。报告自评「group 数量小，实际影响可忽略」。优化需改 4 个函数签名（find_matching_ciphers → matches_any_uri → match_uri_one → matches_domain 传预计算的 lower_equivalent），波及面 vs 收益不匹配。
+
+---
+
+## 第十轮审查修复（2026-07-24，M8/L21）
+
+### M8: incremental_export 吞 outline 解析错 → 删除不可靠 + clone 复活（中，数据完整性）
+
+**问题**：`incremental_export`（store.rs:537）`read_outline_file().unwrap_or_default()` 把 outline.json 解析失败吞成空 Outline。删除循环遍历空 outline → 不执行 → SQLite 已删的 cipher 文件永久残留 → 新设备 clone（import_all_from_files 全量 walk）读到残留文件 → 已删密码复活。
+
+**残留链条**：outline 损坏 → 删除循环不执行 → stale 文件残留 → outline 永不含该 cipher（后续 sync 只删「outline 有 / SQLite 无」的）→ 永久残留 → clone 复活。
+
+**修复**：解析错时降级为 `export_all_to_files` 全量重建（`remove_dir_all` 清所有 stale 文件，恢复一致）。NotFound → 空 Outline（首次同步合法）。与 #9（salt unwrap_or_default 修复）原则一致——不吞解析错。
+
+**新增测试** `incremental_export_degraded_rebuild_on_corrupt_outline`：验证 outline 损坏时 stale 文件被清理 + outline 重写为有效 JSON。
+
+### L21: TOTP secret 未 zeroize（低，follow-up，受 totp-rs 限制）
+
+**问题**：`TotpGenerator.inner: TOTP`（totp-rs）持有 secret: Vec<u8> 不实现 Zeroize；`secret.to_string()` 局部副本 drop 不清零。
+
+**状态**：follow-up。totp-rs 的 TOTP/Secret 不实现 Zeroize，octopus 无法零成本包装（需 fork 或 wrapping）。局部副本可部分缓解但 TOTP.inner.secret 无法清。威胁模型外（单机离线 vault）。
+
+---
+
+## 第十二轮审查修复（2026-07-24，E2/E3/E5）
+
+### E2: clone_initial 无本地已初始化检查（高，数据锁死）
+
+**问题**：clone_initial 不检查本地 vault_meta 已存在 → 若 B 机已设主密码但 .sync 不存在，clone 用远程 meta 覆盖本地 kdf_salt/protected_user_vault_key/security_stamp → 本地 cipher 用旧 key 加密但新 meta 的 key 解不开 → **原数据永久锁死**。enable_sync 的 .sync 检查覆盖不到此场景。
+
+**修复**：clone_initial 入口加 `db::load_vault_meta().is_some()` 检查，已存在则拒绝（要求先清本地 vault）。
+
+### E3: meta_file_not_found 字符串匹配改类型安全（低，Q1 一致性）
+
+**问题**：`contains("No such file")` 脆弱匹配（不同 io 错/locale 可能漏判）。活分支（read_meta_file 不内部转 NotFound）。
+
+**修复**：改用 `downcast_ref::<io::Error>().kind() == ErrorKind::NotFound` 类型安全匹配。
+
+### E5: upsert_folder_with_sort 新建两次写 DB（低）
+
+**问题**：不存在时先 insert（sort_order=0）再 update 补 sort_order——两次 DB 写。
+
+**修复**：infra 加 `insert_vault_folder_with_sort`（含 sort_order，一次写）。
+
+### E1/E4 文档化
+
+- **E1 硬删跨设备复活**（M5 重申）：pull 无删除传播。需 tombstone 机制，Phase 2 统一设计。软删（H2 已修）正确传播，只有硬删（permanent_delete）不传播。
+- **E4 upsert_folder O(F²)**：报告自评「folder <100，毫秒级」。pull 已有 db_folders 缓存可复用，但改签名波及 clone/pull 两路径，收益极低。
+
+---
+
+## 第十三轮审查修复（2026-07-24，G2/G3）
+
+### G2: git_commit 错误处理过宽（中，数据完整性）
+
+**问题**：`git_commit` 的 `allow_exit_codes: &[1]` 无条件放行 exit 1（不只限于 nothing to commit）+ `Err(GitError) => Ok(false)` 兜底吞掉真实失败。两层过宽：
+1. pre-commit hook 拒绝（exit 1）被放行 → Ok(stdout) → Ok(true) **谎报成功**
+2. index.lock/磁盘满（exit 128）→ GitError → Ok(false) **当无变化吞掉**
+
+**修复**：不再用 `run_git_allow_codes`，直接处理 git commit 输出：
+- exit 0 → Ok(true)（成功）
+- 非零 + stdout/stderr 含 "nothing to commit"/"no changes" → Ok(false)（无变化）
+- 其余失败 → Err（不吞）
+
+**关键发现**：git commit 的 "nothing to commit" 消息在 **stdout** 不在 stderr——`run_git_allow_codes` 的 `allow_stderr_contains` 检查 stderr 永远匹配不到。之前靠 `allow_exit_codes: &[1]` 兜底才通过。
+
+### G3: cleanup_in_progress_ops 不清 stale index.lock（低-中）
+
+**问题**：只检测 MERGE_HEAD/rebase，不检测 index.lock。崩溃残留的 index.lock 让下次 git add -A 失败。
+
+**修复**：加 stale index.lock 清理（mtime > 60s 视为崩溃残留删除——SYNC_LOCK 保证单进程同步串行，60s 阈值区分崩溃残留 vs 并发持有）。
+
+### G1/P1/P2 文档化（低）
+
+- **G1**（from_utf8_lossy）：非 UTF8 输出替换为 U+FFFD。macOS 主，commit msg/branch 多 ASCII，低危。
+- **P1**（privacy unwrap_or(false)）：API 200 但无 private 字段 → 默认 false → 判 Public 拒绝。方向安全（宁可误拒），GitHub/Gitee 正常响应必含 private 字段。
+- **P2**（SSH_SCP_RE 正则重编译）：每次 parse 重新编译。低频（remote 1-3 个），低危。

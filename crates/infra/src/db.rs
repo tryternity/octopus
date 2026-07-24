@@ -3893,6 +3893,22 @@ fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str, sync_md5: &st
     Ok(())
 }
 
+/// E5 修复（2026-07-24）：insert folder 含 sort_order（一次写，不再 insert+update 两次）。
+pub fn insert_vault_folder_with_sort(
+    id: &str,
+    name: &str,
+    sort_order: i64,
+    sync_md5: &str,
+) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO vault_folders (id, name, sort_order, sync_md5) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, sort_order, sync_md5],
+        )?;
+        Ok(())
+    })
+}
+
 /// 重命名 folder（参数应是已用 user_vault_key.encrypt 加密过的密文）。
 ///
 /// follow-up #6：folder.name 与 cipher.name 一致存密文；调用方负责加解密。

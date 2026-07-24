@@ -41,9 +41,12 @@ impl DerivedKey {
         // Zeroizing 包装 GenericArray 本体——Deref<Target=GenericArray> 让
         // copy_from_slice 仍可用；scope 结束时直接对原件 zeroize。
         let bytes = crate::Zeroizing::new(mac.finalize().into_bytes());
-        let mut child = [0u8; 32];
+        // C1 修复（2026-07-24）：用 Zeroizing<[u8;32]> 借用写入，move 整个 Zeroizing。
+        // 之前用裸 [u8;32]（Copy 类型）→ Zeroizing::new(child) 是复制，原栈数组
+        // drop 时不清零（child key 残留栈帧）。与 A2（chain code 清零）同类修复。
+        let mut child = crate::Zeroizing::new([0u8; 32]);
         child.copy_from_slice(&bytes[..32]);
-        DerivedKey(crate::Zeroizing::new(child))
+        DerivedKey(child)
         // `bytes` 在此 drop——Zeroizing 触发 GenericArray::zeroize() 清零整个 64B
         //（含后 32B chain code）。
     }

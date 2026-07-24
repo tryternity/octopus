@@ -42,8 +42,8 @@ pub fn generate_report(ciphers: &[Cipher]) -> HealthReport {
     }
 
     let weak_count = weak_cipher_ids.len();
-    let duplicate_groups =
-        duplicate::find_duplicates(&logins.iter().map(|&r| r.clone()).collect::<Vec<_>>());
+    // H1 修复（2026-07-24）：find_duplicates 签名改为 &[&Cipher]——不再深拷贝
+    let duplicate_groups = duplicate::find_duplicates(&logins);
     let average_score = if score_count > 0 {
         total_score / score_count as f64
     } else {

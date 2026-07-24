@@ -660,13 +660,27 @@ pub fn vault_export(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<String, String> {
+    // L17 修复（2026-07-24）：加 SYNC_LOCK——list_ciphers + list_folders 两次 DB 读
+    // 期间若 sync_now 并发写入会跨事务边界（快照不一致）。与 empty_trash 同模式（T2）。
+    let _sync_guard = octopus_vault::sync::engine::try_sync_lock()
+        .map_err(|e| e.to_string())?;
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;
     if !failures.is_empty() {
         log::warn!("vault_export: {} 条记录解密失败已跳过（未导出）", failures.len());
     }
-    octopus_vault::importer::export_vault_json(&ciphers).map_err(vault_error::to_tauri_error)
+    // M6 修复：读 folders 一并导出（之前 folders 硬编码空 → 导入后丢失文件夹归属）
+    let (folders, folder_failures) =
+        octopus_vault::storage::list_folders(&key).map_err(vault_error::to_tauri_error)?;
+    if !folder_failures.is_empty() {
+        log::warn!(
+            "vault_export: {} 个文件夹解密失败已跳过",
+            folder_failures.len()
+        );
+    }
+    octopus_vault::importer::export_vault_json(&ciphers, &folders)
+        .map_err(vault_error::to_tauri_error)
 }
 
 // === Auto-Type 命令（Task 19） ===
