@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, FileText, Inbox } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Segmented } from "@/components/ui/tabs";
 
