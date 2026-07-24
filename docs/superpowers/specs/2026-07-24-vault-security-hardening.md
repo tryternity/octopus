@@ -1,7 +1,8 @@
-# Vault 安全加固（第二轮代码审查修复）
+# Vault 安全加固（多轮代码审查修复汇总）
 
-**日期**：2026-07-24
-**状态**：已实现并测试通过（vault 213 / desktop 396）
+**日期**：2026-07-24 起，持续至 2026-07-25
+**状态**：已实现并测试通过。最新基线：vault **234** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
 ## 背景
@@ -407,26 +408,6 @@
 
 ---
 
-## 第十五轮审查修复（2026-07-24，S1/S2/S3）
-
-### S1: soft_delete/restore 两步非原子（中，数据一致性）
-
-**问题**：soft_delete/restore 是「UPDATE deleted_at」+「读 row 算 md5 + UPDATE sync_md5」两次独立 autocommit。若第 2 步失败（DB 锁超时/磁盘满/事务冲突），deleted_at 已改但 sync_md5 仍旧 → incremental_export 用旧 sync_md5 对比旧 outline.md5 → 一致 → 文件不重写 → 删除状态不传播到其他设备。
-
-**修复**：合并为单事务（`unchecked_transaction` 内 UPDATE deleted_at → SELECT row → 算 md5 → UPDATE sync_md5 → COMMIT）。db 层 `load_vault_cipher_at` 改 pub 供 vault crate 事务内调用。
-
-### S2: save_cipher 无锁 RMW（低-中，文档化）
-
-**问题**：save_cipher 读 existing_deleted_at（H2）后 update，期间无锁 → 并发 soft_delete 可能被撤销。
-
-**状态**：文档化。报告自评「UI 单焦点下概率低」。完整修复需给所有 cipher 写路径加事务（soft_delete/restore 已修，save_cipher 的 RMW 改事务需重构）。
-
-### S3: rename_folder 全表扫（低，文档化）
-
-L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
-
----
-
 ## 第十四轮审查修复（2026-07-24，ER1/HW1/HW3）
 
 > 补录：commit `0f8b259a` 已 push 但本轮此前缺独立章节，现补。
@@ -453,6 +434,26 @@ L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) �
 
 - **HW2**（pull 缺删除传播）：E1 同类，需 tombstone 机制（Phase 2）
 - **G2-minor** / **ER2** / **HW4**：低危，文档化
+
+---
+
+## 第十五轮审查修复（2026-07-24，S1/S2/S3）
+
+### S1: soft_delete/restore 两步非原子（中，数据一致性）
+
+**问题**：soft_delete/restore 是「UPDATE deleted_at」+「读 row 算 md5 + UPDATE sync_md5」两次独立 autocommit。若第 2 步失败（DB 锁超时/磁盘满/事务冲突），deleted_at 已改但 sync_md5 仍旧 → incremental_export 用旧 sync_md5 对比旧 outline.md5 → 一致 → 文件不重写 → 删除状态不传播到其他设备。
+
+**修复**：合并为单事务（`unchecked_transaction` 内 UPDATE deleted_at → SELECT row → 算 md5 → UPDATE sync_md5 → COMMIT）。db 层 `load_vault_cipher_at` 改 pub 供 vault crate 事务内调用。
+
+### S2: save_cipher 无锁 RMW（低-中，文档化）
+
+**问题**：save_cipher 读 existing_deleted_at（H2）后 update，期间无锁 → 并发 soft_delete 可能被撤销。
+
+**状态**：文档化。报告自评「UI 单焦点下概率低」。完整修复需给所有 cipher 写路径加事务（soft_delete/restore 已修，save_cipher 的 RMW 改事务需重构）。
+
+### S3: rename_folder 全表扫（低，文档化）
+
+L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
 
 ---
 
