@@ -375,3 +375,32 @@
 
 - **E1 硬删跨设备复活**（M5 重申）：pull 无删除传播。需 tombstone 机制，Phase 2 统一设计。软删（H2 已修）正确传播，只有硬删（permanent_delete）不传播。
 - **E4 upsert_folder O(F²)**：报告自评「folder <100，毫秒级」。pull 已有 db_folders 缓存可复用，但改签名波及 clone/pull 两路径，收益极低。
+
+---
+
+## 第十三轮审查修复（2026-07-24，G2/G3）
+
+### G2: git_commit 错误处理过宽（中，数据完整性）
+
+**问题**：`git_commit` 的 `allow_exit_codes: &[1]` 无条件放行 exit 1（不只限于 nothing to commit）+ `Err(GitError) => Ok(false)` 兜底吞掉真实失败。两层过宽：
+1. pre-commit hook 拒绝（exit 1）被放行 → Ok(stdout) → Ok(true) **谎报成功**
+2. index.lock/磁盘满（exit 128）→ GitError → Ok(false) **当无变化吞掉**
+
+**修复**：不再用 `run_git_allow_codes`，直接处理 git commit 输出：
+- exit 0 → Ok(true)（成功）
+- 非零 + stdout/stderr 含 "nothing to commit"/"no changes" → Ok(false)（无变化）
+- 其余失败 → Err（不吞）
+
+**关键发现**：git commit 的 "nothing to commit" 消息在 **stdout** 不在 stderr——`run_git_allow_codes` 的 `allow_stderr_contains` 检查 stderr 永远匹配不到。之前靠 `allow_exit_codes: &[1]` 兜底才通过。
+
+### G3: cleanup_in_progress_ops 不清 stale index.lock（低-中）
+
+**问题**：只检测 MERGE_HEAD/rebase，不检测 index.lock。崩溃残留的 index.lock 让下次 git add -A 失败。
+
+**修复**：加 stale index.lock 清理（mtime > 60s 视为崩溃残留删除——SYNC_LOCK 保证单进程同步串行，60s 阈值区分崩溃残留 vs 并发持有）。
+
+### G1/P1/P2 文档化（低）
+
+- **G1**（from_utf8_lossy）：非 UTF8 输出替换为 U+FFFD。macOS 主，commit msg/branch 多 ASCII，低危。
+- **P1**（privacy unwrap_or(false)）：API 200 但无 private 字段 → 默认 false → 判 Public 拒绝。方向安全（宁可误拒），GitHub/Gitee 正常响应必含 private 字段。
+- **P2**（SSH_SCP_RE 正则重编译）：每次 parse 重新编译。低频（remote 1-3 个），低危。
