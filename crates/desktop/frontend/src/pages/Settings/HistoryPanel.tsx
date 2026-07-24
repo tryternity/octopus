@@ -86,6 +86,9 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
           <Search className="w-3.5 h-3.5 text-muted-foreground" />
           <input
             type="text"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             placeholder={t("settings.history.searchPlaceholder")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}

@@ -460,6 +460,9 @@ export default function VaultPicker() {
             <div className="px-3 py-2">
               <input
                 type="text"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);

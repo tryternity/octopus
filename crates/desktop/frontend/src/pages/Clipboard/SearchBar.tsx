@@ -14,6 +14,9 @@ export default function SearchBar({
       <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
       <input
         type="text"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         placeholder={t("clipboard.search")}
         value={value}
         onChange={(e) => onChange(e.target.value)}

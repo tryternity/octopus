@@ -52,9 +52,12 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
     hideTimer.current = setTimeout(() => setShowPreview(false), 1000);
   };
   // 独立 mode state——切换时不改 value，避免「切不回」的死锁。
-  // 初始值由 value 检测：以 @ 开头 = ref，否则 inline。
+  // 初始值由 value 检测：以 @ 开头 = ref，否则 = inline。
   // 切换不同菜单项时由父组件 key={editingId} 重新 mount，mode 自动从 value 重初始化。
   const [mode, setMode] = useState<string>(isReferenceMode(value) ? "ref" : "inline");
+  // input 草稿：用户自由输入的内容（可能匹配已有文件，也可能是新文件名）。
+  // 与 selectedName（派生自 props value，= 已提交的引用）区分——
+  // input 显示草稿，Enter/加号提交或匹配已有文件时才写回 props。
   const [selectedInput, setSelectedInput] = useState(extractFileName(value));
 
   // 加载 prompt 文件列表（mount 时一次性）
@@ -64,7 +67,12 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
       .catch((e) => console.error("list_prompt_files failed:", e));
   }, []);
 
+  // 外部 value 变化时同步草稿（如父组件重置 / 切换菜单项 remount 之外的途径）。
+  // 避免外部清空 value 后草稿仍显示旧文件名。
   const selectedName = useMemo(() => extractFileName(value), [value]);
+  useEffect(() => {
+    setSelectedInput(selectedName);
+  }, [selectedName]);
   const selectedFile = useMemo(
     () => files.find((f) => f.name === selectedName),
     [files, selectedName],
@@ -124,6 +132,9 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
           placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
         />
       )}
 
@@ -131,27 +142,32 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
       {mode === "ref" && (
         <div className="space-y-1.5">
           {/* 可编辑输入框 + datalist（可选已有文件，也可输入新文件名）+ 加号按钮 */}
+          {/* input value 绑定草稿 selectedInput（非派生 selectedName），用户可自由输入；
+              匹配已有文件或 Enter/加号提交时才写回 props value。 */}
           <div className="flex items-center gap-1.5">
             <div className="relative flex-1">
               <FileText className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
               <input
                 type="text"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 list="prompt-file-list"
                 className="w-full bg-background border border-border rounded-md pl-8 pr-3 py-2 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
                 placeholder={t("settings.actionBar.promptSelectFile")}
-                value={selectedName}
+                value={selectedInput}
                 onChange={(e) => {
                   const v = e.target.value;
                   setSelectedInput(v);
-                  // 如果输入匹配已有文件 → 选中
+                  // 匹配已有文件 → 即时选中（写回 props，触发预览/路径更新）
                   if (files.some((f) => f.name === v)) {
                     selectFile(v);
                   }
                 }}
                 onKeyDown={(e) => {
-                  // Enter → 如果输入不匹配已有文件，创建新文件
-                  if (e.key === "Enter" && selectedInput && !files.some((f) => f.name === selectedInput)) {
-                    createNewFile(selectedInput);
+                  // Enter → 输入非空且不匹配已有文件时，创建新文件（即时提交草稿为新引用）
+                  if (e.key === "Enter" && selectedInput.trim() && !files.some((f) => f.name === selectedInput.trim())) {
+                    createNewFile(selectedInput.trim());
                   }
                 }}
               />
@@ -161,11 +177,12 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
                 ))}
               </datalist>
             </div>
-            {/* 加号：输入了新文件名 → 创建；否则提示 */}
+            {/* 加号：输入了非空草稿 → 创建新文件并引用 */}
             <button
               onClick={() => {
-                if (selectedInput && !files.some((f) => f.name === selectedInput)) {
-                  createNewFile(selectedInput);
+                const trimmed = selectedInput.trim();
+                if (trimmed && !files.some((f) => f.name === trimmed)) {
+                  createNewFile(trimmed);
                 }
               }}
               className="shrink-0 rounded p-1.5 text-muted-foreground/60 transition-colors hover:bg-voice/10 hover:text-voice"
@@ -175,10 +192,11 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
             </button>
           </div>
 
-              {/* 文件路径 */}
-              {selectedName && (
+              {/* 文件路径：跟草稿 selectedInput 走（用户当前输入的内容），不跟已提交的 selectedName。
+                  草稿非空即显示路径 + 存在性提示（已有=无提示，新文件名=黄字"文件不存在"待创建）。 */}
+              {selectedInput && (
                 <p className="text-[11px] text-muted-foreground/60">
-                  <code className="text-muted-foreground/80">~/.octopus/.sync/prompts/command/{selectedName}.md</code>
+                  <code className="text-muted-foreground/80">~/.octopus/.sync/prompts/command/{selectedInput}.md</code>
                   {!selectedFile && (
                     <span className="ml-1.5 text-amber-600 dark:text-amber-400">
                       {t("settings.actionBar.promptFileMissing")}
