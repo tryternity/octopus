@@ -240,7 +240,20 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
         .with_context(|| format!("创建 hotword 目录失败：{}", dir.display()))?;
 
     // 1. 读旧 outline 做 diff
-    let old_outline = read_hotword_outline().unwrap_or_default();
+    // HW1 修复（2026-07-24）：与 vault M8 对称——解析错不再 unwrap_or_default 吞成空，
+    // 否则删除循环遍历空 outline → 不执行 → stale 文件残留 → clone 复活。
+    // read_hotword_outline 已把 NotFound 转 Ok(default)，故 Err 必为解析错 → 降级全量重建。
+    let old_outline = match read_hotword_outline() {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!(
+                "[hotword-sync] outline.json 解析失败，降级为全量重建：{}",
+                e
+            );
+            let outline = export_all_hotwords(sets)?;
+            return Ok((outline, sets.len()));
+        }
+    };
     let mut changed = 0usize;
 
     // 2. 对比 md5，只写变化的
@@ -347,9 +360,11 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
     let db_ids: std::collections::HashSet<&str> = db_sets.iter().map(|h| h.id.as_str()).collect();
     let mut count = 0;
 
-    for (uuid, _entry) in &remote_outline.ciphers {
+    for (uuid, entry) in &remote_outline.ciphers {
+        // HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault #2 对齐），
+        // 不再调 hotword_md5_mismatch 读文件（消除双读——pull 主体行 354 还要读一次）。
         let needs_update = !db_ids.contains(uuid.as_str())
-            || hotword_md5_mismatch(uuid, &db_sets);
+            || hotword_md5_mismatch_v2(uuid, &entry.md5, &db_sets);
         if needs_update {
             match read_hotword_set_file(uuid) {
                 Ok(file) => {
@@ -382,30 +397,12 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
     Ok(count)
 }
 
-/// 检测热词版本的 sync_md5 是否与 outline 不匹配（需要 pull）。
-fn hotword_md5_mismatch(uuid: &str, db_sets: &[HotwordSet]) -> bool {
-    let db_set = match db_sets.iter().find(|h| h.id == uuid) {
-        Some(h) => h,
-        None => return true,
-    };
-    match read_hotword_set_file(uuid) {
-        Ok(file) => {
-            // 比较文件内容的 md5 vs DB sync_md5
-            let file_md5 = hotword_set_md5_from_fields(&file.name, file.enabled, &file.words_text);
-            let db_md5 = db_set.sync_md5.as_deref().unwrap_or("");
-            file_md5 != db_md5
-        }
-        // 文件读失败——不 pull（避免误删）。但不再静默：记日志让用户可见
-        // （#10 修复——与 vault engine.rs cipher_md5_mismatch 的 Err 处理对齐思路，
-        // 不过 vault 的 cipher_md5_mismatch 用 outline.md5 不读文件，此处 hotword
-        // 读文件是历史实现，保留语义只加日志）
-        Err(e) => {
-            log::warn!(
-                "[sync] 热词版本 {} md5 比对时文件读取失败，视为无需更新：{}",
-                uuid, e
-            );
-            false
-        }
+/// HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault cipher_md5_mismatch 对齐）。
+/// 不再读文件——消除双读（pull 主体还要读一次文件 upsert）。
+fn hotword_md5_mismatch_v2(uuid: &str, outline_md5: &str, db_sets: &[HotwordSet]) -> bool {
+    match db_sets.iter().find(|h| h.id == uuid) {
+        None => true, // DB 无 → 需 pull
+        Some(h) => h.sync_md5.as_deref().unwrap_or("") != outline_md5,
     }
 }
 

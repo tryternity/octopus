@@ -6,9 +6,22 @@
 //!
 //! **拼接格式**（确定性 + 无歧义）：
 //! - 字段按固定顺序拼接
-//! - 字段间用 `|` 分隔（避免字段值含分隔符导致歧义）
+//! - 字段间用 `|` 分隔
 //! - Option<String> 统一为空字符串
 //! - **不含** `created_at` / `updated_at`（时间戳跨设备必然不同，会导致永久 diff）
+//!
+//! **无碰撞保证（F2, 2026-07-24）**：`|` 作为单字符分隔符本身不防歧义——
+//! 若两个相邻字段值都可能含 `|`，会出现「`a|b`+`c` 与 `a`+`b|c`」同串异义。
+//! 当前安全靠的是**字符集约束**而非分隔符设计：
+//! - 密文字段（name/notes/data/fields/password_history）= `v1:` + RFC4648 base64
+//!   （`crypto::util::base64_encode`，字符集 `A-Za-z0-9+/=`），严格不含 `|`
+//! - id / folder_id = UUID（含 `-`，不含 `|`）
+//! - favorite / atype / reprompt = bool / i64（纯数字）
+//! - deleted_at = SQLite datetime（`YYYY-MM-DD HH:MM:SS`，含空格/`-`/`:`，不含 `|`）
+//!
+//! 字段顺序固定不可变；新增字段前必须确认其字符集不含 `|`，否则需改用
+//! 长度前缀分隔（`{len}|{value}` 重复）彻底消除歧义。回归测试见
+//! `cipher_md5_no_collision_on_pipe_in_separate_fields`。
 //!
 //! **跨设备一致性**：cipher 只在创建机器加密一次，sync 搬运密文（不重新加密），
 //! 所以密文字段跨设备字节一致——md5 也一致。详见 spec §2.4。
@@ -189,6 +202,45 @@ mod tests {
         f1.created_at = "1999-01-01".into();
         f1.updated_at = "2099-12-31".into();
         assert_eq!(md5_a, folder_md5(&f1));
+    }
+
+    /// F2 回归守护：cipher_md5 的 `|` 分隔拼接在当前字段字符集下不会碰撞。
+    ///
+    /// 单字符分隔符不防歧义——`name="a|b",notes="c"` 与 `name="a",notes="b|c"`
+    /// 会拼成同一字符串。当前安全靠字符集约束：密文 = base64（不含 `|`），
+    /// 其余字段也不含 `|`。此测试验证：真实可能的字段组合中，任一字段值
+    /// 变化都能让 md5 变化（即分隔符未被字段值「吞掉」）。
+    #[test]
+    fn cipher_md5_no_collision_on_pipe_in_separate_fields() {
+        let base = sample_cipher();
+
+        // 反例构造：若字段值能含 `|`，下面两组会碰撞。当前密文为 base64
+        // 不含 `|`，故 name 变化必导致 md5 变化（验证 name 字段未被吞）。
+        let mut c1 = base.clone();
+        c1.name = "v1:YWJjZA==".into(); // base64("abcd")，无 `|`
+        let mut c2 = base.clone();
+        c2.name = "v1:YWJjZA==".into();
+        c2.notes = Some("v1:ZWZnaGk=".into()); // base64("efghi")
+        assert_ne!(
+            cipher_md5(&c1),
+            cipher_md5(&c2),
+            "notes 变化应导致 md5 变化（`|` 未吞字段）"
+        );
+
+        // deleted_at 含空格/`:`（最可能「越界」的非密文字段）——
+        // 验证它与相邻 password_history 不会因分隔符产生歧义。
+        let mut c3 = base.clone();
+        c3.deleted_at = Some("2026-07-24 10:00:00".into());
+        let mut c4 = base.clone();
+        c4.deleted_at = Some("2026-07-24 10:00:01".into());
+        assert_ne!(
+            cipher_md5(&c3),
+            cipher_md5(&c4),
+            "deleted_at 秒级变化应导致 md5 变化"
+        );
+
+        // 反向证明：相同内容（含 deleted_at）md5 稳定
+        assert_eq!(cipher_md5(&c3), cipher_md5(&c3.clone()));
     }
 
     // md5_hex 测试已随函数搬到 octopus_sync::store

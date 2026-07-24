@@ -47,22 +47,38 @@ pub fn evaluate(password: &str) -> PasswordStrength {
         } else {
             0.0
         };
-        let entropy_bits = char_count * charset_bits;
+        let independent_entropy = char_count * charset_bits;
 
         // 综合：取 zxcvbn 模式识别 score 和熵估算的较低者
         // （两者都高才高——防止"长但重复"或"短采样恰好高熵"误报）
-        let entropy_score: u8 = if entropy_bits < 28.0 {
+        let entropy_score: u8 = if independent_entropy < 28.0 {
             0
-        } else if entropy_bits < 36.0 {
+        } else if independent_entropy < 36.0 {
             1
-        } else if entropy_bits < 60.0 {
+        } else if independent_entropy < 60.0 {
             2
-        } else if entropy_bits < 128.0 {
+        } else if independent_entropy < 128.0 {
             3
         } else {
             4
         };
         let score = pattern_score.min(entropy_score);
+
+        // H2 修复（2026-07-24）：entropy_bits 显示与 score 一致——
+        // 当 zxcvbn 识别到模式（pattern_score < entropy_score）时，entropy_bits
+        // 用 pattern_score 对应的熵上限（score→bit），避免「2048 bit 却 score=0」矛盾显示。
+        let entropy_bits = if pattern_score < entropy_score {
+            // zxcvbn 识别到低熵模式——entropy_bits 用 score 对应的上限
+            match score {
+                0 => independent_entropy.min(28.0),
+                1 => independent_entropy.min(36.0),
+                2 => independent_entropy.min(60.0),
+                3 => independent_entropy.min(128.0),
+                _ => independent_entropy,
+            }
+        } else {
+            independent_entropy
+        };
 
         let (warning, suggestions) = match est.feedback() {
             Some(fb) => {

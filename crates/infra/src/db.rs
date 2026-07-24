@@ -3763,7 +3763,7 @@ pub fn load_vault_cipher(id: &str) -> Result<Option<VaultCipher>> {
     with_db(|conn| load_vault_cipher_at(conn, id))
 }
 
-fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
+pub fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
     let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_ciphers WHERE id = ?1", VAULT_CIPHER_COLS))?;
     let mut rows = stmt.query(params![id])?;
     match rows.next()? {
@@ -3857,44 +3857,6 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
     Ok(())
 }
 
-pub fn soft_delete_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| soft_delete_vault_cipher_at(conn, id))
-}
-
-fn soft_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 soft_delete 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-pub fn restore_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| restore_vault_cipher_at(conn, id))
-}
-
-fn restore_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 restore 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-/// 仅更新 sync_md5（soft_delete / restore 后 cipher 内容变了，md5 需重算）。
-/// 调用方先 SELECT 拿到完整 row → 算 md5 → 调本函数写回。
-pub fn update_cipher_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
-            params![sync_md5, id],
-        )?;
-        Ok(())
-    })
-}
-
 pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
     with_db(|conn| permanent_delete_vault_cipher_at(conn, id))
 }
@@ -3943,6 +3905,22 @@ fn insert_vault_folder_at(conn: &Connection, id: &str, name: &str, sync_md5: &st
         params![id, name, sync_md5],
     )?;
     Ok(())
+}
+
+/// E5 修复（2026-07-24）：insert folder 含 sort_order（一次写，不再 insert+update 两次）。
+pub fn insert_vault_folder_with_sort(
+    id: &str,
+    name: &str,
+    sort_order: i64,
+    sync_md5: &str,
+) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO vault_folders (id, name, sort_order, sync_md5) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, sort_order, sync_md5],
+        )?;
+        Ok(())
+    })
 }
 
 /// 重命名 folder（参数应是已用 user_vault_key.encrypt 加密过的密文）。
@@ -6651,15 +6629,9 @@ mod vault_schema_tests {
         assert_eq!(loaded2.name, "v1:enc-name-2");
         assert!(loaded2.favorite);
 
-        // 软删除
-        soft_delete_vault_cipher_at(&conn, id).unwrap();
-        let loaded3 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded3.deleted_at.is_some(), "软删除后 deleted_at 应非空");
-
-        // 恢复
-        restore_vault_cipher_at(&conn, id).unwrap();
-        let loaded4 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded4.deleted_at.is_none(), "恢复后 deleted_at 应为空");
+        // 注：软删/恢复（soft_delete/restore）+ sync_md5 原子一致性已在
+        // crates/vault/src/storage/cipher.rs::soft_delete_and_restore_update_sync_md5_atomically
+        // 完整守护。本测试不再覆盖 db 层 soft_delete/restore（函数已删，见 F1）。
 
         // 物理删除
         permanent_delete_vault_cipher_at(&conn, id).unwrap();

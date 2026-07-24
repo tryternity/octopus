@@ -225,25 +225,40 @@ pub fn git_add_all(path: &Path) -> Result<(), SyncError> {
 /// `git commit -m <msg>`——提交。
 ///
 /// 返 Ok(true) 成功 commit，Ok(false) nothing to commit（工作区干净）。
+/// G2 修复（2026-07-24）：精确化错误处理——
+/// 之前 allow_exit_codes: &[1] 无条件放行 exit 1（不只限于 nothing to commit），
+/// + Err(GitError) => Ok(false) 兜底吞掉真实失败（index.lock/磁盘满/hook 拒绝）。
+/// 现在直接处理 git commit 输出：成功（exit 0）→ true；无变化（stdout/stderr 含
+/// "nothing to commit"，exit 1）→ false；其余失败 → Err。
 pub fn git_commit(path: &Path, msg: &str) -> Result<bool, SyncError> {
-    let result = run_git_allow_codes(
-        path,
-        &["commit", "-m", msg],
-        &[1],
-        &["nothing to commit", "no changes added"],
-    );
-    match result {
-        Ok(stdout) => {
-            // 检查 stdout/stderr 是否提示 nothing to commit
-            if stdout.to_lowercase().contains("nothing to commit") {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        }
-        Err(SyncError::GitError(_)) => Ok(false),
-        Err(e) => Err(e),
+    let output = git_command(&["commit", "-m", msg])
+        .current_dir(path)
+        .output()
+        .context("git commit 调用失败")
+        .map_err(SyncError::Other)?;
+
+    if output.status.success() {
+        return Ok(true);
     }
+
+    // 非零退出——检查是否「无变化」（消息在 stdout 不在 stderr）
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!(
+        "{} {}",
+        stdout.to_lowercase(),
+        String::from_utf8_lossy(&output.stderr).to_lowercase()
+    );
+    if combined.contains("nothing to commit") || combined.contains("no changes") {
+        return Ok(false);
+    }
+
+    // 真实失败（hook 拒绝 / index.lock / 磁盘满）→ Err，不吞
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let code = output.status.code().unwrap_or(-1);
+    Err(classify_git_error(&format!(
+        "git commit 失败（exit {}）：{}",
+        code, stderr
+    )))
 }
 
 /// `git push <remote> <ref>`——推送。
@@ -446,10 +461,13 @@ pub fn git_rebase_abort(path: &Path) -> Result<(), SyncError> {
     Ok(())
 }
 
-/// 检测并清理进行中的 merge / rebase——sync_now 入口调用。
+/// 检测并清理进行中的 merge / rebase / stale index.lock——sync_now 入口调用。
 ///
 /// - `.git/MERGE_HEAD` 存在 → merge 进行中 → abort
 /// - `.git/rebase-merge` 或 `.git/rebase-apply` 存在 → rebase 进行中 → abort
+/// - `.git/index.lock` 存在且 mtime > 60s 前 → 崩溃残留 → 删除（G3 修复）
+///   （mtime 阈值区分「崩溃残留」vs「并发 git 进程持有」——SYNC_LOCK 保证单进程同步
+///   串行，但用户手动 git 与 octopus 并发仍可能。60s 阈值足够区分。）
 pub fn cleanup_in_progress_ops(path: &Path) -> Result<(), SyncError> {
     let git_dir = path.join(".git");
     if git_dir.join("MERGE_HEAD").exists() {
@@ -459,6 +477,20 @@ pub fn cleanup_in_progress_ops(path: &Path) -> Result<(), SyncError> {
     if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
         log::warn!("检测到进行中的 rebase，执行 abort 清理");
         git_rebase_abort(path)?;
+    }
+    // G3 修复（2026-07-24）：清理 stale index.lock（崩溃残留）
+    let index_lock = git_dir.join("index.lock");
+    if index_lock.exists() {
+        if let Ok(metadata) = std::fs::metadata(&index_lock) {
+            if let Ok(mtime) = metadata.modified() {
+                if mtime.elapsed().unwrap_or_default().as_secs() > 60 {
+                    log::warn!(
+                        "检测到 stale index.lock（mtime > 60s，崩溃残留），删除清理"
+                    );
+                    let _ = std::fs::remove_file(&index_lock);
+                }
+            }
+        }
     }
     Ok(())
 }

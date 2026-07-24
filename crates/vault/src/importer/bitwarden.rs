@@ -20,12 +20,38 @@ struct BitwardenExport {
     encrypted: bool,
     #[serde(default)]
     items: Vec<BitwardenItem>,
+    /// M6 修复：folders 数组（之前导入端不解析）。`#[serde(default)]` 保证旧导出兼容。
+    #[serde(default)]
+    folders: Vec<BitwardenFolder>,
+}
+
+/// Bitwarden folder（M6 修复）。
+#[derive(Debug, Deserialize)]
+struct BitwardenFolder {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// Bitwarden 密码历史条目（M6 修复）。
+#[derive(Debug, Deserialize)]
+struct BitwardenPasswordHistory {
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    #[serde(rename = "lastUsedDate")]
+    last_used_date: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct BitwardenItem {
     #[serde(default)]
     name: String,
+    /// M6 修复：folderId 引用 folders.id（之前导入端不解析 → 丢失文件夹归属）。
+    #[serde(default)]
+    #[serde(rename = "folderId")]
+    folder_id: Option<String>,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
@@ -41,6 +67,10 @@ struct BitwardenItem {
     /// 落库硬编码 None。`#[serde(default)]` 保证旧导出（无此字段）仍兼容。
     #[serde(default)]
     reprompt: i64,
+    /// M6 修复：密码历史（之前导入端不解析 → 清空）。
+    #[serde(default)]
+    #[serde(rename = "passwordHistory")]
+    password_history: Vec<BitwardenPasswordHistory>,
 }
 
 fn default_type() -> i64 {
@@ -140,6 +170,46 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
     let mut skipped = 0;
     let mut errors: Vec<String> = Vec::new();
 
+    // M6 修复（2026-07-24）：导入 folders——建「导出 folderId → 本机 folder_id」映射。
+    // M7 修复（2026-07-24）：folder 必须先于 cipher 创建（cipher.folder_id 是 FK），
+    // 但记录新建的 folder_id——若 cipher batch 失败则补偿删除（避免空 folder 残留）。
+    // L20 修复（2026-07-24）：循环外 list_folders 一次建 name→id HashMap（不再 N+1）。
+    let mut existing_folder_names: std::collections::HashMap<String, String> = storage::list_folders(key)
+        .map(|(folders, _)| {
+            folders
+                .into_iter()
+                .map(|f| (f.name, f.id))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut folder_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut created_folder_ids: Vec<String> = Vec::new(); // M7：batch 失败时补偿删除
+    for f in &export.folders {
+        if f.name.is_empty() {
+            continue;
+        }
+        // 同名 folder 复用现有 UUID（避免重复建）
+        if let Some(existing_id) = existing_folder_names.get(&f.name) {
+            folder_map.insert(f.id.clone(), existing_id.clone());
+        } else {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            match storage::create_folder(&new_id, &f.name, key) {
+                Ok(()) => {
+                    folder_map.insert(f.id.clone(), new_id.clone());
+                    // N1 修复（2026-07-24）：回填到 existing_folder_names——
+                    // 同次导入内若有两个同名 export folder（不同 export id），
+                    // 第二个复用首次创建的本机 id（避免重复同名 folder）。
+                    existing_folder_names.insert(f.name.clone(), new_id.clone());
+                    created_folder_ids.push(new_id); // 记录以便补偿回滚
+                }
+                Err(e) => {
+                    log::warn!("[import] 创建 folder {} 失败：{}", f.name, e);
+                }
+            }
+        }
+    }
+
     // L8 修复（2026-07-24）：两阶段——先加密收集 Vec（加密失败记 errors 跳过），
     // 再一次性 batch 事务化 insert。既保证 DB 原子性（不会部分入库），又保留
     // 「跳过坏条目」的容错。之前逐条 create_cipher 各自 autocommit，中途失败
@@ -166,9 +236,13 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             continue;
         }
 
-        // #4：从导入字段读 reprompt，不再硬编码 None。
+        // #4：从导入字段读 reprompt。M6：folder_id 从映射取 + password_history 从 item 读。
         let input = CipherInput {
-            folder_id: None,
+            // M6 修复：folderId 映射到本机 folder_id（旧导出无 folderId → None）
+            folder_id: item
+                .folder_id
+                .as_ref()
+                .and_then(|fid| folder_map.get(fid).cloned()),
             favorite: item.favorite,
             atype: CipherType::Login,
             name: item.name.clone(),
@@ -196,7 +270,15 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
                     field_type: f.field_type,
                 })
                 .collect(),
-            password_history: vec![],
+            // M6 修复：从导入字段读 passwordHistory（之前硬编码 vec![]）
+            password_history: item
+                .password_history
+                .iter()
+                .map(|h| crate::types::PasswordHistoryEntry {
+                    password: h.password.clone(),
+                    last_used_at: h.last_used_date.clone(),
+                })
+                .collect(),
             reprompt: RepromptType::from(item.reprompt),
         };
 
@@ -213,7 +295,16 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
 
     // 阶段 2：事务化批量 insert（全成功或全回滚）
     let batch_len = batch.len();
-    db::insert_vault_ciphers_batch(&batch)?;
+    if let Err(e) = db::insert_vault_ciphers_batch(&batch) {
+        // M7 修复：batch 失败时补偿删除已建 folder——避免空 folder 残留。
+        // folder 必须先于 cipher 创建（FK 约束），但 batch 失败后它们成孤儿。
+        for folder_id in &created_folder_ids {
+            if let Err(fe) = storage::delete_folder(folder_id) {
+                log::warn!("[import] 补偿删除 folder {} 失败：{}", folder_id, fe);
+            }
+        }
+        return Err(e);
+    }
 
     Ok(ImportReport {
         total: export.items.len(),
@@ -445,5 +536,148 @@ mod tests {
         assert_eq!(all.len(), 2, "应有 2 行（软删 1 + 新 1）");
         let live: Vec<_> = all.iter().filter(|c| c.deleted_at.is_none()).collect();
         assert_eq!(live.len(), 1, "应有 1 行未软删");
+    }
+
+    /// M6 回归守护：导入含 folders + folderId + passwordHistory 的 JSON——
+    /// folder 应被创建 + item 的 folder_id 正确映射 + password_history 存活。
+    #[test]
+    fn test_import_folders_and_password_history() {
+        setup_clean_db();
+        let key = make_key(1);
+        let json = r#"{
+            "encrypted": false,
+            "folders": [
+                {"id": "export-folder-1", "name": "Social"}
+            ],
+            "items": [
+                {
+                    "name": "GitHub",
+                    "folderId": "export-folder-1",
+                    "favorite": false,
+                    "type": 1,
+                    "login": {
+                        "username": "user",
+                        "password": "secret",
+                        "uris": [{"uri": "https://github.com", "match": null}]
+                    },
+                    "passwordHistory": [
+                        {"password": "old-pass", "lastUsedDate": "2026-01-01T00:00:00"}
+                    ]
+                }
+            ]
+        }"#;
+        let report = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(report.imported, 1, "应导入 1 个 item");
+
+        // 验证 folder 被创建
+        let (folders, _) = storage::list_folders(&key).expect("list folders");
+        assert_eq!(folders.len(), 1, "M6: folder 应被创建");
+        assert_eq!(folders[0].name, "Social");
+
+        // 验证 item 的 folder_id 映射到创建的 folder
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list ciphers");
+        assert_eq!(ciphers.len(), 1);
+        let cipher = &ciphers[0];
+        assert_eq!(
+            cipher.folder_id.as_deref(),
+            Some(folders[0].id.as_str()),
+            "M6: item 的 folder_id 应映射到创建的 folder"
+        );
+
+        // 验证 password_history 存活
+        assert_eq!(
+            cipher.password_history.len(),
+            1,
+            "M6: password_history 应存活"
+        );
+        assert_eq!(cipher.password_history[0].password, "old-pass");
+    }
+
+    /// M6 向后兼容：旧导出（无 folders / folderId / passwordHistory）仍能正常导入。
+    #[test]
+    fn test_import_old_export_without_folders_still_works() {
+        setup_clean_db();
+        let key = make_key(1);
+        let json = r#"{
+            "encrypted": false,
+            "items": [
+                {
+                    "name": "Legacy",
+                    "favorite": false,
+                    "type": 1,
+                    "login": {
+                        "username": "user",
+                        "password": "pass",
+                        "uris": [{"uri": "https://example.com", "match": null}]
+                    }
+                }
+            ]
+        }"#;
+        let report = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(report.imported, 1, "旧导出应正常导入");
+
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list");
+        assert_eq!(ciphers.len(), 1);
+        assert!(
+            ciphers[0].folder_id.is_none(),
+            "旧导出无 folderId → folder_id 应为 None"
+        );
+        assert!(
+            ciphers[0].password_history.is_empty(),
+            "旧导出无 passwordHistory → 应为空"
+        );
+    }
+
+    /// N1 回归守护：同次导入内两个同名 export folder（不同 export id）应只创建一个本机 folder。
+    ///
+    /// 之前 bug：create_folder 成功后未回填 existing_folder_names → 第二个同名 folder
+    /// 仍查不到 → 再创建 → 库内出现重复同名 folder。
+    #[test]
+    fn test_import_duplicate_named_folders_dedup() {
+        setup_clean_db();
+        let key = make_key(1);
+        // 两个同名 folder（不同 export id f1/f2）
+        let json = r#"{
+            "encrypted": false,
+            "folders": [
+                {"id": "f1", "name": "Social"},
+                {"id": "f2", "name": "Social"}
+            ],
+            "items": [
+                {
+                    "name": "Item1",
+                    "folderId": "f1",
+                    "favorite": false,
+                    "type": 1,
+                    "login": {"username": "u1", "password": "p1", "uris": [{"uri": "https://a.com", "match": null}]}
+                },
+                {
+                    "name": "Item2",
+                    "folderId": "f2",
+                    "favorite": false,
+                    "type": 1,
+                    "login": {"username": "u2", "password": "p2", "uris": [{"uri": "https://b.com", "match": null}]}
+                }
+            ]
+        }"#;
+        let report = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(report.imported, 2, "应导入 2 个 item");
+
+        // N1 核心：只应有 1 个 "Social" folder（不是 2 个）
+        let (folders, _) = storage::list_folders(&key).expect("list folders");
+        let social_count = folders.iter().filter(|f| f.name == "Social").count();
+        assert_eq!(
+            social_count, 1,
+            "N1: 同名 export folder 应只创建 1 个本机 folder，实际 {}",
+            social_count
+        );
+
+        // 两个 item 的 folder_id 应映射到同一个本机 folder
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list ciphers");
+        assert_eq!(ciphers.len(), 2);
+        assert_eq!(
+            ciphers[0].folder_id, ciphers[1].folder_id,
+            "两个 item 的 folder_id 应映射到同一个本机 folder"
+        );
     }
 }

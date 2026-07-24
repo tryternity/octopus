@@ -1,4 +1,7 @@
-//! 工具函数：CSPRNG、Base64、常量时间比较。
+//! 工具函数：CSPRNG、Base64。
+//!
+//! C2 备注（2026-07-24）：原注释提及「常量时间比较」但全文无此函数——AES-GCM
+//! tag 验证天然替代了密码比较（常量时间），不需独立实现。死注释已删。
 
 use anyhow::{Context, Result};
 use data_encoding::BASE64;

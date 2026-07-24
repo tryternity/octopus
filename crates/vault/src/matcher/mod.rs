@@ -100,23 +100,29 @@ fn matches_domain(
     cipher_uri: &str,
     equivalent: &[Vec<String>],
 ) -> bool {
+    // L12 修复（2026-07-24）：与 8.4 Host 策略对齐——全部 to_lowercase 归一。
+    // equivalent_domains 是用户配置，可能含大写（如 Google.com）→ contains 失败。
     let cipher_host = Url::parse(cipher_uri)
         .ok()
-        .and_then(|u| u.host_str().map(String::from))
-        .unwrap_or_else(|| cipher_uri.to_string());
-    let cipher_domain = psl::etld_plus_one(&cipher_host).unwrap_or_else(|| cipher_host.clone());
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .unwrap_or_else(|| cipher_uri.to_lowercase());
+    let cipher_domain = psl::etld_plus_one(&cipher_host)
+        .unwrap_or_else(|| cipher_host.clone())
+        .to_lowercase();
+    let target_domain = target_domain.to_lowercase();
 
     let mut candidates: HashSet<String> = HashSet::new();
     candidates.insert(cipher_domain.clone());
-    // 加入等价域名
+    // 加入等价域名（group 内域名也 to_lowercase 归一）
     for group in equivalent {
-        if group.contains(&cipher_domain) {
-            for d in group {
+        let lower_group: Vec<String> = group.iter().map(|d| d.to_lowercase()).collect();
+        if lower_group.contains(&cipher_domain) {
+            for d in &lower_group {
                 candidates.insert(d.clone());
             }
         }
     }
-    candidates.contains(target_domain)
+    candidates.contains(&target_domain)
 }
 
 #[cfg(test)]
@@ -260,6 +266,20 @@ mod tests {
         assert_eq!(
             find_matching_ciphers(&url, std::slice::from_ref(&cipher), &equivalent).len(),
             1
+        );
+    }
+
+    /// L12 修复回归守护：等价域名含大写时应匹配（与 8.4 Host 大小写归一对齐）。
+    #[test]
+    fn test_equivalent_domains_case_insensitive() {
+        let cipher = make_cipher(&[("https://google.com", None)]);
+        // 用户配置含大写——之前 contains 失败，等价域名组静默不生效
+        let equivalent = vec![vec!["Google.com".to_string(), "YouTube.com".to_string()]];
+        let url = Url::parse("https://youtube.com/watch?v=123").unwrap();
+        assert_eq!(
+            find_matching_ciphers(&url, std::slice::from_ref(&cipher), &equivalent).len(),
+            1,
+            "等价域名含大写时应匹配（L12——Domain 策略大小写归一）"
         );
     }
 
