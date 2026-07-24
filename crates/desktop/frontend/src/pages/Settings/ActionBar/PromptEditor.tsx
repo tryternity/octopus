@@ -33,7 +33,7 @@ function extractFileName(value: string): string {
  * Prompt 编辑器：支持「内联编辑」和「引用文件」两种模式。
  *
  * - 内联模式：textarea 直接写 prompt（原有行为）
- * - 引用模式：下拉选 ~/.octopus/.sync/prompts/*.md 文件，action_data 存 @文件名
+ * - 引用模式：下拉选 ~/.octopus/.sync/prompts/command/*.md 文件，action_data 存 @文件名
  *
  * 模式自动检测：value 以 @ 开头 = 引用模式，否则 = 内联模式。
  * 切换模式时保留原内容（内联→引用不清空文本，引用→内联展开 @ 为普通文本）。
@@ -58,7 +58,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
 
   // 加载 prompt 文件列表（mount 时一次性）
   useEffect(() => {
-    invoke<PromptFileInfo[]>("list_prompt_files")
+    invoke<PromptFileInfo[]>("list_prompt_files", { category: "command" })
       .then(setFiles)
       .catch((e) => console.error("list_prompt_files failed:", e));
   }, []);
@@ -117,7 +117,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
               <p className="text-xs text-muted-foreground/60">
                 {t("settings.actionBar.promptDirEmpty")}
               </p>
-              <code className="text-[10px] text-muted-foreground/40">~/.octopus/.sync/prompts/*.md</code>
+              <code className="text-[10px] text-muted-foreground/40">~/.octopus/.sync/prompts/command/*.md</code>
             </div>
           ) : (
             <>
@@ -142,7 +142,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
               {/* 文件路径 */}
               {selectedName && (
                 <p className="text-[11px] text-muted-foreground/60">
-                  <code className="text-muted-foreground/80">~/.octopus/.sync/prompts/{selectedName}.md</code>
+                  <code className="text-muted-foreground/80">~/.octopus/.sync/prompts/command/{selectedName}.md</code>
                   {!selectedFile && (
                     <span className="ml-1.5 text-amber-600 dark:text-amber-400">
                       {t("settings.actionBar.promptFileMissing")}
@@ -159,7 +159,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
                   onMouseLeave={handleHoverLeave}
                 >
                   <button
-                    onClick={() => invoke("open_file_in_editor", { name: selectedFile.name })}
+                    onClick={() => invoke("open_file_in_editor", { name: selectedFile.name, category: "command" })}
                     className="flex items-center gap-1 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
                   >
                     <FileText className="h-3 w-3" />
@@ -170,7 +170,7 @@ export default function PromptEditor({ value, onChange, placeholder }: PromptEdi
                       <pre className="max-h-64 overflow-y-auto text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap">{selectedFile.preview}</pre>
                       {selectedFile.preview.length >= 500 && (
                         <button
-                          onClick={() => invoke("open_file_in_editor", { name: selectedFile.name })}
+                          onClick={() => invoke("open_file_in_editor", { name: selectedFile.name, category: "command" })}
                           className="mt-1.5 flex w-full items-center justify-center gap-1 rounded border-t border-border pt-1.5 text-[11px] text-voice/80 transition-colors hover:text-voice"
                         >
                           {t("settings.actionBar.promptViewMore")}

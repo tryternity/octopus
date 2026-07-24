@@ -424,13 +424,61 @@ fn migrate_v48_to_v49(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v49→v50：prompts 表 content 字段从完整 md 文本改为文件名引用。
+/// id=1 content → "润色-默认"，id=2 content → "润色-进阶"。
+/// 同时把旧 content（完整 md 文本）导出到 ~/.octopus/.sync/prompts/polish/ 对应文件。
+/// 幂等：只处理 content 长度 > 100 的行（说明还是完整 md 文本，非文件名）。
+fn migrate_v49_to_v50(conn: &Connection) -> Result<()> {
+    let has_prompts = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts'")?
+        .exists([])?;
+    if has_prompts {
+        let polish_dir = crate::paths::octopus_config_home()
+            .join(".sync").join("prompts").join("polish");
+        let _ = std::fs::create_dir_all(&polish_dir);
+        // 逐行处理：id → 目标文件名
+        for (id, dest_name) in [(1i64, "润色-默认"), (2i64, "润色-进阶")] {
+            // 读旧 content（完整 md 文本）
+            let old_content: Option<String> = conn
+                .query_row(
+                    "SELECT content FROM prompts WHERE id = ?1 AND length(content) > 100",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(content) = old_content {
+                // 导出到文件（已存在跳过——用户可能已手动编辑过）
+                let path = polish_dir.join(format!("{}.md", dest_name));
+                if !path.exists() {
+                    let _ = std::fs::write(&path, &content);
+                }
+                // DB content 改为文件名引用
+                conn.execute(
+                    "UPDATE prompts SET content = ?2 WHERE id = ?1",
+                    rusqlite::params![id, dest_name],
+                )?;
+            }
+        }
+        log::info!("schema v50: prompts content 改为文件名引用 + 导出 md 到 polish/");
+    }
+    conn.execute("PRAGMA user_version = 50", [])?;
+    log::info!("schema upgraded to v50 (prompts content → 文件名引用)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 49 {
-        // v49+ 已最新，直接返回。
+    if v >= 50 {
+        // v50+ 已最新，直接返回。
+        return Ok(());
+    }
+
+    // v49→v50：prompts content 从完整 md 改为文件名引用。
+    if v == 49 {
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -438,6 +486,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 独立 helper——在 v==48 库、v47→v48 后、v46→v47→v48 后三处调用。
     if v == 48 {
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -447,6 +496,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     if v == 47 {
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -468,9 +518,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49（v46 库同一次启动完成 v47→v48→v49）
+        // 继续迁移到 v48→v49→v50（v46 库同一次启动完成 v47→v48→v49→v50）
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -736,9 +787,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49（v17-v46 库同一次启动完成 v47→v48→v49）
+        // 继续迁移到 v48→v49→v50（v17-v46 库同一次启动完成 v47→v48→v49→v50）
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -748,10 +800,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含 source_type 字段（v48 schema）+ sync_md5 + hotword_sets TEXT id + deleted_at
-    // + app_bundle_ids + launcher_index.bundle_id（v49 schema），直接设 v49
-    conn.execute("PRAGMA user_version = 49", [])?;
-    log::info!("DB initialized (v49): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含所有列（v49 schema）+ prompts content 存文件名引用（load_prompt_seeds 处理）
+    // + md 拷贝到 ~/.octopus/.sync/prompts/polish/，直接设 v50
+    conn.execute("PRAGMA user_version = 50", [])?;
+    log::info!("DB initialized (v50): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -4162,7 +4214,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49, "全新库 init_schema 后应到 v49");
+        assert_eq!(v, 50, "全新库 init_schema 后应到 v50");
         // v48: models 表用 source_type（非旧 is_local）
         let has_source_type: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name='source_type'")
@@ -4246,7 +4298,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 验证列已改名
         let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)").unwrap()
@@ -4340,7 +4392,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 验证 action_bar_items 有 app_bundle_ids 列，默认空串
         let has_col: bool = conn
@@ -4690,7 +4742,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -4735,7 +4787,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4865,7 +4917,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4893,7 +4945,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4967,7 +5019,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -5150,7 +5202,7 @@ mod tests {
 
         // 验证 user_version = 47（v46→v47 迁移加了 clipboard_history.deleted_at）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // id 类型应为 TEXT
         let id_type: String = conn

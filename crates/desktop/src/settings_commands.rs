@@ -518,6 +518,18 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
 
 // ── 润色 prompt 管理（设置窗口 prompt 管理页）──
 
+/// 读润色 prompt 文件内容。content 是文件名（不含扩展名）。
+/// 路径：~/.octopus/.sync/prompts/polish/<content>.md
+/// 失败时返回空串（降级——不让润色功能完全卡死）。
+pub fn read_prompt_file(content: &str) -> String {
+    let path = octopus_infra::paths::octopus_config_home()
+        .join(".sync")
+        .join("prompts")
+        .join("polish")
+        .join(format!("{}.md", content));
+    std::fs::read_to_string(&path).unwrap_or_default()
+}
+
 /// 设置窗口返回的 prompt 信息。
 #[derive(Serialize)]
 pub struct PromptInfo {
@@ -557,7 +569,8 @@ pub fn set_active_prompt(id: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("prompt id={} 不存在", id))?;
     octopus_infra::db::save_active_prompt_id(id).map_err(|e| e.to_string())?;
-    octopus_llm::set_system_prompt(&record.content);
+    let file_content = read_prompt_file(&record.content);
+    octopus_llm::set_system_prompt(&file_content);
     log::info!("激活润色 prompt: id={} title={}", id, record.title);
     Ok(())
 }
@@ -593,7 +606,7 @@ pub fn update_prompt(
     let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     if active == id {
         if let Ok(Some(rec)) = octopus_infra::db::load_prompt(id) {
-            octopus_llm::set_system_prompt(&rec.content);
+            octopus_llm::set_system_prompt(&read_prompt_file(&rec.content));
         }
     }
     Ok(())
@@ -609,7 +622,7 @@ pub fn delete_prompt(id: i64) -> Result<(), String> {
         log::warn!("删除了激活 prompt id={}，回退到 id=1", id);
         let _ = octopus_infra::db::save_active_prompt_id(1);
         if let Ok(Some(rec)) = octopus_infra::db::load_prompt(1) {
-            octopus_llm::set_system_prompt(&rec.content);
+            octopus_llm::set_system_prompt(&read_prompt_file(&rec.content));
         }
     }
     Ok(())
