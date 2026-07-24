@@ -356,12 +356,6 @@ pub fn write_meta_file(meta: &MetaFile) -> Result<()> {
     write_atomically(&meta_path(), &format!("{}\n", json))
 }
 
-/// 判断 outline.json 读取错误是否为「文件不存在」（合法场景——首次同步）。
-fn outline_not_found(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.to_string().contains("No such file"))
-        || e.to_string().contains("No such file")
-}
-
 /// 读 outline.json。文件不存在时返回默认空 outline（首次同步）。
 pub fn read_outline_file() -> Result<Outline> {
     let path = outline_path();
@@ -541,12 +535,11 @@ pub fn incremental_export(
 
     // 2. 读旧 outline 做 diff
     // M8 修复（2026-07-24）：outline.json 解析失败时不再 unwrap_or_default 吞成空——
-    // 那样删除循环（565-571）遍历空 outline → 不执行 → SQLite 已删的 cipher 文件
-    // 永久残留 → 新设备 clone 复活。改为：NotFound → 空 Outline（首次同步合法）；
-    // 解析错 → 降级为 export_all_to_files 全量重建（remove_dir_all 清所有 stale 文件）。
+    // 那样删除循环遍历空 outline → 不执行 → SQLite 已删的 cipher 文件永久残留 → clone 复活。
+    // Q1 修复（2026-07-24）：read_outline_file 已把 NotFound 转成 Ok(default)，
+    // 故此处 Err 必为解析错/IO 错——直接降级全量重建，无需再判 NotFound（删死分支）。
     let old_outline = match read_outline_file() {
         Ok(o) => o,
-        Err(e) if outline_not_found(&e) => Outline::default(),
         Err(e) => {
             log::warn!(
                 "[sync] outline.json 解析失败，降级为全量重建（清理所有 stale 文件）：{}",

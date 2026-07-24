@@ -31,12 +31,12 @@ impl std::fmt::Debug for DuplicateGroup {
     }
 }
 
-pub fn find_duplicates(ciphers: &[Cipher]) -> Vec<DuplicateGroup> {
+/// H1 修复（2026-07-24）：签名改为 &[&Cipher]——避免调用方深拷贝整个 cipher 列表
+/// （之前 generate_report 行 46 把 Vec<&Cipher> clone 成 Vec<Cipher> 仅为匹配签名）。
+pub fn find_duplicates(ciphers: &[&Cipher]) -> Vec<DuplicateGroup> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for c in ciphers {
         // L6 修复（2026-07-24）：跳过软删/回收站的 cipher——它们不应参与重复检测。
-        // 之前依赖调用方预过滤（当前唯一调用方 vault_health_report 已过滤），
-        // 但 pub API 不应假设调用方一定过滤，内置过滤更安全。
         if c.deleted_at.is_some() {
             continue;
         }
@@ -97,7 +97,7 @@ mod tests {
             make_cipher("c2", Some("b")),
             make_cipher("c3", Some("c")),
         ];
-        assert!(find_duplicates(&ciphers).is_empty());
+        assert!(find_duplicates(&ciphers.iter().collect::<Vec<_>>()).is_empty());
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
             make_cipher("c3", Some("different")),
             make_cipher("c4", Some("same")),
         ];
-        let groups = find_duplicates(&ciphers);
+        let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].cipher_ids.len(), 3);
     }
@@ -122,14 +122,14 @@ mod tests {
             make_cipher("c4", Some("b")),
             make_cipher("c5", Some("unique")),
         ];
-        let groups = find_duplicates(&ciphers);
+        let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 2);
     }
 
     #[test]
     fn test_skip_none_password() {
         let ciphers = vec![make_cipher("c1", None), make_cipher("c2", None)];
-        assert!(find_duplicates(&ciphers).is_empty());
+        assert!(find_duplicates(&ciphers.iter().collect::<Vec<_>>()).is_empty());
     }
 
     /// L6 修复回归守护：软删/回收站的 cipher 不应参与重复检测。
@@ -140,7 +140,7 @@ mod tests {
         c1.deleted_at = Some("2026-07-24".into()); // c1 软删
         let ciphers = vec![c1, c2];
         // c1 被过滤后只剩 c2（无重复）——不应报告重复组
-        let groups = find_duplicates(&ciphers);
+        let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert!(
             groups.is_empty(),
             "软删 cipher 不应参与重复检测（L6），实际 {} 组",
@@ -156,7 +156,7 @@ mod tests {
             make_cipher("redact-1", Some("topsecret")),
             make_cipher("redact-2", Some("topsecret")),
         ];
-        let groups = find_duplicates(&ciphers);
+        let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 1);
 
         let debug_str = format!("{:?}", groups[0]);
