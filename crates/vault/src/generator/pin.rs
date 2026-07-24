@@ -3,6 +3,7 @@
 use anyhow::{ensure, Result};
 use rand::rngs::OsRng;
 use rand::Rng;
+use zeroize::Zeroizing;
 
 use super::PinConfig;
 
@@ -10,10 +11,14 @@ pub fn generate(cfg: &PinConfig) -> Result<String> {
     ensure!(cfg.length >= 1, "PIN 长度必须 ≥ 1（当前 {}）", cfg.length);
     ensure!(cfg.length <= 32, "PIN 长度必须 ≤ 32（当前 {}）", cfg.length);
     let mut rng = OsRng;
-    let s: String = (0..cfg.length)
-        .map(|_| char::from_digit(rng.gen_range(0..10), 10).unwrap())
-        .collect();
-    Ok(s)
+    // #8 修复：明文 PIN 中间材料用 Zeroizing——离开作用域自动清零
+    let s: Zeroizing<String> = Zeroizing::new(
+        (0..cfg.length)
+            .map(|_| char::from_digit(rng.gen_range(0..10), 10).unwrap())
+            .collect(),
+    );
+    // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 s 的 heap）
+    Ok(s.as_str().to_string())
 }
 
 #[cfg(test)]

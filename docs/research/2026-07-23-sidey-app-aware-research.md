@@ -20,7 +20,7 @@
 | 优先级 | 借鉴点 | 状态 |
 |---|---|---|
 | **P0** | App-aware Assistant（per-app 命令/行为绑定） | ✅ 已实现（spec `2026-07-23-actionbar-app-aware.md`） |
-| P1 | 选区位置感知（浮标定位） | ⏳ backlog |
+| ~~P1~~ | ~~选区位置感知（浮标定位）~~ | ❌ 放弃（覆盖率 < 20%，详见 §3.1） |
 | P1 | 选区捕获的 AX 通知驱动 + 递归查找 | ⏳ backlog |
 | P2 | 附件式上下文注入（clipboard/selection 勾选附加） | ⏳ backlog |
 
@@ -113,13 +113,15 @@ macOS menu bar AI assistant，Swift/SwiftUI，约 20 个 Swift 文件，~3700 �
 
 ---
 
-### 🟡 P1：选区位置感知（浮标定位）— ⏳ backlog
+### ❌ P1：选区位置感知（浮标定位）— 已放弃（2026-07-23 评估）
 
 **Sidey 怎么做**：`getSelectedTextBounds` 用 `kAXSelectedTextRangeAttribute` + `kBoundsForRangeParameterizedAttribute` 拿到选区的屏幕坐标 `CGRect`，浮动按钮贴着选区上方弹出。
 
-**octopus 现状**：action_bar 跟鼠标位置，不跟选区位置。鼠标可能在选区任意位置。
-
-**借鉴评估**：如做「选区浮标」或想让 action_bar 更精准「贴着选区弹」，需要此能力。技术上 octopus 的 AX 基础设施能扩展。
+**放弃理由**（brainstorming 评估结论）：
+1. **覆盖率 < 20%**：只有原生 NSTextView app（TextEdit/Notes/Mail）能通过 AXBoundsForRange 拿到选区坐标。浏览器走 AppleScript JS、VSCode/Cursor/微信/Slack 是 Electron 自绘、终端选区自绘、Sublime 走插件、WPS AX 禁用——这些**全部 fallback 到跟鼠标**。
+2. **现有方案已够用**：用户选中文字后鼠标本来就在选区附近，`get_mouse_position` + 碰撞检测对 80%+ 场景已提供不错定位。
+3. **代码铁证**：`build_surrounding` 的整套 fallback 链（sublime_plugin → pages_applescript → lsof → 磁盘读文件）正是因为 AX 在主流编辑器上**连文本都拿不到**——文本都拿不到，bounds 更别想。
+4. **投入产出比低**：需新写 FFI（参数化 AX API + CGRect 类型）+ 定位算法 + 降级逻辑，工程量不小但收益微弱。
 
 ---
 

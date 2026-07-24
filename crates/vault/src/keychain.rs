@@ -11,12 +11,23 @@
 //! 这让"本机无感启动"完全失效（每次重启都丢 K_machine → 解不开 app_key_local_enc
 //! → 强制弹主密码）。
 //!
-//! ## 现行方案：本地加密文件
-//! 把 K_machine 用 AES-256-GCM 加密后写到 `~/.octopus/machine-key.enc`。
-//! 加密用的 file_key 由 **machine_id + username** 派生（HKDF-SHA256）：
-//!   - 同机 + 同用户 → 同 file_key → 能解密（重启、kill -9 后仍可用）
-//!   - 换机或换用户 → 不同 file_key → 解不开（迁移需主密码）
-//!   - 只拿到 DB（没拿到本机）→ 解不开 app_key（仍需主密码 + K_machine）
+//! ## 现行方案：本地混淆文件（#13 修订 2026-07-24：如实表述防护强度）
+//!
+//! 把 K_machine 写到 `~/.octopus/machine-key.enc`，用 HKDF-SHA256 派生的
+//! file_key 做 AES-256-GCM 加密。**但需明确：这是 obfuscation 而非真加密**——
+//! `derive_file_key()` 的四个输入全是公开或硬编码的：
+//!   - `machine_id`（IOPlatformUUID / machine-id / MachineGuid）——本机任意进程可读
+//!   - `username`（USER 环境变量）——本机任意进程可读
+//!   - `FILE_KEY_SALT` / `FILE_KEY_INFO`——源码常量
+//!
+//! 因此任何能读到 `machine-key.enc` 的**同机进程**都能解出 K_machine。
+//! 实际防护等价于文件权限 0600——真正保障是：
+//!   - 换机 / 拷走 DB 单独（没拿到 machine-key.enc）→ 解不开 app_key（仍需主密码）
+//!   - 重启 / kill -9 后仍可用（同机 + 同用户 → 同 file_key）
+//!
+//! 这是 adhoc 签名无法用 Keychain 的**已知妥协**（生产签名后应切回 Keychain 方案）。
+//! 之前注释反复称「AES-256-GCM 加密」夸大了防护强度——算法本身没问题，问题在
+//! 加密 key 的派生输入非秘密。详见 docs/superpowers/specs/2026-07-18-password-vault-design.md §6.2。
 //!
 //! ## 跨平台 machine_id
 //! - macOS：`ioreg` 读 `IOPlatformUUID`（重启稳定，每机唯一）
@@ -188,6 +199,11 @@ fn read_username() -> Result<String> {
 /// HKDF-SHA256(machine_id:username, salt) → 32B file_key。
 ///
 /// 同机 + 同用户必然返回同一把 key；任一变化则完全不同。
+///
+/// ⚠️ **注意（#13）**：file_key 的派生输入（machine_id / username / salt / info）
+/// 全是公开或硬编码的——这把 key **不是秘密**。用它加密 machine-key.enc 是
+/// obfuscation（防"拷走 DB 单独"的场景），不是真加密（同机进程都能解出）。
+/// 详见模块顶部注释。
 fn derive_file_key() -> Result<[u8; 32]> {
     let machine_id = read_machine_id()?;
     let user = read_username()?;

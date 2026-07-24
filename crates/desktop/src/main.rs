@@ -316,6 +316,10 @@ pub fn run() {
             search_commands::reveal_path,
             search_commands::reindex_apps,
             search_commands::list_all_apps,
+            action_bar_commands::list_prompt_files,
+            action_bar_commands::open_file_in_editor,
+            action_bar_commands::save_file,
+            action_bar_commands::read_file_text,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,
@@ -639,6 +643,10 @@ pub fn run() {
             // 启动 notify-rs 文件监听：app 目录变化时秒级刷新索引。
             // macOS FSEvents 对 /System 等非用户目录可能漏事件——下面的轮询作为 fallback。
             file_watcher::start_app_watcher();
+
+            // 启动 prompt 文件监听：~/.octopus/.sync/prompts/ 下文件外部变化时
+            // emit compact-editor://file-changed，CompactEditor 自动 reload 或提示冲突。
+            file_watcher::start_prompt_file_watcher(app.handle().clone());
 
             // 应用索引后台自动刷新（mtime 轮询）：用户装卸应用后无需重启即可搜到。
             // 启动后延迟 30s（避开 ASR 预热等重活），之后每 10 分钟检测 /Applications 等

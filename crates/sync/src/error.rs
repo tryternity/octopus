@@ -56,9 +56,16 @@ impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SyncError::GitNotInstalled => write!(f, "系统未安装 git 命令"),
-            SyncError::NetworkUnreachable(msg) => write!(f, "网络不可达：{}", msg),
-            SyncError::SshPermissionDenied(msg) => {
-                write!(f, "SSH 权限拒绝（检查 SSH key 配置）：{}", msg)
+            // #11 修复（2026-07-24）：各变体的 msg 是原始 git stderr，可能含
+            // 本地路径、或若 remote URL 配成 https://user:pat@host 则含 PAT。
+            // Display 面向前端用户，不应透传 stderr——只给分类提示。
+            // msg 保留在 enum 内，Debug / log::warn! 仍可见用于诊断。
+            SyncError::NetworkUnreachable(_msg) => write!(
+                f,
+                "网络不可达——检查网络连接 / DNS / 防火墙（详情见应用日志）"
+            ),
+            SyncError::SshPermissionDenied(_msg) => {
+                write!(f, "SSH 权限拒绝——检查 SSH key 配置（详情见应用日志）")
             }
             SyncError::SshHostKeyUnverified => write!(
                 f,
@@ -68,12 +75,14 @@ impl std::fmt::Display for SyncError {
                 f,
                 "远程仓库需要认证但无法交互输入——请配 SSH key（推荐）或使用 SSH/PAT URL，避免 HTTPS 凭据"
             ),
-            SyncError::RemoteNotFound(msg) => write!(f, "远程仓库不存在或 URL 错误：{}", msg),
+            SyncError::RemoteNotFound(_msg) => {
+                write!(f, "远程仓库不存在或 URL 错误（详情见应用日志）")
+            }
             SyncError::RepoNotInitialized => write!(f, "同步仓库未初始化"),
             SyncError::RepoCorrupted(msg) => write!(f, "git 仓库状态损坏：{}", msg),
             SyncError::OutlineDamaged(msg) => write!(f, "outline.json 解析失败：{}", msg),
-            SyncError::ConflictNeedsManual(msg) => {
-                write!(f, "合并冲突需手动介入（请在终端打开 ~/.octopus/.vault/ 解决）：{}", msg)
+            SyncError::ConflictNeedsManual(_msg) => {
+                write!(f, "合并冲突需手动介入——请在终端打开 ~/.octopus/.sync/ 解决（详情见应用日志）")
             }
             SyncError::MasterPasswordMismatch => write!(f, "远程 vault 用了不同主密码"),
             SyncError::PublicRepoRejected(url) => write!(
@@ -84,7 +93,7 @@ impl std::fmt::Display for SyncError {
             SyncError::LocalPathRejected => {
                 write!(f, "本地路径不能作为同步 remote——请使用 GitHub/Gitee 私有库或自建 Git 服务的 URL")
             }
-            SyncError::GitError(msg) => write!(f, "git 错误：{}", msg),
+            SyncError::GitError(_msg) => write!(f, "git 操作失败（详情见应用日志）"),
             SyncError::Other(e) => write!(f, "同步错误：{}", e),
         }
     }
@@ -219,5 +228,32 @@ mod tests {
     fn display_local_path_rejected_hint() {
         let msg = SyncError::LocalPathRejected.to_string();
         assert!(msg.contains("GitHub/Gitee"));
+    }
+
+    /// #11 修复回归守护：Display 不透传含 PAT 的 git stderr。
+    ///
+    /// 场景：用户把 remote URL 配成 https://user:ghp_xxx@github.com/...（含 PAT），
+    /// git 失败时 stderr 会包含这个 URL。Display 面向前端，必须过滤掉——
+    /// PAT 泄露到前端 toast 等于凭证泄露。
+    #[test]
+    fn display_does_not_leak_pat_from_stderr() {
+        let stderr_with_pat =
+            "fatal: Authentication failed for 'https://user:ghp_abcdef123456@github.com/owner/repo/'";
+        let variants = [
+            SyncError::GitError(stderr_with_pat.to_string()),
+            SyncError::CredentialsRequired(stderr_with_pat.to_string()),
+            SyncError::SshPermissionDenied(stderr_with_pat.to_string()),
+            SyncError::NetworkUnreachable(stderr_with_pat.to_string()),
+            SyncError::RemoteNotFound(stderr_with_pat.to_string()),
+            SyncError::ConflictNeedsManual(stderr_with_pat.to_string()),
+        ];
+        for v in &variants {
+            let msg = v.to_string();
+            assert!(
+                !msg.contains("ghp_abcdef123456"),
+                "#11：Display 不应透传 PAT，实际：{}",
+                msg
+            );
+        }
     }
 }

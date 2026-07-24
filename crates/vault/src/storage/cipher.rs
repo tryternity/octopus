@@ -49,6 +49,20 @@ pub fn load_cipher(id: &str, key: &DerivedKey) -> Result<Option<Cipher>> {
 /// 创建 cipher——调用方必须先 `Uuid::new_v4().to_string()` 生成 id 传入。
 /// 2026-07-21 v44：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步跨设备无冲突）。
 pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
+    let db_input = prepare_cipher_input(id, input, key)?;
+    Ok(db::insert_vault_cipher(&db_input)?)
+}
+
+/// 仅加密 + 算 sync_md5，不落库（L8 修复，2026-07-24）。
+///
+/// 供 importer 批量事务化用：先循环调此函数收集 `Vec<VaultCipherInput>`，
+/// 再一次性 `db::insert_vault_ciphers_batch` 事务化 insert。加密是纯内存操作，
+/// 失败的条目在循环阶段跳过（记 errors），只把成功的进 batch——既原子又容错。
+pub fn prepare_cipher_input(
+    id: &str,
+    input: &CipherInput,
+    key: &DerivedKey,
+) -> Result<VaultCipherInput> {
     let enc = input.encrypt_strings(key)?;
     let db_input = VaultCipherInput {
         id: id.to_string(),
@@ -61,15 +75,20 @@ pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
-        sync_md5: None, // 下面算好填入
+        deleted_at: None, // 新建默认未软删（H2 修复）
+        sync_md5: None,   // 下面算好填入
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
-    let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
-    Ok(db::insert_vault_cipher(&db_input)?)
+    Ok(VaultCipherInput { sync_md5: Some(sync_md5), ..db_input })
 }
 
 pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
     let enc = input.encrypt_strings(key)?;
+    // H2 修复：编辑时保留现有 deleted_at（不碰删除状态）——读现有 row 取值。
+    // update SQL 现在会 SET deleted_at，若传 None 会把已软删的 cipher 恢复成 live。
+    let existing_deleted_at = db::load_vault_cipher(id)?
+        .map(|row| row.deleted_at)
+        .unwrap_or(None);
     let db_input = VaultCipherInput {
         // update 不需要 id（id 是 WHERE 条件），但 VaultCipherInput struct 现在含 id 字段
         // ——填占位（不会被 update_vault_cipher 使用，只 WHERE id = ? 用外部传入的 id）
@@ -83,6 +102,7 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
+        deleted_at: existing_deleted_at, // 保留现有删除状态（H2 修复）
         sync_md5: None,
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
@@ -120,7 +140,15 @@ pub fn permanent_delete(id: &str) -> Result<()> {
 /// 一致性逻辑的对称（虽然 permanent delete 后行已不存在，md5 无需更新，但走同一
 /// 函数路径便于未来加审计/级联清理）。单条失败不中断——收集 errors 返回，让调用
 /// 方 toast 提示「清空了 N 条，M 条失败」。
+///
+/// T2 修复（2026-07-24）：SYNC_LOCK 下沉到函数内部——与 sync_now 并发时挡住，
+/// 避免「刚永久删的行被并发 pull 重新插入」（M5 的本地并发表现）。锁在函数内
+/// 而非调用方，避免未来新增调用方（CLI/批量清理）忘记加锁。与 meta_lock 下沉
+/// 到 save_vault_meta 的设计一致。
 pub fn empty_trash() -> Result<(usize, Vec<String>)> {
+    // T2：取 sync 锁——sync 进行中返 Err（guard 持续整个函数生命周期）
+    let _sync_guard = crate::sync::engine::try_sync_lock()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let ids = db::list_trash_cipher_ids()?;
     let mut errors: Vec<String> = Vec::new();
     let mut deleted = 0;

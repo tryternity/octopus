@@ -1484,3 +1484,122 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 - A 删热词集 → sync → B 也删了 ✅
 - 真实 GitHub private repo + SSH key 端到端 ✅
 - stamp 冲突解决（以远程为准 / 以本地为准）双向 e2e ✅
+
+---
+
+## 代码审查修复（2026-07-24）
+
+**触发**：用户贴了一份 vault/sync 代码审查报告（14 个问题）。
+
+**复查过程**：
+- 第一轮：14 个问题中判定 #1（MatchType）为「误报」、#12 follow-up，其余 12 个 + 低优先级清理项已修。
+- **第二轮（2026-07-24 同日）**：用户指出 #1 判断有误。直接 fetch Bitwarden server 官方源码 `UriMatchType.cs` 复核，确认原报告成立——`Exact/StartsWith` 确实与官方值相反。已补修。
+
+**详见**：[2026-07-24-vault-sync-code-review-fixes.md](../specs/2026-07-24-vault-sync-code-review-fixes.md)
+
+### 实施记录（10 个 Task）
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| 1 | #2/#5/#6/#3/#10 pull 重构 | engine.rs, folder.rs, db.rs | ✅ |
+| 2 | #4 SyncReport push 失败 | engine.rs, SyncPanel.tsx, useToast.tsx | ✅ |
+| 3 | #7 SYNC_LOCK 覆盖写入口 | engine.rs | ✅ |
+| 4 | #10 hotword 同源吞错 | hotword.rs | ✅ |
+| 5 | #8 generator zeroize | random/pin/passphrase_en/passphrase_zh.rs | ✅ |
+| 6 | #9 salt 解码报错 | store.rs, engine.rs | ✅ |
+| 7 | #11/#13/#14 安全模型 | error.rs, keychain.rs, kdf.rs, unlock.rs | ✅ |
+| 8 | 8.1/8.3/8.4/8.5/8.7 清理 | types.rs, eff_wordlist.rs, matcher/mod.rs, strength.rs | ✅ |
+| 9 | 文档同步 | spec/plan/architecture | ✅ |
+| **10** | **#1 MatchType 协议对齐**（二次复查） | **types.rs** | **✅** |
+
+### 关键设计决策
+
+- **pull 判定标准对齐**：改用 outline.md5 vs DB sync_md5（参照 hotword 模式），不引入冲突检测
+- **generator zeroize 范围**：仅清零中间材料（返回值保持 String，Tauri 边界保护意义有限）
+- **hotword 一并修**：静默吞错与 vault 同源，改法相同
+- **#12 follow-up**：返回 affected rows 影响面大，标为后续任务
+
+### 测试基线（修复后）
+
+- vault: **209 pass** + 1 ignored（+10 新测试：md5 mismatch / stamp 前置 / 损坏跳过 / folder rename / sort_order / Display PAT / salt 解码 / Argon2Params 边界 / Host 大小写 / 长密码短路）
+- sync: **97 pass** + 4 ignored（+1 新测试：Display PAT 泄露守护）
+- desktop + 前端：待最终全量验证
+
+### 未修（已知限制）
+
+1. **last-write-wins**（vault + hotword）：本地未 push 的修改可能被远程盲覆盖。Phase 2 自动同步时考虑引入冲突检测。
+2. **#12 vault_update_cipher 静默成功**：follow-up。
+3. **8.2 字符集 &[char] 重构 / 8.4 正则缓存**：follow-up（需并发设计）。
+
+---
+
+## 第二轮代码审查修复（2026-07-24）
+
+**触发**：用户贴了第二轮审查报告（1 高 + 4 中 + 9 低）。逐条核实后全部成立。
+
+**详见**：[2026-07-24-vault-security-hardening.md](../specs/2026-07-24-vault-security-hardening.md)
+
+### 实施记录（9 个 Task）
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| 1 | H1 主密码 zeroize | unlock.rs, engine.rs, kdf.rs, vault_commands.rs, vault_sync_commands.rs, Cargo.toml | ✅ |
+| 2 | M1 超长密码误报 | strength.rs | ✅ |
+| 3 | M2 totp secret 下限 | totp.rs | ✅ |
+| 4 | M3 setup TOCTOU | unlock.rs | ✅ |
+| 5 | M4 枚举非法值 log | types.rs | ✅ |
+| 6 | L1 resizable | vault_commands.rs | ✅ |
+| 7 | L4 store 原子写 | sync/store.rs | ✅ |
+| 8 | L6 duplicates 过滤 | health/duplicate.rs | ✅ |
+| 9 | L8 import 事务 | db.rs, cipher.rs, bitwarden.rs | ✅ |
+
+### 关键设计决策
+
+- **H1 zeroize 方案**：`Zeroizing<String>` 所有权转移（非借用）——Tauri 命令签名不动，vault 层结束时自动清零
+- **M4 枚举**：保留 From + 兜底（不全面改 TryFrom），加 log warn——波及面 vs 收益不匹配
+- **L8 import**：两阶段（先加密收集 Vec，再 batch 事务化 insert）——既原子又容错
+
+### follow-up（未修）
+
+L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 墙钟（报告自评可接受）/ L7 全量解密（已 debounce）/ L9 目录权限（泄露面小）
+
+### 测试基线（修复后）
+
+- vault: **213 pass** + 1 ignored（+4：H1 签名守护 / M1 重复+多样 / M2 空 secret / L6 软删）
+- desktop: **396 pass**
+
+---
+
+## 第三轮新发现修复（2026-07-24，N1-N4）
+
+**触发**：第二轮修复后的补充审查。
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| N1 | 超长低唯一字符循环误报 Score::4（M1 补全） | strength.rs | ✅ |
+| N2 | AES key schedule zeroize | Cargo.toml | ⏸ 反馈（aes 0.8 无 zeroize feature） |
+| N3 | rename 后 fsync 父目录（L4 补全） | sync/store.rs | ✅ |
+| N4 | resizable(true) 加 min_inner_size | vault_commands.rs | ✅ |
+
+**N1 关键**：M1 的 `unique.log2()×count` 只堵 unique=1，`"ab"×1024`（unique=2）仍误报。改取前 256 字符跑 zxcvbn 做模式识别（抓循环/键盘序列/字典词），与熵估算取较低值。
+
+**N2 反馈**：报告说「一行 Cargo feature」——复查不成立。aes 0.8.4 的 `[features]` 只有 `hazmat`，无 zeroize feature。标 follow-up 待 aes-gcm 升级。
+
+## 第四轮审查修复（2026-07-24，H2/M5/L10/L11）
+
+**触发**：深扫 sync/engine.rs + storage/cipher.rs 发现的软删同步断裂。
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| H2 | 软删密码跨设备不同步 + clone 复活 | db.rs, engine.rs, cipher.rs, fingerprint.rs | ✅ |
+| M5 | 永久删除无 tombstone 可复活 | — | ⏸ 文档化（需 tombstone 机制） |
+| L10 | upsert_folder O(N²) | — | ⏸ 未修（报告自评无碍） |
+| L11 | empty_trash 未持 SYNC_LOCK | vault_commands.rs | ✅ |
+
+**H2 核心**（高危，数据隐私）：`VaultCipherInput` 无 `deleted_at` 字段 → sync pull/clone 落库时丢弃软删状态 → 新机 clone 复活已删密码 + md5 振荡。修复：加字段 + INSERT/UPDATE SQL 加列 + pull/clone 从文件取值 + save_cipher 保留现有状态。新增 2 个回归测试。
+
+### 测试基线（截至第四轮）
+
+- vault: **216 pass** + 1 ignored（+8 累计：H1 签名 / M1 重复+多样 / M2 secret / L6 软删 / N1 循环 / H2 pull+clone）
+- infra: **160 pass**
+- desktop: **400 pass**

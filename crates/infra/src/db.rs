@@ -3539,6 +3539,11 @@ pub struct VaultCipherInput {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
+    /// 软删除时间戳（H2 修复 2026-07-24）：sync pull/clone 必须从文件取值传入，
+    /// 否则软删密码在新机 clone 时复活（deleted_at=NULL），且跨设备软删状态不同步。
+    /// 本机 soft_delete/restore 走专用 UPDATE 路径（不经此结构），此处仅 sync 用。
+    /// None = 未软删（新建默认）；Some(ts) = 已软删（回收站）。
+    pub deleted_at: Option<String>,
     /// md5 内容指纹（v45：增量同步 diff，由调用方算好传入）。
     /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
     pub sync_md5: Option<String>,
@@ -3733,10 +3738,27 @@ pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| insert_vault_cipher_at(conn, input))
 }
 
+/// 批量插入 cipher（L8 修复，2026-07-24）——事务化，全成功或全回滚。
+///
+/// 用于 Bitwarden import：之前逐条 `insert_vault_cipher` 各自 autocommit，
+/// 中途失败留部分数据。现在包一个 `unchecked_transaction`，任一失败 → 整批回滚。
+/// 调用方应在循环阶段先过滤掉加密失败的条目（加密是纯内存操作，不破坏事务），
+/// 只把加密成功的传进来 batch insert。
+pub fn insert_vault_ciphers_batch(inputs: &[VaultCipherInput]) -> Result<()> {
+    with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for input in inputs {
+            insert_vault_cipher_at(&tx, input)?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, sync_md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, sync_md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             input.id,
             input.folder_id,
@@ -3748,6 +3770,7 @@ fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result
             input.fields,
             input.password_history,
             input.reprompt,
+            input.deleted_at,
             input.sync_md5,
         ],
     )?;
@@ -3762,8 +3785,8 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
-            fields = ?7, password_history = ?8, reprompt = ?9, sync_md5 = ?10, updated_at = datetime('now')
-         WHERE id = ?11",
+            fields = ?7, password_history = ?8, reprompt = ?9, deleted_at = ?10, sync_md5 = ?11, updated_at = datetime('now')
+         WHERE id = ?12",
         params![
             input.folder_id,
             input.favorite as i32,
@@ -3774,6 +3797,7 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
             input.fields,
             input.password_history,
             input.reprompt,
+            input.deleted_at,
             input.sync_md5,
             id,
         ],
@@ -3880,6 +3904,26 @@ pub fn update_vault_folder_name(id: &str, new_name_encrypted: &str, sync_md5: &s
             params![new_name_encrypted, sync_md5, id],
         )?;
         Ok(())
+    })
+}
+
+/// 更新 folder 的 name + sort_order + sync_md5（sync pull 用，#6 修复）。
+///
+/// 与 `update_vault_folder_name` 的区别：同时更新 sort_order，让远程 folder 的
+/// 排序变化能同步到本地（之前 pull 硬编码 sort_order=0，导致排序永不同步）。
+/// 返回受影响行数（0 表示 id 不存在——调用方可据此判断）。
+pub fn update_vault_folder_fields(
+    id: &str,
+    new_name_encrypted: &str,
+    sort_order: i64,
+    sync_md5: &str,
+) -> Result<usize> {
+    with_db(|conn| {
+        let affected = conn.execute(
+            "UPDATE vault_folders SET name = ?1, sort_order = ?2, sync_md5 = ?3, updated_at = datetime('now') WHERE id = ?4",
+            params![new_name_encrypted, sort_order, sync_md5, id],
+        )?;
+        Ok(affected)
     })
 }
 
@@ -6534,6 +6578,7 @@ mod vault_schema_tests {
             fields: None,
             password_history: None,
             reprompt: 0,
+            deleted_at: None,
             sync_md5: None,
         };
         insert_vault_cipher_at(&conn, &input).unwrap();

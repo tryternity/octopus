@@ -4,6 +4,7 @@ use anyhow::{ensure, Result};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use zeroize::Zeroizing;
 
 use super::zh_wordlist_4096::ZH_WORDLIST_4096;
 use super::PassphraseZhConfig;
@@ -21,22 +22,25 @@ pub fn generate(cfg: &PassphraseZhConfig) -> Result<String> {
     );
 
     let mut rng = OsRng;
+    // words 是 &'static str（字面量引用，无 heap 明文）——不需 zeroize
     let words: Vec<&str> = (0..cfg.word_count)
         .map(|_| *ZH_WORDLIST_4096.choose(&mut rng).unwrap())
         .collect();
 
-    let mut result = words.join(&cfg.separator);
+    // #8 修复：result 中间拼接材料用 Zeroizing——离开作用域自动清零
+    let mut result: Zeroizing<String> = Zeroizing::new(words.join(&cfg.separator));
 
     if cfg.include_number {
         let n: u32 = OsRng.gen_range(0..=9);
-        result = format!("{}{}", result, n);
+        *result = format!("{}{}", result.as_str(), n);
     }
     if cfg.include_symbol {
         let symbols = ['!', '@', '#', '$', '%', '&', '*'];
         let s = symbols.choose(&mut rng).unwrap();
-        result = format!("{}{}", result, s);
+        *result = format!("{}{}", result.as_str(), s);
     }
-    Ok(result)
+    // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 result 的 heap）
+    Ok(result.as_str().to_string())
 }
 
 #[cfg(test)]

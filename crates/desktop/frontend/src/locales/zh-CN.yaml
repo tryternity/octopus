@@ -34,6 +34,19 @@ tab:
   image: 图片
   empty: 空
   close: 关闭
+  sourceClipboard: 剪贴板历史
+  sourceTranscription: 语音识别
+  sourceTemp: 临时（未保存）
+  sourceFile: 磁盘文件
+  metaPath: 路径
+  metaStatus: 状态
+  metaSize: 尺寸
+  metaChars: 字数
+  statusReadonly: 只读
+  statusUnsaved: 未保存
+  statusEdited: 已编辑
+  statusSaved: 已保存
+  unitChars: 字
 
 # ════════ Settings 设置 ════════
 settings:
@@ -585,6 +598,13 @@ settings:
     typeLabel: 类型
     builtinTypeLocked: · 内置项类型不可更改
     contentLabel: 内容
+    promptInline: 内联
+    promptRef: 引用文件
+    promptSelectFile: 选择 prompt 文件…
+    promptDirEmpty: 目录为空。将 .md 文件放到下方目录：
+    promptFileMissing: 文件不存在
+    promptPreview: 预览内容
+    promptViewMore: 查看更多 / 编辑内容
     execOptions: 执行选项
     asyncExec: 异步执行（不等待结果，后台运行）
     writeToClipboard: 结果写入剪贴板

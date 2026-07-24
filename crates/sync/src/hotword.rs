@@ -351,20 +351,29 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
         let needs_update = !db_ids.contains(uuid.as_str())
             || hotword_md5_mismatch(uuid, &db_sets);
         if needs_update {
-            if let Ok(file) = read_hotword_set_file(uuid) {
-                let h = file.to_hotword_set(None);
-                let md5 = hotword_set_md5(&h);
-                let mut h = h;
-                h.sync_md5 = Some(md5);
-                // upsert 可能因 name UNIQUE 冲突失败（两设备同名不同 UUID）——跳过不阻断
-                match octopus_infra::db::upsert_hotword_set(&h) {
-                    Ok(()) => count += 1,
-                    Err(e) => {
-                        log::warn!(
-                            "[sync] 热词版本 {} pull 跳过（可能 name 冲突）：{}",
-                            uuid, e
-                        );
+            match read_hotword_set_file(uuid) {
+                Ok(file) => {
+                    let h = file.to_hotword_set(None);
+                    let md5 = hotword_set_md5(&h);
+                    let mut h = h;
+                    h.sync_md5 = Some(md5);
+                    // upsert 可能因 name UNIQUE 冲突失败（两设备同名不同 UUID）——跳过不阻断
+                    match octopus_infra::db::upsert_hotword_set(&h) {
+                        Ok(()) => count += 1,
+                        Err(e) => {
+                            log::warn!(
+                                "[sync] 热词版本 {} pull 跳过（可能 name 冲突）：{}",
+                                uuid, e
+                            );
+                        }
                     }
+                }
+                // #10 修复（与 vault engine.rs 对齐）：损坏文件不再静默吞
+                Err(e) => {
+                    log::warn!(
+                        "[sync] 热词版本 {} 文件读取失败，已跳过：{}",
+                        uuid, e
+                    );
                 }
             }
         }
@@ -386,7 +395,17 @@ fn hotword_md5_mismatch(uuid: &str, db_sets: &[HotwordSet]) -> bool {
             let db_md5 = db_set.sync_md5.as_deref().unwrap_or("");
             file_md5 != db_md5
         }
-        Err(_) => false,
+        // 文件读失败——不 pull（避免误删）。但不再静默：记日志让用户可见
+        // （#10 修复——与 vault engine.rs cipher_md5_mismatch 的 Err 处理对齐思路，
+        // 不过 vault 的 cipher_md5_mismatch 用 outline.md5 不读文件，此处 hotword
+        // 读文件是历史实现，保留语义只加日志）
+        Err(e) => {
+            log::warn!(
+                "[sync] 热词版本 {} md5 比对时文件读取失败，视为无需更新：{}",
+                uuid, e
+            );
+            false
+        }
     }
 }
 

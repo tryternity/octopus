@@ -160,6 +160,19 @@ desktop → feature-gated: vault (=vault + keychain + TOTP)
 - 及时修改文档中过时的地方（参数变了、阈值变了、流程变了）
 - 没有对应 spec 的小改动，至少更新 `docs/architecture.md` 相关章节
 
+### 文档与测试准则（强制）
+
+**文档先行**：稍微大点的功能特性（新功能 / 行为变更 / 新组件），动手写代码前必须先补充或新增 spec（`docs/superpowers/specs/`），可选 plan（`docs/superpowers/plans/`）。纯 bug fix 可省略 spec，但仍需更新 `docs/architecture.md` 相关章节。
+
+**TDD 优先**：尽量测试先行（test-driven development）。无法先写测试的场景（如 UI 交互、AX 集成），事后补录测试也可以——重点是防止回归问题。纯 bug fix 至少补一个覆盖该 bug 的回归测试。
+
+**判断标准**：
+| 改动类型 | spec/plan | 测试 |
+|---|---|---|
+| 新功能 / 行为变更 / 新组件 | ✅ 必须先写 | ✅ TDD 或事后补 |
+| bug fix | ❌ 可省（更新 architecture.md） | ✅ 至少回归测试 |
+| 参数调整 / 文案修改 | ❌ 可省 | 视情况 |
+
 ### 前端页面设计（强制）
 
 涉及任何页面、组件、弹窗、浮层等前端 UI 的修改或新建，**必须使用 `frontend-design` skill 进行设计**：

@@ -34,6 +34,12 @@ impl std::fmt::Debug for DuplicateGroup {
 pub fn find_duplicates(ciphers: &[Cipher]) -> Vec<DuplicateGroup> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for c in ciphers {
+        // L6 修复（2026-07-24）：跳过软删/回收站的 cipher——它们不应参与重复检测。
+        // 之前依赖调用方预过滤（当前唯一调用方 vault_health_report 已过滤），
+        // 但 pub API 不应假设调用方一定过滤，内置过滤更安全。
+        if c.deleted_at.is_some() {
+            continue;
+        }
         // CipherData 当前仅 Login 单变体；保留 if let 以便未来扩展 SecureNote/Card/Identity。
         #[allow(irrefutable_let_patterns)]
         if let CipherData::Login(login) = &c.data {
@@ -124,6 +130,22 @@ mod tests {
     fn test_skip_none_password() {
         let ciphers = vec![make_cipher("c1", None), make_cipher("c2", None)];
         assert!(find_duplicates(&ciphers).is_empty());
+    }
+
+    /// L6 修复回归守护：软删/回收站的 cipher 不应参与重复检测。
+    #[test]
+    fn test_skip_deleted_ciphers() {
+        let mut c1 = make_cipher("c1", Some("same"));
+        let c2 = make_cipher("c2", Some("same"));
+        c1.deleted_at = Some("2026-07-24".into()); // c1 软删
+        let ciphers = vec![c1, c2];
+        // c1 被过滤后只剩 c2（无重复）——不应报告重复组
+        let groups = find_duplicates(&ciphers);
+        assert!(
+            groups.is_empty(),
+            "软删 cipher 不应参与重复检测（L6），实际 {} 组",
+            groups.len()
+        );
     }
 
     /// #12：Debug 输出必须 redact password_hash（SHA-256 hex，敏感），

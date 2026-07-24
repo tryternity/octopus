@@ -69,9 +69,9 @@ pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
 /// 重命名 folder。`new_name` 是明文；内部加密后写库。
 pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(new_name.as_bytes())?;
-    // rename 不改 sort_order——读当前值算 md5
-    let sort_order = db::list_vault_folders()
-        .unwrap_or_default()
+    // rename 不改 sort_order——读当前值算 md5（之前 unwrap_or_default 吞 DB 错误，
+    // 失败时 sort_order 错算为 0 导致 sync_md5 不准——#6 修复）
+    let sort_order = db::list_vault_folders()?
         .into_iter()
         .find(|f| f.id == id)
         .map(|f| f.sort_order)
