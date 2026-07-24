@@ -46,7 +46,7 @@ impl DerivedKey {
         // drop 时不清零（child key 残留栈帧）。与 A2（chain code 清零）同类修复。
         let mut child = crate::Zeroizing::new([0u8; 32]);
         child.copy_from_slice(&bytes[..32]);
-        DerivedKey(child)
+        DerivedKey::from_zeroizing(child)
         // `bytes` 在此 drop——Zeroizing 触发 GenericArray::zeroize() 清零整个 64B
         //（含后 32B chain code）。
     }
@@ -57,7 +57,7 @@ mod tests {
     use super::*;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     #[test]

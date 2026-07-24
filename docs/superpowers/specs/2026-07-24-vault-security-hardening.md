@@ -617,3 +617,39 @@ totp.rs 经 #7（80bit secret）、M2（空/短 secret 拦截）、复审 #1（�
 **问题**：`derive_master_root_key` 用 `password.as_bytes()` 直接喂 Argon2id，不做 NFC normalize。组合字符（如 `é` = `e` + 组合 vs 预组合 U+00E9）不同输入方式产生不同字节 → 跨设备"看似对却解不开"。
 
 **状态**：backlog。前端 input 框通常产 NFC（浏览器 normalize），实际风险低。
+
+---
+
+## 第二十轮审查修复（2026-07-25，crypto/ 全目录：K1/M1-mod/K3 + S2 文档化）
+
+crypto/ 是 vault 的命门模块（KDF + 对称加密 + 密钥派生）。本轮处理 1 个纵深防御加强 + 2 个整洁性改进 + 1 个文档化。
+
+### K1: from_i64 复用于不可信远程参数，memory 下限过低废掉 Argon2id 内存硬度（低-中，纵深防御）
+
+**问题**：`Argon2Params::from_i64`（kdf.rs）注释假设"本地 DB 可信"，校验下限是**崩溃级**：iterations≥1、memory_kib≥8（即 8KB）、parallelism≥1。但 grep 确认 `from_i64` 被 `sync/engine.rs:933 resolve_with_remote` 复用于处理**远程不可信** KDF 参数（`f.kdf_*` 来自同步仓库 meta.json）——超出"本地 DB 可信"假设。
+
+技术问题在 memory 下限：Argon2id 的抗 GPU 爆破核心是**内存硬度**（memory 参数），而非 iterations。memory_kib=8 = 8KB，可全放 GPU 寄存器/共享内存 → GPU 高度并行爆破，内存硬度几乎归零（逼近裸哈希速度）。OWASP 推荐的 65536 KiB（64MiB）让 GPU 难以并行，才是关键。`from_i64` 允许 memory=8 等于废掉 Argon2id 的主要防线。
+
+**触发链**：攻击者污染同步仓库的 vault_meta 为 kdf_memory_kib=8 → 受害者 sync，`from_i64` 不拒绝 → vault_meta（含弱 KDF + salt + protected_user_vault_key 密文）在同步仓库中可被攻击者读取 → 离线爆破，弱 memory 让 GPU 高度并行。
+
+**修复**：新增 `from_i64_strict`（安全下限），`resolve_with_remote` 改用它。本地路径（`resolve_with_local` :989）继续用 `from_i64`（本地 DB 可信）。安全下限：memory_kib≥16384（16MiB，保留 GPU 抗并行的内存硬度）、iterations≥2、parallelism≥1。
+
+**严重度限定**：触发需攻击者先获取 vault_meta 内容（私有库访问/窃取本地 DB 拷贝）。私有库 + PublicRepoRejected 前提下，获取内容本身需较高权限；但一旦获取，memory=8 显著加速爆破。定低-中：纵深防御加强项，非新攻击面。
+
+### M1-mod: DerivedKey 字段 pub（低，封装）
+
+**问题**：`mod.rs:12 pub struct DerivedKey(pub Zeroizing<[u8; 32]>)`——字段 pub，任何持有 DerivedKey 的代码可经 `.0` 直接读原始 32B key 字节，绕过 `as_bytes` 受控接口。Zeroizing 清零保护未被破坏（Zeroizing 仍在 DerivedKey 内，drop 时清零），但读取不受控——若某处把 `.0` 字节拷到非 Zeroizing 缓冲（log/String），绕过清零。
+
+**修复**：字段改 private + 新增 `pub(crate) fn from_zeroizing`（crate 内生产构造点用，如 KDF 派生/hierarchy 子 key）+ 保留 `pub fn from_raw`（外部 crate 测试用）。所有直接 `DerivedKey(...)` 构造点（vault 内 6 处测试 + kdf/hierarchy 生产 + desktop 2 处测试）改用 `from_raw`/`from_zeroizing`。
+
+### K3-derive: Argon2Params derive(Deserialize) 暴露绕过校验构造能力（低，未来风险）
+
+**问题**：`kdf.rs:13 #[derive(Serialize, Deserialize)]`。grep 确认当前无任何反序列化调用方（所有构造走 from_i64 / Default）。Deserialize 暴露了"可构造 iterations=0 / 弱参数 Argon2Params 绕过 from_i64 校验"的能力——若未来加配置加载/API 接收 JSON 的路径，会静默绕过校验。
+
+**修复**：移除 Deserialize derive，保留 Serialize（未来可能用于配置导出，且不暴露构造能力）。注释标注：若未来确需反序列化，必须构造后立即用 from_i64_strict 复校验。
+
+### S2: AES-GCM encrypt 未用 AAD 绑定上下文（低，文档化）
+
+**问题**：`symmetric.rs:23 cipher.encrypt(nonce, plaintext)` 不传 AAD。密文不绑定 cipher_id / field_name 上下文——攻击者若能写 DB，可把 cipher A 的 password 密文复制到 cipher B 的 password 字段，decrypt 仍成功（同 user_vault_key），cipher B 显示 cipher A 的密码（密文移动/重放）。
+
+**状态**：文档化。单机威胁模型下"能写 DB = 攻击者已赢"，AAD 是纵深防御而非必需。加 AAD 需改 encrypt/decrypt 签名 + 所有调用点 + 密文格式（破坏向后兼容），代价大收益低。已在 symmetric.rs 模块注释说明设计取舍。

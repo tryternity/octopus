@@ -68,13 +68,12 @@ pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Zeroizing;
     use octopus_infra::db;
     use rusqlite::params;
 
     /// 构造一份确定性的 32B DerivedKey（每个 byte 都为 `byte`），用于加解密往返。
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     /// 为当前测试线程注入一份干净的 in-memory DB（schema 已建，含 seed models 但无云端模型）。

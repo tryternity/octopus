@@ -197,7 +197,7 @@ mod tests {
     use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     fn sample_input(name: &str) -> CipherInput {

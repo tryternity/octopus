@@ -107,7 +107,7 @@ mod tests {
     use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     /// 注入干净 in-memory DB（含 vault_folders 表，无数据）。
