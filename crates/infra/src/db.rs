@@ -3805,44 +3805,6 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
     Ok(())
 }
 
-pub fn soft_delete_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| soft_delete_vault_cipher_at(conn, id))
-}
-
-fn soft_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 soft_delete 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-pub fn restore_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| restore_vault_cipher_at(conn, id))
-}
-
-fn restore_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 restore 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-/// 仅更新 sync_md5（soft_delete / restore 后 cipher 内容变了，md5 需重算）。
-/// 调用方先 SELECT 拿到完整 row → 算 md5 → 调本函数写回。
-pub fn update_cipher_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
-            params![sync_md5, id],
-        )?;
-        Ok(())
-    })
-}
-
 pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
     with_db(|conn| permanent_delete_vault_cipher_at(conn, id))
 }
@@ -6615,15 +6577,9 @@ mod vault_schema_tests {
         assert_eq!(loaded2.name, "v1:enc-name-2");
         assert!(loaded2.favorite);
 
-        // 软删除
-        soft_delete_vault_cipher_at(&conn, id).unwrap();
-        let loaded3 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded3.deleted_at.is_some(), "软删除后 deleted_at 应非空");
-
-        // 恢复
-        restore_vault_cipher_at(&conn, id).unwrap();
-        let loaded4 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded4.deleted_at.is_none(), "恢复后 deleted_at 应为空");
+        // 注：软删/恢复（soft_delete/restore）+ sync_md5 原子一致性已在
+        // crates/vault/src/storage/cipher.rs::soft_delete_and_restore_update_sync_md5_atomically
+        // 完整守护。本测试不再覆盖 db 层 soft_delete/restore（函数已删，见 F1）。
 
         // 物理删除
         permanent_delete_vault_cipher_at(&conn, id).unwrap();

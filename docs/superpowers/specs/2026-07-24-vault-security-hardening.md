@@ -424,3 +424,65 @@
 ### S3: rename_folder 全表扫（低，文档化）
 
 L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
+
+---
+
+## 第十四轮审查修复（2026-07-24，ER1/HW1/HW3）
+
+> 补录：commit `0f8b259a` 已 push 但本轮此前缺独立章节，现补。
+
+### ER1: classify_git_error "not found" 关键词过宽（中，分类误判）
+
+**问题**：`|| lower.contains("not found")` 误匹配 "object not found"（本地 repo 损坏）等本地错误 → 分类成 RemoteAuth/RemoteNotFound → 前端误导用户查 remote 配置，实际是本地 repo 问题。
+
+**修复**：删后半段，仅保留 "repository not found"（精确匹配 remote 仓库不存在）。
+
+### HW1: hotword incremental_export 吞 outline 解析错（M8 对称遗漏）
+
+**问题**：`unwrap_or_default` 吞 outline 解析错成空 → 删除循环不执行 → stale 文件残留 → clone 复活。与 vault M8 完全同型的对称遗漏（vault↔hotword 姊妹模块反复出现）。
+
+**修复**：`match read_hotword_outline()` 降级 `export_all_hotwords`（与 vault M8 对称）。
+
+### HW3: hotword pull 用 outline.md5（消除双读 + 与 vault #2 对齐）
+
+**问题**：pull 忽略 outline `entry.md5`，调 `hotword_md5_mismatch` 读文件算 md5；pull 主体又读一次 → 同一文件双读。
+
+**修复**：`hotword_md5_mismatch_v2` 用 outline.md5 对比 DB sync_md5（不读文件）；删除旧 `hotword_md5_mismatch`（读文件版）。
+
+### HW2/G2-minor/ER2/HW4 文档化（低）
+
+- **HW2**（pull 缺删除传播）：E1 同类，需 tombstone 机制（Phase 2）
+- **G2-minor** / **ER2** / **HW4**：低危，文档化
+
+---
+
+## 第十六轮审查修复（2026-07-24，F1/F2）
+
+### F1: S1 重构遗留的半截软删死代码（中低，bug 复活入口）
+
+**问题**：S1 修复（第十五轮）将 `cipher::soft_delete/restore` 改为事务化内联 SQL 后，db 层遗留的 `soft_delete_vault_cipher` / `restore_vault_cipher`（+ `_at` 变体）+ `update_cipher_sync_md5` 共 5 个函数无任何生产调用方。但它们执行的是**「半截软删」**——只 UPDATE deleted_at（或只 UPDATE sync_md5），正是 S1 修复前的 bug 本体。保留它们等于在代码库里留了一个已修 bug 的一键复活开关：任何未来调用方（CLI/批量路径）不知情调用 `db::soft_delete_vault_cipher` → S1 缺口立即复活（deleted_at 改了但 sync_md5 旧 → 删除不传播）。
+
+**修复**：删除 db.rs 中 5 个死函数（`soft_delete_vault_cipher` / `soft_delete_vault_cipher_at` / `restore_vault_cipher` / `restore_vault_cipher_at` / `update_cipher_sync_md5`）。删除 db.rs 测试中守护死逻辑的软删/恢复断言（`soft_delete_and_restore_update_sync_md5_atomically` 在 cipher 层已完整守护 S1 原子性，db 层测试冗余）。
+
+**核查**：全 crate `rg` 确认 5 个函数零残留引用；cipher.rs:469 `soft_delete_and_restore_update_sync_md5_atomically` 三重断言（deleted_at 变化 + sync_md5 变化 + sync_md5 与 row 重算一致）完整覆盖。
+
+### F2: fingerprint.rs 分隔符注释误导 + 设计脆弱性（低）
+
+**问题**：注释称「字段间用 `|` 分隔（避免字段值含分隔符导致歧义）」——单字符分隔符本身不防歧义。反例：`name="a|b",notes="c"` 与 `name="a",notes="b|c"` 拼成同一字符串 → md5 碰撞 → sync 误判「无变化」不重写文件 → 跨设备不一致。
+
+**当前安全靠字符集约束（隐式假设）而非分隔符设计**：
+- 密文字段（name/notes/data/fields/password_history）= `v1:` + RFC4648 base64（`A-Za-z0-9+/=`），严格不含 `|`
+- id/folder_id = UUID（含 `-`，不含 `|`）
+- favorite/atype/reprompt = bool/i64（纯数字）
+- deleted_at = SQLite datetime（含空格/`-`/`:`，不含 `|`）
+
+**修复**：修正模块 doc 注释，明确说明真实安全保证来自 base64 字符集约束，并标注「新增字段前必须确认字符集不含 `|`，否则需改长度前缀分隔」。补回归测试 `cipher_md5_no_collision_on_pipe_in_separate_fields` 守护字符集约束。
+
+**状态**：当前功能正确（所有字段恰好不含 `|`）。未来若加密格式变化（引入含 `|` 的编码）或新增非密文含 `|` 字段，需改用长度前缀分隔（`{len}|{value}` 重复）。
+
+### 正面结论（fingerprint 不变量核查）
+
+fingerprint 是同步正确性的源头，核查扎实：
+- `cipher_md5`（sync 读 row）与 `cipher_md5_from_input`（create/save 填充）字段顺序（11 字段）、字段类型（atype/reprompt 两 struct 均 i64、favorite 均 bool）、None 处理（5 个 unwrap_or("") 对称）三者一致 → create 时填的 md5 与 sync 时读 row 算的 md5 永远对齐
+- deleted_at 纳入 md5（H2）—— S1 前提
+- 不含 created_at/updated_at —— 跨设备时间戳必然不同，排除避免永久 diff
