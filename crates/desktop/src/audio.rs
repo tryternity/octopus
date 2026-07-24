@@ -3,6 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::{debug, error, info};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 
 /// 音频共享状态：采样缓冲 + 录制标志 + cpal 流（生命周期绑定到本结构）。
@@ -26,6 +27,10 @@ pub struct SharedAudioState {
     /// RNNoise 降噪器（nnnoiseless）：start 时 lazy 建/重置；失败则 None（直通降级）。
     denoise: Mutex<Option<octopus_asr_local::denoise::DenoiseProcessor>>,
     stream: Mutex<Option<cpal::Stream>>,
+    /// 最近一次 cpal 回调收到样本的时间（看门狗用，spec 2026-07-24-audio-watchdog §4.1）。
+    /// cpal 回调每次 extend 后更新；drain_samples 读它算 stall_duration。
+    /// `None` = 会话未开始 / 刚 start 未收到首个回调。
+    last_sample_time: Arc<Mutex<Option<Instant>>>,
 }
 
 impl SharedAudioState {
@@ -39,6 +44,7 @@ impl SharedAudioState {
             down_sampler: Mutex::new(None),
             denoise: Mutex::new(None),
             stream: Mutex::new(None),
+            last_sample_time: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -160,6 +166,7 @@ impl SharedAudioState {
 
         let samples = self.samples.clone();
         let is_recording = self.is_recording.clone();
+        let last_sample_time = self.last_sample_time.clone();
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_input_stream(
@@ -173,6 +180,8 @@ impl SharedAudioState {
                             data.chunks(channels)
                                 .map(|c| c.iter().sum::<f32>() / channels as f32),
                         );
+                        // 看门狗：记录收到样本的时间（spec 2026-07-24-audio-watchdog §4.1）
+                        *last_sample_time.lock() = Some(Instant::now());
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -188,6 +197,7 @@ impl SharedAudioState {
                                     / channels as f32
                             }),
                         );
+                        *last_sample_time.lock() = Some(Instant::now());
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -205,6 +215,7 @@ impl SharedAudioState {
                                     / channels as f32
                             }),
                         );
+                        *last_sample_time.lock() = Some(Instant::now());
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -220,7 +231,9 @@ impl SharedAudioState {
     /// 同时初始化 RNNoise 降噪（会话起点）：enabled 则建/重置实例，否则置 None。
     pub fn start(&self, device_name: &str) -> Result<()> {
         self.samples.lock().clear();
-        self.is_recording.store(true, Ordering::Relaxed);
+        // 看门狗：清 last_sample_time，避免上次会话残留（spec 2026-07-24-audio-watchdog §4.1）。
+        // 首个 cpal 回调到达后才置 Some。
+        *self.last_sample_time.lock() = None;
 
         // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
         // 绝不阻断录音、绝不 panic（spec §9 降级）。RNNoise 内置模型，无外部文件依赖。
@@ -252,6 +265,10 @@ impl SharedAudioState {
 
         let stream = self.build_stream(device_name)?;
         stream.play()?;
+        // 时序修正（spec 2026-07-24-audio-watchdog §4.1）：is_recording 在 build_stream + play
+        // 成功之后才置 true。旧代码在开头置 true，若 build_stream/play 失败（设备忙/无权限）
+        // 标志残留 true → 看门狗误判"正在录但无样本"。
+        self.is_recording.store(true, Ordering::Relaxed);
 
         *self.stream.lock() = Some(stream);
         debug!("Recording started");
@@ -308,6 +325,26 @@ impl SharedAudioState {
         }
         let rate = self.sample_rate.load(Ordering::Relaxed);
         self.process_pipeline(&raw, rate, false)
+    }
+
+    /// 看门狗：距上次收到 cpal 样本的时间（spec 2026-07-24-audio-watchdog §4.1）。
+    ///
+    /// 返回值语义：
+    /// - `is_recording=true` 且 `last_sample_time=Some(t)` → `Instant::now() - t`
+    /// - `is_recording=true` 且 `last_sample_time=None`（刚 start，首回调未到）→ 从 `start`
+    ///   时刻算起会很小（start 刚清 None），视为 0 避免冷启动误判
+    /// - `is_recording=false`（未录 / 已停）→ `Duration::ZERO`（看门狗不适用）
+    ///
+    /// coordinator `dispatch_tick` 据此判定：`>= STALL_THRESHOLD(3s)` → cpal 断推 → 自动重连。
+    pub fn sample_stall_duration(&self) -> Duration {
+        if !self.is_recording.load(Ordering::Relaxed) {
+            return Duration::ZERO;
+        }
+        let last = self.last_sample_time.lock();
+        match *last {
+            Some(t) => t.elapsed(),
+            None => Duration::ZERO, // 刚 start 首回调未到，冷启动保护
+        }
     }
 
     /// 编辑期间不 drain——音频在缓冲区自然累积。
@@ -378,5 +415,50 @@ impl AudioRecorder {
             anyhow::bail!("Microphone device '{}' not found", self.state.device_name);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_stall_duration_zero_when_not_recording() {
+        // is_recording=false（未录/已停）→ 看门狗不适用，返回 0
+        let state = SharedAudioState::new("test");
+        // 不 start，is_recording 保持 false
+        assert_eq!(state.sample_stall_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn sample_stall_duration_zero_when_just_started_no_callback_yet() {
+        // is_recording=true 但 last_sample_time=None（刚 start，首回调未到）
+        // → 冷启动保护，返回 0（避免首回调延迟误判断流）
+        let state = SharedAudioState::new("test");
+        state.is_recording.store(true, Ordering::Relaxed);
+        // last_sample_time 保持 None（start 已清，首回调未到）
+        assert_eq!(state.sample_stall_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn sample_stall_duration_positive_when_recording_and_stalled() {
+        // is_recording=true + last_sample_time=Some(很久以前) → 返回正 Duration
+        // 模拟 cpal 断推：回调停止更新 last_sample_time
+        let state = SharedAudioState::new("test");
+        state.is_recording.store(true, Ordering::Relaxed);
+        // 手动设一个 5 秒前的时间戳（模拟回调曾触发后停止）
+        *state.last_sample_time.lock() = Some(Instant::now() - Duration::from_secs(5));
+        let stall = state.sample_stall_duration();
+        assert!(stall >= Duration::from_secs(5), "stall 应 ≥5s，实际 {:?}", stall);
+    }
+
+    #[test]
+    fn sample_stall_duration_small_when_recent_callback() {
+        // is_recording=true + last_sample_time=刚更新 → 返回很小 Duration（正常采集中）
+        let state = SharedAudioState::new("test");
+        state.is_recording.store(true, Ordering::Relaxed);
+        *state.last_sample_time.lock() = Some(Instant::now());
+        let stall = state.sample_stall_duration();
+        assert!(stall < Duration::from_millis(100), "正常采集 stall 应很小，实际 {:?}", stall);
     }
 }

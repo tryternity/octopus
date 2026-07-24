@@ -77,6 +77,22 @@ impl Transcript {
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+
+    /// 重连场景：清引擎层累积基准（engine_cumulative / engine_consumed_chars /
+    /// diverted_pending），与重建后的空 pipeline 状态对齐。保留 segments / caret_gap /
+    /// id / db_inserted（用户已识别文本 + 落库状态）。
+    ///
+    /// 用途：音频采集看门狗检测到 cpal 断流后自动重连——重建 pipeline（engine 状态清零）
+    /// 但复用本 transcript。若不清 engine_cumulative，首个 apply_engine_full 的 is_prefix
+    /// 判定会失败（空 engine 输出不是旧长 cum 的前缀）→ 走 diverted → 异常累积。
+    ///
+    /// 副作用：丢失引擎层纠正能力（可接受——断流本就是异常，重连后从空基准重新累积）。
+    /// 详见 spec 2026-07-24-audio-watchdog §3.5。
+    pub fn reset_engine_baseline(&mut self) {
+        self.engine_cumulative.clear();
+        self.engine_consumed_chars = 0;
+        self.diverted_pending.clear();
+    }
     /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
     pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
     /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
@@ -96,13 +112,19 @@ impl Transcript {
     pub fn db_text(&self) -> String { self.finish_text() }
 
     /// 引擎累积全量 → 取尾部 delta → 在 caret_gap 生长。返回是否变化（delta 非空）。
-    /// diverted（非前缀，引擎纠正早前文本）→ 新 full 与已展示 finish_text 的 LCP 之后差异
-    /// 暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 时连同补发。
+    /// diverted（非前缀，引擎纠正早前文本）→ 新 full 与 **engine_cumulative**（引擎层基准）
+    /// 的 LCP 之后差异暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 连同补发。
     /// （不回退已展示——no rollback。）
+    ///
+    /// ⚠️ LCP 基准必须是 `engine_cumulative`（引擎层），**不是** `finish_text()`（展示层）。
+    /// shown 会因选中删除 / diverted flush 而与 engine_cumulative 分歧（shown 膨胀），
+    /// 用 shown 算 LCP 会导致正反馈风暴（2026-07-24 Bug：shown=1004 vs cum=4 时，
+    /// lcp(shown,full) 持续=1 → diff 持续=3 → diverted_pending 反复达 LIMIT flush →
+    /// shown 进一步膨胀 → 无限循环）。
     pub fn apply_engine_full(&mut self, full: &str) -> bool {
-        // 消费 pending_delete（选中替换）——在任何 early return 之前。
-        // 引擎静音期每 tick 产出 same-as-before 的 full（delta 空），旧代码在 delta 空
-        // 时 return false 跳过消费 → 选区永远不删。现在只要 apply 被调用就消费。
+        // 幂等短路：同一 full 重复（静音期引擎重发 / drain 积压）→ 直接返回。
+        // 最便宜的防护，避免重复 full 走 diverted 累积空 diff。
+        // 注意：须在消费 pending_delete 之前——选区删除须优先处理（即便 full 重复）。
         let mut selection_deleted = false;
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
@@ -120,18 +142,25 @@ impl Transcript {
                 self.debug_segments_str());
         }
 
+        // 幂等短路：full 与 engine_cumulative 完全相同 → 无 delta、无 diverted。
+        // 选区刚删则返回 true 让前端刷新。
+        if full == self.engine_cumulative.as_str() {
+            return selection_deleted;
+        }
+
         let mut combined_delta;
         let is_prefix = full.starts_with(self.engine_cumulative.as_str());
         if is_prefix {
             combined_delta = full.chars().skip(self.engine_consumed_chars).collect::<String>();
         } else {
-            // diverted：算新 full 与当前 finish_text 的 LCP，之后的差异暂存
-            let shown = self.finish_text();
-            let lcp = common_prefix_len(&shown, full);
+            // diverted：引擎纠正早前文本。用 engine_cumulative（引擎层基准）算 LCP，
+            // 之后的差异暂存。引擎通常只改尾部 → LCP 大、diff 小，不会膨胀。
+            let prev_cum = self.engine_cumulative.clone();
+            let lcp = common_prefix_len(&prev_cum, full);
             let diff: String = full.chars().skip(lcp).collect();
             log::debug!(
-                "[seldbg] DIVERTED t={} shown='{}' full='{}' lcp={} diff='{}' sel_del={} dp_len={}",
-                self.id, shown, full, lcp, diff, selection_deleted,
+                "[seldbg] DIVERTED t={} cum='{}' full='{}' lcp={} diff='{}' sel_del={} dp_len={}",
+                self.id, prev_cum, full, lcp, diff, selection_deleted,
                 self.diverted_pending.chars().count() + diff.chars().count());
             self.diverted_pending.push_str(&diff);
             self.engine_cumulative = full.to_string();
@@ -1073,13 +1102,22 @@ mod tests {
 
     #[test]
     fn diverted_pending_flushes_when_over_limit() {
-        // 引擎持续纠正（每次 full 非前缀）→ diverted_pending 累积，超 DIVERTED_PENDING_LIMIT
-        // 后强制 flush 展示，避免用户看空白。
+        // 引擎持续纠正（每次 full 与 cum 完全不同 → LCP=0，diff=整个 full）→
+        // diverted_pending 累积，超 DIVERTED_PENDING_LIMIT 后强制 flush 展示，避免用户看空白。
+        //
+        // 注：2026-07-24 APPLY 风暴修复后，LCP 基准从 finish_text()(shown) 改为
+        // engine_cumulative。引擎通常只改尾部 → LCP 大、diff 小、不会频繁超限。
+        // 本测试构造「每次首字符不同」的极端纠正（LCP=0）来触发超限 flush 路径。
         let mut t = Transcript::new(108, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
         t.apply_engine_full("基"); // engine_cumulative="基", shown="基"
-        // 每次「基+递增数字」非 engine_cumulative 前缀 → 持续 diverted 累积
-        for i in 0..400 {
-            t.apply_engine_full(&format!("基{}", i));
+        // 每次给完全不同的 3 字符串（首字符不同 → LCP=0，diff=全文 3 char）
+        // "ABC","DEF","GHI",... 累积 168 次 ≈ 504 char > 500 → flush
+        let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".chars().collect();
+        for i in 0..200 {
+            let c1 = chars[i % 26];
+            let c2 = chars[(i * 7 + 1) % 26];
+            let c3 = chars[(i * 13 + 2) % 26];
+            t.apply_engine_full(&format!("{}{}{}", c1, c2, c3));
         }
         // 超限（500 char）后强制 flush → finish_text 增长（不再卡在"基"）
         assert!(
@@ -1296,5 +1334,132 @@ mod user_scenario_tests {
         assert_eq!(result[0].text, "A");
         assert_eq!(result[1].kind, SegmentKind::Edited);
         assert_eq!(result[1].text, "C");
+    }
+
+    // ── APPLY 风暴回归（Bug 2026-07-24）──
+    // 症状：日志 2ms 内爆发 46 行 [APPLY] branch=diverted，full_len=4 lcp=1 diff_len=3 反复，
+    // diverted_pending 反复累积到 500 才 flush → 无限循环感。
+    // 根因：选中删除后 shown(finish_text) 与 engine_cumulative 分歧，引擎重发同一 full 时
+    //       is_prefix 判定用 engine_cumulative 但 LCP 用 shown，基准不一致。
+
+    #[test]
+    fn apply_engine_full_idempotent_on_same_full_repeated() {
+        // 同一 full 连续重复 N 次（静音期引擎重发）→ 必须幂等：
+        // 第一次后 engine_cumulative==full，后续 is_prefix=true 且 delta 空 → 不应反复进 diverted。
+        let mut t = Transcript::new(300, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("你好世界");
+        let text_after_first = t.finish_text();
+        for _ in 0..50 {
+            let changed = t.apply_engine_full("你好世界"); // 同一 full 重复
+            assert!(!changed, "同一 full 重复必须幂等（changed=false），finish_text={}",
+                t.finish_text());
+        }
+        assert_eq!(t.finish_text(), text_after_first, "文本不应被重复 full 改变");
+        assert!(t.diverted_pending.is_empty(), "重复 full 不应累积 diverted_pending");
+    }
+
+    #[test]
+    fn apply_engine_full_no_storm_after_selection_delete() {
+        // 风暴温床：选中删除后 shown 与 engine_cumulative 分歧。
+        // 引擎持续重发"删除前的全量"（引擎不知道用户删了）→ 每次 is_prefix 对 engine_cumulative 为 true
+        // 但若基准失配走入 diverted，shown 的 LCP 永远 < full_len → diff 非空 → 反复累积。
+        // 修复后：删除后 engine_cumulative 须与 shown 对齐，或 diverted 分支幂等短路。
+        let mut t = Transcript::new(301, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("你好世界再见"); // shown=cum="你好世界再见"
+        t.set_selection(2, 4); // 选 "世界"
+        t.apply_engine_full("你好世界再见"); // 静音 tick → 消费 pending_delete → shown="你好再见", cum 仍="你好世界再见"
+        assert_eq!(t.finish_text(), "你好再见");
+
+        // 引擎持续重发"删除前全量"（它不知道用户删了）—— 模拟风暴触发场景
+        let mut divert_count = 0usize;
+        for _ in 0..20 {
+            // 捕获是否走入 diverted：用 diverted_pending 是否非空间接判断
+            let before_dp = t.diverted_pending.chars().count();
+            t.apply_engine_full("你好世界再见");
+            let after_dp = t.diverted_pending.chars().count();
+            if after_dp > before_dp { divert_count += 1; }
+        }
+        // 修复后：要么不进 diverted（基准对齐），要么进 diverted 但幂等（不反复累积）。
+        // 关键不变量：diverted_pending 不应无界增长到 LIMIT。
+        assert!(
+            t.diverted_pending.chars().count() < DIVERTED_PENDING_LIMIT,
+            "删除后引擎重发不应让 diverted_pending 累积到上限（{}），实际 {}，divert 次数 {}",
+            DIVERTED_PENDING_LIMIT, t.diverted_pending.chars().count(), divert_count
+        );
+        // 文本不应被重复全量污染（"世界"已被删，不应反复出现又消失）
+        assert_eq!(t.finish_text(), "你好再见",
+            "删除后引擎重发同一全量不应改变展示文本");
+    }
+
+    #[test]
+    fn apply_engine_full_storm_shown_inflation_does_not_loop() {
+        // 精确复现 2026-07-24 APPLY 风暴（日志 23:14:46.512 2ms 内 46 行 branch=diverted）：
+        //   full_len=4 lcp=1 diff_len=3 反复，diverted_pending 累积到 500 flush，shown 膨胀，
+        //   下轮 lcp(shown, full) 仍=1（shown 首字符同 full，其余全分歧）→ diff=3 → 无限累积。
+        //
+        // 根因：diverted 用 finish_text()(shown) 算 LCP。shown 膨胀后 lcp 持续小，
+        // 引擎任何小幅纠正被放大成大 diff，shown 进一步膨胀 → 正反馈风暴。
+        //
+        // 触发前提：shown 与 engine_cumulative 分歧（shown 远长于 cum）+ 引擎持续给
+        // 非前缀 full（close 时乱吐 / drain 积压 partial）。
+        let mut t = Transcript::new(302, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("种子"); // cum=shown="种子", consumed=2
+        // 模拟历史 diverted flush 导致 shown 膨胀（与 cum 分歧）—— shown 500 字符，cum 仍 2 字符
+        t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)) }];
+
+        // 引擎持续给不同 4 字符 full（模拟日志：首字符"种"同 shown → lcp=1，diff=3）
+        let mut max_shown = t.finish_text().chars().count();
+        for i in 0..500u32 {
+            let full = format!("种{:03}", i); // "种000".."种499"：每次不同，首字符同 shown
+            t.apply_engine_full(&full);
+            max_shown = max_shown.max(t.finish_text().chars().count());
+        }
+        // 不变量：shown 不应因 diverted 风暴无界膨胀。
+        // 修复前：500 次 × diff 3 = 1500 字符累积 → 3 次 flush → shown ≈ 500+1500 = 2000。
+        // 修复后：风暴检测停止累积，shown 有界（< 1500）。
+        assert!(
+            max_shown < 1500,
+            "shown 不应因 diverted 风暴无限膨胀，max_shown={}（初始 500）",
+            max_shown
+        );
+    }
+
+    // ── 音频重连：engine 基准重置（spec 2026-07-24-audio-watchdog §3.5）──
+
+    #[test]
+    fn reset_engine_baseline_clears_cumulative_keeps_segments() {
+        // 重连场景：pipeline 重建（engine 状态清零）但复用 transcript。
+        // reset_engine_baseline 须清 engine 层基准（与空 engine 对齐），
+        // 保留 segments（用户已识别文本）+ id + db_inserted + caret_gap。
+        let mut t = Transcript::new(400, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("已识别的文本"); // engine_cumulative="已识别的文本", segments=[Raw]
+        t.apply_engine_full("已识别的文本纠正"); // diverted，diverted_pending 非空
+        assert!(!t.engine_cumulative.is_empty(), "前置：engine_cumulative 应非空");
+        let text_before = t.finish_text();
+        let id_before = t.id;
+        let gap_before = t.caret_gap;
+
+        t.reset_engine_baseline();
+
+        // engine 层基准清零
+        assert_eq!(t.engine_cumulative, "", "engine_cumulative 须清空");
+        assert_eq!(t.engine_consumed_chars, 0, "engine_consumed_chars 须归零");
+        assert!(t.diverted_pending.is_empty(), "diverted_pending 须清空");
+        // 用户数据保留
+        assert_eq!(t.finish_text(), text_before, "segments 文本须保留");
+        assert_eq!(t.id, id_before, "id 须保留（DB 主键续写）");
+        assert_eq!(t.caret_gap, gap_before, "caret_gap 须保留（光标位置）");
+    }
+
+    #[test]
+    fn reset_engine_baseline_then_apply_starts_fresh() {
+        // 重连后首个 apply_engine_full：空 engine 输出对空 engine_cumulative
+        // → is_prefix=true → 正常 delta 生长，不走 diverted 异常累积。
+        let mut t = Transcript::new(401, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        t.apply_engine_full("旧文本"); // cum="旧文本", segments=[Raw("旧文本")]
+        t.reset_engine_baseline();
+        // 模拟重连后引擎首个输出
+        assert!(t.apply_engine_full("新语音"), "重连后首词应正常 apply");
+        assert_eq!(t.finish_text(), "旧文本新语音", "新语音追加到保留文本后");
     }
 }

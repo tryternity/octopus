@@ -202,18 +202,18 @@ pub fn run() {
         }
     }
 
-    // 从 DB 加载激活的润色 prompt（prompts 表 active_polish_prompt 指向的记录）
-    // 失败时 fallback 到 id=1（系统默认）
+    // 从 DB 加载激活的润色 prompt（prompts 表 content 字段存文件名引用）
+    // 读 ~/.octopus/.sync/prompts/polish/<content>.md 文件内容。失败 fallback id=1。
     let active_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     let prompt_content = match octopus_infra::db::load_prompt(active_id) {
-        Ok(Some(p)) => p.content,
+        Ok(Some(p)) => crate::settings_commands::read_prompt_file(&p.content),
         Ok(None) => {
             log::warn!("active_polish_prompt id={} 不存在，fallback 到 id=1", active_id);
             let _ = octopus_infra::db::save_active_prompt_id(1);
             octopus_infra::db::load_prompt(1)
                 .ok()
                 .flatten()
-                .map(|p| p.content)
+                .map(|p| crate::settings_commands::read_prompt_file(&p.content))
                 .unwrap_or_default()
         }
         Err(e) => {
@@ -320,6 +320,7 @@ pub fn run() {
             action_bar_commands::open_file_in_editor,
             action_bar_commands::save_file,
             action_bar_commands::read_file_text,
+            action_bar_commands::create_prompt_file,
             hotword_commands::list_hotword_sets,
             hotword_commands::create_hotword_set,
             hotword_commands::rename_hotword_set,
