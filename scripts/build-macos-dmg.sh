@@ -112,15 +112,74 @@ DMG_PATH="$DMG_DIR/octopus_${VERSION}_${ARCH}.dmg"
 mkdir -p "$DMG_DIR"
 rm -f "$DMG_PATH"
 
-echo "[build-dmg] hdiutil 打 dmg（UDBZ bzip2 压缩）..."
-# -fs HFS+：兼容性好；-format UDBZ：bzip2 压缩（体积小）；-volname：挂载后卷名
+# 构造 dmg staging 目录：.app + Applications 软链接 + .DS_Store（拖拽安装体验）
+# 双击 dmg 打开后，Finder 按 .DS_Store 布局显示：octopus.app 在左、Applications 在右，
+# 用户把 app 拖到 Applications 即完成安装。
+STAGING_DIR="$DMG_DIR/staging"
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR"
+# 拷贝 .app（不能用软链接，否则 dmg 内符号链接断裂）
+cp -R "$APP_DIR" "$STAGING_DIR/"
+# Applications 软链接——Finder 会显示成带箭头的文件夹图标
+ln -s /Applications "$STAGING_DIR/Applications"
+
+# 写 .DS_Store：窗口尺寸 + icon view + 图标位置（app 左 / Applications 右）。
+# 用 ds_store python 库写 .DS_Store，比 AppleScript Finder 自动化可靠得多
+# （Finder 的 disk/folder AppleScript 语义在多版本下脆弱，常报 -1728/-10010）。
+# 三类记录：
+#   bwsp — browser window properties（窗口尺寸/位置，去掉 toolbar/sidebar/pathbar）
+#   icvp — icon view properties（icon 大小、排列方式、背景色）
+#   Iloc — 每个图标的 (x, y) 位置
+# 不写 bwsp/icvp 时 Finder 用默认大窗口，图标被挤到下方留大片空白。
+echo "[build-dmg] 写 .DS_Store 布局（紧凑窗口 480×160，app 左 / Applications 右）..."
+python3 - "$STAGING_DIR/.DS_Store" <<'PYEOF' || echo "[build-dmg] ⚠️  .DS_Store 写入失败（不影响 dmg 功能，仅布局默认）"
+import sys
+import ds_store
+path = sys.argv[1]
+bwsp = {
+    'ShowStatusBar': False,
+    'WindowBounds': '{{200, 200}, {480, 160}}',
+    'ContainerShowSidebar': False,
+    'PreviewPaneVisibility': False,
+    'SidebarWidth': 0,
+    'ShowToolbar': False,
+    'ShowPathbar': False,
+    'ShowTabView': False,
+}
+icvp = {
+    'gridOffsetX': 0.0, 'textSize': 12.0, 'iconSize': 96.0,
+    'gridSpacing': 100.0, 'scrollPositionX': 0.0, 'showItemInfo': False,
+    'labelOnBottom': True, 'gridOffsetY': 0.0, 'scrollPositionY': 0.0,
+    'arrangeBy': 'none', 'showIconPreview': True,
+    'backgroundColorBlue': 1.0, 'backgroundType': 0,
+    'backgroundColorGreen': 1.0, 'backgroundColorRed': 1.0,
+}
+with ds_store.DSStore.open(path, 'w+') as d:
+    d['.']['bwsp'] = bwsp
+    d['.']['icvp'] = icvp
+    d['.']['vSrn'] = ('long', 1)
+    d['octopus.app']['Iloc'] = (80, 50)
+    d['Applications']['Iloc'] = (320, 50)
+PYEOF
+
+echo "[build-dmg] hdiutil 打 dmg（UDBZ bzip2 压缩，含 Applications 拖拽安装）..."
+# 两步：先打 read-write (UDRW) → 再转只读压缩 (UDBZ)。
+# 直接 UDBZ 打 staging 也行，但两步法便于未来插入 Finder 美化（背景图等）。
+# -fs HFS+：兼容性好；-volname：挂载后卷名；-srcfolder 指向 staging
+RW_DMG="$DMG_DIR/octopus-rw.dmg"
+rm -f "$RW_DMG"
 hdiutil create \
   -volname "octopus" \
-  -srcfolder "$APP_DIR" \
+  -srcfolder "$STAGING_DIR" \
   -fs HFS+ \
-  -format UDBZ \
+  -format UDRW \
   -ov \
-  "$DMG_PATH" 2>&1 | tail -3
+  "$RW_DMG" 2>&1 | tail -1
+hdiutil convert "$RW_DMG" -format UDBZ -ov -o "$DMG_PATH" 2>&1 | tail -1
+rm -f "$RW_DMG"
+
+# 清理 staging（.app 副本已打进 dmg，不再需要）
+rm -rf "$STAGING_DIR"
 
 if [[ ! -f "$DMG_PATH" ]]; then
   echo "[build-dmg] ❌ dmg 生成失败: $DMG_PATH" >&2
