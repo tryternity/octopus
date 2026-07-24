@@ -140,7 +140,15 @@ pub fn permanent_delete(id: &str) -> Result<()> {
 /// 一致性逻辑的对称（虽然 permanent delete 后行已不存在，md5 无需更新，但走同一
 /// 函数路径便于未来加审计/级联清理）。单条失败不中断——收集 errors 返回，让调用
 /// 方 toast 提示「清空了 N 条，M 条失败」。
+///
+/// T2 修复（2026-07-24）：SYNC_LOCK 下沉到函数内部——与 sync_now 并发时挡住，
+/// 避免「刚永久删的行被并发 pull 重新插入」（M5 的本地并发表现）。锁在函数内
+/// 而非调用方，避免未来新增调用方（CLI/批量清理）忘记加锁。与 meta_lock 下沉
+/// 到 save_vault_meta 的设计一致。
 pub fn empty_trash() -> Result<(usize, Vec<String>)> {
+    // T2：取 sync 锁——sync 进行中返 Err（guard 持续整个函数生命周期）
+    let _sync_guard = crate::sync::engine::try_sync_lock()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     let ids = db::list_trash_cipher_ids()?;
     let mut errors: Vec<String> = Vec::new();
     let mut deleted = 0;

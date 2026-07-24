@@ -452,24 +452,8 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
     for c in &ciphers {
-        // c 已是完整 VaultCipher（含 deleted_at）——直接算 md5 + 构造 input
-        // H2 修复：deleted_at 从文件取值传入（之前硬编码 None → 软删密码 clone 复活）
-        let md5 = crate::sync::fingerprint::cipher_md5(c);
-        let input = VaultCipherInput {
-            id: c.id.clone(),
-            folder_id: c.folder_id.clone(),
-            favorite: c.favorite,
-            atype: c.atype,
-            name: c.name.clone(),
-            notes: c.notes.clone(),
-            data: c.data.clone(),
-            fields: c.fields.clone(),
-            password_history: c.password_history.clone(),
-            reprompt: c.reprompt,
-            deleted_at: c.deleted_at.clone(), // H2 修复：保留文件中的软删状态
-            sync_md5: Some(md5),
-        };
-        // upsert：先 try update，失败则 insert
+        // H2 修复：build_cipher_input_from_file 保留 deleted_at（之前硬编码 None → 复活）
+        let input = build_cipher_input_from_file(c);
         upsert_cipher(&input)?;
     }
     for f in &folders {
@@ -501,6 +485,29 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         folders.len()
     );
     Ok(())
+}
+
+/// 从文件读出的 VaultCipher 构造 VaultCipherInput（clone/pull 共用，T1 修复）。
+///
+/// **H2 不变量**：deleted_at 必须从文件取值传入（不能硬编码 None）——否则软删密码
+/// 在新机 clone / 对端 pull 时复活成 live。此 helper 是生产构造点的单一真相源，
+/// 测试调它即覆盖生产逻辑（避免「测试自带修复值、绕过生产构造点」的 MatchType#1 同型弱点）。
+fn build_cipher_input_from_file(c: &octopus_infra::db::VaultCipher) -> VaultCipherInput {
+    let md5 = crate::sync::fingerprint::cipher_md5(c);
+    VaultCipherInput {
+        id: c.id.clone(),
+        folder_id: c.folder_id.clone(),
+        favorite: c.favorite,
+        atype: c.atype,
+        name: c.name.clone(),
+        notes: c.notes.clone(),
+        data: c.data.clone(),
+        fields: c.fields.clone(),
+        password_history: c.password_history.clone(),
+        reprompt: c.reprompt,
+        deleted_at: c.deleted_at.clone(), // H2：保留文件中的软删状态
+        sync_md5: Some(md5),
+    }
 }
 
 /// Upsert cipher——存在则 UPDATE，不存在则 INSERT。
@@ -774,22 +781,8 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
             match store::read_cipher_file(uuid) {
                 Ok(cipher_file) => {
                     let row = cipher_file.to_vault_cipher();
-                    // 从文件读出的 cipher 算 md5 填 sync_md5
-                    let md5 = crate::sync::fingerprint::cipher_md5(&row);
-                    let input = VaultCipherInput {
-                        id: row.id.clone(),
-                        folder_id: row.folder_id.clone(),
-                        favorite: row.favorite,
-                        atype: row.atype,
-                        name: row.name.clone(),
-                        notes: row.notes.clone(),
-                        data: row.data.clone(),
-                        fields: row.fields.clone(),
-                        password_history: row.password_history.clone(),
-                        reprompt: row.reprompt,
-                        deleted_at: row.deleted_at.clone(), // H2 修复：软删状态跨设备同步
-                        sync_md5: Some(md5),
-                    };
+                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
+                    let input = build_cipher_input_from_file(&row);
                     upsert_cipher(&input)?;
                     count += 1;
                 }
@@ -1883,6 +1876,9 @@ mod tests {
     }
 
     /// H2 补充：clone 也应保留软删状态（之前 clone_initial 硬编码 deleted_at: None）。
+    ///
+    /// T1 修复（2026-07-24）：改用 build_cipher_input_from_file（生产构造点的单一真相源），
+    /// 而非测试自带构造——若日后有人把 clone_initial 改回 None，此测试会真正报红。
     #[test]
     fn clone_preserves_soft_deleted_at() {
         let _s = test_lock();
@@ -1908,28 +1904,11 @@ mod tests {
         };
         store::write_cipher_file(&soft_deleted).unwrap();
 
-        // clone_initial 走 import_all_from_files → upsert
-        // 模拟：直接调 import + upsert（不经 git clone，测文件→DB 路径）
+        // clone_initial 走 import_all_from_files → build_cipher_input_from_file → upsert
+        // T1：用生产 helper（与 clone_initial 相同路径），不再手写 VaultCipherInput
         let (ciphers, _folders) = store::import_all_from_files().unwrap();
         assert_eq!(ciphers.len(), 1, "应导入 1 个 cipher");
-
-        // 构造 input 走 upsert（与 clone_initial 相同路径）
-        let c = &ciphers[0];
-        let md5 = crate::sync::fingerprint::cipher_md5(c);
-        let input = VaultCipherInput {
-            id: c.id.clone(),
-            folder_id: c.folder_id.clone(),
-            favorite: c.favorite,
-            atype: c.atype,
-            name: c.name.clone(),
-            notes: c.notes.clone(),
-            data: c.data.clone(),
-            fields: c.fields.clone(),
-            password_history: c.password_history.clone(),
-            reprompt: c.reprompt,
-            deleted_at: c.deleted_at.clone(), // H2：从文件取值
-            sync_md5: Some(md5),
-        };
+        let input = build_cipher_input_from_file(&ciphers[0]);
         upsert_cipher(&input).unwrap();
 
         // H2 核心断言
