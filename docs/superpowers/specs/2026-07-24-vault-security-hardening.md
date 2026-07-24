@@ -245,3 +245,54 @@
 **问题**：`vault_empty_trash` 与 sync_now 并发时，刚永久删的行可能被并发 pull 重新插入（M5 的本地并发表现）。
 
 **修复**：`vault_empty_trash` 命令入口加 `try_sync_lock()`——sync 进行中返「同步进行中」。
+
+---
+
+## 第六轮审查修复（2026-07-24，M6/L12/L13-L16）
+
+### M6: 导出/导入 passwordHistory + folder round-trip（中，数据完整性）
+
+**问题**：export 端 `BitwardenItem` 无 passwordHistory / folderId，`folders: vec![]` 硬编码空；import 端 `password_history: vec![]` / `folder_id: None` 硬编码。导出→重新导入后密码历史清空 + 文件夹归属丢失。
+
+**修复**（功能改动，含 spec + TDD）：
+
+**export 端**（exporter.rs）：
+- `BitwardenItem` 加 `folderId: Option<String>` + `passwordHistory: Vec<BitwardenPasswordHistory>`
+- `BitwardenExport.folders` 不再硬编码空，输出实际 folders `[{id, name}]`
+- `export_vault_json` 签名改为 `(&[Cipher], &[FolderDto])`——需 folder 数据（已解密明文）
+- 新增 `BitwardenFolder` + `BitwardenPasswordHistory` struct
+
+**import 端**（bitwarden.rs）：
+- `BitwardenItem` 加 `folderId` + `passwordHistory`（`#[serde(default)]` 向后兼容）
+- `BitwardenExport` 加 `folders`（`#[serde(default)]`）
+- 导入逻辑：先导入 folders（建 folderId→本机 folder_id 映射，同名复用），再导入 items（folder_id 从映射取，passwordHistory 从 item 读）
+
+**调用方**（vault_commands.rs vault_export）：额外读 folders 传给 export_vault_json
+
+**Bitwarden JSON 格式映射**：
+| octopus 字段 | Bitwarden JSON 字段 | 说明 |
+|---|---|---|
+| `PasswordHistoryEntry.password` | `passwordHistory[].password` | 明文密码 |
+| `PasswordHistoryEntry.last_used_at` | `passwordHistory[].lastUsedDate` | ISO 8601 |
+| `Cipher.folder_id` | `items[].folderId` | 引用 folders.id |
+| `FolderDto { id, name }` | `folders[] { id, name }` | folder 定义 |
+
+**TDD 测试**：
+- `test_export_includes_password_history` / `test_export_includes_folders`
+- `test_import_folders_and_password_history`（round-trip）
+- `test_import_old_export_without_folders_still_works`（向后兼容）
+
+### L12: matcher 等价域名大小写归一（低-中，8.4 同类遗漏）
+
+**问题**：`matches_domain` 的 `group.contains(&cipher_domain)` 大小写敏感——用户配置含大写（Google.com）时等价域名组静默不生效。8.4 修了 Host 策略的小写归一，Domain 策略的 group 查找未对齐。
+
+**修复**：cipher_domain + equivalent groups + target_domain 全部 `to_lowercase` 归一。
+
+### L13-L16: 文档化已知限制（低，不改代码）
+
+| 项 | 说明 | 处理 |
+|---|---|---|
+| L13 | rename_folder O(N) 读全表 | 报告自评可忽略（folder 量级小） |
+| L14 | attempt_guard 退避基于 wall-clock | 报告自评可接受（单机威胁模型，调慢时钟只锁自己更久） |
+| L15 | migrate UPDATE 无 NOT LIKE 守卫 | 首启无并发改 key，竞态窗口不存在 |
+| L16 | load_or_create_machine_key 双进程首启竞态 | 单用户桌面极少并发，K_machine 复用无害 |

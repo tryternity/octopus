@@ -666,7 +666,17 @@ pub fn vault_export(
     if !failures.is_empty() {
         log::warn!("vault_export: {} 条记录解密失败已跳过（未导出）", failures.len());
     }
-    octopus_vault::importer::export_vault_json(&ciphers).map_err(vault_error::to_tauri_error)
+    // M6 修复：读 folders 一并导出（之前 folders 硬编码空 → 导入后丢失文件夹归属）
+    let (folders, folder_failures) =
+        octopus_vault::storage::list_folders(&key).map_err(vault_error::to_tauri_error)?;
+    if !folder_failures.is_empty() {
+        log::warn!(
+            "vault_export: {} 个文件夹解密失败已跳过",
+            folder_failures.len()
+        );
+    }
+    octopus_vault::importer::export_vault_json(&ciphers, &folders)
+        .map_err(vault_error::to_tauri_error)
 }
 
 // === Auto-Type 命令（Task 19） ===
