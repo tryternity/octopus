@@ -81,6 +81,30 @@ struct BitwardenPasswordHistory {
     last_used_date: String,
 }
 
+/// L18 修复（2026-07-24）：把 octopus 内部时间戳归一化为 Bitwarden ISO 8601。
+///
+/// octopus 的 `last_used_at` 来自 SQLite `datetime('now')`（格式 `"2026-07-24 12:00:00"`，
+/// 空格分隔、无时区）。Bitwarden 标准 `lastUsedDate` 是 `"2026-07-24T12:00:00.000Z"`。
+/// octopus 自身 round-trip 安全（字符串透传），但导出到真 Bitwarden 需归一化。
+///
+/// 策略：把第一个空格替换为 `T`，追加 `.000Z` 后缀。已是 ISO 格式的透传。
+fn normalize_to_iso8601(ts: &str) -> String {
+    let trimmed = ts.trim();
+    if trimmed.is_empty() {
+        return "1970-01-01T00:00:00.000Z".to_string();
+    }
+    // 已含 T（ISO 格式）→ 检查是否需补 .000Z
+    if trimmed.contains('T') {
+        if trimmed.ends_with('Z') || trimmed.contains('.') {
+            return trimmed.to_string();
+        }
+        return format!("{}.000Z", trimmed);
+    }
+    // SQLite 格式（空格分隔）→ 替换为 T + 补 .000Z
+    let with_t = trimmed.replacen(' ', "T", 1);
+    format!("{}.000Z", with_t)
+}
+
 /// 导出 vault 为 Bitwarden unencrypted JSON。
 ///
 /// M6 修复（2026-07-24）：签名改为收 `(&[Cipher], &[FolderDto])`——
@@ -139,7 +163,8 @@ pub fn export_vault_json(ciphers: &[Cipher], folders: &[FolderDto]) -> Result<St
                     .iter()
                     .map(|h| BitwardenPasswordHistory {
                         password: h.password.clone(),
-                        last_used_date: h.last_used_at.clone(),
+                        // L18 修复：归一化为 Bitwarden ISO 8601
+                        last_used_date: normalize_to_iso8601(&h.last_used_at),
                     })
                     .collect(),
             }
@@ -258,7 +283,7 @@ mod tests {
             "M6: 导出应含 2 条密码历史"
         );
         assert_eq!(hist[0]["password"], "old-pass-1");
-        assert_eq!(hist[0]["lastUsedDate"], "2026-01-01T00:00:00");
+        assert_eq!(hist[0]["lastUsedDate"], "2026-01-01T00:00:00.000Z");
     }
 
     /// M6：导出应含 folders + item 的 folderId（之前 folders 硬编码空）。
@@ -299,5 +324,27 @@ mod tests {
             parsed["items"][0]["passwordHistory"].as_array().unwrap().len(),
             0
         );
+    }
+
+    /// L18：SQLite datetime 格式（空格分隔）应归一化为 Bitwarden ISO 8601。
+    #[test]
+    fn test_normalize_to_iso8601() {
+        // SQLite 格式（空格分隔）→ T + .000Z
+        assert_eq!(
+            normalize_to_iso8601("2026-07-24 12:00:00"),
+            "2026-07-24T12:00:00.000Z"
+        );
+        // 已含 T 无 .000Z → 补 .000Z
+        assert_eq!(
+            normalize_to_iso8601("2026-01-01T00:00:00"),
+            "2026-01-01T00:00:00.000Z"
+        );
+        // 已是完整 ISO → 透传
+        assert_eq!(
+            normalize_to_iso8601("2026-01-01T00:00:00.000Z"),
+            "2026-01-01T00:00:00.000Z"
+        );
+        // 空字符串 → epoch
+        assert_eq!(normalize_to_iso8601(""), "1970-01-01T00:00:00.000Z");
     }
 }

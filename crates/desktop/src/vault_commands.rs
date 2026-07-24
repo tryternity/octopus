@@ -660,6 +660,10 @@ pub fn vault_export(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
 ) -> Result<String, String> {
+    // L17 修复（2026-07-24）：加 SYNC_LOCK——list_ciphers + list_folders 两次 DB 读
+    // 期间若 sync_now 并发写入会跨事务边界（快照不一致）。与 empty_trash 同模式（T2）。
+    let _sync_guard = octopus_vault::sync::engine::try_sync_lock()
+        .map_err(|e| e.to_string())?;
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;

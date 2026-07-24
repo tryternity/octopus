@@ -171,38 +171,40 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
     let mut errors: Vec<String> = Vec::new();
 
     // M6 修复（2026-07-24）：导入 folders——建「导出 folderId → 本机 folder_id」映射。
-    // 若同名 folder 已存在则复用（避免重复），否则新建（生成新 UUID）。
-    // 旧导出（无 folders 字段）→ 空 HashMap，item.folder_id 映射到 None（向后兼容）。
-    let folder_map: std::collections::HashMap<String, String> = export
-        .folders
-        .iter()
-        .filter_map(|f| {
-            if f.name.is_empty() {
-                return None;
-            }
-            // 查现有 folder 是否同名——复用 UUID（避免重复建）
-            let existing_id = storage::list_folders(key)
-                .map(|(folders, _)| {
-                    folders
-                        .into_iter()
-                        .find(|ef| ef.name == f.name)
-                        .map(|ef| ef.id)
-                })
-                .ok()
-                .flatten();
-            let (folder_id, is_new) = match existing_id {
-                Some(id) => (id, false), // 已存在——复用
-                None => (uuid::Uuid::new_v4().to_string(), true), // 新建
-            };
-            if is_new {
-                if let Err(e) = storage::create_folder(&folder_id, &f.name, key) {
+    // M7 修复（2026-07-24）：folder 必须先于 cipher 创建（cipher.folder_id 是 FK），
+    // 但记录新建的 folder_id——若 cipher batch 失败则补偿删除（避免空 folder 残留）。
+    // L20 修复（2026-07-24）：循环外 list_folders 一次建 name→id HashMap（不再 N+1）。
+    let existing_folder_names: std::collections::HashMap<String, String> = storage::list_folders(key)
+        .map(|(folders, _)| {
+            folders
+                .into_iter()
+                .map(|f| (f.name, f.id))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut folder_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut created_folder_ids: Vec<String> = Vec::new(); // M7：batch 失败时补偿删除
+    for f in &export.folders {
+        if f.name.is_empty() {
+            continue;
+        }
+        // 同名 folder 复用现有 UUID（避免重复建）
+        if let Some(existing_id) = existing_folder_names.get(&f.name) {
+            folder_map.insert(f.id.clone(), existing_id.clone());
+        } else {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            match storage::create_folder(&new_id, &f.name, key) {
+                Ok(()) => {
+                    folder_map.insert(f.id.clone(), new_id.clone());
+                    created_folder_ids.push(new_id); // 记录以便补偿回滚
+                }
+                Err(e) => {
                     log::warn!("[import] 创建 folder {} 失败：{}", f.name, e);
-                    return None;
                 }
             }
-            Some((f.id.clone(), folder_id))
-        })
-        .collect();
+        }
+    }
 
     // L8 修复（2026-07-24）：两阶段——先加密收集 Vec（加密失败记 errors 跳过），
     // 再一次性 batch 事务化 insert。既保证 DB 原子性（不会部分入库），又保留
@@ -289,7 +291,16 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
 
     // 阶段 2：事务化批量 insert（全成功或全回滚）
     let batch_len = batch.len();
-    db::insert_vault_ciphers_batch(&batch)?;
+    if let Err(e) = db::insert_vault_ciphers_batch(&batch) {
+        // M7 修复：batch 失败时补偿删除已建 folder——避免空 folder 残留。
+        // folder 必须先于 cipher 创建（FK 约束），但 batch 失败后它们成孤儿。
+        for folder_id in &created_folder_ids {
+            if let Err(fe) = storage::delete_folder(folder_id) {
+                log::warn!("[import] 补偿删除 folder {} 失败：{}", folder_id, fe);
+            }
+        }
+        return Err(e);
+    }
 
     Ok(ImportReport {
         total: export.items.len(),

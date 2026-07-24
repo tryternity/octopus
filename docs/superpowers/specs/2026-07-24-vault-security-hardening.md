@@ -296,3 +296,35 @@
 | L14 | attempt_guard 退避基于 wall-clock | 报告自评可接受（单机威胁模型，调慢时钟只锁自己更久） |
 | L15 | migrate UPDATE 无 NOT LIKE 守卫 | 首启无并发改 key，竞态窗口不存在 |
 | L16 | load_or_create_machine_key 双进程首启竞态 | 单用户桌面极少并发，K_machine 复用无害 |
+
+---
+
+## 第七轮审查修复（2026-07-24，M7/L17/L18/L20）
+
+### M7: import folder 创建在 cipher batch 事务外（中，残留）
+
+**问题**：M6 的 folder 创建（逐个 autocommit）在 cipher batch 事务之前，batch 失败时已建 folder 不回滚 → 空文件夹残留。
+
+**修复**：folder 必须先于 cipher 创建（FK 约束），但记录新建的 folder_id——batch 失败时**补偿删除**（`delete_folder`）。不是延后创建（FK 不允许 cipher 先于 folder），而是失败回滚。
+
+### L17: vault_export 无 SYNC_LOCK（低，快照一致性）
+
+**修复**：vault_export 命令入口加 `try_sync_lock`——避免 list_ciphers + list_folders 两次读期间 sync_now 并发写入导致快照不一致。
+
+### L18: lastUsedDate 格式与真 Bitwarden 不兼容（低，互操作）
+
+**问题**：octopus 的 `last_used_at` 来自 SQLite `datetime('now')`（`"2026-07-24 12:00:00"` 空格分隔），Bitwarden 标准是 ISO 8601（`"2026-07-24T12:00:00.000Z"`）。octopus 自身 round-trip 安全（透传），但导出到真 Bitwarden 日期显示错位。
+
+**修复**：export 时 `normalize_to_iso8601` 归一化（空格→T + 补 `.000Z`）。import 透传（Bitwarden 的 lastUsedDate 本身是 ISO 8601）。
+
+### L20: import folder 映射 N+1 全表解密（低，性能）
+
+**问题**：M6 每个 folder 都调 `list_folders(key)` 全表解密 → K 个 folder = K 次全表。
+
+**修复**：循环外 `list_folders` 一次建 `name→id HashMap`，循环内查 HashMap。
+
+### L19: matches_domain 重复 to_lowercase（低，follow-up）
+
+**问题**：L12 的 `lower_group` 每次 cipher×URI 匹配重算（group 不随 cipher 变化）。
+
+**状态**：follow-up。报告自评「group 数量小，实际影响可忽略」。优化需改 4 个函数签名（find_matching_ciphers → matches_any_uri → match_uri_one → matches_domain 传预计算的 lower_equivalent），波及面 vs 收益不匹配。
