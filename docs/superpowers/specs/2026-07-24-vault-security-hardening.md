@@ -572,3 +572,48 @@ totp.rs 经 #7（80bit secret）、M2（空/短 secret 拦截）、复审 #1（�
 - keychain.rs #6 原子写（:314-396）：temp file + sync_all + rename
 - 测试隔离谨慎：keychain override（thread_local）隔离真实文件；via_file 测试 #[ignore] 避免 once_cell HOME 缓存污染开发者本机；unlock 测试用 TEST_SERIALIZER mutex 串行化避免 attempt_guard 跨测试竞争
 - setup 迁移回滚（A1，:117-136）：迁移失败显式 DELETE vault_meta 恢复 setup 可重试
+
+---
+
+## 第十九轮审查修复（2026-07-24，M1/M2/V1/V4 + M1(a)/V3 文档化）
+
+### M1(b): 幂等守卫 NOT LIKE 'v1:%' 硬编码与 CIPHERTEXT_PREFIX 耦合（低-中，DRY）
+
+**问题**：`db.rs:3924` 守卫 SQL `secret_key NOT LIKE 'v1:%'` 的 `'v1:%'` 与 `crypto::symmetric::CIPHERTEXT_PREFIX = "v1:"`（symmetric.rs:13）是两份独立字面量，无引用关系。未来密文格式升级（v2:）时若只改一处会导致：v2 密文被当明文再加密（数据损坏）/ v1 密文漏保护。经典"重构时漏改"温床。
+
+**修复**：`list_models_for_secret_migration` 加 `encrypted_prefix: &str` 参数，SQL 用参数化绑定（`NOT LIKE ?1` + `format!("{}%", prefix)`）。调用方 `migrate.rs` 传 `CIPHERTEXT_PREFIX`，单点维护。infra 不依赖 vault（依赖方向 vault → infra），故不能直接引用常量，必须由调用方注入。
+
+**回归测试**：`encrypt_prefix_matches_migration_guard_prefix`——验证 encrypt 产生的前缀 == CIPHERTEXT_PREFIX（守卫前缀），若重新引入硬编码字面量割裂两者会暴露。
+
+### M1(a): 明文 API Key 以 v1: 开头永久漏迁（低，文档化）
+
+**问题**：若用户某个云端 API Key 恰好以字面量 `v1:` 开头（自研带版本前缀的 key，如 `v1:sk-xxxx`），会被守卫误判为"已加密"跳过，保持明文残留 DB。迁移是 setup 一次性触发、`ensure!(!is_initialized())` 阻止重跑，漏迁不可自愈。
+
+**状态**：文档化为已知边界。概率极低（API Key 罕见以 v1: 开头）。彻底方案是密文用不可伪造结构（固定长度/tag）而非前缀，当前前缀方案对小规模够用。
+
+### M2: 事务内 UPDATE 失败不带行信息（低，诊断）
+
+**问题**：`migrate.rs:48-53` 事务循环 UPDATE 失败 `?` bubble → tx rollback → Err 不带"哪一行 id 失败"。迁移行数少 UPDATE 失败罕见，但一旦发生调试困难。
+
+**修复**：`.with_context(|| format!("迁移 model id={} 失败", id))` 在 `?` 前附加，tx drop 时 rollback 自动触发但错误信息已捕获不丢失。
+
+### V4: 前后端符号集双份手工列举易漂移（低，UX）
+
+**问题**：前端 `validateMasterPassword.ts:28-35 SYMBOL_CHARS` 与后端 `validate.rs:45-59 is_symbol` 是双份实现。码点级差异：前端 `¥` (U+00A5) vs 后端 `￥` (U+FFE5)；前端单引号 vs 后端左右单引号。核心问题是双份维护无共享源、无交叉一致性测试。
+
+**修复**：
+- 前端 SYMBOL_CHARS 全角段统一为后端码点：`¥`(U+00A5) → `￥`(U+FFE5)；ASCII 段改为全集列举对齐后端 `is_ascii_graphic && !alphanumeric` 语义
+- 前端测试 :95 `¥` → `￥`、`——` → `—` 对齐
+- 后端补 `is_symbol_covers_all_expected_chars` 守护测试（ASCII 全集标点 + 全角全集逐字验证）
+
+### V1: "79 bit 熵"注释是乐观上界（低，文档准确性）
+
+**问题**：validate.rs:8-9 与前端 :5-6 均注释"95 可打印 ASCII × 12 位 ≈ 79 bit 熵"。但策略只强制"4 类各含 1 个"+长度 12，最弱合法密码（如 `Aa1!!!!!!!!`）实际熵远低于 79 bit（79 bit 假设每位从 95 字符随机选）。
+
+**修复**：注释改为"理论上界 ~79 bit，实际取决于用户选择；Argon2id 为弱密码兜底"（后端 + 前端）。
+
+### V3: 主密码未 normalize（低，backlog）
+
+**问题**：`derive_master_root_key` 用 `password.as_bytes()` 直接喂 Argon2id，不做 NFC normalize。组合字符（如 `é` = `e` + 组合 vs 预组合 U+00E9）不同输入方式产生不同字节 → 跨设备"看似对却解不开"。
+
+**状态**：backlog。前端 input 框通常产 NFC（浏览器 normalize），实际风险低。
