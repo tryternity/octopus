@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::crypto::DerivedKey;
 use crate::storage;
+use octopus_infra::db::{self, VaultCipherInput};
 use crate::types::{
     CipherData, CipherInput, CipherType, Field, LoginData, LoginUri, MatchType, RepromptType,
 };
@@ -136,9 +137,14 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
         .unwrap_or_default();
 
     let mut seen: HashSet<(String, Option<String>)> = existing;
-    let mut imported = 0;
     let mut skipped = 0;
     let mut errors: Vec<String> = Vec::new();
+
+    // L8 修复（2026-07-24）：两阶段——先加密收集 Vec（加密失败记 errors 跳过），
+    // 再一次性 batch 事务化 insert。既保证 DB 原子性（不会部分入库），又保留
+    // 「跳过坏条目」的容错。之前逐条 create_cipher 各自 autocommit，中途失败
+    // 留部分数据 + 用户看到「失败」却有数据已入库 → 重导可能重复。
+    let mut batch: Vec<VaultCipherInput> = Vec::new();
 
     for (idx, item) in export.items.iter().enumerate() {
         if item.item_type != 1 {
@@ -194,10 +200,10 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             reprompt: RepromptType::from(item.reprompt),
         };
 
-        // 2026-07-21 v44：create_cipher 接收调用方生成的 UUID（不再 AUTOINCREMENT）
+        // 阶段 1：加密 + 算 sync_md5（纯内存，不落库）——失败记 errors 跳过
         let new_id = uuid::Uuid::new_v4().to_string();
-        match storage::create_cipher(&new_id, &input, key) {
-            Ok(_) => imported += 1,
+        match storage::prepare_cipher_input(&new_id, &input, key) {
+            Ok(db_input) => batch.push(db_input),
             Err(e) => {
                 errors.push(format!("Item {} ({}): {}", idx, item.name, e));
                 skipped += 1;
@@ -205,9 +211,13 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
         }
     }
 
+    // 阶段 2：事务化批量 insert（全成功或全回滚）
+    let batch_len = batch.len();
+    db::insert_vault_ciphers_batch(&batch)?;
+
     Ok(ImportReport {
         total: export.items.len(),
-        imported,
+        imported: batch_len,
         skipped,
         errors,
     })
@@ -217,7 +227,6 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
 mod tests {
     use super::*;
     use crate::types::RepromptType;
-    use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
         DerivedKey(crate::Zeroizing::new([byte; 32]))

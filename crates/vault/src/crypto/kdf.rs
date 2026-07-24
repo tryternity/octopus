@@ -83,7 +83,10 @@ impl Argon2Params {
 
 /// 从 master_password + 32B salt 派生 master_root_key。
 ///
-/// **调用者必须在调用后立即 zeroize password**（本函数不接管 password 引用）。
+/// **源秘密清零约定**（H1 修复，2026-07-24）：本函数收 `&[u8]` 只读借用，不接管
+/// password 引用。调用方（`unlock.rs` 的 4 个入口 + `sync/engine.rs` 的 2 个 resolve）
+/// 已统一收 `Zeroizing<String>` 所有权，函数结束时自动清零 heap——源秘密这条线的
+/// Zeroizing 卫生已闭环。底层本函数保持 `&[u8]` 通用签名（KDF 库要求）。
 pub fn derive_master_root_key(password: &[u8], salt: &[u8], params: &Argon2Params) -> Result<DerivedKey> {
     ensure!(salt.len() == 32, "salt 必须为 32 字节，当前 {}", salt.len());
 

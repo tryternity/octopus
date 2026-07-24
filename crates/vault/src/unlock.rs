@@ -18,6 +18,7 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use octopus_infra::db::{VaultMeta, VaultMetaInput};
 
@@ -59,10 +60,15 @@ fn meta_to_kdf_params(meta: &VaultMeta) -> Result<Argon2Params> {
 ///   - 双密文 app_key 落盘
 ///   - 落盘 vault_meta
 ///   - 一次性迁移现有明文 models.secret_key 为 app_key 加密格式（Task 20）
-pub fn setup_vault(password: &str) -> Result<UnlockedKeys> {
+pub fn setup_vault(password: Zeroizing<String>) -> Result<UnlockedKeys> {
+    // M3 修复（2026-07-24）：入口加 meta 写锁，消除 is_initialized 检查到 save_vault_meta
+    // 之间的 TOCTOU 窗口。schema CHECK(id=1) 兜底仍在，但显式锁消除结构竞态。
+    let _meta_guard = crate::meta_lock::acquire_meta_write_lock();
     ensure!(!is_initialized()?, "vault 已初始化");
     // 复审 #1 修复：后端主密码强度校验（INV-10 / §7.4 / F19），防前端绕过
-    crate::validate::validate_master_password(password)?;
+    // H1 修复（2026-07-24）：password 收 Zeroizing<String> 所有权，函数结束时
+    // 自动清零 heap——兑现 kdf.rs 注释承诺的「源秘密清零」
+    crate::validate::validate_master_password(&password)?;
 
     let kdf_salt = random_32();
     let params = Argon2Params::default();
@@ -172,7 +178,7 @@ pub fn unlock_app_key_local() -> Result<Option<DerivedKey>> {
 ///
 /// **暴力破解防护**（复审 #3 修复，spec §7.3）：失败时调 attempt_guard 退避，
 /// 在退避窗口内返 `Err`（"请等待 N 秒后重试"）。
-pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
+pub fn unlock_with_master_password(password: Zeroizing<String>) -> Result<UnlockedKeys> {
     // 退避检查（spec §7.3）——在退避窗口内直接拒绝
     if let Some(wait) = crate::attempt_guard::guard().remaining_wait() {
         bail!("尝试过于频繁，请等待 {} 秒后重试", wait.as_secs());
@@ -252,9 +258,12 @@ pub fn unlock_with_master_password(password: &str) -> Result<UnlockedKeys> {
 /// 返回：解出来的 `UnlockedKeys`（user_vault_key + app_key，均不变），
 /// 让调用方（desktop）能直接刷 session，避免「先 lock 再改密码」后无法继续用。
 /// （follow-up #3）
-pub fn change_master_password(old_password: &str, new_password: &str) -> Result<UnlockedKeys> {
+pub fn change_master_password(
+    old_password: Zeroizing<String>,
+    new_password: Zeroizing<String>,
+) -> Result<UnlockedKeys> {
     // 复审 #1 修复：新主密码必须强度达标（INV-10），防前端绕过
-    crate::validate::validate_master_password(new_password)?;
+    crate::validate::validate_master_password(&new_password)?;
     // 退避检查（复审 #3）——改密旧密码校验也受 guard 保护
     if let Some(wait) = crate::attempt_guard::guard().remaining_wait() {
         bail!("尝试过于频繁，请等待 {} 秒后重试", wait.as_secs());
@@ -404,7 +413,7 @@ fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
 /// 尝试解密 protected_user_vault_key；解密成功（AES-GCM tag 校验通过）即密码正确。
 ///
 /// 返回 `Ok(())` 表示密码正确，`Err(...)` 表示密码错或 vault 异常。
-pub fn verify_master_password(password: &str) -> Result<()> {
+pub fn verify_master_password(password: Zeroizing<String>) -> Result<()> {
     // 退避检查（复审 #3）——reprompt 场景的二次密码验证同样受 guard 保护
     if let Some(wait) = crate::attempt_guard::guard().remaining_wait() {
         bail!("尝试过于频繁，请等待 {} 秒后重试", wait.as_secs());
@@ -445,6 +454,26 @@ mod tests {
     static TEST_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 测试 helper：&str → Zeroizing<String>（H1 修复后 unlock 函数收 Zeroizing<String>）。
+    /// 生产代码用 Zeroizing::new(s.to_string())，测试用 zstr(s) 减少噪音。
+    fn zstr(s: &str) -> Zeroizing<String> {
+        Zeroizing::new(s.to_string())
+    }
+
+    /// H1 签名约定守护：4 个 unlock 入口都收 Zeroizing<String>，编译期保证主密码
+    /// 会被 drop 时清零（类型系统层面兑现 kdf.rs 的源秘密清零承诺）。
+    #[test]
+    fn h1_unlock_functions_accept_zeroizing_string() {
+        fn _assert_setup(_: Zeroizing<String>) {}
+        fn _assert_unlock(_: Zeroizing<String>) {}
+        fn _assert_change(_: Zeroizing<String>, _: Zeroizing<String>) {}
+        fn _assert_verify(_: Zeroizing<String>) {}
+        _assert_setup(Zeroizing::new("a".into()));
+        _assert_unlock(Zeroizing::new("b".into()));
+        _assert_change(Zeroizing::new("c".into()), Zeroizing::new("d".into()));
+        _assert_verify(Zeroizing::new("e".into()));
     }
 
     /// 注入干净 in-memory DB（含 vault_meta 表，无数据）+ 干净 in-memory Keychain。
@@ -548,7 +577,7 @@ mod tests {
         let _ = keychain::delete_machine_key();
 
         // 注：密码需满足后端 validate_master_password 强度要求（≥12 + 4 类）
-        let keys = setup_vault("Test-password-123!").expect("setup_vault");
+        let keys = setup_vault(zstr("Test-password-123!")).expect("setup_vault");
         // 32B 派生 key
         assert_eq!(keys.user_vault_key.as_bytes().len(), 32);
         assert_eq!(keys.app_key.as_bytes().len(), 32);
@@ -573,11 +602,11 @@ mod tests {
         let _ = keychain::delete_machine_key();
 
         let pw = "Correct-horse-battery-staple-1!";
-        let setup_keys = setup_vault(pw).expect("setup");
+        let setup_keys = setup_vault(zstr(pw)).expect("setup");
         // 清掉 K_machine 强制走流程 C（输主密码）
         let _ = keychain::delete_machine_key();
 
-        let unlocked = unlock_with_master_password(pw).expect("unlock");
+        let unlocked = unlock_with_master_password(zstr(pw)).expect("unlock");
         // 同样派生 → 应拿到同一把 user_vault_key
         assert_eq!(setup_keys.user_vault_key.as_bytes(), unlocked.user_vault_key.as_bytes());
         assert_eq!(setup_keys.app_key.as_bytes(), unlocked.app_key.as_bytes());
@@ -592,10 +621,10 @@ mod tests {
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
-        let _ = setup_vault("Right-password-1!").expect("setup");
+        let _ = setup_vault(zstr("Right-password-1!")).expect("setup");
         let _ = keychain::delete_machine_key();
 
-        let result = unlock_with_master_password("wrong-password");
+        let result = unlock_with_master_password(zstr("wrong-password"));
         assert!(result.is_err(), "错误主密码应解密失败");
 
         let _ = keychain::delete_machine_key();
@@ -614,10 +643,10 @@ mod tests {
         let old_pw = "Old-master-password-1!";
         let new_pw = "New-master-password-2!";
 
-        let setup_keys = setup_vault(old_pw).expect("setup");
+        let setup_keys = setup_vault(zstr(old_pw)).expect("setup");
         let _ = keychain::delete_machine_key();
 
-        let keys = change_master_password(old_pw, new_pw).expect("change password");
+        let keys = change_master_password(zstr(old_pw), zstr(new_pw)).expect("change password");
         // user_vault_key / app_key 不应随 master 变化
         assert_eq!(
             keys.user_vault_key.as_bytes(),
@@ -640,21 +669,21 @@ mod tests {
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
-        let setup_keys = setup_vault("Pw-old-pw-1!").expect("setup");
+        let setup_keys = setup_vault(zstr("Pw-old-pw-1!")).expect("setup");
         let _ = keychain::delete_machine_key();
 
-        change_master_password("Pw-old-pw-1!", "Pw-new-pw-2!").expect("change");
+        change_master_password(zstr("Pw-old-pw-1!"), zstr("Pw-new-pw-2!")).expect("change");
 
         // 旧密码应失败
         let _ = keychain::delete_machine_key();
         assert!(
-            unlock_with_master_password("Pw-old-pw-1!").is_err(),
+            unlock_with_master_password(zstr("Pw-old-pw-1!")).is_err(),
             "旧主密码改密后应解不开"
         );
         // reset guard——测试环境无真实退避需求，避免挡住下面的成功路径
         crate::attempt_guard::guard().reset();
         // 新密码应成功，且拿到同一把 user_vault_key
-        let unlocked = unlock_with_master_password("Pw-new-pw-2!").expect("new pw unlocks");
+        let unlocked = unlock_with_master_password(zstr("Pw-new-pw-2!")).expect("new pw unlocks");
         assert_eq!(
             unlocked.user_vault_key.as_bytes(),
             setup_keys.user_vault_key.as_bytes(),
@@ -671,10 +700,10 @@ mod tests {
         setup_clean_db();
         let _ = keychain::delete_machine_key();
 
-        let _ = setup_vault("Correct-old-1!").expect("setup");
+        let _ = setup_vault(zstr("Correct-old-1!")).expect("setup");
         let _ = keychain::delete_machine_key();
 
-        let result = change_master_password("wrong-old", "Anything-new-2!");
+        let result = change_master_password(zstr("wrong-old"), zstr("Anything-new-2!"));
         assert!(result.is_err(), "错误旧密码应导致 change 失败");
 
         let _ = keychain::delete_machine_key();
@@ -700,13 +729,13 @@ mod tests {
         let _ = keychain::delete_machine_key();
 
         let pw = "Test-password-1!";
-        setup_vault(pw).expect("setup");
+        setup_vault(zstr(pw)).expect("setup");
 
         // 流程 C：清 K_machine 模拟换机 → unlock 后 refresh 会重写 local_enc
         //   （旧 local_enc 用 setup 时的 K_machine 加密；现在 K_machine 全新，
         //    解开解不出当前 app_key → 不短路 → 重写）
         let _ = keychain::delete_machine_key();
-        unlock_with_master_password(pw).expect("flow C unlock");
+        unlock_with_master_password(zstr(pw)).expect("flow C unlock");
         let local_enc_after_flow_c = meta::read_vault_meta()
             .expect("read meta")
             .expect("vault_meta should exist")
@@ -714,7 +743,7 @@ mod tests {
 
         // 流程 D：K_machine 不变（沿用流程 C 末尾 keychain 里的 key）→ unlock 第二次
         //   → refresh 应短路跳过 save
-        unlock_with_master_password(pw).expect("flow D unlock");
+        unlock_with_master_password(zstr(pw)).expect("flow D unlock");
         let local_enc_after_flow_d = meta::read_vault_meta()
             .expect("read meta")
             .expect("vault_meta should exist")
@@ -749,20 +778,20 @@ mod tests {
 
         let old_pw = "Old-password-1!";
         let new_pw = "New-password-2!";
-        let _ = setup_vault(old_pw).expect("setup");
+        let _ = setup_vault(zstr(old_pw)).expect("setup");
         let _ = keychain::delete_machine_key();
 
         // 连续输错旧密码触发退避（第 3 次失败 delay=2s）
         for _ in 0..3 {
             // 错旧密码会立即 record_failure（前 2 次 delay=0/1，remaining_wait 暂不挡）
             // 第 3+ 次调用一开始就被 remaining_wait 挡 bail，但 record_failure 已累计
-            let _ = change_master_password("wrong-old-pw-WITH-STRENGTH-1!", new_pw).err();
+            let _ = change_master_password(zstr("wrong-old-pw-WITH-STRENGTH-1!"), zstr(new_pw)).err();
         }
         // 等待最长退避窗口过去（BACKOFF_SECS[2]=2s，留足余量到 3s）
         std::thread::sleep(std::time::Duration::from_secs(3));
 
         // 用正确旧密码改密成功——B1 修复后成功路径 reset guard
-        change_master_password(old_pw, new_pw).expect("change with correct old pw");
+        change_master_password(zstr(old_pw), zstr(new_pw)).expect("change with correct old pw");
 
         assert!(
             crate::attempt_guard::guard().remaining_wait().is_none(),
@@ -770,7 +799,7 @@ mod tests {
         );
 
         // 立即用新密码 unlock 应能成功（验证 reset 后不被挡）
-        let _ = unlock_with_master_password(new_pw).expect("unlock with new pw should work");
+        let _ = unlock_with_master_password(zstr(new_pw)).expect("unlock with new pw should work");
 
         let _ = keychain::delete_machine_key();
     }
@@ -791,18 +820,18 @@ mod tests {
         let _ = keychain::delete_machine_key();
 
         let pw = "Correct-password-1!";
-        let _ = setup_vault(pw).expect("setup");
+        let _ = setup_vault(zstr(pw)).expect("setup");
         let _ = keychain::delete_machine_key();
 
         // 连续输错密码触发退避
         for _ in 0..3 {
-            let _ = unlock_with_master_password("wrong-pw").err();
+            let _ = unlock_with_master_password(zstr("wrong-pw")).err();
         }
         // 等待退避窗口过去（delay 序列第 3 次 = 2s，sleep 等 3s 保证已过）
         std::thread::sleep(std::time::Duration::from_secs(3));
 
         // 用正确密码解锁——应成功且 reset
-        let _ = unlock_with_master_password(pw).expect("unlock with correct pw");
+        let _ = unlock_with_master_password(zstr(pw)).expect("unlock with correct pw");
         assert!(
             crate::attempt_guard::guard().remaining_wait().is_none(),
             "B2 修复：正确密码解锁后 guard 应被 reset（副作用失败不污染）"

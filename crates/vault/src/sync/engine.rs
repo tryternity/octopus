@@ -30,6 +30,7 @@ use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMeta, VaultMet
 use octopus_sync::error::SyncError;
 use octopus_sync::git;
 use octopus_sync::privacy::{self, PrivacyVerdict};
+use zeroize::Zeroizing;
 
 use crate::sync::store;
 
@@ -926,7 +927,7 @@ fn folder_md5_mismatch(uuid: &str, outline_md5: &str, db_folders: &[db::VaultFol
 ///
 /// **密码验证**：用远程 KDF 参数（salt + Argon2Params）+ 用户输入密码派生
 /// master_root_key，尝试解 remote protected_user_vault_key——失败即密码错误。
-pub fn resolve_with_remote(password: &str) -> Result<(), SyncError> {
+pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError> {
     use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
 
     // #7 修复：resolve 会 git add/commit，与 sync_now 并发会留残留
@@ -983,7 +984,7 @@ pub fn resolve_with_remote(password: &str) -> Result<(), SyncError> {
 ///
 /// **密码验证**：用本地 KDF 参数 + 密码派生 master_root_key，解本地
 /// protected_user_vault_key——失败即密码错误（和 unlock 同逻辑）。
-pub fn resolve_with_local(password: &str) -> Result<(), SyncError> {
+pub fn resolve_with_local(password: Zeroizing<String>) -> Result<(), SyncError> {
     use crate::crypto::kdf::{derive_master_root_key, Argon2Params};
 
     // #7 修复：resolve 会 git add/commit，与 sync_now 并发会留残留

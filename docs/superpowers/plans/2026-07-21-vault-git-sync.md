@@ -1530,3 +1530,40 @@ Task 13 全部完成（2026-07-22）。Phase A（sync crate 抽离）+ Phase B�
 1. **last-write-wins**（vault + hotword）：本地未 push 的修改可能被远程盲覆盖。Phase 2 自动同步时考虑引入冲突检测。
 2. **#12 vault_update_cipher 静默成功**：follow-up。
 3. **8.2 字符集 &[char] 重构 / 8.4 正则缓存**：follow-up（需并发设计）。
+
+---
+
+## 第二轮代码审查修复（2026-07-24）
+
+**触发**：用户贴了第二轮审查报告（1 高 + 4 中 + 9 低）。逐条核实后全部成立。
+
+**详见**：[2026-07-24-vault-security-hardening.md](../specs/2026-07-24-vault-security-hardening.md)
+
+### 实施记录（9 个 Task）
+
+| Task | 问题 | 文件 | 状态 |
+|---|---|---|---|
+| 1 | H1 主密码 zeroize | unlock.rs, engine.rs, kdf.rs, vault_commands.rs, vault_sync_commands.rs, Cargo.toml | ✅ |
+| 2 | M1 超长密码误报 | strength.rs | ✅ |
+| 3 | M2 totp secret 下限 | totp.rs | ✅ |
+| 4 | M3 setup TOCTOU | unlock.rs | ✅ |
+| 5 | M4 枚举非法值 log | types.rs | ✅ |
+| 6 | L1 resizable | vault_commands.rs | ✅ |
+| 7 | L4 store 原子写 | sync/store.rs | ✅ |
+| 8 | L6 duplicates 过滤 | health/duplicate.rs | ✅ |
+| 9 | L8 import 事务 | db.rs, cipher.rs, bitwarden.rs | ✅ |
+
+### 关键设计决策
+
+- **H1 zeroize 方案**：`Zeroizing<String>` 所有权转移（非借用）——Tauri 命令签名不动，vault 层结束时自动清零
+- **M4 枚举**：保留 From + 兜底（不全面改 TryFrom），加 log warn——波及面 vs 收益不匹配
+- **L8 import**：两阶段（先加密收集 Vec，再 batch 事务化 insert）——既原子又容错
+
+### follow-up（未修）
+
+L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 墙钟（报告自评可接受）/ L7 全量解密（已 debounce）/ L9 目录权限（泄露面小）
+
+### 测试基线（修复后）
+
+- vault: **213 pass** + 1 ignored（+4：H1 签名守护 / M1 重复+多样 / M2 空 secret / L6 软删）
+- desktop: **396 pass**

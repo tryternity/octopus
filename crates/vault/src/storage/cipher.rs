@@ -49,6 +49,20 @@ pub fn load_cipher(id: &str, key: &DerivedKey) -> Result<Option<Cipher>> {
 /// 创建 cipher——调用方必须先 `Uuid::new_v4().to_string()` 生成 id 传入。
 /// 2026-07-21 v44：id 从 AUTOINCREMENT 改 UUID 字符串（git 同步跨设备无冲突）。
 pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
+    let db_input = prepare_cipher_input(id, input, key)?;
+    Ok(db::insert_vault_cipher(&db_input)?)
+}
+
+/// 仅加密 + 算 sync_md5，不落库（L8 修复，2026-07-24）。
+///
+/// 供 importer 批量事务化用：先循环调此函数收集 `Vec<VaultCipherInput>`，
+/// 再一次性 `db::insert_vault_ciphers_batch` 事务化 insert。加密是纯内存操作，
+/// 失败的条目在循环阶段跳过（记 errors），只把成功的进 batch——既原子又容错。
+pub fn prepare_cipher_input(
+    id: &str,
+    input: &CipherInput,
+    key: &DerivedKey,
+) -> Result<VaultCipherInput> {
     let enc = input.encrypt_strings(key)?;
     let db_input = VaultCipherInput {
         id: id.to_string(),
@@ -64,8 +78,7 @@ pub fn create_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<
         sync_md5: None, // 下面算好填入
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
-    let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
-    Ok(db::insert_vault_cipher(&db_input)?)
+    Ok(VaultCipherInput { sync_md5: Some(sync_md5), ..db_input })
 }
 
 pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {

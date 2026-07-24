@@ -283,6 +283,55 @@ impl FolderFile {
 
 // === 读写函数 ===
 
+/// 原子写文件（L4 修复，2026-07-24）。
+///
+/// 模式：temp file + write_all + sync_all + rename（POSIX rename 原子）。
+/// 复用 keychain.rs:314-388 的模式，但**不设 0600**——sync 文件需正常权限
+/// （git 同步场景，其他设备读取；与现有 std::fs::write 的 umask 行为一致）。
+///
+/// temp 文件用 `.<name>.tmp` 前缀（隐藏 + 不匹配 walk_json_files 的 .json 扫描），
+/// 保证与目标同目录（同卷，rename 原子）。
+fn write_atomically(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+    }
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("data");
+    let tmp_path = path.with_file_name(format!(".{}.tmp", file_name));
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+    }
+    Ok(())
+}
+
 /// 读 meta.json。
 pub fn read_meta_file() -> Result<MetaFile> {
     let path = meta_path();
@@ -293,17 +342,10 @@ pub fn read_meta_file() -> Result<MetaFile> {
     Ok(meta)
 }
 
-/// 写 meta.json（pretty print，便于 git diff 可读）。
+/// 写 meta.json（原子写，L4 修复）。
 pub fn write_meta_file(meta: &MetaFile) -> Result<()> {
-    let path = meta_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(meta).context("序列化 meta.json 失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 meta.json 失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&meta_path(), &format!("{}\n", json))
 }
 
 /// 读 outline.json。文件不存在时返回默认空 outline（首次同步）。
@@ -321,17 +363,10 @@ pub fn read_outline_file() -> Result<Outline> {
     }
 }
 
-/// 写 outline.json。
+/// 写 outline.json（原子写，L4 修复）。
 pub fn write_outline_file(outline: &Outline) -> Result<()> {
-    let path = outline_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(outline).context("序列化 outline.json 失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 outline.json 失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&outline_path(), &format!("{}\n", json))
 }
 
 /// 读单个 cipher 文件。
@@ -344,18 +379,12 @@ pub fn read_cipher_file(uuid: &str) -> Result<CipherFile> {
     Ok(cipher)
 }
 
-/// 写单个 cipher 文件（含分桶目录创建）。
+/// 写单个 cipher 文件（原子写，L4 修复）。
 pub fn write_cipher_file(cipher: &VaultCipher) -> Result<()> {
     let path = cipher_file_path(&cipher.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建桶目录失败：{}", parent.display()))?;
-    }
     let file = CipherFile::from_vault_cipher(cipher);
     let json = serde_json::to_string_pretty(&file).context("序列化 cipher 文件失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 cipher 文件失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&path, &format!("{}\n", json))
 }
 
 /// 删除单个 cipher 文件（同步删除场景）。
@@ -379,18 +408,12 @@ pub fn read_folder_file(uuid: &str) -> Result<FolderFile> {
     Ok(folder)
 }
 
-/// 写单个 folder 文件。
+/// 写单个 folder 文件（原子写，L4 修复）。
 pub fn write_folder_file(folder: &VaultFolder) -> Result<()> {
     let path = folder_file_path(&folder.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建桶目录失败：{}", parent.display()))?;
-    }
     let file = FolderFile::from_vault_folder(folder);
     let json = serde_json::to_string_pretty(&file).context("序列化 folder 文件失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 folder 文件失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&path, &format!("{}\n", json))
 }
 
 /// 删除单个 folder 文件。

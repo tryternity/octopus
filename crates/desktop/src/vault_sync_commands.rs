@@ -8,6 +8,7 @@
 use octopus_vault::sync::{self as vault_sync, SyncReport, SyncStatus};
 use tauri::{AppHandle, Emitter};
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 /// SyncError → Tauri String（用 Display，用户可读）。
 fn sync_err_to_string(e: octopus_vault::sync::SyncError) -> String {
@@ -117,12 +118,12 @@ pub fn vault_sync_clone(remote_url: String) -> Result<(), String> {
 /// 用户输入远程 vault 的主密码验证后，用远程 meta 覆盖本地。
 #[tauri::command]
 pub fn vault_sync_resolve_remote(password: String) -> Result<(), String> {
-    vault_sync::resolve_with_remote(&password).map_err(sync_err_to_string)
+    vault_sync::resolve_with_remote(Zeroizing::new(password)).map_err(sync_err_to_string)
 }
 
 /// stamp 冲突解决：以本地为准（远程 meta 被污染时用）。
 /// 用户输入本地 vault 的主密码验证后，把本地 meta push 覆盖远程。
 #[tauri::command]
 pub fn vault_sync_resolve_local(password: String) -> Result<(), String> {
-    vault_sync::resolve_with_local(&password).map_err(sync_err_to_string)
+    vault_sync::resolve_with_local(Zeroizing::new(password)).map_err(sync_err_to_string)
 }

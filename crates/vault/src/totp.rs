@@ -30,6 +30,14 @@ impl TotpGenerator {
         let bytes = Secret::Encoded(secret.to_string())
             .to_bytes()
             .context("TOTP secret Base32 解码失败")?;
+        // M2 修复（2026-07-24）：校验 secret 长度下限——RFC 6238 要求 ≥ 80bit（10 字节）。
+        // base32::decode("") 返回 Some(Vec::new()) 而非 None，空 secret 会通过 →
+        // current() 用空 secret 调 HMAC 生成完全可预测的 code。必须显式拦截。
+        ensure!(
+            bytes.len() >= 10,
+            "TOTP secret 过短（{} 字节，RFC 6238 要求 ≥ 10 字节/80bit）",
+            bytes.len()
+        );
         // new_unchecked：不强制 secret >= 128bit（修复 #7）。
         // otpauth feature 启用后签名要求 issuer + account_name（即使不用 otpauth URL）。
         let totp = TOTP::new_unchecked(
@@ -83,6 +91,14 @@ impl TotpGenerator {
                 Algorithm::SHA1 | Algorithm::SHA256 | Algorithm::SHA512
             ),
             "TOTP algorithm 仅支持 SHA1/SHA256/SHA512"
+        );
+        // M2 修复（2026-07-24）：校验 secret 长度下限——与 from_base32 对称。
+        // 文件头注释（:8-9）承诺 RFC 6238 80bit 下限，otpauth 路径之前未落地。
+        // 威胁：Bitwarden 导入畸形 URL / 用户手贴空 secret otpauth → 完全可预测的 code。
+        ensure!(
+            totp.secret.len() >= 10,
+            "TOTP secret 过短（{} 字节，RFC 6238 要求 ≥ 10 字节/80bit）",
+            totp.secret.len()
         );
 
         let step = totp.step; // 先取，避免下面 move 后访问
@@ -276,5 +292,18 @@ mod tests {
     fn test_algorithm_invalid_returns_err() {
         let url = "otpauth://totp/?secret=JBSWY3DPEHPK3PXP&algorithm=MD5";
         assert!(TotpGenerator::from_otpauth_url(url).is_err());
+    }
+
+    /// M2 修复回归守护：空 secret / 过短 secret 必须被拒（不能生成可预测 code）。
+    #[test]
+    fn test_empty_or_short_secret_rejected() {
+        // 空 secret otpauth（base32 decode("") 返 Some(Vec::new())，非 None）
+        assert!(TotpGenerator::from_otpauth_url("otpauth://totp/?secret=").is_err());
+        // 过短 secret（< 10 字节 / 80bit）
+        // "AB" 解码后 1 字节——远低于 RFC 6238 下限
+        assert!(TotpGenerator::from_base32("AB").is_err());
+        assert!(TotpGenerator::from_otpauth_url("otpauth://totp/?secret=AB").is_err());
+        // 边界：刚好 10 字节（80bit）应通过——JBSWY3DPEHPK3PXP 是 10 字节
+        assert!(TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").is_ok());
     }
 }

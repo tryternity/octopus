@@ -27,10 +27,17 @@ impl From<CipherType> for i64 {
 impl From<i64> for CipherType {
     fn from(v: i64) -> Self {
         match v {
+            1 => CipherType::Login,
             2 => CipherType::SecureNote,
             3 => CipherType::Card,
             4 => CipherType::Identity,
-            _ => CipherType::Login, // 兜底为 Login（兼容未知类型）
+            other => {
+                // M4（2026-07-24）：非法值不再静默兜底——记 log 让问题可观测。
+                // 保留兜底为 Login（数据兼容性——旧库可能有未知类型，不能让读取失败），
+                // 但至少诊断时有迹可循。威胁模型假设 DB 不被直接改（单机）。
+                log::warn!("CipherType 非法值 {}，兜底为 Login", other);
+                CipherType::Login
+            }
         }
     }
 }
@@ -51,10 +58,19 @@ impl From<RepromptType> for i64 {
 
 impl From<i64> for RepromptType {
     fn from(v: i64) -> Self {
-        if v == 1 {
-            RepromptType::Password
-        } else {
-            RepromptType::None
+        match v {
+            0 => RepromptType::None,
+            1 => RepromptType::Password,
+            other => {
+                // M4（2026-07-24）：非法值不再静默降级 None——记 log 让问题可观测。
+                // 仍降级为 None（数据兼容性），但诊断时可发现 DB 被篡改的迹象。
+                // 注意：降级 None 意味着绕过二次验证——威胁模型假设 DB 不被直接改。
+                log::warn!(
+                    "RepromptType 非法值 {}，降级为 None（二次验证被绕过——检查 DB 是否被篡改）",
+                    other
+                );
+                RepromptType::None
+            }
         }
     }
 }

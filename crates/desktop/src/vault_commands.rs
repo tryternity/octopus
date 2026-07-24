@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use zeroize::Zeroizing;
 
 use octopus_clipboard::ClipboardHandle;
 use octopus_vault::crypto::DerivedKey;
@@ -227,8 +228,9 @@ pub fn vault_status(
 
 #[tauri::command]
 pub fn vault_setup(state: State<'_, SharedVaultSession>, password: String) -> Result<(), String> {
-    let keys =
-        octopus_vault::unlock::setup_vault(&password).map_err(vault_error::to_tauri_error)?;
+    // H1 修复：主密码用 Zeroizing 包裹 move 进 vault 层，vault 层结束时清零 heap
+    let keys = octopus_vault::unlock::setup_vault(Zeroizing::new(password))
+        .map_err(vault_error::to_tauri_error)?;
     let mut session = state.write();
     session.set_user_vault_unlocked(Arc::new(keys.user_vault_key));
     session.app_key = Some(Arc::new(keys.app_key));
@@ -237,7 +239,7 @@ pub fn vault_setup(state: State<'_, SharedVaultSession>, password: String) -> Re
 
 #[tauri::command]
 pub fn vault_unlock(state: State<'_, SharedVaultSession>, password: String) -> Result<(), String> {
-    let keys = octopus_vault::unlock::unlock_with_master_password(&password)
+    let keys = octopus_vault::unlock::unlock_with_master_password(Zeroizing::new(password))
         .map_err(vault_error::to_tauri_error)?;
     let mut session = state.write();
     session.set_user_vault_unlocked(Arc::new(keys.user_vault_key));
@@ -303,8 +305,11 @@ pub fn vault_change_password(
     old_password: String,
     new_password: String,
 ) -> Result<(), String> {
-    let keys = octopus_vault::unlock::change_master_password(&old_password, &new_password)
-        .map_err(vault_error::to_tauri_error)?;
+    let keys = octopus_vault::unlock::change_master_password(
+        Zeroizing::new(old_password),
+        Zeroizing::new(new_password),
+    )
+    .map_err(vault_error::to_tauri_error)?;
     // 改密码成功后用返回的 keys 刷新 session（即使之前是 locked 也 re-unlock）。
     // user_vault_key / app_key 在改密码流程中不变（INV-7），但显式刷一下让
     // 「先 lock 再改密码」也能用——跟 setup_vault / vault_unlock 一致。
@@ -721,7 +726,7 @@ pub fn vault_autotype(
         match master_password {
             Some(pwd) => {
                 // 密码错或 vault 异常 → InvalidMasterPassword（user-safe 消息，不透传内部细节）
-                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                octopus_vault::unlock::verify_master_password(Zeroizing::new(pwd)).map_err(|_| {
                     vault_error::serialize(&VaultError::InvalidMasterPassword)
                 })?;
             }
@@ -957,7 +962,7 @@ pub fn vault_copy_password(
     if cipher.reprompt == RepromptType::Password {
         match master_password {
             Some(pwd) => {
-                octopus_vault::unlock::verify_master_password(&pwd).map_err(|_| {
+                octopus_vault::unlock::verify_master_password(Zeroizing::new(pwd)).map_err(|_| {
                     vault_error::serialize(&VaultError::InvalidMasterPassword)
                 })?;
             }
@@ -1079,9 +1084,11 @@ pub fn register_vault_autotype_shortcut(
                     )
                     .title("Vault Auto-Type")
                     // 初始 400×200（locked/uninit 紧凑视图）。list 视图内容多时前端
-                    // useEffect 据 cipher 数量动态调 set_size 撑高（2026-07-20 e2e 反馈）。
+                    // L1 修复（2026-07-24）：resizable(true) 让前端 setSize 生效
+                    // （Tauri 2 resizable(false) 会忽略后续 setSize 调用）。
+                    // 当前固定 320×360，但 resizable(true) 保证 setSize 不被吞。
                     .inner_size(320.0, 360.0)
-                    .resizable(false)
+                    .resizable(true)
                     .decorations(false)
                     .always_on_top(true)
                     .transparent(true)
@@ -1510,7 +1517,7 @@ mod tests {
         octopus_vault::keychain::set_test_keychain();
         let _ = octopus_vault::keychain::delete_machine_key();
 
-        let keys = octopus_vault::unlock::setup_vault("Test-master-pw1!")
+        let keys = octopus_vault::unlock::setup_vault(Zeroizing::new("Test-master-pw1!".into()))
             .expect("setup_vault");
         let _ = octopus_vault::keychain::delete_machine_key();
         Arc::new(keys.user_vault_key)
@@ -1636,7 +1643,7 @@ mod tests {
         octopus_vault::keychain::set_test_keychain();
         let _ = octopus_vault::keychain::delete_machine_key();
 
-        let keys = octopus_vault::unlock::setup_vault("Test-master-pw1!")
+        let keys = octopus_vault::unlock::setup_vault(Zeroizing::new("Test-master-pw1!".into()))
             .expect("setup_vault");
         let _ = octopus_vault::keychain::delete_machine_key();
         (Arc::new(keys.user_vault_key), Arc::new(keys.app_key))

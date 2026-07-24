@@ -3733,6 +3733,23 @@ pub fn insert_vault_cipher(input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| insert_vault_cipher_at(conn, input))
 }
 
+/// 批量插入 cipher（L8 修复，2026-07-24）——事务化，全成功或全回滚。
+///
+/// 用于 Bitwarden import：之前逐条 `insert_vault_cipher` 各自 autocommit，
+/// 中途失败留部分数据。现在包一个 `unchecked_transaction`，任一失败 → 整批回滚。
+/// 调用方应在循环阶段先过滤掉加密失败的条目（加密是纯内存操作，不破坏事务），
+/// 只把加密成功的传进来 batch insert。
+pub fn insert_vault_ciphers_batch(inputs: &[VaultCipherInput]) -> Result<()> {
+    with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for input in inputs {
+            insert_vault_cipher_at(&tx, input)?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
         "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, sync_md5)
