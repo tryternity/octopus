@@ -313,6 +313,13 @@ fn write_atomically(path: &Path, content: &str) -> Result<()> {
         std::fs::rename(&tmp_path, path).with_context(|| {
             format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
         })?;
+        // N3 修复（2026-07-24）：rename 后 fsync 父目录——POSIX 下目录项更新
+        // 需 fsync 才能扛断电，否则断电恰在 rename 后可能丢 rename（恢复后看到旧版本）。
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all(); // 目录 fsync 失败不阻断（best-effort）
+            }
+        }
     }
     #[cfg(not(unix))]
     {
@@ -328,6 +335,7 @@ fn write_atomically(path: &Path, content: &str) -> Result<()> {
         std::fs::rename(&tmp_path, path).with_context(|| {
             format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
         })?;
+        // Windows: MoveFileEx(REPLACE_EXISTING) 已保证可见性，无需目录 fsync
     }
     Ok(())
 }

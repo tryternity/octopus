@@ -1087,7 +1087,10 @@ pub fn register_vault_autotype_shortcut(
                     // L1 修复（2026-07-24）：resizable(true) 让前端 setSize 生效
                     // （Tauri 2 resizable(false) 会忽略后续 setSize 调用）。
                     // 当前固定 320×360，但 resizable(true) 保证 setSize 不被吞。
+                    // N4 加固（2026-07-24）：min_inner_size 防御——resizable(true)
+                    // 理论上允许用户拖拽改尺寸，加下限防止缩到不可用。
                     .inner_size(320.0, 360.0)
+                    .min_inner_size(320.0, 360.0)
                     .resizable(true)
                     .decorations(false)
                     .always_on_top(true)

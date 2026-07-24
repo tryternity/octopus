@@ -157,8 +157,43 @@
 
 新增测试（全部通过）：
 - `h1_unlock_functions_accept_zeroizing_string`（H1 编译期签名约定守护）
-- `test_very_long_repetitive_password_is_weak` / `test_very_long_diverse_password_is_strong`（M1）
+- `test_very_long_repetitive_password_is_weak` / `test_very_long_low_unique_cycle_is_weak` / `test_very_long_diverse_password_is_strong`（M1 + N1）
 - `test_empty_or_short_secret_rejected`（M2）
 - `test_skip_deleted_ciphers`（L6）
 
-**测试基线**：vault 213 passed（+4）/ desktop 396 passed / tsc 0 error。
+**测试基线**：vault 214 passed（+5）/ desktop 396 passed / tsc 0 error。
+
+---
+
+## 第三轮新发现修复（2026-07-24，N1-N4）
+
+### N1: 超长低唯一字符循环仍误报（M1 的补全）
+
+**问题**：M1 的 `unique_count.log2() × char_count` 公式堵住 unique=1，但 `"ab"×1024`（unique=2, log2(2)=1 → 2048 bit → Score::4）仍误报。zxcvbn 本能识别循环模式但 >1KB 短路跳过了它。
+
+**修复**：超长密码取前 256 字符跑 zxcvbn 做模式识别（zxcvbn 能识别重复/循环/键盘序列/字典词），用其 score；再用完整长度估熵做补充。取两者较低值（`pattern_score.min(entropy_score)`）——防"长但重复"或"短采样恰好高熵"误报。
+
+### N2: AES key schedule 不 zeroize —— 反馈（修法不成立）
+
+**报告建议**：「一行 Cargo feature 启用 aes 的 zeroize」。
+
+**复查结论：不成立**。aes 0.8.4 的 `[features]` 只有 `hazmat`，**没有 zeroize feature**。zeroize 是 target-specific optional dependency（仅 aarch64 armv8），但没有 feature flag 暴露给用户启用。无法通过 `Cargo.toml` 一行修复。
+
+**替代方案评估**：
+- fork aes 0.8 加 zeroize feature → 维护成本高
+- 调用方 `unsafe` 手动清零 → 拿不到 Aes256Gcm 内部 round keys 私有字段
+- 升级 aes → aes-gcm 0.10 锁定 aes 0.8
+
+**决策**：标记为 follow-up。H1 已堵住主密码这条线（最高价值的源秘密），AES round keys 是派生密钥的展开形式（value 低于主密码本身）。完整修复需待 aes-gcm 升级或迁移到其他加密库（如 RustCrypto 的新版本可能支持）。
+
+### N3: rename 后 fsync 父目录（L4 的补全）
+
+**问题**：L4 的 `write_atomically` 对 temp 文件 `sync_all` 了，但 rename 后未对父目录 fsync。POSIX 下目录项更新需 fsync 才能扛断电。
+
+**修复**：rename 后 `File::open(parent)?.sync_all()`（best-effort，失败不阻断）。与 keychain.rs 的同样缺口暂不一并改（一致性，非新引入）。
+
+### N4: resizable(true) 副作用加固
+
+**问题**：L1 改 `resizable(true)` 理论上允许用户拖拽改尺寸（实践无碍——frameless 窗口无把手）。
+
+**修复**：加 `min_inner_size(320.0, 360.0)` 防御——即使可拖拽，也不会缩到不可用。
