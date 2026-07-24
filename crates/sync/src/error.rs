@@ -137,7 +137,11 @@ pub fn classify_git_error(stderr: &str) -> SyncError {
         || lower.contains("network is unreachable")
     {
         SyncError::NetworkUnreachable(stderr.to_string())
-    } else if lower.contains("repository not found") || lower.contains("not found") {
+    } else if lower.contains("repository not found") {
+        // ER1 修复（2026-07-24）：删 || lower.contains("not found")——
+        // 单独的 "not found" 过宽，误匹配 "object not found"（本地 repo 损坏）、
+        // "path not found" 等非远程不存在的错误 → 前端误导用户查 remote 配置。
+        // git 远程不存在的标准文案是 "repository '...' not found"，已被此处覆盖。
         SyncError::RemoteNotFound(stderr.to_string())
     } else if lower.contains("conflict") {
         SyncError::ConflictNeedsManual(stderr.to_string())
