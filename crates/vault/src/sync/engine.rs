@@ -929,8 +929,11 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
     let f = remote_meta.to_sync_fields()?;
 
     // 2. 用远程 KDF 参数 + 密码派生 master_root_key，验证密码
-    //    #14 修复：用 from_meta 校验 i64→u32 范围（防止篡改削弱 KDF）
-    let params = Argon2Params::from_i64(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
+    //    #14 修复：用 from_i64 校验 i64→u32 范围（防止篡改削弱 KDF）
+    //    K1 修复（2026-07-24）：远程参数（f.kdf_* 来自同步仓库 meta.json，不可信）
+    //    用 from_i64_strict——安全下限（memory≥16384KiB）防攻击者污染仓库为弱 KDF
+    //    废掉 Argon2id 内存硬度。本地 DB 路径（resolve_with_local）继续用 from_i64。
+    let params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
         .map_err(SyncError::Other)?;
     let master = derive_master_root_key(password.as_bytes(), &f.kdf_salt, &params)
         .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;

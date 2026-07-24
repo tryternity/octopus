@@ -147,7 +147,7 @@ mod tests {
     /// 构造一份确定性的 32B DerivedKey（每个 byte 都为 `byte`）。
     fn make_key(byte: u8) -> Arc<DerivedKey> {
         use octopus_vault::Zeroizing;
-        Arc::new(DerivedKey(Zeroizing::new([byte; 32])))
+        Arc::new(DerivedKey::from_raw([byte; 32]))
     }
 
     /// 构造一个空 session（app_key=None），用于测试「vault 已启用但 app_key 不可用」。

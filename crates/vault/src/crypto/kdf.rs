@@ -10,7 +10,14 @@ use zeroize::Zeroizing;
 use super::DerivedKey;
 
 /// Argon2id 参数。默认 t=3, m=64 MiB, p=4。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// K3 修复（2026-07-24）：移除 `Deserialize` derive。之前 `#[derive(Deserialize)]`
+/// 暴露了"可构造 iterations=0 / 弱参数 Argon2Params 绕过 from_i64 校验"的能力。
+/// 当前无任何反序列化调用方（所有构造走 from_i64 / from_i64_strict / Default），
+/// 但若未来加配置加载/API 接收 JSON 的路径，Deserialize 会静默绕过校验。
+/// 保留 Serialize（未来可能用于配置导出，且不暴露构造能力）。
+/// 若未来确需反序列化，必须构造后立即用 from_i64_strict 复校验。
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Argon2Params {
     pub iterations: u32,    // t，默认 3
     pub memory_kib: u32,    // m，默认 65536 = 64 MiB
@@ -44,6 +51,11 @@ impl Argon2Params {
     /// 威胁模型：DB 被直接改（kdf_iterations=1）可悄悄削弱 KDF。虽然单机威胁模型
     /// 假设 DB 不被直接改，但加这层校验成本低、能至少在 Params::new 失败时报错
     /// 而非用弱参数继续。
+    ///
+    /// **注意（K1, 2026-07-24）**：本函数的下限是**崩溃级**（防 argon2 crate panic），
+    /// 非安全级。memory_kib=8 (8KB) 仍可通过——这废掉了 Argon2id 的内存硬度（GPU
+    /// 可全放寄存器高度并行爆破）。处理**远程不可信** KDF 参数（同步仓库的 meta.json）
+    /// 必须用 [`from_i64_strict`]，它有安全下限。本地 DB 可信，继续用本函数。
     pub fn from_i64(
         iterations: i64,
         memory_kib: i64,
@@ -58,6 +70,54 @@ impl Argon2Params {
             (8..=u32::MAX as i64).contains(&memory_kib),
             "kdf_memory_kib 非法（{}，应 ≥ 8——argon2 crate 要求）",
             memory_kib
+        );
+        ensure!(
+            (1..=u32::MAX as i64).contains(&parallelism),
+            "kdf_parallelism 非法（{}，应 ≥ 1）",
+            parallelism
+        );
+        Ok(Self {
+            iterations: iterations as u32,
+            memory_kib: memory_kib as u32,
+            parallelism: parallelism as u32,
+        })
+    }
+
+    /// 从**远程不可信** i64 字段构造 Argon2Params，带安全下限校验（K1 修复，2026-07-24）。
+    ///
+    /// 与 [`from_i64`] 的区别：下限是**安全级**而非崩溃级，防止攻击者污染同步仓库的
+    /// vault_meta 为弱 KDF 参数（如 memory_kib=8）废掉 Argon2id 内存硬度。
+    ///
+    /// 安全下限依据：
+    /// - `memory_kib ≥ 16384`（16 MiB）：保留 GPU 抗并行的内存硬度。8KB 可全放 GPU
+    ///   寄存器/共享内存 → 高度并行爆破，内存硬度几乎归零。OWASP 推荐值 65536 (64MiB)，
+    ///   16384 是兼顾安全与兼容旧配置的宽松下限。
+    /// - `iterations ≥ 2`：OWASP 推荐 3，允许 2 兼容合理配置，挡住 iterations=1。
+    /// - `parallelism ≥ 1`：与 from_i64 一致。
+    ///
+    /// 使用场景：`sync/engine.rs::resolve_with_remote` 处理远程 meta.json 的 KDF 参数。
+    /// 本地 DB 走 [`from_i64`]（本地可信假设）。
+    pub fn from_i64_strict(
+        iterations: i64,
+        memory_kib: i64,
+        parallelism: i64,
+    ) -> Result<Self> {
+        ensure!(
+            (1..=u32::MAX as i64).contains(&iterations),
+            "kdf_iterations 非法（{}，应在 1..=u32::MAX）",
+            iterations
+        );
+        ensure!(
+            memory_kib >= 16384 && memory_kib <= u32::MAX as i64,
+            "远程 kdf_memory_kib 过弱（{}，安全下限 ≥ 16384 KiB / 16MiB——\
+             低于此值 Argon2id 内存硬度归零，GPU 可高度并行爆破；\
+             若见此错检查同步仓库 vault_meta 是否被篡改）",
+            memory_kib
+        );
+        ensure!(
+            iterations >= 2,
+            "远程 kdf_iterations 过弱（{}，安全下限 ≥ 2）",
+            iterations
         );
         ensure!(
             (1..=u32::MAX as i64).contains(&parallelism),
@@ -99,7 +159,7 @@ pub fn derive_master_root_key(password: &[u8], salt: &[u8], params: &Argon2Param
     argon2
         .hash_password_into(password, salt, &mut *out)
         .context("Argon2id 派生失败")?;
-    Ok(DerivedKey(out))
+    Ok(DerivedKey::from_zeroizing(out))
 }
 
 #[cfg(test)]
@@ -148,5 +208,54 @@ mod tests {
         let p = Argon2Params::default();
         let result = derive_master_root_key(b"pwd", &[0u8; 16], &p);
         assert!(result.is_err());
+    }
+
+    /// K1 守护（2026-07-24）：from_i64_strict 拒绝弱 KDF 参数（远程不可信输入）。
+    ///
+    /// 攻击链：攻击者污染同步仓库 vault_meta 为 kdf_memory_kib=8 → 受害者 sync →
+    /// resolve_with_remote 用弱参数派生 → 攻击者离线爆破时 GPU 高度并行（8KB 可全放
+    /// 寄存器，内存硬度归零）。from_i64_strict 用安全下限拦截。
+    #[test]
+    fn from_i64_strict_rejects_weak_remote_params() {
+        // memory_kib=8（崩溃下限，from_i64 接受但 from_i64_strict 必须拒）
+        assert!(
+            Argon2Params::from_i64(3, 8, 4).is_ok(),
+            "from_i64 接受 memory=8（本地 DB 可信，崩溃下限）"
+        );
+        assert!(
+            Argon2Params::from_i64_strict(3, 8, 4).is_err(),
+            "from_i64_strict 必须拒 memory=8（远程不可信，废掉内存硬度）"
+        );
+
+        // iterations=1（from_i64 接受，from_i64_strict 拒，安全下限 ≥2）
+        assert!(Argon2Params::from_i64_strict(1, 65536, 4).is_err());
+
+        // memory_kib=16384（16MiB，安全下限边界）应通过
+        assert!(Argon2Params::from_i64_strict(3, 16384, 4).is_ok());
+        // memory_kib=16383（刚好低于下限）应拒
+        assert!(Argon2Params::from_i64_strict(3, 16383, 4).is_err());
+
+        // 默认参数（OWASP 推荐 t=3/m=64MiB/p=4）两条路径都应通过
+        let default = Argon2Params::default();
+        assert!(Argon2Params::from_i64_strict(
+            default.iterations as i64,
+            default.memory_kib as i64,
+            default.parallelism as i64,
+        )
+        .is_ok());
+
+        // 负值 / 超大值两条路径都拒
+        assert!(Argon2Params::from_i64_strict(-1, 65536, 4).is_err());
+        assert!(Argon2Params::from_i64_strict(3, -1, 4).is_err());
+    }
+
+    /// M1-mod 守护：DerivedKey 字段 private，外部经 from_raw 构造，as_bytes 读取。
+    #[test]
+    fn derived_key_from_raw_round_trip() {
+        let arr = [0xAB; 32];
+        let key = DerivedKey::from_raw(arr);
+        assert_eq!(key.as_bytes(), &arr);
+        // 字段 private：以下若取消注释应编译失败（验证字段不可直接访问）
+        // let _ = key.0;
     }
 }

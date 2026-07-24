@@ -320,7 +320,7 @@ mod tests {
     use crate::types::RepromptType;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     /// 注入干净 in-memory DB（含 vault_ciphers 表，无数据）——与 cipher.rs 测试一致。

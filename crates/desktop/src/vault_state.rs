@@ -188,7 +188,7 @@ mod tests {
     use octopus_vault::Zeroizing;
 
     fn make_key(byte: u8) -> Arc<DerivedKey> {
-        Arc::new(DerivedKey(Zeroizing::new([byte; 32])))
+        Arc::new(DerivedKey::from_raw([byte; 32]))
     }
 
     #[test]
