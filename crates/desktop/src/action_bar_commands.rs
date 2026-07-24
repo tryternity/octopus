@@ -1320,6 +1320,7 @@ pub fn open_file_in_editor(name: String, app: AppHandle) -> Result<(), String> {
         "itemId": item_id,
         "source": "file",
         "text": text,
+        "filePath": path_str,
     });
     if let Some(window) = app.get_webview_window(window_label) {
         let _ = window.emit("compact-editor://open-tab", payload);
@@ -1327,10 +1328,22 @@ pub fn open_file_in_editor(name: String, app: AppHandle) -> Result<(), String> {
         let _ = window.set_focus();
     } else {
         // 窗口不存在 → 建 pending + 开窗（file source 不走 store_pending_temp，走通用 pending）
-        crate::compact_editor_commands::store_pending_file(item_id, text);
+        crate::compact_editor_commands::store_pending_file(item_id, text, path_str.to_string());
         crate::compact_editor_window::create_compact_editor_window(&app, None);
     }
     Ok(())
+}
+
+/// 保存文件内容到磁盘（CompactEditor file tab 保存按钮用）。
+#[tauri::command]
+pub fn save_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
+/// 读取文件全文（CompactEditor file tab 外部变化 reload 用）。
+#[tauri::command]
+pub fn read_file_text(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
 /// 按格式格式化文件路径列表（copy_path 动作用）。
