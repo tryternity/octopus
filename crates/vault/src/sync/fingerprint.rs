@@ -44,12 +44,13 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
 
 /// 从 VaultCipherInput 算 md5——用于 create/save 时填 sync_md5。
 ///
-/// 与 `cipher_md5(&VaultCipher)` 的区别：input 不含 deleted_at（新建时无），
-/// 视为 None（空字符串）；input 也不含 id（id 是外部传入的），所以加 id 参数。
+/// 与 `cipher_md5(&VaultCipher)` 的区别：input 不含 id（id 是外部传入的），
+/// 所以加 id 参数。
 ///
 /// **必须保证**：input 版本和 row 版本对同一条 cipher 算出的 md5 相同——
 /// 否则 create 时填的 md5 和 sync 时读 row 算的 md5 对不上，diff 永远误判。
-/// deleted_at 在 create 时为 None（新建无软删），row 读出来也是 None——一致。
+/// H2 修复（2026-07-24）：input 现在含 deleted_at（之前硬编码 ""），
+/// 保证软删/恢复后 md5 与 row 一致。
 pub fn cipher_md5_from_input(id: &str, input: &VaultCipherInput) -> String {
     let s = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -63,7 +64,7 @@ pub fn cipher_md5_from_input(id: &str, input: &VaultCipherInput) -> String {
         input.fields.as_deref().unwrap_or(""),
         input.password_history.as_deref().unwrap_or(""),
         input.reprompt,
-        "", // deleted_at——input 无此字段，新建视为 None
+        input.deleted_at.as_deref().unwrap_or(""),
     );
     md5_hex(s.as_bytes())
 }

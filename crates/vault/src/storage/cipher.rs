@@ -75,7 +75,8 @@ pub fn prepare_cipher_input(
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
-        sync_md5: None, // 下面算好填入
+        deleted_at: None, // 新建默认未软删（H2 修复）
+        sync_md5: None,   // 下面算好填入
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
     Ok(VaultCipherInput { sync_md5: Some(sync_md5), ..db_input })
@@ -83,6 +84,11 @@ pub fn prepare_cipher_input(
 
 pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()> {
     let enc = input.encrypt_strings(key)?;
+    // H2 修复：编辑时保留现有 deleted_at（不碰删除状态）——读现有 row 取值。
+    // update SQL 现在会 SET deleted_at，若传 None 会把已软删的 cipher 恢复成 live。
+    let existing_deleted_at = db::load_vault_cipher(id)?
+        .map(|row| row.deleted_at)
+        .unwrap_or(None);
     let db_input = VaultCipherInput {
         // update 不需要 id（id 是 WHERE 条件），但 VaultCipherInput struct 现在含 id 字段
         // ——填占位（不会被 update_vault_cipher 使用，只 WHERE id = ? 用外部传入的 id）
@@ -96,6 +102,7 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
+        deleted_at: existing_deleted_at, // 保留现有删除状态（H2 修复）
         sync_md5: None,
     };
     let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);

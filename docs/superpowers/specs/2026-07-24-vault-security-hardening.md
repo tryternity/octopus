@@ -15,6 +15,7 @@
 | # | 严重度 | 描述 | 结论 | 状态 |
 |---|--------|------|------|------|
 | H1 | 🔴 高 | 主密码 & 敏感 String 全程不 zeroize | ✅ 成立 | 已修 |
+| H2 | 🔴 高 | 软删密码跨设备不同步 + clone 复活 | ✅ 成立 | 已修 |
 | M1 | 🟡 中 | 超长密码 Score::4 误报（第一轮引入） | ✅ 成立 | 已修 |
 | M2 | 🟡 中 | totp secret 无长度下限 | ✅ 成立 | 已修 |
 | M3 | 🟡 中 | setup_vault TOCTOU | ✅ 成立（低） | 已修 |
@@ -197,3 +198,50 @@
 **问题**：L1 改 `resizable(true)` 理论上允许用户拖拽改尺寸（实践无碍——frameless 窗口无把手）。
 
 **修复**：加 `min_inner_size(320.0, 360.0)` 防御——即使可拖拽，也不会缩到不可用。
+
+---
+
+## 第四轮审查修复（2026-07-24，H2/M5/L10/L11）
+
+### H2: 软删密码跨设备不同步 + clone 复活（高，数据隐私）
+
+**根因**：`VaultCipherInput` 结构体没有 `deleted_at` 字段，而 sync 的「应用」侧（pull/clone）全部经它落库 → 软删状态在同步链路上有去无回。
+
+**证据链**（全部回源码核实）：
+- push 写文件：store.rs:218/241 **保留** deleted_at ✅
+- md5 指纹：fingerprint.rs:40 **包含** deleted_at → 软删会改 md5 触发对端 re-pull ✅
+- pull 读文件→落库：engine.rs 构造 VaultCipherInput 时**丢弃** deleted_at ✗
+- clone 落库：engine.rs:467 硬编码 `deleted_at: None`（注释「未软删」是错误判断）✗
+- INSERT SQL：db.rs 无 deleted_at 列 → 默认 NULL ✗
+- UPDATE SQL：db.rs SET 子句无 deleted_at → 粘性（不碰）✗
+
+**失效模式**：
+1. **clone 复活**：A 软删 X → B clone → X 在 B 上 deleted_at=NULL（live，可自动填充）
+2. **md5 振荡**：B 已有 X(live) → A 软删 → B pull 更新 sync_md5=md5(T) 但 deleted_at 仍 NULL → B push 写文件 deleted_at=NULL → outline.md5=md5("") → A pull mismatch… 每次 sync md5 翻面 + 文件反复重写
+
+**修复**：
+- `VaultCipherInput` 加 `deleted_at: Option<String>` 字段
+- INSERT/UPDATE SQL 加 deleted_at 列
+- pull：从文件读出的 row 取 deleted_at 传入
+- clone：从文件读出的 cipher 取 deleted_at（删除硬编码 None + 删除冗余 row 构造）
+- `save_cipher`：编辑时读现有 deleted_at 传入（保留删除状态，不被覆盖成 None）
+- `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
+- 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
+
+### M5: 永久删除无 tombstone 可复活（中，设计缺口，未修）
+
+**问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
+
+**状态**：文档化为已知限制（与 last-write-wins 同类）。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。
+
+### L10: upsert_folder_with_sort O(N²)（低，未修）
+
+**问题**：用 `list_vault_folders().iter().any()` 判存在，每 folder 全表扫。
+
+**状态**：未修。报告自评「folder 通常很少，实际无碍」。优化需加 `load_vault_folder(id)` 单点查询，收益极低。
+
+### L11: empty_trash 未持 SYNC_LOCK（低，已修）
+
+**问题**：`vault_empty_trash` 与 sync_now 并发时，刚永久删的行可能被并发 pull 重新插入（M5 的本地并发表现）。
+
+**修复**：`vault_empty_trash` 命令入口加 `try_sync_lock()`——sync 进行中返「同步进行中」。

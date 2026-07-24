@@ -25,7 +25,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use octopus_infra::db::{self, VaultCipher, VaultCipherInput, VaultMeta, VaultMetaInput};
+use octopus_infra::db::{self, VaultCipherInput, VaultMeta, VaultMetaInput};
 // 通用 sync 基础设施（2026-07-22 抽离到 octopus_sync）
 use octopus_sync::error::SyncError;
 use octopus_sync::git;
@@ -452,24 +452,9 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
     for c in &ciphers {
-        // 从文件读出的 cipher——算 md5 填 sync_md5（保证与 row 版本一致）
-        let row = VaultCipher {
-            id: c.id.clone(),
-            folder_id: c.folder_id.clone(),
-            favorite: c.favorite,
-            atype: c.atype,
-            name: c.name.clone(),
-            notes: c.notes.clone(),
-            data: c.data.clone(),
-            fields: c.fields.clone(),
-            password_history: c.password_history.clone(),
-            reprompt: c.reprompt,
-            deleted_at: None, // 文件读出的 cipher 未软删
-            sync_md5: None,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        let md5 = crate::sync::fingerprint::cipher_md5(&row);
+        // c 已是完整 VaultCipher（含 deleted_at）——直接算 md5 + 构造 input
+        // H2 修复：deleted_at 从文件取值传入（之前硬编码 None → 软删密码 clone 复活）
+        let md5 = crate::sync::fingerprint::cipher_md5(c);
         let input = VaultCipherInput {
             id: c.id.clone(),
             folder_id: c.folder_id.clone(),
@@ -481,6 +466,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
             fields: c.fields.clone(),
             password_history: c.password_history.clone(),
             reprompt: c.reprompt,
+            deleted_at: c.deleted_at.clone(), // H2 修复：保留文件中的软删状态
             sync_md5: Some(md5),
         };
         // upsert：先 try update，失败则 insert
@@ -801,6 +787,7 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
                         fields: row.fields.clone(),
                         password_history: row.password_history.clone(),
                         reprompt: row.reprompt,
+                        deleted_at: row.deleted_at.clone(), // H2 修复：软删状态跨设备同步
                         sync_md5: Some(md5),
                     };
                     upsert_cipher(&input)?;
@@ -1683,6 +1670,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
+            deleted_at: None,
             sync_md5: Some(md5.clone()),
         };
         octopus_infra::db::insert_vault_cipher(&input).unwrap();
@@ -1826,5 +1814,133 @@ mod tests {
             m1, m2,
             "sort_order 变化应改变 folder md5（否则排序永不同步）"
         );
+    }
+
+    /// H2 回归守护：软删密码经 pull 同步后 deleted_at 必须存活。
+    ///
+    /// 场景：设备 A 软删密码 X（deleted_at=T）→ 文件带 deleted_at=T →
+    /// 设备 B pull → DB 应保留 deleted_at=T（而非复活成 live）。
+    ///
+    /// 之前 bug：VaultCipherInput 无 deleted_at 字段，pull 构造时丢弃 →
+    /// INSERT 默认 NULL / UPDATE 不碰 → 软删密码跨设备复活。
+    #[test]
+    fn pull_preserves_soft_deleted_at() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::{VaultCipher, VaultCipherInput};
+        // 文件系统写一个软删密码（deleted_at = T）
+        let soft_deleted = VaultCipher {
+            id: "soft-delete-test-uuid".to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:deleted-name".into(),
+            notes: None,
+            data: "v1:deleted-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            deleted_at: Some("2026-07-24T12:00:00".into()), // 软删
+            sync_md5: None,
+            created_at: "2026-07-24T00:00:00".into(),
+            updated_at: "2026-07-24T12:00:00".into(),
+        };
+        store::write_cipher_file(&soft_deleted).unwrap();
+
+        // outline：含这个软删密码的 md5
+        use octopus_sync::outline::{Outline, OutlineEntry};
+        use std::collections::BTreeMap;
+        let md5 = crate::sync::fingerprint::cipher_md5(&soft_deleted);
+        let outline = Outline {
+            version: 1,
+            vault_version: 1,
+            ciphers: BTreeMap::from([(
+                "soft-delete-test-uuid".to_string(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: 0,
+                },
+            )]),
+            folders: BTreeMap::new(),
+        };
+        store::write_outline_file(&outline).unwrap();
+
+        // pull 应把软删密码导入 DB（含 deleted_at）
+        let (pulled, _skipped) = pull_from_files().expect("pull should succeed");
+        assert_eq!(pulled, 1, "软删密码应被 pull 导入");
+
+        // H2 核心断言：DB 中 deleted_at 必须保留（不能复活成 NULL）
+        let db_cipher = octopus_infra::db::load_vault_cipher("soft-delete-test-uuid")
+            .unwrap()
+            .expect("cipher should exist in DB");
+        assert_eq!(
+            db_cipher.deleted_at.as_deref(),
+            Some("2026-07-24T12:00:00"),
+            "H2: 软删密码 pull 后 deleted_at 必须存活（不能复活成 live）"
+        );
+        let _ = g;
+    }
+
+    /// H2 补充：clone 也应保留软删状态（之前 clone_initial 硬编码 deleted_at: None）。
+    #[test]
+    fn clone_preserves_soft_deleted_at() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        use octopus_infra::db::VaultCipher;
+        // 文件系统写一个软删密码
+        let soft_deleted = VaultCipher {
+            id: "clone-soft-delete-uuid".to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:name".into(),
+            notes: None,
+            data: "v1:data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            deleted_at: Some("2026-07-24T10:00:00".into()),
+            sync_md5: None,
+            created_at: "2026-07-24T00:00:00".into(),
+            updated_at: "2026-07-24T10:00:00".into(),
+        };
+        store::write_cipher_file(&soft_deleted).unwrap();
+
+        // clone_initial 走 import_all_from_files → upsert
+        // 模拟：直接调 import + upsert（不经 git clone，测文件→DB 路径）
+        let (ciphers, _folders) = store::import_all_from_files().unwrap();
+        assert_eq!(ciphers.len(), 1, "应导入 1 个 cipher");
+
+        // 构造 input 走 upsert（与 clone_initial 相同路径）
+        let c = &ciphers[0];
+        let md5 = crate::sync::fingerprint::cipher_md5(c);
+        let input = VaultCipherInput {
+            id: c.id.clone(),
+            folder_id: c.folder_id.clone(),
+            favorite: c.favorite,
+            atype: c.atype,
+            name: c.name.clone(),
+            notes: c.notes.clone(),
+            data: c.data.clone(),
+            fields: c.fields.clone(),
+            password_history: c.password_history.clone(),
+            reprompt: c.reprompt,
+            deleted_at: c.deleted_at.clone(), // H2：从文件取值
+            sync_md5: Some(md5),
+        };
+        upsert_cipher(&input).unwrap();
+
+        // H2 核心断言
+        let db_cipher = octopus_infra::db::load_vault_cipher("clone-soft-delete-uuid")
+            .unwrap()
+            .expect("cipher should exist");
+        assert_eq!(
+            db_cipher.deleted_at.as_deref(),
+            Some("2026-07-24T10:00:00"),
+            "H2: clone 后软删状态必须保留（之前硬编码 None → 复活）"
+        );
+        let _ = g;
     }
 }

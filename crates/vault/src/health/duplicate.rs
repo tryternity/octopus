@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_skip_deleted_ciphers() {
         let mut c1 = make_cipher("c1", Some("same"));
-        let mut c2 = make_cipher("c2", Some("same"));
+        let c2 = make_cipher("c2", Some("same"));
         c1.deleted_at = Some("2026-07-24".into()); // c1 软删
         let ciphers = vec![c1, c2];
         // c1 被过滤后只剩 c2（无重复）——不应报告重复组

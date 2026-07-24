@@ -3539,6 +3539,11 @@ pub struct VaultCipherInput {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
+    /// 软删除时间戳（H2 修复 2026-07-24）：sync pull/clone 必须从文件取值传入，
+    /// 否则软删密码在新机 clone 时复活（deleted_at=NULL），且跨设备软删状态不同步。
+    /// 本机 soft_delete/restore 走专用 UPDATE 路径（不经此结构），此处仅 sync 用。
+    /// None = 未软删（新建默认）；Some(ts) = 已软删（回收站）。
+    pub deleted_at: Option<String>,
     /// md5 内容指纹（v45：增量同步 diff，由调用方算好传入）。
     /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
     pub sync_md5: Option<String>,
@@ -3752,8 +3757,8 @@ pub fn insert_vault_ciphers_batch(inputs: &[VaultCipherInput]) -> Result<()> {
 
 fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, sync_md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, sync_md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             input.id,
             input.folder_id,
@@ -3765,6 +3770,7 @@ fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result
             input.fields,
             input.password_history,
             input.reprompt,
+            input.deleted_at,
             input.sync_md5,
         ],
     )?;
@@ -3779,8 +3785,8 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
-            fields = ?7, password_history = ?8, reprompt = ?9, sync_md5 = ?10, updated_at = datetime('now')
-         WHERE id = ?11",
+            fields = ?7, password_history = ?8, reprompt = ?9, deleted_at = ?10, sync_md5 = ?11, updated_at = datetime('now')
+         WHERE id = ?12",
         params![
             input.folder_id,
             input.favorite as i32,
@@ -3791,6 +3797,7 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
             input.fields,
             input.password_history,
             input.reprompt,
+            input.deleted_at,
             input.sync_md5,
             id,
         ],
@@ -6571,6 +6578,7 @@ mod vault_schema_tests {
             fields: None,
             password_history: None,
             reprompt: 0,
+            deleted_at: None,
             sync_md5: None,
         };
         insert_vault_cipher_at(&conn, &input).unwrap();

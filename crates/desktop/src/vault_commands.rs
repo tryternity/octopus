@@ -553,8 +553,14 @@ pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: String) -
 /// 清空回收站：批量永久删除所有软删 cipher。
 ///
 /// 单条失败不中断——返回 `(deleted_count, failed_count)`，前端 toast 提示。
+///
+/// L11 修复（2026-07-24）：加 SYNC_LOCK——与 sync_now 并发时挡住，避免
+/// 「刚永久删的行被并发 pull 重新插入」（M5 的本地并发表现）。
 #[tauri::command]
 pub fn vault_empty_trash(_state: State<'_, SharedVaultSession>) -> Result<(usize, usize), String> {
+    // L11：取 sync 锁——sync 进行中返「同步进行中」（与 disable/enable/resolve 同模式）
+    let _guard = octopus_vault::sync::engine::try_sync_lock()
+        .map_err(|e| e.to_string())?;
     let (deleted, errors) =
         octopus_vault::storage::empty_trash().map_err(vault_error::to_tauri_error)?;
     if !errors.is_empty() {
