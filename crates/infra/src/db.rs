@@ -3711,7 +3711,7 @@ pub fn load_vault_cipher(id: &str) -> Result<Option<VaultCipher>> {
     with_db(|conn| load_vault_cipher_at(conn, id))
 }
 
-fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
+pub fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
     let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_ciphers WHERE id = ?1", VAULT_CIPHER_COLS))?;
     let mut rows = stmt.query(params![id])?;
     match rows.next()? {
