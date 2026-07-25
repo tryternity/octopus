@@ -133,6 +133,18 @@ pub fn create_annotation_window(
         toolbar_pos, win_x, win_y, win_w, win_h
     );
 
+    // 设置工具栏区域（poller 用——穿透模式下此区域不穿透）。
+    // 工具栏在窗口内的位置（逻辑坐标）：
+    // - below：Canvas 下方（canvas_oy + canvas_h 到窗口底部）
+    // - above：窗口顶部（0 到 toolbar_space）
+    // - inside：Canvas 内部底部（canvas_oy + canvas_h - 52 到 canvas_oy + canvas_h）
+    let toolbar_zone = match toolbar_pos {
+        "below" => (0.0, canvas_offset_y + sel_logical_h, sel_logical_w, toolbar_space),
+        "above" => (0.0, 0.0, sel_logical_w, toolbar_space),
+        _ => (0.0, canvas_offset_y + sel_logical_h - 52.0, sel_logical_w, 52.0),
+    };
+    *TOOLBAR_ZONE.lock() = toolbar_zone;
+
     // URL 注入选区参数 + 工具栏位置（前端 mount 时解析）
     let url = format!(
         "record-annotation.html?display_id={}&x={}&y={}&width={}&height={}&scale={}&toolbar={}&canvas_ox={}&canvas_oy={}&canvas_w={}&canvas_h={}",
@@ -174,6 +186,11 @@ pub fn create_annotation_window(
 static ANNOTATION_PASSTHROUGH: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 工具栏区域（窗口内逻辑坐标）：穿透模式下此区域不穿透（可点工具栏按钮）。
+/// 由 create_annotation_window 设置（canvas 底部以下到窗口底部）。
+static TOOLBAR_ZONE: parking_lot::Mutex<(f64, f64, f64, f64)> =
+    parking_lot::Mutex::new((0.0, 0.0, 0.0, 0.0)); // (x, y, w, h) 逻辑坐标
+
 /// 启动标注 overlay 的点击穿透轮询。
 ///
 /// 用户决策（2026-07-25）：
@@ -211,8 +228,7 @@ fn start_annotation_click_through_poller(app: AppHandle) {
             }
 
             // 穿透模式（passthrough=true）：工具栏区域不穿透，其他穿透。
-            // 与 result_window 同逻辑——光标在工具栏矩形内 → 不穿透（可点按钮切回标注），
-            // 光标不在工具栏 → 穿透（操作下层应用）。
+            // 用 TOOLBAR_ZONE（create_annotation_window 时设置的窗口内逻辑坐标）判定。
             let (mx, my) = match win.cursor_position() {
                 Ok(p) => (p.x, p.y),
                 Err(_) => continue,
@@ -221,21 +237,17 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 Ok(p) => (p.x as f64, p.y as f64),
                 Err(_) => continue,
             };
-            let (ww, wh) = match win.outer_size() {
-                Ok(s) => (s.width as f64, s.height as f64),
-                Err(_) => continue,
-            };
+            let sf = win.scale_factor().unwrap_or(1.0);
 
-            // 工具栏区域：窗口底部 TOOLBAR_H + 8px margin = 52px。
-            // 只按工具栏实际高度判定（不含 popover 200px）——因为：
-            // - select 状态下只点工具栏按钮（44px），popover 不弹出
-            // - 非 select 状态下整个窗口不穿透（上面已 continue），popover 自然能操作
-            const TOOLBAR_H: f64 = 44.0;
-            const TOOLBAR_MARGIN: f64 = 8.0;
-            let toolbar_zone_h = TOOLBAR_H + TOOLBAR_MARGIN;
-            let toolbar_zone_top = wy + wh - toolbar_zone_h;
+            // TOOLBAR_ZONE 是窗口内逻辑坐标 → 转物理坐标 + 加窗口偏移
+            let (tz_x, tz_y, tz_w, tz_h) = *TOOLBAR_ZONE.lock();
+            let zone_phys_x = wx + tz_x * sf;
+            let zone_phys_y = wy + tz_y * sf;
+            let zone_phys_w = tz_w * sf;
+            let zone_phys_h = tz_h * sf;
 
-            let in_toolbar = mx >= wx && mx <= wx + ww && my >= toolbar_zone_top && my <= wy + wh;
+            let in_toolbar = mx >= zone_phys_x && mx <= zone_phys_x + zone_phys_w
+                && my >= zone_phys_y && my <= zone_phys_y + zone_phys_h;
             let want_ignore = !in_toolbar;
 
             if want_ignore != cur_ignore {
