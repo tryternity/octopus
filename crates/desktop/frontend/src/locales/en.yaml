@@ -66,7 +66,7 @@ settings:
     prompts: Prompts
     system: System
     vault: Password Vault
-    recordings: Recordings
+    recordings: Recording Library
   recordings:
     title: Recordings
     subtitle: Manage your screen recordings
@@ -370,13 +370,15 @@ settings:
     polishShortcutHint: Polish current recognition result
     editShortcut: Voice Edit
     editShortcutHint: Invoke result window when any app is focused
-    clipboardShortcut: Clipboard Float
-    actionBarShortcut: Quick Panel
+    clipboardShortcut: Clipboard
+    actionBarShortcut: Action Panel
     actionBarShortcutHint: Press this key after selecting text
-    vaultAutotypeShortcut: Summon Vault
+    vaultAutotypeShortcut: Vault
     vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
-    screenshotShortcut: Screenshot OCR
+    screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
+    recordShortcut: Recording
+    recordShortcutHint: Show config float to pick source then start (not configurable yet)
     recording: Voice Recognition
     recogLang: Recognition Language
     recogAuto: Auto

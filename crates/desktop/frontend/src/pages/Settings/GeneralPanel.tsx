@@ -210,6 +210,10 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <Row label={t("settings.general.screenshotShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.screenshotShortcutHint")}>
               <ShortcutButton shortcut={cfg.screenshot_shortcut as string} capturing={capturingKey === "screenshot_shortcut"} onClick={() => startShortcutCapture("screenshot_shortcut")} />
             </Row>
+            {/* 录屏快捷键（只读展示，当前 hardcoded Cmd+Shift+R 不支持改） */}
+            <Row label={t("settings.general.recordShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.recordShortcutHint")}>
+              <ShortcutButton shortcut="⌘⇧R" capturing={false} onClick={() => {}} />
+            </Row>
             <Row label={t("settings.general.clipboardShortcut")} effect={t("settings.effect.now")}>
               <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
             </Row>

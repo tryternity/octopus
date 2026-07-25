@@ -66,7 +66,7 @@ settings:
     prompts: 提示配方
     system: 系统状态
     vault: 密码保险库
-    recordings: 录屏
+    recordings: 录屏管理
   recordings:
     title: 录屏
     subtitle: 管理屏幕录制文件
@@ -376,12 +376,14 @@ settings:
     polishShortcutHint: 对当前识别结果立即润色
     editShortcut: 语音编辑
     editShortcutHint: 任意应用聚焦时唤起结果窗并编辑
-    clipboardShortcut: 剪贴板浮窗
-    actionBarShortcut: 快捷操作面板
+    clipboardShortcut: 剪贴板
+    actionBarShortcut: 操作面板
     actionBarShortcutHint: 选中文本后按此键唤起
-    vaultAutotypeShortcut: 召唤密码箱
+    vaultAutotypeShortcut: 密码箱
     vaultAutotypeShortcutHint: 在浏览器登录页按此键，自动匹配并填充密码
-    screenshotShortcut: 截图OCR
+    screenshotShortcut: 截图
+    recordShortcut: 录屏
+    recordShortcutHint: 弹出配置浮窗选源后开始录制（暂不可改）
     screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
     recogLang: 识别语言
