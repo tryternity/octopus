@@ -81,6 +81,10 @@ mod record_hotkey;
 // 仅 macOS（录屏 helper 只 mac 实现）。
 #[cfg(target_os = "macos")]
 mod record_window;
+// 录屏区域选区 picker（多屏全屏透明覆盖，用户拖框选区域）。
+// 仅 macOS。复用 screenshot 的窗口创建 + 坐标换算模式。
+#[cfg(target_os = "macos")]
+mod record_area_picker;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -564,6 +568,15 @@ pub fn run() {
             record_commands::record_stop,
             #[cfg(target_os = "macos")]
             record_commands::record_kill,
+            // 录屏区域选区 picker（Cmd+Shift+R → area tab → 选择区域）
+            #[cfg(target_os = "macos")]
+            record_area_picker::start_record_area_picker,
+            #[cfg(target_os = "macos")]
+            record_area_picker::show_record_area_picker_window,
+            #[cfg(target_os = "macos")]
+            record_area_picker::confirm_record_area_picker,
+            #[cfg(target_os = "macos")]
+            record_area_picker::cancel_record_area_picker,
             #[cfg(target_os = "macos")]
             record_commands::list_recordings,
             #[cfg(target_os = "macos")]

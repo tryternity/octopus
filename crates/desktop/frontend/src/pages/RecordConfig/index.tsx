@@ -18,6 +18,7 @@ import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check } from "luci
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { listen } from "@tauri-apps/api/event";
 
 // ── 后端类型镜像 ────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ export default function RecordConfig() {
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [selectedDisplayId, setSelectedDisplayId] = useState<number | null>(null);
   const [selectedWindowId, setSelectedWindowId] = useState<number | null>(null);
-  // area 选区（Task C 补，先占位）
+  // area 选区（picker 拖框后由后端 emit record-area://selected 推回）
   const [areaSelection, setAreaSelection] = useState<{
     display_id: number;
     x: number;
@@ -69,6 +70,24 @@ export default function RecordConfig() {
     width: number;
     height: number;
   } | null>(null);
+
+  // 监听 picker 选区完成事件（picker 关闭后浮窗重新 show，payload 是物理像素）
+  useEffect(() => {
+    const unlisten = listen<{
+      display_id: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>("record-area://selected", (event) => {
+      setAreaSelection(event.payload);
+      // 选区回来后切到 area tab（用户可能切到别的 tab 调起 picker）
+      setTab("area");
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
   const [systemAudio, setSystemAudio] = useState(true);
   const [microphone, setMicrophone] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -397,37 +416,69 @@ function WindowList({
   );
 }
 
-// ── 子组件：area 选区（Task C 补完，先占位提示）─────────────────
+// ── 子组件：area 选区（拖框选区域，调起 picker）──────────────────
 
 function AreaPanel({
   selection,
   onChange,
-  // displays 在 Task C 拖框时用到（命中检测 + 物理坐标转换），先保留接口
-  displays: _displays,
+  displays,
 }: {
   selection: { display_id: number; x: number; y: number; width: number; height: number } | null;
   onChange: (s: { display_id: number; x: number; y: number; width: number; height: number } | null) => void;
   displays: DisplayInfo[];
 }) {
   const t = useT();
-  // Task C 会实现拖框 UI，先用占位
+
+  // 查选区所在显示器的名字（摘要显示用）
+  const displayName = selection
+    ? displays.find((d) => d.id === selection.display_id)?.name || `Display ${selection.display_id}`
+    : "";
+
+  const handlePick = async () => {
+    try {
+      await invoke("start_record_area_picker");
+    } catch (e) {
+      console.error("[record-config] start picker failed:", e);
+    }
+  };
+
+  if (!selection) {
+    // 无选区：显示「选择区域」按钮
+    return (
+      <div className="flex flex-col items-center justify-center py-8 gap-3">
+        <Square className="w-8 h-8 text-muted-foreground" />
+        <Button variant="outline" size="sm" onClick={handlePick} className="gap-1.5">
+          <Square className="w-3 h-3" />
+          {t("recordConfig.areaPick")}
+        </Button>
+        <p className="text-[10px] text-muted-foreground text-center max-w-[240px]">
+          {t("recordConfig.areaPlaceholder")}
+        </p>
+      </div>
+    );
+  }
+
+  // 有选区：显示摘要 + 重新选择 / 清除
   return (
-    <div className="flex flex-col items-center justify-center py-6 gap-2 text-center">
-      <Square className="w-6 h-6 text-muted-foreground" />
-      <p className="text-[10px] text-muted-foreground">
-        {t("recordConfig.areaPlaceholder")}
-      </p>
-      {selection && (
-        <div className="mt-2 text-[10px] text-foreground">
-          display={selection.display_id} {selection.width}×{selection.height}
-          <button
-            onClick={() => onChange(null)}
-            className="ml-2 text-muted-foreground hover:text-foreground underline"
-          >
-            {t("recordConfig.areaClear")}
-          </button>
+    <div className="flex flex-col gap-2 py-2">
+      <div className="flex items-center gap-2 px-2.5 py-2 rounded-md border border-primary bg-primary/5">
+        <Square className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-xs text-foreground truncate">{displayName}</div>
+          <div className="text-[10px] text-muted-foreground">
+            {selection.width}×{selection.height}
+            <span className="ml-1">({t("recordConfig.areaSelected")})</span>
+          </div>
         </div>
-      )}
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" onClick={handlePick} className="flex-1 text-[10px]">
+          {t("recordConfig.areaReselect")}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => onChange(null)} className="text-[10px]">
+          {t("recordConfig.areaClear")}
+        </Button>
+      </div>
     </div>
   );
 }

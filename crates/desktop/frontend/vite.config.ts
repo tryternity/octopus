@@ -42,6 +42,7 @@ const config = {
         "vault-picker": "vault-picker.html",
         "password-generator": "password-generator.html",
         "record-config": "record-config.html",
+        "area-picker": "area-picker.html",
         download: "download.html",
       },
     },

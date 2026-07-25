@@ -1014,7 +1014,10 @@ recordConfig:
   noDisplays: No displays found
   noWindows: No windows found
   areaNotSelected: Please select a recording area
-  areaPlaceholder: Area recording (Task C, coming soon)
+  areaPlaceholder: Drag to select recording area, release to confirm, Esc to cancel
+  areaPick: Pick Area
+  areaReselect: Reselect
   areaClear: Clear
+  areaSelected: Selected
   loadFailed: "Failed to load sources: "
   startFailed: "Failed to start recording: "

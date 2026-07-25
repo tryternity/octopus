@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>octopus-area-picker</title>
+    <script>
+      // 阻断式主题恢复（透明浮窗，不注入 bg——与 overlay/screenshot/record-config 同模式）。
+      try {
+        var themeId = localStorage.getItem("octopus-theme-id");
+        if (themeId) {
+          document.documentElement.setAttribute("data-theme", themeId);
+          var builtin = ["light", "glass-dark", "nord", "raycast"];
+          if (builtin.indexOf(themeId) === -1) {
+            var css = localStorage.getItem("octopus-custom-theme-css");
+            if (css) {
+              var s = document.createElement("style");
+              s.id = "octopus-custom-theme";
+              s.textContent = css;
+              document.head.appendChild(s);
+            }
+          }
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/entries/area-picker-main.tsx"></script>
+  </body>
+</html>
