@@ -868,11 +868,34 @@ struct OctopusSckHelper {
 		}
 		Task {
 			do {
+				// onScreenWindowsOnly=true 仍会返回大量「控制中心」menu bar item + 后台窗口，
+				// 实测 58 个里大部分是 statusBarItem / 系统菜单。需多层过滤：
 				let content = try await SCShareableContent.excludingDesktopWindows(
 					false,
 					onScreenWindowsOnly: true
 				)
-				let windows = content.windows.map { w -> [String: Any] in
+				let windows = content.windows.filter { w in
+					// ① isOnScreen：macOS 窗口服务器判定可见（排除隐藏/最小化）
+					guard w.isOnScreen else { return false }
+					// ② 尺寸过滤：排除状态栏 item / 菜单（这些 width/height 通常 < 100）
+					//    正常应用窗口至少 200x150
+					guard w.frame.width >= 200 && w.frame.height >= 150 else { return false }
+					// ③ 排除系统 UI app（控制中心、Dock、Window Server、UIEngine）
+					//    这些不是用户想录的「应用窗口」
+					if let bundleId = w.owningApplication?.bundleIdentifier {
+						let systemPrefixes = [
+							"com.apple.controlcenter",
+							"com.apple.dock",
+							"com.apple.WindowManager",
+							"com.apple.WindowServer",
+							"com.apple.UIEngine",
+						]
+						for prefix in systemPrefixes {
+							if bundleId.hasPrefix(prefix) { return false }
+						}
+					}
+					return true
+				}.map { w -> [String: Any] in
 					[
 						"id": w.windowID,
 						"title": w.title ?? "",
