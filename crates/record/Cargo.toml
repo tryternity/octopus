@@ -15,7 +15,11 @@ octopus-infra = { path = "../infra" }
 [dev-dependencies]
 tempfile = "3"
 
+# mock-helper：测试用的假 helper 二进制（被 tests/session_integration.rs spawn）。
+# 放 src/bin/ 而非 tests/——tests/ 下的 .rs 会被 cargo 自动当 integration test target，
+# 与显式 [[bin]] 声明冲突（warning: multiple build targets）。
+# binary 名用连字符 mock-helper（与 session_integration.rs::mock_helper_path 查找一致）。
 [[bin]]
 name = "mock-helper"
-path = "tests/mock_helper.rs"
+path = "src/bin/mock_helper.rs"
 
