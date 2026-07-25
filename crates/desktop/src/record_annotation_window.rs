@@ -106,7 +106,103 @@ pub fn create_annotation_window(
         format!("overlay 窗口创建失败: {e}")
     })?;
 
+    // 启动点击穿透轮询（参考 result_window::start_click_through_poller）
+    // 工具栏区域接收鼠标（可点按钮/画标注），其他区域穿透到下层应用。
+    start_annotation_click_through_poller(app.clone());
+
     Ok(())
+}
+
+/// 工具栏高度（逻辑像素，与前端 TOOLBAR_H 一致）。
+const ANNOTATION_TOOLBAR_H: f64 = 44.0;
+/// 工具栏底部间距（逻辑像素，与前端 toolbarTop = innerHeight - 44 - 8 一致）。
+const ANNOTATION_TOOLBAR_BOTTOM_MARGIN: f64 = 8.0;
+
+/// 启动标注 overlay 的点击穿透轮询。
+///
+/// 参考 `result_window::start_click_through_poller`：Rust 线程按全局鼠标位置
+/// 实时切换 setIgnoresMouseEvents（前端 setIgnoreMouseEvents(true) 后窗口不收
+/// 鼠标事件，无法检测光标重新进入工具栏 → 必须后端轮询）。
+///
+/// 判定逻辑：
+/// - 光标在工具栏矩形（窗口底部 44px + 8px margin）→ setIgnoresMouseEvents(false)
+/// - 光标不在工具栏 → setIgnoresMouseEvents(true)（穿透到下层应用）
+///
+/// 工具栏宽度用窗口宽度（简化——工具栏居中且接近满宽，用窗口宽度判定足够）。
+/// popover 弹出时在工具栏上方，也属于「不穿透」区域——简化为工具栏上方 200px 也接收。
+fn start_annotation_click_through_poller(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        // 33ms 轮询（30 FPS，与人手移动感知上限一致）
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
+        let mut cur_ignore = false;
+
+        loop {
+            poll.tick().await;
+
+            let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
+                // 窗口已关闭（录制停止），退出轮询
+                break;
+            };
+            if !win.is_visible().unwrap_or(false) {
+                break;
+            }
+
+            // 读全局鼠标位置（物理坐标）
+            let (mx, my) = match win.cursor_position() {
+                Ok(p) => (p.x, p.y),
+                Err(_) => continue,
+            };
+            let (wx, wy) = match win.outer_position() {
+                Ok(p) => (p.x as f64, p.y as f64),
+                Err(_) => continue,
+            };
+            let sf = win.scale_factor().unwrap_or(1.0);
+            let win_w = match win.outer_size() {
+                Ok(s) => s.width as f64,
+                Err(_) => continue,
+            };
+            let win_h = match win.outer_size() {
+                Ok(s) => s.height as f64,
+                Err(_) => continue,
+            };
+
+            // 工具栏矩形（物理坐标）：
+            // top = 窗口底部 - 工具栏高度 - margin
+            // 高度 = 工具栏高度 + margin（含 margin 让边缘也好点）
+            // 宽度 = 窗口宽度（简化，工具栏居中接近满宽）
+            let toolbar_top = wy + win_h - (ANNOTATION_TOOLBAR_H + ANNOTATION_TOOLBAR_BOTTOM_MARGIN) * sf;
+            let toolbar_bottom = wy + win_h;
+            // popover 区域：工具栏上方 200px（ToolPropsPopover 高度估算）
+            let popover_top = toolbar_top - 200.0 * sf;
+
+            let in_interactive = mx >= wx && mx <= wx + win_w
+                && my >= popover_top && my <= toolbar_bottom;
+
+            let want_ignore = !in_interactive;
+            if want_ignore != cur_ignore {
+                set_annotation_ignores_mouse(&win, want_ignore);
+                cur_ignore = want_ignore;
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn set_annotation_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
+    let win_clone = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        if let Ok(ptr) = win_clone.ns_window() {
+            if !ptr.is_null() {
+                let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                ns_win.setIgnoresMouseEvents(ignore);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_annotation_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
+    let _ = win.set_ignore_cursor_events(ignore);
 }
 
 /// 关闭标注 overlay 窗口（stop 时调用）。

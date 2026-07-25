@@ -5,8 +5,10 @@
  * - 画 9 种标注（rect/oval/diamond/line/arrow/pen/text/number/blur）
  * - 颜色 / 线宽 / 字号 / 实心 fill 属性（复用截图 ToolPropsPopover）
  * - undo / redo
- * - A 键切换 标注 / 透传（透传时鼠标穿透到下层应用，让用户操作被录的应用）
  * - 顶部工具栏（含 录制边框、停止按钮）
+ *
+ * 鼠标穿透（passthrough）现由后端 poller 管理（按鼠标位置实时切换 setIgnoresMouseEvents），
+ * 前端不再持有 passthrough state。
  *
  * 与截图 Screenshot 的关键差异：
  * - **Canvas 透明背景**（不画暗遮罩）—— 录制时能看到下层应用正常操作。
@@ -28,7 +30,6 @@
  * 因为视频继续录，用户停止后 ESC 路径会正常关闭 overlay）。
  */
 import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { type Annotation, type Tool, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
@@ -73,16 +74,13 @@ export default function RecordAnnotation() {
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // ── 浮窗 / passthrough ──────────────────────────────────────
+  // ── 浮窗 ──────────────────────────────────────────────────────
   const [showPopover, setShowPopover] = useState(false);
   const [popoverX, setPopoverX] = useState(0);
-  const [passthrough, setPassthrough] = useState(false);
-  const passthroughRef = useRef(false);
 
   // 同步 refs
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
-  useEffect(() => { passthroughRef.current = passthrough; }, [passthrough]);
   useEffect(() => { numberCounterRef.current = numberCounter; }, [numberCounter]);
 
   // 工具栏实测宽度（浮窗 X clamp）
@@ -90,7 +88,7 @@ export default function RecordAnnotation() {
   const [toolbarW, setToolbarW] = useState(0);
   useLayoutEffect(() => {
     if (toolbarRef.current) setToolbarW(toolbarRef.current.offsetWidth);
-  }, [tool, passthrough]);
+  }, [tool]);
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -193,7 +191,6 @@ export default function RecordAnnotation() {
 
   // ── 鼠标交互（参考 Screenshot，去除选区逻辑）─────────────────
   function onMouseDown(e: React.MouseEvent) {
-    if (passthroughRef.current) return; // 透传模式不画
     if (e.button !== 0) return;
     setShowPopover(false);
     const mx = e.clientX;
@@ -256,7 +253,6 @@ export default function RecordAnnotation() {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    if (passthroughRef.current) return;
     const mx = e.clientX;
     const my = e.clientY;
 
@@ -322,22 +318,12 @@ export default function RecordAnnotation() {
     }
   }
 
-  // ── 键盘：A 透传 / cmd+z undo / cmd+shift+z redo / Esc 退出工具 ─
+  // ── 键盘：cmd+z undo / cmd+shift+z redo / Esc 退出工具 ───────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // 文字输入中不拦截
       if (textDraftRef.current) return;
 
-      if (e.key === "a" || e.key === "A") {
-        // 不在 textarea 里时 A 切透传
-        const tgt = e.target as HTMLElement | null;
-        if (tgt && (tgt.tagName === "TEXTAREA" || tgt.tagName === "INPUT")) return;
-        e.preventDefault();
-        const next = !passthroughRef.current;
-        setPassthrough(next);
-        invoke("set_annotation_passthrough", { passthrough: next }).catch(() => {});
-        return;
-      }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
         redoAnnotation();
@@ -412,7 +398,7 @@ export default function RecordAnnotation() {
           inset: 0,
           width: "100vw",
           height: "100vh",
-          cursor: passthrough ? "default" : (tool === "none" ? "default" : "crosshair"),
+          cursor: tool === "none" ? "default" : "crosshair",
           display: "block",
         }}
         onMouseDown={onMouseDown}
@@ -476,15 +462,12 @@ export default function RecordAnnotation() {
           display: "flex",
           gap: 4,
           padding: "6px 8px",
-          background: passthrough ? "rgba(26, 26, 30, 0.55)" : "var(--color-surface)",
+          background: "var(--color-surface)",
           color: "var(--color-foreground)",
           borderRadius: 8,
           boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
           zIndex: 100,
           alignItems: "center",
-          opacity: passthrough ? 0.6 : 1,
-          transition: "opacity 0.15s, background 0.15s",
-          pointerEvents: passthrough ? "none" : "auto",
         }}
       >
         <ToolButton active={tool === "none"} onClick={() => { setTool("none"); setShowPopover(false); }} label={t("screenshot.tool.select")} icon={
@@ -525,23 +508,6 @@ export default function RecordAnnotation() {
           <img src="icons/redo.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: redoAvailable ? 1 : 0.3 }} />
         } />
         <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
-        {/* 透传/标注 toggle（A 键）*/}
-        <button
-          onClick={() => {
-            const next = !passthrough;
-            setPassthrough(next);
-            invoke("set_annotation_passthrough", { passthrough: next }).catch(() => {});
-          }}
-          title={passthrough ? t("screenshot.tool.select") : "Passthrough"}
-          style={{
-            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
-            borderRadius: 6, border: "none",
-            background: passthrough ? "var(--color-voice)" : "transparent",
-            cursor: "pointer", padding: 0,
-          }}
-        >
-          <img src="icons/see-eye.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: passthrough ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        </button>
         {/* 停止录制（红色）*/}
         <button
           onClick={onStopClick}
