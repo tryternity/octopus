@@ -11,6 +11,7 @@ pub mod error;
 pub mod protocol;
 pub use protocol::*;
 pub mod session;
+pub use session::{RecordSession, SessionState, StartedInfo, StoppedInfo};
 pub mod store;
 mod platform;
 

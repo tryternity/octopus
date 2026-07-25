@@ -14,3 +14,7 @@ octopus-infra = { path = "../infra" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "mock-helper"
+path = "tests/mock_helper.rs"
