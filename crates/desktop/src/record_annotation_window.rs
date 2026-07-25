@@ -167,25 +167,16 @@ pub fn create_annotation_window(
     Ok(())
 }
 
-/// 工具栏高度（逻辑像素，与前端 TOOLBAR_H 一致）。
-#[allow(dead_code)]
-const ANNOTATION_TOOLBAR_H: f64 = 44.0;
-/// 工具栏底部间距（逻辑像素，与前端 toolbarTop = innerHeight - 44 - 8 一致）。
-#[allow(dead_code)]
-const ANNOTATION_TOOLBAR_BOTTOM_MARGIN: f64 = 8.0;
+// 工具栏尺寸常量已移到 create_annotation_window 内部（不再模块级）。
 
 /// 启动标注 overlay 的点击穿透轮询。
 ///
+/// 用户决策（2026-07-25）：**光标在窗口内 → 不穿透（操作标注），窗口外 → 穿透（操作下层应用）**。
+/// 这比「工具栏区域 vs Canvas 区域」判定简单得多，且方便选中/删除/移动标注。
+///
 /// 参考 `result_window::start_click_through_poller`：Rust 线程按全局鼠标位置
 /// 实时切换 setIgnoresMouseEvents（前端 setIgnoreMouseEvents(true) 后窗口不收
-/// 鼠标事件，无法检测光标重新进入工具栏 → 必须后端轮询）。
-///
-/// 判定逻辑：
-/// - 光标在工具栏矩形（窗口底部 44px + 8px margin）→ setIgnoresMouseEvents(false)
-/// - 光标不在工具栏 → setIgnoresMouseEvents(true)（穿透到下层应用）
-///
-/// 工具栏宽度用窗口宽度（简化——工具栏居中且接近满宽，用窗口宽度判定足够）。
-/// popover 弹出时在工具栏上方，也属于「不穿透」区域——简化为工具栏上方 200px 也接收。
+/// 鼠标事件，无法检测光标重新进入 → 必须后端轮询）。
 fn start_annotation_click_through_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         // 33ms 轮询（30 FPS，与人手移动感知上限一致）
@@ -196,14 +187,13 @@ fn start_annotation_click_through_poller(app: AppHandle) {
             poll.tick().await;
 
             let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
-                // 窗口已关闭（录制停止），退出轮询
-                break;
+                break; // 窗口已关闭（录制停止），退出轮询
             };
             if !win.is_visible().unwrap_or(false) {
                 break;
             }
 
-            // 读全局鼠标位置（物理坐标）
+            // 读全局鼠标位置 + 窗口矩形（物理坐标）
             let (mx, my) = match win.cursor_position() {
                 Ok(p) => (p.x, p.y),
                 Err(_) => continue,
@@ -212,31 +202,16 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 Ok(p) => (p.x as f64, p.y as f64),
                 Err(_) => continue,
             };
-            let sf = win.scale_factor().unwrap_or(1.0);
-            let win_w = match win.outer_size() {
-                Ok(s) => s.width as f64,
+            let (ww, wh) = match win.outer_size() {
+                Ok(s) => (s.width as f64, s.height as f64),
                 Err(_) => continue,
             };
 
-            // 交互区域 = 工具栏 + popover（窗口扩展部分）。
-            // Canvas 区域（选区）穿透——用户操作下层应用。
-            // 工具栏位置由后端 create_annotation_window 三选决定（below/above/inside）。
-            // 简化：整个窗口的非 Canvas 区域都是交互区域。
-            // Canvas 区域 = 窗口内 canvas_oy 到 canvas_oy + canvas_h（逻辑）。
-            // 但 poller 拿不到 canvas offset（在前端 URL 参数里）。
-            // 简化判定：工具栏在选区下方时，交互区域 = 窗口底部 TOOLBAR_H+POPOVER_H；
-            //          工具栏在选区上方时，交互区域 = 窗口顶部 TOOLBAR_H+POPOVER_H；
-            //          工具栏在选区内部时，交互区域 = 窗口底部 TOOLBAR_H（被录可接受）。
-            // 这里用窗口高度 vs 选区高度推断——如果窗口比选区高，说明有扩展空间。
-            // 但 poller 拿不到选区高度……
-            //
-            // 最简方案：整个窗口都接收鼠标（去掉 poller），窗口外自然穿透。
-            // 如果选区太大（几乎全屏），用户无法操作下层——但这种情况少。
-            // 后续如果需要，再加 poller 做 Canvas 穿透。
-            //
-            // 暂时：注释掉穿透逻辑，整个窗口接收鼠标。
-            let _ = (mx, my, wx, wy, sf, win_w); // 避免 unused warning
-            let want_ignore = false; // 整个窗口接收鼠标
+            // 光标在窗口矩形内 → 不穿透（接收鼠标，操作标注/工具栏）
+            // 光标在窗口外 → 穿透（到下层应用）
+            let in_window = mx >= wx && mx <= wx + ww && my >= wy && my <= wy + wh;
+            let want_ignore = !in_window;
+
             if want_ignore != cur_ignore {
                 set_annotation_ignores_mouse(&win, want_ignore);
                 cur_ignore = want_ignore;
