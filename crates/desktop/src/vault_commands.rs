@@ -533,10 +533,15 @@ pub fn vault_update_cipher(
 
 #[tauri::command]
 pub fn vault_delete_cipher(
-    _state: State<'_, SharedVaultSession>,
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
     id: String,
     permanent: bool,
 ) -> Result<(), String> {
+    // C-DELETE-NO-UNLOCK-CHECK 修复（2026-07-25）：与 vault_delete_folder :396 同构——
+    // 不需要 user_vault_key（仅删行），但仍要求 vault 已解锁——避免未解锁会话
+    // （锁定后他人/恶意前端/DevTools）invoke 删除造成不可恢复丢失。
+    let _ = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     // permanent=true 不需要 user_vault_key（只是删行）
     if permanent {
         octopus_vault::storage::permanent_delete(&id).map_err(vault_error::to_tauri_error)
@@ -546,7 +551,13 @@ pub fn vault_delete_cipher(
 }
 
 #[tauri::command]
-pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: String) -> Result<(), String> {
+pub fn vault_restore_cipher(
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
+    id: String,
+) -> Result<(), String> {
+    // C-DELETE-NO-UNLOCK-CHECK 修复：要求 vault 已解锁（与 delete_folder / delete_cipher 同构）
+    let _ = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     octopus_vault::storage::restore(&id).map_err(vault_error::to_tauri_error)
 }
 
@@ -556,7 +567,12 @@ pub fn vault_restore_cipher(_state: State<'_, SharedVaultSession>, id: String) -
 ///
 /// 清空回收站（SYNC_LOCK 已下沉到 empty_trash 内部，T2 修复）。
 #[tauri::command]
-pub fn vault_empty_trash(_state: State<'_, SharedVaultSession>) -> Result<(usize, usize), String> {
+pub fn vault_empty_trash(
+    state: State<'_, SharedVaultSession>,
+    config: State<'_, SharedRuntimeConfig>,
+) -> Result<(usize, usize), String> {
+    // C-DELETE-NO-UNLOCK-CHECK 修复：要求 vault 已解锁（清空回收站是永久删除，不可恢复）
+    let _ = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     // T2：锁在 storage::empty_trash 内部（与 meta_lock 下沉 save_vault_meta 一致），
     // 此处不再重复取锁。sync 进行中时 empty_trash 返 Err → to_tauri_error 映射。
     let (deleted, errors) =

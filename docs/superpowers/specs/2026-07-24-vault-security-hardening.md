@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **248** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1107,3 +1107,116 @@ crypto 模块复审（4 文件：mod/util/symmetric/hierarchy/kdf）——经多
 - **H-CHILD-EXPECT**（极低·风格）：hierarchy.rs:38 `expect("HMAC 接受任意 key 长度")`。HMAC RFC 2104 对任意 key 不失败，安全。仅与 R5「消除 unwrap」风格不一致。
 
 **未来演进提示**（非当前 bug）：S2/AAD 纵深防御——当前不用 AAD 绑定 field_name，单机威胁模型下成立。若未来 vault 支持共享/多用户场景（密文跨设备/跨 vault 流转），「密文移动攻击」价值上升，届时 AAD 绑定 cipher_id || field_name 可作纵深防御。当前 MVP 单机不强求。
+
+---
+
+## 第三十八轮审查修复（2026-07-25，desktop vault 集成层：C-DELETE-NO-UNLOCK-CHECK + 3 项低危文档化）
+
+### C-DELETE-NO-UNLOCK-CHECK: 锁定态可删除/清空 cipher（中，安全一致性，已修）
+
+**核查**：vault_delete_cipher（:536 `_state`）/ vault_restore_cipher（:549 `_state`）/ vault_empty_trash（:559 `_state`）三命令的 `_state` 前缀（编译器「未使用」标记）是遗漏铁证——参数声明传入却被忽略。对比 vault_delete_folder（:390-397）有 `require_user_vault_key` 门禁 + 注释 :340「仍要求 vault 已解锁——避免未解锁会话误触」。
+
+**威胁**：vault 自动锁定后（用户离开），他人/恶意前端/DevTools 可 `invoke('vault_delete_cipher', {id, permanent:true})` 或 `vault_empty_trash` 永久删除密码，无需主密码，造成不可恢复丢失。绕过「锁定 = 不可操作 vault」的安全/UX 预期。
+
+**修复**：三命令改 `_state` → `state`，加 `config: State<'_, SharedRuntimeConfig>`，首行加 `require_user_vault_key` 门禁。与 delete_folder :396 同构。config 是 Tauri State 自动注入，前端 invoke 无需传（签名变更前端无感）。
+
+### S-PASSIVE-TIMEOUT-CLEAR / S-STATUS-WRITE-LOCK / S-SET-TIMEOUT-NO-CHECK（低，文档化）
+
+- **S-PASSIVE-TIMEOUT-CLEAR**：无后台定时器，超时清 key 被动（仅 require/status 调用时检查）。当前心跳 30s + status 轮询构成周期触发，实际残留窗口短。完整方案需后台定时器（权衡复杂度）。
+- **S-STATUS-WRITE-LOCK**：vault_status 高频轮询用写锁（因超时需 &mut self 清 key）。99% 调用无需清，写锁属浪费。可优化为 read() 快速路径 + 仅超时才升级 write()，但引入 TOCTOU 复杂度。parking_lot 临界区极短，实际竞争小。
+- **S-SET-TIMEOUT-NO-CHECK**：vault_set_lock_timeout 不检查解锁即可改超时（含设 0=永不锁定）。超时策略非敏感数据，利用需「能调 Tauri 命令」（那时已 game over）。UI 应对 0 警告。
+
+### 集成层门禁模式洞察
+
+三个跨模块发现（M-CLOUDKEY-PLAINTEXT 加密写入漏读路径 / E-EDIT-TEST-CIPHERTEXT 读路径漏解密 / C-DELETE-NO-UNLOCK-CHECK 删除漏解锁门禁）同源——vault 安全属性在「vault crate 核心」与「desktop 命令层胶水」之间的传递不完整。建议每加一个访问 cipher 的命令，逐项核对 require/解密/reprompt。
+
+---
+
+## 第三十九轮审查（2026-07-25，vault_error.rs：干净，3 项 classify 启发式局限已文档化）
+
+vault_error.rs 主体扎实——user-safe 原则（InternalError 绝不透传内部细节）是核心安全目标，贯彻到位；稳定 code 契约、全链匹配、InvalidMasterPassword 历史 bug 修复均到位。无中高危 bug。
+
+3 项发现全是 classify 启发式的固有局限，**均已文档化，无需修复**：
+
+- **E-DB-LOCKED-MISCLASSIFY**（低·UX）：classify :127 `combined.contains("locked")` 会误匹配 SQLite "database is locked" → 误识别为 Locked → 前端弹解锁框（实际是 DB 锁）。注释 :343-344 已文档化此局限。触发概率低（with_db 串行化 + 短事务），即使触发仅 UX 误导（不泄露数据）。收紧需核对 vault crate 内部错误文案不依赖裸 "locked"。
+- **E-MUST-TRANSPARENCY**（极低）：classify :160-162 对含「必须」/「至少需要」的错误透传 head msg。假设「含必须 = 生成器文案」——Rust/rusqlite 内部错误多为英文，中文「必须」罕见，实际风险极低。这是启发式中唯一的 head msg 透传破例。
+- **E-CIPHER-NO-ID**（极低）：CipherNotFound 统一 `<unknown>`，id 未提取。前端按 code 处理不需 id，纯日志诊断信息丢失。注释 :139 承认简化。
+
+**工程取舍**：classify 用 anyhow 链文本启发式匹配，天然有误分类风险。本模块的核心取舍是「宁可误分类为低危变体，也绝不透传内部细节」——InternalError 兜底保证了这一底线。
+
+---
+
+## 第四十轮审查（2026-07-25，vault_sync_commands.rs：薄包装干净，E-SYNC-OTHER-LEAK 设计债文档化）
+
+vault_sync_commands.rs 命令层是纯转发层（129 行 / 11 命令），自身无逻辑 bug。engine 侧三处 from_i64_strict（K1-GAP 已修）+ Mutex/AtomicBool 双并发保护 + resolve 路径密码验证均到位。
+
+### E-SYNC-OTHER-LEAK: SyncError::Other Display 透传底层错误（低-中，设计债，文档化）
+
+**核查**：sync/error.rs Display 实现——:96 `GitError(_msg) => write!(f, "git 操作失败（详情见应用日志）")` 丢弃 stderr（#11 修复，user-safe）；:97 `Other(e) => write!(f, "同步错误：{}", e)` 透传底层 anyhow Display。同枚举内确凿不对称：GitError 贯彻 user-safe，Other 没贯彻。与 vault_error.rs InternalError 不透传原则也不一致。
+
+**泄露内容**：engine.rs 多处 `.map_err(SyncError::Other)?` 把底层错误（rusqlite/io Error）直接包进 Other → Display 透传 → 前端 toast。可能含本地路径（`~/.octopus/.sync/vault/meta.json`）、SQL 片段、SQLite 错误结构。非密钥/cipher 明文。
+
+**状态**：文档化。泄露内容是本地路径/SQL（非密钥），触发多为本地故障（攻击者无法远程直接触发）。完整修复需重构 SyncError 枚举区分 user-facing Other（故意构造的文案如「同步进行中」「密码错误」）vs internal Other（底层错误透传）——前者应保持 Display，后者应屏蔽。当前改不好会丢 user-facing 文案的前端展示。
+
+### 次要观察: spawn 前不查 is_syncing（极低，UX，文档化）
+
+vault_sync_now spawn_blocking 前不查 is_syncing()。连点「立即同步」每次都起线程，第二个立刻 try_sync_lock 失败 → 误导性 error toast。无正确性问题（Mutex 保证），纯 UX。可前置 `if is_syncing() { return Ok(()) }` 静默吞掉重入。
+
+### A 并发守卫（报告自否决 ✓）
+
+sync_now :597 入口 `try_sync_lock()`（SYNC_LOCK Mutex::try_lock）保证 git 操作串行，无 index.lock 竞争。SYNCING AtomicBool + SyncingGuard 是 UI 进度查询，与 Mutex 职责分离。双重保护完善。
+
+---
+
+## 第四十一轮审查修复（2026-07-25，engine.rs：C-PULL-NO-META-SKIPS-STAMP + E-PULL-NO-HARD-DELETE-SYNC 文档化）
+
+engine.rs 是成熟模块（2059 行，回归测试极全）。md5 指纹比对、stamp 前置校验、软删闭环设计扎实。但有一处 stamp 防护在边界条件下被绕过。
+
+### C-PULL-NO-META-SKIPS-STAMP: 远程 meta.json 缺失时 stamp 校验被跳过仍 upsert cipher（中，INV-S9 违反，已修）
+
+**核查**：pull_from_files 的 stamp 校验仅在「远程 meta 存在 + 本地 meta 存在」双条件时执行（:802-809）。远程 meta.json 不存在 → meta_file = None（:795-797）→ 整个 stamp 校验跳过，但 :816 的 cipher upsert 无条件执行。
+
+**违背的自述不变量**：pull_from_files 注释 :788-790 强调「必须在 upsert cipher/folder 之前完成 stamp 校验，否则 stamp 不一致时本地 DB 已被用错误 user_vault_key 加密的密文污染，返 Err 也无回滚（INV-S9 强化）」。但当前实现恰恰在「远程 meta 缺失」路径绕过了这个保护——注释 :792 把 meta 缺失判定为「合法场景（首次同步/纯新增）」，但「合法」应仅限 local_meta = None，未覆盖「本地已有 vault + 远程 meta 缺失」异常态。
+
+**污染场景**：本地已初始化 vault（K_local）+ 远程 meta.json 缺失（损坏/不完整 clone/篡改）但 cipher 文件仍在 → pull 跳过 stamp → 远程 cipher（K_remote 加密）被 upsert 进本地 DB → K_local 解密失败 → 不可解密密文污染。
+
+**修复**：把「meta 缺失合法」严格限定为 local_meta = None。`local_meta.is_some() && meta_file.is_none()` → 返 `Err(RepoCorrupted)`，不进入 upsert 阶段。保留「本地无 vault + 远程无 meta」首次同步合法路径。
+
+**回归测试**：`pull_rejects_when_local_has_vault_but_remote_meta_missing`（拒绝）+ `pull_allows_when_both_local_and_remote_meta_missing`（首次同步允许）。
+
+### E-PULL-NO-HARD-DELETE-SYNC: permanent_delete 不双向同步（低，设计权衡，文档化）
+
+pull 只遍历 remote_outline 做 upsert，不处理「DB 有但 outline 无」的行。push 侧 incremental_export 会删文件，但 pull 侧无对应 DB 行删除。
+
+**状态**：文档化（= M-TOMBSTONE / M5 同型）。vault 用软删模型（deleted_at = tombstone），正常删除走软删 → md5 变 → pull upsert（H2 闭环）。只有 permanent_delete（清理 tombstone）不双向同步——与「tombstone 各设备独立清理避免无限累积」的常见同步设计一致。SyncReport.deleted 硬编码 0 也与此一致。活跃数据走软删不丢失。
+
+### 正面确认（engine.rs 防护到位）
+
+- P-MD5-LINEAR-SCAN HashMap O(1) 比对 ✓ / H2 软删保留 ✓ / stamp 前置两阶段 ✓
+- from_i64_strict 三处（clone/pull/resolve）✓ / #10 损坏文件不静默吞 ✓
+- #4 push 错误不谎报 ✓ / #7 disable_sync 加锁 ✓ / E3 类型安全 ✓
+
+---
+
+## 第四十二轮审查修复（2026-07-26，fingerprint.rs：字段全覆盖确认 + 2 项极低清理）
+
+fingerprint.rs 核心正确性确认——cipher_md5 11 字段 = VaultCipher 全部业务字段（对照 schema db.rs:3539），folder_md5 3 字段 = VaultFolder 全部业务字段。对称性（cipher_md5 vs cipher_md5_from_input）逐字段一致。这是 pull/push 一致性的基石。
+
+### E-CIPHER-MD5-FROM-INPUT-ID-PARAM-REDUNDANT: id 参数冗余（极低，重构，已修）
+
+**核查**：`cipher_md5_from_input(id: &str, input)` 的注释 :60-61 说「input 不含 id，所以加 id 参数」已过时——v39 UUID 改动后 VaultCipherInput 有 id 字段（db.rs:3584）。两个调用点（cipher.rs:82/122）传的 id 始终 = input.id（:69/:97 `id: id.to_string()`）。
+
+**修复**：移除 id 参数，直接用 input.id。消除「调用方传 ≠ input.id」的 API 误用面 + 修正过时注释。纯重构无功能影响。
+
+### E-FOLDER-MD5-NO-COLLISION-TEST: folder 无碰撞守护（极低，测试不对称，已修）
+
+**核查**：cipher_md5 有 F2 碰撞守护测试（`cipher_md5_no_collision_on_pipe_in_separate_fields`），folder_md5 无对称测试。当前 folder 三字段（UUID/base64/数字）都不含 |，安全。
+
+**修复**：补 `folder_md5_no_collision_on_pipe_in_separate_fields`（对称 cipher 的碰撞守护，验证 name/sort_order 变化都导致 md5 变化）。
+
+### 正面确认（fingerprint 是 sync 一致性基石）
+
+- 字段全覆盖（11 cipher + 3 folder，对照 schema）
+- H2 deleted_at 纳入（软删/恢复 md5 变化触发 sync，不复活）
+- md5 重算时机正确（soft_delete S1 单事务 + save_cipher M-CIPHER-RMW 单事务）
+- 时间戳排除（created_at/updated_at 跨设备不同，不进 md5）

@@ -57,17 +57,19 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
 
 /// 从 VaultCipherInput 算 md5——用于 create/save 时填 sync_md5。
 ///
-/// 与 `cipher_md5(&VaultCipher)` 的区别：input 不含 id（id 是外部传入的），
-/// 所以加 id 参数。
-///
 /// **必须保证**：input 版本和 row 版本对同一条 cipher 算出的 md5 相同——
 /// 否则 create 时填的 md5 和 sync 时读 row 算的 md5 对不上，diff 永远误判。
 /// H2 修复（2026-07-24）：input 现在含 deleted_at（之前硬编码 ""），
 /// 保证软删/恢复后 md5 与 row 一致。
-pub fn cipher_md5_from_input(id: &str, input: &VaultCipherInput) -> String {
+///
+/// E-CIPHER-MD5-FROM-INPUT-ID-PARAM-REDUNDANT 修复（2026-07-26）：
+/// 之前有 id: &str 参数（注释说 input 不含 id），但 v39 UUID 改动后 VaultCipherInput
+/// 已有 id 字段（db.rs:3584）。两个调用点传的 id 始终 = input.id，参数冗余。
+/// 现直接用 input.id，消除「调用方传 ≠ input.id」的 API 误用面。
+pub fn cipher_md5_from_input(input: &VaultCipherInput) -> String {
     let s = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        id,
+        input.id,
         input.folder_id.as_deref().unwrap_or(""),
         input.favorite,
         input.atype,
@@ -241,6 +243,39 @@ mod tests {
 
         // 反向证明：相同内容（含 deleted_at）md5 稳定
         assert_eq!(cipher_md5(&c3), cipher_md5(&c3.clone()));
+    }
+
+    /// E-FOLDER-MD5-NO-COLLISION-TEST 守护（2026-07-26）：folder_md5 的 | 分隔
+    /// 拼接在当前字段字符集下不会碰撞（对称 cipher 的碰撞守护）。
+    ///
+    /// folder 三字段：id=UUID（含 -）、name=base64 密文、sort_order=数字，都不含 |。
+    /// 若未来 name 加密格式改动引入 |，此测试会暴露。
+    #[test]
+    fn folder_md5_no_collision_on_pipe_in_separate_fields() {
+        let f1 = VaultFolder {
+            id: "folder-1".into(),
+            name: "v1:YWJjZA==".into(), // base64，无 |
+            sort_order: 0,
+            created_at: "2026-07-26".into(),
+            updated_at: "2026-07-26".into(),
+            sync_md5: None,
+        };
+        // 改 name（sort_order 不变）→ md5 必变（| 未吞字段）
+        let mut f2 = f1.clone();
+        f2.name = "v1:ZWZnaGk=".into();
+        assert_ne!(
+            folder_md5(&f1),
+            folder_md5(&f2),
+            "name 变化应导致 folder_md5 变化"
+        );
+        // 改 sort_order（name 不变）→ md5 必变
+        let mut f3 = f1.clone();
+        f3.sort_order = 1;
+        assert_ne!(
+            folder_md5(&f1),
+            folder_md5(&f3),
+            "sort_order 变化应导致 folder_md5 变化"
+        );
     }
 
     // md5_hex 测试已随函数搬到 octopus_sync::store

@@ -79,7 +79,7 @@ pub fn prepare_cipher_input(
         deleted_at: None, // 新建默认未软删（H2 修复）
         sync_md5: None,   // 下面算好填入
     };
-    let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
+    let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(&db_input);
     Ok(VaultCipherInput { sync_md5: Some(sync_md5), ..db_input })
 }
 
@@ -119,7 +119,7 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
             deleted_at: existing_deleted_at, // 保留现有删除状态（H2 修复）
             ..db_input.clone()
         };
-        let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
+        let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(&db_input);
         let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
         update_vault_cipher_at(&tx, id, &db_input)?;
         tx.commit()?;
