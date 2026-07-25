@@ -435,3 +435,51 @@ CREATE TABLE IF NOT EXISTS vault_folders (
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ══ 录屏元数据（schema v51）═══════════════════════════════════
+CREATE TABLE IF NOT EXISTS recordings (
+    id                INTEGER PRIMARY KEY,
+    file_path         TEXT    NOT NULL,
+    title             TEXT    NOT NULL DEFAULT '',
+    duration_ms       INTEGER NOT NULL,
+    width             INTEGER NOT NULL,
+    height            INTEGER NOT NULL,
+    fps               INTEGER NOT NULL,
+    codec             TEXT    NOT NULL,
+    has_system_audio  INTEGER NOT NULL DEFAULT 0,
+    has_microphone    INTEGER NOT NULL DEFAULT 0,
+    source_type       TEXT    NOT NULL,
+    file_size         INTEGER NOT NULL,
+    has_thumbnail     INTEGER NOT NULL DEFAULT 0,
+    is_favorite       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT    NOT NULL,
+    deleted_at        TEXT DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_created   ON recordings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_favorite  ON recordings(is_favorite);
+CREATE INDEX IF NOT EXISTS idx_rec_deleted   ON recordings(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_rec_source    ON recordings(source_type);
+
+CREATE TABLE IF NOT EXISTS recordings_thumbnails (
+    recording_id INTEGER PRIMARY KEY,
+    blob         BLOB NOT NULL,
+    width        INTEGER NOT NULL,
+    height       INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+);
+
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    ('record_shortcut',          'CmdOrCtrl+Shift+R', '录屏快捷键（呼出/暂停-恢复 toggle）'),
+    ('record_stop_shortcut',     'Escape',            '停止录屏快捷键'),
+    ('record_fps',               '30',                '录屏帧率（15/30/60）'),
+    ('record_codec',             'h264',              '录屏编码（h264/hevc）'),
+    ('record_resolution',        'original',          '录屏输出分辨率（original/1080p/720p）'),
+    ('record_system_audio',      'true',              '默认是否录制系统音频'),
+    ('record_microphone',        'false',             '默认是否录制麦克风（false=首启不申请麦克风权限）。注意：false 不代表 MVP 不支持麦克风，只是默认不开启'),
+    ('record_microphone_device', '',                  '麦克风设备名（空=系统默认）'),
+    ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
+    ('record_default_source_type', 'display',         '默认录制源类型'),
+    ('record_output_dir',        'recordings',        '输出目录（相对 ~/.octopus/）'),
+    ('record_history_view',      'grid',              '历史列表默认视图（grid/list）');

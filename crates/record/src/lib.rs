@@ -15,3 +15,4 @@ pub mod store;
 mod platform;
 
 pub use error::{RecordError, RecordResult};
+pub use store::{RecordingMeta, RecordStore, ListFilter};

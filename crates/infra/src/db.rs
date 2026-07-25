@@ -466,13 +466,30 @@ fn migrate_v49_to_v50(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v50→v51：新增 recordings / recordings_thumbnails 表 + 12 条录屏 app_config seed。
+/// db.sql 用 CREATE TABLE IF NOT EXISTS 自动建表，INSERT OR IGNORE 自动补 seed，
+/// 本函数仅负责 bump user_version（无数据迁移）。
+fn migrate_v50_to_v51(conn: &Connection) -> Result<()> {
+    // 重新执行 db.sql 的相关段（CREATE TABLE IF NOT EXISTS 幂等）
+    // 注意：init_schema 末尾会重新跑一次 db.sql 全文，这里不重复
+    log::info!("schema v51: 新增 recordings / recordings_thumbnails 表 + 12 条 record_* app_config seed");
+    conn.execute("PRAGMA user_version = 51", [])?;
+    log::info!("schema upgraded to v51 (recordings 表)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 50 {
-        // v50+ 已最新，直接返回。
+    if v >= 51 {
+        // v51+ 已最新，直接返回。
+        return Ok(());
+    }
+
+    if v == 50 {
+        migrate_v50_to_v51(conn)?;
         return Ok(());
     }
 
