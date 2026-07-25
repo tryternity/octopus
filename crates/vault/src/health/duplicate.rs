@@ -52,13 +52,22 @@ pub fn find_duplicates(ciphers: &[&Cipher]) -> Vec<DuplicateGroup> {
             }
         }
     }
-    map.into_iter()
+    // D5 修复（2026-07-25）：收集后按首个 cipher_id 排序，保证 duplicate_groups
+    // 组间顺序确定（HashMap 迭代顺序不确定）。组内 cipher_ids 顺序已确定（按遍历
+    // push，:51）。稳定的顺序让健康报告的重复组列表不会每次刷新都变。
+    let mut groups: Vec<DuplicateGroup> = map
+        .into_iter()
         .filter(|(_, ids)| ids.len() > 1)
         .map(|(password_hash, cipher_ids)| DuplicateGroup {
             password_hash,
             cipher_ids,
         })
-        .collect()
+        .collect();
+    groups.sort_by(|a, b| {
+        // 按 cipher_ids 的首个 id 排序（每组至少 2 个 id，[0] 安全）
+        a.cipher_ids[0].cmp(&b.cipher_ids[0])
+    });
+    groups
 }
 
 #[cfg(test)]
@@ -124,6 +133,45 @@ mod tests {
         ];
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 2);
+    }
+
+    /// D5 回归守护（2026-07-25）：duplicate_groups 组间顺序应确定（按首个 cipher_id）。
+    ///
+    /// 之前 HashMap.into_iter() 顺序不确定，健康报告的重复组列表每次刷新可能变。
+    /// 现在收集后排序，多次调用结果一致。组内 cipher_ids 顺序也已确定（按遍历 push）。
+    #[test]
+    fn test_duplicate_groups_order_stable() {
+        // 构造 3 组重复（首个 cipher_id 分别 c1/c3/c5），故意打乱 hash 顺序
+        // （"z"/"a"/"m" 的 hash 顺序与 cipher_id 顺序无关）
+        let ciphers = vec![
+            make_cipher("c1", Some("zzz")), // group Z: c1, c2
+            make_cipher("c2", Some("zzz")),
+            make_cipher("c3", Some("aaa")), // group A: c3, c4
+            make_cipher("c4", Some("aaa")),
+            make_cipher("c5", Some("mmm")), // group M: c5, c6
+            make_cipher("c6", Some("mmm")),
+        ];
+        // 多次调用验证顺序稳定
+        for _ in 0..20 {
+            let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
+            assert_eq!(groups.len(), 3, "应有 3 组重复");
+            // 按首个 cipher_id 升序：c1 < c3 < c5
+            assert_eq!(
+                groups[0].cipher_ids[0], "c1",
+                "D5: 首组应是 c1（排序后），实际 {}",
+                groups[0].cipher_ids[0]
+            );
+            assert_eq!(
+                groups[1].cipher_ids[0], "c3",
+                "D5: 第二组应是 c3，实际 {}",
+                groups[1].cipher_ids[0]
+            );
+            assert_eq!(
+                groups[2].cipher_ids[0], "c5",
+                "D5: 第三组应是 c5，实际 {}",
+                groups[2].cipher_ids[0]
+            );
+        }
     }
 
     #[test]

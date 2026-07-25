@@ -204,7 +204,12 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
                     created_folder_ids.push(new_id); // 记录以便补偿回滚
                 }
                 Err(e) => {
+                    // I-FOLDER-WARN 修复（2026-07-25）：folder 创建失败不仅 log，还记入 errors
+                    // ——引用该 folderId 的 cipher 的 folder_id 会静默降级为 None（folder_map
+                    // 无此 id → get 返 None），用户丢失文件夹归属却不被告知。记入 errors
+                    // 让用户至少能在导入报告里看到。
                     log::warn!("[import] 创建 folder {} 失败：{}", f.name, e);
+                    errors.push(format!("创建 folder {} 失败：{}", f.name, e));
                 }
             }
         }
@@ -304,6 +309,28 @@ pub fn import_bitwarden_json(json: &str, key: &DerivedKey) -> Result<ImportRepor
             }
         }
         return Err(e);
+    }
+
+    // I8 修复（2026-07-25）：batch 成功后清理未被任何已入库 cipher 引用的 created folder。
+    //
+    // M7 只覆盖 batch 返 Err 的场景；但 batch 为空（&[]）时返 Ok(()) 不进 Err 分支。
+    // 触发链：用户从 Bitwarden 全量导出（含 SecureNote/Card/Identity），octopus 只
+    // 支持 Login（type=1）→ items 全 skip → batch 空 → folder 全残留为孤儿。
+    // 即使 batch 非空，也可能有 folder 被创建但无任何 cipher 引用（item 全是其他 folder 的）。
+    //
+    // 本清理覆盖所有孤儿场景：扫描 batch 里实际被引用的 folder_id，删掉 created 但未引用的。
+    if !created_folder_ids.is_empty() {
+        let referenced: HashSet<&str> = batch
+            .iter()
+            .filter_map(|input| input.folder_id.as_deref())
+            .collect();
+        for folder_id in &created_folder_ids {
+            if !referenced.contains(folder_id.as_str()) {
+                if let Err(fe) = storage::delete_folder(folder_id) {
+                    log::warn!("[import] I8 清理未引用 folder {} 失败：{}", folder_id, fe);
+                }
+            }
+        }
     }
 
     Ok(ImportReport {
@@ -679,5 +706,74 @@ mod tests {
             ciphers[0].folder_id, ciphers[1].folder_id,
             "两个 item 的 folder_id 应映射到同一个本机 folder"
         );
+    }
+
+    /// I8 回归守护：folders 非空但 items 全部无效（type != 1 / 无 login）→
+    /// batch 为空 → folder 不应残留为孤儿。
+    ///
+    /// 触发场景：用户从 Bitwarden 全量导出（含 SecureNote/Card/Identity），
+    /// octopus 只支持 Login → items 全 skip，但 folders 已先行创建。
+    /// M7 补偿只覆盖 batch 返 Err；batch 空（Ok）不进 Err 分支 → 之前 folder 残留。
+    /// I8 修复：batch 成功后清理未被任何 cipher 引用的 created folder。
+    #[test]
+    fn test_import_all_items_skipped_no_orphan_folders() {
+        setup_clean_db();
+        let key = make_key(1);
+        // folders 非空，但 items 全是 type=2（SecureNote，octopus 不支持）
+        let json = r#"{
+            "encrypted": false,
+            "folders": [
+                {"id": "f1", "name": "Notes"},
+                {"id": "f2", "name": "Cards"}
+            ],
+            "items": [
+                {"name": "MyNote", "type": 2, "folderId": "f1", "notes": "secret"},
+                {"name": "MyCard", "type": 3, "folderId": "f2"}
+            ]
+        }"#;
+        let report = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(report.imported, 0, "无 Login item 可导入");
+        assert_eq!(report.skipped, 2, "2 个非 Login item 被 skip");
+
+        // I8 核心：folder 不应残留（之前会留下 2 个空 folder）
+        let (folders, _) = storage::list_folders(&key).expect("list folders");
+        assert_eq!(
+            folders.len(),
+            0,
+            "I8: items 全 skip 时 created folder 应被清理，不应残留孤儿（实际 {} 个）",
+            folders.len()
+        );
+    }
+
+    /// I8 补充：部分 folder 被引用、部分未引用 → 只清理未引用的，被引用的保留。
+    #[test]
+    fn test_import_partial_orphan_folders_cleaned() {
+        setup_clean_db();
+        let key = make_key(1);
+        // f1 有 Login item 引用，f2 只有 SecureNote 引用（item 被 skip）
+        let json = r#"{
+            "encrypted": false,
+            "folders": [
+                {"id": "f1", "name": "Logins"},
+                {"id": "f2", "name": "Notes"}
+            ],
+            "items": [
+                {"name": "GitHub", "type": 1, "folderId": "f1",
+                 "login": {"username": "u", "password": "p", "uris": [{"uri": "https://github.com"}]}},
+                {"name": "Note1", "type": 2, "folderId": "f2", "notes": "secret"}
+            ]
+        }"#;
+        let report = import_bitwarden_json(json, &key).expect("import");
+        assert_eq!(report.imported, 1, "1 个 Login 导入");
+        assert_eq!(report.skipped, 1, "1 个 SecureNote skip");
+
+        let (folders, _) = storage::list_folders(&key).expect("list folders");
+        assert_eq!(folders.len(), 1, "应只保留被引用的 Logins folder");
+        assert_eq!(folders[0].name, "Logins");
+
+        // cipher 的 folder_id 应指向保留的 folder
+        let (ciphers, _) = storage::list_ciphers(&key).expect("list ciphers");
+        assert_eq!(ciphers.len(), 1);
+        assert_eq!(ciphers[0].folder_id.as_deref(), Some(folders[0].id.as_str()));
     }
 }
