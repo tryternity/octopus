@@ -378,9 +378,7 @@ settings:
     screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
     recordShortcut: Recording
-    recordShortcutHint: Show config float to pick source; pause/resume while recording
-    recordStopShortcut: Stop Recording
-    recordStopShortcutHint: Only effective during recording; ignored otherwise
+    recordShortcutHint: Show config float; pause/resume while recording; press ESC to stop
     recording: Voice Recognition
     recogLang: Recognition Language
     recogAuto: Auto
@@ -809,7 +807,7 @@ tray:
   quit: Quit
   engineInfo: Engine  ${engine}
   recordStart: Start Recording (${shortcut})
-  recordStop: Stop Recording
+  recordStop: Stop Recording  ${shortcut}
 
 # ════════ ActionBar ════════
 actionbar:

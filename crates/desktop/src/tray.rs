@@ -36,6 +36,16 @@ static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
 
 /// 存储 asr_shortcut 用于 update_tray_label 动态文案
 static ASR_SHORTCUT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 存储 record_shortcut 用于录屏菜单动态文案。
+/// 用 Mutex（非 OnceLock）——用户在 Settings 改快捷键后立即更新 tray 文案。
+#[cfg(target_os = "macos")]
+static RECORD_SHORTCUT: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+
+/// 返回 RECORD_SHORTCUT 的 lock guard，让 settings_commands 在热重载成功后更新镜像。
+#[cfg(target_os = "macos")]
+pub fn record_shortcut_mirror() -> parking_lot::MutexGuard<'static, String> {
+    RECORD_SHORTCUT.lock()
+}
 
 /// 将 Tauri Accelerator 格式（CmdOrCtrl+Shift+A）转为用户可读格式（⌘⇧A）
 fn fmt_shortcut(s: &str) -> String {
@@ -71,6 +81,10 @@ fn fmt_engine_label() -> String {
 /// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
+    #[cfg(target_os = "macos")]
+    {
+        *RECORD_SHORTCUT.lock() = config.record_shortcut.clone();
+    }
     let sc = fmt_shortcut(&config.asr_shortcut);
     let toggle_text = crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]);
     let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
@@ -100,7 +114,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     // ── 录屏组（Task 14，2026-07-25）：仅 macOS 编译 ──
     // 设计：sep + 3 项，紧跟在 compact_editor 之后、sep2 之前。
     // 快捷键提示在 menu 文案里直接展示「⌘⇧R」（不做硬编码，避免与 record_hotkey
-    // 注册的快捷键字符串不同步——但 MVP 简化，直接写死文案，reload 时 rebuild_tray_labels 也用同 key）。
+    // 录屏菜单项文案：从 RECORD_SHORTCUT 读用户配置的快捷键（与 ASR 同模式）。
+    // 用户改快捷键后 set_config 热重载 + update_record_tray_label 同步文案。
+    #[cfg(target_os = "macos")]
+    let record_sc_display = fmt_shortcut(
+        &RECORD_SHORTCUT.lock().clone()
+    );
     #[cfg(target_os = "macos")]
     let sep_record = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator_record: {e}"))?;
@@ -108,7 +127,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let record_start = MenuItem::with_id(
         app,
         "record_start",
-        &crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")]),
+        &crate::i18n::t("tray.recordStart", &[("shortcut", &record_sc_display)]),
         true,
         None::<&str>,
     )
@@ -326,26 +345,28 @@ pub fn rebuild_tray_labels() {
 /// 录屏菜单文案：根据当前 RecordSession state 切换。
 ///
 /// - Idle/Starting → 「开始录屏 ⌘⇧R」（弹浮窗选源）
-/// - Recording/Paused/Stopping → 「停止录屏」（停止 + 入库）
+/// - Recording/Paused/Stopping → 「停止录屏  ⎋」（停止 + 入库，提示 ESC 快捷键）
 ///
-/// state 查询是 async，但 set_text 必须在 sync 上下文调（menu 重建是同步）。
-/// 这里用 try_read 做最佳努力——拿不到 session（启动早期）默认 Idle 文案。
+/// 快捷键符号从 RECORD_SHORTCUT 读（用户可配置），ESC 固定（全局通用停止键）。
 #[cfg(target_os = "macos")]
 fn record_menu_label_for_current_state() -> String {
     // 同步拿不到 session state（async）——rebuild 场景极少，默认用 Idle 文案。
     // 运行时 state 变化由 update_record_tray_label 主动调（start/stop 路径）。
-    crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")])
+    let sc = fmt_shortcut(&RECORD_SHORTCUT.lock().clone());
+    crate::i18n::t("tray.recordStart", &[("shortcut", &sc)])
 }
 
 /// 根据录制状态更新录屏菜单文案（start/stop 路径调用）。
 ///
-/// `recording=true` → 「停止录屏」；`recording=false` → 「开始录屏 ⌘⇧R」。
+/// `recording=true` → 「停止录屏  ⎋」（停止 + 入库，提示 ESC）
+/// `recording=false` → 「开始录屏 ⌘⇧R」（用户配置的 toggle 快捷键）
 #[cfg(target_os = "macos")]
 pub fn update_record_tray_label(recording: bool) {
     let label = if recording {
-        crate::i18n::t("tray.recordStop", &[])
+        crate::i18n::t("tray.recordStop", &[("shortcut", "⎋")])
     } else {
-        crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")])
+        let sc = fmt_shortcut(&RECORD_SHORTCUT.lock().clone());
+        crate::i18n::t("tray.recordStart", &[("shortcut", &sc)])
     };
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {

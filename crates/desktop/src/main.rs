@@ -896,7 +896,6 @@ pub fn run() {
                     if let Err(e) = record_hotkey::register_record_hotkeys(
                         app.handle(),
                         &config.record_shortcut,
-                        &config.record_stop_shortcut,
                     ) {
                         log::warn!("[record] 快捷键注册失败: {e}");
                     }

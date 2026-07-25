@@ -383,9 +383,7 @@ settings:
     vaultAutotypeShortcutHint: 在浏览器登录页按此键，自动匹配并填充密码
     screenshotShortcut: 截图
     recordShortcut: 录屏
-    recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复
-    recordStopShortcut: 停止录屏
-    recordStopShortcutHint: 仅录制中生效；其他状态忽略
+    recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复；停止按 ESC
     screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
     recogLang: 识别语言
@@ -815,7 +813,7 @@ tray:
   quit: 退出系统
   engineInfo: 引擎  ${engine}
   recordStart: 开始录屏（${shortcut}）
-  recordStop: 停止录屏
+  recordStop: 停止录屏  ${shortcut}
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
