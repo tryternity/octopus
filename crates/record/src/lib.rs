@@ -13,7 +13,7 @@ pub use protocol::*;
 pub mod session;
 pub use session::{RecordSession, SessionState, StartedInfo, StoppedInfo};
 pub mod store;
-mod platform;
+pub mod platform;
 
 pub use error::{RecordError, RecordResult};
 pub use store::{RecordingMeta, RecordStore, ListFilter};
