@@ -3833,7 +3833,10 @@ pub fn update_vault_cipher(id: &str, input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| update_vault_cipher_at(conn, id, input))
 }
 
-fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput) -> Result<()> {
+/// M-CIPHER-RMW 修复（2026-07-25）：改 pub 供 vault crate 的 save_cipher 在
+/// 事务内调用（load_vault_cipher_at + update_vault_cipher_at 合并单事务，
+/// 防 load→update 间隙并发致软删 cipher 复活——与 #4 meta_lock 同构问题）。
+pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,

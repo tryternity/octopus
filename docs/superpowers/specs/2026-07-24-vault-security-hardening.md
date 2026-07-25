@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **240** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **241** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -861,3 +861,27 @@ psl.rs + matches_domain 审查通过——vault 里安全设计最严谨的模�
 - **matches_domain 三重大小写归一**：matcher/mod.rs:78（Host 策略）+ :105-112（Domain 策略 cipher_host/target_domain）+ :118（等价域名组）全部 to_lowercase
 - **等价域名条件扩展**：matcher/mod.rs:116-123 cipher_domain 在组内时，组内所有域名加入 candidates
 - **钓鱼测试守护**：test_phishing_protection_multilevel_tld 锁住 `barclays.co.uk ≠ evil-attacker.co.uk`
+
+---
+
+## 第二十七轮审查修复（2026-07-25，meta_lock + cipher 写并发：M-CIPHER-RMW）
+
+### M-CIPHER-RMW: save_cipher load→update 无锁无事务，与 #4 同构（低，已修）
+
+**核查**：save_cipher（cipher.rs:86-112）流程——:90 `db::load_vault_cipher(id)?`（第 1 次 with_db autocommit 读）→ :87-108 encrypt + 构造 db_input → :111 `db::update_vault_cipher(id, &db_input)?`（第 2 次 with_db autocommit 写）。两步跨两个 autocommit 事务，中间无锁——与 #4（meta_lock 修复的 meta 双 modal 并发 RMW）完全同构。
+
+**并发损坏场景**：save_cipher :90 读到 `deleted_at=None` → 间隙内 `soft_delete("c1")` 改成 ts → :111 update 写回 `deleted_at=None`（save_cipher 读到的旧值，H2「保留」语义反而覆写）→ 软删被撤销，cipher 复活。这与 H2 修复初衷（编辑时保留删除状态）在并发下直接冲突。
+
+**与 #4 的关系**：meta_lock.rs:5 注释明确「Tauri 同步命令被 spawn_blocking，可在不同 worker 并发执行」——这一前提对 cipher 命令同样成立，但 #4 的保护只施加到 meta。cipher 的 soft_delete/restore（S1 修复，单事务原子 ✓）都是好设计，唯独 save_cipher 的 deleted_at 保留 RMW 是 #4 的覆盖盲区。
+
+**修复**：save_cipher 的 load→update 合并进单事务（`with_db` + `unchecked_transaction`），load 用 `load_vault_cipher_at(&tx)`，update 用 `update_vault_cipher_at(&tx)`。事务隔离保证 load 读到的 deleted_at 与 update 写的在同一快照内一致。`update_vault_cipher_at` 改 pub（与 `load_vault_cipher_at` 对称，后者已 pub）。
+
+**严重度诚实限定**：触发条件苛刻——需 ① 两个 Tauri 命令并发操作同一 cipher；② 交错恰好落在 load→update 的微秒级间隙（其间有 encrypt + md5 计算）。单用户 UI 下极难触发。但形态与 #4 完全一致，轻量事务加固消除盲区。
+
+**回归测试**：`save_cipher_preserves_soft_deleted_state`——先 soft_delete → 再 save_cipher → deleted_at 仍非空（不复活）。
+
+### 正面发现（meta_lock.rs）
+
+- **ReentrantMutex 设计正确**：同线程可重入（外层 change_master_password 持锁 → 内层 save_vault_meta 再 lock 不死锁），这是锁下沉到写函数内部的前提
+- **锁下沉写函数**：save_vault_meta / update_security_stamp 内部自动加锁，覆盖所有 meta 写路径（不依赖调用方显式 acquire）
+- **双测试守护**：test_lock_serializes_concurrent_writers（4 线程并发串行化）+ test_lock_is_reentrant_same_thread（同线程重入不死锁）
