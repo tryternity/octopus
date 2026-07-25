@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **234** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **236** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -654,3 +654,51 @@ crypto/ 是 vault 的命门模块（KDF + 对称加密 + 密钥派生）。本�
 **问题**：`symmetric.rs:23 cipher.encrypt(nonce, plaintext)` 不传 AAD。密文不绑定 cipher_id / field_name 上下文——攻击者若能写 DB，可把 cipher A 的 password 密文复制到 cipher B 的 password 字段，decrypt 仍成功（同 user_vault_key），cipher B 显示 cipher A 的密码（密文移动/重放）。
 
 **状态**：文档化。单机威胁模型下"能写 DB = 攻击者已赢"，AAD 是纵深防御而非必需。加 AAD 需改 encrypt/decrypt 签名 + 所有调用点 + 密文格式（破坏向后兼容），代价大收益低。已在 symmetric.rs 模块注释说明设计取舍。
+
+---
+
+## 第二十一轮审查修复（2026-07-25，importer/types/matcher：I8/I-FOLDER-WARN + 4 项文档化）
+
+importer/types/matcher 整体质量高——MatchType 协议对齐、#11 空 URI 防御、Rust regex 免疫 ReDoS、M4 非法值可观测均经源码确认。
+
+### I8: 孤儿 folder 残留——M7 补偿未覆盖"batch 空成功"（中低，真实 bug）
+
+**问题**：`bitwarden.rs:298-307` 的 M7 补偿删除仅在 `insert_vault_ciphers_batch` 返回 Err 时触发。但 `db.rs:3799 insert_vault_ciphers_batch(&[])` 对空 batch 直接 `tx.commit()` 返回 `Ok(())`——不进 Err 分支，不补偿。
+
+**触发链**：用户从 Bitwarden 全量导出（含 SecureNote/Card/Identity），octopus 只支持 Login（type=1）→ items 全 skip（:220 `item_type != 1`）→ batch 空 → `Ok(())` → folder 循环（:188-211）已创建的 N 个 folder 全残留为孤儿（无任何 cipher 引用）。用户会在 folder 列表看到一堆空文件夹且无法理解来源。
+
+**修复**：batch 成功后，扫描 `created_folder_ids`，删掉没被 batch 里任何 cipher 引用的 folder。覆盖所有孤儿场景（batch_len==0 全孤儿 + batch_len>0 部分孤儿）。
+
+**回归测试**：`test_import_all_items_skipped_no_orphan_folders`（全 skip → folder 不残留）+ `test_import_partial_orphan_folders_cleaned`（部分孤儿 → 只清未引用的）。
+
+### I-FOLDER-WARN: folder 创建失败静默（低，可观测性）
+
+**问题**：`bitwarden.rs:206-209` create_folder 失败仅 `log::warn!`，不记入 errors/skipped。引用该 folderId 的 cipher 的 folder_id 静默降级为 None（folder_map 无此 id → get 返 None）→ cipher 仍导入但丢失文件夹归属，用户不知情。
+
+**修复**：失败时除 log 外，记入 `errors` 让导入报告可见。
+
+### M-REGEX: RegularExpression 正则每次匹配重新编译（低，文档化）
+
+**问题**：`matcher.rs:87 Regex::new(cipher_uri)` 每次 `find_matching_ciphers` 调用都重新编译正则（构建 NFA/DFA + 堆分配）。
+
+**状态**：文档化。无 ReDoS（Rust regex crate 线性时间引擎，无 catastrophic backtracking）、无 panic（`unwrap_or(false)`）。绝大多数用户 0 个 regex cipher → 零成本。优化需调用方在查询热路径加 `HashMap<uri, Regex>` 缓存，matcher 本身无状态不好缓存。
+
+### I-DEDUP-PERF: 导入为 dedup 全量解密库内 cipher（低，固有限制）
+
+**问题**：`bitwarden.rs:157 storage::list_ciphers(key)` 每次导入全量解密库内所有 cipher（name + data + fields + history），仅为算 (name, first_uri) dedup key。
+
+**状态**：文档化。AES-GCM nonce 随机致同明文不同密文，无法用密文去重，必须解密。Bitwarden 式字段级加密的固有代价。大库（数百+ cipher）+ 频繁导入时明显变慢，可考虑维护解密缓存或导入时增量比对。
+
+### I-DOSSIZE: 导入无输入大小限制（低，文档化）
+
+**问题**：`bitwarden.rs:146 serde_json::from_str(json)` + :219 `items.iter()` 对超大 JSON / 超大 items 数组无上限。恶意/损坏的 .json 可致 OOM 崩溃。
+
+**状态**：文档化。单机用户文件、非网络输入，威胁低。可加 items 数量上限（如 10 万）+ JSON 字节上限作为廉价纵深防御，暂不实施。
+
+### 正面发现（importer/types/matcher）
+
+- **MatchType 协议对齐**：types.rs:92-99 StartsWith=2/Exact=3 与 Bitwarden 官方 UriMatchType.cs 对齐（之前弄反致导入/导出 match 语义静默互换），守护测试锁住官方值
+- **M4 非法值可观测**：types.rs:38/68 CipherType/RepromptType 非法值兜底时 log::warn! 记迹（仍兜底为数据兼容，单机威胁模型诚实标注）
+- **#11 空 URI 视 Never**：matcher.rs:66-68 `cipher_uri.trim().is_empty()` 提前返回 false，挡住 `starts_with("")` 恒真与 `Regex::new("")` 恒真两类误匹配
+- **L12 大小写归一**：matcher.rs:78/105-112 Host 策略与 Domain 策略 to_lowercase，DNS host 不区分大小写
+- **Rust regex 免疫 ReDoS**：matcher.rs:87 `Regex::new` + `unwrap_or(false)`——regex crate 线性时间引擎，无 catastrophic backtracking，无效正则不 panic
