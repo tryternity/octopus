@@ -229,11 +229,13 @@
 - `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
 - 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
 
-### M5: 永久删除无 tombstone 可复活（中，设计缺口，未修）
+### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，未修）
+
+**严重度升级（2026-07-25 第二十五轮）**：原定「中」，升级为「高」。密码管理器的核心承诺是「删除即删除」，硬删（empty_trash）后密码经多设备 sync 复活违反此承诺，且有安全影响（用户以为已删除的敏感密码仍存活于各设备 + 远程仓库 git 历史）。详见 [第二十五轮](#第二十五轮审查修复2026-07-25syncoutline--syncstorers--enginers-删除传播)。
 
 **问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
 
-**状态**：文档化为已知限制（与 last-write-wins 同类）。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。
+**状态**：文档化为已知限制。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
 
 ### L10: upsert_folder_with_sort O(N²)（低，未修）
 
@@ -782,3 +784,47 @@ health/ 含 zxcvbn 强度评估 + 重复密码检测。演进修复扎实（8.5�
 - **L6 软删过滤**：duplicate.rs:40 跳过 deleted_at 的 cipher
 - **#12 Debug redact**：DuplicateGroup 手写 Debug 对 password_hash redact
 - **H1 签名优化**：find_duplicates 收 `&[&Cipher]` 避免调用方深拷贝
+
+---
+
+## 第二十五轮审查修复（2026-07-25，sync/outline + store + engine 删除传播：M-TOMBSTONE/M-DEAD + ISO-COMMENT）
+
+### M-TOMBSTONE: sync 不传播硬删，密码多设备复活（高，= 已知 M5，严重度升级 + 佐证细化）
+
+**核查**：三条独立佐证链全部回源码确认成立——
+
+1. **push 侧会删**（store.rs:580-586）：本地 DB 硬删 cipher 后，`incremental_export` 读 `old_outline` 有该 uuid 但 `cipher_id_set`（当前 DB）无 → `delete_cipher_file` + 新 outline（:556-578 只 insert 现存 cipher）不含该 uuid → push 后远程文件删、outline 移除。✓
+2. **pull 侧不删**（engine.rs:800-819）：`pull_from_files` 的 apply 只 `for (uuid, entry) in &remote_outline.ciphers` 做 upsert——**无「本地有 remote 无 → 删本地」对称逻辑**。remote_outline 无 c1 → 循环不碰 c1 → B DB 的 c1 保留。✓
+3. **旁证**：`SyncReport.deleted`（engine.rs:570 字段 / :736 初始化 0）grep 全文件无任何递增或重新赋值点 → sync 从不统计删除、从不删除 cipher。✓
+
+**双向复活路径**：A 硬删 c1 → A push（远程删）→ B pull（remote_outline 无 c1 → apply 不碰 → B DB 保留 c1）→ B push（B incremental_export 读 DB 含 c1 → 写回 c1 文件 + outline）→ 远程 c1 复活 → A pull → c1 在 A 复活。
+
+**与第四轮 M5 的关系**：M-TOMBSTONE **就是**第四轮已记录的 M5。本轮提供更完整的三条独立佐证链（第四轮只记录了时序描述），并升级严重度（中→高）：密码管理器的「删除」必须可靠传播，硬删复活违反核心承诺 + 安全影响（敏感密码存活于 git 历史）。
+
+**触发条件**：① 多设备 sync；② empty_trash 硬删（清空回收站）。单设备 / 仅软删不受影响——软删通过 md5 变化正确传播（H2 修复保证 deleted_at 跨设备一致）。
+
+**修复方向**（需 Phase 2，本轮不改代码）：
+- 方案 A（tombstone）：硬删时 outline 写墓碑 entry（uuid + deleted 标记 + 时间），pull 侧识别墓碑删本地。需 outline 格式升级（version 2）。
+- 方案 B（pull 侧对称删除）：apply 增加「本地有 remote 无 → 删本地」。需防误删（remote 是旧的、未收到对方新增 push 时）——需 vault_version 或 merge 状态保护。
+- 方案 C（文档化为设计选择）不可取——密码管理器的「删除」必须可靠传播。
+
+### M-DEAD: merge_outlines 仅 re-export 生产零调用（低，死代码，与 M-TOMBSTONE 同源）
+
+**核查**：`merge_outlines`（outline.rs:61）定义完整、6 个测试覆盖，`lib.rs:33` 与 `vault/sync/mod.rs:37` 各 `pub use` 导出——但 grep 全仓生产代码无任何实际调用点（engine.rs pull 直接用 remote_outline 驱动 apply，不经 merge）。
+
+**与 M-TOMBSTONE 的关系**：这解释了 M-TOMBSTONE 的成因——原设计意图是 LWW merge（outline.rs:60 注释「取 updated_ms 更新者」），但 pull 侧实现改成直接 remote_outline apply（简化），导致 merge 逻辑没接线、删除也不传播。且 merge_outlines 语义本身也有 M-TOMBSTONE 同源缺陷（:62 `local.clone()` + 只遍历 remote → 「本地有 remote 无」一律保留）。
+
+**状态**：文档化。要么按方案 B 接线（merge 后驱动 apply + 加删除传播），要么删除避免误导。取决于 Phase 2 方案选择。
+
+### ISO-COMMENT: iso_to_unix_ms 注释自相矛盾（低，注释，已修）
+
+**问题**：`sync/store.rs:143-145` 同一函数内注释打架——:143-144「简化天数累积——不考虑闰年精度...准确算法需要完整日历库，不值得」，:145「这里用 civil_to_days 公式（Howard Hinnant），精度无损」。代码实际是完整的 Howard Hinnant civil_to_days（:146-151 era/yoe/doy/doe 分解，正确处理闰年）。:143-144 是被淘汰的旧简化方案残留注释。
+
+**修复**：删 :143-144 旧残留注释，保留 :145 正确描述。
+
+### 正面发现（store.rs / outline.rs）
+
+- **BTreeMap 序列化稳定**：outline.rs:9-12 用 BTreeMap（非 HashMap）保证 outline.json 字节级稳定，避免 git 空 commit
+- **iso_to_unix_ms 精确**：civil_to_days 公式正确处理闰年（era/yoe/doy/doe 分解）
+- **incremental_export md5 diff 正确**：store.rs:558-578 只写变化的 cipher
+- **M8 outline 损坏降级全量重建**：store.rs:537-552 outline.json 解析失败不再 `unwrap_or_default` 吞成空（会导致删除循环不执行 + clone 复活），降级 `export_all_to_files`

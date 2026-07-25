@@ -140,9 +140,9 @@ pub fn iso_to_unix_ms(s: &str) -> i64 {
     let h: i64 = s[11..13].parse().unwrap_or(0);
     let mi: i64 = s[14..16].parse().unwrap_or(0);
     let se: i64 = s[17..19].parse().unwrap_or(0);
-    // 简化天数累积——不考虑闰年精度（同条数据在两台机器上写入时间相差 < 1 天，
-    // 累积误差 < 86400s 不影响 merge 决策）。准确算法需要完整日历库，不值得。
-    // 这里用 civil_to_days 公式（Howard Hinnant），精度无损。
+    // civil_to_days 公式（Howard Hinnant）——精度无损，正确处理闰年。
+    // ISO-COMMENT 修复（2026-07-25）：删旧的「简化、不考虑闰年」残留注释——
+    // 那是被淘汰的旧简化方案的描述，与实际代码（完整 civil_to_days）矛盾。
     let y2 = if mo <= 2 { y - 1 } else { y };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
     let yoe = (y2 - era * 400) as u64;
