@@ -311,12 +311,17 @@ pub(crate) async fn start_with_config(
     // 事件回调：helper 进程输出 Warning/Error/RecordingPaused 等非命令响应事件时，
     // 经 Tauri emit 推给前端（前端订阅 'record://event' 更新 UI 状态）。
     let app_clone = app.clone();
-    session
+    let result = session
         .start(&helper_path, request, move |e| {
             let _ = app_clone.emit("record://event", &e);
         })
-        .await
-        .map_err(e2s)
+        .await;
+    // 启动成功 → 更新 tray menu 文案为「停止录屏」（toggle 语义）
+    if result.is_ok() {
+        #[cfg(target_os = "macos")]
+        crate::tray::update_record_tray_label(true);
+    }
+    result.map_err(e2s)
 }
 
 #[command]
@@ -496,6 +501,10 @@ async fn stop_and_store_inner(
         store.insert(&meta_clone, None)
     })
     .await?;
+
+    // 停止 + 入库成功 → tray menu 文案切回「开始录屏」（toggle 语义）
+    #[cfg(target_os = "macos")]
+    crate::tray::update_record_tray_label(false);
 
     Ok(Some(meta))
 }

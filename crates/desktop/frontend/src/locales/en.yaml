@@ -805,7 +805,6 @@ tray:
   quit: Quit
   engineInfo: Engine  ${engine}
   recordStart: Start Recording (${shortcut})
-  recordPauseResume: Pause/Resume
   recordStop: Stop Recording
 
 # ════════ ActionBar ════════

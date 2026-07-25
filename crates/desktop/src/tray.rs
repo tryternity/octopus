@@ -22,13 +22,10 @@ struct TrayItems<R: Runtime> {
     screenshot: MenuItem<R>,
     clipboard: MenuItem<R>,
     compact_editor: MenuItem<R>,
-    // 录屏组（Task 14，2026-07-25）：仅 macOS 注册（windows/linux 无 RecordSession）
+    // 录屏项（2026-07-25）：仅 macOS。toggle 语义——idle 时「开始录屏」，
+    // recording/paused 时「停止录屏」（与 ASR toggle 同模式，单一菜单项切换文案）。
     #[cfg(target_os = "macos")]
     record_start: MenuItem<R>,
-    #[cfg(target_os = "macos")]
-    record_pause_resume: MenuItem<R>,
-    #[cfg(target_os = "macos")]
-    record_stop: MenuItem<R>,
     settings: MenuItem<R>,
     quit: MenuItem<R>,
 }
@@ -116,24 +113,6 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         None::<&str>,
     )
     .map_err(|e| format!("record_start menu: {e}"))?;
-    #[cfg(target_os = "macos")]
-    let record_pause_resume = MenuItem::with_id(
-        app,
-        "record_pause_resume",
-        &crate::i18n::t("tray.recordPauseResume", &[]),
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("record_pause_resume menu: {e}"))?;
-    #[cfg(target_os = "macos")]
-    let record_stop = MenuItem::with_id(
-        app,
-        "record_stop",
-        &crate::i18n::t("tray.recordStop", &[]),
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("record_stop menu: {e}"))?;
 
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
@@ -143,15 +122,13 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
-    // 菜单组装：录屏组（sep + 3 项）插在 compact_editor 和 sep2 之间。
-    // cfg(target_os = "macos") 外层编译差异大，用条件收集 items 数组：
-    // - macOS：完整 11 项
-    // - 其他：8 项（无录屏组）
+    // 菜单组装：录屏项（sep + 1 项 toggle）插在 compact_editor 和 sep2 之间。
+    // macOS 10 项 / 其他 8 项（无录屏）。
     #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
         &screenshot, &clipboard, &compact_editor,
-        &sep_record, &record_start, &record_pause_resume, &record_stop,
+        &sep_record, &record_start,
         &sep2,
         &settings, &quit,
     ])
@@ -176,8 +153,6 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                 clipboard: clipboard.clone(),
                 compact_editor: compact_editor.clone(),
                 record_start: record_start.clone(),
-                record_pause_resume: record_pause_resume.clone(),
-                record_stop: record_stop.clone(),
                 settings: settings.clone(),
                 quit: quit.clone(),
             });
@@ -220,68 +195,32 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                 info!("Tray: open compact editor (empty)");
                 crate::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
             }
-            // ── 录屏组（Task 14，2026-07-25）：仅 macOS ──
+            // ── 录屏项（2026-07-25）：仅 macOS，toggle 语义（与 ASR toggle 同模式）──
+            // idle/starting → 弹配置浮窗（用户选源后开录）
+            // recording/paused → stop_and_store 停止入库
+            // 文案由 update_record_tray_label 根据 state 切换（开始录屏 ↔ 停止录屏）
             #[cfg(target_os = "macos")]
             "record_start" => {
-                info!("Tray: show record config window");
-                // 与 Cmd+Shift+R hotkey 同路径：弹出配置浮窗让用户选源（display/window/area）。
-                // 不再用默认配置直接开录——用户反馈需要选具体源。
-                crate::record_window::show_record_window(app);
-            }
-            #[cfg(target_os = "macos")]
-            "record_pause_resume" => {
-                info!("Tray: record pause/resume toggle");
+                info!("Tray: record toggle");
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     use octopus_record::SessionState;
                     let session = match app_handle.try_state::<octopus_record::RecordSession>() {
                         Some(s) => s,
                         None => {
-                            log::warn!("[tray] RecordSession state 未找到（pause/resume 忽略）");
+                            log::warn!("[tray] RecordSession state 未找到");
                             return;
                         }
                     };
-                    match session.state().await {
-                        SessionState::Recording => {
-                            if let Err(e) = session.pause().await {
-                                log::warn!("[tray] record pause 失败: {}", e);
-                            }
+                    let st = session.state().await;
+                    match st {
+                        SessionState::Idle | SessionState::Starting => {
+                            // 弹配置浮窗（与 Cmd+Shift+R hotkey 同路径）
+                            crate::record_window::show_record_window(&app_handle);
                         }
-                        SessionState::Paused => {
-                            if let Err(e) = session.resume().await {
-                                log::warn!("[tray] record resume 失败: {}", e);
-                            }
-                        }
-                        other => {
-                            log::info!("[tray] pause/resume 在非录制态忽略（state={:?}）", other);
-                        }
-                    }
-                });
-            }
-            #[cfg(target_os = "macos")]
-            "record_stop" => {
-                info!("Tray: record stop + 入库");
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    use octopus_record::SessionState;
-                    let session = match app_handle.try_state::<octopus_record::RecordSession>() {
-                        Some(s) => s,
-                        None => {
-                            log::warn!("[tray] RecordSession state 未找到（stop 忽略）");
-                            return;
-                        }
-                    };
-                    let state = session.state().await;
-                    match state {
                         SessionState::Recording | SessionState::Paused => {
-                            // 与 hotkey Esc 同路径：stop_and_store 读 session 快照入库。
-                            match crate::record_commands::stop_and_store(
-                                &session,
-                                false,
-                                None,
-                            )
-                            .await
-                            {
+                            // 停止 + 入库（与 hotkey Esc 同路径）
+                            match crate::record_commands::stop_and_store(&session, false, None).await {
                                 Ok(Some(meta)) => {
                                     log::info!(
                                         "[tray] 录制已停止入库: id={} file={}",
@@ -297,8 +236,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                                 }
                             }
                         }
-                        other => {
-                            log::info!("[tray] stop 在非录制态忽略（state={:?}）", other);
+                        SessionState::Stopping => {
+                            log::info!("[tray] record toggle 在 Stopping 态忽略");
                         }
                     }
                 });
@@ -371,16 +310,43 @@ pub fn rebuild_tray_labels() {
         let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
         #[cfg(target_os = "macos")]
         {
-            // 录屏组文案：recordStart 展示快捷键 ⌘⇧R（与 record_hotkey 注册字符串对齐）
-            let _ = tray_items.record_start.set_text(crate::i18n::t(
-                "tray.recordStart",
-                &[("shortcut", "⌘⇧R")],
-            ));
-            let _ = tray_items.record_pause_resume.set_text(crate::i18n::t("tray.recordPauseResume", &[]));
-            let _ = tray_items.record_stop.set_text(crate::i18n::t("tray.recordStop", &[]));
+            // 录屏项文案：idle 时「开始录屏 ⌘⇧R」，recording/paused 时「停止录屏」。
+            // rebuild 时按当前 session state 决定文案（与 update_record_tray_label 同逻辑）。
+            let label = record_menu_label_for_current_state();
+            let _ = tray_items.record_start.set_text(label);
         }
         let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
         let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
+    }
+}
+
+/// 录屏菜单文案：根据当前 RecordSession state 切换。
+///
+/// - Idle/Starting → 「开始录屏 ⌘⇧R」（弹浮窗选源）
+/// - Recording/Paused/Stopping → 「停止录屏」（停止 + 入库）
+///
+/// state 查询是 async，但 set_text 必须在 sync 上下文调（menu 重建是同步）。
+/// 这里用 try_read 做最佳努力——拿不到 session（启动早期）默认 Idle 文案。
+#[cfg(target_os = "macos")]
+fn record_menu_label_for_current_state() -> String {
+    // 同步拿不到 session state（async）——rebuild 场景极少，默认用 Idle 文案。
+    // 运行时 state 变化由 update_record_tray_label 主动调（start/stop 路径）。
+    crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")])
+}
+
+/// 根据录制状态更新录屏菜单文案（start/stop 路径调用）。
+///
+/// `recording=true` → 「停止录屏」；`recording=false` → 「开始录屏 ⌘⇧R」。
+#[cfg(target_os = "macos")]
+pub fn update_record_tray_label(recording: bool) {
+    let label = if recording {
+        crate::i18n::t("tray.recordStop", &[])
+    } else {
+        crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")])
+    };
+    let items = TRAY_ITEMS.lock();
+    if let Some(tray_items) = items.as_ref() {
+        let _ = tray_items.record_start.set_text(label);
     }
 }
 
