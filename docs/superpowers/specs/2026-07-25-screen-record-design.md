@@ -15,8 +15,12 @@
 2. **§2 协议 snake_case 关键修复**：vendor 自 openscreen 的 Swift helper 默认按 camelCase 解码，octopus Rust 端发 snake_case JSON 会 decode 失败。修复：`JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase`（详见 `crates/record/native/macos/Sources/OctopusSckHelper/main.swift`）。
 3. **§4.1 命令名前缀**：5 个控制命令（start/pause/resume/stop/kill）改用 `record_*` 前缀（如 `record_start`），避免与既有 `coordinator::start_recording`（ASR 录音）的 `__cmd__start_recording` 符号冲突。
 4. **§3.4 platform trait 同步签名**：原 spec 暗示 trait 方法 async，实施时为简化 MVP 用同步签名 + `tokio::task::block_in_place` 内部等待（macOS provider）。完整 async 化推迟到 P1。
-5. **§8 UI 范围缩减**：原 spec §8.1 配置浮窗 + §8.2 菜单栏下拉两项，实施时用户决策缩减——配置入口走 Settings 录屏页（独立浮窗推迟）；菜单栏控制由后端 `tray.rs` menu item 实现（不做前端 dropdown 组件，不做 tray icon 红点/duration 定时器，推迟到 follow-up）。
-6. **§3.2 StoppedInfo 字段 MVP 简化**：session.rs MVP 不存 RecordingStopped 事件 payload，`stopped.screen_path` 总空、`duration_ms` 恒 0。record_stop 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。完整修复需引入 event channel（follow-up）。
+5. **§8.1 配置浮窗已实现**（2026-07-25 第二轮迭代）：原 MVP 缩减为 Settings panel，现已补回独立浮窗 `record_window.rs` + `RecordConfig.tsx`（Cmd+Shift+R 弹出选 display/window/area）。Settings RecordingPanel 作为历史管理 + 备用入口保留。
+6. **§3.2 StoppedInfo + stop 入库**（2026-07-25 第二轮迭代）：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest），desktop 加 `stop_and_store` 公共函数——hotkey/tray/前端三条 stop 路径都走它入库。`stopped.screen_path` 仍空（session 不存 event payload），用 `recordings_dir` 按 recording_id 扫描 fallback；`duration_ms` 仍恒 0（需 event channel，推迟）。
+7. **§3.4 list-windows 过滤**（2026-07-25 bug 修复）：helper `--list-windows` 加三层过滤——`isOnScreen`（排除隐藏/最小化）+ 尺寸 ≥200×150（排除状态栏 item）+ bundleId 黑名单（controlcenter/dock 等）。实测 58→20 个真实应用窗口。
+8. **§4.1 record_shortcut 可配置**（2026-07-25 第二轮迭代）：录屏 toggle 快捷键接入 AppConfig + 热重载（与 screenshot/asr 等 6 个快捷键同模式）。停止快捷键固定 ESC（octopus 全局通用停止键，不暴露为可配置）。
+9. **§2.2 Source::Area 后端已实现**（2026-07-25 第二轮迭代）：Swift helper 加 `case "area"`（`SCStreamConfiguration.sourceRect` macOS 14+ API），物理像素 → 逻辑 points 转换。前端拖框 UI 待 follow-up。
+10. **DB migrate v50→v51 漏建表 bug**（2026-07-25 修复）：原 `migrate_v50_to_v51` 注释声称「init_schema 末尾会重新跑 db.sql」是错的，导致 version 升到 51 但 recordings 表未创建。修复：migrate 函数显式 `execute_batch(INIT_SQL)` + init_schema 加自愈检测（v51+ 缺表时补建）。回归测试 2 个。
 
 ---
 
@@ -496,6 +500,14 @@ pub async fn record_start(
     config: RecordConfig,
 ) -> Result<StartedInfo, String>;
 
+// 用 DB record_* 默认配置 + ASR microphone 启动（Settings RecordingPanel 备用入口用）。
+// 配置浮窗路径（Cmd+Shift+R）用 record_start 显式传 config，不走 default。
+#[tauri::command]
+pub async fn record_start_default(
+    state: tauri::State<'_, RecordSession>,
+    app: tauri::AppHandle,
+) -> Result<StartedInfo, String>;
+
 #[tauri::command]
 pub async fn record_pause(state: tauri::State<'_, RecordSession>) -> Result<(), String>;
 
@@ -878,7 +890,7 @@ if request.audio.microphone.enabled {
 
 ### 8.1 配置浮窗（双态型）
 
-> **实现注记**：MVP 阶段**未做独立配置浮窗**（用户决策 Task 13 缩减范围）。配置入口走 Settings 录屏页（`RecordingPanel.tsx`）——按 `Cmd+Shift+R` 打开 Settings 跳转到 recordings panel，用户在 panel 内配置后点开始。独立浮窗推迟到 follow-up（与 §8.2 菜单栏 dropdown 一起）。下方 mockup 是 P1 完整版的目标设计。
+> **实现注记（2026-07-25 已实现）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。三个 tab：display（radio list）/ window（radio list，isOnScreen + 尺寸 + bundleId 过滤）/ area（拖框 UI 待 follow-up）。音频开关 + 开始/取消按钮。Settings RecordingPanel 作为历史管理 + 备用入口保留。下方 mockup 是完整设计目标。
 
 ```
 快捷键 Cmd+Shift+R → 配置浮窗弹出
@@ -903,7 +915,7 @@ if request.audio.microphone.enabled {
 
 ### 8.2 录制控制（菜单栏图标 + 下拉 + 快捷键）
 
-> **实现注记**：MVP 阶段做了**部分**——tray menu 加了 3 个录屏项（开始/暂停-恢复/停止），但**未做** tray icon 红点状态指示、未做 duration 实时显示、未做前端 dropdown 组件。快捷键 `Cmd+Shift+R`（toggle）+ `Esc`（stop）已实现（`record_hotkey.rs`）。完整菜单栏体验推迟到 follow-up。
+> **实现注记（2026-07-25 已实现）**：tray menu 录屏项是 **toggle 单项**（与 ASR toggle 同模式）——idle 时「开始录屏 ⌘⇧R」（弹配置浮窗），recording/paused 时文案变「停止录屏  ⎋」（停止入库）。`update_record_tray_label(recording)` 在 start/stop 路径调用切换文案。快捷键 `record_shortcut` 可配置（AppConfig + 热重载），ESC 固定为停止键（全局通用，不暴露）。**未做**：tray icon 红点状态指示、duration 实时显示、前端 dropdown 组件（推迟 follow-up）。
 
 ```
 菜单栏（始终可见，录屏时显示）

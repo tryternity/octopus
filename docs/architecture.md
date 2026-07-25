@@ -969,7 +969,17 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **路径**（`crates/infra/src/paths.rs`）：`recordings_dir()` → `~/.octopus/recordings/`；`resolve_recording_path(relative)` 解析 DB 里的相对路径；`record_helper_log()` → `~/.octopus/logs/record-helper.log`。
 - **打包**：`scripts/build-macos-dmg.sh` 在 `cargo tauri build` 前调 `build-macos-helper.sh`（失败不阻断 DMG，仅录屏不可用）。
 - **快捷键 + tray menu**（spec §8.2 部分实现）：`Cmd+Shift+R` toggle + `Esc` stop 已实现；tray menu 3 个录屏项已加。**未做**（follow-up）：tray icon 红点状态指示、duration 实时显示、独立配置浮窗、菜单栏前端 dropdown 组件。
-- **已知 MVP 简化**（follow-up）：① `session.rs` 不存 `RecordingStopped` payload → `stopped.screen_path` 总空、`duration_ms` 恒 0；`record_stop` 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。完整修复需引入 event channel。② hotkey/tray stop 不入库（仅 helper 退出 + 文件落盘，RecordingMeta 入库由前端监听 Idle 后调 record_stop 补）。③ 缩略图抽取推迟（spec §9.2 F12）。④ 网格视图切换推迟（spec §8.3 双视图 MVP 仅列表）。⑤ 字幕按钮灰占位（spec §8.4 F15 P2）。⑥ 全文搜索 FTS5 推迟（spec §9.2 F17 P2）。
+- **已知 MVP 简化**（follow-up）：① `session.rs` 不存 `RecordingStopped` payload → `stopped.screen_path` 总空、`duration_ms` 恒 0；`record_stop` 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。完整修复需引入 event channel。② 缩略图抽取推迟（spec §9.2 F12）。③ 网格视图切换推迟（spec §8.3 双视图 MVP 仅列表）。④ 字幕按钮灰占位（spec §8.4 F15 P2）。⑤ 全文搜索 FTS5 推迟（spec §9.2 F17 P2）。⑥ area 录制前端拖框 UI 待实现（Swift 后端 sourceRect macOS 14+ 已就绪）。
+
+**第二轮迭代增强**（2026-07-25）：
+- **配置浮窗**：`record_window.rs` + `RecordConfig.tsx`（独立 vite entry `record-config.html`）。Cmd+Shift+R 弹浮窗（主屏水平居中 + 垂直上 1/3），选 display/window/area + 音频开关。三 tab + 绿色 Check 选中态。
+- **list-windows 三层过滤**：`isOnScreen`（排除隐藏/最小化）+ 尺寸 ≥200×150（排除状态栏 item）+ bundleId 黑名单（controlcenter/dock 等）。实测 58→20 个真实应用窗口。
+- **stop_and_store 统一入库**：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest）；desktop 加 `stop_and_store(session, discard, explicit_fields)` 公共函数 + `derive_fields_from_request`——hotkey/tray/前端 record_stop 三条路径都走它入库。前端路径传显式字段，hotkey/tray 路径从 session 快照推。
+- **tray menu toggle 单项**：与 ASR toggle 同模式——idle「开始录屏 ⌘⇧R」→ recording「停止录屏  ⎋」。`update_record_tray_label(recording)` 在 start/stop 路径调。
+- **record_shortcut 可配置**：AppConfig 加字段 + 热重载（与 screenshot/asr 等 6 个快捷键同模式）。停止键固定 ESC（octopus 全局通用停止键，不暴露）。`RECORD_SHORTCUT` 用 `parking_lot::Mutex`（非 OnceLock）让用户改快捷键后 tray 文案立即更新。
+- **Swift Area capture**：helper `makeCaptureTarget` 加 `case "area"`，`SCStreamConfiguration.sourceRect`（macOS 14+ API）裁剪，物理像素 → 逻辑 points 转换。
+- **DB migrate 自愈**：`migrate_v50_to_v51` 显式 `execute_batch(INIT_SQL)`（原注释声称会重跑 db.sql 是错的）；`init_schema` 加自愈检测（v51+ 缺 recordings 表时补建）。回归测试 2 个。
+- **list_displays JSON 修复**：`macos.rs` 取 `v["displays"]` 字段再反序列化（原试图把整个 object 当 Vec 反序列化被 `unwrap_or_default()` 静默吞成空）。
 
 ## 性能优化批次（2026-07-17）
 
