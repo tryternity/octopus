@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **247** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **248** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1195,3 +1195,28 @@ pull 只遍历 remote_outline 做 upsert，不处理「DB 有但 outline 无」�
 - P-MD5-LINEAR-SCAN HashMap O(1) 比对 ✓ / H2 软删保留 ✓ / stamp 前置两阶段 ✓
 - from_i64_strict 三处（clone/pull/resolve）✓ / #10 损坏文件不静默吞 ✓
 - #4 push 错误不谎报 ✓ / #7 disable_sync 加锁 ✓ / E3 类型安全 ✓
+
+---
+
+## 第四十二轮审查修复（2026-07-26，fingerprint.rs：字段全覆盖确认 + 2 项极低清理）
+
+fingerprint.rs 核心正确性确认——cipher_md5 11 字段 = VaultCipher 全部业务字段（对照 schema db.rs:3539），folder_md5 3 字段 = VaultFolder 全部业务字段。对称性（cipher_md5 vs cipher_md5_from_input）逐字段一致。这是 pull/push 一致性的基石。
+
+### E-CIPHER-MD5-FROM-INPUT-ID-PARAM-REDUNDANT: id 参数冗余（极低，重构，已修）
+
+**核查**：`cipher_md5_from_input(id: &str, input)` 的注释 :60-61 说「input 不含 id，所以加 id 参数」已过时——v39 UUID 改动后 VaultCipherInput 有 id 字段（db.rs:3584）。两个调用点（cipher.rs:82/122）传的 id 始终 = input.id（:69/:97 `id: id.to_string()`）。
+
+**修复**：移除 id 参数，直接用 input.id。消除「调用方传 ≠ input.id」的 API 误用面 + 修正过时注释。纯重构无功能影响。
+
+### E-FOLDER-MD5-NO-COLLISION-TEST: folder 无碰撞守护（极低，测试不对称，已修）
+
+**核查**：cipher_md5 有 F2 碰撞守护测试（`cipher_md5_no_collision_on_pipe_in_separate_fields`），folder_md5 无对称测试。当前 folder 三字段（UUID/base64/数字）都不含 |，安全。
+
+**修复**：补 `folder_md5_no_collision_on_pipe_in_separate_fields`（对称 cipher 的碰撞守护，验证 name/sort_order 变化都导致 md5 变化）。
+
+### 正面确认（fingerprint 是 sync 一致性基石）
+
+- 字段全覆盖（11 cipher + 3 folder，对照 schema）
+- H2 deleted_at 纳入（软删/恢复 md5 变化触发 sync，不复活）
+- md5 重算时机正确（soft_delete S1 单事务 + save_cipher M-CIPHER-RMW 单事务）
+- 时间戳排除（created_at/updated_at 跨设备不同，不进 md5）
