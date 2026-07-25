@@ -162,13 +162,18 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 Err(_) => continue,
             };
 
-            // 工具栏在窗口顶部 8px（与前端 toolbarTop=8 一致），popover 在工具栏下方。
-            // 交互区域 = 工具栏(44px) + 8px margin + popover(~200px)
-            let toolbar_top = wy + ANNOTATION_TOOLBAR_BOTTOM_MARGIN * sf;
-            let interactive_bottom = toolbar_top + (ANNOTATION_TOOLBAR_H + 200.0) * sf;
+            // 工具栏在窗口底部（选区内部底部，与前端 toolbarTop = innerHeight - 44 - 8 一致）。
+            // popover 在工具栏上方（~200px）。
+            // 交互区域 = popover 顶部 ~ 工具栏底部（窗口底部）
+            let win_h = match win.outer_size() {
+                Ok(s) => s.height as f64,
+                Err(_) => continue,
+            };
+            let toolbar_bottom = wy + win_h;
+            let interactive_top = toolbar_bottom - (ANNOTATION_TOOLBAR_H + ANNOTATION_TOOLBAR_BOTTOM_MARGIN + 200.0) * sf;
 
             let in_interactive = mx >= wx && mx <= wx + win_w
-                && my >= toolbar_top && my <= interactive_bottom;
+                && my >= interactive_top && my <= toolbar_bottom;
 
             let want_ignore = !in_interactive;
             if want_ignore != cur_ignore {

@@ -375,17 +375,21 @@ export default function RecordAnnotation() {
   //   - 但窗口位置是全局的，我们只能用 window.innerHeight（窗口内空间）。
   //   - 窗口可能没占满屏幕（选区比屏幕小），窗口外是其他应用。
   //   - 工具栏 position:fixed 相对窗口，不能超出窗口边界（否则不可见）。
-  // 工具栏位置：与截图保持一致的视觉链（toolbar 在顶部，popover 在 toolbar 下方）。
-  // RecordAnnotation 窗口 = 选区（无动态 sel），所以工具栏固定在窗口顶部 8px。
-  // 这与截图「sel 在屏幕中上部时 toolbar 默认在 sel 下方」的观感一致——
-  // 用户看到的是 toolbar 在上方、popover 往下弹。
+  // 工具栏位置：与截图「选区内部底部」兜底分支一致（截图 L760-766 第三选）。
+  //
+  // 截图的三选逻辑：① 选区下方 → ② 选区上方 → ③ 选区内部底部（上下都不够时）。
+  // RecordAnnotation 窗口 = 选区（窗口边界 = 选区边界），「选区下方/上方」= 窗口外
+  // （工具栏不可见），所以永远走③——选区内部底部，工具栏浮在选区底部内容上面，
+  // 留 8px 内边距（与截图③ `Math.max(sel.y, sel.y + sel.h - TOOLBAR_H - 8)` 一致）。
+  //
+  // popover 方向：截图③时 popoverY = toolbarY - 200（浮窗往上弹，避免超出选区底部）。
+  // 这里同样——popover 在工具栏上方。
   const TOOLBAR_H = 44;
-  const toolbarTop = 8;
+  const toolbarTop = Math.max(0, window.innerHeight - TOOLBAR_H - 8);  // 选区内部底部
 
-  // popover 在工具栏下方（与截图默认方向一致：toolbarBelow=true → popoverY = toolbarY + 44）
-  const popoverY = toolbarTop + TOOLBAR_H;
-  // popover X：跟随被点击的工具按钮中心（与截图 onToolSelect setPopoverX 一致）。
-  // 截图 popover X 无 clamp（依赖 toolbar clamp），这里也不 clamp 保持一致。
+  // popover 在工具栏上方（与截图③兜底一致：popoverY = toolbarY - 200）
+  const popoverY = Math.max(0, toolbarTop - 200);
+  // popover X：跟随被点击的工具按钮中心（与截图 onToolSelect setPopoverX 一致，无 clamp）
   const popoverLeft = popoverX || window.innerWidth / 2;
 
   // 工具栏 X clamp（与截图 L771-775 一致——用实测 toolbarW + DOCK_MARGIN 钳位）
