@@ -22,6 +22,13 @@ struct TrayItems<R: Runtime> {
     screenshot: MenuItem<R>,
     clipboard: MenuItem<R>,
     compact_editor: MenuItem<R>,
+    // 录屏组（Task 14，2026-07-25）：仅 macOS 注册（windows/linux 无 RecordSession）
+    #[cfg(target_os = "macos")]
+    record_start: MenuItem<R>,
+    #[cfg(target_os = "macos")]
+    record_pause_resume: MenuItem<R>,
+    #[cfg(target_os = "macos")]
+    record_stop: MenuItem<R>,
     settings: MenuItem<R>,
     quit: MenuItem<R>,
 }
@@ -93,6 +100,41 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
         .map_err(|e| format!("compact_editor menu: {e}"))?;
 
+    // ── 录屏组（Task 14，2026-07-25）：仅 macOS 编译 ──
+    // 设计：sep + 3 项，紧跟在 compact_editor 之后、sep2 之前。
+    // 快捷键提示在 menu 文案里直接展示「⌘⇧R」（不做硬编码，避免与 record_hotkey
+    // 注册的快捷键字符串不同步——但 MVP 简化，直接写死文案，reload 时 rebuild_tray_labels 也用同 key）。
+    #[cfg(target_os = "macos")]
+    let sep_record = PredefinedMenuItem::separator(app)
+        .map_err(|e| format!("separator_record: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let record_start = MenuItem::with_id(
+        app,
+        "record_start",
+        &crate::i18n::t("tray.recordStart", &[("shortcut", "⌘⇧R")]),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("record_start menu: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let record_pause_resume = MenuItem::with_id(
+        app,
+        "record_pause_resume",
+        &crate::i18n::t("tray.recordPauseResume", &[]),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("record_pause_resume menu: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let record_stop = MenuItem::with_id(
+        app,
+        "record_stop",
+        &crate::i18n::t("tray.recordStop", &[]),
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("record_stop menu: {e}"))?;
+
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
 
@@ -101,6 +143,20 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
+    // 菜单组装：录屏组（sep + 3 项）插在 compact_editor 和 sep2 之间。
+    // cfg(target_os = "macos") 外层编译差异大，用条件收集 items 数组：
+    // - macOS：完整 11 项
+    // - 其他：8 项（无录屏组）
+    #[cfg(target_os = "macos")]
+    let menu = Menu::with_items(app, &[
+        &toggle, &engine_info, &sep1,
+        &screenshot, &clipboard, &compact_editor,
+        &sep_record, &record_start, &record_pause_resume, &record_stop,
+        &sep2,
+        &settings, &quit,
+    ])
+    .map_err(|e| format!("tray menu: {e}"))?;
+    #[cfg(not(target_os = "macos"))]
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
         &screenshot, &clipboard, &compact_editor, &sep2,
@@ -111,15 +167,33 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     // 存储 handle 供后续更新使用
     {
         let mut items = TRAY_ITEMS.lock();
-        *items = Some(TrayItems {
-            toggle: toggle.clone(),
-            engine_info: engine_info.clone(),
-            screenshot: screenshot.clone(),
-            clipboard: clipboard.clone(),
-            compact_editor: compact_editor.clone(),
-            settings: settings.clone(),
-            quit: quit.clone(),
-        });
+        #[cfg(target_os = "macos")]
+        {
+            *items = Some(TrayItems {
+                toggle: toggle.clone(),
+                engine_info: engine_info.clone(),
+                screenshot: screenshot.clone(),
+                clipboard: clipboard.clone(),
+                compact_editor: compact_editor.clone(),
+                record_start: record_start.clone(),
+                record_pause_resume: record_pause_resume.clone(),
+                record_stop: record_stop.clone(),
+                settings: settings.clone(),
+                quit: quit.clone(),
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            *items = Some(TrayItems {
+                toggle: toggle.clone(),
+                engine_info: engine_info.clone(),
+                screenshot: screenshot.clone(),
+                clipboard: clipboard.clone(),
+                compact_editor: compact_editor.clone(),
+                settings: settings.clone(),
+                quit: quit.clone(),
+            });
+        }
     }
 
     let _tray = TrayIconBuilder::with_id("main")
@@ -145,6 +219,72 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             "compact_editor" => {
                 info!("Tray: open compact editor (empty)");
                 crate::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
+            }
+            // ── 录屏组（Task 14，2026-07-25）：仅 macOS ──
+            #[cfg(target_os = "macos")]
+            "record_start" => {
+                info!("Tray: open settings recordings panel");
+                crate::settings_window::open_settings(app.clone(), Some("recordings".to_string()));
+            }
+            #[cfg(target_os = "macos")]
+            "record_pause_resume" => {
+                info!("Tray: record pause/resume toggle");
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    use octopus_record::SessionState;
+                    let session = match app_handle.try_state::<octopus_record::RecordSession>() {
+                        Some(s) => s,
+                        None => {
+                            log::warn!("[tray] RecordSession state 未找到（pause/resume 忽略）");
+                            return;
+                        }
+                    };
+                    match session.state().await {
+                        SessionState::Recording => {
+                            if let Err(e) = session.pause().await {
+                                log::warn!("[tray] record pause 失败: {}", e);
+                            }
+                        }
+                        SessionState::Paused => {
+                            if let Err(e) = session.resume().await {
+                                log::warn!("[tray] record resume 失败: {}", e);
+                            }
+                        }
+                        other => {
+                            log::info!("[tray] pause/resume 在非录制态忽略（state={:?}）", other);
+                        }
+                    }
+                });
+            }
+            #[cfg(target_os = "macos")]
+            "record_stop" => {
+                info!("Tray: record stop");
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    use octopus_record::SessionState;
+                    let session = match app_handle.try_state::<octopus_record::RecordSession>() {
+                        Some(s) => s,
+                        None => {
+                            log::warn!("[tray] RecordSession state 未找到（stop 忽略）");
+                            return;
+                        }
+                    };
+                    let state = session.state().await;
+                    match state {
+                        SessionState::Recording | SessionState::Paused => {
+                            // 仅 send stop 命令让 helper 干净退出 + .mp4 落盘。
+                            // DB 入库（写 RecordingMeta）由前端监听状态回调后调
+                            // record_stop 命令完成（与 hotkey Esc 同路径，详见
+                            // record_hotkey.rs::handle_stop 注释）。
+                            if let Err(e) = session.stop().await {
+                                log::warn!("[tray] record stop 失败: {}", e);
+                            }
+                        }
+                        other => {
+                            log::info!("[tray] stop 在非录制态忽略（state={:?}）", other);
+                        }
+                    }
+                });
             }
             "settings" => {
                 info!("Tray: open settings");
@@ -212,6 +352,16 @@ pub fn rebuild_tray_labels() {
         let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]));
         let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &sc)]));
         let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
+        #[cfg(target_os = "macos")]
+        {
+            // 录屏组文案：recordStart 展示快捷键 ⌘⇧R（与 record_hotkey 注册字符串对齐）
+            let _ = tray_items.record_start.set_text(crate::i18n::t(
+                "tray.recordStart",
+                &[("shortcut", "⌘⇧R")],
+            ));
+            let _ = tray_items.record_pause_resume.set_text(crate::i18n::t("tray.recordPauseResume", &[]));
+            let _ = tray_items.record_stop.set_text(crate::i18n::t("tray.recordStop", &[]));
+        }
         let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
         let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
     }

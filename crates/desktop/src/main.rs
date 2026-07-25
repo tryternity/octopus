@@ -73,6 +73,10 @@ mod screenshot_geometry;
 // 对应 invoke_handler 注册项也用 cfg gate（见下方 generate_handler!）。
 #[cfg(target_os = "macos")]
 mod record_commands;
+// 录屏全局快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
+// 与 record_commands 同样仅 macOS 编译。
+#[cfg(target_os = "macos")]
+mod record_hotkey;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -878,6 +882,14 @@ pub fn run() {
             action_bar_window::create_action_bar_window(app.handle());
             overlay_window::create_overlay_window(app.handle());
             action_hotkey::register_action_hotkeys(app.handle());
+            // 录屏快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
+            // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
+            #[cfg(target_os = "macos")]
+            {
+                if let Err(e) = record_hotkey::register_record_hotkeys(app.handle()) {
+                    log::warn!("[record] 快捷键注册失败: {e}");
+                }
+            }
             if !config.action_bar_shortcut.is_empty() {
                 if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
                     log::error!("Failed to register action bar shortcut: {}", e);

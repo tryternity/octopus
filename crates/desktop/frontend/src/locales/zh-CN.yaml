@@ -803,6 +803,9 @@ tray:
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine}
+  recordStart: 开始录屏（${shortcut}）
+  recordPauseResume: 暂停/恢复
+  recordStop: 停止录屏
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
