@@ -970,6 +970,76 @@ mod tests {
         assert!(db::get_hotword_set(id_ok).is_ok(), "正常版本应在 DB");
     }
 
+    /// 回归守护（spec 2026-07-25-hotword-sync-overwrite-bug）：记录「pull 用旧 outline
+    /// 覆盖本地新 DB」的 bug 场景。
+    ///
+    /// bug 链：本地加词 → DB sync_md5 变了 → sync_now 的 pull 阶段读旧 outline（远端无新
+    /// commit，文件是上次 sync 的旧状态）→ md5 mismatch → upsert 旧文件版本覆盖 DB → 新词丢失。
+    ///
+    /// **修复在 sync_now 层（engine.rs）**：merge UpToDate 时跳过 pull，不调用本函数。
+    /// 本测试文档化「pull 函数本身仍会覆盖」这一事实——若未来有人改 pull 逻辑，此测试
+    /// 确保不会意外引入「pull 不覆盖」的假设（那会破坏 FastForwarded 路径的正常拉取）。
+    #[test]
+    fn pull_overwrites_local_new_data_when_outline_stale_documented_bug() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // 模拟「上次 sync 的状态」：export 旧版本到文件
+        let id = "dddddddd-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 模拟「本地新加词」：DB 加了「香蕉」，sync_md5 已回填
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+        // DB 现在有「苹果 香蕉」，文件还是旧的「苹果」
+
+        // 直接调 pull（模拟 bug 触发——sync_now 在 UpToDate 时已跳过此调用）
+        let _pulled = pull_hotwords_from_files().expect("pull");
+
+        // 文档化 bug：pull 用旧文件（只有「苹果」）覆盖了 DB（「苹果 香蕉」）
+        let after = db::get_hotword_set(id).unwrap();
+        assert_eq!(
+            after.words_text, "苹果",
+            "pull 会用旧 outline 覆盖本地新数据（这是已知 bug，修复在 sync_now 层跳过 pull）"
+        );
+        // 关键：此测试证明 pull 函数本身不区分方向。修复依赖 sync_now 在 UpToDate 时不调用 pull。
+    }
+
+    /// 回归守护（修复后）：push 阶段（incremental_export）正确导出本地新数据到文件。
+    /// 配合 sync_now 的 UpToDate 跳过 pull，完整流程：本地加词 → sync（跳过 pull）→
+    /// push 导出新词到文件 → commit + push → 远端拿到新词。本地数据不丢。
+    #[test]
+    fn push_exports_local_new_data_when_outline_stale() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "eeeeeeee-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 本地加词
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+
+        // push（DB → 文件）
+        let pushed = push_hotwords_to_files().expect("push");
+        assert_eq!(pushed, 1, "应导出 1 个变化的版本");
+
+        // 文件现在含新词（验证 export 正确）
+        let file = read_hotword_set_file(id).expect("read file");
+        let h = file.to_hotword_set(None);
+        assert_eq!(h.words_text, "苹果 香蕉", "push 应把本地新词写入文件");
+    }
+
     /// incremental_export 的 vault_version 在有变化时递增，无变化时不递增（回归守护）。
     #[test]
     fn incremental_export_version_increments_only_on_change() {

@@ -92,7 +92,7 @@ cloud 引擎走独立 WebSocket 连接（`cloud_pipeline.rs`），断流语义�
 
 ### 4.2 组件 2：自动重连
 
-新增 `Command::RestartCapture { stage_kind: StageKind }`（StageKind = Streaming | VadSegmented | WaitingCompletion）。
+新增 `Command::RestartCapture { stage_kind: RestartStageKind }`（RestartStageKind = Streaming | VadSegmented；不含 WaitingCompletion——该 stage `is_recording` 已 false，看门狗天然不触发）。
 
 新增 `restart_capture_keep_transcript`（`coordinator.rs`，`handle_toggle` 之后）：
 

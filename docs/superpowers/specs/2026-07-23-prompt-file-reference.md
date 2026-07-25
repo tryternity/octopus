@@ -123,8 +123,13 @@ pub struct PromptFileInfo {
 设置页 agent/ai 菜单项的内容区用 `PromptEditor` 组件替换原 textarea：
 - **Segmented 切换**：「内联」/「引用文件」两种模式，独立 mode state（切换不碰 value）
 - **内联模式**：textarea 直接写 prompt（原有行为）
-- **引用模式**：文件下拉（`list_prompt_files`）+ 路径展示 + **hover 浮层预览**（1s 延迟消失，前 500 字符，向上弹出）+ 「查看更多 / 编辑内容」按钮（调 `open_file_in_editor` 用 CompactEditor 打开全文）
-- **空目录状态**：Inbox 图标 + 路径指引（`~/.octopus/.sync/prompts/*.md`）
+- **引用模式**（2026-07-25 重构：select → 可编辑 input + datalist + Plus 创建）：
+  - **可编辑 input**（`value={selectedInput}` 草稿，非派生 `selectedName`）+ `<datalist>` 提示已有文件——用户可自由输入新文件名（旧 select 只能选已有，无法输入新名）
+  - **匹配已有文件即时选中**：输入命中 `files.some(f => f.name === v)` → `selectFile(v)` 写回 props（触发预览/路径更新）
+  - **Enter / Plus 按钮**：输入非空且不匹配已有 → `createNewFile`（创建 md + 写回引用 + 打开编辑器）
+  - **路径展示**：跟草稿 `selectedInput` 实时更新（`~/.octopus/.sync/prompts/command/<草稿>.md`），已有=无提示，新文件名=黄字「文件不存在」待创建
+  - **hover 浮层预览**（仅 `selectedFile` 存在时）：1s 延迟消失，前 500 字符，向上弹出 + 「查看更多 / 编辑内容」按钮（调 `open_file_in_editor` 用 CompactEditor 打开全文）
+- **autocapitalize="off"**（2026-07-25）：input + textarea 均设 `autoCapitalize/autoCorrect/spellCheck={false}`，禁用 WKWebView 首字母自动大写
 - 父组件用 `key={form.id}` 让切换不同菜单项时 PromptEditor 重新 mount
 
 ### 3.6 CompactEditor file tab 保存

@@ -1,7 +1,7 @@
 # 热词同步覆盖 Bug 分析（待定方案）
 
 > **日期**：2026-07-25
-> **状态**：📋 待定方案（用户选择先记录，后续自行决策）
+> **状态**：✅ 已实现（方案：merge UpToDate 时跳过 pull；用户确认 last-write-wins 可接受）
 > **症状**：新增的热词，进行 git 同步后消失了
 
 ---
@@ -59,35 +59,35 @@ vault 的 `pull_from_files`（`engine.rs:785-803`）cipher/folder 用**完全相
 
 新建热词集用 `Uuid::new_v4()`（随机），单设备场景下不冲突，但**仍受 pull 覆盖 bug 影响**（只要本地改了没及时 push 到远端，pull 就会覆盖）。
 
-## 5. 候选修复方案
+## 5. 修复方案（✅ 已实现）
 
-### 方案 A：pull 跳过覆盖（最小修复）
+### 选定方案：merge UpToDate 时跳过 pull
 
-pull 时，对 DB 已有条目，只有 `sync_md5 == outline.md5`（本地未改）才允许 pull 覆盖；不匹配时跳过（保留本地），让 push 阶段导出本地版本。
+经分析，最精准的修复点不在 `pull_hotwords_from_files` 函数本身（pull 在 FastForwarded 路径仍需要正常拉取远端更新），而在 `sync_now` 的流程控制：**当 git merge 表明远端无新 commit（UpToDate）时，跳过 pull 阶段**。
 
-- ✅ 单设备完美修复（本地新数据不被旧版本覆盖）
-- ✅ 改动小（pull 函数加一个条件判断）
-- ❌ 多设备：双方都改时，后 push 者覆盖先 push 者（仍 last-write-wins，但至少不丢本地新数据）
-- ❌ 多设备：远端真有更新但本地也改了时，远端更新拉不进来（需二次 sync 或手动处理）
+理由：UpToDate 意味着工作区文件是上次 sync 的旧状态，此时本地 DB 若有新改动（加词/删词），pull 必然检测到 md5 mismatch 并用旧文件覆盖 → 数据丢失。跳过 pull 后，push 阶段正常导出本地新数据到文件 → commit + push → 远端拿到最新。
 
-### 方案 B：热词合并并集（热词专用，推荐）
+**实现**（`crates/sync/src/git.rs` + `crates/vault/src/sync/engine.rs`）：
+1. `MergeFfResult` enum 新增 `UpToDate` 变体；`git_merge_ff` 通过对比 merge 前后 HEAD SHA 区分 `UpToDate`（hash 不变）vs `FastForwarded`（hash 变了）——`git merge --ff-only` 在 "Already up to date" 时也 exit 0，无法靠退出码区分。
+2. `sync_now` 在 `UpToDate` / `NoUpstream`（首次推送）时跳过 vault pull + 热词 pull；`FastForwarded` / rebase 正常 pull（远端有更新）。
+3. push 阶段不受影响（DB→文件，导出本地最新）。
 
-pull 时检测同名热词集双方都改了 → `words_text` 合并为并集（normalize 去重）；`name`/`enabled` 冲突取 `updated_at` 较新者。
+**覆盖场景**：
+- ✅ 单设备加词 → sync → 词还在（UpToDate 跳过 pull，push 导出新词）
+- ✅ 单设备删词（改 words_text）→ sync → 删除保留（同上）
+- ✅ 多设备 A push → B sync → B 拿到 A 的更新（FastForwarded 正常 pull）
+- ⚠️ 多设备同时改：last-write-wins（用户已确认可接受）
 
-- ✅ 语义安全（用户的词只增不减，符合热词「集合」本质）
-- ✅ 多设备也不丢数据
-- ❌ 实现复杂（需读双方 words_text 解析、并集、重新 normalize、算 md5）
-- ❌ 只适用于热词，vault cipher 不能用此方案（密码条目不能并集）
+### 未采纳方案（备选）
 
-### 方案 C：分步（先 A 后 B）
+- **方案 A（pull 函数加方向判断）**：pull 时对 DB 已有条目只 `sync_md5 == outline.md5` 才覆盖。更细粒度，但实现复杂（需「上次同步 md5 快照」），且 FastForwarded 路径仍需覆盖。当前方案在流程层解决更简洁。
+- **方案 B（words_text 并集合并）**：词级合并。用户确认 last-write-wins 可接受，不需要。
 
-先上方案 A 止血（快速修复单设备数据丢失），后续再实现方案 B 优化多设备体验。
+## 6. 已知限制（用户接受，留作后续）
 
-## 6. 待决策点
-
-- [ ] 选择哪个方案（A / B / C）
-- [ ] vault cipher/folder 的同类 bug 是否一并修（vault 用方案 A 较安全，密码不能并集）
-- [ ] 「通用」集固定 UUID 是否改为随机（多设备隔离），或保留固定但改用合并策略
+- [ ] **删整个集的复活**：`delete_hotword_set` 是硬删（`DELETE FROM`，无 `deleted_at` 列）。A 删集 → push 删文件 → B pull 不删 DB → B push 又写回 → A pull 复活。需引入 `deleted_at` tombstone（仿 vault_ciphers）才能正确传播。用户主要删「集里的词」（改 words_text，已修复），删整个集低频，留作后续。
+- [ ] **多设备同时改 last-write-wins 丢失**：用户接受，不做冲突合并。
+- [ ] **vault cipher/folder 同类 pull 覆盖**：vault pull 用相同 md5-mismatch-overwrite 逻辑，本次修复（UpToDate 跳过 pull）对 vault 同样生效，vault 也受益。
 
 ## 7. 相关代码位置速查
 
