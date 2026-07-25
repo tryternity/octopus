@@ -249,6 +249,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                                         meta.id,
                                         meta.file_path
                                     );
+                                    // 关闭标注 overlay（Source::Area 录制时才有）
+                                    crate::record_annotation_window::close_annotation_window(&app_handle);
                                     let _ = app_handle.emit("record://stopped", &meta);
                                 }
                                 Ok(None) => log::info!("[tray] stop 返回 None"),

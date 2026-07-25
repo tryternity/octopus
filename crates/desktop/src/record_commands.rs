@@ -308,6 +308,8 @@ pub(crate) async fn start_with_config(
     // 打包路径解析需 app.handle().path().resource_dir()——MVP 简化，仅开发期可用。
     let helper_path = platform_helper(|p| p.resolve_helper_path(None))?;
 
+    // move 前克隆 source（start 后创建标注 overlay 用，request 会被 move 进 session.start）
+    let source_clone = request.source.clone();
     // 事件回调：helper 进程输出 Warning/Error/RecordingPaused 等非命令响应事件时，
     // 经 Tauri emit 推给前端（前端订阅 'record://event' 更新 UI 状态）。
     let app_clone = app.clone();
@@ -320,6 +322,13 @@ pub(crate) async fn start_with_config(
     if result.is_ok() {
         #[cfg(target_os = "macos")]
         crate::tray::update_record_tray_label(true);
+        // Source::Area 时创建标注 overlay（普通 level，SCK 录到选区内 overlay 内容）
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = crate::record_annotation_window::create_annotation_window(app, &source_clone) {
+                log::warn!("[record] 标注 overlay 创建失败（不影响录制）: {e}");
+            }
+        }
     }
     result.map_err(e2s)
 }

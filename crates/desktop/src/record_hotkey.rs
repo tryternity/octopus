@@ -142,6 +142,8 @@ async fn handle_stop(app: &AppHandle) {
                         meta.id,
                         meta.file_path
                     );
+                    // 关闭标注 overlay（Source::Area 录制时才有）
+                    crate::record_annotation_window::close_annotation_window(app);
                     // 通知前端刷新历史列表
                     let _ = app.emit("record://stopped", &meta);
                 }

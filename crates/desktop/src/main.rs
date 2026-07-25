@@ -85,6 +85,10 @@ mod record_window;
 // 仅 macOS。复用 screenshot 的窗口创建 + 坐标换算模式。
 #[cfg(target_os = "macos")]
 mod record_area_picker;
+// 录屏标注 overlay 窗口（录屏开始后显示，普通 level 让 SCK 录到）。
+// 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
+#[cfg(target_os = "macos")]
+mod record_annotation_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -577,6 +581,9 @@ pub fn run() {
             record_area_picker::confirm_record_area_picker,
             #[cfg(target_os = "macos")]
             record_area_picker::cancel_record_area_picker,
+            // 标注 overlay（录屏开始后显示，A 键切标注/透传模式）
+            #[cfg(target_os = "macos")]
+            record_annotation_window::set_annotation_passthrough,
             #[cfg(target_os = "macos")]
             record_commands::list_recordings,
             #[cfg(target_os = "macos")]
