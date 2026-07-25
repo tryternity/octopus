@@ -146,6 +146,7 @@ mod tests {
             let s = generate(&cfg).unwrap();
             assert!(!s.contains('l'), "不应含 l: {}", s);
             assert!(!s.contains('1'), "不应含 1: {}", s);
+            assert!(!s.contains('I'), "不应含 I: {}", s);
             assert!(!s.contains('O'), "不应含 O: {}", s);
             assert!(!s.contains('0'), "不应含 0: {}", s);
         }
