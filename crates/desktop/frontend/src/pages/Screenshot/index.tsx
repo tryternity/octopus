@@ -817,6 +817,9 @@ export default function Screenshot() {
       {textDraft && (
         <textarea
           ref={textInputRef}
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           value={textDraft.val}
           onChange={(e) => {
             const updated = { ...textDraft, val: e.target.value };

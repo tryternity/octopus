@@ -424,13 +424,61 @@ fn migrate_v48_to_v49(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v49→v50：prompts 表 content 字段从完整 md 文本改为文件名引用。
+/// id=1 content → "润色-默认"，id=2 content → "润色-进阶"。
+/// 同时把旧 content（完整 md 文本）导出到 ~/.octopus/.sync/prompts/polish/ 对应文件。
+/// 幂等：只处理 content 长度 > 100 的行（说明还是完整 md 文本，非文件名）。
+fn migrate_v49_to_v50(conn: &Connection) -> Result<()> {
+    let has_prompts = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts'")?
+        .exists([])?;
+    if has_prompts {
+        let polish_dir = crate::paths::octopus_config_home()
+            .join(".sync").join("prompts").join("polish");
+        let _ = std::fs::create_dir_all(&polish_dir);
+        // 逐行处理：id → 目标文件名
+        for (id, dest_name) in [(1i64, "润色-默认"), (2i64, "润色-进阶")] {
+            // 读旧 content（完整 md 文本）
+            let old_content: Option<String> = conn
+                .query_row(
+                    "SELECT content FROM prompts WHERE id = ?1 AND length(content) > 100",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(content) = old_content {
+                // 导出到文件（已存在跳过——用户可能已手动编辑过）
+                let path = polish_dir.join(format!("{}.md", dest_name));
+                if !path.exists() {
+                    let _ = std::fs::write(&path, &content);
+                }
+                // DB content 改为文件名引用
+                conn.execute(
+                    "UPDATE prompts SET content = ?2 WHERE id = ?1",
+                    rusqlite::params![id, dest_name],
+                )?;
+            }
+        }
+        log::info!("schema v50: prompts content 改为文件名引用 + 导出 md 到 polish/");
+    }
+    conn.execute("PRAGMA user_version = 50", [])?;
+    log::info!("schema upgraded to v50 (prompts content → 文件名引用)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 49 {
-        // v49+ 已最新，直接返回。
+    if v >= 50 {
+        // v50+ 已最新，直接返回。
+        return Ok(());
+    }
+
+    // v49→v50：prompts content 从完整 md 改为文件名引用。
+    if v == 49 {
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -438,6 +486,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 独立 helper——在 v==48 库、v47→v48 后、v46→v47→v48 后三处调用。
     if v == 48 {
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -447,6 +496,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
     if v == 47 {
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -468,9 +518,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49（v46 库同一次启动完成 v47→v48→v49）
+        // 继续迁移到 v48→v49→v50（v46 库同一次启动完成 v47→v48→v49→v50）
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -736,9 +787,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 47", [])?;
         log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49（v17-v46 库同一次启动完成 v47→v48→v49）
+        // 继续迁移到 v48→v49→v50（v17-v46 库同一次启动完成 v47→v48→v49→v50）
         migrate_v47_to_v48(conn)?;
         migrate_v48_to_v49(conn)?;
+        migrate_v49_to_v50(conn)?;
         return Ok(());
     }
 
@@ -748,10 +800,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
     fill_manifests(conn)?;
     crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含 source_type 字段（v48 schema）+ sync_md5 + hotword_sets TEXT id + deleted_at
-    // + app_bundle_ids + launcher_index.bundle_id（v49 schema），直接设 v49
-    conn.execute("PRAGMA user_version = 49", [])?;
-    log::info!("DB initialized (v49): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
+    // 全新库 db.sql 已含所有列（v49 schema）+ prompts content 存文件名引用（load_prompt_seeds 处理）
+    // + md 拷贝到 ~/.octopus/.sync/prompts/polish/，直接设 v50
+    conn.execute("PRAGMA user_version = 50", [])?;
+    log::info!("DB initialized (v50): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -3711,7 +3763,7 @@ pub fn load_vault_cipher(id: &str) -> Result<Option<VaultCipher>> {
     with_db(|conn| load_vault_cipher_at(conn, id))
 }
 
-fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
+pub fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultCipher>> {
     let mut stmt = conn.prepare(&format!("SELECT {} FROM vault_ciphers WHERE id = ?1", VAULT_CIPHER_COLS))?;
     let mut rows = stmt.query(params![id])?;
     match rows.next()? {
@@ -3803,44 +3855,6 @@ fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput)
         ],
     )?;
     Ok(())
-}
-
-pub fn soft_delete_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| soft_delete_vault_cipher_at(conn, id))
-}
-
-fn soft_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 soft_delete 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-pub fn restore_vault_cipher(id: &str) -> Result<()> {
-    with_db(|conn| restore_vault_cipher_at(conn, id))
-}
-
-fn restore_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
-    // deleted_at 变 → md5 必须重算（调用方应在 restore 后调 update_cipher_sync_md5）
-    conn.execute(
-        "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
-
-/// 仅更新 sync_md5（soft_delete / restore 后 cipher 内容变了，md5 需重算）。
-/// 调用方先 SELECT 拿到完整 row → 算 md5 → 调本函数写回。
-pub fn update_cipher_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
-            params![sync_md5, id],
-        )?;
-        Ok(())
-    })
 }
 
 pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
@@ -3955,13 +3969,24 @@ pub fn delete_vault_folder(id: &str) -> Result<()> {
 }
 
 /// 返回所有需要迁移的 model：(id, 明文 secret_key)。
-/// 仅 source_type=2（cloud）且不以 v1: 开头的行。
-pub fn list_models_for_secret_migration() -> Result<Vec<(i64, String)>> {
+/// 仅 source_type=2（cloud）且不以密文前缀（如 `v1:`）开头的行。
+///
+/// `encrypted_prefix` 由调用方传入（vault crate 传 `crypto::symmetric::CIPHERTEXT_PREFIX`），
+/// 而非在此硬编码——M1(b) 修复（2026-07-24）：之前 SQL 守卫字面量 `'v1:%'` 与
+/// CIPHERTEXT_PREFIX 是两份独立字面量，未来密文格式升级（v2:）时若只改一处会导致
+/// v2 密文被当明文再加密（数据损坏）/ v1 密文漏保护。参数化绑定后调用方传常量，
+/// 单点维护。
+///
+/// 注意：infra 不依赖 vault（依赖方向是 vault → infra），所以不能直接引用
+/// CIPHERTEXT_PREFIX 常量，必须由调用方注入。
+pub fn list_models_for_secret_migration(encrypted_prefix: &str) -> Result<Vec<(i64, String)>> {
+    // SQL LIKE 模式：前缀 + % 通配。前缀本身不含 LIKE 特殊字符（v1: 等），无需 escape。
+    let pattern = format!("{}%", encrypted_prefix);
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, secret_key FROM models WHERE source_type = 2 AND secret_key != '' AND secret_key NOT LIKE 'v1:%'",
+            "SELECT id, secret_key FROM models WHERE source_type = 2 AND secret_key != '' AND secret_key NOT LIKE ?1",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![pattern], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut out = Vec::new();
@@ -4178,7 +4203,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49, "全新库 init_schema 后应到 v49");
+        assert_eq!(v, 50, "全新库 init_schema 后应到 v50");
         // v48: models 表用 source_type（非旧 is_local）
         let has_source_type: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name='source_type'")
@@ -4262,7 +4287,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 验证列已改名
         let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)").unwrap()
@@ -4356,7 +4381,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 验证 action_bar_items 有 app_bundle_ids 列，默认空串
         let has_col: bool = conn
@@ -4706,7 +4731,7 @@ mod tests {
 
         // 验证 user_version = 49
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
         let table_count: i64 = conn.query_row(
@@ -4751,7 +4776,7 @@ mod tests {
         conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
             [], |r| r.get(0),
@@ -4881,7 +4906,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
     }
 
     /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
@@ -4909,7 +4934,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
         // 验证 Agent 主菜单 + PPT 子菜单创建
         let agent_count: i64 = conn
             .query_row(
@@ -4983,7 +5008,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // 「制作 PPT」应消失
         let after_legacy: i64 = conn
@@ -5166,7 +5191,7 @@ mod tests {
 
         // 验证 user_version = 47（v46→v47 迁移加了 clipboard_history.deleted_at）
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 49);
+        assert_eq!(v, 50);
 
         // id 类型应为 TEXT
         let id_type: String = conn
@@ -6615,15 +6640,9 @@ mod vault_schema_tests {
         assert_eq!(loaded2.name, "v1:enc-name-2");
         assert!(loaded2.favorite);
 
-        // 软删除
-        soft_delete_vault_cipher_at(&conn, id).unwrap();
-        let loaded3 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded3.deleted_at.is_some(), "软删除后 deleted_at 应非空");
-
-        // 恢复
-        restore_vault_cipher_at(&conn, id).unwrap();
-        let loaded4 = load_vault_cipher_at(&conn, id).unwrap().unwrap();
-        assert!(loaded4.deleted_at.is_none(), "恢复后 deleted_at 应为空");
+        // 注：软删/恢复（soft_delete/restore）+ sync_md5 原子一致性已在
+        // crates/vault/src/storage/cipher.rs::soft_delete_and_restore_update_sync_md5_atomically
+        // 完整守护。本测试不再覆盖 db 层 soft_delete/restore（函数已删，见 F1）。
 
         // 物理删除
         permanent_delete_vault_cipher_at(&conn, id).unwrap();

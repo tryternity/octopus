@@ -148,6 +148,9 @@ export default function AppPicker({ value, onChange }: AppPickerProps) {
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <input
               autoFocus
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("settings.actionBar.searchApps")}

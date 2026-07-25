@@ -185,7 +185,7 @@ pub fn export_vault_json(ciphers: &[Cipher], folders: &[FolderDto]) -> Result<St
 mod tests {
     use super::*;
     use crate::types::{
-        CipherType, Field, LoginData, LoginUri, PasswordHistoryEntry, RepromptType,
+        CipherType, LoginData, LoginUri, PasswordHistoryEntry, RepromptType,
     };
 
     fn make_login_cipher(name: &str) -> Cipher {

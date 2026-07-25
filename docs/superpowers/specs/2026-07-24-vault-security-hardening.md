@@ -404,3 +404,252 @@
 - **G1**（from_utf8_lossy）：非 UTF8 输出替换为 U+FFFD。macOS 主，commit msg/branch 多 ASCII，低危。
 - **P1**（privacy unwrap_or(false)）：API 200 但无 private 字段 → 默认 false → 判 Public 拒绝。方向安全（宁可误拒），GitHub/Gitee 正常响应必含 private 字段。
 - **P2**（SSH_SCP_RE 正则重编译）：每次 parse 重新编译。低频（remote 1-3 个），低危。
+
+---
+
+## 第十五轮审查修复（2026-07-24，S1/S2/S3）
+
+### S1: soft_delete/restore 两步非原子（中，数据一致性）
+
+**问题**：soft_delete/restore 是「UPDATE deleted_at」+「读 row 算 md5 + UPDATE sync_md5」两次独立 autocommit。若第 2 步失败（DB 锁超时/磁盘满/事务冲突），deleted_at 已改但 sync_md5 仍旧 → incremental_export 用旧 sync_md5 对比旧 outline.md5 → 一致 → 文件不重写 → 删除状态不传播到其他设备。
+
+**修复**：合并为单事务（`unchecked_transaction` 内 UPDATE deleted_at → SELECT row → 算 md5 → UPDATE sync_md5 → COMMIT）。db 层 `load_vault_cipher_at` 改 pub 供 vault crate 事务内调用。
+
+### S2: save_cipher 无锁 RMW（低-中，文档化）
+
+**问题**：save_cipher 读 existing_deleted_at（H2）后 update，期间无锁 → 并发 soft_delete 可能被撤销。
+
+**状态**：文档化。报告自评「UI 单焦点下概率低」。完整修复需给所有 cipher 写路径加事务（soft_delete/restore 已修，save_cipher 的 RMW 改事务需重构）。
+
+### S3: rename_folder 全表扫（低，文档化）
+
+L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
+
+---
+
+## 第十四轮审查修复（2026-07-24，ER1/HW1/HW3）
+
+> 补录：commit `0f8b259a` 已 push 但本轮此前缺独立章节，现补。
+
+### ER1: classify_git_error "not found" 关键词过宽（中，分类误判）
+
+**问题**：`|| lower.contains("not found")` 误匹配 "object not found"（本地 repo 损坏）等本地错误 → 分类成 RemoteAuth/RemoteNotFound → 前端误导用户查 remote 配置，实际是本地 repo 问题。
+
+**修复**：删后半段，仅保留 "repository not found"（精确匹配 remote 仓库不存在）。
+
+### HW1: hotword incremental_export 吞 outline 解析错（M8 对称遗漏）
+
+**问题**：`unwrap_or_default` 吞 outline 解析错成空 → 删除循环不执行 → stale 文件残留 → clone 复活。与 vault M8 完全同型的对称遗漏（vault↔hotword 姊妹模块反复出现）。
+
+**修复**：`match read_hotword_outline()` 降级 `export_all_hotwords`（与 vault M8 对称）。
+
+### HW3: hotword pull 用 outline.md5（消除双读 + 与 vault #2 对齐）
+
+**问题**：pull 忽略 outline `entry.md5`，调 `hotword_md5_mismatch` 读文件算 md5；pull 主体又读一次 → 同一文件双读。
+
+**修复**：`hotword_md5_mismatch_v2` 用 outline.md5 对比 DB sync_md5（不读文件）；删除旧 `hotword_md5_mismatch`（读文件版）。
+
+### HW2/G2-minor/ER2/HW4 文档化（低）
+
+- **HW2**（pull 缺删除传播）：E1 同类，需 tombstone 机制（Phase 2）
+- **G2-minor** / **ER2** / **HW4**：低危，文档化
+
+---
+
+## 第十六轮审查修复（2026-07-24，F1/F2）
+
+### F1: S1 重构遗留的半截软删死代码（中低，bug 复活入口）
+
+**问题**：S1 修复（第十五轮）将 `cipher::soft_delete/restore` 改为事务化内联 SQL 后，db 层遗留的 `soft_delete_vault_cipher` / `restore_vault_cipher`（+ `_at` 变体）+ `update_cipher_sync_md5` 共 5 个函数无任何生产调用方。但它们执行的是**「半截软删」**——只 UPDATE deleted_at（或只 UPDATE sync_md5），正是 S1 修复前的 bug 本体。保留它们等于在代码库里留了一个已修 bug 的一键复活开关：任何未来调用方（CLI/批量路径）不知情调用 `db::soft_delete_vault_cipher` → S1 缺口立即复活（deleted_at 改了但 sync_md5 旧 → 删除不传播）。
+
+**修复**：删除 db.rs 中 5 个死函数（`soft_delete_vault_cipher` / `soft_delete_vault_cipher_at` / `restore_vault_cipher` / `restore_vault_cipher_at` / `update_cipher_sync_md5`）。删除 db.rs 测试中守护死逻辑的软删/恢复断言（`soft_delete_and_restore_update_sync_md5_atomically` 在 cipher 层已完整守护 S1 原子性，db 层测试冗余）。
+
+**核查**：全 crate `rg` 确认 5 个函数零残留引用；cipher.rs:469 `soft_delete_and_restore_update_sync_md5_atomically` 三重断言（deleted_at 变化 + sync_md5 变化 + sync_md5 与 row 重算一致）完整覆盖。
+
+### F2: fingerprint.rs 分隔符注释误导 + 设计脆弱性（低）
+
+**问题**：注释称「字段间用 `|` 分隔（避免字段值含分隔符导致歧义）」——单字符分隔符本身不防歧义。反例：`name="a|b",notes="c"` 与 `name="a",notes="b|c"` 拼成同一字符串 → md5 碰撞 → sync 误判「无变化」不重写文件 → 跨设备不一致。
+
+**当前安全靠字符集约束（隐式假设）而非分隔符设计**：
+- 密文字段（name/notes/data/fields/password_history）= `v1:` + RFC4648 base64（`A-Za-z0-9+/=`），严格不含 `|`
+- id/folder_id = UUID（含 `-`，不含 `|`）
+- favorite/atype/reprompt = bool/i64（纯数字）
+- deleted_at = SQLite datetime（含空格/`-`/`:`，不含 `|`）
+
+**修复**：修正模块 doc 注释，明确说明真实安全保证来自 base64 字符集约束，并标注「新增字段前必须确认字符集不含 `|`，否则需改长度前缀分隔」。补回归测试 `cipher_md5_no_collision_on_pipe_in_separate_fields` 守护字符集约束。
+
+**状态**：当前功能正确（所有字段恰好不含 `|`）。未来若加密格式变化（引入含 `|` 的编码）或新增非密文含 `|` 字段，需改用长度前缀分隔（`{len}|{value}` 重复）。
+
+### 正面结论（fingerprint 不变量核查）
+
+fingerprint 是同步正确性的源头，核查扎实：
+- `cipher_md5`（sync 读 row）与 `cipher_md5_from_input`（create/save 填充）字段顺序（11 字段）、字段类型（atype/reprompt 两 struct 均 i64、favorite 均 bool）、None 处理（5 个 unwrap_or("") 对称）三者一致 → create 时填的 md5 与 sync 时读 row 算的 md5 永远对齐
+- deleted_at 纳入 md5（H2）—— S1 前提
+- 不含 created_at/updated_at —— 跨设备时间戳必然不同，排除避免永久 diff
+
+---
+
+## 第十七轮审查修复（2026-07-24，T1/T2/T4 + T3 文档化）
+
+totp.rs 经 #7（80bit secret）、M2（空/短 secret 拦截）、复审 #1（畸形参数 clamp 防 panic）多轮加固，安全防护扎实。本轮处理 3 个低危改进 + 1 个文档化。
+
+### T1: current() 与 seconds_remaining() 各自独立读时钟（低，UX）
+
+**问题**：`current()`（:129 调 `generate_current`，totp-rs 内部读 `SystemTime::now()`）与 `seconds_remaining()`（:134 显式读 `SystemTime::now()`）两次独立读时钟，非原子。生产调用方 `vault_commands.rs:626-627` 先 `current()` 后 `seconds_remaining()`，跨 step 边界时可能返回「上个 step 的 code + 新 step 的 30s 倒计时」，持续约 1 秒陈旧显示。窗口 <1ms，非安全问题。
+
+**修复**：新增 `current_with_remaining() -> Result<(String, u64)>`——显式读一次 `now`，用 `inner.generate(now)`（而非 `generate_current()`）传同一 time counter，保证 code 与 remaining 基于同一时刻。`vault_commands.rs` 改用新方法。保留 `current()` / `seconds_remaining()` 向后兼容。
+
+### T2: from_base32 不 strip 内部空格/连字符（低，UX）
+
+**问题**：用户从其他 Authenticator 导出常是分组显示（`JBSWY 3DPE HPK3 PXP` / `JBSWY-3DPE-HPK3-PXP`）。`from_input`（:114）只 `trim()` 首尾，不去内部；`Secret::Encoded.to_bytes()` 调 `base32::decode(Rfc4648)` 对含空格/连字符的串返 `None` → Err。用户需手动去空格，多数 TOTP 工具会 strip。
+
+**修复**：`from_base32` 入口 `secret.chars().filter(|c| !c.is_whitespace() && *c != '-').collect()` strip 内部空白/连字符。
+
+### T4: test_known_totp_value 名不副实（低，测试质量）
+
+**问题**：注释称「RFC 6238 测试向量」，但只 `assert_eq!(code.len(), 6)`，与 `test_totp_format_6_digits` 重复。`current()` 用 wall-clock 无法断言固定值。
+
+**修复**：改用 `inner.generate(time)` 传固定 time counter，断言 RFC 6238 附录 B 的真实 8-digit SHA1 向量（T=59→94287082, T=1111111109→07081804, T=1111111111→14050471），真正验证算法正确性。
+
+### T3: TOTP secret 未 zeroize（低，文档化，交叉引用 L21）
+
+与第十轮 L21 同一问题——`TotpGenerator.inner: TOTP`（totp-rs）持有 secret 不实现 Zeroize，是库限制。已在 L21 记录，本轮确认状态不变。
+
+### 附带：清理 vault 既有 2 个 unused import warning
+
+- `exporter.rs:188` test 模块 `Field` 未用
+- `engine.rs:1857` test 函数 `pull_preserves_soft_deleted_at` 内 `VaultCipherInput` 未用（另一处 1647 有用，保留）
+
+非本轮引入（分别来自 feat Task 15 / 第十二轮），但 AGENTS.md 要求 0 warning，顺手清。
+
+---
+
+## 第十八轮审查修复（2026-07-24，KC1 + AG2/KC2/KC3 文档化）
+
+### KC1: 换机迁移下 load_machine_key 解密失败返 Err 致启动僵死 + 主密码死循环（中等）
+
+**问题**：`load_machine_key`（keychain.rs:281-283）对两种"无法取出有效 K_machine"的处理不对称——前缀不符（:275-278）→ `Ok(None)`（视为不存在，可重建）；是 v1: 文件但解密失败（file_key 不匹配/损坏）→ `Err`。
+
+`file_key = HKDF(machine_id:username, salt)`，换机迁移（拷整个 `~/.octopus/` 含 machine-key.enc 到新机器）→ machine_id 变 → file_key 变 → 解密失败。返 Err 致三条死路：
+
+1. **启动僵死**：`unlock_app_key_local`（unlock.rs:154）`load_machine_key()?` 传播 Err → `vault_state.rs:178-180` 走 `Err(e) => log::warn!` 分支，既不设 app_key（:173 没走）也不走 :175 Ok(None) 的"需主密码"提示 → app 卡在"未解锁且无提示"
+2. **主密码死循环**：`unlock_with_master_password`（:244）末尾 `refresh_app_key_local_enc`（:351）`load_machine_key()?` 再次 Err → :246 返"密码正确但刷新失败"→ 用户输对密码也解不开
+3. **load_or_create 被堵**：`load_or_create_machine_key`（:237）`load_machine_key()?` 传播 Err → 走不到 :240 创建分支
+
+**修复**：keychain.rs:281-283 解密失败改 `Ok(None)`，与 :275-278 对称。单点改，三处调用全部自愈：
+- unlock.rs:154 → Ok(None) → return Ok(None) → vault_state 走"需主密码"提示 ✓
+- unlock.rs:351 → Ok(None) → None 分支 → load_or_create 创建新 K_machine 重写 local_enc ✓
+- keychain.rs:237 load_or_create → Ok(None) → 创建分支 ✓
+
+**关键依据**：unlock.rs:148 文档注释**已承诺**"解密失败 → Ok(None)"，但实现对齐文档前是 bug。K_machine 本就是 obfuscation（模块注释 :14-30 说明），重建无损安全性，仅丢失"检测篡改"诊断信息（换机是合法场景，可用性让位诊断）。
+
+**回归测试**：`load_machine_key_returns_none_on_decrypt_failure_machine_change`（#[ignore]，用错误 key 加密文件模拟换机 file_key 不匹配），验证 Ok(None) + load_or_create 自愈创建新 key。
+
+### AG2: record_failure 非原子组合（低，文档化）
+
+**问题**：`record_failure`（attempt_guard.rs:47-57）`fetch_add(1)`（计数）+ `store(now+delay)`（门）两次独立原子操作。并发失败时较晚的 store 可能被较早的较小 delay 覆盖 → next_allowed_at 偶发倒退（退避短暂偏弱）。
+
+**状态**：文档化。failures 计数原子准确，下一轮 record_failure 会重 store 正确 delay，长期退避递增。unlock 路径并发性极低（UI 串行 + attempt_guard 单例 + 三入口不真正并发）。理想可用 CAS 单调更新 deadline，非必要。
+
+### KC2: derive_file_key 无缓存（低，文档化）
+
+**问题**：`derive_file_key`（keychain.rs:207-217）每次 load/save 重新 read_machine_id（macOS spawn ioreg ~10-50ms）+ read_username + HKDF。unlock 流程多次调 load_machine_key → 多次 spawn ioreg。
+
+**状态**：文档化。可用 OnceLock 缓存 file_key，正确性无碍，仅性能优化。
+
+### KC3: setup 回滚未删 K_machine（低，文档化）
+
+**问题**：迁移失败 DELETE vault_meta 回滚（unlock.rs:129-134）后，:84 已 `load_or_create_machine_key` 创建的 K_machine 残留为孤儿。
+
+**状态**：文档化。下次 setup load_or_create 复用它（本机随机 32B 复用无损安全）。严格对称应一并删除，但无实际风险。
+
+### 正面发现（attempt_guard / keychain / unlock）
+
+- attempt_guard 真实生效 + 精确语义：三处解锁路径均接 gate（unlock.rs:183/:268/:418）+ record_failure + reset。B2 修复精确区分"密码校验失败→record_failure" vs "副作用失败→仅 Err 不污染计数"
+- change_master_password 密钥"字节不变只换保护层"（INV-7）：改密时 user_vault_key/app_key 用旧 master 解出后字节原样用新 master 重新加密，不重加密 vault_ciphers（Bitwarden 式高效）
+- verify_master_password 不调 reset（:429）：reprompt 只是二次确认，不清 unlock 路径计数
+- keychain.rs #13 诚实注释（:14-30）：如实承认 HKDF 派生 file_key 输入全公开，AES-256-GCM 实为 obfuscation——高水准安全注释
+- keychain.rs #6 原子写（:314-396）：temp file + sync_all + rename
+- 测试隔离谨慎：keychain override（thread_local）隔离真实文件；via_file 测试 #[ignore] 避免 once_cell HOME 缓存污染开发者本机；unlock 测试用 TEST_SERIALIZER mutex 串行化避免 attempt_guard 跨测试竞争
+- setup 迁移回滚（A1，:117-136）：迁移失败显式 DELETE vault_meta 恢复 setup 可重试
+
+---
+
+## 第十九轮审查修复（2026-07-24，M1/M2/V1/V4 + M1(a)/V3 文档化）
+
+### M1(b): 幂等守卫 NOT LIKE 'v1:%' 硬编码与 CIPHERTEXT_PREFIX 耦合（低-中，DRY）
+
+**问题**：`db.rs:3924` 守卫 SQL `secret_key NOT LIKE 'v1:%'` 的 `'v1:%'` 与 `crypto::symmetric::CIPHERTEXT_PREFIX = "v1:"`（symmetric.rs:13）是两份独立字面量，无引用关系。未来密文格式升级（v2:）时若只改一处会导致：v2 密文被当明文再加密（数据损坏）/ v1 密文漏保护。经典"重构时漏改"温床。
+
+**修复**：`list_models_for_secret_migration` 加 `encrypted_prefix: &str` 参数，SQL 用参数化绑定（`NOT LIKE ?1` + `format!("{}%", prefix)`）。调用方 `migrate.rs` 传 `CIPHERTEXT_PREFIX`，单点维护。infra 不依赖 vault（依赖方向 vault → infra），故不能直接引用常量，必须由调用方注入。
+
+**回归测试**：`encrypt_prefix_matches_migration_guard_prefix`——验证 encrypt 产生的前缀 == CIPHERTEXT_PREFIX（守卫前缀），若重新引入硬编码字面量割裂两者会暴露。
+
+### M1(a): 明文 API Key 以 v1: 开头永久漏迁（低，文档化）
+
+**问题**：若用户某个云端 API Key 恰好以字面量 `v1:` 开头（自研带版本前缀的 key，如 `v1:sk-xxxx`），会被守卫误判为"已加密"跳过，保持明文残留 DB。迁移是 setup 一次性触发、`ensure!(!is_initialized())` 阻止重跑，漏迁不可自愈。
+
+**状态**：文档化为已知边界。概率极低（API Key 罕见以 v1: 开头）。彻底方案是密文用不可伪造结构（固定长度/tag）而非前缀，当前前缀方案对小规模够用。
+
+### M2: 事务内 UPDATE 失败不带行信息（低，诊断）
+
+**问题**：`migrate.rs:48-53` 事务循环 UPDATE 失败 `?` bubble → tx rollback → Err 不带"哪一行 id 失败"。迁移行数少 UPDATE 失败罕见，但一旦发生调试困难。
+
+**修复**：`.with_context(|| format!("迁移 model id={} 失败", id))` 在 `?` 前附加，tx drop 时 rollback 自动触发但错误信息已捕获不丢失。
+
+### V4: 前后端符号集双份手工列举易漂移（低，UX）
+
+**问题**：前端 `validateMasterPassword.ts:28-35 SYMBOL_CHARS` 与后端 `validate.rs:45-59 is_symbol` 是双份实现。码点级差异：前端 `¥` (U+00A5) vs 后端 `￥` (U+FFE5)；前端单引号 vs 后端左右单引号。核心问题是双份维护无共享源、无交叉一致性测试。
+
+**修复**：
+- 前端 SYMBOL_CHARS 全角段统一为后端码点：`¥`(U+00A5) → `￥`(U+FFE5)；ASCII 段改为全集列举对齐后端 `is_ascii_graphic && !alphanumeric` 语义
+- 前端测试 :95 `¥` → `￥`、`——` → `—` 对齐
+- 后端补 `is_symbol_covers_all_expected_chars` 守护测试（ASCII 全集标点 + 全角全集逐字验证）
+
+### V1: "79 bit 熵"注释是乐观上界（低，文档准确性）
+
+**问题**：validate.rs:8-9 与前端 :5-6 均注释"95 可打印 ASCII × 12 位 ≈ 79 bit 熵"。但策略只强制"4 类各含 1 个"+长度 12，最弱合法密码（如 `Aa1!!!!!!!!`）实际熵远低于 79 bit（79 bit 假设每位从 95 字符随机选）。
+
+**修复**：注释改为"理论上界 ~79 bit，实际取决于用户选择；Argon2id 为弱密码兜底"（后端 + 前端）。
+
+### V3: 主密码未 normalize（低，backlog）
+
+**问题**：`derive_master_root_key` 用 `password.as_bytes()` 直接喂 Argon2id，不做 NFC normalize。组合字符（如 `é` = `e` + 组合 vs 预组合 U+00E9）不同输入方式产生不同字节 → 跨设备"看似对却解不开"。
+
+**状态**：backlog。前端 input 框通常产 NFC（浏览器 normalize），实际风险低。
+
+---
+
+## 第二十轮审查修复（2026-07-25，crypto/ 全目录：K1/M1-mod/K3 + S2 文档化）
+
+crypto/ 是 vault 的命门模块（KDF + 对称加密 + 密钥派生）。本轮处理 1 个纵深防御加强 + 2 个整洁性改进 + 1 个文档化。
+
+### K1: from_i64 复用于不可信远程参数，memory 下限过低废掉 Argon2id 内存硬度（低-中，纵深防御）
+
+**问题**：`Argon2Params::from_i64`（kdf.rs）注释假设"本地 DB 可信"，校验下限是**崩溃级**：iterations≥1、memory_kib≥8（即 8KB）、parallelism≥1。但 grep 确认 `from_i64` 被 `sync/engine.rs:933 resolve_with_remote` 复用于处理**远程不可信** KDF 参数（`f.kdf_*` 来自同步仓库 meta.json）——超出"本地 DB 可信"假设。
+
+技术问题在 memory 下限：Argon2id 的抗 GPU 爆破核心是**内存硬度**（memory 参数），而非 iterations。memory_kib=8 = 8KB，可全放 GPU 寄存器/共享内存 → GPU 高度并行爆破，内存硬度几乎归零（逼近裸哈希速度）。OWASP 推荐的 65536 KiB（64MiB）让 GPU 难以并行，才是关键。`from_i64` 允许 memory=8 等于废掉 Argon2id 的主要防线。
+
+**触发链**：攻击者污染同步仓库的 vault_meta 为 kdf_memory_kib=8 → 受害者 sync，`from_i64` 不拒绝 → vault_meta（含弱 KDF + salt + protected_user_vault_key 密文）在同步仓库中可被攻击者读取 → 离线爆破，弱 memory 让 GPU 高度并行。
+
+**修复**：新增 `from_i64_strict`（安全下限），`resolve_with_remote` 改用它。本地路径（`resolve_with_local` :989）继续用 `from_i64`（本地 DB 可信）。安全下限：memory_kib≥16384（16MiB，保留 GPU 抗并行的内存硬度）、iterations≥2、parallelism≥1。
+
+**严重度限定**：触发需攻击者先获取 vault_meta 内容（私有库访问/窃取本地 DB 拷贝）。私有库 + PublicRepoRejected 前提下，获取内容本身需较高权限；但一旦获取，memory=8 显著加速爆破。定低-中：纵深防御加强项，非新攻击面。
+
+### M1-mod: DerivedKey 字段 pub（低，封装）
+
+**问题**：`mod.rs:12 pub struct DerivedKey(pub Zeroizing<[u8; 32]>)`——字段 pub，任何持有 DerivedKey 的代码可经 `.0` 直接读原始 32B key 字节，绕过 `as_bytes` 受控接口。Zeroizing 清零保护未被破坏（Zeroizing 仍在 DerivedKey 内，drop 时清零），但读取不受控——若某处把 `.0` 字节拷到非 Zeroizing 缓冲（log/String），绕过清零。
+
+**修复**：字段改 private + 新增 `pub(crate) fn from_zeroizing`（crate 内生产构造点用，如 KDF 派生/hierarchy 子 key）+ 保留 `pub fn from_raw`（外部 crate 测试用）。所有直接 `DerivedKey(...)` 构造点（vault 内 6 处测试 + kdf/hierarchy 生产 + desktop 2 处测试）改用 `from_raw`/`from_zeroizing`。
+
+### K3-derive: Argon2Params derive(Deserialize) 暴露绕过校验构造能力（低，未来风险）
+
+**问题**：`kdf.rs:13 #[derive(Serialize, Deserialize)]`。grep 确认当前无任何反序列化调用方（所有构造走 from_i64 / Default）。Deserialize 暴露了"可构造 iterations=0 / 弱参数 Argon2Params 绕过 from_i64 校验"的能力——若未来加配置加载/API 接收 JSON 的路径，会静默绕过校验。
+
+**修复**：移除 Deserialize derive，保留 Serialize（未来可能用于配置导出，且不暴露构造能力）。注释标注：若未来确需反序列化，必须构造后立即用 from_i64_strict 复校验。
+
+### S2: AES-GCM encrypt 未用 AAD 绑定上下文（低，文档化）
+
+**问题**：`symmetric.rs:23 cipher.encrypt(nonce, plaintext)` 不传 AAD。密文不绑定 cipher_id / field_name 上下文——攻击者若能写 DB，可把 cipher A 的 password 密文复制到 cipher B 的 password 字段，decrypt 仍成功（同 user_vault_key），cipher B 显示 cipher A 的密码（密文移动/重放）。
+
+**状态**：文档化。单机威胁模型下"能写 DB = 攻击者已赢"，AAD 是纵深防御而非必需。加 AAD 需改 encrypt/decrypt 签名 + 所有调用点 + 密文格式（破坏向后兼容），代价大收益低。已在 symmetric.rs 模块注释说明设计取舍。

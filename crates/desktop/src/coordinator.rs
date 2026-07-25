@@ -108,6 +108,19 @@ enum Command {
     FallbackStart { prepare_id: i64 },
     /// action bar agent 录音（跳过 prepare-record 两阶段，无 selection）
     StartAgentRecording { task_id: String },
+    /// 音频采集看门狗触发：cpal 断推（samples=0 持续 ≥ STALL_THRESHOLD）→ 自动重连。
+    /// 停采集 + 保留 transcript + 重建 pipeline + 重 start，窗口不隐藏。
+    /// spec 2026-07-24-audio-watchdog §4.2。stage_kind 标识触发时的活跃 Stage 类型。
+    RestartCapture { stage_kind: RestartStageKind },
+}
+
+/// `Command::RestartCapture` 携带的活跃 stage 类型标识（看门狗分发用，spec 2026-07-24 §4.2）。
+/// 注：不含 WaitingCompletion——该 stage `is_recording` 已 false（stop 时翻转），
+/// `sample_stall_duration` 返回 0，看门狗天然不触发。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartStageKind {
+    Streaming,
+    VadSegmented,
 }
 
 enum Stage {
@@ -225,6 +238,11 @@ pub struct Coordinator {
 
 /// 流式识别 tick 间隔（毫秒）
 const STREAMING_TICK_INTERVAL_MS: u64 = 200;
+
+/// 音频采集看门狗阈值：cpal 回调距上次收到样本 ≥ 此值 → 判定断推 → 自动重连。
+/// spec 2026-07-24-audio-watchdog §3.1。正常静音 cpal 仍推底噪 samples≠0，故此阈值不误判静音。
+/// VadSegmented 100ms tick × 30 = 3s；Streaming 200ms tick × 15 = 3s。
+const AUDIO_STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// 过程落库（update_text_segments）节流间隔：同条记录 ≥此值才 UPDATE，
 /// Finalize 兜底完整写入（长录音避免每 changed≈每 tick 一次 UPDATE 的写放大）。
@@ -419,6 +437,23 @@ fn build_coordinator_loop(
                         }
                         pending_prepare = None;
                         handle_discard(&mut stage, &audio, &app_handle, &config);
+                    }
+                    Command::RestartCapture { stage_kind } => {
+                        // 看门狗触发：cpal 断推 → 自动重连（spec 2026-07-24-audio-watchdog §4.2）。
+                        // stage_kind 用于校验触发时的 stage 与当前一致（跨命令竞态防护）。
+                        let kind_matches = match (&stage, stage_kind) {
+                            (Stage::Streaming { .. }, RestartStageKind::Streaming) => true,
+                            (Stage::VadSegmented { .. }, RestartStageKind::VadSegmented) => true,
+                            _ => false,
+                        };
+                        if !kind_matches {
+                            warn!("[WATCHDOG] stage mismatch (current={}, expected_kind={:?}), skip restart",
+                                stage_name(&stage), stage_kind);
+                        } else {
+                            restart_capture_keep_transcript(
+                                &mut stage, &audio, &engine, &config, &app_handle, &tx, use_streaming,
+                            );
+                        }
                     }
                     Command::PasteDone => {
                         // 入库 finalize（从 Pasting 取数据；用户编辑已反映到 polished_text）
@@ -1207,7 +1242,161 @@ fn handle_toggle(
     }
 }
 
-/// Toggle 停止录音后的统一收尾：决定走 final 路径还是等待 pending 立即润色。
+/// 音频采集看门狗：cpal 断推后自动重连（spec 2026-07-24-audio-watchdog §4.2）。
+///
+/// 语义：**中断 + 重启录音，复用 transcript**——两次录音的文本拼在一起，识别框不隐藏。
+/// 区别于 `handle_toggle`（停止→finalize→粘贴）和 `begin_recording`（新建 transcript）。
+///
+/// 流程：
+/// 1. 停 tick 线程 + `audio.stop()` 取尾部 + 喂尾给旧 pipeline + `finish` flush 在途 partial
+/// 2. 取出 owned transcript（保留，不交给 finalize）
+/// 3. `transcript.reset_engine_baseline()` 清引擎基准（与重建 pipeline 空状态对齐）
+/// 4. `audio.start()` 重连 cpal——失败则二次降级（mic-error + finalize 粘贴已识别文本）
+/// 5. 引擎 Arc 取用 + reset + 新建 pipeline + transcript 放回 Stage + 重启 tick 线程
+/// 6. `update_result` 刷新显示（窗口一直可见）+ emit `mic-reconnecting`
+///
+/// cloud 引擎（`Stage::Streaming` 且 `is_cloud()`）不在此处理——cloud 断流走独立 WS 重试，
+/// 触发时 no-op + warn。
+#[allow(clippy::too_many_arguments)]
+fn restart_capture_keep_transcript(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    engine: &Arc<dyn TranscriptionEngine>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+    use_streaming: bool,
+) {
+    info!("[WATCHDOG] restart_capture triggered, stage={}", stage_name(stage));
+
+    // ── 停止阶段：取出 transcript（保留）──
+    let mut transcript = match std::mem::replace(stage, Stage::Idle) {
+        Stage::Streaming { mut pipeline, transcript, streaming_active } => {
+            // cloud 引擎不自动重连（独立 WS 连接，断流语义不同）
+            if pipeline.is_cloud() {
+                warn!("[WATCHDOG] cloud engine stall, skip restart (cloud 有独立重试)");
+                // 还原 stage，让 cloud 自己的错误处理接管
+                *stage = Stage::Streaming { pipeline, transcript, streaming_active };
+                return;
+            }
+            streaming_active.store(false, Ordering::Relaxed);
+            let final_samples = audio.drain_samples();
+            let _ = audio.stop();
+            // tail 喂入 + finish flush 在途 partial（同 handle_toggle，但不 apply_engine_full 不 finalize）
+            if !final_samples.is_empty() {
+                let _ = pipeline.tick(&final_samples, &mut Transcript::new(0, PolishMode::Disabled, RecordType::Input));
+            }
+            let _ = pipeline.finish();
+            transcript
+        }
+        Stage::VadSegmented { mut pipeline, mut transcript, tick_active } => {
+            tick_active.store(false, Ordering::Relaxed);
+            let remaining = audio.stop().unwrap_or_default();
+            if !remaining.is_empty() {
+                let _ = pipeline.tick(&remaining, &mut transcript);
+            }
+            pipeline.finish(&mut transcript);
+            transcript
+        }
+        Stage::WaitingCompletion { mut pipeline, mut transcript, tick_active } => {
+            // WaitingCompletion：stop 后在途段识别中，此时 is_recording 已 false，
+            // 正常不应触发看门狗（sample_stall_duration 返回 0）。防御性处理：同 VadSegmented。
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = audio.stop();
+            pipeline.finish(&mut transcript);
+            transcript
+        }
+        other => {
+            // 非活跃 stage（Idle/Polishing/Pasting 等）收到 RestartCapture——异常，还原 + warn
+            warn!("[WATCHDOG] unexpected stage {} for restart, ignoring", stage_name(&other));
+            *stage = other;
+            return;
+        }
+    };
+
+    // ── 清引擎基准（与重建 pipeline 空状态对齐，spec §3.5）──
+    transcript.reset_engine_baseline();
+    let show_text = transcript.display_text();
+
+    // ── 重连阶段 ──
+    if let Err(e) = audio.start(&config.microphone) {
+        // 二次失败降级：mic-error + finalize 粘贴已识别文本（spec §3.3）
+        error!("[WATCHDOG] 重连失败: {}, 降级 finalize", e);
+        let _ = app_handle.emit("mic-error", "麦克风采集中断，自动重连失败，请检查设备后重试");
+        finalize_after_stop(stage, transcript, config, app_handle, tx);
+        return;
+    }
+
+    // 展示旧文本（窗口一直可见，is_continuation 路径——不走 show-result else 清空 caret）
+    let show_placeholder = if show_text.is_empty() { "正在聆听…" } else { "🎙️ 麦克风重连中…" };
+    crate::result_window::show_result(app_handle, show_placeholder);
+    if !show_text.is_empty() {
+        crate::result_window::update_result(app_handle, &show_text, false, 0);
+    }
+    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+    let _ = app_handle.emit("mic-reconnecting", ());
+
+    // 重建 pipeline（复用常驻引擎，不重载模型）+ transcript 放回 Stage + 重启 tick
+    if use_streaming {
+        let asr_engine = active_asr_engine_name();
+        let streaming_manager = app_handle
+            .state::<std::sync::Arc<StreamingSessionManager>>();
+        let streaming_engine = match streaming_manager
+            .active_session(&asr_engine, &config.language)
+        {
+            Ok(arc) => { arc.reset(); arc }
+            Err(e) => {
+                error!("[WATCHDOG] 流式引擎取用失败: {}, 降级 finalize", e);
+                let _ = audio.stop();
+                let _ = app_handle.emit("mic-error", "麦克风采集中断，引擎重连失败");
+                finalize_after_stop(stage, transcript, config, app_handle, tx);
+                return;
+            }
+        };
+        let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+            Ok(e) => e,
+            Err(e) => {
+                error!("[WATCHDOG] LocalPipelineEngine init failed: {}", e);
+                let _ = audio.stop();
+                finalize_after_stop(stage, transcript, config, app_handle, tx);
+                return;
+            }
+        };
+        let pipeline = match StreamingPipeline::new(Box::new(local_engine)) {
+            Ok(p) => p,
+            Err(e) => {
+                error!("[WATCHDOG] StreamingPipeline init failed: {}", e);
+                let _ = audio.stop();
+                finalize_after_stop(stage, transcript, config, app_handle, tx);
+                return;
+            }
+        };
+        let streaming_active = Arc::new(AtomicBool::new(true));
+        start_tick_thread(tx.clone(), streaming_active.clone());
+        *stage = Stage::Streaming { pipeline, transcript, streaming_active };
+    } else {
+        match crate::pipeline::VadSegmentedPipeline::new(
+            engine.clone(),
+            config.language.clone(),
+            active_asr_engine_name(),
+            config.segment_silence,
+        ) {
+            Ok(pipeline) => {
+                let tick_active = Arc::new(AtomicBool::new(true));
+                start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
+                *stage = Stage::VadSegmented { pipeline, transcript, tick_active };
+            }
+            Err(e) => {
+                error!("[WATCHDOG] VAD init failed: {}, 降级 finalize", e);
+                let _ = audio.stop();
+                finalize_after_stop(stage, transcript, config, app_handle, tx);
+            }
+        }
+    }
+    info!("[WATCHDOG] restart_capture done, stage={}", stage_name(stage));
+}
+
+
 ///
 /// **修复 bug**：原实现直接 `transcript.clear_polish_pending()` 后走 final 路径，
 /// 导致：(1) 立即润色的 `PolishDone` 回来时 stage 已切换 → 结果被丢弃；
@@ -2670,10 +2859,18 @@ fn dispatch_tick(
         Stage::Streaming { pipeline, transcript, .. } => {
             let events = pipeline.tick(&samples, transcript);
             apply_pipeline_events(events, transcript, config, app_handle, tx);
+            // 看门狗：cpal 断推检测（spec 2026-07-24-audio-watchdog §4.1）。
+            // WaitingCompletion 天然免疫（is_recording 已 false → stall=0）。
+            if check_audio_stall(audio, stage) {
+                let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::Streaming });
+            }
         }
         Stage::VadSegmented { pipeline, transcript, .. } => {
             let events = pipeline.tick(&samples, transcript);
             apply_pipeline_events(events, transcript, config, app_handle, tx);
+            if check_audio_stall(audio, stage) {
+                let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::VadSegmented });
+            }
         }
         Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
             let events = pipeline.tick(&samples, transcript);
@@ -2684,6 +2881,8 @@ fn dispatch_tick(
                 let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
                 finalize_after_stop(stage, tr, config, app_handle, tx);
             }
+            // WaitingCompletion 不检测看门狗：is_recording 已 false（stop 时翻转），
+            // sample_stall_duration 必返回 0；且此时本就在等在途段完成，不需要重连。
         }
         _ => {
             // tick 到达但 stage 不是活跃识别态——通常是异常路径（如 Polishing/Pasting 阶段
@@ -2694,6 +2893,21 @@ fn dispatch_tick(
                 samples.len(),
             ));
         }
+    }
+}
+
+/// 看门狗纯判定：audio stall 是否超阈值（spec 2026-07-24-audio-watchdog §4.1）。
+/// 抽出为独立函数便于单测。命中时由调用方发 `Command::RestartCapture`。
+fn check_audio_stall(audio: &Arc<SharedAudioState>, stage: &Stage) -> bool {
+    let stall = audio.sample_stall_duration();
+    if stall >= AUDIO_STALL_THRESHOLD {
+        crate::perf_log::log(&format!(
+            "[WATCHDOG] stall={:.1}s threshold={:.0}s stage={} samples_buffer=0 → restart",
+            stall.as_secs_f64(), AUDIO_STALL_THRESHOLD.as_secs_f64(), stage_name(stage),
+        ));
+        true
+    } else {
+        false
     }
 }
 
@@ -2853,6 +3067,19 @@ mod tests {
         let ctx = parse_agent_context(r#"{"prompt_template":"{{voice}}\n\n文件列表：\n{{files}}"}"#);
         assert!(ctx.prompt_template.contains("{{voice}}"));
         assert!(ctx.prompt_template.contains("{{files}}"));
+    }
+
+    // ── 音频采集看门狗（spec 2026-07-24-audio-watchdog §4.1）──
+    // check_audio_stall 是 sample_stall_duration() >= 阈值的薄封装 + 日志。
+    // sample_stall_duration 的 4 种情形（未录/冷启动/断推/正常）在 audio.rs 测试模块覆盖。
+    // 此处仅测不录音时的不触发（跨模块无法访问 audio 私有字段设置 stall 状态）。
+
+    #[test]
+    fn check_audio_stall_no_trigger_when_not_recording() {
+        // is_recording=false → sample_stall_duration 返回 0 < 阈值 → 不触发
+        let audio = Arc::new(SharedAudioState::new("test"));
+        let stage = Stage::Idle;
+        assert!(!check_audio_stall(&audio, &stage));
     }
 }
 

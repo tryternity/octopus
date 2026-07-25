@@ -166,7 +166,10 @@ pub fn git_fetch_all(path: &Path) -> Result<(), SyncError> {
 /// `git merge --ff-only <ref>` 的结果——区分 3 种情况让上层精确处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeFfResult {
-    /// 成功 fast-forward（远程领先本地，已合并到本地）。
+    /// 远程无新 commit，merge 是 no-op（"Already up to date"，HEAD hash 未变）。
+    /// 上层应跳过 pull——工作区文件是上次 sync 的旧状态，pull 会用旧文件覆盖本地新 DB。
+    UpToDate,
+    /// 成功 fast-forward（远程领先本地，已合并到本地，HEAD hash 已变）。
     FastForwarded,
     /// 不能 ff——远程与本地分叉，需 rebase 兜底。
     CannotFastForward,
@@ -177,11 +180,17 @@ pub enum MergeFfResult {
 
 /// `git merge --ff-only <ref>`——fast-forward 合并。
 ///
-/// 返 [`MergeFfResult`] 让上层区分 3 种情况：
-/// - `FastForwarded`：远程领先，已合并到本地
+/// 返 [`MergeFfResult`] 让上层区分 4 种情况：
+/// - `UpToDate`：远程无新 commit（HEAD hash 未变），上层跳过 pull 避免旧文件覆盖新 DB
+/// - `FastForwarded`：远程领先，已合并到本地（HEAD hash 已变），上层正常 pull
 /// - `CannotFastForward`：分叉，上层走 rebase
 /// - `NoUpstream`：远程无此分支（首次推送场景），上层跳过 merge 直接 push -u
+///
+/// UpToDate vs FastForwarded 的区分：`git merge --ff-only` 在 "Already up to date" 时
+/// 也返回 exit 0，无法靠退出码区分。通过对比 merge 前后 HEAD SHA 实现。
 pub fn git_merge_ff(path: &Path, ref_name: &str) -> Result<MergeFfResult, SyncError> {
+    // merge 前读 HEAD SHA（失败说明仓库异常，交给上层）
+    let sha_before = git_head_sha(path).unwrap_or_default();
     let result = run_git_allow_codes(
         path,
         &["merge", "--ff-only", ref_name],
@@ -189,7 +198,15 @@ pub fn git_merge_ff(path: &Path, ref_name: &str) -> Result<MergeFfResult, SyncEr
         &[], // ff-only 失败时 stderr 含 "Not possible to fast-forward"
     );
     match result {
-        Ok(_) => Ok(MergeFfResult::FastForwarded),
+        Ok(_) => {
+            // 对比 merge 后 HEAD SHA：不变 = no-op（Already up to date），变了 = 真 ff
+            let sha_after = git_head_sha(path).unwrap_or_default();
+            if sha_after == sha_before {
+                Ok(MergeFfResult::UpToDate)
+            } else {
+                Ok(MergeFfResult::FastForwarded)
+            }
+        }
         Err(SyncError::GitError(stderr)) => {
             let lower = stderr.to_lowercase();
             // "not something we can merge" / "invalid upstream" / "not a valid ref"
@@ -630,6 +647,89 @@ mod tests {
         assert_eq!(
             result, MergeFfResult::NoUpstream,
             "远程无 main 分支应识别为 NoUpstream（首次推送场景），实际：{:?}",
+            result
+        );
+    }
+
+    /// 建 origin（bare）+ 本地 clone，返回 (origin_tmp, local_tmp)。
+    /// 用于测 merge ff 的 UpToDate / FastForwarded 区分。
+    fn init_origin_and_clone() -> (TempDir, TempDir) {
+        let origin_tmp = TempDir::new().expect("origin tempdir");
+        let origin_path = origin_tmp.path();
+        // bare origin
+        Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(origin_path)
+            .output().expect("init bare origin");
+        // 本地 clone（空 origin，clone 会建本地 main 但无 commit，需先建 commit 再 push）
+        let local_tmp = TempDir::new().expect("local tempdir");
+        let local_path = local_tmp.path();
+        git_init(local_path).expect("git init local");
+        Command::new("git").args(["config", "user.email", "test@example.com"])
+            .current_dir(local_path).output().expect("config email");
+        Command::new("git").args(["config", "user.name", "Test"])
+            .current_dir(local_path).output().expect("config name");
+        // 首个 commit
+        std::fs::write(local_path.join("f"), "init").unwrap();
+        git_add_all(local_path).unwrap();
+        git_commit(local_path, "init").unwrap();
+        // 加 origin remote + push -u（建 origin/main）
+        Command::new("git")
+            .args(["remote", "add", "origin", origin_path.to_str().unwrap()])
+            .current_dir(local_path).output().expect("add remote");
+        Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(local_path).output().expect("push -u");
+        (origin_tmp, local_tmp)
+    }
+
+    #[test]
+    fn merge_ff_up_to_date_when_no_remote_change() {
+        if !has_git() {
+            return;
+        }
+        let (_origin, local) = init_origin_and_clone();
+        let path = local.path();
+        // origin 无新 commit → fetch + merge 应返 UpToDate
+        git_fetch_all(path).expect("fetch");
+        let result = git_merge_ff(path, "origin/main").expect("merge_ff");
+        assert_eq!(
+            result, MergeFfResult::UpToDate,
+            "远程无新 commit 应返 UpToDate（HEAD hash 未变），实际：{:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn merge_ff_fastforwarded_when_remote_has_new_commit() {
+        if !has_git() {
+            return;
+        }
+        let (origin, local) = init_origin_and_clone();
+        let path = local.path();
+        let origin_path = origin.path();
+
+        // 在 origin 上加新 commit（通过另一个 clone 模拟设备 B push）
+        let b_tmp = TempDir::new().expect("B tempdir");
+        Command::new("git")
+            .args(["clone", origin_path.to_str().unwrap(), b_tmp.path().to_str().unwrap()])
+            .output().expect("clone B");
+        Command::new("git").args(["config", "user.email", "b@test.com"])
+            .current_dir(b_tmp.path()).output().expect("config B email");
+        Command::new("git").args(["config", "user.name", "B"])
+            .current_dir(b_tmp.path()).output().expect("config B name");
+        std::fs::write(b_tmp.path().join("new"), "B's commit").unwrap();
+        git_add_all(b_tmp.path()).unwrap();
+        git_commit(b_tmp.path(), "B change").unwrap();
+        Command::new("git").args(["push"])
+            .current_dir(b_tmp.path()).output().expect("B push");
+
+        // 本地 fetch + merge → 应返 FastForwarded（HEAD hash 变了）
+        git_fetch_all(path).expect("fetch");
+        let result = git_merge_ff(path, "origin/main").expect("merge_ff");
+        assert_eq!(
+            result, MergeFfResult::FastForwarded,
+            "远程有新 commit 应返 FastForwarded（HEAD hash 已变），实际：{:?}",
             result
         );
     }

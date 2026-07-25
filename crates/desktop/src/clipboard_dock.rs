@@ -19,11 +19,15 @@ static POLL_ID: AtomicU64 = AtomicU64::new(0);
 /// 启动鼠标位置轮询：鼠标在细条区域 → 可交互，否则穿透。
 /// 用自增 ID 保证同时只有一个轮询线程存活——旧线程自动退出。
 pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edge: &'static str) {
+    // 防重复：如果已有活跃 poll 线程，不重复启动（clipboard_dock_collapse + Focused(false) 可能同时调）
+    if POLL_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
     POLL_ACTIVE.store(true, Ordering::SeqCst);
     let my_id = POLL_ID.fetch_add(1, Ordering::SeqCst);
 
     tauri::async_runtime::spawn(async move {
-        let mut slow_poll = tokio::time::interval(std::time::Duration::from_millis(200));
+        let mut slow_poll = tokio::time::interval(std::time::Duration::from_millis(100));
         let mut fast_poll = tokio::time::interval(std::time::Duration::from_millis(33));
         let mut cur_ignore = false;
         let mut in_fast_mode = false;
@@ -75,24 +79,30 @@ pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edg
 }
 
 /// 读鼠标位置 + 窗口几何，判定是否在 dock 边缘内。返回 (in_bar, want_ignore)。
+///
+/// 全部用物理坐标直接比较（cursor_position / outer_position / outer_size 都是 Physical）。
+/// 与 result_window::start_click_through_poller 统一模式。
 fn probe_position(window: &tauri::WebviewWindow, edge: &'static str) -> Option<(bool, bool)> {
     let cursor = window.cursor_position().ok()?;
-    let (mx, my) = (cursor.x, cursor.y);
+    let (mx, my) = (cursor.x as f64, cursor.y as f64);
     let pos = window.outer_position().ok()?;
     let (wx, wy) = (pos.x as f64, pos.y as f64);
-    let sf = window.scale_factor().unwrap_or(1.0);
-    let win_w = 300.0 * sf;
-    let win_h = 600.0 * sf;
+    let size = window.outer_size().ok()?;
+    let (win_w, win_h) = (size.width as f64, size.height as f64);
     let win_right = wx + win_w;
     let win_bottom = wy + win_h;
 
+    // dock 边缘检测带：窗口边缘内侧 15px + 外侧 3px
+    const DETECT_INNER: f64 = 15.0;
+    const DETECT_OUTER: f64 = 3.0;
+
     let in_bar = match edge {
         "right" => {
-            mx >= win_right - 10.0 * sf && mx <= win_right + 2.0 * sf
+            mx >= win_right - DETECT_INNER && mx <= win_right + DETECT_OUTER
                 && my >= wy && my <= win_bottom
         }
         "left" => {
-            mx >= wx - 2.0 * sf && mx <= wx + 10.0 * sf
+            mx >= wx - DETECT_OUTER && mx <= wx + DETECT_INNER
                 && my >= wy && my <= win_bottom
         }
         _ => false,

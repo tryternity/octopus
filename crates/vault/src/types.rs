@@ -329,7 +329,7 @@ mod tests {
     use super::*;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     fn sample_input() -> CipherInput {

@@ -50,6 +50,9 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
     <input
       ref={ref}
       className={cn(inputVariants({ variant, size, className }))}
+      autoCapitalize="off"
+      autoCorrect="off"
+      spellCheck={false}
       {...props}
     />
   ),
@@ -83,6 +86,9 @@ const Textarea = React.forwardRef<
   <textarea
     ref={ref}
     className={cn(inputVariants({ variant, size }), "leading-relaxed", className)}
+    autoCapitalize="off"
+    autoCorrect="off"
+    spellCheck={false}
     {...props}
   />
 ));

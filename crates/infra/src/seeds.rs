@@ -65,21 +65,33 @@ pub fn load_external_seeds(conn: &Connection) -> Result<()> {
 /// INSERT OR IGNORE：id 已存在则跳过（保护用户编辑）。
 fn load_prompt_seeds(conn: &Connection) -> Result<()> {
     let prompts_dir = seeds_dir().join("prompts");
-    // (id, filename, title, description)
+    // (id, seed_filename, dest_filename_without_ext, title, description)
+    // content 字段存 dest_filename（不含 .md），运行时读 ~/.octopus/.sync/prompts/polish/<content>.md
     let seeds = [
-        (1i64, "default-polish.md", "默认润色", "默认润色（系统内置）"),
-        (2i64, "advanced-polish.md", "进阶润色（断续纠正）",
+        (1i64, "default-polish.md", "润色-默认", "默认润色", "默认润色（系统内置）"),
+        (2i64, "advanced-polish.md", "润色-进阶", "进阶润色（断续纠正）",
          "进阶版：针对断续纠正、重复修正、同音漂移场景强化的润色 prompt（系统内置）"),
     ];
-    for (id, filename, title, desc) in seeds {
-        let path = prompts_dir.join(filename);
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("读 prompt seed: {:?}", path))?;
+    // 拷贝 md 文件到 ~/.octopus/.sync/prompts/polish/（幂等，已存在跳过）
+    let polish_dir = crate::paths::octopus_config_home()
+        .join(".sync").join("prompts").join("polish");
+    let _ = std::fs::create_dir_all(&polish_dir);
+    for (_, seed_file, dest_name, _, _) in &seeds {
+        let src = prompts_dir.join(seed_file);
+        let dst = polish_dir.join(format!("{}.md", dest_name));
+        if !dst.exists() {
+            if let Ok(content) = std::fs::read_to_string(&src) {
+                let _ = std::fs::write(&dst, content);
+            }
+        }
+    }
+    // DB content 存文件名引用（不含 .md）
+    for (id, _, dest_name, title, desc) in seeds {
         // INSERT OR IGNORE：id 已存在则跳过（保护用户编辑）
         conn.execute(
             "INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system)
              VALUES (?1, ?2, 'voice_text_polish', ?3, ?4, 1)",
-            rusqlite::params![id, title, content, desc],
+            rusqlite::params![id, title, dest_name, desc],
         ).with_context(|| format!("插入 prompt seed id={}", id))?;
     }
     Ok(())
@@ -313,7 +325,8 @@ mod load_tests {
         std::fs::rename(&path, &backup).unwrap();
         let result = load_prompt_seeds(&conn);
         std::fs::rename(&backup, &path).unwrap(); // 恢复，防污染其他测试
-        assert!(result.is_err(), "文件缺失应返回 Err");
+        // 2026-07-24：文件缺失不再返回 Err——拷贝失败只跳过（容错），DB 仍插入文件名引用
+        assert!(result.is_ok(), "文件缺失不应阻塞 seed 加载（容错跳过拷贝）");
     }
 
     #[test]

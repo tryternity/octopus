@@ -240,7 +240,20 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
         .with_context(|| format!("创建 hotword 目录失败：{}", dir.display()))?;
 
     // 1. 读旧 outline 做 diff
-    let old_outline = read_hotword_outline().unwrap_or_default();
+    // HW1 修复（2026-07-24）：与 vault M8 对称——解析错不再 unwrap_or_default 吞成空，
+    // 否则删除循环遍历空 outline → 不执行 → stale 文件残留 → clone 复活。
+    // read_hotword_outline 已把 NotFound 转 Ok(default)，故 Err 必为解析错 → 降级全量重建。
+    let old_outline = match read_hotword_outline() {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!(
+                "[hotword-sync] outline.json 解析失败，降级为全量重建：{}",
+                e
+            );
+            let outline = export_all_hotwords(sets)?;
+            return Ok((outline, sets.len()));
+        }
+    };
     let mut changed = 0usize;
 
     // 2. 对比 md5，只写变化的
@@ -347,9 +360,11 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
     let db_ids: std::collections::HashSet<&str> = db_sets.iter().map(|h| h.id.as_str()).collect();
     let mut count = 0;
 
-    for (uuid, _entry) in &remote_outline.ciphers {
+    for (uuid, entry) in &remote_outline.ciphers {
+        // HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault #2 对齐），
+        // 不再调 hotword_md5_mismatch 读文件（消除双读——pull 主体行 354 还要读一次）。
         let needs_update = !db_ids.contains(uuid.as_str())
-            || hotword_md5_mismatch(uuid, &db_sets);
+            || hotword_md5_mismatch_v2(uuid, &entry.md5, &db_sets);
         if needs_update {
             match read_hotword_set_file(uuid) {
                 Ok(file) => {
@@ -382,30 +397,12 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
     Ok(count)
 }
 
-/// 检测热词版本的 sync_md5 是否与 outline 不匹配（需要 pull）。
-fn hotword_md5_mismatch(uuid: &str, db_sets: &[HotwordSet]) -> bool {
-    let db_set = match db_sets.iter().find(|h| h.id == uuid) {
-        Some(h) => h,
-        None => return true,
-    };
-    match read_hotword_set_file(uuid) {
-        Ok(file) => {
-            // 比较文件内容的 md5 vs DB sync_md5
-            let file_md5 = hotword_set_md5_from_fields(&file.name, file.enabled, &file.words_text);
-            let db_md5 = db_set.sync_md5.as_deref().unwrap_or("");
-            file_md5 != db_md5
-        }
-        // 文件读失败——不 pull（避免误删）。但不再静默：记日志让用户可见
-        // （#10 修复——与 vault engine.rs cipher_md5_mismatch 的 Err 处理对齐思路，
-        // 不过 vault 的 cipher_md5_mismatch 用 outline.md5 不读文件，此处 hotword
-        // 读文件是历史实现，保留语义只加日志）
-        Err(e) => {
-            log::warn!(
-                "[sync] 热词版本 {} md5 比对时文件读取失败，视为无需更新：{}",
-                uuid, e
-            );
-            false
-        }
+/// HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault cipher_md5_mismatch 对齐）。
+/// 不再读文件——消除双读（pull 主体还要读一次文件 upsert）。
+fn hotword_md5_mismatch_v2(uuid: &str, outline_md5: &str, db_sets: &[HotwordSet]) -> bool {
+    match db_sets.iter().find(|h| h.id == uuid) {
+        None => true, // DB 无 → 需 pull
+        Some(h) => h.sync_md5.as_deref().unwrap_or("") != outline_md5,
     }
 }
 
@@ -971,6 +968,76 @@ mod tests {
         // 正常版本被拉取，损坏的被跳过
         assert_eq!(pulled, 1, "只应拉取正常版本，损坏的被跳过");
         assert!(db::get_hotword_set(id_ok).is_ok(), "正常版本应在 DB");
+    }
+
+    /// 回归守护（spec 2026-07-25-hotword-sync-overwrite-bug）：记录「pull 用旧 outline
+    /// 覆盖本地新 DB」的 bug 场景。
+    ///
+    /// bug 链：本地加词 → DB sync_md5 变了 → sync_now 的 pull 阶段读旧 outline（远端无新
+    /// commit，文件是上次 sync 的旧状态）→ md5 mismatch → upsert 旧文件版本覆盖 DB → 新词丢失。
+    ///
+    /// **修复在 sync_now 层（engine.rs）**：merge UpToDate 时跳过 pull，不调用本函数。
+    /// 本测试文档化「pull 函数本身仍会覆盖」这一事实——若未来有人改 pull 逻辑，此测试
+    /// 确保不会意外引入「pull 不覆盖」的假设（那会破坏 FastForwarded 路径的正常拉取）。
+    #[test]
+    fn pull_overwrites_local_new_data_when_outline_stale_documented_bug() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        // 模拟「上次 sync 的状态」：export 旧版本到文件
+        let id = "dddddddd-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 模拟「本地新加词」：DB 加了「香蕉」，sync_md5 已回填
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+        // DB 现在有「苹果 香蕉」，文件还是旧的「苹果」
+
+        // 直接调 pull（模拟 bug 触发——sync_now 在 UpToDate 时已跳过此调用）
+        let _pulled = pull_hotwords_from_files().expect("pull");
+
+        // 文档化 bug：pull 用旧文件（只有「苹果」）覆盖了 DB（「苹果 香蕉」）
+        let after = db::get_hotword_set(id).unwrap();
+        assert_eq!(
+            after.words_text, "苹果",
+            "pull 会用旧 outline 覆盖本地新数据（这是已知 bug，修复在 sync_now 层跳过 pull）"
+        );
+        // 关键：此测试证明 pull 函数本身不区分方向。修复依赖 sync_now 在 UpToDate 时不调用 pull。
+    }
+
+    /// 回归守护（修复后）：push 阶段（incremental_export）正确导出本地新数据到文件。
+    /// 配合 sync_now 的 UpToDate 跳过 pull，完整流程：本地加词 → sync（跳过 pull）→
+    /// push 导出新词到文件 → commit + push → 远端拿到新词。本地数据不丢。
+    #[test]
+    fn push_exports_local_new_data_when_outline_stale() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "eeeeeeee-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 本地加词
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+
+        // push（DB → 文件）
+        let pushed = push_hotwords_to_files().expect("push");
+        assert_eq!(pushed, 1, "应导出 1 个变化的版本");
+
+        // 文件现在含新词（验证 export 正确）
+        let file = read_hotword_set_file(id).expect("read file");
+        let h = file.to_hotword_set(None);
+        assert_eq!(h.words_text, "苹果 香蕉", "push 应把本地新词写入文件");
     }
 
     /// incremental_export 的 vault_version 在有变化时递增，无变化时不递增（回归守护）。

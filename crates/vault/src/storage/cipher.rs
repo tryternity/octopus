@@ -1,8 +1,9 @@
 //! vault_ciphers 表的高层 API：Cipher 加解密 + CRUD。
 
 use anyhow::Result;
+use rusqlite::params;
 
-use octopus_infra::db::{self, VaultCipherInput};
+use octopus_infra::db::{self, load_vault_cipher_at, VaultCipherInput};
 
 use crate::crypto::DerivedKey;
 use crate::types::{decrypt_cipher_row, Cipher, CipherInput};
@@ -110,24 +111,49 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
     Ok(db::update_vault_cipher(id, &db_input)?)
 }
 
+/// S1 修复（2026-07-24）：soft_delete + sync_md5 重算合并为单事务——
+/// 之前两步独立 autocommit，第 2 步失败时 deleted_at 已改但 sync_md5 仍旧 →
+/// incremental_export 用旧 md5 对比旧 outline → 一致 → 文件不重写 → 删除不传播。
 pub fn soft_delete(id: &str) -> Result<()> {
-    db::soft_delete_vault_cipher(id)?;
-    // deleted_at 变 → md5 变。读完整 row 重算 sync_md5。
-    if let Some(row) = db::load_vault_cipher(id)? {
+    db::with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        // 1. UPDATE deleted_at
+        tx.execute(
+            "UPDATE vault_ciphers SET deleted_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )?;
+        // 2. 读完整 row（含新 deleted_at）算 md5
+        let row = load_vault_cipher_at(&tx, id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
         let md5 = crate::sync::fingerprint::cipher_md5(&row);
-        db::update_cipher_sync_md5(id, &md5)?;
-    }
-    Ok(())
+        // 3. UPDATE sync_md5
+        tx.execute(
+            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
+            params![md5, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
+/// S1 修复（2026-07-24）：restore + sync_md5 重算合并为单事务（与 soft_delete 对称）。
 pub fn restore(id: &str) -> Result<()> {
-    db::restore_vault_cipher(id)?;
-    // deleted_at 变 → md5 变。读完整 row 重算 sync_md5。
-    if let Some(row) = db::load_vault_cipher(id)? {
+    db::with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE vault_ciphers SET deleted_at = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        let row = load_vault_cipher_at(&tx, id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
         let md5 = crate::sync::fingerprint::cipher_md5(&row);
-        db::update_cipher_sync_md5(id, &md5)?;
-    }
-    Ok(())
+        tx.execute(
+            "UPDATE vault_ciphers SET sync_md5 = ?1 WHERE id = ?2",
+            params![md5, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 pub fn permanent_delete(id: &str) -> Result<()> {
@@ -171,7 +197,7 @@ mod tests {
     use octopus_infra::db;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(crate::Zeroizing::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     fn sample_input(name: &str) -> CipherInput {
@@ -434,5 +460,62 @@ mod tests {
         // list 也仍能拿到（不过滤）
         let (all, _) = list_ciphers(&key).expect("list");
         assert!(all.iter().any(|c| c.id == id), "软删后 list 应仍包含该行");
+    }
+
+    /// S1 回归守护：soft_delete / restore 后 sync_md5 必须反映 deleted_at 变化——
+    /// 之前两步非原子，第 2 步失败时 deleted_at 已改但 sync_md5 仍旧 → 删除不传播。
+    /// 现在合并为单事务，两者原子一致。
+    #[test]
+    fn soft_delete_and_restore_update_sync_md5_atomically() {
+        setup_clean_db();
+        let key = make_key(7);
+        let id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        create_cipher(id, &sample_input("AtomTest"), &key).expect("create");
+
+        // 取初始 sync_md5（deleted_at=None）
+        let initial = octopus_infra::db::load_vault_cipher(id)
+            .unwrap()
+            .unwrap();
+        let initial_md5 = initial.sync_md5.clone().unwrap();
+
+        // soft_delete 后 sync_md5 应变（含 deleted_at）
+        soft_delete(id).expect("soft delete");
+        let after_delete = octopus_infra::db::load_vault_cipher(id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            after_delete.deleted_at.is_some(),
+            "deleted_at 应有值"
+        );
+        assert_ne!(
+            after_delete.sync_md5.as_deref().unwrap_or(""),
+            initial_md5,
+            "S1: soft_delete 后 sync_md5 应变（反映 deleted_at），否则删除不传播"
+        );
+
+        // 手动验证：用 DB row 算的 md5 应与存储的 sync_md5 一致（原子性）
+        let recomputed = crate::sync::fingerprint::cipher_md5(&after_delete);
+        assert_eq!(
+            after_delete.sync_md5.as_deref().unwrap_or(""),
+            recomputed,
+            "S1: sync_md5 应与 DB row 的实际 md5 一致（单事务原子性）"
+        );
+
+        // restore 后 sync_md5 应回到接近初始值（deleted_at=None）
+        restore(id).expect("restore");
+        let after_restore = octopus_infra::db::load_vault_cipher(id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            after_restore.deleted_at.is_none(),
+            "deleted_at 应回 None"
+        );
+        // restore 后 md5 应与用 restored row 算的一致
+        let restored_md5 = crate::sync::fingerprint::cipher_md5(&after_restore);
+        assert_eq!(
+            after_restore.sync_md5.as_deref().unwrap_or(""),
+            restored_md5,
+            "S1: restore 后 sync_md5 应与 DB row 一致"
+        );
     }
 }

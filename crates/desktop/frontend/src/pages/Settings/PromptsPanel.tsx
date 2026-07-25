@@ -1,17 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Plus, Pencil, Check, Trash2, X, Eye, RotateCcw } from "lucide-react";
+import { Plus, Pencil, Check, Trash2, FileText } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 
 interface Prompt {
   id: number;
   title: string;
-  content: string;
+  content: string; // 文件名引用（不含 .md）
   description: string;
   is_system: boolean;
 }
@@ -20,12 +19,10 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   const t = useT();
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
-  const [editing, setEditing] = useState<Prompt | null>(null);
-  const [isNew, setIsNew] = useState(false);
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [description, setDescription] = useState("");
-  const [viewing, setViewing] = useState<Prompt | null>(null);
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newFileName, setNewFileName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
   const [deletePendingId, setDeletePendingId] = useState<number | null>(null);
 
   // 删除二次确认
@@ -52,22 +49,31 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
     catch (e) { showToast(t("settings.prompts.activateFailed") + e); }
   };
 
-  const newPrompt = () => {
-    setEditing({ id: 0, title: "", content: "", description: "", is_system: false });
-    setIsNew(true); setTitle(""); setContent(""); setDescription("");
+  // 编辑 → CompactEditor 打开文件
+  const editInEditor = (p: Prompt) => {
+    invoke("open_file_in_editor", { name: p.content, category: "polish" })
+      .catch((e: unknown) => showToast(String(e)));
   };
 
-  const editPrompt = (p: Prompt) => {
-    setEditing(p); setIsNew(false);
-    setTitle(p.title); setContent(p.content); setDescription(p.description);
-  };
-
-  const save = async () => {
-    if (!title.trim() || !content.trim()) { showToast(t("settings.prompts.emptyError")); return; }
+  // 新建 prompt：创建文件 + DB 记录 + 打开编辑器
+  const createNew = async () => {
+    if (!newTitle.trim() || !newFileName.trim()) {
+      showToast(t("settings.prompts.emptyError"));
+      return;
+    }
     try {
-      if (isNew) await invoke("create_prompt", { title, content, description });
-      else if (editing) await invoke("update_prompt", { id: editing.id, title, content, description });
-      setEditing(null); load(); showToast(isNew ? t("settings.prompts.created") : t("settings.prompts.saved"));
+      // 1. 创建空白 md 文件
+      await invoke("create_prompt_file", { category: "polish", name: newFileName.trim() });
+      // 2. DB 存记录（content = 文件名）
+      await invoke("create_prompt", { title: newTitle, content: newFileName.trim(), description: newDesc });
+      // 3. 刷新列表
+      await load();
+      setShowNewForm(false);
+      setNewTitle(""); setNewFileName(""); setNewDesc("");
+      showToast(t("settings.prompts.created"));
+      // 4. 自动打开编辑器
+      invoke("open_file_in_editor", { name: newFileName.trim(), category: "polish" })
+        .catch(() => {});
     } catch (e) { showToast(t("settings.prompts.saveFailed") + e); }
   };
 
@@ -85,84 +91,66 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
     }
   };
 
-  // ── 查看视图（只读）──
-  if (viewing) {
+  // ── 新建表单 ──
+  if (showNewForm) {
     return (
       <div className="flex flex-col h-full">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold">{viewing.title}</h3>
-          <Button variant="ghost" size="icon-sm" onClick={() => setViewing(null)}>
-            <X />
+          <h3 className="text-sm font-semibold">{t("settings.prompts.newPrompt")}</h3>
+          <Button variant="ghost" size="icon-sm" onClick={() => setShowNewForm(false)}>
+            <Trash2 className="h-4 w-4" />
           </Button>
         </div>
-        {viewing.description && (
-          <div className="text-xs text-muted-foreground/70 mb-2">{viewing.description}</div>
-        )}
-        <Card className="flex-1 min-h-0 overflow-hidden">
-          <pre className="px-4 py-3 text-xs font-mono leading-relaxed whitespace-pre-wrap overflow-y-auto thin-scrollbar h-full">{viewing.content}</pre>
-        </Card>
-      </div>
-    );
-  }
-
-  // ── 编辑器 ──
-  if (editing) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold">{isNew ? t("settings.prompts.newPrompt") : t("settings.prompts.editPrompt")}</h3>
-          <Button variant="ghost" size="icon-sm" onClick={() => setEditing(null)}>
-            <X />
-          </Button>
-        </div>
-        <Card className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-border">
+        <Card className="p-4 space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">{t("settings.prompts.titlePlaceholder")}</label>
             <input
               type="text"
-              className="w-full text-sm font-medium outline-none bg-transparent"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              className="w-full text-sm outline-none bg-transparent border border-border rounded-md px-3 py-2"
               placeholder={t("settings.prompts.titlePlaceholder")}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
             />
           </div>
-          <div className="px-4 py-2 border-b border-border">
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">{t("settings.prompts.fileNameLabel")}</label>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="flex-1 text-sm font-mono outline-none bg-transparent border border-border rounded-md px-3 py-2"
+                placeholder="my-prompt"
+                value={newFileName}
+                onChange={(e) => setNewFileName(e.target.value)}
+              />
+              <span className="text-xs text-muted-foreground/60">.md</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground/50 mt-1">~/.octopus/.sync/prompts/polish/{newFileName || "..."}.md</p>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground mb-1 block">{t("settings.prompts.descPlaceholder")}</label>
             <input
               type="text"
-              className="w-full text-xs text-muted-foreground outline-none bg-transparent"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              className="w-full text-xs text-muted-foreground outline-none bg-transparent border border-border rounded-md px-3 py-2"
               placeholder={t("settings.prompts.descPlaceholder")}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
             />
           </div>
-          <Textarea
-            variant="bare"
-            size="full"
-            className="flex-1 px-4 py-3 font-mono resize-none min-h-[200px]"
-            placeholder={t("settings.prompts.contentPlaceholder")}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-          />
         </Card>
         <div className="flex gap-2 mt-3">
-          <Button variant="primary" size="default" onClick={save}>
+          <Button variant="primary" size="default" onClick={createNew}>
             <Check /> {t("settings.prompts.save")}
           </Button>
-          {editing.is_system && (
-            <Button
-              variant="outline"
-              size="default"
-              onClick={async () => {
-                try {
-                  const restored = await invoke<string>("restore_prompt_from_seed", { promptId: editing.id });
-                  setContent(restored);
-                  showToast(t("settings.prompts.restored"));
-                } catch (e) { showToast(t("settings.prompts.restoreFailed") + e); }
-              }}
-            >
-              <RotateCcw /> {t("settings.prompts.restore")}
-            </Button>
-          )}
-          <Button variant="outline" size="default" onClick={() => setEditing(null)}>
+          <Button variant="outline" size="default" onClick={() => setShowNewForm(false)}>
             {t("settings.prompts.cancel")}
           </Button>
         </div>
@@ -174,7 +162,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   return (
     <div>
       <div className="flex items-center justify-end mb-3">
-        <Button variant="primary" size="default" onClick={newPrompt}>
+        <Button variant="primary" size="default" onClick={() => setShowNewForm(true)}>
           <Plus /> {t("settings.prompts.newBtn")}
         </Button>
       </div>
@@ -194,36 +182,28 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               {isActive && <Badge variant="voice">{t("settings.prompts.activeBadge")}</Badge>}
             </div>
             {p.description && <div className="text-xs text-muted-foreground/70 mb-1">{p.description}</div>}
-            <div className="text-xs text-muted-foreground/50 whitespace-pre-wrap max-h-12 overflow-hidden leading-relaxed">{p.content}</div>
+            {/* 文件名引用展示 */}
+            <div className="flex items-center gap-1 text-xs text-muted-foreground/50">
+              <FileText className="h-3 w-3" />
+              <code>{p.content}.md</code>
+            </div>
             <div className="flex gap-1.5 mt-2">
               {!isActive && (
                 <Button variant="ghost" size="sm" onClick={() => activate(p.id)}>
                   <Check /> {t("settings.prompts.activate")}
                 </Button>
               )}
-              {p.is_system && (
-                <>
-                  <Button variant="ghost" size="sm" onClick={() => setViewing(p)}>
-                    <Eye /> {t("settings.prompts.view")}
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => editPrompt(p)}>
-                    <Pencil /> {t("settings.prompts.edit")}
-                  </Button>
-                </>
-              )}
+              <Button variant="ghost" size="sm" onClick={() => editInEditor(p)}>
+                <Pencil /> {t("settings.prompts.edit")}
+              </Button>
               {!p.is_system && (
-                <>
-                  <Button variant="ghost" size="sm" onClick={() => editPrompt(p)}>
-                    <Pencil /> {t("settings.prompts.edit")}
-                  </Button>
-                  <Button
-                    variant={deletePendingId === p.id ? "destructive" : "destructive-ghost"}
-                    size="sm"
-                    onClick={() => handleDelete(p.id)}
-                  >
-                    <Trash2 /> {deletePendingId === p.id ? t("settings.prompts.confirmDelete") : t("settings.prompts.delete")}
-                  </Button>
-                </>
+                <Button
+                  variant={deletePendingId === p.id ? "destructive" : "destructive-ghost"}
+                  size="sm"
+                  onClick={() => handleDelete(p.id)}
+                >
+                  <Trash2 /> {deletePendingId === p.id ? t("settings.prompts.confirmDelete") : t("settings.prompts.delete")}
+                </Button>
               )}
             </div>
           </Card>

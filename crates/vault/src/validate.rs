@@ -5,8 +5,10 @@
 //! 后端双校验，防前端绕过」——DevTools 可直接 invoke('vault_setup', {password: 'a'})
 //! 设任意弱密码，前端校验不可信。
 //!
-//! 字符集：95 可打印 ASCII × 12 位 ≈ 79 bit 熵，配合 Argon2id (t=3, m=64MiB)
-//! 可抵抗 GPU 离线暴力。
+//! 熵估算（V1 修正，2026-07-24）：95 可打印 ASCII × 12 位 ≈ 79 bit 是**理论上界**
+//! （假设每位从 95 字符均匀随机选）。本策略只强制「4 类各含 1 个」+ 长度 12，
+//! 最弱合法密码（如 `Aa1!!!!!!!!`：1 大写 + 1 小写 + 1 数字 + 9 同一符号）实际熵
+//! 远低于 79 bit。Argon2id (t=3, m=64MiB) 为弱密码兜底，抵抗 GPU 离线爆破。
 
 use anyhow::{anyhow, Result};
 
@@ -95,5 +97,33 @@ mod tests {
     #[test]
     fn test_empty_password_rejected() {
         assert!(validate_master_password("").is_err());
+    }
+
+    /// V4 守护（2026-07-24）：验证 is_symbol 覆盖前端 SYMBOL_CHARS 对齐的所有字符。
+    ///
+    /// 前后端符号集是双份手工实现（TS Set vs Rust matches!），无共享源。此测试
+    /// 列举「按前端 SYMBOL_CHARS 应判 true」的字符（ASCII 全集标点 + 全角全集），
+    /// 验证后端 is_symbol 全过——任一方改动导致漂移会在此暴露。
+    ///
+    /// 全角段必须与前端 `validateMasterPassword.ts` SYMBOL_CHARS 全角段逐字一致：
+    ///   ！￥…（）—【】「」『』；：""''，。、
+    /// （¥ U+00A5 已统一为 ￥ U+FFE5）
+    #[test]
+    fn is_symbol_covers_all_expected_chars() {
+        // ASCII 标点全集：所有非字母数字的可打印 ASCII（码点 33-47, 58-64, 91-96, 123-126）
+        for c in "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".chars() {
+            assert!(is_symbol(c), "ASCII 标点 '{}' 应判为 symbol", c);
+        }
+        // 字母数字不应判为 symbol
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".chars() {
+            assert!(!is_symbol(c), "字母数字 '{}' 不应判为 symbol", c);
+        }
+        // 全角符号全集（与前端 SYMBOL_CHARS 全角段逐字对齐）
+        for c in "！￥…（）—【】「」『』；：”“’‘，。、".chars() {
+            assert!(is_symbol(c), "全角符号 '{}' (U+{:04X}) 应判为 symbol", c, c as u32);
+        }
+        // 边界：半角 ¥ (U+00A5) 不在后端全集（前端已统一为全角 ￥ U+FFE5）
+        assert!(!is_symbol('¥'), "半角 ¥ (U+00A5) 不应判 symbol（已统一用全角 ￥ U+FFE5）");
+        assert!(is_symbol('￥'), "全角 ￥ (U+FFE5) 应判 symbol");
     }
 }

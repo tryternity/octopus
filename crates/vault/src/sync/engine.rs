@@ -608,16 +608,23 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 1. fetch
     git::git_fetch_all(&root)?;
 
-    // 2. merge --ff-only（区分 3 种结果）
-    // - FastForwarded：远程领先，已合并
-    // - CannotFastForward：分叉 → rebase 兜底
-    // - NoUpstream：远程是空仓库（首次推送场景）→ 跳过 merge/rebase，直接 push -u
+    // 2. merge --ff-only（区分 4 种结果）
+    // - UpToDate：远程无新 commit（HEAD hash 未变）→ 跳过 pull（避免旧文件覆盖本地新 DB）
+    // - FastForwarded：远程领先，已合并 → 正常 pull
+    // - CannotFastForward：分叉 → rebase 兜底 → 正常 pull
+    // - NoUpstream：远程是空仓库（首次推送场景）→ 跳过 merge/rebase + 跳过 pull，直接 push -u
     let merge_result = git::git_merge_ff(&root, "origin/main")?;
     let is_first_push = matches!(merge_result, git::MergeFfResult::NoUpstream);
+    // UpToDate / NoUpstream 时跳过 pull：工作区文件是上次 sync 的旧状态，
+    // pull 会用旧 outline 覆盖本地新 DB（热词「加词后 sync 消失」bug 根因，spec 2026-07-25）。
+    let skip_pull = matches!(merge_result, git::MergeFfResult::UpToDate | git::MergeFfResult::NoUpstream);
     if !is_first_push {
         match merge_result {
+            git::MergeFfResult::UpToDate => {
+                log::debug!("[sync] 远程无新 commit（UpToDate），跳过 pull 避免覆盖本地新数据")
+            }
             git::MergeFfResult::FastForwarded => {
-                log::debug!("[sync] ff-only merge 成功")
+                log::debug!("[sync] ff-only merge 成功（远程有新 commit）")
             }
             git::MergeFfResult::CannotFastForward => {
                 log::info!("[sync] merge --ff-only 失败（分叉），走 rebase 路径");
@@ -636,14 +643,22 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     }
 
     // 3. pull 阶段：文件系统 → SQLite
-    // 首次推送时远程是空的，outline 也是默认空——pull 不会引入数据
-    let (pulled, skipped) = pull_from_files()?;
+    // UpToDate / NoUpstream 时跳过——远端无新数据可拉，pull 只会用旧文件覆盖本地新 DB。
+    let (pulled, skipped) = if skip_pull {
+        (0usize, 0usize)
+    } else {
+        pull_from_files()?
+    };
     // 热词 pull（v46：sync_now 同时同步 vault + hotword）
-    let hotwords_pulled = match octopus_sync::hotword::pull_hotwords_from_files() {
-        Ok(n) => n,
-        Err(e) => {
-            log::warn!("[sync] 热词 pull 失败（不阻断 vault 同步）：{}", e);
-            0
+    let hotwords_pulled = if skip_pull {
+        0
+    } else {
+        match octopus_sync::hotword::pull_hotwords_from_files() {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("[sync] 热词 pull 失败（不阻断 vault 同步）：{}", e);
+                0
+            }
         }
     };
 
@@ -929,8 +944,11 @@ pub fn resolve_with_remote(password: Zeroizing<String>) -> Result<(), SyncError>
     let f = remote_meta.to_sync_fields()?;
 
     // 2. 用远程 KDF 参数 + 密码派生 master_root_key，验证密码
-    //    #14 修复：用 from_meta 校验 i64→u32 范围（防止篡改削弱 KDF）
-    let params = Argon2Params::from_i64(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
+    //    #14 修复：用 from_i64 校验 i64→u32 范围（防止篡改削弱 KDF）
+    //    K1 修复（2026-07-24）：远程参数（f.kdf_* 来自同步仓库 meta.json，不可信）
+    //    用 from_i64_strict——安全下限（memory≥16384KiB）防攻击者污染仓库为弱 KDF
+    //    废掉 Argon2id 内存硬度。本地 DB 路径（resolve_with_local）继续用 from_i64。
+    let params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
         .map_err(SyncError::Other)?;
     let master = derive_master_root_key(password.as_bytes(), &f.kdf_salt, &params)
         .map_err(|e| SyncError::Other(e.context("KDF 派生失败")))?;
@@ -1854,7 +1872,7 @@ mod tests {
         let _s = test_lock();
         let g = IntegrationGuard::new();
 
-        use octopus_infra::db::{VaultCipher, VaultCipherInput};
+        use octopus_infra::db::VaultCipher;
         // 文件系统写一个软删密码（deleted_at = T）
         let soft_deleted = VaultCipher {
             id: "soft-delete-test-uuid".to_string(),

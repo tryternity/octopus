@@ -2,6 +2,13 @@
 //!
 //! 密文格式（统一）：v1:<base64(nonce[12B] || ciphertext || tag[16B])>
 //! AES-GCM 自带 16B 认证 tag，不需要独立 HMAC。
+//!
+//! **S2 设计说明（2026-07-24，未用 AAD）**：encrypt/decrypt 不传 AAD（Additional
+//! Authenticated Data）绑定上下文（如 cipher_id || field_name）。理论上攻击者若能写
+//! DB，可把 cipher A 的 password 密文复制到 cipher B 的 password 字段，decrypt 仍成功
+//! （同 user_vault_key）→ cipher B 显示 cipher A 的密码（密文移动/重放）。但单机威胁
+//! 模型下"能写 DB = 攻击者已赢"，AAD 是纵深防御而非必需。加 AAD 需改 encrypt/decrypt
+//! 签名 + 所有调用点 + 密文格式（破坏向后兼容），代价大收益低，暂不实施。
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -57,10 +64,9 @@ impl super::DerivedKey {
 #[cfg(test)]
 mod tests {
     use crate::crypto::DerivedKey;
-    use crate::Zeroizing as Z;
 
     fn make_key(byte: u8) -> DerivedKey {
-        DerivedKey(Z::new([byte; 32]))
+        DerivedKey::from_raw([byte; 32])
     }
 
     #[test]

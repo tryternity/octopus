@@ -812,6 +812,9 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
             {draftBox && (
               <textarea
                 ref={textInputRef}
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 value={textDraft!.val}
                 onChange={(e) => {
                   const val = e.target.value;

@@ -27,7 +27,15 @@ impl TotpGenerator {
     /// 放宽 secret 长度限制：`new_unchecked` 跳过 totp-rs 的 ≥128bit 强制校验，
     /// 支持 RFC 6238 下限的 80bit secret（10 字节，如 JBSWY3DPEHPK3PXP）。
     pub fn from_base32(secret: &str) -> Result<Self> {
-        let bytes = Secret::Encoded(secret.to_string())
+        // T2 修复（2026-07-24）：strip 内部空白/连字符。用户从其他 Authenticator
+        // 导出常是分组显示（"JBSWY 3DPE HPK3 PXP" / "JBSWY-3DPE-HPK3-PXP"），
+        // base32::decode 对含空格/连字符的串返 None → 解码失败。from_input 只 trim
+        // 首尾，不去内部。多数 TOTP 工具会 strip，此处对齐。
+        let cleaned: String = secret
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .collect();
+        let bytes = Secret::Encoded(cleaned)
             .to_bytes()
             .context("TOTP secret Base32 解码失败")?;
         // M2 修复（2026-07-24）：校验 secret 长度下限——RFC 6238 要求 ≥ 80bit（10 字节）。
@@ -141,6 +149,28 @@ impl TotpGenerator {
         }
         self.step - (now % self.step)
     }
+
+    /// 原子地返回 `(当前 code, 剩余秒数)`——单次读时钟（T1 修复，2026-07-24）。
+    ///
+    /// `current()` + `seconds_remaining()` 各自独立读 `SystemTime::now()`，非原子：
+    /// 跨 step 边界调用时，可能返回「上个 step 的 code + 新 step 的 30s 倒计时」，
+    /// 持续约 1 秒陈旧显示。后果仅 UX（非安全问题），但生产调用方应优先用本方法。
+    ///
+    /// 实现：显式读一次 `now`，用 `generate(now)`（而非 `generate_current()`）传同一
+    /// time counter，保证 code 与剩余秒数基于同一时刻。
+    pub fn current_with_remaining(&self) -> Result<(String, u64)> {
+        if self.step == 0 {
+            anyhow::bail!("TOTP step=0（无效配置，应被 from_otpauth_url clamp 拦截）");
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // generate(now)：用我们已读的 now，而非内部再读一次 SystemTime
+        let code = self.inner.generate(now);
+        let remaining = self.step - (now % self.step);
+        Ok((code, remaining))
+    }
 }
 
 #[cfg(test)]
@@ -182,11 +212,24 @@ mod tests {
 
     #[test]
     fn test_known_totp_value() {
-        // RFC 6238 测试向量
-        // Secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ (Base32 of "12345678901234567890")
-        let gen = TotpGenerator::from_base32("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").unwrap();
-        let code = gen.current().unwrap();
-        assert_eq!(code.len(), 6);
+        // T4 修复（2026-07-24）：之前只 assert_eq!(code.len(), 6) 与 test_totp_format_6_digits
+        // 重复，且用 current()（wall-clock）无法断言固定值。改用 RFC 6238 附录 B 的标准
+        // 测试向量（SHA1, 8 digits, seed "12345678901234567890"）+ generate(time) 传固定
+        // time counter，真正验证算法正确性。
+        //
+        // 向量来源：RFC 6238 Appendix B（SHA-1, 8-digit）：
+        // | Time (sec) | TOTP    |
+        // | 59         | 94287082|
+        // | 1111111109 | 07081804|
+        // | 1111111111 | 14050471|
+        let url = "otpauth://totp/RFC?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\
+                   &algorithm=SHA1&digits=8&period=30";
+        let gen = TotpGenerator::from_otpauth_url(url).unwrap();
+
+        // generate 内部用我们传入的 time（Unix 秒）算 counter = time / period
+        assert_eq!(gen.inner.generate(59), "94287082", "RFC 6238 T=59");
+        assert_eq!(gen.inner.generate(1111111109), "07081804", "RFC 6238 T=1111111109");
+        assert_eq!(gen.inner.generate(1111111111), "14050471", "RFC 6238 T=1111111111");
     }
 
     /// otpauth:// URL 解析——完整参数（algorithm/digits/period/issuer）。
@@ -305,5 +348,44 @@ mod tests {
         assert!(TotpGenerator::from_otpauth_url("otpauth://totp/?secret=AB").is_err());
         // 边界：刚好 10 字节（80bit）应通过——JBSWY3DPEHPK3PXP 是 10 字节
         assert!(TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").is_ok());
+    }
+
+    /// T1 修复回归：current_with_remaining 单次读时钟，code 与 remaining 基于同一 now。
+    #[test]
+    fn test_current_with_remaining_atomic() {
+        let gen = TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").unwrap();
+        let (code, remaining) = gen.current_with_remaining().unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(
+            remaining >= 1 && remaining <= 30,
+            "remaining 应在 1..=30，实际 {}",
+            remaining
+        );
+        // step=0 应返 Err（last-resort 防护）——构造一个 step=0 的 generator
+        let mut bad = TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").unwrap();
+        bad.step = 0;
+        assert!(bad.current_with_remaining().is_err());
+    }
+
+    /// T2 修复回归：from_base32 strip 内部空格/连字符（分组显示的 secret）。
+    #[test]
+    fn test_from_base32_strips_internal_whitespace_and_dashes() {
+        // 分组空格（其他 Authenticator 导出常见格式）
+        let g1 = TotpGenerator::from_base32("JBSWY 3DPE HPK3 PXP").unwrap();
+        let g2 = TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").unwrap();
+        // 同一 secret（去空白后）应生成相同 code
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(g1.inner.generate(now), g2.inner.generate(now));
+
+        // 连字符分组
+        let g3 = TotpGenerator::from_base32("JBSWY-3DPE-HPK3-PXP").unwrap();
+        assert_eq!(g1.inner.generate(now), g3.inner.generate(now));
+
+        // from_input 路径也走 from_base32（非 otpauth 前缀）
+        let g4 = TotpGenerator::from_input("  JBSWY 3DPE HPK3 PXP  ").unwrap();
+        assert_eq!(g1.inner.generate(now), g4.inner.generate(now));
     }
 }

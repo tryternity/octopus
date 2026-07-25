@@ -1248,7 +1248,7 @@ pub fn resolve_prompt_reference(action_data: &str) -> String {
     if name.is_empty() {
         return action_data.to_string(); // `@` 单独，不当引用
     }
-    let path = octopus_infra::paths::octopus_config_home().join(".sync").join("prompts").join(format!("{}.md", name));
+    let path = octopus_infra::paths::octopus_config_home().join(".sync").join("prompts").join("command").join(format!("{}.md", name));
     match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(e) => {
@@ -1270,11 +1270,12 @@ pub struct PromptFileInfo {
     pub preview: String,
 }
 
-/// 列出 `~/.octopus/prompts/*.md` 文件，供设置页的「引用文件」下拉选择。
+/// 列出 `~/.octopus/.sync/prompts/<category>/*.md` 文件，供设置页的「引用文件」下拉选择。
+/// category: "command"（命令菜单 prompt）/ "polish"（润色提示词）
 /// 目录不存在时返回空 Vec（不报错——首次使用时目录还没建）。
 #[tauri::command]
-pub fn list_prompt_files() -> Result<Vec<PromptFileInfo>, String> {
-    let dir = octopus_infra::paths::octopus_config_home().join(".sync").join("prompts");
+pub fn list_prompt_files(category: String) -> Result<Vec<PromptFileInfo>, String> {
+    let dir = octopus_infra::paths::octopus_config_home().join(".sync").join("prompts").join(&category);
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -1299,14 +1300,15 @@ pub fn list_prompt_files() -> Result<Vec<PromptFileInfo>, String> {
 }
 
 /// 用 CompactEditor 打开文件全文查看/编辑（source="file"，按文件路径 md5 去重）。
-/// 读 `~/.octopus/.sync/prompts/<name>.md` 全文 → emit open-tab 事件（source=file, itemId=md5 hash）。
-/// 同一文件只开一个 tab——已存在则激活不覆盖（防丢失编辑内容）。
+/// 读 `~/.octopus/.sync/prompts/<category>/<name>.md` 全文 → emit open-tab 事件。
+/// category: "command" / "polish"。同一文件只开一个 tab——已存在则激活不覆盖。
 #[tauri::command]
-pub fn open_file_in_editor(name: String, app: AppHandle) -> Result<(), String> {
+pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let path = octopus_infra::paths::octopus_config_home()
         .join(".sync")
         .join("prompts")
+        .join(&category)
         .join(format!("{}.md", name));
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("读取文件失败: {}", e))?;
@@ -1332,6 +1334,23 @@ pub fn open_file_in_editor(name: String, app: AppHandle) -> Result<(), String> {
         crate::compact_editor_window::create_compact_editor_window(&app, None);
     }
     Ok(())
+}
+
+/// 新建空白 prompt 文件。在 `~/.octopus/.sync/prompts/<category>/` 下创建空 `<name>.md`。
+/// 已存在则报错（防覆盖）。创建后前端可调 open_file_in_editor 打开编辑。
+#[tauri::command]
+pub fn create_prompt_file(category: String, name: String) -> Result<(), String> {
+    let dir = octopus_infra::paths::octopus_config_home()
+        .join(".sync")
+        .join("prompts")
+        .join(&category);
+    // 确保目录存在
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        return Err(format!("文件已存在: {}.md", name));
+    }
+    std::fs::write(&path, "").map_err(|e| format!("创建文件失败: {}", e))
 }
 
 /// 保存文件内容到磁盘（CompactEditor file tab 保存按钮用）。
