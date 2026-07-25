@@ -79,6 +79,25 @@ export default function RecordAnnotation() {
   const [showPopover, setShowPopover] = useState(false);
   const [popoverX, setPopoverX] = useState(0);
 
+  // ── Canvas/工具栏几何（后端注入：窗口=选区+工具栏空间）────────
+  // 后端 record_annotation_window.rs 创建的 overlay 窗口比选区大，
+  // URL 注入 canvas_ox/oy/w/h 描述选区在窗口内的位置（逻辑像素）。
+  const [canvasRect, setCanvasRect] = useState({ ox: 0, oy: 0, w: 0, h: 0 });
+  const [toolbarPos, setToolbarPos] = useState<"below" | "above" | "inside">("inside");
+  const canvasRectRef = useRef(canvasRect);
+  useEffect(() => { canvasRectRef.current = canvasRect; }, [canvasRect]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setCanvasRect({
+      ox: parseFloat(params.get("canvas_ox") || "0"),
+      oy: parseFloat(params.get("canvas_oy") || "0"),
+      w: parseFloat(params.get("canvas_w") || String(window.innerWidth)),
+      h: parseFloat(params.get("canvas_h") || String(window.innerHeight)),
+    });
+    setToolbarPos((params.get("toolbar") || "inside") as "below" | "above" | "inside");
+  }, []);
+
   // 同步 refs
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
@@ -98,18 +117,18 @@ export default function RecordAnnotation() {
 
   const dpr = window.devicePixelRatio || 1;
 
-  // ── Canvas 尺寸初始化（仅一次）────────────────────────────────
+  // ── Canvas 尺寸初始化（绑定 canvasRect）────────────────────────
+  // 后端窗口 = 选区 + 工具栏空间；Canvas 只占选区那部分（canvasRect）。
   const canvasInitedRef = useRef(false);
   useEffect(() => {
-    if (canvasInitedRef.current) return;
+    const { w, h } = canvasRect;
+    if (w === 0 || h === 0) return;  // URL 还没解析
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const cssW = window.innerWidth;
-    const cssH = window.innerHeight;
-    canvas.width = cssW * dpr;
-    canvas.height = cssH * dpr;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
     canvasInitedRef.current = true;
-  }, [dpr]);
+  }, [dpr, canvasRect]);
 
   // ── undo / redo / add ────────────────────────────────────────
   const addAnnotation = (ann: Annotation) => {
@@ -140,13 +159,17 @@ export default function RecordAnnotation() {
   };
 
   // ── 绘制（透明 Canvas + 录制边框 + 标注）─────────────────────
+  // 标注坐标是相对 Canvas 的（与 canvasRect 对应），Canvas 通过 CSS
+  // position 在窗口内偏移。绘制时 transform 已让 (0,0) 对齐 Canvas 左上角，
+  // 因此标注坐标无需再加 canvasRect 偏移；录制边框画在 Canvas 自身边缘。
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const cssW = window.innerWidth;
-    const cssH = window.innerHeight;
+    const cssW = canvasRect.w;
+    const cssH = canvasRect.h;
+    if (cssW === 0 || cssH === 0) return;
     if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
       canvas.width = cssW * dpr;
       canvas.height = cssH * dpr;
@@ -173,11 +196,11 @@ export default function RecordAnnotation() {
       drawAnnotation(ctx, drawingRef.current);
     }
 
-    // 录制区域边框（Canvas 整体边缘 2px 蓝色）
+    // 录制区域边框（Canvas 自身边缘 2px 蓝色）
     ctx.strokeStyle = RECORD_BORDER_COLOR;
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, cssW - 2, cssH - 2);
-  }, [dpr, selectedAnn]);
+  }, [dpr, selectedAnn, canvasRect]);
 
   useEffect(() => { draw(); }, [draw, annotations, drawingVer]);
 
@@ -198,11 +221,13 @@ export default function RecordAnnotation() {
   };
 
   // ── 鼠标交互（参考 Screenshot，去除选区逻辑）─────────────────
+  // e.clientX/Y 是窗口坐标，标注坐标是相对 Canvas（选区）的——
+  // 减去 canvasRect.ox/oy 转换到 Canvas 局部坐标系。
   function onMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
     setShowPopover(false);
-    const mx = e.clientX;
-    const my = e.clientY;
+    const mx = e.clientX - canvasRectRef.current.ox;
+    const my = e.clientY - canvasRectRef.current.oy;
 
     // 文字输入中：先确认当前文字
     if (textDraftRef.current) {
@@ -261,8 +286,8 @@ export default function RecordAnnotation() {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    const mx = e.clientX;
-    const my = e.clientY;
+    const mx = e.clientX - canvasRectRef.current.ox;
+    const my = e.clientY - canvasRectRef.current.oy;
 
     // 标注拖动中
     if (annMoveStartRef.current) {
@@ -376,36 +401,34 @@ export default function RecordAnnotation() {
     }
   };
 
-  // ── 工具栏位置（参考截图三选逻辑，适配「窗口=选区」）──────────
-  // RecordAnnotation 窗口尺寸 = 选区尺寸，所以「选区」= 整个窗口。
-  // 截图原逻辑：下方优先 → 上方 → 内部底部。
-  // 这里简化：选区底部下方空间 = 屏幕高度 - 窗口底部。
-  //   - 但窗口位置是全局的，我们只能用 window.innerHeight（窗口内空间）。
-  //   - 窗口可能没占满屏幕（选区比屏幕小），窗口外是其他应用。
-  //   - 工具栏 position:fixed 相对窗口，不能超出窗口边界（否则不可见）。
-  // 工具栏位置：与截图「选区内部底部」兜底分支一致（截图 L760-766 第三选）。
-  //
-  // 截图的三选逻辑：① 选区下方 → ② 选区上方 → ③ 选区内部底部（上下都不够时）。
-  // RecordAnnotation 窗口 = 选区（窗口边界 = 选区边界），「选区下方/上方」= 窗口外
-  // （工具栏不可见），所以永远走③——选区内部底部，工具栏浮在选区底部内容上面，
-  // 留 8px 内边距（与截图③ `Math.max(sel.y, sel.y + sel.h - TOOLBAR_H - 8)` 一致）。
-  //
-  // popover 方向：截图③时 popoverY = toolbarY - 200（浮窗往上弹，避免超出选区底部）。
-  // 这里同样——popover 在工具栏上方。
+  // ── 工具栏位置（按 toolbarPos + canvasRect 计算）──────────────
+  // 后端窗口 = 选区 + 工具栏空间，工具栏放在 Canvas（选区）外的预留空间内：
+  //   toolbar=below：Canvas 下方（canvas_oy=0，工具栏在 Canvas 底部下方）
+  //   toolbar=above：Canvas 上方（canvas_oy=工具栏空间，工具栏在 Canvas 顶部上方）
+  //   toolbar=inside：兜底，工具栏浮在 Canvas 内部底部
   const TOOLBAR_H = 44;
-  const toolbarTop = Math.max(0, window.innerHeight - TOOLBAR_H - 8);  // 选区内部底部
+  const toolbarTop = toolbarPos === "below"
+    ? canvasRect.oy + canvasRect.h + 8        // Canvas 下方
+    : toolbarPos === "above"
+      ? 8                                      // 窗口顶部（Canvas 上方）
+      : canvasRect.oy + canvasRect.h - TOOLBAR_H - 8;  // Canvas 内部底部
 
-  // popover 在工具栏上方（与截图③兜底一致：popoverY = toolbarY - 200）
-  const popoverY = Math.max(0, toolbarTop - 200);
-  // popover X：跟随被点击的工具按钮中心（与截图 onToolSelect setPopoverX 一致，无 clamp）
-  const popoverLeft = popoverX || window.innerWidth / 2;
+  // popover 位置：below → 工具栏下方；above / inside → 工具栏上方
+  const popoverY = toolbarPos === "below"
+    ? toolbarTop + TOOLBAR_H
+    : Math.max(0, toolbarTop - 200);
+  // popover X：跟随被点击的工具按钮中心（与截图 onToolSelect setPopoverX 一致）
+  const popoverLeft = popoverX || (canvasRect.ox + canvasRect.w / 2);
 
-  // 工具栏 X clamp（与截图 L771-775 一致——用实测 toolbarW + DOCK_MARGIN 钳位）
+  // 工具栏 X clamp（基于 canvasRect 水平区间，DOCK_MARGIN 留边）
   const DOCK_MARGIN = 80;
   const halfW = toolbarW / 2 || 150;
   const toolbarCenterX = Math.max(
-    DOCK_MARGIN + halfW,
-    Math.min(window.innerWidth / 2, window.innerWidth - DOCK_MARGIN - halfW),
+    canvasRect.ox + DOCK_MARGIN + halfW,
+    Math.min(
+      canvasRect.ox + canvasRect.w / 2,
+      canvasRect.ox + canvasRect.w - DOCK_MARGIN - halfW,
+    ),
   );
 
   return (
@@ -414,9 +437,10 @@ export default function RecordAnnotation() {
         ref={canvasRef}
         style={{
           position: "fixed",
-          inset: 0,
-          width: "100vw",
-          height: "100vh",
+          left: canvasRect.ox,
+          top: canvasRect.oy,
+          width: canvasRect.w,
+          height: canvasRect.h,
           cursor: tool === "none" ? "default" : "crosshair",
           display: "block",
         }}
@@ -455,8 +479,8 @@ export default function RecordAnnotation() {
           }}
           style={{
             position: "fixed",
-            left: textDraft.x,
-            top: textDraft.y,
+            left: textDraft.x + canvasRect.ox,
+            top: textDraft.y + canvasRect.oy,
             fontSize: toolFontSize,
             color: toolColor,
             background: "transparent",
