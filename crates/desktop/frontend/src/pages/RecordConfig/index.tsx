@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic } from "lucide-react";
+import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -342,6 +342,9 @@ function DisplayList({
               {d.width}×{d.height}
             </div>
           </div>
+          {selectedId === d.id && (
+            <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" strokeWidth={3} />
+          )}
         </button>
       ))}
     </div>
@@ -385,6 +388,9 @@ function WindowList({
               {w.width}×{w.height}
             </div>
           </div>
+          {selectedId === w.id && (
+            <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" strokeWidth={3} />
+          )}
         </button>
       ))}
     </div>
