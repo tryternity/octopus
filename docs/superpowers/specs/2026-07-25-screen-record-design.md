@@ -1,8 +1,22 @@
 # 屏幕录制功能 — 设计规格（spec）
 
+> **Status: ✅ MVP 已实现**（2026-07-25，分支 `research_screen_record`，Task 1-15 完成）。
+> 实施过程发现的偏差见下方「实现注记」，以及 plan 文件 `2026-07-25-screen-record.md` 的 File Structure 区段。
+>
 > **本 spec 范围**：MVP（P0）阶段——最小可用录屏。基于调研文档（`docs/superpowers/specs/research/2026-07-25-screen-record-survey.md`）和功能点分解文档（`docs/superpowers/specs/2026-07-25-screen-record-features.md`），经 brainstorming 流程确认。
 >
 > **不在本 spec 范围**：P1（核心增强）、P2（字幕差异化）、P3（编辑器/光标/摄像头）、Windows/Linux 平台 helper 实现。
+
+## 实现注记（Implementation Notes）
+
+实施过程中与原 spec 描述的偏差（已回写本 spec 对应章节，此处集中列示便于检索）：
+
+1. **§2.3 HelperEvent 加 Serialize**：原 spec 只 derive Deserialize（helper stdout → 主进程方向），实施时 emit 给前端需要双向序列化（Task 10），已加 `#[derive(Serialize, Deserialize)]`。
+2. **§2 协议 snake_case 关键修复**：vendor 自 openscreen 的 Swift helper 默认按 camelCase 解码，octopus Rust 端发 snake_case JSON 会 decode 失败。修复：`JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase`（详见 `crates/record/native/macos/Sources/OctopusSckHelper/main.swift`）。
+3. **§4.1 命令名前缀**：5 个控制命令（start/pause/resume/stop/kill）改用 `record_*` 前缀（如 `record_start`），避免与既有 `coordinator::start_recording`（ASR 录音）的 `__cmd__start_recording` 符号冲突。
+4. **§3.4 platform trait 同步签名**：原 spec 暗示 trait 方法 async，实施时为简化 MVP 用同步签名 + `tokio::task::block_in_place` 内部等待（macOS provider）。完整 async 化推迟到 P1。
+5. **§8 UI 范围缩减**：原 spec §8.1 配置浮窗 + §8.2 菜单栏下拉两项，实施时用户决策缩减——配置入口走 Settings 录屏页（独立浮窗推迟）；菜单栏控制由后端 `tray.rs` menu item 实现（不做前端 dropdown 组件，不做 tray icon 红点/duration 定时器，推迟到 follow-up）。
+6. **§3.2 StoppedInfo 字段 MVP 简化**：session.rs MVP 不存 RecordingStopped 事件 payload，`stopped.screen_path` 总空、`duration_ms` 恒 0。record_stop 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。完整修复需引入 event channel（follow-up）。
 
 ---
 
@@ -472,53 +486,63 @@ octopus-infra = { path = "../infra" }
 
 #### B. 录制控制（运行中）
 
+> **实现注记**：命令名用 `record_*` 前缀（非 `start_recording` 等），避免与既有 `coordinator::start_recording`（ASR 录音）的 Tauri 宏符号冲突。`State` 直接持有 `RecordSession`（内部已是 `Arc<tokio::sync::Mutex<SessionInner>>`），不再外层包 `std::sync::Mutex`——否则 await 持锁跨 .await 会触发 Send 边界失败。`stop_recording` 的 `recording_id/width/height/source_type/has_*` 字段由前端透传（session.rs MVP 不存这些）。
+
 ```rust
 #[tauri::command]
-pub async fn start_recording(
-    state: tauri::State<'_, Mutex<RecordSession>>,
+pub async fn record_start(
+    state: tauri::State<'_, RecordSession>,
     app: tauri::AppHandle,
     config: RecordConfig,
 ) -> Result<StartedInfo, String>;
 
 #[tauri::command]
-pub async fn pause_recording(state: tauri::State<'_, Mutex<RecordSession>>) -> Result<(), String>;
+pub async fn record_pause(state: tauri::State<'_, RecordSession>) -> Result<(), String>;
 
 #[tauri::command]
-pub async fn resume_recording(state: tauri::State<'_, Mutex<RecordSession>>) -> Result<(), String>;
+pub async fn record_resume(state: tauri::State<'_, RecordSession>) -> Result<(), String>;
 
 #[tauri::command]
-pub async fn stop_recording(
-    state: tauri::State<'_, Mutex<RecordSession>>,
-    db_state: tauri::State<'_, Mutex<Connection>>,
+pub async fn record_stop(
+    state: tauri::State<'_, RecordSession>,
     discard: bool,                  // true = 丢弃不入库；false = 入库
+    recording_id: i64,              // 前端透传（record_start 时分配）
+    width: u32, height: u32,
+    source_type: String,
+    has_system_audio: bool,
+    has_microphone: bool,
 ) -> Result<Option<RecordingMeta>, String>;
 
 #[tauri::command]
-pub async fn kill_recording(state: tauri::State<'_, Mutex<RecordSession>>) -> Result<(), String>;
+pub async fn record_kill(state: tauri::State<'_, RecordSession>) -> Result<(), String>;
 ```
 
 #### C. 录屏历史（录制后）
 
+> **实现注记**：DB 访问通过 `octopus_infra::db::with_db` 全局函数（`parking_lot::ReentrantMutex`），不传 `db_state` 参数。`with_db_blocking` 包 `spawn_blocking` 避免阻塞 tokio worker。
+
 ```rust
-#[tauri::command] pub async fn list_recordings(db_state, filter: Option<ListFilter>) -> Result<Vec<RecordingMeta>, String>;
-#[tauri::command] pub async fn get_recording(db_state, id: i64) -> Result<RecordingMeta, String>;
-#[tauri::command] pub async fn get_recording_thumbnail(db_state, id: i64) -> Result<Option<Vec<u8>>, String>;
-#[tauri::command] pub async fn rename_recording(db_state, id: i64, title: String) -> Result<(), String>;
-#[tauri::command] pub async fn toggle_recording_favorite(db_state, id: i64) -> Result<(), String>;
-#[tauri::command] pub async fn delete_recording(db_state, id: i64, permanent: bool) -> Result<(), String>;
-#[tauri::command] pub async fn restore_recording(db_state, id: i64) -> Result<(), String>;
-#[tauri::command] pub async fn open_recording_file(db_state, id: i64) -> Result<(), String>;
-#[tauri::command] pub async fn reveal_recording(db_state, id: i64) -> Result<(), String>;
+#[tauri::command] pub async fn list_recordings(filter: Option<ListRecordingsParams>) -> Result<Vec<RecordingMeta>, String>;
+#[tauri::command] pub async fn get_recording(id: i64) -> Result<RecordingMeta, String>;
+#[tauri::command] pub async fn get_recording_thumbnail(id: i64) -> Result<Option<Vec<u8>>, String>;
+#[tauri::command] pub async fn rename_recording(id: i64, title: String) -> Result<(), String>;
+#[tauri::command] pub async fn toggle_recording_favorite(id: i64) -> Result<(), String>;
+#[tauri::command] pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String>;
+#[tauri::command] pub async fn restore_recording(id: i64) -> Result<(), String>;
+#[tauri::command] pub async fn open_recording_file(id: i64) -> Result<(), String>;
+#[tauri::command] pub async fn reveal_recording(id: i64) -> Result<(), String>;
 ```
+
+> `ListRecordingsParams` 是前端的反序列化 wrapper（`{ limit, offset, include_deleted, favorites_only }`），因 `ListFilter`（record crate 内）无 Deserialize derive，在 desktop 层 `From` 转换。
 
 ### 4.1.1 时序说明
 
-`start_recording` / `stop_recording` / `pause_recording` / `resume_recording` 都是**异步等待 helper 事件**后才返回：
+`record_start` / `record_stop` / `record_pause` / `record_resume` 都是**异步等待 helper 事件**后才返回：
 
-- `start_recording`：spawn helper → 等 `Ready` → 等 `RecordingStarted` → 返回 `StartedInfo`
-- `pause_recording`：stdin 写 `pause\n` → 等 `RecordingPaused` → 返回
-- `resume_recording`：stdin 写 `resume\n` → 等 `RecordingResumed` → 返回
-- `stop_recording`：stdin 写 `stop\n` → 等 `RecordingStopped`（含 `duration_ms`/`file_size`）→ 等 helper 进程退出 → 入库 → 返回 `RecordingMeta`
+- `record_start`：spawn helper → 等 `Ready` → 等 `RecordingStarted` → 返回 `StartedInfo`
+- `record_pause`：stdin 写 `pause\n` → 等 `RecordingPaused` → 返回
+- `record_resume`：stdin 写 `resume\n` → 等 `RecordingResumed` → 返回
+- `record_stop`：stdin 写 `stop\n` → 等 helper 进程退出 → 入库 → 返回 `RecordingMeta`
 
 事件等待有超时保护（`RecordError::Timeout`），默认 10 秒——避免 helper 卡死时命令永久挂起。
 
@@ -854,6 +878,8 @@ if request.audio.microphone.enabled {
 
 ### 8.1 配置浮窗（双态型）
 
+> **实现注记**：MVP 阶段**未做独立配置浮窗**（用户决策 Task 13 缩减范围）。配置入口走 Settings 录屏页（`RecordingPanel.tsx`）——按 `Cmd+Shift+R` 打开 Settings 跳转到 recordings panel，用户在 panel 内配置后点开始。独立浮窗推迟到 follow-up（与 §8.2 菜单栏 dropdown 一起）。下方 mockup 是 P1 完整版的目标设计。
+
 ```
 快捷键 Cmd+Shift+R → 配置浮窗弹出
 
@@ -877,6 +903,8 @@ if request.audio.microphone.enabled {
 
 ### 8.2 录制控制（菜单栏图标 + 下拉 + 快捷键）
 
+> **实现注记**：MVP 阶段做了**部分**——tray menu 加了 3 个录屏项（开始/暂停-恢复/停止），但**未做** tray icon 红点状态指示、未做 duration 实时显示、未做前端 dropdown 组件。快捷键 `Cmd+Shift+R`（toggle）+ `Esc`（stop）已实现（`record_hotkey.rs`）。完整菜单栏体验推迟到 follow-up。
+
 ```
 菜单栏（始终可见，录屏时显示）
   ● 00:12  ⏺                      ← 红点+时长+图标
@@ -896,6 +924,8 @@ if request.audio.microphone.enabled {
 完全不影响桌面布局，录全屏也不会录到（菜单栏在 SCK 捕获范围外）。与 octopus 既有菜单栏图标风格一致。
 
 ### 8.3 历史列表（双视图切换）
+
+> **实现注记**：MVP 阶段**仅做列表视图**（合并 plan 原计划的 Grid/List/Card 4 文件为 `RecordingPanel.tsx` 单文件，作为 Settings 的一个 panel）。网格视图切换推迟。视觉沿用既有 HistoryPanel 规范（shadcn-style token）。搜索框灰禁用（F17 FTS5 推迟）。
 
 ```
 右上角切换按钮

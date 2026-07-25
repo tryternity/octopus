@@ -20,7 +20,8 @@ octopus/
 │   ├── download/    # 模型下载 (octopus-download)
 │   ├── dlp/         # 视频音频下载 (octopus-dlp)
 │   ├── sync/        # 通用 git 同步基础设施 (octopus-sync，2026-07-22 从 vault 抽离)
-│   └── vault/       # 密码保险库纯逻辑库 (octopus-vault，2026-07-18 新增)
+│   ├── vault/       # 密码保险库纯逻辑库 (octopus-vault，2026-07-18 新增)
+│   └── record/      # 屏幕录制纯逻辑库 (octopus-record，2026-07-25 新增，含 vendor Swift helper)
 ├── docs/            # 文档
 └── usage.md         # 快速使用指南
 ```
@@ -594,6 +595,28 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 详见 spec `superpowers/specs/2026-07-09-dlp-sidecar-design.md`。
 
+### octopus-record（屏幕录制纯逻辑库，2026-07-25 新增）
+
+独立的屏幕录制核心库，仅依赖 `octopus-infra`。封装 macOS Swift helper 子进程的完整生命周期 + JSON-over-stdio 协议 + 元数据入库。完整设计见 [screen-record spec](superpowers/specs/2026-07-25-screen-record-design.md)。
+
+| 模块 | 说明 |
+|------|------|
+| `protocol` | JSON schema：`RecordingRequest`（argv[1]，主进程 → helper）/ `HelperEvent`（helper stdout → 主进程，tag="event" kebab-case）/ `Source` enum（Display/Window/Area，tag="type" lowercase）/ `VideoConfig` / `AudioConfig` / `Outputs` / `DisplayInfo` / `WindowInfo` / `MicrophoneInfo` / `PermissionStatus` / `PrivacySection`。**HelperEvent 双向 derive**（Serialize + Deserialize）——helper stdout 方向 + emit 给前端方向都要序列化 |
+| `session` | `RecordSession`（`Arc<tokio::sync::Mutex<SessionInner>>`，state machine: Idle/Starting/Recording/Paused/Stopping）+ `StartedInfo` / `StoppedInfo`。全 async 方法：`start(helper_path, request, on_event)` / `pause` / `resume` / `stop` / `kill` / `state`。stdin 写命令 + stdout reader task 解析 HelperEvent 并回调 |
+| `store` | DB CRUD（接 `&rusqlite::Connection`）：`insert` / `get` / `list`（按 ListFilter）/ `rename` / `soft_delete` / `restore` / `toggle_favorite` / `get_thumbnail` / `delete_db_row` / `list_all_file_paths`（孤儿清理用）+ `RecordingMeta` / `ListFilter` |
+| `error` | `RecordError`（thiserror，11 变体）+ `RecordResult<T>`。关键变体：`HelperNotFound(PathBuf)` / `HelperError{code,message}` / `SpawnFailed` / `Timeout{event}` / `AlreadyRunning` / `NotRunning` / `PlatformNotImplemented(&'static str)` / `NotFound(i64)` / `Json` |
+| `platform` | `HelperProvider` trait（同步签名，内部 `tokio::task::block_in_place` 等 async helper）+ `provider()` cfg-gated 工厂（macOS→MacOSProvider，Win/Linux 占位返 `PlatformNotImplemented`）+ `run_helper_subcommand`（跑 helper `--list-*` / `--check-permission` 子命令模式）。`MacOSProvider::resolve_helper_path` 双路径：打包后 `Resources/binaries/octopus-sck-helper`，开发期 `crates/desktop/binaries/octopus-sck-helper` |
+| `native/macos/` | vendor 自 openscreen 的 Swift helper（上游 commit `f57e36e2`，MIT）。octopus 8 处修改详见 spec 实现注记 + `crates/record/native/macos/LICENSE`。`scripts/build-macos-helper.sh` 编译 universal binary |
+
+**DB 表（schema v51）**：`recordings`（id/file_path/title/duration_ms/width/height/fps/codec/has_system_audio/has_microphone/source_type/file_size/has_thumbnail/is_favorite/created_at/deleted_at）+ `recordings_thumbnails`（id/recording_id/thumbnail BLOB 分离）。`file_path` 永远存相对路径（`recordings/xxx.mp4`），运行时 `paths::resolve_recording_path` join `octopus_config_home` 得绝对路径。
+
+**路径**（`crates/infra/src/paths.rs`）：`recordings_dir()` → `~/.octopus/recordings/`；`resolve_recording_path(rel)` → 绝对路径；`record_helper_log()` → `~/.octopus/logs/record-helper.log`。启动时 `cleanup_orphan_recordings` 扫 `recordings/` 删 DB 不认得的孤儿文件（与 clipboard cleanup 同模式）。
+
+**helper 协议关键修复**：vendor 自 openscreen 的 Swift helper 默认按 camelCase 解码，octopus Rust 端发 snake_case JSON 会 decode 失败。修复 `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase`。实测 round-trip：snake_case JSON → helper → emit snake_case ready 事件，全链路通。
+
+**已知 MVP 简化**（follow-up）：① `session.rs` 不存 `RecordingStopped` payload → `stopped.screen_path` 总空、`duration_ms` 恒 0；`record_stop` 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。② hotkey/tray stop 不入库（仅 helper 退出 + 文件落盘）。完整修复需引入 event channel。
+
+
 ## 模型管理
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。VAD（silero_vad_v4.onnx 1.7MB）**内嵌二进制**（`include_bytes!` + ort `commit_from_memory`，开箱即用不读磁盘；磁盘 `~/.octopus/models/silero_vad_v4.onnx` 存在时优先用磁盘版本覆盖）；默认 ASR 兜底引擎 zipformer-small 27M（builtin source_type=0，首次启动自动下载——缺失弹下载窗）；大模型按需下载——设置窗口「模型管理」页（GUI）或 `octopus-cli download` 下到 `~/.octopus/models/{domain}/{name}/`，兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型（desktop 启动时 `model_migrate::create_model_symlinks` 自动创建软链——对旧 bootstrap manifest source 全空的模型回退到 `model_manifests` 预填常量取 repo 信息；`fill_manifests` 自动升级旧 manifest 补 source URL）。
@@ -918,6 +941,33 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **测试基础设施**：`set_test_db`（octopus-infra）+ `set_test_keychain`（octopus-vault）thread_local override，让单元测试可在 in-memory DB / in-memory Keychain 上隔离运行。
 - **第五轮审查修复**（2026-07-19）：① **A1 setup 失败可恢复**——`setup_vault` 迁移失败时显式调 `infra::db::delete_vault_meta_row()` 回滚 vault_meta，让 `is_initialized()` 回 false 用户可重试（旧实现 vault_meta 已独立 commit + ensure! 阻止重跑 → 不可恢复的「已初始化但全明文」状态）；② **B1 change 密码成功 reset guard**——与 unlock 成功路径对称；③ **B2 副作用失败不污染退避**——`unlock_with_master_password` 拆密码校验（失败 record_failure）和 refresh（失败不 record_failure）两阶段，避免流程 C 写 local_enc 失败时正确密码被判失败 + 退避；④ **A2 chain code 真正 zeroize**——`vault/Cargo.toml` 启用 `generic-array` 的 zeroize feature，`Zeroizing::new(mac.finalize().into_bytes())` 包装原件，scope 结束时清零整个 64B（旧实现只清拷贝、原件残留栈帧）；⑤ **O2 软删不参与导入去重**——`bitwarden.rs` 算 seen HashSet 时 filter `deleted_at.is_none()`，否则用户软删后再导入同一份备份被静默 skip 永远恢复不了；⑥ O3 注释订正。O1（SELECT/UPDATE 独立连接的极小窗口）和 O4（非 ASCII 不计入大小写类）文档化未修。
 - **第六轮审查（收敛轮，2026-07-19）**：8/8 第五轮修复全部正确落地，无 bug 无回归。仅 4 项观察——A1 崩溃窗口残余风险（save commit 与 migrate 不在同一事务，硬失败窗口极短概率极低，工程折衷不闭合）、B2 refresh 失败 unlock 保守返 Err 的既有设计（非回归）、`delete_vault_meta_row` 可见性偏宽（已加 `#[doc(hidden)]` + 警告注释，保留 pub 让 vault 跨 crate 调用）、测试 sleep(3s) cosmetic。密码保险库核心路径的安全不变量与失败恢复语义已闭合。
+
+## 屏幕录制（2026-07-25 起，MVP）
+
+新引入 `crates/record/`（纯逻辑库，依赖 infra）+ desktop 内嵌命令层 + 前端 `pages/Settings/RecordingPanel.tsx` + macOS Swift helper 子进程。完整设计见 [screen-record spec](superpowers/specs/2026-07-25-screen-record-design.md)，实施计划见 [screen-record plan](superpowers/plans/2026-07-25-screen-record.md)。
+
+- **架构选型（D-Swift）**：macOS 端 vendor openscreen 项目的 ScreenCaptureKit helper 作为 sidecar 子进程。主进程（Rust）通过 `tokio::process::Command` spawn helper，通信走 JSON-over-stdio（argv[1]=RecordingRequest JSON，stdout=HelperEvent 流，stdin=命令字符串）。帧数据**不经过 IPC**——SCStream → AVAssetWriter 在 helper 内部闭环直接写文件。
+- **crates/record 结构**（schema v51，详见 spec §5）：
+  - `protocol.rs` — `RecordingRequest` / `HelperEvent` / `Source` enum（tag="type", lowercase）/ `VideoConfig` / `AudioConfig` / `DisplayInfo` / `WindowInfo` / `MicrophoneInfo` / `PermissionStatus` / `PrivacySection`。**HelperEvent 双向 derive**（Serialize + Deserialize）——helper stdout 方向 + emit 给前端方向都要序列化。
+  - `session.rs` — `RecordSession`（`Arc<tokio::sync::Mutex<SessionInner>>`，state machine: Idle/Starting/Recording/Paused/Stopping）+ `StartedInfo` / `StoppedInfo`。方法全 async：`start / pause / resume / stop / kill`。
+  - `store.rs` — `RecordStore<'a>`（接 `&rusqlite::Connection`）+ `RecordingMeta` / `ListFilter`。方法：`insert / get / list / rename / soft_delete / restore / toggle_favorite / get_thumbnail / delete_db_row / list_all_file_paths`（孤儿清理用）。
+  - `error.rs` — `RecordError`（thiserror，11 变体）+ `RecordResult<T>`。
+  - `platform/{mod,macos,windows,linux}.rs` — `HelperProvider` trait（同步签名，内部 `block_in_place`）+ 平台 provider 工厂。macOS 实现，Win/Linux 占位返 `PlatformNotImplemented`。
+- **vendor Swift helper**（`crates/record/native/macos/`）：上游 openscreen commit `f57e36e25448b5af6c7b1b271066fe5beb9b8a49`（MIT，Copyright (c) 2025 Siddharth Vaddem）。octopus 8 处修改（完整声明见 `crates/record/native/macos/LICENSE`）：① product/target 改名 `octopus-sck-helper`；② 删 webcam/cursor 字段；③ 加 5 个子命令（`--list-displays/windows/microphones` + `--check/request-permission`）；④ emit schema 改 snake_case；⑤ **关键修复** `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase`（octopus Rust 端发 snake_case，上游 openscreen TS 端发 camelCase 所以不需要）；⑥ 显示器名用 `NSScreen` deviceDescription 反查（`SCDisplay` 无 `nsScreen` 属性，原 spec 描述有误）；⑦ `RecordingStopped` 补 `duration_ms` + `file_size`（用 `AVAsset.load(.duration)` + `FileManager.attributesOfItem`）；⑧ dispatch label 改 `app.octopus.sck-helper.*`。`scripts/build-macos-helper.sh` 编译 universal binary 拷贝到 `crates/desktop/binaries/`，Tauri bundler 按 `tauri.conf.json` resources 配置打包进 `Contents/Resources/binaries/`。
+- **desktop 集成**（macOS-only，cfg gate）：
+  - `record_commands.rs` — 21 个 Tauri 命令（薄封装 crate）：A 源枚举 6（list_displays/windows/microphones + check/request_permission + open_privacy_settings）+ B 录制控制 5（**命令名 `record_*` 前缀**，避免与 `coordinator::start_recording` ASR 冲突）+ C 历史 10（list/get/rename/delete/favorite/restore/open/reveal）。DB 访问走 `octopus_infra::db::with_db_blocking`（`spawn_blocking` + 全局 ReentrantMutex，与 clipboard_commands 同模式）。
+  - `record_hotkey.rs` — 硬编码 2 个全局快捷键：`Cmd+Shift+R`（toggle：Idle/Starting→开 Settings 录屏页 / Recording→pause / Paused→resume）+ `Esc`（仅 Recording/Paused 时 stop）。handler 内 `tauri::async_runtime::spawn` 包 async。
+  - `tray.rs` 扩展 — `TrayItems` 加 3 个 cfg-gated 字段（record_start / record_pause_resume / record_stop），菜单组组装双分支（macOS 11 项 / 其他 8 项），menu_event handler 加 3 个 cfg-gated 分支。
+  - `main.rs` — `app.manage(RecordSession::new())` + setup hook 调 `cleanup_orphan_recordings`（扫 `recordings/` 删 DB 不认得的孤儿文件，与 clipboard cleanup 同模式）+ 注册 record_hotkey。
+  - `capabilities/default.json` — windows 数组加 `record_config_window` / `record_history_window`。
+  - `tauri.conf.json` — `bundle.resources` 加 `binaries/octopus-sck-helper`（保留既有 seeds/）；`bundle.macOS` 加 `infoPlist` / `entitlements` / `signingIdentity=null`。
+  - `Info.plist` — `NSScreenCaptureUsageDescription`（必填，缺失会让 helper 调 `CGRequestScreenCaptureAccess` 时 app 被系统终止）+ `NSMicrophoneUsageDescription`。
+  - `octopus.entitlements` — Tauri WKWebView 三件套（allow-jit / unsigned-executable-memory / disable-library-validation）+ helper 设备访问三件套（audio-input / camera / screen-capture）。
+- **前端**：`pages/Settings/RecordingPanel.tsx`（565 行，作为 Settings 的一个 panel，不是独立窗口）+ `components/record/PermissionGate.tsx`（权限 banner）+ `hooks/useRecordSession.ts`（订阅 `record://event`，状态机镜像）。视觉沿用既有 HistoryPanel 规范（shadcn-style token）。
+- **路径**（`crates/infra/src/paths.rs`）：`recordings_dir()` → `~/.octopus/recordings/`；`resolve_recording_path(relative)` 解析 DB 里的相对路径；`record_helper_log()` → `~/.octopus/logs/record-helper.log`。
+- **打包**：`scripts/build-macos-dmg.sh` 在 `cargo tauri build` 前调 `build-macos-helper.sh`（失败不阻断 DMG，仅录屏不可用）。
+- **快捷键 + tray menu**（spec §8.2 部分实现）：`Cmd+Shift+R` toggle + `Esc` stop 已实现；tray menu 3 个录屏项已加。**未做**（follow-up）：tray icon 红点状态指示、duration 实时显示、独立配置浮窗、菜单栏前端 dropdown 组件。
+- **已知 MVP 简化**（follow-up）：① `session.rs` 不存 `RecordingStopped` payload → `stopped.screen_path` 总空、`duration_ms` 恒 0；`record_stop` 用 `recordings_dir` 按 recording_id 扫描 fallback 找文件；DB duration_ms 字段恒 0。完整修复需引入 event channel。② hotkey/tray stop 不入库（仅 helper 退出 + 文件落盘，RecordingMeta 入库由前端监听 Idle 后调 record_stop 补）。③ 缩略图抽取推迟（spec §9.2 F12）。④ 网格视图切换推迟（spec §8.3 双视图 MVP 仅列表）。⑤ 字幕按钮灰占位（spec §8.4 F15 P2）。⑥ 全文搜索 FTS5 推迟（spec §9.2 F17 P2）。
 
 ## 性能优化批次（2026-07-17）
 
