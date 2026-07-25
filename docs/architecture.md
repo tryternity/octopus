@@ -981,6 +981,15 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **DB migrate 自愈**：`migrate_v50_to_v51` 显式 `execute_batch(INIT_SQL)`（原注释声称会重跑 db.sql 是错的）；`init_schema` 加自愈检测（v51+ 缺 recordings 表时补建）。回归测试 2 个。
 - **list_displays JSON 修复**：`macos.rs` 取 `v["displays"]` 字段再反序列化（原试图把整个 object 当 Vec 反序列化被 `unwrap_or_default()` 静默吞成空）。
 
+**第三轮迭代：区域录屏 + 实时标注**（2026-07-26）：
+- **配置浮窗 `record_window.rs`** + `RecordConfig.tsx`（独立 vite entry `record-config.html`）。Cmd+Shift+R 弹出选 display/window/area + 音频开关。绿色 Check 选中态。
+- **区域选区 picker `record_area_picker.rs`** + `AreaPicker.tsx`（`area-picker.html`）。复用 screenshot 多屏全屏窗口模式 + `screenshot_geometry` 坐标换算（Cocoa frame Y 翻转 → compute_selection_global → find_monitor_for_point → compute_physical_crop → active_display_for_point）。拖完即确认（mouseup 立即调 confirm）。
+- **标注 overlay `record_annotation_window.rs`** + `RecordAnnotation.tsx`（`record-annotation.html`）。`always_on_top` 透明窗口，复用 `@/lib/annotation` 9 种标注工具（rect/oval/diamond/line/arrow/pen/text/number/blur）。**关键验证**：SCK 录到 always_on_top 窗口内容（标注进视频），之前 PyObjC spike 说「不录」是错的（窗口没真显示）。
+- **窗口扩展**：overlay 窗口 = 选区 + 工具栏空间（三选逻辑：选区下方优先 → 上方 → 内部底部兜底，与截图 L750-766 一致）。Canvas 限制在选区区域，工具栏在选区外（不被录）。
+- **部分穿透**（参考 `result_window::start_click_through_poller`）：`ANNOTATION_PASSTHROUGH: AtomicBool` + poller 33ms tick。select 工具=穿透模式（工具栏区域 `TOOLBAR_ZONE` 不穿透，选区穿透到下层应用）；标注工具=标注模式（整个窗口不穿透）。前端 `onToolSelect` 调 `set_annotation_passthrough(t === "none")`。
+- **停止按钮**：emit `record://stop-requested` → 后端 listen → 调 `stop_and_store`（与 ESC/tray 同路径）。
+- **screenshot_commands 辅助函数 pub(crate)**：`get_window_cocoa_frame` / `get_primary_screen_height` / `active_display_for_point` 提升可见性供 record_area_picker 复用。
+
 ## 性能优化批次（2026-07-17）
 
 基于多轮性能审查（4 个并行 agent × 2 轮，60+ 条发现）的集中优化，按 "Measure First → 核实 → 修 → 验证" 流程逐项处理。详见 [perf-batch spec](superpowers/specs/archived/2026-07-17-perf-batch-cpu-memory.md)。

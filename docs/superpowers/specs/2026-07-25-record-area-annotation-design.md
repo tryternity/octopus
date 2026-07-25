@@ -1,6 +1,7 @@
 # 区域录屏 + 实时标注 — 设计规格（spec）
 
-> **状态**：设计阶段（2026-07-25）。基于 spike 验证（commit 待补）确认技术可行。
+> **状态：✅ 已实现**（2026-07-26，区域选区 + 标注 overlay + 部分穿透，e2e 通过）。
+> 实施 commit `33e321c1`..`a3769582`，详见 [plan](../plans/2026-07-25-record-area-annotation.md)。
 >
 > **范围**：在已有「录屏配置浮窗 + helper Area capture」基础上，加「区域选区 + 录制中实时标注」。标注与屏幕内容一起被录进视频（不是后期合成）。
 
@@ -143,22 +144,26 @@
 - mousedown/move/up 画标注（复用 Screenshot 的 hitTest / resize 逻辑，但**不 resize 选区**——选区固定）
 - Esc：切换到透传模式（不是关闭，避免误触关掉录制）
 
-### 3.3 鼠标透传模式（关键交互）
+### 3.3 鼠标穿透模型（最终实现）
 
 **问题**：overlay 要画标注必须接收鼠标，但会挡住用户操作选区下的应用。
 
-**方案**：两种模式 toggle（快捷键 `A` 切换）：
+**最终方案**（按工具栏当前工具切换，非快捷键）：
 
-| 模式 | overlay 鼠标行为 | 用途 |
-|---|---|---|
-| **标注模式**（默认） | overlay 接收所有鼠标事件 | 用户画标注 |
-| **透传模式** | `setIgnoreMouseEvents(true)` 鼠标穿透到下层应用 | 用户操作选区下的应用（演示软件/网页等） |
+| 工具 | 模式 | overlay 鼠标行为 | 用户能做什么 |
+|---|---|---|---|
+| **select**（鼠标，默认） | 穿透模式 | 工具栏区域不穿透，选区区域穿透 | 操作下层应用（录屏内容） |
+| **rect/arrow/pen/text...** | 标注模式 | 整个窗口不穿透 | 画标注、选/删/移动标注 |
 
-视觉反馈：
-- 标注模式：工具栏高亮 + 光标 crosshair（画笔）/ text（文字）
-- 透传模式：工具栏半透明 + 光标默认箭头 + 浮动提示「按 A 切回标注模式」
+切换方式：点工具栏「鼠标」按钮→穿透模式；点任何标注工具→标注模式。
 
-⚠️ **macOS 限制**：`setIgnoreMouseEvents(true)` 后 overlay 仍能被 SCK 录到（窗口可见，只是鼠标穿透）。验证 spike 已覆盖（红块 setIgnoresMouseEvents(true) 被录到——虽然这次 spike 设了 True 但仍录进去，是好消息）。
+**穿透模式下工具栏区域不穿透**——参考 `result_window::start_click_through_poller`：
+- 后端 `ANNOTATION_PASSTHROUGH: AtomicBool` + poller 33ms tick
+- 穿透模式时：poller 按光标位置区分（工具栏区域 `TOOLBAR_ZONE` → 不穿透，其他 → 穿透）
+- 标注模式时：整个窗口不穿透
+- 前端 `onToolSelect` 调 `set_annotation_passthrough(t === "none")` 切换状态
+
+`TOOLBAR_ZONE`：create_annotation_window 时按 `toolbar_pos`（below/above/inside）设置工具栏在窗口内的逻辑坐标，poller 转物理坐标判定。工具栏区域高度 = `TOOLBAR_H(44) + MARGIN(8) = 52px`（不含 popover——标注模式下整个窗口不穿透，popover 自然可操作）。
 
 ### 3.4 标注数据持久化（MVP 不做）
 
