@@ -268,6 +268,9 @@ fn start_annotation_click_through_poller(app: AppHandle) {
 
 #[cfg(target_os = "macos")]
 fn set_annotation_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
+    // 双保险：Tauri API（同步） + NSWindow 直调（run_on_main_thread 异步）。
+    // result_window 也用同样模式（L217-228 + L232）。
+    let _ = win.set_ignore_cursor_events(ignore);
     let win_clone = win.clone();
     let _ = win.run_on_main_thread(move || {
         if let Ok(ptr) = win_clone.ns_window() {
