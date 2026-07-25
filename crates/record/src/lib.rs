@@ -9,6 +9,7 @@
 
 pub mod error;
 pub mod protocol;
+pub use protocol::*;
 pub mod session;
 pub mod store;
 mod platform;
