@@ -18,11 +18,17 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.icns", "icons/icon.png"],
-    "resources": { "../infra/seeds/": "seeds/" },
+    "resources": {
+      "../infra/seeds/": "seeds/",
+      "binaries/octopus-sck-helper": "binaries/octopus-sck-helper"
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "frameworks": [],
-      "exceptionDomain": ""
+      "exceptionDomain": "",
+      "infoPlist": "Info.plist",
+      "entitlements": "octopus.entitlements",
+      "signingIdentity": null
     }
   }
 }
