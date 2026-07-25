@@ -545,10 +545,11 @@ fn upsert_folder_with_sort(
     sort_order: i64,
     sync_md5: &str,
 ) -> Result<(), SyncError> {
-    let exists = db::list_vault_folders()
+    // P-FOLDER-SCAN 修复（2026-07-25）：用 load_vault_folder 单条查询（O(1)）替代
+    // list_vault_folders().iter().any() 全表扫（O(N)）。与 upsert_cipher（load_vault_cipher）对称。
+    let exists = db::load_vault_folder(id)
         .map_err(SyncError::Other)?
-        .iter()
-        .any(|f| f.id == id);
+        .is_some();
     if exists {
         db::update_vault_folder_fields(id, encrypted_name, sort_order, sync_md5)
             .map_err(SyncError::Other)?;
@@ -763,10 +764,18 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
     let db_ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
     let db_folders = db::list_vault_folders().map_err(SyncError::Other)?;
 
-    let db_cipher_ids: std::collections::HashSet<&str> =
-        db_ciphers.iter().map(|c| c.id.as_str()).collect();
-    let db_folder_ids: std::collections::HashSet<&str> =
-        db_folders.iter().map(|f| f.id.as_str()).collect();
+    // P-MD5-LINEAR-SCAN 修复（2026-07-25）：HashSet 升级为 HashMap（id → sync_md5）。
+    // 之前 db_cipher_ids 只用于 exists 判断（O(1)），但 md5 比对（cipher_md5_mismatch）
+    // 又回到 db_ciphers Vec 线性 find（O(N)）→ 外层 for × 内部 find = O(M×N)。
+    // HashMap 后 exists 用 contains_key（O(1)），md5 比对用 get（O(1)），整体降到 O(M)。
+    let db_cipher_md5: std::collections::HashMap<&str, &str> = db_ciphers
+        .iter()
+        .map(|c| (c.id.as_str(), c.sync_md5.as_deref().unwrap_or("")))
+        .collect();
+    let db_folder_md5: std::collections::HashMap<&str, &str> = db_folders
+        .iter()
+        .map(|f| (f.id.as_str(), f.sync_md5.as_deref().unwrap_or("")))
+        .collect();
 
     // === 阶段 A：stamp 校验（前置——不通过则不触碰 cipher/folder DB）===
     //
@@ -798,8 +807,8 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
 
     // cipher：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
     for (uuid, entry) in &remote_outline.ciphers {
-        let needs_update = !db_cipher_ids.contains(uuid.as_str())
-            || cipher_md5_mismatch(uuid, &entry.md5, &db_ciphers);
+        let needs_update = !db_cipher_md5.contains_key(uuid.as_str())
+            || cipher_md5_mismatch(uuid, &entry.md5, &db_cipher_md5);
         if needs_update {
             match store::read_cipher_file(uuid) {
                 Ok(cipher_file) => {
@@ -820,8 +829,8 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
 
     // folder：与 cipher 对称（#5 修复——已有 folder 也比对 md5，捕获 rename）
     for (uuid, entry) in &remote_outline.folders {
-        let needs_update = !db_folder_ids.contains(uuid.as_str())
-            || folder_md5_mismatch(uuid, &entry.md5, &db_folders);
+        let needs_update = !db_folder_md5.contains_key(uuid.as_str())
+            || folder_md5_mismatch(uuid, &entry.md5, &db_folder_md5);
         if needs_update {
             match store::read_folder_file(uuid) {
                 Ok(folder_file) => {
@@ -902,10 +911,16 @@ fn meta_file_not_found(e: &anyhow::Error) -> bool {
 /// - DB.sync_md5 与 outline.md5 相等 → false（无变化）
 ///
 /// 不再读文件（消除 2N syscall——低优先级清理项 8.7）。
-fn cipher_md5_mismatch(uuid: &str, outline_md5: &str, db_ciphers: &[db::VaultCipher]) -> bool {
-    match db_ciphers.iter().find(|c| c.id == uuid) {
+/// P-MD5-LINEAR-SCAN 修复（2026-07-25）：接收 HashMap（id → sync_md5）而非 Vec，
+/// 用 get（O(1)）替代 iter().find（O(N)）。整体 pull 复杂度从 O(M×N) 降到 O(M)。
+fn cipher_md5_mismatch(
+    uuid: &str,
+    outline_md5: &str,
+    db_cipher_md5: &std::collections::HashMap<&str, &str>,
+) -> bool {
+    match db_cipher_md5.get(uuid) {
         None => true,
-        Some(c) => c.sync_md5.as_deref().unwrap_or("") != outline_md5,
+        Some(db_md5) => *db_md5 != outline_md5,
     }
 }
 
@@ -913,10 +928,14 @@ fn cipher_md5_mismatch(uuid: &str, outline_md5: &str, db_ciphers: &[db::VaultCip
 ///
 /// 与 cipher 对称。之前 folder 只在「DB 不存在」时 pull，已有 folder 整个跳过
 /// → 远程 rename 被静默丢弃（last-write-wins 数据丢失）。现在与 cipher 同标准。
-fn folder_md5_mismatch(uuid: &str, outline_md5: &str, db_folders: &[db::VaultFolder]) -> bool {
-    match db_folders.iter().find(|f| f.id == uuid) {
+fn folder_md5_mismatch(
+    uuid: &str,
+    outline_md5: &str,
+    db_folder_md5: &std::collections::HashMap<&str, &str>,
+) -> bool {
+    match db_folder_md5.get(uuid) {
         None => true,
-        Some(f) => f.sync_md5.as_deref().unwrap_or("") != outline_md5,
+        Some(db_md5) => *db_md5 != outline_md5,
     }
 }
 
@@ -1624,13 +1643,18 @@ mod tests {
             updated_at: "2026-07-24".into(),
         };
         let db_ciphers = vec![db_cipher];
+        // P-MD5-LINEAR-SCAN：测试改用 HashMap（id → sync_md5），与生产签名一致
+        let db_cipher_md5: std::collections::HashMap<&str, &str> = db_ciphers
+            .iter()
+            .map(|c| (c.id.as_str(), c.sync_md5.as_deref().unwrap_or("")))
+            .collect();
 
         // DB 有 + md5 相同 → false
-        assert!(!cipher_md5_mismatch("uuid-1", "md5-aaa", &db_ciphers));
+        assert!(!cipher_md5_mismatch("uuid-1", "md5-aaa", &db_cipher_md5));
         // DB 有 + md5 不同 → true
-        assert!(cipher_md5_mismatch("uuid-1", "md5-bbb", &db_ciphers));
+        assert!(cipher_md5_mismatch("uuid-1", "md5-bbb", &db_cipher_md5));
         // DB 无 → true
-        assert!(cipher_md5_mismatch("uuid-other", "md5-aaa", &db_ciphers));
+        assert!(cipher_md5_mismatch("uuid-other", "md5-aaa", &db_cipher_md5));
     }
 
     /// #5 修复：folder_md5_mismatch 对比 outline.md5 vs DB sync_md5（与 cipher 对称）。
@@ -1646,10 +1670,14 @@ mod tests {
             updated_at: "2026-07-24".into(),
         };
         let db_folders = vec![db_folder];
+        let db_folder_md5: std::collections::HashMap<&str, &str> = db_folders
+            .iter()
+            .map(|f| (f.id.as_str(), f.sync_md5.as_deref().unwrap_or("")))
+            .collect();
 
-        assert!(!folder_md5_mismatch("folder-1", "md5-aaa", &db_folders));
-        assert!(folder_md5_mismatch("folder-1", "md5-bbb", &db_folders));
-        assert!(folder_md5_mismatch("folder-other", "md5-aaa", &db_folders));
+        assert!(!folder_md5_mismatch("folder-1", "md5-aaa", &db_folder_md5));
+        assert!(folder_md5_mismatch("folder-1", "md5-bbb", &db_folder_md5));
+        assert!(folder_md5_mismatch("folder-other", "md5-aaa", &db_folder_md5));
     }
 
     /// #2 修复回归守护：pull 用 outline.md5 比对，而非 updated_at 字符串。

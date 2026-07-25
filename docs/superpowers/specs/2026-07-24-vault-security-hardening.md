@@ -913,3 +913,27 @@ generator 模块审查通过——四个生成器（random/passphrase_en/passphr
 - **强制每类型至少 1 个 + avoid_ambiguous 正确过滤**：强制类型数（≤4）< length 下限（5），不超长
 - **zh words 不 zeroize 合理**：Vec<&'static str>（指针指向静态段，无堆明文拷贝），核心明文 result 已 Zeroizing
 - **mod.rs serde tag=camelCase 对齐前端**
+
+---
+
+## 第二十九轮审查修复（2026-07-25，sync/engine.rs 同步核心：P-MD5-LINEAR-SCAN + P-FOLDER-SCAN）
+
+engine.rs 同步核心安全设计严谨——E2 防锁死、stamp 校验前置、保留本地密钥、H2 不复活、#10 不静默吞、resolve 密码验证均正确。2 个性能发现。
+
+### P-MD5-LINEAR-SCAN: md5 比对线性扫描，已有 HashSet 未复用（低-中，已修）
+
+**核查**：pull_from_files 的 md5 比对是 O(M×N)。`db_cipher_ids`/`db_folder_ids` HashSet（:766-769）已构建用于 exists 判断（O(1)），但 `cipher_md5_mismatch`/`folder_md5_mismatch`（:905/:916）接收 `&[VaultCipher]` Vec 用 `.iter().find()` 线性 O(N)。外层 for × 内部 find = O(M×N)，clone 时 M≈N → O(N²)。
+
+**修复**：HashSet 升级为 `HashMap<&str, &str>`（id → sync_md5）。exists 用 `contains_key`（O(1)），md5 比对用 `get` 拿 md5（O(1)），整体降到 O(M)。`cipher_md5_mismatch`/`folder_md5_mismatch` 签名改为接收 `&HashMap`。
+
+**影响评估**：N（密码条数）普通用户几十、重度几百。N=500 时 N²=250k 次字符串比较 ≈ 亚秒级，企业库几千条才到秒级。实际影响有限，但 O(N²) 不必要且修复极简。
+
+### P-FOLDER-SCAN: upsert_folder 全表扫描，db 缺单条 API（低，已修）
+
+**核查**：`upsert_folder_with_sort`（:548-551）判断 folder 存在用 `list_vault_folders().iter().any(|f| f.id == id)` 全表扫。每次 upsert 都 O(N) → pull folder 循环 O(N²)。与 `upsert_cipher`（:527 用单条 `load_vault_cipher`）不对称。db.rs 无 `load_vault_folder(id)` 单条 API。
+
+**修复**：db 层加 `load_vault_folder(id)`（SELECT WHERE id=? 单条查询），`upsert_folder_with_sort` 改用。folder 数量通常远少于 cipher，影响小于 P-MD5-LINEAR-SCAN，但与 upsert_cipher 对称。
+
+### M-TOMBSTONE 仍在（已知 M5 + folder 维度同构）
+
+pull_from_files :800/:822 只遍历 remote outline 做 upsert，无删除分支——远程硬删除的 cipher/folder 在 pull 端不删本地。本轮确认仍在，且 folder 维度同构（folder 硬删除同样不传播）。待 Phase 2 统一处理 tombstone（详见第二十五轮 M5）。

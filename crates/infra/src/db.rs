@@ -3875,6 +3875,32 @@ pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
     with_db(list_vault_folders_at)
 }
 
+/// P-FOLDER-SCAN 修复（2026-07-25）：单条查询 folder（与 load_vault_cipher 对称）。
+///
+/// 之前 upsert_folder_with_sort 用 list_vault_folders().iter().any() 全表扫判断存在，
+/// 每次 upsert 都 O(N) → pull 的 folder 循环 O(N²)。改用本函数 O(1) 单条查询。
+pub fn load_vault_folder(id: &str) -> Result<Option<VaultFolder>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(VaultFolder {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                sync_md5: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
+}
+
 fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
