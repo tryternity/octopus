@@ -199,7 +199,43 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 break;
             }
 
-            let want_ignore = ANNOTATION_PASSTHROUGH.load(std::sync::atomic::Ordering::Relaxed);
+            let passthrough = ANNOTATION_PASSTHROUGH.load(std::sync::atomic::Ordering::Relaxed);
+
+            // 标注模式（passthrough=false）：整个窗口不穿透（画标注/选删移动）
+            if !passthrough {
+                if cur_ignore {
+                    set_annotation_ignores_mouse(&win, false);
+                    cur_ignore = false;
+                }
+                continue;
+            }
+
+            // 穿透模式（passthrough=true）：工具栏区域不穿透，其他穿透。
+            // 与 result_window 同逻辑——光标在工具栏矩形内 → 不穿透（可点按钮切回标注），
+            // 光标不在工具栏 → 穿透（操作下层应用）。
+            let (mx, my) = match win.cursor_position() {
+                Ok(p) => (p.x, p.y),
+                Err(_) => continue,
+            };
+            let (wx, wy) = match win.outer_position() {
+                Ok(p) => (p.x as f64, p.y as f64),
+                Err(_) => continue,
+            };
+            let (ww, wh) = match win.outer_size() {
+                Ok(s) => (s.width as f64, s.height as f64),
+                Err(_) => continue,
+            };
+
+            // 工具栏区域：窗口底部 TOOLBAR_H + 8px margin（与前端 toolbarTop 一致）。
+            // popover 弹出时也在工具栏附近（上方 ~200px），一并算入交互区域。
+            const TOOLBAR_H: f64 = 44.0;
+            const TOOLBAR_MARGIN: f64 = 8.0;
+            const POPOVER_H: f64 = 200.0;
+            let toolbar_zone_h = TOOLBAR_H + TOOLBAR_MARGIN + POPOVER_H;
+            let toolbar_zone_top = wy + wh - toolbar_zone_h;
+
+            let in_toolbar = mx >= wx && mx <= wx + ww && my >= toolbar_zone_top && my <= wy + wh;
+            let want_ignore = !in_toolbar;
 
             if want_ignore != cur_ignore {
                 set_annotation_ignores_mouse(&win, want_ignore);
