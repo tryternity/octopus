@@ -1129,3 +1129,17 @@ crypto 模块复审（4 文件：mod/util/symmetric/hierarchy/kdf）——经多
 ### 集成层门禁模式洞察
 
 三个跨模块发现（M-CLOUDKEY-PLAINTEXT 加密写入漏读路径 / E-EDIT-TEST-CIPHERTEXT 读路径漏解密 / C-DELETE-NO-UNLOCK-CHECK 删除漏解锁门禁）同源——vault 安全属性在「vault crate 核心」与「desktop 命令层胶水」之间的传递不完整。建议每加一个访问 cipher 的命令，逐项核对 require/解密/reprompt。
+
+---
+
+## 第三十九轮审查（2026-07-25，vault_error.rs：干净，3 项 classify 启发式局限已文档化）
+
+vault_error.rs 主体扎实——user-safe 原则（InternalError 绝不透传内部细节）是核心安全目标，贯彻到位；稳定 code 契约、全链匹配、InvalidMasterPassword 历史 bug 修复均到位。无中高危 bug。
+
+3 项发现全是 classify 启发式的固有局限，**均已文档化，无需修复**：
+
+- **E-DB-LOCKED-MISCLASSIFY**（低·UX）：classify :127 `combined.contains("locked")` 会误匹配 SQLite "database is locked" → 误识别为 Locked → 前端弹解锁框（实际是 DB 锁）。注释 :343-344 已文档化此局限。触发概率低（with_db 串行化 + 短事务），即使触发仅 UX 误导（不泄露数据）。收紧需核对 vault crate 内部错误文案不依赖裸 "locked"。
+- **E-MUST-TRANSPARENCY**（极低）：classify :160-162 对含「必须」/「至少需要」的错误透传 head msg。假设「含必须 = 生成器文案」——Rust/rusqlite 内部错误多为英文，中文「必须」罕见，实际风险极低。这是启发式中唯一的 head msg 透传破例。
+- **E-CIPHER-NO-ID**（极低）：CipherNotFound 统一 `<unknown>`，id 未提取。前端按 code 处理不需 id，纯日志诊断信息丢失。注释 :139 承认简化。
+
+**工程取舍**：classify 用 anyhow 链文本启发式匹配，天然有误分类风险。本模块的核心取舍是「宁可误分类为低危变体，也绝不透传内部细节」——InternalError 兜底保证了这一底线。
