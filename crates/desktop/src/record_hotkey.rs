@@ -23,49 +23,56 @@ use octopus_record::SessionState;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-/// 注册录屏全局快捷键（硬编码 Cmd+Shift+R + Esc）。
+/// 注册录屏全局快捷键（参数化，支持 config-driven 热重载）。
 ///
-/// 与 `register_action_hotkeys` 不同：不维护 REGISTERED_SHORTCUTS 集合——本模块注册的
-/// 两个快捷键是常量，重启时整体重新注册即可（global_shortcut plugin 用相同 shortcut
-/// 再 on_shortcut 会覆盖，不会泄漏）。
-pub fn register_record_hotkeys(app: &AppHandle) -> Result<(), String> {
-    // ── Cmd+Shift+R：toggle ──────────────────────────────────────
-    let toggle_sc: Shortcut = "CommandOrControl+Shift+R"
+/// 与 `screenshot_commands::register_screenshot_shortcut` 同范式：
+/// - main.rs setup 启动注册 + settings_commands::set_config 热重载共用
+/// - 函数签名接 `&str` 参数，失败返 `Err(String)` 让调用方回滚
+///
+/// `toggle_sc`：idle→弹浮窗 / recording→pause / paused→resume
+/// `stop_sc`：仅 recording/paused 时停止入库
+pub fn register_record_hotkeys(
+    app: &AppHandle,
+    toggle_sc: &str,
+    stop_sc: &str,
+) -> Result<(), String> {
+    // ── toggle 快捷键 ─────────────────────────────────────────────
+    let toggle: Shortcut = toggle_sc
         .parse()
-        .map_err(|e| format!("parse Cmd+Shift+R: {e}"))?;
+        .map_err(|e| format!("parse record toggle '{}': {}", toggle_sc, e))?;
     let app_clone = app.clone();
     app.global_shortcut()
-        .on_shortcut(toggle_sc, move |_app, _scut, event| {
+        .on_shortcut(toggle, move |_app, _scut, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            log::info!("[record-hotkey] Cmd+Shift+R 触发");
+            log::info!("[record-hotkey] toggle 触发");
             let app = app_clone.clone();
             tauri::async_runtime::spawn(async move {
                 handle_toggle(&app).await;
             });
         })
-        .map_err(|e| format!("register Cmd+Shift+R: {e}"))?;
+        .map_err(|e| format!("register record toggle '{}': {}", toggle_sc, e))?;
 
-    // ── Esc：stop（仅 recording/paused 状态） ──────────────────────
-    let esc_sc: Shortcut = "Escape"
+    // ── stop 快捷键（仅 recording/paused 状态） ────────────────────
+    let stop: Shortcut = stop_sc
         .parse()
-        .map_err(|e| format!("parse Escape: {e}"))?;
+        .map_err(|e| format!("parse record stop '{}': {}", stop_sc, e))?;
     let app_clone = app.clone();
     app.global_shortcut()
-        .on_shortcut(esc_sc, move |_app, _scut, event| {
+        .on_shortcut(stop, move |_app, _scut, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            log::info!("[record-hotkey] Esc 触发");
+            log::info!("[record-hotkey] stop 触发");
             let app = app_clone.clone();
             tauri::async_runtime::spawn(async move {
                 handle_stop(&app).await;
             });
         })
-        .map_err(|e| format!("register Escape: {e}"))?;
+        .map_err(|e| format!("register record stop '{}': {}", stop_sc, e))?;
 
-    log::info!("[record-hotkey] 已注册 Cmd+Shift+R (toggle) + Esc (stop)");
+    log::info!("[record-hotkey] 已注册 toggle='{}' stop='{}'", toggle_sc, stop_sc);
     Ok(())
 }
 

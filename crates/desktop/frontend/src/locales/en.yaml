@@ -378,7 +378,9 @@ settings:
     screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
     recordShortcut: Recording
-    recordShortcutHint: Show config float to pick source then start (not configurable yet)
+    recordShortcutHint: Show config float to pick source; pause/resume while recording
+    recordStopShortcut: Stop Recording
+    recordStopShortcutHint: Only effective during recording; ignored otherwise
     recording: Voice Recognition
     recogLang: Recognition Language
     recogAuto: Auto

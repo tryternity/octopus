@@ -383,7 +383,9 @@ settings:
     vaultAutotypeShortcutHint: 在浏览器登录页按此键，自动匹配并填充密码
     screenshotShortcut: 截图
     recordShortcut: 录屏
-    recordShortcutHint: 弹出配置浮窗选源后开始录制（暂不可改）
+    recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复
+    recordStopShortcut: 停止录屏
+    recordStopShortcutHint: 仅录制中生效；其他状态忽略
     screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
     recogLang: 识别语言

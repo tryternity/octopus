@@ -102,12 +102,13 @@ pub fn set_config(
     coordinator: State<'_, crate::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, old_record_stop_sc, mut cfg) = {
         let g = rc.read();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.record_stop_shortcut.clone(), g.clone())
     };
-    // vault feature off 时 old_vault_autotype_sc 不被读，避免 unused warning。
-    let _ = &old_vault_autotype_sc;
+    // vault feature off 时 old_vault_autotype_sc 不被读；非 macOS 时 old_record_* 不被读——
+    // 统一标 unused 避免 warning。
+    let _ = (&old_vault_autotype_sc, &old_record_sc, &old_record_stop_sc);
     apply_config_value(&mut cfg, &key, &value)?;
 
     // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
@@ -168,6 +169,36 @@ pub fn set_config(
         }
         if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
             let _ = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    // 录屏快捷键热重载（仅 macOS——record_hotkey 模块 cfg-gate）。
+    // record_shortcut（toggle）+ record_stop_shortcut 一起注册/注销（register_record_hotkeys 接两个参数）。
+    #[cfg(target_os = "macos")]
+    if (key == "record_shortcut" && cfg.record_shortcut != old_record_sc)
+        || (key == "record_stop_shortcut" && cfg.record_stop_shortcut != old_record_stop_sc)
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        // 注销旧的两个快捷键（toggle + stop）
+        if let Ok(old) = old_record_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Ok(old) = old_record_stop_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        // 注册新的两个
+        if let Err(e) = crate::record_hotkey::register_record_hotkeys(
+            &app_handle,
+            &cfg.record_shortcut,
+            &cfg.record_stop_shortcut,
+        ) {
+            // 失败：恢复旧的两个
+            let _ = crate::record_hotkey::register_record_hotkeys(
+                &app_handle,
+                &old_record_sc,
+                &old_record_stop_sc,
+            );
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -374,6 +405,12 @@ fn apply_config_value(
         }
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
+        }
+        "record_shortcut" => {
+            cfg.record_shortcut = value.as_str().ok_or("record_shortcut 需要字符串")?.to_string();
+        }
+        "record_stop_shortcut" => {
+            cfg.record_stop_shortcut = value.as_str().ok_or("record_stop_shortcut 需要字符串")?.to_string();
         }
         "switch_input_source_on_paste" => {
             cfg.switch_input_source_on_paste = value.as_bool().ok_or("switch_input_source_on_paste 需要 bool")?;

@@ -203,6 +203,16 @@ pub struct AppConfig {
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
 
+    /// 录屏 toggle 快捷键（弹配置浮窗 / 暂停 / 恢复）。默认 "CmdOrCtrl+Shift+R"。
+    /// 仅 macOS 实际使用（record_hotkey 模块 cfg-gate），其他平台仅落库不消费。
+    #[serde(default = "default_record_shortcut")]
+    pub record_shortcut: String,
+
+    /// 停止录屏快捷键。默认 "Escape"。
+    /// 仅 recording/paused 状态下生效；其他状态忽略（让 Esc 给其他用途）。
+    #[serde(default = "default_record_stop_shortcut")]
+    pub record_stop_shortcut: String,
+
     /// vault Auto-Type 全局热键。默认 CmdOrCtrl+Shift+L。
     ///
     /// follow-up #10：仅在 `octopus-desktop` 启用 `vault` cargo feature 时实际使用
@@ -321,6 +331,12 @@ fn default_action_bar_search_engine() -> String {
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
+fn default_record_shortcut() -> String {
+    "CmdOrCtrl+Shift+R".into()
+}
+fn default_record_stop_shortcut() -> String {
+    "Escape".into()
+}
 fn default_vault_autotype_shortcut() -> String {
     "CmdOrCtrl+Shift+L".into()
 }
@@ -372,6 +388,8 @@ impl Default for AppConfig {
             action_bar_shortcut: default_action_bar_shortcut(),
             action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
+            record_shortcut: default_record_shortcut(),
+            record_stop_shortcut: default_record_stop_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_generator_shortcut: default_vault_generator_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),

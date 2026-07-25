@@ -888,12 +888,18 @@ pub fn run() {
             action_bar_window::create_action_bar_window(app.handle());
             overlay_window::create_overlay_window(app.handle());
             action_hotkey::register_action_hotkeys(app.handle());
-            // 录屏快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
+            // 录屏快捷键（config-driven，与 screenshot 同模式）：
             // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
             #[cfg(target_os = "macos")]
             {
-                if let Err(e) = record_hotkey::register_record_hotkeys(app.handle()) {
-                    log::warn!("[record] 快捷键注册失败: {e}");
+                if !config.record_shortcut.is_empty() {
+                    if let Err(e) = record_hotkey::register_record_hotkeys(
+                        app.handle(),
+                        &config.record_shortcut,
+                        &config.record_stop_shortcut,
+                    ) {
+                        log::warn!("[record] 快捷键注册失败: {e}");
+                    }
                 }
             }
             if !config.action_bar_shortcut.is_empty() {

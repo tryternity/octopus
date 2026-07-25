@@ -73,7 +73,12 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     const handler = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") { setCapturingKey(null); return; }
+      // ESC 通常用于退出捕获；但 record_stop_shortcut 允许录 ESC 作为快捷键值
+      // （录屏停止键默认就是 Escape，用户应能改成其他键或保持 ESC）。
+      if (e.key === "Escape" && configKey !== "record_stop_shortcut") {
+        setCapturingKey(null);
+        return;
+      }
       // 纯修饰键不触发，等待用户按实际键
       if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
       const parts: string[] = [];
@@ -210,9 +215,12 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <Row label={t("settings.general.screenshotShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.screenshotShortcutHint")}>
               <ShortcutButton shortcut={cfg.screenshot_shortcut as string} capturing={capturingKey === "screenshot_shortcut"} onClick={() => startShortcutCapture("screenshot_shortcut")} />
             </Row>
-            {/* 录屏快捷键（只读展示，当前 hardcoded Cmd+Shift+R 不支持改） */}
+            {/* 录屏快捷键（config-driven，与 screenshot 同模式，支持热重载） */}
             <Row label={t("settings.general.recordShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.recordShortcutHint")}>
-              <ShortcutButton shortcut="⌘⇧R" capturing={false} onClick={() => {}} />
+              <ShortcutButton shortcut={cfg.record_shortcut as string} capturing={capturingKey === "record_shortcut"} onClick={() => startShortcutCapture("record_shortcut")} />
+            </Row>
+            <Row label={t("settings.general.recordStopShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.recordStopShortcutHint")}>
+              <ShortcutButton shortcut={cfg.record_stop_shortcut as string} capturing={capturingKey === "record_stop_shortcut"} onClick={() => startShortcutCapture("record_stop_shortcut")} />
             </Row>
             <Row label={t("settings.general.clipboardShortcut")} effect={t("settings.effect.now")}>
               <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
