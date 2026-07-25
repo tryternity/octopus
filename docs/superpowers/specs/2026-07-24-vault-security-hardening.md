@@ -885,3 +885,31 @@ psl.rs + matches_domain 审查通过——vault 里安全设计最严谨的模�
 - **ReentrantMutex 设计正确**：同线程可重入（外层 change_master_password 持锁 → 内层 save_vault_meta 再 lock 不死锁），这是锁下沉到写函数内部的前提
 - **锁下沉写函数**：save_vault_meta / update_security_stamp 内部自动加锁，覆盖所有 meta 写路径（不依赖调用方显式 acquire）
 - **双测试守护**：test_lock_serializes_concurrent_writers（4 线程并发串行化）+ test_lock_is_reentrant_same_thread（同线程重入不死锁）
+
+---
+
+## 第二十八轮审查修复（2026-07-25，generator 模块：R-AMBIGUOUS-DEAD + R-UPPER-BRANCH-ASYMMETRY）
+
+generator 模块审查通过——四个生成器（random/passphrase_en/passphrase_zh/pin）+ mod 配置，CSPRNG/边界/Zeroizing/词表守护均到位，无实质 bug。仅 2 个低/信息性观察。
+
+### R-AMBIGUOUS-DEAD: AMBIGUOUS 含 4 个永不命中的死字符（信息性，已修）
+
+**核查**：random.rs:25 `AMBIGUOUS` 列 9 字符 `l 1 I O 0 | ` ' "`。其中 `|` `` ` `` `'` `"` 不在 UPPER/LOWER/DIGITS/SYMBOLS 任一字符集（SYMBOLS 是 `!@#$%^&*()-_=+[]{}<>?`，无这 4 个）。`build_charset` 的 `retain` 和强制阶段 `filter` 对这 4 个永远是 no-op——它们本就不会被生成。
+
+**修复**：从 AMBIGUOUS 删除 4 个死字符，保留 5 个真正有效的（l/1/I/O/0 在字符集内会被过滤）。选择「删除」而非「加入 SYMBOLS」——因为加入会改变密码生成行为（之前不生成这些，之后会生成除非 avoid_ambiguous），删除是纯清理零行为变化。
+
+### R-UPPER-BRANCH-ASYMMETRY: uppercase 双分支 vs 其余统一 filter（低，风格，已修）
+
+**核查**：uppercase 用 `if cfg.uppercase && !cfg.avoid_ambiguous { UPPER.choose } else if cfg.uppercase { filter }` 双分支；lowercase/numbers/symbols 统一用 `filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))`。两种写法语义等价但结构不一致。
+
+**修复**：uppercase 改统一 filter 写法，与其余三个对齐。
+
+### 正面发现（generator 全模块）
+
+- **CSPRNG 一致**：四个生成器全用 OsRng，SliceRandom::choose/shuffle（Fisher-Yates 无偏）、gen_range 边界正确
+- **Zeroizing 中间材料**：random（Zeroizing<Vec<char>>）/ pin（Zeroizing<String>）/ en（Zeroizing<Vec<String>>）/ zh（Zeroizing<String> result）
+- **词表三重守护**：EFF 7776 + ZH 4096 size 守护 + 无重复守护；EFF 额外 no_dedash_collision；ZH 额外 all_two_cjk_chars
+- **边界 ensure**：random 5..=128 / pin 1..=32 / en 3..=10 / zh 3..=8
+- **强制每类型至少 1 个 + avoid_ambiguous 正确过滤**：强制类型数（≤4）< length 下限（5），不超长
+- **zh words 不 zeroize 合理**：Vec<&'static str>（指针指向静态段，无堆明文拷贝），核心明文 result 已 Zeroizing
+- **mod.rs serde tag=camelCase 对齐前端**
