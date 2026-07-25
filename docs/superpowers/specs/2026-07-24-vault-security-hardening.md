@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **241** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **243** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -957,3 +957,24 @@ health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位
 **核查**：generate_report 对 logins 遍历两次——:29-42 算 strength（zxcvbn）+ :46 find_duplicates 内部再遍历算 SHA-256。可合并为单次遍历。
 
 **状态**：文档化。zxcvbn（O(n²) 中等密码）是绝对瓶颈，单次遍历合并省的只是 N 次指针解引用，相对可忽略。几百个 login 的健康报告是用户主动触发的一次性操作。若未来做成后台定时扫描再考虑。
+
+---
+
+## 第三十一轮审查修复（2026-07-25，sync/store.rs 文件读写层：R-IMPORT-NOFAULT-TOLERANT）
+
+### R-IMPORT-NOFAULT-TOLERANT: clone 路径单文件损坏中止 + 连锁死锁（中，健壮性/一致性，已修）
+
+**核查**：三条证据全部回源码确认——
+
+1. **import 中止**：`import_all_from_files`（store.rs:644-672）对损坏文件直接 `?` 中止——:652 `read_to_string(...)?` + :654 `serde_json::from_str(...)?`。单文件 read/parse 失败 = 整个 import Err。✓
+2. **连锁放大**：`clone_initial`（engine.rs:462）`db::upsert_vault_meta` 在 :465 `import_all_from_files()` **之前**执行。import 失败 → DB 半初始化（有 meta 无 cipher）→ 重试 clone → :419 E2 守卫 `load_vault_meta().is_some()` 拒绝 → **死锁**。用户必须手动清 vault_meta + cipher 表。✓
+3. **不对称**：pull 路径（engine.rs:813-825）`read_cipher_file` 失败 `log::warn + skipped += 1`（#10 容错）；hotword 导入（engine.rs:478-491）`log::warn`「不阻断 vault clone」；唯独 vault cipher/folder 导入（:465 `import_all_from_files()?`）不容错。三者处理同类「外部文件导入」却三种策略。✓
+
+**修复**：import_all_from_files 的 cipher/folder 循环改容错——单文件 read/parse 失败 `log::warn` 跳过，不中止（与 pull #10 + hotword 模式对齐）。容错后连锁问题自然消失（import 不再整体失败 → 不会留半初始化状态）。
+
+**回归测试**：`import_all_from_files_skips_corrupt_file`——写 2 个正常 cipher + 1 个损坏 JSON，验证 import 返回 2 个（损坏跳过）。
+
+### 信息性（不单独开项）
+
+- **incremental_export changed 虚高**：delete_cipher_file 对 NotFound 返 Ok，删除循环 changed += 1 即使文件早不存在 → vault_version 可能不必要 +1。但新 outline 不含 stale uuid，每次 stale 只触发一次，影响极小。
+- **export_all_to_files remove_dir_all 非原子**：清空 ciphers/ folders/ 后写文件，中间失败留半空目录。但 SQLite 是真相源，重新 sync 自愈；且主要在 push_initial（ciphers/ 空）跑。低。
