@@ -31,3 +31,6 @@ package.json
 2026-07-19-octopus-project-overview.html
 /ppt/
 /projects/
+
+# 录屏 helper 编译产物（Task 9 build-macos-helper.sh 生成）
+/crates/desktop/binaries/

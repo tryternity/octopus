@@ -73,7 +73,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     const handler = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") { setCapturingKey(null); return; }
+      // ESC 用于退出捕获（octopus 全局通用停止键）
+      if (e.key === "Escape") {
+        setCapturingKey(null);
+        return;
+      }
       // 纯修饰键不触发，等待用户按实际键
       if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
       const parts: string[] = [];
@@ -209,6 +213,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             )}
             <Row label={t("settings.general.screenshotShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.screenshotShortcutHint")}>
               <ShortcutButton shortcut={cfg.screenshot_shortcut as string} capturing={capturingKey === "screenshot_shortcut"} onClick={() => startShortcutCapture("screenshot_shortcut")} />
+            </Row>
+            {/* 录屏快捷键（config-driven，与 screenshot 同模式，支持热重载）。
+                停止录屏固定 ESC 不暴露（octopus 全局通用停止键）。 */}
+            <Row label={t("settings.general.recordShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.recordShortcutHint")}>
+              <ShortcutButton shortcut={cfg.record_shortcut as string} capturing={capturingKey === "record_shortcut"} onClick={() => startShortcutCapture("record_shortcut")} />
             </Row>
             <Row label={t("settings.general.clipboardShortcut")} effect={t("settings.effect.now")}>
               <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />

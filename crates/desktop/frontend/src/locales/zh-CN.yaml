@@ -66,6 +66,48 @@ settings:
     prompts: 提示配方
     system: 系统状态
     vault: 密码保险库
+    recordings: 录屏管理
+  recordings:
+    title: 录屏
+    subtitle: 管理屏幕录制文件
+    # 搜索框（P2 启用全文搜索前禁用）
+    searchPlaceholder: P2 启用全文搜索
+    # 列表
+    selectedN: 已选 ${n} 项
+    selectAll: 全选
+    empty: 还没有录屏文件。按 Cmd+Shift+R 开始第一次录制。
+    loading: 加载中...
+    loadFailed: "加载录屏列表失败："
+    totalN: 共 ${n} 条录屏
+    deleteFailed: "删除失败："
+    deleted: 已删除
+    deletedN: 已删除 ${n} 条
+    confirmDeleteN: 确认删除 ${n} 项
+    deleteSelected: 删除选中
+    # 行操作
+    play: 播放
+    reveal: 在 Finder 中显示
+    favorite: 收藏
+    unfavorite: 取消收藏
+    delete: 删除
+    deleteConfirm: 再次点击确认删除
+    transcript: 转字幕
+    transcriptTooltip: 需下载 ASR 模型，点击跳转
+    recording: 录制中
+    paused: 已暂停
+    # 录制控制按钮（2026-07-25 加：Cmd+Shift+R 直接开录后，panel 也要有按钮入口）
+    startBtn: 开始录制
+    starting: 启动中...
+    pauseBtn: 暂停
+    resumeBtn: 恢复
+    startFailed: "启动录制失败："
+    # 权限
+    permission:
+      notDetermined: 需要屏幕录制权限。
+      notDeterminedAction: 申请权限
+      denied: 屏幕录制权限被拒。
+      deniedAction: 打开系统设置
+      checkFailed: "权限检查失败："
   vault:
     title: 密码保险库
     description: 端到端加密存储你的登录凭证，自动填充网页登录表单
@@ -334,12 +376,14 @@ settings:
     polishShortcutHint: 对当前识别结果立即润色
     editShortcut: 语音编辑
     editShortcutHint: 任意应用聚焦时唤起结果窗并编辑
-    clipboardShortcut: 剪贴板浮窗
-    actionBarShortcut: 快捷操作面板
+    clipboardShortcut: 剪贴板
+    actionBarShortcut: 操作面板
     actionBarShortcutHint: 选中文本后按此键唤起
-    vaultAutotypeShortcut: 召唤密码箱
+    vaultAutotypeShortcut: 密码箱
     vaultAutotypeShortcutHint: 在浏览器登录页按此键，自动匹配并填充密码
-    screenshotShortcut: 截图OCR
+    screenshotShortcut: 截图
+    recordShortcut: 录屏
+    recordShortcutHint: 弹出配置浮窗选源后开始；录制中按此键暂停/恢复；停止按 ESC
     screenshotShortcutHint: 截取屏幕区域并识别文字
     recording: 语音识别
     recogLang: 识别语言
@@ -768,6 +812,8 @@ tray:
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine}
+  recordStart: 开始录屏（${shortcut}）
+  recordStop: 停止录屏  ${shortcut}
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
@@ -960,3 +1006,25 @@ imagePreview:
     solidFill: 实心填充
 vaultPicker:
   searchPlaceholder: 搜索密码条目（名称 / 用户名 / 网址）...
+
+recordConfig:
+  title: 录制设置
+  cancel: 取消
+  startBtn: 开始录制
+  starting: 启动中...
+  tabDisplay: 全屏
+  tabWindow: 窗口
+  tabArea: 区域
+  systemAudio: 系统声音
+  microphone: 麦克风
+  noSource: 请先选择录制源
+  noDisplays: 未找到可用显示器
+  noWindows: 未找到可用窗口
+  areaNotSelected: 请先选择录制区域
+  areaPlaceholder: 拖动鼠标选择录制区域，松开即确认，按 Esc 取消
+  areaPick: 选择区域
+  areaReselect: 重新选择
+  areaClear: 清除
+  areaSelected: 已选区域
+  loadFailed: "加载源列表失败："
+  startFailed: "启动录制失败："

@@ -15,3 +15,24 @@ static OCTOPUS_HOME: Lazy<PathBuf> = Lazy::new(|| {
 pub fn octopus_config_home() -> &'static Path {
     OCTOPUS_HOME.as_path()
 }
+
+// ── 录屏 ───────────────────────────────────────────────────────────
+
+/// 录屏输出目录：~/.octopus/recordings/
+/// 不存在时由调用方在 start_recording 前创建。
+pub fn recordings_dir() -> PathBuf {
+    octopus_config_home().join("recordings")
+}
+
+/// 解析 recordings 表里的相对路径为绝对路径。
+/// file_path 字段存 "recordings/xxx.mp4" 这种相对路径，
+/// 运行时 join octopus_config_home() 得到绝对路径。
+pub fn resolve_recording_path(relative: &str) -> PathBuf {
+    octopus_config_home().join(relative)
+}
+
+/// 录屏 helper 子进程的 stdout/stderr 日志路径：~/.octopus/logs/record-helper.log
+/// （logs 目录约定与 desktop/action_bar_commands.rs、desktop/perf_log.rs 一致。）
+pub fn record_helper_log() -> PathBuf {
+    octopus_config_home().join("logs").join("record-helper.log")
+}

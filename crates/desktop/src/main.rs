@@ -68,6 +68,27 @@ mod pipeline;
 mod result_window;
 mod screenshot_commands;
 mod screenshot_geometry;
+// 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
+// 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
+// 对应 invoke_handler 注册项也用 cfg gate（见下方 generate_handler!）。
+#[cfg(target_os = "macos")]
+mod record_commands;
+// 录屏全局快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
+// 与 record_commands 同样仅 macOS 编译。
+#[cfg(target_os = "macos")]
+mod record_hotkey;
+// 录屏配置浮窗（Cmd+Shift+R 弹出，选 display/window/area + 音频开关）。
+// 仅 macOS（录屏 helper 只 mac 实现）。
+#[cfg(target_os = "macos")]
+mod record_window;
+// 录屏区域选区 picker（多屏全屏透明覆盖，用户拖框选区域）。
+// 仅 macOS。复用 screenshot 的窗口创建 + 坐标换算模式。
+#[cfg(target_os = "macos")]
+mod record_area_picker;
+// 录屏标注 overlay 窗口（录屏开始后显示，普通 level 让 SCK 录到）。
+// 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
+#[cfg(target_os = "macos")]
+mod record_annotation_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -524,6 +545,63 @@ pub fn run() {
             translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
             perf_log::perf_log_cmd,
+            // ── 录屏（2026-07-25 screen record MVP，Task 10）──────────
+            // 仅 macOS 编译；record_commands 模块整体 cfg(target_os = "macos")。
+            // 5 个控制命令用 record_* 前缀避免与 coordinator::start_recording（ASR 录音）冲突。
+            #[cfg(target_os = "macos")]
+            record_commands::list_record_displays,
+            #[cfg(target_os = "macos")]
+            record_commands::list_record_windows,
+            #[cfg(target_os = "macos")]
+            record_commands::list_microphones,
+            #[cfg(target_os = "macos")]
+            record_commands::check_record_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::request_screen_record_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::open_privacy_settings,
+            #[cfg(target_os = "macos")]
+            record_commands::record_start,
+            #[cfg(target_os = "macos")]
+            record_commands::record_start_default,
+            #[cfg(target_os = "macos")]
+            record_commands::record_pause,
+            #[cfg(target_os = "macos")]
+            record_commands::record_resume,
+            #[cfg(target_os = "macos")]
+            record_commands::record_stop,
+            #[cfg(target_os = "macos")]
+            record_commands::record_kill,
+            // 录屏区域选区 picker（Cmd+Shift+R → area tab → 选择区域）
+            #[cfg(target_os = "macos")]
+            record_area_picker::start_record_area_picker,
+            #[cfg(target_os = "macos")]
+            record_area_picker::show_record_area_picker_window,
+            #[cfg(target_os = "macos")]
+            record_area_picker::confirm_record_area_picker,
+            #[cfg(target_os = "macos")]
+            record_area_picker::cancel_record_area_picker,
+            // 标注 overlay（录屏开始后显示，A 键切标注/透传模式）
+            #[cfg(target_os = "macos")]
+            record_annotation_window::set_annotation_passthrough,
+            #[cfg(target_os = "macos")]
+            record_commands::list_recordings,
+            #[cfg(target_os = "macos")]
+            record_commands::get_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::get_recording_thumbnail,
+            #[cfg(target_os = "macos")]
+            record_commands::rename_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::toggle_recording_favorite,
+            #[cfg(target_os = "macos")]
+            record_commands::delete_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::restore_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::open_recording_file,
+            #[cfg(target_os = "macos")]
+            record_commands::reveal_recording,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -577,6 +655,19 @@ pub fn run() {
                     octopus_clipboard::cleanup::run_cleanup(conn, max_age, max_items)
                 }) {
                     log::warn!("Startup clipboard cleanup failed: {}", e);
+                }
+            }
+
+            // 录屏孤儿清理（2026-07-25 screen record MVP，Task 11）：
+            // 上次 crash / kill 残留的 .mp4 没入库，启动时扫 recordings/ 删掉。
+            // 仅 macOS 编译（record crate 暂只 mac provider）。
+            #[cfg(target_os = "macos")]
+            {
+                if let Err(e) = octopus_infra::db::with_db(|conn| {
+                    cleanup_orphan_recordings(conn);
+                    Ok::<_, anyhow::Error>(())
+                }) {
+                    log::warn!("Startup orphan recording cleanup failed: {}", e);
                 }
             }
 
@@ -817,6 +908,19 @@ pub fn run() {
             action_bar_window::create_action_bar_window(app.handle());
             overlay_window::create_overlay_window(app.handle());
             action_hotkey::register_action_hotkeys(app.handle());
+            // 录屏快捷键（config-driven，与 screenshot 同模式）：
+            // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
+            #[cfg(target_os = "macos")]
+            {
+                if !config.record_shortcut.is_empty() {
+                    if let Err(e) = record_hotkey::register_record_hotkeys(
+                        app.handle(),
+                        &config.record_shortcut,
+                    ) {
+                        log::warn!("[record] 快捷键注册失败: {e}");
+                    }
+                }
+            }
             if !config.action_bar_shortcut.is_empty() {
                 if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
                     log::error!("Failed to register action bar shortcut: {}", e);
@@ -979,6 +1083,55 @@ pub fn run() {
             );
             app.manage(coordinator);
 
+            // 录屏会话状态（Task 10，2026-07-25 screen record MVP）：
+            // RecordSession 内部已用 Arc<tokio::sync::Mutex<...>> 持有 helper 子进程句柄，
+            // 这里直接 manage 不再外层包 Mutex。仅 macOS 编译（windows/linux provider 待适配）。
+            #[cfg(target_os = "macos")]
+            app.manage(octopus_record::RecordSession::new());
+            // 录屏配置浮窗预创建（visible=false，Cmd+Shift+R 触发时 show）。
+            // 与 overlay_window 同模式——启动时建好窗口壳，触发时只 set_position + show，
+            // 避免按需创建的 ~200ms 启动延迟（用户期望快捷键立即响应）。
+            #[cfg(target_os = "macos")]
+            record_window::create_record_window(app.handle());
+
+            // 标注 overlay 的「停止录制」按钮 emit record://stop-requested。
+            // 监听后调 stop_and_store（与 ESC/tray 同路径，读 session 快照入库）。
+            #[cfg(target_os = "macos")]
+            {
+                let app_handle = app.handle().clone();
+                let _ = app.handle().listen("record://stop-requested", move |_event| {
+                    log::info!("[record] stop-requested from annotation overlay");
+                    let ah = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        use octopus_record::SessionState;
+                        let session = match ah.try_state::<octopus_record::RecordSession>() {
+                            Some(s) => s,
+                            None => {
+                                log::warn!("[record] stop-requested: RecordSession 未找到");
+                                return;
+                            }
+                        };
+                        let st = session.state().await;
+                        if st != SessionState::Recording && st != SessionState::Paused {
+                            log::info!("[record] stop-requested 在非录制态忽略（state={:?}）", st);
+                            return;
+                        }
+                        match crate::record_commands::stop_and_store(&session, false, None).await {
+                            Ok(Some(meta)) => {
+                                log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
+                                crate::record_annotation_window::close_annotation_window(&ah);
+                                let _ = ah.emit("record://stopped", &meta);
+                            }
+                            Ok(None) => log::info!("[record] stop 返回 None"),
+                            Err(e) => {
+                                log::error!("[record] stop + 入库失败: {e}");
+                                let _ = ah.emit("record://stop-failed", &e);
+                            }
+                        }
+                    });
+                });
+            }
+
             // 4. Initialize i18n + Create Tray
             i18n::init(&config.ui_language);
             if let Err(e) = tray::create_tray(app.handle(), &config) {
@@ -1057,6 +1210,48 @@ pub fn run() {
                 db_queue::shutdown_db();
             }
         });
+}
+
+/// 启动时孤儿录屏文件清理。
+///
+/// 场景：上次录制 crash / 强制 kill 后，helper 写出的 .mp4 没入库就成了孤儿。
+/// 启动时扫 `recordings/`，DB 不认得的文件直接删除（避免占用磁盘）。
+///
+/// 与 clipboard cleanup 同模式：通过 `octopus_infra::db::with_db` 拿连接，
+/// 调 `RecordStore::list_all_file_paths` 取 DB 已知 file_path 集合，
+/// 再扫目录比对。失败不阻塞启动（log::warn 继续）。
+#[cfg(target_os = "macos")]
+fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
+    let store = octopus_record::RecordStore::new(conn);
+    let known_files = match store.list_all_file_paths() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[record] 孤儿清理查询失败: {e}");
+            return;
+        }
+    };
+
+    let recordings_dir = octopus_infra::paths::recordings_dir();
+    let entries = match std::fs::read_dir(&recordings_dir) {
+        Ok(e) => e,
+        Err(_) => return, // 目录不存在是正常的（首次启动或从未录制过）
+    };
+
+    // file_path 字段在 DB 里存 "recordings/xxx.mp4" 相对路径，
+    // 与 octopus_config_home().join(rel) 的反向操作。用 octopus_config_home 作 strip_prefix 锚点
+    // （brief 写的 octopus_root 不存在；Task 7 已确认 infra 只有 octopus_config_home）。
+    let octopus_root = octopus_infra::paths::octopus_config_home().to_path_buf();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = match path.strip_prefix(&octopus_root) {
+            Ok(r) => r.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+        if !known_files.contains(&rel) {
+            log::warn!("[record] 孤儿文件清理: {rel}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。

@@ -466,13 +466,49 @@ fn migrate_v49_to_v50(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v50→v51：新增 recordings / recordings_thumbnails 表 + 12 条录屏 app_config seed。
+///
+/// **重要**：必须在 migrate 函数内显式跑 db.sql 的 CREATE TABLE/INSERT 段——
+/// 历史版本曾假设「init_schema 末尾会重新跑一次 db.sql 全文」是错的：v>=17 的现有库
+/// 走 migrate 分支后直接 return Ok，从不重跑 db.sql，导致表实际未创建（运行时
+/// `no such table: recordings`，2026-07-25 实测踩坑）。
+///
+/// 修复：本函数显式 `execute_batch(INIT_SQL)` 跑一次完整 db.sql。db.sql 全用
+/// `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`，对已有表/数据幂等无副作用，
+/// 只补建缺失的 recordings / recordings_thumbnails 表 + 缺失的 record_* seed。
+fn migrate_v50_to_v51(conn: &Connection) -> Result<()> {
+    log::info!("schema v51: 跑 db.sql 补建 recordings / recordings_thumbnails 表 + record_* seed");
+    conn.execute_batch(INIT_SQL)
+        .context("migrate_v50_to_v51: execute_batch INIT_SQL")?;
+    conn.execute("PRAGMA user_version = 51", [])?;
+    log::info!("schema upgraded to v51 (recordings 表)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 50 {
-        // v50+ 已最新，直接返回。
+    if v >= 51 {
+        // v51+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
+        // migrate_v50_to_v51 曾漏跑 db.sql 致 version 升到 51 但表没建（运行时
+        // `no such table: recordings`，2026-07-25 实测）。这里自愈：若 v51 但表缺失，
+        // 重跑 INIT_SQL 补建（IF NOT EXISTS 幂等，对正常 v51 库无副作用）。
+        let has_recordings = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
+            .exists([])?;
+        if !has_recordings {
+            log::warn!("schema v51+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
+            conn.execute_batch(INIT_SQL)
+                .context("self-heal: execute_batch INIT_SQL for missing recordings table")?;
+            log::info!("recordings 表自愈完成");
+        }
+        return Ok(());
+    }
+
+    if v == 50 {
+        migrate_v50_to_v51(conn)?;
         return Ok(());
     }
 
@@ -6689,5 +6725,82 @@ mod vault_schema_tests {
             [],
         );
         assert!(result.is_err(), "CHECK(id=1) 应阻止 id=2 的插入");
+    }
+
+    /// 回归测试：v50→v51 migrate 必须真正创建 recordings 表。
+    ///
+    /// 背景（2026-07-25 实测 bug）：原 migrate_v50_to_v51 注释声称「init_schema 末尾会
+    /// 重新跑一次 db.sql」是错的——v>=17 现有库走 migrate 分支后直接 return Ok，
+    /// 从不重跑 db.sql，导致 version 升到 51 但 recordings 表从未创建，运行时报
+    /// `no such table: recordings`。修复后 migrate_v50_to_v51 显式 execute_batch(INIT_SQL)。
+    #[test]
+    fn test_migrate_v50_to_v51_creates_recordings_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 模拟损坏的 v50 库：跑 db.sql 建 v50 之前的所有表 + DROP recordings 模拟缺失
+        // （更真实的做法是手工建一组 v50 表，但 db.sql IF NOT EXISTS 幂等且含所有 v50 表，
+        //  跑完后 DROP recordings 即可模拟「v50 库升级到 v51 但 recordings 没建」的损坏态）
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 50", []).unwrap();
+        // 删掉 recordings 表 + thumbnails 模拟 migrate_v50_to_v51 漏建
+        conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
+        conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
+        // 验证损坏态
+        let has_before: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!has_before, "测试前置：recordings 表应不存在");
+
+        // 跑 migrate_v50_to_v51（直接调内部函数，不绕 init_schema）
+        migrate_v50_to_v51(&conn).unwrap();
+
+        // 验证修复
+        let has_after: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_after, "migrate_v50_to_v51 后 recordings 表应存在");
+
+        let has_thumb: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings_thumbnails')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_thumb, "migrate_v50_to_v51 后 recordings_thumbnails 表应存在");
+
+        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 51, "migrate 后 user_version 应为 51");
+    }
+
+    /// 回归测试：v51+ 自愈——schema version 已 51 但 recordings 表缺失时（历史 bug
+    /// 残留的损坏库），init_schema 应自动重跑 db.sql 补建。
+    #[test]
+    fn test_init_schema_self_heals_missing_recordings_at_v51() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 51", []).unwrap();
+        // 模拟损坏态：version 51 但表被 DROP（模拟历史 migrate 漏跑的残留）
+        conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
+        conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
+
+        // init_schema 应自愈
+        init_schema(&conn).unwrap();
+
+        let has: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has, "v51+ 自愈：recordings 表缺失时 init_schema 应补建");
     }
 }

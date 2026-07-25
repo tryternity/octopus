@@ -92,6 +92,10 @@ octopus-translation = { path = "../translation" }
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }
 
+# rusqlite：vault_commands / record_commands 直接拿 &Connection 调 store 层 API。
+# 与 octopus-infra / octopus-record 同版本（0.31 + bundled），避免 ABI 不一致。
+rusqlite = { workspace = true }
+
 # 通用下载 crate（模型管理页下 HF 模型，复用阶段1 能力）
 octopus-download = { path = "../download" }
 
@@ -155,6 +159,10 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSData", "NSStr
 core-graphics = { version = "0.24", features = ["highsierra", "elcapitan"] }
 core-foundation = "0.10"
 
+# 录屏（Task 10，2026-07-25 screen record MVP）：macOS 专用，windows/linux 待后续平台适配。
+# 与 objc2 等 macOS 专属依赖同段 gate，避免在非 mac 编译时引入 helper 二进制依赖。
+octopus-record = { path = "../record" }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
@@ -178,4 +186,5 @@ glib = "0.18"
 [dev-dependencies]
 tempfile = "3"
 # 仅测试时用 in-memory SQLite 注入 vault DB（与 octopus-vault 测试同构）
+# 已在 [dependencies] 主依赖段（见上），此处保留仅为历史兼容；下版本清理。
 rusqlite = { version = "0.31", features = ["bundled"] }

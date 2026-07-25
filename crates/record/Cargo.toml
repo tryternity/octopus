@@ -1,0 +1,25 @@
+[package]
+name = "octopus-record"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["process", "sync", "io-util", "time", "rt", "rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+log = "0.4"
+rusqlite = { workspace = true }
+octopus-infra = { path = "../infra" }
+
+[dev-dependencies]
+tempfile = "3"
+
+# mock-helper：测试用的假 helper 二进制（被 tests/session_integration.rs spawn）。
+# 放 src/bin/ 而非 tests/——tests/ 下的 .rs 会被 cargo 自动当 integration test target，
+# 与显式 [[bin]] 声明冲突（warning: multiple build targets）。
+# binary 名用连字符 mock-helper（与 session_integration.rs::mock_helper_path 查找一致）。
+[[bin]]
+name = "mock-helper"
+path = "src/bin/mock_helper.rs"
+

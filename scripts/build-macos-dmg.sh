@@ -79,6 +79,21 @@ if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
 fi
 (cd "$FRONTEND_DIR" && npm run build)
 
+# ── 1b. 构建录屏 helper（macOS only，Task 15 集成）──────────────────────────
+# 必须在 cargo tauri build 之前：Tauri bundler 按 tauri.conf.json resources 配置
+# 把 crates/desktop/binaries/octopus-sck-helper 拷进 .app/Contents/Resources/binaries/。
+# 缺失会让打包报 resources not found。
+echo "[build-dmg] 构建录屏 helper (universal binary)..."
+"$REPO_ROOT/scripts/build-macos-helper.sh" || {
+  echo "[build-dmg] ⚠️ helper 编译失败，跳过录屏 helper 打包" >&2
+  echo "[build-dmg] （录屏功能不可用，其他功能不受影响）" >&2
+}
+# 验证产物存在——Tauri resources 配置指向 binaries/octopus-sck-helper
+if [[ ! -f "$DESKTOP_DIR/binaries/octopus-sck-helper" ]]; then
+  echo "[build-dmg] ⚠️ helper 产物未找到：$DESKTOP_DIR/binaries/octopus-sck-helper" >&2
+  echo "[build-dmg]    DMG 里的录屏功能将不可用（其他功能正常）" >&2
+fi
+
 # ── 2. cargo tauri build（仅 .app，dmg 用 hdiutil 自己打）───────────────────
 # tauri build 原生 -f 传 features；profile 通过 -- 透传给底层 cargo。
 # 产物在 target/<profile>/：release profile → target/release/，optimize → target/optimize/。

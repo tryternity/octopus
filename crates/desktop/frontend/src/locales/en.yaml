@@ -66,6 +66,43 @@ settings:
     prompts: Prompts
     system: System
     vault: Password Vault
+    recordings: Recording Library
+  recordings:
+    title: Recordings
+    subtitle: Manage your screen recordings
+    searchPlaceholder: Full-text search coming in P2
+    selectedN: ${n} selected
+    selectAll: Select all
+    empty: No recordings yet. Press Cmd+Shift+R to start your first recording.
+    loading: Loading...
+    loadFailed: "Failed to load recordings:"
+    totalN: ${n} recordings
+    deleteFailed: "Delete failed:"
+    deleted: Deleted
+    deletedN: Deleted ${n} recordings
+    confirmDeleteN: Confirm delete ${n}
+    deleteSelected: Delete selected
+    play: Play
+    reveal: Reveal in Finder
+    favorite: Favorite
+    unfavorite: Unfavorite
+    delete: Delete
+    deleteConfirm: Click again to confirm
+    transcript: Transcribe
+    transcriptTooltip: Requires ASR model, click to download
+    recording: Recording
+    paused: Paused
+    startBtn: Start Recording
+    starting: Starting...
+    pauseBtn: Pause
+    resumeBtn: Resume
+    startFailed: "Failed to start recording: "
+    permission:
+      notDetermined: Screen recording permission required.
+      notDeterminedAction: Request permission
+      denied: Screen recording permission denied.
+      deniedAction: Open System Settings
+      checkFailed: "Permission check failed:"
   vault:
     title: Password Vault
     description: End-to-end encrypted storage for your login credentials with web form auto-fill
@@ -333,13 +370,15 @@ settings:
     polishShortcutHint: Polish current recognition result
     editShortcut: Voice Edit
     editShortcutHint: Invoke result window when any app is focused
-    clipboardShortcut: Clipboard Float
-    actionBarShortcut: Quick Panel
+    clipboardShortcut: Clipboard
+    actionBarShortcut: Action Panel
     actionBarShortcutHint: Press this key after selecting text
-    vaultAutotypeShortcut: Summon Vault
+    vaultAutotypeShortcut: Vault
     vaultAutotypeShortcutHint: Press this key on a browser login page to auto-fill passwords
-    screenshotShortcut: Screenshot OCR
+    screenshotShortcut: Screenshot
     screenshotShortcutHint: Capture screen region and recognize text
+    recordShortcut: Recording
+    recordShortcutHint: Show config float; pause/resume while recording; press ESC to stop
     recording: Voice Recognition
     recogLang: Recognition Language
     recogAuto: Auto
@@ -767,6 +806,8 @@ tray:
   settings: Settings
   quit: Quit
   engineInfo: Engine  ${engine}
+  recordStart: Start Recording (${shortcut})
+  recordStop: Stop Recording  ${shortcut}
 
 # ════════ ActionBar ════════
 actionbar:
@@ -958,3 +999,25 @@ imagePreview:
     solidFill: Solid Fill
 vaultPicker:
   searchPlaceholder: Search passwords (name / username / URL)...
+
+recordConfig:
+  title: Recording Settings
+  cancel: Cancel
+  startBtn: Start Recording
+  starting: Starting...
+  tabDisplay: Display
+  tabWindow: Window
+  tabArea: Area
+  systemAudio: System Audio
+  microphone: Microphone
+  noSource: Please select a recording source
+  noDisplays: No displays found
+  noWindows: No windows found
+  areaNotSelected: Please select a recording area
+  areaPlaceholder: Drag to select recording area, release to confirm, Esc to cancel
+  areaPick: Pick Area
+  areaReselect: Reselect
+  areaClear: Clear
+  areaSelected: Selected
+  loadFailed: "Failed to load sources: "
+  startFailed: "Failed to start recording: "

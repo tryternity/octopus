@@ -5377,6 +5377,7 @@ dependencies = [
  "octopus-infra",
  "octopus-llm",
  "octopus-ocr",
+ "octopus-record",
  "octopus-scheduler",
  "octopus-search",
  "octopus-sync",
@@ -5508,6 +5509,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "unicode-bidi",
+]
+
+[[package]]
+name = "octopus-record"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "octopus-infra",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
