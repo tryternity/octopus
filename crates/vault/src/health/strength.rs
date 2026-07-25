@@ -51,6 +51,19 @@ pub fn evaluate(password: &str) -> PasswordStrength {
 
         // 综合：取 zxcvbn 模式识别 score 和熵估算的较低者
         // （两者都高才高——防止"长但重复"或"短采样恰好高熵"误报）
+        //
+        // S-THRESHOLD（2026-07-25）阈值依据：超长路径的 entropy_score 阈值
+        // （28/36/60/128 bit）比 zxcvbn 正常路径的 Score 边界（log2 换算约
+        // 6.6/13.3/19.9/26.6 bit）高得多。原因：两者度量不同——
+        //   - zxcvbn score 基于 guesses（实际攻击成本，含模式识别）
+        //   - independent_entropy 基于 字符级熵（char_count × log2(unique)，
+        //     假设每字符独立，但超长密码常有重复/模式 → 高估）
+        // 由于 independent_entropy 系统性高估（不考虑字符间相关性），需要更高
+        // 阈值才能达到 zxcvbn 同等安全保证。这些是经验值，非 OWASP/NIST 标准——
+        // 超长密码（>1KB）超出 zxcvbn 设计范围，无权威阈值可循。实践中超长密码
+        // 的 independent_entropy 要么极高（真随机 → score 4）要么极低（unique 极少
+        // → score 0），中间地带少，最终 score 基本由 pattern_score 决定，阈值
+        // 主要兜底 unique 极少的边界情况。
         let entropy_score: u8 = if independent_entropy < 28.0 {
             0
         } else if independent_entropy < 36.0 {

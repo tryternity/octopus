@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **239** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **240** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -749,3 +749,36 @@ generator/ 是密码生成器命门（弱随机=可爆破密码）。本轮处�
 - **长度边界校验**：random.rs length 5..=128 / passphrase_en word_count 3..=10 / pin 有上限
 - **avoid_ambiguous**：random.rs:39-41 过滤 l/1/I/O/0 等易混淆字符
 - **zh 词表守护扎实**：size 4096 + no_duplicates + all_two_cjk（EFF 词表现在对齐补齐）
+
+---
+
+## 第二十三轮审查修复（2026-07-25，health/ 全模块：S-THRESHOLD/D5 + D-NOSALT 文档化）
+
+health/ 含 zxcvbn 强度评估 + 重复密码检测。演进修复扎实（8.5→M1→N1 超长密码处理）。
+
+### S-THRESHOLD: 超长路径 entropy_score 阈值无依据注释（低，可观测）
+
+**问题**：strength.rs:54-64 超长路径（>1KB）的 entropy_score 分段阈值 28/36/60/128 bit，比 zxcvbn 正常路径的 Score 边界（log2 换算约 6.6/13.3/19.9/26.6 bit）高得多。注释未说明来源（OWASP？NIST？经验值？），后续维护者无法判断合理性。
+
+**修复**：补注释说明阈值依据——超长路径的 `independent_entropy`（char_count × log2(unique)）与 zxcvbn 的 guesses（实际攻击成本）度量不同：independent_entropy 假设每字符独立，但超长密码常有重复/模式 → 系统性高估，需更高阈值达到同等安全保证。这些是经验值（超长密码超出 zxcvbn 设计范围，无权威阈值），实践中中间地带少，最终 score 基本由 pattern_score 决定。
+
+### D5: duplicate_groups 顺序不确定（低，UX）
+
+**问题**：duplicate.rs:55 `HashMap.into_iter().collect()` 组间顺序不确定（HashMap 迭代序随机）。组内 cipher_ids 顺序确定（按遍历 push），但组间无序——健康报告的重复组列表每次刷新可能变。
+
+**修复**：收集后按首个 cipher_id 排序。回归测试 `test_duplicate_groups_order_stable`（20 次循环验证 3 组顺序固定为 c1<c3<c5）。
+
+### D-NOSALT: 重复检测无盐 SHA-256（信息性，设计正确）
+
+**问题**：duplicate.rs:47-49 对 password 算无盐 SHA-256 用于内存分组。
+
+**状态**：设计正确，非缺陷。重复检测的固有需求——加盐会让相同明文产生不同哈希，破坏"相同密码→同组"语义。已有充分缓解：hash 仅内存（不持久化）+ `#[serde(skip)]` 不跨 IPC + Debug redact（#12）。唯一边际增强是 peppering（HMAC-SHA256(pepper)），但 pepper 须存内存（与 hash 同级泄露则失效），收益边际，不实施。
+
+### 正面发现（health/）
+
+- **zxcvbn 集成**：strength.rs 用 zxcvbn 做模式识别（重复/循环/键盘序列/字典词），比纯熵公式更准
+- **超长密码演进**：8.5（char×6.0 误报）→ M1（unique.log2×count 堵 unique=1）→ N1（取前 256 字符跑 zxcvbn 做模式识别 + 完整长度估熵取较低者）
+- **H2 entropy_bits 一致性**：zxcvbn 识别到低熵模式时，entropy_bits 用 score 对应上限，避免「2048 bit 却 score=0」矛盾显示
+- **L6 软删过滤**：duplicate.rs:40 跳过 deleted_at 的 cipher
+- **#12 Debug redact**：DuplicateGroup 手写 Debug 对 password_hash redact
+- **H1 签名优化**：find_duplicates 收 `&[&Cipher]` 避免调用方深拷贝
