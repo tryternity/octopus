@@ -1,7 +1,8 @@
-# Vault 安全加固（第二轮代码审查修复）
+# Vault 安全加固（多轮代码审查修复汇总）
 
-**日期**：2026-07-24
-**状态**：已实现并测试通过（vault 213 / desktop 396）
+**日期**：2026-07-24 起，持续至 2026-07-25
+**状态**：已实现并测试通过。最新基线：vault **240** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
 ## 背景
@@ -407,26 +408,6 @@
 
 ---
 
-## 第十五轮审查修复（2026-07-24，S1/S2/S3）
-
-### S1: soft_delete/restore 两步非原子（中，数据一致性）
-
-**问题**：soft_delete/restore 是「UPDATE deleted_at」+「读 row 算 md5 + UPDATE sync_md5」两次独立 autocommit。若第 2 步失败（DB 锁超时/磁盘满/事务冲突），deleted_at 已改但 sync_md5 仍旧 → incremental_export 用旧 sync_md5 对比旧 outline.md5 → 一致 → 文件不重写 → 删除状态不传播到其他设备。
-
-**修复**：合并为单事务（`unchecked_transaction` 内 UPDATE deleted_at → SELECT row → 算 md5 → UPDATE sync_md5 → COMMIT）。db 层 `load_vault_cipher_at` 改 pub 供 vault crate 事务内调用。
-
-### S2: save_cipher 无锁 RMW（低-中，文档化）
-
-**问题**：save_cipher 读 existing_deleted_at（H2）后 update，期间无锁 → 并发 soft_delete 可能被撤销。
-
-**状态**：文档化。报告自评「UI 单焦点下概率低」。完整修复需给所有 cipher 写路径加事务（soft_delete/restore 已修，save_cipher 的 RMW 改事务需重构）。
-
-### S3: rename_folder 全表扫（低，文档化）
-
-L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
-
----
-
 ## 第十四轮审查修复（2026-07-24，ER1/HW1/HW3）
 
 > 补录：commit `0f8b259a` 已 push 但本轮此前缺独立章节，现补。
@@ -453,6 +434,26 @@ L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) �
 
 - **HW2**（pull 缺删除传播）：E1 同类，需 tombstone 机制（Phase 2）
 - **G2-minor** / **ER2** / **HW4**：低危，文档化
+
+---
+
+## 第十五轮审查修复（2026-07-24，S1/S2/S3）
+
+### S1: soft_delete/restore 两步非原子（中，数据一致性）
+
+**问题**：soft_delete/restore 是「UPDATE deleted_at」+「读 row 算 md5 + UPDATE sync_md5」两次独立 autocommit。若第 2 步失败（DB 锁超时/磁盘满/事务冲突），deleted_at 已改但 sync_md5 仍旧 → incremental_export 用旧 sync_md5 对比旧 outline.md5 → 一致 → 文件不重写 → 删除状态不传播到其他设备。
+
+**修复**：合并为单事务（`unchecked_transaction` 内 UPDATE deleted_at → SELECT row → 算 md5 → UPDATE sync_md5 → COMMIT）。db 层 `load_vault_cipher_at` 改 pub 供 vault crate 事务内调用。
+
+### S2: save_cipher 无锁 RMW（低-中，文档化）
+
+**问题**：save_cipher 读 existing_deleted_at（H2）后 update，期间无锁 → 并发 soft_delete 可能被撤销。
+
+**状态**：文档化。报告自评「UI 单焦点下概率低」。完整修复需给所有 cipher 写路径加事务（soft_delete/restore 已修，save_cipher 的 RMW 改事务需重构）。
+
+### S3: rename_folder 全表扫（低，文档化）
+
+L13 已文档化。报告自评「folder 数量通常个位数到几十，O(F) 可忽略」。
 
 ---
 
@@ -653,3 +654,131 @@ crypto/ 是 vault 的命门模块（KDF + 对称加密 + 密钥派生）。本�
 **问题**：`symmetric.rs:23 cipher.encrypt(nonce, plaintext)` 不传 AAD。密文不绑定 cipher_id / field_name 上下文——攻击者若能写 DB，可把 cipher A 的 password 密文复制到 cipher B 的 password 字段，decrypt 仍成功（同 user_vault_key），cipher B 显示 cipher A 的密码（密文移动/重放）。
 
 **状态**：文档化。单机威胁模型下"能写 DB = 攻击者已赢"，AAD 是纵深防御而非必需。加 AAD 需改 encrypt/decrypt 签名 + 所有调用点 + 密文格式（破坏向后兼容），代价大收益低。已在 symmetric.rs 模块注释说明设计取舍。
+
+---
+
+## 第二十一轮审查修复（2026-07-25，importer/types/matcher：I8/I-FOLDER-WARN + 4 项文档化）
+
+importer/types/matcher 整体质量高——MatchType 协议对齐、#11 空 URI 防御、Rust regex 免疫 ReDoS、M4 非法值可观测均经源码确认。
+
+### I8: 孤儿 folder 残留——M7 补偿未覆盖"batch 空成功"（中低，真实 bug）
+
+**问题**：`bitwarden.rs:298-307` 的 M7 补偿删除仅在 `insert_vault_ciphers_batch` 返回 Err 时触发。但 `db.rs:3799 insert_vault_ciphers_batch(&[])` 对空 batch 直接 `tx.commit()` 返回 `Ok(())`——不进 Err 分支，不补偿。
+
+**触发链**：用户从 Bitwarden 全量导出（含 SecureNote/Card/Identity），octopus 只支持 Login（type=1）→ items 全 skip（:220 `item_type != 1`）→ batch 空 → `Ok(())` → folder 循环（:188-211）已创建的 N 个 folder 全残留为孤儿（无任何 cipher 引用）。用户会在 folder 列表看到一堆空文件夹且无法理解来源。
+
+**修复**：batch 成功后，扫描 `created_folder_ids`，删掉没被 batch 里任何 cipher 引用的 folder。覆盖所有孤儿场景（batch_len==0 全孤儿 + batch_len>0 部分孤儿）。
+
+**回归测试**：`test_import_all_items_skipped_no_orphan_folders`（全 skip → folder 不残留）+ `test_import_partial_orphan_folders_cleaned`（部分孤儿 → 只清未引用的）。
+
+### I-FOLDER-WARN: folder 创建失败静默（低，可观测性）
+
+**问题**：`bitwarden.rs:206-209` create_folder 失败仅 `log::warn!`，不记入 errors/skipped。引用该 folderId 的 cipher 的 folder_id 静默降级为 None（folder_map 无此 id → get 返 None）→ cipher 仍导入但丢失文件夹归属，用户不知情。
+
+**修复**：失败时除 log 外，记入 `errors` 让导入报告可见。
+
+### M-REGEX: RegularExpression 正则每次匹配重新编译（低，文档化）
+
+**问题**：`matcher.rs:87 Regex::new(cipher_uri)` 每次 `find_matching_ciphers` 调用都重新编译正则（构建 NFA/DFA + 堆分配）。
+
+**状态**：文档化。无 ReDoS（Rust regex crate 线性时间引擎，无 catastrophic backtracking）、无 panic（`unwrap_or(false)`）。绝大多数用户 0 个 regex cipher → 零成本。优化需调用方在查询热路径加 `HashMap<uri, Regex>` 缓存，matcher 本身无状态不好缓存。
+
+### I-DEDUP-PERF: 导入为 dedup 全量解密库内 cipher（低，固有限制）
+
+**问题**：`bitwarden.rs:157 storage::list_ciphers(key)` 每次导入全量解密库内所有 cipher（name + data + fields + history），仅为算 (name, first_uri) dedup key。
+
+**状态**：文档化。AES-GCM nonce 随机致同明文不同密文，无法用密文去重，必须解密。Bitwarden 式字段级加密的固有代价。大库（数百+ cipher）+ 频繁导入时明显变慢，可考虑维护解密缓存或导入时增量比对。
+
+### I-DOSSIZE: 导入无输入大小限制（低，文档化）
+
+**问题**：`bitwarden.rs:146 serde_json::from_str(json)` + :219 `items.iter()` 对超大 JSON / 超大 items 数组无上限。恶意/损坏的 .json 可致 OOM 崩溃。
+
+**状态**：文档化。单机用户文件、非网络输入，威胁低。可加 items 数量上限（如 10 万）+ JSON 字节上限作为廉价纵深防御，暂不实施。
+
+### 正面发现（importer/types/matcher）
+
+- **MatchType 协议对齐**：types.rs:92-99 StartsWith=2/Exact=3 与 Bitwarden 官方 UriMatchType.cs 对齐（之前弄反致导入/导出 match 语义静默互换），守护测试锁住官方值
+- **M4 非法值可观测**：types.rs:38/68 CipherType/RepromptType 非法值兜底时 log::warn! 记迹（仍兜底为数据兼容，单机威胁模型诚实标注）
+- **#11 空 URI 视 Never**：matcher.rs:66-68 `cipher_uri.trim().is_empty()` 提前返回 false，挡住 `starts_with("")` 恒真与 `Regex::new("")` 恒真两类误匹配
+- **L12 大小写归一**：matcher.rs:78/105-112 Host 策略与 Domain 策略 to_lowercase，DNS host 不区分大小写
+- **Rust regex 免疫 ReDoS**：matcher.rs:87 `Regex::new` + `unwrap_or(false)`——regex crate 线性时间引擎，无 catastrophic backtracking，无效正则不 panic
+
+---
+
+## 第二十二轮审查修复（2026-07-25，generator/ 全模块：G-EFF-NOGUARD/G-YOYO-COLLIDE/R8/R5 + P4 文档化）
+
+generator/ 是密码生成器命门（弱随机=可爆破密码）。本轮处理词表守护缺失、注释措辞、数据结构低效。
+
+### G-EFF-NOGUARD: EFF 词表零守护测试（中低，与 zh 词表不对称）
+
+**问题**：`eff_wordlist.rs` 7776 行静态 const 零测试（zh_wordlist_4096 有 3 个守护：size/no_duplicates/all_two_cjk）。误删几行/引入重复词/编辑引入异常字符，CI 无任何守护，静默降熵。
+
+**修复**：在 `passphrase_en.rs` 测试模块补 3 个对齐 zh 词表的守护：
+- `test_eff_wordlist_size_7776`：大小恰好 7776
+- `test_eff_wordlist_no_duplicates`：原始词无重复
+- `test_eff_wordlist_no_dedash_collision`：去连字符后无新增碰撞（除已知 yo-yo/yoyo）
+
+### G-YOYO-COLLIDE: yo-yo/yoyo 去连字符碰撞，注释措辞不严谨（很低，信息性）
+
+**问题**：EFF 词表同时含 "yo-yo"（:7757）和 "yoyo"（:7762）。`passphrase_en.rs:34 w.replace('-', "")` 把 yo-yo→yoyo，与已有 yoyo 碰撞 → 实际唯一输出版 7775。但注释 :30-33 声称"保持源词熵不变"不严谨。
+
+**修复**：注释改为如实表述——熵损 = log2(7776/7775) ≈ 0.000186 bit/词，3-10 词总熵损 < 0.002 bit，可忽略；非 octopus 引入（EFF 官方词表固有）。`test_eff_wordlist_no_dedash_collision` 锁住此已知碰撞。
+
+### R8: 字符集 &[&str] 致每次 generate 多次 concat（低，性能）
+
+**问题**：`random.rs:10-22` UPPER/LOWER/DIGITS/SYMBOLS 是 `&[&str]`，`build_charset:28-37` 每次调用 4 次 `concat()` 堆分配拼 String 再 `.chars()`。字符集静态已知。
+
+**修复**：改 `&[char]` 常量，`build_charset` 用 `extend_from_slice` 零分配。强制类型选择逻辑同步简化（直接 choose 拿 char，无需 `.chars()` 转换）。
+
+### R5: random.rs:65 唯一 unwrap（低，整洁性）
+
+**问题**：`UPPER.choose(&mut rng).unwrap()` 是强制类型选择里唯一 unwrap（:72/82/92/102 都用 if let Some）。UPPER 非空 choose 必返 Some 不 panic，但风格不一致。
+
+**修复**：R8 改造时一并统一为 `if let Some`。
+
+### P4: include_number/symbol 固定末尾位置（低，文档化）
+
+**问题**：`passphrase_en.rs:50-61` / `passphrase_zh.rs:35-40` 追加的数字/符号总在末尾（非随机位置）。攻击者知道位置略降熵。
+
+**状态**：文档化。单字符位（log2(10)≈3.3 / log2(7)≈2.8 bit）影响极小，且位置固定便于用户识别。设计权衡。
+
+### 正面发现（generator/）
+
+- **OsRng CSPRNG**：random.rs:57 / passphrase_en.rs:24 / passphrase_zh.rs / pin.rs 均用 `OsRng`（OS 熵源），非弱 `thread_rng`
+- **#8 Zeroizing 中间材料**：random.rs:61 / passphrase_en.rs:27 生成过程的中间 Vec/String 用 Zeroizing，函数返回时清零 heap
+- **长度边界校验**：random.rs length 5..=128 / passphrase_en word_count 3..=10 / pin 有上限
+- **avoid_ambiguous**：random.rs:39-41 过滤 l/1/I/O/0 等易混淆字符
+- **zh 词表守护扎实**：size 4096 + no_duplicates + all_two_cjk（EFF 词表现在对齐补齐）
+
+---
+
+## 第二十三轮审查修复（2026-07-25，health/ 全模块：S-THRESHOLD/D5 + D-NOSALT 文档化）
+
+health/ 含 zxcvbn 强度评估 + 重复密码检测。演进修复扎实（8.5→M1→N1 超长密码处理）。
+
+### S-THRESHOLD: 超长路径 entropy_score 阈值无依据注释（低，可观测）
+
+**问题**：strength.rs:54-64 超长路径（>1KB）的 entropy_score 分段阈值 28/36/60/128 bit，比 zxcvbn 正常路径的 Score 边界（log2 换算约 6.6/13.3/19.9/26.6 bit）高得多。注释未说明来源（OWASP？NIST？经验值？），后续维护者无法判断合理性。
+
+**修复**：补注释说明阈值依据——超长路径的 `independent_entropy`（char_count × log2(unique)）与 zxcvbn 的 guesses（实际攻击成本）度量不同：independent_entropy 假设每字符独立，但超长密码常有重复/模式 → 系统性高估，需更高阈值达到同等安全保证。这些是经验值（超长密码超出 zxcvbn 设计范围，无权威阈值），实践中中间地带少，最终 score 基本由 pattern_score 决定。
+
+### D5: duplicate_groups 顺序不确定（低，UX）
+
+**问题**：duplicate.rs:55 `HashMap.into_iter().collect()` 组间顺序不确定（HashMap 迭代序随机）。组内 cipher_ids 顺序确定（按遍历 push），但组间无序——健康报告的重复组列表每次刷新可能变。
+
+**修复**：收集后按首个 cipher_id 排序。回归测试 `test_duplicate_groups_order_stable`（20 次循环验证 3 组顺序固定为 c1<c3<c5）。
+
+### D-NOSALT: 重复检测无盐 SHA-256（信息性，设计正确）
+
+**问题**：duplicate.rs:47-49 对 password 算无盐 SHA-256 用于内存分组。
+
+**状态**：设计正确，非缺陷。重复检测的固有需求——加盐会让相同明文产生不同哈希，破坏"相同密码→同组"语义。已有充分缓解：hash 仅内存（不持久化）+ `#[serde(skip)]` 不跨 IPC + Debug redact（#12）。唯一边际增强是 peppering（HMAC-SHA256(pepper)），但 pepper 须存内存（与 hash 同级泄露则失效），收益边际，不实施。
+
+### 正面发现（health/）
+
+- **zxcvbn 集成**：strength.rs 用 zxcvbn 做模式识别（重复/循环/键盘序列/字典词），比纯熵公式更准
+- **超长密码演进**：8.5（char×6.0 误报）→ M1（unique.log2×count 堵 unique=1）→ N1（取前 256 字符跑 zxcvbn 做模式识别 + 完整长度估熵取较低者）
+- **H2 entropy_bits 一致性**：zxcvbn 识别到低熵模式时，entropy_bits 用 score 对应上限，避免「2048 bit 却 score=0」矛盾显示
+- **L6 软删过滤**：duplicate.rs:40 跳过 deleted_at 的 cipher
+- **#12 Debug redact**：DuplicateGroup 手写 Debug 对 password_hash redact
+- **H1 签名优化**：find_duplicates 收 `&[&Cipher]` 避免调用方深拷贝

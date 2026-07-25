@@ -890,7 +890,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **Y+ 方案**：app_key 双密文——`app_key_local_enc`（用 K_machine 加密，本机无感启动）+ `app_key_sync_enc`（用 master_root_key 加密，跨机同步）。换机 / K_machine 丢失时走流程 C 解 sync_enc + 重建 local_enc。
 - **K_machine**：`~/.octopus/machine-key.enc`（AES-256-GCM 加密，file_key 由 `HKDF-SHA256(machine_id + USER)` 派生）。**注意（#13 修订 2026-07-24）：这是 obfuscation 而非真加密**——file_key 的派生输入（machine_id / USER / 固定 salt+info）全是公开或硬编码的，同机进程都能解出。实际防护等价于文件权限 0600，真正保障是「换机/拷走 DB 单独无法解」。**原计划用 OS Keychain，实施时改本地文件**——macOS 对 adhoc 签名 binary 写 Keychain 是 session-only（重启即丢），跨平台不一致。威胁模型：仅拿到 DB（无本机文件）解不开 app_key；**不防同机同用户恶意/root 进程**（IOPlatformUUID + $USER 公开可读，详见 spec §2.5）。生产签名后应切回 Keychain 方案。
 - **跨设备密钥一致性**（git 同步成立的前提，详见 [spec §2.4](superpowers/specs/2026-07-21-vault-git-sync-design.md#24-跨设备密钥一致性加密链路论证)）：`master_root_key` 是**确定性派生**（主密码 + kdf_salt → Argon2id，无随机成分），A/B 机输入相同主密码 + 相同 kdf_salt（经 meta.json 同步）→ 派生出**字节级相同**的 master_root_key → 解 `protected_user_vault_key` 得到**相同的 user_vault_key` → 能解对方加密的 cipher 密文。cipher 只在创建机器加密一次，sync 搬运密文（不重新加密），所以密文跨设备一致。`security_stamp`（UUID）在 meta.json 同步，两机 stamp 不同 → `pull_from_files` 拒绝覆盖 vault_meta 并报 `MasterPasswordMismatch`（INV-S9，2026-07-22 实现——曾因缺此校验，dummy meta.json 覆盖真实 vault_meta 致主密码失效）。**stamp 前置（2026-07-24 代码审查 #3）**：pull 改两阶段——先校验 stamp（不通过则不触碰 cipher/folder DB，避免污染后无回滚），stamp 一致后才 upsert。换主密码时 user_vault_key 不变（`change_master_password` 不重加密 cipher），密文继续一致。**修改主密码入口**（2026-07-22）：VaultPanel 顶部栏 KeyRound 按钮 + `ChangePasswordModal.tsx`（旧/新/确认 + 强度条），调已有后端 `vault_change_password`。
-- **密钥卫生（Zeroizing）**（2026-07-24 代码审查 H1 闭环）：`DerivedKey` 及派生树全套包 `Zeroizing`；**主密码**（源秘密）也收 `Zeroizing<String>` 所有权——unlock.rs 4 个入口（setup/unlock/change/verify）+ sync/engine.rs 2 个 resolve 入口改签名，函数结束时 heap 自动清零。IPC 边界（7 个 Tauri 命令）命令体内 `Zeroizing::new(password)` 包裹 move 进 vault 层，Tauri 命令签名不动（前端协议零影响）。详见 [security-hardening spec](superpowers/specs/2026-07-24-vault-security-hardening.md)。
+- **密钥卫生（Zeroizing）**（2026-07-24 代码审查 H1 闭环 + 第二十轮加固）：`DerivedKey` 及派生树全套包 `Zeroizing`；**主密码**（源秘密）也收 `Zeroizing<String>` 所有权——unlock.rs 4 个入口（setup/unlock/change/verify）+ sync/engine.rs 2 个 resolve 入口改签名，函数结束时 heap 自动清零。IPC 边界（7 个 Tauri 命令）命令体内 `Zeroizing::new(password)` 包裹 move 进 vault 层，Tauri 命令签名不动（前端协议零影响）。**第二十轮（M1-mod）**：`DerivedKey` 字段改 private——外部经 `from_raw`/`as_bytes` 受控接口访问，不能经 `.0` 绕过读取（防拷到非 Zeroizing 缓冲）。**第二十轮（K1）**：远程不可信 KDF 参数（同步仓库 meta.json）走 `from_i64_strict`（安全下限 memory≥16384KiB/16MiB），本地 DB 走 `from_i64`（崩溃下限，本地可信）——防攻击者污染仓库为弱 KDF 废掉 Argon2id 内存硬度。详见 [security-hardening spec](superpowers/specs/2026-07-24-vault-security-hardening.md)。
 - **sync pull 增量协议**（2026-07-24 代码审查 #2 修正）：pull 侧改用 outline.md5 vs DB sync_md5 比对（与 push 侧 incremental_export 对称），不再用跨设备不稳定的 updated_at 字符串比较。损坏文件不再静默吞——累计 `skipped` 计数 + log warn。folder 与 cipher 对称（捕获 rename）+ sort_order 同步（不再硬编码 0）。详见 [code-review-fixes spec](superpowers/specs/2026-07-24-vault-sync-code-review-fixes.md)。
 - **软删状态跨设备同步**（2026-07-24 代码审查 H2 修复）：`VaultCipherInput` 加 `deleted_at` 字段，pull/clone 从文件取值传入——软删密码在新机 clone 后保持软删（不复活成 live），跨设备软删/恢复状态正确传播。本机 soft_delete/restore 走专用 UPDATE 路径（不经 VaultCipherInput），save_cipher 编辑时读现有 deleted_at 保留（不碰删除状态）。**已知限制**：永久删除（permanent_delete）无 tombstone——对端 push 可复活（M5，需 tombstone 机制，Phase 2 统一设计）。
 - **schema v38**：新增 `vault_meta`（单行，KDF 参数 + 双密文 app_key + security_stamp）/ `vault_ciphers`（密文 cipher）/ `vault_folders`（folder 名用 user_vault_key 加密）3 张表。FK `vault_ciphers.folder_id → vault_folders.id ON DELETE SET NULL`（删 folder 时其下 cipher 回到根目录）。
@@ -947,6 +947,48 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 **未实施（backlog）**：
 - **流式 paraformer `raw_samples` 无界增长**——涉及 AGENTS.md 警告的 ASR 不变量，需重设计帧索引体系 + 真实音频回归测试。
 - **paddle-ocr NEON port**——4 个文件多个函数需手写 `std::arch::aarch64` NEON intrinsics + OCR 回归测试，详见 [backlog spec](superpowers/specs/archived/2026-07-17-paddle-ocr-neon-port-backlog.md)。
+
+## 打包 / 分发（macOS DMG）
+
+2026-07-23 首次建立 macOS 打包链路。此前项目一直是「裸二进制 `cargo run`」运行（无 `.app` bundle），打包后系统权限（屏幕录制/辅助功能/麦克风）从绑定 Terminal 改为绑定 octopus 本身。
+
+**打包脚本**：`scripts/build-macos-dmg.sh`
+```bash
+./scripts/build-macos-dmg.sh              # 默认 --profile optimize（LTO+strip，生产级）
+./scripts/build-macos-dmg.sh --no-lto     # release profile（无 LTO，调试打包流程用）
+./scripts/build-macos-dmg.sh --open       # 构建完冒烟测试
+```
+
+**产物路径**：
+- `.app`：`target/<profile>/bundle/macos/octopus.app`
+- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2 压缩，~40MB）
+
+**feature 组合**：`embedded,cloud,vault,custom-protocol`
+- `custom-protocol` 生产 build 必须启用，让 tauri 走 `frontendDist`（嵌入 dist）而非 `devUrl`（`cfg(dev) = !has_feature("custom-protocol")`，与 release/debug profile 无关）
+
+**打包链路关键决策**：
+
+1. **dmg bundling 不走 Tauri 自带 `bundle_dmg.sh`**（create-dmg fork）——它在部分环境失败（Finder AppleScript 美化步骤），且 Tauri 吞掉 stderr 难诊断。改为 `cargo tauri build -b app` 只生成 `.app`，再用 macOS 原生 `hdiutil create -format UDBZ` 打 dmg。
+
+2. **`beforeBuildCommand` 设 null**——Tauri 2 的 beforeBuildCommand（字符串形式 `cd frontend && npm run build`）CWD 行为不可靠（workspace 根执行时找不到 `frontend` 目录）。前端构建由脚本手动完成（与 `run-octopus.sh` 一致）。
+
+3. **resources 映射用对象形式**——seeds 目录在 `crates/infra/seeds/`（desktop crate 之外）。`tauri.conf.json` `bundle.resources` 用对象形式 `{ "../infra/seeds/": "seeds/" }`（key=source 可含 `../`，value=destination），正确落到 `Resources/seeds/` 保留子目录结构。数组形式 `["../infra/seeds/"]` 的 `..` 会被字面编码成 `_up_`，**勿用**。
+
+4. **`seeds_dir()` 三路解析**（`crates/infra/src/seeds.rs:15-44`）：(1) dev `$CARGO_MANIFEST_DIR/seeds` → (2) 裸二进制 `<exe-parent>/seeds` → (3) `.app` bundle `Contents/Resources/seeds`（exe 在 `Contents/MacOS/`，`parent().parent()` 得 `Contents/`，join `Resources/seeds`）。seeds 缺失为非致命降级（log::error 跳过，不阻塞 schema 升级），但会导致无默认润色 prompt / LLM provider 目录 / PPT agent 菜单。
+
+5. **Tauri profile 痛点**：`cargo tauri build` 无原生 `--profile`，通过 `--` 透传（`cargo tauri build -f ... -- --profile optimize`）。bundler 默认查 `target/release/`，非 release profile 需较新 tauri-cli（2.11.4+ 已支持跟随 cargo profile 定位 binary）。GitHub #15019 跟踪此问题。
+
+**运行时资源嵌 入情况**（打包无需额外处理）：
+- VAD ONNX（1.8MB）、ASR 纠正器、hans 表、db.sql、i18n yaml：`include_bytes!`/`include_str!` 编译期嵌入
+- 默认 ASR 模型（zipformer-small 27M）：首次启动从 hf-mirror.com 下载到 `~/.octopus/models/`
+- seeds（28KB，5 文件）：唯一需 resource 映射的运行时文件
+
+**当前限制**（未签名内测版）：
+- 无 Apple 代码签名 + 公证 → 用户首次打开需右键 → 打开（或系统设置允许）
+- 仅 arm64（当前机器架构），无 Universal Binary
+- 无自动更新
+
+详见 [plan](superpowers/plans/2026-07-23-macos-dmg-packaging.md)。
 
 ## 技术栈
 
