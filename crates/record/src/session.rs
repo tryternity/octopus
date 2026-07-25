@@ -47,6 +47,11 @@ struct SessionInner {
     state: SessionState,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
+    /// 最近一次 start 的 RecordingRequest 快照——hotkey/tray stop 路径需要这些字段
+    /// 入库（recording_id / source / video / audio），但它们不在 SessionState 里。
+    /// start 时存快照，stop 时 desktop 层读出来组装 RecordingMeta。
+    /// None 表示从未 start 过（或上次 stop 后被清空）。
+    last_request: Option<RecordingRequest>,
 }
 
 impl RecordSession {
@@ -56,8 +61,17 @@ impl RecordSession {
                 state: SessionState::Idle,
                 child: None,
                 stdin: None,
+                last_request: None,
             })),
         }
+    }
+
+    /// 读最近一次 start 的 RecordingRequest 快照（None = 从未 start / 已 stop 清空）。
+    ///
+    /// 用途：hotkey/tray stop 路径需要 recording_id / source / video / audio 字段入库，
+    /// 但这些不在 SessionState enum 里。start 时存快照，stop 后由 stop() 清空。
+    pub async fn last_start_request(&self) -> Option<RecordingRequest> {
+        self.inner.lock().await.last_request.clone()
     }
 
     pub async fn state(&self) -> SessionState {
@@ -78,6 +92,8 @@ impl RecordSession {
             return Err(RecordError::AlreadyRunning);
         }
         inner.state = SessionState::Starting;
+        // 存快照供 hotkey/tray stop 入库用（recording_id / source / video / audio）
+        inner.last_request = Some(request.clone());
 
         let req_json = serde_json::to_string(&request)?;
         let mut child = tokio::process::Command::new(helper_path)
@@ -165,6 +181,8 @@ impl RecordSession {
         let mut inner = self.inner.lock().await;
         inner.stdin = None;
         inner.state = SessionState::Idle;
+        // 不清 last_request——desktop 层 stop_and_store 在 session.stop() 之后仍需读它入库。
+        // 清空时机交给下次 start（start 时会覆盖 last_request = Some(new_request)）。
 
         // StoppedInfo 的精确字段需要 reader task 在 RecordingStopped 时回传——
         // 简化版：让调用方自己从文件系统查 file_size（session 不存 event payload）

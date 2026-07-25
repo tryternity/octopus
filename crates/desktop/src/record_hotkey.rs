@@ -20,7 +20,7 @@
 #![cfg(target_os = "macos")]
 
 use octopus_record::SessionState;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// 注册录屏全局快捷键（硬编码 Cmd+Shift+R + Esc）。
@@ -131,14 +131,9 @@ async fn handle_toggle(app: &AppHandle) {
 
 /// Esc stop 处理：仅 recording/paused 时执行，否则忽略。
 ///
-/// **注意**：仅调 `RecordSession::stop()`（discard=false，文件入库）。但与
-/// `record_commands::record_stop` 不同——后者会写 RecordingMeta 入库（width/height 等
-/// 字段来自前端），此处 hotkey 路径不掌握这些字段，**只 send stop 命令给 helper**
-/// 让其停止写文件 + 退出；DB 入库由前端监听 SessionState 转回 Idle 后调
-/// `record_stop` 命令完成（或由后续 follow-up 引入统一 on-stop hook 补齐）。
-///
-/// 这是当前 MVP 的妥协：hotkey stop 仅保证 helper 进程干净退出 + .mp4 落盘，
-/// 不入库。主会话已确认「hotkey stop 暂不入库」属 follow-up，不在 Task 14 范围。
+/// 调 `record_commands::stop_and_store`——读 session.last_start_request 拿 start 时
+/// 的 recording_id / source / video / audio 字段，组装 RecordingMeta 入库。
+/// 这样 hotkey/tray/前端 record_stop 三条路径都走同一个入库逻辑。
 async fn handle_stop(app: &AppHandle) {
     let session = match app.try_state::<octopus_record::RecordSession>() {
         Some(s) => s,
@@ -151,9 +146,22 @@ async fn handle_stop(app: &AppHandle) {
     let state = session.state().await;
     match state {
         SessionState::Recording | SessionState::Paused => {
-            log::info!("[record-hotkey] Esc → stop（state={:?}）", state);
-            if let Err(e) = session.stop().await {
-                log::warn!("[record-hotkey] stop 失败: {}", e);
+            log::info!("[record-hotkey] Esc → stop + 入库（state={:?}）", state);
+            match crate::record_commands::stop_and_store(&session, false, None).await {
+                Ok(Some(meta)) => {
+                    log::info!(
+                        "[record-hotkey] 录制已停止入库: id={} file={}",
+                        meta.id,
+                        meta.file_path
+                    );
+                    // 通知前端刷新历史列表
+                    let _ = app.emit("record://stopped", &meta);
+                }
+                Ok(None) => log::info!("[record-hotkey] stop 返回 None（discard？）"),
+                Err(e) => {
+                    log::error!("[record-hotkey] stop + 入库失败: {e}");
+                    let _ = app.emit("record://stop-failed", &e);
+                }
             }
         }
         // Idle / Starting / Stopping：忽略（Esc 让给其他用途）

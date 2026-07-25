@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 
 /// Tray icon state for display purposes
 pub enum TrayState {
@@ -304,7 +304,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             }
             #[cfg(target_os = "macos")]
             "record_stop" => {
-                info!("Tray: record stop");
+                info!("Tray: record stop + 入库");
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     use octopus_record::SessionState;
@@ -318,12 +318,27 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                     let state = session.state().await;
                     match state {
                         SessionState::Recording | SessionState::Paused => {
-                            // 仅 send stop 命令让 helper 干净退出 + .mp4 落盘。
-                            // DB 入库（写 RecordingMeta）由前端监听状态回调后调
-                            // record_stop 命令完成（与 hotkey Esc 同路径，详见
-                            // record_hotkey.rs::handle_stop 注释）。
-                            if let Err(e) = session.stop().await {
-                                log::warn!("[tray] record stop 失败: {}", e);
+                            // 与 hotkey Esc 同路径：stop_and_store 读 session 快照入库。
+                            match crate::record_commands::stop_and_store(
+                                &session,
+                                false,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(Some(meta)) => {
+                                    log::info!(
+                                        "[tray] 录制已停止入库: id={} file={}",
+                                        meta.id,
+                                        meta.file_path
+                                    );
+                                    let _ = app_handle.emit("record://stopped", &meta);
+                                }
+                                Ok(None) => log::info!("[tray] stop 返回 None"),
+                                Err(e) => {
+                                    log::error!("[tray] stop + 入库失败: {e}");
+                                    let _ = app_handle.emit("record://stop-failed", &e);
+                                }
                             }
                         }
                         other => {

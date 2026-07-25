@@ -344,16 +344,95 @@ pub async fn record_stop(
     has_system_audio: bool,
     has_microphone: bool,
 ) -> Result<Option<RecordingMeta>, String> {
+    // 前端显式传字段路径：直接用前端给的值组装 MetaFields。
+    let fields = MetaFields {
+        recording_id,
+        width,
+        height,
+        source_type,
+        has_system_audio,
+        has_microphone,
+    };
+    // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
+    stop_and_store(&state, discard, Some(fields)).await
+}
+
+/// hotkey / tray stop 复用的入库逻辑。
+///
+/// 读 `session.last_start_request()` 拿 start 时的 recording_id / source / video / audio
+/// （这些字段 hotkey/tray 路径无法直接掌握，靠 session.rs 存的快照），组装 MetaFields
+/// 后调 `stop_and_store_inner`。
+///
+/// `explicit_fields`：前端 `record_stop` 命令路径已显式传字段，直接用；None 则从
+/// session 快照读（hotkey/tray 路径）。
+pub(crate) async fn stop_and_store(
+    session: &RecordSession,
+    discard: bool,
+    explicit_fields: Option<MetaFields>,
+) -> Result<Option<RecordingMeta>, String> {
+    let fields = match explicit_fields {
+        Some(f) => f,
+        None => {
+            // hotkey/tray 路径：从 session 快照读 start 时的字段
+            let req = session.last_start_request().await.ok_or_else(|| {
+                "stop_and_store: session 无 last_start_request（未 start 过？）".to_string()
+            })?;
+            derive_fields_from_request(&req)?
+        }
+    };
+    stop_and_store_inner(session, discard, fields).await
+}
+
+/// 从 RecordingRequest 推导入库需要的 MetaFields。
+///
+/// 源类型从 Source enum 推（Display/Window/Area → "display"/"window"/"area"），
+/// 宽高从 VideoConfig 取，audio flags 从 AudioConfig 取。
+fn derive_fields_from_request(req: &RecordingRequest) -> Result<MetaFields, String> {
+    let source_type = match &req.source {
+        Source::Display { .. } => "display",
+        Source::Window { .. } => "window",
+        Source::Area { .. } => "area",
+    };
+    Ok(MetaFields {
+        recording_id: req.recording_id,
+        width: req.video.width,
+        height: req.video.height,
+        source_type: source_type.to_string(),
+        has_system_audio: req.audio.system.enabled,
+        has_microphone: req.audio.microphone.enabled,
+    })
+}
+
+/// 入库需要的字段（前端显式传 或 从 session 快照推）。
+pub(crate) struct MetaFields {
+    pub recording_id: i64,
+    pub width: u32,
+    pub height: u32,
+    pub source_type: String,
+    pub has_system_audio: bool,
+    pub has_microphone: bool,
+}
+
+async fn stop_and_store_inner(
+    session: &RecordSession,
+    discard: bool,
+    fields: MetaFields,
+) -> Result<Option<RecordingMeta>, String> {
     use octopus_infra::paths::octopus_config_home;
 
+    let MetaFields {
+        recording_id,
+        width,
+        height,
+        source_type,
+        has_system_audio,
+        has_microphone,
+    } = fields;
+
     // stop 返回的 StoppedInfo.screen_path 在 session.rs MVP 实现里是空 PathBuf
-    // （session 不存 RecordingStopped 事件的 payload）——这是 Task 5 的已知简化，
-    // Task 11+ 优化时会引入 event channel 回传真实路径。
-    //
-    // Fallback 策略（MVP）：在 recordings_dir 下找文件名含 recording_id 的 .mp4。
-    // 比「用 Local::now() 推文件名」更稳——因为 record_start 用 Local 当时时间命名，
-    // 长录制跨天后 stop 时 Local 已变；按 recording_id 后缀匹配则不受影响。
-    let stopped = state.stop().await.map_err(e2s)?;
+    // （session 不存 RecordingStopped 事件的 payload）——Task 5 已知简化。
+    // Fallback：在 recordings_dir 下找文件名含 recording_id 的 .mp4。
+    let stopped = session.stop().await.map_err(e2s)?;
 
     let abs_path = if stopped.screen_path.as_os_str().is_empty() {
         let dir = octopus_infra::paths::recordings_dir();
@@ -385,10 +464,7 @@ pub async fn record_stop(
         return Ok(None);
     }
 
-    let file_size =
-        std::fs::metadata(&abs_path).map(|m| m.len()).unwrap_or(0);
-    // DB 里 file_path 存相对路径（recordings/xxx.mp4），运行时 join octopus_config_home。
-    // 用 octopus_config_home 而非 brief 写的 octopus_root（后者不存在，Bug 1）。
+    let file_size = std::fs::metadata(&abs_path).map(|m| m.len()).unwrap_or(0);
     let file_path_rel = abs_path
         .strip_prefix(octopus_config_home())
         .map_err(|e| e.to_string())?
