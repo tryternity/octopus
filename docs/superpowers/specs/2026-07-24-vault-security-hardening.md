@@ -828,3 +828,36 @@ health/ 含 zxcvbn 强度评估 + 重复密码检测。演进修复扎实（8.5�
 - **iso_to_unix_ms 精确**：civil_to_days 公式正确处理闰年（era/yoe/doy/doe 分解）
 - **incremental_export md5 diff 正确**：store.rs:558-578 只写变化的 cipher
 - **M8 outline 损坏降级全量重建**：store.rs:537-552 outline.json 解析失败不再 `unwrap_or_default` 吞成空（会导致删除循环不执行 + clone 复活），降级 `export_all_to_files`
+
+---
+
+## 第二十六轮审查修复（2026-07-25，matcher/psl.rs + matches_domain：3 项文档化，无中高 bug）
+
+psl.rs + matches_domain 审查通过——vault 里安全设计最严谨的模块之一。本轮发现均为低/信息性，无功能或安全缺陷，全部文档化。
+
+### P-LAZY: psl() 首次调用 expect panic 风险（低，文档化）
+
+**核查**：psl.rs:33-34 `List::from_bytes(PSL_BYTES).expect("...解析失败")` 在 `OnceLock::get_or_init` 闭包内。`PSL_BYTES` 是 `include_bytes!` 编译期内嵌（:26），正常解析不会失败。但若 dat 文件被手动下载时截断/损坏，`psl()` 首次调用（用户首次 autofill 时，经 `etld_plus_one` → `matches_domain`）会 panic 崩溃而非 fail-closed 退化。
+
+**状态**：文档化。编译期内嵌正常不触发（dat 是 git 仓库内静态文件，不运行时损坏）。可选改进：vault init/unlock 后预热调一次 `psl()`（fail-fast 在启动期暴露），或 `OnceLock<Option<List>>` + fallback host 本身（fail-closed）。当前不改——改了增加复杂度，收益边际。
+
+### P-EXPIRE: 内嵌 PSL 会过期（信息性，已文档化）
+
+**核查**：psl.rs:18-25 注释已明确——`include_bytes!` 编译期内嵌，升级 publicsuffix crate 不会自动更新列表，需手动 `curl` 重新下载 `public_suffix_list.dat`，Mozilla 月更建议季度同步。
+
+**状态**：已文档化。过期后果：新上线 TLD 的多段规则不被识别 → fail-closed 退化为 host 本身（功能退化非安全）。可选：加 CI 检查 dat 的更新日期。
+
+### 测试覆盖缺口: PSL 边缘规则未覆盖（低，文档化）
+
+**核查**：psl.rs 测试覆盖核心场景（简单域名/localhost/多段 TLD 钓鱼/IP），但未覆盖 wildcard rule（`*.kawasaki.jp`）/ exception rule（`!parliament.uk`）/ IDN/Punycode。
+
+**状态**：文档化。这些由 publicsuffix crate 内部正确处理（crate 自有测试），真实 autofill 场景少。可选加几个守护测试防 crate 升级回归。
+
+### 正面发现（psl.rs / matches_domain）
+
+- **PSL 替代简化算法堵钓鱼**：首发版「取最后两段」让 `barclays.co.uk` 与 `evil-attacker.co.uk` 都退化为 `co.uk` 互相匹配 → 钓鱼站可收银行密码。现用 `publicsuffix` crate 的 `DefaultProvider` 正确处理多段 TLD
+- **IP 字面量精确匹配**：psl.rs:55 `host.parse::<IpAddr>().is_ok()` → 原样返回，不做 eTLD+1（否则 `192.168.1.1` 与 `10.20.1.1` 都退化为 `1.1` 互相匹配 → 路由器密码钓鱼）
+- **fail-closed 设计**：PSL 查不到（localhost/内网单段名/未知 TLD）→ 返回 host 本身（宁可匹配失败也不要错匹配）
+- **matches_domain 三重大小写归一**：matcher/mod.rs:78（Host 策略）+ :105-112（Domain 策略 cipher_host/target_domain）+ :118（等价域名组）全部 to_lowercase
+- **等价域名条件扩展**：matcher/mod.rs:116-123 cipher_domain 在组内时，组内所有域名加入 candidates
+- **钓鱼测试守护**：test_phishing_protection_multilevel_tld 锁住 `barclays.co.uk ≠ evil-attacker.co.uk`
