@@ -90,7 +90,10 @@ pub fn create_annotation_window(
     .title("")
     .inner_size(sel_logical_w, sel_logical_h)
     .position(sel_global_x, sel_global_y)
-    // ⚠️ 关键：不用 always_on_top（spike 验证 SCK 不录 floating 浮层）
+    // ⚠️ 测试：always_on_top=true（用户反馈需要「总在最上」）
+    // 之前 PyObjC spike 说 SCK 不录 always_on_top，但 spike 可能有 bug（窗口没真显示）
+    // 改用 Tauri 真实窗口验证——如果视频里有标注 → 之前 spike 结论是错的，方案成立
+    .always_on_top(true)
     .decorations(false)
     .transparent(true)
     .skip_taskbar(true)
