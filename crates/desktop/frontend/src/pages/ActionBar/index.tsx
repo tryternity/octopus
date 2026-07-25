@@ -1043,8 +1043,6 @@ export default function ActionBar() {
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[15px] font-medium text-foreground placeholder:text-muted-foreground/40 placeholder:font-normal outline-none border-none min-w-0"
         autoComplete="off"
-        autoCorrect="off"
-        spellCheck={false}
       />
       {/* 内置按钮：密码生成器（独立于 DB items）*/}
       <button

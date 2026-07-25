@@ -470,9 +470,6 @@ export default function VaultPicker() {
                 }}
                 placeholder={t("vaultPicker.searchPlaceholder")}
                 autoFocus={view.ciphers.length === 0}
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
                 className="flex h-9 w-full rounded-md border border-border bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
             </div>

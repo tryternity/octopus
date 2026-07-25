@@ -343,7 +343,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 - **键盘导航（双模式，2026-07-16 重构；2026-07-23 快捷键改版）**：window 级 keydown handler 据 `query` 是否为空分两套行为。**输入框始终 DOM focus**（双模式共用），无「结果区焦点」概念。**菜单模式**（query 空）：`Alt+字母 a-z` 执行（按 `shortcut` 匹配，2026-07-23 从 Cmd/Ctrl 改为 Alt）、`Alt+数字 1-9` 定位菜单项（按位置选中不执行，超出 9 项用 Tab/方向键）、`Tab`/`Shift+Tab` 在主/子菜单项间循环移动（submenu 项自动展开预览，原左右键职责）、`↑↓` 切焦点层 main↔sub、`Enter`/`Space` 执行选中项、无修饰字符进输入框切换到搜索模式。**搜索模式**（query 非空）：`Tab`/`Shift+Tab`/`←→` 循环切 Tab 页（2026-07-23：原 Alt+字母跳 Tab 已删除——Alt+字母统一用于执行快捷键）、`↑↓` 导航结果、`Enter` 执行选中。菜单溢出 scrollIntoView + voice 色 <</> 指示器（ScrollRow）。`Escape` 有查询→清空、无查询→dismiss（loading 也生效）。macOS Option 改变 `e.key`，修饰键分支统一 `codeToChar(e.code)` 取物理键。`focusLayer` 状态独立于 `view` 状态。详见 [spec §3.5](superpowers/specs/archived/2026-07-15-actionbar-search-design.md)。
 
-- **窗口焦点协调（FLOAT_DEPTH 引用计数）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。解法（视觉焦点协调方案）：(1) show 前记录前台 app（`NSWorkspace.frontmostApplication`）+ app 非活跃时临时隐藏其他可见窗口（`WINDOWS_TO_HIDE_ON_FLOAT`：settings/compact_editor/clipboard_window）；(2) `set_focus` 激活浮窗获得键盘焦点；(3) hide 时先 `activate` 原前台 app 交还焦点，再 `show` 恢复被隐藏的 Regular 窗口。实现：`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数（`FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 记录状态/交还焦点），action bar + 剪贴板浮窗共用。`action_bar_show_result` 调 `after_floating_window_hide_keep_active`（递减 depth + 清状态 + 恢复隐藏窗口，跳过 deactivate 避免 CompactEditor 被压后台）。剪贴板浮窗另加 `Focused(false)` 事件回调 `restore_hidden_windows_only`（失焦 = 虚拟关闭：`float_depth_decrement_and_is_zero` 扣减——**depth>0（仍有浮窗存活如 action_bar）时直接 return 不清状态**，只有 depth==0 才清状态 + deactivate。纯逻辑提取为 `float_depth_increment` / `float_depth_decrement_and_is_zero` / `float_clear_state`，单测覆盖 5 场景）。`TRIGGER_IN_PROGRESS: AtomicBool` 重入 guard（加 10s 超时保护——webview 崩溃后 guard 不永久卡死，toggle 再按或 `reset_trigger_guard_if_stale` 强制重置）。**`NSApplicationActivationOptions` 全项目统一 `1 << 0`（ActivateAllWindows）**——`1 << 1`（ActivateIgnoringOtherApps）macOS 14+ deprecated 且无效。2026-07-17 统一三处遗漏：`after_floating_window_hide` + `screenshot_commands.rs` 两处（滚动截图返回前 app + 截图后激活本 app），对齐 `activate_window_by_pid` / `activate_self`。**show 后焦点巩固**（2026-07-16）：`show_action_bar_window` 后起诊断线程 150/350ms 读 `isKeyWindow`（objc2 `msg_send!` 窗口级，比 app 级 `isActive` 准），150ms 若失焦则 `set_focus` 巩固夺回（覆盖 Sublime `subl --command` 延迟激活抢焦点）；前端 `onFocusChanged` 在 show 后 500ms 宽限内忽略 spurious focus-lost（`showTimeRef` 记录 show 时刻），`action_bar_dismiss` 携带 `reason` 诊断来源。
+- **窗口焦点协调（FLOAT_DEPTH 引用计数）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。解法（视觉焦点协调方案）：(1) show 前记录前台 app（`NSWorkspace.frontmostApplication`）+ app 非活跃时临时隐藏其他可见 Regular 窗口（`WINDOWS_TO_HIDE_ON_FLOAT`：settings/compact_editor——**2026-07-24 移除 clipboard_window**：它是 always-on-top 浮窗不抢焦点，列入会导致 dock 收缩态被拖进 hide→裸 show 循环破坏 DOCK_EXPANDED 状态 + setIgnoresMouseEvents 残留；3 处 restore 循环加防御跳过 clipboard_window）；(2) `set_focus` 激活浮窗获得键盘焦点；(3) hide 时先 `activate` 原前台 app 交还焦点，再 `show` 恢复被隐藏的 Regular 窗口。实现：`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数（`FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 记录状态/交还焦点），action bar + 剪贴板浮窗共用。`action_bar_show_result` 调 `after_floating_window_hide_keep_active`（递减 depth + 清状态 + 恢复隐藏窗口，跳过 deactivate 避免 CompactEditor 被压后台）。剪贴板浮窗另加 `Focused(false)` 事件回调 `restore_hidden_windows_only`（失焦 = 虚拟关闭：`float_depth_decrement_and_is_zero` 扣减——**depth>0（仍有浮窗存活如 action_bar）时直接 return 不清状态**，只有 depth==0 才清状态 + deactivate。纯逻辑提取为 `float_depth_increment` / `float_depth_decrement_and_is_zero` / `float_clear_state`，单测覆盖 5 场景）。`TRIGGER_IN_PROGRESS: AtomicBool` 重入 guard（加 10s 超时保护——webview 崩溃后 guard 不永久卡死，toggle 再按或 `reset_trigger_guard_if_stale` 强制重置）。**`NSApplicationActivationOptions` 全项目统一 `1 << 0`（ActivateAllWindows）**——`1 << 1`（ActivateIgnoringOtherApps）macOS 14+ deprecated 且无效。2026-07-17 统一三处遗漏：`after_floating_window_hide` + `screenshot_commands.rs` 两处（滚动截图返回前 app + 截图后激活本 app），对齐 `activate_window_by_pid` / `activate_self`。**show 后焦点巩固**（2026-07-16）：`show_action_bar_window` 后起诊断线程 150/350ms 读 `isKeyWindow`（objc2 `msg_send!` 窗口级，比 app 级 `isActive` 准），150ms 若失焦则 `set_focus` 巩固夺回（覆盖 Sublime `subl --command` 延迟激活抢焦点）；前端 `onFocusChanged` 在 show 后 500ms 宽限内忽略 spurious focus-lost（`showTimeRef` 记录 show 时刻），`action_bar_dismiss` 携带 `reason` 诊断来源。
 
 - **执行收口（`execute_action_bar`）**：async command 收口重构为 inner fn（返回 `Result<bool>`）+ 三路 match：Ok(true)=ai 已自收口直通、Ok(false)=url/script/copy 成功 hide+finalize、Err=异常仅 finalize（不 hide，前端显示红色气泡提示）——确保 `?`/Err 不会泄漏重入锁和 depth。`hide_action_bar_window` 经 `run_on_main_thread` 投递主线程（`after_floating_window_hide` 的 `NSApplication::deactivate` 需 `MainThreadMarker`）；`finalize_action_bar` 仅 AtomicBool 线程安全即时执行。trigger 阶段 suppress watcher → Cmd+C → 读选中 → 立即恢复剪贴板（选中文本不入库）；**所有路径（含成功路径）显式 `clear_suppress`** 撤销。URL 参数编码复用 `percent-encoding` 库（`url_encode_param`）。
 
@@ -380,6 +380,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | **screenshot**（滚动录制） | 工具栏 + 预览窗（`interactive_rects`） | 其余遮罩区 | `start_scroll_recording` 内嵌轮询（`screenshot_commands.rs`） | `CGEvent` Quartz 逻辑坐标 ⚠️ |
 
 **统一模式**（result_window + clipboard_dock）：`tokio::interval(33ms)` 轮询 Tauri 跨平台 `cursor_position()`（物理坐标）+ `outer_position()`（物理坐标）直接比较——无需 scale 换算，多显示器不同 DPI 安全。macOS 在 NSWindow 直调 `setIgnoresMouseEvents`（via `run_on_main_thread`），Windows/Linux 用 Tauri `set_ignore_cursor_events`。**Wayland 限制**：`cursor_position()` 恒返回 (0,0)，穿透失效（协议层限制，改用 XWayland 可恢复）。**为什么不用前端 `setIgnoreCursorEvents` + mousemove**：一旦 `setIgnoreCursorEvents(true)`，窗口完全不收鼠标事件（NSWindow 连 tracking area 都禁），前端 mousemove 不再触发 → 无法检测光标重入 → 重入失效。必须 Rust 后端读全局位置。
+
+**clipboard_dock 收缩态检测带**（2026-07-24 修正，`clipboard_dock.rs::probe_position`）：dock 收缩态是边缘 8px 细条，鼠标进入检测带才从穿透切可交互。检测带用物理坐标直接比较（`cursor_position` + `outer_position` + `outer_size` 都是 Physical，不除 scale_factor）+ 实际窗口尺寸（`outer_size()`，非硬编码 300×600）+ 检测带 `DETECT_INNER=15px`（窗口内侧）+ `DETECT_OUTER=3px`（窗口外侧），原 10+2 过窄致边缘难以触发。`slow_poll` 100ms（原 200ms，响应更快）+ `fast_poll` 33ms 双频率。**防重复 poll**：`POLL_ACTIVE` 标志位 + `POLL_ID` 自增——`clipboard_dock_collapse` + `Focused(false)` 可能同时触发 `start_edge_poll`，重复启动两个 poll 线程致竞态，已加 `if POLL_ACTIVE { return }` 守卫。
 
 **截图不可统一**：截图穿透的核心价值不只是穿透鼠标——它还**激活光标下方的 app**（`CGWindowListCopyWindowInfo` 查鼠标下的 PID → `activateWithOptions`），让用户能直接滚动下层窗口。这依赖 Quartz 坐标系 + macOS 窗口列表 API，且整段 `#[cfg(target_os = "macos")]` gate（macOS 专属功能）。强行统一会增加坐标转换复杂度且无跨平台收益。
 
@@ -945,6 +947,48 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 **未实施（backlog）**：
 - **流式 paraformer `raw_samples` 无界增长**——涉及 AGENTS.md 警告的 ASR 不变量，需重设计帧索引体系 + 真实音频回归测试。
 - **paddle-ocr NEON port**——4 个文件多个函数需手写 `std::arch::aarch64` NEON intrinsics + OCR 回归测试，详见 [backlog spec](superpowers/specs/archived/2026-07-17-paddle-ocr-neon-port-backlog.md)。
+
+## 打包 / 分发（macOS DMG）
+
+2026-07-23 首次建立 macOS 打包链路。此前项目一直是「裸二进制 `cargo run`」运行（无 `.app` bundle），打包后系统权限（屏幕录制/辅助功能/麦克风）从绑定 Terminal 改为绑定 octopus 本身。
+
+**打包脚本**：`scripts/build-macos-dmg.sh`
+```bash
+./scripts/build-macos-dmg.sh              # 默认 --profile optimize（LTO+strip，生产级）
+./scripts/build-macos-dmg.sh --no-lto     # release profile（无 LTO，调试打包流程用）
+./scripts/build-macos-dmg.sh --open       # 构建完冒烟测试
+```
+
+**产物路径**：
+- `.app`：`target/<profile>/bundle/macos/octopus.app`
+- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2 压缩，~40MB）
+
+**feature 组合**：`embedded,cloud,vault,custom-protocol`
+- `custom-protocol` 生产 build 必须启用，让 tauri 走 `frontendDist`（嵌入 dist）而非 `devUrl`（`cfg(dev) = !has_feature("custom-protocol")`，与 release/debug profile 无关）
+
+**打包链路关键决策**：
+
+1. **dmg bundling 不走 Tauri 自带 `bundle_dmg.sh`**（create-dmg fork）——它在部分环境失败（Finder AppleScript 美化步骤），且 Tauri 吞掉 stderr 难诊断。改为 `cargo tauri build -b app` 只生成 `.app`，再用 macOS 原生 `hdiutil create -format UDBZ` 打 dmg。
+
+2. **`beforeBuildCommand` 设 null**——Tauri 2 的 beforeBuildCommand（字符串形式 `cd frontend && npm run build`）CWD 行为不可靠（workspace 根执行时找不到 `frontend` 目录）。前端构建由脚本手动完成（与 `run-octopus.sh` 一致）。
+
+3. **resources 映射用对象形式**——seeds 目录在 `crates/infra/seeds/`（desktop crate 之外）。`tauri.conf.json` `bundle.resources` 用对象形式 `{ "../infra/seeds/": "seeds/" }`（key=source 可含 `../`，value=destination），正确落到 `Resources/seeds/` 保留子目录结构。数组形式 `["../infra/seeds/"]` 的 `..` 会被字面编码成 `_up_`，**勿用**。
+
+4. **`seeds_dir()` 三路解析**（`crates/infra/src/seeds.rs:15-44`）：(1) dev `$CARGO_MANIFEST_DIR/seeds` → (2) 裸二进制 `<exe-parent>/seeds` → (3) `.app` bundle `Contents/Resources/seeds`（exe 在 `Contents/MacOS/`，`parent().parent()` 得 `Contents/`，join `Resources/seeds`）。seeds 缺失为非致命降级（log::error 跳过，不阻塞 schema 升级），但会导致无默认润色 prompt / LLM provider 目录 / PPT agent 菜单。
+
+5. **Tauri profile 痛点**：`cargo tauri build` 无原生 `--profile`，通过 `--` 透传（`cargo tauri build -f ... -- --profile optimize`）。bundler 默认查 `target/release/`，非 release profile 需较新 tauri-cli（2.11.4+ 已支持跟随 cargo profile 定位 binary）。GitHub #15019 跟踪此问题。
+
+**运行时资源嵌 入情况**（打包无需额外处理）：
+- VAD ONNX（1.8MB）、ASR 纠正器、hans 表、db.sql、i18n yaml：`include_bytes!`/`include_str!` 编译期嵌入
+- 默认 ASR 模型（zipformer-small 27M）：首次启动从 hf-mirror.com 下载到 `~/.octopus/models/`
+- seeds（28KB，5 文件）：唯一需 resource 映射的运行时文件
+
+**当前限制**（未签名内测版）：
+- 无 Apple 代码签名 + 公证 → 用户首次打开需右键 → 打开（或系统设置允许）
+- 仅 arm64（当前机器架构），无 Universal Binary
+- 无自动更新
+
+详见 [plan](superpowers/plans/2026-07-23-macos-dmg-packaging.md)。
 
 ## 技术栈
 
