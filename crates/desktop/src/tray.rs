@@ -122,12 +122,15 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
-    // 菜单组装：录屏项紧跟 screenshot 后（用户决策 2026-07-25：录屏与截图同属「屏幕采集」类）。
-    // macOS 9 项 / 其他 8 项（无录屏）。
+    // 菜单组装（用户决策 2026-07-25）：
+    // 分组 1：语音识别 + 引擎信息
+    // 分组 2：截图 + 录屏（屏幕采集类）
+    // 分组 3：剪贴板 + 图文编辑
+    // 分组 4：设置 + 退出
     #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
-        &screenshot, &sep_record, &record_start,
+        &screenshot, &record_start, &sep_record,
         &clipboard, &compact_editor,
         &sep2,
         &settings, &quit,
