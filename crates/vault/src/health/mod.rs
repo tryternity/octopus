@@ -14,6 +14,12 @@ pub struct HealthReport {
     pub duplicate_groups: Vec<duplicate::DuplicateGroup>,
     pub total_logins: usize,
     pub average_score: f64,
+    /// R-AVG-DENOM 修复（2026-07-25）：average_score 的真实分母。
+    ///
+    /// total_logins 含 password=None 的 Login（只存 username），但 average_score
+    /// 只算 password=Some 的（无密码无强度）。两者并列展示时分母不一致误导——
+    /// 前端可用本字段标注「基于 N 个有密码项」。
+    pub scored_count: usize,
 }
 
 pub fn generate_report(ciphers: &[Cipher]) -> HealthReport {
@@ -56,6 +62,7 @@ pub fn generate_report(ciphers: &[Cipher]) -> HealthReport {
         duplicate_groups,
         total_logins: logins.len(),
         average_score,
+        scored_count: score_count, // R-AVG-DENOM：average_score 的真实分母（仅 password=Some 的 Login）
     }
 }
 
@@ -111,5 +118,37 @@ mod tests {
         ciphers[0].deleted_at = Some("2026-07-18".into());
         let report = generate_report(&ciphers);
         assert_eq!(report.total_logins, 0);
+    }
+
+    /// R-AVG-DENOM 守护（2026-07-25）：password=None 的 Login 进 total_logins 但不进 scored_count。
+    ///
+    /// average_score 只算 password=Some 的（无密码无强度）。之前 total_logins 与
+    /// average_score 分母不一致致 UI 误导。现 HealthReport 加 scored_count 透明化分母。
+    #[test]
+    fn test_scored_count_excludes_none_password() {
+        // c1/c2 有密码，c3 无密码（只存 username）
+        let mut ciphers = vec![
+            make_cipher("c1", "password"),
+            make_cipher("c2", "Tr0ub4dour&3-something-very-long"),
+        ];
+        let mut no_pwd = make_cipher("c3", "x"); // 临时占位
+        // 改成无密码 Login
+        #[allow(irrefutable_let_patterns)]
+        if let CipherData::Login(ref mut login) = no_pwd.data {
+            login.password = None;
+        }
+        ciphers.push(no_pwd);
+
+        let report = generate_report(&ciphers);
+        assert_eq!(report.total_logins, 3, "total_logins 含无密码 Login");
+        assert_eq!(
+            report.scored_count, 2,
+            "R-AVG-DENOM: scored_count 只算有密码的（c1+c2=2），不含 c3"
+        );
+        // average_score 是 c1+c2 的平均，不是除以 3
+        assert!(
+            report.average_score > 0.0,
+            "average_score 应基于 2 个有密码项"
+        );
     }
 }

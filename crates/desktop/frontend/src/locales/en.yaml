@@ -232,6 +232,7 @@ settings:
       duplicatesCount: ${count} duplicate groups
       total: ${count} logins total
       averageScore: Average strength ${score} / 4
+      scoredOf: based on ${scored} with passwords
     importExport:
       title: Import / Export
       importLabel: Import from Bitwarden JSON

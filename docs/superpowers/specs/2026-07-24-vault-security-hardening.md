@@ -937,3 +937,23 @@ engine.rs 同步核心安全设计严谨——E2 防锁死、stamp 校验前置�
 ### M-TOMBSTONE 仍在（已知 M5 + folder 维度同构）
 
 pull_from_files :800/:822 只遍历 remote outline 做 upsert，无删除分支——远程硬删除的 cipher/folder 在 pull 端不删本地。本轮确认仍在，且 folder 维度同构（folder 硬删除同样不传播）。待 Phase 2 统一处理 tombstone（详见第二十五轮 M5）。
+
+---
+
+## 第三十轮审查修复（2026-07-25，health 模块：R-AVG-DENOM + P-DOUBLE-TRAVERSE 文档化）
+
+health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位。2 个低优先级发现。
+
+### R-AVG-DENOM: average_score 分母与 total_logins 不一致（低，UX 语义，已修）
+
+**核查**：generate_report（mod.rs:46-58）——`total_logins: logins.len()`（含 password=None 的 Login），但 `average_score: total_score / score_count`（score_count 只算 password=Some）。logins 的 filter（:22）只判 `CipherData::Login(_) && deleted_at.is_none()`，不要求 password=Some。Bitwarden 式密码管理器允许「只存 username 不存 password」的 Login——这些进 total_logins 但不进 score_count，UI 显示「10 个登录平均分 3.2」实际是 8 个的。
+
+**修复**：HealthReport 加 `scored_count` 字段透明化 average_score 的真实分母（方案 a，不改现有语义只补透明度）。前端 HealthReportDto 加 optional `scored_count`，average_score 展示旁当 `scored_count < total_logins` 时标注「基于 N 个有密码项」（i18n en/zh）。
+
+**回归测试**：`test_scored_count_excludes_none_password`——3 个 Login（2 有密码 + 1 无密码），total_logins=3 但 scored_count=2。
+
+### P-DOUBLE-TRAVERSE: generate_report 双重遍历 logins（低，性能，文档化）
+
+**核查**：generate_report 对 logins 遍历两次——:29-42 算 strength（zxcvbn）+ :46 find_duplicates 内部再遍历算 SHA-256。可合并为单次遍历。
+
+**状态**：文档化。zxcvbn（O(n²) 中等密码）是绝对瓶颈，单次遍历合并省的只是 N 次指针解引用，相对可忽略。几百个 login 的健康报告是用户主动触发的一次性操作。若未来做成后台定时扫描再考虑。
