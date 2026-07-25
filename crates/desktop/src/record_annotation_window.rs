@@ -1,10 +1,13 @@
 //! 录屏标注 overlay 窗口——录屏开始后显示，用户画标注被 SCK 录进视频。
 //!
-//! **关键设计**（spike7/8 验证）：
-//! - overlay 用**普通窗口 level**（非 always_on_top）—— SCK 不录 floating 浮层
-//! - SCK 录窗口 buffer 内容，与层级/可见性无关（切应用时标注仍被录到）
-//! - overlay 尺寸 = 选区尺寸，位置 = 选区在屏幕上的全局位置（精确覆盖选区）
-//! - 标注渲染在前端（复用 lib/annotation），SCK 录到 overlay 窗口的画面
+//! **关键设计**（2026-07-26 Tauri 真实窗口 e2e 验证）：
+//! - overlay 用 **always_on_top**（总在最上）——SCK **会**录到 always_on_top 窗口内容
+//!   （之前 PyObjC spike 说「不录」是错的——Python subprocess 窗口没真显示）
+//! - overlay 窗口比选区大（选区 + 工具栏空间），三选逻辑决定工具栏在选区外/内
+//! - Canvas 限制在选区区域（被录），工具栏在选区外（不被录）
+//! - 部分穿透：select 工具=穿透模式（工具栏不穿透+选区穿透），标注工具=不穿透
+//!
+//! 详见 spec `docs/superpowers/specs/2026-07-25-record-area-annotation-design.md`。
 //!
 //! 仅 macOS。
 
