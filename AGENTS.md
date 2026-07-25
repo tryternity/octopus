@@ -40,6 +40,23 @@ cargo run --profile optimize -p octopus-desktop --features remote-ws,custom-prot
 cargo run --profile optimize -p octopus-desktop --features remote-grpc,custom-protocol
 ```
 
+### 打包（macOS DMG）
+
+```bash
+# 生产级 DMG（--profile optimize，LTO+strip，体积小，链接慢）
+./scripts/build-macos-dmg.sh
+
+# 调试打包流程（纯 release，无 LTO，链接快）
+./scripts/build-macos-dmg.sh --no-lto
+
+# 构建完 open .app 冒烟测试
+./scripts/build-macos-dmg.sh --open
+```
+
+产物：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（未签名，自用/内测）+ `target/<profile>/bundle/macos/octopus.app`。
+
+feature 组合固定 `embedded,cloud,vault,custom-protocol`（`custom-protocol` 生产 build 必须启用）。详见 [`docs/architecture.md` §打包/分发](docs/architecture.md) + [plan](docs/superpowers/plans/2026-07-23-macos-dmg-packaging.md)。
+
 ### 开发运行
 
 ```bash

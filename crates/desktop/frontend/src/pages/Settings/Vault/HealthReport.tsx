@@ -26,6 +26,9 @@ interface HealthReportDto {
   duplicate_groups: DuplicateGroup[];
   total_logins: number;
   average_score: number;
+  // R-AVG-DENOM：average_score 的真实分母（仅 password=Some 的 Login）。
+  // 后端总会返回；optional 保持向后兼容（旧后端不发此字段时 undefined）。
+  scored_count?: number;
 }
 
 export default function HealthReport({ showToast }: { showToast: (msg: string) => void }) {
@@ -89,7 +92,15 @@ export default function HealthReport({ showToast }: { showToast: (msg: string) =
       </div>
 
       <p className="text-sm text-muted-foreground">
+        {/* R-AVG-DENOM：当有 password=None 的 Login 时标明 average_score 的真实分母，
+            避免「N 个登录平均分 X」的误导（实际只算有密码项） */}
         {t("settings.vault.health.averageScore", { score })}
+        {report.scored_count !== undefined &&
+          report.scored_count < report.total_logins && (
+            <span className="ml-1 text-xs text-muted-foreground/60">
+              ({t("settings.vault.health.scoredOf", { scored: report.scored_count })})
+            </span>
+          )}
       </p>
 
       {/* 详细信息（折叠摘要） */}

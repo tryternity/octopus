@@ -22,7 +22,12 @@ const SYMBOLS: &[char] = &[
     '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+', '[', ']', '{', '}', '<',
     '>', '?',
 ];
-const AMBIGUOUS: &[char] = &['l', '1', 'I', 'O', '0', '|', '`', '\'', '"'];
+// R-AMBIGUOUS-DEAD 修复（2026-07-25）：删 4 个死字符 |/`/'/"——它们不在
+// UPPER/LOWER/DIGITS/SYMBOLS 任一字符集，build_charset 的 retain 和强制阶段
+// filter 对它们永远是 no-op。保留 5 个真正有效的（l/1/I/O/0 在字符集内会被过滤）。
+// 之前作者意图排除易混淆字符但忘了把它们纳入 SYMBOLS——当前无害（no-op），
+// 删除让 AMBIGUOUS 语义准确（只列实际参与生成且需过滤的字符）。
+const AMBIGUOUS: &[char] = &['l', '1', 'I', 'O', '0'];
 
 fn build_charset(cfg: &RandomConfig) -> Vec<char> {
     let mut s: Vec<char> = Vec::new();
@@ -64,14 +69,15 @@ pub fn generate(cfg: &RandomConfig) -> Result<String> {
 
     // 强制每种启用类型至少 1 个
     // R8 修复后字符集是 &[char]，直接 choose 拿 char，无需 .chars() 转换。
-    // R5 修复：统一用 if let Some，消除 :65 的 unwrap（与非 ambiguous 分支风格一致）。
-    if cfg.uppercase && !cfg.avoid_ambiguous {
-        if let Some(&c) = UPPER.choose(&mut rng) {
-            result.push(c);
-        }
-    } else if cfg.uppercase {
-        let filtered: Vec<&char> = UPPER.iter().filter(|c| !AMBIGUOUS.contains(c)).collect();
-        if let Some(&&c) = filtered.choose(&mut rng) {
+    // R5 修复：统一用 if let Some，消除 unwrap。
+    // R-UPPER-BRANCH-ASYMMETRY 修复（2026-07-25）：uppercase 改统一 filter 写法，
+    // 与 lowercase/numbers/symbols 对齐（之前 uppercase 用双分支，其余用统一 filter）。
+    if cfg.uppercase {
+        let pool: Vec<&char> = UPPER
+            .iter()
+            .filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))
+            .collect();
+        if let Some(&&c) = pool.choose(&mut rng) {
             result.push(c);
         }
     }
@@ -140,6 +146,7 @@ mod tests {
             let s = generate(&cfg).unwrap();
             assert!(!s.contains('l'), "不应含 l: {}", s);
             assert!(!s.contains('1'), "不应含 1: {}", s);
+            assert!(!s.contains('I'), "不应含 I: {}", s);
             assert!(!s.contains('O'), "不应含 O: {}", s);
             assert!(!s.contains('0'), "不应含 0: {}", s);
         }

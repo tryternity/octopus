@@ -275,6 +275,7 @@ settings:
       duplicatesCount: ${count} 组重复
       total: 共 ${count} 个登录
       averageScore: 平均强度 ${score} / 4
+      scoredOf: 基于 ${scored} 个有密码项
     importExport:
       title: 导入导出
       importLabel: 从 Bitwarden JSON 导入

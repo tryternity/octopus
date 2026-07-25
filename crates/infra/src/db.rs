@@ -3869,7 +3869,10 @@ pub fn update_vault_cipher(id: &str, input: &VaultCipherInput) -> Result<()> {
     with_db(|conn| update_vault_cipher_at(conn, id, input))
 }
 
-fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput) -> Result<()> {
+/// M-CIPHER-RMW 修复（2026-07-25）：改 pub 供 vault crate 的 save_cipher 在
+/// 事务内调用（load_vault_cipher_at + update_vault_cipher_at 合并单事务，
+/// 防 load→update 间隙并发致软删 cipher 复活——与 #4 meta_lock 同构问题）。
+pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
@@ -3906,6 +3909,32 @@ fn permanent_delete_vault_cipher_at(conn: &Connection, id: &str) -> Result<()> {
 
 pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
     with_db(list_vault_folders_at)
+}
+
+/// P-FOLDER-SCAN 修复（2026-07-25）：单条查询 folder（与 load_vault_cipher 对称）。
+///
+/// 之前 upsert_folder_with_sort 用 list_vault_folders().iter().any() 全表扫判断存在，
+/// 每次 upsert 都 O(N) → pull 的 folder 循环 O(N²)。改用本函数 O(1) 单条查询。
+pub fn load_vault_folder(id: &str) -> Result<Option<VaultFolder>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(VaultFolder {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                sync_md5: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
 }
 
 fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {

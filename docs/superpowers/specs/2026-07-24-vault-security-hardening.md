@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **240** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **241** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -229,11 +229,13 @@
 - `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
 - 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
 
-### M5: 永久删除无 tombstone 可复活（中，设计缺口，未修）
+### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，未修）
+
+**严重度升级（2026-07-25 第二十五轮）**：原定「中」，升级为「高」。密码管理器的核心承诺是「删除即删除」，硬删（empty_trash）后密码经多设备 sync 复活违反此承诺，且有安全影响（用户以为已删除的敏感密码仍存活于各设备 + 远程仓库 git 历史）。详见 [第二十五轮](#第二十五轮审查修复2026-07-25syncoutline--syncstorers--enginers-删除传播)。
 
 **问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
 
-**状态**：文档化为已知限制（与 last-write-wins 同类）。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。
+**状态**：文档化为已知限制。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
 
 ### L10: upsert_folder_with_sort O(N²)（低，未修）
 
@@ -782,3 +784,176 @@ health/ 含 zxcvbn 强度评估 + 重复密码检测。演进修复扎实（8.5�
 - **L6 软删过滤**：duplicate.rs:40 跳过 deleted_at 的 cipher
 - **#12 Debug redact**：DuplicateGroup 手写 Debug 对 password_hash redact
 - **H1 签名优化**：find_duplicates 收 `&[&Cipher]` 避免调用方深拷贝
+
+---
+
+## 第二十五轮审查修复（2026-07-25，sync/outline + store + engine 删除传播：M-TOMBSTONE/M-DEAD + ISO-COMMENT）
+
+### M-TOMBSTONE: sync 不传播硬删，密码多设备复活（高，= 已知 M5，严重度升级 + 佐证细化）
+
+**核查**：三条独立佐证链全部回源码确认成立——
+
+1. **push 侧会删**（store.rs:580-586）：本地 DB 硬删 cipher 后，`incremental_export` 读 `old_outline` 有该 uuid 但 `cipher_id_set`（当前 DB）无 → `delete_cipher_file` + 新 outline（:556-578 只 insert 现存 cipher）不含该 uuid → push 后远程文件删、outline 移除。✓
+2. **pull 侧不删**（engine.rs:800-819）：`pull_from_files` 的 apply 只 `for (uuid, entry) in &remote_outline.ciphers` 做 upsert——**无「本地有 remote 无 → 删本地」对称逻辑**。remote_outline 无 c1 → 循环不碰 c1 → B DB 的 c1 保留。✓
+3. **旁证**：`SyncReport.deleted`（engine.rs:570 字段 / :736 初始化 0）grep 全文件无任何递增或重新赋值点 → sync 从不统计删除、从不删除 cipher。✓
+
+**双向复活路径**：A 硬删 c1 → A push（远程删）→ B pull（remote_outline 无 c1 → apply 不碰 → B DB 保留 c1）→ B push（B incremental_export 读 DB 含 c1 → 写回 c1 文件 + outline）→ 远程 c1 复活 → A pull → c1 在 A 复活。
+
+**与第四轮 M5 的关系**：M-TOMBSTONE **就是**第四轮已记录的 M5。本轮提供更完整的三条独立佐证链（第四轮只记录了时序描述），并升级严重度（中→高）：密码管理器的「删除」必须可靠传播，硬删复活违反核心承诺 + 安全影响（敏感密码存活于 git 历史）。
+
+**触发条件**：① 多设备 sync；② empty_trash 硬删（清空回收站）。单设备 / 仅软删不受影响——软删通过 md5 变化正确传播（H2 修复保证 deleted_at 跨设备一致）。
+
+**修复方向**（需 Phase 2，本轮不改代码）：
+- 方案 A（tombstone）：硬删时 outline 写墓碑 entry（uuid + deleted 标记 + 时间），pull 侧识别墓碑删本地。需 outline 格式升级（version 2）。
+- 方案 B（pull 侧对称删除）：apply 增加「本地有 remote 无 → 删本地」。需防误删（remote 是旧的、未收到对方新增 push 时）——需 vault_version 或 merge 状态保护。
+- 方案 C（文档化为设计选择）不可取——密码管理器的「删除」必须可靠传播。
+
+### M-DEAD: merge_outlines 仅 re-export 生产零调用（低，死代码，与 M-TOMBSTONE 同源）
+
+**核查**：`merge_outlines`（outline.rs:61）定义完整、6 个测试覆盖，`lib.rs:33` 与 `vault/sync/mod.rs:37` 各 `pub use` 导出——但 grep 全仓生产代码无任何实际调用点（engine.rs pull 直接用 remote_outline 驱动 apply，不经 merge）。
+
+**与 M-TOMBSTONE 的关系**：这解释了 M-TOMBSTONE 的成因——原设计意图是 LWW merge（outline.rs:60 注释「取 updated_ms 更新者」），但 pull 侧实现改成直接 remote_outline apply（简化），导致 merge 逻辑没接线、删除也不传播。且 merge_outlines 语义本身也有 M-TOMBSTONE 同源缺陷（:62 `local.clone()` + 只遍历 remote → 「本地有 remote 无」一律保留）。
+
+**状态**：文档化。要么按方案 B 接线（merge 后驱动 apply + 加删除传播），要么删除避免误导。取决于 Phase 2 方案选择。
+
+### ISO-COMMENT: iso_to_unix_ms 注释自相矛盾（低，注释，已修）
+
+**问题**：`sync/store.rs:143-145` 同一函数内注释打架——:143-144「简化天数累积——不考虑闰年精度...准确算法需要完整日历库，不值得」，:145「这里用 civil_to_days 公式（Howard Hinnant），精度无损」。代码实际是完整的 Howard Hinnant civil_to_days（:146-151 era/yoe/doy/doe 分解，正确处理闰年）。:143-144 是被淘汰的旧简化方案残留注释。
+
+**修复**：删 :143-144 旧残留注释，保留 :145 正确描述。
+
+### 正面发现（store.rs / outline.rs）
+
+- **BTreeMap 序列化稳定**：outline.rs:9-12 用 BTreeMap（非 HashMap）保证 outline.json 字节级稳定，避免 git 空 commit
+- **iso_to_unix_ms 精确**：civil_to_days 公式正确处理闰年（era/yoe/doy/doe 分解）
+- **incremental_export md5 diff 正确**：store.rs:558-578 只写变化的 cipher
+- **M8 outline 损坏降级全量重建**：store.rs:537-552 outline.json 解析失败不再 `unwrap_or_default` 吞成空（会导致删除循环不执行 + clone 复活），降级 `export_all_to_files`
+
+---
+
+## 第二十六轮审查修复（2026-07-25，matcher/psl.rs + matches_domain：3 项文档化，无中高 bug）
+
+psl.rs + matches_domain 审查通过——vault 里安全设计最严谨的模块之一。本轮发现均为低/信息性，无功能或安全缺陷，全部文档化。
+
+### P-LAZY: psl() 首次调用 expect panic 风险（低，文档化）
+
+**核查**：psl.rs:33-34 `List::from_bytes(PSL_BYTES).expect("...解析失败")` 在 `OnceLock::get_or_init` 闭包内。`PSL_BYTES` 是 `include_bytes!` 编译期内嵌（:26），正常解析不会失败。但若 dat 文件被手动下载时截断/损坏，`psl()` 首次调用（用户首次 autofill 时，经 `etld_plus_one` → `matches_domain`）会 panic 崩溃而非 fail-closed 退化。
+
+**状态**：文档化。编译期内嵌正常不触发（dat 是 git 仓库内静态文件，不运行时损坏）。可选改进：vault init/unlock 后预热调一次 `psl()`（fail-fast 在启动期暴露），或 `OnceLock<Option<List>>` + fallback host 本身（fail-closed）。当前不改——改了增加复杂度，收益边际。
+
+### P-EXPIRE: 内嵌 PSL 会过期（信息性，已文档化）
+
+**核查**：psl.rs:18-25 注释已明确——`include_bytes!` 编译期内嵌，升级 publicsuffix crate 不会自动更新列表，需手动 `curl` 重新下载 `public_suffix_list.dat`，Mozilla 月更建议季度同步。
+
+**状态**：已文档化。过期后果：新上线 TLD 的多段规则不被识别 → fail-closed 退化为 host 本身（功能退化非安全）。可选：加 CI 检查 dat 的更新日期。
+
+### 测试覆盖缺口: PSL 边缘规则未覆盖（低，文档化）
+
+**核查**：psl.rs 测试覆盖核心场景（简单域名/localhost/多段 TLD 钓鱼/IP），但未覆盖 wildcard rule（`*.kawasaki.jp`）/ exception rule（`!parliament.uk`）/ IDN/Punycode。
+
+**状态**：文档化。这些由 publicsuffix crate 内部正确处理（crate 自有测试），真实 autofill 场景少。可选加几个守护测试防 crate 升级回归。
+
+### 正面发现（psl.rs / matches_domain）
+
+- **PSL 替代简化算法堵钓鱼**：首发版「取最后两段」让 `barclays.co.uk` 与 `evil-attacker.co.uk` 都退化为 `co.uk` 互相匹配 → 钓鱼站可收银行密码。现用 `publicsuffix` crate 的 `DefaultProvider` 正确处理多段 TLD
+- **IP 字面量精确匹配**：psl.rs:55 `host.parse::<IpAddr>().is_ok()` → 原样返回，不做 eTLD+1（否则 `192.168.1.1` 与 `10.20.1.1` 都退化为 `1.1` 互相匹配 → 路由器密码钓鱼）
+- **fail-closed 设计**：PSL 查不到（localhost/内网单段名/未知 TLD）→ 返回 host 本身（宁可匹配失败也不要错匹配）
+- **matches_domain 三重大小写归一**：matcher/mod.rs:78（Host 策略）+ :105-112（Domain 策略 cipher_host/target_domain）+ :118（等价域名组）全部 to_lowercase
+- **等价域名条件扩展**：matcher/mod.rs:116-123 cipher_domain 在组内时，组内所有域名加入 candidates
+- **钓鱼测试守护**：test_phishing_protection_multilevel_tld 锁住 `barclays.co.uk ≠ evil-attacker.co.uk`
+
+---
+
+## 第二十七轮审查修复（2026-07-25，meta_lock + cipher 写并发：M-CIPHER-RMW）
+
+### M-CIPHER-RMW: save_cipher load→update 无锁无事务，与 #4 同构（低，已修）
+
+**核查**：save_cipher（cipher.rs:86-112）流程——:90 `db::load_vault_cipher(id)?`（第 1 次 with_db autocommit 读）→ :87-108 encrypt + 构造 db_input → :111 `db::update_vault_cipher(id, &db_input)?`（第 2 次 with_db autocommit 写）。两步跨两个 autocommit 事务，中间无锁——与 #4（meta_lock 修复的 meta 双 modal 并发 RMW）完全同构。
+
+**并发损坏场景**：save_cipher :90 读到 `deleted_at=None` → 间隙内 `soft_delete("c1")` 改成 ts → :111 update 写回 `deleted_at=None`（save_cipher 读到的旧值，H2「保留」语义反而覆写）→ 软删被撤销，cipher 复活。这与 H2 修复初衷（编辑时保留删除状态）在并发下直接冲突。
+
+**与 #4 的关系**：meta_lock.rs:5 注释明确「Tauri 同步命令被 spawn_blocking，可在不同 worker 并发执行」——这一前提对 cipher 命令同样成立，但 #4 的保护只施加到 meta。cipher 的 soft_delete/restore（S1 修复，单事务原子 ✓）都是好设计，唯独 save_cipher 的 deleted_at 保留 RMW 是 #4 的覆盖盲区。
+
+**修复**：save_cipher 的 load→update 合并进单事务（`with_db` + `unchecked_transaction`），load 用 `load_vault_cipher_at(&tx)`，update 用 `update_vault_cipher_at(&tx)`。事务隔离保证 load 读到的 deleted_at 与 update 写的在同一快照内一致。`update_vault_cipher_at` 改 pub（与 `load_vault_cipher_at` 对称，后者已 pub）。
+
+**严重度诚实限定**：触发条件苛刻——需 ① 两个 Tauri 命令并发操作同一 cipher；② 交错恰好落在 load→update 的微秒级间隙（其间有 encrypt + md5 计算）。单用户 UI 下极难触发。但形态与 #4 完全一致，轻量事务加固消除盲区。
+
+**回归测试**：`save_cipher_preserves_soft_deleted_state`——先 soft_delete → 再 save_cipher → deleted_at 仍非空（不复活）。
+
+### 正面发现（meta_lock.rs）
+
+- **ReentrantMutex 设计正确**：同线程可重入（外层 change_master_password 持锁 → 内层 save_vault_meta 再 lock 不死锁），这是锁下沉到写函数内部的前提
+- **锁下沉写函数**：save_vault_meta / update_security_stamp 内部自动加锁，覆盖所有 meta 写路径（不依赖调用方显式 acquire）
+- **双测试守护**：test_lock_serializes_concurrent_writers（4 线程并发串行化）+ test_lock_is_reentrant_same_thread（同线程重入不死锁）
+
+---
+
+## 第二十八轮审查修复（2026-07-25，generator 模块：R-AMBIGUOUS-DEAD + R-UPPER-BRANCH-ASYMMETRY）
+
+generator 模块审查通过——四个生成器（random/passphrase_en/passphrase_zh/pin）+ mod 配置，CSPRNG/边界/Zeroizing/词表守护均到位，无实质 bug。仅 2 个低/信息性观察。
+
+### R-AMBIGUOUS-DEAD: AMBIGUOUS 含 4 个永不命中的死字符（信息性，已修）
+
+**核查**：random.rs:25 `AMBIGUOUS` 列 9 字符 `l 1 I O 0 | ` ' "`。其中 `|` `` ` `` `'` `"` 不在 UPPER/LOWER/DIGITS/SYMBOLS 任一字符集（SYMBOLS 是 `!@#$%^&*()-_=+[]{}<>?`，无这 4 个）。`build_charset` 的 `retain` 和强制阶段 `filter` 对这 4 个永远是 no-op——它们本就不会被生成。
+
+**修复**：从 AMBIGUOUS 删除 4 个死字符，保留 5 个真正有效的（l/1/I/O/0 在字符集内会被过滤）。选择「删除」而非「加入 SYMBOLS」——因为加入会改变密码生成行为（之前不生成这些，之后会生成除非 avoid_ambiguous），删除是纯清理零行为变化。
+
+### R-UPPER-BRANCH-ASYMMETRY: uppercase 双分支 vs 其余统一 filter（低，风格，已修）
+
+**核查**：uppercase 用 `if cfg.uppercase && !cfg.avoid_ambiguous { UPPER.choose } else if cfg.uppercase { filter }` 双分支；lowercase/numbers/symbols 统一用 `filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))`。两种写法语义等价但结构不一致。
+
+**修复**：uppercase 改统一 filter 写法，与其余三个对齐。
+
+### 正面发现（generator 全模块）
+
+- **CSPRNG 一致**：四个生成器全用 OsRng，SliceRandom::choose/shuffle（Fisher-Yates 无偏）、gen_range 边界正确
+- **Zeroizing 中间材料**：random（Zeroizing<Vec<char>>）/ pin（Zeroizing<String>）/ en（Zeroizing<Vec<String>>）/ zh（Zeroizing<String> result）
+- **词表三重守护**：EFF 7776 + ZH 4096 size 守护 + 无重复守护；EFF 额外 no_dedash_collision；ZH 额外 all_two_cjk_chars
+- **边界 ensure**：random 5..=128 / pin 1..=32 / en 3..=10 / zh 3..=8
+- **强制每类型至少 1 个 + avoid_ambiguous 正确过滤**：强制类型数（≤4）< length 下限（5），不超长
+- **zh words 不 zeroize 合理**：Vec<&'static str>（指针指向静态段，无堆明文拷贝），核心明文 result 已 Zeroizing
+- **mod.rs serde tag=camelCase 对齐前端**
+
+---
+
+## 第二十九轮审查修复（2026-07-25，sync/engine.rs 同步核心：P-MD5-LINEAR-SCAN + P-FOLDER-SCAN）
+
+engine.rs 同步核心安全设计严谨——E2 防锁死、stamp 校验前置、保留本地密钥、H2 不复活、#10 不静默吞、resolve 密码验证均正确。2 个性能发现。
+
+### P-MD5-LINEAR-SCAN: md5 比对线性扫描，已有 HashSet 未复用（低-中，已修）
+
+**核查**：pull_from_files 的 md5 比对是 O(M×N)。`db_cipher_ids`/`db_folder_ids` HashSet（:766-769）已构建用于 exists 判断（O(1)），但 `cipher_md5_mismatch`/`folder_md5_mismatch`（:905/:916）接收 `&[VaultCipher]` Vec 用 `.iter().find()` 线性 O(N)。外层 for × 内部 find = O(M×N)，clone 时 M≈N → O(N²)。
+
+**修复**：HashSet 升级为 `HashMap<&str, &str>`（id → sync_md5）。exists 用 `contains_key`（O(1)），md5 比对用 `get` 拿 md5（O(1)），整体降到 O(M)。`cipher_md5_mismatch`/`folder_md5_mismatch` 签名改为接收 `&HashMap`。
+
+**影响评估**：N（密码条数）普通用户几十、重度几百。N=500 时 N²=250k 次字符串比较 ≈ 亚秒级，企业库几千条才到秒级。实际影响有限，但 O(N²) 不必要且修复极简。
+
+### P-FOLDER-SCAN: upsert_folder 全表扫描，db 缺单条 API（低，已修）
+
+**核查**：`upsert_folder_with_sort`（:548-551）判断 folder 存在用 `list_vault_folders().iter().any(|f| f.id == id)` 全表扫。每次 upsert 都 O(N) → pull folder 循环 O(N²)。与 `upsert_cipher`（:527 用单条 `load_vault_cipher`）不对称。db.rs 无 `load_vault_folder(id)` 单条 API。
+
+**修复**：db 层加 `load_vault_folder(id)`（SELECT WHERE id=? 单条查询），`upsert_folder_with_sort` 改用。folder 数量通常远少于 cipher，影响小于 P-MD5-LINEAR-SCAN，但与 upsert_cipher 对称。
+
+### M-TOMBSTONE 仍在（已知 M5 + folder 维度同构）
+
+pull_from_files :800/:822 只遍历 remote outline 做 upsert，无删除分支——远程硬删除的 cipher/folder 在 pull 端不删本地。本轮确认仍在，且 folder 维度同构（folder 硬删除同样不传播）。待 Phase 2 统一处理 tombstone（详见第二十五轮 M5）。
+
+---
+
+## 第三十轮审查修复（2026-07-25，health 模块：R-AVG-DENOM + P-DOUBLE-TRAVERSE 文档化）
+
+health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位。2 个低优先级发现。
+
+### R-AVG-DENOM: average_score 分母与 total_logins 不一致（低，UX 语义，已修）
+
+**核查**：generate_report（mod.rs:46-58）——`total_logins: logins.len()`（含 password=None 的 Login），但 `average_score: total_score / score_count`（score_count 只算 password=Some）。logins 的 filter（:22）只判 `CipherData::Login(_) && deleted_at.is_none()`，不要求 password=Some。Bitwarden 式密码管理器允许「只存 username 不存 password」的 Login——这些进 total_logins 但不进 score_count，UI 显示「10 个登录平均分 3.2」实际是 8 个的。
+
+**修复**：HealthReport 加 `scored_count` 字段透明化 average_score 的真实分母（方案 a，不改现有语义只补透明度）。前端 HealthReportDto 加 optional `scored_count`，average_score 展示旁当 `scored_count < total_logins` 时标注「基于 N 个有密码项」（i18n en/zh）。
+
+**回归测试**：`test_scored_count_excludes_none_password`——3 个 Login（2 有密码 + 1 无密码），total_logins=3 但 scored_count=2。
+
+### P-DOUBLE-TRAVERSE: generate_report 双重遍历 logins（低，性能，文档化）
+
+**核查**：generate_report 对 logins 遍历两次——:29-42 算 strength（zxcvbn）+ :46 find_duplicates 内部再遍历算 SHA-256。可合并为单次遍历。
+
+**状态**：文档化。zxcvbn（O(n²) 中等密码）是绝对瓶颈，单次遍历合并省的只是 N 次指针解引用，相对可忽略。几百个 login 的健康报告是用户主动触发的一次性操作。若未来做成后台定时扫描再考虑。

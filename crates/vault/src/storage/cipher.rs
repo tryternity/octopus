@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rusqlite::params;
 
-use octopus_infra::db::{self, load_vault_cipher_at, VaultCipherInput};
+use octopus_infra::db::{self, load_vault_cipher_at, update_vault_cipher_at, VaultCipherInput};
 
 use crate::crypto::DerivedKey;
 use crate::types::{decrypt_cipher_row, Cipher, CipherInput};
@@ -87,9 +87,12 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
     let enc = input.encrypt_strings(key)?;
     // H2 修复：编辑时保留现有 deleted_at（不碰删除状态）——读现有 row 取值。
     // update SQL 现在会 SET deleted_at，若传 None 会把已软删的 cipher 恢复成 live。
-    let existing_deleted_at = db::load_vault_cipher(id)?
-        .map(|row| row.deleted_at)
-        .unwrap_or(None);
+    //
+    // M-CIPHER-RMW 修复（2026-07-25）：load→update 合并进单事务（unchecked_transaction）。
+    // 之前 load(:90) 与 update(:111) 是两次独立 with_db（autocommit），中间无锁——
+    // 并发交错（save_cipher 读到 deleted_at=None → 间隙内 soft_delete 改成 ts →
+    // update 写回 None）会撤销软删致 cipher 复活。与 #4（meta_lock 修复）同构。
+    // 事务隔离保证 load 读到的 deleted_at 与 update 写的在同一快照内一致。
     let db_input = VaultCipherInput {
         // update 不需要 id（id 是 WHERE 条件），但 VaultCipherInput struct 现在含 id 字段
         // ——填占位（不会被 update_vault_cipher 使用，只 WHERE id = ? 用外部传入的 id）
@@ -103,12 +106,25 @@ pub fn save_cipher(id: &str, input: &CipherInput, key: &DerivedKey) -> Result<()
         fields: enc.fields,
         password_history: enc.password_history,
         reprompt: input.reprompt.into(),
-        deleted_at: existing_deleted_at, // 保留现有删除状态（H2 修复）
+        deleted_at: None, // 占位——事务内 load 后填实际值（见下）
         sync_md5: None,
     };
-    let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
-    let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
-    Ok(db::update_vault_cipher(id, &db_input)?)
+    db::with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        // 事务内 load：读现有 deleted_at（H2 保留语义）
+        let existing_deleted_at = load_vault_cipher_at(&tx, id)?
+            .map(|row| row.deleted_at)
+            .unwrap_or(None);
+        let db_input = VaultCipherInput {
+            deleted_at: existing_deleted_at, // 保留现有删除状态（H2 修复）
+            ..db_input.clone()
+        };
+        let sync_md5 = crate::sync::fingerprint::cipher_md5_from_input(id, &db_input);
+        let db_input = VaultCipherInput { sync_md5: Some(sync_md5), ..db_input };
+        update_vault_cipher_at(&tx, id, &db_input)?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 /// S1 修复（2026-07-24）：soft_delete + sync_md5 重算合并为单事务——
@@ -394,6 +410,35 @@ mod tests {
         let loaded = load_cipher(id, &key).expect("load").expect("should exist");
         assert_eq!(loaded.id, id, "id 必须保持不变（同一行）");
         assert_eq!(loaded.name, "Updated");
+    }
+
+    /// H2 + M-CIPHER-RMW 守护（2026-07-25）：cipher 已软删时 save_cipher 应保留 deleted_at。
+    ///
+    /// H2 修复：编辑时保留现有删除状态（不碰 deleted_at）。
+    /// M-CIPHER-RMW 修复：load→update 合并单事务，防并发间隙致软删被覆写成 None（复活）。
+    /// 此测试验证：先 soft_delete → 再 save_cipher → deleted_at 仍非空（不复活）。
+    #[test]
+    fn save_cipher_preserves_soft_deleted_state() {
+        setup_clean_db();
+        let key = make_key(5);
+        let id = "55555555-5555-4555-8555-555555555555";
+        create_cipher(id, &sample_input("ToSoftDelete"), &key).expect("create");
+
+        // 软删
+        soft_delete(id).expect("soft delete");
+        let after_delete = load_cipher(id, &key).expect("load").expect("should exist");
+        assert!(after_delete.deleted_at.is_some(), "软删后 deleted_at 应非空");
+
+        // 编辑保存——deleted_at 应保留（不被覆写成 None）
+        let updated = sample_input("Edited");
+        save_cipher(id, &updated, &key).expect("save after soft delete");
+
+        let after_save = load_cipher(id, &key).expect("load").expect("should exist");
+        assert_eq!(after_save.name, "Edited", "字段应更新");
+        assert!(
+            after_save.deleted_at.is_some(),
+            "H2+M-CIPHER-RMW: save_cipher 应保留软删状态，deleted_at 不应为 None（复活）"
+        );
     }
 
     /// load_cipher 不存在的 id → Ok(None)（不是 Err）。这是「未找到」语义的不变量。
