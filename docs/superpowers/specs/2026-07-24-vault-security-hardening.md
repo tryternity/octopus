@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **243** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **244** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -978,3 +978,27 @@ health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位
 
 - **incremental_export changed 虚高**：delete_cipher_file 对 NotFound 返 Ok，删除循环 changed += 1 即使文件早不存在 → vault_version 可能不必要 +1。但新 outline 不含 stale uuid，每次 stale 只触发一次，影响极小。
 - **export_all_to_files remove_dir_all 非原子**：清空 ciphers/ folders/ 后写文件，中间失败留半空目录。但 SQLite 是真相源，重新 sync 自愈；且主要在 push_initial（ciphers/ 空）跑。低。
+
+---
+
+## 第三十二轮审查修复（2026-07-25，crypto 模块：K1-GAP + C-ZEROIZE-FEATURES 文档化）
+
+### K1-GAP: clone/pull 远程 KDF 参数未 strict 校验，与 K1 设计意图不一致（中，安全，已修）
+
+**核查**：`from_i64_strict` grep 确认**只有** `resolve_with_remote`（engine.rs:970，stamp 冲突罕见分支）调用。主路径漏防：
+- `clone_initial`（:452）meta upsert 直接 `kdf_memory_kib: f.kdf_memory_kib`（远程原值，无校验）
+- `pull_from_files`（:876）同样无校验
+
+这是我第二十轮 K1 修复的覆盖盲区——strict 校验只接到罕见分支（stamp 冲突），常规 clone/pull 才是日常同步主路径，却漏防。
+
+**攻击链**：攻击者污染私有同步库 meta.json 为 `kdf_memory_kib=8` → 受害者 clone/pull → 弱 KDF 写入本地 DB（stamp 校验通过≠KDF 强度校验）→ unlock 用 from_i64（崩溃下限 memory≥8）接受 → 用户用废掉内存硬度的 Argon2id 无感知。需攻击者能改私有库（中等前提）+ 另获本地 DB 才完整利用，但 K1 设计意图明确是防此场景。
+
+**修复**：clone_initial（:445 后）+ pull_from_files（:861 后）在 `to_sync_fields()` 后、构造 VaultMetaInput 前，加 `Argon2Params::from_i64_strict` 校验。失败返 Err 拒绝同步。补齐 K1 防御主路径。
+
+**回归测试**：`pull_rejects_weak_kdf_params`——写 stamp 一致但 memory_kib=8 的 meta.json，验证 pull 返 Err 且本地 DB 不被污染（kdf_memory_kib 仍 65536）。
+
+### C-ZEROIZE-FEATURES: argon2/aes-gcm/hmac 未启用 zeroize feature（低-中，文档化）
+
+**核查**：Cargo.toml 确认 argon2/aes-gcm/hmac 都缺 zeroize feature，唯独 generic-array 启了（A2 修复）。但核实三个库的 `[features]`——**argon2 0.5 / aes-gcm 0.10 / hmac 0.12 都不提供 zeroize feature**，加不上。
+
+**状态**：文档化。与 N2（aes 0.8 无 zeroize feature）同型已知限制。报告假设这三个库像 generic-array 一样有 zeroize feature 可启，但实际没有。修复需 fork 或升级库版本。argon2 的 64MiB memory blocks 残留是最大量级，但逆推 Argon2 memory blocks ≠ 廉价爆破（不可逆填充阵列）。
