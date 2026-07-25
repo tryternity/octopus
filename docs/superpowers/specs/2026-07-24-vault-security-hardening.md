@@ -1107,3 +1107,25 @@ crypto 模块复审（4 文件：mod/util/symmetric/hierarchy/kdf）——经多
 - **H-CHILD-EXPECT**（极低·风格）：hierarchy.rs:38 `expect("HMAC 接受任意 key 长度")`。HMAC RFC 2104 对任意 key 不失败，安全。仅与 R5「消除 unwrap」风格不一致。
 
 **未来演进提示**（非当前 bug）：S2/AAD 纵深防御——当前不用 AAD 绑定 field_name，单机威胁模型下成立。若未来 vault 支持共享/多用户场景（密文跨设备/跨 vault 流转），「密文移动攻击」价值上升，届时 AAD 绑定 cipher_id || field_name 可作纵深防御。当前 MVP 单机不强求。
+
+---
+
+## 第三十八轮审查修复（2026-07-25，desktop vault 集成层：C-DELETE-NO-UNLOCK-CHECK + 3 项低危文档化）
+
+### C-DELETE-NO-UNLOCK-CHECK: 锁定态可删除/清空 cipher（中，安全一致性，已修）
+
+**核查**：vault_delete_cipher（:536 `_state`）/ vault_restore_cipher（:549 `_state`）/ vault_empty_trash（:559 `_state`）三命令的 `_state` 前缀（编译器「未使用」标记）是遗漏铁证——参数声明传入却被忽略。对比 vault_delete_folder（:390-397）有 `require_user_vault_key` 门禁 + 注释 :340「仍要求 vault 已解锁——避免未解锁会话误触」。
+
+**威胁**：vault 自动锁定后（用户离开），他人/恶意前端/DevTools 可 `invoke('vault_delete_cipher', {id, permanent:true})` 或 `vault_empty_trash` 永久删除密码，无需主密码，造成不可恢复丢失。绕过「锁定 = 不可操作 vault」的安全/UX 预期。
+
+**修复**：三命令改 `_state` → `state`，加 `config: State<'_, SharedRuntimeConfig>`，首行加 `require_user_vault_key` 门禁。与 delete_folder :396 同构。config 是 Tauri State 自动注入，前端 invoke 无需传（签名变更前端无感）。
+
+### S-PASSIVE-TIMEOUT-CLEAR / S-STATUS-WRITE-LOCK / S-SET-TIMEOUT-NO-CHECK（低，文档化）
+
+- **S-PASSIVE-TIMEOUT-CLEAR**：无后台定时器，超时清 key 被动（仅 require/status 调用时检查）。当前心跳 30s + status 轮询构成周期触发，实际残留窗口短。完整方案需后台定时器（权衡复杂度）。
+- **S-STATUS-WRITE-LOCK**：vault_status 高频轮询用写锁（因超时需 &mut self 清 key）。99% 调用无需清，写锁属浪费。可优化为 read() 快速路径 + 仅超时才升级 write()，但引入 TOCTOU 复杂度。parking_lot 临界区极短，实际竞争小。
+- **S-SET-TIMEOUT-NO-CHECK**：vault_set_lock_timeout 不检查解锁即可改超时（含设 0=永不锁定）。超时策略非敏感数据，利用需「能调 Tauri 命令」（那时已 game over）。UI 应对 0 警告。
+
+### 集成层门禁模式洞察
+
+三个跨模块发现（M-CLOUDKEY-PLAINTEXT 加密写入漏读路径 / E-EDIT-TEST-CIPHERTEXT 读路径漏解密 / C-DELETE-NO-UNLOCK-CHECK 删除漏解锁门禁）同源——vault 安全属性在「vault crate 核心」与「desktop 命令层胶水」之间的传递不完整。建议每加一个访问 cipher 的命令，逐项核对 require/解密/reprompt。
