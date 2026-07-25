@@ -66,6 +66,42 @@ settings:
     prompts: 提示配方
     system: 系统状态
     vault: 密码保险库
+    recordings: 录屏
+  recordings:
+    title: 录屏
+    subtitle: 管理屏幕录制文件
+    # 搜索框（P2 启用全文搜索前禁用）
+    searchPlaceholder: P2 启用全文搜索
+    # 列表
+    selectedN: 已选 ${n} 项
+    selectAll: 全选
+    empty: 还没有录屏文件。按 Cmd+Shift+R 开始第一次录制。
+    loading: 加载中...
+    loadFailed: "加载录屏列表失败："
+    totalN: 共 ${n} 条录屏
+    deleteFailed: "删除失败："
+    deleted: 已删除
+    deletedN: 已删除 ${n} 条
+    confirmDeleteN: 确认删除 ${n} 项
+    deleteSelected: 删除选中
+    # 行操作
+    play: 播放
+    reveal: 在 Finder 中显示
+    favorite: 收藏
+    unfavorite: 取消收藏
+    delete: 删除
+    deleteConfirm: 再次点击确认删除
+    transcript: 转字幕
+    transcriptTooltip: 需下载 ASR 模型，点击跳转
+    recording: 录制中
+    paused: 已暂停
+    # 权限
+    permission:
+      notDetermined: 需要屏幕录制权限。
+      notDeterminedAction: 申请权限
+      denied: 屏幕录制权限被拒。
+      deniedAction: 打开系统设置
+      checkFailed: "权限检查失败："
   vault:
     title: 密码保险库
     description: 端到端加密存储你的登录凭证，自动填充网页登录表单

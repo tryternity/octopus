@@ -12,6 +12,7 @@ import {
   Type,
   Bot,
   Lock,
+  Video,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import ActionBarPanel from "./ActionBarPanel";
 import AgentPanel from "./AgentPanel";
 import { HotwordPanel } from "./HotwordPanel";
 import VaultPanel from "./VaultPanel";
+import RecordingPanel from "./RecordingPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -38,13 +40,14 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword" | "vault";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword" | "vault" | "recordings";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "settings", icon: SettingsIcon, labelKey: "settings.nav.general" },
   { page: "models", icon: Box, labelKey: "settings.nav.models" },
   { page: "actionbar", icon: Command, labelKey: "settings.nav.actionBar" },
   { page: "clipboard", icon: Clipboard, labelKey: "settings.nav.clipboard" },
+  { page: "recordings", icon: Video, labelKey: "settings.nav.recordings" },
   { page: "hotword", icon: Type, labelKey: "settings.nav.hotword" },
   { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
   { page: "agent", icon: Bot, labelKey: "settings.nav.agent" },
@@ -175,6 +178,8 @@ function Settings() {
           <AgentPanel showToast={showToast} />
         ) : effectivePage === "vault" ? (
           <VaultPanel showToast={showToast} />
+        ) : effectivePage === "recordings" ? (
+          <RecordingPanel showToast={showToast} onNavigate={(p) => setPage(p as PageName)} />
         ) : !configResp ? (
           /* 只有 settings(GeneralPanel) 和 hotword 真正依赖 configResp。
              其他页面各自 invoke 独立命令，不应被 configResp 加载失败阻塞。 */
