@@ -377,7 +377,10 @@ export default function RecordAnnotation() {
         return;
       }
       if (e.key === "Escape") {
-        if (toolRef.current !== "none") { setTool("none"); setShowPopover(false); }
+        if (toolRef.current !== "none") {
+          setTool("none"); setShowPopover(false);
+          invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {});
+        }
         // 录屏停止由全局 ESC 快捷键接管（record_hotkey），这里不重复处理
       }
     };
@@ -513,7 +516,7 @@ export default function RecordAnnotation() {
           alignItems: "center",
         }}
       >
-        <ToolButton active={tool === "none"} onClick={() => { setTool("none"); setShowPopover(false); }} label={t("screenshot.tool.select")} icon={
+        <ToolButton active={tool === "none"} onClick={() => { setTool("none"); setShowPopover(false); invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {}); }} label={t("screenshot.tool.select")} icon={
           <img src="icons/arrow-pointer.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
         } />
         <ToolButton active={tool === "rect"} onClick={(e) => onToolSelect(e, "rect")} label={t("screenshot.tool.rect")} icon={
