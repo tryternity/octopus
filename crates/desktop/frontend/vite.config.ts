@@ -43,6 +43,7 @@ const config = {
         "password-generator": "password-generator.html",
         "record-config": "record-config.html",
         "area-picker": "area-picker.html",
+        "record-annotation": "record-annotation.html",
         download: "download.html",
       },
     },
