@@ -52,12 +52,16 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
             .collect(),
     );
 
-    let mut result = words.join(&cfg.separator);
+    // G-EN-RESULT-NO-ZEROIZE 修复（2026-07-25）：result 用 Zeroizing<String> 包裹，
+    // 与 random（Zeroizing<Vec<char>>）/ passphrase_zh / pin 一致——之前 en 独漏，
+    // words（中间词数组）包了 Zeroizing 但 join 产出的最终明文副本没包。
+    // 模式照 passphrase_zh :31/:35/:43。
+    let mut result: Zeroizing<String> = Zeroizing::new(words.join(&cfg.separator));
     if cfg.include_number {
         let n: u32 = rng.gen_range(0..=9);
-        result = format!(
+        *result = format!(
             "{}{}{}",
-            result,
+            result.as_str(),
             if cfg.separator.is_empty() {
                 ""
             } else {
@@ -66,7 +70,8 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
             n
         );
     }
-    Ok(result)
+    // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 result 的 heap）
+    Ok(result.as_str().to_string())
 }
 
 #[cfg(test)]

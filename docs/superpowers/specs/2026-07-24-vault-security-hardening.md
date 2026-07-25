@@ -1002,3 +1002,15 @@ health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位
 **核查**：Cargo.toml 确认 argon2/aes-gcm/hmac 都缺 zeroize feature，唯独 generic-array 启了（A2 修复）。但核实三个库的 `[features]`——**argon2 0.5 / aes-gcm 0.10 / hmac 0.12 都不提供 zeroize feature**，加不上。
 
 **状态**：文档化。与 N2（aes 0.8 无 zeroize feature）同型已知限制。报告假设这三个库像 generic-array 一样有 zeroize feature 可启，但实际没有。修复需 fork 或升级库版本。argon2 的 64MiB memory blocks 残留是最大量级，但逆推 Argon2 memory blocks ≠ 廉价爆破（不可逆填充阵列）。
+
+---
+
+## 第三十三轮审查修复（2026-07-25，generator 模块：G-EN-RESULT-NO-ZEROIZE）
+
+### G-EN-RESULT-NO-ZEROIZE: passphrase_en 最终明文 result 未用 Zeroizing（低，一致性，已修）
+
+**核查**：同模块四生成器最终明文容器对比——random（`Zeroizing<Vec<char>>`）/ passphrase_zh（`Zeroizing<String>`）/ pin（`Zeroizing<String>`）/ passphrase_en（普通 `String`）。en 独漏：words 中间词数组（:27）包了 Zeroizing，但 `words.join()` 产出的最终明文副本 result（:55）没包。
+
+**修复**：照 passphrase_zh :31/:35/:43 模式——:55 改 `Zeroizing::new(words.join(...))`，:58 format 覆盖改 `*result = format!(...)`，:69 改 `Ok(result.as_str().to_string())`。
+
+**严重度诚实限定**：result 唯一存活区间是 join(:55) 到 return(:69)，其间只有同步 format!，无显式 panic 路径（除 OOM），Zeroizing「异常不残留」的实际收益边际。返回给 Tauri IPC 的 String 本就是明文（四生成器同样），Zeroizing 只保护中间容器。但模块内一致性缺口明显（4 个生成器 3 个包了，en 独漏），且注释 :25-26 宣称「中间材料用 Zeroizing」却漏了最终拼接结果，值得为一致性补齐。
