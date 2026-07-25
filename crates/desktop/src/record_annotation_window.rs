@@ -250,6 +250,14 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 && my >= zone_phys_y && my <= zone_phys_y + zone_phys_h;
             let want_ignore = !in_toolbar;
 
+            // 诊断日志（passthrough 模式下每秒打一次）
+            if want_ignore != cur_ignore {
+                log::info!(
+                    "[annotation-poller] passthrough mouse=({},{}) win=({},{}) zone=({},{},{},{}) in_toolbar={} → ignore={}",
+                    mx, my, wx, wy, zone_phys_x, zone_phys_y, zone_phys_w, zone_phys_h, in_toolbar, want_ignore
+                );
+            }
+
             if want_ignore != cur_ignore {
                 set_annotation_ignores_mouse(&win, want_ignore);
                 cur_ignore = want_ignore;
