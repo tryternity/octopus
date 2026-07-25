@@ -1603,3 +1603,24 @@ L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 
 - vault: **216 pass** + 1 ignored（+8 累计：H1 签名 / M1 重复+多样 / M2 secret / L6 软删 / N1 循环 / H2 pull+clone）
 - infra: **160 pass**
 - desktop: **400 pass**
+
+---
+
+## 第五~二十轮审查修复（详见 spec）
+
+**说明**：第五轮起的审查修复记录统一在 spec 维护，避免 spec/plan 双处重复导致漂移。
+
+**权威文档**：[2026-07-24-vault-security-hardening.md](../specs/2026-07-24-vault-security-hardening.md)
+
+该 spec 覆盖第六~二十轮（部分轮次编号因审查 agent 报告不连续而跳跃），含每轮的：
+- 问题严重度 + 核查依据（回源码核实，不轻信报告）
+- 修复方案 / 文档化决策 / follow-up 状态
+- 测试覆盖 + 回归守护
+- 已知限制清单（E1/M5 硬删复活、N2 AES key schedule、L21 TOTP secret zeroize 等）
+
+**最新测试基线（截至第二十轮，2026-07-25）**：
+- vault: **234 pass** + 2 ignored（lib）+ 1 pass（集成 unlock.rs）
+- infra: 160 pass / sync: 97 pass + 4 ignored / desktop: 410 pass
+- tsc 0 error / cargo build 0 warning
+
+**本轮（vault-git-sync）原计划任务状态**：原 spec/plan 定义的 sync 功能（pull/clone/push/resolve/热词同步）均已实现并通过审查。后续轮次（第五~二十轮）是上线后的持续安全加固，不属于本 plan 的原始任务范围，故只在此引用。

@@ -30,7 +30,13 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
             // EFF 列表中有 4 个带连字符的词（yo-yo / drop-down / felt-tip / t-shirt）。
             // 由于 separator 默认 '-'，且 capitalize 会把首个字母大写，连字符词会
             // 让生成的 passphrase 在 split('-') 后无法逐词校验。这里把连字符去掉
-            // （yo-yo → yoyo），既保持源词熵不变，又让默认 '-' 分隔符语义清晰。
+            // （yo-yo → yoyo），让默认 '-' 分隔符语义清晰。
+            //
+            // G-YOYO-COLLIDE（2026-07-25）：去连字符后 yo-yo→yoyo 与已有 yoyo 碰撞，
+            // 实际唯一输出版 7775（少 1）。熵损 = log2(7776/7775) ≈ 0.000186 bit/词，
+            // 3-10 词 passphrase 总熵损 < 0.002 bit，可忽略。非 octopus 引入——EFF
+            // 官方大词表本身同时含两者。守护测试 test_eff_wordlist_no_dedash_collision
+            // 锁住此已知碰撞，防止未来词表改动引入新的去连字符碰撞。
             .map(|w| w.replace('-', ""))
             .map(|w| {
                 if cfg.capitalize {
@@ -142,5 +148,67 @@ mod tests {
             ..Default::default()
         };
         assert!(generate(&cfg_max).is_ok());
+    }
+
+    /// G-EFF-NOGUARD 守护（2026-07-25）：EFF 词表大小必须恰好 7776。
+    ///
+    /// 7776 行静态 const，误删几行 / 编辑引入异常，CI 之前无任何守护，静默降熵。
+    /// 与 zh_wordlist_4096 的 test_wordlist_size_4096_after_completion 对称。
+    #[test]
+    fn test_eff_wordlist_size_7776() {
+        assert_eq!(
+            EFF_WORDLIST.len(),
+            7776,
+            "EFF 词表必须恰好 7776 词（当前 {}），误删/误增会静默降熵",
+            EFF_WORDLIST.len()
+        );
+    }
+
+    /// G-EFF-NOGUARD 守护：EFF 词表无重复词。
+    #[test]
+    fn test_eff_wordlist_no_duplicates() {
+        let mut sorted = EFF_WORDLIST.to_vec();
+        sorted.sort();
+        let dups: Vec<&str> = sorted
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| w[0])
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "EFF 词表不应有重复词（原始词，未去连字符）：{:?}",
+            dups
+        );
+    }
+
+    /// G-EFF-NOGUARD + G-YOYO-COLLIDE 守护：去连字符后无新增碰撞（除已知 yo-yo/yoyo）。
+    ///
+    /// passphrase 生成会 `w.replace('-', "")`——若去连字符后两词变成相同，实际唯一
+    /// 输出版减少，静默降熵。EFF 官方词表已知 yo-yo→yoyo 与 yoyo 碰撞（熵损可忽略，
+    /// 见生成函数注释）。此测试锁住「仅此一对已知碰撞」，防止未来词表改动引入更多。
+    #[test]
+    fn test_eff_wordlist_no_dedash_collision() {
+        use std::collections::HashMap;
+        // key = 去连字符后的词（owned），value = 原始词（记录首个出现的）
+        let mut seen: HashMap<String, &str> = HashMap::new();
+        let mut collisions: Vec<(&str, &str)> = Vec::new();
+        for &word in EFF_WORDLIST.iter() {
+            let dedashed = word.replace('-', "");
+            if let Some(&prev) = seen.get(&dedashed) {
+                // 已知碰撞：yo-yo / yoyo（EFF 官方词表固有，熵损可忽略）
+                let is_known =
+                    (prev == "yo-yo" && word == "yoyo") || (prev == "yoyo" && word == "yo-yo");
+                if !is_known {
+                    collisions.push((prev, word));
+                }
+            } else {
+                seen.insert(dedashed, word);
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "去连字符后出现非已知碰撞（会静默降熵）：{:?}",
+            collisions
+        );
     }
 }
