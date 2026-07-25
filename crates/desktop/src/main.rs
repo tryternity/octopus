@@ -1094,6 +1094,44 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_window::create_record_window(app.handle());
 
+            // 标注 overlay 的「停止录制」按钮 emit record://stop-requested。
+            // 监听后调 stop_and_store（与 ESC/tray 同路径，读 session 快照入库）。
+            #[cfg(target_os = "macos")]
+            {
+                let app_handle = app.handle().clone();
+                let _ = app.handle().listen("record://stop-requested", move |_event| {
+                    log::info!("[record] stop-requested from annotation overlay");
+                    let ah = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        use octopus_record::SessionState;
+                        let session = match ah.try_state::<octopus_record::RecordSession>() {
+                            Some(s) => s,
+                            None => {
+                                log::warn!("[record] stop-requested: RecordSession 未找到");
+                                return;
+                            }
+                        };
+                        let st = session.state().await;
+                        if st != SessionState::Recording && st != SessionState::Paused {
+                            log::info!("[record] stop-requested 在非录制态忽略（state={:?}）", st);
+                            return;
+                        }
+                        match crate::record_commands::stop_and_store(&session, false, None).await {
+                            Ok(Some(meta)) => {
+                                log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
+                                crate::record_annotation_window::close_annotation_window(&ah);
+                                let _ = ah.emit("record://stopped", &meta);
+                            }
+                            Ok(None) => log::info!("[record] stop 返回 None"),
+                            Err(e) => {
+                                log::error!("[record] stop + 入库失败: {e}");
+                                let _ = ah.emit("record://stop-failed", &e);
+                            }
+                        }
+                    });
+                });
+            }
+
             // 4. Initialize i18n + Create Tray
             i18n::init(&config.ui_language);
             if let Err(e) = tray::create_tray(app.handle(), &config) {
