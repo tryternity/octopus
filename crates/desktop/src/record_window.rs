@@ -89,27 +89,28 @@ pub fn toggle_record_window(app: &AppHandle) {
     }
 }
 
-/// 算浮窗左上角坐标——鼠标上方居中（fallback 主屏中心）。
+/// 算浮窗左上角坐标——主屏水平居中 + 垂直上 1/3 位置。
+///
+/// 录屏是确定性操作（与鼠标当前位置无关），浮窗固定显示在主屏视觉焦点区
+/// （上 1/3 处），避免遮挡屏幕底部 dock / 状态栏，也避免鼠标位置在副屏时
+/// 浮窗跑到副屏（多屏环境下用户期望浮窗在主屏）。
+///
+/// fallback（拿不到主屏，极少见）：屏幕原点偏移 (100, 100)。
 fn compute_position(app: &AppHandle) -> (f64, f64) {
-    // 鼠标位置（逻辑坐标，CGEvent 不除 scale，参考 action_bar_commands::get_mouse_position）
-    if let Some((mx, my)) = crate::action_bar_commands::get_mouse_position(app) {
-        // 浮窗在鼠标上方居中（mx - W/2, my - H - 10）
-        return (mx - WIDTH / 2.0, (my - HEIGHT - 10.0).max(0.0));
-    }
-    // fallback：主屏中心
-    let (cx, cy) = app
-        .primary_monitor()
+    app.primary_monitor()
         .ok()
         .flatten()
         .and_then(|m| {
             let scale = m.scale_factor();
             let pos = m.position();
             let sz = m.size();
-            Some((
-                (pos.x as f64 + sz.width as f64 / scale / 2.0) - WIDTH / 2.0,
-                (pos.y as f64 + sz.height as f64 / scale / 2.0) - HEIGHT / 2.0,
-            ))
+            let mon_w = sz.width as f64 / scale;
+            let mon_h = sz.height as f64 / scale;
+            // 水平居中：显示器中心 - 浮窗宽度/2
+            let x = pos.x as f64 + mon_w / 2.0 - WIDTH / 2.0;
+            // 垂直上 1/3：显示器顶部 + 高度/3 - 浮窗高度/2（浮窗中心对齐上 1/3 线）
+            let y = pos.y as f64 + mon_h / 3.0 - HEIGHT / 2.0;
+            Some((x, y.max(0.0)))
         })
-        .unwrap_or((400.0, 300.0));
-    (cx, cy)
+        .unwrap_or((100.0, 100.0))
 }
