@@ -1093,3 +1093,17 @@ generator 经多轮修复（R8/R5/R-AMBIGUOUS-DEAD/R-UPPER/G-EN/G-YOYO/G-EFF）�
 ### G-ZH-NUMBER-NO-SEPARATOR: zh include_number/symbol 不考虑 separator（低，文档化）
 
 zh 的 include_number/symbol（passphrase_zh.rs:33-41）直接 `format!("{}{}", result, n)`，不像 en（:62-71）那样按 separator 配置补分隔符。中文默认 separator 空，紧贴无视觉问题；但若用户设非空 separator（如「·」），数字/符号仍紧贴前词，与词间分隔不一致。en/zh 两实现独立演化的轻微不对称。
+
+---
+
+## 第三十七轮审查（2026-07-25，crypto 复审：干净，3 项极低观察 + 演进提示）
+
+crypto 模块复审（4 文件：mod/util/symmetric/hierarchy/kdf）——经多轮修复（M1-mod/K1/K3/C1/H1/A2/S2）后已很干净，本轮无实质 bug。
+
+3 项极低优先级观察（**均非 bug，无需修复**，诚实标注避免过度工程）：
+
+- **S-DECRYPT-DIAG**（极低·诊断）：symmetric.rs:46-50 `ensure!(combined.len() > NONCE_LEN)` 下限过宽——合法 GCM 密文最少 12+16=28B，`> 12` 仅挡 nonce 都不全，len 13~27 放行靠 decrypt tag 校验拒。安全无影响（最终必拒），仅错误信息语义不准。
+- **K-STRICT-ITER-REDUNDANT**（极低·冗余）：kdf.rs:105-121 from_i64_strict 对 iterations 两处检查（范围 1..=u32::MAX + ≥2），第一个下界 1 被 ≥2 覆盖，轻微冗余。逻辑正确。
+- **H-CHILD-EXPECT**（极低·风格）：hierarchy.rs:38 `expect("HMAC 接受任意 key 长度")`。HMAC RFC 2104 对任意 key 不失败，安全。仅与 R5「消除 unwrap」风格不一致。
+
+**未来演进提示**（非当前 bug）：S2/AAD 纵深防御——当前不用 AAD 绑定 field_name，单机威胁模型下成立。若未来 vault 支持共享/多用户场景（密文跨设备/跨 vault 流转），「密文移动攻击」价值上升，届时 AAD 绑定 cipher_id || field_name 可作纵深防御。当前 MVP 单机不强求。
