@@ -1071,3 +1071,25 @@ unlock.rs 密钥管理设计扎实——密钥清零链完整、M3/B1/B2/A1/#8/I
 ### 附带：清理 desktop test 7 个 unused import warning
 
 cargo fix 清理 vault_state.rs（1）+ runtime_config.rs（5）+ vault_secret_access.rs（1）的 test profile unused import。非本轮引入，但 AGENTS.md 要求 0 warning。
+
+---
+
+## 第三十六轮审查修复（2026-07-25，E-EDIT-TEST-CIPHERTEXT 回归 + generator 复审）
+
+### E-EDIT-TEST-CIPHERTEXT: edit 未改 key 时取 DB 密文当明文测连接 → 401（中，功能回归，已修）
+
+**M-CLOUDKEY-PLAINTEXT 修复的直接回归**：edit_cloud_model（model_commands.rs:757）`get_model_source_key(id)` 是裸 SQL（db.rs:1447），不解密。M-CLOUDKEY-PLAINTEXT 修复后 DB 存 `v1:` 密文，edit 取密文当明文 Bearer token 发云端 → 401 → `!test.ok` → return Err「模型测试失败」→ llm/translate 云端模型编辑被拒。
+
+**触发**：vault 已初始化 + edit llm/translate 云端模型 + 用户不改 key（前端默认传空 secret_key 不回填明文）。前端 edit 表单默认空 secret_key → 几乎每次 edit 都走空值路径。
+
+**根因**：唯一漏了 `try_decrypt_secret_global` 的 secret_key 读路径（其他三处：action_bar_commands:973 / config:58 / engine_aliyun:115 都已解密）。
+
+**修复**：:757 取回 raw 后过 `try_decrypt_secret_global` 解密再测连接。与现有三处读路径模式一致。
+
+### generator 模块复审：干净（1 个低危一致性观察）
+
+generator 经多轮修复（R8/R5/R-AMBIGUOUS-DEAD/R-UPPER/G-EN/G-YOYO/G-EFF）后已干净。
+
+### G-ZH-NUMBER-NO-SEPARATOR: zh include_number/symbol 不考虑 separator（低，文档化）
+
+zh 的 include_number/symbol（passphrase_zh.rs:33-41）直接 `format!("{}{}", result, n)`，不像 en（:62-71）那样按 separator 配置补分隔符。中文默认 separator 空，紧贴无视觉问题；但若用户设非空 separator（如「·」），数字/符号仍紧贴前词，与词间分隔不一致。en/zh 两实现独立演化的轻微不对称。

@@ -752,11 +752,16 @@ pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
 pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), String> {
     // LLM / Translate 云端模型：后端先测试连接，通过才更新
     if (input.domain == "llm" || input.domain == "translate") && !input.model_name.is_empty() {
-        // secret_key 为空表示编辑时未改 key，从 DB 取真实 key 测试
+        // secret_key 为空表示编辑时未改 key，从 DB 取真实 key 测试。
+        // E-EDIT-TEST-CIPHERTEXT 修复（2026-07-25）：M-CLOUDKEY-PLAINTEXT 修复后 DB 存
+        // v1: 密文，get_model_source_key 是裸 SQL 不解密——必须过 try_decrypt_secret_global
+        // 解密后再测连接，否则密文当 Bearer token 发云端 → 401 → 编辑被拒。
+        // 与 action_bar_commands:973 / config:58 / engine_aliyun:115 三处读路径模式一致。
         let real_key = if input.secret_key.is_empty() {
-            octopus_infra::db::get_model_source_key(id)
+            let raw = octopus_infra::db::get_model_source_key(id)
                 .map(|(_, k)| k)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            crate::vault_secret_access::try_decrypt_secret_global(&raw)?
         } else {
             input.secret_key.clone()
         };
