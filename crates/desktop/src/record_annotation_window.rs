@@ -226,12 +226,13 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 Err(_) => continue,
             };
 
-            // 工具栏区域：窗口底部 TOOLBAR_H + 8px margin（与前端 toolbarTop 一致）。
-            // popover 弹出时也在工具栏附近（上方 ~200px），一并算入交互区域。
+            // 工具栏区域：窗口底部 TOOLBAR_H + 8px margin = 52px。
+            // 只按工具栏实际高度判定（不含 popover 200px）——因为：
+            // - select 状态下只点工具栏按钮（44px），popover 不弹出
+            // - 非 select 状态下整个窗口不穿透（上面已 continue），popover 自然能操作
             const TOOLBAR_H: f64 = 44.0;
             const TOOLBAR_MARGIN: f64 = 8.0;
-            const POPOVER_H: f64 = 200.0;
-            let toolbar_zone_h = TOOLBAR_H + TOOLBAR_MARGIN + POPOVER_H;
+            let toolbar_zone_h = TOOLBAR_H + TOOLBAR_MARGIN;
             let toolbar_zone_top = wy + wh - toolbar_zone_h;
 
             let in_toolbar = mx >= wx && mx <= wx + ww && my >= toolbar_zone_top && my <= wy + wh;
