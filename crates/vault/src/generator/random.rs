@@ -7,39 +7,41 @@ use zeroize::Zeroizing;
 
 use super::RandomConfig;
 
-const UPPER: &[&str] = &[
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z",
+// R8 修复（2026-07-25）：字符集改 &[char]——之前 &[&str] 每次 build_charset 都
+// concat() 4 次堆分配拼 String 再 .chars()。字符集静态已知， &[char] 零分配。
+const UPPER: &[char] = &[
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
 ];
-const LOWER: &[&str] = &[
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
-    "t", "u", "v", "w", "x", "y", "z",
+const LOWER: &[char] = &[
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
+    't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
-const DIGITS: &[&str] = &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
-const SYMBOLS: &[&str] = &[
-    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "_", "=", "+", "[", "]", "{", "}", "<",
-    ">", "?",
+const DIGITS: &[char] = &['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+const SYMBOLS: &[char] = &[
+    '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+', '[', ']', '{', '}', '<',
+    '>', '?',
 ];
 const AMBIGUOUS: &[char] = &['l', '1', 'I', 'O', '0', '|', '`', '\'', '"'];
 
 fn build_charset(cfg: &RandomConfig) -> Vec<char> {
-    let mut s: String = String::new();
+    let mut s: Vec<char> = Vec::new();
     if cfg.uppercase {
-        s.push_str(UPPER.concat().as_str());
+        s.extend_from_slice(UPPER);
     }
     if cfg.lowercase {
-        s.push_str(LOWER.concat().as_str());
+        s.extend_from_slice(LOWER);
     }
     if cfg.numbers {
-        s.push_str(DIGITS.concat().as_str());
+        s.extend_from_slice(DIGITS);
     }
     if cfg.symbols {
-        s.push_str(SYMBOLS.concat().as_str());
+        s.extend_from_slice(SYMBOLS);
     }
     if cfg.avoid_ambiguous {
-        s = s.chars().filter(|c| !AMBIGUOUS.contains(c)).collect();
+        s.retain(|c| !AMBIGUOUS.contains(c));
     }
-    s.chars().collect()
+    s
 }
 
 pub fn generate(cfg: &RandomConfig) -> Result<String> {
@@ -61,46 +63,43 @@ pub fn generate(cfg: &RandomConfig) -> Result<String> {
     let mut result: Zeroizing<Vec<char>> = Zeroizing::new(Vec::with_capacity(cfg.length as usize));
 
     // 强制每种启用类型至少 1 个
+    // R8 修复后字符集是 &[char]，直接 choose 拿 char，无需 .chars() 转换。
+    // R5 修复：统一用 if let Some，消除 :65 的 unwrap（与非 ambiguous 分支风格一致）。
     if cfg.uppercase && !cfg.avoid_ambiguous {
-        result.extend(UPPER.choose(&mut rng).unwrap().chars());
+        if let Some(&c) = UPPER.choose(&mut rng) {
+            result.push(c);
+        }
     } else if cfg.uppercase {
-        let filtered: Vec<&str> = UPPER
-            .iter()
-            .filter(|s| !AMBIGUOUS.contains(&s.chars().next().unwrap()))
-            .copied()
-            .collect();
-        if let Some(c) = filtered.choose(&mut rng) {
-            result.extend(c.chars());
+        let filtered: Vec<&char> = UPPER.iter().filter(|c| !AMBIGUOUS.contains(c)).collect();
+        if let Some(&&c) = filtered.choose(&mut rng) {
+            result.push(c);
         }
     }
     if cfg.lowercase {
-        let pool: Vec<&str> = LOWER
+        let pool: Vec<&char> = LOWER
             .iter()
-            .filter(|s| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(&s.chars().next().unwrap()))
-            .copied()
+            .filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))
             .collect();
-        if let Some(c) = pool.choose(&mut rng) {
-            result.extend(c.chars());
+        if let Some(&&c) = pool.choose(&mut rng) {
+            result.push(c);
         }
     }
     if cfg.numbers {
-        let pool: Vec<&str> = DIGITS
+        let pool: Vec<&char> = DIGITS
             .iter()
-            .filter(|s| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(&s.chars().next().unwrap()))
-            .copied()
+            .filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))
             .collect();
-        if let Some(c) = pool.choose(&mut rng) {
-            result.extend(c.chars());
+        if let Some(&&c) = pool.choose(&mut rng) {
+            result.push(c);
         }
     }
     if cfg.symbols {
-        let pool: Vec<&str> = SYMBOLS
+        let pool: Vec<&char> = SYMBOLS
             .iter()
-            .filter(|s| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(&s.chars().next().unwrap()))
-            .copied()
+            .filter(|c| !cfg.avoid_ambiguous || !AMBIGUOUS.contains(c))
             .collect();
-        if let Some(c) = pool.choose(&mut rng) {
-            result.extend(c.chars());
+        if let Some(&&c) = pool.choose(&mut rng) {
+            result.push(c);
         }
     }
 
@@ -162,8 +161,7 @@ mod tests {
             assert!(s.chars().any(|c| c.is_lowercase()), "缺小写: {}", s);
             assert!(s.chars().any(|c| c.is_ascii_digit()), "缺数字: {}", s);
             assert!(
-                s.chars()
-                    .any(|c| SYMBOLS.iter().any(|sym| sym.chars().any(|sc| sc == c))),
+                s.chars().any(|c| SYMBOLS.contains(&c)),
                 "缺符号: {}",
                 s
             );

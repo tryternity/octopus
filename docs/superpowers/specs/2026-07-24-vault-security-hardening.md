@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **236** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **239** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 97 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -702,3 +702,50 @@ importer/types/matcher 整体质量高——MatchType 协议对齐、#11 空 URI
 - **#11 空 URI 视 Never**：matcher.rs:66-68 `cipher_uri.trim().is_empty()` 提前返回 false，挡住 `starts_with("")` 恒真与 `Regex::new("")` 恒真两类误匹配
 - **L12 大小写归一**：matcher.rs:78/105-112 Host 策略与 Domain 策略 to_lowercase，DNS host 不区分大小写
 - **Rust regex 免疫 ReDoS**：matcher.rs:87 `Regex::new` + `unwrap_or(false)`——regex crate 线性时间引擎，无 catastrophic backtracking，无效正则不 panic
+
+---
+
+## 第二十二轮审查修复（2026-07-25，generator/ 全模块：G-EFF-NOGUARD/G-YOYO-COLLIDE/R8/R5 + P4 文档化）
+
+generator/ 是密码生成器命门（弱随机=可爆破密码）。本轮处理词表守护缺失、注释措辞、数据结构低效。
+
+### G-EFF-NOGUARD: EFF 词表零守护测试（中低，与 zh 词表不对称）
+
+**问题**：`eff_wordlist.rs` 7776 行静态 const 零测试（zh_wordlist_4096 有 3 个守护：size/no_duplicates/all_two_cjk）。误删几行/引入重复词/编辑引入异常字符，CI 无任何守护，静默降熵。
+
+**修复**：在 `passphrase_en.rs` 测试模块补 3 个对齐 zh 词表的守护：
+- `test_eff_wordlist_size_7776`：大小恰好 7776
+- `test_eff_wordlist_no_duplicates`：原始词无重复
+- `test_eff_wordlist_no_dedash_collision`：去连字符后无新增碰撞（除已知 yo-yo/yoyo）
+
+### G-YOYO-COLLIDE: yo-yo/yoyo 去连字符碰撞，注释措辞不严谨（很低，信息性）
+
+**问题**：EFF 词表同时含 "yo-yo"（:7757）和 "yoyo"（:7762）。`passphrase_en.rs:34 w.replace('-', "")` 把 yo-yo→yoyo，与已有 yoyo 碰撞 → 实际唯一输出版 7775。但注释 :30-33 声称"保持源词熵不变"不严谨。
+
+**修复**：注释改为如实表述——熵损 = log2(7776/7775) ≈ 0.000186 bit/词，3-10 词总熵损 < 0.002 bit，可忽略；非 octopus 引入（EFF 官方词表固有）。`test_eff_wordlist_no_dedash_collision` 锁住此已知碰撞。
+
+### R8: 字符集 &[&str] 致每次 generate 多次 concat（低，性能）
+
+**问题**：`random.rs:10-22` UPPER/LOWER/DIGITS/SYMBOLS 是 `&[&str]`，`build_charset:28-37` 每次调用 4 次 `concat()` 堆分配拼 String 再 `.chars()`。字符集静态已知。
+
+**修复**：改 `&[char]` 常量，`build_charset` 用 `extend_from_slice` 零分配。强制类型选择逻辑同步简化（直接 choose 拿 char，无需 `.chars()` 转换）。
+
+### R5: random.rs:65 唯一 unwrap（低，整洁性）
+
+**问题**：`UPPER.choose(&mut rng).unwrap()` 是强制类型选择里唯一 unwrap（:72/82/92/102 都用 if let Some）。UPPER 非空 choose 必返 Some 不 panic，但风格不一致。
+
+**修复**：R8 改造时一并统一为 `if let Some`。
+
+### P4: include_number/symbol 固定末尾位置（低，文档化）
+
+**问题**：`passphrase_en.rs:50-61` / `passphrase_zh.rs:35-40` 追加的数字/符号总在末尾（非随机位置）。攻击者知道位置略降熵。
+
+**状态**：文档化。单字符位（log2(10)≈3.3 / log2(7)≈2.8 bit）影响极小，且位置固定便于用户识别。设计权衡。
+
+### 正面发现（generator/）
+
+- **OsRng CSPRNG**：random.rs:57 / passphrase_en.rs:24 / passphrase_zh.rs / pin.rs 均用 `OsRng`（OS 熵源），非弱 `thread_rng`
+- **#8 Zeroizing 中间材料**：random.rs:61 / passphrase_en.rs:27 生成过程的中间 Vec/String 用 Zeroizing，函数返回时清零 heap
+- **长度边界校验**：random.rs length 5..=128 / passphrase_en word_count 3..=10 / pin 有上限
+- **avoid_ambiguous**：random.rs:39-41 过滤 l/1/I/O/0 等易混淆字符
+- **zh 词表守护扎实**：size 4096 + no_duplicates + all_two_cjk（EFF 词表现在对齐补齐）
