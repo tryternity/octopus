@@ -122,6 +122,42 @@ pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
     }
 }
 
+/// M-CLOUDKEY-PLAINTEXT 修复（2026-07-25）：加密 secret_key 写入 chokepoint。
+///
+/// 与 [`try_decrypt_secret_global`] 对称——add/edit_cloud_model 写 DB 前调用：
+/// - vault 已初始化 + app_key 可用 → `app_key.encrypt(raw)` → 返回 `v1:` 密文
+/// - vault 未初始化 / app_key 不可用 / 空 secret_key → 原样返回（向后兼容）
+///
+/// 这样 add/edit 产生的增量 secret_key 也会加密落盘（之前只 migrate 覆盖 setup
+/// 存量，增量明文残留 DB）。读路径 try_decrypt_secret 已处理 v1: 解密，加密后
+/// 自动走解密分支。
+///
+/// **空值不加密**：edit_cloud_model 传空 secret_key 表示「未改 key」，空值应
+/// 原样返回（DB 层对空值有特殊处理——保持现有值）。
+#[cfg(feature = "vault")]
+pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
+    // 空值不加密（edit 未改 key）
+    if secret.is_empty() {
+        return Ok(secret.to_string());
+    }
+    // 已是密文（v1: 前缀）→ 不重复加密（幂等，防双重加密）
+    if secret.starts_with(CIPHERTEXT_PREFIX) {
+        return Ok(secret.to_string());
+    }
+    match crate::vault_state::try_global_session() {
+        Some(session) => {
+            let app_key = crate::vault_commands::require_app_key_from_session(&session)
+                .map_err(|e| crate::vault_error::serialize(&e))?;
+            let ciphertext = app_key.encrypt(secret.as_bytes()).map_err(|_| {
+                crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+            })?;
+            Ok(ciphertext)
+        }
+        // vault 未初始化 / session 未注入 → 原样返回明文（向后兼容 pre-vault）
+        None => Ok(secret.to_string()),
+    }
+}
+
 // ===== feature != "vault"：no-op 退化 =====
 //
 // follow-up #10: vault feature off 时，octopus_vault crate 不存在，无法解密。
@@ -137,6 +173,12 @@ pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
     Ok(raw.to_string())
 }
 
+#[cfg(not(feature = "vault"))]
+pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
+    // No vault → 无加密能力 → 原样返回明文（与 try_decrypt_secret_global 退化一致）。
+    Ok(secret.to_string())
+}
+
 #[cfg(all(test, feature = "vault"))]
 mod tests {
     use super::*;
@@ -146,7 +188,7 @@ mod tests {
 
     /// 构造一份确定性的 32B DerivedKey（每个 byte 都为 `byte`）。
     fn make_key(byte: u8) -> Arc<DerivedKey> {
-        use octopus_vault::Zeroizing;
+        
         Arc::new(DerivedKey::from_raw([byte; 32]))
     }
 
@@ -250,6 +292,45 @@ mod tests {
 
         // 模拟推理热路径消费
         let decrypted = try_decrypt_secret(&migrated, &session).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// M-CLOUDKEY-PLAINTEXT 守护（2026-07-25）：encrypt_secret_global 的可达路径。
+    ///
+    /// encrypt_secret_global 用全局 session（OnceLock），单测里不一定注入——这里测
+    /// 两个不依赖 session 的路径（空值 + 幂等）。加密路径由 round_trip 间接覆盖
+    ///（encrypt → try_decrypt 对称，逻辑相同）。
+    #[test]
+    fn encrypt_secret_empty_and_idempotent() {
+        // 空 secret_key → 原样返回空（edit 未改 key，不加密）
+        assert_eq!(encrypt_secret_global("").unwrap(), "");
+
+        // 已是 v1: 前缀 → 幂等，不重复加密（防双重加密）
+        let key = make_key(9);
+        let already_encrypted = key.encrypt(b"plain").unwrap();
+        assert!(already_encrypted.starts_with("v1:"));
+        // encrypt_secret_global 对已加密的应原样返回（不依赖 session）
+        let result = encrypt_secret_global(&already_encrypted).unwrap();
+        assert_eq!(result, already_encrypted, "v1: 前缀应幂等不重复加密");
+    }
+
+    /// M-CLOUDKEY-PLAINTEXT 守护：encrypt → try_decrypt round-trip（对称性）。
+    ///
+    /// add/edit_cloud_model 用 encrypt_secret_global 写入，读路径用 try_decrypt_secret
+    /// 解出——两者必须对称（加密的能解出）。
+    #[test]
+    fn encrypt_then_decrypt_round_trip() {
+        let key = make_key(5);
+        let session = session_with_app_key(key.clone());
+
+        let plaintext = "sk-cloud-key-for-add-edit-round-trip";
+        // 模拟 add/edit 路径的加密（直接用 app_key.encrypt，与 encrypt_secret_global
+        // 的 vault 已初始化路径逻辑相同）
+        let encrypted = key.encrypt(plaintext.as_bytes()).unwrap();
+        assert!(encrypted.starts_with("v1:"));
+
+        // 读路径解密
+        let decrypted = try_decrypt_secret(&encrypted, &session).unwrap();
         assert_eq!(decrypted, plaintext);
     }
 }

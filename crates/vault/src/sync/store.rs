@@ -646,25 +646,45 @@ pub fn import_all_from_files() -> Result<(Vec<VaultCipher>, Vec<VaultFolder>)> {
     let ciphers_dir = root.join("ciphers");
     let folders_dir = root.join("folders");
 
+    // R-IMPORT-NOFAULT-TOLERANT 修复（2026-07-25）：单文件损坏不再中止整个 import。
+    //
+    // 之前单文件 read/parse 失败直接 ? 中止 → clone_initial 连锁死锁：
+    //   meta 已在 import 前写入 DB（engine.rs:462）→ import 失败 → clone Err
+    //   → DB 半初始化（有 meta 无 cipher）→ E2 守卫阻止重试（:419）→ 用户死锁。
+    //
+    // 与 pull #10（engine.rs:813-825 read_cipher_file 容错）+ hotword 导入
+    //（engine.rs:478-491 log 不阻断）对齐——三者都处理「外部文件导入」应统一容错。
     let mut ciphers = Vec::new();
     if ciphers_dir.exists() {
         for entry in walk_json_files(&ciphers_dir)? {
-            let content = std::fs::read_to_string(&entry)
-                .with_context(|| format!("读文件失败：{}", entry.display()))?;
-            let file: CipherFile = serde_json::from_str(&content)
-                .with_context(|| format!("解析 cipher 文件失败：{}", entry.display()))?;
-            ciphers.push(file.to_vault_cipher());
+            match std::fs::read_to_string(&entry)
+                .with_context(|| format!("读 cipher 文件失败：{}", entry.display()))
+                .and_then(|content| {
+                    serde_json::from_str::<CipherFile>(&content)
+                        .with_context(|| format!("解析 cipher 文件失败：{}", entry.display()))
+                }) {
+                Ok(file) => ciphers.push(file.to_vault_cipher()),
+                Err(e) => {
+                    log::warn!("[sync] clone import：cipher 文件跳过（损坏）：{}", e);
+                }
+            }
         }
     }
 
     let mut folders = Vec::new();
     if folders_dir.exists() {
         for entry in walk_json_files(&folders_dir)? {
-            let content = std::fs::read_to_string(&entry)
-                .with_context(|| format!("读文件失败：{}", entry.display()))?;
-            let file: FolderFile = serde_json::from_str(&content)
-                .with_context(|| format!("解析 folder 文件失败：{}", entry.display()))?;
-            folders.push(file.to_vault_folder());
+            match std::fs::read_to_string(&entry)
+                .with_context(|| format!("读 folder 文件失败：{}", entry.display()))
+                .and_then(|content| {
+                    serde_json::from_str::<FolderFile>(&content)
+                        .with_context(|| format!("解析 folder 文件失败：{}", entry.display()))
+                }) {
+                Ok(file) => folders.push(file.to_vault_folder()),
+                Err(e) => {
+                    log::warn!("[sync] clone import：folder 文件跳过（损坏）：{}", e);
+                }
+            }
         }
     }
 
@@ -873,6 +893,42 @@ mod tests {
         assert_eq!(loaded_folders.len(), 1);
         // cipher id 不变
         let ids: Vec<&str> = loaded_ciphers.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"a1b2c3d4-e5f6-4789-8901-abcdef123456"));
+        assert!(ids.contains(&"b2c3d4e5-f6a7-4890-9002-bcdef234567"));
+    }
+
+    /// R-IMPORT-NOFAULT-TOLERANT 守护（2026-07-25）：单文件损坏不中止整个 import。
+    ///
+    /// 之前单文件 read/parse 失败直接 ? 中止 → clone_initial 连锁死锁
+    ///（meta 已写入 DB + cipher 未导入 + E2 阻止重试）。现与 pull #10 / hotword
+    /// 容错对齐——损坏文件 log::warn 跳过，其他文件仍导入。
+    #[test]
+    fn import_all_from_files_skips_corrupt_file() {
+        let _g = VaultRootGuard::new();
+        // 写 2 个正常 cipher 文件
+        write_cipher_file(&sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456"))
+            .expect("write good 1");
+        write_cipher_file(&sample_cipher("b2c3d4e5-f6a7-4890-9002-bcdef234567"))
+            .expect("write good 2");
+
+        // 手写 1 个损坏 JSON 文件（合法路径，非法内容）
+        let corrupt_path = cipher_file_path("cccccccc-1111-4222-8333-cccccccccccc");
+        if let Some(parent) = corrupt_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&corrupt_path, "{ this is not valid json }}}")
+            .expect("write corrupt");
+
+        // import 应成功（不中止），返回 2 个正常 cipher（损坏的被跳过）
+        let (ciphers, _folders) = import_all_from_files().expect("import 不应因单文件损坏失败");
+        assert_eq!(
+            ciphers.len(),
+            2,
+            "R-IMPORT-NOFAULT-TOLERANT: 损坏文件应跳过，2 个正常的仍导入，实际 {}",
+            ciphers.len()
+        );
+        // 确认是 2 个正常的（非损坏的）
+        let ids: Vec<&str> = ciphers.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"a1b2c3d4-e5f6-4789-8901-abcdef123456"));
         assert!(ids.contains(&"b2c3d4e5-f6a7-4890-9002-bcdef234567"));
     }

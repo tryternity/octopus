@@ -33,6 +33,7 @@ use octopus_sync::privacy::{self, PrivacyVerdict};
 use zeroize::Zeroizing;
 
 use crate::sync::store;
+use crate::crypto::kdf::Argon2Params;
 
 // === T4.1: SyncState 进程内锁 ===
 
@@ -443,6 +444,12 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // 2. 读 meta.json → upsert vault_meta
     let meta_file = store::read_meta_file()?;
     let f = meta_file.to_sync_fields()?;
+    // K1-GAP 修复（2026-07-25）：clone 的远程 KDF 参数用 from_i64_strict 校验——
+    // 防攻击者污染私有同步库的 meta.json 为弱 KDF（memory_kib=8 废掉 Argon2id
+    // 内存硬度）。与 resolve_with_remote:970 一致，补齐 K1 防御的主路径（之前
+    // 只 stamp 冲突罕见分支有 strict，常规 clone/pull 漏防）。
+    let _strict_params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
+        .map_err(SyncError::Other)?;
     // clone_initial 时 vault_meta 可能还没初始化（B 机首次）——用 upsert 写入
     // app_key_local_enc / public_key 留空，用户解锁后 refresh_app_key_local_enc 会填
     let meta_input = VaultMetaInput {
@@ -859,6 +866,11 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
     // meta → upsert vault_meta（stamp 已在阶段 A 校验通过）
     if let Some(mf) = meta_file {
         let f = mf.to_sync_fields()?;
+
+        // K1-GAP 修复（2026-07-25）：pull 的远程 KDF 参数用 from_i64_strict 校验，
+        // 与 clone_initial / resolve_with_remote 一致——补齐 K1 防御主路径。
+        let _strict_params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
+            .map_err(SyncError::Other)?;
 
         // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key
         let (local_enc, pub_key, priv_key) = match &local_meta {
@@ -1613,6 +1625,49 @@ mod tests {
         assert_eq!(
             local.protected_user_vault_key, "v1:new-uvk-from-remote",
             "stamp 一致时 vault_meta 应被 meta.json 覆盖"
+        );
+        let _ = g;
+    }
+
+    /// K1-GAP 守护（2026-07-25）：pull 拒绝弱 KDF 参数的远程 meta.json。
+    ///
+    /// 攻击者污染私有同步库的 meta.json 为 kdf_memory_kib=8 → pull 写入本地 DB →
+    /// unlock 用崩溃下限接受 → 用户无感知地用废掉内存硬度的 Argon2id。
+    /// K1-GAP 修复：pull_from_files 的 meta upsert 前调 from_i64_strict 拒绝弱参数。
+    ///（之前只 resolve_with_remote 罕见分支有 strict，常规 pull 主路径漏防。）
+    #[test]
+    fn pull_rejects_weak_kdf_params() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 写一个 stamp 一致但 KDF 弱（memory_kib=8）的 meta.json
+        let weak_meta = store::MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+            kdf_iterations: 3,
+            kdf_memory_kib: 8, // 弱：8KB 废掉 Argon2id 内存硬度（GPU 可全放寄存器）
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:weak-uvk".into(),
+            app_key_sync_enc: "v1:weak-sync".into(),
+            security_stamp: "stamp-test".into(), // 与本地一致——通过 stamp 校验
+            equivalent_domains: "[]".into(),
+        };
+        store::write_meta_file(&weak_meta).expect("write meta");
+
+        // pull 应拒绝（from_i64_strict 拦截弱 KDF），不写入本地 DB
+        let result = pull_from_files();
+        assert!(
+            result.is_err(),
+            "K1-GAP: pull 应拒绝弱 KDF（memory_kib=8）的远程 meta，实际：{:?}",
+            result
+        );
+
+        // 本地 DB 不应被污染——kdf_memory_kib 仍是原来的 65536
+        let local = octopus_infra::db::load_vault_meta().unwrap().unwrap();
+        assert_eq!(
+            local.kdf_memory_kib, 65536,
+            "K1-GAP: 弱 KDF 不应写入本地 DB，kdf_memory_kib 应仍是 65536"
         );
         let _ = g;
     }

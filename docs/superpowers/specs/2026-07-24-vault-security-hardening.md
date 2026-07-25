@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **241** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -957,3 +957,153 @@ health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位
 **核查**：generate_report 对 logins 遍历两次——:29-42 算 strength（zxcvbn）+ :46 find_duplicates 内部再遍历算 SHA-256。可合并为单次遍历。
 
 **状态**：文档化。zxcvbn（O(n²) 中等密码）是绝对瓶颈，单次遍历合并省的只是 N 次指针解引用，相对可忽略。几百个 login 的健康报告是用户主动触发的一次性操作。若未来做成后台定时扫描再考虑。
+
+---
+
+## 第三十一轮审查修复（2026-07-25，sync/store.rs 文件读写层：R-IMPORT-NOFAULT-TOLERANT）
+
+### R-IMPORT-NOFAULT-TOLERANT: clone 路径单文件损坏中止 + 连锁死锁（中，健壮性/一致性，已修）
+
+**核查**：三条证据全部回源码确认——
+
+1. **import 中止**：`import_all_from_files`（store.rs:644-672）对损坏文件直接 `?` 中止——:652 `read_to_string(...)?` + :654 `serde_json::from_str(...)?`。单文件 read/parse 失败 = 整个 import Err。✓
+2. **连锁放大**：`clone_initial`（engine.rs:462）`db::upsert_vault_meta` 在 :465 `import_all_from_files()` **之前**执行。import 失败 → DB 半初始化（有 meta 无 cipher）→ 重试 clone → :419 E2 守卫 `load_vault_meta().is_some()` 拒绝 → **死锁**。用户必须手动清 vault_meta + cipher 表。✓
+3. **不对称**：pull 路径（engine.rs:813-825）`read_cipher_file` 失败 `log::warn + skipped += 1`（#10 容错）；hotword 导入（engine.rs:478-491）`log::warn`「不阻断 vault clone」；唯独 vault cipher/folder 导入（:465 `import_all_from_files()?`）不容错。三者处理同类「外部文件导入」却三种策略。✓
+
+**修复**：import_all_from_files 的 cipher/folder 循环改容错——单文件 read/parse 失败 `log::warn` 跳过，不中止（与 pull #10 + hotword 模式对齐）。容错后连锁问题自然消失（import 不再整体失败 → 不会留半初始化状态）。
+
+**回归测试**：`import_all_from_files_skips_corrupt_file`——写 2 个正常 cipher + 1 个损坏 JSON，验证 import 返回 2 个（损坏跳过）。
+
+### 信息性（不单独开项）
+
+- **incremental_export changed 虚高**：delete_cipher_file 对 NotFound 返 Ok，删除循环 changed += 1 即使文件早不存在 → vault_version 可能不必要 +1。但新 outline 不含 stale uuid，每次 stale 只触发一次，影响极小。
+- **export_all_to_files remove_dir_all 非原子**：清空 ciphers/ folders/ 后写文件，中间失败留半空目录。但 SQLite 是真相源，重新 sync 自愈；且主要在 push_initial（ciphers/ 空）跑。低。
+
+---
+
+## 第三十二轮审查修复（2026-07-25，crypto 模块：K1-GAP + C-ZEROIZE-FEATURES 文档化）
+
+### K1-GAP: clone/pull 远程 KDF 参数未 strict 校验，与 K1 设计意图不一致（中，安全，已修）
+
+**核查**：`from_i64_strict` grep 确认**只有** `resolve_with_remote`（engine.rs:970，stamp 冲突罕见分支）调用。主路径漏防：
+- `clone_initial`（:452）meta upsert 直接 `kdf_memory_kib: f.kdf_memory_kib`（远程原值，无校验）
+- `pull_from_files`（:876）同样无校验
+
+这是我第二十轮 K1 修复的覆盖盲区——strict 校验只接到罕见分支（stamp 冲突），常规 clone/pull 才是日常同步主路径，却漏防。
+
+**攻击链**：攻击者污染私有同步库 meta.json 为 `kdf_memory_kib=8` → 受害者 clone/pull → 弱 KDF 写入本地 DB（stamp 校验通过≠KDF 强度校验）→ unlock 用 from_i64（崩溃下限 memory≥8）接受 → 用户用废掉内存硬度的 Argon2id 无感知。需攻击者能改私有库（中等前提）+ 另获本地 DB 才完整利用，但 K1 设计意图明确是防此场景。
+
+**修复**：clone_initial（:445 后）+ pull_from_files（:861 后）在 `to_sync_fields()` 后、构造 VaultMetaInput 前，加 `Argon2Params::from_i64_strict` 校验。失败返 Err 拒绝同步。补齐 K1 防御主路径。
+
+**回归测试**：`pull_rejects_weak_kdf_params`——写 stamp 一致但 memory_kib=8 的 meta.json，验证 pull 返 Err 且本地 DB 不被污染（kdf_memory_kib 仍 65536）。
+
+### C-ZEROIZE-FEATURES: argon2/aes-gcm/hmac 未启用 zeroize feature（低-中，文档化）
+
+**核查**：Cargo.toml 确认 argon2/aes-gcm/hmac 都缺 zeroize feature，唯独 generic-array 启了（A2 修复）。但核实三个库的 `[features]`——**argon2 0.5 / aes-gcm 0.10 / hmac 0.12 都不提供 zeroize feature**，加不上。
+
+**状态**：文档化。与 N2（aes 0.8 无 zeroize feature）同型已知限制。报告假设这三个库像 generic-array 一样有 zeroize feature 可启，但实际没有。修复需 fork 或升级库版本。argon2 的 64MiB memory blocks 残留是最大量级，但逆推 Argon2 memory blocks ≠ 廉价爆破（不可逆填充阵列）。
+
+---
+
+## 第三十三轮审查修复（2026-07-25，generator 模块：G-EN-RESULT-NO-ZEROIZE）
+
+### G-EN-RESULT-NO-ZEROIZE: passphrase_en 最终明文 result 未用 Zeroizing（低，一致性，已修）
+
+**核查**：同模块四生成器最终明文容器对比——random（`Zeroizing<Vec<char>>`）/ passphrase_zh（`Zeroizing<String>`）/ pin（`Zeroizing<String>`）/ passphrase_en（普通 `String`）。en 独漏：words 中间词数组（:27）包了 Zeroizing，但 `words.join()` 产出的最终明文副本 result（:55）没包。
+
+**修复**：照 passphrase_zh :31/:35/:43 模式——:55 改 `Zeroizing::new(words.join(...))`，:58 format 覆盖改 `*result = format!(...)`，:69 改 `Ok(result.as_str().to_string())`。
+
+**严重度诚实限定**：result 唯一存活区间是 join(:55) 到 return(:69)，其间只有同步 format!，无显式 panic 路径（除 OOM），Zeroizing「异常不残留」的实际收益边际。返回给 Tauri IPC 的 String 本就是明文（四生成器同样），Zeroizing 只保护中间容器。但模块内一致性缺口明显（4 个生成器 3 个包了，en 独漏），且注释 :25-26 宣称「中间材料用 Zeroizing」却漏了最终拼接结果，值得为一致性补齐。
+
+---
+
+## 第三十四轮审查修复（2026-07-25，unlock.rs 密钥解锁主链路：B-UNLOCK-RECORD-ASYMMETRY + B-SETUP-CRASH-WINDOW 文档化）
+
+unlock.rs 密钥管理设计扎实——密钥清零链完整、M3/B1/B2/A1/#8/INV-7/#14 修复到位、K1-GAP 下游确认（unlock 用 from_i64 处理本地可信参数）。
+
+### B-UNLOCK-RECORD-ASYMMETRY: unlock 把数据损坏误计为密码错退避（低，逻辑不对称，已修）
+
+**核查**：unlock_with_master_password 把 protected + sync 解密捆绑在闭包（:204-222），闭包内任一失败 → :229 record_failure + :235 context「主密码错误」。而 change_master_password 精确区分：:282-288 protected 解密失败才 record_failure（密码错）；:289 长度异常 + :295 sync 解密失败用 `?`/`ensure` 直接 return，不 record_failure（数据损坏 ≠ 密码错）。
+
+**后果**：sync_enc 单字段损坏（protected 完好、密码正确）→ :205 解 protected 成功 → :212 解 sync_enc 失败 → 闭包 Err → record_failure + 退避计数 + 误显「主密码错误」（实际密码正确）。
+
+**修复**：把闭包拆成三阶段（与 change :282/:295 结构 1:1 对齐）：
+1. 密码校验：仅解 protected_user_vault_key，失败 record_failure + 「主密码错误」
+2. 数据完整性：解 app_key_sync_enc，失败不 record_failure，返「vault 数据损坏」Err
+3. 副作用（refresh）：失败不 record_failure（B2 已有）
+
+**回归测试**：`test_unlock_sync_enc_corruption_no_record_failure`——破坏 app_key_sync_enc，用正确密码 unlock，验证返 Err 但 guard remaining_wait 仍 None（不 record_failure）。
+
+### B-SETUP-CRASH-WINDOW: A1 回滚只覆盖 Err 不覆盖崩溃（低-中，固有成本，文档化）
+
+**核查**：setup_vault 跨两个独立事务——:107 save_vault_meta（commit meta）与 :124 migrate_secret_keys_to_encrypted（内部事务）。A1 回滚（:127-136）在 Err(migrate_err) 分支。崩溃窗口：:107 commit 后、:124 migrate commit 前，进程 panic/断电/OOM → A1 回滚不执行 → 半初始化（vault_meta 落盘 + secret_key 明文）+ :67 `ensure!(!is_initialized())` 阻止重跑 → 用户卡死 + 明文暴露。
+
+**状态**：文档化。触发需精确崩溃在两 commit 间（毫秒级窗口），概率极低；但后果不可恢复 + 安全暴露。注释 :120-122 已承认跨表事务合并限制。修复方向（调序/跨表事务/独立后台任务）均成本较高，需架构权衡。
+
+---
+
+## 第三十五轮审查修复（2026-07-25，migrate.rs + 跨模块 secret_key：M-CLOUDKEY-PLAINTEXT + migrate 低危文档化）
+
+### M-CLOUDKEY-PLAINTEXT: add/edit 云端模型明文写 secret_key，绕过 vault 加密（中-高，安全，已修）
+
+**核查**（完整跨模块证据链）：
+1. **写入路径明文**（model_commands.rs）：`add_cloud_model`（:738）`insert_cloud_model(..., &input.secret_key, ...)` 无加密；`edit_cloud_model`（:765）`update_cloud_model(..., &input.secret_key, ...)` 无加密。前端明文 API Key 直接传 db 层落盘。
+2. **migrate 不覆盖**（migrate.rs:30）：`migrate_secret_keys_to_encrypted` 仅 setup_vault 调用一次。setup 后新增/编辑云端模型产生的明文，migrate 永不再触发。
+3. **passthrough 掩盖**（vault_secret_access.rs:82）：`try_decrypt_secret` 对非 v1: 前缀原样返回——新明文被当「未迁移明文」passthrough，推理热路径拿到明文 API Key 鉴权正常，用户无感知。
+
+**后果**：用户 setup vault 后 add/edit 云端模型 → 明文 secret_key 落盘 → DB 文件泄露 → 明文 API Key 直接暴露。vault 加密承诺对 setup 后增量失效。全程无感知（migrate 跑过 + UI 显示 vault 已启用 + 推理正常）。
+
+**修复**：
+- vault_secret_access.rs 补 `encrypt_secret_global` chokepoint（对称 `try_decrypt_secret_global`）：vault 已初始化 + app_key 可用 → `app_key.encrypt` → v1: 密文；否则原样返回（向后兼容 pre-vault）。空值不加密（edit 未改 key）；v1: 前缀幂等不重复加密。
+- `add_cloud_model`/`edit_cloud_model` 写 DB 前调 `encrypt_secret_global(&input.secret_key)` 加密。
+- 读路径 `try_decrypt_secret` 已正确处理 v1: 解密，加密写入后自动走解密分支，无需改。
+
+**回归测试**：`encrypt_secret_empty_and_idempotent`（空值 + v1: 幂等）+ `encrypt_then_decrypt_round_trip`（加密 → 解密对称性）。
+
+### M-MIGRATE-TOCTOU / M-COUNT / M-DEAD-CODE: migrate.rs 内部低危（低，文档化）
+
+- **M-MIGRATE-TOCTOU**（list 事务外 + UPDATE 事务内）：list 快照与 UPDATE 时状态不一致。触发需 setup 期间并发改 models（罕见）。与 M-CLOUDKEY-PLAINTEXT 同根（M-CLOUDKEY-PLAINTEXT 修复后影响消失）。
+- **M-COUNT-NO-VERIFY**（count 不验证 UPDATE 影响行数）：并发删行时 count 虚高，无安全影响。
+- **M-DEAD-CODE**（update_model_secret_key 无生产调用）：#5 事务化重构后遗留。可删。
+
+**状态**：文档化。M-CLOUDKEY-PLAINTEXT 修复后 M-MIGRATE-TOCTOU 的影响消失（增量已加密，不再有明文残留风险）。
+
+### 附带：清理 desktop test 7 个 unused import warning
+
+cargo fix 清理 vault_state.rs（1）+ runtime_config.rs（5）+ vault_secret_access.rs（1）的 test profile unused import。非本轮引入，但 AGENTS.md 要求 0 warning。
+
+---
+
+## 第三十六轮审查修复（2026-07-25，E-EDIT-TEST-CIPHERTEXT 回归 + generator 复审）
+
+### E-EDIT-TEST-CIPHERTEXT: edit 未改 key 时取 DB 密文当明文测连接 → 401（中，功能回归，已修）
+
+**M-CLOUDKEY-PLAINTEXT 修复的直接回归**：edit_cloud_model（model_commands.rs:757）`get_model_source_key(id)` 是裸 SQL（db.rs:1447），不解密。M-CLOUDKEY-PLAINTEXT 修复后 DB 存 `v1:` 密文，edit 取密文当明文 Bearer token 发云端 → 401 → `!test.ok` → return Err「模型测试失败」→ llm/translate 云端模型编辑被拒。
+
+**触发**：vault 已初始化 + edit llm/translate 云端模型 + 用户不改 key（前端默认传空 secret_key 不回填明文）。前端 edit 表单默认空 secret_key → 几乎每次 edit 都走空值路径。
+
+**根因**：唯一漏了 `try_decrypt_secret_global` 的 secret_key 读路径（其他三处：action_bar_commands:973 / config:58 / engine_aliyun:115 都已解密）。
+
+**修复**：:757 取回 raw 后过 `try_decrypt_secret_global` 解密再测连接。与现有三处读路径模式一致。
+
+### generator 模块复审：干净（1 个低危一致性观察）
+
+generator 经多轮修复（R8/R5/R-AMBIGUOUS-DEAD/R-UPPER/G-EN/G-YOYO/G-EFF）后已干净。
+
+### G-ZH-NUMBER-NO-SEPARATOR: zh include_number/symbol 不考虑 separator（低，文档化）
+
+zh 的 include_number/symbol（passphrase_zh.rs:33-41）直接 `format!("{}{}", result, n)`，不像 en（:62-71）那样按 separator 配置补分隔符。中文默认 separator 空，紧贴无视觉问题；但若用户设非空 separator（如「·」），数字/符号仍紧贴前词，与词间分隔不一致。en/zh 两实现独立演化的轻微不对称。
+
+---
+
+## 第三十七轮审查（2026-07-25，crypto 复审：干净，3 项极低观察 + 演进提示）
+
+crypto 模块复审（4 文件：mod/util/symmetric/hierarchy/kdf）——经多轮修复（M1-mod/K1/K3/C1/H1/A2/S2）后已很干净，本轮无实质 bug。
+
+3 项极低优先级观察（**均非 bug，无需修复**，诚实标注避免过度工程）：
+
+- **S-DECRYPT-DIAG**（极低·诊断）：symmetric.rs:46-50 `ensure!(combined.len() > NONCE_LEN)` 下限过宽——合法 GCM 密文最少 12+16=28B，`> 12` 仅挡 nonce 都不全，len 13~27 放行靠 decrypt tag 校验拒。安全无影响（最终必拒），仅错误信息语义不准。
+- **K-STRICT-ITER-REDUNDANT**（极低·冗余）：kdf.rs:105-121 from_i64_strict 对 iterations 两处检查（范围 1..=u32::MAX + ≥2），第一个下界 1 被 ≥2 覆盖，轻微冗余。逻辑正确。
+- **H-CHILD-EXPECT**（极低·风格）：hierarchy.rs:38 `expect("HMAC 接受任意 key 长度")`。HMAC RFC 2104 对任意 key 不失败，安全。仅与 R5「消除 unwrap」风格不一致。
+
+**未来演进提示**（非当前 bug）：S2/AAD 纵深防御——当前不用 AAD 绑定 field_name，单机威胁模型下成立。若未来 vault 支持共享/多用户场景（密文跨设备/跨 vault 流转），「密文移动攻击」价值上升，届时 AAD 绑定 cipher_id || field_name 可作纵深防御。当前 MVP 单机不强求。
