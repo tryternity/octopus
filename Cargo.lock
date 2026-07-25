@@ -5511,6 +5511,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "octopus-record"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "octopus-infra",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "octopus-scheduler"
 version = "0.1.0"
 dependencies = [
