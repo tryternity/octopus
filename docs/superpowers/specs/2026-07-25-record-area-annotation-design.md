@@ -19,13 +19,22 @@
 
 ### 0.2 关键技术验证（spike 结论）
 
-**已验证**（2026-07-25 spike `/tmp/spike3.py`）：
+**已验证**（2026-07-25 spike7 `/tmp/spike7.py`）：
 - helper `Source::Area` 录制选区正常工作（视频尺寸 = 选区尺寸，ffprobe 确认 1000×700）
-- 在选区范围内创建 `NSWindow`（`setLevel(1500)` always_on_top + `setOpaque(false)` + 红色背景）
-- helper 录出的视频文件正常（1.5MB / 6.9s / 201 帧）
-- **红块窗口在选区内 → 应当被录进视频**（用户暂未视觉确认，但 macOS 窗口合成层行为 + spike 文件正常双重证据支持）
+- **选区内的普通可见窗口（普通 level）被 SCK 录到**：
+  - spike7 用 Preview 打开大红 PNG（500×400 物理像素），Preview 是普通 regular 窗口
+  - 抽帧分析：s3/s4/s5 时刻 **20603 红色像素**，范围 X[0-884] Y[34-404] ≈ 884×370px（Preview 窗口尺寸）
+  - 视频文件正常（740KB / 5.7s / 1000×700）
 
-**原理**：ScreenCaptureKit 录制 display 时，录的是「macOS 合成后的画面」（WindowServer 合成所有可见窗口）。`Source::Area` 的 `sourceRect` 只是对合成画面做矩形裁剪——选区内的所有可见窗口（包括 always_on_top 透明 overlay）都会被裁剪进视频。
+**关键限制**（spike3/6 反面验证）：
+- **always_on_top（floating level）窗口不被 SCK 录到**：
+  - spike3（Python subprocess + NSWindow level=floating）：0 红像素
+  - spike6（Swift NSApplication.run + level=.floating）：0 红像素
+  - 这是 SCK 的安全设计——录屏不允许捕获 floating 浮层（防恶意软件偷录系统 UI）
+
+**对方案的影响**：标注 overlay 窗口必须用**普通窗口 level**（非 always_on_top）。代价：切到其他应用时标注窗口会被遮挡——但区域录屏场景固定（用户在选区内画标注，不切换应用），可接受。
+
+**原理**：ScreenCaptureKit `Source::Area` + `sourceRect` 录制时，只录「选区内的普通可见窗口内容」，floating/always_on_top 窗口被过滤。这是 macOS 的安全策略（TCC 录屏权限模型的一部分）。
 
 ### 0.3 与截图标注的关系
 
@@ -63,15 +72,15 @@
 |---|---|---|
 | `transparent` | true | 透明背景，只画标注 |
 | `decorations` | false | 无标题栏/边框 |
-| `always_on_top` | true (level > 1000) | 覆盖所有应用，保证被 SCK 录到 |
+| `always_on_top` | **false**（普通 level）| ⚠️ **关键**：spike7 验证 SCK 不录 floating 窗口，必须用普通 level |
 | `resizable` | false | 尺寸固定 = 选区 |
-| `skip_taskbar` | true | 不出现在 Dock |
-| `focus` | true | 接收键盘（Esc 取消标注工具）+ 鼠标（画标注） |
+| `skip_taskbar` | true | 不出现在 Dock（但不是 always_on_top） |
+| `focus` | true | 接收键盘（Esc/A 切换）+ 鼠标（画标注） |
 | `position` | 选区全局位置 | 精确覆盖选区 |
 | `inner_size` | 选区尺寸（逻辑像素） | 精确覆盖选区 |
-| `ignoresMouseEvents` | false | 必须接收鼠标（画标注）—— ⚠️ 与 spike 不同 |
+| `ignoresMouseEvents` | false（标注模式）/ true（透传模式） | 见 §3.3 鼠标透传 |
 
-⚠️ **鼠标拦截问题**：overlay 窗口要画标注必须接收鼠标事件，但这会**挡住用户操作选区下的应用**。解决方案见 §3（标注模式 vs 透传模式 toggle）。
+⚠️ **限制**：普通 level 窗口切到其他应用时会被遮挡。但区域录屏场景固定（用户在选区内画标注），可接受。如果用户切到其他应用，标注窗口被遮挡 → SCK 录到的是遮挡后的画面（标注消失）。这是 SCK 安全模型的固有限制，无法绕过。
 
 ### 1.3 与 helper 的关系
 
