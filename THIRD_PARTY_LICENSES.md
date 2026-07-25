@@ -147,28 +147,31 @@ octopus 当前不内嵌字体（使用系统字体）。未来若内嵌 Web 字�
 
 ---
 
-## 7. 待补录（录屏功能 vendor 时）
+## 7. 录屏功能 vendor
 
-> 本节是录屏功能（D-Swift 选型）的占位，录屏 helper vendor 进来后填充：
+> 本节是录屏功能（D-Swift 选型）的第三方代码声明。Task 8（2026-07-25）已 vendor 完成。
 
-### 7.1 openscreen ScreenCaptureKit Helper（待 vendor）
+### 7.1 openscreen ScreenCaptureKit Helper
 
 | 字段 | 值 |
 | --- | --- |
-| **来源** | <https://github.com/EtienneLescot/openscreen>（`electron/native/screencapturekit/`）|
-| **用途** | macOS 屏幕录制 helper 子进程（SCK + AVAssetWriter）|
-| **打包方式** | 编译为 `octopus-sck-helper` 二进制，放 `Contents/Resources/binaries/`（见 [录屏功能文档 §2.1](docs/superpowers/specs/2026-07-25-screen-record-features.md#f1--helper-二进制获取与打包)）|
-| **许可证** | MIT（[openscreen LICENSE](https://github.com/EtienneLescot/openscreen/blob/main/LICENSE)）|
+| **来源** | <https://github.com/EtienneLescot/openscreen>（`electron/native/screencapturekit/Sources/OpenScreenScreenCaptureKitHelper/main.swift`）|
+| **上游 commit** | `f57e36e25448b5af6c7b1b271066fe5beb9b8a49`（2026-06-16）|
+| **用途** | macOS 屏幕录制 helper 子进程（ScreenCaptureKit + AVAssetWriter，录屏/音频采集/权限检查）|
+| **本地路径** | `crates/record/native/macos/Sources/OctopusSckHelper/main.swift`（已改名 `octopus-sck-helper`）|
+| **打包方式** | `scripts/build-macos-helper.sh` 编译为 universal binary，拷贝到 `crates/desktop/binaries/`，Tauri bundler 按 `tauri.conf.json` resources 配置打包进 `Contents/Resources/binaries/`|
+| **许可证** | MIT（[openscreen LICENSE](https://github.com/EtienneLescot/openscreen/blob/main/LICENSE)，全文见 `crates/record/native/macos/LICENSE`）|
 | **版权声明** | Copyright (c) 2025 Siddharth Vaddem |
-| **修改声明** | octopus vendor 后修改点见 `crates/desktop/native/screencapturekit-helper/README.md`（待建）|
-| **隔离论证** | 复用 [`crates/dlp/docs/architecture.md` §1](crates/dlp/docs/architecture.md) 的物理进程隔离 + Mere Aggregation 边界（openscreen MIT 比 yt-dlp 更宽松）|
+| **修改声明** | octopus vendor 后修改点：<br>1. product/target 改名 `openscreen-screencapturekit-helper` → `octopus-sck-helper`<br>2. 删除 `RecordingRequest.webcam` / `cursor` 字段（octopus MVP 不需要）<br>3. 新增 5 个子命令（`--list-displays/windows/microphones` + `--check/request-permission`）<br>4. emit 事件 schema 改 snake_case 对齐 octopus `protocol.rs`<br>5. `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase`（octopus Rust 端发 snake_case）<br>6. 显示器名改用 `NSScreen` 反查（`SCDisplay` 无 `nsScreen` 属性）<br>7. `RecordingStopped` 补 `duration_ms` / `file_size` 字段<br>8. dispatch label 改 `app.octopus.sck-helper.*`<br>完整声明见 `crates/record/native/macos/LICENSE` 文件头，完整修改历史见 git log|
+| **隔离论证** | helper 是独立子进程（octopus 主进程通过 `tokio::process::Command` spawn），与主进程物理隔离。通信走 JSON-over-stdio（argv + stdin/stdout）。复用 [`crates/dlp/docs/architecture.md` §1](crates/dlp/docs/architecture.md) 的物理进程隔离 + Mere Aggregation 边界（openscreen MIT 比 yt-dlp 更宽松）|
 
-### 7.2 openscreen Cursor Helper（待 vendor，P3 阶段）
+### 7.2 openscreen Cursor Helper（未 vendor，P3 阶段）
 
 | 字段 | 值 |
 | --- | --- |
 | **来源** | 同上（`electron/native/screencapturekit/Sources/OpenScreenMacOSCursorHelper/`）|
 | **许可证** | MIT |
+| **状态** | octopus MVP 不需要可编辑光标（spec §9.2 F18 推迟到 P3）。届时若 vendor 再补完整声明 |
 
 ---
 
