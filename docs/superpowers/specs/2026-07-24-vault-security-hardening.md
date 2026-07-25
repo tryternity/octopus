@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **248** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **249** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1220,3 +1220,23 @@ fingerprint.rs 核心正确性确认——cipher_md5 11 字段 = VaultCipher 全
 - H2 deleted_at 纳入（软删/恢复 md5 变化触发 sync，不复活）
 - md5 重算时机正确（soft_delete S1 单事务 + save_cipher M-CIPHER-RMW 单事务）
 - 时间戳排除（created_at/updated_at 跨设备不同，不进 md5）
+
+---
+
+## 第四十三轮审查修复（2026-07-26，sync/store.rs：E-PATH-TRAVERSAL-OUTLINE-UUID 中-高安全）
+
+### E-PATH-TRAVERSAL-OUTLINE-UUID: 远程 outline uuid 经 read/delete 触发 path traversal（中-高，安全，已修）
+
+**核查**：`cipher_file_path`/`folder_file_path`（store.rs:73-86）的 `format!("{}.json", uuid)` 原样拼接 uuid，无路径分隔符过滤。`shard_dir`（sync/store.rs:78）只 sanitize 分片目录（filter is_ascii_hexdigit + take 2），不 sanitize 文件名。
+
+**攻击链**：
+- **delete**（incremental_export :581-586）：遍历 `old_outline.ciphers.keys()`（远程 untrusted）调 `delete_cipher_file` → 恶意 uuid `../../meta` → 删 `vault_root/meta.json` 或更多 `../` 跳出 vault_root 删任意 .json 文件
+- **read**（pull_from_files :831）：遍历 remote_outline 调 `read_cipher_file` → 读 traversal 路径文件
+
+**修复**：在 `cipher_file_path`/`folder_file_path` 入口加 `validate_uuid`——拒绝含 path traversal 字符（`/`、`\`、`..`、`\0`、空串）的 uuid。chokepoint 模式：read/delete/write 三路径统一在路径构造入口拦截，无需改 pull/incremental_export 业务逻辑。函数签名改为 `Result<PathBuf>`。
+
+> 设计决策：不强制严格 UUID v4 格式（`uuid::Uuid::parse_str`），只拒绝 path traversal 字符。理由：vault 生产 id 理论上是 UUID v4，但测试用简短 id（"test-uuid" 等）方便，严格 UUID 校验会破坏 10+ 个现有测试且无额外安全收益——path traversal 字符检查已足够防目录穿越。
+
+**回归测试**：`path_traversal_uuid_rejected`——合法 UUID 通过 + 多种恶意 uuid（../../meta、绝对路径、Windows 风格）被拒 + 非法格式被拒。
+
+**严重度校准**：中-高——不到「高」（私有 repo 威胁模型 + .json 后缀限制可利用性），高于「中」（delete 破坏性 + read/delete 双路径 + 防御原则违反 + clone 任意 repo 场景真实）。write 路径 trusted（用本地 DB 的 UUID v4，非 outline 控制）。

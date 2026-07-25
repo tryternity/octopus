@@ -1996,8 +1996,8 @@ mod tests {
         };
         store::write_outline_file(&outline).expect("write outline");
 
-        // 写一个损坏的 cipher 文件（非法 JSON）
-        let path = store::cipher_file_path("corrupt-uuid");
+        // 写一个损坏的 cipher 文件（非法 JSON）——用合法 UUID（E-PATH-TRAVERSAL 校验后要求合法格式）
+        let path = store::cipher_file_path("cccccccc-1111-4222-8333-cccccccccccc").expect("path");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "this is not valid json {{{{").unwrap();
 

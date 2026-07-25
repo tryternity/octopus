@@ -70,19 +70,45 @@ pub fn outline_path() -> PathBuf {
 }
 
 /// cipher 文件路径：`ciphers/<前2hex>/<uuid>.json`（shard_dir 来自 sync crate）。
-pub fn cipher_file_path(uuid: &str) -> PathBuf {
-    vault_root()
+/// E-PATH-TRAVERSAL-OUTLINE-UUID 修复（2026-07-26）：校验 uuid 不含 path traversal 字符。
+///
+/// 之前 cipher_file_path/folder_file_path 的 `format!("{}.json", uuid)` 原样拼接 uuid，
+/// 远程 outline 的恶意 uuid（如 `../../meta`）可触发 path traversal——read 路径读
+/// traversal 文件、delete 路径删任意 .json 文件。shard_dir 只 sanitize 分片目录，
+/// 不 sanitize 文件名。
+///
+/// 本 chokepoint 在路径构造入口校验，read/delete/write 三路径统一拦截。
+/// 不强制严格 UUID 格式（测试用简短 id 方便），只拒绝 path traversal 字符。
+fn validate_uuid(uuid: &str) -> Result<()> {
+    if uuid.is_empty()
+        || uuid.contains('/')
+        || uuid.contains('\\')
+        || uuid.contains("..")
+        || uuid.contains('\0')
+    {
+        anyhow::bail!(
+            "非法 uuid（含路径分隔符 / \\ .. 或空）：{}——拒绝 path traversal",
+            uuid
+        );
+    }
+    Ok(())
+}
+
+pub fn cipher_file_path(uuid: &str) -> Result<PathBuf> {
+    validate_uuid(uuid)?;
+    Ok(vault_root()
         .join("ciphers")
         .join(sync_store::shard_dir(uuid))
-        .join(format!("{}.json", uuid))
+        .join(format!("{}.json", uuid)))
 }
 
 /// folder 文件路径：`folders/<前2hex>/<uuid>.json`（folder 也分桶）。
-pub fn folder_file_path(uuid: &str) -> PathBuf {
-    vault_root()
+pub fn folder_file_path(uuid: &str) -> Result<PathBuf> {
+    validate_uuid(uuid)?;
+    Ok(vault_root()
         .join("folders")
         .join(sync_store::shard_dir(uuid))
-        .join(format!("{}.json", uuid))
+        .join(format!("{}.json", uuid)))
 }
 
 // === 数据结构 ===
@@ -379,7 +405,7 @@ pub fn write_outline_file(outline: &Outline) -> Result<()> {
 
 /// 读单个 cipher 文件。
 pub fn read_cipher_file(uuid: &str) -> Result<CipherFile> {
-    let path = cipher_file_path(uuid);
+    let path = cipher_file_path(uuid)?;
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("读 cipher 文件失败：{}", path.display()))?;
     let cipher: CipherFile =
@@ -389,7 +415,7 @@ pub fn read_cipher_file(uuid: &str) -> Result<CipherFile> {
 
 /// 写单个 cipher 文件（原子写，L4 修复）。
 pub fn write_cipher_file(cipher: &VaultCipher) -> Result<()> {
-    let path = cipher_file_path(&cipher.id);
+    let path = cipher_file_path(&cipher.id)?;
     let file = CipherFile::from_vault_cipher(cipher);
     let json = serde_json::to_string_pretty(&file).context("序列化 cipher 文件失败")?;
     write_atomically(&path, &format!("{}\n", json))
@@ -397,7 +423,7 @@ pub fn write_cipher_file(cipher: &VaultCipher) -> Result<()> {
 
 /// 删除单个 cipher 文件（同步删除场景）。
 pub fn delete_cipher_file(uuid: &str) -> Result<()> {
-    let path = cipher_file_path(uuid);
+    let path = cipher_file_path(uuid)?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -408,7 +434,7 @@ pub fn delete_cipher_file(uuid: &str) -> Result<()> {
 
 /// 读单个 folder 文件。
 pub fn read_folder_file(uuid: &str) -> Result<FolderFile> {
-    let path = folder_file_path(uuid);
+    let path = folder_file_path(uuid)?;
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("读 folder 文件失败：{}", path.display()))?;
     let folder: FolderFile =
@@ -418,7 +444,7 @@ pub fn read_folder_file(uuid: &str) -> Result<FolderFile> {
 
 /// 写单个 folder 文件（原子写，L4 修复）。
 pub fn write_folder_file(folder: &VaultFolder) -> Result<()> {
-    let path = folder_file_path(&folder.id);
+    let path = folder_file_path(&folder.id)?;
     let file = FolderFile::from_vault_folder(folder);
     let json = serde_json::to_string_pretty(&file).context("序列化 folder 文件失败")?;
     write_atomically(&path, &format!("{}\n", json))
@@ -426,7 +452,7 @@ pub fn write_folder_file(folder: &VaultFolder) -> Result<()> {
 
 /// 删除单个 folder 文件。
 pub fn delete_folder_file(uuid: &str) -> Result<()> {
-    let path = folder_file_path(uuid);
+    let path = folder_file_path(uuid)?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -788,7 +814,7 @@ mod tests {
     #[test]
     fn cipher_file_path_uses_shard() {
         let _g = VaultRootGuard::new();
-        let p = cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+        let p = cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").expect("path");
         assert!(p.to_string_lossy().contains("ciphers/a1/"));
         assert!(p.to_string_lossy().ends_with(".json"));
     }
@@ -912,7 +938,7 @@ mod tests {
             .expect("write good 2");
 
         // 手写 1 个损坏 JSON 文件（合法路径，非法内容）
-        let corrupt_path = cipher_file_path("cccccccc-1111-4222-8333-cccccccccccc");
+        let corrupt_path = cipher_file_path("cccccccc-1111-4222-8333-cccccccccccc").expect("path");
         if let Some(parent) = corrupt_path.parent() {
             std::fs::create_dir_all(parent).expect("mkdir");
         }
@@ -931,6 +957,42 @@ mod tests {
         let ids: Vec<&str> = ciphers.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"a1b2c3d4-e5f6-4789-8901-abcdef123456"));
         assert!(ids.contains(&"b2c3d4e5-f6a7-4890-9002-bcdef234567"));
+    }
+
+    /// E-PATH-TRAVERSAL-OUTLINE-UUID 守护（2026-07-26）：恶意 uuid 触发 path traversal
+    /// 被 cipher_file_path/folder_file_path 的 validate_uuid 拦截。
+    ///
+    /// 攻击者污染远程 outline 的 uuid（如 ../../meta）→ read/delete 路径读/删
+    /// vault_root 外文件。validate_uuid 在路径构造入口拒绝 path traversal 字符。
+    #[test]
+    fn path_traversal_uuid_rejected() {
+        // 合法 UUID → Ok
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").is_ok());
+        assert!(folder_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").is_ok());
+        // 简短 id（测试用）→ Ok（不含 path 字符）
+        assert!(cipher_file_path("test-uuid").is_ok());
+
+        // path traversal 尝试 → Err
+        let malicious_uuids = [
+            "../../meta",           // 跳出 ciphers/ 到 vault_root
+            "..\\..\\meta",         // Windows 风格
+            "../../../etc/passwd",  // 跳出 vault_root
+            "/etc/passwd",          // 绝对路径
+            "a/../../b",            // 混合
+            "",                     // 空串
+        ];
+        for uuid in &malicious_uuids {
+            assert!(
+                cipher_file_path(uuid).is_err(),
+                "cipher_file_path 应拒绝恶意 uuid：{}",
+                uuid
+            );
+            assert!(
+                folder_file_path(uuid).is_err(),
+                "folder_file_path 应拒绝恶意 uuid：{}",
+                uuid
+            );
+        }
     }
 
     // sha256_hex 测试已随函数搬到 octopus_sync::store
@@ -991,13 +1053,13 @@ mod tests {
 
         // 首次写 c1
         let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
-        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists());
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists());
 
         // 二次：SQLite 无 cipher → 文件应被删
         let (_, changed) = incremental_export(&meta, &[], &[]).expect("second");
         assert_eq!(changed, 1, "应删 1 个文件");
         assert!(
-            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists(),
+            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists(),
             "SQLite 无的 cipher 文件应被删"
         );
     }
@@ -1015,7 +1077,7 @@ mod tests {
 
         // 首次写 c1（生成正常 outline）
         let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
-        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists());
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists());
 
         // 破坏 outline.json（写入非法 JSON）
         let outline_p = outline_path();
@@ -1028,7 +1090,7 @@ mod tests {
 
         // M8 核心断言：c1 的 stale 文件应被清理（不残留 → clone 不复活）
         assert!(
-            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").exists(),
+            !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists(),
             "M8: outline 损坏时降级全量重建应清理 stale cipher 文件（之前永久残留 → clone 复活）"
         );
 
