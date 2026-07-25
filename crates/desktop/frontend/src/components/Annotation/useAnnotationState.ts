@@ -1,0 +1,197 @@
+// 标注状态 hook —— Screenshot 与 RecordAnnotation 共用。
+//
+// 抽取自：
+//   - RecordAnnotation/index.tsx L48-69（已是 ref 模式，作为基线）
+//   - RecordAnnotation/index.tsx L134-159（add/undo/redo）
+//   - Screenshot/index.tsx L40-79（state 定义）
+//   - Screenshot/index.tsx L161-185（add/undo/redo，numberCounter 用 useState）
+//
+// **修复 numberCounter 不一致**：
+//   - 原截图 numberCounter 用 useState，undo 闭包每次 render 重建读到最新 state（能工作但脆弱）
+//   - 原录屏 numberCounter 用 useRef + state 镜像，更稳定
+//   - 抽取后统一用 ref 模式（ref 为主，state 触发 render）
+//
+// 业务侧职责（不进 hook）：
+//   - 选区 hitTest / move / resize（Screenshot）
+//   - canvasRect 偏移（RecordAnnotation）
+//   - passthrough 切换（RecordAnnotation）
+//   - 文字输入 textarea 浮层（两边差异较大）
+
+import { useState, useRef, useEffect } from "react";
+import type { Annotation, Tool } from "@/lib/annotation";
+
+export interface AnnotationState {
+  // ── 工具 ──────────────────────────────────
+  tool: Tool;
+  setTool: (t: Tool) => void;
+  toolRef: React.MutableRefObject<Tool>;
+
+  // ── 工具属性 ──────────────────────────────
+  toolColor: string;
+  setToolColor: (c: string) => void;
+  toolColorRef: React.MutableRefObject<string>;
+  toolWidth: number;
+  setToolWidth: (n: number) => void;
+  toolFontSize: number;
+  setToolFontSize: (n: number) => void;
+  toolFontSizeRef: React.MutableRefObject<number>;
+  toolFilled: boolean;
+  setToolFilled: (f: boolean) => void;
+  toolFilledRef: React.MutableRefObject<boolean>;
+  toolCircleSize: number;
+  setToolCircleSize: (n: number) => void;
+
+  // ── 标注数据 ──────────────────────────────
+  annotations: Annotation[];
+  annotationsRef: React.MutableRefObject<Annotation[]>;
+  setAnnotations: React.Dispatch<React.SetStateAction<Annotation[]>>;
+  drawingRef: React.MutableRefObject<Annotation | null>;
+  /** 触发 pen 实时重绘的版本号（业务侧 useEffect 依赖它） */
+  drawingVer: number;
+  setDrawingVer: React.Dispatch<React.SetStateAction<number>>;
+  addAnnotation: (ann: Annotation) => void;
+  undoAnnotation: () => void;
+  redoAnnotation: () => void;
+  redoAvailable: boolean;
+  numberCounter: number;
+  numberCounterRef: React.MutableRefObject<number>;
+  setNumberCounter: React.Dispatch<React.SetStateAction<number>>;
+  selectedAnn: number | null;
+  setSelectedAnn: React.Dispatch<React.SetStateAction<number | null>>;
+
+  // ── 浮窗（工具属性 popover） ──────────────
+  showPopover: boolean;
+  setShowPopover: (b: boolean) => void;
+  popoverX: number;
+  setPopoverX: (n: number) => void;
+}
+
+export function useAnnotationState(): AnnotationState {
+  // ── 工具 ──────────────────────────────────
+  const [tool, setTool] = useState<Tool>("none");
+  const toolRef = useRef<Tool>("none");
+
+  // ── 工具属性（state + ref 镜像）────────────
+  const [toolColor, setToolColorState] = useState("#ef4444");
+  const toolColorRef = useRef("#ef4444");
+  const setToolColor = (c: string) => {
+    toolColorRef.current = c;
+    setToolColorState(c);
+  };
+
+  const [toolWidth, setToolWidth] = useState(3);
+
+  const [toolFontSize, setToolFontSizeState] = useState(16);
+  const toolFontSizeRef = useRef(16);
+  const setToolFontSize = (s: number) => {
+    toolFontSizeRef.current = s;
+    setToolFontSizeState(s);
+  };
+
+  const [toolFilled, setToolFilledState] = useState(false);
+  const toolFilledRef = useRef(false);
+  const setToolFilled = (f: boolean) => {
+    toolFilledRef.current = f;
+    setToolFilledState(f);
+  };
+
+  const [toolCircleSize, setToolCircleSize] = useState(24);
+
+  // ── 标注数据 ──────────────────────────────
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const annotationsRef = useRef<Annotation[]>([]);
+  const drawingRef = useRef<Annotation | null>(null);
+  const [drawingVer, setDrawingVer] = useState(0);
+
+  const redoStackRef = useRef<Annotation[]>([]);
+  const [redoAvailable, setRedoAvailable] = useState(false);
+
+  const [numberCounter, setNumberCounter] = useState(1);
+  const numberCounterRef = useRef(1);
+
+  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+
+  // ── 浮窗 ──────────────────────────────────
+  const [showPopover, setShowPopover] = useState(false);
+  const [popoverX, setPopoverX] = useState(0);
+
+  // ── 同步 refs ─────────────────────────────
+  useEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
+  useEffect(() => {
+    annotationsRef.current = annotations;
+  }, [annotations]);
+  useEffect(() => {
+    numberCounterRef.current = numberCounter;
+  }, [numberCounter]);
+
+  // ── add / undo / redo ─────────────────────
+  const addAnnotation = (ann: Annotation) => {
+    redoStackRef.current = [];
+    setRedoAvailable(false);
+    setAnnotations((prev) => [...prev, ann]);
+  };
+
+  const undoAnnotation = () => {
+    setAnnotations((prev) => {
+      if (prev.length === 0) return prev;
+      const removed = prev[prev.length - 1];
+      redoStackRef.current.push(removed);
+      setRedoAvailable(true);
+      // number 标注 undo 时回退计数（用 ref 读最新值，避免闭包陈旧）
+      if (removed.type === "number" && removed.number === numberCounterRef.current - 1) {
+        setNumberCounter(numberCounterRef.current - 1);
+      }
+      return prev.slice(0, -1);
+    });
+    setSelectedAnn(null);
+  };
+
+  const redoAnnotation = () => {
+    const ann = redoStackRef.current.pop();
+    if (ann) {
+      if (ann.type === "number") setNumberCounter(numberCounterRef.current + 1);
+      setAnnotations((prev) => [...prev, ann]);
+      setRedoAvailable(redoStackRef.current.length > 0);
+    }
+  };
+
+  return {
+    tool,
+    setTool,
+    toolRef,
+    toolColor,
+    setToolColor,
+    toolColorRef,
+    toolWidth,
+    setToolWidth,
+    toolFontSize,
+    setToolFontSize,
+    toolFontSizeRef,
+    toolFilled,
+    setToolFilled,
+    toolFilledRef,
+    toolCircleSize,
+    setToolCircleSize,
+    annotations,
+    annotationsRef,
+    setAnnotations,
+    drawingRef,
+    drawingVer,
+    setDrawingVer,
+    addAnnotation,
+    undoAnnotation,
+    redoAnnotation,
+    redoAvailable,
+    numberCounter,
+    numberCounterRef,
+    setNumberCounter,
+    selectedAnn,
+    setSelectedAnn,
+    showPopover,
+    setShowPopover,
+    popoverX,
+    setPopoverX,
+  };
+}
