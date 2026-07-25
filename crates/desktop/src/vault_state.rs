@@ -185,7 +185,7 @@ pub fn bootstrap_app_key(session: &SharedVaultSession) {
 mod tests {
     use super::*;
     use octopus_vault::crypto::DerivedKey;
-    use octopus_vault::Zeroizing;
+    
 
     fn make_key(byte: u8) -> Arc<DerivedKey> {
         Arc::new(DerivedKey::from_raw([byte; 32]))

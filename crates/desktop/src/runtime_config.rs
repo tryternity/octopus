@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn build_asr_options_injects_fallback_first_and_dedups() {
-        use octopus_asr_local::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::EngineCategory;
         // 场景 1：whisper-small 激活（is_enabled=true）→ 兜底非 current，whisper-small current
         let engines = vec![
             mk_engine("whisper-small", "bigmodel", EngineCategory::Whisper, 2, true),
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn build_llm_options_marks_current_and_labels() {
-        use octopus_infra::db::LlmModelInfo;
+        
         let llms = vec![
             mk_llm("glm-4-flashx", "bigmodel", "glm", 2, true),
             mk_llm("ollama-local", "ollama", "qwen", 1, false),
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn build_llm_options_none_current_when_no_active() {
         // 需求：无激活 LLM（全 is_enabled=false）→ 首项「无模型」标 current。
-        use octopus_infra::db::LlmModelInfo;
+        
         let llms = vec![
             mk_llm("glm-4-flashx", "bigmodel", "glm", 2, false),
         ];
@@ -584,7 +584,7 @@ mod tests {
     /// 不应被标 current）。
     #[test]
     fn build_llm_options_is_enabled_precise_current() {
-        use octopus_infra::db::LlmModelInfo;
+        
         let llms = vec![
             mk_llm("deepseek-v4-flash", "aliyun", "deepseek", 2, true),
             mk_llm("deepseek-v4-flash", "deepseek", "deepseek", 2, false),
@@ -609,7 +609,7 @@ mod tests {
     /// LlmOption 包含 provider 字段。
     #[test]
     fn llm_option_has_provider_field() {
-        use octopus_infra::db::LlmModelInfo;
+        
         let llms = vec![
             mk_llm("test", "bigmodel", "glm", 2, false),
         ];

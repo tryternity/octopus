@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1039,3 +1039,35 @@ unlock.rs 密钥管理设计扎实——密钥清零链完整、M3/B1/B2/A1/#8/I
 **核查**：setup_vault 跨两个独立事务——:107 save_vault_meta（commit meta）与 :124 migrate_secret_keys_to_encrypted（内部事务）。A1 回滚（:127-136）在 Err(migrate_err) 分支。崩溃窗口：:107 commit 后、:124 migrate commit 前，进程 panic/断电/OOM → A1 回滚不执行 → 半初始化（vault_meta 落盘 + secret_key 明文）+ :67 `ensure!(!is_initialized())` 阻止重跑 → 用户卡死 + 明文暴露。
 
 **状态**：文档化。触发需精确崩溃在两 commit 间（毫秒级窗口），概率极低；但后果不可恢复 + 安全暴露。注释 :120-122 已承认跨表事务合并限制。修复方向（调序/跨表事务/独立后台任务）均成本较高，需架构权衡。
+
+---
+
+## 第三十五轮审查修复（2026-07-25，migrate.rs + 跨模块 secret_key：M-CLOUDKEY-PLAINTEXT + migrate 低危文档化）
+
+### M-CLOUDKEY-PLAINTEXT: add/edit 云端模型明文写 secret_key，绕过 vault 加密（中-高，安全，已修）
+
+**核查**（完整跨模块证据链）：
+1. **写入路径明文**（model_commands.rs）：`add_cloud_model`（:738）`insert_cloud_model(..., &input.secret_key, ...)` 无加密；`edit_cloud_model`（:765）`update_cloud_model(..., &input.secret_key, ...)` 无加密。前端明文 API Key 直接传 db 层落盘。
+2. **migrate 不覆盖**（migrate.rs:30）：`migrate_secret_keys_to_encrypted` 仅 setup_vault 调用一次。setup 后新增/编辑云端模型产生的明文，migrate 永不再触发。
+3. **passthrough 掩盖**（vault_secret_access.rs:82）：`try_decrypt_secret` 对非 v1: 前缀原样返回——新明文被当「未迁移明文」passthrough，推理热路径拿到明文 API Key 鉴权正常，用户无感知。
+
+**后果**：用户 setup vault 后 add/edit 云端模型 → 明文 secret_key 落盘 → DB 文件泄露 → 明文 API Key 直接暴露。vault 加密承诺对 setup 后增量失效。全程无感知（migrate 跑过 + UI 显示 vault 已启用 + 推理正常）。
+
+**修复**：
+- vault_secret_access.rs 补 `encrypt_secret_global` chokepoint（对称 `try_decrypt_secret_global`）：vault 已初始化 + app_key 可用 → `app_key.encrypt` → v1: 密文；否则原样返回（向后兼容 pre-vault）。空值不加密（edit 未改 key）；v1: 前缀幂等不重复加密。
+- `add_cloud_model`/`edit_cloud_model` 写 DB 前调 `encrypt_secret_global(&input.secret_key)` 加密。
+- 读路径 `try_decrypt_secret` 已正确处理 v1: 解密，加密写入后自动走解密分支，无需改。
+
+**回归测试**：`encrypt_secret_empty_and_idempotent`（空值 + v1: 幂等）+ `encrypt_then_decrypt_round_trip`（加密 → 解密对称性）。
+
+### M-MIGRATE-TOCTOU / M-COUNT / M-DEAD-CODE: migrate.rs 内部低危（低，文档化）
+
+- **M-MIGRATE-TOCTOU**（list 事务外 + UPDATE 事务内）：list 快照与 UPDATE 时状态不一致。触发需 setup 期间并发改 models（罕见）。与 M-CLOUDKEY-PLAINTEXT 同根（M-CLOUDKEY-PLAINTEXT 修复后影响消失）。
+- **M-COUNT-NO-VERIFY**（count 不验证 UPDATE 影响行数）：并发删行时 count 虚高，无安全影响。
+- **M-DEAD-CODE**（update_model_secret_key 无生产调用）：#5 事务化重构后遗留。可删。
+
+**状态**：文档化。M-CLOUDKEY-PLAINTEXT 修复后 M-MIGRATE-TOCTOU 的影响消失（增量已加密，不再有明文残留风险）。
+
+### 附带：清理 desktop test 7 个 unused import warning
+
+cargo fix 清理 vault_state.rs（1）+ runtime_config.rs（5）+ vault_secret_access.rs（1）的 test profile unused import。非本轮引入，但 AGENTS.md 要求 0 warning。
