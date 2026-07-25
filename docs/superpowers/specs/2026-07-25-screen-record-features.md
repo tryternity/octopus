@@ -622,6 +622,14 @@ ffmpeg -i input.mp4 -vf "fps=15,scale=800:-1:flags=lanczos" -loop 0 output.gif
 
 经 Q1-Q5 的分析，**真正需要用户拍板的只剩 2 项**，用户已于 2026-07-25 拍板：
 
+> **架构外溢决策（2026-07-25 brainstorming 补充）**：麦克风权限**应在 app 启动时统一主动申请**，而非录屏模块按需申请。
+>
+> **背景**：麦克风是跨模块共享权限（ASR / 录屏 / 未来视频会议等子模块都用）。当前 octopus 没有主动申请——依赖 cpal 在第一次打开输入设备时让 macOS 自动弹 TCC 模态框。这是隐式流程，应升级为**显式启动时申请**。
+>
+> **影响范围**：这是 octopus 跨模块的架构改进，**不属于录屏功能 MVP 范围**。录屏 spec 记录这个决策，但具体实现（启动 hook 申请麦克风权限的 Tauri 命令 + 首启 UI 引导）应作为独立的「权限基础设施」spec 处理。
+>
+> **录屏 spec 的责任**：依赖这个权限基础设施——录屏模块不再独立申请麦克风权限，假设 app 启动时已申请（或已授权）。录屏 helper 内部仍做权限检查（防御性，避免 helper 启动时权限已过期）。
+
 1. ✅ **`THIRD_PARTY_LICENSES.md` 现在就建**——把 dlp 的 yt-dlp/ffmpeg 也一并补录（dlp 当前只有 docs/architecture.md 提到，没有正式的第三方许可文件）。文件位置：仓库根 `THIRD_PARTY_LICENSES.md`。本次先建文件 + 补录现有依赖，录屏 helper vendor 时再追加 openscreen 条目。
 
 2. ✅ **F15 字幕做灰按钮占位**——MVP（P0）阶段 UI 上显示「转字幕」按钮但禁用，tooltip 提示「需下载 ASR 模型」，点击跳转模型下载页。比完全隐藏更早建立用户认知，也为 F15 实现时省去 UI 改动。F15 实现放在 P2 阶段。
