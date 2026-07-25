@@ -27,10 +27,12 @@
 
 - [x] Segmented 切换（内联 / 引用文件），独立 mode state（切换不碰 value）
 - [x] 内联模式：textarea（原行为）
-- [x] 引用模式：文件下拉（调 list_prompt_files）+ 路径展示 + hover 浮层预览（1s 延迟消失，向上弹出）
+- [x] 引用模式（2026-07-25 重构）：可编辑 input + datalist（调 list_prompt_files）替代旧 select，支持自由输入新文件名 + 匹配已有即时选中 + Enter/Plus 创建新文件
+- [x] 路径展示跟草稿 selectedInput 实时更新（已有=无提示，新名=黄字「文件不存在」）
+- [x] hover 浮层预览（仅 selectedFile 存在时，1s 延迟消失，向上弹出）
 - [x] 「查看更多/编辑内容」按钮调 open_file_in_editor（CompactEditor 打开全文）
-- [x] 空目录状态提示（Inbox 图标 + 路径指引）
 - [x] 父组件 key={form.id} 让切换菜单项时重新 mount
+- [x] **（2026-07-25 bugfix）** input value 改绑草稿 selectedInput（原绑派生 selectedName 导致自由输入被受控还原）；input + textarea 加 autoCapitalize/autoCorrect/spellCheck={false}
 
 ## Task 4：CompactEditor file source
 
