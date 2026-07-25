@@ -64,7 +64,7 @@ pub struct Outputs {
 
 // ── helper → 主进程（stdout 事件流）──────────────────────────────
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum HelperEvent {
     Ready { schema_version: u32 },

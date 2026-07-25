@@ -3,7 +3,7 @@
 use crate::error::RecordResult;
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct RecordingMeta {
     pub id: i64,
     pub file_path: String,

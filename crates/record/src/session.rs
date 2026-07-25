@@ -24,6 +24,7 @@ pub enum SessionState {
     Stopping,
 }
 
+#[derive(serde::Serialize)]
 pub struct StartedInfo {
     pub width: u32,
     pub height: u32,

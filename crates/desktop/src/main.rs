@@ -68,6 +68,11 @@ mod pipeline;
 mod result_window;
 mod screenshot_commands;
 mod screenshot_geometry;
+// 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
+// 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
+// 对应 invoke_handler 注册项也用 cfg gate（见下方 generate_handler!）。
+#[cfg(target_os = "macos")]
+mod record_commands;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -524,6 +529,49 @@ pub fn run() {
             translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
             perf_log::perf_log_cmd,
+            // ── 录屏（2026-07-25 screen record MVP，Task 10）──────────
+            // 仅 macOS 编译；record_commands 模块整体 cfg(target_os = "macos")。
+            // 5 个控制命令用 record_* 前缀避免与 coordinator::start_recording（ASR 录音）冲突。
+            #[cfg(target_os = "macos")]
+            record_commands::list_record_displays,
+            #[cfg(target_os = "macos")]
+            record_commands::list_record_windows,
+            #[cfg(target_os = "macos")]
+            record_commands::list_microphones,
+            #[cfg(target_os = "macos")]
+            record_commands::check_record_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::request_screen_record_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::open_privacy_settings,
+            #[cfg(target_os = "macos")]
+            record_commands::record_start,
+            #[cfg(target_os = "macos")]
+            record_commands::record_pause,
+            #[cfg(target_os = "macos")]
+            record_commands::record_resume,
+            #[cfg(target_os = "macos")]
+            record_commands::record_stop,
+            #[cfg(target_os = "macos")]
+            record_commands::record_kill,
+            #[cfg(target_os = "macos")]
+            record_commands::list_recordings,
+            #[cfg(target_os = "macos")]
+            record_commands::get_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::get_recording_thumbnail,
+            #[cfg(target_os = "macos")]
+            record_commands::rename_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::toggle_recording_favorite,
+            #[cfg(target_os = "macos")]
+            record_commands::delete_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::restore_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::open_recording_file,
+            #[cfg(target_os = "macos")]
+            record_commands::reveal_recording,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -978,6 +1026,12 @@ pub fn run() {
                 runtime_config.clone(),
             );
             app.manage(coordinator);
+
+            // 录屏会话状态（Task 10，2026-07-25 screen record MVP）：
+            // RecordSession 内部已用 Arc<tokio::sync::Mutex<...>> 持有 helper 子进程句柄，
+            // 这里直接 manage 不再外层包 Mutex。仅 macOS 编译（windows/linux provider 待适配）。
+            #[cfg(target_os = "macos")]
+            app.manage(octopus_record::RecordSession::new());
 
             // 4. Initialize i18n + Create Tray
             i18n::init(&config.ui_language);
