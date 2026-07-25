@@ -197,43 +197,41 @@ pub fn unlock_with_master_password(password: Zeroizing<String>) -> Result<Unlock
     // 流程 C 写 local_enc 失败（save_vault_meta DB 错 / Keychain 错）会让正确密码
     // 被判失败 + 退避，且整个 unlock 返 Err（用户输对密码却解锁失败）。
     //
-    // 新实现分两阶段：
-    //   1. 密码校验阶段：仅做 decrypt，失败 = 密码错 → record_failure
-    //   2. 副作用阶段（refresh）：失败不调 record_failure（密码是对的），但仍返 Err。
-    //      unlock 本身确实失败（用户没拿到有效 session），但下一次立即重试不会被挡。
-    let auth_result = (|| -> Result<UnlockedKeys> {
-        let user_vault_bytes = master_root_key.decrypt(&meta.protected_user_vault_key)?;
-        ensure!(user_vault_bytes.len() == 32, "user_vault_key 长度异常");
-        let mut uv_arr = [0u8; 32];
-        uv_arr.copy_from_slice(&user_vault_bytes);
-        let user_vault_key = DerivedKey::from_raw(uv_arr);
-
-        // 解 app_key（用 sync 密文）
-        let app_key_bytes = master_root_key.decrypt(&meta.app_key_sync_enc)?;
-        ensure!(app_key_bytes.len() == 32, "app_key 长度异常");
-        let mut ak_arr = [0u8; 32];
-        ak_arr.copy_from_slice(&app_key_bytes);
-        let app_key = DerivedKey::from_raw(ak_arr);
-
-        Ok(UnlockedKeys {
-            user_vault_key,
-            app_key,
-        })
-    })();
-
-    let keys = match auth_result {
-        Ok(k) => {
-            crate::attempt_guard::guard().reset(); // 密码校验成功 → 重置计数
-            k
-        }
+    // 新实现分三阶段：
+    //   1. 密码校验阶段：仅解 protected_user_vault_key，失败 = 密码错 → record_failure
+    //   2. 数据完整性阶段：解 app_key_sync_enc，失败 = 数据损坏（密码已对）→ 不
+    //      record_failure，返「vault 数据损坏」Err
+    //   3. 副作用阶段（refresh）：失败不调 record_failure（密码是对的），但仍返 Err。
+    //
+    // B-UNLOCK-RECORD-ASYMMETRY 修复（2026-07-25）：原实现把 protected+sync 解密
+    // 捆绑在同一闭包，sync_enc 损坏（密码对）也 record_failure + 误显「主密码错误」。
+    // 现与 change_master_password:282/:295 结构 1:1 对齐——protected 单独做校验点。
+    let user_vault_bytes = match master_root_key.decrypt(&meta.protected_user_vault_key) {
+        Ok(b) => b,
         Err(e) => {
-            crate::attempt_guard::guard().record_failure(); // 密码错 → 计数 + 退避
-            // 加 context 让 desktop::vault_error::classify 识别为 InvalidMasterPassword。
-            // 裸 decrypt 错误文案是 "AES-256-GCM 解密失败：密文可能已损坏或 key 不匹配"，
-            // classify 兜底为 InternalError → 用户看到"内部错误"而非"主密码错误"。
-            // 与 change_master_password:276 对称（那里用 .context("旧主密码错误")）。
+            crate::attempt_guard::guard().record_failure();
             return Err(e.context("主密码错误"));
         }
+    };
+    ensure!(user_vault_bytes.len() == 32, "user_vault_key 长度异常");
+    let mut uv_arr = [0u8; 32];
+    uv_arr.copy_from_slice(&user_vault_bytes);
+    let user_vault_key = DerivedKey::from_raw(uv_arr);
+
+    // 密码校验通过——重置退避计数
+    crate::attempt_guard::guard().reset();
+
+    // 解 app_key（用 sync 密文）——失败是数据损坏（非密码错），不 record_failure
+    let app_key_bytes = master_root_key.decrypt(&meta.app_key_sync_enc)
+        .context("解 app_key_sync_enc 失败（vault 数据损坏，非主密码错误）")?;
+    ensure!(app_key_bytes.len() == 32, "app_key 长度异常");
+    let mut ak_arr = [0u8; 32];
+    ak_arr.copy_from_slice(&app_key_bytes);
+    let app_key = DerivedKey::from_raw(ak_arr);
+
+    let keys = UnlockedKeys {
+        user_vault_key,
+        app_key,
     };
 
     // 流程 C 特有：用本机 K_machine 重新加密 app_key → 落盘
@@ -626,6 +624,49 @@ mod tests {
 
         let result = unlock_with_master_password(zstr("wrong-password"));
         assert!(result.is_err(), "错误主密码应解密失败");
+
+        let _ = keychain::delete_machine_key();
+    }
+
+    /// B-UNLOCK-RECORD-ASYMMETRY 守护（2026-07-25）：sync_enc 损坏时 unlock 返 Err
+    /// 但不 record_failure（数据损坏 ≠ 密码错），退避计数不增。
+    ///
+    /// 之前 protected+sync 捆绑在同一闭包，sync_enc 损坏（密码对）也 record_failure +
+    /// 误显「主密码错误」。现 protected 单独做校验点（与 change :282/:295 对齐）。
+    #[test]
+    fn test_unlock_sync_enc_corruption_no_record_failure() {
+        let _s = test_lock();
+        setup_clean_db();
+        let _ = keychain::delete_machine_key();
+
+        let _ = setup_vault(zstr("Right-password-1!")).expect("setup");
+        let _ = keychain::delete_machine_key();
+
+        // 确保 guard 干净（其他测试可能污染）
+        crate::attempt_guard::guard().reset();
+
+        // 破坏 app_key_sync_enc（密码校验用的 protected_user_vault_key 完好）
+        octopus_infra::db::with_db(|conn| {
+            conn.execute(
+                "UPDATE vault_meta SET app_key_sync_enc = ?1 WHERE id = 1",
+                rusqlite::params!["v1:CORRUPTED-SYNC-ENC"],
+            )?;
+            Ok(())
+        }).expect("破坏 sync_enc");
+
+        // 用正确密码 unlock——protected 解密成功（密码对），sync_enc 解密失败（数据损坏）
+        let result = unlock_with_master_password(zstr("Right-password-1!"));
+        assert!(
+            result.is_err(),
+            "sync_enc 损坏应致 unlock 失败（数据损坏）"
+        );
+
+        // B-UNLOCK-RECORD-ASYMMETRY 核心：不应 record_failure（数据损坏 ≠ 密码错）
+        // guard reset 后 sync_enc 损坏 unlock 不应触发退避 → remaining_wait 仍 None
+        assert!(
+            crate::attempt_guard::guard().remaining_wait().is_none(),
+            "B-UNLOCK-RECORD-ASYMMETRY: sync_enc 损坏不应触发退避（数据损坏非密码错）"
+        );
 
         let _ = keychain::delete_machine_key();
     }

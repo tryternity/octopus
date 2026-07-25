@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **244** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **410** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1014,3 +1014,28 @@ health 模块整体质量高——L6/H1/D5/#12/N1/M1/H2/空密码兜底全到位
 **修复**：照 passphrase_zh :31/:35/:43 模式——:55 改 `Zeroizing::new(words.join(...))`，:58 format 覆盖改 `*result = format!(...)`，:69 改 `Ok(result.as_str().to_string())`。
 
 **严重度诚实限定**：result 唯一存活区间是 join(:55) 到 return(:69)，其间只有同步 format!，无显式 panic 路径（除 OOM），Zeroizing「异常不残留」的实际收益边际。返回给 Tauri IPC 的 String 本就是明文（四生成器同样），Zeroizing 只保护中间容器。但模块内一致性缺口明显（4 个生成器 3 个包了，en 独漏），且注释 :25-26 宣称「中间材料用 Zeroizing」却漏了最终拼接结果，值得为一致性补齐。
+
+---
+
+## 第三十四轮审查修复（2026-07-25，unlock.rs 密钥解锁主链路：B-UNLOCK-RECORD-ASYMMETRY + B-SETUP-CRASH-WINDOW 文档化）
+
+unlock.rs 密钥管理设计扎实——密钥清零链完整、M3/B1/B2/A1/#8/INV-7/#14 修复到位、K1-GAP 下游确认（unlock 用 from_i64 处理本地可信参数）。
+
+### B-UNLOCK-RECORD-ASYMMETRY: unlock 把数据损坏误计为密码错退避（低，逻辑不对称，已修）
+
+**核查**：unlock_with_master_password 把 protected + sync 解密捆绑在闭包（:204-222），闭包内任一失败 → :229 record_failure + :235 context「主密码错误」。而 change_master_password 精确区分：:282-288 protected 解密失败才 record_failure（密码错）；:289 长度异常 + :295 sync 解密失败用 `?`/`ensure` 直接 return，不 record_failure（数据损坏 ≠ 密码错）。
+
+**后果**：sync_enc 单字段损坏（protected 完好、密码正确）→ :205 解 protected 成功 → :212 解 sync_enc 失败 → 闭包 Err → record_failure + 退避计数 + 误显「主密码错误」（实际密码正确）。
+
+**修复**：把闭包拆成三阶段（与 change :282/:295 结构 1:1 对齐）：
+1. 密码校验：仅解 protected_user_vault_key，失败 record_failure + 「主密码错误」
+2. 数据完整性：解 app_key_sync_enc，失败不 record_failure，返「vault 数据损坏」Err
+3. 副作用（refresh）：失败不 record_failure（B2 已有）
+
+**回归测试**：`test_unlock_sync_enc_corruption_no_record_failure`——破坏 app_key_sync_enc，用正确密码 unlock，验证返 Err 但 guard remaining_wait 仍 None（不 record_failure）。
+
+### B-SETUP-CRASH-WINDOW: A1 回滚只覆盖 Err 不覆盖崩溃（低-中，固有成本，文档化）
+
+**核查**：setup_vault 跨两个独立事务——:107 save_vault_meta（commit meta）与 :124 migrate_secret_keys_to_encrypted（内部事务）。A1 回滚（:127-136）在 Err(migrate_err) 分支。崩溃窗口：:107 commit 后、:124 migrate commit 前，进程 panic/断电/OOM → A1 回滚不执行 → 半初始化（vault_meta 落盘 + secret_key 明文）+ :67 `ensure!(!is_initialized())` 阻止重跑 → 用户卡死 + 明文暴露。
+
+**状态**：文档化。触发需精确崩溃在两 commit 间（毫秒级窗口），概率极低；但后果不可恢复 + 安全暴露。注释 :120-122 已承认跨表事务合并限制。修复方向（调序/跨表事务/独立后台任务）均成本较高，需架构权衡。
