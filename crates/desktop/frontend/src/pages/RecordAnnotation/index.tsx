@@ -382,8 +382,24 @@ export default function RecordAnnotation() {
     }
   };
 
-  // ── 浮窗位置（工具栏下方居中，按 X clamp）──────────────────
-  const popoverY = 8 + 44; // 工具栏 top 8 + 高 44
+  // ── 工具栏位置（参考截图三选逻辑，适配「窗口=选区」）──────────
+  // RecordAnnotation 窗口尺寸 = 选区尺寸，所以「选区」= 整个窗口。
+  // 截图原逻辑：下方优先 → 上方 → 内部底部。
+  // 这里简化：选区底部下方空间 = 屏幕高度 - 窗口底部。
+  //   - 但窗口位置是全局的，我们只能用 window.innerHeight（窗口内空间）。
+  //   - 窗口可能没占满屏幕（选区比屏幕小），窗口外是其他应用。
+  //   - 工具栏 position:fixed 相对窗口，不能超出窗口边界（否则不可见）。
+  // 所以工具栏在窗口内部：底部优先，底部空间不足则在顶部。
+  const TOOLBAR_H = 44;
+  // 简化：默认底部（top = innerHeight - TOOLBAR_H - 8），如果窗口太矮（< 200px）则顶部
+  const toolbarTop = window.innerHeight > 200
+    ? window.innerHeight - TOOLBAR_H - 8  // 底部
+    : 8;                                    // 顶部（窗口太矮）
+
+  // ── 浮窗位置（工具栏上方或下方，根据 toolbarTop 决定）──────────
+  const popoverY = toolbarTop > 8
+    ? toolbarTop - 200  // 工具栏在底部，浮窗在上方
+    : toolbarTop + TOOLBAR_H;  // 工具栏在顶部，浮窗在下方
   const halfW = toolbarW / 2 || 150;
   const popoverLeft = Math.max(halfW + 8, Math.min(popoverX || window.innerWidth / 2, window.innerWidth - halfW - 8));
 
@@ -454,7 +470,7 @@ export default function RecordAnnotation() {
         ref={toolbarRef}
         style={{
           position: "fixed",
-          top: 8,
+          top: toolbarTop,
           left: "50%",
           transform: "translateX(-50%)",
           display: "flex",

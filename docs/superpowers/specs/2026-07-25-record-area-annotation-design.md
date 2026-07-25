@@ -17,32 +17,23 @@
 4. 标注**只能画在选区内**（视觉上选区外不接收标注输入）
 5. **标注被 ScreenCaptureKit 录进视频**（不是 overlay UI，是视频内容的一部分）
 
-### 0.2 关键技术验证（spike 结论）
+### 0.2 关键技术验证（最终结论）
 
-**三组 spike 验证**（2026-07-25）：
+**决定性验证**（2026-07-25，Tauri 真实窗口 e2e）：
+- helper `Source::Area` + Tauri 创建 `always_on_top(true)` 透明窗口
+- 用户区域录制 + 画矩形标注 + 停止 → **视频里有标注**（用户视觉确认）
+- ✅ **always_on_top 窗口被 SCK 录到**（标注进视频，且总在最上）
 
-**spike7**（普通窗口被录到）：
-- helper `Source::Area` 录制选区正常（1000×700 / 5.7s / 740KB）
-- 选区内 Preview 显示红 PNG（普通 regular 窗口）
-- 抽帧：20603 红色像素 ≈ 884×370px（Preview 窗口尺寸）
-- ✅ **普通窗口被 SCK 录到**
+**之前 PyObjC spike 的错误结论**（已推翻）：
+- spike3/6 用 Python subprocess + NSWindow/NSPanel，结论「always_on_top 不被录」
+- 实际原因：Python subprocess 没起 NSApplication.run()，窗口对象创建了但**没真正进入窗口服务器**
+- 用 Tauri 真实窗口（与实际实现一致）验证后，always_on_top 正常被录到
 
-**spike8**（普通窗口被遮挡时仍被录到）—— 决定性证据：
-- Preview 显示红 PNG，期间 `osascript` 激活 Finder 遮挡 Preview
-- 抽帧对比：Preview 显示中 129727 红像素 / Finder 遮挡中 **129727 红像素**（完全相同）
-- ✅ **SCK 录的是窗口 buffer 内容，与层级/可见性无关**
-- → 用户切应用时，标注 overlay 即使在窗口层级上下移，SCK 仍录到完整标注内容
-
-**spike3/6**（always_on_top 不被录）：
-- floating level（level=1500）窗口：0 红像素
-- → SCK 安全过滤 always_on_top 浮层（防恶意软件偷录系统 UI）
-
-**最终结论**：
-- 标注 overlay 用**普通窗口 level**（非 always_on_top）→ 被 SCK 录到
-- 用户切应用不影响标注录制（SCK 录窗口 buffer，不录层级遮挡）
-- **方案完全成立，无限制**
-
-**原理**：ScreenCaptureKit `Source::Area` + `sourceRect` 录制时，录的是「选区内所有窗口的 buffer 内容合成」，不是「屏幕可见画面」。这是 macOS 的窗口捕获模型——每个窗口独立 buffer，SCK 合成选区内所有窗口的内容，floating 浮层被安全过滤。
+**最终方案**：
+- 标注 overlay 用 **always_on_top**（总在最上，满足「录制框+标注+工具栏永远浮在顶层」）
+- 透传模式：`setIgnoreMouseEvents(true)` 鼠标穿透到下层应用
+- 标注进视频（SCK 录到 always_on_top 窗口内容）
+- **方案完全成立，无任何限制**
 
 ### 0.3 与截图标注的关系
 
@@ -80,15 +71,13 @@
 |---|---|---|
 | `transparent` | true | 透明背景，只画标注 |
 | `decorations` | false | 无标题栏/边框 |
-| `always_on_top` | **false**（普通 level）| ⚠️ **关键**：spike7 验证 SCK 不录 floating 窗口，必须用普通 level |
+| `always_on_top` | **true** | ✅ 总在最上（Tauri e2e 验证被 SCK 录到）|
 | `resizable` | false | 尺寸固定 = 选区 |
-| `skip_taskbar` | true | 不出现在 Dock（但不是 always_on_top） |
-| `focus` | true | 接收键盘（Esc/A 切换）+ 鼠标（画标注） |
+| `skip_taskbar` | true | 不出现在 Dock |
+| `focus` | true | 接收键盘 + 鼠标（标注模式） |
 | `position` | 选区全局位置 | 精确覆盖选区 |
 | `inner_size` | 选区尺寸（逻辑像素） | 精确覆盖选区 |
 | `ignoresMouseEvents` | false（标注模式）/ true（透传模式） | 见 §3.3 鼠标透传 |
-
-⚠️ **关键发现**（spike8）：SCK 录的是窗口 buffer 内容，不是屏幕可见画面。即使标注 overlay 被其他应用遮挡（窗口层级下移），SCK 仍录到 overlay 的完整标注内容。用户切应用不影响标注录制。
 
 ### 1.3 与 helper 的关系
 
