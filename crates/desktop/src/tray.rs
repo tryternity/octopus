@@ -122,13 +122,13 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
-    // 菜单组装：录屏项（sep + 1 项 toggle）插在 compact_editor 和 sep2 之间。
-    // macOS 10 项 / 其他 8 项（无录屏）。
+    // 菜单组装：录屏项紧跟 screenshot 后（用户决策 2026-07-25：录屏与截图同属「屏幕采集」类）。
+    // macOS 9 项 / 其他 8 项（无录屏）。
     #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
-        &screenshot, &clipboard, &compact_editor,
-        &sep_record, &record_start,
+        &screenshot, &sep_record, &record_start,
+        &clipboard, &compact_editor,
         &sep2,
         &settings, &quit,
     ])
