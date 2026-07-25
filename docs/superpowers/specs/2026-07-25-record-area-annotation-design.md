@@ -19,22 +19,30 @@
 
 ### 0.2 关键技术验证（spike 结论）
 
-**已验证**（2026-07-25 spike7 `/tmp/spike7.py`）：
-- helper `Source::Area` 录制选区正常工作（视频尺寸 = 选区尺寸，ffprobe 确认 1000×700）
-- **选区内的普通可见窗口（普通 level）被 SCK 录到**：
-  - spike7 用 Preview 打开大红 PNG（500×400 物理像素），Preview 是普通 regular 窗口
-  - 抽帧分析：s3/s4/s5 时刻 **20603 红色像素**，范围 X[0-884] Y[34-404] ≈ 884×370px（Preview 窗口尺寸）
-  - 视频文件正常（740KB / 5.7s / 1000×700）
+**三组 spike 验证**（2026-07-25）：
 
-**关键限制**（spike3/6 反面验证）：
-- **always_on_top（floating level）窗口不被 SCK 录到**：
-  - spike3（Python subprocess + NSWindow level=floating）：0 红像素
-  - spike6（Swift NSApplication.run + level=.floating）：0 红像素
-  - 这是 SCK 的安全设计——录屏不允许捕获 floating 浮层（防恶意软件偷录系统 UI）
+**spike7**（普通窗口被录到）：
+- helper `Source::Area` 录制选区正常（1000×700 / 5.7s / 740KB）
+- 选区内 Preview 显示红 PNG（普通 regular 窗口）
+- 抽帧：20603 红色像素 ≈ 884×370px（Preview 窗口尺寸）
+- ✅ **普通窗口被 SCK 录到**
 
-**对方案的影响**：标注 overlay 窗口必须用**普通窗口 level**（非 always_on_top）。代价：切到其他应用时标注窗口会被遮挡——但区域录屏场景固定（用户在选区内画标注，不切换应用），可接受。
+**spike8**（普通窗口被遮挡时仍被录到）—— 决定性证据：
+- Preview 显示红 PNG，期间 `osascript` 激活 Finder 遮挡 Preview
+- 抽帧对比：Preview 显示中 129727 红像素 / Finder 遮挡中 **129727 红像素**（完全相同）
+- ✅ **SCK 录的是窗口 buffer 内容，与层级/可见性无关**
+- → 用户切应用时，标注 overlay 即使在窗口层级上下移，SCK 仍录到完整标注内容
 
-**原理**：ScreenCaptureKit `Source::Area` + `sourceRect` 录制时，只录「选区内的普通可见窗口内容」，floating/always_on_top 窗口被过滤。这是 macOS 的安全策略（TCC 录屏权限模型的一部分）。
+**spike3/6**（always_on_top 不被录）：
+- floating level（level=1500）窗口：0 红像素
+- → SCK 安全过滤 always_on_top 浮层（防恶意软件偷录系统 UI）
+
+**最终结论**：
+- 标注 overlay 用**普通窗口 level**（非 always_on_top）→ 被 SCK 录到
+- 用户切应用不影响标注录制（SCK 录窗口 buffer，不录层级遮挡）
+- **方案完全成立，无限制**
+
+**原理**：ScreenCaptureKit `Source::Area` + `sourceRect` 录制时，录的是「选区内所有窗口的 buffer 内容合成」，不是「屏幕可见画面」。这是 macOS 的窗口捕获模型——每个窗口独立 buffer，SCK 合成选区内所有窗口的内容，floating 浮层被安全过滤。
 
 ### 0.3 与截图标注的关系
 
@@ -80,7 +88,7 @@
 | `inner_size` | 选区尺寸（逻辑像素） | 精确覆盖选区 |
 | `ignoresMouseEvents` | false（标注模式）/ true（透传模式） | 见 §3.3 鼠标透传 |
 
-⚠️ **限制**：普通 level 窗口切到其他应用时会被遮挡。但区域录屏场景固定（用户在选区内画标注），可接受。如果用户切到其他应用，标注窗口被遮挡 → SCK 录到的是遮挡后的画面（标注消失）。这是 SCK 安全模型的固有限制，无法绕过。
+⚠️ **关键发现**（spike8）：SCK 录的是窗口 buffer 内容，不是屏幕可见画面。即使标注 overlay 被其他应用遮挡（窗口层级下移），SCK 仍录到 overlay 的完整标注内容。用户切应用不影响标注录制。
 
 ### 1.3 与 helper 的关系
 
