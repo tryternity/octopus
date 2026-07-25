@@ -33,21 +33,27 @@ impl HelperProvider for MacOSProvider {
     fn list_displays(&self) -> RecordResult<Vec<DisplayInfo>> {
         let helper = self.resolve_helper_path(None)?;
         let v = futures_block_on(run_helper_subcommand(&helper, "--list-displays"))?;
-        let displays: Vec<DisplayInfo> = serde_json::from_value(v)
-            .unwrap_or_default();
+        // helper 输出格式：{"displays":[{id,name,width,height,is_primary}, ...]}
+        // （见 crates/record/native/macos/Sources/OctopusSckHelper/main.swift::listDisplaysAndExit）
+        // 取 v["displays"] 再反序列化——历史 bug：曾试图把整个 object 当 Vec 反序列化，
+        // 失败后被 unwrap_or_default() 静默吞成空 Vec（2026-07-25 实测踩坑）。
+        let arr = v.get("displays").unwrap_or(&serde_json::Value::Null);
+        let displays: Vec<DisplayInfo> = serde_json::from_value(arr.clone())?;
         Ok(displays)
     }
 
     fn list_windows(&self) -> RecordResult<Vec<WindowInfo>> {
         let helper = self.resolve_helper_path(None)?;
         let v = futures_block_on(run_helper_subcommand(&helper, "--list-windows"))?;
-        Ok(serde_json::from_value(v).unwrap_or_default())
+        let arr = v.get("windows").unwrap_or(&serde_json::Value::Null);
+        Ok(serde_json::from_value(arr.clone())?)
     }
 
     fn list_microphones(&self) -> RecordResult<Vec<MicrophoneInfo>> {
         let helper = self.resolve_helper_path(None)?;
         let v = futures_block_on(run_helper_subcommand(&helper, "--list-microphones"))?;
-        Ok(serde_json::from_value(v).unwrap_or_default())
+        let arr = v.get("microphones").unwrap_or(&serde_json::Value::Null);
+        Ok(serde_json::from_value(arr.clone())?)
     }
 
     fn check_permission(&self) -> RecordResult<PermissionStatus> {
