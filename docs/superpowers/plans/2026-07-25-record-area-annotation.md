@@ -29,17 +29,77 @@
 **Files:**
 - Create: `crates/desktop/src/record_area_picker.rs`
 
-参考 `screenshot_commands::start_screenshot`（L67-227），做以下改动：
+**窗口创建**参考 `screenshot_commands::start_screenshot`（L67-227）：
 - label 前缀 `record_area_picker_{session_id}_{i}`
 - URL `area-picker.html`
 - **不截图**（删 `capture_all_monitors` / `PENDING_IMAGES` / `ALL_CAPTURES` 相关）
 - 保留并发门控 + READY_COUNT 同步
 - picker 显示前 hide record_config_window
 
-命令：
+**坐标换算完全复用 screenshot 的调用链**（参考 `screenshot_commands::start_scroll_recording` L935-1010，这是唯一验证过的完整路径）：
+
+`confirm_record_area_picker(app, win_label, x, y, w, h)` 实现步骤：
+```rust
+// 1. 拿 picker 窗口原点（Cocoa frame + Y 翻转，与 start_scroll_recording L937-948 完全一致）
+let primary_h = crate::screenshot_commands::get_primary_screen_height();
+let (cx, cy, _, ch) = crate::screenshot_commands::get_window_cocoa_frame(&sel_win)?;
+let win_origin_x = cx;
+let win_origin_y = primary_h - (cy + ch);  // Quartz 原点在左下，转屏幕左上原点
+
+// 2. 选区全局化（复用 screenshot_geometry）
+let sel = crate::screenshot_geometry::compute_selection_global(
+    win_origin_x, win_origin_y, x, y, w, h,
+);
+
+// 3. 构造 MonitorRect[]（Tauri monitor 物理 → 逻辑 / scale，与 start_scroll_recording L966-979 完全一致）
+let monitors: Vec<MonitorRect> = app.available_monitors()?.iter().map(|m| {
+    let sf = m.scale_factor();
+    MonitorRect {
+        x: m.position().x as f64 / sf,
+        y: m.position().y as f64 / sf,
+        w: m.size().width as f64 / sf,
+        h: m.size().height as f64 / sf,
+        scale: sf,
+    }
+}).collect();
+
+// 4. 命中检测（选区中心点，与 start_scroll_recording L980-984 一致）
+let mon_idx = crate::screenshot_geometry::find_monitor_for_point(
+    &monitors,
+    sel.x + w / 2.0,
+    sel.y + h / 2.0,
+).or_else(|| (!monitors.is_empty()).then_some(0));
+
+// 5. 物理裁剪（复用 screenshot_geometry）
+let crop = crate::screenshot_geometry::compute_physical_crop(&sel, &monitors[mon_idx.unwrap()]);
+
+// 6. 查 display_id（复用 Task 1 新增的 active_display_for_point）
+let display_id = crate::screenshot_commands::active_display_for_point(
+    sel.x + w / 2.0,
+    sel.y + h / 2.0,
+);
+
+// 7. emit 给 record_config_window（物理像素，与 Source::Area 对齐）
+app.emit("record-area://selected", json!({
+    "display_id": display_id,
+    "x": crop.px as i32, "y": crop.py as i32,
+    "width": crop.pw, "height": crop.ph,
+}))?;
+
+// 8. 关 picker + show 配置浮窗
+close_all_record_area_picker_windows(&app);
+crate::record_window::show_record_window(&app);
+```
+
+**关键不变量**（与 screenshot 一致）：
+- 选区中心点命中显示器（不是左上角）—— 避免跨屏选区命中错误显示器
+- 物理像素输出（与 protocol.rs::Source::Area + DisplayInfo.width/height 同体系）
+- Y 轴翻转（Quartz 左下原点 → 屏幕左上原点）
+
+命令清单：
 - [ ] `start_record_area_picker(app)` — 创建多屏 picker 窗口
 - [ ] `show_record_area_picker_window(app)` — 前端 ready 后累加 READY_COUNT
-- [ ] `confirm_record_area_picker(app, win_label, x, y, w, h)` — 拖完即调，坐标转换 + emit `record-area://selected` + 关 picker + show 配置浮窗
+- [ ] `confirm_record_area_picker(app, win_label, x, y, w, h)` — 拖完即调（坐标换算如上）
 - [ ] `cancel_record_area_picker(app)` — Esc/右键，关 picker + show 配置浮窗
 - [ ] `close_all_record_area_picker_windows(app)` — 内部函数
 - [ ] 验证 `cargo check` 0 error
