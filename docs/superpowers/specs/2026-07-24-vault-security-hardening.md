@@ -1143,3 +1143,25 @@ vault_error.rs 主体扎实——user-safe 原则（InternalError 绝不透传�
 - **E-CIPHER-NO-ID**（极低）：CipherNotFound 统一 `<unknown>`，id 未提取。前端按 code 处理不需 id，纯日志诊断信息丢失。注释 :139 承认简化。
 
 **工程取舍**：classify 用 anyhow 链文本启发式匹配，天然有误分类风险。本模块的核心取舍是「宁可误分类为低危变体，也绝不透传内部细节」——InternalError 兜底保证了这一底线。
+
+---
+
+## 第四十轮审查（2026-07-25，vault_sync_commands.rs：薄包装干净，E-SYNC-OTHER-LEAK 设计债文档化）
+
+vault_sync_commands.rs 命令层是纯转发层（129 行 / 11 命令），自身无逻辑 bug。engine 侧三处 from_i64_strict（K1-GAP 已修）+ Mutex/AtomicBool 双并发保护 + resolve 路径密码验证均到位。
+
+### E-SYNC-OTHER-LEAK: SyncError::Other Display 透传底层错误（低-中，设计债，文档化）
+
+**核查**：sync/error.rs Display 实现——:96 `GitError(_msg) => write!(f, "git 操作失败（详情见应用日志）")` 丢弃 stderr（#11 修复，user-safe）；:97 `Other(e) => write!(f, "同步错误：{}", e)` 透传底层 anyhow Display。同枚举内确凿不对称：GitError 贯彻 user-safe，Other 没贯彻。与 vault_error.rs InternalError 不透传原则也不一致。
+
+**泄露内容**：engine.rs 多处 `.map_err(SyncError::Other)?` 把底层错误（rusqlite/io Error）直接包进 Other → Display 透传 → 前端 toast。可能含本地路径（`~/.octopus/.sync/vault/meta.json`）、SQL 片段、SQLite 错误结构。非密钥/cipher 明文。
+
+**状态**：文档化。泄露内容是本地路径/SQL（非密钥），触发多为本地故障（攻击者无法远程直接触发）。完整修复需重构 SyncError 枚举区分 user-facing Other（故意构造的文案如「同步进行中」「密码错误」）vs internal Other（底层错误透传）——前者应保持 Display，后者应屏蔽。当前改不好会丢 user-facing 文案的前端展示。
+
+### 次要观察: spawn 前不查 is_syncing（极低，UX，文档化）
+
+vault_sync_now spawn_blocking 前不查 is_syncing()。连点「立即同步」每次都起线程，第二个立刻 try_sync_lock 失败 → 误导性 error toast。无正确性问题（Mutex 保证），纯 UX。可前置 `if is_syncing() { return Ok(()) }` 静默吞掉重入。
+
+### A 并发守卫（报告自否决 ✓）
+
+sync_now :597 入口 `try_sync_lock()`（SYNC_LOCK Mutex::try_lock）保证 git 操作串行，无 index.lock 竞争。SYNCING AtomicBool + SyncingGuard 是 UI 进度查询，与 Mutex 职责分离。双重保护完善。
