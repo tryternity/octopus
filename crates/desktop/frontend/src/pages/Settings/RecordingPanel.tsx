@@ -34,6 +34,7 @@ import {
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { ToastVariant } from "@/lib/useToast";
+import { Button } from "@/components/ui/button";
 import { PermissionGate } from "@/components/record/PermissionGate";
 import { useRecordSession } from "@/hooks/useRecordSession";
 
@@ -112,8 +113,40 @@ export default function RecordingPanel({
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // 顶部「正在录制中」banner：仅展示 useRecordSession 的 state（控制由其他 UI 入口触发）
-  const { state: sessionState, duration } = useRecordSession();
+  // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
+  // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
+  // 让用户用 Esc 快捷键或 tray menu 停止）。
+  const {
+    state: sessionState,
+    duration,
+    startDefault,
+    pause: pauseSession,
+    resume: resumeSession,
+  } = useRecordSession();
+
+  const [starting, setStarting] = useState(false);
+  const handleStartDefault = useCallback(async () => {
+    setStarting(true);
+    try {
+      await startDefault();
+    } catch (e) {
+      showToast(t("settings.recordings.startFailed") + e, "error");
+    } finally {
+      setStarting(false);
+    }
+  }, [startDefault, showToast, t]);
+
+  const handlePauseResume = useCallback(async () => {
+    try {
+      if (sessionState === "recording") {
+        await pauseSession();
+      } else if (sessionState === "paused") {
+        await resumeSession();
+      }
+    } catch (e) {
+      showToast(t("settings.recordings.startFailed") + e, "error");
+    }
+  }, [sessionState, pauseSession, resumeSession, showToast, t]);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -200,33 +233,59 @@ export default function RecordingPanel({
               </p>
             </div>
             {sessionState === "recording" || sessionState === "paused" ? (
-              <div
-                className={cn(
-                  "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium",
-                  sessionState === "recording"
-                    ? "bg-destructive/10 text-destructive"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                {sessionState === "recording" ? (
-                  <Circle className="w-2 h-2 fill-current" />
-                ) : (
-                  <Pause className="w-2.5 h-2.5" />
-                )}
-                <span>
-                  {t(
+              <div className="flex items-center gap-1.5">
+                <div
+                  className={cn(
+                    "flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium",
                     sessionState === "recording"
-                      ? "settings.recordings.recording"
-                      : "settings.recordings.paused",
+                      ? "bg-destructive/10 text-destructive"
+                      : "bg-muted text-muted-foreground",
                   )}
-                  {sessionState === "recording" && (
-                    <span className="ml-1 tabular-nums">
-                      {formatDuration(duration * 1000)}
-                    </span>
+                >
+                  {sessionState === "recording" ? (
+                    <Circle className="w-2 h-2 fill-current" />
+                  ) : (
+                    <Pause className="w-2.5 h-2.5" />
                   )}
-                </span>
+                  <span>
+                    {t(
+                      sessionState === "recording"
+                        ? "settings.recordings.recording"
+                        : "settings.recordings.paused",
+                    )}
+                    {sessionState === "recording" && (
+                      <span className="ml-1 tabular-nums">
+                        {formatDuration(duration * 1000)}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {/* 暂停/恢复按钮（Esc 或 tray menu 停止）*/}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePauseResume}
+                  className="h-6 px-2 text-[10px]"
+                >
+                  {sessionState === "recording"
+                    ? t("settings.recordings.pauseBtn")
+                    : t("settings.recordings.resumeBtn")}
+                </Button>
               </div>
-            ) : null}
+            ) : (
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleStartDefault}
+                disabled={starting || sessionState === "starting"}
+                className="h-6 px-2 text-[10px] gap-1"
+              >
+                <Circle className="w-2 h-2 fill-current" />
+                {starting || sessionState === "starting"
+                  ? t("settings.recordings.starting")
+                  : t("settings.recordings.startBtn")}
+              </Button>
+            )}
           </div>
           {/* 搜索框：MVP 灰禁用 + placeholder 指向 P2 */}
           <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border opacity-60">

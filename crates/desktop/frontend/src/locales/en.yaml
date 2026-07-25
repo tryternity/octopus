@@ -92,6 +92,11 @@ settings:
     transcriptTooltip: Requires ASR model, click to download
     recording: Recording
     paused: Paused
+    startBtn: Start Recording
+    starting: Starting...
+    pauseBtn: Pause
+    resumeBtn: Resume
+    startFailed: "Failed to start recording: "
     permission:
       notDetermined: Screen recording permission required.
       notDeterminedAction: Request permission

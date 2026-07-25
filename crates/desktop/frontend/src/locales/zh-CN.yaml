@@ -95,6 +95,12 @@ settings:
     transcriptTooltip: 需下载 ASR 模型，点击跳转
     recording: 录制中
     paused: 已暂停
+    # 录制控制按钮（2026-07-25 加：Cmd+Shift+R 直接开录后，panel 也要有按钮入口）
+    startBtn: 开始录制
+    starting: 启动中...
+    pauseBtn: 暂停
+    resumeBtn: 恢复
+    startFailed: "启动录制失败："
     # 权限
     permission:
       notDetermined: 需要屏幕录制权限。

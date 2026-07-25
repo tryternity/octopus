@@ -84,11 +84,33 @@ async fn handle_toggle(app: &AppHandle) {
 
     match state {
         SessionState::Idle | SessionState::Starting => {
-            // MVP 决策：呼出 Settings 录屏页（没独立配置浮窗，用户在 Settings 配好源/音视频再点开始）
-            crate::settings_window::open_settings(
-                app.clone(),
-                Some("recordings".to_string()),
-            );
+            // 用户决策（2026-07-25）：Cmd+Shift+R 直接开始录屏（默认配置）。
+            // 不再呼出 Settings——用 DB record_* 配置 + ASR microphone 直接启动。
+            // 用户需要选源/调参数时手动开 Settings 录屏页（tray menu 或 RecordingPanel 按钮）。
+            //
+            // 复用 record_commands 的公共函数（与前端 invoke('record_start_default') 同逻辑）：
+            // build_default_config → start_with_config，避免 IPC 往返 + State 反序列化。
+            match crate::record_commands::build_default_config().await {
+                Ok(config) => {
+                    if let Err(e) =
+                        crate::record_commands::start_with_config(&session, app, config).await
+                    {
+                        log::error!("[record-hotkey] 启动默认录制失败: {e}");
+                        // 失败时打开 Settings 录屏页让用户看错误 + 手动启动
+                        let _ = crate::settings_window::open_settings(
+                            app.clone(),
+                            Some("recordings".to_string()),
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::error!("[record-hotkey] 组装默认配置失败: {e}");
+                    let _ = crate::settings_window::open_settings(
+                        app.clone(),
+                        Some("recordings".to_string()),
+                    );
+                }
+            }
         }
         SessionState::Recording => {
             if let Err(e) = session.pause().await {

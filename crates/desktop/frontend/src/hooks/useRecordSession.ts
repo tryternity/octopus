@@ -102,6 +102,8 @@ export interface UseRecordSessionApi {
   lastWarning: { code: string; message: string } | null;
   /** 启动录制。state 会经过 starting → recording。 */
   start: (config: RecordConfig) => Promise<void>;
+  /** 用默认配置启动录制（后端从 DB record_* + ASR microphone 组装）。 */
+  startDefault: () => Promise<void>;
   /** 暂停录制。 */
   pause: () => Promise<void>;
   /** 恢复录制。 */
@@ -193,6 +195,17 @@ export function useRecordSession(): UseRecordSessionApi {
     }
   }, []);
 
+  /** 用默认配置启动录制（后端从 DB record_* + ASR microphone 组装）。 */
+  const startDefault = useCallback(async () => {
+    setState("starting");
+    try {
+      await invoke("record_start_default");
+    } catch (e) {
+      setState("idle");
+      throw e;
+    }
+  }, []);
+
   const pause = useCallback(async () => {
     await invoke("record_pause");
     setState("paused");
@@ -214,5 +227,5 @@ export function useRecordSession(): UseRecordSessionApi {
     setDuration(0);
   }, [clearTimer]);
 
-  return { state, duration, lastWarning, start, pause, resume, stop };
+  return { state, duration, lastWarning, start, startDefault, pause, resume, stop };
 }

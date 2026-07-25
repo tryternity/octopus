@@ -551,6 +551,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::record_start,
             #[cfg(target_os = "macos")]
+            record_commands::record_start_default,
+            #[cfg(target_os = "macos")]
             record_commands::record_pause,
             #[cfg(target_os = "macos")]
             record_commands::record_resume,

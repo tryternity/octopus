@@ -138,7 +138,7 @@ pub struct RecordConfig {
     pub audio: AudioConfig,
 }
 
-/// 启动录制。
+/// 启动录制（前端显式传 RecordConfig）。
 ///
 /// 命令签名说明：`state: State<'_, RecordSession>`——RecordSession 内部已用
 /// `Arc<tokio::sync::Mutex<SessionInner>>` 持有状态，外层不再包 std::sync::Mutex
@@ -152,6 +152,128 @@ pub struct RecordConfig {
 pub async fn record_start(
     state: State<'_, RecordSession>,
     app: AppHandle,
+    config: RecordConfig,
+) -> Result<StartedInfo, String> {
+    start_with_config(&state, &app, config).await
+}
+
+/// 启动录制（用 DB app_config 默认配置 + ASR 麦克风）。
+///
+/// 用户决策（2026-07-25）：`Cmd+Shift+R` 直接开始录屏，不走 Settings 配置浮窗。
+/// 本命令从 DB 读 `record_*` 配置项 + 复用 ASR 的 `microphone` 字段作麦克风设备，
+/// 组装 RecordConfig 后调 `start_with_config`。
+///
+/// 默认配置（spec §5.4 seed）：
+/// - 源：主屏（list_displays 找 is_primary=true）
+/// - 视频：30fps / H264 / 主屏原生分辨率 / 不隐藏光标
+/// - 音频：系统音频开（excludes_current_process=true）+ 麦克风按 record_microphone 配置
+///   （麦克风设备名优先用 record_microphone_device，空则回退 ASR 的 microphone 配置）
+#[command]
+pub async fn record_start_default(
+    state: State<'_, RecordSession>,
+    app: AppHandle,
+) -> Result<StartedInfo, String> {
+    let config = build_default_config().await?;
+    start_with_config(&state, &app, config).await
+}
+
+/// 组装默认 RecordConfig（从 DB 读 record_* + ASR microphone）。
+///
+/// 失败模式：
+/// - 读 DB 失败 → 返回 Err（让调用方 toast 提示）
+/// - 找不到主屏 → 返回 Err（多屏环境异常或 helper --list-displays 失败）
+/// 其他字段用 spec §5.4 seed 默认值兜底（解析失败保留 seed）。
+/// 组装默认 RecordConfig（从 DB 读 record_* + ASR microphone）。
+///
+/// `pub(crate)` 让 record_hotkey / tray 复用（与 record_start_default 命令同逻辑）。
+pub(crate) async fn build_default_config() -> Result<RecordConfig, String> {
+    use octopus_record::VideoCodec;
+
+    // ── 源：主屏（list_displays 找 is_primary）──────────────────────
+    let displays = platform_helper(|p| p.list_displays())?;
+    let primary = displays
+        .iter()
+        .find(|d| d.is_primary)
+        .or_else(|| displays.first())
+        .ok_or_else(|| "找不到可用显示器（helper --list-displays 返回空）".to_string())?;
+    let source = Source::Display {
+        display_id: primary.id,
+    };
+
+    // ── 视频：record_fps / record_codec / 主屏原生分辨率 ────────────────
+    let fps: u32 = octopus_infra::db::load_config_key("record_fps")
+        .map_err(e2s)?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    let codec_str = octopus_infra::db::load_config_key("record_codec")
+        .map_err(e2s)?
+        .unwrap_or_else(|| "h264".into());
+    let codec = match codec_str.as_str() {
+        "hevc" => VideoCodec::Hevc,
+        _ => VideoCodec::H264,
+    };
+    let hide_cursor = parse_bool_config("record_hide_cursor", false);
+
+    let video = VideoConfig {
+        fps,
+        width: primary.width,
+        height: primary.height,
+        codec,
+        bitrate: None, // None = helper 按分辨率×fps 自动算
+        hide_system_cursor: hide_cursor,
+    };
+
+    // ── 音频：系统音频 + 麦克风（按 record_microphone + ASR microphone 配置）─────
+    let system_audio_on = parse_bool_config("record_system_audio", true);
+    let mic_on = parse_bool_config("record_microphone", false);
+    // 麦克风设备名：优先 record_microphone_device，空则回退 ASR microphone（用户决策：
+    // 「麦克风用 ASR 的配置」——ASR 已配的麦克风直接复用，避免用户在录屏再配一次）
+    let mic_device = octopus_infra::db::load_config_key("record_microphone_device")
+        .map_err(e2s)?
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            octopus_infra::db::load_config_key("microphone")
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty())
+        });
+
+    let audio = AudioConfig {
+        system: octopus_record::SystemAudioConfig {
+            enabled: system_audio_on,
+            excludes_current_process: true,
+        },
+        microphone: octopus_record::MicrophoneConfig {
+            enabled: mic_on,
+            device_id: None,
+            device_name: mic_device,
+        },
+    };
+
+    Ok(RecordConfig {
+        source,
+        video,
+        audio,
+    })
+}
+
+/// 读 DB bool 配置项，失败/不存在用 default。
+fn parse_bool_config(key: &str, default: bool) -> bool {
+    octopus_infra::db::load_config_key(key)
+        .ok()
+        .flatten()
+        .map(|s| s == "true")
+        .unwrap_or(default)
+}
+
+/// record_start / record_start_default 共用的核心启动逻辑。
+///
+/// 接 `&RecordSession` 而非 `State<'_, RecordSession>`——State 仅是 Tauri 的状态容器
+/// 包装，deref 到内层 T。用裸引用让 hotkey / tray 等非命令路径也能复用（它们经
+/// `app.try_state::<RecordSession>()` 拿到 `State`，deref 后传入）。
+pub(crate) async fn start_with_config(
+    session: &RecordSession,
+    app: &AppHandle,
     config: RecordConfig,
 ) -> Result<StartedInfo, String> {
     use octopus_infra::paths::recordings_dir;
@@ -189,7 +311,7 @@ pub async fn record_start(
     // 事件回调：helper 进程输出 Warning/Error/RecordingPaused 等非命令响应事件时，
     // 经 Tauri emit 推给前端（前端订阅 'record://event' 更新 UI 状态）。
     let app_clone = app.clone();
-    state
+    session
         .start(&helper_path, request, move |e| {
             let _ = app_clone.emit("record://event", &e);
         })
