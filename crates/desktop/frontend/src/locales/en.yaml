@@ -997,3 +997,22 @@ imagePreview:
     solidFill: Solid Fill
 vaultPicker:
   searchPlaceholder: Search passwords (name / username / URL)...
+
+recordConfig:
+  title: Recording Settings
+  cancel: Cancel
+  startBtn: Start Recording
+  starting: Starting...
+  tabDisplay: Display
+  tabWindow: Window
+  tabArea: Area
+  systemAudio: System Audio
+  microphone: Microphone
+  noSource: Please select a recording source
+  noDisplays: No displays found
+  noWindows: No windows found
+  areaNotSelected: Please select a recording area
+  areaPlaceholder: Area recording (Task C, coming soon)
+  areaClear: Clear
+  loadFailed: "Failed to load sources: "
+  startFailed: "Failed to start recording: "

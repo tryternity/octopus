@@ -35,6 +35,13 @@ struct RecordingRequest: Decodable {
 		let displayId: UInt32?
 		let windowId: UInt32?
 		let bounds: Rectangle?
+		// Area capture（与 octopus protocol.rs::Source::Area 对齐）
+		// 坐标单位：显示器内物理像素（与 DisplayInfo.width/height = CGDisplayPixelsWide 同体系）。
+		// makeCaptureTarget 转 sourceRect 时 / scale 得逻辑 points（SCStreamConfiguration.sourceRect 要求）。
+		let x: Int32?
+		let y: Int32?
+		let width: UInt32?
+		let height: UInt32?
 	}
 
 	struct Video: Decodable {
@@ -129,6 +136,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		let filter: SCContentFilter
 		let width: Int
 		let height: Int
+		/// Area capture 的源裁剪矩形（逻辑 points）。nil = 全屏捕获（display/window 模式）。
+		/// 仅 macOS 14+ 生效（SCStreamConfiguration.sourceRect 是 14 API）。
+		let sourceRect: CGRect?
 	}
 
 	private let request: RecordingRequest
@@ -148,6 +158,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	private var nativeMicrophoneEnabled = false
 	private var outputWidth = 1920
 	private var outputHeight = 1080
+	/// Area capture 的源裁剪矩形（makeCaptureTarget 设，makeStreamConfiguration 读）。
+	/// nil = 全屏（display/window 模式）；非 nil = area 模式（macOS 14+ sourceRect）。
+	private var sourceRect: CGRect? = nil
 	private let microphoneOutputTypeRawValue = 2
 	private let hostClock = CMClockGetHostTimeClock()
 
@@ -165,6 +178,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		let target = try makeCaptureTarget(from: content)
 		outputWidth = target.width
 		outputHeight = target.height
+		sourceRect = target.sourceRect
 		let configuration = makeStreamConfiguration()
 		let stream = SCStream(filter: target.filter, configuration: configuration, delegate: self)
 
@@ -356,7 +370,8 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return CaptureTarget(
 				filter: SCContentFilter(display: display, excludingWindows: []),
 				width: clampCaptureDimension(width, fallback: request.video.width),
-				height: clampCaptureDimension(height, fallback: request.video.height)
+				height: clampCaptureDimension(height, fallback: request.video.height),
+				sourceRect: nil
 			)
 		case "window":
 			guard let windowId = request.source.windowId else {
@@ -374,7 +389,35 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return CaptureTarget(
 				filter: SCContentFilter(desktopIndependentWindow: window),
 				width: clampCaptureDimension(width, fallback: request.video.width),
-				height: clampCaptureDimension(height, fallback: request.video.height)
+				height: clampCaptureDimension(height, fallback: request.video.height),
+				sourceRect: nil
+			)
+		case "area":
+			// Area capture：用 display filter + sourceRect 裁剪到指定区域。
+			// SCStreamConfiguration.sourceRect 是 macOS 14+ API（CGAffineTransform 裁剪源）。
+			// 输入 x/y/width/height 是显示器内物理像素，转 sourceRect 需 / scale 得逻辑 points。
+			guard let displayId = request.source.displayId,
+			      let areaX = request.source.x,
+			      let areaY = request.source.y,
+			      let areaW = request.source.width,
+			      let areaH = request.source.height else {
+				throw HelperError.sourceNotFound("Area capture requires source.displayId + x/y/width/height.")
+			}
+			guard let display = content.displays.first(where: { $0.displayID == displayId }) else {
+				throw HelperError.sourceNotFound("No ScreenCaptureKit display found for id \(displayId).")
+			}
+			let scale = Self.scaleFactor(for: displayId)
+			let sourceRect = CGRect(
+				x: CGFloat(areaX) / CGFloat(scale),
+				y: CGFloat(areaY) / CGFloat(scale),
+				width: CGFloat(areaW) / CGFloat(scale),
+				height: CGFloat(areaH) / CGFloat(scale)
+			)
+			return CaptureTarget(
+				filter: SCContentFilter(display: display, excludingWindows: []),
+				width: clampCaptureDimension(Int(areaW), fallback: request.video.width),
+				height: clampCaptureDimension(Int(areaH), fallback: request.video.height),
+				sourceRect: sourceRect
 			)
 		default:
 			throw HelperError.invalidSourceType(request.source.type)
@@ -393,6 +436,21 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		configuration.channelCount = 2
 		configuration.excludesCurrentProcessAudio = request.audio.system.excludesCurrentProcess ?? true
 		configuration.capturesAudio = request.audio.system.enabled
+
+		// Area capture：应用 sourceRect 裁剪（macOS 14+ API）。
+		// macOS 13 不支持 sourceRect，调用方（desktop 层）应在选 area 时检查版本；
+		// 这里兜底——若 13.x 误传 area，emit warning + 不裁剪（录整个 display）。
+		if let rect = sourceRect {
+			if #available(macOS 14.0, *) {
+				configuration.sourceRect = rect
+			} else {
+				emit([
+					"event": "warning",
+					"code": "area-capture-requires-macos-14",
+					"message": "Area capture (sourceRect) requires macOS 14+. Capturing full display.",
+				])
+			}
+		}
 
 		if request.audio.microphone.enabled {
 			guard supportsNativeMicrophoneCapture(streamConfig: configuration) else {

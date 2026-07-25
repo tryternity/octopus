@@ -77,6 +77,10 @@ mod record_commands;
 // 与 record_commands 同样仅 macOS 编译。
 #[cfg(target_os = "macos")]
 mod record_hotkey;
+// 录屏配置浮窗（Cmd+Shift+R 弹出，选 display/window/area + 音频开关）。
+// 仅 macOS（录屏 helper 只 mac 实现）。
+#[cfg(target_os = "macos")]
+mod record_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -1059,6 +1063,11 @@ pub fn run() {
             // 这里直接 manage 不再外层包 Mutex。仅 macOS 编译（windows/linux provider 待适配）。
             #[cfg(target_os = "macos")]
             app.manage(octopus_record::RecordSession::new());
+            // 录屏配置浮窗预创建（visible=false，Cmd+Shift+R 触发时 show）。
+            // 与 overlay_window 同模式——启动时建好窗口壳，触发时只 set_position + show，
+            // 避免按需创建的 ~200ms 启动延迟（用户期望快捷键立即响应）。
+            #[cfg(target_os = "macos")]
+            record_window::create_record_window(app.handle());
 
             // 4. Initialize i18n + Create Tray
             i18n::init(&config.ui_language);

@@ -1004,3 +1004,22 @@ imagePreview:
     solidFill: 实心填充
 vaultPicker:
   searchPlaceholder: 搜索密码条目（名称 / 用户名 / 网址）...
+
+recordConfig:
+  title: 录制设置
+  cancel: 取消
+  startBtn: 开始录制
+  starting: 启动中...
+  tabDisplay: 全屏
+  tabWindow: 窗口
+  tabArea: 区域
+  systemAudio: 系统声音
+  microphone: 麦克风
+  noSource: 请先选择录制源
+  noDisplays: 未找到可用显示器
+  noWindows: 未找到可用窗口
+  areaNotSelected: 请先选择录制区域
+  areaPlaceholder: 区域录制（Task C 实现，敬请期待）
+  areaClear: 清除
+  loadFailed: "加载源列表失败："
+  startFailed: "启动录制失败："

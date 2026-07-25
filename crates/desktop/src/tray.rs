@@ -223,54 +223,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             // ── 录屏组（Task 14，2026-07-25）：仅 macOS ──
             #[cfg(target_os = "macos")]
             "record_start" => {
-                info!("Tray: start default recording");
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    use octopus_record::SessionState;
-                    let session = match app_handle.try_state::<octopus_record::RecordSession>() {
-                        Some(s) => s,
-                        None => {
-                            log::warn!("[tray] RecordSession state 未找到（start 忽略）");
-                            return;
-                        }
-                    };
-                    // 仅 Idle/Starting 才启动——避免菜单连点导致重复 spawn helper
-                    let st = session.state().await;
-                    if st != SessionState::Idle && st != SessionState::Starting {
-                        log::info!("[tray] record_start 在非 idle 态忽略（state={:?}）", st);
-                        // 已在录制中，打开 Settings 让用户看状态
-                        let _ = crate::settings_window::open_settings(
-                            app_handle.clone(),
-                            Some("recordings".to_string()),
-                        );
-                        return;
-                    }
-                    // 与 Cmd+Shift+R hotkey 同路径：默认配置 + ASR microphone
-                    match crate::record_commands::build_default_config().await {
-                        Ok(config) => {
-                            if let Err(e) = crate::record_commands::start_with_config(
-                                &session,
-                                &app_handle,
-                                config,
-                            )
-                            .await
-                            {
-                                log::error!("[tray] 启动默认录制失败: {e}");
-                                let _ = crate::settings_window::open_settings(
-                                    app_handle,
-                                    Some("recordings".to_string()),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("[tray] 组装默认配置失败: {e}");
-                            let _ = crate::settings_window::open_settings(
-                                app_handle,
-                                Some("recordings".to_string()),
-                            );
-                        }
-                    }
-                });
+                info!("Tray: show record config window");
+                // 与 Cmd+Shift+R hotkey 同路径：弹出配置浮窗让用户选源（display/window/area）。
+                // 不再用默认配置直接开录——用户反馈需要选具体源。
+                crate::record_window::show_record_window(app);
             }
             #[cfg(target_os = "macos")]
             "record_pause_resume" => {
