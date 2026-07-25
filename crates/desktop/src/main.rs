@@ -628,6 +628,19 @@ pub fn run() {
                 }
             }
 
+            // 录屏孤儿清理（2026-07-25 screen record MVP，Task 11）：
+            // 上次 crash / kill 残留的 .mp4 没入库，启动时扫 recordings/ 删掉。
+            // 仅 macOS 编译（record crate 暂只 mac provider）。
+            #[cfg(target_os = "macos")]
+            {
+                if let Err(e) = octopus_infra::db::with_db(|conn| {
+                    cleanup_orphan_recordings(conn);
+                    Ok::<_, anyhow::Error>(())
+                }) {
+                    log::warn!("Startup orphan recording cleanup failed: {}", e);
+                }
+            }
+
             // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
             // 统一管所有剪贴板定时清理（2026-07-22 合并了原每小时固定线程）。
             //
@@ -1111,6 +1124,48 @@ pub fn run() {
                 db_queue::shutdown_db();
             }
         });
+}
+
+/// 启动时孤儿录屏文件清理。
+///
+/// 场景：上次录制 crash / 强制 kill 后，helper 写出的 .mp4 没入库就成了孤儿。
+/// 启动时扫 `recordings/`，DB 不认得的文件直接删除（避免占用磁盘）。
+///
+/// 与 clipboard cleanup 同模式：通过 `octopus_infra::db::with_db` 拿连接，
+/// 调 `RecordStore::list_all_file_paths` 取 DB 已知 file_path 集合，
+/// 再扫目录比对。失败不阻塞启动（log::warn 继续）。
+#[cfg(target_os = "macos")]
+fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
+    let store = octopus_record::RecordStore::new(conn);
+    let known_files = match store.list_all_file_paths() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[record] 孤儿清理查询失败: {e}");
+            return;
+        }
+    };
+
+    let recordings_dir = octopus_infra::paths::recordings_dir();
+    let entries = match std::fs::read_dir(&recordings_dir) {
+        Ok(e) => e,
+        Err(_) => return, // 目录不存在是正常的（首次启动或从未录制过）
+    };
+
+    // file_path 字段在 DB 里存 "recordings/xxx.mp4" 相对路径，
+    // 与 octopus_config_home().join(rel) 的反向操作。用 octopus_config_home 作 strip_prefix 锚点
+    // （brief 写的 octopus_root 不存在；Task 7 已确认 infra 只有 octopus_config_home）。
+    let octopus_root = octopus_infra::paths::octopus_config_home().to_path_buf();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = match path.strip_prefix(&octopus_root) {
+            Ok(r) => r.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+        if !known_files.contains(&rel) {
+            log::warn!("[record] 孤儿文件清理: {rel}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
