@@ -169,17 +169,23 @@ pub fn create_annotation_window(
 
 // 工具栏尺寸常量已移到 create_annotation_window 内部（不再模块级）。
 
+/// 穿透模式标志：true=整个窗口穿透（操作下层应用），false=不穿透（操作标注）。
+/// 由前端 emit "record-annotation://passthrough" 切换（点「鼠标」工具→穿透，点其他工具→不穿透）。
+static ANNOTATION_PASSTHROUGH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// 启动标注 overlay 的点击穿透轮询。
 ///
-/// 用户决策（2026-07-25）：**光标在窗口内 → 不穿透（操作标注），窗口外 → 穿透（操作下层应用）**。
-/// 这比「工具栏区域 vs Canvas 区域」判定简单得多，且方便选中/删除/移动标注。
+/// 用户决策（2026-07-25）：
+/// - **标注模式**（默认，passthrough=false）：整个窗口不穿透，用户画标注/选/删/移动
+/// - **穿透模式**（passthrough=true）：整个窗口穿透，用户操作下层应用（录屏内容）
+/// - 切换方式：点工具栏「鼠标」按钮→穿透模式；点其他标注工具→切回标注模式
 ///
-/// 参考 `result_window::start_click_through_poller`：Rust 线程按全局鼠标位置
-/// 实时切换 setIgnoresMouseEvents（前端 setIgnoreMouseEvents(true) 后窗口不收
-/// 鼠标事件，无法检测光标重新进入 → 必须后端轮询）。
+/// 参考 `result_window::start_click_through_poller`：Rust 线程读 ANNOTATION_PASSTHROUGH
+/// 状态切换 setIgnoresMouseEvents（前端 setIgnoreMouseEvents(true) 后窗口不收鼠标事件，
+/// 无法检测光标重新进入 → 必须后端轮询）。
 fn start_annotation_click_through_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        // 33ms 轮询（30 FPS，与人手移动感知上限一致）
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
         let mut cur_ignore = false;
 
@@ -187,30 +193,13 @@ fn start_annotation_click_through_poller(app: AppHandle) {
             poll.tick().await;
 
             let Some(win) = app.get_webview_window(WINDOW_LABEL) else {
-                break; // 窗口已关闭（录制停止），退出轮询
+                break;
             };
             if !win.is_visible().unwrap_or(false) {
                 break;
             }
 
-            // 读全局鼠标位置 + 窗口矩形（物理坐标）
-            let (mx, my) = match win.cursor_position() {
-                Ok(p) => (p.x, p.y),
-                Err(_) => continue,
-            };
-            let (wx, wy) = match win.outer_position() {
-                Ok(p) => (p.x as f64, p.y as f64),
-                Err(_) => continue,
-            };
-            let (ww, wh) = match win.outer_size() {
-                Ok(s) => (s.width as f64, s.height as f64),
-                Err(_) => continue,
-            };
-
-            // 光标在窗口矩形内 → 不穿透（接收鼠标，操作标注/工具栏）
-            // 光标在窗口外 → 穿透（到下层应用）
-            let in_window = mx >= wx && mx <= wx + ww && my >= wy && my <= wy + wh;
-            let want_ignore = !in_window;
+            let want_ignore = ANNOTATION_PASSTHROUGH.load(std::sync::atomic::Ordering::Relaxed);
 
             if want_ignore != cur_ignore {
                 set_annotation_ignores_mouse(&win, want_ignore);
@@ -247,16 +236,12 @@ pub fn close_annotation_window(app: &AppHandle) {
 
 /// 切换标注 overlay 的鼠标透传（标注模式 / 透传模式 toggle）。
 ///
-/// passthrough=true：setIgnoreMouseEvents(true)，鼠标穿透到下层应用
-/// passthrough=false：正常接收鼠标（画标注）
+/// passthrough=true：整个窗口穿透（操作下层应用 / 录屏内容）
+/// passthrough=false：整个窗口不穿透（画标注 / 选/删/移动标注）
+///
+/// 实际切换由 poller 按 ANNOTATION_PASSTHROUGH 状态执行（poller 33ms tick）。
 #[tauri::command]
-pub fn set_annotation_passthrough(app: AppHandle, passthrough: bool) {
-    set_annotation_passthrough_inner(&app, passthrough);
-}
-
-fn set_annotation_passthrough_inner(app: &AppHandle, passthrough: bool) {
-    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = win.set_ignore_cursor_events(passthrough);
-        log::debug!("[annotation] passthrough={}", passthrough);
-    }
+pub fn set_annotation_passthrough(_app: AppHandle, passthrough: bool) {
+    ANNOTATION_PASSTHROUGH.store(passthrough, std::sync::atomic::Ordering::Relaxed);
+    log::info!("[annotation] passthrough={}（poller 下一 tick 生效）", passthrough);
 }

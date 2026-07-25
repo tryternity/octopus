@@ -30,6 +30,7 @@
  * 因为视频继续录，用户停止后 ESC 路径会正常关闭 overlay）。
  */
 import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { type Annotation, type Tool, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
@@ -82,6 +83,11 @@ export default function RecordAnnotation() {
   useEffect(() => { toolRef.current = tool; }, [tool]);
   useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
   useEffect(() => { numberCounterRef.current = numberCounter; }, [numberCounter]);
+
+  // mount 时默认穿透（tool="none" = 鼠标模式 = 穿透操作下层应用）
+  useEffect(() => {
+    invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {});
+  }, []);
 
   // 工具栏实测宽度（浮窗 X clamp）
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -181,10 +187,12 @@ export default function RecordAnnotation() {
     const rect = btn.getBoundingClientRect();
     setPopoverX(rect.left + rect.width / 2);
     if (tool === t) {
-      if (showPopover) { setShowPopover(false); setTool("none"); }
+      if (showPopover) { setShowPopover(false); setTool("none"); invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {}); }
       else { setShowPopover(true); }
     } else {
       setTool(t); setShowPopover(true);
+      // 选标注工具 → 不穿透（画标注）；选 "none"（鼠标）→ 穿透（操作下层应用）
+      invoke("set_annotation_passthrough", { passthrough: t === "none" }).catch(() => {});
       extra?.();
     }
   };
