@@ -53,8 +53,10 @@ pub fn evaluate(password: &str) -> PasswordStrength {
         // （两者都高才高——防止"长但重复"或"短采样恰好高熵"误报）
         //
         // S-THRESHOLD（2026-07-25）阈值依据：超长路径的 entropy_score 阈值
-        // （28/36/60/128 bit）比 zxcvbn 正常路径的 Score 边界（log2 换算约
-        // 6.6/13.3/19.9/26.6 bit）高得多。原因：两者度量不同——
+        // （28/36/60/128 bit）比 zxcvbn 正常路径的 Score 边界高。zxcvbn Score
+        // 上界（guesses）换算 log2：Zero=10³≈10bit / One=10⁶≈20bit /
+        // Two=10⁸≈27bit / Three=10¹⁰≈33bit（来源 zxcvbn scoring.rs Score enum）。
+        // 超长路径阈值高于此，原因：两者度量不同——
         //   - zxcvbn score 基于 guesses（实际攻击成本，含模式识别）
         //   - independent_entropy 基于 字符级熵（char_count × log2(unique)，
         //     假设每字符独立，但超长密码常有重复/模式 → 高估）
