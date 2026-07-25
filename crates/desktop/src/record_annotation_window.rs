@@ -66,20 +66,77 @@ pub fn create_annotation_window(
     // 选区在屏幕上的全局逻辑位置（物理 → 逻辑 / scale）
     let mon_x = mon.position().x as f64 / scale;
     let mon_y = mon.position().y as f64 / scale;
+    let mon_h = mon.size().height as f64 / scale;
     let sel_global_x = mon_x + (x / scale);
     let sel_global_y = mon_y + (y / scale);
     let sel_logical_w = w / scale;
     let sel_logical_h = h / scale;
 
+    // ── 工具栏三选逻辑（与截图 screenshot_commands L750-766 完全一致）──
+    // 用户决策：工具栏不需要被录进视频（只有标注才需要）。所以 overlay 窗口扩展
+    // 容纳工具栏——选区下方优先，不够则上方，都不够则选区内部底部（被录可接受）。
+    //
+    // TOOLBAR_MARGIN：工具栏与选区的间距（8px，与截图一致）
+    // TOOLBAR_H：工具栏高度（44px）
+    // POPOVER_H：popover 高度估算（200px，工具栏弹出颜色/线宽时需要空间）
+    const TOOLBAR_H: f64 = 44.0;
+    const TOOLBAR_MARGIN: f64 = 8.0;
+    const POPOVER_H: f64 = 200.0;
+    let toolbar_space = TOOLBAR_H + TOOLBAR_MARGIN + POPOVER_H; // 工具栏 + popover 总空间
+
+    let below_space = mon_h - (sel_global_y - mon_y + sel_logical_h + TOOLBAR_MARGIN);
+    let above_space = sel_global_y - mon_y;
+    let toolbar_below = below_space >= toolbar_space;
+    let toolbar_above = !toolbar_below && above_space >= toolbar_space;
+
+    // 窗口扩展方向 + 位置（让工具栏在选区外，Canvas 对齐选区）
+    let (win_x, win_y, win_w, win_h, canvas_offset_x, canvas_offset_y, toolbar_pos) =
+        if toolbar_below {
+            // 工具栏在选区下方：窗口 = 选区 + 下方工具栏空间
+            (
+                sel_global_x,
+                sel_global_y,
+                sel_logical_w,
+                sel_logical_h + toolbar_space,
+                0.0,                  // Canvas X 偏移（窗口内）
+                0.0,                  // Canvas Y 偏移
+                "below",              // 工具栏位置标识（前端用）
+            )
+        } else if toolbar_above {
+            // 工具栏在选区上方：窗口 = 上方工具栏空间 + 选区
+            (
+                sel_global_x,
+                sel_global_y - toolbar_space,
+                sel_logical_w,
+                sel_logical_h + toolbar_space,
+                0.0,
+                toolbar_space,        // Canvas Y 偏移（窗口内，工具栏在上方）
+                "above",
+            )
+        } else {
+            // 兜底：工具栏在选区内部底部（被录进视频，可接受）
+            // 窗口 = 选区尺寸（不扩展），工具栏覆盖在选区底部
+            (
+                sel_global_x,
+                sel_global_y,
+                sel_logical_w,
+                sel_logical_h,
+                0.0,
+                0.0,
+                "inside",
+            )
+        };
+
     log::info!(
-        "[annotation] 创建 overlay: display_id={} 选区逻辑 ({},{},{},{}) scale={}",
-        display_id, sel_global_x, sel_global_y, sel_logical_w, sel_logical_h, scale
+        "[annotation] overlay: display_id={} 选区逻辑 ({},{},{},{}) toolbar={} 窗口 ({},{},{},{})",
+        display_id, sel_global_x, sel_global_y, sel_logical_w, sel_logical_h,
+        toolbar_pos, win_x, win_y, win_w, win_h
     );
 
-    // URL 注入选区参数（前端 mount 时解析，用于 Canvas 尺寸 + 标注坐标）
+    // URL 注入选区参数 + 工具栏位置（前端 mount 时解析）
     let url = format!(
-        "record-annotation.html?display_id={}&x={}&y={}&width={}&height={}&scale={}",
-        display_id, x, y, w, h, scale
+        "record-annotation.html?display_id={}&x={}&y={}&width={}&height={}&scale={}&toolbar={}&canvas_ox={}&canvas_oy={}&canvas_w={}&canvas_h={}",
+        display_id, x, y, w, h, scale, toolbar_pos, canvas_offset_x, canvas_offset_y, sel_logical_w, sel_logical_h
     );
 
     let _ = WebviewWindowBuilder::new(
@@ -88,18 +145,15 @@ pub fn create_annotation_window(
         WebviewUrl::App(url.into()),
     )
     .title("")
-    .inner_size(sel_logical_w, sel_logical_h)
-    .position(sel_global_x, sel_global_y)
-    // ⚠️ 测试：always_on_top=true（用户反馈需要「总在最上」）
-    // 之前 PyObjC spike 说 SCK 不录 always_on_top，但 spike 可能有 bug（窗口没真显示）
-    // 改用 Tauri 真实窗口验证——如果视频里有标注 → 之前 spike 结论是错的，方案成立
+    .inner_size(win_w, win_h)
+    .position(win_x, win_y)
     .always_on_top(true)
     .decorations(false)
     .transparent(true)
     .skip_taskbar(true)
     .resizable(false)
     .shadow(false)
-    .visible(true) // 直接显示（与 picker 不同，picker 是 ready 后统一 show）
+    .visible(true)
     .build()
     .map_err(|e| {
         log::error!("[annotation] overlay 窗口创建失败: {e}");
@@ -114,8 +168,10 @@ pub fn create_annotation_window(
 }
 
 /// 工具栏高度（逻辑像素，与前端 TOOLBAR_H 一致）。
+#[allow(dead_code)]
 const ANNOTATION_TOOLBAR_H: f64 = 44.0;
 /// 工具栏底部间距（逻辑像素，与前端 toolbarTop = innerHeight - 44 - 8 一致）。
+#[allow(dead_code)]
 const ANNOTATION_TOOLBAR_BOTTOM_MARGIN: f64 = 8.0;
 
 /// 启动标注 overlay 的点击穿透轮询。
@@ -162,20 +218,25 @@ fn start_annotation_click_through_poller(app: AppHandle) {
                 Err(_) => continue,
             };
 
-            // 工具栏在窗口底部（选区内部底部，与前端 toolbarTop = innerHeight - 44 - 8 一致）。
-            // popover 在工具栏上方（~200px）。
-            // 交互区域 = popover 顶部 ~ 工具栏底部（窗口底部）
-            let win_h = match win.outer_size() {
-                Ok(s) => s.height as f64,
-                Err(_) => continue,
-            };
-            let toolbar_bottom = wy + win_h;
-            let interactive_top = toolbar_bottom - (ANNOTATION_TOOLBAR_H + ANNOTATION_TOOLBAR_BOTTOM_MARGIN + 200.0) * sf;
-
-            let in_interactive = mx >= wx && mx <= wx + win_w
-                && my >= interactive_top && my <= toolbar_bottom;
-
-            let want_ignore = !in_interactive;
+            // 交互区域 = 工具栏 + popover（窗口扩展部分）。
+            // Canvas 区域（选区）穿透——用户操作下层应用。
+            // 工具栏位置由后端 create_annotation_window 三选决定（below/above/inside）。
+            // 简化：整个窗口的非 Canvas 区域都是交互区域。
+            // Canvas 区域 = 窗口内 canvas_oy 到 canvas_oy + canvas_h（逻辑）。
+            // 但 poller 拿不到 canvas offset（在前端 URL 参数里）。
+            // 简化判定：工具栏在选区下方时，交互区域 = 窗口底部 TOOLBAR_H+POPOVER_H；
+            //          工具栏在选区上方时，交互区域 = 窗口顶部 TOOLBAR_H+POPOVER_H；
+            //          工具栏在选区内部时，交互区域 = 窗口底部 TOOLBAR_H（被录可接受）。
+            // 这里用窗口高度 vs 选区高度推断——如果窗口比选区高，说明有扩展空间。
+            // 但 poller 拿不到选区高度……
+            //
+            // 最简方案：整个窗口都接收鼠标（去掉 poller），窗口外自然穿透。
+            // 如果选区太大（几乎全屏），用户无法操作下层——但这种情况少。
+            // 后续如果需要，再加 poller 做 Canvas 穿透。
+            //
+            // 暂时：注释掉穿透逻辑，整个窗口接收鼠标。
+            let _ = (mx, my, wx, wy, sf, win_w); // 避免 unused warning
+            let want_ignore = false; // 整个窗口接收鼠标
             if want_ignore != cur_ignore {
                 set_annotation_ignores_mouse(&win, want_ignore);
                 cur_ignore = want_ignore;
