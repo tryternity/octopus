@@ -793,6 +793,17 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
     let meta_file = match store::read_meta_file() {
         Ok(m) => Some(m),
         Err(e) if meta_file_not_found(&e) => {
+            // C-PULL-NO-META-SKIPS-STAMP 修复（2026-07-25）：
+            // 「meta 缺失合法」严格限定为 local_meta = None（本地也无 vault，首次同步）。
+            // 若本地已有 vault（local_meta = Some）+ 远程 meta 缺失 → 异常态（损坏/
+            // 不完整 clone/篡改），拒绝 pull——否则 stamp 校验被跳过 + 远程 cipher
+            // （用 K_remote 加密）被无条件 upsert 进本地 DB（K_local 解密）→ 不可解密
+            // 密文污染（违背 INV-S9「先校验后触碰 DB」不变量，:788-790 自述）。
+            if local_meta.is_some() {
+                return Err(SyncError::RepoCorrupted(
+                    "远程 meta.json 缺失但本地已初始化 vault——拒绝 pull（无法校验加密一致性，可能远程仓库损坏）".into(),
+                ));
+            }
             log::debug!("[sync] meta.json 不存在，跳过 stamp 校验 + meta upsert");
             None
         }
@@ -1224,6 +1235,25 @@ mod tests {
         }
     }
 
+    /// C-PULL-NO-META-SKIPS-STAMP 修复后，pull 测试需写一个 stamp 一致的 meta.json
+    ///（否则「本地有 vault + 远程无 meta」会被拒绝）。本辅助函数写 IntegrationGuard
+    /// 预置 stamp（"stamp-test"）一致的 meta，让 pull 测试聚焦 cipher/folder 逻辑。
+    fn write_stamp_matching_meta() {
+        let meta_file = store::MetaFile {
+            version: 1,
+            kdf_type: 0,
+            kdf_salt: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into(),
+            kdf_iterations: 3,
+            kdf_memory_kib: 65536,
+            kdf_parallelism: 4,
+            protected_user_vault_key: "v1:test-uvk".into(),
+            app_key_sync_enc: "v1:test-sync".into(),
+            security_stamp: "stamp-test".into(),
+            equivalent_domains: "[]".into(),
+        };
+        store::write_meta_file(&meta_file).expect("write stamp-matching meta");
+    }
+
     /// enable_sync 后 .git 应在 sync_root（.sync/），不在 vault_dir（.sync/vault/）。
     /// 回归测试：之前 bug 是 .git 建在 vault/ 下，变成每子目录独立 repo。
     #[test]
@@ -1629,6 +1659,73 @@ mod tests {
         let _ = g;
     }
 
+    /// C-PULL-NO-META-SKIPS-STAMP 守护（2026-07-25）：本地有 vault + 远程 meta 缺失 → pull 拒绝。
+    ///
+    /// 之前 meta.json 缺失时 stamp 校验被跳过，但 cipher upsert 无条件执行——
+    /// 远程 cipher（K_remote 加密）被 upsert 进本地 DB（K_local 解密）→ 不可解密密文污染。
+    /// 违背 INV-S9「先校验后触碰 DB」。修复：meta 缺失合法严格限定为 local_meta = None。
+    #[test]
+    fn pull_rejects_when_local_has_vault_but_remote_meta_missing() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+        // IntegrationGuard 预置了 vault_meta（local_meta = Some）
+
+        // 不写 meta.json（远程缺失）——但写一个 cipher 文件（模拟远程仓库异常态：
+        // meta 损坏/丢失但 cipher 文件仍在）
+        use octopus_infra::db::VaultCipher;
+        let cipher = VaultCipher {
+            id: "d4e5f6a7-b8c9-4123-9004-defab456789".to_string(),
+            folder_id: None,
+            favorite: false,
+            atype: 1,
+            name: "v1:enc-name".into(),
+            notes: None,
+            data: "v1:enc-data".into(),
+            fields: None,
+            password_history: None,
+            reprompt: 0,
+            deleted_at: None,
+            created_at: "2026-07-25T00:00:00".into(),
+            updated_at: "2026-07-25T00:00:00".into(),
+            sync_md5: None,
+        };
+        store::write_cipher_file(&cipher).expect("write cipher");
+
+        // pull 应拒绝（本地有 vault + 远程无 meta → 无法校验加密一致性）
+        let result = pull_from_files();
+        assert!(
+            result.is_err(),
+            "C-PULL-NO-META-SKIPS-STAMP: 本地有 vault + 远程无 meta 应拒绝 pull，实际：{:?}",
+            result
+        );
+
+        let _ = g;
+    }
+
+    /// C-PULL-NO-META-SKIPS-STAMP 补充：本地无 vault + 远程无 meta → 仍允许（首次同步合法路径）。
+    #[test]
+    fn pull_allows_when_both_local_and_remote_meta_missing() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 删除本地 vault_meta（模拟本地无 vault）
+        octopus_infra::db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_meta WHERE id = 1", [])?;
+            Ok(())
+        }).expect("delete vault_meta");
+
+        // 不写远程 meta.json（首次同步/纯新增）
+        // pull 应允许（不报错）——虽然没有任何 cipher 文件，pull 返回 Ok((0, 0))
+        let result = pull_from_files();
+        assert!(
+            result.is_ok(),
+            "本地无 vault + 远程无 meta 是首次同步合法路径，应允许 pull，实际：{:?}",
+            result
+        );
+
+        let _ = g;
+    }
+
     /// K1-GAP 守护（2026-07-25）：pull 拒绝弱 KDF 参数的远程 meta.json。
     ///
     /// 攻击者污染私有同步库的 meta.json 为 kdf_memory_kib=8 → pull 写入本地 DB →
@@ -1803,6 +1900,7 @@ mod tests {
         store::write_outline_file(&outline).expect("write outline");
 
         // pull：md5 一致应跳过，pulled = 0
+        write_stamp_matching_meta();
         let (pulled, _skipped) = pull_from_files().expect("pull should succeed");
         assert_eq!(
             pulled, 0,
@@ -1860,6 +1958,7 @@ mod tests {
         store::write_outline_file(&outline).expect("write outline");
 
         // pull 应检测到 folder 变化并 upsert
+        write_stamp_matching_meta();
         let (pulled, _skipped) = pull_from_files().expect("pull should succeed");
         assert_eq!(
             pulled, 1,
@@ -1903,6 +2002,7 @@ mod tests {
         std::fs::write(&path, "this is not valid json {{{{").unwrap();
 
         // pull 应 Ok（不阻断），但 skipped = 1，pulled = 0
+        write_stamp_matching_meta();
         let (pulled, skipped) = pull_from_files().expect("pull should not fail");
         assert_eq!(pulled, 0, "损坏文件不应被 pull");
         assert_eq!(skipped, 1, "损坏文件应被计入 skipped（#10——不再静默吞）");
@@ -1994,6 +2094,7 @@ mod tests {
         store::write_outline_file(&outline).unwrap();
 
         // pull 应把软删密码导入 DB（含 deleted_at）
+        write_stamp_matching_meta();
         let (pulled, _skipped) = pull_from_files().expect("pull should succeed");
         assert_eq!(pulled, 1, "软删密码应被 pull 导入");
 

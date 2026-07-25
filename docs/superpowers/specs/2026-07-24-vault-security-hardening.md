@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **245** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **247** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1165,3 +1165,33 @@ vault_sync_now spawn_blocking 前不查 is_syncing()。连点「立即同步」�
 ### A 并发守卫（报告自否决 ✓）
 
 sync_now :597 入口 `try_sync_lock()`（SYNC_LOCK Mutex::try_lock）保证 git 操作串行，无 index.lock 竞争。SYNCING AtomicBool + SyncingGuard 是 UI 进度查询，与 Mutex 职责分离。双重保护完善。
+
+---
+
+## 第四十一轮审查修复（2026-07-25，engine.rs：C-PULL-NO-META-SKIPS-STAMP + E-PULL-NO-HARD-DELETE-SYNC 文档化）
+
+engine.rs 是成熟模块（2059 行，回归测试极全）。md5 指纹比对、stamp 前置校验、软删闭环设计扎实。但有一处 stamp 防护在边界条件下被绕过。
+
+### C-PULL-NO-META-SKIPS-STAMP: 远程 meta.json 缺失时 stamp 校验被跳过仍 upsert cipher（中，INV-S9 违反，已修）
+
+**核查**：pull_from_files 的 stamp 校验仅在「远程 meta 存在 + 本地 meta 存在」双条件时执行（:802-809）。远程 meta.json 不存在 → meta_file = None（:795-797）→ 整个 stamp 校验跳过，但 :816 的 cipher upsert 无条件执行。
+
+**违背的自述不变量**：pull_from_files 注释 :788-790 强调「必须在 upsert cipher/folder 之前完成 stamp 校验，否则 stamp 不一致时本地 DB 已被用错误 user_vault_key 加密的密文污染，返 Err 也无回滚（INV-S9 强化）」。但当前实现恰恰在「远程 meta 缺失」路径绕过了这个保护——注释 :792 把 meta 缺失判定为「合法场景（首次同步/纯新增）」，但「合法」应仅限 local_meta = None，未覆盖「本地已有 vault + 远程 meta 缺失」异常态。
+
+**污染场景**：本地已初始化 vault（K_local）+ 远程 meta.json 缺失（损坏/不完整 clone/篡改）但 cipher 文件仍在 → pull 跳过 stamp → 远程 cipher（K_remote 加密）被 upsert 进本地 DB → K_local 解密失败 → 不可解密密文污染。
+
+**修复**：把「meta 缺失合法」严格限定为 local_meta = None。`local_meta.is_some() && meta_file.is_none()` → 返 `Err(RepoCorrupted)`，不进入 upsert 阶段。保留「本地无 vault + 远程无 meta」首次同步合法路径。
+
+**回归测试**：`pull_rejects_when_local_has_vault_but_remote_meta_missing`（拒绝）+ `pull_allows_when_both_local_and_remote_meta_missing`（首次同步允许）。
+
+### E-PULL-NO-HARD-DELETE-SYNC: permanent_delete 不双向同步（低，设计权衡，文档化）
+
+pull 只遍历 remote_outline 做 upsert，不处理「DB 有但 outline 无」的行。push 侧 incremental_export 会删文件，但 pull 侧无对应 DB 行删除。
+
+**状态**：文档化（= M-TOMBSTONE / M5 同型）。vault 用软删模型（deleted_at = tombstone），正常删除走软删 → md5 变 → pull upsert（H2 闭环）。只有 permanent_delete（清理 tombstone）不双向同步——与「tombstone 各设备独立清理避免无限累积」的常见同步设计一致。SyncReport.deleted 硬编码 0 也与此一致。活跃数据走软删不丢失。
+
+### 正面确认（engine.rs 防护到位）
+
+- P-MD5-LINEAR-SCAN HashMap O(1) 比对 ✓ / H2 软删保留 ✓ / stamp 前置两阶段 ✓
+- from_i64_strict 三处（clone/pull/resolve）✓ / #10 损坏文件不静默吞 ✓
+- #4 push 错误不谎报 ✓ / #7 disable_sync 加锁 ✓ / E3 类型安全 ✓
