@@ -368,12 +368,29 @@ export default function RecordConfig() {
                   ))}
                 </div>
               </div>
-              {/* Hide cursor（无图标，纯文字 + toggle）*/}
-              <ToggleRow
-                label={t("recordConfig.hideCursor")}
-                checked={hideCursor}
-                onChange={setHideCursor}
-              />
+              {/* Hide cursor（与 fps/codec 同布局：文字左，toggle 右对齐）*/}
+              <button
+                onClick={() => setHideCursor(!hideCursor)}
+                className={cn(
+                  "flex items-center justify-between w-full text-[11px] transition-colors",
+                  hideCursor ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <span>{t("recordConfig.hideCursor")}</span>
+                <span
+                  className={cn(
+                    "w-7 h-3.5 rounded-full relative transition-colors",
+                    hideCursor ? "bg-primary" : "bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 w-2.5 h-2.5 rounded-full bg-background transition-transform",
+                      hideCursor ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </span>
+              </button>
             </div>
           )}
         </div>
