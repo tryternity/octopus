@@ -10,9 +10,9 @@
 - `pub const WINDOW_LABEL: &str = "record_control_window";`
 - `pub fn create_control_window(app, source)` —— Area 过滤跳过；非 Area 创建 pill（destroy 重建保证单例）
 - `pub fn close_control_window(app)` —— destroy 窗口
-- `compute_position(app, source)` —— 主屏右下角 - 16px 内边距（display_id 精确匹配推迟，MVP fallback 主屏）
+- `compute_position(app, source)` —— **录制所在屏**右下角 - 16px 内边距（2026-07-26 修复前 fallback 主屏 → 副屏 bug；改用 `CGDisplay::bounds()` 精确查逻辑边界，详见下方「后续修复」）
 - 窗口属性：always_on_top / transparent / decorations:false / skip_taskbar / resizable:false / shadow:false / visible:true
-- 固定尺寸 WIDTH=200 / HEIGHT=56
+- 固定尺寸 WIDTH=130 / HEIGHT=38（用户反馈原 200×56 太长，commit `bbfebf57` 调整）
 
 ### Task 2：前端 RecordControl 组件（3 新增）
 
@@ -63,10 +63,22 @@ cd crates/desktop/frontend && npm run build
 
 ### 待用户实测
 
-- [ ] display 录制 → 右下角 pill（红点+时长）→ 点停止 → 消失
-- [ ] window 录制 → 主屏右下角 pill（fallback）
+- [ ] display 录制 → **录制所在屏**右下角 pill（红点+时长）→ 点停止 → 消失
+  - **2026-07-26 修复**：原 compute_position 丢弃 display_id 永远 fallback 主屏，副屏录制 pill 跑到主屏右下角。改用 `CGDisplay::new(display_id).bounds()` 直接查逻辑边界。详见下方「后续修复」。
+- [ ] **副屏 display 录制 → pill 出现在副屏右下角**（新增回归验证项，对应 2026-07-26 副屏 bug 修复）
+- [ ] window 录制 → 主屏右下角 pill（fallback，window_id → display 查询推迟）
 - [ ] 暂停/恢复：红点变灰 + 时长停 / 恢复
 - [ ] ESC 停止：pill 消失
 - [ ] tray 停止：pill 消失
 - [ ] kill 路径：pill 不残留
 - [ ] area 录制：无 pill（只有 RecordAnnotation）
+
+### 后续修复（2026-07-26，commit `8ab15558`）
+
+**副屏定位 bug**：用户实测副屏录制时 pill 出现在主屏右下角。根因 `compute_position` 双重错误：
+1. `let _ = display_id;` 丢弃 CGDirectDisplayID
+2. `Monitor::position()` 物理像素未除 scale（AGENTS.md gotcha）
+
+修复：用 `core_graphics::display::CGDisplay::new(display_id).bounds()` 拿逻辑 CGRect（CoreGraphics 原生 points，已含 scale）。新增 `pill_bottom_right` / `cg_display_logical_bounds` 函数 + 4 个单元测试（主屏 / 左侧副屏 origin_x<0 / 上方副屏 origin_y<0 / display_id=0 无效）。
+
+详见 [`specs/2026-07-26-record-control-window.md`](../specs/2026-07-26-record-control-window.md)「位置算法」段。
