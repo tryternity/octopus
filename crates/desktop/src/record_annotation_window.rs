@@ -69,84 +69,37 @@ pub fn create_annotation_window(
     // 选区在屏幕上的全局逻辑位置（物理 → 逻辑 / scale）
     let mon_x = mon.position().x as f64 / scale;
     let mon_y = mon.position().y as f64 / scale;
+    let mon_w = mon.size().width as f64 / scale;
     let mon_h = mon.size().height as f64 / scale;
     let sel_global_x = mon_x + (x / scale);
     let sel_global_y = mon_y + (y / scale);
     let sel_logical_w = w / scale;
     let sel_logical_h = h / scale;
 
-    // ── 工具栏三选逻辑（与截图 computeToolbarPosition 对齐）──
-    // 用户决策：工具栏不需要被录进视频（只有标注才需要）。所以 overlay 窗口扩展
-    // 容纳工具栏——选区下方优先，不够则上方，都不够则选区内部底部（被录可接受）。
-    //
-    // 注意：与截图一致，三选只看 TOOLBAR_H（44px），不含 popover 高度。
-    // 之前把 POPOVER_H(200) 算进 toolbar_space 导致 above/below 判定太严格，
-    // 选区在下方时 below_space < 252 触发 toolbar_above，工具栏跑到选区上方很远。
-    // popover 高度由前端 popoverY clamp 兜底（屏幕边缘限制），不影响三选。
-    const TOOLBAR_H: f64 = 44.0;
-    const TOOLBAR_MARGIN: f64 = 8.0;
-    let toolbar_space = TOOLBAR_H + TOOLBAR_MARGIN; // 与截图 computeToolbarPosition 一致
-
-    let below_space = mon_h - (sel_global_y - mon_y + sel_logical_h + TOOLBAR_MARGIN);
-    let above_space = sel_global_y - mon_y;
-    let toolbar_below = below_space >= toolbar_space;
-    let toolbar_above = !toolbar_below && above_space >= toolbar_space;
-
-    // 窗口扩展方向 + 位置（让工具栏在选区外，Canvas 对齐选区）
-    let (win_x, win_y, win_w, win_h, canvas_offset_x, canvas_offset_y, toolbar_pos) =
-        if toolbar_below {
-            // 工具栏在选区下方：窗口 = 选区 + 下方工具栏空间
-            (
-                sel_global_x,
-                sel_global_y,
-                sel_logical_w,
-                sel_logical_h + toolbar_space,
-                0.0,                  // Canvas X 偏移（窗口内）
-                0.0,                  // Canvas Y 偏移
-                "below",              // 工具栏位置标识（前端用）
-            )
-        } else if toolbar_above {
-            // 工具栏在选区上方：窗口 = 上方工具栏空间 + 选区
-            (
-                sel_global_x,
-                sel_global_y - toolbar_space,
-                sel_logical_w,
-                sel_logical_h + toolbar_space,
-                0.0,
-                toolbar_space,        // Canvas Y 偏移（窗口内，工具栏在上方）
-                "above",
-            )
-        } else {
-            // 兜底：工具栏在选区内部底部（被录进视频，可接受）
-            // 窗口 = 选区尺寸（不扩展），工具栏覆盖在选区底部
-            (
-                sel_global_x,
-                sel_global_y,
-                sel_logical_w,
-                sel_logical_h,
-                0.0,
-                0.0,
-                "inside",
-            )
-        };
+    // 窗口 = 选区所在显示器全屏（与截图 Screenshot 同模式）。
+    // 这样工具栏用 position:fixed 渲染，不受选区宽度限制（窄选区也能完整显示工具栏）。
+    // Canvas 通过 CSS fixed 定位到选区位置（canvasRect.ox/oy），工具栏用 computeToolbarPosition 算位置。
+    let win_x = mon_x;
+    let win_y = mon_y;
+    let win_w = mon_w;
+    let win_h = mon_h;
+    // Canvas 在窗口内的偏移（选区相对显示器原点的逻辑坐标）
+    let canvas_offset_x = sel_global_x - mon_x;
+    let canvas_offset_y = sel_global_y - mon_y;
+    // 工具栏位置标识不再由后端算——前端用 computeToolbarPosition（与截图同算法）。
+    // 保留 toolbar 参数传 "auto" 标识新模式（前端据此用 computeToolbarPosition）。
+    let toolbar_pos = "auto";
 
     log::info!(
-        "[annotation] overlay: display_id={} 选区逻辑 ({},{},{},{}) toolbar={} 窗口 ({},{},{},{})",
+        "[annotation] overlay: display_id={} 选区逻辑 ({},{},{},{}) 全屏窗口 ({},{},{},{}) canvas_offset=({},{})",
         display_id, sel_global_x, sel_global_y, sel_logical_w, sel_logical_h,
-        toolbar_pos, win_x, win_y, win_w, win_h
+        win_x, win_y, win_w, win_h, canvas_offset_x, canvas_offset_y
     );
 
-    // 设置工具栏区域（poller 用——穿透模式下此区域不穿透）。
-    // 工具栏在窗口内的位置（逻辑坐标）：
-    // - below：Canvas 下方（canvas_oy + canvas_h 到窗口底部）
-    // - above：窗口顶部（0 到 toolbar_space）
-    // - inside：Canvas 内部底部（canvas_oy + canvas_h - 52 到 canvas_oy + canvas_h）
-    let toolbar_zone = match toolbar_pos {
-        "below" => (0.0, canvas_offset_y + sel_logical_h, sel_logical_w, toolbar_space),
-        "above" => (0.0, 0.0, sel_logical_w, toolbar_space),
-        _ => (0.0, canvas_offset_y + sel_logical_h - 52.0, sel_logical_w, 52.0),
-    };
-    *TOOLBAR_ZONE.lock() = toolbar_zone;
+    // TOOLBAR_ZONE：前端 mount 后通过 invoke set_toolbar_zone 传回工具栏实际位置
+    // （前端用 computeToolbarPosition 算，与截图同算法）。后端不再猜测工具栏位置。
+    // 初始化为全 0（poller 启动时若前端还没传回，按全屏穿透处理）。
+    *TOOLBAR_ZONE.lock() = (0.0, 0.0, 0.0, 0.0);
 
     // URL 注入选区参数 + 工具栏位置（前端 mount 时解析）
     let url = format!(
@@ -307,4 +260,12 @@ pub fn close_annotation_window(app: &AppHandle) {
 pub fn set_annotation_passthrough(_app: AppHandle, passthrough: bool) {
     ANNOTATION_PASSTHROUGH.store(passthrough, std::sync::atomic::Ordering::Relaxed);
     log::info!("[annotation] passthrough={}（poller 下一 tick 生效）", passthrough);
+}
+
+/// 前端把工具栏实际位置（computeToolbarPosition 算出）传回后端。
+/// poller 用此区域判定鼠标穿透（工具栏区域不穿透，其他穿透）。
+/// 全屏窗口模式下后端不再猜测工具栏位置——前端算好后传回。
+#[tauri::command]
+pub fn set_toolbar_zone(_app: AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    *TOOLBAR_ZONE.lock() = (x, y, w, h);
 }

@@ -34,7 +34,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit, listen as rawListen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import { type Annotation, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
-import { useAnnotationState, AnnotationToolbar, TOOLBAR_H } from "@/components/Annotation";
+import { useAnnotationState, AnnotationToolbar, computeToolbarPosition, computeToolbarCenterX, TOOLBAR_H } from "@/components/Annotation";
 import { useT } from "@/lib/i18n";
 
 const RECORD_BORDER_COLOR = "#3b82f6";
@@ -78,7 +78,6 @@ export default function RecordAnnotation() {
   // URL 注入 canvas_ox/oy/w/h 描述选区在窗口内的位置（逻辑像素）。
   // toolbar_pos 决定 TOOLBAR_ZONE（后端 poller 据此判定鼠标穿透），前端必须与之对齐。
   const [canvasRect, setCanvasRect] = useState({ ox: 0, oy: 0, w: 0, h: 0 });
-  const [toolbarPos, setToolbarPos] = useState<"below" | "above" | "inside">("inside");
   // ── 录制时长显示（与 RecordControl 同模式：mount 查 get_record_status + 监听事件）──
   // RecordAnnotation overlay 创建晚于 recording-started 事件，本地直接 setInterval。
   type RecState = "idle" | "recording" | "paused";
@@ -122,7 +121,6 @@ export default function RecordAnnotation() {
       w: parseFloat(params.get("canvas_w") || String(window.innerWidth)),
       h: parseFloat(params.get("canvas_h") || String(window.innerHeight)),
     });
-    setToolbarPos((params.get("toolbar") || "inside") as "below" | "above" | "inside");
   }, []);
 
   // mount 时默认穿透（tool="none" = 鼠标模式 = 穿透操作下层应用）
@@ -388,37 +386,43 @@ export default function RecordAnnotation() {
     }
   };
 
-  // ── 工具栏位置（基于后端注入的 toolbarPos，前端不能换算法）─────
-  // 后端 record_annotation_window.rs 用 toolbarPos 决定窗口尺寸 + TOOLBAR_ZONE
-  // （poller 据此判定鼠标穿透），前端必须与之对齐，不能调 computeToolbarPosition。
-  //   toolbar=below：Canvas 下方（canvas_oy=0，工具栏在 Canvas 底部下方）
-  //   toolbar=above：Canvas 上方（canvas_oy=工具栏空间，工具栏在 Canvas 顶部上方）
-  //   toolbar=inside：兜底，工具栏浮在 Canvas 内部底部
-  const toolbarTop = toolbarPos === "below"
-    ? canvasRect.oy + canvasRect.h + 8        // Canvas 下方
-    : toolbarPos === "above"
-      ? 8                                      // 窗口顶部（Canvas 上方）
-      : canvasRect.oy + canvasRect.h - TOOLBAR_H - 8;  // Canvas 内部底部
-
-  // popover Y：below → 工具栏下方；above / inside → 工具栏上方
-  const popoverY = toolbarPos === "below"
+  // ── 工具栏位置（与截图同算法 computeToolbarPosition）──
+  // 全屏窗口模式：窗口覆盖整个显示器，Canvas 通过 fixed 定位到选区，
+  // 工具栏用 computeToolbarPosition 算位置（与截图完全一致）。
+  const tbPos = canvasRect.w > 0
+    ? computeToolbarPosition(
+        { x: canvasRect.ox, y: canvasRect.oy, w: canvasRect.w, h: canvasRect.h },
+        window.innerHeight,
+      )
+    : null;
+  const toolbarTop = tbPos ? tbPos.y : 0;
+  // popover Y：below/above → 工具栏下方；inside → 工具栏上方
+  const popoverY = tbPos?.belowOrAbove
     ? toolbarTop + TOOLBAR_H
     : Math.max(0, toolbarTop - 200);
 
-  // popover X：跟随被点击的工具按钮中心（state.popoverX 由 onToolSelect 设置），
-  // 首次未点按钮时 fallback 到选区中心（与截图一致）。
+  // popover X：跟随被点击的工具按钮中心，fallback 到选区中心
   const popoverLeft = annotation.popoverX || (canvasRect.ox + canvasRect.w / 2);
 
-  // 工具栏 X clamp（基于 canvasRect 水平区间）
-  // toolbarW 未就绪时用 150 估算（与原实现一致）
-  const halfW = toolbarW / 2 || 150;
-  const toolbarCenterX = Math.max(
-    canvasRect.ox + 80 + halfW,
-    Math.min(
-      canvasRect.ox + canvasRect.w / 2,
-      canvasRect.ox + canvasRect.w - 80 - halfW,
-    ),
-  );
+  // 工具栏 X clamp（与截图同算法 computeToolbarCenterX）
+  const toolbarCenterX = canvasRect.w > 0
+    ? computeToolbarCenterX(
+        { x: canvasRect.ox, y: canvasRect.oy, w: canvasRect.w, h: canvasRect.h },
+        window.innerWidth,
+        toolbarW,
+      )
+    : 0;
+
+  // mount 后把工具栏实际位置传回后端（poller 用此区域判定穿透）
+  useEffect(() => {
+    if (canvasRect.w === 0 || !tbPos) return;
+    invoke("set_toolbar_zone", {
+      x: toolbarCenterX - (toolbarW || 200) / 2,
+      y: toolbarTop,
+      w: toolbarW || 200,
+      h: TOOLBAR_H,
+    }).catch(() => {});
+  }, [canvasRect.w, canvasRect.ox, canvasRect.oy, canvasRect.h, toolbarTop, toolbarCenterX, toolbarW, tbPos]);
 
   return (
     <>

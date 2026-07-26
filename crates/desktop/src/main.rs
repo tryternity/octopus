@@ -587,6 +587,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_annotation_window::set_annotation_passthrough,
             #[cfg(target_os = "macos")]
+            record_annotation_window::set_toolbar_zone,
+            #[cfg(target_os = "macos")]
             record_commands::list_recordings,
             #[cfg(target_os = "macos")]
             record_commands::get_recording,
