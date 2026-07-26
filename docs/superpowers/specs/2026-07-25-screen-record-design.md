@@ -344,6 +344,10 @@ pub struct StoppedInfo { pub screen_path: PathBuf, pub duration_ms: i64, pub fil
 - `on_event` 回调让上层自由选择事件分发（emit Tauri event / log），session 本身不耦合 Tauri
 - `state()` 只读快照，所有状态变更由 helper 事件驱动
 - `kill()` 与 `stop()` 分离：`stop` 优雅（等 helper flush），`kill` 强制（SIGKILL，可能损坏文件）
+- **失败路径必须清理（2026-07-26 P0 修复）**：`start()` / `stop()` 的 Err 路径（spawn 失败 / 等不到 recording-started / helper 超时不退出）都必须调 `reset_to_idle()`（SIGKILL helper + state=Idle）。原代码用 `?` 直接返回不清理 → state 卡 Starting → 之后所有 start 撞 `AlreadyRunning`，用户必须重启 app。
+- **stderr 必须 reader task 消费**（2026-07-26 P0 修复）：helper 的 stderr 被 `Stdio::piped()` 但从不读 → 64KB 缓冲填满 → helper 阻塞在 write(stderr) → 永不发 recording-started → 父进程超时。修复：spawn 一个 stderr reader task，每行 `log::debug!("[record][helper stderr] {line}")`。
+- **HelperEvent::Error 短路 wait_for_state**（2026-07-26 P1 修复）：reader task 收到 `HelperEvent::Error{code,message}` 时存入 `last_helper_error`；`wait_for_state` 每轮检测它，立即返回 `HelperError`（不等 10s 超时）——让调用方拿到 helper 真实错误（permissionDenied / sourceNotFound）而非笼统的 Timeout。
+- **kill_on_drop(true)**（2026-07-26 P2 防御）：`Command::kill_on_drop(true)` 保证进程 panic / SessionInner drop 时 helper 不残留为孤儿。
 
 ### 3.3 RecordStore — 元数据入库
 
