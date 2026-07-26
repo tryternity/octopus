@@ -44,6 +44,7 @@ const config = {
         "record-config": "record-config.html",
         "area-picker": "area-picker.html",
         "record-annotation": "record-annotation.html",
+        "record-control": "record-control.html",
         download: "download.html",
       },
     },

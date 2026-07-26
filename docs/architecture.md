@@ -984,7 +984,8 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 **第三轮迭代：区域录屏 + 实时标注**（2026-07-26）：
 - **配置浮窗 `record_window.rs`** + `RecordConfig.tsx`（独立 vite entry `record-config.html`）。Cmd+Shift+R 弹出选 display/window/area + 音频开关。绿色 Check 选中态。
 - **区域选区 picker `record_area_picker.rs`** + `AreaPicker.tsx`（`area-picker.html`）。复用 screenshot 多屏全屏窗口模式 + `screenshot_geometry` 坐标换算（Cocoa frame Y 翻转 → compute_selection_global → find_monitor_for_point → compute_physical_crop → active_display_for_point）。拖完即确认（mouseup 立即调 confirm）。
-- **标注 overlay `record_annotation_window.rs`** + `RecordAnnotation.tsx`（`record-annotation.html`）。`always_on_top` 透明窗口，复用 `@/lib/annotation` 9 种标注工具（rect/oval/diamond/line/arrow/pen/text/number/blur）。**关键验证**：SCK 录到 always_on_top 窗口内容（标注进视频），之前 PyObjC spike 说「不录」是错的（窗口没真显示）。
+- **标注 overlay `record_annotation_window.rs`** + `RecordAnnotation.tsx`（`record-annotation.html`）。`always_on_top` 透明窗口，复用 `@/lib/annotation` 9 种标注工具（rect/oval/diamond/line/arrow/pen/text/number/blur）。**关键验证**：SCK 录到 always_on_top 窗口内容（标注进视频），之前 PyObjC spike 说「不录」是错的（窗口没真显示）。仅 Source::Area 创建。
+- **控制浮窗 `record_control_window.rs`** + `RecordControl.tsx`（`record-control.html`）。display/window 录制时桌面右下角 pill（红点+时长+暂停+停止）。与 RecordAnnotation 互斥（Area 用 annotation，display/window 用 control）。always_on_top 接受被录进视频，不穿透（按钮直接点）。详见 [record-control-window spec](superpowers/specs/2026-07-26-record-control-window.md)。
 - **窗口扩展**：overlay 窗口 = 选区 + 工具栏空间（三选逻辑：选区下方优先 → 上方 → 内部底部兜底，与截图 L750-766 一致）。Canvas 限制在选区区域，工具栏在选区外（不被录）。
 - **部分穿透**（参考 `result_window::start_click_through_poller`）：`ANNOTATION_PASSTHROUGH: AtomicBool` + poller 33ms tick。select 工具=穿透模式（工具栏区域 `TOOLBAR_ZONE` 不穿透，选区穿透到下层应用）；标注工具=标注模式（整个窗口不穿透）。前端 `onToolSelect` 调 `set_annotation_passthrough(t === "none")`。
 - **停止按钮**：emit `record://stop-requested` → 后端 listen → 调 `stop_and_store`（与 ESC/tray 同路径）。

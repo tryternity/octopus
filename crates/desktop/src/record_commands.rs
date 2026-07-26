@@ -328,6 +328,8 @@ pub(crate) async fn start_with_config(
             if let Err(e) = crate::record_annotation_window::create_annotation_window(app, &source_clone) {
                 log::warn!("[record] 标注 overlay 创建失败（不影响录制）: {e}");
             }
+            // 控制浮窗（display/window 录制用；area 已有 RecordAnnotation，create 内部过滤）
+            crate::record_control_window::create_control_window(app, &source_clone);
             // ESC stop 全局快捷键按需注册——非录制态不注册，避免吞掉 Screenshot /
             // RecordConfig 等 DOM 级 ESC。详见 record_hotkey::register_stop_hotkey。
             if let Err(e) = crate::record_hotkey::register_stop_hotkey(app) {
@@ -538,10 +540,14 @@ pub async fn record_kill(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     let r = state.kill().await.map_err(e2s);
-    // 强杀路径也要注销 ESC——kill 是异常恢复，ESC 不应残留（否则下次 Screenshot ESC 被吞）。
-    // 无论 kill 成功失败都注销（与 stop_and_store 一致）。
+    // 强杀路径：注销 ESC + 关闭浮窗（control + annotation），避免窗口泄漏残留。
+    // 无论 kill 成功失败都清理（与 stop_and_store 一致）。
     #[cfg(target_os = "macos")]
-    crate::record_hotkey::unregister_stop_hotkey(&app_handle);
+    {
+        crate::record_hotkey::unregister_stop_hotkey(&app_handle);
+        crate::record_annotation_window::close_annotation_window(&app_handle);
+        crate::record_control_window::close_control_window(&app_handle);
+    }
     r
 }
 

@@ -915,7 +915,9 @@ if request.audio.microphone.enabled {
 
 ### 8.2 录制控制（菜单栏图标 + 下拉 + 快捷键）
 
-> **实现注记（2026-07-25 已实现）**：tray menu 录屏项是 **toggle 单项**（与 ASR toggle 同模式）——idle 时「开始录屏 ⌘⇧R」（弹配置浮窗），recording/paused 时文案变「停止录屏  ⎋」（停止入库）。`update_record_tray_label(recording)` 在 start/stop 路径调用切换文案。快捷键 `record_shortcut` 可配置（AppConfig + 热重载），ESC 固定为停止键（全局通用，不暴露）。**未做**：tray icon 红点状态指示、duration 实时显示、前端 dropdown 组件（推迟 follow-up）。
+> **实现注记（2026-07-25 已实现）**：tray menu 录屏项是 **toggle 单项**（与 ASR toggle 同模式）——idle 时「开始录屏 ⌘⇧R」（弹配置浮窗），recording/paused 时文案变「停止录屏  ⎋」（停止入库）。`update_record_tray_label(recording)` 在 start/stop 路径调用切换文案。快捷键 `record_shortcut` 可配置（AppConfig + 热重载），ESC 固定为停止键（全局通用，不暴露）。
+>
+> **2026-07-26 补完**（P1-7）：display/window 录制时桌面右下角 pill 控制浮窗（红点+时长+暂停+停止），详见 [record-control-window spec](2026-07-26-record-control-window.md)。原「dropdown 推迟」被该浮窗覆盖（浮窗体验 > tray 下拉面板）。**仍未做**：tray icon 红点状态指示（P1-3）。
 
 ```
 菜单栏（始终可见，录屏时显示）

@@ -89,6 +89,8 @@ mod record_area_picker;
 // 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
 #[cfg(target_os = "macos")]
 mod record_annotation_window;
+#[cfg(target_os = "macos")]
+mod record_control_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -1122,6 +1124,7 @@ pub fn run() {
                             Ok(Some(meta)) => {
                                 log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
                                 crate::record_annotation_window::close_annotation_window(&ah);
+                                crate::record_control_window::close_control_window(&ah);
                                 let _ = ah.emit("record://stopped", &meta);
                             }
                             Ok(None) => log::info!("[record] stop 返回 None"),
