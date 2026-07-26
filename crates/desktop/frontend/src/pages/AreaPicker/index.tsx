@@ -13,6 +13,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { computeToolbarPosition, computeToolbarCenterX } from "@/components/Annotation";
+import { useT } from "@/lib/i18n";
 
 interface Selection {
   x: number;
@@ -133,23 +135,12 @@ export default function AreaPicker() {
     setDragging(false);
     const s = selRef.current;
     if (!s || s.w < MIN_SIZE || s.h < MIN_SIZE) {
-      // 选区太小，丢弃回 idle
+      // 选区太小，丢弃
       setSel(null);
       return;
     }
-    // 拖完即确认：调 confirm_record_area_picker
-    const winLabel = getCurrentWindow().label;
-    try {
-      await invoke("confirm_record_area_picker", {
-        winLabel,
-        x: s.x,
-        y: s.y,
-        w: s.w,
-        h: s.h,
-      });
-    } catch (err) {
-      console.error("[area-picker] confirm failed:", err);
-    }
+    // 松手不自动确认——用户看工具栏（含尺寸提示 + 「开始录制」按钮），
+    // 点「开始录制」才 confirm。这与截图流程一致（选区确定后工具栏出现，用户操作）。
   };
 
   // Esc / 右键取消
@@ -169,21 +160,85 @@ export default function AreaPicker() {
     invoke("cancel_record_area_picker").catch(() => {});
   };
 
+  const t = useT();
+  // 工具栏位置（与截图同算法，sel 存在即跟随）
+  const toolbarW = 180; // 估算（开始录制 + 取消两按钮）
+  const tbPos = sel ? computeToolbarPosition(sel, window.innerHeight) : null;
+  const toolbarY = tbPos ? tbPos.y : 0;
+  const toolbarX = sel ? computeToolbarCenterX(sel, window.innerWidth, toolbarW) : 0;
+
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        position: "fixed",
-        inset: 0,
-        width: "100vw",
-        height: "100vh",
-        cursor: "crosshair",
-        display: "block",
-      }}
-      onMouseDown={onMouseDown}
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-      onContextMenu={onContextMenu}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100vw",
+          height: "100vh",
+          cursor: "crosshair",
+          display: "block",
+        }}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onContextMenu={onContextMenu}
+      />
+      {/* 工具栏（跟随选区，与截图同位置算法）。
+          sel 存在即显示——拖框时实时跟随，松手后停留（用户可点「开始录制」确认）。
+          拖框中（dragging）也显示，让用户直观看到工具栏位置。*/}
+      {sel && sel.w >= MIN_SIZE && (
+        <div
+          style={{
+            position: "fixed",
+            top: `${toolbarY}px`,
+            left: `${toolbarX}px`,
+            transform: "translateX(-50%)",
+            display: "flex",
+            gap: 4,
+            padding: "6px 8px",
+            background: "var(--color-surface)",
+            color: "var(--color-foreground)",
+            borderRadius: 8,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            zIndex: 100,
+            alignItems: "center",
+          }}
+        >
+          {/* 尺寸提示（物理像素）*/}
+          <span style={{ fontSize: 11, color: "var(--color-muted-foreground)", fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums", padding: "0 4px" }}>
+            {Math.round(sel.w * (window.devicePixelRatio || 1))} × {Math.round(sel.h * (window.devicePixelRatio || 1))}
+          </span>
+          <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
+          {/* 开始录制（绿色，与截图确认按钮同风格）*/}
+          <button
+            onClick={() => {
+              const winLabel = getCurrentWindow().label;
+              invoke("confirm_record_area_picker", { winLabel, x: sel.x, y: sel.y, w: sel.w, h: sel.h }).catch(() => {});
+            }}
+            style={{
+              padding: "4px 10px", fontSize: 12, fontWeight: 600,
+              borderRadius: 6, border: "none",
+              background: "var(--color-voice)", color: "#fff",
+              cursor: "pointer",
+            }}
+          >
+            {t("recordConfig.areaPickRecord")}
+          </button>
+          {/* 取消 */}
+          <button
+            onClick={() => invoke("cancel_record_area_picker").catch(() => {})}
+            style={{
+              padding: "4px 10px", fontSize: 12,
+              borderRadius: 6, border: "1px solid var(--color-border)",
+              background: "transparent", color: "var(--color-muted-foreground)",
+              cursor: "pointer",
+            }}
+          >
+            {t("recordConfig.cancel")}
+          </button>
+        </div>
+      )}
+    </>
   );
 }
