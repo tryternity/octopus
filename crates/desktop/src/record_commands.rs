@@ -27,12 +27,13 @@ fn e2s<E: std::fmt::Display + std::fmt::Debug>(e: E) -> String {
     e.to_string()
 }
 
-/// 把 HelperProvider trait 方法（同步签名，内部 block_in_place）包成 Result<T, String>。
-fn platform_helper<F, T>(f: F) -> Result<T, String>
-where
-    F: FnOnce(&dyn HelperProvider) -> Result<T, RecordError>,
-{
-    f(&octopus_record::platform::provider()).map_err(e2s)
+/// 拿当前平台的 provider（零成本，MacOSProvider 是 ZST）。
+///
+/// trait async 化（2026-07-26，`#[async_trait]`）后，原 `platform_helper` 闭包 wrapper
+/// 因 async_trait 的 `Box<dyn Future + Send + 'static>` 与 `&dyn HelperProvider` 的
+/// 生命周期冲突编译不过。改为直接拿 provider 实例调用——ZST 无成本，调用点更直观。
+fn provider() -> impl HelperProvider {
+    octopus_record::platform::provider()
 }
 
 /// ISO8601 UTC 时间戳（DB 里 created_at / deleted_at 统一格式）。
@@ -78,29 +79,29 @@ where
 
 #[command]
 pub async fn list_record_displays() -> Result<Vec<DisplayInfo>, String> {
-    // provider::list_displays 内部 block_in_place（跑 helper --list-displays），
-    // 但命令本身已 async，tokio runtime 调度不受影响。无需 spawn_blocking。
-    platform_helper(|p| p.list_displays())
+    // provider().list_displays() 已 async 化（2026-07-26），直接 .await helper 子进程，
+    // 不再走 block_in_place——async Tauri 命令在 runtime worker 上不阻塞。
+    provider().list_displays().await.map_err(e2s)
 }
 
 #[command]
 pub async fn list_record_windows() -> Result<Vec<WindowInfo>, String> {
-    platform_helper(|p| p.list_windows())
+    provider().list_windows().await.map_err(e2s)
 }
 
 #[command]
 pub async fn list_microphones() -> Result<Vec<MicrophoneInfo>, String> {
-    platform_helper(|p| p.list_microphones())
+    provider().list_microphones().await.map_err(e2s)
 }
 
 #[command]
 pub async fn check_record_permission() -> Result<PermissionStatus, String> {
-    platform_helper(|p| p.check_permission())
+    provider().check_permission().await.map_err(e2s)
 }
 
 #[command]
 pub async fn request_screen_record_permission() -> Result<PermissionStatus, String> {
-    platform_helper(|p| p.request_screen_permission())
+    provider().request_screen_permission().await.map_err(e2s)
 }
 
 /// 打开 macOS 系统偏好设置里的隐私面板。
@@ -190,7 +191,7 @@ pub(crate) async fn build_default_config() -> Result<RecordConfig, String> {
     use octopus_record::VideoCodec;
 
     // ── 源：主屏（list_displays 找 is_primary）──────────────────────
-    let displays = platform_helper(|p| p.list_displays())?;
+    let displays = provider().list_displays().await.map_err(e2s)?;
     let primary = displays
         .iter()
         .find(|d| d.is_primary)
@@ -306,7 +307,9 @@ pub(crate) async fn start_with_config(
     // 解析 helper 路径——开发期走 crates/desktop/binaries/，打包后走 resource_dir。
     // provider 的 resolve_helper_path(None) 不传 resource_dir，依赖开发期路径；
     // 打包路径解析需 app.handle().path().resource_dir()——MVP 简化，仅开发期可用。
-    let helper_path = platform_helper(|p| p.resolve_helper_path(None))?;
+    //
+    // resolve_helper_path 是 sync 方法（纯文件探测，不走子进程），不 .await。
+    let helper_path = provider().resolve_helper_path(None).map_err(e2s)?;
 
     // move 前克隆 source（start 后创建标注 overlay 用，request 会被 move 进 session.start）
     let source_clone = request.source.clone();

@@ -3,10 +3,12 @@
 use crate::error::{RecordError, RecordResult};
 use crate::platform::{run_helper_subcommand, HelperProvider};
 use crate::protocol::{DisplayInfo, MicrophoneInfo, PermissionStatus, WindowInfo};
+use async_trait::async_trait;
 use std::path::PathBuf;
 
 pub struct MacOSProvider;
 
+#[async_trait]
 impl HelperProvider for MacOSProvider {
     fn resolve_helper_path(&self, app_resource_dir: Option<&std::path::Path>) -> RecordResult<PathBuf> {
         // 1. 打包后路径：Contents/Resources/binaries/octopus-sck-helper
@@ -30,9 +32,9 @@ impl HelperProvider for MacOSProvider {
         ))
     }
 
-    fn list_displays(&self) -> RecordResult<Vec<DisplayInfo>> {
+    async fn list_displays(&self) -> RecordResult<Vec<DisplayInfo>> {
         let helper = self.resolve_helper_path(None)?;
-        let v = futures_block_on(run_helper_subcommand(&helper, "--list-displays"))?;
+        let v = run_helper_subcommand(&helper, "--list-displays").await?;
         // helper 输出格式：{"displays":[{id,name,width,height,is_primary}, ...]}
         // （见 crates/record/native/macos/Sources/OctopusSckHelper/main.swift::listDisplaysAndExit）
         // 取 v["displays"] 再反序列化——历史 bug：曾试图把整个 object 当 Vec 反序列化，
@@ -42,40 +44,31 @@ impl HelperProvider for MacOSProvider {
         Ok(displays)
     }
 
-    fn list_windows(&self) -> RecordResult<Vec<WindowInfo>> {
+    async fn list_windows(&self) -> RecordResult<Vec<WindowInfo>> {
         let helper = self.resolve_helper_path(None)?;
-        let v = futures_block_on(run_helper_subcommand(&helper, "--list-windows"))?;
+        let v = run_helper_subcommand(&helper, "--list-windows").await?;
         let arr = v.get("windows").unwrap_or(&serde_json::Value::Null);
         Ok(serde_json::from_value(arr.clone())?)
     }
 
-    fn list_microphones(&self) -> RecordResult<Vec<MicrophoneInfo>> {
+    async fn list_microphones(&self) -> RecordResult<Vec<MicrophoneInfo>> {
         let helper = self.resolve_helper_path(None)?;
-        let v = futures_block_on(run_helper_subcommand(&helper, "--list-microphones"))?;
+        let v = run_helper_subcommand(&helper, "--list-microphones").await?;
         let arr = v.get("microphones").unwrap_or(&serde_json::Value::Null);
         Ok(serde_json::from_value(arr.clone())?)
     }
 
-    fn check_permission(&self) -> RecordResult<PermissionStatus> {
+    async fn check_permission(&self) -> RecordResult<PermissionStatus> {
         let helper = self.resolve_helper_path(None)?;
-        let v = futures_block_on(run_helper_subcommand(&helper, "--check-permission"))?;
+        let v = run_helper_subcommand(&helper, "--check-permission").await?;
         let granted = v.get("granted").and_then(|g| g.as_bool()).unwrap_or(false);
         Ok(if granted { PermissionStatus::Granted } else { PermissionStatus::Denied })
     }
 
-    fn request_screen_permission(&self) -> RecordResult<PermissionStatus> {
+    async fn request_screen_permission(&self) -> RecordResult<PermissionStatus> {
         let helper = self.resolve_helper_path(None)?;
-        let v = futures_block_on(run_helper_subcommand(&helper, "--request-permission"))?;
+        let v = run_helper_subcommand(&helper, "--request-permission").await?;
         let granted = v.get("granted").and_then(|g| g.as_bool()).unwrap_or(false);
         Ok(if granted { PermissionStatus::Granted } else { PermissionStatus::Denied })
     }
-}
-
-/// 同步等待异步 future（platform trait 是同步的，简化 MVP）。
-/// 完整版应让 trait 方法也 async，但 MVP 不引入复杂度。
-fn futures_block_on<F: std::future::Future>(f: F) -> F::Output {
-    tokio::task::block_in_place(|| {
-        let runtime = tokio::runtime::Handle::current();
-        runtime.block_on(f)
-    })
 }

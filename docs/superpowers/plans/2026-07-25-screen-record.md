@@ -1677,6 +1677,10 @@ fn futures_block_on<F: std::future::Future>(f: F) -> F::Output {
 }
 ```
 
+> **2026-07-26 迭代注记**：上方 macOS provider 实现是**原始 MVP 版本**（保留作历史记录）。
+> trait 已 async 化（`#[async_trait]`，5 方法 `async fn`），`futures_block_on` 已删除——
+> macOS impl 直接 `run_helper_subcommand(...).await`。详见本 plan 末尾「后续修复」段。
+
 - [x] **Step 3: 实现 windows.rs 和 linux.rs 占位**
 
 `crates/record/src/platform/windows.rs`:
@@ -2778,6 +2782,20 @@ Task 5 实现的 session.rs 在用户实测中暴露**两个串联 P0 bug**（co
 - `start_stderr_flood_does_not_orphan_helper` — 200KB stderr 不阻塞 helper + 被 kill 清理
 
 > Task 5 Step 2 的 session.rs 代码块是**原始实现**（保留作历史记录，是「最早能跑通 MVP 的版本」）；上面 4 个 P0/P1/P2 修复是上线后用户实测反馈的迭代。详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.2「设计要点」末尾的 4 条新约束。
+
+### Task 6 后续：platform trait async 化（2026-07-26，commit 待补）
+
+Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 `futures_block_on` + `tokio::task::block_in_place` 桥接 async helper 子进程——这是 MVP 简化的技术债（trait 内部阻塞 runtime worker，多 display 枚举并发时可能拖慢调度）。
+
+修复（方案 B2：`#[async_trait]` + 混合 sync/async）：
+- 5 个调 helper 方法标 `async fn`（`#[async_trait]`）
+- `resolve_helper_path` 保留 sync（纯文件探测，假装 async 是语义失真；`async_trait` 允许混用）
+- macOS impl 删 `futures_block_on`，直接 `.await` 子进程
+- Win/Linux 占位 impl 5 方法签名改 `async fn`（body 不变，仍立即返回 `Err`）
+- `record_commands.rs` 删 `platform_helper` 闭包 wrapper（async_trait 的 `BoxFuture + 'static` 与 `&dyn` 引用生命周期冲突）→ 改为 `provider().list_displays().await.map_err(e2s)` 直接调（ZST 无成本）
+- 新增 `async-trait = "0.1"` 依赖（仓库既有惯例，desktop/search/translation 20 处都在用）
+
+详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.4。
 
 ---
 
