@@ -75,17 +75,17 @@ pub fn create_annotation_window(
     let sel_logical_w = w / scale;
     let sel_logical_h = h / scale;
 
-    // ── 工具栏三选逻辑（与截图 screenshot_commands L750-766 完全一致）──
+    // ── 工具栏三选逻辑（与截图 computeToolbarPosition 对齐）──
     // 用户决策：工具栏不需要被录进视频（只有标注才需要）。所以 overlay 窗口扩展
     // 容纳工具栏——选区下方优先，不够则上方，都不够则选区内部底部（被录可接受）。
     //
-    // TOOLBAR_MARGIN：工具栏与选区的间距（8px，与截图一致）
-    // TOOLBAR_H：工具栏高度（44px）
-    // POPOVER_H：popover 高度估算（200px，工具栏弹出颜色/线宽时需要空间）
+    // 注意：与截图一致，三选只看 TOOLBAR_H（44px），不含 popover 高度。
+    // 之前把 POPOVER_H(200) 算进 toolbar_space 导致 above/below 判定太严格，
+    // 选区在下方时 below_space < 252 触发 toolbar_above，工具栏跑到选区上方很远。
+    // popover 高度由前端 popoverY clamp 兜底（屏幕边缘限制），不影响三选。
     const TOOLBAR_H: f64 = 44.0;
     const TOOLBAR_MARGIN: f64 = 8.0;
-    const POPOVER_H: f64 = 200.0;
-    let toolbar_space = TOOLBAR_H + TOOLBAR_MARGIN + POPOVER_H; // 工具栏 + popover 总空间
+    let toolbar_space = TOOLBAR_H + TOOLBAR_MARGIN; // 与截图 computeToolbarPosition 一致
 
     let below_space = mon_h - (sel_global_y - mon_y + sel_logical_h + TOOLBAR_MARGIN);
     let above_space = sel_global_y - mon_y;
