@@ -87,6 +87,7 @@ settings:
     # 行操作
     play: 播放
     reveal: 在 Finder 中显示
+    rename: 重命名
     favorite: 收藏
     unfavorite: 取消收藏
     delete: 删除

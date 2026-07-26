@@ -30,6 +30,7 @@ import {
   Captions,
   Circle,
   Pause,
+  Pencil,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -345,6 +346,7 @@ export default function RecordingPanel({
               showToast={showToast}
               onDeleted={handleRowDeleted}
               onFavoriteToggled={handleFavoriteToggled}
+              onRenamed={loadList}
               onTranscribeClick={
                 onNavigate ? () => onNavigate("models") : undefined
               }
@@ -397,6 +399,7 @@ interface RecordingRowProps {
   onDeleted: () => void;
   onFavoriteToggled: () => void;
   onTranscribeClick?: () => void;
+  onRenamed: () => void;
 }
 
 function RecordingRow({
@@ -407,11 +410,16 @@ function RecordingRow({
   onDeleted,
   onFavoriteToggled,
   onTranscribeClick,
+  onRenamed,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 重命名 inline input（WKWebView 不支持 window.prompt，用 inline input 仿 HotwordPanel 范式）
+  const [renaming, setRenaming] = useState(false);
+  const [renameVal, setRenameVal] = useState("");
+  const renameCancelledRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -441,6 +449,32 @@ function RecordingRow({
     } catch (e) {
       showToast(t("settings.recordings.loadFailed") + e, "error");
     }
+  };
+
+  // ── 重命名（inline input，仿 HotwordPanel 范式）──
+  // WKWebView 不支持 window.prompt，用 inline input。
+  // Enter / blur → 提交；Escape → 取消（renameCancelledRef 防 blur 重复触发）。
+  const commitRename = useCallback(async () => {
+    if (renameCancelledRef.current) {
+      renameCancelledRef.current = false;
+      return;
+    }
+    const newTitle = renameVal.trim();
+    setRenaming(false);
+    if (!newTitle || newTitle === title) return;
+    try {
+      await invoke("rename_recording", { id: rec.id, title: newTitle });
+      onRenamed();
+    } catch (e) {
+      showToast(t("settings.recordings.loadFailed") + e, "error");
+    }
+  }, [renameVal, title, rec.id, onRenamed, showToast, t]);
+
+  const startRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    renameCancelledRef.current = false;
+    setRenameVal(title);
+    setRenaming(true);
   };
 
   const handleFavorite = async (e: React.MouseEvent) => {
@@ -541,10 +575,28 @@ function RecordingRow({
             {rec.source_type}
           </span>
         </div>
-        {/* Title */}
-        <p className="text-xs leading-relaxed text-foreground truncate" title={title}>
-          {title}
-        </p>
+        {/* Title（renaming 时显示 inline input，仿 HotwordPanel）*/}
+        {renaming ? (
+          <input
+            autoFocus
+            value={renameVal}
+            onChange={(e) => setRenameVal(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                renameCancelledRef.current = true;
+                setRenaming(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="text-xs leading-relaxed text-foreground bg-background border border-border rounded px-1 py-0.5 w-full outline-none focus:border-primary"
+          />
+        ) : (
+          <p className="text-xs leading-relaxed text-foreground truncate" title={title}>
+            {title}
+          </p>
+        )}
       </div>
 
       {/* 右侧操作：播放 + Finder + 收藏 + 转字幕（灰） + 删除 */}
@@ -562,6 +614,13 @@ function RecordingRow({
           title={t("settings.recordings.reveal")}
         >
           <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+        </button>
+        <button
+          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+          onClick={startRename}
+          title={t("settings.recordings.rename")}
+        >
+          <Pencil className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className="p-1 rounded opacity-60 group-hover:opacity-70 hover:!opacity-100 transition-opacity disabled:opacity-30"

@@ -84,6 +84,7 @@ settings:
     deleteSelected: Delete selected
     play: Play
     reveal: Reveal in Finder
+    rename: Rename
     favorite: Favorite
     unfavorite: Unfavorite
     delete: Delete
