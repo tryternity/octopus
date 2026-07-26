@@ -2821,6 +2821,20 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 - RecordConfig 浮窗 Advanced 区加 toggle「停止后定位文件 / Reveal after stop」——**持久化到 DB**（与 fps/codec session-only 不同，这是跨 session 行为）。mount 时读 `get_config`，切换时调 `set_config`。
 - i18n 加 `recordConfig.revealAfterStop`（zh/en）。
 
+### Task 8 后续：实时混音——系统音频 + 麦克风 → 单轨（2026-07-26）
+
+用户实测「麦克风没采集」。`ffprobe` 分析发现音量正常（mic max -15.8dB），但文件有 **2 条独立音轨**（system + mic），播放器默认只放 track 1（系统音频，常为静音）→ 用户听不到麦克风。这是 helper 设计缺陷，不是采集问题。
+
+修复（用户决策方案 A：实时混音）：Swift helper 在 sample callback 里把 system + mic 实时混合成单条 AAC 轨（符合 QuickTime/OBS/Cap 主流行为）：
+- 删 `systemAudioInput` / `microphoneAudioInput` 两个 AVAssetWriterInput，统一用 `mixedAudioInput`
+- 双 deque（`pendingSystem` / `pendingMic`）按 PTS 配对（48k sample index 取整相等）
+- 配对成功 → `vDSP_vadd` 求和 + 0.5 衰减防削波 → 封回 CMSampleBuffer → 写入单轨
+- 某边 PTS 落后超 200ms（对齐窗口超时）或某边永远空（只开一边音频）→ 落后边 passthrough
+- 收尾 `finishWriter` 前 flush 两边 deque 剩余样本（避免尾部 ~100-200ms 丢失）
+- 格式不一致用 `AVAudioConverter` 转换到目标格式（48k/stereo/float32）
+
+详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3 helper 混音说明。
+
 ---
 
 **Plan 结束。下一步：执行方式选择。**
