@@ -121,11 +121,11 @@ export default function RecordConfig() {
   const handleChangeOutputDir = useCallback(async () => {
     try {
       const selected = await openDialog({ directory: true, multiple: false });
-      if (typeof selected === "string") {
+      if (typeof selected === "string" && selected) {
         await invoke("set_config", { key: "record_output_dir", value: selected });
         setOutputDir(selected);
       }
-    } catch { /* 用户取消，静默 */ }
+    } catch { /* 用户取消或出错，静默 */ }
   }, []);
 
   // ── 拉取源列表（浮窗 show 时 + tab 切换时）──────────────────────
