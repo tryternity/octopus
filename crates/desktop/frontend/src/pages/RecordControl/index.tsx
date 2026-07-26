@@ -4,20 +4,24 @@
  * 屏幕右下角 fixed 位置（位置由后端 record_control_window.rs 算好）。
  * 紧凑布局：红点 + 时长 + 暂停/恢复按钮 + 停止按钮。
  *
- * **duration 初始化**：浮窗创建晚于 recording-started 事件，useRecordSession 的
- * 监听器收不到该事件 → duration 永远 0。mount 时主动 invoke get_record_status
- * 拿当前 state + elapsed_secs，如果在录制中就设 duration 初值 + 启动 setInterval。
- *
- * 停止路径：emit `record://stop-requested`（与 RecordAnnotation 同），main.rs 监听后
- * 调 stop_and_store → close_control_window + emit record://stopped。
- * 暂停/恢复：直接 invoke `record_pause` / `record_resume`（via useRecordSession hook）。
+ * **关键设计：不依赖 useRecordSession 的 state**——浮窗创建晚于 recording-started
+ * 事件，hook 的监听器收不到该事件，state 会一直 idle。改用：
+ * - mount 时 invoke get_record_status 拿真实 state + elapsed_secs
+ * - 本地 currentState state（初始从 get_record_status 来）
+ * - 监听 record://event 的 recording-paused/resumed/stopped 更新本地 state
+ * - 本地 setInterval 在 currentState === "recording" 时累加 displayDuration
  */
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen as rawListen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRecordSession } from "@/hooks/useRecordSession";
 import { useT } from "@/lib/i18n";
+
+/** helper event payload（与后端 HelperEvent 对齐，只取关心的字段） */
+interface HelperEventLite {
+  event: "recording-started" | "recording-paused" | "recording-resumed" | "recording-stopped" | "ready" | "warning" | "error";
+}
 
 function formatDuration(secs: number): string {
   const totalSec = Math.max(0, Math.floor(secs));
@@ -29,68 +33,84 @@ function formatDuration(secs: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+type RecState = "idle" | "recording" | "paused";
+
 export default function RecordControl() {
   const t = useT();
+  // 只用 useRecordSession 的 pause/resume actions，不用它的 state（mount 时是错的 idle）
   const session = useRecordSession();
-  const { state } = session;
-  const isRecording = state === "recording";
-  const isPaused = state === "paused";
 
-  // mount 时主动查当前录制状态——浮窗创建晚于 recording-started 事件，
-  // useRecordSession 的监听收不到，duration 会一直 0。这里 invoke 拿真实状态 + elapsed。
+  // 本地录制状态——从 get_record_status 初始化，监听 record://event 更新
+  const [currentState, setCurrentState] = useState<RecState>("recording"); // 默认 recording（浮窗只在录制中创建）
+  const [displayDuration, setDisplayDuration] = useState(0);
   const [synced, setSynced] = useState(false);
+
+  // mount 时拿真实状态 + 已录秒数
   useEffect(() => {
     let cancelled = false;
     invoke<{ state: string; elapsed_secs: number }>("get_record_status")
       .then((status) => {
         if (cancelled) return;
-        // 如果正在录制（state=recording），直接用后端的 elapsed 作为初始 duration。
-        // useRecordSession 内部的 setInterval 还没启动（recording-started 事件已过），
-        // 这里手动启一个补上——但 setInterval 在 hook 内部，外部无法直接触发。
-        // 折中：直接展示后端 elapsed + 本地 setInterval 继续累加。
-        // 但 hook 的 duration 是内部 state，外部无法设——所以本组件维护自己的 displayDuration。
-        if (status.state === "recording" || status.state === "paused") {
-          setDisplayDuration(status.elapsed_secs);
-        }
+        const s = status.state;
+        setCurrentState(s === "paused" ? "paused" : s === "recording" ? "recording" : "idle");
+        setDisplayDuration(status.elapsed_secs);
         setSynced(true);
       })
-      .catch(() => setSynced(true));
+      .catch(() => {
+        // 失败时假定 recording（浮窗只在录制中创建）
+        setSynced(true);
+      });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // 自己维护 displayDuration（hook 的 duration 收不到 recording-started 不会启动）
-  const [displayDuration, setDisplayDuration] = useState(0);
+  // 监听 record://event 更新本地 state（pause/resume/stop）
   useEffect(() => {
-    if (!synced) return;
-    // recording 时启动本地计时器；paused/idle 时停
-    if (state === "recording") {
-      const timer = setInterval(() => {
-        setDisplayDuration((d) => d + 1);
-      }, 1000);
-      return () => clearInterval(timer);
-    }
-  }, [synced, state]);
-
-  // 监听停止失败（停止失败时也 hide 浮窗，避免残留）
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlisten: UnlistenFn | undefined;
     let cancelled = false;
-    import("@tauri-apps/api/event").then(({ listen }) => {
-      if (cancelled) return;
-      listen("record://stop-failed", () => {
-        getCurrentWindow().hide().catch(() => {});
-      }).then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      });
+    rawListen<HelperEventLite>("record://event", (e: Event<HelperEventLite>) => {
+      const evt = e.payload.event;
+      if (evt === "recording-paused") setCurrentState("paused");
+      else if (evt === "recording-resumed") setCurrentState("recording");
+      else if (evt === "recording-stopped") setCurrentState("idle");
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
     });
     return () => {
       cancelled = true;
       unlisten?.();
     };
   }, []);
+
+  // recording 时累加 displayDuration；paused/idle 停
+  useEffect(() => {
+    if (!synced || currentState !== "recording") return;
+    const timer = setInterval(() => {
+      setDisplayDuration((d) => d + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [synced, currentState]);
+
+  // 监听停止失败（hide 浮窗避免残留）
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    rawListen("record://stop-failed", () => {
+      getCurrentWindow().hide().catch(() => {});
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const isRecording = currentState === "recording";
+  const isPaused = currentState === "paused";
 
   const onStop = async () => {
     await emit("record://stop-requested", { from: "control" });
@@ -169,11 +189,13 @@ export default function RecordControl() {
         }}
       >
         {isRecording ? (
+          // 暂停图标（两竖）——录制中显示「暂停」
           <svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor">
             <rect x="0" y="0" width="3" height="12" rx="1" />
             <rect x="7" y="0" width="3" height="12" rx="1" />
           </svg>
         ) : (
+          // 播放图标（三角）——暂停中显示「继续」
           <svg width="8" height="10" viewBox="0 0 10 12" fill="currentColor">
             <path d="M0 0 L10 6 L0 12 Z" />
           </svg>

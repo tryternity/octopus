@@ -32,12 +32,27 @@
 import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen as rawListen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
 import { type Annotation, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
 import { useAnnotationState, AnnotationToolbar, TOOLBAR_H } from "@/components/Annotation";
 import { useT } from "@/lib/i18n";
 
 const RECORD_BORDER_COLOR = "#3b82f6";
+
+/** helper event payload（监听 pause/resume/stop 更新录制状态）*/
+interface HelperEventLite {
+  event: "recording-started" | "recording-paused" | "recording-resumed" | "recording-stopped" | "ready" | "warning" | "error";
+}
+
+function formatDuration(secs: number): string {
+  const totalSec = Math.max(0, Math.floor(secs));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+  return `${pad(m)}:${pad(s)}`;
+}
 
 export default function RecordAnnotation() {
   const t = useT();
@@ -64,6 +79,38 @@ export default function RecordAnnotation() {
   // toolbar_pos 决定 TOOLBAR_ZONE（后端 poller 据此判定鼠标穿透），前端必须与之对齐。
   const [canvasRect, setCanvasRect] = useState({ ox: 0, oy: 0, w: 0, h: 0 });
   const [toolbarPos, setToolbarPos] = useState<"below" | "above" | "inside">("inside");
+  // ── 录制时长显示（与 RecordControl 同模式：mount 查 get_record_status + 监听事件）──
+  // RecordAnnotation overlay 创建晚于 recording-started 事件，本地直接 setInterval。
+  type RecState = "idle" | "recording" | "paused";
+  const [recState, setRecState] = useState<RecState>("recording"); // overlay 只在录制中创建
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ state: string; elapsed_secs: number }>("get_record_status")
+      .then((status) => {
+        if (cancelled) return;
+        setRecState(status.state === "paused" ? "paused" : status.state === "recording" ? "recording" : "idle");
+        setElapsed(status.elapsed_secs);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    rawListen<HelperEventLite>("record://event", (e: Event<HelperEventLite>) => {
+      const evt = e.payload.event;
+      if (evt === "recording-paused") setRecState("paused");
+      else if (evt === "recording-resumed") setRecState("recording");
+      else if (evt === "recording-stopped") setRecState("idle");
+    }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+  useEffect(() => {
+    if (recState !== "recording") return;
+    const timer = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [recState]);
   const canvasRectRef = useRef(canvasRect);
   useEffect(() => { canvasRectRef.current = canvasRect; }, [canvasRect]);
 
@@ -449,8 +496,24 @@ export default function RecordAnnotation() {
           invoke("set_annotation_passthrough", { passthrough: target === "none" }).catch(() => {});
         }}
       >
-        {/* divider + 停止录制（红色）—— 业务侧独有 */}
+        {/* divider + 录制时长 + 停止录制（红色）—— 业务侧独有 */}
         <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
+        {/* 录制时长 mm:ss（等宽数字防跳；红点 pulse 提示录制中）*/}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 6px" }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: recState === "paused" ? "rgba(255,255,255,0.4)" : "#dc2626",
+            animation: recState === "recording" ? "pulse 1.5s ease-in-out infinite" : "none",
+          }} />
+          <span style={{
+            fontSize: 11, fontWeight: 600, color: "var(--color-foreground)",
+            fontFamily: "SF Mono, Menlo, monospace",
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {formatDuration(elapsed)}
+          </span>
+          <style>{`@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.85); } }`}</style>
+        </div>
         <button
           onClick={onStopClick}
           title={t("tray.recordStop")}
