@@ -61,9 +61,9 @@
 | **F9** | 系统音频内录 | 见 §2.9（helper 配置 `capturesAudio=true`，macOS 13+ 原生支持，无需虚拟驱动）|
 | **F10** | 麦克风录制 | 见 §2.10（helper 配置麦克风，独立音轨；需要 `NSMicrophoneUsageDescription`）|
 | **F11** | 录制源选择（display/window/区域） | 见 §2.11（前端选择器 + helper 传不同 source type）|
-| **F12** | 编码参数（codec/分辨率/fps/码率） | 见 §2.12（前端设置 + helper 配置透传）|
-| **F13** | 录屏文件管理（重命名/删除/打开目录） | 见 §2.13（Tauri 命令 + 文件系统操作）|
-| **F14** | 录屏浮窗（带暂停/停止按钮） | 见 §2.14（新建 record_control_window，仿 overlay_window）|
+| ~~**F12**~~ ✅ | ~~编码参数（codec/分辨率/fps/码率）~~ | 已实现（2026-07-26）：RecordConfig「高级」折叠区 fps/codec/hideCursor |
+| ~~**F13**~~ ✅ | ~~录屏文件管理（重命名）~~ | 已实现（2026-07-26）：RecordingRow inline 重命名。物理删/回收站推迟 |
+| ~~**F14**~~ ✅ | ~~录屏浮窗（带暂停/停止按钮）~~ | 已实现（2026-07-26）：record_control_window display/window pill |
 
 ### P2 — 差异化能力（octopus 独有，复用既有栈）
 
@@ -79,7 +79,7 @@
 | --- | --- | --- |
 | **F18** | 可编辑光标（隐藏系统光标 + 后期重放） | 见 §2.18（vendor cursor-helper，录屏时 `showsCursor=false`，存储光标轨迹）|
 | **F19** | 录后编辑器（修剪/缩放动画） | 见 §2.19（前端时间线 UI + ffmpeg_sidecar 修剪；PixiJS 缩放动画参考 openscreen）|
-| **F20** | GIF 导出 | 见 §2.20（ffmpeg_sidecar MP4 → GIF）|
+| ~~**F20**~~ ✅ | ~~GIF 导出~~ | 已实现（2026-07-26）：见 [`2026-07-26-record-gif-export.md`](2026-07-26-record-gif-export.md)（裸调 ffmpeg，不用 ffmpeg_sidecar）|
 | **F21** | 摄像头画中画 | 见 §2.21（helper 扩展 webcam capture，或 AVFoundation 独立进程）|
 
 ---

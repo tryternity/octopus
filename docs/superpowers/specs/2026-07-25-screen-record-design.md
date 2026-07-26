@@ -967,7 +967,7 @@ if request.audio.microphone.enabled {
 │ ▢ bug 复现         03:21  2026-07-24 18:05│
 └──────────────────────────────────────────┘
 
-每条录屏右键：[播放] [重命名] [收藏] [删除]
+每条录屏行操作（hover 显示图标按钮组）：[播放] [Finder 显示] [重命名] [收藏] [转字幕（灰）] [GIF 导出] [删除]
 顶部：[搜索框]（MVP 灰禁用，P2 启用 FTS5 全文搜索）
 ```
 
@@ -1002,15 +1002,17 @@ if request.audio.microphone.enabled {
 
 | 推迟到 | 功能点 |
 |---|---|
-| **P1** | F12 编码参数 UI（MVP 全用 `app_config` 默认值，配置浮窗「高级」是占位）|
-| **P1** | F13 完整文件管理（MVP 只做双击播放 + 右键软删，重命名/物理删/P2）|
-| **P1** | F14 完整录制控制浮窗（MVP 用菜单栏图标 + 简单下拉）|
+| ~~**P1** F12 编码参数 UI~~ | ✅ 已实现（2026-07-26）：RecordConfig「高级」折叠区——fps/codec/hideCursor，session 级 |
+| ~~**P1** F13 重命名~~ | ✅ 已实现（2026-07-26）：RecordingRow Pencil 按钮 + inline input |
+| **P1** | F13 物理删除/回收站视图（软删够用，推迟）|
+| ~~**P1** F14 录制控制浮窗~~ | ✅ 已实现（2026-07-26）：`record_control_window` display/window 录制时桌面右下角 pill |
 | **P1** | Windows helper（vendor openscreen C++ `wgc-capture`）|
 | **P2** | F15 ASR 字幕（MVP 灰按钮占位）|
 | **P2** | F16 字幕翻译 |
 | **P2** | F17 全文搜索（FTS5 表推迟到 F15 一起加）|
 | **P2+** | Linux helper（待调研 PipeWire/X11 方案）|
-| **P3** | F18 可编辑光标、F19 编辑器、F20 GIF 导出、F21 摄像头 |
+| ~~**P3** F20 GIF 导出~~ | ✅ 已实现（2026-07-26）：`export_gif` 命令 + Clapperboard 按钮 |
+| **P3** | F18 可编辑光标、F19 编辑器、F21 摄像头 |
 
 ### 9.3 MVP 验收标准
 
