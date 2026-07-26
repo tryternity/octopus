@@ -15,11 +15,16 @@ display / window 录制开始时显示一个**桌面右下角 pill 浮窗**：
 
 Area 录制不创建本浮窗（已有 RecordAnnotation，互斥）。
 
+> **2026-07-26 补充**：
+> 1. **时长 bug 修复**——pill mount 时调 `get_record_status` 拿真实 state + elapsed_secs（修 duration=0 bug：浮窗创建晚于 recording-started 事件，useRecordSession 收不到事件，duration 永远 0）。前端维护本地 `currentState` + `displayDuration`，监听 `record://event` 更新。
+> 2. **RecordAnnotation 也加了同款控件**——area 录制的 RecordAnnotation 工具栏尾也加了录制时长 mm:ss + 暂停/继续按钮（与 pill 同范式，commit `bbfebf57`/`323ba014`），保证 area 录制也有时长反馈 + 暂停入口。
+
 ## 设计决策（用户确认）
 
 | 决策点 | 选择 | 理由 |
 |---|---|---|
 | 位置 | 录制所在屏右下角（MVP 全部 fallback 主屏） | 与 record_window 配置浮窗一致；display_id → Monitor 精确匹配推迟（tauri Monitor 不暴露 CGDirectDisplayID） |
+| **尺寸** | **130×38**（原 200×56 太长，用户反馈） | 紧凑布局：红点(7px)+gap+时长(~28px)+暂停(24px)+停止(24px) |
 | 被录进视频 | 接受（always_on_top=true） | 用户主动选 display/window 录制，预期接受；不被录需 always_on_top=false 但会失去置顶 |
 | 鼠标穿透 | **不穿透** | pill 必须能直接点按钮；穿透需复制 RecordAnnotation 的 33ms poller，复杂度高，收益低 |
 | 关闭时机 | 跟随 stop_and_store（与 RecordAnnotation 同） | main.rs stop-requested handler + record_hotkey handle_stop + record_kill 三处都调 close_control_window |

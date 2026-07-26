@@ -890,7 +890,16 @@ if request.audio.microphone.enabled {
 
 ### 8.1 配置浮窗（双态型）
 
-> **实现注记（2026-07-25 已实现）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。三个 tab：display（radio list）/ window（radio list，isOnScreen + 尺寸 + bundleId 过滤）/ area（拖框 UI 已实现——`record_area_picker.rs` + `AreaPicker/index.tsx`，选完后回填 display name + 宽高摘要）。音频开关 + 开始/取消按钮。Settings RecordingPanel 作为历史管理 + 备用入口保留。下方 mockup 是完整设计目标。
+> **实现注记（2026-07-25 已实现；2026-07-26 UX 改进）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。
+>
+> **2026-07-26 UX 改进**：
+> - **TAB 顺序改为 区域 → 全屏 → 应用**（原 display → window → area），默认 tab 是「区域」
+> - **「窗口」tab 改名「应用」**（i18n tabWindow: 窗口→应用）
+> - **area tab 合并为 1 步流程**——点底部「框选录制」按钮 → picker 拖框 → 松手后工具栏出现（实时跟随）→ 点「开始录制」直接开始录制（不回填「已选区域」摘要、不回 RecordConfig）
+> - **麦克风默认开**（session 级 `useState(true)`，DB seed 仍 false 是首启权限考虑）
+> - **高级折叠区**：fps（15/30/60）/ codec（h264/hevc）/ hideCursor toggle（右对齐）
+> - **源列表固定高度** `h-[140px]`（三 tab 切换无晃动，超过滚动）
+> - **窗口列表排除 octopus「录制设置」浮窗**（双重条件：app 是 octopus + 标题匹配）
 
 ```
 快捷键 Cmd+Shift+R → 配置浮窗弹出
@@ -922,6 +931,8 @@ if request.audio.microphone.enabled {
 > **2026-07-26 部分实现**（P1-3）：tray menu 录制态文案加 `●` 前缀作为视觉提示（`update_record_tray_label` 录制分支 format!）。真红点需替换 tray icon PNG（待用户提供图标资源）。duration 实时显示跳过（被 P1-7 浮窗覆盖）。
 >
 > **2026-07-26 实现**（P1-5）：RecordConfig 加「高级」折叠区——fps（15/30/60）/ codec（h264/hevc）/ hideCursor toggle。session 级（不持久化 DB），默认收起。
+>
+> **2026-07-26 补充**（RecordAnnotation 增强）：area 录制的 RecordAnnotation overlay 工具栏尾加了录制时长 mm:ss + 暂停/继续按钮（与 RecordControl pill 同范式，commit `bbfebf57`/`323ba014`）；overlay 窗口改为全屏模式 + 工具栏位置复用截图 `computeToolbarPosition`（详见 [record-area-annotation spec §1.3](2026-07-25-record-area-annotation-design.md)）。ESC 全局快捷键改动态注册（详见 [record-esc-hotkey-fix spec](2026-07-26-record-esc-hotkey-fix.md)）。
 
 ```
 菜单栏（始终可见，录屏时显示）

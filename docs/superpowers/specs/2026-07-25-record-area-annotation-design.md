@@ -3,6 +3,12 @@
 > **状态：✅ 已实现**（2026-07-26，区域选区 + 标注 overlay + 部分穿透，e2e 通过）。
 > 实施 commit `33e321c1`..`a3769582`，详见 [plan](../plans/2026-07-25-record-area-annotation.md)。
 >
+> **2026-07-26 重构**（commit `d587fc1f`/`bbfebf57`/`323ba014`/`acc65cbc`）：
+> - **窗口改全屏**——不再用"窄窗口 + 后端三选"（§1.3 已废弃），改用选区所在显示器全屏窗口 + Canvas CSS fixed 定位选区（与截图 Screenshot 同模式）。
+> - **工具栏位置复用截图算法**——前端用 `computeToolbarPosition`（`components/Annotation/position.ts`），与截图完全同算法；位置算完 `invoke("set_toolbar_zone")` 回传给后端 poller 判穿透。
+> - **RecordAnnotation 工具栏加暂停 + 时长**——与 RecordControl pill 同范式（红点 pulse + mm:ss + 暂停/继续按钮）。
+> - **AreaPicker 实时跟随工具栏**——拖框中工具栏就显示（含尺寸 + 「开始录制」+ 「取消」），与截图同体验。
+>
 > **范围**：在已有「录屏配置浮窗 + helper Area capture」基础上，加「区域选区 + 录制中实时标注」。标注与屏幕内容一起被录进视频（不是后期合成）。
 
 ## 0. 背景与决策
@@ -77,35 +83,31 @@
 | `skip_taskbar` | true | 不出现在 Dock |
 | `shadow` | false | 无阴影（透明窗口不需要）|
 | `visible` | true | 直接显示（不像 picker 要 ready 同步）|
+| **尺寸** | **选区所在显示器全屏**（2026-07-26 重构）| 与截图同模式——工具栏用 fixed 浮层，不受选区宽度限制 |
 
-### 1.3 窗口扩展三选逻辑（定稿）
+### 1.3 窗口尺寸策略（2026-07-26 重构：全屏窗口 + 前端算工具栏位置）
 
-**背景**：工具栏 + popover **不需要被录进视频**（只有标注才需要）。所以 overlay 窗口比选区大——Canvas=选区（被 SCK 录），工具栏在选区外（不被录）。
+> **⚠️ 原"窄窗口 + 后端三选"已废弃**（commit `d587fc1f`）。
+> 原方案窗口 = 选区 + 工具栏空间（252px 扩展），后端 Rust 算 below/above/inside。
+> 问题：① 窄选区时工具栏被窗口边界截断；② Rust 三选算法与前端 `computeToolbarPosition` 重复且不对齐（POPOVER_H 差异导致位置 bug）。
 
-**三选逻辑**（与截图 `screenshot_commands.rs` L750-766 一致）：
-
-```
-TOOLBAR_H = 44.0     // 工具栏高度
-TOOLBAR_MARGIN = 8.0  // 工具栏与选区间距
-POPOVER_H = 200.0     // popover 高度估算
-toolbar_space = TOOLBAR_H + TOOLBAR_MARGIN + POPOVER_H  // = 252.0
-
-below_space = 显示器高度 - (选区底部 + TOOLBAR_MARGIN)
-above_space = 选区顶部 - 显示器顶部
-
-① below_space >= 252 → toolbar_pos = "below"
-   窗口 = 选区 + 下方 252px。Canvas oy=0（窗口顶部），工具栏在 Canvas 下方。
-② above_space >= 252 → toolbar_pos = "above"
-   窗口 = 上方 252px + 选区。Canvas oy=252（窗口偏移），工具栏在 Canvas 上方。
-③ 都不够 → toolbar_pos = "inside"
-   窗口 = 选区尺寸（不扩展）。工具栏覆盖在 Canvas 内部底部（被录可接受）。
-```
+**新方案**（与截图 Screenshot 完全同模式）：
+- **窗口 = 选区所在显示器全屏**（`win_x/y/w/h = mon_x/y/w/h`）
+- **Canvas 通过 CSS `position:fixed` 定位到选区位置**（`canvas_ox/oy/w/h` URL 参数注入）
+- **工具栏位置前端算**——`computeToolbarPosition(canvasRect, viewportH)`（`components/Annotation/position.ts`，与截图同算法）
+- **TOOLBAR_ZONE 前端回传**——mount 后 `invoke("set_toolbar_zone", {x,y,w,h})` 把工具栏实际位置传给后端 poller（判穿透用）
 
 **URL 参数**（注入 `record-annotation.html`）：
 ```
-?toolbar=below&canvas_ox=0&canvas_oy=0&canvas_w=500&canvas_h=350&scale=2
+?display_id=5&x=...&y=...&width=...&height=...&scale=2
+&toolbar=auto                    // "auto" = 前端用 computeToolbarPosition
+&canvas_ox=选区相对显示器原点X    // Canvas CSS left
+&canvas_oy=选区相对显示器原点Y    // Canvas CSS top
+&canvas_w=选区宽                  // Canvas CSS width
+&canvas_h=选区高                  // Canvas CSS height
 ```
-前端解析后 Canvas 用 `canvas_ox/oy/w/h` 限制在选区区域，工具栏按 `toolbar` 定位。
+
+前端 RecordAnnotation.tsx 不再读 `toolbar` 参数做三分支，直接调 `computeToolbarPosition` + `invoke("set_toolbar_zone")`。
 
 ### 1.4 与 helper 的关系
 
@@ -129,9 +131,9 @@ above_space = 选区顶部 - 显示器顶部
 - mount 时 invoke `show_record_area_picker_window`（累加 READY_COUNT）
 - Canvas 全屏 + 半透明黑遮罩 `rgba(0,0,0,0.5)`
 - mousedown 记起点 + mousemove 实时画选区框（蓝色 `#3b82f6`）+ mouseup 完成
-- **拖完即确认**（用户决策）：mouseup 后选区 ≥10px 立即 invoke `confirm_record_area_picker`，不显示标注工具
+- **工具栏实时跟随**（2026-07-26 加，与截图同体验）：sel 存在即显示工具栏（`computeToolbarPosition` 算位置），含尺寸提示 + 「开始录制」+ 「取消」按钮。mouseup 不自动 confirm——用户点「开始录制」才调 `confirm_record_area_picker`
 - Esc / 右键 → invoke `cancel_record_area_picker`
-- 实时尺寸提示（物理像素 `Math.round(w*dpr) × Math.round(h*dpr)`）
+- 实时尺寸提示（物理像素 `Math.round(w*dpr) × Math.round(h*dpr)`，工具栏内显示）
 
 ### 2.3 坐标转换（复用 screenshot_geometry）
 
@@ -153,19 +155,23 @@ static ANNOTATION_PASSTHROUGH: AtomicBool  // false=标注模式, true=穿透模
 static TOOLBAR_ZONE: Mutex<(f64, f64, f64, f64)>  // 工具栏在窗口内的逻辑坐标 (x, y, w, h)
 ```
 
-**`create_annotation_window(app, selection)`**：
+**`create_annotation_window(app, selection)`**（2026-07-26 重构后）：
 1. 从 `Source::Area` 提取 display_id + x/y/width/height（物理像素）
 2. 匹配 Tauri monitor（物理 → 逻辑坐标 / scale）
-3. 三选逻辑决定 `toolbar_pos`（below/above/inside）+ 窗口尺寸/位置 + Canvas 偏移
-4. 设置 `TOOLBAR_ZONE`（工具栏在窗口内的逻辑坐标，poller 用）
-5. URL 注入 `canvas_ox/oy/w/h` + `toolbar` + `scale`
-6. 创建 `always_on_top(true)` 透明窗口
+3. **窗口 = 选区所在显示器全屏**（不再算三选/扩展空间）
+4. `TOOLBAR_ZONE` 初始化为全 0（前端 mount 后通过 `set_toolbar_zone` 回传实际位置）
+5. URL 注入 `canvas_ox/oy/w/h`（选区相对显示器原点的逻辑坐标）+ `toolbar=auto` + `scale`
+6. 创建 `always_on_top(true)` 透明全屏窗口
 7. 启动 poller
+
+**`set_toolbar_zone(_app, x, y, w, h)`**（Tauri 命令，2026-07-26 新增）：
+- 前端 mount 后调，把 `computeToolbarPosition` 算出的工具栏实际位置传给后端
+- poller 据此判定穿透（工具栏区域不穿透，其他穿透）
 
 **`start_annotation_click_through_poller(app)`**（33ms tick）：
 - 标注模式（passthrough=false）→ 整个窗口不穿透（`setIgnoresMouseEvents(false)`）
 - 穿透模式（passthrough=true）→ 按光标位置区分：
-  - 光标在 `TOOLBAR_ZONE` 内 → 不穿透（可点工具栏切回标注）
+  - 光标在 `TOOLBAR_ZONE` 内（前端回传） → 不穿透（可点工具栏切回标注）
   - 光标不在 → 穿透（操作下层应用）
 
 **`set_annotation_passthrough(_app, passthrough: bool)`**（Tauri 命令）：
@@ -180,26 +186,27 @@ static TOOLBAR_ZONE: Mutex<(f64, f64, f64, f64)>  // 工具栏在窗口内的逻
 **URL 参数解析**（mount 时）：
 ```tsx
 const params = new URLSearchParams(window.location.search);
-const canvasRect = { ox, oy, w, h };  // Canvas 在窗口内的位置 + 尺寸
-const toolbarPos = "below" | "above" | "inside";
+const canvasRect = { ox, oy, w, h };  // Canvas 在窗口内的位置 + 尺寸（选区相对显示器原点）
+// toolbar=auto 标识前端用 computeToolbarPosition（不再读 below/above/inside）
 ```
 
 **Canvas**：`position: fixed; left/top/width/height = canvasRect`。Canvas 像素 buffer = `canvasRect.w * dpr` / `canvasRect.h * dpr`。标注坐标 = `e.clientX - canvasRect.ox`（Canvas 局部坐标）。
 
-**工具栏位置**（按 `toolbarPos` 三分支）：
-- `below`：`toolbarTop = canvasRect.oy + canvasRect.h + 8`（Canvas 下方）
-- `above`：`toolbarTop = 8`（窗口顶部）
-- `inside`：`toolbarTop = canvasRect.oy + canvasRect.h - 44 - 8`（Canvas 内部底部）
+**工具栏位置**（2026-07-26 重构后，与截图同算法）：
+```tsx
+const tbPos = computeToolbarPosition(canvasRect, window.innerHeight);
+const toolbarTop = tbPos.y;
+const popoverY = tbPos.belowOrAbove ? toolbarTop + TOOLBAR_H : Math.max(0, toolbarTop - 200);
+const toolbarCenterX = computeToolbarCenterX(canvasRect, window.innerWidth, toolbarW);
+// mount 后回传给后端 poller
+useEffect(() => { invoke("set_toolbar_zone", {x, y, w, h}); }, [tbPos, ...]);
+```
 
-**popover 位置**（跟随工具栏）：
-- `below`：`popoverY = toolbarTop + 44`（工具栏下方）
-- `above`/`inside`：`popoverY = max(0, toolbarTop - 200)`（工具栏上方）
-
-**工具栏 X clamp**：`DOCK_MARGIN(80) + halfW`（与截图 L771-775 一致）
-
-**工具栏按钮**（复用截图 `ToolButton`）：
+**工具栏按钮**（复用截图 `<AnnotationToolbar>`）：
 - 9 种标注工具（none/rect/oval/diamond/line/arrow/pen/text/number/blur）
 - undo / redo（Cmd+Z / Cmd+Shift+Z）
+- **录制时长 mm:ss**（红点 pulse，2026-07-26 加，与 RecordControl pill 同范式）
+- **暂停/继续按钮**（2026-07-26 加，invoke `record_pause`/`record_resume`）
 - 停止录制按钮（红色，emit `record://stop-requested`）
 
 **标注交互**（复用 `@/lib/annotation`）：
@@ -211,6 +218,11 @@ const toolbarPos = "below" | "above" | "inside";
 - select 按钮 onClick → `passthrough: true`
 - Esc 退出工具（回 none）→ `passthrough: true`
 - mount 时默认 `passthrough: true`（tool 默认 none）
+
+**录制状态/时长**（2026-07-26 加，与 RecordControl 同范式）：
+- mount 时 `invoke("get_record_status")` 拿真实 state + elapsed_secs（修 duration=0 bug）
+- 监听 `record://event` 的 pause/resume/stop 更新本地 recState
+- 本地 setInterval 在 recState === "recording" 时累加 elapsed
 
 ### 3.3 鼠标穿透模型（定稿）
 
@@ -238,10 +250,6 @@ const toolbarPos = "below" | "above" | "inside";
 ### 3.4 标注数据持久化（MVP 不做）
 
 标注是实时合成进视频的（overlay 窗口内容被 SCK 录到），**不单独保存标注数据**（视频里已经有了）。如果要支持「编辑已有标注」，需要把 annotations 数组序列化（推迟到 P2）。
-
-### 3.4 标注数据持久化（MVP 不做）
-
-标注是实时合成进视频的，**不单独保存标注数据**（视频里已经有了）。如果要支持「编辑已有标注」，需要把 annotations 数组序列化（推迟到 P2）。
 
 ## 4. 配置接入
 
