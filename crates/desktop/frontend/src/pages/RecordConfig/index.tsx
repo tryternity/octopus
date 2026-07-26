@@ -263,31 +263,25 @@ export default function RecordConfig() {
           ))}
         </div>
 
-        {/* ── 源列表（display / window）/ area 说明 ──────────────── */}
-        <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
-          {tab === "display" && (
-            <DisplayList
-              displays={displays}
-              selectedId={selectedDisplayId}
-              onSelect={setSelectedDisplayId}
-            />
-          )}
-          {tab === "window" && (
-            <WindowList
-              windows={windows}
-              selectedId={selectedWindowId}
-              onSelect={setSelectedWindowId}
-            />
-          )}
-          {tab === "area" && (
-            <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
-              <Square className="w-6 h-6 text-muted-foreground/60" />
-              <p className="text-[11px] text-muted-foreground max-w-[220px] leading-relaxed">
-                {t("recordConfig.areaPlaceholder")}
-              </p>
-            </div>
-          )}
-        </div>
+        {/* ── 源列表（仅 display / window；area 无需选源，直接从音频开关开始）── */}
+        {tab !== "area" && (
+          <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
+            {tab === "display" && (
+              <DisplayList
+                displays={displays}
+                selectedId={selectedDisplayId}
+                onSelect={setSelectedDisplayId}
+              />
+            )}
+            {tab === "window" && (
+              <WindowList
+                windows={windows}
+                selectedId={selectedWindowId}
+                onSelect={setSelectedWindowId}
+              />
+            )}
+          </div>
+        )}
 
         {/* ── 音频开关 ─────────────────────────────────────── */}
         <div className="px-3 py-2 border-t border-border flex items-center gap-4">
