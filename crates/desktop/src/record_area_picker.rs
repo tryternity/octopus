@@ -249,9 +249,12 @@ pub async fn confirm_record_area_picker(
     });
     let _ = app_handle.emit("record-area://selected", payload);
 
-    // 8. 关 picker + show 配置浮窗
+    // 8. 关 picker。
+    // 不 show 配置浮窗——新流程是「框选完直接开始录制」（listener 收到 record-area://selected
+    // 后立即调 startRecordingWithSource → 成功后 getCurrentWindow().hide()）。
+    // 如果这里 show，会和 listener 的 hide 并发导致「设置窗口一闪而过」。
+    // cancel_record_area_picker 才 show（用户取消框选 → 回配置）。
     close_all_picker_windows(&app_handle);
-    crate::record_window::show_record_window(&app_handle);
 
     Ok(())
 }

@@ -161,6 +161,9 @@ export default function RecordConfig() {
       await getCurrentWindow().hide();
     } catch (e) {
       setError(t("recordConfig.startFailed") + String(e));
+      // area 流程下 picker 启动时已 hide 配置浮窗，失败时需 show 让用户看到错误
+      // （display/window 流程浮窗一直可见，show 是幂等 no-op）
+      await getCurrentWindow().show().catch(() => {});
     } finally {
       setStarting(false);
     }
