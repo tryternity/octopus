@@ -1240,3 +1240,21 @@ fingerprint.rs 核心正确性确认——cipher_md5 11 字段 = VaultCipher 全
 **回归测试**：`path_traversal_uuid_rejected`——合法 UUID 通过 + 多种恶意 uuid（../../meta、绝对路径、Windows 风格）被拒 + 非法格式被拒。
 
 **严重度校准**：中-高——不到「高」（私有 repo 威胁模型 + .json 后缀限制可利用性），高于「中」（delete 破坏性 + read/delete 双路径 + 防御原则违反 + clone 任意 repo 场景真实）。write 路径 trusted（用本地 DB 的 UUID v4，非 outline 控制）。
+
+---
+
+## 第四十四轮审查（2026-07-26，vault_state / vault_secret_access / passphrase_en：干净，2 项信息性观察）
+
+三模块设计成熟、守护测试完备，无中高危 bug。两个候选观察经核实均不可达，定级信息性。
+
+### OBS-1: is_user_vault_unlocked 对 last_active_at=None 的「信任」语义（信息性，不可达）
+
+vault_state.rs:109 若 last_active_at=None 但 user_vault_key=Some，超时检查跳过 → 永不超时。
+
+**不可达确认**：grep 全仓库 user_vault_key 写入点仅 3 处——:111 `= None`（超时清零）/ :125 `= Some(key)`（set_user_vault_unlocked，同时设 last_active_at）/ :141 `= None`（lock）。无路径绕过 set_user_vault_unlocked 直接写 Some。故「key 在但 last_active_at=None」正常路径不可达。
+
+### OBS-2: try_decrypt_secret_global 对 session=None 返回 raw（信息性，不可达）
+
+vault_secret_access.rs:117-123 session None → Ok(raw) 即使 raw 是 v1: 密文。对比 try_decrypt_secret(:90-91) v1: + app_key None → Err。两版本对「v1: 但无法解密」处理相反。
+
+**不可达确认**：set_global_session 仅 main.rs:1073 一处，在 `#[cfg(feature = "vault")]` 块内。feature on → session 必注入；feature off → 整块跳过 + octopus_vault 不存在 + DB 不可能有 v1: 密文 → Ok(raw) 正确。注释 :111-112/:120 已说明设计意图。
