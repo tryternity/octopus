@@ -227,17 +227,8 @@ pub(crate) async fn build_default_config() -> Result<RecordConfig, String> {
     // ── 音频：系统音频 + 麦克风（按 record_microphone + ASR microphone 配置）─────
     let system_audio_on = parse_bool_config("record_system_audio", true);
     let mic_on = parse_bool_config("record_microphone", false);
-    // 麦克风设备名：优先 record_microphone_device，空则回退 ASR microphone（用户决策：
-    // 「麦克风用 ASR 的配置」——ASR 已配的麦克风直接复用，避免用户在录屏再配一次）
-    let mic_device = octopus_infra::db::load_config_key("record_microphone_device")
-        .map_err(e2s)?
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            octopus_infra::db::load_config_key("microphone")
-                .ok()
-                .flatten()
-                .filter(|s| !s.is_empty())
-        });
+    // 麦克风设备名：复用 ASR 配的麦克风（resolve_mic_device_name 三级回退）
+    let mic_device = resolve_mic_device_name(None);
 
     let audio = AudioConfig {
         system: octopus_record::SystemAudioConfig {
@@ -265,6 +256,36 @@ fn parse_bool_config(key: &str, default: bool) -> bool {
         .flatten()
         .map(|s| s == "true")
         .unwrap_or(default)
+}
+
+/// 解析麦克风设备名（用户决策 2026-07-26：复用 ASR 已配的麦克风）。
+///
+/// 优先级：
+/// 1. 调用方显式传入（RecordConfig UI 未来加设备选择器 / 测试场景）
+/// 2. DB `record_microphone_device`（录屏专用配置，目前默认空）
+/// 3. DB `microphone`（ASR 语音识别配的麦克风——用户已精心选过，复用避免录屏再配）
+/// 4. 都空 → None（helper 用 SCK 内部默认设备，通常系统默认输入）
+///
+/// 修 bug 背景：RecordConfig UI 当前只发 `device_name: null`（无设备选择器），
+/// 导致 helper 回退系统默认麦（可能是 MacBook 内置麦，灵敏度低 → 录屏音量极低）。
+/// 复用 ASR 配的麦克风（用户已验证可用）是最小成本修复。
+fn resolve_mic_device_name(explicit: Option<&str>) -> Option<String> {
+    if let Some(name) = explicit {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    octopus_infra::db::load_config_key("record_microphone_device")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            octopus_infra::db::load_config_key("microphone")
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty())
+        })
 }
 
 /// record_start / record_start_default 共用的核心启动逻辑。
@@ -298,7 +319,17 @@ pub(crate) async fn start_with_config(
         recording_id,
         source: config.source,
         video: config.video,
-        audio: config.audio,
+        // 麦克风设备名回退：RecordConfig UI 当前只发 device_name=null（无设备选择器），
+        // 这里兜底从 DB 读 ASR 配的麦克风名（用户已精心选过，复用避免录屏再配）。
+        // 否则 helper 收到 deviceName=nil → 回退 SCK 内部默认麦（可能选错 → 录屏音量极低）。
+        audio: {
+            let mut audio = config.audio;
+            if audio.microphone.enabled {
+                audio.microphone.device_name =
+                    resolve_mic_device_name(audio.microphone.device_name.as_deref());
+            }
+            audio
+        },
         outputs: Outputs {
             screen_path: abs_path.to_string_lossy().to_string(),
         },
@@ -824,4 +855,43 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
         serde_json::json!({ "id": id, "path": path_str }),
     );
     Ok(path_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：调用方显式传入非空设备名时，直接返回（trim 空白），不读 DB。
+    /// 这是 RecordConfig UI 未来加设备选择器后的路径——用户主动选的设备优先。
+    #[test]
+    fn resolve_mic_device_name_explicit_non_empty_wins() {
+        assert_eq!(resolve_mic_device_name(Some("  UGREEN USB MIC  ")), Some("UGREEN USB MIC".to_string()));
+    }
+
+    /// 回归：显式传入空字符串 / 纯空白 → 视为 None，走 DB 回退路径（不返回空串）。
+    /// 前端可能传 `""`（空串）而非 `null`，需正确识别为「未指定」。
+    /// 注意：空串会 fallback 到 DB——若 DB 有 microphone 配置则返回该值（这是预期行为）。
+    /// 本测试仅验证不返回空串/纯空白（避免 helper 收到 deviceName="" 当作有效设备名）。
+    #[test]
+    fn resolve_mic_device_name_explicit_empty_does_not_return_empty() {
+        // 无论 DB 是否有配置，空串输入都不应直接返回空串
+        let result1 = resolve_mic_device_name(Some("   "));
+        let result2 = resolve_mic_device_name(Some(""));
+        assert!(result1.is_none() || !result1.as_deref().unwrap_or("").trim().is_empty(),
+            "空串输入不应返回空串/纯空白设备名");
+        assert!(result2.is_none() || !result2.as_deref().unwrap_or("").trim().is_empty(),
+            "空串输入不应返回空串/纯空白设备名");
+    }
+
+    /// 回归：explicit=None 时走 DB 三级回退（record_microphone_device → microphone）。
+    /// 这是 RecordConfig UI 当前的实际路径（前端发 device_name=null）。
+    /// 此测试需要 ~/.octopus/octopus.db 存在——用 `cargo test -- --ignored` 手动跑。
+    #[test]
+    #[ignore = "需要 ~/.octopus/octopus.db 全局 DB（CI 环境无）；本地手动验证用 --ignored"]
+    fn resolve_mic_device_name_falls_back_to_asr_config() {
+        // 用户 DB 里 microphone = "UGREEN USB MIC-CM769"（ASR 配的）
+        let result = resolve_mic_device_name(None);
+        assert!(result.is_some(), "应回退到 ASR microphone 配置，不应返回 None");
+        // 不强断言具体设备名（因机器而异），只验证回退逻辑生效
+    }
 }

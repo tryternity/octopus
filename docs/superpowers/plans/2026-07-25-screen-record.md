@@ -2797,6 +2797,20 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 
 详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.4。
 
+### Task 10 后续：麦克风设备名回退（2026-07-26）
+
+用户实测「录屏勾选了麦克风但没录进去」。`ffprobe` 分析发现音轨存在但音量极低（mic mean -64dB / max -50dB，正常说话应 -20~0dB）——**不是没录，是选错了麦克风**。
+
+根因：RecordConfig UI（`index.tsx:156`）发 `device_name: null`（UI 无设备选择器），helper 的 `resolveMicrophoneCaptureDeviceID()` 收到 `deviceName=nil` → 返回 `nil` → SCK 用**内部默认麦**（系统默认输入，可能是 MacBook 内置麦，灵敏度低）。用户实际主麦是 `UGREEN USB MIC-CM769`（ASR 已配），但 UI 路径完全不传设备名。
+
+修复（用户决策「复用 ASR 配置」）：提取 `resolve_mic_device_name(explicit)` 三级回退函数：
+1. 调用方显式传入（未来 UI 加设备选择器用）
+2. DB `record_microphone_device`（录屏专用，目前默认空）
+3. DB `microphone`（**ASR 配的麦克风——用户已精心选过，复用避免录屏再配**）
+4. 都空 → None（helper 用 SCK 默认）
+
+`start_with_config` 收到 `device_name=null` 时调它兜底（`build_default_config` 也复用此函数去重）。回归测试 3 个（2 unit + 1 ignored DB 集成）。
+
 ---
 
 **Plan 结束。下一步：执行方式选择。**
