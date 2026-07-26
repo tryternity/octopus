@@ -46,7 +46,7 @@ export default function RecordAnnotation() {
   // ── 标注状态（hook 抽取，与 Screenshot 共用）──────────────────
   const annotation = useAnnotationState();
   const {
-    toolRef, annotationsRef, drawingRef, setDrawingVer,
+    toolRef, annotationsRef, drawingRef, drawingVer, setDrawingVer,
     addAnnotation, undoAnnotation, redoAnnotation,
     numberCounterRef, setSelectedAnn,
     setAnnotations,
@@ -151,7 +151,8 @@ export default function RecordAnnotation() {
     ctx.strokeRect(1, 1, cssW - 2, cssH - 2);
   };
 
-  useEffect(() => { draw(); });
+  // 与原版一致：依赖 [annotations, drawingVer]——标注变化或绘制中时重绘。
+  useEffect(() => { draw(); }, [annotation.annotations, drawingVer]);
 
 
   // ── 鼠标交互（参考 Screenshot，去除选区逻辑）─────────────────
