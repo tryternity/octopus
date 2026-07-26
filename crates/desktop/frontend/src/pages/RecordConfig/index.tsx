@@ -263,7 +263,7 @@ export default function RecordConfig() {
           ))}
         </div>
 
-        {/* ── 源列表（display / window）────────────────────── */}
+        {/* ── 源列表（display / window）/ area 说明 ──────────────── */}
         <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
           {tab === "display" && (
             <DisplayList
@@ -280,13 +280,12 @@ export default function RecordConfig() {
             />
           )}
           {tab === "area" && (
-            <AreaPanel onPick={async () => {
-              try {
-                await invoke("start_record_area_picker");
-              } catch (e) {
-                setError(t("recordConfig.startFailed") + String(e));
-              }
-            }} />
+            <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
+              <Square className="w-6 h-6 text-muted-foreground/60" />
+              <p className="text-[11px] text-muted-foreground max-w-[220px] leading-relaxed">
+                {t("recordConfig.areaPlaceholder")}
+              </p>
+            </div>
           )}
         </div>
 
@@ -377,8 +376,26 @@ export default function RecordConfig() {
 
         {/* ── 底部按钮 ─────────────────────────────────────── */}
         <div className="px-3 py-3 border-t border-border flex gap-2">
-          {/* area tab 隐藏「开始录制」——area 流程是点 AreaPanel 的「框选录制」一步完成 */}
-          {tab !== "area" && (
+          {tab === "area" ? (
+            // area tab：「框选录制」按钮（点击调起 picker，框选完直接录制）
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await invoke("start_record_area_picker");
+                } catch (e) {
+                  setError(t("recordConfig.startFailed") + String(e));
+                }
+              }}
+              disabled={starting}
+              className="flex-1 gap-1.5"
+            >
+              <Square className="w-3 h-3" />
+              {t("recordConfig.areaPickRecord")}
+            </Button>
+          ) : (
+            // display/window tab：「开始录制」
             <Button
               variant="primary"
               size="sm"
@@ -496,29 +513,6 @@ function WindowList({
 }
 
 // ── 子组件：area 选区（拖框选区域，调起 picker）──────────────────
-
-/**
- * area tab：单个「框选录制」按钮。
- *
- * 用户反馈简化：去掉「选择区域」→「已选区域 + 重新选择/清除」→「开始录制」3 步流程，
- * 合并为 1 步——点「框选录制」→ picker 拖框 → 框选完直接开始录制（picker 通过
- * record-area://selected 事件回传选区，listener 直接调 startRecordingWithSource）。
- */
-function AreaPanel({ onPick }: { onPick: () => void }) {
-  const t = useT();
-  return (
-    <div className="flex flex-col items-center justify-center py-8 gap-3">
-      <Square className="w-8 h-8 text-muted-foreground" />
-      <Button variant="primary" size="sm" onClick={onPick} className="gap-1.5">
-        <Square className="w-3 h-3" />
-        {t("recordConfig.areaPickRecord")}
-      </Button>
-      <p className="text-[10px] text-muted-foreground text-center max-w-[240px]">
-        {t("recordConfig.areaPlaceholder")}
-      </p>
-    </div>
-  );
-}
 
 // ── 通用：toggle 行 ─────────────────────────────────────────────
 
