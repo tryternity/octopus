@@ -40,7 +40,6 @@ import type { ToastVariant } from "@/lib/useToast";
 import { Button } from "@/components/ui/button";
 import { PermissionGate } from "@/components/record/PermissionGate";
 import { useRecordSession } from "@/hooks/useRecordSession";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 // ── 后端类型镜像（crates/record/src/store.rs::RecordingMeta）──────────────────
 
@@ -125,28 +124,6 @@ export default function RecordingPanel({
   useEffect(() => {
     invoke<boolean>("check_ffmpeg").then(setFfmpegAvailable).catch(() => setFfmpegAvailable(true));
   }, []);
-  // 保存目录（用户可配置，绝对路径）。空=默认 ~/.octopus/recordings/。
-  const [outputDir, setOutputDir] = useState<string>("");
-  useEffect(() => {
-    invoke<Record<string, unknown>>("get_config")
-      .then((cfg) => {
-        const dir = cfg.record_output_dir;
-        if (typeof dir === "string" && dir) setOutputDir(dir);
-      })
-      .catch(() => {});
-  }, []);
-  const handleChangeOutputDir = useCallback(async () => {
-    try {
-      const selected = await openDialog({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        await invoke("set_config", { key: "record_output_dir", value: selected });
-        setOutputDir(selected);
-        showToast(t("settings.recordings.dirChanged"), "success");
-      }
-    } catch {
-      // 用户取消或出错，静默
-    }
-  }, [showToast, t]);
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -320,27 +297,6 @@ export default function RecordingPanel({
                   : t("settings.recordings.startBtn")}
               </Button>
             )}
-          </div>
-          {/* 保存目录设置（紧凑行，与搜索框同区域） */}
-          <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border">
-            <FolderOpen className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-            <span className="text-[10px] text-muted-foreground flex-shrink-0">
-              {t("settings.recordings.outputDir")}
-            </span>
-            <span
-              className="flex-1 text-[10px] text-foreground truncate"
-              title={outputDir || "~/.octopus/recordings/"}
-            >
-              {outputDir || "~/.octopus/recordings/"}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleChangeOutputDir}
-              className="h-5 px-1.5 text-[10px] flex-shrink-0"
-            >
-              {t("settings.recordings.changeDir")}
-            </Button>
           </div>
           {/* 搜索框：MVP 灰禁用 + placeholder 指向 P2 */}
           <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border opacity-60">

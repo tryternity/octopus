@@ -72,10 +72,6 @@ settings:
     subtitle: 管理屏幕录制文件
     # 搜索框（P2 启用全文搜索前禁用）
     searchPlaceholder: P2 启用全文搜索
-    # 保存目录设置
-    outputDir: 保存到
-    changeDir: 更改
-    dirChanged: 保存目录已更新
     # 列表
     selectedN: 已选 ${n} 项
     selectAll: 全选
@@ -1041,3 +1037,4 @@ recordConfig:
   codec: 编码
   hideCursor: 隐藏光标
   revealAfterStop: 停止后定位文件
+  outputDir: 保存目录

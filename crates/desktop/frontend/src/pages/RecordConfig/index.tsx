@@ -14,11 +14,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check, ChevronDown } from "lucide-react";
+import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check, ChevronDown, FolderOpen } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 // ── 后端类型镜像 ────────────────────────────────────────────────
 
@@ -91,9 +92,10 @@ export default function RecordConfig() {
   // 录屏停止后自动 Finder 高亮文件——持久化到 DB（record_reveal_after_stop，默认 true）。
   // 与 fps/codec 不同（那俩是 session-only），这个是跨 session 行为，必须持久化。
   const [revealAfterStop, setRevealAfterStop] = useState(true);
+  // 保存目录（用户可配置，绝对路径）。空=默认 ~/.octopus/recordings/。
+  const [outputDir, setOutputDir] = useState<string>("");
 
-  // 从 DB 读 revealAfterStop 配置（默认 true，配置项缺失时也用 true）。
-  // 用 get_config 批量拿（与 Settings 同命令），key 不存在时回退 true。
+  // 从 DB 读 revealAfterStop + outputDir 配置（一次 get_config 批量拿）。
   useEffect(() => {
     invoke<Record<string, unknown>>("get_config")
       .then((cfg) => {
@@ -101,6 +103,8 @@ export default function RecordConfig() {
         if (typeof v === "string") setRevealAfterStop(v !== "false");
         else if (typeof v === "boolean") setRevealAfterStop(v);
         // undefined / null → 保持默认 true
+        const dir = cfg.record_output_dir;
+        if (typeof dir === "string" && dir) setOutputDir(dir);
       })
       .catch(() => { /* 读配置失败用默认值，不阻塞浮窗 */ });
   }, []);
@@ -112,6 +116,16 @@ export default function RecordConfig() {
         .catch(() => { /* 写配置失败仅静默，UI 已切换 */ });
       return next;
     });
+  }, []);
+
+  const handleChangeOutputDir = useCallback(async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        await invoke("set_config", { key: "record_output_dir", value: selected });
+        setOutputDir(selected);
+      }
+    } catch { /* 用户取消，静默 */ }
   }, []);
 
   // ── 拉取源列表（浮窗 show 时 + tab 切换时）──────────────────────
@@ -343,6 +357,20 @@ export default function RecordConfig() {
             checked={microphone}
             onChange={setMicrophone}
           />
+        </div>
+
+        {/* ── 保存目录（持久化到 DB record_output_dir）────────────────── */}
+        <div className="px-3 py-2 border-t border-border">
+          <button
+            onClick={handleChangeOutputDir}
+            className="flex items-center gap-2 w-full text-[11px] transition-colors hover:text-foreground text-muted-foreground"
+          >
+            <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="flex-shrink-0">{t("recordConfig.outputDir")}</span>
+            <span className="flex-1 text-right text-foreground truncate" title={outputDir || "~/.octopus/recordings/"}>
+              {outputDir || "~/.octopus/recordings/"}
+            </span>
+          </button>
         </div>
 
         {/* ── 高级（编码参数，默认收起）────────────────────────── */}
