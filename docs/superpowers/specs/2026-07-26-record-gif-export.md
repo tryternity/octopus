@@ -100,6 +100,7 @@ MVP 版 GIF 按钮始终可点，未装 ffmpeg 时点击才报错。用户不知
 - `ffmpegAvailable === false` → GIF 按钮 `disabled` + `opacity-30 cursor-not-allowed`
 - tooltip 切换：可用时显示「导出 GIF」，不可用时显示 `ffmpegMissing`（含 brew + curl 两种方式）
 - `ffmpegAvailable === null`（探测中）→ 按可用处理，避免首帧闪烁
+- **2026-07-26 可见性调整**：原默认 `opacity-40 group-hover:opacity-60` 太暗，用户反馈找不到按钮。改为与 favorite 同范式 `opacity-60 group-hover:opacity-70 hover:!opacity-100`，且 hover 时图标 `text-muted-foreground hover:text-foreground`（与 Play/Reveal 一致的颜色反馈）。Transcribe 按钮仍保留较低可见度（`opacity-40`，因为 F15 尚未实现，是灰占位）。
 
 ### 安装引导文案（i18n `settings.recordings.ffmpegMissing`）
 

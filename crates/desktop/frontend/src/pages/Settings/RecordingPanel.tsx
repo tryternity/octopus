@@ -698,7 +698,9 @@ function RecordingRow({
               ? "opacity-30 cursor-not-allowed"
               : isExportingGif
                 ? "opacity-100"
-                : "opacity-40 group-hover:opacity-60 hover:!opacity-100 cursor-pointer",
+                : // 与 favorite 对齐：默认可见（opacity-60），不要像 Play/Reveal 那样隐藏
+                  // —— 用户反馈找不到 GIF 导出按钮（之前 opacity-40 太暗被当成装饰）
+                  "opacity-60 group-hover:opacity-70 hover:!opacity-100 cursor-pointer",
           )}
           onClick={handleExportGif}
           disabled={isExportingGif || ffmpegDisabled}
@@ -711,7 +713,7 @@ function RecordingRow({
           {isExportingGif ? (
             <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
           ) : (
-            <Clapperboard className="w-3.5 h-3.5 text-muted-foreground" />
+            <Clapperboard className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
         </button>
         <button
