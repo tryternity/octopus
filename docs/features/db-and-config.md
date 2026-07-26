@@ -1,6 +1,6 @@
 # 数据持久化与配置
 
-> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB 全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v18。
+> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v51。
 
 源文件：`crates/infra/src/db.rs`、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
 
@@ -107,19 +107,30 @@ v3+，替代旧 `config.yaml`。29 字段 key-value TEXT，含 `category` 分组
 
 ### prompts（润色提示词管理）
 
-v4+，多 prompt 管理（替代旧单文件 `VOICE_POLISH.md`）。
+v4+ 多 prompt 管理；**v50 改造**：`content` 从完整 md 文本改为**文件名引用**（不含 `.md`），运行时读 `~/.octopus/.sync/prompts/polish/<content>.md`。启动 seed 拷贝内置 md 到 polish/ 子目录（幂等）；`migrate_v49_to_v50` 把旧 DB 的 content 文本导出到文件 + 改文件名。
 
 | 列 | 说明 |
 |---|---|
 | `id` | PK AUTOINCREMENT（用户不可编辑） |
 | `title` | 用户可读别名（允许重复） |
 | `category` | 固定 `voice_text_polish` |
-| `content` | 风格规则（不含增量逻辑） |
+| `content` | **文件名引用**（v50，不含 `.md`）；运行时 `read_prompt_file(content)` 读 `~/.octopus/.sync/prompts/polish/<content>.md` |
 | `description` | 描述 |
 | `is_system` | 0/1 |
 | 时间戳 | — |
 
-seed 2 条系统内置：`id=1` 默认润色 + `id=2` 进阶润色（断续纠正），均 `is_system=1`（不可编辑/删除）。
+seed 2 条系统内置：`id=1` 默认润色 + `id=2` 进阶润色（断续纠正），均 `is_system=1`。v50 后**可编辑**（调 `open_file_in_editor` 用 CompactEditor 打开 md 文件编辑）。
+
+**文件目录布局**（v50）：
+```
+~/.octopus/.sync/prompts/
+├── polish/    # 润色 prompt（prompts 表 content 引用这里）
+│   ├── 润色-默认.md
+│   └── 润色-进阶.md
+└── command/   # 命令面板 agent/ai 的 @文件名引用（action_data 以 @ 开头）
+```
+
+**新建 prompt**：`create_prompt_file(category, name)` 创建空 md → `create_prompt` 写 DB 记录（content=文件名）→ 自动打开 CompactEditor 编辑。
 
 `app_config.active_polish_prompt` 存激活 id（默认 `'1'`）。
 

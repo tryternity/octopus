@@ -55,7 +55,7 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc,custom-pr
 
 产物：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（未签名，自用/内测）+ `target/<profile>/bundle/macos/octopus.app`。
 
-feature 组合固定 `embedded,cloud,vault,custom-protocol`（`custom-protocol` 生产 build 必须启用）。详见 [`docs/architecture.md` §打包/分发](docs/architecture.md) + [plan](docs/superpowers/plans/2026-07-23-macos-dmg-packaging.md)。
+feature 组合固定 `embedded,cloud,vault,custom-protocol`（`custom-protocol` 生产 build 必须启用）。详见 [`docs/architecture.md` §打包/分发](docs/architecture.md) + [plan](docs/superpowers/plans/archived/2026-07-23-macos-dmg-packaging.md)。
 
 ### 开发运行
 

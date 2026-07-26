@@ -301,6 +301,33 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 - 让用户即时感知错误而非卡在"正在聆听…"假死状态
 - session 由 `!is_closing && !is_speaking` 分支自动 take，下次语音 onset 重开 WS（瞬时抖动自动重试；持续失败如 Key 无效每次 onset 报错，用户可见可排查）
 
+## 13.1 诊断日志（perf_log 9 类 prefix）
+
+`perf_log.rs` 承载双重职责：阈值性能日志（`[BE tick]`/`[FE writeDoc]`，根因定位后可移除）+ 状态机诊断日志（长期保留）。9 类 prefix：
+
+| prefix | 含义 |
+|---|---|
+| `[STATE]` | editing 翻转（5 处精确 + 心跳兜底） |
+| `[HEARTBEAT]` | tick 1Hz 心跳（stage + editing 状态） |
+| `[SPEAKING]` | VAD 翻转 + emit |
+| `[FE]` | 前端事件 |
+| `[WARN]` | dispatch_tick 异常 |
+| `[POLISH]` | 润色状态机 |
+| `[TICK-DETAIL]` | tick 详情 1Hz（pipeline 两路径 silence/has_speech/samples） |
+| `[APPLY]` | apply_engine_full 分支（prefix/diverted + delta/cum/shown 长度） |
+| `[CARET]` | caret_gap 落点 |
+| `[WATCHDOG]` | 音频采集看门狗（见 §13.2） |
+
+**判读指南**：「绿条不亮」看 `[STATE]` editing 是否翻转 + `[SPEAKING]` 是否 emit；「commit 后不恢复」看 `[CARET]` commit 后 gap + `[APPLY]` 是否 delta 空。asr-local 不能依赖 desktop，`streaming_runner` 内部状态走 `log::debug!` stderr，desktop 层写文件对账。详见 [spec](../superpowers/specs/2026-07-19-asr-edit-stall-observability.md)。
+
+## 13.2 音频采集看门狗 + 自动重连
+
+修复 cpal 断推后 pipeline 永久空转（日志 `samples=0 has_speech=true` 持续 30s 无提示）。
+
+**看门狗**：`SharedAudioState` 持 `last_sample_time`，cpal 回调每次 extend 后更新；`sample_stall_duration()` 返回距上次回调时长；`dispatch_tick` 在 Streaming/VadSegmented 分支 tick 后调 `check_audio_stall()`，`>= AUDIO_STALL_THRESHOLD(3s)` → 发 `Command::RestartCapture`。3s 阈值不误判正常静音（静音时 cpal 仍推底噪 samples≠0）。
+
+**自动重连**（`restart_capture_keep_transcript`）：中断+重启录音，**复用 transcript**（两次录音文本拼一起，识别框不隐藏）。流程：停 tick + audio.stop 取尾 + 喂尾给旧 pipeline + finish flush → 取出 transcript 保留 → `reset_engine_baseline()` 清引擎基准 → audio.start 重连（失败则二次降级 emit mic-error + finalize 粘贴）→ 重建 pipeline + transcript 放回 Stage + 重启 tick。cloud 引擎 no-op（独立 WS 连接）。详见 [spec](../superpowers/specs/2026-07-24-audio-watchdog.md)。
+
 ---
 
 ## 14. 关键不变量

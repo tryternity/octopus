@@ -184,6 +184,23 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 - `main.rs` setup 启动时跑一次（image_migration 迁入旧图片后）
 - 后台线程每小时从 DB 重读 `clipboard_max_items` / `clipboard_max_age_days` 跑一次（让设置页「最大保留条数 / 自动清理天数」真正生效；用户运行时改限额 1 小时内自动生效）
 
+## 9.1 软删 / 回收站（v47）
+
+`clipboard_history` 加 `deleted_at` 列（v47）。删除走两阶段：
+
+- **软删**：`UPDATE ... SET deleted_at = now`（条目仍在 DB，列表不显示，进「回收站」tab）
+- **还原**：`UPDATE ... SET deleted_at = NULL`（回收站 tab → 还原按钮）
+- **永久删**：`DELETE FROM`（回收站 tab → 永久删除按钮，或 TTL 自动触发）
+
+**图片物理删**：软删文本条目只设 deleted_at；但图片条目软删时立即物理删 image_data blob（图片占空间大，软删留 blob 无意义）。
+
+**回收站自动清**（scheduler `trash_purge` 任务）：
+- TTL 3 天（`deleted_at` 超过 3 天的永久删）
+- 容量上限 500 条（排除收藏，超限时先永久删回收站最老的）
+- 与 `clipboard_cleanup`（§9 按 天数/数量）互补：cleanup 管活跃区，trash_purge 管回收站
+
+**不变量**：收藏条目（`is_favorite=1`）即使软删也不被自动清理/TTL 永久删（用户显式永久删才行）。详见 [spec](../superpowers/specs/2026-07-22-clipboard-soft-delete.md)。
+
 ---
 
 ## 10. meta_info schema（按 item_type 分）
