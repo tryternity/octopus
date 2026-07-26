@@ -119,9 +119,28 @@ impl Argon2Params {
             "远程 kdf_iterations 过弱（{}，安全下限 ≥ 2）",
             iterations
         );
+        // K-KDF-STRICT-MISSING-CEILING 修复（2026-07-26）：K1 守了机密性下限（防弱 KDF
+        // 爆破），但漏了可用性上限（防资源耗尽）。攻击者污染远程 meta.json 为
+        // memory_kib=2GiB / iterations=u32::MAX → from_i64_strict 通过 → 写入本地 DB →
+        // 每次 unlock OOM/卡死，用户被永久锁在密码库外。上限取 OWASP 推荐值 4 倍：
+        //   - memory_kib ≤ 262144（256 MiB，OWASP 推荐 64MiB × 4）
+        //   - iterations ≤ 10（OWASP 推荐 3 × ~3）
+        //   - parallelism ≤ 16（OWASP 推荐 4 × 4）
         ensure!(
-            (1..=u32::MAX as i64).contains(&parallelism),
-            "kdf_parallelism 非法（{}，应 ≥ 1）",
+            memory_kib <= 262144,
+            "远程 kdf_memory_kib 过高（{}，安全上限 ≤ 262144 KiB / 256MiB——\
+             超此值会 OOM/卡死；若见此错检查同步仓库 vault_meta 是否被篡改）",
+            memory_kib
+        );
+        ensure!(
+            iterations <= 10,
+            "远程 kdf_iterations 过高（{}，安全上限 ≤ 10——\
+             超此值派生耗时数分钟/小时）",
+            iterations
+        );
+        ensure!(
+            parallelism <= 16,
+            "远程 kdf_parallelism 过高（{}，安全上限 ≤ 16）",
             parallelism
         );
         Ok(Self {
@@ -247,6 +266,27 @@ mod tests {
         // 负值 / 超大值两条路径都拒
         assert!(Argon2Params::from_i64_strict(-1, 65536, 4).is_err());
         assert!(Argon2Params::from_i64_strict(3, -1, 4).is_err());
+    }
+
+    /// K-KDF-STRICT-MISSING-CEILING 守护（2026-07-26）：from_i64_strict 拒绝过高远程参数。
+    ///
+    /// K1 守了机密性下限（防弱 KDF 爆破），本测试守可用性上限（防资源耗尽）。
+    /// 攻击者污染 meta.json 为 memory_kib=2GiB / iterations=u32::MAX → OOM/卡死。
+    #[test]
+    fn from_i64_strict_rejects_huge_remote_params() {
+        // memory_kib 上限 262144（256 MiB）
+        assert!(Argon2Params::from_i64_strict(3, 262144, 4).is_ok(), "边界值 256MiB 应通过");
+        assert!(Argon2Params::from_i64_strict(3, 262145, 4).is_err(), "超 256MiB 应拒");
+        assert!(Argon2Params::from_i64_strict(3, 2097152, 4).is_err(), "2GiB 应拒（OOM 攻击）");
+
+        // iterations 上限 10
+        assert!(Argon2Params::from_i64_strict(10, 65536, 4).is_ok(), "边界值 10 应通过");
+        assert!(Argon2Params::from_i64_strict(11, 65536, 4).is_err(), "超 10 应拒");
+        assert!(Argon2Params::from_i64_strict(4294967295, 65536, 4).is_err(), "u32::MAX 应拒");
+
+        // parallelism 上限 16
+        assert!(Argon2Params::from_i64_strict(3, 65536, 16).is_ok(), "边界值 16 应通过");
+        assert!(Argon2Params::from_i64_strict(3, 65536, 17).is_err(), "超 16 应拒");
     }
 
     /// M1-mod 守护：DerivedKey 字段 private，外部经 from_raw 构造，as_bytes 读取。

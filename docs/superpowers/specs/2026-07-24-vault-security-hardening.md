@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **249** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **250** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1274,3 +1274,22 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **修复**：在 :290（user_vault_key 构造后、sync_enc 解密前）加 `guard().reset()`，与 unlock :222 对称。:333 末尾的 reset 保留（幂等无害）。
 
 **同源关系**：这是 B-UNLOCK-RECORD-ASYMMETRY 修复 unlock 时的遗漏——修 unlock 时没对称处理 change。
+
+---
+
+## 第四十七轮审查修复（2026-07-26，crypto 深度复审：K-KDF-STRICT-MISSING-CEILING）
+
+### K-KDF-STRICT-MISSING-CEILING: from_i64_strict 缺资源上限 → 远程污染致持久化设备锁死（中，可用性，已修）
+
+**核查**：K1（第二十轮）为 from_i64_strict 加了安全下限（memory≥16384/iter≥2），但完全没有上限——iterations 可达 u32::MAX（43 亿）、memory_kib 可达 u32::MAX（4 TiB）、parallelism 可达 u32::MAX。
+
+**攻击链**：攻击者污染 sync 仓库 meta.json 为 `kdf_memory_kib=2097152`（2 GiB）→ `from_i64_strict` 通过（下限✓ u32✓）→ clone/pull 写入本地 DB → 每次 unlock `derive_master_root_key` 尝试分配 2 GiB → OOM panic 或数小时卡死。持久化放大：污染参数已写入本地 DB，即使从 OOM 恢复，后续每次 unlock 再次触发。用户被永久锁在密码库外。
+
+**与 K1 的关系**：K1 守机密性（Confidentiality）——防弱 KDF 被爆破。本发现守可用性（Availability）——防资源耗尽被锁死。CIA 三性里 K1 守 C，本发现守 A。
+
+**修复**：from_i64_strict 加三个上限校验（OWASP 推荐值 4 倍留余量）：
+- `memory_kib ≤ 262144`（256 MiB）
+- `iterations ≤ 10`
+- `parallelism ≤ 16`
+
+**回归测试**：`from_i64_strict_rejects_huge_remote_params`（对称 `from_i64_strict_rejects_weak_remote_params`）。
