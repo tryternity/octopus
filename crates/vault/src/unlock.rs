@@ -289,6 +289,11 @@ pub fn change_master_password(
     uv_arr.copy_from_slice(&user_vault_bytes);
     let user_vault_key = DerivedKey::from_raw(uv_arr);
 
+    // C-CHANGE-RESET-ASYMMETRY 修复（2026-07-26）：旧密码校验通过后立即 reset
+    // 退避计数——与 unlock :222 对称。之前 reset 在 :333 全成功末尾，protected 验证
+    // 通过但后续失败（sync_enc 损坏/encrypt/save 失败）时提前 return，guard 未清理。
+    crate::attempt_guard::guard().reset();
+
     // 用旧 master 解出 app_key
     let app_key_bytes = old_master.decrypt(&meta.app_key_sync_enc)?;
     ensure!(app_key_bytes.len() == 32, "app_key 长度异常");

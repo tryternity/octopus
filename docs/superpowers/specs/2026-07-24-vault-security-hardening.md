@@ -1258,3 +1258,19 @@ vault_state.rs:109 若 last_active_at=None 但 user_vault_key=Some，超时检�
 vault_secret_access.rs:117-123 session None → Ok(raw) 即使 raw 是 v1: 密文。对比 try_decrypt_secret(:90-91) v1: + app_key None → Err。两版本对「v1: 但无法解密」处理相反。
 
 **不可达确认**：set_global_session 仅 main.rs:1073 一处，在 `#[cfg(feature = "vault")]` 块内。feature on → session 必注入；feature off → 整块跳过 + octopus_vault 不存在 + DB 不可能有 v1: 密文 → Ok(raw) 正确。注释 :111-112/:120 已说明设计意图。
+
+---
+
+## 第四十五轮审查修复（2026-07-26，crypto + unlock + migrate 安全心脏复查：C-CHANGE-RESET-ASYMMETRY）
+
+vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确认——AES-256-GCM / Argon2id / HMAC-SHA512 child + Zeroizing 卫生闭环，H1 源秘密清零影响面 4 入口全部 Zeroizing<String> + 编译期守护，migrate #5 事务化 + A1 回滚完整。
+
+### C-CHANGE-RESET-ASYMMETRY: change 的 guard.reset 时机与 unlock 不对称（低，对称性遗漏，已修）
+
+**核查**：第三十四轮 B-UNLOCK-RECORD-ASYMMETRY 修复把 unlock 的 `reset()` 提前到 protected 校验成功后（:222）。但 change_master_password 的 reset 在 :333 全成功末尾——protected 验证通过（:280 Ok）但后续失败（:293 sync_enc 损坏 / :303 encrypt 失败 / :328 save 失败）时提前 return，guard 未 reset。
+
+**后果**：旧密码正确但后续失败时，guard 有历史计数 → 下次 change/unlock 被 remaining_wait() 挡——「密码其实对却因数据损坏/副作用失败被退避挡」。
+
+**修复**：在 :290（user_vault_key 构造后、sync_enc 解密前）加 `guard().reset()`，与 unlock :222 对称。:333 末尾的 reset 保留（幂等无害）。
+
+**同源关系**：这是 B-UNLOCK-RECORD-ASYMMETRY 修复 unlock 时的遗漏——修 unlock 时没对称处理 change。
