@@ -1,9 +1,12 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
-**日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **250** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
-**范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
-**关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
+**日期**：2026-07-24 起，持续至 2026-07-26
+**状态**：已实现并测试通过。最新基线：vault **251** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 412 / infra 160 / tsc 0 error / cargo build 0 warning
+**范围**：本文件汇总第二~第五十五轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
+**关联**：
+- [vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
+- [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
+- [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（第五十五轮起的跨设备删除一致性方向）
 
 ## 背景
 
@@ -229,13 +232,13 @@
 - `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
 - 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
 
-### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，未修）
+### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，spec/plan 已就绪待实施）
 
 **严重度升级（2026-07-25 第二十五轮）**：原定「中」，升级为「高」。密码管理器的核心承诺是「删除即删除」，硬删（empty_trash）后密码经多设备 sync 复活违反此承诺，且有安全影响（用户以为已删除的敏感密码仍存活于各设备 + 远程仓库 git 历史）。详见 [第二十五轮](#第二十五轮审查修复2026-07-25syncoutline--syncstorers--enginers-删除传播)。
 
 **问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
 
-**状态**：文档化为已知限制。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
+**状态（2026-07-26 更新）**：spec/plan 已就绪——[vault-tombstone-design](./2026-07-26-vault-tombstone-design.md) + [vault-tombstone plan](../plans/2026-07-26-vault-tombstone.md)。设计：Outline v2 新增 `tombstones` 字段 + 30 天 TTL + 删除赢冲突解决。待实施。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
 
 ### L10: upsert_folder_with_sort O(N²)（低，未修）
 
@@ -1339,3 +1342,124 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **修复**：`add_remote`（:246）+ `maybe_rewrite_to_ssh`（:304）入口各加 `let safe_url = redact_url(url);`，所有 log 用 `safe_url`。`add_remote` 的 effective_url 也 redact。
 
 **教训（二次违反）**：第五十轮的教训「影响面追踪——追踪所有同类 log」本身的应用范围漏了「调用 ensure_private_repo 的流程上紧邻的同类 log」。与 MatchType #1 / E-EDIT-TEST-CIPHERTEXT / K1-GAP 同型——修一处时又漏了同类的其余处。
+
+---
+
+## 第五十二轮审查修复（2026-07-26，ensure_remotes_use_ssh_when_possible：E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND: sync_now 路径第 4 个函数漏 redact（中，PAT 第四次外溢，已修）
+
+**核查**：第四十九~五十一轮覆盖了 add_remote / ensure_private_repo / maybe_rewrite_to_ssh 三个函数的 url log redact，漏了第 4 个同类函数 `ensure_remotes_use_ssh_when_possible`（sync_now 路径，遍历 git_remote_list）。:366 `log::info!("...→ {}", url)` + :377 `log::warn!("...保留 {}", url)` 透传 .git/config 原始 url（PAT）。
+
+**修复**：循环体首行 `let safe_url = redact_url(url);`，:366/:377 用 safe_url（rewritten 是 SSH URL 已 strip userinfo，不需 redact）。
+
+**根治防御（契约测试）**：补 `redact_url_strips_userinfo` + `redact_url_never_leaks_pat` 两个契约测试到 error.rs——前四轮外溢的根因防御。若 redact_url 本身漏了 PAT 格式，所有调用点的 safe_url 失效。
+
+**教训（第三次违反影响面追踪）**：49→50→51→52 四轮外溢，每次都是"修一个函数边界，下一轮发现同型外溢"。点状 `let safe_url` 修复无法收敛。
+
+---
+
+## 第五十三轮审查修复（2026-07-26，E-UI-URL-LEAKS-PAT-LIST-REMOTES：list_remotes + SyncStatus 返回值 redact）
+
+### E-UI-URL-LEAKS-PAT-LIST-REMOTES: list_remotes 返回值透传 PAT 到前端 UI（高，第六次外溢，已修）
+
+**核查**：完整 7 步攻击链——用户配 PAT url + SSH key 后装 → add_remote 写 PAT 进 .git/config → list_remotes 透传 → SyncPanel.tsx:540 `{url}` 裸渲染。截图/录屏/窥屏即泄露。
+
+**严重性升级**：前五轮 log 泄露需文件系统访问；UI 渲染是用户高频可见——密码管理器 UI 裸显示 token 低于 1Password/Bitwarden 行业基线。
+
+**修复方案（报告选项 1，最小后端 redact）**：
+- 抽 `redact_remotes_for_outflow` helper（list_remotes + get_sync_status 共用），集中 redact 逻辑到单一构造点。
+- test_connection(redacted_url) 对 PAT HTTPS remote 退化（CredentialsRequired），可接受——add_remote 时已强制 ensure_private_repo + maybe_rewrite_to_ssh。
+
+**第七次外溢候选（SyncStatus.remotes，同步修复）**：SyncStatus derive Serialize 流向前端，remotes 字段同样透传 git_remote_list 原始 url。当前前端未消费 status.remotes（用独立 list_remotes 拉取），但序列化后仍在客户端内存——防御性 redact。
+
+### 方法论教训：证伪第五十二轮「契约测试是根因防御」判断
+
+第五十二轮判断"契约测试是更轻量、更稳的防御"被证伪——契约测试只防 redact_url 实现退化（漏某种 PAT 格式），**不防漏调**（list_remotes 根本没调 redact_url）。第六次外溢正是漏调。
+
+**影响面追踪定义升级**：从「所有 log:: 宏」扩展到「所有 url 流出 crate 边界的点」（返回值 / Serialize struct / Tauri command / emit / Display）。
+
+### 关于 lint 测试（诚实记录）
+
+尝试报告 §五建议的源码 lint 测试（split/contains 扫 git_remote_list 调用点窗口）**失败**——lint 测试代码注释含 `git_remote_list` 字符串污染 split，17 段里 4 个真调用点全 is_outflow: False。源码字符串扫描 lint 在真实 codebase 极度脆弱。已回退，改用行为测试 `redact_remotes_for_outflow_strips_pat`。
+
+---
+
+## 第五十四轮审查（2026-07-26，六轮 PAT 外溢链收官：未发现新外溢）
+
+### 复查结论：6 个维度独立验证，无第七次外溢
+
+报告声称"六轮以来首次未发现新外溢"——经独立复查全部成立：
+1. engine.rs 4 个 git_remote_list 调用点流出面：全覆盖（:127 SyncStatus / :357 log safe / :423 list_remotes / :744 _url 忽略）
+2. SyncStatus 完整字段：唯一 url 字段 remotes 已 helper；last_sync/last_commit_sha 非 url
+3. Debug 透传维度：全 crate grep `log::.*{:?}` 无 SyncError Debug 打印
+4. cli/server 消费面：空
+5. vault/sync 其他 pub fn 返回值：fingerprint 四个返 md5（非 url）
+6. 前端消费面：唯一渲染点 SyncPanel:540（走已 redact 的 list_remotes）
+
+**PAT 专题收官**：六轮外溢链（49→54）在本轮首次无新外溢。redact_remotes_for_outflow helper 是六轮以来最稳健的结构性改进。
+
+### 方法论纠偏（用户工程决策）
+
+1. **抽 helper 集中构造点**：点状修复 → 集中构造（与 SafeUrl newtype 同向但更轻量）
+2. **诚实声明 helper 不防漏调**：未声称「全收敛」（与前四轮每次声称「无第 N+1 次外溢」然后证伪形成对比）
+3. **lint 失败的诚实记录 + 改用行为测试**：技术判断正确
+
+### 已知局限（文档化，未修）
+
+- **OBS-CLONE-URL-STORES-PAT-IN-CONFIG**：本轮修了下游流出 redact，未修上游「PAT 写入 .git/config」。彻底根治需 add_remote 拒绝 PAT url——产品决策，见 [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md) §不解决问题。
+- **helper 不防漏调**：未来新增第 3 个 remotes 流出点若忘调 helper → 第八次外溢。当前架构无法防——编译期 newtype 才能完全防（见 safeurl-newtype-design spec）。
+
+---
+
+## 第五十五轮审查修复（2026-07-26，crypto 层深审：E-ZEROIZE-RESIDUE 系统性 Zeroizing 卫生）
+
+### E-ZEROIZE-RESIDUE: keychain + unlock 密钥构造路径栈残留（中，与 C1 同型，已修）
+
+**核查**：与 kdf.rs:174 + hierarchy.rs:44 已修的 C1 同型（裸 `[u8;32]` Copy 类型 → `Zeroizing::new()` 复制 → 原栈数组 drop no-op → 残留），但 C1 修复时影响面追踪漏了 keychain + unlock 的密钥构造路径。
+
+**3 类 12 处修复**（报告列 10 处 + 自查发现 derive_file_key 2 处）：
+
+| 缺口 | 位置 | 模式 | 修复 |
+|---|---|---|---|
+| 1 | util.rs `random_32` | 返裸 `[u8;32]` | 返 `Zeroizing<[u8;32]>`（util 层根治） |
+| 1 | keychain.rs:240 K_machine | `Zeroizing::new(裸数组)` Copy | 直接 move new_key |
+| 2 | unlock.rs 5 处 decrypt→from_raw | 裸栈 `arr` + `from_raw` Copy | `Zeroizing` + `from_zeroizing` move |
+| 3 | unlock.rs 4 处 `*k_machine` | 解引用得 Copy 临时值 | `from_zeroizing(k_machine)` 纯 move |
+| **自查** | keychain.rs `derive_file_key` + 2 调用点 | 返裸 `[u8;32]` + `from_raw` Copy | 返 `Zeroizing` + `from_zeroizing` move |
+
+**严重性 Medium**：密钥栈残留违背 Zeroizing 设计意图，但单机威胁模型 + 成功路径栈临时值，不创造新攻击面。
+
+**影响面追踪自查（报告 §二建议）**：执行 grep `from_raw(` + `Zeroizing::new(` + 裸 `[u8;32]`，发现报告漏列的 derive_file_key（file_key 是敏感密钥，加密磁盘上的 K_machine）——同型 bug 不该分两次修，一并修复。
+
+**守护测试说明**：E-ZEROIZE-RESIDUE 本质是栈残留，难以用单元测试直接断言。守护靠 C1 注释模板（各处明确禁忌）+ code review。新增密钥构造路径时检查是否走 `from_zeroizing` move。
+
+### 正面确认（crypto 核心算法实现正确）
+
+- symmetric.rs：AES-256-GCM，nonce 每次 OsRng 随机，tag 常量时间验证，decrypt 返 Zeroizing<Vec<u8>>，S2 AAD 权衡文档化 ✓
+- hierarchy.rs：HMAC-SHA512 child 派生，A2 + C1 修复完美，编译型测试锁 feature ✓
+- mod.rs：M1-mod 字段 private，as_bytes 受控读 ✓
+- util.rs：OsRng CSPRNG ✓
+
+### 信息性观察（均非 bug，不修）
+
+- OBS-SYM-ENCRYPT-BORROW：encrypt 借用不接管明文，清零责任在调用方（当前安全）
+- OBS-SYM-LENGTH-CHECK：combined.len() > NONCE_LEN 在 13-16B 边界值错误信息误导（功能正确）
+- OBS-HIER-LABEL-PUBLIC：HMAC label 公开不影响（与 HMAC 标准一致）
+- OBS-RANDOM32-SALT：kdf_salt 公开残留无害（random_32 改返 Zeroizing 后调用方相应调整）
+
+---
+
+## 后续推进方向（spec/plan 已就绪）
+
+第五十五轮起，用户拍板两个架构改进方向，spec + plan 已写：
+
+1. **SafeUrl newtype（PAT 结构性根治）** — [spec](./2026-07-26-safeurl-newtype-design.md) + [plan](../plans/2026-07-26-safeurl-newtype.md)
+   - 动机：六轮 PAT 外溢证伪点状修复可收敛
+   - 设计：SafeUrl(String) newtype + redact_url 唯一构造器，编译期杜绝非已 redact 的 url 流出 crate 边界
+
+2. **Vault Tombstone（跨设备永久删除一致性）** — [spec](./2026-07-26-vault-tombstone-design.md) + [plan](../plans/2026-07-26-vault-tombstone.md)
+   - 动机：M-TOMBSTONE（M5，已知高优先级未修）——permanent_delete 后跨设备复活
+   - 设计：Outline v2 新增 tombstones 字段 + 30 天 TTL + 删除赢冲突解决
+
+两个方向独立，可分别推进。SafeUrl 改动面小（~15 处签名），建议先做。
