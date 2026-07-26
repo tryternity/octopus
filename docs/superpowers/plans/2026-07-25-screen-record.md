@@ -2839,6 +2839,18 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 
 **后续**：实时混音作为 P2 任务重新设计——考虑用 `AVAudioEngine` 混音节点（成熟 API，不手动构造 CMSampleBuffer），或录后 `ffmpeg -filter_complex amerge` 后处理（commit `67aec0a2` 已加 ffmpeg 探测基础设施）。手动 CMSampleBuffer + vDSP 路径证明太脆弱。
 
+### Task 10 后续：保存目录可配置（2026-07-27）
+
+用户需求：录屏保存目录可配置（任意绝对路径），录屏管理页面列表前加设置入口。
+
+实现：
+- `paths.rs::recordings_dir()` 读 DB `record_output_dir`（绝对路径，支持 `~` 展开；空=默认 `~/.octopus/recordings/`）
+- DB `file_path` 改存**绝对路径**（不再相对 `~/.octopus/`）；`resolve_recording_path` 对绝对路径原样返回（防御性 fallback join）
+- `db.sql` seed `record_output_dir` 默认值从 `'recordings'` 改为 `''`（空=默认）
+- RecordingPanel 标题区加目录设置行：`FolderOpen` 图标 + 当前路径（truncate）+「更改」按钮（`openDialog({ directory: true })` → `set_config` → toast）
+- i18n 加 `outputDir` / `changeDir` / `dirChanged`（zh/en）
+- 决策：不做 recordings/ 自动清理（用户手动管理）
+
 ---
 
 **Plan 结束。下一步：执行方式选择。**

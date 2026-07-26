@@ -481,8 +481,6 @@ async fn stop_and_store_inner(
     discard: bool,
     fields: MetaFields,
 ) -> Result<Option<RecordingMeta>, String> {
-    use octopus_infra::paths::octopus_config_home;
-
     let MetaFields {
         recording_id,
         width,
@@ -529,15 +527,13 @@ async fn stop_and_store_inner(
     }
 
     let file_size = std::fs::metadata(&abs_path).map(|m| m.len()).unwrap_or(0);
-    let file_path_rel = abs_path
-        .strip_prefix(octopus_config_home())
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .to_string();
+    // 2026-07-27：file_path 直接存**绝对路径**（用户可配置保存目录，目录可能在 ~/.octopus/ 外）。
+    // resolve_recording_path 对绝对路径原样返回，无需 strip_prefix。
+    let file_path = abs_path.to_string_lossy().to_string();
 
     let meta = RecordingMeta {
         id: recording_id,
-        file_path: file_path_rel,
+        file_path,
         title: String::new(),
         duration_ms: stopped.duration_ms,
         width,

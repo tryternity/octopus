@@ -71,6 +71,9 @@ settings:
     title: Recordings
     subtitle: Manage your screen recordings
     searchPlaceholder: Full-text search coming in P2
+    outputDir: Save to
+    changeDir: Change
+    dirChanged: Output directory updated
     selectedN: ${n} selected
     selectAll: Select all
     empty: No recordings yet. Press Cmd+Shift+R to start your first recording.
