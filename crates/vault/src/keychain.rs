@@ -262,9 +262,11 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
                     None => Ok(Some(None)), // override 设了但没存过
                     Some(bytes) => {
                         ensure!(bytes.len() == 32, "K_machine 长度异常：{} bytes", bytes.len());
-                        let mut arr = [0u8; 32];
+                        // E-ZEROIZE-RESIDUE 修复（第五十六轮，与 :315 生产路径同型）——
+                        // 测试 K_machine 是随机值残留无害，但保持模式一致防未来 copy-paste。
+                        let mut arr = Zeroizing::new([0u8; 32]);
                         arr.copy_from_slice(bytes);
-                        Ok(Some(Some(Zeroizing::new(arr))))
+                        Ok(Some(Some(arr)))
                     }
                 },
             }
@@ -312,9 +314,13 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
         "K_machine 文件内容长度异常：{} bytes",
         bytes.len()
     );
-    let mut arr = [0u8; 32];
+    // E-ZEROIZE-RESIDUE 修复（2026-07-26，第五十六轮）：与 unlock.rs:172-174 同型
+    // （decrypt → 裸栈 → Zeroizing::new Copy → 残留）。K_machine 是顶层机器主密钥，
+    // load_machine_key 被 4 条路径调用（setup/unlock/refresh/change_password），每次
+    // 启动都触发残留。改 Zeroizing::new([0u8;32]) 直接写入 + move，无栈残留。
+    let mut arr = Zeroizing::new([0u8; 32]);
     arr.copy_from_slice(&bytes);
-    Ok(Some(Zeroizing::new(arr)))
+    Ok(Some(arr))
 }
 
 /// 保存 K_machine（覆盖式）。Unix 下文件权限 0600。
