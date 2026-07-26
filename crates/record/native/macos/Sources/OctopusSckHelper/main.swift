@@ -145,6 +145,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	private let request: RecordingRequest
 	private let sampleQueue = DispatchQueue(label: "app.octopus.sck-helper.samples")
 	private let stateQueue = DispatchQueue(label: "app.octopus.sck-helper.state")
+	/// 混音专用串行队列——与 sampleQueue 分离，避免 reentrant sync 死锁。
+	/// audio callback 可能在 sampleQueue 或 SCK 内部 queue 上跑，混音操作统一 dispatch 到
+	/// 这个独立 queue 上串行执行。所有 ring buffer / mixedAudioFormat 访问必须在此 queue 上。
+	private let mixQueue = DispatchQueue(label: "app.octopus.sck-helper.mix")
 	private var stream: SCStream?
 	private var writer: AVAssetWriter?
 	private var videoInput: AVAssetWriterInput?
@@ -532,8 +536,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return
 		}
 
-		// 混音收尾：先在 sampleQueue 上 flush 两边 deque 剩余样本（避免尾部丢失），再 markAsFinished。
-		sampleQueue.sync {
+		// 混音收尾：在 mixQueue 上 flush 两边 deque 剩余样本（避免尾部丢失），再 markAsFinished。
+		// 用 mixQueue（不是 sampleQueue）——避免与 audio callback 的 sampleQueue reentrant sync 死锁。
+		mixQueue.sync {
 			flushPendingMixSamples()
 		}
 		videoInput?.markAsFinished()
@@ -628,26 +633,24 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	// 设计：帧计数 ring buffer（不用 PTS 配对）。
 	// 两个独立 PCM 累积缓冲（interleaved float32），按帧数追加。
 	// 每当两边累积都达到 mixBatchFrames（或单边超过时），混合一批写出。
-	// `enqueueForMix` 内部用 sampleQueue.sync 串行化所有 ring buffer 访问（防并发 crash）。
-	// `drainMixableSamples` / `flushPendingMixSamples` 假定已在 sampleQueue 上（由 enqueue / finishWriter 保证）。
+	// `enqueueForMix` 内部用 mixQueue.sync 串行化所有 ring buffer 访问（防并发 crash）。
+	// `drainMixableSamples` / `flushPendingMixSamples` 假定已在 mixQueue 上（由 enqueue / finishWriter 保证）。
 	//
-	// ⚠️ 线程安全（2026-07-27 修 crash）：SCK 的 audio callback（`startRemoteAudioReceiveQueue`）
-	// 在 macOS 26 上可能从**独立 dispatch queue** 调入（不保证在 sampleQueue 上），两个流
-	// （system + mic）并发 mutate ring buffer + 读 mixedAudioFormat → Swift exclusivity
-	// violation crash（日志：Fatal access conflict）。所有 ring buffer + mixedAudioFormat 访问
-	// 必须显式 sampleQueue.sync 包裹，不能依赖 addStreamOutput 的 sampleHandlerQueue 参数。
+	// ⚠️ 线程安全（2026-07-27 修 crash）：audio callback 可能在 sampleQueue 或 SCK 内部
+	// queue 上跑。**不能在 sampleQueue 上再 sampleQueue.sync**（reentrant sync 死锁 crash），
+	// 所以用独立的 mixQueue。所有 ring buffer + mixedAudioFormat 访问必须经 mixQueue.sync。
 
 	/// 音频源标记——决定 sample 进哪个 ring buffer。
 	private enum AudioMixSource { case system, microphone }
 
 	/// 把 CMSampleBuffer 的 PCM 数据追加到指定 ring buffer（interleaved float32）。
-	/// 所有 ring buffer / mixedAudioFormat 访问在 sampleQueue.sync 内（防并发 crash）。
+	/// 所有 ring buffer / mixedAudioFormat 访问在 mixQueue.sync 内（防并发 crash + reentrant 死锁）。
 	private func enqueueForMix(_ sampleBuffer: CMSampleBuffer, source: AudioMixSource) {
 		guard mixedAudioInput != nil else { return }
 
 		// PCM 转换在锁外做（CPU 密集，不访问共享状态）
 		// 首次锁定 mixedAudioFormat 需要锁内做（并发首次会重复设但幂等）
-		sampleQueue.sync {
+		mixQueue.sync {
 			// 首次：锁定 mixedAudioFormat（强制 48k/stereo/float32 interleaved）
 			if mixedAudioFormat == nil {
 				mixedAudioFormat = AVAudioFormat(
@@ -667,7 +670,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		// 锁内追加 + drain（访问共享 ring buffers）
-		sampleQueue.sync {
+		mixQueue.sync {
 			switch source {
 			case .system:
 				systemRing.append(contentsOf: interleaved)
@@ -865,7 +868,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	}
 
 	/// 收尾时把两边 ring 剩余样本全部混合写出（避免尾部丢失）。
-	/// 在 finishWriter markAsFinished 之前调，必须在 sampleQueue。
+	/// 在 finishWriter markAsFinished 之前调，必须在 mixQueue（由 finishWriter 的 mixQueue.sync 保证）。
 	private func flushPendingMixSamples() {
 		// 把剩余的也按 batch 混合（不足一批的也输出，用 0 补齐）
 		while !systemRing.isEmpty || !micRing.isEmpty {
