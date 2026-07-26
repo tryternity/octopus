@@ -361,10 +361,13 @@ macOS 有**两套**坐标 API，**必须区分**：
 
 **任何坐标比较**（如判断鼠标是否在某显示器范围内）必须统一到逻辑坐标。Monitor 的物理值 ÷ `scale_factor()` 转逻辑。
 
+**捷径**：若已知 `CGDirectDisplayID`（如录屏 `Source::Display { display_id }`、helper `--list-displays` 的 `id`），**直接用 `core_graphics::display::CGDisplay::new(id).bounds()`** 拿逻辑 CGRect——CoreGraphics 原生返回逻辑 points，**已含 scale，无需再除**。比遍历 `app.available_monitors()` 做 bounds 命中更可靠（Tauri Monitor 不暴露 CGDirectDisplayID，匹配只能靠坐标 heuristic）。注意副屏在主屏左侧/上方时 `bounds.origin` 是负数，pill 定位不能再 `.max(0.0)`（会把窗口推回主屏）。
+
 已修复的文件：
 - `action_bar_commands.rs::get_mouse_position`——CGEvent 不除 scale（曾错误除过）
 - `compact_editor_window.rs`——Monitor position/size 除 scale
 - `window_position.rs::is_position_visible`——Monitor position/size 除 scale
+- `record_control_window.rs::compute_position`——曾 `let _ = display_id;` 丢弃 display_id 永远用 `primary_monitor()` + `Monitor::position()` 未除 scale，双重错误导致副屏录制 pill 跑到主屏右下角。改用 `CGDisplay::new(display_id).bounds()` 直接查逻辑边界（2026-07-26）
 
 **诊断方法**：日志打印 raw 坐标 + scale factor，对比预期逻辑值（主屏左上角应该是 ~0,0；1440×900 逻辑屏的右下角应该是 ~1440,900）。
 

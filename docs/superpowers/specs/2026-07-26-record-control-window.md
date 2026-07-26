@@ -23,7 +23,7 @@ Area 录制不创建本浮窗（已有 RecordAnnotation，互斥）。
 
 | 决策点 | 选择 | 理由 |
 |---|---|---|
-| 位置 | 录制所在屏右下角（MVP 全部 fallback 主屏） | 与 record_window 配置浮窗一致；display_id → Monitor 精确匹配推迟（tauri Monitor 不暴露 CGDirectDisplayID） |
+| 位置 | 录制所在屏右下角（display_id → `CGDisplay::bounds()` 精确查逻辑边界） | ~~MVP fallback 主屏~~ → **2026-07-26 修复**：副屏录制 pill 跑到主屏右下角 bug。改用 `core_graphics::display::CGDisplay::new(display_id).bounds()` 直接拿逻辑 CGRect（CoreGraphics 原生返回 points，已含 scale），无需 Tauri Monitor 物理坐标 ÷ scale。详见下方「位置算法」。 |
 | **尺寸** | **130×38**（原 200×56 太长，用户反馈） | 紧凑布局：红点(7px)+gap+时长(~28px)+暂停(24px)+停止(24px) |
 | 被录进视频 | 接受（always_on_top=true） | 用户主动选 display/window 录制，预期接受；不被录需 always_on_top=false 但会失去置顶 |
 | 鼠标穿透 | **不穿透** | pill 必须能直接点按钮；穿透需复制 RecordAnnotation 的 33ms poller，复杂度高，收益低 |
@@ -76,6 +76,42 @@ main.rs L1104 listen → stop_and_store(session, app, false, None)
 
 暂停/恢复：浮窗直接 `invoke("record_pause")` / `invoke("record_resume")`（via useRecordSession hook）。
 
+## 位置算法（2026-07-26 修复副屏 bug）
+
+**Bug**：原 `compute_position` 写 `let _ = display_id;` 丢弃 CGDirectDisplayID、永远用 `app.primary_monitor()`，且 `Monitor::position()` 返回物理像素未除 scale → 双重错误导致副屏录制时 pill 跑到主屏右下角。
+
+**修复**：
+```rust
+fn compute_position(app: &AppHandle, source: &Source) -> (f64, f64) {
+    // 1. Display 录制：display_id 是 CGDirectDisplayID，直接 CGDisplay::bounds() 拿逻辑边界
+    if let Source::Display { display_id } = source {
+        if let Some((ox, oy, w, h)) = cg_display_logical_bounds(*display_id) {
+            return pill_bottom_right(ox, oy, w, h);
+        }
+        log::warn!("[record] CGDisplay::bounds() 查不到 display_id={display_id}，回退主屏");
+    }
+    // 2. 回退：Tauri Monitor（window 录制、或 CG 查询失败）——position/size 都是物理像素，÷ scale
+    let m = app.primary_monitor()?.unwrap();
+    let scale = m.scale_factor();
+    pill_bottom_right(
+        m.position().x as f64 / scale,
+        m.position().y as f64 / scale,
+        m.size().width as f64 / scale,
+        m.size().height as f64 / scale,
+    )
+}
+
+fn pill_bottom_right(origin_x, origin_y, w, h) -> (f64, f64) {
+    // 注意：副屏在主屏左/上时 origin 是负数，不能 .max(0.0)（会推回主屏）
+    (origin_x + w - WIDTH - 16.0, origin_y + h - HEIGHT - 16.0)
+}
+```
+
+**关键点**：
+- `CGDisplay::new(id).bounds()` 返回**逻辑** CGRect（CoreGraphics 原生 points，已含 scale）—— 比 Tauri Monitor heuristic 命中更可靠（Tauri Monitor 不暴露 CGDirectDisplayID）。
+- 副屏在主屏**左侧/上方**时 `bounds.origin` 是负数，pill 坐标也应是负数（落在副屏坐标空间内）——不能 `.max(0.0)`。
+- 单元测试覆盖 3 种场景：主屏（origin=0,0）、左侧副屏（origin_x<0）、上方副屏（origin_y<0）。
+
 ## 验证
 
 详见 plan 验证章节。关键 e2e 场景：
@@ -89,6 +125,6 @@ main.rs L1104 listen → stop_and_store(session, app, false, None)
 
 ## 不在范围
 
-- window 录制精确显示器定位（MVP fallback 主屏）
+- ~~window 录制精确显示器定位（MVP fallback 主屏）~~ → window 录制仍 fallback 主屏（window_id → display 查询复杂），display 录制已精确（2026-07-26）
 - F12 编码参数 / F13 文件管理 / F14 录制浮窗的其他形态（P1 其他项）
 - 浮窗「不被录进视频」开关（未来可选）
