@@ -118,6 +118,12 @@ export default function RecordingPanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   // GIF 导出：一次只导出一个（按 id 跟踪，null=空闲）。row 据此切换按钮 disabled/spinner。
   const [gifExportingId, setGifExportingId] = useState<number | null>(null);
+  // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
+  // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<boolean>("check_ffmpeg").then(setFfmpegAvailable).catch(() => setFfmpegAvailable(true));
+  }, []);
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -353,6 +359,7 @@ export default function RecordingPanel({
               onRenamed={loadList}
               gifExportingId={gifExportingId}
               onExportGif={(gid) => setGifExportingId(gid)}
+              ffmpegAvailable={ffmpegAvailable}
               onTranscribeClick={
                 onNavigate ? () => onNavigate("models") : undefined
               }
@@ -408,6 +415,7 @@ interface RecordingRowProps {
   onRenamed: () => void;
   gifExportingId: number | null;
   onExportGif: (id: number | null) => void;
+  ffmpegAvailable: boolean | null;
 }
 
 function RecordingRow({
@@ -421,6 +429,7 @@ function RecordingRow({
   onRenamed,
   gifExportingId,
   onExportGif,
+  ffmpegAvailable,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -489,9 +498,11 @@ function RecordingRow({
 
   // ── GIF 导出（F20）── invoke export_gif 命令，loading 状态由父 gifExportingId 控制
   const isExportingGif = gifExportingId === rec.id;
+  // ffmpeg 缺失时灰禁（null=探测中，按可用处理避免闪烁；false=未找到，灰禁 + tooltip）
+  const ffmpegDisabled = ffmpegAvailable === false;
   const handleExportGif = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isExportingGif) return;
+    if (isExportingGif || ffmpegDisabled) return;
     onExportGif(rec.id);
     try {
       const path = await invoke<string>("export_gif", { id: rec.id });
@@ -683,13 +694,19 @@ function RecordingRow({
         <button
           className={cn(
             "p-1 rounded transition-opacity",
-            isExportingGif
-              ? "opacity-100"
-              : "opacity-40 group-hover:opacity-60 hover:!opacity-100 cursor-pointer",
+            ffmpegDisabled
+              ? "opacity-30 cursor-not-allowed"
+              : isExportingGif
+                ? "opacity-100"
+                : "opacity-40 group-hover:opacity-60 hover:!opacity-100 cursor-pointer",
           )}
           onClick={handleExportGif}
-          disabled={isExportingGif}
-          title={t("settings.recordings.exportGif")}
+          disabled={isExportingGif || ffmpegDisabled}
+          title={
+            ffmpegDisabled
+              ? t("settings.recordings.ffmpegMissing")
+              : t("settings.recordings.exportGif")
+          }
         >
           {isExportingGif ? (
             <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />

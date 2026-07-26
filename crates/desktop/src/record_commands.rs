@@ -683,17 +683,16 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
 
 // ── F20 GIF 导出（P3）─────────────────────────────────────────
 
-/// 查找 ffmpeg 二进制路径。
+/// 同步探测 ffmpeg 是否存在（不报错，返回 Option）。
 ///
+/// 查找顺序：`~/.octopus/bin/ffmpeg`（用户手动放/dlp 下载缓存）→ 系统 PATH（which）。
 /// 复制自 `crates/dlp/src/main.rs:42-73` 的 `get_binary_path`（dlp 是 binary crate 无 lib，
 /// 无法 use 导入；desktop crate 已有 4 处 which 内联副本，容忍此模式）。
-///
-/// 查找顺序：`~/.octopus/bin/ffmpeg`（dlp 下载缓存）→ 系统 PATH（which）→ 报错引导 brew install。
-async fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
+fn probe_ffmpeg() -> Option<std::path::PathBuf> {
     // 1. ~/.octopus/bin/ffmpeg
     let home_bin = octopus_infra::octopus_config_home().join("bin").join("ffmpeg");
     if home_bin.exists() {
-        return Ok(home_bin);
+        return Some(home_bin);
     }
     // 2. 系统 PATH（which，与 agent_adapter.rs / paste.rs 同模式）
     let on_path = std::process::Command::new("which")
@@ -704,9 +703,41 @@ async fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
         .map(|s| s.success())
         .unwrap_or(false);
     if on_path {
-        return Ok(std::path::PathBuf::from("ffmpeg"));
+        return Some(std::path::PathBuf::from("ffmpeg"));
     }
-    Err("ffmpeg 未找到。请运行 `brew install ffmpeg` 或将 ffmpeg 放到 ~/.octopus/bin/".into())
+    None
+}
+
+/// 查找 ffmpeg 二进制路径（报错版本，给 export_gif 用）。
+///
+/// 未找到时返回错误，文案引导多种安装方式（brew + bash 下载 + 手动）。
+/// 前端 GIF 按钮 disabled 时 tooltip 也用同一文案（通过 check_ffmpeg 命令拿）。
+async fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
+    if let Some(p) = probe_ffmpeg() {
+        return Ok(p);
+    }
+    Err(ffmpeg_missing_hint())
+}
+
+/// ffmpeg 缺失时的安装引导文案（多种方式）。
+///
+/// 不只 brew——用户可能没装 brew，提供 bash 直接下载静态二进制 + 手动放置两种。
+/// 文案是多语言 key 的 fallback（i18n 加载前/英文化场景），前端通过 check_ffmpeg
+/// 命令拿 bool 后用自己的 i18n key 渲染 tooltip。
+fn ffmpeg_missing_hint() -> String {
+    "ffmpeg 未找到。安装方式：\n\
+     1. brew install ffmpeg\n\
+     2. curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/\n\
+     3. 手动下载放到 ~/.octopus/bin/ffmpeg"
+        .into()
+}
+
+/// 探测 ffmpeg 是否可用（前端 GIF 按钮据此决定是否灰禁）。
+///
+/// 返回 bool：true=可用，false=未找到（前端显示 tooltip 引导安装）。
+#[command]
+pub async fn check_ffmpeg() -> bool {
+    probe_ffmpeg().is_some()
 }
 
 /// 把已录制的 MP4 转成 GIF。

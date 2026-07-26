@@ -95,6 +95,7 @@ settings:
     exportGifStarted: Exporting GIF...
     exportGifDone: Exported to ${path}
     exportGifFailed: "Failed to export GIF: "
+    ffmpegMissing: "ffmpeg not installed. Install via: brew install ffmpeg; or curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/"
     recording: Recording
     paused: Paused
     startBtn: Start Recording

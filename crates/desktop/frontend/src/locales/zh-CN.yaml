@@ -98,6 +98,7 @@ settings:
     exportGifStarted: 正在导出 GIF...
     exportGifDone: 已导出到 ${path}
     exportGifFailed: "导出 GIF 失败："
+    ffmpegMissing: "未安装 ffmpeg。安装方式之一：brew install ffmpeg；或 curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/"
     recording: 录制中
     paused: 已暂停
     # 录制控制按钮（2026-07-25 加：Cmd+Shift+R 直接开录后，panel 也要有按钮入口）

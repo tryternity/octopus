@@ -81,9 +81,41 @@ ffmpeg -y -i input.mp4 -vf "fps=15,scale=800:-1:flags=lanczos" -loop 0 output.gi
 2. **大文件耗时**：toast + spinner 兜底；超长视频 GIF 无意义，MVP 不警告
 3. **同名覆盖**：`-y` 覆盖（重导出即覆盖是合理默认）
 
+## ffmpeg 探测 + 灰禁 + 安装引导（体验优化，2026-07-26 补）
+
+### 问题
+
+MVP 版 GIF 按钮始终可点，未装 ffmpeg 时点击才报错。用户不知道要先装 ffmpeg，体验差。
+
+### 实现
+
+**后端**（`record_commands.rs`）：
+- `probe_ffmpeg() -> Option<PathBuf>`：同步探测（`~/.octopus/bin/ffmpeg` + which），不报错
+- `find_ffmpeg()`：报错版本（export_gif 用），错误文案含多种安装方式
+- `check_ffmpeg() -> bool`：Tauri 命令，前端 mount 时调，决定按钮灰禁
+- `ffmpeg_missing_hint()`：安装引导文案，不止 brew——提供 bash 直接下载 + 手动放置
+
+**前端**（`RecordingPanel.tsx`）：
+- 父 RecordingPanel mount 时 `invoke<boolean>("check_ffmpeg")` → `ffmpegAvailable` state
+- `ffmpegAvailable === false` → GIF 按钮 `disabled` + `opacity-30 cursor-not-allowed`
+- tooltip 切换：可用时显示「导出 GIF」，不可用时显示 `ffmpegMissing`（含 brew + curl 两种方式）
+- `ffmpegAvailable === null`（探测中）→ 按可用处理，避免首帧闪烁
+
+### 安装引导文案（i18n `settings.recordings.ffmpegMissing`）
+
+不止 brew——提供 bash 直接下载静态二进制（evermeet.cx）+ 手动放置：
+
+```
+未安装 ffmpeg。安装方式之一：
+brew install ffmpeg；
+或 curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/
+```
+
+evermeet.cx 是 macOS 上常用的 ffmpeg 静态构建源（与 brew 解耦，无需先装 brew）。
+
 ## 不在范围
 
-- 启动时 ffmpeg 探测 + 按钮灰禁（体验优化）
+- ~~启动时 ffmpeg 探测 + 按钮灰禁~~ ✅ 已实现（2026-07-26）
 - 调色板两遍优化（质量优化，耗时翻倍）
 - 另存为对话框（导出位置选择）
 - F15 ASR 字幕 / F17 全文搜索（P2，依赖 F15）
