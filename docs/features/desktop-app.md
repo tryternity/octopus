@@ -285,11 +285,11 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 **App-aware 菜单绑定**（2026-07-23，v49）：
 - `action_bar_items` 加 `app_bundle_ids` 列（JSON 数组，如 `["com.tencent.xinWeChat"]`）；`launcher_index` 加 `bundle_id` 列。
 - 语义：`app_bundle_ids` 为空 = 全局项（所有 app 都显示）；非空 = 专属项（仅前台 app 的 bundle_id 在数组中才显示）。前端 `isItemVisibleForApp` 按 AND 匹配。
-- AppPicker 组件：`list_all_apps` 返回 `AppBrief { name, bundle_id, icon }`，多选器勾选绑定。详见 [spec](../superpowers/specs/2026-07-23-actionbar-app-aware.md)。
+- AppPicker 组件：`list_all_apps` 返回 `AppBrief { name, bundle_id, icon }`，多选器勾选绑定。详见 [spec](../superpowers/specs/archived/2026-07-23-actionbar-app-aware.md)。
 
 **Prompt 外部文件引用**（2026-07-23）：
 - agent/ai 类型菜单的 `action_data` 支持 `@文件名` 语法引用 `~/.octopus/.sync/prompts/command/<文件名>.md`（运行时 `resolve_prompt_reference` 展开）。
-- 前端 PromptEditor 组件：Segmented 切换「内联」/「引用文件」模式；引用模式用可编辑 input + datalist（可选已有 + 自由输入新名）+ Plus 创建 + hover 浮层预览。详见 [spec](../superpowers/specs/2026-07-23-prompt-file-reference.md)。
+- 前端 PromptEditor 组件：Segmented 切换「内联」/「引用文件」模式；引用模式用可编辑 input + datalist（可选已有 + 自由输入新名）+ Plus 创建 + hover 浮层预览。详见 [spec](../superpowers/specs/archived/2026-07-23-prompt-file-reference.md)。
 
 ---
 

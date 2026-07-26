@@ -199,7 +199,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 - 容量上限 500 条（排除收藏，超限时先永久删回收站最老的）
 - 与 `clipboard_cleanup`（§9 按 天数/数量）互补：cleanup 管活跃区，trash_purge 管回收站
 
-**不变量**：收藏条目（`is_favorite=1`）即使软删也不被自动清理/TTL 永久删（用户显式永久删才行）。详见 [spec](../superpowers/specs/2026-07-22-clipboard-soft-delete.md)。
+**不变量**：收藏条目（`is_favorite=1`）即使软删也不被自动清理/TTL 永久删（用户显式永久删才行）。详见 [spec](../superpowers/specs/archived/2026-07-22-clipboard-soft-delete.md)。
 
 ---
 

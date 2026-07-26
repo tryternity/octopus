@@ -318,7 +318,7 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 | `[CARET]` | caret_gap 落点 |
 | `[WATCHDOG]` | 音频采集看门狗（见 §13.2） |
 
-**判读指南**：「绿条不亮」看 `[STATE]` editing 是否翻转 + `[SPEAKING]` 是否 emit；「commit 后不恢复」看 `[CARET]` commit 后 gap + `[APPLY]` 是否 delta 空。asr-local 不能依赖 desktop，`streaming_runner` 内部状态走 `log::debug!` stderr，desktop 层写文件对账。详见 [spec](../superpowers/specs/2026-07-19-asr-edit-stall-observability.md)。
+**判读指南**：「绿条不亮」看 `[STATE]` editing 是否翻转 + `[SPEAKING]` 是否 emit；「commit 后不恢复」看 `[CARET]` commit 后 gap + `[APPLY]` 是否 delta 空。asr-local 不能依赖 desktop，`streaming_runner` 内部状态走 `log::debug!` stderr，desktop 层写文件对账。详见 [spec](../superpowers/specs/archived/2026-07-19-asr-edit-stall-observability.md)。
 
 ## 13.2 音频采集看门狗 + 自动重连
 
@@ -326,7 +326,7 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 
 **看门狗**：`SharedAudioState` 持 `last_sample_time`，cpal 回调每次 extend 后更新；`sample_stall_duration()` 返回距上次回调时长；`dispatch_tick` 在 Streaming/VadSegmented 分支 tick 后调 `check_audio_stall()`，`>= AUDIO_STALL_THRESHOLD(3s)` → 发 `Command::RestartCapture`。3s 阈值不误判正常静音（静音时 cpal 仍推底噪 samples≠0）。
 
-**自动重连**（`restart_capture_keep_transcript`）：中断+重启录音，**复用 transcript**（两次录音文本拼一起，识别框不隐藏）。流程：停 tick + audio.stop 取尾 + 喂尾给旧 pipeline + finish flush → 取出 transcript 保留 → `reset_engine_baseline()` 清引擎基准 → audio.start 重连（失败则二次降级 emit mic-error + finalize 粘贴）→ 重建 pipeline + transcript 放回 Stage + 重启 tick。cloud 引擎 no-op（独立 WS 连接）。详见 [spec](../superpowers/specs/2026-07-24-audio-watchdog.md)。
+**自动重连**（`restart_capture_keep_transcript`）：中断+重启录音，**复用 transcript**（两次录音文本拼一起，识别框不隐藏）。流程：停 tick + audio.stop 取尾 + 喂尾给旧 pipeline + finish flush → 取出 transcript 保留 → `reset_engine_baseline()` 清引擎基准 → audio.start 重连（失败则二次降级 emit mic-error + finalize 粘贴）→ 重建 pipeline + transcript 放回 Stage + 重启 tick。cloud 引擎 no-op（独立 WS 连接）。详见 [spec](../superpowers/specs/archived/2026-07-24-audio-watchdog.md)。
 
 ---
 
