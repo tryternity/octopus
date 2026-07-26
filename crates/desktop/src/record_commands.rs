@@ -328,6 +328,13 @@ pub(crate) async fn start_with_config(
             if let Err(e) = crate::record_annotation_window::create_annotation_window(app, &source_clone) {
                 log::warn!("[record] 标注 overlay 创建失败（不影响录制）: {e}");
             }
+            // 控制浮窗（display/window 录制用；area 已有 RecordAnnotation，create 内部过滤）
+            crate::record_control_window::create_control_window(app, &source_clone);
+            // ESC stop 全局快捷键按需注册——非录制态不注册，避免吞掉 Screenshot /
+            // RecordConfig 等 DOM 级 ESC。详见 record_hotkey::register_stop_hotkey。
+            if let Err(e) = crate::record_hotkey::register_stop_hotkey(app) {
+                log::warn!("[record] ESC stop 快捷键注册失败（不影响录制）: {e}");
+            }
         }
     }
     result.map_err(e2s)
@@ -350,6 +357,7 @@ pub async fn record_resume(state: State<'_, RecordSession>) -> Result<(), String
 #[command]
 pub async fn record_stop(
     state: State<'_, RecordSession>,
+    app_handle: AppHandle,
     discard: bool,
     recording_id: i64,
     width: u32,
@@ -368,7 +376,7 @@ pub async fn record_stop(
         has_microphone,
     };
     // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
-    stop_and_store(&state, discard, Some(fields)).await
+    stop_and_store(&state, &app_handle, discard, Some(fields)).await
 }
 
 /// hotkey / tray stop 复用的入库逻辑。
@@ -381,6 +389,7 @@ pub async fn record_stop(
 /// session 快照读（hotkey/tray 路径）。
 pub(crate) async fn stop_and_store(
     session: &RecordSession,
+    app: &AppHandle,
     discard: bool,
     explicit_fields: Option<MetaFields>,
 ) -> Result<Option<RecordingMeta>, String> {
@@ -394,7 +403,13 @@ pub(crate) async fn stop_and_store(
             derive_fields_from_request(&req)?
         }
     };
-    stop_and_store_inner(session, discard, fields).await
+    let result = stop_and_store_inner(session, discard, fields).await;
+    // 录制结束（无论入库成功失败）→ 注销 ESC stop 快捷键。
+    // 失败也注销：异常状态下 ESC 不应残留（下次 Screenshot ESC 仍需正常）。
+    // 详见 record_hotkey::unregister_stop_hotkey 的设计说明。
+    #[cfg(target_os = "macos")]
+    crate::record_hotkey::unregister_stop_hotkey(app);
+    result
 }
 
 /// 从 RecordingRequest 推导入库需要的 MetaFields。
@@ -443,12 +458,13 @@ async fn stop_and_store_inner(
         has_microphone,
     } = fields;
 
-    // stop 返回的 StoppedInfo.screen_path 在 session.rs MVP 实现里是空 PathBuf
-    // （session 不存 RecordingStopped 事件的 payload）——Task 5 已知简化。
-    // Fallback：在 recordings_dir 下找文件名含 recording_id 的 .mp4。
+    // StoppedInfo：reader task 收到 RecordingStopped 时存精确 payload（screen_path /
+    // duration_ms / file_size）。session.stop() take 返回；正常路径下字段齐全。
+    // Fallback（异常退出 / kill 路径未收到事件）：按 recording_id 扫 recordings_dir 找文件。
     let stopped = session.stop().await.map_err(e2s)?;
 
     let abs_path = if stopped.screen_path.as_os_str().is_empty() {
+        // Fallback：未收到 RecordingStopped 事件（异常退出），按文件名 suffix 查
         let dir = octopus_infra::paths::recordings_dir();
         let suffix = format!("_{recording_id}.mp4");
         let mut found: Option<std::path::PathBuf> = None;
@@ -519,8 +535,20 @@ async fn stop_and_store_inner(
 }
 
 #[command]
-pub async fn record_kill(state: State<'_, RecordSession>) -> Result<(), String> {
-    state.kill().await.map_err(e2s)
+pub async fn record_kill(
+    state: State<'_, RecordSession>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let r = state.kill().await.map_err(e2s);
+    // 强杀路径：注销 ESC + 关闭浮窗（control + annotation），避免窗口泄漏残留。
+    // 无论 kill 成功失败都清理（与 stop_and_store 一致）。
+    #[cfg(target_os = "macos")]
+    {
+        crate::record_hotkey::unregister_stop_hotkey(&app_handle);
+        crate::record_annotation_window::close_annotation_window(&app_handle);
+        crate::record_control_window::close_control_window(&app_handle);
+    }
+    r
 }
 
 // ── C. 录屏历史（10 个）──────────────────────────────────────
@@ -651,4 +679,146 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── F20 GIF 导出（P3）─────────────────────────────────────────
+
+/// 同步探测 ffmpeg 是否存在（不报错，返回 Option）。
+///
+/// 查找顺序：`~/.octopus/bin/ffmpeg`（用户手动放/dlp 下载缓存）→ 系统 PATH（which）。
+/// 复制自 `crates/dlp/src/main.rs:42-73` 的 `get_binary_path`（dlp 是 binary crate 无 lib，
+/// 无法 use 导入；desktop crate 已有 4 处 which 内联副本，容忍此模式）。
+fn probe_ffmpeg() -> Option<std::path::PathBuf> {
+    // 1. ~/.octopus/bin/ffmpeg
+    let home_bin = octopus_infra::octopus_config_home().join("bin").join("ffmpeg");
+    if home_bin.exists() {
+        return Some(home_bin);
+    }
+    // 2. 系统 PATH（which，与 agent_adapter.rs / paste.rs 同模式）
+    let on_path = std::process::Command::new("which")
+        .arg("ffmpeg")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if on_path {
+        return Some(std::path::PathBuf::from("ffmpeg"));
+    }
+    None
+}
+
+/// 查找 ffmpeg 二进制路径（报错版本，给 export_gif 用）。
+///
+/// 未找到时返回错误，文案引导多种安装方式（brew + bash 下载 + 手动）。
+/// 前端 GIF 按钮 disabled 时 tooltip 也用同一文案（通过 check_ffmpeg 命令拿）。
+async fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
+    if let Some(p) = probe_ffmpeg() {
+        return Ok(p);
+    }
+    Err(ffmpeg_missing_hint())
+}
+
+/// ffmpeg 缺失时的安装引导文案（多种方式）。
+///
+/// 不只 brew——用户可能没装 brew，提供 bash 直接下载静态二进制 + 手动放置两种。
+/// 文案是多语言 key 的 fallback（i18n 加载前/英文化场景），前端通过 check_ffmpeg
+/// 命令拿 bool 后用自己的 i18n key 渲染 tooltip。
+fn ffmpeg_missing_hint() -> String {
+    "ffmpeg 未找到。安装方式：\n\
+     1. brew install ffmpeg\n\
+     2. curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/\n\
+     3. 手动下载放到 ~/.octopus/bin/ffmpeg"
+        .into()
+}
+
+/// 探测 ffmpeg 是否可用（前端 GIF 按钮据此决定是否灰禁）。
+///
+/// 返回 bool：true=可用，false=未找到（前端显示 tooltip 引导安装）。
+#[command]
+pub async fn check_ffmpeg() -> bool {
+    probe_ffmpeg().is_some()
+}
+
+/// 查询当前录制状态 + 已录秒数。
+///
+/// 用途：RecordControl 浮窗 mount 时初始化——浮窗创建晚于 recording-started 事件，
+/// 收不到事件，靠此命令拿当前 state + elapsed_secs 启动计时器。
+/// 返回 {state: "idle"/"recording"/"paused"/..., elapsed_secs: u64}。
+#[derive(serde::Serialize)]
+pub struct RecordStatus {
+    pub state: String,
+    pub elapsed_secs: u64,
+}
+
+#[command]
+pub async fn get_record_status(state: State<'_, RecordSession>) -> Result<RecordStatus, String> {
+    let s = state.state().await;
+    let elapsed = state.elapsed_secs().await.unwrap_or(0);
+    Ok(RecordStatus {
+        state: format!("{:?}", s).to_lowercase(),
+        elapsed_secs: elapsed,
+    })
+}
+
+/// 把已录制的 MP4 转成 GIF。
+///
+/// 输出位置：源 MP4 同目录、同名换 `.gif`（`-y` 覆盖）。
+/// ffmpeg 参数（spec §2.20）：`fps=15,scale=800:-1:flags=lanczos -loop 0`。
+///
+/// 进度反馈：emit `record://gif-started {id}` → ffmpeg 跑完 →
+/// 成功 emit `record://gif-done {id, path}` / 失败 emit `record://gif-failed {id, error}`。
+/// 前端 invoke 返回值也能拿到路径/错误，事件作为多窗口同步备用。
+#[command]
+pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
+    use octopus_infra::paths::resolve_recording_path;
+
+    // 1. 查 DB 拿 file_path
+    let file_path = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
+        Ok::<_, RecordError>(meta.file_path)
+    })
+    .await?;
+    let input = resolve_recording_path(&file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+
+    // 2. 解析 ffmpeg
+    let ffmpeg = find_ffmpeg().await?;
+
+    // 3. 输出路径：源文件同目录、同名换 .gif
+    let output = input.with_extension("gif");
+
+    // 4. emit 起点
+    let _ = app.emit("record://gif-started", serde_json::json!({ "id": id }));
+
+    // 5. spawn ffmpeg
+    let status = tokio::process::Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i").arg(&input)
+        .arg("-vf").arg("fps=15,scale=800:-1:flags=lanczos")
+        .arg("-loop").arg("0")
+        .arg(&output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
+
+    if !status.success() {
+        let _ = app.emit(
+            "record://gif-failed",
+            serde_json::json!({ "id": id, "error": "ffmpeg 转 GIF 失败" }),
+        );
+        return Err("ffmpeg 转 GIF 失败（退出码非 0）。可能原因：源文件损坏 / ffmpeg 版本过旧".into());
+    }
+
+    let path_str = output.to_string_lossy().to_string();
+    let _ = app.emit(
+        "record://gif-done",
+        serde_json::json!({ "id": id, "path": path_str }),
+    );
+    Ok(path_str)
 }

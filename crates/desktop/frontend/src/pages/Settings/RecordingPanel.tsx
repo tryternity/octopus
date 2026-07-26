@@ -30,6 +30,9 @@ import {
   Captions,
   Circle,
   Pause,
+  Pencil,
+  Clapperboard,
+  Loader2,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -113,6 +116,14 @@ export default function RecordingPanel({
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // GIF 导出：一次只导出一个（按 id 跟踪，null=空闲）。row 据此切换按钮 disabled/spinner。
+  const [gifExportingId, setGifExportingId] = useState<number | null>(null);
+  // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
+  // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
+  const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<boolean>("check_ffmpeg").then(setFfmpegAvailable).catch(() => setFfmpegAvailable(true));
+  }, []);
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -345,6 +356,10 @@ export default function RecordingPanel({
               showToast={showToast}
               onDeleted={handleRowDeleted}
               onFavoriteToggled={handleFavoriteToggled}
+              onRenamed={loadList}
+              gifExportingId={gifExportingId}
+              onExportGif={(gid) => setGifExportingId(gid)}
+              ffmpegAvailable={ffmpegAvailable}
               onTranscribeClick={
                 onNavigate ? () => onNavigate("models") : undefined
               }
@@ -397,6 +412,10 @@ interface RecordingRowProps {
   onDeleted: () => void;
   onFavoriteToggled: () => void;
   onTranscribeClick?: () => void;
+  onRenamed: () => void;
+  gifExportingId: number | null;
+  onExportGif: (id: number | null) => void;
+  ffmpegAvailable: boolean | null;
 }
 
 function RecordingRow({
@@ -407,11 +426,19 @@ function RecordingRow({
   onDeleted,
   onFavoriteToggled,
   onTranscribeClick,
+  onRenamed,
+  gifExportingId,
+  onExportGif,
+  ffmpegAvailable,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 重命名 inline input（WKWebView 不支持 window.prompt，用 inline input 仿 HotwordPanel 范式）
+  const [renaming, setRenaming] = useState(false);
+  const [renameVal, setRenameVal] = useState("");
+  const renameCancelledRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -440,6 +467,50 @@ function RecordingRow({
       await invoke("reveal_recording", { id: rec.id });
     } catch (e) {
       showToast(t("settings.recordings.loadFailed") + e, "error");
+    }
+  };
+
+  // ── 重命名（inline input，仿 HotwordPanel 范式）──
+  // WKWebView 不支持 window.prompt，用 inline input。
+  // Enter / blur → 提交；Escape → 取消（renameCancelledRef 防 blur 重复触发）。
+  const commitRename = useCallback(async () => {
+    if (renameCancelledRef.current) {
+      renameCancelledRef.current = false;
+      return;
+    }
+    const newTitle = renameVal.trim();
+    setRenaming(false);
+    if (!newTitle || newTitle === title) return;
+    try {
+      await invoke("rename_recording", { id: rec.id, title: newTitle });
+      onRenamed();
+    } catch (e) {
+      showToast(t("settings.recordings.loadFailed") + e, "error");
+    }
+  }, [renameVal, title, rec.id, onRenamed, showToast, t]);
+
+  const startRename = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    renameCancelledRef.current = false;
+    setRenameVal(title);
+    setRenaming(true);
+  };
+
+  // ── GIF 导出（F20）── invoke export_gif 命令，loading 状态由父 gifExportingId 控制
+  const isExportingGif = gifExportingId === rec.id;
+  // ffmpeg 缺失时灰禁（null=探测中，按可用处理避免闪烁；false=未找到，灰禁 + tooltip）
+  const ffmpegDisabled = ffmpegAvailable === false;
+  const handleExportGif = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isExportingGif || ffmpegDisabled) return;
+    onExportGif(rec.id);
+    try {
+      const path = await invoke<string>("export_gif", { id: rec.id });
+      showToast(t("settings.recordings.exportGifDone", { path }), "success");
+    } catch (err) {
+      showToast(t("settings.recordings.exportGifFailed") + String(err), "error");
+    } finally {
+      onExportGif(null);
     }
   };
 
@@ -541,10 +612,28 @@ function RecordingRow({
             {rec.source_type}
           </span>
         </div>
-        {/* Title */}
-        <p className="text-xs leading-relaxed text-foreground truncate" title={title}>
-          {title}
-        </p>
+        {/* Title（renaming 时显示 inline input，仿 HotwordPanel）*/}
+        {renaming ? (
+          <input
+            autoFocus
+            value={renameVal}
+            onChange={(e) => setRenameVal(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                renameCancelledRef.current = true;
+                setRenaming(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="text-xs leading-relaxed text-foreground bg-background border border-border rounded px-1 py-0.5 w-full outline-none focus:border-primary"
+          />
+        ) : (
+          <p className="text-xs leading-relaxed text-foreground truncate" title={title}>
+            {title}
+          </p>
+        )}
       </div>
 
       {/* 右侧操作：播放 + Finder + 收藏 + 转字幕（灰） + 删除 */}
@@ -562,6 +651,13 @@ function RecordingRow({
           title={t("settings.recordings.reveal")}
         >
           <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+        </button>
+        <button
+          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+          onClick={startRename}
+          title={t("settings.recordings.rename")}
+        >
+          <Pencil className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className="p-1 rounded opacity-60 group-hover:opacity-70 hover:!opacity-100 transition-opacity disabled:opacity-30"
@@ -594,6 +690,31 @@ function RecordingRow({
           title={t("settings.recordings.transcriptTooltip")}
         >
           <Captions className="w-3.5 h-3.5 text-muted-foreground" />
+        </button>
+        <button
+          className={cn(
+            "p-1 rounded transition-opacity",
+            ffmpegDisabled
+              ? "opacity-30 cursor-not-allowed"
+              : isExportingGif
+                ? "opacity-100"
+                : // 与 favorite 对齐：默认可见（opacity-60），不要像 Play/Reveal 那样隐藏
+                  // —— 用户反馈找不到 GIF 导出按钮（之前 opacity-40 太暗被当成装饰）
+                  "opacity-60 group-hover:opacity-70 hover:!opacity-100 cursor-pointer",
+          )}
+          onClick={handleExportGif}
+          disabled={isExportingGif || ffmpegDisabled}
+          title={
+            ffmpegDisabled
+              ? t("settings.recordings.ffmpegMissing")
+              : t("settings.recordings.exportGif")
+          }
+        >
+          {isExportingGif ? (
+            <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+          ) : (
+            <Clapperboard className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          )}
         </button>
         <button
           className={cn(

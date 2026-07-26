@@ -29,61 +29,87 @@
  * 这里采用最简方案：hide overlay 让用户从托盘 / 快捷键停止（与原 RecordAnnotation 行为一致，
  * 因为视频继续录，用户停止后 ESC 路径会正常关闭 overlay）。
  */
-import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
+import { useEffect, useRef, useState, useLayoutEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
-import { type Annotation, type Tool, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
-import { ToolButton } from "@/pages/Screenshot/ToolButton";
-import { ToolPropsPopover } from "@/pages/Screenshot/ToolPropsPopover";
+import { emit, listen as rawListen, type UnlistenFn, type Event } from "@tauri-apps/api/event";
+import { type Annotation, drawAnnotation, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { useAnnotationState, AnnotationToolbar, computeToolbarPosition, computeToolbarCenterX, TOOLBAR_H } from "@/components/Annotation";
 import { useT } from "@/lib/i18n";
 
 const RECORD_BORDER_COLOR = "#3b82f6";
+
+/** helper event payload（监听 pause/resume/stop 更新录制状态）*/
+interface HelperEventLite {
+  event: "recording-started" | "recording-paused" | "recording-resumed" | "recording-stopped" | "ready" | "warning" | "error";
+}
+
+function formatDuration(secs: number): string {
+  const totalSec = Math.max(0, Math.floor(secs));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+  return `${pad(m)}:${pad(s)}`;
+}
 
 export default function RecordAnnotation() {
   const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // ── 工具状态 ──────────────────────────────────────────────────
-  const [tool, setTool] = useState<Tool>("none");
-  const toolRef = useRef<Tool>("none");
-  const [toolColor, setToolColorState] = useState("#ef4444");
-  const toolColorRef = useRef("#ef4444");
-  const [toolWidth, setToolWidth] = useState(3);
-  const [toolFontSize, setToolFontSizeState] = useState(16);
-  const toolFontSizeRef = useRef(16);
-  const [toolFilled, setToolFilled] = useState(false);
-  const toolFilledRef = useRef(false);
-  const [toolCircleSize, setToolCircleSize] = useState(24);
-  const setToolColor = (c: string) => { toolColorRef.current = c; setToolColorState(c); };
-  const setToolFontSize = (s: number) => { toolFontSizeRef.current = s; setToolFontSizeState(s); };
-
-  // ── 标注数据 ──────────────────────────────────────────────────
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const annotationsRef = useRef<Annotation[]>([]);
-  const drawingRef = useRef<Annotation | null>(null);
-  const [drawingVer, setDrawingVer] = useState(0); // 触发 pen 实时重绘
-  const redoStackRef = useRef<Annotation[]>([]);
-  const [redoAvailable, setRedoAvailable] = useState(false);
-  const [numberCounter, setNumberCounter] = useState(1);
-  const numberCounterRef = useRef(1);
-  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  // ── 标注状态（hook 抽取，与 Screenshot 共用）──────────────────
+  const annotation = useAnnotationState();
+  const {
+    toolRef, annotationsRef, drawingRef, drawingVer, setDrawingVer,
+    addAnnotation, undoAnnotation, redoAnnotation,
+    numberCounterRef, setSelectedAnn,
+    setAnnotations,
+  } = annotation;
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
-  // ── 文字输入草稿 ──────────────────────────────────────────────
+  // ── 文字输入草稿（业务侧独有，不进 hook）──────────────────────
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // ── 浮窗 ──────────────────────────────────────────────────────
-  const [showPopover, setShowPopover] = useState(false);
-  const [popoverX, setPopoverX] = useState(0);
-
   // ── Canvas/工具栏几何（后端注入：窗口=选区+工具栏空间）────────
   // 后端 record_annotation_window.rs 创建的 overlay 窗口比选区大，
   // URL 注入 canvas_ox/oy/w/h 描述选区在窗口内的位置（逻辑像素）。
+  // toolbar_pos 决定 TOOLBAR_ZONE（后端 poller 据此判定鼠标穿透），前端必须与之对齐。
   const [canvasRect, setCanvasRect] = useState({ ox: 0, oy: 0, w: 0, h: 0 });
-  const [toolbarPos, setToolbarPos] = useState<"below" | "above" | "inside">("inside");
+  // ── 录制时长显示（与 RecordControl 同模式：mount 查 get_record_status + 监听事件）──
+  // RecordAnnotation overlay 创建晚于 recording-started 事件，本地直接 setInterval。
+  type RecState = "idle" | "recording" | "paused";
+  const [recState, setRecState] = useState<RecState>("recording"); // overlay 只在录制中创建
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ state: string; elapsed_secs: number }>("get_record_status")
+      .then((status) => {
+        if (cancelled) return;
+        setRecState(status.state === "paused" ? "paused" : status.state === "recording" ? "recording" : "idle");
+        setElapsed(status.elapsed_secs);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    rawListen<HelperEventLite>("record://event", (e: Event<HelperEventLite>) => {
+      const evt = e.payload.event;
+      if (evt === "recording-paused") setRecState("paused");
+      else if (evt === "recording-resumed") setRecState("recording");
+      else if (evt === "recording-stopped") setRecState("idle");
+    }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+  useEffect(() => {
+    if (recState !== "recording") return;
+    const timer = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [recState]);
   const canvasRectRef = useRef(canvasRect);
   useEffect(() => { canvasRectRef.current = canvasRect; }, [canvasRect]);
 
@@ -95,13 +121,7 @@ export default function RecordAnnotation() {
       w: parseFloat(params.get("canvas_w") || String(window.innerWidth)),
       h: parseFloat(params.get("canvas_h") || String(window.innerHeight)),
     });
-    setToolbarPos((params.get("toolbar") || "inside") as "below" | "above" | "inside");
   }, []);
-
-  // 同步 refs
-  useEffect(() => { toolRef.current = tool; }, [tool]);
-  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
-  useEffect(() => { numberCounterRef.current = numberCounter; }, [numberCounter]);
 
   // mount 时默认穿透（tool="none" = 鼠标模式 = 穿透操作下层应用）
   useEffect(() => {
@@ -113,7 +133,7 @@ export default function RecordAnnotation() {
   const [toolbarW, setToolbarW] = useState(0);
   useLayoutEffect(() => {
     if (toolbarRef.current) setToolbarW(toolbarRef.current.offsetWidth);
-  }, [tool]);
+  }, [annotation.tool]);
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -130,39 +150,13 @@ export default function RecordAnnotation() {
     canvasInitedRef.current = true;
   }, [dpr, canvasRect]);
 
-  // ── undo / redo / add ────────────────────────────────────────
-  const addAnnotation = (ann: Annotation) => {
-    redoStackRef.current = [];
-    setRedoAvailable(false);
-    setAnnotations((prev) => [...prev, ann]);
-  };
-  const undoAnnotation = () => {
-    setAnnotations((prev) => {
-      if (prev.length === 0) return prev;
-      const removed = prev[prev.length - 1];
-      redoStackRef.current.push(removed);
-      setRedoAvailable(true);
-      if (removed.type === "number" && removed.number === numberCounterRef.current - 1) {
-        setNumberCounter(numberCounterRef.current - 1);
-      }
-      return prev.slice(0, -1);
-    });
-    setSelectedAnn(null);
-  };
-  const redoAnnotation = () => {
-    const ann = redoStackRef.current.pop();
-    if (ann) {
-      if (ann.type === "number") setNumberCounter(numberCounterRef.current + 1);
-      setAnnotations((prev) => [...prev, ann]);
-      setRedoAvailable(redoStackRef.current.length > 0);
-    }
-  };
+  // add/undo/redo 已抽到 useAnnotationState（与 Screenshot 共用）
 
   // ── 绘制（透明 Canvas + 录制边框 + 标注）─────────────────────
   // 标注坐标是相对 Canvas 的（与 canvasRect 对应），Canvas 通过 CSS
   // position 在窗口内偏移。绘制时 transform 已让 (0,0) 对齐 Canvas 左上角，
   // 因此标注坐标无需再加 canvasRect 偏移；录制边框画在 Canvas 自身边缘。
-  const draw = useCallback(() => {
+  const draw = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -183,7 +177,7 @@ export default function RecordAnnotation() {
       // 编辑中的文字标注（text=""）跳过——textarea 已显示
       if (anns[i].type === "text" && (anns[i].text ?? "") === "") continue;
       drawAnnotation(ctx, anns[i]);
-      if (selectedAnn === i) {
+      if (annotation.selectedAnn === i) {
         const b = annBounds(anns[i]);
         ctx.strokeStyle = "#3b82f6";
         ctx.lineWidth = 1;
@@ -200,32 +194,20 @@ export default function RecordAnnotation() {
     ctx.strokeStyle = RECORD_BORDER_COLOR;
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, cssW - 2, cssH - 2);
-  }, [dpr, selectedAnn, canvasRect]);
-
-  useEffect(() => { draw(); }, [draw, annotations, drawingVer]);
-
-  // ── 工具选择：弹浮窗 + 记录按钮中心 x ────────────────────────
-  const onToolSelect = (e: React.MouseEvent, t: Tool, extra?: () => void) => {
-    const btn = e.currentTarget as HTMLElement;
-    const rect = btn.getBoundingClientRect();
-    setPopoverX(rect.left + rect.width / 2);
-    if (tool === t) {
-      if (showPopover) { setShowPopover(false); setTool("none"); invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {}); }
-      else { setShowPopover(true); }
-    } else {
-      setTool(t); setShowPopover(true);
-      // 选标注工具 → 不穿透（画标注）；选 "none"（鼠标）→ 穿透（操作下层应用）
-      invoke("set_annotation_passthrough", { passthrough: t === "none" }).catch(() => {});
-      extra?.();
-    }
   };
+
+  // 重绘触发：标注变化、绘制中、canvasRect 变化（URL 解析后首次拿到选区几何）。
+  // 原依赖列表只有 [annotations, drawingVer]——漏了 canvasRect，导致 URL 解析填充
+  // canvasRect 后不重绘，录制边框要等到首次标注操作才出现（bug：录屏开始无边框）。
+  useEffect(() => { draw(); }, [annotation.annotations, drawingVer, canvasRect]);
+
 
   // ── 鼠标交互（参考 Screenshot，去除选区逻辑）─────────────────
   // e.clientX/Y 是窗口坐标，标注坐标是相对 Canvas（选区）的——
   // 减去 canvasRect.ox/oy 转换到 Canvas 局部坐标系。
   function onMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
-    setShowPopover(false);
+    annotation.setShowPopover(false);
     const mx = e.clientX - canvasRectRef.current.ox;
     const my = e.clientY - canvasRectRef.current.oy;
 
@@ -233,7 +215,7 @@ export default function RecordAnnotation() {
     if (textDraftRef.current) {
       const draft = textDraftRef.current;
       if (draft.val.trim()) {
-        addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current, textWidth: 200 });
+        addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: annotation.toolColorRef.current, fontSize: annotation.toolFontSizeRef.current, textWidth: 200 });
       }
       textDraftRef.current = null;
       setTextDraft(null);
@@ -269,18 +251,18 @@ export default function RecordAnnotation() {
     if (tk === "number") {
       addAnnotation({
         type: "number", x1: mx, y1: my, x2: mx, y2: my,
-        number: numberCounterRef.current, color: toolColorRef.current, circleSize: toolCircleSize,
+        number: numberCounterRef.current, color: annotation.toolColorRef.current, circleSize: annotation.toolCircleSize,
       });
-      setNumberCounter(numberCounterRef.current + 1);
+      annotation.setNumberCounter(numberCounterRef.current + 1);
       return;
     }
     if (tk === "pen") {
-      drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: toolColorRef.current, lineWidth: toolWidth };
+      drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: annotation.toolColorRef.current, lineWidth: annotation.toolWidth };
     } else {
       drawingRef.current = {
         type: tk, x1: mx, y1: my, x2: mx, y2: my,
-        color: toolColorRef.current, lineWidth: toolWidth,
-        filled: (tk === "rect" || tk === "oval" || tk === "diamond") ? toolFilledRef.current : undefined,
+        color: annotation.toolColorRef.current, lineWidth: annotation.toolWidth,
+        filled: (tk === "rect" || tk === "oval" || tk === "diamond") ? annotation.toolFilledRef.current : undefined,
       };
     }
   }
@@ -367,18 +349,18 @@ export default function RecordAnnotation() {
         undoAnnotation();
         return;
       }
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedAnn !== null) {
-        const removed = annotationsRef.current[selectedAnn];
+      if ((e.key === "Delete" || e.key === "Backspace") && annotation.selectedAnn !== null) {
+        const removed = annotationsRef.current[annotation.selectedAnn];
         if (removed?.type === "number" && removed.number === numberCounterRef.current - 1) {
-          setNumberCounter(numberCounterRef.current - 1);
+          annotation.setNumberCounter(numberCounterRef.current - 1);
         }
-        setAnnotations(annotationsRef.current.filter((_, i) => i !== selectedAnn));
+        setAnnotations(annotationsRef.current.filter((_, i) => i !== annotation.selectedAnn));
         setSelectedAnn(null);
         return;
       }
       if (e.key === "Escape") {
         if (toolRef.current !== "none") {
-          setTool("none"); setShowPopover(false);
+          annotation.setTool("none"); annotation.setShowPopover(false);
           invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {});
         }
         // 录屏停止由全局 ESC 快捷键接管（record_hotkey），这里不重复处理
@@ -386,7 +368,7 @@ export default function RecordAnnotation() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedAnn]);
+  }, [annotation.selectedAnn]);
 
   // ── 停止录制按钮：emit 事件让主进程停止（主进程未监听时 fallback hide overlay）──
   const onStopClick = async () => {
@@ -404,35 +386,43 @@ export default function RecordAnnotation() {
     }
   };
 
-  // ── 工具栏位置（按 toolbarPos + canvasRect 计算）──────────────
-  // 后端窗口 = 选区 + 工具栏空间，工具栏放在 Canvas（选区）外的预留空间内：
-  //   toolbar=below：Canvas 下方（canvas_oy=0，工具栏在 Canvas 底部下方）
-  //   toolbar=above：Canvas 上方（canvas_oy=工具栏空间，工具栏在 Canvas 顶部上方）
-  //   toolbar=inside：兜底，工具栏浮在 Canvas 内部底部
-  const TOOLBAR_H = 44;
-  const toolbarTop = toolbarPos === "below"
-    ? canvasRect.oy + canvasRect.h + 8        // Canvas 下方
-    : toolbarPos === "above"
-      ? 8                                      // 窗口顶部（Canvas 上方）
-      : canvasRect.oy + canvasRect.h - TOOLBAR_H - 8;  // Canvas 内部底部
-
-  // popover 位置：below → 工具栏下方；above / inside → 工具栏上方
-  const popoverY = toolbarPos === "below"
+  // ── 工具栏位置（与截图同算法 computeToolbarPosition）──
+  // 全屏窗口模式：窗口覆盖整个显示器，Canvas 通过 fixed 定位到选区，
+  // 工具栏用 computeToolbarPosition 算位置（与截图完全一致）。
+  const tbPos = canvasRect.w > 0
+    ? computeToolbarPosition(
+        { x: canvasRect.ox, y: canvasRect.oy, w: canvasRect.w, h: canvasRect.h },
+        window.innerHeight,
+      )
+    : null;
+  const toolbarTop = tbPos ? tbPos.y : 0;
+  // popover Y：below/above → 工具栏下方；inside → 工具栏上方
+  const popoverY = tbPos?.belowOrAbove
     ? toolbarTop + TOOLBAR_H
     : Math.max(0, toolbarTop - 200);
-  // popover X：跟随被点击的工具按钮中心（与截图 onToolSelect setPopoverX 一致）
-  const popoverLeft = popoverX || (canvasRect.ox + canvasRect.w / 2);
 
-  // 工具栏 X clamp（基于 canvasRect 水平区间，DOCK_MARGIN 留边）
-  const DOCK_MARGIN = 80;
-  const halfW = toolbarW / 2 || 150;
-  const toolbarCenterX = Math.max(
-    canvasRect.ox + DOCK_MARGIN + halfW,
-    Math.min(
-      canvasRect.ox + canvasRect.w / 2,
-      canvasRect.ox + canvasRect.w - DOCK_MARGIN - halfW,
-    ),
-  );
+  // popover X：跟随被点击的工具按钮中心，fallback 到选区中心
+  const popoverLeft = annotation.popoverX || (canvasRect.ox + canvasRect.w / 2);
+
+  // 工具栏 X clamp（与截图同算法 computeToolbarCenterX）
+  const toolbarCenterX = canvasRect.w > 0
+    ? computeToolbarCenterX(
+        { x: canvasRect.ox, y: canvasRect.oy, w: canvasRect.w, h: canvasRect.h },
+        window.innerWidth,
+        toolbarW,
+      )
+    : 0;
+
+  // mount 后把工具栏实际位置传回后端（poller 用此区域判定穿透）
+  useEffect(() => {
+    if (canvasRect.w === 0 || !tbPos) return;
+    invoke("set_toolbar_zone", {
+      x: toolbarCenterX - (toolbarW || 200) / 2,
+      y: toolbarTop,
+      w: toolbarW || 200,
+      h: TOOLBAR_H,
+    }).catch(() => {});
+  }, [canvasRect.w, canvasRect.ox, canvasRect.oy, canvasRect.h, toolbarTop, toolbarCenterX, toolbarW, tbPos]);
 
   return (
     <>
@@ -444,7 +434,7 @@ export default function RecordAnnotation() {
           top: canvasRect.oy,
           width: canvasRect.w,
           height: canvasRect.h,
-          cursor: tool === "none" ? "default" : "crosshair",
+          cursor: annotation.tool === "none" ? "default" : "crosshair",
           display: "block",
         }}
         onMouseDown={onMouseDown}
@@ -468,7 +458,7 @@ export default function RecordAnnotation() {
           onBlur={() => {
             const draft = textDraftRef.current;
             if (draft && draft.val.trim()) {
-              addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current, textWidth: 200 });
+              addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: annotation.toolColorRef.current, fontSize: annotation.toolFontSizeRef.current, textWidth: 200 });
             }
             textDraftRef.current = null;
             setTextDraft(null);
@@ -484,77 +474,82 @@ export default function RecordAnnotation() {
             position: "fixed",
             left: textDraft.x + canvasRect.ox,
             top: textDraft.y + canvasRect.oy,
-            fontSize: toolFontSize,
-            color: toolColor,
+            fontSize: annotation.toolFontSize,
+            color: annotation.toolColor,
             background: "transparent",
-            border: `1px dashed ${toolColor}`,
+            border: `1px dashed ${annotation.toolColor}`,
             outline: "none",
             resize: "none",
             padding: "2px 4px",
-            minHeight: toolFontSize + 8,
+            minHeight: annotation.toolFontSize + 8,
             width: 200,
           }}
         />
       )}
 
-      {/* 顶部工具栏 */}
-      <div
-        ref={toolbarRef}
-        style={{
-          position: "fixed",
-          top: toolbarTop,
-          left: toolbarCenterX,
-          transform: "translateX(-50%)",
-          display: "flex",
-          gap: 4,
-          padding: "6px 8px",
-          background: "var(--color-surface)",
-          color: "var(--color-foreground)",
-          borderRadius: 8,
-          boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
-          zIndex: 100,
-          alignItems: "center",
+      {/* 工具栏（AnnotationToolbar 渲染 9 工具 + undo/redo + children slot） */}
+      <AnnotationToolbar
+        state={annotation}
+        toolbarRef={toolbarRef}
+        top={toolbarTop}
+        left={toolbarCenterX}
+        popoverY={popoverY}
+        popoverX={popoverLeft}
+        onToolChange={(target) => {
+          // 选标注工具 → 不穿透（画标注）；选 "none"（鼠标）→ 穿透（操作下层应用）
+          invoke("set_annotation_passthrough", { passthrough: target === "none" }).catch(() => {});
         }}
       >
-        <ToolButton active={tool === "none"} onClick={() => { setTool("none"); setShowPopover(false); invoke("set_annotation_passthrough", { passthrough: true }).catch(() => {}); }} label={t("screenshot.tool.select")} icon={
-          <img src="icons/arrow-pointer.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "rect"} onClick={(e) => onToolSelect(e, "rect")} label={t("screenshot.tool.rect")} icon={
-          <img src="icons/square.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "oval"} onClick={(e) => onToolSelect(e, "oval")} label={t("screenshot.tool.ellipse")} icon={
-          <img src="icons/oval-vertical.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "diamond"} onClick={(e) => onToolSelect(e, "diamond")} label={t("screenshot.tool.diamond")} icon={
-          <img src="icons/diamond.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "diamond" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "line"} onClick={(e) => onToolSelect(e, "line")} label={t("screenshot.tool.line")} icon={
-          <img src="icons/straight-line.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "arrow"} onClick={(e) => onToolSelect(e, "arrow")} label={t("screenshot.tool.arrow")} icon={
-          <img src="icons/arrow-line.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "arrow" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "pen"} onClick={(e) => onToolSelect(e, "pen")} label={t("screenshot.tool.pen")} icon={
-          <img src="icons/sketching.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "pen" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "text"} onClick={(e) => onToolSelect(e, "text")} label={t("screenshot.tool.text")} icon={
-          <img src="icons/text.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "text" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "number"} onClick={(e) => onToolSelect(e, "number", () => setNumberCounter(1))} label={t("screenshot.tool.number")} icon={
-          <img src="icons/sequence-note.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
-        <ToolButton active={tool === "blur"} onClick={(e) => onToolSelect(e, "blur")} label={t("screenshot.tool.mosaic")} icon={
-          <img src="icons/mosaic.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
-        } />
+        {/* divider + 录制时长 + 停止录制（红色）—— 业务侧独有 */}
         <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
-        <ToolButton onClick={undoAnnotation} label={t("screenshot.tool.undo")} icon={
-          <img src="icons/restore.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: annotations.length > 0 ? 1 : 0.3 }} />
-        } />
-        <ToolButton onClick={redoAnnotation} label={t("screenshot.tool.redo")} icon={
-          <img src="icons/redo.svg" alt="" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: redoAvailable ? 1 : 0.3 }} />
-        } />
-        <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
-        {/* 停止录制（红色）*/}
+        {/* 录制时长 mm:ss（等宽数字防跳；红点 pulse 提示录制中）*/}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 6px" }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: recState === "paused" ? "rgba(255,255,255,0.4)" : "#dc2626",
+            animation: recState === "recording" ? "pulse 1.5s ease-in-out infinite" : "none",
+          }} />
+          <span style={{
+            fontSize: 11, fontWeight: 600, color: "var(--color-foreground)",
+            fontFamily: "SF Mono, Menlo, monospace",
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {formatDuration(elapsed)}
+          </span>
+          <style>{`@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.85); } }`}</style>
+        </div>
+        {/* 暂停/继续录制按钮（与 RecordControl 浮窗同范式）*/}
+        <button
+          onClick={() => {
+            // recState 是本地状态（从 record://event 同步），调 record_pause/resume
+            if (recState === "recording") invoke("record_pause").catch(() => {});
+            else if (recState === "paused") invoke("record_resume").catch(() => {});
+          }}
+          title={
+            recState === "recording"
+              ? t("settings.recordings.pauseBtn")
+              : t("settings.recordings.resumeBtn")
+          }
+          style={{
+            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: 6, border: "1px solid var(--color-border)",
+            background: "transparent", color: "var(--color-foreground)",
+            cursor: "pointer", padding: 0,
+          }}
+        >
+          {recState === "recording" ? (
+            // 暂停图标（两竖）
+            <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+              <rect x="0" y="0" width="3" height="12" rx="1" />
+              <rect x="7" y="0" width="3" height="12" rx="1" />
+            </svg>
+          ) : (
+            // 继续图标（三角）
+            <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+              <path d="M0 0 L10 6 L0 12 Z" />
+            </svg>
+          )}
+        </button>
         <button
           onClick={onStopClick}
           title={t("tray.recordStop")}
@@ -568,28 +563,7 @@ export default function RecordAnnotation() {
           {/* 红色实心圆点（停止录制标准图标）*/}
           <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#fff", display: "block" }} />
         </button>
-      </div>
-
-      {/* 工具属性浮窗 */}
-      {tool !== "none" && showPopover && (
-        <ToolPropsPopover
-          x={popoverLeft}
-          y={popoverY}
-          color={toolColor}
-          width={toolWidth}
-          fontSize={toolFontSize}
-          circleSize={toolCircleSize}
-          isText={tool === "text"}
-          isNumber={tool === "number"}
-          isShape={tool === "rect" || tool === "oval" || tool === "diamond"}
-          filled={toolFilled}
-          onColorChange={setToolColor}
-          onWidthChange={setToolWidth}
-          onFontSizeChange={setToolFontSize}
-          onCircleSizeChange={setToolCircleSize}
-          onFilledChange={(f) => { setToolFilled(f); toolFilledRef.current = f; }}
-        />
-      )}
+      </AnnotationToolbar>
     </>
   );
 }

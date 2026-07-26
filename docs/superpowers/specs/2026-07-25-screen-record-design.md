@@ -16,10 +16,10 @@
 3. **§4.1 命令名前缀**：5 个控制命令（start/pause/resume/stop/kill）改用 `record_*` 前缀（如 `record_start`），避免与既有 `coordinator::start_recording`（ASR 录音）的 `__cmd__start_recording` 符号冲突。
 4. **§3.4 platform trait 同步签名**：原 spec 暗示 trait 方法 async，实施时为简化 MVP 用同步签名 + `tokio::task::block_in_place` 内部等待（macOS provider）。完整 async 化推迟到 P1。
 5. **§8.1 配置浮窗已实现**（2026-07-25 第二轮迭代）：原 MVP 缩减为 Settings panel，现已补回独立浮窗 `record_window.rs` + `RecordConfig.tsx`（Cmd+Shift+R 弹出选 display/window/area）。Settings RecordingPanel 作为历史管理 + 备用入口保留。
-6. **§3.2 StoppedInfo + stop 入库**（2026-07-25 第二轮迭代）：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest），desktop 加 `stop_and_store` 公共函数——hotkey/tray/前端三条 stop 路径都走它入库。`stopped.screen_path` 仍空（session 不存 event payload），用 `recordings_dir` 按 recording_id 扫描 fallback；`duration_ms` 仍恒 0（需 event channel，推迟）。
+6. **§3.2 StoppedInfo + stop 入库**（2026-07-25 第二轮迭代；2026-07-26 补完精确字段）：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest）+ `last_stopped` 快照字段（reader task 收到 RecordingStopped 事件时存 screen_path/duration_ms/file_size），desktop 加 `stop_and_store` 公共函数——hotkey/tray/前端三条 stop 路径都走它入库。`stopped` 精确字段从 helper 报回的 payload 直接取；异常退出（kill）未收到事件时 fallback：按 recording_id 扫 recordings_dir 找文件，duration_ms 可能 0。
 7. **§3.4 list-windows 过滤**（2026-07-25 bug 修复）：helper `--list-windows` 加三层过滤——`isOnScreen`（排除隐藏/最小化）+ 尺寸 ≥200×150（排除状态栏 item）+ bundleId 黑名单（controlcenter/dock 等）。实测 58→20 个真实应用窗口。
 8. **§4.1 record_shortcut 可配置**（2026-07-25 第二轮迭代）：录屏 toggle 快捷键接入 AppConfig + 热重载（与 screenshot/asr 等 6 个快捷键同模式）。停止快捷键固定 ESC（octopus 全局通用停止键，不暴露为可配置）。
-9. **§2.2 Source::Area 后端已实现**（2026-07-25 第二轮迭代）：Swift helper 加 `case "area"`（`SCStreamConfiguration.sourceRect` macOS 14+ API），物理像素 → 逻辑 points 转换。前端拖框 UI 待 follow-up。
+9. **§2.2 Source::Area 后端已实现**（2026-07-25 第二轮迭代）：Swift helper 加 `case "area"`（`SCStreamConfiguration.sourceRect` macOS 14+ API），物理像素 → 逻辑 points 转换。前端拖框 UI 已落地（`crates/desktop/src/record_area_picker.rs` + `AreaPicker/index.tsx`，复用 screenshot 选区逻辑）。
 10. **DB migrate v50→v51 漏建表 bug**（2026-07-25 修复）：原 `migrate_v50_to_v51` 注释声称「init_schema 末尾会重新跑 db.sql」是错的，导致 version 升到 51 但 recordings 表未创建。修复：migrate 函数显式 `execute_batch(INIT_SQL)` + init_schema 加自愈检测（v51+ 缺表时补建）。回归测试 2 个。
 
 ---
@@ -344,6 +344,10 @@ pub struct StoppedInfo { pub screen_path: PathBuf, pub duration_ms: i64, pub fil
 - `on_event` 回调让上层自由选择事件分发（emit Tauri event / log），session 本身不耦合 Tauri
 - `state()` 只读快照，所有状态变更由 helper 事件驱动
 - `kill()` 与 `stop()` 分离：`stop` 优雅（等 helper flush），`kill` 强制（SIGKILL，可能损坏文件）
+- **失败路径必须清理（2026-07-26 P0 修复）**：`start()` / `stop()` 的 Err 路径（spawn 失败 / 等不到 recording-started / helper 超时不退出）都必须调 `reset_to_idle()`（SIGKILL helper + state=Idle）。原代码用 `?` 直接返回不清理 → state 卡 Starting → 之后所有 start 撞 `AlreadyRunning`，用户必须重启 app。
+- **stderr 必须 reader task 消费**（2026-07-26 P0 修复）：helper 的 stderr 被 `Stdio::piped()` 但从不读 → 64KB 缓冲填满 → helper 阻塞在 write(stderr) → 永不发 recording-started → 父进程超时。修复：spawn 一个 stderr reader task，每行 `log::debug!("[record][helper stderr] {line}")`。
+- **HelperEvent::Error 短路 wait_for_state**（2026-07-26 P1 修复）：reader task 收到 `HelperEvent::Error{code,message}` 时存入 `last_helper_error`；`wait_for_state` 每轮检测它，立即返回 `HelperError`（不等 10s 超时）——让调用方拿到 helper 真实错误（permissionDenied / sourceNotFound）而非笼统的 Timeout。
+- **kill_on_drop(true)**（2026-07-26 P2 防御）：`Command::kill_on_drop(true)` 保证进程 panic / SessionInner drop 时 helper 不残留为孤儿。
 
 ### 3.3 RecordStore — 元数据入库
 
@@ -890,7 +894,16 @@ if request.audio.microphone.enabled {
 
 ### 8.1 配置浮窗（双态型）
 
-> **实现注记（2026-07-25 已实现）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。三个 tab：display（radio list）/ window（radio list，isOnScreen + 尺寸 + bundleId 过滤）/ area（拖框 UI 待 follow-up）。音频开关 + 开始/取消按钮。Settings RecordingPanel 作为历史管理 + 备用入口保留。下方 mockup 是完整设计目标。
+> **实现注记（2026-07-25 已实现；2026-07-26 UX 改进）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。
+>
+> **2026-07-26 UX 改进**：
+> - **TAB 顺序改为 区域 → 全屏 → 应用**（原 display → window → area），默认 tab 是「区域」
+> - **「窗口」tab 改名「应用」**（i18n tabWindow: 窗口→应用）
+> - **area tab 合并为 1 步流程**——点底部「框选录制」按钮 → picker 拖框 → 松手后工具栏出现（实时跟随）→ 点「开始录制」直接开始录制（不回填「已选区域」摘要、不回 RecordConfig）
+> - **麦克风默认开**（session 级 `useState(true)`，DB seed 仍 false 是首启权限考虑）
+> - **高级折叠区**：fps（15/30/60）/ codec（h264/hevc）/ hideCursor toggle（右对齐）
+> - **源列表固定高度** `h-[140px]`（三 tab 切换无晃动，超过滚动）
+> - **窗口列表排除 octopus「录制设置」浮窗**（双重条件：app 是 octopus + 标题匹配）
 
 ```
 快捷键 Cmd+Shift+R → 配置浮窗弹出
@@ -915,7 +928,15 @@ if request.audio.microphone.enabled {
 
 ### 8.2 录制控制（菜单栏图标 + 下拉 + 快捷键）
 
-> **实现注记（2026-07-25 已实现）**：tray menu 录屏项是 **toggle 单项**（与 ASR toggle 同模式）——idle 时「开始录屏 ⌘⇧R」（弹配置浮窗），recording/paused 时文案变「停止录屏  ⎋」（停止入库）。`update_record_tray_label(recording)` 在 start/stop 路径调用切换文案。快捷键 `record_shortcut` 可配置（AppConfig + 热重载），ESC 固定为停止键（全局通用，不暴露）。**未做**：tray icon 红点状态指示、duration 实时显示、前端 dropdown 组件（推迟 follow-up）。
+> **实现注记（2026-07-25 已实现）**：tray menu 录屏项是 **toggle 单项**（与 ASR toggle 同模式）——idle 时「开始录屏 ⌘⇧R」（弹配置浮窗），recording/paused 时文案变「停止录屏  ⎋」（停止入库）。`update_record_tray_label(recording)` 在 start/stop 路径调用切换文案。快捷键 `record_shortcut` 可配置（AppConfig + 热重载），ESC 固定为停止键（全局通用，不暴露）。
+>
+> **2026-07-26 补完**（P1-7）：display/window 录制时桌面右下角 pill 控制浮窗（红点+时长+暂停+停止），详见 [record-control-window spec](2026-07-26-record-control-window.md)。原「dropdown 推迟」被该浮窗覆盖（浮窗体验 > tray 下拉面板）。
+>
+> **2026-07-26 部分实现**（P1-3）：tray menu 录制态文案加 `●` 前缀作为视觉提示（`update_record_tray_label` 录制分支 format!）。真红点需替换 tray icon PNG（待用户提供图标资源）。duration 实时显示跳过（被 P1-7 浮窗覆盖）。
+>
+> **2026-07-26 实现**（P1-5）：RecordConfig 加「高级」折叠区——fps（15/30/60）/ codec（h264/hevc）/ hideCursor toggle。session 级（不持久化 DB），默认收起。
+>
+> **2026-07-26 补充**（RecordAnnotation 增强）：area 录制的 RecordAnnotation overlay 工具栏尾加了录制时长 mm:ss + 暂停/继续按钮（与 RecordControl pill 同范式，commit `bbfebf57`/`323ba014`）；overlay 窗口改为全屏模式 + 工具栏位置复用截图 `computeToolbarPosition`（详见 [record-area-annotation spec §1.3](2026-07-25-record-area-annotation-design.md)）。ESC 全局快捷键改动态注册（详见 [record-esc-hotkey-fix spec](2026-07-26-record-esc-hotkey-fix.md)）。
 
 ```
 菜单栏（始终可见，录屏时显示）
@@ -961,7 +982,7 @@ if request.audio.microphone.enabled {
 │ ▢ bug 复现         03:21  2026-07-24 18:05│
 └──────────────────────────────────────────┘
 
-每条录屏右键：[播放] [重命名] [收藏] [删除]
+每条录屏行操作（hover 显示图标按钮组）：[播放] [Finder 显示] [重命名] [收藏] [转字幕（灰）] [GIF 导出] [删除]
 顶部：[搜索框]（MVP 灰禁用，P2 启用 FTS5 全文搜索）
 ```
 
@@ -996,15 +1017,17 @@ if request.audio.microphone.enabled {
 
 | 推迟到 | 功能点 |
 |---|---|
-| **P1** | F12 编码参数 UI（MVP 全用 `app_config` 默认值，配置浮窗「高级」是占位）|
-| **P1** | F13 完整文件管理（MVP 只做双击播放 + 右键软删，重命名/物理删/P2）|
-| **P1** | F14 完整录制控制浮窗（MVP 用菜单栏图标 + 简单下拉）|
+| ~~**P1** F12 编码参数 UI~~ | ✅ 已实现（2026-07-26）：RecordConfig「高级」折叠区——fps/codec/hideCursor，session 级 |
+| ~~**P1** F13 重命名~~ | ✅ 已实现（2026-07-26）：RecordingRow Pencil 按钮 + inline input |
+| **P1** | F13 物理删除/回收站视图（软删够用，推迟）|
+| ~~**P1** F14 录制控制浮窗~~ | ✅ 已实现（2026-07-26）：`record_control_window` display/window 录制时桌面右下角 pill |
 | **P1** | Windows helper（vendor openscreen C++ `wgc-capture`）|
 | **P2** | F15 ASR 字幕（MVP 灰按钮占位）|
 | **P2** | F16 字幕翻译 |
 | **P2** | F17 全文搜索（FTS5 表推迟到 F15 一起加）|
 | **P2+** | Linux helper（待调研 PipeWire/X11 方案）|
-| **P3** | F18 可编辑光标、F19 编辑器、F20 GIF 导出、F21 摄像头 |
+| ~~**P3** F20 GIF 导出~~ | ✅ 已实现（2026-07-26）：`export_gif` 命令 + Clapperboard 按钮 |
+| **P3** | F18 可编辑光标、F19 编辑器、F21 摄像头 |
 
 ### 9.3 MVP 验收标准
 

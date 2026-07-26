@@ -89,6 +89,8 @@ mod record_area_picker;
 // 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
 #[cfg(target_os = "macos")]
 mod record_annotation_window;
+#[cfg(target_os = "macos")]
+mod record_control_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -585,6 +587,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_annotation_window::set_annotation_passthrough,
             #[cfg(target_os = "macos")]
+            record_annotation_window::set_toolbar_zone,
+            #[cfg(target_os = "macos")]
             record_commands::list_recordings,
             #[cfg(target_os = "macos")]
             record_commands::get_recording,
@@ -602,6 +606,11 @@ pub fn run() {
             record_commands::open_recording_file,
             #[cfg(target_os = "macos")]
             record_commands::reveal_recording,
+            #[cfg(target_os = "macos")]
+            record_commands::export_gif,
+            #[cfg(target_os = "macos")]
+            record_commands::check_ffmpeg,
+            record_commands::get_record_status,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -910,10 +919,12 @@ pub fn run() {
             action_hotkey::register_action_hotkeys(app.handle());
             // 录屏快捷键（config-driven，与 screenshot 同模式）：
             // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
+            // 仅注册 toggle（Cmd+Shift+R）；ESC stop 按需注册（录制开始时，
+            // 见 record_commands::start_with_config），避免吞掉其他窗口的 DOM 级 ESC。
             #[cfg(target_os = "macos")]
             {
                 if !config.record_shortcut.is_empty() {
-                    if let Err(e) = record_hotkey::register_record_hotkeys(
+                    if let Err(e) = record_hotkey::register_toggle_hotkey(
                         app.handle(),
                         &config.record_shortcut,
                     ) {
@@ -1116,10 +1127,11 @@ pub fn run() {
                             log::info!("[record] stop-requested 在非录制态忽略（state={:?}）", st);
                             return;
                         }
-                        match crate::record_commands::stop_and_store(&session, false, None).await {
+                        match crate::record_commands::stop_and_store(&session, &ah, false, None).await {
                             Ok(Some(meta)) => {
                                 log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
                                 crate::record_annotation_window::close_annotation_window(&ah);
+                                crate::record_control_window::close_control_window(&ah);
                                 let _ = ah.emit("record://stopped", &meta);
                             }
                             Ok(None) => log::info!("[record] stop 返回 None"),

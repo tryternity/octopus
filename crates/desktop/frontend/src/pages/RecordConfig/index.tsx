@@ -11,10 +11,10 @@
  * 区域录制（Task C 后补）：tab=area 时显示「选择区域」按钮，点击后浮窗全屏化
  * 让用户拖框，完成后恢复小窗 + 显示选区摘要。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check } from "lucide-react";
+import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check, ChevronDown } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -42,36 +42,22 @@ type Tab = "display" | "window" | "area";
 
 // ── 默认视频/音频配置（从 DB record_* seed 派生，与后端 build_default_config 对齐）────
 
-function defaultVideo(width: number, height: number) {
-  return {
-    fps: 30,
-    width,
-    height,
-    codec: "h264" as const,
-    bitrate: null, // None = helper 自动算
-    hide_system_cursor: false,
-  };
-}
-
 // ── 主组件 ──────────────────────────────────────────────────────
 
 export default function RecordConfig() {
   const t = useT();
-  const [tab, setTab] = useState<Tab>("display");
+  const [tab, setTab] = useState<Tab>("area");
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [selectedDisplayId, setSelectedDisplayId] = useState<number | null>(null);
   const [selectedWindowId, setSelectedWindowId] = useState<number | null>(null);
-  // area 选区（picker 拖框后由后端 emit record-area://selected 推回）
-  const [areaSelection, setAreaSelection] = useState<{
-    display_id: number;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
 
-  // 监听 picker 选区完成事件（picker 关闭后浮窗重新 show，payload 是物理像素）
+  // startRecordingWithSource 的 ref——listener（定义在前）通过 ref 拿最新引用，
+  // 避免 TDZ（TS 不让 const 前向引用）。每次 render 更新 ref.current。
+  const startRecordingRef = useRef<(s: { type: "display"; display_id: number } | { type: "window"; window_id: number } | { type: "area"; display_id: number; x: number; y: number; width: number; height: number }, w: number, h: number) => Promise<void>>(async () => {});
+
+  // 监听 picker 选区完成事件（picker 关闭后浮窗重新 show，payload 是物理像素）。
+  // area 流程合并为 1 步：框选完直接开始录制，不回填 state、不显示「已选区域」。
   useEffect(() => {
     const unlisten = listen<{
       display_id: number;
@@ -80,18 +66,28 @@ export default function RecordConfig() {
       width: number;
       height: number;
     }>("record-area://selected", (event) => {
-      setAreaSelection(event.payload);
-      // 选区回来后切到 area tab（用户可能切到别的 tab 调起 picker）
-      setTab("area");
+      const sel = event.payload;
+      // 通过 ref 调最新的 startRecordingWithSource（跟随 fps/codec 等设置）
+      void startRecordingRef.current(
+        { type: "area" as const, ...sel },
+        sel.width,
+        sel.height,
+      );
     });
     return () => {
       unlisten.then((fn) => fn());
     };
   }, []);
   const [systemAudio, setSystemAudio] = useState(true);
-  const [microphone, setMicrophone] = useState(false);
+  const [microphone, setMicrophone] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ── 高级（编码参数，默认收起）──
+  // 不持久化到 DB（避免改 seed 影响其他路径），只在当前 RecordConfig session 用。
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [fps, setFps] = useState<15 | 30 | 60>(30);
+  const [codec, setCodec] = useState<"h264" | "hevc">("h264");
+  const [hideCursor, setHideCursor] = useState(false);
 
   // ── 拉取源列表（浮窗 show 时 + tab 切换时）──────────────────────
   const refreshSources = useCallback(async () => {
@@ -133,10 +129,54 @@ export default function RecordConfig() {
   }, []);
 
   // ── 开始录制 ──────────────────────────────────────────────────
+  // 抽出 source-agnostic 的核心录制启动逻辑——display/window/area 三种 source 复用。
+  // area 流程在 record-area://selected listener 里直接调它（合并 2 步为 1 步）。
+  const startRecordingWithSource = useCallback(async (
+    source: { type: "display"; display_id: number }
+      | { type: "window"; window_id: number }
+      | { type: "area"; display_id: number; x: number; y: number; width: number; height: number },
+    videoW: number,
+    videoH: number,
+  ) => {
+    setStarting(true);
+    try {
+      await invoke("record_start", {
+        config: {
+          source,
+          video: {
+            fps,
+            width: videoW,
+            height: videoH,
+            codec,
+            bitrate: null, // None = helper 自动按分辨率×fps 算
+            hide_system_cursor: hideCursor,
+          },
+          audio: {
+            system: { enabled: systemAudio, excludes_current_process: true },
+            microphone: { enabled: microphone, device_id: null, device_name: null },
+          },
+        },
+      });
+      // 成功——隐藏浮窗
+      await getCurrentWindow().hide();
+    } catch (e) {
+      setError(t("recordConfig.startFailed") + String(e));
+      // area 流程下 picker 启动时已 hide 配置浮窗，失败时需 show 让用户看到错误
+      // （display/window 流程浮窗一直可见，show 是幂等 no-op）
+      await getCurrentWindow().show().catch(() => {});
+    } finally {
+      setStarting(false);
+    }
+  }, [fps, codec, hideCursor, systemAudio, microphone, t]);
+
+  // 同步 ref——listener（前面定义）通过 ref 拿最新 startRecordingWithSource。
+  startRecordingRef.current = startRecordingWithSource;
+
+  // display/window tab 用：从当前 tab 的选择组装 source 后调 startRecordingWithSource。
+  // area tab 不走这里（直接在 record-area://selected listener 里调 startRecordingWithSource）。
   const handleStart = useCallback(async () => {
     setError(null);
 
-    // 组装 source（按 tab）
     let source;
     let videoW: number;
     let videoH: number;
@@ -159,44 +199,19 @@ export default function RecordConfig() {
       videoW = w.width;
       videoH = w.height;
     } else {
-      // area
-      if (!areaSelection) {
-        setError(t("recordConfig.areaNotSelected"));
-        return;
-      }
-      source = { type: "area" as const, ...areaSelection };
-      videoW = areaSelection.width;
-      videoH = areaSelection.height;
+      // area tab：handleStart 不会被触发——底部「开始录制」按钮在 area tab 隐藏，
+      // 改为「框选录制」直接调 start_record_area_picker。
+      return;
     }
 
-    setStarting(true);
-    try {
-      await invoke("record_start", {
-        config: {
-          source,
-          video: defaultVideo(videoW, videoH),
-          audio: {
-            system: { enabled: systemAudio, excludes_current_process: true },
-            microphone: { enabled: microphone, device_id: null, device_name: null },
-          },
-        },
-      });
-      // 成功——隐藏浮窗
-      await getCurrentWindow().hide();
-    } catch (e) {
-      setError(t("recordConfig.startFailed") + String(e));
-    } finally {
-      setStarting(false);
-    }
+    await startRecordingWithSource(source, videoW, videoH);
   }, [
     tab,
     displays,
     windows,
     selectedDisplayId,
     selectedWindowId,
-    areaSelection,
-    systemAudio,
-    microphone,
+    startRecordingWithSource,
     t,
   ]);
 
@@ -230,9 +245,9 @@ export default function RecordConfig() {
         <div className="flex gap-1 px-3 pt-3">
           {(
             [
+              { id: "area", icon: Square, label: t("recordConfig.tabArea") },
               { id: "display", icon: Monitor, label: t("recordConfig.tabDisplay") },
               { id: "window", icon: AppWindow, label: t("recordConfig.tabWindow") },
-              { id: "area", icon: Square, label: t("recordConfig.tabArea") },
             ] as const
           ).map(({ id, icon: Icon, label }) => (
             <button
@@ -251,8 +266,10 @@ export default function RecordConfig() {
           ))}
         </div>
 
-        {/* ── 源列表（display / window）────────────────────── */}
-        <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
+        {/* ── 源列表（display / window 选源）/ area 示意图 ──────────── */}
+        {/* 固定高度 h-[140px]——三 tab 内容差异大（display 1-2 项 / window 很多项 / area 示意图），
+            固定高度避免切换时晃动。超过 140px 时内部滚动（WindowList 多应用场景）。 */}
+        <div className="px-3 py-3 h-[140px] overflow-y-auto thin-scrollbar">
           {tab === "display" && (
             <DisplayList
               displays={displays}
@@ -268,11 +285,22 @@ export default function RecordConfig() {
             />
           )}
           {tab === "area" && (
-            <AreaPanel
-              selection={areaSelection}
-              onChange={setAreaSelection}
-              displays={displays}
-            />
+            <div className="flex flex-col items-center justify-center h-full gap-3">
+              <svg width="160" height="80" viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                {/* 虚线选区框 */}
+                <rect x="20" y="10" width="120" height="60" rx="4"
+                  stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 3"
+                  className="text-primary" fill="none" />
+                {/* 四角手柄 */}
+                <rect x="17" y="7" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="137" y="7" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="17" y="67" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="137" y="67" width="6" height="6" fill="currentColor" className="text-primary" />
+              </svg>
+              <p className="text-[11px] text-muted-foreground text-center max-w-[200px] leading-relaxed">
+                {t("recordConfig.areaPlaceholder")}
+              </p>
+            </div>
           )}
         </div>
 
@@ -292,6 +320,84 @@ export default function RecordConfig() {
           />
         </div>
 
+        {/* ── 高级（编码参数，默认收起）────────────────────────── */}
+        <div className="px-3 py-1.5 border-t border-border">
+          <button
+            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            <ChevronDown className={cn("w-3 h-3 transition-transform", !showAdvanced && "-rotate-90")} />
+            {t("recordConfig.advanced")}
+          </button>
+          {showAdvanced && (
+            <div className="mt-1.5 space-y-1.5">
+              {/* FPS */}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">{t("recordConfig.fps")}</span>
+                <div className="flex gap-1">
+                  {([15, 30, 60] as const).map((f) => (
+                    <button
+                      key={f}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[10px] transition-colors",
+                        fps === f
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground",
+                      )}
+                      onClick={() => setFps(f)}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Codec */}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">{t("recordConfig.codec")}</span>
+                <div className="flex gap-1">
+                  {(["h264", "hevc"] as const).map((c) => (
+                    <button
+                      key={c}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[10px] uppercase transition-colors",
+                        codec === c
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground",
+                      )}
+                      onClick={() => setCodec(c)}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Hide cursor（与 fps/codec 同布局：文字左，toggle 右对齐）*/}
+              <button
+                onClick={() => setHideCursor(!hideCursor)}
+                className={cn(
+                  "flex items-center justify-between w-full text-[11px] transition-colors",
+                  hideCursor ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <span>{t("recordConfig.hideCursor")}</span>
+                <span
+                  className={cn(
+                    "w-7 h-3.5 rounded-full relative transition-colors",
+                    hideCursor ? "bg-primary" : "bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 w-2.5 h-2.5 rounded-full bg-background transition-transform",
+                      hideCursor ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* ── 错误提示 ─────────────────────────────────────── */}
         {error && (
           <div className="mx-3 mb-2 px-2 py-1.5 rounded-md bg-destructive/10 text-destructive text-[10px]">
@@ -301,16 +407,37 @@ export default function RecordConfig() {
 
         {/* ── 底部按钮 ─────────────────────────────────────── */}
         <div className="px-3 py-3 border-t border-border flex gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleStart}
-            disabled={starting}
-            className="flex-1 gap-1.5"
-          >
-            <Circle className="w-2.5 h-2.5 fill-current" />
-            {starting ? t("recordConfig.starting") : t("recordConfig.startBtn")}
-          </Button>
+          {tab === "area" ? (
+            // area tab：「框选录制」按钮（点击调起 picker，框选完直接录制）
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await invoke("start_record_area_picker");
+                } catch (e) {
+                  setError(t("recordConfig.startFailed") + String(e));
+                }
+              }}
+              disabled={starting}
+              className="flex-1 gap-1.5"
+            >
+              <Square className="w-3 h-3" />
+              {t("recordConfig.areaPickRecord")}
+            </Button>
+          ) : (
+            // display/window tab：「开始录制」
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleStart}
+              disabled={starting}
+              className="flex-1 gap-1.5"
+            >
+              <Circle className="w-2.5 h-2.5 fill-current" />
+              {starting ? t("recordConfig.starting") : t("recordConfig.startBtn")}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={handleCancel}>
             {t("recordConfig.cancel")}
           </Button>
@@ -418,71 +545,6 @@ function WindowList({
 
 // ── 子组件：area 选区（拖框选区域，调起 picker）──────────────────
 
-function AreaPanel({
-  selection,
-  onChange,
-  displays,
-}: {
-  selection: { display_id: number; x: number; y: number; width: number; height: number } | null;
-  onChange: (s: { display_id: number; x: number; y: number; width: number; height: number } | null) => void;
-  displays: DisplayInfo[];
-}) {
-  const t = useT();
-
-  // 查选区所在显示器的名字（摘要显示用）
-  const displayName = selection
-    ? displays.find((d) => d.id === selection.display_id)?.name || `Display ${selection.display_id}`
-    : "";
-
-  const handlePick = async () => {
-    try {
-      await invoke("start_record_area_picker");
-    } catch (e) {
-      console.error("[record-config] start picker failed:", e);
-    }
-  };
-
-  if (!selection) {
-    // 无选区：显示「选择区域」按钮
-    return (
-      <div className="flex flex-col items-center justify-center py-8 gap-3">
-        <Square className="w-8 h-8 text-muted-foreground" />
-        <Button variant="outline" size="sm" onClick={handlePick} className="gap-1.5">
-          <Square className="w-3 h-3" />
-          {t("recordConfig.areaPick")}
-        </Button>
-        <p className="text-[10px] text-muted-foreground text-center max-w-[240px]">
-          {t("recordConfig.areaPlaceholder")}
-        </p>
-      </div>
-    );
-  }
-
-  // 有选区：显示摘要 + 重新选择 / 清除
-  return (
-    <div className="flex flex-col gap-2 py-2">
-      <div className="flex items-center gap-2 px-2.5 py-2 rounded-md border border-primary bg-primary/5">
-        <Square className="w-3.5 h-3.5 text-primary flex-shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-xs text-foreground truncate">{displayName}</div>
-          <div className="text-[10px] text-muted-foreground">
-            {selection.width}×{selection.height}
-            <span className="ml-1">({t("recordConfig.areaSelected")})</span>
-          </div>
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <Button variant="outline" size="sm" onClick={handlePick} className="flex-1 text-[10px]">
-          {t("recordConfig.areaReselect")}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => onChange(null)} className="text-[10px]">
-          {t("recordConfig.areaClear")}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // ── 通用：toggle 行 ─────────────────────────────────────────────
 
 function ToggleRow({
@@ -491,7 +553,7 @@ function ToggleRow({
   checked,
   onChange,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
@@ -504,7 +566,7 @@ function ToggleRow({
         checked ? "text-foreground" : "text-muted-foreground",
       )}
     >
-      <Icon className={cn("w-3.5 h-3.5", checked && "text-primary")} />
+      {Icon && <Icon className={cn("w-3.5 h-3.5", checked && "text-primary")} />}
       <span>{label}</span>
       <span
         className={cn(

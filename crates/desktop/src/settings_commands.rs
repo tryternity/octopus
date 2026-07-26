@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::runtime_config::SharedRuntimeConfig;
 use crate::config::PolishMode;
@@ -174,25 +174,42 @@ pub fn set_config(
     }
 
     // 录屏 toggle 快捷键热重载（仅 macOS——record_hotkey 模块 cfg-gate）。
-    // stop 快捷键固定 ESC 不参与配置（不是可改字段）。
+    // stop 快捷键固定 ESC，按需注册（start 时 register，stop 时 unregister），不参与热重载。
     #[cfg(target_os = "macos")]
     if key == "record_shortcut" && cfg.record_shortcut != old_record_sc {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        // 注销旧 toggle（register_record_hotkeys 内部会重新注册 ESC，所以旧 ESC 会被覆盖）
+        // 注销旧 toggle（ESC stop 由 register_stop_hotkey / unregister_stop_hotkey 单独管理）
         if let Ok(old) = old_record_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        // 注册新 toggle（register 内部会重新注册 ESC stop）
-        if let Err(e) = crate::record_hotkey::register_record_hotkeys(
+        // 注册新 toggle（register_toggle_hotkey 只动 toggle，不动 ESC）
+        if let Err(e) = crate::record_hotkey::register_toggle_hotkey(
             &app_handle,
             &cfg.record_shortcut,
         ) {
             // 失败：恢复旧 toggle
-            let _ = crate::record_hotkey::register_record_hotkeys(
+            let _ = crate::record_hotkey::register_toggle_hotkey(
                 &app_handle,
                 &old_record_sc,
             );
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+        // 若当前正在录制，重新注册 ESC（register_toggle 不动 ESC；但旧 ESC 可能因
+        // 上面 unregister 失败而残留——register_stop_hotkey 对同一快捷键是覆盖语义，安全）
+        let session = app_handle.try_state::<octopus_record::RecordSession>();
+        if let Some(s) = session {
+            let in_recording = tauri::async_runtime::block_on(async {
+                matches!(
+                    s.state().await,
+                    octopus_record::SessionState::Recording
+                        | octopus_record::SessionState::Paused
+                )
+            });
+            if in_recording {
+                if let Err(e) = crate::record_hotkey::register_stop_hotkey(&app_handle) {
+                    log::warn!("[settings] 录制中改快捷键，ESC 重新注册失败（不影响录制）: {e}");
+                }
+            }
         }
         // 注册成功：更新 tray 用的快捷键镜像 + 刷新菜单文案（显示新快捷键）
         *crate::tray::record_shortcut_mirror() = cfg.record_shortcut.clone();

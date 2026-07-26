@@ -87,12 +87,18 @@ settings:
     # 行操作
     play: 播放
     reveal: 在 Finder 中显示
+    rename: 重命名
     favorite: 收藏
     unfavorite: 取消收藏
     delete: 删除
     deleteConfirm: 再次点击确认删除
     transcript: 转字幕
     transcriptTooltip: 需下载 ASR 模型，点击跳转
+    exportGif: 导出 GIF
+    exportGifStarted: 正在导出 GIF...
+    exportGifDone: 已导出到 ${path}
+    exportGifFailed: "导出 GIF 失败："
+    ffmpegMissing: "未安装 ffmpeg。安装方式之一：brew install ffmpeg；或 curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/"
     recording: 录制中
     paused: 已暂停
     # 录制控制按钮（2026-07-25 加：Cmd+Shift+R 直接开录后，panel 也要有按钮入口）
@@ -1013,7 +1019,7 @@ recordConfig:
   startBtn: 开始录制
   starting: 启动中...
   tabDisplay: 全屏
-  tabWindow: 窗口
+  tabWindow: 应用
   tabArea: 区域
   systemAudio: 系统声音
   microphone: 麦克风
@@ -1021,10 +1027,12 @@ recordConfig:
   noDisplays: 未找到可用显示器
   noWindows: 未找到可用窗口
   areaNotSelected: 请先选择录制区域
-  areaPlaceholder: 拖动鼠标选择录制区域，松开即确认，按 Esc 取消
-  areaPick: 选择区域
-  areaReselect: 重新选择
-  areaClear: 清除
-  areaSelected: 已选区域
+  areaPlaceholder: 拖动鼠标选择录制区域，松开即直接开始录制，按 Esc 取消
+  areaPickRecord: 框选录制
   loadFailed: "加载源列表失败："
   startFailed: "启动录制失败："
+  # 高级（编码参数）
+  advanced: 高级
+  fps: 帧率
+  codec: 编码
+  hideCursor: 隐藏光标

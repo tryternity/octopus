@@ -2662,6 +2662,16 @@ git add crates/desktop/src/action_hotkey.rs
 git commit -m "feat(desktop): 录屏快捷键 Cmd+Shift+R toggle + Esc 停止"
 ```
 
+> **Follow-up（2026-07-26，commit `2ec1a469`）**：ESC 改为动态注册。
+> 原 Step 1 实现是「启动时常驻注册 ESC」，导致 Screenshot/RecordConfig 等所有窗口的
+> DOM 级 ESC 被 tauri_plugin_global_shortcut 在系统层吞掉。改为：
+> - 启动只注册 toggle（`register_toggle_hotkey`）
+> - 录制 `start_with_config` 成功后 `register_stop_hotkey`
+> - `stop_and_store` / `record_kill` 完成后 `unregister_stop_hotkey`
+> - settings 热重载对齐（仅 toggle，录制中改快捷键时额外 register_stop）
+>
+> 详见 `docs/superpowers/specs/2026-07-26-record-esc-hotkey-fix.md` Task 1-5。
+
 ---
 
 ## Task 15: DMG 脚本集成 + THIRD_PARTY_LICENSES 更新
@@ -2711,10 +2721,12 @@ git commit -m "feat(packaging): DMG 脚本集成 helper 编译 + 第三方许可
 
 执行完所有 15 个任务后，跑完整验收：
 
-- [x] `cargo test --workspace --lib` 全过（240 passed / 0 failed / 2 ignored，2026-07-25 验证）
+- [x] `cargo test --workspace --lib` 全过（240 passed / 0 failed / 2 ignored，2026-07-25 验证；2026-07-26 加 session.rs 4 个回归测试 + record_control_window 4 个，共 248+）
 - [x] `cd crates/desktop/frontend && npm run build` 0 error（0 warning，2026-07-25 验证）
 - [ ] `./scripts/build-macos-dmg.sh` 打包成功（**待手动验证**——需 universal binary swift 编译环境，3-8 分钟）
 - [ ] 手动 e2e（按 spec §9.3 的 7 个场景）全过（**待用户在 GUI 环境验证**）
+  - [ ] **2026-07-26 新增**：副屏 display 录制 → 控制浮窗 pill 出现在副屏右下角（不是主屏）
+  - [ ] **2026-07-26 新增**：录屏 timeout 后能立即重试（不卡 AlreadyRunning）—— 验证 `reset_to_idle` 修复
 - [x] `THIRD_PARTY_LICENSES.md` 完整（§7.1 已填正式条目，含 8 处修改声明 + 上游 commit SHA）
 - [x] `docs/architecture.md` 同步更新（录屏模块章节）—— 已加「## 屏幕录制（2026-07-25 起，MVP）」section + 项目结构加 record crate + 「### octopus-record」模块说明
 
@@ -2737,6 +2749,33 @@ git commit -m "feat(packaging): DMG 脚本集成 helper 编译 + 第三方许可
 **2. Placeholder scan**：搜索 plan 里的 todo!/TBD/待实现——只在 Task 10 的简化实现里出现（且明确标注了「完整版由执行者展开，不要保留 todo!()」），这是预期的。
 
 **3. Type consistency**：protocol.rs 定义的所有类型（RecordingRequest/HelperEvent/Source/...）在 session.rs/store.rs/record_commands.rs 里使用的字段名一致。
+
+---
+
+## 后续修复（迭代记录，2026-07-26）
+
+Task 5 实现的 session.rs 在用户实测中暴露**两个串联 P0 bug**（commit `29504e26`）：
+
+1. **原始 timeout 根因**：`stderr(Stdio::piped())` 但从不 take/read → 64KB 管道填满 → helper 阻塞在 write(stderr) → 永不发 `recording-started` → 父进程 10s 超时。
+2. **之后全 AlreadyRunning**：`start()` Err 路径用 `?` 直接返回，**不重置 state、不 kill child** → state 卡 `Starting` → 之后所有 `start` 撞 `state != Idle` → `AlreadyRunning`，必须重启 app。
+
+修复（提取 `reset_to_idle()` 让 kill / start_err / stop_err 三处共用单一清理路径）：
+
+| 优先级 | 修复 |
+|---|---|
+| P0-A | start() spawn 失败 / wait_for_state 超时 → `reset_to_idle`（SIGKILL helper + state=Idle），优先返回 helper 真实错误（`last_helper_error`）而非笼统 Timeout |
+| P0-B | spawn stderr reader task（每行 `log::debug!("[record][helper stderr] {line}")`）防管道阻塞 |
+| P1 | `HelperEvent::Error` 存入 `last_helper_error`，`wait_for_state` 每轮检测短路返回（不等 10s）→ 调用方拿到 `permissionDenied`/`sourceNotFound` 等真实原因 |
+| P2 | `Command::kill_on_drop(true)` 防进程 panic 时 helper 残留孤儿 |
+| 顺带 | `stop()` Err 路径同步修复（helper 10s 不退出时 fallback `reset_to_idle`） |
+
+**回归测试**（mock-helper 加 `MOCK_HELPER_MODE` env 切换 4 种场景，`tests/session_integration.rs`）：
+- `start_timeout_resets_state_to_idle` — 超时后 state=Idle（原 bug 卡 Starting）
+- `can_restart_after_timeout` — 超时后立即用正常 helper 重试成功（原 bug 撞 AlreadyRunning）
+- `start_helper_error_short_circuits_and_resets` — error 模式 `< 3s` 返回真实 HelperError
+- `start_stderr_flood_does_not_orphan_helper` — 200KB stderr 不阻塞 helper + 被 kill 清理
+
+> Task 5 Step 2 的 session.rs 代码块是**原始实现**（保留作历史记录，是「最早能跑通 MVP 的版本」）；上面 4 个 P0/P1/P2 修复是上线后用户实测反馈的迭代。详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.2「设计要点」末尾的 4 条新约束。
 
 ---
 

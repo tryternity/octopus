@@ -177,6 +177,18 @@ crate::record_window::show_record_window(&app);
   - 透传模式：工具栏半透明 + 浮动提示「按 A 切回标注模式」
 - [x] 验证 `npm run build` 0 error
 
+> **Follow-up（2026-07-26，commit `f1eeb455`）**：录制边框延迟显示 bug 修复。
+> RecordAnnotation draw useEffect 依赖列表 `[annotations, drawingVer]` 漏了 `canvasRect`——
+> URL 解析 setCanvasRect 后不触发 draw，导致录制开始时边框不画，要等到首次标注操作
+> 才出现。修复：依赖列表加 `canvasRect`。纯 bugfix，无新 spec。
+
+> **Follow-up（2026-07-26，commit `d587fc1f`/`acc65cbc`/`bbfebf57`/`323ba014`）**：
+> 1. **RecordAnnotation 改全屏窗口**——窗口从"窄窗口 + 后端三选"改为选区所在显示器全屏（与截图 Screenshot 同模式）。Canvas CSS fixed 定位选区，工具栏用 `computeToolbarPosition`（`components/Annotation/position.ts`，与截图同算法）。
+> 2. **新增 `set_toolbar_zone` 命令**——前端 mount 后把工具栏实际位置传给后端 poller（判穿透用），后端不再猜测工具栏位置。
+> 3. **工具栏位置 bug 修复**——去掉 POPOVER_H（200px），与截图 computeToolbarPosition 完全对齐（只看 TOOLBAR_H=44px）。
+> 4. **RecordAnnotation 工具栏加录制时长 + 暂停按钮**——与 RecordControl pill 同范式（红点 pulse + mm:ss + 暂停/继续按钮）。
+> 5. **AreaPicker 实时跟随工具栏**——拖框中工具栏就显示（含尺寸 + 「开始录制」+ 「取消」），松手不自动 confirm，用户点按钮才确认。
+
 ### Task 8: 配置接入（annotation 部分）
 
 **Files:**

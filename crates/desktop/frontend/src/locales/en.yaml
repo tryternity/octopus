@@ -84,12 +84,18 @@ settings:
     deleteSelected: Delete selected
     play: Play
     reveal: Reveal in Finder
+    rename: Rename
     favorite: Favorite
     unfavorite: Unfavorite
     delete: Delete
     deleteConfirm: Click again to confirm
     transcript: Transcribe
     transcriptTooltip: Requires ASR model, click to download
+    exportGif: Export GIF
+    exportGifStarted: Exporting GIF...
+    exportGifDone: Exported to ${path}
+    exportGifFailed: "Failed to export GIF: "
+    ffmpegMissing: "ffmpeg not installed. Install via: brew install ffmpeg; or curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/"
     recording: Recording
     paused: Paused
     startBtn: Start Recording
@@ -1006,7 +1012,7 @@ recordConfig:
   startBtn: Start Recording
   starting: Starting...
   tabDisplay: Display
-  tabWindow: Window
+  tabWindow: App
   tabArea: Area
   systemAudio: System Audio
   microphone: Microphone
@@ -1014,10 +1020,11 @@ recordConfig:
   noDisplays: No displays found
   noWindows: No windows found
   areaNotSelected: Please select a recording area
-  areaPlaceholder: Drag to select recording area, release to confirm, Esc to cancel
-  areaPick: Pick Area
-  areaReselect: Reselect
-  areaClear: Clear
-  areaSelected: Selected
+  areaPlaceholder: Drag to select recording area, release to start recording immediately, Esc to cancel
+  areaPickRecord: Pick & Record
   loadFailed: "Failed to load sources: "
   startFailed: "Failed to start recording: "
+  advanced: Advanced
+  fps: Frame Rate
+  codec: Codec
+  hideCursor: Hide Cursor
