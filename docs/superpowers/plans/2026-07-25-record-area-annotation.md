@@ -177,6 +177,11 @@ crate::record_window::show_record_window(&app);
   - 透传模式：工具栏半透明 + 浮动提示「按 A 切回标注模式」
 - [x] 验证 `npm run build` 0 error
 
+> **Follow-up（2026-07-26，commit `f1eeb455`）**：录制边框延迟显示 bug 修复。
+> RecordAnnotation draw useEffect 依赖列表 `[annotations, drawingVer]` 漏了 `canvasRect`——
+> URL 解析 setCanvasRect 后不触发 draw，导致录制开始时边框不画，要等到首次标注操作
+> 才出现。修复：依赖列表加 `canvasRect`。纯 bugfix，无新 spec。
+
 ### Task 8: 配置接入（annotation 部分）
 
 **Files:**

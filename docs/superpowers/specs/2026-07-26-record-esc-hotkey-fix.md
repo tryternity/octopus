@@ -1,4 +1,4 @@
-# 2026-07-26 ESC 全局快捷键修复（录屏 + 滚动截图）
+# 2026-07-26 ESC 全局快捷键修复 + 右键取消（录屏 + 滚动截图）
 
 ## 背景
 
@@ -278,3 +278,65 @@ release profile 下，stitch 处理一帧 < 10ms（10-50× 加速），emit 不�
 - **方案 C**：dev 模式下 stitch 跳帧（检测到 debug_assertions 时降低 NCC 频率）
 
 但这些都是优化，不是 bug 修复。当前结论：**dev 模式卡是预期行为，用 release profile 调试 scroll 截图**。
+
+## 右键取消（与 commit `7584f326` 同批，扩展功能）
+
+### 需求
+
+截图（含滚动截图）时，**选区外右键**应取消截图/停止 scroll。原来只在 idle 模式（未框选）右键取消，需扩展到 selected / scrolling 全模式。
+
+### 设计
+
+**onContextMenu（前端，`Screenshot/index.tsx`）**：
+- **idle**：任意位置右键取消截图（保持原行为）
+- **selected**：选区外右键取消截图，选区内右键无操作（避免误触）
+- **scrolling**：选区外右键停止 scroll（选区内/预览窗内不处理）
+
+**scrolling 模式的难点**：scrolling 时鼠标穿透（`setIgnoresMouseEvents(true)`）让下层应用接收滚轮，前端 `onContextMenu` **收不到右键**。需要后端兜底。
+
+**后端轮询检测右键（`screenshot_commands.rs` 鼠标轮询）**：
+- 复用现有 16ms 鼠标位置轮询循环
+- 加 FFI 声明 `CGEventSourceButtonState(state_id, button)`（macOS CoreGraphics API，查硬件鼠标按键状态）
+- 封装 `right_mouse_button_down()` 辅助函数
+- **边沿检测**：`prev=false → curr=true`（刚按下瞬间）才触发，避免持续按住时反复触发
+- 选区外（用 `sel_global_x/y/w/h` 判断）右键 → `SCROLL_STOP_MODE=Copy` + `SCROLL_RECORDING=false`
+- handler 直接后端 stop（与 scrolling ESC 同路径，不走前端）
+
+### FFI 声明
+
+```rust
+#[cfg(target_os = "macos")]
+mod cg_event_source_ffi {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        pub(crate) fn CGEventSourceButtonState(state_id: i32, button: i32) -> bool;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn right_mouse_button_down() -> bool {
+    // state_id=1（HIDSystemState）查硬件按键状态；button=1（右键）
+    unsafe { cg_event_source_ffi::CGEventSourceButtonState(1, 1) }
+}
+```
+
+`state_id=1`（HIDSystemState）反映硬件状态，不受其他 app 的合成事件影响。`button=1` 是右键（CGMouseButton::Right）。
+
+### 不变量
+
+1. **idle/selected 模式**：前端 `onContextMenu` 收到右键（无穿透），前端处理
+2. **scrolling 模式选区外**：前端收不到（穿透），后端轮询兜底
+3. **scrolling 模式选区内**：前端可能收到（鼠标在交互区域时穿透关闭），前端处理；选区内右键不操作
+4. **边沿检测**：只在按下瞬间触发，持续按住不重复触发
+
+### 已实现（commit `7584f326`）
+
+- `Screenshot/index.tsx` `onContextMenu` 扩展三模式分支
+- `screenshot_commands.rs` 加 `cg_event_source_ffi` 模块 + `right_mouse_button_down`
+- 鼠标轮询循环加 `prev_right_down` 边沿检测 + 选区外判断
+
+### 测试场景
+
+1. 截图→拖选区→选区外右键 → 截图取消（idle/selected）
+2. 截图→拖选区→点 scroll→选区外右键 → 停止 scroll 回到 selected
+3. 截图→拖选区→点 scroll→选区内右键 → 无操作（不停止）

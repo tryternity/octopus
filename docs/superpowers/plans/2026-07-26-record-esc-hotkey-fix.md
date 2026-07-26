@@ -14,6 +14,21 @@
 
 **Task 8**：handler 内 `SCROLL_STOP_MODE = Copy` + `SCROLL_RECORDING = false`（与 `stop_scroll_recording` 命令一致）。任务体收尾自动处理 finalize/入库/关窗。
 
+### Task 9：右键取消（选区外右键取消截图/停止 scroll）
+
+**前端**（`Screenshot/index.tsx` `onContextMenu`）：扩展三模式分支——
+- idle：任意位置右键取消截图
+- selected：选区外右键取消（选区内不操作）
+- scrolling：选区外右键停止 scroll（前端兜底，主要靠后端）
+
+**后端**（`screenshot_commands.rs` 鼠标轮询循环）：
+- FFI 声明 `CGEventSourceButtonState` + 封装 `right_mouse_button_down()`
+- 复用现有 16ms 鼠标位置轮询循环
+- 加 `prev_right_down` 边沿检测（false→true 才触发）
+- 选区外右键按下 → `SCROLL_STOP_MODE=Copy` + `SCROLL_RECORDING=false`
+
+详见 spec「右键取消」章节。
+
 ### Task 1：拆分 record_hotkey.rs
 
 **文件**：`crates/desktop/src/record_hotkey.rs`

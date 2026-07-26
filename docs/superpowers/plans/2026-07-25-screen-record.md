@@ -2662,6 +2662,16 @@ git add crates/desktop/src/action_hotkey.rs
 git commit -m "feat(desktop): 录屏快捷键 Cmd+Shift+R toggle + Esc 停止"
 ```
 
+> **Follow-up（2026-07-26，commit `2ec1a469`）**：ESC 改为动态注册。
+> 原 Step 1 实现是「启动时常驻注册 ESC」，导致 Screenshot/RecordConfig 等所有窗口的
+> DOM 级 ESC 被 tauri_plugin_global_shortcut 在系统层吞掉。改为：
+> - 启动只注册 toggle（`register_toggle_hotkey`）
+> - 录制 `start_with_config` 成功后 `register_stop_hotkey`
+> - `stop_and_store` / `record_kill` 完成后 `unregister_stop_hotkey`
+> - settings 热重载对齐（仅 toggle，录制中改快捷键时额外 register_stop）
+>
+> 详见 `docs/superpowers/specs/2026-07-26-record-esc-hotkey-fix.md` Task 1-5。
+
 ---
 
 ## Task 15: DMG 脚本集成 + THIRD_PARTY_LICENSES 更新
