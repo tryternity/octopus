@@ -1315,3 +1315,15 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 - 守护测试 variants 加 `PublicRepoRejected("https://user:ghp_xxx@...")`
 
 **与 #11 的关系**：同一泄露模式（PAT 嵌 URL/stderr），#11 守了 stderr 6 变体，漏了 url 变体。守护测试 variants 也恰好不含它。
+
+---
+
+## 第五十轮审查修复（2026-07-26，privacy.rs 深审：E-LOG-URL-LEAKS-PAT-INCOMPLETE）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE: ensure_private_repo 其余 4 分支 log 仍透传原始 url（中，影响面追踪不全，已修）
+
+**核查**：第四十九轮 E-PUBLIC-REPO-URL-LEAKS-PAT 只改了 Public 分支（:258 redact），但 ensure_private_repo 共 5 个 verdict 分支，其余 4 个（Private :262 / Ambiguous :266 / SshUnverifiable :270 / NetworkError :274）全部用原始 `url`。
+
+**最常见泄露路径**：用户配 PAT 访问私有库（PAT 最常见用法）→ Phase 1 未认证 API → GitHub 404（隐私设计）→ Ambiguous → :266 `log::info!(url)` 每次同步把 PAT 写进日志。
+
+**修复**：入口加 `let safe_url = redact_url(url);`，所有 5 个分支 log 统一用 `safe_url`。AGENTS.md「影响面追踪」要求——改 log 行为时追踪所有同类 log。

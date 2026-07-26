@@ -251,27 +251,30 @@ pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
 /// 其他 verdict（Private / Ambiguous / SshUnverifiable / NetworkError）放行，
 /// 仅记录日志让用户能看到检测过程。
 fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
+    // E-LOG-URL-LEAKS-PAT-INCOMPLETE 修复（2026-07-26）：入口统一 redact，
+    // 所有分支 log 用 safe_url（第四十九轮只改了 Public 分支，漏了其余 4 个——
+    // Ambiguous 是 PAT 访问私有库的默认路径，每次 sync 把 PAT 写日志）。
+    let safe_url = octopus_sync::error::redact_url(url);
     let verdict = privacy::check_privacy(url)?;
     match verdict {
         PrivacyVerdict::Public => {
-            // E-PUBLIC-REPO-URL-LEAKS-PAT：redact URL 防含 PAT 的 URL 泄露到日志
-            log::warn!("[sync] 拒绝公有库: {}", octopus_sync::error::redact_url(url));
+            log::warn!("[sync] 拒绝公有库: {}", safe_url);
             Err(SyncError::PublicRepoRejected(url.to_string()))
         }
         PrivacyVerdict::Private => {
-            log::info!("[sync] 确认私有库: {}", url);
+            log::info!("[sync] 确认私有库: {}", safe_url);
             Ok(())
         }
         PrivacyVerdict::Ambiguous(reason) => {
-            log::info!("[sync] 仓库可见性不明（放行）: {} —— {}", url, reason);
+            log::info!("[sync] 仓库可见性不明（放行）: {} —— {}", safe_url, reason);
             Ok(())
         }
         PrivacyVerdict::SshUnverifiable => {
-            log::info!("[sync] SSH URL 无法自动检测（放行，由用户保证私有）: {}", url);
+            log::info!("[sync] SSH URL 无法自动检测（放行，由用户保证私有）: {}", safe_url);
             Ok(())
         }
         PrivacyVerdict::NetworkError(msg) => {
-            log::warn!("[sync] 仓库可见性检测网络错误（放行）: {} —— {}", url, msg);
+            log::warn!("[sync] 仓库可见性检测网络错误（放行）: {} —— {}", safe_url, msg);
             Ok(())
         }
     }
