@@ -881,18 +881,30 @@ struct OctopusSckHelper {
 					//    正常应用窗口至少 200x150
 					guard w.frame.width >= 200 && w.frame.height >= 150 else { return false }
 					// ③ 排除系统 UI app（控制中心、Dock、Window Server、UIEngine）
-					//    + octopus 自己（录屏配置浮窗 / 标注 overlay / 控制浮窗等不应被录）
-					if let bundleId = w.owningApplication?.bundleIdentifier {
+					if let app = w.owningApplication {
+						let bid = app.bundleIdentifier  // String（cargo run 模式可能为空串）
 						let systemPrefixes = [
 							"com.apple.controlcenter",
 							"com.apple.dock",
 							"com.apple.WindowManager",
 							"com.apple.WindowServer",
 							"com.apple.UIEngine",
-							"com.octopus.desktop",
 						]
 						for prefix in systemPrefixes {
-							if bundleId.hasPrefix(prefix) { return false }
+							if bid.hasPrefix(prefix) { return false }
+						}
+
+						// ④ 排除 octopus 的「录制设置」浮窗（设置完即关，用户无法录它）。
+						//    必须双重条件：app 是 octopus（bundleId 或 PID 匹配）+ 标题匹配。
+						//    单独按标题排除会误伤其他 app 的"录制设置"窗口。
+						//    其他 octopus 窗口（语音识别框/compact editor/剪贴板等）不排除——用户可能要录。
+						let isOctopus = bid.hasPrefix("com.octopus")
+							|| app.processID == getppid()  // cargo run 模式（bid 为空）
+						if isOctopus {
+							let title = w.title ?? ""
+							if title.contains("录制设置") || title.contains("Record Config") || title.contains("octopus-record-config") {
+								return false
+							}
 						}
 					}
 					return true
