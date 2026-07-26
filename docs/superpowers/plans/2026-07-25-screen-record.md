@@ -2821,19 +2821,22 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 - RecordConfig 浮窗 Advanced 区加 toggle「停止后定位文件 / Reveal after stop」——**持久化到 DB**（与 fps/codec session-only 不同，这是跨 session 行为）。mount 时读 `get_config`，切换时调 `set_config`。
 - i18n 加 `recordConfig.revealAfterStop`（zh/en）。
 
-### Task 8 后续：实时混音——系统音频 + 麦克风 → 单轨（2026-07-26）
+### Task 8 后续：音轨顺序 + 实时混音回退（2026-07-26 ~ 2026-07-27）
 
-用户实测「麦克风没采集」。`ffprobe` 分析发现音量正常（mic max -15.8dB），但文件有 **2 条独立音轨**（system + mic），播放器默认只放 track 1（系统音频，常为静音）→ 用户听不到麦克风。这是 helper 设计缺陷，不是采集问题。
+**问题**：用户实测「麦克风没采集」。`ffprobe` 分析发现音量正常（mic max -15.8dB），但文件有 **2 条独立音轨**（system + mic），播放器默认只放 track 1（系统音频，常为静音）→ 用户听不到麦克风。这是 helper 设计缺陷，不是采集问题。
 
-修复（用户决策方案 A：实时混音）：Swift helper 在 sample callback 里把 system + mic 实时混合成单条 AAC 轨（符合 QuickTime/OBS/Cap 主流行为）：
-- 删 `systemAudioInput` / `microphoneAudioInput` 两个 AVAssetWriterInput，统一用 `mixedAudioInput`
-- 双 deque（`pendingSystem` / `pendingMic`）按 PTS 配对（48k sample index 取整相等）
-- 配对成功 → `vDSP_vadd` 求和 + 0.5 衰减防削波 → 封回 CMSampleBuffer → 写入单轨
-- 某边 PTS 落后超 200ms（对齐窗口超时）或某边永远空（只开一边音频）→ 落后边 passthrough
-- 收尾 `finishWriter` 前 flush 两边 deque 剩余样本（避免尾部 ~100-200ms 丢失）
-- 格式不一致用 `AVAudioConverter` 转换到目标格式（48k/stereo/float32）
+**尝试方案 A：实时混音**（commit `6cb6fe90` ~ `f9741968`，5 轮迭代）——Swift helper 在 sample callback 里把 system + mic 实时混合成单条 AAC 轨。经充分调试（PTS 配对 / 帧计数 ring buffer / vDSP / CMSampleBuffer 构造），最终 `appendInterleavedPCM` 的 `input.append(sb)` 始终不生效（日志确认 ENTERED 但 audio track 仍 0 条），根因未能定位。**已回退**（commit `f8bbe8ed`）。
 
-详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3 helper 混音说明。
+**当前方案（务实回退）**：保留双轨，仅调整 `setupWriter` 的 add 顺序——**麦克风先 add（track 1）**，系统音频后 add（track 2）。播放器默认放 track 1 = 麦克风。
+
+| 场景 | 结果 |
+|---|---|
+| 只开麦克风 | ✅ track 1 = mic，完美 |
+| 只开系统音频 | ✅ track 1 = system，完美 |
+| 都开 | 默认听麦克风（系统音频在 track 2，播放器可手动切换） |
+| 都关 | 仅 video |
+
+**后续**：实时混音作为 P2 任务重新设计——考虑用 `AVAudioEngine` 混音节点（成熟 API，不手动构造 CMSampleBuffer），或录后 `ffmpeg -filter_complex amerge` 后处理（commit `67aec0a2` 已加 ffmpeg 探测基础设施）。手动 CMSampleBuffer + vDSP 路径证明太脆弱。
 
 ---
 
