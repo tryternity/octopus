@@ -3,6 +3,30 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
+// macOS：查询当前鼠标按键是否按下（HIDSystemState 反映硬件状态）。
+//
+// 用于 scrolling 模式右键取消——选区外鼠标穿透到下层应用，前端 onContextMenu
+// 收不到。后端在 16ms 轮询里检查右键状态 + 边沿检测，选区外按下右键则停止 scroll。
+//
+// button：0=左键、1=右键、2=中键（CGMouseButton 值）。
+// state_id：0=CombinedSessionState、1=HIDSystemState（硬件状态，不受其他 app 影响）。
+//
+// 详见 CGEventSourceButtonState（CGEventSource.h）。
+#[cfg(target_os = "macos")]
+mod cg_event_source_ffi {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        pub(crate) fn CGEventSourceButtonState(state_id: i32, button: i32) -> bool;
+    }
+}
+
+/// 便捷封装：当前右键是否按下。
+#[cfg(target_os = "macos")]
+fn right_mouse_button_down() -> bool {
+    // state_id=1（HIDSystemState）查硬件按键状态；button=1（右键）
+    unsafe { cg_event_source_ffi::CGEventSourceButtonState(1, 1) }
+}
+
 /// 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。
 fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 * 1024 {
@@ -61,6 +85,50 @@ pub fn register_screenshot_shortcut(
         })
         .map_err(|e| format!("Failed to register screenshot shortcut '{}': {}", shortcut_str, e))?;
     Ok(())
+}
+
+/// scrolling 启动时注册全局 ESC，handler 调 stop_scroll 逻辑。
+///
+/// scrolling 时键盘焦点在下层应用（activate_prev_app 把焦点交给被滚动 app，让用户能滚动），
+/// Screenshot 窗口的 DOM 级 onKeyDown / keydown listener 收不到 ESC。只能用全局快捷键。
+/// 与 `record_hotkey::register_stop_hotkey` 同范式（录屏/scroll 截图互斥，不会同时注册）。
+///
+/// handler 直接在后端 stop（不走前端 invoke，因为前端收不到 ESC）：
+/// 1. 设 SCROLL_STOP_MODE = Copy（默认，与 stop_scroll_recording 一致）
+/// 2. 设 SCROLL_RECORDING = false（让消费循环退出，任务体收尾处理 finalize/入库/关窗）
+fn register_scroll_esc(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let esc: Shortcut = "Escape".parse().map_err(|e| format!("parse scroll ESC: {e}"))?;
+    app.global_shortcut()
+        .on_shortcut(esc, move |_app, _scut, event| {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            log::info!("[scroll] ESC 全局快捷键触发 → 停止 scroll（焦点在下层应用，DOM 收不到）");
+            // 默认 copy 模式（与 stop_scroll_recording 命令一致；用户用按钮时走 _with_mode 设其他模式）
+            SCROLL_STOP_MODE.store(ScrollStopMode::Copy as u8, std::sync::atomic::Ordering::SeqCst);
+            SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+            // 不做其他——任务体会看到 SCROLL_RECORDING=false 退出循环，走 finalize/入库/关窗
+        })
+        .map_err(|e| format!("register scroll ESC: {e}"))?;
+    log::info!("[scroll] 全局 ESC 已注册（scrolling 模式）");
+    Ok(())
+}
+
+/// scrolling 停止时注销全局 ESC，让其他窗口的 DOM 级 ESC 重新生效。
+/// 未注册时 unregister 是 no-op，不会报错。失败仅 warn 不阻断。
+fn unregister_scroll_esc(app: &tauri::AppHandle) {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    match "Escape".parse::<Shortcut>() {
+        Ok(sc) => {
+            if let Err(e) = app.global_shortcut().unregister(sc) {
+                log::warn!("[scroll] 全局 ESC 注销失败（不影响功能）: {e}");
+            } else {
+                log::info!("[scroll] 全局 ESC 已注销（scrolling 结束）");
+            }
+        }
+        Err(e) => log::warn!("[scroll] ESC 解析失败（无法注销）: {e}"),
+    }
 }
 
 #[tauri::command]
@@ -691,18 +759,27 @@ static SCROLL_STOP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// RAII 守卫：drop 时把 `SCROLL_RECORDING` 重置为 false。
+/// RAII 守卫：drop 时把 `SCROLL_RECORDING` 重置为 false + 注销 scrolling 全局 ESC。
 ///
 /// `start_scroll_recording` 在 `swap(true)` 成功后 spawn 异步任务，任务体里的早返回
 /// （截图窗口已关闭 / CG 获取活动显示器失败 / 首帧截取失败）以及 panic 都不会重置标志，
 /// 会导致 `SCROLL_RECORDING` 永久停留在 true —— 此后任何滚动截图尝试都立即返回
 /// "already in progress"，必须重启应用才能恢复。在 spawn 开头持有一份守卫，任何退出
-/// 路径（早返回 / 正常结束 / panic / runtime 取消）都会 drop 它 → 重置标志，幂等无副作用
+/// 路径（早返回 / 正常结束 / panic / runtime 取消）都会 drop 它 → 重置标志 + 注销 ESC，幂等无副作用
 /// （正常停止路径由前端 `stop_scroll_recording` 先设 false 让循环退出，再 drop 守卫重复置 false）。
-struct ScrollRecordingGuard;
+///
+/// 持有 Option<AppHandle>：drop 时若有则调 unregister_scroll_esc（scrolling 时 register 过）。
+/// None 表示启动失败前未 register（早返回路径），drop 时跳过 unregister。
+struct ScrollRecordingGuard {
+    app: Option<tauri::AppHandle>,
+}
 impl Drop for ScrollRecordingGuard {
     fn drop(&mut self) {
         SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(app) = &self.app {
+            #[cfg(target_os = "macos")]
+            unregister_scroll_esc(app);
+        }
     }
 }
 
@@ -945,8 +1022,9 @@ pub async fn start_scroll_recording(
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         // RAII 守卫：本任务体任何退出（早返回 / 正常结束 / panic / runtime 取消）都重置
-        // SCROLL_RECORDING=false，避免初始化失败的早返回让滚动截图功能永久锁死。
-        let _scroll_guard = ScrollRecordingGuard;
+        // SCROLL_RECORDING=false + 注销 scrolling 全局 ESC，避免功能永久锁死或 ESC 残留。
+        // app 字段初始为 None——register_scroll_esc 成功后才设 Some（drop 时才 unregister）。
+        let mut _scroll_guard = ScrollRecordingGuard { app: None };
         // ── 通过 win_label 定位选区所在的截图窗口（spec §6.4）──
         let sel_win = match ah.get_webview_window(&win_label) {
             Some(w) => w,
@@ -1092,6 +1170,17 @@ pub async fn start_scroll_recording(
                 set_window_ignores_mouse_events(&win, true);
             }
         }
+        // scrolling 全局 ESC：焦点将交给下层应用（activate_prev_app），DOM 收不到 ESC，
+        // 用全局快捷键兜底。register 成功后让 guard 持有 app（drop 时 unregister）。
+        // 失败仅 warn 不阻断——最坏情况是 scrolling 时 ESC 不响应（仍可用预览窗按钮停止）。
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = register_scroll_esc(&ah) {
+                log::warn!("[scroll] 全局 ESC 注册失败（不影响 scroll，可用预览窗按钮停止）: {e}");
+            } else {
+                _scroll_guard.app = Some(ah.clone());
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             activate_prev_app(&sel_win);
@@ -1113,6 +1202,11 @@ pub async fn start_scroll_recording(
             let mon_winx = win_origin_x;
             let mon_winy = win_origin_y;
             let mon_rects = interactive_rects;
+            // 选区全局几何（用于右键取消：选区外右键停止 scroll）
+            let mon_sel_x = sel_global_x;
+            let mon_sel_y = sel_global_y;
+            let mon_sel_w = w;
+            let mon_sel_h = h;
             tauri::async_runtime::spawn(async move {
                 use core_graphics::event::CGEvent;
                 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -1122,6 +1216,8 @@ pub async fn start_scroll_recording(
                 let mut activate_check_count = 0u32;
                 let mut last_check_x: f64 = 0.0;
                 let mut last_check_y: f64 = 0.0;
+                // 右键边沿检测：只在 false→true（刚按下）瞬间触发停止，避免持续按住时反复触发
+                let mut prev_right_down = false;
                 while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
                     poll.tick().await;
                     let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -1145,6 +1241,24 @@ pub async fn start_scroll_recording(
                         }
                         cur_passthrough = want;
                     }
+
+                    // 右键取消：选区外（含穿透区）右键按下 → 停止 scroll。
+                    // 边沿检测：只在刚按下瞬间触发（prev=false 且 curr=true）。
+                    // 选区内右键不处理（避免与标注操作冲突，且选区内右键本就少见）。
+                    let curr_right_down = right_mouse_button_down();
+                    if curr_right_down && !prev_right_down {
+                        let in_sel = mouse_x >= mon_sel_x
+                            && mouse_x <= mon_sel_x + mon_sel_w
+                            && mouse_y >= mon_sel_y
+                            && mouse_y <= mon_sel_y + mon_sel_h;
+                        if !in_sel {
+                            log::info!("[scroll] 选区外右键按下 → 停止 scroll");
+                            SCROLL_STOP_MODE.store(ScrollStopMode::Copy as u8, std::sync::atomic::Ordering::SeqCst);
+                            SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+                            // 不 break——让循环条件自然退出（保持与其他停止路径一致）
+                        }
+                    }
+                    prev_right_down = curr_right_down;
 
                     // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
                     // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。

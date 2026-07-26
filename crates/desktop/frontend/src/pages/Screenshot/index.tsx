@@ -535,9 +535,29 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    // idle 模式（未框选）右键取消截图
+    // 右键取消规则：
+    //   - idle（未框选）：任意位置右键取消截图
+    //   - selected：选区外右键取消截图（选区内右键无操作，避免误触）
+    //   - scrolling：选区外右键停止 scroll（选区内/预览窗内不处理——预览窗有按钮）
+    //     注：scrolling 时选区外鼠标穿透，onContextMenu 收不到——后端 poller 兜底
+    //     （见 screenshot_commands.rs 鼠标轮询的右键检测）
+    const mx = e.clientX;
+    const my = e.clientY;
     if (mode === "idle") {
       invoke("cancel_screenshot").catch(() => {});
+    } else if (mode === "selected" && sel) {
+      // 选区外右键取消
+      const inSel = mx >= sel.x && mx <= sel.x + sel.w && my >= sel.y && my <= sel.y + sel.h;
+      if (!inSel) {
+        invoke("cancel_screenshot").catch(() => {});
+      }
+    } else if (mode === "scrolling" && sel) {
+      // scrolling 时选区外穿透，前端理论上收不到；保留分支作为兜底
+      // （若鼠标恰好在交互区域边缘的非穿透瞬间右键）
+      const inSel = mx >= sel.x && mx <= sel.x + sel.w && my >= sel.y && my <= sel.y + sel.h;
+      if (!inSel) {
+        stopScroll();
+      }
     }
   }
 
