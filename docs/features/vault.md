@@ -181,7 +181,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ## 10. Git 跨设备同步
 
-详见 `docs/superpowers/specs/2026-07-21-vault-git-sync-design.md`。核心机制：
+详见 `docs/superpowers/specs/archived/2026-07-21-vault-git-sync-design.md`。核心机制：
 
 - 用 git repo（GitHub/Gitee private repo）同步，shell out 系统 git，SSH key 认证
 - `~/.octopus/.sync/` 目录：`vault/`（加密数据）+ `hotword/`（热词，明文）——所有同步数据在同一个 git repo

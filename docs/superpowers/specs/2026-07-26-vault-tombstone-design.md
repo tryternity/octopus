@@ -6,7 +6,7 @@
 **关联**：
 - [vault-git-sync-design](./2026-07-21-vault-git-sync-design.md) §2.4——sync 增量同步原设计
 - [vault-security-hardening](./2026-07-24-vault-security-hardening.md) M-TOMBSTONE（M5，已知高优先级未修项）
-- [vault-git-sync plan](../plans/2026-07-21-vault-git-sync.md)——sync 实施计划
+- [vault-git-sync plan](../plans/archived/2026-07-21-vault-git-sync.md)——sync 实施计划
 
 ## 背景：跨设备硬删复活 bug
 

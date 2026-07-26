@@ -183,6 +183,29 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 ./run-octopus.sh
 ```
 
+### 10.1 macOS DMG 打包
+
+首次建立打包链路（2026-07-23）。产出未签名 `.dmg` + `.app`（自用/内测）。
+
+```bash
+# 生产级 DMG（LTO+strip，体积小）
+./scripts/build-macos-dmg.sh
+
+# 调试打包流程（无 LTO，链接快）
+./scripts/build-macos-dmg.sh --no-lto
+
+# 构建完冒烟测试
+./scripts/build-macos-dmg.sh --open
+```
+
+**产物**：
+- `.app`：`target/<profile>/bundle/macos/octopus.app`
+- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2，~40MB）
+
+**feature 组合**：`embedded,cloud,vault,custom-protocol`（`custom-protocol` 生产 build 必须启用，走 `frontendDist` 嵌入 dist 而非 `devUrl`）。
+
+**打包意义**：此前是「裸二进制 cargo run」，系统权限（屏幕录制/辅助功能/麦克风）绑定 Terminal；打包后绑定 octopus 本身，用户授权更清晰。关键决策（dmg 不走 Tauri create-dmg fork / beforeBuildCommand 设 null / resources 用对象形式 / `seeds_dir()` 三路解析含 .app bundle）详见 [architecture.md §打包/分发](../architecture.md) + [plan](../superpowers/plans/archived/2026-07-23-macos-dmg-packaging.md)。
+
 ---
 
 ## 11. DB schema 变更策略
@@ -258,6 +281,15 @@ cargo run --profile optimize -p octopus-desktop --features remote-grpc
 - 3 个内置变量（`huggingface`/`modelscope`/`github`，key 不可改、值可改）+ 用户自定义。
 - DB `app_config` 表 `category='env'`，与普通 config 同表隔离。
 - 模型下载 URL 中 `{huggingface}` 等占位符运行时替换为实际值（仅 ASR 模型下载，LLM/OCR source URL 不替换）。
+
+**App-aware 菜单绑定**（2026-07-23，v49）：
+- `action_bar_items` 加 `app_bundle_ids` 列（JSON 数组，如 `["com.tencent.xinWeChat"]`）；`launcher_index` 加 `bundle_id` 列。
+- 语义：`app_bundle_ids` 为空 = 全局项（所有 app 都显示）；非空 = 专属项（仅前台 app 的 bundle_id 在数组中才显示）。前端 `isItemVisibleForApp` 按 AND 匹配。
+- AppPicker 组件：`list_all_apps` 返回 `AppBrief { name, bundle_id, icon }`，多选器勾选绑定。详见 [spec](../superpowers/specs/archived/2026-07-23-actionbar-app-aware.md)。
+
+**Prompt 外部文件引用**（2026-07-23）：
+- agent/ai 类型菜单的 `action_data` 支持 `@文件名` 语法引用 `~/.octopus/.sync/prompts/command/<文件名>.md`（运行时 `resolve_prompt_reference` 展开）。
+- 前端 PromptEditor 组件：Segmented 切换「内联」/「引用文件」模式；引用模式用可编辑 input + datalist（可选已有 + 自由输入新名）+ Plus 创建 + hover 浮层预览。详见 [spec](../superpowers/specs/archived/2026-07-23-prompt-file-reference.md)。
 
 ---
 
