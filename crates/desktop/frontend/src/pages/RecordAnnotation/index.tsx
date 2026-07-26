@@ -514,6 +514,38 @@ export default function RecordAnnotation() {
           </span>
           <style>{`@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.85); } }`}</style>
         </div>
+        {/* 暂停/继续录制按钮（与 RecordControl 浮窗同范式）*/}
+        <button
+          onClick={() => {
+            // recState 是本地状态（从 record://event 同步），调 record_pause/resume
+            if (recState === "recording") invoke("record_pause").catch(() => {});
+            else if (recState === "paused") invoke("record_resume").catch(() => {});
+          }}
+          title={
+            recState === "recording"
+              ? t("settings.recordings.pauseBtn")
+              : t("settings.recordings.resumeBtn")
+          }
+          style={{
+            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
+            borderRadius: 6, border: "1px solid var(--color-border)",
+            background: "transparent", color: "var(--color-foreground)",
+            cursor: "pointer", padding: 0,
+          }}
+        >
+          {recState === "recording" ? (
+            // 暂停图标（两竖）
+            <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+              <rect x="0" y="0" width="3" height="12" rx="1" />
+              <rect x="7" y="0" width="3" height="12" rx="1" />
+            </svg>
+          ) : (
+            // 继续图标（三角）
+            <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
+              <path d="M0 0 L10 6 L0 12 Z" />
+            </svg>
+          )}
+        </button>
         <button
           onClick={onStopClick}
           title={t("tray.recordStop")}
