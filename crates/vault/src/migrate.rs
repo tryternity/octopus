@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use octopus_infra::db;
+use zeroize::Zeroize;
 
 use crate::crypto::symmetric::CIPHERTEXT_PREFIX;
 use crate::crypto::DerivedKey;
@@ -30,7 +31,7 @@ use crate::crypto::DerivedKey;
 pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
     // M1(b) 修复：传 CIPHERTEXT_PREFIX 而非在 db.rs 硬编码——单点维护，
     // 升级 v2: 时只改 CIPHERTEXT_PREFIX，SQL 守卫自动跟随。
-    let models = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)?;
+    let mut models = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)?;
 
     // (1) 全部加密——任一行失败 → 整批 abort，DB 0 改动
     let encrypted: Vec<(i64, String)> = models
@@ -62,6 +63,18 @@ pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
     })?;
 
     log::info!("迁移 {} 个 model 的 secret_key 为加密格式", count);
+
+    // OBS-MIGRATE-PLAINTEXT-MODELS-RESIDUE 修复（2026-07-27，第六十二轮）：
+    // models: Vec<(i64, String)> 的 String 含明文 API key（来自 infra
+    // list_models_for_secret_migration）。加密完成后 models 仍持有明文，函数结束
+    // drop 时普通 String heap 不清零 → 明文 API key 残留窗口。
+    // 显式 zeroize 消除残留（String 实现了 zeroize::Zeroize trait）。
+    // 风险 Low（单机 + 迁移前本就明文存 DB + 残留窗口仅函数执行期），但修复成本
+    // 极低 + 与已修的 17 处 Zeroizing 卫生同类型，值得做。
+    for (_, plaintext) in &mut models {
+        plaintext.zeroize();
+    }
+
     Ok(count)
 }
 
