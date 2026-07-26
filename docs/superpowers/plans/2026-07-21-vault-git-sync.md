@@ -1618,18 +1618,23 @@ L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 
 - 测试覆盖 + 回归守护
 - 已知限制清单（E1/M5 硬删复活、N2 AES key schedule、L21 TOTP secret zeroize 等）
 
-**最新测试基线（截至第五十五轮，2026-07-26）**：
+**最新测试基线（截至第五十八轮，2026-07-27）**：
 - vault: **251 pass** + 2 ignored（lib）+ 1 pass（集成 unlock.rs）
-- infra: 160 pass / sync: **103 pass** + 4 ignored / desktop: 412 pass
+- infra: 160 pass / sync: **103 pass** + 4 ignored / desktop: 416 pass
 - tsc 0 error / cargo build 0 warning
 
-**本轮（vault-git-sync）原计划任务状态**：原 spec/plan 定义的 sync 功能（pull/clone/push/resolve/热词同步）均已实现并通过审查。后续轮次（第五~五十五轮）是上线后的持续安全加固，不属于本 plan 的原始任务范围，故只在此引用。
+**本轮（vault-git-sync）原计划任务状态**：原 spec/plan 定义的 sync 功能（pull/clone/push/resolve/热词同步）均已实现并通过审查。后续轮次（第五~五十八轮）是上线后的持续安全加固，不属于本 plan 的原始任务范围，故只在此引用。
 
-**第五十二~五十五轮摘要**（详见 [vault-security-hardening spec](../specs/2026-07-24-vault-security-hardening.md)）：
+**第五十二~五十八轮摘要**（详见 [vault-security-hardening spec](../specs/2026-07-24-vault-security-hardening.md)）：
 - 52: E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND（ensure_remotes_use_ssh_when_possible redact）
 - 53: E-UI-URL-LEAKS-PAT-LIST-REMOTES（list_remotes + SyncStatus 返回值 redact + helper 抽取）
 - 54: 六轮 PAT 外溢链收官（无新外溢，方法论纠偏）
 - 55: E-ZEROIZE-RESIDUE（keychain + unlock Zeroizing 卫生系统性修复，12 处）
+- 56: E-ZEROIZE-RESIDUE-MISSED-KEYCHAIN-DECRYPT（load_machine_key 解密路径，2 处，第二次外溢）
+- 57: E-ZEROIZE-PLAINTEXT-JSON-VEC（types.rs encrypt 侧明文 JSON Vec 残留，3 处，Vec<u8> 变体）
+- 58: Zeroizing 卫生专题收官（五视角交叉验证收敛，无新发现；OBS-EXPORT-PLAINTEXT-STRING 信息性不修）
+
+**Zeroizing 卫生专题状态**：vault crate 内可修的 Zeroizing 卫生缺口完整收敛（共 17 处修复，3 轮）。剩余 Cipher/LoginData/Field 的 String 字段不清零是设计层面妥协（与 Bitwarden 同困境，已记录不修）。
 
 **后续推进方向**（spec/plan 已就绪，待实施）：
 - [SafeUrl newtype](./2026-07-26-safeurl-newtype.md) — PAT 结构性根治
