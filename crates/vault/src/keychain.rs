@@ -204,14 +204,18 @@ fn read_username() -> Result<String> {
 /// 全是公开或硬编码的——这把 key **不是秘密**。用它加密 machine-key.enc 是
 /// obfuscation（防"拷走 DB 单独"的场景），不是真加密（同机进程都能解出）。
 /// 详见模块顶部注释。
-fn derive_file_key() -> Result<[u8; 32]> {
+/// E-ZEROIZE-RESIDUE 修复（2026-07-26）：返 Zeroizing<[u8;32]> 而非裸 [u8;32]。
+/// 与 random_32 同型修复——file_key 是敏感密钥（加密磁盘上的 K_machine），
+/// HKDF 派生后裸 [u8;32] 在调用方 from_raw 会 Copy 残留。现返 Zeroizing 让
+/// 调用方 from_zeroizing move，无栈残留。
+fn derive_file_key() -> Result<Zeroizing<[u8; 32]>> {
     let machine_id = read_machine_id()?;
     let user = read_username()?;
     let input = format!("{}:{}", machine_id, user);
 
     let hk = Hkdf::<Sha256>::new(Some(FILE_KEY_SALT), input.as_bytes());
-    let mut okm = [0u8; 32];
-    hk.expand(FILE_KEY_INFO, &mut okm)
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hk.expand(FILE_KEY_INFO, &mut *okm)
         .map_err(|_| anyhow::anyhow!("HKDF-SHA256 expand 失败（输出长度非法）"))?;
     Ok(okm)
 }
@@ -237,9 +241,12 @@ pub fn load_or_create_machine_key() -> Result<Zeroizing<[u8; 32]>> {
     if let Some(existing) = load_machine_key()? {
         return Ok(existing);
     }
+    // E-ZEROIZE-RESIDUE 修复（2026-07-26）：random_32 现返 Zeroizing<[u8;32]>，
+    // 这里直接 move 进返回值——无栈残留（之前 Zeroizing::new(裸数组) 是 Copy，
+    // new_key 栈变量 drop no-op → K_machine 字节残留）。
     let new_key = random_32();
-    save_machine_key(&new_key)?;
-    Ok(Zeroizing::new(new_key))
+    save_machine_key(&*new_key)?;
+    Ok(new_key)
 }
 
 /// 读取已有 K_machine。文件不存在或无法解密 → `Ok(None)`。
@@ -277,7 +284,8 @@ pub fn load_machine_key() -> Result<Option<Zeroizing<[u8; 32]>>> {
         return Ok(None);
     }
 
-    let file_key = DerivedKey::from_raw(derive_file_key()?);
+    // E-ZEROIZE-RESIDUE 修复：derive_file_key 现返 Zeroizing，from_zeroizing move
+    let file_key = DerivedKey::from_zeroizing(derive_file_key()?);
     // KC1 修复（2026-07-24）：解密失败（file_key 不匹配 / 文件损坏）→ Ok(None)，
     // 与上面「前缀不符 → Ok(None)」对称。两者语义都是「无可用 K_machine，需重建」。
     //
@@ -325,7 +333,8 @@ pub fn save_machine_key(key: &[u8; 32]) -> Result<()> {
         return Ok(());
     }
 
-    let file_key = DerivedKey::from_raw(derive_file_key()?);
+    // E-ZEROIZE-RESIDUE 修复：derive_file_key 现返 Zeroizing，from_zeroizing move
+    let file_key = DerivedKey::from_zeroizing(derive_file_key()?);
     let ciphertext = file_key.encrypt(key)?;
     let path = machine_key_path()?;
 
@@ -513,11 +522,12 @@ mod tests {
         assert!(load_machine_key().unwrap().is_none());
 
         let key = random_32();
-        save_machine_key(&key).expect("save 应成功");
+        save_machine_key(&*key).expect("save 应成功");
         let loaded = load_machine_key()
             .expect("load 应成功")
             .expect("应读到刚保存的 key");
-        assert_eq!(loaded.as_ref(), &key);
+        // 两边都是 Zeroizing<[u8;32]>，比较内部数组（* 解引用）
+        assert_eq!(*loaded, *key);
 
         // #6 修复验证：原子写完成后 temp file 不应残留——rename 后 .tmp 路径已
         // 转移到目标路径，残留即说明 rename 未发生（fallback 到旧的 truncate+write）。

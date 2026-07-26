@@ -70,9 +70,11 @@ pub fn setup_vault(password: Zeroizing<String>) -> Result<UnlockedKeys> {
     // 自动清零 heap——兑现 kdf.rs 注释承诺的「源秘密清零」
     crate::validate::validate_master_password(&password)?;
 
+    // kdf_salt 是公开值（存 vault_meta.kdf_salt），残留无害——但 random_32 现统一
+    // 返 Zeroizing<[u8;32]> 表达「敏感随机数据」语义。借用时用 &* 解引用。
     let kdf_salt = random_32();
     let params = Argon2Params::default();
-    let master_root_key = derive_master_root_key(password.as_bytes(), &kdf_salt, &params)?;
+    let master_root_key = derive_master_root_key(password.as_bytes(), &*kdf_salt, &params)?;
 
     // 派生 user_vault_key / app_key
     let user_vault_key = master_root_key.child(LABEL_USER_VAULT);
@@ -83,7 +85,8 @@ pub fn setup_vault(password: Zeroizing<String>) -> Result<UnlockedKeys> {
     // 加密 app_key（双密文）
     let k_machine = keychain::load_or_create_machine_key()?;
     let app_key_local_enc = {
-        let k_machine_derived = DerivedKey::from_raw(*k_machine);
+        // E-ZEROIZE-RESIDUE 修复：from_zeroizing move（k_machine 后续不再用）
+        let k_machine_derived = DerivedKey::from_zeroizing(k_machine);
         k_machine_derived.encrypt(app_key.as_bytes())?
     };
     let app_key_sync_enc = master_root_key.encrypt(app_key.as_bytes())?;
@@ -92,7 +95,7 @@ pub fn setup_vault(password: Zeroizing<String>) -> Result<UnlockedKeys> {
 
     let input = VaultMetaInput {
         kdf_type: 0,
-        kdf_salt: kdf_salt.to_vec(),
+        kdf_salt: kdf_salt[..].to_vec(),
         kdf_iterations: params.iterations as i64,
         kdf_memory_kib: params.memory_kib as i64,
         kdf_parallelism: params.parallelism as i64,
@@ -155,7 +158,8 @@ pub fn unlock_app_key_local() -> Result<Option<DerivedKey>> {
         Some(k) => k,
         None => return Ok(None),
     };
-    let k_machine_derived = DerivedKey::from_raw(*k_machine);
+    // E-ZEROIZE-RESIDUE 修复：from_zeroizing move（k_machine 后续不再用，纯 move 无残留）
+    let k_machine_derived = DerivedKey::from_zeroizing(k_machine);
     match k_machine_derived.decrypt(&meta.app_key_local_enc) {
         Ok(bytes) => {
             ensure!(
@@ -163,9 +167,11 @@ pub fn unlock_app_key_local() -> Result<Option<DerivedKey>> {
                 "app_key 解密后长度异常：{}",
                 bytes.len()
             );
-            let mut arr = [0u8; 32];
+            // E-ZEROIZE-RESIDUE 修复（2026-07-26）：裸 [u8;32] → Zeroizing<[u8;32]>
+            // + from_zeroizing move（之前 from_raw 是 Copy，arr 栈残留）。
+            let mut arr = Zeroizing::new([0u8; 32]);
             arr.copy_from_slice(&bytes);
-            Ok(Some(DerivedKey::from_raw(arr)))
+            Ok(Some(DerivedKey::from_zeroizing(arr)))
         }
         Err(_) => Ok(None), // 解密失败 → 降级到流程 C
     }
@@ -214,9 +220,10 @@ pub fn unlock_with_master_password(password: Zeroizing<String>) -> Result<Unlock
         }
     };
     ensure!(user_vault_bytes.len() == 32, "user_vault_key 长度异常");
-    let mut uv_arr = [0u8; 32];
+    // E-ZEROIZE-RESIDUE 修复：Zeroizing move（防 uv_arr 栈残留）
+    let mut uv_arr = Zeroizing::new([0u8; 32]);
     uv_arr.copy_from_slice(&user_vault_bytes);
-    let user_vault_key = DerivedKey::from_raw(uv_arr);
+    let user_vault_key = DerivedKey::from_zeroizing(uv_arr);
 
     // 密码校验通过——重置退避计数
     crate::attempt_guard::guard().reset();
@@ -225,9 +232,9 @@ pub fn unlock_with_master_password(password: Zeroizing<String>) -> Result<Unlock
     let app_key_bytes = master_root_key.decrypt(&meta.app_key_sync_enc)
         .context("解 app_key_sync_enc 失败（vault 数据损坏，非主密码错误）")?;
     ensure!(app_key_bytes.len() == 32, "app_key 长度异常");
-    let mut ak_arr = [0u8; 32];
+    let mut ak_arr = Zeroizing::new([0u8; 32]);
     ak_arr.copy_from_slice(&app_key_bytes);
-    let app_key = DerivedKey::from_raw(ak_arr);
+    let app_key = DerivedKey::from_zeroizing(ak_arr);
 
     let keys = UnlockedKeys {
         user_vault_key,
@@ -285,9 +292,10 @@ pub fn change_master_password(
         }
     };
     ensure!(user_vault_bytes.len() == 32, "user_vault_key 长度异常");
-    let mut uv_arr = [0u8; 32];
+    // E-ZEROIZE-RESIDUE 修复：Zeroizing move（防 uv_arr 栈残留）
+    let mut uv_arr = Zeroizing::new([0u8; 32]);
     uv_arr.copy_from_slice(&user_vault_bytes);
-    let user_vault_key = DerivedKey::from_raw(uv_arr);
+    let user_vault_key = DerivedKey::from_zeroizing(uv_arr);
 
     // C-CHANGE-RESET-ASYMMETRY 修复（2026-07-26）：旧密码校验通过后立即 reset
     // 退避计数——与 unlock :222 对称。之前 reset 在 :333 全成功末尾，protected 验证
@@ -297,9 +305,9 @@ pub fn change_master_password(
     // 用旧 master 解出 app_key
     let app_key_bytes = old_master.decrypt(&meta.app_key_sync_enc)?;
     ensure!(app_key_bytes.len() == 32, "app_key 长度异常");
-    let mut ak_arr = [0u8; 32];
+    let mut ak_arr = Zeroizing::new([0u8; 32]);
     ak_arr.copy_from_slice(&app_key_bytes);
-    let app_key = DerivedKey::from_raw(ak_arr);
+    let app_key = DerivedKey::from_zeroizing(ak_arr);
 
     // 用新密码派生新 master_root_key
     let new_master = derive_master_root_key(new_password.as_bytes(), &meta.kdf_salt, &old_params)?;
@@ -309,7 +317,8 @@ pub fn change_master_password(
     let new_app_key_sync_enc = new_master.encrypt(app_key.as_bytes())?;
     let new_app_key_local_enc = {
         let k_machine = keychain::load_or_create_machine_key()?;
-        let k_machine_derived = DerivedKey::from_raw(*k_machine);
+        // E-ZEROIZE-RESIDUE 修复：from_zeroizing move（k_machine 后续不再用）
+        let k_machine_derived = DerivedKey::from_zeroizing(k_machine);
         k_machine_derived.encrypt(app_key.as_bytes())?
     };
 
@@ -355,7 +364,8 @@ fn refresh_app_key_local_enc(app_key: &DerivedKey) -> Result<()> {
         Some(k) => k,
         None => keychain::load_or_create_machine_key()?,
     };
-    let k_machine_derived = DerivedKey::from_raw(*k_machine);
+    // E-ZEROIZE-RESIDUE 修复：from_zeroizing move（k_machine 后续不再用）
+    let k_machine_derived = DerivedKey::from_zeroizing(k_machine);
 
     let meta = meta::read_vault_meta()
         .context("读取 vault_meta 失败")?
