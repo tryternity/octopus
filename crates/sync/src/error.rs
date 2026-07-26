@@ -284,4 +284,80 @@ mod tests {
             );
         }
     }
+
+    /// redact_url 契约守护——E-LOG-URL-LEAKS-PAT-INCOMPLETE 系列外溢（第四十九~五十二轮）
+    /// 的根因防御。前四轮靠逐处 `let safe_url = redact_url(url)` 点状修复，反复外溢；
+    /// 若 redact_url 本身漏了某种 PAT 格式，所有调用点的 safe_url 全部失效。
+    ///
+    /// 本测试钉死契约：常见 PAT/密码/userinfo 必须被剥离；非 HTTP(S) scp-like 原样返回。
+    #[test]
+    fn redact_url_strips_userinfo() {
+        // PAT in userinfo（最常见——用户从 GitHub 复制 token 拼到 URL）
+        assert_eq!(
+            redact_url("https://user:ghp_xxx@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+        // 只有 token（无 username）
+        assert_eq!(
+            redact_url("https://:ghp_xxx@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+        // 只有 username（无 password）
+        assert_eq!(
+            redact_url("https://user@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+        // password 是密码而非 PAT
+        assert_eq!(
+            redact_url("https://alice:s3cret@gitee.com/owner/repo.git"),
+            "https://gitee.com/owner/repo.git"
+        );
+        // 端口必须保留
+        assert_eq!(
+            redact_url("https://user:pass@gitlab.example.com:8443/team/repo.git"),
+            "https://gitlab.example.com:8443/team/repo.git"
+        );
+        // query / fragment 保留
+        assert_eq!(
+            redact_url("https://user:token@github.com/owner/repo?foo=bar#frag"),
+            "https://github.com/owner/repo?foo=bar#frag"
+        );
+
+        // scp-like SSH URL（非 `://` 格式）——url::Url parse 失败，原样返回
+        // （scp-like 不含 `://user:pass@`，不可能嵌 PAT；不 redact 安全）
+        assert_eq!(
+            redact_url("git@github.com:owner/repo.git"),
+            "git@github.com:owner/repo.git"
+        );
+        // ssh:// 协议——Url::parse 成功，应剥 userinfo
+        assert_eq!(
+            redact_url("ssh://git@github.com/owner/repo.git"),
+            "ssh://github.com/owner/repo.git"
+        );
+    }
+
+    /// redact_url 守护——PAT token 永不残留输出。
+    ///
+    /// 这是 E-LOG-URL-LEAKS-PAT-INCOMPLETE 系列的语义层防御：
+    /// 无论输入什么 URL，输出绝不含 PAT token 字面量。
+    #[test]
+    fn redact_url_never_leaks_pat() {
+        let pat_urls = [
+            "https://user:ghp_abcdef1234567890@github.com/owner/repo.git",
+            "https://user:github_pat_11ABCDEF_xxx@gitee.com/owner/repo.git",
+            "https://user:glpat-xxxxxxxxxxxx@gitlab.example.com/team/repo.git",
+            "https://user:ghp_abcdef1234567890@github.com/owner/repo.git?foo=bar",
+        ];
+        for u in &pat_urls {
+            let redacted = redact_url(u);
+            assert!(
+                !redacted.contains("ghp_abcdef1234567890")
+                    && !redacted.contains("github_pat_11ABCDEF_xxx")
+                    && !redacted.contains("glpat-xxxxxxxxxxxx"),
+                "redact_url 泄露 PAT：{} → {}",
+                u,
+                redacted
+            );
+        }
+    }
 }

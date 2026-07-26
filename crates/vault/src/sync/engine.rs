@@ -357,13 +357,18 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
         }
     };
     for (name, url) in &remotes {
+        // E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND 修复（2026-07-26）：第五次外溢
+        // ——add_remote / ensure_private_repo / maybe_rewrite_to_ssh 都改了，
+        // 漏了 sync_now 路径上的 ensure_remotes_use_ssh_when_possible。url 来自
+        // .git/config（OBS-CLONE-URL-STORES-PAT-IN-CONFIG 场景存 PAT），透传泄露 PAT。
+        let safe_url = octopus_sync::error::redact_url(url);
         match maybe_rewrite_to_ssh(url) {
             Ok(rewritten) if rewritten != *url => {
-                // 改写后 URL 不同——set-url
+                // 改写后 URL 不同——set-url（rewritten 是 SSH URL，已 strip userinfo，安全）
                 match git::git_remote_set_url(root, name, &rewritten) {
                     Ok(()) => log::info!(
                         "[sync] sync_now 自动改写 remote {}：{} → {}",
-                        name, url, rewritten
+                        name, safe_url, rewritten
                     ),
                     Err(e) => log::warn!(
                         "[sync] sync_now 自动改写 remote {} 失败（保留 HTTPS）：{}",
@@ -374,7 +379,7 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
             Ok(_) => { /* URL 未变（已是 SSH / SSH key 不可用 / 非 github/gitee） */ }
             Err(e) => log::warn!(
                 "[sync] remote {} 改写检测失败（保留 {}）：{}",
-                name, url, e
+                name, safe_url, e
             ),
         }
     }
