@@ -91,6 +91,10 @@ settings:
     deleteConfirm: Click again to confirm
     transcript: Transcribe
     transcriptTooltip: Requires ASR model, click to download
+    exportGif: Export GIF
+    exportGifStarted: Exporting GIF...
+    exportGifDone: Exported to ${path}
+    exportGifFailed: "Failed to export GIF: "
     recording: Recording
     paused: Paused
     startBtn: Start Recording

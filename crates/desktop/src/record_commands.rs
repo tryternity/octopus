@@ -680,3 +680,93 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ── F20 GIF 导出（P3）─────────────────────────────────────────
+
+/// 查找 ffmpeg 二进制路径。
+///
+/// 复制自 `crates/dlp/src/main.rs:42-73` 的 `get_binary_path`（dlp 是 binary crate 无 lib，
+/// 无法 use 导入；desktop crate 已有 4 处 which 内联副本，容忍此模式）。
+///
+/// 查找顺序：`~/.octopus/bin/ffmpeg`（dlp 下载缓存）→ 系统 PATH（which）→ 报错引导 brew install。
+async fn find_ffmpeg() -> Result<std::path::PathBuf, String> {
+    // 1. ~/.octopus/bin/ffmpeg
+    let home_bin = octopus_infra::octopus_config_home().join("bin").join("ffmpeg");
+    if home_bin.exists() {
+        return Ok(home_bin);
+    }
+    // 2. 系统 PATH（which，与 agent_adapter.rs / paste.rs 同模式）
+    let on_path = std::process::Command::new("which")
+        .arg("ffmpeg")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if on_path {
+        return Ok(std::path::PathBuf::from("ffmpeg"));
+    }
+    Err("ffmpeg 未找到。请运行 `brew install ffmpeg` 或将 ffmpeg 放到 ~/.octopus/bin/".into())
+}
+
+/// 把已录制的 MP4 转成 GIF。
+///
+/// 输出位置：源 MP4 同目录、同名换 `.gif`（`-y` 覆盖）。
+/// ffmpeg 参数（spec §2.20）：`fps=15,scale=800:-1:flags=lanczos -loop 0`。
+///
+/// 进度反馈：emit `record://gif-started {id}` → ffmpeg 跑完 →
+/// 成功 emit `record://gif-done {id, path}` / 失败 emit `record://gif-failed {id, error}`。
+/// 前端 invoke 返回值也能拿到路径/错误，事件作为多窗口同步备用。
+#[command]
+pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
+    use octopus_infra::paths::resolve_recording_path;
+
+    // 1. 查 DB 拿 file_path
+    let file_path = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
+        Ok::<_, RecordError>(meta.file_path)
+    })
+    .await?;
+    let input = resolve_recording_path(&file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+
+    // 2. 解析 ffmpeg
+    let ffmpeg = find_ffmpeg().await?;
+
+    // 3. 输出路径：源文件同目录、同名换 .gif
+    let output = input.with_extension("gif");
+
+    // 4. emit 起点
+    let _ = app.emit("record://gif-started", serde_json::json!({ "id": id }));
+
+    // 5. spawn ffmpeg
+    let status = tokio::process::Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i").arg(&input)
+        .arg("-vf").arg("fps=15,scale=800:-1:flags=lanczos")
+        .arg("-loop").arg("0")
+        .arg(&output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
+
+    if !status.success() {
+        let _ = app.emit(
+            "record://gif-failed",
+            serde_json::json!({ "id": id, "error": "ffmpeg 转 GIF 失败" }),
+        );
+        return Err("ffmpeg 转 GIF 失败（退出码非 0）。可能原因：源文件损坏 / ffmpeg 版本过旧".into());
+    }
+
+    let path_str = output.to_string_lossy().to_string();
+    let _ = app.emit(
+        "record://gif-done",
+        serde_json::json!({ "id": id, "path": path_str }),
+    );
+    Ok(path_str)
+}

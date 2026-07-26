@@ -94,6 +94,10 @@ settings:
     deleteConfirm: 再次点击确认删除
     transcript: 转字幕
     transcriptTooltip: 需下载 ASR 模型，点击跳转
+    exportGif: 导出 GIF
+    exportGifStarted: 正在导出 GIF...
+    exportGifDone: 已导出到 ${path}
+    exportGifFailed: "导出 GIF 失败："
     recording: 录制中
     paused: 已暂停
     # 录制控制按钮（2026-07-25 加：Cmd+Shift+R 直接开录后，panel 也要有按钮入口）

@@ -482,10 +482,15 @@ async fn search_recordings(state, query: String) -> Result<Vec<Recording>> {
 
 ### §2.20 F20 — GIF 导出（P3）
 
-**实现方式**：ffmpeg_sidecar MP4 → GIF。
+> **实现注记（2026-07-26 已实现）**：见 [`2026-07-26-record-gif-export.md`](2026-07-26-record-gif-export.md)。
+> 录屏历史列表行加「导出 GIF」按钮（Clapperboard 图标），点击 → 后端 spawn ffmpeg 转 GIF → toast 反馈。
+> GIF 自动保存到源 MP4 同目录、同名 `.gif`（`-y` 覆盖）。不打包 ffmpeg（缺失则报错引导 `brew install ffmpeg`）。
+> 不用 ffmpeg_sidecar 依赖（裸调 `tokio::process::Command`，复用 dlp 的 `get_binary_path` 逻辑作私有 `find_ffmpeg`）。
+
+**ffmpeg 参数**（spec 原文，已落地）：
 
 ```bash
-ffmpeg -i input.mp4 -vf "fps=15,scale=800:-1:flags=lanczos" -loop 0 output.gif
+ffmpeg -y -i input.mp4 -vf "fps=15,scale=800:-1:flags=lanczos" -loop 0 output.gif
 ```
 
 复用 snow-shot 的 GIF 参数模式（`video_record_service.rs` 里的 GIF 分支）。

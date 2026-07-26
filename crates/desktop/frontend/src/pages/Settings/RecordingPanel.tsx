@@ -31,6 +31,8 @@ import {
   Circle,
   Pause,
   Pencil,
+  Clapperboard,
+  Loader2,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -114,6 +116,8 @@ export default function RecordingPanel({
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // GIF 导出：一次只导出一个（按 id 跟踪，null=空闲）。row 据此切换按钮 disabled/spinner。
+  const [gifExportingId, setGifExportingId] = useState<number | null>(null);
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -347,6 +351,8 @@ export default function RecordingPanel({
               onDeleted={handleRowDeleted}
               onFavoriteToggled={handleFavoriteToggled}
               onRenamed={loadList}
+              gifExportingId={gifExportingId}
+              onExportGif={(gid) => setGifExportingId(gid)}
               onTranscribeClick={
                 onNavigate ? () => onNavigate("models") : undefined
               }
@@ -400,6 +406,8 @@ interface RecordingRowProps {
   onFavoriteToggled: () => void;
   onTranscribeClick?: () => void;
   onRenamed: () => void;
+  gifExportingId: number | null;
+  onExportGif: (id: number | null) => void;
 }
 
 function RecordingRow({
@@ -411,6 +419,8 @@ function RecordingRow({
   onFavoriteToggled,
   onTranscribeClick,
   onRenamed,
+  gifExportingId,
+  onExportGif,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -475,6 +485,22 @@ function RecordingRow({
     renameCancelledRef.current = false;
     setRenameVal(title);
     setRenaming(true);
+  };
+
+  // ── GIF 导出（F20）── invoke export_gif 命令，loading 状态由父 gifExportingId 控制
+  const isExportingGif = gifExportingId === rec.id;
+  const handleExportGif = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isExportingGif) return;
+    onExportGif(rec.id);
+    try {
+      const path = await invoke<string>("export_gif", { id: rec.id });
+      showToast(t("settings.recordings.exportGifDone", { path }), "success");
+    } catch (err) {
+      showToast(t("settings.recordings.exportGifFailed") + String(err), "error");
+    } finally {
+      onExportGif(null);
+    }
   };
 
   const handleFavorite = async (e: React.MouseEvent) => {
@@ -653,6 +679,23 @@ function RecordingRow({
           title={t("settings.recordings.transcriptTooltip")}
         >
           <Captions className="w-3.5 h-3.5 text-muted-foreground" />
+        </button>
+        <button
+          className={cn(
+            "p-1 rounded transition-opacity",
+            isExportingGif
+              ? "opacity-100"
+              : "opacity-40 group-hover:opacity-60 hover:!opacity-100 cursor-pointer",
+          )}
+          onClick={handleExportGif}
+          disabled={isExportingGif}
+          title={t("settings.recordings.exportGif")}
+        >
+          {isExportingGif ? (
+            <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+          ) : (
+            <Clapperboard className="w-3.5 h-3.5 text-muted-foreground" />
+          )}
         </button>
         <button
           className={cn(
