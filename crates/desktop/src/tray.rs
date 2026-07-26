@@ -365,7 +365,11 @@ fn record_menu_label_for_current_state() -> String {
 #[cfg(target_os = "macos")]
 pub fn update_record_tray_label(recording: bool) {
     let label = if recording {
-        crate::i18n::t("tray.recordStop", &[("shortcut", "⎋")])
+        // 录制中：红点前缀（●）+ 停止文案。
+        // ● 是 U+25CF，macOS menu 渲染为当前文本色（深色菜单栏=白，浅色=黑），
+        // 不是真红色——真红点需替换 tray icon PNG（P1-3 后续，待用户提供图标）。
+        // 现版本：文本红点作为菜单栏视觉提示（P1-7 浮窗已有红点动画，tray 是补充）。
+        format!("● {}", crate::i18n::t("tray.recordStop", &[("shortcut", "⎋")]))
     } else {
         let sc = fmt_shortcut(&RECORD_SHORTCUT.lock().clone());
         crate::i18n::t("tray.recordStart", &[("shortcut", &sc)])
