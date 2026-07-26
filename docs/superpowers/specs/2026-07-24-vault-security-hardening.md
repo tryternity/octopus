@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **248** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **249** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1220,3 +1220,57 @@ fingerprint.rs 核心正确性确认——cipher_md5 11 字段 = VaultCipher 全
 - H2 deleted_at 纳入（软删/恢复 md5 变化触发 sync，不复活）
 - md5 重算时机正确（soft_delete S1 单事务 + save_cipher M-CIPHER-RMW 单事务）
 - 时间戳排除（created_at/updated_at 跨设备不同，不进 md5）
+
+---
+
+## 第四十三轮审查修复（2026-07-26，sync/store.rs：E-PATH-TRAVERSAL-OUTLINE-UUID 中-高安全）
+
+### E-PATH-TRAVERSAL-OUTLINE-UUID: 远程 outline uuid 经 read/delete 触发 path traversal（中-高，安全，已修）
+
+**核查**：`cipher_file_path`/`folder_file_path`（store.rs:73-86）的 `format!("{}.json", uuid)` 原样拼接 uuid，无路径分隔符过滤。`shard_dir`（sync/store.rs:78）只 sanitize 分片目录（filter is_ascii_hexdigit + take 2），不 sanitize 文件名。
+
+**攻击链**：
+- **delete**（incremental_export :581-586）：遍历 `old_outline.ciphers.keys()`（远程 untrusted）调 `delete_cipher_file` → 恶意 uuid `../../meta` → 删 `vault_root/meta.json` 或更多 `../` 跳出 vault_root 删任意 .json 文件
+- **read**（pull_from_files :831）：遍历 remote_outline 调 `read_cipher_file` → 读 traversal 路径文件
+
+**修复**：在 `cipher_file_path`/`folder_file_path` 入口加 `validate_uuid`——拒绝含 path traversal 字符（`/`、`\`、`..`、`\0`、空串）的 uuid。chokepoint 模式：read/delete/write 三路径统一在路径构造入口拦截，无需改 pull/incremental_export 业务逻辑。函数签名改为 `Result<PathBuf>`。
+
+> 设计决策：不强制严格 UUID v4 格式（`uuid::Uuid::parse_str`），只拒绝 path traversal 字符。理由：vault 生产 id 理论上是 UUID v4，但测试用简短 id（"test-uuid" 等）方便，严格 UUID 校验会破坏 10+ 个现有测试且无额外安全收益——path traversal 字符检查已足够防目录穿越。
+
+**回归测试**：`path_traversal_uuid_rejected`——合法 UUID 通过 + 多种恶意 uuid（../../meta、绝对路径、Windows 风格）被拒 + 非法格式被拒。
+
+**严重度校准**：中-高——不到「高」（私有 repo 威胁模型 + .json 后缀限制可利用性），高于「中」（delete 破坏性 + read/delete 双路径 + 防御原则违反 + clone 任意 repo 场景真实）。write 路径 trusted（用本地 DB 的 UUID v4，非 outline 控制）。
+
+---
+
+## 第四十四轮审查（2026-07-26，vault_state / vault_secret_access / passphrase_en：干净，2 项信息性观察）
+
+三模块设计成熟、守护测试完备，无中高危 bug。两个候选观察经核实均不可达，定级信息性。
+
+### OBS-1: is_user_vault_unlocked 对 last_active_at=None 的「信任」语义（信息性，不可达）
+
+vault_state.rs:109 若 last_active_at=None 但 user_vault_key=Some，超时检查跳过 → 永不超时。
+
+**不可达确认**：grep 全仓库 user_vault_key 写入点仅 3 处——:111 `= None`（超时清零）/ :125 `= Some(key)`（set_user_vault_unlocked，同时设 last_active_at）/ :141 `= None`（lock）。无路径绕过 set_user_vault_unlocked 直接写 Some。故「key 在但 last_active_at=None」正常路径不可达。
+
+### OBS-2: try_decrypt_secret_global 对 session=None 返回 raw（信息性，不可达）
+
+vault_secret_access.rs:117-123 session None → Ok(raw) 即使 raw 是 v1: 密文。对比 try_decrypt_secret(:90-91) v1: + app_key None → Err。两版本对「v1: 但无法解密」处理相反。
+
+**不可达确认**：set_global_session 仅 main.rs:1073 一处，在 `#[cfg(feature = "vault")]` 块内。feature on → session 必注入；feature off → 整块跳过 + octopus_vault 不存在 + DB 不可能有 v1: 密文 → Ok(raw) 正确。注释 :111-112/:120 已说明设计意图。
+
+---
+
+## 第四十五轮审查修复（2026-07-26，crypto + unlock + migrate 安全心脏复查：C-CHANGE-RESET-ASYMMETRY）
+
+vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确认——AES-256-GCM / Argon2id / HMAC-SHA512 child + Zeroizing 卫生闭环，H1 源秘密清零影响面 4 入口全部 Zeroizing<String> + 编译期守护，migrate #5 事务化 + A1 回滚完整。
+
+### C-CHANGE-RESET-ASYMMETRY: change 的 guard.reset 时机与 unlock 不对称（低，对称性遗漏，已修）
+
+**核查**：第三十四轮 B-UNLOCK-RECORD-ASYMMETRY 修复把 unlock 的 `reset()` 提前到 protected 校验成功后（:222）。但 change_master_password 的 reset 在 :333 全成功末尾——protected 验证通过（:280 Ok）但后续失败（:293 sync_enc 损坏 / :303 encrypt 失败 / :328 save 失败）时提前 return，guard 未 reset。
+
+**后果**：旧密码正确但后续失败时，guard 有历史计数 → 下次 change/unlock 被 remaining_wait() 挡——「密码其实对却因数据损坏/副作用失败被退避挡」。
+
+**修复**：在 :290（user_vault_key 构造后、sync_enc 解密前）加 `guard().reset()`，与 unlock :222 对称。:333 末尾的 reset 保留（幂等无害）。
+
+**同源关系**：这是 B-UNLOCK-RECORD-ASYMMETRY 修复 unlock 时的遗漏——修 unlock 时没对称处理 change。
