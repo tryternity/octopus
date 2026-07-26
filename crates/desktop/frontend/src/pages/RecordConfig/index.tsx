@@ -366,9 +366,8 @@ export default function RecordConfig() {
                   ))}
                 </div>
               </div>
-              {/* Hide cursor */}
+              {/* Hide cursor（无图标，纯文字 + toggle）*/}
               <ToggleRow
-                icon={X}
                 label={t("recordConfig.hideCursor")}
                 checked={hideCursor}
                 onChange={setHideCursor}
@@ -532,7 +531,7 @@ function ToggleRow({
   checked,
   onChange,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
@@ -545,7 +544,7 @@ function ToggleRow({
         checked ? "text-foreground" : "text-muted-foreground",
       )}
     >
-      <Icon className={cn("w-3.5 h-3.5", checked && "text-primary")} />
+      {Icon && <Icon className={cn("w-3.5 h-3.5", checked && "text-primary")} />}
       <span>{label}</span>
       <span
         className={cn(

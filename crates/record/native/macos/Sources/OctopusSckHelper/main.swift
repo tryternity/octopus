@@ -881,7 +881,7 @@ struct OctopusSckHelper {
 					//    正常应用窗口至少 200x150
 					guard w.frame.width >= 200 && w.frame.height >= 150 else { return false }
 					// ③ 排除系统 UI app（控制中心、Dock、Window Server、UIEngine）
-					//    这些不是用户想录的「应用窗口」
+					//    + octopus 自己（录屏配置浮窗 / 标注 overlay / 控制浮窗等不应被录）
 					if let bundleId = w.owningApplication?.bundleIdentifier {
 						let systemPrefixes = [
 							"com.apple.controlcenter",
@@ -889,6 +889,7 @@ struct OctopusSckHelper {
 							"com.apple.WindowManager",
 							"com.apple.WindowServer",
 							"com.apple.UIEngine",
+							"com.octopus.desktop",
 						]
 						for prefix in systemPrefixes {
 							if bundleId.hasPrefix(prefix) { return false }
