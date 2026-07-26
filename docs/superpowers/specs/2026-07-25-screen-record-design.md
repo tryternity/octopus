@@ -920,6 +920,8 @@ if request.audio.microphone.enabled {
 > **2026-07-26 补完**（P1-7）：display/window 录制时桌面右下角 pill 控制浮窗（红点+时长+暂停+停止），详见 [record-control-window spec](2026-07-26-record-control-window.md)。原「dropdown 推迟」被该浮窗覆盖（浮窗体验 > tray 下拉面板）。
 >
 > **2026-07-26 部分实现**（P1-3）：tray menu 录制态文案加 `●` 前缀作为视觉提示（`update_record_tray_label` 录制分支 format!）。真红点需替换 tray icon PNG（待用户提供图标资源）。duration 实时显示跳过（被 P1-7 浮窗覆盖）。
+>
+> **2026-07-26 实现**（P1-5）：RecordConfig 加「高级」折叠区——fps（15/30/60）/ codec（h264/hevc）/ hideCursor toggle。session 级（不持久化 DB），默认收起。
 
 ```
 菜单栏（始终可见，录屏时显示）

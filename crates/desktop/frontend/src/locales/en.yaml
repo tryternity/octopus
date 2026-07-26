@@ -1022,3 +1022,7 @@ recordConfig:
   areaSelected: Selected
   loadFailed: "Failed to load sources: "
   startFailed: "Failed to start recording: "
+  advanced: Advanced
+  fps: Frame Rate
+  codec: Codec
+  hideCursor: Hide Cursor

@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check } from "lucide-react";
+import { Monitor, AppWindow, Square, Circle, X, Volume2, Mic, Check, ChevronDown } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -41,17 +41,6 @@ interface WindowInfo {
 type Tab = "display" | "window" | "area";
 
 // ── 默认视频/音频配置（从 DB record_* seed 派生，与后端 build_default_config 对齐）────
-
-function defaultVideo(width: number, height: number) {
-  return {
-    fps: 30,
-    width,
-    height,
-    codec: "h264" as const,
-    bitrate: null, // None = helper 自动算
-    hide_system_cursor: false,
-  };
-}
 
 // ── 主组件 ──────────────────────────────────────────────────────
 
@@ -92,6 +81,12 @@ export default function RecordConfig() {
   const [microphone, setMicrophone] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ── 高级（编码参数，默认收起）──
+  // 不持久化到 DB（避免改 seed 影响其他路径），只在当前 RecordConfig session 用。
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [fps, setFps] = useState<15 | 30 | 60>(30);
+  const [codec, setCodec] = useState<"h264" | "hevc">("h264");
+  const [hideCursor, setHideCursor] = useState(false);
 
   // ── 拉取源列表（浮窗 show 时 + tab 切换时）──────────────────────
   const refreshSources = useCallback(async () => {
@@ -174,7 +169,14 @@ export default function RecordConfig() {
       await invoke("record_start", {
         config: {
           source,
-          video: defaultVideo(videoW, videoH),
+          video: {
+            fps,
+            width: videoW,
+            height: videoH,
+            codec,
+            bitrate: null, // None = helper 自动按分辨率×fps 算
+            hide_system_cursor: hideCursor,
+          },
           audio: {
             system: { enabled: systemAudio, excludes_current_process: true },
             microphone: { enabled: microphone, device_id: null, device_name: null },
@@ -197,6 +199,9 @@ export default function RecordConfig() {
     areaSelection,
     systemAudio,
     microphone,
+    fps,
+    codec,
+    hideCursor,
     t,
   ]);
 
@@ -290,6 +295,68 @@ export default function RecordConfig() {
             checked={microphone}
             onChange={setMicrophone}
           />
+        </div>
+
+        {/* ── 高级（编码参数，默认收起）────────────────────────── */}
+        <div className="px-3 py-1.5 border-t border-border">
+          <button
+            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+          >
+            <ChevronDown className={cn("w-3 h-3 transition-transform", !showAdvanced && "-rotate-90")} />
+            {t("recordConfig.advanced")}
+          </button>
+          {showAdvanced && (
+            <div className="mt-1.5 space-y-1.5">
+              {/* FPS */}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">{t("recordConfig.fps")}</span>
+                <div className="flex gap-1">
+                  {([15, 30, 60] as const).map((f) => (
+                    <button
+                      key={f}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[10px] transition-colors",
+                        fps === f
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground",
+                      )}
+                      onClick={() => setFps(f)}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Codec */}
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">{t("recordConfig.codec")}</span>
+                <div className="flex gap-1">
+                  {(["h264", "hevc"] as const).map((c) => (
+                    <button
+                      key={c}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[10px] uppercase transition-colors",
+                        codec === c
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground",
+                      )}
+                      onClick={() => setCodec(c)}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* Hide cursor */}
+              <ToggleRow
+                icon={X}
+                label={t("recordConfig.hideCursor")}
+                checked={hideCursor}
+                onChange={setHideCursor}
+              />
+            </div>
+          )}
         </div>
 
         {/* ── 错误提示 ─────────────────────────────────────── */}

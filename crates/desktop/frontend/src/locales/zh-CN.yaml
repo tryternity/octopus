@@ -1029,3 +1029,8 @@ recordConfig:
   areaSelected: 已选区域
   loadFailed: "加载源列表失败："
   startFailed: "启动录制失败："
+  # 高级（编码参数）
+  advanced: 高级
+  fps: 帧率
+  codec: 编码
+  hideCursor: 隐藏光标
