@@ -1,8 +1,8 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-27
-**状态**：已实现并测试通过。最新基线：vault **251** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 416 / infra 160 / tsc 0 error / cargo build 0 warning
-**范围**：本文件汇总第二~第五十八轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
+**状态**：已实现并测试通过。最新基线：vault **253** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 416 / infra 160 / tsc 0 error / cargo build 0 warning
+**范围**：本文件汇总第二~第五十九轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：
 - [vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 - [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
@@ -1553,3 +1553,44 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **vault crate 内可修的 Zeroizing 卫生缺口至此完整收敛**（共 17 处修复）。剩余的是设计层面妥协（Cipher/LoginData/Field 的 String 字段不清零）——需大重构，与 Bitwarden 同困境，已记录不修。
 
 **方法论教训**（与 PAT 外溢链同型）：Zeroizing 卫生专题经历了 2 次外溢（55→56 同文件漏 load_machine_key；56→57 Vec 变体漏 types.rs）。根因都是"影响面追踪维度不够全"。最终用三视角 + 五视角交叉验证才真正收敛——单视角 grep 在真实 codebase 上反复失败。
+
+---
+
+## 第五十九轮审查修复（2026-07-27，generator/ 密码学核心审查 + OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY）
+
+### generator/* 密码学核心正面确认（无 Medium+ 安全 bug）
+
+经独立复查（报告 §一 + 我的验证），generator 密码学核心 6 个维度全部正确：
+
+| 维度 | 核实 | 结论 |
+|---|---|---|
+| CSPRNG 源 | 全部 OsRng（random:64 / en:24 / zh:24,34 / pin:13） | ✓ macOS 走 SecRandomCopyBytes |
+| modulo bias | gen_range + SliceRandom::choose（rand 0.8 拒绝采样 Lemire） | ✓ 无偏 |
+| shuffle 偏置 | result.shuffle(&mut rng)（Fisher-Yates） | ✓ 无偏 |
+| seed 泄露 | 无 seed，OsRng 是 stateless ZST | ✓ 无可泄露种子 |
+| ensure 顺序 | random:53/58 双 ensure（≥5 + ≤128）在 with_capacity:68 前 | ✓ 防恶意 length 触发 OOM |
+| 词表守护测试 | EFF 7776（size + no_dup + no_dedash_collision）/ ZH 4096（size + no_dup + all_two_cjk） | ✓ 完善 |
+
+### OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY: 中英 include_number/include_symbol separator 行为不对称（Low，已修）
+
+**核查**：passphrase_zh:35/40 用 `format!("{}{}", result, n)` 无视 separator，passphrase_en:62-71 用 `format!("{}{}{}", result, sep_branch, n)` 尊重 separator。separator='-' 时：
+- 英文：`Word1-Word2-3`（数字独立段，前有 -）
+- 中文：`词1-词2-词35`（数字粘最后词，无 -）
+
+**严重性 Low**（报告校准准确）：熵无损（数字仍贡献 log2(10)，与位置无关）；默认不暴露（中文默认 separator=''，此时两版等价）；仅用户主动改中文 separator 时行为不一致。
+
+**修复**：passphrase_zh include_number/include_symbol 加 separator 分支，与 en:62-71 对齐。默认 separator='' 时行为不变（向后兼容）。
+
+**回归测试 2 个**：
+- `test_separator_respected_for_number_and_symbol`：separator='-' 时数字/符号应独立段
+- `test_default_empty_separator_number_still_appends`：默认空 separator 行为不变
+
+### 信息性观察（7 项，均不修）
+
+1. **GeneratorConfig 反序列化无字段校验**：恶意 payload（length=u32::MAX）反序列化成功，但 generate ensure 在 with_capacity 前拦截，无 OOM 风险。纯错误诊断时序问题。
+2. **PIN 默认 6 位低熵**（~20 bit）：用户主动选 PIN 模式（设计意图，银行 PIN 也是 4-6 位），length 可调。非 bug。
+3. **passphrase_en include_number 固定末尾**：Bitwarden 插随机词间，octopus 固定末尾。模式可预测但熵不变。与 Bitwarden 行为差异，非 bug。
+4. **random.rs 强制字符无 length 上限守护**（防御性 Low）：当前 length≥5 保证 4 类型强制阶段不超长。若未来下限调低（如改 3），强制 4 类型会静默超长。当前不触发。
+5. **passphrase_zh include_symbol 只 7 符号**（~2.81 bit）：可选增强（非主熵源，主熵来自 4096 词表）。非 bug。
+6. **返回值普通 String**（已知设计妥协）：与 Cipher String 字段困境同根，Tauri IPC/serde 需要普通 String。第五十八轮已判定不修。
+7. **passphrase_zh 风格不一致**：include_number 用 OsRng.gen_range（:34），include_symbol 用顶部 rng.choose（:39）。OsRng 是 ZST 无状态，两者等价，纯风格不统一。
