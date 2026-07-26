@@ -307,12 +307,12 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		if type == .audio {
-			enqueueForMix(sampleBuffer, into: &systemRing)
+			enqueueForMix(sampleBuffer, source: .system)
 			return
 		}
 
 		if type.rawValue == microphoneOutputTypeRawValue {
-			enqueueForMix(sampleBuffer, into: &micRing)
+			enqueueForMix(sampleBuffer, source: .microphone)
 			return
 		}
 
@@ -628,51 +628,65 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	// 设计：帧计数 ring buffer（不用 PTS 配对）。
 	// 两个独立 PCM 累积缓冲（interleaved float32），按帧数追加。
 	// 每当两边累积都达到 mixBatchFrames（或单边超过时），混合一批写出。
-	// 所有函数假定调用方在 sampleQueue（已是串行队列，无需额外锁）。
+	// `enqueueForMix` 内部用 sampleQueue.sync 串行化所有 ring buffer 访问（防并发 crash）。
+	// `drainMixableSamples` / `flushPendingMixSamples` 假定已在 sampleQueue 上（由 enqueue / finishWriter 保证）。
+	//
+	// ⚠️ 线程安全（2026-07-27 修 crash）：SCK 的 audio callback（`startRemoteAudioReceiveQueue`）
+	// 在 macOS 26 上可能从**独立 dispatch queue** 调入（不保证在 sampleQueue 上），两个流
+	// （system + mic）并发 mutate ring buffer + 读 mixedAudioFormat → Swift exclusivity
+	// violation crash（日志：Fatal access conflict）。所有 ring buffer + mixedAudioFormat 访问
+	// 必须显式 sampleQueue.sync 包裹，不能依赖 addStreamOutput 的 sampleHandlerQueue 参数。
+
+	/// 音频源标记——决定 sample 进哪个 ring buffer。
+	private enum AudioMixSource { case system, microphone }
 
 	/// 把 CMSampleBuffer 的 PCM 数据追加到指定 ring buffer（interleaved float32）。
-	/// 首次锁定 mixedAudioFormat（48k/stereo/float32 non-interleaved → 转 interleaved 便于 vDSP）。
-	private func enqueueForMix(_ sampleBuffer: CMSampleBuffer, into ring: inout [Float]) {
+	/// 所有 ring buffer / mixedAudioFormat 访问在 sampleQueue.sync 内（防并发 crash）。
+	private func enqueueForMix(_ sampleBuffer: CMSampleBuffer, source: AudioMixSource) {
 		guard mixedAudioInput != nil else { return }
 
-		// 首次：锁定 mixedAudioFormat（强制 48k/stereo/float32 interleaved）
-		if mixedAudioFormat == nil {
-			guard let fmtDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
-				  let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc) else {
-				emit(["event": "warning", "code": "mix-format-unknown", "message": "no ASBD"])
-				return
+		// PCM 转换在锁外做（CPU 密集，不访问共享状态）
+		// 首次锁定 mixedAudioFormat 需要锁内做（并发首次会重复设但幂等）
+		sampleQueue.sync {
+			// 首次：锁定 mixedAudioFormat（强制 48k/stereo/float32 interleaved）
+			if mixedAudioFormat == nil {
+				mixedAudioFormat = AVAudioFormat(
+					commonFormat: .pcmFormatFloat32,
+					sampleRate: 48_000,
+					channels: 2,
+					interleaved: true
+				)
 			}
-			let asbd = asbdPtr.pointee
-			// 强制目标格式为 48k/stereo/float32/interleaved（与 addAudioInput 的 AAC 设置对齐）
-			mixedAudioFormat = AVAudioFormat(
-				commonFormat: .pcmFormatFloat32,
-				sampleRate: 48_000,
-				channels: 2,
-				interleaved: true
-			)
-			_ = asbd  // 仅记录（debug 用）
 		}
 		guard let targetFormat = mixedAudioFormat else { return }
 
-		// 把 CMSampleBuffer 的 PCM 拿出来（interleaved float32 数组）
+		// PCM 转换（锁外，纯函数）
 		guard let interleaved = toInterleavedFloat32(sampleBuffer, targetFormat: targetFormat) else {
 			emit(["event": "warning", "code": "mix-convert-failed", "message": "toInterleavedFloat32 failed"])
 			return
 		}
 
-		ring.append(contentsOf: interleaved)
-
-		// 背压：超 ringMaxFrames（按 2 通道，帧数 = count/2）截断最旧
-		let maxFloats = ringMaxFrames * 2  // stereo interleaved
-		if ring.count > maxFloats {
-			ring.removeFirst(ring.count - maxFloats)
-			emit(["event": "warning", "code": "mix-overflow", "message": "ring buffer overflow, truncated"])
+		// 锁内追加 + drain（访问共享 ring buffers）
+		sampleQueue.sync {
+			switch source {
+			case .system:
+				systemRing.append(contentsOf: interleaved)
+				let maxFloats = ringMaxFrames * 2
+				if systemRing.count > maxFloats {
+					systemRing.removeFirst(systemRing.count - maxFloats)
+				}
+			case .microphone:
+				micRing.append(contentsOf: interleaved)
+				let maxFloats = ringMaxFrames * 2
+				if micRing.count > maxFloats {
+					micRing.removeFirst(micRing.count - maxFloats)
+				}
+			}
+			drainMixableSamples()
 		}
-
-		// 尝试混合输出
-		drainMixableSamples()
 	}
 
+		// 背压：超 ringMaxFrames（按 2 通道，帧数 = count/2）截断最旧
 	/// 从 CMSampleBuffer 提取 PCM 转 interleaved float32 数组（按 targetFormat 归一）。
 	/// SCK 通常直接交付 48k/stereo/float32 non-interleaved——需转 interleaved 便于 vDSP。
 	private func toInterleavedFloat32(_ sampleBuffer: CMSampleBuffer, targetFormat: AVAudioFormat) -> [Float]? {
