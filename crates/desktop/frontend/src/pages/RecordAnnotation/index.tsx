@@ -151,8 +151,10 @@ export default function RecordAnnotation() {
     ctx.strokeRect(1, 1, cssW - 2, cssH - 2);
   };
 
-  // 与原版一致：依赖 [annotations, drawingVer]——标注变化或绘制中时重绘。
-  useEffect(() => { draw(); }, [annotation.annotations, drawingVer]);
+  // 重绘触发：标注变化、绘制中、canvasRect 变化（URL 解析后首次拿到选区几何）。
+  // 原依赖列表只有 [annotations, drawingVer]——漏了 canvasRect，导致 URL 解析填充
+  // canvasRect 后不重绘，录制边框要等到首次标注操作才出现（bug：录屏开始无边框）。
+  useEffect(() => { draw(); }, [annotation.annotations, drawingVer, canvasRect]);
 
 
   // ── 鼠标交互（参考 Screenshot，去除选区逻辑）─────────────────
