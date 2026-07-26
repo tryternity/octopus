@@ -1027,11 +1027,8 @@ recordConfig:
   noDisplays: 未找到可用显示器
   noWindows: 未找到可用窗口
   areaNotSelected: 请先选择录制区域
-  areaPlaceholder: 拖动鼠标选择录制区域，松开即确认，按 Esc 取消
-  areaPick: 选择区域
-  areaReselect: 重新选择
-  areaClear: 清除
-  areaSelected: 已选区域
+  areaPlaceholder: 拖动鼠标选择录制区域，松开即直接开始录制，按 Esc 取消
+  areaPickRecord: 框选录制
   loadFailed: "加载源列表失败："
   startFailed: "启动录制失败："
   # 高级（编码参数）

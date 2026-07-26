@@ -1020,11 +1020,8 @@ recordConfig:
   noDisplays: No displays found
   noWindows: No windows found
   areaNotSelected: Please select a recording area
-  areaPlaceholder: Drag to select recording area, release to confirm, Esc to cancel
-  areaPick: Pick Area
-  areaReselect: Reselect
-  areaClear: Clear
-  areaSelected: Selected
+  areaPlaceholder: Drag to select recording area, release to start recording immediately, Esc to cancel
+  areaPickRecord: Pick & Record
   loadFailed: "Failed to load sources: "
   startFailed: "Failed to start recording: "
   advanced: Advanced
