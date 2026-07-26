@@ -88,7 +88,7 @@ impl std::fmt::Display for SyncError {
             SyncError::PublicRepoRejected(url) => write!(
                 f,
                 "拒绝添加公有库 {} 作为同步仓库——密码箱必须使用私有库。请到 GitHub/Gitee 把仓库改为 Private，或换一个私有库地址",
-                url
+                redact_url(url)
             ),
             SyncError::LocalPathRejected => {
                 write!(f, "本地路径不能作为同步 remote——请使用 GitHub/Gitee 私有库或自建 Git 服务的 URL")
@@ -96,6 +96,26 @@ impl std::fmt::Display for SyncError {
             SyncError::GitError(_msg) => write!(f, "git 操作失败（详情见应用日志）"),
             SyncError::Other(e) => write!(f, "同步错误：{}", e),
         }
+    }
+}
+
+/// E-PUBLIC-REPO-URL-LEAKS-PAT 修复（2026-07-26）：redact URL 中的 userinfo（PAT/密码）。
+///
+/// `https://user:ghp_xxx@github.com/owner/repo.git` → `https://github.com/owner/repo.git`
+///
+/// #11 修复守了 6 个 stderr 变体的 PAT 泄露，但漏了 `PublicRepoRejected(url)` 的 url 透传。
+/// 本 helper 用于 Display + log::warn!，确保含 PAT 的 URL 不泄露到前端 toast / 日志。
+///
+/// 非 HTTP(S) URL（scp-like `git@host:owner/repo.git`）parse 失败时原样返回——
+/// scp-like 格式不含 `://user:pass@`，不可能嵌 PAT。
+pub fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut parsed) => {
+            let _ = parsed.set_password(None);
+            let _ = parsed.set_username("");
+            parsed.to_string()
+        }
+        Err(_) => url.to_string(),
     }
 }
 
@@ -243,6 +263,9 @@ mod tests {
     fn display_does_not_leak_pat_from_stderr() {
         let stderr_with_pat =
             "fatal: Authentication failed for 'https://user:ghp_abcdef123456@github.com/owner/repo/'";
+        // E-PUBLIC-REPO-URL-LEAKS-PAT（第四十九轮）：补 PublicRepoRejected 变体——
+        // #11 遗漏了 url 变体（只守了 6 个 stderr 变体），含 PAT 的 URL 经 Display 泄露。
+        let url_with_pat = "https://user:ghp_abcdef123456@github.com/owner/repo.git";
         let variants = [
             SyncError::GitError(stderr_with_pat.to_string()),
             SyncError::CredentialsRequired(stderr_with_pat.to_string()),
@@ -250,6 +273,7 @@ mod tests {
             SyncError::NetworkUnreachable(stderr_with_pat.to_string()),
             SyncError::RemoteNotFound(stderr_with_pat.to_string()),
             SyncError::ConflictNeedsManual(stderr_with_pat.to_string()),
+            SyncError::PublicRepoRejected(url_with_pat.to_string()),
         ];
         for v in &variants {
             let msg = v.to_string();

@@ -1,7 +1,7 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
 **日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **249** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
+**状态**：已实现并测试通过。最新基线：vault **250** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
 
@@ -1274,3 +1274,68 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **修复**：在 :290（user_vault_key 构造后、sync_enc 解密前）加 `guard().reset()`，与 unlock :222 对称。:333 末尾的 reset 保留（幂等无害）。
 
 **同源关系**：这是 B-UNLOCK-RECORD-ASYMMETRY 修复 unlock 时的遗漏——修 unlock 时没对称处理 change。
+
+---
+
+## 第四十七轮审查修复（2026-07-26，crypto 深度复审：K-KDF-STRICT-MISSING-CEILING）
+
+### K-KDF-STRICT-MISSING-CEILING: from_i64_strict 缺资源上限 → 远程污染致持久化设备锁死（中，可用性，已修）
+
+**核查**：K1（第二十轮）为 from_i64_strict 加了安全下限（memory≥16384/iter≥2），但完全没有上限——iterations 可达 u32::MAX（43 亿）、memory_kib 可达 u32::MAX（4 TiB）、parallelism 可达 u32::MAX。
+
+**攻击链**：攻击者污染 sync 仓库 meta.json 为 `kdf_memory_kib=2097152`（2 GiB）→ `from_i64_strict` 通过（下限✓ u32✓）→ clone/pull 写入本地 DB → 每次 unlock `derive_master_root_key` 尝试分配 2 GiB → OOM panic 或数小时卡死。持久化放大：污染参数已写入本地 DB，即使从 OOM 恢复，后续每次 unlock 再次触发。用户被永久锁在密码库外。
+
+**与 K1 的关系**：K1 守机密性（Confidentiality）——防弱 KDF 被爆破。本发现守可用性（Availability）——防资源耗尽被锁死。CIA 三性里 K1 守 C，本发现守 A。
+
+**修复**：from_i64_strict 加三个上限校验（OWASP 推荐值 4 倍留余量）：
+- `memory_kib ≤ 262144`（256 MiB）
+- `iterations ≤ 10`
+- `parallelism ≤ 16`
+
+**回归测试**：`from_i64_strict_rejects_huge_remote_params`（对称 `from_i64_strict_rejects_weak_remote_params`）。
+
+---
+
+## 第四十九轮审查修复（2026-07-26，octopus-sync crate：E-PUBLIC-REPO-URL-LEAKS-PAT）
+
+### E-PUBLIC-REPO-URL-LEAKS-PAT: PublicRepoRejected(url) Display + log 双透传含 PAT 的 URL（中，凭证泄露，已修）
+
+**核查**：#11 修复守了 6 个 stderr 变体的 PAT 泄露（Display 一律不透传 `_msg`），但漏了第 7 个变体 `PublicRepoRejected(url)`——Display :88-92 直接 `{}` 透传 url。
+
+完整泄露链（4 点逐行核实）：
+1. privacy.rs:77 明确支持 `https://user:token@host` 格式
+2. engine.rs:257 `log::warn!` + :258 `PublicRepoRejected(url.to_string())` 用原始 url
+3. error.rs:88-92 Display `{}` 透传 url → 前端 toast
+4. error.rs:266-273 守护测试 variants 数组恰好不含 `PublicRepoRejected`
+
+**修复**：
+- error.rs 加 `redact_url(url)` helper——用 `url::Url::parse` 剥 userinfo（username/password），parse 失败（scp-like 等）原样返回
+- error.rs:88 PublicRepoRejected Display 改用 `redact_url(url)`
+- engine.rs:257 log::warn! 改用 `octopus_sync::error::redact_url(url)`（日志也是泄露面）
+- 守护测试 variants 加 `PublicRepoRejected("https://user:ghp_xxx@...")`
+
+**与 #11 的关系**：同一泄露模式（PAT 嵌 URL/stderr），#11 守了 stderr 6 变体，漏了 url 变体。守护测试 variants 也恰好不含它。
+
+---
+
+## 第五十轮审查修复（2026-07-26，privacy.rs 深审：E-LOG-URL-LEAKS-PAT-INCOMPLETE）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE: ensure_private_repo 其余 4 分支 log 仍透传原始 url（中，影响面追踪不全，已修）
+
+**核查**：第四十九轮 E-PUBLIC-REPO-URL-LEAKS-PAT 只改了 Public 分支（:258 redact），但 ensure_private_repo 共 5 个 verdict 分支，其余 4 个（Private :262 / Ambiguous :266 / SshUnverifiable :270 / NetworkError :274）全部用原始 `url`。
+
+**最常见泄露路径**：用户配 PAT 访问私有库（PAT 最常见用法）→ Phase 1 未认证 API → GitHub 404（隐私设计）→ Ambiguous → :266 `log::info!(url)` 每次同步把 PAT 写进日志。
+
+**修复**：入口加 `let safe_url = redact_url(url);`，所有 5 个分支 log 统一用 `safe_url`。AGENTS.md「影响面追踪」要求——改 log 行为时追踪所有同类 log。
+
+---
+
+## 第五十一轮审查修复（2026-07-26，git.rs 深审：E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND: 调用方链 add_remote + maybe_rewrite_to_ssh 仍透传原始 url（中，影响面再次外溢，已修）
+
+**核查**：第五十轮修复只追踪了 `ensure_private_repo` 函数体内部 5 分支，漏了调用它的 `add_remote`（:245）+ `maybe_rewrite_to_ssh`（:305/:311/:318/:325）紧邻的同类 log。一次 add_remote，PAT 写日志 3 次（检测 HTTPS / SSH 可用 / 添加 remote）。
+
+**修复**：`add_remote`（:246）+ `maybe_rewrite_to_ssh`（:304）入口各加 `let safe_url = redact_url(url);`，所有 log 用 `safe_url`。`add_remote` 的 effective_url 也 redact。
+
+**教训（二次违反）**：第五十轮的教训「影响面追踪——追踪所有同类 log」本身的应用范围漏了「调用 ensure_private_repo 的流程上紧邻的同类 log」。与 MatchType #1 / E-EDIT-TEST-CIPHERTEXT / K1-GAP 同型——修一处时又漏了同类的其余处。

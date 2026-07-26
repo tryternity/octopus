@@ -1618,8 +1618,8 @@ L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 
 - 测试覆盖 + 回归守护
 - 已知限制清单（E1/M5 硬删复活、N2 AES key schedule、L21 TOTP secret zeroize 等）
 
-**最新测试基线（截至第四十四轮，2026-07-26）**：
-- vault: **249 pass** + 2 ignored（lib）+ 1 pass（集成 unlock.rs）
+**最新测试基线（截至第四十九轮，2026-07-26）**：
+- vault: **250 pass** + 2 ignored（lib）+ 1 pass（集成 unlock.rs）
 - infra: 160 pass / sync: 101 pass + 4 ignored / desktop: 412 pass
 - tsc 0 error / cargo build 0 warning
 
