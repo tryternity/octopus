@@ -203,8 +203,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		let stream = SCStream(filter: target.filter, configuration: configuration, delegate: self)
 
 		try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+		FileHandle.standardError.write(Data("[mix-diag] addStreamOutput screen ok; system.enabled=\(request.audio.system.enabled) nativeMicEnabled=\(nativeMicrophoneEnabled)\n".utf8))
 		if request.audio.system.enabled {
 			try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+			FileHandle.standardError.write(Data("[mix-diag] addStreamOutput .audio ok\n".utf8))
 		}
 		if nativeMicrophoneEnabled {
 			guard let microphoneOutputType = SCStreamOutputType(rawValue: microphoneOutputTypeRawValue) else {
@@ -213,6 +215,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 				)
 			}
 			try stream.addStreamOutput(self, type: microphoneOutputType, sampleHandlerQueue: sampleQueue)
+			FileHandle.standardError.write(Data("[mix-diag] addStreamOutput mic(rawValue=\(microphoneOutputTypeRawValue)) ok\n".utf8))
 		}
 		try setupWriter()
 
@@ -311,11 +314,13 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		if type == .audio {
+			FileHandle.standardError.write(Data("[mix-diag] audio callback type=.audio\n".utf8))
 			enqueueForMix(sampleBuffer, source: .system)
 			return
 		}
 
 		if type.rawValue == microphoneOutputTypeRawValue {
+			FileHandle.standardError.write(Data("[mix-diag] audio callback type=mic(rawValue=\(type.rawValue))\n".utf8))
 			enqueueForMix(sampleBuffer, source: .microphone)
 			return
 		}
@@ -646,7 +651,10 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	/// 把 CMSampleBuffer 的 PCM 数据追加到指定 ring buffer（interleaved float32）。
 	/// 所有 ring buffer / mixedAudioFormat 访问在 mixQueue.sync 内（防并发 crash + reentrant 死锁）。
 	private func enqueueForMix(_ sampleBuffer: CMSampleBuffer, source: AudioMixSource) {
-		guard mixedAudioInput != nil else { return }
+		guard mixedAudioInput != nil else {
+			FileHandle.standardError.write(Data("[mix-diag] enqueue SKIP: mixedAudioInput nil\n".utf8))
+			return
+		}
 
 		// PCM 转换在锁外做（CPU 密集，不访问共享状态）
 		// 首次锁定 mixedAudioFormat 需要锁内做（并发首次会重复设但幂等）
@@ -665,12 +673,14 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
 		// PCM 转换（锁外，纯函数）
 		guard let interleaved = toInterleavedFloat32(sampleBuffer, targetFormat: targetFormat) else {
+			FileHandle.standardError.write(Data("[mix-diag] toInterleavedFloat32 FAILED for \(source)\n".utf8))
 			emit(["event": "warning", "code": "mix-convert-failed", "message": "toInterleavedFloat32 failed"])
 			return
 		}
 
 		// 锁内追加 + drain（访问共享 ring buffers）
 		mixQueue.sync {
+			FileHandle.standardError.write(Data("[mix-diag] enqueue \(source): +\(interleaved.count) floats\n".utf8))
 			switch source {
 			case .system:
 				systemRing.append(contentsOf: interleaved)
@@ -769,8 +779,13 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	/// PTS 用 nextOutputSampleIndex 累加（不依赖输入 PTS，避免对齐问题）。
 	private func drainMixableSamples() {
 		guard mixedAudioInput != nil, let format = mixedAudioFormat else { return }
+		// ⚠️ 必须等 didStartWriting=true（首个 video frame 到达后 writer.startWriting 才调）。
+		// 否则 appendInterleavedPCM 内 guard didStartWriting 会静默 return，但 drain 已经
+		// removeFirst 把数据拿走 → 数据丢失 + ring buffer 永远不够 → 文件 0 audio（2026-07-27 bug）。
+		guard didStartWriting else { return }
 		let channels = 2
 		let batchFloats = mixBatchFrames * channels
+		FileHandle.standardError.write(Data("[mix-diag] drain: sys=\(systemRing.count) mic=\(micRing.count) need=\(batchFloats)\n".utf8))
 
 		while max(systemRing.count, micRing.count) >= batchFloats {
 			// 取 batchFloats 个 float（不足补零）
@@ -864,6 +879,7 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			emit(["event": "warning", "code": "mix-samplebuf-failed", "message": "CMSampleBufferCreateReady status=\(status)"])
 			return
 		}
+		FileHandle.standardError.write(Data("[mix-diag] append: frames=\(frames) pts=\(pts.value)/\(pts.timescale) ready=\(input.isReadyForMoreMediaData)\n".utf8))
 		input.append(sb)
 	}
 
