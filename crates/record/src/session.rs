@@ -52,6 +52,11 @@ struct SessionInner {
     /// start 时存快照，stop 时 desktop 层读出来组装 RecordingMeta。
     /// None 表示从未 start 过（或上次 stop 后被清空）。
     last_request: Option<RecordingRequest>,
+    /// reader task 在收到 RecordingStopped 事件时存的精确停止信息
+    /// （screen_path / duration_ms / file_size，从 helper 报回的 payload 直接取）。
+    /// stop() 方法在 helper 进程退出后 take 它返回给调用方。
+    /// None 表示未收到 RecordingStopped（异常退出 / kill 路径），调用方 fallback。
+    last_stopped: Option<StoppedInfo>,
 }
 
 impl RecordSession {
@@ -62,6 +67,7 @@ impl RecordSession {
                 child: None,
                 stdin: None,
                 last_request: None,
+                last_stopped: None,
             })),
         }
     }
@@ -109,11 +115,11 @@ impl RecordSession {
 
         // 启动 stdout reader task：按行解析 JSON 事件
         let inner_clone = self.inner.clone();
-        tokio::spawn(async move {
+            tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if let Ok(event) = serde_json::from_str::<HelperEvent>(&line) {
-                    // 更新 state
+                    // 更新 state + 捕获 RecordingStopped payload（精确 duration_ms 等）
                     {
                         let mut inner = inner_clone.lock().await;
                         match &event {
@@ -121,6 +127,14 @@ impl RecordSession {
                             HelperEvent::RecordingStarted { .. } => inner.state = SessionState::Recording,
                             HelperEvent::RecordingPaused { .. } => inner.state = SessionState::Paused,
                             HelperEvent::RecordingResumed { .. } => inner.state = SessionState::Recording,
+                            HelperEvent::RecordingStopped { screen_path, duration_ms, file_size } => {
+                                // 精确停止信息存入 last_stopped——stop() 方法 take 返回给调用方
+                                inner.last_stopped = Some(StoppedInfo {
+                                    screen_path: PathBuf::from(screen_path),
+                                    duration_ms: *duration_ms,
+                                    file_size: *file_size,
+                                });
+                            }
                             _ => {}
                         }
                     }
@@ -184,14 +198,14 @@ impl RecordSession {
         // 不清 last_request——desktop 层 stop_and_store 在 session.stop() 之后仍需读它入库。
         // 清空时机交给下次 start（start 时会覆盖 last_request = Some(new_request)）。
 
-        // StoppedInfo 的精确字段需要 reader task 在 RecordingStopped 时回传——
-        // 简化版：让调用方自己从文件系统查 file_size（session 不存 event payload）
-        // 完整版需要引入 event channel，见 Task 6 集成时的回调路径
-        Ok(StoppedInfo {
-            screen_path: PathBuf::new(), // 由调用方填充（stop_recording 命令知道 screen_path）
-            duration_ms: 0,              // 由调用方从文件元数据查
+        // StoppedInfo：reader task 收到 RecordingStopped 时存的精确 payload。
+        // take 出来返回；None 表示未收到（异常退出 / reader 还没处理到），
+        // 调用方 fallback（按 recording_id 扫 recordings_dir 查文件，duration_ms 仍可能 0）。
+        Ok(inner.last_stopped.take().unwrap_or(StoppedInfo {
+            screen_path: PathBuf::new(),
+            duration_ms: 0,
             file_size: 0,
-        })
+        }))
     }
 
     pub async fn kill(&self) -> RecordResult<()> {

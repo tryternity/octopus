@@ -16,10 +16,10 @@
 3. **§4.1 命令名前缀**：5 个控制命令（start/pause/resume/stop/kill）改用 `record_*` 前缀（如 `record_start`），避免与既有 `coordinator::start_recording`（ASR 录音）的 `__cmd__start_recording` 符号冲突。
 4. **§3.4 platform trait 同步签名**：原 spec 暗示 trait 方法 async，实施时为简化 MVP 用同步签名 + `tokio::task::block_in_place` 内部等待（macOS provider）。完整 async 化推迟到 P1。
 5. **§8.1 配置浮窗已实现**（2026-07-25 第二轮迭代）：原 MVP 缩减为 Settings panel，现已补回独立浮窗 `record_window.rs` + `RecordConfig.tsx`（Cmd+Shift+R 弹出选 display/window/area）。Settings RecordingPanel 作为历史管理 + 备用入口保留。
-6. **§3.2 StoppedInfo + stop 入库**（2026-07-25 第二轮迭代）：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest），desktop 加 `stop_and_store` 公共函数——hotkey/tray/前端三条 stop 路径都走它入库。`stopped.screen_path` 仍空（session 不存 event payload），用 `recordings_dir` 按 recording_id 扫描 fallback；`duration_ms` 仍恒 0（需 event channel，推迟）。
+6. **§3.2 StoppedInfo + stop 入库**（2026-07-25 第二轮迭代；2026-07-26 补完精确字段）：session.rs 加 `last_request` 快照字段（start 时存 RecordingRequest）+ `last_stopped` 快照字段（reader task 收到 RecordingStopped 事件时存 screen_path/duration_ms/file_size），desktop 加 `stop_and_store` 公共函数——hotkey/tray/前端三条 stop 路径都走它入库。`stopped` 精确字段从 helper 报回的 payload 直接取；异常退出（kill）未收到事件时 fallback：按 recording_id 扫 recordings_dir 找文件，duration_ms 可能 0。
 7. **§3.4 list-windows 过滤**（2026-07-25 bug 修复）：helper `--list-windows` 加三层过滤——`isOnScreen`（排除隐藏/最小化）+ 尺寸 ≥200×150（排除状态栏 item）+ bundleId 黑名单（controlcenter/dock 等）。实测 58→20 个真实应用窗口。
 8. **§4.1 record_shortcut 可配置**（2026-07-25 第二轮迭代）：录屏 toggle 快捷键接入 AppConfig + 热重载（与 screenshot/asr 等 6 个快捷键同模式）。停止快捷键固定 ESC（octopus 全局通用停止键，不暴露为可配置）。
-9. **§2.2 Source::Area 后端已实现**（2026-07-25 第二轮迭代）：Swift helper 加 `case "area"`（`SCStreamConfiguration.sourceRect` macOS 14+ API），物理像素 → 逻辑 points 转换。前端拖框 UI 待 follow-up。
+9. **§2.2 Source::Area 后端已实现**（2026-07-25 第二轮迭代）：Swift helper 加 `case "area"`（`SCStreamConfiguration.sourceRect` macOS 14+ API），物理像素 → 逻辑 points 转换。前端拖框 UI 已落地（`crates/desktop/src/record_area_picker.rs` + `AreaPicker/index.tsx`，复用 screenshot 选区逻辑）。
 10. **DB migrate v50→v51 漏建表 bug**（2026-07-25 修复）：原 `migrate_v50_to_v51` 注释声称「init_schema 末尾会重新跑 db.sql」是错的，导致 version 升到 51 但 recordings 表未创建。修复：migrate 函数显式 `execute_batch(INIT_SQL)` + init_schema 加自愈检测（v51+ 缺表时补建）。回归测试 2 个。
 
 ---
@@ -890,7 +890,7 @@ if request.audio.microphone.enabled {
 
 ### 8.1 配置浮窗（双态型）
 
-> **实现注记（2026-07-25 已实现）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。三个 tab：display（radio list）/ window（radio list，isOnScreen + 尺寸 + bundleId 过滤）/ area（拖框 UI 待 follow-up）。音频开关 + 开始/取消按钮。Settings RecordingPanel 作为历史管理 + 备用入口保留。下方 mockup 是完整设计目标。
+> **实现注记（2026-07-25 已实现）**：独立配置浮窗已落地——`crates/desktop/src/record_window.rs`（窗口管理）+ `crates/desktop/frontend/src/pages/RecordConfig/index.tsx`（UI）。Cmd+Shift+R 弹出浮窗在主屏水平居中 + 垂直上 1/3 位置（不跟随鼠标）。三个 tab：display（radio list）/ window（radio list，isOnScreen + 尺寸 + bundleId 过滤）/ area（拖框 UI 已实现——`record_area_picker.rs` + `AreaPicker/index.tsx`，选完后回填 display name + 宽高摘要）。音频开关 + 开始/取消按钮。Settings RecordingPanel 作为历史管理 + 备用入口保留。下方 mockup 是完整设计目标。
 
 ```
 快捷键 Cmd+Shift+R → 配置浮窗弹出

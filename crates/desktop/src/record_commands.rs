@@ -456,12 +456,13 @@ async fn stop_and_store_inner(
         has_microphone,
     } = fields;
 
-    // stop 返回的 StoppedInfo.screen_path 在 session.rs MVP 实现里是空 PathBuf
-    // （session 不存 RecordingStopped 事件的 payload）——Task 5 已知简化。
-    // Fallback：在 recordings_dir 下找文件名含 recording_id 的 .mp4。
+    // StoppedInfo：reader task 收到 RecordingStopped 时存精确 payload（screen_path /
+    // duration_ms / file_size）。session.stop() take 返回；正常路径下字段齐全。
+    // Fallback（异常退出 / kill 路径未收到事件）：按 recording_id 扫 recordings_dir 找文件。
     let stopped = session.stop().await.map_err(e2s)?;
 
     let abs_path = if stopped.screen_path.as_os_str().is_empty() {
+        // Fallback：未收到 RecordingStopped 事件（异常退出），按文件名 suffix 查
         let dir = octopus_infra::paths::recordings_dir();
         let suffix = format!("_{recording_id}.mp4");
         let mut found: Option<std::path::PathBuf> = None;
