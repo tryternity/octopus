@@ -242,7 +242,10 @@ pub fn add_remote(name: &str, url: &str) -> Result<(), SyncError> {
     // HTTPS → SSH 自动改写（github.com / gitee.com 的 HTTPS URL，且本机 SSH key 可用）
     let effective_url = maybe_rewrite_to_ssh(url)?;
     git::git_remote_add(&root, name, &effective_url)?;
-    log::info!("[sync] 添加 remote: {} → {}（effective: {}）", name, url, effective_url);
+    // E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND：redact 所有 log 中的 url（含 PAT）
+    let safe_url = octopus_sync::error::redact_url(url);
+    let safe_effective = octopus_sync::error::redact_url(&effective_url);
+    log::info!("[sync] 添加 remote: {} → {}（effective: {}）", name, safe_url, safe_effective);
     Ok(())
 }
 
@@ -296,6 +299,9 @@ fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
 /// 会被前端 toast 显示（含 GitHub 的 "Password authentication is not supported"），
 /// 用户能据此判断要配 SSH key 还是要换 URL。
 fn maybe_rewrite_to_ssh(url: &str) -> Result<String, SyncError> {
+    // E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND：redact 所有 log（第五十轮修了
+    // ensure_private_repo 内部，漏了调用方链的 maybe_rewrite_to_ssh）。
+    let safe_url = octopus_sync::error::redact_url(url);
     let Some(ssh_url) = privacy::try_convert_https_to_ssh(url) else {
         return Ok(url.to_string());
     };
@@ -303,27 +309,27 @@ fn maybe_rewrite_to_ssh(url: &str) -> Result<String, SyncError> {
     let parsed = privacy::GitRemoteUrl::parse(&ssh_url)?;
     log::info!(
         "[sync] 检测到 {} HTTPS URL，验证 SSH key 后尝试转 SSH: {}",
-        parsed.host, url
+        parsed.host, safe_url
     );
     match git::verify_ssh_key_for_host(&parsed.host) {
         Ok(true) => {
             log::info!(
                 "[sync] SSH key 可用，HTTPS → SSH: {} → {}",
-                url, ssh_url
+                safe_url, ssh_url
             );
             Ok(ssh_url)
         }
         Ok(false) => {
             log::warn!(
                 "[sync] SSH key 不可用（保留 HTTPS，后续 push 可能失败）: {}",
-                url
+                safe_url
             );
             Ok(url.to_string())
         }
         Err(e) => {
             log::warn!(
                 "[sync] SSH 预检失败（保留 HTTPS）: {} —— {}",
-                url, e
+                safe_url, e
             );
             Ok(url.to_string())
         }

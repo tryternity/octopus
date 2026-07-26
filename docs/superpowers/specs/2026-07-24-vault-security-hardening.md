@@ -1327,3 +1327,15 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **最常见泄露路径**：用户配 PAT 访问私有库（PAT 最常见用法）→ Phase 1 未认证 API → GitHub 404（隐私设计）→ Ambiguous → :266 `log::info!(url)` 每次同步把 PAT 写进日志。
 
 **修复**：入口加 `let safe_url = redact_url(url);`，所有 5 个分支 log 统一用 `safe_url`。AGENTS.md「影响面追踪」要求——改 log 行为时追踪所有同类 log。
+
+---
+
+## 第五十一轮审查修复（2026-07-26，git.rs 深审：E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE-OUTBOUND: 调用方链 add_remote + maybe_rewrite_to_ssh 仍透传原始 url（中，影响面再次外溢，已修）
+
+**核查**：第五十轮修复只追踪了 `ensure_private_repo` 函数体内部 5 分支，漏了调用它的 `add_remote`（:245）+ `maybe_rewrite_to_ssh`（:305/:311/:318/:325）紧邻的同类 log。一次 add_remote，PAT 写日志 3 次（检测 HTTPS / SSH 可用 / 添加 remote）。
+
+**修复**：`add_remote`（:246）+ `maybe_rewrite_to_ssh`（:304）入口各加 `let safe_url = redact_url(url);`，所有 log 用 `safe_url`。`add_remote` 的 effective_url 也 redact。
+
+**教训（二次违反）**：第五十轮的教训「影响面追踪——追踪所有同类 log」本身的应用范围漏了「调用 ensure_private_repo 的流程上紧邻的同类 log」。与 MatchType #1 / E-EDIT-TEST-CIPHERTEXT / K1-GAP 同型——修一处时又漏了同类的其余处。
