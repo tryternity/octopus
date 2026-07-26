@@ -264,7 +264,9 @@ export default function RecordConfig() {
         </div>
 
         {/* ── 源列表（display / window 选源）/ area 示意图 ──────────── */}
-        <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
+        {/* 固定高度 h-[140px]——三 tab 内容差异大（display 1-2 项 / window 很多项 / area 示意图），
+            固定高度避免切换时晃动。超过 140px 时内部滚动（WindowList 多应用场景）。 */}
+        <div className="px-3 py-3 h-[140px] overflow-y-auto thin-scrollbar">
           {tab === "display" && (
             <DisplayList
               displays={displays}
@@ -280,7 +282,7 @@ export default function RecordConfig() {
             />
           )}
           {tab === "area" && (
-            <div className="flex flex-col items-center justify-center h-[120px] gap-3">
+            <div className="flex flex-col items-center justify-center h-full gap-3">
               <svg width="160" height="80" viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
                 {/* 虚线选区框 */}
                 <rect x="20" y="10" width="120" height="60" rx="4"

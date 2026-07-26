@@ -1019,7 +1019,7 @@ recordConfig:
   startBtn: 开始录制
   starting: 启动中...
   tabDisplay: 全屏
-  tabWindow: 窗口
+  tabWindow: 应用
   tabArea: 区域
   systemAudio: 系统声音
   microphone: 麦克风

@@ -1012,7 +1012,7 @@ recordConfig:
   startBtn: Start Recording
   starting: Starting...
   tabDisplay: Display
-  tabWindow: Window
+  tabWindow: App
   tabArea: Area
   systemAudio: System Audio
   microphone: Microphone
