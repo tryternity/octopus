@@ -242,7 +242,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                         }
                         SessionState::Recording | SessionState::Paused => {
                             // 停止 + 入库（与 hotkey Esc 同路径）
-                            match crate::record_commands::stop_and_store(&session, false, None).await {
+                            match crate::record_commands::stop_and_store(&session, &app_handle, false, None).await {
                                 Ok(Some(meta)) => {
                                     log::info!(
                                         "[tray] 录制已停止入库: id={} file={}",

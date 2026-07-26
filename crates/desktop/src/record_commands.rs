@@ -328,6 +328,11 @@ pub(crate) async fn start_with_config(
             if let Err(e) = crate::record_annotation_window::create_annotation_window(app, &source_clone) {
                 log::warn!("[record] 标注 overlay 创建失败（不影响录制）: {e}");
             }
+            // ESC stop 全局快捷键按需注册——非录制态不注册，避免吞掉 Screenshot /
+            // RecordConfig 等 DOM 级 ESC。详见 record_hotkey::register_stop_hotkey。
+            if let Err(e) = crate::record_hotkey::register_stop_hotkey(app) {
+                log::warn!("[record] ESC stop 快捷键注册失败（不影响录制）: {e}");
+            }
         }
     }
     result.map_err(e2s)
@@ -350,6 +355,7 @@ pub async fn record_resume(state: State<'_, RecordSession>) -> Result<(), String
 #[command]
 pub async fn record_stop(
     state: State<'_, RecordSession>,
+    app_handle: AppHandle,
     discard: bool,
     recording_id: i64,
     width: u32,
@@ -368,7 +374,7 @@ pub async fn record_stop(
         has_microphone,
     };
     // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
-    stop_and_store(&state, discard, Some(fields)).await
+    stop_and_store(&state, &app_handle, discard, Some(fields)).await
 }
 
 /// hotkey / tray stop 复用的入库逻辑。
@@ -381,6 +387,7 @@ pub async fn record_stop(
 /// session 快照读（hotkey/tray 路径）。
 pub(crate) async fn stop_and_store(
     session: &RecordSession,
+    app: &AppHandle,
     discard: bool,
     explicit_fields: Option<MetaFields>,
 ) -> Result<Option<RecordingMeta>, String> {
@@ -394,7 +401,13 @@ pub(crate) async fn stop_and_store(
             derive_fields_from_request(&req)?
         }
     };
-    stop_and_store_inner(session, discard, fields).await
+    let result = stop_and_store_inner(session, discard, fields).await;
+    // 录制结束（无论入库成功失败）→ 注销 ESC stop 快捷键。
+    // 失败也注销：异常状态下 ESC 不应残留（下次 Screenshot ESC 仍需正常）。
+    // 详见 record_hotkey::unregister_stop_hotkey 的设计说明。
+    #[cfg(target_os = "macos")]
+    crate::record_hotkey::unregister_stop_hotkey(app);
+    result
 }
 
 /// 从 RecordingRequest 推导入库需要的 MetaFields。
@@ -519,8 +532,16 @@ async fn stop_and_store_inner(
 }
 
 #[command]
-pub async fn record_kill(state: State<'_, RecordSession>) -> Result<(), String> {
-    state.kill().await.map_err(e2s)
+pub async fn record_kill(
+    state: State<'_, RecordSession>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let r = state.kill().await.map_err(e2s);
+    // 强杀路径也要注销 ESC——kill 是异常恢复，ESC 不应残留（否则下次 Screenshot ESC 被吞）。
+    // 无论 kill 成功失败都注销（与 stop_and_store 一致）。
+    #[cfg(target_os = "macos")]
+    crate::record_hotkey::unregister_stop_hotkey(&app_handle);
+    r
 }
 
 // ── C. 录屏历史（10 个）──────────────────────────────────────

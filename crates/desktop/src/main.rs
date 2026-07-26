@@ -910,10 +910,12 @@ pub fn run() {
             action_hotkey::register_action_hotkeys(app.handle());
             // 录屏快捷键（config-driven，与 screenshot 同模式）：
             // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
+            // 仅注册 toggle（Cmd+Shift+R）；ESC stop 按需注册（录制开始时，
+            // 见 record_commands::start_with_config），避免吞掉其他窗口的 DOM 级 ESC。
             #[cfg(target_os = "macos")]
             {
                 if !config.record_shortcut.is_empty() {
-                    if let Err(e) = record_hotkey::register_record_hotkeys(
+                    if let Err(e) = record_hotkey::register_toggle_hotkey(
                         app.handle(),
                         &config.record_shortcut,
                     ) {
@@ -1116,7 +1118,7 @@ pub fn run() {
                             log::info!("[record] stop-requested 在非录制态忽略（state={:?}）", st);
                             return;
                         }
-                        match crate::record_commands::stop_and_store(&session, false, None).await {
+                        match crate::record_commands::stop_and_store(&session, &ah, false, None).await {
                             Ok(Some(meta)) => {
                                 log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
                                 crate::record_annotation_window::close_annotation_window(&ah);
