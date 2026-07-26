@@ -4,7 +4,7 @@
 **状态**：已实现并测试通过。最新基线：vault **253** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 416 / infra 160 / tsc 0 error / cargo build 0 warning
 **范围**：本文件汇总第二~第五十九轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：
-- [vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
+- [vault-sync-code-review-fixes](./archived/2026-07-24-vault-sync-code-review-fixes.md)（第一轮，已归档）
 - [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
 - [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（第五十五轮起的跨设备删除一致性方向）
 
