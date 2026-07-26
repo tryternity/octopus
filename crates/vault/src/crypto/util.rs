@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use data_encoding::BASE64;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use zeroize::Zeroizing;
 
 /// 用 OS 熵源生成随机字节（CSPRNG）。
 pub fn random_bytes(len: usize) -> Vec<u8> {
@@ -16,9 +17,17 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
 }
 
 /// 生成 32B 随机（用于 K_machine / salt / key 等）。
-pub fn random_32() -> [u8; 32] {
-    let mut buf = [0u8; 32];
-    OsRng.fill_bytes(&mut buf);
+///
+/// E-ZEROIZE-RESIDUE 修复（2026-07-26）：返 `Zeroizing<[u8;32]>` 而非裸 `[u8;32]`。
+/// 之前返裸数组（Copy 类型）→ 调用方 `Zeroizing::new(arr)` 是复制，原栈数组 drop no-op
+/// → K_machine 等密钥字节栈残留（与 kdf.rs/hierarchy.rs 已修的 C1 同型）。
+/// 现在 Zeroizing 持有唯一副本，调用方 move 即可，无栈残留。
+///
+/// 公开 salt 调用方（如 unlock.rs kdf_salt）仍可用 `&*salt` 借用——salt 残留
+/// 本身无害（公开值），但统一返 Zeroizing 让类型签名表达「这是敏感随机数据」。
+pub fn random_32() -> Zeroizing<[u8; 32]> {
+    let mut buf = Zeroizing::new([0u8; 32]);
+    OsRng.fill_bytes(&mut *buf);
     buf
 }
 
@@ -38,7 +47,8 @@ mod tests {
     fn test_random_32_unique() {
         let a = random_32();
         let b = random_32();
-        assert_ne!(a, b);
+        // Zeroizing<[u8;32]> 比较内部数组
+        assert_ne!(*a, *b);
     }
 
     #[test]

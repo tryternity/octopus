@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::crypto::DerivedKey;
 
@@ -249,19 +250,25 @@ fn encrypt_cipher_fields(
         Some(n) => Some(key.encrypt(n.as_bytes())?),
         None => None,
     };
-    let data_json = serde_json::to_vec(data)?;
-    let data = key.encrypt(&data_json)?;
+    // E-ZEROIZE-PLAINTEXT-JSON-VEC 修复（2026-07-26，第五十七轮）：serde_json::to_vec
+    // 返普通 Vec<u8>，含 username/password/totp 明文，drop 不清零 → heap 残留。
+    // 与 symmetric.rs:60 decrypt 侧 Zeroizing<Vec<u8>> 对称——decrypt 出方向清零，
+    // encrypt 入方向也应收 Zeroizing。包 Zeroizing::new + &* 借用，零额外开销。
+    let data_json = Zeroizing::new(serde_json::to_vec(data)?);
+    let data = key.encrypt(&*data_json)?;
     let fields = if fields.is_empty() {
         None
     } else {
-        let json = serde_json::to_vec(fields)?;
-        Some(key.encrypt(&json)?)
+        // E-ZEROIZE-PLAINTEXT-JSON-VEC 修复：fields 含 Field.value（自定义隐藏字段）明文
+        let json = Zeroizing::new(serde_json::to_vec(fields)?);
+        Some(key.encrypt(&*json)?)
     };
     let password_history = if password_history.is_empty() {
         None
     } else {
-        let json = serde_json::to_vec(password_history)?;
-        Some(key.encrypt(&json)?)
+        // E-ZEROIZE-PLAINTEXT-JSON-VEC 修复：含历史 password 明文
+        let json = Zeroizing::new(serde_json::to_vec(password_history)?);
+        Some(key.encrypt(&*json)?)
     };
     Ok(CipherEncStrings {
         name,

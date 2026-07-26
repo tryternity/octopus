@@ -31,13 +31,22 @@ pub fn generate(cfg: &PassphraseZhConfig) -> Result<String> {
     let mut result: Zeroizing<String> = Zeroizing::new(words.join(&cfg.separator));
 
     if cfg.include_number {
+        // OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY 修复（2026-07-27，第五十九轮）：
+        // 之前 format!("{}{}", result, n) 无视 separator——separator="-" 时英文给
+        // "Word1-Word2-3"（数字独立段），中文给 "词1-词2-词35"（数字粘最后词），
+        // 行为不一致。现与 passphrase_en:62-71 对齐：separator 非空时数字前加分隔符。
+        // 默认 separator="" 时行为不变（数字仍粘末尾）。
         let n: u32 = OsRng.gen_range(0..=9);
-        *result = format!("{}{}", result.as_str(), n);
+        let sep = if cfg.separator.is_empty() { "" } else { cfg.separator.as_str() };
+        *result = format!("{}{}{}", result.as_str(), sep, n);
     }
     if cfg.include_symbol {
+        // 同 include_number：与英文对称（虽然英文目前无 include_symbol，但保持
+        // separator 语义一致，未来扩展英文 symbol 时可直接对齐）
         let symbols = ['!', '@', '#', '$', '%', '&', '*'];
         let s = symbols.choose(&mut rng).unwrap();
-        *result = format!("{}{}", result.as_str(), s);
+        let sep = if cfg.separator.is_empty() { "" } else { cfg.separator.as_str() };
+        *result = format!("{}{}{}", result.as_str(), sep, s);
     }
     // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 result 的 heap）
     Ok(result.as_str().to_string())
@@ -165,5 +174,65 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY 回归守护（2026-07-27，第五十九轮）：
+    /// 中文 separator 非空时，数字/符号前应加分隔符（与 passphrase_en:62-71 对称）。
+    ///
+    /// 之前 bug：format!("{}{}", result, n) 无视 separator——separator="-" + include_number
+    /// 给 "词1-词2-词3-词45"（数字粘最后词），而英文给 "Word1-Word2-3"（数字独立段）。
+    /// 修复后中文也应给 "词1-词2-词3-词4-5"（数字前有 separator）。
+    #[test]
+    fn test_separator_respected_for_number_and_symbol() {
+        // include_number + separator="-" → 数字前应有 -
+        let cfg = PassphraseZhConfig {
+            separator: "-".into(),
+            include_number: true,
+            include_symbol: false,
+            ..Default::default()
+        };
+        let s = generate(&cfg).unwrap();
+        // 拆分后最后一段应是纯数字（数字独立段，非粘在词后）
+        let parts: Vec<&str> = s.split('-').collect();
+        let last = parts.last().unwrap();
+        assert!(
+            last.chars().all(|c| c.is_ascii_digit()),
+            "separator='-' + include_number：最后一段应是纯数字（独立段），实际 {}（完整 {}）",
+            last,
+            s
+        );
+
+        // include_symbol + separator="-" → 符号前应有 -
+        let cfg_sym = PassphraseZhConfig {
+            separator: "-".into(),
+            include_number: false,
+            include_symbol: true,
+            ..Default::default()
+        };
+        let s_sym = generate(&cfg_sym).unwrap();
+        let parts_sym: Vec<&str> = s_sym.split('-').collect();
+        let last_sym = parts_sym.last().unwrap();
+        assert!(
+            last_sym.chars().all(|c| ['!', '@', '#', '$', '%', '&', '*'].contains(&c)),
+            "separator='-' + include_symbol：最后一段应是纯符号（独立段），实际 {}（完整 {}）",
+            last_sym,
+            s_sym
+        );
+    }
+
+    /// 默认 separator（空字符串）时，数字/符号仍粘末尾——行为不变（向后兼容）。
+    #[test]
+    fn test_default_empty_separator_number_still_appends() {
+        let cfg = PassphraseZhConfig::default();
+        let s = generate(&cfg).unwrap();
+        // 默认 separator 空 + include_number=true → 末尾是数字，但数字粘最后词后
+        // （split('-') 无效，整个字符串是一段，末尾字符是数字）
+        assert!(
+            s.ends_with(|c: char| c.is_ascii_digit()),
+            "默认空 separator：末尾应是数字（粘最后词后），实际 {}",
+            s
+        );
+        // 不应含 '-'（默认 separator 空，数字前不加分隔符）
+        assert!(!s.contains('-'), "默认空 separator 不应含 '-'：{}", s);
     }
 }

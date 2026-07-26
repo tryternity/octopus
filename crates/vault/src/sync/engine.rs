@@ -134,7 +134,12 @@ pub fn get_sync_status() -> SyncStatus {
     SyncStatus {
         git_available,
         initialized: true,
-        remotes,
+        // E-UI-URL-LEAKS-PAT-LIST-REMOTES 修复（2026-07-26）：与 list_remotes 同型
+        // （第七次外溢候选）——SyncStatus derive Serialize 直接流向前端，remotes
+        // 字段透传 .git/config 原始 url（含 PAT）。当前前端未消费 status.remotes
+        // （用独立 list_remotes 拉取），但序列化后仍在客户端内存，且未来可能新增
+        // 消费者——走 redact_remotes_for_outflow helper（与 list_remotes 共用）。
+        remotes: redact_remotes_for_outflow(&remotes),
         last_commit_sha,
         last_sync,
         syncing,
@@ -357,13 +362,18 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
         }
     };
     for (name, url) in &remotes {
+        // E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND 修复（2026-07-26）：第五次外溢
+        // ——add_remote / ensure_private_repo / maybe_rewrite_to_ssh 都改了，
+        // 漏了 sync_now 路径上的 ensure_remotes_use_ssh_when_possible。url 来自
+        // .git/config（OBS-CLONE-URL-STORES-PAT-IN-CONFIG 场景存 PAT），透传泄露 PAT。
+        let safe_url = octopus_sync::error::redact_url(url);
         match maybe_rewrite_to_ssh(url) {
             Ok(rewritten) if rewritten != *url => {
-                // 改写后 URL 不同——set-url
+                // 改写后 URL 不同——set-url（rewritten 是 SSH URL，已 strip userinfo，安全）
                 match git::git_remote_set_url(root, name, &rewritten) {
                     Ok(()) => log::info!(
                         "[sync] sync_now 自动改写 remote {}：{} → {}",
-                        name, url, rewritten
+                        name, safe_url, rewritten
                     ),
                     Err(e) => log::warn!(
                         "[sync] sync_now 自动改写 remote {} 失败（保留 HTTPS）：{}",
@@ -374,7 +384,7 @@ pub fn ensure_remotes_use_ssh_when_possible(root: &std::path::Path) {
             Ok(_) => { /* URL 未变（已是 SSH / SSH key 不可用 / 非 github/gitee） */ }
             Err(e) => log::warn!(
                 "[sync] remote {} 改写检测失败（保留 {}）：{}",
-                name, url, e
+                name, safe_url, e
             ),
         }
     }
@@ -397,7 +407,37 @@ pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
     if !git::is_git_repo(&root) {
         return Ok(vec![]);
     }
-    git::git_remote_list(&root)
+    // E-UI-URL-LEAKS-PAT-LIST-REMOTES 修复（2026-07-26）：第六次外溢——
+    // 前五轮只追 log:: 宏的 url 透传，漏了「返回值流向前端 UI」维度。
+    // list_remotes 返回的 url 来自 .git/config（OBS-CLONE-URL-STORES-PAT-IN-CONFIG
+    // 场景存 PAT），透传到 SyncPanel.tsx:540 {url} 裸渲染——截图/录屏/窥屏即泄露。
+    //
+    // 在 engine 层 redact（而非 desktop 命令层）：cli/server 未来调 list_remotes
+    // 也受益，单点维护。
+    //
+    // 功能权衡：test_connection(redacted_url) 对 PAT HTTPS remote 会失败
+    // （CredentialsRequired，因 redact 后无凭据）——但 add_remote 时已强制
+    // ensure_private_repo + maybe_rewrite_to_ssh（SSH key 预检），事后测试非刚需。
+    // SSH remote（git@github.com:...）redact 后原样返回（url::Url parse 失败），
+    // test_connection 不受影响。
+    Ok(redact_remotes_for_outflow(&git::git_remote_list(&root)?))
+}
+
+/// 流出 crate 边界前对 remotes 做 redact（list_remotes + SyncStatus 共用）。
+///
+/// E-UI-URL-LEAKS-PAT-LIST-REMOTES 第六次外溢的根因防御：抽成 helper 让所有
+/// 「remotes 流出」点统一走这一个入口。当前调用点：
+///   - `list_remotes`（pub fn 返回值，Tauri command 返回）
+///   - `get_sync_status`（SyncStatus.remotes 字段，Serialize 流向前端）
+///
+/// 注：helper 只能防「现有调用点漏调」（调用点写错变量），不能防「新增流出点不调
+/// helper」——后者需编译期 newtype 才能完全防，已评估暂不引入（用户第五十三轮
+/// 拒绝 SafeUrl newtype）。
+fn redact_remotes_for_outflow(remotes: &[(String, String)]) -> Vec<(String, String)> {
+    remotes
+        .iter()
+        .map(|(name, url)| (name.clone(), octopus_sync::error::redact_url(url)))
+        .collect()
 }
 
 /// 从指定 remote URL clone 仓库（B 机首次同步）。
@@ -2166,5 +2206,42 @@ mod tests {
             "H2: clone 后软删状态必须保留（之前硬编码 None → 复活）"
         );
         let _ = g;
+    }
+
+    /// E-UI-URL-LEAKS-PAT-LIST-REMOTES 行为守护（2026-07-26）。
+    ///
+    /// 第六次外溢的根因（报告 §二）：前五轮只追 log:: 宏的 url 透传，漏了「返回值
+    /// 流向前端 UI」维度。list_remotes / SyncStatus.remotes 直接透传 git_remote_list
+    /// 原始 url（含 PAT），到 SyncPanel.tsx {url} 裸渲染。
+    ///
+    /// 契约测试（redact_url_strips_userinfo）只防 redact_url 实现退化，不防漏调。
+    /// 本测试用行为层守护：直接调用 list_remotes / get_sync_status 的 redact 路径，
+    /// 断言返回值不含 PAT。这两个函数依赖真实 git repo，无法直接单元测试——
+    /// 但 redact 在 vault/sync/engine.rs 的两个流出点（list_remotes 返回 +
+    /// SyncStatus.remotes 字段）是纯 map 操作，可以提取成可测函数。
+    ///
+    /// 这里测的是「redact_remotes_for_outflow」helper——list_remotes 和
+    /// get_sync_status 共用的流出前 redact 步骤。任何一处漏调这个 helper，
+    /// 本测试仍 pass，但新增流出点如果不调 helper 就不会被守护——
+    /// 这是当前架构下的最佳折中（编译期 newtype 才能完全防漏调，已评估暂不引入）。
+    #[test]
+    fn redact_remotes_for_outflow_strips_pat() {
+        let input = vec![
+            ("origin".to_string(), "https://user:ghp_secret@github.com/owner/repo.git".to_string()),
+            ("backup".to_string(), "git@github.com:owner/repo.git".to_string()),
+        ];
+        let redacted = super::redact_remotes_for_outflow(&input);
+        // PAT 必须被剥离
+        assert!(
+            !redacted.iter().any(|(_, u)| u.contains("ghp_secret")),
+            "redact_remotes_for_outflow 后仍含 PAT：{:?}",
+            redacted
+        );
+        // SSH URL（scp-like）原样返回
+        let ssh = redacted.iter().find(|(n, _)| n == "backup").expect("backup remote");
+        assert_eq!(ssh.1, "git@github.com:owner/repo.git");
+        // HTTPS URL 剥 userinfo
+        let https = redacted.iter().find(|(n, _)| n == "origin").expect("origin remote");
+        assert_eq!(https.1, "https://github.com/owner/repo.git");
     }
 }

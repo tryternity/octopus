@@ -275,7 +275,7 @@ CREATE TABLE vault_folders (
 
 ### 3.3 schema 版本升级 v43 → v44
 
-> **修正**：spec 原写 v38→v39，但实施时 user_version 已经到 v43（main 上其他功能推进），实际是 v43→v44。详见 [plan §关键决策变化](../plans/2026-07-21-vault-git-sync.md#关键决策变化)。
+> **修正**：spec 原写 v38→v39，但实施时 user_version 已经到 v43（main 上其他功能推进），实际是 v43→v44。详见 [plan §关键决策变化](../plans/archived/2026-07-21-vault-git-sync.md#关键决策变化)。
 
 v44 迁移：
 1. 新建 `vault_ciphers_new` 和 `vault_folders_new`（id TEXT PRIMARY KEY）
@@ -1348,6 +1348,6 @@ B 机点「同步」：
 ## 参考文档
 
 - [vault 原始设计 spec](./archived/2026-07-18-password-vault-design.md)——加密层、密钥层级、数据模型基础
-- [vault 实施计划](../plans/2026-07-18-password-vault.md)——含方案 A bookmarklet 评估（已弃）
+- [vault 实施计划](../plans/archived/2026-07-18-password-vault.md)——含方案 A bookmarklet 评估（已弃）
 - Tauri deep-link plugin 文档（未采用，但评估过）
 - vaultwarden 源码 `vault/src/api/core/ciphers.rs`（Bitwarden 同步协议参考）

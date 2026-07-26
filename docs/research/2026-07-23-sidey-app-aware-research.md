@@ -192,4 +192,4 @@ RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers),
 - [Sidey 源码](https://github.com/chentao1006/Sidey)（本地 `/Users/wudarui/workspace/agent/Sidey`）
 - [Sidey 官网](https://sidey.ct106.com/)
 - 实现 spec：`docs/superpowers/specs/2026-07-23-actionbar-app-aware.md`
-- 实现 plan：`docs/superpowers/plans/2026-07-23-actionbar-app-aware.md`
+- 实现 plan：`docs/superpowers/plans/archived/2026-07-23-actionbar-app-aware.md`

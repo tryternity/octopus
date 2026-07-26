@@ -1,9 +1,12 @@
 # Vault 安全加固（多轮代码审查修复汇总）
 
-**日期**：2026-07-24 起，持续至 2026-07-25
-**状态**：已实现并测试通过。最新基线：vault **250** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ desktop **412** / infra 160 / sync 101 + 4 ignored / tsc 0 error / cargo build 0 warning
-**范围**：本文件汇总第二~第二十轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
-**关联**：[vault-sync-code-review-fixes](./2026-07-24-vault-sync-code-review-fixes.md)（第一轮）
+**日期**：2026-07-24 起，持续至 2026-07-27
+**状态**：已实现并测试通过。最新基线：vault **253** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 416 / infra 160 / tsc 0 error / cargo build 0 warning
+**范围**：本文件汇总第二~第五十九轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
+**关联**：
+- [vault-sync-code-review-fixes](./archived/2026-07-24-vault-sync-code-review-fixes.md)（第一轮，已归档）
+- [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
+- [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（第五十五轮起的跨设备删除一致性方向）
 
 ## 背景
 
@@ -229,13 +232,13 @@
 - `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
 - 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
 
-### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，未修）
+### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，spec/plan 已就绪待实施）
 
 **严重度升级（2026-07-25 第二十五轮）**：原定「中」，升级为「高」。密码管理器的核心承诺是「删除即删除」，硬删（empty_trash）后密码经多设备 sync 复活违反此承诺，且有安全影响（用户以为已删除的敏感密码仍存活于各设备 + 远程仓库 git 历史）。详见 [第二十五轮](#第二十五轮审查修复2026-07-25syncoutline--syncstorers--enginers-删除传播)。
 
 **问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
 
-**状态**：文档化为已知限制。完整修复需 tombstone 机制（标记已删 uuid + 同步传播 + 清理策略），工作量大，Phase 2 自动同步时统一设计。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
+**状态（2026-07-26 更新）**：spec/plan 已就绪——[vault-tombstone-design](./2026-07-26-vault-tombstone-design.md) + [vault-tombstone plan](../plans/2026-07-26-vault-tombstone.md)。设计：Outline v2 新增 `tombstones` 字段 + 30 天 TTL + 删除赢冲突解决。待实施。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
 
 ### L10: upsert_folder_with_sort O(N²)（低，未修）
 
@@ -1339,3 +1342,255 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 **修复**：`add_remote`（:246）+ `maybe_rewrite_to_ssh`（:304）入口各加 `let safe_url = redact_url(url);`，所有 log 用 `safe_url`。`add_remote` 的 effective_url 也 redact。
 
 **教训（二次违反）**：第五十轮的教训「影响面追踪——追踪所有同类 log」本身的应用范围漏了「调用 ensure_private_repo 的流程上紧邻的同类 log」。与 MatchType #1 / E-EDIT-TEST-CIPHERTEXT / K1-GAP 同型——修一处时又漏了同类的其余处。
+
+---
+
+## 第五十二轮审查修复（2026-07-26，ensure_remotes_use_ssh_when_possible：E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND）
+
+### E-LOG-URL-LEAKS-PAT-INCOMPLETE-4TH-OUTBOUND: sync_now 路径第 4 个函数漏 redact（中，PAT 第四次外溢，已修）
+
+**核查**：第四十九~五十一轮覆盖了 add_remote / ensure_private_repo / maybe_rewrite_to_ssh 三个函数的 url log redact，漏了第 4 个同类函数 `ensure_remotes_use_ssh_when_possible`（sync_now 路径，遍历 git_remote_list）。:366 `log::info!("...→ {}", url)` + :377 `log::warn!("...保留 {}", url)` 透传 .git/config 原始 url（PAT）。
+
+**修复**：循环体首行 `let safe_url = redact_url(url);`，:366/:377 用 safe_url（rewritten 是 SSH URL 已 strip userinfo，不需 redact）。
+
+**根治防御（契约测试）**：补 `redact_url_strips_userinfo` + `redact_url_never_leaks_pat` 两个契约测试到 error.rs——前四轮外溢的根因防御。若 redact_url 本身漏了 PAT 格式，所有调用点的 safe_url 失效。
+
+**教训（第三次违反影响面追踪）**：49→50→51→52 四轮外溢，每次都是"修一个函数边界，下一轮发现同型外溢"。点状 `let safe_url` 修复无法收敛。
+
+---
+
+## 第五十三轮审查修复（2026-07-26，E-UI-URL-LEAKS-PAT-LIST-REMOTES：list_remotes + SyncStatus 返回值 redact）
+
+### E-UI-URL-LEAKS-PAT-LIST-REMOTES: list_remotes 返回值透传 PAT 到前端 UI（高，第六次外溢，已修）
+
+**核查**：完整 7 步攻击链——用户配 PAT url + SSH key 后装 → add_remote 写 PAT 进 .git/config → list_remotes 透传 → SyncPanel.tsx:540 `{url}` 裸渲染。截图/录屏/窥屏即泄露。
+
+**严重性升级**：前五轮 log 泄露需文件系统访问；UI 渲染是用户高频可见——密码管理器 UI 裸显示 token 低于 1Password/Bitwarden 行业基线。
+
+**修复方案（报告选项 1，最小后端 redact）**：
+- 抽 `redact_remotes_for_outflow` helper（list_remotes + get_sync_status 共用），集中 redact 逻辑到单一构造点。
+- test_connection(redacted_url) 对 PAT HTTPS remote 退化（CredentialsRequired），可接受——add_remote 时已强制 ensure_private_repo + maybe_rewrite_to_ssh。
+
+**第七次外溢候选（SyncStatus.remotes，同步修复）**：SyncStatus derive Serialize 流向前端，remotes 字段同样透传 git_remote_list 原始 url。当前前端未消费 status.remotes（用独立 list_remotes 拉取），但序列化后仍在客户端内存——防御性 redact。
+
+### 方法论教训：证伪第五十二轮「契约测试是根因防御」判断
+
+第五十二轮判断"契约测试是更轻量、更稳的防御"被证伪——契约测试只防 redact_url 实现退化（漏某种 PAT 格式），**不防漏调**（list_remotes 根本没调 redact_url）。第六次外溢正是漏调。
+
+**影响面追踪定义升级**：从「所有 log:: 宏」扩展到「所有 url 流出 crate 边界的点」（返回值 / Serialize struct / Tauri command / emit / Display）。
+
+### 关于 lint 测试（诚实记录）
+
+尝试报告 §五建议的源码 lint 测试（split/contains 扫 git_remote_list 调用点窗口）**失败**——lint 测试代码注释含 `git_remote_list` 字符串污染 split，17 段里 4 个真调用点全 is_outflow: False。源码字符串扫描 lint 在真实 codebase 极度脆弱。已回退，改用行为测试 `redact_remotes_for_outflow_strips_pat`。
+
+---
+
+## 第五十四轮审查（2026-07-26，六轮 PAT 外溢链收官：未发现新外溢）
+
+### 复查结论：6 个维度独立验证，无第七次外溢
+
+报告声称"六轮以来首次未发现新外溢"——经独立复查全部成立：
+1. engine.rs 4 个 git_remote_list 调用点流出面：全覆盖（:127 SyncStatus / :357 log safe / :423 list_remotes / :744 _url 忽略）
+2. SyncStatus 完整字段：唯一 url 字段 remotes 已 helper；last_sync/last_commit_sha 非 url
+3. Debug 透传维度：全 crate grep `log::.*{:?}` 无 SyncError Debug 打印
+4. cli/server 消费面：空
+5. vault/sync 其他 pub fn 返回值：fingerprint 四个返 md5（非 url）
+6. 前端消费面：唯一渲染点 SyncPanel:540（走已 redact 的 list_remotes）
+
+**PAT 专题收官**：六轮外溢链（49→54）在本轮首次无新外溢。redact_remotes_for_outflow helper 是六轮以来最稳健的结构性改进。
+
+### 方法论纠偏（用户工程决策）
+
+1. **抽 helper 集中构造点**：点状修复 → 集中构造（与 SafeUrl newtype 同向但更轻量）
+2. **诚实声明 helper 不防漏调**：未声称「全收敛」（与前四轮每次声称「无第 N+1 次外溢」然后证伪形成对比）
+3. **lint 失败的诚实记录 + 改用行为测试**：技术判断正确
+
+### 已知局限（文档化，未修）
+
+- **OBS-CLONE-URL-STORES-PAT-IN-CONFIG**：本轮修了下游流出 redact，未修上游「PAT 写入 .git/config」。彻底根治需 add_remote 拒绝 PAT url——产品决策，见 [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md) §不解决问题。
+- **helper 不防漏调**：未来新增第 3 个 remotes 流出点若忘调 helper → 第八次外溢。当前架构无法防——编译期 newtype 才能完全防（见 safeurl-newtype-design spec）。
+
+---
+
+## 第五十五轮审查修复（2026-07-26，crypto 层深审：E-ZEROIZE-RESIDUE 系统性 Zeroizing 卫生）
+
+### E-ZEROIZE-RESIDUE: keychain + unlock 密钥构造路径栈残留（中，与 C1 同型，已修）
+
+**核查**：与 kdf.rs:174 + hierarchy.rs:44 已修的 C1 同型（裸 `[u8;32]` Copy 类型 → `Zeroizing::new()` 复制 → 原栈数组 drop no-op → 残留），但 C1 修复时影响面追踪漏了 keychain + unlock 的密钥构造路径。
+
+**3 类 12 处修复**（报告列 10 处 + 自查发现 derive_file_key 2 处）：
+
+| 缺口 | 位置 | 模式 | 修复 |
+|---|---|---|---|
+| 1 | util.rs `random_32` | 返裸 `[u8;32]` | 返 `Zeroizing<[u8;32]>`（util 层根治） |
+| 1 | keychain.rs:240 K_machine | `Zeroizing::new(裸数组)` Copy | 直接 move new_key |
+| 2 | unlock.rs 5 处 decrypt→from_raw | 裸栈 `arr` + `from_raw` Copy | `Zeroizing` + `from_zeroizing` move |
+| 3 | unlock.rs 4 处 `*k_machine` | 解引用得 Copy 临时值 | `from_zeroizing(k_machine)` 纯 move |
+| **自查** | keychain.rs `derive_file_key` + 2 调用点 | 返裸 `[u8;32]` + `from_raw` Copy | 返 `Zeroizing` + `from_zeroizing` move |
+
+**严重性 Medium**：密钥栈残留违背 Zeroizing 设计意图，但单机威胁模型 + 成功路径栈临时值，不创造新攻击面。
+
+**影响面追踪自查（报告 §二建议）**：执行 grep `from_raw(` + `Zeroizing::new(` + 裸 `[u8;32]`，发现报告漏列的 derive_file_key（file_key 是敏感密钥，加密磁盘上的 K_machine）——同型 bug 不该分两次修，一并修复。
+
+**守护测试说明**：E-ZEROIZE-RESIDUE 本质是栈残留，难以用单元测试直接断言。守护靠 C1 注释模板（各处明确禁忌）+ code review。新增密钥构造路径时检查是否走 `from_zeroizing` move。
+
+### 正面确认（crypto 核心算法实现正确）
+
+- symmetric.rs：AES-256-GCM，nonce 每次 OsRng 随机，tag 常量时间验证，decrypt 返 Zeroizing<Vec<u8>>，S2 AAD 权衡文档化 ✓
+- hierarchy.rs：HMAC-SHA512 child 派生，A2 + C1 修复完美，编译型测试锁 feature ✓
+- mod.rs：M1-mod 字段 private，as_bytes 受控读 ✓
+- util.rs：OsRng CSPRNG ✓
+
+### 信息性观察（均非 bug，不修）
+
+- OBS-SYM-ENCRYPT-BORROW：encrypt 借用不接管明文，清零责任在调用方（当前安全）
+- OBS-SYM-LENGTH-CHECK：combined.len() > NONCE_LEN 在 13-16B 边界值错误信息误导（功能正确）
+- OBS-HIER-LABEL-PUBLIC：HMAC label 公开不影响（与 HMAC 标准一致）
+- OBS-RANDOM32-SALT：kdf_salt 公开残留无害（random_32 改返 Zeroizing 后调用方相应调整）
+
+---
+
+## 后续推进方向（spec/plan 已就绪）
+
+第五十五轮起，用户拍板两个架构改进方向，spec + plan 已写：
+
+1. **SafeUrl newtype（PAT 结构性根治）** — [spec](./2026-07-26-safeurl-newtype-design.md) + [plan](../plans/2026-07-26-safeurl-newtype.md)
+   - 动机：六轮 PAT 外溢证伪点状修复可收敛
+   - 设计：SafeUrl(String) newtype + redact_url 唯一构造器，编译期杜绝非已 redact 的 url 流出 crate 边界
+
+2. **Vault Tombstone（跨设备永久删除一致性）** — [spec](./2026-07-26-vault-tombstone-design.md) + [plan](../plans/2026-07-26-vault-tombstone.md)
+   - 动机：M-TOMBSTONE（M5，已知高优先级未修）——permanent_delete 后跨设备复活
+   - 设计：Outline v2 新增 tombstones 字段 + 30 天 TTL + 删除赢冲突解决
+
+两个方向独立，可分别推进。SafeUrl 改动面小（~15 处签名），建议先做。
+
+---
+
+## 第五十六轮审查修复（2026-07-26，E-ZEROIZE-RESIDUE 第二次外溢：load_machine_key 解密路径）
+
+### E-ZEROIZE-RESIDUE-MISSED-KEYCHAIN-DECRYPT: keychain.rs load_machine_key 解密读取路径漏修（中，影响面追踪再次漏点，已修）
+
+**核查**：第五十五轮 commit a7843412 修复了 12 处，但同文件同模式的 `load_machine_key` 解密路径漏修——连续两轮影响面追踪漏 keychain.rs（与 PAT 外溢链同型）。
+
+**遗漏 1（生产 :315-317）**：K_machine 解密读取路径——`decrypt → 裸栈 arr → Zeroizing::new(arr) Copy → arr drop no-op → K_machine 明文栈残留`。被 4 条路径调用（setup/unlock/refresh/change_password），每次启动触发。与已修的 random_32（K_machine 生成路径）完全对称——生成路径修了，读取路径漏修。
+
+**遗漏 2（测试闭包 :265-267）**：TEST_KEYCHAIN_OVERRIDE 内同型模式——测试 K_machine 是随机值残留无害，但保持模式一致防未来 copy-paste 到生产。
+
+**修复**：与 unlock.rs:172-174（第五十五轮已修）模板 1:1 对齐——`Zeroizing::new([0u8;32])` 直接写入 + move 返 arr。
+
+### 方法论教训：影响面追踪单位升级
+
+报告 §二洞察精准："影响面追踪的单位应是「文件内所有密钥生命周期路径（生成/派生/加密/解密/读取）」而非「跨文件 grep 关键字」"。keychain.rs 涉及 K_machine 的路径有 5 条，第五十五轮修 derive_file_key + random_32 时没顺带审同文件的 load_machine_key 解密路径。
+
+**收敛验证（三视角交叉）**：
+- 视角 1（裸 `[0u8;32]` 中间变量）：vault crate 零残留 ✓
+- 视角 2（`Zeroizing::new(非字面量)`）：剩余均为 Vec/String/GenericArray move 语义，无 Copy 残留 ✓
+- 视角 3（`from_raw` 生产路径）：全部改 `from_zeroizing`，剩余 from_raw 均为测试代码 ✓
+
+**vault crate 的 [u8;32] 密钥构造残留缺口至此完整收敛**。
+
+---
+
+## 第五十七轮审查修复（2026-07-26，E-ZEROIZE-PLAINTEXT-JSON-VEC：encrypt 侧明文 JSON Vec 残留）
+
+### E-ZEROIZE-PLAINTEXT-JSON-VEC: types.rs encrypt_cipher_fields 3 处 serde_json::to_vec 明文 password heap 残留（中，Vec<u8> 变体，已修）
+
+**核查**：E-ZEROIZE-RESIDUE 的 Vec<u8> 变体——已修的 14 处是 `[u8;32]` 密钥残留，本轮发现 Vec<u8> 明文 password 残留（同模式不同类型）。
+
+**3 处**：
+- `:252 data_json`：含 LoginData.username/password/totp 明文
+- `:257 fields json`：含 Field.value（自定义隐藏字段）明文
+- `:263 password_history json`：含历史 password 明文
+
+`serde_json::to_vec` 返普通 `Vec<u8>`（非 Zeroizing），Vec::drop 释放 heap 但不清零 → 明文 password JSON heap 残留。
+
+**项目设计不对称**（报告 §一洞察）：`symmetric.rs:60` decrypt 侧已返 `Zeroizing<Vec<u8>>`（明文输出清零），encrypt 侧的明文 JSON 输入没包 Zeroizing（入方向不清零）。这是第五十六轮 OBS-SYM-ENCRYPT-BORROW（当时信息性）的具体化——上轮笼统说"encrypt 借用 plaintext，清零责任在调用方"，本轮定位到 `encrypt_cipher_fields` 就是那个没尽责的调用方。
+
+**修复**：3 处包 `Zeroizing::new(serde_json::to_vec(...)?)` + `key.encrypt(&*json)?`，与 decrypt 侧对称。零额外开销（Zeroizing 零成本包装 + `&*` 借用无复制）。
+
+### 信息性观察 E-ZEROIZE-CIPHER-STRING-FIELDS（Low，设计层面妥协，不修）
+
+`decrypt_cipher_row` 解密后 Cipher 结构体的所有 String 字段（name/notes、LoginData.username/password/totp、Field.value、PasswordHistoryEntry.password）是普通 String，drop 不清零。
+
+**为何不修**：需把 Cipher/LoginData/Field/PasswordHistoryEntry 所有 String 字段改 `Zeroizing<String>`，破坏 `#[derive(Serialize, Deserialize)]` + 影响所有调用方（命令层/importer/exporter/sync）。密码管理器经典难题（Bitwarden 同困境）。记录为已知妥协。
+
+与 §一（临时 Vec）区别：§一是函数内局部 buffer，改 Zeroizing 零外部影响；本条是跨模块数据结构，改 Zeroizing 牵一发动全身。
+
+---
+
+## 第五十八轮审查（2026-07-27，Zeroizing 卫生专题收官：五视角交叉验证收敛）
+
+### 复查结论：五视角交叉验证，vault crate 明文 Vec/String 序列化残留完整收敛
+
+经五视角独立核对（报告 §〇 + 我的独立验证）：
+
+| 视角 | 命中 | 结论 |
+|---|---|---|
+| 1. `serde_json::to_vec` | types.rs:252/257/263（全已 Zeroizing） | ✓ 无遗漏 |
+| 2. `serde_json::to_string(_pretty)` | exporter.rs:181（明文，§一）/ sync/store.rs 4 处（密文/索引）/ 测试 | 见下 |
+| 3. `.as_bytes()`（encrypt 输入） | unlock 密钥加密 / folder name / migrate / keychain HKDF | ✓ 密文或借用调用方 String 契约 |
+| 4. `String::from_utf8`（解密→String） | types.rs:288 / folder.rs:94 / 测试 | ✓ 同 E-ZEROIZE-CIPHER-STRING-FIELDS 设计妥协 |
+| 5. `serde_json::from_slice/from_str`（解密反序列化） | types.rs:299/304/312（借用 Zeroizing bytes）/ sync 文件密文 / importer 用户输入 | ✓ |
+
+**sync/store.rs 4 处 `to_string_pretty` 全是密文/索引序列化**（MetaFile 含已加密 protected_user_vault_key/app_key_sync_enc；Outline 是 uuid→md5 索引；CipherFile/FolderFile 是密文行）——无明文 password。
+
+### OBS-EXPORT-PLAINTEXT-STRING（Low，信息性，有意明文，不修）
+
+`exporter.rs:181` 明文导出 String 含全库 password，未 Zeroizing。
+
+**为何不修**：与 E-ZEROIZE-CIPHER-STRING-FIELDS 同根——明文链路三层（Cipher.password / BitwardenItem.password / export String），只要 Cipher 用 String 字段，下游全链都是明文。修 #3（export String 包 Zeroizing）是表层——String 经 IPC 序列化到前端后，vault 层的 Zeroizing 无法清零前端副本 + IPC 副本。
+
+报告判断准确："与 E-ZEROIZE-CIPHER-STRING-FIELDS 同根，修 #3 是表层，深层需 Cipher 结构体改 Zeroizing<String>（已判定不修）"。
+
+### Zeroizing 卫生专题状态（4 轮收官）
+
+经过第五十五~五十八轮 4 轮：
+- 第五十五轮：12 处（util/keychain/unlock 密钥构造路径）
+- 第五十六轮：2 处（keychain load_machine_key 解密路径）
+- 第五十七轮：3 处（types.rs encrypt 侧明文 JSON Vec）
+- 第五十八轮：0 处（五视角交叉验证收敛，无新发现）
+
+**vault crate 内可修的 Zeroizing 卫生缺口至此完整收敛**（共 17 处修复）。剩余的是设计层面妥协（Cipher/LoginData/Field 的 String 字段不清零）——需大重构，与 Bitwarden 同困境，已记录不修。
+
+**方法论教训**（与 PAT 外溢链同型）：Zeroizing 卫生专题经历了 2 次外溢（55→56 同文件漏 load_machine_key；56→57 Vec 变体漏 types.rs）。根因都是"影响面追踪维度不够全"。最终用三视角 + 五视角交叉验证才真正收敛——单视角 grep 在真实 codebase 上反复失败。
+
+---
+
+## 第五十九轮审查修复（2026-07-27，generator/ 密码学核心审查 + OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY）
+
+### generator/* 密码学核心正面确认（无 Medium+ 安全 bug）
+
+经独立复查（报告 §一 + 我的验证），generator 密码学核心 6 个维度全部正确：
+
+| 维度 | 核实 | 结论 |
+|---|---|---|
+| CSPRNG 源 | 全部 OsRng（random:64 / en:24 / zh:24,34 / pin:13） | ✓ macOS 走 SecRandomCopyBytes |
+| modulo bias | gen_range + SliceRandom::choose（rand 0.8 拒绝采样 Lemire） | ✓ 无偏 |
+| shuffle 偏置 | result.shuffle(&mut rng)（Fisher-Yates） | ✓ 无偏 |
+| seed 泄露 | 无 seed，OsRng 是 stateless ZST | ✓ 无可泄露种子 |
+| ensure 顺序 | random:53/58 双 ensure（≥5 + ≤128）在 with_capacity:68 前 | ✓ 防恶意 length 触发 OOM |
+| 词表守护测试 | EFF 7776（size + no_dup + no_dedash_collision）/ ZH 4096（size + no_dup + all_two_cjk） | ✓ 完善 |
+
+### OBS-PASSPHRASE-ZH-NUMBER-ASYMMETRY: 中英 include_number/include_symbol separator 行为不对称（Low，已修）
+
+**核查**：passphrase_zh:35/40 用 `format!("{}{}", result, n)` 无视 separator，passphrase_en:62-71 用 `format!("{}{}{}", result, sep_branch, n)` 尊重 separator。separator='-' 时：
+- 英文：`Word1-Word2-3`（数字独立段，前有 -）
+- 中文：`词1-词2-词35`（数字粘最后词，无 -）
+
+**严重性 Low**（报告校准准确）：熵无损（数字仍贡献 log2(10)，与位置无关）；默认不暴露（中文默认 separator=''，此时两版等价）；仅用户主动改中文 separator 时行为不一致。
+
+**修复**：passphrase_zh include_number/include_symbol 加 separator 分支，与 en:62-71 对齐。默认 separator='' 时行为不变（向后兼容）。
+
+**回归测试 2 个**：
+- `test_separator_respected_for_number_and_symbol`：separator='-' 时数字/符号应独立段
+- `test_default_empty_separator_number_still_appends`：默认空 separator 行为不变
+
+### 信息性观察（7 项，均不修）
+
+1. **GeneratorConfig 反序列化无字段校验**：恶意 payload（length=u32::MAX）反序列化成功，但 generate ensure 在 with_capacity 前拦截，无 OOM 风险。纯错误诊断时序问题。
+2. **PIN 默认 6 位低熵**（~20 bit）：用户主动选 PIN 模式（设计意图，银行 PIN 也是 4-6 位），length 可调。非 bug。
+3. **passphrase_en include_number 固定末尾**：Bitwarden 插随机词间，octopus 固定末尾。模式可预测但熵不变。与 Bitwarden 行为差异，非 bug。
+4. **random.rs 强制字符无 length 上限守护**（防御性 Low）：当前 length≥5 保证 4 类型强制阶段不超长。若未来下限调低（如改 3），强制 4 类型会静默超长。当前不触发。
+5. **passphrase_zh include_symbol 只 7 符号**（~2.81 bit）：可选增强（非主熵源，主熵来自 4096 词表）。非 bug。
+6. **返回值普通 String**（已知设计妥协）：与 Cipher String 字段困境同根，Tauri IPC/serde 需要普通 String。第五十八轮已判定不修。
+7. **passphrase_zh 风格不一致**：include_number 用 OsRng.gen_range（:34），include_symbol 用顶部 rng.choose（:39）。OsRng 是 ZST 无状态，两者等价，纯风格不统一。
