@@ -248,7 +248,7 @@ export default function Screenshot() {
     }
   }, [sel, mode, ready, dpr, annotation.annotations, annotation.selectedAnn, annotation.tool, textDraft]);
 
-  useEffect(() => { draw(); });
+  useEffect(() => { draw(); }, [draw]);
 
   function getHandles(s: Selection): [number, number][] {
     return [
