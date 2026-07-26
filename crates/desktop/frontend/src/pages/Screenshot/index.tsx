@@ -52,6 +52,10 @@ export default function Screenshot() {
 
   const [scrollPreview, setScrollPreview] = useState<string | null>(null);
   const [scrollHeight, setScrollHeight] = useState(0);
+  // scrolling 模式录制时长（前端 setInterval，startScroll 启动 / scroll://done 停）。
+  // 显示在 ScrollPreview 顶部「REC ● mm:ss」。
+  const [scrollElapsed, setScrollElapsed] = useState(0);
+  const scrollElapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const scrollFrameRef = useRef<HTMLImageElement | null>(null);
 
   const scrollSaveAfterStopRef = useRef(false);
@@ -123,6 +127,11 @@ export default function Screenshot() {
     }).then((fn) => { if (cancelled) fn(); else unlistenFrame = fn; });
     listen("scroll://done", () => {
       setScrollPreview(null);
+      // 停止 scroll 计时器
+      if (scrollElapsedRef.current) {
+        clearInterval(scrollElapsedRef.current);
+        scrollElapsedRef.current = null;
+      }
       setModeSafe("selected");
       // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
@@ -567,6 +576,12 @@ export default function Screenshot() {
     annotation.setTool("none");
     setScrollPreview(null);
     setScrollHeight(0);
+    setScrollElapsed(0);
+    // 启动 scroll 录制计时器（显示在 ScrollPreview 顶部）
+    if (scrollElapsedRef.current) clearInterval(scrollElapsedRef.current);
+    scrollElapsedRef.current = setInterval(() => {
+      setScrollElapsed((s) => s + 1);
+    }, 1000);
 
     // 计算交互区域（只有预览窗，scrolling 模式下工具栏已隐藏）
     const interactiveRects: Array<{x: number; y: number; width: number; height: number}> = [];
@@ -585,6 +600,11 @@ export default function Screenshot() {
   }
 
   function stopScroll() {
+    // 停止 scroll 计时器（ESC/右键/按钮停止时；scroll://done listener 也会清，幂等）
+    if (scrollElapsedRef.current) {
+      clearInterval(scrollElapsedRef.current);
+      scrollElapsedRef.current = null;
+    }
     invoke("stop_scroll_recording").catch(() => {});
   }
 
@@ -890,7 +910,7 @@ export default function Screenshot() {
 
       {/* 滚动预览浮层 */}
       {mode === "scrolling" && scrollPreview && sel && (
-        <ScrollPreview sel={sel} scrollPreview={scrollPreview} scrollHeight={scrollHeight} />
+        <ScrollPreview sel={sel} scrollPreview={scrollPreview} scrollHeight={scrollHeight} elapsed={scrollElapsed} />
       )}
 
       {/* OCR 全局互斥提示：他处正在 OCR → 屏幕中央短暂提示稍后重试 */}

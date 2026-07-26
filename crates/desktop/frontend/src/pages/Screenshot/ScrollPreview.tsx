@@ -5,9 +5,18 @@ interface ScrollPreviewProps {
   sel: { x: number; y: number; w: number; h: number };
   scrollPreview: string;
   scrollHeight: number;
+  elapsed: number;
 }
 
-export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPreviewProps) {
+function formatElapsed(secs: number): string {
+  const totalSec = Math.max(0, Math.floor(secs));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${pad(m)}:${pad(s)}`;
+}
+
+export function ScrollPreview({ sel, scrollPreview, scrollHeight, elapsed }: ScrollPreviewProps) {
   const t = useT();
   return (
     <div style={{
@@ -30,7 +39,7 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
       overflow: "hidden",
       boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06)",
     }}>
-      {/* 状态条：脉冲录制点 + 等宽高度计数器 */}
+      {/* 状态条：脉冲录制点 + REC + 时长 | 右侧高度计数器 */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div style={{
@@ -39,6 +48,10 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
             animation: "pulse 1.5s ease-in-out infinite",
           }} />
           <span style={{ fontSize: 10, color: "#f59e0b", fontWeight: 600, letterSpacing: 0.3 }}>REC</span>
+          {/* 录制时长（mm:ss，等宽数字防跳） */}
+          <span style={{ fontSize: 11, color: "rgba(255,255,255,0.85)", fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
+            {formatElapsed(elapsed)}
+          </span>
         </div>
         <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums" }}>
           {scrollHeight}px

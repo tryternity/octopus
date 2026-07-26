@@ -19,8 +19,11 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 pub const WINDOW_LABEL: &str = "record_control_window";
 
 /// pill 浮窗固定尺寸（逻辑像素）。
-const WIDTH: f64 = 200.0;
-const HEIGHT: f64 = 56.0;
+///
+/// 紧凑布局：红点(7px) + gap + 时长(mm:ss ~28px) + gap + 暂停(24px) + 停止(24px)。
+/// 实测 130×38 够用；太长显得突兀（用户反馈原 200×56 太长）。
+const WIDTH: f64 = 130.0;
+const HEIGHT: f64 = 38.0;
 
 /// 创建控制浮窗。仅 Display/Window 录制创建；Area 录制静默跳过（用 RecordAnnotation）。
 ///

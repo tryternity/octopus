@@ -740,6 +740,27 @@ pub async fn check_ffmpeg() -> bool {
     probe_ffmpeg().is_some()
 }
 
+/// 查询当前录制状态 + 已录秒数。
+///
+/// 用途：RecordControl 浮窗 mount 时初始化——浮窗创建晚于 recording-started 事件，
+/// 收不到事件，靠此命令拿当前 state + elapsed_secs 启动计时器。
+/// 返回 {state: "idle"/"recording"/"paused"/..., elapsed_secs: u64}。
+#[derive(serde::Serialize)]
+pub struct RecordStatus {
+    pub state: String,
+    pub elapsed_secs: u64,
+}
+
+#[command]
+pub async fn get_record_status(state: State<'_, RecordSession>) -> Result<RecordStatus, String> {
+    let s = state.state().await;
+    let elapsed = state.elapsed_secs().await.unwrap_or(0);
+    Ok(RecordStatus {
+        state: format!("{:?}", s).to_lowercase(),
+        elapsed_secs: elapsed,
+    })
+}
+
 /// 把已录制的 MP4 转成 GIF。
 ///
 /// 输出位置：源 MP4 同目录、同名换 `.gif`（`-y` 覆盖）。

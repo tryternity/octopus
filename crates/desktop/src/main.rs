@@ -608,6 +608,7 @@ pub fn run() {
             record_commands::export_gif,
             #[cfg(target_os = "macos")]
             record_commands::check_ffmpeg,
+            record_commands::get_record_status,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

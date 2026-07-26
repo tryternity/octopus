@@ -57,6 +57,11 @@ struct SessionInner {
     /// stop() 方法在 helper 进程退出后 take 它返回给调用方。
     /// None 表示未收到 RecordingStopped（异常退出 / kill 路径），调用方 fallback。
     last_stopped: Option<StoppedInfo>,
+    /// 录制真正开始的时刻（reader task 收到 RecordingStarted 事件时记）。
+    /// 用于 RecordControl 浮窗 mount 时计算已录时长（浮窗创建晚于 recording-started 事件，
+    /// 收不到事件，靠查这个字段 + Instant::now() 算 elapsed）。
+    /// pause 时不清（保持原值，resume 后继续累计）；stop/kill 时清空。
+    recording_started_at: Option<std::time::Instant>,
 }
 
 impl RecordSession {
@@ -68,6 +73,7 @@ impl RecordSession {
                 stdin: None,
                 last_request: None,
                 last_stopped: None,
+                recording_started_at: None,
             })),
         }
     }
@@ -82,6 +88,17 @@ impl RecordSession {
 
     pub async fn state(&self) -> SessionState {
         self.inner.lock().await.state
+    }
+
+    /// 当前录制已进行的秒数（用于 RecordControl 浮窗 mount 时初始化计时器）。
+    ///
+    /// 浮窗创建晚于 recording-started 事件，收不到事件，靠此方法 + Instant::now() 算 elapsed。
+    /// pause 时不清 recording_started_at（保持原值，resume 后继续累计）——但 pause 期间
+    /// elapsed 仍在增长，调用方需结合 state 判断（paused 时不再 +1）。
+    /// 返回 None 表示未在录制 / paused 中（recording_started_at 为 None）。
+    pub async fn elapsed_secs(&self) -> Option<u64> {
+        let inner = self.inner.lock().await;
+        inner.recording_started_at.map(|t| t.elapsed().as_secs())
     }
 
     /// 启动录制。
@@ -124,7 +141,10 @@ impl RecordSession {
                         let mut inner = inner_clone.lock().await;
                         match &event {
                             HelperEvent::Ready { .. } => inner.state = SessionState::Starting,
-                            HelperEvent::RecordingStarted { .. } => inner.state = SessionState::Recording,
+                            HelperEvent::RecordingStarted { .. } => {
+                                inner.state = SessionState::Recording;
+                                inner.recording_started_at = Some(std::time::Instant::now());
+                            }
                             HelperEvent::RecordingPaused { .. } => inner.state = SessionState::Paused,
                             HelperEvent::RecordingResumed { .. } => inner.state = SessionState::Recording,
                             HelperEvent::RecordingStopped { screen_path, duration_ms, file_size } => {
@@ -195,6 +215,7 @@ impl RecordSession {
         let mut inner = self.inner.lock().await;
         inner.stdin = None;
         inner.state = SessionState::Idle;
+        inner.recording_started_at = None;
         // 不清 last_request——desktop 层 stop_and_store 在 session.stop() 之后仍需读它入库。
         // 清空时机交给下次 start（start 时会覆盖 last_request = Some(new_request)）。
 
@@ -216,6 +237,7 @@ impl RecordSession {
         }
         inner.stdin = None;
         inner.state = SessionState::Idle;
+        inner.recording_started_at = None;
         Ok(())
     }
 
