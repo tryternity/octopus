@@ -88,6 +88,31 @@ export default function RecordConfig() {
   const [fps, setFps] = useState<15 | 30 | 60>(30);
   const [codec, setCodec] = useState<"h264" | "hevc">("h264");
   const [hideCursor, setHideCursor] = useState(false);
+  // 录屏停止后自动 Finder 高亮文件——持久化到 DB（record_reveal_after_stop，默认 true）。
+  // 与 fps/codec 不同（那俩是 session-only），这个是跨 session 行为，必须持久化。
+  const [revealAfterStop, setRevealAfterStop] = useState(true);
+
+  // 从 DB 读 revealAfterStop 配置（默认 true，配置项缺失时也用 true）。
+  // 用 get_config 批量拿（与 Settings 同命令），key 不存在时回退 true。
+  useEffect(() => {
+    invoke<Record<string, unknown>>("get_config")
+      .then((cfg) => {
+        const v = cfg.record_reveal_after_stop;
+        if (typeof v === "string") setRevealAfterStop(v !== "false");
+        else if (typeof v === "boolean") setRevealAfterStop(v);
+        // undefined / null → 保持默认 true
+      })
+      .catch(() => { /* 读配置失败用默认值，不阻塞浮窗 */ });
+  }, []);
+
+  const toggleRevealAfterStop = useCallback(() => {
+    setRevealAfterStop((prev) => {
+      const next = !prev;
+      invoke("set_config", { key: "record_reveal_after_stop", value: next })
+        .catch(() => { /* 写配置失败仅静默，UI 已切换 */ });
+      return next;
+    });
+  }, []);
 
   // ── 拉取源列表（浮窗 show 时 + tab 切换时）──────────────────────
   const refreshSources = useCallback(async () => {
@@ -390,6 +415,29 @@ export default function RecordConfig() {
                     className={cn(
                       "absolute top-0.5 w-2.5 h-2.5 rounded-full bg-background transition-transform",
                       hideCursor ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </span>
+              </button>
+              {/* 录屏停止后自动 Finder 高亮（持久化到 DB record_reveal_after_stop）*/}
+              <button
+                onClick={toggleRevealAfterStop}
+                className={cn(
+                  "flex items-center justify-between w-full text-[11px] transition-colors",
+                  revealAfterStop ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <span>{t("recordConfig.revealAfterStop")}</span>
+                <span
+                  className={cn(
+                    "w-7 h-3.5 rounded-full relative transition-colors",
+                    revealAfterStop ? "bg-primary" : "bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 w-2.5 h-2.5 rounded-full bg-background transition-transform",
+                      revealAfterStop ? "translate-x-3.5" : "translate-x-0.5",
                     )}
                   />
                 </span>

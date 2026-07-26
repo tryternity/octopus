@@ -482,4 +482,5 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
     ('record_default_source_type', 'display',         '默认录制源类型'),
     ('record_output_dir',        'recordings',        '输出目录（相对 ~/.octopus/）'),
-    ('record_history_view',      'grid',              '历史列表默认视图（grid/list）');
+    ('record_history_view',      'grid',              '历史列表默认视图（grid/list）'),
+    ('record_reveal_after_stop', 'true',              '录屏停止后是否自动在 Finder 高亮文件');

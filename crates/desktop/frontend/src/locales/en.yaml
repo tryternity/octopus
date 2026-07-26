@@ -1028,3 +1028,4 @@ recordConfig:
   fps: Frame Rate
   codec: Codec
   hideCursor: Hide Cursor
+  revealAfterStop: Reveal after stop

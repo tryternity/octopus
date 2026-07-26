@@ -2811,6 +2811,16 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 
 `start_with_config` 收到 `device_name=null` 时调它兜底（`build_default_config` 也复用此函数去重）。回归测试 3 个（2 unit + 1 ignored DB 集成）。
 
+### Task 10 后续：录屏停止自动 Finder 高亮（2026-07-26）
+
+用户决策「录屏完毕后，保存文件自动打开所在的文件夹」。加配置项 `record_reveal_after_stop`（默认 true）。
+
+实现：
+- `stop_and_store_inner` 入库成功后，读 `parse_bool_config("record_reveal_after_stop", true)`，true 时 spawn `open -R <abs_path>`（与 `reveal_recording` 命令同机制）。失败仅 log 不影响录制。
+- DB seed 加 `record_reveal_after_stop = 'true'`（新用户；老用户通过 `parse_bool_config` 默认 true 兜底，配置项缺失也行为正确）。
+- RecordConfig 浮窗 Advanced 区加 toggle「停止后定位文件 / Reveal after stop」——**持久化到 DB**（与 fps/codec session-only 不同，这是跨 session 行为）。mount 时读 `get_config`，切换时调 `set_config`。
+- i18n 加 `recordConfig.revealAfterStop`（zh/en）。
+
 ---
 
 **Plan 结束。下一步：执行方式选择。**

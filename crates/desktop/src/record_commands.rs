@@ -565,6 +565,21 @@ async fn stop_and_store_inner(
     #[cfg(target_os = "macos")]
     crate::tray::update_record_tray_label(false);
 
+    // 录制完成自动在 Finder 高亮文件（用户决策 2026-07-26，record_reveal_after_stop
+    // 配置项默认 true）。非 macOS 静默跳过。失败仅 log，不影响录制结果。
+    if parse_bool_config("record_reveal_after_stop", true) {
+        #[cfg(target_os = "macos")]
+        {
+            let path_str = abs_path.to_string_lossy().to_string();
+            if let Err(e) = std::process::Command::new("open")
+                .args(["-R", &path_str])
+                .spawn()
+            {
+                log::warn!("[record] Finder reveal 失败（不影响录制）: {e}");
+            }
+        }
+    }
+
     Ok(Some(meta))
 }
 
