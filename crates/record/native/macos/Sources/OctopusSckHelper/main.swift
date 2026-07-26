@@ -15,7 +15,6 @@
 //
 
 import AVFoundation
-import Accelerate
 import AppKit
 import CoreGraphics
 import CoreMedia
@@ -145,30 +144,11 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	private let request: RecordingRequest
 	private let sampleQueue = DispatchQueue(label: "app.octopus.sck-helper.samples")
 	private let stateQueue = DispatchQueue(label: "app.octopus.sck-helper.state")
-	/// 混音专用串行队列——与 sampleQueue 分离，避免 reentrant sync 死锁。
-	/// audio callback 可能在 sampleQueue 或 SCK 内部 queue 上跑，混音操作统一 dispatch 到
-	/// 这个独立 queue 上串行执行。所有 ring buffer / mixedAudioFormat 访问必须在此 queue 上。
-	private let mixQueue = DispatchQueue(label: "app.octopus.sck-helper.mix")
 	private var stream: SCStream?
 	private var writer: AVAssetWriter?
 	private var videoInput: AVAssetWriterInput?
-	// 混音输出：系统音频 + 麦克风实时混合成单条 AAC 轨（2026-07-27 简化重写）。
-	// 原双轨设计（system + mic 各一轨）导致播放器默认只放第一条轨，用户听不到麦克风。
-	// 第一版 PTS 配对实现把音频完全弄丢了（2 个文件 0 audio track），重写为**帧计数 ring buffer**：
-	// 不依赖 PTS 匹配——两个独立 PCM ring buffer 按帧数累积，达到输出批次大小就混合一次。
-	// 简单、鲁棒、天然处理「只开一边」（另一边永远空 → 该通道静音，但输出不中断）。
-	private var mixedAudioInput: AVAssetWriterInput?
-	/// 混音目标格式——锁定自首个样本（期望 48k/stereo/float32 non-interleaved）。
-	private var mixedAudioFormat: AVAudioFormat?
-	/// 两个独立的 PCM 累积缓冲（按帧追加），所有访问限制在 sampleQueue（已是串行队列）。
-	private var systemRing: [Float] = []  // interleaved float32（ch0,ch1,ch0,ch1,...）
-	private var micRing: [Float] = []
-	/// 每次混合输出的帧数（AAC 编码器典型 1024 帧/批次）。
-	private let mixBatchFrames: Int = 1024
-	/// 下一批输出样本的 PTS（按混合批次累加，timescale=48000）。
-	private var nextOutputSampleIndex: Int64 = 0
-	/// ring buffer 背压上限（帧数）——超此截断最旧，防一边卡住时无限堆积。
-	private let ringMaxFrames: Int = 48_000 * 2  // 2 秒
+	private var systemAudioInput: AVAssetWriterInput?
+	private var microphoneAudioInput: AVAssetWriterInput?
 	private var didStartWriting = false
 	private var didEmitRecordingStarted = false
 	private var isStopping = false
@@ -203,10 +183,8 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		let stream = SCStream(filter: target.filter, configuration: configuration, delegate: self)
 
 		try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-		FileHandle.standardError.write(Data("[mix-diag] addStreamOutput screen ok; system.enabled=\(request.audio.system.enabled) nativeMicEnabled=\(nativeMicrophoneEnabled)\n".utf8))
 		if request.audio.system.enabled {
 			try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
-			FileHandle.standardError.write(Data("[mix-diag] addStreamOutput .audio ok\n".utf8))
 		}
 		if nativeMicrophoneEnabled {
 			guard let microphoneOutputType = SCStreamOutputType(rawValue: microphoneOutputTypeRawValue) else {
@@ -215,7 +193,6 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 				)
 			}
 			try stream.addStreamOutput(self, type: microphoneOutputType, sampleHandlerQueue: sampleQueue)
-			FileHandle.standardError.write(Data("[mix-diag] addStreamOutput mic(rawValue=\(microphoneOutputTypeRawValue)) ok\n".utf8))
 		}
 		try setupWriter()
 
@@ -314,14 +291,12 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		if type == .audio {
-			FileHandle.standardError.write(Data("[mix-diag] audio callback type=.audio\n".utf8))
-			enqueueForMix(sampleBuffer, source: .system)
+			appendAudioSampleBuffer(sampleBuffer, to: systemAudioInput)
 			return
 		}
 
 		if type.rawValue == microphoneOutputTypeRawValue {
-			FileHandle.standardError.write(Data("[mix-diag] audio callback type=mic(rawValue=\(type.rawValue))\n".utf8))
-			enqueueForMix(sampleBuffer, source: .microphone)
+			appendAudioSampleBuffer(sampleBuffer, to: microphoneAudioInput)
 			return
 		}
 
@@ -529,10 +504,15 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		self.writer = writer
 		self.videoInput = input
 
-		// 混音输出单条轨（系统音频 + 麦克风任一开启即建）。bitRate 用系统音频的 192k
-		// （混音后信息量比单 mic 高，192k 更稳；若只开 mic 也是合理上限）。
-		if request.audio.system.enabled || nativeMicrophoneEnabled {
-			mixedAudioInput = try addAudioInput(to: writer, bitRate: 192_000)
+		// ⚠️ 麦克风轨先 add（变 track 1，播放器默认播放）——原顺序 system 先 add 导致
+		// 播放器默认放 system audio track（常为静音），用户听不到麦克风。
+		// 实时混音方案（commit 6cb6fe90 ~ f9741968）经多轮调试仍无法稳定输出，
+		// 暂回退双轨 + 调整顺序，混音作为后续 P2 任务重新设计。
+		if nativeMicrophoneEnabled {
+			microphoneAudioInput = try addAudioInput(to: writer, bitRate: 128_000)
+		}
+		if request.audio.system.enabled {
+			systemAudioInput = try addAudioInput(to: writer, bitRate: 192_000)
 		}
 	}
 
@@ -541,13 +521,9 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 			return
 		}
 
-		// 混音收尾：在 mixQueue 上 flush 两边 deque 剩余样本（避免尾部丢失），再 markAsFinished。
-		// 用 mixQueue（不是 sampleQueue）——避免与 audio callback 的 sampleQueue reentrant sync 死锁。
-		mixQueue.sync {
-			flushPendingMixSamples()
-		}
 		videoInput?.markAsFinished()
-		mixedAudioInput?.markAsFinished()
+		systemAudioInput?.markAsFinished()
+		microphoneAudioInput?.markAsFinished()
 
 		await withCheckedContinuation { continuation in
 			writer.finishWriting {
@@ -632,287 +608,6 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		}
 
 		input.append(sampleBuffer)
-	}
-
-	// ── 实时混音：系统音频 + 麦克风 → 单轨（2026-07-27 简化重写）──────────────
-	// 设计：帧计数 ring buffer（不用 PTS 配对）。
-	// 两个独立 PCM 累积缓冲（interleaved float32），按帧数追加。
-	// 每当两边累积都达到 mixBatchFrames（或单边超过时），混合一批写出。
-	// `enqueueForMix` 内部用 mixQueue.sync 串行化所有 ring buffer 访问（防并发 crash）。
-	// `drainMixableSamples` / `flushPendingMixSamples` 假定已在 mixQueue 上（由 enqueue / finishWriter 保证）。
-	//
-	// ⚠️ 线程安全（2026-07-27 修 crash）：audio callback 可能在 sampleQueue 或 SCK 内部
-	// queue 上跑。**不能在 sampleQueue 上再 sampleQueue.sync**（reentrant sync 死锁 crash），
-	// 所以用独立的 mixQueue。所有 ring buffer + mixedAudioFormat 访问必须经 mixQueue.sync。
-
-	/// 音频源标记——决定 sample 进哪个 ring buffer。
-	private enum AudioMixSource { case system, microphone }
-
-	/// 把 CMSampleBuffer 的 PCM 数据追加到指定 ring buffer（interleaved float32）。
-	/// 所有 ring buffer / mixedAudioFormat 访问在 mixQueue.sync 内（防并发 crash + reentrant 死锁）。
-	private func enqueueForMix(_ sampleBuffer: CMSampleBuffer, source: AudioMixSource) {
-		guard mixedAudioInput != nil else {
-			FileHandle.standardError.write(Data("[mix-diag] enqueue SKIP: mixedAudioInput nil\n".utf8))
-			return
-		}
-
-		// PCM 转换在锁外做（CPU 密集，不访问共享状态）
-		// 首次锁定 mixedAudioFormat 需要锁内做（并发首次会重复设但幂等）
-		mixQueue.sync {
-			// 首次：锁定 mixedAudioFormat（强制 48k/stereo/float32 interleaved）
-			if mixedAudioFormat == nil {
-				mixedAudioFormat = AVAudioFormat(
-					commonFormat: .pcmFormatFloat32,
-					sampleRate: 48_000,
-					channels: 2,
-					interleaved: true
-				)
-			}
-		}
-		guard let targetFormat = mixedAudioFormat else { return }
-
-		// PCM 转换（锁外，纯函数）
-		guard let interleaved = toInterleavedFloat32(sampleBuffer, targetFormat: targetFormat) else {
-			FileHandle.standardError.write(Data("[mix-diag] toInterleavedFloat32 FAILED for \(source)\n".utf8))
-			emit(["event": "warning", "code": "mix-convert-failed", "message": "toInterleavedFloat32 failed"])
-			return
-		}
-
-		// 锁内追加 + drain（访问共享 ring buffers）
-		mixQueue.sync {
-			FileHandle.standardError.write(Data("[mix-diag] enqueue \(source): +\(interleaved.count) floats\n".utf8))
-			switch source {
-			case .system:
-				systemRing.append(contentsOf: interleaved)
-				let maxFloats = ringMaxFrames * 2
-				if systemRing.count > maxFloats {
-					systemRing.removeFirst(systemRing.count - maxFloats)
-				}
-			case .microphone:
-				micRing.append(contentsOf: interleaved)
-				let maxFloats = ringMaxFrames * 2
-				if micRing.count > maxFloats {
-					micRing.removeFirst(micRing.count - maxFloats)
-				}
-			}
-			drainMixableSamples()
-		}
-	}
-
-		// 背压：超 ringMaxFrames（按 2 通道，帧数 = count/2）截断最旧
-	/// 从 CMSampleBuffer 提取 PCM 转 interleaved float32 数组（按 targetFormat 归一）。
-	/// SCK 通常直接交付 48k/stereo/float32 non-interleaved——需转 interleaved 便于 vDSP。
-	private func toInterleavedFloat32(_ sampleBuffer: CMSampleBuffer, targetFormat: AVAudioFormat) -> [Float]? {
-		guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
-			  let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer),
-			  let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else { return nil }
-		let asbd = asbdPtr.pointee
-
-		let srcFormat = AVAudioFormat(
-			commonFormat: (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0 ? .pcmFormatFloat32 : .pcmFormatInt16,
-			sampleRate: asbd.mSampleRate,
-			channels: asbd.mChannelsPerFrame,
-			interleaved: (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
-		)
-		guard let srcFormat = srcFormat else { return nil }
-
-		let frameLength = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-		guard let srcBuffer = AVAudioPCMBuffer(pcmFormat: srcFormat, frameCapacity: frameLength) else { return nil }
-		srcBuffer.frameLength = frameLength
-
-		// 拷贝原始字节到 srcBuffer
-		let length = CMBlockBufferGetDataLength(blockBuffer)
-		guard let dst = srcBuffer.audioBufferList.pointee.mBuffers.mData else { return nil }
-		let copyOk = CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: dst)
-		guard copyOk == kCMBlockBufferNoErr else { return nil }
-
-		// 格式一致：直接转 interleaved 数组
-		if srcFormat.sampleRate == targetFormat.sampleRate && srcFormat.channelCount == targetFormat.channelCount {
-			return pcmBufferToInterleaved(srcBuffer, channels: Int(srcFormat.channelCount), frames: Int(frameLength),
-			                              srcInterleaved: srcFormat.isInterleaved)
-		}
-
-		// 格式不一致：AVAudioConverter 转换
-		guard let converter = AVAudioConverter(from: srcFormat, to: targetFormat) else { return nil }
-		let ratio = targetFormat.sampleRate / srcFormat.sampleRate
-		let outCapacity = AVAudioFrameCount(Double(frameLength) * ratio) + 1024
-		guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCapacity) else { return nil }
-		var consumed = false
-		let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-			if consumed { outStatus.pointee = .endOfStream; return nil }
-			consumed = true
-			outStatus.pointee = .haveData
-			return srcBuffer
-		}
-		var convError: NSError?
-		let status = converter.convert(to: outBuffer, error: &convError, withInputFrom: inputBlock)
-		guard status != .error, convError == nil else { return nil }
-		return pcmBufferToInterleaved(outBuffer, channels: Int(targetFormat.channelCount), frames: Int(outBuffer.frameLength),
-		                              srcInterleaved: targetFormat.isInterleaved)
-	}
-
-	/// AVAudioPCMBuffer → interleaved [Float]（L,R,L,R,...）。
-	/// 处理 srcInterleaved（已是交错）和 non-interleaved（分通道）两种情况。
-	private func pcmBufferToInterleaved(_ buf: AVAudioPCMBuffer, channels: Int, frames: Int, srcInterleaved: Bool) -> [Float] {
-		var out = [Float](repeating: 0, count: frames * channels)
-		if srcInterleaved {
-			// 已交错——直接 memcpy float32
-			if let src = buf.floatChannelData?[0] {
-				out.withUnsafeMutableBufferPointer { dst in
-					dst.baseAddress?.update(from: src, count: frames * channels)
-				}
-			}
-		} else {
-			// 非交错——逐通道交错拷贝
-			for ch in 0..<channels {
-				guard let srcCh = buf.floatChannelData?[ch] else { continue }
-				for f in 0..<frames {
-					out[f * channels + ch] = srcCh[f]
-				}
-			}
-		}
-		return out
-	}
-
-	/// 混音输出循环：当两边 ring 至少有一边达到 mixBatchFrames 时，取 mixBatchFrames 帧（不足补零）
-	/// → vDSP 求和 → 0.5 衰减 → 封 CMSampleBuffer 写入 mixedAudioInput。
-	/// PTS 用 nextOutputSampleIndex 累加（不依赖输入 PTS，避免对齐问题）。
-	private func drainMixableSamples() {
-		guard mixedAudioInput != nil, let format = mixedAudioFormat else { return }
-		// ⚠️ 必须等 didStartWriting=true（首个 video frame 到达后 writer.startWriting 才调）。
-		// 否则 appendInterleavedPCM 内 guard didStartWriting 会静默 return，但 drain 已经
-		// removeFirst 把数据拿走 → 数据丢失 + ring buffer 永远不够 → 文件 0 audio（2026-07-27 bug）。
-		guard didStartWriting else { return }
-		let channels = 2
-		let batchFloats = mixBatchFrames * channels
-		FileHandle.standardError.write(Data("[mix-diag] drain: sys=\(systemRing.count) mic=\(micRing.count) need=\(batchFloats)\n".utf8))
-
-		while max(systemRing.count, micRing.count) >= batchFloats {
-			// 取 batchFloats 个 float（不足补零）
-			var sysBatch = [Float](repeating: 0, count: batchFloats)
-			var micBatch = [Float](repeating: 0, count: batchFloats)
-
-			let sysTake = min(systemRing.count, batchFloats)
-			if sysTake > 0 {
-				_ = systemRing.withUnsafeMutableBufferPointer { rb in
-					sysBatch.withUnsafeMutableBufferPointer { sb in
-						sb.baseAddress?.update(from: rb.baseAddress!, count: sysTake)
-					}
-				}
-				systemRing.removeFirst(sysTake)
-			}
-			let micTake = min(micRing.count, batchFloats)
-			if micTake > 0 {
-				_ = micRing.withUnsafeMutableBufferPointer { rb in
-					micBatch.withUnsafeMutableBufferPointer { sb in
-						sb.baseAddress?.update(from: rb.baseAddress!, count: micTake)
-					}
-				}
-				micRing.removeFirst(micTake)
-			}
-
-			// vDSP 求和 + 0.5 衰减
-			var mixed = [Float](repeating: 0, count: batchFloats)
-			vDSP_vadd(sysBatch, 1, micBatch, 1, &mixed, 1, vDSP_Length(batchFloats))
-			var half: Float = 0.5
-			// in-place 衰减：vDSP_vsmul 不允许 src==dst 重叠，用临时变量
-			var attenuated = [Float](repeating: 0, count: batchFloats)
-			vDSP_vsmul(mixed, 1, &half, &attenuated, 1, vDSP_Length(batchFloats))
-
-			// 封 CMSampleBuffer 写出
-			let pts = CMTime(value: nextOutputSampleIndex, timescale: 48_000)
-			nextOutputSampleIndex += Int64(mixBatchFrames)
-			if let format = mixedAudioFormat {
-				appendInterleavedPCM(attenuated, channels: channels, frames: mixBatchFrames, pts: pts, format: format)
-			}
-		}
-	}
-
-	/// 把 interleaved [Float] PCM 封成 CMSampleBuffer 并 append 到 mixedAudioInput。
-	private func appendInterleavedPCM(_ interleaved: [Float], channels: Int, frames: Int, pts: CMTime, format: AVAudioFormat) {
-		guard didStartWriting else { return }
-		guard let input = mixedAudioInput, input.isReadyForMoreMediaData else { return }
-		guard let formatDesc = format.formatDescription as CMAudioFormatDescription? else { return }
-
-		// 拷贝到 CMBlockBuffer
-		var blockBuffer: CMBlockBuffer?
-		let totalBytes = interleaved.count * MemoryLayout<Float>.size
-		let ok = interleaved.withUnsafeBufferPointer { ptr -> OSStatus in
-			CMBlockBufferCreateWithMemoryBlock(
-				allocator: kCFAllocatorDefault,
-				memoryBlock: nil,
-				blockLength: totalBytes,
-				blockAllocator: kCFAllocatorDefault,
-				customBlockSource: nil,
-				offsetToData: 0,
-				dataLength: totalBytes,
-				flags: 0,
-				blockBufferOut: &blockBuffer
-			)
-		}
-		guard ok == kCMBlockBufferNoErr, let bb = blockBuffer else { return }
-		let copyOk = interleaved.withUnsafeBufferPointer { ptr -> OSStatus in
-			CMBlockBufferCopyDataBytes(bb, atOffset: 0, dataLength: totalBytes, destination: UnsafeMutableRawPointer(mutating: ptr.baseAddress!))
-		}
-		guard copyOk == kCMBlockBufferNoErr else { return }
-
-		// 封 CMSampleBuffer（PCM ready）
-		var sampleBuffer: CMSampleBuffer?
-		var timing = CMSampleTimingInfo(
-			duration: CMTime(value: Int64(frames), timescale: 48_000),
-			presentationTimeStamp: pts,
-			decodeTimeStamp: .invalid
-		)
-		var sampleSize = MemoryLayout<Float>.size * channels  // 每帧字节数（interleaved）
-		let status = CMSampleBufferCreateReady(
-			allocator: kCFAllocatorDefault,
-			dataBuffer: bb,
-			formatDescription: formatDesc,
-			sampleCount: CMItemCount(frames),
-			sampleTimingEntryCount: 1,
-			sampleTimingArray: &timing,
-			sampleSizeEntryCount: 1,
-			sampleSizeArray: &sampleSize,
-			sampleBufferOut: &sampleBuffer
-		)
-		guard status == noErr, let sb = sampleBuffer else {
-			emit(["event": "warning", "code": "mix-samplebuf-failed", "message": "CMSampleBufferCreateReady status=\(status)"])
-			return
-		}
-		FileHandle.standardError.write(Data("[mix-diag] append: frames=\(frames) pts=\(pts.value)/\(pts.timescale) ready=\(input.isReadyForMoreMediaData)\n".utf8))
-		input.append(sb)
-	}
-
-	/// 收尾时把两边 ring 剩余样本全部混合写出（避免尾部丢失）。
-	/// 在 finishWriter markAsFinished 之前调，必须在 mixQueue（由 finishWriter 的 mixQueue.sync 保证）。
-	private func flushPendingMixSamples() {
-		// 把剩余的也按 batch 混合（不足一批的也输出，用 0 补齐）
-		while !systemRing.isEmpty || !micRing.isEmpty {
-			let channels = 2
-			let batchFloats = mixBatchFrames * channels
-			var sysBatch = [Float](repeating: 0, count: batchFloats)
-			var micBatch = [Float](repeating: 0, count: batchFloats)
-			let sysTake = min(systemRing.count, batchFloats)
-			if sysTake > 0 {
-				sysBatch.replaceSubrange(0..<sysTake, with: systemRing.prefix(sysTake))
-				systemRing.removeFirst(sysTake)
-			}
-			let micTake = min(micRing.count, batchFloats)
-			if micTake > 0 {
-				micBatch.replaceSubrange(0..<micTake, with: micRing.prefix(micTake))
-				micRing.removeFirst(micTake)
-			}
-			var mixed = [Float](repeating: 0, count: batchFloats)
-			vDSP_vadd(sysBatch, 1, micBatch, 1, &mixed, 1, vDSP_Length(batchFloats))
-			var half: Float = 0.5
-			var attenuated = [Float](repeating: 0, count: batchFloats)
-			vDSP_vsmul(mixed, 1, &half, &attenuated, 1, vDSP_Length(batchFloats))
-			let pts = CMTime(value: nextOutputSampleIndex, timescale: 48_000)
-			nextOutputSampleIndex += Int64(mixBatchFrames)
-			if let format = mixedAudioFormat {
-				appendInterleavedPCM(attenuated, channels: channels, frames: mixBatchFrames, pts: pts, format: format)
-			}
-		}
 	}
 
 	private func currentPauseState() -> (paused: Bool, offset: CMTime) {
