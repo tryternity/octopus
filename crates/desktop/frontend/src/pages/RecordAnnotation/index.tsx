@@ -356,6 +356,10 @@ export default function RecordAnnotation() {
     ? toolbarTop + TOOLBAR_H
     : Math.max(0, toolbarTop - 200);
 
+  // popover X：跟随被点击的工具按钮中心（state.popoverX 由 onToolSelect 设置），
+  // 首次未点按钮时 fallback 到选区中心（与截图一致）。
+  const popoverLeft = annotation.popoverX || (canvasRect.ox + canvasRect.w / 2);
+
   // 工具栏 X clamp（基于 canvasRect 水平区间）
   // toolbarW 未就绪时用 150 估算（与原实现一致）
   const halfW = toolbarW / 2 || 150;
@@ -437,6 +441,7 @@ export default function RecordAnnotation() {
         top={toolbarTop}
         left={toolbarCenterX}
         popoverY={popoverY}
+        popoverX={popoverLeft}
         onToolChange={(target) => {
           // 选标注工具 → 不穿透（画标注）；选 "none"（鼠标）→ 穿透（操作下层应用）
           invoke("set_annotation_passthrough", { passthrough: target === "none" }).catch(() => {});

@@ -827,6 +827,8 @@ export default function Screenshot() {
           left={toolbarCenterX}
           // popover 仅在 selected 模式显示（selecting/move/resize 时收起，避免遮挡手柄操作）
           popoverY={mode === "selected" ? popoverY : undefined}
+          // popover X：跟随按钮中心（state.popoverX），未点按钮时 fallback 到选区中心
+          popoverX={annotation.popoverX || (sel.x + sel.w / 2)}
         >
           {/* divider + OCR（截图独有） */}
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />

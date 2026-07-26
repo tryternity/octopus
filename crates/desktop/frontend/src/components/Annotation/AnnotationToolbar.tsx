@@ -52,6 +52,14 @@ export interface AnnotationToolbarProps {
   /** 业务按钮（OCR / scroll / save / pin / confirm / cancel / stop 等） */
   children?: ReactNode;
 
+  /**
+   * popover X 位置（业务侧算好，含 fallback）。
+   * 不传时用 state.popoverX（首次为 0，会偏到屏幕左边缘——业务侧应传 fallback）。
+   * 截图：popoverX || (sel.x + sel.w / 2)
+   * 录屏：popoverX || (canvasRect.ox + canvasRect.w / 2)
+   */
+  popoverX?: number;
+
   /** 工具栏根 div 是否显示（业务侧条件控制，默认 true） */
   visible?: boolean;
 }
@@ -119,6 +127,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     top,
     left,
     popoverY,
+    popoverX,
     children,
     visible = true,
   } = props;
@@ -255,7 +264,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
       {/* 工具属性 popover */}
       {popoverY !== undefined && state.tool !== "none" && state.showPopover && (
         <ToolPropsPopover
-          x={state.popoverX}
+          x={popoverX ?? state.popoverX}
           y={popoverY}
           color={state.toolColor}
           width={state.toolWidth}
