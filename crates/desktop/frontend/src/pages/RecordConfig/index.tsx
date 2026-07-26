@@ -46,7 +46,7 @@ type Tab = "display" | "window" | "area";
 
 export default function RecordConfig() {
   const t = useT();
-  const [tab, setTab] = useState<Tab>("display");
+  const [tab, setTab] = useState<Tab>("area");
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [selectedDisplayId, setSelectedDisplayId] = useState<number | null>(null);
@@ -79,7 +79,7 @@ export default function RecordConfig() {
     };
   }, []);
   const [systemAudio, setSystemAudio] = useState(true);
-  const [microphone, setMicrophone] = useState(false);
+  const [microphone, setMicrophone] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // ── 高级（编码参数，默认收起）──
@@ -242,9 +242,9 @@ export default function RecordConfig() {
         <div className="flex gap-1 px-3 pt-3">
           {(
             [
+              { id: "area", icon: Square, label: t("recordConfig.tabArea") },
               { id: "display", icon: Monitor, label: t("recordConfig.tabDisplay") },
               { id: "window", icon: AppWindow, label: t("recordConfig.tabWindow") },
-              { id: "area", icon: Square, label: t("recordConfig.tabArea") },
             ] as const
           ).map(({ id, icon: Icon, label }) => (
             <button
@@ -263,25 +263,41 @@ export default function RecordConfig() {
           ))}
         </div>
 
-        {/* ── 源列表（仅 display / window；area 无需选源，直接从音频开关开始）── */}
-        {tab !== "area" && (
-          <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
-            {tab === "display" && (
-              <DisplayList
-                displays={displays}
-                selectedId={selectedDisplayId}
-                onSelect={setSelectedDisplayId}
-              />
-            )}
-            {tab === "window" && (
-              <WindowList
-                windows={windows}
-                selectedId={selectedWindowId}
-                onSelect={setSelectedWindowId}
-              />
-            )}
-          </div>
-        )}
+        {/* ── 源列表（display / window 选源）/ area 示意图 ──────────── */}
+        <div className="px-3 py-3 min-h-[140px] max-h-[200px] overflow-y-auto thin-scrollbar">
+          {tab === "display" && (
+            <DisplayList
+              displays={displays}
+              selectedId={selectedDisplayId}
+              onSelect={setSelectedDisplayId}
+            />
+          )}
+          {tab === "window" && (
+            <WindowList
+              windows={windows}
+              selectedId={selectedWindowId}
+              onSelect={setSelectedWindowId}
+            />
+          )}
+          {tab === "area" && (
+            <div className="flex flex-col items-center justify-center h-[120px] gap-3">
+              <svg width="160" height="80" viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                {/* 虚线选区框 */}
+                <rect x="20" y="10" width="120" height="60" rx="4"
+                  stroke="currentColor" strokeWidth="1.5" strokeDasharray="4 3"
+                  className="text-primary" fill="none" />
+                {/* 四角手柄 */}
+                <rect x="17" y="7" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="137" y="7" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="17" y="67" width="6" height="6" fill="currentColor" className="text-primary" />
+                <rect x="137" y="67" width="6" height="6" fill="currentColor" className="text-primary" />
+              </svg>
+              <p className="text-[11px] text-muted-foreground text-center max-w-[200px] leading-relaxed">
+                {t("recordConfig.areaPlaceholder")}
+              </p>
+            </div>
+          )}
+        </div>
 
         {/* ── 音频开关 ─────────────────────────────────────── */}
         <div className="px-3 py-2 border-t border-border flex items-center gap-4">
