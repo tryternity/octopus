@@ -2725,8 +2725,10 @@ git commit -m "feat(packaging): DMG 脚本集成 helper 编译 + 第三方许可
 - [x] `cd crates/desktop/frontend && npm run build` 0 error（0 warning，2026-07-25 验证）
 - [ ] `./scripts/build-macos-dmg.sh` 打包成功（**待手动验证**——需 universal binary swift 编译环境，3-8 分钟）
 - [ ] 手动 e2e（按 spec §9.3 的 7 个场景）全过（**待用户在 GUI 环境验证**）
-  - [ ] **2026-07-26 新增**：副屏 display 录制 → 控制浮窗 pill 出现在副屏右下角（不是主屏）
-  - [ ] **2026-07-26 新增**：录屏 timeout 后能立即重试（不卡 AlreadyRunning）—— 验证 `reset_to_idle` 修复
+  - [x] **2026-07-26 新增**：副屏 display 录制 → 控制浮窗 pill 出现在副屏右下角（不是主屏） ✅ 用户验证
+  - [x] **2026-07-26 新增**：录屏 timeout 后能立即重试（不卡 AlreadyRunning）—— 验证 `reset_to_idle` 修复 ✅ 用户验证（间接：本轮 timeout 修复后实测整个流程正常，stderr reader 让 helper 不再卡死）
+  - [x] **2026-07-26 新增**：GIF 按钮（场记板图标）默认可见 ✅ 用户验证
+  - [x] **2026-07-26 新增**：录屏整个流程正常（验证 stderr reader 修复后 timeout 消失） ✅ 用户验证
 - [x] `THIRD_PARTY_LICENSES.md` 完整（§7.1 已填正式条目，含 8 处修改声明 + 上游 commit SHA）
 - [x] `docs/architecture.md` 同步更新（录屏模块章节）—— 已加「## 屏幕录制（2026-07-25 起，MVP）」section + 项目结构加 record crate + 「### octopus-record」模块说明
 
