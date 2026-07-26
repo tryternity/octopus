@@ -254,7 +254,8 @@ fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
     let verdict = privacy::check_privacy(url)?;
     match verdict {
         PrivacyVerdict::Public => {
-            log::warn!("[sync] 拒绝公有库: {}", url);
+            // E-PUBLIC-REPO-URL-LEAKS-PAT：redact URL 防含 PAT 的 URL 泄露到日志
+            log::warn!("[sync] 拒绝公有库: {}", octopus_sync::error::redact_url(url));
             Err(SyncError::PublicRepoRejected(url.to_string()))
         }
         PrivacyVerdict::Private => {

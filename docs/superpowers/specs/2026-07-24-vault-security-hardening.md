@@ -1293,3 +1293,25 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 - `parallelism ≤ 16`
 
 **回归测试**：`from_i64_strict_rejects_huge_remote_params`（对称 `from_i64_strict_rejects_weak_remote_params`）。
+
+---
+
+## 第四十九轮审查修复（2026-07-26，octopus-sync crate：E-PUBLIC-REPO-URL-LEAKS-PAT）
+
+### E-PUBLIC-REPO-URL-LEAKS-PAT: PublicRepoRejected(url) Display + log 双透传含 PAT 的 URL（中，凭证泄露，已修）
+
+**核查**：#11 修复守了 6 个 stderr 变体的 PAT 泄露（Display 一律不透传 `_msg`），但漏了第 7 个变体 `PublicRepoRejected(url)`——Display :88-92 直接 `{}` 透传 url。
+
+完整泄露链（4 点逐行核实）：
+1. privacy.rs:77 明确支持 `https://user:token@host` 格式
+2. engine.rs:257 `log::warn!` + :258 `PublicRepoRejected(url.to_string())` 用原始 url
+3. error.rs:88-92 Display `{}` 透传 url → 前端 toast
+4. error.rs:266-273 守护测试 variants 数组恰好不含 `PublicRepoRejected`
+
+**修复**：
+- error.rs 加 `redact_url(url)` helper——用 `url::Url::parse` 剥 userinfo（username/password），parse 失败（scp-like 等）原样返回
+- error.rs:88 PublicRepoRejected Display 改用 `redact_url(url)`
+- engine.rs:257 log::warn! 改用 `octopus_sync::error::redact_url(url)`（日志也是泄露面）
+- 守护测试 variants 加 `PublicRepoRejected("https://user:ghp_xxx@...")`
+
+**与 #11 的关系**：同一泄露模式（PAT 嵌 URL/stderr），#11 守了 stderr 6 变体，漏了 url 变体。守护测试 variants 也恰好不含它。
