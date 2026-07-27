@@ -530,7 +530,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
     // 3. 读所有 cipher/folder 文件 → upsert SQLite
     let (ciphers, folders) = store::import_all_from_files()?;
     for c in &ciphers {
-        // H2 修复：build_cipher_input_from_file 保留 deleted_at（之前硬编码 None → 复活）
+        // H2 修复：build_cipher_input_from_file 保留 is_deleted（之前硬编码 false → 复活）
         let input = build_cipher_input_from_file(c);
         upsert_cipher(&input)?;
     }
@@ -567,7 +567,7 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
 
 /// 从文件读出的 VaultCipher 构造 VaultCipherInput（clone/pull 共用，T1 修复）。
 ///
-/// **H2 不变量**：deleted_at 必须从文件取值传入（不能硬编码 None）——否则软删密码
+/// **H2 不变量**：is_deleted 必须从文件取值传入（不能硬编码 false）——否则软删密码
 /// 在新机 clone / 对端 pull 时复活成 live。此 helper 是生产构造点的单一真相源，
 /// 测试调它即覆盖生产逻辑（避免「测试自带修复值、绕过生产构造点」的 MatchType#1 同型弱点）。
 fn build_cipher_input_from_file(c: &octopus_infra::db::VaultCipher) -> VaultCipherInput {
@@ -583,7 +583,7 @@ fn build_cipher_input_from_file(c: &octopus_infra::db::VaultCipher) -> VaultCiph
         fields: c.fields.clone(),
         password_history: c.password_history.clone(),
         reprompt: c.reprompt,
-        deleted_at: c.deleted_at.clone(), // H2：保留文件中的软删状态
+        is_deleted: c.is_deleted, // H2：保留文件中的软删状态
         sync_md5: Some(md5),
     }
 }
@@ -926,7 +926,7 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
             match store::read_cipher_file(uuid) {
                 Ok(cipher_file) => {
                     let row = cipher_file.to_vault_cipher();
-                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
+                    // build_cipher_input_from_file 保留 is_deleted（H2）——T1 后是单一真相源
                     let input = build_cipher_input_from_file(&row);
                     upsert_cipher(&input)?;
                     count += 1;
@@ -1635,7 +1635,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T00:00:00".into(),
@@ -1765,7 +1765,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-07-25T00:00:00".into(),
             updated_at: "2026-07-25T00:00:00".into(),
             sync_md5: None,
@@ -1870,7 +1870,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: Some("md5-aaa".into()),
             created_at: "2026-07-24".into(),
             updated_at: "2026-07-24".into(),
@@ -1898,6 +1898,7 @@ mod tests {
             id: "folder-1".to_string(),
             name: "v1:name".into(),
             sort_order: 0,
+            is_deleted: false,
             sync_md5: Some("md5-aaa".into()),
             created_at: "2026-07-24".into(),
             updated_at: "2026-07-24".into(),
@@ -1936,7 +1937,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T00:00:00".into(),
@@ -1953,7 +1954,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: Some(md5.clone()),
         };
         octopus_infra::db::insert_vault_cipher(&input).unwrap();
@@ -2005,6 +2006,7 @@ mod tests {
             id: "rename-test-folder".to_string(),
             name: "v1:name-a".into(),
             sort_order: 0,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T00:00:00".into(),
@@ -2124,20 +2126,20 @@ mod tests {
         let _ = g;
     }
 
-    /// H2 回归守护：软删密码经 pull 同步后 deleted_at 必须存活。
+    /// H2 回归守护：软删密码经 pull 同步后 is_deleted 必须存活。
     ///
-    /// 场景：设备 A 软删密码 X（deleted_at=T）→ 文件带 deleted_at=T →
-    /// 设备 B pull → DB 应保留 deleted_at=T（而非复活成 live）。
+    /// 场景：设备 A 软删密码 X（is_deleted=true）→ 文件带 is_deleted=true →
+    /// 设备 B pull → DB 应保留 is_deleted=true（而非复活成 live）。
     ///
-    /// 之前 bug：VaultCipherInput 无 deleted_at 字段，pull 构造时丢弃 →
-    /// INSERT 默认 NULL / UPDATE 不碰 → 软删密码跨设备复活。
+    /// 之前 bug：VaultCipherInput 无 is_deleted 字段，pull 构造时丢弃 →
+    /// INSERT 默认 false / UPDATE 不碰 → 软删密码跨设备复活。
     #[test]
     fn pull_preserves_soft_deleted_at() {
         let _s = test_lock();
         let g = IntegrationGuard::new();
 
         use octopus_infra::db::VaultCipher;
-        // 文件系统写一个软删密码（deleted_at = T）
+        // 文件系统写一个软删密码（is_deleted = true）
         let soft_deleted = VaultCipher {
             id: "soft-delete-test-uuid".to_string(),
             folder_id: None,
@@ -2149,7 +2151,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: Some("2026-07-24T12:00:00".into()), // 软删
+            is_deleted: true, // 软删
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T12:00:00".into(),
@@ -2174,27 +2176,26 @@ mod tests {
         };
         store::write_outline_file(&outline).unwrap();
 
-        // pull 应把软删密码导入 DB（含 deleted_at）
+        // pull 应把软删密码导入 DB（含 is_deleted）
         write_stamp_matching_meta();
         let (pulled, _skipped) = pull_from_files().expect("pull should succeed");
         assert_eq!(pulled, 1, "软删密码应被 pull 导入");
 
-        // H2 核心断言：DB 中 deleted_at 必须保留（不能复活成 NULL）
+        // H2 核心断言：DB 中 is_deleted 必须保留（不能复活成 false）
         let db_cipher = octopus_infra::db::load_vault_cipher("soft-delete-test-uuid")
             .unwrap()
             .expect("cipher should exist in DB");
-        assert_eq!(
-            db_cipher.deleted_at.as_deref(),
-            Some("2026-07-24T12:00:00"),
-            "H2: 软删密码 pull 后 deleted_at 必须存活（不能复活成 live）"
+        assert!(
+            db_cipher.is_deleted,
+            "H2: 软删密码 pull 后 is_deleted 必须存活（不能复活成 live）"
         );
         let _ = g;
     }
 
-    /// H2 补充：clone 也应保留软删状态（之前 clone_initial 硬编码 deleted_at: None）。
+    /// H2 补充：clone 也应保留软删状态（之前 clone_initial 硬编码 is_deleted: false）。
     ///
     /// T1 修复（2026-07-24）：改用 build_cipher_input_from_file（生产构造点的单一真相源），
-    /// 而非测试自带构造——若日后有人把 clone_initial 改回 None，此测试会真正报红。
+    /// 而非测试自带构造——若日后有人把 clone_initial 改回 false，此测试会真正报红。
     #[test]
     fn clone_preserves_soft_deleted_at() {
         let _s = test_lock();
@@ -2213,7 +2214,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: Some("2026-07-24T10:00:00".into()),
+            is_deleted: true,
             sync_md5: None,
             created_at: "2026-07-24T00:00:00".into(),
             updated_at: "2026-07-24T10:00:00".into(),
@@ -2231,10 +2232,9 @@ mod tests {
         let db_cipher = octopus_infra::db::load_vault_cipher("clone-soft-delete-uuid")
             .unwrap()
             .expect("cipher should exist");
-        assert_eq!(
-            db_cipher.deleted_at.as_deref(),
-            Some("2026-07-24T10:00:00"),
-            "H2: clone 后软删状态必须保留（之前硬编码 None → 复活）"
+        assert!(
+            db_cipher.is_deleted,
+            "H2: clone 后软删状态必须保留（之前硬编码 false → 复活）"
         );
         let _ = g;
     }
@@ -2299,7 +2299,7 @@ mod tests {
             favorite: false, atype: 1,
             name: "v1:enc-site1".into(), notes: None, data: "v1:enc-data1".into(),
             fields: None, password_history: None, reprompt: 0,
-            deleted_at: None, sync_md5: None,
+            is_deleted: false, sync_md5: None,
         };
         let c2 = VaultCipherInput {
             id: "bbb22222-2222-4222-8222-222222222222".to_string(),
@@ -2307,7 +2307,7 @@ mod tests {
             favorite: false, atype: 1,
             name: "v1:enc-site2".into(), notes: None, data: "v1:enc-data2".into(),
             fields: None, password_history: None, reprompt: 0,
-            deleted_at: None, sync_md5: None,
+            is_deleted: false, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert c1");
         db::insert_vault_cipher(&c2).expect("insert c2");
@@ -2378,7 +2378,7 @@ mod tests {
             folder_id: None, favorite: false, atype: 1,
             name: "v1:enc-site".into(), notes: None, data: "v1:enc-data".into(),
             fields: None, password_history: None, reprompt: 0,
-            deleted_at: None, sync_md5: None,
+            is_deleted: false, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert");
         push_to_files().expect("push");

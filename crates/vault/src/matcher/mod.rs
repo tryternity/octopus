@@ -8,7 +8,7 @@
 //!   - `RegularExpression`：URL 匹配正则
 //!   - `Never`：永不匹配
 //!
-//! 非 Login cipher 永不匹配；标记删除（deleted_at）的 cipher 在入口被过滤。
+//! 非 Login cipher 永不匹配；标记删除（is_deleted）的 cipher 在入口被过滤。
 
 pub mod psl;
 
@@ -23,7 +23,7 @@ use crate::types::{Cipher, CipherData, MatchType};
 ///
 /// - `equivalent_domains`：等价域名分组（参见 `psl::default_equivalent_domains`）。
 ///   仅在 `Domain` 策略下生效——target_domain 落在 cipher_domain 所属分组内即匹配。
-/// - 标记删除（`deleted_at.is_some()`）的 cipher 被跳过。
+/// - 标记删除（`is_deleted`）的 cipher 被跳过。
 pub fn find_matching_ciphers<'a>(
     url: &Url,
     ciphers: &'a [Cipher],
@@ -31,7 +31,7 @@ pub fn find_matching_ciphers<'a>(
 ) -> Vec<&'a Cipher> {
     ciphers
         .iter()
-        .filter(|c| c.deleted_at.is_none())
+        .filter(|c| !c.is_deleted)
         .filter(|c| matches_any_uri(url, c, equivalent_domains))
         .collect()
 }
@@ -154,7 +154,7 @@ mod tests {
             fields: vec![],
             password_history: vec![],
             reprompt: crate::types::RepromptType::None,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         }
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_skip_deleted_cipher() {
         let mut cipher = make_cipher(&[("https://example.com", None)]);
-        cipher.deleted_at = Some("2026-07-18".into());
+        cipher.is_deleted = true;
         let url = Url::parse("https://example.com").unwrap();
         assert_eq!(
             find_matching_ciphers(&url, std::slice::from_ref(&cipher), &[]).len(),

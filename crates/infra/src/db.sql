@@ -415,7 +415,7 @@ CREATE TABLE IF NOT EXISTS vault_ciphers (
     fields              TEXT DEFAULT NULL,               -- 密文 JSON（自定义字段）
     password_history    TEXT DEFAULT NULL,               -- 密文 JSON（密码历史）
     reprompt            INTEGER NOT NULL DEFAULT 0,      -- 0=None 1=Password
-    deleted_at          TEXT DEFAULT NULL,               -- 回收站软删除
+    is_deleted          INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
     sync_md5            TEXT,                            -- md5 内容指纹（增量同步 diff，详见 vault::sync::fingerprint）
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -423,18 +423,21 @@ CREATE TABLE IF NOT EXISTS vault_ciphers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
-    ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);
+    ON vault_ciphers(favorite) WHERE is_deleted = 0;
 
 -- vault 文件夹（id UUID 字符串，与 vault_ciphers 一致）。
 CREATE TABLE IF NOT EXISTS vault_folders (
     id          TEXT PRIMARY KEY,                -- UUID v4 字符串
     name        TEXT NOT NULL,                    -- 密文 v1:base64(...)
     sort_order  INTEGER NOT NULL DEFAULT 0,
+    is_deleted  INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
     sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff）
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_vault_folders_active
+    ON vault_folders(sort_order) WHERE is_deleted = 0;
 
 -- ══ 录屏元数据（schema v51 + v52 audio_tracks）═══════════════
 CREATE TABLE IF NOT EXISTS recordings (

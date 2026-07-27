@@ -7,7 +7,7 @@
 //! 现在所有写路径都强制走 `key.encrypt()`。
 
 use anyhow::Result;
-use octopus_infra::db::{self, VaultFolder};
+use octopus_infra::db::{self, load_vault_folder_at, VaultFolder};
 
 use crate::crypto::DerivedKey;
 
@@ -23,11 +23,16 @@ pub struct FolderDto {
     /// 已解密的明文名称（DB 中存的是 `v1:` 前缀密文）。
     pub name: String,
     pub sort_order: i64,
+    pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
 }
 
-/// 列出所有 folder（按 sort_order ASC）。name 自动解密。
+/// 列出所有 **active** folder（is_deleted=0，按 sort_order ASC）。name 自动解密。
+///
+/// **统一语义（2026-07-27 v53）**：folder 现在软删（is_deleted=1），与 cipher 对齐。
+/// 本函数默认过滤掉软删 folder——UI 只看到 active folder。sync 路径需要全量
+/// （含软删）时直接调 `db::list_vault_folders()`（不过滤）。
 ///
 /// **单行容错**（修复 #9）：照搬 `cipher::list_ciphers` 修复 #6 的模式——
 /// 单行解密失败不让整表 Err，坏行记 log + 收集到 `failures` 返回，
@@ -42,6 +47,10 @@ pub fn list_folders(key: &DerivedKey) -> Result<(Vec<FolderDto>, Vec<String>)> {
     let mut out = Vec::with_capacity(rows.len());
     let mut failures: Vec<String> = Vec::new();
     for row in rows {
+        // 过滤软删 folder（UI 只看 active）——sync 路径不经此函数。
+        if row.is_deleted {
+            continue;
+        }
         match row_to_dto(&row, key) {
             Ok(dto) => out.push(dto),
             Err(e) => {
@@ -81,12 +90,35 @@ pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
     Ok(db::update_vault_folder_name(id, &encrypted, &md5)?)
 }
 
-/// 删除 folder。
+/// 软删除 folder（统一 cipher+folder 语义，2026-07-27 v53）。
 ///
-/// vault_ciphers.folder_id 的 FK 是 `ON DELETE SET NULL`——本文件夹下的 cipher
-/// 不会被删，只是 folder_id 被置为 NULL（回到根目录）。
+/// 仅打 is_deleted=1 标记——行仍在表里，sync 走标准 merge 路径传播删除状态。
+/// 与 cipher 的 soft_delete 对称：单事务内 UPDATE is_deleted + 重算 sync_md5，
+/// 保证删除状态在 sync 时正确传播（否则 incremental_export 用旧 md5 对比 →
+/// outline 一致 → 文件不重写 → 删除不传播）。
+///
+/// cipher.folder_id 仍指向此 folder（FK 不触发 SET NULL，因为不是 DELETE）——
+/// UI 看不到软删 folder（list_folders 过滤 is_deleted=0）。
 pub fn delete_folder(id: &str) -> Result<()> {
-    Ok(db::delete_vault_folder(id)?)
+    db::with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        // 1. UPDATE is_deleted = 1 + updated_at
+        tx.execute(
+            "UPDATE vault_folders SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        // 2. 读完整 row（含新 is_deleted）算 md5
+        let row = load_vault_folder_at(&tx, id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+        let md5 = crate::sync::fingerprint::folder_md5(&row);
+        // 3. UPDATE sync_md5
+        tx.execute(
+            "UPDATE vault_folders SET sync_md5 = ?1 WHERE id = ?2",
+            rusqlite::params![md5, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 /// 把 DB row 解密成 DTO（共享给 list_folders / 后续可能的单点查询）。
@@ -97,6 +129,7 @@ fn row_to_dto(row: &VaultFolder, key: &DerivedKey) -> Result<FolderDto> {
         id: row.id.clone(),
         name,
         sort_order: row.sort_order,
+        is_deleted: row.is_deleted,
         created_at: row.created_at.clone(),
         updated_at: row.updated_at.clone(),
     })
@@ -198,7 +231,8 @@ mod tests {
         assert_eq!(folders[0].name, "new name");
     }
 
-    /// delete_folder：删除后 list 应不再包含；DB 行也确实被删。
+    /// delete_folder（软删，2026-07-27 v53）：删除后 list_folders（过滤 is_deleted=0）
+    /// 应不再包含；但 DB 行仍在（is_deleted=1）——sync 走标准 merge 路径。
     #[test]
     fn delete_folder_removes_row() {
         setup_clean_db();
@@ -210,11 +244,18 @@ mod tests {
         create_folder(id_b, "drop", &key).expect("create b");
         delete_folder(id_b).expect("delete");
 
+        // list_folders（active only）应只剩 1 个
         let (folders, failures) = list_folders(&key).expect("list");
         assert!(failures.is_empty());
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].id, id_a);
         assert_eq!(folders[0].name, "keep");
+
+        // 但 DB 行仍在（软删）——is_deleted=1
+        let raw: Vec<octopus_infra::db::VaultFolder> = db::list_vault_folders().expect("raw list");
+        assert_eq!(raw.len(), 2, "软删后 DB 行应仍在");
+        let dropped = raw.iter().find(|f| f.id == id_b).expect("dropped row exists");
+        assert!(dropped.is_deleted, "dropped folder 应 is_deleted=true");
     }
 
     /// 用错误的 key 解密 folder.name：修复 #9 后整表不再 Err，

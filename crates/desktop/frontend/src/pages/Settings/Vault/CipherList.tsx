@@ -58,7 +58,7 @@ export interface CipherDto {
   login: LoginDataDto | null;
   fields: FieldDto[];
   reprompt: number;
-  deletedAt: string | null;
+  isDeleted: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -109,7 +109,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const counts: FolderCounts = useMemo(() => {
     const c: FolderCounts = { all: 0, favorites: 0, trash: 0 };
     for (const cipher of ciphers) {
-      if (cipher.deletedAt) {
+      if (cipher.isDeleted) {
         c.trash += 1;
         continue;
       }
@@ -126,7 +126,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const filtered = useMemo(() => {
     // 1. sidebar selection
     const sel = ciphers.filter((c) => {
-      if (c.deletedAt) return selected === "trash";
+      if (c.isDeleted) return selected === "trash";
       if (selected === "all") return true;
       if (selected === "favorites") return c.favorite;
       if (selected === "trash") return false;
@@ -399,7 +399,7 @@ function CipherCard({
   // 后续可由 VaultPanel 拉一次 weak list 透传下来，或新增轻量 vault_weak_ids 命令。
   const isWeak = false;
 
-  const sealColor = cipher.deletedAt
+  const sealColor = cipher.isDeleted
     ? "border-l-[3px] border-dashed border-muted-foreground/40 bg-transparent"
     : isWeak
       ? "bg-warning"
@@ -412,7 +412,7 @@ function CipherCard({
   const cardContent = (
     <>
       {/* 封印条：左侧 3px 竖条 + 顶部圆节点 */}
-      {cipher.deletedAt ? (
+      {cipher.isDeleted ? (
         <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sealColor)} />
       ) : (
         <>
@@ -437,7 +437,7 @@ function CipherCard({
       <div
         className={cn(
           "font-mono-vault pr-4 text-sm font-medium text-foreground",
-          cipher.deletedAt && "line-through",
+          cipher.isDeleted && "line-through",
         )}
       >
         {cipher.name}
@@ -458,7 +458,7 @@ function CipherCard({
           </span>
         )}
         <span>{relativeTime(cipher.updatedAt, t)}</span>
-        {cipher.deletedAt && (
+        {cipher.isDeleted && (
           <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-destructive">
             {t("settings.vault.list.deleted")}
           </span>
@@ -475,7 +475,7 @@ function CipherCard({
           "group relative flex w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-background p-3 pl-5 transition-colors",
           "hover:bg-accent/50",
           active && "bg-accent",
-          cipher.deletedAt && "opacity-60",
+          cipher.isDeleted && "opacity-60",
         )}
       >
         <div className="min-w-0 flex-1">{cardContent}</div>
@@ -506,7 +506,7 @@ function CipherCard({
         "group relative w-full overflow-hidden rounded-md border border-border bg-background p-3 pl-5 text-left transition-colors",
         "hover:bg-accent/50",
         active && "bg-accent",
-        cipher.deletedAt && "opacity-60",
+        cipher.isDeleted && "opacity-60",
       )}
     >
       {cardContent}

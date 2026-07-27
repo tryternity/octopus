@@ -333,7 +333,7 @@ export default function CipherEditor({
   const [favorite, setFavorite] = useState(false);
   // follow-up #6：folderId 状态（null = 无 folder / 根目录）
   const [folderId, setFolderId] = useState<string | null>(null);
-  const [deletedAt, setDeletedAt] = useState<string | null>(null);
+  const [isDeleted, setIsDeleted] = useState(false);
   // reprompt=1：使用此 cipher（autotype/复制密码）时强制重新验证主密码（高敏感条目）
   const [reprompt, setReprompt] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -361,7 +361,7 @@ export default function CipherEditor({
       setNotes(c.notes ?? "");
       setFavorite(c.favorite);
       setFolderId(c.folderId);
-      setDeletedAt(c.deletedAt);
+      setIsDeleted(c.isDeleted);
       setReprompt(c.reprompt === 1);
     } catch (e) {
       showToast(String(e));
@@ -694,9 +694,9 @@ export default function CipherEditor({
               variant="destructive-ghost"
               size="sm"
               disabled={busy}
-              onClick={() => handleDelete(!!deletedAt)}
+              onClick={() => handleDelete(isDeleted)}
             >
-              {deletedAt
+              {isDeleted
                 ? t("settings.vault.editor.permanentDelete")
                 : t("settings.vault.editor.delete")}
             </Button>

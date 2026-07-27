@@ -515,13 +515,47 @@ fn migrate_v51_to_v52(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v52→v53：vault_ciphers `deleted_at`（TEXT 可空）→ `is_deleted`（INTEGER 0/1）+ vault_folders 加 `is_deleted`。
+///
+/// 用户确认可清库——直接删 deleted_at 列，不保留不兼容。
+fn migrate_v52_to_v53(conn: &Connection) -> Result<()> {
+    // vault_ciphers: 加 is_deleted + 迁移数据 + 删 deleted_at
+    let has_cipher_is_deleted = conn
+        .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'is_deleted'")?
+        .exists([])?;
+    if !has_cipher_is_deleted {
+        conn.execute("ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
+        // 迁移：deleted_at 有值 → is_deleted=1
+        conn.execute("UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL", [])?;
+        // 删 deleted_at 列（SQLite 3.35+ 支持 DROP COLUMN）
+        conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
+        // 索引重建
+        conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
+        conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
+        log::info!("schema v53: vault_ciphers deleted_at → is_deleted");
+    }
+    // vault_folders: 加 is_deleted
+    let has_folder_is_deleted = conn
+        .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'is_deleted'")?
+        .exists([])?;
+    if !has_folder_is_deleted {
+        conn.execute("ALTER TABLE vault_folders ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_folders_active ON vault_folders(sort_order) WHERE is_deleted = 0", [])?;
+        log::info!("schema v53: vault_folders 加 is_deleted");
+    }
+    conn.execute("PRAGMA user_version = 53", [])?;
+    log::info!("schema upgraded to v53 (vault is_deleted)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 52 {
-        // v52+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
+    if v >= 53 {
+        // v53+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
         // migrate_v50_to_v51 曾漏跑 db.sql 致 version 升到 51 但表没建（运行时
         // `no such table: recordings`，2026-07-25 实测）。这里自愈：若 v52 但表缺失，
         // 重跑 INIT_SQL 补建（IF NOT EXISTS 幂等，对正常 v52 库无副作用）。
@@ -534,6 +568,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 .context("self-heal: execute_batch INIT_SQL for missing recordings table")?;
             log::info!("recordings 表自愈完成");
         }
+        return Ok(());
+    }
+
+    if v == 52 {
+        migrate_v52_to_v53(conn)?;
         return Ok(());
     }
 
@@ -3618,7 +3657,7 @@ pub struct VaultCipher {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     pub sync_md5: Option<String>, // md5 内容指纹（v45：增量同步 diff，详见 vault::sync::fingerprint）
     pub created_at: String,
     pub updated_at: String,
@@ -3629,6 +3668,7 @@ pub struct VaultFolder {
     pub id: String, // UUID v4 字符串
     pub name: String,
     pub sort_order: i64,
+    pub is_deleted: bool,
     pub sync_md5: Option<String>, // md5 内容指纹（v45）
     pub created_at: String,
     pub updated_at: String,
@@ -3662,11 +3702,11 @@ pub struct VaultCipherInput {
     pub fields: Option<String>,
     pub password_history: Option<String>,
     pub reprompt: i64,
-    /// 软删除时间戳（H2 修复 2026-07-24）：sync pull/clone 必须从文件取值传入，
-    /// 否则软删密码在新机 clone 时复活（deleted_at=NULL），且跨设备软删状态不同步。
+    /// 软删除标志（H2 修复 2026-07-24）：sync pull/clone 必须从文件取值传入，
+    /// 否则软删密码在新机 clone 时复活（is_deleted=0），且跨设备软删状态不同步。
+    /// 软删除（sync 用）：false=活跃，true=回收站。
     /// 本机 soft_delete/restore 走专用 UPDATE 路径（不经此结构），此处仅 sync 用。
-    /// None = 未软删（新建默认）；Some(ts) = 已软删（回收站）。
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     /// md5 内容指纹（v45：增量同步 diff，由调用方算好传入）。
     /// None 表示调用方未算（向后兼容旧调用方），sync 时按需重算。
     pub sync_md5: Option<String>,
@@ -3677,7 +3717,7 @@ const VAULT_META_COLS: &str = "id, kdf_type, kdf_salt, kdf_iterations, kdf_memor
                                equivalent_domains, public_key, protected_private_key, created_at, updated_at";
 
 const VAULT_CIPHER_COLS: &str = "id, folder_id, favorite, atype, name, notes, data, fields, \
-                                 password_history, reprompt, deleted_at, sync_md5, created_at, updated_at";
+                                 password_history, reprompt, is_deleted, sync_md5, created_at, updated_at";
 
 fn row_to_vault_meta(row: &rusqlite::Row) -> rusqlite::Result<VaultMeta> {
     Ok(VaultMeta {
@@ -3711,7 +3751,7 @@ fn row_to_vault_cipher(row: &rusqlite::Row) -> rusqlite::Result<VaultCipher> {
         fields: row.get(7)?,
         password_history: row.get(8)?,
         reprompt: row.get(9)?,
-        deleted_at: row.get(10)?,
+        is_deleted: row.get::<_, i32>(10)? != 0,
         sync_md5: row.get(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
@@ -3843,11 +3883,11 @@ pub fn load_vault_cipher_at(conn: &Connection, id: &str) -> Result<Option<VaultC
     }
 }
 
-/// 查所有软删 cipher 的 id（deleted_at IS NOT NULL），轻量查询——不解密、不读字段，
+/// 查所有软删 cipher 的 id（is_deleted = 1），轻量查询——不解密、不读字段，
 /// 仅供 `vault_empty_trash` 批量永久删除用。
 pub fn list_trash_cipher_ids() -> Result<Vec<String>> {
     with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT id FROM vault_ciphers WHERE deleted_at IS NOT NULL")?;
+        let mut stmt = conn.prepare("SELECT id FROM vault_ciphers WHERE is_deleted = 1")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut ids = Vec::new();
         for r in rows {
@@ -3880,7 +3920,7 @@ pub fn insert_vault_ciphers_batch(inputs: &[VaultCipherInput]) -> Result<()> {
 
 fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result<()> {
     conn.execute(
-        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, sync_md5)
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, is_deleted, sync_md5)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             input.id,
@@ -3893,7 +3933,7 @@ fn insert_vault_cipher_at(conn: &Connection, input: &VaultCipherInput) -> Result
             input.fields,
             input.password_history,
             input.reprompt,
-            input.deleted_at,
+            input.is_deleted as i32,
             input.sync_md5,
         ],
     )?;
@@ -3911,7 +3951,7 @@ pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherIn
     conn.execute(
         "UPDATE vault_ciphers SET
             folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
-            fields = ?7, password_history = ?8, reprompt = ?9, deleted_at = ?10, sync_md5 = ?11, updated_at = datetime('now')
+            fields = ?7, password_history = ?8, reprompt = ?9, is_deleted = ?10, sync_md5 = ?11, updated_at = datetime('now')
          WHERE id = ?12",
         params![
             input.folder_id,
@@ -3923,7 +3963,7 @@ pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherIn
             input.fields,
             input.password_history,
             input.reprompt,
-            input.deleted_at,
+            input.is_deleted as i32,
             input.sync_md5,
             id,
         ],
@@ -3951,39 +3991,47 @@ pub fn list_vault_folders() -> Result<Vec<VaultFolder>> {
 /// 之前 upsert_folder_with_sort 用 list_vault_folders().iter().any() 全表扫判断存在，
 /// 每次 upsert 都 O(N) → pull 的 folder 循环 O(N²)。改用本函数 O(1) 单条查询。
 pub fn load_vault_folder(id: &str) -> Result<Option<VaultFolder>> {
-    with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(VaultFolder {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                sort_order: row.get(2)?,
-                sync_md5: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        })?;
-        match rows.next() {
-            Some(r) => Ok(Some(r?)),
-            None => Ok(None),
-        }
-    })
+    with_db(|conn| load_vault_folder_at(conn, id))
+}
+
+/// 事务内单条查询 folder（与 load_vault_cipher_at 对称）。
+///
+/// 供 storage::folder::delete_folder 在软删事务内 load + 算 md5 + UPDATE sync_md5
+/// 单事务原子化（与 cipher 的 soft_delete 同构）。
+pub fn load_vault_folder_at(conn: &Connection, id: &str) -> Result<Option<VaultFolder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, sort_order, is_deleted, sync_md5, created_at, updated_at FROM vault_folders WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(VaultFolder {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            sort_order: row.get(2)?,
+            is_deleted: row.get::<_, i32>(3)? != 0,
+            sync_md5: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
 }
 
 fn list_vault_folders_at(conn: &Connection) -> Result<Vec<VaultFolder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, sort_order, sync_md5, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
+        "SELECT id, name, sort_order, is_deleted, sync_md5, created_at, updated_at FROM vault_folders ORDER BY sort_order ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(VaultFolder {
             id: row.get(0)?,
             name: row.get(1)?,
             sort_order: row.get(2)?,
-            sync_md5: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            is_deleted: row.get::<_, i32>(3)? != 0,
+            sync_md5: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
         })
     })?;
     let mut list = Vec::new();
@@ -4057,13 +4105,22 @@ pub fn update_vault_folder_fields(
     })
 }
 
-/// 删除 folder。FK 配置 `ON DELETE SET NULL`——本表内的 cipher 不受影响，
-/// 仅其 folder_id 被置为 NULL（条目回到根目录）。
+/// 软删除 folder（统一 cipher+folder 语义，2026-07-27 v53）。
 ///
-/// follow-up #6。
+/// 仅打 `is_deleted=1` 标记——行仍在表里，sync 走标准 merge 路径传播删除状态。
+/// cipher.folder_id 仍指向此 folder（FK 不触发 SET NULL，因为不是 DELETE）——
+/// list_folders 在 storage 层过滤 is_deleted=0，UI 看不到软删 folder。
+///
+/// **注意**：sync_md5 重算 + 单事务原子性由上层 `storage::folder::delete_folder` 负责
+/// （与 cipher 的 soft_delete 对称——infra 不依赖 vault，无法直接算 folder_md5）。
+///
+/// follow-up #6 / spec §1.2。
 pub fn delete_vault_folder(id: &str) -> Result<()> {
     with_db(|conn| {
-        conn.execute("DELETE FROM vault_folders WHERE id = ?1", params![id])?;
+        conn.execute(
+            "UPDATE vault_folders SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     })
 }
@@ -6719,7 +6776,7 @@ mod vault_schema_tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: None,
         };
         insert_vault_cipher_at(&conn, &input).unwrap();
@@ -6729,7 +6786,7 @@ mod vault_schema_tests {
         assert_eq!(loaded.name, "v1:enc-name");
         assert_eq!(loaded.atype, 1);
         assert!(!loaded.favorite);
-        assert!(loaded.deleted_at.is_none());
+        assert!(!loaded.is_deleted);
 
         // 更新
         let mut input2 = input.clone();
@@ -6815,14 +6872,14 @@ mod vault_schema_tests {
         assert_eq!(version, 51, "migrate 后 user_version 应为 51");
     }
 
-    /// 回归测试：v52+ 自愈——schema version 已 52 但 recordings 表缺失时（历史 bug
+    /// 回归测试：v53+ 自愈——schema version 已 53 但 recordings 表缺失时（历史 bug
     /// 残留的损坏库），init_schema 应自动重跑 db.sql 补建。
     #[test]
     fn test_init_schema_self_heals_missing_recordings_at_v52() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 52", []).unwrap();
-        // 模拟损坏态：version 52 但表被 DROP（模拟历史 migrate 漏跑的残留）
+        conn.execute("PRAGMA user_version = 53", []).unwrap();
+        // 模拟损坏态：version 53 但表被 DROP（模拟历史 migrate 漏跑的残留）
         conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
         conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
 
@@ -6836,7 +6893,7 @@ mod vault_schema_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(has, "v52+ 自愈：recordings 表缺失时 init_schema 应补建");
+        assert!(has, "v53+ 自愈：recordings 表缺失时 init_schema 应补建");
     }
 
     /// v51→v52 migrate：recordings 表加 audio_tracks 列。

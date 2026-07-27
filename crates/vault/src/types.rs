@@ -174,7 +174,7 @@ pub struct Cipher {
     pub fields: Vec<Field>,
     pub password_history: Vec<PasswordHistoryEntry>,
     pub reprompt: RepromptType,
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -325,7 +325,7 @@ pub fn decrypt_cipher_row(
         fields,
         password_history,
         reprompt: row.reprompt.into(),
-        deleted_at: row.deleted_at.clone(),
+        is_deleted: row.is_deleted,
         created_at: row.created_at.clone(),
         updated_at: row.updated_at.clone(),
     })
@@ -387,7 +387,7 @@ mod tests {
             fields: enc.fields,
             password_history: enc.password_history,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
