@@ -28,13 +28,17 @@
 
 | 文件 | 改动 | 职责 |
 |---|---|---|
-| `crates/record/native/macos/Sources/OctopusSckHelper/main.swift` | **大改** | 现有 815 行 → 新增 mixer/tap/PTS + 改 setupWriter/stream 回调 |
-| `crates/record/native/macos/Sources/OctopusSckHelper/RingBuffer.swift` | **新增** | 无锁/`os_unfair_lock` 环形缓冲，推→拉桥 |
-| `crates/record/native/macos/Sources/OctopusSckHelper/AudioMixing.swift` | **新增** | 纯函数：PCM 转换、PTS 自产、增益——便于单测 |
+| `crates/record/native/macos/Sources/OctopusSckHelperLib/main.swift`（原 `OctopusSckHelper/main.swift` 迁移） | **大改** | `ScreenCaptureRecorder` 类 + `@main` 入口都放 Lib，便于单测覆盖 Phase 2 集成改动 |
+| `crates/record/native/macos/Sources/OctopusSckHelper/main.swift`（新文件） | **新增** | executable wrapper：`@main struct { ScreenCaptureRecorder(...).run() }` 薄壳，无逻辑 |
+| `crates/record/native/macos/Sources/OctopusSckHelperLib/RingBuffer.swift` | **新增** | `OSAllocatedUnfairLock` 环形缓冲，推→拉桥 |
+| `crates/record/native/macos/Sources/OctopusSckHelperLib/AudioMath.swift` | **新增** | 纯函数：PTS 自产 + 增益 clamp |
+| `crates/record/native/macos/Sources/OctopusSckHelperLib/PCMConverter.swift` | **新增** | 纯函数：CMSampleBuffer → Float32 interleaved |
 | `crates/record/native/macos/Tests/OctopusSckHelperTests/` | **新增** | XCTest 单测目录 |
-| `crates/record/native/macos/Package.swift` | **小改** | 加 `testTarget` |
+| `crates/record/native/macos/Package.swift` | **小改** | 拆 Lib + Exec + testTarget |
 | `docs/superpowers/research/2026-07-27-sck-single-stream-spike.md` | **新增** | A2 spike 报告 |
 | `scripts/verify-audio-mix.sh` | **新增** | e2e 回归脚本（ffprobe + 波形） |
+
+**Lib/Exec 边界（Pre-Flight 决策）**：`ScreenCaptureRecorder` 类整体放 `OctopusSckHelperLib`，包括 Phase 2 的 AVAudioEngine 集成改动。executable wrapper（`Sources/OctopusSckHelper/main.swift`）只是 `@main struct` 调用 `ScreenCaptureRecorder.run()`，无业务逻辑。理由：Phase 2 的 setupWriter/mixer/tap/PTS 集成改动是上轮失败的核心区域，必须能被单测覆盖。
 
 ---
 
@@ -746,19 +750,84 @@ public enum PCMConverter {
 
 ⚠️ **此 Task 最复杂**——AVAudioConverter render block 的精确写法需要在实现期对照 Apple 文档打磨。测试主要覆盖「格式相同 pass-through」和「planar→interleaved」两条路径。**若实现期发现 SCK `.audio` 已经是 48k/2ch/float32 interleaved**（很可能），`convertWithAVAudioConverter` 分支根本走不到，可作为降级路径。
 
-- [ ] **Step 4: 跑测试，确认通过**
+- [ ] **Step 4: 补全对外 API 测试（Pre-Flight Issue 2 决策）**
+
+测试必须覆盖对外 API `toFloat32Interleaved(_:targetFormat:)`，不能只测内部辅助函数。补一个用 `CMAudioSampleBufferCreateReady` 手工构造 CMSampleBuffer 的单测（纯 PCM bytes，不走真实 SCK）：
+
+```swift
+func testToFloat32InterleavedPassthroughWithConstructedSampleBuffer() {
+    // 构造已知 PCM：48k/2ch/float32 interleaved，2 帧 = [0.1, 0.2, 0.3, 0.4]
+    let samples: [Float] = [0.1, 0.2, 0.3, 0.4]
+    let frameCount: Int = 2
+    let bytesPerFrame = 2 * MemoryLayout<Float>.size  // 2 ch × 4 bytes
+    let totalBytes = frameCount * bytesPerFrame
+
+    var asbd = AudioStreamBasicDescription(
+        mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: bytesPerFrame, mFramesPerPacket: 1,
+        mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: 2,
+        mBitsPerChannel: 32, mReserved: 0
+    )
+    var formatDesc: CMFormatDescription?
+    CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault, asbd: &asbd,
+        layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
+        extensions: nil, formatDescriptionOut: &formatDesc
+    )
+    guard let desc = formatDesc else { XCTFail("formatDesc nil"); return }
+
+    // 构造 CMBlockBuffer 装载 PCM bytes
+    var blockBuffer: CMBlockBuffer?
+    CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault, memoryBlock: nil,
+        blockLength: totalBytes, blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil, offsetToData: 0, dataLength: totalBytes,
+        flags: 0, blockBufferOut: &blockBuffer
+    )
+    _ = blockBuffer!.withMutableDataPointer { ptr in
+        let dst = ptr.pointee.withMemoryRebound(to: Float.self, capacity: samples.count) { $0 }
+        for (i, s) in samples.enumerated() { dst[i] = s }
+    }
+
+    var timing = CMSampleTimingInfo(
+        duration: CMTime(value: 2, timescale: 48_000),
+        presentationTimeStamp: CMTime(value: 0, timescale: 48_000),
+        decodeTimeStamp: .invalid
+    )
+    var sampleSize = bytesPerFrame
+    var sampleBuffer: CMSampleBuffer?
+    CMSampleBufferCreateReady(
+        allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
+        formatDescription: desc, sampleCount: frameCount,
+        sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer
+    )
+    guard let sb = sampleBuffer else { XCTFail("sampleBuffer nil"); return }
+
+    // 调对外 API（target = source 格式，应走 pass-through）
+    let result = try? PCMConverter.toFloat32Interleaved(sb, targetFormat: AudioMath.targetFormat)
+    XCTAssertNotNil(result)
+    XCTAssertEqual(result, samples, accuracy: 1e-6)
+}
+```
+
+**注意**：`AudioMath.targetFormat` 是 interleaved；如果构造的 asbd 也是 interleaved（`mFormatFlags` 含 `IsPacked`），格式相同走 pass-through 分支，直接验证 `extractFloats`。如果要测重采样路径（44.1k → 48k），把 asbd.mSampleRate 改成 44_100，验证返回长度按比例缩放。
+
+- [ ] **Step 5: 跑测试，确认通过**
 
 ```bash
 swift test --filter PCMConverterTests
 ```
 
-Expected: `testFloat32InterleavedPassThrough` 通过。
+Expected: 2 个 test（`testFloat32InterleavedPassThrough` + `testToFloat32InterleavedPassthroughWithConstructedSampleBuffer`）全过。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add Sources/OctopusSckHelperLib/PCMConverter.swift Tests/OctopusSckHelperTests/PCMConverterTests.swift
-git commit -m "feat(helper): PCMConverter——CMSampleBuffer→Float32 interleaved"
+git commit -m "feat(helper): PCMConverter——CMSampleBuffer→Float32 interleaved + 对外 API 单测"
 ```
 
 ---
@@ -1334,3 +1403,16 @@ git commit -m "docs(record): 单轨混音重做——spec/plan/architecture 同�
 - Phase 5：文档同步
 
 **关键纪律**：Phase 3 e2e 任一止损信号命中（S1-S5），立刻 revert，不调。
+
+## 执行节奏（Subagent-Driven，Pre-Flight Issue 3 决策）
+
+Phase 0（spike）和 Phase 3（e2e）需要用户硬件介入，分段执行：
+
+| 阶段 | 执行者 | checkpoint |
+|---|---|---|
+| Phase 0 spike | **用户**（真机权限 + SCK） | spike 报告决策门（A2 成功 / 失败） |
+| Phase 1-2 | subagent（连续执行） | Phase 2 build 成功后交回 |
+| Phase 3 e2e | **用户**（跑 app 录屏 + 听音） | 止损判定门（S1-S5 任一 → revert；全过 → 继续） |
+| Phase 4-5 | subagent（连续执行） | 全部完成 |
+
+每个 subagent 段内 continuous execution（不停顿），段间用户介入。
