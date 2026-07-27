@@ -332,7 +332,7 @@ fn default_record_shortcut() -> String {
     "CmdOrCtrl+Shift+R".into()
 }
 fn default_vault_autotype_shortcut() -> String {
-    "CmdOrCtrl+Shift+L".into()
+    "CmdOrCtrl+Shift+S".into()
 }
 fn default_vault_generator_shortcut() -> String {
     "CmdOrCtrl+Shift+G".into()
