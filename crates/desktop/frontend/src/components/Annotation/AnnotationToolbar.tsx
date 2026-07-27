@@ -62,6 +62,9 @@ export interface AnnotationToolbarProps {
 
   /** 工具栏根 div 是否显示（业务侧条件控制，默认 true） */
   visible?: boolean;
+
+  /** 是否显示 highlight 工具按钮（默认 true） */
+  showHighlight?: boolean;
 }
 
 // ── 内联 ToolButton（原 pages/Screenshot/ToolButton.tsx，19 行 dumb component）──
@@ -130,6 +133,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     popoverX,
     children,
     visible = true,
+    showHighlight = true,
   } = props;
 
   if (!visible) return null;
@@ -172,6 +176,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     { key: "line", src: "icons/straight-line.svg", label: t("screenshot.tool.line") },
     { key: "arrow", src: "icons/arrow-line.svg", label: t("screenshot.tool.arrow") },
     { key: "pen", src: "icons/sketching.svg", label: t("screenshot.tool.pen") },
+    ...(showHighlight ? [{ key: "highlight" as Tool, src: "icons/highlighter.svg", label: t("screenshot.tool.highlight") }] : []),
     { key: "text", src: "icons/text.svg", label: t("screenshot.tool.text") },
     { key: "number", src: "icons/sequence-note.svg", label: t("screenshot.tool.number") },
     { key: "blur", src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") },
@@ -208,7 +213,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           icon={<ToolIcon src="icons/arrow-pointer.svg" alt={t("screenshot.tool.select")} active={state.tool === "none"} />}
         />
 
-        {/* 9 个标注工具 */}
+        {/* 标注工具（含 highlight，条件显示） */}
         {tools.map((it) => (
           <ToolButton
             key={it.key}
@@ -222,6 +227,24 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
             icon={<ToolIcon src={it.src} alt={it.label} active={state.tool === it.key} />}
           />
         ))}
+
+        {/* 橡皮擦：不弹 popover，直接切工具 */}
+        <ToolButton
+          active={state.tool === "eraser"}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (state.tool === "eraser") {
+              state.setTool("none");
+              onToolChange?.("none");
+            } else {
+              state.setTool("eraser");
+              state.setShowPopover(false);
+              onToolChange?.("eraser");
+            }
+          }}
+          label={t("screenshot.tool.eraser")}
+          icon={<ToolIcon src="icons/eraser.svg" alt={t("screenshot.tool.eraser")} active={state.tool === "eraser"} />}
+        />
 
         <Divider />
 
@@ -253,6 +276,25 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
               alt={t("screenshot.tool.redo")}
               className="w-[18px] h-[18px]"
               style={{ filter: "var(--icon-filter)", opacity: state.redoAvailable ? 1 : 0.3 }}
+            />
+          }
+        />
+
+        <Divider />
+
+        {/* clearAll */}
+        <ToolButton
+          onClick={(e) => {
+            e.stopPropagation();
+            state.clearAllAnnotations();
+          }}
+          label={t("screenshot.tool.clear")}
+          icon={
+            <img
+              src="icons/clear.svg"
+              alt={t("screenshot.tool.clear")}
+              className="w-[18px] h-[18px]"
+              style={{ filter: "var(--icon-filter)", opacity: state.annotations.length === 0 ? 0.3 : 1 }}
             />
           }
         />

@@ -38,7 +38,12 @@ pub fn generate(cfg: &PassphraseZhConfig) -> Result<String> {
         // 默认 separator="" 时行为不变（数字仍粘末尾）。
         let n: u32 = OsRng.gen_range(0..=9);
         let sep = if cfg.separator.is_empty() { "" } else { cfg.separator.as_str() };
-        *result = format!("{}{}{}", result.as_str(), sep, n);
+        // OBS-PASSPHRASE-ZEROIZE-DERF-ASSIGN 修复（2026-07-27，第六十九轮）：
+        // *result = format!(...) 经 DerefMut 赋值，旧 String 走普通 Drop（不清零 heap），
+        // 绕过 Zeroizing::drop。改重新绑定 result = Zeroizing::new(format!(...)) ——
+        // 旧 Zeroizing drop 触发 self.0.zeroize() 清零旧 String heap bytes。
+        // NLL 允许 result.as_str() 借用在 format! 求值后结束，再 move result。
+        result = Zeroizing::new(format!("{}{}{}", result.as_str(), sep, n));
     }
     if cfg.include_symbol {
         // 同 include_number：与英文对称（虽然英文目前无 include_symbol，但保持
@@ -46,7 +51,8 @@ pub fn generate(cfg: &PassphraseZhConfig) -> Result<String> {
         let symbols = ['!', '@', '#', '$', '%', '&', '*'];
         let s = symbols.choose(&mut rng).unwrap();
         let sep = if cfg.separator.is_empty() { "" } else { cfg.separator.as_str() };
-        *result = format!("{}{}{}", result.as_str(), sep, s);
+        // OBS-PASSPHRASE-ZEROIZE-DERF-ASSIGN：同 include_number，重新绑定触发 Drop
+        result = Zeroizing::new(format!("{}{}{}", result.as_str(), sep, s));
     }
     // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 result 的 heap）
     Ok(result.as_str().to_string())

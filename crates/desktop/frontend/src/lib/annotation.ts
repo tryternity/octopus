@@ -2,13 +2,13 @@
 // 坐标空间由调用方决定：这些函数对坐标数值本身不做假设，
 // 调用方负责把 ctx 变换（translate/scale）设好后再传入标注坐标。
 
-export type Tool = "none" | "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
+export type Tool = "none" | "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "highlight" | "text" | "number" | "blur" | "eraser";
 
 /** 标注工具预设色板（Screenshot ToolPropsPopover 与 ImagePreview Toolbar 共用，含白色）。 */
 export const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 
 export interface Annotation {
-  type: "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
+  type: "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "highlight" | "text" | "number" | "blur";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
   points?: number[][];
@@ -89,6 +89,26 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
       else ctx.lineTo(px, py);
     }
     ctx.stroke();
+  } else if (ann.type === "highlight") {
+    // 荧光笔：pen 变体——multiply 混合 + alpha 0.35 + 粗线宽（默认 15）
+    // save/restore 隔离 globalCompositeOperation/globalAlpha，避免污染后续标注
+    ctx.save();
+    ctx.globalCompositeOperation = "multiply";
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = ann.lineWidth || 15;
+    ctx.strokeStyle = color;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (ann.points && ann.points.length > 0) {
+      ctx.beginPath();
+      for (let i = 0; i < ann.points.length; i++) {
+        const [px, py] = ann.points[i];
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
   } else if (ann.type === "text" && ann.text) {
     const fs = ann.fontSize || 16;
     const maxW = ann.textWidth || Infinity;
@@ -231,6 +251,25 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
       else ctx.lineTo(px * scale, py * scale);
     }
     ctx.stroke();
+  } else if (ann.type === "highlight") {
+    // 荧光笔（合成到原图分辨率）：与 drawAnnotation 同语义，所有尺寸 × scale
+    ctx.save();
+    ctx.globalCompositeOperation = "multiply";
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = (ann.lineWidth || 15) * scale;
+    ctx.strokeStyle = color;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    if (ann.points && ann.points.length > 0) {
+      ctx.beginPath();
+      for (let i = 0; i < ann.points.length; i++) {
+        const [px, py] = ann.points[i];
+        if (i === 0) ctx.moveTo(px * scale, py * scale);
+        else ctx.lineTo(px * scale, py * scale);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
   } else if (ann.type === "text" && ann.text) {
     const fs = (ann.fontSize || 16) * scale;
     const maxW = (ann.textWidth || Infinity) * scale;
@@ -321,7 +360,7 @@ export function annBounds(ann: Annotation): { x: number; y: number; w: number; h
     const r = (ann.circleSize || 24) / 2 + 2;
     return { x: ann.x1 - r, y: ann.y1 - r, w: r * 2, h: r * 2 };
   }
-  if (ann.type === "pen" && ann.points && ann.points.length > 0) {
+  if ((ann.type === "pen" || ann.type === "highlight") && ann.points && ann.points.length > 0) {
     const xs = ann.points.map(p => p[0]);
     const ys = ann.points.map(p => p[1]);
     return {
@@ -395,8 +434,8 @@ export function hitTestAnnotationPrecise(
     } else if (ann.type === "line" || ann.type === "arrow") {
       // 线段：点到线段的距离
       if (pointToSegmentDist(mx, my, ann.x1, ann.y1, ann.x2, ann.y2) <= HIT_DIST) return i;
-    } else if (ann.type === "pen" && ann.points) {
-      // 自由曲线：检查到任意一段的距离
+    } else if ((ann.type === "pen" || ann.type === "highlight") && ann.points) {
+      // 自由曲线（pen / highlight 均为 points polyline）：检查到任意一段的距离
       for (let j = 1; j < ann.points.length; j++) {
         const [px1, py1] = ann.points[j - 1];
         const [px2, py2] = ann.points[j];

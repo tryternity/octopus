@@ -65,6 +65,19 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
           {...strokeProps}
         />
       );
+    case "highlight":
+      // 荧光笔：pen 变体——multiply 混合 + alpha 0.35 + 粗线宽（默认 15）
+      // 与 drawAnnotation highlight 分支语义一致（globalCompositeOperation=multiply + globalAlpha=0.35）
+      return (
+        <polyline
+          points={ann.points?.map((p) => `${p[0]},${p[1]}`).join(" ") || ""}
+          fill="none"
+          stroke={color}
+          strokeWidth={ann.lineWidth || 15}
+          opacity={0.35}
+          style={{ mixBlendMode: "multiply", strokeLinecap: "round", strokeLinejoin: "round" }}
+        />
+      );
     case "text": {
       if (!ann.text) return null;
       const fs = ann.fontSize || 16;

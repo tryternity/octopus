@@ -53,6 +53,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
+  // 选中标注索引（tool==="none" 命中后高亮 + 供 deleteSelected 删除）
+  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
@@ -76,6 +78,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
   const dragRef = useRef<{ idx: number; dx: number; dy: number } | null>(null);
+  // 橡皮擦按下中（true 时 mousemove 持续擦；松开复位）
+  const erasingRef = useRef(false);
   const toolColorRef = useRef("#ef4444");
   const toolWidthRef = useRef(3);
   const toolFontSizeRef = useRef(20);
@@ -461,14 +465,23 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     }
 
     // 全图加载中：仅允许选择/平移，禁止标注（thumb 坐标系 ≠ full 坐标系）
-    if (loadingFullRef.current && tool !== "none") return;
+    if (loadingFullRef.current && tool !== "none" && tool !== "eraser") return;
+
+    // 橡皮擦：按下即擦（mousemove 持续擦），命中即推 redo 并移除
+    if (tool === "eraser") {
+      eraseAnnotationAt(nx, ny);
+      erasingRef.current = true;
+      return;
+    }
 
     if (tool === "none") {
       const idx = hitTestAnnotationPrecise(nx, ny, annotations);
       if (idx != null) {
         dragRef.current = { idx, dx: nx - annotations[idx].x1, dy: ny - annotations[idx].y1 };
+        setSelectedAnn(idx);
       } else {
-        // 未命中标注 → 抓手拖拽平移视口
+        // 未命中标注 → 抓手拖拽平移视口，并清空选中
+        setSelectedAnn(null);
         startPan(e);
       }
       return;
@@ -510,6 +523,15 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       };
       return;
     }
+    // 荧光笔（pen 变体，粗线宽默认 15 + multiply 混合，渲染层处理样式）
+    if (tool === "highlight") {
+      drawingRef.current = {
+        type: "highlight", x1: nx, y1: ny, x2: nx, y2: ny,
+        points: [[nx, ny]],
+        color: toolColorRef.current, lineWidth: 15,
+      };
+      return;
+    }
     // rect/oval/line/arrow 开始绘制（自然坐标）
     drawingRef.current = {
       type: tool as Annotation["type"],
@@ -522,6 +544,11 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   const onMouseMove = (e: React.MouseEvent) => {
     const { cssX, cssY } = canvasCoords(e);
     const { nx, ny } = toNatural(cssX, cssY);
+    // 橡皮擦按下拖动：持续擦除（命中即推 redo 并移除）
+    if (erasingRef.current && tool === "eraser") {
+      eraseAnnotationAt(nx, ny);
+      return;
+    }
     if (dragRef.current) {
       const { idx, dx, dy } = dragRef.current;
       setAnnotations((prev) => prev.map((a, i) => {
@@ -533,8 +560,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       return;
     }
     if (drawingRef.current) {
-      // 画笔：push 新点到 points（自然坐标）
-      if (drawingRef.current.type === "pen" && drawingRef.current.points) {
+      // 画笔 / 荧光笔：push 新点到 points（自然坐标）
+      if ((drawingRef.current.type === "pen" || drawingRef.current.type === "highlight") && drawingRef.current.points) {
         drawingRef.current.points.push([nx, ny]);
         setDraftAnn({ ...drawingRef.current, points: [...drawingRef.current.points] });
       } else {
@@ -549,8 +576,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
-      // 过滤误触：画笔按点数（≥2 才算画了一笔），其余按尺寸
-      const ok = ann.type === "pen"
+      // 过滤误触：画笔/荧光笔按点数（≥2 才算画了一笔），其余按尺寸
+      const ok = (ann.type === "pen" || ann.type === "highlight")
         ? (ann.points?.length ?? 0) >= 2
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
@@ -558,6 +585,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       }
       setDraftAnn(null);
     }
+    erasingRef.current = false;
     dragRef.current = null;
   };
 
@@ -581,6 +609,52 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     redoStackRef.current = [];
     setRedoAvailable(false);
     setAnnotations((prev) => [...prev, ann]);
+  };
+
+  // ── eraser / clear / delete ─────────────────
+  // eraser：从顶层（数组末尾）往下 hitTest，命中第一个 → 推 redo 并移除。
+  // 用函数式 setAnnotations 读最新 prev（避免 annotations 闭包陈旧）。
+  const eraseAnnotationAt = (x: number, y: number) => {
+    setAnnotations((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const hitIdx = hitTestAnnotationPrecise(x, y, [prev[i]]);
+        if (hitIdx !== null) {
+          redoStackRef.current.push(prev[i]);
+          setRedoAvailable(true);
+          // 选中索引同步：被擦的是当前选中 → 清空；之前的索引下移
+          setSelectedAnn((sel) => sel === null ? null : sel === i ? null : sel > i ? sel - 1 : sel);
+          return prev.filter((_, j) => j !== i);
+        }
+      }
+      return prev;
+    });
+  };
+
+  // clearAll：清空全部标注，全部推入 redo（保持 redo 顺序），重置 selectedAnn。
+  const clearAllAnnotations = () => {
+    setAnnotations((prev) => {
+      if (prev.length === 0) return prev;
+      for (let i = prev.length - 1; i >= 0; i--) {
+        redoStackRef.current.push(prev[i]);
+      }
+      setRedoAvailable(true);
+      return [];
+    });
+    setSelectedAnn(null);
+  };
+
+  // deleteSelected：删除当前选中索引，推入 redo，清空 selectedAnn。
+  const deleteSelectedAnnotation = () => {
+    setSelectedAnn((sel) => {
+      if (sel === null) return null;
+      setAnnotations((prev) => {
+        if (sel < 0 || sel >= prev.length) return prev;
+        redoStackRef.current.push(prev[sel]);
+        setRedoAvailable(true);
+        return prev.filter((_, j) => j !== sel);
+      });
+      return null;
+    });
   };
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
@@ -698,6 +772,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
+        onDeleteSelected={deleteSelectedAnnotation} canDeleteSelected={selectedAnn !== null}
+        onClearAll={clearAllAnnotations} canClearAll={annotations.length > 0}
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         ocrMode={ocrOverlay}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}

@@ -297,6 +297,7 @@ dependencies = [
  "blake2",
  "cpufeatures",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -1154,6 +1155,16 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
+name = "chinese2digits"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2048eb5759ae141299834c433aef2c6d343e76d5d2f745f40004d0909b804b27"
+dependencies = [
+ "regex",
+ "rust_decimal",
+]
 
 [[package]]
 name = "chrono"
@@ -5267,6 +5278,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "chinese2digits",
  "criterion",
  "deep_filter",
  "flate2",
@@ -9675,6 +9687,7 @@ dependencies = [
  "cfg-if",
  "once_cell",
  "rustversion",
+ "serde",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
 ]

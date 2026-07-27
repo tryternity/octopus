@@ -2,7 +2,7 @@
 
 **日期**：2026-07-24 起，持续至 2026-07-27
 **状态**：已实现并测试通过。最新基线：vault **253** passed + 2 ignored（lib）+ 1 passed（集成 unlock.rs）/ sync **103** + 4 ignored / desktop 416 / infra 160 / tsc 0 error / cargo build 0 warning
-**范围**：本文件汇总第二~第五十九轮代码审查修复（第一轮见关联文档）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
+**范围**：本文件汇总第二~第六十二轮代码审查修复（第一轮见关联文档，vault crate 16 模块审查收尾里程碑）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：
 - [vault-sync-code-review-fixes](./archived/2026-07-24-vault-sync-code-review-fixes.md)（第一轮，已归档）
 - [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
@@ -1594,3 +1594,99 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 5. **passphrase_zh include_symbol 只 7 符号**（~2.81 bit）：可选增强（非主熵源，主熵来自 4096 词表）。非 bug。
 6. **返回值普通 String**（已知设计妥协）：与 Cipher String 字段困境同根，Tauri IPC/serde 需要普通 String。第五十八轮已判定不修。
 7. **passphrase_zh 风格不一致**：include_number 用 OsRng.gen_range（:34），include_symbol 用顶部 rng.choose（:39）。OsRng 是 ZST 无状态，两者等价，纯风格不统一。
+
+---
+
+## 第六十轮审查（2026-07-27，totp.rs 算法核心审查：RFC 6238 标准向量铁证）
+
+### totp.rs 密码学核心正面确认（无 Medium+ bug）
+
+本轮重点模块——TOTP 是密码学算法（RFC 6238），最可能藏 Medium+ bug。经独立复查全部成立：
+
+**RFC 6238 标准向量铁证**（:213-233 test_known_totp_value）：用 RFC 6238 Appendix B 的 3 个标准测试向量（T=59/1111111109/1111111111，对应 TOTP 94287082/07081804/14050471），secret 是标准的 `GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`（base32 of "12345678901234567890"）。如果算法实现有任何偏差（HMAC-SHA1 / counter / truncation / digits 提取），这些标准向量会失败。这是 TOTP 算法正确性的铁证。
+
+**边界防护完善**：
+- period > 0（:90，防除零 panic）✓
+- digits == 6 || == 8（:91-95，RFC 标准）✓
+- algorithm 白名单 SHA1/SHA256/SHA512（:96-102）✓
+- secret ≥ 10 字节（:103-110，RFC 6238 80bit 下限）✓
+- input 清洗（:34-37 strip 空白/连字符）✓
+- 原子性 current_with_remaining（T1 修复，:161-173 单次读时钟）✓
+
+### OBS-TOTP-CLEANED-STRING（Low，信息性，不修）
+
+from_base32:34-37 的 `cleaned: String` 含 base32 编码 secret，drop 不清零。但 `Secret::Encoded(cleaned)` 接收 String（不是 Zeroizing<String>），octopus 无法控制 to_bytes() 内部 drop 时机。与 OBS-EXPORT-PLAINTEXT-STRING / Cipher String 困境同性质（第三方库边界）。修复受限，不修。
+
+### 信息性观察（5 项，均不修）
+
+1. secret 无长度上限（DoS，用户自伤，非安全）
+2. now < UNIX_EPOCH 边界（现代系统不可能）
+3. seconds_remaining step=0 兜底返 30（纯防御性）
+4. current/seconds_remaining 未 deprecated（UX 非安全）
+5. test_algorithm_invalid_returns_err 覆盖偏弱（已诚实记录）
+
+---
+
+## 第六十一轮审查（2026-07-27，health/* + matcher/* 审查：钓鱼防护铁证）
+
+### health/* 正面确认（基本健壮）
+
+**strength.rs**（zxcvbn 强度评估）：
+- 超长密码（>1KB）短路设计扎实（N1 修复：前 256 字符 zxcvbn 模式识别 + 完整长度独立熵估算 + min 融合）
+- 回归守护完善：test_very_long_repetitive_password_is_weak / test_very_long_low_unique_cycle_is_weak
+- 空密码不 panic（:127 is_finite 兜底 NEG_INFINITY）
+
+**duplicate.rs**（重复检测）：
+- SHA-256 + HashMap 分组，三层 hash 保护：#[serde(skip_serializing)]（不跨 IPC）+ Debug redact（手写 impl）+ 不持久化
+- 软删过滤（L6）+ 组间排序确定（D5）
+
+### matcher/* 钓鱼防护核心正面确认（铁证安全）
+
+**psl.rs**——eTLD+1 提取直接关系 autotype 钓鱼防护（把银行密码注入钓鱼站是致命漏洞）：
+- PSL 正确处理多段 TLD：test_phishing_protection_multilevel_tld（:111-145）验证 `barclays.co.uk` ≠ `evil-attacker.co.uk`（旧简化算法都退化到 `co.uk` 互相匹配 → 钓鱼漏洞）
+- IP 字面量精确匹配（防 `192.168.1.1` 与 `10.20.1.1` 都被简化算法处理成 `1.1` 互相匹配）
+- fail-closed fallback（未知 TLD 返回 host 本身）
+
+**mod.rs**——5 策略 + 等价域名 + 大小写归一 + 空 URI 视为 Never 全覆盖：
+- Domain/Host/StartsWith/Exact/RegularExpression + Never（:70-91）
+- Host 大小写归一（:75-78，DNS host 不区分大小写）
+- 空 URI 视为 Never（:66-68，修复 #11，防 starts_with("") / Regex::new("") 恒真）
+- MatchType 协议对齐（与 types.rs 2026-07-24 修复的官方 UriMatchType 值一致）
+
+### OBS-MATCHER-REGEX-RECOMPILE（Low 性能，不修）
+
+RegularExpression 策略每次 find_matching_ciphers 重编译所有正则（:87 Regex::new 在 match_uri_one 内）。autotype 用户主动触发非热路径 + 正则 URI 少见 + Rust regex crate 用 hybrid NFA/DFA 对 catastrophic backtracking 免疫。50-1000 cipher × 5-100 正则 ≈ 5μs-10ms，边界可接受。非 bug，性能观察。
+
+### 信息性观察（11 项，均不修）
+
+duplicate 无盐 / entropy 度量不一致 / sample 反馈 / zxcvbn 英文导向 / StartsWith 大小写敏感 / PSL 季度更新 / psl panic / equivalent 配 eTLD+1 等。多为设计意图或库限制。
+
+---
+
+## 第六十二轮审查修复（2026-07-27，vault crate 收尾轮：migrate zeroize + 16 模块审查里程碑）
+
+### OBS-MIGRATE-PLAINTEXT-MODELS-RESIDUE 修复（Low，本轮修复）
+
+migrate.rs:34 `models: Vec<(i64, String)>` 的 String 含明文 API key（来自 infra list_models_for_secret_migration）。加密完成后 models 仍持有明文，函数结束 drop 时普通 String heap 不清零 → 明文 API key 残留窗口。
+
+**修复**：函数末尾显式 zeroize——`for (_, plaintext) in &mut models { plaintext.zeroize(); }`。String 实现了 zeroize::Zeroize trait。
+
+**与第五十八轮判定的区别**：第五十八轮判定"infra DB 层不在 vault 范围不修"。本轮修复原因是 models 是 vault 侧局部变量（不是 infra 返回值的不可控副本），vault 完全可控 + 修复成本极低 + 与已修的 17 处 Zeroizing 卫生同类型。
+
+### validate.rs + migrate.rs 正面确认（健壮）
+
+**validate.rs**：前后端双校验（spec INV-10）+ is_symbol ASCII 段 + 全角符号 + V4 守护测试与前端 SYMBOL_CHARS 对齐。长度用 chars().count()（Unicode 字符数）。
+
+**migrate.rs**：#5 事务性（先全加密 collect → 事务整批 UPDATE → commit）+ A1 回滚（迁移失败 delete_vault_meta_row 恢复 setup 可重试）+ M1(b) CIPHERTEXT_PREFIX 绑定 + M2 UPDATE 失败带行 id + 参数化 SQL 无注入 + 8 个测试覆盖。
+
+### vault crate 16 模块审查整体总结（收尾里程碑）
+
+vault crate 全部 16 模块审查完成（lib.rs:17-32）：crypto/* / keychain / unlock / meta_lock / attempt_guard / types / storage / sync/* / importer / generator / totp / health / matcher / migrate / validate / error。
+
+**整体结论**（经我独立复查确认）：
+- 62 轮覆盖密码学核心 / 存储 / 同步 / 匹配 / 健康 / 生成 / TOTP / 迁移 / 校验全链路
+- **无 Critical/High/Medium bug**
+- 三大核心安全铁证：matcher 钓鱼防护 + totp RFC 6238 标准向量 + crypto E-ZEROIZE 链条 + migrate #5/A1 事务回滚
+- Zeroizing 卫生专题（55-58 + 62 轮）：**18 处修复收敛**（17 + 本轮 migrate）
+
+**剩余设计妥协**（不修，需大重构）：Cipher/LoginData/Field 的 String 字段不清零 + exporter 明文导出 + totp cleaned base32（totp-rs 第三方库边界）。

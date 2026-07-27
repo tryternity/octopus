@@ -8,10 +8,10 @@
 
 use anyhow::{Context, Result};
 use octopus_infra::db;
-use zeroize::Zeroize;
 
 use crate::crypto::symmetric::CIPHERTEXT_PREFIX;
 use crate::crypto::DerivedKey;
+use crate::Zeroizing;
 
 /// 迁移所有未加密的 secret_key。返回迁移的行数。
 ///
@@ -31,7 +31,16 @@ use crate::crypto::DerivedKey;
 pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
     // M1(b) 修复：传 CIPHERTEXT_PREFIX 而非在 db.rs 硬编码——单点维护，
     // 升级 v2: 时只改 CIPHERTEXT_PREFIX，SQL 守卫自动跟随。
-    let mut models = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)?;
+    //
+    // OBS-MIGRATE-PLAINTEXT-MODELS-RESIDUE-FAILURE-PATH 修复（2026-07-27，第六十五轮）：
+    // models 的 String 含明文 API key。第六十二轮用「函数末尾显式 zeroize 循环」
+    // 只覆盖成功路径——失败路径（encrypt/tx.execute/commit 任一 ? bubble）的 early
+    // return 绕过循环，明文 heap 残留。改用 Zeroizing<String> 靠 Drop 覆盖所有路径
+    // （成功 + 失败 + panic unwind），与 vault crate 其他 17 处 Zeroizing 卫生一致。
+    let models: Vec<(i64, Zeroizing<String>)> = db::list_models_for_secret_migration(CIPHERTEXT_PREFIX)?
+        .into_iter()
+        .map(|(id, s)| (id, Zeroizing::new(s)))
+        .collect();
 
     // (1) 全部加密——任一行失败 → 整批 abort，DB 0 改动
     let encrypted: Vec<(i64, String)> = models
@@ -64,17 +73,8 @@ pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
 
     log::info!("迁移 {} 个 model 的 secret_key 为加密格式", count);
 
-    // OBS-MIGRATE-PLAINTEXT-MODELS-RESIDUE 修复（2026-07-27，第六十二轮）：
-    // models: Vec<(i64, String)> 的 String 含明文 API key（来自 infra
-    // list_models_for_secret_migration）。加密完成后 models 仍持有明文，函数结束
-    // drop 时普通 String heap 不清零 → 明文 API key 残留窗口。
-    // 显式 zeroize 消除残留（String 实现了 zeroize::Zeroize trait）。
-    // 风险 Low（单机 + 迁移前本就明文存 DB + 残留窗口仅函数执行期），但修复成本
-    // 极低 + 与已修的 17 处 Zeroizing 卫生同类型，值得做。
-    for (_, plaintext) in &mut models {
-        plaintext.zeroize();
-    }
-
+    // models 在此 drop（Zeroizing<String> Drop 触发 zeroize heap bytes）——
+    // 成功 + 失败 + panic unwind 所有路径都覆盖，无需显式循环。
     Ok(count)
 }
 

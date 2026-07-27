@@ -10,7 +10,13 @@ octopus-infra = { path = "../infra" }
 octopus-sync = { path = "../sync" }
 
 # 加密
-argon2 = { version = "0.5", features = ["std"] }
+# OBS-ARGON2-ZEROIZE-FEATURE-MISSING 修复（2026-07-27，第七十轮）：
+# 启用 zeroize feature——argon2 内部显式调 .zeroize() 的中间状态（initial_hash 含
+# password+salt hash / blockhash final XOR 结果 / blockhash_bytes，约 2KB）在 drop
+# 时清零。注意：64 MiB memory blocks（Vec<Block>）不会自动清零（Block 无
+# ZeroizeOnDrop，Vec drop 只 dealloc），但 ~2KB 中间状态清零仍有价值 + 符合
+# argon2 crate best practice（处理 password 的应用应启用 zeroize）。
+argon2 = { version = "0.5", features = ["std", "zeroize"] }
 aes-gcm = { version = "0.10", features = ["std"] }
 hkdf = "0.12"
 hmac = "0.12"

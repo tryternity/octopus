@@ -512,4 +512,46 @@ mod tests {
             VaultError::ImportFailed(String::new()).user_message()
         );
     }
+
+    /// OBS-CLASSIFY-MUST-KEYWORD-OVERMATCH 回归守护（2026-07-27，第六十六轮）：
+    /// symmetric.rs 的 decrypt context（密文格式不符/AES key 长度）不应被 classify
+    /// 的「必须」启发式误匹配为 InvalidInput——解密失败是内部错误，应走 InternalError。
+    ///
+    /// 之前 bug：symmetric.rs:44 context「密文必须以 v1: 开头」含「必须」→ classify :160
+    /// 误匹配 InvalidInput → load_cipher 路径解密失败被报成「用户输入无效」+ 透传 v1: 格式。
+    /// 修复后 symmetric.rs context 避开「必须」（「密文格式不符」/「AES key 长度需为」），
+    /// 这些内部错误正确走 InternalError。
+    #[test]
+    fn classify_decrypt_failure_not_invalid_input() {
+        // symmetric.rs:44 改后 context「密文格式不符（缺 v1: 前缀）」——不含「必须」
+        let e = err_with_chain(&["密文格式不符（缺 v1: 前缀）"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InternalError,
+            "decrypt 失败（密文无 v1: 前缀）应走 InternalError，不应误分类 InvalidInput"
+        );
+
+        // symmetric.rs:27/54 改后 context「AES-256-GCM key 长度需为 32 字节」——不含「必须」
+        let e = err_with_chain(&["AES-256-GCM key 长度需为 32 字节"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InternalError,
+            "AES key 长度错（内部错误）应走 InternalError"
+        );
+
+        // 对比：generator/validate 的「必须」仍正确分类 InvalidInput（这是用户输入校验）
+        let e = err_with_chain(&["密码长度必须 ≥ 5（当前 3）"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InvalidInput("密码长度必须 ≥ 5（当前 3）".into()),
+            "generator 的「必须」仍应正确分类 InvalidInput（用户输入校验）"
+        );
+
+        let e = err_with_chain(&["主密码必须包含大写字母"]);
+        assert_eq!(
+            classify(&e),
+            VaultError::InvalidInput("主密码必须包含大写字母".into()),
+            "validate 的「必须」仍应正确分类 InvalidInput（用户输入校验）"
+        );
+    }
 }

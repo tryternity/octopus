@@ -908,11 +908,15 @@ screenshot:
     line: Line
     arrow: Arrow
     pen: Pen
+    highlight: Highlighter
     text: Text
     number: Number
     mosaic: Mosaic
+    eraser: Eraser
     undo: Undo
     redo: Redo
+    deleteSelected: Delete Selected
+    clearAll: Clear All
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
@@ -983,15 +987,19 @@ imagePreview:
     line: Line
     arrow: Arrow
     pen: Pen (free draw)
+    highlight: Highlight
     text: Text
     number: Number
     mosaic: Mosaic
+    eraser: Eraser
   saveToFile: Save to File
   copyToClipboard: Copy to Clipboard
   ocr: OCR Recognition
   ocrBusy: Previous OCR not finished, please wait
   undo: Undo (Cmd/Ctrl+Z)
   redo: Redo (Cmd/Ctrl+Shift+Z)
+  delete: Delete Selected
+  clear: Clear All
   zoomOut: Zoom Out
   zoomIn: Zoom In
   resetZoom: Reset to 100%

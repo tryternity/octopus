@@ -24,7 +24,7 @@ impl super::DerivedKey {
     /// 加密，返回 "v1:<base64(nonce||ct||tag)>"。
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<String> {
         let cipher = Aes256Gcm::new_from_slice(self.as_bytes())
-            .context("AES-256-GCM key 长度必须为 32 字节")?;
+            .context("AES-256-GCM key 长度需为 32 字节")?;
         let nonce_bytes = random_bytes(NONCE_LEN);
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = cipher
@@ -41,7 +41,7 @@ impl super::DerivedKey {
     pub fn decrypt(&self, ciphertext: &str) -> Result<Zeroizing<Vec<u8>>> {
         let ct_str = ciphertext
             .strip_prefix(CIPHERTEXT_PREFIX)
-            .context("密文必须以 v1: 开头")?;
+            .context("密文格式不符（缺 v1: 前缀）")?;
         let combined = base64_decode(ct_str)?;
         ensure!(
             combined.len() > NONCE_LEN,
@@ -51,7 +51,7 @@ impl super::DerivedKey {
 
         let (nonce_bytes, ct) = combined.split_at(NONCE_LEN);
         let cipher = Aes256Gcm::new_from_slice(self.as_bytes())
-            .context("AES-256-GCM key 长度必须为 32 字节")?;
+            .context("AES-256-GCM key 长度需为 32 字节")?;
         let nonce = Nonce::from_slice(nonce_bytes);
         let plaintext = cipher
             .decrypt(nonce, ct)
