@@ -6,14 +6,11 @@
 //! e2e 验证（真实 ffprobe + mp4）留到 Phase 5；本模块无纯单测——ffprobe 路径依赖环境。
 
 #![cfg(target_os = "macos")]
-// 函数将在 Task 2.2（write_audio_tracks_metadata）/ 2.3（stop_and_store_inner 接入）启用。
-// 本 task（2.1）只交付解析能力，未到调用点，故暂 allow dead_code；下游接通后移除。
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use octopus_record::{AudioTrack, RawAudioTrack};
+use octopus_record::{infer_audio_tracks, AudioTrack, RawAudioTrack};
 use octopus_infra::octopus_config_home;
 use serde::Deserialize;
 
@@ -160,4 +157,35 @@ pub async fn write_audio_tracks_metadata(
 
     std::fs::rename(&tmp, mp4).map_err(|e| format!("覆盖原文件失败: {e}"))?;
     Ok(())
+}
+
+/// 完整流程：ffprobe 读 mp4 → 配置交叉推断 source。失败返回空 vec（不阻断）。
+///
+/// 给 `stop_and_store_inner` 用的组合函数：把「探测 ffprobe → 跑 mp4 → 推断 source」
+/// 三步串起来，统一失败兜底（任一步失败返回空 vec，调用方不阻断录制入库）。
+///
+/// 参数：
+/// - `mp4`：录屏 mp4 绝对路径
+/// - `system_enabled` / `mic_enabled`：start 时用户配置（决定 source 推断方向）
+/// - `mic_device_name`：start 时解析的麦克风设备名（None 时 mic 轨 device_name 字段为空）
+pub async fn probe_recording_audio_tracks(
+    mp4: &Path,
+    system_enabled: bool,
+    mic_enabled: bool,
+    mic_device_name: Option<&str>,
+) -> Vec<AudioTrack> {
+    let ffprobe = match probe_ffprobe() {
+        Some(p) => p,
+        None => {
+            log::debug!("[record] ffprobe 不可用，audio_tracks 兜底空");
+            return vec![];
+        }
+    };
+    match probe_audio_tracks(&ffprobe, mp4).await {
+        Ok(raw) => infer_audio_tracks(raw, system_enabled, mic_enabled, mic_device_name),
+        Err(e) => {
+            log::warn!("[record] ffprobe 解析失败: {e}");
+            vec![]
+        }
+    }
 }

@@ -401,6 +401,8 @@ pub async fn record_stop(
     has_microphone: bool,
 ) -> Result<Option<RecordingMeta>, String> {
     // 前端显式传字段路径：直接用前端给的值组装 MetaFields。
+    // mic_device_name：stop 时 session 没存 start 解析的设备名，重新调
+    // resolve_mic_device_name(None)（幂等，读 DB 配置，与 start 默认路径一致）。
     let fields = MetaFields {
         recording_id,
         width,
@@ -408,6 +410,7 @@ pub async fn record_stop(
         source_type,
         has_system_audio,
         has_microphone,
+        mic_device_name: resolve_mic_device_name(None),
     };
     // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
     stop_and_store(&state, &app_handle, discard, Some(fields)).await
@@ -463,6 +466,10 @@ fn derive_fields_from_request(req: &RecordingRequest) -> Result<MetaFields, Stri
         source_type: source_type.to_string(),
         has_system_audio: req.audio.system.enabled,
         has_microphone: req.audio.microphone.enabled,
+        // hotkey/tray 路径：req.audio.microphone.device_name 在 start 时已解析过
+        // （start_with_config 行 327-330），但 resolve_mic_device_name 是幂等的，
+        // 再调一次保证拿到当前 DB 配置（用户可能在录屏中改了 ASR 麦克风）。
+        mic_device_name: resolve_mic_device_name(req.audio.microphone.device_name.as_deref()),
     })
 }
 
@@ -474,6 +481,13 @@ pub(crate) struct MetaFields {
     pub source_type: String,
     pub has_system_audio: bool,
     pub has_microphone: bool,
+    /// 麦克风设备名（start 时解析的三级回退值）。
+    ///
+    /// stop 时 session 没存 start 解析的设备名，但 `resolve_mic_device_name` 是幂等的
+    /// （读 DB 配置），stop 时重新调一次即可。两条构造路径：
+    /// - 前端 `record_stop`：`resolve_mic_device_name(None)`（与 start 默认路径一致）
+    /// - hotkey/tray：`resolve_mic_device_name(req.audio.microphone.device_name.as_deref())`
+    pub mic_device_name: Option<String>,
 }
 
 async fn stop_and_store_inner(
@@ -488,6 +502,7 @@ async fn stop_and_store_inner(
         source_type,
         has_system_audio,
         has_microphone,
+        mic_device_name,
     } = fields;
 
     // StoppedInfo：reader task 收到 RecordingStopped 时存精确 payload（screen_path /
@@ -531,6 +546,16 @@ async fn stop_and_store_inner(
     // resolve_recording_path 对绝对路径原样返回，无需 strip_prefix。
     let file_path = abs_path.to_string_lossy().to_string();
 
+    // 探测实际音轨元数据（ffprobe 读 mp4 → 配置交叉推断 source）。
+    // 失败兜底空 vec，不阻断录制入库（probe_recording_audio_tracks 内部已吞错）。
+    let audio_tracks = crate::record_audio_probe::probe_recording_audio_tracks(
+        &abs_path,
+        has_system_audio,
+        has_microphone,
+        mic_device_name.as_deref(),
+    )
+    .await;
+
     let meta = RecordingMeta {
         id: recording_id,
         file_path,
@@ -542,7 +567,7 @@ async fn stop_and_store_inner(
         codec: "h264".into(),
         has_system_audio,
         has_microphone,
-        audio_tracks: vec![], // Task 2.3 填真实值（ffprobe 解析后）
+        audio_tracks: audio_tracks.clone(),
         source_type,
         file_size,
         has_thumbnail: false,
@@ -557,6 +582,22 @@ async fn stop_and_store_inner(
         store.insert(&meta_clone, None)
     })
     .await?;
+
+    // 入库成功后写 mp4 udta metadata（audio_tracks JSON）。
+    // 失败不阻断——DB 已有 audio_tracks 兜底，mp4 metadata 是 nice-to-have
+    // （合并单轨 Task 3.1 / 前端展示双轨详情时用到）。
+    // probe_ffmpeg 在本文件（同 module），直接调用；write_audio_tracks_metadata 跨 module。
+    if !audio_tracks.is_empty() {
+        if let Some(ffmpeg) = probe_ffmpeg() {
+            if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+                &ffmpeg, &abs_path, &audio_tracks,
+            )
+            .await
+            {
+                log::warn!("[record] mp4 metadata 写入失败（不影响录制）: {e}");
+            }
+        }
+    }
 
     // 停止 + 入库成功 → tray menu 文案切回「开始录屏」（toggle 语义）
     #[cfg(target_os = "macos")]
@@ -734,7 +775,10 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
 /// 查找顺序：`~/.octopus/bin/ffmpeg`（用户手动放/dlp 下载缓存）→ 系统 PATH（which）。
 /// 复制自 `crates/dlp/src/main.rs:42-73` 的 `get_binary_path`（dlp 是 binary crate 无 lib，
 /// 无法 use 导入；desktop crate 已有 4 处 which 内联副本，容忍此模式）。
-fn probe_ffmpeg() -> Option<std::path::PathBuf> {
+///
+/// `pub(crate)`：被同 crate 的 `record_audio_probe::write_audio_tracks_metadata` 调用
+/// （Task 2.3 在 stop_and_store_inner 入库成功后写 mp4 udta metadata）。
+pub(crate) fn probe_ffmpeg() -> Option<std::path::PathBuf> {
     // 1. ~/.octopus/bin/ffmpeg
     let home_bin = octopus_infra::octopus_config_home().join("bin").join("ffmpeg");
     if home_bin.exists() {
