@@ -445,6 +445,9 @@ fn apply_config_value(
         "record_shortcut" => {
             cfg.record_shortcut = value.as_str().ok_or("record_shortcut 需要字符串")?.to_string();
         }
+        "vault_autotype_shortcut" => {
+            cfg.vault_autotype_shortcut = value.as_str().ok_or("vault_autotype_shortcut 需要字符串")?.to_string();
+        }
         "switch_input_source_on_paste" => {
             cfg.switch_input_source_on_paste = value.as_bool().ok_or("switch_input_source_on_paste 需要 bool")?;
         }
