@@ -20,7 +20,7 @@
 | 4.1 前端 | `RecordingPanel.tsx` + i18n | **blocker fix**：`RecordingMeta` 无 `rename_all`，前端 `audioTracks` 改 `audio_tracks` 对齐 snake_case；`MergeResult` 后端加 `rename_all="camelCase"` |
 
 **关键决策（实施期裁定）**：
-- `RecordingMeta` struct **故意不加** `#[serde(rename_all = "camelCase")]`——它有 16 个字段全是 snake_case（与 SQL 列名一致），加 rename_all 要改 16 处前端访问点。新字段继续用 snake_case。
+- `RecordingMeta` struct **故意不加** `#[serde(rename_all = "camelCase")]`——它有 16 个字段全是 snake_case（与 SQL 列名一致），加 rename_all 要改 16 处前端访问点。新字段继续用 snake_case。**约定已在 struct 上加注释明示**（`crates/record/src/store.rs:7`），防止重踩 Task 4.1 blocker。
 - `MergeResult` **加了** `rename_all="camelCase"`——只有 2 字段，且是 Tauri 命令返回值，符合 camelCase 惯例。
 - 合并不监听 `record://merge-*` 事件——与 GIF export 模式一致（await invoke + toast 即可），事件留作多窗口同步备用。
 
