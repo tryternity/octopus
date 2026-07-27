@@ -44,16 +44,19 @@ impl<'a> RecordStore<'a> {
     }
 
     pub fn insert(&self, meta: &RecordingMeta, thumbnail: Option<&[u8]>) -> RecordResult<()> {
+        let audio_tracks_json = serde_json::to_string(&meta.audio_tracks)
+            .unwrap_or_else(|_| "[]".into());
         self.conn.execute(
             "INSERT INTO recordings
              (id, file_path, title, duration_ms, width, height, fps, codec,
-              has_system_audio, has_microphone, source_type, file_size,
+              has_system_audio, has_microphone, audio_tracks, source_type, file_size,
               has_thumbnail, is_favorite, created_at, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL)",
             rusqlite::params![
                 meta.id, meta.file_path, meta.title, meta.duration_ms,
                 meta.width, meta.height, meta.fps, meta.codec,
                 meta.has_system_audio as i32, meta.has_microphone as i32,
+                audio_tracks_json,
                 meta.source_type, meta.file_size,
                 thumbnail.is_some() as i32, meta.is_favorite as i32,
                 meta.created_at,
@@ -72,7 +75,7 @@ impl<'a> RecordStore<'a> {
     pub fn get(&self, id: i64) -> RecordResult<Option<RecordingMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
-                    has_system_audio, has_microphone, source_type, file_size,
+                    has_system_audio, has_microphone, audio_tracks, source_type, file_size,
                     has_thumbnail, is_favorite, created_at, deleted_at
              FROM recordings WHERE id = ?1",
         )?;
@@ -87,7 +90,7 @@ impl<'a> RecordStore<'a> {
     pub fn list(&self, filter: &ListFilter) -> RecordResult<Vec<RecordingMeta>> {
         let mut sql = String::from(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
-                    has_system_audio, has_microphone, source_type, file_size,
+                    has_system_audio, has_microphone, audio_tracks, source_type, file_size,
                     has_thumbnail, is_favorite, created_at, deleted_at
              FROM recordings WHERE 1=1",
         );
@@ -191,6 +194,9 @@ impl<'a> RecordStore<'a> {
     }
 
     fn row_to_meta(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordingMeta> {
+        let audio_tracks_json: String = row.get(10)?;
+        let audio_tracks =
+            serde_json::from_str(&audio_tracks_json).unwrap_or_default();
         Ok(RecordingMeta {
             id: row.get(0)?,
             file_path: row.get(1)?,
@@ -202,14 +208,13 @@ impl<'a> RecordStore<'a> {
             codec: row.get(7)?,
             has_system_audio: row.get::<_, i32>(8)? != 0,
             has_microphone: row.get::<_, i32>(9)? != 0,
-            // RED phase: 暂硬编码空 vec，新测试会 FAIL
-            audio_tracks: vec![],
-            source_type: row.get(10)?,
-            file_size: row.get(11)?,
-            has_thumbnail: row.get::<_, i32>(12)? != 0,
-            is_favorite: row.get::<_, i32>(13)? != 0,
-            created_at: row.get(14)?,
-            deleted_at: row.get(15)?,
+            audio_tracks,
+            source_type: row.get(11)?,
+            file_size: row.get(12)?,
+            has_thumbnail: row.get::<_, i32>(13)? != 0,
+            is_favorite: row.get::<_, i32>(14)? != 0,
+            created_at: row.get(15)?,
+            deleted_at: row.get(16)?,
         })
     }
 }
