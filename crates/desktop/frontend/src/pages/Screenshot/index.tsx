@@ -351,8 +351,8 @@ export default function Screenshot() {
         annotation.setNumberCounter(annotation.numberCounter + 1);
         return;
       }
-      if (annotation.tool === "pen") {
-        drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: annotation.toolColor, lineWidth: annotation.toolWidth };
+      if (annotation.tool === "pen" || annotation.tool === "highlight") {
+        drawingRef.current = { type: annotation.tool, x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: annotation.toolColor, lineWidth: annotation.tool === "highlight" ? 15 : annotation.toolWidth };
       } else {
         drawingRef.current = { type: annotation.tool, x1: mx, y1: my, x2: mx, y2: my, color: annotation.toolColor, lineWidth: annotation.toolWidth, filled: (annotation.tool === "rect" || annotation.tool === "oval" || annotation.tool === "diamond") ? annotation.toolFilledRef.current : undefined };
       }
@@ -392,7 +392,7 @@ export default function Screenshot() {
 
     // 标注绘制中
     if (drawingRef.current && annotation.tool !== "none") {
-      if (drawingRef.current.type === "pen" && drawingRef.current.points) {
+      if ((drawingRef.current.type === "pen" || drawingRef.current.type === "highlight") && drawingRef.current.points) {
         drawingRef.current.points.push([mx, my]);
       } else {
         drawingRef.current = { ...drawingRef.current, x2: mx, y2: my };
@@ -476,7 +476,7 @@ export default function Screenshot() {
           addAnnotation(ann);
           added = true;
         }
-      } else if (ann.type === "pen" && ann.points) {
+      } else if ((ann.type === "pen" || ann.type === "highlight") && ann.points) {
         if (ann.points.length > 2) {
           addAnnotation(ann);
           added = true;

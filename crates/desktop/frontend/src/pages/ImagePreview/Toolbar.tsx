@@ -131,7 +131,6 @@ export default function Toolbar(props: {
     { key: "text", icon: <SvgIcon src="icons/text.svg" alt={t("imagePreview.tool.text")} active={props.tool === "text"} />, title: t("imagePreview.tool.text") },
     { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt={t("imagePreview.tool.number")} active={props.tool === "number"} />, title: t("imagePreview.tool.number") },
     { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt={t("imagePreview.tool.mosaic")} active={props.tool === "blur"} />, title: t("imagePreview.tool.mosaic") },
-    { key: "eraser", icon: <SvgIcon src="icons/eraser.svg" alt={t("imagePreview.tool.eraser")} active={props.tool === "eraser"} />, title: t("imagePreview.tool.eraser") },
   ];
 
   return (
@@ -175,16 +174,25 @@ export default function Toolbar(props: {
             {t.icon}
           </ToolButton>
         ))}
+        {/* 橡皮擦：不弹 popover，直接切工具 */}
+        <ToolButton title={t("imagePreview.tool.eraser")} active={props.tool === "eraser"}
+          onClick={() => {
+            if (props.tool === "eraser") {
+              props.setTool("none");
+            } else {
+              props.setTool("eraser");
+              setShowPopover(false);
+            }
+          }}>
+          <SvgIcon src="icons/eraser.svg" alt={t("imagePreview.tool.eraser")} active={props.tool === "eraser"} />
+        </ToolButton>
         <ToolButton title={t("imagePreview.undo")} active={false} onClick={() => props.onUndo()}>
           <img src="icons/restore.svg" alt={t("imagePreview.undo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canUndo ? 1 : 0.3 }} />
         </ToolButton>
         <ToolButton title={t("imagePreview.redo")} active={false} onClick={() => props.onRedo()}>
           <img src="icons/redo.svg" alt={t("imagePreview.redo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canRedo ? 1 : 0.3 }} />
         </ToolButton>
-        {/* 删除选中 / 清空全部（对齐 AnnotationToolbar 末尾分组） */}
-        <ToolButton title={t("imagePreview.delete")} active={false} onClick={() => props.onDeleteSelected()}>
-          <img src="icons/trash.svg" alt={t("imagePreview.delete")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canDeleteSelected ? 1 : 0.3 }} />
-        </ToolButton>
+        {/* 清空全部 */}
         <ToolButton title={t("imagePreview.clear")} active={false} onClick={() => props.onClearAll()}>
           <img src="icons/clear.svg" alt={t("imagePreview.clear")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canClearAll ? 1 : 0.3 }} />
         </ToolButton>

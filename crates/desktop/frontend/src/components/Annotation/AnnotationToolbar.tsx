@@ -180,7 +180,6 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
     { key: "text", src: "icons/text.svg", label: t("screenshot.tool.text") },
     { key: "number", src: "icons/sequence-note.svg", label: t("screenshot.tool.number") },
     { key: "blur", src: "icons/mosaic.svg", label: t("screenshot.tool.mosaic") },
-    { key: "eraser", src: "icons/eraser.svg", label: t("screenshot.tool.eraser") },
   ];
 
   return (
@@ -214,7 +213,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
           icon={<ToolIcon src="icons/arrow-pointer.svg" alt={t("screenshot.tool.select")} active={state.tool === "none"} />}
         />
 
-        {/* 9 个标注工具 */}
+        {/* 标注工具（含 highlight，条件显示） */}
         {tools.map((it) => (
           <ToolButton
             key={it.key}
@@ -228,6 +227,24 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
             icon={<ToolIcon src={it.src} alt={it.label} active={state.tool === it.key} />}
           />
         ))}
+
+        {/* 橡皮擦：不弹 popover，直接切工具 */}
+        <ToolButton
+          active={state.tool === "eraser"}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (state.tool === "eraser") {
+              state.setTool("none");
+              onToolChange?.("none");
+            } else {
+              state.setTool("eraser");
+              state.setShowPopover(false);
+              onToolChange?.("eraser");
+            }
+          }}
+          label={t("screenshot.tool.eraser")}
+          icon={<ToolIcon src="icons/eraser.svg" alt={t("screenshot.tool.eraser")} active={state.tool === "eraser"} />}
+        />
 
         <Divider />
 
@@ -265,22 +282,7 @@ export function AnnotationToolbar(props: AnnotationToolbarProps) {
 
         <Divider />
 
-        {/* deleteSelected / clearAll */}
-        <ToolButton
-          onClick={(e) => {
-            e.stopPropagation();
-            state.deleteSelectedAnnotation();
-          }}
-          label={t("screenshot.tool.delete")}
-          icon={
-            <img
-              src="icons/trash.svg"
-              alt={t("screenshot.tool.delete")}
-              className="w-[18px] h-[18px]"
-              style={{ filter: "var(--icon-filter)", opacity: state.selectedAnn === null ? 0.3 : 1 }}
-            />
-          }
-        />
+        {/* clearAll */}
         <ToolButton
           onClick={(e) => {
             e.stopPropagation();
