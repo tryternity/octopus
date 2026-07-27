@@ -247,8 +247,8 @@ fn check_https(parsed: &GitRemoteUrl) -> Result<PrivacyVerdict, SyncError> {
 /// - 200 + `private: false` → `Public`
 /// - 200 + `private: true` → `Private`（Phase 1 未认证不会到这）
 /// - 404 → `Ambiguous`（私有 vs 不存在无法区分）
-/// - 403 → `RateLimited`（限流/拒绝——未认证查询的 403 实践中即限流；
-///   非 403 限流如 abuse detection 一并硬阻断更保守。S-SYNC-PUBLIC-LEAK-ON-RATELIMIT）
+/// - 403 → `RateLimited`（任意 403 一并硬阻断——未认证查询的 403 实践中即 API 限流；
+///   即使成因非限流（如 abuse detection 触发的 403）也阻断，方向更保守。S-SYNC-PUBLIC-LEAK-ON-RATELIMIT）
 /// - 网络错误 → `NetworkError`
 /// - 其他状态码 → fallback ls-remote
 fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncError> {
