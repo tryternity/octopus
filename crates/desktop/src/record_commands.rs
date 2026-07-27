@@ -542,6 +542,7 @@ async fn stop_and_store_inner(
         codec: "h264".into(),
         has_system_audio,
         has_microphone,
+        audio_tracks: vec![], // Task 2.3 填真实值（ffprobe 解析后）
         source_type,
         file_size,
         has_thumbnail: false,
