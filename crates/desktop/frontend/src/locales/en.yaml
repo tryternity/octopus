@@ -917,11 +917,15 @@ screenshot:
     redo: Redo
     deleteSelected: Delete Selected
     clearAll: Clear All
+    qrcode: QR Code
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
   cancel: Cancel
   pin: Pin
+  qrNoResult: No QR code detected
+  qrCopied: Copied to clipboard
+  qrScanning: Scanning...
   save: Save
   copy: Copy
   props:
@@ -992,10 +996,14 @@ imagePreview:
     number: Number
     mosaic: Mosaic
     eraser: Eraser
+    qrcode: QR Code
   saveToFile: Save to File
   copyToClipboard: Copy to Clipboard
   ocr: OCR Recognition
   ocrBusy: Previous OCR not finished, please wait
+  qrNoResult: No QR code detected
+  qrCopied: Copied to clipboard
+  qrScanning: Scanning...
   undo: Undo (Cmd/Ctrl+Z)
   redo: Redo (Cmd/Ctrl+Shift+Z)
   delete: Delete Selected
