@@ -154,6 +154,11 @@ pub fn unlock_app_key_local() -> Result<Option<DerivedKey>> {
         Some(m) => m,
         None => return Ok(None),
     };
+    // app_key_local_enc 空（清库/sync pull 清空/换机首次）→ 走流程 C
+    if meta.app_key_local_enc.is_empty() {
+        log::debug!("[vault] app_key_local_enc 为空，降级到流程 C（需主密码解锁）");
+        return Ok(None);
+    }
     let k_machine = match keychain::load_machine_key()? {
         Some(k) => k,
         None => return Ok(None),
