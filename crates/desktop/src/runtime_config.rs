@@ -130,6 +130,7 @@ pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
 // ── 命令返回 DTO ──
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolbarState {
     pub asr_engine: String,
     pub polish_mode: u8,
@@ -148,6 +149,7 @@ pub struct ToolbarState {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EngineOption {
     pub id: i64,
     pub name: String,
@@ -165,6 +167,7 @@ pub struct EngineOption {
 
 /// LLM 润色模型菜单项（与 EngineOption 同构，current 标记当前选中的 polish_llm）。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmOption {
     pub id: i64,
     pub name: String,
@@ -183,6 +186,7 @@ pub struct LlmOption {
 /// OCR 模型菜单项（与 LlmOption 同构，current 标记当前选中的 ocr_model）。
 /// 与 LLM 的区别：不做「不选择模型」首项——OCR 必须有一个模型。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OcrOption {
     pub name: String,
     pub provider: String,

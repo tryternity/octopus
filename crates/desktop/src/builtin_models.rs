@@ -14,6 +14,7 @@ use serde::Serialize;
 
 /// 单个 builtin 模型的检测信息（供前端下载页展示）。
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct BuiltinModelInfo {
     /// DB model_name（如 "zipformer-small"）
     pub name: String,

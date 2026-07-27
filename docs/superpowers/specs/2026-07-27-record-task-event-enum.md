@@ -1,6 +1,6 @@
 # RecordTaskEvent enum — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
+> **Status: ✅ 已实现**（2026-07-27，分支 `feat/record-followup`，commit `7ba81b64`）。
 >
 > **本 spec 范围**：把 gif + merge 6 个独立 Tauri 事件合并为 1 个 `record://task` 事件 + `RecordTaskEvent` enum payload。这是「全工程 casing 统一」roadmap 的第一个 task（详见 AGENTS.md「序列化 casing 规范」）。
 >
@@ -14,9 +14,20 @@
 
 ## 实现注记（Implementation Notes）
 
-实施过程中与原 spec 的偏差回写至此处（实施时填充）。
+### 2026-07-27 实施完成（commit `7ba81b64`）
 
-<!-- 待填 -->
+| 检查项 | 结果 |
+|---|---|
+| A1 cargo build | 0 error 0 warning |
+| A2 cargo test -p octopus-desktop | 422 passed / 0 failed / 1 ignored |
+| A3 旧事件名清零 | `record://gif-*` / `record://merge-*` 共 0 残留 |
+| A4 RecordTaskEvent emit 6 次 | 行 885/903/911/1022/1053/1139（gif 3 + merge 3） |
+
+**偏差**：
+- `MergeDone` 的 `file_path_str` 在 emit 里需 `.clone()`——原 inline `json!` 借引用不 move，enum 拥有所有权，emit 后 `MergeResult` 还要用，故 clone。`GifDone` 同理（`path_str.clone()`，path_str 还要 return）。
+- 同步更新了 3 处函数 doc 注释里的事件名引用（spec 未提及，但避免文档漂移）。
+
+**序列化验证**：变体级 `#[serde(rename_all = "camelCase")]` 实测有效——`MergeDone { new_id }` 序列化为 `{"event":"merge-done","newId":...}`（spec 决策 B+ 落地）。
 
 ---
 

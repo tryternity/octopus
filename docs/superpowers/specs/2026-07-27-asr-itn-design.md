@@ -1,7 +1,7 @@
 # ASR 数字 ITN（Inverse Text Normalization）设计
 
 > **日期**：2026-07-27
-> **状态**：✅ 已实现（chinese2digits crate，corrector 后 hans 前；流式仅 Final 过 ITN；141 测试全过；e2e 待用户验证）
+> **状态**：✅ 已实现（单数字保护 + 黑名单词边界 + chinese2digits crate；corrector 后 hans 前；流式仅 Final 过 ITN；11 测试全过；e2e 待用户验证）
 > **来源**：[竞品分析报告](../../research/2026-07-27-competitive-analysis.md) §1 语音输入 P0 缺口
 
 ---
@@ -22,7 +22,10 @@ ASR 引擎输出中文数字而非阿拉伯数字：「二零二六年七月二�
 
 ## 2. 方案
 
-用 [chinese2digits](https://github.com/Wall-ee/chinese2digits) crate 的 `take_number_from_string`，在 ASR 后处理链中插入 ITN 步骤。
+用 [chinese2digits](https://github.com/Wall-ee/chinese2digits) crate 的 `take_number_from_string` 做底层转换，但加两层保护避免误转：
+
+1. **单数字保护**：只转连续 2+ 中文数字字符的片段。单个数字字符（前后非数字）一律保留——杜绝「统一→统1」「一些→1些」「七月→7月」（「七月」是地道中文）。
+2. **黑名单词边界匹配**：含 2+ 数字字符但不是数字的常用词/成语，在词边界（前后非数字字符）时不转。
 
 ### 后处理链（修改后）
 
@@ -50,27 +53,19 @@ engine.transcribe() → raw_text
 
 ## 3. 组件
 
-### 新增 `crates/asr-local/src/itn.rs`
+### `crates/asr-local/src/itn.rs`（实际实现）
 
-```rust
-use chinese2digits::take_number_from_string;
+**核心逻辑**（非简单调 take_number_from_string，而是分段处理）：
 
-/// ASR 数字 ITN：中文数字→阿拉伯数字。
-///
-/// 用 chinese2digits crate 的 take_number_from_string，从文本中找中文数字
-/// 替换为阿拉伯数字，保留非数字文字。
-///
-/// 参数 force_simplified=true：先把繁体数字字符（貳貳參...）转简体再识别。
-/// 注意：这只管数字字符的繁简，不替代 hans 模块的全文简繁归一。
-pub fn normalize(text: &str) -> String {
-    let result = take_number_from_string(text, false, true);
-    result.replaced_text
-}
-```
+1. **黑名单保护**：先用占位符替换黑名单词（词边界匹配——前后非数字字符时才保护）。两类黑名单：
+   - **固定搭配**（任何情况都不转）：三十六计、三百六十行、二十四史、七十二变、八十一难、九九归一、三七二十一、八九不离十、三五成群、略知一二
+   - **独立数字**（单独不转，连数字时转）：万一、千万、百万、二百五
+2. **分段扫描**：遍历文本，收集连续数字字符片段：
+   - **2+ 连续数字字符** → 调 `take_number_from_string` 转换
+   - **单个数字字符** → 保留原文（「七月」「统一」「十分」不转）
+3. **还原黑名单**：占位符替换回原词
 
-- 纯函数，无状态
-- 第二参数 `false`：不做百分比转换（「百分之五十」→「50%」非核心需求，且可能误转）
-- 第三参数 `true`：force_simplified（繁体数字字符先转简体再识别）
+**关键设计**：词边界匹配使「二百五」独立时不转（`二百五` → 保留），但跟数字连用时转（`二百五十六` → 256）。
 
 ### 修改 `pipeline.rs` `transcribe_batch`
 
@@ -114,13 +109,16 @@ chinese2digits = "1"
 
 | # | 不变量 | 保证方式 |
 |---|---|---|
-| INV-1 | 自带 ITN 引擎（Qwen3/SenseVoice/Paraformer）无副作用 | 文本无中文数字 → `take_number_from_string` 找不到 → 返回原文（no-op） |
+| INV-1 | 自带 ITN 引擎（Qwen3/SenseVoice/Paraformer）无副作用 | 文本无中文数字 → no-op |
 | INV-2 | 英文文本无副作用 | 无中文数字字符 → no-op |
 | INV-3 | 不影响 hans 全文简繁归一 | ITN 的 force_simplified 只管数字字符；hans 在 ITN 后做全文归一 |
-| INV-4 | Partial/Committed 不过 ITN | 仅 `finish()`（Final）和 `transcribe_batch`（离线）调 ITN；流式 partial 路径不调 |
+| INV-4 | Partial/Committed 不过 ITN | 仅 `finish()`（Final）和 `transcribe_batch`（离线）调 ITN |
 | INV-5 | 始终应用，无配置开关 | ASR 语音输入场景数字归一化几乎总是想要 |
+| INV-6 | 单个数字字符不转 | 只转连续 2+ 数字字符片段；「统一」「七月」「十分」保留 |
+| INV-7 | 黑名单词边界保护 | 固定搭配（三十六计等）任何情况不转；独立数字（万一/百万/二百五）单独不转、连数字时转 |
+| INV-8 | 黑名单 + 数字连用时转 | 「二百五十六」→256（「二百五」后面跟「十六」，词边界失效） |
 
-## 5. 测试（TDD）
+## 5. 测试
 
 `itn.rs` 内联测试模块：
 
@@ -187,9 +185,11 @@ mod tests {
 
 ## 7. 不做
 
-- **英文 ITN**（"twenty twenty six" → "2026"）：英文数字表达复杂（序数词/小数/分数/货币），且 Moonshine/Whisper 英文场景非核心。留作后续。
-- **百分比/货币/日期时间格式化**（"百分之五十"→"50%"）：chinese2digits 的第二参数 `pct=false` 关闭。非核心需求，可能误转。
-- **配置开关**：ASR 场景始终需要数字归一化，不加 `itn_enabled` 配置项。
+- **英文 ITN**（"twenty twenty six" → "2026"）：英文数字表达复杂，留作后续。
+- **百分比/货币/日期时间格式化**（"百分之五十"→"50%"）：`pct=false` 关闭。
+- **配置开关**：ASR 场景始终需要，不加 `itn_enabled`。
+- **单数字+量词转换**（「七月→7月」「三个→3个」）：单个数字字符一律保留——「七月」「三个」是地道中文，转了反而不自然。
+- **黑名单穷尽**：黑名单只覆盖高频误转词，不可能穷尽所有中文固有表达。新误转词发现后逐步加。
 
 ## 8. 相关代码位置
 

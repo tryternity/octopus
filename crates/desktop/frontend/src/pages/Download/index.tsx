@@ -10,7 +10,7 @@ interface BuiltinModelInfo {
   name: string;
   source: string;
   description: string;
-  is_streaming: boolean;
+  isStreaming: boolean;
 }
 
 /** download-progress 事件 payload。 */
@@ -299,7 +299,7 @@ function ModelCard({ model }: { model: ModelState }) {
             <Download className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
           )}
           <span className="text-xs font-medium">{info.name}</span>
-          {info.is_streaming && (
+          {info.isStreaming && (
             <span className="text-[9px] text-muted-foreground/50 px-1 py-px rounded bg-muted">
               流式
             </span>

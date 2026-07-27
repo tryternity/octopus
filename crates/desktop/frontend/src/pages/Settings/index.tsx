@@ -32,11 +32,11 @@ import RecordingPanel from "./RecordingPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
-  asr_engines: { name: string; label: string; current: boolean; source_type: number }[];
-  llm_models: { name: string; label: string; current: boolean }[];
-  ocr_models: { name: string; label: string; current: boolean }[];
-  prompts: { id: number; title: string; is_system: boolean }[];
-  active_prompt_id: number;
+  asrEngines: { name: string; label: string; current: boolean; sourceType: number }[];
+  llmModels: { name: string; label: string; current: boolean }[];
+  ocrModels: { name: string; label: string; current: boolean }[];
+  prompts: { id: number; title: string; isSystem: boolean }[];
+  activePromptId: number;
   microphones: string[];
 }
 

@@ -11,10 +11,10 @@ export interface ModelRowData {
   provider: string;
   category: string;
   description: string;
-  is_ready: boolean;
-  is_current: boolean;
+  isReady: boolean;
+  isCurrent: boolean;
   /** 模型来源: 0=builtin 1=local 2=cloud（!== 2 即本地/builtin） */
-  source_type: number;
+  sourceType: number;
   repo: string;
   /** 云端模型 id（用于编辑/删除） */
   cloudId?: number;
@@ -51,7 +51,7 @@ export function ModelRow({
 }) {
   const t = useT();
   const pct = progress && progress.total > 0 ? (progress.downloaded / progress.total) * 100 : 0;
-  const showDownload = model.source_type !== 2 && !model.is_ready;
+  const showDownload = model.sourceType !== 2 && !model.isReady;
   // 内部 fallback 状态（无外部控制时用，如云端行不需互斥）
   const [internalOpen, setInternalOpen] = useState(false);
   const showPopover = onPopoverOpenChange ? (popoverOpen ?? false) : internalOpen;
@@ -66,9 +66,9 @@ export function ModelRow({
       className={cn(
         "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
         "border-l-2",
-        model.is_current
+        model.isCurrent
           ? "border-l-success bg-success/10"
-          : model.is_ready
+          : model.isReady
             ? "border-l-voice/50"
             : "border-l-border/40",
       )}
@@ -76,9 +76,9 @@ export function ModelRow({
       {/* 左：状态 + 名称 + 描述 */}
       <div className="flex flex-col gap-0.5 flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          {model.is_current ? (
+          {model.isCurrent ? (
             <CheckCircle2 className="w-3 h-3 text-success shrink-0" />
-          ) : model.is_ready ? (
+          ) : model.isReady ? (
             <CheckCircle2 className="w-3 h-3 text-voice/70 shrink-0" />
           ) : (
             <Circle className="w-3 h-3 text-muted-foreground/30 shrink-0" />
@@ -114,7 +114,7 @@ export function ModelRow({
         ) : (
           <>
             {/* 激活 / 已激活 */}
-            {model.is_current ? (
+            {model.isCurrent ? (
               <Button variant="ghost" size="sm" disabled className="cursor-default">
                 {t("settings.models.activated")}
               </Button>
@@ -125,7 +125,7 @@ export function ModelRow({
             )}
 
             {/* 校验（本地已就绪） */}
-            {model.source_type !== 2 && model.is_ready && (
+            {model.sourceType !== 2 && model.isReady && (
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -137,13 +137,13 @@ export function ModelRow({
             )}
 
             {/* 删除（local 已就绪 或 云端模型；builtin 始终灰掉占位——文件损坏用校验+重新下载） */}
-            {(model.source_type !== 2 && model.is_ready || model.source_type === 2) && (
+            {(model.sourceType !== 2 && model.isReady || model.sourceType === 2) && (
               <Button
                 variant="destructive-ghost"
                 size="icon-sm"
-                disabled={busy || model.source_type === 0}
+                disabled={busy || model.sourceType === 0}
                 onClick={async () => {
-                  if (model.source_type === 0) return; // builtin 不可删
+                  if (model.sourceType === 0) return; // builtin 不可删
                   const ok = await confirm(t("settings.models.confirmDelete"), { title: "删除模型", kind: "warning" });
                   if (ok) onDelete();
                 }}
@@ -153,7 +153,7 @@ export function ModelRow({
             )}
 
             {/* 编辑（云端模型） */}
-            {model.source_type === 2 && onEdit && (
+            {model.sourceType === 2 && onEdit && (
               <Button variant="ghost" size="icon-sm" onClick={onEdit}>
                 <Pencil />
               </Button>
@@ -162,7 +162,7 @@ export function ModelRow({
         )}
 
         {/* 文件列表浮层（本地+builtin，无论就绪/下载中/未下载）—— hover/click 展示文件级进度 */}
-        {model.source_type !== 2 && (
+        {model.sourceType !== 2 && (
           <div className="relative">
             <Button
               ref={filesBtnRef}

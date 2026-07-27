@@ -23,12 +23,12 @@ const DENOISE_MODES = [0, 1, 2];
 const TRANSLATE_OFF_SENTINEL = "__off__";
 
 interface ToolbarState {
-  polish_mode: number;
-  denoise_mode: number;
-  polish_llm_valid: boolean;
-  hide_toolbar: boolean;
-  edit_shortcut: string;
-  translate_mode: string;
+  polishMode: number;
+  denoiseMode: number;
+  polishLlmValid: boolean;
+  hideToolbar: boolean;
+  editShortcut: string;
+  translateMode: string;
 }
 
 interface PopupItem {
@@ -49,9 +49,9 @@ function Result() {
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
-    polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
-    hide_toolbar: true, edit_shortcut: "CmdOrCtrl+Enter",
-    translate_mode: "manual",
+    polishMode: 0, denoiseMode: 1, polishLlmValid: false,
+    hideToolbar: true, editShortcut: "CmdOrCtrl+Enter",
+    translateMode: "manual",
   });
   const [popupType, setPopupType] = useState<PopupType>(null);
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
@@ -102,7 +102,7 @@ function Result() {
     try {
       const st = await invoke<ToolbarState>("toolbar_state");
       setToolbarState(st);
-      if (st.hide_toolbar === false) {
+      if (st.hideToolbar === false) {
         showToolbar();
       } else {
         hideToolbar();
@@ -147,7 +147,7 @@ function Result() {
   useEffect(() => {
     const container = document.getElementById("result-container");
     if (!container) return;
-    if (toolbarState.hide_toolbar === false) return;
+    if (toolbarState.hideToolbar === false) return;
 
     const onMove = () => showToolbar();
     const onLeave = () => hideToolbar();
@@ -157,7 +157,7 @@ function Result() {
       container.removeEventListener("mousemove", onMove);
       container.removeEventListener("mouseleave", onLeave);
     };
-  }, [toolbarState.hide_toolbar, showToolbar, hideToolbar]);
+  }, [toolbarState.hideToolbar, showToolbar, hideToolbar]);
 
   // ── Tauri events ──
   useEffect(() => {
@@ -274,7 +274,7 @@ function Result() {
   useEffect(() => { doTranslateRef.current = doTranslate; }, [doTranslate]);
 
   const enterTranslateMode = useCallback(() => {
-    const mode = resolveRememberedTranslateMode(toolbarState.translate_mode);
+    const mode = resolveRememberedTranslateMode(toolbarState.translateMode);
     setTranslateMode(mode);
     if (!expanded) {
       setExpanded(true);
@@ -284,7 +284,7 @@ function Result() {
       if (translateModeRef.current !== 'off') doTranslateRef.current();
     }, 100);
     invoke("set_translation_active", { active: true });
-  }, [toolbarState.translate_mode, expanded]);
+  }, [toolbarState.translateMode, expanded]);
 
   // 翻译事件监听——仅翻译模式开启/关闭时订阅/退订，档位切换不重订阅（防竞态丢失 translate-done）
   useEffect(() => {
@@ -365,7 +365,7 @@ function Result() {
         if (translateModeRef.current !== 'off') doTranslateRef.current();
         return;
       }
-      const sc = parseShortcut(toolbarState.edit_shortcut);
+      const sc = parseShortcut(toolbarState.editShortcut);
       if (matchShortcut(e, sc)) {
         e.preventDefault();
         asrEditorRef.current?.commit();
@@ -373,7 +373,7 @@ function Result() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [popupType, toolbarState.edit_shortcut, win]);
+  }, [popupType, toolbarState.editShortcut, win]);
 
   // ── Popup close on outside click ──
   useEffect(() => {
@@ -392,7 +392,7 @@ function Result() {
     if (popupType === "polish") { setPopupType(null); return; }
     const polishLabels = [ti18n("result.polish.off"), ti18n("result.polish.finalOnly"), ti18n("result.polish.intermediate")];
     setPopupItems(POLISH_MODES.map(m => ({
-      label: polishLabels[m], current: m === toolbarState.polish_mode, mode: m,
+      label: polishLabels[m], current: m === toolbarState.polishMode, mode: m,
     })));
     setPopupType("polish");
   };
@@ -401,7 +401,7 @@ function Result() {
     if (popupType === "denoise") { setPopupType(null); return; }
     const denoiseLabels = [ti18n("result.denoise.none"), ti18n("result.denoise.light"), ti18n("result.denoise.deep")];
     setPopupItems(DENOISE_MODES.map(m => ({
-      label: denoiseLabels[m], current: m === toolbarState.denoise_mode, mode: m,
+      label: denoiseLabels[m], current: m === toolbarState.denoiseMode, mode: m,
     })));
     setPopupType("denoise");
   };
@@ -462,8 +462,8 @@ function Result() {
 
   const tools: ToolDef[] = [
     { id: "close", icon: "close", label: t("result.close"), onClick: () => invoke("discard_recording") },
-    { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
-    { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
+    { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoiseMode !== 0, onClick: openDenoisePopup },
+    { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polishMode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: t("result.polishNow"), disabled: polishLoading, onClick: polishNow },
     { id: "translate", icon: "translate", label: t("result.translate"), active: translateMode !== 'off', onClick: openTranslatePopup },
     { id: "translate-now", icon: "redo", label: t("result.translateNow"), disabled: translating || translateMode === 'off', onClick: doTranslate },
@@ -499,7 +499,7 @@ function Result() {
         {/* Toolbar */}
         <Toolbar
           tools={tools}
-          opacityClass={toolbarState.hide_toolbar === false || toolbarVisible ? "opacity-100" : "opacity-0"}
+          opacityClass={toolbarState.hideToolbar === false || toolbarVisible ? "opacity-100" : "opacity-0"}
           onDragStart={onDragStart}
         />
         {/* Drag handle */}

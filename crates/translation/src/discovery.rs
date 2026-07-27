@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslationModelInfo {
     pub name: String,
     pub source: String,

@@ -26,7 +26,7 @@ interface GeneralPanelProps {
 }
 
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
-  const { config: cfg, prompts, active_prompt_id, microphones } = configResp;
+  const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "voice" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
@@ -269,8 +269,8 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
                 </Select>
               </Row>
               <Row label={t("settings.general.polishPrompt")} effect={t("settings.effect.now")} hint={t("settings.general.polishPromptHint")}>
-                <Select value={active_prompt_id} onChange={(e) => setActivePrompt(parseInt(e.target.value))}>
-                  {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.is_system ? t("settings.general.builtinSuffix") : ""}</option>)}
+                <Select value={activePromptId} onChange={(e) => setActivePrompt(parseInt(e.target.value))}>
+                  {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.isSystem ? t("settings.general.builtinSuffix") : ""}</option>)}
                 </Select>
               </Row>
               <Row label={t("settings.general.polishInterval")} effect={t("settings.effect.nextRecording")}>

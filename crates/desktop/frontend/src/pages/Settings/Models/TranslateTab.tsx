@@ -14,10 +14,10 @@ interface DownloadableModel {
   repo: string;
   description: string;
   category: string;
-  // Task 2 后：is_available=就绪；is_enabled=激活
-  is_available: boolean;
-  is_enabled: boolean;
-  source_type: number;
+  // Task 2 后：isAvailable=就绪；isEnabled=激活
+  isAvailable: boolean;
+  isEnabled: boolean;
+  sourceType: number;
 }
 
 interface TranslateCloudModel {
@@ -29,8 +29,8 @@ interface TranslateCloudModel {
   secretKey: string;
   isStreaming: boolean;
   isThinking: boolean;
-  // 后端 TranslateCloudModel（model_commands.rs）的 is_enabled 字段（camelCase 序列化），
-  // review fix 问题 3：local/cloud is_current 都用 DB is_enabled。
+  // 后端 TranslateCloudModel（model_commands.rs）的 isEnabled 字段（camelCase 序列化），
+  // review fix 问题 3：local/cloud isCurrent 都用 DB isEnabled。
   // main 上的 584f6456 "fix bug" 也加了同一字段——合并两边都修了同一个 bug。
   isEnabled: boolean;
 }
@@ -148,24 +148,24 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     setShowForm(true);
   };
 
-  const readyCount = downloadable.filter((m) => m.is_available).length;
+  const readyCount = downloadable.filter((m) => m.isAvailable).length;
   // translate_status 返回 engineName 供 CurrentBanner 显示
   const currentEngineName = status?.engineName ?? "";
 
-  // review fix 问题 3+6：local/cloud is_current 都用 DB is_enabled；local 补 cloudId: m.id
+  // review fix 问题 3+6：local/cloud isCurrent 都用 DB isEnabled；local 补 cloudId: m.id
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled,
-    source_type: m.source_type, repo: m.repo,
+    description: m.description, isReady: m.isAvailable,
+    isCurrent: m.isEnabled,
+    sourceType: m.sourceType, repo: m.repo,
     cloudId: m.id,
   }));
 
   const cloudRows: ModelRowData[] = cloudModels.map((m) => ({
     name: m.modelName, provider: m.provider, category: m.category,
-    description: "", is_ready: true,
-    is_current: m.isEnabled,
-    source_type: 2, repo: "",
+    description: "", isReady: true,
+    isCurrent: m.isEnabled,
+    sourceType: 2, repo: "",
     cloudId: m.id,
   }));
 
