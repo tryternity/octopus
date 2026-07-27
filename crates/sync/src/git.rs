@@ -117,6 +117,11 @@ pub fn git_init(path: &Path) -> Result<(), SyncError> {
 /// `git remote add <name> <url>`——添加 remote。
 pub fn git_remote_add(path: &Path, name: &str, url: &str) -> Result<(), SyncError> {
     run_git(path, &["remote", "add", name, url])?;
+    // S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG 修复（2026-07-27，第七十九轮）：
+    // git 写 .git/config 时用默认权限（umask 022 下 0644），世界可读。
+    // 若 url 含 PAT（https://user:ghp_xxx@host/...），PAT 明文落盘 + 世界可读。
+    // 设 0600 把世界可读降到仅 owner（凭证最小权限基线，与 ~/.ssh/id_rsa 同级）。
+    secure_git_dir_permissions(path);
     Ok(())
 }
 
@@ -310,6 +315,10 @@ pub fn git_clone(url: &str, path: &Path) -> Result<(), SyncError> {
         .context("clone path 无文件名")
         .map_err(SyncError::Other)?;
     run_git(parent, &["clone", url, dir_name])?;
+    // S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG 修复（2026-07-27，第七十九轮）：
+    // clone 后 .git/config 可能含 PAT（若 url 是 https://user:ghp_xxx@host/...）。
+    // git 用默认权限创建 config（0644 世界可读）——设 0600 + .git/ 0700 降权。
+    secure_git_dir_permissions(path);
     Ok(())
 }
 
@@ -561,6 +570,42 @@ pub fn git_last_commit_info(path: &Path) -> Result<Option<(String, String)>, Syn
         }
         Err(SyncError::GitError(_)) => Ok(None), // 无 commit
         Err(e) => Err(e),
+    }
+}
+
+/// S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG 修复（2026-07-27，第七十九轮）：
+/// 把 .git/config 设 0600 + .git/ 目录设 0700，防止 PAT 明文落盘后被其他用户读取。
+///
+/// git 默认用 umask 创建 .git/config（0644 世界可读）。若 url 含 PAT
+/// （https://user:ghp_xxx@host/...），PAT 明文落盘 + 世界可读 = 凭证泄漏。
+/// 设 0600 把世界可读降到仅 owner（凭证最小权限基线，与 ~/.ssh/id_rsa / ~/.netrc 同级）。
+///
+/// 注意：0600 不能消除备份路径（Time Machine 以 root 运行不受文件权限限制），
+/// 但符合凭证最小权限基线，是必要非充分。
+///
+/// 失败只 log::warn 不阻断（权限设置是 best-effort 加固，不应让 clone/add 失败）。
+fn secure_git_dir_permissions(root: &Path) {
+    let git_dir = root.join(".git");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // .git/ 目录设 0700（防其他用户 traverse 进目录）
+        if let Err(e) = std::fs::set_permissions(&git_dir, std::fs::Permissions::from_mode(0o700)) {
+            log::warn!("[sync] 设置 .git/ 目录权限 0700 失败：{}", e);
+        }
+        // .git/config 设 0600（防其他用户读 PAT）
+        let config = git_dir.join("config");
+        if config.exists() {
+            if let Err(e) = std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)) {
+                log::warn!("[sync] 设置 .git/config 权限 0600 失败：{}", e);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows：文件权限走 ACL，std::fs::set_permissions 只支持只读切换。
+        // .git/config 的 PAT 保护在 Windows 依赖 NTFS ACL（用户目录默认仅 owner 可读）。
+        let _ = git_dir;
     }
 }
 
@@ -845,5 +890,52 @@ mod tests {
         assert!(!is_git_repo(tmp.path()), "非 git 目录");
         git_init(tmp.path()).unwrap();
         assert!(is_git_repo(tmp.path()), "init 后应是 git repo");
+    }
+
+    /// S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG 守护（2026-07-27，第七十九轮）：
+    /// git_remote_add 后 .git/config 权限应为 0600（防 PAT 世界可读）。
+    #[cfg(unix)]
+    #[test]
+    fn git_remote_add_sets_config_permissions_0600() {
+        if !has_git() {
+            return;
+        }
+        let tmp = init_repo();
+        git_remote_add(tmp.path(), "origin", "https://github.com/owner/repo.git")
+            .expect("remote add");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(tmp.path().join(".git/config"))
+            .expect("config exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG: .git/config 权限应为 0600，实际 {:o}",
+            mode & 0o777
+        );
+    }
+
+    /// S-SYNC-PAT-STORED-WORLD-READABLE-CONFIG 守护：.git/ 目录权限应为 0700。
+    #[cfg(unix)]
+    #[test]
+    fn git_dir_permissions_0700_after_remote_add() {
+        if !has_git() {
+            return;
+        }
+        let tmp = init_repo();
+        git_remote_add(tmp.path(), "origin", "https://github.com/owner/repo.git")
+            .expect("remote add");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(tmp.path().join(".git"))
+            .expect(".git exists")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            ".git/ 目录权限应为 0700，实际 {:o}",
+            mode & 0o777
+        );
     }
 }
