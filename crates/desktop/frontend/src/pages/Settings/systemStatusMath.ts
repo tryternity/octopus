@@ -30,10 +30,10 @@ export function sparklinePoints(
     .join(" ");
 }
 
-/** 快照去重：仅当 next.sampled_at 严格大于 prev 才替换；prev 为 null 或更旧时取 next。 */
-export function newerSnapshot<T extends { sampled_at: number }>(prev: T | null, next: T): T {
+/** 快照去重：仅当 next.sampledAt 严格大于 prev 才替换；prev 为 null 或更旧时取 next。 */
+export function newerSnapshot<T extends { sampledAt: number }>(prev: T | null, next: T): T {
   if (!prev) return next;
-  return next.sampled_at > prev.sampled_at ? next : prev;
+  return next.sampledAt > prev.sampledAt ? next : prev;
 }
 
 /**

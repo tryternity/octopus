@@ -62,24 +62,24 @@ describe("sparklinePoints", () => {
 });
 
 describe("newerSnapshot", () => {
-  type S = { sampled_at: number; v: number };
-  const make = (sampled_at: number, v: number): S => ({ sampled_at, v });
+  type S = { sampledAt: number; v: number };
+  const make = (sampledAt: number, v: number): S => ({ sampledAt, v });
 
   it("prev=null → next", () => {
     const next = make(100, 2);
     expect(newerSnapshot<S>(null, next)).toBe(next);
   });
-  it("next.sampled_at 严格大于 prev → next", () => {
+  it("next.sampledAt 严格大于 prev → next", () => {
     const prev = make(100, 1);
     const next = make(200, 2);
     expect(newerSnapshot(prev, next)).toBe(next);
   });
-  it("next.sampled_at 等于 prev → prev（严格大于）", () => {
+  it("next.sampledAt 等于 prev → prev（严格大于）", () => {
     const prev = make(100, 1);
     const next = make(100, 2);
     expect(newerSnapshot(prev, next)).toBe(prev);
   });
-  it("next.sampled_at 小于 prev → prev", () => {
+  it("next.sampledAt 小于 prev → prev", () => {
     const prev = make(200, 1);
     const next = make(100, 2);
     expect(newerSnapshot(prev, next)).toBe(prev);
