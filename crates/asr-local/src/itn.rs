@@ -16,9 +16,14 @@ use chinese2digits::take_number_from_string;
 /// 中文数字字符集（含幺，电信场景用）
 const CN_DIGITS: &str = "零一二三四五六七八九十百千万亿点幺";
 
-/// 黑名单——含 2+ 数字字符但不是数字的常用词，不转换
+/// 黑名单——含 2+ 数字字符但不是数字的常用词/成语。
+/// 只在**词边界**（前后非数字字符）匹配时保护——
+/// 「二百五」独立出现不转，但「二百五十六」该转。
 const BLACKLIST: &[&str] = &[
     "万一", "千万", "百万",
+    "三十六计", "三百六十行", "二十四史", "二百五",
+    "七十二变", "八十一难", "九九归一",
+    "三七二十一", "八九不离十", "三五成群", "略知一二",
 ];
 
 /// 中文数字→阿拉伯数字。始终应用，无开关。
@@ -30,14 +35,45 @@ const BLACKLIST: &[&str] = &[
 ///    - 单个数字字符 → 一律保留（「七月」「统一」都不转）
 /// 3. 还原黑名单占位符
 pub fn normalize(text: &str) -> String {
-    // 1. 保护黑名单词
+    // 1. 保护黑名单词（只在词边界匹配——前后非数字字符时）
+    let is_digit = |c: char| CN_DIGITS.contains(c);
     let mut protected = text.to_string();
     let mut placeholders: Vec<(String, String)> = Vec::new();
+
     for (idx, word) in BLACKLIST.iter().enumerate() {
-        if protected.contains(word) {
-            let ph = format!("\u{0000}BL{idx}\u{0000}");
-            protected = protected.replace(word, &ph);
-            placeholders.push((ph, word.to_string()));
+        loop {
+            let chars: Vec<char> = protected.chars().collect();
+            let word_chars: Vec<char> = word.chars().collect();
+            let mut found_pos = None;
+
+            // 在 chars 里找 word，检查前后边界
+            let mut search_start = 0;
+            while search_start + word_chars.len() <= chars.len() {
+                let slice = &chars[search_start..search_start + word_chars.len()];
+                if slice == word_chars.as_slice() {
+                    // 检查前一个字符是否数字
+                    let prev_ok = search_start == 0 || !is_digit(chars[search_start - 1]);
+                    // 检查后一个字符是否数字
+                    let after = search_start + word_chars.len();
+                    let next_ok = after >= chars.len() || !is_digit(chars[after]);
+                    if prev_ok && next_ok {
+                        found_pos = Some(search_start);
+                        break;
+                    }
+                }
+                search_start += 1;
+            }
+
+            if let Some(pos) = found_pos {
+                let ph = format!("\u{0000}B{idx}P{pos}\u{0000}");
+                // 替换 chars 里的 word 为占位符
+                let before: String = chars[..pos].iter().collect();
+                let after: String = chars[pos + word_chars.len()..].iter().collect();
+                protected = format!("{before}{ph}{after}");
+                placeholders.push((ph, word.to_string()));
+            } else {
+                break;
+            }
         }
     }
 
@@ -139,6 +175,19 @@ mod tests {
         assert_eq!(normalize("万一"), "万一");
         assert_eq!(normalize("千万"), "千万");
         assert_eq!(normalize("百万"), "百万");
+        assert_eq!(normalize("三十六计"), "三十六计");
+        assert_eq!(normalize("三百六十行"), "三百六十行");
+        assert_eq!(normalize("二十四史"), "二十四史");
+        assert_eq!(normalize("七十二变"), "七十二变");
+        assert_eq!(normalize("八十一难"), "八十一难");
+    }
+
+    #[test]
+    fn blacklist_boundary_check() {
+        // 「二百五」独立出现不转，但跟其他数字连用时该转
+        assert_eq!(normalize("二百五"), "二百五");       // 独立 → 保护
+        assert_eq!(normalize("二百五十六"), "256");      // 连数字 → 转
+        assert_eq!(normalize("他是个二百五"), "他是个二百五"); // 句中独立 → 保护
     }
 
     // ── 混合文本 ──
@@ -148,7 +197,9 @@ mod tests {
         assert_eq!(normalize("唯一的十五个苹果"), "唯一的15个苹果");
         assert_eq!(normalize("统一的三百六十五天"), "统一的365天");
         assert_eq!(normalize("万一丢了十五个"), "万一丢了15个");
-        // 单数字 + 真正数字混合
         assert_eq!(normalize("七月二十一日"), "七月21日");
+        // 成语在句中 + 真正数字混合
+        assert_eq!(normalize("三十六计走为上"), "三十六计走为上");
+        assert_eq!(normalize("花了二百五买了十五个"), "花了二百五买了15个");
     }
 }
