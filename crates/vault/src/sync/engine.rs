@@ -949,13 +949,28 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         let _strict_params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
             .map_err(SyncError::Other)?;
 
-        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key
+        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key。
+        // ⚠️ app_key_sync_enc 不一致时清空 local_enc（2026-07-27 修复）：
+        // 场景：B 机新建 vault（生成新 app_key）→ sync 从 A 机拉数据。
+        // pull 把 app_key_sync_enc 覆盖成远程值（A 机 app_key 加密），但本地 local_enc
+        // 仍是新 app_key 加密的。如果保留 local_enc，启动时优先用它解出新 app_key →
+        // cipher（A 机旧 app_key 加密）解不开。清空 local_enc 强制走 sync_enc 路径，
+        // 解出 A 机 app_key，cipher 才能正确解密。成功后 unlock 自动用本机 K_machine
+        // 重写 local_enc。
         let (local_enc, pub_key, priv_key) = match &local_meta {
-            Some(m) => (
-                m.app_key_local_enc.clone(),
-                m.public_key.clone(),
-                m.protected_private_key.clone(),
-            ),
+            Some(m) => {
+                let sync_changed = m.app_key_sync_enc != f.app_key_sync_enc;
+                let enc = if sync_changed {
+                    log::info!(
+                        "[sync] pull 检测到 app_key_sync_enc 变化（远程覆盖了 sync_enc）——\
+                        清空本地 app_key_local_enc，强制下次 unlock 从 sync_enc 解 app_key"
+                    );
+                    String::new()
+                } else {
+                    m.app_key_local_enc.clone()
+                };
+                (enc, m.public_key.clone(), m.protected_private_key.clone())
+            }
             None => (String::new(), None, None),
         };
         let meta_input = VaultMetaInput {
@@ -2339,6 +2354,62 @@ mod tests {
         // c1 的 folder_id 应正确恢复
         let c1_after = db_ciphers_after.iter().find(|c| c.id == "aaa11111-1111-4111-8111-111111111111").expect("c1");
         assert_eq!(c1_after.folder_id.as_deref(), Some(folder_id), "c1 folder_id 应恢复");
+
+        let _ = g;
+    }
+
+    /// 回归守护（2026-07-27 app_key 不匹配 bug）：
+    /// B 机新建 vault（新 app_key + local_enc）→ sync 从 A 机拉数据（旧 app_key + sync_enc）
+    /// → pull 后 app_key_local_enc 应被清空（强制下次 unlock 从 sync_enc 解旧 app_key）。
+    /// 否则启动优先用 local_enc 解出新 app_key → cipher（旧 app_key 加密）解不开。
+    #[test]
+    fn pull_clears_local_enc_when_sync_enc_differs() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // DB 已有 vault_meta（IntegrationGuard 设的，stamp-test，app_key_local_enc 非空）
+        let meta_before = db::load_vault_meta().expect("meta").expect("meta exists");
+        let original_local_enc = meta_before.app_key_local_enc.clone();
+        assert!(!original_local_enc.is_empty(), "IntegrationGuard 应设了非空 local_enc");
+
+        // 模拟 A 机数据 push 到 .sync（不同 app_key_sync_enc）
+        let c1 = VaultCipherInput {
+            id: "ddd44444-4444-4444-8444-444444444444".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-site".into(), notes: None, data: "v1:enc-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+        push_to_files().expect("push");
+
+        // 清空 DB cipher（模拟 B 机新建 vault 后 cipher 空）
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", []).expect("del");
+            Ok::<_, anyhow::Error>(())
+        }).expect("clear");
+
+        // 模拟 A 机不同的 app_key_sync_enc：直接改 .sync meta.json 的 sync_enc
+        let meta_file = store::read_meta_file().expect("read meta file");
+        let mut meta_fields = meta_file;
+        meta_fields.app_key_sync_enc = "v1:DIFFERENT_SYNC_ENC_FROM_A_MACHINE".into();
+        store::write_meta_file(&meta_fields).expect("write changed meta");
+
+        // pull（DB 空 + .sync 有数据 + sync_enc 不同）
+        let (pulled, _) = pull_from_files().expect("pull");
+        assert_eq!(pulled, 1, "应拉回 1 cipher");
+
+        // 验证 app_key_local_enc 被清空（强制走 sync_enc）
+        let meta_after = db::load_vault_meta().expect("meta after").expect("meta exists");
+        assert!(
+            meta_after.app_key_local_enc.is_empty(),
+            "sync_enc 变化时 local_enc 应被清空，实际：{}",
+            meta_after.app_key_local_enc
+        );
+        assert_eq!(
+            meta_after.app_key_sync_enc, "v1:DIFFERENT_SYNC_ENC_FROM_A_MACHINE",
+            "app_key_sync_enc 应被远程值覆盖"
+        );
 
         let _ = g;
     }
