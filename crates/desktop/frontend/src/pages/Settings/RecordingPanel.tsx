@@ -66,7 +66,7 @@ export interface RecordingMeta {
   codec: string;
   has_system_audio: boolean;
   has_microphone: boolean;
-  audioTracks: AudioTrack[];
+  audio_tracks: AudioTrack[];
   source_type: string;
   file_size: number;
   has_thumbnail: boolean;
@@ -76,10 +76,9 @@ export interface RecordingMeta {
 }
 
 // merge_audio_tracks 命令的返回值（crates/desktop/src/record_commands.rs::MergeResult）。
-// 注意：后端结构体未加 #[serde(rename_all = "camelCase")]，字段按 snake_case 序列化。
 interface MergeResult {
-  new_id: number;
-  file_path: string;
+  newId: number;
+  filePath: string;
 }
 
 // ── 工具：格式化时长 ms → "MM:SS"（<1h）或 "H:MM:SS"（≥1h）─────────────────
@@ -555,7 +554,7 @@ function RecordingRow({
     try {
       const result = await invoke<MergeResult>("merge_audio_tracks", { id: rec.id });
       showToast(
-        t("settings.recordings.mergeAudioDone", { path: result.file_path }),
+        t("settings.recordings.mergeAudioDone", { path: result.filePath }),
         "success",
       );
       onMerged();
@@ -663,9 +662,9 @@ function RecordingRow({
           >
             {rec.source_type}
           </span>
-          {rec.audioTracks && rec.audioTracks.length > 0 && (
+          {rec.audio_tracks && rec.audio_tracks.length > 0 && (
             <div className="flex gap-1 items-center text-[10px]">
-              {rec.audioTracks.map((track, i) => (
+              {rec.audio_tracks.map((track, i) => (
                 <span
                   key={i}
                   className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
@@ -785,7 +784,7 @@ function RecordingRow({
             <Clapperboard className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
         </button>
-        {rec.audioTracks && rec.audioTracks.length >= 2 && (
+        {rec.audio_tracks && rec.audio_tracks.length >= 2 && (
           <button
             className={cn(
               "p-1 rounded transition-opacity",

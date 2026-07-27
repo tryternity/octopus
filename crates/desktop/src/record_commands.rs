@@ -917,6 +917,7 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
 ///
 /// 前端拿到后跳详情 / reveal in Finder；事件 `record://merge-done` 作为多窗口同步备用。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MergeResult {
     pub new_id: i64,
     pub file_path: String,
