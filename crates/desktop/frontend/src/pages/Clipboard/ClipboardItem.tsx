@@ -45,7 +45,7 @@ function ClipboardItemRow({
   }, []);
 
   useEffect(() => {
-    if (item.item_type !== "image") return;
+    if (item.itemType !== "image") return;
     // 虚拟列表滚动会复用组件实例：item.id 切换时先清旧缩略图，避免新图 base64
     // 经 IPC 传回前短暂显示上一条（幽灵闪烁）；cancelled 防快速滚动时旧请求晚到覆盖新图。
     setThumbSrc(null);
@@ -54,7 +54,7 @@ function ClipboardItemRow({
       .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [item.id, item.item_type]);
+  }, [item.id, item.itemType]);
 
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -127,11 +127,11 @@ function ClipboardItemRow({
 
   const handleEditText = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (item.item_type === "image" || item.item_type === "file") return;
+    if (item.itemType === "image" || item.itemType === "file") return;
     openCompactEditorTab(item.id);
   };
 
-  const link = item.item_type === "text" ? detectUrl(item.content) : null;
+  const link = item.itemType === "text" ? detectUrl(item.content) : null;
   const isUrl = !!link?.isLink;
 
   // 预览文本：码元数 ≤200 时字符数必 ≤200（emoji 占多码元），直接返回原串零开销；
@@ -143,19 +143,19 @@ function ClipboardItemRow({
     return chars.length > 200 ? chars.slice(0, 200).join("") + "……" : item.content;
   }, [item.content]);
 
-  const Icon = item.item_type === "voice" ? Mic
-    : item.item_type === "ocr" ? ScanText
-    : item.item_type === "image" ? ImageIcon
-    : item.item_type === "file" ? FileText
+  const Icon = item.itemType === "voice" ? Mic
+    : item.itemType === "ocr" ? ScanText
+    : item.itemType === "image" ? ImageIcon
+    : item.itemType === "file" ? FileText
     : Type;
 
-  const isVoice = item.item_type === "voice";
+  const isVoice = item.itemType === "voice";
   // 第一行行尾元数据：text/ocr→N字；voice→N字·Xs；image→w×h·size；file→类型/N个
   const row1Meta =
-    item.item_type === "image" ? imageMeta(item)
-    : item.item_type === "file" ? fileMeta(item)
+    item.itemType === "image" ? imageMeta(item)
+    : item.itemType === "file" ? fileMeta(item)
     : metaParts(item);
-  const accent = typeAccent[item.item_type];
+  const accent = typeAccent[item.itemType];
 
   return (
     <div
@@ -203,12 +203,12 @@ function ClipboardItemRow({
       <div className="flex items-center gap-2">
 
         <div className="flex-1 min-w-0">
-          {item.item_type === "image" ? (
+          {item.itemType === "image" ? (
             thumbSrc && (
               <img src={thumbSrc} className="w-10 h-10 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )
-          ) : item.item_type === "file" ? (
-            <span className="block truncate text-[12px] text-muted-foreground">{formatFilePaths(item.ref_data)}</span>
+          ) : item.itemType === "file" ? (
+            <span className="block truncate text-[12px] text-muted-foreground">{formatFilePaths(item.refData)}</span>
           ) : (
             <p className="break-all line-clamp-1 text-[12.5px] leading-snug text-foreground/90">{preview}</p>
           )}
@@ -221,7 +221,7 @@ function ClipboardItemRow({
 
       {/* 第二行：时间戳 + 操作（内容栏内，已对齐图标右侧，无需 pl 缩进）。 */}
       <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
-        <span className="tabular-nums text-[10px] text-muted-foreground/60">{item.created_at}</span>
+        <span className="tabular-nums text-[10px] text-muted-foreground/60">{item.createdAt}</span>
         <div className="flex flex-shrink-0 items-center gap-0.5">
           <button
             className={cn(
@@ -249,7 +249,7 @@ function ClipboardItemRow({
               <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
             </button>
           )}
-          {item.item_type !== "image" && item.item_type !== "file" && (
+          {item.itemType !== "image" && item.itemType !== "file" && (
             <button
               className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
               onClick={handleEditText}
@@ -258,7 +258,7 @@ function ClipboardItemRow({
               <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
             </button>
           )}
-          {item.item_type === "image" && (
+          {item.itemType === "image" && (
             <button
               className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
               onClick={(e) => {
@@ -270,7 +270,7 @@ function ClipboardItemRow({
               <img src="icons/eye-edit.svg" alt={t("clipboard.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
             </button>
           )}
-          {item.item_type === "image" && (
+          {item.itemType === "image" && (
             <div className="relative">
               <button
                 ref={saveBtnRef}
@@ -293,7 +293,7 @@ function ClipboardItemRow({
               )}
             </div>
           )}
-          {item.item_type === "file" && (
+          {item.itemType === "file" && (
             <button
               className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
               onClick={handleOpenFile}
@@ -320,12 +320,12 @@ function ClipboardItemRow({
           <button
             className={cn(
               "p-0.5 transition-opacity hover:scale-110",
-              item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+              item.isFavorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
             )}
             onClick={handleFavorite}
           >
             <Star
-              className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+              className={cn("w-3.5 h-3.5", item.isFavorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
             />
           </button>
         </div>
@@ -343,7 +343,7 @@ function ClipboardItemRow({
 // 令每行 prop 引用每帧变化、memo 形同虚设。
 export default memo(ClipboardItemRow);
 
-/// ref_data 是 JSON 路径数组，取每个路径最后 2 段显示。
+/// refData 是 JSON 路径数组，取每个路径最后 2 段显示。
 function formatFilePaths(refData?: string): string {
   if (!refData) return ti18n("clipboard.filter.file");
   try {

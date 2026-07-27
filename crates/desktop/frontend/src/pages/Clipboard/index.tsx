@@ -101,7 +101,7 @@ export default function Clipboard() {
   // 图片类型拉缩略图（竞态守卫：快速切换时只保留最后一个结果）
   useEffect(() => {
     let cancelled = false;
-    if (previewItem?.item_type === "image") {
+    if (previewItem?.itemType === "image") {
       invoke<string>("get_image_thumb", { id: previewItem.id })
         .then(data => { if (!cancelled) setPreviewThumb(data); })
         .catch(() => { if (!cancelled) setPreviewThumb(null); });
@@ -389,11 +389,11 @@ export default function Clipboard() {
           >
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
               <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
-                {previewItem.item_type === "voice" ? "ASR" : previewItem.item_type}
+                {previewItem.itemType === "voice" ? "ASR" : previewItem.itemType}
               </span>
             </div>
             <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
-              {previewItem.item_type === "image" ? (
+              {previewItem.itemType === "image" ? (
                 <div className="flex items-center justify-center p-2 min-h-full">
                   {previewThumb ? (
                     <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
@@ -401,9 +401,9 @@ export default function Clipboard() {
                     <span className="text-[11px] text-muted-foreground">Loading...</span>
                   )}
                 </div>
-              ) : previewItem.item_type === "file" ? (
+              ) : previewItem.itemType === "file" ? (
                 <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
-                  {previewItem.ref_data || ""}
+                  {previewItem.refData || ""}
                 </pre>
               ) : (
                 <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
@@ -425,7 +425,7 @@ export default function Clipboard() {
           <span>{total} {t("clipboard.count", { n: total })}</span>
           {/* 一键清理：删当前 tab 类别下所有非收藏条目（与搜索框正交）。
               两步确认：点 1 次 → 变红「再点确认」+ 3s 超时，再点才执行。
-              收藏 tab 因 is_favorite=1 AND is_favorite=0 恒假删 0 条，禁用按钮。
+              收藏 tab 因 isFavorite=1 AND isFavorite=0 恒假删 0 条，禁用按钮。
               默认高亮一档（text-foreground），hover 预告危险偏红。 */}
           <button
             className={cn(

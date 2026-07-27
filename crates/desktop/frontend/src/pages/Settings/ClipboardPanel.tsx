@@ -91,7 +91,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   };
 
   const toggleSelectAll = (checked: boolean) => {
-    setSelectedIds(checked ? new Set(items.filter((i) => !i.is_favorite).map((i) => i.id)) : new Set());
+    setSelectedIds(checked ? new Set(items.filter((i) => !i.isFavorite).map((i) => i.id)) : new Set());
     setConfirmDelete(false);
   };
 
@@ -113,7 +113,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
     }
   };
 
-  const selectableItems = items.filter((i) => !i.is_favorite);
+  const selectableItems = items.filter((i) => !i.isFavorite);
   const allChecked = selectableItems.length > 0 && selectableItems.every((i) => selectedIds.has(i.id));
   const hasSelection = selectedIds.size > 0;
   const isTrash = filter === "trash";
@@ -359,14 +359,14 @@ function ClipboardRow({
   }, []);
 
   useEffect(() => {
-    if (item.item_type !== "image") return;
+    if (item.itemType !== "image") return;
     setThumbSrc(null);
     let cancelled = false;
     invoke<string>("get_image_thumb", { id: item.id })
       .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [item.id, item.item_type]);
+  }, [item.id, item.itemType]);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -422,27 +422,27 @@ function ClipboardRow({
     setShowSavePopover((v) => !v);
   };
 
-  const Icon = item.item_type === "voice" ? Mic
-    : item.item_type === "ocr" ? ScanText
-    : item.item_type === "image" ? ImageIcon
-    : item.item_type === "file" ? FileText
+  const Icon = item.itemType === "voice" ? Mic
+    : item.itemType === "ocr" ? ScanText
+    : item.itemType === "image" ? ImageIcon
+    : item.itemType === "file" ? FileText
     : Type;
-  const isVoice = item.item_type === "voice";
+  const isVoice = item.itemType === "voice";
   // 第一行行尾元数据：text/ocr→N字；voice→N字·Xs；image→W×H·size；file→类型/N个
   const row1Meta =
-    item.item_type === "image" ? imageMeta(item)
-    : item.item_type === "file" ? fileMeta(item)
+    item.itemType === "image" ? imageMeta(item)
+    : item.itemType === "file" ? fileMeta(item)
     : metaParts(item);
-  const accent = typeAccent[item.item_type];
-  const link = item.item_type === "text" ? detectUrl(item.content) : null;
+  const accent = typeAccent[item.itemType];
+  const link = item.itemType === "text" ? detectUrl(item.content) : null;
   const isUrl = !!link?.isLink;
 
   // 类型左缘色：voice 用 amber 渐变（声波暗示），其余用对应类型色低饱和
   const edgeClass = isVoice
     ? "bg-gradient-to-b from-amber-400 to-amber-600"
-    : item.item_type === "ocr" ? "bg-teal-500/50"
-    : item.item_type === "image" ? "bg-indigo-400/50"
-    : item.item_type === "file" ? "bg-emerald-500/50"
+    : item.itemType === "ocr" ? "bg-teal-500/50"
+    : item.itemType === "image" ? "bg-indigo-400/50"
+    : item.itemType === "file" ? "bg-emerald-500/50"
     : "bg-muted-foreground/30";
 
   // 选中态用 voice 左缘覆盖
@@ -506,12 +506,12 @@ function ClipboardRow({
         {/* 第一行：内容 / 缩略图 / 文件路径 + 行尾元数据 */}
         <div className="flex items-center gap-2">
           <div className="flex-1 min-w-0">
-            {item.item_type === "image" ? (
+            {item.itemType === "image" ? (
               thumbSrc && (
                 <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
               )
-            ) : item.item_type === "file" ? (
-              <span className="block truncate text-xs text-muted-foreground">{formatFilePaths(item.ref_data)}</span>
+            ) : item.itemType === "file" ? (
+              <span className="block truncate text-xs text-muted-foreground">{formatFilePaths(item.refData)}</span>
             ) : (
               <p className={cn(
                 "leading-snug text-foreground break-words line-clamp-1",
@@ -527,7 +527,7 @@ function ClipboardRow({
 
         {/* 第二行：时间戳 + 操作（复制居首，最常用） */}
         <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
-          <span className="text-[10px] text-muted-foreground tabular-nums">{item.created_at}</span>
+          <span className="text-[10px] text-muted-foreground tabular-nums">{item.createdAt}</span>
           {isTrash ? (
             // 回收站模式：还原 + 永久删除
             <div className="flex flex-shrink-0 items-center gap-0.5">
@@ -572,7 +572,7 @@ function ClipboardRow({
                   <LinkIcon className="w-3.5 h-3.5 text-info" />
                 </button>
               )}
-              {item.item_type !== "image" && item.item_type !== "file" && (
+              {item.itemType !== "image" && item.itemType !== "file" && (
                 <button
                   className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                   onClick={handleEditOrPreview}
@@ -581,7 +581,7 @@ function ClipboardRow({
                   <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
                 </button>
               )}
-              {item.item_type === "image" && (
+              {item.itemType === "image" && (
                 <button
                   className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                   onClick={handleEditOrPreview}
@@ -590,7 +590,7 @@ function ClipboardRow({
                   <img src="icons/eye-edit.svg" alt={t("settings.clipboardPanel.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
                 </button>
               )}
-              {item.item_type === "image" && (
+              {item.itemType === "image" && (
                 <div className="relative">
                   <button
                     ref={saveBtnRef}
@@ -611,7 +611,7 @@ function ClipboardRow({
                   )}
                 </div>
               )}
-              {item.item_type === "file" && (
+              {item.itemType === "file" && (
                 <button
                   className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                   onClick={handleOpenFile}
@@ -638,13 +638,13 @@ function ClipboardRow({
               <button
                 className={cn(
                   "p-1 rounded transition-opacity hover:scale-110",
-                  item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+                  item.isFavorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
                 )}
                 onClick={handleFavorite}
               >
                 <Star className={cn(
                   "w-3.5 h-3.5",
-                  item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground",
+                  item.isFavorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground",
                 )} />
               </button>
             </div>
