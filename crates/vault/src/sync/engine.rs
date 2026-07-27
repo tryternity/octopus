@@ -683,13 +683,16 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // - NoUpstream：远程是空仓库（首次推送场景）→ 跳过 merge/rebase + 跳过 pull，直接 push -u
     let merge_result = git::git_merge_ff(&root, "origin/main")?;
     let is_first_push = matches!(merge_result, git::MergeFfResult::NoUpstream);
-    // UpToDate / NoUpstream 时跳过 pull：工作区文件是上次 sync 的旧状态，
-    // pull 会用旧 outline 覆盖本地新 DB（热词「加词后 sync 消失」bug 根因，spec 2026-07-25）。
-    let skip_pull = matches!(merge_result, git::MergeFfResult::UpToDate | git::MergeFfResult::NoUpstream);
+    // NoUpstream（首次推送）时跳过 pull——远程无内容可拉。
+    // UpToDate 不再跳过 pull（2026-07-27 修复）：pull_from_files 内部已有 md5 比对，
+    // 只 upsert「outline 有 + DB 无」或「md5 不匹配」的条目，不会无脑覆盖 DB 更新的数据。
+    // 原 skip_pull 是对「热词加词后 sync 消失」bug 的误判修复——真正根因是 push 阶段的
+    // 删除传播（已在 incremental_export 加保护修复，见 store.rs db_all_empty 检查）。
+    let skip_pull = matches!(merge_result, git::MergeFfResult::NoUpstream);
     if !is_first_push {
         match merge_result {
             git::MergeFfResult::UpToDate => {
-                log::debug!("[sync] 远程无新 commit（UpToDate），跳过 pull 避免覆盖本地新数据")
+                log::debug!("[sync] 远程无新 commit（UpToDate），仍执行 pull（md5 比对保护不覆盖新数据）")
             }
             git::MergeFfResult::FastForwarded => {
                 log::debug!("[sync] ff-only merge 成功（远程有新 commit）")
@@ -711,7 +714,8 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     }
 
     // 3. pull 阶段：文件系统 → SQLite
-    // UpToDate / NoUpstream 时跳过——远端无新数据可拉，pull 只会用旧文件覆盖本地新 DB。
+    // NoUpstream（首次推送）时跳过——远程无内容。其他情况都执行 pull。
+    // pull_from_files 内部 md5 比对确保不覆盖 DB 已有的更新数据。
     let (pulled, skipped) = if skip_pull {
         (0usize, 0usize)
     } else {
