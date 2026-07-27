@@ -2258,4 +2258,78 @@ mod tests {
         let https = redacted.iter().find(|(n, _)| n == "origin").expect("origin remote");
         assert_eq!(https.1, "https://github.com/owner/repo.git");
     }
+
+    /// 回归守护（2026-07-27 sync 覆盖 bug 系列）：
+    /// 完整模拟用户场景——.sync 有数据 + DB 清空 → sync 应恢复数据到 DB，不丢 .sync 文件。
+    ///
+    /// 这个测试覆盖 3 个 bug 修复点的协同：
+    /// 1. push 不删 cipher 文件（incremental_export db_all_empty 保护）
+    /// 2. push 不写空 outline（incremental_export 返回旧 outline）
+    /// 3. pull 能从 .sync 拉回数据（pull_from_files md5 比对）
+    #[test]
+    fn sync_recovers_data_when_db_emptied() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 阶段 1：DB 有 2 个 cipher + 1 个 folder，push 到 .sync
+        let c1 = VaultCipherInput {
+            id: "aaa11111-1111-4111-8111-111111111111".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-site1".into(), notes: None, data: "v1:enc-data1".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        let c2 = VaultCipherInput {
+            id: "bbb22222-2222-4222-8222-222222222222".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-site2".into(), notes: None, data: "v1:enc-data2".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert c1");
+        db::insert_vault_cipher(&c2).expect("insert c2");
+        db::insert_vault_folder("ccc33333-3333-4333-8333-333333333333", "v1:enc-folder1", "md5-f1").expect("insert f1");
+
+        let pushed1 = push_to_files().expect("push 1");
+        assert!(pushed1 >= 3, "首次 push 应写至少 3 个文件（2 cipher + 1 folder），实际 {}", pushed1);
+
+        // 验证 .sync 有数据
+        let outline1 = store::read_outline_file().expect("outline 1");
+        assert_eq!(outline1.ciphers.len(), 2, ".sync outline 应有 2 cipher");
+        assert_eq!(outline1.folders.len(), 1, ".sync outline 应有 1 folder");
+
+        // 阶段 2：模拟清库——清空 DB cipher/folder（保留 vault_meta，stamp 一致）
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", []).expect("del ciphers");
+            conn.execute("DELETE FROM vault_folders", []).expect("del folders");
+            Ok::<_, anyhow::Error>(())
+        }).expect("clear db");
+        assert!(db::list_vault_ciphers().expect("list").is_empty(), "清库后 DB cipher 应空");
+        assert!(db::list_vault_folders().expect("list").is_empty(), "清库后 DB folder 应空");
+
+        // 阶段 3：push（DB 空）——保护应生效，不删文件 + 不覆盖 outline
+        let pushed2 = push_to_files().expect("push 2");
+        assert_eq!(pushed2, 0, "DB 空 + .sync 有数据 → 不应删/写任何文件");
+
+        // .sync outline 应仍完整（不被空 DB 覆盖）
+        let outline2 = store::read_outline_file().expect("outline 2");
+        assert_eq!(outline2.ciphers.len(), 2, "保护后 outline 仍应有 2 cipher");
+        assert_eq!(outline2.folders.len(), 1, "保护后 outline 仍应有 1 folder");
+
+        // 阶段 4：pull（DB 空 + .sync 有数据）——应恢复数据到 DB
+        let (pulled, skipped) = pull_from_files().expect("pull");
+        assert_eq!(pulled, 3, "应从 .sync 拉回 3 条（2 cipher + 1 folder），实际 {}", pulled);
+        assert_eq!(skipped, 0, "无跳过");
+
+        // 验证 DB 恢复
+        let db_ciphers_after = db::list_vault_ciphers().expect("list after");
+        let db_folders_after = db::list_vault_folders().expect("list after");
+        assert_eq!(db_ciphers_after.len(), 2, "pull 后 DB 应有 2 cipher");
+        assert_eq!(db_folders_after.len(), 1, "pull 后 DB 应有 1 folder");
+        let ids: Vec<&str> = db_ciphers_after.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"aaa11111-1111-4111-8111-111111111111"), "c1 应恢复");
+        assert!(ids.contains(&"bbb22222-2222-4222-8222-222222222222"), "c2 应恢复");
+
+        let _ = g;
+    }
 }
