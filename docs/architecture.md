@@ -109,7 +109,8 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 有界热词纠错（候选仅来自 HotwordIndex，命中即替换，消灭全词典过纠）+ 可配方言模糊规则 `FuzzyRules`（f/h、hu/wu、n/l、r/l，存 `app_config.fuzzy_dialect`） |
 | `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
-| `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → 纠错 → 简繁归一化，收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排 |
+| `itn` | 数字 ITN（Inverse Text Normalization）：中文数字→阿拉伯数字（chinese2digits crate `take_number_from_string`，force_simplified=true）。解决 Zipformer/Moonshine/Whisper 输出「二零二六年七月二十六日」痛点。自带 ITN 引擎（Qwen3/SenseVoice/Paraformer）无中文数字→no-op。详见 [spec](superpowers/specs/2026-07-27-asr-itn-design.md) |
+| `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → **纠错 → ITN 数字归一化 → 简繁归一化**，2026-07-27 ITN 插在 corrector 后 hans 前；收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排 |
 | `streaming_engine` | 流式 ASR 引擎抽象：`StreamingSession`（Paraformer / ZipformerCtc / ZipformerTransducer 增量流式，`&self` + 内部 Mutex）；阶段2a impl `StreamingEngine` trait |
 | `streaming_runner` | 流式编排 helper（阶段2a 新增）：`StreamingRunner`（持 `Box<dyn StreamingEngine>` + VAD + 静音/标点状态）收编 VAD 静音检测 + 标点触发 + accept/flush/finish；`TranscriptEvent`（Partial/Committed/Final/Error）+ `StreamingEngine` trait（local `StreamingSession` impl，cloud 2c-2）。denoise/resample 不入（留 `audio.rs`，输入为已降噪 16k 样本） |
 
