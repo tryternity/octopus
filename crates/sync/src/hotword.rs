@@ -278,11 +278,22 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
             },
         );
     }
-    // 删 SQLite 无但 outline 有的文件
-    for old_uuid in old_outline.ciphers.keys() {
-        if !id_set.contains(old_uuid.as_str()) {
-            let _ = delete_hotword_set_file(old_uuid); // 幂等
-            changed += 1;
+    // 删 SQLite 无但 outline 有的文件。
+    // ⚠️ 保护（2026-07-27 sync 覆盖 bug 修复，与 vault store.rs 同款）：
+    // DB 空但 .sync outline 有数据时跳过删除——防止空 DB 覆盖已有热词数据。
+    let db_empty = sets.is_empty();
+    let sync_has_data = !old_outline.ciphers.is_empty();
+    if db_empty && sync_has_data {
+        log::warn!(
+            "[sync] DB 无热词但 .sync outline 有数据（sets={}）——跳过删除，防止空 DB 覆盖",
+            old_outline.ciphers.len()
+        );
+    } else {
+        for old_uuid in old_outline.ciphers.keys() {
+            if !id_set.contains(old_uuid.as_str()) {
+                let _ = delete_hotword_set_file(old_uuid); // 幂等
+                changed += 1;
+            }
         }
     }
 
@@ -629,6 +640,24 @@ mod tests {
         assert!(
             read_hotword_set_file("a1b2c3d4-0002").is_err(),
             "已删版本A的文件不应存在"
+        );
+    }
+
+    /// 回归守护（2026-07-27 sync 覆盖 bug）：DB 完全空 + .sync outline 有数据时，
+    /// 不删除 .sync 文件——防止清库后空 DB 覆盖 .sync 已有热词。
+    #[test]
+    fn incremental_export_protects_sync_data_when_db_empty() {
+        let _g = SyncRootGuard::new();
+        let sets = vec![sample_set("a1b2c3d4-0001", "版本A", "苹果")];
+        export_all_hotwords(&sets).expect("initial");
+        assert!(read_hotword_set_file("a1b2c3d4-0001").is_ok());
+
+        // DB 完全空（清库场景）→ 不应删文件
+        let (_outline, changed) = incremental_export_hotwords(&[]).expect("empty");
+        assert_eq!(changed, 0, "DB 空 + .sync 有数据时不应删任何文件");
+        assert!(
+            read_hotword_set_file("a1b2c3d4-0001").is_ok(),
+            "DB 空时 .sync 的热词文件应保留（防止覆盖）"
         );
     }
 
