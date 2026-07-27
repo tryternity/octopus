@@ -1,14 +1,38 @@
 # 屏幕录制音频录后合并 — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
->
-> **方向调整**：原计划实时单轨混音（见 `specs/archived/2026-07-27-screen-record-audio-mix-redesign-realtime.md`），Phase 0 spike + Phase 1 Task 1.1 完成后用户调整策略——放弃实时混音，改为「双轨保留 + 录后按需合并」。Task 1.1（lib/exec 拆分）保留，spike 发现（SCK 实际音频格式）归档备查。
+> **Status: ✅ 已实现**（2026-07-27，分支 `feat/record-followup`，Phase 1-4 完成，HEAD `b930b572`）。Phase 5 e2e 待用户验证。
+
+## 实现注记（Implementation Notes）
+
+实施过程中与原 spec 的偏差回写至此处。
+
+### 2026-07-27 实施完成（Phase 1-4）
+
+| Task | 实现 | 偏差 |
+|---|---|---|
+| 1.1 AudioTrack + infer | `crates/record/src/audio_tracks.rs`，7 测试全过 | 无（与 spec 完全一致） |
+| 1.2 DB migration v51→v52 | `crates/infra/src/db.rs::migrate_v51_to_v52`，165 infra 测试全过 | 多加了 `init_schema_upgrades_v51_db_to_v52` 端到端测试（合理增强） |
+| 1.3 RecordStore 改造 | `crates/record/src/store.rs`，4 个 SQL + 3 新测试 | row_to_meta 列 index 逐行核对（audio_tracks=10，后续 +1） |
+| 2.1 probe_ffprobe | `crates/desktop/src/record_audio_probe.rs` | `which` 探测用 `.output()` 单次（非 brief 的两次） |
+| 2.2 write_audio_tracks_metadata | 同上文件 | 用 `.mp4.meta.tmp` 临时文件 + rename 覆盖 |
+| 2.3 stop_and_store_inner 集成 | `crates/desktop/src/record_commands.rs` | MetaFields 加 mic_device_name（两条路径都 resolve_mic_device_name 重解析，幂等） |
+| 3.1 merge_audio_tracks | 同上 + `merged_output_path` | **amix 非 amerge**（spike 发现 mic mono + system stereo）；命令签名去掉 `State<AppState>`（Pre-Flight 修正，项目无 AppState） |
+| 4.1 前端 | `RecordingPanel.tsx` + i18n | **blocker fix**：`RecordingMeta` 无 `rename_all`，前端 `audioTracks` 改 `audio_tracks` 对齐 snake_case；`MergeResult` 后端加 `rename_all="camelCase"` |
+
+**关键决策（实施期裁定）**：
+- `RecordingMeta` struct **故意不加** `#[serde(rename_all = "camelCase")]`——它有 16 个字段全是 snake_case（与 SQL 列名一致），加 rename_all 要改 16 处前端访问点。新字段继续用 snake_case。
+- `MergeResult` **加了** `rename_all="camelCase"`——只有 2 字段，且是 Tauri 命令返回值，符合 camelCase 惯例。
+- 合并不监听 `record://merge-*` 事件——与 GIF export 模式一致（await invoke + toast 即可），事件留作多窗口同步备用。
+
+---
+
+
 >
 > **本 spec 范围**：
 > 1. 录制阶段保持当前双轨智能 add 顺序（不动 helper 录制路径）
 > 2. 录制停止后用 ffprobe 探测实际音轨 → 写入 DB + mp4 metadata
 > 3. 录屏管理 UI hover 显示音轨信息
-> 4. 双轨 recording 提供「合并音轨」按钮 → ffmpeg amerge → 另存新文件
+> 4. 双轨 recording 提供「合并音轨」按钮 → ffmpeg amix → 另存新文件
 >
 > **不在本 spec 范围**：实时混音（已 archive）、视频轨逻辑、helper 录制路径修改、自动合并（用户明确选手动）。
 >
@@ -93,7 +117,7 @@
                           ↓（用户点合并）
 ┌─ 合并阶段（新增）──────────────────────────────────────────┐
 │  merge_audio_tracks(id)                                    │
-│    ├─ ffmpeg -i <mp4> -filter_complex amerge → merged.mp4  │
+│    ├─ ffmpeg -i <mp4> -filter_complex amix → merged.mp4   │
 │    ├─ ffprobe merged.mp4 → 写 audio_tracks metadata        │
 │    └─ INSERT recordings (file_path=merged.mp4, ...)        │
 │      （新记录，原记录保留）                                 │
@@ -380,7 +404,7 @@ pub async fn merge_audio_tracks(
         return Err("not a multi-track recording".into());
     }
 
-    // 3. ffmpeg amerge 合并
+    // 3. ffmpeg amix 合并（设计期初稿写 amerge，实施期改为 amix——详见 §0.2 决策清单 + 实现注记）
     let input = resolve_recording_path(&meta.file_path);
     let output = merged_output_path(&input);  // xxx.mp4 → xxx_merged.mp4
     let ffmpeg = find_ffmpeg().map_err(|e| e.to_string())?;

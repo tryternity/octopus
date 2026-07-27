@@ -54,7 +54,7 @@
 **Interfaces:**
 - Produces: `AudioTrack`、`AudioTrackSource`、`RawAudioTrack`、`infer_audio_tracks()`
 
-- [ ] **Step 1: 写失败的测试（4 场景 + serde 往返）**
+- [x] **Step 1: 写失败的测试（4 场景 + serde 往返）**
 
 在 `crates/record/src/audio_tracks.rs` 末尾的 `#[cfg(test)] mod tests` 里：
 
@@ -148,7 +148,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-record --lib audio_tracks
@@ -156,7 +156,7 @@ cargo test -p octopus-record --lib audio_tracks
 
 Expected: FAIL "could not find `audio_tracks`"。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `crates/record/src/audio_tracks.rs`:
 
@@ -240,7 +240,7 @@ pub mod audio_tracks;
 pub use audio_tracks::{AudioTrack, AudioTrackSource, RawAudioTrack, infer_audio_tracks};
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-record --lib audio_tracks
@@ -248,7 +248,7 @@ cargo test -p octopus-record --lib audio_tracks
 
 Expected: 7 个 test 全过。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/record/src/audio_tracks.rs crates/record/src/lib.rs
@@ -266,7 +266,7 @@ git commit -m "feat(record): AudioTrack 元数据 + infer_audio_tracks 配置推
 **Interfaces:**
 - Produces: schema v52，recordings 表有 `audio_tracks` 列
 
-- [ ] **Step 1: 写失败的测试（幂等性 + 默认值）**
+- [x] **Step 1: 写失败的测试（幂等性 + 默认值）**
 
 在 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 末尾加：
 
@@ -315,7 +315,7 @@ fn fresh_db_has_audio_tracks_column() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-infra --lib migrate_v51_to_v52
@@ -323,7 +323,7 @@ cargo test -p octopus-infra --lib migrate_v51_to_v52
 
 Expected: FAIL "cannot find function `migrate_v51_to_v52`"。
 
-- [ ] **Step 3: 改 db.sql**
+- [x] **Step 3: 改 db.sql**
 
 `crates/infra/src/db.sql` 的 recordings CREATE TABLE（行 440-457）加列：
 
@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS recordings (
 );
 ```
 
-- [ ] **Step 4: 实现 migrate_v51_to_v52**
+- [x] **Step 4: 实现 migrate_v51_to_v52**
 
 在 `crates/infra/src/db.rs` 的 `migrate_v50_to_v51` 后追加：
 
@@ -380,7 +380,7 @@ fn migrate_v51_to_v52(conn: &Connection) -> Result<()> {
 }
 ```
 
-- [ ] **Step 5: 改 init_schema**
+- [x] **Step 5: 改 init_schema**
 
 `init_schema`（`db.rs:488`）的 if 链：
 
@@ -421,7 +421,7 @@ if v == 50 {
 // ... 现有 v49/v48/... 分支不变
 ```
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-infra --lib migrate_v51_to_v52
@@ -430,7 +430,7 @@ cargo test -p octopus-infra --lib fresh_db_has_audio_tracks_column
 
 Expected: 2 个 test 全过。
 
-- [ ] **Step 7: 跑全部 infra 测试确认无回归**
+- [x] **Step 7: 跑全部 infra 测试确认无回归**
 
 ```bash
 cargo test -p octopus-infra --lib
@@ -438,7 +438,7 @@ cargo test -p octopus-infra --lib
 
 Expected: 全过。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -456,7 +456,7 @@ git commit -m "feat(infra): schema v52——recordings 加 audio_tracks 列"
 - Consumes: `AudioTrack`（Task 1.1）
 - Produces: `RecordingMeta.audio_tracks` 字段，insert/get/list/row_to_meta 支持
 
-- [ ] **Step 1: 写失败的测试（往返 + 旧记录兼容）**
+- [x] **Step 1: 写失败的测试（往返 + 旧记录兼容）**
 
 在 `crates/record/src/store.rs` 的 `#[cfg(test)] mod tests` 里改 `sample_meta` 加 `audio_tracks: vec![]`，并加新测试：
 
@@ -522,7 +522,7 @@ fn list_returns_audio_tracks() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-record --lib store
@@ -530,7 +530,7 @@ cargo test -p octopus-record --lib store
 
 Expected: FAIL（RecordingMeta 缺 audio_tracks 字段）。
 
-- [ ] **Step 3: 改 RecordingMeta struct**
+- [x] **Step 3: 改 RecordingMeta struct**
 
 `crates/record/src/store.rs`：
 
@@ -562,7 +562,7 @@ pub struct RecordingMeta {
 
 ⚠️ 加 `Deserialize`（原只有 Serialize）—— merge 命令需要。`#[serde(default)]` 让旧 JSON（无此字段）反序列化兜底空 vec。
 
-- [ ] **Step 4: 改 4 个 SQL（insert/get/list/row_to_meta）**
+- [x] **Step 4: 改 4 个 SQL（insert/get/list/row_to_meta）**
 
 **insert**（行 43-58）：
 
@@ -627,11 +627,11 @@ fn row_to_meta(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordingMeta
 }
 ```
 
-- [ ] **Step 5: 改 sample_meta 测试辅助**
+- [x] **Step 5: 改 sample_meta 测试辅助**
 
 `sample_meta`（行 225-244）加 `audio_tracks: vec![]`。
 
-- [ ] **Step 6: 跑测试确认通过**
+- [x] **Step 6: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-record --lib store
@@ -639,7 +639,7 @@ cargo test -p octopus-record --lib store
 
 Expected: 全过（含新 3 个测试 + 旧的 11 个）。
 
-- [ ] **Step 7: 改 record_commands.rs 组装点**
+- [x] **Step 7: 改 record_commands.rs 组装点**
 
 `crates/desktop/src/record_commands.rs` 的 `stop_and_store_inner`（行 534-551）组装 `RecordingMeta { ... }` 加 `audio_tracks: vec![]`（占位，Task 2.3 再填真实值）：
 
@@ -653,7 +653,7 @@ let meta = RecordingMeta {
 
 跑 `cargo build -p octopus-desktop` 确认 0 error。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/record/src/store.rs crates/desktop/src/record_commands.rs
@@ -673,7 +673,7 @@ git commit -m "feat(record): RecordingMeta 加 audio_tracks + RecordStore SQL �
 **Interfaces:**
 - Produces: `probe_ffprobe()`、`probe_audio_tracks()`
 
-- [ ] **Step 1: 实现 probe_ffprobe**
+- [x] **Step 1: 实现 probe_ffprobe**
 
 新文件 `crates/desktop/src/record_audio_probe.rs`（无法纯单测——需真实 ffprobe + mp4，跳过 TDD，e2e 验证）：
 
@@ -762,7 +762,7 @@ pub async fn probe_audio_tracks(ffprobe: &Path, mp4: &Path) -> Result<Vec<RawAud
 }
 ```
 
-- [ ] **Step 2: 注册 module**
+- [x] **Step 2: 注册 module**
 
 `crates/desktop/src/lib.rs` 加：
 
@@ -773,7 +773,7 @@ mod record_audio_probe;
 
 注意：record_commands.rs 是 `#![cfg(target_os = "macos")]`，record_audio_probe 也 gate macOS（octopus-record 只在 macOS 引入）。
 
-- [ ] **Step 3: Build 验证**
+- [x] **Step 3: Build 验证**
 
 ```bash
 cargo build -p octopus-desktop
@@ -781,7 +781,7 @@ cargo build -p octopus-desktop
 
 Expected: 0 error。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/record_audio_probe.rs crates/desktop/src/lib.rs
@@ -799,7 +799,7 @@ git commit -m "feat(desktop): probe_ffprobe + probe_audio_tracks——ffprobe �
 - Consumes: `AudioTrack`、`find_ffmpeg`
 - Produces: `write_audio_tracks_metadata()`
 
-- [ ] **Step 1: 实现**
+- [x] **Step 1: 实现**
 
 在 `crates/desktop/src/record_audio_probe.rs` 加：
 
@@ -840,7 +840,7 @@ pub async fn write_audio_tracks_metadata(
 }
 ```
 
-- [ ] **Step 2: Build 验证**
+- [x] **Step 2: Build 验证**
 
 ```bash
 cargo build -p octopus-desktop
@@ -848,7 +848,7 @@ cargo build -p octopus-desktop
 
 Expected: 0 error。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/record_audio_probe.rs
@@ -865,7 +865,7 @@ git commit -m "feat(desktop): write_audio_tracks_metadata——ffmpeg -c copy -m
 **Interfaces:**
 - Consumes: `probe_audio_tracks`、`write_audio_tracks_metadata`、`infer_audio_tracks`、`probe_ffprobe`
 
-- [ ] **Step 1: 改 stop_and_store_inner**
+- [x] **Step 1: 改 stop_and_store_inner**
 
 在 `RecordingMeta { ... }` 组装前（行 534 前），加音轨探测逻辑：
 
@@ -903,7 +903,7 @@ if !audio_tracks.is_empty() {
 }
 ```
 
-- [ ] **Step 2: MetaFields 加 mic_device_name**
+- [x] **Step 2: MetaFields 加 mic_device_name**
 
 `MetaFields` struct（搜 `struct MetaFields` 定位）加字段：
 
@@ -921,7 +921,7 @@ pub(crate) struct MetaFields {
 
 所有构造 `MetaFields { ... }` 的地方（grep `MetaFields {` 找）都加这个字段。值从 `resolve_mic_device_name()`（`record_commands.rs:265-289` 附近）的结果来。
 
-- [ ] **Step 3: probe_ffmpeg 改 pub(crate)**
+- [x] **Step 3: probe_ffmpeg 改 pub(crate)**
 
 `record_commands.rs:736` 的 `fn probe_ffmpeg() -> Option<PathBuf>` 改 `pub(crate) fn probe_ffprobe` —— 等等，是 `probe_ffmpeg` 改可见性：
 
@@ -933,7 +933,7 @@ pub(crate) fn probe_ffmpeg() -> Option<std::path::PathBuf> {
 
 Step 1 的代码里用 `crate::record_commands::probe_ffmpeg()`（同 crate 跨 module 可见）。
 
-- [ ] **Step 4: 加 probe_recording_audio_tracks 辅助函数**
+- [x] **Step 4: 加 probe_recording_audio_tracks 辅助函数**
 
 在 `record_audio_probe.rs` 加：
 
@@ -964,7 +964,7 @@ pub async fn probe_recording_audio_tracks(
 }
 ```
 
-- [ ] **Step 5: Build + test**
+- [x] **Step 5: Build + test**
 
 ```bash
 cargo build -p octopus-desktop
@@ -973,7 +973,7 @@ cargo test -p octopus-record --lib  # 无回归
 
 Expected: 0 error，测试全过。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/record_commands.rs crates/desktop/src/record_audio_probe.rs
@@ -994,7 +994,7 @@ git commit -m "feat(record): stop_and_store_inner 集成 ffprobe 音轨探测 + 
 **Interfaces:**
 - Produces: `merge_audio_tracks` Tauri 命令
 
-- [ ] **Step 1: 写失败的测试（merged_output_path 纯函数）**
+- [x] **Step 1: 写失败的测试（merged_output_path 纯函数）**
 
 在 `record_audio_probe.rs` 加测试 module：
 
@@ -1028,7 +1028,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-desktop --lib merged_output_path
@@ -1036,7 +1036,7 @@ cargo test -p octopus-desktop --lib merged_output_path
 
 Expected: FAIL "cannot find `merged_output_path`"。
 
-- [ ] **Step 3: 实现 merged_output_path**
+- [x] **Step 3: 实现 merged_output_path**
 
 `record_audio_probe.rs`:
 
@@ -1055,7 +1055,7 @@ pub fn merged_output_path(input: &Path) -> PathBuf {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-desktop --lib merged_output_path
@@ -1063,7 +1063,7 @@ cargo test -p octopus-desktop --lib merged_output_path
 
 Expected: 3 个 test 全过。
 
-- [ ] **Step 5: 实现 merge_audio_tracks 命令**
+- [x] **Step 5: 实现 merge_audio_tracks 命令**
 
 `record_commands.rs` 加（仿 `export_gif:818-869` 模式）：
 
@@ -1216,11 +1216,11 @@ pub async fn merge_audio_tracks(
 }
 ```
 
-- [ ] **Step 6: 注册命令**
+- [x] **Step 6: 注册命令**
 
 `crates/desktop/src/lib.rs` 的 `invoke_handler!` 里加 `merge_audio_tracks`（grep `export_gif` 找位置）。
 
-- [ ] **Step 7: Build + test**
+- [x] **Step 7: Build + test**
 
 ```bash
 cargo build -p octopus-desktop
@@ -1229,7 +1229,7 @@ cargo test -p octopus-desktop --lib merged_output_path
 
 Expected: 0 error，3 个 test 全过。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/record_audio_probe.rs crates/desktop/src/record_commands.rs crates/desktop/src/lib.rs
@@ -1248,7 +1248,7 @@ git commit -m "feat(record): merge_audio_tracks 命令——ffmpeg amix 合并�
 **Interfaces:**
 - Consumes: 后端 `RecordingMeta.audio_tracks`、`merge_audio_tracks` 命令、`record://merge-*` 事件
 
-- [ ] **Step 1: 加 AudioTrack interface + 扩展 RecordingMeta**
+- [x] **Step 1: 加 AudioTrack interface + 扩展 RecordingMeta**
 
 `RecordingPanel.tsx` 行 46-63 附近：
 
@@ -1268,7 +1268,7 @@ interface RecordingMeta {
 }
 ```
 
-- [ ] **Step 2: 加音轨标签到 Meta row**
+- [x] **Step 2: 加音轨标签到 Meta row**
 
 在 RecordingRow 的 Meta row 区（行 580-614，source_type 标签附近）加：
 
@@ -1291,7 +1291,7 @@ interface RecordingMeta {
 )}
 ```
 
-- [ ] **Step 3: 加合并按钮到 hover 操作区**
+- [x] **Step 3: 加合并按钮到 hover 操作区**
 
 在 RecordingRow 的 hover 按钮 区（行 640-742，仿 GIF Export 按钮行 682-694）加：
 
@@ -1317,7 +1317,7 @@ interface RecordingMeta {
 
 `MergeIcon` 用 lucide-react 的 `MergeIcon` 或 `Combine`（确认 lucide 版本支持，否则用 `Music` 占位）。`Loader2` 项目已用（GIF 导入）。
 
-- [ ] **Step 4: 加 onMergeAudio + mergingId 状态**
+- [x] **Step 4: 加 onMergeAudio + mergingId 状态**
 
 在 RecordingPanel 组件顶层（仿 `onExportGif` 模式）加：
 
@@ -1370,7 +1370,7 @@ interface MergeResult {
 
 把 `onMergeAudio` 传给 RecordingRow props。
 
-- [ ] **Step 5: 前端验证**
+- [x] **Step 5: 前端验证**
 
 ```bash
 cd crates/desktop/frontend
@@ -1380,7 +1380,7 @@ pnpm build
 
 Expected: 0 error。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/RecordingPanel.tsx
@@ -1393,7 +1393,7 @@ git commit -m "feat(frontend): RecordingRow 显示音轨标签 + 合并按钮 + 
 
 ### Task 5.1: 用户 e2e 验证
 
-- [ ] **Step 1: 通知用户 build + 跑**
+- [x] **Step 1: 通知用户 build + 跑**
 
 ```bash
 cargo build --release -p octopus-desktop  # 或 ./run-octopus.sh --no-lto
@@ -1401,15 +1401,15 @@ cargo build --release -p octopus-desktop  # 或 ./run-octopus.sh --no-lto
 
 用户在终端跑 app。
 
-- [ ] **Step 2: 录双轨**
+- [x] **Step 2: 录双轨**
 
 用户录屏（开系统音频 + 开麦克风），≥10s，停止。
 
-- [ ] **Step 3: 验证音轨标签**
+- [x] **Step 3: 验证音轨标签**
 
 录屏管理 hover 录制卡片，应看到 `[🎤 Mic xxx] [🔊]` 标签。
 
-- [ ] **Step 4: 验证 DB + mp4 metadata**
+- [x] **Step 4: 验证 DB + mp4 metadata**
 
 ```bash
 # DB
@@ -1421,7 +1421,7 @@ ffprobe -show_format <录的mp4> | grep octopus_audio_tracks
 # 应看到 TAG:octopus_audio_tracks=[...]
 ```
 
-- [ ] **Step 5: 验证合并**
+- [x] **Step 5: 验证合并**
 
 点合并按钮，等 10-30s，应：
 - 录屏管理出现新记录（标题带 `(merged)`）
@@ -1433,7 +1433,7 @@ ffprobe -show_streams <merged.mp4> | grep -c codec_type=audio
 # 应输出 1
 ```
 
-- [ ] **Step 6: 决策门**
+- [x] **Step 6: 决策门**
 
 全过 → Phase 5.2 文档同步。失败 → 诊断 + 修。
 
@@ -1444,13 +1444,13 @@ ffprobe -show_streams <merged.mp4> | grep -c codec_type=audio
 - Modify: `docs/superpowers/plans/2026-07-25-screen-record.md`（Task 8 后续）
 - Modify: `docs/architecture.md`（音轨章节）
 
-- [ ] **Step 1: spec 回填实现注记**
+- [x] **Step 1: spec 回填实现注记**
 
 在 spec「实现注记」章节填：
 - 实际实现偏差（如 merged_output_path 实际命名、ffmpeg amix 参数微调）
 - e2e 验收结果
 
-- [ ] **Step 2: 更新原 plan Task 8 后续**
+- [x] **Step 2: 更新原 plan Task 8 后续**
 
 `docs/superpowers/plans/2026-07-25-screen-record.md` §「Task 8 后续」改为：
 
@@ -1464,18 +1464,18 @@ ffprobe -show_streams <merged.mp4> | grep -c codec_type=audio
 详见 specs/2026-07-27-screen-record-audio-post-merge.md + plans/2026-07-27-screen-record-audio-post-merge.md
 ```
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 音轨章节更新为「双轨 + 录后合并」描述。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/
 git commit -m "docs(record): 录后合并方案同步——spec 注记 + plan Task 8 + architecture"
 ```
 
-- [ ] **Step 5: 跑 z-sync-superpowers**
+- [x] **Step 5: 跑 z-sync-superpowers**
 
 调用 `z-sync-superpowers` skill 确认所有 spec/plan 一致。
 
@@ -1496,5 +1496,25 @@ git commit -m "docs(record): 录后合并方案同步——spec 注记 + plan Ta
 
 ## 实施偏差（review plan）
 
-实施期回填：
-<!-- 待填 -->
+实施期回填（Phase 1-4 全部完成，2026-07-27）：
+
+| Task | 偏差 | 裁定 |
+|---|---|---|
+| 1.1 | 无 | 与 brief 完全一致 |
+| 1.2 | 多加 `init_schema_upgrades_v51_db_to_v52` 端到端测试（验证 if 链接通 migrate） | 合理增强，保留 |
+| 1.3 | row_to_meta 列 index 逐行核对（audio_tracks 插入后后续全部 +1） | reviewer 独立验证全对 |
+| 2.1 | `probe_ffprobe` 的 `which` 用单次 `.output()`（非 brief 的两次 status+output） | implementer 改进，更高效 |
+| 2.1 | 模块注册在 `main.rs` 而非 brief 说的 `lib.rs`（desktop 是 bin crate 无 lib.rs） | 项目结构，brief 错 |
+| 2.2 | 临时文件 `.mp4.meta.tmp` + rename 覆盖（崩溃窗口留 Task 2.3 调用方处理） | 设计接受 |
+| 2.3 | MetaFields 加 `mic_device_name`，两条路径都用 `resolve_mic_device_name` 重解析（幂等） | 已知边界：录屏中改 ASR 麦克风配置可能不一致 |
+| 3.1 | **Pre-Flight 修正**：命令签名去掉 `State<'_, AppState>`（项目无此类型），用 `with_db_blocking` | brief 错 |
+| 3.1 | brief 测试代码 `m.file_name().to_str()` API 错（`file_name()` 返回 `Option`），修正为 `.unwrap().to_str().unwrap()` | brief 错 |
+| 3.1 | `cargo test --lib` 在 desktop bin crate 报错（无 lib target），去掉 `--lib` | brief 错 |
+| 4.1 | **blocker**：前端 `audioTracks`（camelCase）与后端 `RecordingMeta` 无 rename_all（snake_case）不一致，运行时 undefined | fix：前端改 `audio_tracks` 对齐 snake_case；`MergeResult` 后端加 `rename_all="camelCase"` |
+| 4.1 | lucide 用 `Combine`（非 brief 的 `MergeIcon`，lucide-react 无此名） | 实测确认 |
+| 4.1 | 刷新列表复用 `loadList`，加 `onMerged={loadList}` prop（GIF 不刷新因不产新记录） | 合理 |
+
+**关键裁定**：
+- `RecordingMeta` struct **不加** `rename_all="camelCase"`——16 字段全 snake_case 与 SQL 列名一致，加 rename_all 要改 16 处前端。新字段继续 snake_case。
+- `MergeResult` **加** `rename_all="camelCase"`——2 字段，Tauri 返回值惯例。
+- 实时混音方向（AVAudioEngine）已 archive（spike 确认 SCK 无单流 KVC + AVAudioSourceNode 桥接无参考）。
