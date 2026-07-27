@@ -89,7 +89,6 @@
 **查缺补漏**：
 - 🔴 **P0 剪贴板→翻译自动链路**：octopus 有剪贴板监听 + 翻译引擎但两者没打通
 - 🔴 **P0 PDF 换行处理**：`do_translate` 入口加可选文本预处理
-- 🟡 **P1 OCR→翻译闭环**：截图 OCR 后加「立即翻译」或自动翻译
 - 🟡 **P1 术语表**：DB 加 `translation_glossary` 表，LLM 翻译注入 prompt（差异化机会）
 - 🟡 **P1 智能互译**：加 `whatlang` 轻量语言检测，源=auto 时自动判断
 
@@ -279,21 +278,20 @@
 | 10 | ASR | 文件转录字幕/时间戳 | CapsWriter |
 | 11 | ASR | LLM 角色前缀触发 | CapsWriter |
 | 12 | OCR | 抽象 backend trait + 云端 VLM OCR 入口 | umi-OCR |
-| 13 | 翻译 | OCR→翻译闭环 | CopyTranslator |
-| 14 | 翻译 | 术语表 Glossary | BabelDOC/translate-book |
-| 15 | 翻译 | 智能互译语言检测 | CopyTranslator |
-| 16 | 截屏 | 标注扩充（荧光笔/折线/马赛克画笔） | snow-shot/PixPin |
-| 17 | 截屏 | 横向滚动截图 | snow-shot |
-| 18 | 录屏 | driver-free 音频 loopback | QuickRecorder |
-| 19 | 录屏 | 多音轨分离 | QuickRecorder |
-| 20 | 录屏 | 鼠标点击高亮 | openscreen |
-| 21 | 剪贴板 | 用户自定义分组/标签 | EcoPaste |
-| 22 | 剪贴板 | 备注字段 | EcoPaste |
-| 23 | 密码箱 | SSH agent | keepassxc |
-| 24 | 密码箱 | cipher 类型扩展（Card/Identity/Note） | 1Password/Bitwarden |
-| 25 | ActionBar | Run And Paste 重评估（原生 app 白名单） | Wox |
-| 26 | ActionBar | 单位/货币换算 provider | Wox |
-| 27 | AI/LLM | 多模态图片输入 | cherry-studio |
+| 13 | 翻译 | 术语表 Glossary | BabelDOC/translate-book |
+| 14 | 翻译 | 智能互译语言检测 | CopyTranslator |
+| 15 | 截屏 | 标注扩充（荧光笔/折线/马赛克画笔） | snow-shot/PixPin |
+| 16 | 截屏 | 横向滚动截图 | snow-shot |
+| 17 | 录屏 | driver-free 音频 loopback | QuickRecorder |
+| 18 | 录屏 | 多音轨分离 | QuickRecorder |
+| 19 | 录屏 | 鼠标点击高亮 | openscreen |
+| 20 | 剪贴板 | 用户自定义分组/标签 | EcoPaste |
+| 21 | 剪贴板 | 备注字段 | EcoPaste |
+| 22 | 密码箱 | SSH agent | keepassxc |
+| 23 | 密码箱 | cipher 类型扩展（Card/Identity/Note） | 1Password/Bitwarden |
+| 24 | ActionBar | Run And Paste 重评估（原生 app 白名单） | Wox |
+| 25 | ActionBar | 单位/货币换算 provider | Wox |
+| 26 | AI/LLM | 多模态图片输入 | cherry-studio |
 
 ### 🟢 P2（可选，长期/锦上添花）
 
