@@ -25,7 +25,7 @@ start_screenshot
       → 前端 URL.createObjectURL 加载
       → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）
   → show_screenshot_window 显示（消除白屏闪烁）
-  → 选区下方弹出标注工具栏（矩形/椭圆/菱形/直线/箭头/画笔/荧光笔/文字/序号/马赛克 + 橡皮擦/清空标注/撤销/重做，2026-07-27 扩充）
+  → 选区下方弹出标注工具栏（矩形/椭圆/菱形/直线/箭头/画笔/荧光笔/文字/序号/马赛克 + 橡皮擦/清空标注/撤销/重做 + OCR/二维码识别，2026-07-27 扩充）
   → 标注在选区内 Canvas clip 绘制
   → Enter 确认：
       Canvas toBlob → Uint8Array Raw body → ipc::Request（不经 base64）
