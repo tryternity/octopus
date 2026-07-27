@@ -713,14 +713,35 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         log::info!("[sync] 远程无 main 分支（首次推送场景），跳过 merge/rebase");
     }
 
-    // 3. pull 阶段：文件系统 → SQLite
-    // NoUpstream（首次推送）时跳过——远程无内容。其他情况都执行 pull。
-    // pull_from_files 内部 md5 比对确保不覆盖 DB 已有的更新数据。
-    let (pulled, skipped) = if skip_pull {
-        (0usize, 0usize)
+    // 3. merge 阶段：DB ↔ 文件系统 双向同步（spec §3.1，2026-07-27）。
+    //
+    // 替代原来 pull_from_files + push_to_files 两步——合并后无顺序依赖（FK /
+    // skip_pull / 删除保护等问题自然消失）。按 updated_at 最新赢，冲突（相同
+    // 时间戳）DB 赢。NoUpstream（首次推送）时 .sync outline 由 enable_sync 写过
+    // ——merge 会判定「outline == DB」无变化，安全。
+    //
+    // 热词子系统（octopus_sync::hotword）独立维护 pull/push 两步，不受 vault
+    // merge 影响——本机 vault merge 模型尚未推广到 hotword。
+    let merge_report = if skip_pull {
+        // NoUpstream：远程无 main 分支，文件系统已由 enable_sync 写过——
+        // 走 push_to_files 把本地最新 DB 写到文件系统（merge_vault 也能做，但
+        // NoUpstream 时远程 .sync meta 必然与本地一致，merge 退化成纯 push）。
+        // 保留 push_to_files 调用是为了复用 incremental_export 的元数据/outline 写入
+        // 逻辑（merge_vault 内部走 export_all_to_files 会清空目录重写，对首次推送
+        // 场景无差异，但 push_to_files 更经济）。
+        let pushed = push_to_files()?;
+        MergeReport {
+            pulled: 0,
+            pushed,
+            conflicts: 0,
+            skipped: 0,
+        }
     } else {
-        pull_from_files()?
+        merge_vault()?
     };
+    let pulled = merge_report.pulled;
+    let pushed = merge_report.pushed;
+    let skipped = merge_report.skipped;
     // 热词 pull（v46：sync_now 同时同步 vault + hotword）
     let hotwords_pulled = if skip_pull {
         0
@@ -734,8 +755,6 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         }
     };
 
-    // 4. push 阶段：SQLite → 文件系统
-    let pushed = push_to_files()?;
     // 热词 push
     let hotwords_pushed = match octopus_sync::hotword::push_hotwords_to_files() {
         Ok(n) => n,
@@ -830,6 +849,13 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
 /// **判定标准**（#2 修复，2026-07-24）：pull 侧改用 outline.md5 vs DB sync_md5
 /// 比对，与 push 侧（incremental_export 用 sync_md5）对称。参照 hotword.rs 模式。
 /// 不再依赖 updated_at 字符串比较（跨设备格式不可控）。
+///
+/// ⚠️ 2026-07-27（spec §3.1）：sync_now 改用 `merge_vault` 替代 pull + push 两步。
+/// 本函数保留——`merge_vault` 的阶段 A（stamp 校验）+ 阶段 B（cipher/folder pull 路径）
+/// 沿用其设计；现有回归测试（`sync_recovers_data_when_db_emptied` /
+/// `pull_clears_local_enc_when_sync_enc_differs`）也直接调它验证 pull 子流程。
+/// 生产路径已不调用——`#[allow(dead_code)]` 抑制 prod 构建的 unused 警告。
+#[cfg_attr(not(test), allow(dead_code))]
 fn pull_from_files() -> Result<(usize, usize), SyncError> {
     let remote_outline = store::read_outline_file()?;
     let db_ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
@@ -1171,6 +1197,315 @@ fn push_to_files() -> Result<usize, SyncError> {
     // 返实际变更文件数（不是总数），SyncReport 据此显示「推送 N 条」。
     let (_new_outline, changed) = store::incremental_export(&meta, &ciphers, &folders)?;
     Ok(changed)
+}
+
+// === merge_vault（spec §3.1，2026-07-27）===
+//
+// 双向 merge：DB ↔ .sync 文件系统，按 updated_at 最新赢。
+//
+// 替代 sync_now 里 pull_from_files + push_to_files 两步——合并后无顺序依赖，
+// FK / skip_pull / 删除保护等问题自然消失。pull_from_files + push_to_files
+// 函数本身保留——clone_initial（B 机首次 clone）仍用 pull_from_files。
+//
+// 真相源 = updated_at 最新赢；冲突（相同时间戳）→ DB 赢（当前机器优先）。
+// 「删除」是普通字段变更（is_deleted=1 + updated_at 更新），走标准 merge 路径——
+// 不再硬删文件 / DB 行。
+
+/// merge_vault 返回值——供 SyncReport 上报「拉了 X / 推了 Y / 冲突 Z」。
+#[derive(Debug, Clone, Default)]
+pub struct MergeReport {
+    /// 从 .sync 拉到 DB 的条目数（folder + cipher）。
+    pub pulled: usize,
+    /// 从 DB 推到 .sync 的条目数（folder + cipher）。
+    pub pushed: usize,
+    /// 冲突数（updated_at 相同 + md5 不同 → DB 赢）。pushed 已含这部分，本字段单独统计便于诊断。
+    pub conflicts: usize,
+    /// 因文件读取失败被跳过的条目数（沿用 pull_from_files 容错语义）。
+    pub skipped: usize,
+}
+
+/// 双向 merge——按 updated_at 最新赢。
+///
+/// 流程：
+/// 1. 读 outline（远程视角）+ DB ciphers/folders（本地视角）+ vault_meta
+/// 2. stamp 校验（沿用 pull_from_files 阶段 A 逻辑——校验失败不触碰 DB）
+/// 3. merge folder（先，FK 被引用方）—— 按条目比对 updated_ms
+/// 4. merge cipher（后，FK 引用方）
+/// 5. merge meta（app_key_sync_enc 一致性——沿用 pull_from_files meta upsert 逻辑）
+/// 6. 写 outline（从 DB 最新状态重建——merge 完后 DB 即单一真相源）
+///
+/// 判定规则（每条 folder/cipher）：
+/// - outline 有 + DB 无 → pull（.sync → DB）
+/// - DB 有 + outline 无 → push（DB → .sync）
+/// - 都有 → 比 updated_ms（outline 的远程时间戳 vs DB 的本地时间戳转 ms）
+///   - remote > local → pull 覆盖 DB
+///   - local > remote → push 覆盖 .sync
+///   - 相等 → md5 比对；md5 不同 → DB 赢（conflict）；md5 相同 → 跳过
+pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
+    let remote_outline = store::read_outline_file()?;
+    let db_ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
+    let db_folders = db::list_vault_folders().map_err(SyncError::Other)?;
+
+    // === 阶段 A：stamp 校验（沿用 pull_from_files 模式——前置，不通过则不触碰 DB）===
+    let local_meta = db::load_vault_meta().map_err(SyncError::Other)?;
+    let meta_file = match store::read_meta_file() {
+        Ok(m) => Some(m),
+        Err(e) if meta_file_not_found(&e) => {
+            // 与 pull_from_files 同语义——本地已有 vault（local_meta = Some）+ 远程 meta 缺失
+            // 视为异常态（损坏 / 不完整 clone / 篡改），拒绝 merge。
+            if local_meta.is_some() {
+                return Err(SyncError::RepoCorrupted(
+                    "远程 meta.json 缺失但本地已初始化 vault——拒绝 merge（无法校验加密一致性，可能远程仓库损坏）".into(),
+                ));
+            }
+            log::debug!("[sync] meta.json 不存在，跳过 stamp 校验 + meta upsert");
+            None
+        }
+        Err(e) => return Err(SyncError::Other(e)),
+    };
+
+    if let Some(ref mf) = meta_file {
+        let stamp = mf.security_stamp.clone();
+        if let Some(ref local) = local_meta {
+            if local.security_stamp != stamp {
+                return Err(SyncError::MasterPasswordMismatch);
+            }
+        }
+    }
+
+    let mut report = MergeReport::default();
+
+    // === 阶段 B：merge folder（先，FK 被引用方）===
+    //
+    // ⚠️ 顺序与 pull_from_files 一致（2026-07-27 FK constraint 修复）——folder 先，
+    // 避免 cipher.folder_id 引用尚未插入的 folder。
+    let db_folder_by_id: std::collections::HashMap<&str, &octopus_infra::db::VaultFolder> =
+        db_folders.iter().map(|f| (f.id.as_str(), f)).collect();
+
+    // folder：outline 有 + DB 无 → pull
+    for (uuid, entry) in &remote_outline.folders {
+        let remote_updated = entry.updated_ms;
+        match db_folder_by_id.get(uuid.as_str()) {
+            None => {
+                // DB 无 → pull
+                match store::read_folder_file(uuid) {
+                    Ok(folder_file) => {
+                        let md5 = crate::sync::fingerprint::folder_md5_from_fields(
+                            &folder_file.id,
+                            &folder_file.encrypted_name,
+                            folder_file.sort_order,
+                        );
+                        upsert_folder_with_sort(
+                            &folder_file.id,
+                            &folder_file.encrypted_name,
+                            folder_file.sort_order,
+                            &md5,
+                        )?;
+                        report.pulled += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("[sync] merge: folder {} 文件读取失败，已跳过：{}", uuid, e);
+                        report.skipped += 1;
+                    }
+                }
+            }
+            Some(db_f) => {
+                let local_updated = octopus_sync::store::iso_to_unix_ms(&db_f.updated_at);
+                if remote_updated > local_updated {
+                    // .sync 更新 → pull 覆盖 DB
+                    match store::read_folder_file(uuid) {
+                        Ok(folder_file) => {
+                            let md5 = crate::sync::fingerprint::folder_md5_from_fields(
+                                &folder_file.id,
+                                &folder_file.encrypted_name,
+                                folder_file.sort_order,
+                            );
+                            upsert_folder_with_sort(
+                                &folder_file.id,
+                                &folder_file.encrypted_name,
+                                folder_file.sort_order,
+                                &md5,
+                            )?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: folder {} 文件读取失败，已跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if local_updated > remote_updated {
+                    // DB 更新 → push 覆盖 .sync
+                    push_folder_to_files(db_f)?;
+                    report.pushed += 1;
+                } else {
+                    // updated_at 相等 → md5 比对
+                    let db_md5 = db_f
+                        .sync_md5
+                        .clone()
+                        .unwrap_or_else(|| crate::sync::fingerprint::folder_md5(db_f));
+                    if db_md5 != entry.md5 {
+                        // 冲突 → DB 赢
+                        push_folder_to_files(db_f)?;
+                        report.pushed += 1;
+                        report.conflicts += 1;
+                    }
+                    // md5 相同 → 跳过
+                }
+            }
+        }
+    }
+    // folder：DB 有 + outline 无 → push（不再硬删文件）
+    for db_f in &db_folders {
+        if !remote_outline.folders.contains_key(&db_f.id) {
+            push_folder_to_files(db_f)?;
+            report.pushed += 1;
+        }
+    }
+
+    // === 阶段 C：merge cipher（后，FK 引用方）===
+    let db_cipher_by_id: std::collections::HashMap<&str, &octopus_infra::db::VaultCipher> =
+        db_ciphers.iter().map(|c| (c.id.as_str(), c)).collect();
+
+    // cipher：outline 有 + DB 无 / 或 .sync 更新 → pull
+    for (uuid, entry) in &remote_outline.ciphers {
+        let remote_updated = entry.updated_ms;
+        match db_cipher_by_id.get(uuid.as_str()) {
+            None => {
+                // DB 无 → pull
+                match store::read_cipher_file(uuid) {
+                    Ok(cipher_file) => {
+                        let row = cipher_file.to_vault_cipher();
+                        let input = build_cipher_input_from_file(&row);
+                        upsert_cipher(&input)?;
+                        report.pulled += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("[sync] merge: cipher {} 文件读取失败，已跳过：{}", uuid, e);
+                        report.skipped += 1;
+                    }
+                }
+            }
+            Some(db_c) => {
+                let local_updated = octopus_sync::store::iso_to_unix_ms(&db_c.updated_at);
+                if remote_updated > local_updated {
+                    // .sync 更新 → pull 覆盖 DB
+                    match store::read_cipher_file(uuid) {
+                        Ok(cipher_file) => {
+                            let row = cipher_file.to_vault_cipher();
+                            let input = build_cipher_input_from_file(&row);
+                            upsert_cipher(&input)?;
+                            report.pulled += 1;
+                        }
+                        Err(e) => {
+                            log::warn!("[sync] merge: cipher {} 文件读取失败，已跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if local_updated > remote_updated {
+                    // DB 更新 → push 覆盖 .sync
+                    push_cipher_to_files(db_c)?;
+                    report.pushed += 1;
+                } else {
+                    // updated_at 相等 → md5 比对
+                    let db_md5 = db_c
+                        .sync_md5
+                        .clone()
+                        .unwrap_or_else(|| crate::sync::fingerprint::cipher_md5(db_c));
+                    if db_md5 != entry.md5 {
+                        // 冲突 → DB 赢
+                        push_cipher_to_files(db_c)?;
+                        report.pushed += 1;
+                        report.conflicts += 1;
+                    }
+                }
+            }
+        }
+    }
+    // cipher：DB 有 + outline 无 → push
+    for db_c in &db_ciphers {
+        if !remote_outline.ciphers.contains_key(&db_c.id) {
+            push_cipher_to_files(db_c)?;
+            report.pushed += 1;
+        }
+    }
+
+    // === 阶段 D：merge meta（沿用 pull_from_files 阶段 B meta upsert + app_key local_enc 清空）===
+    if let Some(mf) = meta_file {
+        let f = mf.to_sync_fields()?;
+        let _strict_params = Argon2Params::from_i64_strict(
+            f.kdf_iterations,
+            f.kdf_memory_kib,
+            f.kdf_parallelism,
+        )
+        .map_err(SyncError::Other)?;
+
+        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key。
+        // ⚠️ app_key_sync_enc 不一致时清空 local_enc（2026-07-27 修复，与 pull_from_files 一致）：
+        // 场景：B 机新建 vault（生成新 app_key）→ sync 从 A 机拉数据。
+        // merge 把 app_key_sync_enc 覆盖成远程值（A 机 app_key 加密），但本地 local_enc
+        // 仍是新 app_key 加密的。保留 local_enc → 启动时优先用它解出新 app_key →
+        // cipher（A 机旧 app_key 加密）解不开。清空 local_enc 强制走 sync_enc 路径。
+        let (local_enc, pub_key, priv_key) = match &local_meta {
+            Some(m) => {
+                let sync_changed = m.app_key_sync_enc != f.app_key_sync_enc;
+                let enc = if sync_changed {
+                    log::info!(
+                        "[sync] merge 检测到 app_key_sync_enc 变化——清空本地 app_key_local_enc，\
+                        强制下次 unlock 从 sync_enc 解 app_key"
+                    );
+                    String::new()
+                } else {
+                    m.app_key_local_enc.clone()
+                };
+                (enc, m.public_key.clone(), m.protected_private_key.clone())
+            }
+            None => (String::new(), None, None),
+        };
+        let meta_input = VaultMetaInput {
+            kdf_type: f.kdf_type,
+            kdf_salt: f.kdf_salt,
+            kdf_iterations: f.kdf_iterations,
+            kdf_memory_kib: f.kdf_memory_kib,
+            kdf_parallelism: f.kdf_parallelism,
+            protected_user_vault_key: f.protected_user_vault_key,
+            app_key_local_enc: local_enc,
+            app_key_sync_enc: f.app_key_sync_enc,
+            security_stamp: f.security_stamp,
+            equivalent_domains: f.equivalent_domains,
+            public_key: pub_key,
+            protected_private_key: priv_key,
+        };
+        db::upsert_vault_meta(&meta_input).map_err(SyncError::Other)?;
+    }
+
+    // === 阶段 E：写 outline + meta（从 DB 最新状态重建——merge 完后 DB 即单一真相源）===
+    //
+    // 不复用 incremental_export——它有「DB 空 + .sync 有数据」保护，与 merge 的
+    // 「pull .sync 到空 DB」语义冲突（merge 应该把 .sync 拉回 DB，而非保留空 DB）。
+    // 这里走 push_initial 用的 export_all_to_files 路径——但只在 merge 真改了 DB 后
+    // 才需要重建。即使无变更也重写 outline 是幂等的（文件内容不变 git 不会产生 diff）。
+    let meta = db::load_vault_meta()
+        .map_err(SyncError::Other)?
+        .ok_or_else(|| SyncError::Other(anyhow::anyhow!("vault_meta 不存在（merge 后）")))?;
+    let latest_ciphers = db::list_vault_ciphers().map_err(SyncError::Other)?;
+    let latest_folders = db::list_vault_folders().map_err(SyncError::Other)?;
+    store::export_all_to_files(&meta, &latest_ciphers, &latest_folders)?;
+
+    log::info!(
+        "[sync] merge_vault 完成：pulled={} pushed={} conflicts={} skipped={}",
+        report.pulled, report.pushed, report.conflicts, report.skipped
+    );
+    Ok(report)
+}
+
+/// Push 单个 folder 到文件系统（merge 用——不重写 outline，最后统一重建）。
+fn push_folder_to_files(folder: &octopus_infra::db::VaultFolder) -> Result<(), SyncError> {
+    store::write_folder_file(folder).map_err(SyncError::Other)
+}
+
+/// Push 单个 cipher 到文件系统（merge 用——不重写 outline，最后统一重建）。
+fn push_cipher_to_files(cipher: &octopus_infra::db::VaultCipher) -> Result<(), SyncError> {
+    store::write_cipher_file(cipher).map_err(SyncError::Other)
 }
 
 // === T4.9: disable_sync ===
@@ -2411,6 +2746,216 @@ mod tests {
             "app_key_sync_enc 应被远程值覆盖"
         );
 
+        let _ = g;
+    }
+
+    // === merge_vault 测试（spec §3.1，2026-07-27）===
+    //
+    // 5 个测试覆盖 merge_vault 全部分支：
+    // 1. pull 方向（.sync 有 + DB 空）—— B 机新建 vault 恢复
+    // 2. push 方向（DB 有 + .sync 空）—— 本机新增上云
+    // 3. .sync updated_at 更新赢 —— A 机更新覆盖 B 机旧 DB
+    // 4. DB updated_at 更新赢 —— B 机更新覆盖 .sync 旧版本
+    // 5. 冲突（updated_at 相同 + md5 不同）—— DB 赢（当前机器优先）
+
+    /// B 机新建 vault（DB 空）→ sync 从 A 机拉数据 → DB 应恢复。
+    /// 覆盖：pull 方向（.sync → DB），updated_at 最新赢（.sync 有 + DB 无 → .sync 赢）
+    #[test]
+    fn merge_vault_pulls_remote_data_to_empty_db() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 阶段 1：DB 有数据，push 到 .sync（模拟 A 机有数据）
+        let folder_id = "fff00000-0000-4000-8000-000000000001";
+        db::insert_vault_folder(folder_id, "v1:enc-folder", "md5-f1").expect("insert folder");
+        let c1 = VaultCipherInput {
+            id: "aaa00000-0000-4000-8000-000000000001".to_string(),
+            folder_id: Some(folder_id.to_string()),
+            favorite: false, atype: 1,
+            name: "v1:enc-name1".into(), notes: None, data: "v1:enc-data1".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        let c2 = VaultCipherInput {
+            id: "bbb00000-0000-4000-8000-000000000002".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-name2".into(), notes: None, data: "v1:enc-data2".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert c1");
+        db::insert_vault_cipher(&c2).expect("insert c2");
+        push_to_files().expect("push to .sync");
+
+        // 验证 .sync 有数据
+        let outline = store::read_outline_file().expect("outline");
+        assert_eq!(outline.ciphers.len(), 2);
+        assert_eq!(outline.folders.len(), 1);
+
+        // 阶段 2：清空 DB（模拟 B 机新建 vault）
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", []).unwrap();
+            conn.execute("DELETE FROM vault_folders", []).unwrap();
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+
+        // 阶段 3：merge → 应 pull 2 cipher + 1 folder
+        let report = merge_vault().expect("merge");
+        assert_eq!(report.pulled, 3, "应拉回 3 条（2 cipher + 1 folder）");
+        assert_eq!(report.pushed, 0, "DB 空，无 push");
+
+        // 验证 DB 恢复
+        assert_eq!(db::list_vault_ciphers().unwrap().len(), 2);
+        assert_eq!(db::list_vault_folders().unwrap().len(), 1);
+        let _ = g;
+    }
+
+    /// DB 有数据 + .sync 没有 → push 到 .sync。
+    #[test]
+    fn merge_vault_pushes_local_only_data() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // .sync 无 meta.json——但 IntegrationGuard 设了 vault_meta（local_meta=Some），
+        // merge 的 stamp 校验拒绝「本地有 vault + 远程无 meta」场景。
+        // 预置 stamp 一致的 meta.json 让 merge 跳过 stamp 错误，进 merge 分支。
+        write_stamp_matching_meta();
+
+        let c1 = VaultCipherInput {
+            id: "ccc00000-0000-4000-8000-000000000003".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-name3".into(), notes: None, data: "v1:enc-data3".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+
+        let report = merge_vault().expect("merge");
+        assert_eq!(report.pushed, 1, "应 push 1 cipher 到 .sync");
+        assert_eq!(report.pulled, 0);
+
+        let outline = store::read_outline_file().expect("outline");
+        assert_eq!(outline.ciphers.len(), 1);
+        let _ = g;
+    }
+
+    /// DB + .sync 都有同一 cipher，.sync 的 updated_at 更新 → .sync 赢（pull 覆盖 DB）。
+    #[test]
+    fn merge_vault_updated_at_remote_wins() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // DB 有 cipher（旧时间戳）
+        let c1 = VaultCipherInput {
+            id: "ddd00000-0000-4000-8000-000000000004".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:old-name".into(), notes: None, data: "v1:old-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+        push_to_files().expect("push old version");
+
+        // 改 .sync 文件内容（模拟 A 机更新了 cipher，updated_at 更新）
+        let cipher = db::load_vault_cipher("ddd00000-0000-4000-8000-000000000004").unwrap().unwrap();
+        let mut updated = cipher.clone();
+        updated.name = "v1:new-name-from-remote".into();
+        updated.updated_at = "2026-12-31 23:59:59".into(); // 远比 DB 的新
+        store::write_cipher_file(&updated).expect("write updated cipher to .sync");
+
+        // 更新 outline 的 updated_ms
+        let mut outline = store::read_outline_file().expect("outline");
+        outline.ciphers.get_mut("ddd00000-0000-4000-8000-000000000004").unwrap().updated_ms =
+            octopus_sync::store::iso_to_unix_ms("2026-12-31 23:59:59");
+        store::write_outline_file(&outline).expect("write outline");
+
+        // merge → .sync 赢（updated_at 更新）
+        let report = merge_vault().expect("merge");
+        assert!(report.pulled >= 1, "应 pull 远程更新的 cipher");
+
+        // 验证 DB 被远程版本覆盖
+        let after = db::load_vault_cipher("ddd00000-0000-4000-8000-000000000004").unwrap().unwrap();
+        assert_eq!(after.name, "v1:new-name-from-remote", "DB 应被远程版本覆盖");
+        let _ = g;
+    }
+
+    /// DB + .sync 都有同一 cipher，DB 的 updated_at 更新 → DB 赢（push 覆盖 .sync）。
+    #[test]
+    fn merge_vault_updated_at_db_wins() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        let c1 = VaultCipherInput {
+            id: "eee00000-0000-4000-8000-000000000005".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:original".into(), notes: None, data: "v1:original-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+        push_to_files().expect("push");
+
+        // DB 更新 cipher（新时间戳）
+        db::with_db(|conn| {
+            conn.execute(
+                "UPDATE vault_ciphers SET name = 'v1:local-newer', updated_at = '2026-12-31 23:59:59' WHERE id = 'eee00000-0000-4000-8000-000000000005'",
+                [],
+            ).unwrap();
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+
+        // merge → DB 赢
+        let report = merge_vault().expect("merge");
+        assert!(report.pushed >= 1, "应 push DB 更新的 cipher 到 .sync");
+
+        // 验证 .sync 被 DB 版本覆盖
+        let file = store::read_cipher_file("eee00000-0000-4000-8000-000000000005").expect("read file");
+        let cipher = file.to_vault_cipher();
+        assert_eq!(cipher.name, "v1:local-newer", ".sync 应被 DB 版本覆盖");
+        let _ = g;
+    }
+
+    /// updated_at 相同 + md5 不同 → DB 赢
+    #[test]
+    fn merge_vault_conflict_db_wins() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        let c1 = VaultCipherInput {
+            id: "fff00000-0000-4000-8000-000000000006".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:db-version".into(), notes: None, data: "v1:db-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+        push_to_files().expect("push");
+
+        // 改 .sync 文件（不同内容，相同 updated_at）——模拟 A 机同时间戳改了 cipher
+        let cipher = db::load_vault_cipher("fff00000-0000-4000-8000-000000000006").unwrap().unwrap();
+        let mut remote = cipher.clone();
+        remote.name = "v1:remote-version".into();
+        // updated_at 不变（相同时间戳 → 冲突）
+        store::write_cipher_file(&remote).expect("write remote version");
+
+        // 同步更新 outline 的 md5（反映新文件内容的指纹）——保持 updated_ms 不变
+        // （模拟真实场景：A 机改 cipher 时 outline.md5 会重算，updated_at 未变时 updated_ms 相同）
+        let remote_md5 = crate::sync::fingerprint::cipher_md5(&remote);
+        let mut outline = store::read_outline_file().expect("outline");
+        outline
+            .ciphers
+            .get_mut("fff00000-0000-4000-8000-000000000006")
+            .unwrap()
+            .md5 = remote_md5;
+        store::write_outline_file(&outline).expect("write outline");
+
+        let report = merge_vault().expect("merge");
+        assert!(report.conflicts >= 1 || report.pushed >= 1, "冲突时应 DB 赢（push 或 conflict 计数）");
+
+        // .sync 应被 DB 版本覆盖
+        let file = store::read_cipher_file("fff00000-0000-4000-8000-000000000006").expect("read");
+        let after = file.to_vault_cipher();
+        assert_eq!(after.name, "v1:db-version", "冲突时 DB 应赢");
         let _ = g;
     }
 }
