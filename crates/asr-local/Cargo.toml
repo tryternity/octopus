@@ -45,6 +45,8 @@ octopus-llm = { path = "../llm" }
 jieba-rs = "0.6"
 pinyin = "0.10"
 flate2 = "1.0"
+# ITN：中文数字→阿拉伯数字（spec 2026-07-27-asr-itn-design，纯 Rust 无原生依赖）
+chinese2digits = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["coreml"] }

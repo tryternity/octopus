@@ -26,6 +26,7 @@ pub mod moonshine;
 pub mod zipformer;
 pub mod corrector;
 pub mod hans;
+pub mod itn;
 pub mod hotword;
 pub mod miner;
 pub mod pipeline;

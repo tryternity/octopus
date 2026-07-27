@@ -616,7 +616,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_microphone_device', '',                  '麦克风设备名（空=系统默认）'),
     ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
     ('record_default_source_type', 'display',         '默认录制源类型'),
-    ('record_output_dir',        'recordings',        '输出目录（相对 ~/.octopus/）'),
+    ('record_output_dir',        '',                  '录屏保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/.octopus/recordings/）'),
     ('record_history_view',      'grid',              '历史列表默认视图（grid/list）');
 ```
 
@@ -1677,6 +1677,10 @@ fn futures_block_on<F: std::future::Future>(f: F) -> F::Output {
 }
 ```
 
+> **2026-07-26 迭代注记**：上方 macOS provider 实现是**原始 MVP 版本**（保留作历史记录）。
+> trait 已 async 化（`#[async_trait]`，5 方法 `async fn`），`futures_block_on` 已删除——
+> macOS impl 直接 `run_helper_subcommand(...).await`。详见本 plan 末尾「后续修复」段。
+
 - [x] **Step 3: 实现 windows.rs 和 linux.rs 占位**
 
 `crates/record/src/platform/windows.rs`:
@@ -2725,8 +2729,12 @@ git commit -m "feat(packaging): DMG 脚本集成 helper 编译 + 第三方许可
 - [x] `cd crates/desktop/frontend && npm run build` 0 error（0 warning，2026-07-25 验证）
 - [ ] `./scripts/build-macos-dmg.sh` 打包成功（**待手动验证**——需 universal binary swift 编译环境，3-8 分钟）
 - [ ] 手动 e2e（按 spec §9.3 的 7 个场景）全过（**待用户在 GUI 环境验证**）
-  - [ ] **2026-07-26 新增**：副屏 display 录制 → 控制浮窗 pill 出现在副屏右下角（不是主屏）
-  - [ ] **2026-07-26 新增**：录屏 timeout 后能立即重试（不卡 AlreadyRunning）—— 验证 `reset_to_idle` 修复
+  - [x] **2026-07-26 新增**：副屏 display 录制 → 控制浮窗 pill 出现在副屏右下角（不是主屏） ✅ 用户验证
+  - [x] **2026-07-26 新增**：录屏 timeout 后能立即重试（不卡 AlreadyRunning）—— 验证 `reset_to_idle` 修复 ✅ 用户验证（间接：本轮 timeout 修复后实测整个流程正常，stderr reader 让 helper 不再卡死）
+  - [x] **2026-07-26 新增**：GIF 按钮（场记板图标）默认可见 ✅ 用户验证
+  - [x] **2026-07-26 新增**：录屏整个流程正常（验证 stderr reader 修复后 timeout 消失） ✅ 用户验证
+  - [x] **2026-07-27 新增**：录屏音频可听到（双轨 + mic-track-1 方案） ✅ 用户验证——播放器默认放 track 1（麦克风），能听到说话声/音乐
+  - [x] **2026-07-27 新增**：保存目录可配置 + 持久化 ✅ 用户验证——RecordConfig 浮窗选目录 → 录屏文件存到新目录 → 重启后路径仍在
 - [x] `THIRD_PARTY_LICENSES.md` 完整（§7.1 已填正式条目，含 8 处修改声明 + 上游 commit SHA）
 - [x] `docs/architecture.md` 同步更新（录屏模块章节）—— 已加「## 屏幕录制（2026-07-25 起，MVP）」section + 项目结构加 record crate + 「### octopus-record」模块说明
 
@@ -2776,6 +2784,74 @@ Task 5 实现的 session.rs 在用户实测中暴露**两个串联 P0 bug**（co
 - `start_stderr_flood_does_not_orphan_helper` — 200KB stderr 不阻塞 helper + 被 kill 清理
 
 > Task 5 Step 2 的 session.rs 代码块是**原始实现**（保留作历史记录，是「最早能跑通 MVP 的版本」）；上面 4 个 P0/P1/P2 修复是上线后用户实测反馈的迭代。详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.2「设计要点」末尾的 4 条新约束。
+
+### Task 6 后续：platform trait async 化（2026-07-26，commit 待补）
+
+Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 `futures_block_on` + `tokio::task::block_in_place` 桥接 async helper 子进程——这是 MVP 简化的技术债（trait 内部阻塞 runtime worker，多 display 枚举并发时可能拖慢调度）。
+
+修复（方案 B2：`#[async_trait]` + 混合 sync/async）：
+- 5 个调 helper 方法标 `async fn`（`#[async_trait]`）
+- `resolve_helper_path` 保留 sync（纯文件探测，假装 async 是语义失真；`async_trait` 允许混用）
+- macOS impl 删 `futures_block_on`，直接 `.await` 子进程
+- Win/Linux 占位 impl 5 方法签名改 `async fn`（body 不变，仍立即返回 `Err`）
+- `record_commands.rs` 删 `platform_helper` 闭包 wrapper（async_trait 的 `BoxFuture + 'static` 与 `&dyn` 引用生命周期冲突）→ 改为 `provider().list_displays().await.map_err(e2s)` 直接调（ZST 无成本）
+- 新增 `async-trait = "0.1"` 依赖（仓库既有惯例，desktop/search/translation 20 处都在用）
+
+详见 [`specs/2026-07-25-screen-record-design.md`](../specs/2026-07-25-screen-record-design.md) §3.4。
+
+### Task 10 后续：麦克风设备名回退（2026-07-26）
+
+用户实测「录屏勾选了麦克风但没录进去」。`ffprobe` 分析发现音轨存在但音量极低（mic mean -64dB / max -50dB，正常说话应 -20~0dB）——**不是没录，是选错了麦克风**。
+
+根因：RecordConfig UI（`index.tsx:156`）发 `device_name: null`（UI 无设备选择器），helper 的 `resolveMicrophoneCaptureDeviceID()` 收到 `deviceName=nil` → 返回 `nil` → SCK 用**内部默认麦**（系统默认输入，可能是 MacBook 内置麦，灵敏度低）。用户实际主麦是 `UGREEN USB MIC-CM769`（ASR 已配），但 UI 路径完全不传设备名。
+
+修复（用户决策「复用 ASR 配置」）：提取 `resolve_mic_device_name(explicit)` 三级回退函数：
+1. 调用方显式传入（未来 UI 加设备选择器用）
+2. DB `record_microphone_device`（录屏专用，目前默认空）
+3. DB `microphone`（**ASR 配的麦克风——用户已精心选过，复用避免录屏再配**）
+4. 都空 → None（helper 用 SCK 默认）
+
+`start_with_config` 收到 `device_name=null` 时调它兜底（`build_default_config` 也复用此函数去重）。回归测试 3 个（2 unit + 1 ignored DB 集成）。
+
+### Task 10 后续：录屏停止自动 Finder 高亮（2026-07-26）
+
+用户决策「录屏完毕后，保存文件自动打开所在的文件夹」。加配置项 `record_reveal_after_stop`（默认 true）。
+
+实现：
+- `stop_and_store_inner` 入库成功后，读 `parse_bool_config("record_reveal_after_stop", true)`，true 时 spawn `open -R <abs_path>`（与 `reveal_recording` 命令同机制）。失败仅 log 不影响录制。
+- DB seed 加 `record_reveal_after_stop = 'true'`（新用户；老用户通过 `parse_bool_config` 默认 true 兜底，配置项缺失也行为正确）。
+- RecordConfig 浮窗 Advanced 区加 toggle「停止后定位文件 / Reveal after stop」——**持久化到 DB**（与 fps/codec session-only 不同，这是跨 session 行为）。mount 时读 `get_config`，切换时调 `set_config`。
+- i18n 加 `recordConfig.revealAfterStop`（zh/en）。
+
+### Task 8 后续：音轨顺序 + 实时混音回退（2026-07-26 ~ 2026-07-27）
+
+**问题**：用户实测「麦克风没采集」。`ffprobe` 分析发现音量正常（mic max -15.8dB），但文件有 **2 条独立音轨**（system + mic），播放器默认只放 track 1（系统音频，常为静音）→ 用户听不到麦克风。这是 helper 设计缺陷，不是采集问题。
+
+**尝试方案 A：实时混音**（commit `6cb6fe90` ~ `f9741968`，5 轮迭代）——Swift helper 在 sample callback 里把 system + mic 实时混合成单条 AAC 轨。经充分调试（PTS 配对 / 帧计数 ring buffer / vDSP / CMSampleBuffer 构造），最终 `appendInterleavedPCM` 的 `input.append(sb)` 始终不生效（日志确认 ENTERED 但 audio track 仍 0 条），根因未能定位。**已回退**（commit `f8bbe8ed`）。
+
+**当前方案（务实回退）**：保留双轨，仅调整 `setupWriter` 的 add 顺序——**麦克风先 add（track 1）**，系统音频后 add（track 2）。播放器默认放 track 1 = 麦克风。
+
+| 场景 | 结果 |
+|---|---|
+| 只开麦克风 | ✅ track 1 = mic，完美 |
+| 只开系统音频 | ✅ track 1 = system，完美 |
+| 都开 | 默认听麦克风（系统音频在 track 2，播放器可手动切换） |
+| 都关 | 仅 video |
+
+**后续**：实时混音作为 P2 任务重新设计——考虑用 `AVAudioEngine` 混音节点（成熟 API，不手动构造 CMSampleBuffer），或录后 `ffmpeg -filter_complex amerge` 后处理（commit `67aec0a2` 已加 ffmpeg 探测基础设施）。手动 CMSampleBuffer + vDSP 路径证明太脆弱。
+
+### Task 10 后续：保存目录可配置（2026-07-27）
+
+用户需求：录屏保存目录可配置（任意绝对路径），在录屏配置浮窗直接设置。
+
+实现：
+- `paths.rs::recordings_dir()` 读 DB `record_output_dir`（绝对路径，支持 `~` 展开；空=默认 `~/.octopus/recordings/`）
+- DB `file_path` 改存**绝对路径**（不再相对 `~/.octopus/`）；`resolve_recording_path` 对绝对路径原样返回（防御性 fallback join）
+- `db.sql` seed `record_output_dir` 默认值从 `'recordings'` 改为 `''`（空=默认）
+- **RecordConfig 浮窗**（`Cmd+Shift+R` 弹出）音频开关下方加目录设置行：`FolderOpen` 图标 + 当前路径（truncate）+ 点击触发 `openDialog({ directory: true })` → `set_config`（commit `fde9d75d`，原方案放 RecordingPanel 管理页，后按用户反馈挪到浮窗）
+- **关键修复**（commit `903eab15`）：`set_config` 命令拦截 `record_*` key 直接写 DB（不走 `apply_config_value`，后者只处理 `AppConfig` struct 字段，`record_*` 不在 struct 里会报「未知配置字段」）
+- i18n `recordConfig.outputDir`（zh：保存目录 / en：Save to）
+- 决策：不做 recordings/ 自动清理（用户手动管理）
 
 ---
 

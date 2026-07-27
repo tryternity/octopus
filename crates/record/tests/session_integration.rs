@@ -21,22 +21,6 @@ fn mock_helper_path() -> PathBuf {
     panic!("mock-helper not found, run: cargo build -p octopus-record --bin mock-helper");
 }
 
-/// 测试用 wrapper 脚本路径——通过 MOCK_HELPER_MODE 环境变量切换故障场景。
-/// （session.start 不接 env，所以用 wrapper 脚本注入 env 给 mock-helper。）
-fn mock_helper_wrapper_path() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    PathBuf::from(&manifest_dir).join("tests/mock_helper_wrapper.sh")
-}
-
-/// 构造一个 helper 路径：mode=normal 时直接 mock-helper，故障场景用 wrapper。
-fn helper_for_mode(mode: &str) -> PathBuf {
-    if mode == "normal" {
-        mock_helper_path()
-    } else {
-        mock_helper_wrapper_path()
-    }
-}
-
 fn sample_request(screen_path: &str) -> RecordingRequest {
     RecordingRequest {
         schema_version: 1,

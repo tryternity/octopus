@@ -1036,3 +1036,5 @@ recordConfig:
   fps: 帧率
   codec: 编码
   hideCursor: 隐藏光标
+  revealAfterStop: 停止后定位文件
+  outputDir: 保存目录

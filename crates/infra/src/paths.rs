@@ -18,17 +18,43 @@ pub fn octopus_config_home() -> &'static Path {
 
 // ── 录屏 ───────────────────────────────────────────────────────────
 
-/// 录屏输出目录：~/.octopus/recordings/
+/// 录屏输出目录：读 DB `record_output_dir` 配置（绝对路径，支持 `~` 展开）。
+/// 空/未配置时 fallback `~/.octopus/recordings/`。
 /// 不存在时由调用方在 start_recording 前创建。
 pub fn recordings_dir() -> PathBuf {
-    octopus_config_home().join("recordings")
+    let configured = crate::db::load_config_key("record_output_dir")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    match configured {
+        Some(dir) => expand_tilde(&dir),
+        None => octopus_config_home().join("recordings"),
+    }
 }
 
-/// 解析 recordings 表里的相对路径为绝对路径。
-/// file_path 字段存 "recordings/xxx.mp4" 这种相对路径，
-/// 运行时 join octopus_config_home() 得到绝对路径。
-pub fn resolve_recording_path(relative: &str) -> PathBuf {
-    octopus_config_home().join(relative)
+/// 展开 `~` 为 $HOME（macOS/Linux）。已是绝对路径则原样返回。
+/// 不引入 shellexpand 依赖——手动展开足够（录屏 macOS-only）。
+fn expand_tilde(path: &str) -> PathBuf {
+    if path.starts_with("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join(&path[2..])
+    } else if path == "~" {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+    } else {
+        PathBuf::from(path)
+    }
+}
+
+/// 解析 recordings 表里的 file_path 为绝对路径。
+/// 2026-07-27 起 file_path 直接存**绝对路径**（用户可配置保存目录），
+/// 此函数对绝对路径原样返回；防御性 fallback：相对路径 join octopus_config_home()。
+pub fn resolve_recording_path(file_path: &str) -> PathBuf {
+    let p = PathBuf::from(file_path);
+    if p.is_absolute() {
+        p
+    } else {
+        octopus_config_home().join(p)
+    }
 }
 
 /// 录屏 helper 子进程的 stdout/stderr 日志路径：~/.octopus/logs/record-helper.log

@@ -69,6 +69,9 @@ pub fn transcribe_batch(
         raw_text
     };
 
+    // ITN：中文数字→阿拉伯数字（corrector 后、hans 前，spec 2026-07-27-asr-itn-design §2）
+    let text = crate::itn::normalize(&text);
+
     Ok(if cfg.simplify {
         crate::hans::to_simplified(&text)
     } else {

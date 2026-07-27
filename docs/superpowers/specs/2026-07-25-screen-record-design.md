@@ -401,13 +401,17 @@ pub struct ListFilter {
 
 ```rust
 // crates/record/src/platform/mod.rs
+#[async_trait]
 pub trait HelperProvider: Send + Sync {
+    // resolve_helper_path 是纯文件探测（不走子进程），保留 sync。
     fn resolve_helper_path(&self, app_resource_dir: Option<&Path>) -> RecordResult<PathBuf>;
-    fn list_displays(&self) -> RecordResult<Vec<DisplayInfo>>;
-    fn list_windows(&self) -> RecordResult<Vec<WindowInfo>>;
-    fn list_microphones(&self) -> RecordResult<Vec<MicrophoneInfo>>;
-    fn check_permission(&self) -> RecordResult<PermissionStatus>;
-    fn request_screen_permission(&self) -> RecordResult<PermissionStatus>;
+
+    // 5 个调 helper 子进程的方法标 async（2026-07-26 async 化，原 sync + block_in_place 是技术债）。
+    async fn list_displays(&self) -> RecordResult<Vec<DisplayInfo>>;
+    async fn list_windows(&self) -> RecordResult<Vec<WindowInfo>>;
+    async fn list_microphones(&self) -> RecordResult<Vec<MicrophoneInfo>>;
+    async fn check_permission(&self) -> RecordResult<PermissionStatus>;
+    async fn request_screen_permission(&self) -> RecordResult<PermissionStatus>;
 }
 
 #[cfg(target_os = "macos")]
@@ -418,10 +422,12 @@ pub fn provider() -> impl HelperProvider { WindowsProvider }  // 占位
 pub fn provider() -> impl HelperProvider { LinuxProvider }    // 占位
 ```
 
-- `list_displays` / `list_windows` / `list_microphones` 走 helper `--list-*` 子命令模式（不主进程链接 SCK）
+- `list_displays` / `list_windows` / `list_microphones` 走 helper `--list-*` 子命令模式（不主进程链接 SCK），`.await` 异步等 stdout
 - `request_screen_permission` 走 helper `--request-permission` 模式
 - `check_permission` 走 helper `--check-permission` 模式
 - Windows/Linux provider 返回 `Err(PlatformNotImplemented)`
+- **`#[async_trait]`**（不是原生 async-fn-in-trait）：保留 `dyn HelperProvider` 兼容（虽然实际 consumer 用 `impl HelperProvider`，但仓库既有惯例统一用 async-trait 宏，desktop/search/translation 20 处都在用）。`resolve_helper_path` 保留 sync（`async_trait` 允许同一 trait 内 sync/async 方法混用）。
+- **consumer 侧**（`crates/desktop/src/record_commands.rs`）：每个 Tauri 命令直接 `provider().list_displays().await.map_err(e2s)`（原 `platform_helper` 闭包 wrapper 已删除——async_trait 的 `BoxFuture + 'static` 与 `&dyn` 引用生命周期冲突，且 provider 是 ZST 直接调更直观）。
 
 ### 3.5 RecordError
 
@@ -687,8 +693,9 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_microphone_device', '',                  '麦克风设备名（空=系统默认）'),
     ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
     ('record_default_source_type', 'display',         '默认录制源类型'),
-    ('record_output_dir',        'recordings',        '输出目录（相对 ~/.octopus/）'),
-    ('record_history_view',      'grid',              '历史列表默认视图（grid/list）');
+    ('record_output_dir',        '',                  '录屏保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/.octopus/recordings/）'),
+    ('record_history_view',      'grid',              '历史列表默认视图（grid/list）'),
+    ('record_reveal_after_stop', 'true',              '录屏停止后是否自动在 Finder 高亮文件');
 ```
 
 ### 5.5 升级函数

@@ -102,6 +102,25 @@ pub fn set_config(
     coordinator: State<'_, crate::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // record_* 配置项不在 AppConfig struct 里（走 app_config 表的泛型 key-value 存储），
+    // 直接写 DB 后返回，不走 apply_config_value（会报「未知配置字段」）。
+    // 包括：record_output_dir / record_reveal_after_stop / record_microphone_device 等。
+    if key.starts_with("record_") && key != "record_shortcut" && key != "record_stop_shortcut" {
+        let val_str = match &value {
+            Value::Bool(b) => b.to_string(),
+            Value::String(s) => s.clone(),
+            _ => value.to_string(),
+        };
+        octopus_infra::db::with_db(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
+                rusqlite::params![&key, &val_str],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| format!("写入 DB 失败: {e}"))?;
+        return Ok(());
+    }
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
         let g = rc.read();
         (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.clone())
