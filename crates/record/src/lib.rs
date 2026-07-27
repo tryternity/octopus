@@ -7,6 +7,8 @@
 //!
 //! 不含 UI，不含 Tauri 命令（命令在 crates/desktop/src/record_commands.rs）。
 
+pub mod audio_tracks;
+pub use audio_tracks::{AudioTrack, AudioTrackSource, RawAudioTrack, infer_audio_tracks};
 pub mod error;
 pub mod protocol;
 pub use protocol::*;
