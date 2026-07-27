@@ -3,21 +3,21 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use crate::backend::OcrBackend;
 use crate::model;
 
-/// OCR 引擎——封装 octopus-paddle-ocr（基于 ONNX Runtime 的 PaddleOCR）。
+/// OCR 引擎——封装当前激活的 OCR 后端（trait object，PP-OCR 本地 / VLM 云端后续）。
 ///
-/// RapidOcr::run 需要 &mut self，OcrEngine 包在 Arc 里共享。
+/// 后端 `recognize` 需要 &mut self，OcrEngine 包在 Arc 里共享。
 /// 用 Mutex 保护内部可变性——OCR 全局互斥（OcrLockGuard）保证同一时刻
 /// 只有一个调用方，Mutex 不会产生实际竞争。
 pub struct OcrEngine {
     /// None=已 idle 释放，下次 run_ocr 自动重载。
-    inner: Mutex<Option<octopus_paddle_ocr::RapidOcr>>,
+    inner: Mutex<Option<Box<dyn OcrBackend>>>,
     /// 最近一次 run_ocr 入口时间戳，守护线程据此判 idle。
     last_used: Mutex<Option<std::time::Instant>>,
     /// 当前加载的模型名，守护线程释放时拼 probe id 用。
     model_name: String,
-    use_word_segmentation: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -73,19 +73,12 @@ impl OcrEngine {
             octopus_infra::model_probe::LoadPhase::Before,
             &format!("ocr:{model_name}"),
         );
-        let inner = Self::load_rapid_ocr(&model_name)?;
-
-        // v6 的 CTC space token 被正确激活，输出自带英文空格，不需要后处理分词。
-        // v5 及更早版本需要 words_alpha 词库做贪心分词。
-        let use_word_segmentation = !model_name.starts_with("PP-OCRv6");
-
-        log::info!("[ocr-engine] RapidOcr loaded — model={}, word_segmentation={}", model_name, use_word_segmentation);
+        let inner = Self::new_backend(&model_name)?;
 
         let engine = Arc::new(OcrEngine {
             inner: Mutex::new(Some(inner)),
             last_used: Mutex::new(Some(std::time::Instant::now())),
             model_name: model_name.clone(),
-            use_word_segmentation,
         });
         octopus_infra::model_probe::probe(
             octopus_infra::model_probe::LoadPhase::After,
@@ -98,15 +91,14 @@ impl OcrEngine {
         Ok(engine)
     }
 
-    /// 构建 RapidOcr 实例（不含 probe，纯加载）。instance() 首次加载与 run_ocr idle
+    /// 构造 OCR 后端（不含 probe，纯加载）。instance() 首次加载与 run_ocr idle
     /// 后重载共用——probe Before/After 由各自调用方包夹（首次在 instance()，重载在
     /// run_ocr）；重载 After 命中 estimated 首次缓存值，不会因 arena 复用偏低。
-    fn load_rapid_ocr(model_name: &str) -> Result<octopus_paddle_ocr::RapidOcr> {
-        let dir = crate::model::model_dir(model_name);
-        log::info!("Loading OCR model: {} from {}", model_name, dir.display());
-        let config = build_engine_config(&dir)?;
-        octopus_paddle_ocr::RapidOcr::new(config)
-            .map_err(|e| anyhow::anyhow!("Failed to init RapidOcr: {e}"))
+    ///
+    /// 当前固定路由到 PaddleOcrBackend（本地 PP-OCR）。
+    /// 未来按 model source_type 分流：source_type=2 → VlmOcrBackend，否则 PaddleOcrBackend。
+    fn new_backend(model_name: &str) -> Result<Box<dyn OcrBackend>> {
+        Ok(Box::new(crate::paddle_backend::PaddleOcrBackend::new(model_name)?))
     }
 
     /// 起 idle 监控守护线程（全局唯一，只在 instance 首次 set 成功后 spawn 一次）。
@@ -121,15 +113,16 @@ impl OcrEngine {
         });
     }
 
-    /// 守护线程调用：若距上次使用超过 OCR_IDLE_TIMEOUT，drop 内部 RapidOcr（释放模型内存）
+    /// 守护线程调用：若距上次使用超过 OCR_IDLE_TIMEOUT，drop 内部后端（释放模型内存）
     /// 并 probe(Unload) 通知状态页清条目。下次 run_ocr 自动重载。
     fn check_and_release_if_idle(&self) {
         if !Self::is_idle(&self.last_used.lock()) {
             return;
         }
         let mut inner = self.inner.lock();
-        if inner.is_some() {
-            *inner = None; // drop RapidOcr → 释放 ort session + mmap 权重
+        if let Some(backend) = inner.as_mut() {
+            backend.unload(); // PP-OCR drop RapidOcr → 释放 ort session + mmap 权重
+            *inner = None;    // drop Box<dyn OcrBackend>
             drop(inner);   // 先释放 inner 锁，再调 probe 闭包（不持锁调外部代码）
             let id = format!("ocr:{}", self.model_name);
             octopus_infra::model_probe::probe(
@@ -187,9 +180,6 @@ impl OcrEngine {
         // 入口先刷新 last_used：防止守护线程在重载期间误判 idle。
         *self.last_used.lock() = Some(std::time::Instant::now());
 
-        let rec_img = dynamic_to_rec_image(img)?;
-        let opts = octopus_paddle_ocr::OcrCallOptions::default();
-
         // 重载 + run 在同一 inner lock 作用域：重载期间持有 inner 锁，守护线程
         // 无法在「重载后、run 前」窗口抢锁释放刚重载的模型（否则 run 时 inner=None → expect panic）。
         // OcrLockGuard 已保证同时只有一个 run_ocr，持锁重载数秒不阻塞其他 OCR 调用；
@@ -197,7 +187,7 @@ impl OcrEngine {
         // 重载补 probe Before/After（与首次 instance() 对称）：idle 释放时 probe(Unload)
         // 已移除 active 条目（estimated 首次值保留），重载 After 命中 estimated 复用首次
         // 估算恢复 active——避免状态页在 OCR 重载后永久缺条目（旧实现重载不调 probe）。
-        let result = {
+        let (result, use_word_segmentation) = {
             let mut guard = self.inner.lock();
             if guard.is_none() {
                 log::info!("[ocr-engine] OCR model {} reloaded after idle release", self.model_name);
@@ -206,21 +196,25 @@ impl OcrEngine {
                     octopus_infra::model_probe::LoadPhase::Before,
                     &id,
                 );
-                let new_engine = Self::load_rapid_ocr(&self.model_name)?;
-                *guard = Some(new_engine);
+                let new_backend = Self::new_backend(&self.model_name)?;
+                *guard = Some(new_backend);
                 octopus_infra::model_probe::probe(
                     octopus_infra::model_probe::LoadPhase::After,
                     &id,
                 );
             }
-            let engine_ref = guard.as_mut().expect("inner just reloaded or was Some");
-            engine_ref.run(rec_img, opts)
-                .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?
+            let backend = guard.as_mut().expect("inner just reloaded or was Some");
+            // 先读 flag 再 run：避免 run 后再借 backend（&mut 已用）。
+            let seg = backend.use_word_segmentation();
+            let output = backend
+                .recognize(img)
+                .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?;
+            (output, seg)
         }; // guard 在此 drop，释放 inner 锁
 
         let mut blocks = ocr_output_to_blocks(&result);
         blocks = merge_same_line_blocks(blocks);
-        if self.use_word_segmentation {
+        if use_word_segmentation {
             for b in &mut blocks {
                 b.text = segment_english_words(&b.text);
             }
@@ -274,42 +268,6 @@ impl OcrEngine {
         }
         plan
     }
-}
-
-fn build_engine_config(dir: &std::path::Path) -> Result<octopus_paddle_ocr::EngineConfig> {
-    use octopus_paddle_ocr::*;
-
-    let det_path = dir.join("det.onnx");
-    let rec_path = dir.join("rec.onnx");
-    let keys_path = dir.join("keys.txt");
-    let cls_path = dir.join("cls.onnx");
-
-    let mut config = EngineConfig::default();
-
-    config.det.model_path = Some(det_path);
-    config.det.allow_download = false;
-
-    config.rec.model.model_path = Some(rec_path);
-    config.rec.model.rec_keys_path = Some(keys_path);
-    config.rec.model.allow_download = false;
-
-    if cls_path.exists() {
-        config.cls.model_path = Some(cls_path);
-        config.cls.allow_download = false;
-    } else {
-        config.global.use_cls = false;
-    }
-
-    Ok(config)
-}
-
-fn dynamic_to_rec_image(img: &::image::DynamicImage) -> Result<octopus_paddle_ocr::RecImage> {
-    let rgb = img.to_rgb8();
-    let (w, h) = rgb.dimensions();
-    // 直接用 from_rgb_u8——RecImage 内部记录 color_order，as_bgr_cow() 按需做 RGB→BGR
-    // 转换（与原手动 swap 等价）。省一次 ~25MB BGR vec 分配（4K 图）+ 25M 像素循环。
-    octopus_paddle_ocr::RecImage::from_rgb_u8(w as usize, h as usize, rgb.into_raw())
-        .map_err(|e| anyhow::anyhow!("Failed to create RecImage: {e}"))
 }
 
 fn ocr_output_to_blocks(output: &octopus_paddle_ocr::OcrOutput) -> Vec<OcrBlock> {
