@@ -504,11 +504,15 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 		self.writer = writer
 		self.videoInput = input
 
-		if request.audio.system.enabled {
-			systemAudioInput = try addAudioInput(to: writer, bitRate: 192_000)
-		}
+		// ⚠️ 麦克风轨先 add（变 track 1，播放器默认播放）——原顺序 system 先 add 导致
+		// 播放器默认放 system audio track（常为静音），用户听不到麦克风。
+		// 实时混音方案（commit 6cb6fe90 ~ f9741968）经多轮调试仍无法稳定输出，
+		// 暂回退双轨 + 调整顺序，混音作为后续 P2 任务重新设计。
 		if nativeMicrophoneEnabled {
 			microphoneAudioInput = try addAudioInput(to: writer, bitRate: 128_000)
+		}
+		if request.audio.system.enabled {
+			systemAudioInput = try addAudioInput(to: writer, bitRate: 192_000)
 		}
 	}
 

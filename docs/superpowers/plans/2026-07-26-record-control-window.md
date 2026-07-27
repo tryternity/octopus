@@ -63,9 +63,9 @@ cd crates/desktop/frontend && npm run build
 
 ### 待用户实测
 
-- [ ] display 录制 → **录制所在屏**右下角 pill（红点+时长）→ 点停止 → 消失
+- [x] display 录制 → **录制所在屏**右下角 pill（红点+时长）→ 点停止 → 消失 ✅ 2026-07-26 用户验证
   - **2026-07-26 修复**：原 compute_position 丢弃 display_id 永远 fallback 主屏，副屏录制 pill 跑到主屏右下角。改用 `CGDisplay::new(display_id).bounds()` 直接查逻辑边界。详见下方「后续修复」。
-- [ ] **副屏 display 录制 → pill 出现在副屏右下角**（新增回归验证项，对应 2026-07-26 副屏 bug 修复）
+- [x] **副屏 display 录制 → pill 出现在副屏右下角** ✅ 2026-07-26 用户验证（核心回归项）
 - [ ] window 录制 → 主屏右下角 pill（fallback，window_id → display 查询推迟）
 - [ ] 暂停/恢复：红点变灰 + 时长停 / 恢复
 - [ ] ESC 停止：pill 消失
