@@ -22,6 +22,7 @@ use crate::runtime_config::SharedRuntimeConfig;
 
 /// 一个可下载模型的列表项。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadableModel {
     /// DB 行 id（switch_active_model 按 id 切激活）。
     pub id: i64,
@@ -43,6 +44,7 @@ pub struct DownloadableModel {
 
 /// 完整性复核结果。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyResult {
     pub ok: bool,
     /// true=本次新自举生成了清单（之前 secret_key 为空）。
@@ -79,6 +81,7 @@ pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<Downloadab
 
 /// 模型文件信息（供 DownloadPopover 展示文件级列表 + 进度）。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelFile {
     /// manifest 里的相对路径（如 "model.int8.onnx"）
     pub path: String,

@@ -12,7 +12,7 @@ interface Prompt {
   title: string;
   content: string; // 文件名引用（不含 .md）
   description: string;
-  is_system: boolean;
+  isSystem: boolean;
 }
 
 export default function PromptsPanel({ showToast }: { showToast: (msg: string) => void }) {
@@ -35,10 +35,10 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
 
   const load = useCallback(async () => {
     try {
-      const resp = await invoke<{ prompts: Prompt[]; active_prompt_id: number }>("get_config" as any) as any;
+      const resp = await invoke<{ prompts: Prompt[]; activePromptId: number }>("get_config" as any) as any;
       const list = await invoke<Prompt[]>("list_prompts");
       setPrompts(list);
-      setActiveId(resp.active_prompt_id);
+      setActiveId(resp.activePromptId);
     } catch (e) { showToast(t("settings.prompts.loadFailed") + e); }
   }, [showToast]);
 
@@ -178,7 +178,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
           >
             <div className="flex items-center gap-2 mb-1">
               <span className="text-sm font-medium">{p.title}</span>
-              {p.is_system && <Badge>{t("settings.prompts.builtin")}</Badge>}
+              {p.isSystem && <Badge>{t("settings.prompts.builtin")}</Badge>}
               {isActive && <Badge variant="voice">{t("settings.prompts.activeBadge")}</Badge>}
             </div>
             {p.description && <div className="text-xs text-muted-foreground/70 mb-1">{p.description}</div>}
@@ -196,7 +196,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               <Button variant="ghost" size="sm" onClick={() => editInEditor(p)}>
                 <Pencil /> {t("settings.prompts.edit")}
               </Button>
-              {!p.is_system && (
+              {!p.isSystem && (
                 <Button
                   variant={deletePendingId === p.id ? "destructive" : "destructive-ghost"}
                   size="sm"

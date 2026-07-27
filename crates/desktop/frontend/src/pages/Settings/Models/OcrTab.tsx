@@ -12,10 +12,10 @@ interface DownloadableModel {
   repo: string;
   description: string;
   category: string;
-  // Task 2 后：is_available=就绪；is_enabled=激活
-  is_available: boolean;
-  is_enabled: boolean;
-  source_type: number;
+  // Task 2 后：isAvailable=就绪；isEnabled=激活
+  isAvailable: boolean;
+  isEnabled: boolean;
+  sourceType: number;
 }
 
 interface OcrOption {
@@ -23,7 +23,7 @@ interface OcrOption {
   provider: string;
   label: string;
   current: boolean;
-  source_type: number;
+  sourceType: number;
 }
 
 interface DownloadProgress {
@@ -43,10 +43,10 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   const load = useCallback(async () => {
     try {
       const [resp, dl] = await Promise.all([
-        invoke<{ ocr_models: OcrOption[] }>("get_config"),
+        invoke<{ ocrModels: OcrOption[] }>("get_config"),
         invoke<DownloadableModel[]>("list_downloadable_models", { domain: "ocr" }),
       ]);
-      setOcrModels(resp.ocr_models ?? []);
+      setOcrModels(resp.ocrModels ?? []);
       setDownloadable(dl);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
@@ -80,9 +80,9 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  // Task 2 后：currentLabel 仍从 get_config 的 ocr_models（带 current 标记）取。
+  // Task 2 后：currentLabel 仍从 get_config 的 ocrModels（带 current 标记）取。
   const currentLabel = ocrModels.find((m) => m.current)?.label ?? "";
-  const readyCount = downloadable.filter((m) => m.is_available).length;
+  const readyCount = downloadable.filter((m) => m.isAvailable).length;
 
   // Task 2 后：统一走 switch_active_model(domain, id)。
   const onActivate = async (id: number) => {
@@ -121,11 +121,11 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
     invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
-  // Task 2 后：is_ready 用 is_available；is_current 用 is_enabled（激活）。
+  // Task 2 后：isReady 用 isAvailable；isCurrent 用 isEnabled（激活）。
   const rows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, source_type: m.source_type, repo: m.repo,
+    description: m.description, isReady: m.isAvailable,
+    isCurrent: m.isEnabled, sourceType: m.sourceType, repo: m.repo,
     cloudId: m.id,
   }));
 
