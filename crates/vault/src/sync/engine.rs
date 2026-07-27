@@ -883,40 +883,20 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         }
     }
 
-    // === 阶段 B：应用 cipher / folder / meta ===
+    // === 阶段 B：应用 folder / cipher / meta ===
+    // ⚠️ 顺序修复（2026-07-27 FK constraint failed）：先 folder（被引用方）再 cipher
+    // （引用方），避免 cipher 的 folder_id 引用尚未插入的 folder → FOREIGN KEY constraint failed。
+    // 之前是 cipher 先 folder 后——如果 cipher 有非 null folder_id 就触发 FK。
     let mut count = 0usize;
     let mut skipped = 0usize;
 
-    // cipher：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
-    for (uuid, entry) in &remote_outline.ciphers {
-        let needs_update = !db_cipher_md5.contains_key(uuid.as_str())
-            || cipher_md5_mismatch(uuid, &entry.md5, &db_cipher_md5);
-        if needs_update {
-            match store::read_cipher_file(uuid) {
-                Ok(cipher_file) => {
-                    let row = cipher_file.to_vault_cipher();
-                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
-                    let input = build_cipher_input_from_file(&row);
-                    upsert_cipher(&input)?;
-                    count += 1;
-                }
-                Err(e) => {
-                    // #10：损坏文件不再静默吞——记日志 + 累计 skipped
-                    log::warn!("[sync] cipher {} 文件读取失败，已跳过：{}", uuid, e);
-                    skipped += 1;
-                }
-            }
-        }
-    }
-
-    // folder：与 cipher 对称（#5 修复——已有 folder 也比对 md5，捕获 rename）
+    // folder 先：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
     for (uuid, entry) in &remote_outline.folders {
         let needs_update = !db_folder_md5.contains_key(uuid.as_str())
             || folder_md5_mismatch(uuid, &entry.md5, &db_folder_md5);
         if needs_update {
             match store::read_folder_file(uuid) {
                 Ok(folder_file) => {
-                    // #6 修复：用文件实际的 sort_order，不再硬编码 0
                     let md5 = crate::sync::fingerprint::folder_md5_from_fields(
                         &folder_file.id,
                         &folder_file.encrypted_name,
@@ -932,6 +912,28 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
                 }
                 Err(e) => {
                     log::warn!("[sync] folder {} 文件读取失败，已跳过：{}", uuid, e);
+                    skipped += 1;
+                }
+            }
+        }
+    }
+
+    // cipher 后：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
+    for (uuid, entry) in &remote_outline.ciphers {
+        let needs_update = !db_cipher_md5.contains_key(uuid.as_str())
+            || cipher_md5_mismatch(uuid, &entry.md5, &db_cipher_md5);
+        if needs_update {
+            match store::read_cipher_file(uuid) {
+                Ok(cipher_file) => {
+                    let row = cipher_file.to_vault_cipher();
+                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
+                    let input = build_cipher_input_from_file(&row);
+                    upsert_cipher(&input)?;
+                    count += 1;
+                }
+                Err(e) => {
+                    // #10：损坏文件不再静默吞——记日志 + 累计 skipped
+                    log::warn!("[sync] cipher {} 文件读取失败，已跳过：{}", uuid, e);
                     skipped += 1;
                 }
             }
@@ -2261,39 +2263,44 @@ mod tests {
 
     /// 回归守护（2026-07-27 sync 覆盖 bug 系列）：
     /// 完整模拟用户场景——.sync 有数据 + DB 清空 → sync 应恢复数据到 DB，不丢 .sync 文件。
+    /// 同时验证 pull 顺序（folder 先 cipher 后，避免 FK constraint failed）。
     ///
-    /// 这个测试覆盖 3 个 bug 修复点的协同：
+    /// 覆盖 4 个 bug 修复点的协同：
     /// 1. push 不删 cipher 文件（incremental_export db_all_empty 保护）
     /// 2. push 不写空 outline（incremental_export 返回旧 outline）
     /// 3. pull 能从 .sync 拉回数据（pull_from_files md5 比对）
+    /// 4. pull 先 folder 后 cipher（避免 FK constraint failed）
     #[test]
     fn sync_recovers_data_when_db_emptied() {
         let _s = test_lock();
         let g = IntegrationGuard::new();
 
-        // 阶段 1：DB 有 2 个 cipher + 1 个 folder，push 到 .sync
+        // 阶段 1：DB 有 2 个 cipher（c1 有 folder_id）+ 1 个 folder，push 到 .sync
+        let folder_id = "ccc33333-3333-4333-8333-333333333333";
+        db::insert_vault_folder(folder_id, "v1:enc-folder1", "md5-f1").expect("insert f1");
         let c1 = VaultCipherInput {
             id: "aaa11111-1111-4111-8111-111111111111".to_string(),
-            folder_id: None, favorite: false, atype: 1,
+            folder_id: Some(folder_id.to_string()), // ⚠️ 引用 folder——测 FK 顺序
+            favorite: false, atype: 1,
             name: "v1:enc-site1".into(), notes: None, data: "v1:enc-data1".into(),
             fields: None, password_history: None, reprompt: 0,
             deleted_at: None, sync_md5: None,
         };
         let c2 = VaultCipherInput {
             id: "bbb22222-2222-4222-8222-222222222222".to_string(),
-            folder_id: None, favorite: false, atype: 1,
+            folder_id: None,
+            favorite: false, atype: 1,
             name: "v1:enc-site2".into(), notes: None, data: "v1:enc-data2".into(),
             fields: None, password_history: None, reprompt: 0,
             deleted_at: None, sync_md5: None,
         };
         db::insert_vault_cipher(&c1).expect("insert c1");
         db::insert_vault_cipher(&c2).expect("insert c2");
-        db::insert_vault_folder("ccc33333-3333-4333-8333-333333333333", "v1:enc-folder1", "md5-f1").expect("insert f1");
 
         let pushed1 = push_to_files().expect("push 1");
         assert!(pushed1 >= 3, "首次 push 应写至少 3 个文件（2 cipher + 1 folder），实际 {}", pushed1);
 
-        // 验证 .sync 有数据
+        // 验证 .sync outline 有数据
         let outline1 = store::read_outline_file().expect("outline 1");
         assert_eq!(outline1.ciphers.len(), 2, ".sync outline 应有 2 cipher");
         assert_eq!(outline1.folders.len(), 1, ".sync outline 应有 1 folder");
@@ -2311,12 +2318,12 @@ mod tests {
         let pushed2 = push_to_files().expect("push 2");
         assert_eq!(pushed2, 0, "DB 空 + .sync 有数据 → 不应删/写任何文件");
 
-        // .sync outline 应仍完整（不被空 DB 覆盖）
         let outline2 = store::read_outline_file().expect("outline 2");
         assert_eq!(outline2.ciphers.len(), 2, "保护后 outline 仍应有 2 cipher");
         assert_eq!(outline2.folders.len(), 1, "保护后 outline 仍应有 1 folder");
 
-        // 阶段 4：pull（DB 空 + .sync 有数据）——应恢复数据到 DB
+        // 阶段 4：pull（DB 空 + .sync 有数据）——应恢复数据，不触发 FK
+        // c1 有 folder_id=folder_id，folder 必须先于 cipher 写入（否则 FK failed）
         let (pulled, skipped) = pull_from_files().expect("pull");
         assert_eq!(pulled, 3, "应从 .sync 拉回 3 条（2 cipher + 1 folder），实际 {}", pulled);
         assert_eq!(skipped, 0, "无跳过");
@@ -2329,6 +2336,9 @@ mod tests {
         let ids: Vec<&str> = db_ciphers_after.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"aaa11111-1111-4111-8111-111111111111"), "c1 应恢复");
         assert!(ids.contains(&"bbb22222-2222-4222-8222-222222222222"), "c2 应恢复");
+        // c1 的 folder_id 应正确恢复
+        let c1_after = db_ciphers_after.iter().find(|c| c.id == "aaa11111-1111-4111-8111-111111111111").expect("c1");
+        assert_eq!(c1_after.folder_id.as_deref(), Some(folder_id), "c1 folder_id 应恢复");
 
         let _ = g;
     }
