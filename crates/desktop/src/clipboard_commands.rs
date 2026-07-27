@@ -630,10 +630,10 @@ pub async fn scan_qrcode_image(
     .map_err(|e| e.to_string())?
     .ok_or("图片数据不存在")?;
 
-    // WebP 解码 + quircs 识别：CPU 密集，移入 spawn_blocking 隔离 Tokio worker。
+    // 图片解码（自动检测格式：JPEG/WebP/PNG）+ quircs 识别：CPU 密集，移入 spawn_blocking。
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
-        let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
-            .map_err(|e| format!("解码 WebP 失败: {}", e))?;
+        let img = ::image::load_from_memory(&webp_blob)
+            .map_err(|e| format!("解码图片失败: {}", e))?;
         octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
     })
     .await
