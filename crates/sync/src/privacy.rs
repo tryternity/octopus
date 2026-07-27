@@ -36,8 +36,16 @@ pub enum PrivacyVerdict {
     Public,
     /// 确认私有库（Phase 1 不会返——未认证 API 无法确认私有）。
     Private,
-    /// 歧义——可能是私有 / 不存在 / 限流。**放行 + UI 提示**。
+    /// 歧义——可能是私有 / 不存在。**放行 + UI 提示**。
+    ///
+    /// 注意：限流（403）不再归入 Ambiguous——见 [`PrivacyVerdict::RateLimited`]。
     Ambiguous(String),
+    /// API 限流（403）——**硬阻断**（S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 修复，2026-07-27）。
+    ///
+    /// 限流时无法确认仓库可见性——若放行，用户误配的 public repo 会被 push 密文
+    /// 导致不可逆泄漏。限流是临时的（用户重试即可恢复），用「不可逆密钥泄漏」换取
+    /// 「用户少等几分钟」是错误的代价权衡。硬阻断让用户重试或换用 SSH URL。
+    RateLimited(String),
     /// SSH URL——无法自动检测。**放行 + UI 强提示**。
     SshUnverifiable,
     /// 网络错误——可能是 host 不通 / DNS 失败。**放行（用户可重试）**。
@@ -239,7 +247,8 @@ fn check_https(parsed: &GitRemoteUrl) -> Result<PrivacyVerdict, SyncError> {
 /// - 200 + `private: false` → `Public`
 /// - 200 + `private: true` → `Private`（Phase 1 未认证不会到这）
 /// - 404 → `Ambiguous`（私有 vs 不存在无法区分）
-/// - 403 + rate limit 头 → `Ambiguous`（限流）
+/// - 403 → `RateLimited`（任意 403 一并硬阻断——未认证查询的 403 实践中即 API 限流；
+///   即使成因非限流（如 abuse detection 触发的 403）也阻断，方向更保守。S-SYNC-PUBLIC-LEAK-ON-RATELIMIT）
 /// - 网络错误 → `NetworkError`
 /// - 其他状态码 → fallback ls-remote
 fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncError> {
@@ -261,8 +270,8 @@ fn check_via_github_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncE
         HttpResult::Status(404) => Ok(PrivacyVerdict::Ambiguous(
             "GitHub 返 404（可能是私有库，也可能不存在）".to_string(),
         )),
-        HttpResult::Status(403) => Ok(PrivacyVerdict::Ambiguous(
-            "GitHub API 限流（60/h/IP）——无法确认，请稍后再试或换用 SSH".to_string(),
+        HttpResult::Status(403) => Ok(PrivacyVerdict::RateLimited(
+            "GitHub API 限流（60/h/IP）——请稍后重试或换用 SSH URL".to_string(),
         )),
         HttpResult::Status(code) => {
             log::warn!("[sync] GitHub API 返 {} —— fallback 到 ls-remote", code);
@@ -302,8 +311,8 @@ fn check_via_gitee_api(owner: &str, repo: &str) -> Result<PrivacyVerdict, SyncEr
         HttpResult::Status(404) => Ok(PrivacyVerdict::Ambiguous(
             "Gitee 返 404（可能是私有库，也可能不存在）".to_string(),
         )),
-        HttpResult::Status(403) => Ok(PrivacyVerdict::Ambiguous(
-            "Gitee API 限流——无法确认，请稍后再试".to_string(),
+        HttpResult::Status(403) => Ok(PrivacyVerdict::RateLimited(
+            "Gitee API 限流——请稍后重试或换用 SSH URL".to_string(),
         )),
         HttpResult::Status(code) => {
             log::warn!("[sync] Gitee API 返 {} —— fallback 到 ls-remote", code);
@@ -725,5 +734,19 @@ mod tests {
     fn integration_verify_ssh_key_for_github() {
         let ok = crate::git::verify_ssh_key_for_host("github.com").unwrap();
         assert!(ok, "本机 SSH key 应能认证 GitHub");
+    }
+
+    /// S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 守护（2026-07-27，第七十七轮）：
+    /// RateLimited 是独立变体，不是 Ambiguous——确保 enum 变体存在 + 类型区分。
+    /// 限流硬阻断（非放行）依赖此类型区分。
+    #[test]
+    fn rate_limited_is_distinct_from_ambiguous() {
+        let r = PrivacyVerdict::RateLimited("test".to_string());
+        let a = PrivacyVerdict::Ambiguous("test".to_string());
+        // 两者是不同变体（matches! 互斥）
+        assert!(matches!(r, PrivacyVerdict::RateLimited(_)));
+        assert!(!matches!(r, PrivacyVerdict::Ambiguous(_)));
+        assert!(matches!(a, PrivacyVerdict::Ambiguous(_)));
+        assert!(!matches!(a, PrivacyVerdict::RateLimited(_)));
     }
 }

@@ -278,6 +278,14 @@ fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
             log::info!("[sync] 仓库可见性不明（放行）: {} —— {}", safe_url, reason);
             Ok(())
         }
+        // S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 修复（2026-07-27，第七十七轮）：
+        // 限流（403）硬阻断——用户误配的 public repo 在限流时若放行，push 会
+        // 把 vault 密文推到 public 导致不可逆泄漏。限流是临时的（用户重试即恢复），
+        // 用「不可逆密钥泄漏」换取「用户少等几分钟」是错误的代价权衡。
+        PrivacyVerdict::RateLimited(reason) => {
+            log::warn!("[sync] API 限流，硬阻断（防 public 漏检）: {} —— {}", safe_url, reason);
+            Err(SyncError::RateLimited(reason))
+        }
         PrivacyVerdict::SshUnverifiable => {
             log::info!("[sync] SSH URL 无法自动检测（放行，由用户保证私有）: {}", safe_url);
             Ok(())
