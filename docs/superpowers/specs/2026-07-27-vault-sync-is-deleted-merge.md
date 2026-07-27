@@ -47,18 +47,19 @@
 ### 1.1 vault_ciphers
 
 ```sql
--- 新增列
+-- 新增列 + 数据迁移 + 删除旧列
 ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
-
--- 数据迁移（deleted_at 有值 → is_deleted=1）
 UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL;
+
+-- SQLite 3.35+ 支持 DROP COLUMN（macOS 系统 SQLite 版本足够）
+ALTER TABLE vault_ciphers DROP COLUMN deleted_at;
 
 -- 索引更新
 DROP INDEX IF EXISTS idx_vault_ciphers_deleted;
 CREATE INDEX idx_vault_ciphers_active ON vault_ciphers(favorite) WHERE is_deleted = 0;
 ```
 
-**`deleted_at` 列保留**（migration 只加 `is_deleted`，不删 `deleted_at`）。代码只用 `is_deleted`，`deleted_at` 留作历史数据兼容（读忽略，写不再更新）。
+**直接删 `deleted_at` 列**（用户确认可清库，不需要向后兼容）。代码只用 `is_deleted`。
 
 ### 1.2 vault_folders
 
@@ -106,7 +107,7 @@ cipher 同步文件格式的 `plaintext_meta`：
 "plaintext_meta": { "is_deleted": false, ... }
 ```
 
-**向后兼容**：读取旧文件时 `deleted_at` 有值 → 视为 `is_deleted=true`。
+**不向后兼容旧文件**（用户确认可清库）。旧 cipher 文件的 `deleted_at` 字段读取时忽略——如果有旧 sync 文件，清库 + 重新建 vault 后重新 sync 即可。
 
 ### 2.3 sync fingerprint cipher_md5
 
@@ -259,6 +260,6 @@ isDeleted: boolean;
 | 风险 | 缓解 |
 |---|---|
 | 秒级 updated_at 冲突 | 当前机器赢（DB 优先）；P1 升毫秒 |
-| migration 数据丢失 | deleted_at 列保留不删；is_deleted 从 deleted_at 迁移 |
+| migration 数据丢失 | 用户已确认可清库；migration 先迁移 deleted_at → is_deleted 再 DROP |
 | merge 逻辑复杂导致回归 | 完整 TDD + 回归测试（5 个旧 sync bug 的测试仍通过） |
-| cipher 文件格式向后兼容 | 旧文件 `deleted_at` → `is_deleted` 映射 |
+| cipher 文件格式不兼容 | 不向后兼容旧文件（用户确认）；清库后重新 sync |
