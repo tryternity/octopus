@@ -297,7 +297,17 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
         }
     }
 
-    // 3. 写新 outline（vault_version 只在 changed > 0 时 +1）
+    // 3. 写新 outline
+    // ⚠️ 保护延续（2026-07-27，与 vault store.rs 同款）：db_empty && sync_has_data 时，
+    // 不写空 outline 覆盖旧 outline——否则 pull 读空 outline 拉到 0 条。
+    if db_empty && sync_has_data {
+        log::warn!(
+            "[sync] DB 无热词——保留旧 outline 不覆盖（sets={}），热词文件也未删",
+            old_outline.ciphers.len()
+        );
+        return Ok((old_outline, 0));
+    }
+    // vault_version 只在 changed > 0 时 +1
     let new_version = if changed > 0 {
         old_outline.vault_version.wrapping_add(1)
     } else {

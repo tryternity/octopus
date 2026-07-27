@@ -663,6 +663,17 @@ pub fn incremental_export(
     }
 
     // 5. 写新 outline
+    // ⚠️ 保护延续（2026-07-27）：db_all_empty && sync_has_data 时，不写空 outline 覆盖
+    // 旧 outline——否则 pull 阶段读空 outline 拉到 0 条，数据虽在文件但进不了 DB。
+    // 直接返回旧 outline（保数据完整，等 DB 有数据后下次 sync 正常写）。
+    if db_all_empty && sync_has_data {
+        log::warn!(
+            "[sync] DB 完全空——保留旧 outline 不覆盖（ciphers={}, folders={}），cipher/folder 文件也未删",
+            old_outline.ciphers.len(),
+            old_outline.folders.len()
+        );
+        return Ok((old_outline, 0));
+    }
     // vault_version 只在 changed > 0 时 +1（用户反馈：无变化 sync 不应递增版本）
     let new_vault_version = if changed > 0 {
         old_outline.vault_version.wrapping_add(1)
