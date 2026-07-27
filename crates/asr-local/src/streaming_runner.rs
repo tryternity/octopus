@@ -275,10 +275,11 @@ impl StreamingRunner {
         events
     }
 
-    /// 收尾：engine.finish（追加句号 + 简繁归一）→ `Final`。
+    /// 收尾：engine.finish（追加句号 + 简繁归一）→ ITN 数字归一化 → `Final`。
+    /// Partial/Committed 不过 ITN（数字未说完可能误转），仅 Final 过。
     pub fn finish(&mut self) -> TranscriptEvent {
         match self.engine.finish() {
-            Ok(text) => TranscriptEvent::Final(text),
+            Ok(text) => TranscriptEvent::Final(crate::itn::normalize(&text)),
             Err(e) => TranscriptEvent::Error(e.to_string()),
         }
     }
