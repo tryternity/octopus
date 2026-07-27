@@ -616,7 +616,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_microphone_device', '',                  '麦克风设备名（空=系统默认）'),
     ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
     ('record_default_source_type', 'display',         '默认录制源类型'),
-    ('record_output_dir',        'recordings',        '输出目录（相对 ~/.octopus/）'),
+    ('record_output_dir',        '',                  '录屏保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/.octopus/recordings/）'),
     ('record_history_view',      'grid',              '历史列表默认视图（grid/list）');
 ```
 
@@ -2842,14 +2842,15 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 
 ### Task 10 后续：保存目录可配置（2026-07-27）
 
-用户需求：录屏保存目录可配置（任意绝对路径），录屏管理页面列表前加设置入口。
+用户需求：录屏保存目录可配置（任意绝对路径），在录屏配置浮窗直接设置。
 
 实现：
 - `paths.rs::recordings_dir()` 读 DB `record_output_dir`（绝对路径，支持 `~` 展开；空=默认 `~/.octopus/recordings/`）
 - DB `file_path` 改存**绝对路径**（不再相对 `~/.octopus/`）；`resolve_recording_path` 对绝对路径原样返回（防御性 fallback join）
 - `db.sql` seed `record_output_dir` 默认值从 `'recordings'` 改为 `''`（空=默认）
-- RecordingPanel 标题区加目录设置行：`FolderOpen` 图标 + 当前路径（truncate）+「更改」按钮（`openDialog({ directory: true })` → `set_config` → toast）
-- i18n 加 `outputDir` / `changeDir` / `dirChanged`（zh/en）
+- **RecordConfig 浮窗**（`Cmd+Shift+R` 弹出）音频开关下方加目录设置行：`FolderOpen` 图标 + 当前路径（truncate）+ 点击触发 `openDialog({ directory: true })` → `set_config`（commit `fde9d75d`，原方案放 RecordingPanel 管理页，后按用户反馈挪到浮窗）
+- **关键修复**（commit `903eab15`）：`set_config` 命令拦截 `record_*` key 直接写 DB（不走 `apply_config_value`，后者只处理 `AppConfig` struct 字段，`record_*` 不在 struct 里会报「未知配置字段」）
+- i18n `recordConfig.outputDir`（zh：保存目录 / en：Save to）
 - 决策：不做 recordings/ 自动清理（用户手动管理）
 
 ---
