@@ -19,6 +19,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import type { Annotation, Tool } from "@/lib/annotation";
+import { hitTestAnnotationPrecise } from "@/lib/annotation";
 
 export interface AnnotationState {
   // ── 工具 ──────────────────────────────────
@@ -53,6 +54,9 @@ export interface AnnotationState {
   undoAnnotation: () => void;
   redoAnnotation: () => void;
   redoAvailable: boolean;
+  eraseAnnotationAt: (x: number, y: number) => void;
+  clearAllAnnotations: () => void;
+  deleteSelectedAnnotation: () => void;
   numberCounter: number;
   numberCounterRef: React.MutableRefObject<number>;
   setNumberCounter: React.Dispatch<React.SetStateAction<number>>;
@@ -157,6 +161,55 @@ export function useAnnotationState(): AnnotationState {
     }
   };
 
+  // ── eraser / clear / delete ─────────────────
+  // eraser：从顶层（数组末尾）往下逐个 hitTest，命中第一个 → 推入 redo 并移除。
+  // hitTestAnnotationPrecise 实际签名为 (mx,my,anns[])=>number|null（返回索引），
+  // 这里逐个传入单元素数组拿到 i=0 命中结果，等价于 task 描述里的「单 ann 布尔判定」。
+  const eraseAnnotationAt = (x: number, y: number) => {
+    setAnnotations((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        const hitIdx = hitTestAnnotationPrecise(x, y, [prev[i]]);
+        if (hitIdx !== null) {
+          redoStackRef.current.push(prev[i]);
+          setRedoAvailable(true);
+          return prev.filter((_, j) => j !== i);
+        }
+      }
+      return prev;
+    });
+    setSelectedAnn(null);
+  };
+
+  // clearAll：清空全部标注，全部推入 redo，重置 selectedAnn 与 numberCounter。
+  const clearAllAnnotations = () => {
+    setAnnotations((prev) => {
+      if (prev.length === 0) return prev;
+      // 倒序入栈，保持 redo 时的相对顺序与撤销一致
+      for (let i = prev.length - 1; i >= 0; i--) {
+        redoStackRef.current.push(prev[i]);
+      }
+      setRedoAvailable(true);
+      return [];
+    });
+    setSelectedAnn(null);
+    setNumberCounter(1);
+  };
+
+  // deleteSelected：删除当前选中标注索引，推入 redo，清空 selectedAnn。
+  // 用 setAnnotations 的函数式更新避免 selectedAnn 闭包陈旧；同时 setSelectedAnn(null)。
+  const deleteSelectedAnnotation = () => {
+    setSelectedAnn((sel) => {
+      if (sel === null) return null;
+      setAnnotations((prev) => {
+        if (sel < 0 || sel >= prev.length) return prev;
+        redoStackRef.current.push(prev[sel]);
+        setRedoAvailable(true);
+        return prev.filter((_, j) => j !== sel);
+      });
+      return null;
+    });
+  };
+
   return {
     tool,
     setTool,
@@ -184,6 +237,9 @@ export function useAnnotationState(): AnnotationState {
     undoAnnotation,
     redoAnnotation,
     redoAvailable,
+    eraseAnnotationAt,
+    clearAllAnnotations,
+    deleteSelectedAnnotation,
     numberCounter,
     numberCounterRef,
     setNumberCounter,
