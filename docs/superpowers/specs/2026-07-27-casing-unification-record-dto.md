@@ -1,6 +1,6 @@
 # casing 统一 Task 2: record 命令 DTO — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
+> **Status: ✅ 已实现**（2026-07-27，分支 `feat/record-followup`）。
 >
 > **本 spec 范围**：给 `RecordStatus` + `StartedInfo` 加 `#[serde(rename_all = "camelCase")]`，并同步前端消费点。全工程 casing 统一 roadmap 第 2 个 task（Task 1 已完成 RecordTaskEvent enum）。
 >
@@ -12,9 +12,17 @@
 
 ## 实现注记（Implementation Notes）
 
-实施过程中与原 spec 的偏差回写至此处。
+### 2026-07-27 实施完成
 
-<!-- 待填 -->
+| 检查项 | 结果 |
+|---|---|
+| A1 cargo build（desktop + record） | 0 error 0 warning |
+| A2 cargo test（desktop + record） | desktop 422 + record 28 全过，0 failed |
+| A3 pnpm tsc --noEmit | 0 error |
+| A4 前端 elapsed_secs 残留 | 0（RecordControl + RecordAnnotation 各 2 处全改） |
+| A5 后端 struct 有 rename_all | RecordStatus + StartedInfo 各 1 个 |
+
+**偏差**：无。spec 描述的 6 处改动（后端 2 struct + 前端 4 处）全部精确执行。
 
 ---
 

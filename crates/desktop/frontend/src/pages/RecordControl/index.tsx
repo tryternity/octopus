@@ -48,12 +48,12 @@ export default function RecordControl() {
   // mount 时拿真实状态 + 已录秒数
   useEffect(() => {
     let cancelled = false;
-    invoke<{ state: string; elapsed_secs: number }>("get_record_status")
+    invoke<{ state: string; elapsedSecs: number }>("get_record_status")
       .then((status) => {
         if (cancelled) return;
         const s = status.state;
         setCurrentState(s === "paused" ? "paused" : s === "recording" ? "recording" : "idle");
-        setDisplayDuration(status.elapsed_secs);
+        setDisplayDuration(status.elapsedSecs);
         setSynced(true);
       })
       .catch(() => {

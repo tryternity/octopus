@@ -834,8 +834,9 @@ pub async fn check_ffmpeg() -> bool {
 ///
 /// 用途：RecordControl 浮窗 mount 时初始化——浮窗创建晚于 recording-started 事件，
 /// 收不到事件，靠此命令拿当前 state + elapsed_secs 启动计时器。
-/// 返回 {state: "idle"/"recording"/"paused"/..., elapsed_secs: u64}。
+/// 返回 {state: "idle"/"recording"/"paused"/..., elapsedSecs: u64}。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecordStatus {
     pub state: String,
     pub elapsed_secs: u64,

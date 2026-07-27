@@ -85,11 +85,11 @@ export default function RecordAnnotation() {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    invoke<{ state: string; elapsed_secs: number }>("get_record_status")
+    invoke<{ state: string; elapsedSecs: number }>("get_record_status")
       .then((status) => {
         if (cancelled) return;
         setRecState(status.state === "paused" ? "paused" : status.state === "recording" ? "recording" : "idle");
-        setElapsed(status.elapsed_secs);
+        setElapsed(status.elapsedSecs);
       })
       .catch(() => {});
     return () => { cancelled = true; };

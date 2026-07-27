@@ -25,6 +25,7 @@ pub enum SessionState {
 }
 
 #[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct StartedInfo {
     pub width: u32,
     pub height: u32,
