@@ -15,7 +15,9 @@
 | 荧光笔 highlight | ✅ | ❌ | ✅ |
 | 橡皮擦 eraser | ✅ | ✅ | ✅ |
 | 清空标注 clearAll | ✅ | ✅ | ✅ |
-| 删除选定 deleteSelected | ✅ | ✅ | ✅ |
+| ~~删除选定 deleteSelected~~ | ~~已删除~~ | ~~已删除~~ | ~~已删除~~ |
+
+> **2026-07-27 调整**：deleteSelected 删除——橡皮擦划过即删已够用，选定删除冗余。useAnnotationState 的 `deleteSelectedAnnotation` action 保留（无害，后续可清理）。
 
 ## 2. 现状
 
@@ -62,17 +64,15 @@ case "highlight":
 
 ### 3.2 橡皮擦 eraser
 
-**交互**：划过即删。tool 为 `"eraser"` 时，mousemove 对每个 annotation 做 hitTest（点位 → 标注命中），命中即删除。可连续划过多删。
+**交互**：划过即删。tool 为 `"eraser"` 时，mousedown + mousemove（按住左键拖动）对每个 annotation 做 hitTest（点位 → 标注命中），命中即删除。可连续划过多删。
+
+**工具栏行为**：eraser 是**独立按钮**（不在 tools 数组里），不弹 popover（无需选颜色/粗细）。点击切换到 eraser 模式，再点切回 select。
 
 **Tool 类型**：`Tool` union 加 `"eraser"`（操作模式，不是标注类型——不产生 Annotation）。
 
-**实现**（业务侧 mousemove handler）：
-- 截图/录屏（Canvas）：mousedown 进入 eraser 模式 → mousemove 时遍历 `annotationsRef.current`，调 `hitTestAnnotationPrecise(x, y, ann)` 命中则 `splice` 删除 → 触发重绘
-- ImagePreview（SVG）：同逻辑，对 `niions` 数组操作
+**实现**（useAnnotationState 的 `eraseAnnotationAt(x, y)` action）：遍历 annotations 倒序 hitTest，命中即 splice + 推入 redoStack。
 
 **删除时推入 redoStack**：橡皮擦删除的标注推入 `redoStackRef`，支持 undo 恢复。
-
-**光标**：CSS `cursor: crosshair` 或自定义橡皮擦图标。
 
 ### 3.3 清空标注 clearAll
 
@@ -94,53 +94,29 @@ const clearAllAnnotations = () => {
 
 ImagePreview 独立实现等价逻辑。
 
-### 3.4 删除选定 deleteSelected
+### ~~3.4 删除选定 deleteSelected~~（已删除 2026-07-27）
 
-**交互**：选中一个标注后（`selectedAnn != null`），点「删除选定」按钮删除它。
-
-**实现**（useAnnotationState 加 action）：
-```typescript
-const deleteSelectedAnnotation = () => {
-  if (selectedAnn === null) return;
-  setAnnotations((prev) => {
-    const removed = prev[selectedAnn!];
-    if (removed) {
-      redoStackRef.current.push(removed);
-      setRedoAvailable(true);
-    }
-    return prev.filter((_, i) => i !== selectedAnn);
-  });
-  setSelectedAnn(null);
-};
-```
-
-ImagePreview 独立实现等价逻辑。
+> 橡皮擦划过即删已够用，选定删除冗余。按钮从 AnnotationToolbar + ImagePreview Toolbar 移除。`deleteSelectedAnnotation` action 保留在 useAnnotationState（无害，后续可清理）。
 
 ## 4. 工具栏按钮排列
 
 ### AnnotationToolbar（截图 + 录屏共享）
 
-现有：`select | rect oval diamond line arrow pen text number blur | undo redo | 业务按钮`
-
-改为（截图，`showHighlight=true`）：
+截图（`showHighlight=true`）：
 ```
-select | rect oval diamond line arrow pen highlight text number blur | divider | undo redo | divider | eraser deleteSelected clearAll | divider | 业务按钮
+select | rect oval diamond line arrow pen highlight text number blur eraser | divider | undo redo | divider | clearAll | divider | 业务按钮
 ```
 
-改为（录屏，`showHighlight=false`）：
+录屏（`showHighlight=false`）：
 ```
-select | rect oval diamond line arrow pen text number blur | divider | undo redo | divider | eraser deleteSelected clearAll | divider | 业务按钮
+select | rect oval diamond line arrow pen text number blur eraser | divider | undo redo | divider | clearAll | divider | 业务按钮
 ```
+
+**eraser 是独立按钮**（不在 tools 数组里），不弹 popover（无需颜色/粗细）。点击切换 eraser 模式，再点切回 select。
 
 **新增 prop**：`showHighlight?: boolean`（默认 true，录屏传 false）。
 
-**按钮图标**（复用现有 SVG 图标风格）：
-- highlight: `icons/highlighter.svg`（需新增；或用 lucide Highlighter 图标）
-- eraser: `icons/eraser.svg`（需新增；或用 lucide Eraser 图标）
-- deleteSelected: `icons/trash.svg`（或 lucide Trash2）
-- clearAll: `icons/clear.svg`（或 lucide Eraser 全量感）
-
-**deleteSelected / clearAll 禁用态**：无选中 / 无标注时 opacity 0.3 + cursor default。
+**clearAll 禁用态**：无标注时 opacity 0.3。
 
 ### ImagePreview Toolbar
 
@@ -173,6 +149,7 @@ select | rect oval diamond line arrow pen text number blur | divider | undo redo
 
 ## 7. 不做
 
-- **橡皮擦单击删单个**（与 deleteSelected 重叠）
+- ~~**橡皮擦单击删单个**（与 deleteSelected 重叠）~~ → deleteSelected 已删，橡皮擦划过即删是唯一删除路径
 - **清空确认弹窗**（undo 是更好的安全网）
 - **荧光笔矩形区域高亮**（用户选择自由画笔式）
+- **deleteSelected 按钮**（2026-07-27 删除：橡皮擦够用，选定删除冗余）
