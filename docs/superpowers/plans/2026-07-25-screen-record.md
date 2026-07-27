@@ -2734,6 +2734,7 @@ git commit -m "feat(packaging): DMG 脚本集成 helper 编译 + 第三方许可
   - [x] **2026-07-26 新增**：GIF 按钮（场记板图标）默认可见 ✅ 用户验证
   - [x] **2026-07-26 新增**：录屏整个流程正常（验证 stderr reader 修复后 timeout 消失） ✅ 用户验证
   - [x] **2026-07-27 新增**：录屏音频可听到（双轨 + mic-track-1 方案） ✅ 用户验证——播放器默认放 track 1（麦克风），能听到说话声/音乐
+  - [x] **2026-07-27 新增**：保存目录可配置 + 持久化 ✅ 用户验证——RecordConfig 浮窗选目录 → 录屏文件存到新目录 → 重启后路径仍在
 - [x] `THIRD_PARTY_LICENSES.md` 完整（§7.1 已填正式条目，含 8 处修改声明 + 上游 commit SHA）
 - [x] `docs/architecture.md` 同步更新（录屏模块章节）—— 已加「## 屏幕录制（2026-07-25 起，MVP）」section + 项目结构加 record crate + 「### octopus-record」模块说明
 
