@@ -444,6 +444,38 @@ pub async fn ocr_screenshot(
     Ok(())
 }
 
+/// 截图二维码识别：前端传 Raw body PNG（与 ocr_screenshot 同协议）。
+/// spawn_blocking 内解码 PNG → qrcode::scan → 非空则 join("\n") 写剪贴板。
+/// 返回识别到的二维码内容列表（可能空）。与 ocr_screenshot 不同：不入库、不开编辑器，
+/// 仅识别 + 写剪贴板（截图窗由前端负责关）。
+#[tauri::command]
+pub async fn scan_qrcode_screenshot(
+    request: tauri::ipc::Request<'_>,
+    handle: State<'_, std::sync::Arc<ClipboardHandle>>,
+) -> Result<Vec<String>, String> {
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
+
+    // 解码 PNG（CPU 密集）+ rqrr 识别 + 写剪贴板：移入 spawn_blocking 隔离 Tokio worker
+    // （与 ocr_screenshot / confirm_screenshot_with_data 同范式）。
+    let handle_clone = handle.inner().clone();
+    let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let img = ::image::load_from_memory(&png_bytes)
+            .map_err(|e| format!("解码失败: {:?}", e))?;
+        let codes = octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())?;
+        if !codes.is_empty() {
+            let joined = codes.join("\n");
+            handle_clone.write_text(&joined).map_err(|e| e.to_string())?;
+        }
+        Ok(codes)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(codes)
+}
+
 /// ImagePreview mount 时拉取缓存（按 image_id 校验：匹配返回并清空，不匹配放回）。
 /// 治 emit("ocr-screenshot://result") 早于新窗 React mount 的竞态——截图 OCR 后
 /// 新窗 ImagePreview mount 时主动拉高亮遮罩（emit 已被丢）。截图 OCR 全局互斥，单槽即可。
