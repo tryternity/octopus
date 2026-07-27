@@ -904,11 +904,15 @@ screenshot:
     line: Line
     arrow: Arrow
     pen: Pen
+    highlight: Highlighter
     text: Text
     number: Number
     mosaic: Mosaic
+    eraser: Eraser
     undo: Undo
     redo: Redo
+    deleteSelected: Delete Selected
+    clearAll: Clear All
   scrollShot: Scroll Capture
   saveToFile: Save to File
   confirm: Confirm
