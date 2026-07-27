@@ -986,15 +986,19 @@ imagePreview:
     line: 直线
     arrow: 箭头
     pen: 画笔（自由曲线）
+    highlight: 荧光笔
     text: 文字
     number: 序号
     mosaic: 马赛克
+    eraser: 橡皮擦
   saveToFile: 保存为文件
   copyToClipboard: 复制到剪贴板
   ocr: OCR 识别
   ocrBusy: 前一个 OCR 还未完成，请稍后
   undo: 撤销 (Cmd/Ctrl+Z)
   redo: 重做 (Cmd/Ctrl+Shift+Z)
+  delete: 删除选中
+  clear: 清空全部
   zoomOut: 缩小
   zoomIn: 放大
   resetZoom: 重置为 100%

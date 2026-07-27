@@ -979,15 +979,19 @@ imagePreview:
     line: Line
     arrow: Arrow
     pen: Pen (free draw)
+    highlight: Highlight
     text: Text
     number: Number
     mosaic: Mosaic
+    eraser: Eraser
   saveToFile: Save to File
   copyToClipboard: Copy to Clipboard
   ocr: OCR Recognition
   ocrBusy: Previous OCR not finished, please wait
   undo: Undo (Cmd/Ctrl+Z)
   redo: Redo (Cmd/Ctrl+Shift+Z)
+  delete: Delete Selected
+  clear: Clear All
   zoomOut: Zoom Out
   zoomIn: Zoom In
   resetZoom: Reset to 100%

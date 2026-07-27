@@ -65,6 +65,8 @@ export default function Toolbar(props: {
   onSave: () => void; onCopy: () => void; onOcr: () => void;
   onUndo: () => void; canUndo: boolean;
   onRedo: () => void; canRedo: boolean;
+  onDeleteSelected: () => void; canDeleteSelected: boolean;
+  onClearAll: () => void; canClearAll: boolean;
   ocrCopied: boolean;
   ocrWarn: boolean;
   ocrMode: 'off' | 'overlay' | 'mask';
@@ -125,9 +127,11 @@ export default function Toolbar(props: {
     { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt={t("imagePreview.tool.line")} active={props.tool === "line"} />, title: t("imagePreview.tool.line") },
     { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt={t("imagePreview.tool.arrow")} active={props.tool === "arrow"} />, title: t("imagePreview.tool.arrow") },
     { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt={t("imagePreview.tool.pen")} active={props.tool === "pen"} />, title: t("imagePreview.tool.pen") },
+    { key: "highlight", icon: <SvgIcon src="icons/highlighter.svg" alt={t("imagePreview.tool.highlight")} active={props.tool === "highlight"} />, title: t("imagePreview.tool.highlight") },
     { key: "text", icon: <SvgIcon src="icons/text.svg" alt={t("imagePreview.tool.text")} active={props.tool === "text"} />, title: t("imagePreview.tool.text") },
     { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt={t("imagePreview.tool.number")} active={props.tool === "number"} />, title: t("imagePreview.tool.number") },
     { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt={t("imagePreview.tool.mosaic")} active={props.tool === "blur"} />, title: t("imagePreview.tool.mosaic") },
+    { key: "eraser", icon: <SvgIcon src="icons/eraser.svg" alt={t("imagePreview.tool.eraser")} active={props.tool === "eraser"} />, title: t("imagePreview.tool.eraser") },
   ];
 
   return (
@@ -176,6 +180,13 @@ export default function Toolbar(props: {
         </ToolButton>
         <ToolButton title={t("imagePreview.redo")} active={false} onClick={() => props.onRedo()}>
           <img src="icons/redo.svg" alt={t("imagePreview.redo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canRedo ? 1 : 0.3 }} />
+        </ToolButton>
+        {/* 删除选中 / 清空全部（对齐 AnnotationToolbar 末尾分组） */}
+        <ToolButton title={t("imagePreview.delete")} active={false} onClick={() => props.onDeleteSelected()}>
+          <img src="icons/trash.svg" alt={t("imagePreview.delete")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canDeleteSelected ? 1 : 0.3 }} />
+        </ToolButton>
+        <ToolButton title={t("imagePreview.clear")} active={false} onClick={() => props.onClearAll()}>
+          <img src="icons/clear.svg" alt={t("imagePreview.clear")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canClearAll ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}
