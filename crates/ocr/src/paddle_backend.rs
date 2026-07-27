@@ -76,6 +76,10 @@ impl OcrBackend for PaddleOcrBackend {
         false
     }
 
+    fn use_word_segmentation(&self) -> bool {
+        self.use_word_segmentation
+    }
+
     fn unload(&mut self) {
         // drop RapidOcr → 释放 ort session + mmap 权重
         self.inner = None;
