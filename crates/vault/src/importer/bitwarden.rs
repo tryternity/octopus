@@ -109,6 +109,7 @@ struct BitwardenUri {
 }
 
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportReport {
     pub total: usize,
     pub imported: usize,

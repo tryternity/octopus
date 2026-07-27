@@ -22,10 +22,10 @@ import { PasswordInput } from "@/components/ui/password-input";
  */
 
 interface SyncStatus {
-  git_available: boolean;
+  gitAvailable: boolean;
   initialized: boolean;
   remotes: [string, string][];
-  last_sync: string | null;
+  lastSync: string | null;
   last_commit_sha: string | null;
   /** 当前是否在后台同步——UI 据此显进度条（2026-07-21） */
   syncing: boolean;
@@ -262,7 +262,7 @@ export default function SyncPanel({
   // === 渲染 ===
 
   // git 不可用
-  if (status && !status.git_available) {
+  if (status && !status.gitAvailable) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-2 text-sm text-warning">
@@ -392,10 +392,10 @@ export default function SyncPanel({
           <span className="font-medium text-foreground">
             {t("settings.vault.sync.enabled")}
           </span>
-          {status.last_sync && (
+          {status.lastSync && (
             <span className="text-muted-foreground">
               · {t("settings.vault.sync.lastSync")}:{" "}
-              {status.last_sync.replace("T", " ").replace(/\+.*/, "")}
+              {status.lastSync.replace("T", " ").replace(/\+.*/, "")}
             </span>
           )}
           {status.last_auto_sync && (

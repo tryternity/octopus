@@ -89,6 +89,7 @@ pub fn try_sync_lock() -> Result<std::sync::MutexGuard<'static, bool>, SyncError
 
 /// 同步状态——UI 显示用。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
     /// git 是否可用
     pub git_available: bool,
@@ -622,6 +623,7 @@ fn upsert_folder_with_sort(
 
 /// 同步报告——sync_now 返回值，UI 显示「拉了 X 条，推了 Y 条」。
 #[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub pulled: usize,
     pub pushed: usize,

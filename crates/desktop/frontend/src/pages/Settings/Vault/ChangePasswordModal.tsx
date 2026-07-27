@@ -26,7 +26,7 @@ export interface ChangePasswordModalProps {
 
 interface PasswordStrength {
   score: number;
-  entropy_bits: number;
+  entropyBits: number;
 }
 
 export default function ChangePasswordModal({

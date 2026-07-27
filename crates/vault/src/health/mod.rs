@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::types::{Cipher, CipherData};
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthReport {
     pub weak_count: usize,
     pub weak_cipher_ids: Vec<String>,

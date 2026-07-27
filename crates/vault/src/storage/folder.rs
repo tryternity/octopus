@@ -17,6 +17,7 @@ use crate::crypto::DerivedKey;
 ///
 /// 2026-07-21 v44：id 从 i64 改 String（UUID 字符串）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderDto {
     pub id: String,
     /// 已解密的明文名称（DB 中存的是 `v1:` 前缀密文）。
