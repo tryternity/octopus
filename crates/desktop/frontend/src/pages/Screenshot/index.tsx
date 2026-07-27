@@ -332,6 +332,11 @@ export default function Screenshot() {
 
     // 标注工具激活时，在选区内绘制新标注
     if (annotation.tool !== "none" && sel && inSelection(mx, my)) {
+      // eraser：mousedown 即开始擦除（划过即删）
+      if (annotation.tool === "eraser") {
+        annotation.eraseAnnotationAt(mx, my);
+        return;
+      }
       if (annotation.tool === "text") {
         setTextDraft({ x: mx, y: my, val: "" });
         textDraftRef.current = { x: mx, y: my, val: "" };
@@ -378,6 +383,12 @@ export default function Screenshot() {
 
     // 滚动模式：后端每帧检查鼠标位置自动切换 cursor 穿透，前端无需处理
     if (mode === "scrolling") return;
+
+    // eraser：按住左键拖动时擦除（划过即删）
+    if (annotation.tool === "eraser" && (e.buttons & 1)) {
+      annotation.eraseAnnotationAt(mx, my);
+      return;
+    }
 
     // 标注绘制中
     if (drawingRef.current && annotation.tool !== "none") {

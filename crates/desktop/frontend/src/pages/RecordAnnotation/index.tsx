@@ -242,6 +242,11 @@ export default function RecordAnnotation() {
 
     // 标注工具激活：开始绘制
     const tk = toolRef.current;
+    // eraser：mousedown 即开始擦除（划过即删）
+    if (tk === "eraser") {
+      annotation.eraseAnnotationAt(mx, my);
+      return;
+    }
     if (tk === "text") {
       setTextDraft({ x: mx, y: my, val: "" });
       textDraftRef.current = { x: mx, y: my, val: "" };
@@ -270,6 +275,12 @@ export default function RecordAnnotation() {
   function onMouseMove(e: React.MouseEvent) {
     const mx = e.clientX - canvasRectRef.current.ox;
     const my = e.clientY - canvasRectRef.current.oy;
+
+    // eraser：按住左键拖动时擦除（划过即删）
+    if (toolRef.current === "eraser" && (e.buttons & 1)) {
+      annotation.eraseAnnotationAt(mx, my);
+      return;
+    }
 
     // 标注拖动中
     if (annMoveStartRef.current) {
@@ -495,6 +506,7 @@ export default function RecordAnnotation() {
         left={toolbarCenterX}
         popoverY={popoverY}
         popoverX={popoverLeft}
+        showHighlight={false}
         onToolChange={(target) => {
           // 选标注工具 → 不穿透（画标注）；选 "none"（鼠标）→ 穿透（操作下层应用）
           invoke("set_annotation_passthrough", { passthrough: target === "none" }).catch(() => {});
