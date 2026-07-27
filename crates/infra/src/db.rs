@@ -485,25 +485,60 @@ fn migrate_v50_to_v51(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v51→v52：recordings 表加 `audio_tracks TEXT NOT NULL DEFAULT '[]'` 列
+/// （JSON 序列化的 `AudioTrack[]`）。
+///
+/// 用于「双轨保留 + 录后合并」方案（spec
+/// 2026-07-27-screen-record-audio-post-merge.md）：录制时保留各轨元数据，
+/// 后续合并由 ffmpeg amix 处理，DB 这里只存元数据 JSON。
+///
+/// 幂等：PRAGMA table_info 检查列不存在才 ALTER；表不存在跳过（全新库走
+/// init_schema 末尾的 INIT_SQL，直接建出含本列的 recordings）。
+fn migrate_v51_to_v52(conn: &Connection) -> Result<()> {
+    let has_audio_tracks = conn
+        .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name = 'audio_tracks'")?
+        .exists([])?;
+    if !has_audio_tracks {
+        let has_table = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
+            .exists([])?;
+        if has_table {
+            conn.execute(
+                "ALTER TABLE recordings ADD COLUMN audio_tracks TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+            log::info!("schema v52: recordings 补 audio_tracks 列");
+        }
+    }
+    conn.execute("PRAGMA user_version = 52", [])?;
+    log::info!("schema upgraded to v52 (recordings.audio_tracks)");
+    Ok(())
+}
+
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 51 {
-        // v51+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
+    if v >= 52 {
+        // v52+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
         // migrate_v50_to_v51 曾漏跑 db.sql 致 version 升到 51 但表没建（运行时
-        // `no such table: recordings`，2026-07-25 实测）。这里自愈：若 v51 但表缺失，
-        // 重跑 INIT_SQL 补建（IF NOT EXISTS 幂等，对正常 v51 库无副作用）。
+        // `no such table: recordings`，2026-07-25 实测）。这里自愈：若 v52 但表缺失，
+        // 重跑 INIT_SQL 补建（IF NOT EXISTS 幂等，对正常 v52 库无副作用）。
         let has_recordings = conn
             .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
             .exists([])?;
         if !has_recordings {
-            log::warn!("schema v51+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
+            log::warn!("schema v52+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
             conn.execute_batch(INIT_SQL)
                 .context("self-heal: execute_batch INIT_SQL for missing recordings table")?;
             log::info!("recordings 表自愈完成");
         }
+        return Ok(());
+    }
+
+    if v == 51 {
+        migrate_v51_to_v52(conn)?;
         return Ok(());
     }
 
@@ -6780,14 +6815,14 @@ mod vault_schema_tests {
         assert_eq!(version, 51, "migrate 后 user_version 应为 51");
     }
 
-    /// 回归测试：v51+ 自愈——schema version 已 51 但 recordings 表缺失时（历史 bug
+    /// 回归测试：v52+ 自愈——schema version 已 52 但 recordings 表缺失时（历史 bug
     /// 残留的损坏库），init_schema 应自动重跑 db.sql 补建。
     #[test]
-    fn test_init_schema_self_heals_missing_recordings_at_v51() {
+    fn test_init_schema_self_heals_missing_recordings_at_v52() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 51", []).unwrap();
-        // 模拟损坏态：version 51 但表被 DROP（模拟历史 migrate 漏跑的残留）
+        conn.execute("PRAGMA user_version = 52", []).unwrap();
+        // 模拟损坏态：version 52 但表被 DROP（模拟历史 migrate 漏跑的残留）
         conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
         conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
 
@@ -6801,6 +6836,94 @@ mod vault_schema_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(has, "v51+ 自愈：recordings 表缺失时 init_schema 应补建");
+        assert!(has, "v52+ 自愈：recordings 表缺失时 init_schema 应补建");
+    }
+
+    /// v51→v52 migrate：recordings 表加 audio_tracks 列。
+    ///
+    /// 背景（spec 2026-07-27-screen-record-audio-post-merge.md）：双轨保留方案需要存
+    /// JSON 序列化的 AudioTrack[]，给 recordings 加 NOT NULL DEFAULT '[]' 列。
+    /// 幂等：PRAGMA table_info 检查列不存在才 ALTER，重复跑不报错。
+    #[test]
+    fn migrate_v51_to_v52_adds_audio_tracks_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 跑 INIT_SQL 建表（含 v51 全部表）
+        conn.execute_batch(INIT_SQL).unwrap();
+        // 模拟 v51 库状态：删掉 audio_tracks 列（如果 db.sql 已含），强制走 migrate 路径
+        // SQLite ≥ 3.35 支持 ALTER TABLE DROP COLUMN（一次性重建表）
+        let _ = conn.execute("ALTER TABLE recordings DROP COLUMN audio_tracks", []);
+        conn.execute("PRAGMA user_version = 51", []).unwrap();
+
+        // 跑前确认列不存在
+        let has_before: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap_or(false);
+        assert!(!has_before, "测试前置：audio_tracks 列应不存在");
+
+        // 跑 migrate
+        migrate_v51_to_v52(&conn).unwrap();
+
+        // 验证列存在
+        let has_after: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap_or(false);
+        assert!(has_after, "migrate 后 audio_tracks 列应存在");
+
+        // 验证 user_version 升到 52
+        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 52, "migrate 后 user_version 应为 52");
+
+        // 验证默认值 '[]'：插入一行，读回 audio_tracks 应是 '[]'
+        conn.execute(
+            "INSERT INTO recordings (file_path, duration_ms, width, height, fps, codec,
+                                     source_type, file_size, created_at)
+             VALUES ('/tmp/test.mkv', 1000, 1920, 1080, 30, 'h264', 'screen', 1024, '2026-07-27')",
+            [],
+        ).unwrap();
+        let default: String = conn
+            .query_row("SELECT audio_tracks FROM recordings WHERE file_path='/tmp/test.mkv'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(default, "[]", "audio_tracks 列默认值应为 '[]'");
+
+        // 幂等：再跑一次不报错
+        migrate_v51_to_v52(&conn).unwrap();
+    }
+
+    /// 全新库直接跑 INIT_SQL，audio_tracks 列应存在（db.sql 已加列）。
+    #[test]
+    fn fresh_db_has_audio_tracks_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        let has_col: bool = conn
+            .prepare("SELECT COUNT(*) > 0 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap();
+        assert!(has_col, "全新库应直接有 audio_tracks 列");
+    }
+
+    /// 端到端：v51 库经 init_schema 升到 v52（验证 if 链 v==51 分支正确）。
+    #[test]
+    fn init_schema_upgrades_v51_db_to_v52() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        // 模拟 v51 库：DROP 掉 audio_tracks 列（db.sql 已含此列）+ user_version=51
+        let _ = conn.execute("ALTER TABLE recordings DROP COLUMN audio_tracks", []);
+        conn.execute("PRAGMA user_version = 51", []).unwrap();
+        // init_schema 走 if v == 51 → migrate_v51_to_v52 → v52
+        init_schema(&conn).unwrap();
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 52, "v51 库经 init_schema 应升到 v52");
+        // 列已加回来
+        let has_col: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap_or(false);
+        assert!(has_col, "init_schema 后 audio_tracks 列应存在");
     }
 }

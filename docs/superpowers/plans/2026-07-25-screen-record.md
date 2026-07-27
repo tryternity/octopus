@@ -2838,7 +2838,14 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 | 都开 | 默认听麦克风（系统音频在 track 2，播放器可手动切换） |
 | 都关 | 仅 video |
 
-**后续**：实时混音作为 P2 任务重新设计——考虑用 `AVAudioEngine` 混音节点（成熟 API，不手动构造 CMSampleBuffer），或录后 `ffmpeg -filter_complex amerge` 后处理（commit `67aec0a2` 已加 ffmpeg 探测基础设施）。手动 CMSampleBuffer + vDSP 路径证明太脆弱。
+**后续：录后合并方案已实现（2026-07-27）**——放弃实时混音（曾尝试 AVAudioEngine 方向，详见 archived spec `2026-07-27-screen-record-audio-mix-redesign-realtime.md` + spike 报告 `2026-07-27-sck-single-stream-spike.md`，确认 SCK 无单流 KVC + AVAudioSourceNode 拉模型桥接无现成参考，风险高）。改走「双轨保留 + 录后按需合并」：
+
+- 录制阶段：保持当前双轨 mic-first add 顺序（不动 helper）
+- 录制停止：ffprobe 读 mp4 实际音轨 → 配置交叉推断 source → 写 DB `recordings.audio_tracks` JSON 列 + ffmpeg `-c copy -metadata` 写 mp4 udta atom
+- 前端展示：RecordingRow hover 显示音轨标签 `[🎤 Mic] [🔊 System]`，双轨时显示「合并音轨」按钮
+- 合并：手动按钮 → ffmpeg `amix`（非 amerge，spike 发现 mic mono + system stereo 声道不同）→ 另存 `xxx_merged.mp4` + INSERT 新 DB 记录
+
+详见 `specs/2026-07-27-screen-record-audio-post-merge.md` + `plans/2026-07-27-screen-record-audio-post-merge.md`。
 
 ### Task 10 后续：保存目录可配置（2026-07-27）
 

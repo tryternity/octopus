@@ -401,6 +401,8 @@ pub async fn record_stop(
     has_microphone: bool,
 ) -> Result<Option<RecordingMeta>, String> {
     // 前端显式传字段路径：直接用前端给的值组装 MetaFields。
+    // mic_device_name：stop 时 session 没存 start 解析的设备名，重新调
+    // resolve_mic_device_name(None)（幂等，读 DB 配置，与 start 默认路径一致）。
     let fields = MetaFields {
         recording_id,
         width,
@@ -408,6 +410,7 @@ pub async fn record_stop(
         source_type,
         has_system_audio,
         has_microphone,
+        mic_device_name: resolve_mic_device_name(None),
     };
     // State<'_, RecordSession> deref 到 &RecordSession，stop_and_store 接裸引用。
     stop_and_store(&state, &app_handle, discard, Some(fields)).await
@@ -463,6 +466,10 @@ fn derive_fields_from_request(req: &RecordingRequest) -> Result<MetaFields, Stri
         source_type: source_type.to_string(),
         has_system_audio: req.audio.system.enabled,
         has_microphone: req.audio.microphone.enabled,
+        // hotkey/tray 路径：req.audio.microphone.device_name 在 start 时已解析过
+        // （start_with_config 行 327-330），但 resolve_mic_device_name 是幂等的，
+        // 再调一次保证拿到当前 DB 配置（用户可能在录屏中改了 ASR 麦克风）。
+        mic_device_name: resolve_mic_device_name(req.audio.microphone.device_name.as_deref()),
     })
 }
 
@@ -474,6 +481,13 @@ pub(crate) struct MetaFields {
     pub source_type: String,
     pub has_system_audio: bool,
     pub has_microphone: bool,
+    /// 麦克风设备名（start 时解析的三级回退值）。
+    ///
+    /// stop 时 session 没存 start 解析的设备名，但 `resolve_mic_device_name` 是幂等的
+    /// （读 DB 配置），stop 时重新调一次即可。两条构造路径：
+    /// - 前端 `record_stop`：`resolve_mic_device_name(None)`（与 start 默认路径一致）
+    /// - hotkey/tray：`resolve_mic_device_name(req.audio.microphone.device_name.as_deref())`
+    pub mic_device_name: Option<String>,
 }
 
 async fn stop_and_store_inner(
@@ -488,6 +502,7 @@ async fn stop_and_store_inner(
         source_type,
         has_system_audio,
         has_microphone,
+        mic_device_name,
     } = fields;
 
     // StoppedInfo：reader task 收到 RecordingStopped 时存精确 payload（screen_path /
@@ -531,6 +546,16 @@ async fn stop_and_store_inner(
     // resolve_recording_path 对绝对路径原样返回，无需 strip_prefix。
     let file_path = abs_path.to_string_lossy().to_string();
 
+    // 探测实际音轨元数据（ffprobe 读 mp4 → 配置交叉推断 source）。
+    // 失败兜底空 vec，不阻断录制入库（probe_recording_audio_tracks 内部已吞错）。
+    let audio_tracks = crate::record_audio_probe::probe_recording_audio_tracks(
+        &abs_path,
+        has_system_audio,
+        has_microphone,
+        mic_device_name.as_deref(),
+    )
+    .await;
+
     let meta = RecordingMeta {
         id: recording_id,
         file_path,
@@ -542,6 +567,7 @@ async fn stop_and_store_inner(
         codec: "h264".into(),
         has_system_audio,
         has_microphone,
+        audio_tracks: audio_tracks.clone(),
         source_type,
         file_size,
         has_thumbnail: false,
@@ -556,6 +582,22 @@ async fn stop_and_store_inner(
         store.insert(&meta_clone, None)
     })
     .await?;
+
+    // 入库成功后写 mp4 udta metadata（audio_tracks JSON）。
+    // 失败不阻断——DB 已有 audio_tracks 兜底，mp4 metadata 是 nice-to-have
+    // （合并单轨 Task 3.1 / 前端展示双轨详情时用到）。
+    // probe_ffmpeg 在本文件（同 module），直接调用；write_audio_tracks_metadata 跨 module。
+    if !audio_tracks.is_empty() {
+        if let Some(ffmpeg) = probe_ffmpeg() {
+            if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+                &ffmpeg, &abs_path, &audio_tracks,
+            )
+            .await
+            {
+                log::warn!("[record] mp4 metadata 写入失败（不影响录制）: {e}");
+            }
+        }
+    }
 
     // 停止 + 入库成功 → tray menu 文案切回「开始录屏」（toggle 语义）
     #[cfg(target_os = "macos")]
@@ -733,7 +775,10 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
 /// 查找顺序：`~/.octopus/bin/ffmpeg`（用户手动放/dlp 下载缓存）→ 系统 PATH（which）。
 /// 复制自 `crates/dlp/src/main.rs:42-73` 的 `get_binary_path`（dlp 是 binary crate 无 lib，
 /// 无法 use 导入；desktop crate 已有 4 处 which 内联副本，容忍此模式）。
-fn probe_ffmpeg() -> Option<std::path::PathBuf> {
+///
+/// `pub(crate)`：被同 crate 的 `record_audio_probe::write_audio_tracks_metadata` 调用
+/// （Task 2.3 在 stop_and_store_inner 入库成功后写 mp4 udta metadata）。
+pub(crate) fn probe_ffmpeg() -> Option<std::path::PathBuf> {
     // 1. ~/.octopus/bin/ffmpeg
     let home_bin = octopus_infra::octopus_config_home().join("bin").join("ffmpeg");
     if home_bin.exists() {
@@ -866,6 +911,194 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
         serde_json::json!({ "id": id, "path": path_str }),
     );
     Ok(path_str)
+}
+
+/// `merge_audio_tracks` 的返回值——新 recording 的 id 与文件绝对路径。
+///
+/// 前端拿到后跳详情 / reveal in Finder；事件 `record://merge-done` 作为多窗口同步备用。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeResult {
+    pub new_id: i64,
+    pub file_path: String,
+}
+
+/// 把双轨录屏 mp4（mic + system）用 ffmpeg `amix` 合并成单轨，另存为新文件 + INSERT 新 DB 记录。
+///
+/// **amix（非 amerge）**：spike 发现 mic 常为 mono、system 为 stereo，`amerge` 要求两输入
+/// 声道数相同会失败；`amix` 自动处理声道差异（mono 自动 upmix 到 stereo 混音），更稳健。
+///
+/// 流程（仿 `export_gif:863` 模式）：
+/// 1. 查 DB 拿原 recording meta（`with_db_blocking` + `RecordStore::get`）
+/// 2. 校验 `audio_tracks.len() >= 2`（非多音轨直接报错，不浪费 ffmpeg 调用）
+/// 3. `find_ffmpeg` + `merged_output_path` 算输出路径
+/// 4. emit `record://merge-started {id}` → spawn ffmpeg → 成功 emit done / 失败 emit failed
+/// 5. ffmpeg 参数：`-filter_complex [0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0[a]`
+///    + `-map 0:v -map [a] -c:v copy -c:a aac -b:a 192k`（视频流拷贝不重编码，音频重编码 AAC）
+/// 6. 失败删 merged.mp4（避免半残文件占空间 + DB 不入库）
+/// 7. ffprobe 探测 merged 文件音轨（应单轨，source=Merged）；ffprobe 不可用兜底构造一个 Merged track
+/// 8. 写 mp4 metadata（失败仅 warn，不阻断——DB 已有 audio_tracks 兜底）
+/// 9. INSERT 新 recording 记录（file_path = merged.mp4 绝对路径，title 加 `(merged)` 后缀，新 id）
+///
+/// **失败删 merged.mp4**：与 export_gif 不同（gif 失败也删 gif 但 export_gif 没写——本命令显式删，
+/// 因 merged 文件体积大且与源同目录，半残文件会混淆用户）。
+///
+/// **stderr piped 但暂不用**：与 export_gif 一致（export_gif 用 `Stdio::null()`）。Phase 5 e2e
+/// 如需诊断 ffmpeg 错误细节，再改成 piped + 读 stderr 进 error 文案。当前先 null 保持简洁。
+///
+/// **new_id**：`chrono::Utc::now().timestamp_millis()`——与 `start_with_config:305` 的
+/// `recording_id` 同体系（chrono 毫秒戳），desktop crate 已有 chrono 依赖（Cargo.toml）。
+#[command]
+pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, String> {
+    use octopus_infra::paths::resolve_recording_path;
+    use octopus_record::audio_tracks::{AudioTrack, AudioTrackSource};
+
+    // 1. 查 DB 拿原 recording meta（连同 file_path 一起，省去第二次查 DB）
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.get(id)?.ok_or(RecordError::NotFound(id))
+    })
+    .await?;
+
+    // 2. 校验：非多音轨直接报错（不浪费 ffmpeg 调用）
+    if meta.audio_tracks.len() < 2 {
+        return Err("不是多音轨录屏，无需合并".into());
+    }
+
+    let input = resolve_recording_path(&meta.file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+
+    // 3. ffmpeg + 输出路径
+    let ffmpeg = find_ffmpeg().await?;
+    let output = crate::record_audio_probe::merged_output_path(&input);
+
+    // 4. emit 起点（前端切 loading 态）
+    let _ = app.emit("record://merge-started", serde_json::json!({ "id": id }));
+
+    // 5. spawn ffmpeg amix
+    let status = tokio::process::Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(&input)
+        .arg("-filter_complex")
+        .arg("[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0[a]")
+        .arg("-map")
+        .arg("0:v")
+        .arg("-map")
+        .arg("[a]")
+        .arg("-c:v")
+        .arg("copy")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("192k")
+        .arg(&output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
+
+    if !status.success() {
+        // 6. 失败删 merged.mp4（避免半残文件占空间）
+        let _ = std::fs::remove_file(&output);
+        let _ = app.emit(
+            "record://merge-failed",
+            serde_json::json!({ "id": id, "error": "ffmpeg amix 失败" }),
+        );
+        return Err("ffmpeg amix 失败（退出码非 0）".into());
+    }
+
+    // 7. 探测 merged 文件音轨（应单轨）。ffprobe 不可用 / 解析失败 → 兜底构造一个 Merged track。
+    let merged_tracks: Vec<AudioTrack> =
+        match crate::record_audio_probe::probe_ffprobe() {
+            Some(ffprobe) => {
+                match crate::record_audio_probe::probe_audio_tracks(&ffprobe, &output).await {
+                    Ok(raw) if !raw.is_empty() => vec![AudioTrack {
+                        index: 0,
+                        source: AudioTrackSource::Merged,
+                        codec: raw[0].codec.clone(),
+                        sample_rate: raw[0].sample_rate,
+                        channels: raw[0].channels,
+                        device_name: None,
+                    }],
+                    _ => vec![AudioTrack {
+                        index: 0,
+                        source: AudioTrackSource::Merged,
+                        codec: "aac".into(),
+                        sample_rate: 48000,
+                        channels: 2,
+                        device_name: None,
+                    }],
+                }
+            }
+            None => vec![AudioTrack {
+                index: 0,
+                source: AudioTrackSource::Merged,
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                device_name: None,
+            }],
+        };
+
+    // 8. 写 mp4 metadata（失败不阻断——DB 已有 audio_tracks 兜底）
+    if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+        &ffmpeg,
+        &output,
+        &merged_tracks,
+    )
+    .await
+    {
+        log::warn!("[record] merged mp4 metadata 写入失败: {e}");
+    }
+
+    // 9. INSERT 新 recording 记录
+    let file_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+    let new_id = chrono::Utc::now().timestamp_millis();
+    let file_path_str = output.to_string_lossy().to_string();
+    let title = if meta.title.is_empty() {
+        "merged".to_string()
+    } else {
+        format!("{} (merged)", meta.title)
+    };
+    let new_meta = RecordingMeta {
+        id: new_id,
+        file_path: file_path_str.clone(),
+        title,
+        duration_ms: meta.duration_ms,
+        width: meta.width,
+        height: meta.height,
+        fps: meta.fps,
+        codec: meta.codec.clone(),
+        has_system_audio: true,
+        has_microphone: true,
+        audio_tracks: merged_tracks,
+        source_type: meta.source_type.clone(),
+        file_size,
+        has_thumbnail: false,
+        is_favorite: false,
+        created_at: now_iso(),
+        deleted_at: None,
+    };
+
+    with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.insert(&new_meta, None)
+    })
+    .await?;
+
+    let _ = app.emit(
+        "record://merge-done",
+        serde_json::json!({ "id": id, "new_id": new_id, "path": file_path_str }),
+    );
+
+    Ok(MergeResult {
+        new_id,
+        file_path: file_path_str,
+    })
 }
 
 #[cfg(test)]

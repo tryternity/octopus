@@ -436,7 +436,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ══ 录屏元数据（schema v51）═══════════════════════════════════
+-- ══ 录屏元数据（schema v51 + v52 audio_tracks）═══════════════
 CREATE TABLE IF NOT EXISTS recordings (
     id                INTEGER PRIMARY KEY,
     file_path         TEXT    NOT NULL,
@@ -448,6 +448,9 @@ CREATE TABLE IF NOT EXISTS recordings (
     codec             TEXT    NOT NULL,
     has_system_audio  INTEGER NOT NULL DEFAULT 0,
     has_microphone    INTEGER NOT NULL DEFAULT 0,
+    -- schema v52：JSON 序列化的 AudioTrack[]（spec 2026-07-27-screen-record-audio-post-merge.md）。
+    -- 双轨保留 + 录后合并方案——存原始多轨元数据，合并时由 ffmpeg amix 处理。
+    audio_tracks      TEXT    NOT NULL DEFAULT '[]',
     source_type       TEXT    NOT NULL,
     file_size         INTEGER NOT NULL,
     has_thumbnail     INTEGER NOT NULL DEFAULT 0,

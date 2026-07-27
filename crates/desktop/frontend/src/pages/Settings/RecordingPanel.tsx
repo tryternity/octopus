@@ -33,6 +33,7 @@ import {
   Pencil,
   Clapperboard,
   Loader2,
+  Combine,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -42,6 +43,17 @@ import { PermissionGate } from "@/components/record/PermissionGate";
 import { useRecordSession } from "@/hooks/useRecordSession";
 
 // ── 后端类型镜像（crates/record/src/store.rs::RecordingMeta）──────────────────
+
+// 音轨（crates/record/src/audio_tracks.rs::AudioTrack，serde rename_all=camelCase）
+// source enum rename_all=lowercase：'microphone' | 'system' | 'merged' | 'unknown'
+export interface AudioTrack {
+  index: number;
+  source: 'microphone' | 'system' | 'merged' | 'unknown';
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  deviceName?: string;
+}
 
 export interface RecordingMeta {
   id: number;
@@ -54,12 +66,19 @@ export interface RecordingMeta {
   codec: string;
   has_system_audio: boolean;
   has_microphone: boolean;
+  audio_tracks: AudioTrack[];
   source_type: string;
   file_size: number;
   has_thumbnail: boolean;
   is_favorite: boolean;
   created_at: string;
   deleted_at: string | null;
+}
+
+// merge_audio_tracks 命令的返回值（crates/desktop/src/record_commands.rs::MergeResult）。
+interface MergeResult {
+  newId: number;
+  filePath: string;
 }
 
 // ── 工具：格式化时长 ms → "MM:SS"（<1h）或 "H:MM:SS"（≥1h）─────────────────
@@ -118,6 +137,8 @@ export default function RecordingPanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   // GIF 导出：一次只导出一个（按 id 跟踪，null=空闲）。row 据此切换按钮 disabled/spinner。
   const [gifExportingId, setGifExportingId] = useState<number | null>(null);
+  // 音轨合并：一次只合并一个（按 id 跟踪，null=空闲）。仿 gifExportingId 模式。
+  const [mergingId, setMergingId] = useState<number | null>(null);
   // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
   // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
@@ -360,6 +381,9 @@ export default function RecordingPanel({
               gifExportingId={gifExportingId}
               onExportGif={(gid) => setGifExportingId(gid)}
               ffmpegAvailable={ffmpegAvailable}
+              mergingId={mergingId}
+              onMergeAudio={(mid) => setMergingId(mid)}
+              onMerged={loadList}
               onTranscribeClick={
                 onNavigate ? () => onNavigate("models") : undefined
               }
@@ -416,6 +440,9 @@ interface RecordingRowProps {
   gifExportingId: number | null;
   onExportGif: (id: number | null) => void;
   ffmpegAvailable: boolean | null;
+  mergingId: number | null;
+  onMergeAudio: (id: number | null) => void;
+  onMerged: () => void;
 }
 
 function RecordingRow({
@@ -430,6 +457,9 @@ function RecordingRow({
   gifExportingId,
   onExportGif,
   ffmpegAvailable,
+  mergingId,
+  onMergeAudio,
+  onMerged,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -511,6 +541,27 @@ function RecordingRow({
       showToast(t("settings.recordings.exportGifFailed") + String(err), "error");
     } finally {
       onExportGif(null);
+    }
+  };
+
+  // ── 音轨合并（仿 handleExportGif 模式）── invoke merge_audio_tracks 命令，
+  // loading 状态由父 mergingId 控制；成功后调 onMerged 刷新列表（新记录加入）。
+  const isMerging = mergingId === rec.id;
+  const handleMergeAudio = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isMerging) return;
+    onMergeAudio(rec.id);
+    try {
+      const result = await invoke<MergeResult>("merge_audio_tracks", { id: rec.id });
+      showToast(
+        t("settings.recordings.mergeAudioDone", { path: result.filePath }),
+        "success",
+      );
+      onMerged();
+    } catch (err) {
+      showToast(t("settings.recordings.mergeAudioFailed") + String(err), "error");
+    } finally {
+      onMergeAudio(null);
     }
   };
 
@@ -611,6 +662,23 @@ function RecordingRow({
           >
             {rec.source_type}
           </span>
+          {rec.audio_tracks && rec.audio_tracks.length > 0 && (
+            <div className="flex gap-1 items-center text-[10px]">
+              {rec.audio_tracks.map((track, i) => (
+                <span
+                  key={i}
+                  className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
+                  title={`${track.codec} ${track.sampleRate}Hz ${track.channels}ch`}
+                >
+                  {track.source === 'microphone' &&
+                    `🎤${track.deviceName ? ` ${track.deviceName}` : ''}`}
+                  {track.source === 'system' && '🔊'}
+                  {track.source === 'merged' && '🎵 merged'}
+                  {track.source === 'unknown' && '? unknown'}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         {/* Title（renaming 时显示 inline input，仿 HotwordPanel）*/}
         {renaming ? (
@@ -716,6 +784,29 @@ function RecordingRow({
             <Clapperboard className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
         </button>
+        {rec.audio_tracks && rec.audio_tracks.length >= 2 && (
+          <button
+            className={cn(
+              "p-1 rounded transition-opacity",
+              isMerging
+                ? "opacity-100"
+                : "opacity-60 group-hover:opacity-70 hover:!opacity-100 cursor-pointer",
+            )}
+            onClick={handleMergeAudio}
+            disabled={isMerging}
+            title={
+              isMerging
+                ? t("settings.recordings.merging")
+                : t("settings.recordings.mergeAudioTooltip")
+            }
+          >
+            {isMerging ? (
+              <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+            ) : (
+              <Combine className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            )}
+          </button>
+        )}
         <button
           className={cn(
             "p-1 rounded transition-all",

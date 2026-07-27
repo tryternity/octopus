@@ -96,6 +96,10 @@ settings:
     exportGifDone: Exported to ${path}
     exportGifFailed: "Failed to export GIF: "
     ffmpegMissing: "ffmpeg not installed. Install via: brew install ffmpeg; or curl -L https://evermeet.cx/ffmpeg/getrelease/zip -o /tmp/ffmpeg.zip && unzip /tmp/ffmpeg.zip -d ~/.octopus/bin/"
+    mergeAudioTooltip: "Merge audio tracks (microphone + system) into single track"
+    mergeAudioDone: "Merged audio saved to ${path}"
+    mergeAudioFailed: "Failed to merge audio: "
+    merging: "Merging audio..."
     recording: Recording
     paused: Paused
     startBtn: Start Recording

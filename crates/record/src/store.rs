@@ -1,9 +1,21 @@
 //! RecordStore：录屏元数据入库（recordings / recordings_thumbnails 表）。
 
+use crate::audio_tracks::AudioTrack;
 use crate::error::RecordResult;
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// 录屏元数据（DB `recordings` 表直映射）。
+///
+/// ⚠️ **serde 约定**：故意**不加** `#[serde(rename_all = "camelCase")]`。
+/// 所有字段保持 snake_case 与 SQL 列名一致（DB row 直映射，更自然）。
+/// **新加字段必须继续用 snake_case**，前端 interface 也要对齐 snake_case
+/// （如 `audio_tracks`，不是 `audioTracks`）。
+///
+/// 历史教训（Task 4.1 blocker，2026-07-27）：曾给前端 interface 加 camelCase
+/// `audioTracks`，但后端无 rename_all 序列化为 `audio_tracks`，运行时前端
+/// 拿到 `undefined` → 音轨标签 + 合并按钮永远不渲染。修复 = 前端改回 snake_case。
+/// 详见 spec `docs/superpowers/specs/2026-07-27-screen-record-audio-post-merge.md` 实现注记。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecordingMeta {
     pub id: i64,
     pub file_path: String,
@@ -15,6 +27,8 @@ pub struct RecordingMeta {
     pub codec: String,
     pub has_system_audio: bool,
     pub has_microphone: bool,
+    #[serde(default)]
+    pub audio_tracks: Vec<AudioTrack>,
     pub source_type: String,
     pub file_size: u64,
     pub has_thumbnail: bool,
@@ -41,16 +55,19 @@ impl<'a> RecordStore<'a> {
     }
 
     pub fn insert(&self, meta: &RecordingMeta, thumbnail: Option<&[u8]>) -> RecordResult<()> {
+        let audio_tracks_json = serde_json::to_string(&meta.audio_tracks)
+            .unwrap_or_else(|_| "[]".into());
         self.conn.execute(
             "INSERT INTO recordings
              (id, file_path, title, duration_ms, width, height, fps, codec,
-              has_system_audio, has_microphone, source_type, file_size,
+              has_system_audio, has_microphone, audio_tracks, source_type, file_size,
               has_thumbnail, is_favorite, created_at, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL)",
             rusqlite::params![
                 meta.id, meta.file_path, meta.title, meta.duration_ms,
                 meta.width, meta.height, meta.fps, meta.codec,
                 meta.has_system_audio as i32, meta.has_microphone as i32,
+                audio_tracks_json,
                 meta.source_type, meta.file_size,
                 thumbnail.is_some() as i32, meta.is_favorite as i32,
                 meta.created_at,
@@ -69,7 +86,7 @@ impl<'a> RecordStore<'a> {
     pub fn get(&self, id: i64) -> RecordResult<Option<RecordingMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
-                    has_system_audio, has_microphone, source_type, file_size,
+                    has_system_audio, has_microphone, audio_tracks, source_type, file_size,
                     has_thumbnail, is_favorite, created_at, deleted_at
              FROM recordings WHERE id = ?1",
         )?;
@@ -84,7 +101,7 @@ impl<'a> RecordStore<'a> {
     pub fn list(&self, filter: &ListFilter) -> RecordResult<Vec<RecordingMeta>> {
         let mut sql = String::from(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
-                    has_system_audio, has_microphone, source_type, file_size,
+                    has_system_audio, has_microphone, audio_tracks, source_type, file_size,
                     has_thumbnail, is_favorite, created_at, deleted_at
              FROM recordings WHERE 1=1",
         );
@@ -188,6 +205,9 @@ impl<'a> RecordStore<'a> {
     }
 
     fn row_to_meta(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordingMeta> {
+        let audio_tracks_json: String = row.get(10)?;
+        let audio_tracks =
+            serde_json::from_str(&audio_tracks_json).unwrap_or_default();
         Ok(RecordingMeta {
             id: row.get(0)?,
             file_path: row.get(1)?,
@@ -199,12 +219,13 @@ impl<'a> RecordStore<'a> {
             codec: row.get(7)?,
             has_system_audio: row.get::<_, i32>(8)? != 0,
             has_microphone: row.get::<_, i32>(9)? != 0,
-            source_type: row.get(10)?,
-            file_size: row.get(11)?,
-            has_thumbnail: row.get::<_, i32>(12)? != 0,
-            is_favorite: row.get::<_, i32>(13)? != 0,
-            created_at: row.get(14)?,
-            deleted_at: row.get(15)?,
+            audio_tracks,
+            source_type: row.get(11)?,
+            file_size: row.get(12)?,
+            has_thumbnail: row.get::<_, i32>(13)? != 0,
+            is_favorite: row.get::<_, i32>(14)? != 0,
+            created_at: row.get(15)?,
+            deleted_at: row.get(16)?,
         })
     }
 }
@@ -234,6 +255,7 @@ mod tests {
             codec: "h264".into(),
             has_system_audio: true,
             has_microphone: false,
+            audio_tracks: vec![],
             source_type: "display".into(),
             file_size: 1048576,
             has_thumbnail: false,
@@ -241,6 +263,29 @@ mod tests {
             created_at: "2026-07-25T14:30:22Z".into(),
             deleted_at: None,
         }
+    }
+
+    fn sample_meta_with_tracks(id: i64) -> RecordingMeta {
+        let mut m = sample_meta(id);
+        m.audio_tracks = vec![
+            AudioTrack {
+                index: 0,
+                source: crate::audio_tracks::AudioTrackSource::Microphone,
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 1,
+                device_name: Some("UGREEN".into()),
+            },
+            AudioTrack {
+                index: 1,
+                source: crate::audio_tracks::AudioTrackSource::System,
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                device_name: None,
+            },
+        ];
+        m
     }
 
     #[test]
@@ -357,5 +402,56 @@ mod tests {
         store.insert(&sample_meta(1), None).unwrap();
         store.delete_db_row(1).unwrap();
         assert!(store.get(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn insert_and_get_with_audio_tracks() {
+        let conn = test_db();
+        let store = RecordStore::new(&conn);
+        let meta = sample_meta_with_tracks(2001);
+        store.insert(&meta, None).unwrap();
+        let got = store.get(2001).unwrap().unwrap();
+        assert_eq!(got.audio_tracks.len(), 2);
+        assert_eq!(
+            got.audio_tracks[0].source,
+            crate::audio_tracks::AudioTrackSource::Microphone
+        );
+        assert_eq!(
+            got.audio_tracks[1].source,
+            crate::audio_tracks::AudioTrackSource::System
+        );
+    }
+
+    #[test]
+    fn audio_tracks_default_empty_for_legacy_rows() {
+        // 旧记录（audio_tracks 列默认 '[]'）读回应是空 vec
+        let conn = test_db();
+        let store = RecordStore::new(&conn);
+        // 直接 INSERT 不带 audio_tracks（模拟旧客户端写入）
+        conn.execute(
+            "INSERT INTO recordings (id, file_path, title, duration_ms, width, height, fps, codec,
+             has_system_audio, has_microphone, source_type, file_size, has_thumbnail, is_favorite, created_at)
+             VALUES (3001, '/x.mp4', '', 1000, 100, 100, 30, 'h264', 0, 0, 'display', 0, 0, 0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let got = store.get(3001).unwrap().unwrap();
+        assert!(got.audio_tracks.is_empty());
+    }
+
+    #[test]
+    fn list_returns_audio_tracks() {
+        let conn = test_db();
+        let store = RecordStore::new(&conn);
+        store.insert(&sample_meta_with_tracks(1), None).unwrap();
+        let list = store
+            .list(&ListFilter {
+                limit: 100,
+                offset: 0,
+                include_deleted: false,
+                favorites_only: false,
+            })
+            .unwrap();
+        assert_eq!(list[0].audio_tracks.len(), 2);
     }
 }
