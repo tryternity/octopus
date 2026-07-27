@@ -189,3 +189,63 @@ pub async fn probe_recording_audio_tracks(
         }
     }
 }
+
+/// 合并产物路径：`xxx.mp4` → `xxx_merged.mp4`（同目录）。已含 `_merged` 不重复加。
+///
+/// 给 `merge_audio_tracks` 算 ffmpeg 输出路径用——与源同目录便于 reveal/file 管理，
+/// 文件名加 `_merged` 后缀让用户在 Finder 里一眼区分。
+///
+/// 幂等性：源文件名已含 `_merged`（如重复合并）时原样返回，避免 `x_merged_merged.mp4`。
+///
+/// 边界处理：
+/// - `file_name` 拿不到（如 `/` 根路径）→ 兜底 `"output.mp4"`（极端防御，正常路径不会触发）。
+/// - 非 `.mp4` 扩展名（如 `.mkv`）→ 当前仍按 `.mp4` 后缀规则匹配（trim_end_matches(".mp4")
+///   对 `.mkv` 无效，stem 即整个文件名 `xxx.mkv`，结果 `xxx.mkv_merged.mp4`）——
+///   录屏当前只产 mp4，不做更复杂扩展名推断。
+pub fn merged_output_path(input: &Path) -> PathBuf {
+    let file_name = input
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.mp4");
+    let stem = file_name.trim_end_matches(".mp4");
+    let already_merged = stem.ends_with("_merged");
+    let new_name = if already_merged {
+        file_name.to_string()
+    } else {
+        format!("{stem}_merged.mp4")
+    };
+    input.with_file_name(new_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 回归：`xxx.mp4` → `xxx_merged.mp4`（核心契约——给 `merge_audio_tracks` 算输出路径）。
+    #[test]
+    fn merged_output_path_appends_merged_suffix() {
+        let p = PathBuf::from("/tmp/2026-07-27_10.30.00_123.mp4");
+        let m = merged_output_path(&p);
+        assert_eq!(
+            m.file_name().unwrap().to_str().unwrap(),
+            "2026-07-27_10.30.00_123_merged.mp4"
+        );
+    }
+
+    /// 回归：已含 `_merged` 不重复加（避免 `x_merged_merged.mp4`——重复合并场景的幂等性）。
+    #[test]
+    fn merged_output_path_no_double_suffix() {
+        let p = PathBuf::from("/tmp/x_merged.mp4");
+        let m = merged_output_path(&p);
+        assert_eq!(m.file_name().unwrap().to_str().unwrap(), "x_merged.mp4");
+    }
+
+    /// 回归：保留原目录（merged.mp4 必须与源同目录，便于 reveal/file 管理）。
+    #[test]
+    fn merged_output_path_preserves_dir() {
+        let p = PathBuf::from("/Users/wudarui/.octopus/recordings/abc.mp4");
+        let m = merged_output_path(&p);
+        assert_eq!(m.parent(), p.parent());
+    }
+}

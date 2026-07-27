@@ -614,6 +614,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::export_gif,
             #[cfg(target_os = "macos")]
+            record_commands::merge_audio_tracks,
+            #[cfg(target_os = "macos")]
             record_commands::check_ffmpeg,
             record_commands::get_record_status,
         ])

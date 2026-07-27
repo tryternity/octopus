@@ -913,6 +913,193 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
     Ok(path_str)
 }
 
+/// `merge_audio_tracks` 的返回值——新 recording 的 id 与文件绝对路径。
+///
+/// 前端拿到后跳详情 / reveal in Finder；事件 `record://merge-done` 作为多窗口同步备用。
+#[derive(serde::Serialize)]
+pub struct MergeResult {
+    pub new_id: i64,
+    pub file_path: String,
+}
+
+/// 把双轨录屏 mp4（mic + system）用 ffmpeg `amix` 合并成单轨，另存为新文件 + INSERT 新 DB 记录。
+///
+/// **amix（非 amerge）**：spike 发现 mic 常为 mono、system 为 stereo，`amerge` 要求两输入
+/// 声道数相同会失败；`amix` 自动处理声道差异（mono 自动 upmix 到 stereo 混音），更稳健。
+///
+/// 流程（仿 `export_gif:863` 模式）：
+/// 1. 查 DB 拿原 recording meta（`with_db_blocking` + `RecordStore::get`）
+/// 2. 校验 `audio_tracks.len() >= 2`（非多音轨直接报错，不浪费 ffmpeg 调用）
+/// 3. `find_ffmpeg` + `merged_output_path` 算输出路径
+/// 4. emit `record://merge-started {id}` → spawn ffmpeg → 成功 emit done / 失败 emit failed
+/// 5. ffmpeg 参数：`-filter_complex [0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0[a]`
+///    + `-map 0:v -map [a] -c:v copy -c:a aac -b:a 192k`（视频流拷贝不重编码，音频重编码 AAC）
+/// 6. 失败删 merged.mp4（避免半残文件占空间 + DB 不入库）
+/// 7. ffprobe 探测 merged 文件音轨（应单轨，source=Merged）；ffprobe 不可用兜底构造一个 Merged track
+/// 8. 写 mp4 metadata（失败仅 warn，不阻断——DB 已有 audio_tracks 兜底）
+/// 9. INSERT 新 recording 记录（file_path = merged.mp4 绝对路径，title 加 `(merged)` 后缀，新 id）
+///
+/// **失败删 merged.mp4**：与 export_gif 不同（gif 失败也删 gif 但 export_gif 没写——本命令显式删，
+/// 因 merged 文件体积大且与源同目录，半残文件会混淆用户）。
+///
+/// **stderr piped 但暂不用**：与 export_gif 一致（export_gif 用 `Stdio::null()`）。Phase 5 e2e
+/// 如需诊断 ffmpeg 错误细节，再改成 piped + 读 stderr 进 error 文案。当前先 null 保持简洁。
+///
+/// **new_id**：`chrono::Utc::now().timestamp_millis()`——与 `start_with_config:305` 的
+/// `recording_id` 同体系（chrono 毫秒戳），desktop crate 已有 chrono 依赖（Cargo.toml）。
+#[command]
+pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, String> {
+    use octopus_infra::paths::resolve_recording_path;
+    use octopus_record::audio_tracks::{AudioTrack, AudioTrackSource};
+
+    // 1. 查 DB 拿原 recording meta（连同 file_path 一起，省去第二次查 DB）
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.get(id)?.ok_or(RecordError::NotFound(id))
+    })
+    .await?;
+
+    // 2. 校验：非多音轨直接报错（不浪费 ffmpeg 调用）
+    if meta.audio_tracks.len() < 2 {
+        return Err("不是多音轨录屏，无需合并".into());
+    }
+
+    let input = resolve_recording_path(&meta.file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+
+    // 3. ffmpeg + 输出路径
+    let ffmpeg = find_ffmpeg().await?;
+    let output = crate::record_audio_probe::merged_output_path(&input);
+
+    // 4. emit 起点（前端切 loading 态）
+    let _ = app.emit("record://merge-started", serde_json::json!({ "id": id }));
+
+    // 5. spawn ffmpeg amix
+    let status = tokio::process::Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(&input)
+        .arg("-filter_complex")
+        .arg("[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0[a]")
+        .arg("-map")
+        .arg("0:v")
+        .arg("-map")
+        .arg("[a]")
+        .arg("-c:v")
+        .arg("copy")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("192k")
+        .arg(&output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
+
+    if !status.success() {
+        // 6. 失败删 merged.mp4（避免半残文件占空间）
+        let _ = std::fs::remove_file(&output);
+        let _ = app.emit(
+            "record://merge-failed",
+            serde_json::json!({ "id": id, "error": "ffmpeg amix 失败" }),
+        );
+        return Err("ffmpeg amix 失败（退出码非 0）".into());
+    }
+
+    // 7. 探测 merged 文件音轨（应单轨）。ffprobe 不可用 / 解析失败 → 兜底构造一个 Merged track。
+    let merged_tracks: Vec<AudioTrack> =
+        match crate::record_audio_probe::probe_ffprobe() {
+            Some(ffprobe) => {
+                match crate::record_audio_probe::probe_audio_tracks(&ffprobe, &output).await {
+                    Ok(raw) if !raw.is_empty() => vec![AudioTrack {
+                        index: 0,
+                        source: AudioTrackSource::Merged,
+                        codec: raw[0].codec.clone(),
+                        sample_rate: raw[0].sample_rate,
+                        channels: raw[0].channels,
+                        device_name: None,
+                    }],
+                    _ => vec![AudioTrack {
+                        index: 0,
+                        source: AudioTrackSource::Merged,
+                        codec: "aac".into(),
+                        sample_rate: 48000,
+                        channels: 2,
+                        device_name: None,
+                    }],
+                }
+            }
+            None => vec![AudioTrack {
+                index: 0,
+                source: AudioTrackSource::Merged,
+                codec: "aac".into(),
+                sample_rate: 48000,
+                channels: 2,
+                device_name: None,
+            }],
+        };
+
+    // 8. 写 mp4 metadata（失败不阻断——DB 已有 audio_tracks 兜底）
+    if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+        &ffmpeg,
+        &output,
+        &merged_tracks,
+    )
+    .await
+    {
+        log::warn!("[record] merged mp4 metadata 写入失败: {e}");
+    }
+
+    // 9. INSERT 新 recording 记录
+    let file_size = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+    let new_id = chrono::Utc::now().timestamp_millis();
+    let file_path_str = output.to_string_lossy().to_string();
+    let title = if meta.title.is_empty() {
+        "merged".to_string()
+    } else {
+        format!("{} (merged)", meta.title)
+    };
+    let new_meta = RecordingMeta {
+        id: new_id,
+        file_path: file_path_str.clone(),
+        title,
+        duration_ms: meta.duration_ms,
+        width: meta.width,
+        height: meta.height,
+        fps: meta.fps,
+        codec: meta.codec.clone(),
+        has_system_audio: true,
+        has_microphone: true,
+        audio_tracks: merged_tracks,
+        source_type: meta.source_type.clone(),
+        file_size,
+        has_thumbnail: false,
+        is_favorite: false,
+        created_at: now_iso(),
+        deleted_at: None,
+    };
+
+    with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.insert(&new_meta, None)
+    })
+    .await?;
+
+    let _ = app.emit(
+        "record://merge-done",
+        serde_json::json!({ "id": id, "new_id": new_id, "path": file_path_str }),
+    );
+
+    Ok(MergeResult {
+        new_id,
+        file_path: file_path_str,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
