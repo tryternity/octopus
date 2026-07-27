@@ -1,7 +1,7 @@
 # 标注工具扩充设计（荧光笔 / 橡皮擦 / 清空 / 删除选定）
 
 > **日期**：2026-07-27
-> **状态**：设计阶段（待实现）
+> **状态**：✅ 已实现（7 Task subagent-driven，tsc + vite build + cargo build 全过；e2e 待用户验证）
 > **来源**：[竞品分析报告](../../research/2026-07-27-competitive-analysis.md) §4 截屏 P1 + 用户需求
 
 ---

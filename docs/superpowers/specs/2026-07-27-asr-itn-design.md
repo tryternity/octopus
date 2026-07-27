@@ -1,7 +1,7 @@
 # ASR 数字 ITN（Inverse Text Normalization）设计
 
 > **日期**：2026-07-27
-> **状态**：设计阶段（待实现）
+> **状态**：✅ 已实现（chinese2digits crate，corrector 后 hans 前；流式仅 Final 过 ITN；141 测试全过；e2e 待用户验证）
 > **来源**：[竞品分析报告](../../research/2026-07-27-competitive-analysis.md) §1 语音输入 P0 缺口
 
 ---
