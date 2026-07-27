@@ -856,8 +856,8 @@ pub async fn get_record_status(state: State<'_, RecordSession>) -> Result<Record
 /// 输出位置：源 MP4 同目录、同名换 `.gif`（`-y` 覆盖）。
 /// ffmpeg 参数（spec §2.20）：`fps=15,scale=800:-1:flags=lanczos -loop 0`。
 ///
-/// 进度反馈：emit `record://gif-started {id}` → ffmpeg 跑完 →
-/// 成功 emit `record://gif-done {id, path}` / 失败 emit `record://gif-failed {id, error}`。
+/// 进度反馈：emit `record://task` + `RecordTaskEvent::GifStarted { id }` → ffmpeg 跑完 →
+/// 成功 emit `RecordTaskEvent::GifDone { id, path }` / 失败 emit `RecordTaskEvent::GifFailed { id, error }`。
 /// 前端 invoke 返回值也能拿到路径/错误，事件作为多窗口同步备用。
 #[command]
 pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
@@ -882,7 +882,7 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
     let output = input.with_extension("gif");
 
     // 4. emit 起点
-    let _ = app.emit("record://gif-started", serde_json::json!({ "id": id }));
+    let _ = app.emit("record://task", RecordTaskEvent::GifStarted { id });
 
     // 5. spawn ffmpeg
     let status = tokio::process::Command::new(&ffmpeg)
@@ -899,28 +899,72 @@ pub async fn export_gif(app: AppHandle, id: i64) -> Result<String, String> {
 
     if !status.success() {
         let _ = app.emit(
-            "record://gif-failed",
-            serde_json::json!({ "id": id, "error": "ffmpeg 转 GIF 失败" }),
+            "record://task",
+            RecordTaskEvent::GifFailed { id, error: "ffmpeg 转 GIF 失败".into() },
         );
         return Err("ffmpeg 转 GIF 失败（退出码非 0）。可能原因：源文件损坏 / ffmpeg 版本过旧".into());
     }
 
     let path_str = output.to_string_lossy().to_string();
     let _ = app.emit(
-        "record://gif-done",
-        serde_json::json!({ "id": id, "path": path_str }),
+        "record://task",
+        RecordTaskEvent::GifDone { id, path: path_str.clone() },
     );
     Ok(path_str)
 }
 
 /// `merge_audio_tracks` 的返回值——新 recording 的 id 与文件绝对路径。
 ///
-/// 前端拿到后跳详情 / reveal in Finder；事件 `record://merge-done` 作为多窗口同步备用。
+/// 前端拿到后跳详情 / reveal in Finder；事件 `record://task` +
+/// `RecordTaskEvent::MergeDone` 作为多窗口同步备用。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeResult {
     pub new_id: i64,
     pub file_path: String,
+}
+
+/// 录屏异步任务（GIF 导出 / 音轨合并）的进度事件。
+///
+/// 统一替代原 `record://gif-{started,done,failed}` + `record://merge-{started,done,failed}`
+/// 6 个事件名。前端未来如需监听，单个 `listen("record://task", ...)` + `switch(payload.event)` 即可。
+///
+/// 与 `HelperEvent`（`record://event`）同模式：内部 tagged enum。
+/// 变体名 kebab-case（外层 `rename_all`）+ 字段 camelCase（变体级 `rename_all`）——
+/// 遵循 `AGENTS.md`「序列化 casing 规范」。
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub enum RecordTaskEvent {
+    #[serde(rename_all = "camelCase")]
+    GifStarted {
+        id: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    GifDone {
+        id: i64,
+        path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    GifFailed {
+        id: i64,
+        error: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    MergeStarted {
+        id: i64,
+    },
+    /// `new_id` 指向合并后新生成的 recording 记录 id（序列化为 `newId`）。
+    #[serde(rename_all = "camelCase")]
+    MergeDone {
+        id: i64,
+        new_id: i64,
+        path: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    MergeFailed {
+        id: i64,
+        error: String,
+    },
 }
 
 /// 把双轨录屏 mp4（mic + system）用 ffmpeg `amix` 合并成单轨，另存为新文件 + INSERT 新 DB 记录。
@@ -932,7 +976,7 @@ pub struct MergeResult {
 /// 1. 查 DB 拿原 recording meta（`with_db_blocking` + `RecordStore::get`）
 /// 2. 校验 `audio_tracks.len() >= 2`（非多音轨直接报错，不浪费 ffmpeg 调用）
 /// 3. `find_ffmpeg` + `merged_output_path` 算输出路径
-/// 4. emit `record://merge-started {id}` → spawn ffmpeg → 成功 emit done / 失败 emit failed
+/// 4. emit `record://task` + `RecordTaskEvent::MergeStarted { id }` → spawn ffmpeg → 成功 emit done / 失败 emit failed
 /// 5. ffmpeg 参数：`-filter_complex [0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0[a]`
 ///    + `-map 0:v -map [a] -c:v copy -c:a aac -b:a 192k`（视频流拷贝不重编码，音频重编码 AAC）
 /// 6. 失败删 merged.mp4（避免半残文件占空间 + DB 不入库）
@@ -975,7 +1019,7 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
     let output = crate::record_audio_probe::merged_output_path(&input);
 
     // 4. emit 起点（前端切 loading 态）
-    let _ = app.emit("record://merge-started", serde_json::json!({ "id": id }));
+    let _ = app.emit("record://task", RecordTaskEvent::MergeStarted { id });
 
     // 5. spawn ffmpeg amix
     let status = tokio::process::Command::new(&ffmpeg)
@@ -1005,8 +1049,8 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         // 6. 失败删 merged.mp4（避免半残文件占空间）
         let _ = std::fs::remove_file(&output);
         let _ = app.emit(
-            "record://merge-failed",
-            serde_json::json!({ "id": id, "error": "ffmpeg amix 失败" }),
+            "record://task",
+            RecordTaskEvent::MergeFailed { id, error: "ffmpeg amix 失败".into() },
         );
         return Err("ffmpeg amix 失败（退出码非 0）".into());
     }
@@ -1091,8 +1135,8 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
     .await?;
 
     let _ = app.emit(
-        "record://merge-done",
-        serde_json::json!({ "id": id, "new_id": new_id, "path": file_path_str }),
+        "record://task",
+        RecordTaskEvent::MergeDone { id, new_id, path: file_path_str.clone() },
     );
 
     Ok(MergeResult {
