@@ -59,7 +59,10 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
     let mut result: Zeroizing<String> = Zeroizing::new(words.join(&cfg.separator));
     if cfg.include_number {
         let n: u32 = rng.gen_range(0..=9);
-        *result = format!(
+        // OBS-PASSPHRASE-ZEROIZE-DERF-ASSIGN 修复（2026-07-27，第六十九轮）：
+        // *result = format!(...) 经 DerefMut 赋值绕过 Zeroizing::drop。改重新绑定
+        // result = Zeroizing::new(format!(...)) 触发旧 Zeroizing drop 清零旧 heap。
+        result = Zeroizing::new(format!(
             "{}{}{}",
             result.as_str(),
             if cfg.separator.is_empty() {
@@ -68,7 +71,7 @@ pub fn generate(cfg: &PassphraseEnConfig) -> Result<String> {
                 cfg.separator.as_str()
             },
             n
-        );
+        ));
     }
     // 复制一份返回（Tauri IPC 需要 String；Zeroizing 在此清零 result 的 heap）
     Ok(result.as_str().to_string())
