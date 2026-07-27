@@ -198,6 +198,29 @@ desktop → feature-gated: vault (=vault + keychain + TOTP)
 - 不是简单套用 shadcn/ui 默认样式，而是做出有意图、有辨识度的设计选择
 - 纯功能性改动（如改个文案、修个逻辑 bug）无需触发此流程，但涉及视觉表现的改动必须遵守
 
+### 序列化 casing 规范（强制）
+
+**Tauri 边界**（命令返回值 + 事件 payload + 前端 TS interface）统一 **camelCase**。**协议层 / 外部格式** 保持各自 casing 不动。
+
+| 层级 | casing | 规则 | 例子 |
+|---|---|---|---|
+| **命令返回值 DTO** | camelCase | Rust 字段 snake_case + `#[serde(rename_all = "camelCase")]`；前端 interface camelCase | `newId` / `filePath` / `isAvailable` |
+| **事件 payload（Tauri emit）** | enum 外层 kebab-case tag + 变体字段 camelCase | `#[serde(tag = "event", rename_all = "kebab-case")]` 外层 + `#[serde(rename_all = "camelCase")]` 每个变体 | `{"event":"merge-done","id":1,"newId":2}` |
+| **前端 TS interface** | camelCase | 与后端 DTO 一致，零转换 | `interface MergeResult { newId: number }` |
+| **❌ 协议层（不动）** | snake_case + kebab tag | Swift helper 子进程协议，硬编码字段名 | `HelperEvent` / `RecordingRequest`（`crates/record/src/protocol.rs`） |
+| **❌ 外部格式对齐（不动）** | 各异 | 对齐外部 JSON 格式 | `ThemeColors`（Tailwind kebab）/ Bitwarden importer（camelCase）/ paddle-ocr config（snake_case） |
+| **❌ vault sync 持久化（不动）** | snake_case | 跨设备文件格式，改了破坏老数据 | `crates/vault/src/sync/store.rs` |
+| **⚠️ DB 直映射（过渡期）** | 当前 snake_case，逐步改 camelCase | `RecordingMeta` / `ClipboardItem` / `ModelEntry` 等——参考 `ActionBarItem` 先例（DB 直映射 + camelCase 可行）。改动需同步前端 interface | — |
+
+**判断流程**（新加 Serialize struct/enum 时）：
+1. 是协议层 / 外部格式 / vault sync？→ 保持现状
+2. 是命令返回值 / 事件 payload？→ **必须 camelCase**（外层 struct 加 `rename_all = "camelCase"`；enum 外层 kebab + 变体内 camelCase）
+3. 是 DB 直映射？→ **优先 camelCase**（除非有踩坑历史明确保留 snake_case）
+
+**历史教训（Task 4.1 blocker，2026-07-27）**：前端写 `audioTracks`（camelCase）但后端 `RecordingMeta` 无 rename_all 序列化为 `audio_tracks`（snake_case）→ 前端拿到 `undefined` → UI 静默失败。**casing 不一致是运行期 bug，编译期不报错**。新代码必须严格遵循本规范，前端 interface 与后端序列化 casing 一一对应。
+
+详见全工程统一 roadmap：`docs/superpowers/specs/2026-07-27-screen-record-audio-post-merge.md` 实现注记 + 后续 casing-unification 系列 spec。
+
 ### 文档同步（强制）
 
 代码变更完成后（或同时）必须同步文档：
