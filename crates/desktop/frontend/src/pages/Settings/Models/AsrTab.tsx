@@ -14,12 +14,12 @@ interface EngineOption {
   provider: string;
   category: string;
   current: boolean;
-  source_type: number;
+  sourceType: number;
   label: string;
   source: string;
-  secret_key: string;
-  is_streaming: boolean;
-  is_thinking: boolean;
+  secretKey: string;
+  isStreaming: boolean;
+  isThinking: boolean;
 }
 
 interface DownloadableModel {
@@ -28,17 +28,17 @@ interface DownloadableModel {
   repo: string;
   description: string;
   category: string;
-  // Task 2 后：is_available=就绪（文件完备）；is_enabled=激活（每域仅 1 个=1）
-  is_available: boolean;
-  is_enabled: boolean;
-  source_type: number;
+  // Task 2 后：isAvailable=就绪（文件完备）；isEnabled=激活（每域仅 1 个=1）
+  isAvailable: boolean;
+  isEnabled: boolean;
+  sourceType: number;
 }
 
-/** verify_model 返回的校验结果。ok=false 时 broken_files 含损坏/缺失文件列表。 */
+/** verify_model 返回的校验结果。ok=false 时 brokenFiles 含损坏/缺失文件列表。 */
 interface VerifyResult {
   ok: boolean;
   bootstrapped: boolean;
-  broken_files: string[];
+  brokenFiles: string[];
   message: string;
 }
 
@@ -60,10 +60,10 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     try {
       const [data, resp] = await Promise.all([
         invoke<DownloadableModel[]>("list_downloadable_models", { domain: "asr" }),
-        invoke<{ asr_engines: EngineOption[] }>("get_config"),
+        invoke<{ asrEngines: EngineOption[] }>("get_config"),
       ]);
       setDownloadable(data);
-      setEngines(resp.asr_engines ?? []);
+      setEngines(resp.asrEngines ?? []);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
@@ -100,7 +100,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
   }, [load, showToast, t]);
 
-  // Task 2 后：currentLabel 仍从 get_config 的 asr_engines（带 current 标记）取。
+  // Task 2 后：currentLabel 仍从 get_config 的 asrEngines（带 current 标记）取。
   const currentLabel = engines.find((e) => e.current)?.label ?? "";
 
   // Task 2 后：统一走 switch_active_model(domain, id)。本地模型 id 来自 DownloadableModel，
@@ -182,24 +182,24 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     invoke("delete_model", { repo }).then(load).catch((e) => showToast(e));
   };
 
-  const readyCount = downloadable.filter((m) => m.is_available).length;
+  const readyCount = downloadable.filter((m) => m.isAvailable).length;
 
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<CloudModelData | null>(null);
 
-  // 合并本地 + 云端。Task 2 后：is_ready 用 is_available；is_current 用 is_enabled（激活）。
+  // 合并本地 + 云端。Task 2 后：isReady 用 isAvailable；isCurrent 用 isEnabled（激活）。
   const localRows: ModelRowData[] = downloadable.map((m) => ({
     name: m.name, provider: "local", category: m.category,
-    description: m.description, is_ready: m.is_available,
-    is_current: m.is_enabled, source_type: m.source_type, repo: m.repo,
+    description: m.description, isReady: m.isAvailable,
+    isCurrent: m.isEnabled, sourceType: m.sourceType, repo: m.repo,
     cloudId: m.id,
   }));
 
-  const cloudEngines = engines.filter((e) => e.source_type === 2);
+  const cloudEngines = engines.filter((e) => e.sourceType === 2);
   const cloudRows: ModelRowData[] = cloudEngines.map((e) => ({
     name: e.name, provider: e.provider, category: e.category,
-    description: e.label, is_ready: true,
-    is_current: e.current, source_type: 2, repo: "",
+    description: e.label, isReady: true,
+    isCurrent: e.current, sourceType: 2, repo: "",
     cloudId: e.id,
   }));
 
@@ -211,8 +211,8 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const onEditCloud = (e: EngineOption) => {
     setEditTarget({
       id: e.id, domain: "asr", provider: e.provider, category: e.category,
-      modelName: e.name, source: e.source, secretKey: e.secret_key,
-      isStreaming: e.is_streaming, isThinking: e.is_thinking,
+      modelName: e.name, source: e.source, secretKey: e.secretKey,
+      isStreaming: e.isStreaming, isThinking: e.isThinking,
     });
     setShowForm(true);
   };

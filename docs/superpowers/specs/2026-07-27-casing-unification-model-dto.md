@@ -1,6 +1,6 @@
 # casing 统一 Task 3: model 域 DTO — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
+> **Status: ✅ 已实现**（2026-07-27，分支 `feat/record-followup`）。
 >
 > **本 spec 范围**：model 域所有命令返回 DTO 统一加 `#[serde(rename_all = "camelCase")]`，前端所有消费点（interface + 字段访问）同步改 camelCase。合并原 roadmap Task 3+4+8（model + runtime_config + translation DTO）——因为这些 struct 的 `source_type`/`is_enabled`/`is_available`/`is_streaming`/`is_thinking` 字段跨 struct 共享，前端同一页面消费，必须一次性同步改。
 >
@@ -15,9 +15,23 @@
 
 ## 实现注记（Implementation Notes）
 
-实施过程中与原 spec 的偏差回写至此处。
+### 2026-07-27 实施完成
 
-<!-- 待填 -->
+| 检查项 | 结果 |
+|---|---|
+| A1 cargo build（desktop + translation） | 0 error 0 warning |
+| A2 cargo test（desktop + translation） | desktop 422 + translation 20 全过 |
+| A3 pnpm tsc --noEmit | 0 error |
+| A4 前端 9 文件 snake_case 残留 | 0（Result/index.tsx 的 3 处 `set_polish_mode` 等是 Tauri 命令名字符串，非字段访问，正确不改） |
+| A5 后端 11 struct 都有 rename_all | model_commands 9（含已有 6 + 新加 3）+ builtin_models 1 + runtime_config 4 + settings_commands 2 + translation 1 |
+| A6 VerifiedCache/VerifiedEntry 未被误改 | 两者都只有 derive，无 rename_all ✅ |
+
+**偏差**：
+- 实施用 macOS BSD sed `[[:<:]]`/`[[:>:]]` word boundary 批量替换（`\b` 在 BSD sed 不支持，初次尝试失败后改用 BSD 语法成功）
+- model_commands.rs 实际有 9 个 rename_all（spec 说「11 个 struct 加 rename_all」是跨文件总数；model_commands.rs 内 3 个新加 + 6 个已有 = 9）
+- 前端 Result/index.tsx 的 3 处 `invoke("set_polish_mode", ...)` 是 Tauri 命令名（snake_case，Tauri 2 自动 camelCase 映射），非字段访问，正确不改
+
+**ModelRowData 决策落地**：`is_ready`/`is_current`/`source_type` 全部改 camelCase（`isReady`/`isCurrent`/`sourceType`），所有 Tab 填充代码 + ModelRow 渲染访问点同步改。
 
 ---
 

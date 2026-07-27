@@ -13,6 +13,7 @@ use crate::config::PolishMode;
 // ── get_config 返回 DTO ──
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigResponse {
     pub config: Value,
     pub asr_engines: Vec<crate::runtime_config::EngineOption>,
@@ -601,6 +602,7 @@ pub fn read_prompt_file(content: &str) -> String {
 
 /// 设置窗口返回的 prompt 信息。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptInfo {
     pub id: i64,
     pub title: String,

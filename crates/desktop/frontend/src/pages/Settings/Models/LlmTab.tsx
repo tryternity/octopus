@@ -13,12 +13,12 @@ interface LlmOption {
   provider: string;
   category: string;
   current: boolean;
-  source_type: number;
+  sourceType: number;
   label: string;
   source: string;
-  secret_key: string;
-  is_streaming: boolean;
-  is_thinking: boolean;
+  secretKey: string;
+  isStreaming: boolean;
+  isThinking: boolean;
 }
 
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
@@ -29,8 +29,8 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
 
   const load = useCallback(async () => {
     try {
-      const resp = await invoke<{ llm_models: LlmOption[] }>("get_config");
-      setModels(resp.llm_models ?? []);
+      const resp = await invoke<{ llmModels: LlmOption[] }>("get_config");
+      setModels(resp.llmModels ?? []);
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
@@ -55,8 +55,8 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   const onEdit = (m: LlmOption) => {
     setEditTarget({
       id: m.id, domain: "llm", provider: m.provider, category: m.category,
-      modelName: m.name, source: m.source, secretKey: m.secret_key,
-      isStreaming: m.is_streaming, isThinking: m.is_thinking,
+      modelName: m.name, source: m.source, secretKey: m.secretKey,
+      isStreaming: m.isStreaming, isThinking: m.isThinking,
     });
     setShowForm(true);
   };
@@ -68,13 +68,13 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     .filter((m) => m.name)
     .map((m) => ({
       name: m.name, provider: m.provider, category: m.category,
-      description: m.label, is_ready: true,
-      is_current: m.current, source_type: m.source_type, repo: "",
+      description: m.label, isReady: true,
+      isCurrent: m.current, sourceType: m.sourceType, repo: "",
       cloudId: m.id,
     }));
 
-  const localRows = rows.filter((r) => r.source_type !== 2);
-  const cloudRows = rows.filter((r) => r.source_type === 2);
+  const localRows = rows.filter((r) => r.sourceType !== 2);
+  const cloudRows = rows.filter((r) => r.sourceType === 2);
 
   return (
     <div className="space-y-0.5">
