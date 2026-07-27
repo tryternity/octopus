@@ -15,9 +15,22 @@
 
 ## 实现注记（Implementation Notes）
 
-实施过程中与原 spec 描述的偏差回写至此处（实施时填充）。
+实施过程中与原 spec 描述的偏差回写至此处。
 
-<!-- TODO（实施时填）: -->
+### 2026-07-27 Phase 0 A2 spike 结果
+
+**决策**：A2 失败（SCK 无单流 KVC），转 Phase 1-2 A1（AVAudioEngine 实时混音）。详见 `docs/superpowers/research/2026-07-27-sck-single-stream-spike.md`。
+
+**关键发现（修正原 spec 假设）**：
+
+| 原 spec 假设（§2.1/§2.3） | spike 实测 | 修正 |
+|---|---|---|
+| system `.audio` 是 interleaved stereo | **planar stereo**（flags=0x29 含 IsNonInterleaved） | PCMConverter `extractFloats` 必须处理 planar→interleaved |
+| mic 格式假设 Float32/stereo | **SInt16 mono**（flags=0xc, 1ch × Int16） | PCMConverter 必须处理 SInt16→Float32 + mono→stereo |
+| 需要 AVAudioConverter 重采样 | 两路都是 48k，**不需重采样** | AVAudioConverter 仍用，但只做位深+声道转换 |
+| S1 止损信号（压缩格式） | 两路都是 PCM，**未触发** | S1 风险降低，但代码保留检测 |
+
+**对设计的影响**：Phase 1-2 实际比原 spec 简单——不用处理采样率差异，只需位深 + 声道 + planar/interleaved 归一化。但**必须正确处理 planar vs interleaved**（否则 L/R 混乱、爆音或单边丢失——这是上轮可能的坑之一）。
 
 ---
 

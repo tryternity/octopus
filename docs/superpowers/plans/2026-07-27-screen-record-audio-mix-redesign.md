@@ -219,6 +219,15 @@ git commit -m "research(record): SCK 单流输出 spike 报告——A2 [成功/�
 
 可单测的纯函数优先。每个 task 独立可测，互不依赖。
 
+⚠️ **Phase 0 spike 发现修正**（详见 `docs/superpowers/research/2026-07-27-sck-single-stream-spike.md`）：
+
+- system `.audio` 实测：**planar stereo Float32**（`flags=0x29`，`IsFloat|IsPacked|IsNonInterleaved`，L/R 分开存）
+- mic `=2` 实测：**mono SInt16**（`flags=0xc`，`IsSignedInteger|IsPacked`，1 ch × Int16）
+- 两路都是 48k（**不需重采样**）
+- S1 止损信号未触发（都是 PCM）
+
+→ PCMConverter 必须处理 **3 维归一化**：位深（SInt16→Float32）+ 声道（mono→stereo）+ 排列（planar→interleaved）。Task 1.4 的实现和测试都按此修正。
+
 ### Task 1.1: Package.swift 加 XCTest target
 
 **Files:**
@@ -563,61 +572,163 @@ git commit -m "feat(helper): AudioMath——PTS 自产 + 增益 clamp 纯函数"
 - Consumes: `AudioMath.targetFormat`（Task 1.3）
 - Produces: `PCMConverter.toFloat32Interleaved(_:targetFormat:)`
 
-- [ ] **Step 1: 写失败的测试**
+**spike 实测格式**（必读）：
+- system `.audio`：**planar stereo Float32**（L/R 分开存于 `mBuffers[0]` / `mBuffers[1]`，每个 4 字节 Float32）
+- mic `=2`：**mono SInt16**（单缓冲，每个 2 字节 Int16）
+- 都 48k，无需重采样
+
+- [ ] **Step 1: 写失败的测试（覆盖 3 种格式）**
+
+`Tests/OctopusSckHelperTests/PCMConverterTests.swift`:
 
 ```swift
 import XCTest
 import AVFoundation
 import CoreMedia
+import AudioToolbox
 @testable import OctopusSckHelperLib
 
 final class PCMConverterTests: XCTestCase {
-    /// 构造一个已知 Float32 interleaved CMSampleBuffer（48k/2ch/2 帧）。
-    private func makeFloat32InterleavedBuffer(_ samples: [Float]) -> CMSampleBuffer? {
-        let asbd = AudioStreamBasicDescription(
-            mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
-            mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0
-        )
-        guard let desc = try? CMAudioFormatDescription(
-            streamBasicDescription: asbd
-        ), let data = try? JSONSerialization.data(withJSONObject: [])  // 占位，下面用 bytes
-        else { return nil }
 
-        var sampleBuffer: CMSampleBuffer?
-        var formatDescription: CMFormatDescription?
-        CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            asbd: &asbd, layoutSize: 0, layout: nil,
-            magicCookieSize: 0, magicCookie: nil,
-            extensions: nil, formatDescriptionOut: &formatDescription
+    // ── 测试 1：system .audio 格式（planar stereo Float32 → interleaved Float32）──
+    // 模拟 spike 实测：flags=0x29 (IsFloat|IsPacked|IsNonInterleaved), 2ch, bytesPerFrame=4
+    func testPlanarStereoFloat32ToInterleaved() throws {
+        // planar 数据：L = [0.1, 0.3]，R = [0.2, 0.4]
+        let leftSamples: [Float] = [0.1, 0.3]
+        let rightSamples: [Float] = [0.2, 0.4]
+        let frameCount = 2
+
+        let sb = try makePCMSampleBuffer(
+            sampleRate: 48_000, channels: 2,
+            formatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+            bytesPerFrame: 4,  // per-plane（1 ch × Float32）
+            planes: [
+                leftSamples.withUnsafeBufferPointer { Data(buffer: $0) },
+                rightSamples.withUnsafeBufferPointer { Data(buffer: $0) },
+            ]
         )
-        // 构造 block buffer + sample buffer 见 helper 实现期；测试可简化为只验 bytes 转换
-        // 此处给一个简化的 smoke test：直接调用 converter，看是否返回预期长度
-        return sampleBuffer
+
+        let result = try PCMConverter.toFloat32Interleaved(sb, targetFormat: AudioMath.targetFormat)
+        // 期望 interleaved：[L0, R0, L1, R1] = [0.1, 0.2, 0.3, 0.4]
+        XCTAssertEqual(result.count, frameCount * 2)
+        XCTAssertEqual(result, [0.1, 0.2, 0.3, 0.4], accuracy: 1e-6)
     }
 
-    func testFloat32InterleavedPassThrough() {
-        // 简化测试：构造一个 AVAudioPCMBuffer，转成 CMSampleBuffer，再转回来
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
-            channels: 2, interleaved: true
-        )!
-        let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2)!
-        pcmBuffer.frameLength = 2
-        let chans = pcmBuffer.floatChannelData!
-        // interleaved buffer: floatChannelData?[0] 是连续的 L0,R0,L1,R1
-        chans[0][0] = 0.1; chans[0][1] = 0.2; chans[0][2] = 0.3; chans[0][3] = 0.4
+    // ── 测试 2：mic =2 格式（mono SInt16 → stereo Float32 interleaved）──
+    // 模拟 spike 实测：flags=0xc (IsSignedInteger|IsPacked), 1ch, bytesPerFrame=2
+    func testMonoSInt16ToStereoFloat32() throws {
+        // SInt16 数据：[16384, -16384]（约 0.5, -0.5）
+        let intSamples: [Int16] = [16384, -16384]
+        let frameCount = 2
 
-        // 直接测底层 bytes 转 Float 数组（PCMConverter 的内部辅助函数）
-        let floats = PCMConverter._testExtractFloats(fromPCMBuffer: pcmBuffer)
-        XCTAssertEqual(floats, [0.1, 0.2, 0.3, 0.4], accuracy: 1e-6)
+        let sb = try makePCMSampleBuffer(
+            sampleRate: 48_000, channels: 1,
+            formatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            bytesPerFrame: 2,
+            planes: [
+                intSamples.withUnsafeBufferPointer { Data(buffer: $0) },
+            ]
+        )
+
+        let result = try PCMConverter.toFloat32Interleaved(sb, targetFormat: AudioMath.targetFormat)
+        // 期望 mono→stereo duplicate + SInt16→Float32（/32768.0）+ interleaved
+        // [0.5, 0.5, -0.5, -0.5]
+        XCTAssertEqual(result.count, frameCount * 2)
+        XCTAssertEqual(result[0], 16384.0 / 32768.0, accuracy: 1e-3)
+        XCTAssertEqual(result[1], 16384.0 / 32768.0, accuracy: 1e-3)
+        XCTAssertEqual(result[2], -16384.0 / 32768.0, accuracy: 1e-3)
+        XCTAssertEqual(result[3], -16384.0 / 32768.0, accuracy: 1e-3)
+    }
+
+    // ── 测试 3：已是目标格式（interleaved stereo Float32）→ pass-through ──
+    func testInterleavedFloat32PassThrough() throws {
+        let samples: [Float] = [0.1, 0.2, 0.3, 0.4]  // L0,R0,L1,R1
+
+        let sb = try makePCMSampleBuffer(
+            sampleRate: 48_000, channels: 2,
+            formatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            bytesPerFrame: 8,  // 2 ch × Float32
+            planes: [
+                samples.withUnsafeBufferPointer { Data(buffer: $0) },
+            ]
+        )
+
+        let result = try PCMConverter.toFloat32Interleaved(sb, targetFormat: AudioMath.targetFormat)
+        XCTAssertEqual(result, samples, accuracy: 1e-6)
+    }
+
+    // MARK: - 辅助：手工构造 PCM CMSampleBuffer
+
+    /// 通用 PCM sample buffer 构造。planes.count == 1 = interleaved/packed；> 1 = planar。
+    private func makePCMSampleBuffer(
+        sampleRate: Float64, channels: UInt32, formatFlags: AudioFormatFlags,
+        bytesPerFrame: UInt32, planes: [Data]
+    ) throws -> CMSampleBuffer {
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: sampleRate, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: formatFlags,
+            mBytesPerPacket: bytesPerFrame * channels, mFramesPerPacket: 1,
+            mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: channels,
+            mBitsPerChannel: bytesPerFrame * 8 / channels, mReserved: 0
+        )
+        // ⚠️ 对 planar，mBytesPerFrame 是 per-plane；上面的 bytesPerFrame * channels 对 planar 不准
+        // 但 CMAudioFormatDescription 主要看 mChannelsPerFrame + flags，mBytesPerFrame 在 planar 下
+        // 表示每个 plane 的帧字节数。修正：
+        if formatFlags & kAudioFormatFlagIsNonInterleaved != 0 {
+            asbd.mBytesPerPacket = bytesPerFrame
+            asbd.mBytesPerFrame = bytesPerFrame
+        }
+
+        var formatDesc: CMFormatDescription?
+        CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault, asbd: &asbd,
+            layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
+            extensions: nil, formatDescriptionOut: &formatDesc
+        )
+        guard let desc = formatDesc else { XCTFail("formatDesc nil"); fatalError() }
+
+        let frameCount = planes[0].count / Int(bytesPerFrame)
+        let totalBytes = planes.reduce(0) { $0 + $1.count }
+
+        var blockBuffer: CMBlockBuffer?
+        CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault, memoryBlock: nil,
+            blockLength: totalBytes, blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil, offsetToData: 0, dataLength: totalBytes,
+            flags: 0, blockBufferOut: &blockBuffer
+        )
+        // 拷贝 planes 顺序拼接进 blockBuffer
+        var offset = 0
+        for plane in planes {
+            plane.withUnsafeBytes { rawBuf in
+                guard let base = rawBuf.baseAddress else { return }
+                blockBuffer!.withMutableDataPointer { ptr in
+                    let dst = ptr.pointee.advanced(by: offset)
+                    memcpy(dst, base, plane.count)
+                }
+            }
+            offset += plane.count
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: Int64(frameCount), timescale: 48_000),
+            presentationTimeStamp: CMTime(value: 0, timescale: 48_000),
+            decodeTimeStamp: .invalid
+        )
+        var sampleSize = Int(bytesPerFrame)
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
+            formatDescription: desc, sampleCount: frameCount,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard let sb = sampleBuffer else { XCTFail("sampleBuffer nil"); fatalError() }
+        return sb
     }
 }
 ```
-
-⚠️ **注意**：CMSampleBuffer 完整构造在单测里复杂（blockbuffer + sample timing）。实现期可简化——PCMConverter 直接接受 `AVAudioPCMBuffer` 或 `AudioBufferList`，避开 CMSampleBuffer 构造。测试策略改为：测 `AVAudioPCMBuffer → [Float]` 这一层（更易构造），CMSampleBuffer 解构在集成层验证。
 
 - [ ] **Step 2: 跑测试，确认失败**
 
@@ -627,7 +738,7 @@ swift test --filter PCMConverterTests
 
 Expected: FAIL "cannot find 'PCMConverter' in scope"。
 
-- [ ] **Step 3: 实现 PCMConverter**
+- [ ] **Step 3: 实现 PCMConverter（用 AVAudioConverter 处理位深+声道+排列归一化）**
 
 `Sources/OctopusSckHelperLib/PCMConverter.swift`:
 
@@ -636,18 +747,20 @@ import Foundation
 import AVFAudio
 import CoreMedia
 
-/// 把音频样本归一化到目标格式（48k/2ch/float32 interleaved）。
+/// 把 SCK 回调的 CMSampleBuffer（system=planar-stereo-float32，mic=mono-sint16）
+/// 归一化到目标格式（48k/2ch/float32 interleaved）。
+///
+/// spike 实测（2026-07-27）：
+/// - system .audio: planar stereo Float32（flags=0x29），L/R 分开存
+/// - mic =2: mono SInt16（flags=0xc），单缓冲 Int16
+/// - 两路都 48k，**无需重采样**，只需位深 + 声道 + 排列归一化
+///
+/// ⚠️ 技术止损信号 S1：若 SCK 给的是压缩格式（AAC），AVAudioConverter 会失败。
 public enum PCMConverter {
-    /// 从 SCK 回调的 CMSampleBuffer 提取 PCM bytes，用 AVAudioConverter 重采样到目标格式。
-    /// 返回 interleaved Float32 数组（L0,R0,L1,R1,...）。
-    ///
-    /// ⚠️ 技术止损信号 S1：若 SCK 给的是压缩格式（AAC），AVAudioConverter 会失败。
-    /// 调用方需 catch 并发 stderr 警告。
     public static func toFloat32Interleaved(
         _ sampleBuffer: CMSampleBuffer,
         targetFormat: AVAudioFormat
     ) throws -> [Float] {
-        // 从 CMSampleBuffer 拿 AudioBufferList + frameCount
         let frameCount = Int(CMSampleBufferGetNumSamples(sampleBuffer))
         guard frameCount > 0,
               let srcFormatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
@@ -662,22 +775,24 @@ public enum PCMConverter {
             throw NSError(domain: "PCMConverter", code: 2, userInfo: nil)
         }
         srcBuffer.frameLength = AVAudioFrameCount(frameCount)
-        try sampleBuffer.withAudioBufferList { audioBufferList in
-            // 拷贝第一帧的 mData 到 srcBuffer
+        sampleBuffer.withAudioBufferList { audioBufferList in
             let src = audioBufferList.unsafePointer(at: 0)
             if let srcData = src?.pointee.mBuffers.mData,
                let dstData = srcBuffer.audioBufferList.pointee.mBuffers.mData {
-                let bytes = frameCount * Int(srcASBD.mBytesPerFrame)
-                memcpy(dstData, srcData, bytes)
+                let bytes = frameCount * Int(srcASBD.mBytesPerFrame) * Int(srcASBD.mChannelsPerFrame)
+                    / Int(audioBufferList.unsafePointer(at: 0)?.pointee.mNumberBuffers ?? 1)
+                // planar 时 mBuffers[0] 只含一个 plane；interleaved 时含全部
+                let actualBytes = min(bytes, Int(src?.pointee.mBuffers.mDataByteSize ?? 0))
+                memcpy(dstData, srcData, actualBytes)
             }
         }
 
-        // 格式相同直接抽
+        // 格式完全相同直接抽
         if srcAvFormat == targetFormat {
             return extractFloats(fromPCMBuffer: srcBuffer)
         }
 
-        // 格式不同用 AVAudioConverter 重采样
+        // 格式不同用 AVAudioConverter（处理位深+声道+排列，不做采样率转换）
         guard let converter = AVAudioConverter(from: srcAvFormat, to: targetFormat) else {
             throw NSError(domain: "PCMConverter", code: 3,
                           userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter init failed (compressed source?)"])
@@ -692,28 +807,22 @@ public enum PCMConverter {
 
     static func extractFloats(fromPCMBuffer buffer: AVAudioPCMBuffer) -> [Float] {
         let frames = Int(buffer.frameLength)
-        let chans = buffer.floatChannelData!
+        let channels = Int(buffer.format.channelCount)
+        guard let chans = buffer.floatChannelData else { return [] }
         if buffer.format.isInterleaved {
             // interleaved: chans[0] 是连续 L0,R0,L1,R1
-            let count = frames * Int(buffer.format.channelCount)
+            let count = frames * channels
             return Array(UnsafeBufferPointer(start: chans[0], count: count))
         } else {
             // planar: chans[0] = L 全部，chans[1] = R 全部，需交织
-            let result = [Float](repeating: 0, count: frames * 2)
-            for f in 0..<frames {
-                result[f * 2] = chans[0][f]
-                result[f * 2 + 1] = chans[1][f]
+            var result = [Float](repeating: 0, count: frames * channels)
+            for ch in 0..<channels {
+                for f in 0..<frames {
+                    result[f * channels + ch] = chans[ch][f]
+                }
             }
             return result
         }
-    }
-
-    static func extractFloats(fromBufferList bl: AudioBufferList, frameCount: Int) -> [Float] {
-        guard bl.mNumberBuffers > 0, let data = bl.mBuffers.mData else { return [] }
-        let channels = Int(bl.mBuffers.mNumberChannels)
-        let count = frameCount * channels
-        let pointer = data.assumingMemoryBound(to: Float.self)
-        return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
     static func convertWithAVAudioConverter(
@@ -721,10 +830,8 @@ public enum PCMConverter {
         sourceBuffer: AVAudioPCMBuffer,
         targetFormat: AVAudioFormat
     ) throws -> [Float] {
-        // 计算输出帧数（按采样率比）
-        let outputFrames = AVAudioFrameCount(
-            Double(sourceBuffer.frameLength) * targetFormat.sampleRate / sourceBuffer.format.sampleRate
-        )
+        // 同采样率：输出帧数 = 输入帧数（不做重采样，只做格式转换）
+        let outputFrames = sourceBuffer.frameLength
         guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputFrames) else {
             throw NSError(domain: "PCMConverter", code: 2, userInfo: nil)
         }
@@ -733,7 +840,6 @@ public enum PCMConverter {
         var error: NSError?
         var inputBufferConsumed = false
         converter.convert(to: outputBuffer, error: &error) { _, outStatus in
-            // render block：被调用一次（输入是一次性 buffer）
             if inputBufferConsumed {
                 outStatus.pointee = .endOfStream
                 return nil
@@ -748,86 +854,22 @@ public enum PCMConverter {
 }
 ```
 
-⚠️ **此 Task 最复杂**——AVAudioConverter render block 的精确写法需要在实现期对照 Apple 文档打磨。测试主要覆盖「格式相同 pass-through」和「planar→interleaved」两条路径。**若实现期发现 SCK `.audio` 已经是 48k/2ch/float32 interleaved**（很可能），`convertWithAVAudioConverter` 分支根本走不到，可作为降级路径。
-
-- [ ] **Step 4: 补全对外 API 测试（Pre-Flight Issue 2 决策）**
-
-测试必须覆盖对外 API `toFloat32Interleaved(_:targetFormat:)`，不能只测内部辅助函数。补一个用 `CMAudioSampleBufferCreateReady` 手工构造 CMSampleBuffer 的单测（纯 PCM bytes，不走真实 SCK）：
-
-```swift
-func testToFloat32InterleavedPassthroughWithConstructedSampleBuffer() {
-    // 构造已知 PCM：48k/2ch/float32 interleaved，2 帧 = [0.1, 0.2, 0.3, 0.4]
-    let samples: [Float] = [0.1, 0.2, 0.3, 0.4]
-    let frameCount: Int = 2
-    let bytesPerFrame = 2 * MemoryLayout<Float>.size  // 2 ch × 4 bytes
-    let totalBytes = frameCount * bytesPerFrame
-
-    var asbd = AudioStreamBasicDescription(
-        mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
-        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-        mBytesPerPacket: bytesPerFrame, mFramesPerPacket: 1,
-        mBytesPerFrame: bytesPerFrame, mChannelsPerFrame: 2,
-        mBitsPerChannel: 32, mReserved: 0
-    )
-    var formatDesc: CMFormatDescription?
-    CMAudioFormatDescriptionCreate(
-        allocator: kCFAllocatorDefault, asbd: &asbd,
-        layoutSize: 0, layout: nil, magicCookieSize: 0, magicCookie: nil,
-        extensions: nil, formatDescriptionOut: &formatDesc
-    )
-    guard let desc = formatDesc else { XCTFail("formatDesc nil"); return }
-
-    // 构造 CMBlockBuffer 装载 PCM bytes
-    var blockBuffer: CMBlockBuffer?
-    CMBlockBufferCreateWithMemoryBlock(
-        allocator: kCFAllocatorDefault, memoryBlock: nil,
-        blockLength: totalBytes, blockAllocator: kCFAllocatorDefault,
-        customBlockSource: nil, offsetToData: 0, dataLength: totalBytes,
-        flags: 0, blockBufferOut: &blockBuffer
-    )
-    _ = blockBuffer!.withMutableDataPointer { ptr in
-        let dst = ptr.pointee.withMemoryRebound(to: Float.self, capacity: samples.count) { $0 }
-        for (i, s) in samples.enumerated() { dst[i] = s }
-    }
-
-    var timing = CMSampleTimingInfo(
-        duration: CMTime(value: 2, timescale: 48_000),
-        presentationTimeStamp: CMTime(value: 0, timescale: 48_000),
-        decodeTimeStamp: .invalid
-    )
-    var sampleSize = bytesPerFrame
-    var sampleBuffer: CMSampleBuffer?
-    CMSampleBufferCreateReady(
-        allocator: kCFAllocatorDefault, dataBuffer: blockBuffer,
-        formatDescription: desc, sampleCount: frameCount,
-        sampleTimingEntryCount: 1, sampleTimingArray: &timing,
-        sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize,
-        sampleBufferOut: &sampleBuffer
-    )
-    guard let sb = sampleBuffer else { XCTFail("sampleBuffer nil"); return }
-
-    // 调对外 API（target = source 格式，应走 pass-through）
-    let result = try? PCMConverter.toFloat32Interleaved(sb, targetFormat: AudioMath.targetFormat)
-    XCTAssertNotNil(result)
-    XCTAssertEqual(result, samples, accuracy: 1e-6)
-}
-```
-
-**注意**：`AudioMath.targetFormat` 是 interleaved；如果构造的 asbd 也是 interleaved（`mFormatFlags` 含 `IsPacked`），格式相同走 pass-through 分支，直接验证 `extractFloats`。如果要测重采样路径（44.1k → 48k），把 asbd.mSampleRate 改成 44_100，验证返回长度按比例缩放。
-
-- [ ] **Step 5: 跑测试，确认通过**
+- [ ] **Step 4: 跑测试，确认通过**
 
 ```bash
 swift test --filter PCMConverterTests
 ```
 
-Expected: 2 个 test（`testFloat32InterleavedPassThrough` + `testToFloat32InterleavedPassthroughWithConstructedSampleBuffer`）全过。
+Expected: 3 个 test 全过：
+- `testPlanarStereoFloat32ToInterleaved`（system .audio 格式）
+- `testMonoSInt16ToStereoFloat32`（mic =2 格式）
+- `testInterleavedFloat32PassThrough`（边界情况）
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add Sources/OctopusSckHelperLib/PCMConverter.swift Tests/OctopusSckHelperTests/PCMConverterTests.swift
-git commit -m "feat(helper): PCMConverter——CMSampleBuffer→Float32 interleaved + 对外 API 单测"
+git commit -m "feat(helper): PCMConverter——CMSampleBuffer→Float32 interleaved（planar/SInt16/mono 归一化）"
 ```
 
 ---
