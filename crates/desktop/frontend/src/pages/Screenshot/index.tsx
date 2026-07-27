@@ -976,7 +976,7 @@ export default function Screenshot() {
           onClose={() => { setQrResult(null); setQrScanning(false); }}
           scanningText={t("screenshot.qrScanning")}
           noResultText={t("screenshot.qrNoResult")}
-          copiedText={t("screenshot.qrCopied")}
+          copyAllText={t("screenshot.qrCopyAll")}
           onOpenUrl={(u) => openUrl(u).catch(() => {})}
         />
       )}
@@ -994,21 +994,24 @@ export default function Screenshot() {
  *     若选区高度过小（< 60），改为贴选区上方（top = sel.y - 卡片高 - 6）
  *   - 多个二维码内容：逐行显示；http(s):// 开头渲染为可点击链接（openUrl 打开）
  */
-function QrResultCard({ sel, scanning, codes, onClose, scanningText, noResultText, copiedText, onOpenUrl }: {
+function QrResultCard({ sel, scanning, codes, onClose, scanningText, noResultText, copyAllText, onOpenUrl }: {
   sel: Selection;
   scanning: boolean;
   codes: string[] | null;
   onClose: () => void;
   scanningText: string;
   noResultText: string;
-  copiedText: string;
+  copyAllText: string;
   onOpenUrl: (url: string) => void;
 }) {
   const CARD_MAX_W = 360;
   const CARD_MIN_W = 200;
   const cardW = Math.max(CARD_MIN_W, Math.min(CARD_MAX_W, sel.w));
-  // 选区高度过小时把卡片放上方（避免遮挡内容 / 卡片高过选区）
   const above = sel.h < 80;
+
+  const copyText = (text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
 
   return (
     <div style={{
@@ -1048,28 +1051,52 @@ function QrResultCard({ sel, scanning, codes, onClose, scanningText, noResultTex
           <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingRight: 20 }}>
             {codes.map((c, i) => {
               const isUrl = /^https?:\/\//i.test(c);
-              return isUrl ? (
-                <a
-                  key={i}
-                  href={c}
-                  onClick={(e) => { e.preventDefault(); onOpenUrl(c); }}
-                  style={{
-                    color: "#2563eb", textDecoration: "underline",
-                    wordBreak: "break-all", cursor: "pointer", fontSize: 13, lineHeight: 1.4,
-                  }}
-                  title={c}
-                >{c}</a>
-              ) : (
-                <div key={i} style={{
-                  wordBreak: "break-all", whiteSpace: "pre-wrap",
-                  fontSize: 13, lineHeight: 1.4, color: "#1a1a1a",
-                }}>{c}</div>
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {isUrl ? (
+                      <a
+                        href={c}
+                        onClick={(e) => { e.preventDefault(); onOpenUrl(c); }}
+                        style={{ color: "#2563eb", textDecoration: "underline", wordBreak: "break-all", cursor: "pointer", fontSize: 13, lineHeight: 1.4 }}
+                        title={c}
+                      >{c}</a>
+                    ) : (
+                      <div style={{ wordBreak: "break-all", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.4, color: "#1a1a1a" }}>{c}</div>
+                    )}
+                  </div>
+                  {/* 单个复制按钮 */}
+                  <button
+                    onClick={() => copyText(c)}
+                    title="复制"
+                    style={{
+                      flexShrink: 0, width: 24, height: 24, borderRadius: 4, border: "none",
+                      cursor: "pointer", background: "transparent", color: "#71717a",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 12, marginTop: -1,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#f4f4f5"; e.currentTarget.style.color = "#3b82f6"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#71717a"; }}
+                  ><img src="icons/copy.svg" alt="复制" className="w-[14px] h-[14px]" style={{ filter: "var(--icon-filter)" }} /></button>
+                </div>
               );
             })}
           </div>
-          <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#16a34a", fontWeight: 500 }}>
-            {copiedText}
-          </div>
+          {/* 复制所有——仅多码时显示 */}
+          {codes.length > 1 && (
+            <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #f0f0f0" }}>
+              <button
+                onClick={() => copyText(codes.join("\n"))}
+                style={{
+                  width: "100%", padding: "5px 0", borderRadius: 5, border: "1px solid #e4e4e7",
+                  cursor: "pointer", background: "#fafafa", color: "#52525b",
+                  fontSize: 12, fontWeight: 500,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "#f4f4f5"; e.currentTarget.style.color = "#3b82f6"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "#fafafa"; e.currentTarget.style.color = "#52525b"; }}
+              >{copyAllText}</button>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ padding: "6px 0", color: "#71717a", textAlign: "center" }}>{noResultText}</div>

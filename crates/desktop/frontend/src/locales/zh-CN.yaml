@@ -931,7 +931,7 @@ screenshot:
   pin: 贴图
   ocrBusy: 前一个 OCR 还未完成，请稍后
   qrNoResult: 未识别到二维码
-  qrCopied: 已复制到剪贴板
+  qrCopyAll: 复制所有
   qrScanning: 识别中...
   save: 保存
   copy: 复制
@@ -1009,7 +1009,7 @@ imagePreview:
   ocr: OCR 识别
   ocrBusy: 前一个 OCR 还未完成，请稍后
   qrNoResult: 未识别到二维码
-  qrCopied: 已复制到剪贴板
+  qrCopyAll: 复制所有
   qrScanning: 识别中...
   undo: 撤销 (Cmd/Ctrl+Z)
   redo: 重做 (Cmd/Ctrl+Shift+Z)

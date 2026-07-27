@@ -603,13 +603,13 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     Ok(OcrResult { text, blocks })
 }
 
-/// 图片条目二维码识别：按 image_id 读 DB 图片 blob（WebP）→ 解码 → qrcode::scan →
-/// 非空则 join("\n") 写剪贴板。与 ocr_image 同模式读 blob，但不走 OCR 推理、不入库。
+/// 图片条目二维码识别：按 image_id 读 DB 图片 blob（WebP）→ 解码 → qrcode::scan。
+/// 与 ocr_image 同模式读 blob，但不走 OCR 推理、不入库、不自动写剪贴板
+/// （前端白卡提供单个复制 + 复制所有按钮）。
 /// 返回识别到的二维码内容列表（可能空）。
 #[tauri::command]
 pub async fn scan_qrcode_image(
     image_id: i64,
-    handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<Vec<String>, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, image_id)
@@ -630,18 +630,11 @@ pub async fn scan_qrcode_image(
     .map_err(|e| e.to_string())?
     .ok_or("图片数据不存在")?;
 
-    // WebP 解码 + rqrr 识别 + 写剪贴板：CPU 密集，移入 spawn_blocking 隔离 Tokio worker
-    // （与 ocr_image / write_item_to_clipboard Image 分支同范式）。
-    let handle_clone = handle.inner().clone();
+    // WebP 解码 + quircs 识别：CPU 密集，移入 spawn_blocking 隔离 Tokio worker。
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
             .map_err(|e| format!("解码 WebP 失败: {}", e))?;
-        let codes = octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())?;
-        if !codes.is_empty() {
-            let joined = codes.join("\n");
-            handle_clone.write_text(&joined).map_err(|e| e.to_string())?;
-        }
-        Ok(codes)
+        octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("scan_qrcode_image 任务异常: {}", e))??;

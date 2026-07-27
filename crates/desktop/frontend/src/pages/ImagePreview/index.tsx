@@ -1010,28 +1010,50 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
               <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingRight: 20 }}>
                 {qrResult.map((c, i) => {
                   const isUrl = /^https?:\/\//i.test(c);
-                  return isUrl ? (
-                    <a
-                      key={i}
-                      href={c}
-                      onClick={(e) => { e.preventDefault(); openUrl(c).catch(() => {}); }}
-                      style={{
-                        color: "#2563eb", textDecoration: "underline",
-                        wordBreak: "break-all", cursor: "pointer", fontSize: 13, lineHeight: 1.4,
-                      }}
-                      title={c}
-                    >{c}</a>
-                  ) : (
-                    <div key={i} style={{
-                      wordBreak: "break-all", whiteSpace: "pre-wrap",
-                      fontSize: 13, lineHeight: 1.4, color: "#1a1a1a",
-                    }}>{c}</div>
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 4 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {isUrl ? (
+                          <a
+                            href={c}
+                            onClick={(e) => { e.preventDefault(); openUrl(c).catch(() => {}); }}
+                            style={{ color: "#2563eb", textDecoration: "underline", wordBreak: "break-all", cursor: "pointer", fontSize: 13, lineHeight: 1.4 }}
+                            title={c}
+                          >{c}</a>
+                        ) : (
+                          <div style={{ wordBreak: "break-all", whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.4, color: "#1a1a1a" }}>{c}</div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(c).catch(() => {})}
+                        title="复制"
+                        style={{
+                          width: 24, height: 24, borderRadius: 4, border: "none",
+                          cursor: "pointer", background: "transparent", color: "#71717a",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 12, marginTop: -1,
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "#f4f4f5"; e.currentTarget.style.color = "#3b82f6"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#71717a"; }}
+                      ><img src="icons/copy.svg" alt="复制" className="w-[14px] h-[14px]" style={{ filter: "var(--icon-filter)" }} /></button>
+                    </div>
                   );
                 })}
               </div>
-              <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #f0f0f0", fontSize: 11, color: "#16a34a", fontWeight: 500 }}>
-                {t("imagePreview.qrCopied")}
-              </div>
+              {qrResult.length > 1 && (
+                <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #f0f0f0" }}>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(qrResult.join("\n")).catch(() => {})}
+                    style={{
+                      width: "100%", padding: "5px 0", borderRadius: 5, border: "1px solid #e4e4e7",
+                      cursor: "pointer", background: "#fafafa", color: "#52525b",
+                      fontSize: 12, fontWeight: 500,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "#f4f4f5"; e.currentTarget.style.color = "#3b82f6"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "#fafafa"; e.currentTarget.style.color = "#52525b"; }}
+                  >{t("imagePreview.qrCopyAll")}</button>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ padding: "6px 0", color: "#71717a", textAlign: "center" }}>{t("imagePreview.qrNoResult")}</div>

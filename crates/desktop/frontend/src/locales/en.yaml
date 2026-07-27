@@ -924,7 +924,7 @@ screenshot:
   cancel: Cancel
   pin: Pin
   qrNoResult: No QR code detected
-  qrCopied: Copied to clipboard
+  qrCopyAll: Copy All
   qrScanning: Scanning...
   save: Save
   copy: Copy
@@ -1002,7 +1002,7 @@ imagePreview:
   ocr: OCR Recognition
   ocrBusy: Previous OCR not finished, please wait
   qrNoResult: No QR code detected
-  qrCopied: Copied to clipboard
+  qrCopyAll: Copy All
   qrScanning: Scanning...
   undo: Undo (Cmd/Ctrl+Z)
   redo: Redo (Cmd/Ctrl+Shift+Z)
