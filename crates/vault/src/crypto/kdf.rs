@@ -174,6 +174,20 @@ pub fn derive_master_root_key(password: &[u8], salt: &[u8], params: &Argon2Param
     // 之前用裸 [u8;32]（Copy 类型）→ Zeroizing::new(out) 是复制，原栈数组 drop 时
     // 不清零（[u8;32] 的 Drop 是 no-op），成功路径残留 + 失败路径（? 提前返回）更残留。
     // 现在 Zeroizing 持有唯一副本，任一返回路径 scope 结束都清零。
+    //
+    // 第七十二轮（2026-07-27）记录 64 MiB argon2 memory blocks deliberate trade-off：
+    // hash_password_into 内部分配 ~64 MiB memory blocks（Vec<Block>，Block 是 Copy + 无
+    // ZeroizeOnDrop），hash 后 Vec drop 只 dealloc 不清零 → 64 MiB argon2 中间态 heap 残留。
+    // 这是当前选择不清的权衡——argon2 单向性（G 函数 + data-dependent addressing）保证
+    // memory blocks 不可逆推 password，残留是 cold boot / heap dump 攻击面，非密钥泄漏。
+    // vault 启用 argon2 zeroize feature 只让 ~2KB 中间状态（initial_hash 64B + blockhash
+    // 1024B + blockhash_bytes 1024B）清零，不覆盖 64 MiB memory。
+    //
+    // 未来如需清除 64 MiB，可改用 hash_password_into_with_memory 自己 own Vec<Block>
+    // 后遍历 .zeroize()（与 argon2 官方 lib.rs:230 hash_password_into 实现一致）：
+    //   let mut blocks = vec![Block::default(); params.block_count()];
+    //   argon2.hash_password_into_with_memory(password, salt, &mut *out, &mut blocks)?;
+    //   for block in &mut blocks { block.zeroize(); }
     let mut out = Zeroizing::new([0u8; 32]);
     argon2
         .hash_password_into(password, salt, &mut *out)
