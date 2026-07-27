@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use octopus_record::RawAudioTrack;
+use octopus_record::{AudioTrack, RawAudioTrack};
 use octopus_infra::octopus_config_home;
 use serde::Deserialize;
 
@@ -116,4 +116,48 @@ pub async fn probe_audio_tracks(ffprobe: &Path, mp4: &Path) -> Result<Vec<RawAud
         });
     }
     Ok(tracks)
+}
+
+/// 用 ffmpeg `-c copy -metadata` 把 audio_tracks JSON 写进 mp4 udta atom。
+///
+/// 调用语义：失败不阻断主流程——调用方吞掉错误仅 log warn（DB 已有 audio_tracks 兜底）。
+/// 流程：ffmpeg 写入 `*.meta.tmp` 临时文件 → 成功才 `rename` 覆盖原文件；失败删 tmp 避免半残。
+///
+/// `serde_json::to_string` 兜底 `"[]"`——`AudioTrack` 派生了 `Serialize`，理论上不会失败，
+/// 保留兜底以防御未来字段变更（如含不可序列化类型）。
+///
+/// ffmpeg 参数：`-y -i <mp4> -c copy -metadata octopus_audio_tracks=<json> <tmp>`。
+/// `-c copy` 不重编码（流拷贝），秒级完成，仅改写 udta box。
+pub async fn write_audio_tracks_metadata(
+    ffmpeg: &Path,
+    mp4: &Path,
+    tracks: &[AudioTrack],
+) -> Result<(), String> {
+    let json = serde_json::to_string(tracks).unwrap_or_else(|_| "[]".into());
+    // 临时文件命名：`<name>.mp4.meta.tmp`——`with_extension("mp4.meta.tmp")` 把
+    // 原 `.mp4` 整体替换为 `xxx.mp4.meta.tmp`（PathBuf::with_extension 语义：替换最后一段 ext）。
+    // 实测 `xxx.mp4` → `xxx.mp4.meta.tmp`（因为 `.mp4` 视为单个 ext 被替换）。
+    // 之所以带 `.mp4`：ffmpeg 按扩展名判断输出格式，必须保留 `.mp4` 后缀。
+    let tmp = mp4.with_extension("mp4.meta.tmp");
+
+    let status = tokio::process::Command::new(ffmpeg)
+        .arg("-y")
+        .arg("-i").arg(mp4)
+        .arg("-c").arg("copy")
+        .arg("-metadata").arg(format!("octopus_audio_tracks={}", json))
+        .arg(&tmp)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
+
+    if !status.success() {
+        // 失败删 tmp，避免半残文件残留（_ 忽略「文件不存在」错误）。
+        let _ = std::fs::remove_file(&tmp);
+        return Err("ffmpeg metadata 写入失败（退出码非 0）".into());
+    }
+
+    std::fs::rename(&tmp, mp4).map_err(|e| format!("覆盖原文件失败: {e}"))?;
+    Ok(())
 }
