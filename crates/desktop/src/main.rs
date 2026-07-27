@@ -91,6 +91,11 @@ mod record_area_picker;
 mod record_annotation_window;
 #[cfg(target_os = "macos")]
 mod record_control_window;
+// 录屏音频元数据探测（Task 2.1，2026-07-27 录后合并 phase）：
+// ffprobe 读 mp4 实际音轨 + 给后续 Task 2.2 写 metadata 用。仅 macOS
+// （octopus-record + RawAudioTrack 只 mac 编译；与 record_commands.rs 同 gate）。
+#[cfg(target_os = "macos")]
+mod record_audio_probe;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
