@@ -175,13 +175,13 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
         octopus_clipboard::ItemType::Image => {
             let blob_hash = item.ref_data.clone()
                 .ok_or("图片元数据缺失")?;
-            let webp_blob = octopus_infra::db::with_db(|conn| {
+            let image_blob = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::get_image_blob(conn, &blob_hash)
             })
             .map_err(|e| e.to_string())?
             .ok_or("图片数据不存在")?;
             // image_data 存 JPEG q85 BLOB（IMAGE_SAVE_QUALITY=jpeg:85）；write_image 契约是 PNG，转码一次
-            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
+            let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                 .map_err(|e| format!("解码 JPEG 失败: {}", e))?;
             let mut png = Vec::new();
             let mut cursor = std::io::Cursor::new(&mut png);
@@ -325,7 +325,7 @@ pub async fn save_image_item(
         .ok_or("图片元数据缺失")?;
 
     // 2. 从 DB 读 WebP 无损 BLOB
-    let webp_blob = octopus_infra::db::with_db(|conn| {
+    let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
     .map_err(|e| e.to_string())?
@@ -352,16 +352,16 @@ pub async fn save_image_item(
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         match ext {
             "png" => {
-                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
+                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                     .map_err(|e| e.to_string())?;
                 img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
                     .map_err(|e| e.to_string())?;
             }
             "webp" => {
-                std::fs::write(&save_path_clone, &webp_blob).map_err(|e| e.to_string())?;
+                std::fs::write(&save_path_clone, &image_blob).map_err(|e| e.to_string())?;
             }
             _ => {
-                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
+                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                     .map_err(|e| e.to_string())?;
                 let rgb = img.to_rgb8();
                 let mut buf = std::io::BufWriter::new(
@@ -567,12 +567,12 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
-    let webp_blob = octopus_infra::db::with_db(|conn| {
+    let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
     .map_err(|e| e.to_string())?
     .ok_or("图片数据不存在")?;
-    log::info!("[ocr-image] got blob {} bytes", webp_blob.len());
+    log::info!("[ocr-image] got blob {} bytes", image_blob.len());
 
     log::info!("[ocr-image] before OcrEngine::instance()");
     let engine = octopus_ocr::engine::OcrEngine::instance()
@@ -585,7 +585,7 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     let (text, blocks) = {
         let engine = engine.clone();
         tokio::task::spawn_blocking(move || {
-            engine.recognize_with_blocks(&webp_blob)
+            engine.recognize_with_blocks(&image_blob)
         })
         .await
         .map_err(|e| format!("OCR 任务异常: {}", e))?
@@ -624,7 +624,7 @@ pub async fn scan_qrcode_image(
     let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
-    let webp_blob = octopus_infra::db::with_db(|conn| {
+    let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
     .map_err(|e| e.to_string())?
@@ -632,7 +632,7 @@ pub async fn scan_qrcode_image(
 
     // 图片解码（自动检测格式：JPEG/PNG）+ zxing-cpp QR 识别：CPU 密集，移入 spawn_blocking。
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
-        let img = ::image::load_from_memory(&webp_blob)
+        let img = ::image::load_from_memory(&image_blob)
             .map_err(|e| format!("解码图片失败: {}", e))?;
         octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
     })
@@ -694,7 +694,7 @@ pub async fn insert_clipboard_text_item(
     Ok(new_id)
 }
 
-/// 获取图片缩略图 data URL（base64 编码：`data:image/webp;base64,...`）。
+/// 获取图片缩略图 data URL（base64 编码：`data:image/jpeg;base64,...`）。
 ///
 /// 返回完整 data URL 而非裸 `Vec<u8>`：Tauri IPC 把 `Vec<u8>` 序列化成 JSON 数字数组
 /// （4-5x 膨胀），前端还要 `map/join/btoa` 手动转 base64。后端一次编码成 data URL，
@@ -723,7 +723,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         .ok_or_else(|| "缩略图不存在".to_string())?;
 
         Ok(format!(
-            "data:image/webp;base64,{}",
+            "data:image/jpeg;base64,{}",
             general_purpose::STANDARD.encode(&thumb_blob)
         ))
     })

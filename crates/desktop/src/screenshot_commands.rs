@@ -320,11 +320,11 @@ fn save_screenshot_to_history(
         };
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&img)
+        let encoded = octopus_clipboard::image::encode_image(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::insert_image_data(
-                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
+                conn, &hash, &encoded.image_blob, &encoded.thumb_blob,
                 crop_w as i64, crop_h as i64,
             )
         }).map_err(|e| e.to_string())?;
@@ -336,7 +336,7 @@ fn save_screenshot_to_history(
                 content: String::new(),
                 ref_data: Some(hash.clone()),
                 meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.image_blob.len() as u64)),
                     ..Default::default()
                 }),
                 created_at: octopus_clipboard::store::iso_now(),
@@ -1554,12 +1554,12 @@ pub async fn start_scroll_recording(
         let id_for_db = item_id;
         let _db_task = tokio::task::spawn_blocking(move || {
             let img = image::DynamicImage::ImageRgba8(canvas_for_db);
-            let encoded = match octopus_clipboard::image::encode_to_webp(&img) {
+            let encoded = match octopus_clipboard::image::encode_image(&img) {
                 Ok(e) => e,
                 Err(_) => return,
             };
             if let Err(e) = octopus_infra::db::with_db(|conn| {
-                octopus_clipboard::store::insert_image_data(conn, &hash_for_db, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
+                octopus_clipboard::store::insert_image_data(conn, &hash_for_db, &encoded.image_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
             }) {
                 log::error!("[scroll] Failed to insert image_data: {}", e);
             }
@@ -1569,7 +1569,7 @@ pub async fn start_scroll_recording(
                     content: String::new(),
                     ref_data: Some(hash_for_db.clone()),
                     meta_info: Some(octopus_clipboard::MetaInfo {
-                        w: Some(img.width()), h: Some(img.height()), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                        w: Some(img.width()), h: Some(img.height()), size: Some(format_file_size(encoded.image_blob.len() as u64)),
                         ..Default::default()
                     }),
                     created_at: octopus_clipboard::store::iso_now(),
