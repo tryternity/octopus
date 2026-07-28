@@ -49,7 +49,7 @@ fn engine_label(source_type: i64, category: &str, provider: &str, name: &str) ->
 }
 
 /// ASR 兜底引擎名（固定首项，不依赖 DB 存在）。
-pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
+pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small";
 
 /// API Key 脱敏：显示前 4 位 + ****** + 后 4 位（长度 <= 8 时全掩码）。
 fn mask_key(key: &str) -> String {
@@ -67,7 +67,7 @@ fn mask_key(key: &str) -> String {
 /// `EngineInfo.is_enabled` 字段（来自 DB models.is_enabled）。
 ///
 /// Task 2 后：不再接收外部 `current_effective` spec 字符串做 name 匹配——EngineInfo
-/// 自带 is_enabled，直接用它标 current。兜底 zipformer-small-ctc 的 current 判定：
+/// 自带 is_enabled，直接用它标 current。兜底 zipformer-small 的 current 判定：
 /// DB 无任何 ASR is_enabled=1 时，fallback 引擎视为当前（与 resolve_active_engine
 /// 的 ASR 兜底语义对称）。
 fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec<EngineOption> {
@@ -463,8 +463,8 @@ mod tests {
             mk_engine("whisper-small", "bigmodel", EngineCategory::Whisper, 2, true),
         ];
         let opts = build_asr_options(engines);
-        assert_eq!(opts[0].name, "zipformer-small-ctc");
-        assert_eq!(opts[0].label, "本地:zipformer:zipformer-small-ctc");
+        assert_eq!(opts[0].name, "zipformer-small");
+        assert_eq!(opts[0].label, "本地:zipformer:zipformer-small");
         assert_eq!(opts[0].source_type, 0, "兜底引擎 source_type 应为 0 (builtin)");
         assert!(!opts[0].current, "有激活模型 → 兜底非当前");
         assert_eq!(opts[1].name, "whisper-small");
@@ -475,21 +475,21 @@ mod tests {
         // 场景 2：无激活模型（全 is_enabled=false）→ 兜底为当前
         let opts2 = build_asr_options(vec![]);
         assert_eq!(opts2.len(), 1);
-        assert_eq!(opts2[0].name, "zipformer-small-ctc");
+        assert_eq!(opts2[0].name, "zipformer-small");
         assert!(opts2[0].current, "无激活 → 兜底当前");
 
-        // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
+        // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small，且在首位）
         let engines3 = vec![
-            mk_engine("zipformer-small-ctc", "local", EngineCategory::Zipformer, 1, false),
+            mk_engine("zipformer-small", "local", EngineCategory::Zipformer, 1, false),
             mk_engine("whisper-small", "local", EngineCategory::Whisper, 2, true),
         ];
         let opts3 = build_asr_options(engines3);
         assert_eq!(
-            opts3.iter().filter(|o| o.name == "zipformer-small-ctc").count(),
+            opts3.iter().filter(|o| o.name == "zipformer-small").count(),
             1,
             "DB 已含兜底时去重"
         );
-        assert_eq!(opts3[0].name, "zipformer-small-ctc");
+        assert_eq!(opts3[0].name, "zipformer-small");
         assert!(!opts3[0].current, "DB 有 whisper-small 激活，兜底非 current");
         assert!(opts3[1].current, "whisper-small 激活");
     }
