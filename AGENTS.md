@@ -209,13 +209,13 @@ desktop → feature-gated: vault (=vault + keychain + TOTP)
 | **前端 TS interface** | camelCase | 与后端 DTO 一致，零转换 | `interface MergeResult { newId: number }` |
 | **❌ 协议层（不动）** | snake_case + kebab tag | Swift helper 子进程协议，硬编码字段名 | `HelperEvent` / `RecordingRequest`（`crates/record/src/protocol.rs`） |
 | **❌ 外部格式对齐（不动）** | 各异 | 对齐外部 JSON 格式 | `ThemeColors`（Tailwind kebab）/ Bitwarden importer（camelCase）/ paddle-ocr config（snake_case） |
-| **❌ vault sync 持久化（不动）** | snake_case | 跨设备文件格式，改了破坏老数据 | `crates/vault/src/sync/store.rs` |
 | **✅ DB 直映射（返回前端的）** | camelCase | 2026-07-28 全工程 casing 统一完成。返回前端的 DB struct 加 `rename_all = "camelCase"`（`TranscriptionRecord` / `ClipboardItem` / `MetaInfo` / `RecordingMeta` / `ActionBarItem` 等）；纯内部 DB 映射不返回前端的（`ModelRow` / `LocalAsrModelRow` 用 rusqlite row.get 不经 serde）不需加 | — |
+| **✅ vault sync 持久化** | camelCase | 2026-07-28 改为 camelCase（按全新库策略，老 sync 数据需清掉重建）。`MetaFile` / `CipherFile` / `CipherEncStrings` / `CipherPlaintextMeta` / `FolderFile` 均加 `rename_all = "camelCase"` | `crates/vault/src/sync/store.rs` |
 
 **判断流程**（新加 Serialize struct/enum 时）：
-1. 是协议层 / 外部格式 / vault sync？→ 保持现状
+1. 是协议层 / 外部格式？→ 保持现状
 2. 是命令返回值 / 事件 payload？→ **必须 camelCase**（外层 struct 加 `rename_all = "camelCase"`；enum 外层 kebab + 变体内 camelCase）
-3. 是 DB 直映射？→ **返回前端的加 camelCase**；纯内部（不经 serde 序列化给前端）随意
+3. 是 DB 直映射 / vault sync 持久化？→ **camelCase**（返回前端的加；纯内部不经 serde 的随意）
 
 **历史教训（Task 4.1 blocker，2026-07-27）**：前端写 `audioTracks`（camelCase）但后端 `RecordingMeta` 无 rename_all 序列化为 `audio_tracks`（snake_case）→ 前端拿到 `undefined` → UI 静默失败。**casing 不一致是运行期 bug，编译期不报错**。新代码必须严格遵循本规范，前端 interface 与后端序列化 casing 一一对应。
 

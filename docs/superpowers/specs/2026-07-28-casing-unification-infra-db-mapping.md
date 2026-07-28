@@ -41,6 +41,22 @@ infra/db.rs 有 ~20 个 Serialize struct 无 `rename_all`。逐个评估：
 - cargo test infra: 154 pass
 - pnpm build: 0 error
 
+### 2026-07-28 补充：vault sync 持久化也改 camelCase
+
+用户明确「vault sync 持久化也可以动」（按全新库策略，老 sync 数据清掉重建）。
+
+`crates/vault/src/sync/store.rs` 5 个 sync 文件格式 struct 加 `rename_all = "camelCase"`：
+
+| struct | snake_case → camelCase 字段示例 |
+|---|---|
+| `MetaFile` | `kdf_type` → `kdfType` / `kdf_memory_kib` → `kdfMemoryKib` / `app_key_sync_enc` → `appKeySyncEnc` / `security_stamp` → `securityStamp` / `equivalent_domains` → `equivalentDomains` |
+| `CipherFile` | `plaintext_meta` → `plaintextMeta` |
+| `CipherEncStrings` | `password_history` → `passwordHistory` |
+| `CipherPlaintextMeta` | `folder_id` → `folderId` / `is_deleted` → `isDeleted` / `created_at` → `createdAt` / `updated_at` → `updatedAt` |
+| `FolderFile` | `encrypted_name` → `encryptedName` / `sort_order` → `sortOrder` / `is_deleted` → `isDeleted` / `created_at` → `createdAt` / `updated_at` → `updatedAt` |
+
+验证：vault 263 tests pass（含 sync 读写全部测试）。
+
 ## 结论
 
-**casing 统一 Task 1-10 全部完成**。全工程 Tauri 命令返回 DTO + 事件 payload + 返回前端的 DB 直映射 struct 统一为 camelCase。不动的只剩三类（协议层 / 外部格式 / vault sync 持久化）。
+**casing 统一 Task 1-10 全部完成**。全工程 Tauri 命令返回 DTO + 事件 payload + 返回前端的 DB 直映射 struct + vault sync 持久化 统一为 camelCase。不动的只剩两类硬约束（协议层 / 外部格式）。
