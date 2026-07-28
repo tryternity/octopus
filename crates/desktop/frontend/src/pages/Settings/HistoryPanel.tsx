@@ -6,11 +6,11 @@ import { useT } from "@/lib/i18n";
 
 interface HistoryRecord {
   id: number;
-  created_at: string;
+  createdAt: string;
   engine: string;
   text: string;
-  polish_status: string;
-  duration_ms: number;
+  polishStatus: string;
+  durationMs: number;
 }
 
 const POLISH_KEYS: Record<string, string> = { done: "settings.history.polishPolished", failed: "settings.history.polishFailed", off: "settings.history.polishNone" };
@@ -201,8 +201,8 @@ function HistoryRow({
 
   const primaryText = rec.text.length <= 200 ? rec.text
     : (() => { const chars = [...rec.text]; return chars.length > 200 ? chars.slice(0, 200).join("") + "……" : rec.text; })();
-  const isPolished = rec.polish_status === "done";
-  const duration = rec.duration_ms ? (rec.duration_ms / 1000).toFixed(1) + "s" : null;
+  const isPolished = rec.polishStatus === "done";
+  const duration = rec.durationMs ? (rec.durationMs / 1000).toFixed(1) + "s" : null;
 
   const copyRecord = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -249,7 +249,7 @@ function HistoryRow({
       <div className="flex-1 min-w-0">
         {/* Meta row */}
         <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-          <span className="text-[10px] text-muted-foreground">{rec.created_at}</span>
+          <span className="text-[10px] text-muted-foreground">{rec.createdAt}</span>
           {duration && (
             <span className="text-[10px] text-muted-foreground px-1 rounded bg-muted">{duration}</span>
           )}
@@ -257,7 +257,7 @@ function HistoryRow({
             "text-[10px] px-1.5 py-0.5 rounded font-medium",
             isPolished ? "bg-amber-600/10 text-amber-700" : "text-muted-foreground",
           )}>
-            {t(POLISH_KEYS[rec.polish_status] || rec.polish_status)}
+            {t(POLISH_KEYS[rec.polishStatus] || rec.polishStatus)}
           </span>
           <span className="text-[10px] text-muted-foreground/50">{rec.engine}</span>
         </div>
