@@ -24,15 +24,23 @@ pub struct SubtitleResult {
     pub srt_text: String,
     pub model: String,
     pub track_used: AudioTrackSource,
+    /// 润色结果（None=未尝试润色）。前端据此显示提示。
+    ///
+    /// 用 `Option<String>` 而非强类型 `PolishOutcome`——后者定义在 desktop crate，
+    /// record crate 不能依赖 desktop。desktop 序列化时把 `PolishOutcome` 转成字符串
+    /// （如 `"polished"` / `"fallbackRatio"` / `"noLlmConfig"` / `"failed:msg"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polish_outcome: Option<String>,
 }
 
 /// 进度阶段（emit 给前端，外层 kebab + 变体 camelCase）。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "stage", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum SubtitleProgress {
-    ExtractingAudio { percent: u32 },
-    Recognizing { percent: u32 },
-    Finalizing { percent: u32 },
+    ExtractingAudio { percent: u32 },    // 0~30%
+    Recognizing { percent: u32 },        // 30~40%
+    Polishing { percent: u32 },          // 40~90%（LLM 润色，可选）
+    Finalizing { percent: u32 },         // 90~100%
     Done { cue_count: usize },
     Error { message: String },
 }
@@ -385,6 +393,51 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"cueCount\":5"), "应输出 camelCase cueCount，实际: {}", json);
         assert!(!json.contains("cue_count"), "不应有 snake_case cue_count，实际: {}", json);
+    }
+
+    #[test]
+    fn subtitle_progress_polishing_serializes_kebab_tag() {
+        // 外层 tag="stage" + kebab-case → "polishing"；字段 percent camelCase 无影响。
+        let p = SubtitleProgress::Polishing { percent: 50 };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"stage\":\"polishing\""), "应输出 kebab-case polishing，实际: {}", json);
+        assert!(json.contains("\"percent\":50"), "应输出 percent，实际: {}", json);
+    }
+
+    #[test]
+    fn subtitle_result_polish_outcome_none_skipped_in_json() {
+        // polish_outcome=None 时序列化应省略字段（skip_serializing_if）。
+        let r = SubtitleResult {
+            cues: vec![],
+            srt_text: String::new(),
+            model: "test".into(),
+            track_used: AudioTrackSource::Microphone,
+            polish_outcome: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("polish_outcome"), "None 应被省略，实际: {}", json);
+        assert!(!json.contains("polishOutcome"), "None 应被省略，实际: {}", json);
+    }
+
+    #[test]
+    fn subtitle_result_polish_outcome_some_serialized() {
+        let r = SubtitleResult {
+            cues: vec![],
+            srt_text: String::new(),
+            model: "test".into(),
+            track_used: AudioTrackSource::Microphone,
+            polish_outcome: Some("polished".into()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"polishOutcome\":\"polished\""), "应输出 camelCase polishOutcome，实际: {}", json);
+    }
+
+    #[test]
+    fn subtitle_result_polish_outcome_default_none_on_deserialize() {
+        // 旧 JSON（无 polishOutcome 字段）反序列化应得到 None（#[serde(default)]）。
+        let old_json = r#"{"cues":[],"srtText":"","model":"x","trackUsed":"microphone"}"#;
+        let r: SubtitleResult = serde_json::from_str(old_json).unwrap();
+        assert_eq!(r.polish_outcome, None);
     }
 
     // ── select_track 测试（Task 1.3）──────────────────────────────────────────
