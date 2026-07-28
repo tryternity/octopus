@@ -603,11 +603,28 @@ pub fn incremental_export(
             },
         );
     }
-    // 删 SQLite 无但 outline 有的 cipher 文件
-    for old_uuid in old_outline.ciphers.keys() {
-        if !cipher_id_set.contains(old_uuid.as_str()) {
-            let _ = delete_cipher_file(old_uuid); // 文件可能已不存在，忽略错误
-            changed += 1;
+    // 删 SQLite 无但 outline 有的 cipher 文件。
+    // ⚠️ 保护（2026-07-27 sync 覆盖 bug 修复）：当 DB 完全空（0 cipher + 0 folder）
+    // 且 .sync outline 有数据时，跳过删除——这种状态几乎肯定是异常（清库/迁移），
+    // 不应把空状态传播到 .sync 覆盖已有数据。用户真想清空应 disable_sync 或逐条软删。
+    let db_all_empty = ciphers.is_empty() && folders.is_empty();
+    let sync_has_data = !old_outline.ciphers.is_empty() || !old_outline.folders.is_empty();
+    if db_all_empty && sync_has_data {
+        log::warn!(
+            "[sync] DB 完全空但 .sync outline 有数据（ciphers={}, folders={}）——跳过删除，防止空 DB 覆盖。如需清空请 disable_sync",
+            old_outline.ciphers.len(),
+            old_outline.folders.len()
+        );
+        // 仍然写新 outline（反映 DB 当前状态），但不删文件
+        // —— 实际上 DB 空 → cipher_entries/folder_entries 都是空 map
+        //    → 写空 outline 会与未删的文件不一致，但 git commit 时 outline 是「DB 视角」
+        //    下次 pull 会从文件重新填充 outline。优先保数据不丢。
+    } else {
+        for old_uuid in old_outline.ciphers.keys() {
+            if !cipher_id_set.contains(old_uuid.as_str()) {
+                let _ = delete_cipher_file(old_uuid); // 文件可能已不存在，忽略错误
+                changed += 1;
+            }
         }
     }
 
@@ -635,14 +652,28 @@ pub fn incremental_export(
             },
         );
     }
-    for old_uuid in old_outline.folders.keys() {
-        if !folder_id_set.contains(old_uuid.as_str()) {
-            let _ = delete_folder_file(old_uuid);
-            changed += 1;
+    // folder 删除保护（同 cipher，行 610-629）——db_all_empty && sync_has_data 时已跳过。
+    if !(db_all_empty && sync_has_data) {
+        for old_uuid in old_outline.folders.keys() {
+            if !folder_id_set.contains(old_uuid.as_str()) {
+                let _ = delete_folder_file(old_uuid);
+                changed += 1;
+            }
         }
     }
 
     // 5. 写新 outline
+    // ⚠️ 保护延续（2026-07-27）：db_all_empty && sync_has_data 时，不写空 outline 覆盖
+    // 旧 outline——否则 pull 阶段读空 outline 拉到 0 条，数据虽在文件但进不了 DB。
+    // 直接返回旧 outline（保数据完整，等 DB 有数据后下次 sync 正常写）。
+    if db_all_empty && sync_has_data {
+        log::warn!(
+            "[sync] DB 完全空——保留旧 outline 不覆盖（ciphers={}, folders={}），cipher/folder 文件也未删",
+            old_outline.ciphers.len(),
+            old_outline.folders.len()
+        );
+        return Ok((old_outline, 0));
+    }
     // vault_version 只在 changed > 0 时 +1（用户反馈：无变化 sync 不应递增版本）
     let new_vault_version = if changed > 0 {
         old_outline.vault_version.wrapping_add(1)
@@ -1050,17 +1081,45 @@ mod tests {
         let _g = VaultRootGuard::new();
         let meta = sample_vault_meta();
         let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+        let c2 = sample_cipher("b2c3d4e5-f6a7-4890-9012-bcdef234567");
 
-        // 首次写 c1
-        let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
+        // 首次写 c1 + c2
+        let (_, _) = incremental_export(&meta, &[c1.clone(), c2.clone()], &[]).expect("first");
         assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists());
+        assert!(cipher_file_path("b2c3d4e5-f6a7-4890-9012-bcdef234567").unwrap().exists());
 
-        // 二次：SQLite 无 cipher → 文件应被删
-        let (_, changed) = incremental_export(&meta, &[], &[]).expect("second");
-        assert_eq!(changed, 1, "应删 1 个文件");
+        // 二次：SQLite 只剩 c2（c1 被删）→ c1 文件应被删
+        // 注意：DB 非空（有 c2），所以删除保护不触发，正常删除 c1
+        let (_, changed) = incremental_export(&meta, &[c2.clone()], &[]).expect("second");
+        assert_eq!(changed, 1, "应删 1 个文件（c1）");
         assert!(
             !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists(),
             "SQLite 无的 cipher 文件应被删"
+        );
+        assert!(
+            cipher_file_path("b2c3d4e5-f6a7-4890-9012-bcdef234567").unwrap().exists(),
+            "SQLite 有的 cipher 文件应保留"
+        );
+    }
+
+    /// 回归守护（2026-07-27 sync 覆盖 bug）：DB 完全空 + .sync outline 有数据时，
+    /// 不删除 .sync 文件——防止清库后空 DB 覆盖 .sync 已有数据。
+    #[test]
+    fn incremental_export_protects_sync_data_when_db_empty() {
+        let _g = VaultRootGuard::new();
+        let meta = sample_vault_meta();
+        let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
+
+        // 首次写 c1（.sync 有数据）
+        let (_, _) = incremental_export(&meta, &[c1], &[]).expect("first");
+        assert!(cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists());
+
+        // 二次：DB 完全空（清库场景）→ 不应删 c1 文件
+        let (_, changed) = incremental_export(&meta, &[], &[]).expect("second");
+        assert_eq!(changed, 0, "DB 空 + .sync 有数据时不应删任何文件");
+        assert!(
+            cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists(),
+            "DB 空时 .sync 的 cipher 文件应保留（防止覆盖）"
         );
     }
 

@@ -1,3 +1,8 @@
+> **⚠️ 已废弃（2026-07-28）**：对应的 spec 已废弃，本 plan 不再推进。
+> 替代方案：[`2026-07-27-vault-sync-is-deleted-merge.md`](../specs/2026-07-27-vault-sync-is-deleted-merge.md)
+> + [`2026-07-27-vault-sync-is-deleted-merge.md` plan](../plans/2026-07-27-vault-sync-is-deleted-merge.md)。
+> 保留本文件作为历史记录。
+
 # Vault Tombstone 实施计划
 
 **日期**：2026-07-26

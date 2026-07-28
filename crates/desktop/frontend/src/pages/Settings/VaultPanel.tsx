@@ -26,7 +26,7 @@ import ChangePasswordModal from "./Vault/ChangePasswordModal";
  */
 interface VaultStatus {
   initialized: boolean;
-  user_vault_unlocked: boolean;
+  userVaultUnlocked: boolean;
 }
 
 type View = "list" | "health" | "io";
@@ -78,7 +78,7 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string, var
     function handleFocus() {
       // 窗口获焦：立即检查 vault 状态（可能已超时锁定）
       // refreshStatus 会调 vault_status，后端在 is_user_vault_unlocked
-      // 检查中主动 zeroize 超时的 key，并返回 user_vault_unlocked=false
+      // 检查中主动 zeroize 超时的 key，并返回 userVaultUnlocked=false
       refreshStatus();
       // 重启心跳（如果仍解锁）
       startHeartbeat();
@@ -166,7 +166,7 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string, var
   }
 
   // 已初始化但未解锁 → 解锁弹窗
-  if (!status.user_vault_unlocked) {
+  if (!status.userVaultUnlocked) {
     return <UnlockDialog onSuccess={refreshStatus} showToast={showToast} />;
   }
 

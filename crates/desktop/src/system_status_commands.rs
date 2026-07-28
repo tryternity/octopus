@@ -12,6 +12,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelMemory {
     pub id: String,
     pub kind: String,
@@ -20,6 +21,7 @@ pub struct ModelMemory {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessStats {
     pub rss_bytes: u64,
     /// macOS=phys_footprint（活动监视器「内存」列口径），其他平台=None（serde→null）。
@@ -28,6 +30,7 @@ pub struct ProcessStats {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemStats {
     pub total_memory_bytes: u64,
     pub used_memory_bytes: u64,
@@ -35,6 +38,7 @@ pub struct SystemStats {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TimeSeries {
     pub rss: Vec<u64>,
     /// phys_footprint 时序（macOS），其他平台空数组。
@@ -44,6 +48,7 @@ pub struct TimeSeries {
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemStatusSnapshot {
     pub sampled_at: f64,
     pub process: ProcessStats,

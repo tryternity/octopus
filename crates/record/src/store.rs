@@ -4,18 +4,19 @@ use crate::audio_tracks::AudioTrack;
 use crate::error::RecordResult;
 use std::collections::HashSet;
 
-/// 录屏元数据（DB `recordings` 表直映射）。
+/// 录屏元数据（DB `recordings` 表直映射 + Tauri 命令返回 DTO）。
 ///
-/// ⚠️ **serde 约定**：故意**不加** `#[serde(rename_all = "camelCase")]`。
-/// 所有字段保持 snake_case 与 SQL 列名一致（DB row 直映射，更自然）。
-/// **新加字段必须继续用 snake_case**，前端 interface 也要对齐 snake_case
-/// （如 `audio_tracks`，不是 `audioTracks`）。
+/// **serde 约定**：`#[serde(rename_all = "camelCase")]` —— Rust 字段保持
+/// snake_case 与 SQL 列名一致（DB row 直映射），序列化到 wire（Tauri 边界）
+/// 时自动转 camelCase，前端 interface 用 camelCase 零转换消费。
 ///
-/// 历史教训（Task 4.1 blocker，2026-07-27）：曾给前端 interface 加 camelCase
-/// `audioTracks`，但后端无 rename_all 序列化为 `audio_tracks`，运行时前端
-/// 拿到 `undefined` → 音轨标签 + 合并按钮永远不渲染。修复 = 前端改回 snake_case。
-/// 详见 spec `docs/superpowers/specs/2026-07-27-screen-record-audio-post-merge.md` 实现注记。
+/// 历史教训（Task 4.1 blocker → Task 7 翻转，2026-07-27）：
+/// - Task 4.1 曾因前端 `audioTracks` (camelCase) vs 后端 `audio_tracks` (snake_case)
+///   不一致导致 UI 静默失败，临时回退前端到 snake_case + struct 加「故意不加 rename_all」注释。
+/// - Task 7（全工程 casing 统一）：翻转决策——后端加 rename_all，前端翻回 camelCase。
+///   统一规范见 AGENTS.md「序列化 casing 规范」。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecordingMeta {
     pub id: i64,
     pub file_path: String,

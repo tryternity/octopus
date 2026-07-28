@@ -30,7 +30,7 @@ import { classifyError } from "./classifyError";
  */
 
 interface LoginDataDto {
-  uris: { uri: string; match_type: number | null }[];
+  uris: { uri: string; matchType: number | null }[];
   username: string | null;
   password: string | null;
   totp: string | null;

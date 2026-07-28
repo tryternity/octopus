@@ -376,7 +376,7 @@ settings:
     ocrModelHint: For screenshot OCR, restart to apply
     shortcut: Shortcuts
     asrShortcut: Voice Recognition
-    polishShortcut: Polish Now
+    polishShortcut: Recognition Polish
     polishShortcutHint: Polish current recognition result
     editShortcut: Voice Edit
     editShortcutHint: Invoke result window when any app is focused

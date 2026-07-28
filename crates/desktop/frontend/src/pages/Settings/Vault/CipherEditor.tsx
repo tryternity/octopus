@@ -34,7 +34,7 @@ import type { FolderDto } from "./folderTypes";
 
 interface LoginUriDto {
   uri: string;
-  match_type: number | null;
+  matchType: number | null;
 }
 interface LoginDataDto {
   uris: LoginUriDto[];
@@ -45,10 +45,10 @@ interface LoginDataDto {
 interface FieldDto {
   name: string;
   value: string | null;
-  field_type: number;
+  fieldType: number;
 }
 interface CipherInputDto {
-  folder_id: string | null;
+  folderId: string | null;
   favorite: boolean;
   name: string;
   notes: string | null;
@@ -59,18 +59,18 @@ interface CipherInputDto {
 
 interface TotpResult {
   code: string;
-  seconds_remaining: number;
+  secondsRemaining: number;
 }
 
 interface PasswordStrength {
   score: number; // 0-4
-  entropy_bits: number;
+  entropyBits: number;
 }
 
 /**
  * useTotpPoller —— 对指定 cipher 轮询 TOTP code。
  *
- * 每 5s 调一次 `vault_generate_totp`，并返回 `{ code, seconds_remaining }`。
+ * 每 5s 调一次 `vault_generate_totp`，并返回 `{ code, secondsRemaining }`。
  * - `cipherId === null` 或后端返回无 totp secret 时返回 `null`。
  * - 卸载 / cipherId 变化时自动 cleanup。
  *
@@ -331,7 +331,7 @@ export default function CipherEditor({
   const [totp, setTotp] = useState("");
   const [notes, setNotes] = useState("");
   const [favorite, setFavorite] = useState(false);
-  // follow-up #6：folder_id 状态（null = 无 folder / 根目录）
+  // follow-up #6：folderId 状态（null = 无 folder / 根目录）
   const [folderId, setFolderId] = useState<string | null>(null);
   const [deletedAt, setDeletedAt] = useState<string | null>(null);
   // reprompt=1：使用此 cipher（autotype/复制密码）时强制重新验证主密码（高敏感条目）
@@ -360,8 +360,8 @@ export default function CipherEditor({
       setTotp(c.login?.totp ?? "");
       setNotes(c.notes ?? "");
       setFavorite(c.favorite);
-      setFolderId(c.folder_id);
-      setDeletedAt(c.deleted_at);
+      setFolderId(c.folderId);
+      setDeletedAt(c.deletedAt);
       setReprompt(c.reprompt === 1);
     } catch (e) {
       showToast(String(e));
@@ -378,9 +378,9 @@ export default function CipherEditor({
       .split("\n")
       .map((s) => s.trim())
       .filter((s) => s.length > 0)
-      .map((uri) => ({ uri, match_type: null }));
+      .map((uri) => ({ uri, matchType: null }));
     return {
-      folder_id: folderId,
+      folderId: folderId,
       favorite,
       name: name.trim() || "(untitled)",
       notes: notes.trim() || null,
@@ -613,7 +613,7 @@ export default function CipherEditor({
                   {totpResult.code.slice(0, 3)} {totpResult.code.slice(3)}
                 </span>
                 <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
-                  ⏱ {totpResult.seconds_remaining}s
+                  ⏱ {totpResult.secondsRemaining}s
                 </span>
                 <button
                   type="button"

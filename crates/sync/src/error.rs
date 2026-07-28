@@ -42,6 +42,9 @@ pub enum SyncError {
     /// 私有库检测（2026-07-21）：AES-256-GCM 加密虽强，但密文泄露给攻击者做
     /// 离线爆破仍是失败（弱主密码会被破）。入口处必须拦截公有库。
     PublicRepoRejected(String),
+    /// API 限流——无法确认仓库可见性，硬阻断防 public repo 漏检。
+    /// S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 修复（2026-07-27，第七十七轮）。
+    RateLimited(String),
     /// 本地路径不能作为同步 remote——`file://` / `/abs/path` / `./rel/path`。
     ///
     /// 同步意义为 0（本地路径无需 git remote），且会暴露本地文件结构。
@@ -90,6 +93,11 @@ impl std::fmt::Display for SyncError {
                 "拒绝添加公有库 {} 作为同步仓库——密码箱必须使用私有库。请到 GitHub/Gitee 把仓库改为 Private，或换一个私有库地址",
                 redact_url(url)
             ),
+            SyncError::RateLimited(reason) => write!(
+                f,
+                "无法确认仓库可见性：{}。请稍后重试或换用 SSH URL（如 git@github.com:owner/repo.git）",
+                reason
+            ),
             SyncError::LocalPathRejected => {
                 write!(f, "本地路径不能作为同步 remote——请使用 GitHub/Gitee 私有库或自建 Git 服务的 URL")
             }
@@ -108,14 +116,45 @@ impl std::fmt::Display for SyncError {
 ///
 /// 非 HTTP(S) URL（scp-like `git@host:owner/repo.git`）parse 失败时原样返回——
 /// scp-like 格式不含 `://user:pass@`，不可能嵌 PAT。
-pub fn redact_url(url: &str) -> String {
-    match url::Url::parse(url) {
+///
+/// SafeUrl newtype（2026-07-28 实施）：返 `SafeUrl` 而非 `String`——编译期保证所有
+/// 流出 crate 边界的 url 都经 redact。SafeUrl 是 newtype，private 字段，外部无法直接
+/// 构造（防绕过 redact_url）。详见 [safeurl-newtype-design](../../docs/superpowers/specs/2026-07-26-safeurl-newtype-design.md)。
+pub fn redact_url(url: &str) -> SafeUrl {
+    let redacted = match url::Url::parse(url) {
         Ok(mut parsed) => {
             let _ = parsed.set_password(None);
             let _ = parsed.set_username("");
             parsed.to_string()
         }
         Err(_) => url.to_string(),
+    };
+    SafeUrl(redacted)
+}
+
+/// 已 redact 的 URL——PAT/密码/userinfo 已剥离，可安全用于 log / Display / 流出 crate 边界。
+///
+/// **唯一构造器是 `redact_url`**——无法从 `&str` / `String` 直接构造（不实现
+/// `From<&str>` / `From<String>`），编译期保证所有 `SafeUrl` 实例都经过 redact。
+///
+/// 用于：流出 octopus-sync / octopus-vault crate 边界的 url（SyncStatus.remotes /
+/// list_remotes 返回值 / SyncError::PublicRepoRejected / log 宏参数）。
+///
+/// 第六轮 PAT 外溢链（第四十九~五十四轮）的结构性根治——newtype 让漏调 = 编译错误，
+/// 而非运行时 PAT 泄露。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SafeUrl(String);
+
+impl SafeUrl {
+    /// 已 redact 的字符串引用——用于 log / Display。
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SafeUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -254,6 +293,15 @@ mod tests {
         assert!(msg.contains("GitHub/Gitee"));
     }
 
+    /// S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 守护（2026-07-27，第七十七轮）：
+    /// RateLimited Display 应给用户可操作提示（重试 / 换 SSH），不暴露内部细节。
+    #[test]
+    fn display_rate_limited_actionable_hint() {
+        let msg = SyncError::RateLimited("GitHub API 限流（60/h/IP）".to_string()).to_string();
+        assert!(msg.contains("重试"), "应提示重试：{}", msg);
+        assert!(msg.contains("SSH"), "应提示换 SSH URL：{}", msg);
+    }
+
     /// #11 修复回归守护：Display 不透传含 PAT 的 git stderr。
     ///
     /// 场景：用户把 remote URL 配成 https://user:ghp_xxx@github.com/...（含 PAT），
@@ -294,44 +342,44 @@ mod tests {
     fn redact_url_strips_userinfo() {
         // PAT in userinfo（最常见——用户从 GitHub 复制 token 拼到 URL）
         assert_eq!(
-            redact_url("https://user:ghp_xxx@github.com/owner/repo.git"),
+            redact_url("https://user:ghp_xxx@github.com/owner/repo.git").as_str(),
             "https://github.com/owner/repo.git"
         );
         // 只有 token（无 username）
         assert_eq!(
-            redact_url("https://:ghp_xxx@github.com/owner/repo.git"),
+            redact_url("https://:ghp_xxx@github.com/owner/repo.git").as_str(),
             "https://github.com/owner/repo.git"
         );
         // 只有 username（无 password）
         assert_eq!(
-            redact_url("https://user@github.com/owner/repo.git"),
+            redact_url("https://user@github.com/owner/repo.git").as_str(),
             "https://github.com/owner/repo.git"
         );
         // password 是密码而非 PAT
         assert_eq!(
-            redact_url("https://alice:s3cret@gitee.com/owner/repo.git"),
+            redact_url("https://alice:s3cret@gitee.com/owner/repo.git").as_str(),
             "https://gitee.com/owner/repo.git"
         );
         // 端口必须保留
         assert_eq!(
-            redact_url("https://user:pass@gitlab.example.com:8443/team/repo.git"),
+            redact_url("https://user:pass@gitlab.example.com:8443/team/repo.git").as_str(),
             "https://gitlab.example.com:8443/team/repo.git"
         );
         // query / fragment 保留
         assert_eq!(
-            redact_url("https://user:token@github.com/owner/repo?foo=bar#frag"),
+            redact_url("https://user:token@github.com/owner/repo?foo=bar#frag").as_str(),
             "https://github.com/owner/repo?foo=bar#frag"
         );
 
         // scp-like SSH URL（非 `://` 格式）——url::Url parse 失败，原样返回
         // （scp-like 不含 `://user:pass@`，不可能嵌 PAT；不 redact 安全）
         assert_eq!(
-            redact_url("git@github.com:owner/repo.git"),
+            redact_url("git@github.com:owner/repo.git").as_str(),
             "git@github.com:owner/repo.git"
         );
         // ssh:// 协议——Url::parse 成功，应剥 userinfo
         assert_eq!(
-            redact_url("ssh://git@github.com/owner/repo.git"),
+            redact_url("ssh://git@github.com/owner/repo.git").as_str(),
             "ssh://github.com/owner/repo.git"
         );
     }
@@ -351,9 +399,9 @@ mod tests {
         for u in &pat_urls {
             let redacted = redact_url(u);
             assert!(
-                !redacted.contains("ghp_abcdef1234567890")
-                    && !redacted.contains("github_pat_11ABCDEF_xxx")
-                    && !redacted.contains("glpat-xxxxxxxxxxxx"),
+                !redacted.as_str().contains("ghp_abcdef1234567890")
+                    && !redacted.as_str().contains("github_pat_11ABCDEF_xxx")
+                    && !redacted.as_str().contains("glpat-xxxxxxxxxxxx"),
                 "redact_url 泄露 PAT：{} → {}",
                 u,
                 redacted

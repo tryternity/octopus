@@ -6,7 +6,7 @@
 **关联**：
 - [vault-sync-code-review-fixes](./archived/2026-07-24-vault-sync-code-review-fixes.md)（第一轮，已归档）
 - [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
-- [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（第五十五轮起的跨设备删除一致性方向）
+- [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（**已废弃 2026-07-28**，改由 [is_deleted + updated_at merge](./2026-07-27-vault-sync-is-deleted-merge.md) 统一解决）
 
 ## 背景
 
@@ -232,13 +232,13 @@
 - `cipher_md5_from_input`：从 input 取 deleted_at（之前硬编码 ""）
 - 新增 `pull_preserves_soft_deleted_at` + `clone_preserves_soft_deleted_at` 回归测试
 
-### M5: 永久删除无 tombstone 可复活（~~中~~→**高**，设计缺口，spec/plan 已就绪待实施）
+### M5: 永久删除跨设备可复活（~~中~~→**高**，设计缺口，方案已转向 is_deleted merge）
 
 **严重度升级（2026-07-25 第二十五轮）**：原定「中」，升级为「高」。密码管理器的核心承诺是「删除即删除」，硬删（empty_trash）后密码经多设备 sync 复活违反此承诺，且有安全影响（用户以为已删除的敏感密码仍存活于各设备 + 远程仓库 git 历史）。详见 [第二十五轮](#第二十五轮审查修复2026-07-25syncoutline--syncstorers--enginers-删除传播)。
 
 **问题**：pull_from_files 只 upsert 从不删除；incremental_export(push) 会删 SQLite 无的文件。多设备时序：A permanent_delete X → A push 删文件 → 但 B 在 A push 前 pull（B outline 仍有 X）→ B push 把 X 文件写回 → A pull 复活。
 
-**状态（2026-07-26 更新）**：spec/plan 已就绪——[vault-tombstone-design](./2026-07-26-vault-tombstone-design.md) + [vault-tombstone plan](../plans/2026-07-26-vault-tombstone.md)。设计：Outline v2 新增 `tombstones` 字段 + 30 天 TTL + 删除赢冲突解决。待实施。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
+**状态（2026-07-28 更新）**：原 tombstone 方案（Outline v2 新增 tombstones 字段 + 30 天 TTL）**已废弃**——改由 [is_deleted + updated_at merge](./2026-07-27-vault-sync-is-deleted-merge.md) 统一解决（deleted_at → is_deleted 字段 + 双向 merge，删除是普通字段变更走标准 merge，不需特殊墓碑传播）。触发条件：① 多设备 sync；② empty_trash 硬删。单设备/仅软删不受影响（软删通过 md5 变化正确传播）。
 
 ### L10: upsert_folder_with_sort O(N²)（低，未修）
 

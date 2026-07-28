@@ -35,7 +35,7 @@ import type {
 // 与后端 CipherDto 对齐（vault_commands.rs，snake_case，无 rename_all）
 interface LoginUriDto {
   uri: string;
-  match_type: number | null;
+  matchType: number | null;
 }
 interface LoginDataDto {
   uris: LoginUriDto[];
@@ -46,11 +46,11 @@ interface LoginDataDto {
 interface FieldDto {
   name: string;
   value: string | null;
-  field_type: number;
+  fieldType: number;
 }
 export interface CipherDto {
   id: string; // UUID 字符串（2026-07-21 v44）
-  folder_id: string | null;
+  folderId: string | null;
   favorite: boolean;
   atype: number;
   name: string;
@@ -58,9 +58,9 @@ export interface CipherDto {
   login: LoginDataDto | null;
   fields: FieldDto[];
   reprompt: number;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export default function CipherList({ showToast }: { showToast: (msg: string) => void }) {
@@ -109,14 +109,14 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const counts: FolderCounts = useMemo(() => {
     const c: FolderCounts = { all: 0, favorites: 0, trash: 0 };
     for (const cipher of ciphers) {
-      if (cipher.deleted_at) {
+      if (cipher.deletedAt) {
         c.trash += 1;
         continue;
       }
       c.all += 1;
       if (cipher.favorite) c.favorites += 1;
-      if (cipher.folder_id !== null) {
-        c[cipher.folder_id] = (c[cipher.folder_id] ?? 0) + 1;
+      if (cipher.folderId !== null) {
+        c[cipher.folderId] = (c[cipher.folderId] ?? 0) + 1;
       }
     }
     return c;
@@ -126,11 +126,11 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
   const filtered = useMemo(() => {
     // 1. sidebar selection
     const sel = ciphers.filter((c) => {
-      if (c.deleted_at) return selected === "trash";
+      if (c.deletedAt) return selected === "trash";
       if (selected === "all") return true;
       if (selected === "favorites") return c.favorite;
       if (selected === "trash") return false;
-      return c.folder_id === selected;
+      return c.folderId === selected;
     });
     // 2. 搜索 query
     const q = query.trim().toLowerCase();
@@ -182,7 +182,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
         await invoke("vault_delete_folder", { id: folder.id });
         // 当前选中的正是被删 folder → 退回 "all"，避免空视图
         if (selected === folder.id) setSelected("all");
-        await refreshCiphers(); // folder 下 cipher 的 folder_id 被 FK SET NULL
+        await refreshCiphers(); // folder 下 cipher 的 folderId 被 FK SET NULL
         await refreshFolders();
         showToast(t("settings.vault.folder.deleteFolder"));
       } catch (e) {
@@ -372,7 +372,7 @@ export default function CipherList({ showToast }: { showToast: (msg: string) => 
  * 左侧 3px 竖条（封印）+ 顶部小圆节点，颜色编码状态：
  *   已删 → 虚线无填充（border-dashed）
  *   收藏 → fg 满色 + 右上角 ★
- *   弱密码 → warning 色（TODO: 当前未接入 weak_cipher_ids，始终 false）
+ *   弱密码 → warning 色（TODO: 当前未接入 weakCipherIds，始终 false）
  *   默认 → fg/30
  *
  * 凭证数据（name / username / password 掩码）用 .font-mono-vault 等宽字。
@@ -394,12 +394,12 @@ function CipherCard({
 }) {
   const t = useT();
 
-  // TODO(v2): 接入 HealthReport 的 weak_cipher_ids 做弱密码高亮。
+  // TODO(v2): 接入 HealthReport 的 weakCipherIds 做弱密码高亮。
   // 当前 isWeak 始终 false——避免在卡片层重复拉健康报告。
   // 后续可由 VaultPanel 拉一次 weak list 透传下来，或新增轻量 vault_weak_ids 命令。
   const isWeak = false;
 
-  const sealColor = cipher.deleted_at
+  const sealColor = cipher.deletedAt
     ? "border-l-[3px] border-dashed border-muted-foreground/40 bg-transparent"
     : isWeak
       ? "bg-warning"
@@ -412,7 +412,7 @@ function CipherCard({
   const cardContent = (
     <>
       {/* 封印条：左侧 3px 竖条 + 顶部圆节点 */}
-      {cipher.deleted_at ? (
+      {cipher.deletedAt ? (
         <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", sealColor)} />
       ) : (
         <>
@@ -437,7 +437,7 @@ function CipherCard({
       <div
         className={cn(
           "font-mono-vault pr-4 text-sm font-medium text-foreground",
-          cipher.deleted_at && "line-through",
+          cipher.deletedAt && "line-through",
         )}
       >
         {cipher.name}
@@ -457,8 +457,8 @@ function CipherCard({
             {"•".repeat(Math.min(12, cipher.login.password.length))}
           </span>
         )}
-        <span>{relativeTime(cipher.updated_at, t)}</span>
-        {cipher.deleted_at && (
+        <span>{relativeTime(cipher.updatedAt, t)}</span>
+        {cipher.deletedAt && (
           <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-destructive">
             {t("settings.vault.list.deleted")}
           </span>
@@ -475,7 +475,7 @@ function CipherCard({
           "group relative flex w-full items-center gap-2 overflow-hidden rounded-md border border-border bg-background p-3 pl-5 transition-colors",
           "hover:bg-accent/50",
           active && "bg-accent",
-          cipher.deleted_at && "opacity-60",
+          cipher.deletedAt && "opacity-60",
         )}
       >
         <div className="min-w-0 flex-1">{cardContent}</div>
@@ -506,7 +506,7 @@ function CipherCard({
         "group relative w-full overflow-hidden rounded-md border border-border bg-background p-3 pl-5 text-left transition-colors",
         "hover:bg-accent/50",
         active && "bg-accent",
-        cipher.deleted_at && "opacity-60",
+        cipher.deletedAt && "opacity-60",
       )}
     >
       {cardContent}

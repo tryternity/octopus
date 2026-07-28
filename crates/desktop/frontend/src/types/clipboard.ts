@@ -8,10 +8,10 @@ export interface MetaInfo {
   // voice / ocr
   engine?: string;
   model?: string;
-  duration_ms?: number;
-  char_count?: number;
-  asr_mode?: string;
-  polish_model?: string;
+  durationMs?: number;
+  charCount?: number;
+  asrMode?: string;
+  polishModel?: string;
   polished?: boolean;
   // file
   files?: Array<{ size?: string; type?: string }>;
@@ -19,16 +19,16 @@ export interface MetaInfo {
 
 export interface ClipboardItem {
   id: number;
-  item_type: ItemType;
+  itemType: ItemType;
   content: string;
-  ref_data?: string;
-  meta_info?: MetaInfo;
-  is_favorite: boolean;
-  created_at: string;
-  is_rich: boolean;
-  has_thumbnail: boolean;
+  refData?: string;
+  metaInfo?: MetaInfo;
+  isFavorite: boolean;
+  createdAt: string;
+  isRich: boolean;
+  hasThumbnail: boolean;
   segments?: string;
-  deleted_at?: string | null;
+  deletedAt?: string | null;
 }
 
 /**
@@ -39,15 +39,15 @@ export interface ClipboardItem {
  * file:     ""
  */
 export function metaParts(item: ClipboardItem): string {
-  const m = item.meta_info;
-  switch (item.item_type) {
+  const m = item.metaInfo;
+  switch (item.itemType) {
     case "text":
     case "ocr":
-      return m?.char_count ? `${m.char_count}字` : "";
+      return m?.charCount ? `${m.charCount}字` : "";
     case "voice": {
       const parts: string[] = [];
-      if (m?.char_count) parts.push(`${m.char_count}字`);
-      if (m?.duration_ms) parts.push(`${(m.duration_ms / 1000).toFixed(1)}s`);
+      if (m?.charCount) parts.push(`${m.charCount}字`);
+      if (m?.durationMs) parts.push(`${(m.durationMs / 1000).toFixed(1)}s`);
       return parts.join(" · ");
     }
     default:
@@ -57,7 +57,7 @@ export function metaParts(item: ClipboardItem): string {
 
 /** 图片条目专用：WxH · size */
 export function imageMeta(item: ClipboardItem): string {
-  const m = item.meta_info;
+  const m = item.metaInfo;
   if (!m) return "";
   const parts: string[] = [];
   if (m.w && m.h) parts.push(`${m.w}×${m.h}`);
@@ -71,7 +71,7 @@ export function imageMeta(item: ClipboardItem): string {
  * type 缺失时退化为「N个」/ 空。
  */
 export function fileMeta(item: ClipboardItem): string {
-  const files = item.meta_info?.files;
+  const files = item.metaInfo?.files;
   if (!files || files.length === 0) return "";
   const firstType = files.map((f) => f.type).find(Boolean);
   if (files.length === 1) return firstType || "";

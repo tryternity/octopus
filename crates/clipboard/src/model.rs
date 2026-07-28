@@ -37,6 +37,7 @@ impl ItemType {
 /// JSON 元数据，按 item_type 不同 schema（见 spec §2.3）。
 /// 存 DB 时序列化为 JSON 字符串存 meta_info 列；读 DB 时反序列化。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct MetaInfo {
     // image
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +67,7 @@ pub struct MetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub size: Option<String>,
     #[serde(rename = "type")]
@@ -73,6 +75,7 @@ pub struct FileEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClipboardItem {
     pub id: i64,
     pub item_type: ItemType,

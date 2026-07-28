@@ -382,7 +382,7 @@ settings:
     ocrModelHint: 截图识别用，改后重启生效
     shortcut: 快捷键
     asrShortcut: 语音识别
-    polishShortcut: 立即润色
+    polishShortcut: 识别润色
     polishShortcutHint: 对当前识别结果立即润色
     editShortcut: 语音编辑
     editShortcutHint: 任意应用聚焦时唤起结果窗并编辑

@@ -89,13 +89,14 @@ pub fn try_sync_lock() -> Result<std::sync::MutexGuard<'static, bool>, SyncError
 
 /// 同步状态——UI 显示用。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
     /// git 是否可用
     pub git_available: bool,
     /// `~/.octopus/.vault/` 是否已初始化（.git 存在）
     pub initialized: bool,
-    /// 配置的 remotes（name → url）
-    pub remotes: Vec<(String, String)>,
+    /// 配置的 remotes（name → 已 redact 的 url，SafeUrl 保证 PAT 不泄露到前端）
+    pub remotes: Vec<(String, octopus_sync::error::SafeUrl)>,
     /// 最近一次 commit 的 ISO 时间戳（如果有）
     pub last_sync: Option<String>,
     /// 最近一次 commit 的 SHA（如果有）
@@ -277,6 +278,14 @@ fn ensure_private_repo(url: &str) -> Result<(), SyncError> {
             log::info!("[sync] 仓库可见性不明（放行）: {} —— {}", safe_url, reason);
             Ok(())
         }
+        // S-SYNC-PUBLIC-LEAK-ON-RATELIMIT 修复（2026-07-27，第七十七轮）：
+        // 限流（403）硬阻断——用户误配的 public repo 在限流时若放行，push 会
+        // 把 vault 密文推到 public 导致不可逆泄漏。限流是临时的（用户重试即恢复），
+        // 用「不可逆密钥泄漏」换取「用户少等几分钟」是错误的代价权衡。
+        PrivacyVerdict::RateLimited(reason) => {
+            log::warn!("[sync] API 限流，硬阻断（防 public 漏检）: {} —— {}", safe_url, reason);
+            Err(SyncError::RateLimited(reason))
+        }
         PrivacyVerdict::SshUnverifiable => {
             log::info!("[sync] SSH URL 无法自动检测（放行，由用户保证私有）: {}", safe_url);
             Ok(())
@@ -402,7 +411,7 @@ pub fn remove_remote(name: &str) -> Result<(), SyncError> {
 }
 
 /// 列出所有 remote（name → url）。
-pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
+pub fn list_remotes() -> Result<Vec<(String, octopus_sync::error::SafeUrl)>, SyncError> {
     let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Ok(vec![]);
@@ -430,10 +439,10 @@ pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
 ///   - `list_remotes`（pub fn 返回值，Tauri command 返回）
 ///   - `get_sync_status`（SyncStatus.remotes 字段，Serialize 流向前端）
 ///
-/// 注：helper 只能防「现有调用点漏调」（调用点写错变量），不能防「新增流出点不调
-/// helper」——后者需编译期 newtype 才能完全防，已评估暂不引入（用户第五十三轮
-/// 拒绝 SafeUrl newtype）。
-fn redact_remotes_for_outflow(remotes: &[(String, String)]) -> Vec<(String, String)> {
+/// SafeUrl newtype（2026-07-28 实施）：返 `Vec<(String, SafeUrl)>`——编译期保证
+/// url 经 redact_url（SafeUrl 唯一构造器）。helper 仍保留作为集中构造点，
+/// 与 SafeUrl 配合形成双重防御。
+fn redact_remotes_for_outflow(remotes: &[(String, String)]) -> Vec<(String, octopus_sync::error::SafeUrl)> {
     remotes
         .iter()
         .map(|(name, url)| (name.clone(), octopus_sync::error::redact_url(url)))
@@ -622,6 +631,7 @@ fn upsert_folder_with_sort(
 
 /// 同步报告——sync_now 返回值，UI 显示「拉了 X 条，推了 Y 条」。
 #[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub pulled: usize,
     pub pushed: usize,
@@ -673,13 +683,16 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // - NoUpstream：远程是空仓库（首次推送场景）→ 跳过 merge/rebase + 跳过 pull，直接 push -u
     let merge_result = git::git_merge_ff(&root, "origin/main")?;
     let is_first_push = matches!(merge_result, git::MergeFfResult::NoUpstream);
-    // UpToDate / NoUpstream 时跳过 pull：工作区文件是上次 sync 的旧状态，
-    // pull 会用旧 outline 覆盖本地新 DB（热词「加词后 sync 消失」bug 根因，spec 2026-07-25）。
-    let skip_pull = matches!(merge_result, git::MergeFfResult::UpToDate | git::MergeFfResult::NoUpstream);
+    // NoUpstream（首次推送）时跳过 pull——远程无内容可拉。
+    // UpToDate 不再跳过 pull（2026-07-27 修复）：pull_from_files 内部已有 md5 比对，
+    // 只 upsert「outline 有 + DB 无」或「md5 不匹配」的条目，不会无脑覆盖 DB 更新的数据。
+    // 原 skip_pull 是对「热词加词后 sync 消失」bug 的误判修复——真正根因是 push 阶段的
+    // 删除传播（已在 incremental_export 加保护修复，见 store.rs db_all_empty 检查）。
+    let skip_pull = matches!(merge_result, git::MergeFfResult::NoUpstream);
     if !is_first_push {
         match merge_result {
             git::MergeFfResult::UpToDate => {
-                log::debug!("[sync] 远程无新 commit（UpToDate），跳过 pull 避免覆盖本地新数据")
+                log::debug!("[sync] 远程无新 commit（UpToDate），仍执行 pull（md5 比对保护不覆盖新数据）")
             }
             git::MergeFfResult::FastForwarded => {
                 log::debug!("[sync] ff-only merge 成功（远程有新 commit）")
@@ -701,7 +714,8 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     }
 
     // 3. pull 阶段：文件系统 → SQLite
-    // UpToDate / NoUpstream 时跳过——远端无新数据可拉，pull 只会用旧文件覆盖本地新 DB。
+    // NoUpstream（首次推送）时跳过——远程无内容。其他情况都执行 pull。
+    // pull_from_files 内部 md5 比对确保不覆盖 DB 已有的更新数据。
     let (pulled, skipped) = if skip_pull {
         (0usize, 0usize)
     } else {
@@ -869,40 +883,20 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         }
     }
 
-    // === 阶段 B：应用 cipher / folder / meta ===
+    // === 阶段 B：应用 folder / cipher / meta ===
+    // ⚠️ 顺序修复（2026-07-27 FK constraint failed）：先 folder（被引用方）再 cipher
+    // （引用方），避免 cipher 的 folder_id 引用尚未插入的 folder → FOREIGN KEY constraint failed。
+    // 之前是 cipher 先 folder 后——如果 cipher 有非 null folder_id 就触发 FK。
     let mut count = 0usize;
     let mut skipped = 0usize;
 
-    // cipher：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
-    for (uuid, entry) in &remote_outline.ciphers {
-        let needs_update = !db_cipher_md5.contains_key(uuid.as_str())
-            || cipher_md5_mismatch(uuid, &entry.md5, &db_cipher_md5);
-        if needs_update {
-            match store::read_cipher_file(uuid) {
-                Ok(cipher_file) => {
-                    let row = cipher_file.to_vault_cipher();
-                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
-                    let input = build_cipher_input_from_file(&row);
-                    upsert_cipher(&input)?;
-                    count += 1;
-                }
-                Err(e) => {
-                    // #10：损坏文件不再静默吞——记日志 + 累计 skipped
-                    log::warn!("[sync] cipher {} 文件读取失败，已跳过：{}", uuid, e);
-                    skipped += 1;
-                }
-            }
-        }
-    }
-
-    // folder：与 cipher 对称（#5 修复——已有 folder 也比对 md5，捕获 rename）
+    // folder 先：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
     for (uuid, entry) in &remote_outline.folders {
         let needs_update = !db_folder_md5.contains_key(uuid.as_str())
             || folder_md5_mismatch(uuid, &entry.md5, &db_folder_md5);
         if needs_update {
             match store::read_folder_file(uuid) {
                 Ok(folder_file) => {
-                    // #6 修复：用文件实际的 sort_order，不再硬编码 0
                     let md5 = crate::sync::fingerprint::folder_md5_from_fields(
                         &folder_file.id,
                         &folder_file.encrypted_name,
@@ -924,6 +918,28 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         }
     }
 
+    // cipher 后：outline 有但 DB 无，或 md5 不匹配 → 读文件 upsert
+    for (uuid, entry) in &remote_outline.ciphers {
+        let needs_update = !db_cipher_md5.contains_key(uuid.as_str())
+            || cipher_md5_mismatch(uuid, &entry.md5, &db_cipher_md5);
+        if needs_update {
+            match store::read_cipher_file(uuid) {
+                Ok(cipher_file) => {
+                    let row = cipher_file.to_vault_cipher();
+                    // build_cipher_input_from_file 保留 deleted_at（H2）——T1 后是单一真相源
+                    let input = build_cipher_input_from_file(&row);
+                    upsert_cipher(&input)?;
+                    count += 1;
+                }
+                Err(e) => {
+                    // #10：损坏文件不再静默吞——记日志 + 累计 skipped
+                    log::warn!("[sync] cipher {} 文件读取失败，已跳过：{}", uuid, e);
+                    skipped += 1;
+                }
+            }
+        }
+    }
+
     // meta → upsert vault_meta（stamp 已在阶段 A 校验通过）
     if let Some(mf) = meta_file {
         let f = mf.to_sync_fields()?;
@@ -933,13 +949,28 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         let _strict_params = Argon2Params::from_i64_strict(f.kdf_iterations, f.kdf_memory_kib, f.kdf_parallelism)
             .map_err(SyncError::Other)?;
 
-        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key
+        // stamp 一致（或本地无 vault_meta）——保留本地 app_key_local_enc / public_key。
+        // ⚠️ app_key_sync_enc 不一致时清空 local_enc（2026-07-27 修复）：
+        // 场景：B 机新建 vault（生成新 app_key）→ sync 从 A 机拉数据。
+        // pull 把 app_key_sync_enc 覆盖成远程值（A 机 app_key 加密），但本地 local_enc
+        // 仍是新 app_key 加密的。如果保留 local_enc，启动时优先用它解出新 app_key →
+        // cipher（A 机旧 app_key 加密）解不开。清空 local_enc 强制走 sync_enc 路径，
+        // 解出 A 机 app_key，cipher 才能正确解密。成功后 unlock 自动用本机 K_machine
+        // 重写 local_enc。
         let (local_enc, pub_key, priv_key) = match &local_meta {
-            Some(m) => (
-                m.app_key_local_enc.clone(),
-                m.public_key.clone(),
-                m.protected_private_key.clone(),
-            ),
+            Some(m) => {
+                let sync_changed = m.app_key_sync_enc != f.app_key_sync_enc;
+                let enc = if sync_changed {
+                    log::info!(
+                        "[sync] pull 检测到 app_key_sync_enc 变化（远程覆盖了 sync_enc）——\
+                        清空本地 app_key_local_enc，强制下次 unlock 从 sync_enc 解 app_key"
+                    );
+                    String::new()
+                } else {
+                    m.app_key_local_enc.clone()
+                };
+                (enc, m.public_key.clone(), m.protected_private_key.clone())
+            }
             None => (String::new(), None, None),
         };
         let meta_input = VaultMetaInput {
@@ -2233,15 +2264,153 @@ mod tests {
         let redacted = super::redact_remotes_for_outflow(&input);
         // PAT 必须被剥离
         assert!(
-            !redacted.iter().any(|(_, u)| u.contains("ghp_secret")),
+            !redacted.iter().any(|(_, u)| u.as_str().contains("ghp_secret")),
             "redact_remotes_for_outflow 后仍含 PAT：{:?}",
             redacted
         );
         // SSH URL（scp-like）原样返回
         let ssh = redacted.iter().find(|(n, _)| n == "backup").expect("backup remote");
-        assert_eq!(ssh.1, "git@github.com:owner/repo.git");
+        assert_eq!(ssh.1.as_str(), "git@github.com:owner/repo.git");
         // HTTPS URL 剥 userinfo
         let https = redacted.iter().find(|(n, _)| n == "origin").expect("origin remote");
-        assert_eq!(https.1, "https://github.com/owner/repo.git");
+        assert_eq!(https.1.as_str(), "https://github.com/owner/repo.git");
+    }
+
+    /// 回归守护（2026-07-27 sync 覆盖 bug 系列）：
+    /// 完整模拟用户场景——.sync 有数据 + DB 清空 → sync 应恢复数据到 DB，不丢 .sync 文件。
+    /// 同时验证 pull 顺序（folder 先 cipher 后，避免 FK constraint failed）。
+    ///
+    /// 覆盖 4 个 bug 修复点的协同：
+    /// 1. push 不删 cipher 文件（incremental_export db_all_empty 保护）
+    /// 2. push 不写空 outline（incremental_export 返回旧 outline）
+    /// 3. pull 能从 .sync 拉回数据（pull_from_files md5 比对）
+    /// 4. pull 先 folder 后 cipher（避免 FK constraint failed）
+    #[test]
+    fn sync_recovers_data_when_db_emptied() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 阶段 1：DB 有 2 个 cipher（c1 有 folder_id）+ 1 个 folder，push 到 .sync
+        let folder_id = "ccc33333-3333-4333-8333-333333333333";
+        db::insert_vault_folder(folder_id, "v1:enc-folder1", "md5-f1").expect("insert f1");
+        let c1 = VaultCipherInput {
+            id: "aaa11111-1111-4111-8111-111111111111".to_string(),
+            folder_id: Some(folder_id.to_string()), // ⚠️ 引用 folder——测 FK 顺序
+            favorite: false, atype: 1,
+            name: "v1:enc-site1".into(), notes: None, data: "v1:enc-data1".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        let c2 = VaultCipherInput {
+            id: "bbb22222-2222-4222-8222-222222222222".to_string(),
+            folder_id: None,
+            favorite: false, atype: 1,
+            name: "v1:enc-site2".into(), notes: None, data: "v1:enc-data2".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert c1");
+        db::insert_vault_cipher(&c2).expect("insert c2");
+
+        let pushed1 = push_to_files().expect("push 1");
+        assert!(pushed1 >= 3, "首次 push 应写至少 3 个文件（2 cipher + 1 folder），实际 {}", pushed1);
+
+        // 验证 .sync outline 有数据
+        let outline1 = store::read_outline_file().expect("outline 1");
+        assert_eq!(outline1.ciphers.len(), 2, ".sync outline 应有 2 cipher");
+        assert_eq!(outline1.folders.len(), 1, ".sync outline 应有 1 folder");
+
+        // 阶段 2：模拟清库——清空 DB cipher/folder（保留 vault_meta，stamp 一致）
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", []).expect("del ciphers");
+            conn.execute("DELETE FROM vault_folders", []).expect("del folders");
+            Ok::<_, anyhow::Error>(())
+        }).expect("clear db");
+        assert!(db::list_vault_ciphers().expect("list").is_empty(), "清库后 DB cipher 应空");
+        assert!(db::list_vault_folders().expect("list").is_empty(), "清库后 DB folder 应空");
+
+        // 阶段 3：push（DB 空）——保护应生效，不删文件 + 不覆盖 outline
+        let pushed2 = push_to_files().expect("push 2");
+        assert_eq!(pushed2, 0, "DB 空 + .sync 有数据 → 不应删/写任何文件");
+
+        let outline2 = store::read_outline_file().expect("outline 2");
+        assert_eq!(outline2.ciphers.len(), 2, "保护后 outline 仍应有 2 cipher");
+        assert_eq!(outline2.folders.len(), 1, "保护后 outline 仍应有 1 folder");
+
+        // 阶段 4：pull（DB 空 + .sync 有数据）——应恢复数据，不触发 FK
+        // c1 有 folder_id=folder_id，folder 必须先于 cipher 写入（否则 FK failed）
+        let (pulled, skipped) = pull_from_files().expect("pull");
+        assert_eq!(pulled, 3, "应从 .sync 拉回 3 条（2 cipher + 1 folder），实际 {}", pulled);
+        assert_eq!(skipped, 0, "无跳过");
+
+        // 验证 DB 恢复
+        let db_ciphers_after = db::list_vault_ciphers().expect("list after");
+        let db_folders_after = db::list_vault_folders().expect("list after");
+        assert_eq!(db_ciphers_after.len(), 2, "pull 后 DB 应有 2 cipher");
+        assert_eq!(db_folders_after.len(), 1, "pull 后 DB 应有 1 folder");
+        let ids: Vec<&str> = db_ciphers_after.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"aaa11111-1111-4111-8111-111111111111"), "c1 应恢复");
+        assert!(ids.contains(&"bbb22222-2222-4222-8222-222222222222"), "c2 应恢复");
+        // c1 的 folder_id 应正确恢复
+        let c1_after = db_ciphers_after.iter().find(|c| c.id == "aaa11111-1111-4111-8111-111111111111").expect("c1");
+        assert_eq!(c1_after.folder_id.as_deref(), Some(folder_id), "c1 folder_id 应恢复");
+
+        let _ = g;
+    }
+
+    /// 回归守护（2026-07-27 app_key 不匹配 bug）：
+    /// B 机新建 vault（新 app_key + local_enc）→ sync 从 A 机拉数据（旧 app_key + sync_enc）
+    /// → pull 后 app_key_local_enc 应被清空（强制下次 unlock 从 sync_enc 解旧 app_key）。
+    /// 否则启动优先用 local_enc 解出新 app_key → cipher（旧 app_key 加密）解不开。
+    #[test]
+    fn pull_clears_local_enc_when_sync_enc_differs() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // DB 已有 vault_meta（IntegrationGuard 设的，stamp-test，app_key_local_enc 非空）
+        let meta_before = db::load_vault_meta().expect("meta").expect("meta exists");
+        let original_local_enc = meta_before.app_key_local_enc.clone();
+        assert!(!original_local_enc.is_empty(), "IntegrationGuard 应设了非空 local_enc");
+
+        // 模拟 A 机数据 push 到 .sync（不同 app_key_sync_enc）
+        let c1 = VaultCipherInput {
+            id: "ddd44444-4444-4444-8444-444444444444".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:enc-site".into(), notes: None, data: "v1:enc-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            deleted_at: None, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert");
+        push_to_files().expect("push");
+
+        // 清空 DB cipher（模拟 B 机新建 vault 后 cipher 空）
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", []).expect("del");
+            Ok::<_, anyhow::Error>(())
+        }).expect("clear");
+
+        // 模拟 A 机不同的 app_key_sync_enc：直接改 .sync meta.json 的 sync_enc
+        let meta_file = store::read_meta_file().expect("read meta file");
+        let mut meta_fields = meta_file;
+        meta_fields.app_key_sync_enc = "v1:DIFFERENT_SYNC_ENC_FROM_A_MACHINE".into();
+        store::write_meta_file(&meta_fields).expect("write changed meta");
+
+        // pull（DB 空 + .sync 有数据 + sync_enc 不同）
+        let (pulled, _) = pull_from_files().expect("pull");
+        assert_eq!(pulled, 1, "应拉回 1 cipher");
+
+        // 验证 app_key_local_enc 被清空（强制走 sync_enc）
+        let meta_after = db::load_vault_meta().expect("meta after").expect("meta exists");
+        assert!(
+            meta_after.app_key_local_enc.is_empty(),
+            "sync_enc 变化时 local_enc 应被清空，实际：{}",
+            meta_after.app_key_local_enc
+        );
+        assert_eq!(
+            meta_after.app_key_sync_enc, "v1:DIFFERENT_SYNC_ENC_FROM_A_MACHINE",
+            "app_key_sync_enc 应被远程值覆盖"
+        );
+
+        let _ = g;
     }
 }

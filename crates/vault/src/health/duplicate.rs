@@ -12,6 +12,7 @@ use crate::types::{Cipher, CipherData};
 /// 修复 #12：去掉了 `derive(Debug)`——派生的 Debug 会打印 `password_hash`
 /// （SHA-256 hex），属于敏感信息；改手写 impl 对 `password_hash` redact。
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DuplicateGroup {
     /// SHA-256(password)，仅用于分组；不跨 IPC 输出，避免泄露哈希。
     /// （final-review #5/M2）

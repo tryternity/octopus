@@ -34,14 +34,14 @@ function StatCard({
 }
 
 export interface ProcessStats {
-  rss_bytes: number;
-  real_bytes: number | null; // macOS=phys_footprint，其他平台=null
-  cpu_percent: number;
+  rssBytes: number;
+  realBytes: number | null; // macOS=phys_footprint，其他平台=null
+  cpuPercent: number;
 }
 export interface SystemStats {
-  total_memory_bytes: number;
-  used_memory_bytes: number;
-  cpu_percent: number;
+  totalMemoryBytes: number;
+  usedMemoryBytes: number;
+  cpuPercent: number;
 }
 export interface TimeSeries {
   rss: number[];
@@ -52,11 +52,11 @@ export interface TimeSeries {
 export interface ModelMemory {
   id: string;
   kind: string;
-  display_name: string;
-  estimated_bytes: number | null;
+  displayName: string;
+  estimatedBytes: number | null;
 }
 export interface SystemStatusSnapshot {
-  sampled_at: number;
+  sampledAt: number;
   process: ProcessStats;
   system: SystemStats;
   history: TimeSeries;
@@ -113,12 +113,12 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
   }
 
   // 双指标：macOS 主用 real（phys_footprint，更接近真实占用），其他平台退 RSS。
-  const hasReal = snap.process.real_bytes != null;
-  const memMain = hasReal ? snap.process.real_bytes! : snap.process.rss_bytes;
+  const hasReal = snap.process.realBytes != null;
+  const memMain = hasReal ? snap.process.realBytes! : snap.process.rssBytes;
   const realSeries = sparklineDataFromNullable(snap.history.real, snap.history.rss);
   const realMax = Math.max(
     ...realSeries,
-    snap.process.real_bytes ?? snap.process.rss_bytes,
+    snap.process.realBytes ?? snap.process.rssBytes,
     1,
   );
 
@@ -128,19 +128,19 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
       <div className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-muted/40 border border-border">
         {/* 双指标：macOS 主显 real（phys_footprint，真实占用），RSS 作辅；其他平台只显 RSS。 */}
         <span className="text-sm font-medium flex items-center gap-3">
-          {snap.process.real_bytes != null ? (
+          {snap.process.realBytes != null ? (
             <>
-              <span>{t("settings.system.processMem")} {fmtBytes(snap.process.real_bytes)}</span>
+              <span>{t("settings.system.processMem")} {fmtBytes(snap.process.realBytes)}</span>
               <span className="text-muted-foreground">
-                {t("settings.system.resident")} {fmtBytes(snap.process.rss_bytes)}
+                {t("settings.system.resident")} {fmtBytes(snap.process.rssBytes)}
               </span>
             </>
           ) : (
-            <span>{t("settings.system.processTotalMem")} {fmtBytes(snap.process.rss_bytes)}</span>
+            <span>{t("settings.system.processTotalMem")} {fmtBytes(snap.process.rssBytes)}</span>
           )}
         </span>
         <span className="text-xs text-muted-foreground/70">
-          {t("settings.system.systemCpu")} {snap.system.cpu_percent.toFixed(1)}%
+          {t("settings.system.systemCpu")} {snap.system.cpuPercent.toFixed(1)}%
         </span>
       </div>
 
@@ -151,7 +151,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
             {fmtBytes(memMain)}
             {hasReal && (
               <span className="ml-2 text-xs text-muted-foreground font-normal">
-                {t("settings.system.resident")} {fmtBytes(snap.process.rss_bytes)}
+                {t("settings.system.resident")} {fmtBytes(snap.process.rssBytes)}
               </span>
             )}
           </div>
@@ -159,7 +159,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
         </StatCard>
         <StatCard icon={Cpu} title={t("settings.system.cpuProcess")}>
           <div className="text-lg font-semibold mb-1">
-            {snap.process.cpu_percent.toFixed(1)}%
+            {snap.process.cpuPercent.toFixed(1)}%
           </div>
           <Sparkline data={snap.history.cpu} color="var(--color-warning)" />
         </StatCard>
@@ -175,10 +175,10 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
               <div key={m.id} className="flex items-center justify-between text-sm">
                 <div className="flex items-center gap-1.5">
                   <Badge size="sm">{m.kind}</Badge>
-                  <span>{m.display_name}</span>
+                  <span>{m.displayName}</span>
                 </div>
                 <span className="text-xs text-muted-foreground/70">
-                  {t("settings.system.approx")} {fmtBytes(m.estimated_bytes)}
+                  {t("settings.system.approx")} {fmtBytes(m.estimatedBytes)}
                 </span>
               </div>
             ))}

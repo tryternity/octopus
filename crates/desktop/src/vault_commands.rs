@@ -25,18 +25,21 @@ use crate::vault_state::SharedVaultSession;
 // === DTO ===
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VaultStatusDto {
     pub initialized: bool,
     pub user_vault_unlocked: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginUriDto {
     pub uri: String,
     pub match_type: Option<i64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginDataDto {
     pub uris: Vec<LoginUriDto>,
     pub username: Option<String>,
@@ -45,6 +48,7 @@ pub struct LoginDataDto {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FieldDto {
     pub name: String,
     pub value: Option<String>,
@@ -52,6 +56,7 @@ pub struct FieldDto {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherDto {
     pub id: String, // UUID v4 字符串（2026-07-21 v44：支持 git 同步）
     pub folder_id: Option<String>,
@@ -68,6 +73,7 @@ pub struct CipherDto {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherInputDto {
     pub folder_id: Option<String>,
     pub favorite: bool,
@@ -79,6 +85,7 @@ pub struct CipherInputDto {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TotpResultDto {
     pub code: String,
     pub seconds_remaining: u64,
@@ -607,6 +614,7 @@ pub fn vault_evaluate_password(password: String) -> PasswordStrengthDto {
 /// `vault_evaluate_password` 返回 DTO（仅暴露 score + entropy，前端强度条够用）。
 #[cfg(feature = "vault")]
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordStrengthDto {
     /// zxcvbn 评分 0-4
     pub score: u8,
@@ -707,6 +715,7 @@ pub fn vault_export(
 // === Auto-Type 命令（Task 19） ===
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AutoTypeResultDto {
     pub filled: bool,
     pub message: String,

@@ -44,7 +44,7 @@ import { useRecordSession } from "@/hooks/useRecordSession";
 
 // ── 后端类型镜像（crates/record/src/store.rs::RecordingMeta）──────────────────
 
-// 音轨（crates/record/src/audio_tracks.rs::AudioTrack，serde rename_all=camelCase）
+// 音轨（crates/record/src/audioTracks.rs::AudioTrack，serde rename_all=camelCase）
 // source enum rename_all=lowercase：'microphone' | 'system' | 'merged' | 'unknown'
 export interface AudioTrack {
   index: number;
@@ -57,22 +57,22 @@ export interface AudioTrack {
 
 export interface RecordingMeta {
   id: number;
-  file_path: string;
+  filePath: string;
   title: string;
-  duration_ms: number;
+  durationMs: number;
   width: number;
   height: number;
   fps: number;
   codec: string;
-  has_system_audio: boolean;
-  has_microphone: boolean;
-  audio_tracks: AudioTrack[];
-  source_type: string;
-  file_size: number;
-  has_thumbnail: boolean;
-  is_favorite: boolean;
-  created_at: string;
-  deleted_at: string | null;
+  hasSystemAudio: boolean;
+  hasMicrophone: boolean;
+  audioTracks: AudioTrack[];
+  sourceType: string;
+  fileSize: number;
+  hasThumbnail: boolean;
+  isFavorite: boolean;
+  createdAt: string;
+  deletedAt: string | null;
 }
 
 // merge_audio_tracks 命令的返回值（crates/desktop/src/record_commands.rs::MergeResult）。
@@ -93,7 +93,7 @@ function formatDuration(ms: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
-/** 把 file_size bytes 格式化为 KB/MB/GB（参考 octopus 既有简短格式）。 */
+/** 把 fileSize bytes 格式化为 KB/MB/GB（参考 octopus 既有简短格式）。 */
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   const units = ["KB", "MB", "GB"];
@@ -106,7 +106,7 @@ function formatSize(bytes: number): string {
   return `${v.toFixed(v >= 10 ? 0 : 1)}${units[i]}`;
 }
 
-/** 把 ISO8601 created_at 格式化为本地短日期（YYYY-MM-DD HH:MM）。 */
+/** 把 ISO8601 createdAt 格式化为本地短日期（YYYY-MM-DD HH:MM）。 */
 function formatCreatedAt(iso: string): string {
   if (!iso) return "";
   // 后端写的是 %Y-%m-%dT%H:%M:%SZ（UTC）；用 Date 解析后转本地。
@@ -476,11 +476,11 @@ function RecordingRow({
     };
   }, []);
 
-  const title = rec.title || rec.file_path.split("/").pop() || `#${rec.id}`;
-  const durationLabel = rec.duration_ms > 0 ? formatDuration(rec.duration_ms) : null;
+  const title = rec.title || rec.filePath.split("/").pop() || `#${rec.id}`;
+  const durationLabel = rec.durationMs > 0 ? formatDuration(rec.durationMs) : null;
   const resolutionLabel =
     rec.width > 0 && rec.height > 0 ? `${rec.width}×${rec.height}` : null;
-  const sizeLabel = rec.file_size > 0 ? formatSize(rec.file_size) : null;
+  const sizeLabel = rec.fileSize > 0 ? formatSize(rec.fileSize) : null;
 
   const handlePlay = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -609,7 +609,7 @@ function RecordingRow({
       )}
       onClick={onToggleSelect}
     >
-      {rec.is_favorite && (
+      {rec.isFavorite && (
         <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-amber-600/40" />
       )}
       <input
@@ -630,7 +630,7 @@ function RecordingRow({
         {/* Meta row */}
         <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
           <span className="text-[10px] text-muted-foreground">
-            {formatCreatedAt(rec.created_at)}
+            {formatCreatedAt(rec.createdAt)}
           </span>
           {durationLabel && (
             <span className="text-[10px] text-muted-foreground px-1 rounded bg-muted tabular-nums">
@@ -655,16 +655,16 @@ function RecordingRow({
           <span
             className={cn(
               "text-[10px] px-1.5 py-0.5 rounded font-medium",
-              rec.has_microphone
+              rec.hasMicrophone
                 ? "bg-voice/10 text-voice"
                 : "text-muted-foreground/60",
             )}
           >
-            {rec.source_type}
+            {rec.sourceType}
           </span>
-          {rec.audio_tracks && rec.audio_tracks.length > 0 && (
+          {rec.audioTracks && rec.audioTracks.length > 0 && (
             <div className="flex gap-1 items-center text-[10px]">
-              {rec.audio_tracks.map((track, i) => (
+              {rec.audioTracks.map((track, i) => (
                 <span
                   key={i}
                   className="px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
@@ -732,7 +732,7 @@ function RecordingRow({
           onClick={handleFavorite}
           disabled={favoriteLoading}
           title={
-            rec.is_favorite
+            rec.isFavorite
               ? t("settings.recordings.unfavorite")
               : t("settings.recordings.favorite")
           }
@@ -740,7 +740,7 @@ function RecordingRow({
           <Star
             className={cn(
               "w-3.5 h-3.5 transition-colors",
-              rec.is_favorite
+              rec.isFavorite
                 ? "fill-amber-500 text-amber-500"
                 : "text-muted-foreground hover:text-foreground",
             )}
@@ -784,7 +784,7 @@ function RecordingRow({
             <Clapperboard className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
         </button>
-        {rec.audio_tracks && rec.audio_tracks.length >= 2 && (
+        {rec.audioTracks && rec.audioTracks.length >= 2 && (
           <button
             className={cn(
               "p-1 rounded transition-opacity",
