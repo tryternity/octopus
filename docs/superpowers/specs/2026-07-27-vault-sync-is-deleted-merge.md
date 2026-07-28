@@ -1,6 +1,6 @@
 # Vault Sync is_deleted + updated_at merge — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
+> **Status: ✅ 已实现**（2026-07-28，分支 `feat/record-followup`，Phase 1-6 完成）。
 >
 > **本 spec 范围**：把 vault_ciphers + vault_folders 的 `deleted_at`（TEXT 可空）改为 `is_deleted`（INTEGER 0/1），vault_folders 也加 `is_deleted`；sync 的 pull+push 合并为按 `updated_at` 最新赢的单向 merge；app_key 一致性校验。
 >
@@ -14,7 +14,32 @@
 
 ## 实现注记（Implementation Notes）
 
-<!-- 待填 -->
+### 2026-07-28 Phase 1-6 实施完成
+
+| Phase | 完成 |
+|---|---|
+| 1 DB migration v53 + struct is_deleted | ✅ commit `7c52ffc3` |
+| 2 CipherFile + fingerprint is_deleted | ✅ 同上 |
+| 3 merge_vault + 5 TDD 测试 | ✅ commit `ad415b3c` |
+| 4 storage + commands is_deleted | ✅ 同 commit `7c52ffc3`（subagent 合并完成） |
+| 5 前端 isDeleted | ✅ 同上 |
+| 6 全量回归 | ✅ cargo build/test + pnpm build 全过 |
+
+**偏差**：
+- folder 也加了 is_deleted + soft_delete_folder（subagent 通过 AskUserQuestion 扩展）
+- folder_md5 也加 is_deleted 进指纹（与 cipher 对称）
+- db.sql 索引语法 bug 修复（部分索引需至少一列：`ON vault_folders(sort_order) WHERE is_deleted = 0`）
+- `pull_from_files` + `push_to_files` 保留（clone_initial + 旧测试用），sync_now 改调 merge_vault
+- 5 个临时保护全部移除或不再触发
+
+**merge_vault 测试覆盖**（5 个 TDD）：
+1. `pulls_remote_data_to_empty_db`——B 机空 DB + .sync 有数据 → pull
+2. `pushes_local_only_data`——DB 有 + .sync 没 → push
+3. `updated_at_remote_wins`——.sync 更新 → pull 覆盖 DB
+4. `updated_at_db_wins`——DB 更新 → push 覆盖 .sync
+5. `conflict_db_wins`——updated_at 相同 + md5 不同 → DB 赢
+
+---
 
 ---
 
