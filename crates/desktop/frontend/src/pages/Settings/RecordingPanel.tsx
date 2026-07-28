@@ -26,7 +26,6 @@ import {
   FolderOpen,
   Star,
   Trash2,
-  Search,
   Film,
   Captions,
   Circle,
@@ -275,21 +274,6 @@ export default function RecordingPanel({
     invoke<LlmOption[]>("list_subtitle_llms")
       .then(setLlmOptions)
       .catch(() => setLlmOptions([]));
-  }, []);
-
-  // Settings 面板持久化润色默认值（toggle + 下拉）。乐观更新 UI，写 DB 失败仅静默。
-  // 这两个 handler 也会被弹框「记住我的选择」复用——弹框确认时同步写默认值（可选，MVP 暂不写）。
-  const handlePolishDefaultChange = useCallback((next: boolean) => {
-    setPolishDefault(next);
-    invoke("set_config", { key: "subtitle_llm_polish_default", value: next }).catch(() => {
-      /* 写配置失败仅静默，UI 已切换 */
-    });
-  }, []);
-  const handlePolishLlmKeyChange = useCallback((key: string) => {
-    setPolishLlmKey(key);
-    invoke("set_config", { key: "subtitle_polish_llm_key", value: key }).catch(() => {
-      /* 写配置失败仅静默 */
-    });
   }, []);
 
   // ── 转字幕弹对话框状态（Phase 4，Task 4.1）──
@@ -638,29 +622,6 @@ export default function RecordingPanel({
               </Button>
             )}
           </div>
-          {/* 搜索框：MVP 灰禁用 + placeholder 指向 P2 */}
-          <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border opacity-60">
-            <Search className="w-3.5 h-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              disabled
-              placeholder={t("settings.recordings.searchPlaceholder")}
-              className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground cursor-not-allowed"
-            />
-          </div>
-
-          {/* ── 字幕默认润色设置（Phase 4，Task 4.3）──
-              与标题区同语汇：muted 卡片 + 10px 标签 + Sparkles 标识润色。
-              开关持久化到 subtitle_llm_polish_default，下拉到 subtitle_polish_llm_key。
-              下拉仅在开关开启时可点（checkbox off 时灰禁，避免误操作）。 */}
-          <SubtitlePolishDefaults
-            polishDefault={polishDefault}
-            polishLlmKey={polishLlmKey}
-            llmOptions={llmOptions}
-            onPolishDefaultChange={handlePolishDefaultChange}
-            onPolishLlmKeyChange={handlePolishLlmKeyChange}
-            t={t}
-          />
         </div>
 
         {/* ── 转字幕润色弹对话框（Phase 4，Task 4.1）──
@@ -1552,84 +1513,6 @@ function SubtitlePanel({
           </button>
         </div>
       )}
-      </div>
-    </div>
-  );
-}
-
-// ── 字幕默认润色设置（Phase 4，Task 4.3）──────────────────────────────
-//
-// 设计意图（frontend-design）：
-// 这是 Settings 区的一个「子卡片」，不是独立 panel。沿用标题区的 muted 卡片语汇
-// （bg-muted + border-border + rounded-md），左侧 Sparkles 图标点题（润色 = 增值魔法）。
-// 布局：单行 checkbox + 内联下拉。checkbox off 时下拉灰禁（视觉强关联——开关关了，
-// 选 LLM 无意义）。文案用 10px 标签 + 11px 控件，与列表行 meta 同密度。
-//
-// 配色克制：开关用 accent-primary（黑），LLM 选项文字用 muted-foreground。
-// 不用 warning 色——这是「设置默认值」而非「警示」。warning 色留给 polishing 进度。
-
-interface SubtitlePolishDefaultsProps {
-  polishDefault: boolean;
-  polishLlmKey: string;
-  llmOptions: LlmOption[];
-  onPolishDefaultChange: (next: boolean) => void;
-  onPolishLlmKeyChange: (key: string) => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
-}
-
-function SubtitlePolishDefaults({
-  polishDefault,
-  polishLlmKey,
-  llmOptions,
-  onPolishDefaultChange,
-  onPolishLlmKeyChange,
-  t,
-}: SubtitlePolishDefaultsProps) {
-  return (
-    <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border">
-      <Sparkles className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-      <label className="flex items-center gap-1.5 cursor-pointer flex-shrink-0">
-        <input
-          type="checkbox"
-          className="w-3.5 h-3.5 accent-primary"
-          checked={polishDefault}
-          onChange={(e) => onPolishDefaultChange(e.target.checked)}
-        />
-        <span className="text-[10px] text-foreground whitespace-nowrap">
-          {t("settings.recordings.subtitlePolishDefault")}
-        </span>
-      </label>
-      {/* LLM 下拉：checkbox off 时灰禁（opacity-50 + cursor-not-allowed）。 */}
-      <div className="flex items-center gap-1 ml-auto">
-        <span
-          className={cn(
-            "text-[10px] text-muted-foreground whitespace-nowrap",
-            !polishDefault && "opacity-50",
-          )}
-        >
-          {t("settings.recordings.subtitlePolishLlm")}
-        </span>
-        <select
-          value={polishLlmKey}
-          onChange={(e) => onPolishLlmKeyChange(e.target.value)}
-          disabled={!polishDefault}
-          className={cn(
-            "bg-background border border-border rounded text-[10px] px-1.5 py-0.5 text-foreground outline-none max-w-[140px] truncate",
-            "focus:border-primary disabled:cursor-not-allowed disabled:opacity-50",
-          )}
-        >
-          {llmOptions.length === 0 ? (
-            <option value="">
-              {t("settings.recordings.subtitlePolishNoLlm")}
-            </option>
-          ) : (
-            llmOptions.map((opt) => (
-              <option key={opt.key} value={opt.key}>
-                {opt.label}
-              </option>
-            ))
-          )}
-        </select>
       </div>
     </div>
   );
