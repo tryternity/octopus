@@ -139,7 +139,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 .map_err(|e| anyhow::anyhow!("to_rgba8 failed: {}", e))?;
             let rgba = rgba_img.to_vec();
             // PNG bytes 仅用于算 SHA-256 去重 hash；WebP 编码改走 DynamicImage（复用 RGBA，
-            // 不再让 encode_to_webp 内部把刚编出的 PNG 又解码一遍）。
+            // 不再让 encode_image 内部把刚编出的 PNG 又解码一遍）。
             // 直接 hash RGBA 像素（不编码 PNG）——省去大图 PNG 编码的 CPU 开销
             let hash = image::hash_rgba(&rgba);
 
@@ -156,12 +156,12 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                     ::image::RgbaImage::from_raw(w, h, rgba)
                         .ok_or_else(|| anyhow::anyhow!("RgbaImage::from_raw failed"))?,
                 );
-                let encoded = image::encode_to_webp(&dyn_img)?;
-                let img_size = format_file_size(encoded.webp_blob.len() as u64);
+                let encoded = image::encode_image(&dyn_img)?;
+                let img_size = format_file_size(encoded.image_blob.len() as u64);
 
                 // 存 image_data BLOB
                 octopus_infra::db::with_db(|conn| {
-                    store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, w as i64, h as i64)
+                    store::insert_image_data(conn, &hash, &encoded.image_blob, &encoded.thumb_blob, w as i64, h as i64)
                 })?;
 
                 // 存 clipboard_history 条目

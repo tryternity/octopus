@@ -480,10 +480,10 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
 
 // ── image_data CRUD ──
 
-pub fn insert_image_data(conn: &Connection, hash: &str, webp_blob: &[u8], thumb_blob: &[u8], width: i64, height: i64) -> Result<()> {
+pub fn insert_image_data(conn: &Connection, hash: &str, image_blob: &[u8], thumb_blob: &[u8], width: i64, height: i64) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO image_data (hash, blob, thumb, image_type, width, height, created_at) VALUES (?, ?, ?, 'webp', ?, ?, ?)",
-        params![hash, webp_blob, thumb_blob, width, height, iso_now()],
+        params![hash, image_blob, thumb_blob, width, height, iso_now()],
     )?;
     Ok(())
 }
