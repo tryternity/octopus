@@ -122,10 +122,154 @@ pub fn check_builtin_models_missing() -> Vec<BuiltinModelInfo> {
     STARTUP_CACHE.get().cloned().unwrap_or_default()
 }
 
+/// ASR 兜底引擎自动激活（2026-07-28）。
+///
+/// 条件：ASR 域无激活模型（is_enabled=1）+ zipformer-small 文件就绪（is_available=1）。
+/// 满足时调 `switch_active_model("asr", zipformer_small_id)` 激活。
+///
+/// 场景：全新库 db.sql seed 把 is_enabled 全设 0。`resolve_active_engine` 有 runtime
+/// fallback（不依赖 is_enabled），但 DB 显示未激活会让用户困惑（设置页无 current 标记、
+/// tray 引擎名可能异常）。激活后 DB 反映真实使用状态。
+///
+/// 不激活的情况：
+/// - ASR 域已有激活模型（用户在设置页激活了别的）→ 不覆盖用户选择
+/// - zipformer-small 文件未就绪（is_available=0）→ 无法激活
+///
+/// 返回：Ok(true) = 已激活；Ok(false) = 无需激活（已有激活或兜底未就绪）；Err = DB 错误。
+pub fn auto_activate_fallback_asr() -> Result<bool, String> {
+    use octopus_infra::db;
+
+    // 1. ASR 域已有激活模型 → 不覆盖
+    if db::get_active_model("asr")
+        .map_err(|e| format!("查询 ASR 激活模型失败: {e}"))?
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    // 2. 查 zipformer-small（builtin 兜底引擎）是否就绪
+    let fallback = db::list_builtin_models()
+        .map_err(|e| format!("查询 builtin 模型失败: {e}"))?
+        .into_iter()
+        .find(|m| m.model_name == "zipformer-small" && m.is_available);
+    let Some(fallback) = fallback else {
+        return Ok(false); // 兜底未就绪（缺文件）→ 不激活，下载窗会提示
+    };
+
+    // 3. 激活兜底引擎
+    db::switch_active_model("asr", fallback.id)
+        .map_err(|e| format!("激活兜底引擎失败: {e}"))?;
+    log::info!(
+        "[startup] ASR 兜底引擎 zipformer-small 已自动激活（id={}，此前 ASR 域无激活模型）",
+        fallback.id
+    );
+
+    // 4. 刷新 asr 的激活引擎缓存（让 resolve_active_engine 立即生效）
+    octopus_asr_local::config::reload_active_engine("asr")
+        .map_err(|e| format!("reload_active_engine 失败: {e}"))?;
+
+    Ok(true)
+}
+
 /// Tauri 命令：返回缺失的 builtin 模型列表（供下载页 load）。
 /// 不走启动缓存——下载页打开时可能文件状态已变（如用户刚点了下载），需实时查询。
 /// DB 查询失败时返回 Err（前端 catch 显示错误，而非误报「已就绪」）。
 #[tauri::command]
 pub fn check_builtin_models() -> Result<Vec<BuiltinModelInfo>, String> {
     check_and_sync_builtins()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测试前切换到 in-memory DB，避免污染开发库。
+    static TEST_DB_SETUP: std::sync::Once = std::sync::Once::new();
+    fn ensure_test_db() {
+        TEST_DB_SETUP.call_once(|| {
+            octopus_infra::db::init_test_db();
+            let _ = octopus_asr_local::db::ensure_db();
+        });
+    }
+
+    /// 串行化测试——三个测试都操作全局 in-memory DB 的 models 表（switch_active_model
+    /// / set_model_available），并发会互相干扰。用 Mutex 保证一次只跑一个。
+    static TEST_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 全新库（db.sql seed）后，ASR 域无激活模型 + zipformer-small 默认 is_available=0
+    /// → auto_activate 应返回 Ok(false)（兜底未就绪，不激活）。
+    #[test]
+    fn auto_activate_skips_when_fallback_not_available() {
+        let _s = test_lock();
+        ensure_test_db();
+        // 全新库 seed：zipformer-small is_available=0（ensure_builtin_seed 设的）
+        // 确保无激活模型
+        let _ = octopus_infra::db::switch_active_model("asr", -1);
+
+        let activated = auto_activate_fallback_asr().expect("应不报错");
+        assert!(!activated, "兜底未就绪时不应激活");
+
+        // 验证仍无激活
+        let active = octopus_infra::db::get_active_model("asr").unwrap();
+        assert!(active.is_none(), "不应有激活模型");
+    }
+
+    /// zipformer-small 标记为 is_available=1（模拟文件就绪）+ ASR 无激活
+    /// → auto_activate 应激活它（返回 Ok(true)）。
+    #[test]
+    fn auto_activate_when_fallback_ready_and_no_active() {
+        let _s = test_lock();
+        ensure_test_db();
+        // 模拟文件就绪：把 zipformer-small is_available 置 1
+        let fallback = octopus_infra::db::list_builtin_models()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.model_name == "zipformer-small")
+            .expect("zipformer-small 应在 seed 中");
+        octopus_infra::db::set_model_available("zipformer-small", true).unwrap();
+        // 确保无激活
+        let _ = octopus_infra::db::switch_active_model("asr", -1);
+
+        let activated = auto_activate_fallback_asr().expect("应不报错");
+        assert!(activated, "兜底就绪 + 无激活时应激活");
+
+        // 验证激活的是 zipformer-small
+        let active = octopus_infra::db::get_active_model("asr").unwrap().expect("应有激活");
+        assert_eq!(active.model_name, "zipformer-small");
+
+        // 清理：恢复 is_available=0 + 取消激活，避免污染其他测试
+        let _ = octopus_infra::db::set_model_available("zipformer-small", false);
+        let _ = octopus_infra::db::switch_active_model("asr", -1);
+        let _ = fallback; // 避免 unused warning
+    }
+
+    /// ASR 域已有激活模型 → auto_activate 不应覆盖（返回 Ok(false)）。
+    #[test]
+    fn auto_activate_skips_when_already_has_active() {
+        let _s = test_lock();
+        ensure_test_db();
+        // 先激活 zipformer-small（模拟用户已激活）
+        let fallback = octopus_infra::db::list_builtin_models()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.model_name == "zipformer-small")
+            .expect("zipformer-small 应在 seed 中");
+        octopus_infra::db::set_model_available("zipformer-small", true).unwrap();
+        octopus_infra::db::switch_active_model("asr", fallback.id).unwrap();
+
+        // 再调 auto_activate——不应覆盖
+        let activated = auto_activate_fallback_asr().expect("应不报错");
+        assert!(!activated, "已有激活时不应覆盖");
+
+        // 验证激活的仍是 zipformer-small（没被改动）
+        let active = octopus_infra::db::get_active_model("asr").unwrap().expect("应有激活");
+        assert_eq!(active.model_name, "zipformer-small");
+
+        // 清理
+        let _ = octopus_infra::db::set_model_available("zipformer-small", false);
+        let _ = octopus_infra::db::switch_active_model("asr", -1);
+    }
 }

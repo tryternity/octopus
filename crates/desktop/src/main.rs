@@ -922,6 +922,15 @@ pub fn run() {
                 log::info!("[startup] builtin 模型全部就绪");
             }
 
+            // ASR 兜底引擎自动激活（2026-07-28）：ASR 域无激活模型（is_enabled=1）
+            // + zipformer-small 文件就绪（is_available=1）→ 自动激活。
+            // 场景：全新库 db.sql seed 把 is_enabled 全设 0，用户没去设置页激活时，
+            // 兜底引擎虽可用（resolve_active_engine runtime fallback）但 DB 显示未激活，
+            // 且部分流程依赖 is_enabled=1（如 tray 引擎名显示）。激活后 DB 反映真实状态。
+            if let Err(e) = builtin_models::auto_activate_fallback_asr() {
+                log::warn!("[startup] ASR 兜底引擎自动激活失败（不阻断启动）：{e}");
+            }
+
             // Create + register action bar window (AI command palette)
             action_bar_window::create_action_bar_window(app.handle());
             overlay_window::create_overlay_window(app.handle());
@@ -1165,7 +1174,7 @@ pub fn run() {
                 app.listen("locale-changed", move |_event| {
                     let cfg = octopus_infra::config::load_config().unwrap_or_default();
                     i18n::reload(&cfg.ui_language);
-                    tray::rebuild_tray_labels();
+                    tray::rebuild_tray_labels(&cfg);
                     let _ = app_handle; // keep handle alive
                 });
             }

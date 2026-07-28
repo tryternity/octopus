@@ -67,7 +67,7 @@ pub struct CipherDto {
     pub login: Option<LoginDataDto>,
     pub fields: Vec<FieldDto>,
     pub reprompt: i64,
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -169,7 +169,7 @@ fn cipher_to_dto(c: Cipher) -> CipherDto {
             })
             .collect(),
         reprompt: c.reprompt.into(),
-        deleted_at: c.deleted_at,
+        is_deleted: c.is_deleted,
         created_at: c.created_at,
         updated_at: c.updated_at,
     }
@@ -865,7 +865,7 @@ pub fn vault_search_ciphers(
     let mut filtered: Vec<Cipher> = ciphers
         .into_iter()
         .filter(|c| {
-            if c.deleted_at.is_some() {
+            if c.is_deleted {
                 return false;
             }
             // name 匹配
@@ -1237,7 +1237,7 @@ mod tests {
                 last_used_at: "2026-01-01".into(),
             }],
             reprompt: RepromptType::Password,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-02T00:00:00".into(),
         }
@@ -1281,7 +1281,7 @@ mod tests {
         assert_eq!(dto.name, "Example Login");
         assert_eq!(dto.notes.as_deref(), Some("some notes"));
         assert_eq!(dto.reprompt, 1, "RepromptType::Password 应映射为 1");
-        assert_eq!(dto.deleted_at, None);
+        assert!(!dto.is_deleted);
         assert_eq!(dto.created_at, "2026-01-01T00:00:00");
         assert_eq!(dto.updated_at, "2026-01-02T00:00:00");
 
@@ -1403,7 +1403,7 @@ mod tests {
             fields: input.fields.clone(),
             password_history: vec![],
             reprompt: input.reprompt,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-01-01T00:00:00".into(),
             updated_at: "2026-01-01T00:00:00".into(),
         };

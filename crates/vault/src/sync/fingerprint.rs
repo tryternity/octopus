@@ -17,7 +17,7 @@
 //!   （`crypto::util::base64_encode`，字符集 `A-Za-z0-9+/=`），严格不含 `|`
 //! - id / folder_id = UUID（含 `-`，不含 `|`）
 //! - favorite / atype / reprompt = bool / i64（纯数字）
-//! - deleted_at = SQLite datetime（`YYYY-MM-DD HH:MM:SS`，含空格/`-`/`:`，不含 `|`）
+//! - is_deleted = bool（0/1，纯数字）
 //!
 //! 字段顺序固定不可变；新增字段前必须确认其字符集不含 `|`，否则需改用
 //! 长度前缀分隔（`{len}|{value}` 重复）彻底消除歧义。回归测试见
@@ -36,7 +36,7 @@ use octopus_sync::store::md5_hex;
 ///
 /// 拼接字段顺序（固定，不可变）：
 /// `id | folder_id | favorite | atype | name | notes | data | fields |
-///  password_history | reprompt | deleted_at`
+///  password_history | reprompt | is_deleted`
 pub fn cipher_md5(c: &VaultCipher) -> String {
     let input = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -50,7 +50,7 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
         c.fields.as_deref().unwrap_or(""),
         c.password_history.as_deref().unwrap_or(""),
         c.reprompt,
-        c.deleted_at.as_deref().unwrap_or(""),
+        c.is_deleted as u8,
     );
     md5_hex(input.as_bytes())
 }
@@ -59,7 +59,7 @@ pub fn cipher_md5(c: &VaultCipher) -> String {
 ///
 /// **必须保证**：input 版本和 row 版本对同一条 cipher 算出的 md5 相同——
 /// 否则 create 时填的 md5 和 sync 时读 row 算的 md5 对不上，diff 永远误判。
-/// H2 修复（2026-07-24）：input 现在含 deleted_at（之前硬编码 ""），
+/// H2 修复（2026-07-24）：input 现在含 is_deleted（之前硬编码 ""），
 /// 保证软删/恢复后 md5 与 row 一致。
 ///
 /// E-CIPHER-MD5-FROM-INPUT-ID-PARAM-REDUNDANT 修复（2026-07-26）：
@@ -79,24 +79,24 @@ pub fn cipher_md5_from_input(input: &VaultCipherInput) -> String {
         input.fields.as_deref().unwrap_or(""),
         input.password_history.as_deref().unwrap_or(""),
         input.reprompt,
-        input.deleted_at.as_deref().unwrap_or(""),
+        input.is_deleted as u8,
     );
     md5_hex(s.as_bytes())
 }
 
 /// folder 的逻辑内容 md5——不含 created_at/updated_at。
 ///
-/// 拼接字段顺序：`id | name | sort_order`
+/// 拼接字段顺序：`id | name | sort_order | is_deleted`
 pub fn folder_md5(f: &VaultFolder) -> String {
-    let input = format!("{}|{}|{}", f.id, f.name, f.sort_order);
+    let input = format!("{}|{}|{}|{}", f.id, f.name, f.sort_order, f.is_deleted as u8);
     md5_hex(input.as_bytes())
 }
 
 /// 从 folder 基本字段算 md5（用于 insert/rename 时填 sync_md5）。
 ///
-/// folder 新建时 sort_order=0（默认），与 row 读出一致。
+/// folder 新建时 sort_order=0（默认）、is_deleted=false，与 row 读出一致。
 pub fn folder_md5_from_fields(id: &str, name: &str, sort_order: i64) -> String {
-    let s = format!("{}|{}|{}", id, name, sort_order);
+    let s = format!("{}|{}|{}|{}", id, name, sort_order, 0u8);
     md5_hex(s.as_bytes())
 }
 
@@ -116,7 +116,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -162,7 +162,7 @@ mod tests {
         c.fields = None;
         c.password_history = None;
         c.folder_id = None;
-        c.deleted_at = None;
+        c.is_deleted = false;
         let md5_none = cipher_md5(&c);
 
         // 改回空字符串——md5 应仍相同（None 和 "" 视为等价）
@@ -177,6 +177,7 @@ mod tests {
             id: "f1".into(),
             name: "v1:name-a".into(),
             sort_order: 0,
+            is_deleted: false,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -188,6 +189,11 @@ mod tests {
         let mut f3 = f1.clone();
         f3.sort_order = 1;
         assert_ne!(folder_md5(&f1), folder_md5(&f3));
+
+        // is_deleted 变化也应导致 md5 变化（软删传播）
+        let mut f4 = f1.clone();
+        f4.is_deleted = true;
+        assert_ne!(folder_md5(&f1), folder_md5(&f4));
     }
 
     #[test]
@@ -196,6 +202,7 @@ mod tests {
             id: "f1".into(),
             name: "v1:name".into(),
             sort_order: 0,
+            is_deleted: false,
             created_at: "2026-07-21 10:00:00".into(),
             updated_at: "2026-07-21 10:00:00".into(),
             sync_md5: None,
@@ -229,19 +236,19 @@ mod tests {
             "notes 变化应导致 md5 变化（`|` 未吞字段）"
         );
 
-        // deleted_at 含空格/`:`（最可能「越界」的非密文字段）——
-        // 验证它与相邻 password_history 不会因分隔符产生歧义。
+        // is_deleted 是末尾字段（紧邻 reprompt 数字字段）——
+        // 验证它与相邻 reprompt 不会因分隔符产生歧义。
         let mut c3 = base.clone();
-        c3.deleted_at = Some("2026-07-24 10:00:00".into());
+        c3.is_deleted = false;
         let mut c4 = base.clone();
-        c4.deleted_at = Some("2026-07-24 10:00:01".into());
+        c4.is_deleted = true;
         assert_ne!(
             cipher_md5(&c3),
             cipher_md5(&c4),
-            "deleted_at 秒级变化应导致 md5 变化"
+            "is_deleted 变化应导致 md5 变化"
         );
 
-        // 反向证明：相同内容（含 deleted_at）md5 稳定
+        // 反向证明：相同内容（含 is_deleted）md5 稳定
         assert_eq!(cipher_md5(&c3), cipher_md5(&c3.clone()));
     }
 
@@ -256,6 +263,7 @@ mod tests {
             id: "folder-1".into(),
             name: "v1:YWJjZA==".into(), // base64，无 |
             sort_order: 0,
+            is_deleted: false,
             created_at: "2026-07-26".into(),
             updated_at: "2026-07-26".into(),
             sync_md5: None,

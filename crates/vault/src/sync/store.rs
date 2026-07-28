@@ -218,7 +218,7 @@ pub struct CipherPlaintextMeta {
     pub favorite: bool,
     pub atype: i64,
     pub reprompt: i64,
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -241,7 +241,7 @@ impl CipherFile {
                 favorite: row.favorite,
                 atype: row.atype,
                 reprompt: row.reprompt,
-                deleted_at: row.deleted_at.clone(),
+                is_deleted: row.is_deleted,
                 created_at: row.created_at.clone(),
                 updated_at: row.updated_at.clone(),
             },
@@ -264,7 +264,7 @@ impl CipherFile {
             fields: self.encrypted.fields.clone(),
             password_history: self.encrypted.password_history.clone(),
             reprompt: self.plaintext_meta.reprompt,
-            deleted_at: self.plaintext_meta.deleted_at.clone(),
+            is_deleted: self.plaintext_meta.is_deleted,
             sync_md5: None, // 由调用方算 md5 填入（pull 时 fingerprint::cipher_md5）
             created_at: self.plaintext_meta.created_at.clone(),
             updated_at: self.plaintext_meta.updated_at.clone(),
@@ -279,6 +279,7 @@ pub struct FolderFile {
     pub id: String,
     pub encrypted_name: String,
     pub sort_order: i64,
+    pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -290,6 +291,7 @@ impl FolderFile {
             id: row.id.clone(),
             encrypted_name: row.name.clone(),
             sort_order: row.sort_order,
+            is_deleted: row.is_deleted,
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
         }
@@ -300,6 +302,7 @@ impl FolderFile {
             id: self.id.clone(),
             name: self.encrypted_name.clone(),
             sort_order: self.sort_order,
+            is_deleted: self.is_deleted,
             sync_md5: None, // 由调用方算 md5 填入
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
@@ -833,7 +836,7 @@ mod tests {
             fields: None,
             password_history: None,
             reprompt: 0,
-            deleted_at: None,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-21T10:00:00".into(),
             updated_at: "2026-07-21T10:00:00".into(),
@@ -935,6 +938,7 @@ mod tests {
             id: "c3d4e5f6-a7b8-4901-9003-cdefg345678".into(),
             name: "v1:enc-folder".into(),
             sort_order: 0,
+            is_deleted: false,
             sync_md5: None,
             created_at: "2026-07-21T00:00:00".into(),
             updated_at: "2026-07-21T00:00:00".into(),

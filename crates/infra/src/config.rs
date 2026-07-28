@@ -154,13 +154,13 @@ pub struct AppConfig {
     /// 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。
     /// 与 edit_shortcut（窗口内、仅结果窗聚焦时生效）并存：edit_global 负责跨应用唤起+toggle，
     /// edit_shortcut 负责结果窗已聚焦时的编辑 toggle（用户明确要求保留不动）。
-    /// Tauri Accelerator 格式，默认 "CmdOrCtrl+Shift+E"（与 asr_shortcut 同系列，不与 Alt+V/CmdOrCtrl+Enter 冲突）。
+    /// Tauri Accelerator 格式，默认 "Alt+E"（不与 Alt+A/CmdOrCtrl+Enter 冲突）。
     #[serde(default = "default_edit_global_shortcut")]
     pub edit_global_shortcut: String,
 
     /// 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 polish_now
     /// （复用工具栏「立即润色」按钮语义：空文本静默、polishLoading 幂等）。
-    /// 默认 "CmdOrCtrl+Shift+S"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
+    /// 默认 "Alt+S"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
     #[serde(default = "default_polish_global_shortcut")]
     pub polish_global_shortcut: String,
 
@@ -169,7 +169,7 @@ pub struct AppConfig {
     #[serde(default = "default_download_mirror")]
     pub download_mirror: String,
 
-    /// 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式，如 "CmdOrCtrl+Shift+D"）。默认 "CmdOrCtrl+Shift+D"。
+    /// 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。默认 "Alt+C"。
     #[serde(default = "default_clipboard_shortcut")]
     pub clipboard_shortcut: String,
 
@@ -191,7 +191,7 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_theme")]
     pub clipboard_theme: String,
 
-    /// AI 命令面板全局热键。默认 CmdOrCtrl+Shift+Space。
+    /// AI 命令面板全局热键。默认 Alt+D。
     #[serde(default = "default_action_bar_shortcut")]
     pub action_bar_shortcut: String,
 
@@ -199,7 +199,7 @@ pub struct AppConfig {
     #[serde(default = "default_action_bar_search_engine")]
     pub action_bar_search_engine: String,
 
-    /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
+    /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "CmdOrCtrl+Shift+X"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
 
@@ -210,7 +210,7 @@ pub struct AppConfig {
     #[serde(default = "default_record_shortcut")]
     pub record_shortcut: String,
 
-    /// vault Auto-Type 全局热键。默认 CmdOrCtrl+Shift+L。
+    /// vault Auto-Type 全局热键。默认 CmdOrCtrl+Shift+S。
     ///
     /// follow-up #10：仅在 `octopus-desktop` 启用 `vault` cargo feature 时实际使用
     /// （main.rs setup() 里 cfg-gate 了热键注册）。feature off 时此字段仍存在
@@ -296,16 +296,16 @@ fn default_edit_shortcut() -> String {
     "CmdOrCtrl+Enter".into()
 }
 fn default_edit_global_shortcut() -> String {
-    "CmdOrCtrl+Shift+E".into()
+    "Alt+E".into()
 }
 fn default_polish_global_shortcut() -> String {
-    "CmdOrCtrl+Shift+S".into()
+    "Alt+S".into()
 }
 fn default_download_mirror() -> String {
     String::new()
 }
 fn default_clipboard_shortcut() -> String {
-    "CmdOrCtrl+Shift+D".into()
+    "Alt+C".into()
 }
 fn default_clipboard_max_items() -> i64 {
     1000
@@ -320,13 +320,13 @@ fn default_clipboard_theme() -> String {
     "light".into()
 }
 fn default_action_bar_shortcut() -> String {
-    "CmdOrCtrl+Shift+Space".into()
+    "Alt+D".into()
 }
 fn default_action_bar_search_engine() -> String {
     "google".into()
 }
 fn default_screenshot_shortcut() -> String {
-    "Alt+S".into()
+    "CmdOrCtrl+Shift+X".into()
 }
 fn default_record_shortcut() -> String {
     "CmdOrCtrl+Shift+R".into()
@@ -430,8 +430,8 @@ mod tests {
         assert!(!cfg.asr_correct);
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
-        assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
-        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+S");
+        assert_eq!(cfg.edit_global_shortcut, "Alt+E");
+        assert_eq!(cfg.polish_global_shortcut, "Alt+S");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

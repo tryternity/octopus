@@ -412,7 +412,7 @@ pub fn load_active_engine(domain: &str) -> Result<ResolvedEngine> {
         }
         None => {
             if domain == "asr" {
-                // ASR 兜底引擎（随应用本地打包，不依赖 DB is_enabled）
+                // ASR 兜底引擎
                 let resolved = fallback_resolved_engine();
                 ACTIVE_ENGINES
                     .write()
@@ -455,7 +455,7 @@ pub fn resolve_active_engine(domain: &str) -> Result<ResolvedEngine> {
 /// 兜底引擎固定裸名。
 const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small";
 
-/// ASR 兜底引擎（无 DB 激活时）：优先用 DB 可用的 zipformer-small
+/// ASR 兜底引擎
 /// （用户可能改过 source），否则硬构造（本地打包路径）。
 fn fallback_resolved_engine() -> ResolvedEngine {
     // 查 DB 任意可用 ASR 的 zipformer-small（不限激活）

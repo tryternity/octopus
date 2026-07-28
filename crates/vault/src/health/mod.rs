@@ -26,7 +26,7 @@ pub struct HealthReport {
 pub fn generate_report(ciphers: &[Cipher]) -> HealthReport {
     let logins: Vec<&Cipher> = ciphers
         .iter()
-        .filter(|c| matches!(&c.data, CipherData::Login(_)) && c.deleted_at.is_none())
+        .filter(|c| matches!(&c.data, CipherData::Login(_)) && !c.is_deleted)
         .collect();
 
     // 弱密码：score < 3
@@ -93,7 +93,7 @@ mod tests {
             fields: vec![],
             password_history: vec![],
             reprompt: RepromptType::None,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         }
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn test_report_excludes_deleted() {
         let mut ciphers = vec![make_cipher("c1", "weak")];
-        ciphers[0].deleted_at = Some("2026-07-18".into());
+        ciphers[0].is_deleted = true;
         let report = generate_report(&ciphers);
         assert_eq!(report.total_logins, 0);
     }

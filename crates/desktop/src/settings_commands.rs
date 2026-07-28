@@ -106,7 +106,9 @@ pub fn set_config(
     // record_* 配置项不在 AppConfig struct 里（走 app_config 表的泛型 key-value 存储），
     // 直接写 DB 后返回，不走 apply_config_value（会报「未知配置字段」）。
     // 包括：record_output_dir / record_reveal_after_stop / record_microphone_device 等。
-    if key.starts_with("record_") && key != "record_shortcut" && key != "record_stop_shortcut" {
+    // 注意：record_shortcut 在 AppConfig struct 里（走 apply_config_value）；record_stop
+    // 固定为 Escape 常量（record_hotkey.rs::STOP_SHORTCUT），不是配置项。
+    if key.starts_with("record_") && key != "record_shortcut" {
         let val_str = match &value {
             Value::Bool(b) => b.to_string(),
             Value::String(s) => s.clone(),
@@ -270,6 +272,13 @@ pub fn set_config(
         *g = cfg.clone();
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
+
+    // 快捷键类配置变更后刷新 tray 菜单文案（显示新快捷键）。
+    // record_start 的文案由上方 update_record_tray_label 单独处理；这里覆盖其余项
+    // （toggle / screenshot / clipboard）。
+    if key.ends_with("_shortcut") {
+        crate::tray::rebuild_tray_labels(&cfg);
+    }
 
     // fuzzy_dialect 热重载：改方言规则后重建 corrector 热词索引（规则变 key 必变）。
     if key == "fuzzy_dialect" {

@@ -444,7 +444,12 @@ export default function SyncPanel({
         </div>
       </div>
 
-      {/* stamp 冲突解决——sync 失败且 error 含「不同主密码」时显示 */}
+      {/* stamp 冲突解决——sync 失败且 error 含「主密码」时显示。
+          两种错误共用此 UI：
+            - MasterPasswordMismatch "远程 vault 用了不同主密码"——可「以远程/本地为准」二选一
+            - EmptyRecoveryNeedsPassword "本地空库恢复需确认源机器主密码"——本地空，只能「以远程为准」
+          用「空库恢复」关键字区分（空库场景隐藏「以本地为主」按钮——本地空没什么可为主的，
+          且会让远程 meta 被空状态覆盖导致 cipher pull 回来解不开）。 */}
       {syncError && syncError.includes("主密码") && (
         <div className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
           <div className="flex items-start gap-2">
@@ -469,14 +474,18 @@ export default function SyncPanel({
               >
                 {t("settings.vault.sync.useRemote")}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="flex-1"
-                onClick={() => setResolveMode("local")}
-              >
-                {t("settings.vault.sync.useLocal")}
-              </Button>
+              {/* 空库恢复场景（EmptyRecoveryNeedsPassword）隐藏「以本地为主」——本地空，
+                  选了会把远程 meta 覆盖成空状态 + cipher pull 回来解不开。 */}
+              {!syncError.includes("空库恢复") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setResolveMode("local")}
+                >
+                  {t("settings.vault.sync.useLocal")}
+                </Button>
+              )}
             </div>
           ) : (
             <div className="space-y-2">

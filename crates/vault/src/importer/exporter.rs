@@ -121,7 +121,7 @@ pub fn export_vault_json(ciphers: &[Cipher], folders: &[FolderDto]) -> Result<St
 
     let items: Vec<BitwardenItem> = ciphers
         .iter()
-        .filter(|c| c.deleted_at.is_none())
+        .filter(|c| !c.is_deleted)
         .map(|c| {
             let (item_type, login) = match &c.data {
                 CipherData::Login(l) => (
@@ -209,7 +209,7 @@ mod tests {
             fields: vec![],
             password_history: vec![],
             reprompt: RepromptType::None,
-            deleted_at: None,
+            is_deleted: false,
             created_at: "2026-07-18".into(),
             updated_at: "2026-07-18".into(),
         }
@@ -220,6 +220,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             sort_order: 0,
+            is_deleted: false,
             created_at: "2026-07-24".into(),
             updated_at: "2026-07-24".into(),
         }
@@ -241,7 +242,7 @@ mod tests {
     #[test]
     fn test_export_skips_deleted() {
         let mut c = make_login_cipher("GitHub");
-        c.deleted_at = Some("2026-07-18".into());
+        c.is_deleted = true;
         let json = export_vault_json(&[c], &[]).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["items"].as_array().unwrap().len(), 0);

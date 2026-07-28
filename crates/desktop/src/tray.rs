@@ -101,7 +101,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let sep1 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator: {e}"))?;
 
-    let screenshot_text = crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]);
+    let screenshot_text = crate::i18n::t("tray.screenshot", &[("shortcut", &fmt_shortcut(&config.screenshot_shortcut))]);
     let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
         .map_err(|e| format!("screenshot menu: {e}"))?;
     let clipboard_text = crate::i18n::t("tray.clipboard", &[("shortcut", &fmt_shortcut(&config.clipboard_shortcut))]);
@@ -323,14 +323,19 @@ pub fn update_tray_screenshot_label(active: bool) {
     }
 }
 
-/// 语言切换后重建所有菜单项文案
-pub fn rebuild_tray_labels() {
+/// 语言切换后重建所有菜单项文案。
+///
+/// 传入当前 `AppConfig`——所有快捷键文案从 config 读，不依赖全局 mirror。
+/// （曾因复用 ASR_SHORTCUT 全局变量导致截图/剪贴板菜单显示成 ASR 的快捷键——2026-07-28 修复）
+pub fn rebuild_tray_labels(config: &AppConfig) {
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
-        let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
-        let _ = tray_items.toggle.set_text(crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]));
-        let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]));
-        let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &sc)]));
+        let asr_sc = fmt_shortcut(&config.asr_shortcut);
+        let screenshot_sc = fmt_shortcut(&config.screenshot_shortcut);
+        let clipboard_sc = fmt_shortcut(&config.clipboard_shortcut);
+        let _ = tray_items.toggle.set_text(crate::i18n::t("tray.startAsr", &[("shortcut", &asr_sc)]));
+        let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &screenshot_sc)]));
+        let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &clipboard_sc)]));
         let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
         #[cfg(target_os = "macos")]
         {

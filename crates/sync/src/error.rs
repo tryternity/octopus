@@ -37,6 +37,11 @@ pub enum SyncError {
     ConflictNeedsManual(String),
     /// security_stamp 不一致——远程 vault 用了不同主密码。
     MasterPasswordMismatch,
+    /// 空库恢复场景：本地空库（cipher=0 + folder=0）+ 远程有数据 + stamp 不一致。
+    /// 需要用户输源机器主密码确认（前端弹窗），调 resolve_with_remote 校验 + 覆盖本地。
+    /// v2（2026-07-28）：v1 是无条件放行，但用户输错主密码会进入「数据恢复但解不开」
+    /// 的死状态。v2 改为要求密码确认，复用现有 resolve_with_remote 函数。
+    EmptyRecoveryNeedsPassword,
     /// 检测到公有库——禁止作为 vault 同步仓库（含 URL）。
     ///
     /// 私有库检测（2026-07-21）：AES-256-GCM 加密虽强，但密文泄露给攻击者做
@@ -88,6 +93,9 @@ impl std::fmt::Display for SyncError {
                 write!(f, "合并冲突需手动介入——请在终端打开 ~/.octopus/.sync/ 解决（详情见应用日志）")
             }
             SyncError::MasterPasswordMismatch => write!(f, "远程 vault 用了不同主密码"),
+            // ⚠️ Display 字符串含「主密码」——前端 SyncPanel.tsx 用 includes("主密码")
+            // 匹配以显示冲突解决 UI（密码输入框 + 以远程/本地为准按钮）。
+            SyncError::EmptyRecoveryNeedsPassword => write!(f, "本地空库恢复需确认源机器主密码"),
             SyncError::PublicRepoRejected(url) => write!(
                 f,
                 "拒绝添加公有库 {} 作为同步仓库——密码箱必须使用私有库。请到 GitHub/Gitee 把仓库改为 Private，或换一个私有库地址",
