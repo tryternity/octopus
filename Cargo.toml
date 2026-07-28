@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record"]
+# dlp 是独立 sidecar（yt-dlp 封装），无任何 crate 依赖它（cli 通过 shell-out
+# 查找预编译二进制）。排除出 default-members，让日常 cargo build/test 不编译它，
+# 加速迭代；cargo build -p octopus-dlp 仍可单独编译 sidecar。
+default-members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/download", "crates/clipboard", "crates/ocr", "crates/paddle-ocr", "crates/capx", "crates/translation", "crates/search", "crates/vault", "crates/sync", "crates/scheduler", "crates/record"]
 exclude = ["xcap"]
 resolver = "2"
 
