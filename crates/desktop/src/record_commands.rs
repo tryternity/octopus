@@ -1228,6 +1228,7 @@ async fn generate_subtitle_inner(
 ) -> Result<octopus_record::SubtitleResult, String> {
     use octopus_infra::paths::resolve_recording_path;
 
+    log::info!("[subtitle] generate_subtitle_inner 开始 id={}", id);
     let _ = app.emit("record://task", RecordTaskEvent::SubtitleStarted { id });
 
     // 1. 查 DB 拿 RecordingMeta（连同 file_path 一起，省去第二次查 DB）
@@ -1236,6 +1237,8 @@ async fn generate_subtitle_inner(
         store.get(id)?.ok_or(RecordError::NotFound(id))
     })
     .await?;
+    log::info!("[subtitle] step1 查 DB 完成 file_path={} audio_tracks={}",
+        meta.file_path, meta.audio_tracks.len());
 
     // 2. 解析 TrackPreference
     let pref = match track.as_deref() {
@@ -1247,6 +1250,7 @@ async fn generate_subtitle_inner(
     // 3. 选轨
     let (track_idx, track_used) =
         octopus_record::select_track(&meta, pref).map_err(|e| e.to_string())?;
+    log::info!("[subtitle] step3 选轨完成 track_idx={} track_used={:?}", track_idx, track_used);
 
     // 4. emit 进度：抽音轨
     let _ = app.emit(
@@ -1263,6 +1267,7 @@ async fn generate_subtitle_inner(
     if !input.exists() {
         return Err(format!("源文件不存在: {}", input.display()));
     }
+    log::info!("[subtitle] step5 开始抽 PCM mp4={} ffmpeg={}", input.display(), ffmpeg.display());
     let mp4_path = input.clone();
     let pcm = tokio::task::spawn_blocking(move || {
         octopus_record::extract_audio_track_to_pcm(&mp4_path, track_idx, &ffmpeg)
@@ -1270,6 +1275,7 @@ async fn generate_subtitle_inner(
     .await
     .map_err(|e| format!("extract join error: {e}"))?
     .map_err(|e| e.to_string())?;
+    log::info!("[subtitle] step5 抽 PCM 完成 samples={} ({:.1}s)", pcm.len(), pcm.len() as f64 / 16000.0);
 
     // 6. emit 进度：识别中
     let _ = app.emit(
@@ -1284,13 +1290,16 @@ async fn generate_subtitle_inner(
     let engine = engine_manager
         .active_engine()
         .map_err(|e| format!("获取 ASR 引擎失败: {e}"))?;
+    log::info!("[subtitle] step7 拿到 active engine");
     let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config("zh");
 
     // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——但 engine.transcribe 内部已并发，
     //    且通常总耗时 < ffmpeg；为简化暂不再 spawn_blocking，如发现卡 UI 再包）。
+    log::info!("[subtitle] step8 开始 ASR transcribe（这一步可能耗时几十秒）...");
     let timestamped =
         octopus_asr_local::pipeline::transcribe_segments_with_timestamps(engine.as_ref(), &pcm, &cfg)
             .map_err(|e| format!("ASR 失败: {e}"))?;
+    log::info!("[subtitle] step8 ASR 完成 segments={}", timestamped.len());
 
     // 9. emit 进度：组装
     let _ = app.emit(
@@ -1323,17 +1332,20 @@ async fn generate_subtitle_inner(
 
     // 11. UPDATE DB（cues 序列化为 JSON 字符串）
     let cues_json = serde_json::to_string(&cues).map_err(|e| e.to_string())?;
+    log::info!("[subtitle] step11 开始 DB UPDATE cues={} json_len={}", cues.len(), cues_json.len());
     with_db_blocking(move |conn| {
         let store = RecordStore::new(conn);
         store.update_subtitle(id, &cues_json, &srt_text, &model)
     })
     .await?;
+    log::info!("[subtitle] step11 DB UPDATE 完成");
 
     // 12. emit done（cues 为空也走 Done——VAD 无声属于「正常无字幕」，不是错误）
     let _ = app.emit(
         "record://task",
         RecordTaskEvent::SubtitleDone { id, cue_count: cues.len() },
     );
+    log::info!("[subtitle] step12 emit Done 完成，函数即将返回");
 
     Ok(result)
 }

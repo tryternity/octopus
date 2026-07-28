@@ -228,8 +228,9 @@ export default function RecordingPanel({
       stage?: SubtitleProgressPayload["stage"];
       percent?: number;
       message?: string;
-    }>("record://task", (payload) => {
-      const e = payload as {
+    }>("record://task", (msg) => {
+      // Tauri 2 listen callback 收到的是 Event<T>，数据在 msg.payload（不是 msg 本身）。
+      const e = msg.payload as {
         event: string;
         id: number;
         cueCount?: number;
