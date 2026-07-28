@@ -57,8 +57,6 @@ pub enum SubtitleError {
     Decode(String),
 }
 
-pub type SubtitleResult2<T> = std::result::Result<T, SubtitleError>;
-
 /// 把 SubtitleCue 列表格式化为标准 SRT 文本。
 ///
 /// 格式：序号从 1 开始；时间 `HH:MM:SS,mmm`（毫秒用逗号）；cue 间空行分隔；末尾保留换行。
