@@ -611,7 +611,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `platform` | `HelperProvider` trait（**`#[async_trait]`**，5 个调 helper 方法 `async fn`，`resolve_helper_path` 保留 sync——2026-07-26 async 化，原 sync + `block_in_place` 是 MVP 技术债）+ `provider()` cfg-gated 工厂（macOS→MacOSProvider，Win/Linux 占位返 `PlatformNotImplemented`）+ `run_helper_subcommand`（`async fn`，跑 helper `--list-*` / `--check-permission` 子命令模式）。`MacOSProvider::resolve_helper_path` 双路径：打包后 `Resources/binaries/octopus-sck-helper`，开发期 `crates/desktop/binaries/octopus-sck-helper`。consumer 侧（record_commands.rs）每命令直接 `provider().list_displays().await`（ZST 无成本，原 `platform_helper` 闭包 wrapper 因 async_trait 生命周期冲突已删） |
 | `native/macos/` | vendor 自 openscreen 的 Swift helper（上游 commit `f57e36e2`，MIT）。octopus 8 处修改详见 spec 实现注记 + `crates/record/native/macos/LICENSE`。`scripts/build-macos-helper.sh` 编译 universal binary |
 
-**DB 表（schema v51）**：`recordings`（id/file_path/title/duration_ms/width/height/fps/codec/has_system_audio/has_microphone/source_type/file_size/has_thumbnail/is_favorite/created_at/deleted_at）+ `recordings_thumbnails`（id/recording_id/thumbnail BLOB 分离）。`file_path` 永远存相对路径（`recordings/xxx.mp4`），运行时 `paths::resolve_recording_path` join `octopus_config_home` 得绝对路径。
+**DB 表（schema v54）**：`recordings`（id/file_path/title/duration_ms/width/height/fps/codec/has_system_audio/has_microphone/audio_tracks JSON/source_type/file_size/has_thumbnail/is_favorite/created_at/deleted_at/subtitle_cues JSON/subtitle_srt TEXT/subtitle_model TEXT）+ `recordings_thumbnails`（id/recording_id/thumbnail BLOB 分离）。`file_path` 永远存相对路径（`recordings/xxx.mp4`），运行时 `paths::resolve_recording_path` join `octopus_config_home` 得绝对路径。**v54 字幕三列**（2026-07-28，spec `2026-07-28-record-auto-subtitle-design.md`）：`subtitle_cues` 存 `SubtitleCue[]` JSON（每条 `{startMs,endMs,text}`，camelCase）；`subtitle_srt` 存完整 SRT 全文（导出直接读，免重组装）；`subtitle_model` 存生成时模型名（便于「模型不同需重生成」提示）。三列空 = 未生成。
 
 **路径**（`crates/infra/src/paths.rs`）：`recordings_dir()` → `~/.octopus/recordings/`；`resolve_recording_path(rel)` → 绝对路径；`record_helper_log()` → `~/.octopus/logs/record-helper.log`。启动时 `cleanup_orphan_recordings` 扫 `recordings/` 删 DB 不认得的孤儿文件（与 clipboard cleanup 同模式）。
 
@@ -971,7 +971,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **路径**（`crates/infra/src/paths.rs`）：`recordings_dir()` → `~/.octopus/recordings/`；`resolve_recording_path(relative)` 解析 DB 里的相对路径；`record_helper_log()` → `~/.octopus/logs/record-helper.log`。
 - **打包**：`scripts/build-macos-dmg.sh` 在 `cargo tauri build` 前调 `build-macos-helper.sh`（失败不阻断 DMG，仅录屏不可用）。
 - **快捷键 + tray menu**（spec §8.2 部分实现）：`Cmd+Shift+R` toggle + `Esc` stop 已实现；tray menu 3 个录屏项已加。**未做**（follow-up）：tray icon 红点状态指示、duration 实时显示、独立配置浮窗、菜单栏前端 dropdown 组件。
-- **已知 MVP 简化**（follow-up）：① ~~duration_ms 恒 0~~ **已修复**（见上 L619）。② 缩略图抽取推迟。③ 网格视图切换推迟（spec §8.3 双视图 MVP 仅列表）。④ 字幕按钮灰占位（spec §8.4 F15 P2）。⑤ 全文搜索 FTS5 推迟（spec §9.2 F17 P2）。⑥ ~~area 录制前端拖框 UI 待实现~~ **已实现**（record_area_picker.rs + AreaPicker.tsx，含实时跟随工具栏）。
+- **已知 MVP 简化**（follow-up）：① ~~duration_ms 恒 0~~ **已修复**（见上 L619）。② 缩略图抽取推迟。③ 网格视图切换推迟（spec §8.3 双视图 MVP 仅列表）。④ ~~字幕按钮灰占位~~ **已实现**（2026-07-28 录屏自动字幕，见下文「自动字幕」段）。⑤ 全文搜索 FTS5 推迟（spec §9.2 F17 P2）。⑥ ~~area 录制前端拖框 UI 待实现~~ **已实现**（record_area_picker.rs + AreaPicker.tsx，含实时跟随工具栏）。
 
 **第二轮迭代增强**（2026-07-25）：
 - **配置浮窗**：`record_window.rs` + `RecordConfig.tsx`（独立 vite entry `record-config.html`）。Cmd+Shift+R 弹浮窗（主屏水平居中 + 垂直上 1/3），选 display/window/area + 音频开关。三 tab + 绿色 Check 选中态。
@@ -992,6 +992,17 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **部分穿透**（参考 `result_window::start_click_through_poller`）：`ANNOTATION_PASSTHROUGH: AtomicBool` + poller 33ms tick。select 工具=穿透模式（工具栏区域 `TOOLBAR_ZONE` 不穿透，选区穿透到下层应用）；标注工具=标注模式（整个窗口不穿透）。前端 `onToolSelect` 调 `set_annotation_passthrough(t === "none")`。
 - **停止按钮**：emit `record://stop-requested` → 后端 listen → 调 `stop_and_store`（与 ESC/tray 同路径）。
 - **screenshot_commands 辅助函数 pub(crate)**：`get_window_cocoa_frame` / `get_primary_screen_height` / `active_display_for_point` 提升可见性供 record_area_picker 复用。
+
+**第四轮迭代：自动字幕**（2026-07-28，详见 [spec](superpowers/specs/2026-07-28-record-auto-subtitle-design.md) + [plan](superpowers/plans/2026-07-28-record-auto-subtitle.md)）：
+- **手动触发**：录屏停止后用户在 RecordingRow 点「转字幕」按钮（激活原 Captions 灰禁占位）→ 抽 mic track → ASR → 入 DB + 可导出 SRT。不自动触发（用户可控、不阻塞视频就绪、ASR 失败不污染主流程）。
+- **方案 B（desktop 编排）**：record crate 加 `subtitle.rs`（mp4→PCM ffmpeg 抽轨 + SRT 格式化 + 选轨 + 数据模型，**无 ASR 依赖**）；asr-local 扩展 `pipeline.rs`（带时间戳 transcribe，复用 VAD/engine/后处理）；desktop 加 `generate_subtitle`/`export_subtitle`/`get_subtitle` 3 个 Tauri 命令编排两者。依赖方向：`infra ← record ← desktop → asr-local`（record 不依赖 asr-local，与 merge_audio_tracks 同模式）。
+- **VAD 段级时间戳**（核心改造）：`asr-local/audio.rs` 新增 `segment_audio_vad_with_offsets`（**不改原 `segment_audio_vad`**，复制状态机 + 追加 `offset_samples` 跟踪，一致性回归测试保护）。`pipeline.rs` 新增 `transcribe_segments_with_timestamps` 调它 + 逐段 `engine.transcribe` + 抽出的 `postprocess_text` helper（复用 corrector + ITN + hans，**transcribe_batch 零回归**）。过滤 <500ms 段 + 空文本段。短音频也走 VAD（字幕需要分段）。
+- **选轨策略**：默认 mic（教程/会议讲解），无 mic 自动 fallback system + 前端 amber 提示「已使用系统音轨」。`SubtitleResult.track_used` 字段标实际用轨。`AudioTrackSource` 复用既有 enum（Microphone/System/Merged/Unknown）。
+- **数据模型**：DB schema v53→v54（recordings 加 `subtitle_cues` JSON + `subtitle_srt` TEXT + `subtitle_model` TEXT 三列，migration 机制已简化为只改 db.sql + 升常量）。`SubtitleCue { start_ms, end_ms, text }` + `SubtitleResult { cues, srt_text, model, track_used }`，跨 Tauri 边界 camelCase（`#[serde(rename_all = "camelCase")]`）。`SubtitleProgress` 事件 enum 外层 kebab tag + `rename_all_fields = "camelCase"`（serde 1.0.228+ 特性，覆盖变体内字段如 `cueCount`）。
+- **ffmpeg 抽 PCM**：`extract_audio_track_to_pcm` 用 `std::process::Command`（`-map 0:a:<idx> -ar 16000 -ac 1 -f f32le pipe:1`），在 `tokio::task::spawn_blocking` 内执行（ffmpeg 阻塞数秒）。
+- **RecordTaskEvent 加 4 变体**：`SubtitleStarted` / `SubtitleProgress`（携带 stage + percent）/ `SubtitleDone`（cue_count）/ `SubtitleFailed`，与现有 Gif/Merge 同 `record://task` 事件流。
+- **前端**：RecordingPanel.tsx SubtitlePanel 组件（cue 列表 + 等宽时间码 `00:00 → 00:08` + 单击复制 + 复制全部 + 导出 SRT via Tauri save dialog）。ChevronDown toggle 展开/折叠。fallback 提示 amber 条。i18n `settings.recordings.subtitle*`（22 key，zh-CN + en 对称）。
+- **ASR 引擎跟随 Settings**：命令注入 `State<'_, Arc<AsrEngineManager>>`（main.rs:1051 已 manage）→ `active_engine()` + `PipelineConfig::from_app_config("zh")` → `transcribe_segments_with_timestamps`。模型名从 `resolve_active_engine("asr").name` 取。
 
 ## 性能优化批次（2026-07-17）
 
