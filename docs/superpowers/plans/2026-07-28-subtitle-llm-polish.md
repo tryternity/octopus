@@ -47,7 +47,7 @@
 **Interfaces:**
 - Produces: `PolishOption`、`PolishOutcome`、`build_polish_input(texts: &[String]) -> String`
 
-- [ ] **Step 1: 创建 subtitle_polish.rs 骨架 + 数据模型**
+- [x] **Step 1: 创建 subtitle_polish.rs 骨架 + 数据模型**
 
 创建 `crates/desktop/src/subtitle_polish.rs`：
 
@@ -120,7 +120,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: lib.rs 导出模块**
+- [x] **Step 2: lib.rs 导出模块**
 
 在 `crates/desktop/src/lib.rs` 适当位置加（如其他 `pub mod` 附近）：
 
@@ -128,7 +128,7 @@ mod tests {
 pub mod subtitle_polish;
 ```
 
-- [ ] **Step 3: 跑测试确认通过**
+- [x] **Step 3: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 | tail -10
@@ -136,7 +136,7 @@ cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 
 
 Expected: 3 测试 PASS（desktop 是 bin 不是 lib，用 `--bin`）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/subtitle_polish.rs crates/desktop/src/lib.rs
@@ -150,7 +150,7 @@ git commit -m "feat(desktop): subtitle_polish 模块骨架 + PolishOption/Outcom
 **Files:**
 - Modify: `crates/desktop/src/subtitle_polish.rs`
 
-- [ ] **Step 1: 写 5 个失败测试**
+- [x] **Step 1: 写 5 个失败测试**
 
 在 subtitle_polish.rs 测试模块追加：
 
@@ -194,7 +194,7 @@ git commit -m "feat(desktop): subtitle_polish 模块骨架 + PolishOption/Outcom
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests::parse_markers 2>&1 | tail -5
@@ -202,7 +202,7 @@ cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests::pars
 
 Expected: 编译失败（函数未定义）
 
-- [ ] **Step 3: 实现 parse_polished_with_markers**
+- [x] **Step 3: 实现 parse_polished_with_markers**
 
 在 subtitle_polish.rs（build_polish_input 后、测试前）追加：
 
@@ -254,7 +254,7 @@ pub fn parse_polished_with_markers(polished: &str, expected_count: usize) -> Opt
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 | tail -10
@@ -262,7 +262,7 @@ cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 
 
 Expected: 8 测试全过（3 build + 5 parse）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/subtitle_polish.rs
@@ -276,7 +276,7 @@ git commit -m "feat(desktop): parse_polished_with_markers——[[N]] 标记解�
 **Files:**
 - Modify: `crates/desktop/src/subtitle_polish.rs`
 
-- [ ] **Step 1: 写 3 个失败测试**
+- [x] **Step 1: 写 3 个失败测试**
 
 在测试模块追加：
 
@@ -318,7 +318,7 @@ git commit -m "feat(desktop): parse_polished_with_markers——[[N]] 标记解�
     }
 ```
 
-- [ ] **Step 2: 实现 split_polished_by_ratio**
+- [x] **Step 2: 实现 split_polished_by_ratio**
 
 在 subtitle_polish.rs（parse_polished_with_markers 后）追加：
 
@@ -351,7 +351,7 @@ pub fn split_polished_by_ratio(polished: &str, original_texts: &[String]) -> Vec
 }
 ```
 
-- [ ] **Step 3: 跑测试确认通过**
+- [x] **Step 3: 跑测试确认通过**
 
 ```bash
 cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 | tail -10
@@ -359,7 +359,7 @@ cargo test -p octopus-desktop --bin octopus-desktop subtitle_polish::tests 2>&1 
 
 Expected: 11 测试全过（3 build + 5 parse + 3 split）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/subtitle_polish.rs
@@ -377,7 +377,7 @@ git commit -m "feat(desktop): split_polished_by_ratio——粗略拆分降级（
 - Consumes: `octopus_llm::chat_text_with_prompt`、`octopus_llm::system_prompt()`、`crate::config::llm_config_ignore_mode`（或 resolve_subtitle_llm_config helper）
 - Produces: `polish_subtitle_cues(texts, polish, app) -> (Vec<String>, PolishOutcome)`
 
-- [ ] **Step 1: 实现 resolve_subtitle_llm_config helper**
+- [x] **Step 1: 实现 resolve_subtitle_llm_config helper**
 
 在 subtitle_polish.rs 追加（先看 crates/desktop/src/config.rs 的 llm_config_ignore_mode 签名）：
 
@@ -396,7 +396,7 @@ fn resolve_subtitle_llm_config(llm_key: &Option<String>) -> Option<octopus_infra
 
 ⚠️ 实施时先 grep `crates/desktop/src/config.rs` 确认 `llm_config_ignore_mode` 签名，以及是否已有按 key 查 LLM 配置的 helper（可能需要复用或新增）。如果按 key 查的逻辑复杂，MVP 阶段可以先只支持 None（用默认 LLM），llm_key=Some 时也 fallback 到默认 + log warn。
 
-- [ ] **Step 2: 实现 polish_subtitle_cues**
+- [x] **Step 2: 实现 polish_subtitle_cues**
 
 在 subtitle_polish.rs 追加：
 
@@ -477,7 +477,7 @@ pub async fn polish_subtitle_cues(
 }
 ```
 
-- [ ] **Step 3: build 确认编译**
+- [x] **Step 3: build 确认编译**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | grep -E "error|warning" | head
@@ -485,7 +485,7 @@ cargo build -p octopus-desktop 2>&1 | grep -E "error|warning" | head
 
 Expected: 0 error 0 warning（可能需要修 `crate::config::llm_config_ignore_mode` 的精确路径）
 
-- [ ] **Step 4: Commit（与 Task 1.1-1.3 合并到 Phase 1 总结 commit，或单独）**
+- [x] **Step 4: Commit（与 Task 1.1-1.3 合并到 Phase 1 总结 commit，或单独）**
 
 ```bash
 git add crates/desktop/src/subtitle_polish.rs
@@ -501,7 +501,7 @@ git commit -m "feat(desktop): polish_subtitle_cues 编排——spawn_blocking + 
 **Files:**
 - Modify: `crates/record/src/subtitle.rs`
 
-- [ ] **Step 1: SubtitleProgress 加 Polishing 变体**
+- [x] **Step 1: SubtitleProgress 加 Polishing 变体**
 
 找到 `crates/record/src/subtitle.rs` 的 `SubtitleProgress` enum 定义，在 `Recognizing` 和 `Finalizing` 之间插入：
 
@@ -518,7 +518,7 @@ pub enum SubtitleProgress {
 }
 ```
 
-- [ ] **Step 2: SubtitleResult 加 polish_outcome 字段**
+- [x] **Step 2: SubtitleResult 加 polish_outcome 字段**
 
 ```rust
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -536,17 +536,17 @@ pub struct SubtitleResult {
 
 ⚠️ 用 `Option<String>` 而非 `Option<PolishOutcome>`，因为 `PolishOutcome` 在 desktop crate 定义，record crate 不能依赖 desktop。desktop 序列化时把 PolishOutcome 转成字符串（如 `"polished"` / `"fallbackRatio"` / `"failed:msg"`）。
 
-- [ ] **Step 3: 更新所有 RecordingMeta / SubtitleResult 构造点**
+- [x] **Step 3: 更新所有 RecordingMeta / SubtitleResult 构造点**
 
 grep `SubtitleResult {` 找所有构造点，加 `polish_outcome: None`（默认）。
 
-- [ ] **Step 4: build + test 确认无回归**
+- [x] **Step 4: build + test 确认无回归**
 
 ```bash
 cargo build -p octopus-record && cargo test -p octopus-record --lib 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/record/src/subtitle.rs
@@ -561,7 +561,7 @@ git commit -m "feat(record): SubtitleProgress 加 Polishing + SubtitleResult 加
 - Modify: `crates/desktop/src/record_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（注册 list_subtitle_llms）
 
-- [ ] **Step 1: generate_subtitle 命令加 polish 参数**
+- [x] **Step 1: generate_subtitle 命令加 polish 参数**
 
 修改 `generate_subtitle` 签名：
 
@@ -584,7 +584,7 @@ pub async fn generate_subtitle(
 }
 ```
 
-- [ ] **Step 2: generate_subtitle_inner 加 polish 参数 + step8.5**
+- [x] **Step 2: generate_subtitle_inner 加 polish 参数 + step8.5**
 
 修改 `generate_subtitle_inner` 签名 + 在 step8（ASR）和 step10（组装 cue）之间插入 step8.5：
 
@@ -630,7 +630,7 @@ async fn generate_subtitle_inner(
 }
 ```
 
-- [ ] **Step 3: 新增 list_subtitle_llms 命令**
+- [x] **Step 3: 新增 list_subtitle_llms 命令**
 
 在 record_commands.rs 追加：
 
@@ -656,20 +656,20 @@ pub struct LlmOption {
 }
 ```
 
-- [ ] **Step 4: main.rs 注册 list_subtitle_llms**
+- [x] **Step 4: main.rs 注册 list_subtitle_llms**
 
 ```rust
 #[cfg(target_os = "macos")]
 record_commands::list_subtitle_llms,
 ```
 
-- [ ] **Step 5: build 确认编译**
+- [x] **Step 5: build 确认编译**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | grep -E "error|warning" | head
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/record_commands.rs crates/desktop/src/main.rs
@@ -686,7 +686,7 @@ git commit -m "feat(desktop): generate_subtitle 加 polish 参数 + step8.5 + li
 - Modify: `crates/infra/src/config.rs`
 - Modify: `crates/desktop/src/settings_commands.rs`
 
-- [ ] **Step 1: AppConfig 加字段**
+- [x] **Step 1: AppConfig 加字段**
 
 在 `crates/infra/src/config.rs` 的 `AppConfig` struct 加：
 
@@ -702,7 +702,7 @@ pub struct AppConfig {
 }
 ```
 
-- [ ] **Step 2: set_config 支持新字段**
+- [x] **Step 2: set_config 支持新字段**
 
 在 `settings_commands.rs` 的 `set_config` 命令，加对这两个 key 的处理（参考现有 `record_*` key 的同模式）：
 
@@ -711,13 +711,13 @@ pub struct AppConfig {
 "subtitle_polish_llm_key" => { /* 写 DB app_config */ }
 ```
 
-- [ ] **Step 3: build 确认**
+- [x] **Step 3: build 确认**
 
 ```bash
 cargo build -p octopus-infra -p octopus-desktop 2>&1 | tail -3
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/infra/src/config.rs crates/desktop/src/settings_commands.rs
@@ -735,7 +735,7 @@ git commit -m "feat(config): AppConfig 加 subtitle_llm_polish_default + subtitl
 
 ⚠️ **必须用 frontend-design skill 做视觉设计**（AGENTS.md 准则）。
 
-- [ ] **Step 1: 加 PolishOption / LlmOption TS interface**
+- [x] **Step 1: 加 PolishOption / LlmOption TS interface**
 
 ```typescript
 interface PolishOption {
@@ -747,11 +747,11 @@ interface LlmOption {
 }
 ```
 
-- [ ] **Step 2: 转字幕弹对话框组件**
+- [x] **Step 2: 转字幕弹对话框组件**
 
 点「转字幕」不再直接 invoke，而是弹对话框（checkbox + LLM 下拉 + 确认/取消）。用 frontend-design skill 设计视觉。
 
-- [ ] **Step 3: invoke generate_subtitle 传 polish 参数**
+- [x] **Step 3: invoke generate_subtitle 传 polish 参数**
 
 ```typescript
 const result = await invoke<SubtitleResult>("generate_subtitle", {
@@ -761,39 +761,39 @@ const result = await invoke<SubtitleResult>("generate_subtitle", {
 });
 ```
 
-- [ ] **Step 4: tsc + vite build**
+- [x] **Step 4: tsc + vite build**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
 ### Task 4.2: Polishing 进度 + outcome 提示
 
-- [ ] **Step 1: SubtitleProgressPayload 加 polishing stage**
+- [x] **Step 1: SubtitleProgressPayload 加 polishing stage**
 
 ```typescript
 type SubtitleStage = 'extracting-audio' | 'recognizing' | 'polishing' | 'finalizing' | 'done' | 'error';
 ```
 
-- [ ] **Step 2: 进度条显示 Polishing 阶段**
+- [x] **Step 2: 进度条显示 Polishing 阶段**
 
-- [ ] **Step 3: polish_outcome 提示 UI**
+- [x] **Step 3: polish_outcome 提示 UI**
 
 根据 `result.polishOutcome`（`"polished"` / `"fallbackRatio"` / `"noLlmConfig"` / `"failed:msg"`）显示不同颜色 toast。
 
-- [ ] **Step 4: tsc + vite build + Commit**
+- [x] **Step 4: tsc + vite build + Commit**
 
 ---
 
 ### Task 4.3: Settings 默认配置 UI + i18n
 
-- [ ] **Step 1: Settings 加字幕默认润色开关 + LLM 选择**
+- [x] **Step 1: Settings 加字幕默认润色开关 + LLM 选择**
 
-- [ ] **Step 2: i18n 文案（zh-CN + en）**
+- [x] **Step 2: i18n 文案（zh-CN + en）**
 
 新键：`subtitlePolish`（润色 checkbox label）、`subtitlePolishLlm`（下拉 label）、`subtitlePolishing`（进度文案）、`subtitlePolishOutcome.*`（4 种结果提示）等。
 
-- [ ] **Step 3: vite build + 手动 e2e + Commit**
+- [x] **Step 3: vite build + 手动 e2e + Commit**
 
 ---
 
@@ -801,16 +801,16 @@ type SubtitleStage = 'extracting-audio' | 'recognizing' | 'polishing' | 'finaliz
 
 ### Task 5.1: 手动 e2e（spec §7.2 清单）
 
-- [ ] 勾选润色 + GPT-4o → 标记解析成功，字幕更通顺
-- [ ] 勾选润色 + 弱模型（无标记输出）→ 粗略拆分降级，黄色提示
-- [ ] 关网络后勾选润色 → LLM 失败，红色提示，用原 ASR
-- [ ] 不勾选润色 → 与 v2 一致
-- [ ] Settings 默认开关 → 弹框 checkbox 初始值跟随
+- [x] 勾选润色 + GPT-4o → 标记解析成功，字幕更通顺
+- [x] 勾选润色 + 弱模型（无标记输出）→ 粗略拆分降级，黄色提示
+- [x] 关网络后勾选润色 → LLM 失败，红色提示，用原 ASR
+- [x] 不勾选润色 → 与 v2 一致
+- [x] Settings 默认开关 → 弹框 checkbox 初始值跟随
 
 ### Task 5.2: architecture.md 同步
 
-- [ ] 录屏章节加「LLM 润色」说明
-- [ ] Commit
+- [x] 录屏章节加「LLM 润色」说明
+- [x] Commit
 
 ---
 

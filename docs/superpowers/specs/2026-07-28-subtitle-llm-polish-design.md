@@ -97,6 +97,8 @@ record/asr-local 不依赖 octopus-llm（分层约束不变）。润色逻辑在
 pub struct PolishOption {
     /// LLM 配置标识（provider:model 字符串，如 "openai:gpt-4o"）。
     /// None = 用 resolve_active_engine("llm") 默认。
+    /// ⚠️ MVP 限制（2026-07-28）：resolve_subtitle_llm_config 当前无论 llm_key 是 None/Some
+    /// 都用 llm_config_ignore_mode() 默认 LLM（log warn 但不报错）。按 key 查 DB 留后续。
     pub llm_key: Option<String>,
 }
 
@@ -108,17 +110,14 @@ const CUE_MARKER_CLOSE: &str = "]]";
 
 ### 3.2 Settings 新增字段（crates/infra/src/config.rs AppConfig）
 
-```rust
-pub struct AppConfig {
-    // ... 现有字段
-    /// 字幕生成时默认是否启用 LLM 润色（弹框 checkbox 初始值）。
-    pub subtitle_llm_polish_default: bool,      // 默认 false
-    /// 字幕润色默认用的 LLM key（provider:model）。空 = resolve_active_engine("llm")。
-    pub subtitle_polish_llm_key: String,         // 默认 ""
-}
-```
+配置走 DB `app_config` 表泛型 key-value（**不进 AppConfig struct**，与 `record_*` 配置同范式）：
 
-通过 `set_config` 命令持久化（与现有 `record_*` 配置同模式）。
+- `subtitle_llm_polish_default`（"true"/"false"）—— 弹框 checkbox 初始值，默认 false
+- `subtitle_polish_llm_key`（"provider:model"）—— 默认润色 LLM，空 = resolve_active_engine("llm")
+
+通过 `set_config` 命令的 `subtitle_` 前缀分支直接 INSERT OR REPLACE 写 DB（settings_commands.rs:121）。读侧用 `load_config_key`。
+
+⚠️ MVP 限制：前端 Settings 默认配置**不回显**当前值（get_config 不返回 subtitle_* key），每次用默认值启动。后续可扩展 get_config 或加专用读命令。
 
 ### 3.3 SubtitleProgress 加 Polishing 阶段（crates/record/src/subtitle.rs）
 

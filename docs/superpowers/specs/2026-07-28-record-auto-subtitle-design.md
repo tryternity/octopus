@@ -126,28 +126,14 @@ infra ← asr-local ← desktop
 >
 > 下方 §3.1（DB schema v54）**已废弃**，保留作为历史记录。实际实现以本段 v2 决策为准。
 
-### 3.1 DB schema 变更（v53 → v54）~~【已废弃，v2 改用文件】~~
+### 3.1 存储：SRT 文件（v2，不存 DB）
 
-`recordings` 表新增 3 列：
+字幕不存数据库，直接生成 `.srt` 文件与 mp4 同目录同名：
 
-```sql
--- crates/infra/src/db.sql (recordings 表) 追加：
-subtitle_cues TEXT,        -- JSON 数组：[{startMs,endMs,text},...]（与 audio_tracks JSON 列同模式）
-subtitle_srt TEXT,         -- SRT 全文（直接读出即可导出，免重组装）
-subtitle_model TEXT,       -- 生成字幕时用的模型名（"sensevoice" / "whisper-large" 等，便于「模型不同要重生成」提示）
-```
-
-- 3 列均可空（NULL = 未生成过字幕）
-- `subtitle_cues` JSON 数组与 `audio_tracks` 一致用 camelCase 序列化（Tauri 边界规范）
-
-**⚠️ migration 机制已简化（commit df73ff44）**：当前 schema 已是 v53（`CURRENT_SCHEMA_VERSION = 53`），新机制**不再写 `migrate_vN_to_vNplus1` 函数**——只支持 `v==0`（全新库建表）和 `v==CURRENT`（no-op），中间版本一律 bail「清库重建」。
-
-所以加 schema 只需 **3 步**（无迁移函数）：
-1. 在 `crates/infra/src/db.sql` 的 `recordings` 表 CREATE 语句里加 3 列
-2. 升 `crates/infra/src/db.rs::CURRENT_SCHEMA_VERSION` 常量 `53` → `54`
-3. 升 `db.sql` 顶部注释 + `recordings` 表注释（标 `schema v54 subtitle_*`）
-
-**测试**：`init_schema_fresh_db_builds_current_version`（db.rs:3805）现有回归测试会在升常量后自动验证——建表后 `PRAGMA user_version == 54`。无需额外 migration 测试。
+- 命名：`<mp4_stem>.<N>.srt`（N 从 1 递增，每次生成都新建不覆盖）
+- 最新版本：N 最大的那个（`latest_srt_path` 扫描取 max N）
+- cue 预览来源：读最新 `.srt` 文件解析（`parse_srt`）
+- schema 无变更（v1 曾加 DB 三列 v54，v2 已回退到 v53）
 
 ### 3.2 Rust 结构（分两 crate）
 
@@ -172,21 +158,33 @@ pub struct SubtitleResult {
     pub srt_text: String,
     pub model: String,
     pub track_used: AudioTrackSource,  // 用于前端 fallback 提示
+    /// LLM 润色结果（None=未尝试润色）。详见 subtitle-llm-polish spec。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polish_outcome: Option<String>,  // "polished"/"fallbackRatio"/"noLlmConfig"/"failed:msg"
 }
 
 // 进度阶段（emit 给前端）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "stage", rename_all = "kebab-case")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "stage", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum SubtitleProgress {
     ExtractingAudio { percent: u32 },    // 抽音轨 0~30%
-    Recognizing { percent: u32 },        // ASR 中 30~95%
-    Finalizing { percent: u32 },         // 组装 SRT 入库 95~100%
+    Recognizing { percent: u32 },        // ASR 中 30~40%
+    Polishing { percent: u32 },          // LLM 润色 40~90%（subtitle-llm-polish spec 加）
+    Finalizing { percent: u32 },         // 组装写文件 90~100%
     Done { cue_count: usize },           // 完成
     Error { message: String },           // 失败
 }
 
 // 选轨偏好
 pub enum TrackPreference { Auto, Microphone, System }
+```
+
+**v2 新增文件读写函数**（record crate）：
+
+```rust
+pub fn next_srt_path(mp4_path: &Path) -> PathBuf      // 算下一个 xxx.N.srt（扫已有取 max N + 1）
+pub fn latest_srt_path(mp4_path: &Path) -> Option<PathBuf>  // 找最新版本（N 最大）
+pub fn parse_srt(text: &str) -> Vec<SubtitleCue>      // 解析 SRT 文本为 cue 列表（容错）
 ```
 
 **带时间戳段在 asr-local 定义**（内部类型，不跨 Tauri 边界，snake_case）：
@@ -209,21 +207,7 @@ pub struct VadSegment {
 
 **注意**：现有 `segment_audio_vad` 位于 `crates/asr-local/src/audio.rs`（非 pipeline.rs），签名是 `segment_audio_vad(samples, vad: &mut SileroVad, frame_size, threshold, min_silence, max_speech)` —— 改造时新增 `segment_audio_vad_with_offsets` 同样放在 `audio.rs`，签名参数对齐。
 
-### 3.3 RecordingMeta 扩展（crates/record/src/store.rs）
-
-```rust
-pub struct RecordingMeta {
-    // ... 现有字段
-    pub subtitle_cues: Option<Vec<SubtitleCue>>,   // None = 未生成
-    pub subtitle_srt: Option<String>,
-    pub subtitle_model: Option<String>,
-}
-```
-
-读取时 `subtitle_cues` 列为 NULL/空 → `None`；非空 → `serde_json::from_str`。
-写入时 `serde_json::to_string` 存入。
-
-### 3.4 SRT 格式（生成器规格）
+### 3.3 SRT 格式（生成器规格）
 
 标准 SRT 格式（兼容 QuickTime / VLC / 剪映 / Premiere）：
 
@@ -423,62 +407,65 @@ pub fn transcribe_segments_with_timestamps(
 
 **注意**：入参是 `engine: &dyn OfflineAsrEngine` + `cfg: &PipelineConfig`（与现有 `transcribe_batch` 完全一致的签名风格）。desktop 命令层需要先获取一个 `AsrEngineManager` 实例拿到 `OfflineAsrEngine` 实现 + 从 `app_config` 构造 `PipelineConfig`（用 `PipelineConfig::from_app_config(language)`）后传入。
 
-### 5.3 Tauri 命令（desktop/record_commands.rs，新增 3 个）
+### 5.3 Tauri 命令（desktop/record_commands.rs）
 
-**命令 1：生成字幕**
+**命令 1：生成字幕**（v2 + LLM 润色）
 
 ```rust
 #[tauri::command]
 pub async fn generate_subtitle(
-    recording_id: i64,
-    track: Option<String>,        // "microphone" | "system" | None(=Auto)
-    state: State<'_, AppState>,
     app: AppHandle,
+    engine_manager: State<'_, Arc<AsrEngineManager>>,
+    id: i64,
+    track: Option<String>,        // "microphone" | "system" | None(=Auto)
+    polish: Option<PolishOption>, // None=不润色；Some=润色（详见 subtitle-llm-polish spec）
 ) -> Result<SubtitleResult, String> {
-    // 1. 查 DB 拿 RecordingMeta（含 audio_tracks）
-    // 2. select_track 决定 track_index + track_used
-    // 3. emit("record://subtitle-progress", ExtractingAudio)
-    // 4. record::extract_audio_track_to_pcm(mp4, idx, ffmpeg) → Vec<f32>
-    // 5. emit(Recognizing)
-    // 6. 拿 AsrEngineManager → 取当前激活模型的 OfflineAsrEngine 实现
-    //    + PipelineConfig::from_app_config(language) 构造配置
-    // 7. asr_local::transcribe_segments_with_timestamps(engine, pcm, cfg) → Vec<TimestampedSegment>
-    // 8. emit(Finalizing)
-    // 9. 转 SubtitleCue + record::generate_srt → SubtitleResult
-    // 10. 【v2 变更】写 SRT 文件到磁盘：与 mp4 同目录，命名 xxx.N.srt（N = 现有同名文件数 + 1）
-    //     不再 UPDATE DB（v2 删了 DB 三列）
-    // 11. emit(Done { cue_count })
-    // 12. 返回 SubtitleResult
+    // 1-8. 查 DB → select_track → extract PCM → ASR transcribe_segments_with_timestamps
+    // 8.5. LLM 润色（polish=Some 时，详见 subtitle-llm-polish spec）
+    // 9. emit(Finalizing)
+    // 10. 转 SubtitleCue + generate_srt → SubtitleResult
+    // 11. 写 SRT 文件：next_srt_path(mp4) → xxx.N.srt（不存 DB）
+    // 12. emit(Done { cue_count })
 }
 ```
 
-**命令 2：导出 SRT 文件到磁盘** ~~【已废弃，v2 改用文件——SRT 直接生成在磁盘，无需导出】~~
-
-v2 替代：「在 Finder 显示 SRT 文件」（前端调 `reveal_recording` 同模式 reveal `.srt` 文件即可，或直接 `open -R`）。
-
-**命令 3：读取字幕（历史项展开时调）** ~~【已废弃，v2 改名 read_subtitle + 从文件读】~~
-
-v2 替代 `read_subtitle`：
+**命令 2：读取最新字幕**（v2：从文件解析）
 
 ```rust
 #[tauri::command]
-pub async fn read_subtitle(
-    recording_id: i64,
-) -> Result<Option<SubtitleResult>, String> {
-    // 1. 查 DB 拿 file_path（mp4 绝对路径）
-    // 2. 扫同目录找 xxx.N.srt（N 最大的是最新版本）
-    // 3. 不存在 → 返回 None（前端显示「生成字幕」按钮）
-    // 4. 存在 → 读文件 + 解析 SRT 为 cue 列表 + mtime 作 model 字段占位 → SubtitleResult
+pub async fn read_subtitle(id: i64) -> Result<Option<SubtitleResult>, String> {
+    // 查 DB 拿 mp4 路径 → latest_srt_path → 读文件 + parse_srt → SubtitleResult
+    // 不存在 → None
+}
+```
+
+**命令 3：在 Finder 显示 SRT 文件**（v2：替代导出）
+
+```rust
+#[tauri::command]
+pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
+    // latest_srt_path → open -R（Finder 高亮）
 }
 ```
 
 ### 5.4 Tauri 事件（emit 给前端）
 
+事件名 `record://task`（复用现有录屏事件流），payload 是 `RecordTaskEvent` enum：
+
 ```typescript
-// 前端 listen("record://subtitle-progress")
-type SubtitleProgress =
+// 前端 listen("record://task", (msg) => { const e = msg.payload; ... })
+// subtitle 相关变体（外层 kebab-case tag + 变体字段 camelCase）：
+type SubtitleTaskEvent =
+  | { event: "subtitle-started"; id: number }
+  | { event: "subtitle-progress"; id: number; stage: SubtitleProgressPayload }
+  | { event: "subtitle-done"; id: number; cueCount: number }
+  | { event: "subtitle-failed"; id: number; error: string };
+
+// stage 是 SubtitleProgress enum 序列化（嵌套在 progress 变体里）
+type SubtitleProgressPayload =
   | { stage: "extracting-audio"; percent: number }
   | { stage: "recognizing"; percent: number }
+  | { stage: "polishing"; percent: number }      // LLM 润色阶段
   | { stage: "finalizing"; percent: number }
   | { stage: "done"; cueCount: number }
   | { stage: "error"; message: string };

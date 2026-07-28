@@ -2,7 +2,31 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 录屏停止后用户手动点「转字幕」按钮（激活现有 Captions 占位），抽 mic track → VAD 分段 ASR → 生成带时间戳 cue 列表 → 入 DB + 可导出 SRT。
+> **⚠️ 实施记录（2026-07-28，Subagent-Driven 完成 + v2 重构）**
+>
+> 本 plan 原为 v1 设计（DB 存储）。e2e 后用户反馈「字幕不需要存 DB，直接生成文件」，v2 重构为 SRT 文件存储。下方 Task 的 checkbox 反映 v1 实施过程（已全部执行），但部分 Task 在 v2 重构中被废弃或修改：
+>
+> | Task | v1 状态 | v2 调整 |
+> |---|---|---|
+> | 1.1 schema v53→v54 | ✅ 执行 | ❌ **回退**：v2 删 DB 三列，schema 回 v53 |
+> | 1.2 subtitle 模型 + generate_srt | ✅ 执行 | ✅ 保留（+ rename_all_fields 修复） |
+> | 1.3+1.4 select_track + RecordingMeta + update_subtitle | ✅ 执行 | ⚠️ 部分：select_track 保留；RecordingMeta 三字段 + update_subtitle **删除** |
+> | 2.1 segment_audio_vad_with_offsets | ✅ 执行 | ✅ 保留 |
+> | 2.2 transcribe_segments_with_timestamps | ✅ 执行 | ✅ 保留 |
+> | 3.1+3.2 命令层 | ✅ 执行 | ⚠️ 重构：generate_subtitle 改写文件（不 UPDATE DB）；删 get_subtitle/export_subtitle，新增 read_subtitle/reveal_subtitle |
+> | 4.1-4.3 前端 | ✅ 执行 | ⚠️ 重构：cue 预览改读 read_subtitle；导出改 reveal_subtitle（Finder 显示） |
+> | 5.1 e2e | ✅ 执行（发现 3 个 bug）| 见下方 bugfix |
+> | 5.2 architecture.md | ✅ 执行 | ✅ 保留 |
+>
+> **v2 重构提交**：`eaeca817`（DB→文件）+ `e59477ca`/`7b929467`/`9342779e`（3 bugfix）
+>
+> **v2 新增功能**：`next_srt_path` / `latest_srt_path` / `parse_srt`（record crate，6 TDD）
+>
+> **LLM 润色**：独立 spec/plan `2026-07-28-subtitle-llm-polish-*`，已实施完成。
+>
+> 下方原文保留作为 v1 实施历史记录。
+
+**Goal:** 录屏停止后用户手动点「转字幕」按钮（激活现有 Captions 占位），抽 mic track → VAD 分段 ASR → 生成带时间戳 cue 列表 → ~~入 DB + 可导出 SRT~~（v2：写 .srt 文件与 mp4 同目录）。
 
 **Architecture:** 方案 B（desktop 编排）。record crate 加 subtitle 模块（mp4→PCM ffmpeg 抽轨 + SRT 格式化 + 选轨 + 数据模型，无 ASR 依赖）；asr-local 扩展 pipeline（带时间戳 transcribe，复用 VAD/engine/后处理）；desktop 加 3 个 Tauri 命令编排两者。前端激活 RecordingPanel 现有「转字幕」占位 + 新增 cue 预览面板。
 
