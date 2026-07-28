@@ -70,6 +70,8 @@ octopus/
 
 **并发约束**：同一测试进程内所有线程共享 `DB: OnceLock`（in-memory 或文件）。首个触达 `ensure_db` 的测试决定模式——故 `setup_test_db()` 必须在任何可能调 `with_db` 的测试逻辑前执行。并行测试间共享同一 in-memory 连接（经 `ReentrantMutex` 排他），目前所有经 `with_db` 的测试均为只读，安全；若未来加写测试，需自行用 `open_init()` 独立连接。
 
+**测试分层**：测试按耗时 + 依赖分三层（详见 [`AGENTS.md` §测试分层](../AGENTS.md#测试分层三层)）——① 核心（`cargo test`，~15s，每次合并必跑，vault 用弱 KDF 参数加速 50s→8s）；② 慢（`cargo test -- --ignored`，~2min，API key / 文件系统 / 参数边界）；③ real-model（需 HuggingFace 模型缓存，手动触发）。
+
 ### onnx-infra（ONNX 推理基础设施）
 无项目内依赖的最底层 ONNX 公共设施，从 asr-local 抽取。`paths` 模块提供模型路径查找（`resolve_model_dir`：4 级查找 `~/.octopus/<source>` → 绝对路径 → `~/.octopus/models/<source>` → HF cache snapshots）；`session` 模块提供 `apply_session_acceleration`（按平台注册 CoreML/CUDA/DirectML EP，generic 化 `skip_coreml` 参数）。asr-local 和 translation 都依赖此 crate。
 
