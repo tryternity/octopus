@@ -1273,18 +1273,17 @@ fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
         Err(_) => return, // 目录不存在是正常的（首次启动或从未录制过）
     };
 
-    // file_path 字段在 DB 里存 "recordings/xxx.mp4" 相对路径，
-    // 与 octopus_config_home().join(rel) 的反向操作。用 octopus_config_home 作 strip_prefix 锚点
-    // （brief 写的 octopus_root 不存在；Task 7 已确认 infra 只有 octopus_config_home）。
-    let octopus_root = octopus_infra::paths::octopus_config_home().to_path_buf();
+    // ⚠️ file_path 在 DB 里存的是绝对路径（2026-07-27 保存目录可配置后改），
+    // list_all_file_paths 直接返回 DB 原值（绝对路径）。磁盘文件用 entry.path() 也是绝对路径，
+    // 两者都是绝对路径，直接 to_string_lossy 比较即可。
+    //
+    // 曾有 bug（2026-07-28 e2e 发现）：旧代码 strip_prefix(octopus_root) 把磁盘文件转成相对路径
+    // 再与 DB 的绝对路径比较 → 永远不匹配 → 所有录屏文件被当孤儿删掉（数据丢失）。
     for entry in entries.flatten() {
         let path = entry.path();
-        let rel = match path.strip_prefix(&octopus_root) {
-            Ok(r) => r.to_string_lossy().to_string(),
-            Err(_) => continue,
-        };
-        if !known_files.contains(&rel) {
-            log::warn!("[record] 孤儿文件清理: {rel}");
+        let abs = path.to_string_lossy().to_string();
+        if !known_files.contains(&abs) {
+            log::warn!("[record] 孤儿文件清理: {abs}");
             let _ = std::fs::remove_file(&path);
         }
     }
