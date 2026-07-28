@@ -119,6 +119,24 @@ settings:
     subtitleTrackSystem: System audio
     subtitleTrackMerged: Merged track
     subtitleTrackUnknown: Unknown track
+    # ── LLM polish (Phase 4, Task 4.1/4.2/4.3) ──
+    # polishing progress label (inline chip + Captions button tooltip)
+    subtitlePolishing: LLM polishing...
+    # polish_outcome fallback hints (toast) — polished / undefined = no hint
+    subtitlePolishOutcomeFallbackRatio: LLM marker parse failed, split roughly
+    subtitlePolishOutcomeNoLlmConfig: No LLM configured, used raw recognition
+    subtitlePolishOutcomeFailed: "LLM polish failed: ${msg}, used raw recognition"
+    # Settings defaults (Task 4.3)
+    subtitlePolishDefault: LLM polish subtitles by default
+    subtitlePolishLlm: Polish LLM
+    subtitlePolishNoLlm: No LLM available (configure one in Models first)
+    # Generate subtitle dialog (Task 4.1)
+    subtitlePolishDialogTitle: Generate Subtitle
+    subtitlePolishCheckbox: LLM polish (fix typos, improve segmentation)
+    subtitlePolishHint: When on, calls LLM to polish the whole transcript for readability; when off, uses raw ASR only.
+    subtitlePolishCancel: Cancel
+    subtitlePolishConfirm: Polish & Generate
+    subtitlePolishConfirmPlain: Generate
     merging: "Merging audio..."
     recording: Recording
     paused: Paused

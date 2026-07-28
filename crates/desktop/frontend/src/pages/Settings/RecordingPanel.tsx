@@ -40,6 +40,8 @@ import {
   CopyCheck,
   Download,
   Info,
+  Sparkles,
+  X,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -101,16 +103,39 @@ export interface SubtitleResult {
   srtText: string;
   model: string;
   trackUsed: "microphone" | "system" | "merged" | "unknown";
+  // LLM 润色结果（Phase 4 加，对应后端 polish_outcome: Option<String>）。
+  // undefined / "polished" = 正常润色或未润色（无提示）；其余值触发降级提示：
+  //   "fallbackRatio" → warning「标记解析失败，已粗略拆分」
+  //   "noLlmConfig"   → error「未配置可用 LLM，使用原始识别」
+  //   "failed:msg"    → error「LLM 润色失败：msg，使用原始识别」
+  polishOutcome?: string;
 }
 
 // 字幕生成阶段（与 crates/record/src/subtitle.rs::SubtitleProgress 对齐，外层 kebab-case tag）。
 // 用于 record://task 事件的 SubtitleProgress 变体（stage 字段 + 额外 percent/cueCount/message）。
+// Phase 4 加 "polishing"（LLM 润色，可选阶段）。
 export type SubtitleStage =
   | "extracting-audio"
   | "recognizing"
+  | "polishing"
   | "finalizing"
   | "done"
   | "error";
+
+// ── LLM 润色相关类型（Phase 4，与 crates/desktop/src/subtitle_polish.rs 对齐）──
+// PolishOption：generate_subtitle 命令的 polish 参数（serde rename_all=camelCase）。
+//   null = 不润色；{ llmKey: "openai:gpt-4o" } = 用指定 LLM 润色。
+//   llmKey 可为 null（后端用默认 LLM），MVP 前端始终传非空 key。
+export interface PolishOption {
+  llmKey: string | null;
+}
+
+// LlmOption：list_subtitle_llms 命令返回项（serde rename_all=camelCase）。
+//   key="openai:gpt-4o"（provider:model），label="gpt-4o (Openai)"。
+export interface LlmOption {
+  key: string;
+  label: string;
+}
 
 // record://task 事件 payload 子集（仅字幕相关变体）。
 export interface SubtitleProgressPayload {
@@ -172,6 +197,32 @@ function formatMs(ms: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
+// ── polish_outcome 降级提示（Phase 4，Task 4.2）──
+// 根据 SubtitleResult.polishOutcome 显示对应颜色 toast：
+//   "fallbackRatio" → warning「LLM 标记解析失败，已粗略拆分」
+//   "noLlmConfig"   → error「未配置可用 LLM，使用原始识别」
+//   "failed:msg"    → error「LLM 润色失败：msg，使用原始识别」
+//   "polished" / undefined → 无提示（正常润色或未润色）。
+// 提示只在润色「降级」时出现——让用户知道字幕可能质量打折，但流程仍完成了。
+function showPolishOutcomeToast(
+  outcome: string | undefined,
+  showToast: (msg: string, variant?: ToastVariant) => void,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  if (!outcome || outcome === "polished") return;
+  if (outcome === "fallbackRatio") {
+    showToast(t("settings.recordings.subtitlePolishOutcomeFallbackRatio"), "warning");
+  } else if (outcome === "noLlmConfig") {
+    showToast(t("settings.recordings.subtitlePolishOutcomeNoLlmConfig"), "error");
+  } else if (outcome.startsWith("failed:")) {
+    const msg = outcome.slice("failed:".length);
+    showToast(
+      t("settings.recordings.subtitlePolishOutcomeFailed", { msg }),
+      "error",
+    );
+  }
+}
+
 // ── Panel 主组件 ─────────────────────────────────────────────────
 
 interface RecordingPanelProps {
@@ -201,12 +252,51 @@ export default function RecordingPanel({
   const [subtitleError, setSubtitleError] = useState<Record<number, string>>({});
   // 当前展开字幕预览面板的 recording id（null=全收起）。一次只展开一个（列表节奏感）。
   const [expandedSubtitleId, setExpandedSubtitleId] = useState<number | null>(null);
+  // 字幕生成当前阶段（按 recording id 索引，null/undefined=空闲或未知）。
+  // 用于行内进度文案：polishing 阶段显示「✨ LLM 润色中...」。其他阶段沿用 spinner。
+  const [subtitleStage, setSubtitleStage] = useState<Record<number, SubtitleStage | undefined>>({});
   // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
   // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   useEffect(() => {
     invoke<boolean>("check_ffmpeg").then(setFfmpegAvailable).catch(() => setFfmpegAvailable(true));
   }, []);
+
+  // ── 字幕 LLM 润色默认配置（Phase 4，Task 4.3）──
+  // 持久化到 DB app_config（key=subtitle_llm_polish_default / subtitle_polish_llm_key）。
+  // 这些 key 不在 AppConfig struct，get_config 不返回——前端默认值启动（MVP 不回显），
+  // 用户在 Settings 改后持久化。弹框默认值从这两个 state 取（与 Settings 同步）。
+  const [polishDefault, setPolishDefault] = useState(false);
+  const [polishLlmKey, setPolishLlmKey] = useState<string>("");
+  // 可用 LLM 列表（弹框 + Settings 下拉填充）。mount 时拉取，空数组兜底（下拉显示占位）。
+  const [llmOptions, setLlmOptions] = useState<LlmOption[]>([]);
+  useEffect(() => {
+    invoke<LlmOption[]>("list_subtitle_llms")
+      .then(setLlmOptions)
+      .catch(() => setLlmOptions([]));
+  }, []);
+
+  // Settings 面板持久化润色默认值（toggle + 下拉）。乐观更新 UI，写 DB 失败仅静默。
+  // 这两个 handler 也会被弹框「记住我的选择」复用——弹框确认时同步写默认值（可选，MVP 暂不写）。
+  const handlePolishDefaultChange = useCallback((next: boolean) => {
+    setPolishDefault(next);
+    invoke("set_config", { key: "subtitle_llm_polish_default", value: next }).catch(() => {
+      /* 写配置失败仅静默，UI 已切换 */
+    });
+  }, []);
+  const handlePolishLlmKeyChange = useCallback((key: string) => {
+    setPolishLlmKey(key);
+    invoke("set_config", { key: "subtitle_polish_llm_key", value: key }).catch(() => {
+      /* 写配置失败仅静默 */
+    });
+  }, []);
+
+  // ── 转字幕弹对话框状态（Phase 4，Task 4.1）──
+  // 当前弹框关联的 recording id（null=关闭）。一次只对一个 recording 弹框。
+  const [polishDialogId, setPolishDialogId] = useState<number | null>(null);
+  // 弹框内 checkbox / 下拉的本地选择（确认才生效）。打开弹框时按 polishDefault 初始化。
+  const [dialogPolishEnabled, setDialogPolishEnabled] = useState(false);
+  const [dialogLlmKey, setDialogLlmKey] = useState<string>("");
 
   // ── 订阅 record://task 事件（字幕生成进度，仿 useRecordSession 的 record://event 范式）──
   // 后端 RecordTaskEvent（record_commands.rs:941）外层 kebab-case + 变体 camelCase：
@@ -234,8 +324,26 @@ export default function RecordingPanel({
       };
       if (e.event === "subtitle-started") {
         setSubtitleGeneratingId(e.id);
+        setSubtitleStage((prev) => ({ ...prev, [e.id]: undefined }));
+      } else if (e.event === "subtitle-progress") {
+        // 进度阶段（extracting-audio / recognizing / polishing / finalizing）。
+        // 仅用于行内文案：polishing 阶段显示「✨ LLM 润色中...」。
+        const p = msg.payload as {
+          event: string;
+          id: number;
+          stage?: { stage: SubtitleStage; percent?: number };
+        };
+        if (p.stage?.stage) {
+          setSubtitleStage((prev) => ({ ...prev, [e.id]: p.stage!.stage }));
+        }
       } else if (e.event === "subtitle-done") {
         setSubtitleGeneratingId(null);
+        setSubtitleStage((prev) => {
+          if (!prev[e.id]) return prev;
+          const next = { ...prev };
+          delete next[e.id];
+          return next;
+        });
         // 清行内错误（如有）。重新拉取该 recording 的字幕（含空 cues 的「正常无字幕」场景）。
         setSubtitleError((prev) => {
           if (!prev[e.id]) return prev;
@@ -244,6 +352,9 @@ export default function RecordingPanel({
           return next;
         });
         // read_subtitle 返回 Option<SubtitleResult>：null=未生成。
+        // 注意：read_subtitle 的 polish_outcome 恒为 None（v2 不持久化到 srt 文件），
+        // 故降级提示只能从 generate_subtitle 的返回值拿（见 onGenerateSubtitle）。
+        // done 事件到达时仅刷新缓存 + 显示「字幕已生成」success toast。
         invoke<SubtitleResult | null>("read_subtitle", { id: e.id }).then((r) => {
           if (r) {
             setSubtitleResults((prev) => ({ ...prev, [e.id]: r }));
@@ -255,6 +366,12 @@ export default function RecordingPanel({
         });
       } else if (e.event === "subtitle-failed") {
         setSubtitleGeneratingId(null);
+        setSubtitleStage((prev) => {
+          if (!prev[e.id]) return prev;
+          const next = { ...prev };
+          delete next[e.id];
+          return next;
+        });
         // 行内红字 + toast 双通道：行内留存方便用户回看，toast 跨 panel 可见。
         const msg = e.error || t("settings.recordings.subtitleFailed");
         setSubtitleError((prev) => ({ ...prev, [e.id]: msg }));
@@ -274,13 +391,19 @@ export default function RecordingPanel({
   // 注意：generate_subtitle 内部跑数秒 ffmpeg+ASR，invoke promise 何时 resolve 与
   // subtitle-done 事件到达的先后无保证——故 finally 不清 subtitleGeneratingId，
   // 改由事件回调（done/failed）清，避免按钮提前转回 idle 又被事件点亮。
+  //
+  // Phase 4：polish 参数（null=不润色；{llmKey}=润色）。润色结果（polishOutcome）从
+  // generate_subtitle 的返回值拿——done 事件触发的 read_subtitle 不带 outcome（v2 不持久化），
+  // 故降级提示只能在这里发（invoke 成功 resolve 时 result.polishOutcome 是权威值）。
   const onGenerateSubtitle = useCallback(
-    async (id: number, track?: string) => {
+    async (id: number, track?: string, polish?: PolishOption | null) => {
       setSubtitleGeneratingId(id);
+      setSubtitleStage((prev) => ({ ...prev, [id]: undefined }));
       try {
         const result = await invoke<SubtitleResult>("generate_subtitle", {
           id,
           track: track ?? null,
+          polish: polish ?? null,
         });
         // 乐观更新缓存（done 事件到达前先显示）。空 cues（无声）也存——前端显示「无字幕」。
         setSubtitleResults((prev) => ({ ...prev, [id]: result }));
@@ -290,6 +413,9 @@ export default function RecordingPanel({
           delete next[id];
           return next;
         });
+        // polish_outcome 降级提示（仅润色启用时可能有非 polished 值）。
+        // polished / undefined → 无提示（正常）。
+        showPolishOutcomeToast(result.polishOutcome, showToast, t);
       } catch (e) {
         // 行内红字 + toast 双通道（与 subtitle-failed 事件回调保持一致）。
         const msg = String(e);
@@ -297,6 +423,12 @@ export default function RecordingPanel({
         showToast(t("settings.recordings.subtitleFailed") + ": " + msg, "error");
         // 失败兜底清 loading（事件回调也会清，这里防事件丢失）。
         setSubtitleGeneratingId(null);
+        setSubtitleStage((prev) => {
+          if (!prev[id]) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       }
     },
     [showToast, t],
@@ -534,7 +666,41 @@ export default function RecordingPanel({
               className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground cursor-not-allowed"
             />
           </div>
+
+          {/* ── 字幕默认润色设置（Phase 4，Task 4.3）──
+              与标题区同语汇：muted 卡片 + 10px 标签 + Sparkles 标识润色。
+              开关持久化到 subtitle_llm_polish_default，下拉到 subtitle_polish_llm_key。
+              下拉仅在开关开启时可点（checkbox off 时灰禁，避免误操作）。 */}
+          <SubtitlePolishDefaults
+            polishDefault={polishDefault}
+            polishLlmKey={polishLlmKey}
+            llmOptions={llmOptions}
+            onPolishDefaultChange={handlePolishDefaultChange}
+            onPolishLlmKeyChange={handlePolishLlmKeyChange}
+            t={t}
+          />
         </div>
+
+        {/* ── 转字幕润色弹对话框（Phase 4，Task 4.1）──
+            点 Captions 按钮触发，用户选润色与否 + LLM，确认才 invoke generate_subtitle。
+            overlay + 居中卡片，遵循 SubtitlePanel 的 surface/muted 配色 + 左竖条强调。 */}
+        {polishDialogId !== null && (
+          <SubtitlePolishDialog
+            rec={records.find((r) => r.id === polishDialogId)}
+            llmOptions={llmOptions}
+            polishEnabled={dialogPolishEnabled}
+            llmKey={dialogLlmKey}
+            onPolishEnabledChange={setDialogPolishEnabled}
+            onLlmKeyChange={setDialogLlmKey}
+            onCancel={() => setPolishDialogId(null)}
+            onConfirm={(polish) => {
+              const id = polishDialogId;
+              setPolishDialogId(null);
+              onGenerateSubtitle(id, undefined, polish);
+            }}
+            t={t}
+          />
+        )}
 
         {/* ── 列表 ── */}
         <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
@@ -590,9 +756,15 @@ export default function RecordingPanel({
               onMergeAudio={(mid) => setMergingId(mid)}
               onMerged={loadList}
               subtitleGeneratingId={subtitleGeneratingId}
+              subtitleStage={subtitleStage[rec.id]}
               subtitleResult={subtitleResults[rec.id]}
               subtitleError={subtitleError[rec.id]}
-              onGenerateSubtitle={onGenerateSubtitle}
+              onRequestPolishDialog={(id) => {
+                // 打开弹框：用 Settings 默认值初始化 checkbox + 下拉。
+                setDialogPolishEnabled(polishDefault);
+                setDialogLlmKey(polishLlmKey || llmOptions[0]?.key || "");
+                setPolishDialogId(id);
+              }}
               expandedSubtitleId={expandedSubtitleId}
               onToggleExpandSubtitle={onToggleExpandSubtitle}
               onRevealSubtitle={onRevealSubtitle}
@@ -655,12 +827,14 @@ interface RecordingRowProps {
   onMerged: () => void;
   /** 字幕生成中 id（null=空闲）。控制 Captions 按钮 spinner / disabled。 */
   subtitleGeneratingId: number | null;
+  /** 该 recording 当前的字幕生成阶段（polishing 阶段显示「✨ LLM 润色中...」）。 */
+  subtitleStage?: SubtitleStage;
   /** 该 recording 已生成的字幕（无则 undefined）。Task 4.2 详情面板消费。 */
   subtitleResult?: SubtitleResult;
   /** 字幕生成失败文案（无则 undefined）。行内红字展示。 */
   subtitleError?: string;
-  /** 触发字幕生成。track 留空走后端 Auto 选轨。 */
-  onGenerateSubtitle: (id: number, track?: string) => void;
+  /** 请求弹转字幕润色对话框（Phase 4：点 Captions 不再直接生成，先弹框确认）。 */
+  onRequestPolishDialog: (id: number) => void;
   /** 当前展开字幕预览的 recording id（null=全收起）。 */
   expandedSubtitleId: number | null;
   /** 展开/收起字幕预览面板。 */
@@ -688,9 +862,10 @@ function RecordingRow({
   onMergeAudio,
   onMerged,
   subtitleGeneratingId,
+  subtitleStage,
   subtitleResult,
   subtitleError,
-  onGenerateSubtitle,
+  onRequestPolishDialog,
   expandedSubtitleId,
   onToggleExpandSubtitle,
   onRevealSubtitle,
@@ -831,14 +1006,15 @@ function RecordingRow({
     }
   };
 
-  // ── 转字幕（Task 4.1 激活）── invoke generate_subtitle 命令，
+  // ── 转字幕（Task 4.1 激活；Phase 4 改为弹框确认）──
+  // 点 Captions 按钮不再直接 invoke，而是弹润色对话框（checkbox + LLM 下拉 + 确认）。
+  // 确认后由父 onGenerateSubtitle 调 invoke generate_subtitle（带 polish 参数）。
   // loading 状态由父 subtitleGeneratingId 控制（同 GIF 模式）。
-  // track 留空走后端 Auto 选轨；subtitleResult 已存在时仍可重新生成（覆盖旧结果）。
   const isGeneratingSubtitle = subtitleGeneratingId === rec.id;
   const handleGenerateSubtitle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (isGeneratingSubtitle) return;
-    onGenerateSubtitle(rec.id);
+    onRequestPolishDialog(rec.id);
   };
 
   // ── 字幕面板展开态（Task 4.2）──
@@ -1009,14 +1185,22 @@ function RecordingRow({
           disabled={isGeneratingSubtitle}
           title={
             isGeneratingSubtitle
-              ? t("settings.recordings.subtitleGenerating")
+              ? subtitleStage === "polishing"
+                ? t("settings.recordings.subtitlePolishing")
+                : t("settings.recordings.subtitleGenerating")
               : subtitleResult
                 ? t("settings.recordings.transcriptRegenerate")
                 : t("settings.recordings.transcript")
           }
         >
           {isGeneratingSubtitle ? (
-            <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+            // polishing 阶段用 Sparkles 替代 Loader2——signature 元素，让「润色中」可感知。
+            // 其余阶段（extracting/recognizing/finalizing）沿用 spinner。
+            subtitleStage === "polishing" ? (
+              <Sparkles className="w-3.5 h-3.5 text-warning animate-pulse" />
+            ) : (
+              <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+            )
           ) : (
             <Captions className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
@@ -1131,6 +1315,20 @@ function RecordingRow({
           <span className="break-all">{subtitleError}</span>
         </div>
       )}
+
+      {/* ── 字幕生成中：polishing 阶段行内进度提示（Phase 4，Task 4.2）──
+          沿用 recording 状态 banner 的 chip 语汇（warning 色，amber，呼应润色「增值」语气），
+          但更紧凑（10px + Sparkles 脉冲）。仅在 polishing 阶段且面板未展开时显示。 */}
+      {isGeneratingSubtitle &&
+        subtitleStage === "polishing" &&
+        !isSubtitleExpanded && (
+          <div className="px-3 pb-1.5 -mt-1 flex items-center gap-1.5">
+            <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-warning/10 text-warning text-[10px] font-medium">
+              <Sparkles className="w-2.5 h-2.5 animate-pulse" />
+              <span>{t("settings.recordings.subtitlePolishing")}</span>
+            </div>
+          </div>
+        )}
 
       {/* ── 字幕预览面板（Task 4.2，展开态）── */}
       {isSubtitleExpanded && subtitleResult && (
@@ -1327,6 +1525,254 @@ function SubtitlePanel({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── 字幕默认润色设置（Phase 4，Task 4.3）──────────────────────────────
+//
+// 设计意图（frontend-design）：
+// 这是 Settings 区的一个「子卡片」，不是独立 panel。沿用标题区的 muted 卡片语汇
+// （bg-muted + border-border + rounded-md），左侧 Sparkles 图标点题（润色 = 增值魔法）。
+// 布局：单行 checkbox + 内联下拉。checkbox off 时下拉灰禁（视觉强关联——开关关了，
+// 选 LLM 无意义）。文案用 10px 标签 + 11px 控件，与列表行 meta 同密度。
+//
+// 配色克制：开关用 accent-primary（黑），LLM 选项文字用 muted-foreground。
+// 不用 warning 色——这是「设置默认值」而非「警示」。warning 色留给 polishing 进度。
+
+interface SubtitlePolishDefaultsProps {
+  polishDefault: boolean;
+  polishLlmKey: string;
+  llmOptions: LlmOption[];
+  onPolishDefaultChange: (next: boolean) => void;
+  onPolishLlmKeyChange: (key: string) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+function SubtitlePolishDefaults({
+  polishDefault,
+  polishLlmKey,
+  llmOptions,
+  onPolishDefaultChange,
+  onPolishLlmKeyChange,
+  t,
+}: SubtitlePolishDefaultsProps) {
+  return (
+    <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border">
+      <Sparkles className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+      <label className="flex items-center gap-1.5 cursor-pointer flex-shrink-0">
+        <input
+          type="checkbox"
+          className="w-3.5 h-3.5 accent-primary"
+          checked={polishDefault}
+          onChange={(e) => onPolishDefaultChange(e.target.checked)}
+        />
+        <span className="text-[10px] text-foreground whitespace-nowrap">
+          {t("settings.recordings.subtitlePolishDefault")}
+        </span>
+      </label>
+      {/* LLM 下拉：checkbox off 时灰禁（opacity-50 + cursor-not-allowed）。 */}
+      <div className="flex items-center gap-1 ml-auto">
+        <span
+          className={cn(
+            "text-[10px] text-muted-foreground whitespace-nowrap",
+            !polishDefault && "opacity-50",
+          )}
+        >
+          {t("settings.recordings.subtitlePolishLlm")}
+        </span>
+        <select
+          value={polishLlmKey}
+          onChange={(e) => onPolishLlmKeyChange(e.target.value)}
+          disabled={!polishDefault}
+          className={cn(
+            "bg-background border border-border rounded text-[10px] px-1.5 py-0.5 text-foreground outline-none max-w-[140px] truncate",
+            "focus:border-primary disabled:cursor-not-allowed disabled:opacity-50",
+          )}
+        >
+          {llmOptions.length === 0 ? (
+            <option value="">
+              {t("settings.recordings.subtitlePolishNoLlm")}
+            </option>
+          ) : (
+            llmOptions.map((opt) => (
+              <option key={opt.key} value={opt.key}>
+                {opt.label}
+              </option>
+            ))
+          )}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// ── 转字幕润色弹对话框（Phase 4，Task 4.1）──────────────────────────────
+//
+// 设计意图（frontend-design）：
+// 这是确认型弹框，不是表单——目的是「让用户知情地选择是否花一次 LLM 调用润色」。
+// 视觉决策：
+//   ① overlay 用半透明黑（不是毛玻璃模糊——Tauri WKWebView 毛玻璃开销大且分散注意力），
+//      居中卡片用 surface 配色（与 SubtitlePanel 同），左竖条 primary 黑强调「这是决策点」。
+//   ② 标题行：Sparkles 图标 + 文案。Sparkles 是这个功能的 signature——它出现在
+//      设置卡、弹框标题、polishing 进度三处，构成一条视觉线索。克制使用（不滥用）。
+//   ③ 录屏标题用 truncate，避免长标题撑爆窄弹框；下方 10px meta 复用行 meta 语汇。
+//   ④ checkbox + 下拉垂直堆叠（不是横排）——避免窄弹框挤压；checkbox off 时下拉灰禁。
+//   ⑤ 底部按钮：取消 ghost（左）+ 确认 primary 黑（右）。确认是主动作，视觉更重。
+//      润色关闭时确认按钮文案是「生成」（不润色），开启时是「润色并生成」——动作名随状态变。
+//
+// 配色：warning 色不出现（弹框是中性确认，不是警示）。LLM 选项 disabled 用 opacity。
+
+interface SubtitlePolishDialogProps {
+  /** 弹框关联的 recording（找不到时退化为只显示标题文案）。 */
+  rec?: RecordingMeta;
+  llmOptions: LlmOption[];
+  polishEnabled: boolean;
+  llmKey: string;
+  onPolishEnabledChange: (next: boolean) => void;
+  onLlmKeyChange: (key: string) => void;
+  onCancel: () => void;
+  /** 确认：返回 polish 参数（null=不润色，{llmKey}=润色），由父 invoke generate_subtitle。 */
+  onConfirm: (polish: PolishOption | null) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+function SubtitlePolishDialog({
+  rec,
+  llmOptions,
+  polishEnabled,
+  llmKey,
+  onPolishEnabledChange,
+  onLlmKeyChange,
+  onCancel,
+  onConfirm,
+  t,
+}: SubtitlePolishDialogProps) {
+  const title = rec
+    ? rec.title || rec.filePath.split("/").pop() || `#${rec.id}`
+    : t("settings.recordings.subtitlePolishDialogTitle");
+  const durationLabel = rec && rec.durationMs > 0 ? formatDuration(rec.durationMs) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="w-[340px] max-w-[90vw] bg-surface border border-border rounded-lg shadow-lg overflow-hidden border-l-2 border-l-primary"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 标题行：Sparkles + 文案 + 关闭 */}
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border/60">
+          <Sparkles className="w-3.5 h-3.5 text-warning flex-shrink-0" />
+          <span className="text-xs font-semibold text-foreground flex-1 min-w-0 truncate">
+            {t("settings.recordings.subtitlePolishDialogTitle")}
+          </span>
+          <button
+            onClick={onCancel}
+            className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex-shrink-0"
+            title={t("settings.recordings.subtitlePolishCancel")}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* 录屏标题 + meta（让用户确认是对哪个录屏操作） */}
+        <div className="px-3 py-2 border-b border-border/60">
+          <p className="text-xs text-foreground truncate" title={title}>
+            {title}
+          </p>
+          <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-muted-foreground">
+            {durationLabel && (
+              <span className="tabular-nums px-1 rounded bg-muted">{durationLabel}</span>
+            )}
+            {rec && rec.width > 0 && rec.height > 0 && (
+              <span className="tabular-nums">
+                {rec.width}×{rec.height}
+              </span>
+            )}
+            <span
+              className={cn(
+                "px-1.5 py-0.5 rounded font-medium",
+                rec?.hasMicrophone
+                  ? "bg-voice/10 text-voice"
+                  : "text-muted-foreground/60",
+              )}
+            >
+              {rec?.sourceType || ""}
+            </span>
+          </div>
+        </div>
+
+        {/* 润色选项：checkbox + 下拉（垂直堆叠） */}
+        <div className="px-3 py-2.5 space-y-2">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-3.5 h-3.5 mt-0.5 accent-primary flex-shrink-0"
+              checked={polishEnabled}
+              onChange={(e) => onPolishEnabledChange(e.target.checked)}
+            />
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs text-foreground">
+                {t("settings.recordings.subtitlePolishCheckbox")}
+              </span>
+              <span className="text-[10px] text-muted-foreground leading-relaxed mt-0.5">
+                {t("settings.recordings.subtitlePolishHint")}
+              </span>
+            </div>
+          </label>
+
+          {/* LLM 下拉：checkbox off 时灰禁 + 折叠（避免占空间）。
+              pl-[22px] 对齐 checkbox 宽度（w-3.5=14px + gap-2=8px），视觉缩进与 checkbox 文字齐。 */}
+          {polishEnabled && (
+            <div className="flex items-center gap-1.5 pl-[22px]">
+              <span className="text-[10px] text-muted-foreground whitespace-nowrap flex-shrink-0">
+                {t("settings.recordings.subtitlePolishLlm")}
+              </span>
+              <select
+                value={llmKey}
+                onChange={(e) => onLlmKeyChange(e.target.value)}
+                disabled={!polishEnabled}
+                className="flex-1 min-w-0 bg-background border border-border rounded text-[10px] px-1.5 py-1 text-foreground outline-none focus:border-primary truncate"
+              >
+                {llmOptions.length === 0 ? (
+                  <option value="">
+                    {t("settings.recordings.subtitlePolishNoLlm")}
+                  </option>
+                ) : (
+                  llmOptions.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )}
+        </div>
+
+        {/* 底部按钮：取消（ghost）+ 确认（primary）。动作名随润色开关变。 */}
+        <div className="flex items-center justify-end gap-1.5 px-3 py-2 border-t border-border/60 bg-muted/40">
+          <button
+            onClick={onCancel}
+            className="px-2.5 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            {t("settings.recordings.subtitlePolishCancel")}
+          </button>
+          <button
+            onClick={() =>
+              onConfirm(polishEnabled ? { llmKey: llmKey || null } : null)
+            }
+            className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            {polishEnabled && <Sparkles className="w-3 h-3" />}
+            {polishEnabled
+              ? t("settings.recordings.subtitlePolishConfirm")
+              : t("settings.recordings.subtitlePolishConfirmPlain")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

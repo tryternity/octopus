@@ -122,6 +122,24 @@ settings:
     subtitleTrackSystem: 系统音频
     subtitleTrackMerged: 合并音轨
     subtitleTrackUnknown: 未知音轨
+    # ── LLM 润色（Phase 4，Task 4.1/4.2/4.3）──
+    # polishing 进度文案（行内 chip + Captions 按钮 tooltip）
+    subtitlePolishing: LLM 润色中...
+    # polish_outcome 降级提示（toast）—— polished / undefined 不提示
+    subtitlePolishOutcomeFallbackRatio: LLM 标记解析失败，已粗略拆分
+    subtitlePolishOutcomeNoLlmConfig: 未配置可用 LLM，使用原始识别
+    subtitlePolishOutcomeFailed: "LLM 润色失败：${msg}，使用原始识别"
+    # Settings 默认配置（Task 4.3）
+    subtitlePolishDefault: 字幕默认 LLM 润色
+    subtitlePolishLlm: 润色用 LLM
+    subtitlePolishNoLlm: 暂无可用 LLM（先在「模型」页配置）
+    # 转字幕弹对话框（Task 4.1）
+    subtitlePolishDialogTitle: 转字幕
+    subtitlePolishCheckbox: LLM 润色（修正错别字、优化断句）
+    subtitlePolishHint: 开启后调用一次 LLM 整段润色，字幕更易读；关闭则只用 ASR 原始识别。
+    subtitlePolishCancel: 取消
+    subtitlePolishConfirm: 润色并生成
+    subtitlePolishConfirmPlain: 生成
     merging: "合并中..."
     recording: 录制中
     paused: 已暂停
