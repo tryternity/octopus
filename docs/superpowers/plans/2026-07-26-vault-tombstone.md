@@ -7,7 +7,7 @@
 
 **日期**：2026-07-26
 **关联 spec**：[vault-tombstone-design](../specs/2026-07-26-vault-tombstone-design.md)
-**状态**：待实施
+**状态**：~~待实施~~ **已废弃**（见顶部说明；下方 6 个 Task 未实现，方案被 is_deleted merge 替代）
 
 ## 任务分解
 

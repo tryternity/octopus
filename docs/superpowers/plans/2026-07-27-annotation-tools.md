@@ -1,5 +1,11 @@
 # 标注工具扩充实施计划
 
+> **Status: 🔶 大部分完成**（Task 1/2/4/6/7 + Task 3/5 的 highlight/eraser/clearAll 均已实现；**deleteSelected 按钮未接线**见下）。2026-07-29 z-sync 回填 checkbox。
+>
+> ⚠️ **未完成项**（2 个 step 标 `[ ]`）：Task 3 Step 4 + Task 5 Step 2 的 **`deleteSelected` 按钮在 AnnotationToolbar 和 ImagePreview Toolbar 都未渲染**——底层 `deleteSelectedAnnotation` action、props、i18n 文案、`trash.svg` 图标全齐，但工具栏没接线。当前删除选中标注走键盘 Delete/Backspace（Screenshot/RecordAnnotation），且这两处直接 `setAnnotations.filter` 删除、**绕过 action、未推入 redoStack**（undo 不回来）。待办：补工具栏按钮，或把键盘删除改走 `deleteSelectedAnnotation()`。
+>
+> **其他偏差**：i18n 实际 key 是 `screenshot.tool.clear` / `imagePreview.clear`（非 plan 写的 `clearAll`/`deleteSelected`，功能等价）；Task 4 方案 A 的 `eraseAnnotationAt` 已实现（useAnnotationState.ts:168-181）。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为截图/录屏/图文编辑器标注系统扩充 4 个工具（荧光笔/橡皮擦/清空/删除选定）。
@@ -45,7 +51,7 @@
 **Interfaces:**
 - Produces: `Tool` union 含 `"highlight"` + `"eraser"`；`Annotation.type` 含 `"highlight"`；`drawAnnotation` 处理 highlight；`hitTestAnnotationPrecise` 覆盖 highlight
 
-- [ ] **Step 1: 加 highlight/eraser 到 Tool + Annotation type**
+- [x] **Step 1: 加 highlight/eraser 到 Tool + Annotation type**
 
 Read `crates/desktop/frontend/src/lib/annotation.ts`. 修改两处 type 定义：
 
@@ -60,7 +66,7 @@ export interface Annotation {
 }
 ```
 
-- [ ] **Step 2: drawAnnotation 加 highlight canvas 分支**
+- [x] **Step 2: drawAnnotation 加 highlight canvas 分支**
 
 在 `drawAnnotation` 函数中，`pen` 分支之后加 `highlight` 分支。highlight 复用 pen 的 points polyline 绘制，但用 multiply 混合 + 半透明 + 粗线宽：
 
@@ -85,16 +91,16 @@ if (ann.type === "highlight") {
 }
 ```
 
-- [ ] **Step 3: hitTestAnnotationPrecise 覆盖 highlight**
+- [x] **Step 3: hitTestAnnotationPrecise 覆盖 highlight**
 
 highlight 的命中测试与 pen 完全一致（都是 points polyline）。找到 hitTestAnnotationPrecise 函数，在 pen 分支旁加 highlight 走相同逻辑（`ann.type === "pen" || ann.type === "highlight"`）。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/lib/annotation.ts
@@ -112,7 +118,7 @@ git commit -m "feat(annotation): highlight 类型 + canvas 绘制 + hitTest（mu
 - Produces: `clearAllAnnotations()` + `deleteSelectedAnnotation()` 加入 AnnotationState interface
 - Consumes: Task 1 的 highlight type（间接——addAnnotation 支持 highlight annotation）
 
-- [ ] **Step 1: 加 clearAllAnnotations action**
+- [x] **Step 1: 加 clearAllAnnotations action**
 
 在 `useAnnotationState` 函数内，`redoAnnotation` 之后加：
 
@@ -130,7 +136,7 @@ const clearAllAnnotations = () => {
 };
 ```
 
-- [ ] **Step 2: 加 deleteSelectedAnnotation action**
+- [x] **Step 2: 加 deleteSelectedAnnotation action**
 
 紧接 `clearAllAnnotations` 后加：
 
@@ -149,7 +155,7 @@ const deleteSelectedAnnotation = () => {
 };
 ```
 
-- [ ] **Step 3: 在 interface + return 加这两个 action**
+- [x] **Step 3: 在 interface + return 加这两个 action**
 
 `AnnotationState` interface 加：
 ```typescript
@@ -163,12 +169,12 @@ clearAllAnnotations,
 deleteSelectedAnnotation,
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/components/Annotation/useAnnotationState.ts
@@ -186,7 +192,7 @@ git commit -m "feat(annotation): useAnnotationState 加 clearAll + deleteSelecte
 - Consumes: Task 1 的 Tool 含 highlight/eraser；Task 2 的 clearAllAnnotations/deleteSelectedAnnotation
 - Produces: `showHighlight` prop（截图 true，录屏 false）
 
-- [ ] **Step 1: 加 showHighlight prop**
+- [x] **Step 1: 加 showHighlight prop**
 
 `AnnotationToolbarProps` interface 加：
 ```typescript
@@ -196,7 +202,7 @@ showHighlight?: boolean;
 
 解构 props 时加 `showHighlight = true`。
 
-- [ ] **Step 2: tools 数组加 highlight**
+- [x] **Step 2: tools 数组加 highlight**
 
 在 `tools` 数组中，`pen` 之后加 highlight（条件显示）：
 
@@ -215,7 +221,7 @@ const tools: { key: Tool; src: string; label: string }[] = [
 ];
 ```
 
-- [ ] **Step 3: 加 eraser 按钮到 tools 数组末尾**
+- [x] **Step 3: 加 eraser 按钮到 tools 数组末尾**
 
 eraser 也是工具按钮（切换到 eraser 模式），加在 blur 之后：
 
@@ -225,7 +231,9 @@ eraser 也是工具按钮（切换到 eraser 模式），加在 blur 之后：
 
 注意：eraser 工具按钮的 onClick 行为和其他工具一致（切换 tool + 弹 popover），但 eraser 不需要 popover 属性。在 `onToolSelect` 里 eraser 走正常切换逻辑即可。
 
-- [ ] **Step 4: 加 deleteSelected + clearAll 按钮**
+- [ ] **Step 4: 加 deleteSelected + clearAll 按钮** ⚠️ **部分实现**（2026-07-29 z-sync 核对）
+
+> **偏差**：`clearAll` 按钮已加（:286-300，用 `t("screenshot.tool.clear")` + `icons/clear.svg`）；但 **`deleteSelected` 按钮从未渲染**——底层 `deleteSelectedAnnotation` action、props、i18n 文案 `deleteSelected`、`trash.svg` 图标全都齐备，工具栏却没接线。Screenshot/RecordAnnotation 改用键盘 Delete/Backspace 删除选中标注（Screenshot L527-534、RecordAnnotation L363-371），但这两处直接 `setAnnotations.filter` 删除、**绕过了 `deleteSelectedAnnotation()` action，未推入 redoStack**（删了 undo 不回来）。待办：要么补上工具栏 `deleteSelected` 按钮，要么把键盘删除路径改走 action。
 
 在 undo/redo 之后、`{children}` 之前加两个操作按钮（非工具切换，是直接 action）：
 
@@ -267,12 +275,12 @@ eraser 也是工具按钮（切换到 eraser 模式），加在 blur 之后：
 />
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error（图标 SVG 文件可能不存在，先不管——用占位路径，Task 6 统一加图标）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/components/Annotation/AnnotationToolbar.tsx
@@ -290,7 +298,7 @@ git commit -m "feat(annotation): AnnotationToolbar 加 highlight/eraser/deleteSe
 **Interfaces:**
 - Consumes: Task 1 的 hitTestAnnotationPrecise + Task 3 的 eraser tool
 
-- [ ] **Step 1: 截图 Screenshot eraser mousemove**
+- [x] **Step 1: 截图 Screenshot eraser mousemove**
 
 Read `crates/desktop/frontend/src/pages/Screenshot/index.tsx`。找到 mousemove handler（绘制逻辑所在）。在 tool === "eraser" 时，不做绘制，改为 hitTest + 删除：
 
@@ -347,18 +355,18 @@ if (toolRef.current === "eraser") {
 }
 ```
 
-- [ ] **Step 2: 录屏 RecordAnnotation eraser mousemove**
+- [x] **Step 2: 录屏 RecordAnnotation eraser mousemove**
 
 Read `crates/desktop/frontend/src/pages/RecordAnnotation/index.tsx`。同样在 mousemove handler 加 eraser 分支（坐标转换用 RecordAnnotation 自己的 canvasRect 偏移逻辑）。
 
 同时给 AnnotationToolbar 传 `showHighlight={false}`。
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/components/Annotation/useAnnotationState.ts \
@@ -379,7 +387,7 @@ git commit -m "feat(annotation): 截图+录屏 eraser 划过即删 + 录屏 show
 **Interfaces:**
 - Consumes: Task 1 的 highlight type/draw
 
-- [ ] **Step 1: AnnotationSvg 加 highlight 渲染**
+- [x] **Step 1: AnnotationSvg 加 highlight 渲染**
 
 Read `crates/desktop/frontend/src/pages/ImagePreview/AnnotationSvg.tsx`。在 switch 的 pen 分支旁加 highlight：
 
@@ -400,7 +408,9 @@ case "highlight": {
 }
 ```
 
-- [ ] **Step 2: Toolbar 加 highlight + eraser + deleteSelected + clearAll**
+- [ ] **Step 2: Toolbar 加 highlight + eraser + deleteSelected + clearAll** ⚠️ **部分实现**（2026-07-29 z-sync 核对）
+
+> **偏差**：`highlight` 在 tools 数组（:132）、`eraser` 独立按钮（:185-195）、`clearAll` 按钮（:203-205，用 `onClearAll` + `icons/clear.svg`）均已实现；但 **`deleteSelected` 按钮未渲染**——prop 类型声明有（:70 `onDeleteSelected`/`canDeleteSelected`）、index.tsx 也传了（:796），但 Toolbar 内从未渲染对应按钮（无 `trash.svg` ToolButton）。与 Task 3 Step 4 同一问题：底层齐全，按钮缺失。
 
 Read `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx`。
 
@@ -416,7 +426,7 @@ tools 数组末尾加 eraser：
 
 在 undo/redo 之后加 deleteSelected + clearAll 按钮（需 Toolbar 接收 onDeleteSelected + onClearAll 回调 prop）。
 
-- [ ] **Step 3: index.tsx eraser mousemove + clearAll + deleteSelected**
+- [x] **Step 3: index.tsx eraser mousemove + clearAll + deleteSelected**
 
 Read `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`。
 
@@ -424,12 +434,12 @@ Read `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`。
 
 加 clearAll + deleteSelected 函数，传给 Toolbar。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ImagePreview/
@@ -445,7 +455,7 @@ git commit -m "feat(annotation): ImagePreview highlight SVG + eraser/deleteSelec
 - Modify: `crates/desktop/frontend/src/locales/zh-CN.yaml`
 - Create: 图标 SVG 文件（如不存在）
 
-- [ ] **Step 1: 加 i18n 文案**
+- [x] **Step 1: 加 i18n 文案**
 
 `zh-CN.yaml` screenshot.tool 下加：
 ```yaml
@@ -465,16 +475,16 @@ deleteSelected: Delete Selected
 
 imagePreview.tool 下同样加（或复用 screenshot key，取决于现有 i18n 结构——读文件确认）。
 
-- [ ] **Step 2: 确认/添加图标 SVG**
+- [x] **Step 2: 确认/添加图标 SVG**
 
 检查 `crates/desktop/frontend/public/icons/` 下是否有 `highlighter.svg` / `eraser.svg` / `trash.svg` / `clear.svg`。如果缺失，从 lucide icons（lucide.dev）下载对应 SVG 放入，或用已有的 lucide React 组件替代 img 标签。
 
-- [ ] **Step 3: vite build 验证**
+- [x] **Step 3: vite build 验证**
 
 Run: `cd crates/desktop/frontend && npx vite build`
 Expected: 0 error
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/locales/ crates/desktop/frontend/public/icons/
@@ -485,21 +495,21 @@ git commit -m "feat(annotation): i18n 文案 + 图标资源（highlight/eraser/c
 
 ### Task 7: 全量验证 + architecture.md
 
-- [ ] **Step 1: tsc + vite build**
+- [x] **Step 1: tsc + vite build**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npx vite build`
 Expected: 0 error
 
-- [ ] **Step 2: desktop 编译**
+- [x] **Step 2: desktop 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 0 error
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 在标注工具描述处补 highlight/eraser/clearAll/deleteSelected。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md

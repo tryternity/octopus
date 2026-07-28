@@ -1,5 +1,9 @@
 # OCR Backend Trait 抽象实施计划
 
+> **Status: ✅ 已完成**（Task 1-4 全部实现，commits `932b213e` / `73ca7ef9` / `17dbdc4a` / `6235d845`）。2026-07-29 z-sync 回填 checkbox。
+>
+> **实现偏差**（Task 1 Step 1 / Task 2 Step 2）：`OcrBackend` trait 实际比 plan 多一个 `use_word_segmentation(&self) -> bool { false }` 方法，`PaddleOcrBackend` 对应多一个 `use_word_segmentation: bool` 字段（从 engine 搬入）。属正向增量，architecture.md 已同步记录。Task 3 Step 2 的 VLM `source_type=2` 路由仅以注释预留（未写 `match { 2 => Err(...) }` 占位），固定走 `PaddleOcrBackend`。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 OcrEngine 从焊死 RapidOcr 重构为持有 Box<dyn OcrBackend>，现有 PP-OCRv6 逻辑搬入 PaddleOcrBackend，desktop 调用零改动。
@@ -41,7 +45,7 @@
 **Interfaces:**
 - Produces: `OcrBackend` trait（Send + recognize + provides_layout + unload + name）
 
-- [ ] **Step 1: 创建 backend.rs**
+- [x] **Step 1: 创建 backend.rs**
 
 Read `crates/ocr/src/engine.rs` 了解 OcrOutput 类型和现有 recognize 返回值。然后创建 `crates/ocr/src/backend.rs`：
 
@@ -67,16 +71,16 @@ pub trait OcrBackend: Send {
 }
 ```
 
-- [ ] **Step 2: 在 lib.rs 注册模块**
+- [x] **Step 2: 在 lib.rs 注册模块**
 
 Read `crates/ocr/src/lib.rs`，加 `pub mod backend;`。
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-ocr`
 Expected: 0 error
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/ocr/src/backend.rs crates/ocr/src/lib.rs
@@ -95,7 +99,7 @@ git commit -m "feat(ocr): OcrBackend trait 定义（Send + recognize + provides_
 - Consumes: Task 1 的 OcrBackend trait
 - Produces: `PaddleOcrBackend` impl OcrBackend
 
-- [ ] **Step 1: 读 engine.rs 找到 RapidOcr 相关逻辑**
+- [x] **Step 1: 读 engine.rs 找到 RapidOcr 相关逻辑**
 
 Read `crates/ocr/src/engine.rs` 完整文件。找到：
 - 构造 RapidOcr 的代码（build_engine_config / EngineConfig 构造）
@@ -104,7 +108,7 @@ Read `crates/ocr/src/engine.rs` 完整文件。找到：
 - unload / drop RapidOcr 的代码
 - model_name 获取
 
-- [ ] **Step 2: 创建 paddle_backend.rs**
+- [x] **Step 2: 创建 paddle_backend.rs**
 
 把上述逻辑搬入 `crates/ocr/src/paddle_backend.rs`，实现 OcrBackend trait：
 
@@ -149,16 +153,16 @@ impl OcrBackend for PaddleOcrBackend {
 
 IMPORTANT: 搬代码时保持逻辑完全一致（不重构不优化）。use_word_segmentation 的逻辑也要搬入（按 model_name 前缀判断）。
 
-- [ ] **Step 3: 在 lib.rs 注册模块**
+- [x] **Step 3: 在 lib.rs 注册模块**
 
 加 `pub mod paddle_backend;`。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-ocr`
 Expected: 0 error（可能 warning unused——engine.rs 还在用 RapidOcr，后续 Task 3 删）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ocr/src/paddle_backend.rs crates/ocr/src/lib.rs
@@ -175,11 +179,11 @@ git commit -m "feat(ocr): PaddleOcrBackend（现有 RapidOcr 逻辑搬入，impl
 **Interfaces:**
 - Consumes: Task 1 的 OcrBackend + Task 2 的 PaddleOcrBackend
 
-- [ ] **Step 1: 改 inner 类型**
+- [x] **Step 1: 改 inner 类型**
 
 Read `crates/ocr/src/engine.rs`。把 `inner: Mutex<Option<RapidOcr>>` 改为 `inner: Mutex<Option<Box<dyn OcrBackend>>>`。
 
-- [ ] **Step 2: 改构造逻辑**
+- [x] **Step 2: 改构造逻辑**
 
 原来直接构造 RapidOcr 的地方，改为调 `PaddleOcrBackend::new(model_name)`：
 
@@ -192,33 +196,33 @@ fn new_backend() -> Result<Box<dyn OcrBackend>> {
 
 如果有 source_type 路由，加 match（source_type=2 返回 Err 占位）。
 
-- [ ] **Step 3: 改 recognize 调用**
+- [x] **Step 3: 改 recognize 调用**
 
 原来调 `RapidOcr::run` 的地方，改为调 `inner.recognize(image)`。
 
-- [ ] **Step 4: 改 idle 释放**
+- [x] **Step 4: 改 idle 释放**
 
 原来 drop RapidOcr 的地方，改为调 `inner.unload()`。
 
-- [ ] **Step 5: 删除 engine.rs 里搬入 paddle_backend.rs 的旧代码**
+- [x] **Step 5: 删除 engine.rs 里搬入 paddle_backend.rs 的旧代码**
 
 build_engine_config / use_word_segmentation 判断 / RapidOcr 构造等——已在 PaddleOcrBackend 里，engine.rs 不再需要。
 
-- [ ] **Step 6: 删除 engine.rs 对 octopus-paddle-ocr 的直接依赖引用**
+- [x] **Step 6: 删除 engine.rs 对 octopus-paddle-ocr 的直接依赖引用**
 
 engine.rs 不再直接用 RapidOcr / EngineConfig 等（都经 PaddleOcrBackend）。但 Cargo.toml 依赖保留（PaddleOcrBackend 用）。
 
-- [ ] **Step 7: 编译验证**
+- [x] **Step 7: 编译验证**
 
 Run: `cargo build -p octopus-ocr`
 Expected: 0 error 0 warning
 
-- [ ] **Step 8: ocr crate 测试**
+- [x] **Step 8: ocr crate 测试**
 
 Run: `cargo test -p octopus-ocr`
 Expected: 全过（现有测试黑盒，内部 backend 切换不改变行为）
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/ocr/src/engine.rs
@@ -229,23 +233,23 @@ git commit -m "refactor(ocr): OcrEngine inner 改 Box<dyn OcrBackend> + 构造�
 
 ### Task 4: desktop 集成验证 + 文档
 
-- [ ] **Step 1: desktop 编译**
+- [x] **Step 1: desktop 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 0 error（OcrEngine 公开 API 不变，desktop 调用零改动）
 
-- [ ] **Step 2: desktop 测试**
+- [x] **Step 2: desktop 测试**
 
 Run: `cargo test -p octopus-desktop`
 Expected: 全过
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 OCR 引擎描述处补 backend trait 架构：
 
 > OcrEngine 持有 Box<dyn OcrBackend>（2026-07-27 重构），按 source_type 选后端（0/1=PaddleOcrBackend 现有 PP-OCRv6，2=VlmOcrBackend 后续）。desktop 调用零改动。详见 spec。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md

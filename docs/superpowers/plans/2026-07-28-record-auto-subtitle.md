@@ -1,5 +1,7 @@
 # 录屏自动字幕（Record Auto-Subtitle）Implementation Plan
 
+> **Status: ✅ 已完成-存档**（v1 DB 方案已废，v2 SRT 方案以 [spec](../specs/2026-07-28-record-auto-subtitle-design.md) §3 v2 决策为准；2026-07-29 z-sync 加注）。下方 70 个 checkbox 反映 v1 实施过程，不回填（v1/v2 混合，逐条勾选会失真，见下方实施记录表）。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **⚠️ 实施记录（2026-07-28，Subagent-Driven 完成 + v2 重构）**
