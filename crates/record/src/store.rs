@@ -36,6 +36,15 @@ pub struct RecordingMeta {
     pub is_favorite: bool,
     pub created_at: String,
     pub deleted_at: Option<String>,
+    /// 字幕 cues（spec v54）。None = 未生成字幕；空 DB 列 '[]' 读出也为 None。
+    #[serde(default)]
+    pub subtitle_cues: Option<Vec<crate::subtitle::SubtitleCue>>,
+    /// SRT 全文（导出时直接读）。None = 未生成。
+    #[serde(default)]
+    pub subtitle_srt: Option<String>,
+    /// 生成字幕时用的模型名（便于「模型不同需重生成」提示）。None = 未生成。
+    #[serde(default)]
+    pub subtitle_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -58,12 +67,19 @@ impl<'a> RecordStore<'a> {
     pub fn insert(&self, meta: &RecordingMeta, thumbnail: Option<&[u8]>) -> RecordResult<()> {
         let audio_tracks_json = serde_json::to_string(&meta.audio_tracks)
             .unwrap_or_else(|_| "[]".into());
+        // subtitle_cues：None 或序列化失败 → 存 '[]'（与 DB DEFAULT 一致，空表示未生成）
+        let subtitle_cues_json = meta
+            .subtitle_cues
+            .as_ref()
+            .map(|c| serde_json::to_string(c).unwrap_or_else(|_| "[]".into()))
+            .unwrap_or_else(|| "[]".into());
         self.conn.execute(
             "INSERT INTO recordings
              (id, file_path, title, duration_ms, width, height, fps, codec,
               has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-              has_thumbnail, is_favorite, created_at, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL)",
+              has_thumbnail, is_favorite, created_at, deleted_at,
+              subtitle_cues, subtitle_srt, subtitle_model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19)",
             rusqlite::params![
                 meta.id, meta.file_path, meta.title, meta.duration_ms,
                 meta.width, meta.height, meta.fps, meta.codec,
@@ -72,6 +88,9 @@ impl<'a> RecordStore<'a> {
                 meta.source_type, meta.file_size,
                 thumbnail.is_some() as i32, meta.is_favorite as i32,
                 meta.created_at,
+                subtitle_cues_json,
+                meta.subtitle_srt.clone().unwrap_or_default(),
+                meta.subtitle_model.clone().unwrap_or_default(),
             ],
         )?;
         if let Some(thumb) = thumbnail {
@@ -88,7 +107,8 @@ impl<'a> RecordStore<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
                     has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-                    has_thumbnail, is_favorite, created_at, deleted_at
+                    has_thumbnail, is_favorite, created_at, deleted_at,
+                    subtitle_cues, subtitle_srt, subtitle_model
              FROM recordings WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -103,7 +123,8 @@ impl<'a> RecordStore<'a> {
         let mut sql = String::from(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
                     has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-                    has_thumbnail, is_favorite, created_at, deleted_at
+                    has_thumbnail, is_favorite, created_at, deleted_at,
+                    subtitle_cues, subtitle_srt, subtitle_model
              FROM recordings WHERE 1=1",
         );
         if !filter.include_deleted {
@@ -170,6 +191,28 @@ impl<'a> RecordStore<'a> {
         Ok(())
     }
 
+    /// 更新字幕（幂等：重复生成覆盖旧值）。
+    ///
+    /// - `cues_json`：SubtitleCue[] 的 JSON 字符串（由调用方序列化）。
+    /// - `srt`：完整 SRT 文本。
+    /// - `model`：生成字幕时用的模型名。
+    pub fn update_subtitle(
+        &self,
+        id: i64,
+        cues_json: &str,
+        srt: &str,
+        model: &str,
+    ) -> RecordResult<()> {
+        let affected = self.conn.execute(
+            "UPDATE recordings SET subtitle_cues=?1, subtitle_srt=?2, subtitle_model=?3 WHERE id=?4",
+            rusqlite::params![cues_json, srt, model, id],
+        )?;
+        if affected == 0 {
+            return Err(crate::error::RecordError::NotFound(id));
+        }
+        Ok(())
+    }
+
     pub fn get_thumbnail(&self, id: i64) -> RecordResult<Option<Vec<u8>>> {
         let result: Option<Vec<u8>> = self.conn
             .query_row(
@@ -209,6 +252,29 @@ impl<'a> RecordStore<'a> {
         let audio_tracks_json: String = row.get(10)?;
         let audio_tracks =
             serde_json::from_str(&audio_tracks_json).unwrap_or_default();
+
+        // subtitle_cues：空/NULL/解析失败 → None（与「未生成字幕」语义一致）
+        let subtitle_cues_json: String = row.get(17).unwrap_or_default();
+        let subtitle_cues = if subtitle_cues_json.is_empty() || subtitle_cues_json == "[]" {
+            None
+        } else {
+            serde_json::from_str::<Vec<crate::subtitle::SubtitleCue>>(&subtitle_cues_json).ok()
+        };
+        // subtitle_srt：空 → None
+        let subtitle_srt: String = row.get(18).unwrap_or_default();
+        let subtitle_srt = if subtitle_srt.is_empty() {
+            None
+        } else {
+            Some(subtitle_srt)
+        };
+        // subtitle_model：空 → None
+        let subtitle_model: String = row.get(19).unwrap_or_default();
+        let subtitle_model = if subtitle_model.is_empty() {
+            None
+        } else {
+            Some(subtitle_model)
+        };
+
         Ok(RecordingMeta {
             id: row.get(0)?,
             file_path: row.get(1)?,
@@ -227,6 +293,9 @@ impl<'a> RecordStore<'a> {
             is_favorite: row.get::<_, i32>(14)? != 0,
             created_at: row.get(15)?,
             deleted_at: row.get(16)?,
+            subtitle_cues,
+            subtitle_srt,
+            subtitle_model,
         })
     }
 }
@@ -263,6 +332,9 @@ mod tests {
             is_favorite: false,
             created_at: "2026-07-25T14:30:22Z".into(),
             deleted_at: None,
+            subtitle_cues: None,
+            subtitle_srt: None,
+            subtitle_model: None,
         }
     }
 
@@ -454,5 +526,21 @@ mod tests {
             })
             .unwrap();
         assert_eq!(list[0].audio_tracks.len(), 2);
+    }
+
+    #[test]
+    fn update_subtitle_writes_and_roundtrips() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 简化：手动建表只含必要列（真实 schema 见 db.sql，这里只测 UPDATE 逻辑）
+        conn.execute_batch(
+            "CREATE TABLE recordings (id INTEGER PRIMARY KEY, subtitle_cues TEXT NOT NULL DEFAULT '[]', subtitle_srt TEXT NOT NULL DEFAULT '', subtitle_model TEXT NOT NULL DEFAULT '');
+             INSERT INTO recordings (id) VALUES (1);"
+        ).unwrap();
+        let store = RecordStore::new(&conn);
+        store.update_subtitle(1, "[{\"startMs\":100,\"endMs\":200,\"text\":\"hi\"}]", "1\n00:00:00,100 --> 00:00:00,200\nhi\n", "sensevoice").unwrap();
+        let row_cues: String = conn.query_row("SELECT subtitle_cues FROM recordings WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(row_cues, "[{\"startMs\":100,\"endMs\":200,\"text\":\"hi\"}]");
+        let row_model: String = conn.query_row("SELECT subtitle_model FROM recordings WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(row_model, "sensevoice");
     }
 }

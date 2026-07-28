@@ -574,6 +574,9 @@ async fn stop_and_store_inner(
         is_favorite: false,
         created_at: now_iso(),
         deleted_at: None,
+        subtitle_cues: None,
+        subtitle_srt: None,
+        subtitle_model: None,
     };
 
     let meta_clone = meta.clone();
@@ -1127,6 +1130,10 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         is_favorite: false,
         created_at: now_iso(),
         deleted_at: None,
+        // 合并产物是新音频轨，原 meta 的字幕时间戳不再匹配 → 不继承。
+        subtitle_cues: None,
+        subtitle_srt: None,
+        subtitle_model: None,
     };
 
     with_db_blocking(move |conn| {

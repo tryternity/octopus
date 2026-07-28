@@ -73,6 +73,17 @@ export interface RecordingMeta {
   isFavorite: boolean;
   createdAt: string;
   deletedAt: string | null;
+  // 字幕字段（schema v54）。未生成时后端序列化为 null/省略，前端按可选处理。
+  subtitleCues?: SubtitleCue[] | null;
+  subtitleSrt?: string | null;
+  subtitleModel?: string | null;
+}
+
+// 字幕 cue（与 crates/record/src/subtitle.rs::SubtitleCue 对齐，camelCase）。
+export interface SubtitleCue {
+  startMs: number;
+  endMs: number;
+  text: string;
 }
 
 // merge_audio_tracks 命令的返回值（crates/desktop/src/record_commands.rs::MergeResult）。

@@ -16,6 +16,10 @@ pub mod session;
 pub use session::{RecordSession, SessionState, StartedInfo, StoppedInfo};
 pub mod store;
 pub mod subtitle;
+pub use subtitle::{
+    SubtitleCue, SubtitleResult, SubtitleProgress, TrackPreference, SubtitleError,
+    select_track, generate_srt,
+};
 pub mod platform;
 
 pub use error::{RecordError, RecordResult};

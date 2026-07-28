@@ -93,6 +93,49 @@ fn format_srt_timestamp(ms: u64) -> String {
     format!("{:02}:{:02}:{:02},{:03}", h, m, s, millis)
 }
 
+/// 按 preference 选音轨，返回 (track_index, track_source)。
+///
+/// - Auto / Microphone：优先 mic；mic 不存在则 fallback system，再 fallback 第一条（Merged/Unknown）。
+/// - System：强制 system，不存在则 `NoSystemTrack`。
+/// - 空 audio_tracks：`NoAudioTrack`。
+pub fn select_track(
+    meta: &crate::store::RecordingMeta,
+    pref: TrackPreference,
+) -> Result<(usize, AudioTrackSource), SubtitleError> {
+    if meta.audio_tracks.is_empty() {
+        return Err(SubtitleError::NoAudioTrack);
+    }
+    match pref {
+        TrackPreference::Auto | TrackPreference::Microphone => {
+            // 优先 mic
+            if let Some(t) = meta
+                .audio_tracks
+                .iter()
+                .find(|t| t.source == AudioTrackSource::Microphone)
+            {
+                return Ok((t.index as usize, AudioTrackSource::Microphone));
+            }
+            // fallback system
+            if let Some(t) = meta
+                .audio_tracks
+                .iter()
+                .find(|t| t.source == AudioTrackSource::System)
+            {
+                return Ok((t.index as usize, AudioTrackSource::System));
+            }
+            // 再 fallback 第一条（Merged/Unknown）
+            let t = &meta.audio_tracks[0];
+            Ok((t.index as usize, t.source))
+        }
+        TrackPreference::System => meta
+            .audio_tracks
+            .iter()
+            .find(|t| t.source == AudioTrackSource::System)
+            .map(|t| (t.index as usize, AudioTrackSource::System))
+            .ok_or(SubtitleError::NoSystemTrack),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +182,65 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("\"cueCount\":5"), "应输出 camelCase cueCount，实际: {}", json);
         assert!(!json.contains("cue_count"), "不应有 snake_case cue_count，实际: {}", json);
+    }
+
+    // ── select_track 测试（Task 1.3）──────────────────────────────────────────
+    use crate::audio_tracks::AudioTrack;
+    use crate::store::RecordingMeta;
+
+    fn track(idx: u32, src: AudioTrackSource) -> AudioTrack {
+        AudioTrack { index: idx, source: src, codec: "aac".into(), sample_rate: 48000, channels: 2, device_name: None }
+    }
+
+    fn meta_with_tracks(tracks: &[AudioTrack]) -> RecordingMeta {
+        RecordingMeta {
+            id: 1, file_path: "/tmp/x.mp4".into(), title: "".into(), duration_ms: 1000,
+            width: 1920, height: 1080, fps: 30, codec: "h264".into(),
+            has_system_audio: !tracks.is_empty(), has_microphone: tracks.iter().any(|t| t.source == AudioTrackSource::Microphone),
+            audio_tracks: tracks.to_vec(), source_type: "display".into(), file_size: 100,
+            has_thumbnail: false, is_favorite: false, created_at: "2026-07-28T00:00:00Z".into(),
+            deleted_at: None,
+            subtitle_cues: None, subtitle_srt: None, subtitle_model: None,
+        }
+    }
+
+    #[test]
+    fn select_track_auto_prefers_microphone() {
+        let m = meta_with_tracks(&[track(0, AudioTrackSource::Microphone), track(1, AudioTrackSource::System)]);
+        let (idx, used) = select_track(&m, TrackPreference::Auto).unwrap();
+        assert_eq!((idx, used), (0, AudioTrackSource::Microphone));
+    }
+
+    #[test]
+    fn select_track_microphone_explicit() {
+        let m = meta_with_tracks(&[track(0, AudioTrackSource::Microphone)]);
+        let (idx, used) = select_track(&m, TrackPreference::Microphone).unwrap();
+        assert_eq!((idx, used), (0, AudioTrackSource::Microphone));
+    }
+
+    #[test]
+    fn select_track_system_explicit() {
+        let m = meta_with_tracks(&[track(0, AudioTrackSource::Microphone), track(1, AudioTrackSource::System)]);
+        let (idx, used) = select_track(&m, TrackPreference::System).unwrap();
+        assert_eq!((idx, used), (1, AudioTrackSource::System));
+    }
+
+    #[test]
+    fn select_track_auto_fallback_to_system_when_no_mic() {
+        let m = meta_with_tracks(&[track(0, AudioTrackSource::System)]);
+        let (idx, used) = select_track(&m, TrackPreference::Auto).unwrap();
+        assert_eq!((idx, used), (0, AudioTrackSource::System));
+    }
+
+    #[test]
+    fn select_track_empty_returns_no_audio_track_error() {
+        let m = meta_with_tracks(&[]);
+        assert!(matches!(select_track(&m, TrackPreference::Auto), Err(SubtitleError::NoAudioTrack)));
+    }
+
+    #[test]
+    fn select_track_system_but_none_returns_no_system_error() {
+        let m = meta_with_tracks(&[track(0, AudioTrackSource::Microphone)]);
+        assert!(matches!(select_track(&m, TrackPreference::System), Err(SubtitleError::NoSystemTrack)));
     }
 }
