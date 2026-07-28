@@ -40,7 +40,7 @@ struct Cipher {
     fields: Vec<Field>,      // 加密存储
     password_history: Vec<String>,
     reprompt: RepromptType,  // None=不需要 / Password=使用时再验主密码
-    deleted_at: Option<String>, // 软删时间戳（回收站）
+    is_deleted: bool, // 软删标志（回收站）
     created_at: String,
     updated_at: String,
 }
@@ -62,7 +62,7 @@ struct LoginData {
 | 表 | 说明 |
 |---|---|
 | `vault_meta` | 单行：加密状态标记、K_machine 密文、app_key_local_enc、app_key_sync_enc、security_stamp、PBKDF2 参数 |
-| `vault_ciphers` | 密码条目：id(UUID) + folder_id + name(密文) + data(密文 JSON) + reprompt + deleted_at + sync_md5 |
+| `vault_ciphers` | 密码条目：id(UUID) + folder_id + name(密文) + data(密文 JSON) + reprompt + is_deleted + sync_md5 |
 | `vault_folders` | 文件夹：id(UUID) + name(密文) + sync_md5 |
 
 ---
@@ -145,7 +145,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ## 6. 回收站
 
-- 文本 cipher 删除走软删（`UPDATE deleted_at`），可还原 / 永久删
+- 文本 cipher 删除走软删（`UPDATE is_deleted = 1`），可还原 / 永久删
 - 回收站 tab 仅在 Settings → Vault → CipherList（VaultPicker 浮窗无回收站）
 - 操作：还原（`vault_restore_cipher`）/ 永久删（`vault_delete_cipher permanent=true`）/ 全部清空（`vault_empty_trash`）
 

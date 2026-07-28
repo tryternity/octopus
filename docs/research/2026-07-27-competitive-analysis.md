@@ -161,7 +161,7 @@
 | 富文本/HTML | ❌（明确放弃，2026-07-28） | ✅ rtf.js + dompurify XSS 过滤 |
 | 搜索 | ✅ **FTS5 trigram** | ❌ 仅 LIKE |
 | 收藏/分组 | ✅ 收藏 + 6 类 item_type tab | ✅ 收藏 + **用户自定义分组** + 备注 |
-| 软删回收站 | ✅ **独有**（deleted_at + TTL 3 天 + 500 上限） | ❌ 硬删 |
+| 软删回收站 | ✅ **独有**（is_deleted + TTL 3 天 + 500 上限） | ❌ 硬删 |
 | dock 边缘吸附 | ✅ **独有**（macOS 8px 细条 hover 展开） | ❌ DockMode 空 stub |
 | hover 预览 | ✅ 200×200 智能定位 | ❌ 行内预览 |
 | Wayland | ✅ | ❌ |

@@ -377,7 +377,7 @@ git commit -m "feat(record): subtitle 数据模型 + generate_srt（4 TDD 测试
             has_system_audio: !tracks.is_empty(), has_microphone: tracks.iter().any(|t| t.source == AudioTrackSource::Microphone),
             audio_tracks: tracks.to_vec(), source_type: "display".into(), file_size: 100,
             has_thumbnail: false, is_favorite: false, created_at: "2026-07-28T00:00:00Z".into(),
-            deleted_at: None,
+            is_deleted: false,
             // 新字段（Task 1.4 会加到 RecordingMeta；此处先占位，Task 1.4 完成后补齐）
             subtitle_cues: None, subtitle_srt: None, subtitle_model: None,
         }
@@ -488,10 +488,10 @@ pub fn select_track(
 
 - [ ] **Step 1: RecordingMeta struct 加 3 字段**
 
-修改 `crates/record/src/store.rs:18-39`，在 `deleted_at` 后追加：
+修改 `crates/record/src/store.rs:18-39`，在 `is_deleted` 后追加：
 
 ```rust
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
     #[serde(default)]
     pub subtitle_cues: Option<Vec<crate::subtitle::SubtitleCue>>,
     #[serde(default)]
@@ -502,14 +502,14 @@ pub fn select_track(
 
 - [ ] **Step 2: 更新 INSERT 语句**
 
-修改 `crates/record/src/store.rs:61-76`，列清单加 3 列（紧跟 deleted_at），params 数组加 3 值：
+修改 `crates/record/src/store.rs:61-76`，列清单加 3 列（紧跟 is_deleted），params 数组加 3 值：
 
 ```rust
 self.conn.execute(
     "INSERT INTO recordings
      (id, file_path, title, duration_ms, width, height, fps, codec,
       has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-      has_thumbnail, is_favorite, created_at, deleted_at,
+      has_thumbnail, is_favorite, created_at, is_deleted,
       subtitle_cues, subtitle_srt, subtitle_model)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19)",
     rusqlite::params![
@@ -535,7 +535,7 @@ self.conn.execute(
 let mut stmt = self.conn.prepare(
     "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
             has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-            has_thumbnail, is_favorite, created_at, deleted_at,
+            has_thumbnail, is_favorite, created_at, is_deleted,
             subtitle_cues, subtitle_srt, subtitle_model
      FROM recordings WHERE id = ?1",
 )?;
@@ -572,7 +572,7 @@ fn row_to_meta(&self, row: &rusqlite::Row<'_>) -> rusqlite::Result<RecordingMeta
         // ... 现有字段保持不变 ...
         audio_tracks,
         // ...
-        deleted_at: row.get(16)?,
+        is_deleted: row.get::<_, i32>(16)? != 0,
         subtitle_cues,
         subtitle_srt,
         subtitle_model,
