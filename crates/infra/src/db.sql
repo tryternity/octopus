@@ -1,10 +1,18 @@
--- octopus DB 初始化脚本（开发期简化版，schema 唯一真相）
--- 由 db.rs init_schema 执行：v17 跳过；其他（含全新库）跑本脚本建表+seed → v17。
--- schema 变更：直接改本文件 + 升 db.rs 的 user_version 数值，勿新增 ALTER 迁移分支。
+-- octopus DB 初始化脚本（schema 唯一真相源，2026-07-27 极简化重构）
+-- 由 db.rs init_schema 执行：user_version == 0（全新库）时 execute_batch 本脚本。
+-- schema 变更：直接改本文件 + 升 db.rs 的 CURRENT_SCHEMA_VERSION 常量。
+-- 旧版本库（0 < v < CURRENT_SCHEMA_VERSION）一律 bail，不再支持自动迁移——清库重建。
 -- 全部 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
+--
+-- 文件结构（2026-07-28 重组）：
+--   §A 表结构（CREATE TABLE / INDEX / TRIGGER / VIRTUAL TABLE）—— 前半部分
+--   §B 初始化数据（INSERT OR IGNORE seed）—— 后半部分
 
--- ── 表结构 ──────────────────────────────────────────────────────────────────
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║                              §A 表结构（DDL）                                  ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
 
+-- ── 模型目录（models）─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS models (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     domain        TEXT    NOT NULL,                       -- 'asr' | 'llm' | 'ocr' | 'translate'
@@ -23,49 +31,9 @@ CREATE TABLE IF NOT EXISTS models (
     UNIQUE(domain, provider, category, model_name)        -- domain + provider + category + model_name 作为唯一键
 );
 
--- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
-
--- ── 本地 ASR 模型（source_type=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）──
--- is_available 表「文件就绪」：seed 初始大部分未就绪（is_available=0），用户下载后置 true。
--- is_enabled 表「激活」：seed 全 0，用户在管理页激活某模型时 switch_active_model 置 1（每域仅 1 个）。
--- 默认/兜底引擎 zipformer-small-ctc（source_type=0 builtin）Step 3 由 db.sql seed + fill_manifests 管理。
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-VALUES
-    ('asr','local','moonshine','moonshine-base-en','asr/moonshine-base-en','en','Moonshine Base EN (274M)',1,0,0),
-    ('asr','local','moonshine','moonshine-tiny-en','asr/moonshine-tiny-en','en','Moonshine Tiny EN (119M)',1,0,0),
-    ('asr','local','paraformer','paraformer-bilingual','asr/paraformer-bilingual','auto','paraformer中英版, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-multi-zh','asr/paraformer-multi-zh','auto','paraformer方言+英语, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-streaming','asr/paraformer-streaming','zh','paraformer-streaming, 230M',1,0,1),
-    ('asr','local','paraformer','paraformer-zh','asr/paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
-    ('asr','local','qwen3-asr','qwen3-asr-0.6B','asr/qwen3-asr-0.6B','auto','qwen3-asr-0.6B, 954M',1,0,0),
-    ('asr','local','qwen3-asr','qwen3-asr-1.7B','asr/qwen3-asr-1.7B','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
-    ('asr','local','sensevoice-orig','sensevoice-orig-small','asr/sensevoice-orig-small','auto','原版 SenseVoice-Small quant (230M，FunASR 4输入，中/英/粤/日/韩)',1,1,0),
-    ('asr','local','firered','firered-asr2','asr/firered-asr2','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
-    ('asr','local','whisper','whisper-small','asr/whisper-small','en','whisper-small.en, 372M',1,0,0),
-    ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
-    ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1),
-    -- builtin 兜底引擎（source_type=0，27M，首次启动下载；spec 2026-07-22-builtin-models.md §1.3）
-    ('asr','local','zipformer','zipformer-small','asr/zipformer-small','zh','zipformer-small 兜底引擎（27M，内置，首次启动下载）',0,0,1);
-
--- ── 云端模型（source_type=2）不再 seed，由用户自行添加 ──
--- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。
-
--- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-VALUES
-    ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
-    ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
-
--- ── 翻译模型（domain='translate'）─────────────────────────────────
-INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-VALUES
-    ('translate','local','opus-mt','opus-mt','translate/opus-mt','auto','opus-mt 中英互译（轻量快速，~500M）',1,0,0),
-    ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);
-
--- ── 润色提示词（prompts 表）───────────────────────────────────────────────────
+-- ── 润色提示词（prompts）───────────────────────────────────────────────────────
 -- 用户可维护多条润色 prompt，激活其一（app_config.active_polish_prompt 存 id）。
 -- id=1 为系统内置默认（is_system=1，不可编辑/删除）。
-
 CREATE TABLE IF NOT EXISTS prompts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT    NOT NULL,
@@ -77,16 +45,11 @@ CREATE TABLE IF NOT EXISTS prompts (
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- prompts 表 seed 已外置到 crates/infra/seeds/prompts/，由 seeds::load_prompt_seeds
--- 在 schema 升级到 v39 时一次性加载（INSERT OR IGNORE，保护用户编辑）。
--- 文件清单：default-polish.md（id=1 默认润色）/ advanced-polish.md（id=2 进阶润色）。
-
--- ── 应用配置（app_config 表）─────────────────────────────────────────────────
+-- ── 应用配置（app_config）─────────────────────────────────────────────────────
 -- config.yaml 的 DB 化：所有应用行为配置（引擎/快捷键/润色/降噪等）以 key-value 存储。
 -- 值统一 TEXT，由 Rust 侧 load_app_config 按字段类型解析。
 -- category 用于分组：'setting'（用户配置项）/ 'system'（窗口位置等系统状态）。
 -- 首次启动由 init_schema 执行 seed；后续 set_config / persist_* 通过 ON CONFLICT DO UPDATE 仅改 config_value，保留 description + category。
-
 CREATE TABLE IF NOT EXISTS app_config (
     category     TEXT NOT NULL DEFAULT 'setting',
     config_key   TEXT PRIMARY KEY,
@@ -94,36 +57,9 @@ CREATE TABLE IF NOT EXISTS app_config (
     description  TEXT
 );
 
-INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
-    ('engine_mode',              'embedded',                             'ASR 引擎模式: embedded | websocket | grpc'),
-    ('remote_url',               'ws://127.0.0.1:3000/ws/stream',        'WebSocket 远程地址（engine_mode=websocket 时使用）'),
-    ('grpc_endpoint',            'http://127.0.0.1:50051',               'gRPC 端点（engine_mode=grpc 时使用）'),
-    ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
-    ('asr_shortcut',             'Alt+A',                      '全局 ASR 激活/关闭快捷键'),
-    ('edit_shortcut',            'CmdOrCtrl+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
-    ('edit_global_shortcut',     'Alt+E',                      '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
-    ('polish_global_shortcut',   'Alt+S',                      '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
-    ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
-    ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
-    ('switch_input_source_on_paste', 'true',                             '粘贴前切换到英文输入源（避免中文输入法干扰，仅 macOS）'),
-    ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
-    ('overlay_position',         'top',                                  'overlay 位置: top | bottom | none'),
-    ('segment_silence',          '400',                                  'VAD 静音触发识别阈值（毫秒）'),
-    ('polish_mode',              '0',                                    '润色模式: 0=关闭 / 1=仅最终 / 2=中间+最终'),
-    ('polish_min_interval',      '5',                                    '中间润色最小间隔（秒，节流用）'),
-    ('pause_polish_threshold_ms','600',                                  '停顿驱动中间润色的静音阈值（毫秒，必须 > 500）'),
-    ('asr_hardware_accelerated', 'false',                                '是否使用 ASR 硬件加速'),
-    ('asr_correct',              'false',                                '是否对 ASR 输出进行纠错'),
-    ('output_simplified',        'true',                                 'ASR 输出字形: true=简体 / false=繁体'),
-    ('hide_toolbar',             'false',                                '结果展示区工具栏是否自动隐藏'),
-    ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度'),
-    ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co'),
-    ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段）');
-
--- ── 剪贴板历史（clipboard_history 表）─────────────────────────────────────────
+-- ── 剪贴板历史（clipboard_history）─────────────────────────────────────────────
 -- 统一存储 text/voice/ocr/image/file，吞并原 transcriptions 表。
 -- content + ref_data + meta_info 三层数据模型。
-
 CREATE TABLE IF NOT EXISTS clipboard_history (
     id              INTEGER PRIMARY KEY,       -- 毫秒戳
     item_type       TEXT    NOT NULL,          -- 'text' | 'voice' | 'ocr' | 'image' | 'file'
@@ -146,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
 CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(deleted_at);
 
--- ── 图片 BLOB 存储（image_data 表）─────────────────────────────────────────
+-- ── 图片 BLOB 存储（image_data）─────────────────────────────────────────────
 -- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。
 CREATE TABLE IF NOT EXISTS image_data (
     hash       TEXT PRIMARY KEY,     -- SHA-256(PNG bytes)，去重键
@@ -180,43 +116,7 @@ CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF content ON clipboard_hi
     INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.id, new.content);
 END;
 
--- 剪贴板配置项 seed
-INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
-    ('clipboard_enabled',      'true',  '是否启用剪贴板历史监听'),
-    ('clipboard_shortcut',     'Alt+C', '剪贴板历史窗口快捷键'),
-    ('clipboard_theme',        'light', 'UI 主题 id'),
-    ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
-    ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
-    ('screenshot_shortcut',     'CmdOrCtrl+Shift+X',                                '截图快捷键'),
-    ('action_bar_shortcut',   'Alt+D', 'AI 命令面板快捷键'),
-    ('action_bar_search_engine', 'google', 'AI 命令面板搜索引擎');
-
--- ── 环境变量（category='env'）——模型下载地址模板替换 ──────────────
-INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
-    ('huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),
-    ('modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),
-    ('github',      'https://github.com',     'GitHub 下载地址',         'env');
-
--- ── 云端模型参考列表 ──────────────────────────────────────────
-INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
-    ('aliyun:Fun-ASR', 'fun-asr-realtime;fun-asr-realtime-2026-02-28;fun-asr-realtime-2025-11-07;fun-asr-flash-8k-realtime;fun-asr-flash-8k-realtime-2026-01-28', '阿里云 FunASR 实时模型列表', 'asr_cloud_model'),
-    ('aliyun:Paraformer', 'paraformer-realtime-v1;paraformer-realtime-v2;paraformer-realtime-8k-v1;paraformer-realtime-8k-v2', '阿里云 Paraformer 实时模型列表', 'asr_cloud_model'),
-    ('aliyun:Qwen-ASR', 'qwen3-asr-flash-realtime;qwen3-asr-flash-realtime-2026-02-10;qwen3-asr-flash-realtime-2025-10-27', '阿里云 Qwen3-ASR Realtime 模型列表', 'asr_cloud_model'),
-    ('bytedance:Doubao-ASR', 'doubao-asr-1.0-streaming', '火山引擎豆包 ASR 1.0', 'asr_cloud_model'),
-    ('bytedance:Doubao-ASR-2.0', 'doubao-asr-2.0-streaming;seedasr-2.0-streaming', '火山引擎豆包 ASR 2.0', 'asr_cloud_model'),
-    ('tencent:Tencent-ASR', '16k_zh;16k_zh_large;16k_zh-PY;16k_zh-TW;16k_yue;16k_zh_dialect;16k_wuu-SH', '腾讯云实时语音识别中文引擎', 'asr_cloud_model'),
-    ('tencent:Tencent-ASR-Multi', '16k_zh_en;16k_multi_lang;16k_en;16k_en_large', '腾讯云实时语音识别多语种引擎', 'asr_cloud_model'),
-    ('baidu:Baidu-ASR', '15372;15376;1537', '百度实时语音识别中文模型（dev_pid）', 'asr_cloud_model'),
-    ('baidu:Baidu-ASR-EN', '17372;1737', '百度实时语音识别英文模型（dev_pid）', 'asr_cloud_model');
-
--- llm_provider seed 已外置到 crates/infra/seeds/llm_providers.json，由
--- seeds::load_llm_providers_seed 在 schema 升级到 v39 时一次性加载（7 个 provider）。
--- 与上面 asr_cloud_model 区分：后者为云端 ASR 模型列表（非 LLM），仍内联于本文件。
-
--- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
--- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。
-
--- ── Action Bar 菜单项（两级菜单，自引用 parent_id）──────────────
+-- ── Action Bar 菜单项（两级菜单，自引用 parent_id）──────────────────────────
 CREATE TABLE IF NOT EXISTS action_bar_items (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_id   INTEGER DEFAULT NULL,
@@ -241,41 +141,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
 );
 
--- 种子：主菜单项
-INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts) VALUES
-    (1, NULL, 'AI',    'sparkles', 'submenu', '', 0, 1, 'any'),
-    (2, NULL, '翻译',  'globe',    'ai', 'auto_translate', 1, 1, 'text'),
-    (3, NULL, '搜索',  'search',   'submenu', '', 2, 1, 'any'),
-    (4, NULL, '网页',  'link',     'url', '', 3, 1, 'text');
-
--- 种子：AI 子菜单（parent_id=1）
-INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
-    (5, 1, '润色', 'pencil',    'ai', '请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。', 0, 1),
-    (6, 1, '摘要', 'file-text', 'ai', '请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。', 1, 1),
-    (7, 1, '解释', 'lightbulb', 'ai', '请用简洁的中文解释以下内容的含义。只输出解释。', 2, 1);
-
--- 种子：搜索子菜单（parent_id=3）
-INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
-    (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
-    (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
-    (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1);
-
--- 种子：「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
-INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
-SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
-set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
-do shell script "open -a Doubao"
-delay 2
-tell application "System Events"
-    tell process "Doubao"
-        keystroke "v" using command down
-        delay 0.3
-        key code 36
-    end tell
-end tell', 4, 1
-WHERE NOT EXISTS (SELECT 1 FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL);
-
--- ── 脚本执行记录 ──────────────────────────────────────────────
+-- ── 脚本执行记录（script_runs）──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS script_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id     INTEGER NOT NULL,
@@ -292,7 +158,7 @@ CREATE TABLE IF NOT EXISTS script_runs (
 CREATE INDEX IF NOT EXISTS idx_script_runs_started_at ON script_runs(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 
--- ── ASR 热词版本（多场景词表，多选叠加）──────────────────────
+-- ── ASR 热词版本（hotword_sets）多场景词表，多选叠加 ──────────────────────────
 -- id 用 TEXT UUID（v46 改造）：支持 git 同步跨设备无冲突，与 vault_ciphers 一致。
 -- sync_md5：内容指纹（md5），增量同步 diff 用，由 sync crate 计算填入（不在 infra 算）。
 CREATE TABLE IF NOT EXISTS hotword_sets (
@@ -305,19 +171,13 @@ CREATE TABLE IF NOT EXISTS hotword_sets (
     sync_md5    TEXT                              -- md5 内容指纹（增量同步 diff，NULL 表示待算）
 );
 
--- 默认「通用」版本：固定 UUID（跨设备一致——两台机器的「通用」集 sync 时 id 相同不冲突）。
--- 全新库开箱即用；升级库由 v45→v46 迁移把旧 i64 id 转为 random UUID（「通用」集会获得新 UUID，
--- 首次 sync 时与远程的固定 UUID 版本合并——name UNIQUE 约束保证不重复）。
-INSERT OR IGNORE INTO hotword_sets(id, name, enabled, words_text, sync_md5)
-VALUES('00000000-0000-0000-0000-000000000001', '通用', 1, '', NULL);
-
--- ── ASR 热词全局命中计数（词级，不绑版本）────────────────────
+-- ── ASR 热词全局命中计数（hotword_hits）词级，不绑版本 ────────────────────────
 CREATE TABLE IF NOT EXISTS hotword_hits (
     word        TEXT    PRIMARY KEY,
     hit_count   INTEGER NOT NULL DEFAULT 0
 );
 
--- ── Agent Adapter（用户自定义 agent 适配器）──────────────────
+-- ── Agent Adapter（用户自定义 agent 适配器）──────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_adapters (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     key              TEXT NOT NULL UNIQUE,
@@ -330,13 +190,7 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 种子：内置 agent（is_system=1，用户不可删除，仅可改 is_default）
--- is_default 由代码层保证唯一（set_default_agent 时先把全部置 0 再置目标为 1）
-INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
-    ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
-    ('pi',     'Pi',          'pi',     'pi {files_at} {prompt}',           1, 1);  -- Pi 默认（PPT 菜单等场景的兜底）
-
--- ── Agent Task（agent × 语音识别联动）──────────────────────
+-- ── Agent Task（agent × 语音识别联动）──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_tasks (
     id               TEXT PRIMARY KEY,
     status           TEXT NOT NULL DEFAULT 'pending',
@@ -348,8 +202,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ── 启动器索引（统一 app + command 缓存，避免每次启动扫文件系统）──
--- v36：合并原 app_index 表（升级库由 v35→v36 迁移把数据搬过来并 DROP 旧表）。
+-- ── 启动器索引（launcher_index）统一 app + command 缓存 ──────────────────────
 -- type='app'：文件系统扫描的应用；type='command'：brew/cargo/system 等命令。
 -- PRIMARY KEY (type, path) 既是去重键也是按 (type, path) 单点更新 keywords 的索引。
 CREATE TABLE IF NOT EXISTS launcher_index (
@@ -368,8 +221,7 @@ CREATE TABLE IF NOT EXISTS launcher_index (
 CREATE INDEX IF NOT EXISTS idx_launcher_name  ON launcher_index(name);
 CREATE INDEX IF NOT EXISTS idx_launcher_alias ON launcher_index(alias);
 
--- ── 搜索频次加权（search_frequency 表）──────────────────────────
--- 按命中次数加权搜索结果排序；score_key 为打分维度键（如查询归一化串）。
+-- ── 搜索频次加权（search_frequency）按命中次数加权搜索结果排序 ────────────────
 CREATE TABLE IF NOT EXISTS search_frequency (
     score_key   TEXT    NOT NULL,           -- 打分维度键（主键）
     query       TEXT    NOT NULL DEFAULT '', -- 最近一次命中的查询原文
@@ -439,7 +291,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 CREATE INDEX IF NOT EXISTS idx_vault_folders_active
     ON vault_folders(sort_order) WHERE is_deleted = 0;
 
--- ══ 录屏元数据（schema v51 + v52 audio_tracks）═══════════════
+-- ══ 录屏元数据（recordings / recordings_thumbnails，schema v51 + v52 audio_tracks）═══
 CREATE TABLE IF NOT EXISTS recordings (
     id                INTEGER PRIMARY KEY,
     file_path         TEXT    NOT NULL,
@@ -476,9 +328,114 @@ CREATE TABLE IF NOT EXISTS recordings_thumbnails (
     FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
 );
 
+
+-- ╔══════════════════════════════════════════════════════════════════════════════╗
+-- ║                          §B 初始化数据（seed）                                 ║
+-- ║          全部 INSERT OR IGNORE，幂等；不破坏已有数据                            ║
+-- ╚══════════════════════════════════════════════════════════════════════════════╝
+
+-- ─── 模型 seed（models 表）───────────────────────────────────────────────────
+-- is_available 表「文件就绪」：seed 初始大部分未就绪（is_available=0），用户下载后置 true。
+-- is_enabled 表「激活」：seed 全 0，用户在管理页激活某模型时 switch_active_model 置 1（每域仅 1 个）。
+-- 默认/兜底引擎 zipformer-small-ctc（source_type=0 builtin）Step 3 由 db.sql seed + fill_manifests 管理。
+-- 本地 ASR 模型（source_type=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
+VALUES
+    ('asr','local','moonshine','moonshine-base-en','asr/moonshine-base-en','en','Moonshine Base EN (274M)',1,0,0),
+    ('asr','local','moonshine','moonshine-tiny-en','asr/moonshine-tiny-en','en','Moonshine Tiny EN (119M)',1,0,0),
+    ('asr','local','paraformer','paraformer-bilingual','asr/paraformer-bilingual','auto','paraformer中英版, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-multi-zh','asr/paraformer-multi-zh','auto','paraformer方言+英语, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-streaming','asr/paraformer-streaming','zh','paraformer-streaming, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-zh','asr/paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
+    ('asr','local','qwen3-asr','qwen3-asr-0.6B','asr/qwen3-asr-0.6B','auto','qwen3-asr-0.6B, 954M',1,0,0),
+    ('asr','local','qwen3-asr','qwen3-asr-1.7B','asr/qwen3-asr-1.7B','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
+    ('asr','local','sensevoice-orig','sensevoice-orig-small','asr/sensevoice-orig-small','auto','原版 SenseVoice-Small quant (230M，FunASR 4输入，中/英/粤/日/韩)',1,1,0),
+    ('asr','local','firered','firered-asr2','asr/firered-asr2','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
+    ('asr','local','whisper','whisper-small','asr/whisper-small','en','whisper-small.en, 372M',1,0,0),
+    ('asr','local','zipformer','zipformer','asr/zipformer','zh','zipformer, 160M',1,0,1),
+    ('asr','local','zipformer','zipformer-large','asr/zipformer-large','zh','zipformer-large, 736M',1,0,1),
+    -- builtin 兜底引擎（source_type=0，27M，首次启动下载；spec 2026-07-22-builtin-models.md §1.3）
+    ('asr','local','zipformer','zipformer-small','asr/zipformer-small','zh','zipformer-small 兜底引擎（27M，内置，首次启动下载）',0,0,1);
+
+-- OCR 模型（domain='ocr'）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
+VALUES
+    ('ocr','local','paddleocr','PP-OCRv6-small','ocr/PP-OCRv6-small','auto','PP-OCRv6 small (det 9.7M + rec 21.5M + keys 73K)，中/英/繁体/日',1,1,0),
+    ('ocr','local','paddleocr','PP-OCRv5','ocr/PP-OCRv5','auto','PP-OCRv5 mobile (det 4.5M + rec 16M + keys 92K)，中/英/繁体/日',1,0,0);
+
+-- 翻译模型（domain='translate'）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
+VALUES
+    ('translate','local','opus-mt','opus-mt','translate/opus-mt','auto','opus-mt 中英互译（轻量快速，~500M）',1,0,0),
+    ('translate','local','m2m100','m2m100-418M','translate/m2m100-418M','auto','m2m100 多语言翻译（100+ 语言互译，~600M）',1,0,0);
+
+-- 云端模型（source_type=2）不再 seed，由用户自行添加。
+-- 参考模型列表存 app_config（category='asr_cloud_model' / 'llm_provider'），见下方 app_config seed。
+
+-- prompts 表 seed 已外置到 crates/infra/seeds/prompts/，由 seeds::load_prompt_seeds
+-- 在 load_external_seeds 时一次性加载（INSERT OR IGNORE，保护用户编辑）。
+-- 文件清单：default-polish.md（id=1 默认润色）/ advanced-polish.md（id=2 进阶润色）。
+-- llm_provider seed 已外置到 crates/infra/seeds/llm_providers.json，由
+-- seeds::load_llm_providers_seed 一次性加载（7 个 provider）。
+
+-- ─── 应用配置 seed（app_config 表）───────────────────────────────────────────
+-- 通用设置（engine / 识别 / 润色 / 降噪等，不含快捷键——快捷键见下方独立 seed 块）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
-    ('record_shortcut',          'CmdOrCtrl+Shift+R', '录屏快捷键（呼出/暂停-恢复 toggle）'),
-    ('record_stop_shortcut',     'Escape',            '停止录屏快捷键'),
+    ('engine_mode',              'embedded',                             'ASR 引擎模式: embedded | websocket | grpc'),
+    ('remote_url',               'ws://127.0.0.1:3000/ws/stream',        'WebSocket 远程地址（engine_mode=websocket 时使用）'),
+    ('grpc_endpoint',            'http://127.0.0.1:50051',               'gRPC 端点（engine_mode=grpc 时使用）'),
+    ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
+    ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
+    ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
+    ('switch_input_source_on_paste', 'true',                             '粘贴前切换到英文输入源（避免中文输入法干扰，仅 macOS）'),
+    ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
+    ('overlay_position',         'top',                                  'overlay 位置: top | bottom | none'),
+    ('segment_silence',          '400',                                  'VAD 静音触发识别阈值（毫秒）'),
+    ('polish_mode',              '0',                                    '润色模式: 0=关闭 / 1=仅最终 / 2=中间+最终'),
+    ('polish_min_interval',      '5',                                    '中间润色最小间隔（秒，节流用）'),
+    ('pause_polish_threshold_ms','600',                                  '停顿驱动中间润色的静音阈值（毫秒，必须 > 500）'),
+    ('asr_hardware_accelerated', 'false',                                '是否使用 ASR 硬件加速'),
+    ('asr_correct',              'false',                                '是否对 ASR 输出进行纠错'),
+    ('output_simplified',        'true',                                 'ASR 输出字形: true=简体 / false=繁体'),
+    ('hide_toolbar',             'false',                                '结果展示区工具栏是否自动隐藏'),
+    ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度'),
+    ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co'),
+    ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段）');
+
+-- 全局快捷键 seed（统一管理，按功能分组；与 config.rs 的 default_*_shortcut 函数保持一致）
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    -- 识别 / 结果窗
+    ('asr_shortcut',           'Alt+A',            '全局 ASR 激活/关闭快捷键'),
+    ('edit_shortcut',          'CmdOrCtrl+Enter',  '结果窗编辑 toggle 快捷键（进入/保存同键）'),
+    ('edit_global_shortcut',   'Alt+E',            '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
+    ('polish_global_shortcut', 'Alt+S',            '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
+    -- 剪贴板
+    ('clipboard_shortcut',     'Alt+C',            '剪贴板历史窗口快捷键'),
+    -- 操作面板（AI 命令面板）
+    ('action_bar_shortcut',    'Alt+D',            'AI 命令面板快捷键'),
+    -- 截图
+    ('screenshot_shortcut',    'CmdOrCtrl+Shift+X','截图快捷键'),
+    -- 录屏
+    ('record_shortcut',        'CmdOrCtrl+Shift+R','录屏快捷键（呼出/暂停-恢复 toggle）'),
+    -- 停止录屏固定为 Escape（record_hotkey.rs 的 STOP_SHORTCUT 常量），不暴露为配置项
+    -- 密码箱（vault）
+    ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键'),
+    ('vault_generator_shortcut',   'CmdOrCtrl+Shift+G', '密码箱密码生成器快捷键');
+
+-- 剪贴板其他配置项（非快捷键）
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    ('clipboard_enabled',          'true',  '是否启用剪贴板历史监听'),
+    ('clipboard_theme',            'light', 'UI 主题 id'),
+    ('clipboard_max_items',        '1000',  '最大保留条数（不含收藏）'),
+    ('clipboard_max_age_days',     '30',    '自动清理天数（不含收藏）'),
+    ('action_bar_search_engine',   'google', 'AI 命令面板搜索引擎');
+
+-- 密码箱其他配置项（非快捷键）
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    ('vault_lock_timeout_secs',    '180',               '密码箱锁定超时（秒，焦点失活后）');
+
+-- 录屏其他配置项（非快捷键）
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_fps',               '30',                '录屏帧率（15/30/60）'),
     ('record_codec',             'h264',              '录屏编码（h264/hevc）'),
     ('record_resolution',        'original',          '录屏输出分辨率（original/1080p/720p）'),
@@ -490,3 +447,69 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_output_dir',        '',                  '录屏保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/.octopus/recordings/）'),
     ('record_history_view',      'grid',              '历史列表默认视图（grid/list）'),
     ('record_reveal_after_stop', 'true',              '录屏停止后是否自动在 Finder 高亮文件');
+
+-- 环境变量（category='env'）——模型下载地址模板替换
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+    ('huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),
+    ('modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),
+    ('github',      'https://github.com',     'GitHub 下载地址',         'env');
+
+-- 云端 ASR 模型参考列表（category='asr_cloud_model'）
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+    ('aliyun:Fun-ASR', 'fun-asr-realtime;fun-asr-realtime-2026-02-28;fun-asr-realtime-2025-11-07;fun-asr-flash-8k-realtime;fun-asr-flash-8k-realtime-2026-01-28', '阿里云 FunASR 实时模型列表', 'asr_cloud_model'),
+    ('aliyun:Paraformer', 'paraformer-realtime-v1;paraformer-realtime-v2;paraformer-realtime-8k-v1;paraformer-realtime-8k-v2', '阿里云 Paraformer 实时模型列表', 'asr_cloud_model'),
+    ('aliyun:Qwen-ASR', 'qwen3-asr-flash-realtime;qwen3-asr-flash-realtime-2026-02-10;qwen3-asr-flash-realtime-2025-10-27', '阿里云 Qwen3-ASR Realtime 模型列表', 'asr_cloud_model'),
+    ('bytedance:Doubao-ASR', 'doubao-asr-1.0-streaming', '火山引擎豆包 ASR 1.0', 'asr_cloud_model'),
+    ('bytedance:Doubao-ASR-2.0', 'doubao-asr-2.0-streaming;seedasr-2.0-streaming', '火山引擎豆包 ASR 2.0', 'asr_cloud_model'),
+    ('tencent:Tencent-ASR', '16k_zh;16k_zh_large;16k_zh-PY;16k_zh-TW;16k_yue;16k_zh_dialect;16k_wuu-SH', '腾讯云实时语音识别中文引擎', 'asr_cloud_model'),
+    ('tencent:Tencent-ASR-Multi', '16k_zh_en;16k_multi_lang;16k_en;16k_en_large', '腾讯云实时语音识别多语种引擎', 'asr_cloud_model'),
+    ('baidu:Baidu-ASR', '15372;15376;1537', '百度实时语音识别中文模型（dev_pid）', 'asr_cloud_model'),
+    ('baidu:Baidu-ASR-EN', '17372;1737', '百度实时语音识别英文模型（dev_pid）', 'asr_cloud_model');
+
+-- ─── Action Bar 菜单项 seed（两级菜单，自引用 parent_id）─────────────────────
+-- 主菜单项
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system, accepts) VALUES
+    (1, NULL, 'AI',    'sparkles', 'submenu', '', 0, 1, 'any'),
+    (2, NULL, '翻译',  'globe',    'ai', 'auto_translate', 1, 1, 'text'),
+    (3, NULL, '搜索',  'search',   'submenu', '', 2, 1, 'any'),
+    (4, NULL, '网页',  'link',     'url', '', 3, 1, 'text');
+
+-- AI 子菜单（parent_id=1）
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+    (5, 1, '润色', 'pencil',    'ai', '请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。', 0, 1),
+    (6, 1, '摘要', 'file-text', 'ai', '请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。', 1, 1),
+    (7, 1, '解释', 'lightbulb', 'ai', '请用简洁的中文解释以下内容的含义。只输出解释。', 2, 1);
+
+-- 搜索子菜单（parent_id=3）
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+    (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
+    (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
+    (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1),
+     (11, 3, 'Github',  'search', 'url', 'https://github.com/search?type=repositories&q={text}', 3, 1);
+
+-- 「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
+INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
+SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
+set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
+do shell script "open -a Doubao"
+delay 2
+tell application "System Events"
+    tell process "Doubao"
+        keystroke "v" using command down
+        delay 0.3
+        key code 36
+    end tell
+end tell', 4, 1
+WHERE NOT EXISTS (SELECT 1 FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL);
+
+-- ─── ASR 热词 seed（hotword_sets）────────────────────────────────────────────
+-- 默认「通用」版本：固定 UUID（跨设备一致——两台机器的「通用」集 sync 时 id 相同不冲突）。
+INSERT OR IGNORE INTO hotword_sets(id, name, enabled, words_text, sync_md5)
+VALUES('00000000-0000-0000-0000-000000000001', '通用', 1, '', NULL);
+
+-- ─── Agent Adapter seed（agent_adapters）─────────────────────────────────────
+-- 内置 agent（is_system=1，用户不可删除，仅可改 is_default）
+-- is_default 由代码层保证唯一（set_default_agent 时先把全部置 0 再置目标为 1）
+INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
+    ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
+    ('pi',     'Pi',          'pi',     'pi {files_at} {prompt}',           1, 1);  -- Pi 默认（PPT 菜单等场景的兜底）

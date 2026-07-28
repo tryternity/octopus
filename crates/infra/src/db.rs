@@ -314,632 +314,56 @@ where
 }
 
 
-/// 初始化 schema：以 db.sql 为唯一表结构真相，外置 seed 加载机制注入长文本。
+/// 初始化 schema：db.sql 是唯一表结构真相，全新库直接跑 db.sql 建表。
 ///
-/// **分支**：
-/// - `v >= 39`：最新，no-op。
-/// - `17 <= v < 39`：开发期历史库（唯一用户已 ≥v38）。db.sql 对这些库已 no-op
-///   （所有表/列/vault 表均由 db.sql `CREATE TABLE IF NOT EXISTS` 覆盖），仅补跑外置
-///   seed 升到 v40。历史 v17→v37 的 ALTER / DROP / 数据迁移分支已删除——这些表/列
-///   在 db.sql 内已存在（vault_*、launcher_index、search_frequency、global_shortcut、
-///   trigger_keyword、models.is_available）。`auto_paste` 列已废弃（代码不再读写），
-///   不在新 schema 中出现。
-/// - `v < 17`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v40。
+/// **设计**（2026-07-27 重构）：删除所有历史 migration 代码——单用户开发库，每次
+/// schema 变更直接改 db.sql + 升 `user_version`，旧库一律清库重建（`rm ~/.octopus/octopus.db*`）。
 ///
-/// schema 变更流程：改 db.sql + 升下方 user_version 数值。
-/// v38：vault_* 表（2026-07-18 Password Vault，db.sql 已含）。
-/// v40：外置 seed 加载机制（prompts/llm_providers/agent_actions）+ Agent 菜单 + PPT。
-/// v43：PPT 两阶段——「制作 PPT」改名「PPT 制作」+ 新增「PPT 大纲」子菜单。
-///      纯 seed 重跑（无 schema 变更），bump user_version 触发 load_external_seeds。
-/// v48：models.is_local → source_type（0=builtin/1=local/2=cloud），见 spec 2026-07-22-builtin-models.md。
-/// v47→v48 迁移：models.is_local → source_type（0=builtin/1=local/2=cloud）。
+/// 分支：
+/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v53
+/// - `v == 53`：最新，no-op
+/// - `v != 0 && v < 53`：旧版本库——不支持自动迁移，bail 提示清库
 ///
-/// 映射：旧 is_local=0（云端）→ source_type=2；旧 is_local=1（本地）→ source_type=1。
-/// builtin（0）是新增分类，迁移阶段没有数据，由后续 seed/fill_manifests 注入。
-///
-/// 幂等：检查列是否已迁移（开发期中间 binary 可能重复跑，或老库经 db.sql 重建已有 source_type）。
-/// 被 init_schema 在 3 处调用（v==47 库、v==46 段末尾、v17-v46 段末尾），确保所有路径都能到 v48。
-fn migrate_v47_to_v48(conn: &Connection) -> Result<()> {
-    let has_source_type = conn
-        .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name = 'source_type'")?
-        .exists([])?;
-    if !has_source_type {
-        // 先检查表存在（测试库可能没建 models）+ 是否还是旧 is_local 列
-        let has_is_local = conn
-            .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name = 'is_local'")?
-            .exists([])?;
-        if has_is_local {
-            conn.execute("ALTER TABLE models RENAME COLUMN is_local TO source_type", [])?;
-            // 0→2(cloud), 1→1(local)
-            conn.execute(
-                "UPDATE models SET source_type = CASE WHEN source_type = 0 THEN 2 ELSE 1 END",
-                [],
-            )?;
-            log::info!("schema v48: models.is_local → source_type (0→2 cloud, 1→1 local)");
-        }
-    }
-    // 注入 builtin 兜底引擎 seed 行（source_type=0）——老库没有这行（v47 前硬编码）。
-    // 仅当 models 表存在时执行（测试库可能只有 hotword_sets 等部分表）。
-    // INSERT OR IGNORE 幂等（UNIQUE(domain, provider, category, model_name) 约束）。
-    let has_models = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='models'")?
-        .exists([])?;
-    if has_models {
-        conn.execute(
-            "INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, source_type, is_available, is_streaming)
-             VALUES ('asr','local','zipformer','zipformer-small','asr/zipformer-small','zh',
-                     'zipformer-small 兜底引擎（27M，内置，首次启动下载）',0,0,1)",
-            [],
-        )?;
-        // 为 builtin + local 模型填充 manifest（含新增的 zipformer-small）
-        fill_manifests(conn)?;
-    }
-    conn.execute("PRAGMA user_version = 48", [])?;
-    log::info!("schema upgraded to v48 (models.source_type + builtin seed)");
-    Ok(())
-}
-
-/// v48→v49：action_bar_items 加 app_bundle_ids 列 + launcher_index 加 bundle_id 列。
-///
-/// 两列都用于 app-aware 菜单绑定功能：
-/// - `action_bar_items.app_bundle_ids`：JSON 数组字符串，菜单项绑定哪些 app（空=全局项）
-/// - `launcher_index.bundle_id`：应用索引的 CFBundleIdentifier，app 多选器的稳定 key
-///
-/// 幂等：PRAGMA table_info 检查列不存在才 ALTER。两个表独立检查（测试库可能只有其中一个）。
-fn migrate_v48_to_v49(conn: &Connection) -> Result<()> {
-    // action_bar_items 加 app_bundle_ids 列
-    let has_app_bundle_ids = conn
-        .prepare("SELECT 1 FROM pragma_table_info('action_bar_items') WHERE name = 'app_bundle_ids'")?
-        .exists([])?;
-    if !has_app_bundle_ids {
-        let has_table = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='action_bar_items'")?
-            .exists([])?;
-        if has_table {
-            conn.execute(
-                "ALTER TABLE action_bar_items ADD COLUMN app_bundle_ids TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-            log::info!("schema v49: action_bar_items 补 app_bundle_ids 列");
-        }
-    }
-    // launcher_index 加 bundle_id 列
-    let has_bundle_id = conn
-        .prepare("SELECT 1 FROM pragma_table_info('launcher_index') WHERE name = 'bundle_id'")?
-        .exists([])?;
-    if !has_bundle_id {
-        let has_table = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='launcher_index'")?
-            .exists([])?;
-        if has_table {
-            conn.execute(
-                "ALTER TABLE launcher_index ADD COLUMN bundle_id TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-            log::info!("schema v49: launcher_index 补 bundle_id 列");
-        }
-    }
-    conn.execute("PRAGMA user_version = 49", [])?;
-    log::info!("schema upgraded to v49 (action_bar_items.app_bundle_ids + launcher_index.bundle_id)");
-    Ok(())
-}
-
-/// v49→v50：prompts 表 content 字段从完整 md 文本改为文件名引用。
-/// id=1 content → "润色-默认"，id=2 content → "润色-进阶"。
-/// 同时把旧 content（完整 md 文本）导出到 ~/.octopus/.sync/prompts/polish/ 对应文件。
-/// 幂等：只处理 content 长度 > 100 的行（说明还是完整 md 文本，非文件名）。
-fn migrate_v49_to_v50(conn: &Connection) -> Result<()> {
-    let has_prompts = conn
-        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='prompts'")?
-        .exists([])?;
-    if has_prompts {
-        let polish_dir = crate::paths::octopus_config_home()
-            .join(".sync").join("prompts").join("polish");
-        let _ = std::fs::create_dir_all(&polish_dir);
-        // 逐行处理：id → 目标文件名
-        for (id, dest_name) in [(1i64, "润色-默认"), (2i64, "润色-进阶")] {
-            // 读旧 content（完整 md 文本）
-            let old_content: Option<String> = conn
-                .query_row(
-                    "SELECT content FROM prompts WHERE id = ?1 AND length(content) > 100",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .ok();
-            if let Some(content) = old_content {
-                // 导出到文件（已存在跳过——用户可能已手动编辑过）
-                let path = polish_dir.join(format!("{}.md", dest_name));
-                if !path.exists() {
-                    let _ = std::fs::write(&path, &content);
-                }
-                // DB content 改为文件名引用
-                conn.execute(
-                    "UPDATE prompts SET content = ?2 WHERE id = ?1",
-                    rusqlite::params![id, dest_name],
-                )?;
-            }
-        }
-        log::info!("schema v50: prompts content 改为文件名引用 + 导出 md 到 polish/");
-    }
-    conn.execute("PRAGMA user_version = 50", [])?;
-    log::info!("schema upgraded to v50 (prompts content → 文件名引用)");
-    Ok(())
-}
-
-/// v50→v51：新增 recordings / recordings_thumbnails 表 + 12 条录屏 app_config seed。
-///
-/// **重要**：必须在 migrate 函数内显式跑 db.sql 的 CREATE TABLE/INSERT 段——
-/// 历史版本曾假设「init_schema 末尾会重新跑一次 db.sql 全文」是错的：v>=17 的现有库
-/// 走 migrate 分支后直接 return Ok，从不重跑 db.sql，导致表实际未创建（运行时
-/// `no such table: recordings`，2026-07-25 实测踩坑）。
-///
-/// 修复：本函数显式 `execute_batch(INIT_SQL)` 跑一次完整 db.sql。db.sql 全用
-/// `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`，对已有表/数据幂等无副作用，
-/// 只补建缺失的 recordings / recordings_thumbnails 表 + 缺失的 record_* seed。
-fn migrate_v50_to_v51(conn: &Connection) -> Result<()> {
-    log::info!("schema v51: 跑 db.sql 补建 recordings / recordings_thumbnails 表 + record_* seed");
-    conn.execute_batch(INIT_SQL)
-        .context("migrate_v50_to_v51: execute_batch INIT_SQL")?;
-    conn.execute("PRAGMA user_version = 51", [])?;
-    log::info!("schema upgraded to v51 (recordings 表)");
-    Ok(())
-}
-
-/// v51→v52：recordings 表加 `audio_tracks TEXT NOT NULL DEFAULT '[]'` 列
-/// （JSON 序列化的 `AudioTrack[]`）。
-///
-/// 用于「双轨保留 + 录后合并」方案（spec
-/// 2026-07-27-screen-record-audio-post-merge.md）：录制时保留各轨元数据，
-/// 后续合并由 ffmpeg amix 处理，DB 这里只存元数据 JSON。
-///
-/// 幂等：PRAGMA table_info 检查列不存在才 ALTER；表不存在跳过（全新库走
-/// init_schema 末尾的 INIT_SQL，直接建出含本列的 recordings）。
-fn migrate_v51_to_v52(conn: &Connection) -> Result<()> {
-    let has_audio_tracks = conn
-        .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name = 'audio_tracks'")?
-        .exists([])?;
-    if !has_audio_tracks {
-        let has_table = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
-            .exists([])?;
-        if has_table {
-            conn.execute(
-                "ALTER TABLE recordings ADD COLUMN audio_tracks TEXT NOT NULL DEFAULT '[]'",
-                [],
-            )?;
-            log::info!("schema v52: recordings 补 audio_tracks 列");
-        }
-    }
-    conn.execute("PRAGMA user_version = 52", [])?;
-    log::info!("schema upgraded to v52 (recordings.audio_tracks)");
-    Ok(())
-}
-
-/// v52→v53：vault_ciphers `deleted_at`（TEXT 可空）→ `is_deleted`（INTEGER 0/1）+ vault_folders 加 `is_deleted`。
-///
-/// 用户确认可清库——直接删 deleted_at 列，不保留不兼容。
-fn migrate_v52_to_v53(conn: &Connection) -> Result<()> {
-    // vault_ciphers: 加 is_deleted + 迁移数据
-    let has_cipher_is_deleted = conn
-        .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'is_deleted'")?
-        .exists([])?;
-    if !has_cipher_is_deleted {
-        conn.execute("ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
-        // 迁移：deleted_at 有值 → is_deleted=1（deleted_at 此时一定存在）
-        conn.execute("UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL", [])?;
-        log::info!("schema v53: vault_ciphers 加 is_deleted 列 + 迁移数据");
-    }
-
-    // 删 deleted_at 列（独立于上面的幂等检查——可能上次跑了 ADD 但 DROP 没跑完）
-    // SQLite 3.35+ 支持 DROP COLUMN
-    let has_cipher_deleted_at = conn
-        .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'deleted_at'")?
-        .exists([])?;
-    if has_cipher_deleted_at {
-        conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
-        log::info!("schema v53: vault_ciphers 删 deleted_at 列");
-    }
-
-    // 索引重建（独立——可能旧索引残留）
-    conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
-    // 删旧索引（WHERE deleted_at IS NULL 版本）+ 建新索引（WHERE is_deleted = 0 版本）
-    conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
-
-    // vault_folders: 加 is_deleted
-    let has_folder_is_deleted = conn
-        .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'is_deleted'")?
-        .exists([])?;
-    if !has_folder_is_deleted {
-        conn.execute("ALTER TABLE vault_folders ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
-        log::info!("schema v53: vault_folders 加 is_deleted");
-    }
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_folders_active ON vault_folders(sort_order) WHERE is_deleted = 0", [])?;
-
-    conn.execute("PRAGMA user_version = 53", [])?;
-    log::info!("schema upgraded to v53 (vault is_deleted)");
-    Ok(())
-}
-
+/// schema 变更流程：改 db.sql + 升 `user_version`（init_schema 末尾 + db.sql 注释）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 53 {
-        // v53+ 已最新，但检测一次 recordings 表是否存在——历史 bug 修复：
-        // migrate_v50_to_v51 曾漏跑 db.sql 致 version 升到 51 但表没建（运行时
-        // `no such table: recordings`，2026-07-25 实测）。这里自愈：若 v52 但表缺失，
-        // 重跑 INIT_SQL 补建（IF NOT EXISTS 幂等，对正常 v52 库无副作用）。
-        let has_recordings = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
-            .exists([])?;
-        if !has_recordings {
-            log::warn!("schema v53+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
-            conn.execute_batch(INIT_SQL)
-                .context("self-heal: execute_batch INIT_SQL for missing recordings table")?;
-            log::info!("recordings 表自愈完成");
-        }
-        // v53 自愈：deleted_at 列可能残留（migration 第一次跑时 ADD 成功但 DROP 没跑完）
-        let has_vault_deleted_at = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'deleted_at'")?
-            .exists([])?;
-        if has_vault_deleted_at {
-            log::warn!("schema v53+ 但 vault_ciphers 仍有 deleted_at 列（migration 不完整残留），删除");
-            conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
-            conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
-            conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
-            log::info!("vault_ciphers deleted_at 列自愈删除完成");
-        }
+    if v == CURRENT_SCHEMA_VERSION {
         return Ok(());
     }
 
-    if v == 52 {
-        migrate_v52_to_v53(conn)?;
-        return Ok(());
-    }
-
-    if v == 51 {
-        migrate_v51_to_v52(conn)?;
-        return Ok(());
-    }
-
-    if v == 50 {
-        migrate_v50_to_v51(conn)?;
-        return Ok(());
-    }
-
-    // v49→v50：prompts content 从完整 md 改为文件名引用。
-    if v == 49 {
-        migrate_v49_to_v50(conn)?;
-        return Ok(());
-    }
-
-    // v48→v49：action_bar_items.app_bundle_ids + launcher_index.bundle_id（app-aware 菜单绑定）。
-    // 独立 helper——在 v==48 库、v47→v48 后、v46→v47→v48 后三处调用。
-    if v == 48 {
-        migrate_v48_to_v49(conn)?;
-        migrate_v49_to_v50(conn)?;
-        return Ok(());
-    }
-
-    // v47→v48：models.is_local → source_type（0=builtin/1=local/2=cloud）。
-    // 独立 helper——在 3 处调用：v==47 库、v==46 段末尾、v17-v46 段末尾。
-    // 详见 spec 2026-07-22-builtin-models.md §4。
-    if v == 47 {
-        migrate_v47_to_v48(conn)?;
-        migrate_v48_to_v49(conn)?;
-        migrate_v49_to_v50(conn)?;
-        return Ok(());
-    }
-
-    // v46→v47：clipboard_history 加 deleted_at 列（软删/回收站）。
-    // 单独提前处理 v46 库——下面的 v44/v45/v46 迁移段以 v<=46 为入口，
-    // v46 库不需要跑那些迁移，只需补 deleted_at 列后直接跳 v47 返回。
-    if v == 46 {
-        let has_clip_table = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clipboard_history'")?
-            .exists([])?;
-        if has_clip_table {
-            let has_deleted_at = conn
-                .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'deleted_at'")?
-                .exists([])?;
-            if !has_deleted_at {
-                conn.execute("ALTER TABLE clipboard_history ADD COLUMN deleted_at TEXT", [])?;
-                log::info!("schema v47: clipboard_history 补 deleted_at 列");
-            }
-        }
-        conn.execute("PRAGMA user_version = 47", [])?;
-        log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49→v50（v46 库同一次启动完成 v47→v48→v49→v50）
-        migrate_v47_to_v48(conn)?;
-        migrate_v48_to_v49(conn)?;
-        migrate_v49_to_v50(conn)?;
-        return Ok(());
-    }
-
-    // v44→v45：vault_ciphers / vault_folders 加 sync_md5 字段（md5 内容指纹，
-    // 用于增量同步 diff）。详见 vault::sync::fingerprint。
-    //
-    // 迁移策略：只加字段，不回填 md5（旧数据 sync_md5 = NULL）。
-    // 首次 sync_now 时检测到 NULL 当作「需要写文件」处理（增量 push 重写一次），
-    // 之后正常增量。避免在 infra 层引入 md5 依赖（md5 逻辑在 vault crate）。
-    //
-    // ALTER TABLE ADD COLUMN 需检查列是否存在（开发期中间 binary 可能跳过版本号）。
-    if v == 44 {
-        let has_cipher_md5 = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
-            .exists([])?;
-        if !has_cipher_md5 {
-            conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
-        }
-        let has_folder_md5 = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
-            .exists([])?;
-        if !has_folder_md5 {
-            conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
-        }
-        // 不设 user_version 也不 return——fall through 到 v46 段（同一次启动完成 v44→v45→v46）
-    }
-
-    // v43→v44：vault_ciphers / vault_folders 的 id 从 INTEGER AUTOINCREMENT 改
-    // TEXT（UUID 字符串），支持 git 同步跨设备无冲突。
-    //
-    // 迁移策略（保守，不丢数据）：
-    //   1. 检查 vault_ciphers 是否还是 INTEGER（旧 schema）—— SQLite 没有直接
-    //      查 PRIMARY KEY 类型的 API，但 PRAGMA table_info 会返 type 列；
-    //      type="TEXT" 表示已迁移过（开发期中间 binary 可能跳过），跳过；
-    //      type="INTEGER" 表示旧 schema，跑迁移。
-    //   2. 建新表 + 复制（每行 randomblob(16) 转 hex 当 UUID）+ 修 folder_id 引用
-    //   3. DROP 旧表 + RENAME 新表
-    //
-    // 注意：vault 是 2026-07-18 v38 引入的；v<38 的旧库走 v<17 分支（db.sql 建
-    // 新表已经是 TEXT PRIMARY KEY），不会触发此迁移——只有 v38/v43 的老 vault
-    // 库需要此迁移。
-    if v >= 17 && v <= 43 {
-        // 先跑之前的 v40/v42 升级（需要补 need_voice / agent_adapters 列），
-        // 然后跑 v44 vault UUID 迁移。
-        conn.execute_batch(INIT_SQL).ok();
-        // v39→v40：action_bar_items 加 need_voice 列
-        {
-            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
-                .query_map([], |r| r.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            if !cols.contains(&"need_voice".to_string()) {
-                conn.execute("ALTER TABLE action_bar_items ADD COLUMN need_voice INTEGER NOT NULL DEFAULT 0", [])?;
-                log::info!("schema v40: action_bar_items 补 need_voice 列");
-            }
-        }
-        // v41→v42：agent_adapters 加 is_system + is_default 列
-        {
-            let cols: Vec<String> = conn.prepare("PRAGMA table_info(agent_adapters)")?
-                .query_map([], |r| r.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            if !cols.contains(&"is_system".to_string()) {
-                conn.execute("ALTER TABLE agent_adapters ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0", [])?;
-                log::info!("schema v42: agent_adapters 补 is_system 列");
-            }
-            if !cols.contains(&"is_default".to_string()) {
-                conn.execute("ALTER TABLE agent_adapters ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0", [])?;
-                log::info!("schema v42: agent_adapters 补 is_default 列");
-            }
-        }
-        // v42 内置 agent seed
-        conn.execute(
-            "INSERT OR IGNORE INTO agent_adapters (key, display_name, detect_binary, command_template, is_system, is_default) VALUES
-                ('claude', 'Claude Code', 'claude', 'claude --add-dir {cwd} {prompt}', 1, 0),
-                ('pi',     'Pi',          'pi',     'pi {files_at} {prompt}',           1, 1)",
-            [],
-        ).context("seed Pi/Claude 入 agent_adapters")?;
+    if v == 0 {
+        // 全新库：db.sql 建表 + seed + manifest + 外置 seed + yaml 配置迁移
+        conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
+        migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
         fill_manifests(conn)?;
         crate::seeds::load_external_seeds(conn)?;
-
-        // **v43→v44: vault_ciphers / vault_folders id 改 UUID 字符串（git 同步）**
-        // 见上方注释。检查 vault_ciphers.id 类型——INTEGER 表示旧 schema 需迁移。
-        let cipher_id_type: String = conn
-            .query_row(
-                "SELECT type FROM pragma_table_info('vault_ciphers') WHERE name = 'id'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_else(|_| "TEXT".to_string()); // 表不存在或查询失败时按已迁移处理
-        if cipher_id_type == "INTEGER" {
-            log::info!("schema v44: 迁移 vault_ciphers / vault_folders id INTEGER → TEXT (UUID)");
-            // 用 hex(randomblob(16)) 作伪 UUID（足够唯一，非标准 v4 但跨设备无冲突）
-            // 真正的 v4 UUID 在 vault crate 的 create_cipher 时生成；这里只是给
-            // 旧 i64 行分配一个临时全局唯一 id 让迁移通过。
-
-            // 1. folders 先迁移（cipher 引用 folder_id，要等 folder 新 id 就位）
-            conn.execute_batch(
-                "CREATE TABLE vault_folders_new (
-                    id          TEXT PRIMARY KEY,
-                    name        TEXT NOT NULL,
-                    sort_order  INTEGER NOT NULL DEFAULT 0,
-                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                INSERT INTO vault_folders_new (id, name, sort_order, created_at, updated_at)
-                SELECT lower(hex(randomblob(16))), name, sort_order, created_at, updated_at
-                FROM vault_folders;
-                -- 临时映射表：old_rowid → new_uuid
-                CREATE TABLE _vault_folder_id_map (old_id INTEGER, new_id TEXT);
-                INSERT INTO _vault_folder_id_map (old_id, new_id)
-                SELECT rowid, id FROM vault_folders_new;",
-            )?;
-
-            // 2. cipher 迁移，folder_id 按映射翻译（NULL 保留 NULL）
-            conn.execute_batch(
-                "CREATE TABLE vault_ciphers_new (
-                    id                  TEXT PRIMARY KEY,
-                    folder_id           TEXT DEFAULT NULL,
-                    favorite            INTEGER NOT NULL DEFAULT 0,
-                    atype               INTEGER NOT NULL,
-                    name                TEXT NOT NULL,
-                    notes               TEXT DEFAULT NULL,
-                    data                TEXT NOT NULL,
-                    fields              TEXT DEFAULT NULL,
-                    password_history    TEXT DEFAULT NULL,
-                    reprompt            INTEGER NOT NULL DEFAULT 0,
-                    deleted_at          TEXT DEFAULT NULL,
-                    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-                INSERT INTO vault_ciphers_new (id, folder_id, favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, created_at, updated_at)
-                SELECT
-                    lower(hex(randomblob(16))),
-                    (SELECT new_id FROM _vault_folder_id_map WHERE old_id = vault_ciphers.folder_id),
-                    favorite, atype, name, notes, data, fields, password_history, reprompt, deleted_at, created_at, updated_at
-                FROM vault_ciphers;",
-            )?;
-
-            // 3. DROP 旧表 + RENAME 新表 + 重建索引（DROP TABLE 不连带索引）
-            conn.execute_batch(
-                "DROP TABLE vault_ciphers;
-                 DROP TABLE vault_folders;
-                 ALTER TABLE vault_ciphers_new RENAME TO vault_ciphers;
-                 ALTER TABLE vault_folders_new RENAME TO vault_folders;
-                 DROP TABLE _vault_folder_id_map;
-                 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
-                     ON vault_ciphers(favorite) WHERE deleted_at IS NULL;
-                 CREATE INDEX IF NOT EXISTS idx_vault_ciphers_deleted ON vault_ciphers(deleted_at);",
-            )?;
-            log::info!("schema v44: vault id INTEGER → TEXT 迁移完成");
-        } else {
-            log::debug!("schema v44: vault_ciphers.id 已是 TEXT，跳过 UUID 迁移");
-        }
-
-        conn.execute("PRAGMA user_version = 44", [])?;
-        log::info!("schema upgraded to v44 (vault_ciphers/folders id 改 UUID 字符串)");
-        // 不 return——fall through 到 v45→v46 迁移（同一次启动完成 v44+v45+v46）
-    }
-
-    // v45→v46：hotword_sets.id INTEGER→TEXT UUID + sync_md5 字段 + vault sync_md5 兜底。
-    //
-    // **位置在 `v >= 17 && v <= 43` 完整迁移分支之后**——覆盖所有 v>=17 的库：
-    //   - v17-v43 老库：上方完整迁移后 fall through 到此
-    //   - v44 库：上方 v44→v45 vault sync_md5 补丁后 fall through 到此
-    //   - v45 库：直接进入此段
-    // 全新库（v<17）走下方 INIT_SQL（db.sql 已含新 schema），不走这里。
-    if v >= 17 {
-        // hotword_sets id 迁移——检查类型决定是否建新表
-        let hotword_id_type: String = conn
-            .query_row(
-                "SELECT type FROM pragma_table_info('hotword_sets') WHERE name = 'id'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_else(|_| "TEXT".to_string()); // 表不存在或查询失败时按已迁移处理
-
-        if hotword_id_type == "INTEGER" {
-            log::info!("schema v46: 迁移 hotword_sets.id INTEGER → TEXT (UUID)");
-            conn.execute_batch(
-                "CREATE TABLE hotword_sets_new (
-                    id          TEXT PRIMARY KEY,
-                    name        TEXT NOT NULL UNIQUE,
-                    enabled     INTEGER NOT NULL DEFAULT 1,
-                    words_text  TEXT NOT NULL DEFAULT '',
-                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    sync_md5    TEXT
-                );
-                INSERT INTO hotword_sets_new (id, name, enabled, words_text, created_at, updated_at, sync_md5)
-                SELECT
-                    CASE WHEN name = '通用'
-                         THEN '00000000-0000-0000-0000-000000000001'
-                         ELSE lower(hex(randomblob(16)))
-                    END,
-                    name, enabled, words_text, created_at, updated_at, NULL
-                FROM hotword_sets;
-                DROP TABLE hotword_sets;
-                ALTER TABLE hotword_sets_new RENAME TO hotword_sets;",
-            )?;
-            log::info!("schema v46: hotword_sets id INTEGER → TEXT 迁移完成");
-        } else {
-            // 已是 TEXT 但可能缺 sync_md5 列（开发期中间 binary）——检查并补
-            let has_md5 = conn
-                .prepare("SELECT 1 FROM pragma_table_info('hotword_sets') WHERE name = 'sync_md5'")?
-                .exists([])?;
-            if !has_md5 {
-                conn.execute("ALTER TABLE hotword_sets ADD COLUMN sync_md5 TEXT", [])?;
-                log::info!("schema v46: hotword_sets 补 sync_md5 列");
-            }
-        }
-
-        // vault_ciphers/folders sync_md5 兜底（v45 补丁——确保 vault 表也有 sync_md5）。
-        // 表可能不存在（如纯热词测试库只建了 hotword_sets）——先检查表存在再 ALTER。
-        let vault_ciphers_exists: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers')")?
-            .exists([])?;
-        if vault_ciphers_exists {
-            let has_cipher_md5 = conn
-                .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'sync_md5'")?
-                .exists([])?;
-            if !has_cipher_md5 {
-                conn.execute("ALTER TABLE vault_ciphers ADD COLUMN sync_md5 TEXT", [])?;
-            }
-        }
-        let vault_folders_exists: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('vault_folders')")?
-            .exists([])?;
-        if vault_folders_exists {
-            let has_folder_md5 = conn
-                .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'sync_md5'")?
-                .exists([])?;
-            if !has_folder_md5 {
-                conn.execute("ALTER TABLE vault_folders ADD COLUMN sync_md5 TEXT", [])?;
-            }
-        }
-
-        conn.execute("PRAGMA user_version = 46", [])?;
-        log::info!("schema upgraded to v46 (hotword_sets id 改 UUID + sync_md5 字段)");
-        // fall through 到 v47 段（不 return）——同一次启动完成 v44→v45→v46→v47
-    }
-
-    // v46→v47：clipboard_history 加 deleted_at 列（软删/回收站）。
-    //
-    // ALTER TABLE ADD COLUMN 需检查列是否存在（开发期中间 binary 可能跳过版本号）。
-    // 图片不软删（image_data 引用计数约束），deleted_at 对图片始终 NULL——靠应用层保证，
-    // schema 层不加 CHECK 约束（SQLite CHECK 对 item_type='image' AND deleted_at NOT NULL 的
-    // 限制会影响 INSERT 性能，不值得）。
-    //
-    // 测试库可能只有 hotword_sets 没有 clipboard_history——先检查表存在再 ALTER。
-    if v >= 17 && v <= 46 {
-        let has_clip_table = conn
-            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='clipboard_history'")?
-            .exists([])?;
-        if has_clip_table {
-            let has_deleted_at = conn
-                .prepare("SELECT 1 FROM pragma_table_info('clipboard_history') WHERE name = 'deleted_at'")?
-                .exists([])?;
-            if !has_deleted_at {
-                conn.execute("ALTER TABLE clipboard_history ADD COLUMN deleted_at TEXT", [])?;
-                log::info!("schema v47: clipboard_history 补 deleted_at 列");
-            }
-        }
-        conn.execute("PRAGMA user_version = 47", [])?;
-        log::info!("schema upgraded to v47 (clipboard_history deleted_at 软删列)");
-        // 继续迁移到 v48→v49→v50（v17-v46 库同一次启动完成 v47→v48→v49→v50）
-        migrate_v47_to_v48(conn)?;
-        migrate_v48_to_v49(conn)?;
-        migrate_v49_to_v50(conn)?;
+        conn.execute(
+            &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
+            [],
+        )?;
+        log::info!(
+            "DB initialized (v{}): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）",
+            CURRENT_SCHEMA_VERSION
+        );
         return Ok(());
     }
 
-    // v<17 全新库：建表 + 外置 seed + manifest
-    conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
-    migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    // 填充 manifest（全新库 seed 中 secret_key 为空 → 从常量写入）
-    fill_manifests(conn)?;
-    crate::seeds::load_external_seeds(conn)?;
-    // 全新库 db.sql 已含所有列（v49 schema）+ prompts content 存文件名引用（load_prompt_seeds 处理）
-    // + md 拷贝到 ~/.octopus/.sync/prompts/polish/，直接设 v50
-    conn.execute("PRAGMA user_version = 50", [])?;
-    log::info!("DB initialized (v50): schema + external seeds + manifest fill + yaml 配置导入（无 yaml 则跳过）");
-    Ok(())
+    // 1 <= v < 53：旧版本库，不再支持自动迁移
+    anyhow::bail!(
+        "DB schema version {} is outdated (current {}). \
+         This build no longer supports auto-migration. \
+         Run: rm ~/.octopus/octopus.db* (then restart app to rebuild from db.sql).",
+        v,
+        CURRENT_SCHEMA_VERSION
+    );
 }
+
+/// 当前 schema 版本——db.sql 建出的库就是这个版本。
+/// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+pub const CURRENT_SCHEMA_VERSION: u32 = 53;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -4378,13 +3802,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v43() {
+    fn init_schema_fresh_db_builds_current_version() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 50, "全新库 init_schema 后应到 v50");
+        assert_eq!(v, CURRENT_SCHEMA_VERSION, "全新库 init_schema 后应到 CURRENT_SCHEMA_VERSION");
         // v48: models 表用 source_type（非旧 is_local）
         let has_source_type: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name='source_type'")
@@ -4427,166 +3851,6 @@ mod tests {
                 .unwrap();
             assert_eq!(cnt, 1, "v39→v40 升级后应注入「{}」子项", title);
         }
-    }
-
-    /// v47→v48 迁移：models.is_local → source_type，数据 0→2(cloud) / 1→1(local)。
-    #[test]
-    fn migration_v47_to_v48_renames_is_local_to_source_type() {
-        let conn = Connection::open_in_memory().unwrap();
-        // 建一个 v47 schema 的 models 表（含 is_local 列，不含 source_type）
-        conn.execute_batch(
-            "CREATE TABLE models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain TEXT NOT NULL, provider TEXT NOT NULL DEFAULT 'local',
-                category TEXT NOT NULL, model_name TEXT NOT NULL, source TEXT NOT NULL,
-                secret_key TEXT NOT NULL DEFAULT '', language TEXT NOT NULL DEFAULT '',
-                is_local INTEGER NOT NULL DEFAULT 0,
-                is_thinking INTEGER NOT NULL DEFAULT 0, is_streaming INTEGER NOT NULL DEFAULT 0,
-                is_available INTEGER NOT NULL DEFAULT 0, is_enabled INTEGER NOT NULL DEFAULT 0,
-                description TEXT NOT NULL DEFAULT '',
-                UNIQUE(domain, provider, category, model_name)
-            );",
-        )
-        .unwrap();
-        // 插入 1 行 cloud（is_local=0）+ 1 行 local（is_local=1）
-        conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, is_local)
-             VALUES ('llm','deepseek','deepseek','dsv4','https://api.deepseek.com', 0)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO models (domain, provider, category, model_name, source, is_local)
-             VALUES ('asr','local','whisper','whisper-small','asr/whisper-small', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute("PRAGMA user_version = 47", []).unwrap();
-
-        // 运行迁移
-        init_schema(&conn).unwrap();
-
-        // 验证 user_version = 49
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 50);
-
-        // 验证列已改名
-        let cols: Vec<String> = conn.prepare("PRAGMA table_info(models)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .filter_map(|r| r.ok()).collect();
-        assert!(cols.contains(&"source_type".to_string()), "应有 source_type 列: {:?}", cols);
-        assert!(!cols.contains(&"is_local".to_string()), "不应再有 is_local 列: {:?}", cols);
-
-        // 验证数据迁移：cloud（原 0）→ 2，local（原 1）→ 1
-        let cloud_st: i64 = conn
-            .query_row(
-                "SELECT source_type FROM models WHERE model_name='dsv4'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(cloud_st, 2, "cloud 模型 is_local=0 应迁移为 source_type=2");
-
-        let local_st: i64 = conn
-            .query_row(
-                "SELECT source_type FROM models WHERE model_name='whisper-small'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(local_st, 1, "local 模型 is_local=1 应迁移为 source_type=1");
-
-        // 验证 builtin 兜底引擎 seed 行被注入（source_type=0）
-        let builtin_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM models WHERE model_name='zipformer-small' AND source_type=0",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(builtin_count, 1, "v48 迁移应注入 zipformer-small builtin seed 行");
-
-        // 验证 manifest 已填充（secret_key 非空——fill_manifests 覆盖 source_type IN (0,1)）
-        let manifest: String = conn
-            .query_row(
-                "SELECT secret_key FROM models WHERE model_name='zipformer-small'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert!(!manifest.is_empty(), "builtin 模型的 manifest (secret_key) 应被 fill_manifests 填充");
-        assert!(manifest.contains("model.int8.onnx"), "manifest 应含 model.int8.onnx 文件条目");
-    }
-
-    /// v48→v49 迁移：action_bar_items 加 app_bundle_ids 列 + launcher_index 加 bundle_id 列。
-    /// 建一个 v48 库（有 action_bar_items + launcher_index 但无新列）→ 迁移 → 验证两列添加 + 默认值。
-    #[test]
-    fn migration_v48_to_v49_adds_app_bundle_ids_and_bundle_id() {
-        let conn = Connection::open_in_memory().unwrap();
-        // 建一个 v48 schema：action_bar_items（无 app_bundle_ids）+ launcher_index（无 bundle_id）
-        conn.execute_batch(
-            "CREATE TABLE action_bar_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER DEFAULT NULL,
-                title TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '',
-                action_type TEXT NOT NULL, action_data TEXT NOT NULL DEFAULT '',
-                sort_order INTEGER NOT NULL DEFAULT 0, is_system INTEGER NOT NULL DEFAULT 1,
-                is_enabled INTEGER NOT NULL DEFAULT 1, is_async INTEGER NOT NULL DEFAULT 1,
-                write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
-                shortcut TEXT NOT NULL DEFAULT '', agent TEXT NOT NULL DEFAULT '',
-                accepts TEXT NOT NULL DEFAULT 'text', trigger_keyword TEXT NOT NULL DEFAULT '',
-                global_shortcut TEXT NOT NULL DEFAULT '', need_voice INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE launcher_index (
-                type TEXT NOT NULL, name TEXT NOT NULL, path TEXT NOT NULL,
-                alias TEXT NOT NULL DEFAULT '', icon TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-                keywords TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (type, path)
-            );",
-        )
-        .unwrap();
-        // 插入测试数据
-        conn.execute(
-            "INSERT INTO action_bar_items (title, action_type, accepts) VALUES ('翻译','ai','text')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO launcher_index (type, name, path) VALUES ('app','Safari','/Applications/Safari.app')",
-            [],
-        )
-        .unwrap();
-        conn.execute("PRAGMA user_version = 48", []).unwrap();
-
-        // 运行迁移
-        init_schema(&conn).unwrap();
-
-        // 验证 user_version = 49
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 50);
-
-        // 验证 action_bar_items 有 app_bundle_ids 列，默认空串
-        let has_col: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('action_bar_items') WHERE name='app_bundle_ids'")
-            .unwrap()
-            .exists([])
-            .unwrap();
-        assert!(has_col, "action_bar_items 应有 app_bundle_ids 列");
-        let default_val: String = conn
-            .query_row("SELECT app_bundle_ids FROM action_bar_items WHERE title='翻译'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(default_val, "", "现有菜单项 app_bundle_ids 默认空串（全局项）");
-
-        // 验证 launcher_index 有 bundle_id 列，默认空串
-        let has_bid: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('launcher_index') WHERE name='bundle_id'")
-            .unwrap()
-            .exists([])
-            .unwrap();
-        assert!(has_bid, "launcher_index 应有 bundle_id 列");
-        let bid_val: String = conn
-            .query_row("SELECT bundle_id FROM launcher_index WHERE name='Safari'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(bid_val, "", "现有应用 bundle_id 默认空串（旧缓存需重扫填充）");
     }
 
     #[test]
@@ -4882,59 +4146,6 @@ mod tests {
         assert_eq!(sv_enabled, 0, "原激活模型应被清空");
     }
 
-    /// 回归：v32-vintage 库（已有 action_bar_items 但仅缺其他表）经 init_schema 升到 v40，
-    /// db.sql CREATE TABLE IF NOT EXISTS 把所有缺表补齐。验证 v40 schema 完整性。
-    ///
-    /// 历史 v32→v34/v35/v36 的迁移逻辑已删除（schema 由 db.sql 统一覆盖），本测试只保留
-    /// 升级到 v40 的 smoke check：launcher_index / search_frequency 表存在，列齐全。
-    #[test]
-    fn migration_v32_db_upgrades_to_v40() {
-        // 模拟 v32 库：有 action_bar_items（v32 schema）但无 app_index / launcher_index
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE action_bar_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER DEFAULT NULL,
-                title TEXT NOT NULL, icon TEXT NOT NULL DEFAULT '', action_type TEXT NOT NULL,
-                action_data TEXT NOT NULL DEFAULT '', accepts TEXT NOT NULL DEFAULT 'text',
-                sort_order INTEGER NOT NULL DEFAULT 0, is_system INTEGER NOT NULL DEFAULT 1,
-                is_enabled INTEGER NOT NULL DEFAULT 1, is_async INTEGER NOT NULL DEFAULT 1,
-                write_output_to_clipboard INTEGER NOT NULL DEFAULT 0, shortcut TEXT NOT NULL DEFAULT '',
-                agent TEXT NOT NULL DEFAULT '', trigger_keyword TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
-            );"
-        ).unwrap();
-        conn.execute("PRAGMA user_version = 32", []).unwrap();
-
-        // 运行迁移——v ≥ 17 分支：db.sql 全表 CREATE IF NOT EXISTS + 外置 seed
-        init_schema(&conn).unwrap();
-
-        // 验证 user_version = 49
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 50);
-
-        // v40：launcher_index 表存在 + icon/path/alias/type 列（db.sql 提供）
-        let table_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='launcher_index'", [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(table_count, 1, "launcher_index 表应被创建");
-
-        let cols: Vec<String> = conn.prepare("PRAGMA table_info(launcher_index)").unwrap()
-            .query_map([], |r| r.get::<_, String>(1)).unwrap()
-            .filter_map(|r| r.ok()).collect();
-        assert!(cols.contains(&"icon".to_string()), "launcher_index 应有 icon 列");
-        assert!(cols.contains(&"path".to_string()), "launcher_index 应有 path 列");
-        assert!(cols.contains(&"alias".to_string()), "launcher_index 应有 alias 列");
-        assert!(cols.contains(&"type".to_string()), "launcher_index 应有 type 列");
-
-        // search_frequency 表存在
-        let sf_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_frequency'", [], |r| r.get(0)
-        ).unwrap();
-        assert_eq!(sf_count, 1, "search_frequency 表应存在");
-    }
-
     #[test]
     fn action_bar_insert_agent_type_default_accepts() {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
@@ -4945,24 +4156,6 @@ mod tests {
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
         assert_eq!(item.agent, "claude");
-    }
-
-    #[test]
-    fn migration_v26_to_v27_creates_agent_tasks_table() {
-        // 旧 v26→v27 迁移已删（schema 由 db.sql 统一覆盖）；本测试降级为 smoke check：
-        // DROP agent_tasks 后 init_schema 应靠 db.sql CREATE IF NOT EXISTS 重建表。
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("DROP TABLE agent_tasks", []).unwrap();
-        conn.execute("PRAGMA user_version = 26", []).unwrap();
-        init_schema(&conn).unwrap();
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 50);
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
-            [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]
@@ -5077,140 +4270,7 @@ mod tests {
         assert_eq!(context, "{}");
     }
 
-    #[test]
-    fn init_schema_v27_db_upgrades_to_v40() {
-        // v27 库再调 init_schema 应靠 v ≥ 17 分支升到 v40（不报错）
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 27", []).unwrap();
-        init_schema(&conn).unwrap();
-        let v: u32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, 50);
-    }
-
-    /// 用户实际升级路径：v38 → v40 应正确加载外置 seed，且保护用户已编辑的 prompt。
-    #[test]
-    fn migration_v38_to_v40_loads_external_seeds_and_preserves_user_edits() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        // 模拟 v38 旧库：prompts 表已存在 id=1 行（v38 的 db.sql 内联种子，
-        // v40 已迁出为外置 seed）。用户在此基础上编辑过。
-        conn.execute(
-            "INSERT INTO prompts (id, title, category, content, description, is_system)
-             VALUES (1, '默认润色', 'voice_text_polish', 'v38 原始内容', '', 1)",
-            [],
-        ).unwrap();
-        // 模拟用户在 v38 时已编辑 prompt id=1
-        conn.execute(
-            "UPDATE prompts SET content='用户改的 prompt 内容' WHERE id=1",
-            [],
-        ).unwrap();
-        // 标 v38（用户当前状态）
-        conn.execute("PRAGMA user_version = 38", []).unwrap();
-        // 运行 init_schema（升级路径）
-        init_schema(&conn).unwrap();
-        // 验证升到 v43
-        let v: u32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, 50);
-        // 验证 Agent 主菜单 + PPT 子菜单创建
-        let agent_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(agent_count, 1, "v38→v40 升级时应创建 Agent 主菜单");
-        // v43: Agent 下应有两个子菜单——PPT 大纲 + PPT 制作
-        for title in ["PPT 大纲", "PPT 制作"] {
-            let cnt: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM action_bar_items WHERE title=?1",
-                    rusqlite::params![title],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(cnt, 1, "v38→v40 升级时应创建「{}」子菜单", title);
-        }
-        // 验证用户编辑保留（INSERT OR IGNORE 保护）
-        let prompt_content: String = conn
-            .query_row("SELECT content FROM prompts WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            prompt_content, "用户改的 prompt 内容",
-            "用户已编辑的 prompt 应保留（INSERT OR IGNORE）"
-        );
-    }
-
-    /// v42→v43 升级路径：用户 DB 已是 v42（有「制作 PPT」老菜单），重启 octopus 后
-    /// 应自动：(1) bump 到 v43；(2) 改名「制作 PPT」→「PPT 制作」；(3) 新增「PPT 大纲」。
-    /// row id 不变（保快捷键）。这是 v43 的核心保证——不删 ~/.octopus/octopus.db 重建也能生效。
-    #[test]
-    fn migration_v42_to_v43_renames_and_adds_ppt_outline() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        // 模拟 v42 状态：先跑一次完整 init_schema 让它升到 v43（拿到「PPT 制作」+「PPT 大纲」），
-        // 然后手工把它「倒回」v42 状态——删掉 PPT 大纲、把 PPT 制作改回老标题、user_version=42。
-        init_schema(&conn).unwrap();
-        let _agent_id: i64 = conn
-            .query_row("SELECT id FROM action_bar_items WHERE title='Agent' AND parent_id IS NULL", [], |r| r.get(0))
-            .unwrap();
-        // 记下 PPT 制作 row id（应该是改名前的「制作 PPT」对应行）
-        let ppt_make_id: i64 = conn
-            .query_row("SELECT id FROM action_bar_items WHERE title='PPT 制作'", [], |r| r.get(0))
-            .unwrap();
-        // 删 PPT 大纲（模拟 v42 时还不存在）
-        conn.execute("DELETE FROM action_bar_items WHERE title='PPT 大纲'", []).unwrap();
-        // 把 PPT 制作改回老标题（模拟 v42 残留）
-        conn.execute(
-            "UPDATE action_bar_items SET title='制作 PPT' WHERE id=?1",
-            rusqlite::params![ppt_make_id],
-        ).unwrap();
-        // 倒回 v42
-        conn.execute("PRAGMA user_version = 42", []).unwrap();
-
-        // 验证模拟成功——v42 状态：只有「制作 PPT」，没有「PPT 大纲」
-        let legacy_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(legacy_count, 1);
-        let outline_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(outline_count, 0, "测试前置：v42 状态下不应有 PPT 大纲");
-
-        // 现在跑 init_schema（模拟用户重启 octopus）
-        init_schema(&conn).unwrap();
-
-        // 验证升到 v43
-        let v: u32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(v, 50);
-
-        // 「制作 PPT」应消失
-        let after_legacy: i64 = conn
-            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='制作 PPT'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(after_legacy, 0, "v43 升级后老标题应消失");
-
-        // 「PPT 制作」存在且 row id 不变
-        let (after_id,): (i64,) = conn
-            .query_row("SELECT id FROM action_bar_items WHERE title='PPT 制作'", [], |r| Ok((r.get(0)?,)))
-            .unwrap();
-        assert_eq!(after_id, ppt_make_id, "PPT 制作 row id 应保持不变（保快捷键）");
-
-        // 「PPT 大纲」被新增
-        let after_outline: i64 = conn
-            .query_row("SELECT COUNT(*) FROM action_bar_items WHERE title='PPT 大纲'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(after_outline, 1, "v43 升级后应新增 PPT 大纲子菜单");
-    }
-
-    /// 已是 v40 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
+    /// 已是 CURRENT_SCHEMA_VERSION 的库再次调 init_schema 应是 no-op——不重读 seed 文件、不重复插入。
     #[test]
     fn init_schema_already_v40_is_noop() {
         let conn = Connection::open_in_memory().unwrap();
@@ -5345,67 +4405,6 @@ mod tests {
             general.id, "00000000-0000-0000-0000-000000000001",
             "「通用」版本必须用固定 UUID，保证跨设备 sync 时 id 一致"
         );
-    }
-
-    /// v45→v46 迁移：hotword_sets.id INTEGER→TEXT UUID + sync_md5 字段。
-    /// 模拟 v45 库（INTEGER id），跑迁移后验证：id 变 TEXT + sync_md5 列存在 + 数据保留。
-    #[test]
-    fn migrate_v45_to_v46_hotword_id_to_uuid() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        // 建 v45 schema 的 hotword_sets（INTEGER id，无 sync_md5）
-        conn.execute_batch(
-            "CREATE TABLE hotword_sets (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL UNIQUE,
-                enabled     INTEGER NOT NULL DEFAULT 1,
-                words_text  TEXT NOT NULL DEFAULT '',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO hotword_sets (name, enabled, words_text) VALUES ('通用', 1, '苹果');
-            INSERT INTO hotword_sets (name, enabled, words_text) VALUES ('工作', 1, '会议');
-            PRAGMA user_version = 45;",
-        ).unwrap();
-
-        // 跑迁移
-        init_schema(&conn).unwrap();
-
-        // 验证 user_version = 47（v46→v47 迁移加了 clipboard_history.deleted_at）
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 50);
-
-        // id 类型应为 TEXT
-        let id_type: String = conn
-            .query_row(
-                "SELECT type FROM pragma_table_info('hotword_sets') WHERE name = 'id'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(id_type, "TEXT", "迁移后 id 应为 TEXT");
-
-        // sync_md5 列应存在
-        let has_md5: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('hotword_sets') WHERE name = 'sync_md5'")
-            .unwrap()
-            .exists([])
-            .unwrap();
-        assert!(has_md5, "迁移后应有 sync_md5 列");
-
-        // 数据保留（2 条 + 迁移不丢）
-        let sets = list_hotword_sets_at(&conn).unwrap();
-        assert_eq!(sets.len(), 2, "迁移不应丢数据");
-        // 「通用」应有固定 UUID
-        let general = sets.iter().find(|s| s.name == "通用").unwrap();
-        assert_eq!(general.id, "00000000-0000-0000-0000-000000000001");
-        assert_eq!(general.words_text, "苹果");
-        // sync_md5 迁移后为 NULL（首次 sync 时填）
-        assert!(general.sync_md5.is_none());
-
-        // 「工作」应是随机 UUID（非固定）
-        let work = sets.iter().find(|s| s.name == "工作").unwrap();
-        assert_eq!(work.words_text, "会议");
-        assert_ne!(work.id, "00000000-0000-0000-0000-000000000001", "非「通用」应有独立 UUID");
     }
 
     #[test]
@@ -6843,168 +5842,40 @@ mod vault_schema_tests {
         assert!(result.is_err(), "CHECK(id=1) 应阻止 id=2 的插入");
     }
 
-    /// 回归测试：v50→v51 migrate 必须真正创建 recordings 表。
-    ///
-    /// 背景（2026-07-25 实测 bug）：原 migrate_v50_to_v51 注释声称「init_schema 末尾会
-    /// 重新跑一次 db.sql」是错的——v>=17 现有库走 migrate 分支后直接 return Ok，
-    /// 从不重跑 db.sql，导致 version 升到 51 但 recordings 表从未创建，运行时报
-    /// `no such table: recordings`。修复后 migrate_v50_to_v51 显式 execute_batch(INIT_SQL)。
+    /// 全新库（v=0）经 init_schema 后应升到 CURRENT_SCHEMA_VERSION，
+    /// recordings 表 + audio_tracks 列应存在。
     #[test]
-    fn test_migrate_v50_to_v51_creates_recordings_table() {
+    fn fresh_db_has_recordings_and_audio_tracks() {
         let conn = Connection::open_in_memory().unwrap();
-        // 模拟损坏的 v50 库：跑 db.sql 建 v50 之前的所有表 + DROP recordings 模拟缺失
-        // （更真实的做法是手工建一组 v50 表，但 db.sql IF NOT EXISTS 幂等且含所有 v50 表，
-        //  跑完后 DROP recordings 即可模拟「v50 库升级到 v51 但 recordings 没建」的损坏态）
+        // user_version 默认 0 → 走全新库分支
+        init_schema(&conn).unwrap();
+
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, CURRENT_SCHEMA_VERSION, "全新库应升到 CURRENT_SCHEMA_VERSION");
+
+        let has_recordings: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
+                [], |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_recordings, "全新库应有 recordings 表");
+
+        let has_audio_tracks: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap_or(false);
+        assert!(has_audio_tracks, "全新库 recordings 应有 audio_tracks 列");
+    }
+
+    /// 旧版本库（1 <= v < CURRENT_SCHEMA_VERSION）应 bail，不自动迁移。
+    #[test]
+    fn outdated_db_bails_instead_of_auto_migrating() {
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("PRAGMA user_version = 50", []).unwrap();
-        // 删掉 recordings 表 + thumbnails 模拟 migrate_v50_to_v51 漏建
-        conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
-        conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
-        // 验证损坏态
-        let has_before: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(!has_before, "测试前置：recordings 表应不存在");
-
-        // 跑 migrate_v50_to_v51（直接调内部函数，不绕 init_schema）
-        migrate_v50_to_v51(&conn).unwrap();
-
-        // 验证修复
-        let has_after: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(has_after, "migrate_v50_to_v51 后 recordings 表应存在");
-
-        let has_thumb: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings_thumbnails')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(has_thumb, "migrate_v50_to_v51 后 recordings_thumbnails 表应存在");
-
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 51, "migrate 后 user_version 应为 51");
-    }
-
-    /// 回归测试：v53+ 自愈——schema version 已 53 但 recordings 表缺失时（历史 bug
-    /// 残留的损坏库），init_schema 应自动重跑 db.sql 补建。
-    #[test]
-    fn test_init_schema_self_heals_missing_recordings_at_v52() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 53", []).unwrap();
-        // 模拟损坏态：version 53 但表被 DROP（模拟历史 migrate 漏跑的残留）
-        conn.execute("DROP TABLE IF EXISTS recordings_thumbnails", []).unwrap();
-        conn.execute("DROP TABLE IF EXISTS recordings", []).unwrap();
-
-        // init_schema 应自愈
-        init_schema(&conn).unwrap();
-
-        let has: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings')",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(has, "v53+ 自愈：recordings 表缺失时 init_schema 应补建");
-    }
-
-    /// v51→v52 migrate：recordings 表加 audio_tracks 列。
-    ///
-    /// 背景（spec 2026-07-27-screen-record-audio-post-merge.md）：双轨保留方案需要存
-    /// JSON 序列化的 AudioTrack[]，给 recordings 加 NOT NULL DEFAULT '[]' 列。
-    /// 幂等：PRAGMA table_info 检查列不存在才 ALTER，重复跑不报错。
-    #[test]
-    fn migrate_v51_to_v52_adds_audio_tracks_column() {
-        let conn = Connection::open_in_memory().unwrap();
-        // 跑 INIT_SQL 建表（含 v51 全部表）
-        conn.execute_batch(INIT_SQL).unwrap();
-        // 模拟 v51 库状态：删掉 audio_tracks 列（如果 db.sql 已含），强制走 migrate 路径
-        // SQLite ≥ 3.35 支持 ALTER TABLE DROP COLUMN（一次性重建表）
-        let _ = conn.execute("ALTER TABLE recordings DROP COLUMN audio_tracks", []);
-        conn.execute("PRAGMA user_version = 51", []).unwrap();
-
-        // 跑前确认列不存在
-        let has_before: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
-            .unwrap()
-            .query_row([], |r| r.get(0))
-            .unwrap_or(false);
-        assert!(!has_before, "测试前置：audio_tracks 列应不存在");
-
-        // 跑 migrate
-        migrate_v51_to_v52(&conn).unwrap();
-
-        // 验证列存在
-        let has_after: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
-            .unwrap()
-            .query_row([], |r| r.get(0))
-            .unwrap_or(false);
-        assert!(has_after, "migrate 后 audio_tracks 列应存在");
-
-        // 验证 user_version 升到 52
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 52, "migrate 后 user_version 应为 52");
-
-        // 验证默认值 '[]'：插入一行，读回 audio_tracks 应是 '[]'
-        conn.execute(
-            "INSERT INTO recordings (file_path, duration_ms, width, height, fps, codec,
-                                     source_type, file_size, created_at)
-             VALUES ('/tmp/test.mkv', 1000, 1920, 1080, 30, 'h264', 'screen', 1024, '2026-07-27')",
-            [],
-        ).unwrap();
-        let default: String = conn
-            .query_row("SELECT audio_tracks FROM recordings WHERE file_path='/tmp/test.mkv'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(default, "[]", "audio_tracks 列默认值应为 '[]'");
-
-        // 幂等：再跑一次不报错
-        migrate_v51_to_v52(&conn).unwrap();
-    }
-
-    /// 全新库直接跑 INIT_SQL，audio_tracks 列应存在（db.sql 已加列）。
-    #[test]
-    fn fresh_db_has_audio_tracks_column() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        let has_col: bool = conn
-            .prepare("SELECT COUNT(*) > 0 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
-            .unwrap()
-            .query_row([], |r| r.get(0))
-            .unwrap();
-        assert!(has_col, "全新库应直接有 audio_tracks 列");
-    }
-
-    /// 端到端：v51 库经 init_schema 升到 v52（验证 if 链 v==51 分支正确）。
-    #[test]
-    fn init_schema_upgrades_v51_db_to_v52() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(INIT_SQL).unwrap();
-        // 模拟 v51 库：DROP 掉 audio_tracks 列（db.sql 已含此列）+ user_version=51
-        let _ = conn.execute("ALTER TABLE recordings DROP COLUMN audio_tracks", []);
-        conn.execute("PRAGMA user_version = 51", []).unwrap();
-        // init_schema 走 if v == 51 → migrate_v51_to_v52 → v52
-        init_schema(&conn).unwrap();
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 52, "v51 库经 init_schema 应升到 v52");
-        // 列已加回来
-        let has_col: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='audio_tracks'")
-            .unwrap()
-            .query_row([], |r| r.get(0))
-            .unwrap_or(false);
-        assert!(has_col, "init_schema 后 audio_tracks 列应存在");
+        let result = init_schema(&conn);
+        assert!(result.is_err(), "旧版本库应 bail，不应自动迁移");
     }
 }
