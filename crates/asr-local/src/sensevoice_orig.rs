@@ -299,6 +299,7 @@ mod tests {
     /// 注意：若用 TTS 合成 wav（如 macOS `say`），CMVN 修复前后均能识别（合成音频落在
     /// 模型鲁棒区）；CMVN 修复主要改善真实麦克风录音——质量验证需用真实录音人工核对。
     #[test]
+    #[ignore = "real-model: 需 DB 引擎 + OCTOPUS_TEST_WAV，cargo test -- --ignored 跑"]
     fn sensevoice_orig_real_model_transcribes() {
         let wav = match std::env::var("OCTOPUS_TEST_WAV") {
             Ok(p) if !p.is_empty() => p,

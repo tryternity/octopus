@@ -880,30 +880,7 @@ impl StreamingZipformerTransducer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 动态查找 HF cache 中的 snapshot 目录（不依赖特定 hash）。
-    /// `repo` 如 `models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30`。
-    fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
-        let base = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub")
-            .join(repo)
-            .join("snapshots");
-        if !base.is_dir() {
-            return None;
-        }
-        // 取 snapshots 下第一个子目录（HF 每次拉取用 commit hash 命名）
-        std::fs::read_dir(&base)
-            .ok()?
-            .filter_map(|e| e.ok())
-            .find_map(|e| {
-                let p = e.path();
-                if p.is_dir() {
-                    Some(p)
-                } else {
-                    None
-                }
-            })
-    }
+    use crate::test_helpers::hf_snapshot;
 
     #[test]
     fn test_streaming_zipformer_ctc() {
@@ -974,6 +951,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real-model: 需 HF 模型缓存，cargo test -- --ignored 跑"]
     fn test_streaming_zipformer_transducer() {
         let zh_int8 = match hf_snapshot(
             "models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30",

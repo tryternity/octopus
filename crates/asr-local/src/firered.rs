@@ -196,8 +196,9 @@ mod tests {
     }
 
     /// 真实模型 e2e：加载 DB 的 firered-asr2，识别 $OCTOPUS_TEST_WAV（若设）。
-    /// 无环境变量则 skip（CI 无音频时不阻塞）；本地验证：OCTOPUS_TEST_WAV=/tmp/x.wav cargo test。
+    /// 无环境变量则 skip（CI 无音频时不阻塞）；本地验证：OCTOPUS_TEST_WAV=/tmp/x.wav cargo test -- --ignored。
     #[test]
+    #[ignore = "real-model: 需 DB 引擎 + OCTOPUS_TEST_WAV，cargo test -- --ignored 跑"]
     fn firered_real_model_transcribes() {
         let wav = match std::env::var("OCTOPUS_TEST_WAV") {
             Ok(p) if !p.is_empty() => p,
