@@ -8,8 +8,8 @@ include = ["src/**/*", "assets/words_common.txt"]
 octopus-infra = { path = "../infra" }
 octopus-paddle-ocr = { path = "../paddle-ocr" }
 parking_lot = { workspace = true }
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
-zxing-cpp = { version = "0.5", features = ["bundled", "image"] }
+zxing-cpp = { version = "0.5", features = ["bundled"] }
