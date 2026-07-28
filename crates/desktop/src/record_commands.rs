@@ -36,7 +36,7 @@ fn provider() -> impl HelperProvider {
     octopus_record::platform::provider()
 }
 
-/// ISO8601 UTC 时间戳（DB 里 created_at / deleted_at 统一格式）。
+/// ISO8601 UTC 时间戳（DB 里 created_at 统一格式）。
 fn now_iso() -> String {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
@@ -573,7 +573,7 @@ async fn stop_and_store_inner(
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        deleted_at: None,
+        is_deleted: false,
     };
 
     let meta_clone = meta.clone();
@@ -714,9 +714,8 @@ pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
         }
         with_db_blocking(move |conn| RecordStore::new(conn).delete_db_row(id)).await
     } else {
-        // 软删：仅打 deleted_at 时间戳，回收站可还原
-        let now = now_iso();
-        with_db_blocking(move |conn| RecordStore::new(conn).soft_delete(id, &now)).await
+        // 软删：仅打 is_deleted = 1，回收站可还原
+        with_db_blocking(move |conn| RecordStore::new(conn).soft_delete(id)).await
     }
 }
 
@@ -1126,7 +1125,7 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        deleted_at: None,
+        is_deleted: false,
     };
 
     with_db_blocking(move |conn| {

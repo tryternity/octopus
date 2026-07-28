@@ -72,7 +72,7 @@ export interface RecordingMeta {
   hasThumbnail: boolean;
   isFavorite: boolean;
   createdAt: string;
-  deletedAt: string | null;
+  isDeleted: boolean;
 }
 
 // merge_audio_tracks 命令的返回值（crates/desktop/src/record_commands.rs::MergeResult）。

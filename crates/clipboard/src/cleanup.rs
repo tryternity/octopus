@@ -50,14 +50,14 @@ fn delete_by_age(conn: &Connection, max_age_days: u32) -> Result<(usize, usize)>
     // 图片物理删
     let phys = conn.execute(
         "DELETE FROM clipboard_history
-         WHERE is_favorite = 0 AND item_type = 'image' AND deleted_at IS NULL
+         WHERE is_favorite = 0 AND item_type = 'image' AND is_deleted = 0
          AND created_at < datetime('now', ?)",
         [&age_clause],
     )?;
     // 文本软删
     let soft = conn.execute(
-        "UPDATE clipboard_history SET deleted_at = datetime('now')
-         WHERE is_favorite = 0 AND item_type != 'image' AND deleted_at IS NULL
+        "UPDATE clipboard_history SET is_deleted = 1
+         WHERE is_favorite = 0 AND item_type != 'image' AND is_deleted = 0
          AND created_at < datetime('now', ?)",
         [&age_clause],
     )?;
@@ -91,7 +91,7 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
     // 第一步：先永久删回收站最老的（物理 DELETE 腾空间）
     if excess > 0 {
         let trash_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0 AND deleted_at IS NOT NULL",
+            "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0 AND is_deleted = 1",
             [], |r| r.get(0),
         )?;
         if trash_count > 0 {
@@ -99,8 +99,8 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
             phys += conn.execute(
                 "DELETE FROM clipboard_history WHERE id IN (
                     SELECT id FROM clipboard_history
-                    WHERE is_favorite = 0 AND deleted_at IS NOT NULL
-                    ORDER BY deleted_at ASC LIMIT ?
+                    WHERE is_favorite = 0 AND is_deleted = 1
+                    ORDER BY created_at ASC LIMIT ?
                 )",
                 [to_delete],
             )?;
@@ -116,7 +116,7 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
             "DELETE FROM clipboard_history
              WHERE id IN (
                  SELECT id FROM clipboard_history
-                 WHERE is_favorite = 0 AND item_type = 'image' AND deleted_at IS NULL
+                 WHERE is_favorite = 0 AND item_type = 'image' AND is_deleted = 0
                  ORDER BY created_at ASC LIMIT ?
              )",
             [excess],
@@ -126,7 +126,7 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
             "DELETE FROM clipboard_history
              WHERE id IN (
                  SELECT id FROM clipboard_history
-                 WHERE is_favorite = 0 AND item_type != 'image' AND deleted_at IS NULL
+                 WHERE is_favorite = 0 AND item_type != 'image' AND is_deleted = 0
                  ORDER BY created_at ASC LIMIT ?
              )",
             [excess],

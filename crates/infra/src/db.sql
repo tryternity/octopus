@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     created_at      TEXT    NOT NULL,
     has_thumbnail   INTEGER NOT NULL DEFAULT 0,
     segments        TEXT,                      -- 段 JSON（仅 voice，段模型真相源）
-    deleted_at      TEXT DEFAULT NULL          -- 软删时间戳（v47）。NULL=活跃；非空=已进回收站。
-                                               -- 图片不软删（image_data 引用计数约束），deleted_at 对图片始终 NULL。
+    is_deleted      INTEGER NOT NULL DEFAULT 0 -- 软删标记（0=活跃；1=已进回收站）。与 vault_ciphers/folders 一致。
+                                               -- 图片不软删（image_data 引用计数约束），is_deleted 对图片始终 0。
                                                -- 热词挖掘 list_recent_text 故意不过滤此列——软删内容仍是热词来源（INV-C1）。
 );
 
@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_clip_created   ON clipboard_history(created_at DE
 CREATE INDEX IF NOT EXISTS idx_clip_type      ON clipboard_history(item_type);
 CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
-CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(is_deleted) WHERE is_deleted = 1;
 
 -- ── 图片 BLOB 存储（image_data）─────────────────────────────────────────────
 -- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。
@@ -311,12 +311,12 @@ CREATE TABLE IF NOT EXISTS recordings (
     has_thumbnail     INTEGER NOT NULL DEFAULT 0,
     is_favorite       INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT    NOT NULL,
-    deleted_at        TEXT DEFAULT NULL
+    is_deleted        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_rec_created   ON recordings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rec_favorite  ON recordings(is_favorite);
-CREATE INDEX IF NOT EXISTS idx_rec_deleted   ON recordings(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_rec_deleted   ON recordings(is_deleted) WHERE is_deleted = 1;
 CREATE INDEX IF NOT EXISTS idx_rec_source    ON recordings(source_type);
 
 CREATE TABLE IF NOT EXISTS recordings_thumbnails (
