@@ -618,6 +618,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::merge_audio_tracks,
             #[cfg(target_os = "macos")]
+            record_commands::generate_subtitle,
+            #[cfg(target_os = "macos")]
+            record_commands::export_subtitle,
+            #[cfg(target_os = "macos")]
+            record_commands::get_subtitle,
+            #[cfg(target_os = "macos")]
             record_commands::check_ffmpeg,
             record_commands::get_record_status,
         ])

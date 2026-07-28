@@ -4,6 +4,7 @@
 //! ASR 调用由 desktop 编排层桥接（方案 B）——本模块只负责 mp4→PCM、cue 模型、SRT 格式化、选轨。
 
 use crate::audio_tracks::AudioTrackSource;
+use std::path::Path;
 use thiserror::Error;
 
 /// 一条字幕 cue（跨 Tauri 边界的 DTO，camelCase 序列化）。
@@ -134,6 +135,57 @@ pub fn select_track(
             .map(|t| (t.index as usize, AudioTrackSource::System))
             .ok_or(SubtitleError::NoSystemTrack),
     }
+}
+
+/// 用 ffmpeg 从 mp4 抽取指定音轨为 16k mono f32le PCM。
+///
+/// ffmpeg 调用形态：`ffmpeg -y -i <mp4> -map 0:a:<idx> -ar 16000 -ac 1 -f f32le pipe:1`
+/// 读 stdout → 每 4 字节一个 f32（little-endian）。
+///
+/// **同步 `std::process::Command`**：ffmpeg 跑几秒，会阻塞调用线程。调用方负责用
+/// `tokio::task::spawn_blocking` 包一层避免阻塞 tokio runtime（参考 desktop
+/// `generate_subtitle` 命令的实现）。
+///
+/// 不写单测（依赖外部 ffmpeg + 真实 mp4，归 e2e）。
+pub fn extract_audio_track_to_pcm(
+    mp4_path: &Path,
+    track_index: usize,
+    ffmpeg_path: &Path,
+) -> Result<Vec<f32>, SubtitleError> {
+    let output = std::process::Command::new(ffmpeg_path)
+        .arg("-y")
+        .arg("-i").arg(mp4_path)
+        .arg("-map").arg(format!("0:a:{}", track_index))
+        .arg("-ar").arg("16000")
+        .arg("-ac").arg("1")
+        .arg("-f").arg("f32le")
+        .arg("pipe:1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| SubtitleError::Ffmpeg(format!("spawn 失败: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SubtitleError::Ffmpeg(format!(
+            "退出码非 0: {}",
+            stderr.chars().take(500).collect::<String>()
+        )));
+    }
+
+    // f32le → Vec<f32>
+    let bytes = &output.stdout;
+    if bytes.len() % 4 != 0 {
+        return Err(SubtitleError::Decode(format!(
+            "PCM 字节数 {} 不是 4 的倍数",
+            bytes.len()
+        )));
+    }
+    let samples: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok(samples)
 }
 
 #[cfg(test)]

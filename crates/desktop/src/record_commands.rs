@@ -969,6 +969,25 @@ pub enum RecordTaskEvent {
         id: i64,
         error: String,
     },
+    #[serde(rename_all = "camelCase")]
+    SubtitleStarted {
+        id: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleProgress {
+        id: i64,
+        stage: octopus_record::SubtitleProgress,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleDone {
+        id: i64,
+        cue_count: usize,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleFailed {
+        id: i64,
+        error: String,
+    },
 }
 
 /// 把双轨录屏 mp4（mic + system）用 ffmpeg `amix` 合并成单轨，另存为新文件 + INSERT 新 DB 记录。
@@ -1151,6 +1170,225 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         new_id,
         file_path: file_path_str,
     })
+}
+
+// ── 字幕生成（P3）──────────────────────────────────────────────
+
+/// 生成字幕：选轨 → ffmpeg 抽 16k mono PCM → ASR 带时间戳转写 → cue + SRT → UPDATE DB。
+///
+/// **编排**（与 `merge_audio_tracks` 同模式，但 ASR 段为同步阻塞）：
+/// 1. emit `SubtitleStarted { id }`
+/// 2. 查 DB 拿 `RecordingMeta`
+/// 3. `select_track` 按 preference 选轨（Auto/Microphone/System）
+/// 4. emit `SubtitleProgress::ExtractingAudio { 10 }`
+/// 5. **`spawn_blocking`** 包 `extract_audio_track_to_pcm`（ffmpeg 跑数秒，避免阻塞 tokio runtime）
+/// 6. emit `SubtitleProgress::Recognizing { 40 }`
+/// 7. `engine_manager.active_engine()` 拿 `Arc<dyn OfflineAsrEngine>`
+/// 8. `transcribe_segments_with_timestamps` → `Vec<TimestampedSegment>`
+/// 9. emit `SubtitleProgress::Finalizing { 90 }`
+/// 10. 转 `SubtitleCue` + `generate_srt` + `SubtitleResult`
+/// 11. UPDATE DB（cues 序列化为 JSON 字符串）
+/// 12. emit `SubtitleDone { id, cue_count }`
+///
+/// **错误降级**：任一步失败 → emit `SubtitleFailed { id, error }` + 返回 Err。
+/// VAD 分段完全为空（无声）→ cues 为空 + srt_text=""（不报错，前端显示「无字幕」）。
+///
+/// **engine_manager 参数**：Tauri 2 要求 `State` 在前。`Arc<AsrEngineManager>` 在
+/// `main.rs:1051` 通过 `app.manage` 注入（与 `runtime_config.rs:348` 同模式）。
+///
+/// **model 名**：用 `octopus_asr_local::config::resolve_active_engine("asr")`（与
+/// `main.rs:980` 启动预热同模式），返回 `Result<ResolvedEngine>`，取 `.name`。
+#[command]
+pub async fn generate_subtitle(
+    app: AppHandle,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
+    id: i64,
+    track: Option<String>,
+) -> Result<octopus_record::SubtitleResult, String> {
+    // 内层 runner：返回 Result，外层 catch 后 emit SubtitleFailed。
+    // 这样所有失败路径统一走一处 emit，避免漏发。
+    match generate_subtitle_inner(&app, &engine_manager, id, track).await {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let _ = app.emit(
+                "record://task",
+                RecordTaskEvent::SubtitleFailed { id, error: e.clone() },
+            );
+            Err(e)
+        }
+    }
+}
+
+/// `generate_subtitle` 的实际编排（不带错误 emit，由外层统一处理）。
+async fn generate_subtitle_inner(
+    app: &AppHandle,
+    engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
+    id: i64,
+    track: Option<String>,
+) -> Result<octopus_record::SubtitleResult, String> {
+    use octopus_infra::paths::resolve_recording_path;
+
+    let _ = app.emit("record://task", RecordTaskEvent::SubtitleStarted { id });
+
+    // 1. 查 DB 拿 RecordingMeta（连同 file_path 一起，省去第二次查 DB）
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.get(id)?.ok_or(RecordError::NotFound(id))
+    })
+    .await?;
+
+    // 2. 解析 TrackPreference
+    let pref = match track.as_deref() {
+        Some("system") => octopus_record::TrackPreference::System,
+        Some("microphone") => octopus_record::TrackPreference::Microphone,
+        _ => octopus_record::TrackPreference::Auto,
+    };
+
+    // 3. 选轨
+    let (track_idx, track_used) =
+        octopus_record::select_track(&meta, pref).map_err(|e| e.to_string())?;
+
+    // 4. emit 进度：抽音轨
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::ExtractingAudio { percent: 10 },
+        },
+    );
+
+    // 5. ffmpeg 抽 PCM（spawn_blocking 包裹——ffmpeg 跑数秒，避免阻塞 tokio runtime）
+    let ffmpeg = find_ffmpeg().await?;
+    let input = resolve_recording_path(&meta.file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+    let mp4_path = input.clone();
+    let pcm = tokio::task::spawn_blocking(move || {
+        octopus_record::extract_audio_track_to_pcm(&mp4_path, track_idx, &ffmpeg)
+    })
+    .await
+    .map_err(|e| format!("extract join error: {e}"))?
+    .map_err(|e| e.to_string())?;
+
+    // 6. emit 进度：识别中
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::Recognizing { percent: 40 },
+        },
+    );
+
+    // 7. 拿 active engine（State 注入的 AsrEngineManager）+ PipelineConfig
+    let engine = engine_manager
+        .active_engine()
+        .map_err(|e| format!("获取 ASR 引擎失败: {e}"))?;
+    let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config("zh");
+
+    // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——但 engine.transcribe 内部已并发，
+    //    且通常总耗时 < ffmpeg；为简化暂不再 spawn_blocking，如发现卡 UI 再包）。
+    let timestamped =
+        octopus_asr_local::pipeline::transcribe_segments_with_timestamps(engine.as_ref(), &pcm, &cfg)
+            .map_err(|e| format!("ASR 失败: {e}"))?;
+
+    // 9. emit 进度：组装
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::Finalizing { percent: 90 },
+        },
+    );
+
+    // 10. 转 SubtitleCue + 生成 SRT
+    let cues: Vec<octopus_record::SubtitleCue> = timestamped
+        .into_iter()
+        .map(|t| octopus_record::SubtitleCue {
+            start_ms: t.start_ms,
+            end_ms: t.end_ms,
+            text: t.text,
+        })
+        .collect();
+    let model = octopus_asr_local::config::resolve_active_engine("asr")
+        .map(|r| r.name)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let srt_text = octopus_record::generate_srt(&cues);
+    let result = octopus_record::SubtitleResult {
+        cues: cues.clone(),
+        srt_text: srt_text.clone(),
+        model: model.clone(),
+        track_used,
+    };
+
+    // 11. UPDATE DB（cues 序列化为 JSON 字符串）
+    let cues_json = serde_json::to_string(&cues).map_err(|e| e.to_string())?;
+    with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.update_subtitle(id, &cues_json, &srt_text, &model)
+    })
+    .await?;
+
+    // 12. emit done（cues 为空也走 Done——VAD 无声属于「正常无字幕」，不是错误）
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleDone { id, cue_count: cues.len() },
+    );
+
+    Ok(result)
+}
+
+/// 导出 SRT 文件到指定路径。
+///
+/// 从 DB 读已生成的 `subtitle_srt` 文本 → 写文件。空 SRT（未生成）→ Err。
+#[command]
+pub async fn export_subtitle(id: i64, dest_path: String) -> Result<String, String> {
+    let srt = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
+        Ok::<_, RecordError>(meta.subtitle_srt.unwrap_or_default())
+    })
+    .await?;
+    if srt.is_empty() {
+        return Err("字幕未生成".into());
+    }
+    std::fs::write(&dest_path, &srt).map_err(|e| format!("写文件失败: {e}"))?;
+    Ok(dest_path)
+}
+
+/// 读取字幕（历史项展开时调）。None = 未生成。
+///
+/// 三字段（cues/srt/model）任一缺失视为未生成。`track_used` 仅用于前端 fallback 提示，
+/// 从 audio_tracks 第一条 source 推（真实 used track 未持久化，这里只是兜底）。
+#[command]
+pub async fn get_subtitle(
+    id: i64,
+) -> Result<Option<octopus_record::SubtitleResult>, String> {
+    with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = match store.get(id)? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+        match (meta.subtitle_cues, meta.subtitle_srt, meta.subtitle_model) {
+            (Some(cues), Some(srt), Some(model)) => {
+                // track_used 查 audio_tracks 第一条 source（仅前端 fallback 提示用）
+                let track_used = meta
+                    .audio_tracks
+                    .first()
+                    .map(|t| t.source)
+                    .unwrap_or(octopus_record::AudioTrackSource::Unknown);
+                Ok(Some(octopus_record::SubtitleResult {
+                    cues,
+                    srt_text: srt,
+                    model,
+                    track_used,
+                }))
+            }
+            _ => Ok(None),
+        }
+    })
+    .await
 }
 
 #[cfg(test)]

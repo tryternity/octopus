@@ -18,7 +18,7 @@ pub mod store;
 pub mod subtitle;
 pub use subtitle::{
     SubtitleCue, SubtitleResult, SubtitleProgress, TrackPreference, SubtitleError,
-    select_track, generate_srt,
+    select_track, generate_srt, extract_audio_track_to_pcm,
 };
 pub mod platform;
 
