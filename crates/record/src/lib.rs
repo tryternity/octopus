@@ -15,6 +15,12 @@ pub use protocol::*;
 pub mod session;
 pub use session::{RecordSession, SessionState, StartedInfo, StoppedInfo};
 pub mod store;
+pub mod subtitle;
+pub use subtitle::{
+    SubtitleCue, SubtitleResult, SubtitleProgress, TrackPreference, SubtitleError,
+    select_track, generate_srt, extract_audio_track_to_pcm,
+    next_srt_path, latest_srt_path, parse_srt,
+};
 pub mod platform;
 
 pub use error::{RecordError, RecordResult};

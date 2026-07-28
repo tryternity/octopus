@@ -573,7 +573,6 @@ async fn stop_and_store_inner(
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        is_deleted: false,
     };
 
     let meta_clone = meta.clone();
@@ -648,7 +647,6 @@ pub async fn record_kill(
 pub struct ListRecordingsParams {
     pub limit: u32,
     pub offset: u32,
-    pub include_deleted: bool,
     pub favorites_only: bool,
 }
 
@@ -657,7 +655,6 @@ impl From<ListRecordingsParams> for ListFilter {
         ListFilter {
             limit: p.limit,
             offset: p.offset,
-            include_deleted: p.include_deleted,
             favorites_only: p.favorites_only,
         }
     }
@@ -700,8 +697,10 @@ pub async fn toggle_recording_favorite(id: i64) -> Result<(), String> {
 pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
     use octopus_infra::paths::resolve_recording_path;
 
+    // permanent=true：物理删 DB 行 + 磁盘文件（含 .srt 字幕文件）
+    // permanent=false：仅删 DB 行（磁盘文件保留，下次启动 cleanup 孤儿清理会删）
     if permanent {
-        // 先查 meta 拿相对路径 → 删文件 → 删 DB 行（顺序避免删文件后 DB 失败留孤儿）
+        // 先查 meta 拿路径 → 删文件 + 关联 .srt → 删 DB 行（顺序避免删文件后 DB 失败留孤儿）
         let file_path = with_db_blocking(move |conn| {
             let store = RecordStore::new(conn);
             let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
@@ -712,16 +711,23 @@ pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
         if abs.exists() {
             std::fs::remove_file(&abs).map_err(|e| e.to_string())?;
         }
-        with_db_blocking(move |conn| RecordStore::new(conn).delete_db_row(id)).await
-    } else {
-        // 软删：仅打 is_deleted = 1，回收站可还原
-        with_db_blocking(move |conn| RecordStore::new(conn).soft_delete(id)).await
+        // 删关联的 .N.srt 字幕文件（与 mp4 同目录同名，所有版本）
+        if let Some(dir) = abs.parent() {
+            if let Some(stem) = abs.file_stem().and_then(|s| s.to_str()) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    // 匹配 <stem>.N.srt
+                    if name.starts_with(&format!("{}.", stem)) && name.ends_with(".srt") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            }
+        }
     }
-}
-
-#[command]
-pub async fn restore_recording(id: i64) -> Result<(), String> {
-    with_db_blocking(move |conn| RecordStore::new(conn).restore(id)).await
+    with_db_blocking(move |conn| RecordStore::new(conn).delete_db_row(id)).await
 }
 
 /// 用系统默认应用打开录屏文件（QuickTime Player）。
@@ -965,6 +971,25 @@ pub enum RecordTaskEvent {
         id: i64,
         error: String,
     },
+    #[serde(rename_all = "camelCase")]
+    SubtitleStarted {
+        id: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleProgress {
+        id: i64,
+        stage: octopus_record::SubtitleProgress,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleDone {
+        id: i64,
+        cue_count: usize,
+    },
+    #[serde(rename_all = "camelCase")]
+    SubtitleFailed {
+        id: i64,
+        error: String,
+    },
 }
 
 /// 把双轨录屏 mp4（mic + system）用 ffmpeg `amix` 合并成单轨，另存为新文件 + INSERT 新 DB 记录。
@@ -1125,7 +1150,6 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        is_deleted: false,
     };
 
     with_db_blocking(move |conn| {
@@ -1143,6 +1167,342 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         new_id,
         file_path: file_path_str,
     })
+}
+
+// ── 字幕生成（P3）──────────────────────────────────────────────
+
+/// 生成字幕：选轨 → ffmpeg 抽 16k mono PCM → ASR 带时间戳转写 → cue + SRT → UPDATE DB。
+///
+/// **编排**（与 `merge_audio_tracks` 同模式，但 ASR 段为同步阻塞）：
+/// 1. emit `SubtitleStarted { id }`
+/// 2. 查 DB 拿 `RecordingMeta`
+/// 3. `select_track` 按 preference 选轨（Auto/Microphone/System）
+/// 4. emit `SubtitleProgress::ExtractingAudio { 10 }`
+/// 5. **`spawn_blocking`** 包 `extract_audio_track_to_pcm`（ffmpeg 跑数秒，避免阻塞 tokio runtime）
+/// 6. emit `SubtitleProgress::Recognizing { 40 }`
+/// 7. `engine_manager.active_engine()` 拿 `Arc<dyn OfflineAsrEngine>`
+/// 8. `transcribe_segments_with_timestamps` → `Vec<TimestampedSegment>`
+/// 8.5. （可选）`polish=Some` 时 emit `Polishing { 50 }` + LLM 整段润色 + 文本回填
+/// 9. emit `SubtitleProgress::Finalizing { 90 }`
+/// 10. 转 `SubtitleCue` + `generate_srt` + `SubtitleResult`
+/// 11. UPDATE DB（cues 序列化为 JSON 字符串）
+/// 12. emit `SubtitleDone { id, cue_count }`
+///
+/// **错误降级**：任一步失败 → emit `SubtitleFailed { id, error }` + 返回 Err。
+/// VAD 分段完全为空（无声）→ cues 为空 + srt_text=""（不报错，前端显示「无字幕」）。
+///
+/// **engine_manager 参数**：Tauri 2 要求 `State` 在前。`Arc<AsrEngineManager>` 在
+/// `main.rs:1051` 通过 `app.manage` 注入（与 `runtime_config.rs:348` 同模式）。
+///
+/// **model 名**：用 `octopus_asr_local::config::resolve_active_engine("asr")`（与
+/// `main.rs:980` 启动预热同模式），返回 `Result<ResolvedEngine>`，取 `.name`。
+#[command]
+pub async fn generate_subtitle(
+    app: AppHandle,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
+    id: i64,
+    track: Option<String>,
+    polish: Option<crate::subtitle_polish::PolishOption>,
+) -> Result<octopus_record::SubtitleResult, String> {
+    // 内层 runner：返回 Result，外层 catch 后 emit SubtitleFailed。
+    // 这样所有失败路径统一走一处 emit，避免漏发。
+    match generate_subtitle_inner(&app, &engine_manager, id, track, polish).await {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let _ = app.emit(
+                "record://task",
+                RecordTaskEvent::SubtitleFailed { id, error: e.clone() },
+            );
+            Err(e)
+        }
+    }
+}
+
+/// `generate_subtitle` 的实际编排（不带错误 emit，由外层统一处理）。
+async fn generate_subtitle_inner(
+    app: &AppHandle,
+    engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
+    id: i64,
+    track: Option<String>,
+    polish: Option<crate::subtitle_polish::PolishOption>,
+) -> Result<octopus_record::SubtitleResult, String> {
+    use octopus_infra::paths::resolve_recording_path;
+
+    log::info!("[subtitle] generate_subtitle_inner 开始 id={}", id);
+    let _ = app.emit("record://task", RecordTaskEvent::SubtitleStarted { id });
+
+    // 1. 查 DB 拿 RecordingMeta（连同 file_path 一起，省去第二次查 DB）
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        store.get(id)?.ok_or(RecordError::NotFound(id))
+    })
+    .await?;
+    log::info!("[subtitle] step1 查 DB 完成 file_path={} audio_tracks={}",
+        meta.file_path, meta.audio_tracks.len());
+
+    // 2. 解析 TrackPreference
+    let pref = match track.as_deref() {
+        Some("system") => octopus_record::TrackPreference::System,
+        Some("microphone") => octopus_record::TrackPreference::Microphone,
+        _ => octopus_record::TrackPreference::Auto,
+    };
+
+    // 3. 选轨
+    let (track_idx, track_used) =
+        octopus_record::select_track(&meta, pref).map_err(|e| e.to_string())?;
+    log::info!("[subtitle] step3 选轨完成 track_idx={} track_used={:?}", track_idx, track_used);
+
+    // 4. emit 进度：抽音轨
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::ExtractingAudio { percent: 10 },
+        },
+    );
+
+    // 5. ffmpeg 抽 PCM（spawn_blocking 包裹——ffmpeg 跑数秒，避免阻塞 tokio runtime）
+    let ffmpeg = find_ffmpeg().await?;
+    let input = resolve_recording_path(&meta.file_path);
+    if !input.exists() {
+        return Err(format!("源文件不存在: {}", input.display()));
+    }
+    log::info!("[subtitle] step5 开始抽 PCM mp4={} ffmpeg={}", input.display(), ffmpeg.display());
+    let mp4_path_clone = input.clone();
+    let pcm = tokio::task::spawn_blocking(move || {
+        octopus_record::extract_audio_track_to_pcm(&mp4_path_clone, track_idx, &ffmpeg)
+    })
+    .await
+    .map_err(|e| format!("extract join error: {e}"))?
+    .map_err(|e| e.to_string())?;
+    log::info!("[subtitle] step5 抽 PCM 完成 samples={} ({:.1}s)", pcm.len(), pcm.len() as f64 / 16000.0);
+
+    // 6. emit 进度：识别中
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::Recognizing { percent: 40 },
+        },
+    );
+
+    // 7. 拿 active engine（State 注入的 AsrEngineManager）+ PipelineConfig
+    let engine = engine_manager
+        .active_engine()
+        .map_err(|e| format!("获取 ASR 引擎失败: {e}"))?;
+    log::info!("[subtitle] step7 拿到 active engine");
+    let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config("zh");
+
+    // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——但 engine.transcribe 内部已并发，
+    //    且通常总耗时 < ffmpeg；为简化暂不再 spawn_blocking，如发现卡 UI 再包）。
+    log::info!("[subtitle] step8 开始 ASR transcribe（这一步可能耗时几十秒）...");
+    let mut timestamped =
+        octopus_asr_local::pipeline::transcribe_segments_with_timestamps(engine.as_ref(), &pcm, &cfg)
+            .map_err(|e| format!("ASR 失败: {e}"))?;
+    log::info!("[subtitle] step8 ASR 完成 segments={}", timestamped.len());
+
+    // 8.5. LLM 润色（可选，polish=Some 时触发）
+    //     整段润色（保留 [[N]] 标记边界）→ 拆回 cue → 文本回填 timestamped（时间戳不变）。
+    //     失败降级（NoLlmConfig/Failed/FallbackRatio）走 polish_subtitle_cues 内部，
+    //     不会让整条字幕流程报错——润色失败 = 用 ASR 原文本 + 提示用户。
+    let polish_outcome_str: Option<String> = if let Some(polish_opt) = polish.as_ref() {
+        let _ = app.emit(
+            "record://task",
+            RecordTaskEvent::SubtitleProgress {
+                id,
+                stage: octopus_record::SubtitleProgress::Polishing { percent: 50 },
+            },
+        );
+        let texts: Vec<String> = timestamped.iter().map(|t| t.text.clone()).collect();
+        log::info!("[subtitle] step8.5 开始 LLM 润色 cues={}", texts.len());
+        let (polished_texts, outcome) =
+            crate::subtitle_polish::polish_subtitle_cues(texts, polish_opt, app).await;
+        // 文本回填（时间戳不变）；长度一定一致（polish_subtitle_cues 保证）
+        for (seg, new_text) in timestamped.iter_mut().zip(polished_texts) {
+            seg.text = new_text;
+        }
+        log::info!("[subtitle] step8.5 润色完成 outcome={:?}", outcome);
+        let outcome_str = match outcome {
+            crate::subtitle_polish::PolishOutcome::Skipped => None,
+            crate::subtitle_polish::PolishOutcome::Polished => Some("polished".into()),
+            crate::subtitle_polish::PolishOutcome::FallbackRatio => Some("fallbackRatio".into()),
+            crate::subtitle_polish::PolishOutcome::NoLlmConfig => Some("noLlmConfig".into()),
+            crate::subtitle_polish::PolishOutcome::Failed(msg) => Some(format!("failed:{msg}")),
+        };
+        outcome_str
+    } else {
+        None
+    };
+
+    // 9. emit 进度：组装
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleProgress {
+            id,
+            stage: octopus_record::SubtitleProgress::Finalizing { percent: 90 },
+        },
+    );
+
+    // 10. 转 SubtitleCue + 生成 SRT（文本取自 step8.5 润色后的 timestamped）
+    let cues: Vec<octopus_record::SubtitleCue> = timestamped
+        .into_iter()
+        .map(|t| octopus_record::SubtitleCue {
+            start_ms: t.start_ms,
+            end_ms: t.end_ms,
+            text: t.text,
+        })
+        .collect();
+    let model = octopus_asr_local::config::resolve_active_engine("asr")
+        .map(|r| r.name)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let srt_text = octopus_record::generate_srt(&cues);
+    let result = octopus_record::SubtitleResult {
+        cues: cues.clone(),
+        srt_text: srt_text.clone(),
+        model: model.clone(),
+        track_used,
+        polish_outcome: polish_outcome_str,
+    };
+
+    // 11. 写 SRT 文件到磁盘（v2：不存 DB，与 mp4 同目录同名 xxx.N.srt）
+    let srt_path = octopus_record::next_srt_path(&input);
+    log::info!("[subtitle] step11 写 SRT 文件 {} cues={}", srt_path.display(), cues.len());
+    std::fs::write(&srt_path, &srt_text)
+        .map_err(|e| format!("写 SRT 文件失败 {}: {e}", srt_path.display()))?;
+    log::info!("[subtitle] step11 SRT 文件写入完成");
+
+    // 12. emit done（cues 为空也走 Done——VAD 无声属于「正常无字幕」，不是错误）
+    let _ = app.emit(
+        "record://task",
+        RecordTaskEvent::SubtitleDone { id, cue_count: cues.len() },
+    );
+    log::info!("[subtitle] step12 emit Done 完成，函数即将返回");
+
+    Ok(result)
+}
+
+/// 导出 SRT 文件到指定路径。
+///
+/// 读取最新字幕（v2：从磁盘 .srt 文件解析，不查 DB）。
+///
+/// 扫描 mp4 同目录的 `<stem>.N.srt`，取 N 最大的（最新版本）→ 解析为 SubtitleResult。
+/// 不存在 → None（前端显示「生成字幕」按钮）。
+/// `track_used` 从 audio_tracks 第一条 source 推（仅前端 fallback 提示用）。
+#[command]
+pub async fn read_subtitle(
+    id: i64,
+) -> Result<Option<octopus_record::SubtitleResult>, String> {
+    // 查 DB 拿 file_path + audio_tracks（用于解析 mp4 路径 + track_used 推断）
+    let meta_opt: Option<octopus_record::RecordingMeta> = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        Ok(store.get(id)?)
+    })
+    .await?;
+    let meta = match meta_opt {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let mp4 = octopus_infra::paths::resolve_recording_path(&meta.file_path);
+    let srt_path = match octopus_record::latest_srt_path(&mp4) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let srt_text = std::fs::read_to_string(&srt_path)
+        .map_err(|e| format!("读 SRT 文件失败 {}: {e}", srt_path.display()))?;
+    let cues = octopus_record::parse_srt(&srt_text);
+    let track_used = meta
+        .audio_tracks
+        .first()
+        .map(|t| t.source)
+        .unwrap_or(octopus_record::AudioTrackSource::Unknown);
+    // model 字段用 srt 文件名占位（v2 不再持久化 model 名——序号即版本）
+    let model = srt_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(Some(octopus_record::SubtitleResult {
+        cues,
+        srt_text,
+        model,
+        track_used,
+        polish_outcome: None,
+    }))
+}
+
+/// 在 Finder 显示录屏对应的最新 SRT 文件（v2：替代 export_subtitle）。
+///
+/// 找最新 .srt 文件，`open -R` 在 Finder 高亮。不存在 → Err。
+#[command]
+pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
+        Ok::<_, RecordError>(meta.file_path)
+    })
+    .await?;
+    let mp4 = octopus_infra::paths::resolve_recording_path(&meta);
+    let srt_path = octopus_record::latest_srt_path(&mp4)
+        .ok_or_else(|| "字幕未生成".to_string())?;
+    let status = tokio::process::Command::new("open")
+        .arg("-R")
+        .arg(&srt_path)
+        .status()
+        .await
+        .map_err(|e| format!("open -R 失败: {e}"))?;
+    if !status.success() {
+        return Err(format!("open -R 退出码非 0: {}", srt_path.display()));
+    }
+    Ok(srt_path.to_string_lossy().to_string())
+}
+
+// ── 字幕 LLM 润色：列出可用 LLM（弹框下拉填充）──────────────────
+
+/// LLM 下拉选项（前端弹「润色」对话框时填 select）。
+///
+/// - `key`：`{provider}:{model_name}`（如 `openai:gpt-4o`），传回 `generate_subtitle` 的
+///   `polish.llmKey` 字段（subtitle_polish 暂按默认 LLM 走，key 仅记录用户选择）。
+/// - `label`：`{model_name} ({Provider})`（如 `GPT-4o (Openai)`），provider 首字母大写。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmOption {
+    pub key: String,
+    pub label: String,
+}
+
+/// 列出可用 LLM（弹框下拉填充）。
+///
+/// 查 `models` 表 `domain='llm' AND is_available=1`（文件就绪/配置完整即列出，
+/// 不要求 is_enabled——用户可选用任一已配置的 LLM 润色）。
+/// 按 `model_name` 字母序排序，方便前端展示。
+#[command]
+pub async fn list_subtitle_llms() -> Result<Vec<LlmOption>, String> {
+    with_db_blocking(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT provider, model_name FROM models WHERE domain='llm' AND is_available=1 ORDER BY model_name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let provider: String = r.get(0)?;
+            let model_name: String = r.get(1)?;
+            let key = format!("{}:{}", provider, model_name);
+            let label = format!("{} ({})", model_name, capitalize(&provider));
+            Ok(LlmOption { key, label })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    })
+    .await
+}
+
+/// 首字母大写（用于 LLM label 的 provider 显示：`openai` → `Openai`）。
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

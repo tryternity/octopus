@@ -117,6 +117,25 @@ pub fn set_config(
         .map_err(|e| format!("写入 DB 失败: {e}"))?;
         return Ok(());
     }
+    // subtitle_* 配置项同 record_* 范式：不在 AppConfig struct，走 app_config 表的泛型
+    // key-value 存储（包括 subtitle_llm_polish_default / subtitle_polish_llm_key 等）。
+    // 后端读取用 load_config_key（参见 record_* 的 load_config_key 用法），不走 AppConfig struct。
+    if key.starts_with("subtitle_") {
+        let val_str = match &value {
+            Value::Bool(b) => b.to_string(),
+            Value::String(s) => s.clone(),
+            _ => value.to_string(),
+        };
+        octopus_infra::db::with_db(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
+                rusqlite::params![&key, &val_str],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| format!("写入 DB 失败: {e}"))?;
+        return Ok(());
+    }
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
         let g = rc.read();
         (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.clone())

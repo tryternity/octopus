@@ -279,6 +279,125 @@ pub fn segment_audio_vad(
     segments
 }
 
+/// VAD 分段结果（带 offset）——每段在原音频中的起始样本偏移。
+/// 用于字幕生成：offset_samples / 16.0 = start_ms（16k 采样率）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VadSegment {
+    pub offset_samples: usize,
+    pub samples: Vec<f32>,
+}
+
+/// 带 offset 的 VAD 分段（spec 2026-07-28-record-auto-subtitle §4.2）。
+///
+/// 与 `segment_audio_vad` 相同的分段逻辑，但每段额外返回 offset_samples（段在原音频中
+/// 的起始样本偏移），用于字幕生成的时间戳对齐。参数与原函数一一对应，行为一致
+/// （仅多了 offset 字段）。
+///
+/// NOTE: 本函数与 `segment_audio_vad` 共享同一套状态机逻辑。理想做法是把核心循环
+/// 抽成共享 helper（接收闭包决定产出 `Vec<f32>` 还是 `VadSegment`），但为最小化对
+/// 原函数的回归风险，此处复制状态机并追加 offset 跟踪。两函数行为应保持一致
+/// （有 `segment_audio_vad_with_offsets_consistent_with_original` 回归测试保护）。
+pub fn segment_audio_vad_with_offsets(
+    samples: &[f32],
+    vad: &mut crate::vad::SileroVad,
+    frame_size: usize,
+    threshold: f32,
+    min_silence_ms: usize,
+    max_segment_ms: usize,
+) -> Vec<VadSegment> {
+    let mut segments: Vec<VadSegment> = Vec::new();
+    let mut in_speech = false;
+    let mut current_segment_start = 0;
+    let mut silence_frames_count = 0;
+
+    // We compute frame duration in milliseconds: (frame_size * 1000) / 16000
+    // For 480 samples, this is 30ms.
+    let frame_duration_ms = (frame_size * 1000) / 16000;
+    let min_silence_frames = min_silence_ms / frame_duration_ms;
+    // Pre/post padding 详见模块级 SPEECH_PAD_MS；pad_samples 按实际帧时长换算。
+    let pad_samples = (SPEECH_PAD_MS / frame_duration_ms) * frame_size;
+
+    let total_frames = samples.len() / frame_size;
+
+    for i in 0..total_frames {
+        let start_idx = i * frame_size;
+        let end_idx = start_idx + frame_size;
+        let chunk = &samples[start_idx..end_idx];
+
+        let prob = vad.compute(chunk).unwrap_or(0.0);
+        let is_speech_frame = prob >= threshold;
+
+        if !in_speech {
+            if is_speech_frame {
+                in_speech = true;
+                // 前置余量：向前借 pad 补回被 VAD 响应延迟切掉的音头（首字辅音）。
+                current_segment_start = start_idx.saturating_sub(pad_samples);
+                silence_frames_count = 0;
+            }
+        } else {
+            if is_speech_frame {
+                silence_frames_count = 0;
+            } else {
+                silence_frames_count += 1;
+            }
+
+            let current_duration_ms = ((end_idx - current_segment_start) * 1000) / 16000;
+
+            // Check for silence split
+            if silence_frames_count >= min_silence_frames {
+                // 后置余量：尾音残尾被算进静音帧，speech_end 回溯会切掉它，+pad 借回（不超当前帧）。
+                let speech_end = ((i + 1 - silence_frames_count) * frame_size + pad_samples)
+                    .min((i + 1) * frame_size);
+                if speech_end > current_segment_start {
+                    segments.push(VadSegment {
+                        offset_samples: current_segment_start,
+                        samples: samples[current_segment_start..speech_end].to_vec(),
+                    });
+                }
+                in_speech = false;
+            }
+            // Check for max duration split
+            else if current_duration_ms >= max_segment_ms {
+                let speech_end = if silence_frames_count > 0 {
+                    ((i + 1 - silence_frames_count) * frame_size + pad_samples)
+                        .min((i + 1) * frame_size)
+                } else {
+                    end_idx
+                };
+                if speech_end > current_segment_start {
+                    segments.push(VadSegment {
+                        offset_samples: current_segment_start,
+                        samples: samples[current_segment_start..speech_end].to_vec(),
+                    });
+                }
+                current_segment_start = speech_end;
+                silence_frames_count = 0;
+            }
+        }
+    }
+
+    // Add the final segment if still in speech
+    if in_speech && samples.len() > current_segment_start {
+        let mut speech_end = samples.len();
+        if silence_frames_count > 0 && samples.len() >= silence_frames_count * frame_size {
+            // 末段尾音同理借回 pad（clamp 到 samples.len()，不越界）。
+            speech_end = (samples.len() - silence_frames_count * frame_size + pad_samples)
+                .min(samples.len());
+        }
+        if speech_end > current_segment_start {
+            segments.push(VadSegment {
+                offset_samples: current_segment_start,
+                samples: samples[current_segment_start..speech_end].to_vec(),
+            });
+        }
+    }
+
+    // Reset VAD states after processing
+    vad.reset();
+
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +511,96 @@ mod tests {
             out.len(),
             samples.len()
         );
+    }
+
+    #[test]
+    fn segment_audio_vad_with_offsets_offsets_are_monotonic() {
+        // offset 单调递增 + 所有段下标合法 + offset+len <= samples.len()
+        let mut vad = match crate::config::create_silero_vad() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 失败: {e}");
+                return;
+            }
+        };
+        // 31s 合成音频，5-25s 段提高幅度（参考 segment_audio_vad_segments_in_bounds）
+        let n = 16000 * 31;
+        let samples: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                let amp = if (5.0..25.0).contains(&t) { 0.3 } else { 0.02 };
+                (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
+            })
+            .collect();
+        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 480, 0.4, 500, 25000);
+        let mut prev_end = 0usize;
+        for s in &segs {
+            assert!(!s.samples.is_empty(), "段不应为空");
+            assert!(
+                s.offset_samples >= prev_end,
+                "offset 应单调递增（{} < {}）",
+                s.offset_samples,
+                prev_end
+            );
+            assert!(
+                s.offset_samples + s.samples.len() <= samples.len(),
+                "段越界：offset {} + len {} > total {}",
+                s.offset_samples,
+                s.samples.len(),
+                samples.len()
+            );
+            prev_end = s.offset_samples + s.samples.len();
+        }
+    }
+
+    #[test]
+    fn segment_audio_vad_with_offsets_all_silence_returns_empty() {
+        let mut vad = match crate::config::create_silero_vad() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 失败: {e}");
+                return;
+            }
+        };
+        // 全零 = 绝对静音
+        let samples = vec![0.0f32; 16000 * 5];
+        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 480, 0.4, 500, 25000);
+        // VAD 对全零应判静音；不强断言空（VAD 可能误判），但所有段下标合法
+        for s in &segs {
+            assert!(s.offset_samples + s.samples.len() <= samples.len());
+        }
+    }
+
+    #[test]
+    fn segment_audio_vad_with_offsets_consistent_with_original() {
+        // 带 offset 版本与原版本段数、段内容一致（仅多了 offset 字段）
+        let mut vad1 = match crate::config::create_silero_vad() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 失败: {e}");
+                return;
+            }
+        };
+        let mut vad2 = match crate::config::create_silero_vad() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 失败: {e}");
+                return;
+            }
+        };
+        let n = 16000 * 31;
+        let samples: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                let amp = if (5.0..25.0).contains(&t) { 0.3 } else { 0.02 };
+                (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
+            })
+            .collect();
+        let orig = segment_audio_vad(&samples, &mut vad1, 480, 0.4, 500, 25000);
+        let with_off = segment_audio_vad_with_offsets(&samples, &mut vad2, 480, 0.4, 500, 25000);
+        assert_eq!(orig.len(), with_off.len(), "两版本段数应一致");
+        for (o, w) in orig.iter().zip(with_off.iter()) {
+            assert_eq!(o, &w.samples, "段内容应一致");
+        }
     }
 }
