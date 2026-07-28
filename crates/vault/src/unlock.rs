@@ -73,7 +73,10 @@ pub fn setup_vault(password: Zeroizing<String>) -> Result<UnlockedKeys> {
     // kdf_salt 是公开值（存 vault_meta.kdf_salt），残留无害——但 random_32 现统一
     // 返 Zeroizing<[u8;32]> 表达「敏感随机数据」语义。借用时用 &* 解引用。
     let kdf_salt = random_32();
+    #[cfg(not(test))]
     let params = Argon2Params::default();
+    #[cfg(test)]
+    let params = Argon2Params::test_params();
     let master_root_key = derive_master_root_key(password.as_bytes(), &*kdf_salt, &params)?;
 
     // 派生 user_vault_key / app_key

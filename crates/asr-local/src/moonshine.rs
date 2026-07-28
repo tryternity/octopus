@@ -285,6 +285,7 @@ mod tests {
 
     /// 验证 tokens.txt 解析：vocab 大小 32768，特殊 token 在正确位置。
     #[test]
+    #[ignore = "real-model: 需 DB moonshine-base-en 引擎 + tokens.txt，cargo test -- --ignored 跑"]
     fn test_load_tokens() {
         let cfg = config::load_config().expect("load_config 失败");
         let entry = match config::pick_entry(&cfg, config::EngineCategory::Moonshine, "moonshine-base-en") {
@@ -304,6 +305,7 @@ mod tests {
 
     /// 真实模型端到端测试：加载 Moonshine base 模型，识别 test_wavs 中的 wav 文件。
     #[test]
+    #[ignore = "real-model: 需 DB 引擎 + 模型缓存，cargo test -- --ignored 跑"]
     fn test_moonshine_base_real_model() {
         let cfg = config::load_config().expect("load_config 失败");
         let entry = match config::pick_entry(&cfg, config::EngineCategory::Moonshine, "moonshine-base-en") {

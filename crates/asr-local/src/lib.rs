@@ -26,6 +26,9 @@ pub mod moonshine;
 pub mod zipformer;
 pub mod corrector;
 pub mod hans;
+
+#[cfg(test)]
+pub(crate) mod test_helpers;
 pub mod itn;
 pub mod hotword;
 pub mod miner;

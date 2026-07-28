@@ -158,6 +158,24 @@ impl Argon2Params {
             meta.kdf_parallelism,
         )
     }
+
+    /// 测试专用弱 KDF 参数（argon2 派生从 ~0.4s/次 → <1ms/次）。
+    ///
+    /// memory_kib=8 是 `from_i64` 的崩溃级下限（argon2 crate 要求 ≥8），
+    /// iterations=1 / parallelism=1 最小化计算。**仅用于 `#[cfg(test)]`**——
+    /// 生产代码必须用 [`Default`]（64 MiB / 3 iterations / 4 parallelism）。
+    ///
+    /// 安全性：弱参数通过 `from_i64`（本地 DB 可信路径），但**不通过 `from_i64_strict`**
+    /// （memory_kib < 16384）。sync engine 的 `resolve_with_remote` 走 strict 路径，
+    /// 不会被测试的弱参数污染（unlock 测试用 local DB，不经 remote sync）。
+    #[cfg(test)]
+    pub(crate) fn test_params() -> Self {
+        Self {
+            iterations: 1,
+            memory_kib: 8,
+            parallelism: 1,
+        }
+    }
 }
 
 /// 从 master_password + 32B salt 派生 master_root_key。
@@ -209,9 +227,9 @@ mod tests {
 
     #[test]
     fn test_kdf_deterministic() {
-        // 同 password + salt + params → 同 master_root_key
+        // 同 password + salt + params → 同 master_root_key（用 test_params 加速）
         let salt = [42u8; 32];
-        let p = Argon2Params::default();
+        let p = Argon2Params::test_params();
         let k1 = derive_master_root_key(b"my-password", &salt, &p).unwrap();
         let k2 = derive_master_root_key(b"my-password", &salt, &p).unwrap();
         assert_eq!(k1.as_bytes(), k2.as_bytes());
@@ -220,7 +238,7 @@ mod tests {
     #[test]
     fn test_different_password_different_key() {
         let salt = [42u8; 32];
-        let p = Argon2Params::default();
+        let p = Argon2Params::test_params();
         let k1 = derive_master_root_key(b"password1", &salt, &p).unwrap();
         let k2 = derive_master_root_key(b"password2", &salt, &p).unwrap();
         assert_ne!(k1.as_bytes(), k2.as_bytes());
@@ -230,7 +248,7 @@ mod tests {
     fn test_different_salt_different_key() {
         let s1 = [1u8; 32];
         let s2 = [2u8; 32];
-        let p = Argon2Params::default();
+        let p = Argon2Params::test_params();
         let k1 = derive_master_root_key(b"same-pwd", &s1, &p).unwrap();
         let k2 = derive_master_root_key(b"same-pwd", &s2, &p).unwrap();
         assert_ne!(k1.as_bytes(), k2.as_bytes());
@@ -238,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_invalid_salt_length() {
-        let p = Argon2Params::default();
+        let p = Argon2Params::test_params();
         let result = derive_master_root_key(b"pwd", &[0u8; 16], &p);
         assert!(result.is_err());
     }

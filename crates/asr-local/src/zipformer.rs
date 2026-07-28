@@ -1259,6 +1259,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::hf_snapshot;
     use crate::engine::OfflineAsrEngine;
 
     /// BBPE_TABLE 应对 byte 0-255 全部显式映射。decode_byte_bpe 的 len()==1 兜底
@@ -1281,21 +1282,6 @@ mod tests {
     #[test]
     fn decode_byte_bpe_handles_quote() {
         assert_eq!(decode_byte_bpe("\"", false), "\"");
-    }
-
-    /// 动态查找 HF cache 中的 snapshot 目录（不依赖特定 hash）。
-    fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
-        let base = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub")
-            .join(repo)
-            .join("snapshots");
-        if !base.is_dir() {
-            return None;
-        }
-        std::fs::read_dir(&base).ok()?.filter_map(|e| e.ok()).find_map(|e| {
-            let p = e.path();
-            if p.is_dir() { Some(p) } else { None }
-        })
     }
 
     #[test]

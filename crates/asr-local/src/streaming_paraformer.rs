@@ -896,6 +896,7 @@ mod tests {
     /// 流式 Paraformer 集成测试 — 用真实模型验证识别质量。
     /// 此测试用于诊断"字重复/乱码"类问题。
     #[test]
+    #[ignore = "real-model: 需 HF 模型缓存，cargo test -- --ignored 跑"]
     fn test_streaming_paraformer_real_model() {
         let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
         let test_wavs = match hf_snapshot(repo) {
@@ -955,6 +956,7 @@ mod tests {
     /// 必须清除它，否则 Paraformer 流式不 reset（累积上下文）会导致后续 compute_new_fbank_frames
     /// 持续走零 padding 收尾分支 → 帧边界越界零填充 → 特征错乱 → 识别错乱 / 丢字 / 大量重复字。
     #[test]
+    #[ignore = "real-model: 需 HF 模型缓存，cargo test -- --ignored 跑"]
     fn test_accept_samples_clears_input_finished_after_flush() {
         let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
         let test_wavs = match hf_snapshot(repo) {
@@ -1006,6 +1008,7 @@ mod tests {
     /// 后不再算新帧 → 识别停滞（用户症状：开头几词后停住）。`test_streaming_paraformer_real_model`
     /// 只断言「文本非空」故漏检（开头几词即非空）。本测试直接断言连续 accept 后 fbank 帧持续增长。
     #[test]
+    #[ignore = "real-model: 需 DB paraformer-bilingual 引擎 + HF 模型缓存，cargo test -- --ignored 跑"]
     fn test_no_drain_stall_continuous_accept_grows_fbank() {
         let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
         let test_wavs = match hf_snapshot(repo) {
@@ -1050,6 +1053,7 @@ mod tests {
     /// 注意：离线用的是 paraformer-zh（非流式模型），和流式模型不同，
     /// 但可以验证 fbank/LFR 基础设施是否正确。
     #[test]
+    #[ignore = "real-model: 需 HF 模型缓存，cargo test -- --ignored 跑"]
     fn test_offline_paraformer_real_model() {
         let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
         let test_wavs = match hf_snapshot(repo) {
