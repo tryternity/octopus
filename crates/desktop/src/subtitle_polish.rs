@@ -4,9 +4,9 @@
 //! record/asr-local 不依赖 octopus-llm，润色逻辑集中在 desktop。
 //!
 //! 设计详见 `docs/superpowers/specs/2026-07-28-subtitle-llm-polish-design.md`。
-// 模块整体在 Task 1.x 阶段尚未被 generate_subtitle 命令消费（Phase 2 接入），
-// 期间 pub 项在 bin crate 内会触发 dead_code；Phase 2 接入后此 allow 可移除。
-#![allow(dead_code)]
+//!
+//! Phase 2 起被 `record_commands::generate_subtitle` 接入消费——所有 pub 项已被引用，
+//! 不再需要 `#![allow(dead_code)]`（Phase 1 review 提醒移除）。
 
 /// 标记格式常量。LLM 输出须用 [[N]] 包裹每条 cue（N 从 1 递增）。
 const CUE_MARKER_OPEN: &str = "[[";

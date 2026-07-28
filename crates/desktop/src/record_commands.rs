@@ -1177,6 +1177,7 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
 /// 6. emit `SubtitleProgress::Recognizing { 40 }`
 /// 7. `engine_manager.active_engine()` 拿 `Arc<dyn OfflineAsrEngine>`
 /// 8. `transcribe_segments_with_timestamps` → `Vec<TimestampedSegment>`
+/// 8.5. （可选）`polish=Some` 时 emit `Polishing { 50 }` + LLM 整段润色 + 文本回填
 /// 9. emit `SubtitleProgress::Finalizing { 90 }`
 /// 10. 转 `SubtitleCue` + `generate_srt` + `SubtitleResult`
 /// 11. UPDATE DB（cues 序列化为 JSON 字符串）
@@ -1196,10 +1197,11 @@ pub async fn generate_subtitle(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     id: i64,
     track: Option<String>,
+    polish: Option<crate::subtitle_polish::PolishOption>,
 ) -> Result<octopus_record::SubtitleResult, String> {
     // 内层 runner：返回 Result，外层 catch 后 emit SubtitleFailed。
     // 这样所有失败路径统一走一处 emit，避免漏发。
-    match generate_subtitle_inner(&app, &engine_manager, id, track).await {
+    match generate_subtitle_inner(&app, &engine_manager, id, track, polish).await {
         Ok(r) => Ok(r),
         Err(e) => {
             let _ = app.emit(
@@ -1217,6 +1219,7 @@ async fn generate_subtitle_inner(
     engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
     id: i64,
     track: Option<String>,
+    polish: Option<crate::subtitle_polish::PolishOption>,
 ) -> Result<octopus_record::SubtitleResult, String> {
     use octopus_infra::paths::resolve_recording_path;
 
@@ -1288,10 +1291,43 @@ async fn generate_subtitle_inner(
     // 8. ASR 带时间戳转写（同步阻塞 CPU 密集——但 engine.transcribe 内部已并发，
     //    且通常总耗时 < ffmpeg；为简化暂不再 spawn_blocking，如发现卡 UI 再包）。
     log::info!("[subtitle] step8 开始 ASR transcribe（这一步可能耗时几十秒）...");
-    let timestamped =
+    let mut timestamped =
         octopus_asr_local::pipeline::transcribe_segments_with_timestamps(engine.as_ref(), &pcm, &cfg)
             .map_err(|e| format!("ASR 失败: {e}"))?;
     log::info!("[subtitle] step8 ASR 完成 segments={}", timestamped.len());
+
+    // 8.5. LLM 润色（可选，polish=Some 时触发）
+    //     整段润色（保留 [[N]] 标记边界）→ 拆回 cue → 文本回填 timestamped（时间戳不变）。
+    //     失败降级（NoLlmConfig/Failed/FallbackRatio）走 polish_subtitle_cues 内部，
+    //     不会让整条字幕流程报错——润色失败 = 用 ASR 原文本 + 提示用户。
+    let polish_outcome_str: Option<String> = if let Some(polish_opt) = polish.as_ref() {
+        let _ = app.emit(
+            "record://task",
+            RecordTaskEvent::SubtitleProgress {
+                id,
+                stage: octopus_record::SubtitleProgress::Polishing { percent: 50 },
+            },
+        );
+        let texts: Vec<String> = timestamped.iter().map(|t| t.text.clone()).collect();
+        log::info!("[subtitle] step8.5 开始 LLM 润色 cues={}", texts.len());
+        let (polished_texts, outcome) =
+            crate::subtitle_polish::polish_subtitle_cues(texts, polish_opt, app).await;
+        // 文本回填（时间戳不变）；长度一定一致（polish_subtitle_cues 保证）
+        for (seg, new_text) in timestamped.iter_mut().zip(polished_texts) {
+            seg.text = new_text;
+        }
+        log::info!("[subtitle] step8.5 润色完成 outcome={:?}", outcome);
+        let outcome_str = match outcome {
+            crate::subtitle_polish::PolishOutcome::Skipped => None,
+            crate::subtitle_polish::PolishOutcome::Polished => Some("polished".into()),
+            crate::subtitle_polish::PolishOutcome::FallbackRatio => Some("fallbackRatio".into()),
+            crate::subtitle_polish::PolishOutcome::NoLlmConfig => Some("noLlmConfig".into()),
+            crate::subtitle_polish::PolishOutcome::Failed(msg) => Some(format!("failed:{msg}")),
+        };
+        outcome_str
+    } else {
+        None
+    };
 
     // 9. emit 进度：组装
     let _ = app.emit(
@@ -1302,7 +1338,7 @@ async fn generate_subtitle_inner(
         },
     );
 
-    // 10. 转 SubtitleCue + 生成 SRT
+    // 10. 转 SubtitleCue + 生成 SRT（文本取自 step8.5 润色后的 timestamped）
     let cues: Vec<octopus_record::SubtitleCue> = timestamped
         .into_iter()
         .map(|t| octopus_record::SubtitleCue {
@@ -1320,6 +1356,7 @@ async fn generate_subtitle_inner(
         srt_text: srt_text.clone(),
         model: model.clone(),
         track_used,
+        polish_outcome: polish_outcome_str,
     };
 
     // 11. 写 SRT 文件到磁盘（v2：不存 DB，与 mp4 同目录同名 xxx.N.srt）
@@ -1383,6 +1420,7 @@ pub async fn read_subtitle(
         srt_text,
         model,
         track_used,
+        polish_outcome: None,
     }))
 }
 
@@ -1410,6 +1448,56 @@ pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
         return Err(format!("open -R 退出码非 0: {}", srt_path.display()));
     }
     Ok(srt_path.to_string_lossy().to_string())
+}
+
+// ── 字幕 LLM 润色：列出可用 LLM（弹框下拉填充）──────────────────
+
+/// LLM 下拉选项（前端弹「润色」对话框时填 select）。
+///
+/// - `key`：`{provider}:{model_name}`（如 `openai:gpt-4o`），传回 `generate_subtitle` 的
+///   `polish.llmKey` 字段（subtitle_polish 暂按默认 LLM 走，key 仅记录用户选择）。
+/// - `label`：`{model_name} ({Provider})`（如 `GPT-4o (Openai)`），provider 首字母大写。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmOption {
+    pub key: String,
+    pub label: String,
+}
+
+/// 列出可用 LLM（弹框下拉填充）。
+///
+/// 查 `models` 表 `domain='llm' AND is_available=1`（文件就绪/配置完整即列出，
+/// 不要求 is_enabled——用户可选用任一已配置的 LLM 润色）。
+/// 按 `model_name` 字母序排序，方便前端展示。
+#[command]
+pub async fn list_subtitle_llms() -> Result<Vec<LlmOption>, String> {
+    with_db_blocking(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT provider, model_name FROM models WHERE domain='llm' AND is_available=1 ORDER BY model_name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let provider: String = r.get(0)?;
+            let model_name: String = r.get(1)?;
+            let key = format!("{}:{}", provider, model_name);
+            let label = format!("{} ({})", model_name, capitalize(&provider));
+            Ok(LlmOption { key, label })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    })
+    .await
+}
+
+/// 首字母大写（用于 LLM label 的 provider 显示：`openai` → `Openai`）。
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

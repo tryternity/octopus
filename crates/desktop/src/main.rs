@@ -625,6 +625,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::reveal_subtitle,
             #[cfg(target_os = "macos")]
+            record_commands::list_subtitle_llms,
+            #[cfg(target_os = "macos")]
             record_commands::check_ffmpeg,
             record_commands::get_record_status,
         ])
