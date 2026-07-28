@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 /// outline 单条条目——uuid 对应的 md5 + 最后更新时间（毫秒）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct OutlineEntry {
     /// cipher/folder 逻辑内容的 md5（hex 32 字符），用于增量同步去重。
     pub md5: String,
@@ -28,6 +29,7 @@ pub struct OutlineEntry {
 
 /// outline.json 完整结构。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Outline {
     /// outline 格式版本（当前 1）。
     pub version: u32,

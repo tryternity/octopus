@@ -1494,6 +1494,7 @@ pub fn list_ocr_models() -> Result<Vec<OcrModelInfo>> {
 
 /// prompts 表记录（设置窗口 prompt 管理页用）。
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptRecord {
     pub id: i64,
     pub title: String,
@@ -2884,6 +2885,7 @@ pub fn finalize_transcription(
 
 /// 历史识别记录（设置窗口识别记录页用）。
 #[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptionRecord {
     pub id: i64,
     pub created_at: String,

@@ -15,7 +15,7 @@ use octopus_vault::generator::GeneratorConfig;
 use octopus_vault::health::HealthReport;
 use octopus_vault::importer::ImportReport;
 use octopus_vault::storage::FolderDto;
-use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, RepromptType};
+use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, Field, LoginData, RepromptType};
 
 use crate::autotype;
 use crate::runtime_config::SharedRuntimeConfig;
@@ -23,37 +23,20 @@ use crate::vault_error::{self, VaultError};
 use crate::vault_state::SharedVaultSession;
 
 // === DTO ===
+//
+// 仅保留 Cipher 相关 DTO（CipherDto / CipherInputDto / LoginDataDto / LoginUriDto /
+// FieldDto）——它们是 Phase 2/3 的真实 transformation（Cipher 内部用强类型 enum，
+// 前端用裸 i64），不在本次 DTO 消除范围。
+//
+// VaultStatusDto / TotpResultDto / PasswordStrengthDto / AutoTypeResultDto 已于
+// 2026-07-27 移除：要么返回内部类型（PasswordStrength），要么改为命令同文件内
+// 的局部 wire-format struct（VaultStatus / TotpResult / AutoTypeResult）。
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultStatusDto {
-    pub initialized: bool,
-    pub user_vault_unlocked: bool,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginUriDto {
-    pub uri: String,
-    pub match_type: Option<i64>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginDataDto {
-    pub uris: Vec<LoginUriDto>,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub totp: Option<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FieldDto {
-    pub name: String,
-    pub value: Option<String>,
-    pub field_type: i64,
-}
+// Phase 2（2026-07-28）：LoginUriDto/LoginDataDto/FieldDto 已删除——内部 struct
+// （LoginUri/LoginData/Field）已有 rename_all + alias，直接用于 CipherDto 字段类型。
+// MatchType 枚举有 #[serde(into = "i64", from = "i64")]，序列化为 i64，wire format
+// 与原 DTO（Option<i64>）一致。LoginData 多出的 passwordRevisionDate 字段对前端
+// 是 extra field（harmless）。
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -64,8 +47,8 @@ pub struct CipherDto {
     pub atype: i64,
     pub name: String,
     pub notes: Option<String>,
-    pub login: Option<LoginDataDto>,
-    pub fields: Vec<FieldDto>,
+    pub login: Option<LoginData>,
+    pub fields: Vec<Field>,
     pub reprompt: i64,
     pub is_deleted: bool,
     pub created_at: String,
@@ -79,16 +62,9 @@ pub struct CipherInputDto {
     pub favorite: bool,
     pub name: String,
     pub notes: Option<String>,
-    pub login: Option<LoginDataDto>,
-    pub fields: Vec<FieldDto>,
+    pub login: Option<LoginData>,
+    pub fields: Vec<Field>,
     pub reprompt: Option<i64>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TotpResultDto {
-    pub code: String,
-    pub seconds_remaining: u64,
 }
 
 // === AppState key 取用辅助 ===
@@ -129,27 +105,17 @@ pub(crate) fn require_app_key_from_session(
 }
 
 // === DTO ↔ Domain 转换 ===
+//
+// Phase 2（2026-07-28）：LoginDataDto/LoginUriDto/FieldDto 已删除。CipherDto 直接
+// 使用内部 LoginData/Field 类型（已有 rename_all + alias）。转换函数仍保留——
+// CipherDto 做真转换：CipherData enum 展平为 Option<LoginData> + enum→i64 + 丢字段。
+// 这个转换层有架构价值（wire shape 简化），不是 casing 冗余。
 
 fn cipher_to_dto(c: Cipher) -> CipherDto {
     // CipherData 当前仅 Login 单变体；保留 match 以便未来扩展 SecureNote/Card/Identity。
     #[allow(irrefutable_let_patterns)]
     let (login, atype) = match &c.data {
-        CipherData::Login(l) => (
-            Some(LoginDataDto {
-                uris: l
-                    .uris
-                    .iter()
-                    .map(|u| LoginUriDto {
-                        uri: u.uri.clone(),
-                        match_type: u.match_type.map(|m| m.into()),
-                    })
-                    .collect(),
-                username: l.username.clone(),
-                password: l.password.clone(),
-                totp: l.totp.clone(),
-            }),
-            1,
-        ),
+        CipherData::Login(l) => (Some(l.clone()), 1),
     };
     CipherDto {
         id: c.id.clone(),
@@ -159,15 +125,7 @@ fn cipher_to_dto(c: Cipher) -> CipherDto {
         name: c.name,
         notes: c.notes,
         login,
-        fields: c
-            .fields
-            .iter()
-            .map(|f| FieldDto {
-                name: f.name.clone(),
-                value: f.value.clone(),
-                field_type: f.field_type,
-            })
-            .collect(),
+        fields: c.fields.clone(),
         reprompt: c.reprompt.into(),
         is_deleted: c.is_deleted,
         created_at: c.created_at,
@@ -183,31 +141,8 @@ fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, VaultError> {
         atype: CipherType::Login,
         name: dto.name,
         notes: dto.notes,
-        data: CipherData::Login(octopus_vault::types::LoginData {
-            uris: login
-                .uris
-                .into_iter()
-                .map(|u| octopus_vault::types::LoginUri {
-                    uri: u.uri,
-                    match_type: u
-                        .match_type
-                        .and_then(|m| octopus_vault::types::MatchType::try_from(m).ok()),
-                })
-                .collect(),
-            username: login.username,
-            password: login.password,
-            totp: login.totp,
-            password_revision_date: None,
-        }),
-        fields: dto
-            .fields
-            .into_iter()
-            .map(|f| octopus_vault::types::Field {
-                name: f.name,
-                value: f.value,
-                field_type: f.field_type,
-            })
-            .collect(),
+        data: CipherData::Login(login),
+        fields: dto.fields,
         password_history: vec![],
         reprompt: dto
             .reprompt
@@ -218,16 +153,24 @@ fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, VaultError> {
 
 // === Tauri 命令 ===
 
+/// `vault_status` 命令返回值（前端调用方唯一消费点，故就近定义而非堆在 DTO 区）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultStatus {
+    pub initialized: bool,
+    pub user_vault_unlocked: bool,
+}
+
 #[tauri::command]
 pub fn vault_status(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-) -> Result<VaultStatusDto, String> {
+) -> Result<VaultStatus, String> {
     let timeout = config.read().vault_lock_timeout_secs;
     let initialized = octopus_vault::unlock::is_initialized().map_err(vault_error::to_tauri_error)?;
     // 用 write() 因为 is_user_vault_unlocked 超时会主动清零 key
     let user_vault_unlocked = state.write().is_user_vault_unlocked(timeout);
-    Ok(VaultStatusDto {
+    Ok(VaultStatus {
         initialized,
         user_vault_unlocked,
     })
@@ -601,24 +544,23 @@ pub fn vault_generate(cfg: GeneratorConfig) -> Result<String, String> {
 /// 避免每键都跑 zxcvbn（前端不打包 zxcvbn，统一走后端单点）。
 ///
 /// 不需要 user_vault_key——评估是纯计算，不接触 vault 数据。
+///
+/// 直接返回内部 `PasswordStrength`（已带 `rename_all = "camelCase"`，2026-07-27 DTO
+/// 消除：原 `PasswordStrengthDto` 仅暴露 score + entropy 是历史前端能力受限的产物，
+/// 现直接返回完整结构——多出的 `warning` / `suggestions` 字段对前端是可选增强，
+/// JSON 多字段不破坏现有契约）。
 #[cfg(feature = "vault")]
 #[tauri::command]
-pub fn vault_evaluate_password(password: String) -> PasswordStrengthDto {
-    let s = octopus_vault::health::strength::evaluate(&password);
-    PasswordStrengthDto {
-        score: s.score,
-        entropy_bits: s.entropy_bits,
-    }
+pub fn vault_evaluate_password(password: String) -> octopus_vault::health::strength::PasswordStrength {
+    octopus_vault::health::strength::evaluate(&password)
 }
 
-/// `vault_evaluate_password` 返回 DTO（仅暴露 score + entropy，前端强度条够用）。
-#[cfg(feature = "vault")]
+/// `vault_generate_totp` 命令返回值（前端调用方唯一消费点，就近定义）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PasswordStrengthDto {
-    /// zxcvbn 评分 0-4
-    pub score: u8,
-    pub entropy_bits: f64,
+pub struct TotpResult {
+    pub code: String,
+    pub seconds_remaining: u64,
 }
 
 #[tauri::command]
@@ -626,7 +568,7 @@ pub fn vault_generate_totp(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     cipher_id: String,
-) -> Result<TotpResultDto, String> {
+) -> Result<TotpResult, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
@@ -651,7 +593,7 @@ pub fn vault_generate_totp(
     let (code, seconds_remaining) = gen
         .current_with_remaining()
         .map_err(vault_error::to_tauri_error)?;
-    Ok(TotpResultDto {
+    Ok(TotpResult {
         code,
         seconds_remaining,
     })
@@ -714,9 +656,10 @@ pub fn vault_export(
 
 // === Auto-Type 命令（Task 19） ===
 
+/// `vault_autotype` 命令返回值（前端调用方唯一消费点，就近定义）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoTypeResultDto {
+pub struct AutoTypeResult {
     pub filled: bool,
     pub message: String,
     pub fallback_to_clipboard: bool,
@@ -736,7 +679,7 @@ pub fn vault_autotype(
     cipher_id: String,
     master_password: Option<String>,
     mode: Option<AutoTypeMode>,
-) -> Result<AutoTypeResultDto, String> {
+) -> Result<AutoTypeResult, String> {
     let mode = mode.unwrap_or_default();
     log::info!(
         "[vault-autotype] invoke 进入：cipher_id={}，reprompt_required={}，mode={:?}",
@@ -815,7 +758,7 @@ pub fn vault_autotype(
     match autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
         Ok(()) => {
             log::info!("[vault-autotype] autotype_login Ok（已填充，mode={:?}）", mode);
-            Ok(AutoTypeResultDto {
+            Ok(AutoTypeResult {
                 filled: true,
                 message: "已填充".into(),
                 fallback_to_clipboard: false,
@@ -827,7 +770,7 @@ pub fn vault_autotype(
             // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
             let _ = autotype::copy_concealed(&password);
-            Ok(AutoTypeResultDto {
+            Ok(AutoTypeResult {
                 filled: false,
                 message: VaultError::AutoTypeFailed.user_message().to_string(),
                 fallback_to_clipboard: true,
@@ -1250,16 +1193,17 @@ mod tests {
             favorite: false,
             name: "New Entry".into(),
             notes: None,
-            login: Some(LoginDataDto {
-                uris: vec![LoginUriDto {
+            login: Some(LoginData {
+                uris: vec![LoginUri {
                     uri: "https://test.com".into(),
-                    match_type: Some(0),
+                    match_type: MatchType::try_from(0).ok(),
                 }],
                 username: Some("u".into()),
                 password: Some("p".into()),
                 totp: None,
+                password_revision_date: None,
             }),
-            fields: vec![FieldDto {
+            fields: vec![Field {
                 name: "f".into(),
                 value: None,
                 field_type: 1,
@@ -1289,7 +1233,7 @@ mod tests {
         let login = dto.login.expect("login should be Some for Login cipher");
         assert_eq!(login.uris.len(), 1);
         assert_eq!(login.uris[0].uri, "https://example.com");
-        assert_eq!(login.uris[0].match_type, Some(0), "MatchType::Domain 应映射为 0");
+        assert_eq!(login.uris[0].match_type, Some(MatchType::Domain), "MatchType::Domain 应映射为 0");
         assert_eq!(login.username.as_deref(), Some("user1"));
         assert_eq!(login.password.as_deref(), Some("s3cret"));
         assert_eq!(login.totp.as_deref(), Some("JBSWY3DPEHPK3PXP"));
@@ -1451,8 +1395,8 @@ mod tests {
         let dto = cipher_to_dto(cipher);
         let login = dto.login.expect("login present");
         assert_eq!(login.uris.len(), 3);
-        assert_eq!(login.uris[0].match_type, Some(0), "Domain → 0");
-        assert_eq!(login.uris[1].match_type, Some(1), "Host → 1");
+        assert_eq!(login.uris[0].match_type, Some(MatchType::Domain), "Domain → 0");
+        assert_eq!(login.uris[1].match_type, Some(MatchType::Host), "Host → 1");
         assert_eq!(login.uris[2].match_type, None, "None 必须保持 None");
     }
 
@@ -1461,19 +1405,20 @@ mod tests {
     #[test]
     fn test_dto_to_input_preserves_all_match_types() {
         let mut dto = sample_input_dto();
-        dto.login = Some(LoginDataDto {
+        dto.login = Some(LoginData {
             uris: vec![
-                LoginUriDto { uri: "u0".into(), match_type: Some(0) }, // Domain
-                LoginUriDto { uri: "u1".into(), match_type: Some(1) }, // Host
-                LoginUriDto { uri: "u2".into(), match_type: Some(2) }, // StartsWith（Bitwarden 官方 2）
-                LoginUriDto { uri: "u3".into(), match_type: Some(3) }, // Exact（Bitwarden 官方 3）
-                LoginUriDto { uri: "u4".into(), match_type: Some(4) }, // RegularExpression
-                LoginUriDto { uri: "u5".into(), match_type: Some(5) }, // Never
-                LoginUriDto { uri: "u_none".into(), match_type: None },
+                LoginUri { uri: "u0".into(), match_type: MatchType::try_from(0).ok() }, // Domain
+                LoginUri { uri: "u1".into(), match_type: MatchType::try_from(1).ok() }, // Host
+                LoginUri { uri: "u2".into(), match_type: MatchType::try_from(2).ok() }, // StartsWith（Bitwarden 官方 2）
+                LoginUri { uri: "u3".into(), match_type: MatchType::try_from(3).ok() }, // Exact（Bitwarden 官方 3）
+                LoginUri { uri: "u4".into(), match_type: MatchType::try_from(4).ok() }, // RegularExpression
+                LoginUri { uri: "u5".into(), match_type: MatchType::try_from(5).ok() }, // Never
+                LoginUri { uri: "u_none".into(), match_type: None },
             ],
             username: None,
             password: None,
             totp: None,
+            password_revision_date: None,
         });
         let input = dto_to_input(dto).expect("convert");
         #[allow(irrefutable_let_patterns)]
@@ -1496,14 +1441,15 @@ mod tests {
     #[test]
     fn test_dto_to_input_invalid_match_type_falls_back_to_none() {
         let mut dto = sample_input_dto();
-        dto.login = Some(LoginDataDto {
+        dto.login = Some(LoginData {
             uris: vec![
-                LoginUriDto { uri: "valid".into(), match_type: Some(0) },
-                LoginUriDto { uri: "invalid".into(), match_type: Some(99) },
+                LoginUri { uri: "valid".into(), match_type: MatchType::try_from(0).ok() },
+                LoginUri { uri: "invalid".into(), match_type: MatchType::try_from(99).ok() },
             ],
             username: None,
             password: None,
             totp: None,
+            password_revision_date: None,
         });
         let input = dto_to_input(dto).expect("整条转换应成功（单 URI match_type 非法不影响整体）");
         #[allow(irrefutable_let_patterns)]

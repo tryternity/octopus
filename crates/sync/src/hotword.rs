@@ -72,6 +72,7 @@ pub fn hotword_set_md5_from_fields(name: &str, enabled: bool, words_text: &str) 
 
 /// 单个热词版本的文件内容（明文 JSON，不加密）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HotwordSetFile {
     /// 文件格式版本（当前 1）。
     pub version: u32,

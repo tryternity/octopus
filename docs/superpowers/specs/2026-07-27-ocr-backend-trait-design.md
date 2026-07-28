@@ -1,8 +1,21 @@
 # OCR Backend Trait 抽象设计
 
 > **日期**：2026-07-27
-> **状态**：设计阶段（待实现）
+> **状态**：✅ 已实现（2026-07-27；spec 状态 2026-07-28 补标）
 > **来源**：[竞品分析报告](../../research/2026-07-27-competitive-analysis.md) §2 OCR P0 缺口
+
+## 实现注记（2026-07-28 补标）
+
+已实现，代码结构与 spec 设计一致：
+
+| 组件 | 文件 | 说明 |
+|---|---|---|
+| `OcrBackend` trait | `crates/ocr/src/backend.rs` | 4 方法：recognize / provides_layout / use_word_segmentation / unload / name |
+| `PaddleOcrBackend` | `crates/ocr/src/paddle_backend.rs` | PP-OCR 实现（持有 RapidOcr 实例） |
+| `OcrEngine` | `crates/ocr/src/engine.rs` | `inner: Mutex<Option<Box<dyn OcrBackend>>>`（trait object） |
+| `new_backend` 工厂 | `engine.rs:100` | 当前固定路由 PaddleOcrBackend；注释标注未来按 source_type 分流 VLM |
+
+**未实现（未来扩展）**：VlmOcrBackend（云端 VLM OCR）——trait 已就绪，加新 backend 只需 impl OcrBackend + 在 new_backend 按 source_type 分流。
 
 ---
 

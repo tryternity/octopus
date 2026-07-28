@@ -1,6 +1,6 @@
 # casing 统一 Task 7: clipboard + RecordingMeta — 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-27，分支 `feat/record-followup`）。
+> **Status: ✅ 已实现**（2026-07-27，代码已完成；spec 状态 2026-07-28 补标）。
 >
 > **本 spec 范围**：clipboard crate（MetaInfo/FileEntry/ClipboardItem）+ RecordingMeta 加 `#[serde(rename_all = "camelCase")]`，前端同步改。需清库（MetaInfo 持久化到 DB）。
 >
@@ -10,7 +10,16 @@
 
 ## 实现注记（Implementation Notes）
 
-<!-- 待填 -->
+### 2026-07-27 实施完成
+
+| struct | 文件 | rename_all | 备注 |
+|---|---|---|---|
+| MetaInfo | `crates/clipboard/src/model.rs:40` | ✅ camelCase | 持久化到 DB meta_info 列，按全新库策略不兼容老数据 |
+| FileEntry | `crates/clipboard/src/model.rs:70` | ✅ camelCase | 字段级 `#[serde(rename = "type")]` 仍优先（file_type → "type"） |
+| ClipboardItem | `crates/clipboard/src/model.rs:78` | ✅ camelCase | DB 行映射 + 命令返回 DTO 双重身份 |
+| RecordingMeta | `crates/record/src/store.rs:19` | ✅ camelCase | 翻转 Task 4.1 的「故意不加」决策 |
+
+**ItemType enum 不动**（行 4 `rename_all = "snake_case"` 是变体名 text/voice/ocr/image/file，持久化到 DB item_type 列，改了破坏数据）。
 
 ---
 
