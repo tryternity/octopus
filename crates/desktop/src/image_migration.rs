@@ -53,11 +53,11 @@ pub fn migrate_images_to_db() {
                     Ok(img) => {
                         let w = img.width();
                         let h = img.height();
-                        match octopus_clipboard::image::encode_to_webp(&img) {
+                        match octopus_clipboard::image::encode_image(&img) {
                             Ok(encoded) => {
                                 let result = octopus_infra::db::with_db(|conn| {
                                     octopus_clipboard::store::insert_image_data(
-                                        conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
+                                        conn, &hash, &encoded.image_blob, &encoded.thumb_blob,
                                         w as i64, h as i64,
                                     )
                                 });

@@ -26,7 +26,7 @@ pub fn encode_and_hash(rgba: Vec<u8>, width: u32, height: u32) -> Result<(Vec<u8
 
 /// 编码结果：WebP 无损原图 + WebP 缩略图。
 pub struct EncodedImage {
-    pub webp_blob: Vec<u8>,
+    pub image_blob: Vec<u8>,
     pub thumb_blob: Vec<u8>,
 }
 
@@ -105,14 +105,14 @@ fn parse_image_fallbacks(s: &str) -> Vec<EncodeAttempt> {
 /// `load_from_memory` 解码，致「RGBA→PNG(编码)→RGBA(解码)→WebP(编码)」冗余；
 /// watcher / screenshot / migration 手里本就有解码好的图像，直接传入省一次 PNG 解码）。
 ///
-/// **函数名 `encode_to_webp` 历史遗留**：实际按 `consts::IMAGE_SAVE_QUALITY` 链编码，
+/// **函数名 `encode_image` 历史遗留**：实际按 `consts::IMAGE_SAVE_QUALITY` 链编码，
 /// 2026-07-20 后默认 `"jpeg:85;webp:80"` —— JPEG 优先（8.6x 快于 WebP lossy，体积翻倍可接受）。
 /// 返回 BLOB 可能是 JPEG 或 WebP（兜底），`image_data.blob` 字段不区分格式，前端用 MIME sniff。
 ///
 /// **编码链**：按 `consts::IMAGE_SAVE_QUALITY` 顺序尝试，首个成功即返回。
 /// 每次 WebP/JPEG 编码经 `catch_unwind` 兜底，防超大图编码 panic。返回的 BLOB 可能是
 /// WebP 或 JPEG（兜底产物），统一存入 `image_data.blob`。
-pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
+pub fn encode_image(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let rgba = img.to_rgba8();
     let w = rgba.width();
     let h = rgba.height();
@@ -126,7 +126,7 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
         log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), relying on fallback chain", w, h);
     }
 
-    let webp_blob = chain
+    let image_blob = chain
         .iter()
         .find_map(|attempt| {
             let blob = attempt.try_encode(img, &rgba);
@@ -155,7 +155,7 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
         .ok_or_else(|| anyhow::anyhow!("All thumb encoding failed for {}×{}", tw, th))?;
     log::info!("[clipboard] thumb encoded: {} bytes ({}×{})", thumb_blob.len(), tw, th);
 
-    Ok(EncodedImage { webp_blob, thumb_blob })
+    Ok(EncodedImage { image_blob, thumb_blob })
 }
 
 /// SHA-256 十六进制哈希。
@@ -193,18 +193,18 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_to_webp() {
+    fn test_encode_image() {
         let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
         let img = ::image::DynamicImage::ImageRgba8(
             ::image::RgbaImage::from_raw(2, 2, rgba).unwrap()
         );
-        let encoded = encode_to_webp(&img).unwrap();
-        assert!(!encoded.webp_blob.is_empty());
+        let encoded = encode_image(&img).unwrap();
+        assert!(!encoded.image_blob.is_empty());
         assert!(!encoded.thumb_blob.is_empty());
         // 主 blob 按 IMAGE_SAVE_QUALITY 链首个成功格式（默认 jpeg:85 → SOI magic [FF D8 FF]）
         // 缩略图按 THUMB_SAVE_QUALITY 链（默认 jpeg:10 → 也是 SOI magic）
         // 链可配置，不强制 magic；测试只验证非空 + 至少匹配已知 magic 之一
-        for blob in [&encoded.webp_blob, &encoded.thumb_blob] {
+        for blob in [&encoded.image_blob, &encoded.thumb_blob] {
             let head = &blob[..4];
             let is_jpeg = head.starts_with(&[0xFF, 0xD8, 0xFF]);
             let is_webp = head == b"RIFF";

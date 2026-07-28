@@ -21,7 +21,7 @@ pub const SEGMENT_DURATION_S: f64 = 20.0;
 /// 200ms ≈ 一个音节，给 ASR 引擎足够声学线索补全段首残字。原为 config 字段，因属实现细节改为常量。
 pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 
-/// 主图编码格式链：`<格式>:<质量>` 列表（`;` 分割），`clipboard::image::encode_to_webp` 按序尝试首个成功。
+/// 主图编码格式链：`<格式>:<质量>` 列表（`;` 分割），`clipboard::image::encode_image` 按序尝试首个成功。
 ///
 /// 2026-07-20 perf（基于 img-bench 实测，3176×1866 截图，release build）：
 ///

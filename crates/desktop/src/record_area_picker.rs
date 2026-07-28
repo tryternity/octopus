@@ -189,12 +189,22 @@ pub async fn confirm_record_area_picker(
     // 1. 拿窗口原点（Cocoa frame + Y 翻转，与 start_scroll_recording L937-948 完全一致）
     let primary_h = crate::screenshot_commands::get_primary_screen_height();
     let (win_origin_x, win_origin_y) = match crate::screenshot_commands::get_window_cocoa_frame(&sel_win) {
-        Some((cx, cy, _, ch)) => (cx, primary_h - (cy + ch)),
-        None => (0.0, 0.0),
+        Some((cx, cy, _, ch)) => {
+            let oy = primary_h - (cy + ch);
+            log::info!(
+                "[area-picker] cocoa_frame=({},{},{},{}) primary_h={} → win_origin=({},{})",
+                cx, cy, ch, ch, primary_h, cx, oy
+            );
+            (cx, oy)
+        }
+        None => {
+            log::warn!("[area-picker] get_window_cocoa_frame 失败，用 (0,0) 兜底");
+            (0.0, 0.0)
+        }
     };
-    log::debug!(
-        "[area-picker] win_origin=({},{}) sel_local=({},{},{},{})",
-        win_origin_x, win_origin_y, x, y, w, h
+    log::info!(
+        "[area-picker] sel_local=({},{},{},{}) → global=({},{})",
+        x, y, w, h, win_origin_x + x, win_origin_y + y
     );
 
     // 2. 选区全局化
@@ -217,7 +227,16 @@ pub async fn confirm_record_area_picker(
         .collect();
 
     // 4. 命中检测（选区中心点）
-    let mon_idx = find_monitor_for_point(&monitors, sel.x + w / 2.0, sel.y + h / 2.0)
+    let center_x = sel.x + w / 2.0;
+    let center_y = sel.y + h / 2.0;
+    log::info!(
+        "[area-picker] monitors: {}",
+        monitors.iter().enumerate()
+            .map(|(i, m)| format!("[{}]({},{},{},{},scale={})", i, m.x, m.y, m.w, m.h, m.scale))
+            .collect::<Vec<_>>().join(" ")
+    );
+    log::info!("[area-picker] 选区中心=({},{})", center_x, center_y);
+    let mon_idx = find_monitor_for_point(&monitors, center_x, center_y)
         .or_else(|| (!monitors.is_empty()).then_some(0));
     let mon_idx = match mon_idx {
         Some(idx) => idx,
@@ -228,7 +247,7 @@ pub async fn confirm_record_area_picker(
     let crop = compute_physical_crop(&sel, &monitors[mon_idx]);
 
     // 6. 查 display_id
-    let display_id = crate::screenshot_commands::active_display_for_point(sel.x + w / 2.0, sel.y + h / 2.0);
+    let display_id = crate::screenshot_commands::active_display_for_point(center_x, center_y);
     if display_id == 0 {
         return Err("无法确定选区所在的 display_id".into());
     }

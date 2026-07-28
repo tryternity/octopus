@@ -40,45 +40,52 @@ pub fn create_annotation_window(
         let _ = old.destroy();
     }
 
-    // 拿选区所在显示器（用 active_display_for_point 查 CGDirectDisplayID 对应的 Tauri monitor）
-    let monitors = app.available_monitors().unwrap_or_default();
-    let mon = monitors.iter().find(|m| {
-        // Tauri monitor.position() 是物理坐标；display_id 是 CGDirectDisplayID
-        // 用 bounds 命中更可靠，但 Tauri 没暴露 display_id 映射
-        // 简化：用 selection 的物理坐标 + scale 推逻辑位置匹配 monitor
-        let scale = m.scale_factor();
-        let mx = m.position().x as f64 / scale;
-        let my = m.position().y as f64 / scale;
-        let mw = m.size().width as f64 / scale;
-        let mh = m.size().height as f64 / scale;
-        // 选区左上角逻辑坐标
-        let sel_x_logical = mx + (x / scale);
-        let sel_y_logical = my + (y / scale);
-        sel_x_logical >= mx && sel_x_logical < mx + mw && sel_y_logical >= my && sel_y_logical < my + mh
-    }).or_else(|| monitors.first());
-
-    let mon = match mon {
-        Some(m) => m,
-        None => {
-            log::warn!("[annotation] 找不到选区所在显示器，不创建 overlay");
-            return Ok(());
-        }
+    // ⚠️ 用 display_id 直接查 CGDisplay::bounds()（2026-07-28 修复副屏 bug）。
+    // 之前用 Tauri monitor 坐标推断匹配——但 selection.x/y 是相对 display 的局部物理坐标，
+    // 加到每个 monitor.position() 后，主屏和副屏都可能匹配（find 返回第一个=主屏）→ overlay 建在主屏。
+    // 现在用 CGDisplay::new(display_id).bounds() 直接拿选区所在 display 的逻辑边界。
+    #[cfg(target_os = "macos")]
+    let (mon_x, mon_y, mon_w, mon_h, scale) = {
+        use core_graphics::display::CGDisplay;
+        let bounds = CGDisplay::new(display_id).bounds();
+        // CGDisplay::bounds() 返回逻辑 points（已含 scale，无需再除）。
+        // scale 从 Tauri monitor 匹配拿（bounds 不含 scale 信息）。
+        let monitors = app.available_monitors().unwrap_or_default();
+        let scale = monitors.iter()
+            .find(|m| {
+                let sf = m.scale_factor();
+                let mx = m.position().x as f64 / sf;
+                let my = m.position().y as f64 / sf;
+                // CGDisplay bounds.origin 是逻辑坐标，与 Tauri position（物理÷scale）一致
+                (bounds.origin.x - mx).abs() < 1.0 && (bounds.origin.y - my).abs() < 1.0
+            })
+            .map(|m| m.scale_factor())
+            .unwrap_or(2.0); // fallback Retina
+        (bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, scale)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (mon_x, mon_y, mon_w, mon_h, scale) = {
+        let monitors = app.available_monitors().unwrap_or_default();
+        let mon = monitors.first();
+        let scale = mon.map(|m| m.scale_factor()).unwrap_or(1.0);
+        let mon = mon.map(|m| {
+            (
+                m.position().x as f64 / scale,
+                m.position().y as f64 / scale,
+                m.size().width as f64 / scale,
+                m.size().height as f64 / scale,
+            )
+        }).unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+        (mon.0, mon.1, mon.2, mon.3, scale)
     };
 
-    let scale = mon.scale_factor();
     // 选区在屏幕上的全局逻辑位置（物理 → 逻辑 / scale）
-    let mon_x = mon.position().x as f64 / scale;
-    let mon_y = mon.position().y as f64 / scale;
-    let mon_w = mon.size().width as f64 / scale;
-    let mon_h = mon.size().height as f64 / scale;
-    let sel_global_x = mon_x + (x / scale);
-    let sel_global_y = mon_y + (y / scale);
-    let sel_logical_w = w / scale;
-    let sel_logical_h = h / scale;
+    let sel_global_x = mon_x + (x as f64 / scale);
+    let sel_global_y = mon_y + (y as f64 / scale);
+    let sel_logical_w = w as f64 / scale;
+    let sel_logical_h = h as f64 / scale;
 
     // 窗口 = 选区所在显示器全屏（与截图 Screenshot 同模式）。
-    // 这样工具栏用 position:fixed 渲染，不受选区宽度限制（窄选区也能完整显示工具栏）。
-    // Canvas 通过 CSS fixed 定位到选区位置（canvasRect.ox/oy），工具栏用 computeToolbarPosition 算位置。
     let win_x = mon_x;
     let win_y = mon_y;
     let win_w = mon_w;
@@ -86,8 +93,6 @@ pub fn create_annotation_window(
     // Canvas 在窗口内的偏移（选区相对显示器原点的逻辑坐标）
     let canvas_offset_x = sel_global_x - mon_x;
     let canvas_offset_y = sel_global_y - mon_y;
-    // 工具栏位置标识不再由后端算——前端用 computeToolbarPosition（与截图同算法）。
-    // 保留 toolbar 参数传 "auto" 标识新模式（前端据此用 computeToolbarPosition）。
     let toolbar_pos = "auto";
 
     log::info!(
