@@ -1276,7 +1276,10 @@ function SubtitlePanel({
             return (
               <button
                 key={i}
-                onClick={() => handleCopyCue(cue)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCopyCue(cue);
+                }}
                 className={cn(
                   "group/cue w-full flex items-start gap-2 px-1.5 py-1 rounded text-left transition-colors",
                   "hover:bg-accent",
@@ -1311,14 +1314,20 @@ function SubtitlePanel({
       {cueCount > 0 && (
         <div className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40">
           <button
-            onClick={onCopyAll}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopyAll();
+            }}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <Copy className="w-3 h-3" />
             {t("settings.recordings.subtitleCopyAll")}
           </button>
           <button
-            onClick={onExport}
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport();
+            }}
             className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <Download className="w-3 h-3" />
