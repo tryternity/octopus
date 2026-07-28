@@ -519,31 +519,43 @@ fn migrate_v51_to_v52(conn: &Connection) -> Result<()> {
 ///
 /// 用户确认可清库——直接删 deleted_at 列，不保留不兼容。
 fn migrate_v52_to_v53(conn: &Connection) -> Result<()> {
-    // vault_ciphers: 加 is_deleted + 迁移数据 + 删 deleted_at
+    // vault_ciphers: 加 is_deleted + 迁移数据
     let has_cipher_is_deleted = conn
         .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'is_deleted'")?
         .exists([])?;
     if !has_cipher_is_deleted {
         conn.execute("ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
-        // 迁移：deleted_at 有值 → is_deleted=1
+        // 迁移：deleted_at 有值 → is_deleted=1（deleted_at 此时一定存在）
         conn.execute("UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL", [])?;
-        // 删 deleted_at 列（SQLite 3.35+ 支持 DROP COLUMN）
-        conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
-        // 索引重建
-        conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
-        conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
-        log::info!("schema v53: vault_ciphers deleted_at → is_deleted");
+        log::info!("schema v53: vault_ciphers 加 is_deleted 列 + 迁移数据");
     }
+
+    // 删 deleted_at 列（独立于上面的幂等检查——可能上次跑了 ADD 但 DROP 没跑完）
+    // SQLite 3.35+ 支持 DROP COLUMN
+    let has_cipher_deleted_at = conn
+        .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'deleted_at'")?
+        .exists([])?;
+    if has_cipher_deleted_at {
+        conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
+        log::info!("schema v53: vault_ciphers 删 deleted_at 列");
+    }
+
+    // 索引重建（独立——可能旧索引残留）
+    conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
+    // 删旧索引（WHERE deleted_at IS NULL 版本）+ 建新索引（WHERE is_deleted = 0 版本）
+    conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
+
     // vault_folders: 加 is_deleted
     let has_folder_is_deleted = conn
         .prepare("SELECT 1 FROM pragma_table_info('vault_folders') WHERE name = 'is_deleted'")?
         .exists([])?;
     if !has_folder_is_deleted {
         conn.execute("ALTER TABLE vault_folders ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_folders_active ON vault_folders(sort_order) WHERE is_deleted = 0", [])?;
         log::info!("schema v53: vault_folders 加 is_deleted");
     }
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_folders_active ON vault_folders(sort_order) WHERE is_deleted = 0", [])?;
+
     conn.execute("PRAGMA user_version = 53", [])?;
     log::info!("schema upgraded to v53 (vault is_deleted)");
     Ok(())
@@ -563,10 +575,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
             .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recordings'")?
             .exists([])?;
         if !has_recordings {
-            log::warn!("schema v52+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
+            log::warn!("schema v53+ 但 recordings 表缺失（历史 migrate bug 残留），重跑 db.sql 自愈");
             conn.execute_batch(INIT_SQL)
                 .context("self-heal: execute_batch INIT_SQL for missing recordings table")?;
             log::info!("recordings 表自愈完成");
+        }
+        // v53 自愈：deleted_at 列可能残留（migration 第一次跑时 ADD 成功但 DROP 没跑完）
+        let has_vault_deleted_at = conn
+            .prepare("SELECT 1 FROM pragma_table_info('vault_ciphers') WHERE name = 'deleted_at'")?
+            .exists([])?;
+        if has_vault_deleted_at {
+            log::warn!("schema v53+ 但 vault_ciphers 仍有 deleted_at 列（migration 不完整残留），删除");
+            conn.execute("ALTER TABLE vault_ciphers DROP COLUMN deleted_at", [])?;
+            conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_deleted", [])?;
+            conn.execute("DROP INDEX IF EXISTS idx_vault_ciphers_favorite", [])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite ON vault_ciphers(favorite) WHERE is_deleted = 0", [])?;
+            log::info!("vault_ciphers deleted_at 列自愈删除完成");
         }
         return Ok(());
     }
