@@ -702,6 +702,24 @@ export default function RecordingPanel({
           />
         )}
 
+        {/* ── 字幕预览浮层（v2 改为 overlay，不再行内展开挤压布局）──
+            expandedSubtitleId 非 null 且对应字幕已加载时，居中浮层展示 cue 列表。
+            点遮罩 / Esc / ChevronDown 再次点击关闭。 */}
+        {expandedSubtitleId !== null &&
+          subtitleResults[expandedSubtitleId] && (
+            <SubtitlePanel
+              result={subtitleResults[expandedSubtitleId]}
+              error={subtitleError[expandedSubtitleId]}
+              onExport={() => onRevealSubtitle(expandedSubtitleId)}
+              onCopyCue={onCopyCue}
+              onCopyAll={() =>
+                onCopyAll(subtitleResults[expandedSubtitleId])
+              }
+              onClose={() => setExpandedSubtitleId(null)}
+              t={t}
+            />
+          )}
+
         {/* ── 列表 ── */}
         <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
           {records.length > 0 && (
@@ -1329,18 +1347,6 @@ function RecordingRow({
             </div>
           </div>
         )}
-
-      {/* ── 字幕预览面板（Task 4.2，展开态）── */}
-      {isSubtitleExpanded && subtitleResult && (
-        <SubtitlePanel
-          result={subtitleResult}
-          error={subtitleError}
-          onExport={() => onRevealSubtitle(rec.id)}
-          onCopyCue={onCopyCue}
-          onCopyAll={() => onCopyAll(subtitleResult)}
-          t={t}
-        />
-      )}
       </div>
     </div>
   );
@@ -1349,7 +1355,8 @@ function RecordingRow({
 // ── 字幕预览面板（Task 4.2）──────────────────────────────────────────
 //
 // 设计意图（frontend-design）：
-// 这不是一个浮层，而是行内的「展开抽屉」——和 RecordingRow 共享背景层（muted），
+// 这是浮层 overlay（v2 改造，原为行内展开抽屉——挤压布局已改浮层）。
+// fixed 全屏遮罩 + 居中卡片，不挤压 RecordingRow 布局。Esc / 点遮罩 / X 按钮关闭。
 // 视觉上像行「长出」了一块腹地。三段式纵向布局，每段一个职责：
 //
 //   ① 顶部 meta 条：cue 计数 + 模型名 + track 来源标签。等宽小字（text-[10px]），
@@ -1373,6 +1380,8 @@ interface SubtitlePanelProps {
   onExport: () => void;
   onCopyCue: (cue: SubtitleCue) => void;
   onCopyAll: () => void;
+  /** 关闭浮层（点遮罩/Esc/关闭按钮触发）。 */
+  onClose: () => void;
   t: (key: string, params?: Record<string, string | number>) => string;
 }
 
@@ -1382,6 +1391,7 @@ function SubtitlePanel({
   onExport,
   onCopyCue,
   onCopyAll,
+  onClose,
   t,
 }: SubtitlePanelProps) {
   // 最近一次成功复制的 cue 文本（用于行内 CopyCheck 反馈）。1.2s 后清。
@@ -1394,6 +1404,15 @@ function SubtitlePanel({
       if (copiedTimer.current) clearTimeout(copiedTimer.current);
     };
   }, []);
+
+  // Esc 关闭浮层（与 SubtitlePolishDialog 同模式）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const handleCopyCue = (cue: SubtitleCue) => {
     onCopyCue(cue);
@@ -1417,92 +1436,112 @@ function SubtitlePanel({
           : t("settings.recordings.subtitleTrackUnknown");
 
   return (
-    <div className="px-3 pb-2.5 pt-1 border-t border-border/60 bg-surface/40">
-      {/* ① fallback 提示（仅 system/merged/unknown 轨）—— 必须最先看到 */}
-      {isFallback && (
-        <div className="flex items-start gap-1.5 mb-2 px-2 py-1.5 rounded border-l-2 border-warning bg-warning/10 text-[10px] leading-relaxed text-foreground/80">
-          <Info className="w-3 h-3 mt-px flex-shrink-0 text-warning" />
-          <span>{t("settings.recordings.subtitleFallbackSystem")}</span>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl max-h-[80vh] mx-4 rounded-lg border border-border bg-surface shadow-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 标题栏：cue 计数 · 模型 · track 来源 · 关闭按钮 */}
+        <div className="flex items-center gap-1.5 px-4 py-2.5 border-b border-border/60 text-[10px] text-muted-foreground flex-wrap">
+          <span className="tabular-nums">
+            {t("settings.recordings.subtitleCount", { count: cueCount })}
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span className="font-mono-vault text-muted-foreground/80">{result.model}</span>
+          <span className="text-muted-foreground/40">·</span>
+          <span
+            className={cn(
+              "px-1.5 py-0.5 rounded font-medium",
+              result.trackUsed === "microphone"
+                ? "bg-success/10 text-success"
+                : "bg-warning/10 text-warning",
+            )}
+          >
+            {trackLabel}
+          </span>
+          <button
+            onClick={onClose}
+            className="ml-auto p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            title={t("settings.recordings.subtitleCollapse")}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
-      )}
 
-      {/* ① 行内错误（生成失败但缓存里有旧结果——理论上不应同时存在，兜底展示） */}
-      {error && !isFallback && (
-        <div className="flex items-start gap-1.5 mb-2 px-2 py-1.5 rounded border-l-2 border-destructive bg-destructive/10 text-[10px] leading-relaxed text-destructive">
-          <Info className="w-3 h-3 mt-px flex-shrink-0" />
-          <span className="break-all">{error}</span>
-        </div>
-      )}
+        {/* 提示区（fallback / error） */}
+        {(isFallback || (error && !isFallback)) && (
+          <div className="px-4 pt-2">
+            {isFallback && (
+              <div className="flex items-start gap-1.5 mb-1 px-2 py-1.5 rounded border-l-2 border-warning bg-warning/10 text-[10px] leading-relaxed text-foreground/80">
+                <Info className="w-3 h-3 mt-px flex-shrink-0 text-warning" />
+                <span>{t("settings.recordings.subtitleFallbackSystem")}</span>
+              </div>
+            )}
+            {error && !isFallback && (
+              <div className="flex items-start gap-1.5 mb-1 px-2 py-1.5 rounded border-l-2 border-destructive bg-destructive/10 text-[10px] leading-relaxed text-destructive">
+                <Info className="w-3 h-3 mt-px flex-shrink-0" />
+                <span className="break-all">{error}</span>
+              </div>
+            )}
+          </div>
+        )}
 
-      {/* ② meta 条：cue 计数 · 模型 · track 来源 */}
-      <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-muted-foreground flex-wrap">
-        <span className="tabular-nums">
-          {t("settings.recordings.subtitleCount", { count: cueCount })}
-        </span>
-        <span className="text-muted-foreground/40">·</span>
-        <span className="font-mono-vault text-muted-foreground/80">{result.model}</span>
-        <span className="text-muted-foreground/40">·</span>
-        <span
-          className={cn(
-            "px-1.5 py-0.5 rounded font-medium",
-            result.trackUsed === "microphone"
-              ? "bg-success/10 text-success"
-              : "bg-warning/10 text-warning",
-          )}
-        >
-          {trackLabel}
-        </span>
+        {/* cue 列表（flex-1 占满中间空间，可滚） */}
+
+      {/* cue 列表（flex-1 占满浮层中间，可滚，单击复制）—— 空 cues 走空状态 */}
+      <div className="flex-1 overflow-y-auto thin-scrollbar px-4 py-2">
+        {cueCount === 0 ? (
+          <div className="py-6 text-center text-[10px] text-muted-foreground">
+            {t("settings.recordings.subtitleEmpty")}
+          </div>
+        ) : (
+          <div className="space-y-px">
+            {result.cues.map((cue, i) => {
+              const isCopied = copiedText === cue.text;
+              return (
+                <button
+                  key={i}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCopyCue(cue);
+                  }}
+                  className={cn(
+                    "group/cue w-full flex items-start gap-2 px-1.5 py-1 rounded text-left transition-colors",
+                    "hover:bg-accent",
+                  )}
+                  title={t("settings.recordings.subtitleCopyCueHint")}
+                >
+                  {/* 等宽时间戳——脚本/字幕编辑器语汇。tabular-nums 保证位对齐。 */}
+                  <span className="flex-shrink-0 font-mono-vault text-[10px] tabular-nums text-muted-foreground/80 pt-px">
+                    <span>{formatMs(cue.startMs)}</span>
+                    <span className="mx-0.5 text-muted-foreground/40">→</span>
+                    <span>{formatMs(cue.endMs)}</span>
+                  </span>
+                  {/* cue 文本 */}
+                  <span className="flex-1 min-w-0 text-xs leading-relaxed text-foreground/90 break-words">
+                    {cue.text}
+                  </span>
+                  {/* 复制反馈图标——hover 露出 copy，复制成功切 CopyCheck 绿 */}
+                  <span className="flex-shrink-0 pt-px">
+                    {isCopied ? (
+                      <CopyCheck className="w-3 h-3 text-success" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-muted-foreground/40 opacity-0 group-hover/cue:opacity-100 transition-opacity" />
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* ② cue 列表（可滚，单击复制）—— 空 cues 走空状态邀请行动 */}
-      {cueCount === 0 ? (
-        <div className="py-3 text-center text-[10px] text-muted-foreground">
-          {t("settings.recordings.subtitleEmpty")}
-        </div>
-      ) : (
-        <div className="max-h-40 overflow-y-auto thin-scrollbar -mx-1 px-1 space-y-px">
-          {result.cues.map((cue, i) => {
-            const isCopied = copiedText === cue.text;
-            return (
-              <button
-                key={i}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleCopyCue(cue);
-                }}
-                className={cn(
-                  "group/cue w-full flex items-start gap-2 px-1.5 py-1 rounded text-left transition-colors",
-                  "hover:bg-accent",
-                )}
-                title={t("settings.recordings.subtitleCopyCueHint")}
-              >
-                {/* 等宽时间戳——脚本/字幕编辑器语汇。tabular-nums 保证位对齐。 */}
-                <span className="flex-shrink-0 font-mono-vault text-[10px] tabular-nums text-muted-foreground/80 pt-px">
-                  <span>{formatMs(cue.startMs)}</span>
-                  <span className="mx-0.5 text-muted-foreground/40">→</span>
-                  <span>{formatMs(cue.endMs)}</span>
-                </span>
-                {/* cue 文本 */}
-                <span className="flex-1 min-w-0 text-xs leading-relaxed text-foreground/90 break-words">
-                  {cue.text}
-                </span>
-                {/* 复制反馈图标——hover 露出 copy，复制成功切 CopyCheck 绿 */}
-                <span className="flex-shrink-0 pt-px">
-                  {isCopied ? (
-                    <CopyCheck className="w-3 h-3 text-success" />
-                  ) : (
-                    <Copy className="w-3 h-3 text-muted-foreground/40 opacity-0 group-hover/cue:opacity-100 transition-opacity" />
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* ③ 底部操作条：复制全部 + 导出 SRT（ghost 按钮，左对齐） */}
+      {/* 底部操作条：复制全部 + 在 Finder 显示（ghost 按钮） */}
       {cueCount > 0 && (
-        <div className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40">
+        <div className="flex items-center gap-1 px-4 py-2 border-t border-border/40">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1525,6 +1564,7 @@ function SubtitlePanel({
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }
