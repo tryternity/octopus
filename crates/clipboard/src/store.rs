@@ -100,7 +100,7 @@ pub fn touch_created_at(conn: &Connection, id: i64) -> Result<()> {
 
 // ── QUERY ──
 
-const SELECT_COLS: &str = "id, item_type, content, ref_data, meta_info, is_favorite, is_rich, created_at, has_thumbnail, segments, deleted_at";
+const SELECT_COLS: &str = "id, item_type, content, ref_data, meta_info, is_favorite, is_rich, created_at, has_thumbnail, segments, is_deleted";
 
 pub fn query_history(conn: &Connection, filter: &QueryFilter) -> Result<Vec<ClipboardItem>> {
     let limit = filter.size.max(1) as i64;
@@ -147,7 +147,7 @@ fn query_with_search(conn: &Connection, search: &str, extra_where: &str, limit: 
     }
     let phrase = format!("\"{}\"", search.replace('"', "\"\""));
     let sql = format!(
-        "SELECT c.id, c.item_type, c.content, c.ref_data, c.meta_info, c.is_favorite, c.is_rich, c.created_at, c.has_thumbnail, c.segments, c.deleted_at
+        "SELECT c.id, c.item_type, c.content, c.ref_data, c.meta_info, c.is_favorite, c.is_rich, c.created_at, c.has_thumbnail, c.segments, c.is_deleted
          FROM clipboard_history_fts f JOIN clipboard_history c ON c.id = f.rowid
          WHERE f.content MATCH ?{} ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?",
         if extra_where.is_empty() { String::new() } else { format!(" AND {}", extra_where) }
@@ -194,8 +194,8 @@ fn count_with_search(conn: &Connection, search: &str, extra_where: &str) -> Resu
 
 /// 把 QueryFilter.filter 翻译为 SQL WHERE 子句（不含 WHERE 关键字）。
 ///
-/// **INV-C4（回收站隔离）**：除 "trash" 外的所有 filter 都追加 `AND deleted_at IS NULL`，
-/// 确保软删内容只在回收站 tab 出现。"trash" 反向过滤 `deleted_at IS NOT NULL`。
+/// **INV-C4（回收站隔离）**：除 "trash" 外的所有 filter 都追加 `AND is_deleted = 0`，
+/// 确保软删内容只在回收站 tab 出现。"trash" 反向过滤 `is_deleted = 1`。
 fn build_where(filter: &QueryFilter) -> String {
     // 非 trash 的基础条件
     let base = match filter.filter.as_str() {
@@ -207,14 +207,14 @@ fn build_where(filter: &QueryFilter) -> String {
         "file" => "item_type = 'file'".to_string(),
         "favorite" => "is_favorite = 1".to_string(),
         "unfavorite" => "is_favorite = 0".to_string(),
-        "trash" => return "deleted_at IS NOT NULL".to_string(),
+        "trash" => return "is_deleted = 1".to_string(),
         _ => String::new(),
     };
-    // 追加 deleted_at IS NULL（INV-C4）
+    // 追加 is_deleted = 0（INV-C4）
     if base.is_empty() {
-        "deleted_at IS NULL".to_string()
+        "is_deleted = 0".to_string()
     } else {
-        format!("{} AND deleted_at IS NULL", base)
+        format!("{} AND is_deleted = 0", base)
     }
 }
 
@@ -236,7 +236,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
         created_at: row.get(7)?,
         has_thumbnail: row.get::<_, i64>(8)? != 0,
         segments: row.get(9)?,
-        deleted_at: row.get(10)?,
+        is_deleted: row.get::<_, i32>(10)? != 0,
     })
 }
 
@@ -263,7 +263,7 @@ pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Res
 //
 // 删除语义（2026-07-22 v47 软删/回收站）：
 //   - 图片（item_type='image'）：永远物理 DELETE（image_data 引用计数，软删行还在 → blob 泄漏）
-//   - 文本类（text/voice/ocr/file）：软删（UPDATE deleted_at = now），进回收站，可还原
+//   - 文本类（text/voice/ocr/file）：软删（UPDATE is_deleted = 1），进回收站，可还原
 //
 // delete_item / delete_items：前端默认删除入口，按 item_type 分流（image 物理 / 其他软删）。
 // permanent_delete_item / permanent_delete_items / empty_trash：回收站永久删，物理 DELETE。
@@ -300,19 +300,19 @@ pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
     Ok(affected)
 }
 
-/// 软删单条：UPDATE deleted_at = now（仅对未删的行生效）。
+/// 软删单条：UPDATE is_deleted = 1（仅对未删的行生效）。
 pub fn soft_delete(conn: &Connection, id: i64) -> Result<usize> {
     let rows = conn.execute(
-        "UPDATE clipboard_history SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL",
+        "UPDATE clipboard_history SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
         params![id],
     )?;
     Ok(rows)
 }
 
-/// 还原单条：清除 deleted_at。
+/// 还原单条：清除 is_deleted。
 pub fn restore_item(conn: &Connection, id: i64) -> Result<usize> {
     let rows = conn.execute(
-        "UPDATE clipboard_history SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+        "UPDATE clipboard_history SET is_deleted = 0 WHERE id = ? AND is_deleted = 1",
         params![id],
     )?;
     Ok(rows)
@@ -324,7 +324,7 @@ pub fn restore_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
     let rows = conn.execute(
-        &format!("UPDATE clipboard_history SET deleted_at = NULL WHERE id IN ({}) AND deleted_at IS NOT NULL", placeholders),
+        &format!("UPDATE clipboard_history SET is_deleted = 0 WHERE id IN ({}) AND is_deleted = 1", placeholders),
         params_vec.as_slice(),
     )?;
     Ok(rows)
@@ -357,10 +357,10 @@ pub fn permanent_delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
     Ok(rows)
 }
 
-/// 清空回收站：永久删除所有 deleted_at IS NOT NULL 的行。
+/// 清空回收站：永久删除所有 is_deleted = 1 的行。
 /// 物理 DELETE 触发 FTS trigger（clip_fts_ad）自动清索引。
 pub fn empty_trash(conn: &Connection) -> Result<usize> {
-    let rows = conn.execute("DELETE FROM clipboard_history WHERE deleted_at IS NOT NULL", [])?;
+    let rows = conn.execute("DELETE FROM clipboard_history WHERE is_deleted = 1", [])?;
     if rows > 0 {
         cleanup_unreferenced_images(conn)?;
     }
@@ -369,16 +369,17 @@ pub fn empty_trash(conn: &Connection) -> Result<usize> {
 
 /// 永久删除回收站中满足以下**任一**条件的软删条目（由 scheduler 定时调用）：
 ///
-/// 1. **TTL 超期**：`deleted_at` 超过 `ttl_days` 天
-/// 2. **容量超限**：回收站总条数超过 `max_items`，删最老的（`deleted_at ASC`）超出部分
+/// 1. **TTL 超期**：条目 `created_at` 早于 `ttl_days` 天前（is_deleted 不再是时间戳，
+///    用 created_at 作为老化依据；与 cleanup.rs delete_by_age 同语义）
+/// 2. **容量超限**：回收站总条数超过 `max_items`，删最老的（`created_at ASC`）超出部分
 ///
 /// 物理 DELETE 触发 FTS trigger（clip_fts_ad）自动清索引。返回删除条数。
 pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<usize> {
     let mut total_deleted = 0;
 
-    // 条件 1：TTL 超期
+    // 条件 1：TTL 超期（is_deleted 是 0/1，用 created_at 作老化时间）
     let ttl_deleted = conn.execute(
-        "DELETE FROM clipboard_history WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ?)",
+        "DELETE FROM clipboard_history WHERE is_deleted = 1 AND created_at < datetime('now', ?)",
         [format!("-{} days", ttl_days)],
     )?;
     if ttl_deleted > 0 {
@@ -388,7 +389,7 @@ pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<u
 
     // 条件 2：容量超限——删最老的超出部分（收藏项不计入容量、不被删）
     let trash_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_history WHERE deleted_at IS NOT NULL AND is_favorite = 0",
+        "SELECT COUNT(*) FROM clipboard_history WHERE is_deleted = 1 AND is_favorite = 0",
         [],
         |r| r.get(0),
     )?;
@@ -397,8 +398,8 @@ pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<u
         let cap_deleted = conn.execute(
             "DELETE FROM clipboard_history WHERE id IN (
                 SELECT id FROM clipboard_history
-                WHERE deleted_at IS NOT NULL AND is_favorite = 0
-                ORDER BY deleted_at ASC LIMIT ?
+                WHERE is_deleted = 1 AND is_favorite = 0
+                ORDER BY created_at ASC LIMIT ?
             )",
             [excess],
         )?;
@@ -421,7 +422,7 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
 
     // 1. 图片物理删（含 blob 清理）
     let img_rows = conn.execute(
-        &format!("DELETE FROM clipboard_history WHERE item_type = 'image'{} AND deleted_at IS NULL", fav_clause),
+        &format!("DELETE FROM clipboard_history WHERE item_type = 'image'{} AND is_deleted = 0", fav_clause),
         [],
     )?;
     if img_rows > 0 {
@@ -430,7 +431,7 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
 
     // 2. 文本类软删
     let text_rows = conn.execute(
-        &format!("UPDATE clipboard_history SET deleted_at = datetime('now') WHERE item_type != 'image'{} AND deleted_at IS NULL", fav_clause),
+        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type != 'image'{} AND is_deleted = 0", fav_clause),
         [],
     )?;
     Ok(img_rows + text_rows)
@@ -440,9 +441,9 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
 /// keep_favorite=true 追加 AND is_favorite = 0。
 /// 图片→物理 DELETE；其他→软删 UPDATE。
 ///
-/// filter="trash" + keep_favorite → build_where 返回 "deleted_at IS NOT NULL"，
+/// filter="trash" + keep_favorite → build_where 返回 "is_deleted = 1"，
 /// 此时清理=永久删回收站内容（物理 DELETE）。
-/// filter="favorite" + keep_favorite=true → "is_favorite = 1 AND deleted_at IS NULL AND is_favorite = 0" 恒假，删 0 条
+/// filter="favorite" + keep_favorite=true → "is_favorite = 1 AND is_deleted = 0 AND is_favorite = 0" 恒假，删 0 条
 /// （收藏 tab 自然结果，前端禁用按钮，后端无需特判）。
 pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: bool) -> Result<usize> {
     let qf = QueryFilter { filter: filter.to_string(), search: None, page: 1, size: 1 };
@@ -470,7 +471,7 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
 
     // 2. 文本类软删
     let text_sql = format!(
-        "UPDATE clipboard_history SET deleted_at = datetime('now') WHERE item_type != 'image' AND {}",
+        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type != 'image' AND {}",
         where_clause
     );
     let text_rows = conn.execute(&text_sql, [])?;

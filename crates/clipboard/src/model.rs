@@ -90,9 +90,9 @@ pub struct ClipboardItem {
     pub has_thumbnail: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<String>,
-    /// 软删时间戳（v47）。None=活跃；Some=已进回收站。图片始终 None（不软删）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deleted_at: Option<String>,
+    /// 软删标记（false=活跃；true=已进回收站）。图片始终 false（不软删）。
+    /// 与 vault_ciphers/folders 的 is_deleted 字段一致（DB 列 INTEGER 0/1）。
+    pub is_deleted: bool,
 }
 
 /// 查询过滤条件

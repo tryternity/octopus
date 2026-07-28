@@ -28,7 +28,7 @@ export interface ClipboardItem {
   isRich: boolean;
   hasThumbnail: boolean;
   segments?: string;
-  deletedAt?: string | null;
+  isDeleted: boolean;
 }
 
 /**

@@ -78,7 +78,7 @@ export interface RecordingMeta {
   hasThumbnail: boolean;
   isFavorite: boolean;
   createdAt: string;
-  deletedAt: string | null;
+  isDeleted: boolean;
 }
 
 // 字幕 cue（与 crates/record/src/subtitle.rs::SubtitleCue 对齐，camelCase）。
