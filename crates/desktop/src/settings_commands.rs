@@ -11,6 +11,9 @@ use crate::runtime_config::SharedRuntimeConfig;
 use crate::config::PolishMode;
 
 // ── get_config 返回 DTO ──
+//
+// ConfigResponse 是多个独立查询的聚合（config JSON + asr/llm/ocr engines + microphones
+// + prompts + active_prompt_id），保留为独立结构——非纯 casing mirror，DTO 消除范围外。
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +23,7 @@ pub struct ConfigResponse {
     pub llm_models: Vec<crate::runtime_config::LlmOption>,
     pub ocr_models: Vec<crate::runtime_config::OcrOption>,
     pub microphones: Vec<String>,
-    pub prompts: Vec<PromptInfo>,
+    pub prompts: Vec<octopus_infra::db::PromptRecord>,
     pub active_prompt_id: i64,
 }
 
@@ -51,16 +54,6 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
 
         let prompt_records = octopus_infra::db::list_prompts()
             .unwrap_or_else(|e| { log::warn!("get_config: prompts 查询失败: {}", e); vec![] });
-        let prompts = prompt_records
-            .into_iter()
-            .map(|r| PromptInfo {
-                id: r.id,
-                title: r.title,
-                content: r.content,
-                description: r.description,
-                is_system: r.is_system,
-            })
-            .collect();
         let active_prompt_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
 
         Ok(ConfigResponse {
@@ -69,7 +62,7 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
             llm_models,
             ocr_models,
             microphones,
-            prompts,
+            prompts: prompt_records,
             active_prompt_id,
         })
     })
@@ -612,31 +605,13 @@ pub fn read_prompt_file(content: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
-/// 设置窗口返回的 prompt 信息。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptInfo {
-    pub id: i64,
-    pub title: String,
-    pub content: String,
-    pub description: String,
-    pub is_system: bool,
-}
-
 /// 列出所有润色 prompt（按 is_system 降序、id 升序）。
+///
+/// 直接返回内部 `PromptRecord`（已带 `rename_all = "camelCase"`，2026-07-27 DTO
+/// 消除：原 `PromptInfo` 与 `PromptRecord` 字段 1:1 完全一致，纯冗余包装）。
 #[tauri::command]
-pub fn list_prompts() -> Result<Vec<PromptInfo>, String> {
-    let records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
-    Ok(records
-        .into_iter()
-        .map(|r| PromptInfo {
-            id: r.id,
-            title: r.title,
-            content: r.content,
-            description: r.description,
-            is_system: r.is_system,
-        })
-        .collect())
+pub fn list_prompts() -> Result<Vec<octopus_infra::db::PromptRecord>, String> {
+    octopus_infra::db::list_prompts().map_err(|e| e.to_string())
 }
 
 /// 返回当前激活的 prompt id。

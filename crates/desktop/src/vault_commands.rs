@@ -23,13 +23,14 @@ use crate::vault_error::{self, VaultError};
 use crate::vault_state::SharedVaultSession;
 
 // === DTO ===
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultStatusDto {
-    pub initialized: bool,
-    pub user_vault_unlocked: bool,
-}
+//
+// 仅保留 Cipher 相关 DTO（CipherDto / CipherInputDto / LoginDataDto / LoginUriDto /
+// FieldDto）——它们是 Phase 2/3 的真实 transformation（Cipher 内部用强类型 enum，
+// 前端用裸 i64），不在本次 DTO 消除范围。
+//
+// VaultStatusDto / TotpResultDto / PasswordStrengthDto / AutoTypeResultDto 已于
+// 2026-07-27 移除：要么返回内部类型（PasswordStrength），要么改为命令同文件内
+// 的局部 wire-format struct（VaultStatus / TotpResult / AutoTypeResult）。
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -82,13 +83,6 @@ pub struct CipherInputDto {
     pub login: Option<LoginDataDto>,
     pub fields: Vec<FieldDto>,
     pub reprompt: Option<i64>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TotpResultDto {
-    pub code: String,
-    pub seconds_remaining: u64,
 }
 
 // === AppState key 取用辅助 ===
@@ -218,16 +212,24 @@ fn dto_to_input(dto: CipherInputDto) -> Result<CipherInput, VaultError> {
 
 // === Tauri 命令 ===
 
+/// `vault_status` 命令返回值（前端调用方唯一消费点，故就近定义而非堆在 DTO 区）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultStatus {
+    pub initialized: bool,
+    pub user_vault_unlocked: bool,
+}
+
 #[tauri::command]
 pub fn vault_status(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-) -> Result<VaultStatusDto, String> {
+) -> Result<VaultStatus, String> {
     let timeout = config.read().vault_lock_timeout_secs;
     let initialized = octopus_vault::unlock::is_initialized().map_err(vault_error::to_tauri_error)?;
     // 用 write() 因为 is_user_vault_unlocked 超时会主动清零 key
     let user_vault_unlocked = state.write().is_user_vault_unlocked(timeout);
-    Ok(VaultStatusDto {
+    Ok(VaultStatus {
         initialized,
         user_vault_unlocked,
     })
@@ -601,24 +603,23 @@ pub fn vault_generate(cfg: GeneratorConfig) -> Result<String, String> {
 /// 避免每键都跑 zxcvbn（前端不打包 zxcvbn，统一走后端单点）。
 ///
 /// 不需要 user_vault_key——评估是纯计算，不接触 vault 数据。
+///
+/// 直接返回内部 `PasswordStrength`（已带 `rename_all = "camelCase"`，2026-07-27 DTO
+/// 消除：原 `PasswordStrengthDto` 仅暴露 score + entropy 是历史前端能力受限的产物，
+/// 现直接返回完整结构——多出的 `warning` / `suggestions` 字段对前端是可选增强，
+/// JSON 多字段不破坏现有契约）。
 #[cfg(feature = "vault")]
 #[tauri::command]
-pub fn vault_evaluate_password(password: String) -> PasswordStrengthDto {
-    let s = octopus_vault::health::strength::evaluate(&password);
-    PasswordStrengthDto {
-        score: s.score,
-        entropy_bits: s.entropy_bits,
-    }
+pub fn vault_evaluate_password(password: String) -> octopus_vault::health::strength::PasswordStrength {
+    octopus_vault::health::strength::evaluate(&password)
 }
 
-/// `vault_evaluate_password` 返回 DTO（仅暴露 score + entropy，前端强度条够用）。
-#[cfg(feature = "vault")]
+/// `vault_generate_totp` 命令返回值（前端调用方唯一消费点，就近定义）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PasswordStrengthDto {
-    /// zxcvbn 评分 0-4
-    pub score: u8,
-    pub entropy_bits: f64,
+pub struct TotpResult {
+    pub code: String,
+    pub seconds_remaining: u64,
 }
 
 #[tauri::command]
@@ -626,7 +627,7 @@ pub fn vault_generate_totp(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
     cipher_id: String,
-) -> Result<TotpResultDto, String> {
+) -> Result<TotpResult, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let cipher = octopus_vault::storage::load_cipher(&cipher_id, &key)
         .map_err(vault_error::to_tauri_error)?
@@ -651,7 +652,7 @@ pub fn vault_generate_totp(
     let (code, seconds_remaining) = gen
         .current_with_remaining()
         .map_err(vault_error::to_tauri_error)?;
-    Ok(TotpResultDto {
+    Ok(TotpResult {
         code,
         seconds_remaining,
     })
@@ -714,9 +715,10 @@ pub fn vault_export(
 
 // === Auto-Type 命令（Task 19） ===
 
+/// `vault_autotype` 命令返回值（前端调用方唯一消费点，就近定义）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoTypeResultDto {
+pub struct AutoTypeResult {
     pub filled: bool,
     pub message: String,
     pub fallback_to_clipboard: bool,
@@ -736,7 +738,7 @@ pub fn vault_autotype(
     cipher_id: String,
     master_password: Option<String>,
     mode: Option<AutoTypeMode>,
-) -> Result<AutoTypeResultDto, String> {
+) -> Result<AutoTypeResult, String> {
     let mode = mode.unwrap_or_default();
     log::info!(
         "[vault-autotype] invoke 进入：cipher_id={}，reprompt_required={}，mode={:?}",
@@ -815,7 +817,7 @@ pub fn vault_autotype(
     match autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
         Ok(()) => {
             log::info!("[vault-autotype] autotype_login Ok（已填充，mode={:?}）", mode);
-            Ok(AutoTypeResultDto {
+            Ok(AutoTypeResult {
                 filled: true,
                 message: "已填充".into(),
                 fallback_to_clipboard: false,
@@ -827,7 +829,7 @@ pub fn vault_autotype(
             // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
             let _ = autotype::copy_concealed(&password);
-            Ok(AutoTypeResultDto {
+            Ok(AutoTypeResult {
                 filled: false,
                 message: VaultError::AutoTypeFailed.user_message().to_string(),
                 fallback_to_clipboard: true,
