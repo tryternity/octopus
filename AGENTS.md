@@ -96,6 +96,25 @@ cargo test -p octopus-desktop
 
 注意：没有独立的 `tests/` 目录，所有测试都是 `#[cfg(test)] mod tests {}` 内联在源文件中。
 
+#### 测试分层（三层）
+
+测试按耗时 + 依赖分为三层，用 `#[ignore]` 标记区分：
+
+| 层 | 命令 | 耗时 | 跑什么 | 何时跑 |
+|---|---|---|---|---|
+| **核心** | `cargo test` | ~15s | 纯逻辑测试（含 vault 弱 KDF 测试） | **每次合并必跑** |
+| **慢** | `cargo test -- --ignored` | ~2min | + 参数边界 / API key / 文件系统 / 模型缓存 | 重构 / 功能增减后全面回归 |
+| **real-model** | `cargo test -p octopus-asr-local -- --ignored` | ~5min | + 真实 ASR 模型推理（需 HuggingFace 缓存） | 手动验证模型识别质量 |
+
+**标记约定**：
+- `#[ignore = "real-model: ..."]` — 需真实模型文件/DB 引擎，默认跳过
+- `#[ignore = "slow: ..."]` 或裸 `#[ignore]` — 需特殊环境（API key / 音频文件 / 网络），默认跳过
+- 无标记 — 核心测试，`cargo test` 默认跑
+
+**vault 弱 KDF**：vault 测试在 `#[cfg(test)]` 下用 `Argon2Params::test_params()`（memory_kib=8, iterations=1）替代生产参数（64MB, 3 iterations），argon2 派生从 ~0.4s/次 → <1ms/次。生产代码（`setup_vault` 非 test 分支）仍用 `Default`。
+
+**asr-local real_model 测试**：9 个需真实模型的测试统一 `#[ignore = "real-model"]`，`--ignored` 跑时保留 skip-by-return 作为二次防护（无模型优雅跳过，不 panic）。
+
 ## Cargo Workspace 结构
 
 ```
