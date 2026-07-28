@@ -1283,7 +1283,7 @@ fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
     for entry in entries.flatten() {
         let path = entry.path();
         let abs = path.to_string_lossy().to_string();
-        if !known_files.contains(&abs) {
+        if octopus_record::RecordStore::is_orphan(&abs, &known_files) {
             log::warn!("[record] 孤儿文件清理: {abs}");
             let _ = std::fs::remove_file(&path);
         }

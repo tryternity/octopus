@@ -1688,7 +1688,8 @@ function DeleteConfirmDialog({
   onConfirm,
   t,
 }: DeleteConfirmDialogProps) {
-  const [deleteFile, setDeleteFile] = useState(true);
+  // 默认不勾——删除是常见操作，误删磁盘文件不可逆；用户显式勾选才删文件。
+  const [deleteFile, setDeleteFile] = useState(false);
   const isBatch = count > 1;
 
   return (

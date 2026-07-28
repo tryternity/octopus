@@ -128,14 +128,23 @@ pub fn split_polished_by_ratio(polished: &str, original_texts: &[String]) -> Vec
 /// - llm_key=Some → log warn「按 key 查 LLM 暂未实现」，仍 fallback 到默认 LLM。
 ///   （按 key 查 DB 的逻辑是 Task 2.2 list_subtitle_llms 的配套，后续做。）
 ///
-/// 返回 None（→ 调用方走 NoLlmConfig 降级）当且仅当默认 LLM 域也无激活模型。
+/// 解析字幕润色用的 LLM 配置。
+///
+/// - `llm_key=None` → 用激活的默认 LLM（`llm_config_ignore_mode`）
+/// - `llm_key=Some("provider:model")` → 按 key 从 DB 查（`llm_config_by_key`），
+///   找不到再 fallback 到默认 LLM
+///
+/// 返回 None（→ 调用方走 NoLlmConfig 降级）当且仅当按 key 查失败且默认 LLM 域也无激活模型。
 fn resolve_subtitle_llm_config(
     llm_key: &Option<String>,
 ) -> Option<octopus_llm::CompatibleLlmConfig> {
-    if llm_key.is_some() {
+    if let Some(key) = llm_key {
+        if let Some(cfg) = crate::config::llm_config_by_key(key) {
+            return Some(cfg);
+        }
         log::warn!(
-            "[subtitle-polish] 按 key 查 LLM 暂未实现（key={:?}），用默认 LLM",
-            llm_key
+            "[subtitle-polish] 按 key '{}' 查 LLM 失败，fallback 到默认 LLM",
+            key
         );
     }
     crate::config::llm_config_ignore_mode()
