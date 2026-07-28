@@ -1,7 +1,7 @@
 # SafeUrl Newtype 设计——PAT 泄露结构性根治
 
-**日期**：2026-07-26
-**状态**：设计阶段（待 plan + 实现）
+**日期**：2026-07-26（设计），2026-07-28（实施）
+**状态**：✅ 已实施（commit 见 git log）
 **类型**：架构改进（跨 crate 类型系统改动）
 **关联**：
 - [vault-security-hardening](./2026-07-24-vault-security-hardening.md)——第四十九~五十四轮 PAT 外溢链

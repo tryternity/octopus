@@ -1,8 +1,8 @@
 # SafeUrl Newtype 实施计划
 
-**日期**：2026-07-26
+**日期**：2026-07-26（设计），2026-07-28（实施）
 **关联 spec**：[safeurl-newtype-design](../specs/2026-07-26-safeurl-newtype-design.md)
-**状态**：待实施
+**状态**：✅ 已实施（2026-07-28）
 
 ## 任务分解
 
@@ -80,11 +80,11 @@ cd crates/desktop/frontend && npx tsc --noEmit  # 0 error
 
 ## 验收清单
 
-- [ ] Task 1: sync crate SafeUrl 定义 + redact_url 改返回类型
-- [ ] Task 2: vault crate SyncStatus/list_remotes/helper 改返回类型
-- [ ] Task 3: desktop crate 跟随
-- [ ] Task 4: 全量测试通过（sync 105+ / vault 251+ / desktop build 0 warning / tsc 0 error）
-- [ ] Task 5: 文档同步
+- [x] Task 1: sync crate SafeUrl 定义 + redact_url 改返回类型
+- [x] Task 2: vault crate SyncStatus/list_remotes/helper 改返回类型
+- [x] Task 3: desktop crate 跟随
+- [x] Task 4: 全量测试通过（sync 108 / vault 256 / desktop build 0 warning / tsc 0 error）
+- [x] Task 5: 文档同步
 
 ## 回滚预案
 

@@ -104,7 +104,7 @@ pub fn vault_sync_remove_remote(name: String) -> Result<(), String> {
 
 /// 列出所有 remote（name → url）。
 #[tauri::command]
-pub fn vault_sync_list_remotes() -> Result<Vec<(String, String)>, String> {
+pub fn vault_sync_list_remotes() -> Result<Vec<(String, octopus_sync::error::SafeUrl)>, String> {
     vault_sync::list_remotes().map_err(sync_err_to_string)
 }
 

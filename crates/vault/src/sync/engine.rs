@@ -95,8 +95,8 @@ pub struct SyncStatus {
     pub git_available: bool,
     /// `~/.octopus/.vault/` 是否已初始化（.git 存在）
     pub initialized: bool,
-    /// 配置的 remotes（name → url）
-    pub remotes: Vec<(String, String)>,
+    /// 配置的 remotes（name → 已 redact 的 url，SafeUrl 保证 PAT 不泄露到前端）
+    pub remotes: Vec<(String, octopus_sync::error::SafeUrl)>,
     /// 最近一次 commit 的 ISO 时间戳（如果有）
     pub last_sync: Option<String>,
     /// 最近一次 commit 的 SHA（如果有）
@@ -411,7 +411,7 @@ pub fn remove_remote(name: &str) -> Result<(), SyncError> {
 }
 
 /// 列出所有 remote（name → url）。
-pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
+pub fn list_remotes() -> Result<Vec<(String, octopus_sync::error::SafeUrl)>, SyncError> {
     let root = octopus_sync::store::sync_root();
     if !git::is_git_repo(&root) {
         return Ok(vec![]);
@@ -439,10 +439,10 @@ pub fn list_remotes() -> Result<Vec<(String, String)>, SyncError> {
 ///   - `list_remotes`（pub fn 返回值，Tauri command 返回）
 ///   - `get_sync_status`（SyncStatus.remotes 字段，Serialize 流向前端）
 ///
-/// 注：helper 只能防「现有调用点漏调」（调用点写错变量），不能防「新增流出点不调
-/// helper」——后者需编译期 newtype 才能完全防，已评估暂不引入（用户第五十三轮
-/// 拒绝 SafeUrl newtype）。
-fn redact_remotes_for_outflow(remotes: &[(String, String)]) -> Vec<(String, String)> {
+/// SafeUrl newtype（2026-07-28 实施）：返 `Vec<(String, SafeUrl)>`——编译期保证
+/// url 经 redact_url（SafeUrl 唯一构造器）。helper 仍保留作为集中构造点，
+/// 与 SafeUrl 配合形成双重防御。
+fn redact_remotes_for_outflow(remotes: &[(String, String)]) -> Vec<(String, octopus_sync::error::SafeUrl)> {
     remotes
         .iter()
         .map(|(name, url)| (name.clone(), octopus_sync::error::redact_url(url)))
@@ -2599,16 +2599,16 @@ mod tests {
         let redacted = super::redact_remotes_for_outflow(&input);
         // PAT 必须被剥离
         assert!(
-            !redacted.iter().any(|(_, u)| u.contains("ghp_secret")),
+            !redacted.iter().any(|(_, u)| u.as_str().contains("ghp_secret")),
             "redact_remotes_for_outflow 后仍含 PAT：{:?}",
             redacted
         );
         // SSH URL（scp-like）原样返回
         let ssh = redacted.iter().find(|(n, _)| n == "backup").expect("backup remote");
-        assert_eq!(ssh.1, "git@github.com:owner/repo.git");
+        assert_eq!(ssh.1.as_str(), "git@github.com:owner/repo.git");
         // HTTPS URL 剥 userinfo
         let https = redacted.iter().find(|(n, _)| n == "origin").expect("origin remote");
-        assert_eq!(https.1, "https://github.com/owner/repo.git");
+        assert_eq!(https.1.as_str(), "https://github.com/owner/repo.git");
     }
 
     /// 回归守护（2026-07-27 sync 覆盖 bug 系列）：

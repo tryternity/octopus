@@ -1,3 +1,9 @@
+> **⚠️ 已废弃（2026-07-28）**：本 spec 提出的 tombstone（墓碑）机制已被更优方案替代——
+> [`2026-07-27-vault-sync-is-deleted-merge.md`](./2026-07-27-vault-sync-is-deleted-merge.md)
+> 用统一 `is_deleted` 字段 + `updated_at` 最新赢的单向 merge 模型解决跨设备删除一致性，
+> 比 tombstone 机制更简洁（删除是普通字段变更走标准 merge，不需特殊墓碑传播）。
+> 保留本文件作为历史决策记录（A vs B 权衡——为什么曾考虑 tombstone 以及为什么放弃）。
+
 # Vault Tombstone 设计——跨设备永久删除一致性
 
 **日期**：2026-07-26
