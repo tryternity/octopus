@@ -455,7 +455,6 @@ mod tests {
             has_system_audio: !tracks.is_empty(), has_microphone: tracks.iter().any(|t| t.source == AudioTrackSource::Microphone),
             audio_tracks: tracks.to_vec(), source_type: "display".into(), file_size: 100,
             has_thumbnail: false, is_favorite: false, created_at: "2026-07-28T00:00:00Z".into(),
-            is_deleted: false,
         }
     }
 

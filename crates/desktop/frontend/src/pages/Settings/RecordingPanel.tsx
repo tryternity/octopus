@@ -80,7 +80,6 @@ export interface RecordingMeta {
   hasThumbnail: boolean;
   isFavorite: boolean;
   createdAt: string;
-  isDeleted: boolean;
 }
 
 // 字幕 cue（与 crates/record/src/subtitle.rs::SubtitleCue 对齐，camelCase）。
@@ -252,6 +251,8 @@ export default function RecordingPanel({
   const [subtitleError, setSubtitleError] = useState<Record<number, string>>({});
   // 当前展开字幕预览面板的 recording id（null=全收起）。一次只展开一个（列表节奏感）。
   const [expandedSubtitleId, setExpandedSubtitleId] = useState<number | null>(null);
+  // 删除确认弹框：null=关闭；number=单条删除该 id；'batch'=批量删除选中项。
+  const [deleteDialog, setDeleteDialog] = useState<number | "batch" | null>(null);
   // 字幕生成当前阶段（按 recording id 索引，null/undefined=空闲或未知）。
   // 用于行内进度文案：polishing 阶段显示「✨ LLM 润色中...」。其他阶段沿用 spinner。
   const [subtitleStage, setSubtitleStage] = useState<Record<number, SubtitleStage | undefined>>({});
@@ -524,7 +525,6 @@ export default function RecordingPanel({
         filter: {
           limit: 50,
           offset: 0,
-          includeDeleted: false,
           favoritesOnly: false,
         },
       });
@@ -554,27 +554,9 @@ export default function RecordingPanel({
   const allChecked = records.length > 0 && selectedIds.size === records.length;
   const hasSelection = selectedIds.size > 0;
 
-  const handleBatchDelete = async () => {
+  const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      setTimeout(() => setConfirmDelete(false), 3000);
-      return;
-    }
-    try {
-      const ids = Array.from(selectedIds);
-      await Promise.all(
-        ids.map((id) =>
-          invoke("delete_recording", { id, permanent: false }),
-        ),
-      );
-      showToast(t("settings.recordings.deletedN", { n: ids.length }));
-      setSelectedIds(new Set());
-      setConfirmDelete(false);
-      loadList();
-    } catch (e) {
-      showToast(t("settings.recordings.deleteFailed") + e, "error");
-    }
+    setDeleteDialog("batch");
   };
 
   const handleRowDeleted = () => {
@@ -720,6 +702,54 @@ export default function RecordingPanel({
             />
           )}
 
+        {/* ── 删除确认弹框（单条 + 批量共用）──
+            deleteDialog=null 关闭；number=单条删该 id；'batch'=批量删选中项。
+            checkbox「同时删除磁盘文件」默认勾，勾=permanent:true（删文件+DB），不勾=permanent:false（仅DB）。 */}
+        {deleteDialog !== null && (
+          <DeleteConfirmDialog
+            targetLabel={
+              typeof deleteDialog === "number"
+                ? (() => {
+                    const r = records.find((x) => x.id === deleteDialog);
+                    return r
+                      ? r.title || r.filePath.split("/").pop() || `#${r.id}`
+                      : `#${deleteDialog}`;
+                  })()
+                : ""
+            }
+            count={
+              deleteDialog === "batch" ? selectedIds.size : 1
+            }
+            onCancel={() => setDeleteDialog(null)}
+            onConfirm={async (permanent) => {
+              const ids =
+                deleteDialog === "batch"
+                  ? Array.from(selectedIds)
+                  : [deleteDialog as number];
+              setDeleteDialog(null);
+              try {
+                await Promise.all(
+                  ids.map((id) =>
+                    invoke("delete_recording", { id, permanent }),
+                  ),
+                );
+                showToast(
+                  t("settings.recordings.deletedN", { n: ids.length }),
+                );
+                if (deleteDialog === "batch") setSelectedIds(new Set());
+                setConfirmDelete(false);
+                loadList();
+              } catch (e) {
+                showToast(
+                  t("settings.recordings.deleteFailed") + e,
+                  "error",
+                );
+              }
+            }}
+            t={t}
+          />
+        )}
+
         {/* ── 列表 ── */}
         <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
           {records.length > 0 && (
@@ -765,6 +795,7 @@ export default function RecordingPanel({
               onToggleSelect={() => toggleSelect(rec.id)}
               showToast={showToast}
               onDeleted={handleRowDeleted}
+              onRequestDelete={(id) => setDeleteDialog(id)}
               onFavoriteToggled={handleFavoriteToggled}
               onRenamed={loadList}
               gifExportingId={gifExportingId}
@@ -805,20 +836,11 @@ export default function RecordingPanel({
           </span>
           {hasSelection ? (
             <button
-              className={cn(
-                "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-150",
-                confirmDelete
-                  ? "bg-red-600 text-white"
-                  : "border border-red-400 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30",
-              )}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-150 border border-red-400 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
               onClick={handleBatchDelete}
             >
               <Trash2 className="w-3 h-3" />
-              {confirmDelete
-                ? t("settings.recordings.confirmDeleteN", {
-                    n: selectedIds.size,
-                  })
-                : t("settings.recordings.deleteSelected")}
+              {t("settings.recordings.deleteSelected")}
             </button>
           ) : null}
         </div>
@@ -835,6 +857,8 @@ interface RecordingRowProps {
   onToggleSelect: () => void;
   showToast: (msg: string, variant?: ToastVariant) => void;
   onDeleted: () => void;
+  /** 触发删除确认弹框（单条）。 */
+  onRequestDelete: (id: number) => void;
   onFavoriteToggled: () => void;
   onRenamed: () => void;
   gifExportingId: number | null;
@@ -871,6 +895,7 @@ function RecordingRow({
   onToggleSelect,
   showToast,
   onDeleted,
+  onRequestDelete,
   onFavoriteToggled,
   onRenamed,
   gifExportingId,
@@ -891,19 +916,11 @@ function RecordingRow({
   onCopyAll,
 }: RecordingRowProps) {
   const t = useT();
-  const [deletePending, setDeletePending] = useState(false);
   const [favoriteLoading, setFavoriteLoading] = useState(false);
-  const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 重命名 inline input（WKWebView 不支持 window.prompt，用 inline input 仿 HotwordPanel 范式）
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState("");
   const renameCancelledRef = useRef(false);
-
-  useEffect(() => {
-    return () => {
-      if (deleteTimer.current) clearTimeout(deleteTimer.current);
-    };
-  }, []);
 
   const title = rec.title || rec.filePath.split("/").pop() || `#${rec.id}`;
   const durationLabel = rec.durationMs > 0 ? formatDuration(rec.durationMs) : null;
@@ -1007,21 +1024,9 @@ function RecordingRow({
     setFavoriteLoading(false);
   };
 
-  const handleDeleteClick = async (e: React.MouseEvent) => {
+  const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!deletePending) {
-      setDeletePending(true);
-      deleteTimer.current = setTimeout(() => setDeletePending(false), 1500);
-    } else {
-      if (deleteTimer.current) clearTimeout(deleteTimer.current);
-      try {
-        await invoke("delete_recording", { id: rec.id, permanent: false });
-        showToast(t("settings.recordings.deleted"));
-        onDeleted();
-      } catch (e) {
-        showToast(t("settings.recordings.deleteFailed") + e, "error");
-      }
-    }
+    onRequestDelete(rec.id);
   };
 
   // ── 转字幕（Task 4.1 激活；Phase 4 改为弹框确认）──
@@ -1044,7 +1049,6 @@ function RecordingRow({
       className={cn(
         "group relative border-b border-border/60 transition-colors",
         isSelected ? "bg-accent" : "hover:bg-muted",
-        deletePending && "bg-red-50/10 dark:bg-red-950/20",
         isSubtitleExpanded && "!bg-muted",
       )}
     >
@@ -1301,27 +1305,11 @@ function RecordingRow({
           </button>
         )}
         <button
-          className={cn(
-            "p-1 rounded transition-all",
-            deletePending
-              ? "opacity-100 bg-red-100 dark:bg-red-950/40"
-              : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
-          )}
+          className="p-1 rounded transition-all opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
           onClick={handleDeleteClick}
-          title={
-            deletePending
-              ? t("settings.recordings.deleteConfirm")
-              : t("settings.recordings.delete")
-          }
+          title={t("settings.recordings.delete")}
         >
-          <Trash2
-            className={cn(
-              "w-3.5 h-3.5 transition-colors",
-              deletePending
-                ? "text-red-600"
-                : "text-muted-foreground hover:text-red-500",
-            )}
-          />
+          <Trash2 className="w-3.5 h-3.5 transition-colors text-muted-foreground hover:text-red-500" />
         </button>
       </div>
 
@@ -1810,6 +1798,99 @@ function SubtitlePolishDialog({
             {polishEnabled
               ? t("settings.recordings.subtitlePolishConfirm")
               : t("settings.recordings.subtitlePolishConfirmPlain")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 删除确认弹框（单条 + 批量共用）──────────────────────────────────────
+//
+// 设计意图（frontend-design）：
+// 与 SubtitlePolishDialog 同模式（fixed overlay + 居中卡片），但语义是「破坏性操作确认」
+// ——用 destructive 色调（红）强调不可逆。核心交互：checkbox「同时删除磁盘文件」默认勾，
+// 因为用户删录屏通常想连文件一起清掉（你反馈「逻辑删除堆积数据没地方清理」）。
+//
+// 不勾时仅删 DB 行（permanent:false），磁盘文件保留（下次启动 cleanup 孤儿清理会删）。
+// 勾时删 DB 行 + 磁盘 mp4 + 关联 .N.srt 字幕文件（permanent:true）。
+interface DeleteConfirmDialogProps {
+  /** 删除目标描述（单条用文件名，批量用「N 个录屏」）。 */
+  targetLabel: string;
+  /** 删除数量（影响文案：单数/复数）。 */
+  count: number;
+  onCancel: () => void;
+  onConfirm: (permanent: boolean) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+function DeleteConfirmDialog({
+  targetLabel,
+  count,
+  onCancel,
+  onConfirm,
+  t,
+}: DeleteConfirmDialogProps) {
+  const [deleteFile, setDeleteFile] = useState(true);
+  const isBatch = count > 1;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onCancel}
+    >
+      <div
+        className="relative w-full max-w-sm mx-4 rounded-lg border border-border bg-surface shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 标题区：destructive 色调 + Trash2 图标 */}
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
+          <div className="flex items-center gap-1.5 text-destructive">
+            <Trash2 className="w-3.5 h-3.5" />
+            <span className="text-xs font-medium">
+              {t("settings.recordings.delete")}
+            </span>
+          </div>
+        </div>
+
+        {/* 内容区：目标 + checkbox */}
+        <div className="px-3 py-3 space-y-2.5">
+          <p className="text-[11px] text-foreground/80 break-words">
+            {isBatch
+              ? t("settings.recordings.confirmDeleteN", { n: count })
+              : t("settings.recordings.deleteConfirm")}
+            {!isBatch && (
+              <span className="block mt-0.5 font-mono-vault text-[10px] text-muted-foreground break-all">
+                {targetLabel}
+              </span>
+            )}
+          </p>
+          <label className="flex items-start gap-2 cursor-pointer group">
+            <input
+              type="checkbox"
+              className="mt-0.5 w-3.5 h-3.5 accent-destructive flex-shrink-0"
+              checked={deleteFile}
+              onChange={(e) => setDeleteFile(e.target.checked)}
+            />
+            <span className="text-[11px] leading-relaxed text-foreground/80 group-hover:text-foreground transition-colors">
+              {t("settings.recordings.deleteAlsoFile")}
+            </span>
+          </label>
+        </div>
+
+        {/* 底部按钮：取消 + 删除（destructive） */}
+        <div className="flex items-center justify-end gap-1.5 px-3 py-2 border-t border-border/60 bg-muted/40">
+          <button
+            onClick={onCancel}
+            className="px-2.5 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            {t("settings.recordings.subtitlePolishCancel")}
+          </button>
+          <button
+            onClick={() => onConfirm(deleteFile)}
+            className="px-2.5 py-1 rounded text-[10px] font-medium bg-destructive text-white hover:bg-destructive/90 transition-colors"
+          >
+            {t("settings.recordings.delete")}
           </button>
         </div>
       </div>

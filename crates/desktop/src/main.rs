@@ -609,8 +609,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::delete_recording,
             #[cfg(target_os = "macos")]
-            record_commands::restore_recording,
-            #[cfg(target_os = "macos")]
             record_commands::open_recording_file,
             #[cfg(target_os = "macos")]
             record_commands::reveal_recording,

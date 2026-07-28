@@ -310,13 +310,11 @@ CREATE TABLE IF NOT EXISTS recordings (
     file_size         INTEGER NOT NULL,
     has_thumbnail     INTEGER NOT NULL DEFAULT 0,
     is_favorite       INTEGER NOT NULL DEFAULT 0,
-    created_at        TEXT    NOT NULL,
-    is_deleted        INTEGER NOT NULL DEFAULT 0
+    created_at        TEXT    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_rec_created   ON recordings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rec_favorite  ON recordings(is_favorite);
-CREATE INDEX IF NOT EXISTS idx_rec_deleted   ON recordings(is_deleted) WHERE is_deleted = 1;
 CREATE INDEX IF NOT EXISTS idx_rec_source    ON recordings(source_type);
 
 CREATE TABLE IF NOT EXISTS recordings_thumbnails (

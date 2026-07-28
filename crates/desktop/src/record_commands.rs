@@ -573,7 +573,6 @@ async fn stop_and_store_inner(
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        is_deleted: false,
     };
 
     let meta_clone = meta.clone();
@@ -648,7 +647,6 @@ pub async fn record_kill(
 pub struct ListRecordingsParams {
     pub limit: u32,
     pub offset: u32,
-    pub include_deleted: bool,
     pub favorites_only: bool,
 }
 
@@ -657,7 +655,6 @@ impl From<ListRecordingsParams> for ListFilter {
         ListFilter {
             limit: p.limit,
             offset: p.offset,
-            include_deleted: p.include_deleted,
             favorites_only: p.favorites_only,
         }
     }
@@ -700,8 +697,10 @@ pub async fn toggle_recording_favorite(id: i64) -> Result<(), String> {
 pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
     use octopus_infra::paths::resolve_recording_path;
 
+    // permanent=true：物理删 DB 行 + 磁盘文件（含 .srt 字幕文件）
+    // permanent=false：仅删 DB 行（磁盘文件保留，下次启动 cleanup 孤儿清理会删）
     if permanent {
-        // 先查 meta 拿相对路径 → 删文件 → 删 DB 行（顺序避免删文件后 DB 失败留孤儿）
+        // 先查 meta 拿路径 → 删文件 + 关联 .srt → 删 DB 行（顺序避免删文件后 DB 失败留孤儿）
         let file_path = with_db_blocking(move |conn| {
             let store = RecordStore::new(conn);
             let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
@@ -712,16 +711,23 @@ pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
         if abs.exists() {
             std::fs::remove_file(&abs).map_err(|e| e.to_string())?;
         }
-        with_db_blocking(move |conn| RecordStore::new(conn).delete_db_row(id)).await
-    } else {
-        // 软删：仅打 is_deleted = 1，回收站可还原
-        with_db_blocking(move |conn| RecordStore::new(conn).soft_delete(id)).await
+        // 删关联的 .N.srt 字幕文件（与 mp4 同目录同名，所有版本）
+        if let Some(dir) = abs.parent() {
+            if let Some(stem) = abs.file_stem().and_then(|s| s.to_str()) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    // 匹配 <stem>.N.srt
+                    if name.starts_with(&format!("{}.", stem)) && name.ends_with(".srt") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+            }
+        }
     }
-}
-
-#[command]
-pub async fn restore_recording(id: i64) -> Result<(), String> {
-    with_db_blocking(move |conn| RecordStore::new(conn).restore(id)).await
+    with_db_blocking(move |conn| RecordStore::new(conn).delete_db_row(id)).await
 }
 
 /// 用系统默认应用打开录屏文件（QuickTime Player）。
@@ -1144,7 +1150,6 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         has_thumbnail: false,
         is_favorite: false,
         created_at: now_iso(),
-        is_deleted: false,
     };
 
     with_db_blocking(move |conn| {

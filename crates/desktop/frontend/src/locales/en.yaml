@@ -88,7 +88,8 @@ settings:
     favorite: Favorite
     unfavorite: Unfavorite
     delete: Delete
-    deleteConfirm: Click again to confirm
+    deleteConfirm: Confirm delete this recording?
+    deleteAlsoFile: Also delete disk files (mp4 + subtitles)
     transcript: Transcribe
     transcriptRegenerate: Regenerate subtitle
     exportGif: Export GIF

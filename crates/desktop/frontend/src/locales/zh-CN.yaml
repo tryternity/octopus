@@ -91,7 +91,8 @@ settings:
     favorite: 收藏
     unfavorite: 取消收藏
     delete: 删除
-    deleteConfirm: 再次点击确认删除
+    deleteConfirm: 确认删除此录屏？
+    deleteAlsoFile: 同时删除磁盘文件（mp4 + 字幕）
     transcript: 转字幕
     transcriptRegenerate: 重新生成字幕
     exportGif: 导出 GIF
