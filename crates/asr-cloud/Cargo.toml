@@ -8,7 +8,7 @@ octopus-asr-local = { path = "../asr-local" }
 octopus-infra = { path = "../infra" }
 
 # Async + WSS（wss:// 需 native-tls）
-tokio = { version = "1", features = ["full"] }
+tokio.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 

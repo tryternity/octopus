@@ -38,7 +38,7 @@ cpal = "0.16"
 enigo = "0.6"
 
 # Async
-tokio = { version = "1", features = ["full"] }
+tokio.workspace = true
 
 # Serialization
 serde.workspace = true
