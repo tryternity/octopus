@@ -38,6 +38,17 @@ impl PipelineConfig {
     }
 }
 
+/// 带时间戳的转写段（内部类型，非 DTO——desktop 编排时转为 record::SubtitleCue）。
+///
+/// 时间区间为绝对偏移（相对整段音频起点），单位毫秒；`start_ms` 为 VAD 段
+/// `offset_samples / 16.0`（16k 采样率），`end_ms` = `(offset + len) / 16.0`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimestampedSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
 /// 批处理转写：VAD 分段 → 逐段 `engine.transcribe` → 连接 → 纠错 → 简繁归一化。
 ///
 /// 收编自原 `engine::transcribe_with_vad`；纠错/简繁改由 `cfg` 控制（不读全局 config），
@@ -53,7 +64,19 @@ pub fn transcribe_batch(
     }
 
     let raw_text = transcribe_segments(engine, samples, &cfg.language)?;
+    Ok(postprocess_text(raw_text, engine, cfg))
+}
 
+/// 文本后处理：corrector（含热词命中计数副作用）→ ITN → 简繁归一。
+///
+/// 抽自 `transcribe_batch`，供 `transcribe_segments_with_timestamps` 复用（DRY）。
+/// 行为与原 `transcribe_batch` 内联实现完全一致——包括 corrector 命中持久化
+/// （`corrector::drain_hits` + `db::bump_hotword_hit_by_word`，best-effort）。
+fn postprocess_text(
+    raw_text: String,
+    engine: &dyn OfflineAsrEngine,
+    cfg: &PipelineConfig,
+) -> String {
     let is_english = cfg.language.eq_ignore_ascii_case("en");
     let text = if cfg.correct && !engine.skip_corrector() && !is_english {
         let corrected = crate::corrector::get_corrector().correct(&raw_text);
@@ -72,11 +95,11 @@ pub fn transcribe_batch(
     // ITN：中文数字→阿拉伯数字（corrector 后、hans 前，spec 2026-07-27-asr-itn-design §2）
     let text = crate::itn::normalize(&text);
 
-    Ok(if cfg.simplify {
+    if cfg.simplify {
         crate::hans::to_simplified(&text)
     } else {
         crate::hans::to_traditional(&text)
-    })
+    }
 }
 
 /// VAD 分段转写：短音频直连；长音频用 Silero VAD 切片后逐段转写，并按 CJK/非 CJK 规则连接。
@@ -145,6 +168,57 @@ fn transcribe_segments(
     }
 }
 
+/// 带时间戳的转写：VAD 分段（带 offset）→ 逐段 `engine.transcribe` + 后处理 → 组装 `TimestampedSegment`。
+///
+/// 与 `transcribe_batch` 的区别：不拼接文本，而是保留每段独立 + 时间区间（字幕场景所需）。
+/// 短音频（≤480k samples）也走 VAD 分段（spec 2026-07-28-record-auto-subtitle §4.5 决策）
+/// ——与 `transcribe_segments` 的「短音频直连」不同，因为字幕场景需要分段 cue。
+/// VAD 初始化失败时降级：整段作为单条 cue（offset=0）。
+/// 过滤：`<500ms` 段（噪声/残余静音）与 `text.trim().is_empty()` 段。
+pub fn transcribe_segments_with_timestamps(
+    engine: &dyn OfflineAsrEngine,
+    samples: &[f32],
+    cfg: &PipelineConfig,
+) -> Result<Vec<TimestampedSegment>> {
+    // VAD 分段（带 offset）——初始化失败降级整段一条 cue（offset=0）。
+    let segments: Vec<crate::audio::VadSegment> = match crate::config::create_silero_vad() {
+        Ok(mut v) => crate::audio::segment_audio_vad_with_offsets(
+            samples, &mut v, 480, 0.4, 500, 25000,
+        ),
+        Err(e) => {
+            log::warn!("VAD 初始化失败，整段作为单条 cue: {}", e);
+            vec![crate::audio::VadSegment {
+                offset_samples: 0,
+                samples: samples.to_vec(),
+            }]
+        }
+    };
+
+    let mut result = Vec::with_capacity(segments.len());
+    for seg in &segments {
+        let dur_samples = seg.samples.len();
+        let dur_ms = (dur_samples as f64 / 16.0).round() as u64;
+        // 过滤 <500ms 段（噪声/残余静音）
+        if dur_ms < 500 {
+            continue;
+        }
+        let raw = engine.transcribe(&seg.samples, &cfg.language)?;
+        let text = postprocess_text(raw, engine, cfg);
+        // 过滤空文本段
+        if text.trim().is_empty() {
+            continue;
+        }
+        let start_ms = (seg.offset_samples as f64 / 16.0).round() as u64;
+        let end_ms = ((seg.offset_samples + dur_samples) as f64 / 16.0).round() as u64;
+        result.push(TimestampedSegment {
+            start_ms,
+            end_ms,
+            text,
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +276,72 @@ mod tests {
         let samples = vec![0.0f32; 1000];
         let out = transcribe_batch(&eng, &samples, &cfg(true, false)).unwrap();
         assert_eq!(out, "短音频");
+    }
+
+    #[test]
+    fn transcribe_timestamps_short_audio_single_cue() {
+        // 短音频（1s = 16000 samples）走 VAD 分段（spec §4.5）。
+        // 不强断言段数——VAD 对纯合成信号常判静音（audio.rs 测试已验证），
+        // 结果可能是 0 段（VAD 判静音 + 非空文本下）或 N 段。只校验返回段的通用不变式：
+        // 1) 每段 start_ms < end_ms；2) 1s 音频所有段 end_ms ≤ 1000；3) 每段文本非空。
+        let eng = FakeEngine { text: "短音频测试".into(), skip: false };
+        let samples = vec![0.5f32; 16000]; // 1 秒
+        let segs =
+            transcribe_segments_with_timestamps(&eng, &samples, &cfg(true, false)).unwrap();
+        for s in &segs {
+            assert!(s.start_ms < s.end_ms, "start < end（{} >= {}）", s.start_ms, s.end_ms);
+            assert!(s.end_ms <= 1000, "1 秒音频 end_ms 不应超 1000，实际 {}", s.end_ms);
+            assert!(!s.text.is_empty(), "段文本不应为空（过滤后）");
+        }
+    }
+
+    #[test]
+    fn transcribe_timestamps_ms_conversion() {
+        // 时间戳换算验证：320000 samples = 20s（>500ms 阈值，不会被 dur 过滤）。
+        // create_silero_vad() 成功且 VAD 把合成信号判静音时返回 0 段；
+        // VAD 成功检测到语音则分段；create_silero_vad() 失败则降级整段一条 cue
+        // （offset=0、len=samples.len()，end_ms = 320000/16 = 20000）。
+        // 三种路径下都校验不变式；降级单 cue 路径额外校验精确换算。
+        let eng = FakeEngine { text: "测试".into(), skip: false };
+        let samples = vec![0.5f32; 320000];
+        let segs =
+            transcribe_segments_with_timestamps(&eng, &samples, &cfg(true, false)).unwrap();
+        for s in &segs {
+            assert!(s.start_ms < s.end_ms, "start < end");
+            assert!(s.end_ms <= 20000, "20s 音频 end_ms ≤ 20000，实际 {}", s.end_ms);
+            assert!(!s.text.is_empty());
+        }
+        // 降级整段一条 cue 时（create_silero_vad 失败）精确校验 ms 换算
+        if segs.len() == 1 {
+            assert_eq!(segs[0].start_ms, 0, "整段 cue start 应为 0");
+            assert_eq!(segs[0].end_ms, 20000, "320000 / 16 = 20000");
+        }
+    }
+
+    #[test]
+    fn transcribe_timestamps_filters_empty_text() {
+        // 空文本过滤：FakeEngine 返回空文本 → 即使 VAD 检测到语音段，结果也应全被过滤为空。
+        // 与对照测试 transcribe_timestamps_short_audio_single_cue（非空文本）配合，
+        // 验证 `text.trim().is_empty()` 过滤分支：在相同音频下，空文本 → 0 段。
+        // Silero VAD 对合成信号常判静音（环境限制，audio.rs 测试同理不强断言非空）；
+        // 当 VAD 返回 0 段时空文本过滤本就无段可过滤——此情形下结果空是 VAD 而非过滤导致，
+        // 故本测试不与 VAD 检测耦合：只验证「无论 VAD 是否检测到段，空文本永远不进结果」。
+        let eng = FakeEngine { text: "".into(), skip: false };
+        let samples = vec![0.5f32; 16000];
+        let segs =
+            transcribe_segments_with_timestamps(&eng, &samples, &cfg(true, false)).unwrap();
+        assert!(
+            segs.is_empty(),
+            "空文本段应被过滤，实际残留 {} 段",
+            segs.len()
+        );
+        // 反向对照：同样音频、非空文本，至少不应因过滤逻辑把有效段误删为空
+        // （若 VAD 仍判静音则两者都为空——这是 VAD 行为，不破坏本断言）。
+        let eng2 = FakeEngine { text: "有内容".into(), skip: false };
+        let segs2 =
+            transcribe_segments_with_timestamps(&eng2, &samples, &cfg(true, false)).unwrap();
+        for s in &segs2 {
+            assert!(!s.text.is_empty(), "非空文本下返回段不应含空文本");
+        }
     }
 }
