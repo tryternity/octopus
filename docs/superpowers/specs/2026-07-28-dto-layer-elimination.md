@@ -1,8 +1,35 @@
 # DTO 转换层精简——casing 统一后的架构简化
 
-- **Status:** 🔜 待实现（2026-07-28）
+- **Status:** ✅ Phase 1+2 已完成（2026-07-28）
 - **Date:** 2026-07-28
 - **关联：** AGENTS.md「序列化 casing 规范」+ casing 统一 Task 1-10 已完成
+
+## 实现注记（2026-07-28）
+
+### Phase 1 完成（commit `3c4b4d63`）
+
+删除 5 个纯冗余 DTO：
+- `PasswordStrengthDto` → 直接返回 `PasswordStrength`
+- `VaultStatusDto` / `TotpResultDto` / `AutoTypeResultDto` → co-located 本地 struct
+- `PromptInfo` → 直接返回 `PromptRecord`
+
+跳过 9 个（VerifyResult/RecordStatus/MergeResult/ProcessStats 等）——它们本身就是 wire format 定义（无内部镜像），不是冗余。
+
+### Phase 2 完成（commit `206500d3` + `db42fdde`）
+
+删除 3 个加密数据 DTO：
+- `LoginUriDto` → CipherDto 直接用 `LoginUri`
+- `LoginDataDto` → CipherDto 直接用 `LoginData`
+- `FieldDto` → CipherDto 直接用 `Field`
+
+cipher_to_dto / dto_to_input 转换函数大幅简化（-96 行）。MatchType 枚举有 `#[serde(into/from = "i64")]`，序列化为 i64，wire format 与原 DTO 一致。
+
+**alias 已删除**（commit `db42fdde`）——无需兼容老加密数据（全新库策略）。LoginData/Field/PasswordHistoryEntry 的 `#[serde(alias = "snake_case")]` 全部移除。
+
+### 保留的 DTO（真转换层）
+
+- `CipherDto` / `CipherInputDto`：CipherData enum 展平 + enum→i64 + 丢字段（Phase 3，本次不做）
+- `DownloadableModel` / `TranslateCloudModel` / `ModelFile` / `TimeSeries` / `ModelMemory` / `OcrTextBlock`：真转换（字段重命名/过滤/计算）
 
 ## 背景
 
