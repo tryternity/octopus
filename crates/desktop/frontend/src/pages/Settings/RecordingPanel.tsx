@@ -234,7 +234,6 @@ export default function RecordingPanel({
   const [records, setRecords] = useState<RecordingMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [confirmDelete, setConfirmDelete] = useState(false);
   // GIF 导出：一次只导出一个（按 id 跟踪，null=空闲）。row 据此切换按钮 disabled/spinner。
   const [gifExportingId, setGifExportingId] = useState<number | null>(null);
   // 音轨合并：一次只合并一个（按 id 跟踪，null=空闲）。仿 gifExportingId 模式。
@@ -264,11 +263,10 @@ export default function RecordingPanel({
 
   // ── 字幕 LLM 润色默认配置（Phase 4，Task 4.3）──
   // 持久化到 DB app_config（key=subtitle_llm_polish_default / subtitle_polish_llm_key）。
-  // 这些 key 不在 AppConfig struct，get_config 不返回——前端默认值启动（MVP 不回显），
-  // 用户在 Settings 改后持久化。弹框默认值从这两个 state 取（与 Settings 同步）。
-  const [polishDefault, setPolishDefault] = useState(false);
-  const [polishLlmKey, setPolishLlmKey] = useState<string>("");
-  // 可用 LLM 列表（弹框 + Settings 下拉填充）。mount 时拉取，空数组兜底（下拉显示占位）。
+  // 字幕润色默认值（MVP：前端常量，不回显 DB 配置）。弹框打开时初始化 checkbox + 下拉。
+  const polishDefault = false;
+  const polishLlmKey = "";
+  // 可用 LLM 列表（弹框下拉填充）。mount 时拉取，空数组兜底（下拉显示占位）。
   const [llmOptions, setLlmOptions] = useState<LlmOption[]>([]);
   useEffect(() => {
     invoke<LlmOption[]>("list_subtitle_llms")
@@ -514,7 +512,6 @@ export default function RecordingPanel({
       });
       setRecords(recs);
       setSelectedIds(new Set());
-      setConfirmDelete(false);
     } catch (e) {
       showToast(t("settings.recordings.loadFailed") + e, "error");
     }
@@ -532,7 +529,6 @@ export default function RecordingPanel({
       else next.add(id);
       return next;
     });
-    setConfirmDelete(false);
   };
 
   const allChecked = records.length > 0 && selectedIds.size === records.length;
@@ -541,11 +537,6 @@ export default function RecordingPanel({
   const handleBatchDelete = () => {
     if (selectedIds.size === 0) return;
     setDeleteDialog("batch");
-  };
-
-  const handleRowDeleted = () => {
-    setSelectedIds(new Set());
-    loadList();
   };
 
   const handleFavoriteToggled = () => {
@@ -698,7 +689,6 @@ export default function RecordingPanel({
                   t("settings.recordings.deletedN", { n: ids.length }),
                 );
                 if (deleteDialog === "batch") setSelectedIds(new Set());
-                setConfirmDelete(false);
                 loadList();
               } catch (e) {
                 showToast(
@@ -755,7 +745,6 @@ export default function RecordingPanel({
               isSelected={selectedIds.has(rec.id)}
               onToggleSelect={() => toggleSelect(rec.id)}
               showToast={showToast}
-              onDeleted={handleRowDeleted}
               onRequestDelete={(id) => setDeleteDialog(id)}
               onFavoriteToggled={handleFavoriteToggled}
               onRenamed={loadList}
@@ -766,8 +755,8 @@ export default function RecordingPanel({
               onMergeAudio={(mid) => setMergingId(mid)}
               onMerged={loadList}
               subtitleGeneratingId={subtitleGeneratingId}
+              hasSubtitle={!!subtitleResults[rec.id]}
               subtitleStage={subtitleStage[rec.id]}
-              subtitleResult={subtitleResults[rec.id]}
               subtitleError={subtitleError[rec.id]}
               onRequestPolishDialog={(id) => {
                 // 打开弹框：用 Settings 默认值初始化 checkbox + 下拉。
@@ -777,9 +766,6 @@ export default function RecordingPanel({
               }}
               expandedSubtitleId={expandedSubtitleId}
               onToggleExpandSubtitle={onToggleExpandSubtitle}
-              onRevealSubtitle={onRevealSubtitle}
-              onCopyCue={onCopyCue}
-              onCopyAll={onCopyAll}
             />
           ))}
 
@@ -817,7 +803,6 @@ interface RecordingRowProps {
   isSelected: boolean;
   onToggleSelect: () => void;
   showToast: (msg: string, variant?: ToastVariant) => void;
-  onDeleted: () => void;
   /** 触发删除确认弹框（单条）。 */
   onRequestDelete: (id: number) => void;
   onFavoriteToggled: () => void;
@@ -830,10 +815,10 @@ interface RecordingRowProps {
   onMerged: () => void;
   /** 字幕生成中 id（null=空闲）。控制 Captions 按钮 spinner / disabled。 */
   subtitleGeneratingId: number | null;
+  /** 该 recording 是否已有字幕（控制 Captions 按钮 tooltip + ChevronDown 显示）。 */
+  hasSubtitle: boolean;
   /** 该 recording 当前的字幕生成阶段（polishing 阶段显示「✨ LLM 润色中...」）。 */
   subtitleStage?: SubtitleStage;
-  /** 该 recording 已生成的字幕（无则 undefined）。Task 4.2 详情面板消费。 */
-  subtitleResult?: SubtitleResult;
   /** 字幕生成失败文案（无则 undefined）。行内红字展示。 */
   subtitleError?: string;
   /** 请求弹转字幕润色对话框（Phase 4：点 Captions 不再直接生成，先弹框确认）。 */
@@ -842,12 +827,6 @@ interface RecordingRowProps {
   expandedSubtitleId: number | null;
   /** 展开/收起字幕预览面板。 */
   onToggleExpandSubtitle: (id: number) => void;
-  /** 在 Finder 显示最新 SRT 文件。 */
-  onRevealSubtitle: (id: number) => void;
-  /** 复制单条 cue 文本到剪贴板。 */
-  onCopyCue: (cue: SubtitleCue) => void;
-  /** 复制全部 cue 纯文本到剪贴板。 */
-  onCopyAll: (result: SubtitleResult) => void;
 }
 
 function RecordingRow({
@@ -855,7 +834,6 @@ function RecordingRow({
   isSelected,
   onToggleSelect,
   showToast,
-  onDeleted,
   onRequestDelete,
   onFavoriteToggled,
   onRenamed,
@@ -866,15 +844,12 @@ function RecordingRow({
   onMergeAudio,
   onMerged,
   subtitleGeneratingId,
+  hasSubtitle,
   subtitleStage,
-  subtitleResult,
   subtitleError,
   onRequestPolishDialog,
   expandedSubtitleId,
   onToggleExpandSubtitle,
-  onRevealSubtitle,
-  onCopyCue,
-  onCopyAll,
 }: RecordingRowProps) {
   const t = useT();
   const [favoriteLoading, setFavoriteLoading] = useState(false);
@@ -1003,7 +978,6 @@ function RecordingRow({
 
   // ── 字幕面板展开态（Task 4.2）──
   const isSubtitleExpanded = expandedSubtitleId === rec.id;
-  const hasSubtitle = !!subtitleResult;
 
   return (
     <div
@@ -1171,7 +1145,7 @@ function RecordingRow({
               ? subtitleStage === "polishing"
                 ? t("settings.recordings.subtitlePolishing")
                 : t("settings.recordings.subtitleGenerating")
-              : subtitleResult
+              : hasSubtitle
                 ? t("settings.recordings.transcriptRegenerate")
                 : t("settings.recordings.transcript")
           }
