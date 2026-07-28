@@ -3,6 +3,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordStrength {
     /// 0-4（zxcvbn 评分）
     pub score: u8,

@@ -122,6 +122,7 @@ impl TryFrom<i64> for MatchType {
 
 /// 单条 URI + 其匹配策略（None 表示用客户端默认，octopus 强制 Domain）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginUri {
     pub uri: String,
     /// null = 用客户端默认（Domain）
@@ -130,6 +131,7 @@ pub struct LoginUri {
 
 /// Login 类型 cipher 的明文 payload（落盘时加密为 data 字段）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginData {
     pub uris: Vec<LoginUri>,
     pub username: Option<String>,
@@ -141,6 +143,7 @@ pub struct LoginData {
 
 /// 自定义字段（密码、文本、隐藏等）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Field {
     pub name: String,
     pub value: Option<String>,
@@ -149,6 +152,7 @@ pub struct Field {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordHistoryEntry {
     pub password: String,
     pub last_used_at: String,
@@ -163,6 +167,7 @@ pub enum CipherData {
 
 /// 解密后的 cipher 完整对象。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Cipher {
     pub id: String, // UUID v4 字符串（2026-07-21 v44：支持 git 同步）
     pub folder_id: Option<String>,
@@ -181,6 +186,7 @@ pub struct Cipher {
 
 /// 新建/更新 cipher 的输入（不带 id/时间戳——id 由调用方在 create_cipher 时生成 UUID）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherInput {
     pub folder_id: Option<String>,
     pub favorite: bool,

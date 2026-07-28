@@ -115,6 +115,7 @@ pub fn folder_file_path(uuid: &str) -> Result<PathBuf> {
 
 /// meta.json 内容——只含同步所需字段（不含 app_key_local_enc / K_machine 相关）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MetaFile {
     pub version: u32,
     pub kdf_type: i64,
@@ -194,6 +195,7 @@ pub struct MetaSyncFields {
 
 /// cipher 文件——encrypted 字段是 user_vault_key 加密的 v1: 前缀密文（与 SQLite 一致）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherFile {
     pub version: u32,
     pub id: String,
@@ -203,6 +205,7 @@ pub struct CipherFile {
 
 /// cipher 加密字段——与 SQLite vault_ciphers 表的敏感字段一一对应。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherEncStrings {
     pub name: String,
     pub notes: Option<String>,
@@ -213,6 +216,7 @@ pub struct CipherEncStrings {
 
 /// cipher 非敏感元数据（明文存储——这些字段在 SQLite 里也是明文）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherPlaintextMeta {
     pub folder_id: Option<String>,
     pub favorite: bool,
@@ -274,6 +278,7 @@ impl CipherFile {
 
 /// folder 文件——结构比 cipher 简单（只有 name 加密）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderFile {
     pub version: u32,
     pub id: String,

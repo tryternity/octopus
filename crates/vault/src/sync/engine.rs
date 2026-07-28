@@ -1787,14 +1787,14 @@ mod tests {
         };
         let json = serde_json::to_string(&outline).expect("serialize");
 
-        // 字段名必须是 md5 + updated_ms（不是 sha + updated_at）
+        // 字段名：md5（无下划线不变）+ updatedMs（2026-07-28 casing 统一，原 updated_ms）
         assert!(
             json.contains("\"md5\""),
             "outline.json 应含 \"md5\" 字段，实际：{}", json
         );
         assert!(
-            json.contains("\"updated_ms\""),
-            "outline.json 应含 \"updated_ms\" 字段，实际：{}", json
+            json.contains("\"updatedMs\""),
+            "outline.json 应含 \"updatedMs\" 字段（camelCase），实际：{}", json
         );
         assert!(
             !json.contains("\"sha\""),
