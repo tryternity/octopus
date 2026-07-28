@@ -21,7 +21,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 模型文件清单 sha256 校验（manifest，desktop/cli 共用）
 sha2 = "0.10"
-serde_yaml = "0.9"
 tokenizers = "0.21"
 rustfft = "6"
 # RNNoise 流式降噪（纯 Rust，内置默认模型）。曾用 DeepFilterNet3 dfn3.onnx，但该流式逐帧
@@ -33,14 +32,11 @@ ndarray_015 = { package = "ndarray", version = "0.15", default-features = false 
 # 引用 octopus fork tryternity/DeepFilterNet tag v0.5.6（= commit 978576aa，与上游
 # Rikorose/DeepFilterNet v0.5.6 等价）。自控仓库避免上游删库/移 tag；精确 commit 由 Cargo.lock 锁定。
 df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
-base64 = "0.22"
-kaldi-native-fbank = "0.1.0"
 log = "0.4"
 parking_lot = { workspace = true }
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }
 onnx-infra = { path = "../onnx-infra" }
-octopus-llm = { path = "../llm" }
 
 jieba-rs = "0.6"
 pinyin = "0.10"

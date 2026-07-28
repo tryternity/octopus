@@ -3791,21 +3791,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kaldi-native-fbank"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f297ca19f4c2069ccc7969cba1d4c496b46c0b88f6ceddb88a9ae3200a6cf506"
-dependencies = [
- "anyhow",
- "log",
- "rand 0.8.6",
- "rand_distr",
- "realfft",
- "rustfft",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5133,20 +5118,17 @@ name = "octopus-asr-local"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "chinese2digits",
  "criterion",
  "deep_filter",
  "flate2",
  "hound",
  "jieba-rs",
- "kaldi-native-fbank",
  "log",
  "ndarray 0.15.6",
  "ndarray 0.17.2",
  "nnnoiseless",
  "octopus-infra",
- "octopus-llm",
  "once_cell",
  "onnx-infra",
  "ort",
@@ -5156,7 +5138,6 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "tempfile",
  "tokenizers",
@@ -5172,8 +5153,6 @@ dependencies = [
  "image",
  "imageproc",
  "log",
- "rustfft",
- "serde",
  "xcap",
 ]
 
@@ -5187,7 +5166,6 @@ dependencies = [
  "md5",
  "octopus-asr-cloud",
  "octopus-asr-local",
- "octopus-download",
  "octopus-infra",
  "serde",
  "serde_json",
@@ -5233,7 +5211,6 @@ dependencies = [
  "image",
  "log",
  "notify",
- "nucleo-matcher",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -5256,7 +5233,6 @@ dependencies = [
  "percent-encoding",
  "prost 0.13.5",
  "reqwest 0.12.28",
- "rubato 0.16.2",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5302,7 +5278,6 @@ dependencies = [
 name = "octopus-download"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "futures",
  "httpmock",
  "log",
@@ -5337,7 +5312,6 @@ name = "octopus-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "log",
  "octopus-asr-local",
  "octopus-infra",
  "once_cell",
@@ -5366,8 +5340,6 @@ version = "0.1.0"
 dependencies = [
  "geo-clipper",
  "geo-types",
- "imageproc",
- "log",
  "nalgebra 0.33.3",
  "ndarray 0.17.2",
  "num_cpus",
@@ -5385,11 +5357,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "log",
- "octopus-infra",
  "rusqlite",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -5407,7 +5377,6 @@ dependencies = [
 name = "octopus-search"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -5422,7 +5391,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -5453,7 +5421,6 @@ dependencies = [
  "log",
  "md-5",
  "octopus-infra",
- "parking_lot",
  "regex",
  "rusqlite",
  "serde",
@@ -5507,7 +5474,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "subtle",
  "tempfile",
  "totp-rs",
  "url",
