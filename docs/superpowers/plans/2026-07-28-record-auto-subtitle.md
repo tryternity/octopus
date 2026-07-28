@@ -15,7 +15,7 @@
 > | 2.2 transcribe_segments_with_timestamps | ✅ 执行 | ✅ 保留 |
 > | 3.1+3.2 命令层 | ✅ 执行 | ⚠️ 重构：generate_subtitle 改写文件（不 UPDATE DB）；删 get_subtitle/export_subtitle，新增 read_subtitle/reveal_subtitle |
 > | 4.1-4.3 前端 | ✅ 执行 | ⚠️ 重构：cue 预览改读 read_subtitle；导出改 reveal_subtitle（Finder 显示） |
-> | 5.1 e2e | ✅ 执行（发现 3 个 bug）| 见下方 bugfix |
+> | 5.1 e2e | ✅ 执行（发现 3 个 bug + UI 优化）| 见下方 bugfix + UI 改动 |
 > | 5.2 architecture.md | ✅ 执行 | ✅ 保留 |
 >
 > **v2 重构提交**：`eaeca817`（DB→文件）+ `e59477ca`/`7b929467`/`9342779e`（3 bugfix）
@@ -23,6 +23,12 @@
 > **v2 新增功能**：`next_srt_path` / `latest_srt_path` / `parse_srt`（record crate，6 TDD）
 >
 > **LLM 润色**：独立 spec/plan `2026-07-28-subtitle-llm-polish-*`，已实施完成。
+>
+> **e2e 后 UI 改动（2026-07-28~29）**：
+> - SubtitlePanel 行内展开 → **浮层 overlay**（`b90c399b`，不再挤压 RecordingRow 布局）
+> - 删 P2 搜索框 + 字幕默认润色设置行（`c15389ff`，用户反馈清理）
+> - 删除录屏改为**物理删除 + 弹框问是否删磁盘文件**（`97c2f06c`，删软删/回收站功能 + is_deleted 列，schema v53→v54）
+> - 删除弹框 checkbox **默认不勾**（`ced25fd3`，误删文件不可逆）
 >
 > 下方原文保留作为 v1 实施历史记录。
 

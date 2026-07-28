@@ -410,11 +410,11 @@ pub struct LlmOption {
 - `FallbackRatio` → 黄色 toast「LLM 标记解析失败，已粗略拆分」
 - `NoLlmConfig` / `Failed` → 红色 toast「LLM 润色失败，使用原始识别：{msg}」
 
-### 6.4 Settings 加默认配置
+### 6.4 ~~Settings 加默认配置~~（已移除，2026-07-29 e2e 后清理）
 
-Settings 录屏页加：
-- 「字幕默认 LLM 润色」开关（持久化 `subtitle_llm_polish_default`）
-- 「字幕默认润色 LLM」下拉（持久化 `subtitle_polish_llm_key`）
+~~Settings 录屏页加「字幕默认 LLM 润色」开关 + 「字幕默认润色 LLM」下拉。~~
+
+**e2e 后用户反馈清理**：SubtitlePolishDefaults 组件 + handlePolishDefaultChange/handlePolishLlmKeyChange 已删。弹框 checkbox 默认值改为前端常量（`polishDefault = false`），不回显 DB 配置。后端 `set_config` 的 `subtitle_` 分支保留（DB 泛型 key-value 仍可写，只是前端不消费）。如需恢复 Settings 默认配置，重新加 SubtitlePolishDefaults 组件即可。
 
 ## 7. 测试策略
 

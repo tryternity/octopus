@@ -27,8 +27,8 @@
 - 默认 mic track，UI 可选 system（单轨录制时自适应）
 - ASR 模型跟随用户 Settings 配置
 - VAD 段级时间戳（一句字幕 ≈ 一个语音段，可能不规整，后期可升级）
-- DB 存 cue 列表（结构化）+ SRT 全文（便于直接导出）
-- 历史项可展开 cue 列表预览，每 cue 可复制，整体可导出 SRT 文件到磁盘
+- SRT 文件存储（与 mp4 同目录 `xxx.N.srt`，N 递增不覆盖；v2 架构，不存 DB）
+- 历史项 cue 列表预览（浮层 overlay，单击复制，复制全部，在 Finder 显示 SRT）
 - 进度可见（抽音轨/识别中/完成）+ 失败优雅降级（不阻塞视频已就绪）
 
 ### 1.2 MVP 范围外（OUT，留给后续 spec）
@@ -46,7 +46,7 @@
 
 1. 一段含麦克风讲解的 5 分钟录屏，点「生成字幕」后 ≤ 60 秒出完整 SRT
 2. SRT 在 QuickTime / VLC / 剪映里能正确加载，时间戳对齐可接受（每条 cue 的起始时间与视频对应语音段偏差 ≤ 500ms）
-3. 重复点「生成字幕」是幂等的（覆盖旧结果，不重复 cue）
+3. 重复点「转字幕」递增生成 `xxx.N.srt`（不覆盖旧版本，cue 面板显示最新）
 4. 无 mic track（纯系统音频录制）→ 走 system track 也能跑，但有 toast 提示「未检测到麦克风音轨，使用系统音轨」
 5. 完全无声的录制 → 友好提示「未检测到语音内容」，不崩溃
 
@@ -497,74 +497,50 @@ type SubtitleProgressPayload =
 
 ## 6. 前端 UI
 
-按 AGENTS.md「涉及前端 UI 必须用 frontend-design skill」准则，本节是设计意图层面的描述，具体视觉设计在实施阶段（Phase 4）用 frontend-design skill 落实。
+按 AGENTS.md「涉及前端 UI 必须用 frontend-design skill」准则，本节是设计意图层面的描述，具体视觉设计在实施阶段用 frontend-design skill 落实。
 
 ### 6.1 入口位置
 
-录屏历史列表现有的每个录制项（网格/列表视图），在「...」菜单或卡片操作区加入「生成字幕」入口：
+录屏历史列表每个录制项（RecordingRow）的操作区：
+- **Captions 图标按钮**（Lucide `Captions`）：未生成字幕时 tooltip「转字幕」；已生成时「重新生成」
+- **ChevronDown 按钮**：有字幕时显示，点击 toggle 字幕浮层
 
-- **未生成字幕时**：显示「生成字幕」按钮（或菜单项）
-- **已生成字幕时**：显示「查看字幕」（展开 cue 列表）+「重新生成」+「导出 SRT」
-- **无 audio track 时**：按钮置灰 + tooltip「该录制无音轨」
+### 6.2 字幕生成流程 UX（v2 + LLM 润色）
 
-### 6.2 字幕生成流程 UX
+**触发**：点 Captions 按钮 → 弹 `SubtitlePolishDialog` 对话框（overlay 居中卡片）：
+- checkbox「LLM 润色」（默认不勾）
+- 下拉「润色用 LLM」（checkbox 勾选时启用，从 `list_subtitle_llms` 填充）
+- 取消 / 确认按钮（确认按钮文案随润色开关变：「生成」/「润色并生成」）
 
-**触发**：点击「生成字幕」
-**进度反馈**：卡片上叠加一个轻量的进度状态条（不阻塞整个历史列表，只在该卡片上）
+确认后调 `generate_subtitle(id, track=null, polish)`。进度通过 listen `record://task` 的 `subtitle-progress` 事件更新（Captions 按钮 spinner，polishing 阶段切 Sparkles 脉冲 + 行内「✨ LLM 润色中...」chip）。
 
-```
-阶段 1：🎵 提取音轨...  [▬▬▬░░░░░] 20%
-阶段 2：🎤 识别中...    [▬▬▬▬▬░░░] 65%
-阶段 3：✨ 生成字幕...  [▬▬▬▬▬▬▬░] 92%
-完成：✅ 字幕已生成（共 23 条）    [查看字幕] [导出 SRT]
-```
+### 6.3 cue 预览浮层（v2：overlay，不再行内展开）
 
-- 进度通过 listen `record://subtitle-progress` 更新
-- 失败时显示「❌ 字幕生成失败：{message}」+「重试」按钮
-- 生成期间禁用「生成字幕」按钮（防重复点击）
+字幕生成成功后，点击 ChevronDown 展开 **浮层**（fixed overlay，居中卡片，不挤压 RecordingRow 布局）：
 
-### 6.3 cue 列表预览
+- 标题栏：cue 计数 · 模型 · track 来源标签 · X 关闭按钮
+- cue 列表（flex-1 可滚）：等宽时间戳 `00:00 → 00:08`（tabular-nums）+ 文本，单击复制（CopyCheck 反馈）
+- 底部操作条：复制全部 + 在 Finder 显示（`reveal_subtitle`）
+- 关闭方式：Esc / 点遮罩 / X 按钮
+- fallback 提示：track_used 非 microphone 时顶部 amber 条「未检测到麦克风音轨，已使用系统音轨识别」
 
-字幕生成成功后，点击「查看字幕」展开 cue 列表面板：
+⚠️ v1 是行内展开抽屉（挤压 RecordingRow 布局），e2e 反馈后改为浮层 overlay。
 
-```
-┌─────────────────────────────────────────────────┐
-│  字幕（共 23 条）         模型：sensevoice      │
-│  ─────────────────────────────────────────────  │
-│  1  00:00:01 → 00:00:03   大家好今天给大家介绍  │
-│     ─────────────────────────────────────────  │
-│  2  00:00:04 → 00:00:07   如何使用这个新功能    │
-│     ─────────────────────────────────────────  │
-│  3  00:00:08 → 00:00:12   首先我们来看一下界面  │
-│  ...                                            │
-│                                                 │
-│  [复制全部]  [导出 SRT]  [重新生成]            │
-└─────────────────────────────────────────────────┘
-```
+### 6.4 polish_outcome 提示
 
-- 每条 cue 显示：序号、时间区间（`HH:MM:SS` 起止，紧凑格式）、文本
-- 单击 cue：复制该条文本到剪贴板
-- 「复制全部」：复制整段纯文本（不含 SRT 时间戳，只文本拼接）
-- 「导出 SRT」：触发 save dialog → 调 `export_subtitle` → toast 成功
-- 「重新生成」：确认弹窗（覆盖现有字幕？）→ 再走一遍 generate
+字幕生成完成后，根据 `result.polishOutcome` 显示 toast：
+- `fallbackRatio` → 黄色「LLM 标记解析失败，已粗略拆分」
+- `noLlmConfig` / `failed:msg` → 红色「LLM 润色失败：msg，使用原始识别」
+- `polished` / undefined → 无提示
 
-### 6.4 时间显示格式
+### 6.5 时间显示格式
 
-预览面板用紧凑格式（节省横向空间）：`00:00:01 → 00:00:03`
+浮层用紧凑格式：`00:00 → 00:08`
 SRT 文件用标准格式：`00:00:01,234 --> 00:00:03,567`
-
-### 6.5 fallback 提示
-
-如果 `track_used` 字段显示用了 system track（而非用户预期的 microphone），cue 预览面板顶部加一行温和提示：
-
-```
-ℹ️ 未检测到麦克风音轨，已使用系统音轨识别
-```
 
 ### 6.6 前端 interface（TS）
 
 ```typescript
-// crates/desktop/frontend/src/types/record.ts (扩展)
 interface SubtitleCue {
   startMs: number;
   endMs: number;
@@ -576,25 +552,16 @@ interface SubtitleResult {
   srtText: string;
   model: string;
   trackUsed: 'microphone' | 'system' | 'merged' | 'unknown';
+  polishOutcome?: string;  // "polished"/"fallbackRatio"/"noLlmConfig"/"failed:msg"
 }
 
-type SubtitleProgress =
-  | { stage: 'extracting-audio'; percent: number }
-  | { stage: 'recognizing'; percent: number }
-  | { stage: 'finalizing'; percent: number }
-  | { stage: 'done'; cueCount: number }
-  | { stage: 'error'; message: string };
+// record://task 事件 payload（嵌套 stage）
+type SubtitleStage = 'extracting-audio' | 'recognizing' | 'polishing' | 'finalizing' | 'done' | 'error';
 ```
 
 ### 6.7 i18n
 
-新增 zh-CN / en 文案键：
-- `record.subtitle.generate` / `record.subtitle.view` / `record.subtitle.regenerate`
-- `record.subtitle.export` / `record.subtitle.copyAll` / `record.subtitle.copyOne`
-- `record.subtitle.progress.*`（5 个阶段文案）
-- `record.subtitle.error.*`（错误文案）
-- `record.subtitle.fallback.systemTrack`
-- `record.subtitle.empty`（无语音内容）
+文案键在 `settings.recordings.*` 命名空间（zh-CN + en 对称）：subtitle* / transcript* / deleteAlsoFile / deleteConfirm 等。
 
 ## 7. 测试策略
 
