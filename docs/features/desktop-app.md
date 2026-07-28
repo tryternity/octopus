@@ -85,7 +85,7 @@
 - **300×600**，无边框圆角透明置顶
 - 顶部标题栏：X + 「剪贴板」 + 右侧两 toggle（监听开关 CircleCheck/CircleX + Pin）+ `data-tauri-drag-region="deep"` + `cursor-grab`
 - 搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip）
-- 列表：hairline 分隔线，ASR 条目左侧 voice 色条，图片条目内联 WebP 缩略图
+- 列表：hairline 分隔线，ASR 条目左侧 voice 色条，图片条目内联缩略图
 - hover 显示操作按钮（编辑/预览/保存/OCR/打开/删除 + 收藏置末）
 - **左侧类型图标单击即复制**（触效：icon 放大回弹 + 闪绿 + 「已复制」气泡 1.5s）
 - 单击选中不关闭，双击写剪贴板 → 隐藏浮窗 → 模拟 Cmd+V 自动粘贴

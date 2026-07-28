@@ -603,6 +603,44 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     Ok(OcrResult { text, blocks })
 }
 
+/// 图片条目二维码识别：按 image_id 读 DB 图片 blob（WebP）→ 解码 → qrcode::scan。
+/// 与 ocr_image 同模式读 blob，但不走 OCR 推理、不入库、不自动写剪贴板
+/// （前端白卡提供单个复制 + 复制所有按钮）。
+/// 返回识别到的二维码内容列表（可能空）。
+#[tauri::command]
+pub async fn scan_qrcode_image(
+    image_id: i64,
+) -> Result<Vec<String>, String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, image_id)
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::Image {
+        return Err("非图片条目".into());
+    }
+
+    let blob_hash = item.ref_data.clone()
+        .ok_or("图片元数据缺失")?;
+
+    let webp_blob = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or("图片数据不存在")?;
+
+    // 图片解码（自动检测格式：JPEG/WebP/PNG）+ quircs 识别：CPU 密集，移入 spawn_blocking。
+    let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+        let img = ::image::load_from_memory(&webp_blob)
+            .map_err(|e| format!("解码图片失败: {}", e))?;
+        octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("scan_qrcode_image 任务异常: {}", e))??;
+    Ok(codes)
+}
+
 /// 精简编辑器回写：更新剪贴板条目文本（content）并同步系统剪贴板。
 /// OCR 编辑、剪贴板文本条目编辑两处共用。
 #[tauri::command]

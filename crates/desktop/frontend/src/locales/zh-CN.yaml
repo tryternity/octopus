@@ -923,12 +923,16 @@ screenshot:
     redo: 重做
     deleteSelected: 删除选定
     clearAll: 清空标注
+    qrcode: 二维码
   scrollShot: 滚动截图
   saveToFile: 保存到文件
   confirm: 确认
   cancel: 取消
   pin: 贴图
   ocrBusy: 前一个 OCR 还未完成，请稍后
+  qrNoResult: 未识别到二维码
+  qrCopyAll: 复制所有
+  qrScanning: 识别中...
   save: 保存
   copy: 复制
   props:
@@ -999,10 +1003,14 @@ imagePreview:
     number: 序号
     mosaic: 马赛克
     eraser: 橡皮擦
+    qrcode: 二维码
   saveToFile: 保存为文件
   copyToClipboard: 复制到剪贴板
   ocr: OCR 识别
   ocrBusy: 前一个 OCR 还未完成，请稍后
+  qrNoResult: 未识别到二维码
+  qrCopyAll: 复制所有
+  qrScanning: 识别中...
   undo: 撤销 (Cmd/Ctrl+Z)
   redo: 重做 (Cmd/Ctrl+Shift+Z)
   delete: 删除选中

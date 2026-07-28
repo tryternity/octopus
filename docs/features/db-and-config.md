@@ -60,7 +60,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 | 列 | 类型 |
 |---|---|
 | `hash` | `TEXT PRIMARY KEY`（SHA-256） |
-| `blob` | `BLOB`（WebP 编码） |
+| `blob` | `BLOB`（JPEG q85 编码，`IMAGE_SAVE_QUALITY` 可配） |
 | `thumb` | `BLOB`（240×240 缩略图） |
 | `image_type` | `TEXT` |
 | `width` / `height` | `INTEGER` |

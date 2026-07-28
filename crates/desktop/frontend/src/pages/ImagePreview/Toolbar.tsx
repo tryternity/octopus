@@ -63,6 +63,8 @@ export default function Toolbar(props: {
   toolFontSize: number; setToolFontSize: (n: number) => void;
   alwaysOnTop: boolean; onToggleTop: () => void;
   onSave: () => void; onCopy: () => void; onOcr: () => void;
+  onQrScan: () => void;
+  qrActive: boolean;
   onUndo: () => void; canUndo: boolean;
   onRedo: () => void; canRedo: boolean;
   onDeleteSelected: () => void; canDeleteSelected: boolean;
@@ -164,6 +166,11 @@ export default function Toolbar(props: {
             </span>
           )}
         </div>
+
+        {/* 二维码识别：scan_qrcode_image，识别结果在白卡展示 */}
+        <ToolButton title={t("imagePreview.tool.qrcode")} active={props.qrActive} onClick={() => props.onQrScan()}>
+          <img src="icons/qr-code.svg" alt={t("imagePreview.tool.qrcode")} className="w-[18px] h-[18px]" style={{ filter: props.qrActive ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+        </ToolButton>
 
         <Divider />
 
