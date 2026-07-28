@@ -104,6 +104,7 @@ mod focus_tracker;
 mod shortcut;
 mod theme;
 mod tray;
+mod subtitle_polish;
 mod transcript;
 mod translation_commands;
 mod window_position;
