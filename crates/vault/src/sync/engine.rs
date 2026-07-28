@@ -904,7 +904,19 @@ fn pull_from_files() -> Result<(usize, usize), SyncError> {
         let stamp = mf.security_stamp.clone();
         if let Some(ref local) = local_meta {
             if local.security_stamp != stamp {
-                return Err(SyncError::MasterPasswordMismatch);
+                // 空库恢复场景（2026-07-28 v2，与 merge_vault 对称）：本地空库 + stamp 不一致
+                // → 返回 EmptyRecoveryNeedsPassword。详见 spec 2026-07-28-vault-sync-empty-recovery.md。
+                let local_empty = db_ciphers.is_empty() && db_folders.is_empty();
+                if local_empty {
+                    log::info!(
+                        "[sync] pull_from_files: 本地 vault 空库 + stamp 不一致（本地={}, 远程={}）\
+                        ——返回 EmptyRecoveryNeedsPassword",
+                        local.security_stamp, stamp
+                    );
+                    return Err(SyncError::EmptyRecoveryNeedsPassword);
+                } else {
+                    return Err(SyncError::MasterPasswordMismatch);
+                }
             }
         }
     }
@@ -1251,14 +1263,24 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
     let meta_file = match store::read_meta_file() {
         Ok(m) => Some(m),
         Err(e) if meta_file_not_found(&e) => {
-            // 与 pull_from_files 同语义——本地已有 vault（local_meta = Some）+ 远程 meta 缺失
-            // 视为异常态（损坏 / 不完整 clone / 篡改），拒绝 merge。
-            if local_meta.is_some() {
+            // 远程 meta.json 缺失——两种场景：
+            //   (1) 远程 outline 也空 → 远程从未有 vault 数据（用户主动清空远程
+            //       或首次推送）→ 允许继续，走纯 push 路径把本地数据推到远程。
+            //   (2) 远程 outline 有数据但 meta 缺失 → 异常态（损坏/不完整 clone/
+            //       篡改）→ 拒绝 merge（无法校验加密一致性）。
+            //    （2026-07-28 修复：原逻辑不分情况一律拒绝，误伤「远程清空后重新
+            //     推送」的合法场景。）
+            let remote_outline_empty =
+                remote_outline.ciphers.is_empty() && remote_outline.folders.is_empty();
+            if local_meta.is_some() && !remote_outline_empty {
                 return Err(SyncError::RepoCorrupted(
-                    "远程 meta.json 缺失但本地已初始化 vault——拒绝 merge（无法校验加密一致性，可能远程仓库损坏）".into(),
+                    "远程 meta.json 缺失但本地已初始化 vault 且远程 outline 有数据——拒绝 merge（无法校验加密一致性，可能远程仓库损坏）".into(),
                 ));
             }
-            log::debug!("[sync] meta.json 不存在，跳过 stamp 校验 + meta upsert");
+            log::debug!(
+                "[sync] meta.json 不存在（remote_outline_empty={}），跳过 stamp 校验 + meta upsert",
+                remote_outline_empty
+            );
             None
         }
         Err(e) => return Err(SyncError::Other(e)),
@@ -1268,7 +1290,22 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
         let stamp = mf.security_stamp.clone();
         if let Some(ref local) = local_meta {
             if local.security_stamp != stamp {
-                return Err(SyncError::MasterPasswordMismatch);
+                // 空库恢复场景（2026-07-28 v2）：本地刚 setup（stamp 必然是新的随机值）
+                // 但 cipher/folder 都为空，.sync 有数据 → 返回 EmptyRecoveryNeedsPassword，
+                // 让前端弹窗要求输源机器主密码，调 resolve_with_remote 校验 + 覆盖本地。
+                // v1 是无条件放行，但用户输错主密码会进入「数据恢复但解不开」的死状态。
+                // 详见 spec 2026-07-28-vault-sync-empty-recovery.md。
+                let local_empty = db_ciphers.is_empty() && db_folders.is_empty();
+                if local_empty {
+                    log::info!(
+                        "[sync] merge_vault: 本地 vault 空库 + stamp 不一致（本地={}, 远程={}）\
+                        ——返回 EmptyRecoveryNeedsPassword，等待用户输源机密码",
+                        local.security_stamp, stamp
+                    );
+                    return Err(SyncError::EmptyRecoveryNeedsPassword);
+                } else {
+                    return Err(SyncError::MasterPasswordMismatch);
+                }
             }
         }
     }
@@ -1957,8 +1994,22 @@ mod tests {
         let g = IntegrationGuard::new();
         // IntegrationGuard 预置的 vault_meta security_stamp = "stamp-test"
 
-        // 在 outline + 文件系统放一个 cipher——验证 stamp 不一致时它不会被 upsert
-        use octopus_infra::db::VaultCipher;
+        // pre-seed 一条本地 cipher——让本地 vault 非空（2026-07-28 调整）。
+        // 理由：空库旁路（merge_vault / pull_from_files 的空库恢复场景）在
+        // cipher=0 + folder=0 时跳过 stamp 校验。本测试的目的是「保护本地已有数据
+        // 不被 poison cipher 覆盖」，所以本地必须有数据要保护——pre-seed 一个本地
+        // cipher 让空库旁路不触发，回归测试的本意（stamp 不一致时拒绝）才能验证。
+        use octopus_infra::db::{VaultCipher, VaultCipherInput};
+        let local_cipher = VaultCipherInput {
+            id: "local-legit-uuid".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:local-legit".into(), notes: None, data: "v1:local-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&local_cipher).expect("pre-seed local cipher");
+
+        // 在 outline + 文件系统放一个 poison cipher——验证 stamp 不一致时它不会被 upsert
         let poison_cipher = VaultCipher {
             id: "stamp-poison-uuid".to_string(),
             folder_id: None,
@@ -2956,6 +3007,111 @@ mod tests {
         let file = store::read_cipher_file("fff00000-0000-4000-8000-000000000006").expect("read");
         let after = file.to_vault_cipher();
         assert_eq!(after.name, "v1:db-version", "冲突时 DB 应赢");
+        let _ = g;
+    }
+
+    /// 清库恢复场景：本地 vault 空（cipher=0 + folder=0）+ 本地 stamp 与 .sync 不一致
+    /// （模拟 `setup_vault` 生成的随机新 stamp）→ merge_vault 应返回
+    /// `EmptyRecoveryNeedsPassword`（v2：要求用户输源机密码确认，不再无条件放行）。
+    ///
+    /// 背景（2026-07-28 v2）：v1 是无条件放行，但用户输错主密码会进入「数据恢复但解不开」
+    /// 的死状态。v2 改为返回 EmptyRecoveryNeedsPassword，让前端弹窗输源机密码。
+    /// 详见 spec 2026-07-28-vault-sync-empty-recovery.md。
+    #[test]
+    fn merge_vault_recovers_when_local_empty_and_stamp_differs() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 1. 本地有一条 cipher，push 到 .sync（让远程有数据）
+        let c1 = VaultCipherInput {
+            id: "eee00000-0000-4000-8000-000000000001".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:cipher-name".into(), notes: None, data: "v1:cipher-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert cipher");
+        push_to_files().expect("push cipher to .sync");
+
+        // 2. 模拟清库重建：删除本地所有 cipher + folder，但保留 vault_meta
+        db::with_db(|conn| {
+            conn.execute("DELETE FROM vault_ciphers", [])?;
+            conn.execute("DELETE FROM vault_folders", [])?;
+            Ok(())
+        }).expect("clear local ciphers/folders");
+
+        // 3. 模拟 setup_vault 生成的新 stamp + 写 .sync/meta.json 保持原 stamp-test
+        db::update_vault_security_stamp("FRESH-STAMP-AFTER-SETUP")
+            .expect("update local stamp to simulate fresh setup");
+        write_stamp_matching_meta();
+
+        let local_meta = db::load_vault_meta().unwrap().unwrap();
+        assert_ne!(local_meta.security_stamp, "stamp-test", "测试前置：本地 stamp 应与远程不同");
+
+        // 4. 调 merge_vault——应返回 EmptyRecoveryNeedsPassword（v2 不再无条件放行）
+        let result = merge_vault();
+        assert!(
+            matches!(result, Err(SyncError::EmptyRecoveryNeedsPassword)),
+            "空库 + stamp 不一致应返回 EmptyRecoveryNeedsPassword，实际：{:?}",
+            result
+        );
+
+        // 5. 验证本地 DB 未被触碰（meta 没被覆盖，cipher 没被拉回）
+        let after_meta = db::load_vault_meta().unwrap().unwrap();
+        assert_eq!(
+            after_meta.security_stamp, "FRESH-STAMP-AFTER-SETUP",
+            "本地 stamp 不应被覆盖（等待用户输密码后才覆盖）"
+        );
+        let cipher_count = db::list_vault_ciphers().unwrap().len();
+        assert_eq!(cipher_count, 0, "cipher 不应被拉回（等待用户输密码后才拉）");
+        let _ = g;
+    }
+
+    /// 远程仓库 vault 数据被清空（meta.json + outline.json 都不存在）+ 本地有 vault
+    /// → merge_vault 应允许继续（走纯 push 路径把本地数据推到远程），不报 RepoCorrupted。
+    ///
+    /// 场景（2026-07-28）：用户主动清空远程 vault 目录（git rm + push）后，本机建了
+    /// 新 vault 想重新推送。原逻辑「本地有 vault_meta + 远程 meta 缺失 → RepoCorrupted」
+    /// 误报。修复：远程 outline 也空时，判定为「远程从未有 vault 数据」，允许 push。
+    #[test]
+    fn merge_vault_allows_push_when_remote_vault_empty() {
+        let _s = test_lock();
+        let g = IntegrationGuard::new();
+
+        // 1. 本地建一条 cipher（模拟用户新建 vault + 创建数据）
+        let c1 = VaultCipherInput {
+            id: "ddd00000-0000-4000-8000-000000000001".to_string(),
+            folder_id: None, favorite: false, atype: 1,
+            name: "v1:new-cipher".into(), notes: None, data: "v1:new-data".into(),
+            fields: None, password_history: None, reprompt: 0,
+            is_deleted: false, sync_md5: None,
+        };
+        db::insert_vault_cipher(&c1).expect("insert local cipher");
+
+        // 2. 模拟远程 vault 被清空：不写 meta.json，不写 outline.json
+        //    （IntegrationGuard 默认不写这些文件，.sync/vault/ 是空的）
+        //    确认 .sync/vault/ 无 meta.json + 无 outline.json
+        let meta_path = octopus_sync::store::sync_root().join("vault/meta.json");
+        let outline_path = octopus_sync::store::sync_root().join("vault/outline.json");
+        assert!(!meta_path.exists(), "测试前置：远程 meta.json 应不存在");
+        assert!(!outline_path.exists(), "测试前置：远程 outline.json 应不存在");
+
+        // 3. 调 merge_vault——应成功（不报 RepoCorrupted），走纯 push 路径
+        let report = merge_vault().expect("merge 应成功（远程空 + 本地有数据 → 纯 push）");
+
+        // 4. 验证本地 cipher 被推到远程（.sync 文件系统）
+        assert!(report.pushed >= 1, "应至少 push 1 条 cipher 到远程");
+        let pushed_file = store::read_cipher_file("ddd00000-0000-4000-8000-000000000001")
+            .expect("cipher 应已 push 到 .sync");
+        assert_eq!(pushed_file.to_vault_cipher().name, "v1:new-cipher");
+
+        // 5. 验证本地 meta 也被推到远程（meta.json 应已生成）
+        let remote_meta = store::read_meta_file().expect("远程 meta.json 应已生成");
+        let local_meta = db::load_vault_meta().unwrap().unwrap();
+        assert_eq!(
+            remote_meta.security_stamp, local_meta.security_stamp,
+            "远程 meta stamp 应与本地一致（本地 push 上去的）"
+        );
         let _ = g;
     }
 }

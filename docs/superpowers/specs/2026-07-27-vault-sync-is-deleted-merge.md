@@ -18,7 +18,7 @@
 
 | Phase | 完成 |
 |---|---|
-| 1 DB migration v53 + struct is_deleted | ✅ commit `7c52ffc3` |
+| 1 db.sql is_deleted 改造（v53）+ struct is_deleted | ✅ commit `7c52ffc3`（2026-07-28 极简化重构后改为 db.sql 单一真相源，无 ALTER TABLE 迁移） |
 | 2 CipherFile + fingerprint is_deleted | ✅ 同上 |
 | 3 merge_vault + 5 TDD 测试 | ✅ commit `ad415b3c` |
 | 4 storage + commands is_deleted | ✅ 同 commit `7c52ffc3`（subagent 合并完成） |
@@ -67,46 +67,56 @@
 
 ---
 
-## 1. DB Schema 改动（v52 → v53）
+## 1. DB Schema 改动（v53：is_deleted 改造）
 
-### 1.1 vault_ciphers
+> **2026-07-28 极简化重构注记**：原方案用 `ALTER TABLE` 迁移 v52→v53，重构后改为 **db.sql 单一真相源**——`is_deleted` 直接写在 db.sql 的 CREATE TABLE 里，全新库由 `init_schema` 跑 db.sql 建出；旧版本库（v<53）启动直接 bail 提示清库，不再有 ALTER TABLE 迁移路径。下方 ALTER TABLE 块保留为历史方案记录（已废弃，代码中不存在）。
 
-```sql
--- 新增列 + 数据迁移 + 删除旧列
-ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
-UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL;
-
--- SQLite 3.35+ 支持 DROP COLUMN（macOS 系统 SQLite 版本足够）
-ALTER TABLE vault_ciphers DROP COLUMN deleted_at;
-
--- 索引更新
-DROP INDEX IF EXISTS idx_vault_ciphers_deleted;
-CREATE INDEX idx_vault_ciphers_active ON vault_ciphers(favorite) WHERE is_deleted = 0;
-```
-
-**直接删 `deleted_at` 列**（用户确认可清库，不需要向后兼容）。代码只用 `is_deleted`。
-
-### 1.2 vault_folders
-
-```sql
--- 新增列（folder 当前无 deleted_at，直接加 is_deleted）
-ALTER TABLE vault_folders ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
-
--- 索引更新
-CREATE INDEX idx_vault_folders_active ON vault_folders WHERE is_deleted = 0;
-```
-
-### 1.3 db.sql 同步更新
-
-全新库的 CREATE TABLE 直接用 `is_deleted`（不留 `deleted_at`）：
+### 1.1 vault_ciphers（db.sql CREATE TABLE 形式——现行方案）
 
 ```sql
 CREATE TABLE IF NOT EXISTS vault_ciphers (
     ...
+    is_deleted INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
+    ...
+);
+CREATE INDEX IF NOT EXISTS idx_vault_ciphers_favorite
+    ON vault_ciphers(favorite) WHERE is_deleted = 0;
+```
+
+**直接删 `deleted_at` 列**（用户确认可清库，不需要向后兼容）。代码只用 `is_deleted`。
+
+### 1.2 vault_folders（db.sql CREATE TABLE 形式——现行方案）
+
+```sql
+CREATE TABLE IF NOT EXISTS vault_folders (
+    ...
     is_deleted INTEGER NOT NULL DEFAULT 0,
     ...
 );
+CREATE INDEX IF NOT EXISTS idx_vault_folders_active
+    ON vault_folders(sort_order) WHERE is_deleted = 0;
 ```
+
+### 1.3 历史方案（已废弃——ALTER TABLE 迁移，2026-07-28 删除）
+
+<details>
+<summary>原 v52→v53 ALTER TABLE 迁移 SQL（已废弃，仅供历史参考）</summary>
+
+```sql
+-- vault_ciphers: 新增列 + 数据迁移 + 删除旧列
+ALTER TABLE vault_ciphers ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+UPDATE vault_ciphers SET is_deleted = 1 WHERE deleted_at IS NOT NULL;
+ALTER TABLE vault_ciphers DROP COLUMN deleted_at;  -- SQLite 3.35+ DROP COLUMN
+DROP INDEX IF EXISTS idx_vault_ciphers_deleted;
+CREATE INDEX idx_vault_ciphers_active ON vault_ciphers(favorite) WHERE is_deleted = 0;
+
+-- vault_folders: 新增列（folder 当前无 deleted_at，直接加 is_deleted）
+ALTER TABLE vault_folders ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_vault_folders_active ON vault_folders WHERE is_deleted = 0;
+```
+
+⚠️ **此方案已于 2026-07-28 极简化重构中删除**——原因：DROP COLUMN 时 SQLite 会重建依赖索引，旧索引 `idx_vault_ciphers_favorite WHERE deleted_at IS NULL` 重建时报 `no such column: deleted_at`（实测 bug）。重构后 db.sql 是唯一真相源，不再有版本间迁移。
+</details>
 
 ---
 
@@ -273,7 +283,7 @@ isDeleted: boolean;
 
 | # | 检查项 | 通过标准 |
 |---|---|---|
-| A1 | DB migration v52→v53 | is_deleted 列存在 + 旧 deleted_at 数据正确迁移 |
+| A1 | db.sql is_deleted schema（v53） | 全新库 `init_schema` → vault_ciphers/vault_folders 含 `is_deleted` 列 + 索引 `WHERE is_deleted = 0`；旧版本库（v<53）启动 bail 提示清库（2026-07-28 极简化重构后无 ALTER TABLE 迁移路径） |
 | A2 | merge_vault 测试 | B 机新建 vault + sync → cipher 正确恢复 + 解密成功 |
 | A3 | 清库恢复测试 | 清库 → 重建 → sync → DB 恢复 + .sync 不被覆盖 |
 | A4 | 并发编辑测试 | A/B 同改一条 → updated_at 最新赢 |
@@ -285,6 +295,6 @@ isDeleted: boolean;
 | 风险 | 缓解 |
 |---|---|
 | 秒级 updated_at 冲突 | 当前机器赢（DB 优先）；P1 升毫秒 |
-| migration 数据丢失 | 用户已确认可清库；migration 先迁移 deleted_at → is_deleted 再 DROP |
+| migration 数据丢失 | 用户已确认可清库；2026-07-28 极简化重构后无 ALTER TABLE 迁移路径——db.sql 直接定义 `is_deleted`，旧库清库重建（`rm ~/.octopus/octopus.db*`），.sync 数据由 merge_vault 恢复 |
 | merge 逻辑复杂导致回归 | 完整 TDD + 回归测试（5 个旧 sync bug 的测试仍通过） |
 | cipher 文件格式不兼容 | 不向后兼容旧文件（用户确认）；清库后重新 sync |
