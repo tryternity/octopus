@@ -11,7 +11,7 @@ octopus/
 │   ├── asr-local/   # 核心推理库 (octopus-asr-local)
 │   ├── asr-cloud/   # 云端 ASR 协议层 (octopus-asr-cloud)
 │   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
-│   ├── ocr/         # OCR 图片识别 (octopus-ocr)
+│   ├── ocr/         # OCR 图片识别 + 二维码识别 (octopus-ocr)
 │   ├── capx/        # 屏幕截图 (octopus-capx)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
@@ -186,9 +186,9 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 独立 crate（依赖 infra），通用定时任务调度框架。后台线程每 10 分钟（`tick_interval_secs`）醒一次，检查 CPU 是否空闲（`infra::cpu::is_cpu_idle(30.0)`——CPU < 30%），空闲则执行所有到期任务，忙则跳过等下次。**不知道业务逻辑**——任务由 `register_task(name, interval, run: Box<dyn Fn()>)` 注册，`run` 闭包由调用方注入。**已注册任务**（2026-07-22）：① `clipboard_cleanup`——按天数 + 按数量清理（`run_cleanup`，用户可配的 `clipboard_max_age_days` / `clipboard_max_items`），容量超限时先永久删回收站最老的再永久删活跃项（全物理删）；② `trash_purge`——回收站 TTL（3 天）+ 容量上限（500 条，排除收藏）自动永久删（`purge_trash(conn, 3, 500)`）；③ `vault_sync`（interval=3600s）——每小时自动同步 vault + 热词，子线程调 `sync_now()`，结果存 `.sync/last_auto_sync.json`（SyncPanel 展示，不弹 toast）。未来可注册其他定时任务（如 FTS rebuild 等）。
 
-### octopus-ocr（OCR 图片识别）
+### octopus-ocr（OCR 图片识别 + 二维码识别）
 
-独立的 OCR crate，依赖 `octopus-infra` + `octopus-paddle-ocr`（vendor 自 paddle-ocr-rs，ONNX Runtime 推理后端）。封装 PaddleOCR pipeline（det→cls→rec）。支持 PP-OCRv5 + PP-OCRv6-small（DB config 按 model_name 选择）。
+独立的 OCR crate，依赖 `octopus-infra` + `octopus-paddle-ocr`（vendor 自 paddle-ocr-rs，ONNX Runtime 推理后端）。封装 PaddleOCR pipeline（det→cls→rec）。支持 PP-OCRv5 + PP-OCRv6-small（DB config 按 model_name 选择）。**2026-07-27 加 OcrBackend trait 抽象**（`Box<dyn OcrBackend>`，PaddleOcrBackend + VLM 预留）+ **二维码识别**（`qrcode::scan`，zxing-cpp C++ FFI bundled，多码全识别，截图/图文编辑器就地白卡展示 + 单个复制/复制所有）。详见 [QR spec](superpowers/specs/2026-07-27-qrcode-scan-design.md) + [backend trait spec](superpowers/specs/2026-07-27-ocr-backend-trait-design.md)。
 
 | 模块 | 职责 |
 |---|---|
