@@ -2674,17 +2674,17 @@ fn list_active_hotword_words_at(conn: &Connection) -> Result<Vec<String>> {
 
 /// 取最近 limit 条 ASR/文本记录的 content（挖掘候选用）。
 ///
-/// **INV-C1（热词来源不断）**：故意不过滤 `deleted_at`——软删内容仍是热词来源，
+/// **INV-C1（热词来源不断）**：故意不过滤 `is_deleted`——软删内容仍是热词来源，
 /// 这是剪贴板软删/回收站功能的核心目的。用户把文本删进回收站后，这里仍能读到它，
 /// 热词挖掘继续工作。只有永久删除（`DELETE FROM`）才会让行真正消失、挖不到。
-/// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 deleted_at），
+/// `ORDER BY id DESC LIMIT N` 降序取最新 N 条，软删内容 id 不变（软删只改 is_deleted），
 /// 活跃和软删混在同一条时间线，不会互相挤占名额。
 pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
             "SELECT content FROM clipboard_history
              WHERE item_type IN ('voice','text','ocr') AND content IS NOT NULL AND content != ''
-             -- 故意不过滤 deleted_at（INV-C1：软删内容仍是热词来源）
+             -- 故意不过滤 is_deleted（INV-C1：软删内容仍是热词来源）
              ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
