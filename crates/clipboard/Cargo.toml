@@ -7,7 +7,7 @@ edition = "2021"
 octopus-infra = { path = "../infra" }
 parking_lot = { workspace = true }
 clipboard-rs = { version = "0.3", features = ["image", "wayland"] }
-image = { version = "0.25", features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 webp = "0.3"
 sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }

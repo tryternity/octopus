@@ -180,9 +180,9 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
             })
             .map_err(|e| e.to_string())?
             .ok_or("图片数据不存在")?;
-            // image_data 存 WebP 无损 BLOB；write_image 契约是 PNG，转码一次
-            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
-                .map_err(|e| format!("解码 WebP 失败: {}", e))?;
+            // image_data 存 JPEG q85 BLOB（IMAGE_SAVE_QUALITY=jpeg:85）；write_image 契约是 PNG，转码一次
+            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
+                .map_err(|e| format!("解码 JPEG 失败: {}", e))?;
             let mut png = Vec::new();
             let mut cursor = std::io::Cursor::new(&mut png);
             let png_encoder = ::image::codecs::png::PngEncoder::new_with_quality(
@@ -347,12 +347,12 @@ pub async fn save_image_item(
     let base_name = &blob_hash[..8.min(blob_hash.len())];
     let save_path = unique_path(&downloads_dir, base_name, ext);
 
-    // 5. 编码写入——CPU/IO 密集（WebP 解码 + PNG/JPEG 编码 + 文件写入）移入 spawn_blocking
+    // 5. 编码写入——CPU/IO 密集（JPEG 解码 + PNG/JPEG 编码 + 文件写入）移入 spawn_blocking
     let save_path_clone = save_path.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         match ext {
             "png" => {
-                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
                     .map_err(|e| e.to_string())?;
                 img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
                     .map_err(|e| e.to_string())?;
@@ -361,7 +361,7 @@ pub async fn save_image_item(
                 std::fs::write(&save_path_clone, &webp_blob).map_err(|e| e.to_string())?;
             }
             _ => {
-                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::Jpeg)
                     .map_err(|e| e.to_string())?;
                 let rgb = img.to_rgb8();
                 let mut buf = std::io::BufWriter::new(
@@ -630,7 +630,7 @@ pub async fn scan_qrcode_image(
     .map_err(|e| e.to_string())?
     .ok_or("图片数据不存在")?;
 
-    // 图片解码（自动检测格式：JPEG/WebP/PNG）+ quircs 识别：CPU 密集，移入 spawn_blocking。
+    // 图片解码（自动检测格式：JPEG/PNG）+ zxing-cpp QR 识别：CPU 密集，移入 spawn_blocking。
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let img = ::image::load_from_memory(&webp_blob)
             .map_err(|e| format!("解码图片失败: {}", e))?;

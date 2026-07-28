@@ -29,11 +29,10 @@ unicode-normalization.workspace = true
 octopus-ocr = { path = "../ocr" }
 # Screenshot
 octopus-capx = { path = "../capx" }
-image = { version = "0.25", features = ["png", "webp", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Audio
 cpal = "0.16"
-rubato = "0.16"
 
 # Paste
 enigo = "0.6"
@@ -50,8 +49,6 @@ serde_yaml = "0.9"
 log = "0.4"
 anyhow = "1"
 
-# Fuzzy matching (search)
-nucleo-matcher = "0.3"
 octopus-search = { path = "../search" }
 dirs = "5"
 

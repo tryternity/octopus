@@ -1,9 +1,8 @@
 use std::{
     borrow::Cow,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-use image::ImageReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{PaddleOcrError, Result};
@@ -237,26 +236,6 @@ impl RecImage {
 
     pub fn from_rgb_u8(width: usize, height: usize, data: Vec<u8>) -> Result<Self> {
         Self::new(width, height, data, ColorOrder::Rgb)
-    }
-
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let image = ImageReader::open(path.as_ref())
-            .map_err(|e| PaddleOcrError::InvalidImage(e.to_string()))?
-            .decode()
-            .map_err(|e| PaddleOcrError::InvalidImage(e.to_string()))?
-            .to_rgb8();
-
-        let (width, height) = image.dimensions();
-        let raw = image.into_raw();
-
-        let mut bgr = vec![0_u8; raw.len()];
-        for (src, dst) in raw.chunks_exact(3).zip(bgr.chunks_exact_mut(3)) {
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-        }
-
-        Self::new(width as usize, height as usize, bgr, ColorOrder::Bgr)
     }
 
     pub fn new(

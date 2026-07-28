@@ -127,3 +127,17 @@ pub struct LoginData {
 - `DownloadableModel` / `TranslateCloudModel` / `ModelFile` / `TimeSeries` / `ModelMemory` / `OcrTextBlock`（真转换）
 - 所有输入 DTO（`CloudModelInput` / `RecordConfig` 等）
 - 所有事件 payload（`RecordTaskEvent` / `OpenTabPayload` 等）
+
+## Phase 3 决策：放弃（2026-07-28 brainstorming）
+
+brainstorming 评估了删除 CipherDto/CipherInputDto 的方案：
+- **方案 A**：全面删除，前端用 tagged enum 原生形式 `cipher.data?.data?.username`
+- **方案 B**：全面删除 + 前端 helper 封装
+- **方案 C**：改 CipherData 序列化形式
+
+**决策：放弃 Phase 3**。理由：
+1. CipherDto 的展平（`CipherData::Login(LoginData)` → `Option<LoginData>`）对前端有实际便利价值——前端用 `cipher.login?.username` 而非 `cipher.data?.data?.username`
+2. 删除后前端约 12 个访问点都要改，收益不抵成本
+3. Phase 1+2 已删除所有真正的冗余 DTO，DTO 层精简目标已达成
+
+**结论**：CipherDto/CipherInputDto 是有架构价值的真转换层，不是 casing 冗余。保留现状，DTO 层精简工作收尾。
