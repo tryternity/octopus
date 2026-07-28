@@ -1645,4 +1645,4 @@ L2 AES 缓存（与 zeroize 冲突）/ L3 正则缓存（需并发设计）/ L5 
 
 **后续推进方向**（spec/plan 已就绪，待实施）：
 - [SafeUrl newtype](../2026-07-26-safeurl-newtype.md) — PAT 结构性根治
-- ~~[Vault Tombstone](../2026-07-26-vault-tombstone.md)~~ — **已废弃 2026-07-28**，改由 [is_deleted + updated_at merge](../../specs/2026-07-27-vault-sync-is-deleted-merge.md) 统一解决
+- ~~[Vault Tombstone](../../specs/2026-07-26-vault-tombstone-design.md)~~ — **已废弃 2026-07-28**（原 plan 已删除 2026-07-29），改由 [is_deleted + updated_at merge](../../specs/2026-07-27-vault-sync-is-deleted-merge.md) 统一解决
