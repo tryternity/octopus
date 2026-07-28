@@ -384,17 +384,25 @@ git commit -m "feat(desktop): split_polished_by_ratio——粗略拆分降级（
 ```rust
 /// 解析字幕润色用的 LLM 配置。
 /// llm_key=None → 用 resolve_active_engine("llm") 默认。
-/// llm_key=Some("provider:model") → 查 DB 找匹配配置。
+/// llm_key=Some("provider:model") → 按 key 从 DB models 表查（`llm_config_by_key`），
+///   找不到 fallback 到默认 LLM。
 /// 无可用配置返回 None（调用方走 NoLlmConfig 降级）。
 fn resolve_subtitle_llm_config(llm_key: &Option<String>) -> Option<octopus_infra::db::CompatibleLlmConfig> {
-    // 复用 desktop config.rs 的 llm_config_ignore_mode 或类似逻辑
-    // 如果 llm_key 是 None，直接用 llm_config_ignore_mode()
-    // 如果是 Some(key)，需要按 key 查 DB（可能要新增 helper）
-    crate::config::llm_config_ignore_mode().ok()
+    // 实施完成（2026-07-29 P1）：
+    // - config::llm_config_by_key(key) 按 'provider:model' 从 DB models 表查
+    // - 抽 resolved_to_llm_config helper（llm_config_ignore_mode + by_key 复用 vault 解密）
+    // - resolved_engine_from_row 改 pub（供 desktop 按 key 查复用）
+    if let Some(key) = llm_key {
+        if let Some(cfg) = crate::config::llm_config_by_key(key) {
+            return Some(cfg);
+        }
+        log::warn!("[subtitle-polish] 按 key '{}' 查 LLM 失败，fallback 默认", key);
+    }
+    crate::config::llm_config_ignore_mode()
 }
 ```
 
-⚠️ 实施时先 grep `crates/desktop/src/config.rs` 确认 `llm_config_ignore_mode` 签名，以及是否已有按 key 查 LLM 配置的 helper（可能需要复用或新增）。如果按 key 查的逻辑复杂，MVP 阶段可以先只支持 None（用默认 LLM），llm_key=Some 时也 fallback 到默认 + log warn。
+✅ 已实施（2026-07-29 P1）：`llm_config_by_key` 真正按 key 查 DB，原 MVP 限制「按 key 查暂未实现」已解除。
 
 - [x] **Step 2: 实现 polish_subtitle_cues**
 

@@ -97,8 +97,9 @@ record/asr-local 不依赖 octopus-llm（分层约束不变）。润色逻辑在
 pub struct PolishOption {
     /// LLM 配置标识（provider:model 字符串，如 "openai:gpt-4o"）。
     /// None = 用 resolve_active_engine("llm") 默认。
-    /// ⚠️ MVP 限制（2026-07-28）：resolve_subtitle_llm_config 当前无论 llm_key 是 None/Some
-    /// 都用 llm_config_ignore_mode() 默认 LLM（log warn 但不报错）。按 key 查 DB 留后续。
+    /// llm_key=Some("provider:model") 按 key 从 DB models 表查（`llm_config_by_key`），
+    /// 找不到 fallback 到默认 LLM。llm_key=None 用激活的默认 LLM。
+    /// （2026-07-29 P1 修复：原 MVP 限制「按 key 查暂未实现」已解除。）
     pub llm_key: Option<String>,
 }
 
