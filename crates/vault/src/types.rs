@@ -122,35 +122,48 @@ impl TryFrom<i64> for MatchType {
 
 /// 单条 URI + 其匹配策略（None 表示用客户端默认，octopus 强制 Domain）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginUri {
     pub uri: String,
     /// null = 用客户端默认（Domain）
+    #[serde(alias = "match_type")]
     pub match_type: Option<MatchType>,
 }
 
 /// Login 类型 cipher 的明文 payload（落盘时加密为 data 字段）。
+///
+/// ⚠️ 加密前序列化为 JSON 存 DB。2026-07-28 casing 统一：字段改 camelCase，
+/// 同时加 `#[serde(alias)]` 兼容老加密数据（snake_case）——反序列化时两种格式都接受。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginData {
     pub uris: Vec<LoginUri>,
     pub username: Option<String>,
     pub password: Option<String>,
     /// Base32 secret（如 "JBSWY3DPEHPK3PXP"），不带 otpauth:// 前缀。
     pub totp: Option<String>,
+    #[serde(alias = "password_revision_date")]
     pub password_revision_date: Option<String>,
 }
 
 /// 自定义字段（密码、文本、隐藏等）。
+///
+/// ⚠️ 同 LoginData——加密前序列化存 DB，alias 兼容老数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Field {
     pub name: String,
     pub value: Option<String>,
     /// 0=Text 1=Hidden 2=Boolean（Bitwarden 协议）
+    #[serde(alias = "field_type")]
     pub field_type: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PasswordHistoryEntry {
     pub password: String,
+    #[serde(alias = "last_used_at")]
     pub last_used_at: String,
 }
 
@@ -163,6 +176,7 @@ pub enum CipherData {
 
 /// 解密后的 cipher 完整对象。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Cipher {
     pub id: String, // UUID v4 字符串（2026-07-21 v44：支持 git 同步）
     pub folder_id: Option<String>,
@@ -181,6 +195,7 @@ pub struct Cipher {
 
 /// 新建/更新 cipher 的输入（不带 id/时间戳——id 由调用方在 create_cipher 时生成 UUID）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CipherInput {
     pub folder_id: Option<String>,
     pub favorite: bool,
