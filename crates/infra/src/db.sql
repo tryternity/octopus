@@ -166,9 +166,9 @@ CREATE TABLE IF NOT EXISTS hotword_sets (
     name        TEXT    NOT NULL UNIQUE,
     enabled     INTEGER NOT NULL DEFAULT 1,   -- 0/1 是否勾选生效
     words_text  TEXT    NOT NULL DEFAULT '',
+    sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff，NULL 表示待算）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    sync_md5    TEXT                              -- md5 内容指纹（增量同步 diff，NULL 表示待算）
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ── ASR 热词全局命中计数（hotword_hits）词级，不绑版本 ────────────────────────
@@ -259,7 +259,6 @@ CREATE TABLE IF NOT EXISTS vault_meta (
 CREATE TABLE IF NOT EXISTS vault_ciphers (
     id                  TEXT PRIMARY KEY,                -- UUID v4 字符串（不再自增——支持 git 同步）
     folder_id           TEXT DEFAULT NULL,               -- FK vault_folders(id)，UUID 字符串
-    favorite            INTEGER NOT NULL DEFAULT 0,
     atype               INTEGER NOT NULL,                -- 1=Login（MVP 仅此）
     name                TEXT NOT NULL,                   -- 密文 v1:base64(...)
     notes               TEXT DEFAULT NULL,               -- 密文
@@ -267,10 +266,11 @@ CREATE TABLE IF NOT EXISTS vault_ciphers (
     fields              TEXT DEFAULT NULL,               -- 密文 JSON（自定义字段）
     password_history    TEXT DEFAULT NULL,               -- 密文 JSON（密码历史）
     reprompt            INTEGER NOT NULL DEFAULT 0,      -- 0=None 1=Password
-    is_deleted          INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
+    favorite            INTEGER NOT NULL DEFAULT 0,
     sync_md5            TEXT,                            -- md5 内容指纹（增量同步 diff，详见 vault::sync::fingerprint）
     created_at          TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    is_deleted          INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
     FOREIGN KEY (folder_id) REFERENCES vault_folders(id) ON DELETE SET NULL
 );
 
@@ -282,10 +282,10 @@ CREATE TABLE IF NOT EXISTS vault_folders (
     id          TEXT PRIMARY KEY,                -- UUID v4 字符串
     name        TEXT NOT NULL,                    -- 密文 v1:base64(...)
     sort_order  INTEGER NOT NULL DEFAULT 0,
-    is_deleted  INTEGER NOT NULL DEFAULT 0,      -- 软删除（0=活跃，1=回收站）
     sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff）
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    is_deleted  INTEGER NOT NULL DEFAULT 0      -- 软删除（0=活跃，1=回收站）
 );
 
 CREATE INDEX IF NOT EXISTS idx_vault_folders_active
