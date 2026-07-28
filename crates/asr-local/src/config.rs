@@ -366,7 +366,8 @@ static ACTIVE_ENGINES: std::sync::LazyLock<RwLock<HashMap<String, Arc<ResolvedEn
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 从 DB ModelRow 构造 ResolvedEngine（4 域统一）。entry 字段从 row 全字段构造。
-fn resolved_engine_from_row(row: &octopus_infra::db::ModelRow) -> ResolvedEngine {
+/// 从 DB ModelRow 构造 ResolvedEngine（4 域统一）。pub 供 desktop 按 key 查 LLM 复用。
+pub fn resolved_engine_from_row(row: &octopus_infra::db::ModelRow) -> ResolvedEngine {
     ResolvedEngine {
         domain: row.domain.clone(),
         name: row.model_name.clone(),

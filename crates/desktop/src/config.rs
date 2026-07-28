@@ -38,6 +38,47 @@ pub fn llm_config(polish_mode: PolishMode) -> Option<octopus_llm::CompatibleLlmC
 
 /// 不检查 polish_mode 的 LLM 配置（供「立即润色」用——忽略 mode 直接润色）。
 ///
+/// 从 ResolvedEngine 构造 CompatibleLlmConfig（含 vault 解密逻辑）。
+///
+/// 抽自 `llm_config_ignore_mode`，供按 key 查（`llm_config_by_key`）复用。
+/// 云端模型（source_type=2）secret_key 可能是 v1: 加密格式 → 透明解密；
+/// 本地模型 secret_key 为 manifest JSON 或空 → 解密 no-op。
+/// vault 解密失败 → 返回空 key（让 LLM 调用 401 暴露问题，不发密文到云端）。
+fn resolved_to_llm_config(resolved: &octopus_asr_local::config::ResolvedEngine) -> octopus_llm::CompatibleLlmConfig {
+    let secret_key = if resolved.entry.is_local_or_builtin() {
+        resolved.entry.secret_key.clone()
+    } else {
+        match crate::vault_secret_access::try_decrypt_secret_global(
+            &resolved.entry.secret_key,
+        ) {
+            Ok(plain) => plain,
+            Err(e) => {
+                log::warn!(
+                    "LLM secret_key 解密失败——保险库未解锁或密文损坏，\
+                     LLM 调用将以空 key 触发 401（避免密文入云端 log）：{}",
+                    e
+                );
+                String::new()
+            }
+        }
+    };
+    if secret_key.is_empty() {
+        log::info!(
+            "LLM 模型 '{}' 其 API Key (secret_key) 为空，适用于本地不需要 key 的模型（如 Ollama 等）",
+            resolved.name
+        );
+    }
+    octopus_llm::CompatibleLlmConfig {
+        provider: resolved.provider.clone(),
+        model: resolved.name.clone(),
+        base_url: resolved.entry.source.clone(),
+        secret_key,
+        is_thinking: resolved.is_thinking,
+        source_type: resolved.entry.source_type,
+        is_enabled: resolved.entry.is_enabled,
+    }
+}
+
 /// 从 LLM 域激活模型（`resolve_active_engine("llm")`）取配置构造 CompatibleLlmConfig。
 ///
 /// follow-up #7：若 secret_key 以 `v1:` 开头（vault 已启用并迁移过），用全局 session
@@ -45,52 +86,23 @@ pub fn llm_config(polish_mode: PolishMode) -> Option<octopus_llm::CompatibleLlmC
 /// 调用暴露具体错误，而非在此吞掉）。
 pub fn llm_config_ignore_mode() -> Option<octopus_llm::CompatibleLlmConfig> {
     match octopus_asr_local::config::resolve_active_engine("llm") {
-        Ok(resolved) => {
-            // 仅云端模型（source_type=2）的 secret_key 才可能是 v1: 加密格式；
-            // 本地模型（builtin/local，Ollama 等）secret_key 为 manifest JSON 或空 / 未迁移明文
-            // → 透明解密对它们是 no-op（不会以 v1: 开头）。
-            // 安全修复 #5：vault 启用但解密失败时**返回空字符串**（不返回密文），
-            // 让 LLM 调用 401 暴露 vault 锁定问题，而不是把密文发到云端污染 access log。
-            let secret_key = if resolved.entry.is_local_or_builtin() {
-                resolved.entry.secret_key.clone()
-            } else {
-                match crate::vault_secret_access::try_decrypt_secret_global(
-                    &resolved.entry.secret_key,
-                ) {
-                    Ok(plain) => plain,
-                    Err(e) => {
-                        // 修复 F：与其他 3 处 fail-soft 不一致（那里返清晰 Err），
-                        // 但 llm_config_ignore_mode 签名是 Option（非 Result），改签名
-                        // 会扩散到所有调用方。最小修复：log 用更明显的"保险库未解锁"
-                        // message（而非"返回空 key 让调用方 401"），让运维/用户排查更直接。
-                        log::warn!(
-                            "LLM secret_key 解密失败——保险库未解锁或密文损坏，\
-                             LLM 调用将以空 key 触发 401（避免密文入云端 log）：{}",
-                            e
-                        );
-                        String::new()
-                    }
-                }
-            };
-            if secret_key.is_empty() {
-                log::info!(
-                    "LLM 激活模型 '{}' 其 API Key (secret_key) 为空，适用于本地不需要 key 的模型（如 Ollama 等）",
-                    resolved.name
-                );
-            }
-            Some(octopus_llm::CompatibleLlmConfig {
-                provider: resolved.provider,
-                model: resolved.name,
-                base_url: resolved.entry.source,
-                secret_key,
-                is_thinking: resolved.is_thinking,
-                source_type: resolved.entry.source_type,
-                is_enabled: resolved.entry.is_enabled,
-            })
-        }
+        Ok(resolved) => Some(resolved_to_llm_config(&resolved)),
         Err(e) => {
             log::warn!("LLM 域无激活模型或解析失败，无法构造润色配置：{}", e);
             None
         }
     }
+}
+
+/// 按 `provider:model_name` key 从 DB 查 LLM 配置（字幕润色用，非激活模型也可选）。
+///
+/// key 格式 `"openai:gpt-4o"`（provider:model_name）。split 后查 DB models 表
+/// domain='llm'。找不到 → None（调用方走 NoLlmConfig 降级）。
+pub fn llm_config_by_key(key: &str) -> Option<octopus_llm::CompatibleLlmConfig> {
+    let (provider, model_name) = key.split_once(':')?;
+    // get_model_id / get_model_by_id 内部各自 with_db（ReentrantMutex 可重入），不嵌套外层 with_db。
+    let id = octopus_infra::db::get_model_id("llm", model_name, provider).ok().flatten()?;
+    let row = octopus_infra::db::get_model_by_id(id).ok().flatten()?;
+    let resolved = octopus_asr_local::config::resolved_engine_from_row(&row);
+    Some(resolved_to_llm_config(&resolved))
 }

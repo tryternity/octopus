@@ -115,6 +115,17 @@ pub async fn probe_audio_tracks(ffprobe: &Path, mp4: &Path) -> Result<Vec<RawAud
     Ok(tracks)
 }
 
+/// 计算 metadata 写入的临时文件路径。
+///
+/// ffmpeg 按输出文件扩展名判断容器格式，真扩展名必须是 `.mp4`。
+/// 用 `with_extension("meta.tmp.mp4")` 产出 `xxx.meta.tmp.mp4`——最后一段 dot 后是 `mp4`。
+///
+/// 回归保护（2026-07-28 bug）：旧代码 `with_extension("mp4.meta.tmp")` 产出 `.tmp` 结尾
+/// → ffmpeg 报「Unable to choose an output format」→ 退出码非 0 → 应用 warn。
+fn metadata_tmp_path(mp4: &Path) -> std::path::PathBuf {
+    mp4.with_extension("meta.tmp.mp4")
+}
+
 /// 用 ffmpeg `-c copy -metadata` 把 audio_tracks JSON 写进 mp4 udta atom。
 ///
 /// 调用语义：失败不阻断主流程——调用方吞掉错误仅 log warn（DB 已有 audio_tracks 兜底）。
@@ -136,7 +147,7 @@ pub async fn write_audio_tracks_metadata(
     // 产出 `.tmp` 结尾 → ffmpeg 报「Unable to choose an output format」静默失败（stderr
     // 被 null 吞，2026-07-28 e2e 发现）。现把 `.mp4` 放最后：先 with_extension("meta.tmp.mp4")
     // 把原 `.mp4` 替换成 `meta.tmp.mp4`，真扩展名仍是 mp4。
-    let tmp = mp4.with_extension("meta.tmp.mp4");
+    let tmp = metadata_tmp_path(mp4);
 
     // stderr piped：失败时读 stderr 进 error message，便于诊断（不再 Stdio::null 吞掉）。
     let output = tokio::process::Command::new(ffmpeg)
@@ -252,5 +263,31 @@ mod tests {
         let p = PathBuf::from("/Users/wudarui/.octopus/recordings/abc.mp4");
         let m = merged_output_path(&p);
         assert_eq!(m.parent(), p.parent());
+    }
+
+    /// 回归：metadata 临时文件扩展名必须是 mp4（ffmpeg 按扩展名判断容器格式）。
+    /// 旧 bug：`with_extension("mp4.meta.tmp")` 产出 `.tmp` 结尾 → ffmpeg 不识别 → 退出码非 0。
+    #[test]
+    fn metadata_tmp_path_has_mp4_extension() {
+        let p = PathBuf::from("/tmp/recording_123.mp4");
+        let tmp = metadata_tmp_path(&p);
+        // 真扩展名（最后一段 dot 后）必须是 mp4
+        assert_eq!(
+            tmp.extension().and_then(|e| e.to_str()),
+            Some("mp4"),
+            "metadata 临时文件扩展名必须是 mp4，实际：{:?}",
+            tmp
+        );
+    }
+
+    /// 回归：文件名形态 `recording_123.meta.tmp.mp4`（stem 保留 + .meta.tmp.mp4 后缀）。
+    #[test]
+    fn metadata_tmp_path_name_shape() {
+        let p = PathBuf::from("/tmp/recording_123.mp4");
+        let tmp = metadata_tmp_path(&p);
+        assert_eq!(
+            tmp.file_name().unwrap().to_str().unwrap(),
+            "recording_123.meta.tmp.mp4"
+        );
     }
 }

@@ -166,6 +166,18 @@ impl<'a> RecordStore<'a> {
         Ok(set)
     }
 
+    /// 判断磁盘文件是否为孤儿（DB 无对应记录）。
+    ///
+    /// `file_abs_path` 是磁盘文件的绝对路径（`entry.path()` 的 to_string_lossy），
+    /// `known_files` 是 DB `file_path` 列的值集合（也是绝对路径）。
+    /// 两者都是绝对路径，直接字符串比较。
+    ///
+    /// 回归保护（2026-07-28 数据丢失 bug）：旧代码 strip_prefix 把磁盘文件转相对路径
+    /// 再与 DB 绝对路径比较 → 永远不匹配 → 所有录屏被当孤儿删掉。
+    pub fn is_orphan(file_abs_path: &str, known_files: &HashSet<String>) -> bool {
+        !known_files.contains(file_abs_path)
+    }
+
     /// 从 DB 删除行（permanent_delete 的 DB 部分，文件由调用方删）。
     pub fn delete_db_row(&self, id: i64) -> RecordResult<()> {
         let affected = self.conn.execute(
@@ -283,6 +295,31 @@ mod tests {
 
         let all = store.list(&ListFilter { limit: 100, offset: 0, favorites_only: false }).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    /// 回归保护：cleanup_orphan_recordings 数据丢失 bug（2026-07-28）。
+    /// 旧代码把磁盘文件转相对路径再与 DB 绝对路径比较 → 永远不匹配 → 误删所有文件。
+    /// 修复后两者都用绝对路径直接比较。
+    #[test]
+    fn is_orphan_absolute_path_matching() {
+        use std::collections::HashSet;
+        // DB 存的绝对路径（与 file_path 列一致）
+        let known: HashSet<String> = vec![
+            "/Users/wudarui/.octopus/recordings/2026-07-28_a.mp4".into(),
+            "/Users/wudarui/.octopus/recordings/2026-07-28_b.mp4".into(),
+        ].into_iter().collect();
+
+        // 磁盘文件也是绝对路径（entry.path()）—— 存在的文件不应是孤儿
+        assert!(!RecordStore::is_orphan(
+            "/Users/wudarui/.octopus/recordings/2026-07-28_a.mp4", &known),
+            "DB 已知的文件不应是孤儿");
+        // 不在 DB 的文件是孤儿（应删）
+        assert!(RecordStore::is_orphan(
+            "/Users/wudarui/.octopus/recordings/2026-07-28_orphan.mp4", &known),
+            "DB 不知的文件应是孤儿");
+        // 空 known → 所有文件都是孤儿
+        let empty: HashSet<String> = HashSet::new();
+        assert!(RecordStore::is_orphan("/any/path.mp4", &empty));
     }
 
     #[test]
