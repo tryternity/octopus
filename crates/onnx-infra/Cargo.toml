@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
-anyhow = "1"
-log = "0.4"
+anyhow.workspace = true
+log.workspace = true
 octopus-infra = { path = "../infra" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
