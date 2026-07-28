@@ -35,7 +35,7 @@ pub struct RecordingMeta {
     pub has_thumbnail: bool,
     pub is_favorite: bool,
     pub created_at: String,
-    pub deleted_at: Option<String>,
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,8 +62,8 @@ impl<'a> RecordStore<'a> {
             "INSERT INTO recordings
              (id, file_path, title, duration_ms, width, height, fps, codec,
               has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-              has_thumbnail, is_favorite, created_at, deleted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL)",
+              has_thumbnail, is_favorite, created_at, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0)",
             rusqlite::params![
                 meta.id, meta.file_path, meta.title, meta.duration_ms,
                 meta.width, meta.height, meta.fps, meta.codec,
@@ -88,7 +88,7 @@ impl<'a> RecordStore<'a> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
                     has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-                    has_thumbnail, is_favorite, created_at, deleted_at
+                    has_thumbnail, is_favorite, created_at, is_deleted
              FROM recordings WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -103,11 +103,11 @@ impl<'a> RecordStore<'a> {
         let mut sql = String::from(
             "SELECT id, file_path, title, duration_ms, width, height, fps, codec,
                     has_system_audio, has_microphone, audio_tracks, source_type, file_size,
-                    has_thumbnail, is_favorite, created_at, deleted_at
+                    has_thumbnail, is_favorite, created_at, is_deleted
              FROM recordings WHERE 1=1",
         );
         if !filter.include_deleted {
-            sql.push_str(" AND deleted_at IS NULL");
+            sql.push_str(" AND is_deleted = 0");
         }
         if filter.favorites_only {
             sql.push_str(" AND is_favorite = 1");
@@ -137,10 +137,10 @@ impl<'a> RecordStore<'a> {
         Ok(())
     }
 
-    pub fn soft_delete(&self, id: i64, now_iso: &str) -> RecordResult<()> {
+    pub fn soft_delete(&self, id: i64) -> RecordResult<()> {
         let affected = self.conn.execute(
-            "UPDATE recordings SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
-            rusqlite::params![now_iso, id],
+            "UPDATE recordings SET is_deleted = 1 WHERE id = ?1 AND is_deleted = 0",
+            rusqlite::params![id],
         )?;
         if affected == 0 {
             return Err(crate::error::RecordError::NotFound(id));
@@ -150,7 +150,7 @@ impl<'a> RecordStore<'a> {
 
     pub fn restore(&self, id: i64) -> RecordResult<()> {
         let affected = self.conn.execute(
-            "UPDATE recordings SET deleted_at = NULL WHERE id = ?1",
+            "UPDATE recordings SET is_deleted = 0 WHERE id = ?1",
             rusqlite::params![id],
         )?;
         if affected == 0 {
@@ -226,7 +226,7 @@ impl<'a> RecordStore<'a> {
             has_thumbnail: row.get::<_, i32>(13)? != 0,
             is_favorite: row.get::<_, i32>(14)? != 0,
             created_at: row.get(15)?,
-            deleted_at: row.get(16)?,
+            is_deleted: row.get::<_, i32>(16)? != 0,
         })
     }
 }
@@ -262,7 +262,7 @@ mod tests {
             has_thumbnail: false,
             is_favorite: false,
             created_at: "2026-07-25T14:30:22Z".into(),
-            deleted_at: None,
+            is_deleted: false,
         }
     }
 
@@ -308,7 +308,7 @@ mod tests {
         let store = RecordStore::new(&conn);
         store.insert(&sample_meta(1), None).unwrap();
         store.insert(&sample_meta(2), None).unwrap();
-        store.soft_delete(1, "2026-07-25T15:00:00Z").unwrap();
+        store.soft_delete(1).unwrap();
 
         let active = store.list(&ListFilter { limit: 100, offset: 0, include_deleted: false, favorites_only: false }).unwrap();
         assert_eq!(active.len(), 1);
@@ -341,11 +341,11 @@ mod tests {
         let conn = test_db();
         let store = RecordStore::new(&conn);
         store.insert(&sample_meta(1), None).unwrap();
-        store.soft_delete(1, "2026-07-25T15:00:00Z").unwrap();
-        assert!(store.get(1).unwrap().unwrap().deleted_at.is_some());
+        store.soft_delete(1).unwrap();
+        assert!(store.get(1).unwrap().unwrap().is_deleted);
 
         store.restore(1).unwrap();
-        assert!(store.get(1).unwrap().unwrap().deleted_at.is_none());
+        assert!(!store.get(1).unwrap().unwrap().is_deleted);
     }
 
     #[test]
