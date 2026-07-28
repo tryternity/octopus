@@ -119,6 +119,117 @@ pub fn split_polished_by_ratio(polished: &str, original_texts: &[String]) -> Vec
     result
 }
 
+/// 解析字幕润色用的 LLM 配置。
+///
+/// MVP 简化：**无论 llm_key 是 None 还是 Some 都用默认 LLM**
+/// （`crate::config::llm_config_ignore_mode()` 取 LLM 域激活引擎）。
+///
+/// - llm_key=None → 用默认 LLM。
+/// - llm_key=Some → log warn「按 key 查 LLM 暂未实现」，仍 fallback 到默认 LLM。
+///   （按 key 查 DB 的逻辑是 Task 2.2 list_subtitle_llms 的配套，后续做。）
+///
+/// 返回 None（→ 调用方走 NoLlmConfig 降级）当且仅当默认 LLM 域也无激活模型。
+fn resolve_subtitle_llm_config(
+    llm_key: &Option<String>,
+) -> Option<octopus_llm::CompatibleLlmConfig> {
+    if llm_key.is_some() {
+        log::warn!(
+            "[subtitle-polish] 按 key 查 LLM 暂未实现（key={:?}），用默认 LLM",
+            llm_key
+        );
+    }
+    crate::config::llm_config_ignore_mode()
+}
+
+/// 对 cue 文本列表做整段 LLM 润色。
+///
+/// 返回 `(润色后文本列表, PolishOutcome)`。返回列表长度与输入 `texts` 一致。
+/// 失败时返回原 `texts` + 对应 `PolishOutcome`（调用方据此提示用户）。
+///
+/// 编排：构造 `[[N]]` 标记输入 → `spawn_blocking` + `catch_unwind` 调 LLM →
+/// 解析标记 → 标记失败时走 `split_polished_by_ratio` 粗略拆分降级。
+///
+/// **并发与 panic 安全**：
+/// - LLM 调用是同步阻塞（reqwest blocking），用 `tokio::task::spawn_blocking` 包裹，
+///   避免阻塞 tokio runtime（与 `record_commands.rs` 的 ffmpeg 抽 PCM 同模式）。
+/// - LLM 内部可能 panic（JSON 反序列化 / 网络库内部），用
+///   `std::panic::catch_unwind(AssertUnwindSafe(..))` 兜底（参考 `coordinator.rs:1697-1724`）。
+///   panic 后走 `PolishOutcome::Failed("LLM panicked")`，不会让进程崩溃或永久卡死。
+///
+/// `_app` 当前未用，保留为 Phase 2 emit 进度（`SubtitleProgress::Polishing`）留接口。
+pub async fn polish_subtitle_cues(
+    texts: Vec<String>,
+    polish: &PolishOption,
+    _app: &tauri::AppHandle,
+) -> (Vec<String>, PolishOutcome) {
+    if texts.is_empty() {
+        return (texts, PolishOutcome::Skipped);
+    }
+
+    // 1. 构造输入（[[1]]文本1[[2]]文本2...）
+    let input = build_polish_input(&texts);
+    let system = octopus_llm::system_prompt();
+    let user = format!(
+        "请润色以下语音识别文本，修正同音错字、补充标点、去除填充词（嗯/啊/那个）。\n\
+         重要：保留 {open}N{close} 标记边界，每条标记对应一条字幕，不要合并或拆分标记。\n\
+         仅输出润色后的文本（含标记），不要任何解释。\n\n{input}",
+        open = CUE_MARKER_OPEN,
+        close = CUE_MARKER_CLOSE,
+        input = input,
+    );
+
+    // 2. 解析 LLM 配置（MVP：始终用默认 LLM）
+    let llm_config = match resolve_subtitle_llm_config(&polish.llm_key) {
+        Some(c) => c,
+        None => {
+            log::warn!("[subtitle-polish] 无可用 LLM 配置，用原文本");
+            return (texts, PolishOutcome::NoLlmConfig);
+        }
+    };
+
+    // 3. spawn_blocking（同步阻塞 LLM）+ catch_unwind（panic 兜底）
+    //    三层 Result 嵌套：spawn_blocking join → catch_unwind → chat_text_with_prompt
+    let result = tokio::task::spawn_blocking(move || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            octopus_llm::chat_text_with_prompt(&system, &user, &llm_config, None)
+        }))
+    })
+    .await;
+
+    let polished = match result {
+        // spawn_blocking join OK + catch_unwind OK + LLM OK
+        Ok(Ok(Ok(text))) => text,
+        // spawn_blocking join OK + catch_unwind OK + LLM Err（HTTP/超时/解析）
+        Ok(Ok(Err(e))) => {
+            log::warn!("[subtitle-polish] LLM 调用失败，用原文本: {e}");
+            return (texts, PolishOutcome::Failed(e.to_string()));
+        }
+        // spawn_blocking join OK + catch_unwind Err（LLM panic）
+        Ok(Err(_panic)) => {
+            log::warn!("[subtitle-polish] LLM panic，用原文本");
+            return (texts, PolishOutcome::Failed("LLM panicked".into()));
+        }
+        // spawn_blocking join Err（task 被 cancel / runtime 关闭）
+        Err(e) => {
+            log::warn!("[subtitle-polish] spawn_blocking join 失败: {e}");
+            return (texts, PolishOutcome::Failed(e.to_string()));
+        }
+    };
+
+    // 4. 解析 [[N]] 标记
+    if let Some(polished_texts) = parse_polished_with_markers(&polished, texts.len()) {
+        (polished_texts, PolishOutcome::Polished)
+    } else {
+        // 5. 降级：标记不一致（数量/连续性/空段）→ 按原 cue 比例粗略切分
+        log::warn!(
+            "[subtitle-polish] 标记解析失败（输入 {} 条，解析不一致），走粗略拆分降级",
+            texts.len()
+        );
+        let split = split_polished_by_ratio(&polished, &texts);
+        (split, PolishOutcome::FallbackRatio)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
