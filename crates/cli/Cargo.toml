@@ -7,10 +7,10 @@ edition = "2021"
 octopus-asr-local = { path = "../asr-local" }
 octopus-asr-cloud = { path = "../asr-cloud" }
 cpal = "0.16"
-anyhow = "1"
+anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 md5 = "0.7"
 octopus-infra = { path = "../infra" }

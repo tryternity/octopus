@@ -20,7 +20,7 @@ argon2 = { version = "0.5", features = ["std", "zeroize"] }
 aes-gcm = { version = "0.10", features = ["std"] }
 hkdf = "0.12"
 hmac = "0.12"
-sha2 = "0.10"
+sha2.workspace = true
 rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 data-encoding = "2"
@@ -47,10 +47,10 @@ url = "2"
 zxcvbn = "3"
 
 # 序列化/工具
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-log = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
 parking_lot = { workspace = true }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
