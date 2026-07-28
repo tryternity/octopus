@@ -1,6 +1,6 @@
 # 剪贴板管理
 
-> 独立的剪贴板历史核心库（`octopus-clipboard` crate），仅依赖 `octopus-infra`，基于 `clipboard-rs` 跨平台读写 + 监听。统一存储 text/voice/ocr/image/file 五类条目，FTS5 全文搜索，图片 WebP BLOB 压缩，自动清理。
+> 独立的剪贴板历史核心库（`octopus-clipboard` crate），仅依赖 `octopus-infra`，基于 `clipboard-rs` 跨平台读写 + 监听。统一存储 text/voice/ocr/image/file 五类条目，FTS5 全文搜索，图片 JPEG q85 BLOB 压缩，自动清理。
 
 源文件：`crates/clipboard/src/`。
 
@@ -14,7 +14,7 @@
 | `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag + `AtomicBool` recording_enabled gate |
 | `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调链 |
 | `store` | DB CRUD：通用插入 / ASR 插入 / OCR 插入 / FTS5 JOIN 搜索 / 分页 / 去重 / 引用计数清理 |
-| `image` | RGBA → PNG → SHA-256 去重 → WebP 编码 → 缩略图 240×240 |
+| `image` | RGBA → PNG → SHA-256 去重 → JPEG q85 编码 → 缩略图 240×240 |
 | `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏 + 孤立 blob 回收 + FTS5 索引重建 |
 
 ---
@@ -117,9 +117,9 @@ FTS5 trigram tokenizer，索引 `content` 列。voice/ocr/text 被搜索，image
 | 列 | 类型 | 说明 |
 |---|---|---|
 | `hash` | `TEXT PRIMARY KEY` | SHA-256 内容哈希 |
-| `blob` | `BLOB` | WebP 编码的图片数据 |
+| `blob` | `BLOB` | JPEG q85 编码的图片数据 |
 | `thumb` | `BLOB` | 240×240 缩略图 |
-| `image_type` | `TEXT` | 编码格式（webp/jpeg） |
+| `image_type` | `TEXT` | 编码格式（jpeg/webp，默认 jpeg） |
 | `width` / `height` | `INTEGER` | 原图尺寸 |
 | `created_at` | `TEXT` | 创建时间 |
 
@@ -151,20 +151,20 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 
 ## 8. 图片存储
 
-`crates/clipboard/src/image.rs`——RGBA → PNG → SHA-256 去重 → WebP 编码 → 缩略图。
+`crates/clipboard/src/image.rs`——RGBA → PNG → SHA-256 去重 → JPEG q85 编码 → 缩略图。
 
 **编码流程**：
 1. 从剪贴板读取 RGBA 像素
 2. `encode_and_hash`：PNG 编码 + SHA-256 计算内容哈希
 3. 去重：`find_by_content_hash` 命中则复用已有 image_data 行
-4. WebP 编码（`webp` crate，lossless 优先）
+4. JPEG 编码（按 IMAGE_SAVE_QUALITY 配置链，默认 q85）
 5. 缩略图 240×240（Triangle 滤波降采样）
 
-**`encode_to_webp`** 接 `&DynamicImage`，复用调用方已解码的像素（watcher 从 RGBA 构造 DynamicImage；screenshot/migration 复用 `load_from_memory`）。
+**`encode_to_webp`**（函数名历史遗留，实际按 `IMAGE_SAVE_QUALITY` 配置链编码，默认 JPEG q85）接 `&DynamicImage`，复用调用方已解码的像素（watcher 从 RGBA 构造 DynamicImage；screenshot/migration 复用 `load_from_memory`）。
 
-**编码降级链**（`consts::IMAGE_SAVE_QUALITY` = `"webp:80;jpeg:80"`，`;` 分割、`:` 解析格式与质量）：
+**编码降级链**（`consts::IMAGE_SAVE_QUALITY` = `"jpeg:85"`，`;` 分割、`:` 解析格式与质量）：
 1. 正常尺寸先 lossless WebP
-2. 失败后走降级链（webp:80 → jpeg:80，依次尝试首个成功）
+2. 按序尝试首个成功（默认 jpeg:85）
 3. 超尺寸（>16383px，VP8 上限）跳过 lossless 直接进降级链
 4. 每次编码 `catch_unwind` 兜底防超大图 panic
 

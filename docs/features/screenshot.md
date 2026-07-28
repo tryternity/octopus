@@ -29,7 +29,7 @@ start_screenshot
   → 标注在选区内 Canvas clip 绘制
   → Enter 确认：
       Canvas toBlob → Uint8Array Raw body → ipc::Request（不经 base64）
-      → PNG SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板
+      → PNG SHA-256 去重 → JPEG q85 BLOB → DB image_data + clipboard_history + 系统剪贴板
       → 关所有窗口
 ```
 
@@ -51,7 +51,7 @@ start_screenshot
   → 先关截图窗口（用户感知立即停止）
   → 后台并发：
       线程一：PNG → 剪贴板（~1s）
-      线程二：canvas → WebP → DB 入库（~2-3s 后台）
+      线程二：canvas → JPEG q85 → DB 入库（~2-3s 后台）
   → emit scroll://done { id }（不含 base64，前端不再中转数据）
 ```
 
@@ -151,7 +151,7 @@ start_screenshot
 
 消除 base64 编解码 + JSON 序列化开销。
 
-剪贴板历史条目复制（`copy_clipboard_item`）：从 DB 读 WebP → PNG → 剪贴板，移入 `spawn_blocking` 不阻塞 UI。
+剪贴板历史条目复制（`copy_clipboard_item`）：从 DB 读图片 BLOB → PNG → 剪贴板，移入 `spawn_blocking` 不阻塞 UI。
 
 ---
 
