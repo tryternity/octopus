@@ -35,6 +35,11 @@ import {
   Clapperboard,
   Loader2,
   Combine,
+  ChevronDown,
+  Copy,
+  CopyCheck,
+  Download,
+  Info,
 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -157,6 +162,20 @@ function formatCreatedAt(iso: string): string {
   )}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * 把 cue 的 ms 时间戳格式化为紧凑时间码：
+ * <1h → "MM:SS"（如 01:23），≥1h → "H:MM:SS"（如 1:02:03）。
+ * 字幕面板的时间区间（00:00 → 00:08）专用，区别于 formatDuration（录屏总时长）。
+ */
+function formatMs(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
 // ── Panel 主组件 ─────────────────────────────────────────────────
 
 interface RecordingPanelProps {
@@ -181,8 +200,11 @@ export default function RecordingPanel({
   const [subtitleGeneratingId, setSubtitleGeneratingId] = useState<number | null>(null);
   // 已拉取的字幕结果缓存（按 recording id 索引）。subtitle-done 事件触发 get_subtitle 拉取后填入。
   const [subtitleResults, setSubtitleResults] = useState<Record<number, SubtitleResult>>({});
-  // Task 4.2 会补：subtitleError（错误文案，按 id 暂存）、expandedSubtitleId（cue 预览展开/收起）。
-  // 本任务仅做 loading + 按钮激活，无 UI 消费这两个 state，故暂不声明（避免 noUnusedLocals）。
+  // 字幕生成错误文案（按 id 暂存）。subtitle-failed 事件或 generate_subtitle reject 时填，
+  // 行内红字展示（区别于 toast 一过性提示）。成功后清。
+  const [subtitleError, setSubtitleError] = useState<Record<number, string>>({});
+  // 当前展开字幕预览面板的 recording id（null=全收起）。一次只展开一个（列表节奏感）。
+  const [expandedSubtitleId, setExpandedSubtitleId] = useState<number | null>(null);
   // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
   // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
@@ -217,7 +239,13 @@ export default function RecordingPanel({
         setSubtitleGeneratingId(e.id);
       } else if (e.event === "subtitle-done") {
         setSubtitleGeneratingId(null);
-        // 重新拉取该 recording 的字幕（含空 cues 的「正常无字幕」场景）。
+        // 清行内错误（如有）。重新拉取该 recording 的字幕（含空 cues 的「正常无字幕」场景）。
+        setSubtitleError((prev) => {
+          if (!prev[e.id]) return prev;
+          const next = { ...prev };
+          delete next[e.id];
+          return next;
+        });
         // get_subtitle 返回 Option<SubtitleResult>：null=未生成。
         invoke<SubtitleResult | null>("get_subtitle", { id: e.id }).then((r) => {
           if (r) {
@@ -230,8 +258,9 @@ export default function RecordingPanel({
         });
       } else if (e.event === "subtitle-failed") {
         setSubtitleGeneratingId(null);
-        // 错误文案直接 toast（Task 4.2 详情面板再补 subtitleError state 做行内红字）。
+        // 行内红字 + toast 双通道：行内留存方便用户回看，toast 跨 panel 可见。
         const msg = e.error || t("settings.recordings.subtitleFailed");
+        setSubtitleError((prev) => ({ ...prev, [e.id]: msg }));
         showToast(t("settings.recordings.subtitleFailed") + ": " + msg, "error");
       }
     }).then((fn) => {
@@ -258,9 +287,16 @@ export default function RecordingPanel({
         });
         // 乐观更新缓存（done 事件到达前先显示）。空 cues（无声）也存——前端显示「无字幕」。
         setSubtitleResults((prev) => ({ ...prev, [id]: result }));
+        setSubtitleError((prev) => {
+          if (!prev[id]) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       } catch (e) {
-        // 错误文案直接 toast（Task 4.2 详情面板再补 subtitleError state 做行内红字）。
+        // 行内红字 + toast 双通道（与 subtitle-failed 事件回调保持一致）。
         const msg = String(e);
+        setSubtitleError((prev) => ({ ...prev, [id]: msg }));
         showToast(t("settings.recordings.subtitleFailed") + ": " + msg, "error");
         // 失败兜底清 loading（事件回调也会清，这里防事件丢失）。
         setSubtitleGeneratingId(null);
@@ -268,6 +304,60 @@ export default function RecordingPanel({
     },
     [showToast, t],
   );
+
+  // ── 字幕面板操作（Task 4.2）──
+  // 导出 SRT：弹原生 save 对话框 → invoke export_subtitle 写文件。失败 toast。
+  // 注意 destPath camelCase：tauri invoke 默认 snake→camel 转换参数名。
+  const onExportSubtitle = useCallback(
+    async (id: number) => {
+      try {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const dest = await save({
+          defaultPath: `recording_${id}.srt`,
+          filters: [{ name: "SubRip", extensions: ["srt"] }],
+        });
+        if (!dest) return; // 用户取消
+        await invoke("export_subtitle", { id, destPath: dest });
+        showToast(t("settings.recordings.subtitleExportDone", { path: dest }), "success");
+      } catch (e) {
+        showToast(t("settings.recordings.subtitleExportFailed") + ": " + String(e), "error");
+      }
+    },
+    [showToast, t],
+  );
+
+  // 复制单条 cue：单击 cue 行触发。复制后由 SubtitlePanel 行内显示「已复制」反馈。
+  // 反馈状态由 SubtitlePanel 内部 useTransitionalState 管理，本 handler 只负责写剪贴板。
+  const onCopyCue = useCallback(
+    async (cue: SubtitleCue) => {
+      try {
+        await navigator.clipboard.writeText(cue.text);
+        showToast(t("settings.recordings.subtitleCopied"), "success");
+      } catch (e) {
+        showToast(t("settings.recordings.subtitleCopyFailed") + ": " + String(e), "error");
+      }
+    },
+    [showToast, t],
+  );
+
+  // 复制全部 cue 文本（不含时间戳，纯文本拼接，方便贴到笔记/聊天）。
+  const onCopyAll = useCallback(
+    async (result: SubtitleResult) => {
+      const text = result.cues.map((c) => c.text).join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(t("settings.recordings.subtitleCopied"), "success");
+      } catch (e) {
+        showToast(t("settings.recordings.subtitleCopyFailed") + ": " + String(e), "error");
+      }
+    },
+    [showToast, t],
+  );
+
+  // 展开/收起字幕面板：点击 toggle，再次点击同一 id 收起。
+  const onToggleExpandSubtitle = useCallback((id: number) => {
+    setExpandedSubtitleId((prev) => (prev === id ? null : id));
+  }, []);
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -509,7 +599,13 @@ export default function RecordingPanel({
               onMerged={loadList}
               subtitleGeneratingId={subtitleGeneratingId}
               subtitleResult={subtitleResults[rec.id]}
+              subtitleError={subtitleError[rec.id]}
               onGenerateSubtitle={onGenerateSubtitle}
+              expandedSubtitleId={expandedSubtitleId}
+              onToggleExpandSubtitle={onToggleExpandSubtitle}
+              onExportSubtitle={onExportSubtitle}
+              onCopyCue={onCopyCue}
+              onCopyAll={onCopyAll}
             />
           ))}
 
@@ -569,8 +665,20 @@ interface RecordingRowProps {
   subtitleGeneratingId: number | null;
   /** 该 recording 已生成的字幕（无则 undefined）。Task 4.2 详情面板消费。 */
   subtitleResult?: SubtitleResult;
+  /** 字幕生成失败文案（无则 undefined）。行内红字展示。 */
+  subtitleError?: string;
   /** 触发字幕生成。track 留空走后端 Auto 选轨。 */
   onGenerateSubtitle: (id: number, track?: string) => void;
+  /** 当前展开字幕预览的 recording id（null=全收起）。 */
+  expandedSubtitleId: number | null;
+  /** 展开/收起字幕预览面板。 */
+  onToggleExpandSubtitle: (id: number) => void;
+  /** 导出 SRT（Tauri save dialog）。 */
+  onExportSubtitle: (id: number) => void;
+  /** 复制单条 cue 文本到剪贴板。 */
+  onCopyCue: (cue: SubtitleCue) => void;
+  /** 复制全部 cue 纯文本到剪贴板。 */
+  onCopyAll: (result: SubtitleResult) => void;
 }
 
 function RecordingRow({
@@ -589,7 +697,13 @@ function RecordingRow({
   onMerged,
   subtitleGeneratingId,
   subtitleResult,
+  subtitleError,
   onGenerateSubtitle,
+  expandedSubtitleId,
+  onToggleExpandSubtitle,
+  onExportSubtitle,
+  onCopyCue,
+  onCopyAll,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -735,12 +849,22 @@ function RecordingRow({
     onGenerateSubtitle(rec.id);
   };
 
+  // ── 字幕面板展开态（Task 4.2）──
+  const isSubtitleExpanded = expandedSubtitleId === rec.id;
+  const hasSubtitle = !!subtitleResult;
+
   return (
     <div
       className={cn(
-        "group relative flex items-start gap-2.5 px-3 py-2.5 border-b border-border/60 transition-colors cursor-pointer",
+        "group relative border-b border-border/60 transition-colors",
         isSelected ? "bg-accent" : "hover:bg-muted",
         deletePending && "bg-red-50/10 dark:bg-red-950/20",
+        isSubtitleExpanded && "!bg-muted",
+      )}
+    >
+    <div
+      className={cn(
+        "flex items-start gap-2.5 px-3 py-2.5 cursor-pointer",
       )}
       onClick={onToggleSelect}
     >
@@ -905,6 +1029,35 @@ function RecordingRow({
             <Captions className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           )}
         </button>
+        {/* 字幕面板展开/收起 toggle：仅在有字幕结果（含空 cues）时显示。
+            视觉上与 Captions 按钮成对——Captions 生成，Chevron 预览。
+            展开时图标旋转 180° 作状态反馈。 */}
+        {hasSubtitle && !isGeneratingSubtitle && (
+          <button
+            className={cn(
+              "p-1 rounded transition-opacity",
+              isSubtitleExpanded
+                ? "opacity-100"
+                : "opacity-60 group-hover:opacity-70 hover:!opacity-100 cursor-pointer",
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpandSubtitle(rec.id);
+            }}
+            title={
+              isSubtitleExpanded
+                ? t("settings.recordings.subtitleCollapse")
+                : t("settings.recordings.subtitleExpand")
+            }
+          >
+            <ChevronDown
+              className={cn(
+                "w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-transform duration-150",
+                isSubtitleExpanded && "rotate-180",
+              )}
+            />
+          </button>
+        )}
         <button
           className={cn(
             "p-1 rounded transition-opacity",
@@ -977,6 +1130,202 @@ function RecordingRow({
           />
         </button>
       </div>
+
+      {/* 行内字幕错误（生成失败留存文案，区别于 toast 一过性）。
+          仅在有错误且面板未展开时显示在行底（展开时改由面板内显示更完整上下文）。 */}
+      {subtitleError && !isSubtitleExpanded && (
+        <div className="px-3 pb-1.5 -mt-1 flex items-start gap-1 text-[10px] text-destructive">
+          <Info className="w-3 h-3 mt-px flex-shrink-0" />
+          <span className="break-all">{subtitleError}</span>
+        </div>
+      )}
+
+      {/* ── 字幕预览面板（Task 4.2，展开态）── */}
+      {isSubtitleExpanded && subtitleResult && (
+        <SubtitlePanel
+          result={subtitleResult}
+          error={subtitleError}
+          onExport={() => onExportSubtitle(rec.id)}
+          onCopyCue={onCopyCue}
+          onCopyAll={() => onCopyAll(subtitleResult)}
+          t={t}
+        />
+      )}
+      </div>
+    </div>
+  );
+}
+
+// ── 字幕预览面板（Task 4.2）──────────────────────────────────────────
+//
+// 设计意图（frontend-design）：
+// 这不是一个浮层，而是行内的「展开抽屉」——和 RecordingRow 共享背景层（muted），
+// 视觉上像行「长出」了一块腹地。三段式纵向布局，每段一个职责：
+//
+//   ① 顶部 meta 条：cue 计数 + 模型名 + track 来源标签。等宽小字（text-[10px]），
+//      与行 meta row 同语汇，保持「精密仪表」气质（不做时间轴可视化——列表节奏不兼容）。
+//
+//   ② cue 列表：等宽时间戳 + 箭头分隔（00:00 → 00:08），文本跟随。
+//      单击复制（hover 露出 copy 图标，符合行内「hover reveal 操作」范式）；
+//      复制成功后该行短暂切到 CopyCheck 绿色图标（1.2s）作 micro-feedback。
+//      列表自身可滚（max-h-40 + thin-scrollbar），长字幕不撑爆行高。
+//
+//   ③ 底部操作条：复制全部 / 导出 SRT。两个 ghost 按钮，左对齐，不抢 cue 列表焦点。
+//
+// fallback 提示（trackUsed !== 'microphone'）放最顶——系统音频/合并轨的 ASR 准确率
+// 显著低于麦克风直采，用户需先知道「这段字幕可能不太准」再看内容。用 amber/warning
+// 色（非 destructive 红），左竖条 + Info 图标，语气是提醒而非报错。
+
+interface SubtitlePanelProps {
+  result: SubtitleResult;
+  /** 行内错误文案（生成失败留存）。面板展开时也展示，方便用户看完整上下文。 */
+  error?: string;
+  onExport: () => void;
+  onCopyCue: (cue: SubtitleCue) => void;
+  onCopyAll: () => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}
+
+function SubtitlePanel({
+  result,
+  error,
+  onExport,
+  onCopyCue,
+  onCopyAll,
+  t,
+}: SubtitlePanelProps) {
+  // 最近一次成功复制的 cue 文本（用于行内 CopyCheck 反馈）。1.2s 后清。
+  // 用 text 而非 index 做 key——cue 文本相同时合并反馈无伤大雅。
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
+  }, []);
+
+  const handleCopyCue = (cue: SubtitleCue) => {
+    onCopyCue(cue);
+    // 不论 onCopyCue 内部成功失败都先标反馈——失败时 onCopyCue 已 toast，行内反馈短暂亮一下无害。
+    setCopiedText(cue.text);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopiedText(null), 1200);
+  };
+
+  const isFallback = result.trackUsed !== "microphone";
+  const cueCount = result.cues.length;
+
+  // track 来源标签文案 + 色调：microphone 绿（success），其他 amber（warning，呼应 fallback）。
+  const trackLabel =
+    result.trackUsed === "microphone"
+      ? t("settings.recordings.subtitleTrackMic")
+      : result.trackUsed === "system"
+        ? t("settings.recordings.subtitleTrackSystem")
+        : result.trackUsed === "merged"
+          ? t("settings.recordings.subtitleTrackMerged")
+          : t("settings.recordings.subtitleTrackUnknown");
+
+  return (
+    <div className="px-3 pb-2.5 pt-1 border-t border-border/60 bg-surface/40">
+      {/* ① fallback 提示（仅 system/merged/unknown 轨）—— 必须最先看到 */}
+      {isFallback && (
+        <div className="flex items-start gap-1.5 mb-2 px-2 py-1.5 rounded border-l-2 border-warning bg-warning/10 text-[10px] leading-relaxed text-foreground/80">
+          <Info className="w-3 h-3 mt-px flex-shrink-0 text-warning" />
+          <span>{t("settings.recordings.subtitleFallbackSystem")}</span>
+        </div>
+      )}
+
+      {/* ① 行内错误（生成失败但缓存里有旧结果——理论上不应同时存在，兜底展示） */}
+      {error && !isFallback && (
+        <div className="flex items-start gap-1.5 mb-2 px-2 py-1.5 rounded border-l-2 border-destructive bg-destructive/10 text-[10px] leading-relaxed text-destructive">
+          <Info className="w-3 h-3 mt-px flex-shrink-0" />
+          <span className="break-all">{error}</span>
+        </div>
+      )}
+
+      {/* ② meta 条：cue 计数 · 模型 · track 来源 */}
+      <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-muted-foreground flex-wrap">
+        <span className="tabular-nums">
+          {t("settings.recordings.subtitleCount", { count: cueCount })}
+        </span>
+        <span className="text-muted-foreground/40">·</span>
+        <span className="font-mono-vault text-muted-foreground/80">{result.model}</span>
+        <span className="text-muted-foreground/40">·</span>
+        <span
+          className={cn(
+            "px-1.5 py-0.5 rounded font-medium",
+            result.trackUsed === "microphone"
+              ? "bg-success/10 text-success"
+              : "bg-warning/10 text-warning",
+          )}
+        >
+          {trackLabel}
+        </span>
+      </div>
+
+      {/* ② cue 列表（可滚，单击复制）—— 空 cues 走空状态邀请行动 */}
+      {cueCount === 0 ? (
+        <div className="py-3 text-center text-[10px] text-muted-foreground">
+          {t("settings.recordings.subtitleEmpty")}
+        </div>
+      ) : (
+        <div className="max-h-40 overflow-y-auto thin-scrollbar -mx-1 px-1 space-y-px">
+          {result.cues.map((cue, i) => {
+            const isCopied = copiedText === cue.text;
+            return (
+              <button
+                key={i}
+                onClick={() => handleCopyCue(cue)}
+                className={cn(
+                  "group/cue w-full flex items-start gap-2 px-1.5 py-1 rounded text-left transition-colors",
+                  "hover:bg-accent",
+                )}
+                title={t("settings.recordings.subtitleCopyCueHint")}
+              >
+                {/* 等宽时间戳——脚本/字幕编辑器语汇。tabular-nums 保证位对齐。 */}
+                <span className="flex-shrink-0 font-mono-vault text-[10px] tabular-nums text-muted-foreground/80 pt-px">
+                  <span>{formatMs(cue.startMs)}</span>
+                  <span className="mx-0.5 text-muted-foreground/40">→</span>
+                  <span>{formatMs(cue.endMs)}</span>
+                </span>
+                {/* cue 文本 */}
+                <span className="flex-1 min-w-0 text-xs leading-relaxed text-foreground/90 break-words">
+                  {cue.text}
+                </span>
+                {/* 复制反馈图标——hover 露出 copy，复制成功切 CopyCheck 绿 */}
+                <span className="flex-shrink-0 pt-px">
+                  {isCopied ? (
+                    <CopyCheck className="w-3 h-3 text-success" />
+                  ) : (
+                    <Copy className="w-3 h-3 text-muted-foreground/40 opacity-0 group-hover/cue:opacity-100 transition-opacity" />
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ③ 底部操作条：复制全部 + 导出 SRT（ghost 按钮，左对齐） */}
+      {cueCount > 0 && (
+        <div className="flex items-center gap-1 mt-2 pt-1.5 border-t border-border/40">
+          <button
+            onClick={onCopyAll}
+            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Copy className="w-3 h-3" />
+            {t("settings.recordings.subtitleCopyAll")}
+          </button>
+          <button
+            onClick={onExport}
+            className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Download className="w-3 h-3" />
+            {t("settings.recordings.subtitleExport")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
