@@ -155,9 +155,9 @@ static ANNOTATION_PASSTHROUGH: AtomicBool  // false=标注模式, true=穿透模
 static TOOLBAR_ZONE: Mutex<(f64, f64, f64, f64)>  // 工具栏在窗口内的逻辑坐标 (x, y, w, h)
 ```
 
-**`create_annotation_window(app, selection)`**（2026-07-26 重构后）：
+**`create_annotation_window(app, selection)`**（2026-07-28 修复副屏 bug）：
 1. 从 `Source::Area` 提取 display_id + x/y/width/height（物理像素）
-2. 匹配 Tauri monitor（物理 → 逻辑坐标 / scale）
+2. **用 `CGDisplay::new(display_id).bounds()` 直接查 display 逻辑边界**（不再用 Tauri monitor 坐标推断——旧逻辑 selection.x/y 是相对 display 的局部物理坐标，加到每个 monitor.position() 后主屏副屏都可能匹配 → find 返回主屏 → overlay 建在主屏）
 3. **窗口 = 选区所在显示器全屏**（不再算三选/扩展空间）
 4. `TOOLBAR_ZONE` 初始化为全 0（前端 mount 后通过 `set_toolbar_zone` 回传实际位置）
 5. URL 注入 `canvas_ox/oy/w/h`（选区相对显示器原点的逻辑坐标）+ `toolbar=auto` + `scale`
