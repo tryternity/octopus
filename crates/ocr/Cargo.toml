@@ -12,4 +12,4 @@ image = "0.25"
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
-quircs = "0.10.3"
+zxing-cpp = { version = "0.5", features = ["bundled", "image"] }
