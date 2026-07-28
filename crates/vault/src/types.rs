@@ -126,14 +126,10 @@ impl TryFrom<i64> for MatchType {
 pub struct LoginUri {
     pub uri: String,
     /// null = 用客户端默认（Domain）
-    #[serde(alias = "match_type")]
     pub match_type: Option<MatchType>,
 }
 
 /// Login 类型 cipher 的明文 payload（落盘时加密为 data 字段）。
-///
-/// ⚠️ 加密前序列化为 JSON 存 DB。2026-07-28 casing 统一：字段改 camelCase，
-/// 同时加 `#[serde(alias)]` 兼容老加密数据（snake_case）——反序列化时两种格式都接受。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginData {
@@ -142,20 +138,16 @@ pub struct LoginData {
     pub password: Option<String>,
     /// Base32 secret（如 "JBSWY3DPEHPK3PXP"），不带 otpauth:// 前缀。
     pub totp: Option<String>,
-    #[serde(alias = "password_revision_date")]
     pub password_revision_date: Option<String>,
 }
 
 /// 自定义字段（密码、文本、隐藏等）。
-///
-/// ⚠️ 同 LoginData——加密前序列化存 DB，alias 兼容老数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Field {
     pub name: String,
     pub value: Option<String>,
     /// 0=Text 1=Hidden 2=Boolean（Bitwarden 协议）
-    #[serde(alias = "field_type")]
     pub field_type: i64,
 }
 
@@ -163,7 +155,6 @@ pub struct Field {
 #[serde(rename_all = "camelCase")]
 pub struct PasswordHistoryEntry {
     pub password: String,
-    #[serde(alias = "last_used_at")]
     pub last_used_at: String,
 }
 
