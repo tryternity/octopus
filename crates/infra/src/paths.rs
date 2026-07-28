@@ -19,7 +19,7 @@ pub fn octopus_config_home() -> &'static Path {
 // ── 录屏 ───────────────────────────────────────────────────────────
 
 /// 录屏输出目录：读 DB `record_output_dir` 配置（绝对路径，支持 `~` 展开）。
-/// 空/未配置时 fallback `~/.octopus/recordings/`。
+/// 空/未配置时 fallback `~/download/octopus/recordings/`。
 /// 不存在时由调用方在 start_recording 前创建。
 pub fn recordings_dir() -> PathBuf {
     let configured = crate::db::load_config_key("record_output_dir")
@@ -28,7 +28,7 @@ pub fn recordings_dir() -> PathBuf {
         .filter(|s| !s.is_empty());
     match configured {
         Some(dir) => expand_tilde(&dir),
-        None => octopus_config_home().join("recordings"),
+        None => expand_tilde("~/download/octopus/recordings"),
     }
 }
 
