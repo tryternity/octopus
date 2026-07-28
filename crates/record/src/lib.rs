@@ -15,6 +15,7 @@ pub use protocol::*;
 pub mod session;
 pub use session::{RecordSession, SessionState, StartedInfo, StoppedInfo};
 pub mod store;
+pub mod subtitle;
 pub mod platform;
 
 pub use error::{RecordError, RecordResult};
