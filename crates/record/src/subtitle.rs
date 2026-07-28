@@ -4,8 +4,6 @@
 //! ASR 调用由 desktop 编排层桥接（方案 B）——本模块只负责 mp4→PCM、cue 模型、SRT 格式化、选轨。
 
 use crate::audio_tracks::AudioTrackSource;
-use crate::store::RecordingMeta;
-use std::path::Path;
 use thiserror::Error;
 
 /// 一条字幕 cue（跨 Tauri 边界的 DTO，camelCase 序列化）。
@@ -29,7 +27,7 @@ pub struct SubtitleResult {
 
 /// 进度阶段（emit 给前端，外层 kebab + 变体 camelCase）。
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "stage", rename_all = "kebab-case")]
+#[serde(tag = "stage", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum SubtitleProgress {
     ExtractingAudio { percent: u32 },
     Recognizing { percent: u32 },
@@ -98,7 +96,6 @@ fn format_srt_timestamp(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_tracks::AudioTrackSource;
 
     fn cue(start: u64, end: u64, text: &str) -> SubtitleCue {
         SubtitleCue { start_ms: start, end_ms: end, text: text.into() }
@@ -134,5 +131,13 @@ mod tests {
         // 1 小时 + 234ms = 3601234ms
         let srt = generate_srt(&[cue(3_601_234, 3_602_500, "跨小时")]);
         assert!(srt.contains("01:00:01,234 --> 01:00:02,500"));
+    }
+
+    #[test]
+    fn subtitle_progress_done_serializes_camel_case() {
+        let p = SubtitleProgress::Done { cue_count: 5 };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"cueCount\":5"), "应输出 camelCase cueCount，实际: {}", json);
+        assert!(!json.contains("cue_count"), "不应有 snake_case cue_count，实际: {}", json);
     }
 }
