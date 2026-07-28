@@ -186,16 +186,16 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 
 ## 9.1 软删 / 回收站（v47）
 
-`clipboard_history` 加 `deleted_at` 列（v47）。删除走两阶段：
+`clipboard_history` 加 `is_deleted` 列（v53，INTEGER 0/1）。删除走两阶段：
 
-- **软删**：`UPDATE ... SET deleted_at = now`（条目仍在 DB，列表不显示，进「回收站」tab）
-- **还原**：`UPDATE ... SET deleted_at = NULL`（回收站 tab → 还原按钮）
+- **软删**：`UPDATE ... SET is_deleted = 1`（条目仍在 DB，列表不显示，进「回收站」tab）
+- **还原**：`UPDATE ... SET is_deleted = 0`（回收站 tab → 还原按钮）
 - **永久删**：`DELETE FROM`（回收站 tab → 永久删除按钮，或 TTL 自动触发）
 
-**图片物理删**：软删文本条目只设 deleted_at；但图片条目软删时立即物理删 image_data blob（图片占空间大，软删留 blob 无意义）。
+**图片物理删**：软删文本条目只设 is_deleted=1；但图片条目软删时立即物理删 image_data blob（图片占空间大，软删留 blob 无意义）。
 
 **回收站自动清**（scheduler `trash_purge` 任务）：
-- TTL 3 天（`deleted_at` 超过 3 天的永久删）
+- TTL 3 天（`created_at` 超过 3 天的永久删——is_deleted 是 0/1 标志不是时间戳）
 - 容量上限 500 条（排除收藏，超限时先永久删回收站最老的）
 - 与 `clipboard_cleanup`（§9 按 天数/数量）互补：cleanup 管活跃区，trash_purge 管回收站
 
