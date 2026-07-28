@@ -87,7 +87,7 @@
 | 智能互译 | ❌ 固定 source/target | ✅ 自动换向 + 语言检测 |
 
 **查缺补漏**：
-- 🔴 **P0 剪贴板→翻译自动链路**：octopus 有剪贴板监听 + 翻译引擎但两者没打通
+- ✅ **剪贴板→翻译链路**（已存在，2026-07-28 核实）：剪贴板条目 → 打开 CompactEditor（图文编辑器）→ `TranslationContrastPane` 流式翻译。原报告「没打通」描述过时
 - 🔴 **P0 PDF 换行处理**：`do_translate` 入口加可选文本预处理
 - 🟡 **P1 术语表**：DB 加 `translation_glossary` 表，LLM 翻译注入 prompt（差异化机会）
 - 🟡 **P1 智能互译**：加 `whatlang` 轻量语言检测，源=auto 时自动判断
@@ -112,10 +112,11 @@
 | 二维码识别 | ❌ | ✅ | ✅ |
 
 **查缺补漏**：
-- 🔴 **P0 智能元素/窗口吸附**：复用已有 `windows_uia.rs` UIAutomation，截图时按鼠标位置返回元素 rect
-- 🟡 **P1 标注工具扩充**：荧光笔(highlight)、折线(polygon)、马赛克画笔(freedraw blur)
+- ❌ **不做 智能元素/窗口吸附**：复用 `windows_uia.rs` UIAutomation 成本/平台耦合偏高，与轻量截图定位冲突，明确放弃（2026-07-28 决策）
+- ✅ **P1 标注工具扩充**（已实现，2026-07-27）：荧光笔(highlight)、橡皮擦(eraser)、清空标注(clearAll)；折线/马赛克画笔仍未做
 - 🟡 **P1 横向滚动截图**：参考 snow-shot 的 `ScrollDirection` 抽象
-- 🟢 **P2 取色器 + 二维码识别**（`rqrr` crate）
+- ✅ **P2 二维码识别**（已实现，2026-07-27）：zxing-cpp（C++ FFI bundled），截图 + 图文编辑器 QR 按钮 + 就地白卡
+- 🟢 **P2 取色器**
 
 **octopus 优势**：滚动拼接实时预览（NCC watch 通道）、OCR 深度集成、IPC 二进制传输、三平台 pin_window。
 
@@ -157,7 +158,7 @@
 |---|---|---|
 | 监听 | clipboard-rs（Win 事件/Linux XFixes/Wayland 两级轮询） | clipboard-x（仅 X11） |
 | 支持类型 | text/image/file/**voice/ocr** | text/image/file/**rich/html** |
-| 富文本/HTML | ❌ | ✅ rtf.js + dompurify XSS 过滤 |
+| 富文本/HTML | ❌（明确放弃，2026-07-28） | ✅ rtf.js + dompurify XSS 过滤 |
 | 搜索 | ✅ **FTS5 trigram** | ❌ 仅 LIKE |
 | 收藏/分组 | ✅ 收藏 + 6 类 item_type tab | ✅ 收藏 + **用户自定义分组** + 备注 |
 | 软删回收站 | ✅ **独有**（deleted_at + TTL 3 天 + 500 上限） | ❌ 硬删 |
@@ -168,7 +169,7 @@
 | 跨设备同步 | ❌（octopus-sync 未覆盖剪贴板） | ❌ 官方不做（Pro fork 做） |
 
 **查缺补漏**：
-- 🔴 **P0 富文本/HTML 支持**：clipboard-rs 已提供 `get_rich_text()/get_html()`，扩展 ItemType + **前端必须加 XSS 过滤**
+- ❌ **不做 富文本/HTML 支持**：clipboard-rs 虽有 `get_rich_text()/get_html()`，但前端 XSS 过滤 + 富文本渲染维护成本高，与「纯文本优先 + 图片」的剪贴板定位冲突，明确放弃（2026-07-28 决策）
 - 🟡 **P1 用户自定义分组/标签**：`clipboard_groups` 表
 - 🟡 **P1 备注字段**：`note TEXT` + FTS5 索引覆盖
 - 🟢 **P2 跨设备同步**：复用 octopus-sync，需防回环（`suppress_flag` 可复用）
@@ -261,15 +262,17 @@
 
 | # | 功能 | 缺口 | 来源 | 实现成本 |
 |---|---|---|---|---|
-| 1 | ASR | 数字 ITN 后处理 | CapsWriter | 低（正则+词典） |
+| 1 | ASR | 数字 ITN 后处理 | CapsWriter | 低（正则+词典）—— ✅ 已实现（2026-07-27） |
 | 2 | ASR | 独立标点模型 CT-Transformer | CapsWriter | 中（外挂 ONNX） |
-| 3 | 剪贴板 | 富文本/HTML 支持 | EcoPaste | 低（clipboard-rs 已有，+XSS 过滤） |
-| 4 | 翻译 | 剪贴板→翻译自动链路 | CopyTranslator | 低（打通现有模块） |
-| 5 | 录屏 | ASR 自动字幕 | openscreen + 自有 asr-local | 中（喂音轨给 ASR） |
-| 6 | 密码箱 | 浏览器扩展 | keepassxc/vaultwarden | 高（但最高差异化价值） |
-| 7 | Vault | passkey/WebAuthn | vaultwarden | 中（先存储后认证） |
-| 8 | AI/LLM | 流式输出 | 全部竞品 | 低（client.rs 改 SSE） |
-| 9 | 截屏 | 智能元素/窗口吸附 | snow-shot | 中（复用 windows_uia） |
+| 3 | 录屏 | ASR 自动字幕 | openscreen + 自有 asr-local | 中（喂音轨给 ASR）—— **护城河** |
+| 4 | 密码箱 | 浏览器扩展 | keepassxc/vaultwarden | 高（但最高差异化价值） |
+| 5 | Vault | passkey/WebAuthn | vaultwarden | 中（先存储后认证） |
+| 6 | AI/LLM | 流式输出 | 全部竞品 | 低（client.rs 改 SSE） |
+
+**已移除**（2026-07-28 决策）：
+- ~~剪贴板 富文本/HTML 支持~~ —— 不做（XSS 维护成本高，与纯文本+图片定位冲突）
+- ~~翻译 剪贴板→翻译自动链路~~ —— 已存在（CompactEditor 的 TranslationContrastPane，原报告描述过时）
+- ~~截屏 智能元素/窗口吸附~~ —— 不做（UIAutomation 平台耦合高，与轻量截图定位冲突）
 
 ### 🟡 P1（值得做，差异化或体验提升）
 
