@@ -131,28 +131,33 @@ pub async fn write_audio_tracks_metadata(
     tracks: &[AudioTrack],
 ) -> Result<(), String> {
     let json = serde_json::to_string(tracks).unwrap_or_else(|_| "[]".into());
-    // 临时文件命名：`<name>.mp4.meta.tmp`——`with_extension("mp4.meta.tmp")` 把
-    // 原 `.mp4` 整体替换为 `xxx.mp4.meta.tmp`（PathBuf::with_extension 语义：替换最后一段 ext）。
-    // 实测 `xxx.mp4` → `xxx.mp4.meta.tmp`（因为 `.mp4` 视为单个 ext 被替换）。
-    // 之所以带 `.mp4`：ffmpeg 按扩展名判断输出格式，必须保留 `.mp4` 后缀。
-    let tmp = mp4.with_extension("mp4.meta.tmp");
+    // 临时文件命名：`<name>.meta.tmp.mp4`。ffmpeg 按输出文件扩展名判断容器格式，
+    // 真正的扩展名必须是 `.mp4`（最后一段 dot 之后）。曾用 `with_extension("mp4.meta.tmp")`
+    // 产出 `.tmp` 结尾 → ffmpeg 报「Unable to choose an output format」静默失败（stderr
+    // 被 null 吞，2026-07-28 e2e 发现）。现把 `.mp4` 放最后：先 with_extension("meta.tmp.mp4")
+    // 把原 `.mp4` 替换成 `meta.tmp.mp4`，真扩展名仍是 mp4。
+    let tmp = mp4.with_extension("meta.tmp.mp4");
 
-    let status = tokio::process::Command::new(ffmpeg)
+    // stderr piped：失败时读 stderr 进 error message，便于诊断（不再 Stdio::null 吞掉）。
+    let output = tokio::process::Command::new(ffmpeg)
         .arg("-y")
         .arg("-i").arg(mp4)
         .arg("-c").arg("copy")
         .arg("-metadata").arg(format!("octopus_audio_tracks={}", json))
         .arg(&tmp)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .await
         .map_err(|e| format!("ffmpeg spawn 失败: {e}"))?;
 
-    if !status.success() {
+    if !output.status.success() {
         // 失败删 tmp，避免半残文件残留（_ 忽略「文件不存在」错误）。
         let _ = std::fs::remove_file(&tmp);
-        return Err("ffmpeg metadata 写入失败（退出码非 0）".into());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let hint = stderr.lines().find(|l| l.contains("Error") || l.contains("Unable"))
+            .unwrap_or("（无 Error 行）");
+        return Err(format!("ffmpeg metadata 写入失败（退出码非 0）: {hint}"));
     }
 
     std::fs::rename(&tmp, mp4).map_err(|e| format!("覆盖原文件失败: {e}"))?;
