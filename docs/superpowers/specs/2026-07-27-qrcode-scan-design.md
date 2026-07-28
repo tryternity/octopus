@@ -43,12 +43,17 @@
 ### 3.1 `crates/ocr/src/qrcode.rs`
 
 ```rust
-use zxingcpp::BarcodeFormat;
+use zxingcpp::{BarcodeFormat, ImageView, ImageFormat};
 
+/// 不依赖 zxing-cpp 的 `image` feature（该 feature 会连带拉入 image crate 的
+/// default features → avif → rav1e 整条重依赖链）。改为直接用 ImageView::from_slice
+/// 从灰度像素构造，QR 识别只需亮度通道，无需彩色格式。
 pub fn scan(image: &DynamicImage) -> Result<Vec<String>> {
     let reader = zxingcpp::read()
         .formats(zxingcpp::BarcodeFormats::list(BarcodeFormat::QRCode));
-    let results = reader.from(image)?;
+    let luma = image.to_luma8();
+    let iv = ImageView::from_slice(luma.as_raw(), luma.width(), luma.height(), ImageFormat::Lum)?;
+    let results = reader.from(&iv)?;
     Ok(results.into_iter()
         .map(|r| r.text().to_string())
         .filter(|s| !s.is_empty())
@@ -59,8 +64,10 @@ pub fn scan(image: &DynamicImage) -> Result<Vec<String>> {
 ### 3.2 `crates/ocr/Cargo.toml`
 
 ```toml
-zxing-cpp = { version = "0.5", features = ["bundled", "image"] }
+zxing-cpp = { version = "0.5", features = ["bundled"] }
 ```
+
+> **注**：不启用 zxing-cpp 的 `image` feature——它会拉入 image crate 的 default features（含 avif → rav1e 重依赖链）。改用 `ImageView::from_slice` + lum 灰度构造（§3.1）。
 
 ### 3.3 后端 Tauri 命令
 
