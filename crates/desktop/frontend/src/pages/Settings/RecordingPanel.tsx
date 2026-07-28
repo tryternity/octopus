@@ -20,6 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Play,
   FolderOpen,
@@ -92,6 +93,33 @@ interface MergeResult {
   filePath: string;
 }
 
+// 字幕生成结果（与 crates/record/src/subtitle.rs::SubtitleResult 对齐，camelCase）。
+// trackUsed 对应 AudioTrackSource（serde rename_all=lowercase）。
+export interface SubtitleResult {
+  cues: SubtitleCue[];
+  srtText: string;
+  model: string;
+  trackUsed: "microphone" | "system" | "merged" | "unknown";
+}
+
+// 字幕生成阶段（与 crates/record/src/subtitle.rs::SubtitleProgress 对齐，外层 kebab-case tag）。
+// 用于 record://task 事件的 SubtitleProgress 变体（stage 字段 + 额外 percent/cueCount/message）。
+export type SubtitleStage =
+  | "extracting-audio"
+  | "recognizing"
+  | "finalizing"
+  | "done"
+  | "error";
+
+// record://task 事件 payload 子集（仅字幕相关变体）。
+export interface SubtitleProgressPayload {
+  id: number;
+  stage: SubtitleStage;
+  percent?: number;
+  cueCount?: number;
+  message?: string;
+}
+
 // ── 工具：格式化时长 ms → "MM:SS"（<1h）或 "H:MM:SS"（≥1h）─────────────────
 
 function formatDuration(ms: number): string {
@@ -133,13 +161,10 @@ function formatCreatedAt(iso: string): string {
 
 interface RecordingPanelProps {
   showToast: (msg: string, variant?: ToastVariant) => void;
-  /** 跳转到 Settings 内部其他 page（用于「转字幕」灰占位跳转到 models 页）。 */
-  onNavigate?: (page: string) => void;
 }
 
 export default function RecordingPanel({
   showToast,
-  onNavigate,
 }: RecordingPanelProps) {
   const t = useT();
   const [records, setRecords] = useState<RecordingMeta[]>([]);
@@ -150,12 +175,99 @@ export default function RecordingPanel({
   const [gifExportingId, setGifExportingId] = useState<number | null>(null);
   // 音轨合并：一次只合并一个（按 id 跟踪，null=空闲）。仿 gifExportingId 模式。
   const [mergingId, setMergingId] = useState<number | null>(null);
+  // 字幕生成：一次只生成一个（按 id 跟踪，null=空闲）。仿 gifExportingId 模式。
+  // 后端 generate_subtitle 是 async 但内部跑数秒 ffmpeg+ASR；loading 态也由
+  // `record://task` 事件（subtitle-started/done/failed）维持，确保跨窗口同步。
+  const [subtitleGeneratingId, setSubtitleGeneratingId] = useState<number | null>(null);
+  // 已拉取的字幕结果缓存（按 recording id 索引）。subtitle-done 事件触发 get_subtitle 拉取后填入。
+  const [subtitleResults, setSubtitleResults] = useState<Record<number, SubtitleResult>>({});
+  // Task 4.2 会补：subtitleError（错误文案，按 id 暂存）、expandedSubtitleId（cue 预览展开/收起）。
+  // 本任务仅做 loading + 按钮激活，无 UI 消费这两个 state，故暂不声明（避免 noUnusedLocals）。
   // ffmpeg 可用性（mount 时探测，决定 GIF 按钮灰禁 + tooltip 引导）。
   // null=探测中（默认 true 可点，避免闪烁），true=可用，false=未找到（灰禁 + tooltip）。
   const [ffmpegAvailable, setFfmpegAvailable] = useState<boolean | null>(null);
   useEffect(() => {
     invoke<boolean>("check_ffmpeg").then(setFfmpegAvailable).catch(() => setFfmpegAvailable(true));
   }, []);
+
+  // ── 订阅 record://task 事件（字幕生成进度，仿 useRecordSession 的 record://event 范式）──
+  // 后端 RecordTaskEvent（record_commands.rs:941）外层 kebab-case + 变体 camelCase：
+  //   subtitle-started { id } / subtitle-done { id, cueCount } / subtitle-failed { id, error }
+  //   subtitle-progress { id, stage: SubtitleProgress }  —— Task 4.2 详情面板再用，本任务暂忽略。
+  // 监听用于跨窗口同步（A 窗口触发生成，B 窗口也能收到 done 自动刷新字幕缓存）。
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    listen<{
+      event: string;
+      id: number;
+      cueCount?: number;
+      error?: string;
+      stage?: SubtitleProgressPayload["stage"];
+      percent?: number;
+      message?: string;
+    }>("record://task", (payload) => {
+      const e = payload as {
+        event: string;
+        id: number;
+        cueCount?: number;
+        error?: string;
+      };
+      if (e.event === "subtitle-started") {
+        setSubtitleGeneratingId(e.id);
+      } else if (e.event === "subtitle-done") {
+        setSubtitleGeneratingId(null);
+        // 重新拉取该 recording 的字幕（含空 cues 的「正常无字幕」场景）。
+        // get_subtitle 返回 Option<SubtitleResult>：null=未生成。
+        invoke<SubtitleResult | null>("get_subtitle", { id: e.id }).then((r) => {
+          if (r) {
+            setSubtitleResults((prev) => ({ ...prev, [e.id]: r }));
+            showToast(
+              t("settings.recordings.subtitleDone", { count: r.cues.length }),
+              "success",
+            );
+          }
+        });
+      } else if (e.event === "subtitle-failed") {
+        setSubtitleGeneratingId(null);
+        // 错误文案直接 toast（Task 4.2 详情面板再补 subtitleError state 做行内红字）。
+        const msg = e.error || t("settings.recordings.subtitleFailed");
+        showToast(t("settings.recordings.subtitleFailed") + ": " + msg, "error");
+      }
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [showToast, t]);
+
+  // 触发字幕生成。loading 态同时由本 handler（乐观）和 record://task 事件（权威）维持。
+  // 注意：generate_subtitle 内部跑数秒 ffmpeg+ASR，invoke promise 何时 resolve 与
+  // subtitle-done 事件到达的先后无保证——故 finally 不清 subtitleGeneratingId，
+  // 改由事件回调（done/failed）清，避免按钮提前转回 idle 又被事件点亮。
+  const onGenerateSubtitle = useCallback(
+    async (id: number, track?: string) => {
+      setSubtitleGeneratingId(id);
+      try {
+        const result = await invoke<SubtitleResult>("generate_subtitle", {
+          id,
+          track: track ?? null,
+        });
+        // 乐观更新缓存（done 事件到达前先显示）。空 cues（无声）也存——前端显示「无字幕」。
+        setSubtitleResults((prev) => ({ ...prev, [id]: result }));
+      } catch (e) {
+        // 错误文案直接 toast（Task 4.2 详情面板再补 subtitleError state 做行内红字）。
+        const msg = String(e);
+        showToast(t("settings.recordings.subtitleFailed") + ": " + msg, "error");
+        // 失败兜底清 loading（事件回调也会清，这里防事件丢失）。
+        setSubtitleGeneratingId(null);
+      }
+    },
+    [showToast, t],
+  );
   // 顶部「正在录制中」banner + 控制按钮（start/pause/resume 由本 panel 触发，
   // stop 走 record_stop 命令需要 recording_id 等参数，本 panel MVP 不持有这些上下文，
   // 让用户用 Esc 快捷键或 tray menu 停止）。
@@ -395,9 +507,9 @@ export default function RecordingPanel({
               mergingId={mergingId}
               onMergeAudio={(mid) => setMergingId(mid)}
               onMerged={loadList}
-              onTranscribeClick={
-                onNavigate ? () => onNavigate("models") : undefined
-              }
+              subtitleGeneratingId={subtitleGeneratingId}
+              subtitleResult={subtitleResults[rec.id]}
+              onGenerateSubtitle={onGenerateSubtitle}
             />
           ))}
 
@@ -446,7 +558,6 @@ interface RecordingRowProps {
   showToast: (msg: string, variant?: ToastVariant) => void;
   onDeleted: () => void;
   onFavoriteToggled: () => void;
-  onTranscribeClick?: () => void;
   onRenamed: () => void;
   gifExportingId: number | null;
   onExportGif: (id: number | null) => void;
@@ -454,6 +565,12 @@ interface RecordingRowProps {
   mergingId: number | null;
   onMergeAudio: (id: number | null) => void;
   onMerged: () => void;
+  /** 字幕生成中 id（null=空闲）。控制 Captions 按钮 spinner / disabled。 */
+  subtitleGeneratingId: number | null;
+  /** 该 recording 已生成的字幕（无则 undefined）。Task 4.2 详情面板消费。 */
+  subtitleResult?: SubtitleResult;
+  /** 触发字幕生成。track 留空走后端 Auto 选轨。 */
+  onGenerateSubtitle: (id: number, track?: string) => void;
 }
 
 function RecordingRow({
@@ -463,7 +580,6 @@ function RecordingRow({
   showToast,
   onDeleted,
   onFavoriteToggled,
-  onTranscribeClick,
   onRenamed,
   gifExportingId,
   onExportGif,
@@ -471,6 +587,9 @@ function RecordingRow({
   mergingId,
   onMergeAudio,
   onMerged,
+  subtitleGeneratingId,
+  subtitleResult,
+  onGenerateSubtitle,
 }: RecordingRowProps) {
   const t = useT();
   const [deletePending, setDeletePending] = useState(false);
@@ -606,9 +725,14 @@ function RecordingRow({
     }
   };
 
-  const handleTranscribeClick = (e: React.MouseEvent) => {
+  // ── 转字幕（Task 4.1 激活）── invoke generate_subtitle 命令，
+  // loading 状态由父 subtitleGeneratingId 控制（同 GIF 模式）。
+  // track 留空走后端 Auto 选轨；subtitleResult 已存在时仍可重新生成（覆盖旧结果）。
+  const isGeneratingSubtitle = subtitleGeneratingId === rec.id;
+  const handleGenerateSubtitle = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    onTranscribeClick?.();
+    if (isGeneratingSubtitle) return;
+    onGenerateSubtitle(rec.id);
   };
 
   return (
@@ -760,15 +884,26 @@ function RecordingRow({
         <button
           className={cn(
             "p-1 rounded transition-opacity",
-            onTranscribeClick
-              ? "opacity-40 group-hover:opacity-60 hover:!opacity-100 cursor-pointer"
-              : "opacity-30 cursor-not-allowed",
+            isGeneratingSubtitle
+              ? "opacity-100 cursor-wait"
+              : // 与 GIF / Merge 按钮对齐：默认可见（opacity-60），避免被当成装饰
+                "opacity-60 group-hover:opacity-70 hover:!opacity-100 cursor-pointer",
           )}
-          onClick={handleTranscribeClick}
-          disabled={!onTranscribeClick}
-          title={t("settings.recordings.transcriptTooltip")}
+          onClick={handleGenerateSubtitle}
+          disabled={isGeneratingSubtitle}
+          title={
+            isGeneratingSubtitle
+              ? t("settings.recordings.subtitleGenerating")
+              : subtitleResult
+                ? t("settings.recordings.transcriptRegenerate")
+                : t("settings.recordings.transcript")
+          }
         >
-          <Captions className="w-3.5 h-3.5 text-muted-foreground" />
+          {isGeneratingSubtitle ? (
+            <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+          ) : (
+            <Captions className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          )}
         </button>
         <button
           className={cn(

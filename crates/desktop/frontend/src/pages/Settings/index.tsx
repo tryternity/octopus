@@ -179,7 +179,7 @@ function Settings() {
         ) : effectivePage === "vault" ? (
           <VaultPanel showToast={showToast} />
         ) : effectivePage === "recordings" ? (
-          <RecordingPanel showToast={showToast} onNavigate={(p) => setPage(p as PageName)} />
+          <RecordingPanel showToast={showToast} />
         ) : !configResp ? (
           /* 只有 settings(GeneralPanel) 和 hotword 真正依赖 configResp。
              其他页面各自 invoke 独立命令，不应被 configResp 加载失败阻塞。 */
