@@ -90,7 +90,7 @@ settings:
     delete: Delete
     deleteConfirm: Click again to confirm
     transcript: Transcribe
-    transcriptTooltip: Requires ASR model, click to download
+    transcriptRegenerate: Regenerate subtitle
     exportGif: Export GIF
     exportGifStarted: Exporting GIF...
     exportGifDone: Exported to ${path}
@@ -99,6 +99,26 @@ settings:
     mergeAudioTooltip: "Merge audio tracks (microphone + system) into single track"
     mergeAudioDone: "Merged audio saved to ${path}"
     mergeAudioFailed: "Failed to merge audio: "
+    # Subtitle (auto ASR transcription) — added 2026-07-28 Task 4.3
+    subtitleGenerating: Generating subtitle...
+    subtitleDone: "Subtitle generated (${count} cues)"
+    subtitleFailed: Subtitle generation failed
+    subtitleFallbackSystem: No microphone track detected, used system audio
+    subtitleCount: ${count} cues
+    subtitleEmpty: No speech detected
+    subtitleCopied: Copied
+    subtitleCopyAll: Copy All
+    subtitleCopyCueHint: Click to copy this cue
+    subtitleCopyFailed: Copy failed
+    subtitleExport: Export SRT
+    subtitleExportDone: Exported to ${path}
+    subtitleExportFailed: Export failed
+    subtitleExpand: Expand subtitle
+    subtitleCollapse: Collapse subtitle
+    subtitleTrackMic: Microphone
+    subtitleTrackSystem: System audio
+    subtitleTrackMerged: Merged track
+    subtitleTrackUnknown: Unknown track
     merging: "Merging audio..."
     recording: Recording
     paused: Paused

@@ -93,7 +93,7 @@ settings:
     delete: 删除
     deleteConfirm: 再次点击确认删除
     transcript: 转字幕
-    transcriptTooltip: 需下载 ASR 模型，点击跳转
+    transcriptRegenerate: 重新生成字幕
     exportGif: 导出 GIF
     exportGifStarted: 正在导出 GIF...
     exportGifDone: 已导出到 ${path}
@@ -102,6 +102,26 @@ settings:
     mergeAudioTooltip: "合并音轨（麦克风 + 系统音频）为单轨"
     mergeAudioDone: "已合并音轨并保存到 ${path}"
     mergeAudioFailed: "合并失败："
+    # 字幕（自动 ASR 转写）—— 2026-07-28 Task 4.3 加
+    subtitleGenerating: 字幕生成中...
+    subtitleDone: "字幕已生成（${count} 条）"
+    subtitleFailed: 字幕生成失败
+    subtitleFallbackSystem: 未检测到麦克风音轨，已使用系统音轨识别
+    subtitleCount: 共 ${count} 条
+    subtitleEmpty: 未检测到语音内容
+    subtitleCopied: 已复制
+    subtitleCopyAll: 复制全部
+    subtitleCopyCueHint: 单击复制该条
+    subtitleCopyFailed: 复制失败
+    subtitleExport: 导出 SRT
+    subtitleExportDone: 已导出到 ${path}
+    subtitleExportFailed: 导出失败
+    subtitleExpand: 展开字幕
+    subtitleCollapse: 收起字幕
+    subtitleTrackMic: 麦克风
+    subtitleTrackSystem: 系统音频
+    subtitleTrackMerged: 合并音轨
+    subtitleTrackUnknown: 未知音轨
     merging: "合并中..."
     recording: 录制中
     paused: 已暂停
