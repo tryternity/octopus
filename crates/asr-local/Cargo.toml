@@ -21,7 +21,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 模型文件清单 sha256 校验（manifest，desktop/cli 共用）
 sha2 = "0.10"
-tokenizers = "0.21"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 rustfft = "6"
 # RNNoise 流式降噪（纯 Rust，内置默认模型）。曾用 DeepFilterNet3 dfn3.onnx，但该流式逐帧
 # 导出模型存在缺陷（压语音），已弃用，改用 nnnoiseless（Xiph RNNoise 移植）。
