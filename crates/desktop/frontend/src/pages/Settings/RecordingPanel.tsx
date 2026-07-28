@@ -79,10 +79,6 @@ export interface RecordingMeta {
   isFavorite: boolean;
   createdAt: string;
   deletedAt: string | null;
-  // 字幕字段（schema v54）。未生成时后端序列化为 null/省略，前端按可选处理。
-  subtitleCues?: SubtitleCue[] | null;
-  subtitleSrt?: string | null;
-  subtitleModel?: string | null;
 }
 
 // 字幕 cue（与 crates/record/src/subtitle.rs::SubtitleCue 对齐，camelCase）。
@@ -198,7 +194,7 @@ export default function RecordingPanel({
   // 后端 generate_subtitle 是 async 但内部跑数秒 ffmpeg+ASR；loading 态也由
   // `record://task` 事件（subtitle-started/done/failed）维持，确保跨窗口同步。
   const [subtitleGeneratingId, setSubtitleGeneratingId] = useState<number | null>(null);
-  // 已拉取的字幕结果缓存（按 recording id 索引）。subtitle-done 事件触发 get_subtitle 拉取后填入。
+  // 已拉取的字幕结果缓存（按 recording id 索引）。subtitle-done 事件触发 read_subtitle 拉取后填入。
   const [subtitleResults, setSubtitleResults] = useState<Record<number, SubtitleResult>>({});
   // 字幕生成错误文案（按 id 暂存）。subtitle-failed 事件或 generate_subtitle reject 时填，
   // 行内红字展示（区别于 toast 一过性提示）。成功后清。
@@ -247,8 +243,8 @@ export default function RecordingPanel({
           delete next[e.id];
           return next;
         });
-        // get_subtitle 返回 Option<SubtitleResult>：null=未生成。
-        invoke<SubtitleResult | null>("get_subtitle", { id: e.id }).then((r) => {
+        // read_subtitle 返回 Option<SubtitleResult>：null=未生成。
+        invoke<SubtitleResult | null>("read_subtitle", { id: e.id }).then((r) => {
           if (r) {
             setSubtitleResults((prev) => ({ ...prev, [e.id]: r }));
             showToast(
@@ -309,19 +305,14 @@ export default function RecordingPanel({
   // ── 字幕面板操作（Task 4.2）──
   // 导出 SRT：弹原生 save 对话框 → invoke export_subtitle 写文件。失败 toast。
   // 注意 destPath camelCase：tauri invoke 默认 snake→camel 转换参数名。
-  const onExportSubtitle = useCallback(
+  // 在 Finder 显示最新 SRT 文件（v2：替代 export_subtitle——SRT 已直接生成在磁盘）。
+  const onRevealSubtitle = useCallback(
     async (id: number) => {
       try {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const dest = await save({
-          defaultPath: `recording_${id}.srt`,
-          filters: [{ name: "SubRip", extensions: ["srt"] }],
-        });
-        if (!dest) return; // 用户取消
-        await invoke("export_subtitle", { id, destPath: dest });
-        showToast(t("settings.recordings.subtitleExportDone", { path: dest }), "success");
+        await invoke<string>("reveal_subtitle", { id });
+        showToast(t("settings.recordings.subtitleRevealed"), "success");
       } catch (e) {
-        showToast(t("settings.recordings.subtitleExportFailed") + ": " + String(e), "error");
+        showToast(t("settings.recordings.subtitleRevealFailed") + ": " + String(e), "error");
       }
     },
     [showToast, t],
@@ -604,7 +595,7 @@ export default function RecordingPanel({
               onGenerateSubtitle={onGenerateSubtitle}
               expandedSubtitleId={expandedSubtitleId}
               onToggleExpandSubtitle={onToggleExpandSubtitle}
-              onExportSubtitle={onExportSubtitle}
+              onRevealSubtitle={onRevealSubtitle}
               onCopyCue={onCopyCue}
               onCopyAll={onCopyAll}
             />
@@ -674,8 +665,8 @@ interface RecordingRowProps {
   expandedSubtitleId: number | null;
   /** 展开/收起字幕预览面板。 */
   onToggleExpandSubtitle: (id: number) => void;
-  /** 导出 SRT（Tauri save dialog）。 */
-  onExportSubtitle: (id: number) => void;
+  /** 在 Finder 显示最新 SRT 文件。 */
+  onRevealSubtitle: (id: number) => void;
   /** 复制单条 cue 文本到剪贴板。 */
   onCopyCue: (cue: SubtitleCue) => void;
   /** 复制全部 cue 纯文本到剪贴板。 */
@@ -702,7 +693,7 @@ function RecordingRow({
   onGenerateSubtitle,
   expandedSubtitleId,
   onToggleExpandSubtitle,
-  onExportSubtitle,
+  onRevealSubtitle,
   onCopyCue,
   onCopyAll,
 }: RecordingRowProps) {
@@ -1146,7 +1137,7 @@ function RecordingRow({
         <SubtitlePanel
           result={subtitleResult}
           error={subtitleError}
-          onExport={() => onExportSubtitle(rec.id)}
+          onExport={() => onRevealSubtitle(rec.id)}
           onCopyCue={onCopyCue}
           onCopyAll={() => onCopyAll(subtitleResult)}
           t={t}

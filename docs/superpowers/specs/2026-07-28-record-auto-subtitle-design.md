@@ -114,7 +114,19 @@ infra ← asr-local ← desktop
 
 ## 3. 数据模型
 
-### 3.1 DB schema 变更（v53 → v54）
+> **⚠️ v2 架构变更（2026-07-28 e2e 后）**：存储模型从「DB 三列」改为「**SRT 文件**」。
+> 原因：DB 存字幕是过度设计——字幕本质是文件（给外部工具用），存 DB 后还要导出，多此一举。
+> 文件方案更简单：`.srt` 与 mp4 同目录同名，直接可被 VLC/剪映/Premiere 加载。
+>
+> **v2 决策**：
+> - SRT 文件位置：与 mp4 同目录同名，命名 `xxx.N.srt`（N 从 1 递增，每次生成都新建不覆盖）
+> - cue 预览来源：读最新的 `.srt` 文件解析回 cue 列表（SRT 是唯一真相源）
+> - **回退 schema v54→v53**：删 db.sql 的 `subtitle_cues`/`subtitle_srt`/`subtitle_model` 三列 + RecordingMeta 三字段 + `update_subtitle` 方法 + `get_subtitle` 命令
+> - 新增 `read_subtitle` 命令：读最新 `.srt` 文件解析为 cue 列表给前端
+>
+> 下方 §3.1（DB schema v54）**已废弃**，保留作为历史记录。实际实现以本段 v2 决策为准。
+
+### 3.1 DB schema 变更（v53 → v54）~~【已废弃，v2 改用文件】~~
 
 `recordings` 表新增 3 列：
 
@@ -433,39 +445,30 @@ pub async fn generate_subtitle(
     // 7. asr_local::transcribe_segments_with_timestamps(engine, pcm, cfg) → Vec<TimestampedSegment>
     // 8. emit(Finalizing)
     // 9. 转 SubtitleCue + record::generate_srt → SubtitleResult
-    // 10. UPDATE recordings SET subtitle_cues=?, subtitle_srt=?, subtitle_model=? WHERE id=?
+    // 10. 【v2 变更】写 SRT 文件到磁盘：与 mp4 同目录，命名 xxx.N.srt（N = 现有同名文件数 + 1）
+    //     不再 UPDATE DB（v2 删了 DB 三列）
     // 11. emit(Done { cue_count })
     // 12. 返回 SubtitleResult
 }
 ```
 
-**命令 2：导出 SRT 文件到磁盘**
+**命令 2：导出 SRT 文件到磁盘** ~~【已废弃，v2 改用文件——SRT 直接生成在磁盘，无需导出】~~
+
+v2 替代：「在 Finder 显示 SRT 文件」（前端调 `reveal_recording` 同模式 reveal `.srt` 文件即可，或直接 `open -R`）。
+
+**命令 3：读取字幕（历史项展开时调）** ~~【已废弃，v2 改名 read_subtitle + 从文件读】~~
+
+v2 替代 `read_subtitle`：
 
 ```rust
 #[tauri::command]
-pub async fn export_subtitle(
+pub async fn read_subtitle(
     recording_id: i64,
-    dest_path: String,            // 用户在 save_dialog 选定的路径
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    // 1. 查 DB 拿 subtitle_srt
-    // 2. None → Err("字幕未生成")
-    // 3. 写文件
-    // 4. 返回 dest_path（前端 toast「已导出到 ...」）
-}
-```
-
-**命令 3：读取字幕（历史项展开时调）**
-
-```rust
-#[tauri::command]
-pub async fn get_subtitle(
-    recording_id: i64,
-    state: State<'_, AppState>,
 ) -> Result<Option<SubtitleResult>, String> {
-    // 1. 查 DB 拿 subtitle_cues + subtitle_srt + subtitle_model
-    // 2. 全 None → 返回 None（前端显示「生成字幕」按钮）
-    // 3. 非空 → 反序列化 cues → 组装 SubtitleResult 返回
+    // 1. 查 DB 拿 file_path（mp4 绝对路径）
+    // 2. 扫同目录找 xxx.N.srt（N 最大的是最新版本）
+    // 3. 不存在 → 返回 None（前端显示「生成字幕」按钮）
+    // 4. 存在 → 读文件 + 解析 SRT 为 cue 列表 + mtime 作 model 字段占位 → SubtitleResult
 }
 ```
 

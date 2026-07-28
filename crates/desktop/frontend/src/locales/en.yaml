@@ -110,9 +110,9 @@ settings:
     subtitleCopyAll: Copy All
     subtitleCopyCueHint: Click to copy this cue
     subtitleCopyFailed: Copy failed
-    subtitleExport: Export SRT
-    subtitleExportDone: Exported to ${path}
-    subtitleExportFailed: Export failed
+    subtitleExport: Reveal in Finder
+    subtitleRevealed: SRT file revealed in Finder
+    subtitleRevealFailed: Reveal failed
     subtitleExpand: Expand subtitle
     subtitleCollapse: Collapse subtitle
     subtitleTrackMic: Microphone

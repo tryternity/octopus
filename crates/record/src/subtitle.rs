@@ -186,6 +186,159 @@ pub fn extract_audio_track_to_pcm(
     Ok(samples)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v2：SRT 文件读写（不存 DB，直接与 mp4 同目录同名）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 计算下一个 SRT 文件路径（不覆盖已有，递增序号）。
+///
+/// 命名规则：`<mp4_stem>.<N>.srt`，N 从 1 递增。
+/// 扫描 mp4 同目录下已存在的 `<stem>.*.srt`，取最大 N + 1。
+/// 不存在任何 .srt 时返回 `<stem>.1.srt`。
+///
+/// **纯路径计算，不创建文件**——调用方拿到路径后自己写。
+pub fn next_srt_path(mp4_path: &Path) -> std::path::PathBuf {
+    let dir = mp4_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = mp4_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("recording");
+    // 扫已存在的 <stem>.N.srt，找最大 N
+    let mut max_n: u32 = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // 匹配 <stem>.<N>.srt
+            let prefix = format!("{}.", stem);
+            if name.starts_with(&prefix) && name.ends_with(".srt") {
+                let mid = &name[prefix.len()..name.len() - 4];
+                if let Ok(n) = mid.parse::<u32>() {
+                    if n > max_n {
+                        max_n = n;
+                    }
+                }
+            }
+        }
+    }
+    dir.join(format!("{}.{}.srt", stem, max_n + 1))
+}
+
+/// 找最新的 SRT 文件路径（N 最大的那个）。不存在返回 None。
+pub fn latest_srt_path(mp4_path: &Path) -> Option<std::path::PathBuf> {
+    let dir = mp4_path.parent()?;
+    let stem = mp4_path.file_stem()?.to_str()?;
+    let prefix = format!("{}.", stem);
+    let mut best: Option<(u32, std::path::PathBuf)> = None;
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".srt") {
+            let mid = &name[prefix.len()..name.len() - 4];
+            if let Ok(n) = mid.parse::<u32>() {
+                if best.as_ref().map_or(true, |(bn, _)| n > *bn) {
+                    best = Some((n, entry.path()));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// 解析 SRT 文本为 cue 列表。
+///
+/// 标准 SRT 格式：
+/// ```text
+/// 1
+/// 00:00:01,234 --> 00:00:03,567
+/// 字幕文本（可多行）
+///
+/// 2
+/// ...
+/// ```
+///
+/// 容错：跳过无法解析的 cue（序号/时间戳/文本任一缺失）；空行 tolerated；BOM tolerated。
+/// 时间戳同时接受 SRT 标准 `,` 毫秒分隔和 VTT 的 `.`（兼容性）。
+pub fn parse_srt(text: &str) -> Vec<SubtitleCue> {
+    parse_srt_impl(text)
+}
+
+fn parse_srt_impl(text: &str) -> Vec<SubtitleCue> {
+    let text = text.trim_start_matches('\u{feff}');
+    let mut cues = Vec::new();
+    let mut lines_iter = text.lines().peekable();
+    while let Some(line) = lines_iter.next() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // 跳过序号行（纯数字）
+        if line.chars().all(|c| c.is_ascii_digit()) && !line.is_empty() {
+            // 下一行应该是时间戳行
+            match lines_iter.next() {
+                Some(ts_line) => {
+                    let ts_line = ts_line.trim();
+                    if let Some((start_ms, end_ms)) = parse_srt_timestamp_line(ts_line) {
+                        // 收集后续文本行直到空行
+                        let mut text_lines = Vec::new();
+                        while let Some(&peek) = lines_iter.peek() {
+                            if peek.trim().is_empty() {
+                                lines_iter.next();
+                                break;
+                            }
+                            text_lines.push(lines_iter.next().unwrap().trim());
+                        }
+                        if !text_lines.is_empty() {
+                            cues.push(SubtitleCue {
+                                start_ms,
+                                end_ms,
+                                text: text_lines.join("\n"),
+                            });
+                        }
+                    }
+                    // 时间戳行解析失败 → 跳过这个块（容错）
+                }
+                None => break,
+            }
+        }
+    }
+    cues
+}
+
+/// 解析时间戳行 `00:00:01,234 --> 00:00:03,567`（逗号或点分隔毫秒）。
+fn parse_srt_timestamp_line(line: &str) -> Option<(u64, u64)> {
+    let line = line.trim();
+    let parts: Vec<&str> = line.split("-->").collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let start = parse_srt_time(parts[0].trim())?;
+    let end = parse_srt_time(parts[1].trim())?;
+    Some((start, end))
+}
+
+/// 解析单个时间戳 `00:00:01,234` → 毫秒。
+fn parse_srt_time(s: &str) -> Option<u64> {
+    // HH:MM:SS,mmm 或 HH:MM:SS.mmm
+    let s = s.trim();
+    let (hms, ms_str) = if let Some(idx) = s.find(|c: char| c == ',' || c == '.') {
+        (&s[..idx], &s[idx + 1..])
+    } else {
+        // 无毫秒部分
+        (s, "0")
+    };
+    let hms_parts: Vec<&str> = hms.split(':').collect();
+    if hms_parts.len() != 3 {
+        return None;
+    }
+    let h: u64 = hms_parts[0].parse().ok()?;
+    let m: u64 = hms_parts[1].parse().ok()?;
+    let s: u64 = hms_parts[2].parse().ok()?;
+    let ms: u64 = ms_str.parse().ok()?;
+    Some(h * 3600_000 + m * 60_000 + s * 1000 + ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +403,6 @@ mod tests {
             audio_tracks: tracks.to_vec(), source_type: "display".into(), file_size: 100,
             has_thumbnail: false, is_favorite: false, created_at: "2026-07-28T00:00:00Z".into(),
             deleted_at: None,
-            subtitle_cues: None, subtitle_srt: None, subtitle_model: None,
         }
     }
 
@@ -292,5 +444,67 @@ mod tests {
     fn select_track_system_but_none_returns_no_system_error() {
         let m = meta_with_tracks(&[track(0, AudioTrackSource::Microphone)]);
         assert!(matches!(select_track(&m, TrackPreference::System), Err(SubtitleError::NoSystemTrack)));
+    }
+
+    // ── v2: parse_srt / generate_srt roundtrip ──
+
+    #[test]
+    fn parse_srt_basic_3_cues() {
+        let srt = "1\n00:00:01,234 --> 00:00:03,567\n第一句\n\
+                   \n2\n00:00:04,000 --> 00:00:06,500\n第二句\n\
+                   \n3\n00:00:07,000 --> 00:00:09,500\n第三句\n";
+        let cues = parse_srt(srt);
+        assert_eq!(cues.len(), 3);
+        assert_eq!(cues[0].start_ms, 1234);
+        assert_eq!(cues[0].end_ms, 3567);
+        assert_eq!(cues[0].text, "第一句");
+        assert_eq!(cues[2].start_ms, 7000);
+    }
+
+    #[test]
+    fn parse_srt_empty_returns_empty() {
+        assert!(parse_srt("").is_empty());
+        assert!(parse_srt("   \n\n  ").is_empty());
+    }
+
+    #[test]
+    fn parse_srt_accepts_dot_milliseparator() {
+        // VTT 风格 `.` 毫秒分隔也应兼容
+        let srt = "1\n00:00:01.500 --> 00:00:02.000\n测试\n";
+        let cues = parse_srt(srt);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].start_ms, 1500);
+        assert_eq!(cues[0].end_ms, 2000);
+    }
+
+    #[test]
+    fn parse_srt_skips_malformed_block() {
+        // 序号行后跟非时间戳行 → 该块跳过，继续解析后续块
+        let srt = "1\nnot a timestamp\n\
+                   \n2\n00:00:01,000 --> 00:00:02,000\n有效\n";
+        let cues = parse_srt(srt);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "有效");
+    }
+
+    #[test]
+    fn parse_srt_handles_bom_and_crlf() {
+        let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:02,000\r\nCRLF\r\n";
+        let cues = parse_srt(srt);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "CRLF");
+    }
+
+    #[test]
+    fn generate_then_parse_roundtrip() {
+        let original = vec![
+            cue(0, 1500, "开始"),
+            cue(2000, 3500, "中间一句"),
+            cue(4000, 6500, "多词"),
+            cue(3_601_234, 3_602_500, "跨小时"),
+        ];
+        let srt = generate_srt(&original);
+        let parsed = parse_srt(&srt);
+        assert_eq!(parsed, original);
     }
 }

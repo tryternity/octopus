@@ -574,9 +574,6 @@ async fn stop_and_store_inner(
         is_favorite: false,
         created_at: now_iso(),
         deleted_at: None,
-        subtitle_cues: None,
-        subtitle_srt: None,
-        subtitle_model: None,
     };
 
     let meta_clone = meta.clone();
@@ -1149,10 +1146,6 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         is_favorite: false,
         created_at: now_iso(),
         deleted_at: None,
-        // 合并产物是新音频轨，原 meta 的字幕时间戳不再匹配 → 不继承。
-        subtitle_cues: None,
-        subtitle_srt: None,
-        subtitle_model: None,
     };
 
     with_db_blocking(move |conn| {
@@ -1268,9 +1261,9 @@ async fn generate_subtitle_inner(
         return Err(format!("源文件不存在: {}", input.display()));
     }
     log::info!("[subtitle] step5 开始抽 PCM mp4={} ffmpeg={}", input.display(), ffmpeg.display());
-    let mp4_path = input.clone();
+    let mp4_path_clone = input.clone();
     let pcm = tokio::task::spawn_blocking(move || {
-        octopus_record::extract_audio_track_to_pcm(&mp4_path, track_idx, &ffmpeg)
+        octopus_record::extract_audio_track_to_pcm(&mp4_path_clone, track_idx, &ffmpeg)
     })
     .await
     .map_err(|e| format!("extract join error: {e}"))?
@@ -1330,15 +1323,12 @@ async fn generate_subtitle_inner(
         track_used,
     };
 
-    // 11. UPDATE DB（cues 序列化为 JSON 字符串）
-    let cues_json = serde_json::to_string(&cues).map_err(|e| e.to_string())?;
-    log::info!("[subtitle] step11 开始 DB UPDATE cues={} json_len={}", cues.len(), cues_json.len());
-    with_db_blocking(move |conn| {
-        let store = RecordStore::new(conn);
-        store.update_subtitle(id, &cues_json, &srt_text, &model)
-    })
-    .await?;
-    log::info!("[subtitle] step11 DB UPDATE 完成");
+    // 11. 写 SRT 文件到磁盘（v2：不存 DB，与 mp4 同目录同名 xxx.N.srt）
+    let srt_path = octopus_record::next_srt_path(&input);
+    log::info!("[subtitle] step11 写 SRT 文件 {} cues={}", srt_path.display(), cues.len());
+    std::fs::write(&srt_path, &srt_text)
+        .map_err(|e| format!("写 SRT 文件失败 {}: {e}", srt_path.display()))?;
+    log::info!("[subtitle] step11 SRT 文件写入完成");
 
     // 12. emit done（cues 为空也走 Done——VAD 无声属于「正常无字幕」，不是错误）
     let _ = app.emit(
@@ -1352,55 +1342,75 @@ async fn generate_subtitle_inner(
 
 /// 导出 SRT 文件到指定路径。
 ///
-/// 从 DB 读已生成的 `subtitle_srt` 文本 → 写文件。空 SRT（未生成）→ Err。
-#[command]
-pub async fn export_subtitle(id: i64, dest_path: String) -> Result<String, String> {
-    let srt = with_db_blocking(move |conn| {
-        let store = RecordStore::new(conn);
-        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
-        Ok::<_, RecordError>(meta.subtitle_srt.unwrap_or_default())
-    })
-    .await?;
-    if srt.is_empty() {
-        return Err("字幕未生成".into());
-    }
-    std::fs::write(&dest_path, &srt).map_err(|e| format!("写文件失败: {e}"))?;
-    Ok(dest_path)
-}
-
-/// 读取字幕（历史项展开时调）。None = 未生成。
+/// 读取最新字幕（v2：从磁盘 .srt 文件解析，不查 DB）。
 ///
-/// 三字段（cues/srt/model）任一缺失视为未生成。`track_used` 仅用于前端 fallback 提示，
-/// 从 audio_tracks 第一条 source 推（真实 used track 未持久化，这里只是兜底）。
+/// 扫描 mp4 同目录的 `<stem>.N.srt`，取 N 最大的（最新版本）→ 解析为 SubtitleResult。
+/// 不存在 → None（前端显示「生成字幕」按钮）。
+/// `track_used` 从 audio_tracks 第一条 source 推（仅前端 fallback 提示用）。
 #[command]
-pub async fn get_subtitle(
+pub async fn read_subtitle(
     id: i64,
 ) -> Result<Option<octopus_record::SubtitleResult>, String> {
-    with_db_blocking(move |conn| {
+    // 查 DB 拿 file_path + audio_tracks（用于解析 mp4 路径 + track_used 推断）
+    let meta_opt: Option<octopus_record::RecordingMeta> = with_db_blocking(move |conn| {
         let store = RecordStore::new(conn);
-        let meta = match store.get(id)? {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        match (meta.subtitle_cues, meta.subtitle_srt, meta.subtitle_model) {
-            (Some(cues), Some(srt), Some(model)) => {
-                // track_used 查 audio_tracks 第一条 source（仅前端 fallback 提示用）
-                let track_used = meta
-                    .audio_tracks
-                    .first()
-                    .map(|t| t.source)
-                    .unwrap_or(octopus_record::AudioTrackSource::Unknown);
-                Ok(Some(octopus_record::SubtitleResult {
-                    cues,
-                    srt_text: srt,
-                    model,
-                    track_used,
-                }))
-            }
-            _ => Ok(None),
-        }
+        Ok(store.get(id)?)
     })
-    .await
+    .await?;
+    let meta = match meta_opt {
+        Some(m) => m,
+        None => return Ok(None),
+    };
+    let mp4 = octopus_infra::paths::resolve_recording_path(&meta.file_path);
+    let srt_path = match octopus_record::latest_srt_path(&mp4) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let srt_text = std::fs::read_to_string(&srt_path)
+        .map_err(|e| format!("读 SRT 文件失败 {}: {e}", srt_path.display()))?;
+    let cues = octopus_record::parse_srt(&srt_text);
+    let track_used = meta
+        .audio_tracks
+        .first()
+        .map(|t| t.source)
+        .unwrap_or(octopus_record::AudioTrackSource::Unknown);
+    // model 字段用 srt 文件名占位（v2 不再持久化 model 名——序号即版本）
+    let model = srt_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(Some(octopus_record::SubtitleResult {
+        cues,
+        srt_text,
+        model,
+        track_used,
+    }))
+}
+
+/// 在 Finder 显示录屏对应的最新 SRT 文件（v2：替代 export_subtitle）。
+///
+/// 找最新 .srt 文件，`open -R` 在 Finder 高亮。不存在 → Err。
+#[command]
+pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
+    let meta = with_db_blocking(move |conn| {
+        let store = RecordStore::new(conn);
+        let meta = store.get(id)?.ok_or(RecordError::NotFound(id))?;
+        Ok::<_, RecordError>(meta.file_path)
+    })
+    .await?;
+    let mp4 = octopus_infra::paths::resolve_recording_path(&meta);
+    let srt_path = octopus_record::latest_srt_path(&mp4)
+        .ok_or_else(|| "字幕未生成".to_string())?;
+    let status = tokio::process::Command::new("open")
+        .arg("-R")
+        .arg(&srt_path)
+        .status()
+        .await
+        .map_err(|e| format!("open -R 失败: {e}"))?;
+    if !status.success() {
+        return Err(format!("open -R 退出码非 0: {}", srt_path.display()));
+    }
+    Ok(srt_path.to_string_lossy().to_string())
 }
 
 #[cfg(test)]

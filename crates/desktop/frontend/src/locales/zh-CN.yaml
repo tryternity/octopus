@@ -113,9 +113,9 @@ settings:
     subtitleCopyAll: 复制全部
     subtitleCopyCueHint: 单击复制该条
     subtitleCopyFailed: 复制失败
-    subtitleExport: 导出 SRT
-    subtitleExportDone: 已导出到 ${path}
-    subtitleExportFailed: 导出失败
+    subtitleExport: 在 Finder 显示
+    subtitleRevealed: 已在 Finder 显示 SRT 文件
+    subtitleRevealFailed: 显示失败
     subtitleExpand: 展开字幕
     subtitleCollapse: 收起字幕
     subtitleTrackMic: 麦克风

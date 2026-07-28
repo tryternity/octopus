@@ -320,9 +320,9 @@ where
 /// schema 变更直接改 db.sql + 升 `user_version`，旧库一律清库重建（`rm ~/.octopus/octopus.db*`）。
 ///
 /// 分支：
-/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v54
-/// - `v == 54`：最新，no-op
-/// - `v != 0 && v < 54`：旧版本库——不支持自动迁移，bail 提示清库
+/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v53
+/// - `v == 53`：最新，no-op
+/// - `v != 0 && v < 53`：旧版本库——不支持自动迁移，bail 提示清库
 ///
 /// schema 变更流程：改 db.sql + 升 `user_version`（init_schema 末尾 + db.sql 注释）。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -363,7 +363,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
-pub const CURRENT_SCHEMA_VERSION: u32 = 54;
+pub const CURRENT_SCHEMA_VERSION: u32 = 53;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -3853,13 +3853,6 @@ mod tests {
                 .unwrap();
             assert_eq!(cnt, 1, "v39→v40 升级后应注入「{}」子项", title);
         }
-        // v54: recordings 表应有 subtitle_cues 列
-        let has_subtitle_cues: bool = conn
-            .prepare("SELECT 1 FROM pragma_table_info('recordings') WHERE name='subtitle_cues'")
-            .unwrap()
-            .exists([])
-            .unwrap();
-        assert!(has_subtitle_cues, "v54 recordings 表应有 subtitle_cues 列");
     }
 
     #[test]

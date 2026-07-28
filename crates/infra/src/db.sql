@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS vault_folders (
 CREATE INDEX IF NOT EXISTS idx_vault_folders_active
     ON vault_folders(sort_order) WHERE is_deleted = 0;
 
--- ══ 录屏元数据（recordings / recordings_thumbnails，schema v51 + v52 audio_tracks + v54 subtitle）═══
+-- ══ 录屏元数据（recordings / recordings_thumbnails，schema v51 + v52 audio_tracks）═══
 CREATE TABLE IF NOT EXISTS recordings (
     id                INTEGER PRIMARY KEY,
     file_path         TEXT    NOT NULL,
@@ -306,12 +306,6 @@ CREATE TABLE IF NOT EXISTS recordings (
     -- schema v52：JSON 序列化的 AudioTrack[]（spec 2026-07-27-screen-record-audio-post-merge.md）。
     -- 双轨保留 + 录后合并方案——存原始多轨元数据，合并时由 ffmpeg amix 处理。
     audio_tracks      TEXT    NOT NULL DEFAULT '[]',
-    -- schema v54：录屏自动字幕（spec 2026-07-28-record-auto-subtitle-design.md）。
-    -- subtitle_cues 存 SubtitleCue[] JSON；subtitle_srt 存完整 SRT 文本（导出时直接读）；
-    -- subtitle_model 存生成字幕时的模型名（便于「模型不同需重生成」提示）。空 = 未生成。
-    subtitle_cues  TEXT    NOT NULL DEFAULT '[]',
-    subtitle_srt   TEXT    NOT NULL DEFAULT '',
-    subtitle_model TEXT    NOT NULL DEFAULT '',
     source_type       TEXT    NOT NULL,
     file_size         INTEGER NOT NULL,
     has_thumbnail     INTEGER NOT NULL DEFAULT 0,
