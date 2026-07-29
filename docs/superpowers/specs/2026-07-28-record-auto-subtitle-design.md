@@ -1,8 +1,8 @@
 # 录屏自动字幕（Record Auto-Subtitle）— 设计规格（spec）
 
-> **Status: 📝 设计阶段**（2026-07-28，brainstorming 完成，待写实施 plan）
+> **Status: ✅ 已实现**（v2 SRT 文件方案，2026-07-28 e2e 后重构；v1 DB 存储方案已废弃，原 plan 已删除，实施 commit 索引见 architecture.md 第四轮迭代段）
 >
-> **本 spec 范围**：MVP——录屏停止后用户手动触发，抽 mic track → ASR → 生成 VAD 段级时间戳字幕 cue 列表，存 DB 并可导出标准 SRT 文件。
+> **本 spec 范围**：MVP——录屏停止后用户手动触发，抽 mic track → ASR → 生成 VAD 段级时间戳字幕 cue 列表，写 `.srt` 文件（与 mp4 同目录 `xxx.N.srt`，v2 不存 DB）。
 >
 > **不在本 spec 范围**：视频播放器叠加字幕、字幕编辑器、词级时间戳（强制对齐）、多语言/双语字幕、多说话人分离、停止即自动生成、字幕样式定制、Windows/Linux 录屏 helper。
 
