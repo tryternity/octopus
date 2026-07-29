@@ -203,8 +203,16 @@ public enum OctopusSckHelperLibMain {
 	}
 
 	private static func listMicrophonesAndExit() {
-		// AVCaptureDevice.devices(for: .audio) 同步可用，不需 RunLoop
-		let devices = AVCaptureDevice.devices(for: .audio)
+		// macOS 14+：用 DiscoverySession 替代 10.15 起废弃的 AVCaptureDevice.devices(for:)，
+		// deviceTypes 同时覆盖内置 + 外接（USB）麦克风，与原 devices(for: .audio) 语义一致。
+		// macOS 13：.external deviceType 不可用，回退到废弃 API（仍能枚举所有音频设备）。
+		let devices: [AVCaptureDevice]
+		if #available(macOS 14.0, *) {
+			let session = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .external], mediaType: .audio, position: .unspecified)
+			devices = session.devices
+		} else {
+			devices = AVCaptureDevice.devices(for: .audio)
+		}
 		let microphones = devices.map { d -> [String: Any] in
 			[
 				"id": d.uniqueID,

@@ -595,7 +595,16 @@ final class ScreenCaptureRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 	}
 
 	private func resolveMicrophoneCaptureDeviceID() -> String? {
-		let devices = AVCaptureDevice.devices(for: .audio)
+		// macOS 14+：用 DiscoverySession 替代 10.15 起废弃的 AVCaptureDevice.devices(for:)，
+		// deviceTypes 覆盖内置 + 外接麦克风，与原 devices(for: .audio) 语义一致。
+		// macOS 13：.external 不可用，回退到废弃 API（仍能枚举所有音频设备）。
+		let devices: [AVCaptureDevice]
+		if #available(macOS 14.0, *) {
+			let session = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInMicrophone, .external], mediaType: .audio, position: .unspecified)
+			devices = session.devices
+		} else {
+			devices = AVCaptureDevice.devices(for: .audio)
+		}
 
 		if let deviceName = request.audio.microphone.deviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
 			!deviceName.isEmpty,
