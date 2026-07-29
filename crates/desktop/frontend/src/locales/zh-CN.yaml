@@ -1121,5 +1121,6 @@ onboarding:
   actions:
     request: 申请权限
     openSettings: 打开系统设置
+    view: 查看
     complete: 完成
     skip: 跳过

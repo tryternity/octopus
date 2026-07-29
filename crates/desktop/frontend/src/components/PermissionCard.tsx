@@ -138,7 +138,16 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
           {t(`onboarding.permissions.${def.key}.description`)}
         </p>
       </div>
-      {!granted && (
+      {granted ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleOpenSettings}
+          className="shrink-0 text-muted-foreground"
+        >
+          {t("onboarding.actions.view")}
+        </Button>
+      ) : (
         <Button
           variant="outline"
           size="sm"
