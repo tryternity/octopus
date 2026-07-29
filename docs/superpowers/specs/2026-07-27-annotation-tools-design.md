@@ -17,7 +17,8 @@
 | 清空标注 clearAll | ✅ | ✅ | ✅ |
 | ~~删除选定 deleteSelected~~ | ~~已删除~~ | ~~已删除~~ | ~~已删除~~ |
 
-> **2026-07-27 调整**：deleteSelected 删除——橡皮擦划过即删已够用，选定删除冗余。useAnnotationState 的 `deleteSelectedAnnotation` action 保留（无害，后续可清理）。
+> **2026-07-27 调整**：deleteSelected 删除——橡皮擦划过即删已够用，选定删除冗余。
+> **2026-07-29 清理**：原「保留（无害，后续可清理）」的 `deleteSelectedAnnotation` action、ImagePreview 独立实现、props、i18n `screenshot.tool.deleteSelected`、`trash.svg` 图标**已全部清理**。删除选中标注统一走键盘 Delete/Backspace。
 
 ## 2. 现状
 
@@ -96,7 +97,7 @@ ImagePreview 独立实现等价逻辑。
 
 ### ~~3.4 删除选定 deleteSelected~~（已删除 2026-07-27）
 
-> 橡皮擦划过即删已够用，选定删除冗余。按钮从 AnnotationToolbar + ImagePreview Toolbar 移除。`deleteSelectedAnnotation` action 保留在 useAnnotationState（无害，后续可清理）。
+> 橡皮擦划过即删已够用，选定删除冗余。按钮从 AnnotationToolbar + ImagePreview Toolbar 移除。~~`deleteSelectedAnnotation` action 保留在 useAnnotationState（无害，后续可清理）~~ → **2026-07-29 已清理**：action + props + i18n + 图标全删。
 
 ## 4. 工具栏按钮排列
 
