@@ -100,7 +100,7 @@ fn parse_image_fallbacks(s: &str) -> Vec<EncodeAttempt> {
 /// watcher / screenshot / migration 手里本就有解码好的图像，直接传入省一次 PNG 解码）。
 ///
 /// **函数名 `encode_image` 历史遗留**：实际按 `consts::IMAGE_SAVE_QUALITY` 链编码，
-/// 2026-07-20 后默认 `"jpeg:85;webp:80"` —— JPEG 优先（8.6x 快于 WebP lossy，体积翻倍可接受）。
+/// 2026-07-30 默认 `"jpeg:100"` —— JPEG 优先（8.6x 快于 WebP lossy，体积翻倍可接受）。
 /// 返回 BLOB 可能是 JPEG 或 WebP（兜底），`image_data.blob` 字段不区分格式，前端用 MIME sniff。
 ///
 /// **编码链**：按 `consts::IMAGE_SAVE_QUALITY` 顺序尝试，首个成功即返回。
@@ -114,7 +114,7 @@ pub fn encode_image(img: &::image::DynamicImage) -> Result<EncodedImage> {
     // 组装尝试链：有损优先（截图/剪贴板历史场景对画质要求不高，lossless 编码对大图极慢，
     // 实测 3176×1866 lossless = 6s，有损 q80 ≈ 50ms，100x 加速）。
     // 超长图（VP8 尺寸上限 16383）仍走降级链，lossless 本就必失败。
-    // IMAGE_SAVE_QUALITY 默认 "jpeg:85;webp:80" 已是有损链，无需 insert lossless。
+    // IMAGE_SAVE_QUALITY 默认 "jpeg:100" 已是有损链，无需 insert lossless。
     let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
     if w > 16383 || h > 16383 {
         log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), relying on fallback chain", w, h);
@@ -204,7 +204,7 @@ mod tests {
         let encoded = encode_image(&img).unwrap();
         assert!(!encoded.image_blob.is_empty());
         assert!(!encoded.thumb_blob.is_empty());
-        // 主 blob 按 IMAGE_SAVE_QUALITY 链首个成功格式（默认 jpeg:85 → SOI magic [FF D8 FF]）
+        // 主 blob 按 IMAGE_SAVE_QUALITY 链首个成功格式（默认 jpeg:100 → SOI magic [FF D8 FF]）
         // 缩略图按 THUMB_SAVE_QUALITY 链（默认 jpeg:10 → 也是 SOI magic）
         // 链可配置，不强制 magic；测试只验证非空 + 至少匹配已知 magic 之一
         for blob in [&encoded.image_blob, &encoded.thumb_blob] {
@@ -217,10 +217,10 @@ mod tests {
 
     #[test]
     fn test_parse_image_fallbacks() {
-        // 标准常量解析为编码链（2026-07-20 起默认 jpeg:85，无 fallback）
+        // 标准常量解析为编码链（2026-07-30 起默认 jpeg:100，无 fallback）
         let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
         assert_eq!(chain.len(), 1);
-        assert!(matches!(chain[0], EncodeAttempt::Jpeg(85)));
+        assert!(matches!(chain[0], EncodeAttempt::Jpeg(100)));
 
         // thumb 链（默认 jpeg:10）
         let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
