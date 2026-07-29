@@ -151,11 +151,13 @@ pub async fn open_privacy_settings(section: PrivacySection) -> Result<(), String
 ///
 /// macOS 无直接查询麦克风授权态的 API（不像屏幕录制有 CGPreflightScreenCaptureAccess）。
 /// 唯一可靠探测：尝试 `build_input_stream` + `play`——
-///   - 授权：成功，立即 stop+drop（不真录音）
+///   - 授权：成功，立即 pause+drop（不真录音）
 ///   - 未授权/拒绝：build 或 play 失败
 /// 副作用：首次调用（未授权态）触发 TCC 弹窗——故 check 与 request 实为同一实现。
 ///
-/// 返回 Granted/Denied（macOS 麦克风无 NotDetermined 可区分）。
+/// **格式适配**（曾踩坑）：`default_input_config()` 可能返回 F32/I16/U16 任一格式，
+/// build_input_stream 的 callback 类型必须匹配。按 config.sample_format() 分派，
+/// 与 audio.rs::build_stream 同模式。
 fn probe_microphone_permission() -> PermissionStatus {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     let host = cpal::default_host();
@@ -167,13 +169,28 @@ fn probe_microphone_permission() -> PermissionStatus {
         Ok(c) => c,
         Err(_) => return PermissionStatus::Denied,
     };
-    // build + play + 立即 stop + drop——play 触发 TCC（首次），成功=已授权
-    let stream = match device.build_input_stream(
-        &config.into(),
-        move |_data: &[f32], _: &cpal::InputCallbackInfo| {},
-        |_: cpal::StreamError| {},
-        None,
-    ) {
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &config.into(),
+            move |_data: &[f32], _: &cpal::InputCallbackInfo| {},
+            |_: cpal::StreamError| {},
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &config.into(),
+            move |_data: &[i16], _: &cpal::InputCallbackInfo| {},
+            |_: cpal::StreamError| {},
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_input_stream(
+            &config.into(),
+            move |_data: &[u16], _: &cpal::InputCallbackInfo| {},
+            |_: cpal::StreamError| {},
+            None,
+        ),
+        _ => return PermissionStatus::Denied,
+    };
+    let stream = match stream {
         Ok(s) => s,
         Err(_) => return PermissionStatus::Denied,
     };
@@ -183,7 +200,6 @@ fn probe_microphone_permission() -> PermissionStatus {
     // pause + drop 释放 stream（cpal Stream 无 stop()，drop 即停止+释放资源）
     let _ = StreamTrait::pause(&stream);
     drop(stream);
-    // play 成功 = 已授权（未授权时 play 会静默失败或 stream 报错）
     PermissionStatus::Granted
 }
 
