@@ -1,7 +1,7 @@
 /**
  * PermissionCard —— 通用权限卡片（麦克风/辅助功能/屏幕录制）。
  *
- * 从 Onboarding 抽取的共享组件，Onboarding 引导页 + Settings 系统权限 tab 复用。
+ * 从 Onboarding 抽取的共享组件，Onboarding 引导页 + Settings 隐私与权限 tab 复用。
  * 复用 PermissionGate 的 refresh/request/openSettings 模式，参数化 by PermissionDef。
  *
  * 权限状态（PermissionStatus，camelCase，与后端 record::protocol::PermissionStatus 一致）：
@@ -150,13 +150,27 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
             : t("onboarding.actions.request")}
         </Button>
       )}
-      {/* hover 详细说明（权限作用 + 使用场景），参考豆包隐私页设计 */}
+      {/* hover 详细说明（权限作用 + 使用场景 + 操作指引 + 升级提示），参考豆包隐私页设计 */}
       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1 z-50
                       opacity-0 group-hover:opacity-100 transition-opacity
-                      max-w-xs px-3 py-2 rounded-md bg-popover border border-border shadow-md">
+                      w-72 px-3 py-2.5 rounded-md bg-popover border border-border shadow-md space-y-1.5">
         <p className="text-xs text-popover-foreground whitespace-normal">
           {t(`onboarding.permissions.${def.key}.usage`)}
         </p>
+        <div className="border-t border-border/50 pt-1.5">
+          <p className="text-[11px] text-muted-foreground whitespace-normal">
+            {granted
+              ? t("onboarding.permissions.operationGranted")
+              : denied
+                ? t("onboarding.permissions.operationDenied")
+                : t(`onboarding.permissions.${def.key}.operation`)}
+          </p>
+        </div>
+        <div className="border-t border-border/50 pt-1.5">
+          <p className="text-[11px] text-amber-600 dark:text-amber-500 whitespace-normal">
+            {t("onboarding.permissions.upgradeNote")}
+          </p>
+        </div>
       </div>
     </div>
   );

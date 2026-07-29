@@ -102,7 +102,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const tabs: { key: string; label: string }[] = [
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
-    // macOS 专有：系统权限 tab（麦克风/辅助功能/屏幕录制）
+    // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
     ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "voice", label: t("settings.general.tabVoice") },
     { key: "sync", label: t("settings.general.tabSync") },
@@ -230,7 +230,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Card>
       )}
 
-      {/* ── 系统权限（macOS 专有）：麦克风 / 辅助功能 / 屏幕录制 ── */}
+      {/* ── 隐私与权限（macOS 专有）：麦克风 / 辅助功能 / 屏幕录制 ── */}
       {activeTab === "permission" && (
         <Card>
           <CardHeader>
