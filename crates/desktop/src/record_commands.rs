@@ -602,19 +602,10 @@ async fn stop_and_store_inner(
     #[cfg(target_os = "macos")]
     crate::tray::update_record_tray_label(false);
 
-    // 录制完成自动在 Finder 高亮文件（用户决策 2026-07-26，record_reveal_after_stop
-    // 配置项默认 true）。非 macOS 静默跳过。失败仅 log，不影响录制结果。
+    // 录制完成自动在文件管理器高亮文件（用户决策 2026-07-26，record_reveal_after_stop
+    // 配置项默认 true）。失败仅 log，不影响录制结果。
     if parse_bool_config("record_reveal_after_stop", true) {
-        #[cfg(target_os = "macos")]
-        {
-            let path_str = abs_path.to_string_lossy().to_string();
-            if let Err(e) = std::process::Command::new("open")
-                .args(["-R", &path_str])
-                .spawn()
-            {
-                log::warn!("[record] Finder reveal 失败（不影响录制）: {e}");
-            }
-        }
+        crate::sys_open::reveal_path_lossy(&abs_path);
     }
 
     Ok(Some(meta))
@@ -744,16 +735,13 @@ pub async fn open_recording_file(id: i64) -> Result<(), String> {
     })
     .await?;
     let abs = resolve_recording_path(&file_path);
-    std::process::Command::new("open")
-        .arg(&abs)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    crate::sys_open::open_with_default(&abs.to_string_lossy())?;
     Ok(())
 }
 
-/// 在 Finder 中定位录屏文件。
+/// 在文件管理器中定位录屏文件（macOS Finder / Windows Explorer / Linux xdg-open）。
 ///
-/// macOS: `open -R <file>` 让 Finder 高亮选中文件；与 search_commands::reveal_path 一致。
+/// macOS: `open -R` 让 Finder 高亮选中文件；与 search_commands::reveal_path 一致。
 /// 不用 NSWorkspace activateFileViewerSelecting（spec §9.2 F13 推迟项）。
 #[command]
 pub async fn reveal_recording(id: i64) -> Result<(), String> {
@@ -765,11 +753,7 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
     })
     .await?;
     let abs = resolve_recording_path(&file_path);
-    let path_str = abs.to_string_lossy().to_string();
-    std::process::Command::new("open")
-        .args(["-R", &path_str])
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    crate::sys_open::reveal_path(&abs)?;
     Ok(())
 }
 
@@ -1431,7 +1415,7 @@ pub async fn read_subtitle(
 
 /// 在 Finder 显示录屏对应的最新 SRT 文件（v2：替代 export_subtitle）。
 ///
-/// 找最新 .srt 文件，`open -R` 在 Finder 高亮。不存在 → Err。
+/// 找最新 .srt 文件，在文件管理器定位。不存在 → Err。
 #[command]
 pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
     let meta = with_db_blocking(move |conn| {
@@ -1443,15 +1427,7 @@ pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
     let mp4 = octopus_infra::paths::resolve_recording_path(&meta);
     let srt_path = octopus_record::latest_srt_path(&mp4)
         .ok_or_else(|| "字幕未生成".to_string())?;
-    let status = tokio::process::Command::new("open")
-        .arg("-R")
-        .arg(&srt_path)
-        .status()
-        .await
-        .map_err(|e| format!("open -R 失败: {e}"))?;
-    if !status.success() {
-        return Err(format!("open -R 退出码非 0: {}", srt_path.display()));
-    }
+    crate::sys_open::reveal_path(&srt_path)?;
     Ok(srt_path.to_string_lossy().to_string())
 }
 

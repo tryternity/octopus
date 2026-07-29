@@ -60,74 +60,29 @@ pub async fn record_search_hit(
     Ok(())
 }
 
-/// 启动应用。检查 open 退出码——路径无效/应用已移动时返回错误而非静默成功。
+/// 启动应用。检查退出码——路径无效/应用已移动时返回错误而非静默成功。
 #[tauri::command]
 pub fn launch_app(path: String) -> Result<(), String> {
-    let status = std::process::Command::new("open")
-        .arg(&path)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("启动应用失败（exit {}）: {}", status, path));
-    }
-    Ok(())
+    crate::sys_open::open_with_default(&path)
 }
 
-/// 打开文件。检查 open 退出码——路径无效/权限拒绝时返回错误。
+/// 打开文件。检查退出码——路径无效/权限拒绝时返回错误。
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
-    let status = std::process::Command::new("open")
-        .arg(&path)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("打开文件失败（exit {}）: {}", status, path));
-    }
-    Ok(())
+    crate::sys_open::open_with_default(&path)
 }
 
-/// 打开 URL（默认浏览器）。检查 open 退出码——无默认处理器时返回错误。
+/// 打开 URL（默认浏览器）。检查退出码——无默认处理器时返回错误。
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
-    let status = std::process::Command::new("open")
-        .arg(&url)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("打开 URL 失败（exit {}）: {}", status, url));
-    }
-    Ok(())
+    crate::sys_open::open_with_default(&url)
 }
 
 /// 在文件管理器中定位文件（macOS Finder / Windows Explorer / Linux xdg-open）。
 /// command 回车时调——复制命令名 + 在 Finder 中显示命令文件位置。
 #[tauri::command]
 pub fn reveal_path(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("open")
-            .args(["-R", &path])
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("定位失败（exit {}）: {}", status, path));
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path))
-            .spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let p = std::path::Path::new(&path);
-        let dir = p.parent().unwrap_or(p);
-        let _ = std::process::Command::new("xdg-open")
-            .arg(dir)
-            .spawn();
-    }
-    Ok(())
+    crate::sys_open::reveal_path(&path)
 }
 
 /// 强制重扫应用索引：刷新内存索引 + DB 缓存。

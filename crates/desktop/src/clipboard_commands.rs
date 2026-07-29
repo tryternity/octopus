@@ -391,25 +391,7 @@ pub async fn save_image_item(
 
 /// 用系统文件管理器打开并高亮指定文件。
 fn reveal_in_file_manager(path: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open")
-            .args(["-R", &path.to_string_lossy()])
-            .spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer")
-            .arg(format!("/select,{}", path.to_string_lossy()))
-            .spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let dir = path.parent().unwrap_or(path);
-        let _ = std::process::Command::new("xdg-open")
-            .arg(dir)
-            .spawn();
-    }
+    crate::sys_open::reveal_path_lossy(path);
 }
 
 /// 在 dir 下找不冲突的文件名：base.ext → base-1.ext → base-2.ext …
@@ -465,27 +447,7 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     let path = decode_file_uri(first);
 
     // 用系统默认应用打开
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(path).spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // explorer <file> 只在资源管理器里「定位并选中」文件，不会用默认程序打开
-        // （与 macOS `open` / Linux `xdg-open` 不一致）；改用 cmd /c start 调起默认
-        // 关联程序。"" 是 start 的窗口标题占位，不可省——否则含空格/特殊字符的路径
-        // 会被 start 误当作标题。注：此 Windows 分支未经本机编译/运行验证。
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", path.as_str()])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open").arg(path).spawn()
-            .map_err(|e| e.to_string())?;
-    }
+    crate::sys_open::open_with_default(&path)?;
     Ok(())
 }
 
