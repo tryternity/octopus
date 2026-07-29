@@ -1096,3 +1096,26 @@ recordConfig:
   hideCursor: 隐藏光标
   revealAfterStop: 停止后定位文件
   outputDir: 保存目录
+
+onboarding:
+  title: 欢迎使用 Octopus
+  subtitle: 授权以下权限以启用全部功能
+  permissions:
+    microphone:
+      title: 麦克风
+      description: 语音识别 / 录屏录音需要
+    accessibility:
+      title: 辅助功能
+      description: 截图 / 返回焦点 / 自动输入需要
+    screen:
+      title: 屏幕录制
+      description: 录屏 / 截图需要
+  status:
+    granted: 已授权
+    denied: 已拒绝
+    notDetermined: 未授权
+  actions:
+    request: 申请权限
+    openSettings: 打开系统设置
+    complete: 完成
+    skip: 跳过

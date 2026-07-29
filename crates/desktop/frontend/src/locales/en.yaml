@@ -1085,3 +1085,26 @@ recordConfig:
   hideCursor: Hide Cursor
   revealAfterStop: Reveal after stop
   outputDir: Save to
+
+onboarding:
+  title: Welcome to Octopus
+  subtitle: Grant the following permissions to enable all features
+  permissions:
+    microphone:
+      title: Microphone
+      description: Required for speech recognition / screen recording audio
+    accessibility:
+      title: Accessibility
+      description: Required for screenshot / focus return / auto input
+    screen:
+      title: Screen Recording
+      description: Required for screen recording / screenshot
+  status:
+    granted: Granted
+    denied: Denied
+    notDetermined: Not Granted
+  actions:
+    request: Request Permission
+    openSettings: Open System Settings
+    complete: Done
+    skip: Skip

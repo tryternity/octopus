@@ -84,7 +84,7 @@ pub enum PermissionStatus { Granted, Denied, NotDetermined }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum PrivacySection { ScreenCapture, Microphone }
+pub enum PrivacySection { ScreenCapture, Microphone, Accessibility }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DisplayInfo {
