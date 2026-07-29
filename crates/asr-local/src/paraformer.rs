@@ -199,7 +199,7 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         // 零拷贝：直接借用 enc_tensor 的连续切片供 CIF 循环读取，避免 clone() 整段 encoder 输出。
         // 形状 [1, enc_len_val, enc_feat] 为标准行主序，slice(s![0, ..enc_len_scalar, ..]) 连续。
         let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len_scalar, ..]);
-        let enc_data: &[f32] = enc_slice.as_slice().unwrap();
+        let enc_data: &[f32] = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!("enc_slice 非连续内存，无法取 slice"))?;
 
         let mut acoustic_embedding: Vec<f32> = Vec::new();
         let mut initial_hidden: Vec<f32> = vec![0.0; enc_feat];

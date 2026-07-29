@@ -1893,7 +1893,12 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             );
             let launcher = crate::terminal_launcher::TerminalAppLauncher;
             use crate::terminal_launcher::TerminalLauncher;
-            launcher.spawn(&command, cwd_path)?;
+            // osascript 启动 Terminal.app 会 wait 子进程（200ms-2s），包 spawn_blocking
+            // 避免阻塞 Tokio worker（与 spawn_script 范式一致）。
+            let cwd_buf = cwd_path.to_path_buf();
+            tokio::task::spawn_blocking(move || launcher.spawn(&command, &cwd_buf))
+                .await
+                .map_err(|e| format!("Terminal 启动任务异常: {e}"))??;
             Ok(false)
         }
         "copy_path" => {

@@ -342,7 +342,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         let mel = compute_mel(audio)?;
         log::debug!("[whisper] mel shape: {:?}", mel.shape());
         {
-            let mel_slice = mel.as_slice().unwrap();
+            let mel_slice = mel.as_slice().ok_or_else(|| anyhow::anyhow!("mel 非连续内存，无法取 slice"))?;
             let mel_max = mel_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let mel_min = mel_slice.iter().cloned().fold(f32::INFINITY, f32::min);
             let mel_mean: f32 = mel_slice.iter().sum::<f32>() / mel_slice.len() as f32;
@@ -464,7 +464,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
             audio_seconds, max_tokens
         );
         for _step in 1..max_tokens {
-            let last_id = Array2::from_shape_vec((1, 1), vec![*tokens.last().unwrap()])?;
+            let last_id = Array2::from_shape_vec((1, 1), vec![*tokens.last().ok_or_else(|| anyhow::anyhow!("tokens 为空（解码循环不变量破坏）"))?])?;
 
             let mut inputs = ort::inputs! {
                 "input_ids" => ort::value::TensorRef::from_array_view(last_id.view())?
