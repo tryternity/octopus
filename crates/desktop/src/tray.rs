@@ -78,7 +78,8 @@ fn fmt_engine_label() -> String {
 /// Create the system tray icon and its context menu.
 ///
 /// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
-/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
+/// 分组：设置（顶部，高频入口）→ 语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 退出。
+/// 系统设置放第一位（2026-07-29 用户决策）：作为最高频入口，与下方功能组用分隔线隔开。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
     #[cfg(target_os = "macos")]
@@ -138,28 +139,34 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
 
     let settings = MenuItem::with_id(app, "settings", &crate::i18n::t("tray.settings", &[]), true, None::<&str>)
         .map_err(|e| format!("settings menu: {e}"))?;
+    // 系统设置（顶部）与下方功能组之间的分隔线（2026-07-29）。
+    let sep_settings = PredefinedMenuItem::separator(app)
+        .map_err(|e| format!("separator_settings: {e}"))?;
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
-    // 菜单组装（用户决策 2026-07-25）：
+    // 菜单组装（用户决策 2026-07-25；2026-07-29 调整 settings 位置）：
+    // 顶部：设置（高频入口，单独一组）
     // 分组 1：语音识别 + 引擎信息
-    // 分组 2：截图 + 录屏（屏幕采集类）
+    // 分组 2：截图 + 录屏（屏幕采集类，仅 macOS）
     // 分组 3：剪贴板 + 图文编辑
-    // 分组 4：设置 + 退出
+    // 底部：退出
     #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[
+        &settings, &sep_settings,
         &toggle, &engine_info, &sep1,
         &screenshot, &record_start, &sep_record,
         &clipboard, &compact_editor,
         &sep2,
-        &settings, &quit,
+        &quit,
     ])
     .map_err(|e| format!("tray menu: {e}"))?;
     #[cfg(not(target_os = "macos"))]
     let menu = Menu::with_items(app, &[
+        &settings, &sep_settings,
         &toggle, &engine_info, &sep1,
         &screenshot, &clipboard, &compact_editor, &sep2,
-        &settings, &quit,
+        &quit,
     ])
     .map_err(|e| format!("tray menu: {e}"))?;
 

@@ -239,6 +239,11 @@ pub struct AppConfig {
     ///   - octopus 默认 3min（折中），用户可改
     #[serde(default = "default_vault_lock_timeout_secs")]
     pub vault_lock_timeout_secs: u64,
+
+    /// 首次启动权限引导页是否已完成（false=首次启动，弹引导页）。
+    /// 用户点「完成」后置 true，不再弹。重置需清 DB。
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -386,6 +391,7 @@ impl Default for AppConfig {
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_generator_shortcut: default_vault_generator_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
+            onboarding_completed: false,
         }
     }
 }

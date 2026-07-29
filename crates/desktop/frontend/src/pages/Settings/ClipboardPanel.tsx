@@ -9,7 +9,6 @@ import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
   ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check,
-  RotateCcw,
 } from "lucide-react";
 import SaveImagePopover from "@/components/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -34,7 +33,6 @@ const FILTER_GROUPS: { labelKey?: string; items: { value: string; icon: any; lab
   { labelKey: "settings.clipboardPanel.groupStatus", items: [
     { value: "favorite", icon: Star, labelKey: "settings.clipboardPanel.filterFavorite", svg: "favorite" },
     { value: "unfavorite", icon: Star, labelKey: "settings.clipboardPanel.filterNonFavorite", svg: "un-favorite" },
-    { value: "trash", icon: Trash2, labelKey: "settings.clipboardPanel.filterTrash" },
   ] },
 ];
 
@@ -47,7 +45,6 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [noMore, setNoMore] = useState(false);
 
@@ -116,41 +113,6 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const selectableItems = items.filter((i) => !i.isFavorite);
   const allChecked = selectableItems.length > 0 && selectableItems.every((i) => selectedIds.has(i.id));
   const hasSelection = selectedIds.size > 0;
-  const isTrash = filter === "trash";
-
-  // 回收站操作
-  const handleRestore = async (id: number) => {
-    try {
-      await invoke("restore_clipboard_item", { id });
-      showToast(t("settings.clipboardPanel.restored"));
-      fetchData(true);
-    } catch (e) {
-      showToast(String(e));
-    }
-  };
-
-  const handlePermanentDelete = async (id: number) => {
-    try {
-      await invoke("permanent_delete_clipboard_item", { id });
-      showToast(t("settings.clipboardPanel.permanentlyDeleted"));
-      fetchData(true);
-    } catch (e) {
-      showToast(String(e));
-    }
-  };
-
-  const handleEmptyTrash = async () => {
-    setBusy(true);
-    try {
-      await invoke("empty_clipboard_trash");
-      showToast(t("settings.clipboardPanel.trashEmptied"));
-      fetchData(true);
-    } catch (e) {
-      showToast(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
   const activeFilterLabel = (() => {
     const item = FILTER_GROUPS.flatMap(g => g.items).find(it => it.value === filter);
     if (!item) return undefined;
@@ -224,53 +186,35 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             </div>
             <div className="text-center">
               <p className="text-sm text-muted-foreground font-medium">
-                {isTrash ? t("settings.clipboardPanel.trashEmpty") : t("settings.clipboardPanel.empty")}
+                {t("settings.clipboardPanel.empty")}
               </p>
-              {!isTrash && (
-                <p className="text-xs text-muted-foreground/70 mt-1">
-                  {search ? t("settings.clipboardPanel.emptySearch", { search }) : t("settings.clipboardPanel.emptyHint")}
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground/70 mt-1">
+                {search ? t("settings.clipboardPanel.emptySearch", { search }) : t("settings.clipboardPanel.emptyHint")}
+              </p>
             </div>
           </div>
         ) : (
           <div className="flex flex-col">
-            {/* 列表 header：全选（sticky）——回收站模式显示「全部清空」 */}
+            {/* 列表 header：全选（sticky） */}
             <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background/95 backdrop-blur-sm group/header">
-              {isTrash ? (
-                <Button
-                  variant="destructive-ghost"
-                  size="sm"
-                  disabled={busy || items.length === 0}
-                  onClick={handleEmptyTrash}
-                  className="ml-auto"
-                >
-                  <Trash2 />
-                  {t("settings.clipboardPanel.emptyTrash")}
-                </Button>
-              ) : (
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="w-3.5 h-3.5 accent-primary"
-                    checked={allChecked}
-                    onChange={(e) => toggleSelectAll(e.target.checked)}
-                  />
-                  <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
-                    {hasSelection ? t("settings.clipboardPanel.selectedN", { n: selectedIds.size }) : t("settings.clipboardPanel.selectAll")}
-                  </span>
-                </label>
-              )}
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="w-3.5 h-3.5 accent-primary"
+                  checked={allChecked}
+                  onChange={(e) => toggleSelectAll(e.target.checked)}
+                />
+                <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
+                  {hasSelection ? t("settings.clipboardPanel.selectedN", { n: selectedIds.size }) : t("settings.clipboardPanel.selectAll")}
+                </span>
+              </label>
             </div>
             {items.map((item) => (
               <ClipboardRow
                 key={item.id}
                 item={item}
                 isSelected={selectedIds.has(item.id)}
-                isTrash={isTrash}
                 onToggleSelect={() => toggleSelect(item.id)}
-                onRestore={() => handleRestore(item.id)}
-                onPermanentDelete={() => handlePermanentDelete(item.id)}
                 onChanged={() => fetchData(true)}
                 showToast={showToast}
               />
@@ -326,19 +270,13 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
 function ClipboardRow({
   item,
   isSelected,
-  isTrash,
   onToggleSelect,
-  onRestore,
-  onPermanentDelete,
   onChanged,
   showToast,
 }: {
   item: ClipboardItem;
   isSelected: boolean;
-  isTrash: boolean;
   onToggleSelect: () => void;
-  onRestore: () => void;
-  onPermanentDelete: () => void;
   onChanged: () => void;
   showToast: (msg: string) => void;
 }) {
@@ -528,35 +466,16 @@ function ClipboardRow({
         {/* 第二行：时间戳 + 操作（复制居首，最常用） */}
         <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
           <span className="text-[10px] text-muted-foreground tabular-nums">{item.createdAt}</span>
-          {isTrash ? (
-            // 回收站模式：还原 + 永久删除
-            <div className="flex flex-shrink-0 items-center gap-0.5">
-              <button
-                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={(e) => { e.stopPropagation(); onRestore(); }}
-                title={t("settings.clipboardPanel.restore")}
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-              </button>
-              <button
-                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-                onClick={(e) => { e.stopPropagation(); onPermanentDelete(); }}
-                title={t("settings.clipboardPanel.permanentDelete")}
-              >
-                <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-destructive" />
-              </button>
-            </div>
-          ) : (
-            // 正常模式：复制/链接/编辑/删除/收藏
-            <div className="flex flex-shrink-0 items-center gap-0.5">
-              <button
-                className={cn(
-                  "p-1 rounded transition-opacity hover:scale-110",
-                  copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-                )}
-                onClick={handleCopy}
-                title={t("settings.clipboardPanel.copy")}
-              >
+          {/* 操作：复制/链接/编辑/删除/收藏 */}
+          <div className="flex flex-shrink-0 items-center gap-0.5">
+            <button
+              className={cn(
+                "p-1 rounded transition-opacity hover:scale-110",
+                copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+              )}
+              onClick={handleCopy}
+              title={t("settings.clipboardPanel.copy")}
+            >
                 {copied ? (
                   <Check className="w-3.5 h-3.5 text-success" />
                 ) : (
@@ -648,7 +567,6 @@ function ClipboardRow({
                 )} />
               </button>
             </div>
-          )}
         </div>
       </div>
     </div>

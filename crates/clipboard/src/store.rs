@@ -261,41 +261,86 @@ pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Res
 
 // ── DELETE（软删 + 永久删）──
 //
-// 删除语义（2026-07-22 v47 软删/回收站）：
-//   - 图片（item_type='image'）：永远物理 DELETE（image_data 引用计数，软删行还在 → blob 泄漏）
-//   - 文本类（text/voice/ocr/file）：软删（UPDATE is_deleted = 1），进回收站，可还原
+// 删除语义（2026-07-29 重构，策略反转）：
+//   - 语音（item_type='voice'）：软删（UPDATE is_deleted = 1），is_deleted=1 不可见
+//     —— voice 软删内容主要用于热词挖掘（INV-C1：list_recent_text 不过滤 is_deleted）
+//        及后续优化语音识别准确性，非用户可还原的回收站
+//     —— voice 软删数据 ≤ VOICE_TRASH_MAX（100）条，超出按 created_at 物理删最老的（INV-1）
+//     —— 回收站概念不暴露给用户：无 trash tab / 无还原 / 无清空回收站命令
+//   - 其他（text/ocr/image/file）：物理 DELETE（image 另做 blob 清理）
 //
-// delete_item / delete_items：前端默认删除入口，按 item_type 分流（image 物理 / 其他软删）。
-// permanent_delete_item / permanent_delete_items / empty_trash：回收站永久删，物理 DELETE。
+// delete_item / delete_items：前端默认删除入口，按 item_type 分流（voice 软删 / 其他物理删）。
+// permanent_delete_item：delete_item/delete_items 内部复用的物理删实现（image 含 blob 清理）。
 
-/// 判断 id 对应的 item_type 是否为图片。查不到返回 false（已删除的行不纠结）。
-fn is_image_item(conn: &Connection, id: i64) -> bool {
+/// voice 软删回收站上限（用户决策 2026-07-29）。超出部分按 created_at 物理删最老的。
+pub const VOICE_TRASH_MAX: u32 = 100;
+
+/// 判断 id 对应的 item_type 是否为语音。查不到返回 false（已删除的行不纠结）。
+fn is_voice_item(conn: &Connection, id: i64) -> bool {
     conn.query_row(
         "SELECT item_type FROM clipboard_history WHERE id = ?", params![id],
         |r| r.get::<_, String>(0),
-    ).ok().map(|t| t == "image").unwrap_or(false)
+    ).ok().map(|t| t == "voice").unwrap_or(false)
 }
 
-/// 默认删除：图片→物理删（含 blob 清理）；其他→软删（进回收站）。
+/// 软删 voice 后保证回收站 voice ≤ max_trash 条（INV-1）。
+///
+/// 若回收站内 voice 数量超过上限，按 `created_at ASC` 物理删最老的至恰好等于上限。
+/// 返回被物理删的条数（调用方可据此决定是否重建 FTS——DB trigger 已保证一致性，
+/// store 层不主动重建）。
+pub fn enforce_voice_trash_limit(conn: &Connection, max_trash: u32) -> Result<usize> {
+    let trash_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clipboard_history WHERE item_type = 'voice' AND is_deleted = 1",
+        [], |r| r.get(0),
+    )?;
+    if trash_count <= max_trash as i64 {
+        return Ok(0);
+    }
+    let excess = trash_count - max_trash as i64;
+    let deleted = conn.execute(
+        "DELETE FROM clipboard_history WHERE id IN (
+            SELECT id FROM clipboard_history
+            WHERE item_type = 'voice' AND is_deleted = 1
+            ORDER BY created_at ASC LIMIT ?
+        )",
+        [excess],
+    )?;
+    if deleted > 0 {
+        log::info!(
+            "[voice-trash] 回收站 voice 容量清理：物理删 {} 条最老（{} > 上限 {}）",
+            deleted, trash_count, max_trash
+        );
+    }
+    Ok(deleted)
+}
+
+/// 默认删除：voice→软删（进回收站 + enforce 上限）；其他→物理删（image 含 blob 清理）。
 pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
-    if is_image_item(conn, id) {
-        permanent_delete_item(conn, id)?;
-    } else {
+    if is_voice_item(conn, id) {
         soft_delete(conn, id)?;
+        enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
+    } else {
+        permanent_delete_item(conn, id)?;
     }
     Ok(())
 }
 
-/// 批量默认删除：图片→物理删；其他→软删。返回受影响行数。
+/// 批量默认删除：voice→软删；其他→物理删。返回受影响行数。
+/// voice 批量软删后统一 enforce 一次上限（而非每条 enforce，减少 DB 往返）。
 pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
     if ids.is_empty() { return Ok(0); }
     let mut affected = 0;
+    let mut had_voice = false;
     for &id in ids {
-        if is_image_item(conn, id) {
-            affected += permanent_delete_item(conn, id)? as usize;
-        } else {
+        if is_voice_item(conn, id) {
             affected += soft_delete(conn, id)? as usize;
+            had_voice = true;
+        } else {
+            affected += permanent_delete_item(conn, id)? as usize;
         }
+    }
+    if had_voice {
+        enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
     }
     Ok(affected)
 }
@@ -305,27 +350,6 @@ pub fn soft_delete(conn: &Connection, id: i64) -> Result<usize> {
     let rows = conn.execute(
         "UPDATE clipboard_history SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
         params![id],
-    )?;
-    Ok(rows)
-}
-
-/// 还原单条：清除 is_deleted。
-pub fn restore_item(conn: &Connection, id: i64) -> Result<usize> {
-    let rows = conn.execute(
-        "UPDATE clipboard_history SET is_deleted = 0 WHERE id = ? AND is_deleted = 1",
-        params![id],
-    )?;
-    Ok(rows)
-}
-
-/// 批量还原。
-pub fn restore_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
-    if ids.is_empty() { return Ok(0); }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-    let rows = conn.execute(
-        &format!("UPDATE clipboard_history SET is_deleted = 0 WHERE id IN ({}) AND is_deleted = 1", placeholders),
-        params_vec.as_slice(),
     )?;
     Ok(rows)
 }
@@ -345,101 +369,37 @@ pub fn permanent_delete_item(conn: &Connection, id: i64) -> Result<usize> {
     Ok(rows)
 }
 
-/// 批量永久删：物理 DELETE IN (...) + 图片 blob 清理。
-pub fn permanent_delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
-    if ids.is_empty() { return Ok(0); }
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-    let rows = conn.execute(&format!("DELETE FROM clipboard_history WHERE id IN ({})", placeholders), params_vec.as_slice())?;
-    if rows > 0 {
-        cleanup_unreferenced_images(conn)?;
-    }
-    Ok(rows)
-}
-
-/// 清空回收站：永久删除所有 is_deleted = 1 的行。
-/// 物理 DELETE 触发 FTS trigger（clip_fts_ad）自动清索引。
-pub fn empty_trash(conn: &Connection) -> Result<usize> {
-    let rows = conn.execute("DELETE FROM clipboard_history WHERE is_deleted = 1", [])?;
-    if rows > 0 {
-        cleanup_unreferenced_images(conn)?;
-    }
-    Ok(rows)
-}
-
-/// 永久删除回收站中满足以下**任一**条件的软删条目（由 scheduler 定时调用）：
-///
-/// 1. **TTL 超期**：条目 `created_at` 早于 `ttl_days` 天前（is_deleted 不再是时间戳，
-///    用 created_at 作为老化依据；与 cleanup.rs delete_by_age 同语义）
-/// 2. **容量超限**：回收站总条数超过 `max_items`，删最老的（`created_at ASC`）超出部分
-///
-/// 物理 DELETE 触发 FTS trigger（clip_fts_ad）自动清索引。返回删除条数。
-pub fn purge_trash(conn: &Connection, ttl_days: u64, max_items: u64) -> Result<usize> {
-    let mut total_deleted = 0;
-
-    // 条件 1：TTL 超期（is_deleted 是 0/1，用 created_at 作老化时间）
-    let ttl_deleted = conn.execute(
-        "DELETE FROM clipboard_history WHERE is_deleted = 1 AND created_at < datetime('now', ?)",
-        [format!("-{} days", ttl_days)],
-    )?;
-    if ttl_deleted > 0 {
-        log::info!("[trash-purge] TTL 清理：删除 {} 条超期（>{} 天）", ttl_deleted, ttl_days);
-    }
-    total_deleted += ttl_deleted;
-
-    // 条件 2：容量超限——删最老的超出部分（收藏项不计入容量、不被删）
-    let trash_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM clipboard_history WHERE is_deleted = 1 AND is_favorite = 0",
-        [],
-        |r| r.get(0),
-    )?;
-    if trash_count > max_items as i64 {
-        let excess = trash_count - max_items as i64;
-        let cap_deleted = conn.execute(
-            "DELETE FROM clipboard_history WHERE id IN (
-                SELECT id FROM clipboard_history
-                WHERE is_deleted = 1 AND is_favorite = 0
-                ORDER BY created_at ASC LIMIT ?
-            )",
-            [excess],
-        )?;
-        if cap_deleted > 0 {
-            log::info!("[trash-purge] 容量清理：删除 {} 条最老（回收站 {} > 上限 {}）", cap_deleted, trash_count, max_items);
-        }
-        total_deleted += cap_deleted;
-    }
-
-    if total_deleted > 0 {
-        cleanup_unreferenced_images(conn)?;
-    }
-    Ok(total_deleted)
-}
-
-/// 清空历史：图片→物理 DELETE；其他→软删 UPDATE。
+/// 清空历史：voice→软删 UPDATE（进回收站 + enforce 上限）；其他→物理 DELETE。
 /// keep_favorite=true 时跳过收藏项。
 pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     let fav_clause = if keep_favorite { " AND is_favorite = 0" } else { "" };
 
-    // 1. 图片物理删（含 blob 清理）
-    let img_rows = conn.execute(
-        &format!("DELETE FROM clipboard_history WHERE item_type = 'image'{} AND is_deleted = 0", fav_clause),
+    // 1. 非 voice 全部物理删（image 含 blob 清理）
+    let non_voice_rows = conn.execute(
+        &format!("DELETE FROM clipboard_history WHERE item_type != 'voice'{} AND is_deleted = 0", fav_clause),
         [],
     )?;
-    if img_rows > 0 {
+    if non_voice_rows > 0 {
         cleanup_unreferenced_images(conn)?;
     }
 
-    // 2. 文本类软删
-    let text_rows = conn.execute(
-        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type != 'image'{} AND is_deleted = 0", fav_clause),
+    // 2. voice 软删（进回收站）
+    let voice_rows = conn.execute(
+        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice'{} AND is_deleted = 0", fav_clause),
         [],
     )?;
-    Ok(img_rows + text_rows)
+
+    // 3. voice 回收站容量上限（INV-1）
+    if voice_rows > 0 {
+        enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
+    }
+
+    Ok(non_voice_rows + voice_rows)
 }
 
 /// 按 filter（类型筛选）批量清理。复用 build_where 把 filter 转 SQL where，
 /// keep_favorite=true 追加 AND is_favorite = 0。
-/// 图片→物理 DELETE；其他→软删 UPDATE。
+/// voice→软删 UPDATE（进回收站 + enforce 上限）；其他→物理 DELETE。
 ///
 /// filter="trash" + keep_favorite → build_where 返回 "is_deleted = 1"，
 /// 此时清理=永久删回收站内容（物理 DELETE）。
@@ -462,20 +422,26 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
         return Ok(rows);
     }
 
-    // 1. 图片物理删（含 blob 清理）
-    let img_sql = format!("DELETE FROM clipboard_history WHERE item_type = 'image' AND {}", where_clause);
-    let img_rows = conn.execute(&img_sql, [])?;
-    if img_rows > 0 {
+    // 1. 非 voice 全部物理删（image 含 blob 清理）
+    let non_voice_sql = format!("DELETE FROM clipboard_history WHERE item_type != 'voice' AND {}", where_clause);
+    let non_voice_rows = conn.execute(&non_voice_sql, [])?;
+    if non_voice_rows > 0 {
         cleanup_unreferenced_images(conn)?;
     }
 
-    // 2. 文本类软删
-    let text_sql = format!(
-        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type != 'image' AND {}",
+    // 2. voice 软删（进回收站）
+    let voice_sql = format!(
+        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND {}",
         where_clause
     );
-    let text_rows = conn.execute(&text_sql, [])?;
-    Ok(img_rows + text_rows)
+    let voice_rows = conn.execute(&voice_sql, [])?;
+
+    // 3. voice 回收站容量上限（INV-1）
+    if voice_rows > 0 {
+        enforce_voice_trash_limit(conn, VOICE_TRASH_MAX)?;
+    }
+
+    Ok(non_voice_rows + voice_rows)
 }
 
 // ── image_data CRUD ──
@@ -788,5 +754,183 @@ mod tests {
         // cleanup_unreferenced_images 应清掉孤立 blob
         let after: i64 = conn.query_row("SELECT COUNT(*) FROM image_data", [], |r| r.get(0)).unwrap();
         assert_eq!(after, 0);
+    }
+
+    // ── 软删策略重构（2026-07-29）：仅 voice 软删 + 回收站 100 条上限 ──
+
+    /// 插入一条 voice，返回其 id。created_at 用 epoch 控制时间顺序（老化测试用）。
+    fn insert_voice_at(conn: &Connection, id: i64, text: &str, age_seconds: u64) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs().saturating_sub(age_seconds))
+            .unwrap_or(0);
+        let (y, mo, d, h, mi, s) = epoch_to_ymd_hms(secs);
+        let created = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s);
+        conn.execute(
+            "INSERT INTO clipboard_history (id, item_type, content, created_at, is_rich)
+             VALUES (?, 'voice', ?, ?, 0)",
+            params![id, text, created],
+        ).unwrap();
+    }
+
+    fn voice_trash_count(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE item_type = 'voice' AND is_deleted = 1",
+            [], |r| r.get(0),
+        ).unwrap()
+    }
+
+    #[test]
+    fn delete_voice_soft_deletes() {
+        let conn = open_test_db();
+        insert_voice_at(&conn, 100, "语音A", 0);
+        delete_item(&conn, 100).unwrap();
+        // 行还在，is_deleted=1（软删进回收站）
+        let deleted_flag: i64 = conn.query_row(
+            "SELECT is_deleted FROM clipboard_history WHERE id = 100", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(deleted_flag, 1);
+    }
+
+    #[test]
+    fn delete_text_physical() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 200, item_type: ItemType::Text, content: "文本".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        delete_item(&conn, 200).unwrap();
+        // 物理删——行不存在
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 200", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn delete_image_physical_with_blob_cleanup() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 300, item_type: ItemType::Image, content: String::new(),
+            ref_data: Some("hash300".into()), meta_info: None, created_at: iso_now(),
+            has_thumbnail: Some(1), is_rich: false,
+        }).unwrap();
+        insert_image_data(&conn, "hash300", &[1], &[2], 10, 10).unwrap();
+        delete_item(&conn, 300).unwrap();
+        // 行删 + blob 清理（回归：image 仍物理删）
+        let row_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 300", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(row_count, 0);
+        let blob_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM image_data WHERE hash = 'hash300'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(blob_count, 0);
+    }
+
+    #[test]
+    fn voice_trash_limit_enforced_on_delete() {
+        // 回收站已有 100 条 voice（age 100..1 秒，id 越大越新），
+        // 再软删 1 条 → 最老 1 条被物理删，回收站恰好 100 条。
+        let conn = open_test_db();
+        for i in 0..100 {
+            insert_voice_at(&conn, 1000 + i, &format!("旧{}", i), 100 - i as u64);
+        }
+        // 先把它们标为已软删（模拟回收站现状）
+        conn.execute("UPDATE clipboard_history SET is_deleted = 1", []).unwrap();
+        assert_eq!(voice_trash_count(&conn), 100);
+
+        // 插一条新 voice 并软删（触发 enforce）
+        insert_voice_at(&conn, 2000, "新删", 0);
+        delete_item(&conn, 2000).unwrap();
+
+        // INV-1：回收站恰好 100 条
+        assert_eq!(voice_trash_count(&conn), 100);
+        // 最老的（id=1000, age=100s）被物理删
+        let oldest: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 1000", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(oldest, 0, "最老的 voice 应被物理删");
+        // 新删的还在回收站
+        let newest: i64 = conn.query_row(
+            "SELECT is_deleted FROM clipboard_history WHERE id = 2000", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(newest, 1);
+    }
+
+    #[test]
+    fn voice_trash_limit_below_threshold_noop() {
+        // 回收站 < 100 条 → enforce 不删任何行
+        let conn = open_test_db();
+        for i in 0..50 {
+            insert_voice_at(&conn, 1000 + i, &format!("v{}", i), 50 - i as u64);
+        }
+        conn.execute("UPDATE clipboard_history SET is_deleted = 1", []).unwrap();
+        insert_voice_at(&conn, 2000, "触发", 0);
+        delete_item(&conn, 2000).unwrap();
+        // 51 条全在（50 旧 + 1 新），未被 enforce 删除
+        assert_eq!(voice_trash_count(&conn), 51);
+    }
+
+    #[test]
+    fn clear_history_soft_deletes_only_voice() {
+        // 清空历史：voice 软删，text/image 物理删
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 1, item_type: ItemType::Text, content: "t".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 2, item_type: ItemType::Image, content: String::new(),
+            ref_data: Some("h2".into()), meta_info: None, created_at: iso_now(),
+            has_thumbnail: Some(1), is_rich: false,
+        }).unwrap();
+        insert_image_data(&conn, "h2", &[1], &[2], 10, 10).unwrap();
+        insert_voice_at(&conn, 3, "语音", 0);
+
+        clear_history(&conn, false).unwrap();
+
+        // text/image 物理删（行不在）
+        let text_row: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 1", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(text_row, 0);
+        let image_row: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE id = 2", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(image_row, 0);
+        // voice 软删（行在，is_deleted=1）
+        let voice_flag: i64 = conn.query_row(
+            "SELECT is_deleted FROM clipboard_history WHERE id = 3", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(voice_flag, 1);
+    }
+
+    #[test]
+    fn clear_history_voice_trash_limit_enforced() {
+        // 清空历史时若 voice 进回收站后超 100 → enforce 物理删最老至恰好 100
+        let conn = open_test_db();
+        // 105 条 voice（id=1000 最新 age=0 ... id=1104 最老 age=208s）
+        for i in 0..105 {
+            insert_voice_at(&conn, 1000 + i, &format!("v{}", i), i as u64 * 2);
+        }
+        clear_history(&conn, false).unwrap();
+        // 全部进回收站后 105 > 100，enforce 删 5 条最老的 → 恰好 100
+        assert_eq!(voice_trash_count(&conn), 100);
+        // 最老 5 条（id=1100..1104，age 最大）被物理删
+        for id in 1100..1105 {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM clipboard_history WHERE id = ?", params![id], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(count, 0, "id={} 应被 enforce 物理删", id);
+        }
+        // 第 6 老（id=1099）保留在回收站
+        let kept: i64 = conn.query_row(
+            "SELECT is_deleted FROM clipboard_history WHERE id = 1099", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(kept, 1);
     }
 }

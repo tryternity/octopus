@@ -46,6 +46,7 @@ const config = {
         "record-annotation": "record-annotation.html",
         "record-control": "record-control.html",
         download: "download.html",
+        onboarding: "onboarding.html",
       },
     },
   },

@@ -785,14 +785,6 @@ settings:
     groupStatus: Status
     filterFavorite: Favorites
     filterNonFavorite: Non-Favorites
-    filterTrash: Trash
-    restore: Restore
-    permanentDelete: Delete Permanently
-    emptyTrash: Empty Trash
-    trashEmpty: Trash is empty
-    restored: Restored
-    permanentlyDeleted: Permanently deleted
-    trashEmptied: Trash emptied
     loadFailed: "Load failed:"
     deletedN: Deleted ${n} records
     deleteFailed: "Delete failed:"
@@ -1085,3 +1077,26 @@ recordConfig:
   hideCursor: Hide Cursor
   revealAfterStop: Reveal after stop
   outputDir: Save to
+
+onboarding:
+  title: Welcome to Octopus
+  subtitle: Grant the following permissions to enable all features
+  permissions:
+    microphone:
+      title: Microphone
+      description: Required for speech recognition / screen recording audio
+    accessibility:
+      title: Accessibility
+      description: Required for screenshot / focus return / auto input
+    screen:
+      title: Screen Recording
+      description: Required for screen recording / screenshot
+  status:
+    granted: Granted
+    denied: Denied
+    notDetermined: Not Granted
+  actions:
+    request: Request Permission
+    openSettings: Open System Settings
+    complete: Done
+    skip: Skip
