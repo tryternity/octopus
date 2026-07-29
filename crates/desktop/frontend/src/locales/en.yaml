@@ -1110,5 +1110,6 @@ onboarding:
   actions:
     request: Request Permission
     openSettings: Open System Settings
+    view: View
     complete: Done
     skip: Skip
