@@ -138,7 +138,16 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
           {t(`onboarding.permissions.${def.key}.description`)}
         </p>
       </div>
-      {!granted && (
+      {granted ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleOpenSettings}
+          className="shrink-0 text-muted-foreground"
+        >
+          {t("onboarding.actions.view")}
+        </Button>
+      ) : (
         <Button
           variant="outline"
           size="sm"
@@ -150,7 +159,8 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
             : t("onboarding.actions.request")}
         </Button>
       )}
-      {/* hover 详细说明（权限作用 + 使用场景 + 操作指引 + 升级提示），参考豆包隐私页设计 */}
+      {/* hover 详细说明（权限作用 + 使用场景 + 操作指引），参考豆包隐私页设计。
+          升级提示（upgradeNote）不在此显示——已在设置页权限 tab 底部统一展示。 */}
       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1 z-50
                       opacity-0 group-hover:opacity-100 transition-opacity
                       w-72 px-3 py-2.5 rounded-md bg-popover border border-border shadow-md space-y-1.5">
@@ -164,11 +174,6 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
               : denied
                 ? t("onboarding.permissions.operationDenied")
                 : t(`onboarding.permissions.${def.key}.operation`)}
-          </p>
-        </div>
-        <div className="border-t border-border/50 pt-1.5">
-          <p className="text-[11px] text-amber-600 dark:text-amber-500 whitespace-normal">
-            {t("onboarding.permissions.upgradeNote")}
           </p>
         </div>
       </div>
