@@ -390,7 +390,7 @@ settings:
   general:
     tabGeneral: General
     tabShortcut: Shortcuts
-    tabPermission: System Permissions
+    tabPermission: Privacy & Permissions
     tabVoice: Voice
     tabSync: Git Sync
     appearance: Appearance
@@ -1089,14 +1089,20 @@ onboarding:
       title: Microphone
       description: Required for speech recognition / screen recording audio
       usage: Used for real-time speech recognition (ASR) and audio capture during screen recording. Enables "hotkey speech-to-text" and "record screen with audio" features.
+      operation: Click "Request Permission" to show a system dialog. Select "Allow" to grant. Once granted, speech recognition starts automatically when you speak.
     accessibility:
       title: Accessibility
       description: Required for screenshot / focus return / auto input
       usage: Used to read selected text in foreground apps (ActionBar context awareness), simulate keyboard input (auto-paste / Auto-Type password filling), and return focus to the result window. These features fail silently when not granted.
+      operation: Click "Request Permission" to open System Settings. Check octopus in the Accessibility list. Once granted, screenshot, auto-paste, and password filling work correctly.
     screen:
       title: Screen Recording
       description: Required for screen recording / screenshot
       usage: Used for screenshots (full screen / region / scrolling / window) and screen recording (with annotation overlay). Returns actual screen content when granted; black screen when denied.
+      operation: Click "Request Permission" to show a system dialog. Select "Allow" to grant. Once granted, screenshots and recordings capture actual screen content instead of black screen.
+    operationGranted: Permission granted. Related features work normally.
+    operationDenied: Permission denied. Click "Open System Settings" and re-check octopus in the list.
+    upgradeNote: "⚠️ This app has no Apple certificate. After upgrading to a new version, if permissions are lost (list item grayed out), click − to remove the old entry, then click + to re-add the new octopus.app."
   status:
     granted: Granted
     denied: Denied
