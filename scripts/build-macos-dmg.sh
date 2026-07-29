@@ -120,6 +120,22 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
+# ── 2b. ad-hoc 签名固定 identifier（稳定 TCC code identity）──────────────────
+# 问题：未签名 .app 的 identifier 是 linker 生成的 hash 后缀（如 octopus_desktop-348b5fbda5d6f1ef），
+# 每次重新链接 hash 变 → macOS TCC（屏幕录制/麦克风/辅助功能权限）认为是新 app →
+# 旧授权失效但条目残留（灰掉无法重勾）= 用户死局。
+# 解法：codesign -s - ad-hoc 签名 + 固定 identifier（com.octopus.desktop，与 tauri.conf.json 一致）。
+# ad-hoc 不需要 Apple Developer 账号，但 code identity 跨打包稳定，TCC 授权持久。
+# --force 覆盖 linker-signed；--deep 签名 bundle 内所有辅助二进制（helper）。
+echo "[build-dmg] ad-hoc 签名（固定 identifier=com.octopus.desktop）..."
+codesign --force --deep --sign - --identifier com.octopus.desktop "$APP_DIR" 2>&1 | tail -3
+# 验证签名
+SIGN_ID=$(codesign -dv --verbose=1 "$APP_DIR" 2>&1 | grep '^Identifier=' | head -1)
+echo "[build-dmg] 签名: $SIGN_ID"
+if [[ "$SIGN_ID" != "Identifier=com.octopus.desktop" ]]; then
+  echo "[build-dmg] ⚠️  签名 identifier 异常: $SIGN_ID（TCC 权限可能不稳定）" >&2
+fi
+
 # dmg 文件名：octopus_<version>_<arch>.dmg（与 tauri 原生命名一致）
 VERSION=$(defaults read "$APP_DIR/Contents/Info" CFBundleVersion 2>/dev/null || echo "0.1.0")
 ARCH=$(file "$APP_DIR/Contents/MacOS/"* | grep -oE 'arm64|x86_64' | head -1 || echo "$(uname -m)")
