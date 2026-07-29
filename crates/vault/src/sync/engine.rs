@@ -847,44 +847,6 @@ fn meta_file_not_found(e: &anyhow::Error) -> bool {
     })
 }
 
-/// 检测 cipher 是否需要 pull——对比 outline.md5 vs DB sync_md5（#2 修复）。
-///
-/// 与 push 侧（incremental_export 用 sync_md5 决定重写）对称：两端都基于
-/// 内容指纹 md5，不依赖跨设备不稳定的时间戳字符串。
-///
-/// - DB 无该 cipher → true（需 pull）
-/// - DB.sync_md5 与 outline.md5 不等 → true（内容变了，需 pull）
-/// - DB.sync_md5 与 outline.md5 相等 → false（无变化）
-///
-/// 不再读文件（消除 2N syscall——低优先级清理项 8.7）。
-/// P-MD5-LINEAR-SCAN 修复（2026-07-25）：接收 HashMap（id → sync_md5）而非 Vec，
-/// 用 get（O(1)）替代 iter().find（O(N)）。整体 pull 复杂度从 O(M×N) 降到 O(M)。
-fn cipher_md5_mismatch(
-    uuid: &str,
-    outline_md5: &str,
-    db_cipher_md5: &std::collections::HashMap<&str, &str>,
-) -> bool {
-    match db_cipher_md5.get(uuid) {
-        None => true,
-        Some(db_md5) => *db_md5 != outline_md5,
-    }
-}
-
-/// 检测 folder 是否需要 pull——对比 outline.md5 vs DB sync_md5（#5 修复）。
-///
-/// 与 cipher 对称。之前 folder 只在「DB 不存在」时 pull，已有 folder 整个跳过
-/// → 远程 rename 被静默丢弃（last-write-wins 数据丢失）。现在与 cipher 同标准。
-fn folder_md5_mismatch(
-    uuid: &str,
-    outline_md5: &str,
-    db_folder_md5: &std::collections::HashMap<&str, &str>,
-) -> bool {
-    match db_folder_md5.get(uuid) {
-        None => true,
-        Some(db_md5) => *db_md5 != outline_md5,
-    }
-}
-
 // === stamp 冲突解决（2026-07-22）===
 //
 // merge_vault 检测到 security_stamp 不一致时返 MasterPasswordMismatch，
@@ -1979,68 +1941,6 @@ mod tests {
     }
 
     // === 代码审查修复测试（2026-07-24）===
-
-    /// #2 修复：cipher_md5_mismatch 对比 outline.md5 vs DB sync_md5。
-    /// - DB 无该 cipher → true（需 pull）
-    /// - md5 不等 → true
-    /// - md5 相等 → false
-    #[test]
-    fn cipher_md5_mismatch_compares_outline_vs_db() {
-        use octopus_infra::db::VaultCipher;
-        let db_cipher = VaultCipher {
-            id: "uuid-1".to_string(),
-            folder_id: None,
-            favorite: false,
-            atype: 1,
-            name: "v1:name".into(),
-            notes: None,
-            data: "v1:data".into(),
-            fields: None,
-            password_history: None,
-            reprompt: 0,
-            is_deleted: false,
-            sync_md5: Some("md5-aaa".into()),
-            created_at: "2026-07-24".into(),
-            updated_at: "2026-07-24".into(),
-        };
-        let db_ciphers = vec![db_cipher];
-        // P-MD5-LINEAR-SCAN：测试改用 HashMap（id → sync_md5），与生产签名一致
-        let db_cipher_md5: std::collections::HashMap<&str, &str> = db_ciphers
-            .iter()
-            .map(|c| (c.id.as_str(), c.sync_md5.as_deref().unwrap_or("")))
-            .collect();
-
-        // DB 有 + md5 相同 → false
-        assert!(!cipher_md5_mismatch("uuid-1", "md5-aaa", &db_cipher_md5));
-        // DB 有 + md5 不同 → true
-        assert!(cipher_md5_mismatch("uuid-1", "md5-bbb", &db_cipher_md5));
-        // DB 无 → true
-        assert!(cipher_md5_mismatch("uuid-other", "md5-aaa", &db_cipher_md5));
-    }
-
-    /// #5 修复：folder_md5_mismatch 对比 outline.md5 vs DB sync_md5（与 cipher 对称）。
-    #[test]
-    fn folder_md5_mismatch_compares_outline_vs_db() {
-        use octopus_infra::db::VaultFolder;
-        let db_folder = VaultFolder {
-            id: "folder-1".to_string(),
-            name: "v1:name".into(),
-            sort_order: 0,
-            is_deleted: false,
-            sync_md5: Some("md5-aaa".into()),
-            created_at: "2026-07-24".into(),
-            updated_at: "2026-07-24".into(),
-        };
-        let db_folders = vec![db_folder];
-        let db_folder_md5: std::collections::HashMap<&str, &str> = db_folders
-            .iter()
-            .map(|f| (f.id.as_str(), f.sync_md5.as_deref().unwrap_or("")))
-            .collect();
-
-        assert!(!folder_md5_mismatch("folder-1", "md5-aaa", &db_folder_md5));
-        assert!(folder_md5_mismatch("folder-1", "md5-bbb", &db_folder_md5));
-        assert!(folder_md5_mismatch("folder-other", "md5-aaa", &db_folder_md5));
-    }
 
     /// #2 修复回归守护：pull 用 outline.md5 比对，而非 updated_at 字符串。
     ///

@@ -1,7 +1,7 @@
 //! 图片编码：RGBA → PNG → SHA-256 → WebP 无损 + 缩略图 → DB BLOB。
 //! 替代旧文件系统方案，不再写 ~/.octopus/clipboard_images/。
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sha2::Sha256;
 
 /// RGBA 像素 → SHA-256 hash（直接 hash 原始像素，不做 PNG 编码）。
@@ -10,18 +10,6 @@ use sha2::Sha256;
 /// 调用方如需 PNG bytes 请用其他函数。
 pub fn hash_rgba(rgba: &[u8]) -> String {
     sha256_hex(rgba)
-}
-
-/// RGBA 像素（owned） → PNG bytes + SHA-256 hash。
-/// 保留供测试/其他调用方使用。
-pub fn encode_and_hash(rgba: Vec<u8>, width: u32, height: u32) -> Result<(Vec<u8>, String)> {
-    let img = ::image::RgbaImage::from_raw(width, height, rgba)
-        .context("Failed to create RgbaImage from raw pixels")?;
-    let mut png_bytes = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
-        .context("Failed to encode PNG")?;
-    let hash = sha256_hex(&png_bytes);
-    Ok((png_bytes, hash))
 }
 
 /// 编码结果：WebP 无损原图 + WebP 缩略图。
@@ -177,18 +165,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_encode_and_hash() {
-        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
-        let (png, hash) = encode_and_hash(rgba.clone(), 2, 2).unwrap();
-        assert!(!png.is_empty());
-        assert_eq!(hash.len(), 64);
-    }
-
-    #[test]
     fn test_dedup_same_image() {
         let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255];
-        let (_, hash1) = encode_and_hash(rgba.clone(), 2, 1).unwrap();
-        let (_, hash2) = encode_and_hash(rgba.clone(), 2, 1).unwrap();
+        let hash1 = hash_rgba(&rgba);
+        let hash2 = hash_rgba(&rgba);
         assert_eq!(hash1, hash2);
     }
 

@@ -322,14 +322,6 @@ pub fn git_clone(url: &str, path: &Path) -> Result<(), SyncError> {
     Ok(())
 }
 
-// === T3.6: status / ls-remote ===
-
-/// `git status --porcelain`——检测工作区有无变化。
-pub fn git_status_has_changes(path: &Path) -> Result<bool, SyncError> {
-    let output = run_git(path, &["status", "--porcelain"])?;
-    Ok(!output.is_empty())
-}
-
 /// `git ls-remote --heads <url>`——测试连接（成功返 true）。
 ///
 /// 不需要本地 repo——直接对远程 URL 操作。用于「测试连接」按钮。
@@ -522,12 +514,6 @@ pub fn cleanup_in_progress_ops(path: &Path) -> Result<(), SyncError> {
 }
 
 // === T3.8: 分支操作 ===
-
-/// `git rev-parse --abbrev-ref HEAD`——取当前分支名。
-pub fn git_current_branch(path: &Path) -> Result<String, SyncError> {
-    let branch = run_git(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    Ok(branch)
-}
 
 /// `git checkout <branch>`——切换分支。
 pub fn git_checkout(path: &Path, branch: &str) -> Result<(), SyncError> {
@@ -780,25 +766,6 @@ mod tests {
     }
 
     #[test]
-    fn git_status_detects_changes() {
-        if !has_git() {
-            return;
-        }
-        let tmp = init_repo();
-        let path = tmp.path();
-
-        // 初始无变化
-        std::fs::write(path.join("a.txt"), "a").unwrap();
-        git_add_all(path).expect("add");
-        git_commit(path, "first").expect("commit");
-        assert!(!git_status_has_changes(path).unwrap(), "commit 后应无变化");
-
-        // 改文件 → 有变化
-        std::fs::write(path.join("a.txt"), "b").unwrap();
-        assert!(git_status_has_changes(path).unwrap(), "改文件后应有变化");
-    }
-
-    #[test]
     fn git_remote_add_and_list() {
         if !has_git() {
             return;
@@ -828,20 +795,6 @@ mod tests {
         let remotes = git_remote_list(path).expect("list");
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0].1, "git@github.com:user/repo.git", "set-url 后应是新 URL");
-    }
-
-    #[test]
-    fn git_current_branch_after_init() {
-        if !has_git() {
-            return;
-        }
-        let tmp = init_repo();
-        // init 后还没 commit，分支可能还没创建——先 commit
-        std::fs::write(tmp.path().join("f"), "x").unwrap();
-        git_add_all(tmp.path()).unwrap();
-        git_commit(tmp.path(), "init").unwrap();
-        let branch = git_current_branch(tmp.path()).expect("branch");
-        assert_eq!(branch, "main");
     }
 
     #[test]
