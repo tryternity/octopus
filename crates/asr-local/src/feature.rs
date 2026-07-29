@@ -133,6 +133,46 @@ pub fn povey_window(size: usize) -> Vec<f32> {
         .collect()
 }
 
+// ── Whisper feature normalization ──
+
+/// Whisper 特征归一化——公式与 sherpa-onnx `NormalizeWhisperFeatures`（math.cc）完全一致。
+///
+/// **勿改公式**：曾错误用 `clamped - clamp_min`（范围 0-8）代替 `(clamped + 4) / 4`（范围~0-2），
+/// 尺度差 4 倍导致 ONNX 模型输入分布不匹配、输出乱码。
+///
+/// **调用方式**：流式引擎必须 **per-chunk** 调用（每个 chunk 切片后独立 normalize），
+/// 不是对整段特征全局归一化。参考 sherpa-onnx online-recognizer-transducer-impl.h。
+///
+/// 快路径：连续内存走 `as_slice_mut()` 单遍扁平迭代（log10 + find-max 合并）；
+/// 非连续 fallback 走 `mapv_inplace`。
+pub(crate) fn normalize_whisper_features(mel: &mut Array2<f32>) {
+    if let Some(slice) = mel.as_slice_mut() {
+        let mut max_val = f32::NEG_INFINITY;
+        for v in slice.iter_mut() {
+            let log_v = v.max(1e-10f32).log10();
+            if log_v > max_val {
+                max_val = log_v;
+            }
+            *v = log_v;
+        }
+        let max_v = max_val - 8.0f32;
+        for v in slice.iter_mut() {
+            *v = (v.max(max_v) + 4.0f32) / 4.0f32;
+        }
+    } else {
+        // Fallback for non-contiguous arrays
+        mel.mapv_inplace(|v| v.max(1e-10f32).log10());
+        let mut max_val = f32::NEG_INFINITY;
+        for &v in mel.iter() {
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        let max_v = max_val - 8.0f32;
+        mel.mapv_inplace(|v| (v.max(max_v) + 4.0f32) / 4.0f32);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

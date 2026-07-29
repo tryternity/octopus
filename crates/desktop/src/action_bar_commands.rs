@@ -1,7 +1,7 @@
 //! AI 命令面板后端命令——模拟 Cmd+C / LLM 调用 / 模拟 Cmd+V / 打开 URL。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 // TranslationEngine trait 需在作用域内才能调 `engine.translate(...).await`（本地 + 云端引擎）。
 use octopus_translation::TranslationEngine;
@@ -307,7 +307,7 @@ pub fn trigger_action_bar(app: AppHandle) {
         // show 投递后 guard 可清（toggle 兜底 + reset_trigger_guard_if_stale 兜底仍在）。
         match &sel {
             Selection::None => {
-                *PENDING_CONTEXT.lock().unwrap() = None;
+                *PENDING_CONTEXT.lock() = None;
                 show_action_bar_centered(&app_clone);
             }
             Selection::Text { text, mouse } => {
@@ -327,15 +327,15 @@ pub fn trigger_action_bar(app: AppHandle) {
                     }
                     Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
                 }
-                *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+                *PENDING_CONTEXT.lock() = Some(ctx);
                 show_action_bar_at_mouse_with_pos(&app_clone, *mouse);
             }
             Selection::File { files, .. } => {
-                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(files.clone()));
+                *PENDING_CONTEXT.lock() = Some(ActionBarContext::files(files.clone()));
                 show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }
             Selection::Folder { folders, .. } => {
-                *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::files(folders.clone()));
+                *PENDING_CONTEXT.lock() = Some(ActionBarContext::files(folders.clone()));
                 show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }
         }
@@ -445,7 +445,7 @@ pub(crate) fn finalize_action_bar_pub(app: &AppHandle) {
 /// 写入 PENDING_CONTEXT——供 quick_execute 在执行前刷新上下文（发现 2 修复）。
 /// trigger_action_bar 内部各分支自己写，quick_execute 需要单独入口防止读到上次残留。
 pub(crate) fn set_pending_context(ctx: ActionBarContext) {
-    *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+    *PENDING_CONTEXT.lock() = Some(ctx);
 }
 
 /// 重置 guard——用于 toggle 隐藏时和超时保护。
@@ -468,7 +468,7 @@ pub fn reset_trigger_guard_if_stale(timeout_secs: u64) {
 #[tauri::command]
 pub fn action_bar_get_context() -> Option<ActionBarContext> {
     // 非消耗读取（clone）——防止 mount + show 竞态导致第二次拿到 None
-    let ctx = PENDING_CONTEXT.lock().unwrap().clone();
+    let ctx = PENDING_CONTEXT.lock().clone();
     log::info!(
         "[action-bar][get_context] {}",
         ctx.as_ref()
@@ -482,7 +482,7 @@ pub fn action_bar_get_context() -> Option<ActionBarContext> {
 /// 消除 invoke(get_context) 异步延迟导致的首屏竞态（窗口已 show 但 ctx Promise
 /// 还在 pending，首屏用陈旧 context state 渲染）。
 pub fn snapshot_pending_context() -> Option<ActionBarContext> {
-    PENDING_CONTEXT.lock().unwrap().clone()
+    PENDING_CONTEXT.lock().clone()
 }
 
 /// 前端隐藏浮窗时调用。reason 用于诊断 dismiss 触发来源（focus-lost / click-outside / 操作后）。
@@ -694,7 +694,7 @@ fn truncate_for_log(s: &str, max_chars: usize) -> String {
 /// 将 ActionBarContext 的 source/surrounding 拼成 LLM 可理解的情境块，
 /// 追加到原始选中文本前面。供 AI 动作（润色/摘要/解释/翻译）使用。
 fn build_enriched_text(text: &str) -> String {
-    let ctx = PENDING_CONTEXT.lock().unwrap();
+    let ctx = PENDING_CONTEXT.lock();
     let Some(ref ctx) = *ctx else {
         return text.to_string();
     };
@@ -1087,7 +1087,7 @@ const TRANSLATE_RESULTS_MAX: usize = 64;
 
 /// 缓存 session 的 done 终止态译文。仅 done 时调用（progress 不缓存）。
 fn cache_translate_done(session_id: &str, text: &str) {
-    let mut map = TRANSLATE_RESULTS.lock().unwrap();
+    let mut map = TRANSLATE_RESULTS.lock();
     // 超上限随机删一个。非真 LRU，理论上可能删到尚未被 forget/get 的活跃 session
     // （极低概率：需 64 积压 + 挤出命中未取走条目）。但 listener 主路径会调
     // forget_translate_result 清理，加上翻译完成频率低（用户手动触发），稳态
@@ -1116,7 +1116,7 @@ fn cache_translate_done(session_id: &str, text: &str) {
 /// TOCTOU 间隙，合并为单次锁 + remove。
 #[tauri::command]
 pub fn get_translate_result(session_id: String) -> Option<CachedTranslateResult> {
-    TRANSLATE_RESULTS.lock().unwrap().remove(&session_id)
+    TRANSLATE_RESULTS.lock().remove(&session_id)
 }
 
 /// 通知后端丢弃某 session 的翻译结果缓存——listener 正常收到 done 时调用。
@@ -1130,7 +1130,7 @@ pub fn get_translate_result(session_id: String) -> Option<CachedTranslateResult>
 /// forget 纯清理（listener 已显示，只需后端释放）。
 #[tauri::command]
 pub fn forget_translate_result(session_id: String) {
-    TRANSLATE_RESULTS.lock().unwrap().remove(&session_id);
+    TRANSLATE_RESULTS.lock().remove(&session_id);
 }
 
 /// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。
@@ -1712,7 +1712,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
         .ok_or("菜单项不存在")?;
 
     // 从 PENDING_CONTEXT 取 files（Files 场景）
-    let app_state_files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
+    let app_state_files: Vec<String> = PENDING_CONTEXT.lock()
         .as_ref().map(|c| c.files.clone()).unwrap_or_default();
 
     match item.action_type.as_str() {
@@ -2012,7 +2012,7 @@ pub(crate) fn trigger_agent_voice_core(
     coordinator: &crate::coordinator::Coordinator,
     hide_action_bar: bool,
 ) -> Result<(), String> {
-    let pending = PENDING_CONTEXT.lock().unwrap();
+    let pending = PENDING_CONTEXT.lock();
     let files: Vec<String> = pending.as_ref().map(|c| c.files.clone()).unwrap_or_default();
     let selected_text: String = pending.as_ref().and_then(|c| c.text.clone()).unwrap_or_default();
 
@@ -2088,7 +2088,7 @@ pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// 序列化所有修改 TRIGGER_* 全局静态量的测试，防并行竞态。
     static TRIGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -2402,7 +2402,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_clears_flag() {
-        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
+        let _guard = TRIGGER_TEST_LOCK.lock();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         reset_trigger_guard();
         assert!(!TRIGGER_IN_PROGRESS.load(Ordering::SeqCst), "reset_trigger_guard 应清除 guard");
@@ -2410,7 +2410,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_resets_when_stale() {
-        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
+        let _guard = TRIGGER_TEST_LOCK.lock();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         // 设一个 60 秒前的时间戳
         let old = std::time::SystemTime::now()
@@ -2424,7 +2424,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_keeps_recent() {
-        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
+        let _guard = TRIGGER_TEST_LOCK.lock();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         // 设一个 5 秒前的时间戳
         let recent = std::time::SystemTime::now()
@@ -2438,7 +2438,7 @@ mod tests {
 
     #[test]
     fn test_reset_trigger_guard_if_stale_ignores_zero_timestamp() {
-        let _guard = TRIGGER_TEST_LOCK.lock().unwrap();
+        let _guard = TRIGGER_TEST_LOCK.lock();
         TRIGGER_IN_PROGRESS.store(true, Ordering::SeqCst);
         TRIGGER_TIMESTAMP.store(0, Ordering::SeqCst);
         reset_trigger_guard_if_stale(30);
