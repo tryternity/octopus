@@ -149,6 +149,8 @@
 
 ### P1-4. `zipformer::compute_fbank_features` 每帧重新 `vec![0.0; Z_FRAME_LEN]` 等
 
+> ✅ **已修复（2026-07-29，commit `6aee091c`）**：frame 改栈数组 + preemph 改 in-place + FFT buf 提循环外复用（对照 fbank.rs/paraformer.rs 范式）。golden-value 测试守护数值一致。详见 spec/plan `2026-07-29-code-quality-asr-desktop` Phase A。
+
 **位置**：`crates/asr-local/src/zipformer.rs:1182, 1204, 1211`
 **症状**：每帧分配 frame (1.6KB) + preemph (1.6KB) + buf (4KB)。50-100 帧/chunk → ~500 次堆分配
 **对比**：streaming_paraformer.rs:308-309 和 fbank.rs:65-66 已用栈数组 + 循环外预分配——zipformer.rs 是唯一遗漏

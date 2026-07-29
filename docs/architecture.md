@@ -96,7 +96,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | 模块 | 说明 |
 |------|------|
 | `config` | DB 模型配置加载（`AsrConfig`，仅激活 ASR）、模型发现、引擎路由（`resolve_engine_in_config` 按 `{provider}:{category}:{model_name}` 3-part spec 解析）、**4 域激活引擎两核心方法**（`load_active_engine(domain)` / `resolve_active_engine(domain)`，Task 2 后；缓存 `ACTIVE_ENGINES: HashMap<domain, Arc<ResolvedEngine>>`）、CLI 多模型路径（`resolve_engine_any` 查 DB 任意可用 ASR）、云引擎分类（`EngineCategory::Aliyun` / `EngineCategory::ByteDance`，由 `resolve_category` 按 provider 分支识别） |
-| `feature` | 共享特征提取设施：mel filterbank（mel 空间权重，参数化 high_freq）、apply_lfr、hz_to_mel/mel_to_hz、hamming/povey 窗口。抽取自 paraformer/fbank/zipformer 三处重复实现，统一正确性（C1 修复） |
+| `feature` | 共享特征提取设施：mel filterbank（mel 空间权重，参数化 high_freq）、apply_lfr、hz_to_mel/mel_to_hz、hamming/povey 窗口、**`normalize_whisper_features`**（2026-07-29 从 zipformer + qwen3_asr 两份实现合并，带 `as_slice_mut()` 快路径——原 zipformer 版 3 趟嵌套 `[[i,j]]` 索引改为单遍扁平迭代，per-chunk 流式归一化热路径受益）。抽取自 paraformer/fbank/zipformer 三处重复实现，统一正确性（C1 修复） |
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
 | `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
@@ -852,7 +852,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 两个引擎共享 `load_vocab`（tokens.txt 解析）、`initial_encoder_states`（encoder 缓存初始化）、`decode_token_ids`（token ID → 文本，支持 BBPE + SentencePiece byte-fallback）三个自由函数。
 
-**Whisper 特征归一化（per-chunk，与 sherpa-onnx 一致）**：使用 whisper 特征（`is_whisper=true`，即 Transducer 系列 + `zipformer-ctc`）的模型，其 `normalize_whisper_features` 公式为 `mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0`（与 sherpa-onnx `NormalizeWhisperFeatures` 完全一致）。**关键约束**：① 归一化公式最后一步是 `(x + 4) / 4`（范围~0-2），不是简单的 shift（曾错误用 `x - clamp_min`，范围 0-8，尺度差 4 倍）；② 流式引擎做 **per-chunk 归一化**（每个 chunk 独立 normalize 后送 encoder），与 sherpa-onnx 行为一致——此前误改为 pseudo-global（每次重算 history+buffer 全局归一化）反而导致 max_v 跨 tick 不稳定；③ Transducer 流式引擎的 `history_samples` 仅保留最后 1 帧（160 samples），与 CTC 一致——此前保留全部未消费样本导致 history 无限膨胀。
+**Whisper 特征归一化（per-chunk，与 sherpa-onnx 一致）**：使用 whisper 特征（`is_whisper=true`，即 Transducer 系列 + `zipformer-ctc`）的模型，其 `normalize_whisper_features` 公式为 `mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0`（与 sherpa-onnx `NormalizeWhisperFeatures` 完全一致）。**关键约束**：① 归一化公式最后一步是 `(x + 4) / 4`（范围~0-2），不是简单的 shift（曾错误用 `x - clamp_min`，范围 0-8，尺度差 4 倍）；② 流式引擎做 **per-chunk 归一化**（每个 chunk 独立 normalize 后送 encoder），与 sherpa-onnx 行为一致——此前误改为 pseudo-global（每次重算 history+buffer 全局归一化）反而导致 max_v 跨 tick 不稳定；③ Transducer 流式引擎的 `history_samples` 仅保留最后 1 帧（160 samples），与 CTC 一致——此前保留全部未消费样本导致 history 无限膨胀。**2026-07-29 实现**：`normalize_whisper_features` 从 zipformer.rs（慢路径 3 趟嵌套 `[[i,j]]`）+ qwen3_asr.rs（快路径 `as_slice_mut`）两份合并到 `feature.rs`（共享 `pub(crate)`），zipformer/streaming_zipformer/qwen3_asr 统一调用，公式不变。同批 `zipformer.rs::compute_whisper_features_linear` / `compute_fbank_features` 的帧循环内堆分配（每帧 `vec!` frame/preemph/FFT buf）改为循环外栈数组 + 复用（对照 fbank.rs/paraformer.rs 范式），数值由 golden-value 测试守护（3 个 `golden_*` 测试钉住前 2 帧 × 5 bin）。
 
 ## 拼音纠错与热词校正 (ASR Corrector)
 

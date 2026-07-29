@@ -181,7 +181,7 @@ impl StreamingZipformer {
                 }
             }
             if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
+                crate::feature::normalize_whisper_features(&mut chunk);
             }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
@@ -275,7 +275,7 @@ impl StreamingZipformer {
             }
 
             if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
+                crate::feature::normalize_whisper_features(&mut chunk);
             }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
@@ -638,7 +638,7 @@ impl StreamingZipformerTransducer {
                 }
             }
             if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
+                crate::feature::normalize_whisper_features(&mut chunk);
             }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
@@ -721,7 +721,7 @@ impl StreamingZipformerTransducer {
                 }
             }
             if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
+                crate::feature::normalize_whisper_features(&mut chunk);
             }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
