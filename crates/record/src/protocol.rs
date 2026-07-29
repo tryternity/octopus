@@ -79,11 +79,11 @@ pub enum HelperEvent {
 // ── 枚举辅助（源选择 / 权限）─────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum PermissionStatus { Granted, Denied, NotDetermined }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum PrivacySection { ScreenCapture, Microphone, Accessibility }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -200,7 +200,23 @@ mod tests {
     }
 
     #[test]
-    fn permission_status_serializes_lowercase() {
+    fn permission_status_serializes_camel_case() {
+        // AGENTS.md 序列化规范：Tauri 边界 enum 变体统一 camelCase。
+        // 多词变体 NotDetermined → "notDetermined"（非 lowercase 的 "notdetermined"）。
         assert_eq!(serde_json::to_string(&PermissionStatus::Granted).unwrap(), r#""granted""#);
+        assert_eq!(serde_json::to_string(&PermissionStatus::Denied).unwrap(), r#""denied""#);
+        assert_eq!(serde_json::to_string(&PermissionStatus::NotDetermined).unwrap(), r#""notDetermined""#);
+    }
+
+    #[test]
+    fn privacy_section_serializes_camel_case() {
+        assert_eq!(serde_json::to_string(&PrivacySection::ScreenCapture).unwrap(), r#""screenCapture""#);
+        assert_eq!(serde_json::to_string(&PrivacySection::Microphone).unwrap(), r#""microphone""#);
+        assert_eq!(serde_json::to_string(&PrivacySection::Accessibility).unwrap(), r#""accessibility""#);
+        // 反序列化（前端 invoke 传参）也必须 camelCase
+        assert_eq!(
+            serde_json::from_str::<PrivacySection>(r#""screenCapture""#).unwrap(),
+            PrivacySection::ScreenCapture,
+        );
     }
 }

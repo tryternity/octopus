@@ -238,6 +238,8 @@ desktop → feature-gated: vault (=vault + keychain + TOTP)
 
 **历史教训（Task 4.1 blocker，2026-07-27）**：前端写 `audioTracks`（camelCase）但后端 `RecordingMeta` 无 rename_all 序列化为 `audio_tracks`（snake_case）→ 前端拿到 `undefined` → UI 静默失败。**casing 不一致是运行期 bug，编译期不报错**。新代码必须严格遵循本规范，前端 interface 与后端序列化 casing 一一对应。
 
+**历史教训（PermissionStatus/PrivacySection，2026-07-29）**：record crate 的 `PermissionStatus` / `PrivacySection` enum 用 `rename_all = "lowercase"`，多词变体 `NotDetermined` 序列化为 `"notdetermined"`（无大写，不可读），前端误写 `"not-determined"`（带连字符）→ 永远匹配不到 not-determined 分支，权限卡片状态显示错误。`PrivacySection` 前端传 `"screen_capture"`（snake_case）但后端 lowercase 期望 `"screencapture"` → 反序列化可能失败。**enum 变体多词时必须用 camelCase**（`NotDetermined` → `"notDetermined"`），勿用 lowercase（`"notdetermined"` 不可读且易与前端猜测的 `"not-determined"` 不一致）。已统一改为 `rename_all = "camelCase"`。
+
 详见全工程统一 roadmap：`docs/superpowers/specs/2026-07-27-screen-record-audio-post-merge.md` 实现注记 + 后续 casing-unification 系列 spec。
 
 ### 文档同步（强制）
