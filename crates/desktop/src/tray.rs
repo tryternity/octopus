@@ -94,6 +94,10 @@ const MIC_DEFAULT_ID: &str = "mic:default";
 
 /// 枚举系统麦克风设备名（cpal）。复用 settings_commands 的同款逻辑。
 /// 返回排序后的设备名列表（可能为空——无麦克风或权限未授予）。
+/// 枚举系统麦克风设备名（cpal）。**只能在后台线程调用**——cpal 首次调用会同步
+/// 初始化 CoreAudio 子系统，阻塞主线程会导致同时初始化的 WKWebView 内容进程
+/// 超时被 macOS 终止（web content process terminated）。
+/// 返回排序后的设备名列表（可能为空——无麦克风或权限未授予）。
 fn list_microphone_devices() -> Vec<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
@@ -118,13 +122,16 @@ fn fmt_microphone_parent_text(current: &str) -> String {
     format!("{}: {}", crate::i18n::t("tray.microphone", &[]), display)
 }
 
-/// 构建麦克风子菜单：父项 + 「默认设备」项 + 各设备 CheckMenuItem。
-/// 当前选中项（cfg.microphone）打勾。
+/// 构建麦克风子菜单：父项 + 「默认设备」项。
+///
+/// **不在启动时枚举设备**——cpal `input_devices()` 首次调用会同步初始化 CoreAudio，
+/// 阻塞主线程导致同时初始化的 WKWebView 内容进程超时被杀（web content process terminated）。
+/// 设备项由 `preheat_microphone_submenu` 在后台线程枚举后异步填充。
 fn build_microphone_submenu(
     app: &tauri::AppHandle,
     current_mic: &str,
 ) -> Result<Submenu<tauri::Wry>, String> {
-    // 「默认设备」项始终在最前。
+    // 「默认设备」项（始终在最前）。
     let default_item = CheckMenuItem::with_id(
         app,
         MIC_DEFAULT_ID,
@@ -135,37 +142,72 @@ fn build_microphone_submenu(
     )
     .map_err(|e| format!("mic default item: {e}"))?;
 
-    // 各实际设备项。
-    let devices = list_microphone_devices();
-    let device_items: Vec<CheckMenuItem<tauri::Wry>> = devices
-        .iter()
-        .map(|name| {
-            CheckMenuItem::with_id(
-                app,
-                format!("{}{}", MIC_ITEM_PREFIX, name),
-                name,
-                true,
-                name == current_mic,
-                None::<&str>,
-            )
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("mic device item: {e}"))?;
-
-    // 组装 items 引用数组（默认项 + 设备项）。
-    let mut item_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        vec![&default_item];
-    for item in &device_items {
-        item_refs.push(item);
-    }
-
     Submenu::with_items(
         app,
         fmt_microphone_parent_text(current_mic),
         true,
-        &item_refs,
+        &[&default_item],
     )
     .map_err(|e| format!("mic submenu: {e}"))
+}
+
+/// 后台枚举麦克风设备，完成后回主线程把设备项 append 到子菜单。
+///
+/// 在 `create_tray` 返回后由 main.rs 调用（spawn 后台线程），避免阻塞启动主线程。
+/// 已存在的设备项不重复添加（按 id 去重）。当前选中项打勾。
+pub fn preheat_microphone_submenu(app: &tauri::AppHandle, current_mic: &str) {
+    let app_handle = app.clone();
+    let current = current_mic.to_string();
+    std::thread::spawn(move || {
+        // 后台线程枚举设备（cpal CoreAudio 初始化在此线程，不阻塞主线程）。
+        let devices = list_microphone_devices();
+        if devices.is_empty() {
+            return;
+        }
+        // 回主线程 append 菜单项（tauri menu 必须主线程操作）。
+        let app2 = app_handle.clone();
+        let current2 = current.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            append_microphone_devices(&app2, &devices, &current2);
+        });
+    });
+}
+
+/// 把枚举到的设备项 append 到麦克风子菜单（主线程调用）。
+/// 已存在的设备项跳过（按 id 去重，防重复 preheat）。
+fn append_microphone_devices(app: &tauri::AppHandle, devices: &[String], current_mic: &str) {
+    let items = TRAY_ITEMS.lock();
+    let Some(tray_items) = items.as_ref() else { return };
+
+    // 收集已存在的设备 id，去重。
+    let existing: std::collections::HashSet<String> = tray_items
+        .mic_submenu
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .map(|i| i.id().as_ref().to_string())
+        .collect();
+
+    for name in devices {
+        let id = format!("{}{}", MIC_ITEM_PREFIX, name);
+        if existing.contains(&id) {
+            continue;
+        }
+        let item = match CheckMenuItem::with_id(
+            app,
+            &id,
+            name,
+            true,
+            name == current_mic,
+            None::<&str>,
+        ) {
+            Ok(item) => item,
+            Err(_) => continue,
+        };
+        if let Err(e) = tray_items.mic_submenu.append(&item) {
+            log::warn!("[mic-submenu] append 设备项失败 {:?}: {}", name, e);
+        }
+    }
 }
 
 /// Create the system tray icon and its context menu.
