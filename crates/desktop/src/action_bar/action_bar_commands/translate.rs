@@ -6,7 +6,7 @@
 
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 // TranslationEngine trait 需在作用域内才能调 `engine.translate(...).await`（本地 + 云端引擎）。
 use octopus_translation::TranslationEngine;
 
@@ -108,7 +108,7 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
                 .map_err(e2s)
         }
         TranslateStrategy::FallbackLlm => {
-            let llm_config = crate::config::llm_config_ignore_mode()
+            let llm_config = crate::core::config::llm_config_ignore_mode()
                 .ok_or_else(|| "翻译 fallback LLM 未配置，请在设置中配置润色模型".to_string())?;
             let prompt = auto_translate_prompt(text); // &'static str，满足 'static move
             let text_owned = text.to_string();

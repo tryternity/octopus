@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 
 /// config.yaml 反序列化结构
 #[derive(Debug, Clone, Deserialize)]

@@ -7,7 +7,7 @@
 //! Task 2 模型激活语义重构后：两个函数都不再接收 `cfg` 参数——激活引擎统一从
 //! `resolve_active_engine(domain)` 内存缓存取（启动时 `load_active_engine` 填充）。
 
-// 复用 infra 的统一 AppConfig：desktop 内部用 crate::config::AppConfig 即可，
+// 复用 infra 的统一 AppConfig：desktop 内部用 crate::core::config::AppConfig 即可，
 // 调用点无需写全 octopus_infra::config::AppConfig。
 pub use octopus_infra::config::{AppConfig, PolishMode};
 

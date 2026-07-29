@@ -3,8 +3,8 @@
 //! 用户进入编辑态（暂停 ASR）+ 提交编辑（劈段落库）的 handler。
 //! 活跃会话走 transcript；Idle 态无 transcript，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE。
 
-use crate::config::PolishMode;
-use crate::db_queue::{DbCommand, get_db_sender};
+use crate::core::config::PolishMode;
+use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::atomic::Ordering;
@@ -28,7 +28,7 @@ pub(crate) fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit
             // 用户可对其修订。允许进入（editing=true）；edit_buffer 不在此初始化。
             // 提交走 commit_edit_apply 的 Idle 分支，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE 落库。
             *editing = true;
-            crate::perf_log::log("[STATE] enter_edit stage=Idle transcript_id=—");
+            crate::core::perf_log::log("[STATE] enter_edit stage=Idle transcript_id=—");
             info!("Entered edit mode in Idle (no active transcript)");
             return;
         }
@@ -40,7 +40,7 @@ pub(crate) fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit
     let transcript_id = transcript.id;
     *editing = true;
     *edit_buffer = Some(transcript.display_text());
-    crate::perf_log::log(&format!(
+    crate::core::perf_log::log(&format!(
         "[STATE] enter_edit stage={} transcript_id={}",
         stage_name(stage), transcript_id,
     ));

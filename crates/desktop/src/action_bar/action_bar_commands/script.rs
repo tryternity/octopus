@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 use crate::action_bar::action_bar_window::hide_action_bar_window;
 // 父模块共享状态 + 共享类型 + 各兄弟子模块经 glob re-export 暴露的 helper。
 use super::{
@@ -402,7 +402,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         return Ok(true);
                     }
                     TranslateStrategy::FallbackLlm => {
-                        let llm_config = crate::config::llm_config_ignore_mode()
+                        let llm_config = crate::core::config::llm_config_ignore_mode()
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
                         // 翻译用纯 text（不含 enriched 上下文标签）：
                         // 1. auto_translate_prompt 检测 CJK 判断方向——标签会干扰检测
@@ -423,7 +423,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             }
 
             // 非 auto_translate 的 AI 操作（润色/摘要/解释），仍走 LLM
-            let llm_config = crate::config::llm_config_ignore_mode()
+            let llm_config = crate::core::config::llm_config_ignore_mode()
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
             let enriched_text = build_enriched_text(&text);
             let prompt = resolve_prompt_reference(&item.action_data);

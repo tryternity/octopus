@@ -20,13 +20,13 @@ macro_rules! handler {
     () => {
         tauri::generate_handler![
             // ── runtime_config（工具栏状态 / 引擎切换 / 模式开关）──
-            crate::runtime_config::toolbar_state,
-            crate::runtime_config::list_asr_engines,
-            crate::runtime_config::switch_active_model,
-            crate::runtime_config::set_polish_mode,
-            crate::runtime_config::list_llm_models,
-            crate::runtime_config::set_denoise_mode,
-            crate::runtime_config::set_translate_mode,
+            crate::core::runtime_config::toolbar_state,
+            crate::core::runtime_config::list_asr_engines,
+            crate::core::runtime_config::switch_active_model,
+            crate::core::runtime_config::set_polish_mode,
+            crate::core::runtime_config::list_llm_models,
+            crate::core::runtime_config::set_denoise_mode,
+            crate::core::runtime_config::set_translate_mode,
             // ── coordinator（录音控制 / 编辑 / 翻译）──
             crate::engine::coordinator::cancel_recording,
             crate::engine::coordinator::discard_recording,
@@ -195,11 +195,11 @@ macro_rules! handler {
             crate::action_bar::action_bar_commands::delete_agent_task,
             crate::action_bar::action_bar_commands::retry_agent_task,
             // ── extensions ──
-            crate::extensions::import_extension,
-            crate::extensions::install_extension,
-            crate::extensions::list_extensions,
-            crate::extensions::delete_extension,
-            crate::extensions::refresh_extensions,
+            crate::core::extensions::import_extension,
+            crate::core::extensions::install_extension,
+            crate::core::extensions::list_extensions,
+            crate::core::extensions::delete_extension,
+            crate::core::extensions::refresh_extensions,
             // ── vault（feature gate——feature off 时命令不注册）──
             // follow-up #10: 前端通过 is_vault_enabled() 检测后整段隐藏 vault UI。
             #[cfg(feature = "vault")]
@@ -303,7 +303,7 @@ macro_rules! handler {
             crate::commands::translation_commands::discover_translation_models,
             crate::commands::translation_commands::translate_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
-            crate::perf_log::perf_log_cmd,
+            crate::core::perf_log::perf_log_cmd,
             // ── 录屏（2026-07-25 screen record MVP，Task 10）──────────
             // 仅 macOS 编译；record_commands 模块整体 cfg(target_os = "macos")。
             // 5 个控制命令用 record_* 前缀避免与 coordinator::start_recording（ASR 录音）冲突。

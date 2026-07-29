@@ -1,6 +1,6 @@
 // src/tray.rs
 
-use crate::config::AppConfig;
+use crate::core::config::AppConfig;
 use log::info;
 use parking_lot::Mutex;
 use tauri::image::Image;
@@ -559,7 +559,7 @@ pub fn update_record_tray_label(recording: bool) {
 /// 复用 set_config 的持久化路径（写 DB + 更新 runtime config），保证与设置页一致。
 /// 不重启 audio stream——下次录音 build_stream 时用新设备名（与设置页行为一致）。
 fn switch_microphone_from_tray(app: &tauri::AppHandle, device: String) {
-    use crate::runtime_config::SharedRuntimeConfig;
+    use crate::core::runtime_config::SharedRuntimeConfig;
     use tauri::Manager;
 
     // 1. 更新 runtime config + 持久化 DB（复用 set_config 的等价逻辑）。

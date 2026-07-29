@@ -11,7 +11,7 @@
 use octopus_record::{PermissionStatus, PrivacySection};
 use tauri::command;
 
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 
 #[command]
 pub async fn check_record_permission() -> Result<PermissionStatus, String> {

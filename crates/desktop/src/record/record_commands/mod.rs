@@ -30,7 +30,7 @@ use tauri::command;
 // ── 辅助函数 ──────────────────────────────────────────────────
 
 /// 把 RecordError 转 String 的统一出口——复用 error_util::e2s。
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 
 /// 拿当前平台的 provider（零成本，MacOSProvider 是 ZST）。
 ///

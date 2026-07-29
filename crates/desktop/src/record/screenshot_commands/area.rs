@@ -13,7 +13,7 @@
 
 use parking_lot::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 use octopus_clipboard::ClipboardHandle;
 
 use super::{

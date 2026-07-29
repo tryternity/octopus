@@ -14,7 +14,7 @@
 
 use crate::engine::transcript::Transcript;
 use log::warn;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 use octopus_asr_local::vad::SileroVad;
 use std::collections::HashMap;
@@ -242,7 +242,7 @@ impl StreamingPipeline {
         // VAD 说话状态变化 → Speaking 事件
         let speaking = self.engine.silence_duration() < 0.3;
         if speaking != self.prev_speaking {
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[SPEAKING] local {} silence={:.2}",
                 speaking, self.engine.silence_duration(),
             ));
@@ -276,7 +276,7 @@ impl StreamingPipeline {
         }
         let total_ms = t_start.elapsed().as_millis();
         if total_ms > 30 {
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[BE tick] total={}ms infer={}ms samples={} changed={} is_cloud={}",
                 total_ms, infer_ms, samples.len(), changed, is_cloud
             ));
@@ -284,7 +284,7 @@ impl StreamingPipeline {
         // 诊断（spec 2026-07-19 第二轮）：tick 详情 1Hz 节流，验证假设 B（绿条延迟亮 + 不出字）
         // 包含 silence / speaking / changed / events 数。配合 streaming_runner.rs 内部 [runner] debug 互补。
         if self.last_detail_log.elapsed() >= std::time::Duration::from_secs(1) {
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[TICK-DETAIL] pipeline-local silence={:.2} speaking={} prev_speaking={} changed={} events={} infer_events={} samples={} infer_ms={} is_cloud={}",
                 self.engine.silence_duration(), speaking, self.prev_speaking, changed, events.len(),
                 infer_ms, samples.len(), infer_ms, is_cloud,
@@ -567,7 +567,7 @@ impl VadSegmentedPipeline {
         let speaking = self.has_speech && self.silence_duration < 0.3;
         if speaking != self.prev_speaking {
             log::info!("[vad-seg] speaking {} → {} (has_speech={}, silence={:.2})", self.prev_speaking, speaking, self.has_speech, self.silence_duration);
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[SPEAKING] vad-seg {} has_speech={} silence={:.2}",
                 speaking, self.has_speech, self.silence_duration,
             ));
@@ -583,7 +583,7 @@ impl VadSegmentedPipeline {
         }
         // 诊断（spec 2026-07-19 第二轮）：tick 详情 1Hz 节流，验证假设 B
         if self.last_detail_log.elapsed() >= std::time::Duration::from_secs(1) {
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[TICK-DETAIL] pipeline-vad-seg silence={:.2} has_speech={} speaking={} prev_speaking={} changed={} events={} samples={} active_count={} buffer_s={:.1}",
                 self.silence_duration, self.has_speech, speaking, self.prev_speaking, changed, events.len(),
                 samples.len(), self.active_count,
@@ -643,7 +643,7 @@ impl VadSegmentedPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PolishMode;
+    use crate::core::config::PolishMode;
     use parking_lot::Mutex;
 
     /// 直接 impl 新 trait 的 fake（不经过 StreamingRunner），测 StreamingPipeline 承载层。

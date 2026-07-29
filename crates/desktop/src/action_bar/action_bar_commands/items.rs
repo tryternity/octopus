@@ -4,7 +4,7 @@
 //! 润色 prompt 按 seed 文件复原。`derive_need_voice` 由 create/update 在保存时统一调用。
 
 use tauri::AppHandle;
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 
 // ── 菜单管理命令（设置页 CRUD）──
 

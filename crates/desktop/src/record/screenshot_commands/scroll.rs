@@ -13,7 +13,7 @@ use tauri::{Emitter, Manager};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
-use crate::error_util::e2s_ctx;
+use crate::core::error_util::e2s_ctx;
 use super::{
     TOTAL_WINDOWS,
     format_file_size,

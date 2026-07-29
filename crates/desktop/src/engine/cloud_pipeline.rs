@@ -7,7 +7,7 @@
 
 use crate::engine::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use octopus_asr_local::streaming_runner::TranscriptEvent;
 use octopus_asr_local::vad::SileroVad;
 use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};

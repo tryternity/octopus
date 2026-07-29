@@ -8,8 +8,8 @@
 //! - `handle_cloud_streaming_done`（#[cfg(cloud)]）：close_async 结果回传 + 跨会话护栏。
 
 use crate::engine::audio::SharedAudioState;
-use crate::config::AppConfig;
-use crate::config::PolishMode;
+use crate::core::config::AppConfig;
+use crate::core::config::PolishMode;
 use crate::engine::engine::TranscriptionEngine;
 use crate::engine::pipeline::StreamingPipeline;
 use crate::engine::transcript::Transcript;

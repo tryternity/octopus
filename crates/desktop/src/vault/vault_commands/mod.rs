@@ -28,7 +28,7 @@ use tauri::State;
 use octopus_vault::crypto::DerivedKey;
 use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, Field, LoginData, RepromptType};
 
-use crate::runtime_config::SharedRuntimeConfig;
+use crate::core::runtime_config::SharedRuntimeConfig;
 use crate::vault::vault_error::VaultError;
 use crate::vault::vault_state::SharedVaultSession;
 

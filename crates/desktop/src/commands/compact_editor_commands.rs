@@ -12,7 +12,7 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use tauri::{Emitter, Manager};
 
 use crate::commands::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};

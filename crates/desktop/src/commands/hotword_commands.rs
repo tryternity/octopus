@@ -3,7 +3,7 @@
 
 use octopus_infra::db::{self, HotwordSet};
 use uuid::Uuid;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 
 /// 写库后统一 reload corrector 热词索引（enabled 版本并集）。
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。

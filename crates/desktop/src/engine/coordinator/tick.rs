@@ -5,8 +5,8 @@
 //! `check_audio_stall` 是 cpal 断推看门狗（spec 2026-07-24-audio-watchdog §4.1）。
 
 use crate::engine::audio::SharedAudioState;
-use crate::config::AppConfig;
-use crate::config::PolishMode;
+use crate::core::config::AppConfig;
+use crate::core::config::PolishMode;
 use crate::engine::transcript::Transcript;
 use log::{debug, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,7 +99,7 @@ pub(crate) fn log_tick_heartbeat(
 ) {
     // editing 翻转即打（错过快速 enter→commit 是要避免的，心跳节流兜底，但翻转必须立即落）
     if *last_editing_logged != Some(editing) {
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[STATE] editing {} -> {} (stage={})",
             last_editing_logged.map(|b| b.to_string()).unwrap_or_else(|| "—".into()),
             editing,
@@ -109,7 +109,7 @@ pub(crate) fn log_tick_heartbeat(
     }
     *hb_ticks += 1;
     if hb_last.elapsed() >= std::time::Duration::from_secs(1) {
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[HEARTBEAT] stage={} editing={} ticks_in_window={}",
             stage_name(stage), editing, hb_ticks,
         ));
@@ -148,7 +148,7 @@ pub(crate) fn apply_pipeline_events(
                 crate::ui::result_window::update_result(app_handle, &e, false, 0);
             }
             PipelineEvent::Speaking(speaking) => {
-                crate::perf_log::log(&format!("[SPEAKING] emit {}", speaking));
+                crate::core::perf_log::log(&format!("[SPEAKING] emit {}", speaking));
                 let _ = app_handle.emit("update-speaking", speaking);
             }
         }
@@ -198,7 +198,7 @@ pub(crate) fn dispatch_tick(
         _ => {
             // tick 到达但 stage 不是活跃识别态——通常是异常路径（如 Polishing/Pasting 阶段
             // 还收到 Tick），打点帮助诊断"绿条为何不亮"是不是因为 stage 漂移。
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[WARN] dispatch_tick stage={} not active, tick dropped (samples_drained={})",
                 stage_name(stage),
                 samples.len(),
@@ -212,7 +212,7 @@ pub(crate) fn dispatch_tick(
 pub(crate) fn check_audio_stall(audio: &Arc<SharedAudioState>, stage: &Stage) -> bool {
     let stall = audio.sample_stall_duration();
     if stall >= AUDIO_STALL_THRESHOLD {
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[WATCHDOG] stall={:.1}s threshold={:.0}s stage={} samples_buffer=0 → restart",
             stall.as_secs_f64(), AUDIO_STALL_THRESHOLD.as_secs_f64(), stage_name(stage),
         ));

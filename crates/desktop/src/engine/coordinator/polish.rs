@@ -8,9 +8,9 @@
 //! - **立即润色**：`handle_polish_now`（前端按钮，忽略 polish_mode）。
 //! - `polish_input_to_regions`：transcript 段快照 → octopus_llm 多段润色输入（共用）。
 
-use crate::config::AppConfig;
-use crate::config::PolishMode;
-use crate::db_queue::{DbCommand, get_db_sender};
+use crate::core::config::AppConfig;
+use crate::core::config::PolishMode;
+use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::mpsc::Sender;
@@ -38,7 +38,7 @@ pub(crate) fn start_final_polish_or_paste(
         return;
     }
 
-    match crate::config::llm_config(config.polish_mode) {
+    match crate::core::config::llm_config(config.polish_mode) {
         None => {
             // 无需润色，直接粘贴
             do_paste(
@@ -202,9 +202,9 @@ pub(crate) fn spawn_polish_thread(
     // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
     let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
-        crate::config::llm_config_ignore_mode()
+        crate::core::config::llm_config_ignore_mode()
     } else {
-        crate::config::llm_config(config.polish_mode)
+        crate::core::config::llm_config(config.polish_mode)
     };
     let llm_config = match llm_config {
         Some(c) => c,
@@ -272,7 +272,7 @@ pub(crate) fn check_and_trigger_polish(
     // 取润色输入（段模型快照）+ 标记 pending（take_polish_input 内部已置 pending）+ 送 LLM
     let input = transcript.take_polish_input();
     // 诊断（spec 2026-07-19 第二轮）：自动润色触发，验证假设 A
-    crate::perf_log::log(&format!(
+    crate::core::perf_log::log(&format!(
         "[POLISH] auto-trigger t={} silence={:.2} mode={:?} segs={}",
         transcript.id, silence_duration, config.polish_mode, input.segments.len(),
     ));
@@ -296,7 +296,7 @@ pub(crate) fn handle_polish_done(
                 "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
                 session_id, transcript.id
             );
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[POLISH] done stage=StoppingPolish discarded_reason=session_mismatch polish_sid={} cur_id={}",
                 session_id, transcript.id,
             ));
@@ -312,10 +312,10 @@ pub(crate) fn handle_polish_done(
                     use tauri::Emitter;
                     let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                     transcript.on_polish_failed();
-                    crate::perf_log::log("[POLISH] done stage=StoppingPolish result=empty → on_polish_failed");
+                    crate::core::perf_log::log("[POLISH] done stage=StoppingPolish result=empty → on_polish_failed");
                 } else {
                     transcript.polish_apply(&polished);
-                    crate::perf_log::log(&format!(
+                    crate::core::perf_log::log(&format!(
                         "[POLISH] done stage=StoppingPolish result=ok polished_len={}", polished.chars().count(),
                     ));
                     let cmd = if transcript.has_edit() {
@@ -343,7 +343,7 @@ pub(crate) fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", &e);
                 transcript.on_polish_failed();
-                crate::perf_log::log(&format!(
+                crate::core::perf_log::log(&format!(
                     "[POLISH] done stage=StoppingPolish result=err err_len={}", e.chars().count(),
                 ));
             }
@@ -366,7 +366,7 @@ pub(crate) fn handle_polish_done(
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", sname);
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[POLISH] done stage={} ignored_reason=not_recording_stage", sname,
             ));
             use tauri::Emitter;
@@ -382,7 +382,7 @@ pub(crate) fn handle_polish_done(
             "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
             session_id, transcript.id
         );
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[POLISH] done stage={} discarded_reason=session_mismatch polish_sid={} cur_id={}",
             sname, session_id, transcript.id,
         ));
@@ -397,13 +397,13 @@ pub(crate) fn handle_polish_done(
                 use tauri::Emitter;
                 let _ = app_handle.emit("polish-error", "LLM 返回空结果（可能是思考模型未关闭 thinking）");
                 transcript.on_polish_failed();
-                crate::perf_log::log(&format!(
+                crate::core::perf_log::log(&format!(
                     "[POLISH] done stage={} result=empty → on_polish_failed", sname,
                 ));
             } else {
                 // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
                 transcript.polish_apply(&polished);
-                crate::perf_log::log(&format!(
+                crate::core::perf_log::log(&format!(
                     "[POLISH] done stage={} result=ok polished_len={}", sname, polished.chars().count(),
                 ));
                 // 含 Edited 段→UpdateEditedSegments（保持 edited/text/segments 一致）；否则 UpdatePolished（现状）
@@ -436,7 +436,7 @@ pub(crate) fn handle_polish_done(
             use tauri::Emitter;
             let _ = app_handle.emit("polish-error", &e);
             transcript.on_polish_failed();
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[POLISH] done stage={} result=err err_len={}", sname, e.chars().count(),
             ));
         }
@@ -467,7 +467,7 @@ pub(crate) fn handle_polish_now(
         Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[POLISH] PolishNow-ignored stage={} (no transcript)", stage_name(stage),
             ));
             let _ = app_handle.emit("polish-done", ());
@@ -476,18 +476,18 @@ pub(crate) fn handle_polish_now(
     };
     if transcript.full().is_empty() {
         debug!("PolishNow skipped: transcript empty");
-        crate::perf_log::log("[POLISH] PolishNow-skipped reason=empty");
+        crate::core::perf_log::log("[POLISH] PolishNow-skipped reason=empty");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
     if transcript.polish_pending() {
         debug!("PolishNow skipped: polish already pending");
-        crate::perf_log::log("[POLISH] PolishNow-skipped reason=already_pending");
+        crate::core::perf_log::log("[POLISH] PolishNow-skipped reason=already_pending");
         let _ = app_handle.emit("polish-done", ());
         return;
     }
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
-    if crate::config::llm_config_ignore_mode().is_none() {
+    if crate::core::config::llm_config_ignore_mode().is_none() {
         warn!("PolishNow: no LLM config available");
         // 不覆盖浮窗识别文本——以 polish-error 红色气泡提示，保留原文显示
         let _ = app_handle.emit("polish-error", "未配置润色模型");
@@ -502,7 +502,7 @@ pub(crate) fn handle_polish_now(
     }
     let input = transcript.take_polish_input();
     // 诊断（spec 2026-07-19 第二轮）：手动润色触发，验证假设 G（编辑期间 PolishNow → PolishDone 覆盖用户编辑）
-    crate::perf_log::log(&format!(
+    crate::core::perf_log::log(&format!(
         "[POLISH] PolishNow-manual-trigger t={} chars={}",
         transcript.id,
         input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>(),

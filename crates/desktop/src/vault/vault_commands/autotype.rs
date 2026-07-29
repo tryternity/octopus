@@ -8,7 +8,7 @@ use zeroize::Zeroizing;
 use octopus_clipboard::ClipboardHandle;
 use octopus_vault::types::{Cipher, CipherData, RepromptType};
 
-use crate::runtime_config::SharedRuntimeConfig;
+use crate::core::runtime_config::SharedRuntimeConfig;
 use crate::vault::vault_error::{self, VaultError};
 use crate::vault::vault_state::SharedVaultSession;
 

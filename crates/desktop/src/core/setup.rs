@@ -82,7 +82,7 @@ impl<'a> AppSetup<'a> {
         clipboard_handle.set_recording_enabled(self.config.clipboard_enabled);
 
         // 确保 extensions 目录存在
-        let ext_dir = crate::extensions::extensions_dir();
+        let ext_dir = crate::core::extensions::extensions_dir();
         if !ext_dir.exists() {
             let _ = std::fs::create_dir_all(&ext_dir);
         }
@@ -201,11 +201,11 @@ impl<'a> AppSetup<'a> {
     fn init_watchers(&self) {
         // 启动 notify-rs 文件监听：app 目录变化时秒级刷新索引。
         // macOS FSEvents 对 /System 等非用户目录可能漏事件——下面的轮询作为 fallback。
-        crate::file_watcher::start_app_watcher();
+        crate::core::file_watcher::start_app_watcher();
 
         // 启动 prompt 文件监听：~/.octopus/.sync/prompts/ 下文件外部变化时
         // emit compact-editor://file-changed，CompactEditor 自动 reload 或提示冲突。
-        crate::file_watcher::start_prompt_file_watcher(self.app.handle().clone());
+        crate::core::file_watcher::start_prompt_file_watcher(self.app.handle().clone());
 
         // 应用索引后台自动刷新（mtime 轮询）：用户装卸应用后无需重启即可搜到。
         // 启动后延迟 30s（避开 ASR 预热等重活），之后每 10 分钟检测 /Applications 等
@@ -277,7 +277,7 @@ impl<'a> AppSetup<'a> {
                 }
                 // 每轮重读 config：polish_llm 可能在运行时被改过。
                 let _config = octopus_infra::config::load_config().unwrap_or_default();
-                let llm_config = match crate::config::llm_config_ignore_mode() {
+                let llm_config = match crate::core::config::llm_config_ignore_mode() {
                     Some(c) => c,
                     None => {
                         std::thread::sleep(std::time::Duration::from_secs(600)); // LLM 未配置，10 分钟后重试
@@ -455,7 +455,7 @@ impl<'a> AppSetup<'a> {
         //   与流式 Session 并存 → 双重加载浪费内存（~100-300MB）。流式引擎在首次录音时由
         //   prepare_streaming_session 懒加载进 StreamingSessionManager，无需启动预热。
         let do_preheat = self.config.engine_mode == "embedded"
-            && !crate::config::is_streaming_engine();
+            && !crate::core::config::is_streaming_engine();
         #[cfg(feature = "cloud")]
         let do_preheat = do_preheat && !is_cloud_aliyun;
 
@@ -522,7 +522,7 @@ impl<'a> AppSetup<'a> {
                 std::sync::Arc::new(std::sync::Mutex::new(None));
             self.app.manage(picker_url_cache);
             // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
-            // （AliyunEngine::transcribe / crate::config::llm_config_ignore_mode / 云端翻译）
+            // （AliyunEngine::transcribe / crate::core::config::llm_config_ignore_mode / 云端翻译）
             // 解密 v1: 前缀的 secret_key。
             crate::vault::vault_state::set_global_session(vault_session);
         }
@@ -574,7 +574,7 @@ impl<'a> AppSetup<'a> {
         };
 
         // 运行时共享配置——唯一真相源（Arc<RwLock<AppConfig>>）
-        let runtime_config: crate::runtime_config::SharedRuntimeConfig =
+        let runtime_config: crate::core::runtime_config::SharedRuntimeConfig =
             std::sync::Arc::new(parking_lot::RwLock::new(self.config.clone()));
         self.app.manage(runtime_config.clone());
 
@@ -671,7 +671,7 @@ impl<'a> AppSetup<'a> {
     /// ASR + edit + polish 全局快捷键注册。
     fn register_shortcuts(&self) {
         // 6. Register global shortcut
-        if let Err(e) = crate::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
+        if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
             log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
         }
 

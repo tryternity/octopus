@@ -7,8 +7,8 @@ use octopus_vault::health::HealthReport;
 use octopus_vault::importer::ImportReport;
 use octopus_vault::types::CipherData;
 
-use crate::error_util::e2s;
-use crate::runtime_config::SharedRuntimeConfig;
+use crate::core::error_util::e2s;
+use crate::core::runtime_config::SharedRuntimeConfig;
 use crate::vault::vault_error::{self, VaultError};
 use crate::vault::vault_state::SharedVaultSession;
 

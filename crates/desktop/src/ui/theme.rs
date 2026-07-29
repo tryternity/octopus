@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use std::sync::OnceLock;
 
 /// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。

@@ -12,8 +12,8 @@ mod polish;
 mod lifecycle;
 
 use crate::engine::audio::SharedAudioState;
-use crate::config::AppConfig;
-use crate::db_queue::{DbCommand, get_db_sender};
+use crate::core::config::AppConfig;
+use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::engine::TranscriptionEngine;
 use crate::engine::transcript::Transcript;
 use log::{debug, error, info, warn};
@@ -253,7 +253,7 @@ impl Coordinator {
         audio: Arc<SharedAudioState>,
         config: AppConfig,
         app_handle: tauri::AppHandle,
-        runtime_config: crate::runtime_config::SharedRuntimeConfig,
+        runtime_config: crate::core::runtime_config::SharedRuntimeConfig,
     ) -> Self {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
         let tx_self = tx.clone();
@@ -273,9 +273,9 @@ fn build_coordinator_loop(
     engine: Arc<dyn TranscriptionEngine>,
     mut config: AppConfig,
     app_handle: tauri::AppHandle,
-    runtime_config: crate::runtime_config::SharedRuntimeConfig,
+    runtime_config: crate::core::runtime_config::SharedRuntimeConfig,
 ) {
-    let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine();
+    let use_streaming = config.engine_mode == "embedded" && crate::core::config::is_streaming_engine();
     let mut use_streaming = use_streaming;
     #[cfg(feature = "cloud")]
     let mut use_cloud_streaming = false;
@@ -316,7 +316,7 @@ fn build_coordinator_loop(
                                 commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
                             }
                             editing = false;
-                            crate::perf_log::log(&format!(
+                            crate::core::perf_log::log(&format!(
                                 "[STATE] toggle-during-edit committed then stopping (stage={})",
                                 stage_name(&stage),
                             ));
@@ -349,7 +349,7 @@ fn build_coordinator_loop(
                             sync_runtime_fields(&mut config, &rc);
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
-                                && crate::config::is_streaming_engine();
+                                && crate::core::config::is_streaming_engine();
                             #[cfg(feature = "cloud")]
                             {
                                 use_cloud_streaming = is_cloud_engine(&config);
@@ -423,7 +423,7 @@ fn build_coordinator_loop(
                         if editing {
                             editing = false;
                             edit_buffer = None;
-                            crate::perf_log::log("[STATE] cancel-during-edit cleared");
+                            crate::core::perf_log::log("[STATE] cancel-during-edit cleared");
                         }
                         pending_prepare = None;
                         handle_cancel(&mut stage, &audio, &app_handle);
@@ -432,7 +432,7 @@ fn build_coordinator_loop(
                         if editing {
                             editing = false;
                             edit_buffer = None;
-                            crate::perf_log::log("[STATE] discard-during-edit cleared");
+                            crate::core::perf_log::log("[STATE] discard-during-edit cleared");
                         }
                         pending_prepare = None;
                         handle_discard(&mut stage, &audio, &app_handle, &config);
@@ -515,7 +515,7 @@ fn build_coordinator_loop(
                         handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
                     }
                     Command::CommitEdit { text, dirty_ranges, has_edited, caret, selection } => {
-                        crate::perf_log::log(&format!(
+                        crate::core::perf_log::log(&format!(
                             "[STATE] commit_edit stage={} text_len={} has_edited={}",
                             stage_name(&stage), text.chars().count(), has_edited,
                         ));
@@ -619,7 +619,7 @@ fn build_coordinator_loop(
                         sync_runtime_fields(&mut config, &rc);
                         drop(rc);
                         use_streaming = config.engine_mode == "embedded"
-                            && crate::config::is_streaming_engine();
+                            && crate::core::config::is_streaming_engine();
                         #[cfg(feature = "cloud")]
                         {
                             use_cloud_streaming = is_cloud_engine(&config);

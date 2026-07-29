@@ -5,7 +5,7 @@
 //! 三个 `prepare_*_session` 分别构造对应 pipeline + transcript + 启动 tick 线程，进入活跃 Stage。
 
 use crate::engine::audio::SharedAudioState;
-use crate::config::AppConfig;
+use crate::core::config::AppConfig;
 use crate::engine::engine::TranscriptionEngine;
 use crate::engine::pipeline::StreamingPipeline;
 use crate::engine::transcript::Transcript;

@@ -6,7 +6,7 @@
 //! = clipboard，派生）。默认 `segments=[]`+`caret_gap=0` 等价旧空文档；`caret_gap==len` 等价
 //! 旧末尾追加（零回归）。润色全篇一次：edited 冻结、raw/polished 重润（best-effort 串匹配回填）。
 
-use crate::config::PolishMode;
+use crate::core::config::PolishMode;
 use std::time::{Duration, Instant};
 
 /// diverted_pending（引擎纠正延迟确认暂存）累积上限（char）。超限强制 flush 展示，
@@ -166,7 +166,7 @@ impl Transcript {
             self.engine_cumulative = full.to_string();
             self.engine_consumed_chars = full.chars().count();
             // 诊断（spec 2026-07-19 第二轮）：diverted 分支，验证假设 F
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[APPLY] t={} branch=diverted is_prefix=false full_len={} lcp={} diff_len={} diverted_pending_len={} polish_pending={} sel_del={}",
                 self.id, full.chars().count(), lcp, diff.chars().count(),
                 self.diverted_pending.chars().count(), self.polish_pending, selection_deleted,
@@ -192,7 +192,7 @@ impl Transcript {
             else { self.push_delta_at_caret(&combined_delta); }
         }
         // 诊断（spec 2026-07-19 第二轮）：apply 成功路径，验证假设 F + polish_pending 卡 delta
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[APPLY] t={} branch=prefix is_prefix={} delta_len={} diverted_len={} polish_pending={} cum_len={} shown_len={} sel_del={}",
             self.id, is_prefix, combined_delta.chars().count(),
             self.diverted_pending.chars().count(), self.polish_pending,
@@ -238,7 +238,7 @@ impl Transcript {
             self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() });
             self.caret_gap = gap + 1;
             // 诊断（spec 2026-07-19 第二轮）：新段插入位置，验证假设 D（caret 落点看不到）
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[CARET] insert gap={} segs={} is_inserting={} (new Raw segment)",
                 self.caret_gap, self.segments.len(), self.is_inserting(),
             ));
@@ -280,7 +280,7 @@ impl Transcript {
         self.pending_delete = None;
         self.selection_insert_offset = None;
         // 诊断（spec 2026-07-19 第二轮）：caret 落点
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[CARET] set_caret off={} gap={} segs={} is_inserting={}",
             char_off, self.caret_gap, self.segments.len(), self.is_inserting(),
         ));
@@ -305,7 +305,7 @@ impl Transcript {
         self.selection_insert_offset = Some(start);
         self.caret_gap = self.split_at(start);
         // 诊断（spec 2026-07-19 第二轮）：选区落点
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[CARET] set_selection range=[{},{}] gap={} segs={} is_inserting={}",
             start, end, self.caret_gap, self.segments.len(), self.is_inserting(),
         ));
@@ -375,7 +375,7 @@ impl Transcript {
         self.selection_insert_offset = None;
         if flat.is_empty() {
             self.segments.clear(); self.caret_gap = 0;
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[CARET] commit_edit(empty) segs=0 caret_gap=0 cum_len={} polish_pending={}",
                 self.engine_cumulative.chars().count(), self.polish_pending,
             ));
@@ -393,7 +393,7 @@ impl Transcript {
                 self.segments = rebuild_segments(&old_segments, flat, &[]);
                 self.caret_gap = self.segments.len();
             }
-            crate::perf_log::log(&format!(
+            crate::core::perf_log::log(&format!(
                 "[CARET] commit_edit(no_dirty) segs={} caret_gap={} cum_len={} polish_pending={} has_edited={}",
                 self.segments.len(), self.caret_gap,
                 self.engine_cumulative.chars().count(), self.polish_pending, has_edited,
@@ -405,7 +405,7 @@ impl Transcript {
         self.caret_gap = self.segments.len();
         // 诊断（spec 2026-07-19 第二轮）：commit 后 transcript 状态
         // 验证假设 F（engine_cumulative 与新 segments 失配）+ 假设 D（caret 落点）+ 假设 A（polish_pending 残留）
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[CARET] commit_edit segs={} caret_gap={} cum_len={} polish_pending={} dirty={} has_edited={}",
             self.segments.len(), self.caret_gap,
             self.engine_cumulative.chars().count(), self.polish_pending,
@@ -437,7 +437,7 @@ impl Transcript {
             && self.caret_gap >= self.segments.len();
         self.polish_pending = true;
         // 诊断（spec 2026-07-19 第二轮）：润色发起，验证假设 A/G
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[POLISH] take_polish_input t={} segs={} caret_at_tail={} caret_off={}",
             self.id, self.segments.len(), self.polish_caret_at_tail, self.polish_caret_offset,
         ));
@@ -466,7 +466,7 @@ impl Transcript {
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
         self.last_polish_time = Instant::now();
         // 诊断（spec 2026-07-19 第二轮）：润色完成回填，验证假设 A/G（用户编辑被 polish_apply 覆盖）
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[POLISH] polish_apply t={} full_len={} at_tail={} segs={} caret_gap={} pending_delta_flushed={}",
             self.id, full.chars().count(), at_tail,
             self.segments.len(), self.caret_gap, pending_len,
@@ -485,7 +485,7 @@ impl Transcript {
         let pending = std::mem::take(&mut self.pending_delta);
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
         // 诊断（spec 2026-07-19 第二轮）
-        crate::perf_log::log(&format!(
+        crate::core::perf_log::log(&format!(
             "[POLISH] on_polish_failed t={} pending_delta_flushed={}",
             self.id, pending.chars().count(),
         ));
@@ -1132,7 +1132,7 @@ mod tests {
 #[cfg(test)]
 mod user_scenario_tests {
     use super::*;
-    use crate::config::PolishMode;
+    use crate::core::config::PolishMode;
 
     #[test]
     fn user_scenario_select_hello_speak_welcome() {

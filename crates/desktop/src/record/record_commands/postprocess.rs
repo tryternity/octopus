@@ -13,7 +13,7 @@
 use octopus_record::{RecordError, RecordStore, RecordingMeta};
 use tauri::{command, AppHandle, Emitter, State};
 
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use super::{with_db_blocking, now_iso};
 
 /// 同步探测 ffmpeg 是否存在（不报错，返回 Option）。

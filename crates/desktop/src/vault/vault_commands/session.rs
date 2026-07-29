@@ -5,8 +5,8 @@ use zeroize::Zeroizing;
 
 use tauri::State;
 
-use crate::error_util::e2s;
-use crate::runtime_config::SharedRuntimeConfig;
+use crate::core::error_util::e2s;
+use crate::core::runtime_config::SharedRuntimeConfig;
 use crate::vault::vault_error::{self, VaultError};
 use crate::vault::vault_state::SharedVaultSession;
 

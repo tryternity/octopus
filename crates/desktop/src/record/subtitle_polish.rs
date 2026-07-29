@@ -122,7 +122,7 @@ pub fn split_polished_by_ratio(polished: &str, original_texts: &[String]) -> Vec
 /// 解析字幕润色用的 LLM 配置。
 ///
 /// MVP 简化：**无论 llm_key 是 None 还是 Some 都用默认 LLM**
-/// （`crate::config::llm_config_ignore_mode()` 取 LLM 域激活引擎）。
+/// （`crate::core::config::llm_config_ignore_mode()` 取 LLM 域激活引擎）。
 ///
 /// - llm_key=None → 用默认 LLM。
 /// - llm_key=Some → log warn「按 key 查 LLM 暂未实现」，仍 fallback 到默认 LLM。
@@ -139,7 +139,7 @@ fn resolve_subtitle_llm_config(
     llm_key: &Option<String>,
 ) -> Option<octopus_llm::CompatibleLlmConfig> {
     if let Some(key) = llm_key {
-        if let Some(cfg) = crate::config::llm_config_by_key(key) {
+        if let Some(cfg) = crate::core::config::llm_config_by_key(key) {
             return Some(cfg);
         }
         log::warn!(
@@ -147,7 +147,7 @@ fn resolve_subtitle_llm_config(
             key
         );
     }
-    crate::config::llm_config_ignore_mode()
+    crate::core::config::llm_config_ignore_mode()
 }
 
 /// 对 cue 文本列表做整段 LLM 润色。

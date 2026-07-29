@@ -4,7 +4,7 @@
 //! 以及 `format_paths` / `derive_cwd` 等纯路径辅助函数。
 
 use tauri::{AppHandle, Emitter, Manager};
-use crate::error_util::e2s_ctx;
+use crate::core::error_util::e2s_ctx;
 
 /// file:// URL 路径编码：仅编码空格（macOS file:// URL 的最小需求）
 fn url_encode_path(path: &str) -> String {

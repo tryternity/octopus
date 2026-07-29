@@ -17,7 +17,7 @@ use octopus_record::{
 use octopus_record::platform::HelperProvider;
 use tauri::{command, AppHandle, Emitter, State};
 
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use super::{provider, with_db_blocking, now_iso, probe_ffmpeg};
 
 /// 前端组装的录制配置（spec §0.3 决策的 7 个维度）。

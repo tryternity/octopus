@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 
 #[tauri::command]
 pub async fn query_clipboard_history(

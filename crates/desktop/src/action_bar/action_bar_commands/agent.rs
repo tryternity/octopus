@@ -3,7 +3,7 @@
 //! 命令面板「智能体管理」Tab 的后端：适配器 CRUD + 语音联动触发 + 任务列表/重试/删除。
 
 use tauri::AppHandle;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use crate::action_bar::action_bar_window::hide_action_bar_window;
 use super::{PENDING_CONTEXT, derive_cwd, resolve_prompt_reference, finalize_action_bar};
 

@@ -9,7 +9,7 @@
 use octopus_record::{ListFilter, RecordError, RecordSession, RecordStore, RecordingMeta};
 use tauri::{command, State};
 
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use super::with_db_blocking;
 
 /// list_recordings 的前端参数：单独定义而非直接收 ListFilter，

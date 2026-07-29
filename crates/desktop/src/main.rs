@@ -7,30 +7,23 @@ mod action_bar;
 // 整体 cfg 掉（gate 在 vault/mod.rs 内部）。vault_secret_access **总是**编译
 // （云端推理热路径 chokepoint，feature off 时退化为返回 raw 原值的 no-op）。
 pub mod vault;
-mod bootstrap;
-mod setup;
-mod config;
-#[macro_use]
-mod invoke_handler;
+// 启动 + 基础设施功能域：core/mod.rs 内部 `#[macro_use] pub mod invoke_handler;`
+// 导出 handler! 宏（亦 #[macro_export] 到 crate 根，main.rs::run 直接 handler!() 调用）。
+mod core;
 mod clipboard;
 mod commands;
 
 // ASR 全栈功能域：engine/mod.rs 内部按 feature gate 守护 cloud / remote-ws / remote-grpc 子 mod。
 mod engine;
-mod db_queue;
-mod error_util;
-mod extensions;
-mod file_watcher;
-mod perf_log;
 // 录屏 + 截图功能域（Task 10/14/2.1，2026-07）：record/mod.rs 内部按 target_os 守护，
 // windows/linux 编译时 record_* 子 mod 整体为空，
-// 对应 invoke_handler 注册项也用 cfg gate（见 invoke_handler.rs::handler! 宏）。
+// 对应 invoke_handler 注册项也用 cfg gate（见 core/invoke_handler.rs::handler! 宏）。
 mod record;
-mod runtime_config;
-mod shortcut;
 mod ui;
 
 use commands::compact_editor_window;
+use core::bootstrap;
+use core::db_queue;
 use engine::coordinator::Coordinator;
 use log::info;
 use tauri::Manager;
@@ -72,7 +65,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(handler!())
-        .setup(move |app| crate::setup::AppSetup::run(app, &config))
+        .setup(move |app| crate::core::setup::AppSetup::run(app, &config))
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

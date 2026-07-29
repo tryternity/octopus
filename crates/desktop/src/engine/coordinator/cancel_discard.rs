@@ -4,8 +4,8 @@
 //! - `handle_discard`：工具栏「关闭」——停录音 + finalize DB（保留识别历史，不粘贴）。
 
 use crate::engine::audio::SharedAudioState;
-use crate::config::AppConfig;
-use crate::db_queue::{DbCommand, get_db_sender};
+use crate::core::config::AppConfig;
+use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::atomic::Ordering;

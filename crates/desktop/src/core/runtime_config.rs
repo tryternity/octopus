@@ -4,11 +4,11 @@
 
 use serde::Serialize;
 use std::sync::Arc;
-use crate::error_util::e2s;
+use crate::core::error_util::e2s;
 use parking_lot::RwLock;
 use tauri::State;
 
-use crate::config::PolishMode;
+use crate::core::config::PolishMode;
 
 /// 运行时可变的完整应用配置——唯一真相源。
 /// 启动时从 config.yaml 加载，set_config / switch_* 命令直接修改此结构；

@@ -64,7 +64,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
     octopus_search::init_search_engine();
 
     // 校验引擎模式
-    if config.engine_mode == "embedded" && !crate::config::is_streaming_engine() {
+    if config.engine_mode == "embedded" && !crate::core::config::is_streaming_engine() {
         let active_name = octopus_asr_local::config::resolve_active_engine("asr")
             .map(|r| r.name)
             .unwrap_or_else(|_| "<未激活>".to_string());
@@ -72,7 +72,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
     }
 
     // 润色配置校验（三档模式）
-    use crate::config::PolishMode;
+    use crate::core::config::PolishMode;
     if config.polish_mode != PolishMode::Disabled {
         if config.polish_mode == PolishMode::Intermediate && config.polish_min_interval <= 0.0 {
             log::warn!(
@@ -81,7 +81,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
                 crate::engine::coordinator::MIN_POLISH_INTERVAL_SEC
             );
         }
-        match crate::config::llm_config(config.polish_mode) {
+        match crate::core::config::llm_config(config.polish_mode) {
             Some(llm_cfg) => {
                 let mode_str = match config.polish_mode {
                     PolishMode::FinalOnly => "仅最终润色",

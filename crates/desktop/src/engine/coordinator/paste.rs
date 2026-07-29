@@ -6,8 +6,8 @@
 //! - **粘贴/落库**：`do_paste`（粘贴 + 终翻 + 剪贴板写入）/ `update_transcription_raw`
 //!   （过程落库 INSERT/UPDATE 节流）。
 
-use crate::config::AppConfig;
-use crate::db_queue::{DbCommand, get_db_sender};
+use crate::core::config::AppConfig;
+use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::transcript::Transcript;
 use log::{info, warn, error};
 use std::sync::atomic::Ordering;

@@ -1,6 +1,6 @@
 // src/paste.rs
 
-use crate::config::AppConfig;
+use crate::core::config::AppConfig;
 use anyhow::Result;
 use enigo::{Enigo, Keyboard, Settings};
 #[cfg(not(target_os = "macos"))]

@@ -13,13 +13,13 @@
 
 use serde::{Serialize, Deserialize};
 use std::path::Path;
-use crate::error_util::{e2s, e2s_ctx};
+use crate::core::error_util::{e2s, e2s_ctx};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 
 use octopus_asr_local::manifest::{bootstrap_manifest, Manifest};
 
-use crate::runtime_config::SharedRuntimeConfig;
+use crate::core::runtime_config::SharedRuntimeConfig;
 
 /// 一个可下载模型的列表项。
 #[derive(Serialize)]
