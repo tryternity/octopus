@@ -845,6 +845,8 @@ tray:
   settings: Settings
   quit: Quit
   engineInfo: Engine  ${engine}
+  microphone: Microphone
+  microphoneDefault: Default Device
   recordStart: Start Recording (${shortcut})
   recordStop: Stop Recording  ${shortcut}
 

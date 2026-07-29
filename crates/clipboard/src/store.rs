@@ -3,19 +3,6 @@ use rusqlite::{params, Connection};
 
 use crate::model::*;
 
-// FTS5 索引一致性由 db.sql 的触发器 clip_fts_ai/ad/au 增量同步（INSERT/DELETE/UPDATE
-// 各自维护对应 fts 行），正常运行无需周期性全表 rebuild。本函数用于：
-//   1. 首次启动 external content table 初始为空时的 populate
-//   2. cleanup 删除行后（cleanup.rs 调用）
-//
-// **不再在启动时无条件调用**（2026-07-21 perf）：触发器在事务内执行，
-// 事务原子性保证 FTS 与主表一致（除非 DB 文件物理损坏，rebuild 也救不回来）。
-// 原 main.rs 启动 rebuild 在 10MB DB 上耗时 50-200ms，纯属冗余。
-pub fn rebuild_fts_index(conn: &Connection) -> Result<()> {
-    conn.execute("INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')", [])?;
-    Ok(())
-}
-
 // ── INSERT ──
 
 pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Result<i64> {
@@ -586,34 +573,6 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "hello world");
         assert_eq!(result[0].item_type, ItemType::Text);
-    }
-
-    #[test]
-    fn rebuild_fts_after_drop_trigger_fixes_search() {
-        // 验证 rebuild 命令在 FTS 落后时能恢复搜索能力。
-        // 场景：模拟触发器失效后主表新增内容（FTS 未同步），rebuild 后应能搜到。
-        let conn = open_test_db();
-        // 先正常插入 1 条（走触发器）
-        insert_clipboard_item(&conn, &NewClipboardItem {
-            id: 1, item_type: ItemType::Text, content: "synced".into(),
-            ref_data: None, meta_info: None, created_at: iso_now(),
-            has_thumbnail: None, is_rich: false,
-        }).unwrap();
-        // 触发器失效后插入（绕过触发器）
-        conn.execute("DROP TRIGGER clip_fts_ai", []).unwrap();
-        conn.execute(
-            "INSERT INTO clipboard_history (id, item_type, content, ref_data, meta_info, is_favorite, is_rich, created_at, has_thumbnail)
-             VALUES (2, 'text', 'orphan_needs_rebuild', NULL, NULL, 0, 0, '2024-01-01', 0)",
-            [],
-        ).unwrap();
-        // rebuild 应恢复索引
-        rebuild_fts_index(&conn).unwrap();
-        // 搜 'orphan' 应能命中（rebuild 后 FTS 重建）
-        let result = query_history(&conn, &QueryFilter {
-            filter: "all".into(), search: Some("orphan".into()), page: 1, size: 10,
-        }).unwrap();
-        assert!(result.iter().any(|i| i.content.contains("orphan_needs_rebuild")),
-            "rebuild should restore searchability");
     }
 
     #[test]

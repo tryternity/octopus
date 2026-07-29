@@ -361,6 +361,23 @@ docs/
 
 ## 重要 Gotchas
 
+### worktree 前端产物污染导致诡异崩溃（⚠️ 已踩坑，诡异 bug 先清 dist + node_modules）
+
+在 worktree 里调试时，如果对前端做过**手动软链 node_modules**（如 `ln -s 主干/node_modules worktree/node_modules`）或频繁切换分支后未重新 `npm install`，会导致 **node_modules / dist 状态不一致**——vite 的 dep optimizer 缓存（`node_modules/.vite`）基于绝对路径，软链混合两个路径状态后打包出的 dist 产物异常，WKWebView 加载后初始化失败（前端 IPC 无响应 `FallbackStart`）。
+
+**症状**：同代码同 commit，主干路径跑正常、worktree 跑崩；`web content process terminated` 日志（注意：这是 WKWebView 隐藏窗口的正常回收，**不是崩溃判据**，主干也有）；前端 `prepare-record` 200ms 无响应 → `FallbackStart`；删 Rust `target` 重编译无效（因为污染源是前端产物，不是 Rust）。
+
+**诊断方法**：遇到"同代码不同行为"的诡异 bug，**第一步彻底清理前端产物**：
+```bash
+cd crates/desktop
+rm -rf dist frontend/node_modules frontend/.vite   # 前端三件套
+cd frontend && npm install && npm run build         # 干净重装 + 重 build
+rm -rf ../target                                      # Rust 也一并清（保险）
+```
+而不是急着 git bisect（bisect 时增量编译反而加剧污染）。**切勿手动软链 node_modules**——worktree 各自独立 `npm install`。
+
+**案例（2026-07-29）**：托盘麦克风子菜单功能排查时，误判 `web content process terminated` 为崩溃，花了数小时 git bisect + cpal 异步化等方向全错。期间为图省事软链了主干 node_modules 到 worktree（后被 npm 实体化），导致前端产物污染。最终 `rm -rf dist node_modules .vite target` 全量重装重 build 后不崩。真正的崩溃判据是前端 IPC 是否响应（`StartRecording` 正常 vs `FallbackStart` 超时）。
+
 ### Zipformer Whisper 特征归一化（已踩 3 次坑，勿再改错）
 
 Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zipformer-ctc` 使用 whisper 特征（ONNX metadata `feature=whisper` → `is_whisper=true`）。`normalize_whisper_features`（实现统一在 `feature.rs`，zipformer/streaming_zipformer/qwen3_asr 共用，2026-07-29 合并）有 3 个关键约束，全部来自 sherpa-onnx C++ 源码（`sherpa-onnx/csrc/math.cc::NormalizeWhisperFeatures`），**修改前务必先读参考实现**：

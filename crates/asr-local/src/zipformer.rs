@@ -1051,8 +1051,7 @@ pub(crate) fn decode_byte_bpe(text: &str, is_streaming: bool) -> String {
     for char_val in text.chars() {
         let char_str = char_val.to_string();
         if char_str == "▁" {
-            if !ans.is_empty() {
-                let last_byte = *ans.last().unwrap();
+            if let Some(&last_byte) = ans.last() {
                 if last_byte > b' ' && last_byte <= 126 {
                     ans.push(b' ');
                 }

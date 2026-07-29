@@ -1186,6 +1186,9 @@ pub fn run() {
             if let Err(e) = tray::create_tray(app.handle(), &config) {
                 log::error!("Tray init failed ({}), running without tray menu", e);
             }
+            // 麦克风子菜单设备项后台预热：cpal 枚举放后台线程，避免阻塞主线程
+            // 导致 WKWebView 内容进程启动超时被杀（web content process terminated）。
+            tray::preheat_microphone_submenu(app.handle(), &config.microphone);
 
             // 4.1 Listen for locale changes → rebuild tray menu labels
             {
