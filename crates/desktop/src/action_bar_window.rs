@@ -1,7 +1,9 @@
 //! AI 命令面板迷你浮窗——选中文本后热键触发，鼠标上方弹出。
 //! 透明无边框 always_on_top，单例 show/hide toggle。
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "action_bar_window";
 
@@ -10,29 +12,21 @@ pub fn create_action_bar_window(app: &AppHandle) {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
         return;
     }
-    let _ = WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        WebviewUrl::App("action-bar.html".into()),
-    )
-    .title("")
-    .inner_size(480.0, 76.0) // 宽 480（大气 + 不遮挡），初始高度由 resize effect 调整
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(false)
-    .build()
-    .map_err(|e| {
-        // P2-2 修复：原 `let _ = ...build()` 静默吞错——此后所有 show/hide 调用
-        // get_webview_window 返回 None 静默 no-op，用户按热键无反应且无任何提示，
-        // 极难定位。记 error 让启动日志至少能看出建窗失败。
-        log::error!("[action-bar] 窗口创建失败: {e}");
-        e
+    // P2-2 修复：原 `let _ = ...build()` 静默吞错——此后所有 show/hide 调用
+    // get_webview_window 返回 None 静默 no-op，用户按热键无反应且无任何提示，
+    // 极难定位。记 error 让启动日志至少能看出建窗失败。
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "action-bar.html",
+        title: "",
+        inner_size: (480.0, 76.0), // 宽 480（大气 + 不遮挡），初始高度由 resize effect 调整
+        visible: false,
+        resizable: false,
+        position: None,
+        focused: None,
+        accept_first_mouse: None,
     })
-    .ok();
+    .map_err(|e| log::error!("[action-bar] 窗口创建失败: {e}"));
 }
 
 /// 在指定坐标显示浮窗（鼠标上方）。emit 事件让前端刷新 context。

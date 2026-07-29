@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use crate::error_util::{e2s, e2s_ctx};
 use tauri::{Manager, State};
 
 use crate::runtime_config::SharedRuntimeConfig;
@@ -32,8 +33,8 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
     // DB 查询 + cpal 麦克风枚举移入 spawn_blocking——避免阻塞 UI 线程。
     // Task 2 后：激活引擎从 ACTIVE_ENGINES 缓存取，不再读 AppConfig 4 个字段。
     let result = tokio::task::spawn_blocking(move || -> Result<ConfigResponse, String> {
-        let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-        let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+        let cfg = octopus_infra::config::load_config().map_err(e2s)?;
+        let config_json = serde_json::to_value(&cfg).map_err(e2s)?;
 
         // 各数据源独立容错：一个表查询失败不拖垮其他数据源（fail-soft）。
         // app_config（load_config）失败是致命的 → 仍用 ? 传播。
@@ -67,7 +68,7 @@ pub async fn get_config(_rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigRes
         })
     })
     .await
-    .map_err(|e| format!("get_config 任务异常: {}", e))?;
+    .map_err(|e| e2s_ctx("get_config 任务异常: {}", e))?;
 
     result
 }
@@ -114,7 +115,7 @@ pub fn set_config(
             )?;
             Ok(())
         })
-        .map_err(|e| format!("写入 DB 失败: {e}"))?;
+        .map_err(|e| e2s_ctx("写入 DB 失败", e))?;
         return Ok(());
     }
     // subtitle_* 配置项同 record_* 范式：不在 AppConfig struct，走 app_config 表的泛型
@@ -133,7 +134,7 @@ pub fn set_config(
             )?;
             Ok(())
         })
-        .map_err(|e| format!("写入 DB 失败: {e}"))?;
+        .map_err(|e| e2s_ctx("写入 DB 失败", e))?;
         return Ok(());
     }
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
@@ -283,7 +284,7 @@ pub fn set_config(
         let mut g = rc.write();
         *g = cfg.clone();
     }
-    octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
+    octopus_infra::db::save_app_config(&cfg).map_err(e2s)?;
 
     // 快捷键类配置变更后刷新 tray 菜单文案（显示新快捷键）。
     // record_start 的文案由上方 update_record_tray_label 单独处理；这里覆盖其余项
@@ -482,17 +483,17 @@ fn apply_config_value(
 
 #[tauri::command]
 pub fn get_env_vars() -> Result<Vec<(String, String)>, String> {
-    octopus_infra::db::list_env_vars().map_err(|e| e.to_string())
+    octopus_infra::db::list_env_vars().map_err(e2s)
 }
 
 #[tauri::command]
 pub fn set_env_var(key: String, value: String) -> Result<(), String> {
-    octopus_infra::db::save_env_var(&key, &value).map_err(|e| e.to_string())
+    octopus_infra::db::save_env_var(&key, &value).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
-    octopus_infra::db::delete_env_var(&key).map_err(|e| e.to_string())
+    octopus_infra::db::delete_env_var(&key).map_err(e2s)
 }
 
 // Task 2 后：build_asr_engine_spec / build_polish_llm_spec 已移除（激活态走
@@ -502,14 +503,14 @@ pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn get_history(limit: u32, offset: u32, search: Option<String>) -> Result<Vec<octopus_infra::db::TranscriptionRecord>, String> {
-    octopus_infra::db::list_transcriptions(limit, offset, search.as_deref()).map_err(|e| e.to_string())
+    octopus_infra::db::list_transcriptions(limit, offset, search.as_deref()).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn delete_history(ids: Vec<i64>, app_handle: tauri::AppHandle) -> Result<usize, String> {
     use tauri::Emitter;
     // 新 schema：transcriptions 已并入 clipboard_history，delete_transcriptions 直接删 voice 条目。
-    let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())?;
+    let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(e2s)?;
     if deleted > 0 {
         let _ = app_handle.emit("clipboard://changed", ());
     }
@@ -544,12 +545,12 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
         return Err("未选择润色模型".into());
     }
     let llm_cfg = octopus_infra::db::load_llm_model(&spec)
-        .map_err(|e| format!("从 DB 加载 LLM 配置失败: {}", e))?
+        .map_err(|e| e2s_ctx("从 DB 加载 LLM 配置失败: {}", e))?
         .ok_or_else(|| format!("DB 中未找到 LLM 模型 '{}'", spec))?;
 
     // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker
     tauri::async_runtime::spawn_blocking(move || {
-        octopus_llm::test_connection(&llm_cfg).map_err(|e| format!("{}", e))
+        octopus_llm::test_connection(&llm_cfg).map_err(|e| e2s_ctx("{}", e))
     })
     .await
     .map_err(|_| "测试线程异常终止".to_string())?
@@ -560,7 +561,7 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
 /// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
-    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(e2s)?;
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 
@@ -587,12 +588,12 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
         .map_err(|_| "云端推理失败：保险库未解锁或密文损坏，请先解锁保险库".to_string())?;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut req = entry.source.clone().into_client_request()
-            .map_err(|e| format!("WS 端点无效: {}", e))?;
+            .map_err(|e| e2s_ctx("WS 端点无效: {}", e))?;
         req.headers_mut().insert(
             "Authorization",
             format!("bearer {}", secret_key_plain)
                 .parse()
-                .map_err(|e| format!("secret_key 含非法 HTTP header 字符: {}", e))?,
+                .map_err(|e| e2s_ctx("secret_key 含非法 HTTP header 字符: {}", e))?,
         );
         // 直接在 tauri::async_runtime 上 await，不再 thread::spawn + Runtime::new + block_on
         match tokio::time::timeout(
@@ -630,22 +631,22 @@ pub fn read_prompt_file(content: &str) -> String {
 /// 消除：原 `PromptInfo` 与 `PromptRecord` 字段 1:1 完全一致，纯冗余包装）。
 #[tauri::command]
 pub fn list_prompts() -> Result<Vec<octopus_infra::db::PromptRecord>, String> {
-    octopus_infra::db::list_prompts().map_err(|e| e.to_string())
+    octopus_infra::db::list_prompts().map_err(e2s)
 }
 
 /// 返回当前激活的 prompt id。
 #[tauri::command]
 pub fn get_active_prompt() -> Result<i64, String> {
-    octopus_infra::db::load_active_prompt_id().map_err(|e| e.to_string())
+    octopus_infra::db::load_active_prompt_id().map_err(e2s)
 }
 
 /// 设置激活 prompt（校验 id 存在 + 写 app_config + 调 set_system_prompt 即时生效）。
 #[tauri::command]
 pub fn set_active_prompt(id: i64) -> Result<(), String> {
     let record = octopus_infra::db::load_prompt(id)
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or_else(|| format!("prompt id={} 不存在", id))?;
-    octopus_infra::db::save_active_prompt_id(id).map_err(|e| e.to_string())?;
+    octopus_infra::db::save_active_prompt_id(id).map_err(e2s)?;
     let file_content = read_prompt_file(&record.content);
     octopus_llm::set_system_prompt(&file_content);
     log::info!("激活润色 prompt: id={} title={}", id, record.title);
@@ -663,7 +664,7 @@ pub fn create_prompt(
         return Err("title 不能为空".into());
     }
     octopus_infra::db::insert_prompt(&title, &content, &description)
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
 }
 
 /// 更新 prompt（允许 system prompt 编辑——配合「复原默认」按钮；is_system 字段在 SQL
@@ -678,7 +679,7 @@ pub fn update_prompt(
     if title.trim().is_empty() {
         return Err("title 不能为空".into());
     }
-    octopus_infra::db::update_prompt(id, &title, &content, &description).map_err(|e| e.to_string())?;
+    octopus_infra::db::update_prompt(id, &title, &content, &description).map_err(e2s)?;
     // 若更新的是当前激活 prompt，同步刷新 system_prompt
     let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     if active == id {
@@ -693,7 +694,7 @@ pub fn update_prompt(
 #[tauri::command]
 pub fn delete_prompt(id: i64) -> Result<(), String> {
     let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
-    octopus_infra::db::delete_prompt(id).map_err(|e| e.to_string())?;
+    octopus_infra::db::delete_prompt(id).map_err(e2s)?;
     // 删除激活项 → fallback 到 id=1
     if active == id {
         log::warn!("删除了激活 prompt id={}，回退到 id=1", id);

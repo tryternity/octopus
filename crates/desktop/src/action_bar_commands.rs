@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
+use crate::error_util::{e2s, e2s_ctx};
 // TranslationEngine trait 需在作用域内才能调 `engine.translate(...).await`（本地 + 云端引擎）。
 use octopus_translation::TranslationEngine;
 
@@ -768,7 +769,7 @@ fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
 
 #[tauri::command]
 pub fn list_action_bar_items() -> Result<Vec<octopus_infra::db::ActionBarItem>, String> {
-    octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())
+    octopus_infra::db::list_all_action_bar_items().map_err(e2s)
 }
 
 /// 推导 need_voice：agent 类型且 action_data 含 `{{voice}}` → true；否则 false。
@@ -796,14 +797,14 @@ pub fn create_action_bar_item(
     app_bundle_ids: Option<String>,
 ) -> Result<i64, String> {
     // 同级菜单项最多 35 个（9 数字 + 26 字母快捷键上限）
-    let all = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
+    let all = octopus_infra::db::list_all_action_bar_items().map_err(e2s)?;
     let sibling_count = all.iter().filter(|i| i.parent_id == parent_id).count();
     if sibling_count >= 35 {
         return Err("同级菜单项已达上限 35 个（快捷键 1-9 + a-z）".into());
     }
     let need_voice = derive_need_voice(&action_type, &action_data);
     octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true), need_voice, app_bundle_ids.as_deref().unwrap_or(""))
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
 }
 
 #[tauri::command]
@@ -825,24 +826,24 @@ pub fn update_action_bar_item(
     // need_voice 自动从 action_type + action_data 推导（前端不再传）
     let need_voice = derive_need_voice(&action_type, &action_data);
     octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &shortcut, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), need_voice, app_bundle_ids.as_deref().unwrap_or(""))
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
 }
 
 #[tauri::command]
 pub fn delete_action_bar_item(id: i64) -> Result<(), String> {
-    octopus_infra::db::delete_action_bar_item(id).map_err(|e| e.to_string())
+    octopus_infra::db::delete_action_bar_item(id).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
-    octopus_infra::db::move_action_bar_item(id, direction).map_err(|e| e.to_string())
+    octopus_infra::db::move_action_bar_item(id, direction).map_err(e2s)
 }
 
 /// 设置菜单项的全局快捷键（Quick Execute silent 入口）。空串清除。
 /// 保存后触发重新注册全局快捷键。
 #[tauri::command]
 pub fn set_global_shortcut(id: i64, global_shortcut: String, app: AppHandle) -> Result<(), String> {
-    octopus_infra::db::set_global_shortcut(id, &global_shortcut).map_err(|e| e.to_string())?;
+    octopus_infra::db::set_global_shortcut(id, &global_shortcut).map_err(e2s)?;
     // 重新注册全局快捷键
     crate::action_hotkey::register_action_hotkeys(&app);
     Ok(())
@@ -852,18 +853,18 @@ pub fn set_global_shortcut(id: i64, global_shortcut: String, app: AppHandle) -> 
 
 #[tauri::command]
 pub fn list_script_runs(limit: Option<i64>, item_id: Option<i64>) -> Result<Vec<octopus_infra::db::ScriptRun>, String> {
-    octopus_infra::db::list_script_runs(limit, item_id).map_err(|e| e.to_string())
+    octopus_infra::db::list_script_runs(limit, item_id).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
-    octopus_infra::db::clear_script_runs(keep_recent).map_err(|e| e.to_string())
+    octopus_infra::db::clear_script_runs(keep_recent).map_err(e2s)
 }
 
 /// 按 ID 批量删除执行记录。2026-07-17 新增——执行记录 TAB 复选框删除。
 #[tauri::command]
 pub fn delete_script_runs(ids: Vec<i64>) -> Result<(), String> {
-    octopus_infra::db::delete_script_runs(&ids).map_err(|e| e.to_string())
+    octopus_infra::db::delete_script_runs(&ids).map_err(e2s)
 }
 
 /// 按 prompt id 复原默认内容：读 seeds/prompts/<name>.md 文件内容并返回字符串。
@@ -878,7 +879,7 @@ pub fn restore_prompt_from_seed(prompt_id: i64) -> Result<String, String> {
     };
     let path = octopus_infra::seeds::seed_prompt_path(name)
         .ok_or_else(|| format!("seed 文件不存在: {}.md", name))?;
-    std::fs::read_to_string(&path).map_err(|e| format!("读 seed 文件失败: {}", e))
+    std::fs::read_to_string(&path).map_err(|e| e2s_ctx("读 seed 文件失败: {}", e))
 }
 
 // ── 统一执行入口 ──
@@ -952,17 +953,17 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
             // opus-mt 按方向加载子目录（zh-en / en-zh）
             if resolved.name.starts_with("opus-mt") {
                 let engine = octopus_translation::load_opus_mt(source_lang, target_lang)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(e2s)?;
                 return engine.translate(text, source_lang, target_lang).await
-                    .map_err(|e| e.to_string());
+                    .map_err(e2s);
             }
             // m2m100 等其他本地引擎：按 model_name 构造 spec 加载
             let manager = octopus_translation::TranslationManager::new(&format!("local:{}", resolved.name));
             let engine = manager.engine()
-                .map_err(|e| e.to_string())?
+                .map_err(e2s)?
                 .ok_or_else(|| "本地翻译引擎加载失败".to_string())?;
             engine.translate(text, source_lang, target_lang).await
-                .map_err(|e| e.to_string())
+                .map_err(e2s)
         }
         TranslateStrategy::CloudModel { resolved } => {
             // 云端引擎（OpenAI 兼容）——内部 reqwest::blocking，由外层 block_on 隔离
@@ -978,7 +979,7 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
                 &resolved.provider, &resolved.name, &resolved.entry.source, &secret_key_plain, resolved.is_thinking,
             );
             engine.translate(text, source_lang, target_lang).await
-                .map_err(|e| e.to_string())
+                .map_err(e2s)
         }
         TranslateStrategy::FallbackLlm => {
             let llm_config = crate::config::llm_config_ignore_mode()
@@ -990,8 +991,8 @@ pub(crate) async fn do_translate(text: &str, config: &octopus_infra::config::App
             tokio::task::spawn_blocking(move || {
                 octopus_llm::chat_text_with_prompt(prompt, &text_owned, &llm_config_owned, None)
             }).await
-                .map_err(|e| format!("LLM 线程异常: {}", e))?
-                .map_err(|e| e.to_string())
+                .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
+                .map_err(e2s)
         }
     }
 }
@@ -1311,7 +1312,7 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
         .join(&category)
         .join(format!("{}.md", name));
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
+        .map_err(|e| e2s_ctx("读取文件失败: {}", e))?;
     // 文件完整路径 md5 → 取前 8 字节作 i64（固定 id，前端 file:<id> 去重）
     let path_str = path.to_string_lossy();
     let hash = octopus_sync::store::md5_hex(path_str.as_bytes());
@@ -1345,24 +1346,24 @@ pub fn create_prompt_file(category: String, name: String) -> Result<(), String> 
         .join("prompts")
         .join(&category);
     // 确保目录存在
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e2s_ctx("创建目录失败: {}", e))?;
     let path = dir.join(format!("{}.md", name));
     if path.exists() {
         return Err(format!("文件已存在: {}.md", name));
     }
-    std::fs::write(&path, "").map_err(|e| format!("创建文件失败: {}", e))
+    std::fs::write(&path, "").map_err(|e| e2s_ctx("创建文件失败: {}", e))
 }
 
 /// 保存文件内容到磁盘（CompactEditor file tab 保存按钮用）。
 #[tauri::command]
 pub fn save_file(path: String, content: String) -> Result<(), String> {
-    std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))
+    std::fs::write(&path, &content).map_err(|e| e2s_ctx("写入文件失败: {}", e))
 }
 
 /// 读取文件全文（CompactEditor file tab 外部变化 reload 用）。
 #[tauri::command]
 pub fn read_file_text(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+    std::fs::read_to_string(&path).map_err(|e| e2s_ctx("读取文件失败: {}", e))
 }
 
 /// 按格式格式化文件路径列表（copy_path 动作用）。
@@ -1708,7 +1709,7 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
 /// 用 is_visible 检查自动适配 ActionBar 可见/不可见。
 pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or("菜单项不存在")?;
 
     // 从 PENDING_CONTEXT 取 files（Files 场景）
@@ -1717,7 +1718,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
 
     match item.action_type.as_str() {
         "ai" => {
-            let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+            let config = octopus_infra::config::load_config().map_err(e2s)?;
 
             // 翻译特殊处理：优先本地引擎。
             // 翻译分支入口只看 action_data，不依赖 ActionBar 可见性——
@@ -1781,8 +1782,8 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         let result = tokio::task::spawn_blocking(move || {
                             octopus_llm::chat_text_with_prompt(&prompt, &text_clone, &config_clone, None)
                         }).await
-                            .map_err(|e| format!("LLM 线程异常: {}", e))?
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
+                            .map_err(e2s)?;
                         action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         return Ok(true);
                     }
@@ -1799,8 +1800,8 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let result = tokio::task::spawn_blocking(move || {
                 octopus_llm::chat_text_with_prompt(&prompt, &enriched_text, &config_clone, None)
             }).await
-                .map_err(|e| format!("LLM 线程异常: {}", e))?
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
+                .map_err(e2s)?;
             action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             Ok(true)
         }
@@ -1833,7 +1834,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let is_pkg = std::path::Path::new(&item.action_data).is_absolute();
             let source = if is_pkg {
                 std::fs::read_to_string(&item.action_data)
-                    .map_err(|e| format!("脚本文件不存在或无法读取: {}", e))?
+                    .map_err(|e| e2s_ctx("脚本文件不存在或无法读取: {}", e))?
             } else {
                 item.action_data.clone()
             };
@@ -1849,7 +1850,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                 let text_clone = text.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     run_script_sync_blocking(&source, &text_clone, item_id, pkg_dir)
-                }).await.map_err(|e| format!("脚本执行线程异常: {}", e))??;
+                }).await.map_err(|e| e2s_ctx("脚本执行线程异常: {}", e))??;
 
                 if result.timed_out {
                     return Err("脚本执行超时（60秒），已强制终止".into());
@@ -1946,7 +1947,7 @@ pub fn create_agent_adapter(
     // DB UNIQUE(key) 约束拦截同名——内置（is_system=1）已 seed 入表，
     // 用户尝试 create 同 key 直接被 UNIQUE 拒绝。
     octopus_infra::db::insert_agent_adapter_record(&key, &display_name, &detect_binary, &command_template)
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
 }
 
 #[tauri::command]
@@ -1956,24 +1957,24 @@ pub fn update_agent_adapter(
     // DB UNIQUE(key) 约束拦截。内置项（is_system=1）的 key 字段仍允许更新
     // （detect_binary / command_template 可能因版本变化需要调整），但不允许删除。
     octopus_infra::db::update_agent_adapter_record(id, &key, &display_name, &detect_binary, &command_template)
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
 }
 
 /// 设为默认 agent（全局唯一）。
 #[tauri::command]
 pub fn set_default_agent(id: i64) -> Result<(), String> {
-    octopus_infra::db::set_default_agent(id).map_err(|e| e.to_string())
+    octopus_infra::db::set_default_agent(id).map_err(e2s)
 }
 
 /// 清除默认 agent（菜单 agent='' 时走 fallback 到第一个可用）。
 #[tauri::command]
 pub fn clear_default_agent() -> Result<(), String> {
-    octopus_infra::db::clear_default_agent().map_err(|e| e.to_string())
+    octopus_infra::db::clear_default_agent().map_err(e2s)
 }
 
 #[tauri::command]
 pub fn delete_agent_adapter(id: i64) -> Result<(), String> {
-    octopus_infra::db::delete_agent_adapter_record(id).map_err(|e| e.to_string())
+    octopus_infra::db::delete_agent_adapter_record(id).map_err(e2s)
 }
 
 #[tauri::command]
@@ -2015,7 +2016,7 @@ pub(crate) fn trigger_agent_voice_core(
 
     let task_id = uuid::Uuid::new_v4().to_string();
     octopus_infra::db::insert_agent_task(&task_id, &item.agent, &context)
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
 
     if hide_action_bar {
         // 隐藏 action bar 浮窗（走统一收口 hide_action_bar_window：含切回 Accessory + 焦点协调，非裸 win.hide()）
@@ -2040,7 +2041,7 @@ pub fn trigger_agent_voice(
     coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
 ) -> Result<(), String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or("菜单项不存在")?;
     if !item.need_voice {
         return Err(format!("菜单项「{}」未启用语音输入（need_voice=false）", item.title));
@@ -2050,18 +2051,18 @@ pub fn trigger_agent_voice(
 
 #[tauri::command]
 pub fn list_agent_tasks(limit: Option<i64>) -> Result<Vec<octopus_infra::db::AgentTask>, String> {
-    octopus_infra::db::list_agent_tasks(limit.unwrap_or(100)).map_err(|e| e.to_string())
+    octopus_infra::db::list_agent_tasks(limit.unwrap_or(100)).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn delete_agent_task(id: String) -> Result<(), String> {
-    octopus_infra::db::delete_agent_task(&id).map_err(|e| e.to_string())
+    octopus_infra::db::delete_agent_task(&id).map_err(e2s)
 }
 
 #[tauri::command]
 pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
     let task = octopus_infra::db::load_agent_task(&id)
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or("task 不存在")?;
     if task.status != "failed" && task.status != "done" {
         return Err("仅 failed/done 状态可重试".into());

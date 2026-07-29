@@ -21,11 +21,8 @@ use tauri::{command, AppHandle, Emitter, State};
 
 // ── 辅助函数 ──────────────────────────────────────────────────
 
-/// 把 RecordError 转 String 的统一出口；顺手 log::error 记录便于排查 helper 故障。
-fn e2s<E: std::fmt::Display + std::fmt::Debug>(e: E) -> String {
-    log::error!("[record] {e:?}");
-    e.to_string()
-}
+/// 把 RecordError 转 String 的统一出口——复用 error_util::e2s。
+use crate::error_util::e2s;
 
 /// 拿当前平台的 provider（零成本，MacOSProvider 是 ZST）。
 ///
@@ -141,7 +138,7 @@ pub async fn open_privacy_settings(section: PrivacySection) -> Result<(), String
     std::process::Command::new("open")
         .arg(url)
         .spawn()
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     Ok(())
 }
 
@@ -419,7 +416,7 @@ pub(crate) async fn start_with_config(
     let dir = recordings_dir();
     tokio::fs::create_dir_all(&dir)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     let abs_path = dir.join(&file_name);
 
     let request = RecordingRequest {
@@ -810,7 +807,7 @@ pub async fn delete_recording(id: i64, permanent: bool) -> Result<(), String> {
         .await?;
         let abs = resolve_recording_path(&file_path);
         if abs.exists() {
-            std::fs::remove_file(&abs).map_err(|e| e.to_string())?;
+            std::fs::remove_file(&abs).map_err(e2s)?;
         }
         // 删关联的 .N.srt 字幕文件（与 mp4 同目录同名，所有版本）
         if let Some(dir) = abs.parent() {
@@ -1343,7 +1340,7 @@ async fn generate_subtitle_inner(
 
     // 3. 选轨
     let (track_idx, track_used) =
-        octopus_record::select_track(&meta, pref).map_err(|e| e.to_string())?;
+        octopus_record::select_track(&meta, pref).map_err(e2s)?;
     log::info!("[subtitle] step3 选轨完成 track_idx={} track_used={:?}", track_idx, track_used);
 
     // 4. emit 进度：抽音轨
@@ -1368,7 +1365,7 @@ async fn generate_subtitle_inner(
     })
     .await
     .map_err(|e| format!("extract join error: {e}"))?
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     log::info!("[subtitle] step5 抽 PCM 完成 samples={} ({:.1}s)", pcm.len(), pcm.len() as f64 / 16000.0);
 
     // 6. emit 进度：识别中

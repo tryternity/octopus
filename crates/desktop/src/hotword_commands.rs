@@ -3,6 +3,7 @@
 
 use octopus_infra::db::{self, HotwordSet};
 use uuid::Uuid;
+use crate::error_util::e2s;
 
 /// 写库后统一 reload corrector 热词索引（enabled 版本并集）。
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
@@ -35,35 +36,35 @@ fn refill_sync_md5(id: &str) {
 
 #[tauri::command]
 pub fn list_hotword_sets() -> Result<Vec<HotwordSet>, String> {
-    db::list_hotword_sets().map_err(|e| e.to_string())
+    db::list_hotword_sets().map_err(e2s)
 }
 
 /// 新建热词版本。v46：id 由后端生成 UUID（不再 AUTOINCREMENT），返回 String。
 #[tauri::command]
 pub fn create_hotword_set(name: String) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
-    db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
+    db::insert_hotword_set(&id, &name).map_err(e2s)?;
     refill_sync_md5(&id);
     Ok(id)
 }
 
 #[tauri::command]
 pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
-    db::rename_hotword_set(&id, &name).map_err(|e| e.to_string())?;
+    db::rename_hotword_set(&id, &name).map_err(e2s)?;
     refill_sync_md5(&id);
     Ok(())
 }
 
 #[tauri::command]
 pub fn delete_hotword_set(id: String) -> Result<(), String> {
-    db::delete_hotword_set(&id).map_err(|e| e.to_string())?;
+    db::delete_hotword_set(&id).map_err(e2s)?;
     reload_after_write();
     Ok(())
 }
 
 #[tauri::command]
 pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
-    db::toggle_hotword_set(&id, enabled).map_err(|e| e.to_string())?;
+    db::toggle_hotword_set(&id, enabled).map_err(e2s)?;
     refill_sync_md5(&id);
     reload_after_write();
     Ok(())
@@ -73,7 +74,7 @@ pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 pub fn add_word_to_set(id: String, word: String) -> Result<bool, String> {
-    let added = db::add_word_to_set(&id, &word).map_err(|e| e.to_string())?;
+    let added = db::add_word_to_set(&id, &word).map_err(e2s)?;
     refill_sync_md5(&id);
     reload_after_write();
     Ok(added)
@@ -81,7 +82,7 @@ pub fn add_word_to_set(id: String, word: String) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn remove_word_from_set(id: String, word: String) -> Result<(), String> {
-    db::remove_word_from_set(&id, &word).map_err(|e| e.to_string())?;
+    db::remove_word_from_set(&id, &word).map_err(e2s)?;
     refill_sync_md5(&id);
     reload_after_write();
     Ok(())
@@ -91,7 +92,7 @@ pub fn remove_word_from_set(id: String, word: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, String> {
-    db::list_hotword_hits().map_err(|e| e.to_string())
+    db::list_hotword_hits().map_err(e2s)
 }
 
 // ── 挖掘候选（不落库，前端确认后再批量 add_words_to_set）──
@@ -99,13 +100,13 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 /// 挖掘候选词列表（扫历史 + jieba + 词频过滤），不写库。前端展示候选供用户勾选确认。
 #[tauri::command]
 pub fn list_hotword_candidates() -> Result<Vec<String>, String> {
-    octopus_asr_local::miner::collect_candidate_words().map_err(|e| e.to_string())
+    octopus_asr_local::miner::collect_candidate_words().map_err(e2s)
 }
 
 /// 批量追加多词到指定版本（挖掘确认 / 手动批量）。返回实际新增条数。
 #[tauri::command]
 pub fn add_words_to_set(id: String, words: Vec<String>) -> Result<usize, String> {
-    let added = db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
+    let added = db::add_words_to_set(&id, &words).map_err(e2s)?;
     refill_sync_md5(&id);
     reload_after_write();
     Ok(added)
@@ -133,14 +134,14 @@ pub async fn import_hotwords(
             return Err("未选择文件".into());
         };
         let path = path.as_path().ok_or("无效路径")?;
-        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let content = std::fs::read_to_string(path).map_err(e2s)?;
 
         match mode.as_str() {
             "new" => {
                 let name = new_name.unwrap_or_else(|| "导入版本".to_string());
                 let id = Uuid::new_v4().to_string();
-                db::insert_hotword_set(&id, &name).map_err(|e| e.to_string())?;
-                db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
+                db::insert_hotword_set(&id, &name).map_err(e2s)?;
+                db::set_hotword_set_words(&id, &content).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
@@ -148,14 +149,14 @@ pub async fn import_hotwords(
             "append" => {
                 let id = target_set_id.ok_or("append 模式需 target_set_id")?;
                 let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
-                db::add_words_to_set(&id, &words).map_err(|e| e.to_string())?;
+                db::add_words_to_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
-                db::set_hotword_set_words(&id, &content).map_err(|e| e.to_string())?;
+                db::set_hotword_set_words(&id, &content).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
@@ -164,14 +165,14 @@ pub async fn import_hotwords(
         }
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
 }
 
 /// 导出某版本 words_text 到 txt（用户选保存路径）。
 #[tauri::command]
 pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let set = db::get_hotword_set(&set_id).map_err(|e| e.to_string())?;
+        let set = db::get_hotword_set(&set_id).map_err(e2s)?;
         use tauri_plugin_dialog::DialogExt;
         let save_path = app_handle
             .dialog()
@@ -181,13 +182,13 @@ pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Re
             .blocking_save_file();
         if let Some(path) = save_path {
             let path = path.as_path().ok_or("无效路径")?;
-            std::fs::write(path, &set.words_text).map_err(|e| e.to_string())?;
+            std::fs::write(path, &set.words_text).map_err(e2s)?;
             log::info!("[hotword] 导出版本「{}」到 {}", set.name, path.display());
         }
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
 }
 
 #[cfg(test)]

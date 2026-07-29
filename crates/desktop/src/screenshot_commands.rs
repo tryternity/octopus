@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use crate::error_util::{e2s, e2s_ctx};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
@@ -98,7 +99,7 @@ pub fn register_screenshot_shortcut(
 /// 2. 设 SCROLL_RECORDING = false（让消费循环退出，任务体收尾处理 finalize/入库/关窗）
 fn register_scroll_esc(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-    let esc: Shortcut = "Escape".parse().map_err(|e| format!("parse scroll ESC: {e}"))?;
+    let esc: Shortcut = "Escape".parse().map_err(|e| e2s_ctx("parse scroll ESC", e))?;
     app.global_shortcut()
         .on_shortcut(esc, move |_app, _scut, event| {
             if event.state() != ShortcutState::Pressed {
@@ -110,7 +111,7 @@ fn register_scroll_esc(app: &tauri::AppHandle) -> Result<(), String> {
             SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
             // 不做其他——任务体会看到 SCROLL_RECORDING=false 退出循环，走 finalize/入库/关窗
         })
-        .map_err(|e| format!("register scroll ESC: {e}"))?;
+        .map_err(|e| e2s_ctx("register scroll ESC", e))?;
     log::info!("[scroll] 全局 ESC 已注册（scrolling 模式）");
     Ok(())
 }
@@ -163,12 +164,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     // 隔离 Tokio worker 避免阻塞录音/VAD/剪贴板监听（与同文件 L298/L439/L477 同范式）。
     let mut captures = tokio::task::spawn_blocking(octopus_capx::capture::capture_all_monitors)
         .await
-        .map_err(|e| format!("截图任务 join 失败: {}", e))?
-        .map_err(|e| format!("截图失败: {}", e))?;
+        .map_err(|e| e2s_ctx("截图任务 join 失败: {}", e))?
+        .map_err(|e| e2s_ctx("截图失败: {}", e))?;
 
     // 3. 获取 Tauri 的显示器列表（逻辑坐标）
     let tauri_monitors = app_handle.available_monitors()
-        .map_err(|e| format!("获取显示器失败: {}", e))?;
+        .map_err(|e| e2s_ctx("获取显示器失败: {}", e))?;
 
     // 清理旧数据 + 旧窗口
     ALL_CAPTURES.lock().clear();
@@ -304,11 +305,11 @@ fn save_screenshot_to_history(
     let hash = octopus_clipboard::image::sha256_hex(png_bytes);
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
-    }).map_err(|e| e.to_string())?;
+    }).map_err(e2s)?;
     if let Some(id) = existing {
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, id)
-        }).map_err(|e| e.to_string())?;
+        }).map_err(e2s)?;
         Ok(id)
     } else {
         // 优先使用调用方已解码的图像，避免重复解码
@@ -316,18 +317,18 @@ fn save_screenshot_to_history(
             img.clone()
         } else {
             ::image::load_from_memory(png_bytes)
-                .map_err(|e| format!("解码失败: {:?}", e))?
+                .map_err(|e| e2s_ctx("解码失败: {:?}", e))?
         };
         let crop_w = img.width();
         let crop_h = img.height();
         let encoded = octopus_clipboard::image::encode_image(&img)
-            .map_err(|e| format!("WebP 编码失败: {}", e))?;
+            .map_err(|e| e2s_ctx("WebP 编码失败: {}", e))?;
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::insert_image_data(
                 conn, &hash, &encoded.image_blob, &encoded.thumb_blob,
                 crop_w as i64, crop_h as i64,
             )
-        }).map_err(|e| e.to_string())?;
+        }).map_err(e2s)?;
         let id = octopus_clipboard::store::chrono_millis();
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
@@ -343,7 +344,7 @@ fn save_screenshot_to_history(
                 has_thumbnail: Some(1),
                 is_rich: false,
             })
-        }).map_err(|e| e.to_string())?;
+        }).map_err(e2s)?;
         Ok(id)
     }
 }
@@ -375,16 +376,16 @@ pub async fn ocr_screenshot(
     let (image_id, text, blocks, ocr_id_opt) = tokio::task::spawn_blocking(move || {
         // 解码一次，save + OCR 共用——避免双重解码（4K 截图省 ~100-300ms）
         let img = ::image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("解码失败: {:?}", e))?;
+            .map_err(|e| e2s_ctx("解码失败: {:?}", e))?;
         let image_id = save_screenshot_to_history(&png_bytes, Some(&img))?;
         log::info!("[ocr-screenshot] before instance");
         let engine = octopus_ocr::engine::OcrEngine::instance()
-            .map_err(|e| e.to_string())?;
+            .map_err(e2s)?;
         log::info!(
             "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
             png_bytes.len()
         );
-        let (text, blocks) = engine.recognize_with_blocks_from_image(&img).map_err(|e| e.to_string())?;
+        let (text, blocks) = engine.recognize_with_blocks_from_image(&img).map_err(e2s)?;
         log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
         let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
@@ -392,7 +393,7 @@ pub async fn ocr_screenshot(
             let ocr_id = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(e2s)?;
             log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
             Some(ocr_id)
         } else {
@@ -401,7 +402,7 @@ pub async fn ocr_screenshot(
         Ok::<_, String>((image_id, text, blocks, ocr_id_opt))
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(e2s)??;
     let image_id_opt: Option<i64> = Some(image_id);
 
     let _ = app_handle.emit("clipboard://changed", ());
@@ -459,11 +460,11 @@ pub async fn scan_qrcode_screenshot(
 
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let img = ::image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("解码失败: {:?}", e))?;
-        octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
+            .map_err(|e| e2s_ctx("解码失败: {:?}", e))?;
+        octopus_ocr::qrcode::scan(&img).map_err(e2s)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(e2s)??;
     Ok(codes)
 }
 
@@ -546,13 +547,13 @@ pub async fn save_screenshot_dialog(
             .blocking_save_file();
         if let Some(path) = save_path {
             let path = path.as_path().ok_or("无效路径")?;
-            std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+            std::fs::write(path, &png_bytes).map_err(e2s)?;
             log::info!("Screenshot saved to {}", path.display());
         }
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
 }
 
 /// 前端合成标注+裁剪后，直接发送最终 PNG（Raw body 二进制）
@@ -576,11 +577,11 @@ pub async fn confirm_screenshot_with_data(
     let handle_clone = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
         save_screenshot_to_history(&png_bytes, None)?;
-        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        handle_clone.write_image(&png_bytes).map_err(e2s)?;
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(e2s)??;
     let _ = app_handle.emit("clipboard://changed", ());
     close_all_screenshot_windows(&app_handle);
 
@@ -649,13 +650,13 @@ pub async fn confirm_screenshot(
             monitor_y: 0,
         };
         let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
-            .map_err(|e| format!("裁剪失败: {}", e))?;
+            .map_err(|e| e2s_ctx("裁剪失败: {}", e))?;
         save_screenshot_to_history(&png_bytes, None)?;
-        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        handle_clone.write_image(&png_bytes).map_err(e2s)?;
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(e2s)??;
 
     // 通知前端刷新
     let _ = app_handle.emit("clipboard://changed", ());
@@ -695,7 +696,7 @@ pub async fn pin_screenshot(
         return Err(format!("pin_screenshot body truncated: need at least {} bytes, got {}", 4 + label_len + 32, body.len()));
     }
     let label = String::from_utf8(body[4..4 + label_len].to_vec())
-        .map_err(|e| format!("label UTF-8 decode failed: {}", e))?;
+        .map_err(|e| e2s_ctx("label UTF-8 decode failed: {}", e))?;
     let mut off = 4 + label_len;
     let read_f64 = |off: &mut usize| -> f64 {
         let v = f64::from_be_bytes([

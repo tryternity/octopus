@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use crate::error_util::{e2s, e2s_ctx};
 
 /// config.yaml 反序列化结构
 #[derive(Debug, Clone, Deserialize)]
@@ -107,9 +108,9 @@ pub fn validate_package(pkg_dir: &Path) -> Result<PackageConfig, String> {
         return Err("缺少 config.yaml".into());
     }
     let config_str = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("读取 config.yaml 失败: {}", e))?;
+        .map_err(|e| e2s_ctx("读取 config.yaml 失败: {}", e))?;
     let config: PackageConfig = serde_yaml::from_str(&config_str)
-        .map_err(|e| format!("config.yaml 格式错误: {}", e))?;
+        .map_err(|e| e2s_ctx("config.yaml 格式错误: {}", e))?;
 
     if config.name.trim().is_empty() {
         return Err("name 不能为空".into());
@@ -173,23 +174,23 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
         ));
         let _ = fs::remove_dir_all(&tmp_dir);
-        fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
-        let zip_file = fs::File::open(path).map_err(|e| format!("打开 zip 失败: {}", e))?;
-        let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| format!("读取 zip 失败: {}", e))?;
+        fs::create_dir_all(&tmp_dir).map_err(|e| e2s_ctx("创建临时目录失败: {}", e))?;
+        let zip_file = fs::File::open(path).map_err(|e| e2s_ctx("打开 zip 失败: {}", e))?;
+        let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| e2s_ctx("读取 zip 失败: {}", e))?;
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i).map_err(|e| format!("读取 zip 条目失败: {}", e))?;
+            let mut file = archive.by_index(i).map_err(|e| e2s_ctx("读取 zip 条目失败: {}", e))?;
             let outpath = match file.enclosed_name() {
                 Some(p) => tmp_dir.join(p),
                 None => continue,
             };
             if file.is_dir() {
-                fs::create_dir_all(&outpath).map_err(|e| format!("创建目录失败: {}", e))?;
+                fs::create_dir_all(&outpath).map_err(|e| e2s_ctx("创建目录失败: {}", e))?;
             } else {
                 if let Some(parent) = outpath.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+                    fs::create_dir_all(parent).map_err(|e| e2s_ctx("创建目录失败: {}", e))?;
                 }
-                let mut outfile = fs::File::create(&outpath).map_err(|e| format!("创建文件失败: {}", e))?;
-                std::io::copy(&mut file, &mut outfile).map_err(|e| format!("写入文件失败: {}", e))?;
+                let mut outfile = fs::File::create(&outpath).map_err(|e| e2s_ctx("创建文件失败: {}", e))?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| e2s_ctx("写入文件失败: {}", e))?;
                 // 恢复 Unix 权限（可执行位等）
                 #[cfg(unix)]
                 {
@@ -247,9 +248,9 @@ pub fn install_extension(
     let dest = extensions_dir().join(&dir_name);
 
     // 复制到 extensions
-    fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
+    fs::create_dir_all(extensions_dir()).map_err(|e| e2s_ctx("创建 extensions 目录失败: {}", e))?;
     let _ = fs::remove_dir_all(&dest);
-    copy_dir_recursive(src, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+    copy_dir_recursive(src, &dest).map_err(|e| e2s_ctx("复制文件失败: {}", e))?;
 
     // 清理临时目录（zip 解压的）
     if src.starts_with(std::env::temp_dir()) {
@@ -279,7 +280,7 @@ pub fn install_extension(
             false,  // need_voice——script 类型不需要语音
             "",     // app_bundle_ids——扩展导入默认全局项
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
         Ok(id)
     } else {
         octopus_infra::db::insert_action_bar_item(
@@ -298,7 +299,7 @@ pub fn install_extension(
             false,  // need_voice——script 类型不需要语音
             "",     // app_bundle_ids——扩展导入默认全局项
         )
-        .map_err(|e| e.to_string())
+        .map_err(e2s)
     }
 }
 
@@ -309,7 +310,7 @@ pub fn list_extensions() -> Result<Vec<ExtensionInfo>, String> {
     let dir = extensions_dir();
     let dir_prefix = dir.to_string_lossy().to_string();
 
-    let db_items = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
+    let db_items = octopus_infra::db::list_all_action_bar_items().map_err(e2s)?;
     let db_map: std::collections::HashMap<String, (i64, Option<i64>)> = db_items
         .iter()
         .filter(|i| i.action_data.starts_with(&dir_prefix))
@@ -355,20 +356,20 @@ pub fn delete_extension(dir_name: String) -> Result<(), String> {
     if !dir.exists() {
         return Err("扩展包不存在".into());
     }
-    let db_items = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
+    let db_items = octopus_infra::db::list_all_action_bar_items().map_err(e2s)?;
     for item in db_items {
         if std::path::Path::new(&item.action_data).starts_with(&dir) {
             let _ = octopus_infra::db::delete_action_bar_item(item.id);
         }
     }
-    fs::remove_dir_all(&dir).map_err(|e| format!("删除文件夹失败: {}", e))?;
+    fs::remove_dir_all(&dir).map_err(|e| e2s_ctx("删除文件夹失败: {}", e))?;
     Ok(())
 }
 
 /// 重新扫描（确保目录存在）
 #[tauri::command]
 pub fn refresh_extensions() -> Result<(), String> {
-    std::fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建目录失败: {}", e))?;
+    std::fs::create_dir_all(extensions_dir()).map_err(|e| e2s_ctx("创建目录失败: {}", e))?;
     Ok(())
 }
 
