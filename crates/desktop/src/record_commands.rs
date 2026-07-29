@@ -335,9 +335,11 @@ pub(crate) async fn start_with_config(
         },
     };
 
-    // 解析 helper 路径——开发期走 crates/desktop/binaries/，打包后走 resource_dir。
-    // provider 的 resolve_helper_path(None) 不传 resource_dir，依赖开发期路径；
-    // 打包路径解析需 app.handle().path().resource_dir()——MVP 简化，仅开发期可用。
+    // 解析 helper 路径。resolve_helper_path 内部三路探测：
+    //   1. 显式 resource_dir（None 跳过）
+    //   2. Tauri .app bundle 的 exe-relative（Contents/Resources/binaries/）← 打包后命中
+    //   3. 开发期 crates/desktop/binaries/ ← dev 命中
+    // None 传入时自动走 2/3，开发期 + 打包后都能解析（infra::paths::tauri_app_resource）。
     //
     // resolve_helper_path 是 sync 方法（纯文件探测，不走子进程），不 .await。
     let helper_path = provider().resolve_helper_path(None).map_err(e2s)?;

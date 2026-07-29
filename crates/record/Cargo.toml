@@ -11,6 +11,9 @@ serde_json.workspace = true
 thiserror = "1"
 log.workspace = true
 rusqlite = { workspace = true }
+# infra：paths::tauri_app_resource 复用 exe-relative .app bundle 资源探测几何
+# （resolve_helper_path 打包后路径解析，与 seeds_dir() 同一逻辑）
+octopus-infra = { path = "../infra" }
 
 # mock-helper：测试用的假 helper 二进制（被 tests/session_integration.rs spawn）。
 # 放 src/bin/ 而非 tests/——tests/ 下的 .rs 会被 cargo 自动当 integration test target，

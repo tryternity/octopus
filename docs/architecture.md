@@ -1048,28 +1048,33 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 ```
 
 **产物路径**：
-- `.app`：`target/<profile>/bundle/macos/octopus.app`
-- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2 压缩，~40MB）
+- `.app`：`target/<profile>/bundle/macos/octopus.app`（optimize profile ~70M）
+- `.dmg`：`target/<profile>/bundle/dmg/octopus_<version>_<arch>.dmg`（UDBZ bzip2 压缩，optimize ~32M）
 
 **feature 组合**：`embedded,cloud,vault,custom-protocol`
 - `custom-protocol` 生产 build 必须启用，让 tauri 走 `frontendDist`（嵌入 dist）而非 `devUrl`（`cfg(dev) = !has_feature("custom-protocol")`，与 release/debug profile 无关）
 
 **打包链路关键决策**：
 
-1. **dmg bundling 不走 Tauri 自带 `bundle_dmg.sh`**（create-dmg fork）——它在部分环境失败（Finder AppleScript 美化步骤），且 Tauri 吞掉 stderr 难诊断。改为 `cargo tauri build -b app` 只生成 `.app`，再用 macOS 原生 `hdiutil create -format UDBZ` 打 dmg。
+1. **dmg bundling 不走 Tauri 自带 `bundle_dmg.sh`**（create-dmg fork）——它在部分环境失败（Finder AppleScript 美化步骤），且 Tauri 吞掉 stderr 难诊断。改为 `cargo tauri build -b app` 只生成 `.app`，再用 macOS 原生 `hdiutil` 两步法打 dmg：(a) `hdiutil create -format UDRW` 打 read-write 镜像 → (b) `hdiutil convert -format UDBZ` 转只读压缩。两步法便于未来插入 Finder 美化（背景图等）。
 
-2. **`beforeBuildCommand` 设 null**——Tauri 2 的 beforeBuildCommand（字符串形式 `cd frontend && npm run build`）CWD 行为不可靠（workspace 根执行时找不到 `frontend` 目录）。前端构建由脚本手动完成（与 `run-octopus.sh` 一致）。
+2. **dmg 拖拽安装体验**（双击 dmg 后 app 左 / Applications 右）：构造 staging 目录 = `.app`（`cp -R`）+ `ln -s /Applications` 软链接 + `.DS_Store`（`ds_store` python 库写 `bwsp` 窗口尺寸 480×160 + `icvp` icon view + `Iloc` 图标坐标）。`.DS_Store` 比 AppleScript Finder 自动化可靠（后者 disk/folder 语义多版本下常报 -1728/-10010）。
 
-3. **resources 映射用对象形式**——seeds 目录在 `crates/infra/seeds/`（desktop crate 之外）。`tauri.conf.json` `bundle.resources` 用对象形式 `{ "../infra/seeds/": "seeds/" }`（key=source 可含 `../`，value=destination），正确落到 `Resources/seeds/` 保留子目录结构。数组形式 `["../infra/seeds/"]` 的 `..` 会被字面编码成 `_up_`，**勿用**。
+3. **录屏 helper 集成**（2026-07-26，Task 15）：`scripts/build-macos-helper.sh` 用 `swift build` 编译 ScreenCaptureKit helper（`crates/record/native/macos`）成 universal binary，拷到 `crates/desktop/binaries/octopus-sck-helper`。`tauri.conf.json bundle.resources` 显式映射 `"binaries/octopus-sck-helper": "binaries/octopus-sck-helper"`（与 seeds 同一个 resources 块），打进 `.app/Contents/Resources/binaries/`。helper 编译失败时脚本容错（警告不退出，录屏不可用但其他正常）。helper 是 on-demand sidecar，idle 不占主进程 RSS（只在 `RecordSession::start()` 时 `tokio::process::Command::spawn`）。运行时路径解析走 exe-relative 探测（`infra::paths::tauri_app_resource`，与 `seeds_dir()` 复用同一 `.app` bundle 几何），`resolve_helper_path` 三路：显式 resource_dir → `.app` bundle `Contents/Resources/binaries/` → dev `crates/desktop/binaries/`。
 
-4. **`seeds_dir()` 三路解析**（`crates/infra/src/seeds.rs:15-44`）：(1) dev `$CARGO_MANIFEST_DIR/seeds` → (2) 裸二进制 `<exe-parent>/seeds` → (3) `.app` bundle `Contents/Resources/seeds`（exe 在 `Contents/MacOS/`，`parent().parent()` 得 `Contents/`，join `Resources/seeds`）。seeds 缺失为非致命降级（log::error 跳过，不阻塞 schema 升级），但会导致无默认润色 prompt / LLM provider 目录 / PPT agent 菜单。
+4. **`beforeBuildCommand` 设 null**——Tauri 2 的 beforeBuildCommand（字符串形式 `cd frontend && npm run build`）CWD 行为不可靠（workspace 根执行时找不到 `frontend` 目录）。前端构建由脚本手动完成（与 `run-octopus.sh` 一致）。
 
-5. **Tauri profile 痛点**：`cargo tauri build` 无原生 `--profile`，通过 `--` 透传（`cargo tauri build -f ... -- --profile optimize`）。bundler 默认查 `target/release/`，非 release profile 需较新 tauri-cli（2.11.4+ 已支持跟随 cargo profile 定位 binary）。GitHub #15019 跟踪此问题。
+5. **seeds resources 映射用对象形式**——seeds 目录在 `crates/infra/seeds/`（desktop crate 之外）。`tauri.conf.json` `bundle.resources` 用对象形式 `{ "../infra/seeds/": "seeds/" }`（key=source 可含 `../`，value=destination），正确落到 `Resources/seeds/` 保留子目录结构。数组形式 `["../infra/seeds/"]` 的 `..` 会被字面编码成 `_up_`，**勿用**。
 
-**运行时资源嵌 入情况**（打包无需额外处理）：
+6. **`seeds_dir()` 三路解析**（`crates/infra/src/seeds.rs:15-44`）：(1) dev `$CARGO_MANIFEST_DIR/seeds` → (2) 裸二进制 `<exe-parent>/seeds` → (3) `.app` bundle `Contents/Resources/seeds`（exe 在 `Contents/MacOS/`，`parent().parent()` 得 `Contents/`，join `Resources/seeds`）。seeds 缺失为非致命降级（log::error 跳过，不阻塞 schema 升级），但会导致无默认润色 prompt / LLM provider 目录 / PPT agent 菜单。
+
+7. **Tauri profile 痛点**：`cargo tauri build` 无原生 `--profile`，通过 `--` 透传（`cargo tauri build -f ... -- --profile optimize`）。bundler 默认查 `target/release/`，非 release profile 需较新 tauri-cli（2.11.4+ 已支持跟随 cargo profile 定位 binary）。GitHub #15019 跟踪此问题。
+
+**运行时资源嵌入情况**（打包无需额外处理）：
 - VAD ONNX（1.8MB）、ASR 纠正器、hans 表、db.sql、i18n yaml：`include_bytes!`/`include_str!` 编译期嵌入
 - 默认 ASR 模型（zipformer-small 27M）：首次启动从 hf-mirror.com 下载到 `~/.octopus/models/`
-- seeds（28KB，5 文件）：唯一需 resource 映射的运行时文件
+- seeds（28KB，5 文件）：需 resource 映射的运行时文件（→ `Resources/seeds/`）
+- 录屏 SCK helper（Swift，~350KB）：需 resource 映射的 sidecar（→ `Resources/binaries/`，on-demand spawn）
 
 **当前限制**（未签名内测版）：
 - 无 Apple 代码签名 + 公证 → 用户首次打开需右键 → 打开（或系统设置允许）

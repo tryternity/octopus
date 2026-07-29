@@ -11,14 +11,20 @@ pub struct MacOSProvider;
 #[async_trait]
 impl HelperProvider for MacOSProvider {
     fn resolve_helper_path(&self, app_resource_dir: Option<&std::path::Path>) -> RecordResult<PathBuf> {
-        // 1. 打包后路径：Contents/Resources/binaries/octopus-sck-helper
+        // 1. 显式传入的 resource_dir（优先级最高，测试 / 覆盖用）
         if let Some(dir) = app_resource_dir {
             let candidate = dir.join("binaries").join("octopus-sck-helper");
             if candidate.exists() {
                 return Ok(candidate);
             }
         }
-        // 2. 开发期路径：crates/desktop/binaries/octopus-sck-helper
+        // 2. Tauri .app bundle：exe 在 Contents/MacOS/，resources 在 Contents/Resources/binaries/
+        //    （exe-relative 几何，与 seeds_dir() 复用 infra::paths::tauri_app_resource）
+        //    所有调用方（含传 None 的 5 个内部 trait 方法）打包后都走这里。
+        if let Some(p) = octopus_infra::paths::tauri_app_resource("binaries/octopus-sck-helper") {
+            return Ok(p);
+        }
+        // 3. 开发期路径：crates/desktop/binaries/octopus-sck-helper
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let dev_path = PathBuf::from(manifest_dir)
             .join("../desktop/binaries/octopus-sck-helper");
