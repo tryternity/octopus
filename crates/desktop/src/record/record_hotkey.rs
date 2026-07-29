@@ -129,7 +129,7 @@ async fn handle_toggle(app: &AppHandle) {
             // 所以改成浮窗交互（spec §8.1 配置浮窗，record_window.rs + RecordConfig.tsx）。
             //
             // 录制中再按 Cmd+Shift+R 走 pause/resume toggle（下方分支）；Esc 停止（handle_stop）。
-            crate::record_window::show_record_window(app);
+            crate::record::record_window::show_record_window(app);
         }
         SessionState::Recording => {
             if let Err(e) = session.pause().await {
@@ -165,7 +165,7 @@ async fn handle_stop(app: &AppHandle) {
     match state {
         SessionState::Recording | SessionState::Paused => {
             log::info!("[record-hotkey] Esc → stop + 入库（state={:?}）", state);
-            match crate::record_commands::stop_and_store(&session, app, false, None).await {
+            match crate::record::record_commands::stop_and_store(&session, app, false, None).await {
                 Ok(Some(meta)) => {
                     log::info!(
                         "[record-hotkey] 录制已停止入库: id={} file={}",
@@ -173,9 +173,9 @@ async fn handle_stop(app: &AppHandle) {
                         meta.file_path
                     );
                     // 关闭标注 overlay（Source::Area 录制时才有）
-                    crate::record_annotation_window::close_annotation_window(app);
+                    crate::record::record_annotation_window::close_annotation_window(app);
                     // 关闭控制浮窗（Source::Display/Window 录制时才有）
-                    crate::record_control_window::close_control_window(app);
+                    crate::record::record_control_window::close_control_window(app);
                     // 通知前端刷新历史列表
                     let _ = app.emit("record://stopped", &meta);
                 }

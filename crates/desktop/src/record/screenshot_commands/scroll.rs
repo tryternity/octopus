@@ -352,7 +352,7 @@ pub async fn start_scroll_recording(
         };
         log::debug!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
         // 选区的全局逻辑坐标 = 窗口原点 + CSS 偏移
-        let sel = crate::screenshot_geometry::compute_selection_global(
+        let sel = crate::record::screenshot_geometry::compute_selection_global(
             win_origin_x, win_origin_y, x, y, w, h,
         );
         let sel_global_x = sel.x;
@@ -360,11 +360,11 @@ pub async fn start_scroll_recording(
 
         // ── 找到选区所在的显示器 + scale ──
         let monitors_raw = ah.available_monitors().unwrap_or_default();
-        let monitors: Vec<crate::screenshot_geometry::MonitorRect> = monitors_raw
+        let monitors: Vec<crate::record::screenshot_geometry::MonitorRect> = monitors_raw
             .iter()
             .map(|m| {
                 let sf = m.scale_factor();
-                crate::screenshot_geometry::MonitorRect {
+                crate::record::screenshot_geometry::MonitorRect {
                     x: m.position().x as f64 / sf,
                     y: m.position().y as f64 / sf,
                     w: m.size().width as f64 / sf,
@@ -373,7 +373,7 @@ pub async fn start_scroll_recording(
                 }
             })
             .collect();
-        let mon_idx = crate::screenshot_geometry::find_monitor_for_point(
+        let mon_idx = crate::record::screenshot_geometry::find_monitor_for_point(
             &monitors,
             sel_global_x + w / 2.0,
             sel_global_y + h / 2.0,
@@ -386,12 +386,12 @@ pub async fn start_scroll_recording(
             }
             None => (1.0, 0.0, 0.0, 0, 0),
         };
-        let mon_rect = crate::screenshot_geometry::MonitorRect {
+        let mon_rect = crate::record::screenshot_geometry::MonitorRect {
             x: mon_logical_x, y: mon_logical_y, w: 0.0, h: 0.0, scale,
         };
 
         // 选区在该显示器内的物理像素偏移
-        let crop = crate::screenshot_geometry::compute_physical_crop(&sel, &mon_rect);
+        let crop = crate::record::screenshot_geometry::compute_physical_crop(&sel, &mon_rect);
         let px = crop.px;
         let py = crop.py;
         let pw = crop.pw;
@@ -681,7 +681,7 @@ pub async fn start_scroll_recording(
             let max_preview_h = 1200u32;
             let canvas_h_now = stitcher.height();
             let canvas_w_now = stitcher.canvas_w();
-            let (crop_src_h, crop_y) = crate::screenshot_geometry::compute_preview_crop(
+            let (crop_src_h, crop_y) = crate::record::screenshot_geometry::compute_preview_crop(
                 canvas_h_now, canvas_w_now, preview_w, max_preview_h,
             );
             let canvas_buf_slice = stitcher.canvas_buf_slice(crop_y, crop_src_h);
@@ -749,7 +749,7 @@ pub async fn start_scroll_recording(
             let preview_b64 = tokio::task::spawn_blocking(move || {
                 let preview_w = 400u32;
                 let max_preview_h = 1200u32;
-                let (crop_src_h, crop_y) = crate::screenshot_geometry::compute_preview_crop(
+                let (crop_src_h, crop_y) = crate::record::screenshot_geometry::compute_preview_crop(
                     canvas.height(), canvas.width(), preview_w, max_preview_h,
                 );
                 let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();

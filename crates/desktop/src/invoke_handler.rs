@@ -132,21 +132,21 @@ macro_rules! handler {
             crate::clipboard::clipboard_commands::save_image_dialog,
             crate::clipboard::clipboard_commands::copy_image_to_clipboard,
             // ── screenshot_commands ──
-            crate::screenshot_commands::start_screenshot,
-            crate::screenshot_commands::confirm_screenshot,
-            crate::screenshot_commands::cancel_screenshot,
-            crate::screenshot_commands::get_screenshot_image,
-            crate::screenshot_commands::get_screenshot_image_size,
-            crate::screenshot_commands::show_screenshot_window,
-            crate::screenshot_commands::confirm_screenshot_with_data,
-            crate::screenshot_commands::save_screenshot_dialog,
-            crate::screenshot_commands::ocr_screenshot,
-            crate::screenshot_commands::scan_qrcode_screenshot,
-            crate::screenshot_commands::get_last_screenshot_ocr,
-            crate::screenshot_commands::start_scroll_recording,
-            crate::screenshot_commands::stop_scroll_recording,
-            crate::screenshot_commands::stop_scroll_recording_with_mode,
-            crate::screenshot_commands::pin_screenshot,
+            crate::record::screenshot_commands::start_screenshot,
+            crate::record::screenshot_commands::confirm_screenshot,
+            crate::record::screenshot_commands::cancel_screenshot,
+            crate::record::screenshot_commands::get_screenshot_image,
+            crate::record::screenshot_commands::get_screenshot_image_size,
+            crate::record::screenshot_commands::show_screenshot_window,
+            crate::record::screenshot_commands::confirm_screenshot_with_data,
+            crate::record::screenshot_commands::save_screenshot_dialog,
+            crate::record::screenshot_commands::ocr_screenshot,
+            crate::record::screenshot_commands::scan_qrcode_screenshot,
+            crate::record::screenshot_commands::get_last_screenshot_ocr,
+            crate::record::screenshot_commands::start_scroll_recording,
+            crate::record::screenshot_commands::stop_scroll_recording,
+            crate::record::screenshot_commands::stop_scroll_recording_with_mode,
+            crate::record::screenshot_commands::pin_screenshot,
             // ── compact_editor_commands ──
             crate::commands::compact_editor_commands::open_compact_editor_tab,
             crate::commands::compact_editor_commands::get_pending_compact_tabs,
@@ -308,82 +308,82 @@ macro_rules! handler {
             // 仅 macOS 编译；record_commands 模块整体 cfg(target_os = "macos")。
             // 5 个控制命令用 record_* 前缀避免与 coordinator::start_recording（ASR 录音）冲突。
             #[cfg(target_os = "macos")]
-            crate::record_commands::list_record_displays,
+            crate::record::record_commands::list_record_displays,
             #[cfg(target_os = "macos")]
-            crate::record_commands::list_record_windows,
+            crate::record::record_commands::list_record_windows,
             #[cfg(target_os = "macos")]
-            crate::record_commands::list_microphones,
+            crate::record::record_commands::list_microphones,
             #[cfg(target_os = "macos")]
-            crate::record_commands::check_record_permission,
+            crate::record::record_commands::check_record_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::request_screen_record_permission,
+            crate::record::record_commands::request_screen_record_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::open_privacy_settings,
+            crate::record::record_commands::open_privacy_settings,
             #[cfg(target_os = "macos")]
-            crate::record_commands::check_microphone_permission,
+            crate::record::record_commands::check_microphone_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::request_microphone_permission,
+            crate::record::record_commands::request_microphone_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::check_accessibility_permission,
+            crate::record::record_commands::check_accessibility_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::request_accessibility_permission,
+            crate::record::record_commands::request_accessibility_permission,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_start,
+            crate::record::record_commands::record_start,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_start_default,
+            crate::record::record_commands::record_start_default,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_pause,
+            crate::record::record_commands::record_pause,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_resume,
+            crate::record::record_commands::record_resume,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_stop,
+            crate::record::record_commands::record_stop,
             #[cfg(target_os = "macos")]
-            crate::record_commands::record_kill,
+            crate::record::record_commands::record_kill,
             // 录屏区域选区 picker（Cmd+Shift+R → area tab → 选择区域）
             #[cfg(target_os = "macos")]
-            crate::record_area_picker::start_record_area_picker,
+            crate::record::record_area_picker::start_record_area_picker,
             #[cfg(target_os = "macos")]
-            crate::record_area_picker::show_record_area_picker_window,
+            crate::record::record_area_picker::show_record_area_picker_window,
             #[cfg(target_os = "macos")]
-            crate::record_area_picker::confirm_record_area_picker,
+            crate::record::record_area_picker::confirm_record_area_picker,
             #[cfg(target_os = "macos")]
-            crate::record_area_picker::cancel_record_area_picker,
+            crate::record::record_area_picker::cancel_record_area_picker,
             // 标注 overlay（录屏开始后显示，A 键切标注/透传模式）
             #[cfg(target_os = "macos")]
-            crate::record_annotation_window::set_annotation_passthrough,
+            crate::record::record_annotation_window::set_annotation_passthrough,
             #[cfg(target_os = "macos")]
-            crate::record_annotation_window::set_toolbar_zone,
+            crate::record::record_annotation_window::set_toolbar_zone,
             #[cfg(target_os = "macos")]
-            crate::record_commands::list_recordings,
+            crate::record::record_commands::list_recordings,
             #[cfg(target_os = "macos")]
-            crate::record_commands::get_recording,
+            crate::record::record_commands::get_recording,
             #[cfg(target_os = "macos")]
-            crate::record_commands::get_recording_thumbnail,
+            crate::record::record_commands::get_recording_thumbnail,
             #[cfg(target_os = "macos")]
-            crate::record_commands::rename_recording,
+            crate::record::record_commands::rename_recording,
             #[cfg(target_os = "macos")]
-            crate::record_commands::toggle_recording_favorite,
+            crate::record::record_commands::toggle_recording_favorite,
             #[cfg(target_os = "macos")]
-            crate::record_commands::delete_recording,
+            crate::record::record_commands::delete_recording,
             #[cfg(target_os = "macos")]
-            crate::record_commands::open_recording_file,
+            crate::record::record_commands::open_recording_file,
             #[cfg(target_os = "macos")]
-            crate::record_commands::reveal_recording,
+            crate::record::record_commands::reveal_recording,
             #[cfg(target_os = "macos")]
-            crate::record_commands::export_gif,
+            crate::record::record_commands::export_gif,
             #[cfg(target_os = "macos")]
-            crate::record_commands::merge_audio_tracks,
+            crate::record::record_commands::merge_audio_tracks,
             #[cfg(target_os = "macos")]
-            crate::record_commands::generate_subtitle,
+            crate::record::record_commands::generate_subtitle,
             #[cfg(target_os = "macos")]
-            crate::record_commands::read_subtitle,
+            crate::record::record_commands::read_subtitle,
             #[cfg(target_os = "macos")]
-            crate::record_commands::reveal_subtitle,
+            crate::record::record_commands::reveal_subtitle,
             #[cfg(target_os = "macos")]
-            crate::record_commands::list_subtitle_llms,
+            crate::record::record_commands::list_subtitle_llms,
             #[cfg(target_os = "macos")]
-            crate::record_commands::check_ffmpeg,
-            crate::record_commands::get_record_status,
+            crate::record::record_commands::check_ffmpeg,
+            crate::record::record_commands::get_record_status,
         ]
     };
 }

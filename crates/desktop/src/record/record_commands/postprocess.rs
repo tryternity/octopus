@@ -259,7 +259,7 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
 
     // 3. ffmpeg + 输出路径
     let ffmpeg = find_ffmpeg().await?;
-    let output = crate::record_audio_probe::merged_output_path(&input);
+    let output = crate::record::record_audio_probe::merged_output_path(&input);
 
     // 4. emit 起点（前端切 loading 态）
     let _ = app.emit("record://task", RecordTaskEvent::MergeStarted { id });
@@ -300,9 +300,9 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
 
     // 7. 探测 merged 文件音轨（应单轨）。ffprobe 不可用 / 解析失败 → 兜底构造一个 Merged track。
     let merged_tracks: Vec<AudioTrack> =
-        match crate::record_audio_probe::probe_ffprobe() {
+        match crate::record::record_audio_probe::probe_ffprobe() {
             Some(ffprobe) => {
-                match crate::record_audio_probe::probe_audio_tracks(&ffprobe, &output).await {
+                match crate::record::record_audio_probe::probe_audio_tracks(&ffprobe, &output).await {
                     Ok(raw) if !raw.is_empty() => vec![AudioTrack {
                         index: 0,
                         source: AudioTrackSource::Merged,
@@ -332,7 +332,7 @@ pub async fn merge_audio_tracks(app: AppHandle, id: i64) -> Result<MergeResult, 
         };
 
     // 8. 写 mp4 metadata（失败不阻断——DB 已有 audio_tracks 兜底）
-    if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+    if let Err(e) = crate::record::record_audio_probe::write_audio_tracks_metadata(
         &ffmpeg,
         &output,
         &merged_tracks,
@@ -420,7 +420,7 @@ pub async fn generate_subtitle(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     id: i64,
     track: Option<String>,
-    polish: Option<crate::subtitle_polish::PolishOption>,
+    polish: Option<crate::record::subtitle_polish::PolishOption>,
 ) -> Result<octopus_record::SubtitleResult, String> {
     // 内层 runner：返回 Result，外层 catch 后 emit SubtitleFailed。
     // 这样所有失败路径统一走一处 emit，避免漏发。
@@ -442,7 +442,7 @@ async fn generate_subtitle_inner(
     engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
     id: i64,
     track: Option<String>,
-    polish: Option<crate::subtitle_polish::PolishOption>,
+    polish: Option<crate::record::subtitle_polish::PolishOption>,
 ) -> Result<octopus_record::SubtitleResult, String> {
     use octopus_infra::paths::resolve_recording_path;
 
@@ -534,18 +534,18 @@ async fn generate_subtitle_inner(
         let texts: Vec<String> = timestamped.iter().map(|t| t.text.clone()).collect();
         log::info!("[subtitle] step8.5 开始 LLM 润色 cues={}", texts.len());
         let (polished_texts, outcome) =
-            crate::subtitle_polish::polish_subtitle_cues(texts, polish_opt, app).await;
+            crate::record::subtitle_polish::polish_subtitle_cues(texts, polish_opt, app).await;
         // 文本回填（时间戳不变）；长度一定一致（polish_subtitle_cues 保证）
         for (seg, new_text) in timestamped.iter_mut().zip(polished_texts) {
             seg.text = new_text;
         }
         log::info!("[subtitle] step8.5 润色完成 outcome={:?}", outcome);
         let outcome_str = match outcome {
-            crate::subtitle_polish::PolishOutcome::Skipped => None,
-            crate::subtitle_polish::PolishOutcome::Polished => Some("polished".into()),
-            crate::subtitle_polish::PolishOutcome::FallbackRatio => Some("fallbackRatio".into()),
-            crate::subtitle_polish::PolishOutcome::NoLlmConfig => Some("noLlmConfig".into()),
-            crate::subtitle_polish::PolishOutcome::Failed(msg) => Some(format!("failed:{msg}")),
+            crate::record::subtitle_polish::PolishOutcome::Skipped => None,
+            crate::record::subtitle_polish::PolishOutcome::Polished => Some("polished".into()),
+            crate::record::subtitle_polish::PolishOutcome::FallbackRatio => Some("fallbackRatio".into()),
+            crate::record::subtitle_polish::PolishOutcome::NoLlmConfig => Some("noLlmConfig".into()),
+            crate::record::subtitle_polish::PolishOutcome::Failed(msg) => Some(format!("failed:{msg}")),
         };
         outcome_str
     } else {

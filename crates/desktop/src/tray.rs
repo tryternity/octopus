@@ -387,11 +387,11 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                     match st {
                         SessionState::Idle | SessionState::Starting => {
                             // 弹配置浮窗（与 Cmd+Shift+R hotkey 同路径）
-                            crate::record_window::show_record_window(&app_handle);
+                            crate::record::record_window::show_record_window(&app_handle);
                         }
                         SessionState::Recording | SessionState::Paused => {
                             // 停止 + 入库（与 hotkey Esc 同路径）
-                            match crate::record_commands::stop_and_store(&session, &app_handle, false, None).await {
+                            match crate::record::record_commands::stop_and_store(&session, &app_handle, false, None).await {
                                 Ok(Some(meta)) => {
                                     log::info!(
                                         "[tray] 录制已停止入库: id={} file={}",
@@ -399,9 +399,9 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                                         meta.file_path
                                     );
                                     // 关闭标注 overlay（Source::Area 录制时才有）
-                                    crate::record_annotation_window::close_annotation_window(&app_handle);
+                                    crate::record::record_annotation_window::close_annotation_window(&app_handle);
                                     // 关闭录制控制浮窗 pill（display/window 录制时才有；与 ESC/stop-requested/kill 路径一致）
-                                    crate::record_control_window::close_control_window(&app_handle);
+                                    crate::record::record_control_window::close_control_window(&app_handle);
                                     let _ = app_handle.emit("record://stopped", &meta);
                                 }
                                 Ok(None) => log::info!("[tray] stop 返回 None"),
@@ -425,7 +425,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                 info!("Tray: start screenshot");
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::screenshot_commands::start_screenshot(app_handle).await;
+                    let _ = crate::record::screenshot_commands::start_screenshot(app_handle).await;
                 });
             }
             "quit" => {

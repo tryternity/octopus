@@ -253,14 +253,14 @@ pub(crate) async fn start_with_config(
         // Source::Area 时创建标注 overlay（普通 level，SCK 录到选区内 overlay 内容）
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) = crate::record_annotation_window::create_annotation_window(app, &source_clone) {
+            if let Err(e) = crate::record::record_annotation_window::create_annotation_window(app, &source_clone) {
                 log::warn!("[record] 标注 overlay 创建失败（不影响录制）: {e}");
             }
             // 控制浮窗（display/window 录制用；area 已有 RecordAnnotation，create 内部过滤）
-            crate::record_control_window::create_control_window(app, &source_clone);
+            crate::record::record_control_window::create_control_window(app, &source_clone);
             // ESC stop 全局快捷键按需注册——非录制态不注册，避免吞掉 Screenshot /
             // RecordConfig 等 DOM 级 ESC。详见 record_hotkey::register_stop_hotkey。
-            if let Err(e) = crate::record_hotkey::register_stop_hotkey(app) {
+            if let Err(e) = crate::record::record_hotkey::register_stop_hotkey(app) {
                 log::warn!("[record] ESC stop 快捷键注册失败（不影响录制）: {e}");
             }
         }
@@ -339,7 +339,7 @@ pub(crate) async fn stop_and_store(
     // 失败也注销：异常状态下 ESC 不应残留（下次 Screenshot ESC 仍需正常）。
     // 详见 record_hotkey::unregister_stop_hotkey 的设计说明。
     #[cfg(target_os = "macos")]
-    crate::record_hotkey::unregister_stop_hotkey(app);
+    crate::record::record_hotkey::unregister_stop_hotkey(app);
     result
 }
 
@@ -442,7 +442,7 @@ async fn stop_and_store_inner(
 
     // 探测实际音轨元数据（ffprobe 读 mp4 → 配置交叉推断 source）。
     // 失败兜底空 vec，不阻断录制入库（probe_recording_audio_tracks 内部已吞错）。
-    let audio_tracks = crate::record_audio_probe::probe_recording_audio_tracks(
+    let audio_tracks = crate::record::record_audio_probe::probe_recording_audio_tracks(
         &abs_path,
         has_system_audio,
         has_microphone,
@@ -482,7 +482,7 @@ async fn stop_and_store_inner(
     // probe_ffmpeg 在本文件（同 module），直接调用；write_audio_tracks_metadata 跨 module。
     if !audio_tracks.is_empty() {
         if let Some(ffmpeg) = probe_ffmpeg() {
-            if let Err(e) = crate::record_audio_probe::write_audio_tracks_metadata(
+            if let Err(e) = crate::record::record_audio_probe::write_audio_tracks_metadata(
                 &ffmpeg, &abs_path, &audio_tracks,
             )
             .await
@@ -515,9 +515,9 @@ pub async fn record_kill(
     // 无论 kill 成功失败都清理（与 stop_and_store 一致）。
     #[cfg(target_os = "macos")]
     {
-        crate::record_hotkey::unregister_stop_hotkey(&app_handle);
-        crate::record_annotation_window::close_annotation_window(&app_handle);
-        crate::record_control_window::close_control_window(&app_handle);
+        crate::record::record_hotkey::unregister_stop_hotkey(&app_handle);
+        crate::record::record_annotation_window::close_annotation_window(&app_handle);
+        crate::record::record_control_window::close_control_window(&app_handle);
     }
     r
 }

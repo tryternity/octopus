@@ -357,7 +357,7 @@ impl<'a> AppSetup<'a> {
 
         // Register screenshot global shortcut (from config)
         if !self.config.screenshot_shortcut.is_empty() {
-            if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(self.app.handle(), &self.config.screenshot_shortcut) {
+            if let Err(e) = crate::record::screenshot_commands::register_screenshot_shortcut(self.app.handle(), &self.config.screenshot_shortcut) {
                 log::error!("Failed to register screenshot shortcut: {}", e);
             }
         }
@@ -400,7 +400,7 @@ impl<'a> AppSetup<'a> {
         #[cfg(target_os = "macos")]
         {
             if !self.config.record_shortcut.is_empty() {
-                if let Err(e) = crate::record_hotkey::register_toggle_hotkey(
+                if let Err(e) = crate::record::record_hotkey::register_toggle_hotkey(
                     self.app.handle(),
                     &self.config.record_shortcut,
                 ) {
@@ -597,7 +597,7 @@ impl<'a> AppSetup<'a> {
         // 与 overlay_window 同模式——启动时建好窗口壳，触发时只 set_position + show，
         // 避免按需创建的 ~200ms 启动延迟（用户期望快捷键立即响应）。
         #[cfg(target_os = "macos")]
-        crate::record_window::create_record_window(self.app.handle());
+        crate::record::record_window::create_record_window(self.app.handle());
 
         // 标注 overlay 的「停止录制」按钮 emit record://stop-requested。
         // 监听后调 stop_and_store（与 ESC/tray 同路径，读 session 快照入库）。
@@ -621,11 +621,11 @@ impl<'a> AppSetup<'a> {
                         log::info!("[record] stop-requested 在非录制态忽略（state={:?}）", st);
                         return;
                     }
-                    match crate::record_commands::stop_and_store(&session, &ah, false, None).await {
+                    match crate::record::record_commands::stop_and_store(&session, &ah, false, None).await {
                         Ok(Some(meta)) => {
                             log::info!("[record] 停止入库成功: id={} file={}", meta.id, meta.file_path);
-                            crate::record_annotation_window::close_annotation_window(&ah);
-                            crate::record_control_window::close_control_window(&ah);
+                            crate::record::record_annotation_window::close_annotation_window(&ah);
+                            crate::record::record_control_window::close_control_window(&ah);
                             let _ = ah.emit("record://stopped", &meta);
                         }
                         Ok(None) => log::info!("[record] stop 返回 None"),

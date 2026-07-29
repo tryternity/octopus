@@ -46,7 +46,7 @@ pub async fn start_record_area_picker(app_handle: AppHandle) -> Result<(), Strin
     let _guard = BusyGuard;
 
     // hide 配置浮窗（避免双 always_on_top 冲突，picker 显示时浮窗让位）
-    crate::record_window::hide_record_window(&app_handle);
+    crate::record::record_window::hide_record_window(&app_handle);
 
     let tauri_monitors = app_handle
         .available_monitors()
@@ -178,7 +178,7 @@ pub async fn confirm_record_area_picker(
     w: f64,
     h: f64,
 ) -> Result<(), String> {
-    use crate::screenshot_geometry::{
+    use crate::record::screenshot_geometry::{
         compute_physical_crop, compute_selection_global, find_monitor_for_point, MonitorRect,
     };
 
@@ -187,8 +187,8 @@ pub async fn confirm_record_area_picker(
         .ok_or_else(|| format!("picker window '{}' not found", win_label))?;
 
     // 1. 拿窗口原点（Cocoa frame + Y 翻转，与 start_scroll_recording L937-948 完全一致）
-    let primary_h = crate::screenshot_commands::get_primary_screen_height();
-    let (win_origin_x, win_origin_y) = match crate::screenshot_commands::get_window_cocoa_frame(&sel_win) {
+    let primary_h = crate::record::screenshot_commands::get_primary_screen_height();
+    let (win_origin_x, win_origin_y) = match crate::record::screenshot_commands::get_window_cocoa_frame(&sel_win) {
         Some((cx, cy, _, ch)) => {
             let oy = primary_h - (cy + ch);
             log::info!(
@@ -247,7 +247,7 @@ pub async fn confirm_record_area_picker(
     let crop = compute_physical_crop(&sel, &monitors[mon_idx]);
 
     // 6. 查 display_id
-    let display_id = crate::screenshot_commands::active_display_for_point(center_x, center_y);
+    let display_id = crate::record::screenshot_commands::active_display_for_point(center_x, center_y);
     if display_id == 0 {
         return Err("无法确定选区所在的 display_id".into());
     }
@@ -283,7 +283,7 @@ pub async fn confirm_record_area_picker(
 pub fn cancel_record_area_picker(app_handle: AppHandle) {
     log::info!("[area-picker] cancelled");
     close_all_picker_windows(&app_handle);
-    crate::record_window::show_record_window(&app_handle);
+    crate::record::record_window::show_record_window(&app_handle);
 }
 
 fn close_all_picker_windows(app_handle: &AppHandle) {

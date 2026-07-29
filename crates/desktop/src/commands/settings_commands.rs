@@ -202,8 +202,8 @@ pub fn set_config(
         if let Ok(old) = old_screenshot_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
-            let _ = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
+        if let Err(e) = crate::record::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
+            let _ = crate::record::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -218,12 +218,12 @@ pub fn set_config(
             let _ = app_handle.global_shortcut().unregister(old);
         }
         // 注册新 toggle（register_toggle_hotkey 只动 toggle，不动 ESC）
-        if let Err(e) = crate::record_hotkey::register_toggle_hotkey(
+        if let Err(e) = crate::record::record_hotkey::register_toggle_hotkey(
             &app_handle,
             &cfg.record_shortcut,
         ) {
             // 失败：恢复旧 toggle
-            let _ = crate::record_hotkey::register_toggle_hotkey(
+            let _ = crate::record::record_hotkey::register_toggle_hotkey(
                 &app_handle,
                 &old_record_sc,
             );
@@ -241,7 +241,7 @@ pub fn set_config(
                 )
             });
             if in_recording {
-                if let Err(e) = crate::record_hotkey::register_stop_hotkey(&app_handle) {
+                if let Err(e) = crate::record::record_hotkey::register_stop_hotkey(&app_handle) {
                     log::warn!("[settings] 录制中改快捷键，ESC 重新注册失败（不影响录制）: {e}");
                 }
             }

@@ -52,43 +52,16 @@ mod pin_window;
 mod perf_log;
 mod pipeline;
 mod result_window;
-mod screenshot_commands;
-mod screenshot_geometry;
-// 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
-// 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
+// 录屏 + 截图功能域（Task 10/14/2.1，2026-07）：record/mod.rs 内部按 target_os 守护，
+// windows/linux 编译时 record_* 子 mod 整体为空，
 // 对应 invoke_handler 注册项也用 cfg gate（见 invoke_handler.rs::handler! 宏）。
-#[cfg(target_os = "macos")]
-mod record_commands;
-// 录屏全局快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
-// 与 record_commands 同样仅 macOS 编译。
-#[cfg(target_os = "macos")]
-mod record_hotkey;
-// 录屏配置浮窗（Cmd+Shift+R 弹出，选 display/window/area + 音频开关）。
-// 仅 macOS（录屏 helper 只 mac 实现）。
-#[cfg(target_os = "macos")]
-mod record_window;
-// 录屏区域选区 picker（多屏全屏透明覆盖，用户拖框选区域）。
-// 仅 macOS。复用 screenshot 的窗口创建 + 坐标换算模式。
-#[cfg(target_os = "macos")]
-mod record_area_picker;
-// 录屏标注 overlay 窗口（录屏开始后显示，普通 level 让 SCK 录到）。
-// 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
-#[cfg(target_os = "macos")]
-mod record_annotation_window;
-#[cfg(target_os = "macos")]
-mod record_control_window;
-// 录屏音频元数据探测（Task 2.1，2026-07-27 录后合并 phase）：
-// ffprobe 读 mp4 实际音轨 + 给后续 Task 2.2 写 metadata 用。仅 macOS
-// （octopus-record + RawAudioTrack 只 mac 编译；与 record_commands.rs 同 gate）。
-#[cfg(target_os = "macos")]
-mod record_audio_probe;
+mod record;
 mod runtime_config;
 mod settings_window;
 mod onboarding_window;
 mod shortcut;
 mod theme;
 mod tray;
-mod subtitle_polish;
 mod transcript;
 mod window_factory;
 mod window_position;
