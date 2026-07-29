@@ -181,13 +181,15 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ## 10. Git 跨设备同步
 
-详见 `docs/superpowers/specs/archived/2026-07-21-vault-git-sync-design.md`。核心机制：
+详见 `docs/superpowers/specs/archived/2026-07-21-vault-git-sync-design.md` + `archived/2026-07-27-vault-sync-is-deleted-merge.md`。核心机制：
 
 - 用 git repo（GitHub/Gitee private repo）同步，shell out 系统 git，SSH key 认证
 - `~/.octopus/.sync/` 目录：`vault/`（加密数据）+ `hotword/`（热词，明文）——所有同步数据在同一个 git repo
+- **merge_vault 双向 merge**（2026-07-27 重构，取代旧 pull/push engine）：pull+push 合并为单向 `merge_vault` 函数，按 `updated_at` 最新赢（同时间冲突 DB 赢）；`is_deleted`（INTEGER 0/1）统一字段（cipher + folder），删除走普通字段 merge（无删除传播，无 tombstone）
 - md5 内容指纹（`sync_md5` 字段）做增量 diff——只 push 变化的文件
 - 跨设备密钥一致性：app_key_sync_enc 用主密码直接加密 app_key，任何设备只要知道主密码就能解
-- security_stamp 守卫：pull 时对比 stamp，不一致拒绝覆盖（防主密码改了但没同步）
+- security_stamp 守卫：pull 时对比 stamp，不一致拒绝覆盖（防主密码改了但没同步）；**空库恢复旁路**（2026-07-28）：本地 cipher=0 + folder=0 + stamp 不一致时返 `EmptyRecoveryNeedsPassword` → 前端弹窗输源机器主密码 → `resolve_with_remote`（含密码校验 + meta 覆盖）
+- **PAT 卫生**（SafeUrl newtype，2026-07-28）：所有流出 crate 边界的 url 必须是 `SafeUrl`（唯一构造器 `redact_url`），编译期杜绝 PAT 泄露
 - **自动同步**（Phase 2，每小时）：`octopus-scheduler` 的 `vault_sync` 任务（interval=3600s），CPU 空闲时自动调 `sync_now()` 同步 vault + 热词；scheduler 每 10 分钟 tick 触发。结果存 `.sync/last_auto_sync.json`（SyncPanel 展示上次同步时间/结果，不弹 toast）
 - **stamp 冲突双向解决**：远程和本地主密码不一致时，用户选择「以远程为准」（输远程密码，用远程 meta 覆盖本地）或「以本地为准」（输本地密码，用本地 meta 覆盖远程）
 
