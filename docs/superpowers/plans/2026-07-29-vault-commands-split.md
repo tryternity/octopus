@@ -2,6 +2,7 @@
 
 > **对应 spec**: `docs/superpowers/specs/2026-07-29-vault-commands-split.md`
 > **分支**: `daily_refactor_vault`
+> **状态**: ✅ 已完成（2026-07-29）
 > **原则**: 纯代码搬家 + glob re-export。与 action_bar_commands 同模式。
 
 ## 阶段 0：目录化
@@ -41,9 +42,28 @@
 ---
 
 ## 验证 checklist
-- [ ] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
-- [ ] `cargo test -p octopus-desktop` — 441 passed
-- [ ] git diff 确认：只搬函数 + re-export
+- [x] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
+- [x] git diff 确认：只搬函数 + re-export（逻辑零改动）
 
 ## 回滚
 每个 Task 独立 commit。失败 `git reset --hard HEAD~1`。
+
+---
+
+## 完成记录（2026-07-29）
+
+6 个 Task 全部完成（含 Task 0.1 目录化 + Task 1.1–1.5 子模块 + Task 2.1 文档同步）。
+
+最终目录结构 + 偏差 + 验证结果详见 spec 末尾「实施记录」。
+
+| Task | 子模块 | 行数 | commit |
+|---|---|---|---|
+| 0.1 | 目录化 | — | `1946ef2e` |
+| 1.1 | window.rs | 139 | `7ab3f0fe` |
+| 1.2 | session.rs | 128 | `8d6cf996` |
+| 1.3 | generate.rs | 136 | `1bdd1cae` |
+| 1.4 | autotype.rs | 376 | `dfd1a936` |
+| 1.5 | cipher.rs（含测试） | 933 | `2d207258` |
+| — | mod.rs（留） | 220 | — |
+| **合计** | | **1932** | |

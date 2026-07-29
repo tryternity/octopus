@@ -291,9 +291,10 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **`invoke_handler!` 宏提取**（2026-07-29）：原 348 行 `tauri::generate_handler![...]` 块（~250 个命令）提取到 `invoke_handler.rs`，用 `macro_rules!` 包成 `handler!()` 宏（`#[macro_use] mod invoke_handler;`）。Tauri 2 不支持合并多个 `generate_handler!` 输出（[Issue #15597](https://github.com/tauri-apps/tauri/issues/15597)），也不支持多次 `invoke_handler` 调用——命令列表必须宏展开期一次性固定。`macro_rules!` 透传 token，`#[cfg(feature = "vault")]` / `#[cfg(target_os = "macos")]` 守卫在展开后由编译器正常求值。命令路径**统一 `crate::` 前缀**（宏定义在独立文件，裸 `module::cmd` 路径会因 mod 上下文不同而解析失败）。`run()` 里一行 `.invoke_handler(handler!())` 替代原 348 行。
 
-**大文件目录化拆分**（2026-07-29）：desktop crate 两个最大文件按职责拆为目录模块——
+**大文件目录化拆分**（2026-07-29）：desktop crate 三个最大文件按职责拆为目录模块——
 - `coordinator/`（原 coordinator.rs 3085 行 → mod.rs 860 + 8 子模块）：actor 模式，自由函数 + 参数传状态，精确 `pub(crate) use` re-export。
 - `action_bar_commands/`（原 2441 行 → mod.rs 36 + 7 子模块）：~50 个符号被 10+ 外部文件引用，用 **glob re-export**（`pub use submodule::*`）保持 `crate::action_bar_commands::xxx` 路径不变，invoke_handler.rs + 10+ 外部文件零改动。子模块：context（上下文检测）/ window（窗口触发）/ items（命令项 CRUD）/ translate（翻译）/ prompt_files（prompt 文件）/ script（脚本执行）/ agent（适配器+任务）。
+- `vault_commands/`（原 1832 行 → mod.rs 220 + 5 子模块）：33 个 invoke_handler 命令 + 12 处外部引用都以 `crate::vault_commands::xxx` 访问，同 action_bar_commands 用 glob re-export 保持路径不变。整个模块在 main.rs 是 `#[cfg(feature = "vault")]` 门控，子模块继承 gate。子模块：window（热键注册 + 生成器浮窗）/ session（解锁锁定/心跳/超时/改密）/ generate（密码生成/评估/TOTP/健康/导入导出）/ autotype（自动填写/搜索/URL 检测/复制）/ cipher（条目 + 文件夹 CRUD + 全部 DTO 转换测试）。mod.rs 保留共享 helper（require_user_vault_key / require_app_key_from_session / cipher_to_dto / dto_to_input / merge_password_history）+ DTO struct（CipherDto / CipherInputDto）+ PASSWORD_HISTORY_MAX 常量。
 
 **识别模式：**
 
