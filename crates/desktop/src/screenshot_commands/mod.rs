@@ -1,3 +1,11 @@
+//! screenshot Tauri 命令层（区域截图 + 滚动截图）。
+//!
+//! 2026-07-30 起拆分为子模块。mod.rs 保留共享静态量 / 注册入口 + 各子模块 glob re-export
+//! （`pub use submodule::*`）保持 `crate::screenshot_commands::xxx` 路径不变。
+
+mod shared;
+pub(crate) use shared::*;
+
 use parking_lot::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use crate::error_util::{e2s, e2s_ctx};
@@ -26,15 +34,6 @@ mod cg_event_source_ffi {
 fn right_mouse_button_down() -> bool {
     // state_id=1（HIDSystemState）查硬件按键状态；button=1（右键）
     unsafe { cg_event_source_ffi::CGEventSourceButtonState(1, 1) }
-}
-
-/// 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。
-fn format_file_size(bytes: u64) -> String {
-    if bytes < 1024 * 1024 {
-        format!("{}K", (bytes + 511) / 1024)
-    } else {
-        format!("{:.1}M", bytes as f64 / 1024.0 / 1024.0)
-    }
 }
 
 /// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
@@ -934,49 +933,6 @@ fn get_window_number(win: &tauri::WebviewWindow) -> Option<u32> {
 
 #[cfg(not(target_os = "macos"))]
 fn get_window_number(_win: &tauri::WebviewWindow) -> Option<u32> { None }
-
-#[cfg(target_os = "macos")]
-pub(crate) fn get_primary_screen_height() -> f64 {
-    use objc2::{class, msg_send, runtime::AnyObject};
-    unsafe {
-        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
-        let primary: *mut AnyObject = msg_send![screens, objectAtIndex: 0];
-        let frame: objc2_foundation::NSRect = msg_send![primary, frame];
-        frame.size.height as f64
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn get_window_cocoa_frame(win: &tauri::WebviewWindow) -> Option<(f64, f64, f64, f64)> {
-    use objc2::{msg_send, runtime::AnyObject};
-    let ptr = win.ns_window().ok()?;
-    if ptr.is_null() { return None; }
-    
-    let rect: objc2_foundation::NSRect = unsafe { msg_send![ptr as *mut AnyObject, frame] };
-    Some((rect.origin.x as f64, rect.origin.y as f64, rect.size.width as f64, rect.size.height as f64))
-}
-
-/// 查包含全局逻辑坐标 (cx, cy) 的 CGDirectDisplayID（区域录屏选区命中检测用）。
-///
-/// 抽自 start_scroll_recording（L1014-1024），让 record_area_picker 复用。
-/// 无命中返回 0（CGMainDisplayID 是 1，0 表示无效）。
-#[cfg(target_os = "macos")]
-#[allow(dead_code)] // Task 2 record_area_picker 将使用
-pub(crate) fn active_display_for_point(cx: f64, cy: f64) -> u32 {
-    use core_graphics::display::CGDisplay;
-    let displays = match CGDisplay::active_displays() {
-        Ok(d) => d,
-        Err(_) => {
-            log::error!("[active_display_for_point] CGGetActiveDisplayList failed");
-            return 0;
-        }
-    };
-    displays.iter().find(|&&id| {
-        let bounds = CGDisplay::new(id).bounds();
-        cx >= bounds.origin.x && cx < bounds.origin.x + bounds.size.width
-            && cy >= bounds.origin.y && cy < bounds.origin.y + bounds.size.height
-    }).copied().unwrap_or(0)
-}
 
 #[cfg(target_os = "macos")]
 fn set_window_ignores_mouse_events(win: &tauri::WebviewWindow, ignore: bool) {
