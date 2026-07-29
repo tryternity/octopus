@@ -319,7 +319,8 @@ function ClipboardRow({
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      showToast(t("settings.clipboardPanel.copyFailed") + e);
+      setFileMissing(true);
+      showToast(t("settings.clipboardPanel.imageLost"));
     }
   };
 

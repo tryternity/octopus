@@ -88,12 +88,15 @@ function ClipboardItemRow({
   const handleClick = () => {
     if (deletePending) return;
     onSelect(index);
-    // 复制到剪贴板 + 动效
+    // 复制到剪贴板 + 动效；文件丢失时设 fileMissing 显示感叹号
     invoke("copy_clipboard_item", { id: item.id }).then(() => {
       setCopied(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
-    }).catch(console.error);
+    }).catch((e) => {
+      setFileMissing(true);
+      console.error(e);
+    });
   };
 
   // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item）。
@@ -101,6 +104,7 @@ function ClipboardItemRow({
     try {
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
+      setFileMissing(true);
       console.error(e);
     }
   };
@@ -127,6 +131,7 @@ function ClipboardItemRow({
     try {
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
+      setFileMissing(true);
       console.error(e);
     }
   };
