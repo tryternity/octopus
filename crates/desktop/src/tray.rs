@@ -354,7 +354,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => {
                 info!("Tray: toggle recording");
-                if let Some(coordinator) = app.try_state::<crate::coordinator::Coordinator>() {
+                if let Some(coordinator) = app.try_state::<crate::engine::coordinator::Coordinator>() {
                     coordinator.toggle();
                 }
             }

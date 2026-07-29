@@ -8,7 +8,7 @@
 
 use crate::config::AppConfig;
 use crate::db_queue::{DbCommand, get_db_sender};
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use log::{info, warn, error};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;

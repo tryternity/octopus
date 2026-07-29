@@ -28,15 +28,15 @@ macro_rules! handler {
             crate::runtime_config::set_denoise_mode,
             crate::runtime_config::set_translate_mode,
             // ── coordinator（录音控制 / 编辑 / 翻译）──
-            crate::coordinator::cancel_recording,
-            crate::coordinator::discard_recording,
-            crate::coordinator::polish_now,
-            crate::coordinator::enter_edit_mode,
-            crate::coordinator::commit_edit,
-            crate::coordinator::set_caret,
-            crate::coordinator::set_selection,
-            crate::coordinator::set_translation_active,
-            crate::coordinator::start_recording,
+            crate::engine::coordinator::cancel_recording,
+            crate::engine::coordinator::discard_recording,
+            crate::engine::coordinator::polish_now,
+            crate::engine::coordinator::enter_edit_mode,
+            crate::engine::coordinator::commit_edit,
+            crate::engine::coordinator::set_caret,
+            crate::engine::coordinator::set_selection,
+            crate::engine::coordinator::set_translation_active,
+            crate::engine::coordinator::start_recording,
             // ── result_window ──
             crate::result_window::result_window_ready,
             crate::result_window::set_result_click_through,
@@ -155,7 +155,7 @@ macro_rules! handler {
             crate::commands::compact_editor_commands::get_transcription_text,
             crate::commands::compact_editor_commands::close_compact_editor,
 
-            crate::coordinator::current_transcription_id,
+            crate::engine::coordinator::current_transcription_id,
             // ── theme ──
             crate::theme::list_themes,
             crate::theme::get_theme_id,

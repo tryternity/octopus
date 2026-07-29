@@ -224,7 +224,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
             item_id,
             files.len(),
         );
-        let coordinator = match app.try_state::<crate::coordinator::Coordinator>() {
+        let coordinator = match app.try_state::<crate::engine::coordinator::Coordinator>() {
             Some(c) => c,
             None => {
                 log::error!("[action-hotkey] Coordinator state 未找到（无法启动音录）");

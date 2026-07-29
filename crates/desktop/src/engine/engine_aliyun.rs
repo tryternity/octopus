@@ -45,7 +45,7 @@ use octopus_asr_local::sentence_separator;
 /// 这里取别名便于在拆出的 helper（`send_pcm_frames` / `collect_results`）签名中复用。
 type WsStream = WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-use crate::engine::TranscriptionEngine;
+use crate::engine::engine::TranscriptionEngine;
 
 /// 构造带 bearer 鉴权的 WS 握手请求。
 ///

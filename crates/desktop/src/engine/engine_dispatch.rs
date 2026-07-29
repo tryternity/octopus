@@ -1,7 +1,7 @@
 #[cfg(feature = "cloud")]
-use crate::engine::TranscriptionEngine;
+use crate::engine::engine::TranscriptionEngine;
 #[cfg(feature = "cloud")]
-use crate::engine_embedded::EmbeddedEngine;
+use crate::engine::engine_embedded::EmbeddedEngine;
 #[cfg(feature = "cloud")]
 use anyhow::Result;
 #[cfg(feature = "cloud")]
@@ -19,7 +19,7 @@ use std::sync::Arc;
 #[cfg(feature = "cloud")]
 pub struct DispatchEngine {
     embedded: EmbeddedEngine,
-    dashscope: crate::engine_aliyun::AliyunEngine,
+    dashscope: crate::engine::engine_aliyun::AliyunEngine,
 }
 
 #[cfg(feature = "cloud")]
@@ -27,7 +27,7 @@ impl DispatchEngine {
     pub fn new(engine_manager: Arc<octopus_asr_local::engine::AsrEngineManager>) -> Self {
         Self {
             embedded: EmbeddedEngine::new(engine_manager),
-            dashscope: crate::engine_aliyun::AliyunEngine::new(),
+            dashscope: crate::engine::engine_aliyun::AliyunEngine::new(),
         }
     }
 }

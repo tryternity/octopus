@@ -4,11 +4,11 @@
 //! 抽自 `handle_toggle` 的 Idle 分支，供 C3 两阶段 Toggle 的 StartRecording / FallbackStart 复用。
 //! 三个 `prepare_*_session` 分别构造对应 pipeline + transcript + 启动 tick 线程，进入活跃 Stage。
 
-use crate::audio::SharedAudioState;
+use crate::engine::audio::SharedAudioState;
 use crate::config::AppConfig;
-use crate::engine::TranscriptionEngine;
-use crate::pipeline::StreamingPipeline;
-use crate::transcript::Transcript;
+use crate::engine::engine::TranscriptionEngine;
+use crate::engine::pipeline::StreamingPipeline;
+use crate::engine::transcript::Transcript;
 use octopus_asr_local::streaming_engine::StreamingSessionManager;
 use log::{debug, error, info, warn};
 use std::sync::atomic::AtomicBool;
@@ -80,7 +80,7 @@ pub(crate) fn prepare_cloud_streaming_session(
 ) {
     match octopus_asr_local::config::create_silero_vad() {
         Ok(mut vad) => {
-            crate::pipeline::vad_preroll(&mut vad);
+            crate::engine::pipeline::vad_preroll(&mut vad);
 
                 // 跨会话选中替换：有 selection → 种子 transcript（保留旧文本 + 删选区）。
                 // cloud 与本地 streaming/vad 共用 Stage::Streaming + Transcript，下游 paste 由
@@ -105,7 +105,7 @@ pub(crate) fn prepare_cloud_streaming_session(
                 }
                 crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
 
-                let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
+                let cloud_engine = crate::engine::cloud_pipeline::CloudPipelineEngine::new(
                     vad,
                     active_asr_engine_name(),
                     config.language.clone(),
@@ -209,7 +209,7 @@ pub(crate) fn prepare_streaming_session(
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
 
     // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
-    let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+    let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
         Ok(e) => e,
         Err(e) => {
             error!("LocalPipelineEngine init failed: {}, abort streaming", e);
@@ -252,7 +252,7 @@ pub(crate) fn prepare_vad_segmented_session(
     record_type: RecordType,
 ) {
     // 非流式模式：使用 VAD 伪流式分段识别（2c-3：编排收进 VadSegmentedPipeline）
-    match crate::pipeline::VadSegmentedPipeline::new(
+    match crate::engine::pipeline::VadSegmentedPipeline::new(
         engine.clone(),
         config.language.clone(),
         active_asr_engine_name(),

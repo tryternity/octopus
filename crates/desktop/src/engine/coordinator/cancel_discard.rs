@@ -3,10 +3,10 @@
 //! - `handle_cancel`：Esc 取消——停录音 + 清 DB 脏数据（已 INSERT 的删除）+ 回 Idle。
 //! - `handle_discard`：工具栏「关闭」——停录音 + finalize DB（保留识别历史，不粘贴）。
 
-use crate::audio::SharedAudioState;
+use crate::engine::audio::SharedAudioState;
 use crate::config::AppConfig;
 use crate::db_queue::{DbCommand, get_db_sender};
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

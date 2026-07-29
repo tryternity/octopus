@@ -11,11 +11,11 @@ mod session;
 mod polish;
 mod lifecycle;
 
-use crate::audio::SharedAudioState;
+use crate::engine::audio::SharedAudioState;
 use crate::config::AppConfig;
 use crate::db_queue::{DbCommand, get_db_sender};
-use crate::engine::TranscriptionEngine;
-use crate::transcript::Transcript;
+use crate::engine::engine::TranscriptionEngine;
+use crate::engine::transcript::Transcript;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -31,7 +31,7 @@ pub(crate) use self::edit::{handle_enter_edit_mode, commit_edit_apply, stage_tra
 #[cfg(feature = "cloud")]
 pub(crate) use self::tick::is_cloud_engine;
 pub(crate) use self::tick::{dispatch_tick, log_tick_heartbeat};
-// retry_agent_task 保持 pub（action_bar_commands 跨 crate 引用 crate::coordinator::retry_agent_task）
+// retry_agent_task 保持 pub（action_bar_commands 跨 crate 引用 crate::engine::coordinator::retry_agent_task）
 pub use self::agent::retry_agent_task;
 pub(crate) use self::cancel_discard::{handle_cancel, handle_discard};
 pub(crate) use self::session::begin_recording;
@@ -154,14 +154,14 @@ pub(crate) enum Stage {
     /// 流式识别：边录边识别
     Streaming {
         /// 流式 pipeline（持 StreamingRunner + 承载 set_full 文本更新，spec §3.4）。
-        pipeline: crate::pipeline::StreamingPipeline,
+        pipeline: crate::engine::pipeline::StreamingPipeline,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
     },
     /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用，2c-3：编排收进 VadSegmentedPipeline）
     VadSegmented {
         /// VAD 分段 pipeline（封装双 VAD + 切段 + spawn + 乱序回填，2c-3）。
-        pipeline: crate::pipeline::VadSegmentedPipeline,
+        pipeline: crate::engine::pipeline::VadSegmentedPipeline,
         transcript: Transcript,
         /// tick 线程控制标志（move 进 WaitingCompletion，finalize 时才停，plan 细化）。
         tick_active: Arc<AtomicBool>,
@@ -177,7 +177,7 @@ pub(crate) enum Stage {
     /// 等待所有识别完成（2c-3：复用 VadSegmented pipeline，靠 tick 线程继续驱动 drain rx）
     WaitingCompletion {
         /// VadSegmented pipeline（从 VadSegmented move 过来；tick 空样本 drain rx 收尾）。
-        pipeline: crate::pipeline::VadSegmentedPipeline,
+        pipeline: crate::engine::pipeline::VadSegmentedPipeline,
         transcript: Transcript,
         /// tick 线程标志（VadSegmented move 过来；finalize 时 store(false) 停线程）。
         tick_active: Arc<AtomicBool>,

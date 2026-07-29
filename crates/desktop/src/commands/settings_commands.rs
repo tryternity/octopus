@@ -94,7 +94,7 @@ pub fn set_config(
     key: String,
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
-    coordinator: State<'_, crate::coordinator::Coordinator>,
+    coordinator: State<'_, crate::engine::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     // record_* 配置项不在 AppConfig struct 里（走 app_config 表的泛型 key-value 存储），

@@ -7,12 +7,12 @@
 //! - `finalize_cloud`（#[cfg(cloud)]）：云端 finalize，拼 partial + 走润色/粘贴。
 //! - `handle_cloud_streaming_done`（#[cfg(cloud)]）：close_async 结果回传 + 跨会话护栏。
 
-use crate::audio::SharedAudioState;
+use crate::engine::audio::SharedAudioState;
 use crate::config::AppConfig;
 use crate::config::PolishMode;
-use crate::engine::TranscriptionEngine;
-use crate::pipeline::StreamingPipeline;
-use crate::transcript::Transcript;
+use crate::engine::engine::TranscriptionEngine;
+use crate::engine::pipeline::StreamingPipeline;
+use crate::engine::transcript::Transcript;
 use octopus_asr_local::streaming_engine::StreamingSessionManager;
 use octopus_asr_local::streaming_runner::TranscriptEvent;
 use log::{debug, error, info, warn};
@@ -296,7 +296,7 @@ pub(crate) fn restart_capture_keep_transcript(
                 return;
             }
         };
-        let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+        let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
             Ok(e) => e,
             Err(e) => {
                 error!("[WATCHDOG] LocalPipelineEngine init failed: {}", e);
@@ -318,7 +318,7 @@ pub(crate) fn restart_capture_keep_transcript(
         start_tick_thread(tx.clone(), streaming_active.clone());
         *stage = Stage::Streaming { pipeline, transcript, streaming_active };
     } else {
-        match crate::pipeline::VadSegmentedPipeline::new(
+        match crate::engine::pipeline::VadSegmentedPipeline::new(
             engine.clone(),
             config.language.clone(),
             active_asr_engine_name(),

@@ -12,7 +12,7 @@ use tauri::{Emitter, Listener, Manager};
 use octopus_infra::config::AppConfig;
 
 #[cfg(not(feature = "cloud"))]
-use crate::engine_embedded::EmbeddedEngine;
+use crate::engine::engine_embedded::EmbeddedEngine;
 
 /// 应用 setup 初始化器——把原 setup 闭包的 587 行逻辑按职责分段。
 ///
@@ -537,10 +537,10 @@ impl<'a> AppSetup<'a> {
         let engine_manager = self.engine_manager.clone().expect(
             "init_engine must run before init_coordinator (engine_manager not set)"
         );
-        let engine: Arc<dyn crate::engine::TranscriptionEngine> = {
+        let engine: Arc<dyn crate::engine::engine::TranscriptionEngine> = {
             #[cfg(feature = "cloud")]
             {
-                Arc::new(crate::engine_dispatch::DispatchEngine::new(engine_manager.clone()))
+                Arc::new(crate::engine::engine_dispatch::DispatchEngine::new(engine_manager.clone()))
             }
             #[cfg(not(feature = "cloud"))]
             {
@@ -560,7 +560,7 @@ impl<'a> AppSetup<'a> {
         self.app.manage(streaming_manager);
 
         // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
-        let audio_state = match crate::audio::AudioRecorder::new(&self.config.microphone) {
+        let audio_state = match crate::engine::audio::AudioRecorder::new(&self.config.microphone) {
             Ok(mut recorder) => {
                 if let Err(e) = recorder.open() {
                     log::error!("Failed to open audio device '{}': {}. Audio input will be silent.", self.config.microphone, e);
@@ -569,7 +569,7 @@ impl<'a> AppSetup<'a> {
             }
             Err(e) => {
                 log::error!("Failed to initialize AudioRecorder: {}. Audio input will be silent.", e);
-                std::sync::Arc::new(crate::audio::SharedAudioState::new(&self.config.microphone))
+                std::sync::Arc::new(crate::engine::audio::SharedAudioState::new(&self.config.microphone))
             }
         };
 
@@ -579,7 +579,7 @@ impl<'a> AppSetup<'a> {
         self.app.manage(runtime_config.clone());
 
         // 3. Create Coordinator
-        let coordinator = crate::coordinator::Coordinator::new(
+        let coordinator = crate::engine::coordinator::Coordinator::new(
             engine,
             audio_state,
             self.config.clone(),
@@ -741,13 +741,13 @@ fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
 fn build_local_engine(
     config: &octopus_infra::config::AppConfig,
     engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
-) -> std::sync::Arc<dyn crate::engine::TranscriptionEngine> {
+) -> std::sync::Arc<dyn crate::engine::engine::TranscriptionEngine> {
     match config.engine_mode.as_str() {
         "embedded" => std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone())),
         #[cfg(feature = "remote-ws")]
-        "websocket" => std::sync::Arc::new(crate::engine_ws::WsRemoteEngine::new(&config.remote_url)),
+        "websocket" => std::sync::Arc::new(crate::engine::engine_ws::WsRemoteEngine::new(&config.remote_url)),
         #[cfg(feature = "remote-grpc")]
-        "grpc" => std::sync::Arc::new(crate::engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
+        "grpc" => std::sync::Arc::new(crate::engine::engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
         other => {
             log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
             std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone()))

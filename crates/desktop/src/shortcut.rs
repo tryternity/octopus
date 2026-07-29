@@ -5,7 +5,7 @@
 //! Registers a configurable global shortcut (default: CmdOrCtrl+Shift+Space)
 //! that toggles recording on/off via the Coordinator.
 
-use crate::coordinator::Coordinator;
+use crate::engine::coordinator::Coordinator;
 use log::{error, info};
 use tauri::{Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};

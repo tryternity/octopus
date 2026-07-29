@@ -27,7 +27,7 @@ pub struct PolishInput { pub segments: Vec<Segment> }
 pub struct Transcript {
     pub id: i64,
     /// 录音类型——finalize 时按 type 分流回调。
-    pub record_type: crate::coordinator::RecordType,
+    pub record_type: crate::engine::coordinator::RecordType,
     mode: PolishMode,
     segments: Vec<Segment>,
     /// 新语音生长缝隙，0..=segments.len()。
@@ -62,7 +62,7 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    pub fn new(id: i64, mode: PolishMode, record_type: crate::coordinator::RecordType) -> Self {
+    pub fn new(id: i64, mode: PolishMode, record_type: crate::engine::coordinator::RecordType) -> Self {
         Self {
             id, record_type, mode, segments: Vec::new(), caret_gap: 0,
             engine_cumulative: String::new(), engine_consumed_chars: 0, diverted_pending: String::new(),
@@ -684,7 +684,7 @@ mod tests {
     // ── 默认零回归 ──
     #[test]
     fn empty_default_finish_empty() {
-        let t = Transcript::new(1, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let t = Transcript::new(1, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         assert_eq!(t.finish_text(), "");
         assert_eq!(t.display_text(), "");
         assert!(!t.is_inserting());
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn apply_engine_full_appends_at_tail_by_default() {
         // 默认 caret_gap==0==len：首 delta 新建 Raw 段，后续追加同段（≡ 旧末尾追加）
-        let mut t = Transcript::new(2, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(2, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         assert!(t.apply_engine_full("你好"));
         assert!(t.apply_engine_full("你好世界"));
         assert_eq!(t.finish_text(), "你好世界");
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn apply_engine_full_diverted_buffers_and_replays_next_tick() {
         // diverted（非前缀纠正）→ 当次不展示（buffered），下次前缀 apply 时连同 delta 一次性补发。
-        let mut t = Transcript::new(3, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(3, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好");
         let changed = t.apply_engine_full("替换全文"); // 非「你好」前缀 = diverted
         assert!(!changed);
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn apply_engine_full_consecutive_diverted_accumulate_pending() {
         // 连续两次 diverted：pending 累积，第三次前缀 apply 一次性补发全部累积。
-        let mut t = Transcript::new(31, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(31, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好");
         assert!(!t.apply_engine_full("甲乙")); // diverted #1：pending = "甲乙"
         assert_eq!(t.finish_text(), "你好");
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn apply_engine_full_diverted_then_prefix_combines_pending_and_delta() {
         // diverted pending + 新前缀 delta 正确拼接顺序（pending 在前，delta 在后）。
-        let mut t = Transcript::new(32, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(32, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("开头");
         assert!(!t.apply_engine_full("纠正")); // diverted：pending = "纠正"
         assert_eq!(t.finish_text(), "开头");
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn append_segment_vad_accumulates() {
-        let mut t = Transcript::new(4, PolishMode::FinalOnly, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(4, PolishMode::FinalOnly, crate::engine::coordinator::RecordType::Input);
         t.append_segment("甲");
         t.append_segment("乙");
         assert_eq!(t.finish_text(), "甲乙");
@@ -751,7 +751,7 @@ mod tests {
     // ── set_caret（劈段/段界/clamp）──
     #[test]
     fn set_caret_at_segment_boundary_sets_gap() {
-        let mut t = Transcript::new(5, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(5, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_caret(2); // 段界（「你好」|「世界」在单 Raw 段内 offset 2）
         assert!(t.is_inserting());
@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn set_caret_splits_edited_segment() {
-        let mut t = Transcript::new(6, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(6, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.commit_edit("abcdef", &[], true); // 单 Edited 段，caret_gap=1
         t.set_caret(3); // 劈 Edited → [Edited(abc)][Edited(def)]，caret_gap=1
         assert_eq!(t.segments.len(), 2);
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn set_caret_clamps_beyond_end() {
-        let mut t = Transcript::new(7, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(7, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("abc");
         t.set_caret(999); // 超出 → 末尾
         assert!(!t.is_inserting());
@@ -783,7 +783,7 @@ mod tests {
 
     #[test]
     fn set_caret_empty_doc_clamps_zero() {
-        let mut t = Transcript::new(8, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(8, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.set_caret(5);
         assert_eq!(t.caret_gap, 0);
     }
@@ -791,7 +791,7 @@ mod tests {
     // ── push_delta_at_caret 边界 ──
     #[test]
     fn push_delta_creates_new_raw_when_prev_not_raw() {
-        let mut t = Transcript::new(9, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(9, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.commit_edit("edited", &[], true); // [Edited], caret_gap=1
         t.set_caret(0); // caret_gap=0（Edited 段之前）
         t.apply_engine_full("新语音");
@@ -804,7 +804,7 @@ mod tests {
     // ── commit_edit ──
     #[test]
     fn commit_edit_flattens_to_single_edited_clears_others() {
-        let mut t = Transcript::new(10, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(10, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("raw1");
         t.commit_edit("手改", &[], true);
         assert_eq!(t.segments, vec![edt("手改")]);
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn commit_edit_empty_clears_all() {
-        let mut t = Transcript::new(11, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(11, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("raw");
         t.commit_edit("", &[], true);
         assert!(t.segments.is_empty());
@@ -823,7 +823,7 @@ mod tests {
     // ── polish_apply（润色回填）──
     #[test]
     fn polish_apply_raw_only_becomes_single_polished() {
-        let mut t = Transcript::new(12, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(12, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         let _input = t.take_polish_input();
         assert!(t.polish_pending);
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn polish_apply_preserves_edited_and_polishes_gap() {
-        let mut t = Transcript::new(13, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(13, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.commit_edit("用户编辑", &[], true);
         t.set_caret(4); // 中间
         t.apply_engine_full("raw尾"); // [Edited(用户编)][Raw 辑raw尾] → 实际 push 到 gap
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn polish_apply_edited_not_found_best_effort_all_polished() {
-        let mut t = Transcript::new(14, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(14, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.segments = vec![edt("原文edited"), raw("x")];
         let _input = t.take_polish_input();
         // LLM 擅改，找不到「原文edited」→ 剩余全 Polished
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn polish_apply_restores_caret_char_offset() {
-        let mut t = Transcript::new(15, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(15, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_caret(2);
         let off_before = t.caret_char_offset(); // 2
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn polish_apply_pending_delta_flushed_after() {
-        let mut t = Transcript::new(16, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(16, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好");
         let _input = t.take_polish_input();
         // pending 期间新 delta 进 pending_delta（不写 segments）
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn on_polish_failed_flushes_pending_delta() {
-        let mut t = Transcript::new(17, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(17, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好");
         let _input = t.take_polish_input();
         t.apply_engine_full("你好新");
@@ -899,7 +899,7 @@ mod tests {
     // ── 类型不变量 ──
     #[test]
     fn invariant_no_raw_after_polish() {
-        let mut t = Transcript::new(18, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(18, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.segments = vec![raw("a"), edt("b"), raw("c")];
         let _input = t.take_polish_input();
         t.polish_apply("a润b润c润");
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn invariant_only_edited_after_commit() {
-        let mut t = Transcript::new(19, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(19, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.segments = vec![raw("a"), pol("b")];
         t.commit_edit("flat", &[], true);
         assert!(t.segments.iter().all(|s| s.kind == SegmentKind::Edited));
@@ -917,7 +917,7 @@ mod tests {
     // ── segments_json ──
     #[test]
     fn segments_json_roundtrip_shape() {
-        let mut t = Transcript::new(20, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(20, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.segments = vec![raw("a"), edt("b")];
         let j = t.segments_json();
         assert!(j.contains("\"kind\":\"raw\""));
@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn delete_range_basic() {
         // "你好世界再见" 删 [2,4)（"世界"）→ "你好再见"，caret 落 "你好" 后。
-        let mut t = Transcript::new(101, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(101, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界再见"); // 单 Raw 段
         t.delete_range(2, 4);
         assert_eq!(t.finish_text(), "你好再见");
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn delete_range_spans_segments() {
         // 多段跨段删除：[raw 甲][edited 乙丙][raw 丁]，删 [1,3)（"乙丙"）→ "甲丁"。
-        let mut t = Transcript::new(102, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(102, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.segments = vec![raw("甲"), edt("乙丙"), raw("丁")];
         t.delete_range(1, 3);
         assert_eq!(t.finish_text(), "甲丁");
@@ -948,7 +948,7 @@ mod tests {
     #[test]
     fn set_selection_then_first_delta_replaces() {
         // 拖选 [2,4)（"世界"）→ 首词到达时删选中、新词从 start 插、caret 跟随增长。
-        let mut t = Transcript::new(103, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(103, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         assert_eq!(t.caret_char_offset(), 2); // 选中态 caret 在 start
@@ -962,7 +962,7 @@ mod tests {
     fn set_selection_then_first_append_segment_replaces() {
         // VadSegmented / cloud partial 路径（append_segment）须与流式路径对称：
         // 拖选 [2,4)（"世界"）→ 首词到达时删选中、新词从 start 插。
-        let mut t = Transcript::new(105, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(105, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界"); // 建初始文本（单 Raw 段）
         t.set_selection(2, 4);
         assert_eq!(t.caret_char_offset(), 2); // 选中态 caret 在 start
@@ -973,7 +973,7 @@ mod tests {
     #[test]
     fn set_caret_clears_pending_delete() {
         // 选中后 set_caret 取消 → clear_pending_delete；后续 apply 不删
-        let mut t = Transcript::new(104, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(104, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         t.set_caret(0); // 取消选区
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn pending_delete_consumed_once() {
         // 首次 apply 消费待删；第二次不再删。
-        let mut t = Transcript::new(105, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(105, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         // 静音 tick（same full）：消费 pending_delete 删"世界"，delta 空 → 返回 true
@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn pending_delete_consumed_in_take_polish_input() {
         // 选中后润色：take_polish_input 先删待删区，快照基于删后文本。
-        let mut t = Transcript::new(106, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(106, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         let input = t.take_polish_input();
@@ -1013,7 +1013,7 @@ mod tests {
     #[test]
     fn selection_then_polish_then_delta_inserts_at_selection_start() {
         // 停顿触发润色后 caret 恢复到选中起点（selection_insert_offset）。
-        let mut t = Transcript::new(108, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(108, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         // 模拟静音 tick → 消费 pending_delete
@@ -1029,7 +1029,7 @@ mod tests {
     #[test]
     fn selection_at_start_then_polish_then_delta_inserts_at_start() {
         // 选中开头 → 首次 apply 删选区 → 润色 → 新词从开头生长。
-        let mut t = Transcript::new(109, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(109, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(0, 2);
         t.apply_engine_full("你好世界"); // same → 删"你好"
@@ -1047,7 +1047,7 @@ mod tests {
     #[test]
     fn selection_then_engine_new_phrase_not_diverted() {
         // 活跃会话选中替换完整流程
-        let mut t = Transcript::new(110, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(110, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         assert_eq!(t.finish_text(), "你好世界");
         t.set_selection(0, 2); // pending_delete
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn selection_mid_text_then_engine_new_phrase_replaces() {
-        let mut t = Transcript::new(111, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(111, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界再见");
         t.set_selection(2, 4);
         // 静音 tick → 消费 pending_delete 删"世界"
@@ -1076,7 +1076,7 @@ mod tests {
     #[test]
     fn selection_deleted_on_first_engine_tick() {
         // pending_delete 在首次 apply 即时消费（不等非空 delta）。
-        let mut t = Transcript::new(112, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(112, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         t.set_selection(0, 2);
         // 静音 tick（same full）
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn db_flush_due_respects_threshold() {
-        let mut t = Transcript::new(107, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(107, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         // 未落库过 → due（即便 threshold 很大）
         assert!(t.db_flush_due(Duration::from_secs(3600)));
         t.mark_db_written();
@@ -1108,7 +1108,7 @@ mod tests {
         // 注：2026-07-24 APPLY 风暴修复后，LCP 基准从 finish_text()(shown) 改为
         // engine_cumulative。引擎通常只改尾部 → LCP 大、diff 小、不会频繁超限。
         // 本测试构造「每次首字符不同」的极端纠正（LCP=0）来触发超限 flush 路径。
-        let mut t = Transcript::new(108, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(108, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("基"); // engine_cumulative="基", shown="基"
         // 每次给完全不同的 3 字符串（首字符不同 → LCP=0，diff=全文 3 char）
         // "ABC","DEF","GHI",... 累积 168 次 ≈ 504 char > 500 → flush
@@ -1137,7 +1137,7 @@ mod user_scenario_tests {
     #[test]
     fn user_scenario_select_hello_speak_welcome() {
         // 用户场景：原文"你好新世界"，选中"你好"，说"欢迎来到"
-        let mut t = Transcript::new(200, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(200, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好新世界");
         assert_eq!(t.finish_text(), "你好新世界");
         // 选中 "你好" [0,2) — 不立即删
@@ -1159,7 +1159,7 @@ mod user_scenario_tests {
     #[test]
     fn user_scenario_select_mid_speak_welcome() {
         // 选中中间文本替换
-        let mut t = Transcript::new(201, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(201, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好新世界");
         t.set_selection(2, 5); // 选中 "新世界"
         // 静音 tick → 消费
@@ -1175,7 +1175,7 @@ mod user_scenario_tests {
     fn diverted_pending_flushed_not_dropped() {
         // 末尾引擎纠正（非前缀，< 500 字）→ diverted 分支早返回，diff 滞留 diverted_pending。
         // 修复前 finalize 只读 segments（finish_text）→ 纠正被静默丢弃。
-        let mut t = Transcript::new(110, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(110, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世"); // engine_cumulative="你好世"，segments=[raw("你好世")]
         // 引擎 end-of-stream 纠正：与最后 partial 发散（"界"≠"世"，非前缀）→ diverted，
         // diff="界" 滞留（< 500 字早返回，未入 segments）。
@@ -1194,7 +1194,7 @@ mod user_scenario_tests {
     fn diverted_pending_flushed_into_pending_delta_when_polish_pending() {
         // polish_pending 时 flush 走 pending_delta（润色回填后由 polish_apply 统一 flush），
         // 不直接改 segments——避免与润色快照竞争。
-        let mut t = Transcript::new(111, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(111, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世");
         t.apply_engine_full("你好界"); // diverted，"界" 滞留
         let _ = t.take_polish_input(); // 标记 polish_pending
@@ -1209,7 +1209,7 @@ mod user_scenario_tests {
 
     #[test]
     fn commit_edit_with_dirty_ranges_marks_edited() {
-        let mut t = Transcript::new(1, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(1, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.append_segment("你好世界");
         // 用户在 offset 2 插入"朋友"（dirty [2,4)），offset 5-7 改为"再见"（dirty [5,7)）
         t.commit_edit("你好朋友世再见", &[(2, 4), (5, 7)], true);
@@ -1227,7 +1227,7 @@ mod user_scenario_tests {
 
     #[test]
     fn commit_edit_empty_dirty_ranges_fallback_all_edited() {
-        let mut t = Transcript::new(1, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(1, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.append_segment("你好");
         t.commit_edit("你好修改", &[], true);
         assert_eq!(t.segments.len(), 1);
@@ -1236,7 +1236,7 @@ mod user_scenario_tests {
 
     #[test]
     fn commit_edit_empty_text_clears_segments() {
-        let mut t = Transcript::new(1, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(1, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.append_segment("你好");
         t.commit_edit("", &[(0, 0)], true);
         assert!(t.segments.is_empty());
@@ -1346,7 +1346,7 @@ mod user_scenario_tests {
     fn apply_engine_full_idempotent_on_same_full_repeated() {
         // 同一 full 连续重复 N 次（静音期引擎重发）→ 必须幂等：
         // 第一次后 engine_cumulative==full，后续 is_prefix=true 且 delta 空 → 不应反复进 diverted。
-        let mut t = Transcript::new(300, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(300, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界");
         let text_after_first = t.finish_text();
         for _ in 0..50 {
@@ -1364,7 +1364,7 @@ mod user_scenario_tests {
         // 引擎持续重发"删除前的全量"（引擎不知道用户删了）→ 每次 is_prefix 对 engine_cumulative 为 true
         // 但若基准失配走入 diverted，shown 的 LCP 永远 < full_len → diff 非空 → 反复累积。
         // 修复后：删除后 engine_cumulative 须与 shown 对齐，或 diverted 分支幂等短路。
-        let mut t = Transcript::new(301, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(301, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("你好世界再见"); // shown=cum="你好世界再见"
         t.set_selection(2, 4); // 选 "世界"
         t.apply_engine_full("你好世界再见"); // 静音 tick → 消费 pending_delete → shown="你好再见", cum 仍="你好世界再见"
@@ -1402,7 +1402,7 @@ mod user_scenario_tests {
         //
         // 触发前提：shown 与 engine_cumulative 分歧（shown 远长于 cum）+ 引擎持续给
         // 非前缀 full（close 时乱吐 / drain 积压 partial）。
-        let mut t = Transcript::new(302, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(302, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("种子"); // cum=shown="种子", consumed=2
         // 模拟历史 diverted flush 导致 shown 膨胀（与 cum 分歧）—— shown 500 字符，cum 仍 2 字符
         t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)) }];
@@ -1431,7 +1431,7 @@ mod user_scenario_tests {
         // 重连场景：pipeline 重建（engine 状态清零）但复用 transcript。
         // reset_engine_baseline 须清 engine 层基准（与空 engine 对齐），
         // 保留 segments（用户已识别文本）+ id + db_inserted + caret_gap。
-        let mut t = Transcript::new(400, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(400, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("已识别的文本"); // engine_cumulative="已识别的文本", segments=[Raw]
         t.apply_engine_full("已识别的文本纠正"); // diverted，diverted_pending 非空
         assert!(!t.engine_cumulative.is_empty(), "前置：engine_cumulative 应非空");
@@ -1455,7 +1455,7 @@ mod user_scenario_tests {
     fn reset_engine_baseline_then_apply_starts_fresh() {
         // 重连后首个 apply_engine_full：空 engine 输出对空 engine_cumulative
         // → is_prefix=true → 正常 delta 生长，不走 diverted 异常累积。
-        let mut t = Transcript::new(401, PolishMode::Intermediate, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(401, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("旧文本"); // cum="旧文本", segments=[Raw("旧文本")]
         t.reset_engine_baseline();
         // 模拟重连后引擎首个输出

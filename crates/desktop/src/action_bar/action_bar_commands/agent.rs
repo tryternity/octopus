@@ -70,7 +70,7 @@ pub fn refresh_agent_detection() -> Result<Vec<crate::action_bar::agent_adapter:
 pub(crate) fn trigger_agent_voice_core(
     item: &octopus_infra::db::ActionBarItem,
     app: &AppHandle,
-    coordinator: &crate::coordinator::Coordinator,
+    coordinator: &crate::engine::coordinator::Coordinator,
     hide_action_bar: bool,
 ) -> Result<(), String> {
     let pending = PENDING_CONTEXT.lock();
@@ -110,7 +110,7 @@ pub(crate) fn trigger_agent_voice_core(
 pub fn trigger_agent_voice(
     item_id: i64,
     app: AppHandle,
-    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+    coordinator: tauri::State<'_, crate::engine::coordinator::Coordinator>,
 ) -> Result<(), String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(e2s)?
@@ -142,6 +142,6 @@ pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
     if task.transcribed_text.trim().is_empty() {
         return Err("识别结果为空，无法重试".into());
     }
-    crate::coordinator::retry_agent_task(&app, &id);
+    crate::engine::coordinator::retry_agent_task(&app, &id);
     Ok(())
 }

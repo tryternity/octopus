@@ -12,7 +12,7 @@
 //! 顺序；DB/polish 被 local + VadSegmented + cloud 三路径共用）。transcript 也留
 //! `Stage::Streaming`，`tick` 接收 `&mut Transcript`。全收敛留 2d。
 
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use log::warn;
 use crate::error_util::e2s;
 use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
@@ -387,7 +387,7 @@ fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec
 /// VadSegmented 伪流式 pipeline：封装双 VAD + 切段 + spawn + 乱序回填（2c-3）。
 /// 非 VAD 依赖字段集合；engine/language/asr_engine/segment_silence_ms 是 config 子集（不 clone 整 AppConfig）。
 pub(crate) struct VadSegmentedPipeline {
-    engine: Arc<dyn crate::engine::TranscriptionEngine>,
+    engine: Arc<dyn crate::engine::engine::TranscriptionEngine>,
     language: String,
     asr_engine: String,
     /// 切段静音阈值（毫秒，来自 config.segment_silence）。
@@ -418,7 +418,7 @@ impl VadSegmentedPipeline {
     /// 构造：加载双 VAD（检测 VAD 预滚）+ 建 channel。
     /// VAD 加载失败 propagate（coordinator start 路径处理 fallback，见 Task 5）。
     pub(crate) fn new(
-        engine: Arc<dyn crate::engine::TranscriptionEngine>,
+        engine: Arc<dyn crate::engine::engine::TranscriptionEngine>,
         language: String,
         asr_engine: String,
         segment_silence_ms: f64,
@@ -698,7 +698,7 @@ mod tests {
             "",
             TranscriptEvent::Final("你好。".to_string()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(t.full(), "你好");
         assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
@@ -713,7 +713,7 @@ mod tests {
             "",
             TranscriptEvent::Final("最终。".to_string()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("最终");
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(t.full(), "最终。"); // Final 前缀推进
@@ -728,7 +728,7 @@ mod tests {
             "",
             TranscriptEvent::Final("".to_string()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("一样");
         let events = p.tick(&[0.0; 1600], &mut t);
         assert!(!events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
@@ -767,7 +767,7 @@ mod tests {
             vec![TranscriptEvent::Partial("你好".to_string())],
             "", TranscriptEvent::Final("".into()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![
             PipelineEvent::Speaking(true),
@@ -780,7 +780,7 @@ mod tests {
     #[test]
     fn tick_events_local_empty_samples_returns_empty() {
         let mut p = pipeline(FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".into())));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         assert!(p.tick(&[], &mut t).is_empty());
     }
 
@@ -790,7 +790,7 @@ mod tests {
         let mut p = pipeline(FakePipelineEngine::new(
             vec![TranscriptEvent::Committed("一样".into())], "", TranscriptEvent::Final("".into()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("一样");
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![PipelineEvent::Speaking(true), PipelineEvent::Polish { silence: 0.0 }]);
@@ -802,7 +802,7 @@ mod tests {
             vec![TranscriptEvent::Committed("已提交".into())],
             "预览中", TranscriptEvent::Final("".into()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         let events = p.tick(&[0.0; 1600], &mut t);
         // changed → PersistRaw + Polish；每 tick Emit(display+partial) = "已提交预览中"
         assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
@@ -815,7 +815,7 @@ mod tests {
             vec![TranscriptEvent::Error("boom".into())],
             "", TranscriptEvent::Final("".into()),
         ));
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         let events = p.tick(&[0.0; 1600], &mut t);
         assert!(events.iter().any(|e| matches!(e, PipelineEvent::Error(msg) if msg == "boom")));
     }
@@ -895,7 +895,7 @@ mod tests {
         let mut results = HashMap::new();
         results.insert(0u64, "甲".to_string());
         results.insert(2u64, "丙".to_string());
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         consume_completed_results_vad(&mut completed_seq, &mut results, &mut t, "zh");
         assert_eq!(t.full(), "甲");
         assert_eq!(completed_seq, 1);
@@ -913,7 +913,7 @@ mod tests {
     /// StreamingPipeline：silence_duration < 0.3 时 Speaking(true)，≥0.3 时 Speaking(false)
     #[test]
     fn streaming_speaking_event_on_silence_change() {
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
 
         // tick 1: silence=0 → speaking=true
         let mut fake1 = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
@@ -946,7 +946,7 @@ mod tests {
         let mut fake = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
         fake.silence = 0.0;
         let mut p = StreamingPipeline::new(Box::new(fake)).unwrap();
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         // 第 1 tick：emit Speaking(true)
         let events = p.tick(&[0.0; 1600], &mut t);
         assert!(events.iter().any(|e| matches!(e, PipelineEvent::Speaking(true))));
@@ -961,7 +961,7 @@ mod tests {
     /// Dummy TranscriptionEngine：全静音不触发 spawn，transcribe 不被调（安全返回即可）。
     struct DummyTranscriptionEngine;
     #[async_trait::async_trait]
-    impl crate::engine::TranscriptionEngine for DummyTranscriptionEngine {
+    impl crate::engine::engine::TranscriptionEngine for DummyTranscriptionEngine {
         async fn transcribe(&self, _: &[f32], _: &str, _: &str) -> anyhow::Result<String> {
             Ok("dummy".to_string())
         }
@@ -971,7 +971,7 @@ mod tests {
     /// 探 silero_vad 可加载则构造 VadSegmentedPipeline，失败返回 None（测试 skip 不 FAIL）。
     fn try_new_vad_pipeline() -> Option<VadSegmentedPipeline> {
         octopus_asr_local::config::create_silero_vad().ok()?;
-        let engine: std::sync::Arc<dyn crate::engine::TranscriptionEngine> =
+        let engine: std::sync::Arc<dyn crate::engine::engine::TranscriptionEngine> =
             std::sync::Arc::new(DummyTranscriptionEngine);
         VadSegmentedPipeline::new(engine, "zh".into(), "sensevoice".into(), 800.0).ok()
     }
@@ -985,7 +985,7 @@ mod tests {
             Some(p) => p,
             None => { println!("skip: 测试环境无 silero_vad 模型"); return; }
         };
-        let mut t = Transcript::new(0, PolishMode::Disabled, crate::coordinator::RecordType::Input);
+        let mut t = Transcript::new(0, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
         // 灌 SEGMENT_DURATION_S(20s) 纯静音：detect_vad 已 preroll 静音稳态 → 判无语音 → has_speech 保持 false。
         // force_cut = buffer_duration_s >= SEGMENT_DURATION_S 触发切段（与 has_speech 无关）→ audio_buffer 清空。
         let silence = vec![0.0_f32; (SEGMENT_DURATION_S * 16000.0) as usize];

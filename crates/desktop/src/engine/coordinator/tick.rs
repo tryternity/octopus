@@ -4,10 +4,10 @@
 //! `dispatch_tick` 是三命令合一的入口，调 pipeline.tick → `apply_pipeline_events` 统一路由；
 //! `check_audio_stall` 是 cpal 断推看门狗（spec 2026-07-24-audio-watchdog §4.1）。
 
-use crate::audio::SharedAudioState;
+use crate::engine::audio::SharedAudioState;
 use crate::config::AppConfig;
 use crate::config::PolishMode;
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use log::{debug, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -120,13 +120,13 @@ pub(crate) fn log_tick_heartbeat(
 
 /// pipeline 事件 → 端动作（DB/emit/polish/错误上报）。2d 统一路由，消除三路径重复。（spec §3.5）
 pub(crate) fn apply_pipeline_events(
-    events: Vec<crate::pipeline::PipelineEvent>,
+    events: Vec<crate::engine::pipeline::PipelineEvent>,
     transcript: &mut Transcript,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    use crate::pipeline::PipelineEvent;
+    use crate::engine::pipeline::PipelineEvent;
     for ev in events {
         match ev {
             PipelineEvent::PersistRaw { engine_mode } => {

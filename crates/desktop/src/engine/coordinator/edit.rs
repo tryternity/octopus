@@ -5,7 +5,7 @@
 
 use crate::config::PolishMode;
 use crate::db_queue::{DbCommand, get_db_sender};
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::atomic::Ordering;
 use super::{

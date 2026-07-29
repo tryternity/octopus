@@ -4,7 +4,7 @@
 //! 录音结束 → `dispatch_by_record_type` 检测 AgentBridge → `execute_agent_task`
 //! 渲染 prompt + 选适配器 + Terminal.app 启动。
 
-use crate::transcript::Transcript;
+use crate::engine::transcript::Transcript;
 use super::{RecordType, Stage};
 use tauri::Emitter;
 

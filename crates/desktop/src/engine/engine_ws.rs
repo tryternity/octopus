@@ -1,5 +1,5 @@
 #[cfg(feature = "remote-ws")]
-use crate::engine::TranscriptionEngine;
+use crate::engine::engine::TranscriptionEngine;
 #[cfg(feature = "remote-ws")]
 use anyhow::{Context, Result};
 #[cfg(feature = "remote-ws")]

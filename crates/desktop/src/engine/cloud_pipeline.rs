@@ -1,11 +1,11 @@
 //! 云端流式 pipeline 引擎（spec §3.4 阶段2c-2，cfg cloud）。
 //!
-//! [`CloudPipelineEngine`] impl [`crate::pipeline::StreamingPipelineEngine`]，把原
+//! [`CloudPipelineEngine`] impl [`crate::engine::pipeline::StreamingPipelineEngine`]，把原
 //! `coordinator::handle_cloud_streaming_tick` 的 ASR 编排（VAD onset / push_pcm / drain
 //! events / partial-transcript 双层 / 静音非阻塞 finish）迁入 `tick`，产
 //! `Vec<TranscriptEvent>`。emit/DB/polish 留 coordinator（§4.2 不对称）。
 
-use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
+use crate::engine::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
 use crate::error_util::e2s;
 use octopus_asr_local::streaming_runner::TranscriptEvent;

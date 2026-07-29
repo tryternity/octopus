@@ -1,4 +1,4 @@
-use crate::engine::TranscriptionEngine;
+use crate::engine::engine::TranscriptionEngine;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;

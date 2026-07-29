@@ -78,7 +78,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
             log::warn!(
                 "polish_mode=2 但 polish_min_interval={}<=0，将使用下限 {}s",
                 config.polish_min_interval,
-                crate::coordinator::MIN_POLISH_INTERVAL_SEC
+                crate::engine::coordinator::MIN_POLISH_INTERVAL_SEC
             );
         }
         match crate::config::llm_config(config.polish_mode) {
