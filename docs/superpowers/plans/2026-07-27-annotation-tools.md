@@ -1,10 +1,10 @@
 # 标注工具扩充实施计划
 
-> **Status: 🔶 大部分完成**（Task 1/2/4/6/7 + Task 3/5 的 highlight/eraser/clearAll 均已实现；**deleteSelected 按钮未接线**见下）。2026-07-29 z-sync 回填 checkbox。
+> **Status: ✅ 已完成**（Task 1/2/4/6/7 + Task 3/5 的 highlight/eraser/clearAll 均已实现）。2026-07-29 z-sync 回填 checkbox。
 >
-> ⚠️ **未完成项**（2 个 step 标 `[ ]`）：Task 3 Step 4 + Task 5 Step 2 的 **`deleteSelected` 按钮在 AnnotationToolbar 和 ImagePreview Toolbar 都未渲染**——底层 `deleteSelectedAnnotation` action、props、i18n 文案、`trash.svg` 图标全齐，但工具栏没接线。当前删除选中标注走键盘 Delete/Backspace（Screenshot/RecordAnnotation），且这两处直接 `setAnnotations.filter` 删除、**绕过 action、未推入 redoStack**（undo 不回来）。待办：补工具栏按钮，或把键盘删除改走 `deleteSelectedAnnotation()`。
+> ~~⚠️ 未完成项~~ **已解决（2026-07-29）**：原 Task 3 Step 4 + Task 5 Step 2 的 `deleteSelected` 按钮曾未接线。用户决定**取消该功能**，相关代码（`deleteSelectedAnnotation` action、props、i18n `screenshot.tool.deleteSelected`、`trash.svg` 图标）已全部清理。删除选中标注统一走键盘 Delete/Backspace。
 >
-> **其他偏差**：i18n 实际 key 是 `screenshot.tool.clear` / `imagePreview.clear`（非 plan 写的 `clearAll`/`deleteSelected`，功能等价）；Task 4 方案 A 的 `eraseAnnotationAt` 已实现（useAnnotationState.ts:168-181）。
+> **其他偏差**：i18n 实际 key 是 `screenshot.tool.clear` / `imagePreview.clear`（非 plan 写的 `clearAll`，功能等价）；Task 4 方案 A 的 `eraseAnnotationAt` 已实现（useAnnotationState.ts:168-181）。
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -231,9 +231,9 @@ eraser 也是工具按钮（切换到 eraser 模式），加在 blur 之后：
 
 注意：eraser 工具按钮的 onClick 行为和其他工具一致（切换 tool + 弹 popover），但 eraser 不需要 popover 属性。在 `onToolSelect` 里 eraser 走正常切换逻辑即可。
 
-- [ ] **Step 4: 加 deleteSelected + clearAll 按钮** ⚠️ **部分实现**（2026-07-29 z-sync 核对）
+- [x] **Step 4: 加 deleteSelected + clearAll 按钮**（2026-07-29 调整：clearAll ✅ 已实现；**deleteSelected 功能取消**——用户决定不要该按钮，相关代码已全部清理）
 
-> **偏差**：`clearAll` 按钮已加（:286-300，用 `t("screenshot.tool.clear")` + `icons/clear.svg`）；但 **`deleteSelected` 按钮从未渲染**——底层 `deleteSelectedAnnotation` action、props、i18n 文案 `deleteSelected`、`trash.svg` 图标全都齐备，工具栏却没接线。Screenshot/RecordAnnotation 改用键盘 Delete/Backspace 删除选中标注（Screenshot L527-534、RecordAnnotation L363-371），但这两处直接 `setAnnotations.filter` 删除、**绕过了 `deleteSelectedAnnotation()` action，未推入 redoStack**（删了 undo 不回来）。待办：要么补上工具栏 `deleteSelected` 按钮，要么把键盘删除路径改走 action。
+> **变更**：`clearAll` 按钮已加（:286-300，用 `t("screenshot.tool.clear")` + `icons/clear.svg`）。原 `deleteSelected` 按钮从未接线，2026-07-29 用户决定**取消该功能**，`deleteSelectedAnnotation` action、props、i18n `screenshot.tool.deleteSelected`、`trash.svg` 图标已全部删除。删除选中标注统一走键盘 Delete/Backspace。下方代码块中的 deleteSelected 部分仅作历史记录。
 
 在 undo/redo 之后、`{children}` 之前加两个操作按钮（非工具切换，是直接 action）：
 
@@ -408,9 +408,9 @@ case "highlight": {
 }
 ```
 
-- [ ] **Step 2: Toolbar 加 highlight + eraser + deleteSelected + clearAll** ⚠️ **部分实现**（2026-07-29 z-sync 核对）
+- [x] **Step 2: Toolbar 加 highlight + eraser + deleteSelected + clearAll**（2026-07-29 调整：highlight/eraser/clearAll ✅ 已实现；**deleteSelected 功能取消**，相关代码已清理）
 
-> **偏差**：`highlight` 在 tools 数组（:132）、`eraser` 独立按钮（:185-195）、`clearAll` 按钮（:203-205，用 `onClearAll` + `icons/clear.svg`）均已实现；但 **`deleteSelected` 按钮未渲染**——prop 类型声明有（:70 `onDeleteSelected`/`canDeleteSelected`）、index.tsx 也传了（:796），但 Toolbar 内从未渲染对应按钮（无 `trash.svg` ToolButton）。与 Task 3 Step 4 同一问题：底层齐全，按钮缺失。
+> **变更**：`highlight` 在 tools 数组（:132）、`eraser` 独立按钮（:185-195）、`clearAll` 按钮（:203-205）均已实现。原 `deleteSelected` 按钮从未渲染，2026-07-29 用户决定**取消该功能**，prop 声明（`onDeleteSelected`/`canDeleteSelected`）+ index.tsx 传参已全部删除。与 Task 3 Step 4 同步处理。
 
 Read `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx`。
 

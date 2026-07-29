@@ -67,7 +67,6 @@ export default function Toolbar(props: {
   qrActive: boolean;
   onUndo: () => void; canUndo: boolean;
   onRedo: () => void; canRedo: boolean;
-  onDeleteSelected: () => void; canDeleteSelected: boolean;
   onClearAll: () => void; canClearAll: boolean;
   ocrCopied: boolean;
   ocrWarn: boolean;

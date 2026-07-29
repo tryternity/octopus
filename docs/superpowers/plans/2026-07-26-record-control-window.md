@@ -2,7 +2,7 @@
 
 > Spec: [`2026-07-26-record-control-window.md`](../specs/2026-07-26-record-control-window.md)
 >
-> **Status: 🔶 大部分完成**（2026-07-29 z-sync 回填 checkbox）。⚠️ **遗留 bug**：tray 停止路径（`tray.rs:245-261`）漏调 `close_control_window`，display/window 录制从托盘停止时 pill 残留——其余 3 条停止路径（ESC/stop-requested/kill）都正确关闭。
+> **Status: ✅ 已完成**（2026-07-29 z-sync 回填 checkbox + 修复 tray pill bug）。原遗留 bug（tray 停止路径漏调 `close_control_window`）已修复，4 条停止路径（ESC/stop-requested/kill/tray）现全部正确关闭 pill。
 
 ## 任务分解
 
@@ -71,7 +71,7 @@ cd crates/desktop/frontend && npm run build
 - [x] window 录制 → 主屏右下角 pill（fallback，window_id → display 查询推迟）
 - [x] 暂停/恢复：红点变灰 + 时长停 / 恢复
 - [x] ESC 停止：pill 消失
-- [ ] tray 停止：pill 消失 ⚠️ **未实现**（2026-07-29 z-sync 核对：tray.rs:245-261 停止路径漏调 close_control_window，display/window 录制从托盘停止时 pill 残留；其余 3 条停止路径 ESC/stop-requested/kill 都正确关闭）
+- [x] tray 停止：pill 消失（2026-07-29 修复：tray.rs 停止路径补调 `close_control_window`，与 ESC/stop-requested/kill 路径一致）
 - [x] kill 路径：pill 不残留
 - [x] area 录制：无 pill（只有 RecordAnnotation）
 

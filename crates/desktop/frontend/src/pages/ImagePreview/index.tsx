@@ -54,7 +54,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
-  // 选中标注索引（tool==="none" 命中后高亮 + 供 deleteSelected 删除）
+  // 选中标注索引（tool==="none" 命中后高亮）
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
@@ -647,20 +647,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     setSelectedAnn(null);
   };
 
-  // deleteSelected：删除当前选中索引，推入 redo，清空 selectedAnn。
-  const deleteSelectedAnnotation = () => {
-    setSelectedAnn((sel) => {
-      if (sel === null) return null;
-      setAnnotations((prev) => {
-        if (sel < 0 || sel >= prev.length) return prev;
-        redoStackRef.current.push(prev[sel]);
-        setRedoAvailable(true);
-        return prev.filter((_, j) => j !== sel);
-      });
-      return null;
-    });
-  };
-
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
     const img = imgRef.current;
@@ -793,7 +779,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         onQrScan={handleQrScan} qrActive={qrScanning || qrResult !== null}
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
-        onDeleteSelected={deleteSelectedAnnotation} canDeleteSelected={selectedAnn !== null}
         onClearAll={clearAllAnnotations} canClearAll={annotations.length > 0}
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         ocrMode={ocrOverlay}

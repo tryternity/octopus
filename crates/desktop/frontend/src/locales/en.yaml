@@ -583,7 +583,6 @@ settings:
     noMore: — No more —
     totalN: ${n} records total
     confirmDeleteN: Confirm delete ${n} items
-    deleteSelected: Delete Selected
     allLoaded: All loaded
     loadedN: ${n} loaded
     copied: Copied
@@ -766,7 +765,6 @@ settings:
     leafNoSubItemsHint: This is a leaf command (not a submenu container), no sub-items
     selectMenuHint: Select a menu from the left
     selectAll: Select All
-    deleteSelected: Delete Selected
     moveUp: Move up
     moveDown: Move down
     edit: Edit
@@ -809,7 +807,6 @@ settings:
     allLoaded: — All loaded —
     totalN: ${n} total
     confirmDeleteN: Confirm delete ${n} items
-    deleteSelected: Delete Selected
     showingN: Showing ${n}
     copyFailed: "Copy failed:"
     deleted: Deleted
@@ -954,7 +951,6 @@ screenshot:
     eraser: Eraser
     undo: Undo
     redo: Redo
-    deleteSelected: Delete Selected
     clearAll: Clear All
     qrcode: QR Code
   scrollShot: Scroll Capture

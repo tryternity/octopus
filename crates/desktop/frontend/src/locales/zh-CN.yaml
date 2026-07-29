@@ -960,7 +960,6 @@ screenshot:
     eraser: 橡皮擦
     undo: 撤销
     redo: 重做
-    deleteSelected: 删除选定
     clearAll: 清空标注
     qrcode: 二维码
   scrollShot: 滚动截图
