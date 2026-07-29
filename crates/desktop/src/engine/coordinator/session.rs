@@ -49,8 +49,8 @@ pub(crate) fn begin_recording(
         error!("Failed to start recording: {}", e);
         // 弹出结果窗 + 红色错误提示，告知用户麦克风不可用
         let _ = app_handle.emit("mic-error", "麦克风不可用，请在系统设置中授权麦克风权限");
-        crate::result_window::show_result(app_handle, "");
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::ui::result_window::show_result(app_handle, "");
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
     }
 
@@ -98,12 +98,12 @@ pub(crate) fn prepare_cloud_streaming_session(
                 };
                 if is_continuation {
                     // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
-                    crate::result_window::show_result(app_handle, "正在聆听…");
-                    crate::result_window::update_result(app_handle, &show_text, false, 0);
+                    crate::ui::result_window::show_result(app_handle, "正在聆听…");
+                    crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
                 } else {
-                    crate::result_window::show_result(app_handle, &show_text);
+                    crate::ui::result_window::show_result(app_handle, &show_text);
                 }
-                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+                crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
                 let cloud_engine = crate::engine::cloud_pipeline::CloudPipelineEngine::new(
                     vad,
@@ -116,8 +116,8 @@ pub(crate) fn prepare_cloud_streaming_session(
                     Err(e) => {
                         error!("StreamingPipeline (cloud) init failed: {}, abort", e);
                         let _ = audio.stop();
-                        crate::result_window::hide_result(app_handle);
-                        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                        crate::ui::result_window::hide_result(app_handle);
+                        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                         return;
                     }
                 };
@@ -178,8 +178,8 @@ pub(crate) fn prepare_streaming_session(
                 Err(e2) => {
                     error!("默认流式引擎也失败: {}", e2);
                     let _ = audio.stop();
-                    crate::result_window::hide_result(app_handle);
-                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                    crate::ui::result_window::hide_result(app_handle);
+                    crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                     return;
                 }
             }
@@ -201,12 +201,12 @@ pub(crate) fn prepare_streaming_session(
     if is_continuation {
         // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
         // 直接 update_result 展示旧文本，保持前端 displayedRef 同步，caret 由后续 update-result 驱动。
-        crate::result_window::show_result(app_handle, "正在聆听…");
-        crate::result_window::update_result(app_handle, &show_text, false, 0);
+        crate::ui::result_window::show_result(app_handle, "正在聆听…");
+        crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
     } else {
-        crate::result_window::show_result(app_handle, &show_text);
+        crate::ui::result_window::show_result(app_handle, &show_text);
     }
-    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+    crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
     // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
     let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
@@ -214,8 +214,8 @@ pub(crate) fn prepare_streaming_session(
         Err(e) => {
             error!("LocalPipelineEngine init failed: {}, abort streaming", e);
             let _ = audio.stop();
-            crate::result_window::hide_result(app_handle);
-            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+            crate::ui::result_window::hide_result(app_handle);
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
             return;
         }
     };
@@ -224,8 +224,8 @@ pub(crate) fn prepare_streaming_session(
         Err(e) => {
             error!("StreamingPipeline init failed: {}, abort streaming", e);
             let _ = audio.stop();
-            crate::result_window::hide_result(app_handle);
-            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+            crate::ui::result_window::hide_result(app_handle);
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
             return;
         }
     };
@@ -272,12 +272,12 @@ pub(crate) fn prepare_vad_segmented_session(
                 (Transcript::new(tid, config.polish_mode, record_type.clone()), "正在聆听…".to_string(), false)
             };
             if is_continuation {
-                crate::result_window::show_result(app_handle, "正在聆听…");
-                crate::result_window::update_result(app_handle, &show_text, false, 0);
+                crate::ui::result_window::show_result(app_handle, "正在聆听…");
+                crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
             } else {
-                crate::result_window::show_result(app_handle, &show_text);
+                crate::ui::result_window::show_result(app_handle, &show_text);
             }
-            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
             let tick_active = Arc::new(AtomicBool::new(true));
             start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());

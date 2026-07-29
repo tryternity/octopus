@@ -142,16 +142,16 @@ mod tests {
     #[test]
     fn dock_state_round_trip() {
         let label = "test_window_dock_roundtrip";
-        crate::window_position::save_dock_state(label, "right");
-        let loaded = crate::window_position::load_dock_state(label);
+        crate::ui::window_position::save_dock_state(label, "right");
+        let loaded = crate::ui::window_position::load_dock_state(label);
         assert_eq!(loaded.as_deref(), Some("right"));
 
-        crate::window_position::save_dock_state(label, "left");
-        let loaded = crate::window_position::load_dock_state(label);
+        crate::ui::window_position::save_dock_state(label, "left");
+        let loaded = crate::ui::window_position::load_dock_state(label);
         assert_eq!(loaded.as_deref(), Some("left"));
 
-        crate::window_position::save_dock_state(label, "none");
-        let loaded = crate::window_position::load_dock_state(label);
+        crate::ui::window_position::save_dock_state(label, "none");
+        let loaded = crate::ui::window_position::load_dock_state(label);
         assert_eq!(loaded.as_deref(), Some("none"));
     }
 }

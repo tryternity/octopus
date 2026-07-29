@@ -34,7 +34,7 @@ pub fn create_result_window(app: &tauri::AppHandle) {
         return;
     }
 
-    match crate::window_factory::build_float_window(app, crate::window_factory::FloatWindowSpec {
+    match crate::ui::window_factory::build_float_window(app, crate::ui::window_factory::FloatWindowSpec {
         label: WINDOW_LABEL,
         url: "result.html",
         title: "Result",
@@ -52,7 +52,7 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     }) {
         Ok(window) => {
             // 恢复上次位置（不可见时 fallback 到顶部居中）
-            crate::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
+            crate::ui::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
                 if let Ok(Some(m)) = w.primary_monitor() {
                     let x = (m.size().width as f64 / m.scale_factor() - RESULT_WIDTH) / 2.0;
                     let _ = w.set_position(tauri::Position::Logical(
@@ -65,7 +65,7 @@ pub fn create_result_window(app: &tauri::AppHandle) {
             let win_clone = window.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Moved(_) = event {
-                    crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+                    crate::ui::window_position::save_current_position(&win_clone, WINDOW_LABEL);
                 }
             });
 

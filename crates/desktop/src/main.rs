@@ -7,7 +7,6 @@ mod action_bar;
 // 整体 cfg 掉（gate 在 vault/mod.rs 内部）。vault_secret_access **总是**编译
 // （云端推理热路径 chokepoint，feature off 时退化为返回 raw 原值的 no-op）。
 pub mod vault;
-mod overlay_window;
 mod bootstrap;
 mod setup;
 mod config;
@@ -16,34 +15,27 @@ mod invoke_handler;
 mod clipboard;
 mod commands;
 
-mod i18n;
 // ASR 全栈功能域：engine/mod.rs 内部按 feature gate 守护 cloud / remote-ws / remote-grpc 子 mod。
 mod engine;
 mod db_queue;
 mod error_util;
 mod extensions;
 mod file_watcher;
-mod download_window;
-mod pin_window;
 mod perf_log;
-mod result_window;
 // 录屏 + 截图功能域（Task 10/14/2.1，2026-07）：record/mod.rs 内部按 target_os 守护，
 // windows/linux 编译时 record_* 子 mod 整体为空，
 // 对应 invoke_handler 注册项也用 cfg gate（见 invoke_handler.rs::handler! 宏）。
 mod record;
 mod runtime_config;
-mod settings_window;
-mod onboarding_window;
 mod shortcut;
-mod theme;
-mod tray;
-mod window_factory;
-mod window_position;
+mod ui;
 
 use commands::compact_editor_window;
 use engine::coordinator::Coordinator;
 use log::info;
 use tauri::Manager;
+use ui::settings_window;
+use ui::onboarding_window;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

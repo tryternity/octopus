@@ -1,8 +1,8 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 
-const ZH_CN_YAML: &str = include_str!("../frontend/src/locales/zh-CN.yaml");
-const EN_YAML: &str = include_str!("../frontend/src/locales/en.yaml");
+const ZH_CN_YAML: &str = include_str!("../../frontend/src/locales/zh-CN.yaml");
+const EN_YAML: &str = include_str!("../../frontend/src/locales/en.yaml");
 
 type Dict = HashMap<String, String>;
 

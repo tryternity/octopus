@@ -100,7 +100,7 @@ pub(crate) fn commit_edit_apply(
             }) {
                 warn!("Queue DB UpdateEditedSegments (idle) failed: {}", e);
             }
-            crate::result_window::update_result(app_handle, text, false, 0);
+            crate::ui::result_window::update_result(app_handle, text, false, 0);
             info!("Edit committed in Idle (id={}, {} chars)", id, text.chars().count());
             return;
         }
@@ -123,7 +123,7 @@ pub(crate) fn commit_edit_apply(
             warn!("Queue DB UpdateEditedSegments failed: {}", e);
         }
     }
-    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
+    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
     info!("Edit committed ({} chars)", text.chars().count());
 }
 

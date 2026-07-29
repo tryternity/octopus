@@ -10,7 +10,7 @@
 //! `show_password_generator_window`。位置跟随前台浏览器窗口（fallback 到鼠标位置）。
 
 use tauri::{AppHandle, Manager};
-use crate::window_factory::{build_float_window, FloatWindowSpec};
+use crate::ui::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "password_generator_window";
 

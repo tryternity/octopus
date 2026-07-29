@@ -88,7 +88,7 @@ pub(crate) fn do_paste(
     // swap 消费确保只翻译一次（多个 do_paste 调用只有首个触发）。
     let text_to_paste_owned: String;
     let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
-        crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+        crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...");
         // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
         // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）。
         // do_translate 已 async 化（云端引擎走 HTTP）——coordinator 非 tokio 线程，
@@ -116,7 +116,7 @@ pub(crate) fn do_paste(
         text_to_paste
     };
 
-    crate::result_window::show_result(app_handle, text_to_paste);
+    crate::ui::result_window::show_result(app_handle, text_to_paste);
 
     *stage = Stage::Pasting {
         id,

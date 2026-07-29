@@ -54,8 +54,8 @@ pub(crate) fn dispatch_by_record_type(
 pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_text: &str) {
     // 所有早返回路径统一执行 hide_result + tray Idle
     let cleanup = || {
-        crate::result_window::hide_result(app_handle);
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::ui::result_window::hide_result(app_handle);
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
     };
 
     if let Err(e) = octopus_infra::db::update_agent_task_result(task_id, transcribed_text) {
@@ -98,8 +98,8 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
                                 task.agent_key
                             );
                             let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-                            crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
-                            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                            crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                             return;
                         }
                     }
@@ -114,8 +114,8 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
             } else {
                 let msg = "没有可用的 agent（菜单未指定；默认不可用；列表全部未安装）".to_string();
                 let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-                crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
-                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                 return;
             }
         }
@@ -131,15 +131,15 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
         match TerminalAppLauncher.spawn(&command, std::path::Path::new(&cwd)) {
             Ok(()) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "done", "");
-                crate::result_window::hide_result(&app_clone);
+                crate::ui::result_window::hide_result(&app_clone);
             }
             Err(e) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", &e);
-                crate::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e));
+                crate::ui::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e));
             }
         }
         let _ = app_clone.emit("agent-task://updated", ());
-        crate::tray::update_tray_label(&app_clone, crate::tray::TrayState::Idle);
+        crate::ui::tray::update_tray_label(&app_clone, crate::ui::tray::TrayState::Idle);
     });
 }
 

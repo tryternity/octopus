@@ -70,7 +70,7 @@ fn fmt_engine_label() -> String {
         }
     };
     let provider_display = if resolved.provider == "local" {
-        crate::i18n::t("settings.models.local", &[])
+        crate::ui::i18n::t("settings.models.local", &[])
     } else {
         resolved.provider
     };
@@ -115,11 +115,11 @@ fn list_microphone_devices() -> Vec<String> {
 /// 当前为空串时显示「默认设备」。
 fn fmt_microphone_parent_text(current: &str) -> String {
     let display = if current.is_empty() {
-        crate::i18n::t("tray.microphoneDefault", &[])
+        crate::ui::i18n::t("tray.microphoneDefault", &[])
     } else {
         current.to_string()
     };
-    format!("{}: {}", crate::i18n::t("tray.microphone", &[]), display)
+    format!("{}: {}", crate::ui::i18n::t("tray.microphone", &[]), display)
 }
 
 /// 构建麦克风子菜单：父项 + 「默认设备」项。
@@ -135,7 +135,7 @@ fn build_microphone_submenu(
     let default_item = CheckMenuItem::with_id(
         app,
         MIC_DEFAULT_ID,
-        &crate::i18n::t("tray.microphoneDefault", &[]),
+        &crate::ui::i18n::t("tray.microphoneDefault", &[]),
         true,
         current_mic.is_empty(),
         None::<&str>,
@@ -222,13 +222,13 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         *RECORD_SHORTCUT.lock() = config.record_shortcut.clone();
     }
     let sc = fmt_shortcut(&config.asr_shortcut);
-    let toggle_text = crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]);
+    let toggle_text = crate::ui::i18n::t("tray.startAsr", &[("shortcut", &sc)]);
     let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
         .map_err(|e| format!("toggle menu: {e}"))?;
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        &crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]),
+        &crate::ui::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]),
         false,
         None::<&str>,
     )
@@ -242,14 +242,14 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let sep1 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator: {e}"))?;
 
-    let screenshot_text = crate::i18n::t("tray.screenshot", &[("shortcut", &fmt_shortcut(&config.screenshot_shortcut))]);
+    let screenshot_text = crate::ui::i18n::t("tray.screenshot", &[("shortcut", &fmt_shortcut(&config.screenshot_shortcut))]);
     let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
         .map_err(|e| format!("screenshot menu: {e}"))?;
-    let clipboard_text = crate::i18n::t("tray.clipboard", &[("shortcut", &fmt_shortcut(&config.clipboard_shortcut))]);
+    let clipboard_text = crate::ui::i18n::t("tray.clipboard", &[("shortcut", &fmt_shortcut(&config.clipboard_shortcut))]);
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .map_err(|e| format!("clipboard menu: {e}"))?;
     // 图文编辑：打开空白 CompactEditor（临时文本 tab，不写 DB）。
-    let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
+    let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::ui::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
         .map_err(|e| format!("compact_editor menu: {e}"))?;
 
     // ── 录屏组（Task 14，2026-07-25）：仅 macOS 编译 ──
@@ -268,7 +268,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let record_start = MenuItem::with_id(
         app,
         "record_start",
-        &crate::i18n::t("tray.recordStart", &[("shortcut", &record_sc_display)]),
+        &crate::ui::i18n::t("tray.recordStart", &[("shortcut", &record_sc_display)]),
         true,
         None::<&str>,
     )
@@ -277,12 +277,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
 
-    let settings = MenuItem::with_id(app, "settings", &crate::i18n::t("tray.settings", &[]), true, None::<&str>)
+    let settings = MenuItem::with_id(app, "settings", &crate::ui::i18n::t("tray.settings", &[]), true, None::<&str>)
         .map_err(|e| format!("settings menu: {e}"))?;
     // 系统设置（顶部）与下方功能组之间的分隔线（2026-07-29）。
     let sep_settings = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator_settings: {e}"))?;
-    let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
+    let quit = MenuItem::with_id(app, "quit", &crate::ui::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
     // 菜单组装（用户决策 2026-07-25；2026-07-29 调整 settings 位置 + 加麦克风子菜单）：
@@ -346,7 +346,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         .icon(
             app.default_window_icon()
                 .cloned()
-                .unwrap_or_else(|| Image::from_bytes(include_bytes!("../icons/icon.png")).unwrap()),
+                .unwrap_or_else(|| Image::from_bytes(include_bytes!("../../icons/icon.png")).unwrap()),
         )
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -419,7 +419,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             }
             "settings" => {
                 info!("Tray: open settings");
-                crate::settings_window::open_settings(app.clone(), None);
+                crate::ui::settings_window::open_settings(app.clone(), None);
             }
             "screenshot" => {
                 info!("Tray: start screenshot");
@@ -457,9 +457,9 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
 pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
     let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
     let label = match state {
-        TrayState::Idle => crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]),
-        TrayState::Recording => crate::i18n::t("tray.stopAsr", &[]),
-        TrayState::Processing => crate::i18n::t("tray.processing", &[]),
+        TrayState::Idle => crate::ui::i18n::t("tray.startAsr", &[("shortcut", &sc)]),
+        TrayState::Recording => crate::ui::i18n::t("tray.stopAsr", &[]),
+        TrayState::Processing => crate::ui::i18n::t("tray.processing", &[]),
     };
 
     let items = TRAY_ITEMS.lock();
@@ -473,7 +473,7 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 /// `engine_spec` / `engine_mode` 参数已废弃（Task 2 后从 ACTIVE_ENGINES 缓存取激活引擎），
 /// 保留以减小调用方改动。
 pub fn update_tray_engine_label(_app: &tauri::AppHandle, _engine_spec: &str, _engine_mode: &str) {
-    let label = crate::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]);
+    let label = crate::ui::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]);
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
@@ -498,10 +498,10 @@ pub fn rebuild_tray_labels(config: &AppConfig) {
         let asr_sc = fmt_shortcut(&config.asr_shortcut);
         let screenshot_sc = fmt_shortcut(&config.screenshot_shortcut);
         let clipboard_sc = fmt_shortcut(&config.clipboard_shortcut);
-        let _ = tray_items.toggle.set_text(crate::i18n::t("tray.startAsr", &[("shortcut", &asr_sc)]));
-        let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &screenshot_sc)]));
-        let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &clipboard_sc)]));
-        let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
+        let _ = tray_items.toggle.set_text(crate::ui::i18n::t("tray.startAsr", &[("shortcut", &asr_sc)]));
+        let _ = tray_items.screenshot.set_text(crate::ui::i18n::t("tray.screenshot", &[("shortcut", &screenshot_sc)]));
+        let _ = tray_items.clipboard.set_text(crate::ui::i18n::t("tray.clipboard", &[("shortcut", &clipboard_sc)]));
+        let _ = tray_items.compact_editor.set_text(crate::ui::i18n::t("tray.compactEditor", &[]));
         #[cfg(target_os = "macos")]
         {
             // 录屏项文案：idle 时「开始录屏 ⌘⇧R」，recording/paused 时「停止录屏」。
@@ -509,8 +509,8 @@ pub fn rebuild_tray_labels(config: &AppConfig) {
             let label = record_menu_label_for_current_state();
             let _ = tray_items.record_start.set_text(label);
         }
-        let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
-        let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
+        let _ = tray_items.settings.set_text(crate::ui::i18n::t("tray.settings", &[]));
+        let _ = tray_items.quit.set_text(crate::ui::i18n::t("tray.quit", &[]));
         // 麦克风子菜单父项文案（子项设备名不随语言变；语言切换只更新父项前缀文案）。
         let _ = tray_items.mic_submenu.set_text(fmt_microphone_parent_text(&config.microphone));
     }
@@ -527,7 +527,7 @@ fn record_menu_label_for_current_state() -> String {
     // 同步拿不到 session state（async）——rebuild 场景极少，默认用 Idle 文案。
     // 运行时 state 变化由 update_record_tray_label 主动调（start/stop 路径）。
     let sc = fmt_shortcut(&RECORD_SHORTCUT.lock().clone());
-    crate::i18n::t("tray.recordStart", &[("shortcut", &sc)])
+    crate::ui::i18n::t("tray.recordStart", &[("shortcut", &sc)])
 }
 
 /// 根据录制状态更新录屏菜单文案（start/stop 路径调用）。
@@ -541,10 +541,10 @@ pub fn update_record_tray_label(recording: bool) {
         // ● 是 U+25CF，macOS menu 渲染为当前文本色（深色菜单栏=白，浅色=黑），
         // 不是真红色——真红点需替换 tray icon PNG（P1-3 后续，待用户提供图标）。
         // 现版本：文本红点作为菜单栏视觉提示（P1-7 浮窗已有红点动画，tray 是补充）。
-        format!("● {}", crate::i18n::t("tray.recordStop", &[("shortcut", "⎋")]))
+        format!("● {}", crate::ui::i18n::t("tray.recordStop", &[("shortcut", "⎋")]))
     } else {
         let sc = fmt_shortcut(&RECORD_SHORTCUT.lock().clone());
-        crate::i18n::t("tray.recordStart", &[("shortcut", &sc)])
+        crate::ui::i18n::t("tray.recordStart", &[("shortcut", &sc)])
     };
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {

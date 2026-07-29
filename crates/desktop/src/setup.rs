@@ -65,7 +65,7 @@ impl<'a> AppSetup<'a> {
             .unwrap_or(true); // config 加载失败也弹引导页（首次启动常见）
         if onboarding_needed {
             log::info!("[startup] 首次启动，打开权限引导页");
-            crate::onboarding_window::open_onboarding(self.app.handle());
+            crate::ui::onboarding_window::open_onboarding(self.app.handle());
         }
 
         // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -375,7 +375,7 @@ impl<'a> AppSetup<'a> {
                 missing.len(),
                 missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>()
             );
-            crate::download_window::create_download_window(self.app.handle());
+            crate::ui::download_window::create_download_window(self.app.handle());
         } else {
             log::info!("[startup] builtin 模型全部就绪");
         }
@@ -391,7 +391,7 @@ impl<'a> AppSetup<'a> {
 
         // Create + register action bar window (AI command palette)
         crate::action_bar::action_bar_window::create_action_bar_window(self.app.handle());
-        crate::overlay_window::create_overlay_window(self.app.handle());
+        crate::ui::overlay_window::create_overlay_window(self.app.handle());
         crate::action_bar::action_hotkey::register_action_hotkeys(self.app.handle());
         // 录屏快捷键（config-driven，与 screenshot 同模式）：
         // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
@@ -642,21 +642,21 @@ impl<'a> AppSetup<'a> {
     /// i18n 初始化 + tray 创建 + 麦克风子菜单预热 + locale 变化 listener。
     fn init_tray(&self) {
         // 4. Initialize i18n + Create Tray
-        crate::i18n::init(&self.config.ui_language);
-        if let Err(e) = crate::tray::create_tray(self.app.handle(), &self.config) {
+        crate::ui::i18n::init(&self.config.ui_language);
+        if let Err(e) = crate::ui::tray::create_tray(self.app.handle(), &self.config) {
             log::error!("Tray init failed ({}), running without tray menu", e);
         }
         // 麦克风子菜单设备项后台预热：cpal 枚举放后台线程，避免阻塞主线程
         // 导致 WKWebView 内容进程启动超时被杀（web content process terminated）。
-        crate::tray::preheat_microphone_submenu(self.app.handle(), &self.config.microphone);
+        crate::ui::tray::preheat_microphone_submenu(self.app.handle(), &self.config.microphone);
 
         // 4.1 Listen for locale changes → rebuild tray menu labels
         {
             let app_handle = self.app.handle().clone();
             self.app.listen("locale-changed", move |_event| {
                 let cfg = octopus_infra::config::load_config().unwrap_or_default();
-                crate::i18n::reload(&cfg.ui_language);
-                crate::tray::rebuild_tray_labels(&cfg);
+                crate::ui::i18n::reload(&cfg.ui_language);
+                crate::ui::tray::rebuild_tray_labels(&cfg);
                 let _ = app_handle; // keep handle alive
             });
         }
@@ -665,7 +665,7 @@ impl<'a> AppSetup<'a> {
     /// 结果窗创建（启动时预创建壳，触发时只 set_position + show）。
     fn create_result_window(&self) {
         // 5. Create Result Window
-        crate::result_window::create_result_window(self.app.handle());
+        crate::ui::result_window::create_result_window(self.app.handle());
     }
 
     /// ASR + edit + polish 全局快捷键注册。
@@ -676,12 +676,12 @@ impl<'a> AppSetup<'a> {
         }
 
         // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
-        if let Err(e) = crate::result_window::register_edit_global_shortcut(self.app.handle(), &self.config.edit_global_shortcut) {
+        if let Err(e) = crate::ui::result_window::register_edit_global_shortcut(self.app.handle(), &self.config.edit_global_shortcut) {
             log::error!("Failed to register global edit shortcut: {}", e);
         }
 
         // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
-        if let Err(e) = crate::result_window::register_polish_global_shortcut(self.app.handle(), &self.config.polish_global_shortcut) {
+        if let Err(e) = crate::ui::result_window::register_polish_global_shortcut(self.app.handle(), &self.config.polish_global_shortcut) {
             log::error!("Failed to register global polish shortcut: {}", e);
         }
 

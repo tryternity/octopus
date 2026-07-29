@@ -13,7 +13,7 @@
 #![cfg(target_os = "macos")]
 
 use tauri::{AppHandle, Emitter, Manager};
-use crate::window_factory::{build_float_window, FloatWindowSpec};
+use crate::ui::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "record_config_window";
 

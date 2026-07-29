@@ -82,8 +82,8 @@ pub(crate) fn handle_cancel(
         }
     }
     *stage = Stage::Idle;
-    crate::result_window::hide_result(app_handle);
-    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+    crate::ui::result_window::hide_result(app_handle);
+    crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
 }
 
 /// handle_discard 从当前 stage 提取的 DB finalize 数据。
@@ -245,6 +245,6 @@ pub(crate) fn handle_discard(
     }
 
     *stage = Stage::Idle;
-    crate::result_window::hide_result(app_handle);
-    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+    crate::ui::result_window::hide_result(app_handle);
+    crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
 }

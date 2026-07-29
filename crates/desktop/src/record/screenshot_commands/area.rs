@@ -123,7 +123,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     #[cfg(target_os = "macos")]
     save_frontmost_app();
 
-    crate::tray::update_tray_screenshot_label(true);
+    crate::ui::tray::update_tray_screenshot_label(true);
 
 
     // 1. 截所有显示器（多屏并行）。
@@ -709,7 +709,7 @@ pub async fn pin_screenshot(
 
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = sel_win.run_on_main_thread(move || {
-        <crate::pin_window::PinWindowImpl as crate::pin_window::PinWindow>::create(
+        <crate::ui::pin_window::PinWindowImpl as crate::ui::pin_window::PinWindow>::create(
             &png_bytes, pin_x, pin_y, w, h,
         );
         let _ = tx.send(());

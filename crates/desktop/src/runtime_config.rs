@@ -365,7 +365,7 @@ pub fn switch_active_model(
         let engine_mode = octopus_infra::config::load_config()
             .map(|c| c.engine_mode)
             .unwrap_or_else(|_| "embedded".to_string());
-        crate::tray::update_tray_engine_label(&app_handle, "", &engine_mode);
+        crate::ui::tray::update_tray_engine_label(&app_handle, "", &engine_mode);
         preheat_local_engine(engine_manager.inner().clone(), &engine_mode);
         let _ = tauri::Emitter::emit(&app_handle, "config-changed", ());
     }

@@ -249,7 +249,7 @@ pub(crate) async fn start_with_config(
     // 启动成功 → 更新 tray menu 文案为「停止录屏」（toggle 语义）
     if result.is_ok() {
         #[cfg(target_os = "macos")]
-        crate::tray::update_record_tray_label(true);
+        crate::ui::tray::update_record_tray_label(true);
         // Source::Area 时创建标注 overlay（普通 level，SCK 录到选区内 overlay 内容）
         #[cfg(target_os = "macos")]
         {
@@ -494,7 +494,7 @@ async fn stop_and_store_inner(
 
     // 停止 + 入库成功 → tray menu 文案切回「开始录屏」（toggle 语义）
     #[cfg(target_os = "macos")]
-    crate::tray::update_record_tray_label(false);
+    crate::ui::tray::update_record_tray_label(false);
 
     // 录制完成自动在文件管理器高亮文件（用户决策 2026-07-26，record_reveal_after_stop
     // 配置项默认 true）。失败仅 log，不影响录制结果。

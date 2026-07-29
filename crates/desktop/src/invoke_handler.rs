@@ -38,12 +38,12 @@ macro_rules! handler {
             crate::engine::coordinator::set_translation_active,
             crate::engine::coordinator::start_recording,
             // ── result_window ──
-            crate::result_window::result_window_ready,
-            crate::result_window::set_result_click_through,
+            crate::ui::result_window::result_window_ready,
+            crate::ui::result_window::set_result_click_through,
             // ── settings_window / onboarding_window ──
-            crate::settings_window::open_settings,
-            crate::settings_window::get_initial_page,
-            crate::onboarding_window::complete_onboarding,
+            crate::ui::settings_window::open_settings,
+            crate::ui::settings_window::get_initial_page,
+            crate::ui::onboarding_window::complete_onboarding,
             // ── settings_commands（配置 / 历史 / prompt / env）──
             crate::commands::settings_commands::get_config,
             crate::commands::settings_commands::set_config,
@@ -66,7 +66,7 @@ macro_rules! handler {
             crate::commands::model_commands::list_model_files,
             crate::commands::model_commands::download_model,
             crate::commands::builtin_models::check_builtin_models,
-            crate::download_window::close_download_window,
+            crate::ui::download_window::close_download_window,
             crate::commands::model_commands::verify_model,
             crate::commands::model_commands::delete_model,
             crate::commands::model_commands::set_download_mirror,
@@ -157,8 +157,8 @@ macro_rules! handler {
 
             crate::engine::coordinator::current_transcription_id,
             // ── theme ──
-            crate::theme::list_themes,
-            crate::theme::get_theme_id,
+            crate::ui::theme::list_themes,
+            crate::ui::theme::get_theme_id,
             // ── system_status_commands ──
             crate::commands::system_status_commands::get_system_status,
             crate::commands::system_status_commands::subscribe_system_status,

@@ -43,7 +43,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     .build()?;
 
     // 恢复上次位置（不可见时 fallback 到屏幕居中）
-    crate::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
+    crate::ui::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
         if let Ok(Some(m)) = w.primary_monitor() {
             let x = (m.size().width as f64 / m.scale_factor() - 300.0) / 2.0;
             let y = (m.size().height as f64 / m.scale_factor() - 600.0) / 2.0;
@@ -56,12 +56,12 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     // 恢复 dock 状态：如果上次 docked，以 collapsed 态打开（仅 macOS）
     #[cfg(target_os = "macos")]
     {
-    let dock_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
+    let dock_edge = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(ref edge) = dock_edge {
         if edge == "right" || edge == "left" {
             // 用保存的坐标定位目标显示器（不能用 current_monitor——窗口刚创建
             // 还在默认位置，current_monitor 返回主屏，导致副屏 dock 跑到主屏）
-            let saved_pos = crate::window_position::load_window_position(WINDOW_LABEL);
+            let saved_pos = crate::ui::window_position::load_window_position(WINDOW_LABEL);
             let (db_x, db_y) = saved_pos.unwrap_or((0.0, 0.0));
             let monitors = window.available_monitors().unwrap_or_default();
             let target: Option<(f64, f64, f64, f64)> = monitors.iter().find_map(|m| {
@@ -110,7 +110,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 .unwrap_or(0);
             if now_sec != LAST_SAVE_SEC.load(Ordering::Relaxed) {
                 LAST_SAVE_SEC.store(now_sec, Ordering::Relaxed);
-                crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+                crate::ui::window_position::save_current_position(&win_clone, WINDOW_LABEL);
             }
 
             // 吸附检测仅 macOS（依赖 NSWindow setIgnoresMouseEvents）
@@ -118,7 +118,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             {
             // 检测新吸附
             if let Some(edge) = detect_dock_edge(&win_clone) {
-                let prev_dock = crate::window_position::load_dock_state(WINDOW_LABEL);
+                let prev_dock = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
                 let is_already_collapsed = prev_dock.as_deref() == Some(edge)
                     && !DOCK_EXPANDED.load(Ordering::SeqCst);
                 // 已处于某 edge 的收缩态时，不切换到另一个 edge
@@ -126,7 +126,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 let is_docked_on_other_edge = prev_dock.as_deref().is_some_and(|p| p != edge && p != "none")
                     && !DOCK_EXPANDED.load(Ordering::SeqCst);
                 if !is_already_collapsed && !is_docked_on_other_edge {
-                    crate::window_position::save_dock_state(WINDOW_LABEL, edge);
+                    crate::ui::window_position::save_dock_state(WINDOW_LABEL, edge);
                     DOCK_EXPANDED.store(false, Ordering::SeqCst);
                     crate::clipboard::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge);
                     let _ = app_clone.emit("clipboard://dock-changed", edge);
@@ -136,10 +136,10 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
 
             // 检测解吸附：之前 docked 但现在不在边缘
-            let prev_dock = crate::window_position::load_dock_state(WINDOW_LABEL);
+            let prev_dock = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
             if let Some(ref prev) = prev_dock {
                 if prev == "right" || prev == "left" {
-                    crate::window_position::save_dock_state(WINDOW_LABEL, "none");
+                    crate::ui::window_position::save_dock_state(WINDOW_LABEL, "none");
                     DOCK_EXPANDED.store(false, Ordering::SeqCst);
                     crate::clipboard::clipboard_dock::stop_edge_poll(&win_clone);
                     let _ = app_clone.emit("clipboard://dock-changed", "none");
@@ -150,7 +150,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
         tauri::WindowEvent::Focused(false) => {
             // 失焦时强制兜底写一次位置（无视节流——保证拖拽落点不丢）
-            crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+            crate::ui::window_position::save_current_position(&win_clone, WINDOW_LABEL);
 
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
             #[cfg(target_os = "macos")]
@@ -159,7 +159,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             // docked 态下失焦 → 收缩（防重复：DOCK_EXPANDED 已 false 则跳过）
             #[cfg(target_os = "macos")]
             if DOCK_EXPANDED.load(Ordering::SeqCst) {
-                let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
+                let docked = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(ref edge) = docked {
                     if edge == "right" || edge == "left" {
                         DOCK_EXPANDED.store(false, Ordering::SeqCst);
@@ -232,7 +232,7 @@ pub fn clipboard_dock_expand(app: AppHandle) {
 #[tauri::command]
 pub fn clipboard_dock_collapse(app: AppHandle) {
     DOCK_EXPANDED.store(false, Ordering::SeqCst);
-    let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
+    let docked = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         if let Some(edge) = docked.filter(|e| e == "right" || e == "left") {
             crate::clipboard::clipboard_dock::start_edge_poll(app.clone(), window, edge_static(&edge));
@@ -269,7 +269,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         let focused = window.is_focused().unwrap_or(false);
 
         // dock 状态：处于 docked 模式时，快捷键逻辑不同于普通 toggle
-        let docked = crate::window_position::load_dock_state(WINDOW_LABEL)
+        let docked = crate::ui::window_position::load_dock_state(WINDOW_LABEL)
             .filter(|e| e == "right" || e == "left");
 
         if let Some(_edge) = &docked {
@@ -278,7 +278,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if expanded {
                 // 展开 → 收缩
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                let docked_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
+                let docked_edge = crate::ui::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(e) = docked_edge.filter(|e| e == "right" || e == "left") {
                     crate::clipboard::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(&e));
                 }

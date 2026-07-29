@@ -15,7 +15,7 @@
 
 use octopus_record::Source;
 use tauri::{AppHandle, Manager};
-use crate::window_factory::{build_float_window, FloatWindowSpec};
+use crate::ui::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "record_control_window";
 

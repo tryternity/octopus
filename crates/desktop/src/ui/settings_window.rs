@@ -65,7 +65,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     }
 
     // 背景色 hex URL 注入——settings.html 首帧即有色，零 CSS 依赖
-    let url = if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+    let url = if let Some(bg) = crate::ui::theme::window_bg_hex(WINDOW_LABEL) {
         format!("settings.html?bg={}", bg)
     } else {
         "settings.html".to_string()
@@ -105,7 +105,7 @@ pub fn set_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    const ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+    const ICON_PNG: &[u8] = include_bytes!("../../icons/icon.png");
 
     // 安全检查：仅主线程可调 AppKit
     let mtm = match MainThreadMarker::new() {

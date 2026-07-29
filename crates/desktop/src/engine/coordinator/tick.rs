@@ -138,14 +138,14 @@ pub(crate) fn apply_pipeline_events(
                 // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
                 // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
                 if !display.is_empty() {
-                    crate::result_window::update_result(app_handle, &display, insertion, caret);
+                    crate::ui::result_window::update_result(app_handle, &display, insertion, caret);
                 }
             }
             PipelineEvent::Polish { silence } => {
                 check_and_trigger_polish(transcript, silence, config, tx);
             }
             PipelineEvent::Error(e) => {
-                crate::result_window::update_result(app_handle, &e, false, 0);
+                crate::ui::result_window::update_result(app_handle, &e, false, 0);
             }
             PipelineEvent::Speaking(speaking) => {
                 crate::perf_log::log(&format!("[SPEAKING] emit {}", speaking));

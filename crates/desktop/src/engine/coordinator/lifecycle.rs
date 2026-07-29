@@ -272,11 +272,11 @@ pub(crate) fn restart_capture_keep_transcript(
 
     // 展示旧文本（窗口一直可见，is_continuation 路径——不走 show-result else 清空 caret）
     let show_placeholder = if show_text.is_empty() { "正在聆听…" } else { "🎙️ 麦克风重连中…" };
-    crate::result_window::show_result(app_handle, show_placeholder);
+    crate::ui::result_window::show_result(app_handle, show_placeholder);
     if !show_text.is_empty() {
-        crate::result_window::update_result(app_handle, &show_text, false, 0);
+        crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
     }
-    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+    crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
     let _ = app_handle.emit("mic-reconnecting", ());
 
     // 重建 pipeline（复用常驻引擎，不重载模型）+ transcript 放回 Stage + 重启 tick
@@ -363,8 +363,8 @@ pub(crate) fn finalize_after_stop(
     // 1. 立即润色仍在途：等其完成再走 final 路径（避免丢弃润色结果）
     if transcript.polish_pending() {
         info!("Toggle stop: polish_pending=true, entering StoppingPolish");
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
-        crate::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
+        crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
         *stage = Stage::StoppingPolish { transcript };
         return;
     }
@@ -387,8 +387,8 @@ pub(crate) fn finalize_after_stop(
         dispatch_by_record_type(&transcript, "", app_handle);
         TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
-        crate::result_window::hide_result(app_handle);
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::ui::result_window::hide_result(app_handle);
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
     }
 
@@ -399,7 +399,7 @@ pub(crate) fn finalize_after_stop(
         return;
     }
 
-    crate::result_window::show_result(app_handle, &transcript.display_text());
+    crate::ui::result_window::show_result(app_handle, &transcript.display_text());
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
         info!("Toggle stop: skip final polish (polished covers all, no increase)");
@@ -444,8 +444,8 @@ pub(crate) fn finalize_cloud(
     if combined.is_empty() {
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
-        crate::result_window::hide_result(app_handle);
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::ui::result_window::hide_result(app_handle);
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
     }
 
@@ -464,13 +464,13 @@ pub(crate) fn finalize_cloud(
     // （CloudStreaming 的 partial 已 append 到 transcript.full，不会再增长）
     if transcript.polish_pending() {
         info!("CloudStreaming finalize: polish_pending=true, entering StoppingPolish");
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
-        crate::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
+        crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
         *stage = Stage::StoppingPolish { transcript };
         return;
     }
 
-    crate::result_window::show_result(app_handle, &transcript.display_text());
+    crate::ui::result_window::show_result(app_handle, &transcript.display_text());
     start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
 }
 

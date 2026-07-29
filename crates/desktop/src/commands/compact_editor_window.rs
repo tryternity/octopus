@@ -92,7 +92,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
         log::info!("[compact-editor] after set_activation_policy(Regular)");
         log::info!("[compact-editor] before set_dock_icon");
-        crate::settings_window::set_dock_icon();
+        crate::ui::settings_window::set_dock_icon();
         log::info!("[compact-editor] after set_dock_icon");
     }
 
@@ -117,7 +117,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         "compact-editor.html".to_string()
     };
     // 背景色 hex 注入——compact-editor.html <head> 脚本同步设为 #hex，零 CSS 依赖消除白屏
-    if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+    if let Some(bg) = crate::ui::theme::window_bg_hex(WINDOW_LABEL) {
         let sep = if url.contains('?') { "&" } else { "?" };
         url.push_str(&format!("{}bg={}", sep, bg));
     }

@@ -167,8 +167,8 @@ pub fn set_config(
         if let Ok(old) = old_edit_global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Err(e) = crate::result_window::register_edit_global_shortcut(&app_handle, &cfg.edit_global_shortcut) {
-            let _ = crate::result_window::register_edit_global_shortcut(&app_handle, &old_edit_global);
+        if let Err(e) = crate::ui::result_window::register_edit_global_shortcut(&app_handle, &cfg.edit_global_shortcut) {
+            let _ = crate::ui::result_window::register_edit_global_shortcut(&app_handle, &old_edit_global);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -179,8 +179,8 @@ pub fn set_config(
         if let Ok(old) = old_polish_global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Err(e) = crate::result_window::register_polish_global_shortcut(&app_handle, &cfg.polish_global_shortcut) {
-            let _ = crate::result_window::register_polish_global_shortcut(&app_handle, &old_polish_global);
+        if let Err(e) = crate::ui::result_window::register_polish_global_shortcut(&app_handle, &cfg.polish_global_shortcut) {
+            let _ = crate::ui::result_window::register_polish_global_shortcut(&app_handle, &old_polish_global);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -247,11 +247,11 @@ pub fn set_config(
             }
         }
         // 注册成功：更新 tray 用的快捷键镜像 + 刷新菜单文案（显示新快捷键）
-        *crate::tray::record_shortcut_mirror() = cfg.record_shortcut.clone();
+        *crate::ui::tray::record_shortcut_mirror() = cfg.record_shortcut.clone();
         // 当前是否在录制决定显示「开始/停止」文案——读 session state（但这是 async，
         // tray 刷新在同步上下文。简化：默认显示「开始录屏 <新快捷键>」，
         // 若正在录制，下次 state 变化时 update_record_tray_label 会修正）。
-        crate::tray::update_record_tray_label(false);
+        crate::ui::tray::update_record_tray_label(false);
     }
 
     if key == "action_bar_shortcut" && cfg.action_bar_shortcut != old_action_bar_sc {
@@ -290,7 +290,7 @@ pub fn set_config(
     // record_start 的文案由上方 update_record_tray_label 单独处理；这里覆盖其余项
     // （toggle / screenshot / clipboard）。
     if key.ends_with("_shortcut") {
-        crate::tray::rebuild_tray_labels(&cfg);
+        crate::ui::tray::rebuild_tray_labels(&cfg);
     }
 
     // fuzzy_dialect 热重载：改方言规则后重建 corrector 热词索引（规则变 key 必变）。

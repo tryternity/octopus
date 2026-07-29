@@ -492,10 +492,10 @@ fn build_coordinator_loop(
                         }
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
-                        crate::result_window::clear_result(&app_handle);
-                        crate::tray::update_tray_label(
+                        crate::ui::result_window::clear_result(&app_handle);
+                        crate::ui::tray::update_tray_label(
                             &app_handle,
-                            crate::tray::TrayState::Idle,
+                            crate::ui::tray::TrayState::Idle,
                         );
                     }
                     Command::PolishDone { result, session_id } => {

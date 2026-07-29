@@ -25,7 +25,7 @@ pub fn create_download_window(app_handle: &tauri::AppHandle) {
     }
 
     // 背景色 hex URL 注入——download.html 首帧即有色，零 CSS 依赖
-    let url = if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+    let url = if let Some(bg) = crate::ui::theme::window_bg_hex(WINDOW_LABEL) {
         format!("download.html?bg={}", bg)
     } else {
         "download.html".to_string()

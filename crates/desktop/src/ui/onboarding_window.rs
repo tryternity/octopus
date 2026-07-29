@@ -33,12 +33,12 @@ pub fn open_onboarding(app_handle: &tauri::AppHandle) {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
         let _ = app_handle.run_on_main_thread(|| {
             crate::platform::activation::activate_self();
-            crate::settings_window::set_dock_icon();
+            crate::ui::settings_window::set_dock_icon();
         });
     }
 
     // 背景色 hex URL 注入（与 settings_window 一致，首帧即有色）
-    let url = if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+    let url = if let Some(bg) = crate::ui::theme::window_bg_hex(WINDOW_LABEL) {
         format!("onboarding.html?bg={}", bg)
     } else {
         "onboarding.html".to_string()

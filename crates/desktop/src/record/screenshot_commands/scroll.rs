@@ -35,7 +35,7 @@ pub(crate) fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
         }
     }
     TOTAL_WINDOWS.store(0, std::sync::atomic::Ordering::SeqCst);
-    crate::tray::update_tray_screenshot_label(false);
+    crate::ui::tray::update_tray_screenshot_label(false);
 }
 
 // ── 滚动截图 ──

@@ -33,8 +33,8 @@ pub(crate) fn start_final_polish_or_paste(
 ) {
     if text.is_empty() {
         *stage = Stage::Idle;
-        crate::result_window::hide_result(app_handle);
-        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::ui::result_window::hide_result(app_handle);
+        crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
     }
 
@@ -55,8 +55,8 @@ pub(crate) fn start_final_polish_or_paste(
         }
         Some(llm_config) => {
             // 进入异步润色状态
-            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
-            crate::result_window::show_result(app_handle, "⏳ 最终润色中...");
+            crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
+            crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
@@ -427,7 +427,7 @@ pub(crate) fn handle_polish_done(
                     warn!("Queue DB update_polish_result failed: {}", e);
                 }
                 if !transcript.full().is_empty() {
-                    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
+                    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
                 }
             }
         }
