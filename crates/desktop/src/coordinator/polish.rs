@@ -18,8 +18,8 @@ use super::{Command, Stage, RecordType, MIN_POLISH_INTERVAL_SEC};
 use super::paste::{
     do_paste, stage_name, active_llm_name, active_asr_engine_name, update_transcription_raw,
 };
-// finalize_after_stop 仍在 mod.rs（Task 2.3 将搬入 lifecycle.rs），通过 super 可见。
-use super::finalize_after_stop;
+// finalize_after_stop 在 lifecycle.rs（Task 2.3 搬入）。
+use super::lifecycle::finalize_after_stop;
 
 /// 开始粘贴阶段（支持最终润色）。`transcript` 移交进 Pasting 持 id（Task 6 用）。
 /// 开始最终润色或粘贴阶段（异步最终润色，防止阻塞协调器线程）。

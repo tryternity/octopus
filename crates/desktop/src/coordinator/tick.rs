@@ -23,7 +23,8 @@ use super::{
 use super::CLOUD_STREAMING_TICK_INTERVAL_MS;
 // 通用工具 + 尚未搬出的 handler（仍在 mod.rs，pub(crate) 可见）
 use super::paste::{stage_name, update_transcription_raw, active_asr_engine_name};
-use super::{finalize_after_stop, check_and_trigger_polish};
+use super::polish::check_and_trigger_polish;
+use super::lifecycle::finalize_after_stop;
 
 /// 启动 VAD 伪流式 tick 线程
 pub(crate) fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
