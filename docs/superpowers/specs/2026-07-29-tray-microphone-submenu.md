@@ -100,8 +100,8 @@ id if id.starts_with("mic:") => {
 
 ### 关键约束
 
-- **macOS 专属**：与 record_start 同级，`#[cfg(target_os = "macos")]`（非 macOS 不编译，与现有录屏组一致）。
-- **不阻塞事件循环**：`list_microphones` 是同步 cpal 调用（快），但设备多时可能稍慢——构建时一次性，不在事件处理里调。
+- **跨平台**：cpal 跨平台，托盘菜单也跨平台，故不限定 `#[cfg(target_os = "macos")]`（与录屏组不同）。
+- **cpal 枚举异步**：启动时不调 cpal（只建「默认设备」项），设备项由后台线程预热填充（见实现注记 §7）。避免 cpal CoreAudio 初始化阻塞主线程。
 - **设备名作 id 的风险**：设备名含特殊字符可能影响 id 匹配。用 `mic:` 前缀 + 设备名后缀，事件处理用 `strip_prefix` 解析。
 
 ## 不在本次范围
@@ -133,8 +133,8 @@ cargo build -p octopus-desktop   # 编译
 
 6. **死锁规避**：`update_microphone_submenu` 与 `rebuild_tray_labels` 都需 lock `TRAY_ITEMS`，后者已持锁，故 rebuild 内联不调前者。
 
-7. **⚠️ cpal 枚举必须异步（关键修复，2026-07-29）**：初版 `build_microphone_submenu` 在 `create_tray`（启动主线程）直接调 `list_microphone_devices()` → cpal `host.input_devices()`。**cpal 首次调用会同步初始化 macOS CoreAudio 子系统，阻塞主线程**，导致同时初始化的多个 WKWebView 内容进程超时被 macOS 终止（`web content process terminated` × 4-5，所有浮窗 webview 全崩，无自愈）。
+7. **cpal 枚举异步化（健壮性改进，2026-07-29）**：`build_microphone_submenu` 不在 `create_tray`（启动主线程）直接调 `list_microphone_devices()` → cpal `host.input_devices()`。cpal 首次调用会同步初始化 macOS CoreAudio 子系统，可能短暂阻塞主线程。虽非崩溃根因（见下），但移到后台线程是更稳健的做法。
 
-   **症状**：启动即崩，所有预创建窗口（result/clipboard/action_bar/overlay/record 等）的 webview 进程全死，`result_window_ready` 永不触发（`ready=false`），浮窗召回失败。main 主干无此调用故不崩。
+   **设计**：启动时子菜单只构建「默认设备」项（无 cpal 调用）；`preheat_microphone_submenu` 在 `create_tray` 返回后由 main.rs spawn 后台线程枚举设备，完成后 `run_on_main_thread` 回主线程 append 设备项（去重防重复 preheat）。
 
-   **修复**：启动时子菜单只构建「默认设备」项（无 cpal 调用）；`preheat_microphone_submenu` 在 `create_tray` 返回后由 main.rs spawn 后台线程枚举设备，完成后 `run_on_main_thread` 回主线程 append 设备项。cpal CoreAudio 初始化移到后台线程，不阻塞 webview 启动。
+   **⚠️ 排查纠偏（2026-07-29）**：排查期间曾误判 cpal 阻塞导致 `web content process terminated` 崩溃。实际该日志是 WKWebView 隐藏窗口的正常回收（主干也有），**不是崩溃判据**。真正的崩溃（前端 IPC 无响应 `FallbackStart`）根因是 **worktree 前端 node_modules 软链污染**（排查时手动 `ln -s` 主干 node_modules 导致 vite 缓存路径混乱），`rm -rf dist node_modules .vite` 全量重装后即恢复，与 cpal 无关。详见 AGENTS.md「worktree 前端产物污染」gotcha。
