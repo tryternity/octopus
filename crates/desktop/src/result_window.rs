@@ -34,30 +34,22 @@ pub fn create_result_window(app: &tauri::AppHandle) {
         return;
     }
 
-    let builder = tauri::WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        // 独立 entry（multi-entry 架构）：result.html 仅含 Result 依赖闭包
-        tauri::WebviewUrl::App("result.html".into()),
-    )
-    .title("Result")
-    .inner_size(RESULT_WIDTH, RESULT_HEIGHT)
-    // 物理尺寸固定 720×480（CSS 伪装方案）：精简/长篇双模式由前端 CSS 切容器尺寸，
-    // 不再运行时 setSize（transparent 无边框窗上被 NSWindow 拒绝）。resizable(true) 保留。
-    .resizable(true)
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .transparent(true)
-    .focused(false)
-    .visible(false)
-    .shadow(false)
-    // macOS：非激活悬浮窗（focused(false)）默认吞掉首次点击——仅用于激活窗口、
-    // 不派发给 webview，导致工具栏按钮（✏️ 进入编辑等）首次点击无响应。accept_first_mouse
-    // 让首次点击也正常派发，按钮点击可靠（双击进入已弃用，改用 edit_shortcut，见 spec §3.1）。
-    .accept_first_mouse(true);
-
-    match builder.build() {
+    match crate::window_factory::build_float_window(app, crate::window_factory::FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "result.html",
+        title: "Result",
+        // 物理尺寸固定 720×480（CSS 伪装方案）：精简/长篇双模式由前端 CSS 切容器尺寸，
+        // 不再运行时 setSize（transparent 无边框窗上被 NSWindow 拒绝）。resizable(true) 保留。
+        inner_size: (RESULT_WIDTH, RESULT_HEIGHT),
+        visible: false,
+        resizable: true,
+        position: None,
+        // macOS：非激活悬浮窗（focused(false)）默认吞掉首次点击——仅用于激活窗口、
+        // 不派发给 webview，导致工具栏按钮（✏️ 进入编辑等）首次点击无响应。accept_first_mouse
+        // 让首次点击也正常派发，按钮点击可靠（双击进入已弃用，改用 edit_shortcut，见 spec §3.1）。
+        focused: Some(false),
+        accept_first_mouse: Some(true),
+    }) {
         Ok(window) => {
             // 恢复上次位置（不可见时 fallback 到顶部居中）
             crate::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {

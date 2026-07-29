@@ -12,6 +12,7 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
+use crate::error_util::e2s;
 use tauri::{Emitter, Manager};
 
 use crate::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};
@@ -280,7 +281,7 @@ pub async fn get_clipboard_item_text(item_id: i64) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, item_id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     item.map(|i| i.content).ok_or_else(|| "条目不存在".to_string())
 }
 
@@ -290,7 +291,7 @@ pub async fn get_clipboard_item_type(item_id: i64) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, item_id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     item.map(|i| i.item_type.as_str().to_string())
         .ok_or_else(|| "条目不存在".to_string())
 }
@@ -302,7 +303,7 @@ pub async fn get_transcription_text(id: i64) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     item.map(|i| i.content)
         .ok_or_else(|| "条目不存在".to_string())
 }

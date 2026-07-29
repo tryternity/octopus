@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use crate::error_util::e2s;
 use std::sync::OnceLock;
 
 /// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。
@@ -243,7 +244,7 @@ fn load_themes() -> Vec<ThemeInfo> {
 #[tauri::command]
 pub fn get_theme_id() -> Result<String, String> {
     let id = octopus_infra::db::load_config_key("clipboard_theme")
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .unwrap_or_else(|| "light".into());
     Ok(id)
 }

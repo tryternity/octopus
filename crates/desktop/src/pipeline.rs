@@ -14,6 +14,7 @@
 
 use crate::transcript::Transcript;
 use log::warn;
+use crate::error_util::e2s;
 use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 use octopus_asr_local::vad::SileroVad;
 use std::collections::HashMap;
@@ -463,7 +464,7 @@ impl VadSegmentedPipeline {
             // );
             let _ = guard.tx.send(SegmentResult {
                 seq: guard.seq,
-                text: result.map_err(|e| e.to_string()),
+                text: result.map_err(e2s),
             });
             guard.done = true;
         });

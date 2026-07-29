@@ -4,6 +4,7 @@
 
 use serde::Serialize;
 use std::sync::Arc;
+use crate::error_util::e2s;
 use parking_lot::RwLock;
 use tauri::State;
 
@@ -120,11 +121,11 @@ fn build_asr_options(engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec
 // 不再写 app_config）。polish_mode / denoise_mode 仍在 app_config。
 
 pub fn persist_polish_mode(value: u8) -> Result<(), String> {
-    octopus_infra::db::save_config_key("polish_mode", &value.to_string()).map_err(|e| e.to_string())
+    octopus_infra::db::save_config_key("polish_mode", &value.to_string()).map_err(e2s)
 }
 
 pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
-    octopus_infra::db::save_config_key("denoise_mode", &value.to_string()).map_err(|e| e.to_string())
+    octopus_infra::db::save_config_key("denoise_mode", &value.to_string()).map_err(e2s)
 }
 
 // ── 命令返回 DTO ──
@@ -307,7 +308,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 #[tauri::command]
 pub fn list_asr_engines(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     // Task 2 后：current 直接用 DB 行的 is_enabled（build_asr_options 内部处理）。
-    let engines = octopus_asr_local::config::list_engines_from_db().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines_from_db().map_err(e2s)?;
     Ok(build_asr_options(engines))
 }
 
@@ -347,7 +348,7 @@ pub fn switch_active_model(
     app_handle: tauri::AppHandle,
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
 ) -> Result<(), String> {
-    octopus_infra::db::switch_active_model(&domain, id).map_err(|e| e.to_string())?;
+    octopus_infra::db::switch_active_model(&domain, id).map_err(e2s)?;
     // 重载该域激活缓存（reload_active_engine 清槽 + 重 load）。
     // 失败仅告警（DB 已切换成功，缓存下次 resolve 会 fallback 重 load）。
     //
@@ -428,14 +429,14 @@ pub fn set_translate_mode(mode: String) -> Result<(), String> {
     if !validate_translate_mode(&mode) {
         return Err(format!("translate_mode='{}' 非法（应为 manual/4s/8s/12s）", mode));
     }
-    octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
+    octopus_infra::db::save_config_key("translate_mode", &mode).map_err(e2s)
 }
 
 /// 列出所有可用的 LLM 润色模型，并标记当前激活的（DB is_enabled=1）。
 #[tauri::command]
 pub fn list_llm_models(_rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
     // Task 2 后：current 直接用 DB 行的 is_enabled（build_llm_options 内部处理）。
-    let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+    let llms = octopus_infra::db::list_llm_models().map_err(e2s)?;
     Ok(build_llm_options(llms))
 }
 

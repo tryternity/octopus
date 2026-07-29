@@ -13,6 +13,7 @@
 
 use serde::{Serialize, Deserialize};
 use std::path::Path;
+use crate::error_util::{e2s, e2s_ctx};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 
@@ -60,7 +61,7 @@ pub struct VerifyResult {
 pub fn list_downloadable_models(domain: Option<String>) -> Result<Vec<DownloadableModel>, String> {
     let domain = domain.unwrap_or_else(|| "asr".to_string());
     let rows = octopus_infra::db::list_local_models_by_domain(&domain)
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     let mut out = Vec::new();
     for r in rows {
         // is_available 由 sync_builtin_models_availability（启动时 sha256 校验）保证准确，
@@ -171,7 +172,7 @@ pub async fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
             return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
         }
         let manifest: Manifest = serde_json::from_str(&secret_key)
-            .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+            .map_err(|e| e2s_ctx("manifest 解析失败", e))?;
 
         let dir = octopus_asr_local::config::resolve_model_dir(&repo).ok();
 
@@ -200,7 +201,7 @@ pub async fn list_model_files(repo: String) -> Result<Vec<ModelFile>, String> {
         Ok(result)
     })
     .await
-    .map_err(|e| format!("list_model_files 任务异常: {e}"))?
+    .map_err(|e| e2s_ctx("list_model_files 任务异常", e))?
 }
 
 /// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
@@ -231,7 +232,7 @@ pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) ->
     let mut cfg = rc.read().clone();
     cfg.download_mirror = value;
     *rc.write() = cfg.clone();
-    octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
+    octopus_infra::db::save_app_config(&cfg).map_err(e2s)?;
     Ok(())
 }
 
@@ -257,8 +258,8 @@ pub async fn download_model(
             let repo_clone = repo.clone();
             let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
                 .await
-                .map_err(|e| format!("bootstrap 任务异常: {}", e))?
-                .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+                .map_err(|e| e2s_ctx("bootstrap 任务异常: {}", e))?
+                .map_err(|e| e2s_ctx("生成校验清单失败", e))?;
             apply_model_state(&repo_clone, Some(&manifest), true)?;
             let _ = app_handle.emit(
                 "download-done",
@@ -271,11 +272,11 @@ pub async fn download_model(
         let key_clone = existing_key.clone();
         let broken = tokio::task::spawn_blocking(move || {
             let manifest: Manifest = serde_json::from_str(&key_clone)
-                .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+                .map_err(|e| e2s_ctx("manifest 解析失败", e))?;
             Ok::<Vec<String>, String>(octopus_asr_local::manifest::verify_against_manifest(&dir_clone, &manifest))
         })
         .await
-        .map_err(|e| format!("校验任务异常: {}", e))??;
+        .map_err(|e| e2s_ctx("校验任务异常: {}", e))??;
         if broken.is_empty() {
             // 全部文件完好 → 置可用
             apply_model_state(&repo, None, true)?;
@@ -296,7 +297,7 @@ pub async fn download_model(
         return Err(format!("模型 '{repo}' 无下载清单（secret_key 为空）"));
     }
     let manifest: Manifest = serde_json::from_str(&secret_key)
-        .map_err(|e| format!("manifest 解析失败: {e:?}"))?;
+        .map_err(|e| e2s_ctx("manifest 解析失败", e))?;
     if manifest.is_empty() {
         return Err(format!("模型 '{repo}' 下载清单为空"));
     }
@@ -314,7 +315,7 @@ pub async fn download_model(
     use tokio::task::JoinSet;
     let dl = Arc::new(
         octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
-            .map_err(|e| format!("初始化下载器失败: {e:?}"))?,
+            .map_err(|e| e2s_ctx("初始化下载器失败", e))?,
     );
 
     // 主进度 channel：每个并发 task 推 (file_path, Progress) tuple
@@ -377,7 +378,7 @@ pub async fn download_model(
         };
 
         let permit = sem.clone().acquire_owned().await
-            .map_err(|e| format!("并发信号量获取失败: {e}"))?;
+            .map_err(|e| e2s_ctx("并发信号量获取失败", e))?;
         let task_dl = Arc::clone(&dl);
         let task_tx = tx.clone();
         let task_path = path.clone();
@@ -467,7 +468,7 @@ pub async fn verify_model(model_name: String, repo: String, full: Option<bool>) 
     let full = full.unwrap_or(false);
     tokio::task::spawn_blocking(move || verify_model_inner(model_name, &repo, full))
         .await
-        .map_err(|e| format!("verify_model 任务异常: {}", e))?
+        .map_err(|e| e2s_ctx("verify_model 任务异常: {}", e))?
 }
 
 fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<VerifyResult, String> {
@@ -486,7 +487,7 @@ fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<Veri
     let secret_key = current_secret_key(&model_name)?;
     // 清单空 → 自举生成 + 确保置 true。
     if secret_key.trim().is_empty() {
-        let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成清单失败: {e:?}"))?;
+        let manifest = bootstrap_manifest(&dir).map_err(|e| e2s_ctx("生成清单失败", e))?;
         apply_model_state(&repo, Some(&manifest), true)?;
         return Ok(VerifyResult {
             ok: true,
@@ -500,7 +501,7 @@ fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<Veri
     // full=true（手动校验）：强制 SHA256 逐文件校验，不信任缓存。
     // full=false（激活前自动校验）：stat 快检（.verified.json 缓存），不匹配才算 SHA256。
     let manifest: Manifest = serde_json::from_str(&secret_key)
-        .map_err(|e| format!("校验清单解析失败（可重新下载修复）: {e:?}"))?;
+        .map_err(|e| e2s_ctx("校验清单解析失败（可重新下载修复）", e))?;
     let mut cache = load_verified_cache(&dir);
     let broken: Vec<String> = if full {
         // 强制完整校验——不读缓存，直接 SHA256，结果写回缓存
@@ -592,9 +593,9 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
         }
     };
     if let Some(json) = manifest_json {
-        octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
+        octopus_infra::db::set_model_secret_key(&model_name, json).map_err(e2s)?;
     }
-    octopus_infra::db::set_model_available(&model_name, enabled).map_err(|e| e.to_string())?;
+    octopus_infra::db::set_model_available(&model_name, enabled).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES 缓存（reload_models_config 已是 no-op）
     if let Some(domain) = get_model_domain(&model_name) {
         reload_engine_cache(&domain);
@@ -605,7 +606,7 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
 /// 由 source（路径标识）反查 model_name，搜索所有 domain。
 fn lookup_model_name(source: &str) -> Result<String, String> {
     for domain in &["asr", "translate", "ocr"] {
-        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(e2s)?;
         if let Some(r) = rows.iter().find(|r| r.source == source) {
             return Ok(r.model_name.clone());
         }
@@ -619,7 +620,7 @@ fn lookup_model_name(source: &str) -> Result<String, String> {
 /// 请用 [`current_secret_key_any`]（follow-up #7 chokepoint 用，含 cloud 行）。
 pub(crate) fn current_secret_key(model_name: &str) -> Result<String, String> {
     for domain in &["asr", "translate", "ocr"] {
-        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(e2s)?;
         if let Some(r) = rows.iter().find(|r| r.model_name == model_name) {
             return Ok(r.secret_key.clone());
         }
@@ -643,7 +644,7 @@ pub(crate) fn current_secret_key_any(model_name: &str) -> Result<String, String>
     // 1. cloud 行（is_local=0）：跨 4 个 domain 查
     for domain in &["asr", "llm", "translate", "ocr"] {
         let rows = octopus_infra::db::list_cloud_models_by_domain(domain)
-            .map_err(|e| e.to_string())?;
+            .map_err(e2s)?;
         if let Some(r) = rows.iter().find(|r| r.model_name == model_name) {
             return Ok(r.secret_key.clone());
         }
@@ -655,7 +656,7 @@ pub(crate) fn current_secret_key_any(model_name: &str) -> Result<String, String>
 /// 按 source（路径标识）反查 model_name + secret_key，搜索所有 domain。
 fn lookup_model_by_source(source: &str) -> Result<(String, String), String> {
     for domain in &["asr", "translate", "ocr"] {
-        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(|e| e.to_string())?;
+        let rows = octopus_infra::db::list_local_models_by_domain(domain).map_err(e2s)?;
         if let Some(r) = rows.iter().find(|r| r.source == source) {
             return Ok((r.model_name.clone(), r.secret_key.clone()));
         }
@@ -674,7 +675,7 @@ fn current_secret_key_for_source(source: &str) -> String {
 #[tauri::command]
 pub async fn delete_model(repo: String) -> Result<(), String> {
     let dir = octopus_asr_local::config::resolve_model_dir(&repo)
-        .map_err(|e| format!("模型目录不存在: {e:?}"))?;
+        .map_err(|e| e2s_ctx("模型目录不存在", e))?;
 
     // 如果是软链，只删软链不删 HF cache 原文件
     tokio::task::spawn_blocking(move || {
@@ -682,16 +683,16 @@ pub async fn delete_model(repo: String) -> Result<(), String> {
         if let Ok(m) = meta {
             if m.is_symlink() || m.file_type().is_symlink() {
                 std::fs::remove_file(&dir)
-                    .map_err(|e| format!("删除软链失败: {e:?}"))?;
+                    .map_err(|e| e2s_ctx("删除软链失败", e))?;
             } else {
                 std::fs::remove_dir_all(&dir)
-                    .map_err(|e| format!("删除目录失败: {e:?}"))?;
+                    .map_err(|e| e2s_ctx("删除目录失败", e))?;
             }
         }
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("delete_model 任务异常: {e}"))??;
+    .map_err(|e| e2s_ctx("delete_model 任务异常", e))??;
 
     apply_model_state(&repo, None, false)?;
     Ok(())
@@ -745,7 +746,7 @@ pub async fn add_cloud_model(input: CloudModelInput) -> Result<i64, String> {
         &input.domain, &input.provider, &input.category,
         &input.model_name, &input.source, &encrypted_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())?;
+    ).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES 缓存（新增不影响激活态，但 reload 无害）
     reload_engine_cache(&input.domain);
     Ok(id)
@@ -779,7 +780,7 @@ pub async fn edit_cloud_model(id: i64, input: CloudModelInput) -> Result<(), Str
         id, &input.provider, &input.category,
         &input.model_name, &input.source, &encrypted_key,
         input.is_streaming, input.is_thinking,
-    ).map_err(|e| e.to_string())?;
+    ).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES（编辑可能改了激活模型的 secret_key/source）
     reload_engine_cache(&input.domain);
     Ok(())
@@ -791,7 +792,7 @@ pub fn remove_cloud_model(id: i64) -> Result<(), String> {
     let domain = octopus_infra::db::get_model_by_id(id)
         .ok().flatten()
         .map(|r| r.domain);
-    octopus_infra::db::delete_cloud_model(id).map_err(|e| e.to_string())?;
+    octopus_infra::db::delete_cloud_model(id).map_err(e2s)?;
     // 按域刷新 ACTIVE_ENGINES（删除的可能是激活模型 → reload 后 fallback/None）
     if let Some(d) = domain {
         reload_engine_cache(&d);
@@ -801,7 +802,7 @@ pub fn remove_cloud_model(id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_asr_cloud_presets() -> Result<Vec<AsrCloudPreset>, String> {
-    let rows = octopus_infra::db::list_asr_cloud_presets().map_err(|e| e.to_string())?;
+    let rows = octopus_infra::db::list_asr_cloud_presets().map_err(e2s)?;
     Ok(rows.into_iter().map(|(provider, category, models_str)| {
         let models: Vec<String> = models_str.split(';').map(|s| s.to_string()).collect();
         AsrCloudPreset { provider, category, models }
@@ -810,7 +811,7 @@ pub fn list_asr_cloud_presets() -> Result<Vec<AsrCloudPreset>, String> {
 
 #[tauri::command]
 pub fn list_llm_provider_presets() -> Result<Vec<LlmProviderPreset>, String> {
-    let rows = octopus_infra::db::list_llm_provider_presets().map_err(|e| e.to_string())?;
+    let rows = octopus_infra::db::list_llm_provider_presets().map_err(e2s)?;
     Ok(rows.into_iter().map(|r| {
         LlmProviderPreset { provider: r.provider, base_url: r.base_url, models: r.models }
     }).collect())
@@ -842,7 +843,7 @@ pub struct TranslateCloudModel {
 #[tauri::command]
 pub fn list_translate_cloud_models() -> Result<Vec<TranslateCloudModel>, String> {
     let rows = octopus_infra::db::list_cloud_models_by_domain("translate")
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     Ok(rows.into_iter().map(|r| TranslateCloudModel {
         id: r.id,
         provider: r.provider,
@@ -947,7 +948,7 @@ pub struct ModelDetail {
 /// 按 id 查模型详情（source + 真实 secret_key，用于编辑表单回填 + 连接测试）。
 #[tauri::command]
 pub fn get_model_detail(id: i64) -> Result<ModelDetail, String> {
-    let (source, secret_key) = octopus_infra::db::get_model_source_key(id).map_err(|e| e.to_string())?;
+    let (source, secret_key) = octopus_infra::db::get_model_source_key(id).map_err(e2s)?;
     let (is_streaming, is_thinking) = octopus_infra::db::get_model_flags(id).unwrap_or((false, false));
     Ok(ModelDetail {
         source,

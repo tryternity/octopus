@@ -12,7 +12,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "record_config_window";
 
@@ -24,26 +25,18 @@ pub fn create_record_window(app: &AppHandle) {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
         return;
     }
-    let _ = WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        WebviewUrl::App("record-config.html".into()),
-    )
-    .title("录制设置")
-    .inner_size(WIDTH, HEIGHT)
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(false)
-    .build()
-    .map_err(|e| {
-        log::error!("[record-window] 窗口创建失败: {e}");
-        e
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "record-config.html",
+        title: "录制设置",
+        inner_size: (WIDTH, HEIGHT),
+        visible: false,
+        resizable: false,
+        position: None,
+        focused: None,
+        accept_first_mouse: None,
     })
-    .ok();
+    .map_err(|e| log::error!("[record-window] 窗口创建失败: {e}"));
 }
 
 /// 在鼠标附近显示浮窗（参考 overlay_window::show_at_mouse 的位置算法）。

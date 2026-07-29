@@ -7,6 +7,7 @@
 
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
+use crate::error_util::e2s;
 use octopus_asr_local::streaming_runner::TranscriptEvent;
 use octopus_asr_local::vad::SileroVad;
 use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
@@ -122,7 +123,7 @@ pub(super) fn open_cloud_session(
     tauri::async_runtime::block_on(async {
         octopus_asr_cloud::open_cloud_session(asr_engine, language, pre_roll)
     })
-    .map_err(|e| e.to_string())
+    .map_err(e2s)
 }
 
 /// cloud 流式 pipeline 引擎（持 `CloudStreamHandle` + onset/状态，spec §3.3）。
