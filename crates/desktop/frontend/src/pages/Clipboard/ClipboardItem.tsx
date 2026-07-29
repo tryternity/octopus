@@ -33,6 +33,7 @@ function ClipboardItemRow({
   const [fileMissing, setFileMissing] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Download 触发按钮 ref：传给 SaveImagePopover，让其 outside-click 检测忽略它，
   // 否则 mousedown 关闭与 click toggle 时序冲突，表现为再次点击 Download 关不掉 popover。
@@ -88,13 +89,16 @@ function ClipboardItemRow({
   const handleClick = () => {
     if (deletePending) return;
     onSelect(index);
-    // 复制到剪贴板 + 动效；文件丢失时设 fileMissing 显示感叹号
+    // 复制到剪贴板 + 动效；文件丢失时红色气泡提示 + 感叹号
     invoke("copy_clipboard_item", { id: item.id }).then(() => {
       setCopied(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
     }).catch((e) => {
       setFileMissing(true);
+      setCopyFailed(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopyFailed(false), 2000);
       console.error(e);
     });
   };
@@ -201,10 +205,16 @@ function ClipboardItemRow({
           "w-5 h-5 transition-all duration-150",
           accent,
           copied && "scale-125 text-emerald-500",
+          copyFailed && "scale-125 text-destructive",
         )} />
         {copied && (
           <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
             {t("clipboard.copied")}
+          </span>
+        )}
+        {copyFailed && (
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-destructive px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
+            {t("clipboard.imageLost")}
           </span>
         )}
       </button>
