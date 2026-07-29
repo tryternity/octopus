@@ -56,7 +56,6 @@ export interface AnnotationState {
   redoAvailable: boolean;
   eraseAnnotationAt: (x: number, y: number) => void;
   clearAllAnnotations: () => void;
-  deleteSelectedAnnotation: () => void;
   numberCounter: number;
   numberCounterRef: React.MutableRefObject<number>;
   setNumberCounter: React.Dispatch<React.SetStateAction<number>>;
@@ -195,21 +194,6 @@ export function useAnnotationState(): AnnotationState {
     setNumberCounter(1);
   };
 
-  // deleteSelected：删除当前选中标注索引，推入 redo，清空 selectedAnn。
-  // 用 setAnnotations 的函数式更新避免 selectedAnn 闭包陈旧；同时 setSelectedAnn(null)。
-  const deleteSelectedAnnotation = () => {
-    setSelectedAnn((sel) => {
-      if (sel === null) return null;
-      setAnnotations((prev) => {
-        if (sel < 0 || sel >= prev.length) return prev;
-        redoStackRef.current.push(prev[sel]);
-        setRedoAvailable(true);
-        return prev.filter((_, j) => j !== sel);
-      });
-      return null;
-    });
-  };
-
   return {
     tool,
     setTool,
@@ -239,7 +223,6 @@ export function useAnnotationState(): AnnotationState {
     redoAvailable,
     eraseAnnotationAt,
     clearAllAnnotations,
-    deleteSelectedAnnotation,
     numberCounter,
     numberCounterRef,
     setNumberCounter,

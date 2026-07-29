@@ -54,8 +54,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
-  // 选中标注索引（tool==="none" 命中后高亮 + 供 deleteSelected 删除）
-  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
@@ -482,10 +480,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       const idx = hitTestAnnotationPrecise(nx, ny, annotations);
       if (idx != null) {
         dragRef.current = { idx, dx: nx - annotations[idx].x1, dy: ny - annotations[idx].y1 };
-        setSelectedAnn(idx);
       } else {
-        // 未命中标注 → 抓手拖拽平移视口，并清空选中
-        setSelectedAnn(null);
+        // 未命中标注 → 抓手拖拽平移视口
         startPan(e);
       }
       return;
@@ -625,8 +621,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         if (hitIdx !== null) {
           redoStackRef.current.push(prev[i]);
           setRedoAvailable(true);
-          // 选中索引同步：被擦的是当前选中 → 清空；之前的索引下移
-          setSelectedAnn((sel) => sel === null ? null : sel === i ? null : sel > i ? sel - 1 : sel);
           return prev.filter((_, j) => j !== i);
         }
       }
@@ -634,7 +628,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     });
   };
 
-  // clearAll：清空全部标注，全部推入 redo（保持 redo 顺序），重置 selectedAnn。
+  // clearAll：清空全部标注，全部推入 redo（保持 redo 顺序）。
   const clearAllAnnotations = () => {
     setAnnotations((prev) => {
       if (prev.length === 0) return prev;
@@ -643,21 +637,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       }
       setRedoAvailable(true);
       return [];
-    });
-    setSelectedAnn(null);
-  };
-
-  // deleteSelected：删除当前选中索引，推入 redo，清空 selectedAnn。
-  const deleteSelectedAnnotation = () => {
-    setSelectedAnn((sel) => {
-      if (sel === null) return null;
-      setAnnotations((prev) => {
-        if (sel < 0 || sel >= prev.length) return prev;
-        redoStackRef.current.push(prev[sel]);
-        setRedoAvailable(true);
-        return prev.filter((_, j) => j !== sel);
-      });
-      return null;
     });
   };
 
@@ -793,7 +772,6 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         onQrScan={handleQrScan} qrActive={qrScanning || qrResult !== null}
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
-        onDeleteSelected={deleteSelectedAnnotation} canDeleteSelected={selectedAnn !== null}
         onClearAll={clearAllAnnotations} canClearAll={annotations.length > 0}
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         ocrMode={ocrOverlay}

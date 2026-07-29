@@ -1458,7 +1458,7 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
    - 动机：六轮 PAT 外溢证伪点状修复可收敛
    - 设计：SafeUrl(String) newtype + redact_url 唯一构造器，编译期杜绝非已 redact 的 url 流出 crate 边界
 
-2. **Vault Tombstone（跨设备永久删除一致性）** — [spec](./2026-07-26-vault-tombstone-design.md) + [plan](../plans/2026-07-26-vault-tombstone.md)
+2. **Vault Tombstone（跨设备永久删除一致性）** — [spec](./2026-07-26-vault-tombstone-design.md)（已废弃，方案被 is_deleted merge 替代；原 plan 已删除 2026-07-29）
    - 动机：M-TOMBSTONE（M5，已知高优先级未修）——permanent_delete 后跨设备复活
    - 设计：Outline v2 新增 tombstones 字段 + 30 天 TTL + 删除赢冲突解决
 

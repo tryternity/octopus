@@ -27,7 +27,7 @@ Area 录制不创建本浮窗（已有 RecordAnnotation，互斥）。
 | **尺寸** | **130×38**（原 200×56 太长，用户反馈） | 紧凑布局：红点(7px)+gap+时长(~28px)+暂停(24px)+停止(24px) |
 | 被录进视频 | 接受（always_on_top=true） | 用户主动选 display/window 录制，预期接受；不被录需 always_on_top=false 但会失去置顶 |
 | 鼠标穿透 | **不穿透** | pill 必须能直接点按钮；穿透需复制 RecordAnnotation 的 33ms poller，复杂度高，收益低 |
-| 关闭时机 | 跟随 stop_and_store（与 RecordAnnotation 同） | main.rs stop-requested handler + record_hotkey handle_stop + record_kill 三处都调 close_control_window |
+| 关闭时机 | 跟随 stop_and_store（与 RecordAnnotation 同） | 四处都调 close_control_window：main.rs stop-requested handler + record_hotkey handle_stop + record_commands record_kill + tray.rs toggle 停止路径（2026-07-29 补） |
 
 ## 与 RecordAnnotation 互斥
 

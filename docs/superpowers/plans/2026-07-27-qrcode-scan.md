@@ -1,5 +1,9 @@
 # 二维码识别实施计划
 
+> **Status: ✅ 已完成**（Task 1-4 全部实现，commits `d71d35c3` / `bf8138df` / `fecc9541` / `cef322c4`）。2026-07-29 z-sync 回填 checkbox。
+>
+> **实现偏差**（贯穿全 plan）：底层 QR 库从 plan 指定的 **rqrr** 换成了 **zxing-cpp**（0.5, bundled）——rqrr/quircs 对 JPEG 有损压缩的 QR 出现 `DataEcc` 纠错失败，改用 zxing-cpp（C++ FFI bundled），原因记录在 `qrcode.rs:3-5` 注释。配套次级偏差：① 两个后端命令（`scan_qrcode_screenshot` / `scan_qrcode_image`）都去掉了自动写剪贴板，改为前端白卡「单个复制/复制所有」按钮交互；② `scan_qrcode_image` 的 DB blob 读取用 `get_item_by_id` + `get_image_blob`（非 plan 示例的 `get_image_data_blob`），并加了解码格式自动检测；③ i18n 多了 `qrCopyAll`、缺 `qrCopied`（与去自动写剪贴板一致），`qrNoResult` 英文文案微调。功能完整，偏差均有对应 commit。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 截图+图文编辑器加二维码识别按钮，rqrr 多码识别，就地白卡展示结果+写剪贴板。
@@ -46,7 +50,7 @@
 **Interfaces:**
 - Produces: `crate::qrcode::scan(image: &DynamicImage) -> Result<Vec<String>>`
 
-- [ ] **Step 1: 加 rqrr 依赖**
+- [x] **Step 1: 加 rqrr 依赖**
 
 Read `crates/ocr/Cargo.toml`，在 `[dependencies]` 段加：
 
@@ -54,7 +58,7 @@ Read `crates/ocr/Cargo.toml`，在 `[dependencies]` 段加：
 rqrr = "0.10"
 ```
 
-- [ ] **Step 2: 创建 qrcode.rs**
+- [x] **Step 2: 创建 qrcode.rs**
 
 ```rust
 //! 二维码识别（rqrr，纯 Rust）。
@@ -83,16 +87,16 @@ pub fn scan(image: &DynamicImage) -> Result<Vec<String>> {
 }
 ```
 
-- [ ] **Step 3: 在 lib.rs 注册**
+- [x] **Step 3: 在 lib.rs 注册**
 
 Read `crates/ocr/src/lib.rs`，加 `pub mod qrcode;`。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-ocr`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ocr/src/qrcode.rs crates/ocr/src/lib.rs crates/ocr/Cargo.toml
@@ -112,7 +116,7 @@ git commit -m "feat(ocr): 二维码识别 scan 函数（rqrr 多码全识别）"
 - Consumes: Task 1 的 `ocr::qrcode::scan`
 - Produces: `scan_qrcode_screenshot(body) -> Vec<String>` + `scan_qrcode_image(image_id) -> Vec<String>`
 
-- [ ] **Step 1: scan_qrcode_screenshot 命令**
+- [x] **Step 1: scan_qrcode_screenshot 命令**
 
 Read `crates/desktop/src/screenshot_commands.rs`。参考 `ocr_screenshot` 命令的模式（raw body PNG → spawn_blocking → image::load_from_memory）。
 
@@ -150,7 +154,7 @@ pub async fn scan_qrcode_screenshot(
 - 剪贴板写入用项目现有的 clipboard 写文本方法（grep `write_text` 或 `set_text`）
 - 不需要 OcrLockGuard（QR 不撞推理模型，秒级）
 
-- [ ] **Step 2: scan_qrcode_image 命令**
+- [x] **Step 2: scan_qrcode_image 命令**
 
 Read `crates/desktop/src/clipboard_commands.rs`。参考 `ocr_image` 命令的模式（从 DB 读 image blob → 解码）。
 
@@ -181,7 +185,7 @@ pub async fn scan_qrcode_image(image_id: i64) -> Result<Vec<String>, String> {
 
 注意：按现有的 DB image blob 读取方式调整（grep `get_image_data` 或 `image_data` 的读取路径）。
 
-- [ ] **Step 3: 在 main.rs 注册命令**
+- [x] **Step 3: 在 main.rs 注册命令**
 
 Read `crates/desktop/src/main.rs`。找到 `ocr_screenshot` / `ocr_image` 注册的位置，加：
 
@@ -190,12 +194,12 @@ screenshot_commands::scan_qrcode_screenshot,
 clipboard_commands::scan_qrcode_image,
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/screenshot_commands.rs crates/desktop/src/clipboard_commands.rs crates/desktop/src/main.rs
@@ -216,7 +220,7 @@ git commit -m "feat(desktop): scan_qrcode_screenshot + scan_qrcode_image 命令"
 **Interfaces:**
 - Consumes: Task 2 的 Tauri 命令
 
-- [ ] **Step 1: i18n 文案**
+- [x] **Step 1: i18n 文案**
 
 `zh-CN.yaml` screenshot.tool 下加：
 ```yaml
@@ -239,7 +243,7 @@ qrScanning: Scanning...
 
 imagePreview.tool 下也加 `qrcode`（或复用 screenshot key）。
 
-- [ ] **Step 2: 截图 QR 按钮 + 白卡**
+- [x] **Step 2: 截图 QR 按钮 + 白卡**
 
 Read `crates/desktop/frontend/src/pages/Screenshot/index.tsx`。
 
@@ -298,7 +302,7 @@ const doQrScan = async () => {
 )}
 ```
 
-- [ ] **Step 3: ImagePreview QR 按钮 + 白卡**
+- [x] **Step 3: ImagePreview QR 按钮 + 白卡**
 
 Read `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx` 和 `index.tsx`。
 
@@ -306,16 +310,16 @@ Toolbar 加 QR 按钮（OCR 按钮旁），onClick 调 `props.onQrScan()`。
 
 index.tsx 加 QR 状态 + 白卡渲染（同截图的模式，但调 `scan_qrcode_image(imageId)`，白卡定位在图片区域内）。
 
-- [ ] **Step 4: 图标**
+- [x] **Step 4: 图标**
 
 检查 `crates/desktop/frontend/public/icons/` 有没有 `qr-code.svg`。如果缺失，从 lucide.dev 下载 QR Code 图标放入。
 
-- [ ] **Step 5: tsc + vite build**
+- [x] **Step 5: tsc + vite build**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npx vite build`
 Expected: 0 error
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/ crates/desktop/frontend/public/icons/
@@ -326,16 +330,16 @@ git commit -m "feat(frontend): QR 按钮 + 就地白卡展示 + i18n（截图+�
 
 ### Task 4: 全量验证 + 文档
 
-- [ ] **Step 1: cargo build + test**
+- [x] **Step 1: cargo build + test**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-ocr -p octopus-desktop`
 Expected: 0 error, all pass
 
-- [ ] **Step 2: architecture.md 更新**
+- [x] **Step 2: architecture.md 更新**
 
 在截图工具栏描述处补 QR 按钮。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/architecture.md

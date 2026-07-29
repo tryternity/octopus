@@ -2,6 +2,8 @@
 
 > **Status: ✅ 已完成**（2026-07-25，Task 1-15 全部实现，分支 `research_screen_record`）
 >
+> ⚠️ **2026-07-29 后续改造（已推翻下方部分 Task）**：软删/回收站功能被物理删除方案替代（commit `97c2f06c`）。下方 Task 中涉及的 `soft_delete`/`restore` 方法、`restore_recording` 命令、`ListFilter.include_deleted`、`recordings.is_deleted` 列、软删相关测试**已全部从代码中删除**。这些 Task 仅作历史实施记录，不再反映当前代码。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现 octopus 屏幕录制 MVP——基于 openscreen Swift helper 子进程的全屏/窗口/区域录制，含系统音频+麦克风、菜单栏控制、历史列表。

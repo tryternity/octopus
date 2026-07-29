@@ -324,4 +324,4 @@ fn expired_tombstone_gc() {
 3. **集成测试**：跨设备复活测试 + 冲突测试 + TTL 测试。
 4. **文档**：架构文档 + 用户提示（v1→v2 升级 + 混合版本风险）。
 
-详见 plan：`docs/superpowers/plans/2026-07-26-vault-tombstone.md`。
+> 原 plan `2026-07-26-vault-tombstone.md` 已删除（2026-07-29，方案被 is_deleted merge 替代，保留本 spec 仅作 A vs B 权衡的历史决策记录）。

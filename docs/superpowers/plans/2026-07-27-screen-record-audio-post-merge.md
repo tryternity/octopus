@@ -517,7 +517,7 @@ fn list_returns_audio_tracks() {
     let conn = test_db();
     let store = RecordStore::new(&conn);
     store.insert(&sample_meta_with_tracks(1), None).unwrap();
-    let list = store.list(&ListFilter { limit: 100, offset: 0, include_deleted: false, favorites_only: false }).unwrap();
+    let list = store.list(&ListFilter { limit: 100, offset: 0, favorites_only: false }).unwrap();
     assert_eq!(list[0].audio_tracks.len(), 2);
 }
 ```

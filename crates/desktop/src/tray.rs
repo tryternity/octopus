@@ -251,6 +251,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                                     );
                                     // 关闭标注 overlay（Source::Area 录制时才有）
                                     crate::record_annotation_window::close_annotation_window(&app_handle);
+                                    // 关闭录制控制浮窗 pill（display/window 录制时才有；与 ESC/stop-requested/kill 路径一致）
+                                    crate::record_control_window::close_control_window(&app_handle);
                                     let _ = app_handle.emit("record://stopped", &meta);
                                 }
                                 Ok(None) => log::info!("[tray] stop 返回 None"),

@@ -3,6 +3,10 @@
 > **Status: ✅ MVP 已实现**（2026-07-25，分支 `research_screen_record`，Task 1-15 完成）。
 > 实施过程发现的偏差见下方「实现注记」，以及 plan 文件 `2026-07-25-screen-record.md` 的 File Structure 区段。
 >
+> ⚠️ **2026-07-29 后续改造（已推翻下方部分设计）**：
+> - **软删/回收站 → 物理删除**（commit `97c2f06c`）：`soft_delete`/`restore` 方法、`restore_recording` 命令、`ListFilter.include_deleted`、`recordings.is_deleted` 列**全部移除**。删除改为物理删 DB 行 + 弹框问是否删磁盘文件。下方 §2.4（RecordStore trait 的 soft_delete）、§4（restore_recording 命令注册）、§7（删除语义软删/回收站）相关描述**已过时**，仅作历史设计记录。
+> - **file_path 改存绝对路径**（2026-07-27 保存目录可配置后）：下方 §11 不变量 #3「file_path 永远存相对路径」已过时。
+>
 > **本 spec 范围**：MVP（P0）阶段——最小可用录屏。基于调研文档（`docs/superpowers/specs/research/2026-07-25-screen-record-survey.md`）和功能点分解文档（`docs/superpowers/specs/2026-07-25-screen-record-features.md`），经 brainstorming 流程确认。
 >
 > **不在本 spec 范围**：P1（核心增强）、P2（字幕差异化）、P3（编辑器/光标/摄像头）、Windows/Linux 平台 helper 实现。
@@ -1095,7 +1099,7 @@ if request.audio.microphone.enabled {
 
 1. **录制运行中最多只有一个 helper 子进程**——`RecordSession.handle` 同时只能持有一个
 2. **`recordings` 表的 `id` 与 `RecordingRequest.recording_id` 一致**——主进程分配后贯穿全链路
-3. **`file_path` 永远存相对路径**（相对 `~/.octopus/`）——绝对路径只在运行时 join
+3. **`file_path` 存绝对路径**（2026-07-27 保存目录可配置后改；~~原 MVP 存相对路径~~）——`resolve_recording_path` 对绝对路径原样返回
 4. **helper 二进制路径由主进程解析后传给 helper**——helper 不自己找文件
 5. **帧数据不经过 IPC**——SCStream → AVAssetWriter 在 helper 内部闭环
 6. **麦克风权限由独立权限基础设施申请**——录屏 helper 只检查不主动申请
