@@ -291,6 +291,10 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **`invoke_handler!` 宏提取**（2026-07-29）：原 348 行 `tauri::generate_handler![...]` 块（~250 个命令）提取到 `invoke_handler.rs`，用 `macro_rules!` 包成 `handler!()` 宏（`#[macro_use] mod invoke_handler;`）。Tauri 2 不支持合并多个 `generate_handler!` 输出（[Issue #15597](https://github.com/tauri-apps/tauri/issues/15597)），也不支持多次 `invoke_handler` 调用——命令列表必须宏展开期一次性固定。`macro_rules!` 透传 token，`#[cfg(feature = "vault")]` / `#[cfg(target_os = "macos")]` 守卫在展开后由编译器正常求值。命令路径**统一 `crate::` 前缀**（宏定义在独立文件，裸 `module::cmd` 路径会因 mod 上下文不同而解析失败）。`run()` 里一行 `.invoke_handler(handler!())` 替代原 348 行。
 
+**大文件目录化拆分**（2026-07-29）：desktop crate 两个最大文件按职责拆为目录模块——
+- `coordinator/`（原 coordinator.rs 3085 行 → mod.rs 860 + 8 子模块）：actor 模式，自由函数 + 参数传状态，精确 `pub(crate) use` re-export。
+- `action_bar_commands/`（原 2441 行 → mod.rs 36 + 7 子模块）：~50 个符号被 10+ 外部文件引用，用 **glob re-export**（`pub use submodule::*`）保持 `crate::action_bar_commands::xxx` 路径不变，invoke_handler.rs + 10+ 外部文件零改动。子模块：context（上下文检测）/ window（窗口触发）/ items（命令项 CRUD）/ translate（翻译）/ prompt_files（prompt 文件）/ script（脚本执行）/ agent（适配器+任务）。
+
 **识别模式：**
 
 | 模式 | 引擎 | 说明 |

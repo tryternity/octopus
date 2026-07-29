@@ -1,6 +1,6 @@
 # action_bar_commands.rs 拆分 spec（desktop crate 大文件重构 #2）
 
-> **Status: 🔨 待实现**（2026-07-29，分支 `daily_refactor_action_bar`）
+> **Status: ✅ 已实现**（2026-07-29，分支 `daily_refactor_action_bar`）
 
 ## 背景
 
@@ -107,3 +107,37 @@ pub use agent::*;
 - 不改 Tauri 命令签名
 - 不改 invoke_handler.rs 注册路径（靠 re-export 保持）
 - 不改外部 10+ 文件的 `crate::action_bar_commands::xxx` 引用（靠 re-export 保持）
+
+## 实施记录（review）
+
+### 最终目录结构
+
+```
+crates/desktop/src/action_bar_commands/
+├── mod.rs           # 36 行：7 个 mod 声明 + glob re-export + 3 个共享 static（PENDING_CONTEXT / TRIGGER_IN_PROGRESS / TRIGGER_TIMESTAMP）
+├── context.rs       # 677 行：ContextKind / ActionBarContext / Selection / detect_selection / clipboard / 鼠标 / 上下文日志 + CHANGE_COUNT_BASELINE
+├── script.rs        # 571 行：ScriptResult / spawn_script / run_script_* / wait_* / runtime detect / execute_action_bar_inner / execute_action_bar
+├── translate.rs     # 344 行：do_translate / TranslateStrategy / streaming / session / cache / translate_text
+├── prompt_files.rs  # 344 行：render_agent_prompt / resolve_prompt_reference / list/open/create/save/read + format_paths/derive_cwd
+├── window.rs        # 286 行：trigger_action_bar / show_* / finalize / position / guard
+├── items.rs         # 146 行：命令项 CRUD + script_runs + restore_prompt_from_seed
+└── agent.rs         # 147 行：agent 适配器 CRUD + trigger_agent_voice + agent_tasks
+```
+
+### 偏差与决策
+
+1. **CHANGE_COUNT_BASELINE 随 context.rs 搬走**：spec 原列在 mod.rs 共享 static，实际它只被 `detect_selection` / `save_change_count_baseline` / `restore_change_count_baseline` 用（全在 context.rs），搬进 context.rs 更内聚。mod.rs 只留 `PENDING_CONTEXT` / `TRIGGER_IN_PROGRESS` / `TRIGGER_TIMESTAMP`（被 window.rs + agent.rs 共享）。
+
+2. **可见性提升**：部分原本 private 的 helper（`Selection::mouse()`、`primary_monitor_center`、`read_clipboard_text` / `write_clipboard_text`、`log_app_context` / `build_enriched_text`、`action_bar_show_result_internal`，以及 translate 的 `auto_translate_prompt` / `TranslateStrategy` / `resolve_translate_strategy` / `TranslateEmitTarget` / `do_translate_streaming` / `url_encode_param` / `do_translate`）提升为 `pub(crate)`——因为被同级子模块通过 `use super::{...}` + glob re-export 访问。纯逻辑不变。
+
+3. **测试分发**：43 个测试从 mod.rs 的单一 `mod tests` 分发到 4 个子模块（prompt_files 24 + context 12 + window 4 + items 3），每个用 `use super::*` 引入被测函数。全 43 个通过，数量与基线一致。
+
+4. **mod.rs use 块清理**：每次提取后移除不再使用的 import（`Ordering` / `Emitter` / `TranslationEngine` / `hide_action_bar_window` / `show_action_bar_window` / `e2s` / `e2s_ctx` / `AtomicBool` / `AppHandle` / `Manager` / `FocusTracker` 等），保持 0 warning。
+
+### 验证结果
+
+- ✅ `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features remote-ws` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features remote-grpc` — 0 error 0 warning
+- ✅ `cargo test -p octopus-desktop` — **441 passed, 0 failed, 1 ignored**

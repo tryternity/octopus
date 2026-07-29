@@ -132,9 +132,12 @@ cargo test -p octopus-desktop
 
 ## 验证 checklist（每步必跑）
 
-- [ ] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
-- [ ] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
-- [ ] git diff 确认：只搬函数 + re-export，无逻辑改动
+- [x] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features remote-ws` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features remote-grpc` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
+- [x] git diff 确认：只搬函数 + re-export，无逻辑改动
 
 ## 关键：mod.rs re-export 模板
 
