@@ -786,6 +786,7 @@ settings:
     groupStatus: Status
     filterFavorite: Favorites
     filterNonFavorite: Non-Favorites
+    imageLost: Original image file is lost
     loadFailed: "Load failed:"
     deletedN: Deleted ${n} records
     deleteFailed: "Delete failed:"
@@ -966,6 +967,7 @@ screenshot:
 
 # ════════ Clipboard ════════
 clipboard:
+  imageLost: Original image file is lost
   title: Clipboard
   close: Close
   pauseListen: Pause

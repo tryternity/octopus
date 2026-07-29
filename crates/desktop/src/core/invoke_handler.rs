@@ -129,6 +129,7 @@ macro_rules! handler {
             crate::clipboard::clipboard_window::clipboard_dock_collapse,
             crate::clipboard::clipboard_commands::get_image_thumb,
             crate::clipboard::clipboard_commands::get_image_full,
+            crate::clipboard::clipboard_commands::check_image_file_exists,
             crate::clipboard::clipboard_commands::save_image_dialog,
             crate::clipboard::clipboard_commands::copy_image_to_clipboard,
             // ── screenshot_commands ──

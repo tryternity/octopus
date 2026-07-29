@@ -8,7 +8,7 @@ import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/c
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
-  ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check,
+  ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check, AlertCircle,
 } from "lucide-react";
 import SaveImagePopover from "@/components/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -284,6 +284,7 @@ function ClipboardRow({
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
+  const [fileMissing, setFileMissing] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -299,9 +300,13 @@ function ClipboardRow({
   useEffect(() => {
     if (item.itemType !== "image") return;
     setThumbSrc(null);
+    setFileMissing(false);
     let cancelled = false;
     invoke<string>("get_image_thumb", { id: item.id })
       .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
+      .catch(() => {});
+    invoke<boolean>("check_image_file_exists", { id: item.id })
+      .then((exists) => { if (!cancelled) setFileMissing(!exists); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [item.id, item.itemType]);
@@ -314,7 +319,8 @@ function ClipboardRow({
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      showToast(t("settings.clipboardPanel.copyFailed") + e);
+      setFileMissing(true);
+      showToast(t("settings.clipboardPanel.imageLost"));
     }
   };
 
@@ -445,7 +451,11 @@ function ClipboardRow({
         <div className="flex items-center gap-2">
           <div className="flex-1 min-w-0">
             {item.itemType === "image" ? (
-              thumbSrc && (
+              fileMissing ? (
+                <div className="w-10 h-10 rounded bg-destructive/10 flex items-center justify-center flex-shrink-0 ring-1 ring-destructive/20" title={t("settings.clipboardPanel.imageLost")}>
+                  <AlertCircle className="w-4 h-4 text-destructive/60" />
+                </div>
+              ) : thumbSrc && (
                 <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
               )
             ) : item.itemType === "file" ? (

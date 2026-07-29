@@ -794,6 +794,7 @@ settings:
     groupStatus: 状态
     filterFavorite: 收藏
     filterNonFavorite: 非收藏
+    imageLost: 原图丢失
     loadFailed: "加载失败："
     deletedN: 已删除 ${n} 条
     deleteFailed: "删除失败："
@@ -976,6 +977,7 @@ screenshot:
 
 # ════════ Clipboard 剪贴板 ════════
 clipboard:
+  imageLost: 原图丢失
   title: 剪贴板
   close: 关闭
   pauseListen: 暂停监听

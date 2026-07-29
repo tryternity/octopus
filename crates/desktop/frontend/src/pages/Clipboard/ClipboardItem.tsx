@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy, Check } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy, Check, AlertCircle } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -30,8 +30,10 @@ function ClipboardItemRow({
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
+  const [fileMissing, setFileMissing] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Download 触发按钮 ref：传给 SaveImagePopover，让其 outside-click 检测忽略它，
   // 否则 mousedown 关闭与 click toggle 时序冲突，表现为再次点击 Download 关不掉 popover。
@@ -49,9 +51,14 @@ function ClipboardItemRow({
     // 虚拟列表滚动会复用组件实例：item.id 切换时先清旧缩略图，避免新图 base64
     // 经 IPC 传回前短暂显示上一条（幽灵闪烁）；cancelled 防快速滚动时旧请求晚到覆盖新图。
     setThumbSrc(null);
+    setFileMissing(false);
     let cancelled = false;
     invoke<string>("get_image_thumb", { id: item.id })
       .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
+      .catch(() => {});
+    // 检查原图文件是否存在（文件系统存储后可能被用户删除）
+    invoke<boolean>("check_image_file_exists", { id: item.id })
+      .then((exists) => { if (!cancelled) setFileMissing(!exists); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [item.id, item.itemType]);
@@ -82,12 +89,18 @@ function ClipboardItemRow({
   const handleClick = () => {
     if (deletePending) return;
     onSelect(index);
-    // 复制到剪贴板 + 动效
+    // 复制到剪贴板 + 动效；文件丢失时红色气泡提示 + 感叹号
     invoke("copy_clipboard_item", { id: item.id }).then(() => {
       setCopied(true);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
-    }).catch(console.error);
+    }).catch((e) => {
+      setFileMissing(true);
+      setCopyFailed(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopyFailed(false), 2000);
+      console.error(e);
+    });
   };
 
   // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item）。
@@ -95,6 +108,7 @@ function ClipboardItemRow({
     try {
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
+      setFileMissing(true);
       console.error(e);
     }
   };
@@ -121,6 +135,7 @@ function ClipboardItemRow({
     try {
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
+      setFileMissing(true);
       console.error(e);
     }
   };
@@ -190,10 +205,16 @@ function ClipboardItemRow({
           "w-5 h-5 transition-all duration-150",
           accent,
           copied && "scale-125 text-emerald-500",
+          copyFailed && "scale-125 text-destructive",
         )} />
         {copied && (
           <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
             {t("clipboard.copied")}
+          </span>
+        )}
+        {copyFailed && (
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-destructive px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
+            {t("clipboard.imageLost")}
           </span>
         )}
       </button>
@@ -204,7 +225,11 @@ function ClipboardItemRow({
 
         <div className="flex-1 min-w-0">
           {item.itemType === "image" ? (
-            thumbSrc && (
+            fileMissing ? (
+              <div className="w-10 h-10 rounded-md bg-destructive/10 flex items-center justify-center flex-shrink-0 ring-1 ring-destructive/20" title={t("clipboard.imageLost")}>
+                <AlertCircle className="w-4 h-4 text-destructive/60" />
+              </div>
+            ) : thumbSrc && (
               <img src={thumbSrc} className="w-10 h-10 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )
           ) : item.itemType === "file" ? (
