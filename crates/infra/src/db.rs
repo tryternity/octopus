@@ -363,6 +363,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
+/// ⚠️ 本次不改版本号——用户手动 DROP + CREATE image_data 表，不走清库流程（保留其他表数据）。
+/// 全新库（user_version=0）时 db.sql 已是新 schema；旧库需手动重建 image_data 表。
 pub const CURRENT_SCHEMA_VERSION: u32 = 54;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
