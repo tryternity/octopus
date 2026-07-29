@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
+import { isMac } from "@/lib/platform";
 import type { ConfigResponse } from "./index";
 import { useT, setLocale } from "@/lib/i18n";
 import type { ToastVariant } from "@/lib/useToast";
@@ -13,6 +14,7 @@ import { Row } from "@/components/ui/row";
 import { Toggle } from "@/components/ui/toggle";
 import { Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
+import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
 
 interface GeneralPanelProps {
@@ -28,7 +30,7 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "voice" | "sync">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
 
   useEffect(() => {
@@ -97,9 +99,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     return () => document.removeEventListener("keydown", handler, true);
   }, [capturingKey, setVal, showToast]);
 
-  const tabs = [
+  const tabs: { key: string; label: string }[] = [
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
+    // macOS 专有：系统权限 tab（麦克风/辅助功能/屏幕录制）
+    ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "voice", label: t("settings.general.tabVoice") },
     { key: "sync", label: t("settings.general.tabSync") },
   ];
@@ -222,6 +226,20 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
                 <ShortcutButton shortcut={cfg.vault_autotype_shortcut as string} capturing={capturingKey === "vault_autotype_shortcut"} onClick={() => startShortcutCapture("vault_autotype_shortcut")} />
               </Row>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── 系统权限（macOS 专有）：麦克风 / 辅助功能 / 屏幕录制 ── */}
+      {activeTab === "permission" && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t("settings.general.tabPermission")}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {PERMISSIONS.map((def) => (
+              <PermissionCard key={def.key} def={def} />
+            ))}
           </CardContent>
         </Card>
       )}

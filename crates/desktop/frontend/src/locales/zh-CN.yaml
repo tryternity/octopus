@@ -396,6 +396,7 @@ settings:
   general:
     tabGeneral: 一般
     tabShortcut: 快捷键
+    tabPermission: 系统权限
     tabVoice: 语音
     tabSync: Git 同步
     appearance: 外观
@@ -1098,12 +1099,15 @@ onboarding:
     microphone:
       title: 麦克风
       description: 语音识别 / 录屏录音需要
+      usage: 用于实时语音识别（ASR）和录屏时的音频采集。授权后可使用「快捷键说话转文字」和「录屏录音」功能。
     accessibility:
       title: 辅助功能
       description: 截图 / 返回焦点 / 自动输入需要
+      usage: 用于读取前台应用选中的文本（ActionBar 上下文感知）、模拟键盘输入（自动粘贴 / Auto-Type 密码填充）、以及识别结果窗口返回焦点。未授权时这些功能会静默失败。
     screen:
       title: 屏幕录制
       description: 录屏 / 截图需要
+      usage: 用于屏幕截图（全屏 / 区域 / 滚动 / 窗口）和屏幕录制（含标注 overlay）。授权后截图返回实际画面，未授权时返回黑屏。
   status:
     granted: 已授权
     denied: 已拒绝

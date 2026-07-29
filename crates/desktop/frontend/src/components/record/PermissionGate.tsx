@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-type PermissionStatus = "granted" | "denied" | "not-determined";
+type PermissionStatus = "granted" | "denied" | "notDetermined";
 
 interface PermissionGateProps {
   /** 授权通过时渲染的内容。 */
@@ -47,7 +47,7 @@ export function PermissionGate({
     } catch (e) {
       onError?.(t("settings.recordings.permission.checkFailed") + e);
       // 检查失败时按 not-determined 渲染——让用户能看到提示而非白屏
-      setStatus("not-determined");
+      setStatus("notDetermined");
     }
   }, [onError, onStatusChange, t]);
 
@@ -73,7 +73,7 @@ export function PermissionGate({
 
   const handleOpenSettings = useCallback(async () => {
     try {
-      await invoke("open_privacy_settings", { section: "screen_capture" });
+      await invoke("open_privacy_settings", { section: "screenCapture" });
     } catch (e) {
       onError?.(t("settings.recordings.permission.checkFailed") + e);
     }

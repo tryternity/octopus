@@ -390,6 +390,7 @@ settings:
   general:
     tabGeneral: General
     tabShortcut: Shortcuts
+    tabPermission: System Permissions
     tabVoice: Voice
     tabSync: Git Sync
     appearance: Appearance
@@ -1087,12 +1088,15 @@ onboarding:
     microphone:
       title: Microphone
       description: Required for speech recognition / screen recording audio
+      usage: Used for real-time speech recognition (ASR) and audio capture during screen recording. Enables "hotkey speech-to-text" and "record screen with audio" features.
     accessibility:
       title: Accessibility
       description: Required for screenshot / focus return / auto input
+      usage: Used to read selected text in foreground apps (ActionBar context awareness), simulate keyboard input (auto-paste / Auto-Type password filling), and return focus to the result window. These features fail silently when not granted.
     screen:
       title: Screen Recording
       description: Required for screen recording / screenshot
+      usage: Used for screenshots (full screen / region / scrolling / window) and screen recording (with annotation overlay). Returns actual screen content when granted; black screen when denied.
   status:
     granted: Granted
     denied: Denied
