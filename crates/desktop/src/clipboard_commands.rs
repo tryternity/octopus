@@ -114,7 +114,7 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
                 octopus_clipboard::store::get_image_blob(conn, &blob_hash)
             })
             .map_err(e2s)?
-            .ok_or("图片数据不存在")?;
+            .ok_or("原图文件已丢失，无法复制")?;
             // image_data 存 JPEG q85 BLOB（IMAGE_SAVE_QUALITY=jpeg:85）；write_image 契约是 PNG，转码一次
             let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
                 .map_err(|e| e2s_ctx("解码 JPEG 失败: {}", e))?;
@@ -654,7 +654,7 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
             octopus_clipboard::store::get_image_blob(conn, &blob_hash)
         })
         .map_err(e2s)?
-        .ok_or_else(|| "图片数据缺失".to_string())?;
+        .ok_or_else(|| "原图文件已丢失".to_string())?;
 
         Ok(blob)
     })
@@ -663,6 +663,26 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
 
     // 返回原始 WebP 字节（Raw body），前端用 URL.createObjectURL 加载
     Ok(tauri::ipc::Response::new(blob))
+}
+
+/// 检查图片原图文件是否存在（文件系统存储后可能被用户删除）。
+/// 前端加载缩略图时顺带调此命令，缺失则标记条目为"原图已丢失"。
+#[tauri::command]
+pub async fn check_image_file_exists(id: i64) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let item = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::get_item_by_id(conn, id)
+        })
+        .map_err(e2s)?;
+        let item = item.ok_or("条目不存在")?;
+        if item.item_type != octopus_clipboard::ItemType::Image {
+            return Ok(true); // 非图片不检查
+        }
+        let hash = item.ref_data.as_ref().ok_or("图片元数据缺失")?;
+        Ok(octopus_infra::paths::image_file_path(hash).exists())
+    })
+    .await
+    .map_err(|e| e2s_ctx("join error: {}", e))?
 }
 
 /// 弹系统保存对话框，把前端合成的标注 PNG（base64）存到用户指定路径。
