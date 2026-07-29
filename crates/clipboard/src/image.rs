@@ -1,15 +1,21 @@
-//! 图片编码：RGBA → PNG → SHA-256 → WebP 无损 + 缩略图 → DB BLOB。
-//! 替代旧文件系统方案，不再写 ~/.octopus/clipboard_images/。
+//! 图片编码：RGBA → MD5 hash（去重）→ JPEG q85 原图存文件系统 + 缩略图存 DB BLOB。
+//! 原图存 ~/Documents/octopus/screens/<hash>.jpg（2026-07-29 从 DB BLOB 改文件系统）。
 
 use anyhow::Result;
-use sha2::Sha256;
 
-/// RGBA 像素 → SHA-256 hash（直接 hash 原始像素，不做 PNG 编码）。
-/// hash 用于去重（同一张图只存一份 BLOB）。
+/// RGBA 像素 → MD5 hash（直接 hash 原始像素，不做 PNG 编码）。
+/// hash 用于去重 + 文件名（同一张图只存一个文件）。
 /// 不再生成 PNG bytes——watcher 只需 hash，PNG 编码纯粹浪费 CPU。
 /// 调用方如需 PNG bytes 请用其他函数。
+/// 2026-07-29：SHA-256 → MD5（更快，剪贴板去重场景无需密码学强度）。
 pub fn hash_rgba(rgba: &[u8]) -> String {
-    sha256_hex(rgba)
+    format!("{:x}", md5::compute(rgba))
+}
+
+/// 任意 bytes → MD5 hex（截图用 PNG bytes hash 去重）。
+/// 替代旧 sha256_hex（2026-07-29 hash 算法统一为 MD5）。
+pub fn hash_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", md5::compute(bytes))
 }
 
 /// 编码结果：WebP 无损原图 + WebP 缩略图。
@@ -146,18 +152,35 @@ pub fn encode_image(img: &::image::DynamicImage) -> Result<EncodedImage> {
     Ok(EncodedImage { image_blob, thumb_blob })
 }
 
-/// SHA-256 十六进制哈希。
-pub fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let result = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for byte in result {
-        use std::fmt::Write;
-        write!(&mut hex, "{:02x}", byte).unwrap();
+/// 写图片文件到文件系统（`<screens_dir>/<hash>.jpg`）。
+/// 目录不存在时自动创建（mkdir -p）。同 hash 覆盖（幂等）。
+pub fn save_image_to_file(hash: &str, blob: &[u8]) -> Result<()> {
+    let path = octopus_infra::paths::image_file_path(hash);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    hex
+    std::fs::write(&path, blob)?;
+    Ok(())
+}
+
+/// 读图片文件（原图）。文件不存在返回 Ok(None)（与旧 DB 查询语义一致）。
+pub fn read_image_file(hash: &str) -> Result<Option<Vec<u8>>> {
+    let path = octopus_infra::paths::image_file_path(hash);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// 删除图片文件（引用计数归零时调）。文件不存在静默成功（幂等）。
+pub fn delete_image_file(hash: &str) {
+    let path = octopus_infra::paths::image_file_path(hash);
+    if path.exists() {
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!("[clipboard] 删除图片文件失败 {:?}: {}", path, e);
+        }
+    }
 }
 
 #[cfg(test)]

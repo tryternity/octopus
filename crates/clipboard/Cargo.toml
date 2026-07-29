@@ -9,7 +9,7 @@ parking_lot = { workspace = true }
 clipboard-rs = { version = "0.3", features = ["image", "wayland"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 webp = "0.3"
-sha2.workspace = true
+md5 = "0.7"
 rusqlite = { version = "0.31", features = ["bundled"] }
 anyhow.workspace = true
 serde.workspace = true

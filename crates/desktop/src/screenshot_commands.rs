@@ -302,7 +302,7 @@ fn save_screenshot_to_history(
     png_bytes: &[u8],
     predecoded: Option<&::image::DynamicImage>,
 ) -> Result<i64, String> {
-    let hash = octopus_clipboard::image::sha256_hex(png_bytes);
+    let hash = octopus_clipboard::image::hash_bytes(png_bytes);
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     }).map_err(e2s)?;
@@ -1535,7 +1535,7 @@ pub async fn start_scroll_recording(
             }
             png
         };
-        let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+        let hash = octopus_clipboard::image::hash_bytes(&png_bytes);
         let item_id = octopus_clipboard::store::chrono_millis();
 
         // 线程一：立即写剪贴板（用户最关心，~1s）

@@ -83,13 +83,12 @@ CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
 CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(is_deleted) WHERE is_deleted = 1;
 
--- ── 图片 BLOB 存储（image_data）─────────────────────────────────────────────
--- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。
+-- ── 图片缩略图存储（image_data）─────────────────────────────────────────────
+-- 原图改文件系统存储（~/Documents/octopus/screens/<hash>.jpg，2026-07-29），
+-- DB 只存缩略图（240×240，几 KB）+ 尺寸元数据，引用计数回收。
 CREATE TABLE IF NOT EXISTS image_data (
-    hash       TEXT PRIMARY KEY,     -- SHA-256(PNG bytes)，去重键
-    blob       BLOB NOT NULL,        -- 图片原图 BLOB（格式见 image_type）
-    thumb      BLOB NOT NULL,        -- 缩略图 BLOB（240×240 Lanczos resize）
-    image_type TEXT NOT NULL DEFAULT 'webp',  -- BLOB 格式：webp（预留 png/jpeg 扩展）
+    hash       TEXT PRIMARY KEY,     -- MD5(RGBA 像素)，去重键 + 文件名
+    thumb      BLOB NOT NULL,        -- 缩略图 BLOB（240×240，JPEG q10）
     width      INTEGER NOT NULL,
     height     INTEGER NOT NULL,
     created_at TEXT NOT NULL
@@ -444,6 +443,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_hide_cursor',       'false',             '是否隐藏系统光标（P3 用）'),
     ('record_default_source_type', 'display',         '默认录制源类型'),
     ('record_output_dir',        '',                  '录屏保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/Documents/octopus/recordings/）'),
+    ('screen_output_dir',        '',                  '截图保存目录（绝对路径，支持 ~/ 展开；空=默认 ~/Documents/octopus/screens/）'),
     ('record_history_view',      'grid',              '历史列表默认视图（grid/list）'),
     ('record_reveal_after_stop', 'true',              '录屏停止后是否自动在 Finder 高亮文件');
 
