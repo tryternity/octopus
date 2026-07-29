@@ -145,7 +145,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 - 6 种 item_type 过滤 + 分页（`LIMIT ? OFFSET ?`）
 - `ORDER BY created_at DESC, id DESC` 二级排序——消除秒级 `iso_now` 同秒不稳定（同秒内按 id 保证确定顺序）
 
-`rebuild_fts_index`：FTS5 索引重建，仅启动时一次性 populate；删除路径由 db.sql 触发器 `clip_fts_ad` 增量同步，无需周期 rebuild。运行中删除计数器达 10 自动 rebuild。
+FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts_au`）事务内增量同步，无需周期 rebuild（原 `rebuild_fts_index` 已于 2026-07-29 删除——死代码）。
 
 ---
 
@@ -155,7 +155,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 
 **编码流程**：
 1. 从剪贴板读取 RGBA 像素
-2. `encode_and_hash`：PNG 编码 + SHA-256 计算内容哈希
+2. `hash_rgba`：SHA-256 计算内容哈希（去重用）
 3. 去重：`find_by_content_hash` 命中则复用已有 image_data 行
 4. JPEG 编码（按 IMAGE_SAVE_QUALITY 配置链，默认 q85）
 5. 缩略图 240×240（Triangle 滤波降采样）
