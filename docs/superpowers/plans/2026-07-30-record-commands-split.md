@@ -57,8 +57,8 @@
 ---
 
 ## 验证 checklist
-- [ ] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
-- [ ] `cargo test -p octopus-desktop` — 441 passed
+- [x] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed
 
 ## 回滚
 每个 Task 独立 commit。失败 `git reset --hard HEAD~1`。

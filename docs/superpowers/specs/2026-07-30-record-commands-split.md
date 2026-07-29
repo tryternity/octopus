@@ -1,6 +1,6 @@
 # record_commands.rs 拆分 spec（desktop crate 大文件重构 #5）
 
-> **Status: 🔨 待实现**（2026-07-30，分支 `daily_refactor_record`）
+> **Status: ✅ 已实现**（2026-07-30，分支 `daily_refactor_record`，5 commit）
 
 ## 背景
 
@@ -53,3 +53,40 @@ crates/desktop/src/record_commands/
 ## 不做
 - 不改函数逻辑/签名
 - 不改 invoke_handler.rs / 外部引用路径
+
+---
+
+## 实施记录（2026-07-30）
+
+### 最终目录结构
+
+```
+crates/desktop/src/record_commands/
+├── mod.rs          # 100 行（共享 helper + 3 个 list_* + 4 个 glob re-export）
+├── permission.rs   # 154 行（7 个权限命令 + probe_microphone_permission 私有）
+├── library.rs      # 163 行（10 个录制库 CRUD + RecordStatus）
+├── postprocess.rs  # 717 行（ffmpeg helpers + GIF + 音轨合并 + 字幕 + LLM 下拉）
+└── control.rs      # 562 行（控制 + 配置 + 入库 + 3 个测试）
+```
+
+合计 1696 行（原 1628 行，增加来自各子模块头注释 + 共享 helper `use super::` 导入）。
+
+### 关键约束兑现
+
+- **glob re-export**：`pub use <module>::*`，32 个命令 + 8 处外部引用路径 `crate::record_commands::xxx` 全部不变（invoke_handler.rs / setup.rs / record_audio_probe.rs 等零改动）。
+- **`#![cfg(target_os = "macos")]`**：每个子模块顶部都加了 gate（含 mod.rs 保留）。
+- **共享 helper 留 mod.rs**：`provider` / `now_iso` / `with_db_blocking` 留在 mod.rs，4 个子模块用 `use super::{...}` 精确引用（不用 `use super::*` 避免 unused warning）。
+- **测试**：3 个 `resolve_mic_device_name_*` 搬到 control.rs，路径变为 `record_commands::control::tests::*`。
+
+### 偏差
+
+- spec 预估 postprocess ~620 行，实际 717 行——原因是 ffmpeg helpers + LlmOption + capitalize 全部归 postprocess（spec 表格列了，估算偏紧）。无逻辑偏差。
+- spec 预估 control ~510 行，实际 562 行——含共享 helper 导入注释。无逻辑偏差。
+- RecordStatus / get_record_status 原在 ffmpeg helpers 与 export_gif 之间（mod.rs 物理位置），spec 归 library.rs。拆分时按 spec 归类（与录制状态查询而非后处理更贴合）。
+- control.rs 多了一处 `use octopus_record::platform::HelperProvider` 显式 trait 导入——`provider().resolve_helper_path()` / `provider().list_displays()` 等方法调用需要 trait 在 scope（原 mod.rs 因顶部 use octopus_record 已带入，control.rs 单独 import）。
+
+### 验证结果
+
+- `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning ✅
+- `cargo test -p octopus-desktop` — 441 passed / 0 failed / 1 ignored ✅
+- 3 个 `resolve_mic_device_name_*` 测试在新路径 `record_commands::control::tests` 下运行正常（2 passed + 1 ignored）。
