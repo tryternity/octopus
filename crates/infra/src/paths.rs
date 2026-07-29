@@ -62,3 +62,40 @@ pub fn resolve_recording_path(file_path: &str) -> PathBuf {
 pub fn record_helper_log() -> PathBuf {
     octopus_config_home().join("logs").join("record-helper.log")
 }
+
+/// 探测 Tauri `.app` bundle 内 resource 路径（exe-relative 几何）。
+///
+/// macOS `.app` 结构：exe 在 `Contents/MacOS/<binary>`，Tauri `bundle.resources` 映射的
+/// 资源在 `Contents/Resources/<rel>`。本函数传相对路径（如 `seeds` /
+/// `binaries/octopus-sck-helper`），命中则返回绝对路径。
+///
+/// 非 `.app` 环境（`cargo run` dev / 裸二进制 release）返回 `None`——
+/// 此时 exe 不在 `Contents/MacOS/` 下，`parent().parent()` 不指向 `Contents`。
+///
+/// 复用方：
+/// - `seeds_dir()`（crates/infra/src/seeds.rs）—— Tauri .app bundle 第 3 路探测
+/// - `MacOSProvider::resolve_helper_path`（crates/record/src/platform/macos.rs）—— helper 路径
+pub fn tauri_app_resource(rel: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;      // Contents/MacOS
+    let contents = macos_dir.parent()?; // Contents
+    let candidate = contents.join("Resources").join(rel);
+    candidate.exists().then_some(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// dev / 裸二进制环境：current_exe() 不在 .app/Contents/MacOS/ 下，
+    /// tauri_app_resource 必须返回 None（不能误报）。
+    /// （.app 环境难在单测里构造，只验证 None 分支）
+    #[test]
+    fn tauri_app_resource_returns_none_in_non_app_env() {
+        // cargo test 的 exe 在 target/debug/deps/ 或 target/release/deps/，
+        // parent().parent() 是 target/debug 或 target/release，不含 Resources 目录。
+        assert!(tauri_app_resource("seeds").is_none());
+        assert!(tauri_app_resource("binaries/octopus-sck-helper").is_none());
+        assert!(tauri_app_resource("nonexistent").is_none());
+    }
+}

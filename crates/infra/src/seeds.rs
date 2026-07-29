@@ -28,15 +28,12 @@ pub fn seeds_dir() -> PathBuf {
             if release.exists() {
                 return release;
             }
-            // Tauri .app bundle——exe 在 Contents/MacOS/，resources 在 Contents/Resources/
-            // parent=MacOS → parent.parent()=Contents → join Resources/seeds
-            if let Some(contents) = parent.parent() {
-                let app_bundle = contents.join("Resources").join("seeds");
-                if app_bundle.exists() {
-                    return app_bundle;
-                }
-            }
         }
+    }
+    // Tauri .app bundle——exe 在 Contents/MacOS/，resources 在 Contents/Resources/seeds
+    // （与 resolve_helper_path 复用同一 exe-relative 几何）
+    if let Some(app_bundle) = crate::paths::tauri_app_resource("seeds") {
+        return app_bundle;
     }
     // fallback：dev 路径（即使不存在也返回，调用方处理 Err）
     dev
