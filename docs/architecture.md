@@ -287,7 +287,9 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 2. **setup.rs::AppSetup** — 原 setup 闭包（~741 行）提取为结构体，`run()` 只剩 `bootstrap() → Builder 链 → .setup(AppSetup::run) → app.run()`
 3. **setup_all 12 方法拆分** — 587 行 `setup_all` 拆成 12 个 `&mut self` 方法（init_clipboard / init_cleanup / init_scheduler / init_watchers / init_input / create_windows / init_engine / init_vault / init_coordinator / init_tray / create_result_window / register_shortcuts），跨段共享变量提升为 `Option` 字段（clipboard_handle / engine_manager）
 
-`main.rs` 经此三步 + 启动工具函数搬家（`cleanup_orphan_recordings` / `build_local_engine` / `count_apps_in_dir` 移入 setup.rs 底部）后降至 580 行，仅剩 `run()`（Builder + plugins + invoke_handler + app.run 事件循环）+ `main()` + `feature_flags` 测试模块。
+`main.rs` 经此三步 + 启动工具函数搬家（`cleanup_orphan_recordings` / `build_local_engine` / `count_apps_in_dir` 移入 setup.rs 底部）+ **`invoke_handler!` 宏提取**（见下）后降至 235 行，仅剩 `run()`（Builder + plugins + 事件循环）+ `main()` + `feature_flags` 测试模块。
+
+**`invoke_handler!` 宏提取**（2026-07-29）：原 348 行 `tauri::generate_handler![...]` 块（~250 个命令）提取到 `invoke_handler.rs`，用 `macro_rules!` 包成 `handler!()` 宏（`#[macro_use] mod invoke_handler;`）。Tauri 2 不支持合并多个 `generate_handler!` 输出（[Issue #15597](https://github.com/tauri-apps/tauri/issues/15597)），也不支持多次 `invoke_handler` 调用——命令列表必须宏展开期一次性固定。`macro_rules!` 透传 token，`#[cfg(feature = "vault")]` / `#[cfg(target_os = "macos")]` 守卫在展开后由编译器正常求值。命令路径**统一 `crate::` 前缀**（宏定义在独立文件，裸 `module::cmd` 路径会因 mod 上下文不同而解析失败）。`run()` 里一行 `.invoke_handler(handler!())` 替代原 348 行。
 
 **识别模式：**
 
