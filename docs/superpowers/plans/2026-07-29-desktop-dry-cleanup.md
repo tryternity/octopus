@@ -1,6 +1,6 @@
 # desktop 重复代码清理 plan：e2s + create_window + reveal/open
 
-> **Status: 🔶 大部分完成**（2026-07-29，Phase A/B 完成 + Phase C 5 窗口完成）。Phase C 剩余 5 窗口（clipboard/record_control/record_annotation/screenshot/record_area_picker）收益递减留后续。验证：441 test 全过。
+> **Status: ✅ Phase A/B 完成 + Phase C 7/10 窗口完成**（2026-07-29）。剩余 3 窗口（clipboard/screenshot/record_area_picker）ROI 不足留原样——clipboard build 后 136 行副作用照留（抽 builder 只省 8 行）、screenshot/record_area_picker 循环动态 label + 状态机耦合。验证：441 test 全过。
 >
 > **Spec**: [`2026-07-29-desktop-dry-cleanup.md`](../specs/2026-07-29-desktop-dry-cleanup.md)
 

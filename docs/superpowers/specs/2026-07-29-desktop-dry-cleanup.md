@@ -1,6 +1,6 @@
 # desktop 重复代码清理 spec：e2s + create_window + reveal/open
 
-> **Status: 🔶 大部分完成**（2026-07-29，Phase A/B 完成 + Phase C 5 窗口完成）。Phase C 剩余 5 窗口（clipboard/record_control/record_annotation/screenshot/record_area_picker）收益递减留后续。验证：441 test 全过。
+> **Status: ✅ Phase A/B 完成 + Phase C 7/10 窗口完成**（2026-07-29）。剩余 3 窗口（clipboard/screenshot/record_area_picker）ROI 不足留原样。验证：441 test 全过。
 >
 > **背景**：rust-patterns 扫描发现 desktop crate 三类重复代码。本 spec 是第一梯队 DRY 重构，纯机械去重，风险极低。
 

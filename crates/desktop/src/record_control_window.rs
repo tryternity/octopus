@@ -14,7 +14,8 @@
 //! 详见 `docs/superpowers/specs/2026-07-26-record-control-window.md`。
 
 use octopus_record::Source;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "record_control_window";
 
@@ -44,18 +45,17 @@ pub fn create_control_window(app: &AppHandle, source: &Source) {
     // URL query 传 source 类型（前端按 display/window 渲染不同 label，MVP 都一样）
     let url = format!("record-control.html?source={}", source_type_str(source));
 
-    let result = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App(url.into()))
-        .title("")
-        .inner_size(WIDTH, HEIGHT)
-        .position(x, y)
-        .always_on_top(true)
-        .decorations(false)
-        .transparent(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .shadow(false)
-        .visible(true)
-        .build();
+    let result = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: &url,
+        title: "",
+        inner_size: (WIDTH, HEIGHT),
+        visible: true,
+        resizable: false,
+        position: Some((x, y)),
+        focused: None,
+        accept_first_mouse: None,
+    });
 
     if let Err(e) = result {
         log::warn!("[record] 控制浮窗创建失败（不影响录制）: {e}");

@@ -13,7 +13,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "record_annotation_window";
 
@@ -112,22 +113,17 @@ pub fn create_annotation_window(
         display_id, x, y, w, h, scale, toolbar_pos, canvas_offset_x, canvas_offset_y, sel_logical_w, sel_logical_h
     );
 
-    let _ = WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        WebviewUrl::App(url.into()),
-    )
-    .title("")
-    .inner_size(win_w, win_h)
-    .position(win_x, win_y)
-    .always_on_top(true)
-    .decorations(false)
-    .transparent(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(true)
-    .build()
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: &url,
+        title: "",
+        inner_size: (win_w, win_h),
+        visible: true,
+        resizable: false,
+        position: Some((win_x, win_y)),
+        focused: None,
+        accept_first_mouse: None,
+    })
     .map_err(|e| {
         log::error!("[annotation] overlay 窗口创建失败: {e}");
         format!("overlay 窗口创建失败: {e}")
