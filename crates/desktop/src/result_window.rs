@@ -244,11 +244,17 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
         // （macOS 可见窗口的 webview 优先首绘，亦加速 ready）；文本仍等 ready 后由
         // show-result 渲染（#container 默认 opacity:0，提前 show 不产生空窗闪烁）。
-        let _ = window.show();
+        log::info!("[result-show] window exists, ready={}, show()", WINDOW_READY.load(Ordering::Relaxed));
+        match window.show() {
+            Ok(_) => {}
+            Err(e) => log::error!("[result-show] show() FAILED: {e}"),
+        }
         if need_emit {
             // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
             let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
         }
+    } else {
+        log::warn!("[result-show] window NOT found, will create");
     }
 }
 

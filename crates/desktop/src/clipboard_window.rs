@@ -267,6 +267,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let visible = window.is_visible().unwrap_or(false);
         let focused = window.is_focused().unwrap_or(false);
+        log::info!("[clipboard-toggle] window exists: visible={visible} focused={focused}");
 
         // dock 状态：处于 docked 模式时，快捷键逻辑不同于普通 toggle
         let docked = crate::window_position::load_dock_state(WINDOW_LABEL)
@@ -295,15 +296,22 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
         } else if visible && focused {
             // 非 docked：可见且有焦点 → 隐藏
+            log::info!("[clipboard-toggle] branch: hide (visible+focused)");
             window.hide()?;
             #[cfg(target_os = "macos")]
             { crate::activation::after_floating_window_hide(app); }
         } else {
             // 非 docked：不可见或无焦点 → show + focus
+            log::info!("[clipboard-toggle] branch: show+focus (visible={visible} focused={focused})");
             #[cfg(target_os = "macos")]
             { crate::activation::before_floating_window_show(app); }
-            window.show()?;
-            window.set_focus()?;
+            match window.show() {
+                Ok(_) => log::info!("[clipboard-toggle] show() ok"),
+                Err(e) => log::error!("[clipboard-toggle] show() FAILED: {e}"),
+            }
+            if let Err(e) = window.set_focus() {
+                log::warn!("[clipboard-toggle] set_focus() failed: {e}");
+            }
         }
     } else {
         create_clipboard_window(app)?;
