@@ -62,7 +62,7 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         // emit 携带 context payload——前端 refresh 直接用事件里的 context，
         // 不再依赖异步 invoke(get_context)（消除首屏竞态：窗口已 show 但 ctx Promise
         // 还在 pending 时用了陈旧 context state，导致"有选中却只显示输入框"）。
-        let ctx = crate::action_bar_commands::snapshot_pending_context();
+        let ctx = crate::action_bar::action_bar_commands::snapshot_pending_context();
         let _ = app.emit("action-bar://show", &ctx);
 
         // 焦点时序诊断 + 巩固：gather_context 内 `subl --command` 激活 Sublime 可能是异步的，
@@ -155,12 +155,12 @@ pub fn register_action_bar_shortcut(
                     // 否则 show 时切的 Regular policy 残留，Dock 图标常驻。
                     hide_action_bar_window(app);
                     // 重置 guard——防 webview 崩溃后 guard 永久卡死
-                    crate::action_bar_commands::reset_trigger_guard();
+                    crate::action_bar::action_bar_commands::reset_trigger_guard();
                     return;
                 }
                 // guard 超时保护——如果上次触发超过 10s 仍未 finalize，强制重置
-                crate::action_bar_commands::reset_trigger_guard_if_stale(10);
-                crate::action_bar_commands::trigger_action_bar(app_handle.clone());
+                crate::action_bar::action_bar_commands::reset_trigger_guard_if_stale(10);
+                crate::action_bar::action_bar_commands::trigger_action_bar(app_handle.clone());
             }
         })
         .map_err(|e| format!("Failed to register action bar shortcut '{}': {}", shortcut_str, e))?;

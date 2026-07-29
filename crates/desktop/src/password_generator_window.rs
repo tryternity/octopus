@@ -116,7 +116,7 @@ pub fn compute_window_position(app: &AppHandle) -> WindowPosition {
     }
 
     // 2. fallback：鼠标位置（前台浏览器输入框附近通常有鼠标）
-    if let Some((mx, my)) = crate::action_bar_commands::get_mouse_position(app) {
+    if let Some((mx, my)) = crate::action_bar::action_bar_commands::get_mouse_position(app) {
         // 浮窗显示在鼠标右下方（偏移 12px，避免遮挡光标）
         let mut x = mx + 12.0;
         let mut y = my + 12.0;

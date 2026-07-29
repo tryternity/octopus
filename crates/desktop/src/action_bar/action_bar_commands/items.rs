@@ -86,7 +86,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
 pub fn set_global_shortcut(id: i64, global_shortcut: String, app: AppHandle) -> Result<(), String> {
     octopus_infra::db::set_global_shortcut(id, &global_shortcut).map_err(e2s)?;
     // 重新注册全局快捷键
-    crate::action_hotkey::register_action_hotkeys(&app);
+    crate::action_bar::action_hotkey::register_action_hotkeys(&app);
     Ok(())
 }
 

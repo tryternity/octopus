@@ -390,9 +390,9 @@ impl<'a> AppSetup<'a> {
         }
 
         // Create + register action bar window (AI command palette)
-        crate::action_bar_window::create_action_bar_window(self.app.handle());
+        crate::action_bar::action_bar_window::create_action_bar_window(self.app.handle());
         crate::overlay_window::create_overlay_window(self.app.handle());
-        crate::action_hotkey::register_action_hotkeys(self.app.handle());
+        crate::action_bar::action_hotkey::register_action_hotkeys(self.app.handle());
         // 录屏快捷键（config-driven，与 screenshot 同模式）：
         // 失败仅 warn 不阻断启动——录屏不是核心 ASR 功能，可用 tray menu 代替。
         // 仅注册 toggle（Cmd+Shift+R）；ESC stop 按需注册（录制开始时，
@@ -409,7 +409,7 @@ impl<'a> AppSetup<'a> {
             }
         }
         if !self.config.action_bar_shortcut.is_empty() {
-            if let Err(e) = crate::action_bar_window::register_action_bar_shortcut(self.app.handle(), &self.config.action_bar_shortcut) {
+            if let Err(e) = crate::action_bar::action_bar_window::register_action_bar_shortcut(self.app.handle(), &self.config.action_bar_shortcut) {
                 log::error!("Failed to register action bar shortcut: {}", e);
             }
         }

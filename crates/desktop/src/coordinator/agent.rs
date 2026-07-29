@@ -71,9 +71,9 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
     };
 
     let ctx = parse_agent_context(&task.context);
-    let prompt = crate::action_bar_commands::render_agent_prompt(&ctx.prompt_template, transcribed_text, &ctx.text, &ctx.files);
+    let prompt = crate::action_bar::action_bar_commands::render_agent_prompt(&ctx.prompt_template, transcribed_text, &ctx.text, &ctx.files);
 
-    let adapters = crate::agent_adapter::list_adapters();
+    let adapters = crate::action_bar::agent_adapter::list_adapters();
     // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用
     let adapter = {
         // 1. 菜单指定
@@ -122,12 +122,12 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
     };
 
     // Terminal.app 启动投递到后台线程，避免阻塞协调器（osascript 可能数秒）
-    let command = crate::agent_adapter::render_command(&adapter.command_template, &prompt, &ctx.files, &ctx.cwd);
+    let command = crate::action_bar::agent_adapter::render_command(&adapter.command_template, &prompt, &ctx.files, &ctx.cwd);
     let cwd = ctx.cwd.clone();
     let app_clone = app_handle.clone();
     let tid = task_id.to_string();
     std::thread::spawn(move || {
-        use crate::terminal_launcher::{TerminalAppLauncher, TerminalLauncher};
+        use crate::action_bar::terminal_launcher::{TerminalAppLauncher, TerminalLauncher};
         match TerminalAppLauncher.spawn(&command, std::path::Path::new(&cwd)) {
             Ok(()) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "done", "");

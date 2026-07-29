@@ -7,7 +7,7 @@
 
 use std::sync::atomic::Ordering;
 use tauri::AppHandle;
-use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
+use crate::action_bar::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 // 父模块的共享状态 + 共享类型 + 共享 helper（context.rs 提取前的函数仍挂在 mod.rs）
 use super::{
     PENDING_CONTEXT, TRIGGER_IN_PROGRESS, TRIGGER_TIMESTAMP,
@@ -42,11 +42,11 @@ pub fn trigger_action_bar(app: AppHandle) {
         // finalize 在 match 后统一调用——guard 防的是「detect+gather 期间重入」，
         // show 投递后 guard 可清（toggle 兜底 + reset_trigger_guard_if_stale 兜底仍在）。
         match &sel {
-            crate::action_bar_commands::Selection::None => {
+            crate::action_bar::action_bar_commands::Selection::None => {
                 *PENDING_CONTEXT.lock() = None;
                 show_action_bar_centered(&app_clone);
             }
-            crate::action_bar_commands::Selection::Text { text, mouse } => {
+            crate::action_bar::action_bar_commands::Selection::Text { text, mouse } => {
                 // 先同步采集上下文再 show——gather 会调用前台 app（Sublime 的 `subl --command` /
                 // Browser 的 osascript），这些调用激活前台 app、在 show 之后抢走 ActionBar 焦点。
                 // 对照实验铁证：无选中（不 gather）→ 正常获焦；有选中（gather）→ 失焦。
@@ -66,11 +66,11 @@ pub fn trigger_action_bar(app: AppHandle) {
                 *PENDING_CONTEXT.lock() = Some(ctx);
                 show_action_bar_at_mouse_with_pos(&app_clone, *mouse);
             }
-            crate::action_bar_commands::Selection::File { files, .. } => {
+            crate::action_bar::action_bar_commands::Selection::File { files, .. } => {
                 *PENDING_CONTEXT.lock() = Some(ActionBarContext::files(files.clone()));
                 show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }
-            crate::action_bar_commands::Selection::Folder { folders, .. } => {
+            crate::action_bar::action_bar_commands::Selection::Folder { folders, .. } => {
                 *PENDING_CONTEXT.lock() = Some(ActionBarContext::files(folders.clone()));
                 show_action_bar_at_mouse_with_pos(&app_clone, sel.mouse());
             }

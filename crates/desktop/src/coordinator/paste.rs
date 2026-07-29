@@ -96,7 +96,7 @@ pub(crate) fn do_paste(
         let text_ref = text_to_paste;
         text_to_paste_owned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tauri::async_runtime::block_on(
-                crate::action_bar_commands::do_translate(text_ref, config)
+                crate::action_bar::action_bar_commands::do_translate(text_ref, config)
             )
         }))
         .unwrap_or_else(|p| {

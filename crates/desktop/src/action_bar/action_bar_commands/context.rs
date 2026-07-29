@@ -299,11 +299,11 @@ fn action_bar_show_result_internal(
     // Quick Execute（全局快捷键）路径下 ActionBar 从未 show（depth 未 +1），
     // 此时 hide + after_floating_window_hide_keep_active（depth -1）会破坏配对。
     // 用 is_visible 检查替代 is_silent 参数——自动适配 ActionBar 可见/不可见两条路径。
-    let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
+    let action_bar_visible = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL)
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false);
     if action_bar_visible {
-        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+        if let Some(win) = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL) {
             let _ = win.hide();
         }
         #[cfg(target_os = "macos")]

@@ -259,8 +259,8 @@ pub fn set_config(
         if let Ok(old) = old_action_bar_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Err(e) = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &cfg.action_bar_shortcut) {
-            let _ = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &old_action_bar_sc);
+        if let Err(e) = crate::action_bar::action_bar_window::register_action_bar_shortcut(&app_handle, &cfg.action_bar_shortcut) {
+            let _ = crate::action_bar::action_bar_window::register_action_bar_shortcut(&app_handle, &old_action_bar_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }

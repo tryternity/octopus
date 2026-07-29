@@ -4,12 +4,12 @@
 
 use tauri::AppHandle;
 use crate::error_util::e2s;
-use crate::action_bar_window::hide_action_bar_window;
+use crate::action_bar::action_bar_window::hide_action_bar_window;
 use super::{PENDING_CONTEXT, derive_cwd, resolve_prompt_reference, finalize_action_bar};
 
 #[tauri::command]
-pub fn list_agent_adapters() -> Result<Vec<crate::agent_adapter::AgentAdapter>, String> {
-    Ok(crate::agent_adapter::list_adapters())
+pub fn list_agent_adapters() -> Result<Vec<crate::action_bar::agent_adapter::AgentAdapter>, String> {
+    Ok(crate::action_bar::agent_adapter::list_adapters())
 }
 
 #[tauri::command]
@@ -50,8 +50,8 @@ pub fn delete_agent_adapter(id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapter>, String> {
-    Ok(crate::agent_adapter::refresh_detection())
+pub fn refresh_agent_detection() -> Result<Vec<crate::action_bar::agent_adapter::AgentAdapter>, String> {
+    Ok(crate::action_bar::agent_adapter::refresh_detection())
 }
 
 // ── Agent Voice（语音联动）──

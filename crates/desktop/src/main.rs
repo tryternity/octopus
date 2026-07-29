@@ -1,8 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activation;
-mod action_bar_window;
-mod action_bar_commands;
+mod action_bar;
 // vault（Task 16+）：AppState + Tauri 命令 + 自动填写
 // follow-up #10: vault feature gate——关闭后所有 vault 模块整体 cfg 掉。
 // 例外：vault_secret_access **总是**编译（云端推理热路径 chokepoint，feature off 时
@@ -22,9 +21,6 @@ pub mod autotype;
 #[cfg(feature = "vault")]
 pub mod password_generator_window;
 mod overlay_window;
-mod action_hotkey;
-mod agent_adapter;
-mod terminal_launcher;
 mod finder_selection;
 mod app_context;
 mod audio;

@@ -93,22 +93,22 @@ pub fn register_action_hotkeys(app: &AppHandle) {
 /// - **无选中** → 静默跳过（不劫持系统快捷键）。
 fn quick_execute(item_id: i64, app: &AppHandle) {
     // baseline 隔离——detect 写 CHANGE_COUNT_BASELINE，恢复原值不污染 ActionBar 路径
-    let saved_baseline = crate::action_bar_commands::save_change_count_baseline();
+    let saved_baseline = crate::action_bar::action_bar_commands::save_change_count_baseline();
 
     log::info!("[action-hotkey] 开始 detect_selection");
-    let selection = crate::action_bar_commands::detect_selection(app);
+    let selection = crate::action_bar::action_bar_commands::detect_selection(app);
 
-    crate::action_bar_commands::restore_change_count_baseline(saved_baseline);
+    crate::action_bar::action_bar_commands::restore_change_count_baseline(saved_baseline);
 
     match selection {
-        crate::action_bar_commands::Selection::Text { text, .. } => {
+        crate::action_bar::action_bar_commands::Selection::Text { text, .. } => {
             handle_text_selection(item_id, app, text);
         }
-        crate::action_bar_commands::Selection::File { files, .. }
-        | crate::action_bar_commands::Selection::Folder { folders: files, .. } => {
+        crate::action_bar::action_bar_commands::Selection::File { files, .. }
+        | crate::action_bar::action_bar_commands::Selection::Folder { folders: files, .. } => {
             handle_files_selection(item_id, app, files);
         }
-        crate::action_bar_commands::Selection::None => {
+        crate::action_bar::action_bar_commands::Selection::None => {
             // 无选中（桌面空选、菜单栏点击等）——菜单项热键的语义是「对选中内容执行动作」，
             // 无选中就不该继续。静默跳过即可。
             log::info!("[action-hotkey] 无选中，跳过 item_id={}", item_id);
@@ -130,7 +130,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     //
     // 注意：只在 Text 分支调（File/Folder 走 trigger 路径由 trigger_action_bar 负责），
     // 且 gather 内部已含 run_command_with_deadline 兜底（osascript/lsof 等 500ms 超时）。
-    let mut ctx = crate::action_bar_commands::ActionBarContext::text(text.clone());
+    let mut ctx = crate::action_bar::action_bar_commands::ActionBarContext::text(text.clone());
     match crate::app_context::gather_context(&text) {
         Ok(extra) => {
             ctx.source = Some(extra.source);
@@ -138,7 +138,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
         }
         Err(e) => log::warn!("[action-hotkey] context gather 失败（降级到仅 text）: {}", e),
     }
-    crate::action_bar_commands::set_pending_context(ctx);
+    crate::action_bar::action_bar_commands::set_pending_context(ctx);
 
     // gather_context 内部 subl --command / osascript 会激活源 app（trigger_action_bar
     // 的注释明确指出这点）。trigger 路径靠随后的 ActionBar show + set_focus 夺回焦点，
@@ -160,12 +160,12 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     // 原先用 hide_action_bar_window（标准 variant），was_inactive=true 时
     // activateWithOptions(prev_app) 把源 app 拉回前台、本 app 退后台，
     // 紧接着打开 CompactEditor 时后台 app 的 set_focus 不激活 → 用户看不到结果。
-    if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+    if let Some(win) = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL) {
         if win.is_visible().unwrap_or(false) {
             let _ = win.hide();
             #[cfg(target_os = "macos")]
             { crate::activation::after_floating_window_hide_keep_active(app); }
-            crate::action_bar_commands::finalize_action_bar_pub(app);
+            crate::action_bar::action_bar_commands::finalize_action_bar_pub(app);
         }
     }
 
@@ -174,7 +174,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     let app_clone = app.clone();
     let result = std::thread::spawn(move || -> Result<bool, String> {
         let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
-        rt.block_on(crate::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone))
+        rt.block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone))
     }).join();
 
     match result {
@@ -197,8 +197,8 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
 ///   用 PENDING_CONTEXT.files 渲染 `{{files}}` 后执行，结果展示在 CompactEditor。
 fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
     // 1. 写 PENDING_CONTEXT (kind=Files)——execute_action_bar_inner 和 trigger_agent_voice_core 都从这里读 files
-    let ctx = crate::action_bar_commands::ActionBarContext::files(files.clone());
-    crate::action_bar_commands::set_pending_context(ctx);
+    let ctx = crate::action_bar::action_bar_commands::ActionBarContext::files(files.clone());
+    crate::action_bar::action_bar_commands::set_pending_context(ctx);
 
     // 2. 查 item 决定路径
     let item = match octopus_infra::db::load_action_bar_item(item_id) {
@@ -232,7 +232,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
             }
         };
         // hide_action_bar=false：quick_execute 路径 ActionBar 未显示，不 hide
-        if let Err(e) = crate::action_bar_commands::trigger_agent_voice_core(
+        if let Err(e) = crate::action_bar::action_bar_commands::trigger_agent_voice_core(
             &item,
             app,
             coordinator.inner(),
@@ -254,7 +254,7 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
         let result = std::thread::spawn(move || -> Result<bool, String> {
             let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
             // text 传空：File 场景不需要文本，execute_action_bar_inner 会从 PENDING_CONTEXT 读 files
-            rt.block_on(crate::action_bar_commands::execute_action_bar_inner(
+            rt.block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(
                 item_id,
                 String::new(),
                 &app_clone,

@@ -7,7 +7,7 @@
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 use crate::error_util::{e2s, e2s_ctx};
-use crate::action_bar_window::hide_action_bar_window;
+use crate::action_bar::action_bar_window::hide_action_bar_window;
 // 父模块共享状态 + 共享类型 + 各兄弟子模块经 glob re-export 暴露的 helper。
 use super::{
     PENDING_CONTEXT,
@@ -357,7 +357,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             // Quick Execute（ActionBar 不可见）也必须正确翻译。
             // action_bar_visible 只 gate Local 流式路径里的 hide/depth 操作。
             if item.action_data == "auto_translate" {
-                let action_bar_visible = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL)
+                let action_bar_visible = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL)
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false);
                 match resolve_translate_strategy(&config).await {
@@ -365,7 +365,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         // 本地 / 云端模型都走流式翻译（CompactEditor contrast tab，体验更好）。
                         // 隐藏浮窗（仅 ActionBar 可见时）+ 打开 contrast tab。
                         if action_bar_visible {
-                            if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                            if let Some(win) = app.get_webview_window(crate::action_bar::action_bar_window::WINDOW_LABEL) {
                                 let _ = win.hide();
                             }
                             #[cfg(target_os = "macos")]
@@ -508,7 +508,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
         "agent" => {
             // agent 桥接：渲染命令 → Terminal.app 启动。
             // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用。
-            let (adapter, source) = crate::agent_adapter::resolve_effective_adapter(&item.agent)?;
+            let (adapter, source) = crate::action_bar::agent_adapter::resolve_effective_adapter(&item.agent)?;
             if source != "menu" {
                 log::info!(
                     "[action-bar] agent 菜单 '{}' 走 fallback（source={}，命中 '{}'）",
@@ -520,11 +520,11 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let prompt = render_agent_prompt(&resolved, "", &text, &app_state_files);
             let cwd = derive_cwd(&app_state_files);
             let cwd_path = std::path::Path::new(&cwd);
-            let command = crate::agent_adapter::render_command(
+            let command = crate::action_bar::agent_adapter::render_command(
                 &adapter.command_template, &prompt, &app_state_files, &cwd,
             );
-            let launcher = crate::terminal_launcher::TerminalAppLauncher;
-            use crate::terminal_launcher::TerminalLauncher;
+            let launcher = crate::action_bar::terminal_launcher::TerminalAppLauncher;
+            use crate::action_bar::terminal_launcher::TerminalLauncher;
             // osascript 启动 Terminal.app 会 wait 子进程（200ms-2s），包 spawn_blocking
             // 避免阻塞 Tokio worker（与 spawn_script 范式一致）。
             let cwd_buf = cwd_path.to_path_buf();
