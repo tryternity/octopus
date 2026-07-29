@@ -4,6 +4,7 @@
 
 mod paste;
 mod edit;
+mod tick;
 
 use crate::audio::SharedAudioState;
 use crate::config::AppConfig;
@@ -26,6 +27,13 @@ pub(crate) use self::paste::{
     stage_name, do_paste, update_transcription_raw,
 };
 pub(crate) use self::edit::{handle_enter_edit_mode, commit_edit_apply, stage_transcript};
+#[cfg(feature = "cloud")]
+pub(crate) use self::tick::is_cloud_engine;
+pub(crate) use self::tick::{
+    start_vad_segmented_tick_thread, start_tick_thread, dispatch_tick, log_tick_heartbeat,
+};
+#[cfg(feature = "cloud")]
+pub(crate) use self::tick::start_cloud_streaming_tick_thread;
 
 /// 当前/最近一次录音会话的 transcription_id。
 /// 在会话起点（Transcript::new）写入，供 Result 窗口「存入记事本」溯源。
@@ -199,11 +207,11 @@ pub(crate) enum Stage {
 }
 
 /// VAD 伪流式 tick 间隔（毫秒）
-const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
+pub(crate) const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
 
 /// 云端流式 tick 间隔（毫秒）
 #[cfg(feature = "cloud")]
-const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
+pub(crate) const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_min_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
@@ -221,12 +229,12 @@ pub struct Coordinator {
 }
 
 /// 流式识别 tick 间隔（毫秒）
-const STREAMING_TICK_INTERVAL_MS: u64 = 200;
+pub(crate) const STREAMING_TICK_INTERVAL_MS: u64 = 200;
 
 /// 音频采集看门狗阈值：cpal 回调距上次收到样本 ≥ 此值 → 判定断推 → 自动重连。
 /// spec 2026-07-24-audio-watchdog §3.1。正常静音 cpal 仍推底噪 samples≠0，故此阈值不误判静音。
 /// VadSegmented 100ms tick × 30 = 3s；Streaming 200ms tick × 15 = 3s。
-const AUDIO_STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(3);
+pub(crate) const AUDIO_STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// 过程落库（update_text_segments）节流间隔：同条记录 ≥此值才 UPDATE，
 /// Finalize 兜底完整写入（长录音避免每 changed≈每 tick 一次 UPDATE 的写放大）。
@@ -1378,7 +1386,7 @@ fn restart_capture_keep_transcript(
 ///
 /// **优化**：若无 Raw 段且非空（has_raw=false），立即润色已覆盖全部文本，
 /// 跳过最终润色（mode=1/2 也跳过），直接 paste，避免平白多一次 LLM 调用。
-fn finalize_after_stop(
+pub(crate) fn finalize_after_stop(
     stage: &mut Stage,
     mut transcript: Transcript,
     config: &AppConfig,
@@ -1881,54 +1889,6 @@ fn handle_final_polish_done(
     }
 }
 
-/// 启动 VAD 伪流式 tick 线程
-fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        while tick_active.load(Ordering::Relaxed) {
-            if tick_active.load(Ordering::Relaxed)
-                && tx.send(Command::VadSegmentedTick).is_err() {
-                    break;
-                }
-            std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
-        }
-        debug!("VadSegmented tick thread exited");
-    });
-}
-
-// ── CloudStreaming（aliyun feature）──
-
-/// 判定激活 ASR 引擎是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
-#[cfg(feature = "cloud")]
-fn is_cloud_engine(_config: &AppConfig) -> bool {
-    use octopus_asr_local::config::EngineCategory;
-    let cat = octopus_asr_local::config::resolve_active_engine("asr")
-        .ok()
-        .and_then(|r| r.as_engine_category());
-    matches!(
-        cat,
-        Some(EngineCategory::Aliyun)
-            | Some(EngineCategory::ByteDance)
-            | Some(EngineCategory::Tencent)
-            | Some(EngineCategory::Baidu)
-    )
-}
-
-/// 启动云端流式 tick 线程（首 tick 立即触发）
-#[cfg(feature = "cloud")]
-fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        while tick_active.load(Ordering::Relaxed) {
-            if tick_active.load(Ordering::Relaxed)
-                && tx.send(Command::CloudStreamingTick).is_err()
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(CLOUD_STREAMING_TICK_INTERVAL_MS));
-        }
-        debug!("CloudStreaming tick thread exited");
-    });
-}
-
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
 /// `input.segments` 转多段润色协议（Edited 段 preserve 原样保留，其余润色，spec §12 / §2.C）。
@@ -1979,7 +1939,7 @@ fn polish_input_to_regions(input: &crate::transcript::PolishInput) -> Vec<octopu
 ///
 /// - 流式由调用方传当前真实 silence_duration；
 /// - 伪流式在段切分后调用，传 PAUSE_POLISH_THRESHOLD_SEC（段边界即停顿点，自动达标）。
-fn check_and_trigger_polish(
+pub(crate) fn check_and_trigger_polish(
     transcript: &mut Transcript,
     silence_duration: f64,
     config: &AppConfig,
@@ -2256,20 +2216,6 @@ fn handle_discard(
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
 
-/// 启动 tick 线程，定时发送 StreamingTick 命令
-fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
-    std::thread::spawn(move || {
-        while streaming_active.load(Ordering::Relaxed) {
-            if streaming_active.load(Ordering::Relaxed)
-                && tx.send(Command::StreamingTick).is_err() {
-                    break;
-                }
-            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
-        }
-        debug!("Streaming tick thread exited");
-    });
-}
-
 /// 处理 PolishDone 命令：把润色结果写回 Transcript。
 fn handle_polish_done(
     stage: &mut Stage,
@@ -2502,142 +2448,6 @@ fn handle_polish_now(
     spawn_polish_thread(input, config, tx, true, transcript.id);
 }
 
-/// tick 线程诊断打点（spec 2026-07-19-asr-edit-stall-observability）：
-/// - 检测 `editing` 翻转（覆盖 5 处精确触发点之外的间接复位路径），翻转即打 `[STATE]`
-/// - 距上次心跳 ≥ 1s 打 `[HEARTBEAT]`（1Hz 节流），证明 tick 线程在跑 + 当前 stage/editing
-/// 调用方：三个 Tick 分支（StreamingTick / VadSegmentedTick / CloudStreamingTick）入口。
-fn log_tick_heartbeat(
-    stage: &Stage,
-    editing: bool,
-    last_editing_logged: &mut Option<bool>,
-    hb_last: &mut std::time::Instant,
-    hb_ticks: &mut u64,
-) {
-    // editing 翻转即打（错过快速 enter→commit 是要避免的，心跳节流兜底，但翻转必须立即落）
-    if *last_editing_logged != Some(editing) {
-        crate::perf_log::log(&format!(
-            "[STATE] editing {} -> {} (stage={})",
-            last_editing_logged.map(|b| b.to_string()).unwrap_or_else(|| "—".into()),
-            editing,
-            stage_name(stage),
-        ));
-        *last_editing_logged = Some(editing);
-    }
-    *hb_ticks += 1;
-    if hb_last.elapsed() >= std::time::Duration::from_secs(1) {
-        crate::perf_log::log(&format!(
-            "[HEARTBEAT] stage={} editing={} ticks_in_window={}",
-            stage_name(stage), editing, hb_ticks,
-        ));
-        *hb_last = std::time::Instant::now();
-        *hb_ticks = 0;
-    }
-}
-
-/// pipeline 事件 → 端动作（DB/emit/polish/错误上报）。2d 统一路由，消除三路径重复。（spec §3.5）
-fn apply_pipeline_events(
-    events: Vec<crate::pipeline::PipelineEvent>,
-    transcript: &mut Transcript,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    use crate::pipeline::PipelineEvent;
-    for ev in events {
-        match ev {
-            PipelineEvent::PersistRaw { engine_mode } => {
-                if let Err(e) = update_transcription_raw(transcript, &active_asr_engine_name(), engine_mode) {
-                    warn!("DB ({}) failed: {}", engine_mode, e);
-                }
-            }
-            PipelineEvent::Emit { display, insertion, caret } => {
-                // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
-                // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
-                if !display.is_empty() {
-                    crate::result_window::update_result(app_handle, &display, insertion, caret);
-                }
-            }
-            PipelineEvent::Polish { silence } => {
-                check_and_trigger_polish(transcript, silence, config, tx);
-            }
-            PipelineEvent::Error(e) => {
-                crate::result_window::update_result(app_handle, &e, false, 0);
-            }
-            PipelineEvent::Speaking(speaking) => {
-                crate::perf_log::log(&format!("[SPEAKING] emit {}", speaking));
-                let _ = app_handle.emit("update-speaking", speaking);
-            }
-        }
-    }
-}
-
-/// VadSegmentedTick / StreamingTick / CloudStreamingTick 三命令合一的 dispatch（2d，spec §3.5）。
-/// 各 Stage 变体调对应 pipeline 的 `tick` → `apply_pipeline_events` 统一路由。
-/// WaitingCompletion 额外做 active_count==0 收尾判定（沿用 2c-3 既有逻辑）。
-fn dispatch_tick(
-    stage: &mut Stage,
-    audio: &Arc<SharedAudioState>,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    let samples = audio.drain_samples();
-    match stage {
-        Stage::Streaming { pipeline, transcript, .. } => {
-            let events = pipeline.tick(&samples, transcript);
-            apply_pipeline_events(events, transcript, config, app_handle, tx);
-            // 看门狗：cpal 断推检测（spec 2026-07-24-audio-watchdog §4.1）。
-            // WaitingCompletion 天然免疫（is_recording 已 false → stall=0）。
-            if check_audio_stall(audio, stage) {
-                let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::Streaming });
-            }
-        }
-        Stage::VadSegmented { pipeline, transcript, .. } => {
-            let events = pipeline.tick(&samples, transcript);
-            apply_pipeline_events(events, transcript, config, app_handle, tx);
-            if check_audio_stall(audio, stage) {
-                let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::VadSegmented });
-            }
-        }
-        Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
-            let events = pipeline.tick(&samples, transcript);
-            apply_pipeline_events(events, transcript, config, app_handle, tx);
-            // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
-            if pipeline.active_count() == 0 {
-                tick_active.store(false, Ordering::Relaxed);
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
-                finalize_after_stop(stage, tr, config, app_handle, tx);
-            }
-            // WaitingCompletion 不检测看门狗：is_recording 已 false（stop 时翻转），
-            // sample_stall_duration 必返回 0；且此时本就在等在途段完成，不需要重连。
-        }
-        _ => {
-            // tick 到达但 stage 不是活跃识别态——通常是异常路径（如 Polishing/Pasting 阶段
-            // 还收到 Tick），打点帮助诊断"绿条为何不亮"是不是因为 stage 漂移。
-            crate::perf_log::log(&format!(
-                "[WARN] dispatch_tick stage={} not active, tick dropped (samples_drained={})",
-                stage_name(stage),
-                samples.len(),
-            ));
-        }
-    }
-}
-
-/// 看门狗纯判定：audio stall 是否超阈值（spec 2026-07-24-audio-watchdog §4.1）。
-/// 抽出为独立函数便于单测。命中时由调用方发 `Command::RestartCapture`。
-fn check_audio_stall(audio: &Arc<SharedAudioState>, stage: &Stage) -> bool {
-    let stall = audio.sample_stall_duration();
-    if stall >= AUDIO_STALL_THRESHOLD {
-        crate::perf_log::log(&format!(
-            "[WATCHDOG] stall={:.1}s threshold={:.0}s stage={} samples_buffer=0 → restart",
-            stall.as_secs_f64(), AUDIO_STALL_THRESHOLD.as_secs_f64(), stage_name(stage),
-        ));
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2755,17 +2565,5 @@ mod tests {
         assert!(ctx.prompt_template.contains("{{files}}"));
     }
 
-    // ── 音频采集看门狗（spec 2026-07-24-audio-watchdog §4.1）──
-    // check_audio_stall 是 sample_stall_duration() >= 阈值的薄封装 + 日志。
-    // sample_stall_duration 的 4 种情形（未录/冷启动/断推/正常）在 audio.rs 测试模块覆盖。
-    // 此处仅测不录音时的不触发（跨模块无法访问 audio 私有字段设置 stall 状态）。
-
-    #[test]
-    fn check_audio_stall_no_trigger_when_not_recording() {
-        // is_recording=false → sample_stall_duration 返回 0 < 阈值 → 不触发
-        let audio = Arc::new(SharedAudioState::new("test"));
-        let stage = Stage::Idle;
-        assert!(!check_audio_stall(&audio, &stage));
-    }
 }
 
