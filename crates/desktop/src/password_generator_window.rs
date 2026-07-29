@@ -9,7 +9,8 @@
 //! 触发方式：ActionBar 内置按钮 → `open_password_generator` 命令 →
 //! `show_password_generator_window`。位置跟随前台浏览器窗口（fallback 到鼠标位置）。
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "password_generator_window";
 
@@ -36,26 +37,18 @@ pub fn create_password_generator_window(app: &AppHandle) {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
         return;
     }
-    let _ = WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        WebviewUrl::App("password-generator.html".into()),
-    )
-    .title("密码生成器")
-    .inner_size(WIDTH, HEIGHT)
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(false)
-    .build()
-    .map_err(|e| {
-        log::error!("[password-generator] 窗口创建失败: {e}");
-        e
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "password-generator.html",
+        title: "密码生成器",
+        inner_size: (WIDTH, HEIGHT),
+        visible: false,
+        resizable: false,
+        position: None,
+        focused: None,
+        accept_first_mouse: None,
     })
-    .ok();
+    .map_err(|e| log::error!("[password-generator] 窗口创建失败: {e}"));
 }
 
 /// 在指定坐标显示浮窗。toggle 语义：不存在 → 先创建。

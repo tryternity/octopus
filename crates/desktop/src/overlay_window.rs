@@ -5,7 +5,9 @@
 //! - toast warn：黄色图标 + {message}，{duration} ms 后自动消失
 //! - toast error：红色图标 + {message}，{duration} ms 后自动消失
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::window_factory::{build_float_window, FloatWindowSpec};
 
 pub const WINDOW_LABEL: &str = "overlay_window";
 
@@ -14,21 +16,17 @@ pub fn create_overlay_window(app: &AppHandle) {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
         return;
     }
-    let _ = WebviewWindowBuilder::new(
-        app,
-        WINDOW_LABEL,
-        WebviewUrl::App("overlay.html".into()),
-    )
-    .title("")
-    .inner_size(320.0, 48.0)
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .visible(false)
-    .build();
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "overlay.html",
+        title: "",
+        inner_size: (320.0, 48.0),
+        visible: false,
+        resizable: false,
+        position: None,
+        focused: None,
+        accept_first_mouse: None,
+    });
 }
 
 /// overlay payload（序列化传给前端）。

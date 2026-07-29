@@ -109,6 +109,7 @@ mod tray;
 mod subtitle_polish;
 mod transcript;
 mod translation_commands;
+mod window_factory;
 mod window_position;
 
 use coordinator::Coordinator;
