@@ -1,6 +1,6 @@
 # crates/desktop/src 目录重组 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 把 `crates/desktop/src/` 下 70 个平铺 .rs 文件全部归入 11 个功能域 mod 目录，消除散落文件。
 
@@ -49,7 +49,7 @@
 
 **说明**：此 Task 只建空目录，不改任何代码。确保 `cargo build` 仍通过（空目录不影响编译，因为还没在 main.rs 声明）。
 
-- [ ] **Step 1: 创建 9 个域目录**
+- [x] **Step 1: 创建 9 个域目录**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_bugfix_0729
@@ -58,12 +58,12 @@ for d in core engine record vault clipboard action_bar platform commands ui; do
 done
 ```
 
-- [ ] **Step 2: 验证编译不受影响**
+- [x] **Step 2: 验证编译不受影响**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: Finished（空目录不影响编译）
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A && git commit -m "chore(desktop): 建 9 个功能域 mod 目录骨架（目录重组 Task 1）"
@@ -84,7 +84,7 @@ git add -A && git commit -m "chore(desktop): 建 9 个功能域 mod 目录骨架
 - Consumes: 无（第一个迁移的域）
 - Produces: `crate::action_bar::<file>::xxx` 新路径
 
-- [ ] **Step 1: git mv 文件 + 子目录**
+- [x] **Step 1: git mv 文件 + 子目录**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_bugfix_0729
@@ -95,7 +95,7 @@ git mv crates/desktop/src/terminal_launcher.rs crates/desktop/src/action_bar/
 git mv crates/desktop/src/action_bar_commands crates/desktop/src/action_bar/
 ```
 
-- [ ] **Step 2: 创建 action_bar/mod.rs**
+- [x] **Step 2: 创建 action_bar/mod.rs**
 
 ```rust
 //! 命令面板功能域：action_bar_commands/ + 窗口 + 热键 + agent 适配器 + 终端启动。
@@ -107,7 +107,7 @@ pub mod agent_adapter;
 pub mod terminal_launcher;
 ```
 
-- [ ] **Step 3: 更新 main.rs mod 声明**
+- [x] **Step 3: 更新 main.rs mod 声明**
 
 把原来的：
 ```rust
@@ -123,7 +123,7 @@ mod terminal_launcher;
 mod action_bar;
 ```
 
-- [ ] **Step 4: 全局路径迁移（4 文件 + 子目录内部）**
+- [x] **Step 4: 全局路径迁移（4 文件 + 子目录内部）**
 
 ```bash
 # action_bar_window（12 处）
@@ -142,7 +142,7 @@ find crates/desktop/src -name "*.rs" -exec sed -i '' 's/crate::terminal_launcher
 find crates/desktop/src -name "*.rs" -exec sed -i '' 's/crate::action_bar_commands::/crate::action_bar::action_bar_commands::/g' {} +
 ```
 
-- [ ] **Step 5: build + test 验证**
+- [x] **Step 5: build + test 验证**
 
 ```bash
 cargo build -p octopus-desktop --features embedded
@@ -150,7 +150,7 @@ cargo test -p octopus-desktop
 ```
 Expected: 0 error 0 warning + 441 passed
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): action_bar/ 域迁移（4 文件 + action_bar_commands/ 子目录）"
@@ -171,7 +171,7 @@ git add -A && git commit -m "refactor(desktop): action_bar/ 域迁移（4 文件
 - `crate::clipboard_dock::`（7 处）→ `crate::clipboard::clipboard_dock::`
 - `crate::clipboard_queue::`（3 处）→ `crate::clipboard::clipboard_queue::`
 
-- [ ] **Step 1-5**：同 Task 2 模式（git mv → mod.rs → main.rs → sed 全局替换 → build+test）
+- [x] **Step 1-5**：同 Task 2 模式（git mv → mod.rs → main.rs → sed 全局替换 → build+test）
 
 mod.rs 内容：
 ```rust
@@ -183,7 +183,7 @@ pub mod clipboard_queue;
 pub mod clipboard_dock;
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): clipboard/ 域迁移（4 文件）"
@@ -209,7 +209,7 @@ git add -A && git commit -m "refactor(desktop): clipboard/ 域迁移（4 文件�
 - `crate::finder_selection::`（2 处）→ `crate::platform::finder_selection::`
 - `crate::paste::`（1 处）→ `crate::platform::paste::`
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
 mod.rs 内容：
 ```rust
@@ -225,7 +225,7 @@ pub mod activation;
 pub mod focus_tracker;
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): platform/ 域迁移（7 文件 + app_context/ 子目录）"
@@ -257,7 +257,7 @@ git add -A && git commit -m "refactor(desktop): platform/ 域迁移（7 文件 +
 
 **注意**：`invoke_handler.rs` 也搬进 core/（Task 9），但它里面引用了大量 `crate::xxx_commands::`。invoke_handler 的迁移在 Task 9，此 Task 先不动它——但它的引用路径会被此 Task 的 sed 改到（因为它在 crates/desktop/src/ 下）。这是正确的。
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
 mod.rs 内容：
 ```rust
@@ -275,7 +275,7 @@ pub mod builtin_models;
 pub mod model_migrate;
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): commands/ 域迁移（10 文件）"
@@ -304,7 +304,7 @@ git add -A && git commit -m "refactor(desktop): commands/ 域迁移（10 文件�
 - `crate::record_control_window::`（5）→ `crate::record::record_control_window::`
 - `crate::record_area_picker::`（4）→ `crate::record::record_area_picker::`
 
-- [ ] **Step 1-5**：同 Task 2 模式。**注意 feature gate**：record 域文件多为 `#[cfg(target_os = "macos")]`，main.rs 原声明也带 gate，迁移后 `record/mod.rs` 的子 mod 声明要带 gate：
+- [x] **Step 1-5**：同 Task 2 模式。**注意 feature gate**：record 域文件多为 `#[cfg(target_os = "macos")]`，main.rs 原声明也带 gate，迁移后 `record/mod.rs` 的子 mod 声明要带 gate：
 
 ```rust
 //! 录屏 + 截图功能域。
@@ -329,7 +329,7 @@ pub mod record_annotation_window;
 pub mod record_control_window;
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): record/ 域迁移（8 文件 + 2 子目录）"
@@ -381,16 +381,16 @@ pub mod vault_secret_access;  // 总是编译（cloud 推理热路径用）
 
 main.rs 里 `vault` 整体不能简单 `#[cfg(feature = "vault")] mod vault;`——因为 `vault_secret_access` 要总是编译。所以 main.rs 保留 `mod vault;`（无 gate），gate 在 vault/mod.rs 内部。
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
-- [ ] **Step 6: 额外验证 vault feature**
+- [x] **Step 6: 额外验证 vault feature**
 
 ```bash
 cargo build -p octopus-desktop --features embedded          # vault off
 cargo build -p octopus-desktop --features embedded,cloud,vault  # vault on
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): vault/ 域迁移（5 文件 + 2 子目录）"
@@ -421,7 +421,7 @@ git add -A && git commit -m "refactor(desktop): vault/ 域迁移（5 文件 + 2 
 
 **注意**：`crate::engine::`（14 处）迁移成 `crate::engine::engine::` 容易和已有的 `crate::engine::coordinator::` 混淆。sed 替换要精确：先替换 `crate::engine_` 开头的（engine_embedded/ws/grpc/dispatch/aliyun），再替换 `crate::engine::`（精确匹配 `::` 后缀）。
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
 mod.rs 内容：
 ```rust
@@ -440,7 +440,7 @@ pub mod audio;
 pub mod coordinator;
 ```
 
-- [ ] **Step 6: 验证 4 feature 组合**
+- [x] **Step 6: 验证 4 feature 组合**
 
 ```bash
 cargo build -p octopus-desktop --features embedded
@@ -450,7 +450,7 @@ cargo build -p octopus-desktop --features remote-grpc
 cargo test -p octopus-desktop
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): engine/ 域迁移（10 文件 + coordinator/ 子目录）"
@@ -477,7 +477,7 @@ git add -A && git commit -m "refactor(desktop): engine/ 域迁移（10 文件 + 
 - `crate::download_window::`（2）→ `crate::ui::download_window::`
 - `crate::overlay_window::`（1）→ `crate::ui::overlay_window::`
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
 mod.rs 内容：
 ```rust
@@ -496,7 +496,7 @@ pub mod window_factory;
 pub mod window_position;
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): ui/ 域迁移（11 文件）"
@@ -524,7 +524,7 @@ git add -A && git commit -m "refactor(desktop): ui/ 域迁移（11 文件）"
 
 **注意**：`crate::config::` 要小心——`config.rs` 里可能有 `AppConfig` / `PolishMode` 等被广泛引用。还有 `invoke_handler.rs`——它里面引用了大量命令路径，但那些路径在前面 Task 已经迁移过了，此 Task 只需迁移 invoke_handler 自身的 `mod invoke_handler;` 声明（它在 main.rs 里是 `#[macro_use] mod invoke_handler;`）。
 
-- [ ] **Step 1-5**：同 Task 2 模式
+- [x] **Step 1-5**：同 Task 2 模式
 
 mod.rs 内容：
 ```rust
@@ -546,7 +546,7 @@ pub mod shortcut;
 
 **注意**：`#[macro_use]` 要放在 `mod invoke_handler` 上方。但 `#[macro_use]` 在 `pub mod` 上可能需要调整——如果编译报错，改用 `pub use invoke_handler::handler;` 在 mod.rs 显式 re-export 宏。
 
-- [ ] **Step 6: 验证 + Commit**
+- [x] **Step 6: 验证 + Commit**
 
 ```bash
 cargo build -p octopus-desktop --features embedded
@@ -564,14 +564,14 @@ git add -A && git commit -m "refactor(desktop): core/ 域迁移（10 文件）"
 - Verify: `desktop/src/` 下除 main.rs 外无平铺 .rs
 - Update: `docs/architecture.md` + spec status
 
-- [ ] **Step 1: 确认无平铺文件残留**
+- [x] **Step 1: 确认无平铺文件残留**
 
 ```bash
 find crates/desktop/src -maxdepth 1 -name "*.rs" ! -name "main.rs"
 ```
 Expected: 无输出（全部已迁移）
 
-- [ ] **Step 2: 确认 main.rs mod 声明干净**
+- [x] **Step 2: 确认 main.rs mod 声明干净**
 
 main.rs 应该只有 ~9 行顶级 mod 声明：
 ```rust
@@ -587,7 +587,7 @@ mod ui;
 ```
 加上 `feature_flags` mod（在 main.rs 底部的测试模块，保留原位）。
 
-- [ ] **Step 3: 全量验证（4 feature 组合）**
+- [x] **Step 3: 全量验证（4 feature 组合）**
 
 ```bash
 cargo build -p octopus-desktop --features embedded
@@ -598,18 +598,18 @@ cargo test -p octopus-desktop
 ```
 Expected: 全部 0 error 0 warning + 441 passed
 
-- [ ] **Step 4: tsc + vite**
+- [x] **Step 4: tsc + vite**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run build
 ```
 
-- [ ] **Step 5: 更新文档**
+- [x] **Step 5: 更新文档**
 
 - spec `docs/superpowers/specs/2026-07-30-desktop-src-reorganize.md` status → ✅
 - `docs/architecture.md`：更新 desktop crate 结构描述
 
-- [ ] **Step 6: Commit + push**
+- [x] **Step 6: Commit + push**
 
 ```bash
 git add -A && git commit -m "refactor(desktop): 目录重组完成——70 文件归入 9 功能域 mod + 文档同步"
@@ -620,9 +620,9 @@ git push origin daily_refactor_record
 
 ## 验证 checklist（每个 Task 必跑）
 
-- [ ] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
-- [ ] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
-- [ ] git diff 确认：只搬文件 + 路径替换，无逻辑改动
+- [x] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
+- [x] git diff 确认：只搬文件 + 路径替换，无逻辑改动
 
 ## 回滚策略
 

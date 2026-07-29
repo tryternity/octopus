@@ -1,6 +1,6 @@
 # crates/desktop/src 目录重组 spec（desktop crate 大文件重构 #6）
 
-> **Status: 🔨 待实现**（2026-07-30，分支 `daily_refactor_record`）
+> **Status: ✅ 已实现**（2026-07-30，分支 `daily_refactor_record`）
 > **前置**：大文件拆分 #1-#5 已完成（coordinator / action_bar / vault / screenshot / record）
 
 ## 背景
