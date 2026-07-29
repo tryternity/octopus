@@ -167,7 +167,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         }
 
         // Whisper-style normalization: per-frame mean/std
-        normalize_whisper_features(&mut mel);
+        crate::feature::normalize_whisper_features(&mut mel);
 
         // mel is [n_frames, 128], conv_frontend expects [B, n_frames, 128]
         let (mel_vec, _) = mel.into_raw_vec_and_offset();
@@ -651,36 +651,6 @@ fn argmax(values: &[f32]) -> i64 {
 }
 
 // ── Whisper-style mel normalization ──
-
-/// Normalize mel features per-frame (Whisper-style): subtract mean, divide by std.
-/// This matches sherpa-onnx's `NormalizeWhisperFeatures`.
-fn normalize_whisper_features(mel: &mut Array2<f32>) {
-    if let Some(slice) = mel.as_slice_mut() {
-        let mut max_val = f32::NEG_INFINITY;
-        for v in slice.iter_mut() {
-            let log_v = v.max(1e-10f32).log10();
-            if log_v > max_val {
-                max_val = log_v;
-            }
-            *v = log_v;
-        }
-        let max_v = max_val - 8.0f32;
-        for v in slice.iter_mut() {
-            *v = (v.max(max_v) + 4.0f32) / 4.0f32;
-        }
-    } else {
-        // Fallback for non-contiguous arrays
-        mel.mapv_inplace(|v| v.max(1e-10f32).log10());
-        let mut max_val = f32::NEG_INFINITY;
-        for &v in mel.iter() {
-            if v > max_val {
-                max_val = v;
-            }
-        }
-        let max_v = max_val - 8.0f32;
-        mel.mapv_inplace(|v| (v.max(max_v) + 4.0f32) / 4.0f32);
-    }
-}
 
 // ── Audio token length computation ──
 

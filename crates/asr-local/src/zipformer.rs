@@ -522,7 +522,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
         // Transducer impl 对 whisper 特征不做归一化（仅 NeMo CTC 做 CMVN），
         // 我们的 chunk 循环模拟需要归一化才能正常工作。
         if self.is_whisper {
-            normalize_whisper_features(&mut my_feats);
+            crate::feature::normalize_whisper_features(&mut my_feats);
         }
         let n_frames = my_feats.nrows();
 
@@ -871,7 +871,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerTransducerEngine {
         };
         // 离线路径全局归一化（同 CTC 注释，详见 ZipformerCtcEngine::transcribe）
         if self.is_whisper {
-            normalize_whisper_features(&mut my_feats);
+            crate::feature::normalize_whisper_features(&mut my_feats);
         }
         let n_frames = my_feats.nrows();
 
@@ -1095,11 +1095,14 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
 
     let mut fbank_data = vec![0.0f32; n_frames * Z_NUM_BINS];
 
+    // buffer 提到循环外复用（对照 fbank.rs / paraformer.rs 范式），避免每帧堆分配。
+    let mut frame = [0.0f32; Z_FRAME_LEN];
+    let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); 400];
+
     for fi in 0..n_frames {
         let midpoint = Z_FRAME_SHIFT * fi + Z_FRAME_SHIFT / 2;
         let wave_start = midpoint as isize - (Z_FRAME_LEN as isize) / 2;
 
-        let mut frame = vec![0.0f32; Z_FRAME_LEN];
         let wave_dim = samples.len() as isize;
         for (s, frame_val) in frame.iter_mut().enumerate().take(Z_FRAME_LEN) {
             let mut s_in_wave = s as isize + wave_start;
@@ -1114,7 +1117,6 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
         }
 
         // Apply Hann window
-        let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); 400];
         for j in 0..400 {
             buf[j] = rustfft::num_complex::Complex::new(frame[j] * WHISPER_HANN_WINDOW[j], 0.0);
         }
@@ -1140,43 +1142,8 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
     Array2::from_shape_vec((n_frames, Z_NUM_BINS), fbank_data).map_err(Into::into)
 }
 
-/// Whisper 特征归一化——公式与 sherpa-onnx `NormalizeWhisperFeatures`（math.cc）完全一致。
-///
-/// **勿改公式**：曾错误用 `clamped - clamp_min`（范围 0-8）代替 `(clamped + 4) / 4`（范围~0-2），
-/// 尺度差 4 倍导致 ONNX 模型输入分布不匹配、输出乱码。
-///
-/// **调用方式**：流式引擎必须 **per-chunk** 调用（每个 chunk 切片后独立 normalize），
-/// 不是对整段特征全局归一化。参考 sherpa-onnx online-recognizer-transducer-impl.h。
-pub(crate) fn normalize_whisper_features(chunk: &mut Array2<f32>) {
-    let nrows = chunk.nrows();
-    let ncols = chunk.ncols();
-
-    // 1. log_spec = torch.clamp(features, min=1e-10).log10()
-    for i in 0..nrows {
-        for j in 0..ncols {
-            chunk[[i, j]] = chunk[[i, j]].max(1e-10f32).log10();
-        }
-    }
-
-    // 2. Find max_v
-    let mut max_v = f32::NEG_INFINITY;
-    for i in 0..nrows {
-        for j in 0..ncols {
-            if chunk[[i, j]] > max_v {
-                max_v = chunk[[i, j]];
-            }
-        }
-    }
-
-    // 3. clamp to max_v - 8.0, then (x + 4.0) / 4.0 — 与 sherpa-onnx NormalizeWhisperFeatures 一致
-    let clamp_min = max_v - 8.0f32;
-    for i in 0..nrows {
-        for j in 0..ncols {
-            let clamped = chunk[[i, j]].max(clamp_min);
-            chunk[[i, j]] = (clamped + 4.0f32) / 4.0f32;
-        }
-    }
-}
+// normalize_whisper_features 已提取至 feature.rs（共享，带 slice 快路径）。
+// zipformer / streaming_zipformer / qwen3_asr 统一调 crate::feature::normalize_whisper_features。
 
 // ── Kaldi Fbank features extraction ──
 
@@ -1190,11 +1157,14 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_freqs = Z_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * Z_NUM_BINS];
 
+    // buffer 提到循环外复用（对照 fbank.rs / paraformer.rs 范式），避免每帧堆分配。
+    let mut frame = [0.0f32; Z_FRAME_LEN];
+    let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); Z_FFT_SIZE];
+
     for fi in 0..n_frames {
         let midpoint = Z_FRAME_SHIFT * fi + Z_FRAME_SHIFT / 2;
         let wave_start = midpoint as isize - (Z_FRAME_LEN as isize) / 2;
 
-        let mut frame = vec![0.0f32; Z_FRAME_LEN];
         let wave_dim = samples.len() as isize;
         for (s, frame_val) in frame.iter_mut().enumerate().take(Z_FRAME_LEN) {
             let mut s_in_wave = s as isize + wave_start;
@@ -1215,18 +1185,16 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
             *val -= mean;
         }
 
-        // 2. Preemphasize
-        let mut preemph = vec![0.0f32; Z_FRAME_LEN];
+        // 2. Preemphasize（in-place，对照 paraformer.rs:491-500，无独立 preemph buffer）
         for i in (1..Z_FRAME_LEN).rev() {
-            preemph[i] = frame[i] - 0.97 * frame[i - 1];
+            frame[i] -= 0.97 * frame[i - 1];
         }
-        preemph[0] = frame[0] - 0.97 * frame[0];
+        frame[0] -= 0.97 * frame[0];
 
         // 3. Apply window
-        let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); Z_FFT_SIZE];
         for j in 0..Z_FFT_SIZE {
             let s = if j < Z_FRAME_LEN {
-                preemph[j] * POVEY_WINDOW[j]
+                frame[j] * POVEY_WINDOW[j]
             } else {
                 0.0
             };
@@ -1349,7 +1317,7 @@ mod tests {
         let mut session = engine.session.lock();
         let my_feats = if engine.is_whisper {
             let mut feats = compute_whisper_features_linear(&samples).unwrap();
-            normalize_whisper_features(&mut feats);
+            crate::feature::normalize_whisper_features(&mut feats);
             feats
         } else {
             compute_fbank_features(&samples).unwrap()
@@ -1520,6 +1488,78 @@ mod tests {
         println!("\n--- Zipformer Transducer (xlarge) Result ---");
         println!("  text = {:?}", text);
         assert!(!text.is_empty(), "transducer xlarge should produce non-empty output");
+    }
+
+    // ── golden-value regression pin（Phase 0：重构前钉住数值，不依赖 HF 模型）──
+    // 用途：Phase A（buffer 优化）/ Phase C'（normalize 合并）重构后，这些测试的数值
+    // 必须完全一致（容差 1e-5）。golden 值由重构前的当前实现生成。
+
+    /// 固定测试输入：1600 samples（10 帧），确定性正弦波 + 常量偏移，避免全零退化。
+    fn golden_samples() -> Vec<f32> {
+        (0..1600).map(|i| (i as f32 * 0.01).sin() + 0.5).collect()
+    }
+
+    /// 浮点近似比较（容差 1e-5）。
+    fn approx_eq(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 1e-5
+    }
+
+    /// compute_whisper_features_linear golden pin：前 2 帧 × 5 bin。
+    #[test]
+    fn golden_whisper_features() {
+        let mel = compute_whisper_features_linear(&golden_samples()).unwrap();
+        let golden: [[f32; 5]; 2] = [
+            [377.192078, 50.866940, 4.699553, 0.658000, 0.239028],
+            [442.780151, 49.902119, 2.679944, 0.062936, 0.009593],
+        ];
+        for (fi, row) in golden.iter().enumerate() {
+            for (bi, &exp) in row.iter().enumerate() {
+                assert!(
+                    approx_eq(mel[[fi, bi]], exp),
+                    "whisper features[{fi}][{bi}] = {} != golden {exp}",
+                    mel[[fi, bi]]
+                );
+            }
+        }
+    }
+
+    /// compute_fbank_features golden pin：前 2 帧 × 5 bin。
+    #[test]
+    fn golden_fbank_features() {
+        let fbank = compute_fbank_features(&golden_samples()).unwrap();
+        let golden: [[f32; 5]; 2] = [
+            [0.208828, 0.624399, -1.152322, -1.990883, -2.556096],
+            [1.276824, 0.983156, -3.782742, -4.568033, -5.261693],
+        ];
+        for (fi, row) in golden.iter().enumerate() {
+            for (bi, &exp) in row.iter().enumerate() {
+                assert!(
+                    approx_eq(fbank[[fi, bi]], exp),
+                    "fbank features[{fi}][{bi}] = {} != golden {exp}",
+                    fbank[[fi, bi]]
+                );
+            }
+        }
+    }
+
+    /// normalize_whisper_features golden pin：先提取 whisper 特征，再归一化，前 2 帧 × 5 bin。
+    #[test]
+    fn golden_normalize_whisper_features() {
+        let mut mel = compute_whisper_features_linear(&golden_samples()).unwrap();
+        crate::feature::normalize_whisper_features(&mut mel);
+        let golden: [[f32; 5]; 2] = [
+            [1.644141, 1.426609, 1.168014, 0.954557, 0.844612],
+            [1.661547, 1.424530, 1.107031, 0.699725, 0.495486],
+        ];
+        for (fi, row) in golden.iter().enumerate() {
+            for (bi, &exp) in row.iter().enumerate() {
+                assert!(
+                    approx_eq(mel[[fi, bi]], exp),
+                    "normalized[{fi}][{bi}] = {} != golden {exp}",
+                    mel[[fi, bi]]
+                );
+            }
+        }
     }
 }
 

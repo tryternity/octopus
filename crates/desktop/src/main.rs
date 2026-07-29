@@ -68,6 +68,7 @@ mod pipeline;
 mod result_window;
 mod screenshot_commands;
 mod screenshot_geometry;
+mod sys_open;
 // 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
 // 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
 // 对应 invoke_handler 注册项也用 cfg gate（见下方 generate_handler!）。

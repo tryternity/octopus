@@ -361,7 +361,7 @@ docs/
 
 ### Zipformer Whisper 特征归一化（已踩 3 次坑，勿再改错）
 
-Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zipformer-ctc` 使用 whisper 特征（ONNX metadata `feature=whisper` → `is_whisper=true`）。`normalize_whisper_features` 有 3 个关键约束，全部来自 sherpa-onnx C++ 源码（`sherpa-onnx/csrc/math.cc::NormalizeWhisperFeatures`），**修改前务必先读参考实现**：
+Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zipformer-ctc` 使用 whisper 特征（ONNX metadata `feature=whisper` → `is_whisper=true`）。`normalize_whisper_features`（实现统一在 `feature.rs`，zipformer/streaming_zipformer/qwen3_asr 共用，2026-07-29 合并）有 3 个关键约束，全部来自 sherpa-onnx C++ 源码（`sherpa-onnx/csrc/math.cc::NormalizeWhisperFeatures`），**修改前务必先读参考实现**：
 
 1. **公式不可变**：最后一步 `(clamped + 4.0) / 4.0`（范围~0-2）。曾错误写成 `clamped - clamp_min`（范围 0-8，尺度差 4 倍）→ ONNX 模型输入分布不匹配 → 输出乱码。
 
