@@ -111,3 +111,27 @@ pub fn ax_role() -> CFString {
 pub fn ax_children() -> CFString {
     CFString::new("AXChildren")
 }
+
+// ── 屏幕录制权限（CoreGraphics）──────────────────────────────────────
+// CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess 在 CoreGraphics framework，
+// macOS 10.15+。必须在主进程调用——helper 子进程调用不触发 TCC 弹窗（打包版根因）。
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// 静默检查屏幕录制权限（不弹窗）。
+pub fn is_screen_capture_trusted() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// 主动触发屏幕录制权限请求弹窗（异步，与 AX prompt 同范式）。
+///
+/// 必须在**主进程**调用——helper 子进程调此函数不触发 TCC 弹窗（macOS 限制）。
+/// 返回值是当前状态（弹窗异步，首次几乎一定 false）——语义是"踢一脚弹窗"。
+/// 打包版 .app 主进程调用能正常触发系统「打开系统设置」对话框。
+pub fn prompt_screen_capture_permission() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
+}
