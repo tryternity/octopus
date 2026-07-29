@@ -47,6 +47,7 @@ mod engine_aliyun;
 mod cloud_pipeline;
 mod engine_dispatch;
 mod engine_embedded;
+mod error_util;
 mod extensions;
 mod file_watcher;
 #[cfg(feature = "remote-grpc")]

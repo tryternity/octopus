@@ -4,6 +4,7 @@
 //! 错误统一映射为 `String`（前端用 `err` 分支即可）。
 
 use std::sync::Arc;
+use crate::error_util::e2s;
 
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -244,7 +245,7 @@ pub fn vault_set_lock_timeout(
     }
     let mut cfg = config.write();
     cfg.vault_lock_timeout_secs = secs;
-    octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
+    octopus_infra::db::save_app_config(&cfg).map_err(e2s)?;
     log::info!("vault 自动锁定超时已更新为 {}s", secs);
     Ok(())
 }
@@ -634,7 +635,7 @@ pub fn vault_export(
     // L17 修复（2026-07-24）：加 SYNC_LOCK——list_ciphers + list_folders 两次 DB 读
     // 期间若 sync_now 并发写入会跨事务边界（快照不一致）。与 empty_trash 同模式（T2）。
     let _sync_guard = octopus_vault::sync::engine::try_sync_lock()
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
     let (ciphers, failures) =
         octopus_vault::storage::list_ciphers(&key).map_err(vault_error::to_tauri_error)?;

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
+use crate::error_util::{e2s, e2s_ctx};
 
 #[tauri::command]
 pub async fn query_clipboard_history(
@@ -24,8 +25,8 @@ pub async fn query_clipboard_history(
         })
     })
     .await
-    .map_err(|e| format!("join error: {}", e))?
-    .map_err(|e| e.to_string())
+    .map_err(|e| e2s_ctx("join error: {}", e))?
+    .map_err(e2s)
 }
 
 #[tauri::command]
@@ -36,7 +37,7 @@ pub async fn toggle_clipboard_favorite(
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::toggle_favorite(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     // 广播给浮窗 + 设置页同步刷新（否则两端列表状态不一致）
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
@@ -50,7 +51,7 @@ pub async fn delete_clipboard_item(
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_item(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
@@ -63,7 +64,7 @@ pub async fn delete_clipboard_items(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_items(conn, &ids)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -76,7 +77,7 @@ pub async fn clear_clipboard_history(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -92,7 +93,7 @@ pub async fn clear_clipboard_history_by_filter(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::clear_history_by_filter(conn, &filter, keep_favorite)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -107,7 +108,7 @@ pub async fn restore_clipboard_item(
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::restore_item(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
@@ -120,7 +121,7 @@ pub async fn restore_clipboard_items(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::restore_items(conn, &ids)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -133,7 +134,7 @@ pub async fn permanent_delete_clipboard_item(
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::permanent_delete_item(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
@@ -146,7 +147,7 @@ pub async fn permanent_delete_clipboard_items(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::permanent_delete_items(conn, &ids)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -158,7 +159,7 @@ pub async fn empty_clipboard_trash(
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::empty_trash(conn)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
 }
@@ -171,18 +172,18 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
     match item.item_type {
         octopus_clipboard::ItemType::Text
         | octopus_clipboard::ItemType::Voice
-        | octopus_clipboard::ItemType::Ocr => handle.write_text(&item.content).map_err(|e| e.to_string()),
+        | octopus_clipboard::ItemType::Ocr => handle.write_text(&item.content).map_err(e2s),
         octopus_clipboard::ItemType::Image => {
             let blob_hash = item.ref_data.clone()
                 .ok_or("图片元数据缺失")?;
             let image_blob = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::get_image_blob(conn, &blob_hash)
             })
-            .map_err(|e| e.to_string())?
+            .map_err(e2s)?
             .ok_or("图片数据不存在")?;
             // image_data 存 JPEG q85 BLOB（IMAGE_SAVE_QUALITY=jpeg:85）；write_image 契约是 PNG，转码一次
             let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
-                .map_err(|e| format!("解码 JPEG 失败: {}", e))?;
+                .map_err(|e| e2s_ctx("解码 JPEG 失败: {}", e))?;
             let mut png = Vec::new();
             let mut cursor = std::io::Cursor::new(&mut png);
             let png_encoder = ::image::codecs::png::PngEncoder::new_with_quality(
@@ -191,15 +192,15 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
                 ::image::codecs::png::FilterType::Up,
             );
             img.write_with_encoder(png_encoder)
-                .map_err(|e| format!("编码 PNG 失败: {}", e))?;
-            handle.write_image(&png).map_err(|e| e.to_string())
+                .map_err(|e| e2s_ctx("编码 PNG 失败: {}", e))?;
+            handle.write_image(&png).map_err(e2s)
         }
         octopus_clipboard::ItemType::File => {
             let paths_json = item.ref_data.as_ref()
                 .ok_or("文件路径缺失")?;
             let paths: Vec<String> = serde_json::from_str(paths_json)
-                .map_err(|e| format!("解析文件路径失败: {}", e))?;
-            handle.write_files(paths).map_err(|e| e.to_string())
+                .map_err(|e| e2s_ctx("解析文件路径失败: {}", e))?;
+            handle.write_files(paths).map_err(e2s)
         }
     }
 }
@@ -212,7 +213,7 @@ pub async fn copy_clipboard_item(
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
     if let Some(item) = item {
         let handle = handle.inner().clone();
@@ -220,7 +221,7 @@ pub async fn copy_clipboard_item(
         // 移入 spawn_blocking 避免阻塞 Tauri UI 线程
         tokio::task::spawn_blocking(move || {
             write_item_to_clipboard(&handle, &item)
-        }).await.map_err(|e| e.to_string())??;
+        }).await.map_err(e2s)??;
     }
     Ok(())
 }
@@ -246,8 +247,8 @@ pub async fn clipboard_stats(
         })
     })
     .await
-    .map_err(|e| format!("join error: {}", e))?
-    .map_err(|e| e.to_string())
+    .map_err(|e| e2s_ctx("join error: {}", e))?
+    .map_err(e2s)
 }
 
 /// 双击条目：写剪贴板 → hide 窗口 → 恢复焦点 → 模拟粘贴
@@ -262,7 +263,7 @@ pub async fn paste_clipboard_item(
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
     let item = match item {
         Some(item) => item,
@@ -313,7 +314,7 @@ pub async fn save_image_item(
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
     let item = item.ok_or("条目不存在")?;
 
@@ -328,7 +329,7 @@ pub async fn save_image_item(
     let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
     .ok_or("图片数据不存在")?;
 
     // 3. 目标目录 ~/Downloads/octopus/
@@ -336,7 +337,7 @@ pub async fn save_image_item(
         .or_else(dirs::home_dir)
         .ok_or("无法确定下载目录")?
         .join("octopus");
-    std::fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&downloads_dir).map_err(e2s)?;
 
     // 4. 确定扩展名 + 文件名（带去重）
     let ext = match fmt.as_str() {
@@ -353,33 +354,33 @@ pub async fn save_image_item(
         match ext {
             "png" => {
                 let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(e2s)?;
                 img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(e2s)?;
             }
             "webp" => {
-                std::fs::write(&save_path_clone, &image_blob).map_err(|e| e.to_string())?;
+                std::fs::write(&save_path_clone, &image_blob).map_err(e2s)?;
             }
             _ => {
                 let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(e2s)?;
                 let rgb = img.to_rgb8();
                 let mut buf = std::io::BufWriter::new(
-                    std::fs::File::create(&save_path_clone).map_err(|e| e.to_string())?
+                    std::fs::File::create(&save_path_clone).map_err(e2s)?
                 );
                 let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
                 encoder.encode(&rgb, rgb.width(), rgb.height(), ::image::ExtendedColorType::Rgb8)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(e2s)?;
             }
         }
         Ok(())
     })
     .await
-    .map_err(|e| format!("save_image_item 任务异常: {}", e))??;
+    .map_err(|e| e2s_ctx("save_image_item 任务异常: {}", e))??;
 
     // 6. 写文件路径到剪贴板
     let abs_path = save_path.to_string_lossy().to_string();
-    handle.write_text(&abs_path).map_err(|e| e.to_string())?;
+    handle.write_text(&abs_path).map_err(e2s)?;
 
     // 7. 可选：用系统文件管理器定位到该文件
     if open_after {
@@ -428,7 +429,7 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
     let item = item.ok_or("条目不存在")?;
     if item.item_type != octopus_clipboard::ItemType::File {
@@ -441,7 +442,7 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     // 导致 serde_json::from_str("") 全平台失败、「打开文件」按钮失效。
     let paths_json = item.ref_data.as_ref().ok_or("文件路径缺失")?;
     let paths: Vec<String> = serde_json::from_str(paths_json)
-        .map_err(|e| format!("解析路径失败: {}", e))?;
+        .map_err(|e| e2s_ctx("解析路径失败: {}", e))?;
 
     let first = paths.first().ok_or("无文件路径")?;
     let path = decode_file_uri(first);
@@ -518,7 +519,7 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
     log::info!("[ocr-image] got item");
 
     let item = item.ok_or("条目不存在")?;
@@ -532,13 +533,13 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
     .ok_or("图片数据不存在")?;
     log::info!("[ocr-image] got blob {} bytes", image_blob.len());
 
     log::info!("[ocr-image] before OcrEngine::instance()");
     let engine = octopus_ocr::engine::OcrEngine::instance()
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
     log::info!("[ocr-image] after OcrEngine::instance()");
 
     log::info!("[ocr-image] before recognize()");
@@ -550,8 +551,8 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
             engine.recognize_with_blocks(&image_blob)
         })
         .await
-        .map_err(|e| format!("OCR 任务异常: {}", e))?
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e2s_ctx("OCR 任务异常: {}", e))?
+        .map_err(e2s)?
     };
     log::info!("[ocr-image] after recognize() text_len={} blocks={}", text.len(), blocks.len());
 
@@ -576,7 +577,7 @@ pub async fn scan_qrcode_image(
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, image_id)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
     let item = item.ok_or("条目不存在")?;
     if item.item_type != octopus_clipboard::ItemType::Image {
@@ -589,17 +590,17 @@ pub async fn scan_qrcode_image(
     let image_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_blob(conn, &blob_hash)
     })
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
     .ok_or("图片数据不存在")?;
 
     // 图片解码（自动检测格式：JPEG/PNG）+ zxing-cpp QR 识别：CPU 密集，移入 spawn_blocking。
     let codes = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
         let img = ::image::load_from_memory(&image_blob)
-            .map_err(|e| format!("解码图片失败: {}", e))?;
-        octopus_ocr::qrcode::scan(&img).map_err(|e| e.to_string())
+            .map_err(|e| e2s_ctx("解码图片失败: {}", e))?;
+        octopus_ocr::qrcode::scan(&img).map_err(e2s)
     })
     .await
-    .map_err(|e| format!("scan_qrcode_image 任务异常: {}", e))??;
+    .map_err(|e| e2s_ctx("scan_qrcode_image 任务异常: {}", e))??;
     Ok(codes)
 }
 
@@ -615,9 +616,9 @@ pub async fn set_clipboard_item_text(
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::update_content(conn, item_id, &text)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
-    handle.write_text(&text).map_err(|e| e.to_string())?;
+    handle.write_text(&text).map_err(e2s)?;
     // 编辑器是独立窗口，剪贴板列表窗口需靠此事件感知条目变化并重新拉取。
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
@@ -648,9 +649,9 @@ pub async fn insert_clipboard_text_item(
             is_rich: false,
         })
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(e2s)?;
 
-    handle.write_text(&text).map_err(|e| e.to_string())?;
+    handle.write_text(&text).map_err(e2s)?;
     // 编辑器是独立窗口，剪贴板列表窗口需靠此事件感知条目变化并重新拉取。
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(new_id)
@@ -668,7 +669,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         let item = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::get_item_by_id(conn, id)
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
 
         let item = item.ok_or("条目不存在")?;
         if item.item_type != octopus_clipboard::ItemType::Image {
@@ -681,7 +682,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         let thumb_blob = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::get_image_thumb(conn, &blob_hash)
         })
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or_else(|| "缩略图不存在".to_string())?;
 
         Ok(format!(
@@ -690,7 +691,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         ))
     })
     .await
-    .map_err(|e| format!("join error: {}", e))?
+    .map_err(|e| e2s_ctx("join error: {}", e))?
 }
 
 /// 取图片全分辨率（image_data.blob）→ data URL（base64 + WebP 前缀）。
@@ -705,7 +706,7 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
         let item = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::get_item_by_id(conn, id)
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(e2s)?;
 
         let item = item.ok_or("条目不存在")?;
         if item.item_type != octopus_clipboard::ItemType::Image {
@@ -718,13 +719,13 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
         let blob = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::get_image_blob(conn, &blob_hash)
         })
-        .map_err(|e| e.to_string())?
+        .map_err(e2s)?
         .ok_or_else(|| "图片数据缺失".to_string())?;
 
         Ok(blob)
     })
     .await
-    .map_err(|e| format!("join error: {}", e))??;
+    .map_err(|e| e2s_ctx("join error: {}", e))??;
 
     // 返回原始 WebP 字节（Raw body），前端用 URL.createObjectURL 加载
     Ok(tauri::ipc::Response::new(blob))
@@ -748,12 +749,12 @@ pub async fn copy_image_to_clipboard(
     // 入库改走 clipboard_queue（与 watcher 同路径，后台 worker 异步处理 + emit）。
     let handle_clone = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
-        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        handle_clone.write_image(&png_bytes).map_err(e2s)?;
         // write_image 触发 NSPasteboard 变化 → watcher 会收到通知 → enqueue。
         // 但有时通知有延迟，这里主动 enqueue 一次确保 worker 处理。
         crate::clipboard_queue::enqueue();
         Ok::<(), String>(())
-    }).await.map_err(|e| e.to_string())??;
+    }).await.map_err(e2s)??;
     Ok(())
 }
 
@@ -783,11 +784,11 @@ pub async fn save_image_dialog(
             .blocking_save_file();
         if let Some(path) = save_path {
             let path = path.as_path().ok_or("无效路径")?;
-            std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+            std::fs::write(path, &png_bytes).map_err(e2s)?;
             log::info!("Image preview saved to {}", path.display());
         }
         Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(e2s)?
 }
