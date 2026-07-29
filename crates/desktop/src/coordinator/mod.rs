@@ -1,11 +1,14 @@
-// src/coordinator.rs
+// coordinator/mod.rs — 录音生命周期协调器（actor 模式）。
+// 2026-07-29 起拆分为子模块：本文件保留 types + 主循环 + tauri commands，
+// 各 handler 函数搬到 coordinator/{paste,edit,tick,agent,cancel_discard,session,polish,lifecycle}.rs。
+
+mod paste;
 
 use crate::audio::SharedAudioState;
 use crate::config::AppConfig;
 use crate::config::PolishMode;
 use crate::db_queue::{DbCommand, get_db_sender};
 use crate::engine::TranscriptionEngine;
-use crate::paste;
 use crate::pipeline::StreamingPipeline;
 use crate::transcript::Transcript;
 use octopus_asr_local::streaming_engine::StreamingSessionManager;
@@ -15,6 +18,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
+
+// 子模块函数 re-export：mod.rs 内的裸调用（now_millis / do_paste 等）零改动。
+pub(crate) use self::paste::{
+    now_millis, active_asr_engine_name, active_llm_name, sync_runtime_fields,
+    stage_name, do_paste, update_transcription_raw,
+};
 
 /// 当前/最近一次录音会话的 transcription_id。
 /// 在会话起点（Transcript::new）写入，供 Result 窗口「存入记事本」溯源。
@@ -27,7 +36,7 @@ pub(crate) fn set_current_transcription_id(id: i64) {
 
 /// 翻译模式激活标志——前端 enterTranslateMode/exitTranslateMode 设置。
 /// finalize_after_stop 读取此标志：true 时对最终文本做同步翻译，粘贴译文而非原文。
-static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 前端命令：设置翻译模式激活状态。
 #[tauri::command]
@@ -56,7 +65,7 @@ impl Default for RecordType {
 }
 
 /// 协调器命令
-enum Command {
+pub(crate) enum Command {
     /// 切换录音状态（开始/停止）
     Toggle,
     /// 取消当前操作（丢弃一切，包括 DB 记录不 finalize）
@@ -118,12 +127,12 @@ enum Command {
 /// 注：不含 WaitingCompletion——该 stage `is_recording` 已 false（stop 时翻转），
 /// `sample_stall_duration` 返回 0，看门狗天然不触发。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RestartStageKind {
+pub(crate) enum RestartStageKind {
     Streaming,
     VadSegmented,
 }
 
-enum Stage {
+pub(crate) enum Stage {
     Idle,
     /// 流式识别：边录边识别
     Streaming {
@@ -197,35 +206,8 @@ const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_min_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
-/// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// ASR 兜底引擎 spec（与 runtime_config::FALLBACK_ASR_ENGINE 一致，3-part 格式供 active_session 用）。
-const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
-
-/// 取激活 ASR 引擎名（裸名）。resolve 失败（含未激活 + 兜底失败）时返回兜底 spec。
-///
-/// Task 2 后：coordinator 不再依赖 config.asr_engine 字段（已删），统一调此函数。
-fn active_asr_engine_name() -> String {
-    octopus_asr_local::config::resolve_active_engine("asr")
-        .map(|r| r.name)
-        .unwrap_or_else(|_| FALLBACK_STREAMING_SPEC.to_string())
-}
-
-/// 取激活 LLM 引擎名（裸名）。resolve 失败（未激活）时返回空串。
-///
-/// Task 2 后：coordinator 不再依赖 config.polish_llm 字段（已删），统一调此函数。
-/// 用于 DB 记录的 model 字段——空串表示无润色 LLM 激活。
-fn active_llm_name() -> String {
-    octopus_asr_local::config::resolve_active_engine("llm")
-        .map(|r| r.name)
-        .unwrap_or_default()
-}
+pub(crate) const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
 
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
@@ -246,7 +228,7 @@ const AUDIO_STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_sec
 
 /// 过程落库（update_text_segments）节流间隔：同条记录 ≥此值才 UPDATE，
 /// Finalize 兜底完整写入（长录音避免每 changed≈每 tick 一次 UPDATE 的写放大）。
-const DB_FLUSH_INTERVAL_MS: u64 = 500;
+pub(crate) const DB_FLUSH_INTERVAL_MS: u64 = 500;
 
 impl Coordinator {
     pub fn new(
@@ -732,19 +714,6 @@ impl Coordinator {
                 error!("Coordinator channel closed");
             }
     }
-}
-
-/// 把共享 AppConfig 的运行时可变字段同步到 coordinator 的 config 快照。
-///
-/// 与 Toggle 时的同步逻辑共用，确保两条路径同步内容一致。
-/// 不含 `asr_engine`（需重建引擎实例，只能 Toggle 时切），也不含 `denoise_mode`
-/// （音频处理路径有独立 cfg 读取，会话中切换影响降噪器状态）。
-fn sync_runtime_fields(config: &mut AppConfig, shared: &AppConfig) {
-    config.polish_mode = shared.polish_mode;
-    config.asr_correct = shared.asr_correct;
-    config.output_simplified = shared.output_simplified;
-    config.hide_toolbar = shared.hide_toolbar;
-    config.edit_shortcut = shared.edit_shortcut.clone();
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。
@@ -1728,110 +1697,6 @@ fn start_final_polish_or_paste(
     }
 }
 
-/// 执行真正的粘贴落库操作（在主线程进行）
-#[allow(clippy::too_many_arguments)]
-fn do_paste(
-    stage: &mut Stage,
-    text_to_paste: &str,
-    id: i64,
-    raw_text: &str,
-    segments: &str,
-    polish_status: &str,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    // 翻译模式：润色完成后（或跳过润色），对最终文本同步翻译，粘贴译文。
-    // swap 消费确保只翻译一次（多个 do_paste 调用只有首个触发）。
-    let text_to_paste_owned: String;
-    let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
-        crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
-        // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
-        // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）。
-        // do_translate 已 async 化（云端引擎走 HTTP）——coordinator 非 tokio 线程，
-        // 用 tauri::async_runtime::block_on 进入（cloud_pipeline.rs:122 同模式，不可新建 Runtime）。
-        let text_ref = text_to_paste;
-        text_to_paste_owned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tauri::async_runtime::block_on(
-                crate::action_bar_commands::do_translate(text_ref, config)
-            )
-        }))
-        .unwrap_or_else(|p| {
-            let msg = if let Some(s) = p.downcast_ref::<&str>() { (*s).to_string() }
-                else if let Some(s) = p.downcast_ref::<String>() { s.clone() }
-                else { "unknown panic".to_string() };
-            warn!("终翻 panic: {}", msg);
-            Err(msg)
-        })
-        .unwrap_or_else(|e| {
-            warn!("最终翻译失败，回退润色/原文: {}", e);
-            text_ref.to_string()
-        });
-        info!("Translation finalize: {} chars", text_to_paste_owned.chars().count());
-        &text_to_paste_owned
-    } else {
-        text_to_paste
-    };
-
-    crate::result_window::show_result(app_handle, text_to_paste);
-
-    *stage = Stage::Pasting {
-        id,
-        raw_text: raw_text.to_string(),
-        segments: segments.to_string(),
-        polished_text: if polish_status == "done" {
-            text_to_paste.to_string()
-        } else {
-            String::new()
-        },
-        polish_status: polish_status.to_string(),
-    };
-
-    let config = config.clone();
-    let tx_inner = tx.clone();
-    let clipboard_handle = app_handle
-        .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
-        .inner()
-        .clone();
-    let text_to_paste = text_to_paste.to_string();
-
-    let app_handle_emit = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        let res = tokio::task::spawn_blocking(move || {
-            // 录音过程中 insert_transcription_at_id 已在 clipboard_history 创建了 voice 条目（id=tid）。
-            // paste 时只需 touch_created_at 把它顶到列表顶部，不重复创建。
-            // tid=0（sentinel，无有效会话）时跳过——cancel 后 paste 的边界场景。
-            let touched = if id > 0 {
-                octopus_infra::db::with_db(|conn| {
-                    octopus_clipboard::store::touch_created_at(conn, id)
-                })
-            } else {
-                Ok(())
-            };
-            if let Err(e) = &touched {
-                warn!("Clipboard history touch_created_at failed: {}", e);
-            }
-
-            // ASR 记录已入库：主动广播 clipboard://changed。paste 路径写剪贴板时
-            // 会设 suppress_flag，watcher 的 on_clipboard_change 命中
-            // check_and_clear_suppress 后直接 return（不调 on_change 闭包），
-            // emit 不会自然触发——前端浮窗/设置面板收不到通知，ASR 记录无法即时渲染。
-            if touched.is_ok() {
-                let _ = app_handle_emit.emit("clipboard://changed", ());
-            }
-
-            paste::paste(&text_to_paste, &clipboard_handle, &config)
-        }).await;
-
-        match res {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => error!("Paste failed: {}", e),
-            Err(e) => error!("Paste task panicked: {:?}", e),
-        }
-        let _ = tx_inner.send(Command::PasteDone);
-    });
-}
-
 /// 云端流式 finalize：把未提交的 partial 拼进 transcript，空则回 Idle，
 /// 否则走与本地引擎一致的「最终润色或粘贴」流程。
 ///
@@ -2761,20 +2626,6 @@ fn stage_transcript(stage: &mut Stage) -> Option<&mut Transcript> {
     }
 }
 
-fn stage_name(stage: &Stage) -> &'static str {
-    match stage {
-        Stage::Idle => "Idle",
-        Stage::Streaming { .. } => "Streaming",
-        Stage::VadSegmented { .. } => "VadSegmented",
-        Stage::WaitingCompletion { .. } => "WaitingCompletion",
-        Stage::StoppingPolish { .. } => "StoppingPolish",
-        Stage::Polishing { .. } => "Polishing",
-        Stage::Pasting { .. } => "Pasting",
-        #[cfg(feature = "cloud")]
-        Stage::CloudClosing { .. } => "CloudClosing",
-    }
-}
-
 /// tick 线程诊断打点（spec 2026-07-19-asr-edit-stall-observability）：
 /// - 检测 `editing` 翻转（覆盖 5 处精确触发点之外的间接复位路径），翻转即打 `[STATE]`
 /// - 距上次心跳 ≥ 1s 打 `[HEARTBEAT]`（1Hz 节流），证明 tick 线程在跑 + 当前 stage/editing
@@ -2909,47 +2760,6 @@ fn check_audio_stall(audio: &Arc<SharedAudioState>, stage: &Stage) -> bool {
     } else {
         false
     }
-}
-
-/// 首次有文本 INSERT，否则 UPDATE raw_text。DB 失败返回 Err 供调用方 warn（不阻塞识别）。
-/// 用 Transcript.db_inserted() 区分首次与后续（避免「UPDATE 0 行无法判断」歧义）。
-fn update_transcription_raw(
-    transcript: &mut Transcript,
-    engine: &str,
-    engine_mode: &str,
-) -> Result<(), String> {
-    if transcript.full().is_empty() {
-        return Ok(());
-    }
-    let sender = get_db_sender();
-    if !transcript.db_inserted() {
-        let cmd = DbCommand::Insert {
-            id: transcript.id,
-            text: transcript.db_text(),
-            segments: transcript.segments_json(),
-            engine: engine.to_string(),
-            engine_mode: Some(engine_mode.to_string()),
-        };
-        sender.send(cmd).map_err(|e| format!("Queue DB insert failed: {}", e))?;
-        transcript.mark_db_inserted();
-        transcript.mark_db_written();
-    } else {
-        // 落库节流：距上次落库 < DB_FLUSH_INTERVAL_MS 则跳过本次 UPDATE（Finalize 兜底完整写入，
-        // 最坏落后一帧文本；避免长录音每 changed≈每 tick 一次 UPDATE 的写放大）。
-        if !transcript.db_flush_due(std::time::Duration::from_millis(DB_FLUSH_INTERVAL_MS)) {
-            return Ok(());
-        }
-        let cmd = DbCommand::UpdateTextSegments {
-            id: transcript.id,
-            text: transcript.db_text(),
-            segments: transcript.segments_json(),
-        };
-        sender
-            .send(cmd)
-            .map_err(|e| format!("Queue DB update_text_segments failed: {}", e))?;
-        transcript.mark_db_written();
-    }
-    Ok(())
 }
 
 #[cfg(test)]
