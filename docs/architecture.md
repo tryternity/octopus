@@ -258,7 +258,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **IPC 二进制传输**：所有图片传输已从 base64 改为二进制——前端→Rust 用 `ipc::Request` Raw body（`canvas.toBlob → ArrayBuffer → invoke(cmd, arraybuffer)`），Rust→前端用 `ipc::Response`（原始字节 → 前端 `URL.createObjectURL`）。消除 base64 编解码 + JSON 序列化开销。剪贴板历史条目复制（`copy_clipboard_item`）从 DB 读图片 BLOB→PNG→剪贴板，移入 `spawn_blocking` 不阻塞 UI。图片预览（ImagePreview 组件，嵌入 CompactEditor 图片 tab）无标注时「复制」跳过（剪贴板已有数据），有标注时走 Canvas 合成→Raw body。
 
-**macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
+**macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。**首次启动权限引导页**（`onboarding_window`，`AppConfig.onboarding_completed == false` 时触发）：3 个权限卡片（麦克风 / 辅助功能 / 屏幕录制），用户逐一授权后点「完成」写 flag 不再弹。避免多个系统 TCC 弹窗同时出现。权限命令：麦克风 `check/request_microphone_permission`（cpal probe：build+play+pause+drop，play 触发 TCC）；辅助功能 `check/request_accessibility_permission`（`app_context::ffi::{is_accessibility_trusted, prompt_accessibility_permission}`，后者传 `kAXTrustedCheckOptionPrompt=true`）；屏幕录制复用 `check_record_permission` / `request_screen_record_permission`（helper `--check-permission` / `--request-permission`）。`PrivacySection` 三态：`ScreenCapture` / `Microphone` / `Accessibility`（→ `Privacy_Assistive` 深链）。AX 权限被 app_context / autotype / keystroke / paste 共用，缺失则截图/返回焦点/自动输入静默失败。详见 [spec](superpowers/specs/2026-07-29-onboarding-permission.md)。
 
 详见 [spec](superpowers/specs/2026-06-28-archived-specs.md)。
 

@@ -268,15 +268,10 @@ fn send_one_key(
     Ok(())
 }
 
-/// 检查 AX 权限。FFI 范式来自 `autotype/macos.rs:17-30`。
+/// 检查 AX 权限（委托 app_context::ffi 统一入口，去重 3 处 extern 声明）。
 #[cfg(target_os = "macos")]
 fn check_accessibility_trusted() -> bool {
-    #[link(name = "ApplicationServices", kind = "framework")]
-    unsafe extern "C" {
-        fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
-    }
-    // null options = 不弹权限对话框，只查当前状态
-    unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
+    crate::app_context::ffi::is_accessibility_trusted()
 }
 
 #[cfg(test)]

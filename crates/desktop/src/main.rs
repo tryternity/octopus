@@ -100,6 +100,7 @@ mod record_audio_probe;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
+mod onboarding_window;
 mod system_status_commands;
 mod focus_tracker;
 mod shortcut;
@@ -305,6 +306,7 @@ pub fn run() {
             result_window::set_result_click_through,
             settings_window::open_settings,
             settings_window::get_initial_page,
+            onboarding_window::complete_onboarding,
             settings_commands::get_config,
             settings_commands::set_config,
             settings_commands::get_history,
@@ -566,6 +568,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             record_commands::open_privacy_settings,
             #[cfg(target_os = "macos")]
+            record_commands::check_microphone_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::request_microphone_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::check_accessibility_permission,
+            #[cfg(target_os = "macos")]
+            record_commands::request_accessibility_permission,
+            #[cfg(target_os = "macos")]
             record_commands::record_start,
             #[cfg(target_os = "macos")]
             record_commands::record_start_default,
@@ -624,6 +634,18 @@ pub fn run() {
             record_commands::get_record_status,
         ])
         .setup(move |app| {
+            // 首次启动检测：onboarding_completed == false → 弹权限引导页。
+            // 引导页内用户逐一授权 3 个权限（麦克风/辅助功能/屏幕录制），点「完成」后
+            // complete_onboarding 命令写 flag + 关窗。非首次启动跳过。
+            // 引导页替代了原来的「启动直接弹 AX 系统对话框」——避免多个系统弹窗同时出现。
+            let onboarding_needed = octopus_infra::config::load_config()
+                .map(|c| !c.onboarding_completed)
+                .unwrap_or(true); // config 加载失败也弹引导页（首次启动常见）
+            if onboarding_needed {
+                log::info!("[startup] 首次启动，打开权限引导页");
+                onboarding_window::open_onboarding(app.handle());
+            }
+
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
             let clipboard_handle = Arc::new(
                 octopus_clipboard::ClipboardHandle::new()
@@ -1226,7 +1248,8 @@ pub fn run() {
                     settings_window::on_settings_closed(app);
                 } else if label == "compact_editor_window" {
                     compact_editor_window::on_compact_editor_closed(app);
-
+                } else if label == "onboarding_window" {
+                    onboarding_window::on_onboarding_closed(app);
                 }
             }
             // 应用退出前：排空后台 DB 写入队列，避免 Finalize 等命令入队未落库而丢失
