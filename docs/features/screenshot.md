@@ -55,6 +55,8 @@ start_screenshot
   → emit scroll://done { id }（不含 base64，前端不再中转数据）
 ```
 
+**取消操作**（2026-07-26）：滚动截图窗口处于鼠标穿透态（焦点在下层 app，DOM 收不到键盘），ESC 取消经全局快捷键——`register_scroll_esc`（scrolling 启动时注册，停止时 `unregister_scroll_esc`）；选区外右键取消经 `CGEventSourceButtonState` FFI 边沿检测兜底（穿透态前端收不到右键，`right_mouse_button_down()` 轮询 `prev_right_down` 状态翻转触发取消）。与录屏 ESC 动态注册模式对称（录屏 `record_hotkey.rs`，scroll `screenshot_commands.rs`）。
+
 ---
 
 ## 4. 拼接引擎（Canvas-Anchored NCC + Sobel）
@@ -119,6 +121,8 @@ start_screenshot
 - 工具：选择 / 矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / OCR / 撤销重做
 - 标注在选区内 Canvas clip 绘制
 - 命中测试（`hitTestAnnotationPrecise`，`lib/annotation.ts`，Screenshot 与 ImagePreview 共用）：选择工具下点选/拖动标注——空心 rect/oval/diamond/line/arrow/pen 查到线条距离 ≤ `HIT_DIST`(8)；实心 rect/oval/diamond 查鼠标在图形内部（rect 矩形包含 / oval 与 diamond 归一半径 ≤1）；文字/序号用 bounding box。2026-07-07 修正：filled 内部命中 + diamond 独立分支，消除空心菱形误中
+
+**共享层 `components/Annotation/`**（2026-07-26 抽取）：Screenshot + RecordAnnotation 共用——`useAnnotationState`（hook，统一 numberCounter ref 模式修两边行为不一致）+ `AnnotationToolbar`（组件，业务侧 children 注入工具按钮）+ `position.ts`（`computeToolbarPosition` 三选算法：选区下方优先 → 上方 → 内部底部）。录屏 `showHighlight=false`（不含荧光笔）。详见 `specs/archived/2026-07-26-annotation-toolbar-extraction.md` + `2026-07-27-annotation-tools-design.md`。
 
 ---
 

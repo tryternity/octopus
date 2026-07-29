@@ -22,6 +22,9 @@ ONNX 标准格式，软链到 HF 缓存。DB config 按 model_name 选择 DB con
 | 模块 | 职责 |
 |------|------|
 | `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测） |
+| `backend` | `OcrBackend` trait 抽象（2026-07-27）：`recognize`/`provides_layout`/`unload`/`use_word_segmentation`/`name`，`Box<dyn OcrBackend>` 持有，VLM 后端预留 |
+| `paddle_backend` | `PaddleOcrBackend`：现有 PaddleOCR 逻辑（source_type 0/1 路由到此），实现 `OcrBackend` |
+| `qrcode` | 二维码识别（2026-07-27）：`zxing-cpp` C++ FFI bundled，多码全识别，截图/图文编辑器就地白卡展示 + 单个复制/复制所有 |
 | `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.onnx + rec.onnx + keys.txt 三件套检测，cls.onnx 可选） |
 
 ---
@@ -30,7 +33,7 @@ ONNX 标准格式，软链到 HF 缓存。DB config 按 model_name 选择 DB con
 
 - **全局单例**（`OnceLock`），懒加载模型
 - `instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次
-- 内部 `Mutex<Option<RapidOcr>>` 提供可变性（`run` 需 `&mut self`）；`None` 表示模型已 idle 释放、下次 `run_ocr` 自动重载
+- 内部 `Mutex<Option<Box<dyn OcrBackend>>>` 提供可变性（2026-07-27 trait 抽象后）；`None` 表示模型已 idle 释放、下次 `run_ocr` 自动重载。按 `source_type` 选后端（0/1 = `PaddleOcrBackend`，2 = VLM 预留），`provides_layout` 分流版面分析
 - 模型名从 DB 激活模型读（`get_active_model("ocr")`，2026-07-17 重构后；ocr crate 不依赖 asr-local 故直查 DB 等价 resolve_active_engine。默认 PP-OCRv6-small），存 `model_name: String` 供释放时拼 probe id
 
 ### 3.1 内存管理：idle 60s 自动释放（2026-07-08）

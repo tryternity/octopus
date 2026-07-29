@@ -2,7 +2,7 @@
 
 - **Status:** ✅ 已实现（2026-07-28，方案迭代 v2）
 - **Date:** 2026-07-28
-- **关联：** `docs/superpowers/specs/2026-07-27-vault-sync-is-deleted-merge.md`（merge_vault 设计）；`docs/superpowers/specs/archived/2026-07-18-password-vault-design.md`（vault 密码学模型）
+- **关联：** `docs/superpowers/specs/archived/2026-07-27-vault-sync-is-deleted-merge.md`（merge_vault 设计）；`docs/superpowers/specs/archived/2026-07-18-password-vault-design.md`（vault 密码学模型）
 
 ## 实现注记（2026-07-28）
 

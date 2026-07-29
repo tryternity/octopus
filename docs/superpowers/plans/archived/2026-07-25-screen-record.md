@@ -2676,7 +2676,7 @@ git commit -m "feat(desktop): 录屏快捷键 Cmd+Shift+R toggle + Esc 停止"
 > - `stop_and_store` / `record_kill` 完成后 `unregister_stop_hotkey`
 > - settings 热重载对齐（仅 toggle，录制中改快捷键时额外 register_stop）
 >
-> 详见 `docs/superpowers/specs/2026-07-26-record-esc-hotkey-fix.md` Task 1-5。
+> 详见 `docs/superpowers/specs/archived/2026-07-26-record-esc-hotkey-fix.md` Task 1-5。
 
 ---
 
@@ -2847,7 +2847,7 @@ Task 6 的 `HelperProvider` trait 原是**同步签名**，macOS impl 内部用 
 - 前端展示：RecordingRow hover 显示音轨标签 `[🎤 Mic] [🔊 System]`，双轨时显示「合并音轨」按钮
 - 合并：手动按钮 → ffmpeg `amix`（非 amerge，spike 发现 mic mono + system stereo 声道不同）→ 另存 `xxx_merged.mp4` + INSERT 新 DB 记录
 
-详见 `specs/2026-07-27-screen-record-audio-post-merge.md` + `plans/2026-07-27-screen-record-audio-post-merge.md`。
+详见 `specs/archived/2026-07-27-screen-record-audio-post-merge.md` + `plans/archived/2026-07-27-screen-record-audio-post-merge.md`。
 
 ### Task 10 后续：保存目录可配置（2026-07-27）
 

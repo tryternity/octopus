@@ -8,7 +8,7 @@
 >
 > **关联文档**：
 > - 全工程 casing roadmap：AGENTS.md「序列化 casing 规范」
-> - 上游 spec：`docs/superpowers/specs/2026-07-27-screen-record-audio-post-merge.md`（P2 项）
+> - 上游 spec：`docs/superpowers/specs/archived/2026-07-27-screen-record-audio-post-merge.md`（P2 项）
 
 ---
 

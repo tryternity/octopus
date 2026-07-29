@@ -658,5 +658,5 @@ ffmpeg -y -i input.mp4 -vf "fps=15,scale=800:-1:flags=lanczos" -loop 0 output.gi
    - JSON schema 的 octopus 定制版
    - recordings 表的最终 schema
    - 浮窗与历史列表的 UI 设计（触发 `frontend-design` skill）
-3. 写 spec：`docs/superpowers/specs/2026-07-25-screen-record-design.md`
-4. 写 plan：`docs/superpowers/plans/2026-07-25-screen-record.md`（按 P0 任务分解）
+3. 写 spec：`docs/superpowers/specs/archived/2026-07-25-screen-record-design.md`
+4. 写 plan：`docs/superpowers/plans/archived/2026-07-25-screen-record.md`（按 P0 任务分解）
