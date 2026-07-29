@@ -41,9 +41,43 @@ extern "C" {
         the_type: AXValueType,
         value_ptr: *mut std::ffi::c_void,
     ) -> AXError;
-    #[allow(dead_code)] // 预留：权限检查未启用
     pub fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
     pub fn AXValueGetTypeID() -> core_foundation::base::CFTypeID;
+}
+
+// ── Accessibility 权限 ─────────────────────────────────────────────
+// macOS 辅助功能（AX）权限是 TCC 运行期授权——非 sandbox app 不走 entitlement，
+// 必须由 AXIsProcessTrustedWithOptions 主动触发系统弹窗。
+// app_context / autotype / keystroke / paste 均依赖 AX 权限。
+
+/// 静默检查 AX 权限（不弹窗）。keystroke / autotype / app_context 共用。
+pub fn is_accessibility_trusted() -> bool {
+    // null options = 不弹权限对话框，只查当前状态
+    unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
+}
+
+/// 主动触发 AX 权限请求弹窗（异步，与 cpal 触发麦克风 TCC 弹窗同范式）。
+///
+/// 传 `kAXTrustedCheckOptionPrompt=true` 的 CFDictionary 给
+/// `AXIsProcessTrustedWithOptions`——首次调用触发 TCC 弹窗（"打开系统设置"），
+/// 引导用户到 "系统设置 > 隐私与安全 > 辅助功能" 授权。
+///
+/// 返回值是**当前**授权状态：弹窗异步，不改变返回值，故首次几乎一定返 false。
+/// 本函数语义是"踢一脚系统弹窗"，不是判定——判定请用 `is_accessibility_trusted`。
+pub fn prompt_accessibility_permission() -> bool {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
+    // kAXTrustedCheckOptionPrompt 用 new() 构造——与同文件 ax_focused_ui_element()
+    // 同范式（extern static kAX* 在 Rust 链接器不可见，HIServices 不导出符号）。
+    let key = CFString::new("AXTrustedCheckOptionPrompt");
+    let options: CFDictionary<CFString, CFBoolean> =
+        CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value())]);
+
+    // as_CFTypeRef() 是 get-rule（不转移所有权）；options 活到函数返回，调用期间有效。
+    unsafe { AXIsProcessTrustedWithOptions(options.as_CFTypeRef()) }
 }
 
 /// 缓存 AXValue 的 CFTypeID（进程内不变）。

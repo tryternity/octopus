@@ -258,7 +258,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **IPC 二进制传输**：所有图片传输已从 base64 改为二进制——前端→Rust 用 `ipc::Request` Raw body（`canvas.toBlob → ArrayBuffer → invoke(cmd, arraybuffer)`），Rust→前端用 `ipc::Response`（原始字节 → 前端 `URL.createObjectURL`）。消除 base64 编解码 + JSON 序列化开销。剪贴板历史条目复制（`copy_clipboard_item`）从 DB 读图片 BLOB→PNG→剪贴板，移入 `spawn_blocking` 不阻塞 UI。图片预览（ImagePreview 组件，嵌入 CompactEditor 图片 tab）无标注时「复制」跳过（剪贴板已有数据），有标注时走 Canvas 合成→Raw body。
 
-**macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
+**macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。启动时主动触发 3 类 TCC 权限弹窗：(1) 麦克风——cpal `build_input_stream` API 使用即触发；(2) 辅助功能（Accessibility）——`app_context::ffi::prompt_accessibility_permission` 显式调 `AXIsProcessTrustedWithOptions(kAXTrustedCheckOptionPrompt=true)`（macOS 无「使用即触发」的 AX API，必须显式请求；AX 权限被 app_context / autotype / keystroke / paste 共用，缺失则截图/返回焦点/自动输入静默失败）；(3) 屏幕录制——录屏 helper 子进程 `CGRequestScreenCaptureAccess`（仅用户触发录屏时）。
 
 详见 [spec](superpowers/specs/2026-06-28-archived-specs.md)。
 

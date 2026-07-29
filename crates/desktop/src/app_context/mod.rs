@@ -84,7 +84,7 @@ pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
 }
 
 #[cfg(target_os = "macos")]
-mod ffi;
+pub mod ffi;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos_ax;
 #[cfg(target_os = "macos")]

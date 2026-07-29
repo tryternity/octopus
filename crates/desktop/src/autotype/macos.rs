@@ -9,24 +9,17 @@ use std::time::{Duration, Instant};
 
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
-// macOS Accessibility 权限检查 FFI（enigo 用 CGEvent 注入需要 AX 权限）
+// macOS Accessibility 权限检查（委托 app_context::ffi 统一入口，去重 3 处 extern 声明）。
 //
 // **2026-07-20 e2e 诊断**：用户报告"autotype_login Ok 但浏览器没收到按键"——
 // 典型的 AX 权限缺失症状（enigo 用 CGEvent.post() 静默失败，不报错）。
 // 在注入前主动检查 + 日志，让权限问题可见。
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
-}
-
-/// 检查当前 app 是否有 Accessibility 权限。
-///
-/// enigo 用 CGEvent.post() 注入键盘事件——macOS 要求调用方有 AX 权限。
-/// 权限缺失时 CGEvent.post() **静默失败**（enigo 返 Ok 但没真的注入），
-/// 这是 autotype Ok 但浏览器没收到按键的最常见根因。
+//
+// enigo 用 CGEvent.post() 注入键盘事件——macOS 要求调用方有 AX 权限。
+// 权限缺失时 CGEvent.post() **静默失败**（enigo 返 Ok 但没真的注入），
+// 这是 autotype Ok 但浏览器没收到按键的最常见根因。
 fn check_accessibility_trusted() -> bool {
-    // options=nil：不弹系统提示框（我们只想静默检查）
-    unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) }
+    crate::app_context::ffi::is_accessibility_trusted()
 }
 
 /// 首次焦点等待——hide VaultPicker 后浏览器回前台需要时间。

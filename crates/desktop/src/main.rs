@@ -629,6 +629,21 @@ pub fn run() {
             record_commands::get_record_status,
         ])
         .setup(move |app| {
+            // 主动触发辅助功能权限请求弹窗（异步，与 cpal 触发麦克风 TCC 弹窗同范式）。
+            // AX 权限被 app_context / autotype / keystroke / paste 共用——先 kick 弹窗，
+            // 让用户在 setup 后续几百 ms 内看到系统对话框。
+            // macOS 没有「使用即触发」的 AX API，必须显式调 prompt（与 cpal 不同）。
+            #[cfg(target_os = "macos")]
+            {
+                let trusted = app_context::ffi::prompt_accessibility_permission();
+                if !trusted {
+                    log::info!(
+                        "[startup] 辅助功能权限未授予，已触发系统弹窗；请到 \
+                         系统设置 > 隐私与安全 > 辅助功能 授权 com.octopus.desktop"
+                    );
+                }
+            }
+
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
             let clipboard_handle = Arc::new(
                 octopus_clipboard::ClipboardHandle::new()
