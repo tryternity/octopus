@@ -6,7 +6,7 @@
 
 use tauri::{WebviewUrl, WebviewWindowBuilder, Manager};
 
-use crate::compact_editor_commands::PendingTabFull;
+use crate::commands::compact_editor_commands::PendingTabFull;
 
 const WIDTH: f64 = 1100.0;
 const HEIGHT: f64 = 680.0;

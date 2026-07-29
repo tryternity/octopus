@@ -57,7 +57,7 @@ pub fn read_model_secret_key(
     model_name: &str,
     session: &SharedVaultSession,
 ) -> Result<String, String> {
-    let raw = crate::model_commands::current_secret_key_any(model_name)?;
+    let raw = crate::commands::model_commands::current_secret_key_any(model_name)?;
     try_decrypt_secret(&raw, session)
 }
 

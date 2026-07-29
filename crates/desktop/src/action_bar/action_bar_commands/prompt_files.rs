@@ -106,7 +106,7 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
     let hash = octopus_sync::store::md5_hex(path_str.as_bytes());
     let item_id = i64::from_str_radix(&hash[..16], 16).unwrap_or(0);
 
-    let window_label = crate::compact_editor_window::WINDOW_LABEL;
+    let window_label = crate::commands::compact_editor_window::WINDOW_LABEL;
     let payload = serde_json::json!({
         "itemId": item_id,
         "source": "file",
@@ -119,8 +119,8 @@ pub fn open_file_in_editor(name: String, category: String, app: AppHandle) -> Re
         let _ = window.set_focus();
     } else {
         // 窗口不存在 → 建 pending + 开窗（file source 不走 store_pending_temp，走通用 pending）
-        crate::compact_editor_commands::store_pending_file(item_id, text, path_str.to_string());
-        crate::compact_editor_window::create_compact_editor_window(&app, None);
+        crate::commands::compact_editor_commands::store_pending_file(item_id, text, path_str.to_string());
+        crate::commands::compact_editor_window::create_compact_editor_window(&app, None);
     }
     Ok(())
 }

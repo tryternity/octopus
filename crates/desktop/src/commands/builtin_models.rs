@@ -45,13 +45,13 @@ fn check_builtin_ready(source: &str, secret_key: &str) -> bool {
         return dir.exists();
     }
     // stat 快检：.verified.json 缓存命中 → 跳过 SHA256；未命中 → SHA256 + 写缓存
-    let mut cache = crate::model_commands::load_verified_cache(&dir);
+    let mut cache = crate::commands::model_commands::load_verified_cache(&dir);
     let all_ok = manifest
         .iter()
         .all(|(path, file)| {
-            crate::model_commands::check_file_with_cache(&dir, path, &file.sha256, &mut cache)
+            crate::commands::model_commands::check_file_with_cache(&dir, path, &file.sha256, &mut cache)
         });
-    crate::model_commands::save_verified_cache(&dir, &cache);
+    crate::commands::model_commands::save_verified_cache(&dir, &cache);
     all_ok
 }
 

@@ -364,7 +364,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             }
             "compact_editor" => {
                 info!("Tray: open compact editor (empty)");
-                crate::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
+                crate::commands::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
             }
             // ── 录屏项（2026-07-25）：仅 macOS，toggle 语义（与 ASR toggle 同模式）──
             // idle/starting → 弹配置浮窗（用户选源后开录）

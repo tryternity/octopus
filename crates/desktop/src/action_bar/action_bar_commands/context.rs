@@ -325,7 +325,7 @@ fn action_bar_show_result_internal(
     // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）。
     // 翻译 action 且有原文 → contrast 模式（左原文右译文）；其他 → single。
     let payload = if _action == "translate" && !_original_text.is_empty() {
-        crate::compact_editor_commands::TempTabPayload {
+        crate::commands::compact_editor_commands::TempTabPayload {
             text: display_text.clone(),
             mode: Some("contrast".into()),
             original_text: Some(_original_text),
@@ -333,7 +333,7 @@ fn action_bar_show_result_internal(
             ..Default::default() // translate_session_id=None（LLM 路径不走流式）；item_id/source/is_temp 由 open_temp_compact_editor 补齐
         }
     } else {
-        crate::compact_editor_commands::TempTabPayload {
+        crate::commands::compact_editor_commands::TempTabPayload {
             text: display_text,
             ..Default::default()
         }
@@ -341,7 +341,7 @@ fn action_bar_show_result_internal(
     // 投递主线程——create_compact_editor_window 内含 set_dock_icon 需主线程
     let app_for_editor = app.clone();
     let _ = app.run_on_main_thread(move || {
-        crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+        crate::commands::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
     });
 }
 

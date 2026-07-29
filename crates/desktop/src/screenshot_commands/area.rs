@@ -400,7 +400,7 @@ pub async fn ocr_screenshot(
             log::info!("[ocr-screenshot] main: open ocr text tab {}", ocr_id);
             tabs.push((ocr_id, None));
         }
-        crate::compact_editor_commands::open_compact_editor_tabs(&tabs, &ah);
+        crate::commands::compact_editor_commands::open_compact_editor_tabs(&tabs, &ah);
     });
 
     // emit OCR blocks（图片预览 mount 后 listen 到，或已 mount 则直接收到）。

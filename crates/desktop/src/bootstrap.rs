@@ -37,7 +37,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
     // 创建模型路径软链（HF cache → ~/.octopus/models/{source}/）
     // 必须在 sync_builtin_models_availability + preheat 之前——builtin 兜底引擎的
     // 文件可能只在 HF cache，软链建好后 resolve_model_dir 才能命中。
-    if let Err(e) = crate::model_migrate::create_model_symlinks() {
+    if let Err(e) = crate::commands::model_migrate::create_model_symlinks() {
         log::warn!("模型路径迁移失败（非致命）: {e:?}");
     }
 
@@ -45,7 +45,7 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
     // builtin 兜底引擎的 is_available 反映文件真实状态。ensure_builtin_seed 注入时
     // is_available=0，软链建好后文件就绪 → 置 1，否则 resolve_engine_any（要求
     // is_available=1）查不到 → ASR 报 Unknown engine。详见 spec 2026-07-22-builtin-models.md §3。
-    crate::builtin_models::sync_builtin_models_availability();
+    crate::commands::builtin_models::sync_builtin_models_availability();
 
     // Task 2 模型激活语义重构：启动时加载 4 域激活引擎到 ACTIVE_ENGINES 内存缓存。
     // 后续所有使用方（推理 / tray / 管理页 / 流式判定）经 resolve_active_engine(domain)
@@ -124,14 +124,14 @@ pub(crate) fn bootstrap() -> octopus_infra::config::AppConfig {
     // 读 ~/.octopus/.sync/prompts/polish/<content>.md 文件内容。失败 fallback id=1。
     let active_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     let prompt_content = match octopus_infra::db::load_prompt(active_id) {
-        Ok(Some(p)) => crate::settings_commands::read_prompt_file(&p.content),
+        Ok(Some(p)) => crate::commands::settings_commands::read_prompt_file(&p.content),
         Ok(None) => {
             log::warn!("active_polish_prompt id={} 不存在，fallback 到 id=1", active_id);
             let _ = octopus_infra::db::save_active_prompt_id(1);
             octopus_infra::db::load_prompt(1)
                 .ok()
                 .flatten()
-                .map(|p| crate::settings_commands::read_prompt_file(&p.content))
+                .map(|p| crate::commands::settings_commands::read_prompt_file(&p.content))
                 .unwrap_or_default()
         }
         Err(e) => {

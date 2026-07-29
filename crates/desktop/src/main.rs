@@ -28,8 +28,7 @@ mod config;
 #[macro_use]
 mod invoke_handler;
 mod clipboard;
-mod compact_editor_commands;
-mod compact_editor_window;
+mod commands;
 
 mod i18n;
 mod coordinator;
@@ -48,12 +47,7 @@ mod file_watcher;
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
-mod model_commands;
-mod model_migrate;
-mod builtin_models;
 mod download_window;
-mod search_commands;
-mod hotword_commands;
 mod pin_window;
 mod perf_log;
 mod pipeline;
@@ -89,19 +83,17 @@ mod record_control_window;
 #[cfg(target_os = "macos")]
 mod record_audio_probe;
 mod runtime_config;
-mod settings_commands;
 mod settings_window;
 mod onboarding_window;
-mod system_status_commands;
 mod shortcut;
 mod theme;
 mod tray;
 mod subtitle_polish;
 mod transcript;
-mod translation_commands;
 mod window_factory;
 mod window_position;
 
+use commands::compact_editor_window;
 use coordinator::Coordinator;
 use log::info;
 use tauri::Manager;

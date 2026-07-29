@@ -368,7 +368,7 @@ impl<'a> AppSetup<'a> {
         // Builtin 模型缺失检测（spec 2026-07-22-builtin-models.md §3）：
         // is_available 同步已在顶层 preheat 前完成（sync_builtin_models_availability）。
         // 此处仅检测缺失 → 弹下载窗（需要 self.app.handle，所以放 setup 钩子）。
-        let missing = crate::builtin_models::check_builtin_models_missing();
+        let missing = crate::commands::builtin_models::check_builtin_models_missing();
         if !missing.is_empty() {
             log::info!(
                 "[startup] builtin 模型缺失（{} 个），打开下载页: {:?}",
@@ -385,7 +385,7 @@ impl<'a> AppSetup<'a> {
         // 场景：全新库 db.sql seed 把 is_enabled 全设 0，用户没去设置页激活时，
         // 兜底引擎虽可用（resolve_active_engine runtime fallback）但 DB 显示未激活，
         // 且部分流程依赖 is_enabled=1（如 tray 引擎名显示）。激活后 DB 反映真实状态。
-        if let Err(e) = crate::builtin_models::auto_activate_fallback_asr() {
+        if let Err(e) = crate::commands::builtin_models::auto_activate_fallback_asr() {
             log::warn!("[startup] ASR 兜底引擎自动激活失败（不阻断启动）：{e}");
         }
 
@@ -463,8 +463,8 @@ impl<'a> AppSetup<'a> {
         // 必须在 preheat spawn 之前——set_probe 同步完成后，预加载模型的加载才会被探针捕获，
         // 否则启动预热的 ASR/VAD 可能抢在注入前加载而漏进 registry。
         {
-            let registry = Arc::new(crate::system_status_commands::ModelMemoryRegistry::new());
-            let sampler = Arc::new(crate::system_status_commands::SystemStatusSampler::new(registry));
+            let registry = Arc::new(crate::commands::system_status_commands::ModelMemoryRegistry::new());
+            let sampler = Arc::new(crate::commands::system_status_commands::SystemStatusSampler::new(registry));
             self.app.manage(sampler.clone());
             sampler.start(self.app.handle().clone());
         }

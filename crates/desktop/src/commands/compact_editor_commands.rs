@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::error_util::e2s;
 use tauri::{Emitter, Manager};
 
-use crate::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};
+use crate::commands::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};
 
 /// 窗口已存在时，向已 mount 的前端推送「打开/切换到某 tab」事件。
 #[derive(Clone, Serialize)]

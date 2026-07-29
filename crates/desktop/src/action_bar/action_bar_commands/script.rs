@@ -379,7 +379,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         // 解决发现 1（竞态）：payload 带 sessionId，前端按 sessionId 路由而非依赖
                         // translatingTabKeyRef 时序，spawn emit 早于 open-tab emit 也能正确路由。
                         let session_id = uuid::Uuid::new_v4().to_string();
-                        let payload = crate::compact_editor_commands::TempTabPayload {
+                        let payload = crate::commands::compact_editor_commands::TempTabPayload {
                             text: "【翻译】\n⏳ 正在翻译…".into(),
                             mode: Some("contrast".into()),
                             original_text: Some(original_text.clone()),
@@ -391,7 +391,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                         // 需主线程的 MainThreadMarker，worker 线程直接调会被跳过
                         let app_for_editor = app.clone();
                         let _ = app.run_on_main_thread(move || {
-                            crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+                            crate::commands::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
                         });
 
                         let app_clone = app.clone();
