@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette, AlertCircle } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import { isMac } from "@/lib/platform";
@@ -240,6 +240,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             {PERMISSIONS.map((def) => (
               <PermissionCard key={def.key} def={def} />
             ))}
+            {/* 升级提示（无证书签名 app 的 TCC 限制，放底部低调提示） */}
+            <div className="flex items-start gap-2 px-3 py-2 rounded-md border border-amber-600/40 bg-amber-600/5 text-xs text-amber-700 dark:text-amber-500 mt-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span className="flex-1 whitespace-normal">{t("onboarding.permissions.upgradeNote")}</span>
+            </div>
           </CardContent>
         </Card>
       )}
