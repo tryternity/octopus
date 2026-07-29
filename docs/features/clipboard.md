@@ -112,18 +112,16 @@ FTS5 trigram tokenizer，索引 `content` 列。voice/ocr/text 被搜索，image
 
 ### image_data 表
 
-图片 BLOB 存储：
+图片缩略图存储（原图存文件系统，2026-07-30 改造）：
 
 | 列 | 类型 | 说明 |
 |---|---|---|
-| `hash` | `TEXT PRIMARY KEY` | SHA-256 内容哈希 |
-| `blob` | `BLOB` | JPEG q85 编码的图片数据 |
-| `thumb` | `BLOB` | 240×240 缩略图 |
-| `image_type` | `TEXT` | 编码格式（jpeg/webp，默认 jpeg） |
+| `hash` | `TEXT PRIMARY KEY` | MD5(RGBA 像素)，去重键 + 文件名 |
+| `thumb` | `BLOB` | 240×240 缩略图（JPEG q5，几 KB） |
 | `width` / `height` | `INTEGER` | 原图尺寸 |
 | `created_at` | `TEXT` | 创建时间 |
 
-`clipboard_history.ref_data` 引用 `image_data.hash`；删除条目时引用计数为 0 才删 image_data 行（`cleanup_unreferenced_images`）。
+原图存文件系统 `~/Documents/octopus/screens/<hash>.jpg`（可配 `screen_output_dir`）。`clipboard_history.ref_data` = hash；删除条目时引用计数为 0 才删文件 + DB 行（`cleanup_unreferenced_images`）。
 
 ### 触发器
 
@@ -151,24 +149,24 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 
 ## 8. 图片存储
 
-`crates/clipboard/src/image.rs`——RGBA → PNG → SHA-256 去重 → JPEG q85 编码 → 缩略图。
+`crates/clipboard/src/image.rs`——RGBA → MD5 去重 → JPEG q100 原图存文件系统 + 缩略图 JPEG q5 存 DB。
+
+**存储架构**（2026-07-30 从 DB BLOB 改文件系统）：
+- **原图**：`~/Documents/octopus/screens/<hash>.jpg`（JPEG q100，可配 `screen_output_dir`）
+- **缩略图**：DB `image_data.thumb`（240×240 JPEG q5，几 KB，列表加载快）
+- **hash**：MD5(RGBA 像素) 或 MD5(PNG bytes)，作文件名天然去重
 
 **编码流程**：
 1. 从剪贴板读取 RGBA 像素
-2. `hash_rgba`：SHA-256 计算内容哈希（去重用）
-3. 去重：`find_by_content_hash` 命中则复用已有 image_data 行
-4. JPEG 编码（按 IMAGE_SAVE_QUALITY 配置链，默认 q85）
-5. 缩略图 240×240（Triangle 滤波降采样）
+2. `hash_rgba`：MD5 计算内容哈希（去重用，2026-07-29 SHA-256→MD5）
+3. 去重：`find_by_content_hash` 命中则复用已有文件 + DB 行
+4. JPEG 编码（按 IMAGE_SAVE_QUALITY 配置链，默认 q100）
+5. 缩略图 240×240（nearest-neighbor resize + q5 编码）
+6. 原图 `save_image_to_file` + 缩略图 `insert_image_data`（DB）
 
-**`encode_to_webp`**（函数名历史遗留，实际按 `IMAGE_SAVE_QUALITY` 配置链编码，默认 JPEG q85）接 `&DynamicImage`，复用调用方已解码的像素（watcher 从 RGBA 构造 DynamicImage；screenshot/migration 复用 `load_from_memory`）。
+`ImageMeta.size` 经文件大小 `fs::metadata` 算，供列表显示存储大小。
 
-**编码降级链**（`consts::IMAGE_SAVE_QUALITY` = `"jpeg:85"`，`;` 分割、`:` 解析格式与质量）：
-1. 正常尺寸先 lossless WebP
-2. 按序尝试首个成功（默认 jpeg:85）
-3. 超尺寸（>16383px，VP8 上限）跳过 lossless 直接进降级链
-4. 每次编码 `catch_unwind` 兜底防超大图 panic
-
-`ImageMeta.size` 经 `(SELECT length(blob) FROM image_data WHERE hash = blob_hash)` 子查询算（query_history / get_item_by_id / LIKE / FTS5 四处 SELECT 同步），供列表显示存储大小。
+**文件丢失处理**（2026-07-30）：原图文件可能被用户删除——`check_image_file_exists(id)` 检查存在性；复制/粘贴失败时前端设 `fileMissing=true`（缩略图变感叹号 + 红色"原图丢失"气泡 2s）；不自动删条目（保留 DB 记录）。
 
 ---
 
@@ -177,11 +175,11 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 `crates/clipboard/src/cleanup.rs`：
 
 - **按天数**（默认 30 天）+ **按数量**（默认 1000 条）删除非收藏记录
-- **孤立 blob 回收**：删除条目后引用计数为 0 的 image_data 行
+- **孤立图片回收**：删除条目后引用计数为 0 的图片文件 + image_data 行（`cleanup_unreferenced_images`：删文件 `delete_image_file` + DELETE DB 行）
 - **FTS5 索引重建**：仅在有删除/回收时 rebuild，避免定时清理无删除时无谓全表重建
 
 **接入定时调用**：
-- `main.rs` setup 启动时跑一次（image_migration 迁入旧图片后）
+- `setup.rs` 启动时跑一次
 - 后台线程每小时从 DB 重读 `clipboard_max_items` / `clipboard_max_age_days` 跑一次（让设置页「最大保留条数 / 自动清理天数」真正生效；用户运行时改限额 1 小时内自动生效）
 
 ## 9.1 软删（voice 内部机制，用户不可见）（2026-07-29 重构）
