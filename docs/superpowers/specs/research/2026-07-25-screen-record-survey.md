@@ -451,7 +451,7 @@ async fn record_stop(state: tauri::State<'_, Mutex<Recorder>>) -> Result<RecordR
    - crate 命名（record vs screen-record vs video-record）
    - 与 capx 的边界（截图永远 xcap？录屏永远 sck-rs？）
    - 是否预留 helper 进程架构（即便 MVP 用 A1，未来升级 D 时不推翻重来）
-3. 写 spec：`docs/superpowers/specs/2026-07-25-screen-record-design.md`
-4. 写 plan：`docs/superpowers/plans/2026-07-25-screen-record.md`
+3. 写 spec：`docs/superpowers/specs/archived/2026-07-25-screen-record-design.md`
+4. 写 plan：`docs/superpowers/plans/archived/2026-07-25-screen-record.md`
 
 本文档**仅是调研，不是 spec**，不触发"代码-文档同步"约束。但本文档基于真实源码勘读得出（4 个仓库的源码索引见第 7 节），可直接作为 spec 输入。

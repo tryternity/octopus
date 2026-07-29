@@ -111,7 +111,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 有界热词纠错（候选仅来自 HotwordIndex，命中即替换，消灭全词典过纠）+ 可配方言模糊规则 `FuzzyRules`（f/h、hu/wu、n/l、r/l，存 `app_config.fuzzy_dialect`） |
 | `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
-| `itn` | 数字 ITN（Inverse Text Normalization）：中文数字→阿拉伯数字（chinese2digits crate `take_number_from_string`，force_simplified=true）。解决 Zipformer/Moonshine/Whisper 输出「二零二六年七月二十六日」痛点。自带 ITN 引擎（Qwen3/SenseVoice/Paraformer）无中文数字→no-op。详见 [spec](superpowers/specs/2026-07-27-asr-itn-design.md) |
+| `itn` | 数字 ITN（Inverse Text Normalization）：中文数字→阿拉伯数字（chinese2digits crate `take_number_from_string`，force_simplified=true）。解决 Zipformer/Moonshine/Whisper 输出「二零二六年七月二十六日」痛点。自带 ITN 引擎（Qwen3/SenseVoice/Paraformer）无中文数字→no-op。详见 [spec](superpowers/specs/archived/2026-07-27-asr-itn-design.md) |
 | `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → **纠错 → ITN 数字归一化 → 简繁归一化**，2026-07-27 ITN 插在 corrector 后 hans 前；收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排 |
 | `streaming_engine` | 流式 ASR 引擎抽象：`StreamingSession`（Paraformer / ZipformerCtc / ZipformerTransducer 增量流式，`&self` + 内部 Mutex）；阶段2a impl `StreamingEngine` trait |
 | `streaming_runner` | 流式编排 helper（阶段2a 新增）：`StreamingRunner`（持 `Box<dyn StreamingEngine>` + VAD + 静音/标点状态）收编 VAD 静音检测 + 标点触发 + accept/flush/finish；`TranscriptEvent`（Partial/Committed/Final/Error）+ `StreamingEngine` trait（local `StreamingSession` impl，cloud 2c-2）。denoise/resample 不入（留 `audio.rs`，输入为已降噪 16k 样本） |
@@ -190,11 +190,11 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-ocr（OCR 图片识别 + 二维码识别）
 
-独立的 OCR crate，依赖 `octopus-infra` + `octopus-paddle-ocr`（vendor 自 paddle-ocr-rs，ONNX Runtime 推理后端）。封装 PaddleOCR pipeline（det→cls→rec）。支持 PP-OCRv5 + PP-OCRv6-small（DB config 按 model_name 选择）。**2026-07-27 加 OcrBackend trait 抽象**（`Box<dyn OcrBackend>`，PaddleOcrBackend + VLM 预留）+ **二维码识别**（`qrcode::scan`，zxing-cpp C++ FFI bundled，多码全识别，截图/图文编辑器就地白卡展示 + 单个复制/复制所有）。详见 [QR spec](superpowers/specs/2026-07-27-qrcode-scan-design.md) + [backend trait spec](superpowers/specs/2026-07-27-ocr-backend-trait-design.md)。
+独立的 OCR crate，依赖 `octopus-infra` + `octopus-paddle-ocr`（vendor 自 paddle-ocr-rs，ONNX Runtime 推理后端）。封装 PaddleOCR pipeline（det→cls→rec）。支持 PP-OCRv5 + PP-OCRv6-small（DB config 按 model_name 选择）。**2026-07-27 加 OcrBackend trait 抽象**（`Box<dyn OcrBackend>`，PaddleOcrBackend + VLM 预留）+ **二维码识别**（`qrcode::scan`，zxing-cpp C++ FFI bundled，多码全识别，截图/图文编辑器就地白卡展示 + 单个复制/复制所有）。详见 [QR spec](superpowers/specs/archived/2026-07-27-qrcode-scan-design.md) + [backend trait spec](superpowers/specs/archived/2026-07-27-ocr-backend-trait-design.md)。
 
 | 模块 | 职责 |
 |---|---|
-| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` / `recognize_with_blocks_from_image(&DynamicImage)` 公开 API。**2026-07-27 重构**：内部 `Mutex<Option<Box<dyn OcrBackend>>>`（原 `Mutex<Option<RapidOcr>>`），按 source_type 选后端（0/1=PaddleOcrBackend 现有 PP-OCRv6，2=VlmOcrBackend 后续预留）。`OcrBackend` trait（`backend.rs`）：`recognize` / `provides_layout`（VLM=true 跳过 to_markdown，PP-OCR=false 走全链）/ `unload` / `use_word_segmentation`（PP-OCRv5=true 走英文分词，v6=false 跳过）。`PaddleOcrBackend`（`paddle_backend.rs`）：从 engine.rs 搬入的 RapidOcr 构造+run 逻辑。desktop 调用零改动。idle 60s 释放调 `backend.unload()`，下次 `run_ocr` 自动重载并补 `probe(Before/After)`。详见 [spec](superpowers/specs/2026-07-27-ocr-backend-trait-design.md)。**超长图切分** + **OcrLockGuard** 全局并发互斥 + **后处理**（merge_same_line_blocks / segment_english_words 仅 PP-OCRv5 / to_markdown 布局感知）不变。 |
+| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` / `recognize_with_blocks_from_image(&DynamicImage)` 公开 API。**2026-07-27 重构**：内部 `Mutex<Option<Box<dyn OcrBackend>>>`（原 `Mutex<Option<RapidOcr>>`），按 source_type 选后端（0/1=PaddleOcrBackend 现有 PP-OCRv6，2=VlmOcrBackend 后续预留）。`OcrBackend` trait（`backend.rs`）：`recognize` / `provides_layout`（VLM=true 跳过 to_markdown，PP-OCR=false 走全链）/ `unload` / `use_word_segmentation`（PP-OCRv5=true 走英文分词，v6=false 跳过）。`PaddleOcrBackend`（`paddle_backend.rs`）：从 engine.rs 搬入的 RapidOcr 构造+run 逻辑。desktop 调用零改动。idle 60s 释放调 `backend.unload()`，下次 `run_ocr` 自动重载并补 `probe(Before/After)`。详见 [spec](superpowers/specs/archived/2026-07-27-ocr-backend-trait-design.md)。**超长图切分** + **OcrLockGuard** 全局并发互斥 + **后处理**（merge_same_line_blocks / segment_english_words 仅 PP-OCRv5 / to_markdown 布局感知）不变。 |
 | `layout` | **布局感知 Markdown 输出（2026-07-09）**：`to_markdown(blocks) -> String` 在 `run_ocr`（merge + segment）之后执行，替代原 `join("\n")`。消费 det 框几何信息输出结构化 Markdown：**标题**（框高 / median_h ≥1.6→H1 `#`，≥1.3→H2 `##`）；**列表**（文本前缀匹配 `•`/`-`/`①`/`1.`/`1、`/`1．`/`1）` 等标记，有序统一重编号 `1. 2. 3.`，连续列表项大间距（>median_h×0.8）时回车重编号）；**段落**（连续 Body 行垂直间隙 >median_h×0.8→新段落，段间 `\n\n`）；**多行正文**（同段 ≥2 行用 code fence ` ``` ` 包裹保留原始分行，不 reflow；内容含 ` ``` ` 时加长围栏 ` ```` ` 避免嵌套）；**单行正文**（直接输出）。常量起始值：`MIN_BLOCKS_FOR_LAYOUT=3`、`TITLE_H1_RATIO=1.6`、`TITLE_H2_RATIO=1.3`、`PARAGRAPH_GAP_RATIO=0.8`。块数 <3 不分析布局。`recognize` / `recognize_with_blocks` 返回 String 语义从扁平文本变为 Markdown，消费端（DB content / CompactEditor / AI 输入）零改动受益。前端 ImagePreview 叠加不受影响（blocks 仍是原始 det 框）。 |
 | `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.onnx + rec.onnx + keys.txt 三件套检测，cls.onnx 可选） |
 
@@ -603,7 +603,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-record（屏幕录制纯逻辑库，2026-07-25 新增）
 
-独立的屏幕录制核心库，仅依赖 `octopus-infra`。封装 macOS Swift helper 子进程的完整生命周期 + JSON-over-stdio 协议 + 元数据入库。完整设计见 [screen-record spec](superpowers/specs/2026-07-25-screen-record-design.md)。
+独立的屏幕录制核心库，仅依赖 `octopus-infra`。封装 macOS Swift helper 子进程的完整生命周期 + JSON-over-stdio 协议 + 元数据入库。完整设计见 [screen-record spec](superpowers/specs/archived/2026-07-25-screen-record-design.md)。
 
 | 模块 | 说明 |
 |------|------|
@@ -951,7 +951,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 
 ## 屏幕录制（2026-07-25 起，MVP）
 
-新引入 `crates/record/`（纯逻辑库，依赖 infra）+ desktop 内嵌命令层 + 前端 `pages/Settings/RecordingPanel.tsx` + macOS Swift helper 子进程。完整设计见 [screen-record spec](superpowers/specs/2026-07-25-screen-record-design.md)，实施计划见 [screen-record plan](superpowers/plans/2026-07-25-screen-record.md)。
+新引入 `crates/record/`（纯逻辑库，依赖 infra）+ desktop 内嵌命令层 + 前端 `pages/Settings/RecordingPanel.tsx` + macOS Swift helper 子进程。完整设计见 [screen-record spec](superpowers/specs/archived/2026-07-25-screen-record-design.md)，实施计划见 [screen-record plan](superpowers/plans/archived/2026-07-25-screen-record.md)。
 
 - **架构选型（D-Swift）**：macOS 端 vendor openscreen 项目的 ScreenCaptureKit helper 作为 sidecar 子进程。主进程（Rust）通过 `tokio::process::Command` spawn helper，通信走 JSON-over-stdio（argv[1]=RecordingRequest JSON，stdout=HelperEvent 流，stdin=命令字符串）。帧数据**不经过 IPC**——SCStream → AVAssetWriter 在 helper 内部闭环直接写文件。
 - **crates/record 结构**（schema v54，详见 spec §5）：

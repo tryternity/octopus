@@ -5,7 +5,7 @@
 **范围**：本文件汇总第二~第六十二轮代码审查修复（第一轮见关联文档，vault crate 16 模块审查收尾里程碑）。各轮次按发现顺序记录，含问题、修复、测试、文档化决策。
 **关联**：
 - [vault-sync-code-review-fixes](./archived/2026-07-24-vault-sync-code-review-fixes.md)（第一轮，已归档）
-- [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
+- [safeurl-newtype-design](./archived/2026-07-26-safeurl-newtype-design.md)（第五十五轮起的 PAT 结构性根治方向）
 - [vault-tombstone-design](./2026-07-26-vault-tombstone-design.md)（**已废弃 2026-07-28**，改由 [is_deleted + updated_at merge](./2026-07-27-vault-sync-is-deleted-merge.md) 统一解决）
 
 ## 背景
@@ -1407,7 +1407,7 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 
 ### 已知局限（文档化，未修）
 
-- **OBS-CLONE-URL-STORES-PAT-IN-CONFIG**：本轮修了下游流出 redact，未修上游「PAT 写入 .git/config」。彻底根治需 add_remote 拒绝 PAT url——产品决策，见 [safeurl-newtype-design](./2026-07-26-safeurl-newtype-design.md) §不解决问题。
+- **OBS-CLONE-URL-STORES-PAT-IN-CONFIG**：本轮修了下游流出 redact，未修上游「PAT 写入 .git/config」。彻底根治需 add_remote 拒绝 PAT url——产品决策，见 [safeurl-newtype-design](./archived/2026-07-26-safeurl-newtype-design.md) §不解决问题。
 - **helper 不防漏调**：未来新增第 3 个 remotes 流出点若忘调 helper → 第八次外溢。当前架构无法防——编译期 newtype 才能完全防（见 safeurl-newtype-design spec）。
 
 ---
@@ -1454,7 +1454,7 @@ vault 安全心脏（crypto 五文件 + unlock + migrate）密码学正确性确
 
 第五十五轮起，用户拍板两个架构改进方向，spec + plan 已写：
 
-1. **SafeUrl newtype（PAT 结构性根治）** — [spec](./2026-07-26-safeurl-newtype-design.md) + [plan](../plans/2026-07-26-safeurl-newtype.md)
+1. **SafeUrl newtype（PAT 结构性根治）** — [spec](./archived/2026-07-26-safeurl-newtype-design.md) + [plan](../plans/archived/2026-07-26-safeurl-newtype.md)
    - 动机：六轮 PAT 外溢证伪点状修复可收敛
    - 设计：SafeUrl(String) newtype + redact_url 唯一构造器，编译期杜绝非已 redact 的 url 流出 crate 边界
 
