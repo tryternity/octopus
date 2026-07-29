@@ -32,6 +32,28 @@ pub fn recordings_dir() -> PathBuf {
     }
 }
 
+// ── 截图 / 剪贴板图片 ──────────────────────────────────────────────
+
+/// 图片文件存储目录：读 DB `screen_output_dir` 配置（绝对路径，支持 `~` 展开）。
+/// 空/未配置时 fallback `~/Documents/octopus/screens/`。
+/// 不存在时由调用方在写入前创建（mkdir -p）。
+pub fn screens_dir() -> PathBuf {
+    let configured = crate::db::load_config_key("screen_output_dir")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty());
+    match configured {
+        Some(dir) => expand_tilde(&dir),
+        None => expand_tilde("~/Documents/octopus/screens"),
+    }
+}
+
+/// 图片文件完整路径：`<screens_dir>/<hash>.jpg`。
+/// hash 作为文件名天然去重（同图复用同一文件）。
+pub fn image_file_path(hash: &str) -> PathBuf {
+    screens_dir().join(format!("{}.jpg", hash))
+}
+
 /// 展开 `~` 为 $HOME（macOS/Linux）。已是绝对路径则原样返回。
 /// 不引入 shellexpand 依赖——手动展开足够（录屏 macOS-only）。
 fn expand_tilde(path: &str) -> PathBuf {

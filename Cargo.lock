@@ -5139,12 +5139,12 @@ dependencies = [
  "clipboard-rs",
  "image",
  "log",
+ "md5",
  "octopus-infra",
  "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "webp",
 ]
 

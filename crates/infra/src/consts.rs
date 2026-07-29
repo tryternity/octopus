@@ -31,12 +31,12 @@ pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 /// | WebP q80      | 483ms   | 997KB   | 体积小但慢            |
 /// | JPEG q85      | 56ms    | 1888KB  | **8.6x 加速** ✅ 推荐 |
 ///
-/// 改 JPEG q85 单条：JPEG 编码不会失败（除非图像 >65500px，那种情况 app 整体已异常），
-/// 多格式降级链是历史遗留（防 webp panic）。截图/剪贴板历史场景对画质要求够用，
-/// 体积翻倍可接受（每图 2MB vs 1MB），换 8-10x 加速。
+/// 改 JPEG q100 单条：JPEG 编码不会失败（除非图像 >65500px，那种情况 app 整体已异常），
+/// 多格式降级链是历史遗留（防 webp panic）。截图/剪贴板历史场景改文件系统存储后
+/// 对画质要求提高，q100 视觉无损（2026-07-30 从 q85 升级）。
 /// 想换回有损 WebP 或加 fallback，改本常量即可（如 `"webp:80;jpeg:85"`）。
-pub const IMAGE_SAVE_QUALITY: &str = "jpeg:85";
+pub const IMAGE_SAVE_QUALITY: &str = "jpeg:100";
 
 /// 缩略图编码格式链：240×240 nearest resize 后的输出格式。
-/// q10 极轻质量（thumb 仅作列表预览，不要求细节）；240×240 这么小，q10 vs q85 肉眼几乎无差。
-pub const THUMB_SAVE_QUALITY: &str = "jpeg:10";
+/// q5 极轻质量（thumb 仅作列表预览，不要求细节）；240×240 这么小，q5 vs q85 肉眼几乎无差。
+pub const THUMB_SAVE_QUALITY: &str = "jpeg:5";

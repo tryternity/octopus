@@ -433,21 +433,22 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
 
 // ── image_data CRUD ──
 
+/// 存储图片：原图写文件系统（`<screens_dir>/<hash>.jpg`）+ 缩略图存 DB。
+/// 签名保持 image_blob 参数（调用方不变），内部改写文件。
 pub fn insert_image_data(conn: &Connection, hash: &str, image_blob: &[u8], thumb_blob: &[u8], width: i64, height: i64) -> Result<()> {
+    // 1. 原图写文件系统
+    crate::image::save_image_to_file(hash, image_blob)?;
+    // 2. 缩略图 + 尺寸存 DB（无 blob/image_type 列）
     conn.execute(
-        "INSERT OR REPLACE INTO image_data (hash, blob, thumb, image_type, width, height, created_at) VALUES (?, ?, ?, 'webp', ?, ?, ?)",
-        params![hash, image_blob, thumb_blob, width, height, iso_now()],
+        "INSERT OR REPLACE INTO image_data (hash, thumb, width, height, created_at) VALUES (?, ?, ?, ?, ?)",
+        params![hash, thumb_blob, width, height, iso_now()],
     )?;
     Ok(())
 }
 
-pub fn get_image_blob(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>> {
-    let mut stmt = conn.prepare("SELECT blob FROM image_data WHERE hash = ?")?;
-    match stmt.query_row(params![hash], |r| r.get::<_, Vec<u8>>(0)) {
-        Ok(blob) => Ok(Some(blob)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+/// 读原图（从文件系统）。签名不变（调用方零改），内部从 fs::read 读。
+pub fn get_image_blob(_conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>> {
+    crate::image::read_image_file(hash)
 }
 
 pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>> {
@@ -459,20 +460,37 @@ pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>>
     }
 }
 
+/// 清理无引用的图片：DB 查无引用 hash → 删文件 + 删 DB 行。
 pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
-    let deleted = conn.execute(
-        "DELETE FROM image_data WHERE hash NOT IN (SELECT DISTINCT ref_data FROM clipboard_history WHERE item_type = 'image' AND ref_data IS NOT NULL)",
-        [],
+    // 查无引用的 hash（clipboard_history 无对应 image 行的）
+    let mut stmt = conn.prepare(
+        "SELECT hash FROM image_data WHERE hash NOT IN (
+            SELECT DISTINCT ref_data FROM clipboard_history
+            WHERE item_type = 'image' AND ref_data IS NOT NULL
+        )",
     )?;
+    let orphan_hashes: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    let mut deleted = 0;
+    for hash in &orphan_hashes {
+        crate::image::delete_image_file(hash);
+        conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash])?;
+        deleted += 1;
+    }
     Ok(deleted)
 }
 
+/// 单条图片删除：引用计数归零时删文件 + DB 行。
 fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM clipboard_history WHERE ref_data = ? AND item_type = 'image'",
         params![hash], |r| r.get(0),
     ).unwrap_or(0);
     if count == 0 {
+        crate::image::delete_image_file(hash);
         let _ = conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash]);
     }
 }

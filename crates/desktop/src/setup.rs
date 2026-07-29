@@ -105,19 +105,16 @@ impl<'a> AppSetup<'a> {
             Err(e) => log::warn!("[hotword] 启动装载失败，纠错以空热词运行: {}", e),
         }
 
-        // 迁移旧文件系统图片到 DB BLOB
-        crate::image_migration::migrate_images_to_db();
-
         self.clipboard_handle = Some(clipboard_handle);
         Ok(())
     }
 
     /// 启动时按配置执行自动清理（剪贴板超期/超量非收藏 + 录屏孤儿）。
     fn init_cleanup(&self) {
-        // 启动时按配置执行自动清理（删除超期/超量非收藏记录 + 回收孤立 BLOB）。
+        // 启动时按配置执行自动清理（删除超期/超量非收藏记录 + 回收孤立图片文件 + DB 行）。
         // clipboard_max_items / clipboard_max_age_days 此前是无处调用的摆设；
         // 此处接入让设置页"最大保留条数 / 自动清理天数"真正生效。
-        // image_migration 已先迁入旧图片；run_cleanup 在有删除时内部重建 FTS。
+        // run_cleanup 在有删除时内部重建 FTS。
         {
             let max_age = self.config.clipboard_max_age_days as u32;
             let max_items = self.config.clipboard_max_items as u32;
