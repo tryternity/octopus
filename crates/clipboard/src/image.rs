@@ -222,10 +222,10 @@ mod tests {
         assert_eq!(chain.len(), 1);
         assert!(matches!(chain[0], EncodeAttempt::Jpeg(100)));
 
-        // thumb 链（默认 jpeg:10）
+        // thumb 链（默认 jpeg:5）
         let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
         assert_eq!(thumb_chain.len(), 1);
-        assert!(matches!(thumb_chain[0], EncodeAttempt::Jpeg(10)));
+        assert!(matches!(thumb_chain[0], EncodeAttempt::Jpeg(5)));
 
         // 容错：空白容忍、未知格式跳过、质量非数字跳过
         assert_eq!(parse_image_fallbacks(" webp : 70 ; png:90 ; jpeg:60 ; bad").len(), 2);

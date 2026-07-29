@@ -38,5 +38,5 @@ pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 pub const IMAGE_SAVE_QUALITY: &str = "jpeg:100";
 
 /// 缩略图编码格式链：240×240 nearest resize 后的输出格式。
-/// q10 极轻质量（thumb 仅作列表预览，不要求细节）；240×240 这么小，q10 vs q85 肉眼几乎无差。
-pub const THUMB_SAVE_QUALITY: &str = "jpeg:10";
+/// q5 极轻质量（thumb 仅作列表预览，不要求细节）；240×240 这么小，q5 vs q85 肉眼几乎无差。
+pub const THUMB_SAVE_QUALITY: &str = "jpeg:5";
