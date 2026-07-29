@@ -2,11 +2,17 @@
 //!
 //! 结构体模式：AppSetup 持有 app 引用 + config + 子任务间共享状态，
 //! 每个子任务段是一个方法，run() 串联调用。
+//!
+//! 第三步（2026-07-29）把原 setup_all 587 行按 12 段注释分节抽成 12 个 `&mut self` 方法，
+//! setup_all 变成 ~15 行串联调用。跨段共享变量提升为 Option 字段（&self → &mut self）。
 
 use std::sync::Arc;
 use log::info;
 use tauri::{Emitter, Listener, Manager};
 use octopus_infra::config::AppConfig;
+
+#[cfg(not(feature = "cloud"))]
+use crate::engine_embedded::EmbeddedEngine;
 
 /// 应用 setup 初始化器——把原 setup 闭包的 587 行逻辑按职责分段。
 ///
@@ -14,15 +20,42 @@ use octopus_infra::config::AppConfig;
 pub(crate) struct AppSetup<'a> {
     app: &'a tauri::App,
     config: &'a AppConfig,
+    /// 跨段共享：init_clipboard 创建（manage 到 State），init_input watcher/worker 复用。
+    clipboard_handle: Option<Arc<octopus_clipboard::ClipboardHandle>>,
+    /// 跨段共享：init_engine 创建（manage 到 State），init_coordinator build_local_engine / DispatchEngine 复用。
+    engine_manager: Option<Arc<octopus_asr_local::engine::AsrEngineManager>>,
 }
 
 impl<'a> AppSetup<'a> {
     pub(crate) fn run(app: &'a tauri::App, config: &'a AppConfig) -> Result<(), Box<dyn std::error::Error>> {
-        let setup = AppSetup { app, config };
+        let mut setup = AppSetup {
+            app,
+            config,
+            clipboard_handle: None,
+            engine_manager: None,
+        };
         setup.setup_all()
     }
 
-    fn setup_all(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn setup_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.init_clipboard()?;
+        self.init_cleanup();
+        self.init_scheduler();
+        self.init_watchers();
+        self.init_input();
+        self.create_windows();
+        self.init_engine()?;
+        self.init_vault();
+        self.init_coordinator();
+        self.init_tray();
+        self.create_result_window();
+        self.register_shortcuts();
+        Ok(())
+    }
+
+    /// onboarding 引导页 + clipboard_handle 创建/管理 + 方言/热词装载 + 图片迁移。
+    /// 填充 `clipboard_handle` 字段（后续 init_input 消费）。
+    fn init_clipboard(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // 首次启动检测：onboarding_completed == false → 弹权限引导页。
         // 引导页内用户逐一授权 3 个权限（麦克风/辅助功能/屏幕录制），点「完成」后
         // complete_onboarding 命令写 flag + 关窗。非首次启动跳过。
@@ -34,47 +67,53 @@ impl<'a> AppSetup<'a> {
             log::info!("[startup] 首次启动，打开权限引导页");
             crate::onboarding_window::open_onboarding(self.app.handle());
         }
-        
+
         // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
         let clipboard_handle = Arc::new(
             octopus_clipboard::ClipboardHandle::new()
                 .map_err(|e| format!("Failed to init clipboard handle: {e}"))?,
         );
         self.app.manage(clipboard_handle.clone());
-        
+
         // 启动时把 DB 的 clipboard_enabled 同步到运行时 flag。
         // ClipboardHandle::new() 默认 recording_enabled = true，而运行时改开关走的是
         // set_config 热重载——若不在此补一次性同步，用户关掉「剪贴板监听」并重启后，
         // watcher 又恢复录制（flag 回 true），但 DB 仍是 false，设置形同虚设。
         clipboard_handle.set_recording_enabled(self.config.clipboard_enabled);
-        
+
         // 确保 extensions 目录存在
         let ext_dir = crate::extensions::extensions_dir();
         if !ext_dir.exists() {
             let _ = std::fs::create_dir_all(&ext_dir);
         }
-        
+
         // 2026-07-21 perf：移除启动时无条件 rebuild FTS5 索引。
         // 原代码每次冷启动都跑 `INSERT INTO clipboard_history_fts VALUES('rebuild')`，
         // 在 10MB DB 上耗时 50-200ms。但触发器（clip_fts_ai/ad/au）在事务内执行，
         // 事务原子性保证 FTS 与主表一致——除非 DB 文件物理损坏，rebuild 也救不回来。
         // cleanup.rs 删除行时仍会条件 rebuild（`if deleted > 0 || reclaimed > 0`），
         // 首次启动的 populate 由 schema 初始化时的种子数据触发器自动处理。
-        
+
         // 启动时应用方言模糊规则（须先于热词装载：规则影响索引 key 归一化，
         // 先 set rules 再 reload_hotwords 建索引，最终索引用新规则）。
         octopus_asr_local::corrector::reload_fuzzy_dialect(&self.config.fuzzy_dialect);
-        
+
         // 启动时装载 active 热词到 corrector（force init + reload 索引）。
         // 之后所有引擎纠错自动用上热词（候选有界，空热词即 no-op 零过纠）。
         match octopus_asr_local::db::list_active_hotword_words() {
             Ok(words) => octopus_asr_local::corrector::reload_hotwords(words),
             Err(e) => log::warn!("[hotword] 启动装载失败，纠错以空热词运行: {}", e),
         }
-        
+
         // 迁移旧文件系统图片到 DB BLOB
         crate::image_migration::migrate_images_to_db();
-        
+
+        self.clipboard_handle = Some(clipboard_handle);
+        Ok(())
+    }
+
+    /// 启动时按配置执行自动清理（剪贴板超期/超量非收藏 + 录屏孤儿）。
+    fn init_cleanup(&self) {
         // 启动时按配置执行自动清理（删除超期/超量非收藏记录 + 回收孤立 BLOB）。
         // clipboard_max_items / clipboard_max_age_days 此前是无处调用的摆设；
         // 此处接入让设置页"最大保留条数 / 自动清理天数"真正生效。
@@ -88,20 +127,24 @@ impl<'a> AppSetup<'a> {
                 log::warn!("Startup clipboard cleanup failed: {}", e);
             }
         }
-        
+
         // 录屏孤儿清理（2026-07-25 screen record MVP，Task 11）：
         // 上次 crash / kill 残留的 .mp4 没入库，启动时扫 recordings/ 删掉。
         // 仅 macOS 编译（record crate 暂只 mac provider）。
         #[cfg(target_os = "macos")]
         {
             if let Err(e) = octopus_infra::db::with_db(|conn| {
-                crate::cleanup_orphan_recordings(conn);
+                cleanup_orphan_recordings(conn);
                 Ok::<_, anyhow::Error>(())
             }) {
                 log::warn!("Startup orphan recording cleanup failed: {}", e);
             }
         }
-        
+    }
+
+    /// 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
+    /// 统一管所有剪贴板定时清理 + vault 自动同步。
+    fn init_scheduler(&self) {
         // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
         // 统一管所有剪贴板定时清理（2026-07-22 合并了原每小时固定线程）。
         //
@@ -155,15 +198,18 @@ impl<'a> AppSetup<'a> {
             }));
             scheduler.spawn();
         }
-        
+    }
+
+    /// app/prompt 文件监听 + 应用索引后台校准 + 命令索引 LLM 关键字生成。
+    fn init_watchers(&self) {
         // 启动 notify-rs 文件监听：app 目录变化时秒级刷新索引。
         // macOS FSEvents 对 /System 等非用户目录可能漏事件——下面的轮询作为 fallback。
         crate::file_watcher::start_app_watcher();
-        
+
         // 启动 prompt 文件监听：~/.octopus/.sync/prompts/ 下文件外部变化时
         // emit compact-editor://file-changed，CompactEditor 自动 reload 或提示冲突。
         crate::file_watcher::start_prompt_file_watcher(self.app.handle().clone());
-        
+
         // 应用索引后台自动刷新（mtime 轮询）：用户装卸应用后无需重启即可搜到。
         // 启动后延迟 30s（避开 ASR 预热等重活），之后每 10 分钟检测 /Applications 等
         // 目录 mtime，变化时才触发全量重扫（扫盘耗时数秒，仅在真实变化时发生）。
@@ -179,10 +225,10 @@ impl<'a> AppSetup<'a> {
             let count_apps = || -> usize {
                 let mut total = 0;
                 for dir in &watch_dirs {
-                    total += crate::count_apps_in_dir(std::path::Path::new(dir), 0);
+                    total += count_apps_in_dir(std::path::Path::new(dir), 0);
                 }
                 if let Some(ref home) = home_apps {
-                    total += crate::count_apps_in_dir(home, 0);
+                    total += count_apps_in_dir(home, 0);
                 }
                 total
             };
@@ -209,7 +255,7 @@ impl<'a> AppSetup<'a> {
                 }
             }
         });
-        
+
         // 命令索引后台 LLM 关键字生成（独立 OS 线程，blocking HTTP 不阻塞 main）。
         // 扫描 PATH 产生的命令只有英文 description（whatis/brew desc），中文用户搜不到——
         // 这里逐个调 LLM 生成中英文关键字，写回 DB 缓存 + 内存索引。增量：每生成一条立即落盘，
@@ -261,19 +307,25 @@ impl<'a> AppSetup<'a> {
                 std::thread::sleep(std::time::Duration::from_secs(30)); // 轮间隔
             }
         });
-        
+    }
+
+    /// focus_tracker + AX watcher + clipboard 队列 worker。
+    /// 消费 `clipboard_handle` 字段（init_clipboard 填充）。
+    fn init_input(&mut self) {
         // Start focus tracker (macOS no-op, Windows/Linux TODO)
         let focus_tracker = std::sync::Arc::new(crate::focus_tracker::FocusTracker::new());
         if let Err(e) = focus_tracker.start() {
             log::warn!("Focus tracker not available: {}", e);
         }
         self.app.manage(focus_tracker);
-        
+
         // Start clipboard watcher (background thread, clipboard-rs)
         {
             let app_handle_for_watcher = self.app.handle().clone();
-            let watcher_handle = clipboard_handle.clone();
-        
+            let clipboard_handle = self.clipboard_handle.clone().expect(
+                "init_clipboard must run before init_input (clipboard_handle not set)"
+            );
+
             // 启动后台 worker：watcher 回调只 enqueue（<1μs），编码/入库在 worker 异步做。
             // 避免 watcher 线程被 WebP 编码 + DB 写阻塞（连续复制时延迟入库）。
             let emit_handle = app_handle_for_watcher.clone();
@@ -283,8 +335,8 @@ impl<'a> AppSetup<'a> {
                     let _ = emit_handle.emit("clipboard://changed", ());
                 }),
             );
-        
-            match octopus_clipboard::ClipboardWatcher::start(watcher_handle, move || {
+
+            match octopus_clipboard::ClipboardWatcher::start(clipboard_handle.clone(), move || {
                 // 旧代码：直接在 watcher 线程同步处理（阻塞）
                 // octopus_clipboard::watcher::handle_clipboard_change(...);
                 // let _ = app_handle_for_watcher.emit("clipboard://changed", ());
@@ -298,21 +350,24 @@ impl<'a> AppSetup<'a> {
                 Err(e) => log::error!("Failed to start clipboard watcher: {}", e),
             }
         }
-        
+
         // Register clipboard window global shortcut (from config)
         if !self.config.clipboard_shortcut.is_empty() {
             if let Err(e) = crate::clipboard_window::register_clipboard_shortcut(self.app.handle(), &self.config.clipboard_shortcut) {
                 log::error!("Failed to register clipboard shortcut: {}", e);
             }
         }
-        
+
         // Register screenshot global shortcut (from config)
         if !self.config.screenshot_shortcut.is_empty() {
             if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(self.app.handle(), &self.config.screenshot_shortcut) {
                 log::error!("Failed to register screenshot shortcut: {}", e);
             }
         }
-        
+    }
+
+    /// download/action_bar/overlay 窗口 + builtin 模型缺失检测 + 兜底引擎自动激活 + 录屏快捷键。
+    fn create_windows(&self) {
         // Builtin 模型缺失检测（spec 2026-07-22-builtin-models.md §3）：
         // is_available 同步已在顶层 preheat 前完成（sync_builtin_models_availability）。
         // 此处仅检测缺失 → 弹下载窗（需要 self.app.handle，所以放 setup 钩子）。
@@ -327,7 +382,7 @@ impl<'a> AppSetup<'a> {
         } else {
             log::info!("[startup] builtin 模型全部就绪");
         }
-        
+
         // ASR 兜底引擎自动激活（2026-07-28）：ASR 域无激活模型（is_enabled=1）
         // + zipformer-small 文件就绪（is_available=1）→ 自动激活。
         // 场景：全新库 db.sql seed 把 is_enabled 全设 0，用户没去设置页激活时，
@@ -336,7 +391,7 @@ impl<'a> AppSetup<'a> {
         if let Err(e) = crate::builtin_models::auto_activate_fallback_asr() {
             log::warn!("[startup] ASR 兜底引擎自动激活失败（不阻断启动）：{e}");
         }
-        
+
         // Create + register action bar window (AI command palette)
         crate::action_bar_window::create_action_bar_window(self.app.handle());
         crate::overlay_window::create_overlay_window(self.app.handle());
@@ -361,7 +416,7 @@ impl<'a> AppSetup<'a> {
                 log::error!("Failed to register action bar shortcut: {}", e);
             }
         }
-        
+
         // vault Auto-Type 热键（默认 Cmd+Shift+L）—— Task 19
         // follow-up #10: vault feature gate——feature off 时整段跳过（命令模块不存在）。
         #[cfg(feature = "vault")]
@@ -374,24 +429,28 @@ impl<'a> AppSetup<'a> {
                     log::warn!("注册 vault autotype 热键失败: {}", e);
                 }
             }
-        
+
             // 密码生成器不再注册全局热键——已改为 CipherEditor 内嵌按钮。
             // AppConfig.vault_generator_shortcut 字段保留仅为兼容旧 DB，不再消费。
         }
-        
+    }
+
+    /// ASR 引擎管理器创建 + 激活引擎解析 + preheat 预热 + SystemStatusSampler 注入。
+    /// 填充 `engine_manager` 字段（后续 init_coordinator 消费）。
+    fn init_engine(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Initialize engine manager
         let engine_manager = Arc::new(octopus_asr_local::engine::AsrEngineManager::new());
-        
+
         // 一次性解析激活 ASR 引擎 → ResolvedEngine，用于 preheat 判定。
         let resolved_engine = octopus_asr_local::config::resolve_active_engine("asr");
-        
+
         // 云引擎判定（仅用于 preheat 守卫）：启动时激活引擎为 Aliyun → 跳过本地预热。
         // 运行时引擎路由由 DispatchEngine 按 spec 动态分发，不依赖此判定。
         #[cfg(feature = "cloud")]
         let is_cloud_aliyun = resolved_engine.as_ref()
             .map(|r| r.as_engine_category() == Some(octopus_asr_local::config::EngineCategory::Aliyun))
             .unwrap_or(false);
-        
+
         // Preheat 仅本地 embedded 离线引擎：
         // - 云引擎 AliyunEngine 无需本地预热（跳过避免 switch_model 对 aliyun bail）；
         // - 流式引擎（is_streaming）走 StreamingSessionManager，录制时不经过离线 AsrEngineManager，
@@ -402,7 +461,7 @@ impl<'a> AppSetup<'a> {
             && !crate::config::is_streaming_engine();
         #[cfg(feature = "cloud")]
         let do_preheat = do_preheat && !is_cloud_aliyun;
-        
+
         // 系统状态页：创建 registry + sampler，manage 为 State，启动采样循环 + 注入模型 probe。
         // 必须在 preheat spawn 之前——set_probe 同步完成后，预加载模型的加载才会被探针捕获，
         // 否则启动预热的 ASR/VAD 可能抢在注入前加载而漏进 registry。
@@ -412,7 +471,7 @@ impl<'a> AppSetup<'a> {
             self.app.manage(sampler.clone());
             sampler.start(self.app.handle().clone());
         }
-        
+
         if do_preheat {
             let resolved_model = match &resolved_engine {
                 Ok(r) => r.name.clone(),
@@ -437,51 +496,14 @@ impl<'a> AppSetup<'a> {
                 }
             });
         }
-        
-        // Create engine —— aliyun feature 下用 DispatchEngine（持有本地 + 云端两个实例，
-        // 每次 transcribe 按 spec 动态路由），解决运行时切换云/本地引擎不匹配的问题。
-        // 非 aliyun feature 仅本地引擎（embedded/websocket/grpc）。
-        let engine: Arc<dyn crate::engine::TranscriptionEngine> = {
-            #[cfg(feature = "cloud")]
-            {
-                Arc::new(crate::engine_dispatch::DispatchEngine::new(engine_manager.clone()))
-            }
-            #[cfg(not(feature = "cloud"))]
-            {
-                crate::build_local_engine(&self.config, &engine_manager)
-            }
-        };
-        
-        // 暴露 engine_manager 为 State（审查 三2）：switch_asr_engine / set_config 切引擎时
-        // 后台 switch_model 预热需要它。DispatchEngine 持有的是 clone，此处再 clone 托管。
-        self.app.manage(engine_manager.clone());
-        
-        // 流式引擎复用 manager（②）：desktop 录音 reset() 复用常驻 StreamingSession，
-        // 避免每次录音重载 ONNX Session。对齐离线 engine_manager 的注入方式。
-        let streaming_manager = Arc::new(
-            octopus_asr_local::streaming_engine::StreamingSessionManager::new(),
-        );
-        self.app.manage(streaming_manager);
-        
-        // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
-        let audio_state = match crate::audio::AudioRecorder::new(&self.config.microphone) {
-            Ok(mut recorder) => {
-                if let Err(e) = recorder.open() {
-                    log::error!("Failed to open audio device '{}': {}. Audio input will be silent.", self.config.microphone, e);
-                }
-                recorder.shared()
-            }
-            Err(e) => {
-                log::error!("Failed to initialize AudioRecorder: {}. Audio input will be silent.", e);
-                std::sync::Arc::new(crate::audio::SharedAudioState::new(&self.config.microphone))
-            }
-        };
-        
-        // 运行时共享配置——唯一真相源（Arc<RwLock<AppConfig>>）
-        let runtime_config: crate::runtime_config::SharedRuntimeConfig =
-            std::sync::Arc::new(parking_lot::RwLock::new(self.config.clone()));
-        self.app.manage(runtime_config.clone());
-        
+
+        self.engine_manager = Some(engine_manager);
+        Ok(())
+    }
+
+    /// vault session 创建（SharedVaultSession + app_key bootstrap + 全局 session 注入）。
+    /// vault_session 为方法内局部变量（set_global_session move 消费后不再跨段使用）。
+    fn init_vault(&self) {
         // vault AppState：进程内持有解锁态的 user_vault_key / app_key。
         // 先 bootstrap_app_key（用 K_machine 尝试解 app_key）再 manage——
         // 这样从 Tauri State 取到 session 时 app_key 已就位（若本机已初始化）。
@@ -507,7 +529,58 @@ impl<'a> AppSetup<'a> {
             // 解密 v1: 前缀的 secret_key。
             crate::vault_state::set_global_session(vault_session);
         }
-        
+    }
+
+    /// 运行时配置 + Coordinator + RecordSession + 录屏窗口 + stop-requested listener。
+    /// 消费 `engine_manager` 字段（init_engine 填充）；runtime_config / vault_session 为局部变量。
+    fn init_coordinator(&mut self) {
+        // Create engine —— aliyun feature 下用 DispatchEngine（持有本地 + 云端两个实例，
+        // 每次 transcribe 按 spec 动态路由），解决运行时切换云/本地引擎不匹配的问题。
+        // 非 aliyun feature 仅本地引擎（embedded/websocket/grpc）。
+        let engine_manager = self.engine_manager.clone().expect(
+            "init_engine must run before init_coordinator (engine_manager not set)"
+        );
+        let engine: Arc<dyn crate::engine::TranscriptionEngine> = {
+            #[cfg(feature = "cloud")]
+            {
+                Arc::new(crate::engine_dispatch::DispatchEngine::new(engine_manager.clone()))
+            }
+            #[cfg(not(feature = "cloud"))]
+            {
+                build_local_engine(&self.config, &engine_manager)
+            }
+        };
+
+        // 暴露 engine_manager 为 State（审查 三2）：switch_asr_engine / set_config 切引擎时
+        // 后台 switch_model 预热需要它。DispatchEngine 持有的是 clone，此处再 clone 托管。
+        self.app.manage(engine_manager);
+
+        // 流式引擎复用 manager（②）：desktop 录音 reset() 复用常驻 StreamingSession，
+        // 避免每次录音重载 ONNX Session。对齐离线 engine_manager 的注入方式。
+        let streaming_manager = Arc::new(
+            octopus_asr_local::streaming_engine::StreamingSessionManager::new(),
+        );
+        self.app.manage(streaming_manager);
+
+        // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
+        let audio_state = match crate::audio::AudioRecorder::new(&self.config.microphone) {
+            Ok(mut recorder) => {
+                if let Err(e) = recorder.open() {
+                    log::error!("Failed to open audio device '{}': {}. Audio input will be silent.", self.config.microphone, e);
+                }
+                recorder.shared()
+            }
+            Err(e) => {
+                log::error!("Failed to initialize AudioRecorder: {}. Audio input will be silent.", e);
+                std::sync::Arc::new(crate::audio::SharedAudioState::new(&self.config.microphone))
+            }
+        };
+
+        // 运行时共享配置——唯一真相源（Arc<RwLock<AppConfig>>）
+        let runtime_config: crate::runtime_config::SharedRuntimeConfig =
+            std::sync::Arc::new(parking_lot::RwLock::new(self.config.clone()));
+        self.app.manage(runtime_config.clone());
+
         // 3. Create Coordinator
         let coordinator = crate::coordinator::Coordinator::new(
             engine,
@@ -517,7 +590,7 @@ impl<'a> AppSetup<'a> {
             runtime_config.clone(),
         );
         self.app.manage(coordinator);
-        
+
         // 录屏会话状态（Task 10，2026-07-25 screen record MVP）：
         // RecordSession 内部已用 Arc<tokio::sync::Mutex<...>> 持有 helper 子进程句柄，
         // 这里直接 manage 不再外层包 Mutex。仅 macOS 编译（windows/linux provider 待适配）。
@@ -528,7 +601,7 @@ impl<'a> AppSetup<'a> {
         // 避免按需创建的 ~200ms 启动延迟（用户期望快捷键立即响应）。
         #[cfg(target_os = "macos")]
         crate::record_window::create_record_window(self.app.handle());
-        
+
         // 标注 overlay 的「停止录制」按钮 emit record://stop-requested。
         // 监听后调 stop_and_store（与 ESC/tray 同路径，读 session 快照入库）。
         #[cfg(target_os = "macos")]
@@ -567,7 +640,10 @@ impl<'a> AppSetup<'a> {
                 });
             });
         }
-        
+    }
+
+    /// i18n 初始化 + tray 创建 + 麦克风子菜单预热 + locale 变化 listener。
+    fn init_tray(&self) {
         // 4. Initialize i18n + Create Tray
         crate::i18n::init(&self.config.ui_language);
         if let Err(e) = crate::tray::create_tray(self.app.handle(), &self.config) {
@@ -576,7 +652,7 @@ impl<'a> AppSetup<'a> {
         // 麦克风子菜单设备项后台预热：cpal 枚举放后台线程，避免阻塞主线程
         // 导致 WKWebView 内容进程启动超时被杀（web content process terminated）。
         crate::tray::preheat_microphone_submenu(self.app.handle(), &self.config.microphone);
-        
+
         // 4.1 Listen for locale changes → rebuild tray menu labels
         {
             let app_handle = self.app.handle().clone();
@@ -587,26 +663,120 @@ impl<'a> AppSetup<'a> {
                 let _ = app_handle; // keep handle alive
             });
         }
-        
+    }
+
+    /// 结果窗创建（启动时预创建壳，触发时只 set_position + show）。
+    fn create_result_window(&self) {
         // 5. Create Result Window
         crate::result_window::create_result_window(self.app.handle());
-        
+    }
+
+    /// ASR + edit + polish 全局快捷键注册。
+    fn register_shortcuts(&self) {
         // 6. Register global shortcut
         if let Err(e) = crate::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
             log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
         }
-        
+
         // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
         if let Err(e) = crate::result_window::register_edit_global_shortcut(self.app.handle(), &self.config.edit_global_shortcut) {
             log::error!("Failed to register global edit shortcut: {}", e);
         }
-        
+
         // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
         if let Err(e) = crate::result_window::register_polish_global_shortcut(self.app.handle(), &self.config.polish_global_shortcut) {
             log::error!("Failed to register global polish shortcut: {}", e);
         }
-        
+
         info!("octopus-desktop initialized");
-        Ok(())
     }
+}
+
+// ============================================================================
+// 启动期工具函数（2026-07-29 从 main.rs 搬入，仅被 AppSetup 方法调用）
+// ============================================================================
+
+/// 启动时孤儿录屏文件清理。
+///
+/// 场景：上次录制 crash / 强制 kill 后，helper 写出的 .mp4 没入库就成了孤儿。
+/// 启动时扫 `recordings/`，DB 不认得的文件直接删除（避免占用磁盘）。
+///
+/// 与 clipboard cleanup 同模式：通过 `octopus_infra::db::with_db` 拿连接，
+/// 调 `RecordStore::list_all_file_paths` 取 DB 已知 file_path 集合，
+/// 再扫目录比对。失败不阻塞启动（log::warn 继续）。
+#[cfg(target_os = "macos")]
+fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
+    let store = octopus_record::RecordStore::new(conn);
+    let known_files = match store.list_all_file_paths() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[record] 孤儿清理查询失败: {e}");
+            return;
+        }
+    };
+
+    let recordings_dir = octopus_infra::paths::recordings_dir();
+    let entries = match std::fs::read_dir(&recordings_dir) {
+        Ok(e) => e,
+        Err(_) => return, // 目录不存在是正常的（首次启动或从未录制过）
+    };
+
+    // ⚠️ file_path 在 DB 里存的是绝对路径（2026-07-27 保存目录可配置后改），
+    // list_all_file_paths 直接返回 DB 原值（绝对路径）。磁盘文件用 entry.path() 也是绝对路径，
+    // 两者都是绝对路径，直接 to_string_lossy 比较即可。
+    //
+    // 曾有 bug（2026-07-28 e2e 发现）：旧代码 strip_prefix(octopus_root) 把磁盘文件转成相对路径
+    // 再与 DB 的绝对路径比较 → 永远不匹配 → 所有录屏文件被当孤儿删掉（数据丢失）。
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let abs = path.to_string_lossy().to_string();
+        if octopus_record::RecordStore::is_orphan(&abs, &known_files) {
+            log::warn!("[record] 孤儿文件清理: {abs}");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
+///
+/// 仅在未启用 `cloud` feature 时使用（cloud 下由 DispatchEngine 统一路由）。
+#[cfg(not(feature = "cloud"))]
+fn build_local_engine(
+    config: &octopus_infra::config::AppConfig,
+    engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
+) -> std::sync::Arc<dyn crate::engine::TranscriptionEngine> {
+    match config.engine_mode.as_str() {
+        "embedded" => std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone())),
+        #[cfg(feature = "remote-ws")]
+        "websocket" => std::sync::Arc::new(crate::engine_ws::WsRemoteEngine::new(&config.remote_url)),
+        #[cfg(feature = "remote-grpc")]
+        "grpc" => std::sync::Arc::new(crate::engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
+        other => {
+            log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
+            std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone()))
+        }
+    }
+}
+
+/// 递归计数目录下的 .app 数量（深度 ≤2，不进入 .app 包内部）。
+/// 用于后台轮询快速检测新装/卸载的 app（不提取 icon，毫秒级）。
+fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
+    const MAX_DEPTH: u32 = 2;
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("app") {
+            count += 1;
+        } else if path.is_dir() {
+            count += count_apps_in_dir(&path, depth + 1);
+        }
+    }
+    count
 }
