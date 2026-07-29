@@ -853,6 +853,8 @@ tray:
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine}
+  microphone: 麦克风
+  microphoneDefault: 默认设备
   recordStart: 开始录屏（${shortcut}）
   recordStop: 停止录屏  ${shortcut}
 

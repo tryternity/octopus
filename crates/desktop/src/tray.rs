@@ -4,7 +4,7 @@ use crate::config::AppConfig;
 use log::info;
 use parking_lot::Mutex;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, Runtime};
 
@@ -19,6 +19,8 @@ pub enum TrayState {
 struct TrayItems<R: Runtime> {
     toggle: MenuItem<R>,
     engine_info: MenuItem<R>,
+    // 麦克风子菜单（2026-07-29）：父项 + 设备列表。切换时重建 checkmark + 父项文案。
+    mic_submenu: Submenu<R>,
     screenshot: MenuItem<R>,
     clipboard: MenuItem<R>,
     compact_editor: MenuItem<R>,
@@ -75,6 +77,97 @@ fn fmt_engine_label() -> String {
     format!("{}[{}]", resolved.name, provider_display)
 }
 
+// ── 麦克风快捷选择子菜单（2026-07-29）──
+//
+// 在「语音识别」与「引擎信息」之间插入 Submenu，父项显示当前麦克风，
+// 子项列出所有设备（+「默认设备」项），点击切换 microphone 配置。
+// 切换逻辑复用 settings_commands::set_config（保证持久化与设置页一致）。
+//
+// 设备项 id 约定：
+//   "mic:default"     → 默认设备（microphone 清空为 ""）
+//   "mic:{device_name}" → 具体设备（microphone = device_name）
+
+/// 麦克风子菜单 id 前缀。
+const MIC_ITEM_PREFIX: &str = "mic:";
+/// 「默认设备」项的 id（对应 microphone 配置为空串）。
+const MIC_DEFAULT_ID: &str = "mic:default";
+
+/// 枚举系统麦克风设备名（cpal）。复用 settings_commands 的同款逻辑。
+/// 返回排序后的设备名列表（可能为空——无麦克风或权限未授予）。
+fn list_microphone_devices() -> Vec<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(devices) => {
+            let mut mics: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
+            mics.sort();
+            mics
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 构建麦克风子菜单父项文案：「麦克风: <当前>」。
+/// 当前为空串时显示「默认设备」。
+fn fmt_microphone_parent_text(current: &str) -> String {
+    let display = if current.is_empty() {
+        crate::i18n::t("tray.microphoneDefault", &[])
+    } else {
+        current.to_string()
+    };
+    format!("{}: {}", crate::i18n::t("tray.microphone", &[]), display)
+}
+
+/// 构建麦克风子菜单：父项 + 「默认设备」项 + 各设备 CheckMenuItem。
+/// 当前选中项（cfg.microphone）打勾。
+fn build_microphone_submenu(
+    app: &tauri::AppHandle,
+    current_mic: &str,
+) -> Result<Submenu<tauri::Wry>, String> {
+    // 「默认设备」项始终在最前。
+    let default_item = CheckMenuItem::with_id(
+        app,
+        MIC_DEFAULT_ID,
+        &crate::i18n::t("tray.microphoneDefault", &[]),
+        true,
+        current_mic.is_empty(),
+        None::<&str>,
+    )
+    .map_err(|e| format!("mic default item: {e}"))?;
+
+    // 各实际设备项。
+    let devices = list_microphone_devices();
+    let device_items: Vec<CheckMenuItem<tauri::Wry>> = devices
+        .iter()
+        .map(|name| {
+            CheckMenuItem::with_id(
+                app,
+                format!("{}{}", MIC_ITEM_PREFIX, name),
+                name,
+                true,
+                name == current_mic,
+                None::<&str>,
+            )
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("mic device item: {e}"))?;
+
+    // 组装 items 引用数组（默认项 + 设备项）。
+    let mut item_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&default_item];
+    for item in &device_items {
+        item_refs.push(item);
+    }
+
+    Submenu::with_items(
+        app,
+        fmt_microphone_parent_text(current_mic),
+        true,
+        &item_refs,
+    )
+    .map_err(|e| format!("mic submenu: {e}"))
+}
+
 /// Create the system tray icon and its context menu.
 ///
 /// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
@@ -98,6 +191,11 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         None::<&str>,
     )
     .map_err(|e| format!("engine_info menu: {e}"))?;
+
+    // 麦克风快捷选择子菜单（2026-07-29）：语音识别与引擎信息之间。
+    // 父项显示当前麦克风，子项列出设备 + 默认设备，点击切换。
+    let mic_submenu = build_microphone_submenu(app, &config.microphone)
+        .map_err(|e| format!("microphone submenu: {e}"))?;
 
     let sep1 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator: {e}"))?;
@@ -145,16 +243,16 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
-    // 菜单组装（用户决策 2026-07-25；2026-07-29 调整 settings 位置）：
+    // 菜单组装（用户决策 2026-07-25；2026-07-29 调整 settings 位置 + 加麦克风子菜单）：
     // 顶部：设置（高频入口，单独一组）
-    // 分组 1：语音识别 + 引擎信息
+    // 分组 1：语音识别 + 麦克风子菜单 + 引擎信息
     // 分组 2：截图 + 录屏（屏幕采集类，仅 macOS）
     // 分组 3：剪贴板 + 图文编辑
     // 底部：退出
     #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[
         &settings, &sep_settings,
-        &toggle, &engine_info, &sep1,
+        &toggle, &mic_submenu, &engine_info, &sep1,
         &screenshot, &record_start, &sep_record,
         &clipboard, &compact_editor,
         &sep2,
@@ -164,7 +262,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     #[cfg(not(target_os = "macos"))]
     let menu = Menu::with_items(app, &[
         &settings, &sep_settings,
-        &toggle, &engine_info, &sep1,
+        &toggle, &mic_submenu, &engine_info, &sep1,
         &screenshot, &clipboard, &compact_editor, &sep2,
         &quit,
     ])
@@ -178,6 +276,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             *items = Some(TrayItems {
                 toggle: toggle.clone(),
                 engine_info: engine_info.clone(),
+                mic_submenu: mic_submenu.clone(),
                 screenshot: screenshot.clone(),
                 clipboard: clipboard.clone(),
                 compact_editor: compact_editor.clone(),
@@ -191,6 +290,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             *items = Some(TrayItems {
                 toggle: toggle.clone(),
                 engine_info: engine_info.clone(),
+                mic_submenu: mic_submenu.clone(),
                 screenshot: screenshot.clone(),
                 clipboard: clipboard.clone(),
                 compact_editor: compact_editor.clone(),
@@ -290,6 +390,20 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                 info!("Tray: quit");
                 app.exit(0);
             }
+            // 麦克风快捷选择（2026-07-29）：子菜单设备项点击。
+            // id = "mic:default"（清空为系统默认）或 "mic:{device_name}"。
+            // 复用 set_config 持久化 microphone 配置，再重建子菜单 checkmark + 父项文案。
+            id if id.starts_with(MIC_ITEM_PREFIX) => {
+                let device = if id == MIC_DEFAULT_ID {
+                    String::new() // 默认设备 = 空串
+                } else {
+                    id[MIC_ITEM_PREFIX.len()..].to_string()
+                };
+                info!("Tray: switch microphone to {:?}", if device.is_empty() { "(default)" } else { &device });
+                // 复用 set_config 持久化（保证与设置页一致：写 DB + 更新 runtime config）。
+                // set_config 需要 State，tray 闭包里直接走 DB 写入 + runtime config 更新的等价路径。
+                switch_microphone_from_tray(app, device);
+            }
             _ => {}
         })
         .build(app)
@@ -355,6 +469,8 @@ pub fn rebuild_tray_labels(config: &AppConfig) {
         }
         let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
         let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
+        // 麦克风子菜单父项文案（子项设备名不随语言变；语言切换只更新父项前缀文案）。
+        let _ = tray_items.mic_submenu.set_text(fmt_microphone_parent_text(&config.microphone));
     }
 }
 
@@ -391,6 +507,58 @@ pub fn update_record_tray_label(recording: bool) {
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.record_start.set_text(label);
+    }
+}
+
+// ── 麦克风子菜单切换与更新（2026-07-29）──
+
+/// 托盘切换麦克风：持久化 microphone 配置 + 更新子菜单 checkmark + 父项文案。
+///
+/// 复用 set_config 的持久化路径（写 DB + 更新 runtime config），保证与设置页一致。
+/// 不重启 audio stream——下次录音 build_stream 时用新设备名（与设置页行为一致）。
+fn switch_microphone_from_tray(app: &tauri::AppHandle, device: String) {
+    use crate::runtime_config::SharedRuntimeConfig;
+    use tauri::Manager;
+
+    // 1. 更新 runtime config + 持久化 DB（复用 set_config 的等价逻辑）。
+    if let Some(rc) = app.try_state::<SharedRuntimeConfig>() {
+        let cfg = {
+            let g = rc.read();
+            let mut c = g.clone();
+            c.microphone = device.clone();
+            c
+        };
+        if octopus_infra::db::save_app_config(&cfg).is_ok() {
+            let mut g = rc.write();
+            *g = cfg;
+        }
+    }
+
+    // 2. 更新子菜单 checkmark + 父项文案。
+    update_microphone_submenu(&device);
+}
+
+/// 按当前选中设备更新麦克风子菜单：
+/// - 父项文案改为「麦克风: <current>」
+/// - 遍历子项，匹配 id 的设 checked=true，其余 false
+fn update_microphone_submenu(current: &str) {
+    let items = TRAY_ITEMS.lock();
+    let Some(tray_items) = items.as_ref() else { return };
+    // 父项文案
+    let _ = tray_items.mic_submenu.set_text(fmt_microphone_parent_text(current));
+    // 子项 checkmark：匹配选中 id 的勾选，其余取消。
+    // 选中 id：空串 → mic:default；否则 mic:{device}
+    let selected_id = if current.is_empty() {
+        MIC_DEFAULT_ID.to_string()
+    } else {
+        format!("{}{}", MIC_ITEM_PREFIX, current)
+    };
+    if let Ok(children) = tray_items.mic_submenu.items() {
+        for child in &children {
+            if let Some(check_item) = child.as_check_menuitem() {
+                let _ = check_item.set_checked(child.id().as_ref() == selected_id);
+            }
+        }
     }
 }
 
