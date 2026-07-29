@@ -14,6 +14,7 @@
 | [coordinator.md](./coordinator.md) | 录音协调器 | Coordinator 状态机、Stage/Command、引擎分支（streaming/cloud/VAD segmented）、录音→处理→粘贴→润色流水线 |
 | [clipboard.md](./clipboard.md) | 剪贴板管理 | 剪贴板历史、监听线程、图片/文本/OCR/语音条目、FTS5 搜索、清理策略 |
 | [screenshot.md](./screenshot.md) | 截图系统 | 区域截图、滚动截图（拼接引擎 NCC+Sobel）、标注工具栏、贴图浮窗（pin_window）、截图 OCR |
+| [record.md](./record.md) | 屏幕录制 | display/window/area 三源、SCK helper sidecar、实时标注、录后音轨合并、GIF 导出、自动字幕（仅 macOS） |
 | [ocr.md](./ocr.md) | OCR 识别 | paddle-ocr 管线（det→cls→rec）、ONNX Runtime 后端、文本块叠加显示 |
 | [result-window.md](./result-window.md) | 结果窗口 | ASR 识别结果展示、流式追加、编辑态、闪烁光标、润色集成、快捷键 |
 | [compact-editor.md](./compact-editor.md) | 统一编辑器 | tab 栏（文本/图片/语音）、编辑保存、与剪贴板历史联动 |

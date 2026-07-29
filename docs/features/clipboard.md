@@ -194,7 +194,7 @@ FTS5 索引一致性由 db.sql 触发器（`clip_fts_ai`/`clip_fts_ad`/`clip_fts
 
 **voice 软删 100 条上限（INV-VT）**：voice 软删后实时保证 `is_deleted=1` 的 voice ≤ 100 条（`VOICE_TRASH_MAX`）。任何入口（`delete_item` / `delete_items` / `clear_history` / `clear_history_by_filter`）软删 voice 后，立即把最老的（`created_at ASC`）voice 物理删到恰好 100 条（`enforce_voice_trash_limit`）。
 
-**不变量**：收藏条目（`is_favorite=1`）任何删除入口都跳过。详见 [spec](../superpowers/specs/2026-07-29-clipboard-softdelete-voice-only.md)。
+**不变量**：收藏条目（`is_favorite=1`）任何删除入口都跳过。详见 [spec](../superpowers/specs/archived/2026-07-29-clipboard-softdelete-voice-only.md)。
 
 ---
 
