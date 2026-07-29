@@ -1,7 +1,7 @@
 # screenshot_commands.rs 拆分 plan（desktop crate 大文件重构 #4）
 
 > **对应 spec**: `docs/superpowers/specs/2026-07-30-screenshot-commands-split.md`
-> **分支**: `daily_refactor_screenshot`
+> **状态**: ✅ 全部完成（2026-07-29，分支 `daily_bugfix_0729`）
 
 ## 阶段 0：目录化
 
@@ -66,9 +66,9 @@
 ---
 
 ## 验证 checklist
-- [ ] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
-- [ ] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
-- [ ] `cargo test -p octopus-desktop` — 441 passed
+- [x] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed
 
 ## 回滚
 每个 Task 独立 commit。失败 `git reset --hard HEAD~1`。

@@ -1,6 +1,6 @@
 # screenshot_commands.rs 拆分 spec（desktop crate 大文件重构 #4）
 
-> **Status: 🔨 待实现**（2026-07-30，分支 `daily_refactor_screenshot`）
+> **Status: ✅ 已实现**（2026-07-29，分支 `daily_bugfix_0729`）
 
 ## 背景
 
@@ -62,3 +62,42 @@ crates/desktop/src/screenshot_commands/
 ## 不做
 - 不拆 `start_scroll_recording` 内部逻辑（留给后续优化）
 - 不改函数签名/逻辑
+
+## 实施记录（2026-07-29）
+
+四个 Task 全部完成，零 warning、441 测试全过。最终结构：
+
+| 文件 | 行数 | 内容 |
+|---|---|---|
+| `mod.rs` | 15 | 仅子模块声明 + `pub(crate) use submodule::*` glob re-export |
+| `shared.rs` | 57 | `format_file_size` + 3 个 `pub(crate)` macOS 平台 helper |
+| `scroll.rs` | 905 | 滚动截图全部（含 `start_scroll_recording` 580 行巨函数原样搬） |
+| `area.rs` | 721 | 区域截图全部 + 6 个截图静态量 + cg_event_source_ffi |
+
+### 与原 plan 的偏差（已修正）
+
+1. **`register_scroll_esc` / `unregister_scroll_esc` 归属**：原 plan 列在 area.rs（L100-135，
+   仅按行号范围机械划分）。实际它们引用 `SCROLL_STOP_MODE` / `SCROLL_RECORDING` /
+   `ScrollStopMode`（scroll 专属静态量），且只被 `start_scroll_recording` /
+   `ScrollRecordingGuard` 调用——纯 scroll 域。归入 scroll.rs 消除跨模块静态依赖，
+   比机械按行划分更内聚。
+
+2. **re-export 可见性用 `pub(crate) use` 而非 `pub use`**：原 plan 写 `pub use submodule::*`。
+   screenshot_commands 的 invoke_handler 命令是 `pub fn`（可 `pub use`），但跨子模块共享的
+   平台 helper（`get_primary_screen_height` 等）是 `pub(crate)`——`pub use` 的 glob 不重导出
+   `pub(crate)` 项会触发 "glob doesn't reexport anything" warning。改用 `pub(crate) use`：
+   `pub` 命令与 `pub(crate)` helper 都能在 crate 内经 `crate::screenshot_commands::xxx` 访问
+   （所有调用方都在 desktop crate 内）。
+
+3. **跨子模块共享符号提升为 `pub(crate)`**（均为 crate 内可见，未泄露到 crate 外）：
+   - `shared.rs`：`format_file_size`（原 `fn`，被 area + scroll 都用）→ `pub(crate)`
+   - `scroll.rs`：`close_all_screenshot_windows`（area 的 confirm/cancel/pin/save 都调）、
+     `save_frontmost_app`（area 的 start_screenshot 调）→ `pub(crate)`
+   - `area.rs`：`right_mouse_button_down`（scroll 的右键取消轮询调）、
+     `TOTAL_WINDOWS`（scroll 的 close_all_screenshot_windows 复位）→ `pub(crate)`
+
+### 验证
+
+- `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
