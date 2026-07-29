@@ -360,7 +360,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             }
             "clipboard" => {
                 info!("Tray: toggle clipboard");
-                let _ = crate::clipboard_window::toggle_clipboard_window(app);
+                let _ = crate::clipboard::clipboard_window::toggle_clipboard_window(app);
             }
             "compact_editor" => {
                 info!("Tray: open compact editor (empty)");

@@ -190,9 +190,9 @@ pub fn set_config(
         if let Ok(old) = old_clipboard_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Err(e) = crate::clipboard_window::register_clipboard_shortcut(&app_handle, &cfg.clipboard_shortcut) {
+        if let Err(e) = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &cfg.clipboard_shortcut) {
             // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
-            let _ = crate::clipboard_window::register_clipboard_shortcut(&app_handle, &old_clipboard_sc);
+            let _ = crate::clipboard::clipboard_window::register_clipboard_shortcut(&app_handle, &old_clipboard_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }

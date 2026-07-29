@@ -73,7 +73,7 @@ static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// 最近一次截图 OCR 结果（关联 image_id）。emit("ocr-screenshot://result") 早于
 /// 新窗 React mount 会被丢，ImagePreview mount 后用 get_last_screenshot_ocr 主动拉取兜底。
 /// 截图 OCR 全局互斥（OcrLockGuard），单槽即可，无需并发保护。
-static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard_commands::OcrResult)>> = Mutex::new(None);
+static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard::clipboard_commands::OcrResult)>> = Mutex::new(None);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
@@ -337,7 +337,7 @@ pub async fn ocr_screenshot(
 
     // current_ocr_meta 闭包外取（与 insert_ocr_clipboard_item 同习惯，详见其注释）：
     // 闭包内调虽已不再死锁（db.rs 已换 ReentrantMutex），仍避免 DB 锁嵌套持有。
-    let (ocr_engine, ocr_model) = crate::clipboard_commands::current_ocr_meta();
+    let (ocr_engine, ocr_model) = crate::clipboard::clipboard_commands::current_ocr_meta();
 
     // 入库（decode+encode CPU）+ OCR 识别（秒级 CPU）+ ocr 条目入库：移入 spawn_blocking，
     // 隔离 Tokio worker，避免 recognize 秒级阻塞拖累录音/VAD/剪贴板监听。
@@ -376,9 +376,9 @@ pub async fn ocr_screenshot(
     let _ = app_handle.emit("clipboard://changed", ());
 
     // 关截图窗 → 开编辑器 + 图片预览 + 推送 OCR blocks 给预览窗
-    let ocr_result = crate::clipboard_commands::OcrResult {
+    let ocr_result = crate::clipboard::clipboard_commands::OcrResult {
         text: text.clone(),
-        blocks: blocks.iter().map(|b| crate::clipboard_commands::OcrTextBlock {
+        blocks: blocks.iter().map(|b| crate::clipboard::clipboard_commands::OcrTextBlock {
             text: b.text.clone(), x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
         }).collect(),
     };
@@ -440,7 +440,7 @@ pub async fn scan_qrcode_screenshot(
 /// 治 emit("ocr-screenshot://result") 早于新窗 React mount 的竞态——截图 OCR 后
 /// 新窗 ImagePreview mount 时主动拉高亮遮罩（emit 已被丢）。截图 OCR 全局互斥，单槽即可。
 #[tauri::command]
-pub fn get_last_screenshot_ocr(image_id: i64) -> Option<crate::clipboard_commands::OcrResult> {
+pub fn get_last_screenshot_ocr(image_id: i64) -> Option<crate::clipboard::clipboard_commands::OcrResult> {
     let mut g = LAST_SCREENSHOT_OCR.lock();
     if let Some((id, res)) = g.take() {
         if id == image_id {

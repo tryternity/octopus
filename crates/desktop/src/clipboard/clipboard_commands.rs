@@ -686,7 +686,7 @@ pub async fn copy_image_to_clipboard(
         handle_clone.write_image(&png_bytes).map_err(e2s)?;
         // write_image 触发 NSPasteboard 变化 → watcher 会收到通知 → enqueue。
         // 但有时通知有延迟，这里主动 enqueue 一次确保 worker 处理。
-        crate::clipboard_queue::enqueue();
+        crate::clipboard::clipboard_queue::enqueue();
         Ok::<(), String>(())
     }).await.map_err(e2s)??;
     Ok(())

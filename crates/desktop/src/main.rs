@@ -29,14 +29,11 @@ mod setup;
 mod config;
 #[macro_use]
 mod invoke_handler;
-mod clipboard_commands;
-mod clipboard_queue;
+mod clipboard;
 mod compact_editor_commands;
 mod compact_editor_window;
 
 mod i18n;
-mod clipboard_window;
-mod clipboard_dock;
 mod coordinator;
 mod db_queue;
 mod engine;

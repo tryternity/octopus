@@ -326,7 +326,7 @@ impl<'a> AppSetup<'a> {
             // 启动后台 worker：watcher 回调只 enqueue（<1μs），编码/入库在 worker 异步做。
             // 避免 watcher 线程被 WebP 编码 + DB 写阻塞（连续复制时延迟入库）。
             let emit_handle = app_handle_for_watcher.clone();
-            crate::clipboard_queue::start_clipboard_worker(
+            crate::clipboard::clipboard_queue::start_clipboard_worker(
                 clipboard_handle.clone(),
                 Arc::new(move || {
                     let _ = emit_handle.emit("clipboard://changed", ());
@@ -341,7 +341,7 @@ impl<'a> AppSetup<'a> {
                 // 新代码：只 enqueue 信号，worker 异步处理。
                 // suppress 检查仍在这里做（watcher 的 ChangeHandler 已处理），
                 // 到这里说明是"用户真实复制"——enqueue 让 worker 处理。
-                crate::clipboard_queue::enqueue();
+                crate::clipboard::clipboard_queue::enqueue();
             }) {
                 Ok(watcher) => { self.app.manage(watcher); }
                 Err(e) => log::error!("Failed to start clipboard watcher: {}", e),
@@ -350,7 +350,7 @@ impl<'a> AppSetup<'a> {
 
         // Register clipboard window global shortcut (from config)
         if !self.config.clipboard_shortcut.is_empty() {
-            if let Err(e) = crate::clipboard_window::register_clipboard_shortcut(self.app.handle(), &self.config.clipboard_shortcut) {
+            if let Err(e) = crate::clipboard::clipboard_window::register_clipboard_shortcut(self.app.handle(), &self.config.clipboard_shortcut) {
                 log::error!("Failed to register clipboard shortcut: {}", e);
             }
         }
