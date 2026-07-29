@@ -48,7 +48,7 @@ fn resolved_to_llm_config(resolved: &octopus_asr_local::config::ResolvedEngine) 
     let secret_key = if resolved.entry.is_local_or_builtin() {
         resolved.entry.secret_key.clone()
     } else {
-        match crate::vault_secret_access::try_decrypt_secret_global(
+        match crate::vault::vault_secret_access::try_decrypt_secret_global(
             &resolved.entry.secret_key,
         ) {
             Ok(plain) => plain,

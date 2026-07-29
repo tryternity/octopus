@@ -73,9 +73,9 @@ pub fn autotype_login(
     // 旧 API 调用方（如 password_generator_autotype 传 username=""）我们当成
     // PasswordOnly 处理——避免空 username + Tab + password 的怪异行为。
     let mode = if username.is_empty() {
-        crate::vault_commands::AutoTypeMode::PasswordOnly
+        crate::vault::vault_commands::AutoTypeMode::PasswordOnly
     } else {
-        crate::vault_commands::AutoTypeMode::UsernamePassword
+        crate::vault::vault_commands::AutoTypeMode::UsernamePassword
     };
     autotype_login_with_mode(username, password, mode, press_enter, expected_bundle_id)
 }
@@ -92,11 +92,11 @@ pub fn autotype_login(
 pub fn autotype_login_with_mode(
     username: &str,
     password: &str,
-    mode: crate::vault_commands::AutoTypeMode,
+    mode: crate::vault::vault_commands::AutoTypeMode,
     press_enter: bool,
     expected_bundle_id: Option<&str>,
 ) -> Result<()> {
-    use crate::vault_commands::AutoTypeMode;
+    use crate::vault::vault_commands::AutoTypeMode;
 
     // **2026-07-20 e2e 诊断**：AX 权限检查放最前——若缺失，后续 enigo 全部静默失败。
     let ax_trusted = check_accessibility_trusted();
@@ -290,7 +290,7 @@ mod tests {
     /// 比 generate_context!().config().identifier 简单（不依赖 Tauri runtime 类型）。
     #[test]
     fn test_octopus_bundle_id_matches_tauri_config() {
-        let conf = include_str!("../../tauri.conf.json");
+        let conf = include_str!("../../../tauri.conf.json");
         // 简单子串匹配——identifier 字段在 conf 里唯一
         let needle = "\"identifier\": \"com.octopus.desktop\"";
         assert!(

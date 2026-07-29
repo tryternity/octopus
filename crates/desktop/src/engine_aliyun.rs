@@ -112,7 +112,7 @@ impl TranscriptionEngine for AliyunEngine {
         // 用全局 session 透明解密。本地 / 未迁移明文 → no-op 返回原值。
         // 安全修复 #5：vault 启用但解密失败（app_key 不可用 / 密文损坏）→ Err，
         // 不把密文当 Bearer 发到云端（会污染云端 access log）。
-        let key = crate::vault_secret_access::try_decrypt_secret_global(&entry.secret_key)
+        let key = crate::vault::vault_secret_access::try_decrypt_secret_global(&entry.secret_key)
             .map_err(|_| anyhow::anyhow!("云端 ASR 鉴权失败：保险库未解锁或密文损坏，请先解锁保险库"))?;
         let model = model_name;
         let samples = samples.to_vec();

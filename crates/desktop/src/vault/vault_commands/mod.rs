@@ -4,7 +4,7 @@
 //! 错误统一映射为 `String`（前端用 `err` 分支即可）。
 //!
 //! 2026-07-29 起拆分为子模块。mod.rs 保留共享 helper/DTO struct + 各子模块 glob re-export
-//! （`pub use submodule::*`）保持 `crate::vault_commands::xxx` 路径不变。
+//! （`pub use submodule::*`）保持 `crate::vault::vault_commands::xxx` 路径不变。
 
 mod window;
 pub use window::*;
@@ -29,8 +29,8 @@ use octopus_vault::crypto::DerivedKey;
 use octopus_vault::types::{Cipher, CipherData, CipherInput, CipherType, Field, LoginData, RepromptType};
 
 use crate::runtime_config::SharedRuntimeConfig;
-use crate::vault_error::VaultError;
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_error::VaultError;
+use crate::vault::vault_state::SharedVaultSession;
 
 // === DTO ===
 //

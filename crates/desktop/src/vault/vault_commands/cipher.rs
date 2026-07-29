@@ -9,8 +9,8 @@ use tauri::State;
 use octopus_vault::storage::FolderDto;
 
 use crate::runtime_config::SharedRuntimeConfig;
-use crate::vault_error::{self, VaultError};
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_error::{self, VaultError};
+use crate::vault::vault_state::SharedVaultSession;
 
 use super::{
     cipher_to_dto, dto_to_input, merge_password_history, require_user_vault_key, CipherDto,
@@ -242,7 +242,7 @@ mod tests {
     use std::sync::Arc;
     // mod.rs 共享 helper / DTO struct / 常量——`super` 在 cipher.rs::tests 中指向
     // cipher.rs 本身，故通过 crate 路径引用 mod.rs 的符号。
-    use crate::vault_commands::{
+    use crate::vault::vault_commands::{
         cipher_to_dto, dto_to_input, merge_password_history, require_app_key_from_session,
         CipherInputDto, PASSWORD_HISTORY_MAX, VAULT_DETECT_MATCH_LIMIT,
     };
@@ -751,7 +751,7 @@ mod tests {
     /// 构造一个 app_key 已注入的 SharedVaultSession。
     fn session_with_app_key(app_key: Arc<DerivedKey>) -> SharedVaultSession {
         use parking_lot::RwLock;
-        let mut s = crate::vault_state::VaultSession::default();
+        let mut s = crate::vault::vault_state::VaultSession::default();
         s.app_key = Some(app_key);
         Arc::new(RwLock::new(s))
     }
@@ -851,7 +851,7 @@ mod tests {
         assert!(decrypted.is_some(), "app_key 应可取");
 
         // 直接调 read_model_secret_key（ chokepoint 入口）
-        let result = crate::vault_secret_access::read_model_secret_key(&model_name, &session)
+        let result = crate::vault::vault_secret_access::read_model_secret_key(&model_name, &session)
             .expect("read_model_secret_key 应成功");
         assert_eq!(
             result, plaintext,
@@ -878,7 +878,7 @@ mod tests {
             .expect("find model_name");
 
         // 未调 migrate → DB 仍是明文 → read_model_secret_key 原样返回
-        let result = crate::vault_secret_access::read_model_secret_key(&model_name, &session)
+        let result = crate::vault::vault_secret_access::read_model_secret_key(&model_name, &session)
             .expect("read should succeed");
         assert_eq!(result, plaintext);
     }
@@ -918,7 +918,7 @@ mod tests {
             .expect("migrate");
 
         // helper 应原样返回 manifest JSON（不解密）
-        let result = crate::vault_secret_access::read_model_secret_key(model_name, &session)
+        let result = crate::vault::vault_secret_access::read_model_secret_key(model_name, &session)
             .expect("read should succeed");
         assert_eq!(result, manifest);
     }

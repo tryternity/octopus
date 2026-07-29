@@ -203,100 +203,100 @@ macro_rules! handler {
             // ── vault（feature gate——feature off 时命令不注册）──
             // follow-up #10: 前端通过 is_vault_enabled() 检测后整段隐藏 vault UI。
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_status,
+            crate::vault::vault_commands::vault_status,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_setup,
+            crate::vault::vault_commands::vault_setup,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_unlock,
+            crate::vault::vault_commands::vault_unlock,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_lock,
+            crate::vault::vault_commands::vault_lock,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_heartbeat,
+            crate::vault::vault_commands::vault_heartbeat,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_change_password,
+            crate::vault::vault_commands::vault_change_password,
             // 自动锁定超时配置（UI 在 VaultPanel 内联）
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_get_lock_timeout,
+            crate::vault::vault_commands::vault_get_lock_timeout,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_set_lock_timeout,
+            crate::vault::vault_commands::vault_set_lock_timeout,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_list_ciphers,
+            crate::vault::vault_commands::vault_list_ciphers,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_get_cipher,
+            crate::vault::vault_commands::vault_get_cipher,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_create_cipher,
+            crate::vault::vault_commands::vault_create_cipher,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_update_cipher,
+            crate::vault::vault_commands::vault_update_cipher,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_delete_cipher,
+            crate::vault::vault_commands::vault_delete_cipher,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_restore_cipher,
+            crate::vault::vault_commands::vault_restore_cipher,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_empty_trash,
+            crate::vault::vault_commands::vault_empty_trash,
             // follow-up #6: folder CRUD
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_list_folders,
+            crate::vault::vault_commands::vault_list_folders,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_create_folder,
+            crate::vault::vault_commands::vault_create_folder,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_rename_folder,
+            crate::vault::vault_commands::vault_rename_folder,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_delete_folder,
+            crate::vault::vault_commands::vault_delete_folder,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_generate,
+            crate::vault::vault_commands::vault_generate,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_evaluate_password,
+            crate::vault::vault_commands::vault_evaluate_password,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_generate_totp,
+            crate::vault::vault_commands::vault_generate_totp,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_health_report,
+            crate::vault::vault_commands::vault_health_report,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_import_bitwarden,
+            crate::vault::vault_commands::vault_import_bitwarden,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_export,
+            crate::vault::vault_commands::vault_export,
             // Task 19: Auto-Type 命令
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_autotype,
+            crate::vault::vault_commands::vault_autotype,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_detect_and_match,
+            crate::vault::vault_commands::vault_detect_and_match,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_search_ciphers,
+            crate::vault::vault_commands::vault_search_ciphers,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_get_cached_url,
+            crate::vault::vault_commands::vault_get_cached_url,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_copy_password,
+            crate::vault::vault_commands::vault_copy_password,
             #[cfg(feature = "vault")]
-            crate::vault_commands::vault_copy_username,
+            crate::vault::vault_commands::vault_copy_username,
             // 密码生成器独立浮窗（Actionbar 触发，外壳 B；详见 spec §5.2）
             #[cfg(feature = "vault")]
-            crate::vault_commands::open_password_generator,
+            crate::vault::vault_commands::open_password_generator,
             #[cfg(feature = "vault")]
-            crate::vault_commands::password_generator_autotype,
+            crate::vault::vault_commands::password_generator_autotype,
             // Vault Git 同步（2026-07-21 Phase 1）
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_status,
+            crate::vault::vault_sync_commands::vault_sync_status,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_test_connection,
+            crate::vault::vault_sync_commands::vault_sync_test_connection,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_enable,
+            crate::vault::vault_sync_commands::vault_sync_enable,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_now,
+            crate::vault::vault_sync_commands::vault_sync_now,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_disable,
+            crate::vault::vault_sync_commands::vault_sync_disable,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_is_git_available,
+            crate::vault::vault_sync_commands::vault_is_git_available,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_add_remote,
+            crate::vault::vault_sync_commands::vault_sync_add_remote,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_remove_remote,
+            crate::vault::vault_sync_commands::vault_sync_remove_remote,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_list_remotes,
+            crate::vault::vault_sync_commands::vault_sync_list_remotes,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_clone,
+            crate::vault::vault_sync_commands::vault_sync_clone,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_resolve_remote,
+            crate::vault::vault_sync_commands::vault_sync_resolve_remote,
             #[cfg(feature = "vault")]
-            crate::vault_sync_commands::vault_sync_resolve_local,
+            crate::vault::vault_sync_commands::vault_sync_resolve_local,
             // follow-up #10: feature probe（永远注册——前端据此刻画 vault UI）。
             crate::feature_flags::is_vault_enabled,
             // ── translation_commands ──

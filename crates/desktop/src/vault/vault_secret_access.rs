@@ -37,7 +37,7 @@ use octopus_vault::crypto::symmetric::CIPHERTEXT_PREFIX;
 use octopus_vault::crypto::DerivedKey;
 
 #[cfg(feature = "vault")]
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_state::SharedVaultSession;
 
 // ===== feature = "vault"：真实实现 =====
 //
@@ -71,7 +71,7 @@ pub fn read_model_secret_key(
 /// - raw 以 `v1:` 开头但 vault 未初始化 / app_key 缺失 → 返回 Err
 /// - 否则 `app_key.decrypt(raw)` → UTF-8 字符串
 ///
-/// `session` 可通过 [`crate::vault_state::try_global_session`] 在非 Tauri-State
+/// `session` 可通过 [`crate::vault::vault_state::try_global_session`] 在非 Tauri-State
 /// 调用点取（AliyunEngine / config::llm_config_ignore_mode 等）。
 #[cfg(feature = "vault")]
 pub fn try_decrypt_secret(
@@ -87,16 +87,16 @@ pub fn try_decrypt_secret(
     // 复用 vault_commands::require_app_key_from_session 保持单一 chokepoint（follow-up #7）。
     // 该函数现在返回 VaultError（user-safe message）；这里透传其 JSON 序列化形式
     // 给调用方（仍是 Result<_, String>，但内容是稳定的 `{ code, message }`）。
-    let app_key: Arc<DerivedKey> = crate::vault_commands::require_app_key_from_session(session)
-        .map_err(|e| crate::vault_error::serialize(&e))?;
+    let app_key: Arc<DerivedKey> = crate::vault::vault_commands::require_app_key_from_session(session)
+        .map_err(|e| crate::vault::vault_error::serialize(&e))?;
 
     // decrypt 失败属内部细节（nonce mismatch / tag 等）——映射为 InternalError 的
     // user-safe message，不透传。
     let plaintext = app_key.decrypt(raw).map_err(|_| {
-        crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+        crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
     })?;
     String::from_utf8(plaintext.to_vec()).map_err(|_| {
-        crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+        crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
     })
 }
 
@@ -115,7 +115,7 @@ pub fn try_decrypt_secret(
 /// 当作 Bearer token 发到云端（密文会进入云端 access log + 静默掩盖 vault 真正问题）。
 #[cfg(feature = "vault")]
 pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
-    match crate::vault_state::try_global_session() {
+    match crate::vault::vault_state::try_global_session() {
         Some(session) => try_decrypt_secret(raw, &session),
         // vault 未启用 / 全局 session 未注入 → raw 原样返回（向后兼容）
         None => Ok(raw.to_string()),
@@ -144,12 +144,12 @@ pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
     if secret.starts_with(CIPHERTEXT_PREFIX) {
         return Ok(secret.to_string());
     }
-    match crate::vault_state::try_global_session() {
+    match crate::vault::vault_state::try_global_session() {
         Some(session) => {
-            let app_key = crate::vault_commands::require_app_key_from_session(&session)
-                .map_err(|e| crate::vault_error::serialize(&e))?;
+            let app_key = crate::vault::vault_commands::require_app_key_from_session(&session)
+                .map_err(|e| crate::vault::vault_error::serialize(&e))?;
             let ciphertext = app_key.encrypt(secret.as_bytes()).map_err(|_| {
-                crate::vault_error::serialize(&crate::vault_error::VaultError::InternalError)
+                crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
             })?;
             Ok(ciphertext)
         }
@@ -182,7 +182,7 @@ pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
 #[cfg(all(test, feature = "vault"))]
 mod tests {
     use super::*;
-    use crate::vault_state::{SharedVaultSession, VaultSession};
+    use crate::vault::vault_state::{SharedVaultSession, VaultSession};
     use parking_lot::RwLock;
     use std::sync::Arc;
 

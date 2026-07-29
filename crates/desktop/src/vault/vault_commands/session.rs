@@ -7,8 +7,8 @@ use tauri::State;
 
 use crate::error_util::e2s;
 use crate::runtime_config::SharedRuntimeConfig;
-use crate::vault_error::{self, VaultError};
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_error::{self, VaultError};
+use crate::vault::vault_state::SharedVaultSession;
 
 /// `vault_status` 命令返回值（前端调用方唯一消费点，故就近定义而非堆在 DTO 区）。
 #[derive(serde::Serialize)]

@@ -419,7 +419,7 @@ impl<'a> AppSetup<'a> {
         #[cfg(feature = "vault")]
         {
             if !self.config.vault_autotype_shortcut.is_empty() {
-                if let Err(e) = crate::vault_commands::register_vault_autotype_shortcut(
+                if let Err(e) = crate::vault::vault_commands::register_vault_autotype_shortcut(
                     self.app.handle(),
                     &self.config.vault_autotype_shortcut,
                 ) {
@@ -511,20 +511,20 @@ impl<'a> AppSetup<'a> {
         //     vault_secret_access::try_decrypt_secret_global 退化为 raw passthrough）
         #[cfg(feature = "vault")]
         {
-            let vault_session: crate::vault_state::SharedVaultSession = std::sync::Arc::new(
-                parking_lot::RwLock::new(crate::vault_state::VaultSession::default()),
+            let vault_session: crate::vault::vault_state::SharedVaultSession = std::sync::Arc::new(
+                parking_lot::RwLock::new(crate::vault::vault_state::VaultSession::default()),
             );
-            crate::vault_state::bootstrap_app_key(&vault_session);
+            crate::vault::vault_state::bootstrap_app_key(&vault_session);
             self.app.manage(vault_session.clone());
             // VaultPicker URL 缓存：热键触发时（show 浮窗之前）抓 URL 存入，
             // vault_detect_and_match 优先读此缓存（修 e2e 发现的抢前台 bug）。
-            let picker_url_cache: crate::vault_state::SharedPickerUrlCache =
+            let picker_url_cache: crate::vault::vault_state::SharedPickerUrlCache =
                 std::sync::Arc::new(std::sync::Mutex::new(None));
             self.app.manage(picker_url_cache);
             // follow-up #7：注入进程级全局 session 句柄，供 cloud 推理热路径
             // （AliyunEngine::transcribe / crate::config::llm_config_ignore_mode / 云端翻译）
             // 解密 v1: 前缀的 secret_key。
-            crate::vault_state::set_global_session(vault_session);
+            crate::vault::vault_state::set_global_session(vault_session);
         }
     }
 

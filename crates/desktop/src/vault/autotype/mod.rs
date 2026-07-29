@@ -28,7 +28,7 @@ pub fn autotype_login(
 pub fn autotype_login_with_mode(
     _u: &str,
     _p: &str,
-    _mode: crate::vault_commands::AutoTypeMode,
+    _mode: crate::vault::vault_commands::AutoTypeMode,
     _enter: bool,
     _expected_bundle_id: Option<&str>,
 ) -> anyhow::Result<()> {

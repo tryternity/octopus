@@ -2,24 +2,11 @@
 
 mod platform;
 mod action_bar;
-// vault（Task 16+）：AppState + Tauri 命令 + 自动填写
-// follow-up #10: vault feature gate——关闭后所有 vault 模块整体 cfg 掉。
-// 例外：vault_secret_access **总是**编译（云端推理热路径 chokepoint，feature off 时
-// 退化为返回 raw 原值的 no-op）。
-#[cfg(feature = "vault")]
-pub mod vault_state;
-#[cfg(feature = "vault")]
-pub mod vault_commands;
-#[cfg(feature = "vault")]
-pub mod vault_secret_access;
-#[cfg(feature = "vault")]
-pub mod vault_error;
-#[cfg(feature = "vault")]
-pub mod vault_sync_commands;
-#[cfg(feature = "vault")]
-pub mod autotype;
-#[cfg(feature = "vault")]
-pub mod password_generator_window;
+// vault（Task 16+）：AppState + Tauri 命令 + 自动填写。
+// follow-up #10: vault feature gate——关闭后除 vault_secret_access 外的 vault 子模块
+// 整体 cfg 掉（gate 在 vault/mod.rs 内部）。vault_secret_access **总是**编译
+// （云端推理热路径 chokepoint，feature off 时退化为返回 raw 原值的 no-op）。
+pub mod vault;
 mod overlay_window;
 mod audio;
 mod bootstrap;

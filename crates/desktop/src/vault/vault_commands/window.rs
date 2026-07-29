@@ -3,7 +3,7 @@
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::autotype;
+use crate::vault::autotype;
 
 // === 全局热键注册（Task 19） ===
 
@@ -38,12 +38,12 @@ pub fn register_vault_autotype_shortcut(
                 // vault_detect_and_match 优先读缓存。失败也不阻塞——detect 端会 fallback。
                 use tauri::Manager;
                 let cached_url: Option<String> =
-                    match crate::autotype::current_browser_url() {
+                    match crate::vault::autotype::current_browser_url() {
                         Ok(Some(u)) if !u.is_empty() => Some(u),
                         _ => None,
                     };
                 if let Some(cache) =
-                    app_handle.try_state::<crate::vault_state::SharedPickerUrlCache>()
+                    app_handle.try_state::<crate::vault::vault_state::SharedPickerUrlCache>()
                 {
                     if let Ok(mut guard) = cache.lock() {
                         *guard = cached_url.clone();
@@ -101,12 +101,12 @@ pub fn register_vault_autotype_shortcut(
 /// toggle 语义：已存在 → show + 移动到新位置；不存在 → 创建。
 #[tauri::command]
 pub fn open_password_generator(app: AppHandle) -> Result<(), String> {
-    let pos = crate::password_generator_window::compute_window_position(&app);
+    let pos = crate::vault::password_generator_window::compute_window_position(&app);
     log::info!(
         "[password-generator] open: position=({:.0},{:.0}) source={:?}",
         pos.x, pos.y, pos.source
     );
-    crate::password_generator_window::show_password_generator_window(&app, pos.x, pos.y);
+    crate::vault::password_generator_window::show_password_generator_window(&app, pos.x, pos.y);
     Ok(())
 }
 
@@ -128,12 +128,12 @@ pub fn password_generator_autotype(
 ) -> Result<(), String> {
     use tauri::Manager;
     // 1. hide 浮窗让浏览器回前台
-    if let Some(win) = app.get_webview_window(crate::password_generator_window::WINDOW_LABEL) {
+    if let Some(win) = app.get_webview_window(crate::vault::password_generator_window::WINDOW_LABEL) {
         let _ = win.hide();
     }
     // 2. sleep + verify_focused + 注入
     autotype::autotype_login("", &password, true, None)
-        .map_err(|_| crate::vault_error::serialize(&crate::vault_error::VaultError::AutoTypeFailed))?;
+        .map_err(|_| crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::AutoTypeFailed))?;
     log::info!("[password-generator] autotype 完成（{} 字符）", password.len());
     Ok(())
 }

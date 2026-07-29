@@ -9,8 +9,8 @@ use octopus_clipboard::ClipboardHandle;
 use octopus_vault::types::{Cipher, CipherData, RepromptType};
 
 use crate::runtime_config::SharedRuntimeConfig;
-use crate::vault_error::{self, VaultError};
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_error::{self, VaultError};
+use crate::vault::vault_state::SharedVaultSession;
 
 use super::{cipher_to_dto, require_user_vault_key, AutoTypeMode, CipherDto};
 
@@ -120,7 +120,7 @@ pub fn vault_autotype(
         username.len(),
         password.len()
     );
-    match crate::autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
+    match crate::vault::autotype::autotype_login_with_mode(&username, &password, mode, false, None) {
         Ok(()) => {
             log::info!("[vault-autotype] autotype_login Ok（已填充，mode={:?}）", mode);
             Ok(AutoTypeResult {
@@ -134,7 +134,7 @@ pub fn vault_autotype(
             // fallback：复制密码到剪贴板（必须先 suppress_next 防 watcher 入库）
             // 失败信息走 VaultError::AutoTypeFailed 的稳定 message，不透传内部细节。
             clipboard.suppress_next();
-            let _ = crate::autotype::copy_concealed(&password);
+            let _ = crate::vault::autotype::copy_concealed(&password);
             Ok(AutoTypeResult {
                 filled: false,
                 message: VaultError::AutoTypeFailed.user_message().to_string(),
@@ -214,7 +214,7 @@ pub fn vault_search_ciphers(
 pub fn vault_detect_and_match(
     state: State<'_, SharedVaultSession>,
     config: State<'_, SharedRuntimeConfig>,
-    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
+    url_cache: State<'_, crate::vault::vault_state::SharedPickerUrlCache>,
 ) -> Result<Vec<CipherDto>, String> {
     let key = require_user_vault_key(&state, &config).map_err(|e| vault_error::serialize(&e))?;
 
@@ -237,7 +237,7 @@ pub fn vault_detect_and_match(
         }
         None => {
             log::debug!("vault_detect_and_match: 缓存空，现抓 URL");
-            crate::autotype::current_browser_url()
+            crate::vault::autotype::current_browser_url()
                 .map_err(vault_error::to_tauri_error)?
                 .unwrap_or_default()
         }
@@ -285,7 +285,7 @@ pub fn vault_detect_and_match(
 /// 已经过了 detect 阶段）。读 + clone 廉价。
 #[tauri::command]
 pub fn vault_get_cached_url(
-    url_cache: State<'_, crate::vault_state::SharedPickerUrlCache>,
+    url_cache: State<'_, crate::vault::vault_state::SharedPickerUrlCache>,
 ) -> Result<Option<String>, String> {
     Ok(url_cache
         .lock()
@@ -333,7 +333,7 @@ pub fn vault_copy_password(
     if let CipherData::Login(l) = cipher.data {
         if let Some(pwd) = l.password {
             clipboard.suppress_next(); // BEFORE copy_concealed
-            crate::autotype::copy_concealed(&pwd).map_err(vault_error::to_tauri_error)?;
+            crate::vault::autotype::copy_concealed(&pwd).map_err(vault_error::to_tauri_error)?;
             return Ok(());
         }
     }
@@ -366,7 +366,7 @@ pub fn vault_copy_username(
             // 用户名不算高敏感（不在 reprompt 保护范围），但走 concealed 写入避免
             // 进 clipboard_history FTS 索引库（被搜索到也是隐私泄露）。
             clipboard.suppress_next();
-            crate::autotype::copy_concealed(&username).map_err(vault_error::to_tauri_error)?;
+            crate::vault::autotype::copy_concealed(&username).map_err(vault_error::to_tauri_error)?;
             return Ok(());
         }
     }

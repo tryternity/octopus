@@ -9,8 +9,8 @@ use octopus_vault::types::CipherData;
 
 use crate::error_util::e2s;
 use crate::runtime_config::SharedRuntimeConfig;
-use crate::vault_error::{self, VaultError};
-use crate::vault_state::SharedVaultSession;
+use crate::vault::vault_error::{self, VaultError};
+use crate::vault::vault_state::SharedVaultSession;
 
 use super::require_user_vault_key;
 
