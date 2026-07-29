@@ -995,7 +995,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **停止按钮**：emit `record://stop-requested` → 后端 listen → 调 `stop_and_store`（与 ESC/tray 同路径）。
 - **screenshot_commands 辅助函数 pub(crate)**：`get_window_cocoa_frame` / `get_primary_screen_height` / `active_display_for_point` 提升可见性供 record_area_picker 复用。
 
-**第四轮迭代：自动字幕**（2026-07-28，详见 [spec](superpowers/specs/2026-07-28-record-auto-subtitle-design.md) + [plan](superpowers/plans/2026-07-28-record-auto-subtitle.md)）：
+**第四轮迭代：自动字幕**（2026-07-28，详见 [spec](superpowers/specs/2026-07-28-record-auto-subtitle-design.md)；原 v1 DB 方案 plan 已删除 2026-07-29，v2 SRT 实施记录见下方 commit 索引）：
 - **手动触发**：录屏停止后用户在 RecordingRow 点「转字幕」按钮（激活原 Captions 灰禁占位）→ 抽 mic track → ASR → 入 DB + 可导出 SRT。不自动触发（用户可控、不阻塞视频就绪、ASR 失败不污染主流程）。
 - **方案 B（desktop 编排）**：record crate 加 `subtitle.rs`（mp4→PCM ffmpeg 抽轨 + SRT 格式化 + 选轨 + 数据模型，**无 ASR 依赖**）；asr-local 扩展 `pipeline.rs`（带时间戳 transcribe，复用 VAD/engine/后处理）；desktop 加 `generate_subtitle`/`export_subtitle`/`get_subtitle` 3 个 Tauri 命令编排两者。依赖方向：`infra ← record ← desktop → asr-local`（record 不依赖 asr-local，与 merge_audio_tracks 同模式）。
 - **VAD 段级时间戳**（核心改造）：`asr-local/audio.rs` 新增 `segment_audio_vad_with_offsets`（**不改原 `segment_audio_vad`**，复制状态机 + 追加 `offset_samples` 跟踪，一致性回归测试保护）。`pipeline.rs` 新增 `transcribe_segments_with_timestamps` 调它 + 逐段 `engine.transcribe` + 抽出的 `postprocess_text` helper（复用 corrector + ITN + hans，**transcribe_batch 零回归**）。过滤 <500ms 段 + 空文本段。短音频也走 VAD（字幕需要分段）。
@@ -1007,6 +1007,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 - **ASR 引擎跟随 Settings**：命令注入 `State<'_, Arc<AsrEngineManager>>`（main.rs:1051 已 manage）→ `active_engine()` + `PipelineConfig::from_app_config("zh")` → `transcribe_segments_with_timestamps`。模型名从 `resolve_active_engine("asr").name` 取。
 - **v2 架构（2026-07-28 e2e 后重构）**：存储从「DB 三列」改为「**SRT 文件**」——`.srt` 与 mp4 同目录同名 `xxx.N.srt`（N 从 1 递增，不覆盖）。回退 schema v54→v53（删 DB 三列 + RecordingMeta 三字段 + update_subtitle）。新增 `next_srt_path`（算下一个序号）+ `latest_srt_path`（找最新）+ `parse_srt`（解析回 cue，6 TDD）。命令层：删 get_subtitle/export_subtitle，新增 `read_subtitle`（从文件解析）+ `reveal_subtitle`（Finder 显示）。
 - **LLM 润色（2026-07-28，详见 [spec](superpowers/specs/2026-07-28-subtitle-llm-polish-design.md)）**：点「转字幕」弹对话框选是否润色 + 用哪个 LLM。整段润色（保留上下文）+ `[[N]]` 标记边界拆回 cue（`subtitle_polish.rs`：`build_polish_input` / `parse_polished_with_markers` / `split_polished_by_ratio`，11 TDD）。降级：标记解析失败→粗略拆分（按原 cue 字符比例切）；LLM 失败/panic→用原 ASR 文本。润色永不阻塞字幕生成。`polish_subtitle_cues` 用 `spawn_blocking` + `catch_unwind`（参考 coordinator.rs:1697-1724）。复用 `chat_text_with_prompt` + `system_prompt()` + `llm_config_ignore_mode()`。分层：润色逻辑在 desktop `subtitle_polish.rs`（record/asr-local 不依赖 octopus-llm）。`SubtitleProgress` 加 `Polishing` 阶段；`SubtitleResult.polish_outcome: Option<String>`（"polished"/"fallbackRatio"/"noLlmConfig"/"failed:msg"）。前端 SubtitlePolishDialog + Sparkles 签名元素 + Settings 默认配置（`subtitle_llm_polish_default` / `subtitle_polish_llm_key` 走 DB app_config 泛型 key-value，与 `record_*` 同范式）。
+- **v2 实施记录（commit 索引，原 v1 plan 已删）**：v1 DB 存储 → v2 SRT 文件重构 `eaeca817`（DB→文件）+ bugfix `e59477ca` / `7b929467` / `9342779e`；v2 新增 `next_srt_path` / `latest_srt_path` / `parse_srt`（6 TDD）。e2e 后 UI 改动：SubtitlePanel 行内展开→浮层 overlay `b90c399b`；删 P2 搜索框 + 字幕默认润色设置行 `c15389ff`；录屏删除改物理删除 + 弹框 `97c2f06c`（schema v53→v54，软删/回收站功能移除）；删除弹框 checkbox 默认不勾 `ced25fd3`。
 
 ## 性能优化批次（2026-07-17）
 
