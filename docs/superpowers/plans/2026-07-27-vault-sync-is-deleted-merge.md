@@ -1,5 +1,7 @@
 # Vault Sync is_deleted + updated_at merge 实施计划（plan）
 
+> **Status: ✅ 已完成**（Phase 1-6 全部实现，分支 feat/record-followup；替代了已废弃的 tombstone 方案。2026-07-29 z-sync 回填 checkbox）。spec 实现注记完整、architecture.md §vault sync 已覆盖 merge_vault + is_deleted 改造。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** vault_ciphers + vault_folders 的 `deleted_at`（TEXT 可空）→ `is_deleted`（INTEGER 0/1）；sync 的 pull+push 合并为按 `updated_at` 最新赢的单向 merge。
@@ -347,9 +349,9 @@ ciphers.filter(c => c.isDeleted)
 
 ### Task 6.2: 文档同步
 
-- [ ] spec 实现注记回填
-- [ ] architecture.md 更新（sync 章节）
-- [ ] z-sync-superpowers
+- [x] spec 实现注记回填
+- [x] architecture.md 更新（sync 章节）
+- [x] z-sync-superpowers
 
 ---
 

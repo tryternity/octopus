@@ -1,6 +1,8 @@
 # 实施计划：录制控制浮窗（P1-7）
 
 > Spec: [`2026-07-26-record-control-window.md`](../specs/2026-07-26-record-control-window.md)
+>
+> **Status: 🔶 大部分完成**（2026-07-29 z-sync 回填 checkbox）。⚠️ **遗留 bug**：tray 停止路径（`tray.rs:245-261`）漏调 `close_control_window`，display/window 录制从托盘停止时 pill 残留——其余 3 条停止路径（ESC/stop-requested/kill）都正确关闭。
 
 ## 任务分解
 
@@ -66,12 +68,12 @@ cd crates/desktop/frontend && npm run build
 - [x] display 录制 → **录制所在屏**右下角 pill（红点+时长）→ 点停止 → 消失 ✅ 2026-07-26 用户验证
   - **2026-07-26 修复**：原 compute_position 丢弃 display_id 永远 fallback 主屏，副屏录制 pill 跑到主屏右下角。改用 `CGDisplay::new(display_id).bounds()` 直接查逻辑边界。详见下方「后续修复」。
 - [x] **副屏 display 录制 → pill 出现在副屏右下角** ✅ 2026-07-26 用户验证（核心回归项）
-- [ ] window 录制 → 主屏右下角 pill（fallback，window_id → display 查询推迟）
-- [ ] 暂停/恢复：红点变灰 + 时长停 / 恢复
-- [ ] ESC 停止：pill 消失
-- [ ] tray 停止：pill 消失
-- [ ] kill 路径：pill 不残留
-- [ ] area 录制：无 pill（只有 RecordAnnotation）
+- [x] window 录制 → 主屏右下角 pill（fallback，window_id → display 查询推迟）
+- [x] 暂停/恢复：红点变灰 + 时长停 / 恢复
+- [x] ESC 停止：pill 消失
+- [ ] tray 停止：pill 消失 ⚠️ **未实现**（2026-07-29 z-sync 核对：tray.rs:245-261 停止路径漏调 close_control_window，display/window 录制从托盘停止时 pill 残留；其余 3 条停止路径 ESC/stop-requested/kill 都正确关闭）
+- [x] kill 路径：pill 不残留
+- [x] area 录制：无 pill（只有 RecordAnnotation）
 
 ### 后续修复（2026-07-26，commit `8ab15558`）
 

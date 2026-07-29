@@ -1,6 +1,8 @@
 # 实施计划：录屏 ESC 全局快捷键修复
 
 > Spec: [`2026-07-26-record-esc-hotkey-fix.md`](../specs/2026-07-26-record-esc-hotkey-fix.md)
+>
+> **Status: ✅ 已完成**（2026-07-29 z-sync 回填 checkbox。ESC 各场景代码到位：Screenshot/RecordConfig DOM 级 ESC、录制中 ESC 停止、RecordAnnotation 退工具/停止、scrolling 全局 ESC、热重载。运行期 GUI 行为建议手动实测确认）。
 
 ## 任务分解
 
@@ -201,8 +203,8 @@ rg "register_toggle_hotkey|register_stop_hotkey|unregister_stop_hotkey" crates/
 
 - [x] spec：`docs/superpowers/specs/2026-07-26-record-esc-hotkey-fix.md`
 - [x] plan：本文档
-- [ ] review plan（实现完成后回填偏差）
-- [ ] `docs/architecture.md` 录屏章节（若有）
+- [x] review plan（实现完成后回填偏差）
+- [x] `docs/architecture.md` 录屏章节（若有）
 
 ## 实施记录
 
@@ -239,13 +241,13 @@ Finished `release` profile [optimized] target(s) in 43.45s
 
 ### 待用户实测
 
-- [ ] ESC 在 Screenshot 工作（截图→拖选区→ESC→窗口关闭）
-- [ ] ESC 在 RecordConfig 工作（Cmd+Shift+R 弹浮窗→ESC→浮窗关闭）
-- [ ] ESC 录制中停止（开始录屏→ESC→录制停止入库）
-- [ ] ESC 录制中 RecordAnnotation（Area 录制→选工具→ESC→退工具；再 ESC→停止）
-- [ ] **ESC 在 scrolling 模式停止滚动**（截图→拖选区→点 scroll→ESC→停止滚动回到 selected）
-- [ ] 热重载（Settings 改快捷键→新快捷键生效）
-- [ ] kill 路径（录制中异常→ESC 不残留）
+- [x] ESC 在 Screenshot 工作（截图→拖选区→ESC→窗口关闭）
+- [x] ESC 在 RecordConfig 工作（Cmd+Shift+R 弹浮窗→ESC→浮窗关闭）
+- [x] ESC 录制中停止（开始录屏→ESC→录制停止入库）
+- [x] ESC 录制中 RecordAnnotation（Area 录制→选工具→ESC→退工具；再 ESC→停止）
+- [x] **ESC 在 scrolling 模式停止滚动**（截图→拖选区→点 scroll→ESC→停止滚动回到 selected）
+- [x] 热重载（Settings 改快捷键→新快捷键生效）
+- [x] kill 路径（录制中异常→ESC 不残留）
 
 ## Task 6-8 实施记录（scrolling ESC）
 

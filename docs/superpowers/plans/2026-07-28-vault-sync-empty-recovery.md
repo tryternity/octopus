@@ -114,7 +114,7 @@ vault sync 章节（如有）补一句：空库 + stamp 不一致 → 跳过校�
 
 ## Phase 5: E2E（用户验证）
 
-- [ ] **用户清库重建后同步验证**
+- [ ] **用户清库重建后同步验证** ⚠️ **需手动 e2e**（2026-07-29 z-sync 核对：代码 + 单测 `merge_vault_recovers_when_local_empty_and_stamp_differs` 已就绪，缺真实用户端 e2e——删本地 DB → 重建 vault → 真实 git 同步拉回 → 解密验证）
 
 用户执行：
 1. `rm ~/.octopus/octopus.db*`
