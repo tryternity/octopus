@@ -116,8 +116,6 @@ mod window_factory;
 mod window_position;
 
 use coordinator::Coordinator;
-#[cfg(not(feature = "cloud"))]
-use engine_embedded::EmbeddedEngine;
 use log::info;
 use tauri::Manager;
 
@@ -545,91 +543,6 @@ pub fn run() {
                 db_queue::shutdown_db();
             }
         });
-}
-
-/// 启动时孤儿录屏文件清理。
-///
-/// 场景：上次录制 crash / 强制 kill 后，helper 写出的 .mp4 没入库就成了孤儿。
-/// 启动时扫 `recordings/`，DB 不认得的文件直接删除（避免占用磁盘）。
-///
-/// 与 clipboard cleanup 同模式：通过 `octopus_infra::db::with_db` 拿连接，
-/// 调 `RecordStore::list_all_file_paths` 取 DB 已知 file_path 集合，
-/// 再扫目录比对。失败不阻塞启动（log::warn 继续）。
-#[cfg(target_os = "macos")]
-fn cleanup_orphan_recordings(conn: &rusqlite::Connection) {
-    let store = octopus_record::RecordStore::new(conn);
-    let known_files = match store.list_all_file_paths() {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("[record] 孤儿清理查询失败: {e}");
-            return;
-        }
-    };
-
-    let recordings_dir = octopus_infra::paths::recordings_dir();
-    let entries = match std::fs::read_dir(&recordings_dir) {
-        Ok(e) => e,
-        Err(_) => return, // 目录不存在是正常的（首次启动或从未录制过）
-    };
-
-    // ⚠️ file_path 在 DB 里存的是绝对路径（2026-07-27 保存目录可配置后改），
-    // list_all_file_paths 直接返回 DB 原值（绝对路径）。磁盘文件用 entry.path() 也是绝对路径，
-    // 两者都是绝对路径，直接 to_string_lossy 比较即可。
-    //
-    // 曾有 bug（2026-07-28 e2e 发现）：旧代码 strip_prefix(octopus_root) 把磁盘文件转成相对路径
-    // 再与 DB 的绝对路径比较 → 永远不匹配 → 所有录屏文件被当孤儿删掉（数据丢失）。
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let abs = path.to_string_lossy().to_string();
-        if octopus_record::RecordStore::is_orphan(&abs, &known_files) {
-            log::warn!("[record] 孤儿文件清理: {abs}");
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
-/// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
-///
-/// 仅在未启用 `dashscope` feature 时使用（dashscope 下由 DispatchEngine 统一路由）。
-#[cfg(not(feature = "cloud"))]
-fn build_local_engine(
-    config: &octopus_infra::config::AppConfig,
-    engine_manager: &std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
-) -> std::sync::Arc<dyn crate::engine::TranscriptionEngine> {
-    match config.engine_mode.as_str() {
-        "embedded" => std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone())),
-        #[cfg(feature = "remote-ws")]
-        "websocket" => std::sync::Arc::new(engine_ws::WsRemoteEngine::new(&config.remote_url)),
-        #[cfg(feature = "remote-grpc")]
-        "grpc" => std::sync::Arc::new(engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
-        other => {
-            log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
-            std::sync::Arc::new(EmbeddedEngine::new(engine_manager.clone()))
-        }
-    }
-}
-
-/// 递归计数目录下的 .app 数量（深度 ≤2，不进入 .app 包内部）。
-/// 用于后台轮询快速检测新装/卸载的 app（不提取 icon，毫秒级）。
-fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
-    const MAX_DEPTH: u32 = 2;
-    if depth > MAX_DEPTH {
-        return 0;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-    let mut count = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("app") {
-            count += 1;
-        } else if path.is_dir() {
-            count += count_apps_in_dir(&path, depth + 1);
-        }
-    }
-    count
 }
 
 fn main() {

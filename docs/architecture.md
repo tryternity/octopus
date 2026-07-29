@@ -282,7 +282,12 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 基于 Tauri 2 的桌面应用，支持系统托盘、全局快捷键、结果窗口、流式识别。
 
-**入口拆分**（2026-07-29 进行中）：`main.rs::run()`（原 1266 行）拆分第一步——初始化逻辑提取到 `bootstrap.rs::bootstrap() -> AppConfig`（panic hook → config → DB ensure → 模型软链 → 引擎预热 → 润色配置 → prompt 加载），setup 闭包（~741 行）待后续拆分。
+**入口拆分**（2026-07-29 已完成三步）：`main.rs::run()`（原 1266 行）按职责分层提取：
+1. **bootstrap.rs** — `bootstrap() -> AppConfig`（panic hook → config → DB ensure → 模型软链 → 引擎预热 → 润色配置 → prompt 加载）
+2. **setup.rs::AppSetup** — 原 setup 闭包（~741 行）提取为结构体，`run()` 只剩 `bootstrap() → Builder 链 → .setup(AppSetup::run) → app.run()`
+3. **setup_all 12 方法拆分** — 587 行 `setup_all` 拆成 12 个 `&mut self` 方法（init_clipboard / init_cleanup / init_scheduler / init_watchers / init_input / create_windows / init_engine / init_vault / init_coordinator / init_tray / create_result_window / register_shortcuts），跨段共享变量提升为 `Option` 字段（clipboard_handle / engine_manager）
+
+`main.rs` 经此三步 + 启动工具函数搬家（`cleanup_orphan_recordings` / `build_local_engine` / `count_apps_in_dir` 移入 setup.rs 底部）后降至 580 行，仅剩 `run()`（Builder + plugins + invoke_handler + app.run 事件循环）+ `main()` + `feature_flags` 测试模块。
 
 **识别模式：**
 
