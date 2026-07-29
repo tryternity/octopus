@@ -8,29 +8,27 @@ pub struct CleanupResult {
 }
 
 /// 执行自动清理：
-/// 1. 按天数删除（is_favorite=0）——图片物理删，文本软删
-/// 2. 按数量删除（总条数超 max_items）——**先永久删回收站最老的，再软删活跃项**
+/// 1. 按天数删除（is_favorite=0，超龄）——全部物理 DELETE（容量管理，不进回收站）
+/// 2. 按数量删除（总条数超 max_items）——永久删最老的（回收站优先 → 活跃项）
 /// 3. 孤立 blob 回收
-/// 4. FTS5 索引重建（仅在有物理删除 / 回收时；纯软删不破坏 FTS，无需重建）
+/// 4. FTS5 索引重建（物理删除触发 DB trigger 已保证一致性，此处 rebuild 为冗余保险）
+///
+/// 注：自动清理属于容量管理，不走软删——容量超限时软删进回收站毫无意义
+/// （回收站本身就在超限，下一轮又被永久删）。软删仅由前端 delete_item 等入口触发（仅 voice）。
 pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Result<CleanupResult> {
     let mut deleted = 0;
-    let mut physical_deleted = 0; // 仅物理删除才需 FTS 重建
 
-    // 1. 按天数删除
-    let (soft, phys) = delete_by_age(conn, max_age_days)?;
-    deleted += soft + phys;
-    physical_deleted += phys;
+    // 1. 按天数删除（全部物理删）
+    deleted += delete_by_age(conn, max_age_days)?;
 
-    // 2. 按数量删除（先清回收站，再清活跃项）
-    let (soft, phys) = delete_by_count(conn, max_items)?;
-    deleted += soft + phys;
-    physical_deleted += phys;
+    // 2. 按数量删除（先清回收站，再清活跃项，全部物理删）
+    deleted += delete_by_count(conn, max_items)?;
 
     // 3. 无引用 image_data BLOB 清理
     let reclaimed = crate::store::cleanup_unreferenced_images(conn)?;
 
-    // 4. FTS5 重建（仅在有物理删除 / blob 回收时；软删不触发 FTS trigger，索引保持一致）
-    if physical_deleted > 0 || reclaimed > 0 {
+    // 4. FTS5 重建（物理删除已触发 trigger，rebuild 作为冗余保险）
+    if deleted > 0 || reclaimed > 0 {
         let _ = conn.execute(
             "INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')",
             [],
@@ -43,25 +41,16 @@ pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Resu
     })
 }
 
-/// 按天数清理（is_favorite=0，超龄）：图片物理 DELETE，文本软删 UPDATE。
-/// 返回 (soft_deleted, physical_deleted)。
-fn delete_by_age(conn: &Connection, max_age_days: u32) -> Result<(usize, usize)> {
+/// 按天数清理（is_favorite=0，超龄）：全部物理 DELETE（容量管理，不进回收站）。
+fn delete_by_age(conn: &Connection, max_age_days: u32) -> Result<usize> {
     let age_clause = format!("-{} days", max_age_days);
-    // 图片物理删
-    let phys = conn.execute(
+    let deleted = conn.execute(
         "DELETE FROM clipboard_history
-         WHERE is_favorite = 0 AND item_type = 'image' AND is_deleted = 0
+         WHERE is_favorite = 0 AND is_deleted = 0
          AND created_at < datetime('now', ?)",
         [&age_clause],
     )?;
-    // 文本软删
-    let soft = conn.execute(
-        "UPDATE clipboard_history SET is_deleted = 1
-         WHERE is_favorite = 0 AND item_type != 'image' AND is_deleted = 0
-         AND created_at < datetime('now', ?)",
-        [&age_clause],
-    )?;
-    Ok((soft, phys))
+    Ok(deleted)
 }
 
 /// 按数量清理（总条数超 max_items 时）。
@@ -69,11 +58,11 @@ fn delete_by_age(conn: &Connection, max_age_days: u32) -> Result<(usize, usize)>
 /// **清理顺序**（用户要求：先清回收站，再清正常项）：
 /// 1. 计算总条数（活跃 + 回收站，is_favorite=0）
 /// 2. 超出 max_items 的部分，**先永久删回收站最老的**（物理 DELETE，腾出空间）
-/// 3. 如果回收站清空后仍超限，**再软删活跃文本**（进回收站）
+/// 3. 如果回收站清空后仍超限，**再永久删活跃项**（物理 DELETE，最老的优先）
 ///
-/// 图片在回收站和活跃区都走物理删（image_data 引用计数约束）。
-/// 返回 (soft_deleted, physical_deleted)。
-fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> {
+/// 全部物理删（容量管理不走软删——容量超限时软删进回收站毫无意义，
+/// 回收站本身就在超限，下一轮又被永久删）。返回删除条数。
+fn delete_by_count(conn: &Connection, max_items: u32) -> Result<usize> {
     // 总条数 = 活跃 + 回收站（非收藏）
     let total: i64 = conn.query_row(
         "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0",
@@ -82,11 +71,11 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
     )?;
 
     if total <= max_items as i64 {
-        return Ok((0, 0));
+        return Ok(0);
     }
 
     let mut excess = total - max_items as i64;
-    let mut phys = 0usize;
+    let mut deleted = 0usize;
 
     // 第一步：先永久删回收站最老的（物理 DELETE 腾空间）
     if excess > 0 {
@@ -96,7 +85,7 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
         )?;
         if trash_count > 0 {
             let to_delete = excess.min(trash_count);
-            phys += conn.execute(
+            deleted += conn.execute(
                 "DELETE FROM clipboard_history WHERE id IN (
                     SELECT id FROM clipboard_history
                     WHERE is_favorite = 0 AND is_deleted = 1
@@ -108,32 +97,20 @@ fn delete_by_count(conn: &Connection, max_items: u32) -> Result<(usize, usize)> 
         }
     }
 
-    // 第二步：回收站清空后仍超限 → 永久删活跃项（物理 DELETE）。
-    // 不走软删——容量超限时软删进回收站毫无意义（回收站本身就在超限，下一轮又被永久删）。
+    // 第二步：回收站清空后仍超限 → 永久删活跃项（物理 DELETE，最老的优先）。
     if excess > 0 {
-        // 活跃图片物理删（最老的）
-        phys += conn.execute(
+        deleted += conn.execute(
             "DELETE FROM clipboard_history
              WHERE id IN (
                  SELECT id FROM clipboard_history
-                 WHERE is_favorite = 0 AND item_type = 'image' AND is_deleted = 0
-                 ORDER BY created_at ASC LIMIT ?
-             )",
-            [excess],
-        )?;
-        // 活跃文本永久删（最老的）
-        phys += conn.execute(
-            "DELETE FROM clipboard_history
-             WHERE id IN (
-                 SELECT id FROM clipboard_history
-                 WHERE is_favorite = 0 AND item_type != 'image' AND is_deleted = 0
+                 WHERE is_favorite = 0 AND is_deleted = 0
                  ORDER BY created_at ASC LIMIT ?
              )",
             [excess],
         )?;
     }
 
-    Ok((0, phys))
+    Ok(deleted)
 }
 
 #[cfg(test)]

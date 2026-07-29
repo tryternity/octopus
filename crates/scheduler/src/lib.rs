@@ -46,7 +46,7 @@ impl ScheduledTask {
 /// 用法：
 /// ```no_run
 /// let mut scheduler = octopus_scheduler::Scheduler::new();
-/// scheduler.register_task("trash_purge", 600, Box::new(|| {
+/// scheduler.register_task("clipboard_cleanup", 600, Box::new(|| {
 ///     // 业务逻辑（scheduler 不知道这里做什么）
 /// }));
 /// scheduler.spawn(); // 后台线程，永不退出

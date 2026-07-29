@@ -793,14 +793,6 @@ settings:
     groupStatus: 状态
     filterFavorite: 收藏
     filterNonFavorite: 非收藏
-    filterTrash: 回收站
-    restore: 还原
-    permanentDelete: 永久删除
-    emptyTrash: 全部清空
-    trashEmpty: 回收站为空
-    restored: 已还原
-    permanentlyDeleted: 已永久删除
-    trashEmptied: 回收站已清空
     loadFailed: "加载失败："
     deletedN: 已删除 ${n} 条
     deleteFailed: "删除失败："

@@ -368,12 +368,6 @@ pub fn run() {
             clipboard_commands::delete_clipboard_items,
             clipboard_commands::clear_clipboard_history,
             clipboard_commands::clear_clipboard_history_by_filter,
-            // 回收站操作（2026-07-22 v47 软删）
-            clipboard_commands::restore_clipboard_item,
-            clipboard_commands::restore_clipboard_items,
-            clipboard_commands::permanent_delete_clipboard_item,
-            clipboard_commands::permanent_delete_clipboard_items,
-            clipboard_commands::empty_clipboard_trash,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
             clipboard_commands::paste_clipboard_item,
@@ -699,9 +693,9 @@ pub fn run() {
             // 通用调度器：每 10 分钟醒一次，CPU 空闲时执行注册的任务。
             // 统一管所有剪贴板定时清理（2026-07-22 合并了原每小时固定线程）。
             //
-            // 任务 1 — clipboard_cleanup：按天数 + 按数量清理（用户可配的 max_age_days / max_items）。
-            //   容量超限时先永久删回收站最老的，不够再软删活跃文本。
-            // 任务 2 — trash_purge：回收站 TTL（3 天）+ 容量上限（500 条）自动永久删。
+            // 任务 — clipboard_cleanup：按天数 + 按数量清理（用户可配的 max_age_days / max_items）。
+            //   全部物理删（容量管理不走软删）。voice 软删的 100 条回收站上限
+            //   已在 delete_item / clear_history 等入口实时 enforce（2026-07-29），无需后台任务。
             {
                 let mut scheduler = octopus_scheduler::Scheduler::new();
                 scheduler.register_task("clipboard_cleanup", 600, Box::new(|| {
@@ -712,13 +706,6 @@ pub fn run() {
                         octopus_clipboard::cleanup::run_cleanup(conn, max_age, max_items)
                     }) {
                         log::warn!("Scheduled clipboard cleanup failed: {}", e);
-                    }
-                }));
-                scheduler.register_task("trash_purge", 600, Box::new(|| {
-                    if let Err(e) = octopus_infra::db::with_db(|conn| {
-                        octopus_clipboard::store::purge_trash(conn, 3, 500)
-                    }) {
-                        log::warn!("Trash purge failed: {}", e);
                     }
                 }));
                 // vault 自动同步（Phase 2，2026-07-22）：
