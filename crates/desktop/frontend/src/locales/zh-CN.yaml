@@ -67,6 +67,7 @@ settings:
     system: 系统状态
     vault: 密码保险库
     recordings: 录屏管理
+    env: 环境与路径
   recordings:
     title: 录屏
     subtitle: 管理屏幕录制文件
@@ -466,6 +467,12 @@ settings:
     autoCleanDays: 自动清理天数
     autoCleanDaysHint: 超过此天数的非收藏记录自动删除
     shortcutRecordingHint: 按下快捷键…（Esc 取消）
+  env:
+    pathsTitle: 保存路径
+    recordings: 录屏
+    screens: 截图
+    reset: 重置
+    envVarsTitle: 环境变量
   models:
     tab:
       env: 环境设置
