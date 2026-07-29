@@ -92,7 +92,7 @@ export default function RecordConfig() {
   // 录屏停止后自动 Finder 高亮文件——持久化到 DB（record_reveal_after_stop，默认 true）。
   // 与 fps/codec 不同（那俩是 session-only），这个是跨 session 行为，必须持久化。
   const [revealAfterStop, setRevealAfterStop] = useState(true);
-  // 保存目录（用户可配置，绝对路径）。空=默认 ~/.octopus/recordings/。
+  // 保存目录（用户可配置，绝对路径）。空=默认 ~/Documents/octopus/recordings/。
   const [outputDir, setOutputDir] = useState<string>("");
 
   // 从 DB 读 revealAfterStop + outputDir 配置（一次 get_config 批量拿）。
@@ -367,8 +367,8 @@ export default function RecordConfig() {
           >
             <FolderOpen className="w-3.5 h-3.5 flex-shrink-0" />
             <span className="flex-shrink-0">{t("recordConfig.outputDir")}</span>
-            <span className="flex-1 text-right text-foreground truncate" title={outputDir || "~/.octopus/recordings/"}>
-              {outputDir || "~/.octopus/recordings/"}
+            <span className="flex-1 text-right text-foreground truncate" title={outputDir || "~/Documents/octopus/recordings/"}>
+              {outputDir || "~/Documents/octopus/recordings/"}
             </span>
           </button>
         </div>

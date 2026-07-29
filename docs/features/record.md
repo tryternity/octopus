@@ -43,6 +43,6 @@ vendor openscreen 项目的 ScreenCaptureKit helper（`crates/record/native/maco
 
 ## 存储与配置
 
-- **路径** `~/download/octopus/recordings/`（可配，DB `record_output_dir`）
+- **路径** `~/Documents/octopus/recordings/`（可配，DB `record_output_dir`）
 - **DB** `recordings` 表（schema v54）：id / file_path（绝对路径）/ source / source_type / duration_ms / audio_tracks（JSON）/ has_audio / created_at / is_favorite
 - **配置项**（DB app_config 表）：`record_microphone_device` / `record_output_dir` / `record_reveal_after_stop` / `subtitle_llm_polish_default` 等
