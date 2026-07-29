@@ -1,6 +1,6 @@
 # coordinator.rs 拆分 spec（desktop crate 大文件重构 #1）
 
-> **Status: 🔨 待实现**（2026-07-29，分支 `daily_refactor_coordinator`）
+> **Status: ✅ 已实现**（2026-07-29，分支 `daily_refactor_coordinator`）
 
 ## 背景
 
@@ -109,3 +109,40 @@ mod.rs 保留的共享类型/常量，子模块通过 `use super::*` 引入：
 - 不改 Stage 状态机（不变体、不合并）
 - 不重构 handler 内部逻辑（只搬家）
 - 不处理 coordinator.rs 以外的文件
+
+## 实施记录（review）
+
+### 最终目录结构
+
+```
+crates/desktop/src/coordinator/
+├── mod.rs           # 860 行（原 3085）：types + build_coordinator_loop + tauri commands + struct + 常量 + 6 个 mod.rs 本地测试
+├── paste.rs         # 217 行：do_paste / update_transcription_raw / 通用工具（now_millis / active_*_name / stage_name / sync_runtime_fields）
+├── edit.rs          # 141 行：handle_enter_edit_mode / commit_edit_apply / stage_transcript
+├── tick.rs          # 241 行：dispatch_tick / apply_pipeline_events / 3 个 tick 线程 / check_audio_stall / log_tick_heartbeat / is_cloud_engine
+├── agent.rs         # 235 行：dispatch_by_record_type / execute_agent_task / parse_agent_context / retry_agent_task / AgentContext / agent_task_id_in_stage
+├── cancel_discard.rs# 250 行：handle_cancel / handle_discard / DiscardDbInfo
+├── session.rs       # 296 行：begin_recording / prepare_streaming_session / prepare_cloud_streaming_session / prepare_vad_segmented_session
+├── polish.rs        # 512 行：spawn_polish_thread / polish_input_to_regions / check_and_trigger_polish / handle_polish_done / handle_final_polish_done / handle_polish_now / start_final_polish_or_paste
+└── lifecycle.rs     # 522 行：handle_toggle / restart_capture_keep_transcript / finalize_after_stop / finalize_cloud / handle_cloud_streaming_done
+```
+
+### 偏差与决策
+
+1. **agent_task_id_in_stage 归属**：spec 原列在 cancel_discard.rs，实际放在 agent.rs（它从 Stage 提取 AgentBridge task_id，语义属 agent 域；cancel_discard.rs 直接 `use super::agent::agent_task_id_in_stage` 引用）。
+
+2. **re-export 渐进精简**：阶段 1 每个 Task 在 mod.rs 加 `pub(crate) use self::<module>::{...}` re-export 让裸调用零改动。阶段 2 Task 2.3 发现主循环不再直接调用一批函数（do_paste / active_asr_engine_name / start_*_tick_thread / dispatch_by_record_type 等），随相关函数搬入子模块后这些 re-export 变成死代码，全部移除 + 清理不再使用的 type imports（PolishMode / StreamingPipeline / StreamingSessionManager / TranscriptEvent / Manager）。
+
+3. **finalize_after_stop 直接路径**：tick.rs 与 polish.rs 用 `use super::lifecycle::finalize_after_stop`（直接模块路径），不经 mod.rs re-export 中转。
+
+4. **通用工具函数放 paste.rs**：spec 原列 `now_millis` / `active_asr_engine_name` / `active_llm_name` / `sync_runtime_fields` / `stage_name` 在 paste.rs——实际确认这些是跨多模块的通用工具，放 paste.rs（第一个搬出的子模块）合理，其他子模块用 `use super::paste::<fn>` 引用。
+
+5. **共享符号可见性**：Stage / Command / RecordType / RestartStageKind / CURRENT_TRANSCRIPTION_ID / TRANSLATION_ACTIVE / 各 tick 常量 / FALLBACK_STREAMING_SPEC / DB_FLUSH_INTERVAL_MS / MIN_POLISH_INTERVAL_SEC 全部提升为 `pub(crate)`。
+
+### 验证结果
+
+- ✅ `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features remote-ws` — 0 error 0 warning
+- ✅ `cargo build -p octopus-desktop --features remote-grpc` — 0 error 0 warning
+- ✅ `cargo test -p octopus-desktop` — **441 passed, 0 failed, 1 ignored**

@@ -207,10 +207,30 @@ cargo test -p octopus-desktop
 
 ## 验证 checklist（每步必跑）
 
-- [ ] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
-- [ ] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning（涉及 cloud gate 的 task）
-- [ ] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
-- [ ] git diff 确认：只搬函数，无逻辑改动（`git diff --stat` 看增删行数对称）
+- [x] `cargo build -p octopus-desktop --features embedded` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features embedded,cloud,vault` — 0 error 0 warning（涉及 cloud gate 的 task）
+- [x] `cargo build -p octopus-desktop --features remote-ws` — 0 error 0 warning
+- [x] `cargo build -p octopus-desktop --features remote-grpc` — 0 error 0 warning
+- [x] `cargo test -p octopus-desktop` — 441 passed, 0 failed, 1 ignored
+- [x] git diff 确认：只搬函数，无逻辑改动（`git diff --stat` 看增删行数对称）
+
+## 实施完成（2026-07-29）
+
+全部 9 个 Task 完成，每个独立 commit：
+
+| Task | commit | 内容 |
+|---|---|---|
+| 0.1 | fbf86a9d | coordinator.rs → coordinator/mod.rs 目录化 |
+| 1.1 | 07041dc2 | paste.rs（do_paste + 通用工具） |
+| 1.2 | d9bad686 | edit.rs（编辑态） |
+| 1.3 | 855fb001 | tick.rs（tick 线程 + pipeline 事件路由 + 看门狗） |
+| 1.4 | ab34a428 | agent.rs（命令面板 agent 集成） |
+| 1.5 | 0e82fbcc | cancel_discard.rs（Cancel/Discard 出口） |
+| 2.1 | 566c3b47 | session.rs（3 引擎分支会话准备） |
+| 2.2 | 4880cf78 | polish.rs（润色相关） |
+| 2.3 | 6eb2bd2d | lifecycle.rs（Toggle/Stop/Finalize 生命周期） |
+
+**最终结果**：coordinator.rs 3085 → mod.rs 860 行 + 8 个子模块（每个 141–522 行）。
 
 ## 回滚策略
 
