@@ -55,7 +55,7 @@ pub fn trigger_action_bar(app: AppHandle) {
                 // （原异步方案在 ActionBar 获焦后 frontmost 可能变成 octopus 自己）。
                 // 代价：热键到弹出增加 gather 耗时（Sublime ~50-150ms，AX 上限 500ms）。
                 let mut ctx = ActionBarContext::text(text.clone());
-                match crate::app_context::gather_context(text) {
+                match crate::platform::app_context::gather_context(text) {
                     Ok(extra) => {
                         log_app_context(text, &extra);
                         ctx.source = Some(extra.source);

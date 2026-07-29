@@ -51,7 +51,7 @@ pub fn show_record_window(app: &AppHandle) {
         ));
 
         // macOS：浮窗 show 前隐藏常规窗口，避免 Regular 策略激活把主窗口带前台
-        crate::activation::before_floating_window_show(app);
+        crate::platform::activation::before_floating_window_show(app);
 
         let _ = win.show();
         let _ = win.set_focus();
@@ -64,7 +64,7 @@ pub fn show_record_window(app: &AppHandle) {
 pub fn hide_record_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.hide();
-        crate::activation::after_floating_window_hide(app);
+        crate::platform::activation::after_floating_window_hide(app);
     }
 }
 

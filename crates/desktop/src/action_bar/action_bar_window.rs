@@ -37,7 +37,7 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         ));
 
         #[cfg(target_os = "macos")]
-        { crate::activation::before_floating_window_show(app); }
+        { crate::platform::activation::before_floating_window_show(app); }
 
         let _ = win.show();
         let _ = win.set_focus();
@@ -129,7 +129,7 @@ pub fn hide_action_bar_window(app: &AppHandle) {
     }
 
     #[cfg(target_os = "macos")]
-    { crate::activation::after_floating_window_hide(app); }
+    { crate::platform::activation::after_floating_window_hide(app); }
 }
 
 /// 注册全局热键。与 register_clipboard_shortcut 范式一致。

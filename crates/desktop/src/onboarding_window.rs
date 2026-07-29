@@ -17,7 +17,7 @@ pub fn open_onboarding(app_handle: &tauri::AppHandle) {
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
             let ah = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                crate::activation::activate_self();
+                crate::platform::activation::activate_self();
                 let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
             });
         }
@@ -32,7 +32,7 @@ pub fn open_onboarding(app_handle: &tauri::AppHandle) {
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
         let _ = app_handle.run_on_main_thread(|| {
-            crate::activation::activate_self();
+            crate::platform::activation::activate_self();
             crate::settings_window::set_dock_icon();
         });
     }
@@ -60,7 +60,7 @@ pub fn open_onboarding(app_handle: &tauri::AppHandle) {
 /// 引导窗口关闭后回调：切回 Accessory（仅托盘）。
 #[cfg(target_os = "macos")]
 pub fn on_onboarding_closed(app_handle: &tauri::AppHandle) {
-    crate::activation::restore_accessory_if_no_regular_window(app_handle);
+    crate::platform::activation::restore_accessory_if_no_regular_window(app_handle);
 }
 
 /// 完成 onboarding：写 DB flag + 触发延迟的 recorder.open（首次启动时）+ 关窗。

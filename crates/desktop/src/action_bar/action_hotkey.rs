@@ -131,7 +131,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     // 注意：只在 Text 分支调（File/Folder 走 trigger 路径由 trigger_action_bar 负责），
     // 且 gather 内部已含 run_command_with_deadline 兜底（osascript/lsof 等 500ms 超时）。
     let mut ctx = crate::action_bar::action_bar_commands::ActionBarContext::text(text.clone());
-    match crate::app_context::gather_context(&text) {
+    match crate::platform::app_context::gather_context(&text) {
         Ok(extra) => {
             ctx.source = Some(extra.source);
             ctx.surrounding = extra.surrounding;
@@ -150,7 +150,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     #[cfg(target_os = "macos")]
     {
         let _ = app.run_on_main_thread(|| {
-            crate::activation::activate_self();
+            crate::platform::activation::activate_self();
         });
     }
 
@@ -164,7 +164,7 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
         if win.is_visible().unwrap_or(false) {
             let _ = win.hide();
             #[cfg(target_os = "macos")]
-            { crate::activation::after_floating_window_hide_keep_active(app); }
+            { crate::platform::activation::after_floating_window_hide_keep_active(app); }
             crate::action_bar::action_bar_commands::finalize_action_bar_pub(app);
         }
     }

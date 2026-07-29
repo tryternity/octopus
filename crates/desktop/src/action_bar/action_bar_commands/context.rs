@@ -10,7 +10,7 @@
 //! - `get_mouse_position`（mac CGEvent / 非 mac None）。
 
 use tauri::{AppHandle, Manager};
-use crate::focus_tracker::FocusTracker;
+use crate::platform::focus_tracker::FocusTracker;
 // 父模块共享状态 + 经 glob re-export 的兄弟 helper
 use super::{
     PENDING_CONTEXT,
@@ -33,9 +33,9 @@ pub struct ActionBarContext {
     pub text: Option<String>,
     pub files: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<crate::app_context::AppSource>,
+    pub source: Option<crate::platform::app_context::AppSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub surrounding: Option<crate::app_context::SurroundingText>,
+    pub surrounding: Option<crate::platform::app_context::SurroundingText>,
 }
 
 impl ActionBarContext {
@@ -141,8 +141,8 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     });
 
     // ── Finder 分支：AppleScript 直接拿 selection ──
-    if crate::finder_selection::is_finder_frontmost() {
-        return match crate::finder_selection::get_finder_selection() {
+    if crate::platform::finder_selection::is_finder_frontmost() {
+        return match crate::platform::finder_selection::get_finder_selection() {
             Ok(files) if !files.is_empty() => {
                 let has_folder = files.iter().any(|p| std::path::Path::new(p).is_dir());
                 let parent_dir = common_parent_dir(&files);
@@ -170,9 +170,9 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     // 导致 changeCount +1 且剪贴板有当前行内容，changeCount 方案误判为"有选中"。
     // 插件的 sel_start/sel_end 能精确区分有无选中，不依赖 Cmd+C。
     #[cfg(target_os = "macos")]
-    if crate::app_context::sublime_plugin::is_sublime_frontmost() {
+    if crate::platform::app_context::sublime_plugin::is_sublime_frontmost() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        return match crate::app_context::sublime_plugin::get_sublime_selection(deadline) {
+        return match crate::platform::app_context::sublime_plugin::get_sublime_selection(deadline) {
             Some(text) => {
                 log::info!("[action-bar] Sublime 插件选区: len={}, mouse=({},{})", text.len(), mouse.0, mouse.1);
                 Selection::Text { text, mouse }
@@ -219,8 +219,8 @@ pub(crate) fn detect_selection(app: &AppHandle) -> Selection {
     //
     // 微信超时由 WECHAT_COPY_POLL_TIMEOUT_MS 控制，方便后续调整。
     let poll_timeout_ms = match copy_dispatch {
-        crate::focus_tracker::CopyDispatch::Osascript => WECHAT_COPY_POLL_TIMEOUT_MS,
-        crate::focus_tracker::CopyDispatch::CGEvent => 80,
+        crate::platform::focus_tracker::CopyDispatch::Osascript => WECHAT_COPY_POLL_TIMEOUT_MS,
+        crate::platform::focus_tracker::CopyDispatch::CGEvent => 80,
     };
     let poll_deadline = std::time::Instant::now() + std::time::Duration::from_millis(poll_timeout_ms);
     let mut change_count_after = change_count_before;
@@ -307,7 +307,7 @@ fn action_bar_show_result_internal(
             let _ = win.hide();
         }
         #[cfg(target_os = "macos")]
-        { crate::activation::after_floating_window_hide_keep_active(&app); }
+        { crate::platform::activation::after_floating_window_hide_keep_active(&app); }
         finalize_action_bar(&app);
     }
 
@@ -377,7 +377,7 @@ fn pasteboard_change_count() -> i64 { 0 }
 
 /// 将采集到的应用上下文以结构化文本追加写入 ~/.octopus/logs/action-bar.log，
 /// 方便直接验证 AX 取数结果（而非通过 AI 结果间接判断）。
-pub(crate) fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext) {
+pub(crate) fn log_app_context(selected_text: &str, extra: &crate::platform::app_context::ExtraContext) {
     let log_path = context_log_path();
 
     let entry = format_context_entry(selected_text, extra);
@@ -397,13 +397,13 @@ fn context_log_path() -> std::path::PathBuf {
 }
 
 /// 将上下文格式化为日志条目（纯函数，可单测）。
-fn format_context_entry(selected_text: &str, extra: &crate::app_context::ExtraContext) -> String {
+fn format_context_entry(selected_text: &str, extra: &crate::platform::app_context::ExtraContext) -> String {
     let kind_label = match extra.source.kind {
-        crate::app_context::AppKind::Editor => "Editor",
-        crate::app_context::AppKind::Terminal => "Terminal",
-        crate::app_context::AppKind::Browser => "Browser",
-        crate::app_context::AppKind::Chat => "Chat",
-        crate::app_context::AppKind::Unknown => "Unknown",
+        crate::platform::app_context::AppKind::Editor => "Editor",
+        crate::platform::app_context::AppKind::Terminal => "Terminal",
+        crate::platform::app_context::AppKind::Browser => "Browser",
+        crate::platform::app_context::AppKind::Chat => "Chat",
+        crate::platform::app_context::AppKind::Unknown => "Unknown",
     };
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
@@ -492,11 +492,11 @@ pub(crate) fn build_enriched_text(text: &str) -> String {
     // 来源
     if let Some(ref source) = ctx.source {
         let kind_label = match source.kind {
-            crate::app_context::AppKind::Editor => "编辑器",
-            crate::app_context::AppKind::Terminal => "终端",
-            crate::app_context::AppKind::Browser => "浏览器",
-            crate::app_context::AppKind::Chat => "聊天",
-            crate::app_context::AppKind::Unknown => "应用",
+            crate::platform::app_context::AppKind::Editor => "编辑器",
+            crate::platform::app_context::AppKind::Terminal => "终端",
+            crate::platform::app_context::AppKind::Browser => "浏览器",
+            crate::platform::app_context::AppKind::Chat => "聊天",
+            crate::platform::app_context::AppKind::Unknown => "应用",
         };
         parts.push(format!("【来源】{}（{}）", source.name, kind_label));
     }
@@ -555,7 +555,7 @@ fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_context::{AppKind, AppSource, ExtraContext, SurroundingText};
+    use crate::platform::app_context::{AppKind, AppSource, ExtraContext, SurroundingText};
 
     fn sample_extra() -> ExtraContext {
         ExtraContext {

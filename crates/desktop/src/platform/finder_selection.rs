@@ -46,7 +46,7 @@ fn run_osascript_timeout(script: &str) -> Result<String, String> {
 pub fn is_finder_frontmost() -> bool {
     #[cfg(target_os = "macos")]
     {
-        crate::app_context::macos_ax::frontmost_bundle_id().as_deref() == Some("com.apple.finder")
+        crate::platform::app_context::macos_ax::frontmost_bundle_id().as_deref() == Some("com.apple.finder")
     }
     #[cfg(not(target_os = "macos"))]
     {

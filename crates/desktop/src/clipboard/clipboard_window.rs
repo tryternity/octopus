@@ -154,7 +154,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
 
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
             #[cfg(target_os = "macos")]
-            { crate::activation::restore_hidden_windows_only(&app_clone); }
+            { crate::platform::activation::restore_hidden_windows_only(&app_clone); }
 
             // docked 态下失焦 → 收缩（防重复：DOCK_EXPANDED 已 false 则跳过）
             #[cfg(target_os = "macos")]
@@ -288,7 +288,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 DOCK_EXPANDED.store(true, Ordering::SeqCst);
                 crate::clipboard::clipboard_dock::stop_edge_poll(&window);
                 #[cfg(target_os = "macos")]
-                { crate::activation::before_floating_window_show(app); }
+                { crate::platform::activation::before_floating_window_show(app); }
                 window.show()?;
                 let _ = app.emit("clipboard://expand", ());
                 window.set_focus()?;
@@ -297,11 +297,11 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             // 非 docked：可见且有焦点 → 隐藏
             window.hide()?;
             #[cfg(target_os = "macos")]
-            { crate::activation::after_floating_window_hide(app); }
+            { crate::platform::activation::after_floating_window_hide(app); }
         } else {
             // 非 docked：不可见或无焦点 → show + focus
             #[cfg(target_os = "macos")]
-            { crate::activation::before_floating_window_show(app); }
+            { crate::platform::activation::before_floating_window_show(app); }
             window.show()?;
             window.set_focus()?;
         }
@@ -318,7 +318,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                     // 100ms 内若窗口已被二次按键提前 show，不重复 before_show + show（防 depth 泄漏）
                     if !window.is_visible().unwrap_or(false) {
                         #[cfg(target_os = "macos")]
-                        { crate::activation::before_floating_window_show(&app2); }
+                        { crate::platform::activation::before_floating_window_show(&app2); }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }

@@ -271,7 +271,7 @@ fn send_one_key(
 /// 检查 AX 权限（委托 app_context::ffi 统一入口，去重 3 处 extern 声明）。
 #[cfg(target_os = "macos")]
 fn check_accessibility_trusted() -> bool {
-    crate::app_context::ffi::is_accessibility_trusted()
+    crate::platform::app_context::ffi::is_accessibility_trusted()
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
             let ah = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
-                crate::activation::activate_self();
+                crate::platform::activation::activate_self();
                 let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
             });
         }
@@ -54,7 +54,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         // ⚠️ 必须显式 activate——app 在 Accessory 模式下从托盘点击时，
         // macOS 不会自动把 app 带到前台（窗口创建了但不前置）。
         let _ = app_handle.run_on_main_thread(|| {
-            crate::activation::activate_self();
+            crate::platform::activation::activate_self();
             set_dock_icon();
         });
     }
@@ -93,7 +93,7 @@ pub fn get_initial_page() -> Option<String> {
 /// 设置窗口关闭后回调：仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
 #[cfg(target_os = "macos")]
 pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
-    crate::activation::restore_accessory_if_no_regular_window(app_handle);
+    crate::platform::activation::restore_accessory_if_no_regular_window(app_handle);
 }
 
 /// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在

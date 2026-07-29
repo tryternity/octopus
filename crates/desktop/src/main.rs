@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod activation;
+mod platform;
 mod action_bar;
 // vault（Task 16+）：AppState + Tauri 命令 + 自动填写
 // follow-up #10: vault feature gate——关闭后所有 vault 模块整体 cfg 掉。
@@ -21,8 +21,6 @@ pub mod autotype;
 #[cfg(feature = "vault")]
 pub mod password_generator_window;
 mod overlay_window;
-mod finder_selection;
-mod app_context;
 mod audio;
 mod bootstrap;
 mod setup;
@@ -56,16 +54,12 @@ mod builtin_models;
 mod download_window;
 mod search_commands;
 mod hotword_commands;
-mod input_source;
-mod keystroke;
-mod paste;
 mod pin_window;
 mod perf_log;
 mod pipeline;
 mod result_window;
 mod screenshot_commands;
 mod screenshot_geometry;
-mod sys_open;
 // 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
 // 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
 // 对应 invoke_handler 注册项也用 cfg gate（见 invoke_handler.rs::handler! 宏）。
@@ -99,7 +93,6 @@ mod settings_commands;
 mod settings_window;
 mod onboarding_window;
 mod system_status_commands;
-mod focus_tracker;
 mod shortcut;
 mod theme;
 mod tray;

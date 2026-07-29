@@ -134,7 +134,7 @@ fn paste_via_clipboard(
     // 三段式文本注入：切到 ASCII 输入源 → Cmd+V → guard drop 时恢复。
     // 避免 CJK IME composing 状态下粘贴出乱码（参考 VoxFlow VoxFlowTextInsertion）。
     let _ime_guard = if switch_ime {
-        crate::input_source::switch_to_ascii_for_paste()
+        crate::platform::input_source::switch_to_ascii_for_paste()
     } else {
         None
     };
@@ -144,7 +144,7 @@ fn paste_via_clipboard(
     // 是 no-op，保留 enigo fallback（仅非 macOS 走 enigo）。
     #[cfg(target_os = "macos")]
     {
-        crate::keystroke::paste()?;
+        crate::platform::keystroke::paste()?;
     }
     #[cfg(not(target_os = "macos"))]
     {

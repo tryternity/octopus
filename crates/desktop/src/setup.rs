@@ -310,7 +310,7 @@ impl<'a> AppSetup<'a> {
     /// 消费 `clipboard_handle` 字段（init_clipboard 填充）。
     fn init_input(&mut self) {
         // Start focus tracker (macOS no-op, Windows/Linux TODO)
-        let focus_tracker = std::sync::Arc::new(crate::focus_tracker::FocusTracker::new());
+        let focus_tracker = std::sync::Arc::new(crate::platform::focus_tracker::FocusTracker::new());
         if let Err(e) = focus_tracker.start() {
             log::warn!("Focus tracker not available: {}", e);
         }

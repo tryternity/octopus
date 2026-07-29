@@ -117,7 +117,7 @@ pub async fn open_recording_file(id: i64) -> Result<(), String> {
     })
     .await?;
     let abs = resolve_recording_path(&file_path);
-    crate::sys_open::open_with_default(&abs.to_string_lossy())?;
+    crate::platform::sys_open::open_with_default(&abs.to_string_lossy())?;
     Ok(())
 }
 
@@ -135,7 +135,7 @@ pub async fn reveal_recording(id: i64) -> Result<(), String> {
     })
     .await?;
     let abs = resolve_recording_path(&file_path);
-    crate::sys_open::reveal_path(&abs)?;
+    crate::platform::sys_open::reveal_path(&abs)?;
     Ok(())
 }
 

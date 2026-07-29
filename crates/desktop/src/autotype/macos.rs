@@ -19,7 +19,7 @@ use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 // 权限缺失时 CGEvent.post() **静默失败**（enigo 返 Ok 但没真的注入），
 // 这是 autotype Ok 但浏览器没收到按键的最常见根因。
 fn check_accessibility_trusted() -> bool {
-    crate::app_context::ffi::is_accessibility_trusted()
+    crate::platform::app_context::ffi::is_accessibility_trusted()
 }
 
 /// 首次焦点等待——hide VaultPicker 后浏览器回前台需要时间。

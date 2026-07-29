@@ -1303,7 +1303,7 @@ unsafe fn build_surrounding(
             {
                 // Sublime Text 专用取数器
                 if bundle_id_or_name.contains("sublimetext") {
-                    if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
+                    if let Some(sublime_ctx) = crate::platform::app_context::sublime_plugin::try_sublime_plugin_context(
                         bundle_id_or_name,
                         selected_text,
                         deadline,
@@ -1647,7 +1647,7 @@ unsafe fn is_cf_value(value: CFTypeRef) -> bool {
         return false;
     }
     // AXValueGetTypeID 在 ApplicationServices framework 中，用 FFI 获取
-    CFGetTypeID(value) == crate::app_context::ffi::ax_value_type_id()
+    CFGetTypeID(value) == crate::platform::app_context::ffi::ax_value_type_id()
 }
 
 /// 读取选区范围 (start, end)，单位为 UTF-16 字符偏移（AX 的 CFRange 单位）。

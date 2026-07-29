@@ -499,7 +499,7 @@ async fn stop_and_store_inner(
     // 录制完成自动在文件管理器高亮文件（用户决策 2026-07-26，record_reveal_after_stop
     // 配置项默认 true）。失败仅 log，不影响录制结果。
     if parse_bool_config("record_reveal_after_stop", true) {
-        crate::sys_open::reveal_path_lossy(&abs_path);
+        crate::platform::sys_open::reveal_path_lossy(&abs_path);
     }
 
     Ok(Some(meta))

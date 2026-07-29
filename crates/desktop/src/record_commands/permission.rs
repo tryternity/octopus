@@ -19,7 +19,7 @@ pub async fn check_record_permission() -> Result<PermissionStatus, String> {
     // 在打包版不可靠（TCC 对子进程行为不一致）。三态映射：
     //   preflight true → Granted；false → NotDetermined（未请求过）或 Denied（请求被拒）
     // macOS 无 API 区分 NotDetermined 与 Denied，统一返 NotDetermined 让前端显示「申请权限」。
-    Ok(if crate::app_context::ffi::is_screen_capture_trusted() {
+    Ok(if crate::platform::app_context::ffi::is_screen_capture_trusted() {
         PermissionStatus::Granted
     } else {
         PermissionStatus::NotDetermined
@@ -30,9 +30,9 @@ pub async fn check_record_permission() -> Result<PermissionStatus, String> {
 pub async fn request_screen_record_permission() -> Result<PermissionStatus, String> {
     // 主进程 FFI（CGRequestScreenCaptureAccess）——必须在主进程调，
     // helper 子进程调此函数不触发 TCC 弹窗（打包版 bug 根因）。
-    crate::app_context::ffi::prompt_screen_capture_permission();
+    crate::platform::app_context::ffi::prompt_screen_capture_permission();
     // 弹窗异步——返回当前态（首次几乎一定 NotDetermined），前端 setTimeout 重查
-    Ok(if crate::app_context::ffi::is_screen_capture_trusted() {
+    Ok(if crate::platform::app_context::ffi::is_screen_capture_trusted() {
         PermissionStatus::Granted
     } else {
         PermissionStatus::NotDetermined
@@ -135,7 +135,7 @@ pub async fn request_microphone_permission() -> Result<PermissionStatus, String>
 
 #[command]
 pub async fn check_accessibility_permission() -> Result<PermissionStatus, String> {
-    Ok(if crate::app_context::ffi::is_accessibility_trusted() {
+    Ok(if crate::platform::app_context::ffi::is_accessibility_trusted() {
         PermissionStatus::Granted
     } else {
         PermissionStatus::Denied
@@ -145,8 +145,8 @@ pub async fn check_accessibility_permission() -> Result<PermissionStatus, String
 #[command]
 pub async fn request_accessibility_permission() -> Result<PermissionStatus, String> {
     // prompt 触发 TCC 弹窗，返回当前态（首次几乎一定 false，前端 setTimeout 重查）
-    crate::app_context::ffi::prompt_accessibility_permission();
-    Ok(if crate::app_context::ffi::is_accessibility_trusted() {
+    crate::platform::app_context::ffi::prompt_accessibility_permission();
+    Ok(if crate::platform::app_context::ffi::is_accessibility_trusted() {
         PermissionStatus::Granted
     } else {
         PermissionStatus::Denied

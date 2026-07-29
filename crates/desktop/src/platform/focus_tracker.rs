@@ -102,7 +102,7 @@ fn restore_focus_platform() {
 fn simulate_paste_platform() {
     // 2026-07-20 perf：原 osascript（~200ms 启动）改用 keystroke 模块（CGEvent < 5ms）。
     // IME guard 仍保留——切到 ASCII 输入源再 paste，避免 CJK IME composing 状态下粘贴乱码。
-    let _ime_guard = crate::input_source::switch_to_ascii_for_paste();
+    let _ime_guard = crate::platform::input_source::switch_to_ascii_for_paste();
 
     // 切输入源可能短暂抢焦点（Carbon TIS API），等 50ms 让焦点稳定再发 keystroke
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -111,7 +111,7 @@ fn simulate_paste_platform() {
     //   1. WKWebView 嵌套 app（微信内置浏览器）→ osascript（~200ms，走 System Events 菜单路由）
     //   2. Electron app（豆包/ZCode）→ CGEventPostToPid（定向，< 5ms）
     //   3. 原生 app → CGEventPostToPid（或全局 post fallback）
-    let frontmost = crate::app_context::macos_ax::frontmost_app();
+    let frontmost = crate::platform::app_context::macos_ax::frontmost_app();
     let result = dispatch_paste(frontmost);
     if let Err(e) = result {
         log::warn!("simulate_paste: {}", e);
@@ -128,7 +128,7 @@ fn simulate_copy_platform() -> CopyDispatch {
     //
     // 2026-07-21 fix：返回 dispatch 路径给调用方，让 detect_selection 据此选 polling 超时
     // （osascript 路径需要等 ~200ms+ WKWebView 回写，CGEvent 路径 80ms 足够）。
-    let frontmost = crate::app_context::macos_ax::frontmost_app();
+    let frontmost = crate::platform::app_context::macos_ax::frontmost_app();
     let (result, dispatch) = dispatch_copy(frontmost);
     if let Err(e) = result {
         log::warn!("simulate_copy: {} (dispatch={:?})", e, dispatch);
@@ -145,26 +145,26 @@ fn dispatch_copy(
     frontmost: Option<(i32, Option<String>, String)>,
 ) -> (anyhow::Result<()>, CopyDispatch) {
     match &frontmost {
-        Some((_, bid, _)) if crate::keystroke::needs_osascript_fallback(bid.as_deref()) => {
+        Some((_, bid, _)) if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) => {
             log::info!("simulate_copy: WKWebView app {:?} → osascript", bid);
-            (crate::keystroke::copy_via_osascript(), CopyDispatch::Osascript)
+            (crate::platform::keystroke::copy_via_osascript(), CopyDispatch::Osascript)
         }
         Some((pid, _, _)) => {
-            (crate::keystroke::copy_to_pid(*pid), CopyDispatch::CGEvent)
+            (crate::platform::keystroke::copy_to_pid(*pid), CopyDispatch::CGEvent)
         }
-        None => (crate::keystroke::copy(), CopyDispatch::CGEvent),
+        None => (crate::platform::keystroke::copy(), CopyDispatch::CGEvent),
     }
 }
 
 #[cfg(target_os = "macos")]
 fn dispatch_paste(frontmost: Option<(i32, Option<String>, String)>) -> anyhow::Result<()> {
     match &frontmost {
-        Some((_, bid, _)) if crate::keystroke::needs_osascript_fallback(bid.as_deref()) => {
+        Some((_, bid, _)) if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) => {
             log::info!("simulate_paste: WKWebView app {:?} → osascript", bid);
-            crate::keystroke::paste_via_osascript()
+            crate::platform::keystroke::paste_via_osascript()
         }
-        Some((pid, _, _)) => crate::keystroke::paste_to_pid(*pid),
-        None => crate::keystroke::paste(),
+        Some((pid, _, _)) => crate::platform::keystroke::paste_to_pid(*pid),
+        None => crate::platform::keystroke::paste(),
     }
 }
 

@@ -661,7 +661,7 @@ pub async fn reveal_subtitle(id: i64) -> Result<String, String> {
     let mp4 = octopus_infra::paths::resolve_recording_path(&meta);
     let srt_path = octopus_record::latest_srt_path(&mp4)
         .ok_or_else(|| "字幕未生成".to_string())?;
-    crate::sys_open::reveal_path(&srt_path)?;
+    crate::platform::sys_open::reveal_path(&srt_path)?;
     Ok(srt_path.to_string_lossy().to_string())
 }
 

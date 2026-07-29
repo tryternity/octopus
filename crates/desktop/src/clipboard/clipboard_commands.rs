@@ -191,7 +191,7 @@ pub async fn paste_clipboard_item(
     id: i64,
     app_handle: tauri::AppHandle,
     handle: State<'_, Arc<ClipboardHandle>>,
-    focus: State<'_, Arc<crate::focus_tracker::FocusTracker>>,
+    focus: State<'_, Arc<crate::platform::focus_tracker::FocusTracker>>,
 ) -> Result<(), String> {
     // 1. 从 DB 按 id 读条目内容（O(1) rowid 查找，不再整页反序列化）
     let item = octopus_infra::db::with_db(|conn| {
@@ -326,7 +326,7 @@ pub async fn save_image_item(
 
 /// 用系统文件管理器打开并高亮指定文件。
 fn reveal_in_file_manager(path: &std::path::Path) {
-    crate::sys_open::reveal_path_lossy(path);
+    crate::platform::sys_open::reveal_path_lossy(path);
 }
 
 /// 在 dir 下找不冲突的文件名：base.ext → base-1.ext → base-2.ext …
@@ -382,7 +382,7 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     let path = decode_file_uri(first);
 
     // 用系统默认应用打开
-    crate::sys_open::open_with_default(&path)?;
+    crate::platform::sys_open::open_with_default(&path)?;
     Ok(())
 }
 

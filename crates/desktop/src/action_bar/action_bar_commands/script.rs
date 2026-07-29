@@ -369,7 +369,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                                 let _ = win.hide();
                             }
                             #[cfg(target_os = "macos")]
-                            { crate::activation::after_floating_window_hide_keep_active(app); }
+                            { crate::platform::activation::after_floating_window_hide_keep_active(app); }
                             finalize_action_bar(app);
                         }
 
@@ -454,7 +454,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
                     .replace("{text}", &url_encode_param(&text))
             };
             // 用系统默认浏览器打开（检查退出码——无默认处理器/URL 无效时返回错误）
-            crate::sys_open::open_with_default(&url).map(|_| false)
+            crate::platform::sys_open::open_with_default(&url).map(|_| false)
         }
         "script" => {
             let is_async = item.is_async;

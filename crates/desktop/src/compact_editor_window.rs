@@ -229,5 +229,5 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
 /// 窗口状态保存已在 CloseRequested 里完成（Destroyed 时窗口已销毁）。
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
-    crate::activation::restore_accessory_if_no_regular_window(app_handle);
+    crate::platform::activation::restore_accessory_if_no_regular_window(app_handle);
 }
