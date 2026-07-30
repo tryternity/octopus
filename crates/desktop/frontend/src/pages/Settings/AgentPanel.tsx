@@ -184,16 +184,20 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                   <span className="text-[10px] text-muted-foreground/40">○</span>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground font-mono mt-1">{a.detectBinary}</div>
-              <div className="text-xs text-muted-foreground/70 font-mono mt-0.5 truncate">
-                {a.commandTemplate}
+              <div className="text-xs text-muted-foreground font-mono mt-1 truncate">
+                <span>{a.detectBinary}</span>
+                <span className="text-muted-foreground/60"> {a.commandTemplate}</span>
               </div>
             </div>
             <div className="shrink-0 flex flex-col items-end gap-1.5">
               {a.isAvailable ? (
-                <span className="text-[10px] text-success font-mono">{t("agentPanel.installed")}</span>
+                <span className="text-[10px] text-success font-mono flex items-center gap-0.5">
+                  {t("agentPanel.installed")} <Check className="w-3 h-3" />
+                </span>
               ) : (
-                <span className="text-[10px] text-muted-foreground font-mono">{t("agentPanel.notFound")}</span>
+                <span className="text-[10px] text-muted-foreground font-mono flex items-center gap-0.5">
+                  {t("agentPanel.notFound")} <X className="w-3 h-3" />
+                </span>
               )}
               {/* 设为默认 / 取消默认按钮：仅可用 agent 显示（不可用不能被设为默认） */}
               {a.isAvailable && (
@@ -202,8 +206,8 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                   size="sm"
                   onClick={() => handleToggleDefault(a)}
                 >
-                  <Star className={cn("w-3.5 h-3.5", a.isDefault && "fill-voice text-voice")} />
                   {a.isDefault ? t("agentPanel.unsetDefault") : t("agentPanel.setDefault")}
+                  <Star className={cn("w-3.5 h-3.5", a.isDefault && "fill-voice text-voice")} />
                 </Button>
               )}
             </div>
