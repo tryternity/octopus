@@ -363,10 +363,6 @@ export default function ActionBarPanel({
                   onMove={(dir) => handleMove(item.id, dir)}
                   onEdit={() => startEdit(item)}
                   onDelete={() => handleDelete(item.id)}
-                  showShortcuts
-                  capturing={capturingItem?.id === item.id}
-                  onCaptureShortcut={() => setCapturingItem({ id: item.id, kind: "global" })}
-                  onClearShortcut={() => updateItemInline(item, { globalShortcut: "" })}
                 />
               ))}
             </div>
@@ -431,8 +427,19 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+                    <FormField label={t("settings.actionBar.slashName")}>
                       <div className="flex items-center gap-2">
+                        {/* 斜杠命令名（左） */}
+                        <input
+                          className="w-28 shrink-0 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                          placeholder={t("settings.actionBar.slashNamePlaceholder")}
+                          value={selectedMain.triggerKeyword || ""}
+                          onChange={(e) => {
+                            const val = e.target.value.trim().toLowerCase();
+                            updateMainInline({ triggerKeyword: val });
+                          }}
+                        />
+                        {/* 全局快捷键（右） */}
                         <ShortcutButton
                           shortcut={selectedMain.globalShortcut ?? ""}
                           capturing={inlineCapturingGlobal}
