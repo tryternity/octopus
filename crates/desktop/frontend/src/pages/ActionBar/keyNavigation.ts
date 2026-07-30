@@ -49,6 +49,7 @@ export type KeyAction =
   | { type: "ime-confirm-enter" }
   | { type: "passthrough" }
   | { type: "ignore" }
+  | { type: "swallow" }            // preventDefault 但不执行其他副作用（Alt 快捷键未命中/越界，保持原 handler 的无条件 preventDefault）
   | { type: "escape-clear-query" }
   | { type: "escape-dismiss" }
   | { type: "search-tab"; dir: 1 | -1 }
@@ -145,7 +146,7 @@ export function decideKeyAction(
       if (/^[a-z]$/.test(ch)) {
         const found = ctx.menuItems.find((i) => i.isEnabled && i.shortcut === ch);
         if (found) return { type: "alt-execute", item: found };
-        return { type: "passthrough" }; // 未命中，放行（复刻行 744-746：find 无果 fallthrough 到 return）
+        return { type: "swallow" }; // 未命中（复刻行 743-746：分支入口无条件 preventDefault，find 无果仍抑制）
       }
       // Alt+数字 → 定位菜单项
       if (/^[1-9]$/.test(ch)) {
@@ -163,8 +164,8 @@ export function decideKeyAction(
           }
           return { type: "alt-goto-main", idx, expandSubmenu: false };
         }
-        // idx 越界 → 原代码进 if 但啥也不做，仍 preventDefault（return 在 if 外）
-        return { type: "ignore" }; // 复刻行 770-772：越界时 setSelectedIdx 不调，但仍 preventDefault
+        // idx 越界 → 原代码分支入口（行 751）无条件 preventDefault，越界不进 if 但仍抑制后 return（行 775）
+        return { type: "swallow" };
       }
     }
     // Alt 但 codeToChar 无效 → 放行（§PRESERVE 行 778）

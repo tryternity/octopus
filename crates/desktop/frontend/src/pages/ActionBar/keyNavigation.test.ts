@@ -146,8 +146,12 @@ describe("decideKeyAction - Alt 快捷键", () => {
     expect(a.type).toBe("alt-execute");
     expect((a as any).item).toBe(it1);
   });
-  it("Alt+字母未命中 → passthrough", () => {
-    expect(decideKeyAction(key({ key: "˙", altKey: true, code: "KeyH" }), ctx({ menuItems: [] }))).toEqual({ type: "passthrough" });
+  it("Alt+字母未命中 → swallow（preventDefault 但不执行）", () => {
+    expect(decideKeyAction(key({ key: "˙", altKey: true, code: "KeyH" }), ctx({ menuItems: [] }))).toEqual({ type: "swallow" });
+  });
+  it("Alt+数字越界 → swallow（preventDefault 但不做事）", () => {
+    // mainItems 为空，idx=0 越界
+    expect(decideKeyAction(key({ key: "1", altKey: true, code: "Digit1" }), ctx({ mainItems: [] }))).toEqual({ type: "swallow" });
   });
   it("Alt+数字焦点 sub → alt-goto-sub", () => {
     expect(decideKeyAction(key({ key: "1", altKey: true, code: "Digit1" }), ctx({ focusLayer: "sub" }))).toEqual({ type: "alt-goto-sub", idx: 0 });
