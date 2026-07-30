@@ -705,8 +705,6 @@ settings:
     execOptions: Execution Options
     asyncExec: Async execution (no wait, runs in background)
     writeToClipboard: Write result to clipboard
-    shortcutLabel: Shortcut
-    shortcutHint: Alt+letter to execute (press Alt+letter when menu is open)
     slashName: "/ Command Name"
     slashNamePlaceholder: "e.g. google or 百度 (type /google to trigger)"
     slashNameInvalid: Chinese, letters, digits, hyphens, underscores only

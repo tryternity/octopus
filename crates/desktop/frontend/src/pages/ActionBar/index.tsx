@@ -882,7 +882,6 @@ export default function ActionBar() {
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
-            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
@@ -901,7 +900,6 @@ export default function ActionBar() {
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
-            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>

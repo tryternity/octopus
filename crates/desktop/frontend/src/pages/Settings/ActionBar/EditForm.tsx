@@ -52,7 +52,6 @@ export default function EditForm({
   const meta = TYPE_META[type];
   const showContent = type !== "submenu" && type !== "extension" && type !== "copy_path";
   const isPromptType = type === "agent" || type === "ai";
-  const showShortcut = type !== "submenu";
   const [adapters, setAdapters] = useState<{key:string;displayName:string;isAvailable:boolean}[]>([]);
   const [capturingGlobal, setCapturingGlobal] = useState(false);
   useEffect(() => {
@@ -168,53 +167,26 @@ export default function EditForm({
           </FormField>
         </div>
 
-        {showShortcut && (
-          <div className="grid grid-cols-2 gap-3">
-            <FormField label={t("settings.actionBar.shortcutLabel")}>
-              <div className="flex w-full items-center gap-1">
-                <span className="text-xs text-muted-foreground/60 font-mono shrink-0">⌥ +</span>
-                <input
-                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15 shrink-0"
-                  placeholder="—"
-                  maxLength={1}
-                  value={form.shortcut || ""}
-                  onChange={(e) => {
-                    const raw = e.target.value.toLowerCase();
-                    const filtered = raw.replace(/[^a-z]/g, "").slice(-1);
-                    onChange({ ...form, shortcut: filtered });
-                  }}
-                />
-                <button
-                  onClick={() => form.shortcut && onChange({ ...form, shortcut: "" })}
-                  className={cn(
-                    "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
-                    form.shortcut ? "" : "invisible pointer-events-none",
-                  )}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </FormField>
-            <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
-              <div className="flex w-full items-center gap-2">
-                <ShortcutButton
-                  shortcut={form.globalShortcut ?? ""}
-                  capturing={capturingGlobal}
-                  onClick={() => setCapturingGlobal((v) => !v)}
-                />
-                <button
-                  onClick={() => form.globalShortcut && onChange({ ...form, globalShortcut: "" })}
-                  className={cn(
-                    "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
-                    form.globalShortcut ? "" : "invisible pointer-events-none",
-                  )}
-                  aria-label={ti18n("settings.actionBar.clearShortcut")}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </FormField>
-          </div>
+        {type !== "submenu" && (
+          <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+            <div className="flex w-full items-center gap-2">
+              <ShortcutButton
+                shortcut={form.globalShortcut ?? ""}
+                capturing={capturingGlobal}
+                onClick={() => setCapturingGlobal((v) => !v)}
+              />
+              <button
+                onClick={() => form.globalShortcut && onChange({ ...form, globalShortcut: "" })}
+                className={cn(
+                  "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+                  form.globalShortcut ? "" : "invisible pointer-events-none",
+                )}
+                aria-label={ti18n("settings.actionBar.clearShortcut")}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </FormField>
         )}
 
         {type === "script" && (

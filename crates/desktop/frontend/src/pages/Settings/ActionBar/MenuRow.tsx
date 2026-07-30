@@ -20,9 +20,9 @@ export interface MenuRowProps {
   onEdit: () => void;
   onDelete: () => void;
   showShortcuts?: boolean;
-  onCaptureShortcut?: (kind: "local" | "global") => void;
-  capturingKind?: "local" | "global" | null;
-  onClearShortcut?: (kind: "local" | "global") => void;
+  onCaptureShortcut?: () => void;
+  capturing?: boolean;
+  onClearShortcut?: () => void;
 }
 
 export default function MenuRow(props: MenuRowProps) {
@@ -57,57 +57,25 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        <div className="flex shrink-0 items-center justify-end gap-2">
-          <div className="flex items-center gap-0.5">
-            <ShortcutButton
-              shortcut={item.globalShortcut ?? ""}
-              capturing={props.capturingKind === "global"}
-              onClick={() => props.onCaptureShortcut?.("global")}
-              title={t("settings.actionBar.globalShortcutHint")}
-            />
-            <button
-              onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("global"); }}
-              className={cn(
-                "rounded p-0.5 text-muted-foreground/50 transition-opacity hover:bg-destructive/10 hover:text-destructive",
-                item.globalShortcut && props.capturingKind !== "global"
-                  ? "opacity-0 group-hover:opacity-100"
-                  : "invisible",
-              )}
-              aria-label={t("settings.actionBar.clearShortcut")}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-          <span className="text-muted-foreground/30 text-[10px]">·</span>
-          <div className="flex items-center gap-0.5">
-            <span className="text-[10px] text-muted-foreground/50 font-mono">⌥</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); props.onCaptureShortcut?.("local"); }}
-              className={cn(
-                "min-w-[22px] text-center rounded border px-1 py-0.5 text-[11px] font-mono transition-all",
-                props.capturingKind === "local"
-                  ? "border-voice ring-2 ring-voice/15 bg-voice/5 text-voice animate-pulse"
-                  : item.shortcut
-                    ? "border-border bg-muted/40 text-foreground hover:border-foreground/30"
-                    : "border-dashed border-muted-foreground/30 text-muted-foreground/40 hover:border-foreground/30 hover:text-muted-foreground/70",
-              )}
-              title={t("settings.actionBar.shortcutHint")}
-            >
-              {props.capturingKind === "local" ? "…" : (item.shortcut || "—")}
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.("local"); }}
-              className={cn(
-                "rounded p-0.5 text-muted-foreground/50 transition-opacity hover:bg-destructive/10 hover:text-destructive",
-                item.shortcut && props.capturingKind !== "local"
-                  ? "opacity-0 group-hover:opacity-100"
-                  : "invisible",
-              )}
-              aria-label={t("settings.actionBar.clearShortcut")}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          </div>
+        <div className="flex shrink-0 items-center justify-end gap-0.5">
+          <ShortcutButton
+            shortcut={item.globalShortcut ?? ""}
+            capturing={props.capturing ?? false}
+            onClick={() => props.onCaptureShortcut?.()}
+            title={t("settings.actionBar.globalShortcutHint")}
+          />
+          <button
+            onClick={(e) => { e.stopPropagation(); props.onClearShortcut?.(); }}
+            className={cn(
+              "rounded p-0.5 text-muted-foreground/50 transition-opacity hover:bg-destructive/10 hover:text-destructive",
+              item.globalShortcut && !props.capturing
+                ? "opacity-0 group-hover:opacity-100"
+                : "invisible",
+            )}
+            aria-label={t("settings.actionBar.clearShortcut")}
+          >
+            <X className="h-3 w-3" />
+          </button>
         </div>
       )}
 

@@ -34,7 +34,6 @@ export interface ActionBarItem {
   sortOrder: number;
   isSystem: boolean;
   isEnabled: boolean;
-  shortcut?: string;
   agent?: string;
   accepts?: string;
   needVoice?: boolean;
