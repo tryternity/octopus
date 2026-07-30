@@ -12,3 +12,12 @@ export function labelToIndex(key: string): number {
   if (/^[a-z]$/.test(key)) return key.charCodeAt(0) - 88; // 'a'→9, 'b'→10, ... 'z'→34
   return -1;
 }
+
+/** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
+ *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。
+ *  从 index.tsx 拆出（2026-07-30）。 */
+export function codeToChar(code: string): string | null {
+  if (code.startsWith("Key") && code.length === 4) return code[3].toLowerCase();
+  if (code.startsWith("Digit") && code.length === 6) return code[5].toLowerCase();
+  return null;
+}

@@ -1,12 +1,14 @@
-import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
-import { Loader2, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { Loader2, Search } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 import { t } from "@/lib/i18n";
 import SearchPanel from "./SearchPanel";
+import IconBtn from "./IconBtn";
+import ScrollRow from "./ScrollRow";
 import {
   INPUT_HEIGHT,
   TAB_BAR_HEIGHT,
@@ -17,18 +19,6 @@ import {
   type ExpandDirection,
   type SearchResult as SearchHit,
 } from "./searchTypes";
-// 只有走 mdfind（file/bookmark Provider，慢）的 Tab 才需防抖；其他 Tab（含 all）
-// 走内存 Provider（app/menu/calculator/url），亚毫秒，无需防抖。
-// all tab 虽也会跑 mdfind，但后端流式扇出——快 Provider 结果先 emit，mdfind 慢的
-// 后追加，首屏由 app/menu 等即时结果提供，故 all tab 不防抖也不阻塞首屏（spec §9 < 30ms）。
-const DEBOUNCED_TABS = new Set<TabId | "files_bookmarks" | "quick">([
-  "files",
-  "bookmarks",
-  "files_bookmarks",
-]);
-function getDebounceMs(tab: TabId): number {
-  return (DEBOUNCED_TABS as Set<string>).has(tab) ? DELAYED_SEARCH_DEBOUNCE_MS : 0;
-}
 import { executeSearchStream, cleanupSearchStream } from "./searchStream";
 import {
   determineExpandDirection,
@@ -42,146 +32,22 @@ import {
   calcMenuHeight,
   moveDirection,
 } from "./searchLogic";
+import { codeToChar } from "./label";
+import type { Context, ActionBarItem } from "./types";
 
-type ContextKind = "text" | "files";
-
-type AppKind = 'editor' | 'terminal' | 'browser' | 'chat' | 'unknown';
-
-interface AppSource {
-  bundleId?: string;
-  name: string;
-  kind: AppKind;
-}
-
-interface SurroundingText {
-  before?: string;
-  after?: string;
-  windowTitle?: string;
-}
-
-interface Context {
-  kind: ContextKind;
-  text: string;
-  files: string[];
-  source?: AppSource;
-  surrounding?: SurroundingText;
-}
-
-interface ActionBarItem {
-  id: number;
-  parentId: number | null;
-  title: string;
-  icon: string;
-  actionType: string;
-  actionData: string;
-  sortOrder: number;
-  isSystem: boolean;
-  isEnabled: boolean;
-  shortcut?: string;
-  agent?: string;
-  accepts?: string;
-  needVoice?: boolean;
-  /** JSON 数组字符串 ["com.apple.Safari"]，空串/undefined=全局项（所有 app 显示） */
-  appBundleIds?: string;
+// 只有走 mdfind（file/bookmark Provider，慢）的 Tab 才需防抖；其他 Tab（含 all）
+// 走内存 Provider（app/menu/calculator/url），亚毫秒，无需防抖。
+const DEBOUNCED_TABS = new Set<TabId | "files_bookmarks" | "quick">([
+  "files",
+  "bookmarks",
+  "files_bookmarks",
+]);
+function getDebounceMs(tab: TabId): number {
+  return (DEBOUNCED_TABS as Set<string>).has(tab) ? DELAYED_SEARCH_DEBOUNCE_MS : 0;
 }
 
 const AI_TIMEOUT_MS = 10000;
-
-/** 菜单模式左右键行为开关。
- *  - true（默认）：←/→ 在菜单项间移动（等同 Tab/Shift+Tab）， ActionBar 场景下输入框
- *    无需手动移光标（内容短），左右键挪给菜单导航更实用。
- *  - false：←/→ 放行给输入框移光标（原行为）。
- *  搜索模式不受影响（←/→ 始终移光标，搜索模式无"菜单项间移动"概念）。 */
 const ARROW_AS_TAB = true;
-
-import { indexLabel } from "./label";
-
-/** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
- *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。 */
-function codeToChar(code: string): string | null {
-  if (code.startsWith("Key") && code.length === 4) return code[3].toLowerCase();
-  if (code.startsWith("Digit") && code.length === 6) return code[5].toLowerCase();
-  return null;
-}
-
-const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
-  index: number; label: string; active: boolean; onClick: () => void;
-  btnRef?: (el: HTMLButtonElement | null) => void;
-  shortcut?: string;
-}) => (
-  <button
-    ref={btnRef}
-    className={cn(
-      "flex items-center gap-1.5 px-2.5 py-[7px] rounded-[8px] transition-all duration-150 shrink-0",
-      active
-        ? "bg-voice/15 text-voice ring-1 ring-inset ring-voice/20"
-        : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-    )}
-    onMouseDown={(e) => e.stopPropagation()}
-    onClick={onClick}
-    title={`${label} — Alt+${indexLabel(index)} 定位${shortcut ? ` · Alt+${shortcut} 执行` : ""}`}
-  >
-    <span
-      className={cn(
-        "inline-flex h-[20px] w-[20px] items-center justify-center rounded-[6px] font-mono text-[11px] font-semibold tabular-nums leading-none",
-        active
-          ? "bg-voice text-white"
-          : "bg-muted/60 text-muted-foreground",
-      )}
-    >
-      {indexLabel(index)}
-    </span>
-    <span className="text-[11px] font-medium leading-none whitespace-nowrap">{label}</span>
-    {shortcut && (
-      <span className="text-[9px] text-voice/60 font-mono leading-none">⌥{shortcut}</span>
-    )}
-  </button>
-);
-
-/** 带左右溢出指示器的横向滚动容器 */
-const ScrollRow = ({ children, className }: {
-  children: React.ReactNode; className?: string;
-}) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [overflow, setOverflow] = useState({ left: false, right: false });
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const check = () => {
-      setOverflow({
-        left: el.scrollLeft > 4,
-        right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
-      });
-    };
-    check();
-    el.addEventListener("scroll", check, { passive: true });
-    const ro = new ResizeObserver(check);
-    ro.observe(el);
-    return () => { el.removeEventListener("scroll", check); ro.disconnect(); };
-  }, []);
-
-  return (
-    <div className={cn("relative", className)}>
-      <div
-        ref={ref}
-        className="flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none"
-      >
-        {children}
-      </div>
-      {overflow.left && (
-        <div className="absolute left-0 top-0 bottom-0 flex items-center pl-0.5 pointer-events-none bg-gradient-to-r from-background/95 to-transparent">
-          <ChevronLeft className="w-3 h-3 text-voice" />
-        </div>
-      )}
-      {overflow.right && (
-        <div className="absolute right-0 top-0 bottom-0 flex items-center pr-0.5 pointer-events-none bg-gradient-to-l from-background/95 to-transparent">
-          <ChevronRight className="w-3 h-3 text-voice" />
-        </div>
-      )}
-    </div>
-  );
-};
 
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
