@@ -199,7 +199,6 @@ mod slash_command_tests {
             is_enabled: true,
             is_async: false,
             write_output_to_clipboard: false,
-            shortcut: String::new(),
             agent: String::new(),
             accepts: "text".into(),
             trigger_keyword: trigger.into(),
