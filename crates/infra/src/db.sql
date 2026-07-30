@@ -478,12 +478,17 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
     (6, 1, '摘要', 'file-text', 'ai', '请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。', 1, 1),
     (7, 1, '解释', 'lightbulb', 'ai', '请用简洁的中文解释以下内容的含义。只输出解释。', 2, 1);
 
--- 搜索子菜单（parent_id=3）
+-- 搜索子菜单（parent_id=3）——补 trigger_keyword 使 /google 等开箱即用
 INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
     (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
     (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
     (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1),
-     (11, 3, 'Github',  'search', 'url', 'https://github.com/search?type=repositories&q={text}', 3, 1);
+    (11, 3, 'Github', 'search', 'url', 'https://github.com/search?type=repositories&q={text}', 3, 1);
+-- 老库（id 已存在）补 trigger_keyword；新库由上行 INSERT 默认空，此处统一补
+UPDATE action_bar_items SET trigger_keyword='google' WHERE id=8 AND trigger_keyword='';
+UPDATE action_bar_items SET trigger_keyword='baidu'  WHERE id=9 AND trigger_keyword='';
+UPDATE action_bar_items SET trigger_keyword='bing'   WHERE id=10 AND trigger_keyword='';
+UPDATE action_bar_items SET trigger_keyword='github' WHERE id=11 AND trigger_keyword='';
 
 -- 「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
 INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
