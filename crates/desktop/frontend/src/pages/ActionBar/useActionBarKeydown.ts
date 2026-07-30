@@ -213,6 +213,13 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
             }
           }
           return;
+
+        default: {
+          // 穷尽性保护：若新增 KeyAction 成员且未在 switch 前拦截、又忘加 case，
+          // action 此处类型非 never → tsc 报错，避免按键静默 no-op。
+          const _exhaustive: never = action;
+          return _exhaustive;
+        }
       }
     };
     window.addEventListener("keydown", handler);
