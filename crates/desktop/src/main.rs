@@ -1,124 +1,34 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod activation;
-mod action_bar_window;
-mod action_bar_commands;
-// vault（Task 16+）：AppState + Tauri 命令 + 自动填写
-// follow-up #10: vault feature gate——关闭后所有 vault 模块整体 cfg 掉。
-// 例外：vault_secret_access **总是**编译（云端推理热路径 chokepoint，feature off 时
-// 退化为返回 raw 原值的 no-op）。
-#[cfg(feature = "vault")]
-pub mod vault_state;
-#[cfg(feature = "vault")]
-pub mod vault_commands;
-#[cfg(feature = "vault")]
-pub mod vault_secret_access;
-#[cfg(feature = "vault")]
-pub mod vault_error;
-#[cfg(feature = "vault")]
-pub mod vault_sync_commands;
-#[cfg(feature = "vault")]
-pub mod autotype;
-#[cfg(feature = "vault")]
-pub mod password_generator_window;
-mod overlay_window;
-mod action_hotkey;
-mod agent_adapter;
-mod terminal_launcher;
-mod finder_selection;
-mod app_context;
-mod audio;
-mod bootstrap;
-mod setup;
-mod config;
-#[macro_use]
-mod invoke_handler;
-mod clipboard_commands;
-mod clipboard_queue;
-mod compact_editor_commands;
-mod compact_editor_window;
+mod platform;
+mod action_bar;
+// vault（Task 16+）：AppState + Tauri 命令 + 自动填写。
+// follow-up #10: vault feature gate——关闭后除 vault_secret_access 外的 vault 子模块
+// 整体 cfg 掉（gate 在 vault/mod.rs 内部）。vault_secret_access **总是**编译
+// （云端推理热路径 chokepoint，feature off 时退化为返回 raw 原值的 no-op）。
+pub mod vault;
+// 启动 + 基础设施功能域：core/mod.rs 内部 `#[macro_use] pub mod invoke_handler;`
+// 导出 handler! 宏（亦 #[macro_export] 到 crate 根，main.rs::run 直接 handler!() 调用）。
+mod core;
+mod clipboard;
+mod commands;
 
-mod i18n;
-mod clipboard_window;
-mod clipboard_dock;
-mod coordinator;
-mod db_queue;
+// ASR 全栈功能域：engine/mod.rs 内部按 feature gate 守护 cloud / remote-ws / remote-grpc 子 mod。
 mod engine;
-#[cfg(feature = "cloud")]
-mod engine_aliyun;
-#[cfg(feature = "cloud")]
-mod cloud_pipeline;
-mod engine_dispatch;
-mod engine_embedded;
-mod error_util;
-mod extensions;
-mod file_watcher;
-#[cfg(feature = "remote-grpc")]
-mod engine_grpc;
-#[cfg(feature = "remote-ws")]
-mod engine_ws;
-mod model_commands;
-mod model_migrate;
-mod builtin_models;
-mod download_window;
-mod search_commands;
-mod hotword_commands;
-mod input_source;
-mod keystroke;
-mod paste;
-mod pin_window;
-mod perf_log;
-mod pipeline;
-mod result_window;
-mod screenshot_commands;
-mod screenshot_geometry;
-mod sys_open;
-// 录屏（Task 10，2026-07-25 screen record MVP）：仅 macOS 编译。
-// 模块内部 `#![cfg(target_os = "macos")]` 守护，windows/linux 编译时此 mod 整体为空，
-// 对应 invoke_handler 注册项也用 cfg gate（见 invoke_handler.rs::handler! 宏）。
-#[cfg(target_os = "macos")]
-mod record_commands;
-// 录屏全局快捷键（Task 14，2026-07-25）：Cmd+Shift+R toggle + Esc stop。
-// 与 record_commands 同样仅 macOS 编译。
-#[cfg(target_os = "macos")]
-mod record_hotkey;
-// 录屏配置浮窗（Cmd+Shift+R 弹出，选 display/window/area + 音频开关）。
-// 仅 macOS（录屏 helper 只 mac 实现）。
-#[cfg(target_os = "macos")]
-mod record_window;
-// 录屏区域选区 picker（多屏全屏透明覆盖，用户拖框选区域）。
-// 仅 macOS。复用 screenshot 的窗口创建 + 坐标换算模式。
-#[cfg(target_os = "macos")]
-mod record_area_picker;
-// 录屏标注 overlay 窗口（录屏开始后显示，普通 level 让 SCK 录到）。
-// 仅 macOS。spike7/8 验证：SCK 录窗口 buffer，不录 always_on_top 浮层。
-#[cfg(target_os = "macos")]
-mod record_annotation_window;
-#[cfg(target_os = "macos")]
-mod record_control_window;
-// 录屏音频元数据探测（Task 2.1，2026-07-27 录后合并 phase）：
-// ffprobe 读 mp4 实际音轨 + 给后续 Task 2.2 写 metadata 用。仅 macOS
-// （octopus-record + RawAudioTrack 只 mac 编译；与 record_commands.rs 同 gate）。
-#[cfg(target_os = "macos")]
-mod record_audio_probe;
-mod runtime_config;
-mod settings_commands;
-mod settings_window;
-mod onboarding_window;
-mod system_status_commands;
-mod focus_tracker;
-mod shortcut;
-mod theme;
-mod tray;
-mod subtitle_polish;
-mod transcript;
-mod translation_commands;
-mod window_factory;
-mod window_position;
+// 录屏 + 截图功能域（Task 10/14/2.1，2026-07）：record/mod.rs 内部按 target_os 守护，
+// windows/linux 编译时 record_* 子 mod 整体为空，
+// 对应 invoke_handler 注册项也用 cfg gate（见 core/invoke_handler.rs::handler! 宏）。
+mod record;
+mod ui;
 
-use coordinator::Coordinator;
+use commands::compact_editor_window;
+use core::bootstrap;
+use core::db_queue;
+use engine::coordinator::Coordinator;
 use log::info;
 use tauri::Manager;
+use ui::settings_window;
+use ui::onboarding_window;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -155,7 +65,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(handler!())
-        .setup(move |app| crate::setup::AppSetup::run(app, &config))
+        .setup(move |app| crate::core::setup::AppSetup::run(app, &config))
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
