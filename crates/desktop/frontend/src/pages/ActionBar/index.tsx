@@ -338,6 +338,14 @@ export default function ActionBar() {
   // 前端单路流式：150ms 防抖避免逐字符打爆后端；payload.runId 校验防旧批次串扰；
   // 每次 batch 用最新结果整体替换（后端 emit 的是累积 top-N，不是单 Provider 增量）。
   // tab 参数 = 当前选中 Tab，后端据此决定哪些 Provider 跑（all → 全部）。
+  // 输入 / 开头 → 自动跳 slash tab（命令模式）。
+  // 不在删掉 / 时强制切回 all——用户可能想手动切（query 清空时下方 reset effect 已兜底回 all）。
+  useEffect(() => {
+    if (query.startsWith("/") && activeTab !== "slash") {
+      setActiveTab("slash");
+    }
+  }, [query, activeTab]);
+
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
@@ -529,6 +537,65 @@ export default function ActionBar() {
       actionData: result.actionData,
       query: queryRef.current,
     }).catch(() => {});
+
+    // ── slash 命令分流 ──
+    // slash 结果的 actionType 是 DB 原始值（url/agent/ai/script），不是 "slash"，
+    // 故不能用 switch case "slash"，改在 switch 前按 source === "slash" 分流。
+    // action_data 形如 {id, cmd, params, action_type, action_data}（见 menu.rs:119）。
+    if (result.source === "slash") {
+      const itemId = data.id as number;
+      const params = (data.params as string) || "";
+      const actionType = (data.action_type as string) || result.actionType;
+      const item = menuItemsRef.current.find((i) => i.id === itemId);
+      if (!item) {
+        console.warn("[slash] 菜单项未找到:", itemId);
+        return;
+      }
+      // url 类型：params 替换 {query}/{text}，无 params 用选中文本
+      if (actionType === "url") {
+        const ctx = contextRef.current;
+        const fallbackText = params || ctx?.text || "";
+        const rawUrl = (data.action_data as string) || item.actionData || "";
+        const url = rawUrl
+          .replace(/\{query\}/g, encodeURIComponent(fallbackText))
+          .replace(/\{text\}/g, encodeURIComponent(fallbackText));
+        if (url) {
+          try {
+            await invoke("open_url", { url });
+            invoke("action_bar_dismiss", { reason: "slash-url" });
+          } catch (e) {
+            showQuickError(String(e).slice(0, 40));
+          }
+        }
+        return;
+      }
+      // agent need_voice + 无参数 → 联动语音录音路径（与 executeItem 一致）
+      if (actionType === "agent" && item.needVoice && !params) {
+        setView("loading");
+        try {
+          await invoke("trigger_agent_voice", { itemId });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+          setView("main");
+        }
+        return;
+      }
+      // 其他（agent/ai/script + 有参数，或 agent 非 need_voice）→ execute_action_bar
+      // text 用 slash params，回退选中文本（execute_action_bar_inner 据 action_type 分流）
+      const ctx = contextRef.current;
+      const text = params || ctx?.text || "";
+      setView("loading");
+      try {
+        await invoke("execute_action_bar", { itemId, text });
+        // ai/script 异步结果由后端收口（action_bar_show_result 隐藏浮窗）；
+        // url/agent-without-voice 已在上面分流，此处多为 script/ai，同步 dismiss 兜底
+        invoke("action_bar_dismiss", { reason: "slash-exec" });
+      } catch (e) {
+        showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
+        setView("main");
+      }
+      return;
+    }
 
     switch (result.actionType) {
       case "launch_app": {
