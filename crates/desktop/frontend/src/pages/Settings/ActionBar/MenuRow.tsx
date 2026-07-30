@@ -90,7 +90,11 @@ export default function MenuRow(props: MenuRowProps) {
         </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div className={cn(
+        "flex shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100",
+        // 左侧主菜单：平时隐藏（hover 显示，避免拥挤）；右侧子菜单：常驻（避免空白）
+        props.isMain ? "opacity-0" : "opacity-60",
+      )}>
         <button
           onClick={(e) => { e.stopPropagation(); props.onMove(-1); }}
           disabled={isFirst}
