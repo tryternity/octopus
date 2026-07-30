@@ -37,6 +37,7 @@ const config = {
         settings: "settings.html",
         clipboard: "clipboard.html",
         "compact-editor": "compact-editor.html",
+        terminal: "terminal.html",
         "action-bar": "action-bar.html",
         overlay: "overlay.html",
         "vault-picker": "vault-picker.html",

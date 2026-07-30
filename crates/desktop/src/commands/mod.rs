@@ -1,4 +1,4 @@
-//! 独立命令文件域：模型/设置/系统状态/热词/搜索/紧凑编辑器/翻译 + builtin 模型 + 模型迁移。
+//! 独立命令文件域：模型/设置/系统状态/热词/搜索/紧凑编辑器/翻译 + builtin 模型 + 模型迁移 + 内嵌终端。
 
 pub mod model_commands;
 pub mod settings_commands;
@@ -10,3 +10,5 @@ pub mod compact_editor_window;
 pub mod translation_commands;
 pub mod builtin_models;
 pub mod model_migrate;
+pub mod terminal_commands;
+pub mod agent_hooks;
