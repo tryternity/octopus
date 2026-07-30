@@ -792,33 +792,80 @@ fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
 /// 导致 `which claude` / `which pi` / `which ffmpeg` 等找不到 homebrew/nvm/cargo 装的工具。
 /// `cargo run` 不受影响（继承终端 shell 的完整 PATH）。
 ///
-/// 修正：用 `zsh -l -c 'echo $PATH'` 拿到 login shell 的 PATH，注入进程环境。
-/// `-l` = login shell（加载 ~/.zprofile + ~/.zshrc，含 homebrew/nvm PATH 设置）。
+/// 两步策略：
+/// 1. 尝试 `zsh -l -c 'echo $PATH'` 拿 login shell 完整 PATH（含所有用户自定义路径）
+/// 2. 兜底：直接追加常见路径（homebrew / .local/bin / cargo / fnm / nvm）
 /// 仅 macOS 需要（Linux GUI app 通常通过 /etc/profile 或 desktop session 继承 PATH）。
 #[cfg(target_os = "macos")]
 fn fix_path_for_gui_app() {
-    let shell_path = std::process::Command::new("zsh")
-        .args(["-l", "-c", "echo $PATH"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout).ok()
-            } else {
-                None
-            }
-        })
-        .map(|s| s.trim().to_string());
+    let current = std::env::var("PATH").unwrap_or_default();
 
-    if let Some(new_path) = shell_path {
-        if !new_path.is_empty() {
-            let current = std::env::var("PATH").unwrap_or_default();
-            // 合并：login shell PATH 优先（含 homebrew/nvm），追加 GUI 默认 PATH 兜底
-            let merged = format!("{}:{}", new_path, current);
-            std::env::set_var("PATH", &merged);
-            log::info!("[startup] PATH 修正（GUI app 继承 login shell PATH）: {}", new_path);
+    // 策略 1：用户默认 shell 的 login shell PATH（含 ~/.profile / ~/.zprofile / ~/.bash_profile）
+    // 用 $SHELL 拿用户实际 shell（zsh / bash / fish），不硬编码 zsh——没装 zsh 的用户也能工作。
+    // 失败/超时/没装该 shell 时静默 fallback 到策略 2（兜底路径）。
+    let shell_path = std::env::var("SHELL").ok()
+        .filter(|s| !s.is_empty())
+        .and_then(|shell| {
+            std::process::Command::new(&shell)
+                .args(["-l", "-c", "echo $PATH"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    // 策略 2：兜底常见路径（login shell 失败/超时时仍能找到主流工具）
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/Shared".into());
+    let mut fallback_dirs: Vec<String> = vec![
+        "/opt/homebrew/bin".into(), "/opt/homebrew/sbin".into(),
+        "/usr/local/bin".into(),
+        format!("{}/.local/bin", home),
+        format!("{}/.cargo/bin", home),
+        format!("{}/.bun/bin", home),
+    ];
+
+    // fnm / nvm 的 node 版本路径含动态版本号，无法硬编码——扫目录通配。
+    // fnm: ~/.local/share/fnm/node-versions/*/installation/bin
+    // nvm: ~/.nvm/versions/node/*/bin
+    // glob 展开（取最新版本——目录名是版本号，排序后取最后一个）
+    for (pattern_base, suffix) in [
+        (format!("{}/.local/share/fnm/node-versions", home), "installation/bin"),
+        (format!("{}/.nvm/versions/node", home), "bin"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&pattern_base) {
+            let mut versions: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect();
+            // 按目录名排序取最新版本（fnm/nvm 版本号字符串排序够用）
+            versions.sort_by_key(|e| e.file_name());
+            if let Some(latest) = versions.last() {
+                fallback_dirs.push(latest.path().join(suffix).to_string_lossy().into_owned());
+            }
         }
-    } else {
-        log::warn!("[startup] 无法从 login shell 获取 PATH，GUI app 可能找不到 homebrew/nvm 工具");
+    }
+
+    let mut merged = shell_path.clone().unwrap_or_default();
+    // 追加兜底路径（去重：merged 里已有的不加）
+    for dir in &fallback_dirs {
+        if !merged.split(':').any(|p| p == dir.as_str()) {
+            if !merged.is_empty() { merged.push(':'); }
+            merged.push_str(dir);
+        }
+    }
+    // 追加当前 PATH（保留 GUI 默认 /usr/bin 等）
+    if !current.is_empty() {
+        merged.push(':');
+        merged.push_str(&current);
+    }
+
+    if merged != current {
+        std::env::set_var("PATH", &merged);
+        log::info!(
+            "[startup] PATH 修正（GUI app 继承 login shell + 兜底路径）source={}",
+            if shell_path.is_some() { "login_shell+fallback" } else { "fallback_only" }
+        );
     }
 }
