@@ -29,7 +29,7 @@ export interface SearchBatch {
 }
 
 /** Tab 标识 */
-export type TabId = "all" | "apps" | "files" | "bookmarks" | "actions" | "commands";
+export type TabId = "all" | "apps" | "files" | "bookmarks" | "actions" | "commands" | "slash";
 
 /** Tab 定义 */
 export interface TabDef {
@@ -50,6 +50,7 @@ export const TABS: readonly TabDef[] = [
   { id: "bookmarks", label: "书签", key: "b" },
   { id: "actions", label: "动作", key: "z" },
   { id: "commands", label: "命令", key: "c" },
+  { id: "slash", label: "斜杠", key: "s" },
 ] as const;
 
 /** 展开方向 */

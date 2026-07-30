@@ -73,6 +73,7 @@ export function filterByTab(results: SearchResult[], tab: TabId): SearchResult[]
     bookmarks: "bookmark",
     actions: "menu",
     commands: "command",
+    slash: "slash",
   };
   const targetSource = sourceMap[tab];
   if (!targetSource) return results;
