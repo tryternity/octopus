@@ -12,7 +12,6 @@ export interface ActionBarItem {
   isEnabled: boolean;
   isAsync?: boolean;
   writeOutputToClipboard?: boolean;
-  shortcut?: string;
   agent?: string;
   accepts?: string;
   triggerKeyword?: string;

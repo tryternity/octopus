@@ -73,44 +73,52 @@ describe("determineExpandDirection", () => {
 // ── getVisibleTabs ──
 
 describe("getVisibleTabs", () => {
-  it("有选中（hasContext=true）→ 全部 7 个 Tab 含 actions", () => {
+  it("非 slash 模式 + 有选中 → 6 个 Tab（无 slash），含 actions", () => {
     const tabs = getVisibleTabs(true);
-    expect(tabs).toHaveLength(7);
+    expect(tabs).toHaveLength(6);
     expect(tabs.find((t) => t.id === "actions")).toBeDefined();
     expect(tabs.find((t) => t.id === "commands")).toBeDefined();
-    expect(tabs.find((t) => t.id === "slash")).toBeDefined();
+    expect(tabs.find((t) => t.id === "slash")).toBeUndefined();
   });
 
-  it("无选中（hasContext=false，launch 模式）→ 6 个 Tab，无 actions（commands/slash 不依赖 context）", () => {
+  it("非 slash 模式 + 无选中 → 5 个 Tab（无 slash 无 actions）", () => {
     const tabs = getVisibleTabs(false);
-    expect(tabs).toHaveLength(6);
+    expect(tabs).toHaveLength(5);
     expect(tabs.find((t) => t.id === "actions")).toBeUndefined();
-    expect(tabs.find((t) => t.id === "commands")).toBeDefined();
-    expect(tabs.find((t) => t.id === "slash")).toBeDefined();
+    expect(tabs.find((t) => t.id === "slash")).toBeUndefined();
+  });
+
+  it("slash 模式 → 只显示 slash tab", () => {
+    const tabs = getVisibleTabs(true, true);
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].id).toBe("slash");
   });
 });
 
 // ── getNextTab ──
 
 describe("getNextTab", () => {
-  it("正向循环 all → apps → files → bookmarks → actions → commands → slash → all", () => {
+  it("非 slash 模式正向循环 all → apps → files → bookmarks → actions → commands → all", () => {
     expect(getNextTab("all", 1)).toBe("apps");
     expect(getNextTab("apps", 1)).toBe("files");
     expect(getNextTab("files", 1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", 1)).toBe("actions");
     expect(getNextTab("actions", 1)).toBe("commands");
-    expect(getNextTab("commands", 1)).toBe("slash");
-    expect(getNextTab("slash", 1)).toBe("all");
+    expect(getNextTab("commands", 1)).toBe("all");
   });
 
-  it("反向循环 all → slash → commands → actions → bookmarks → files → apps → all", () => {
-    expect(getNextTab("all", -1)).toBe("slash");
-    expect(getNextTab("slash", -1)).toBe("commands");
+  it("非 slash 模式反向循环 all → commands → actions → bookmarks → files → apps → all", () => {
+    expect(getNextTab("all", -1)).toBe("commands");
     expect(getNextTab("commands", -1)).toBe("actions");
     expect(getNextTab("actions", -1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", -1)).toBe("files");
     expect(getNextTab("files", -1)).toBe("apps");
     expect(getNextTab("apps", -1)).toBe("all");
+  });
+
+  it("slash 模式下循环只在 slash（单一 tab）", () => {
+    expect(getNextTab("slash", 1, true, true)).toBe("slash");
+    expect(getNextTab("slash", -1, true, true)).toBe("slash");
   });
 
   it("无效 TabId 回退到 all", () => {
@@ -496,17 +504,5 @@ describe("slash tab", () => {
   it("filterByTab slash 只留 source=slash", () => {
     const filtered = filterByTab([slashResult, appResult], "slash");
     expect(filtered).toEqual([slashResult]);
-  });
-
-  it("getVisibleTabs 含 slash（无 context 也含）", () => {
-    const tabs = getVisibleTabs(false);
-    expect(tabs.find((t) => t.id === "slash")).toBeTruthy();
-  });
-
-  it("getNextTab 循环含 slash", () => {
-    // 从某 tab 循环应能经过 slash（具体起点取决于 TABS 顺序，此处验证不报错 + 能到达）
-    const tabs = getVisibleTabs(true);
-    const slashIdx = tabs.findIndex((t) => t.id === "slash");
-    expect(slashIdx).toBeGreaterThanOrEqual(0);
   });
 });

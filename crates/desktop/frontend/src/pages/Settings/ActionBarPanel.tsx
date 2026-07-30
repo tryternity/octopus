@@ -16,7 +16,6 @@ import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
 // 拆分出的子模块
 import type { ActionBarItem } from "./ActionBar/types";
 import { deriveAccepts, inputBase, Toggle } from "./ActionBar/constants";
-import { FormField } from "./ActionBar/EditForm";
 import EditForm from "./ActionBar/EditForm";
 import MenuRow from "./ActionBar/MenuRow";
 import ScriptRunsList from "./ActionBar/ScriptRunsList";
@@ -38,9 +37,8 @@ export default function ActionBarPanel({
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const titleDraftRef = useRef<string | null>(null);
   titleDraftRef.current = titleDraft;
-  const [inlineCapturingShortcut, setInlineCapturingShortcut] = useState(false);
   const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
-  const [subCapturing, setSubCapturing] = useState<{ id: number; kind: "local" | "global" } | null>(null);
+  const [capturingItem, setCapturingItem] = useState<{ id: number; kind: "global" } | null>(null);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -109,14 +107,13 @@ export default function ActionBarPanel({
         const extName = editingForm.title || t("settings.actionBar.extName");
         const isAsync = editingForm.isAsync ?? true;
         const writeOutput = editingForm.writeOutputToClipboard ?? false;
-        const shortcut = editingForm.shortcut || "";
         const isEnabled = editingForm.isEnabled ?? true;
         if (draftParentId !== undefined) {
           if (!hasNewPkg) { showToast(t("settings.actionBar.selectExtFirst")); return; }
           const [sourcePath, dirName] = actionData.split("|");
           const newId = await invoke<number>("install_extension", {
             sourcePath, dirName, name: extName, isAsync,
-            writeOutputToClipboard: writeOutput, parentId: draftParentId, shortcut, isEnabled,
+            writeOutputToClipboard: writeOutput, parentId: draftParentId, isEnabled,
           });
           await invoke("set_global_shortcut", { id: newId, globalShortcut: editingForm.globalShortcut ?? "" });
           showToast(t("settings.actionBar.created"));
@@ -126,13 +123,13 @@ export default function ActionBarPanel({
             await invoke("install_extension", {
               sourcePath, dirName, name: extName, isAsync,
               writeOutputToClipboard: writeOutput, parentId: editingForm.parentId ?? null,
-              shortcut, isEnabled, replaceId: editingId,
+              isEnabled, replaceId: editingId,
             });
           } else {
             await invoke("update_action_bar_item", {
               id: editingId, title: editingForm.title || "", icon: editingForm.icon || "",
               actionType: "script", actionData: editingForm.actionData || "",
-              isEnabled, isAsync, writeOutputToClipboard: writeOutput, shortcut, agent: "",
+              isEnabled, isAsync, writeOutputToClipboard: writeOutput, agent: "",
               accepts: "text", triggerKeyword: editingForm.triggerKeyword || "", appBundleIds: editingForm.appBundleIds ?? "",
             });
           }
@@ -145,7 +142,6 @@ export default function ActionBarPanel({
           icon: "", actionType: editingForm.actionType || "url", actionData: editingForm.actionData || "",
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
-          shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
           triggerKeyword: editingForm.actionType !== "submenu" ? (editingForm.triggerKeyword || "") : "",
@@ -162,7 +158,6 @@ export default function ActionBarPanel({
           isEnabled: editingForm.isEnabled ?? true,
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
-          shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
           triggerKeyword: editingForm.actionType !== "submenu" ? (editingForm.triggerKeyword || "") : "",
@@ -216,7 +211,6 @@ export default function ActionBarPanel({
         actionType: merged.actionType || "url", actionData: merged.actionData || "",
         isEnabled: merged.isEnabled, isAsync: merged.isAsync ?? true,
         writeOutputToClipboard: merged.writeOutputToClipboard ?? false,
-        shortcut: merged.actionType !== "submenu" ? (merged.shortcut || "") : "",
         agent: merged.agent || "", accepts: deriveAccepts(merged.actionType, merged.accepts),
         triggerKeyword: merged.triggerKeyword || "", appBundleIds: merged.appBundleIds ?? "",
       });
@@ -258,50 +252,30 @@ export default function ActionBarPanel({
     return () => document.removeEventListener("keydown", handler, true);
   }, [inlineCapturingGlobal, selectedMain, updateMainInline]);
 
-  // inline Alt+字符快捷键录制
+  // 菜单项行内快捷键录制（主菜单 + 子菜单统一）
   useEffect(() => {
-    if (!inlineCapturingShortcut || selectedMain === null) return;
-    const handler = (e: KeyboardEvent) => {
-      e.preventDefault(); e.stopPropagation();
-      if (e.key === "Escape") { setInlineCapturingShortcut(false); return; }
-      if (e.key === "Backspace" || e.key === "Delete") { updateMainInline({ shortcut: "" }); setInlineCapturingShortcut(false); return; }
-      const ch = e.key.toLowerCase();
-      if (/^[0-9a-z]$/.test(ch)) { updateMainInline({ shortcut: ch }); setInlineCapturingShortcut(false); }
-    };
-    document.addEventListener("keydown", handler, true);
-    return () => document.removeEventListener("keydown", handler, true);
-  }, [inlineCapturingShortcut, selectedMain, updateMainInline]);
-
-  // 子菜单项行内快捷键录制
-  useEffect(() => {
-    if (subCapturing === null) return;
-    const target = selectedSubs.find((s) => s.id === subCapturing.id);
-    if (!target) { setSubCapturing(null); return; }
+    if (capturingItem === null) return;
+    const target = [...mainItems, ...selectedSubs].find((s) => s.id === capturingItem.id);
+    if (!target) { setCapturingItem(null); return; }
     const handler = async (e: KeyboardEvent) => {
       e.preventDefault(); e.stopPropagation();
-      if (e.key === "Escape") { setSubCapturing(null); return; }
-      if (subCapturing.kind === "global") {
-        if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
-        if (e.key === "Backspace" || e.key === "Delete") { updateItemInline(target, { globalShortcut: "" }); setSubCapturing(null); return; }
-        const parts: string[] = [];
-        if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
-        if (e.altKey) parts.push("Alt");
-        if (e.shiftKey) parts.push("Shift");
-        const keyName = e.code.startsWith("Key") ? e.code.slice(3) : e.code;
-        parts.push(keyName);
-        const sc = parts.join("+");
-        try { await invoke("check_shortcut", { shortcut: sc }); updateItemInline(target, { globalShortcut: sc }); }
-        catch { /* ignore */ }
-        setSubCapturing(null);
-      } else {
-        if (e.key === "Backspace" || e.key === "Delete") { updateItemInline(target, { shortcut: "" }); setSubCapturing(null); return; }
-        const ch = e.key.toLowerCase();
-        if (/^[0-9a-z]$/.test(ch)) { updateItemInline(target, { shortcut: ch }); setSubCapturing(null); }
-      }
+      if (e.key === "Escape") { setCapturingItem(null); return; }
+      if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
+      if (e.key === "Backspace" || e.key === "Delete") { updateItemInline(target, { globalShortcut: "" }); setCapturingItem(null); return; }
+      const parts: string[] = [];
+      if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
+      if (e.altKey) parts.push("Alt");
+      if (e.shiftKey) parts.push("Shift");
+      const keyName = e.code.startsWith("Key") ? e.code.slice(3) : e.code;
+      parts.push(keyName);
+      const sc = parts.join("+");
+      try { await invoke("check_shortcut", { shortcut: sc }); updateItemInline(target, { globalShortcut: sc }); }
+      catch { /* ignore */ }
+      setCapturingItem(null);
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
-  }, [subCapturing, selectedSubs, updateItemInline]);
+  }, [capturingItem, mainItems, selectedSubs, updateItemInline]);
 
   // 标题 draft debounce
   useEffect(() => {
@@ -452,34 +426,13 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <div className="grid grid-cols-2 gap-3">
-                      <FormField label={t("settings.actionBar.shortcutLabel")}>
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* 全局快捷键（左列） */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                          {ti18n("settings.actionBar.globalShortcutLabel")}
+                        </label>
                         <div className="flex items-center gap-1">
-                          <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
-                          <button
-                            onClick={() => setInlineCapturingShortcut((v) => !v)}
-                            className={cn(
-                              "w-10 text-center bg-background border rounded-md px-2 py-1.5 text-sm font-mono outline-none transition-all",
-                              inlineCapturingShortcut
-                                ? "border-voice ring-2 ring-voice/15"
-                                : "border-border focus:border-voice/50 focus:ring-2 focus:ring-voice/15",
-                            )}
-                          >
-                            {selectedMain.shortcut || "—"}
-                          </button>
-                          {selectedMain.shortcut && (
-                            <button
-                              onClick={() => updateMainInline({ shortcut: "" })}
-                              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </FormField>
-
-                      <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
-                        <div className="flex items-center gap-2">
                           <ShortcutButton
                             shortcut={selectedMain.globalShortcut ?? ""}
                             capturing={inlineCapturingGlobal}
@@ -495,7 +448,22 @@ export default function ActionBarPanel({
                             </button>
                           )}
                         </div>
-                      </FormField>
+                      </div>
+                      {/* 斜杠命令名（右列） */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                          {t("settings.actionBar.slashName")}
+                        </label>
+                        <input
+                          className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                          placeholder={t("settings.actionBar.slashNamePlaceholder")}
+                          value={selectedMain.triggerKeyword || ""}
+                          onChange={(e) => {
+                            const val = e.target.value.trim().toLowerCase();
+                            updateMainInline({ triggerKeyword: val });
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -530,11 +498,9 @@ export default function ActionBarPanel({
                             onEdit={() => startEdit(sub)}
                             onDelete={() => handleDelete(sub.id)}
                             showShortcuts
-                            capturingKind={subCapturing?.id === sub.id ? subCapturing.kind : null}
-                            onCaptureShortcut={(kind) => setSubCapturing({ id: sub.id, kind })}
-                            onClearShortcut={(kind) =>
-                              updateItemInline(sub, kind === "local" ? { shortcut: "" } : { globalShortcut: "" })
-                            }
+                            capturing={capturingItem?.id === sub.id}
+                            onCaptureShortcut={() => setCapturingItem({ id: sub.id, kind: "global" })}
+                            onClearShortcut={() => updateItemInline(sub, { globalShortcut: "" })}
                           />
                         ))}
                       </div>

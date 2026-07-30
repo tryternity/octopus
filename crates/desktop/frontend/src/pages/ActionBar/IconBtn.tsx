@@ -3,10 +3,9 @@
 import { cn } from "@/lib/utils";
 import { indexLabel } from "./label";
 
-export default function IconBtn({ index, label, active, onClick, btnRef, shortcut }: {
+export default function IconBtn({ index, label, active, onClick, btnRef }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
-  shortcut?: string;
 }) {
   return (
     <button
@@ -19,7 +18,7 @@ export default function IconBtn({ index, label, active, onClick, btnRef, shortcu
       )}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={onClick}
-      title={`${label} — Alt+${indexLabel(index)} 定位${shortcut ? ` · Alt+${shortcut} 执行` : ""}`}
+      title={`${label} — Alt+${indexLabel(index)} 定位`}
     >
       <span
         className={cn(
@@ -32,9 +31,6 @@ export default function IconBtn({ index, label, active, onClick, btnRef, shortcu
         {indexLabel(index)}
       </span>
       <span className="text-[11px] font-medium leading-none whitespace-nowrap">{label}</span>
-      {shortcut && (
-        <span className="text-[9px] text-voice/60 font-mono leading-none">⌥{shortcut}</span>
-      )}
     </button>
   );
 }

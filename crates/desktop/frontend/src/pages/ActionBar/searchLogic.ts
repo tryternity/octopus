@@ -32,18 +32,21 @@ export function determineExpandDirection(
 }
 
 /** 返回当前可见的 Tab 列表。无选中（launch 模式）时隐藏"动作"Tab——菜单项需要选中内容。 */
-export function getVisibleTabs(hasContext: boolean): readonly TabDef[] {
-  return hasContext ? TABS : TABS.filter((t) => t.id !== "actions");
+export function getVisibleTabs(hasContext: boolean, isSlashMode = false): readonly TabDef[] {
+  // slash 模式（query 以 / 开头）：只显示 slash tab
+  if (isSlashMode) return TABS.filter((t) => t.id === "slash");
+  // 非 slash 模式：不显示 slash tab；无选中时再隐藏 actions
+  return TABS.filter((t) => t.id !== "slash" && (hasContext || t.id !== "actions"));
 }
 
 /**
  * 获取下一个/上一个 Tab（循环）。
  * @param direction 1 = 下一个，-1 = 上一个
  */
-export function getNextTab(current: TabId, direction: 1 | -1, hasContext = true): TabId {
-  const tabs = getVisibleTabs(hasContext);
+export function getNextTab(current: TabId, direction: 1 | -1, hasContext = true, isSlashMode = false): TabId {
+  const tabs = getVisibleTabs(hasContext, isSlashMode);
   const idx = tabs.findIndex((t) => t.id === current);
-  if (idx === -1) return "all";
+  if (idx === -1) return tabs[0]?.id ?? "all";
   const nextIdx = (idx + direction + tabs.length) % tabs.length;
   return tabs[nextIdx].id;
 }

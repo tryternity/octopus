@@ -56,19 +56,6 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
     })
 }
 
-/// 校验快捷键格式：空字符串或单个 a-z 字符。
-/// 2026-07-23：数字不再允许（Alt+数字 1-9 改为定位菜单项，与字母执行快捷键区分）。
-/// 旧 DB 中已有的数字 shortcut 不阻断（用户编辑时前端会过滤为字母）。
-pub fn validate_shortcut(shortcut: &str) -> Result<()> {
-    if shortcut.is_empty() {
-        return Ok(());
-    }
-    if shortcut.len() == 1 && shortcut.chars().all(|c| c.is_ascii_lowercase()) {
-        return Ok(());
-    }
-    anyhow::bail!("快捷键必须为空或单个 a-z 字符");
-}
-
 /// 菜单标题 / 命令名（trigger_keyword）字符约束：CJK（中日韩）+ 字母数字 + `-_`。
 /// 禁空格/特殊字符——支持 slash Tab 补全无歧义（标题作为补全文本）。
 /// 与前端 EditForm.tsx 的 TITLE_REGEX 一致。
@@ -86,26 +73,6 @@ pub fn validate_action_bar_text(field: &str, text: &str) -> Result<()> {
     });
     if ok { Ok(()) } else {
         anyhow::bail!("{}只能含中文、字母、数字、连字符、下划线", field);
-    }
-}
-
-/// 检查快捷键是否已被其他项占用（排除指定 id）。返回冲突项（如有）。
-pub(crate) fn check_shortcut_conflict_at(conn: &Connection, shortcut: &str, exclude_id: Option<i64>) -> Result<Option<ActionBarItem>> {
-    if shortcut.is_empty() {
-        return Ok(None);
-    }
-    let sql = match exclude_id {
-        Some(_) => format!("SELECT {} FROM action_bar_items WHERE shortcut=?1 AND id!=?2", ACTION_BAR_SELECT_COLS),
-        None => format!("SELECT {} FROM action_bar_items WHERE shortcut=?1", ACTION_BAR_SELECT_COLS),
-    };
-    let mut stmt = conn.prepare(&sql)?;
-    let mut rows = match exclude_id {
-        Some(eid) => stmt.query_map(params![shortcut, eid], row_to_action_bar_item)?,
-        None => stmt.query_map(params![shortcut], row_to_action_bar_item)?,
-    };
-    match rows.next() {
-        Some(r) => Ok(Some(r?)),
-        None => Ok(None),
     }
 }
 
@@ -171,7 +138,6 @@ pub fn insert_action_bar_item(
     action_data: &str,
     is_async: bool,
     write_output_to_clipboard: bool,
-    shortcut: &str,
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
@@ -180,7 +146,7 @@ pub fn insert_action_bar_item(
     app_bundle_ids: &str,
 ) -> Result<i64> {
     ensure_db()?;
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, is_enabled, need_voice, app_bundle_ids))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, is_enabled, need_voice, app_bundle_ids))
 }
 
 pub(crate) fn insert_action_bar_item_at(
@@ -192,7 +158,6 @@ pub(crate) fn insert_action_bar_item_at(
     action_data: &str,
     is_async: bool,
     write_output_to_clipboard: bool,
-    shortcut: &str,
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
@@ -200,22 +165,18 @@ pub(crate) fn insert_action_bar_item_at(
     need_voice: bool,
     app_bundle_ids: &str,
 ) -> Result<i64> {
-    let shortcut = shortcut.to_lowercase();
-    validate_shortcut(&shortcut)?;
     validate_action_bar_text("菜单标题", title)?;
     validate_action_bar_text("命令名", trigger_keyword)?;
-    if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, None)? {
-        anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
-    }
     let max_order: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM action_bar_items WHERE parent_id IS ?1",
         params![parent_id],
         |r| r.get(0),
     )?;
+    // shortcut 列保留（兼容），不再写入——靠 DB DEFAULT ''。Alt+字母执行已废弃，改 slash 命令。
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice, app_bundle_ids)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?13, ?7, ?8, ?9, ?10, ?11, ?12, ?14, ?15)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32, app_bundle_ids],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, need_voice, app_bundle_ids)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?12, ?7, ?8, ?9, ?10, ?11, ?13, ?14)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, agent, accepts, trigger_keyword, is_enabled as i32, need_voice as i32, app_bundle_ids],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -229,7 +190,6 @@ pub fn update_action_bar_item(
     is_enabled: bool,
     is_async: bool,
     write_output_to_clipboard: bool,
-    shortcut: &str,
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
@@ -237,7 +197,7 @@ pub fn update_action_bar_item(
     app_bundle_ids: &str,
 ) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, need_voice, app_bundle_ids))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, need_voice, app_bundle_ids))
 }
 
 pub(crate) fn update_action_bar_item_at(
@@ -250,7 +210,6 @@ pub(crate) fn update_action_bar_item_at(
     is_enabled: bool,
     is_async: bool,
     write_output_to_clipboard: bool,
-    shortcut: &str,
     agent: &str,
     accepts: &str,
     trigger_keyword: &str,
@@ -261,16 +220,11 @@ pub(crate) fn update_action_bar_item_at(
     if row.is_system && row.action_type != action_type {
         anyhow::bail!("系统内置菜单项不可更改动作类型");
     }
-    let shortcut = shortcut.to_lowercase();
-    validate_shortcut(&shortcut)?;
     validate_action_bar_text("菜单标题", title)?;
     validate_action_bar_text("命令名", trigger_keyword)?;
-    if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, Some(id))? {
-        anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
-    }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, agent=?9, accepts=?10, trigger_keyword=?11, need_voice=?12, app_bundle_ids=?13, updated_at=datetime('now') WHERE id=?14",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, agent, accepts, trigger_keyword, need_voice as i32, app_bundle_ids, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, agent=?8, accepts=?9, trigger_keyword=?10, need_voice=?11, app_bundle_ids=?12, updated_at=datetime('now') WHERE id=?13",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, agent, accepts, trigger_keyword, need_voice as i32, app_bundle_ids, id],
     )?;
     Ok(())
 }
@@ -674,37 +628,6 @@ mod tests {
     }
 
     #[test]
-    fn action_bar_shortcut_validate_and_conflict() {
-        let conn = open_init();
-
-        // 给 id=2（翻译）设快捷键 't'
-        conn.execute("UPDATE action_bar_items SET shortcut='t' WHERE id=2", []).unwrap();
-
-        // validate_shortcut: 合法（仅 a-z；数字 2026-07-23 起不再允许——留给 Alt+数字定位）
-        assert!(validate_shortcut("").is_ok());
-        assert!(validate_shortcut("t").is_ok());
-        // validate_shortcut: 非法
-        assert!(validate_shortcut("5").is_err());  // 数字不再允许
-        assert!(validate_shortcut("T").is_err());  // 大写
-        assert!(validate_shortcut("ab").is_err()); // 多字符
-        assert!(validate_shortcut("-").is_err());  // 非法字符
-        assert!(validate_shortcut(" ").is_err());  // 空格
-
-        // check_shortcut_conflict: 't' 已被 id=2 占用
-        let conflict = check_shortcut_conflict_at(&conn, "t", Some(5)).unwrap();
-        assert!(conflict.is_some());
-        assert_eq!(conflict.unwrap().id, 2);
-
-        // 排除自身——id=2 查 't' 不应冲突
-        let self_ok = check_shortcut_conflict_at(&conn, "t", Some(2)).unwrap();
-        assert!(self_ok.is_none());
-
-        // 无冲突字符
-        let free = check_shortcut_conflict_at(&conn, "z", None).unwrap();
-        assert!(free.is_none());
-    }
-
-    #[test]
     fn action_bar_text_validate() {
         // validate_action_bar_text: CJK + 字母数字 + -_（标题/命令名共用）
         // 空值合法（可选字段）
@@ -724,36 +647,6 @@ mod tests {
         assert!(validate_action_bar_text("命令名", "百度").is_ok());
         assert!(validate_action_bar_text("命令名", "my-cmd").is_ok());
         assert!(validate_action_bar_text("命令名", "my cmd").is_err()); // 空格
-    }
-
-    #[test]
-    fn action_bar_insert_with_shortcut() {
-        let conn = open_init();
-        let id = insert_action_bar_item_at(
-            &conn, None, "测试", "", "url", "", true, false, "q", "", "text", "", true, false, "",
-        ).unwrap();
-        let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
-        assert_eq!(item.shortcut, "q");
-    }
-
-    #[test]
-    fn action_bar_update_shortcut() {
-        let conn = open_init();
-        update_action_bar_item_at(
-            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p", "", "text", "", false, "",
-        ).unwrap();
-        let item = load_action_bar_item_at(&conn, 5).unwrap().unwrap();
-        assert_eq!(item.shortcut, "p");
-    }
-
-    #[test]
-    fn action_bar_shortcut_conflict_rejected() {
-        let conn = open_init();
-        // id=2 设快捷键 't'
-        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t", "", "text", "", false, "").unwrap();
-        // id=5 也想用 't' → 应失败
-        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t", "", "text", "", false, "");
-        assert!(result.is_err());
     }
 
     #[test]
@@ -872,7 +765,7 @@ mod tests {
         // 通过 insert 插入 agent 类型——不传 accepts 时默认 'text'
         let conn = open_init();
         let id = insert_action_bar_item_at(
-            &conn, None, "我的agent", "bot", "agent", "{{voice}}", true, false, "", "claude", "file", "", true, false, "",
+            &conn, None, "我的agent", "bot", "agent", "{{voice}}", true, false, "claude", "file", "", true, false, "",
         ).unwrap();
         let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
         assert_eq!(item.accepts, "file");
@@ -889,8 +782,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "", "text", "", false, "").unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "url", "", false, true, false, "", "text", "", false, "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -908,8 +801,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "", "text", "", true, false, "").unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "url", "", true, false, "", "text", "", true, false, "").unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

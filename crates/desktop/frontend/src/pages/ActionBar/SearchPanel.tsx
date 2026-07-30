@@ -96,13 +96,15 @@ function TabButton({
 function TabBar({
   activeTab,
   hasContext,
+  isSlashMode,
   onTabChange,
 }: {
   activeTab: TabId;
   hasContext: boolean;
+  isSlashMode: boolean;
   onTabChange: (tab: TabId) => void;
 }) {
-  const visibleTabs = getVisibleTabs(hasContext);
+  const visibleTabs = getVisibleTabs(hasContext, isSlashMode);
   return (
     <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-border/30 shrink-0 h-[30px]">
       {visibleTabs.map((tab) => (
@@ -186,6 +188,8 @@ export interface SearchPanelProps {
   selectedIdx: number;
   expandDirection: ExpandDirection;
   hasContext: boolean;
+  /** query 是否 / 开头（slash 命令模式）——true 时只显示 slash tab */
+  isSlashMode: boolean;
   onTabChange: (tab: TabId) => void;
   onSelect: (idx: number) => void;
   onExecute: (result: SearchResult) => void;
@@ -197,6 +201,7 @@ export default function SearchPanel({
   selectedIdx,
   expandDirection,
   hasContext,
+  isSlashMode,
   onTabChange,
   onSelect,
   onExecute,
@@ -230,7 +235,7 @@ export default function SearchPanel({
   }, [selectedIdx]);
 
   const tabBar = (
-    <TabBar activeTab={activeTab} hasContext={hasContext} onTabChange={onTabChange} />
+    <TabBar activeTab={activeTab} hasContext={hasContext} isSlashMode={isSlashMode} onTabChange={onTabChange} />
   );
 
   const resultList = (

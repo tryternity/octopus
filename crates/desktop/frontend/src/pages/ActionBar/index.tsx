@@ -342,11 +342,13 @@ export default function ActionBar() {
   // 前端单路流式：150ms 防抖避免逐字符打爆后端；payload.runId 校验防旧批次串扰；
   // 每次 batch 用最新结果整体替换（后端 emit 的是累积 top-N，不是单 Provider 增量）。
   // tab 参数 = 当前选中 Tab，后端据此决定哪些 Provider 跑（all → 全部）。
-  // 输入 / 开头 → 自动跳 slash tab（命令模式）。
-  // 不在删掉 / 时强制切回 all——用户可能想手动切（query 清空时下方 reset effect 已兜底回 all）。
+  // slash tab 可见性由 query 前缀决定：输入 / 开头 → 自动跳 slash tab（命令模式，只显 slash tab）；
+  // query 不再 / 开头 → 切回 all（非 slash 模式不显示 slash tab，activeTab 不能停在 slash）。
   useEffect(() => {
     if (query.startsWith("/") && activeTab !== "slash") {
       setActiveTab("slash");
+    } else if (!query.startsWith("/") && activeTab === "slash") {
+      setActiveTab("all");
     }
   }, [query, activeTab]);
 
@@ -882,7 +884,6 @@ export default function ActionBar() {
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
-            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
@@ -901,7 +902,6 @@ export default function ActionBar() {
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
-            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
@@ -915,6 +915,7 @@ export default function ActionBar() {
       selectedIdx={searchSelectedIdx}
       expandDirection={expandDirection}
       hasContext={!!context}
+      isSlashMode={query.startsWith("/")}
       onTabChange={setActiveTab}
       onSelect={setSearchSelectedIdx}
       onExecute={executeSearchResult}
