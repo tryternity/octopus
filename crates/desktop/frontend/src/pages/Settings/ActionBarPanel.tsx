@@ -426,24 +426,9 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <div className="flex items-end">
-                      {/* 斜杠命令名（左） */}
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* 全局快捷键（左列） */}
                       <div className="space-y-1.5">
-                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                          {t("settings.actionBar.slashName")}
-                        </label>
-                        <input
-                          className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                          placeholder={t("settings.actionBar.slashNamePlaceholder")}
-                          value={selectedMain.triggerKeyword || ""}
-                          onChange={(e) => {
-                            const val = e.target.value.trim().toLowerCase();
-                            updateMainInline({ triggerKeyword: val });
-                          }}
-                        />
-                      </div>
-                      {/* 全局快捷键（右，ml-auto 推到右侧，块内左对齐） */}
-                      <div className="ml-auto space-y-1.5">
                         <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
                           {ti18n("settings.actionBar.globalShortcutLabel")}
                         </label>
@@ -463,6 +448,21 @@ export default function ActionBarPanel({
                             </button>
                           )}
                         </div>
+                      </div>
+                      {/* 斜杠命令名（右列） */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                          {t("settings.actionBar.slashName")}
+                        </label>
+                        <input
+                          className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                          placeholder={t("settings.actionBar.slashNamePlaceholder")}
+                          value={selectedMain.triggerKeyword || ""}
+                          onChange={(e) => {
+                            const val = e.target.value.trim().toLowerCase();
+                            updateMainInline({ triggerKeyword: val });
+                          }}
+                        />
                       </div>
                     </div>
                   )}
