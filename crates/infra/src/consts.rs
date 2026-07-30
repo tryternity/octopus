@@ -35,7 +35,7 @@ pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 /// 多格式降级链是历史遗留（防 webp panic）。截图/剪贴板历史场景改文件系统存储后
 /// 对画质要求提高，q100 视觉无损（2026-07-30 从 q85 升级）。
 /// 想换回有损 WebP 或加 fallback，改本常量即可（如 `"webp:80;jpeg:85"`）。
-pub const IMAGE_SAVE_QUALITY: &str = "jpeg:100";
+pub const IMAGE_SAVE_QUALITY: &str = "jpeg:92";
 
 /// 缩略图编码格式链：240×240 nearest resize 后的输出格式。
 /// q5 极轻质量（thumb 仅作列表预览，不要求细节）；240×240 这么小，q5 vs q85 肉眼几乎无差。
