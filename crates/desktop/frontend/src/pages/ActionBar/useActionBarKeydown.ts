@@ -105,7 +105,7 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
           return;
 
         case "search-tab":
-          p.setActiveTab(getNextTab(p.activeTabRef.current, action.dir, !!p.contextRef.current));
+          p.setActiveTab(getNextTab(p.activeTabRef.current, action.dir, !!p.contextRef.current, p.activeTabRef.current === "slash"));
           return;
 
         case "search-nav":
@@ -203,10 +203,6 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
           }
           return;
         }
-
-        case "alt-execute":
-          p.executeItem(action.item);
-          return;
 
         case "alt-goto-sub":
           if (action.idx < p.subItemsRef.current.length) {

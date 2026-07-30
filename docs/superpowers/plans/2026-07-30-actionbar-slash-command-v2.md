@@ -31,7 +31,7 @@
 
 **说明**：v1 的 `search_slash_commands` 只匹配 trigger_keyword。v2 扩大候选池到所有菜单项，加标题匹配维度 + `、` 兼容。
 
-- [ ] **Step 1: 更新测试反映 v2 行为**
+- [x] **Step 1: 更新测试反映 v2 行为**
 
 更新 `slash_command_tests`（已有 12 测试，v1 + final fix）。关键变化：
 - 候选池：无 trigger_keyword 的菜单项也进候选（按标题匹配）
@@ -86,12 +86,12 @@ fn slash_all_items_are_candidates() {
 
 > `item_with_title` 是新 helper（支持自定义 title），或扩展现有 `item` 签名加 title 参数。现有 `item(id, over, trigger, action_type)` 的 `over` 参数没用上，改成 `item(id, title, trigger, action_type)`。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-search --lib slash_command_tests 2>&1 | tail -10`
 Expected: FAIL（新测试不通过）。
 
-- [ ] **Step 3: 实现 v2 search_slash_commands**
+- [x] **Step 3: 实现 v2 search_slash_commands**
 
 重写 `search_slash_commands`（menu.rs）。关键改动：
 ```rust
@@ -169,16 +169,16 @@ fn slash_result(r: &ActionBarItem, params: &str, score: i32) -> SearchResult {
 
 > action_data 加 `title` 字段供前端 Tab 补全。subtitle 显示 `/cmd`（有命令名时）或 action_type（无命令名时），让用户知道匹配源。
 
-- [ ] **Step 4: 更新既有测试适配新行为**
+- [x] **Step 4: 更新既有测试适配新行为**
 
 v1 的测试可能断言 `title == "/google"`，v2 改为显示菜单标题。更新断言。如 `slash_with_cmd_and_params_matches` 的 `results[0].title` 从 `/google` 改为 `Test 1`（item 的 title）。
 
-- [ ] **Step 5: 跑测试 + 编译**
+- [x] **Step 5: 跑测试 + 编译**
 
 Run: `cargo test -p octopus-search --lib 2>&1 | tail -5 && cargo build -p octopus-search 2>&1 | tail -3`
 Expected: 全过。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/search/src/providers/menu.rs
@@ -200,7 +200,7 @@ git commit -m "feat(actionbar): slash v2 候选池扩大 + 标题匹配 + IME �
 
 **说明**：核心交互增强。Tab 补全 + 锁定选中是新的交互逻辑。
 
-- [ ] **Step 1: keyNavigation 加 slash-complete action**
+- [x] **Step 1: keyNavigation 加 slash-complete action**
 
 `KeyAction` 加 `{ type: "slash-complete" }`。`decideKeyAction` 里 search 模式的 Tab 处理加判断：activeTab==="slash" 时返回 slash-complete 而非 search-tab。
 
@@ -216,7 +216,7 @@ if (dir !== null) {
 
 记得更新 `useActionBarKeydown.exhaustive.test-d.ts` 的 HandledActionTypes 加 `slash-complete`。
 
-- [ ] **Step 2: index.tsx 加选中锁定状态**
+- [x] **Step 2: index.tsx 加选中锁定状态**
 
 加 state：
 ```ts
@@ -227,7 +227,7 @@ useEffect(() => { slashLockedItemIdRef.current = slashLockedItemId; }, [slashLoc
 
 query effect 改：slash 模式 + 已锁定时，query 变化不触发 search_stream（保持候选）。检测用户删除补全标题 → 解锁。
 
-- [ ] **Step 3: useActionBarKeydown 执行 slash-complete**
+- [x] **Step 3: useActionBarKeydown 执行 slash-complete**
 
 ```ts
 case "slash-complete": {
@@ -248,20 +248,20 @@ case "slash-complete": {
 
 `ActionBarKeydownParams` 加 `setSlashLockedItemId`。
 
-- [ ] **Step 4: 执行改用锁定 id**
+- [x] **Step 4: 执行改用锁定 id**
 
 `executeSearchResult` 的 slash 分流：优先用 `slashLockedItemIdRef.current`，否则用选中候选的 id。参数从 query 空格后解析。
 
-- [ ] **Step 5: query 拦截（锁定时不重新搜索）**
+- [x] **Step 5: query 拦截（锁定时不重新搜索）**
 
 slash 模式 + slashLockedItemId 非空时，query effect 跳过 search_stream 调用。检测解锁：query 不再以 `/锁定标题` 开头 → setSlashLockedItemId(null)。
 
-- [ ] **Step 6: tsc + vite build + vitest**
+- [x] **Step 6: tsc + vite build + vitest**
 
 Run: `cd crates/desktop/frontend && npx tsc -b && npx vitest run && npx vite build`
 Expected: 0 error，测试全过。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/
@@ -281,7 +281,7 @@ slash 模式 Tab 补全菜单标题+空格；锁定选中（selectedItemId），
 
 **说明**：菜单标题加字符约束（中文字母数字 `-_`），支持 Tab 补全无歧义。
 
-- [ ] **Step 1: EditForm 标题校验**
+- [x] **Step 1: EditForm 标题校验**
 
 读 EditForm.tsx 标题输入框（grep `title` input）。加校验正则：允许中文（`\u4e00-\u9fa5`）+ 字母数字 + `-_`，禁空格/特殊字符。
 
@@ -293,15 +293,15 @@ const TITLE_REGEX = /^[\u4e00-\u9fa5a-zA-Z0-9_-]+$/;
 )}
 ```
 
-- [ ] **Step 2: i18n**
+- [x] **Step 2: i18n**
 
 `slashNameInvalid` 旁加 `titleInvalid`：「标题只能中文、字母、数字、连字符、下划线」。
 
-- [ ] **Step 3: tsc + vite build**
+- [x] **Step 3: tsc + vite build**
 
 Run: `cd crates/desktop/frontend && npx tsc -b && npx vite build`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBar/EditForm.tsx crates/desktop/frontend/src/locales/
@@ -317,19 +317,19 @@ git commit -m "feat(actionbar): 菜单标题字符约束（中文/字母/数字/
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: architecture.md 更新 v2**
+- [x] **Step 1: architecture.md 更新 v2**
 
 slash 命令段补 v2 增强：IME 兼容、候选池扩大、Tab 补全、标题约束。
 
-- [ ] **Step 2: 手动 e2e**
+- [x] **Step 2: 手动 e2e**
 
-- [ ] `、google hello`（顿号开头）→ 触发
-- [ ] `/百度`（标题匹配，无 trigger）→ 命中
-- [ ] `/goo` → trigger 命中优先
-- [ ] Tab 补全 `/Google ` → 锁定，输参数回车执行
-- [ ] 菜单标题输入空格 → 校验提示
+- [x] `、google hello`（顿号开头）→ 触发
+- [x] `/百度`（标题匹配，无 trigger）→ 命中
+- [x] `/goo` → trigger 命中优先
+- [x] Tab 补全 `/Google ` → 锁定，输参数回车执行
+- [x] 菜单标题输入空格 → 校验提示
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/architecture.md
