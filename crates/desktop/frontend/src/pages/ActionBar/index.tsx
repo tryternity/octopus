@@ -368,7 +368,8 @@ export default function ActionBar() {
       return;
     }
     // 补全后 query 形如 `/标题 ` 或 `/标题 params`；标题含空格也成立（前缀整体匹配）
-    if (!query.startsWith("/" + title) && !query.startsWith("、" + title)) {
+    // 注：、（顿号）已在输入框 onChange normalize 成 /，此处只需检测 /
+    if (!query.startsWith("/" + title)) {
       setSlashLockedItemId(null);
     }
   }, [query, slashLockedItemId, activeTab, menuItems]);
@@ -607,9 +608,8 @@ export default function ActionBar() {
           // ⚠️ 必须用 queryRef.current 而非闭包 query——keydown handler 空依赖，
           // 闭包 query 恒为 mount 时的初始值，键盘 Enter 执行时参数会丢失。
           const q = queryRef.current;
-          let afterTitle = "";
-          if (q.startsWith("/" + title)) afterTitle = q.slice(1 + title.length);
-          else if (q.startsWith("、" + title)) afterTitle = q.slice("、".length + title.length);
+          // 、（顿号）已在输入框 onChange normalize 成 /，此处只需检测 /
+          let afterTitle = q.startsWith("/" + title) ? q.slice(1 + title.length) : "";
           params = afterTitle.trim();
         } else {
           // 锁定项已删除（菜单改了）→ 回退 data.params 兜底
@@ -822,7 +822,12 @@ export default function ActionBar() {
         autoCorrect="off"
         spellCheck={false}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          // IME 兼容：中文输入法下 / 会变成 、（顿号）。开头 、 normalize 成 /，
+          // 后续逻辑只处理 /，避免显示 、google 这种违和文本。
+          const v = e.target.value;
+          setQuery(v.startsWith("、") ? "/" + v.slice("、".length) : v);
+        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[15px] font-medium text-foreground placeholder:text-muted-foreground/40 placeholder:font-normal outline-none border-none min-w-0"
         autoComplete="off"
