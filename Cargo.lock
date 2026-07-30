@@ -5344,9 +5344,12 @@ name = "octopus-pty"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs 5.0.1",
+ "libc",
  "log",
  "parking_lot",
  "portable-pty",
+ "serde",
 ]
 
 [[package]]

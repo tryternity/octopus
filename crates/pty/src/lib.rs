@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::RwLock;
 
-pub use session::PtySession;
-pub use agent_detect::{AgentSignal, AgentDetector};
+pub use session::{spawn, PtySession};
+pub use agent_detect::{AgentSignal, AgentDetector, Transition};
 
 /// PTY session 注册表。Tauri State 挂载。
 pub struct PtyState {

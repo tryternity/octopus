@@ -137,12 +137,14 @@ Expected: 编译通过
 
 ### Task 2: 实现 PtySession（spawn + 3 线程 + read/write/resize/kill）
 
+> **⚠️ 实施记录（2026-07-30 review）**：交接文档标称「Task 1-4 已完成」，但实测 `session.rs` 只有裸 struct（write/resize/kill/is_exited），**spawn 方法 + reader/flusher/waiter 3 线程完全未实现**。`cargo test -p octopus-pty --lib` 9 测试全绿是真实的，但只覆盖了 `agent_detect.rs` 的 OSC 解析和 `shell_init.rs::build_command` 的「构造成功」（后者甚至没断言任何字段），没覆盖到缺失的 spawn。Step 1-7 全部需重做。已 commit 的 `65ce2b1a` 是半成品，本 Task 真正补完 spawn + 3 线程。
+
 **Files:**
 - Create: `crates/pty/src/session.rs`（完整实现）
 
 **Interfaces:**
 - Consumes: `portable-pty::{native_pty_system, PtySize, CommandBuilder, ChildKiller, MasterPty}`
-- Produces: `PtySession::spawn(opts, on_data, on_exit, on_signal) → Result<Arc<PtySession>>`
+- Produces: `spawn(id, app, cols, rows, cwd, shell, on_data: Channel<Response>, on_exit: Channel<i32>, on_signal: impl Fn(AgentSignal)) → Result<Arc<PtySession>, String>`（对齐 Terax 签名——free fn，非 method）
 
 - [ ] **Step 1: 实现 PtySession 结构 + spawn**
 
@@ -247,6 +249,17 @@ Expected: 测试通过
 
 ### Task 3: 实现 AgentDetector（OSC 133/777 解析状态机）
 
+> **⚠️ 实施记录（2026-07-30 review）**：交接标称「已完成」，实测为**简化版**——能用（7 测试绿），但相对 Terax 蓝本缺以下关键能力，**bash 下 agent 状态感知会失效**：
+> - 缺 `finish()` —— PTY 关闭时不发 Exited，UI 会留 stale 条目
+> - 缺 `Transition` enum —— 用裸 `kind: String`，类型安全弱
+> - 缺 **auto-arm** —— bash 无 preexec，靠 OSC 777 marker 自我 arm（Terax `ensure_armed`），当前简化版不 arm，bash 下永远感知不到 agent
+> - 缺 OSC 9 attention（generic desktop notification）
+> - 缺 4-field marker（`777;notify;octopus;<agent>;<event>`）—— Codex/Gemini/Pi 用这个格式
+> - 缺 `OSC_MAX` 溢出防护（>2048 字节的 OSC 会 panic 或乱）
+> - 缺 `status` 字段——Working 状态会重复 emit
+>
+> `process` 签名已改为 `process(data, session_id) -> Vec<AgentSignal>`，与 plan 描述的 `process(data, |signal| ...)` 不同。本 Task 需重写为 Terax 完整版（回调式 `process<F: FnMut(Transition)>` + `finish` + auto-arm），去掉 octopus 不需要的 da_filter。
+
 **Files:**
 - Create: `crates/pty/src/agent_detect.rs`（完整实现）
 
@@ -312,8 +325,13 @@ Expected: 测试通过
 
 ### Task 4: 实现 shell_init（OSC 133 注入脚本）
 
+> **⚠️ 实施记录（2026-07-30 review）**：交接标称「已完成」，实测**OSC 脚本根本没注入**——`ZSH_INIT` / `BASH_INIT` 字符串定义了，但 `build_command` 里 match arm 是空的（`match shell_name { "zsh" => { /* Phase 1 简化...后续优化 */ } "bash" => {...} _ => {} }`），shell integration 形同虚设。也没有 Terax 的 ZDOTDIR 保留用户配置方案——直接覆盖用户 `~/.zshrc` 会让 starship/p10k 等 prompt 框架失效。
+>
+> 另外 `shell_init.rs:101,107` 的两个测试有 `unused variable: cmd` warning（AGENTS.md 要求 0 warning）。本 Task 需重做：采用 Terax 的 ZDOTDIR + `--rcfile` 方案，把 OSC 133 脚本写到 `~/.cache/octopus/shell-integration/` 下临时文件，env 指过去，保留用户原有配置（`TERAX_USER_ZDOTDIR` → 改名 `OCTOPUS_USER_ZDOTDIR`）。
+
 **Files:**
 - Create: `crates/pty/src/shell_init.rs`（完整实现）
+- Create: `crates/pty/src/scripts/zshenv.zsh` + `zshrc.zsh` + `bashrc.bash`（OSC 133 注入脚本，对齐 Terax，去掉 Terax 标识改 octopus）
 
 - [ ] **Step 1: 实现 build_command（参考 Terax shell_init.rs）**
 
