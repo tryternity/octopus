@@ -16,7 +16,7 @@ import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
 // 拆分出的子模块
 import type { ActionBarItem } from "./ActionBar/types";
 import { deriveAccepts, inputBase, Toggle } from "./ActionBar/constants";
-import EditForm from "./ActionBar/EditForm";
+import EditForm, { FormField } from "./ActionBar/EditForm";
 import MenuRow from "./ActionBar/MenuRow";
 import ScriptRunsList from "./ActionBar/ScriptRunsList";
 
@@ -426,13 +426,10 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-2 gap-3">
                       {/* 全局快捷键（左列） */}
-                      <div className="space-y-1.5">
-                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                          {ti18n("settings.actionBar.globalShortcutLabel")}
-                        </label>
-                        <div className="flex items-center gap-1">
+                      <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+                        <div className="flex h-[38px] items-center gap-1">
                           <ShortcutButton
                             shortcut={selectedMain.globalShortcut ?? ""}
                             capturing={inlineCapturingGlobal}
@@ -448,14 +445,11 @@ export default function ActionBarPanel({
                             </button>
                           )}
                         </div>
-                      </div>
+                      </FormField>
                       {/* 斜杠命令名（右列） */}
-                      <div className="space-y-1.5">
-                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                          {t("settings.actionBar.slashName")}
-                        </label>
+                      <FormField label={t("settings.actionBar.slashName")}>
                         <input
-                          className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                          className="h-[38px] w-full bg-background border border-border rounded-md px-3 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
                           placeholder={t("settings.actionBar.slashNamePlaceholder")}
                           value={selectedMain.triggerKeyword || ""}
                           onChange={(e) => {
@@ -463,7 +457,7 @@ export default function ActionBarPanel({
                             updateMainInline({ triggerKeyword: val });
                           }}
                         />
-                      </div>
+                      </FormField>
                     </div>
                   )}
                 </div>
