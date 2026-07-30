@@ -38,7 +38,7 @@ export default function MenuRow(props: MenuRowProps) {
       className={cn(
         "group relative grid items-center gap-x-2 gap-y-0.5 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
         showShortcuts
-          ? "[grid-template-columns:auto_auto_minmax(40px,1fr)_5rem_auto_auto]"
+          ? "[grid-template-columns:auto_auto_minmax(40px,1fr)_auto_5rem_auto]"
           : "[grid-template-columns:auto_auto_1fr_auto]",
         selected ? "bg-voice/12" : "hover:bg-muted/40",
         props.onSelect && "cursor-pointer",
@@ -57,18 +57,8 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        /* 斜杠命令名（独立列，各行 / 左对齐；trigger_keyword 为空时占位保持列宽一致） */
-        <span className={cn(
-          "min-w-0 truncate rounded px-1.5 py-0.5 text-left font-mono text-[11px]",
-          item.triggerKeyword ? "bg-muted/60 text-muted-foreground" : "",
-        )}>
-          {item.triggerKeyword ? `/${item.triggerKeyword}` : ""}
-        </span>
-      )}
-
-      {showShortcuts && (
         <div className="flex shrink-0 items-center justify-end gap-0.5">
-          {/* 全局快捷键 */}
+          {/* 全局快捷键（第 4 列） */}
           <ShortcutButton
             shortcut={item.globalShortcut ?? ""}
             capturing={props.capturing ?? false}
@@ -88,6 +78,16 @@ export default function MenuRow(props: MenuRowProps) {
             <X className="h-3 w-3" />
           </button>
         </div>
+      )}
+
+      {showShortcuts && (
+        /* 斜杠命令名（第 5 列，独立列各行对齐；trigger_keyword 为空时占位保持列宽） */
+        <span className={cn(
+          "min-w-0 truncate rounded px-1.5 py-0.5 text-left font-mono text-[11px]",
+          item.triggerKeyword ? "bg-muted/60 text-muted-foreground" : "",
+        )}>
+          {item.triggerKeyword ? `/${item.triggerKeyword}` : ""}
+        </span>
       )}
 
       <div className={cn(
