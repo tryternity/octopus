@@ -43,7 +43,7 @@
 
 **说明**：先建文件骨架（类型 + `pickSubIdx`），用最小测试驱动。`KeyContext`/`KeyAction` 类型也在此 task 定义（decideKeyAction 在 Task 2 实现）。
 
-- [ ] **Step 1: 写 pickSubIdx 的失败测试**
+- [x] **Step 1: 写 pickSubIdx 的失败测试**
 
 Create `crates/desktop/frontend/src/pages/ActionBar/keyNavigation.test.ts`:
 
@@ -89,12 +89,12 @@ describe("pickSubIdx", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试以验证其失败**
+- [x] **Step 2: 运行测试以验证其失败**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/ActionBar/keyNavigation.test.ts`
 Expected: FAIL — "Failed to resolve import ./keyNavigation"（文件不存在）。
 
-- [ ] **Step 3: 写 keyNavigation.ts 骨架 + pickSubIdx 实现**
+- [x] **Step 3: 写 keyNavigation.ts 骨架 + pickSubIdx 实现**
 
 Create `crates/desktop/frontend/src/pages/ActionBar/keyNavigation.ts`:
 
@@ -156,8 +156,6 @@ export type KeyAction =
   | { type: "menu-move"; forward: boolean }
   | { type: "menu-toggle-layer" }
   | { type: "menu-enter" }
-  | { type: "open-submenu"; parentId: number; subIdx: number }
-  | { type: "close-submenu" }
   | { type: "alt-execute"; item: ActionBarItem }
   | { type: "alt-goto-sub"; idx: number }
   | { type: "alt-goto-main"; idx: number; expandSubmenu: boolean; parentId?: number; subIdx?: number };
@@ -183,17 +181,17 @@ export function pickSubIdx(
 }
 ```
 
-- [ ] **Step 4: 运行测试以验证其通过**
+- [x] **Step 4: 运行测试以验证其通过**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/ActionBar/keyNavigation.test.ts`
 Expected: PASS（4 个 pickSubIdx 测试全过）。
 
-- [ ] **Step 5: 类型检查**
+- [x] **Step 5: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc -b`
 Expected: 0 error（`KeyContext`/`KeyAction` 定义但未使用会有 warning？不会——导出的类型不报 unused）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/keyNavigation.ts crates/desktop/frontend/src/pages/ActionBar/keyNavigation.test.ts
@@ -217,7 +215,7 @@ pickSubIdx 纯函数。同时定义 KeyContext/KeyAction 类型骨架（decideKe
 
 **说明**：这是重构核心——24 条判断严格复刻原 handler。按 spec 的判断顺序表实现。测试覆盖每条判断。
 
-- [ ] **Step 1: 写 decideKeyAction 的失败测试（追加到 keyNavigation.test.ts）**
+- [x] **Step 1: 写 decideKeyAction 的失败测试（追加到 keyNavigation.test.ts）**
 
 在 `keyNavigation.test.ts` 顶部 import 追加 `decideKeyAction` + `KeyContext`：
 
@@ -370,12 +368,12 @@ describe("decideKeyAction - Enter/Space", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试以验证其失败**
+- [x] **Step 2: 运行测试以验证其失败**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/ActionBar/keyNavigation.test.ts`
 Expected: FAIL — "decideKeyAction is not a function" 或 import 失败。
 
-- [ ] **Step 3: 实现 decideKeyAction**
+- [x] **Step 3: 实现 decideKeyAction**
 
 在 `keyNavigation.ts` 顶部 import 追加：
 
@@ -513,7 +511,7 @@ spec 把「命中 submenu → open-submenu」单列为 action，但原代码的�
 
 **注记（swallow 修正回填）**：Task 2 Step 3 的 decideKeyAction 代码块里，Alt+字母未命中原写 `passthrough`、Alt+数字越界原写 `ignore`（两者都不 preventDefault）——实施期（commit 1ab9f7dd）发现原 handler 分支入口是无条件 `e.preventDefault()`，故新增 `swallow` action（preventDefault 但不执行其他副作用）修正这两处。plan 是实施记录，已回填上面的 `swallow`。
 
-- [ ] **Step 4: 修正测试以匹配方案 A（菜单 Tab 移动返回 menu-move）**
+- [x] **Step 4: 修正测试以匹配方案 A（菜单 Tab 移动返回 menu-move）**
 
 Task 2 Step 1 的测试里有两处需改（方案 A 下都返回 menu-move，不返回 open-submenu/close-submenu）：
 
@@ -540,17 +538,17 @@ describe("decideKeyAction - 菜单模式移动", () => {
 });
 ```
 
-- [ ] **Step 5: 运行测试以验证其通过**
+- [x] **Step 5: 运行测试以验证其通过**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/ActionBar/keyNavigation.test.ts`
 Expected: PASS（所有 decideKeyAction 测试 + pickSubIdx 测试全过）。
 
-- [ ] **Step 6: 类型检查**
+- [x] **Step 6: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc -b`
 Expected: 0 error。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/keyNavigation.ts crates/desktop/frontend/src/pages/ActionBar/keyNavigation.test.ts
@@ -574,7 +572,7 @@ keydown handler。菜单 Tab 移动用方案 A（返回 menu-move，展开判断
 
 **说明**：副作用层。从 refs 组装 ctx、调 decideKeyAction、switch 执行。无单测（需 React 渲染环境 + 真实 keydown），靠 Task 4 后的 e2e 回归。菜单 Tab 移动 + toggle-layer 的展开判断在此 hook 内（忠实复刻原 setSelectedIdx 回调）。
 
-- [ ] **Step 1: 写 useActionBarKeydown.ts**
+- [x] **Step 1: 写 useActionBarKeydown.ts**
 
 Create `crates/desktop/frontend/src/pages/ActionBar/useActionBarKeydown.ts`:
 
@@ -804,12 +802,12 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
 }
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc -b`
 Expected: 0 error。若有类型错（如 `RefObject` vs `MutableRefObject` 不匹配），按报错调整——`inputRef` 在 index.tsx 是 `useRef<HTMLInputElement>(null)`（返回 `RefObject<HTMLInputElement | null>` 或 `MutableRefObject`，取决于 TS/React 版本，以 tsc 报错为准对齐）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/useActionBarKeydown.ts
@@ -832,7 +830,7 @@ git commit -m "refactor(actionbar): 实现 useActionBarKeydown 副作用 hook
 
 **说明**：把 24 个 refs/setters/callbacks 传给 hook，删掉 212 行原 effect。这是行为保持的最后验证点——tsc + vite build + 手动 e2e。
 
-- [ ] **Step 1: 加 import**
+- [x] **Step 1: 加 import**
 
 在 `index.tsx` 顶部 import 区（其他 `./` 导入附近）加：
 
@@ -840,7 +838,7 @@ git commit -m "refactor(actionbar): 实现 useActionBarKeydown 副作用 hook
 import { useActionBarKeydown } from "./useActionBarKeydown";
 ```
 
-- [ ] **Step 2: 定位并删除原 keydown effect**
+- [x] **Step 2: 定位并删除原 keydown effect**
 
 删除 `index.tsx` 里从：
 ```ts
@@ -858,7 +856,7 @@ import { useActionBarKeydown } from "./useActionBarKeydown";
 
 定位方法：搜 `// IME 组合中的按键（keyCode 229` 找到 effect 起点，搜 `return () => window.removeEventListener("keydown", handler);` 找到终点。
 
-- [ ] **Step 3: 在原 effect 位置插入 hook 调用**
+- [x] **Step 3: 在原 effect 位置插入 hook 调用**
 
 在删掉的位置插入（确保所有传入的 refs/setters 在此之前已定义——原 effect 在 651 行，refs 在 629-639 定义、executeItem 在 463、executeSearchResult 在 524，都在 651 之前，顺序 OK）：
 
@@ -875,7 +873,7 @@ import { useActionBarKeydown } from "./useActionBarKeydown";
   });
 ```
 
-- [ ] **Step 4: 类型检查 + 构建**
+- [x] **Step 4: 类型检查 + 构建**
 
 Run:
 ```bash
@@ -883,7 +881,7 @@ cd crates/desktop/frontend && npx tsc -b && npx vite build
 ```
 Expected: 0 error。若有「X is not exported」或类型不匹配，按报错对齐（常见：`submenuParentIdRef` 之前在组件内叫别的名——确认它存在；`inputRef` 类型对齐 Task 3 Step 2 的处理）。
 
-- [ ] **Step 5: 确认未引入 unused import**
+- [x] **Step 5: 确认未引入 unused import**
 
 原 effect 用到的 `useEffect` 仍被其他 effect 用（resize/show 等），不会 unused。`moveDirection`/`navigateResults`/`getNextTab`/`hasQuery`/`codeToChar` 若只在原 effect 用，删除后可能变 unused——检查并删多余 import：
 
@@ -891,12 +889,12 @@ Run: `cd crates/desktop/frontend && rg -n "moveDirection|navigateResults|getNext
 
 若某 import 在 index.tsx 内除 import 行外无其他引用 → 从 import 列表删除（已搬到 hook/纯函数）。
 
-- [ ] **Step 6: 运行全部前端测试**
+- [x] **Step 6: 运行全部前端测试**
 
 Run: `cd crates/desktop/frontend && npx vitest run`
 Expected: 全过（含原有 searchLogic.test.ts / indexLabel.test.ts / urlDetect.test.ts + 新 keyNavigation.test.ts）。
 
-- [ ] **Step 7: 手动 e2e 回归（关键——验证行为零变化）**
+- [ ] **Step 7: 手动 e2e 回归（关键——验证行为零变化）—— ⚠️ 未执行：桌面构建受阻于 octopus-sck-helper sidecar 缺失**
 
 构建桌面应用并手动测试（需 vault feature + 可选 sidecar；若 sidecar 缺失跳过完整 build，至少 vite build 产物已验证）：
 
@@ -905,7 +903,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_bugfix_0730
 ./run-octopus.sh 2>/dev/null || cargo run -p octopus-desktop --features embedded,custom-protocol 2>/dev/null
 ```
 
-测试矩阵（唤出 ActionBar 后逐项验证，对照重构前行为）：
+测试矩阵（唤出 ActionBar 后逐项验证，对照重构前行为）—— **合并前必须人工补跑**：
 - [ ] 输入框打字 → 正常输入（可打印字符放行）
 - [ ] IME 组合（中文输入）→ 不出现字符重复（IME 放行）
 - [ ] 中文输入后 Enter → 选词确认，不触发搜索（500ms 窗口）
@@ -920,7 +918,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_bugfix_0730
 - [ ] Alt+字母 → 执行快捷键
 - [ ] Alt+数字 → 定位菜单项
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/index.tsx

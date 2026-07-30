@@ -90,20 +90,19 @@ export interface KeyContext {
  *   - 其余所有 action → preventDefault（handler 消费了该键）
  */
 export type KeyAction =
-  | { type: "ime-composing" }            // keyCode 229 / isComposing → 记录 IME 时间，放行
-  | { type: "ime-confirm-enter" }        // Enter 在 IME 后 500ms 内 → 选词确认，放行
+  | { type: "ime-composing" }            // keyCode 229 / isComposing → 记录 IME 时间，放行（hook 设 lastImeKeyTime=Date.now()）
+  | { type: "ime-confirm-enter" }        // Enter 在 IME 后 500ms 内 → 选词确认，放行（hook 清 lastImeKeyTime=0）
   | { type: "passthrough" }              // 无修饰可打印字符 → 放行给 input
   | { type: "ignore" }                   // loading 视图，不处理
+  | { type: "swallow" }                  // preventDefault 但不执行副作用（Alt+字母未命中 / Alt+数字越界，保持原 handler 无条件 preventDefault）
   | { type: "escape-clear-query" }       // 搜索中 Esc → 清 query + focus input
   | { type: "escape-dismiss" }           // 菜单中 Esc → invoke("action_bar_dismiss")
   | { type: "search-tab"; dir: 1 | -1 }
   | { type: "search-nav"; dir: 1 | -1 }
   | { type: "search-enter" }
-  | { type: "menu-move"; forward: boolean }
+  | { type: "menu-move"; forward: boolean }  // 菜单 Tab/←→ 移动（方案 A：统一此 action，submenu open/close 判断在 hook 的 setSelectedIdx 回调内）
   | { type: "menu-toggle-layer" }        // ↑↓ 在 main↔sub 间切层（可能触发 submenu 展开）
   | { type: "menu-enter" }
-  | { type: "open-submenu"; parentId: number; subIdx: number }  // 移到 submenu 项 / Alt+数字命中 submenu
-  | { type: "close-submenu" }            // 移到非 submenu 项 → 收起子菜单回 main
   | { type: "alt-execute"; item: ActionBarItem }  // Alt+字母命中快捷键
   | { type: "alt-goto-sub"; idx: number }         // Alt+数字，焦点在 sub 层
   | { type: "alt-goto-main"; idx: number; expandSubmenu: boolean; parentId?: number; subIdx?: number };
@@ -131,9 +130,9 @@ export type KeyAction =
 | 14 | `e.altKey` 且 `[1-9]` 且焦点在 main，命中 submenu 项 | `alt-goto-main {idx, expandSubmenu:true, parentId, subIdx}` | 755-768 |
 | 15 | `e.altKey` 且 `[1-9]` 且焦点在 main，命中非 submenu 项 | `alt-goto-main {idx, expandSubmenu:false}` | 769-772 |
 | 16 | `e.altKey` 其他 | `passthrough`（原 `return`，无 preventDefault）→ 见不变量 §IMPROVE | 778 |
-| 17 | 菜单模式 `moveDirection !== null`，焦点 sub | `menu-move`（hook 内循环移 subSelectedIdx） | 786-792 |
-| 18 | 菜单模式 `moveDirection !== null`，焦点 main，命中 submenu | `open-submenu {parentId, subIdx}`（hook 内 setSelectedIdx + 展开） | 800-809 |
-| 19 | 菜单模式 `moveDirection !== null`，焦点 main，命中非 submenu | `close-submenu`（hook 内 setSelectedIdx + 收起） | 810-813 |
+| 17 | 菜单模式 `moveDirection !== null`，焦点 sub 或 main | `menu-move {forward}`（方案 A：统一此 action；submenu open/close 判断在 hook 的 setSelectedIdx/setSubSelectedIdx 回调内，复刻 786-815） | 786-815 |
+| ~~18~~ | ~~菜单模式 main 命中 submenu → `open-submenu`~~ | **已弃用（方案 A）**——原设计独立 action，但展开判断依赖 setSelectedIdx 回调内的 prev（纯函数拿不到 next），改统一 menu-move | — |
+| ~~19~~ | ~~菜单模式 main 命中非 submenu → `close-submenu`~~ | **已弃用（方案 A）**——同上 | — |
 | 20 | `ArrowUp/Down`，焦点 sub | `menu-toggle-layer`（→ main） | 824-825 |
 | 21 | `ArrowUp/Down`，焦点 main，当前项是 submenu | `menu-toggle-layer`（→ sub，hook 内按需展开） | 828-843 |
 | 22 | `ArrowUp/Down`，焦点 main，当前项非 submenu | `ignore`（原无 preventDefault? 见不变量） | — |
@@ -172,7 +171,7 @@ export function pickSubIdx(
 }
 ```
 
-`decideKeyAction` 在返回 `open-submenu` / `alt-goto-main{expandSubmenu}` 时，内部用 `pickSubIdx` 算好 `subIdx` 一并返回——hook 不重复算。
+`decideKeyAction` 在返回 `alt-goto-main{expandSubmenu:true}` 时，内部用 `pickSubIdx` 算好 `subIdx` 一并返回——hook 不重复算。
 
 ## 副作用层 `useActionBarKeydown` 契约
 
@@ -218,14 +217,13 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void;
 | `search-nav` | `setSearchSelectedIdx(navigateResults(ctx.searchSelectedIdx, dir, ctx.searchResultsCount))` |
 | `search-enter` | 取 `filteredResultsRef[searchSelectedIdx] ?? [0]`，`executeSearchResult` |
 | `menu-move`（焦点 sub） | `setSubSelectedIdx` 循环移位（复刻 788-792） |
-| `menu-move`（焦点 main） | `setSelectedIdx` 循环移位（复刻 795-815） |
-| `open-submenu` | `submenuParentIdRef = parentId` + `setSubSelectedIdx(subIdx)` + `setView("submenu")` |
-| `close-submenu` | `submenuParentIdRef = null` + `setView("main")` |
+| `menu-move`（焦点 main） | `setSelectedIdx` 循环移位（复刻 795-815）；回调内判断新项是否 submenu → 是则展开（`submenuParentIdRef=item.id` + `setSubSelectedIdx(pickSubIdx)` + `setView("submenu")`），否则收起（`submenuParentIdRef=null` + `setView("main")`） |
 | `menu-toggle-layer` | sub→main: `setFocusLayer("main")`；main→sub 且当前项 submenu: `setFocusLayer("sub")` + 按需 `setView("submenu")`（复刻 832-842） |
 | `menu-enter` | 按 focusLayer 取 mainItems/subItems 对应项，`executeItem` |
+| `swallow` | no-op（preventDefault 已统一处理） |
 | `alt-execute` | `executeItem(item)` |
 | `alt-goto-sub` | `setSubSelectedIdx(idx)`（边界：idx < subItems.length） |
-| `alt-goto-main` | `setSelectedIdx(idx)`；expandSubmenu → open-submenu 副作用，否则 close-submenu |
+| `alt-goto-main` | `setSelectedIdx(idx)`；expandSubmenu → 展开（`submenuParentIdRef=parentId` + `setSubSelectedIdx(action.subIdx)` + `setView("submenu")`，subIdx 已由 decideKeyAction 经 pickSubIdx 算好），否则收起（`submenuParentIdRef=null` + `setView("main")`） |
 
 > 注：`submenuParentIdRef` 是 index.tsx 组件内的 ref（控制子菜单展开哪个父项），hook 通过 params 接收并直接写——它不是 React state，写 ref 不触发重渲染，与原行为一致。
 
@@ -247,7 +245,7 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void;
 - **公共前置**：IME 组合中（229/isComposing）→ `ime-composing`；Enter 在 500ms 内/外 → `ime-confirm-enter`/`search-enter`；loading 视图 → `ignore`；无修饰可打印字符 → `passthrough`
 - **Escape 双语义**：search 模式 → `escape-clear-query`；menu 模式 → `escape-dismiss`
 - **搜索模式**：Tab/Shift+Tab → `search-tab {dir}`；↑↓ → `search-nav`；Enter → `search-enter`
-- **菜单模式移动**：Tab 焦点 main 命中 submenu → `open-submenu`；命中非 submenu → `close-submenu`；焦点 sub → `menu-move`
+- **菜单模式移动**：方案 A——Tab/←→ 统一返回 `menu-move {forward}`（焦点 main 或 sub 都一样）；submenu open/close 判断在 hook 的 setSelectedIdx 回调内（纯函数不计算 next，因展开判断依赖 prev）
 - **菜单模式切层**：↑↓ 焦点 sub → `menu-toggle-layer`(→main)；焦点 main submenu 项 → `menu-toggle-layer`(→sub)；焦点 main 非 submenu → `menu-toggle-layer`(no-op)
 - **Alt 快捷键**：Alt+[a-z] 命中 → `alt-execute`；未命中 → `passthrough`；Alt+[1-9] 焦点 sub → `alt-goto-sub`；焦点 main submenu → `alt-goto-main{expandSubmenu:true}`；非 submenu → `alt-goto-main{expandSubmenu:false}`
 - **`pickSubIdx`**：首项 url 且 engine 匹配 → 返回匹配 idx；首项 url 不匹配 → 0；首项非 url → 0；空列表 → 0
