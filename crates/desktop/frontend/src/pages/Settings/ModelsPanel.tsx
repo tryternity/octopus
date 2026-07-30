@@ -1,15 +1,13 @@
 import { useState } from "react";
 import { useT } from "@/lib/i18n";
 import { PillTabs } from "@/components/ui/tabs";
-import EnvironmentTab from "./Models/EnvironmentTab";
 import AsrTab from "./Models/AsrTab";
 import LlmTab from "./Models/LlmTab";
 import OcrTab from "./Models/OcrTab";
 import TranslateTab from "./Models/TranslateTab";
 
-const TAB_KEYS = ["asr", "llm", "ocr", "tr", "env"] as const;
+const TAB_KEYS = ["asr", "llm", "ocr", "tr"] as const;
 const TAB_LABEL_KEYS: Record<string, string> = {
-  env: "settings.models.tab.env",
   asr: "settings.models.tab.asr",
   llm: "settings.models.tab.llm",
   ocr: "settings.models.tab.ocr",
@@ -27,7 +25,6 @@ export default function ModelsPanel({ showToast }: { showToast: (msg: string) =>
       <PillTabs items={tabs} active={activeTab} onChange={setActiveTab} />
       {/* Tab 内容 */}
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        {activeTab === "env" && <EnvironmentTab showToast={showToast} />}
         {activeTab === "asr" && <AsrTab showToast={showToast} />}
         {activeTab === "llm" && <LlmTab showToast={showToast} />}
         {activeTab === "ocr" && <OcrTab showToast={showToast} />}

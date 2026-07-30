@@ -392,6 +392,7 @@ settings:
     tabShortcut: Shortcuts
     tabPermission: Privacy & Permissions
     tabVoice: Voice
+    tabEnv: Environment & Paths
     tabSync: Git Sync
     appearance: Appearance
     theme: Theme
@@ -460,6 +461,12 @@ settings:
     autoCleanDays: Auto-clean Days
     autoCleanDaysHint: Auto-delete non-favorite records older than this
     shortcutRecordingHint: Press shortcut… (Esc to cancel)
+  env:
+    pathsTitle: Save Paths
+    recordings: Recording
+    screens: Screenshot
+    reset: Reset
+    envVarsTitle: Environment Variables
   models:
     tab:
       env: Environment
