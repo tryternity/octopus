@@ -141,7 +141,7 @@ export default function EditForm({
         <div className="grid grid-cols-2 gap-3">
           <FormField label={t("settings.actionBar.typeLabel")}>
             <select
-              className={cn(inputBase, "disabled:opacity-60")}
+              className={cn(inputBase, "h-[38px] disabled:opacity-60")}
               value={type}
               disabled={isSystem}
               onChange={(e) => {
