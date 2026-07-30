@@ -874,6 +874,8 @@ terminal:
   title: 终端
   newTab: 新建标签页
   closeTab: 关闭标签页
+  layoutSidebar: 切换为侧栏列表
+  layoutTabs: 切换为顶部标签页
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:

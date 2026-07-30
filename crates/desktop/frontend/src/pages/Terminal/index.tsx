@@ -1,20 +1,23 @@
 /**
- * 终端窗口主组件（Task 7）。
+ * 终端窗口主组件（Task 7 + 改名/布局增强）。
  *
  * 架构（简化版，相对 Terax TerminalStack + TerminalPane + rendererPool）：
  * - 多 tab：tabs 数组，每 tab 一个 TerminalPane（独立 xterm 实例 + PTY session）
  * - tab 切换用 visibility:hidden 保活（不卸载 xterm，切回时 scrollback 保留）
  * - agent 状态徽章：每 tab 标题旁彩色圆点（working 脉冲 / attention bell / finished）
  * - ActionBar 联动：listen "terminal://new-tab" { cwd, command } → 新 tab + 写命令
+ * - tab 改名：双击标题内联编辑（customName > agentName > 默认标题）
+ * - 布局切换：顶部 tabs ↔ 左侧 sidebar list（localStorage 持久化）
  *
  * 视觉设计（frontend-design skill）：
  * - 终端画布固定深色 #0c0c0f（终端惯例 + signature 元素，不随主题变）
- * - tab 栏用主题 token（--color-background/border/muted-foreground），浅色/深色自适应
+ * - tab/sidebar 栏用主题 token（--color-background/border/muted-foreground），浅色/深色自适应
  * - agent 徽章是唯一「活泼」元素：working amber 脉冲，attention 红色，finished 淡出
+ * - sidebar 激活项左侧 2px 强调条（比 border 更有存在感）
  */
 
 import { useEffect, useState, useCallback } from "react";
-import { Plus, X, Bell } from "lucide-react";
+import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useT } from "@/lib/i18n";
 import { TerminalPane } from "./TerminalPane";
@@ -33,7 +36,22 @@ type Tab = {
   pendingCommand?: string;
   /** TerminalPane 上报的 ptyId（用于 agent 状态映射）。null = 还在连接。 */
   ptyId: number | null;
+  /** 用户自定义名字（双击改名）；空=用默认标题。 */
+  customName?: string;
 };
+
+/** 显示标题优先级：customName > agentName > 默认。 */
+function displayLabel(tab: Tab, agentName: string | null, fallback: string): string {
+  if (tab.customName && tab.customName.trim()) return tab.customName;
+  if (agentName) return agentName;
+  return fallback;
+}
+
+type LayoutMode = "tabs" | "sidebar";
+const LAYOUT_KEY = "octopus-terminal-layout";
+function loadLayout(): LayoutMode {
+  return localStorage.getItem(LAYOUT_KEY) === "sidebar" ? "sidebar" : "tabs";
+}
 
 let nextTabId = 1;
 function makeTab(cwd?: string, pendingCommand?: string): Tab {
@@ -45,6 +63,7 @@ export default function Terminal() {
   const t = useT();
   const [tabs, setTabs] = useState<Tab[]>(() => [makeTab()]);
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? 1);
+  const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -66,12 +85,10 @@ export default function Terminal() {
       setTabs((prev) => {
         const next = prev.filter((tb) => tb.id !== id);
         if (next.length === 0) {
-          // 最后一个 tab 关了——新建空 tab（窗口不关，保持「终端」始终可用）
           const fresh = makeTab();
           setActiveId(fresh.id);
           return [fresh];
         }
-        // 关的是活跃 tab → 切到最后一个
         if (id === activeId) {
           setActiveId(next[next.length - 1].id);
         }
@@ -80,6 +97,24 @@ export default function Terminal() {
     },
     [activeId],
   );
+
+  /** 改 tab 名（空字符串 → 清除 customName，回退默认标题）。 */
+  const renameTab = useCallback((id: number, name: string) => {
+    const trimmed = name.trim();
+    setTabs((prev) =>
+      prev.map((tb) =>
+        tb.id === id ? { ...tb, customName: trimmed || undefined } : tb,
+      ),
+    );
+  }, []);
+
+  const toggleLayout = useCallback(() => {
+    setLayout((prev) => {
+      const next = prev === "tabs" ? "sidebar" : "tabs";
+      localStorage.setItem(LAYOUT_KEY, next);
+      return next;
+    });
+  }, []);
 
   // ActionBar 联动：listen "terminal://new-tab" { cwd, command }
   useEffect(() => {
@@ -108,26 +143,112 @@ export default function Terminal() {
   }, []);
 
   const { phases, agents } = getAgentActivity();
+  const defaultTitle = t("terminal.title");
+
+  // 每个 tab 的渲染数据（标题/相位/agent 名）
+  const tabMeta = tabs.map((tab) => {
+    const phase = tab.ptyId != null ? (phases[tab.ptyId] ?? null) : null;
+    const agentName = tab.ptyId != null ? (agents[tab.ptyId] ?? null) : null;
+    return {
+      tab,
+      phase,
+      agentName,
+      label: displayLabel(tab, agentName, defaultTitle),
+      active: tab.id === activeId,
+    };
+  });
+
+  const panes = (
+    <div className="terminal-panes">
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          className="terminal-pane-wrapper"
+          style={{ visibility: tab.id === activeId ? "visible" : "hidden" }}
+          aria-hidden={tab.id !== activeId}
+        >
+          <TerminalPane
+            cwd={tab.cwd}
+            pendingCommand={tab.pendingCommand}
+            onConsumeCommand={() => {
+              setTabs((prev) =>
+                prev.map((tb) =>
+                  tb.id === tab.id
+                    ? { ...tb, pendingCommand: undefined }
+                    : tb,
+                ),
+              );
+            }}
+            onPtyId={(ptyId) => {
+              setTabs((prev) =>
+                prev.map((tb) =>
+                  tb.id === tab.id ? { ...tb, ptyId } : tb,
+                ),
+              );
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+
+  if (layout === "sidebar") {
+    return (
+      <div className="terminal-window terminal-sidebar-layout">
+        <aside className="terminal-sidebar">
+          <div className="terminal-sidebar-list" role="tablist">
+            {tabMeta.map((m) => (
+              <SidebarItem
+                key={m.tab.id}
+                active={m.active}
+                phase={m.phase}
+                label={m.label}
+                onClick={() => setActiveId(m.tab.id)}
+                onClose={() => closeTab(m.tab.id)}
+                onRename={(name) => renameTab(m.tab.id, name)}
+                closeLabel={t("terminal.closeTab")}
+              />
+            ))}
+          </div>
+          <div className="terminal-sidebar-footer">
+            <button
+              className="terminal-sidebar-new"
+              onClick={() => addTab()}
+              title={t("terminal.newTab")}
+            >
+              <Plus size={14} />
+              <span>{t("terminal.newTab")}</span>
+            </button>
+            <button
+              className="terminal-layout-toggle"
+              onClick={toggleLayout}
+              title={t("terminal.layoutTabs")}
+              aria-label={t("terminal.layoutTabs")}
+            >
+              <LayoutPanelTop size={15} />
+            </button>
+          </div>
+        </aside>
+        {panes}
+      </div>
+    );
+  }
 
   return (
     <div className="terminal-window">
-      {/* ── Tab 栏 ── */}
       <div className="terminal-tabbar" role="tablist">
-        {tabs.map((tab) => {
-          const phase = tab.ptyId != null ? (phases[tab.ptyId] ?? null) : null;
-          const agentName = tab.ptyId != null ? (agents[tab.ptyId] ?? null) : null;
-          return (
-            <TabButton
-              key={tab.id}
-              active={tab.id === activeId}
-              phase={phase}
-              label={agentName ?? t("terminal.title")}
-              onCloseLabel={t("terminal.closeTab")}
-              onClick={() => setActiveId(tab.id)}
-              onClose={() => closeTab(tab.id)}
-            />
-          );
-        })}
+        {tabMeta.map((m) => (
+          <TabButton
+            key={m.tab.id}
+            active={m.active}
+            phase={m.phase}
+            label={m.label}
+            onCloseLabel={t("terminal.closeTab")}
+            onClick={() => setActiveId(m.tab.id)}
+            onClose={() => closeTab(m.tab.id)}
+            onRename={(name) => renameTab(m.tab.id, name)}
+          />
+        ))}
         <button
           className="terminal-tab-new"
           onClick={() => addTab()}
@@ -136,47 +257,50 @@ export default function Terminal() {
         >
           <Plus size={14} />
         </button>
+        <button
+          className="terminal-layout-toggle terminal-layout-toggle-tabbar"
+          onClick={toggleLayout}
+          title={t("terminal.layoutSidebar")}
+          aria-label={t("terminal.layoutSidebar")}
+        >
+          <LayoutPanelLeft size={15} />
+        </button>
       </div>
-
-      {/* ── 终端面板区（多 tab 叠放，visibility 切换保活）── */}
-      <div className="terminal-panes">
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            className="terminal-pane-wrapper"
-            style={{
-              visibility: tab.id === activeId ? "visible" : "hidden",
-            }}
-            aria-hidden={tab.id !== activeId}
-          >
-            <TerminalPane
-              cwd={tab.cwd}
-              pendingCommand={tab.pendingCommand}
-              onConsumeCommand={() => {
-                setTabs((prev) =>
-                  prev.map((tb) =>
-                    tb.id === tab.id
-                      ? { ...tb, pendingCommand: undefined }
-                      : tb,
-                  ),
-                );
-              }}
-              onPtyId={(ptyId) => {
-                setTabs((prev) =>
-                  prev.map((tb) =>
-                    tb.id === tab.id ? { ...tb, ptyId } : tb,
-                  ),
-                );
-              }}
-            />
-          </div>
-        ))}
-      </div>
+      {panes}
     </div>
   );
 }
 
-// ── Tab 按钮（含 agent 状态徽章）──
+// ── 内联改名 input（双击标题触发）──
+function RenameInput(props: {
+  initial: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <input
+      className="terminal-rename-input"
+      defaultValue={props.initial}
+      autoFocus
+      // 选中全部文本，方便整体替换
+      onFocus={(e) => e.currentTarget.select()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          props.onCommit((e.currentTarget as HTMLInputElement).value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          props.onCancel();
+        }
+      }}
+      onBlur={(e) => props.onCommit(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    />
+  );
+}
+
+// ── Tab 按钮（含 agent 状态徽章 + 双击改名）──
 function TabButton(props: {
   active: boolean;
   phase: AgentPhase | null;
@@ -184,8 +308,11 @@ function TabButton(props: {
   onCloseLabel: string;
   onClick: () => void;
   onClose: () => void;
+  onRename: (name: string) => void;
 }) {
-  const { active, phase, label, onClick, onClose, onCloseLabel } = props;
+  const { active, phase, label, onClick, onClose, onCloseLabel, onRename } =
+    props;
+  const [editing, setEditing] = useState(false);
   return (
     <div
       className={`terminal-tab ${active ? "terminal-tab-active" : ""}`}
@@ -194,7 +321,27 @@ function TabButton(props: {
       onClick={onClick}
     >
       <AgentBadge phase={phase} />
-      <span className="terminal-tab-label">{label}</span>
+      {editing ? (
+        <RenameInput
+          initial={label}
+          onCommit={(name) => {
+            onRename(name);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <span
+          className="terminal-tab-label"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setEditing(true);
+          }}
+          title={label}
+        >
+          {label}
+        </span>
+      )}
       <button
         className="terminal-tab-close"
         onClick={(e) => {
@@ -202,6 +349,62 @@ function TabButton(props: {
           onClose();
         }}
         aria-label={onCloseLabel}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+// ── Sidebar list item（含 agent 状态徽章 + 双击改名）──
+function SidebarItem(props: {
+  active: boolean;
+  phase: AgentPhase | null;
+  label: string;
+  closeLabel: string;
+  onClick: () => void;
+  onClose: () => void;
+  onRename: (name: string) => void;
+}) {
+  const { active, phase, label, onClick, onClose, closeLabel, onRename } =
+    props;
+  const [editing, setEditing] = useState(false);
+  return (
+    <div
+      className={`terminal-sidebar-item ${active ? "terminal-sidebar-item-active" : ""}`}
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+    >
+      <AgentBadge phase={phase} />
+      {editing ? (
+        <RenameInput
+          initial={label}
+          onCommit={(name) => {
+            onRename(name);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <span
+          className="terminal-sidebar-item-label"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            setEditing(true);
+          }}
+          title={label}
+        >
+          {label}
+        </span>
+      )}
+      <button
+        className="terminal-tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={closeLabel}
       >
         <X size={12} />
       </button>

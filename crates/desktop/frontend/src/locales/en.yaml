@@ -865,6 +865,8 @@ terminal:
   title: Terminal
   newTab: New Tab
   closeTab: Close Tab
+  layoutSidebar: Switch to sidebar list
+  layoutTabs: Switch to top tabs
 
 # ════════ ActionBar ════════
 actionbar:
