@@ -151,9 +151,6 @@ pub fn open_terminal_window(app_handle: &tauri::AppHandle, cwd: Option<&str>) ->
 ///
 /// 流程：open_terminal_window（新建或聚焦）→ emit "terminal://new-tab" { cwd, command }。
 /// 前端 listen 后新开 tab，shell 启动后写入 command + 回车。
-///
-/// Task 8 接入 action_bar_commands::script.rs 的 agent 分支后移除 allow。
-#[allow(dead_code)]
 pub fn open_terminal_with_command(
     app_handle: &tauri::AppHandle,
     cwd: Option<&str>,

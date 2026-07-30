@@ -557,45 +557,49 @@ Result: ✓ built（terminal-*.js 348kB）；cargo 0 error 0 warning；agent-act
 
 ### Task 8: ActionBar 整合 + 手动冒烟
 
+> **实施记录（2026-07-31）**：已完成代码改动 + 自动化验证。手动冒烟测试待用户执行（GUI 应用，AI 无法操作窗口）。
+> - **agent 分支替换**：`TerminalAppLauncher.spawn()` → `open_terminal_with_command(&app, Some(&cwd), &command)`，失败 fallback 回 Terminal.app（保留旧路径做兜底）。
+> - **线程安全**：`open_terminal_with_command` 内部用 `run_on_main_thread` 调度 AppKit，可在 async worker 线程安全调用（无需 spawn_blocking，与原 Terminal.app 路径不同——osascript 才需 spawn_blocking）。
+> - **移除 dead_code allow**：Task 6 加的 `#[allow(dead_code)]` 现在接入消费方，已移除。
+> - **端到端链路验证**（代码审查）：前端 invoke `execute_action_bar` → agent 分支 derive_cwd + render_command → `open_terminal_with_command` → `open_terminal_window`（新建/聚焦）+ emit `"terminal://new-tab" {cwd, command}` → 前端 listen → addTab → TerminalPane → openPty(cwd) + write(command + "\n")。类型链 `&AppHandle` 匹配 ✓。
+> - **验证**：cargo check 0 error 0 warning；全测试回归绿（pty 26 + agent_hooks 12 + terminal_window 7 = 45 测试）。
+
 **Files:**
 - Modify: `crates/desktop/src/action_bar/action_bar_commands/script.rs`（agent 分支）
+- Modify: `crates/desktop/src/ui/terminal_window.rs`（移除 `#[allow(dead_code)]`）
 
-- [ ] **Step 1: 替换 agent 分支**
+- [x] **Step 1: 替换 agent 分支**
 
-在 `execute_action_bar_inner` 的 agent 分支中：
-
+agent 分支改为优先内嵌终端，失败 fallback Terminal.app：
 ```rust
-// 旧：TerminalAppLauncher.spawn()
-// 新：
-match crate::terminal_window::open_terminal_with_command(&app, &cwd, &command) {
+match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &command) {
     Ok(_) => log::info!("[action-bar] agent 已启动到内嵌终端"),
     Err(e) => {
         log::warn!("[action-bar] 内嵌终端失败，fallback 到 Terminal.app: {}", e);
-        let launcher = TerminalAppLauncher;
-        launcher.spawn(&command, &cwd_buf)?;
+        // 旧路径保留做兜底（osascript spawn_blocking）
     }
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features embedded,cloud,custom-protocol`
-Expected: 0 error
+Result: 0 error 0 warning ✓
 
-- [ ] **Step 3: 手动冒烟测试**
+- [ ] **Step 3: 手动冒烟测试（待用户执行）**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_feature_0729
-./run-octopus.sh --no-lto
+./run-octopus.sh
 ```
 
-测试：
-1. 设置页 ActionBarPanel 选 agent 项 → 终端窗口打开 → agent 输出可见
-2. 终端输入命令 → 正常执行
-3. agent 状态徽章变化（如果安装了 hook）
-4. 多 tab 创建/切换/关闭
+测试项：
+1. 托盘菜单点「终端」→ 终端窗口打开 → shell 可交互（`ls` / `echo hi` 正常）
+2. 设置页 ActionBarPanel 选 agent 项 → 终端窗口聚焦 + 新 tab + agent 命令自动写入执行
+3. 终端输入命令 → 正常执行；多 tab 创建/切换/关闭（最后一个关了建新空 tab）
+4. 安装 agent hook 后（设置页触发 `agent_enable_hooks`），agent 运行时 tab 徽章变色（working 脉冲 / attention bell / finished 绿点）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -608,9 +612,15 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_feature_0729
 - ✅ Tauri 命令层 — Task 5
 - ✅ 终端窗口 — Task 6
 - ✅ xterm.js 前端 + agent 状态徽章 — Task 7
-- ✅ ActionBar 替换 — Task 8
-- ✅ Agent hook 安装（Claude/Codex/Pi）— Task 5 Step 2
+- ✅ ActionBar 替换（内嵌终端优先 + Terminal.app fallback）— Task 8
+- ✅ Agent hook 安装（Claude/Codex/Gemini/Pi）— Task 5 Step 2
 
-**Placeholder scan:** 无 TODO/TBD。每步有具体代码或参考路径。
+**Placeholder scan:** 无 TODO/TBD。每步有具体代码或参考路径。唯一未完成项是 Task 8 Step 3 手动冒烟（需 GUI 操作，留给用户）。
 
-**Type consistency:** `PtyState`/`PtySession`/`AgentSignal` 在 Task 1-3 定义，Task 5-8 消费。`TerminalTab`/`agentPhase` 在 Task 7 定义。
+**Type consistency:** `PtyState`/`PtySession`/`AgentSignal`/`Transition` 在 Task 1-3 定义，Task 5-8 消费。`Tab`（含 ptyId/pendingCommand）在 Task 7 定义，Task 8 的 emit payload `NewTabPayload` 与前端 listen 的 `{cwd, command}` 结构对齐。casing：`NewTabPayload` 用 `#[serde(rename_all = "camelCase")]`（cwd/command 单词无变化，符合规范）。
+
+**测试覆盖（51 测试）：**
+- pty crate：26（OSC 状态机 17 + spawn/echo/退出码/Drop 3 + shell_init 6）
+- desktop agent_hooks：12（幂等/merge 保留 foreign/迁移/Pi 扩展等）
+- desktop terminal_window：7（URL 构造 + percent-encode）
+- frontend agent-activity：6（phaseForSignal 纯映射）
