@@ -154,22 +154,44 @@ export default function EditForm({
               ))}
             </select>
           </FormField>
-          <FormField label={t("settings.actionBar.enableLabel")}>
-            <div className="flex h-[38px] items-center gap-2.5">
-              <Toggle
-                checked={form.isEnabled ?? true}
-                onChange={(v) => onChange({ ...form, isEnabled: v })}
-              />
-              <span className="text-xs text-muted-foreground">
-                {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
-              </span>
-            </div>
-          </FormField>
+          {/* 命令名（原启用位置，右列）—— submenu 时不显示 */}
+          {type !== "submenu" ? (
+            <FormField label={t("settings.actionBar.slashName")}>
+              <div className="space-y-1">
+                <input
+                  className={cn(inputBase, "font-mono")}
+                  placeholder={t("settings.actionBar.slashNamePlaceholder")}
+                  value={form.triggerKeyword || ""}
+                  onChange={(e) => {
+                    const val = e.target.value.trim().toLowerCase();
+                    onChange({ ...form, triggerKeyword: val });
+                  }}
+                />
+                {form.triggerKeyword && !TITLE_REGEX.test(form.triggerKeyword) && (
+                  <p className="text-[11px] text-destructive">
+                    {t("settings.actionBar.slashNameInvalid")}
+                  </p>
+                )}
+              </div>
+            </FormField>
+          ) : (
+            <FormField label={t("settings.actionBar.enableLabel")}>
+              <div className="flex h-[38px] items-center gap-2.5">
+                <Toggle
+                  checked={form.isEnabled ?? true}
+                  onChange={(v) => onChange({ ...form, isEnabled: v })}
+                />
+                <span className="text-xs text-muted-foreground">
+                  {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
+                </span>
+              </div>
+            </FormField>
+          )}
         </div>
 
-        {type !== "submenu" && (
-          <div className="grid grid-cols-2 gap-4">
-            {/* 全局快捷键（左列） */}
+        <div className="grid grid-cols-2 gap-4">
+          {/* 全局快捷键（左列） */}
+          {type !== "submenu" ? (
             <div className="space-y-1.5">
               <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
                 {ti18n("settings.actionBar.globalShortcutLabel")}
@@ -192,28 +214,20 @@ export default function EditForm({
                 </button>
               </div>
             </div>
-            {/* 斜杠命令名（右列） */}
-            <div className="space-y-1.5">
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                {t("settings.actionBar.slashName")}
-              </label>
-              <input
-                className="w-full bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                placeholder={t("settings.actionBar.slashNamePlaceholder")}
-                value={form.triggerKeyword || ""}
-                onChange={(e) => {
-                  const val = e.target.value.trim().toLowerCase();
-                  onChange({ ...form, triggerKeyword: val });
-                }}
+          ) : <div />}
+          {/* 启用（原命令名位置，右列） */}
+          <FormField label={t("settings.actionBar.enableLabel")}>
+            <div className="flex h-[38px] items-center gap-2.5">
+              <Toggle
+                checked={form.isEnabled ?? true}
+                onChange={(v) => onChange({ ...form, isEnabled: v })}
               />
-              {form.triggerKeyword && !TITLE_REGEX.test(form.triggerKeyword) && (
-                <p className="text-[11px] text-destructive">
-                  {t("settings.actionBar.slashNameInvalid")}
-                </p>
-              )}
+              <span className="text-xs text-muted-foreground">
+                {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
+              </span>
             </div>
-          </div>
-        )}
+          </FormField>
+        </div>
 
         {type === "script" && (
           <FormField label={t("settings.actionBar.execOptions")}>
