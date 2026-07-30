@@ -21,7 +21,6 @@ pub struct ActionBarItem {
     pub is_enabled: bool,
     pub is_async: bool,
     pub write_output_to_clipboard: bool,
-    pub shortcut: String,
     pub agent: String,
     pub accepts: String,
     pub trigger_keyword: String,
@@ -31,7 +30,7 @@ pub struct ActionBarItem {
     pub app_bundle_ids: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut, agent, accepts, trigger_keyword, global_shortcut, need_voice, app_bundle_ids";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, agent, accepts, trigger_keyword, global_shortcut, need_voice, app_bundle_ids";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -46,13 +45,12 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         is_enabled: row.get::<_, i32>(8)? != 0,
         is_async: row.get::<_, i32>(9)? != 0,
         write_output_to_clipboard: row.get::<_, i32>(10)? != 0,
-        shortcut: row.get(11)?,
-        agent: row.get(12)?,
-        accepts: row.get(13)?,
-        trigger_keyword: row.get(14)?,
-        global_shortcut: row.get(15)?,
-        need_voice: row.get::<_, i32>(16)? != 0,
-        app_bundle_ids: row.get(17)?,
+        agent: row.get(11)?,
+        accepts: row.get(12)?,
+        trigger_keyword: row.get(13)?,
+        global_shortcut: row.get(14)?,
+        need_voice: row.get::<_, i32>(15)? != 0,
+        app_bundle_ids: row.get(16)?,
     })
 }
 
