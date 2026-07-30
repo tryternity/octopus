@@ -232,21 +232,24 @@ export default function EditForm({
           </FormField>
         )}
 
-        {type === "url" && (
-          <FormField label={t("settings.actionBar.triggerKeywordLabel")}>
-            <div className="flex items-center gap-2">
+        {/* / 命令名（trigger_keyword）——所有动作类型可配，submenu 除外 */}
+        {type !== "submenu" && (
+          <FormField label={t("settings.actionBar.slashName")}>
+            <div className="space-y-1">
               <input
                 className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                placeholder="tr"
+                placeholder={t("settings.actionBar.slashNamePlaceholder")}
                 value={form.triggerKeyword || ""}
                 onChange={(e) => {
                   const val = e.target.value.trim().toLowerCase();
                   onChange({ ...form, triggerKeyword: val });
                 }}
               />
-              <span className="text-[11px] text-muted-foreground/60">
-                {t("settings.actionBar.triggerKeywordHint")}
-              </span>
+              {form.triggerKeyword && !/^[a-z][a-z0-9-]*$/.test(form.triggerKeyword) && (
+                <p className="text-[11px] text-destructive">
+                  {t("settings.actionBar.slashNameInvalid")}
+                </p>
+              )}
             </div>
           </FormField>
         )}

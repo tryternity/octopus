@@ -707,8 +707,9 @@ settings:
     writeToClipboard: Write result to clipboard
     shortcutLabel: Shortcut
     shortcutHint: Alt+letter to execute (press Alt+letter when menu is open)
-    triggerKeywordLabel: Search Keyword
-    triggerKeywordHint: Type "keyword query" in search box to trigger. Use {query} in URL
+    slashName: "/ Command Name"
+    slashNamePlaceholder: "e.g. google (type /google to trigger)"
+    slashNameInvalid: Lowercase letters, digits, hyphens only; must start with a letter
     globalShortcutLabel: Global Shortcut
     globalShortcutHint: Global shortcut, runs without opening the menu
     clearShortcut: Clear shortcut
