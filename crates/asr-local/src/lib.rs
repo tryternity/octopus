@@ -17,8 +17,6 @@ pub mod streaming_paraformer;
 pub mod streaming_zipformer;
 pub mod streaming_engine;
 pub mod streaming_runner;
-pub mod vad;
-pub mod denoise;
 pub mod whisper;
 pub mod whisper_mel_matrix;
 pub mod firered;
@@ -34,6 +32,12 @@ pub use paraformer::sentence_separator;
 
 // ── 功能域子目录（2026-07-30 重组）──
 // 文件搬入子目录后，lib.rs 用 pub use 逐项 re-export 保持 octopus_asr_local::<module>::xxx 路径不变。
+
+// audio/ 域：preprocess（原 audio.rs）+ vad + denoise。
+// preprocess 的公开项经 audio/mod.rs 的 `pub use preprocess::*` 提升到 audio:: 顶层，
+// 故 octopus_asr_local::audio::read_wav_16k 等路径不变；vad / denoise 再 re-export 到 crate 根。
+pub use audio::{vad, denoise};
+
 pub mod text;
 pub use text::{corrector, hotword, hans, itn, miner};
 
