@@ -19,6 +19,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useT } from "@/lib/i18n";
 import { TerminalPane } from "./TerminalPane";
 import {
@@ -117,11 +118,19 @@ export default function Terminal() {
   }, []);
 
   // ActionBar 联动：listen "terminal://new-tab" { cwd, command }
+  // ⚠️ 必须限定 target 为当前窗口 label——否则 listen 默认 {kind:'Any'} 会收到
+  // 所有窗口的事件，导致 Rust emit_to 定向失效，每个终端窗口都开 tab。
+  // Rust 端 open_terminal_with_command 用 emit_to(label) 定向，前端这里对齐。
   useEffect(() => {
     let unlisten: (() => void) | null = null;
-    listen<{ cwd?: string; command?: string }>("terminal://new-tab", (e) => {
-      addTab(e.payload.cwd, e.payload.command);
-    })
+    const currentLabel = getCurrentWebviewWindow().label;
+    listen<{ cwd?: string; command?: string }>(
+      "terminal://new-tab",
+      (e) => {
+        addTab(e.payload.cwd, e.payload.command);
+      },
+      { target: currentLabel },
+    )
       .then((fn) => {
         unlisten = fn;
       })
