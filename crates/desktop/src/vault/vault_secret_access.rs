@@ -1,0 +1,336 @@
+//! secret_key 透明解密 chokepoint（follow-up #7）。
+//!
+//! Task 20 的迁移把 `models.secret_key`（仅 `is_local=0` 云端行）从明文 API Key
+//! 改写为 `v1:<base64(...)>` 加密格式（用 `app_key` 加密）。但消费端（cloud ASR WS 鉴权、
+//! LLM polish HTTP Bearer、云端翻译）原样把 DB 里的值当明文 API Key 用——vault 启用后
+//! 每次云端推理都会把加密 blob 当 Key 发出去导致 401。
+//!
+//! 本模块提供统一 chokepoint：
+//!
+//! - [`read_model_secret_key`]：按 model_name 读 DB secret_key，自动解 `v1:` 前缀
+//! - [`try_decrypt_secret`]：对 raw 字符串做条件解密（云端推理热路径用——
+//!   `ResolvedEngine.entry.secret_key` 等场景只有字符串、没有 model_name 时调）
+//!
+//! 设计原则：
+//! - 没有 vault session（未初始化 / 启动失败）→ 一律返回 raw 原值（向后兼容）
+//! - raw 不以 `v1:` 开头（本地 manifest JSON / 未迁移的明文）→ 原样返回
+//! - 仅 `v1:` 前缀的密文走 `app_key.decrypt(...)`；解密失败返回 Err
+//!
+//! 注意 `is_local=1` 的本地模型 secret_key 是 manifest JSON，永远不应解密——
+//! 但本模块按「前缀判定」而非「is_local 判定」，因为：
+//! 1. 本地 manifest JSON 不会以 `v1:` 开头（迁移 SQL 含 `is_local=0` 守卫）
+//! 2. 调用方已知自己在处理云端 Key（`ResolvedEngine.entry.is_local == false`）
+//!
+//! follow-up #10: vault feature gate。本模块**总是**编译（不被 cfg 掉）——
+//! 它是云端推理热路径（AliyunEngine / config::llm_config_ignore_mode / 云端翻译）
+//! 的统一 chokepoint，4 个调用点不希望加 cfg gate。feature off 时整模块退化为
+//! 「raw 原样返回」的 no-op（没 vault 即不可能有 v1: 加密格式）。
+//!
+//! 公开 API 在两条 feature 路径下签名一致——调用方无感知。
+
+#[cfg(feature = "vault")]
+use std::sync::Arc;
+
+#[cfg(feature = "vault")]
+use octopus_vault::crypto::symmetric::CIPHERTEXT_PREFIX;
+#[cfg(feature = "vault")]
+use octopus_vault::crypto::DerivedKey;
+
+#[cfg(feature = "vault")]
+use crate::vault::vault_state::SharedVaultSession;
+
+// ===== feature = "vault"：真实实现 =====
+//
+// 仅 vault feature on 时编译——这些函数引用 octopus_vault 内部类型（DerivedKey /
+// CIPHERTEXT_PREFIX / app_key.decrypt），feature off 时这些类型不存在。
+
+/// 按 model_name 读 DB secret_key，透明解密 `v1:` 前缀。
+///
+/// 流程：
+/// 1. 调 `model_commands::current_secret_key_any(model_name)` 读 DB raw 值（cloud + local）
+/// 2. raw 不以 `v1:` 开头（manifest / 未迁移明文）→ 原样返回
+/// 3. raw 以 `v1:` 开头但 vault 未初始化 / app_key 不可用 → 返回 Err
+///    （让调用方决定是否 fallback——通常显示「请先解锁 vault」）
+/// 4. raw 以 `v1:` 开头且 app_key 可用 → `app_key.decrypt(raw)` 返回明文 API Key
+#[cfg(feature = "vault")]
+pub fn read_model_secret_key(
+    model_name: &str,
+    session: &SharedVaultSession,
+) -> Result<String, String> {
+    let raw = crate::commands::model_commands::current_secret_key_any(model_name)?;
+    try_decrypt_secret(&raw, session)
+}
+
+/// 对 raw secret_key 字符串做条件解密。
+///
+/// 用于云端推理热路径（`ResolvedEngine.entry.secret_key`、`CompatibleLlmConfig.secret_key`）：
+/// 这些场景只有字符串本身、没有 model_name，但已知是云端 API Key（非本地 manifest）。
+///
+/// 行为：
+/// - raw 不以 `v1:` 开头 → 原样返回（未迁移明文 / pre-vault / 空）
+/// - raw 以 `v1:` 开头但 vault 未初始化 / app_key 缺失 → 返回 Err
+/// - 否则 `app_key.decrypt(raw)` → UTF-8 字符串
+///
+/// `session` 可通过 [`crate::vault::vault_state::try_global_session`] 在非 Tauri-State
+/// 调用点取（AliyunEngine / config::llm_config_ignore_mode 等）。
+#[cfg(feature = "vault")]
+pub fn try_decrypt_secret(
+    raw: &str,
+    session: &SharedVaultSession,
+) -> Result<String, String> {
+    // 不以 v1: 开头 → 不是加密格式，原样返回
+    if !raw.starts_with(CIPHERTEXT_PREFIX) {
+        return Ok(raw.to_string());
+    }
+
+    // 加密格式但 app_key 不可用 → 报错（让调用方提示用户解锁）
+    // 复用 vault_commands::require_app_key_from_session 保持单一 chokepoint（follow-up #7）。
+    // 该函数现在返回 VaultError（user-safe message）；这里透传其 JSON 序列化形式
+    // 给调用方（仍是 Result<_, String>，但内容是稳定的 `{ code, message }`）。
+    let app_key: Arc<DerivedKey> = crate::vault::vault_commands::require_app_key_from_session(session)
+        .map_err(|e| crate::vault::vault_error::serialize(&e))?;
+
+    // decrypt 失败属内部细节（nonce mismatch / tag 等）——映射为 InternalError 的
+    // user-safe message，不透传。
+    let plaintext = app_key.decrypt(raw).map_err(|_| {
+        crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
+    })?;
+    String::from_utf8(plaintext.to_vec()).map_err(|_| {
+        crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
+    })
+}
+
+/// 进程级便捷版：raw 字符串自动用全局 session 解密。
+///
+/// 用于云端推理热路径（拿不到 Tauri State、也没显式 session 参数）。
+///
+/// **失败语义**（修复 #5：不再把密文当 token 发到云端）：
+/// - vault feature on + 全局 session 已注入 + raw 是 `v1:` 密文但 app_key 不可用
+///   → `Err("保险库锁定")`，调用方应显示"请先解锁保险库"并跳过这次推理
+/// - vault feature on + 解密失败（密文损坏）→ `Err("解密失败")`
+/// - vault feature on + raw 不以 `v1:` 开头（本地 manifest / 未迁移明文）→ `Ok(raw)`
+/// - vault feature off / 全局 session 未注入 → `Ok(raw)`（向后兼容，旧 DB 无 v1:）
+///
+/// 关键安全：vault 启用但解密失败时**绝不返回 raw 密文**——避免把 `v1:<base64>`
+/// 当作 Bearer token 发到云端（密文会进入云端 access log + 静默掩盖 vault 真正问题）。
+#[cfg(feature = "vault")]
+pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
+    match crate::vault::vault_state::try_global_session() {
+        Some(session) => try_decrypt_secret(raw, &session),
+        // vault 未启用 / 全局 session 未注入 → raw 原样返回（向后兼容）
+        None => Ok(raw.to_string()),
+    }
+}
+
+/// M-CLOUDKEY-PLAINTEXT 修复（2026-07-25）：加密 secret_key 写入 chokepoint。
+///
+/// 与 [`try_decrypt_secret_global`] 对称——add/edit_cloud_model 写 DB 前调用：
+/// - vault 已初始化 + app_key 可用 → `app_key.encrypt(raw)` → 返回 `v1:` 密文
+/// - vault 未初始化 / app_key 不可用 / 空 secret_key → 原样返回（向后兼容）
+///
+/// 这样 add/edit 产生的增量 secret_key 也会加密落盘（之前只 migrate 覆盖 setup
+/// 存量，增量明文残留 DB）。读路径 try_decrypt_secret 已处理 v1: 解密，加密后
+/// 自动走解密分支。
+///
+/// **空值不加密**：edit_cloud_model 传空 secret_key 表示「未改 key」，空值应
+/// 原样返回（DB 层对空值有特殊处理——保持现有值）。
+#[cfg(feature = "vault")]
+pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
+    // 空值不加密（edit 未改 key）
+    if secret.is_empty() {
+        return Ok(secret.to_string());
+    }
+    // 已是密文（v1: 前缀）→ 不重复加密（幂等，防双重加密）
+    if secret.starts_with(CIPHERTEXT_PREFIX) {
+        return Ok(secret.to_string());
+    }
+    match crate::vault::vault_state::try_global_session() {
+        Some(session) => {
+            let app_key = crate::vault::vault_commands::require_app_key_from_session(&session)
+                .map_err(|e| crate::vault::vault_error::serialize(&e))?;
+            let ciphertext = app_key.encrypt(secret.as_bytes()).map_err(|_| {
+                crate::vault::vault_error::serialize(&crate::vault::vault_error::VaultError::InternalError)
+            })?;
+            Ok(ciphertext)
+        }
+        // vault 未初始化 / session 未注入 → 原样返回明文（向后兼容 pre-vault）
+        None => Ok(secret.to_string()),
+    }
+}
+
+// ===== feature != "vault"：no-op 退化 =====
+//
+// follow-up #10: vault feature off 时，octopus_vault crate 不存在，无法解密。
+// 但 v1: 加密格式只可能由 vault 写入——vault 从未编入即不可能有 v1: 数据，
+// 因此 raw 原样返回是正确行为（与 vault on + 未初始化时的语义一致）。
+//
+// 4 个调用点（engine_aliyun / settings_commands / config / action_bar_commands）
+// 都通过 try_decrypt_secret_global，无需 cfg gate。
+
+#[cfg(not(feature = "vault"))]
+pub fn try_decrypt_secret_global(raw: &str) -> Result<String, String> {
+    // No vault → 无加密可能 → 原样返回（legacy 明文 / pre-vault API Key）。
+    Ok(raw.to_string())
+}
+
+#[cfg(not(feature = "vault"))]
+pub fn encrypt_secret_global(secret: &str) -> Result<String, String> {
+    // No vault → 无加密能力 → 原样返回明文（与 try_decrypt_secret_global 退化一致）。
+    Ok(secret.to_string())
+}
+
+#[cfg(all(test, feature = "vault"))]
+mod tests {
+    use super::*;
+    use crate::vault::vault_state::{SharedVaultSession, VaultSession};
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+
+    /// 构造一份确定性的 32B DerivedKey（每个 byte 都为 `byte`）。
+    fn make_key(byte: u8) -> Arc<DerivedKey> {
+        
+        Arc::new(DerivedKey::from_raw([byte; 32]))
+    }
+
+    /// 构造一个空 session（app_key=None），用于测试「vault 已启用但 app_key 不可用」。
+    fn empty_session() -> SharedVaultSession {
+        Arc::new(RwLock::new(VaultSession::default()))
+    }
+
+    /// 构造一个 app_key 已注入的 session。
+    fn session_with_app_key(key: Arc<DerivedKey>) -> SharedVaultSession {
+        let mut s = VaultSession::default();
+        s.app_key = Some(key);
+        Arc::new(RwLock::new(s))
+    }
+    /// 非 v1: 前缀 → 原样返回（明文 API Key / 本地 manifest JSON / 空）。
+    #[test]
+    fn plaintext_passthrough() {
+        let session = empty_session();
+
+        assert_eq!(try_decrypt_secret("", &session).unwrap(), "");
+        assert_eq!(
+            try_decrypt_secret("sk-plain-api-key", &session).unwrap(),
+            "sk-plain-api-key"
+        );
+        // 本地 manifest JSON 不应被解密
+        let manifest = r#"{"version":"1.0","files":[]}"#;
+        assert_eq!(try_decrypt_secret(manifest, &session).unwrap(), manifest);
+    }
+
+    /// v1: 前缀 + app_key 可用 → 解密返回明文。
+    #[test]
+    fn encrypted_with_app_key_decrypts() {
+        let key = make_key(7);
+        let session = session_with_app_key(key.clone());
+
+        let plaintext = "sk-secret-cloud-api-key-42";
+        let encrypted = key.encrypt(plaintext.as_bytes()).unwrap();
+        assert!(encrypted.starts_with("v1:"));
+
+        let decrypted = try_decrypt_secret(&encrypted, &session).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// v1: 前缀 + app_key=None（vault 未解锁 / app_key 缺失）→ 返回 Err。
+    ///
+    /// follow-up #9 起：错误信息是 VaultError::KeychainUnavailable 的稳定 JSON
+    /// `{ code: "keychain_unavailable", message: ... }`——不再透传内部细节。
+    #[test]
+    fn encrypted_without_app_key_errors() {
+        let key = make_key(7);
+        let encrypted = key.encrypt(b"some-key").unwrap();
+        let session = empty_session(); // app_key=None
+
+        let result = try_decrypt_secret(&encrypted, &session);
+        assert!(result.is_err(), "vault 已启用但 app_key 不可用应返回 Err");
+        let err = result.unwrap_err();
+        // 新契约：JSON 序列化的 VaultError，code=keychain_unavailable
+        assert!(
+            err.contains("keychain_unavailable") || err.contains("密钥串"),
+            "错误信息应含 keychain_unavailable 稳定 code / 密钥串 message，got: {}",
+            err
+        );
+    }
+
+    /// v1: 前缀 + 错误的 app_key（key 不匹配）→ decrypt 失败 → 返回 Err。
+    #[test]
+    fn encrypted_with_wrong_app_key_errors() {
+        let encryptor = make_key(1);
+        let encrypted = encryptor.encrypt(b"plain").unwrap();
+
+        let wrong_key = make_key(2);
+        let session = session_with_app_key(wrong_key);
+
+        let result = try_decrypt_secret(&encrypted, &session);
+        assert!(result.is_err(), "key 不匹配应解密失败");
+    }
+
+    /// try_decrypt_secret_global：全局 session 未注入 → 原样返回（向后兼容）。
+    #[test]
+    fn global_without_session_passthrough() {
+        // 注意：单测里 GLOBAL_SESSION 不一定注入，这里只验证「未注入时」的行为。
+        // 由于 OnceLock::set 是 once 语义，如果其他测试已 set 了，本测试会拿到 session——
+        // 因此这里只断言「raw 不以 v1: 开头时一定原样返回」（与是否注入无关）。
+        assert_eq!(try_decrypt_secret_global("sk-plain").unwrap(), "sk-plain");
+        assert_eq!(try_decrypt_secret_global("").unwrap(), "");
+    }
+
+    /// round-trip：用 migrate 的加密路径产出的密文，本模块能解出来。
+    ///
+    /// 与 crates/vault/src/migrate.rs 的 `migrate_encrypts_plaintext_keys` 对称——
+    /// 那个测试验证「明文 → v1: 密文」，这里验证「v1: 密文 → 明文」。
+    #[test]
+    fn round_trip_with_migrate_path() {
+        let key = make_key(42);
+        let session = session_with_app_key(key.clone());
+
+        // 模拟 Task 20 migrate 产出的密文
+        let plaintext = "plaintext-api-key-for-round-trip";
+        let migrated = key.encrypt(plaintext.as_bytes()).unwrap();
+        assert!(migrated.starts_with("v1:"));
+
+        // 模拟推理热路径消费
+        let decrypted = try_decrypt_secret(&migrated, &session).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// M-CLOUDKEY-PLAINTEXT 守护（2026-07-25）：encrypt_secret_global 的可达路径。
+    ///
+    /// encrypt_secret_global 用全局 session（OnceLock），单测里不一定注入——这里测
+    /// 两个不依赖 session 的路径（空值 + 幂等）。加密路径由 round_trip 间接覆盖
+    ///（encrypt → try_decrypt 对称，逻辑相同）。
+    #[test]
+    fn encrypt_secret_empty_and_idempotent() {
+        // 空 secret_key → 原样返回空（edit 未改 key，不加密）
+        assert_eq!(encrypt_secret_global("").unwrap(), "");
+
+        // 已是 v1: 前缀 → 幂等，不重复加密（防双重加密）
+        let key = make_key(9);
+        let already_encrypted = key.encrypt(b"plain").unwrap();
+        assert!(already_encrypted.starts_with("v1:"));
+        // encrypt_secret_global 对已加密的应原样返回（不依赖 session）
+        let result = encrypt_secret_global(&already_encrypted).unwrap();
+        assert_eq!(result, already_encrypted, "v1: 前缀应幂等不重复加密");
+    }
+
+    /// M-CLOUDKEY-PLAINTEXT 守护：encrypt → try_decrypt round-trip（对称性）。
+    ///
+    /// add/edit_cloud_model 用 encrypt_secret_global 写入，读路径用 try_decrypt_secret
+    /// 解出——两者必须对称（加密的能解出）。
+    #[test]
+    fn encrypt_then_decrypt_round_trip() {
+        let key = make_key(5);
+        let session = session_with_app_key(key.clone());
+
+        let plaintext = "sk-cloud-key-for-add-edit-round-trip";
+        // 模拟 add/edit 路径的加密（直接用 app_key.encrypt，与 encrypt_secret_global
+        // 的 vault 已初始化路径逻辑相同）
+        let encrypted = key.encrypt(plaintext.as_bytes()).unwrap();
+        assert!(encrypted.starts_with("v1:"));
+
+        // 读路径解密
+        let decrypted = try_decrypt_secret(&encrypted, &session).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+}
