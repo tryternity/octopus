@@ -16,7 +16,6 @@ import { UnderlineTabs, Segmented } from "@/components/ui/tabs";
 // 拆分出的子模块
 import type { ActionBarItem } from "./ActionBar/types";
 import { deriveAccepts, inputBase, Toggle } from "./ActionBar/constants";
-import { FormField } from "./ActionBar/EditForm";
 import EditForm from "./ActionBar/EditForm";
 import MenuRow from "./ActionBar/MenuRow";
 import ScriptRunsList from "./ActionBar/ScriptRunsList";
@@ -427,11 +426,14 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <FormField label={t("settings.actionBar.slashName")}>
-                      <div className="flex items-center gap-2">
-                        {/* 斜杠命令名（左） */}
+                    <div className="flex items-start justify-between gap-4">
+                      {/* 斜杠命令名（左） */}
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                          {t("settings.actionBar.slashName")}
+                        </label>
                         <input
-                          className="w-28 shrink-0 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                          className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
                           placeholder={t("settings.actionBar.slashNamePlaceholder")}
                           value={selectedMain.triggerKeyword || ""}
                           onChange={(e) => {
@@ -439,23 +441,30 @@ export default function ActionBarPanel({
                             updateMainInline({ triggerKeyword: val });
                           }}
                         />
-                        {/* 全局快捷键（右） */}
-                        <ShortcutButton
-                          shortcut={selectedMain.globalShortcut ?? ""}
-                          capturing={inlineCapturingGlobal}
-                          onClick={() => setInlineCapturingGlobal((v) => !v)}
-                        />
-                        {selectedMain.globalShortcut && (
-                          <button
-                            onClick={() => updateMainInline({ globalShortcut: "" })}
-                            className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={ti18n("settings.actionBar.clearShortcut")}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
                       </div>
-                    </FormField>
+                      {/* 全局快捷键（右） */}
+                      <div className="flex flex-col items-end gap-1.5">
+                        <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                          {ti18n("settings.actionBar.globalShortcutLabel")}
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <ShortcutButton
+                            shortcut={selectedMain.globalShortcut ?? ""}
+                            capturing={inlineCapturingGlobal}
+                            onClick={() => setInlineCapturingGlobal((v) => !v)}
+                          />
+                          {selectedMain.globalShortcut && (
+                            <button
+                              onClick={() => updateMainInline({ globalShortcut: "" })}
+                              className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={ti18n("settings.actionBar.clearShortcut")}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
 
