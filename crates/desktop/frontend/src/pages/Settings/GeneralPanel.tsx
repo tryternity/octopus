@@ -103,10 +103,10 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const tabs: { key: string; label: string }[] = [
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
-    // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
-    ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "voice", label: t("settings.general.tabVoice") },
     { key: "env", label: t("settings.general.tabEnv") },
+    // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
+    ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "sync", label: t("settings.general.tabSync") },
   ];
 
