@@ -44,11 +44,12 @@ export default function MenuRow(props: MenuRowProps) {
         props.onSelect && "cursor-pointer",
       )}
     >
-      <div className={cn("row-span-2 h-full w-[3px] shrink-0 self-stretch rounded-full transition-all", meta.bar)} />
-      <span className="row-span-2 self-start pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
+      <div className={cn("col-start-1 row-span-2 h-full w-[3px] shrink-0 self-stretch rounded-full transition-all", meta.bar)} />
+      <span className="col-start-2 row-span-2 self-start pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground/50">
         {pad2(index)}
       </span>
       <span className={cn(
+        showShortcuts ? "col-start-3 row-start-1" : "col-start-3 row-span-2",
         "min-w-0 truncate",
         props.isMain ? "text-sm font-semibold" : "text-sm",
         item.isEnabled ? "text-foreground" : "text-muted-foreground/50",
@@ -57,7 +58,7 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        /* 斜杠命令名（显式 grid-column:4 独立列，各行 / 左对齐） */
+        /* 斜杠命令名（显式 col-start-4 row-start-1 独立列，各行 / 左对齐） */
         <span className={cn(
           "col-start-4 row-start-1 min-w-0 truncate rounded px-1.5 py-0.5 text-left font-mono text-[11px]",
           item.triggerKeyword ? "bg-muted/60 text-muted-foreground" : "",
@@ -67,7 +68,7 @@ export default function MenuRow(props: MenuRowProps) {
       )}
 
       {showShortcuts && (
-        <div className="flex shrink-0 items-center justify-end gap-0.5">
+        <div className="col-start-5 row-start-1 flex shrink-0 items-center justify-end gap-0.5">
           {/* 全局快捷键 */}
           <ShortcutButton
             shortcut={item.globalShortcut ?? ""}
@@ -91,6 +92,7 @@ export default function MenuRow(props: MenuRowProps) {
       )}
 
       <div className={cn(
+        showShortcuts ? "col-start-6 row-start-1" : "col-start-4 row-start-1",
         "flex shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100",
         // 左侧主菜单：平时隐藏（hover 显示，避免拥挤）；右侧子菜单：常驻（避免空白）
         props.isMain ? "opacity-0" : "opacity-60",
@@ -138,7 +140,7 @@ export default function MenuRow(props: MenuRowProps) {
         </button>
       </div>
 
-      <div className={cn("flex items-center gap-1.5 text-[10px] text-muted-foreground/60", showShortcuts ? "col-span-2" : "col-span-2")}>
+      <div className={cn("col-start-3 row-start-2 flex items-center gap-1.5 text-[10px] text-muted-foreground/60", showShortcuts && "col-span-2")}>
         <TypeTag type={item.actionType} />
         {item.isSystem && (
           <span className="text-muted-foreground/40">· {t("settings.actionBar.builtin")}</span>
