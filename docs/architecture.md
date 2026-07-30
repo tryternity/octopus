@@ -645,7 +645,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ## 模型管理
 
-模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。VAD（silero_vad_v4.onnx 1.7MB）**内嵌二进制**（`include_bytes!` + ort `commit_from_memory`，开箱即用不读磁盘；磁盘 `~/.octopus/models/silero_vad_v4.onnx` 存在时优先用磁盘版本覆盖）；默认 ASR 兜底引擎 zipformer-small 27M（builtin source_type=0，首次启动自动下载——缺失弹下载窗）；大模型按需下载——设置窗口「模型管理」页（GUI）或 `octopus-cli download` 下到 `~/.octopus/models/{domain}/{name}/`，兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型（desktop 启动时 `model_migrate::create_model_symlinks` 自动创建软链——对旧 bootstrap manifest source 全空的模型回退到 `model_manifests` 预填常量取 repo 信息；`fill_manifests` 自动升级旧 manifest 补 source URL）。
+模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。VAD（silero_vad_v4.onnx 1.7MB）**内嵌二进制**（`include_bytes!` + ort `commit_from_memory`，开箱即用不读磁盘；磁盘 `~/.octopus/models/vad.onnx` 存在时优先用磁盘版本覆盖——通用名，可放任意 VAD 模型替换内嵌的 silero_vad_v4，见 `VAD_OVERRIDE_PATH`）；默认 ASR 兜底引擎 zipformer-small 27M（builtin source_type=0，首次启动自动下载——缺失弹下载窗）；大模型按需下载——设置窗口「模型管理」页（GUI）或 `octopus-cli download` 下到 `~/.octopus/models/{domain}/{name}/`，兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型（desktop 启动时 `model_migrate::create_model_symlinks` 自动创建软链——对旧 bootstrap manifest source 全空的模型回退到 `model_manifests` 预填常量取 repo 信息；`fill_manifests` 自动升级旧 manifest 补 source URL）。
 
 **GUI 模型管理（设置窗口页面 3，5 tab）**：`ModelsPanel` 5 tab——语音识别/文本模型/扫描识别/翻译模型/环境设置（环境变量编辑器，原"常量"，2026-07-22 从首个移到末位，默认激活「语音识别」tab）。所有 Tab 共享 `ModelRow.tsx` 组件——状态指示：绿色 ✓ = 当前激活、红色 ✓ = 已就绪可用、灰色 ⊙ = 未下载。每个模型项右侧操作按钮：下载（未下载时）、激活（已就绪非当前，已激活显示灰色）、校验（图标）、删除（`confirm()` 二次确认，删软链/目录 + `is_enabled=false`）、编辑（云端模型，铅笔图标）。名称格式 `model_name[provider]`，`local`→i18n「本地」。`CurrentBanner`（"当前使用 xxx"）在顶部显示激活模型。`CollapsibleSection` 组件可折叠。**云端模型用户自管理**（v31，无 seed）：`CloudModelForm.tsx` 弹窗——LLM 模式（provider 下拉→base_url 预填 + model_name + api_key + is_stream/is_thinking + 测试连接按钮），ASR 模式（provider→category→source 自动填 + model_name datalist 参考项 + api_key）。API Key 脱敏显示（`mask_key`：前4********后4），编辑保存空值不覆盖原 key，测试连接从 DB 取真实 key。`crates/desktop/src/commands/model_commands.rs` 命令——
 - `list_downloadable_models(domain)`：**v3 直读 DB** `list_local_models_by_domain(domain)` + 文件系统检查（`resolve_model_dir().is_ok()` fallback，手动放置/软链的模型也显示为已就绪）。
@@ -666,7 +666,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 ├── octopus.db          # 嵌入式 SQLite（models + clipboard_history + app_config + prompts + image_data + action_bar_items + script_runs + agent_adapters 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/
-    ├── silero_vad_v4.onnx   # VAD（1.8M，可选——磁盘存在时覆盖内嵌版本；不存在用内嵌 include_bytes!）
+    ├── vad.onnx   # VAD 覆盖（1.8M，可选——通用名，磁盘存在时覆盖内嵌的 silero_vad_v4；不存在用内嵌 include_bytes!）
     ├── zipformer/           # 默认 ASR 兜底引擎（27M，Step 3 计划自动下载）
     └── <HF repo>/           # ★ cli download 下的大模型（如 Systran/faster-whisper-large-v3/）
 

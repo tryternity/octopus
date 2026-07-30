@@ -4,9 +4,13 @@
 //
 // 路径常量均为相对 ~/.octopus/ 根目录的片段，由调用方 join 到 home。
 
-/// Silero VAD 模型相对路径（~/.octopus/models/silero_vad_v4.onnx）。
-/// 固定加载、随应用打包，不读配置 / HF 缓存——唯一 VAD 方案。
-pub const SILERO_VAD_PATH: &str = "models/silero_vad_v4.onnx";
+/// VAD 模型磁盘覆盖路径（~/.octopus/models/vad.onnx）。
+///
+/// 用户可在此放任意 VAD 模型（onnx）覆盖编译期内嵌的 silero_vad_v4。用通用名 `vad.onnx`
+/// 而非绑死版本号——覆盖的意义是换一个**不同的** VAD（如新版 silero 或其他 VAD），
+/// 若路径硬编码成 `silero_vad_v4.onnx`，用户就被迫用同名文件，覆盖失去意义。
+/// 磁盘无此文件时 fallback 到内嵌字节（`SileroVad::new_builtin()`，见 `audio/vad.rs`）。
+pub const VAD_OVERRIDE_PATH: &str = "models/vad.onnx";
 
 /// 兜底（默认）ASR 模型 source（路径标识，domain/name 格式，与其他 local 模型一致）。
 /// zipformer-small 的 source，27M，builtin（source_type=0），首次启动下载。

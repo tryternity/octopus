@@ -14,7 +14,7 @@ octopus 配置分两部分：
 ├── octopus.db          # 嵌入式 SQLite：models + transcriptions + app_config + prompts 表（唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/             # 随应用打包的小模型（固定路径）
-    ├── silero_vad_v4.onnx   # VAD（固定加载，不进 DB）
+    ├── vad.onnx   # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌 silero_vad_v4；不进 DB）
     └── zipformer/           # 默认 ASR（model.int8.onnx + tokens.txt）
 
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice-orig/qwen3/paraformer/firered 等，按需下载）
@@ -246,7 +246,7 @@ rm -f ~/.octopus/octopus.db
 # 下次启动 ensure_db 重建新 schema + seed
 ```
 
-**VAD 不进表**：固定路径 `~/.octopus/models/silero_vad_v4.onnx`，随应用打包。
+**VAD 不进表**：内嵌 `silero_vad_v4.onnx`（随应用打包，`include_bytes!`）；磁盘 `~/.octopus/models/vad.onnx` 存在时覆盖（通用名，可放任意 VAD 模型，见 `VAD_OVERRIDE_PATH`）。
 
 查看当前 DB 中的引擎：
 
