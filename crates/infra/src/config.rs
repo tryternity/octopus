@@ -218,12 +218,6 @@ pub struct AppConfig {
     #[serde(default = "default_vault_autotype_shortcut")]
     pub vault_autotype_shortcut: String,
 
-    /// vault 密码生成器热键（已弃用 - 生成器移入 CipherEditor 内嵌，不再全局可用）。
-    ///
-    /// 保留字段是为了向后兼容旧 DB；新版本不消费此值。
-    #[serde(default = "default_vault_generator_shortcut")]
-    pub vault_generator_shortcut: String,
-
     /// vault 离开焦点后的锁定超时（秒）。默认 180 = 3 分钟。
     ///
     /// 含义：保险库 tab 离开前台（切 tab / 关窗口 / 应用失焦）超过此秒数后，
@@ -339,9 +333,6 @@ fn default_record_shortcut() -> String {
 fn default_vault_autotype_shortcut() -> String {
     "CmdOrCtrl+Shift+S".into()
 }
-fn default_vault_generator_shortcut() -> String {
-    "CmdOrCtrl+Shift+G".into()
-}
 fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
 }
@@ -389,7 +380,6 @@ impl Default for AppConfig {
             screenshot_shortcut: default_screenshot_shortcut(),
             record_shortcut: default_record_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
-            vault_generator_shortcut: default_vault_generator_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
             onboarding_completed: false,
         }
