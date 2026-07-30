@@ -443,7 +443,7 @@ export default function ActionBarPanel({
                         />
                       </div>
                       {/* 全局快捷键（右） */}
-                      <div className="flex flex-col items-end gap-1.5">
+                      <div className="flex flex-col items-start gap-1.5">
                         <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
                           {ti18n("settings.actionBar.globalShortcutLabel")}
                         </label>
