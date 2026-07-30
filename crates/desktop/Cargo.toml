@@ -22,6 +22,9 @@ tauri-plugin-opener = "2"
 # octopus-asr-local (embedded engine)
 octopus-asr-local = { path = "../asr-local", optional = true }
 
+# 内嵌终端 PTY（portable-pty + OSC agent 状态感知）
+octopus-pty = { path = "../pty" }
+
 # Unicode normalization（兼容字符归一化，如 WPS 康熙部首）
 unicode-normalization.workspace = true
 

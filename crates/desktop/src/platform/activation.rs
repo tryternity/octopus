@@ -100,10 +100,21 @@
 use tauri::{ActivationPolicy, Manager};
 
 /// 常规窗口 label：任一存活 → app 须保持 Regular。
+/// 固定 label 的窗口用精确匹配；终端窗口是多实例（`terminal_*` 前缀），用前缀匹配。
 const REGULAR_WINDOWS: &[&str] = &[
     "settings_window",
     "compact_editor_window",
 ];
+/// 多实例常规窗口的 label 前缀（终端窗口 `terminal_<n>`）。
+const REGULAR_WINDOW_PREFIXES: &[&str] = &[
+    "terminal_",
+];
+
+/// 判断某 label 是否为常规窗口（精确 + 前缀）。
+fn is_regular_window(label: &str) -> bool {
+    REGULAR_WINDOWS.contains(&label)
+        || REGULAR_WINDOW_PREFIXES.iter().any(|p| label.starts_with(p))
+}
 
 /// 浮窗 show 时需临时隐藏的其他 Regular 窗口，
 /// 防止 set_focus 激活 app 后这些窗口抢焦点。
@@ -118,30 +129,46 @@ const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
     "settings_window",
     "compact_editor_window",
 ];
+/// 多实例浮窗隐藏窗口的前缀（终端 `terminal_*`）。
+const WINDOWS_TO_HIDE_ON_FLOAT_PREFIXES: &[&str] = &[
+    "terminal_",
+];
+
+fn should_hide_on_float(label: &str) -> bool {
+    WINDOWS_TO_HIDE_ON_FLOAT.contains(&label)
+        || WINDOWS_TO_HIDE_ON_FLOAT_PREFIXES
+            .iter()
+            .any(|p| label.starts_with(p))
+}
 
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
 ///
 /// 必须在 `WindowEvent::Destroyed`（窗口已从 app 移除）里调用——此时被关窗口的
-/// `get_webview_window` 已返回 None，故 `REGULAR_WINDOWS` 检查自然只看其余窗口。
+/// `get_webview_window` 已返回 None，故检查自然只看其余窗口。
+///
+/// 固定 label 用精确查；多实例（终端 `terminal_*`）需遍历所有 webview 窗口做前缀匹配。
 pub fn restore_accessory_if_no_regular_window(app_handle: &tauri::AppHandle) {
-    let any_alive = REGULAR_WINDOWS
-        .iter()
-        .any(|label| app_handle.get_webview_window(label).is_some());
+    // 遍历所有 webview 窗口，任一常规窗口存活则保持 Regular
+    let any_alive = app_handle
+        .webview_windows()
+        .keys()
+        .any(|label| is_regular_window(label));
     if !any_alive {
         let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
     }
 }
 
 /// 全局热键触发浮窗（clipboard/result/action_bar）前调用：
-/// 临时隐藏常规窗口（settings/compact_editor），避免 app 被激活时
+/// 临时隐藏常规窗口（settings/compact_editor/terminal_*），避免 app 被激活时
 /// 把这些窗口带到前台抢焦点。用户手动点 Dock 图标或托盘仍可恢复。
 #[allow(dead_code)]
 pub fn hide_regular_windows(app_handle: &tauri::AppHandle) {
-    for label in REGULAR_WINDOWS {
-        if let Some(win) = app_handle.get_webview_window(label) {
-            if win.is_visible().unwrap_or(false) {
-                let _ = win.hide();
-            }
+    for (label, win) in app_handle.webview_windows() {
+        if !should_hide_on_float(&label) {
+            continue;
+        }
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
         }
     }
 }
@@ -149,11 +176,12 @@ pub fn hide_regular_windows(app_handle: &tauri::AppHandle) {
 /// 浮窗操作完成后调用：恢复之前被隐藏的常规窗口。（保留供未来使用）
 #[allow(dead_code)]
 pub fn show_regular_windows(app_handle: &tauri::AppHandle) {
-    for label in REGULAR_WINDOWS {
-        if let Some(win) = app_handle.get_webview_window(label) {
-            // 只 show 不 focus——不抢焦点
-            let _ = win.show();
+    for (label, win) in app_handle.webview_windows() {
+        if !should_hide_on_float(&label) {
+            continue;
         }
+        // 只 show 不 focus——不抢焦点
+        let _ = win.show();
     }
 }
 
@@ -206,12 +234,13 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
             // app 后台时临时隐藏其他窗口
             if is_inactive {
                 let mut hidden = Vec::new();
-                for label in WINDOWS_TO_HIDE_ON_FLOAT {
-                    if let Some(w) = app.get_webview_window(label) {
-                        if w.is_visible().unwrap_or(false) {
-                            let _ = w.hide();
-                            hidden.push(label.to_string());
-                        }
+                for (label, w) in app.webview_windows() {
+                    if !should_hide_on_float(&label) {
+                        continue;
+                    }
+                    if w.is_visible().unwrap_or(false) {
+                        let _ = w.hide();
+                        hidden.push(label);
                     }
                 }
                 *TEMP_HIDDEN.lock() = hidden;

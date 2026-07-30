@@ -506,7 +506,7 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             }
         }
         "agent" => {
-            // agent 桥接：渲染命令 → Terminal.app 启动。
+            // agent 桥接：渲染命令 → 内嵌终端启动（Task 8）。
             // 三层 fallback（v42）：菜单指定 → 系统默认 → 第一个可用。
             let (adapter, source) = crate::action_bar::agent_adapter::resolve_effective_adapter(&item.agent)?;
             if source != "menu" {
@@ -519,18 +519,25 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let resolved = resolve_prompt_reference(&item.action_data);
             let prompt = render_agent_prompt(&resolved, "", &text, &app_state_files);
             let cwd = derive_cwd(&app_state_files);
-            let cwd_path = std::path::Path::new(&cwd);
             let command = crate::action_bar::agent_adapter::render_command(
                 &adapter.command_template, &prompt, &app_state_files, &cwd,
             );
-            let launcher = crate::action_bar::terminal_launcher::TerminalAppLauncher;
-            use crate::action_bar::terminal_launcher::TerminalLauncher;
-            // osascript 启动 Terminal.app 会 wait 子进程（200ms-2s），包 spawn_blocking
-            // 避免阻塞 Tokio worker（与 spawn_script 范式一致）。
-            let cwd_buf = cwd_path.to_path_buf();
-            tokio::task::spawn_blocking(move || launcher.spawn(&command, &cwd_buf))
-                .await
-                .map_err(|e| format!("Terminal 启动任务异常: {e}"))??;
+            // 优先内嵌终端窗口（Task 6-7）；失败 fallback 到 Terminal.app（Task 8）。
+            // open_terminal_with_command 内部用 run_on_main_thread 调度 AppKit，
+            // 可在 async worker 线程安全调用（无需 spawn_blocking）。
+            match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &command) {
+                Ok(_) => log::info!("[action-bar] agent 已启动到内嵌终端（cwd={}, cmd={}）", cwd, command),
+                Err(e) => {
+                    log::warn!("[action-bar] 内嵌终端失败，fallback 到 Terminal.app: {}", e);
+                    let launcher = crate::action_bar::terminal_launcher::TerminalAppLauncher;
+                    use crate::action_bar::terminal_launcher::TerminalLauncher;
+                    let cwd_path = std::path::Path::new(&cwd);
+                    let cwd_buf = cwd_path.to_path_buf();
+                    tokio::task::spawn_blocking(move || launcher.spawn(&command, &cwd_buf))
+                        .await
+                        .map_err(|e| format!("Terminal 启动任务异常: {e}"))??;
+                }
+            }
             Ok(false)
         }
         "copy_path" => {
