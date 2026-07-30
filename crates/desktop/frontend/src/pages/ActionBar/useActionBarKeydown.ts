@@ -7,7 +7,7 @@
 
 import { useEffect, type RefObject, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { decideKeyAction, type KeyContext, type KeyAction } from "./keyNavigation";
+import { decideKeyAction, pickSubIdx, type KeyContext, type KeyAction } from "./keyNavigation";
 import { navigateResults, getNextTab, hasQuery } from "./searchLogic";
 import type { ActionBarItem, Context } from "./types";
 import type { TabId, View, SearchResult } from "./searchTypes";
@@ -136,12 +136,7 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
               if (it && it.actionType === "submenu") {
                 p.submenuParentIdRef.current = it.id;
                 const subs = p.menuItemsRef.current.filter((i) => i.isEnabled && i.parentId === it.id);
-                if (subs.length > 0 && subs[0].actionType === "url") {
-                  const engineIdx = subs.findIndex((s) => s.title.toLowerCase() === p.searchEngineRef.current);
-                  p.setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-                } else {
-                  p.setSubSelectedIdx(0);
-                }
+                p.setSubSelectedIdx(pickSubIdx(subs, p.searchEngineRef.current));
                 p.setView("submenu");
               } else {
                 p.submenuParentIdRef.current = null;
@@ -163,14 +158,9 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
               p.setFocusLayer("sub");
               if (p.viewRef.current !== "submenu") {
                 p.submenuParentIdRef.current = cur.id;
-                p.setView("submenu");
                 const subs = p.menuItemsRef.current.filter((i) => i.isEnabled && i.parentId === cur.id);
-                if (subs.length > 0 && subs[0].actionType === "url") {
-                  const engineIdx = subs.findIndex((s) => s.title.toLowerCase() === p.searchEngineRef.current);
-                  p.setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-                } else {
-                  p.setSubSelectedIdx(0);
-                }
+                p.setSubSelectedIdx(pickSubIdx(subs, p.searchEngineRef.current));
+                p.setView("submenu");
               }
             }
             // 当前项非 submenu → preventDefault 了但不切层（§PRESERVE）
@@ -213,6 +203,13 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
             }
           }
           return;
+
+        default: {
+          // 穷尽性保护：若新增 KeyAction 成员且未在 switch 前拦截、又忘加 case，
+          // action 此处类型非 never → tsc 报错，避免按键静默 no-op。
+          const _exhaustive: never = action;
+          return _exhaustive;
+        }
       }
     };
     window.addEventListener("keydown", handler);
