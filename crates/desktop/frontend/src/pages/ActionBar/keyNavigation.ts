@@ -45,8 +45,8 @@ export interface KeyContext {
  *   - passthrough / ignore / ime-composing / ime-confirm-enter → 不 preventDefault（放行）
  *   - 其余所有 action → preventDefault */
 export type KeyAction =
-  | { type: "ime-composing" }
-  | { type: "ime-confirm-enter" }
+  | { type: "ime-composing" }  // hook: lastImeKeyTime = Date.now()
+  | { type: "ime-confirm-enter" }  // hook: lastImeKeyTime = 0
   | { type: "passthrough" }
   | { type: "ignore" }
   | { type: "swallow" }            // preventDefault 但不执行其他副作用（Alt 快捷键未命中/越界，保持原 handler 的无条件 preventDefault）
