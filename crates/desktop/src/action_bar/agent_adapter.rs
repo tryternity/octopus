@@ -93,13 +93,75 @@ pub fn resolve_effective_adapter(menu_agent_key: &str) -> Result<(AgentAdapter, 
     ))
 }
 
-/// which <binary> —— 检测 PATH 中是否存在二进制。
+/// 检测二进制是否可找到——三层 fallback（仿 tolaria cli_agent_runtime）。
+///
+/// 打包版 .app 从 Finder 启动时 PATH 只有 /usr/bin:/bin，`which` 找不到
+/// homebrew/fnm/nvm 装的工具。三层策略：
+/// 1. 直接 `which`（进程 PATH 能找到就用，cargo run 不受影响）
+/// 2. 用户 login shell 的 `command -v`（`$SHELL -lc`，加载 ~/.zshrc / ~/.bash_profile，
+///    含 homebrew/fnm/nvm PATH 设置）——macOS GUI app 的关键修复
+/// 3. 硬编码候选路径探测（homebrew / .local/bin / cargo / fnm glob / nvm glob）
 fn which(binary: &str) -> bool {
-    std::process::Command::new("which")
+    // 层 1：进程 PATH
+    if std::process::Command::new("which")
         .arg(binary)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // 层 2：用户 login shell（不硬编码 zsh——用 $SHELL 拿用户实际 shell）
+    if let Some(shell) = std::env::var_os("SHELL").filter(|s| !s.is_empty()) {
+        let found = std::process::Command::new(&shell)
+            .arg("-lc")
+            .arg(format!("command -v {}", binary))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if found {
+            return true;
+        }
+    }
+
+    // 层 3：硬编码候选路径（shell 失败/未装时的兜底）
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/Shared".into());
+    let candidates = [
+        format!("/opt/homebrew/bin/{}", binary),
+        format!("/usr/local/bin/{}", binary),
+        format!("{}/.local/bin/{}", home, binary),
+        format!("{}/.cargo/bin/{}", home, binary),
+        format!("{}/.bun/bin/{}", home, binary),
+    ];
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            return true;
+        }
+    }
+
+    // 层 3b：fnm / nvm 动态版本号路径（glob 最新版本）
+    for (base, suffix) in [
+        (format!("{}/.local/share/fnm/node-versions", home), "installation/bin"),
+        (format!("{}/.nvm/versions/node", home), "bin"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            if let Some(latest) = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .max_by_key(|e| e.file_name())
+            {
+                let bin_path = latest.path().join(suffix).join(binary);
+                if bin_path.exists() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// 按模板渲染命令字符串。

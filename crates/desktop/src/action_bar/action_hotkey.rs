@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// 本模块已注册的快捷键字符串集合（菜单项 Quick Execute 快捷键）。
@@ -172,16 +172,18 @@ fn handle_text_selection(item_id: i64, app: &AppHandle, text: String) {
     // 执行动作——非 silent 模式（is_silent=false），走正常 CompactEditor 展示
     log::info!("[action-hotkey] 执行 item_id={}, text len={}", item_id, text.len());
     let app_clone = app.clone();
-    let result = std::thread::spawn(move || -> Result<bool, String> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
-        rt.block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone))
-    }).join();
+    // 用 tauri::async_runtime::block_on 复用全局 runtime——不可 Runtime::new()（嵌套 panic，
+    // translate.rs:74 / cloud_pipeline.rs:122 同模式）。
+    let result = tauri::async_runtime::block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(item_id, text, &app_clone));
 
     match result {
-        Ok(Ok(true)) => log::info!("[action-hotkey] 执行完成（结果已在 CompactEditor 展示）"),
-        Ok(Ok(false)) => log::info!("[action-hotkey] 执行完成（无需展示）"),
-        Ok(Err(e)) => log::warn!("[action-hotkey] 执行失败: {}", e),
-        Err(e) => log::warn!("[action-hotkey] 执行线程异常: {:?}", e),
+        Ok(true) => log::info!("[action-hotkey] 执行完成（结果已在 CompactEditor 展示）"),
+        Ok(false) => log::info!("[action-hotkey] 执行完成（无需展示）"),
+        Err(e) => {
+            log::warn!("[action-hotkey] 执行失败: {}", e);
+            // emit 错误让用户看到反馈（对齐 ActionBar UI 点击的 toast 体验）
+            let _ = app.emit("agent-task://error", &e);
+        }
     }
 }
 
@@ -251,21 +253,22 @@ fn handle_files_selection(item_id: i64, app: &AppHandle, files: Vec<String>) {
             files.len(),
         );
         let app_clone = app.clone();
-        let result = std::thread::spawn(move || -> Result<bool, String> {
-            let rt = tokio::runtime::Runtime::new().map_err(|e| format!("Runtime 创建失败: {}", e))?;
-            // text 传空：File 场景不需要文本，execute_action_bar_inner 会从 PENDING_CONTEXT 读 files
-            rt.block_on(crate::action_bar::action_bar_commands::execute_action_bar_inner(
+        // 用 tauri::async_runtime::block_on 复用全局 runtime（同上，不可 Runtime::new()）
+        let result = tauri::async_runtime::block_on(
+            crate::action_bar::action_bar_commands::execute_action_bar_inner(
                 item_id,
                 String::new(),
                 &app_clone,
-            ))
-        }).join();
+            ),
+        );
 
         match result {
-            Ok(Ok(true)) => log::info!("[action-hotkey] File 执行完成（结果已在 CompactEditor 展示）"),
-            Ok(Ok(false)) => log::info!("[action-hotkey] File 执行完成（无需展示）"),
-            Ok(Err(e)) => log::warn!("[action-hotkey] File 执行失败: {}", e),
-            Err(e) => log::warn!("[action-hotkey] File 执行线程异常: {:?}", e),
+            Ok(true) => log::info!("[action-hotkey] File 执行完成（结果已在 CompactEditor 展示）"),
+            Ok(false) => log::info!("[action-hotkey] File 执行完成（无需展示）"),
+            Err(e) => {
+                log::warn!("[action-hotkey] File 执行失败: {}", e);
+                let _ = app.emit("agent-task://error", &e);
+            }
         }
     }
 }
