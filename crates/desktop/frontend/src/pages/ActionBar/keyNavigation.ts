@@ -9,6 +9,8 @@
 
 import type { ActionBarItem } from "./types";
 import type { TabId, View } from "./searchTypes";
+import { moveDirection } from "./searchLogic";
+import { codeToChar } from "./label";
 
 // ═══════════════════ 类型 ═══════════════════
 
@@ -79,4 +81,118 @@ export function pickSubIdx(
     return idx >= 0 ? idx : 0;
   }
   return 0;
+}
+
+// ═══════════════════ 核心：键盘动作判定 ═══════════════════
+
+/**
+ * 核心：给定键盘事件 + ctx 快照，决定要执行的动作。
+ *
+ * 判断顺序严格复刻 index.tsx 重构前 keydown handler（652-860 行）——
+ * 顺序不可调换，前置条件改变会导致后续分支行为偏移。
+ *
+ * 常量（与 index.tsx 一致）：ARROW_AS_TAB = true。
+ */
+const ARROW_AS_TAB = true;
+
+export function decideKeyAction(
+  e: KeyboardEvent,
+  ctx: KeyContext,
+): KeyAction {
+  // 1. IME 组合中（keyCode 229 / isComposing）→ 放行
+  if (e.keyCode === 229 || e.isComposing) {
+    return { type: "ime-composing" };
+  }
+  // 2. Enter 在 IME 后 500ms 内 → 选词确认，放行
+  if (e.key === "Enter" && Date.now() - ctx.lastImeKeyTime < 500) {
+    return { type: "ime-confirm-enter" };
+  }
+  // 3-4. Escape（任何视图）
+  if (e.key === "Escape") {
+    return ctx.mode === "search"
+      ? { type: "escape-clear-query" }
+      : { type: "escape-dismiss" };
+  }
+  // 5. loading 视图不拦截
+  if (ctx.view === "loading") {
+    return { type: "ignore" };
+  }
+  // 6. 无修饰可打印字符 → 放行（IME 已在顶部拦截）
+  if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+    const navKeys = ARROW_AS_TAB
+      ? ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Enter", " "]
+      : ["ArrowUp", "ArrowDown", "Tab", "Enter", " "];
+    if (!navKeys.includes(e.key)) {
+      return { type: "passthrough" };
+    }
+  }
+
+  // 7-11. 搜索模式（query 非空）
+  if (ctx.mode === "search") {
+    const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
+    if (dir !== null) return { type: "search-tab", dir: dir ? 1 : -1 };
+    if (e.key === "ArrowDown") return { type: "search-nav", dir: 1 };
+    if (e.key === "ArrowUp") return { type: "search-nav", dir: -1 };
+    if (e.key === "Enter") return { type: "search-enter" };
+    return { type: "passthrough" }; // 兜底
+  }
+
+  // 12-16. 菜单模式 - Alt 快捷键
+  if (e.altKey) {
+    const ch = codeToChar(e.code);
+    if (ch) {
+      // Alt+字母 → 执行局部快捷键
+      if (/^[a-z]$/.test(ch)) {
+        const found = ctx.menuItems.find((i) => i.isEnabled && i.shortcut === ch);
+        if (found) return { type: "alt-execute", item: found };
+        return { type: "passthrough" }; // 未命中，放行（复刻行 744-746：find 无果 fallthrough 到 return）
+      }
+      // Alt+数字 → 定位菜单项
+      if (/^[1-9]$/.test(ch)) {
+        const idx = parseInt(ch, 10) - 1;
+        if (ctx.focusLayer === "sub") {
+          return { type: "alt-goto-sub", idx };
+        }
+        // 焦点 main
+        if (idx < ctx.mainItems.length) {
+          const m = ctx.mainItems[idx];
+          if (m.actionType === "submenu") {
+            const subs = ctx.menuItems.filter((i) => i.isEnabled && i.parentId === m.id);
+            const subIdx = pickSubIdx(subs, ctx.searchEngine);
+            return { type: "alt-goto-main", idx, expandSubmenu: true, parentId: m.id, subIdx };
+          }
+          return { type: "alt-goto-main", idx, expandSubmenu: false };
+        }
+        // idx 越界 → 原代码进 if 但啥也不做，仍 preventDefault（return 在 if 外）
+        return { type: "ignore" }; // 复刻行 770-772：越界时 setSelectedIdx 不调，但仍 preventDefault
+      }
+    }
+    // Alt 但 codeToChar 无效 → 放行（§PRESERVE 行 778）
+    return { type: "passthrough" };
+  }
+
+  // 17-19. 菜单模式 - Tab/←→ 移动
+  const menuDir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
+  if (menuDir !== null) {
+    if (ctx.focusLayer === "sub") {
+      return { type: "menu-move", forward: menuDir };
+    }
+    // 焦点 main：实际移位由 hook 计算（forward + prev），展开判断也在
+    // hook 的 setSelectedIdx(prev => ...) 回调里复刻原 795-815（方案 A）。
+    // 纯函数拿不到 prev，无法在此算 next，故统一返回 menu-move。
+    return { type: "menu-move", forward: menuDir };
+  }
+
+  // 20-22. 菜单模式 - ↑↓ 切层
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    return { type: "menu-toggle-layer" };
+  }
+
+  // 23. Enter/Space → 执行
+  if (e.key === "Enter" || e.key === " ") {
+    return { type: "menu-enter" };
+  }
+
+  // 24. 其他
+  return { type: "passthrough" };
 }
