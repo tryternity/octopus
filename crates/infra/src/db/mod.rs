@@ -182,7 +182,7 @@ pub fn clear_test_db() {
 }
 
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
-const INIT_SQL: &str = include_str!("db.sql");
+const INIT_SQL: &str = include_str!("../db.sql");
 
 /// DB 文件路径：~/.octopus/octopus.db
 ///
@@ -5734,7 +5734,7 @@ mod vault_schema_tests {
     /// 在内存 DB 上执行 db.sql，得到含全部 schema（含 vault v38 表）的连接。
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("db.sql")).unwrap();
+        conn.execute_batch(include_str!("../db.sql")).unwrap();
         conn.execute("PRAGMA user_version = 43", []).unwrap();
         conn
     }
