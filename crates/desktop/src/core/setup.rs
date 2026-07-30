@@ -38,6 +38,14 @@ impl<'a> AppSetup<'a> {
     }
 
     fn setup_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // macOS GUI app（.app 从 Finder 启动）的 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，
+        // 不含 homebrew（/opt/homebrew/bin）、nvm（~/.nvm/...）、cargo（~/.cargo/bin）等。
+        // 导致 which claude / which pi / which ffmpeg 等全部失败（agent adapter 检测不到、
+        // ffmpeg/ffprobe 找不到）。cargo run 不受影响（继承终端 shell PATH）。
+        // 修正：从 login shell 拿用户真实 PATH 注入进程环境。
+        #[cfg(target_os = "macos")]
+        fix_path_for_gui_app();
+
         self.init_clipboard()?;
         self.init_cleanup();
         self.init_scheduler();
@@ -776,4 +784,41 @@ fn count_apps_in_dir(dir: &std::path::Path, depth: u32) -> usize {
         }
     }
     count
+}
+
+/// macOS GUI app PATH 修正。
+///
+/// 从 Finder 启动的 .app 不继承 login shell 的 PATH（只有 /usr/bin:/bin:/usr/sbin:/sbin），
+/// 导致 `which claude` / `which pi` / `which ffmpeg` 等找不到 homebrew/nvm/cargo 装的工具。
+/// `cargo run` 不受影响（继承终端 shell 的完整 PATH）。
+///
+/// 修正：用 `zsh -l -c 'echo $PATH'` 拿到 login shell 的 PATH，注入进程环境。
+/// `-l` = login shell（加载 ~/.zprofile + ~/.zshrc，含 homebrew/nvm PATH 设置）。
+/// 仅 macOS 需要（Linux GUI app 通常通过 /etc/profile 或 desktop session 继承 PATH）。
+#[cfg(target_os = "macos")]
+fn fix_path_for_gui_app() {
+    let shell_path = std::process::Command::new("zsh")
+        .args(["-l", "-c", "echo $PATH"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| s.trim().to_string());
+
+    if let Some(new_path) = shell_path {
+        if !new_path.is_empty() {
+            let current = std::env::var("PATH").unwrap_or_default();
+            // 合并：login shell PATH 优先（含 homebrew/nvm），追加 GUI 默认 PATH 兜底
+            let merged = format!("{}:{}", new_path, current);
+            std::env::set_var("PATH", &merged);
+            log::info!("[startup] PATH 修正（GUI app 继承 login shell PATH）: {}", new_path);
+        }
+    } else {
+        log::warn!("[startup] 无法从 login shell 获取 PATH，GUI app 可能找不到 homebrew/nvm 工具");
+    }
 }
