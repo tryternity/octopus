@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Mic, Accessibility, Monitor, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { Mic, Accessibility, Monitor, Bot, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,7 @@ export type PermissionStatus = "granted" | "denied" | "notDetermined";
 
 /** 权限类型 → 对应的 check/request 命令名 + i18n key + 图标 + PrivacySection。 */
 export interface PermissionDef {
-  key: "microphone" | "accessibility" | "screen";
+  key: "microphone" | "accessibility" | "screen" | "automation";
   icon: React.ComponentType<{ className?: string }>;
   checkCmd: string;
   requestCmd: string;
@@ -28,7 +28,7 @@ export interface PermissionDef {
   privacySection: string;
 }
 
-/** 3 个 macOS 权限定义（Onboarding + Settings tab 共用）。 */
+/** 4 个 macOS 权限定义（Onboarding + Settings tab 共用）。 */
 export const PERMISSIONS: PermissionDef[] = [
   {
     key: "microphone",
@@ -50,6 +50,13 @@ export const PERMISSIONS: PermissionDef[] = [
     checkCmd: "check_record_permission",
     requestCmd: "request_screen_record_permission",
     privacySection: "screenCapture",
+  },
+  {
+    key: "automation",
+    icon: Bot,
+    checkCmd: "check_automation_permission",
+    requestCmd: "request_automation_permission",
+    privacySection: "automation",
   },
 ];
 

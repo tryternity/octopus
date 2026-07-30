@@ -414,7 +414,7 @@ impl<'a> AppSetup<'a> {
             }
         }
 
-        // vault Auto-Type 热键（默认 Cmd+Shift+L）—— Task 19
+        // vault Auto-Type 热键（默认 CmdOrCtrl+Shift+S）—— Task 19
         // follow-up #10: vault feature gate——feature off 时整段跳过（命令模块不存在）。
         #[cfg(feature = "vault")]
         {
@@ -426,9 +426,6 @@ impl<'a> AppSetup<'a> {
                     log::warn!("注册 vault autotype 热键失败: {}", e);
                 }
             }
-
-            // 密码生成器不再注册全局热键——已改为 CipherEditor 内嵌按钮。
-            // AppConfig.vault_generator_shortcut 字段保留仅为兼容旧 DB，不再消费。
         }
     }
 
