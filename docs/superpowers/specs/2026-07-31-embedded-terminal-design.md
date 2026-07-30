@@ -14,9 +14,10 @@ octopus 作为 AI 办公第一入口，需要一个内嵌终端——让 agent C
 - ✅ PTY 后端（portable-pty）：spawn/read/write/resize/kill
 - ✅ 独立终端窗口（多 tab，每 tab 一个 PTY session）
 - ✅ xterm.js 前端渲染
+- ✅ tab 改名（双击内联编辑）+ 布局切换（顶部 tabs ↔ 左侧 sidebar）——详见 [tab 改名/布局 spec](2026-07-31-terminal-tab-rename-layout.md)
 - ✅ OSC 133 shell prompt marker（通用，检测命令开始/结束）
-- ✅ OSC 777 agent hook（Claude/Codex/Pi，检测 working/attention/finished）
-- ✅ ActionBar agent 替换：选 agent 后打开内嵌终端（不再开 Terminal.app）
+- ✅ OSC 777 agent hook（Claude/Codex/Gemini/Pi，检测 working/attention/finished）
+- ✅ ActionBar agent 替换：选 agent 后打开内嵌终端（Terminal.app 保留 fallback）
 - ❌ 手机遥控 WebSocket（Phase 2）
 - ❌ shell 一次性/session/bg 三模式（Terax 的 shell 模块，暂不做）
 - ❌ renderer pool（xterm.js 实例复用，暂不做——单 session 单实例）
@@ -27,12 +28,19 @@ octopus 作为 AI 办公第一入口，需要一个内嵌终端——让 agent C
 
 ```
 crates/pty/
-├── Cargo.toml          # portable-pty 0.9, tokio, log
+├── Cargo.toml          # portable-pty 0.9, serde, dirs, libc, log, anyhow, parking_lot
 └── src/
-    ├── lib.rs          # 模块导出 + PtyState（session 注册表）
-    ├── session.rs      # PtySession + spawn（3 线程）+ read/write/resize/kill
-    └── agent_detect.rs # AgentDetector OSC 状态机 + Transition/AgentSignal
+    ├── lib.rs          # 模块导出 + PtyState（session 注册表）+ spawn re-export
+    ├── session.rs      # PtySession struct + spawn() free fn（3 线程）+ write/resize/kill
+    ├── agent_detect.rs # AgentDetector OSC 状态机 + Transition enum + AgentSignal
+    ├── shell_init.rs   # build_command（ZDOTDIR / --rcfile 脚本注入）
+    └── scripts/        # shell 集成脚本（include_str!）
+        ├── zshenv.zsh
+        ├── zshrc.zsh
+        └── bashrc.bash
 ```
+
+> **实施偏差**：plan 原写 `spawn` 是 `PtySession::spawn()` method。实际是 free fn `spawn(id, cols, rows, cwd, shell, on_data, on_exit, on_signal) -> Result<(Arc<PtySession>, PtySize), String>`，闭包解耦 tauri（pty crate 保持纯净，无 tauri 依赖）。on_data/on_exit/on_signal 是 `Fn + Send + Sync + 'static`。
 
 **`PtyState`**（参考 Terax `PtyState`）：
 ```rust
@@ -70,51 +78,53 @@ const MAX_PENDING: usize = 4 * 1024 * 1024;
 
 ### Agent 状态感知（OSC 解析，参考 Terax agent_detect.rs）
 
-**`AgentDetector` 状态机**：`Ground / Esc / Osc / OscEsc`
+**`AgentDetector` 状态机**：`Ground / Esc / Osc / OscEsc`（OSC_MAX=2048 溢出防护）
 
-解析三种 OSC 序列：
+解析 OSC 序列（PS=第一段，PT=剩余）：
 
 **OSC 133**（shell prompt marker，由 zshrc/bashrc preexec hook 发出）：
-- `133;C;<cmd>` → 匹配 `claude/codex/gemini/pi/opencode` → emit `Started { agent }`
-- `133;D` → emit `Exited`
+- `133;C;<cmd>` → 匹配 `claude/codex/gemini/pi/opencode/grok`（支持路径前缀/npx 包装/连字符后缀）→ emit `Started { agent }`
+- `133;D` → emit `Exited`（仅 armed 时）
 
 **OSC 777**（agent hook 主动通知，由 agent 配置文件的 hook 发出）：
-- `777;notify;octopus;working` → emit `Working`
-- `777;notify;octopus;attention` → emit `Attention`
-- `777;notify;octopus;finished` → emit `Finished`
+- 3-field `777;notify;octopus;<event>` → Claude（默认 agent=claude auto-arm）
+- 4-field `777;notify;octopus;<agent>;<event>` → Codex/Gemini/Pi（带 agent 名）
+- event ∈ `working`/`attention`/`finished` → 对应 Transition
+- **auto-arm**：bash 无 preexec，OSC 777 来了才 `ensure_armed`（自我 arm）
 
-**`AgentSignal`**：
+**OSC 9**（generic desktop notify，非 `9;4` taskbar 进度）→ armed 时 emit `Attention`
+
+**`Transition` enum**（类型安全，替代裸 String）+ **`AgentSignal`**（emit 到前端）：
 ```rust
+pub enum Transition { Started{agent}, Working, Attention, Finished, Exited }
+
+#[derive(serde::Serialize)]
 pub struct AgentSignal {
-    pub id: u32,       // PTY session id
-    pub kind: String,  // "started" | "working" | "attention" | "finished" | "exited"
-    pub agent: Option<String>,  // agent 名称（仅 started 携带）
+    pub id: u32,                  // PTY session id
+    pub kind: &'static str,       // "started"|"working"|"attention"|"finished"|"exited"
+    pub agent: Option<String>,    // agent 名称（仅 started 携带）
 }
 ```
+
+`finish()`：PTY 关闭时若 armed 发 Exited（shell 中途死，没发 133;D 的情况），避免 UI stale。
+`status` 字段防 Working 重复 emit。
 
 ### Agent Hook 安装（参考 Terax agent.rs）
 
 为每个 agent 写配置文件，注入 OSC 777 hook。注入 `$OCTOPUS_TERMINAL=1` 环境变量，让 hook 只在 octopus PTY 中发 OSC。
 
-**Claude Code** → `~/.claude/settings.json`：
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "[ -n \"$OCTOPUS_TERMINAL\" ] && printf '\u001b]777;notify;octopus;working\u0007' || true"}]}],
-    "Notification": [{"hooks": [{"type": "command", "command": "[ -n \"$OCTOPUS_TERMINAL\" ] && printf '\u001b]777;notify;octopus;attention\u0007' || true"}]}],
-    "Stop": [{"hooks": [{"type": "command", "command": "[ -n \"$OCTOPUS_TERMINAL\" ] && printf '\u001b]777;notify;octopus;finished\u0007' || true"}]}]
-  }
-}
-```
+四种 agent（Delivery 区分命令发射方式）：
 
-**Codex CLI** → `~/.codex/hooks.json`：同模式，用 `/dev/tty` 输出。
+| Agent | 配置文件 | Delivery | 事件映射 |
+|---|---|---|---|
+| Claude | `~/.claude/settings.json` | TerminalSequence（`terminalSequence` JSON 字段，v2.1.139+ 丢了 /dev/tty） | UserPromptSubmit→working / Notification→attention / Stop→finished |
+| Codex | `~/.codex/hooks.json` | Osc（`> /dev/tty` + stdout `{}` no-op） | UserPromptSubmit→working / PermissionRequest→attention / Stop→finished |
+| Gemini | `~/.gemini/settings.json` | Osc（`> /dev/tty`） + `matcher:"*"` | BeforeAgent→working / Notification→attention / AfterAgent→finished |
+| Pi | `~/.pi/agent/extensions/octopus-notifications.ts` | TS 扩展（`process.stdout.write` OSC 777） | agent_start→working / agent_settled→finished |
 
-**Pi** → `~/.pi/agent/extensions/octopus-notifications.ts`：TS 扩展。
-
-Hook 命令安装函数 `agent_enable_hooks(agent: String)`：
-- 原子写入（tmp + rename）
-- 幂等（用 `OWNED_MARKERS` 识别并 prune 旧条目再重插）
-- 不覆盖用户已有 hook（merge 注入）
+Hook 命令：
+- `agent_enable_hooks(agent: String)` → 原子写入（tmp + rename）+ 幂等（`OWNED_MARKERS` prune 旧条目）+ 不覆盖用户已有 hook（merge 注入）
+- `agent_hooks_status(agent: String) -> bool` → 查所有 event 的 status_needle 是否都在配置里（前端开关用）
 
 ### Shell 集成脚本
 
@@ -137,78 +147,83 @@ add-zsh-hook zshaddhistory printf '\e]133;D\e\\'
 
 ```
 crates/desktop/src/
-├── terminal_window.rs       # 终端窗口创建/管理（参考 compact_editor_window）
-├── terminal_commands.rs     # Tauri 命令
-└── agent_hooks.rs           # Agent hook 安装
+├── ui/terminal_window.rs         # 终端窗口创建/管理（ui 域，与 settings_window 同级）
+└── commands/
+    ├── terminal_commands.rs      # pty_open/write/resize/close
+    └── agent_hooks.rs            # agent_enable_hooks + agent_hooks_status
 ```
+
+> **实施偏差**：plan 原写 `terminal_window.rs` + `terminal_commands.rs` + `agent_hooks.rs` 在 src 根 + 注册到 core/mod.rs。实际：window 放 `ui/` 域（与 settings_window/compact_editor_window 同级），commands 放 `commands/` 域（与 settings_commands 等同级）。
 
 **Tauri 命令**：
 ```rust
 #[tauri::command]
-async fn pty_open(
-    app: AppHandle,
-    state: State<PtyState>,
-    cols: u16, rows: u16,
-    cwd: Option<String>,
-    shell: Option<String>,
-    on_data: Channel<Vec<u8>>,
-    on_exit: Channel<i32>,
-) -> Result<u32, String>
+async fn pty_open(app, state, cols, rows, cwd, shell, on_data: Channel<Response>, on_exit: Channel<i32>) -> Result<u32, String>
+
+// raw body + x-pty-id header（绕过 JSON，按键延迟敏感路径）
+fn pty_write(state, request: tauri::ipc::Request) -> Result<(), String>
 
 #[tauri::command]
-async fn pty_write(state: State<PtyState>, id: u32, data: Vec<u8>) -> Result<(), String>
+fn pty_resize(state, id, cols, rows) -> Result<(), String>
 
 #[tauri::command]
-async fn pty_resize(state: State<PtyState>, id: u32, cols: u16, rows: u16) -> Result<(), String>
+fn pty_close(state, id) -> Result<(), String>
 
 #[tauri::command]
-async fn pty_close(state: State<PtyState>, id: u32) -> Result<(), String>
+fn agent_enable_hooks(agent: String) -> Result<(), String>
 
 #[tauri::command]
-async fn agent_enable_hooks(agent: String) -> Result<(), String>
+fn agent_hooks_status(agent: String) -> bool
 ```
 
-`pty_write` 使用 raw body（绕过 JSON）——参考 Terax 的 `x-pty-id` header 方案。
+`pty_write` 用 `InvokeBody::Raw` + `x-pty-id` header（对齐 Terax），前端 `invoke("pty_write", textEncoder.encode(data), { headers: { "x-pty-id": String(id) } })`。
+`pty_open` 额外：shell 提前退出时 re-check + reap（防 PTY 孤儿）。
 
 ### 终端窗口（前端）
 
 ```
 crates/desktop/frontend/
-├── entries/terminal-main.tsx    # vite entry
+├── entries/terminal-main.tsx    # vite entry（mountApp(<Terminal/>)）
 ├── terminal.html                # HTML（主题恢复 + bg 注入，同 compact-editor.html）
 └── pages/Terminal/
-    ├── index.tsx                # 主组件：多 tab + xterm.js + agent 状态
-    ├── pty-bridge.ts            # Tauri ↔ PTY 桥（Channel + invoke pty_write）
-    └── AgentStatusBadge.tsx     # agent 状态徽章（working/attention/idle）
+    ├── index.tsx                # 主组件：多 tab + 布局切换 + TabButton/SidebarItem + AgentBadge
+    ├── TerminalPane.tsx         # 单面板：useTerminalSession + 上报 ptyId + 消费 pendingCommand
+    ├── useTerminalSession.ts    # hook：new Terminal + FitAddon + PTY 接线 + ResizeObserver + dispose
+    ├── pty-bridge.ts            # openPty → PtySession（write raw body / resize / close）
+    └── agent-activity.ts        # 模块级 state + subscribe（替代 zustand）+ finished TTL
 ```
 
+**简化策略**（相对 Terax）：无 rendererPool 池化、无 dormantRing、无 zustand、无分屏——每 tab 一个 xterm 实例直接管理。tab 切换用 `visibility:hidden` 保活（不卸载 xterm）。
+
 **`index.tsx` 核心逻辑**：
-- 多 tab：`tabs: TerminalTab[]`，每 tab 持有 `ptyId` + `xterm Terminal` + `agentPhase`
-- 新 tab：创建 xterm.js Terminal → invoke `pty_open`（传 cols/rows）→ `onData` → `term.write(bytes)`
-- 输入：`term.onData(str)` → `invoke("pty_write", { id, data: new TextEncoder().encode(str) })`
-- resize：`term.onResize({ cols, rows })` → `invoke("pty_resize", { id, cols, rows })`
-- agent 信号：`listen("agent://signal", (e) => { 更新对应 tab 的 agentPhase })`
-- 状态徽章：`agentPhase` 映射颜色——`working`=amber pulse / `attention`=red bell / `idle`=灰色
+- 多 tab：`tabs: Tab[]`，每 tab 持有 `ptyId | null` + `pendingCommand?` + `customName?`
+- 新 tab：`makeTab()` → TerminalPane mount → `useTerminalSession` → openPty → onData 喂 term.write
+- 输入：`term.onData(str)` → `pty.write(str)`（raw body + header）
+- resize：`term.onResize` → `pty.resize`；`ResizeObserver` 容器变化 → `fitAddon.fit`
+- agent 信号：`listen("agent://signal")` → `agent-activity.ts` store → `subscribeAgentActivity` 触发重渲染
+- 状态徽章：`AgentBadge` 按 phase 渲染——`working`=amber pulse / `attention`=red bell / `finished`=green / `idle`=隐藏
+- ActionBar 联动：`listen("terminal://new-tab" {cwd, command})` → addTab + pendingCommand → TerminalPane 写命令 + 回车
+- tab 改名 + 布局切换：详见 [tab 改名/布局 spec](2026-07-31-terminal-tab-rename-layout.md)
 
 ### ActionBar 整合
 
-`execute_action_bar_inner` 的 agent 分支：
+`execute_action_bar_inner` 的 agent 分支：优先内嵌终端，失败 fallback Terminal.app。
 
 ```rust
-// 当前（fire-and-forget Terminal.app）
-let launcher = TerminalAppLauncher;
-launcher.spawn(&command, &cwd_buf)?;
-
-// 改为（内嵌终端窗口）
-crate::terminal_window::open_terminal_with_command(app, &cwd, &command)?;
+match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &command) {
+    Ok(_) => log::info!("[action-bar] agent 已启动到内嵌终端"),
+    Err(e) => {
+        log::warn!("[action-bar] 内嵌终端失败，fallback 到 Terminal.app: {}", e);
+        // 旧路径保留做兜底（osascript spawn_blocking）
+    }
+}
 ```
 
-`open_terminal_with_command`：
-1. 打开终端窗口（或聚焦已有）
-2. 在新 tab 中 spawn PTY session（cwd + command）
-3. 如果是已识别的 agent（claude/codex/pi），自动安装 hook
+`open_terminal_with_command(app, cwd, command)`：
+1. `open_terminal_window`（新建或聚焦）——单例，已存在则 show+focus
+2. emit `"terminal://new-tab" { cwd, command }` → 前端新 tab + 写命令
 
-Terminal.app 路径保留为 fallback（终端窗口创建失败时）。
+内嵌终端可在 async worker 线程安全调用（内部 `run_on_main_thread` 调度 AppKit），无需 spawn_blocking（与原 Terminal.app osascript 路径不同）。
 
 ### capabilities
 
@@ -235,8 +250,8 @@ cd crates/desktop/frontend && npm run build  # 前端编译
 
 ## 风险
 
-1. **portable-pty macOS 兼容性**：Terax 已验证 Tauri 2 + macOS 全链路可行，风险低
-2. **OSC 777 hook 写入用户配置文件**：需幂等 + prune 旧条目 + 不覆盖用户已有 hook——参考 Terax `write_if_changed` + `OWNED_MARKERS`
+1. **portable-pty macOS 兼容性**：Terax 已验证 Tauri 2 + macOS 全链路可行，风险低 ✅
+2. **OSC 777 hook 写入用户配置文件**：幂等 + prune 旧条目 + 不覆盖用户已有 hook——`write_atomic` + `OWNED_MARKERS` + merge 注入，12 测试覆盖 ✅
 3. **xterm.js 在 Tauri webview 中的性能**：Terax 用 WebGL renderer；Phase 1 先用默认 Canvas renderer，性能不足再切 WebGL
-4. **pty_write raw body**：Tauri 2 的 `ipc::Request` raw body 方案需验证——如果 Tauri 2 不支持 header + raw body，退化为 base64（性能略降但可接受）
-5. **shell init 脚本注入**：zsh 临时 ZDOTDIR 方案可能与用户已有 .zshrc 冲突——需测试 + fallback 到 $HOME/.zshrc source
+4. ~~**pty_write raw body**：Tauri 2 的 `ipc::Request` raw body 方案需验证~~ ✅ 已验证——Tauri 2 `InvokeArgs` 接受 `Uint8Array`，`invoke("pty_write", textEncoder.encode(data), { headers: { "x-pty-id": String(id) } })` 可行
+5. **shell init 脚本注入**：zsh ZDOTDIR 方案保留用户配置（`OCTOPUS_USER_ZDOTDIR`），starship/p10k 照常工作 ✅
