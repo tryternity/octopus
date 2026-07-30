@@ -329,6 +329,10 @@ macro_rules! handler {
             #[cfg(target_os = "macos")]
             crate::record::record_commands::request_accessibility_permission,
             #[cfg(target_os = "macos")]
+            crate::record::record_commands::check_automation_permission,
+            #[cfg(target_os = "macos")]
+            crate::record::record_commands::request_automation_permission,
+            #[cfg(target_os = "macos")]
             crate::record::record_commands::record_start,
             #[cfg(target_os = "macos")]
             crate::record::record_commands::record_start_default,

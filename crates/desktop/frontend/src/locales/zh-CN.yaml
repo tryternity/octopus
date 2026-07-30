@@ -1120,6 +1120,11 @@ onboarding:
       description: 录屏 / 截图需要
       usage: 用于屏幕截图（全屏 / 区域 / 滚动 / 窗口）和屏幕录制（含标注 overlay）。授权后截图返回实际画面，未授权时返回黑屏。
       operation: 点击「申请权限」会弹出系统对话框，选择「允许」即可。授权后截图和录屏返回实际画面而非黑屏。
+    automation:
+      title: 自动化
+      description: 密码箱自动填充 / 焦点恢复 / 选区捕获需要
+      usage: 用于通过 AppleScript 控制系统事件（模拟键盘输入、读取前台 app）、Finder（文件选区）、浏览器（URL 检测）。密码箱 Auto-Type、ActionBar 选中文本捕获、焦点恢复等功能依赖此权限。未授权时这些功能静默失败。
+      operation: 点击「申请权限」会执行一次系统事件探测，首次会弹出系统对话框，选择「允许」即可。授权后密码箱自动填充、选区捕获等功能正常工作。
     operationGranted: 权限已授予，相关功能可正常使用。
     operationDenied: 权限被拒绝，点击「打开系统设置」后在列表中重新勾选 octopus。
     upgradeNote: ⚠️ 本应用无 Apple 证书签名。升级到新版本后，如权限失效（列表项变灰无法勾选），需先点 − 删除旧条目，再点 + 重新添加新版本 octopus.app。
