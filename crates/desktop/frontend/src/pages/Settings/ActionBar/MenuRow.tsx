@@ -38,7 +38,7 @@ export default function MenuRow(props: MenuRowProps) {
       className={cn(
         "group relative grid items-center gap-x-2 gap-y-0.5 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
         showShortcuts
-          ? "[grid-template-columns:auto_auto_minmax(60px,1fr)_auto_auto]"
+          ? "[grid-template-columns:auto_auto_minmax(40px,1fr)_5rem_auto_auto]"
           : "[grid-template-columns:auto_auto_1fr_auto]",
         selected ? "bg-voice/12" : "hover:bg-muted/40",
         props.onSelect && "cursor-pointer",
@@ -57,13 +57,14 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        <div className="flex shrink-0 items-center justify-end gap-1.5">
-          {/* 斜杠命令名（trigger_keyword 非空时显示） */}
-          {item.triggerKeyword && (
-            <span className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-              /{item.triggerKeyword}
-            </span>
-          )}
+        /* 斜杠命令名（独立列，各行对齐；trigger_keyword 为空时占位保持列宽一致） */
+        <span className="min-w-0 truncate rounded bg-muted/60 px-1.5 py-0.5 text-right font-mono text-[11px] text-muted-foreground">
+          {item.triggerKeyword ? `/${item.triggerKeyword}` : ""}
+        </span>
+      )}
+
+      {showShortcuts && (
+        <div className="flex shrink-0 items-center justify-end gap-0.5">
           {/* 全局快捷键 */}
           <ShortcutButton
             shortcut={item.globalShortcut ?? ""}
