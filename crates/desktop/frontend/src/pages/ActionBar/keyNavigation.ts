@@ -59,7 +59,6 @@ export type KeyAction =
   | { type: "menu-move"; forward: boolean }
   | { type: "menu-toggle-layer" }
   | { type: "menu-enter" }
-  | { type: "alt-execute"; item: ActionBarItem }
   | { type: "alt-goto-sub"; idx: number }
   | { type: "alt-goto-main"; idx: number; expandSubmenu: boolean; parentId?: number; subIdx?: number };
 
@@ -145,19 +144,19 @@ export function decideKeyAction(
     return { type: "passthrough" }; // 兜底
   }
 
-  // 12-16. 菜单模式 - Alt 快捷键
+  // 12-16. 菜单模式 - Alt 定位符（Alt+1-9 定位前 9 项；Alt+a-z 定位第 10-35 项）
+  // shortcut 字段已废弃（slash 命令替代），Alt+字母从「执行」改为「定位」，与 Alt+数字统一。
   if (e.altKey) {
     const ch = codeToChar(e.code);
     if (ch) {
-      // Alt+字母 → 执行局部快捷键
-      if (/^[a-z]$/.test(ch)) {
-        const found = ctx.menuItems.find((i) => i.isEnabled && i.shortcut === ch);
-        if (found) return { type: "alt-execute", item: found };
-        return { type: "swallow" }; // 未命中（复刻行 743-746：分支入口无条件 preventDefault，find 无果仍抑制）
-      }
-      // Alt+数字 → 定位菜单项
+      // Alt+字符 → 定位索引（1-9 → 0-8；a-z → 9-34）
+      let idx: number | null = null;
       if (/^[1-9]$/.test(ch)) {
-        const idx = parseInt(ch, 10) - 1;
+        idx = parseInt(ch, 10) - 1;
+      } else if (/^[a-z]$/.test(ch)) {
+        idx = 9 + (ch.charCodeAt(0) - "a".charCodeAt(0)); // a=9（第10项）, b=10, ... z=34
+      }
+      if (idx !== null) {
         if (ctx.focusLayer === "sub") {
           return { type: "alt-goto-sub", idx };
         }
@@ -171,11 +170,11 @@ export function decideKeyAction(
           }
           return { type: "alt-goto-main", idx, expandSubmenu: false };
         }
-        // idx 越界 → 原代码分支入口（行 751）无条件 preventDefault，越界不进 if 但仍抑制后 return（行 775）
+        // idx 越界（超出菜单项数量）→ 静默（preventDefault 但不定位）
         return { type: "swallow" };
       }
     }
-    // Alt 但 codeToChar 无效 → 放行（§PRESERVE 行 778）
+    // Alt 但 codeToChar 无效 → 放行
     return { type: "passthrough" };
   }
 

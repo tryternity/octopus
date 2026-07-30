@@ -158,15 +158,20 @@ describe("decideKeyAction - 菜单模式切层", () => {
   });
 });
 
-describe("decideKeyAction - Alt 快捷键", () => {
-  it("Alt+字母命中 → alt-execute", () => {
-    const it1 = item({ id: 1, shortcut: "h" });
-    const a = decideKeyAction(key({ key: "˙", altKey: true, code: "KeyH" }), ctx({ menuItems: [it1] }));
-    expect(a.type).toBe("alt-execute");
-    expect((a as any).item).toBe(it1);
+describe("decideKeyAction - Alt 定位符", () => {
+  // Alt+字母定位（a=第10项 idx=9，b=第11项 idx=10...）—— shortcut 废弃后字母改定位
+  it("Alt+a → 定位第10项（idx=9）", () => {
+    // 需 10 项才不越界（a=idx=9）
+    const items = Array.from({ length: 10 }, (_, i) => item({ id: i + 1, actionType: "menu" }));
+    const a = decideKeyAction(key({ key: "å", altKey: true, code: "KeyA" }), ctx({ mainItems: items }));
+    expect(a).toEqual({ type: "alt-goto-main", idx: 9, expandSubmenu: false });
   });
-  it("Alt+字母未命中 → swallow（preventDefault 但不执行）", () => {
-    expect(decideKeyAction(key({ key: "˙", altKey: true, code: "KeyH" }), ctx({ menuItems: [] }))).toEqual({ type: "swallow" });
+  it("Alt+字母越界 → swallow（菜单项不足）", () => {
+    // 只有 1 项，Alt+a（idx=9）越界
+    expect(decideKeyAction(key({ key: "å", altKey: true, code: "KeyA" }), ctx({ mainItems: [item({ id: 1 })] }))).toEqual({ type: "swallow" });
+  });
+  it("Alt+字母焦点 sub → alt-goto-sub", () => {
+    expect(decideKeyAction(key({ key: "å", altKey: true, code: "KeyA" }), ctx({ focusLayer: "sub" }))).toEqual({ type: "alt-goto-sub", idx: 9 });
   });
   it("Alt+数字越界 → swallow（preventDefault 但不做事）", () => {
     // mainItems 为空，idx=0 越界

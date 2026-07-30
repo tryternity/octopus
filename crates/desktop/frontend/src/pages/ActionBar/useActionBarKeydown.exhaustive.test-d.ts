@@ -31,7 +31,6 @@ type HandledActionTypes =
   | "menu-move"
   | "menu-toggle-layer"
   | "menu-enter"
-  | "alt-execute"
   | "alt-goto-sub"
   | "alt-goto-main";
 

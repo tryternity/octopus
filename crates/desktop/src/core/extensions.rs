@@ -239,7 +239,6 @@ pub fn install_extension(
     is_async: bool,
     write_output_to_clipboard: bool,
     parent_id: Option<i64>,
-    shortcut: Option<String>,
     is_enabled: Option<bool>,
     replace_id: Option<i64>,
 ) -> Result<i64, String> {
@@ -261,7 +260,6 @@ pub fn install_extension(
     // replace_id 有值 = 编辑时重选扩展包：update 现有记录（保持 sort_order/位置），否则 insert 新记录
     let config = validate_package(&dest)?;
     let script_abs = dest.join(&config.action.script);
-    let shortcut = shortcut.unwrap_or_default();
     let is_enabled = is_enabled.unwrap_or(true);
     if let Some(id) = replace_id {
         octopus_infra::db::update_action_bar_item(
@@ -273,7 +271,6 @@ pub fn install_extension(
             is_enabled,
             is_async,
             write_output_to_clipboard,
-            &shortcut,
             "",
             "text",
             "",
@@ -291,7 +288,6 @@ pub fn install_extension(
             &script_abs.to_string_lossy(),
             is_async,
             write_output_to_clipboard,
-            &shortcut,
             "",
             "text",
             "",
