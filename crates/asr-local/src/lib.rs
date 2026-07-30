@@ -24,17 +24,17 @@ pub mod whisper_mel_matrix;
 pub mod firered;
 pub mod moonshine;
 pub mod zipformer;
-pub mod corrector;
-pub mod hans;
+pub mod pipeline;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;
-pub mod itn;
-pub mod hotword;
-pub mod miner;
-pub mod pipeline;
 
 /// 句间分隔符（按 language 选择），全 workspace ASR 文本拼接复用。
 pub use paraformer::sentence_separator;
+
+// ── 功能域子目录（2026-07-30 重组）──
+// 文件搬入子目录后，lib.rs 用 pub use 逐项 re-export 保持 octopus_asr_local::<module>::xxx 路径不变。
+pub mod text;
+pub use text::{corrector, hotword, hans, itn, miner};
 
 
