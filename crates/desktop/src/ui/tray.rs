@@ -370,9 +370,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
                 crate::commands::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
             }
             "terminal" => {
-                info!("Tray: open terminal");
+                info!("Tray: new terminal window");
+                // 每次点击都创建一个新终端窗口（多实例，label terminal_<n>）
                 if let Err(e) = crate::ui::terminal_window::open_terminal_window(app, None) {
-                    log::warn!("[tray] 打开终端失败: {e}");
+                    log::warn!("[tray] 新建终端失败: {e}");
                 }
             }
             // ── 录屏项（2026-07-25）：仅 macOS，toggle 语义（与 ASR toggle 同模式）──

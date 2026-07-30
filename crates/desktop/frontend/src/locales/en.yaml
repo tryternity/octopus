@@ -850,7 +850,7 @@ tray:
   screenshot: Screenshot (${shortcut})
   clipboard: Clipboard (${shortcut})
   compactEditor: Image-Text Editor
-  terminal: Terminal
+  terminal: New Terminal
   settings: Settings
   quit: Quit
   engineInfo: Engine  ${engine}

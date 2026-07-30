@@ -859,7 +859,7 @@ tray:
   screenshot: 开始截图（${shortcut}）
   clipboard: 剪  贴  板（${shortcut}）
   compactEditor: 图文编辑
-  terminal: 终端
+  terminal: 新建终端
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine}
