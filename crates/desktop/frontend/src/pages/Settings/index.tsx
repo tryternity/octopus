@@ -13,7 +13,6 @@ import {
   Bot,
   Lock,
   Video,
-  FolderCog,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -30,7 +29,6 @@ import AgentPanel from "./AgentPanel";
 import { HotwordPanel } from "./HotwordPanel";
 import VaultPanel from "./VaultPanel";
 import RecordingPanel from "./RecordingPanel";
-import EnvironmentPanel from "./EnvironmentPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -42,7 +40,7 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword" | "vault" | "recordings" | "env";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword" | "vault" | "recordings";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "settings", icon: SettingsIcon, labelKey: "settings.nav.general" },
@@ -55,7 +53,6 @@ const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "agent", icon: Bot, labelKey: "settings.nav.agent" },
   // follow-up #10: vault nav 仅在 vault feature on 时显示（isVaultEnabled 控制）。
   { page: "vault", icon: Lock, labelKey: "settings.nav.vault" },
-  { page: "env", icon: FolderCog, labelKey: "settings.nav.env" },
   { page: "system", icon: Activity, labelKey: "settings.nav.system" },
 ];
 
@@ -183,8 +180,6 @@ function Settings() {
           <VaultPanel showToast={showToast} />
         ) : effectivePage === "recordings" ? (
           <RecordingPanel showToast={showToast} />
-        ) : effectivePage === "env" ? (
-          <EnvironmentPanel showToast={showToast} />
         ) : !configResp ? (
           /* 只有 settings(GeneralPanel) 和 hotword 真正依赖 configResp。
              其他页面各自 invoke 独立命令，不应被 configResp 加载失败阻塞。 */

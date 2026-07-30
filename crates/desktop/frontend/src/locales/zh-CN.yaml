@@ -67,7 +67,6 @@ settings:
     system: 系统状态
     vault: 密码保险库
     recordings: 录屏管理
-    env: 环境与路径
   recordings:
     title: 录屏
     subtitle: 管理屏幕录制文件
@@ -399,6 +398,7 @@ settings:
     tabShortcut: 快捷键
     tabPermission: 隐私与权限
     tabVoice: 语音
+    tabEnv: 环境与路径
     tabSync: Git 同步
     appearance: 外观
     theme: 主题

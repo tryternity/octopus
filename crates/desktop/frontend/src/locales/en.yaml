@@ -67,7 +67,6 @@ settings:
     system: System
     vault: Password Vault
     recordings: Recording Library
-    env: Environment & Paths
   recordings:
     title: Recordings
     subtitle: Manage your screen recordings
@@ -393,6 +392,7 @@ settings:
     tabShortcut: Shortcuts
     tabPermission: Privacy & Permissions
     tabVoice: Voice
+    tabEnv: Environment & Paths
     tabSync: Git Sync
     appearance: Appearance
     theme: Theme

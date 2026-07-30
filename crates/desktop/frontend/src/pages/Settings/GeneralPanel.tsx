@@ -16,6 +16,7 @@ import { Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
 import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
+import EnvironmentPanel from "./EnvironmentPanel";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -30,7 +31,7 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "sync">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
 
   useEffect(() => {
@@ -105,6 +106,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
     ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "voice", label: t("settings.general.tabVoice") },
+    { key: "env", label: t("settings.general.tabEnv") },
     { key: "sync", label: t("settings.general.tabSync") },
   ];
 
@@ -310,6 +312,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             </CardContent>
           </Card>
         </>
+      )}
+      {activeTab === "env" && (
+        <EnvironmentPanel showToast={showToast} />
       )}
       {activeTab === "sync" && (
         <div className="h-[calc(100vh-200px)] overflow-auto">
