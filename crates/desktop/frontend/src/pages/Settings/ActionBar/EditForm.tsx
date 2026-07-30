@@ -189,14 +189,11 @@ export default function EditForm({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          {/* 全局快捷键（左列） */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* 全局快捷键（左列）—— submenu 时不显示 */}
           {type !== "submenu" ? (
-            <div className="space-y-1.5">
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                {ti18n("settings.actionBar.globalShortcutLabel")}
-              </label>
-              <div className="flex items-center gap-1">
+            <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+              <div className="flex h-[38px] items-center gap-1">
                 <ShortcutButton
                   shortcut={form.globalShortcut ?? ""}
                   capturing={capturingGlobal}
@@ -213,9 +210,9 @@ export default function EditForm({
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
-            </div>
+            </FormField>
           ) : <div />}
-          {/* 启用（原命令名位置，右列） */}
+          {/* 启用（右列） */}
           <FormField label={t("settings.actionBar.enableLabel")}>
             <div className="flex h-[38px] items-center gap-2.5">
               <Toggle

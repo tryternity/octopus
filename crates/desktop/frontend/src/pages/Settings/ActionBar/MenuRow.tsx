@@ -38,7 +38,7 @@ export default function MenuRow(props: MenuRowProps) {
       className={cn(
         "group relative grid items-center gap-x-2 gap-y-0.5 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
         showShortcuts
-          ? "[grid-template-columns:auto_auto_minmax(40px,1fr)_auto_5rem_auto]"
+          ? "[grid-template-columns:auto_auto_minmax(40px,1fr)_minmax(3rem,auto)_5rem_auto]"
           : "[grid-template-columns:auto_auto_1fr_auto]",
         selected ? "bg-voice/12" : "hover:bg-muted/40",
         props.onSelect && "cursor-pointer",
