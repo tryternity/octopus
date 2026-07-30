@@ -708,8 +708,8 @@ settings:
     shortcutLabel: Shortcut
     shortcutHint: Alt+letter to execute (press Alt+letter when menu is open)
     slashName: "/ Command Name"
-    slashNamePlaceholder: "e.g. google (type /google to trigger)"
-    slashNameInvalid: Lowercase letters, digits, hyphens only; must start with a letter
+    slashNamePlaceholder: "e.g. google or 百度 (type /google to trigger)"
+    slashNameInvalid: Chinese, letters, digits, hyphens, underscores only
     titleInvalid: Title allows Chinese, letters, digits, hyphens, underscores only
     globalShortcutLabel: Global Shortcut
     globalShortcutHint: Global shortcut, runs without opening the menu

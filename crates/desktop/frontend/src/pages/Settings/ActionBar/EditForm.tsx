@@ -256,7 +256,7 @@ export default function EditForm({
                   onChange({ ...form, triggerKeyword: val });
                 }}
               />
-              {form.triggerKeyword && !/^[a-z][a-z0-9-]*$/.test(form.triggerKeyword) && (
+              {form.triggerKeyword && !TITLE_REGEX.test(form.triggerKeyword) && (
                 <p className="text-[11px] text-destructive">
                   {t("settings.actionBar.slashNameInvalid")}
                 </p>

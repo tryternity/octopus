@@ -715,8 +715,8 @@ settings:
     shortcutLabel: 快捷键
     shortcutHint: Alt+字母 执行（菜单唤起后按 Alt+设定的字母）
     slashName: "/ 命令名"
-    slashNamePlaceholder: "如 google（输入 /google 触发）"
-    slashNameInvalid: 只能小写字母、数字、连字符，须字母开头
+    slashNamePlaceholder: "如 google 或 百度（输入 /google 触发）"
+    slashNameInvalid: 只能中文、字母、数字、连字符、下划线
     titleInvalid: 标题只能中文、字母、数字、连字符、下划线
     globalShortcutLabel: 全局快捷键
     globalShortcutHint: 全局快捷键，无需菜单直接执行

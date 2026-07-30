@@ -69,6 +69,26 @@ pub fn validate_shortcut(shortcut: &str) -> Result<()> {
     anyhow::bail!("快捷键必须为空或单个 a-z 字符");
 }
 
+/// 菜单标题 / 命令名（trigger_keyword）字符约束：CJK（中日韩）+ 字母数字 + `-_`。
+/// 禁空格/特殊字符——支持 slash Tab 补全无歧义（标题作为补全文本）。
+/// 与前端 EditForm.tsx 的 TITLE_REGEX 一致。
+pub fn validate_action_bar_text(field: &str, text: &str) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let ok = text.chars().all(|c| {
+        // CJK 统一汉字 + 平假名片假名 + 韩文 + ASCII 字母数字 + -_
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3040}'..='\u{30FF}').contains(&c)
+            || ('\u{AC00}'..='\u{D7AF}').contains(&c)
+            || c.is_ascii_alphanumeric()
+            || c == '-' || c == '_'
+    });
+    if ok { Ok(()) } else {
+        anyhow::bail!("{}只能含中文、字母、数字、连字符、下划线", field);
+    }
+}
+
 /// 检查快捷键是否已被其他项占用（排除指定 id）。返回冲突项（如有）。
 pub(crate) fn check_shortcut_conflict_at(conn: &Connection, shortcut: &str, exclude_id: Option<i64>) -> Result<Option<ActionBarItem>> {
     if shortcut.is_empty() {
@@ -182,6 +202,8 @@ pub(crate) fn insert_action_bar_item_at(
 ) -> Result<i64> {
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
+    validate_action_bar_text("菜单标题", title)?;
+    validate_action_bar_text("命令名", trigger_keyword)?;
     if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, None)? {
         anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
     }
@@ -241,6 +263,8 @@ pub(crate) fn update_action_bar_item_at(
     }
     let shortcut = shortcut.to_lowercase();
     validate_shortcut(&shortcut)?;
+    validate_action_bar_text("菜单标题", title)?;
+    validate_action_bar_text("命令名", trigger_keyword)?;
     if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, Some(id))? {
         anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
     }
@@ -678,6 +702,28 @@ mod tests {
         // 无冲突字符
         let free = check_shortcut_conflict_at(&conn, "z", None).unwrap();
         assert!(free.is_none());
+    }
+
+    #[test]
+    fn action_bar_text_validate() {
+        // validate_action_bar_text: CJK + 字母数字 + -_（标题/命令名共用）
+        // 空值合法（可选字段）
+        assert!(validate_action_bar_text("标题", "").is_ok());
+        // 合法：中文 / 日文 / 韩文 / ASCII 字母数字 / -_
+        assert!(validate_action_bar_text("标题", "百度搜索").is_ok());
+        assert!(validate_action_bar_text("标题", "Google").is_ok());
+        assert!(validate_action_bar_text("标题", "make-ppt_v2").is_ok());
+        assert!(validate_action_bar_text("标题", "テスト").is_ok());    // 平假名片假名
+        assert!(validate_action_bar_text("标题", "테스트").is_ok());    // 韩文
+        // 非法：空格 / 特殊字符
+        assert!(validate_action_bar_text("标题", "my cmd").is_err());   // 空格
+        assert!(validate_action_bar_text("标题", "a.b").is_err());      // 点
+        assert!(validate_action_bar_text("标题", "a/b").is_err());      // 斜杠
+        assert!(validate_action_bar_text("标题", "a@b").is_err());      // @
+        // 命令名同样约束
+        assert!(validate_action_bar_text("命令名", "百度").is_ok());
+        assert!(validate_action_bar_text("命令名", "my-cmd").is_ok());
+        assert!(validate_action_bar_text("命令名", "my cmd").is_err()); // 空格
     }
 
     #[test]
