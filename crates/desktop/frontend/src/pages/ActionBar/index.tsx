@@ -22,18 +22,15 @@ import {
 import { executeSearchStream, cleanupSearchStream } from "./searchStream";
 import {
   determineExpandDirection,
-  getNextTab,
   filterByTab,
   parseActionData,
   calcResultsHeight,
-  navigateResults,
   hasQuery,
   nextFocusLayerAfterExecute,
   calcMenuHeight,
-  moveDirection,
 } from "./searchLogic";
-import { codeToChar } from "./label";
 import type { Context, ActionBarItem } from "./types";
+import { useActionBarKeydown } from "./useActionBarKeydown";
 
 // 只有走 mdfind（file/bookmark Provider，慢）的 Tab 才需防抖；其他 Tab（含 all）
 // 走内存 Provider（app/menu/calculator/url），亚毫秒，无需防抖。
@@ -47,7 +44,6 @@ function getDebounceMs(tab: TabId): number {
 }
 
 const AI_TIMEOUT_MS = 10000;
-const ARROW_AS_TAB = true;
 
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
@@ -648,219 +644,16 @@ export default function ActionBar() {
       : [];
   });
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // IME 组合中的按键（keyCode 229 或 isComposing=true）——一律放行，不干预。
-      // 两种模式（搜索/菜单）统一处理：IME 接管输入，handler 不 preventDefault/return 吃掉按键。
-      // 否则菜单模式下 IME 按键被 handler 条件分支拦截，input 没收到原生事件，
-      // 而 IME compositionend 仍插入字符 → 字符重复（输 wx 变 wwx）。
-      if (e.keyCode === 229 || e.isComposing) {
-        lastImeKeyTime.current = Date.now();
-        return;
-      }
-      // Enter(13) 在 IME 按键后 500ms 内 → 选词确认，跳过
-      if (e.key === "Enter" && Date.now() - lastImeKeyTime.current < 500) {
-        lastImeKeyTime.current = 0;
-        return;
-      }
-
-      // Escape 在任何视图都生效——防止 loading 卡住时困死用户
-      if (e.key === "Escape") {
-        e.preventDefault();
-        if (hasQuery(queryRef.current)) {
-          setQuery("");
-          inputRef.current?.focus();
-        } else {
-          invoke("action_bar_dismiss", { reason: "escape" });
-        }
-        return;
-      }
-
-      // loading 视图不拦截其他键盘导航
-      if (viewRef.current === "loading") return;
-
-      // ── 统一放行：无修饰的可打印字符（字母/数字/Backspace）交给输入框原生处理 ──
-      // 搜索模式和菜单模式共享此逻辑——两种模式对输入框输入行为完全一致。
-      // IME 组合按键已在顶部拦截（229/isComposing），修饰键(Alt/Cmd/Ctrl)交各自分支处理。
-      // 导航键（Tab/Arrow/Enter/Space）不走这里——它们在各自模式的分支里处理。
-      if (!e.altKey && !e.metaKey && !e.ctrlKey) {
-        const navKeys = ARROW_AS_TAB
-          ? ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Enter", " "]
-          : ["ArrowUp", "ArrowDown", "Tab", "Enter", " "];
-        if (!navKeys.includes(e.key)) {
-          return; // 可打印字符 → 放行给 input
-        }
-      }
-
-      // ── 搜索模式键盘导航（query 非空时）──
-      // 简化设计：输入框始终是焦点，Tab 键只切换 Tab 页，不改变焦点
-      if (hasQuery(queryRef.current)) {
-        const results = filteredResultsRef.current;
-
-        // Tab 或（ARROW_AS_TAB 时）←/→ → 循环切换 Tab 页
-        const hasCtx = !!contextRef.current;
-        const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
-        if (dir !== null) {
-          e.preventDefault();
-          setActiveTab(getNextTab(activeTabRef.current, dir ? 1 : -1, hasCtx));
-          return;
-        }
-
-        // ↑↓ → 导航结果列表
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, 1, results.length));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setSearchSelectedIdx(navigateResults(searchSelectedIdxRef.current, -1, results.length));
-          return;
-        }
-
-        // Enter → 执行选中项（或第一个）
-        if (e.key === "Enter") {
-          e.preventDefault();
-          const selected = results[searchSelectedIdxRef.current] ?? results[0];
-          if (selected) executeSearchResult(selected);
-          return;
-        }
-
-        // 其他键 → 已在上游统一放行（无修饰可打印字符），这里兜底
-        return;
-      }
-
-      // ── 菜单模式键盘导航（query 为空时）──
-      // 无修饰的可打印字符已在上游统一放行，这里只处理修饰键 + 导航键。
-
-      // Alt + 字母（a-z）→ 直接执行（按菜单项配置的 shortcut 匹配）
-      // Alt 改变 e.key 输出（如 Alt+H → "˙"），用 codeToChar(e.code) 取物理键
-      if (e.altKey) {
-        const ch = codeToChar(e.code);
-        if (ch) {
-          // 字母 → 执行局部快捷键（匹配 item.shortcut）
-          if (/^[a-z]$/.test(ch)) {
-            e.preventDefault();
-            const item = menuItemsRef.current.find((i: ActionBarItem) => i.isEnabled && i.shortcut === ch);
-            if (item) executeItem(item);
-            return;
-          }
-          // 数字（1-9）→ 定位菜单项（按位置，最多 9 个）
-          if (/^[1-9]$/.test(ch)) {
-            const idx = parseInt(ch, 10) - 1;
-            e.preventDefault();
-            if (focusLayerRef.current === "sub") {
-              if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
-            } else {
-              if (idx < mainItemsRef.current.length) {
-                const item = mainItemsRef.current[idx];
-                setSelectedIdx(idx);
-                // submenu 项同步展开子菜单预览（与 Tab 移动行为一致）
-                if (item.actionType === "submenu") {
-                  submenuParentIdRef.current = item.id;
-                  const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === item.id);
-                  if (subs.length > 0 && subs[0].actionType === "url") {
-                    const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-                    setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-                  } else {
-                    setSubSelectedIdx(0);
-                  }
-                  setView("submenu");
-                } else {
-                  submenuParentIdRef.current = null;
-                  setView("main");
-                }
-              }
-            }
-            return;
-          }
-        }
-        return;
-      }
-
-      // Tab 或（ARROW_AS_TAB 时）←/→ → 菜单项间移动
-      const menuDir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
-      if (menuDir !== null) {
-        e.preventDefault();
-        const forward = menuDir;
-        if (focusLayerRef.current === "sub") {
-          // 焦点在子菜单——在子菜单项间移动
-          setSubSelectedIdx((prev) => {
-            const items = subItemsRef.current;
-            if (items.length === 0) return 0;
-            return forward ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-          });
-        } else {
-          // 焦点在主菜单——在主菜单项间移动，submenu 项自动展开子菜单预览
-          setSelectedIdx((prev) => {
-            const items = mainItemsRef.current;
-            if (items.length === 0) return 0;
-            const next = forward ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-            const item = items[next];
-            if (item && item.actionType === "submenu") {
-              submenuParentIdRef.current = item.id;
-              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === item.id);
-              if (subs.length > 0 && subs[0].actionType === "url") {
-                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-              } else {
-                setSubSelectedIdx(0);
-              }
-              setView("submenu");
-            } else {
-              submenuParentIdRef.current = null;
-              setView("main");
-            }
-            return next;
-          });
-        }
-        return;
-      }
-
-      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        e.preventDefault();
-        // 上下键只切换焦点层（main↔sub），不展开/收起子菜单
-        // 子菜单展开/收起由 Tab/Shift+Tab 移动主菜单项时控制
-        if (focusLayerRef.current === "sub") {
-          setFocusLayer("main");
-        } else {
-          // 焦点在主菜单——只有当前主菜单项有子菜单时才能进入
-          const cur = mainItemsRef.current[selectedIdxRef.current];
-          if (cur && cur.actionType === "submenu") {
-            setFocusLayer("sub");
-            // 如果子菜单还没展开（理论上左右键已经展开了），确保展开
-            if (viewRef.current !== "submenu") {
-              submenuParentIdRef.current = cur.id;
-              setView("submenu");
-              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.isEnabled && i.parentId === cur.id);
-              if (subs.length > 0 && subs[0].actionType === "url") {
-                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-              } else {
-                setSubSelectedIdx(0);
-              }
-            }
-          }
-        }
-        return;
-      }
-
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        if (focusLayerRef.current === "sub") {
-          const items = subItemsRef.current;
-          const item = items[subSelectedIdxRef.current];
-          if (item) executeItem(item);
-        } else {
-          const item = mainItemsRef.current[selectedIdxRef.current];
-          if (item) executeItem(item);
-        }
-        return;
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+  useActionBarKeydown({
+    queryRef, viewRef, focusLayerRef, contextRef,
+    selectedIdxRef, subSelectedIdxRef, searchSelectedIdxRef,
+    activeTabRef, mainItemsRef, subItemsRef, menuItemsRef,
+    searchEngineRef, filteredResultsRef, inputRef, lastImeKeyTime,
+    submenuParentIdRef,
+    setQuery, setActiveTab, setSearchSelectedIdx,
+    setSelectedIdx, setSubSelectedIdx, setView, setFocusLayer,
+    executeItem, executeSearchResult,
+  });
 
   // ── 渲染 ──
 
