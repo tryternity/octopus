@@ -84,7 +84,7 @@ pub enum PermissionStatus { Granted, Denied, NotDetermined }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum PrivacySection { ScreenCapture, Microphone, Accessibility }
+pub enum PrivacySection { ScreenCapture, Microphone, Accessibility, Automation }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DisplayInfo {
@@ -213,6 +213,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&PrivacySection::ScreenCapture).unwrap(), r#""screenCapture""#);
         assert_eq!(serde_json::to_string(&PrivacySection::Microphone).unwrap(), r#""microphone""#);
         assert_eq!(serde_json::to_string(&PrivacySection::Accessibility).unwrap(), r#""accessibility""#);
+        assert_eq!(serde_json::to_string(&PrivacySection::Automation).unwrap(), r#""automation""#);
         // 反序列化（前端 invoke 传参）也必须 camelCase
         assert_eq!(
             serde_json::from_str::<PrivacySection>(r#""screenCapture""#).unwrap(),

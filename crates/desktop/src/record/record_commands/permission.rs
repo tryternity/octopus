@@ -56,6 +56,9 @@ pub async fn open_privacy_settings(section: PrivacySection) -> Result<(), String
         PrivacySection::Accessibility => {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Assistive"
         }
+        PrivacySection::Automation => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        }
     };
     std::process::Command::new("open")
         .arg(url)
@@ -151,4 +154,63 @@ pub async fn request_accessibility_permission() -> Result<PermissionStatus, Stri
     } else {
         PermissionStatus::Denied
     })
+}
+
+// ── 自动化权限（AppleScript 控制 System Events / 其他 app）─────────
+
+/// macOS 自动化权限探测——osascript 无害 Apple Event。
+///
+/// macOS 无 Automation 权限预检 API（不像 AX 的 AXIsProcessTrustedWithOptions(null)）。
+/// 唯一探测：发 `tell application "System Events" to get version`——
+///   - 已授权：osascript 成功退出（exit 0）
+///   - 未授权/被拒：osascript 失败（-1743 errAEEventNotPermitted）或超时
+///   - 首次调用（未决定态）：触发 TCC 弹窗（无法避免）
+/// 故 check 与 request 同实现——首次 check 即触发弹窗。
+///
+/// 复用 finder_selection.rs 的 timeout wrapper 模式（spawn + 5s poll），
+/// 防止 TCC 弹窗永久挂起（用户不点弹窗时 osascript 阻塞）。
+fn probe_automation_permission() -> PermissionStatus {
+    use std::time::{Duration, Instant};
+    let mut child = match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(r#"tell application "System Events" to get version"#)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return PermissionStatus::Denied,
+    };
+    // 5s 超时（TCC 弹窗可能阻塞 osascript，用户不操作时永不退出）
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return if status.success() {
+                PermissionStatus::Granted
+            } else {
+                PermissionStatus::Denied
+            },
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // 超时通常意味着首次弹窗等待用户操作——返 NotDetermined 让前端重查
+                    return PermissionStatus::NotDetermined;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => return PermissionStatus::Denied,
+        }
+    }
+}
+
+#[command]
+pub async fn check_automation_permission() -> Result<PermissionStatus, String> {
+    Ok(probe_automation_permission())
+}
+
+#[command]
+pub async fn request_automation_permission() -> Result<PermissionStatus, String> {
+    // 与 check 同实现——首次 probe 即触发 TCC 弹窗
+    Ok(probe_automation_permission())
 }
