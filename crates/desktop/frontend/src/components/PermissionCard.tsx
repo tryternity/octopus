@@ -170,7 +170,7 @@ export function PermissionCard({ def }: { def: PermissionDef }) {
           升级提示（upgradeNote）不在此显示——已在设置页权限 tab 底部统一展示。 */}
       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1 z-50
                       opacity-0 group-hover:opacity-100 transition-opacity
-                      w-72 px-3 py-2.5 rounded-md bg-popover border border-border shadow-md space-y-1.5">
+                      w-72 px-3 py-2.5 rounded-md bg-popover/95 backdrop-blur-sm border border-border shadow-lg space-y-1.5">
         <p className="text-xs text-popover-foreground whitespace-normal">
           {t(`onboarding.permissions.${def.key}.usage`)}
         </p>
