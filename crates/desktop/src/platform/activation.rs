@@ -518,4 +518,40 @@ mod tests {
         float_clear_state();
         assert!(!*WAS_INACTIVE.lock());
     }
+
+    /// is_regular_window：固定 label 精确匹配 + terminal_ 前缀匹配。
+    /// 多实例终端窗口（terminal_<n> + terminal_action_agent）必须被识别为常规窗口，
+    /// 否则关窗后激活策略不会正确恢复（Accessory/Regular）。
+    #[test]
+    fn is_regular_window_matches_fixed_and_prefix() {
+        // 固定 label
+        assert!(is_regular_window("settings_window"));
+        assert!(is_regular_window("compact_editor_window"));
+        // terminal_ 前缀（多实例 + agent 单例）
+        assert!(is_regular_window("terminal_1"));
+        assert!(is_regular_window("terminal_42"));
+        assert!(is_regular_window("terminal_action_agent"));
+        // 非常规窗口
+        assert!(!is_regular_window("clipboard_window"));
+        assert!(!is_regular_window("action_bar_window"));
+        assert!(!is_regular_window("main"));
+        assert!(!is_regular_window(""));
+        assert!(!is_regular_window("terminal")); // 无下划线后缀，不匹配 terminal_
+    }
+
+    /// should_hide_on_float：浮窗 show 时需隐藏的窗口。
+    /// clipboard_window 故意不在列表（always-on-top 浮窗，hide 会破坏 dock 状态）。
+    #[test]
+    fn should_hide_on_float_excludes_clipboard_includes_terminal() {
+        // 应隐藏：settings / compact_editor / terminal_*
+        assert!(should_hide_on_float("settings_window"));
+        assert!(should_hide_on_float("compact_editor_window"));
+        assert!(should_hide_on_float("terminal_1"));
+        assert!(should_hide_on_float("terminal_action_agent"));
+        // 不应隐藏：clipboard（always-on-top，hide 破坏 dock 状态）
+        assert!(!should_hide_on_float("clipboard_window"));
+        // 不应隐藏：浮窗本身
+        assert!(!should_hide_on_float("action_bar_window"));
+        assert!(!should_hide_on_float("overlay_window"));
+    }
 }

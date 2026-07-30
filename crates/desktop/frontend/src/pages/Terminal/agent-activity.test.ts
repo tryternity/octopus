@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { phaseForSignal } from "./agent-activity";
+import { phaseForSignal, displayLabel } from "./agent-activity";
 
 describe("phaseForSignal", () => {
   it("started → working（agent 刚启动）", () => {
@@ -25,5 +25,31 @@ describe("phaseForSignal", () => {
   it("未知信号 → null（忽略）", () => {
     expect(phaseForSignal("unknown")).toBeNull();
     expect(phaseForSignal("")).toBeNull();
+  });
+});
+
+describe("displayLabel", () => {
+  const fallback = "终端";
+
+  it("customName 优先（用户改名）", () => {
+    expect(displayLabel("我的会话", "claude", fallback)).toBe("我的会话");
+  });
+
+  it("customName 空白回退 agentName", () => {
+    expect(displayLabel("   ", "claude", fallback)).toBe("claude");
+    expect(displayLabel("", "codex", fallback)).toBe("codex");
+  });
+
+  it("无 customName 用 agentName", () => {
+    expect(displayLabel(undefined, "gemini", fallback)).toBe("gemini");
+  });
+
+  it("无 customName 无 agentName 用 fallback", () => {
+    expect(displayLabel(undefined, null, fallback)).toBe(fallback);
+    expect(displayLabel("", null, fallback)).toBe(fallback);
+  });
+
+  it("customName 仅空格字符视为空白", () => {
+    expect(displayLabel(" \t\n ", "claude", fallback)).toBe("claude");
   });
 });

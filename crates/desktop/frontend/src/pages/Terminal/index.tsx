@@ -26,6 +26,7 @@ import {
   ensureAgentActivityListener,
   subscribeAgentActivity,
   getAgentActivity,
+  displayLabel,
   type AgentPhase,
 } from "./agent-activity";
 
@@ -40,13 +41,6 @@ type Tab = {
   /** 用户自定义名字（双击改名）；空=用默认标题。 */
   customName?: string;
 };
-
-/** 显示标题优先级：customName > agentName > 默认。 */
-function displayLabel(tab: Tab, agentName: string | null, fallback: string): string {
-  if (tab.customName && tab.customName.trim()) return tab.customName;
-  if (agentName) return agentName;
-  return fallback;
-}
 
 type LayoutMode = "tabs" | "sidebar";
 const LAYOUT_KEY = "octopus-terminal-layout";
@@ -162,7 +156,7 @@ export default function Terminal() {
       tab,
       phase,
       agentName,
-      label: displayLabel(tab, agentName, defaultTitle),
+      label: displayLabel(tab.customName, agentName, defaultTitle),
       active: tab.id === activeId,
     };
   });
