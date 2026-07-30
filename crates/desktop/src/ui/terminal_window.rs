@@ -128,7 +128,7 @@ pub fn open_terminal_window(app_handle: &tauri::AppHandle, cwd: Option<&str>) ->
 /// 与托盘「新建终端」的多实例（`terminal_<n>`）不同：agent 命令期望确定性——
 /// 每次执行 agent 都聚焦同一个窗口并在其中新开 tab，而非每次弹新窗口。
 /// 存在则聚焦 + 新 tab（emit_to 定向，非全局广播）；不存在才建窗。
-pub const AGENT_WINDOW_LABEL: &str = "agent_command";
+pub const AGENT_WINDOW_LABEL: &str = "terminal_action_agent";
 
 /// 打开 agent 专用终端窗口（单例）并在其中运行指定命令。
 ///
@@ -231,7 +231,7 @@ pub fn open_terminal_with_command(
     }
 }
 
-/// 判断某 label 是否是终端窗口（`terminal_*` 前缀 + agent 单例 `agent_command`）。
+/// 判断某 label 是否是终端窗口（`terminal_*` 前缀 + agent 单例 `terminal_action_agent`）。
 pub fn is_terminal_window(label: &str) -> bool {
     label.starts_with(WINDOW_LABEL_PREFIX) || label == AGENT_WINDOW_LABEL
 }
@@ -314,7 +314,7 @@ mod tests {
         assert!(is_terminal_window("terminal_1"));
         assert!(is_terminal_window("terminal_42"));
         // agent 单例窗口
-        assert!(is_terminal_window("agent_command"));
+        assert!(is_terminal_window("terminal_action_agent"));
         // 非终端窗口
         assert!(!is_terminal_window("settings_window"));
         assert!(!is_terminal_window("compact_editor_window"));

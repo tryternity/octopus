@@ -104,7 +104,6 @@ use tauri::{ActivationPolicy, Manager};
 const REGULAR_WINDOWS: &[&str] = &[
     "settings_window",
     "compact_editor_window",
-    "agent_command",
 ];
 /// 多实例常规窗口的 label 前缀（终端窗口 `terminal_<n>`）。
 const REGULAR_WINDOW_PREFIXES: &[&str] = &[
@@ -129,7 +128,6 @@ fn is_regular_window(label: &str) -> bool {
 const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
     "settings_window",
     "compact_editor_window",
-    "agent_command",
 ];
 /// 多实例浮窗隐藏窗口的前缀（终端 `terminal_*`）。
 const WINDOWS_TO_HIDE_ON_FLOAT_PREFIXES: &[&str] = &[
