@@ -416,60 +416,73 @@ Result: 0 error 0 warning ✓
 
 ### Task 6: 终端窗口（terminal_window.rs + 前端 entry + HTML）
 
+> **实施记录（2026-07-30）**：已完成。与原 plan 的偏差：
+> - **文件位置**：plan 写 `crates/desktop/src/terminal_window.rs`。实际放 `ui/` 域（`crates/desktop/src/ui/terminal_window.rs`），与 settings_window / compact_editor_window 同级（都是窗口管理）。plan 提到的「参考 compact_editor_window」本身就在 ui/ 域。
+> - **窗口尺寸**：plan 写 1100×680，实际 1000×640（终端窗口不需要 compact_editor 那么宽，min 560×360）。
+> - **额外接入点（plan 没提但必须做）**：
+>   - `platform/activation.rs` 的 `REGULAR_WINDOWS` + `WINDOWS_TO_HIDE_ON_FLOAT` 加 `terminal_window`——否则浮窗焦点协调不认它，关窗后激活策略不会正确恢复（踩坑隐患）。
+>   - `main.rs` WindowEvent::Destroyed 加 `terminal_window` 分支调 `on_terminal_closed`。
+>   - `tray.rs` 加「终端」菜单项（让 `open_terminal_window` 立即被使用，避免 dead_code warning；Task 8 ActionBar 接 `open_terminal_with_command`）。
+> - **TDD**：`build_initial_url` + `urlencode` 提取为纯函数，7 个单测覆盖（无 cwd/bg、有 cwd、percent-encode 中文空格、组合）。
+> - **前端占位**：Terminal 页面是占位（读 cwd query 验证链路），Task 7 替换为完整 xterm.js + 多 tab。
+> - **i18n**：`tray.terminal` + `terminal.loading`（zh-CN + en）。
+> - **验证**：cargo check 0 error 0 warning；vite build ✓（terminal.html + terminal-*.js 生成）；pty 26 测试仍绿；terminal_window 7 测试绿。
+
 **Files:**
-- Create: `crates/desktop/src/terminal_window.rs`
+- Create: `crates/desktop/src/ui/terminal_window.rs`
 - Create: `crates/desktop/frontend/terminal.html`
 - Create: `crates/desktop/frontend/src/entries/terminal-main.tsx`
+- Create: `crates/desktop/frontend/src/pages/Terminal/index.tsx`（Task 7 替换为完整实现）
+- Modify: `crates/desktop/src/ui/mod.rs`（加 pub mod terminal_window）
+- Modify: `crates/desktop/src/platform/activation.rs`（REGULAR_WINDOWS + WINDOWS_TO_HIDE_ON_FLOAT 加 terminal_window）
+- Modify: `crates/desktop/src/main.rs`（Destroyed 事件加 terminal_window 分支）
+- Modify: `crates/desktop/src/ui/tray.rs`（加「终端」菜单项）
 - Modify: `crates/desktop/frontend/vite.config.ts`（加 terminal entry）
 - Modify: `crates/desktop/frontend/package.json`（加 @xterm/xterm + addon-fit + addon-web-links）
 - Modify: `crates/desktop/capabilities/default.json`（加 terminal_window）
+- Modify: `crates/desktop/frontend/src/locales/{zh-CN,en}.yaml`（tray.terminal + terminal.loading）
 
-- [ ] **Step 1: 实现 terminal_window.rs**
+- [x] **Step 1: 实现 terminal_window.rs**
 
 参考 `compact_editor_window.rs`。窗口属性：
-- 原生标题栏、1100×680 可调、居中
+- 原生标题栏、1000×640 可调（min 560×360）、居中
 - 单例：已存在则 show+focus，否则创建
 - macOS 开窗切 Regular、关窗切回 Accessory
+- `build_initial_url(cwd, bg)` 纯函数：cwd percent-encode + bg hex 注入 URL query（7 单测）
 
-`open_terminal_window(app)` → 创建或聚焦终端窗口
+`open_terminal_window(app, cwd)` → 创建或聚焦终端窗口
 
-`open_terminal_with_command(app, cwd, command)` → 打开窗口 + emit "terminal://new-tab" { cwd, command }
+`open_terminal_with_command(app, cwd, command)` → 打开窗口 + emit "terminal://new-tab" { cwd, command }（Task 8 用，暂 `#[allow(dead_code)]`）
 
-- [ ] **Step 2: 创建 terminal.html**
+- [x] **Step 2: 创建 terminal.html**
 
-复制 compact-editor.html 结构，改 entry script 指向 terminal-main.tsx。
+复制 compact-editor.html 结构（theme bootstrap + bg 注入），entry 指向 terminal-main.tsx。
 
-- [ ] **Step 3: 创建 terminal-main.tsx**
+- [x] **Step 3: 创建 terminal-main.tsx**
 
-```typescript
-import "@/index.css";
-import { mountApp } from "@/lib/mountApp";
-import Terminal from "@/pages/Terminal";
+`mountApp(<Terminal />)`，Terminal 当前为占位（Task 7 替换）。
 
-mountApp(<Terminal />);
-```
+- [x] **Step 4: vite.config.ts 加 entry**
 
-- [ ] **Step 4: vite.config.ts 加 entry**
+`terminal: "terminal.html",`
 
-```typescript
-terminal: "terminal.html",
-```
+- [x] **Step 5: npm install xterm + addon**
 
-- [ ] **Step 5: npm install xterm + addon**
+`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-web-links`（Task 7 用）
 
-```bash
-cd crates/desktop/frontend
-npm install @xterm/xterm @xterm/addon-fit @xterm/addon-web-links
-```
+- [x] **Step 6: capabilities 加 terminal_window + activation 注册 + tray 菜单项 + i18n**
 
-- [ ] **Step 6: capabilities 加 terminal_window**
+capabilities/default.json windows 数组加 `terminal_window`；
+activation.rs REGULAR_WINDOWS + WINDOWS_TO_HIDE_ON_FLOAT 加 terminal_window；
+main.rs Destroyed 事件加 on_terminal_closed；
+tray.rs 加「终端」菜单项（tray.terminal i18n key）。
 
-- [ ] **Step 7: 编译验证**
+- [x] **Step 7: 编译验证**
 
-Run: `cd crates/desktop/frontend && npm run build`
-Expected: ✓ built
+Run: `npm run build` + `cargo check -p octopus-desktop --features embedded,cloud,custom-protocol`
+Result: vite build ✓（terminal.html + terminal-*.js 生成）；cargo 0 error 0 warning ✓
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ---
 

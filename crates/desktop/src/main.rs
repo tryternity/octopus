@@ -97,6 +97,8 @@ pub fn run() {
                     settings_window::on_settings_closed(app);
                 } else if label == "compact_editor_window" {
                     compact_editor_window::on_compact_editor_closed(app);
+                } else if label == "terminal_window" {
+                    ui::terminal_window::on_terminal_closed(app);
                 } else if label == "onboarding_window" {
                     onboarding_window::on_onboarding_closed(app);
                 }

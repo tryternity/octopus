@@ -850,6 +850,7 @@ tray:
   screenshot: Screenshot (${shortcut})
   clipboard: Clipboard (${shortcut})
   compactEditor: Image-Text Editor
+  terminal: Terminal
   settings: Settings
   quit: Quit
   engineInfo: Engine  ${engine}
@@ -857,6 +858,10 @@ tray:
   microphoneDefault: Default Device
   recordStart: Start Recording (${shortcut})
   recordStop: Stop Recording  ${shortcut}
+
+# ════════ Embedded terminal window ════════
+terminal:
+  loading: Loading terminal…
 
 # ════════ ActionBar ════════
 actionbar:

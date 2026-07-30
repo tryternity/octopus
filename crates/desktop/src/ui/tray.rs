@@ -251,6 +251,9 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     // 图文编辑：打开空白 CompactEditor（临时文本 tab，不写 DB）。
     let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::ui::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
         .map_err(|e| format!("compact_editor menu: {e}"))?;
+    // 内嵌终端（Task 6，2026-07-30）：打开终端窗口（单例）。
+    let terminal = MenuItem::with_id(app, "terminal", &crate::ui::i18n::t("tray.terminal", &[]), true, None::<&str>)
+        .map_err(|e| format!("terminal menu: {e}"))?;
 
     // ── 录屏组（Task 14，2026-07-25）：仅 macOS 编译 ──
     // 设计：sep + 3 项，紧跟在 compact_editor 之后、sep2 之前。
@@ -296,7 +299,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         &settings, &sep_settings,
         &toggle, &mic_submenu, &engine_info, &sep1,
         &screenshot, &record_start, &sep_record,
-        &clipboard, &compact_editor,
+        &clipboard, &compact_editor, &terminal,
         &sep2,
         &quit,
     ])
@@ -305,7 +308,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let menu = Menu::with_items(app, &[
         &settings, &sep_settings,
         &toggle, &mic_submenu, &engine_info, &sep1,
-        &screenshot, &clipboard, &compact_editor, &sep2,
+        &screenshot, &clipboard, &compact_editor, &terminal, &sep2,
         &quit,
     ])
     .map_err(|e| format!("tray menu: {e}"))?;
@@ -365,6 +368,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             "compact_editor" => {
                 info!("Tray: open compact editor (empty)");
                 crate::commands::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
+            }
+            "terminal" => {
+                info!("Tray: open terminal");
+                if let Err(e) = crate::ui::terminal_window::open_terminal_window(app, None) {
+                    log::warn!("[tray] 打开终端失败: {e}");
+                }
             }
             // ── 录屏项（2026-07-25）：仅 macOS，toggle 语义（与 ASR toggle 同模式）──
             // idle/starting → 弹配置浮窗（用户选源后开录）

@@ -103,6 +103,7 @@ use tauri::{ActivationPolicy, Manager};
 const REGULAR_WINDOWS: &[&str] = &[
     "settings_window",
     "compact_editor_window",
+    "terminal_window",
 ];
 
 /// 浮窗 show 时需临时隐藏的其他 Regular 窗口，
@@ -117,6 +118,7 @@ const REGULAR_WINDOWS: &[&str] = &[
 const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
     "settings_window",
     "compact_editor_window",
+    "terminal_window",
 ];
 
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。

@@ -859,6 +859,7 @@ tray:
   screenshot: 开始截图（${shortcut}）
   clipboard: 剪  贴  板（${shortcut}）
   compactEditor: 图文编辑
+  terminal: 终端
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine}
@@ -866,6 +867,10 @@ tray:
   microphoneDefault: 默认设备
   recordStart: 开始录屏（${shortcut}）
   recordStop: 停止录屏  ${shortcut}
+
+# ════════ 内嵌终端窗口 ════════
+terminal:
+  loading: 终端组件加载中…
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
