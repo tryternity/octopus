@@ -66,8 +66,11 @@ fn search_menus(query: &str, rows: &[octopus_infra::db::ActionBarItem]) -> Vec<S
 /// fuzzy 匹配 trigger_keyword 非空的菜单项（所有 action_type），
 /// 返回 source="slash" 候选。params 记入 action_data 供执行时用。
 ///
-/// 仅 "/" → 返回所有配了 trigger_keyword 的命令（score 一致，保持 DB 行序）。
+/// 仅 "/" → 返回所有配了 trigger_keyword 的命令（固定基础分，保持 DB 行序）。
 /// query 不以 / 开头 → 空结果（不影响普通搜索）。
+///
+/// 计分（I1）：slash 结果用高基础分（15_000，参考旧 quicklink）确保用户手动切到
+/// all tab 时命令不因 score=0 沉底；cmd 匹配时叠加 fuzzy match_score（精确 > fuzzy）。
 fn search_slash_commands(
     query: &str,
     rows: &[octopus_infra::db::ActionBarItem],
@@ -76,7 +79,7 @@ fn search_slash_commands(
         Some(r) => r,
         None => return vec![],
     };
-    // 仅 "/" → 返回全部命令
+    // 仅 "/" → 返回全部命令（用户主动列命令，统一高基础分置顶）
     if rest.is_empty() {
         return rows
             .iter()
@@ -93,22 +96,38 @@ fn search_slash_commands(
         .iter()
         .filter(|r| r.is_enabled && !r.trigger_keyword.is_empty())
         .filter_map(|r| {
-            let score = match_score(cmd, &r.trigger_keyword)?;
-            Some((score, slash_result_with_params(r, params)))
+            // 大小写归一化（I3）：DB trigger_keyword 可能含大写（seed/导入/老数据），
+            // 用户也可能输大写（/Google）。两边都 to_lowercase 后再匹配，避免漏匹配。
+            let ms = match_score(&cmd.to_lowercase(), &r.trigger_keyword.to_lowercase())?;
+            let final_score = SLASH_BASE_SCORE + ms;
+            Some((final_score, slash_result_with_params(r, params, final_score)))
         })
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.into_iter().take(10).map(|(_, r)| r).collect()
+    scored
+        .into_iter()
+        .take(10)
+        .map(|(s, mut r)| {
+            r.score = s;
+            r
+        })
+        .collect()
 }
 
+/// slash 结果的基础分（参考旧 quicklink 用的 15_000）。
+/// 确保 all tab 下 slash 命令不沉底（其他源 menu/app/quicklink 都有正分）。
+const SLASH_BASE_SCORE: i32 = 15_000;
+
 /// 构造 slash 命令候选结果（无 params 版，用于仅 "/" 时列全部）。
+/// 统一用基础分——仅 "/" 时所有命令等权，保持 DB 行序。
 fn slash_result(r: &octopus_infra::db::ActionBarItem) -> SearchResult {
-    slash_result_with_params(r, "")
+    slash_result_with_params(r, "", SLASH_BASE_SCORE)
 }
 
 fn slash_result_with_params(
     r: &octopus_infra::db::ActionBarItem,
     params: &str,
+    score: i32,
 ) -> SearchResult {
     SearchResult {
         source: "slash".into(),
@@ -124,7 +143,7 @@ fn slash_result_with_params(
             "action_data": r.action_data,
         })
         .to_string(),
-        score: 0,
+        score,
     }
 }
 
@@ -223,5 +242,44 @@ mod slash_command_tests {
         let rows = vec![item(1, "", "", "url")]; // trigger_keyword 空
         let results = search_slash_commands("/anything", &rows);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn slash_uppercase_trigger_keyword_matches_lowercase_query() {
+        // I3：DB trigger_keyword 含大写（seed/导入/老数据），用户输小写应命中
+        let rows = vec![item(1, "", "Google", "url")];
+        let results = search_slash_commands("/google", &rows);
+        assert_eq!(results.len(), 1); // 大小写归一化后命中
+        let data: serde_json::Value = serde_json::from_str(&results[0].action_data).unwrap();
+        assert_eq!(data["cmd"], "Google"); // 保留原始大小写
+    }
+
+    #[test]
+    fn slash_uppercase_query_matches_lowercase_trigger() {
+        // I3：用户输大写 query，DB 小写 trigger_keyword 也应命中
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("/Google", &rows);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn slash_only_all_results_have_high_base_score() {
+        // I1：仅 "/" 列全部命令时，score 应为基础分（非 0），all tab 不沉底
+        let rows = vec![item(1, "", "google", "url"), item(2, "", "tolaria", "agent")];
+        let results = search_slash_commands("/", &rows);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].score > 0);
+        assert!(results[1].score > 0);
+    }
+
+    #[test]
+    fn slash_exact_match_scores_higher_than_fuzzy() {
+        // I1：精确匹配 /google 应比 fuzzy /goo 分高（都叠加在 15_000 基础分上）
+        let rows = vec![item(1, "", "google", "url")];
+        let exact = search_slash_commands("/google", &rows);
+        let fuzzy = search_slash_commands("/goo", &rows);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(fuzzy.len(), 1);
+        assert!(exact[0].score > fuzzy[0].score);
     }
 }

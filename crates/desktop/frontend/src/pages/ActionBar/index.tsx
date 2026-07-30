@@ -528,6 +528,21 @@ export default function ActionBar() {
   const executeSearchResult = async (result: SearchHit) => {
     const data = parseActionData(result.actionData);
 
+    // url 模板替换 helper（I2）：slash 分流与 case "url" 共用，消除重复的
+    // {query}/{text} 替换 + open_url + dismiss 三段逻辑。调用方各自传入 fallbackText。
+    const openUrlTemplate = async (rawUrl: string, fallbackText: string, reason: string) => {
+      const url = rawUrl
+        .replace(/\{query\}/g, encodeURIComponent(fallbackText))
+        .replace(/\{text\}/g, encodeURIComponent(fallbackText));
+      if (!url) return;
+      try {
+        await invoke("open_url", { url });
+        invoke("action_bar_dismiss", { reason });
+      } catch (e) {
+        showQuickError(String(e).slice(0, 40));
+      }
+    };
+
     // 频次加权记录（fire-and-forget，失败不影响动作执行）。
     // spec §5.4：执行动作时记录，让 frequency.boost 在后续搜索中加权用户常用结果。
     // 放在 switch 之前，对所有 actionType 通用（含 launch_app/open_file/menu/url/copy）。
@@ -556,17 +571,7 @@ export default function ActionBar() {
         const ctx = contextRef.current;
         const fallbackText = params || ctx?.text || "";
         const rawUrl = (data.action_data as string) || item.actionData || "";
-        const url = rawUrl
-          .replace(/\{query\}/g, encodeURIComponent(fallbackText))
-          .replace(/\{text\}/g, encodeURIComponent(fallbackText));
-        if (url) {
-          try {
-            await invoke("open_url", { url });
-            invoke("action_bar_dismiss", { reason: "slash-url" });
-          } catch (e) {
-            showQuickError(String(e).slice(0, 40));
-          }
-        }
+        await openUrlTemplate(rawUrl, fallbackText, "slash-url");
         return;
       }
       // agent need_voice + 无参数 → 联动语音录音路径（与 executeItem 一致）
@@ -634,18 +639,7 @@ export default function ActionBar() {
         const ctx = contextRef.current;
         const fallbackText = ctx?.text || queryRef.current;
         const rawUrl = (data.url as string) || (data.action_data as string) || "";
-        // 替换 URL 模板中的 {query} / {text} 占位符
-        const url = rawUrl
-          .replace(/\{query\}/g, encodeURIComponent(fallbackText))
-          .replace(/\{text\}/g, encodeURIComponent(fallbackText));
-        if (url) {
-          try {
-            await invoke("open_url", { url });
-            invoke("action_bar_dismiss", { reason: "open-url" });
-          } catch (e) {
-            showQuickError(String(e).slice(0, 40));
-          }
-        }
+        await openUrlTemplate(rawUrl, fallbackText, "open-url");
         break;
       }
       case "shell": {
