@@ -1,4 +1,4 @@
-//! 菜单 + Quicklink 搜索 Provider。一次 DB 读，产出 menu/quicklink 两类 source。
+//! 菜单 + Slash 命令搜索 Provider。一次 DB 读，产出 menu/slash 两类 source。
 
 use async_trait::async_trait;
 
@@ -15,7 +15,7 @@ impl SearchProvider for MenuProvider {
     }
 
     fn matches_tab(&self, tab: &str) -> bool {
-        matches!(tab, "quick" | "actions")
+        matches!(tab, "quick" | "actions" | "slash")
     }
 
     async fn search(&self, query: &str, _ctx: &SearchContext<'_>) -> Vec<SearchResult> {
@@ -24,7 +24,7 @@ impl SearchProvider for MenuProvider {
             Err(_) => return vec![],
         };
         let mut results = search_menus(query, &rows);
-        results.extend(search_quicklink_keywords(query, &rows));
+        results.extend(search_slash_commands(query, &rows));
         results
     }
 }
@@ -62,86 +62,166 @@ fn search_menus(query: &str, rows: &[octopus_infra::db::ActionBarItem]) -> Vec<S
         .collect()
 }
 
-/// Quicklink 关键词触发：query 以 `<keyword> <rest>` 模式开头时，
-/// 匹配 trigger_keyword == keyword 的 URL 类型菜单项，
-/// 将 URL 模板中的 {query} / {text} 替换为 rest。
-fn search_quicklink_keywords(
+/// Slash 命令匹配：query 以 `/cmd [params]` 模式开头时，
+/// fuzzy 匹配 trigger_keyword 非空的菜单项（所有 action_type），
+/// 返回 source="slash" 候选。params 记入 action_data 供执行时用。
+///
+/// 仅 "/" → 返回所有配了 trigger_keyword 的命令（score 一致，保持 DB 行序）。
+/// query 不以 / 开头 → 空结果（不影响普通搜索）。
+fn search_slash_commands(
     query: &str,
     rows: &[octopus_infra::db::ActionBarItem],
 ) -> Vec<SearchResult> {
-    let parts: Vec<&str> = query.splitn(2, char::is_whitespace).collect();
-    if parts.len() < 2 || parts[1].trim().is_empty() {
-        return Vec::new();
+    let rest = match query.strip_prefix('/') {
+        Some(r) => r,
+        None => return vec![],
+    };
+    // 仅 "/" → 返回全部命令
+    if rest.is_empty() {
+        return rows
+            .iter()
+            .filter(|r| r.is_enabled && !r.trigger_keyword.is_empty())
+            .map(slash_result)
+            .collect();
     }
-    let keyword = parts[0];
-    let rest = parts[1].trim();
-
-    rows.iter()
-        .filter(|r| r.is_enabled && r.action_type == "url" && !r.trigger_keyword.is_empty())
-        .filter(|r| r.trigger_keyword == keyword)
-        .map(|r| {
-            let url = if r.action_data.contains("{query}") {
-                r.action_data.replace("{query}", &url_encode_param(rest))
-            } else if r.action_data.contains("{text}") {
-                r.action_data.replace("{text}", &url_encode_param(rest))
-            } else {
-                r.action_data.clone()
-            };
-            SearchResult {
-                source: "quicklink".into(),
-                title: format!("{} «{}»", r.trigger_keyword, rest),
-                subtitle: format!("{} → {}", r.title, url),
-                icon: None,
-                action_type: "url".into(),
-                action_data: serde_json::json!({ "url": url, "id": r.id }).to_string(),
-                score: 15000,
-            }
+    // 切 cmd（/ 后到空格前）+ params（空格后）
+    let (cmd, params) = match rest.find(char::is_whitespace) {
+        Some(i) => (&rest[..i], rest[i..].trim()),
+        None => (rest, ""),
+    };
+    let mut scored: Vec<(i32, SearchResult)> = rows
+        .iter()
+        .filter(|r| r.is_enabled && !r.trigger_keyword.is_empty())
+        .filter_map(|r| {
+            let score = match_score(cmd, &r.trigger_keyword)?;
+            Some((score, slash_result_with_params(r, params)))
         })
-        .collect()
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.into_iter().take(10).map(|(_, r)| r).collect()
 }
 
-/// URL 参数编码（百分比编码），用于 Quicklink URL 模板替换。
-fn url_encode_param(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => result.push_str(&format!("%{:02X}", byte)),
-        }
+/// 构造 slash 命令候选结果（无 params 版，用于仅 "/" 时列全部）。
+fn slash_result(r: &octopus_infra::db::ActionBarItem) -> SearchResult {
+    slash_result_with_params(r, "")
+}
+
+fn slash_result_with_params(
+    r: &octopus_infra::db::ActionBarItem,
+    params: &str,
+) -> SearchResult {
+    SearchResult {
+        source: "slash".into(),
+        title: format!("/{}", r.trigger_keyword),
+        subtitle: r.title.clone(),
+        icon: None,
+        action_type: r.action_type.clone(),
+        action_data: serde_json::json!({
+            "id": r.id,
+            "cmd": r.trigger_keyword,
+            "params": params,
+            "action_type": r.action_type,
+            "action_data": r.action_data,
+        })
+        .to_string(),
+        score: 0,
     }
-    result
 }
 
 #[cfg(test)]
-mod tests {
+mod slash_command_tests {
     use super::*;
+    use octopus_infra::db::ActionBarItem;
 
-    #[test]
-    fn url_encode_param_basic() {
-        assert_eq!(url_encode_param("hello"), "hello");
-        assert_eq!(url_encode_param("hello world"), "hello%20world");
-        assert_eq!(url_encode_param("a+b=c"), "a%2Bb%3Dc");
-        assert_eq!(url_encode_param("中文"), "%E4%B8%AD%E6%96%87");
-        assert_eq!(url_encode_param(""), "");
+    /// 构造测试用 ActionBarItem（trigger_keyword 非空才进 slash 匹配）。
+    /// 字段以 crates/infra/src/db/action_bar.rs 的真实 struct 为准。
+    fn item(id: i64, _over: &str, trigger: &str, action_type: &str) -> ActionBarItem {
+        ActionBarItem {
+            id,
+            parent_id: None,
+            title: format!("Test {}", id),
+            icon: String::new(),
+            action_type: action_type.into(),
+            action_data: "https://example.com/?q={query}".into(),
+            sort_order: 0,
+            is_system: false,
+            is_enabled: true,
+            is_async: false,
+            write_output_to_clipboard: false,
+            shortcut: String::new(),
+            agent: String::new(),
+            accepts: "text".into(),
+            trigger_keyword: trigger.into(),
+            global_shortcut: String::new(),
+            need_voice: false,
+            app_bundle_ids: String::new(),
+        }
     }
 
     #[test]
-    fn url_encode_param_safe_chars() {
-        assert_eq!(url_encode_param("A-Z0-9-_.~"), "A-Z0-9-_.~");
+    fn slash_with_cmd_and_params_matches() {
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("/google hello", &rows);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, "slash");
+        let data: serde_json::Value = serde_json::from_str(&results[0].action_data).unwrap();
+        assert_eq!(data["cmd"], "google");
+        assert_eq!(data["params"], "hello");
+        assert_eq!(data["id"], 1);
     }
 
     #[test]
-    fn quicklink_keyword_no_keyword_returns_empty() {
-        // 单词查询（无空格）不触发关键词模式
-        assert!(search_quicklink_keywords("translate", &[]).is_empty());
-        assert!(search_quicklink_keywords("hello", &[]).is_empty());
+    fn slash_cmd_no_params() {
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("/google", &rows);
+        assert_eq!(results.len(), 1);
+        let data: serde_json::Value = serde_json::from_str(&results[0].action_data).unwrap();
+        assert_eq!(data["params"], "");
     }
 
     #[test]
-    fn quicklink_keyword_only_space_returns_empty() {
-        // keyword 后只有空格不算
-        assert!(search_quicklink_keywords("tr   ", &[]).is_empty());
+    fn slash_only_returns_all_commands() {
+        // 仅 "/" → 返回所有配了 trigger_keyword 的项
+        let rows = vec![item(1, "", "google", "url"), item(2, "", "tolaria", "agent")];
+        let results = search_slash_commands("/", &rows);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn slash_fuzzy_matches_partial() {
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("/goo", &rows);
+        assert_eq!(results.len(), 1); // fuzzy 命中
+    }
+
+    #[test]
+    fn slash_no_match_returns_empty() {
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("/xyz", &rows);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn non_slash_query_returns_empty() {
+        let rows = vec![item(1, "", "google", "url")];
+        let results = search_slash_commands("google hello", &rows);
+        assert!(results.is_empty()); // 不以 / 开头，不触发 slash 匹配
+    }
+
+    #[test]
+    fn slash_matches_all_action_types() {
+        // agent/ai/script 类型配了 trigger_keyword 也能匹配
+        let rows = vec![item(1, "", "tolaria", "agent")];
+        let results = search_slash_commands("/tolaria", &rows);
+        assert_eq!(results.len(), 1);
+        let data: serde_json::Value = serde_json::from_str(&results[0].action_data).unwrap();
+        assert_eq!(data["action_type"], "agent");
+    }
+
+    #[test]
+    fn slash_empty_trigger_keyword_excluded() {
+        let rows = vec![item(1, "", "", "url")]; // trigger_keyword 空
+        let results = search_slash_commands("/anything", &rows);
+        assert!(results.is_empty());
     }
 }
