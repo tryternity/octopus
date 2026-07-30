@@ -217,10 +217,10 @@ mod tests {
 
     #[test]
     fn test_parse_image_fallbacks() {
-        // 标准常量解析为编码链（2026-07-30 起默认 jpeg:100，无 fallback）
+        // 标准常量解析为编码链（2026-07-30 起默认 jpeg:92，无 fallback）
         let chain = parse_image_fallbacks(octopus_infra::consts::IMAGE_SAVE_QUALITY);
         assert_eq!(chain.len(), 1);
-        assert!(matches!(chain[0], EncodeAttempt::Jpeg(100)));
+        assert!(matches!(chain[0], EncodeAttempt::Jpeg(92)));
 
         // thumb 链（默认 jpeg:5）
         let thumb_chain = parse_image_fallbacks(octopus_infra::consts::THUMB_SAVE_QUALITY);
