@@ -55,6 +55,7 @@ export type KeyAction =
   | { type: "search-tab"; dir: 1 | -1 }
   | { type: "search-nav"; dir: 1 | -1 }
   | { type: "search-enter" }
+  | { type: "slash-complete" }  // hook: Tab 在 slash 模式补全选中标题 + 空格 + 锁定
   | { type: "menu-move"; forward: boolean }
   | { type: "menu-toggle-layer" }
   | { type: "menu-enter" }
@@ -128,8 +129,16 @@ export function decideKeyAction(
 
   // 7-11. 搜索模式（query 非空）
   if (ctx.mode === "search") {
+    // slash 模式：Tab → 补全（不切 tab）；←/→ 放行给浏览器做原生光标移动
+    // （否则 ARROW_AS_TAB=true 时 ←/→ 会切 tab，误清空已输参数）。
+    if (ctx.activeTab === "slash") {
+      if (e.key === "Tab") return { type: "slash-complete" };
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") return { type: "passthrough" };
+    }
     const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
-    if (dir !== null) return { type: "search-tab", dir: dir ? 1 : -1 };
+    if (dir !== null) {
+      return { type: "search-tab", dir: dir ? 1 : -1 };
+    }
     if (e.key === "ArrowDown") return { type: "search-nav", dir: 1 };
     if (e.key === "ArrowUp") return { type: "search-nav", dir: -1 };
     if (e.key === "Enter") return { type: "search-enter" };

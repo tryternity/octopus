@@ -133,7 +133,7 @@ export default function ActionBarPanel({
               id: editingId, title: editingForm.title || "", icon: editingForm.icon || "",
               actionType: "script", actionData: editingForm.actionData || "",
               isEnabled, isAsync, writeOutputToClipboard: writeOutput, shortcut, agent: "",
-              accepts: "text", triggerKeyword: "", appBundleIds: editingForm.appBundleIds ?? "",
+              accepts: "text", triggerKeyword: editingForm.triggerKeyword || "", appBundleIds: editingForm.appBundleIds ?? "",
             });
           }
           await invoke("set_global_shortcut", { id: editingId, globalShortcut: editingForm.globalShortcut ?? "" });
@@ -148,7 +148,7 @@ export default function ActionBarPanel({
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: editingForm.actionType === "submenu" ? "any" : (editingForm.accepts || "text"),
-          triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
+          triggerKeyword: editingForm.actionType !== "submenu" ? (editingForm.triggerKeyword || "") : "",
           isEnabled: editingForm.isEnabled ?? true, appBundleIds: editingForm.appBundleIds ?? "",
         });
         if (editingForm.actionType !== "submenu") {
@@ -165,7 +165,7 @@ export default function ActionBarPanel({
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
           agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
           accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
-          triggerKeyword: editingForm.actionType === "url" ? (editingForm.triggerKeyword || "") : "",
+          triggerKeyword: editingForm.actionType !== "submenu" ? (editingForm.triggerKeyword || "") : "",
           appBundleIds: editingForm.appBundleIds ?? "",
         });
         if (editingForm.actionType !== "submenu") {

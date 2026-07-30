@@ -41,6 +41,8 @@ export interface ActionBarKeydownParams {
   setSubSelectedIdx: (v: number | ((p: number) => number)) => void;
   setView: (v: View) => void;
   setFocusLayer: (v: "main" | "sub") => void;
+  // slash Tab 补全时锁定选中菜单项 id（null = 未锁定）
+  setSlashLockedItemId: (v: number | null) => void;
   // 命令回调
   executeItem: (item: ActionBarItem) => void;
   executeSearchResult: (r: SearchResult) => void;
@@ -116,6 +118,29 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
           const results = p.filteredResultsRef.current;
           const selected = results[p.searchSelectedIdxRef.current] ?? results[0];
           if (selected) p.executeSearchResult(selected);
+          return;
+        }
+
+        case "slash-complete": {
+          // slash 模式 Tab：补全选中候选的标题 + 空格到输入框，并锁定选中菜单 id。
+          // 边界：无候选 / 无选中 → no-op（不补全，preventDefault 已发生但不改状态）。
+          // 标题取自 action_data.title（v2 Task 1 后端已携带），id 取 action_data.id。
+          const results = p.filteredResultsRef.current;
+          const selected = results[p.searchSelectedIdxRef.current] ?? results[0];
+          if (!selected) return;
+          let data: { title?: string; id?: number } = {};
+          try {
+            data = JSON.parse(selected.actionData || "{}");
+          } catch {
+            return; // actionData 损坏 → 不补全（保守）
+          }
+          const title = data.title;
+          const id = data.id;
+          if (typeof title !== "string" || typeof id !== "number") return;
+          // 补全后 query = "/标题 "（前导 / 与后置空格），后续输参数正常。
+          p.setQuery("/" + title + " ");
+          p.setSlashLockedItemId(id);
+          p.inputRef.current?.focus();
           return;
         }
 

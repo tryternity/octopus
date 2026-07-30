@@ -69,6 +69,9 @@ export default function ActionBar() {
   const [instantResults, setInstantResults] = useState<SearchHit[]>([]);
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
   const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
+  // slash Tab 补全锁定的菜单项 id。非空时：query 变化不重新搜索（保持候选），
+  // 执行用此 id + query 参数（不从文本解析命令）。解锁条件见 query effect。
+  const [slashLockedItemId, setSlashLockedItemId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastImeKeyTime = useRef(0);
@@ -230,6 +233,7 @@ export default function ActionBar() {
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]);
         setActiveTab("all"); setSearchSelectedIdx(0);
+        setSlashLockedItemId(null);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
         setContext(ctx);
@@ -338,9 +342,46 @@ export default function ActionBar() {
   // 前端单路流式：150ms 防抖避免逐字符打爆后端；payload.runId 校验防旧批次串扰；
   // 每次 batch 用最新结果整体替换（后端 emit 的是累积 top-N，不是单 Provider 增量）。
   // tab 参数 = 当前选中 Tab，后端据此决定哪些 Provider 跑（all → 全部）。
+  // 输入 / 开头 → 自动跳 slash tab（命令模式）。
+  // 不在删掉 / 时强制切回 all——用户可能想手动切（query 清空时下方 reset effect 已兜底回 all）。
+  useEffect(() => {
+    if (query.startsWith("/") && activeTab !== "slash") {
+      setActiveTab("slash");
+    }
+  }, [query, activeTab]);
+
+  // slash 补全锁定后的解锁检测（必须在 search stream effect 之前声明，
+  // 保证解锁优先于"锁定时跳过搜索"判断）：
+  // - 切走 slash tab → 解锁（补全语义只在 slash tab 有效）
+  // - 锁定菜单项已不存在（设置页删除）→ 解锁
+  // - query 不再以 `/标题` 或 `、标题` 开头（用户删了标题/改了前缀）→ 解锁，恢复 fuzzy 候选
+  useEffect(() => {
+    if (slashLockedItemId === null) return;
+    if (activeTab !== "slash") {
+      setSlashLockedItemId(null);
+      return;
+    }
+    const locked = menuItems.find((i) => i.id === slashLockedItemId);
+    const title = locked?.title;
+    if (typeof title !== "string") {
+      setSlashLockedItemId(null);
+      return;
+    }
+    // 补全后 query 形如 `/标题 ` 或 `/标题 params`；标题含空格也成立（前缀整体匹配）
+    // 注：、（顿号）已在输入框 onChange normalize 成 /，此处只需检测 /
+    if (!query.startsWith("/" + title)) {
+      setSlashLockedItemId(null);
+    }
+  }, [query, slashLockedItemId, activeTab, menuItems]);
+
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
+      return;
+    }
+    // slash 补全锁定时：query 变化（输参数）不重新搜索，保持补全时的候选列表。
+    // 解锁由上方 effect 检测；解锁后 slashLockedItemId 变 null → 本 effect 重跑搜索。
+    if (slashLockedItemId !== null && activeTab === "slash") {
       return;
     }
     let cancelled = false;
@@ -357,7 +398,7 @@ export default function ActionBar() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, activeTab]);
+  }, [query, activeTab, slashLockedItemId]);
 
   // 组件卸载时清理 searchStream 的全局 listen 句柄（防内存泄漏）。
   // 注意：每次 query/activeTab 变化时 executeSearchStream 内部已 unlisten 旧监听，
@@ -373,6 +414,7 @@ export default function ActionBar() {
     if (!hasQuery(query)) {
       setActiveTab("all");
       setSearchSelectedIdx(0);
+      setSlashLockedItemId(null);
     }
   }, [query]);
 
@@ -520,6 +562,21 @@ export default function ActionBar() {
   const executeSearchResult = async (result: SearchHit) => {
     const data = parseActionData(result.actionData);
 
+    // url 模板替换 helper（I2）：slash 分流与 case "url" 共用，消除重复的
+    // {query}/{text} 替换 + open_url + dismiss 三段逻辑。调用方各自传入 fallbackText。
+    const openUrlTemplate = async (rawUrl: string, fallbackText: string, reason: string) => {
+      const url = rawUrl
+        .replace(/\{query\}/g, encodeURIComponent(fallbackText))
+        .replace(/\{text\}/g, encodeURIComponent(fallbackText));
+      if (!url) return;
+      try {
+        await invoke("open_url", { url });
+        invoke("action_bar_dismiss", { reason });
+      } catch (e) {
+        showQuickError(String(e).slice(0, 40));
+      }
+    };
+
     // 频次加权记录（fire-and-forget，失败不影响动作执行）。
     // spec §5.4：执行动作时记录，让 frequency.boost 在后续搜索中加权用户常用结果。
     // 放在 switch 之前，对所有 actionType 通用（含 launch_app/open_file/menu/url/copy）。
@@ -529,6 +586,79 @@ export default function ActionBar() {
       actionData: result.actionData,
       query: queryRef.current,
     }).catch(() => {});
+
+    // ── slash 命令分流 ──
+    // slash 结果的 actionType 是 DB 原始值（url/agent/ai/script），不是 "slash"，
+    // 故不能用 switch case "slash"，改在 switch 前按 source === "slash" 分流。
+    // action_data 形如 {id, cmd, params, action_type, action_data, title}（见 menu.rs:153）。
+    //
+    // v2 Task 2：补全锁定后执行用锁定 id（slashLockedItemIdRef），参数从 query 实时解析
+    // （用户补全后可能改了参数，data.params 是补全时的旧值）。未锁定时回退 data.id + data.params。
+    if (result.source === "slash") {
+      const lockedId = slashLockedItemIdRef.current;
+      const itemId = lockedId ?? (data.id as number);
+      // 参数：锁定时从 query 空格后解析（`/标题 params` 或 `、标题 params`）；
+      // 未锁定（直接 Enter 选中候选）用 action_data.params。
+      let params: string;
+      if (lockedId !== null) {
+        const locked = menuItemsRef.current.find((i) => i.id === lockedId);
+        const title = locked?.title;
+        if (typeof title === "string") {
+          // query 形如 `/标题 params`——去掉前缀（`/` 或 `、`）+ title，剩 trim 即参数
+          // ⚠️ 必须用 queryRef.current 而非闭包 query——keydown handler 空依赖，
+          // 闭包 query 恒为 mount 时的初始值，键盘 Enter 执行时参数会丢失。
+          const q = queryRef.current;
+          // 、（顿号）已在输入框 onChange normalize 成 /，此处只需检测 /
+          let afterTitle = q.startsWith("/" + title) ? q.slice(1 + title.length) : "";
+          params = afterTitle.trim();
+        } else {
+          // 锁定项已删除（菜单改了）→ 回退 data.params 兜底
+          params = (data.params as string) || "";
+        }
+      } else {
+        params = (data.params as string) || "";
+      }
+      const actionType = (data.action_type as string) || result.actionType;
+      const item = menuItemsRef.current.find((i) => i.id === itemId);
+      if (!item) {
+        console.warn("[slash] 菜单项未找到:", itemId);
+        return;
+      }
+      // url 类型：params 替换 {query}/{text}，无 params 用选中文本
+      if (actionType === "url") {
+        const ctx = contextRef.current;
+        const fallbackText = params || ctx?.text || "";
+        const rawUrl = (data.action_data as string) || item.actionData || "";
+        await openUrlTemplate(rawUrl, fallbackText, "slash-url");
+        return;
+      }
+      // agent need_voice + 无参数 → 联动语音录音路径（与 executeItem 一致）
+      if (actionType === "agent" && item.needVoice && !params) {
+        setView("loading");
+        try {
+          await invoke("trigger_agent_voice", { itemId });
+        } catch (e) {
+          showQuickError(String(e).slice(0, 40));
+          setView("main");
+        }
+        return;
+      }
+      // 其他（agent/ai/script + 有参数，或 agent 非 need_voice）→ execute_action_bar
+      // text 用 slash params，回退选中文本（execute_action_bar_inner 据 action_type 分流）
+      const ctx = contextRef.current;
+      const text = params || ctx?.text || "";
+      setView("loading");
+      try {
+        await invoke("execute_action_bar", { itemId, text });
+        // ai/script 异步结果由后端收口（action_bar_show_result 隐藏浮窗）；
+        // url/agent-without-voice 已在上面分流，此处多为 script/ai，同步 dismiss 兜底
+        invoke("action_bar_dismiss", { reason: "slash-exec" });
+      } catch (e) {
+        showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
+        setView("main");
+      }
+      return;
+    }
 
     switch (result.actionType) {
       case "launch_app": {
@@ -567,18 +697,7 @@ export default function ActionBar() {
         const ctx = contextRef.current;
         const fallbackText = ctx?.text || queryRef.current;
         const rawUrl = (data.url as string) || (data.action_data as string) || "";
-        // 替换 URL 模板中的 {query} / {text} 占位符
-        const url = rawUrl
-          .replace(/\{query\}/g, encodeURIComponent(fallbackText))
-          .replace(/\{text\}/g, encodeURIComponent(fallbackText));
-        if (url) {
-          try {
-            await invoke("open_url", { url });
-            invoke("action_bar_dismiss", { reason: "open-url" });
-          } catch (e) {
-            showQuickError(String(e).slice(0, 40));
-          }
-        }
+        await openUrlTemplate(rawUrl, fallbackText, "open-url");
         break;
       }
       case "shell": {
@@ -631,6 +750,9 @@ export default function ActionBar() {
   const queryRef = useRef("");
   const activeTabRef = useRef<TabId>("all");
   const searchSelectedIdxRef = useRef(0);
+  // slash 补全锁定的菜单 id ref——executeSearchResult 内异步读取最新值，
+  // 避免闭包陈旧（executeSearchResult 由 keyboard handler 调用，需拿实时锁定态）
+  const slashLockedItemIdRef = useRef<number | null>(null);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
@@ -638,6 +760,7 @@ export default function ActionBar() {
   useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   useEffect(() => { searchSelectedIdxRef.current = searchSelectedIdx; }, [searchSelectedIdx]);
+  useEffect(() => { slashLockedItemIdRef.current = slashLockedItemId; }, [slashLockedItemId]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -652,6 +775,7 @@ export default function ActionBar() {
     submenuParentIdRef,
     setQuery, setActiveTab, setSearchSelectedIdx,
     setSelectedIdx, setSubSelectedIdx, setView, setFocusLayer,
+    setSlashLockedItemId,
     executeItem, executeSearchResult,
   });
 
@@ -698,7 +822,12 @@ export default function ActionBar() {
         autoCorrect="off"
         spellCheck={false}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          // IME 兼容：中文输入法下 / 会变成 、（顿号）。开头 、 normalize 成 /，
+          // 后续逻辑只处理 /，避免显示 、google 这种违和文本。
+          const v = e.target.value;
+          setQuery(v.startsWith("、") ? "/" + v.slice("、".length) : v);
+        }}
         placeholder={t("actionbar.searchPlaceholder")}
         className="flex-1 bg-transparent text-[15px] font-medium text-foreground placeholder:text-muted-foreground/40 placeholder:font-normal outline-none border-none min-w-0"
         autoComplete="off"

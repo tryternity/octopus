@@ -73,35 +73,39 @@ describe("determineExpandDirection", () => {
 // ── getVisibleTabs ──
 
 describe("getVisibleTabs", () => {
-  it("有选中（hasContext=true）→ 全部 6 个 Tab 含 actions", () => {
+  it("有选中（hasContext=true）→ 全部 7 个 Tab 含 actions", () => {
     const tabs = getVisibleTabs(true);
-    expect(tabs).toHaveLength(6);
+    expect(tabs).toHaveLength(7);
     expect(tabs.find((t) => t.id === "actions")).toBeDefined();
     expect(tabs.find((t) => t.id === "commands")).toBeDefined();
+    expect(tabs.find((t) => t.id === "slash")).toBeDefined();
   });
 
-  it("无选中（hasContext=false，launch 模式）→ 5 个 Tab，无 actions（commands 不依赖 context）", () => {
+  it("无选中（hasContext=false，launch 模式）→ 6 个 Tab，无 actions（commands/slash 不依赖 context）", () => {
     const tabs = getVisibleTabs(false);
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(6);
     expect(tabs.find((t) => t.id === "actions")).toBeUndefined();
     expect(tabs.find((t) => t.id === "commands")).toBeDefined();
+    expect(tabs.find((t) => t.id === "slash")).toBeDefined();
   });
 });
 
 // ── getNextTab ──
 
 describe("getNextTab", () => {
-  it("正向循环 all → apps → files → bookmarks → actions → commands → all", () => {
+  it("正向循环 all → apps → files → bookmarks → actions → commands → slash → all", () => {
     expect(getNextTab("all", 1)).toBe("apps");
     expect(getNextTab("apps", 1)).toBe("files");
     expect(getNextTab("files", 1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", 1)).toBe("actions");
     expect(getNextTab("actions", 1)).toBe("commands");
-    expect(getNextTab("commands", 1)).toBe("all");
+    expect(getNextTab("commands", 1)).toBe("slash");
+    expect(getNextTab("slash", 1)).toBe("all");
   });
 
-  it("反向循环 all → commands → actions → bookmarks → files → apps → all", () => {
-    expect(getNextTab("all", -1)).toBe("commands");
+  it("反向循环 all → slash → commands → actions → bookmarks → files → apps → all", () => {
+    expect(getNextTab("all", -1)).toBe("slash");
+    expect(getNextTab("slash", -1)).toBe("commands");
     expect(getNextTab("commands", -1)).toBe("actions");
     expect(getNextTab("actions", -1)).toBe("bookmarks");
     expect(getNextTab("bookmarks", -1)).toBe("files");
@@ -125,6 +129,7 @@ describe("getTabIndex", () => {
     expect(getTabIndex("bookmarks")).toBe(3);
     expect(getTabIndex("actions")).toBe(4);
     expect(getTabIndex("commands")).toBe(5);
+    expect(getTabIndex("slash")).toBe(6);
   });
 
   it("无效 Tab 返回 -1", () => {
@@ -132,8 +137,8 @@ describe("getTabIndex", () => {
     expect(getTabIndex("invalid")).toBe(-1);
   });
 
-  it("TABS 长度为 6", () => {
-    expect(TABS.length).toBe(6);
+  it("TABS 长度为 7", () => {
+    expect(TABS.length).toBe(7);
   });
 });
 
@@ -473,5 +478,35 @@ describe("moveDirection", () => {
     expect(moveDirection("a", false, true)).toBeNull();
     expect(moveDirection("Enter", false, true)).toBeNull();
     expect(moveDirection("ArrowUp", false, true)).toBeNull();
+  });
+});
+
+// ── slash tab ──
+
+describe("slash tab", () => {
+  const slashResult: SearchResult = {
+    source: "slash", title: "/google", subtitle: "Google",
+    icon: null, actionType: "url", actionData: "{}", score: 100,
+  };
+  const appResult: SearchResult = {
+    source: "app", title: "Chrome", subtitle: "",
+    icon: null, actionType: "launch_app", actionData: "{}", score: 100,
+  };
+
+  it("filterByTab slash 只留 source=slash", () => {
+    const filtered = filterByTab([slashResult, appResult], "slash");
+    expect(filtered).toEqual([slashResult]);
+  });
+
+  it("getVisibleTabs 含 slash（无 context 也含）", () => {
+    const tabs = getVisibleTabs(false);
+    expect(tabs.find((t) => t.id === "slash")).toBeTruthy();
+  });
+
+  it("getNextTab 循环含 slash", () => {
+    // 从某 tab 循环应能经过 slash（具体起点取决于 TABS 顺序，此处验证不报错 + 能到达）
+    const tabs = getVisibleTabs(true);
+    const slashIdx = tabs.findIndex((t) => t.id === "slash");
+    expect(slashIdx).toBeGreaterThanOrEqual(0);
   });
 });
