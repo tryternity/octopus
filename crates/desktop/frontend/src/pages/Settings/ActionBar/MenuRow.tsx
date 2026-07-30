@@ -57,7 +57,14 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        <div className="flex shrink-0 items-center justify-end gap-0.5">
+        <div className="flex shrink-0 items-center justify-end gap-1.5">
+          {/* 斜杠命令名（trigger_keyword 非空时显示） */}
+          {item.triggerKeyword && (
+            <span className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+              /{item.triggerKeyword}
+            </span>
+          )}
+          {/* 全局快捷键 */}
           <ShortcutButton
             shortcut={item.globalShortcut ?? ""}
             capturing={props.capturing ?? false}

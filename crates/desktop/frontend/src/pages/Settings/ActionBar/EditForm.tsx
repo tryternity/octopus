@@ -168,8 +168,19 @@ export default function EditForm({
         </div>
 
         {type !== "submenu" && (
-          <FormField label={ti18n("settings.actionBar.globalShortcutLabel")}>
+          <FormField label={t("settings.actionBar.slashName")}>
             <div className="flex w-full items-center gap-2">
+              {/* 斜杠命令名 */}
+              <input
+                className="w-28 shrink-0 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
+                placeholder={t("settings.actionBar.slashNamePlaceholder")}
+                value={form.triggerKeyword || ""}
+                onChange={(e) => {
+                  const val = e.target.value.trim().toLowerCase();
+                  onChange({ ...form, triggerKeyword: val });
+                }}
+              />
+              {/* 全局快捷键（同一行） */}
               <ShortcutButton
                 shortcut={form.globalShortcut ?? ""}
                 capturing={capturingGlobal}
@@ -178,7 +189,7 @@ export default function EditForm({
               <button
                 onClick={() => form.globalShortcut && onChange({ ...form, globalShortcut: "" })}
                 className={cn(
-                  "ml-auto rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+                  "rounded p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
                   form.globalShortcut ? "" : "invisible pointer-events-none",
                 )}
                 aria-label={ti18n("settings.actionBar.clearShortcut")}
@@ -186,6 +197,11 @@ export default function EditForm({
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
+            {form.triggerKeyword && !TITLE_REGEX.test(form.triggerKeyword) && (
+              <p className="mt-1 text-[11px] text-destructive">
+                {t("settings.actionBar.slashNameInvalid")}
+              </p>
+            )}
           </FormField>
         )}
 
@@ -210,28 +226,6 @@ export default function EditForm({
                   />
                   <span className="text-xs text-muted-foreground">{t("settings.actionBar.writeToClipboard")}</span>
                 </div>
-              )}
-            </div>
-          </FormField>
-        )}
-
-        {/* / 命令名（trigger_keyword）——所有动作类型可配，submenu 除外 */}
-        {type !== "submenu" && (
-          <FormField label={t("settings.actionBar.slashName")}>
-            <div className="space-y-1">
-              <input
-                className="w-28 bg-background border border-border rounded-md px-3 py-1.5 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
-                placeholder={t("settings.actionBar.slashNamePlaceholder")}
-                value={form.triggerKeyword || ""}
-                onChange={(e) => {
-                  const val = e.target.value.trim().toLowerCase();
-                  onChange({ ...form, triggerKeyword: val });
-                }}
-              />
-              {form.triggerKeyword && !TITLE_REGEX.test(form.triggerKeyword) && (
-                <p className="text-[11px] text-destructive">
-                  {t("settings.actionBar.slashNameInvalid")}
-                </p>
               )}
             </div>
           </FormField>
