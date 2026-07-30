@@ -58,8 +58,6 @@ export type KeyAction =
   | { type: "menu-move"; forward: boolean }
   | { type: "menu-toggle-layer" }
   | { type: "menu-enter" }
-  | { type: "open-submenu"; parentId: number; subIdx: number }
-  | { type: "close-submenu" }
   | { type: "alt-execute"; item: ActionBarItem }
   | { type: "alt-goto-sub"; idx: number }
   | { type: "alt-goto-main"; idx: number; expandSubmenu: boolean; parentId?: number; subIdx?: number };
