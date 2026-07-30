@@ -15,9 +15,9 @@ use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 
 /// 繁→简单字对照表（编译期嵌入）。
-const T2S_DATA: &str = include_str!("../data/t2s.txt");
+const T2S_DATA: &str = include_str!("../../data/t2s.txt");
 /// 简→繁单字对照表（编译期嵌入）。
-const S2T_DATA: &str = include_str!("../data/s2t.txt");
+const S2T_DATA: &str = include_str!("../../data/s2t.txt");
 
 fn t2s_map() -> &'static HashMap<char, char> {
     static MAP: OnceCell<HashMap<char, char>> = OnceCell::new();
