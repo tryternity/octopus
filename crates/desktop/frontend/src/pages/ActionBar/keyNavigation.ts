@@ -55,6 +55,7 @@ export type KeyAction =
   | { type: "search-tab"; dir: 1 | -1 }
   | { type: "search-nav"; dir: 1 | -1 }
   | { type: "search-enter" }
+  | { type: "slash-complete" }  // hook: Tab 在 slash 模式补全选中标题 + 空格 + 锁定
   | { type: "menu-move"; forward: boolean }
   | { type: "menu-toggle-layer" }
   | { type: "menu-enter" }
@@ -129,7 +130,12 @@ export function decideKeyAction(
   // 7-11. 搜索模式（query 非空）
   if (ctx.mode === "search") {
     const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
-    if (dir !== null) return { type: "search-tab", dir: dir ? 1 : -1 };
+    if (dir !== null) {
+      // slash 模式 Tab → 补全（不切 tab）。Shift+Tab 仍走补全（hook 内部对补全无方向语义，
+      // 补全只取当前选中项；若想"反向补全上一项"需另行设计，此处保持简单）。
+      if (ctx.activeTab === "slash") return { type: "slash-complete" };
+      return { type: "search-tab", dir: dir ? 1 : -1 };
+    }
     if (e.key === "ArrowDown") return { type: "search-nav", dir: 1 };
     if (e.key === "ArrowUp") return { type: "search-nav", dir: -1 };
     if (e.key === "Enter") return { type: "search-enter" };

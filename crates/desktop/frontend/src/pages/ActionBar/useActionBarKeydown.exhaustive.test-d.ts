@@ -27,6 +27,7 @@ type HandledActionTypes =
   | "search-tab"
   | "search-nav"
   | "search-enter"
+  | "slash-complete"
   | "menu-move"
   | "menu-toggle-layer"
   | "menu-enter"

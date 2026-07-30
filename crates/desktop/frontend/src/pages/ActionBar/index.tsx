@@ -69,6 +69,9 @@ export default function ActionBar() {
   const [instantResults, setInstantResults] = useState<SearchHit[]>([]);
   const [searchSelectedIdx, setSearchSelectedIdx] = useState(0);
   const [expandDirection, setExpandDirection] = useState<ExpandDirection>("down");
+  // slash Tab 补全锁定的菜单项 id。非空时：query 变化不重新搜索（保持候选），
+  // 执行用此 id + query 参数（不从文本解析命令）。解锁条件见 query effect。
+  const [slashLockedItemId, setSlashLockedItemId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const baseWinPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastImeKeyTime = useRef(0);
@@ -230,6 +233,7 @@ export default function ActionBar() {
         setView("main"); setSelectedIdx(0); setFocusLayer("main");
         setQuery(""); setInstantResults([]);
         setActiveTab("all"); setSearchSelectedIdx(0);
+        setSlashLockedItemId(null);
         // 清空 stale 位置——等 compute() 从后端重新读取
         baseWinPosRef.current = null;
         setContext(ctx);
@@ -346,9 +350,37 @@ export default function ActionBar() {
     }
   }, [query, activeTab]);
 
+  // slash 补全锁定后的解锁检测（必须在 search stream effect 之前声明，
+  // 保证解锁优先于"锁定时跳过搜索"判断）：
+  // - 切走 slash tab → 解锁（补全语义只在 slash tab 有效）
+  // - 锁定菜单项已不存在（设置页删除）→ 解锁
+  // - query 不再以 `/标题` 或 `、标题` 开头（用户删了标题/改了前缀）→ 解锁，恢复 fuzzy 候选
+  useEffect(() => {
+    if (slashLockedItemId === null) return;
+    if (activeTab !== "slash") {
+      setSlashLockedItemId(null);
+      return;
+    }
+    const locked = menuItems.find((i) => i.id === slashLockedItemId);
+    const title = locked?.title;
+    if (typeof title !== "string") {
+      setSlashLockedItemId(null);
+      return;
+    }
+    // 补全后 query 形如 `/标题 ` 或 `/标题 params`；标题含空格也成立（前缀整体匹配）
+    if (!query.startsWith("/" + title) && !query.startsWith("、" + title)) {
+      setSlashLockedItemId(null);
+    }
+  }, [query, slashLockedItemId, activeTab, menuItems]);
+
   useEffect(() => {
     if (!hasQuery(query)) {
       setInstantResults([]);
+      return;
+    }
+    // slash 补全锁定时：query 变化（输参数）不重新搜索，保持补全时的候选列表。
+    // 解锁由上方 effect 检测；解锁后 slashLockedItemId 变 null → 本 effect 重跑搜索。
+    if (slashLockedItemId !== null && activeTab === "slash") {
       return;
     }
     let cancelled = false;
@@ -365,7 +397,7 @@ export default function ActionBar() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, activeTab]);
+  }, [query, activeTab, slashLockedItemId]);
 
   // 组件卸载时清理 searchStream 的全局 listen 句柄（防内存泄漏）。
   // 注意：每次 query/activeTab 变化时 executeSearchStream 内部已 unlisten 旧监听，
@@ -381,6 +413,7 @@ export default function ActionBar() {
     if (!hasQuery(query)) {
       setActiveTab("all");
       setSearchSelectedIdx(0);
+      setSlashLockedItemId(null);
     }
   }, [query]);
 
@@ -556,10 +589,35 @@ export default function ActionBar() {
     // ── slash 命令分流 ──
     // slash 结果的 actionType 是 DB 原始值（url/agent/ai/script），不是 "slash"，
     // 故不能用 switch case "slash"，改在 switch 前按 source === "slash" 分流。
-    // action_data 形如 {id, cmd, params, action_type, action_data}（见 menu.rs:119）。
+    // action_data 形如 {id, cmd, params, action_type, action_data, title}（见 menu.rs:153）。
+    //
+    // v2 Task 2：补全锁定后执行用锁定 id（slashLockedItemIdRef），参数从 query 实时解析
+    // （用户补全后可能改了参数，data.params 是补全时的旧值）。未锁定时回退 data.id + data.params。
     if (result.source === "slash") {
-      const itemId = data.id as number;
-      const params = (data.params as string) || "";
+      const lockedId = slashLockedItemIdRef.current;
+      const itemId = lockedId ?? (data.id as number);
+      // 参数：锁定时从 query 空格后解析（`/标题 params` 或 `、标题 params`）；
+      // 未锁定（直接 Enter 选中候选）用 action_data.params。
+      let params: string;
+      if (lockedId !== null) {
+        const locked = menuItemsRef.current.find((i) => i.id === lockedId);
+        const title = locked?.title;
+        if (typeof title === "string") {
+          // query 形如 `/标题 params`——去掉前缀（`/` 或 `、`）+ title，剩 trim 即参数
+          // ⚠️ 必须用 queryRef.current 而非闭包 query——keydown handler 空依赖，
+          // 闭包 query 恒为 mount 时的初始值，键盘 Enter 执行时参数会丢失。
+          const q = queryRef.current;
+          let afterTitle = "";
+          if (q.startsWith("/" + title)) afterTitle = q.slice(1 + title.length);
+          else if (q.startsWith("、" + title)) afterTitle = q.slice("、".length + title.length);
+          params = afterTitle.trim();
+        } else {
+          // 锁定项已删除（菜单改了）→ 回退 data.params 兜底
+          params = (data.params as string) || "";
+        }
+      } else {
+        params = (data.params as string) || "";
+      }
       const actionType = (data.action_type as string) || result.actionType;
       const item = menuItemsRef.current.find((i) => i.id === itemId);
       if (!item) {
@@ -692,6 +750,9 @@ export default function ActionBar() {
   const queryRef = useRef("");
   const activeTabRef = useRef<TabId>("all");
   const searchSelectedIdxRef = useRef(0);
+  // slash 补全锁定的菜单 id ref——executeSearchResult 内异步读取最新值，
+  // 避免闭包陈旧（executeSearchResult 由 keyboard handler 调用，需拿实时锁定态）
+  const slashLockedItemIdRef = useRef<number | null>(null);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
@@ -699,6 +760,7 @@ export default function ActionBar() {
   useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
   useEffect(() => { searchSelectedIdxRef.current = searchSelectedIdx; }, [searchSelectedIdx]);
+  useEffect(() => { slashLockedItemIdRef.current = slashLockedItemId; }, [slashLockedItemId]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -713,6 +775,7 @@ export default function ActionBar() {
     submenuParentIdRef,
     setQuery, setActiveTab, setSearchSelectedIdx,
     setSelectedIdx, setSubSelectedIdx, setView, setFocusLayer,
+    setSlashLockedItemId,
     executeItem, executeSearchResult,
   });
 

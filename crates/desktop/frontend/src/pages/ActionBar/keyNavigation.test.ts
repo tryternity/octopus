@@ -105,6 +105,18 @@ describe("decideKeyAction - 搜索模式", () => {
   it("Enter → search-enter", () => {
     expect(decideKeyAction(key({ key: "Enter" }), ctx({ mode: "search", lastImeKeyTime: 0 }))).toEqual({ type: "search-enter" });
   });
+
+  // slash 模式 Tab → 补全（不切 tab）
+  it("slash 模式 Tab → slash-complete", () => {
+    expect(decideKeyAction(key({ key: "Tab" }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "slash" }))).toEqual({ type: "slash-complete" });
+  });
+  it("slash 模式 Shift+Tab → slash-complete（补全对方向不敏感）", () => {
+    expect(decideKeyAction(key({ key: "Tab", shiftKey: true }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "slash" }))).toEqual({ type: "slash-complete" });
+  });
+  // 非 slash 模式下 Tab 仍切 tab（回归保护）
+  it("all 模式 Tab → search-tab（非 slash 不补全）", () => {
+    expect(decideKeyAction(key({ key: "Tab" }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "all" }))).toEqual({ type: "search-tab", dir: 1 });
+  });
 });
 
 describe("decideKeyAction - 菜单模式移动", () => {
