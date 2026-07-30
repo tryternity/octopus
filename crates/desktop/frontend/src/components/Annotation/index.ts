@@ -6,6 +6,15 @@
 export { useAnnotationState } from "./useAnnotationState";
 export type { AnnotationState } from "./useAnnotationState";
 
+export { useAnnotationInteraction } from "./useAnnotationInteraction";
+export type {
+  UseAnnotationInteractionOptions,
+  AnnotationInteraction,
+  ToolContext,
+  TextDraft,
+  ClientToNatural,
+} from "./useAnnotationInteraction";
+
 export { AnnotationToolbar } from "./AnnotationToolbar";
 export type { AnnotationToolbarProps } from "./AnnotationToolbar";
 

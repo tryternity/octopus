@@ -2,12 +2,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import {
-  type Annotation,
-  type Tool,
   drawAnnotation,
   drawMosaic,
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
+import { useAnnotationState, useAnnotationInteraction } from "@/components/Annotation";
 import Toolbar from "./Toolbar";
 import { AnnotationSvg } from "./AnnotationSvg";
 import { computeVisibleRect, visibleToViewport, computeSrcSlice } from "./viewportMath";
@@ -45,17 +44,20 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // 抓手平移中（tool==="none" 未命中标注时按住拖拽平移视口，免拖滚动条）
   const [panning, setPanning] = useState(false);
 
-  const [tool, setTool] = useState<Tool>("none");
-  const [toolColor, setToolColor] = useState("#ef4444");
-  const [toolWidth, setToolWidth] = useState(3);
-  const [toolFontSize, setToolFontSize] = useState(20);
-  const [filled, setFilled] = useState(false);
+  // ── 标注状态（hook 抽取，与 Screenshot / RecordAnnotation 共用）────────────
+  const annotation = useAnnotationState();
+  const {
+    tool, setTool,
+    toolColor, setToolColor, toolColorRef,
+    toolWidth, setToolWidth,
+    toolFontSize, setToolFontSize, toolFontSizeRef,
+    toolFilled, setToolFilled, toolFilledRef,
+    annotations, setAnnotations,
+    addAnnotation, undoAnnotation, redoAnnotation,
+    redoAvailable, clearAllAnnotations,
+  } = annotation;
+
   const [popoverDismissKey, setPopoverDismissKey] = useState(0);
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const redoStackRef = useRef<Annotation[]>([]);
-  const [redoAvailable, setRedoAvailable] = useState(false);
-  // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
-  const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   // OCR/QR 轴：从 hooks 引入（与标注/canvas 零耦合，2026-07-30 拆出）
   const { ocrBlocks, ocrOverlay, ocrCopied, ocrWarn, ocrCopiedText, handleOcr, handleOcrBlockCopy } = useOcr(imageId);
@@ -70,29 +72,22 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   const [fullNatW, setFullNatW] = useState(0);
   const [fullNatH, setFullNatH] = useState(0);
 
-  // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
-  const drawingRef = useRef<Annotation | null>(null);
-  const dragRef = useRef<{ idx: number; dx: number; dy: number } | null>(null);
-  // 橡皮擦按下中（true 时 mousemove 持续擦；松开复位）
-  const erasingRef = useRef(false);
-  const toolColorRef = useRef("#ef4444");
-  const toolWidthRef = useRef(3);
-  const toolFontSizeRef = useRef(20);
+  // 交互 refs（避免重渲染抖动 + 拖拽用最新值）—— drawingRef/dragRef/erasingRef 由
+  // useAnnotationInteraction 内部持有；这里保留 zoom/位图/平移相关的本组件独有 ref。
   const zoomRef = useRef(1);
   const scaledBitmapRef = useRef<ImageBitmap | null>(null);
   const zoomVersionRef = useRef(0);
   const userZoomedRef = useRef(false);
   // fit 模式：'fitWindow' | 'fitWidth' | 'manual'。ResizeObserver 据此决定是否自动重算
   const fitModeRef = useRef<'fitWindow' | 'fitWidth' | 'manual'>('fitWindow');
-  // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
+  // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）。
+  // textWidth 计算也读它（hook 的 commitText 不支持 textWidth，由本组件 wrapper 补）。
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
-  // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
-  const textDraftRef = useRef<{ nx: number; ny: number; val: string } | null>(null);
-  const [textDraft, setTextDraft] = useState<{ nx: number; ny: number; val: string } | null>(null);
 
-  const setToolColorSync = (c: string) => { toolColorRef.current = c; setToolColor(c); };
-  const setToolWidthSync = (n: number) => { toolWidthRef.current = n; setToolWidth(n); };
-  const setToolFontSizeSync = (n: number) => { toolFontSizeRef.current = n; setToolFontSize(n); };
+  // 工具属性同步 setter：hook 已内置 ref 镜像（toolColorRef 等），直接转发即可。
+  const setToolColorSync = (c: string) => setToolColor(c);
+  const setToolWidthSync = (n: number) => setToolWidth(n);
+  const setToolFontSizeSync = (n: number) => setToolFontSize(n);
   const setZoomSync = (z: number, userInitiated = false) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
     zoomRef.current = clamped;
@@ -168,7 +163,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     zoomVersionRef.current++;
     userZoomedRef.current = false;
     fitModeRef.current = 'fitWindow';
-    drawingRef.current = null;
+    annotation.drawingRef.current = null;
     setAnnotations([]);
     setNatW(0);
     setNatH(0);
@@ -365,35 +360,46 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     return () => { clearTimeout(timer); zoomVersionRef.current++; };
   }, [zoom, natW, natH, imageId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // CSS 坐标（相对图片左上角，含滚动偏移）→ 自然坐标（/zoom）
-  const toNatural = (cssX: number, cssY: number) => {
-    return { nx: cssX / zoomRef.current, ny: cssY / zoomRef.current };
-  };
-
-  const canvasCoords = (e: React.MouseEvent) => {
-    // 手算图片在屏幕上的位置（不查 DOM 布局）
-    const sc = scrollContainerRef.current!;
+  // ── 标注鼠标交互（hook 抽取，与 Screenshot / RecordAnnotation 共用）────────────
+  // clientToNatural：屏幕 clientX/Y → 自然坐标。直接接收 clientX/Y（非 React 事件），
+  // 与 hook 期望的 ClientToNatural 签名一致。
+  const clientToNatural = useCallback((clientX: number, clientY: number) => {
+    const sc = scrollContainerRef.current;
+    // scrollContainer 尚未挂载时退化为 1:1（仅 mount 前的极端边界，不会进入实际绘制）
+    if (!sc) return { x: clientX, y: clientY };
     const scRect = sc.getBoundingClientRect();
     const imgScreenX = scRect.left + imgLeft - sc.scrollLeft;
     const imgScreenY = scRect.top + imgTop - sc.scrollTop;
-    return { cssX: e.clientX - imgScreenX, cssY: e.clientY - imgScreenY };
-  };
+    const z = zoomRef.current || 1;
+    return { x: (clientX - imgScreenX) / z, y: (clientY - imgScreenY) / z };
+  }, [imgLeft, imgTop]);
+  const interaction = useAnnotationInteraction({
+    clientToNatural,
+    natW,
+    natH,
+    state: annotation,
+  });
+  const {
+    draftAnn, textDraft, textDraftRef,
+    handleMouseDown, handleMouseMove, handleMouseUp,
+    setTextDraftVal,
+  } = interaction;
 
+  // commitText：本组件 wrapper——hook 的 commitText 不支持 textWidth，这里补上。
+  // 从 textInputRef 读 textarea 实际宽度（/zoom 还原为自然像素），供导出时折行参考。
   const commitText = () => {
     const d = textDraftRef.current;
     if (d && d.val.trim()) {
-      // 记录 textarea 实际宽度（自然像素），供导出时折行参考
       const textWidth = textInputRef.current
         ? textInputRef.current.clientWidth / zoomRef.current
         : undefined;
       addAnnotation({
-        type: "text", x1: d.nx, y1: d.ny, x2: d.nx, y2: d.ny,
+        type: "text", x1: d.x, y1: d.y, x2: d.x, y2: d.y,
         text: d.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current,
         textWidth,
       });
     }
-    textDraftRef.current = null;
-    setTextDraft(null);
+    interaction.cancelText();
   };
 
   // 抓手平移：tool==="none" 未命中标注时，按住拖动平移滚动视口（免拖滚动条）。
@@ -419,12 +425,19 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     window.addEventListener("mouseup", onUp);
   };
 
+  // 当前工具上下文（透传给 hook 的 handleMouseDown）
+  const toolCtx = () => ({
+    tool,
+    color: toolColorRef.current,
+    width: toolWidth,
+    fontSize: toolFontSizeRef.current,
+    filled: toolFilledRef.current,
+  });
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     // 用户开始操作画布 → 收起工具栏浮窗
     setPopoverDismissKey((k) => k + 1);
-    const { cssX, cssY } = canvasCoords(e);
-    const { nx, ny } = toNatural(cssX, cssY);
 
     // 文字草稿进行中：点击别处 = 提交当前文字
     if (textDraftRef.current) {
@@ -434,176 +447,39 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     // 全图加载中：仅允许选择/平移，禁止标注（thumb 坐标系 ≠ full 坐标系）
     if (loadingFullRef.current && tool !== "none" && tool !== "eraser") return;
 
-    // 橡皮擦：按下即擦（mousemove 持续擦），命中即推 redo 并移除
-    if (tool === "eraser") {
-      eraseAnnotationAt(nx, ny);
-      erasingRef.current = true;
-      return;
-    }
-
+    // tool === "none"：hitTest 命中 → 拖拽（交给 hook）；未命中 → 抓手平移（本组件独有）
     if (tool === "none") {
-      const idx = hitTestAnnotationPrecise(nx, ny, annotations);
-      if (idx != null) {
-        dragRef.current = { idx, dx: nx - annotations[idx].x1, dy: ny - annotations[idx].y1 };
-      } else {
-        // 未命中标注 → 抓手拖拽平移视口
+      const { x: nx, y: ny } = clientToNatural(e.clientX, e.clientY);
+      const idx = hitTestAnnotationPrecise(nx, ny, annotation.annotationsRef.current);
+      if (idx == null) {
         startPan(e);
+        return;
       }
+      handleMouseDown(e, toolCtx());
       return;
     }
 
+    // text 工具：hook 会建草稿，本组件补 textarea focus（autoFocus 对动态挂载不可靠）
     if (tool === "text") {
-      const d = { nx, ny, val: "" };
-      textDraftRef.current = d;
-      setTextDraft(d);
-      // autoFocus 不可靠：等 textarea 挂载后手动聚焦
+      handleMouseDown(e, toolCtx());
       setTimeout(() => textInputRef.current?.focus(), 10);
       return;
     }
 
-    // 序号：点击放置，自动递增编号
-    if (tool === "number") {
-      const maxNum = annotations.reduce((max, a) => {
-        if (a.type === "number" && a.number && a.number > max) return a.number;
-        return max;
-      }, 0);
-      const ann: Annotation = {
-        type: "number", x1: nx, y1: ny, x2: nx, y2: ny,
-        number: maxNum + 1,
-        color: toolColorRef.current, circleSize: 28,
-      };
-      drawingRef.current = ann;
-      addAnnotation(ann);
-      drawingRef.current = null;
-      setDraftAnn(null);
-      return;
-    }
-
-    // 画笔（自由曲线）：起 points 点序列
-    if (tool === "pen") {
-      drawingRef.current = {
-        type: "pen", x1: nx, y1: ny, x2: nx, y2: ny,
-        points: [[nx, ny]],
-        color: toolColorRef.current, lineWidth: toolWidthRef.current,
-      };
-      return;
-    }
-    // 荧光笔（pen 变体，粗线宽默认 15 + multiply 混合，渲染层处理样式）
-    if (tool === "highlight") {
-      drawingRef.current = {
-        type: "highlight", x1: nx, y1: ny, x2: nx, y2: ny,
-        points: [[nx, ny]],
-        color: toolColorRef.current, lineWidth: 15,
-      };
-      return;
-    }
-    // rect/oval/line/arrow 开始绘制（自然坐标）
-    drawingRef.current = {
-      type: tool as Annotation["type"],
-      x1: nx, y1: ny, x2: nx, y2: ny,
-      color: toolColorRef.current, lineWidth: toolWidthRef.current,
-      filled: (tool === "rect" || tool === "oval" || tool === "diamond") ? filled : undefined,
-    };
+    handleMouseDown(e, toolCtx());
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
-    const { cssX, cssY } = canvasCoords(e);
-    const { nx, ny } = toNatural(cssX, cssY);
-    // 橡皮擦按下拖动：持续擦除（命中即推 redo 并移除）
-    if (erasingRef.current && tool === "eraser") {
-      eraseAnnotationAt(nx, ny);
-      return;
-    }
-    if (dragRef.current) {
-      const { idx, dx, dy } = dragRef.current;
-      setAnnotations((prev) => prev.map((a, i) => {
-        if (i !== idx) return a;
-        const mx = nx - dx, my = ny - dy;
-        const w = a.x2 - a.x1, h = a.y2 - a.y1;
-        return { ...a, x1: mx, y1: my, x2: mx + w, y2: my + h };
-      }));
-      return;
-    }
-    if (drawingRef.current) {
-      // 画笔 / 荧光笔：push 新点到 points（自然坐标）
-      if ((drawingRef.current.type === "pen" || drawingRef.current.type === "highlight") && drawingRef.current.points) {
-        drawingRef.current.points.push([nx, ny]);
-        setDraftAnn({ ...drawingRef.current, points: [...drawingRef.current.points] });
-      } else {
-        drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
-        setDraftAnn({ ...drawingRef.current });
-      }
-      return;
-    }
+    handleMouseMove(e);
   };
 
   const onMouseUp = () => {
-    if (drawingRef.current) {
-      const ann = drawingRef.current;
-      drawingRef.current = null;
-      // 过滤误触：画笔/荧光笔按点数（≥2 才算画了一笔），其余按尺寸
-      const ok = (ann.type === "pen" || ann.type === "highlight")
-        ? (ann.points?.length ?? 0) >= 2
-        : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
-      if (ok) {
-        addAnnotation(ann);
-      }
-      setDraftAnn(null);
-    }
-    erasingRef.current = false;
-    dragRef.current = null;
+    handleMouseUp();
   };
 
-  const undo = () => {
-    setAnnotations((prev) => {
-      if (prev.length === 0) return prev;
-      redoStackRef.current.push(prev[prev.length - 1]);
-      setRedoAvailable(true);
-      return prev.slice(0, -1);
-    });
-  };
-  const redo = () => {
-    const ann = redoStackRef.current.pop();
-    if (ann) {
-      addAnnotation(ann);
-      setRedoAvailable(redoStackRef.current.length > 0);
-    }
-  };
-  // 新增标注时清空 redo stack
-  const addAnnotation = (ann: Annotation) => {
-    redoStackRef.current = [];
-    setRedoAvailable(false);
-    setAnnotations((prev) => [...prev, ann]);
-  };
-
-  // ── eraser / clear / delete ─────────────────
-  // eraser：从顶层（数组末尾）往下 hitTest，命中第一个 → 推 redo 并移除。
-  // 用函数式 setAnnotations 读最新 prev（避免 annotations 闭包陈旧）。
-  const eraseAnnotationAt = (x: number, y: number) => {
-    setAnnotations((prev) => {
-      for (let i = prev.length - 1; i >= 0; i--) {
-        const hitIdx = hitTestAnnotationPrecise(x, y, [prev[i]]);
-        if (hitIdx !== null) {
-          redoStackRef.current.push(prev[i]);
-          setRedoAvailable(true);
-          return prev.filter((_, j) => j !== i);
-        }
-      }
-      return prev;
-    });
-  };
-
-  // clearAll：清空全部标注，全部推入 redo（保持 redo 顺序）。
-  const clearAllAnnotations = () => {
-    setAnnotations((prev) => {
-      if (prev.length === 0) return prev;
-      for (let i = prev.length - 1; i >= 0; i--) {
-        redoStackRef.current.push(prev[i]);
-      }
-      setRedoAvailable(true);
-      return [];
-    });
-  };
+  // undo/redo 已抽到 useAnnotationState（与 Screenshot / RecordAnnotation 共用）
+  const undo = undoAnnotation;
+  const redo = redoAnnotation;
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
@@ -671,12 +547,16 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // useAnnotationState 的 toolFontSize 默认 16（与 Screenshot/RecordAnnotation 共用基线），
+  // ImagePreview 历史默认 20——迁移后保持原值（纯重构，不改默认字号）。
+  useEffect(() => { setToolFontSize(20); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // 图像格式：从 dataUrl 前缀解析（data:image/png;base64,… → PNG），底部 EXIF 条显示
   const fmt = dataUrl ? (dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+)/)?.[1] ?? "").toUpperCase() : "";
 
   // 文字草稿 textarea 显示位置（相对 canvas wrapper：自然 ×zoom）
   const draftBox = textDraft
-    ? { left: textDraft.nx * zoom, top: textDraft.ny * zoom, fs: toolFontSize * zoom }
+    ? { left: textDraft.x * zoom, top: textDraft.y * zoom, fs: toolFontSize * zoom }
     : null;
 
   return (
@@ -697,7 +577,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         ocrMode={ocrOverlay}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
-        filled={filled} setFilled={setFilled}
+        filled={toolFilled} setFilled={setToolFilled}
         popoverDismissKey={popoverDismissKey}
       />
       {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
@@ -808,16 +688,11 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                 autoCorrect="off"
                 spellCheck={false}
                 value={textDraft!.val}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  const next = { ...textDraft!, val };
-                  textDraftRef.current = next;
-                  setTextDraft(next);
-                }}
+                onChange={(e) => setTextDraftVal(e.target.value)}
                 onBlur={commitText}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitText(); }
-                  if (e.key === "Escape") { e.stopPropagation(); textDraftRef.current = null; setTextDraft(null); }
+                  if (e.key === "Escape") { e.stopPropagation(); interaction.cancelText(); }
                 }}
                 placeholder={t("imagePreview.textPlaceholder")}
                 className="absolute rounded bg-background px-1 py-0.5 shadow outline-none resize-none border border-border"
