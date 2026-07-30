@@ -129,11 +129,14 @@ export function decideKeyAction(
 
   // 7-11. 搜索模式（query 非空）
   if (ctx.mode === "search") {
+    // slash 模式：Tab → 补全（不切 tab）；←/→ 放行给浏览器做原生光标移动
+    // （否则 ARROW_AS_TAB=true 时 ←/→ 会切 tab，误清空已输参数）。
+    if (ctx.activeTab === "slash") {
+      if (e.key === "Tab") return { type: "slash-complete" };
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") return { type: "passthrough" };
+    }
     const dir = moveDirection(e.key, e.shiftKey, ARROW_AS_TAB);
     if (dir !== null) {
-      // slash 模式 Tab → 补全（不切 tab）。Shift+Tab 仍走补全（hook 内部对补全无方向语义，
-      // 补全只取当前选中项；若想"反向补全上一项"需另行设计，此处保持简单）。
-      if (ctx.activeTab === "slash") return { type: "slash-complete" };
       return { type: "search-tab", dir: dir ? 1 : -1 };
     }
     if (e.key === "ArrowDown") return { type: "search-nav", dir: 1 };

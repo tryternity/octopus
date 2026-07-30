@@ -113,6 +113,13 @@ describe("decideKeyAction - 搜索模式", () => {
   it("slash 模式 Shift+Tab → slash-complete（补全对方向不敏感）", () => {
     expect(decideKeyAction(key({ key: "Tab", shiftKey: true }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "slash" }))).toEqual({ type: "slash-complete" });
   });
+  // slash 模式 ←/→ 放行给浏览器做原生光标移动（不触发补全，防误清空参数）
+  it("slash 模式 ArrowLeft → passthrough（不补全）", () => {
+    expect(decideKeyAction(key({ key: "ArrowLeft" }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "slash" }))).toEqual({ type: "passthrough" });
+  });
+  it("slash 模式 ArrowRight → passthrough（不补全）", () => {
+    expect(decideKeyAction(key({ key: "ArrowRight" }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "slash" }))).toEqual({ type: "passthrough" });
+  });
   // 非 slash 模式下 Tab 仍切 tab（回归保护）
   it("all 模式 Tab → search-tab（非 slash 不补全）", () => {
     expect(decideKeyAction(key({ key: "Tab" }), ctx({ mode: "search", searchResultsCount: 3, activeTab: "all" }))).toEqual({ type: "search-tab", dir: 1 });

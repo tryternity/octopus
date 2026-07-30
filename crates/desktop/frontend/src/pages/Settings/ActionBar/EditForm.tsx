@@ -25,9 +25,9 @@ export interface EditFormProps {
   onCancel: () => void;
 }
 
-// 标题字符约束：中文 + 字母数字 + -_（支持 slash Tab 补全无歧义）
-// 中文范围 \u4e00-\u9fff 与下方长度权重正则一致（含扩展汉字）
-const TITLE_REGEX = /^[\u4e00-\u9fffa-zA-Z0-9_-]+$/;
+// 标题字符约束：CJK（中日韩）+ 字母数字 + -_（支持 slash Tab 补全无歧义）
+// 范围与下方长度权重正则一致（含中文扩展/平假名片假名/韩文）
+const TITLE_REGEX = /^[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7afa-zA-Z0-9_-]+$/;
 
 // ── 表单字段行 ──
 export const FormField = ({
