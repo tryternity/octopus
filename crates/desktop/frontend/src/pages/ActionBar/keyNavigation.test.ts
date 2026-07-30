@@ -169,6 +169,10 @@ describe("decideKeyAction - Alt 快捷键", () => {
     const a = decideKeyAction(key({ key: "1", altKey: true, code: "Digit1" }), ctx({ mainItems: items }));
     expect(a).toMatchObject({ type: "alt-goto-main", idx: 0, expandSubmenu: false });
   });
+  it("Alt 但 codeToChar 无效 → passthrough（§PRESERVE 行 778）", () => {
+    // codeToChar("") 返回 falsy → 不进字母/数字分支 → passthrough（不 preventDefault）
+    expect(decideKeyAction(key({ key: "¡", altKey: true, code: "" }), ctx())).toEqual({ type: "passthrough" });
+  });
 });
 
 describe("decideKeyAction - Enter/Space", () => {

@@ -7,7 +7,7 @@
 
 import { useEffect, type RefObject, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { decideKeyAction, type KeyContext } from "./keyNavigation";
+import { decideKeyAction, type KeyContext, type KeyAction } from "./keyNavigation";
 import { navigateResults, getNextTab, hasQuery } from "./searchLogic";
 import type { ActionBarItem, Context } from "./types";
 import type { TabId, View, SearchResult } from "./searchTypes";
@@ -72,7 +72,7 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
 
       // preventDefault 规则：放行类不 preventDefault，其余都 preventDefault。
       // swallow 刻意排除——它需要 preventDefault 但不执行其他副作用。
-      const passthroughTypes = ["passthrough", "ignore", "ime-composing", "ime-confirm-enter"];
+      const passthroughTypes: KeyAction["type"][] = ["passthrough", "ignore", "ime-composing", "ime-confirm-enter"];
       if (!passthroughTypes.includes(action.type)) {
         e.preventDefault();
       }
@@ -204,13 +204,8 @@ export function useActionBarKeydown(p: ActionBarKeydownParams): void {
             p.setSelectedIdx(action.idx);
             if (action.expandSubmenu && action.parentId !== undefined) {
               p.submenuParentIdRef.current = action.parentId;
-              const subs = p.menuItemsRef.current.filter((i) => i.isEnabled && i.parentId === action.parentId);
-              if (subs.length > 0 && subs[0].actionType === "url") {
-                const engineIdx = subs.findIndex((s) => s.title.toLowerCase() === p.searchEngineRef.current);
-                p.setSubSelectedIdx(action.subIdx ?? (engineIdx >= 0 ? engineIdx : 0));
-              } else {
-                p.setSubSelectedIdx(0);
-              }
+              // subIdx 已由 decideKeyAction 经 pickSubIdx 算好（keyNavigation.ts），hook 不重算
+              p.setSubSelectedIdx(action.subIdx ?? 0);
               p.setView("submenu");
             } else {
               p.submenuParentIdRef.current = null;

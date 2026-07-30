@@ -447,7 +447,7 @@ export function decideKeyAction(
       if (/^[a-z]$/.test(ch)) {
         const found = ctx.menuItems.find((i) => i.isEnabled && i.shortcut === ch);
         if (found) return { type: "alt-execute", item: found };
-        return { type: "passthrough" }; // 未命中，放行（复刻行 744-746：find 无果 fallthrough 到 return）
+        return { type: "swallow" }; // 未命中（复刻行 743-746：分支入口无条件 preventDefault，find 无果仍抑制）
       }
       // Alt+数字 → 定位菜单项
       if (/^[1-9]$/.test(ch)) {
@@ -465,8 +465,8 @@ export function decideKeyAction(
           }
           return { type: "alt-goto-main", idx, expandSubmenu: false };
         }
-        // idx 越界 → 原代码进 if 但啥也不做，仍 preventDefault（return 在 if 外）
-        return { type: "ignore" }; // 复刻行 770-772：越界时 setSelectedIdx 不调，但仍 preventDefault
+        // idx 越界 → 原代码分支入口（行 751）无条件 preventDefault，越界不进 if 但仍抑制后 return（行 775）
+        return { type: "swallow" }; // 复刻行 770-772：越界时 setSelectedIdx 不调，但仍 preventDefault
       }
     }
     // Alt 但 codeToChar 无效 → 放行（§PRESERVE 行 778）
@@ -510,6 +510,8 @@ spec 把「命中 submenu → open-submenu」单列为 action，但原代码的�
 - **方案 B**：纯函数里算 next（需要 selectedIdx + items + forward），返回 open-submenu/close-submenu/menu-move 三选一。
 
 本计划用**方案 A**（更忠实原结构，hook 内 setSelectedIdx 回调原样保留）。若 review 倾向方案 B，把 `menu-move` 分支改成计算 next 后三选一。
+
+**注记（swallow 修正回填）**：Task 2 Step 3 的 decideKeyAction 代码块里，Alt+字母未命中原写 `passthrough`、Alt+数字越界原写 `ignore`（两者都不 preventDefault）——实施期（commit 1ab9f7dd）发现原 handler 分支入口是无条件 `e.preventDefault()`，故新增 `swallow` action（preventDefault 但不执行其他副作用）修正这两处。plan 是实施记录，已回填上面的 `swallow`。
 
 - [ ] **Step 4: 修正测试以匹配方案 A（菜单 Tab 移动返回 menu-move）**
 
