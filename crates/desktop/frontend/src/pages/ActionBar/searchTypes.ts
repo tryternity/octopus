@@ -2,7 +2,7 @@
 
 /** 搜索结果（与 Rust octopus_search::SearchResult 对齐，camelCase 序列化） */
 export interface SearchResult {
-  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "calculator" | "url" | "command" */
+  /** 结果来源："app" | "file" | "menu" | "bookmark" | "quicklink" | "calculator" | "url" | "command" | "slash" */
   source: string;
   /** 标题（应用名 / 文件名 / 菜单标题） */
   title: string;
