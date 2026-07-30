@@ -710,6 +710,7 @@ settings:
     slashName: "/ Command Name"
     slashNamePlaceholder: "e.g. google (type /google to trigger)"
     slashNameInvalid: Lowercase letters, digits, hyphens only; must start with a letter
+    titleInvalid: Title allows Chinese, letters, digits, hyphens, underscores only
     globalShortcutLabel: Global Shortcut
     globalShortcutHint: Global shortcut, runs without opening the menu
     clearShortcut: Clear shortcut
