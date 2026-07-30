@@ -39,7 +39,7 @@ export default function ActionBarPanel({
   const titleDraftRef = useRef<string | null>(null);
   titleDraftRef.current = titleDraft;
   const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
-  const [subCapturing, setSubCapturing] = useState<{ id: number; kind: "global" } | null>(null);
+  const [capturingItem, setCapturingItem] = useState<{ id: number; kind: "global" } | null>(null);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -253,16 +253,16 @@ export default function ActionBarPanel({
     return () => document.removeEventListener("keydown", handler, true);
   }, [inlineCapturingGlobal, selectedMain, updateMainInline]);
 
-  // 子菜单项行内快捷键录制
+  // 菜单项行内快捷键录制（主菜单 + 子菜单统一）
   useEffect(() => {
-    if (subCapturing === null) return;
-    const target = selectedSubs.find((s) => s.id === subCapturing.id);
-    if (!target) { setSubCapturing(null); return; }
+    if (capturingItem === null) return;
+    const target = [...mainItems, ...selectedSubs].find((s) => s.id === capturingItem.id);
+    if (!target) { setCapturingItem(null); return; }
     const handler = async (e: KeyboardEvent) => {
       e.preventDefault(); e.stopPropagation();
-      if (e.key === "Escape") { setSubCapturing(null); return; }
+      if (e.key === "Escape") { setCapturingItem(null); return; }
       if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
-      if (e.key === "Backspace" || e.key === "Delete") { updateItemInline(target, { globalShortcut: "" }); setSubCapturing(null); return; }
+      if (e.key === "Backspace" || e.key === "Delete") { updateItemInline(target, { globalShortcut: "" }); setCapturingItem(null); return; }
       const parts: string[] = [];
       if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
       if (e.altKey) parts.push("Alt");
@@ -272,11 +272,11 @@ export default function ActionBarPanel({
       const sc = parts.join("+");
       try { await invoke("check_shortcut", { shortcut: sc }); updateItemInline(target, { globalShortcut: sc }); }
       catch { /* ignore */ }
-      setSubCapturing(null);
+      setCapturingItem(null);
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
-  }, [subCapturing, selectedSubs, updateItemInline]);
+  }, [capturingItem, mainItems, selectedSubs, updateItemInline]);
 
   // 标题 draft debounce
   useEffect(() => {
@@ -363,6 +363,10 @@ export default function ActionBarPanel({
                   onMove={(dir) => handleMove(item.id, dir)}
                   onEdit={() => startEdit(item)}
                   onDelete={() => handleDelete(item.id)}
+                  showShortcuts
+                  capturing={capturingItem?.id === item.id}
+                  onCaptureShortcut={() => setCapturingItem({ id: item.id, kind: "global" })}
+                  onClearShortcut={() => updateItemInline(item, { globalShortcut: "" })}
                 />
               ))}
             </div>
@@ -478,8 +482,8 @@ export default function ActionBarPanel({
                             onEdit={() => startEdit(sub)}
                             onDelete={() => handleDelete(sub.id)}
                             showShortcuts
-                            capturing={subCapturing?.id === sub.id}
-                            onCaptureShortcut={() => setSubCapturing({ id: sub.id, kind: "global" })}
+                            capturing={capturingItem?.id === sub.id}
+                            onCaptureShortcut={() => setCapturingItem({ id: sub.id, kind: "global" })}
                             onClearShortcut={() => updateItemInline(sub, { globalShortcut: "" })}
                           />
                         ))}

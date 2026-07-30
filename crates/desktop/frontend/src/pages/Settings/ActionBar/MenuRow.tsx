@@ -86,7 +86,7 @@ export default function MenuRow(props: MenuRowProps) {
         </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
         <button
           onClick={(e) => { e.stopPropagation(); props.onMove(-1); }}
           disabled={isFirst}
