@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 终端窗口 label 前缀（实际 label = `terminal_<n>`，capabilities 用 `terminal_*`）。
 pub const WINDOW_LABEL_PREFIX: &str = "terminal_";
@@ -123,41 +123,117 @@ pub fn open_terminal_window(app_handle: &tauri::AppHandle, cwd: Option<&str>) ->
     }
 }
 
-/// 打开一个新的终端窗口并在其中运行指定命令（ActionBar agent 分支用）。
+/// agent 专用终端窗口的固定 label（单例——ActionBar agent 命令复用同一窗口）。
 ///
-/// 流程：open_terminal_window（总是新建窗口）→ 窗口 mount 后前端首个 tab 读 cwd
-/// query 启动 shell；command 经 emit "terminal://new-tab" 推送，前端 listen 后写入。
+/// 与托盘「新建终端」的多实例（`terminal_<n>`）不同：agent 命令期望确定性——
+/// 每次执行 agent 都聚焦同一个窗口并在其中新开 tab，而非每次弹新窗口。
+/// 存在则聚焦 + 新 tab（emit_to 定向，非全局广播）；不存在才建窗。
+pub const AGENT_WINDOW_LABEL: &str = "agent_command";
+
+/// 打开 agent 专用终端窗口（单例）并在其中运行指定命令。
+///
+/// - 窗口已存在 → 聚焦 + emit_to 定向 "terminal://new-tab" { cwd, command }（新 tab）
+/// - 窗口不存在 → 建窗（cwd 注入 URL）+ 延迟 emit_to 推送 command（兜底 mount 时序）
+///
+/// 用 emit_to 定向到 AGENT_WINDOW_LABEL，避免全局广播让其他终端窗口也开 tab。
 pub fn open_terminal_with_command(
     app_handle: &tauri::AppHandle,
     cwd: Option<&str>,
     command: &str,
 ) -> Result<(), String> {
-    open_terminal_window(app_handle, cwd)?;
-    // 新窗口的 React mount 是异步的，emit 可能在 listen 注册前发出而丢失。
-    // 用 250ms 延迟 emit 兜底 mount 完成时序（前端 useEffect 注册 listen 在首帧）。
-    let app = app_handle.clone();
-    let cmd = command.to_string();
-    let cwd_clone = cwd.map(|s| s.to_string());
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let _ = app.emit(
+    // 单例：窗口已存在 → 聚焦 + 定向 emit 新 tab
+    if let Some(win) = app_handle.get_webview_window(AGENT_WINDOW_LABEL) {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+            let ah = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                crate::platform::activation::activate_self();
+                let _ = ah.get_webview_window(AGENT_WINDOW_LABEL).map(|w| w.set_focus());
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = win.set_focus();
+        }
+        let _ = win.show();
+        // 定向 emit：只发给 agent 窗口，不广播到其他终端窗口
+        let _ = app_handle.emit_to(
+            AGENT_WINDOW_LABEL,
             "terminal://new-tab",
             NewTabPayload {
-                cwd: cwd_clone,
-                command: Some(cmd),
+                cwd: cwd.map(|s| s.to_string()),
+                command: Some(command.to_string()),
             },
         );
-    });
-    log::info!(
-        "[terminal] open_terminal_with_command cwd={:?} command={}",
-        cwd, command
-    );
-    Ok(())
+        log::info!(
+            "[terminal] agent window reused, new tab cwd={:?} command={}",
+            cwd, command
+        );
+        return Ok(());
+    }
+
+    // 窗口不存在 → 建窗（单例 label）
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = app_handle.run_on_main_thread(|| {
+            crate::platform::activation::activate_self();
+            crate::ui::settings_window::set_dock_icon();
+        });
+    }
+
+    let bg = crate::ui::theme::window_bg_hex(WINDOW_LABEL_PREFIX);
+    let url = build_initial_url(cwd, bg.as_deref());
+    log::info!("[terminal] create agent window label={} url={}", AGENT_WINDOW_LABEL, url);
+
+    let win = WebviewWindowBuilder::new(app_handle, AGENT_WINDOW_LABEL, WebviewUrl::App(url.into()))
+        .title("Agent")
+        .inner_size(WIDTH, HEIGHT)
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .decorations(true)
+        .resizable(true)
+        .visible(false)
+        .center()
+        .build();
+
+    match win {
+        Ok(w) => {
+            let _ = w.show();
+            let _ = w.set_focus();
+            log::info!("[terminal] agent window created");
+            // 新窗口 React mount 是异步的，listen 在首帧注册。
+            // 延迟 emit_to 定向推送 command，兜底 mount 完成时序。
+            let app = app_handle.clone();
+            let cmd = command.to_string();
+            let cwd_clone = cwd.map(|s| s.to_string());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let _ = app.emit_to(
+                    AGENT_WINDOW_LABEL,
+                    "terminal://new-tab",
+                    NewTabPayload {
+                        cwd: cwd_clone,
+                        command: Some(cmd),
+                    },
+                );
+            });
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("[terminal] create agent window failed: {e}");
+            #[cfg(target_os = "macos")]
+            {
+                restore_accessory_if_no_terminal_window(app_handle);
+            }
+            Err(e.to_string())
+        }
+    }
 }
 
-/// 判断某 label 是否是终端窗口（`terminal_*` 前缀）。
+/// 判断某 label 是否是终端窗口（`terminal_*` 前缀 + agent 单例 `agent_command`）。
 pub fn is_terminal_window(label: &str) -> bool {
-    label.starts_with(WINDOW_LABEL_PREFIX)
+    label.starts_with(WINDOW_LABEL_PREFIX) || label == AGENT_WINDOW_LABEL
 }
 
 /// macOS：某终端窗口关闭后，仅当无其他常规窗口（含终端）存活时切回 Accessory。
@@ -234,8 +310,12 @@ mod tests {
 
     #[test]
     fn is_terminal_window_matches_prefix() {
+        // terminal_* 多实例
         assert!(is_terminal_window("terminal_1"));
         assert!(is_terminal_window("terminal_42"));
+        // agent 单例窗口
+        assert!(is_terminal_window("agent_command"));
+        // 非终端窗口
         assert!(!is_terminal_window("settings_window"));
         assert!(!is_terminal_window("compact_editor_window"));
     }
