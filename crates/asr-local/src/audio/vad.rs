@@ -71,7 +71,7 @@ impl SileroVad {
     /// 内嵌模型 1.7MB，ort `commit_from_memory` 直接从 `&[u8]` 构造 Session。
     /// 缓存 key 用 `builtin://silero_vad_v4` 与磁盘路径缓存隔离。
     pub fn new_builtin() -> Result<Self> {
-        const VAD_BYTES: &[u8] = include_bytes!("../models/silero_vad_v4.onnx");
+        const VAD_BYTES: &[u8] = include_bytes!("../../models/silero_vad_v4.onnx");
         let cache_key = PathBuf::from("builtin://silero_vad_v4");
         let session = {
             let mut cache = vad_sessions().lock();
