@@ -57,8 +57,11 @@ export default function MenuRow(props: MenuRowProps) {
       </span>
 
       {showShortcuts && (
-        /* 斜杠命令名（独立列，各行对齐；trigger_keyword 为空时占位保持列宽一致） */
-        <span className="min-w-0 truncate rounded bg-muted/60 px-1.5 py-0.5 text-right font-mono text-[11px] text-muted-foreground">
+        /* 斜杠命令名（独立列，各行 / 左对齐；trigger_keyword 为空时占位保持列宽一致） */
+        <span className={cn(
+          "min-w-0 truncate rounded px-1.5 py-0.5 text-left font-mono text-[11px]",
+          item.triggerKeyword ? "bg-muted/60 text-muted-foreground" : "",
+        )}>
           {item.triggerKeyword ? `/${item.triggerKeyword}` : ""}
         </span>
       )}
