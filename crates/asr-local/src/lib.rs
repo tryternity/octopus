@@ -13,10 +13,6 @@ pub mod paraformer;
 pub mod qwen3_asr;
 pub mod fbank;
 pub mod sensevoice_orig;
-pub mod streaming_paraformer;
-pub mod streaming_zipformer;
-pub mod streaming_engine;
-pub mod streaming_runner;
 pub mod whisper;
 pub mod whisper_mel_matrix;
 pub mod firered;
@@ -37,6 +33,10 @@ pub use paraformer::sentence_separator;
 // preprocess 的公开项经 audio/mod.rs 的 `pub use preprocess::*` 提升到 audio:: 顶层，
 // 故 octopus_asr_local::audio::read_wav_16k 等路径不变；vad / denoise 再 re-export 到 crate 根。
 pub use audio::{vad, denoise};
+
+// streaming/ 域：会话管理 + runner + Paraformer/Zipformer 流式实现。
+pub mod streaming;
+pub use streaming::{streaming_engine, streaming_runner, streaming_paraformer, streaming_zipformer};
 
 pub mod text;
 pub use text::{corrector, hotword, hans, itn, miner};
