@@ -5210,6 +5210,7 @@ dependencies = [
  "octopus-infra",
  "octopus-llm",
  "octopus-ocr",
+ "octopus-pty",
  "octopus-record",
  "octopus-scheduler",
  "octopus-search",

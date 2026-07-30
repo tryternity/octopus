@@ -55,6 +55,7 @@ impl<'a> AppSetup<'a> {
         self.init_engine()?;
         self.init_vault();
         self.init_coordinator();
+        self.init_pty();
         self.init_tray();
         self.create_result_window();
         self.register_shortcuts();
@@ -642,6 +643,14 @@ impl<'a> AppSetup<'a> {
                 });
             });
         }
+    }
+
+    /// 内嵌终端 PTY session 注册表挂载到 Tauri State。
+    ///
+    /// PtyState 是空 HashMap，pty_open 时填充。无重型初始化（不像 engine 要预热），
+    /// 纯 manage 即可——session 在 pty_open 按需 spawn。
+    fn init_pty(&self) {
+        self.app.manage(octopus_pty::PtyState::new());
     }
 
     /// i18n 初始化 + tray 创建 + 麦克风子菜单预热 + locale 变化 listener。

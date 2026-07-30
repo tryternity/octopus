@@ -31,9 +31,9 @@
 | `Cargo.toml`（workspace） | 加 `crates/pty` 成员 | **修改** |
 | `crates/desktop/Cargo.toml` | 加 `octopus-pty` 依赖 | **修改** |
 | `crates/desktop/src/terminal_window.rs` | 终端窗口创建/管理 | **新建** |
-| `crates/desktop/src/terminal_commands.rs` | Tauri 命令：pty_open/write/resize/close + agent_enable_hooks | **新建** |
-| `crates/desktop/src/agent_hooks.rs` | Claude/Codex/Pi hook 配置文件安装 | **新建** |
-| `crates/desktop/src/core/mod.rs` | 加 `pub mod terminal_window; pub mod terminal_commands; pub mod agent_hooks;` | **修改** |
+| `crates/desktop/src/commands/terminal_commands.rs` | Tauri 命令：pty_open/write/resize/close | **新建** |
+| `crates/desktop/src/commands/agent_hooks.rs` | Claude/Codex/Gemini/Pi hook 配置文件安装 | **新建** |
+| `crates/desktop/src/commands/mod.rs` | 加 `pub mod terminal_commands; pub mod agent_hooks;` | **修改** |
 | `crates/desktop/src/core/invoke_handler.rs` | 注册新命令 | **修改** |
 | `crates/desktop/src/core/setup.rs` | `app.manage(PtyState::default())` | **修改** |
 | `crates/desktop/src/action_bar/action_bar_commands/script.rs` | agent 分支替换为内嵌终端 | **修改** |
@@ -364,55 +364,53 @@ PROMPT_COMMAND='printf "\e]133;A\e\\"'
 
 ### Task 5: Tauri 命令层（pty_open/write/resize/close + agent_enable_hooks）
 
+> **实施记录（2026-07-30）**：已完成。与原 plan 的偏差：
+> - **文件位置**：plan 写 `crates/desktop/src/terminal_commands.rs` + 注册到 `core/mod.rs`。实际放到 `commands/` 域（`crates/desktop/src/commands/terminal_commands.rs` + `agent_hooks.rs` + `commands/mod.rs` 注册），因为 `commands/` 才是命令文件域（settings_commands/model_commands 等都在那），core 是 setup/bootstrap/config 基础设施。
+> - **spawn 签名**：plan 写 `PtySession::spawn(opts, on_data, on_exit, on_signal)`（method）。实际是 free fn `spawn(id, cols, rows, cwd, shell, on_data, on_exit, on_signal) -> Result<(Arc<PtySession>, PtySize), String>`——返回 tuple，pty_open 解构只存 session。
+> - **回调解耦**：pty crate 保持纯逻辑（不依赖 tauri），on_data/on_exit/on_signal 是 `Fn + Send + Sync + 'static` 闭包，terminal_commands.rs 桥接到 `Channel<Response>` / `Channel<i32>` / `app.emit("agent://signal", ...)`。
+> - **agent_hooks 扩展**：plan 只提 Claude/Codex/Pi，实际实现 4 个 agent（Claude/Codex/Gemini/Pi）。Gemini 用 `matcher: "*"` + 4-field marker。Pi 走 TS 扩展机制（非 JSON hook）。加了 `agent_hooks_status` 命令查询安装状态（plan 没提，前端开关需要）。
+> - **验证**：`cargo check -p octopus-desktop --features embedded,cloud,custom-protocol` 0 error 0 warning；`agent_hooks` 12 测试全绿。
+
 **Files:**
-- Create: `crates/desktop/src/terminal_commands.rs`
-- Create: `crates/desktop/src/agent_hooks.rs`
-- Modify: `crates/desktop/src/core/mod.rs`（加 pub mod）
+- Create: `crates/desktop/src/commands/terminal_commands.rs`
+- Create: `crates/desktop/src/commands/agent_hooks.rs`
+- Modify: `crates/desktop/src/commands/mod.rs`（加 pub mod）
 - Modify: `crates/desktop/src/core/invoke_handler.rs`（注册命令）
 - Modify: `crates/desktop/src/core/setup.rs`（app.manage(PtyState)）
 - Modify: `crates/desktop/Cargo.toml`（加 octopus-pty 依赖）
 
-- [ ] **Step 1: 实现 pty_open/write/resize/close 命令**
+- [x] **Step 1: 实现 pty_open/write/resize/close 命令**
 
 参考 Terax `pty/mod.rs`。
 
-`pty_open`：`spawn_blocking` → `PtySession::spawn(opts, on_data: Channel, on_exit: Channel, on_signal: closure emit)` → 存入 PtyState → 返回 id
+`pty_open`：`spawn_blocking` → `spawn(...)` → 解构 `(session, _size)` → 存入 PtyState → 返回 id。额外：shell 提前退出时 re-check + reap（防孤儿）。
 
-`pty_write`：直接 `session.write(&data)`
+`pty_write`：raw body + `x-pty-id` header，绕过 JSON。
 
 `pty_resize`：`session.resize(cols, rows)`
 
-`pty_close`：`session.kill()` + 从 PtyState 移除
+`pty_close`：`session.kill()` + 从 PtyState 移除 + detach drop 线程（防阻塞 worker）
 
-- [ ] **Step 2: 实现 agent_enable_hooks 命令**
+- [x] **Step 2: 实现 agent_enable_hooks + agent_hooks_status 命令**
 
-参考 Terax `agent.rs`。为 Claude/Codex/Pi 写配置文件。
-- `write_if_changed`：tmp + rename 原子写入
-- `OWNED_MARKERS`：`["notify;octopus;", "octopus;notify"]`——prune 旧条目
-- merge 不覆盖用户已有 hook
+参考 Terax `agent.rs`。为 Claude/Codex/Gemini/Pi 写配置文件。
+- `write_atomic`：tmp + rename 原子写入
+- `OWNED_MARKERS`：`["notify;octopus;", "octopus;notify", "__octopus_notify"]`——prune 旧条目
+- merge 不覆盖用户已有 hook（retain foreign + append ours）
+- Pi 走 TS 扩展（`octopus-notifications.ts`），非 octopus 管理的文件拒绝覆写
+- `agent_hooks_status`：查所有 event 的 status_needle 是否都在配置里
 
-- [ ] **Step 3: 注册命令 + manage PtyState**
+- [x] **Step 3: 注册命令 + manage PtyState**
 
-`invoke_handler.rs` 加：
-```rust
-crate::terminal_commands::pty_open,
-crate::terminal_commands::pty_write,
-crate::terminal_commands::pty_resize,
-crate::terminal_commands::pty_close,
-crate::terminal_commands::agent_enable_hooks,
-```
+`invoke_handler.rs` 加 6 个命令（pty_open/write/resize/close + agent_enable_hooks/agent_hooks_status）。
+`setup.rs` 加 `init_pty()` 方法 → `app.manage(octopus_pty::PtyState::new())`。
 
-`setup.rs` 加：
-```rust
-app.manage(octopus_pty::PtyState::new());
-```
-
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features embedded,cloud,custom-protocol`
-Expected: 0 error
+Result: 0 error 0 warning ✓
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 

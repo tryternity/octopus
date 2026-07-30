@@ -303,6 +303,15 @@ macro_rules! handler {
             // ── translation_commands ──
             crate::commands::translation_commands::discover_translation_models,
             crate::commands::translation_commands::translate_status,
+            // ── 内嵌终端 PTY（2026-07-30 embedded terminal，Task 5）──────────
+            // macOS-only 优先；portable-pty 跨平台，命令本身不 cfg gate。
+            crate::commands::terminal_commands::pty_open,
+            crate::commands::terminal_commands::pty_write,
+            crate::commands::terminal_commands::pty_resize,
+            crate::commands::terminal_commands::pty_close,
+            // agent CLI hook 安装（Claude/Codex/Gemini/Pi 配置文件注入 OSC 777 marker）
+            crate::commands::agent_hooks::agent_enable_hooks,
+            crate::commands::agent_hooks::agent_hooks_status,
             // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
             crate::core::perf_log::perf_log_cmd,
             // ── 录屏（2026-07-25 screen record MVP，Task 10）──────────
