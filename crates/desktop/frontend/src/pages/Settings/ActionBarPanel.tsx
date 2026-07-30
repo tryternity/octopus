@@ -426,7 +426,7 @@ export default function ActionBarPanel({
                   </div>
 
                   {selectedMain.actionType !== "submenu" && (
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-end gap-6">
                       {/* 斜杠命令名（左） */}
                       <div className="space-y-1.5">
                         <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
@@ -442,8 +442,8 @@ export default function ActionBarPanel({
                           }}
                         />
                       </div>
-                      {/* 全局快捷键（右） */}
-                      <div className="flex flex-col items-start gap-1.5">
+                      {/* 全局快捷键（右，label+按钮左对齐） */}
+                      <div className="space-y-1.5">
                         <label className="block text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">
                           {ti18n("settings.actionBar.globalShortcutLabel")}
                         </label>
