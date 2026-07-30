@@ -862,6 +862,9 @@ tray:
 # ════════ Embedded terminal window ════════
 terminal:
   loading: Loading terminal…
+  title: Terminal
+  newTab: New Tab
+  closeTab: Close Tab
 
 # ════════ ActionBar ════════
 actionbar:

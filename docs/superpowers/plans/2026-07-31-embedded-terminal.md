@@ -488,71 +488,68 @@ Result: vite build ✓（terminal.html + terminal-*.js 生成）；cargo 0 error
 
 ### Task 7: 前端终端组件（多 tab + xterm.js + agent 状态徽章）
 
+> **实施记录（2026-07-30）**：已完成。相对 Terax 大幅简化（Phase 1）：
+> - **无 rendererPool**：直接在 hook 里 `new Terminal()` + fitAddon，每 tab 一个 xterm 实例（Terax 用池化 + dormantRing + slot retain/park，octopus Phase 1 不需要）。
+> - **无 zustand**：agent 状态用模块级 state + subscribe 模式（与 octopus i18n 同构），避免引入新依赖。
+> - **无分屏 pane 树**：每 tab 单 pane（Terax 有 PaneTreeView 分屏）。
+> - **pty_write 用 raw body**：`invoke("pty_write", textEncoder.encode(data), { headers: { "x-pty-id": String(id) } })`——对齐 Task 5 Rust 的 `InvokeBody::Raw` + header 设计（plan 原写的 `invoke("pty_write", { id, data })` 是 JSON 路径，与 Rust 不匹配）。
+> - **拆分为 4 个文件**（plan 只写了 index.tsx + pty-bridge.ts）：`pty-bridge.ts` / `useTerminalSession.ts` / `TerminalPane.tsx` / `index.tsx` + `agent-activity.ts`（agent 状态 store）。
+> - **TDD**：`phaseForSignal` 纯函数 6 单测（vitest）。
+> - **验证**：tsc + vite build ✓（terminal-*.js 348kB，含 xterm）；cargo check 0 error 0 warning；agent-activity 6 测试绿。
+
 **Files:**
-- Create: `crates/desktop/frontend/src/pages/Terminal/index.tsx`
 - Create: `crates/desktop/frontend/src/pages/Terminal/pty-bridge.ts`
+- Create: `crates/desktop/frontend/src/pages/Terminal/useTerminalSession.ts`
+- Create: `crates/desktop/frontend/src/pages/Terminal/TerminalPane.tsx`
+- Create: `crates/desktop/frontend/src/pages/Terminal/index.tsx`（替换 Task 6 占位）
+- Create: `crates/desktop/frontend/src/pages/Terminal/agent-activity.ts`
+- Create: `crates/desktop/frontend/src/pages/Terminal/agent-activity.test.ts`
+- Modify: `crates/desktop/frontend/src/index.css`（终端 CSS + agent 徽章脉冲动画）
+- Modify: `crates/desktop/frontend/src/locales/{zh-CN,en}.yaml`（terminal.title/newTab/closeTab）
 
-- [ ] **Step 1: 实现 pty-bridge.ts**
+- [x] **Step 1: 实现 pty-bridge.ts**
 
-参考 Terax `pty-bridge.ts`：
-```typescript
-import { Channel, invoke } from "@tauri-apps/api/core";
+`openPty(cols, rows, handlers, cwd) → Promise<PtySession>`。返回的 session 持有 write/resize/close。
+- `pty_write` 走 raw body + `x-pty-id` header（对齐 Task 5 Rust）
+- releaseHandlers 防退出后回调再触发
+- close 幂等（closed flag）
 
-export async function openPty(opts: {
-  cols: number; rows: number; cwd?: string;
-  onData: (bytes: Uint8Array) => void;
-  onExit: (code: number) => void;
-}): Promise<number> {
-  const onDataChannel = new Channel<Uint8Array>();
-  const onExitChannel = new Channel<number>();
-  onDataChannel.onmessage = (buf) => opts.onData(new Uint8Array(buf));
-  onExitChannel.onmessage = (code) => opts.onExit(code);
-  return invoke<number>("pty_open", {
-    cols: opts.cols, rows: opts.rows, cwd: opts.cwd,
-    onData: onDataChannel, onExit: onExitChannel,
-  });
-}
+- [x] **Step 2: 实现 useTerminalSession hook + TerminalPane**
 
-export function writePty(id: number, data: Uint8Array): Promise<void> {
-  return invoke("pty_write", { id, data });
-}
+useTerminalSession(container, cwd, onExit)：
+- new Terminal（深色 #0c0c0f 主题，SF Mono 13px，cursorBlink）+ FitAddon + WebLinksAddon
+- openPty → onData 喂 term.write；term.onData → pty.write；term.onResize → pty.resize
+- ResizeObserver 监听容器尺寸 → fitAddon.fit（隐藏容器跳过，防 0 尺寸）
+- cleanup：pty.close + term.dispose
 
-export function resizePty(id: number, cols: number, rows: number): Promise<void> {
-  return invoke("pty_resize", { id, cols, rows });
-}
+TerminalPane：调 hook，上报 ptyId + 消费 pendingCommand（ActionBar 联动写命令 + 回车）。
 
-export function closePty(id: number): Promise<void> {
-  return invoke("pty_close", { id });
-}
-```
+- [x] **Step 3: index.tsx 主组件 + agent 状态徽章**
 
-- [ ] **Step 2: 实现 index.tsx 主组件**
+多 tab：tabs 数组，每 tab 持 ptyId（TerminalPane 上报）+ pendingCommand。
+- tab 切换用 visibility:hidden 保活（不卸载 xterm，scrollback 保留）
+- 新 tab 按钮（Plus 图标）；关 tab（X 图标，最后关一个不关窗口，建新空 tab）
+- ActionBar 联动：listen "terminal://new-tab" { cwd, command } → 新 tab + 写命令
+- URL query cwd（Rust 注入）→ 首个 tab 的 cwd
 
-核心功能：
-- 多 tab：`tabs: TerminalTab[]`，每 tab 有 `ptyId | null`、`term: Terminal`（xterm.js）、`agentPhase`
-- 新 tab 按钮：创建空 xterm.js Terminal（等待 shell 启动）
-- mount PTY：`openPty({ cols, rows, onData: (bytes) => term.write(bytes) })`
-- 输入：`term.onData((str) => writePty(id, new TextEncoder().encode(str)))`
-- resize：`fitAddon` + `term.onResize` → `resizePty`
-- agent 信号：`listen("agent://signal", (e) => { 更新 tab.agentPhase })`
-- 关 tab：`closePty(id)` + `term.dispose()`
-- 初始命令（ActionBar 联动）：listen "terminal://new-tab" → 新 tab + 写命令
+agent-activity.ts：模块级 state + subscribe（替代 zustand），listen "agent://signal"，
+phaseForSignal 纯映射 + finished 6s TTL 自动 idle + exited 清理。
 
-- [ ] **Step 3: agent 状态徽章**
+agent 徽章（CSS signature 元素）：
+- working → amber 圆点脉冲（1.4s，box-shadow 扩散）
+- attention → 红色 Bell 图标摇晃
+- finished → 绿色圆点淡出
+- 全部尊重 prefers-reduced-motion
 
-每个 tab 标题旁显示彩色圆点：
-- `working` → amber 脉冲动画
-- `attention` → 红色 bell 图标
-- `idle` → 灰色（无指示）
+- [x] **Step 4: i18n + CSS**
 
-- [ ] **Step 4: i18n key**
+zh-CN + en 各加 `terminal.title` / `newTab` / `closeTab` / `loading`。
+index.css 加 `.terminal-window` / `.terminal-tabbar` / `.terminal-agent-*` 全套样式（主题 token 自适应 + agent 动画）。
 
-zh-CN + en 各加 `terminal.*` key（title / newTab / close 等）
+- [x] **Step 5: tsc + vite build + cargo check**
 
-- [ ] **Step 5: tsc + vite build**
-
-Run: `cd crates/desktop/frontend && npm run build`
-Expected: ✓ built
+Run: `npm run build` + `cargo check -p octopus-desktop --features embedded,cloud,custom-protocol`
+Result: ✓ built（terminal-*.js 348kB）；cargo 0 error 0 warning；agent-activity 6 测试绿。
 
 - [ ] **Step 6: Commit**
 

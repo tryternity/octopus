@@ -871,6 +871,9 @@ tray:
 # ════════ 内嵌终端窗口 ════════
 terminal:
   loading: 终端组件加载中…
+  title: 终端
+  newTab: 新建标签页
+  closeTab: 关闭标签页
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
