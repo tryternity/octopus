@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
-use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
+use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, VAD_OVERRIDE_PATH};
 use octopus_infra::octopus_config_home;
 
 // ── Model config schema（DB models 表）──
@@ -38,7 +38,7 @@ pub use onnx_infra::{find_hf_cache, find_onnx_dir, resolve_model_dir};
 /// VAD 模型来源：磁盘文件（用户自定义覆盖）或内嵌字节（include_bytes!，开箱即用）。
 #[derive(Debug, Clone)]
 pub enum VadSource {
-    /// 磁盘上的文件路径（`~/.octopus/models/silero_vad_v4.onnx` 存在时优先）。
+    /// 磁盘上的文件路径（`~/.octopus/models/vad.onnx` 存在时优先，通用名可放任意 VAD 模型覆盖内嵌版本）。
     File(PathBuf),
     /// 内嵌字节（磁盘文件不存在时 fallback 到编译期内嵌）。
     Builtin,
@@ -46,10 +46,11 @@ pub enum VadSource {
 
 /// 定位 Silero VAD 模型。
 ///
-/// 优先读磁盘 `~/.octopus/models/silero_vad_v4.onnx`（用户可放自定义版本覆盖）；
-/// 磁盘不存在则返回 `Builtin`（编译期内嵌字节，`SileroVad::new_builtin()` 从内存加载）。
+/// 优先读磁盘 `~/.octopus/models/vad.onnx`（用户可放任意 VAD 模型覆盖内嵌的 silero_vad_v4，
+/// 通用名避免绑死版本）；磁盘不存在则返回 `Builtin`（编译期内嵌字节，`SileroVad::new_builtin()`
+/// 从内存加载）。
 pub fn find_silero_vad() -> Result<VadSource> {
-    let vad = octopus_config_home().join(SILERO_VAD_PATH);
+    let vad = octopus_config_home().join(VAD_OVERRIDE_PATH);
     if vad.exists() {
         return Ok(VadSource::File(vad));
     }

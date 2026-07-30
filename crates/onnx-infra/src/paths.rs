@@ -32,7 +32,7 @@ pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
 
 /// 前 3 级模型目录查找（基于给定 octopus_home，可单测；不依赖全局 `$HOME`）。
 ///
-/// 1. `octopus_home/<source>`（随包小模型，如 `models/silero_vad_v4.onnx`）
+/// 1. `octopus_home/<source>`（随包小模型，如 `models/vad.onnx`，见 `VAD_OVERRIDE_PATH`）
 /// 2. 绝对路径（`source` 本身是绝对路径）
 /// 3. `octopus_home/models/<source>`（download 下的 HF 模型，source 如 `onnx-community/whisper-small`）
 ///
