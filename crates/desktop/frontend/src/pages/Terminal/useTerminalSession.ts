@@ -23,10 +23,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
-import { readlineSequence, isShiftEnter } from "./keymap";
+import { readlineSequence, isShiftEnter, isFindShortcut } from "./keymap";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
 const IS_MAC =
@@ -50,6 +51,8 @@ export type TerminalSession = {
   focus: () => void;
   /** PTY session id（未连接时 null）。 */
   ptyId: number | null;
+  /** SearchAddon 实例（终端内搜索用，未初始化时 null）。 */
+  searchAddon: SearchAddon | null;
 };
 
 /**
@@ -106,12 +109,15 @@ export function useTerminalSession(opts: {
   container: React.RefObject<HTMLDivElement | null>;
   cwd?: string;
   active?: boolean;
+  /** Cmd+F 触发时回调（TerminalPane 打开搜索栏）。 */
+  onSearchOpen?: () => void;
   onExit?: (code: number) => void;
 }): TerminalSession {
-  const { container, cwd, onExit } = opts;
+  const { container, cwd, onExit, onSearchOpen } = opts;
   const active = opts.active ?? true;
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -136,6 +142,9 @@ export function useTerminalSession(opts: {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
     term.open(el);
     // 首次 fit 拿到 cols/rows 再 openPty（PTY 需要正确初始尺寸）
     fitAddon.fit();
@@ -150,10 +159,30 @@ export function useTerminalSession(opts: {
 
     // 2. openPty + 接线 onData/onResize
     let disposed = false;
+    // rAF 节流：每帧（~16ms）最多 write 一次。yes 这种持续高速输出
+    // 会产生大量 onData 回调——用 rAF 合并，积压时只保留最新块丢弃中间。
+    // 效果：xterm write buffer 不会无限积压，Ctrl+C 后很快消化完显示 prompt。
+    // htop（alternate screen TUI）每帧重绘量小，不受影响。
+    let pendingOutput: Uint8Array | null = null;
+    let rafScheduled = false;
+    const flushOutput = () => {
+      rafScheduled = false;
+      if (disposed || !pendingOutput) return;
+      const data = pendingOutput;
+      pendingOutput = null;
+      term.write(data);
+    };
+
     openPty(cols, rows, {
       onData: (bytes) => {
-        // PTY 输出 → xterm 渲染
-        term.write(bytes);
+        if (rafScheduled) {
+          // 本帧已调度 → 新数据覆盖暂存（丢中间保最新）
+          pendingOutput = bytes;
+        } else {
+          pendingOutput = bytes;
+          rafScheduled = true;
+          requestAnimationFrame(flushOutput);
+        }
       },
       onExit: (code) => {
         if (disposed) return;
@@ -178,6 +207,13 @@ export function useTerminalSession(opts: {
           // IME 组合中（中文拼音等）：拦截原生 keydown（含提交候选的 Enter），
           // xterm 通过 compositionend 收最终字符串，否则会吞字/重复
           if (event.isComposing || event.keyCode === 229) return false;
+
+          // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
+          if (isFindShortcut(event, { isMac: IS_MAC })) {
+            event.preventDefault();
+            if (event.type === "keydown") onSearchOpen?.();
+            return false;
+          }
 
           // readline 序列（Option/Cmd 导航+删除）——alternate screen 交 TUI 应用
           const isAltScreen = term.buffer.active.type === "alternate";
@@ -229,6 +265,9 @@ export function useTerminalSession(opts: {
     // 4. cleanup
     return () => {
       disposed = true;
+      // rAF 可能已调度但未执行——用标志位让它 no-op（无法直接 cancelAnimationFrame
+      // 因为没存 handle，但 disposed=true + flushOutput 检查 pendingOutput 即可）
+      pendingOutput = null;
       resizeObserver.disconnect();
       if (webglRef.current) {
         try {
@@ -276,5 +315,6 @@ export function useTerminalSession(opts: {
       termRef.current?.focus();
     },
     ptyId,
+    searchAddon: searchAddonRef.current,
   };
 }

@@ -200,6 +200,24 @@ export default function Terminal() {
     return (
       <div className="terminal-window terminal-sidebar-layout">
         <aside className="terminal-sidebar">
+          <div className="terminal-sidebar-header">
+            <button
+              className="terminal-layout-toggle"
+              onClick={toggleLayout}
+              title={t("terminal.layoutTabs")}
+              aria-label={t("terminal.layoutTabs")}
+            >
+              <LayoutPanelTop size={15} />
+            </button>
+            <button
+              className="terminal-sidebar-new"
+              onClick={() => addTab()}
+              title={t("terminal.newTab")}
+            >
+              <Plus size={14} />
+              <span>{t("terminal.newTab")}</span>
+            </button>
+          </div>
           <div className="terminal-sidebar-list" role="tablist">
             {tabMeta.map((m) => (
               <SidebarItem
@@ -214,24 +232,6 @@ export default function Terminal() {
               />
             ))}
           </div>
-          <div className="terminal-sidebar-footer">
-            <button
-              className="terminal-sidebar-new"
-              onClick={() => addTab()}
-              title={t("terminal.newTab")}
-            >
-              <Plus size={14} />
-              <span>{t("terminal.newTab")}</span>
-            </button>
-            <button
-              className="terminal-layout-toggle"
-              onClick={toggleLayout}
-              title={t("terminal.layoutTabs")}
-              aria-label={t("terminal.layoutTabs")}
-            >
-              <LayoutPanelTop size={15} />
-            </button>
-          </div>
         </aside>
         {panes}
       </div>
@@ -241,6 +241,14 @@ export default function Terminal() {
   return (
     <div className="terminal-window">
       <div className="terminal-tabbar" role="tablist">
+        <button
+          className="terminal-layout-toggle"
+          onClick={toggleLayout}
+          title={t("terminal.layoutSidebar")}
+          aria-label={t("terminal.layoutSidebar")}
+        >
+          <LayoutPanelLeft size={15} />
+        </button>
         {tabMeta.map((m) => (
           <TabButton
             key={m.tab.id}
@@ -260,14 +268,6 @@ export default function Terminal() {
           aria-label={t("terminal.newTab")}
         >
           <Plus size={14} />
-        </button>
-        <button
-          className="terminal-layout-toggle terminal-layout-toggle-tabbar"
-          onClick={toggleLayout}
-          title={t("terminal.layoutSidebar")}
-          aria-label={t("terminal.layoutSidebar")}
-        >
-          <LayoutPanelLeft size={15} />
         </button>
       </div>
       {panes}
@@ -324,6 +324,16 @@ function TabButton(props: {
       aria-selected={active}
       onClick={onClick}
     >
+      <button
+        className="terminal-tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={onCloseLabel}
+      >
+        <X size={12} />
+      </button>
       <AgentBadge phase={phase} />
       {editing ? (
         <RenameInput
@@ -346,16 +356,6 @@ function TabButton(props: {
           {label}
         </span>
       )}
-      <button
-        className="terminal-tab-close"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        aria-label={onCloseLabel}
-      >
-        <X size={12} />
-      </button>
     </div>
   );
 }
@@ -380,6 +380,16 @@ function SidebarItem(props: {
       aria-selected={active}
       onClick={onClick}
     >
+      <button
+        className="terminal-tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={closeLabel}
+      >
+        <X size={12} />
+      </button>
       <AgentBadge phase={phase} />
       {editing ? (
         <RenameInput
@@ -402,16 +412,6 @@ function SidebarItem(props: {
           {label}
         </span>
       )}
-      <button
-        className="terminal-tab-close"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        aria-label={closeLabel}
-      >
-        <X size={12} />
-      </button>
     </div>
   );
 }

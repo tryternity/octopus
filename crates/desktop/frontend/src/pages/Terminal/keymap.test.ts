@@ -8,6 +8,7 @@ import {
   deleteSequence,
   readlineSequence,
   isShiftEnter,
+  isFindShortcut,
   type TerminalKeyEvent,
 } from "./keymap";
 
@@ -108,5 +109,32 @@ describe("isShiftEnter", () => {
   });
   it("Ctrl+Shift+Enter → false（有其他修饰）", () => {
     expect(isShiftEnter(evt({ key: "Enter", shiftKey: true, ctrlKey: true }))).toBe(false);
+  });
+});
+
+describe("isFindShortcut", () => {
+  it("Mac Cmd+F → true", () => {
+    expect(isFindShortcut(evt({ metaKey: true, key: "f" }), { isMac: true })).toBe(true);
+  });
+  it("Mac Cmd+F（code 兜底）→ true", () => {
+    expect(isFindShortcut(evt({ metaKey: true, code: "KeyF" }), { isMac: true })).toBe(true);
+  });
+  it("非 Mac Ctrl+F → true", () => {
+    expect(isFindShortcut(evt({ ctrlKey: true, key: "f" }), { isMac: false })).toBe(true);
+  });
+  it("Mac Ctrl+F → false（Mac 用 Cmd 不是 Ctrl）", () => {
+    expect(isFindShortcut(evt({ ctrlKey: true, key: "f" }), { isMac: true })).toBe(false);
+  });
+  it("Mac Cmd+Ctrl+F → false（含 Ctrl 干扰）", () => {
+    expect(isFindShortcut(evt({ metaKey: true, ctrlKey: true, key: "f" }), { isMac: true })).toBe(false);
+  });
+  it("Cmd+Shift+F → false（含 Shift）", () => {
+    expect(isFindShortcut(evt({ metaKey: true, shiftKey: true, key: "f" }), { isMac: true })).toBe(false);
+  });
+  it("Cmd+其他键 → false", () => {
+    expect(isFindShortcut(evt({ metaKey: true, key: "c" }), { isMac: true })).toBe(false);
+  });
+  it("无修饰 F → false", () => {
+    expect(isFindShortcut(evt({ key: "f" }), { isMac: true })).toBe(false);
   });
 });
