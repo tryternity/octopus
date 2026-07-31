@@ -891,7 +891,6 @@ terminal:
 # ════════ ActionBar ════════
 actionbar:
   processing: Processing
-  timeout: Request timeout (${n}s)
   searchPlaceholder: Search apps, files, commands…
   noResults: No results
 

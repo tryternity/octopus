@@ -119,11 +119,16 @@ fuzzy 选中候选后按 Tab：
   ↓ 用户上下键选 + 回车
   ↓
 executeSearchResult case "slash":
-  ├─ url 类型 + action_data 非空 → 替换 {query}/{text} = params（无 params 用选中文本）→ open_url
-  ├─ url 类型 + action_data 空 → 用 params/选中文本当 URL（缺 scheme 补 https://）→ open_url
-  │    （「选中文本即 URL」项，如系统「网页」菜单 action_data=''，对齐后端 script.rs url 分支）
-  ├─ agent/ai/script + 有 params → execute_action_bar(text=params)
-  └─ agent need_voice + 无 params → trigger_agent_voice（录音路径，不变）
+  ├─ agent needVoice → trigger_agent_voice（忽略 slash params，与直接点击一致）
+  └─ 其他（url/ai/script/copy_path/非voice agent）→ execute_action_bar(text=params||选中文本)
+       （url 的 action_data 空/模板替换、ai 超时、编码等全由后端 execute_action_bar_inner 处理）
+```
+
+> **路径统一（2026-07-31 重构）**：斜杠 DB action_type 动作全走 `execute_action_bar`，
+> 后端成为唯一动作处理点。详见
+> [ActionBar 路径统一 spec](2026-07-31-actionbar-execute-paths-unification-design.md)。
+> 前端不再自己处理 url（删 openUrlTemplate 的 slash 调用 + action_data 空分支）、
+> 不再有 ai 前端超时（移到后端 tokio::time::timeout）。
 ```
 
 ## 改动点
@@ -213,45 +218,27 @@ fn search_slash_commands(query: &str, rows: &[ActionBarItem]) -> Vec<SearchResul
 
 ```ts
 case "slash": {
-  const itemId = data.id as number;
-  const params = (data.params as string) || "";
+  // 路径统一（2026-07-31）：DB action_type 动作全走 execute_action_bar，
+  // 后端是唯一动作处理点。前端只解析 itemId + 构造 text + 选命令。
+  // 详见 2026-07-31-actionbar-execute-paths-unification-design.md
+  const itemId = slashLockedItemIdRef.current ?? (data.id as number);
+  const params = /* 从 query 解析 / data.params */;
   const item = menuItemsRef.current.find((i) => i.id === itemId);
   if (!item) break;
+  const text = params || contextRef.current?.text || "";
 
-  if (item.actionType === "url") {
-    // url 类型：params 替换 {query}/{text}，无 params 用选中文本
-    const fallbackText = params || contextRef.current?.text || "";
-    if (item.actionData) {
-      // action_data 非空：模板替换
-      const url = item.actionData
-        .replace(/\{query\}/g, encodeURIComponent(fallbackText))
-        .replace(/\{text\}/g, encodeURIComponent(fallbackText));
-      if (url) {
-        await invoke("open_url", { url });
-        invoke("action_bar_dismiss", { reason: "slash-url" });
-      }
-    } else {
-      // action_data 空 = 「选中文本即 URL」项（如系统「网页」菜单）
-      // 对齐后端 script.rs url 分支：用 fallbackText 当 URL，缺 scheme 补 https://
-      const raw = fallbackText.trim();
-      if (raw) {
-        const directUrl = raw.startsWith("http://") || raw.startsWith("https://")
-          ? raw : `https://${raw}`;
-        await invoke("open_url", { url: directUrl });
-        invoke("action_bar_dismiss", { reason: "slash-url" });
-      }
-    }
-  } else if (item.actionType === "agent" && item.needVoice && !params) {
-    // agent need_voice + 无参数 → 录音路径（不变）
+  // agent needVoice → 联动语音录音（忽略 slash params，与直接点击一致）
+  if (item.actionType === "agent" && item.needVoice) {
     await invoke("trigger_agent_voice", { itemId });
   } else {
-    // agent/ai/script + 有参数（或非 need_voice）→ execute_action_bar(text=params 或选中文本)
-    const text = params || contextRef.current?.text || "";
+    // 其他（url/ai/script/copy_path/非voice agent）→ execute_action_bar
+    // url 的 action_data 空/模板替换、ai 超时、url 编码全由后端处理
     await invoke("execute_action_bar", { itemId, text });
     invoke("action_bar_dismiss", { reason: "slash-exec" });
   }
   break;
 }
+```
 ```
 
 > 注：后端 `execute_action_bar_inner` 的 agent 分支（`script.rs:508-535`）当前 `voice=""`，传入 params 作为 text 即可（params 不直接填 voice，voice 仍走录音或留空）。
