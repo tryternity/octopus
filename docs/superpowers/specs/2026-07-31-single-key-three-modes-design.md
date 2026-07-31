@@ -210,8 +210,9 @@ toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**
 - ✅ **db.sql seed**：`ptt_key` 从 `AltRight` 改 `OptRight`（handy-keys 语义对齐）。
   注：未升 schema version（AltRight 仍可解析，旧库无需清重建）。
 - ✅ **pipeline.rs**：`VadSegmentedPipeline::silence_duration()` pub(crate) getter。
-- ✅ **测试**：11 个新测试（PttFsm 初始态 + timed_out 边界 + RECORDING_MODE set/read
-  + **toggle 单击立即润色 / 长按结束 / 长按 keyup noop** + 真 idle 双击启动 toggle + FsmAction eq）。
+- ✅ **测试**：11 ptt 测试（PttFsm 初始态 + timed_out 边界 + toggle 单击立即润色/
+  长按结束/长按 keyup noop + 真 idle 双击启动 + FsmAction eq）+ 2 RECORDING_MODE 测试
+  + 4 window_position 多屏测试（per-display save/load round trip + key 隔离 + 非 macOS None）。
 
 ### 偏差与决策
 
@@ -248,5 +249,5 @@ toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**
 
 - `cargo build -p octopus-desktop --features embedded` ✅ 0 error 0 warning
 - `cargo build -p octopus-desktop --features embedded,cloud,vault` ✅
-- `cargo test -p octopus-desktop --features embedded` ✅ 480 passed (含 14 个新测试)
+- `cargo test -p octopus-desktop --features embedded` ✅ 488 passed（含 11 ptt + 2 RECORDING_MODE + 4 window_position 多屏测试）
 - ⏳ e2e 手动验证（待用户在桌面应用实测三模式交互）
