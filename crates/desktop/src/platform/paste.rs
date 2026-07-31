@@ -8,7 +8,7 @@ use enigo::{Direction, Key};
 use log::info;
 use octopus_clipboard::ClipboardHandle;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 /// Cmd+V 后等待系统粘贴落地、再恢复原剪贴板的延迟。
 const PASTE_RESTORE_DELAY: Duration = Duration::from_millis(200);
@@ -175,8 +175,10 @@ fn paste_via_clipboard(
                 // （activate_cached_app 已把目标 app 拉到前台）
                 crate::platform::keystroke::paste_to_pid(pid)?;
             }
-        } else if let Some(label) = focused_octopus_webview_label(app) {
+        } else if let Some(label) = crate::platform::focus_tracker::cached_self_window() {
             // 前台是 octopus 自己的 webview 窗口（terminal/compact_editor 等）→ emit 事件
+            // 用 toggle 入口缓存的窗口 label（paste 瞬间 is_focused 已不可靠——
+            // result_window/instant_overlay show 过程会改焦点）。
             info!("[paste] self-webview target: {}, emit paste-text", label);
             let _ = app.emit_to(&label, "paste-text", text.to_string());
             return Ok(());
@@ -202,35 +204,6 @@ fn paste_via_clipboard(
     }
 
     Ok(())
-}
-
-/// 找当前聚焦的 octopus webview 窗口 label（用于 self-webview 文本注入）。
-///
-/// 遍历 `app.webview_windows()`，返回 `is_focused() == Ok(true)` 的窗口 label。
-/// 排除浮窗/指示窗（不接收粘贴文本）：instant_overlay / overlay_window / result_window /
-/// clipboard_window（这些是 ASR/剪贴板的展示窗，不是用户编辑目标）。
-///
-/// 无聚焦窗口 / 异常 → None（调用方 fallback 到全局广播）。
-fn focused_octopus_webview_label(app: &AppHandle) -> Option<String> {
-    /// 不接收 paste-text 的窗口 label（浮窗 / 指示窗 / 展示窗）。
-    const EXCLUDED_PREFIXES: &[&str] = &[
-        "instant_overlay",
-        "overlay_window",
-        "result_window",
-        "clipboard_window",
-        "pin_window",
-        "download_window",
-        "onboarding_window",
-    ];
-    for (label, win) in app.webview_windows() {
-        if EXCLUDED_PREFIXES.iter().any(|p| label.starts_with(p)) {
-            continue;
-        }
-        if win.is_focused().unwrap_or(false) {
-            return Some(label);
-        }
-    }
-    None
 }
 
 fn paste_direct(

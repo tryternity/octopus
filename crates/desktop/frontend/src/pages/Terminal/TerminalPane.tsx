@@ -79,6 +79,7 @@ export function TerminalPane({
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
     listen<string>("paste-text", (e) => {
+      console.log("[TerminalPane] paste-text received, ptyId=", session.ptyId, "len=", e.payload.length);
       if (session.ptyId != null) session.write(e.payload);
     }, { target: currentLabel })
       .then((fn) => { unlisten = fn; })

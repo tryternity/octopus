@@ -39,27 +39,38 @@ emit `paste-text` 事件到该窗口，前端各自处理**。
 
 ### 后端改动
 
+#### 关键：在 toggle 入口缓存窗口 label，而非 paste 时检测
+
+初版在 `paste_via_clipboard` 时调 `focused_octopus_webview_label(app)` 检测聚焦窗口，
+但实测失效——**paste 瞬间 is_focused 已不可靠**：ASR 录音期间 `result_window`（toggle）
+或 `instant_overlay`（PTT/hands-free）show 过程会改焦点，paste 时聚焦的可能不是
+terminal 而是这些展示窗（被排除）→ None → fallback 广播 → 失败。
+
+修复：在 `save_frontmost_pid`（toggle/PTT/hands-free 入口，**terminal 正聚焦的瞬间**）
+捕获聚焦的自身 webview 窗口 label，存 `CACHED_SELF_WINDOW`。paste 时读此缓存。
+
+#### `crates/desktop/src/platform/focus_tracker.rs`
+
+- `save_frontmost_pid(app)` 改签名加 `AppHandle`：前台是自身时，调
+  `focused_self_webview_label(app)` 找聚焦的非浮窗 webview 窗口 label，存 `CACHED_SELF_WINDOW`。
+- 新增 `CACHED_SELF_WINDOW: Mutex<Option<String>>`。
+- 新增 `cached_self_window() -> Option<String>`。
+- `clear_cached_pid` 同时清 `CACHED_SELF_WINDOW`。
+- `focused_self_webview_label(app)`：遍历 webview_windows，排除浮窗/指示窗/展示窗
+  （instant_overlay/overlay/result_window/clipboard/pin/download/onboarding/settings），
+  返回 `is_focused()` 的 label。
+
 #### `crates/desktop/src/platform/paste.rs`
 
-`paste_via_clipboard` 加 self-webview 分支。需要 `AppHandle`（改签名 `paste()` 加参数，
-或从 thread-local / 全局取）：
-
+`paste_via_clipboard` 加 self-webview 分支：
 ```rust
-// cached_pid 无值时，检测 octopus 自己的聚焦 webview 窗口
-if cached_pid().is_none() {
-    if let Some(label) = focused_octopus_webview_label(app_handle) {
-        // emit "paste-text" { text } 到该窗口（定向，不广播）
-        let _ = app_handle.emit_to(&label, "paste-text", text);
-        return Ok(());  // 前端处理，不走键盘模拟
-    }
-    // 无聚焦 webview → fallback 全局广播（现有 keystroke::paste()）
-}
+if cached_pid().is_some() { /* 外部 app 三级 dispatch */ }
+else if let Some(label) = cached_self_window() {
+    app.emit_to(&label, "paste-text", text.to_string());  // 定向到 toggle 时缓存的窗口
+    return Ok(());
+} else { keystroke::paste()?; }  // fallback 全局广播
 ```
-
-#### `focused_octopus_webview_label(app) -> Option<String>`
-
-遍历 `app.webview_windows()`，找 `is_focused() == Ok(true)` 的窗口，返回其 label。
-排除浮窗（instant_overlay / overlay / result_window——这些不接收粘贴）。
+`paste()` 加 `app: &AppHandle` 参数。
 
 #### 签名变更
 
