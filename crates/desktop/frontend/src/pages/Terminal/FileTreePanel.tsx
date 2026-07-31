@@ -13,6 +13,7 @@ import { ChevronRight, ChevronDown, Folder, File } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
+import { PanelResizer } from "./PanelResizer";
 
 type FileEntry = {
   name: string;
@@ -29,9 +30,22 @@ type Props = {
   cwd: string | null;
   expanded: boolean;
   onToggle: () => void;
+  width?: number;
+  // resizer 回调（展开态才渲染手柄）
+  onResizerStart?: () => void;
+  onResizerMove?: (clientX: number) => void;
+  onResizerEnd?: () => void;
 };
 
-export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
+export function FileTreePanel({
+  cwd,
+  expanded,
+  onToggle,
+  width,
+  onResizerStart,
+  onResizerMove,
+  onResizerEnd,
+}: Props) {
   const t = useT();
   const [showHidden, setShowHidden] = useState(false);
   // 展开的目录路径集合
@@ -198,7 +212,19 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
 
   // ── 展开态：工具条 + 文件树 ──
   return (
-    <div className="file-tree-panel">
+    <div
+      className="file-tree-panel"
+      style={width !== undefined ? { width: `${width}px` } : undefined}
+    >
+      {/* 拖拽手柄（左边缘）——仅展开态渲染 */}
+      {onResizerStart && onResizerMove && onResizerEnd && (
+        <PanelResizer
+          side="left"
+          onStart={onResizerStart}
+          onMove={onResizerMove}
+          onEnd={onResizerEnd}
+        />
+      )}
       <div className="file-tree-toolbar">
         <button
           className="file-tree-tool-btn"

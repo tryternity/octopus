@@ -16,7 +16,7 @@
  * - sidebar 激活项左侧 2px 强调条（比 border 更有存在感）
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -32,6 +32,8 @@ import {
 import { cwdBasename } from "./osc-handlers";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { FileTreePanel } from "./FileTreePanel";
+import { usePanelWidth } from "./usePanelWidth";
+import { PanelResizer } from "./PanelResizer";
 
 type Tab = {
   id: number;
@@ -69,12 +71,36 @@ export default function Terminal() {
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [, forceUpdate] = useState(0);
 
+  // ── panel 宽度（拖拽 + localStorage 持久化，全局一份）──
+  const sidebarWidthCtrl = usePanelWidth("octopus-terminal-sidebar-width", 200);
+  const fileTreeWidthCtrl = usePanelWidth("octopus-terminal-file-tree-width", 240);
+  // .terminal-content 容器 ref——拖动时实时取 boundingRect 算 clamp 边界
+  const contentRef = useRef<HTMLDivElement>(null);
+
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
   useEffect(() => subscribeAgentActivity(() => forceUpdate((n) => n + 1)), []);
 
   // 绑定 agent 信号 listener（幂等）
   useEffect(() => {
     ensureAgentActivityListener();
+  }, []);
+
+  // 启动 clamp：窗口缩小后重开，已存宽度按当前容器重算。
+  // 不写回 localStorage（保留用户偏好，下次大窗口恢复），只改本次渲染值。
+  // 依赖：空数组（仅启动时跑一次，用闭包内的初始 width 值）。
+  useEffect(() => {
+    if (!contentRef.current) return;
+    const rect = contentRef.current.getBoundingClientRect();
+    const isSidebarLayout = layout === "sidebar";
+    const otherForFileTree = isSidebarLayout ? sidebarWidthCtrl.width : 0;
+    const otherForSidebar = fileTreeOpen ? fileTreeWidthCtrl.width : 0;
+    fileTreeWidthCtrl.clampTo(rect.width, otherForFileTree);
+    sidebarWidthCtrl.clampTo(rect.width, otherForSidebar);
+    // 二次收敛：sidebar clamp 后宽度可能变小，fileTree 的 otherSide 应重算
+    if (isSidebarLayout && fileTreeOpen) {
+      fileTreeWidthCtrl.clampTo(rect.width, sidebarWidthCtrl.width);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addTab = useCallback((cwd?: string, command?: string) => {
@@ -236,6 +262,18 @@ export default function Terminal() {
       cwd={activeTabCwd}
       expanded={fileTreeOpen}
       onToggle={() => setFileTreeOpen(!fileTreeOpen)}
+      width={fileTreeWidthCtrl.width}
+      onResizerStart={fileTreeWidthCtrl.startDrag}
+      onResizerMove={(clientX) => {
+        if (!contentRef.current) return;
+        fileTreeWidthCtrl.updateFromPointer(
+          clientX,
+          contentRef.current.getBoundingClientRect(),
+          "left",
+          layout === "sidebar" ? sidebarWidthCtrl.width : 0,
+        );
+      }}
+      onResizerEnd={fileTreeWidthCtrl.endDrag}
     />
   );
 
@@ -252,7 +290,10 @@ export default function Terminal() {
       <>
       {tabContextMenu}
       <div className="terminal-window terminal-sidebar-layout">
-        <aside className="terminal-sidebar">
+        <aside
+          className="terminal-sidebar"
+          style={{ width: `${sidebarWidthCtrl.width}px` }}
+        >
           <div className="terminal-sidebar-header">
             <button
               className="terminal-layout-toggle"
@@ -288,8 +329,23 @@ export default function Terminal() {
               />
             ))}
           </div>
+          {/* 拖拽手柄（右边缘）——sidebar 没有收缩态，始终渲染 */}
+          <PanelResizer
+            side="right"
+            onStart={sidebarWidthCtrl.startDrag}
+            onMove={(clientX) => {
+              if (!contentRef.current) return;
+              sidebarWidthCtrl.updateFromPointer(
+                clientX,
+                contentRef.current.getBoundingClientRect(),
+                "right",
+                fileTreeOpen ? fileTreeWidthCtrl.width : 0,
+              );
+            }}
+            onEnd={sidebarWidthCtrl.endDrag}
+          />
         </aside>
-        <div className="terminal-content">
+        <div className="terminal-content" ref={contentRef}>
           {panes}
           {fileTree}
         </div>
@@ -335,7 +391,7 @@ export default function Terminal() {
           <Plus size={14} />
         </button>
       </div>
-      <div className="terminal-content">
+      <div className="terminal-content" ref={contentRef}>
         {panes}
         {fileTree}
       </div>
