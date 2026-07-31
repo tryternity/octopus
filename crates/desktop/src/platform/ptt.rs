@@ -445,7 +445,7 @@ pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
 ///
 /// 仅注销当前热键，manager 线程常驻（等待下一次注册）。若希望彻底关闭
 /// 线程，可扩展为发送 Shutdown 命令。
-#[allow(dead_code)]  // 预留给热重载（record_mode 切换时注销旧键）
+#[allow(dead_code)]  // 预留给热重载（asr_shortcut 热重载时注销旧键）
 pub fn unregister_ptt(app: &AppHandle) -> Result<(), String> {
     log::info!("[ptt] unregister_ptt");
 
