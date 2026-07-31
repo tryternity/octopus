@@ -61,17 +61,28 @@ export function TerminalPane({
   const terminalMenuItems: MenuItem[] = [
     {
       label: t("terminal.ctxCopy"),
-      action: async () => {
+      action: () => {
         const sel = session.getSelection();
-        if (sel) await navigator.clipboard.writeText(sel);
+        if (!sel) return;
+        // WKWebView 的 navigator.clipboard 可能受限——用 textarea + execCommand 兜底
+        const ta = document.createElement("textarea");
+        ta.value = sel;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
       },
       disabled: !session.hasSelection(),
     },
     {
       label: t("terminal.ctxPaste"),
-      action: async () => {
-        const text = await navigator.clipboard.readText();
-        if (text) session.paste(text);
+      action: () => {
+        // WKWebView navigator.clipboard.readText 受限——用 execCommand('paste')
+        // 需要 xterm textarea 聚焦，execCommand('paste') 才生效
+        session.focus();
+        document.execCommand("paste");
       },
     },
     {

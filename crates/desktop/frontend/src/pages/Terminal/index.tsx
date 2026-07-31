@@ -66,6 +66,7 @@ export default function Terminal() {
   const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
   const [tabMenu, setTabMenu] = useState<{ pos: MenuPosition; items: MenuItem[] } | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -119,14 +120,7 @@ export default function Terminal() {
       pos: { x: e.clientX, y: e.clientY },
       items: [
         { label: t("terminal.ctxNewTab"), action: () => addTab() },
-        { label: t("terminal.ctxRename"), action: () => {
-          // 触发改名：模拟双击逻辑——用 DOM event 找到 tab 元素双击
-          // 简化：直接用 renameTab 设空再让用户双击。或直接 prompt。
-          // 最简：tab 改名走双击，右键也设 editing——但 editing 在子组件内。
-          // 这里用 window.prompt 兜底（简单直接）
-          const name = window.prompt(t("terminal.ctxRename"));
-          if (name !== null) renameTab(tabId, name);
-        }},
+        { label: t("terminal.ctxRename"), action: () => setRenamingTabId(tabId) },
         { label: t("terminal.ctxClose"), action: () => closeTab(tabId) },
       ],
     });
@@ -284,6 +278,8 @@ export default function Terminal() {
                 active={m.active}
                 phase={m.phase}
                 label={m.label}
+                forceEditing={renamingTabId === m.tab.id}
+                onEditingDone={() => { if (renamingTabId === m.tab.id) setRenamingTabId(null); }}
                 onClick={() => setActiveId(m.tab.id)}
                 onClose={() => closeTab(m.tab.id)}
                 onRename={(name) => renameTab(m.tab.id, name)}
@@ -322,6 +318,8 @@ export default function Terminal() {
             phase={m.phase}
             label={m.label}
             onCloseLabel={t("terminal.closeTab")}
+            forceEditing={renamingTabId === m.tab.id}
+            onEditingDone={() => { if (renamingTabId === m.tab.id) setRenamingTabId(null); }}
             onClick={() => setActiveId(m.tab.id)}
             onClose={() => closeTab(m.tab.id)}
             onRename={(name) => renameTab(m.tab.id, name)}
@@ -385,10 +383,18 @@ function TabButton(props: {
   onClose: () => void;
   onRename: (name: string) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+  forceEditing?: boolean;
+  onEditingDone?: () => void;
 }) {
-  const { active, phase, label, onClick, onClose, onCloseLabel, onRename, onContextMenu } =
-    props;
+  const { active, phase, label, onClick, onClose, onCloseLabel, onRename, onContextMenu,
+    forceEditing, onEditingDone } = props;
   const [editing, setEditing] = useState(false);
+  const isEditing = editing || forceEditing;
+  const finishEditing = (commit: boolean) => {
+    setEditing(false);
+    onEditingDone?.();
+    if (!commit && !forceEditing) return; // 内部取消不触发 rename
+  };
   return (
     <div
       className={`terminal-tab ${active ? "terminal-tab-active" : ""}`}
@@ -408,14 +414,14 @@ function TabButton(props: {
         <X size={12} />
       </button>
       <AgentBadge phase={phase} />
-      {editing ? (
+      {isEditing ? (
         <RenameInput
           initial={label}
           onCommit={(name) => {
             onRename(name);
-            setEditing(false);
+            finishEditing(true);
           }}
-          onCancel={() => setEditing(false)}
+          onCancel={() => finishEditing(false)}
         />
       ) : (
         <span
@@ -443,10 +449,18 @@ function SidebarItem(props: {
   onClose: () => void;
   onRename: (name: string) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+  forceEditing?: boolean;
+  onEditingDone?: () => void;
 }) {
-  const { active, phase, label, onClick, onClose, closeLabel, onRename, onContextMenu } =
-    props;
+  const { active, phase, label, onClick, onClose, closeLabel, onRename, onContextMenu,
+    forceEditing, onEditingDone } = props;
   const [editing, setEditing] = useState(false);
+  const isEditing = editing || forceEditing;
+  const finishEditing = (commit: boolean) => {
+    setEditing(false);
+    onEditingDone?.();
+    if (!commit && !forceEditing) return;
+  };
   return (
     <div
       className={`terminal-sidebar-item ${active ? "terminal-sidebar-item-active" : ""}`}
@@ -466,14 +480,14 @@ function SidebarItem(props: {
         <X size={12} />
       </button>
       <AgentBadge phase={phase} />
-      {editing ? (
+      {isEditing ? (
         <RenameInput
           initial={label}
           onCommit={(name) => {
             onRename(name);
-            setEditing(false);
+            finishEditing(true);
           }}
-          onCancel={() => setEditing(false)}
+          onCancel={() => finishEditing(false)}
         />
       ) : (
         <span

@@ -46,9 +46,19 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
   const openNodeMenu = useCallback((e: React.MouseEvent, name: string, fullPath: string) => {
     e.preventDefault();
     e.stopPropagation();
+    const copyToClipboard = (text: string) => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    };
     setMenuItems([
-      { label: t("terminal.ctxCopyPath"), action: () => navigator.clipboard.writeText(fullPath) },
-      { label: t("terminal.ctxCopyName"), action: () => navigator.clipboard.writeText(name) },
+      { label: t("terminal.ctxCopyPath"), action: () => copyToClipboard(fullPath) },
+      { label: t("terminal.ctxCopyName"), action: () => copyToClipboard(name) },
     ]);
     setMenuPos({ x: e.clientX, y: e.clientY });
   }, [t]);
