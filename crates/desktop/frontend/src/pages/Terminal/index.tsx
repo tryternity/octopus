@@ -172,6 +172,7 @@ export default function Terminal() {
         >
           <TerminalPane
             cwd={tab.cwd}
+            active={tab.id === activeId}
             pendingCommand={tab.pendingCommand}
             onConsumeCommand={() => {
               setTabs((prev) =>

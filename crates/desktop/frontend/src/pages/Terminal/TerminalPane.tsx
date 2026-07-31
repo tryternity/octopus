@@ -14,6 +14,8 @@ import { useTerminalSession } from "./useTerminalSession";
 
 type Props = {
   cwd?: string;
+  /** tab 是否活跃——活跃 attach WebGL，隐藏 dispose 释放 context。 */
+  active?: boolean;
   /** 待写入的初始命令（mount 后消费一次）。 */
   pendingCommand?: string;
   /** 命令消费后回调（父组件清空 pendingCommand，避免重复写）。 */
@@ -24,12 +26,13 @@ type Props = {
 
 export function TerminalPane({
   cwd,
+  active = true,
   pendingCommand,
   onConsumeCommand,
   onPtyId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const session = useTerminalSession({ container: containerRef, cwd });
+  const session = useTerminalSession({ container: containerRef, cwd, active });
 
   // 上报 ptyId（session 連接成功后变化）
   useEffect(() => {
