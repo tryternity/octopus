@@ -290,9 +290,13 @@ octopus 的"手机遥控 agent"需要：
 
 | 功能 | 说明 |
 |---|---|
-| **tab 改名** | 双击 tab 标题内联编辑（customName > agentName > 默认） |
+| **tab 改名** | 双击 tab 标题内联编辑（customName > cwdBasename > agentName > 默认） |
 | **布局切换** | 顶部 tabs ↔ 左侧 sidebar list（localStorage 持久化） |
 | **多窗口** | 托盘「新建终端」多实例（`terminal_<n>`）+ ActionBar agent 单例（`terminal_action_agent`），Terax 是单窗口应用 |
+| **文件树侧栏** | 右侧默认隐藏，工具条切换展开/收缩。懒加载 + gitignore 过滤 + dot 文件切换。根目录跟随当前 tab cwd（OSC 7）。Terax 有完整 explorer（git 状态/拖放/CRUD），octopus Phase 1 仅展示 |
+| **Cmd+T / Ctrl+T 新建 tab** | 不区分平台，Cmd 或 Ctrl+T 都支持 |
+| **右键菜单（三区域）** | 终端内容区（复制/粘贴/全选/清屏）+ tab 标签（改名/关闭/新建）+ 文件树（复制路径/复制名称）。自绘浮层 `ContextMenu.tsx`，剪贴板走 `document.execCommand`（WKWebView `navigator.clipboard` 实测不可靠），改名复用 `forceEditing` prop（`window.prompt` 在 WKWebView 不工作）。Terax 用系统原生右键菜单 |
+| **rAF 节流** | 巨量输出 Ctrl+C 回到命令行（xterm write buffer 积压修复），Terax 靠 rendererPool 绕过 |
 
 ### Terax 有、octopus 未实现（按优先级）
 
@@ -332,12 +336,12 @@ octopus 的"手机遥控 agent"需要：
 | agent_hooks.rs（幂等/merge/Pi） | 12 |
 | terminal_window.rs（URL/label 匹配） | 9 |
 | activation.rs（float_depth/label 匹配） | 3 |
-| keymap.ts（Option/Cmd/删除/readline/isFind/isNewTab） | 37 |
+| keymap.ts（Option/Cmd/删除/readline/isFind/isNewTab） | 39 |
 | agent-activity.ts（phaseForSignal/displayLabel） | 11 |
 | useTerminalSession.ts（attachWebgl 降级/context loss） | 4 |
 | osc-handlers.ts（parseOsc7/cwdBasename/updateShellIntegration） | 13 |
-| **合计（前端）** | **66** |
-| **合计（含 Rust）** | **97** |
+| **合计（前端）** | **68** |
+| **合计（含 Rust）** | **103** |
 
 Terax 终端模块测试文件（供后续补功能时参考其测试范式）：`keymap.test.ts` / `agentActivity.test.ts` / `cursorBlink.test.ts` / `dormantRing.test.ts` / `liveTerminals.test.ts` / `osc-handlers.test.ts` / `panes.test.ts` / `quoteShellPath.test.ts` / `terminalClipboard.test.ts` / `terminalPaste.test.ts` / `useTerminalFileDrop.test.ts` / `block/lib/` 下 6 个。
 

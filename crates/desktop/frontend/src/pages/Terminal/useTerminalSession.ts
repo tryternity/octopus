@@ -56,6 +56,12 @@ export type TerminalSession = {
   searchAddon: SearchAddon | null;
   /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
   cwd: string | null;
+  // ── 右键菜单需要的 xterm 操作 ──
+  hasSelection: () => boolean;
+  getSelection: () => string | undefined;
+  paste: (text: string) => void;
+  selectAll: () => void;
+  clear: () => void;
 };
 
 /**
@@ -344,5 +350,16 @@ export function useTerminalSession(opts: {
     ptyId,
     searchAddon: searchAddonRef.current,
     cwd: trackedCwd,
+    hasSelection: () => termRef.current?.hasSelection() ?? false,
+    getSelection: () => termRef.current?.getSelection() ?? undefined,
+    paste: (text: string) => termRef.current?.paste(text),
+    selectAll: () => {
+      const term = termRef.current;
+      if (!term) return;
+      // xterm select(column, row, length)——选中从 (0,0) 开始的所有字符
+      const buf = term.buffer.active;
+      term.select(0, 0, term.cols * buf.length);
+    },
+    clear: () => termRef.current?.clear(),
   };
 }
