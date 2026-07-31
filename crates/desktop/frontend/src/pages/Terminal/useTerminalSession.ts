@@ -28,6 +28,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
 import { readlineSequence, isShiftEnter, isFindShortcut, isNewTabShortcut } from "./keymap";
+import { registerCwdHandler, registerPromptTracker, createShellIntegrationState } from "./osc-handlers";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
 const IS_MAC =
@@ -53,6 +54,8 @@ export type TerminalSession = {
   ptyId: number | null;
   /** SearchAddon 实例（终端内搜索用，未初始化时 null）。 */
   searchAddon: SearchAddon | null;
+  /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
+  cwd: string | null;
 };
 
 /**
@@ -120,6 +123,7 @@ export function useTerminalSession(opts: {
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [trackedCwd, setTrackedCwd] = useState<string | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -246,6 +250,10 @@ export function useTerminalSession(opts: {
           // 其余（Ctrl+A/C/...、Cmd+C/V 复制粘贴）交 xterm 默认
           return true;
         });
+        // OSC 7 cwd 追踪 + OSC 133 prompt tracker（安全过滤）
+        const shellState = createShellIntegrationState();
+        registerPromptTracker(term, shellState);
+        registerCwdHandler(term, (c) => setTrackedCwd(c), shellState);
         // 窗口 resize → PTY resize
         term.onResize(({ cols, rows }) => {
           void pty.resize(cols, rows);
@@ -325,5 +333,6 @@ export function useTerminalSession(opts: {
     },
     ptyId,
     searchAddon: searchAddonRef.current,
+    cwd: trackedCwd,
   };
 }

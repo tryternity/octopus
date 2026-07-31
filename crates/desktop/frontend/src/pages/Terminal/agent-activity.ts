@@ -52,15 +52,17 @@ export function getAgentActivity(): AgentActivityState {
 /**
  * 计算 tab 显示标题（pure，可单测）。
  *
- * 优先级：customName（用户改名）> agentName（OSC 检测）> fallback（默认标题）。
- * customName 空白（trim 后空）视为未设置，回退 agentName/fallback。
+ * 优先级：customName（用户改名）> cwdBasename（OSC 7 目录名）> agentName（OSC 检测）> fallback。
+ * customName 空白（trim 后空）视为未设置，回退后续优先级。
  */
 export function displayLabel(
   customName: string | undefined,
+  cwdBasename: string | null,
   agentName: string | null,
   fallback: string,
 ): string {
   if (customName && customName.trim()) return customName;
+  if (cwdBasename) return cwdBasename;
   if (agentName) return agentName;
   return fallback;
 }

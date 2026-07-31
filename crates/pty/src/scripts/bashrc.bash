@@ -24,9 +24,21 @@ if [ -z "$__OCTOPUS_HOOKS_LOADED" ]; then
   # on reload, guard with a flag.
   [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
 
+  _octopus_urlencode() {
+    local LC_ALL=C s="$1" i c
+    for (( i=0; i<${#s}; i++ )); do
+      c="${s:i:1}"
+      case "$c" in
+        [a-zA-Z0-9/._~-]) printf '%s' "$c" ;;
+        *) printf '%%%02X' "'$c" ;;
+      esac
+    done
+  }
+
   _octopus_precmd() {
     local _octopus_ret=$?
     printf '\e]133;D;%s\e\\' "$_octopus_ret"
+    printf '\e]7;file://%s%s\e\\' "${HOSTNAME:-$(uname -n 2>/dev/null)}" "$(_octopus_urlencode "$PWD")"
     if [ -z "$__OCTOPUS_PS1_INJECTED" ]; then
       PS1='\[\e]133;B\e\\\]'"$PS1"
       __OCTOPUS_PS1_INJECTED=1

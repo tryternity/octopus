@@ -29,11 +29,14 @@ import {
   displayLabel,
   type AgentPhase,
 } from "./agent-activity";
+import { cwdBasename } from "./osc-handlers";
 
 type Tab = {
   id: number;
   /** shell 启动目录（openPty 用）。 */
   cwd?: string;
+  /** OSC 7 追踪的实时 cwd（cd 后更新，用于新 tab 继承 + 标题显示）。 */
+  trackedCwd: string | null;
   /** 待写入的初始命令（ActionBar 联动；TerminalPane mount 后消费并清空）。 */
   pendingCommand?: string;
   /** TerminalPane 上报的 ptyId（用于 agent 状态映射）。null = 还在连接。 */
@@ -51,7 +54,7 @@ function loadLayout(): LayoutMode {
 let nextTabId = 1;
 function makeTab(cwd?: string, pendingCommand?: string): Tab {
   nextTabId += 1;
-  return { id: nextTabId, cwd, pendingCommand, ptyId: null };
+  return { id: nextTabId, cwd, trackedCwd: null, pendingCommand, ptyId: null };
 }
 
 export default function Terminal() {
@@ -70,10 +73,12 @@ export default function Terminal() {
   }, []);
 
   const addTab = useCallback((cwd?: string, command?: string) => {
-    const tab = makeTab(cwd, command);
+    // cwd 未指定时继承当前活跃 tab 的 trackedCwd（OSC 7 追踪的实时目录）
+    const effectiveCwd = cwd ?? tabs.find((t) => t.id === activeId)?.trackedCwd ?? undefined;
+    const tab = makeTab(effectiveCwd, command);
     setTabs((prev) => [...prev, tab]);
     setActiveId(tab.id);
-  }, []);
+  }, [tabs, activeId]);
 
   const closeTab = useCallback(
     (id: number) => {
@@ -156,7 +161,7 @@ export default function Terminal() {
       tab,
       phase,
       agentName,
-      label: displayLabel(tab.customName, agentName, defaultTitle),
+      label: displayLabel(tab.customName, cwdBasename(tab.trackedCwd), agentName, defaultTitle),
       active: tab.id === activeId,
     };
   });
@@ -188,6 +193,13 @@ export default function Terminal() {
               setTabs((prev) =>
                 prev.map((tb) =>
                   tb.id === tab.id ? { ...tb, ptyId } : tb,
+                ),
+              );
+            }}
+            onCwd={(c) => {
+              setTabs((prev) =>
+                prev.map((tb) =>
+                  tb.id === tab.id ? { ...tb, trackedCwd: c } : tb,
                 ),
               );
             }}
