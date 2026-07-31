@@ -1,6 +1,6 @@
 # 统一 ActionBar「直接点击」与「斜杠命令」执行路径
 
-> **状态：✅ 设计定稿（待写 plan + 实现）**
+> **状态：✅ 实现完成（待 e2e 验证）**——commits `e952251d` + `2fba5d54` + `666b8eb8`，最终全分支 review 通过
 > **日期**：2026-07-31
 > **关联**：[斜杠命令设计](2026-07-30-actionbar-slash-command-design.md)、memory `project_unify-actionbar-execute-paths`
 

@@ -45,7 +45,7 @@
 - `octopus_llm::chat_text_with_prompt` 是同步 `pub fn`（`crates/llm/src/client.rs:181`），在 spawn_blocking 里调。
 - `tokio::time::timeout` 包 spawn_blocking 的 JoinHandle：超时后 await 返回 `Err(Elapsed)`，spawn_blocking 线程继续跑到结束才回收（已知限制，spec 风险 #3 已记录）。
 
-- [ ] **Step 1: 加 AI_TIMEOUT_SECS 常量**
+- [x] **Step 1: 加 AI_TIMEOUT_SECS 常量**
 
 在 `script.rs` 顶部（其他常量附近，或 `execute_action_bar_inner` 前）加：
 
@@ -56,7 +56,7 @@
 const AI_TIMEOUT_SECS: u64 = 10;
 ```
 
-- [ ] **Step 2: ai 分支加 tokio::time::timeout 包裹**
+- [x] **Step 2: ai 分支加 tokio::time::timeout 包裹**
 
 修改 `script.rs:431-437`（非 auto_translate 的 ai 分支的 spawn_blocking 块），从：
 
@@ -92,7 +92,7 @@ const AI_TIMEOUT_SECS: u64 = 10;
             }
 ```
 
-- [ ] **Step 3: 编译 + 测试**
+- [x] **Step 3: 编译 + 测试**
 
 Run:
 ```bash
@@ -101,7 +101,7 @@ cargo test -p octopus-desktop 2>&1 | tail -5
 ```
 Expected: build 0 error 0 warning；rust test 488 passed（不回归）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar/action_bar_commands/script.rs
@@ -130,7 +130,7 @@ auto_translate 例外（上方已 return）。超时从前端移到后端——�
 - 现状 `executeAiItem`（~469-501）：10s 前端超时（`timedOutRef` + `setTimeout`）+ auto_translate 判断。Task 1 后端有超时后，此函数失去存在意义。
 - 现状 `executeItem`（~503-560）：ai 分支调 `executeAiItem`（~526-529）。
 
-- [ ] **Step 1: slash 分流简化——删 url 特殊分支 + 改 agent needVoice 条件**
+- [x] **Step 1: slash 分流简化——删 url 特殊分支 + 改 agent needVoice 条件**
 
 修改 `index.tsx:629-683`。删掉 url 特殊分支（634-657 整段）+ 改 agent needVoice 条件（去掉 `&& !params`，让 needVoice 始终走 voice）。简化后的 slash 分流：
 
@@ -176,7 +176,7 @@ auto_translate 例外（上方已 return）。超时从前端移到后端——�
 
 注意：删掉了原 url 分支的 `fallbackText` / `rawUrl` / action_data 空处理（后端 `script.rs:441-449` 已有）。
 
-- [ ] **Step 2: 确认 openUrlTemplate 的去留（搜索结果仍用）**
+- [x] **Step 2: 确认 openUrlTemplate 的去留（搜索结果仍用）**
 
 grep 确认 `openUrlTemplate` 引用：
 
@@ -190,7 +190,7 @@ rg -n "openUrlTemplate" crates/desktop/frontend/src/pages/ActionBar/index.tsx
 
 此步无代码改动，只是确认「不删函数」的判断。若 grep 显示 line 723 已不存在或 case "url" 已重构，则重新评估。
 
-- [ ] **Step 3: 删 executeAiItem + 改 executeItem ai 分支**
+- [x] **Step 3: 删 executeAiItem + 改 executeItem ai 分支**
 
 删 `executeAiItem` 函数（`index.tsx:469-501`）。修改 `executeItem` 的 ai 分支（~526-529），从：
 
@@ -217,7 +217,7 @@ rg "timedOutRef|AI_TIMEOUT_MS" crates/desktop/frontend/src/pages/ActionBar/index
 ```
 Expected: 若无其他引用则删除其声明。
 
-- [ ] **Step 4: tsc + vitest**
+- [x] **Step 4: tsc + vitest**
 
 Run:
 ```bash
@@ -227,7 +227,7 @@ npx vitest run
 ```
 Expected: tsc 0 error；vitest 全过（原 428，可能有 keyNavigation.test.ts 引用 executeAiItem 的测试需更新——若报错按测试实际调整）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/index.tsx
@@ -270,20 +270,20 @@ Run:
 **url 编码变化验证**
 9. ✅ 选中含 `!*'()` 的文本（如 `test!`）→ `/google` → URL 中 `!` 应被编码为 `%21`（后端全编码）
 
-- [ ] **Step 2: 更新 slash-command spec**
+- [x] **Step 2: 更新 slash-command spec**
 
 Modify `docs/superpowers/specs/2026-07-30-actionbar-slash-command-design.md`：斜杠分流改为统一走 execute_action_bar（替换之前补的 url action_data 空处理描述——现在由后端处理，前端不分支）。
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 Modify `docs/architecture.md`：ActionBar 执行路径描述更新——斜杠命令也走 execute_action_bar，后端单一真相源。
 
-- [ ] **Step 4: 移除 TODO 锚点 + 更新 memory**
+- [x] **Step 4: 移除 TODO 锚点 + 更新 memory**
 
 - 删 `index.tsx` 的 TODO 注释（~630-633，重构已完成）
 - 更新 memory `project_unify-actionbar-execute-paths` 标记为 ✅ 已完成
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/ crates/desktop/frontend/src/pages/ActionBar/index.tsx
@@ -317,3 +317,25 @@ git commit -m "docs(sync): ActionBar 路径统一完成——更新 spec/archite
 - Task 2 Step 2 的 `openUrlTemplate`：需 grep 确认 case "url"（搜索结果 switch，~696-704）是否仍引用——若是则保留函数（只删 slash 分流的调用）。这是实现时要核实的点，plan 已标注。
 - Task 2 Step 3 的 `timedOutRef` / `AI_TIMEOUT_MS`：需 grep 确认无其他引用再删声明。
 - Task 3 Step 1 第 9 项的 url 编码验证：`!` 编码为 `%21` 是后端 `url_encode_param` 行为，实测确认。
+
+## 实施记录（Review plan 回写，2026-07-31）
+
+3 个 task 全部实现完成（commits `e952251d` + `2fba5d54` + `666b8eb8`），最终全分支 review 通过（Ready to merge after e2e）。
+
+### 实际偏差（与 plan 预期对比）
+
+1. **`openUrlTemplate` 保留判断**（Task 2 Step 2，plan 标注的待核实点）——已确认：搜索结果 switch 的 `case "url"`（`index.tsx:660`）仍引用，函数保留，只删 slash 分流的调用。plan 预期正确。
+2. **`timedOutRef` / `AI_TIMEOUT_MS` 删除**（Task 2 Step 3，plan 标注的待核实点）——已确认：无其他引用，声明一并删除。
+3. **ai 超时的 spawn_blocking 取消语义**（Task 1 风险 #3）——`tokio::time::timeout` 对 spawn_blocking 的取消是「detached」语义：超时后前端立即收到 Err，但线程内同步 reqwest 继续跑到结束才回收。已在 `script.rs:436-439` 注释记录。比现状（前端超时 + 后端永远跑）是一大改进。
+
+### Bonus 发现（计划外的正向副作用）
+
+**Quick Execute 全局热键路径也获得了 ai 超时保护**：`action_hotkey.rs:177/:258` 调 `execute_action_bar_inner`，此前该路径的 ai 调用无超时（hung LLM 会无限阻塞 `block_on`）。现在统一走后端超时，超时后 `action_hotkey.rs:185` 的 `Err` 分支 emit `agent-task://error` 提示。这是重构的意外收益——三个入口（直接点击 / 斜杠 / 全局热键）现在都有 ai 超时保护。
+
+### Minor 备注（不阻塞，后续润色）
+
+1. `AI_TIMEOUT_SECS = 10` 是硬编码常量（非配置化）——与原前端 `AI_TIMEOUT_MS` 一致（parity），但 architecture.md 提到 `chat_text_with_prompt(timeout_secs)` 可配，未来可暴露。
+2. `auto_translate` 的 FallbackLlm 路径仍无超时——这是**预存行为**（spec 不变量 #4），非本次引入。慢 endpoint 可能卡住，但本地翻译长文本需要不超时。后续可考虑加一个更长的专用超时。
+3. `openUrlTemplate` 现在只有搜索 `case "url"` 一个调用者——注释「slash 分流与 case url 共用」已过时，函数可内联进 case。纯清理。
+
+**最终验证**：tsc 0 error · vitest 428/428 · desktop rust test 488 passed。e2e 待用户手动验证（见 Task 3 Step 1 清单）。
