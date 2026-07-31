@@ -150,7 +150,7 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 2. PTT（长按）行为不变（经状态机判定后触发 instant_start/stop）
 3. `TAP_TIMEOUT_MS` 是常量（后续可开放为配置项）
 4. coordinator 的 stage 是单线程的，PTT 状态机通过 `RECORDING_MODE` AtomicU8 读取
-5. asr_shortcut（Alt+Shift+A）保留——toggle 的备用入口
+5. ~~asr_shortcut 保留——toggle 的备用入口~~（2026-08-01 废弃）：asr_shortcut 已升级为单键名（默认 `OptRight`，handy-keys 名称），toggle 仅由双击该键触发，原 Tauri 组合快捷键（`Alt+A` / `register_shortcut`）删除。详见 [asr-key-selector-design.md](2026-08-01-asr-key-selector-design.md)
 
 ## 文件改动
 
