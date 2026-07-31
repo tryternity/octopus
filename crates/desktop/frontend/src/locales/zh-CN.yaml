@@ -887,6 +887,15 @@ terminal:
   fileTreeLoading: 加载中…
   fileTreeError: 加载失败
   fileTreeWaiting: 等待目录…
+  ctxCopy: 复制
+  ctxPaste: 粘贴
+  ctxSelectAll: 全选
+  ctxClear: 清屏
+  ctxRename: 改名
+  ctxClose: 关闭
+  ctxNewTab: 新建标签页
+  ctxCopyPath: 复制路径
+  ctxCopyName: 复制名称
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:

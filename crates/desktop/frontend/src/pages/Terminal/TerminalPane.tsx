@@ -1,16 +1,19 @@
 /**
- * 单个终端面板——挂载 xterm 实例 + PTY session + 搜索浮层。
+ * 单个终端面板——挂载 xterm 实例 + PTY session + 搜索浮层 + 右键菜单。
  *
  * 职责：
  * - 调用 useTerminalSession 创建 xterm + PTY
  * - 上报 ptyId 给父组件（用于 agent 状态映射）
  * - 消费 pendingCommand（ActionBar 联动：shell 就绪后写入命令 + 回车）
  * - 终端内搜索（Cmd+F 触发，SearchOverlay 浮层）
+ * - 终端右键菜单（复制/粘贴/全选/清屏）
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useTerminalSession } from "./useTerminalSession";
 import { SearchOverlay } from "./SearchOverlay";
+import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
+import { useT } from "@/lib/i18n";
 
 type Props = {
   cwd?: string;
@@ -39,6 +42,14 @@ export function TerminalPane({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<MenuPosition>(null);
+  const t = useT();
+
+  const openContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  }, []);
+
   const session = useTerminalSession({
     container: containerRef,
     cwd,
@@ -46,6 +57,43 @@ export function TerminalPane({
     onSearchOpen: () => setSearchOpen(true),
     onNewTab,
   });
+
+  const terminalMenuItems: MenuItem[] = [
+    {
+      label: t("terminal.ctxCopy"),
+      action: () => {
+        const sel = session.getSelection();
+        if (!sel) return;
+        // WKWebView 的 navigator.clipboard 可能受限——用 textarea + execCommand 兜底
+        const ta = document.createElement("textarea");
+        ta.value = sel;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      },
+      disabled: !session.hasSelection(),
+    },
+    {
+      label: t("terminal.ctxPaste"),
+      action: () => {
+        // WKWebView navigator.clipboard.readText 受限——用 execCommand('paste')
+        // 需要 xterm textarea 聚焦，execCommand('paste') 才生效
+        session.focus();
+        document.execCommand("paste");
+      },
+    },
+    {
+      label: t("terminal.ctxSelectAll"),
+      action: () => session.selectAll(),
+    },
+    {
+      label: t("terminal.ctxClear"),
+      action: () => session.clear(),
+    },
+  ];
 
   // 上报 ptyId（session 連接成功后变化）
   useEffect(() => {
@@ -71,7 +119,7 @@ export function TerminalPane({
 
   return (
     <div className="terminal-pane">
-      <div ref={containerRef} className="terminal-pane-canvas" />
+      <div ref={containerRef} className="terminal-pane-canvas" onContextMenu={openContextMenu} />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay
           addon={session.searchAddon}
@@ -79,6 +127,7 @@ export function TerminalPane({
           onFocusTerminal={() => session.focus()}
         />
       )}
+      <ContextMenu position={menuPos} items={terminalMenuItems} onClose={() => setMenuPos(null)} />
     </div>
   );
 }

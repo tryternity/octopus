@@ -30,6 +30,7 @@ import {
   type AgentPhase,
 } from "./agent-activity";
 import { cwdBasename } from "./osc-handlers";
+import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { FileTreePanel } from "./FileTreePanel";
 
 type Tab = {
@@ -64,6 +65,8 @@ export default function Terminal() {
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? 1);
   const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
+  const [tabMenu, setTabMenu] = useState<{ pos: MenuPosition; items: MenuItem[] } | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -109,6 +112,19 @@ export default function Terminal() {
       ),
     );
   }, []);
+
+  /** 打开 tab 右键菜单 */
+  const openTabMenu = useCallback((e: React.MouseEvent, tabId: number) => {
+    e.preventDefault();
+    setTabMenu({
+      pos: { x: e.clientX, y: e.clientY },
+      items: [
+        { label: t("terminal.ctxNewTab"), action: () => addTab() },
+        { label: t("terminal.ctxRename"), action: () => setRenamingTabId(tabId) },
+        { label: t("terminal.ctxClose"), action: () => closeTab(tabId) },
+      ],
+    });
+  }, [addTab, closeTab, renameTab, t]);
 
   const toggleLayout = useCallback(() => {
     setLayout((prev) => {
@@ -223,8 +239,18 @@ export default function Terminal() {
     />
   );
 
+  const tabContextMenu = (
+    <ContextMenu
+      position={tabMenu?.pos ?? null}
+      items={tabMenu?.items ?? []}
+      onClose={() => setTabMenu(null)}
+    />
+  );
+
   if (layout === "sidebar") {
     return (
+      <>
+      {tabContextMenu}
       <div className="terminal-window terminal-sidebar-layout">
         <aside className="terminal-sidebar">
           <div className="terminal-sidebar-header">
@@ -252,9 +278,12 @@ export default function Terminal() {
                 active={m.active}
                 phase={m.phase}
                 label={m.label}
+                forceEditing={renamingTabId === m.tab.id}
+                onEditingDone={() => { if (renamingTabId === m.tab.id) setRenamingTabId(null); }}
                 onClick={() => setActiveId(m.tab.id)}
                 onClose={() => closeTab(m.tab.id)}
                 onRename={(name) => renameTab(m.tab.id, name)}
+                onContextMenu={(e) => openTabMenu(e, m.tab.id)}
                 closeLabel={t("terminal.closeTab")}
               />
             ))}
@@ -265,10 +294,13 @@ export default function Terminal() {
           {fileTree}
         </div>
       </div>
+      </>
     );
   }
 
   return (
+    <>
+    {tabContextMenu}
     <div className="terminal-window">
       <div className="terminal-tabbar" role="tablist">
         <button
@@ -286,9 +318,12 @@ export default function Terminal() {
             phase={m.phase}
             label={m.label}
             onCloseLabel={t("terminal.closeTab")}
+            forceEditing={renamingTabId === m.tab.id}
+            onEditingDone={() => { if (renamingTabId === m.tab.id) setRenamingTabId(null); }}
             onClick={() => setActiveId(m.tab.id)}
             onClose={() => closeTab(m.tab.id)}
             onRename={(name) => renameTab(m.tab.id, name)}
+            onContextMenu={(e) => openTabMenu(e, m.tab.id)}
           />
         ))}
         <button
@@ -305,6 +340,7 @@ export default function Terminal() {
         {fileTree}
       </div>
     </div>
+    </>
   );
 }
 
@@ -346,16 +382,26 @@ function TabButton(props: {
   onClick: () => void;
   onClose: () => void;
   onRename: (name: string) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  forceEditing?: boolean;
+  onEditingDone?: () => void;
 }) {
-  const { active, phase, label, onClick, onClose, onCloseLabel, onRename } =
-    props;
+  const { active, phase, label, onClick, onClose, onCloseLabel, onRename, onContextMenu,
+    forceEditing, onEditingDone } = props;
   const [editing, setEditing] = useState(false);
+  const isEditing = editing || forceEditing;
+  const finishEditing = (commit: boolean) => {
+    setEditing(false);
+    onEditingDone?.();
+    if (!commit && !forceEditing) return; // 内部取消不触发 rename
+  };
   return (
     <div
       className={`terminal-tab ${active ? "terminal-tab-active" : ""}`}
       role="tab"
       aria-selected={active}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       <button
         className="terminal-tab-close"
@@ -368,14 +414,14 @@ function TabButton(props: {
         <X size={12} />
       </button>
       <AgentBadge phase={phase} />
-      {editing ? (
+      {isEditing ? (
         <RenameInput
           initial={label}
           onCommit={(name) => {
             onRename(name);
-            setEditing(false);
+            finishEditing(true);
           }}
-          onCancel={() => setEditing(false)}
+          onCancel={() => finishEditing(false)}
         />
       ) : (
         <span
@@ -402,16 +448,26 @@ function SidebarItem(props: {
   onClick: () => void;
   onClose: () => void;
   onRename: (name: string) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  forceEditing?: boolean;
+  onEditingDone?: () => void;
 }) {
-  const { active, phase, label, onClick, onClose, closeLabel, onRename } =
-    props;
+  const { active, phase, label, onClick, onClose, closeLabel, onRename, onContextMenu,
+    forceEditing, onEditingDone } = props;
   const [editing, setEditing] = useState(false);
+  const isEditing = editing || forceEditing;
+  const finishEditing = (commit: boolean) => {
+    setEditing(false);
+    onEditingDone?.();
+    if (!commit && !forceEditing) return;
+  };
   return (
     <div
       className={`terminal-sidebar-item ${active ? "terminal-sidebar-item-active" : ""}`}
       role="tab"
       aria-selected={active}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       <button
         className="terminal-tab-close"
@@ -424,14 +480,14 @@ function SidebarItem(props: {
         <X size={12} />
       </button>
       <AgentBadge phase={phase} />
-      {editing ? (
+      {isEditing ? (
         <RenameInput
           initial={label}
           onCommit={(name) => {
             onRename(name);
-            setEditing(false);
+            finishEditing(true);
           }}
-          onCancel={() => setEditing(false)}
+          onCancel={() => finishEditing(false)}
         />
       ) : (
         <span
