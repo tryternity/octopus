@@ -16,11 +16,28 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
-use super::{Command, Stage, RecordType, FALLBACK_STREAMING_SPEC, set_current_transcription_id};
+use super::{Command, Stage, RecordType, FALLBACK_STREAMING_SPEC, set_current_transcription_id, INSTANT_MODE};
 use super::paste::{now_millis, active_asr_engine_name};
 use super::tick::{start_tick_thread, start_vad_segmented_tick_thread};
 #[cfg(feature = "cloud")]
 use super::tick::start_cloud_streaming_tick_thread;
+
+/// 开录音首帧展示：instant 模式 → instant 浮窗 listening 态；否则 → result_window。
+///
+/// instant 模式下不展示 selection 延续文本（浮窗只读、紧凑，仅作录音指示），
+/// 保持与 talk 模式「只看状态、结果粘贴后即隐藏」的语义一致。
+fn show_listening_start(app_handle: &tauri::AppHandle, show_text: &str, is_continuation: bool) {
+    if INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::ui::instant_overlay::show_instant_overlay(app_handle, "listening", "");
+        return;
+    }
+    if is_continuation {
+        crate::ui::result_window::show_result(app_handle, "正在聆听…");
+        crate::ui::result_window::update_result(app_handle, show_text, false, 0);
+    } else {
+        crate::ui::result_window::show_result(app_handle, show_text);
+    }
+}
 
 /// 实际开录音：从 Idle 进入活跃录音态（cloud / streaming / vad 三分支）。
 /// 抽自 handle_toggle 的 Idle 分支，供 C3 两阶段 Toggle 的 StartRecording / FallbackStart 复用。
@@ -49,7 +66,12 @@ pub(crate) fn begin_recording(
         error!("Failed to start recording: {}", e);
         // 弹出结果窗 + 红色错误提示，告知用户麦克风不可用
         let _ = app_handle.emit("mic-error", "麦克风不可用，请在系统设置中授权麦克风权限");
-        crate::ui::result_window::show_result(app_handle, "");
+        if INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            // instant 模式：错误也走 instant 浮窗（done 态展示提示文字）。
+            crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", "麦克风不可用");
+        } else {
+            crate::ui::result_window::show_result(app_handle, "");
+        }
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
     }
@@ -98,10 +120,9 @@ pub(crate) fn prepare_cloud_streaming_session(
                 };
                 if is_continuation {
                     // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
-                    crate::ui::result_window::show_result(app_handle, "正在聆听…");
-                    crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
+                    show_listening_start(app_handle, &show_text, true);
                 } else {
-                    crate::ui::result_window::show_result(app_handle, &show_text);
+                    show_listening_start(app_handle, &show_text, false);
                 }
                 crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
@@ -201,10 +222,9 @@ pub(crate) fn prepare_streaming_session(
     if is_continuation {
         // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
         // 直接 update_result 展示旧文本，保持前端 displayedRef 同步，caret 由后续 update-result 驱动。
-        crate::ui::result_window::show_result(app_handle, "正在聆听…");
-        crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
+        show_listening_start(app_handle, &show_text, true);
     } else {
-        crate::ui::result_window::show_result(app_handle, &show_text);
+        show_listening_start(app_handle, &show_text, false);
     }
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
@@ -272,10 +292,9 @@ pub(crate) fn prepare_vad_segmented_session(
                 (Transcript::new(tid, config.polish_mode, record_type.clone()), "正在聆听…".to_string(), false)
             };
             if is_continuation {
-                crate::ui::result_window::show_result(app_handle, "正在聆听…");
-                crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
+                show_listening_start(app_handle, &show_text, true);
             } else {
-                crate::ui::result_window::show_result(app_handle, &show_text);
+                show_listening_start(app_handle, &show_text, false);
             }
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 

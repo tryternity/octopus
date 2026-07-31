@@ -21,7 +21,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
-use super::{Command, Stage, RecordType, TRANSLATION_ACTIVE};
+use super::{Command, Stage, RecordType, TRANSLATION_ACTIVE, INSTANT_MODE};
 use super::paste::{stage_name, do_paste, active_asr_engine_name};
 #[cfg(feature = "cloud")]
 use super::paste::update_transcription_raw;
@@ -364,7 +364,11 @@ pub(crate) fn finalize_after_stop(
     if transcript.polish_pending() {
         info!("Toggle stop: polish_pending=true, entering StoppingPolish");
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
-        crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        if INSTANT_MODE.load(Ordering::Relaxed) {
+            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+        } else {
+            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        }
         *stage = Stage::StoppingPolish { transcript };
         return;
     }
@@ -387,6 +391,10 @@ pub(crate) fn finalize_after_stop(
         dispatch_by_record_type(&transcript, "", app_handle);
         TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
+        // instant 空结果：隐藏 instant 浮窗 + 复位标志。
+        if INSTANT_MODE.swap(false, Ordering::Relaxed) {
+            crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+        }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
@@ -399,7 +407,11 @@ pub(crate) fn finalize_after_stop(
         return;
     }
 
-    crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+    // instant 模式：跳过 result_window 预览（do_paste 会用 instant 浮窗 "done" 态展示最终文本）。
+    // 非 instant：正常 show_result 展示识别结果（润色/paste 期间用户可看）。
+    if !INSTANT_MODE.load(Ordering::Relaxed) {
+        crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+    }
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
         info!("Toggle stop: skip final polish (polished covers all, no increase)");
@@ -444,6 +456,9 @@ pub(crate) fn finalize_cloud(
     if combined.is_empty() {
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
+        if INSTANT_MODE.swap(false, Ordering::Relaxed) {
+            crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+        }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;
@@ -465,12 +480,19 @@ pub(crate) fn finalize_cloud(
     if transcript.polish_pending() {
         info!("CloudStreaming finalize: polish_pending=true, entering StoppingPolish");
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
-        crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        if INSTANT_MODE.load(Ordering::Relaxed) {
+            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+        } else {
+            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        }
         *stage = Stage::StoppingPolish { transcript };
         return;
     }
 
-    crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+    // instant 模式：跳过 result_window 预览（do_paste 会用 instant 浮窗 "done" 态展示最终文本）。
+    if !INSTANT_MODE.load(Ordering::Relaxed) {
+        crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+    }
     start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
 }
 

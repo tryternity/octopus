@@ -13,6 +13,7 @@ use std::sync::Arc;
 use super::Stage;
 use super::agent::agent_task_id_in_stage;
 use super::paste::{active_llm_name, now_millis};
+use super::INSTANT_MODE;
 
 /// 处理 Cancel 命令
 pub(crate) fn handle_cancel(
@@ -82,10 +83,12 @@ pub(crate) fn handle_cancel(
         }
     }
     *stage = Stage::Idle;
+    if INSTANT_MODE.swap(false, Ordering::Relaxed) {
+        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+    }
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
 }
-
 /// handle_discard 从当前 stage 提取的 DB finalize 数据。
 /// （用 struct 而非 tuple，避免 clippy::type_complexity 且字段意义明确）
 pub(super) struct DiscardDbInfo {
@@ -245,6 +248,9 @@ pub(crate) fn handle_discard(
     }
 
     *stage = Stage::Idle;
+    if INSTANT_MODE.swap(false, Ordering::Relaxed) {
+        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+    }
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
 }
