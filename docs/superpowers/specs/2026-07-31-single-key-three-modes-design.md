@@ -33,6 +33,9 @@ const TAP_TIMEOUT_MS: u64 = 260;  // 短按/双击判定窗口（后续可开放
 默认右 Alt（handy-keys 名称 `OptRight`），可选：OptRight / ShiftRight / Fn / CtrlRight / CmdRight。
 通过 `ptt_key` 配置字段控制（DB seed 默认值需从 `AltRight` 改为 `OptRight` 对齐 handy-keys）。
 
+> **注记（2026-08-01）**：`ptt_key` 字段已合并进 `asr_shortcut`（语义升级为单键名），
+> 详见 [asr-key-selector-design.md](2026-08-01-asr-key-selector-design.md)。下文 `ptt_key` 引用为历史记录。
+
 ## PTT 状态机（ptt.rs 重构）
 
 6 态有限状态机，替代当前简单的 Pressed→start / Released→stop：
