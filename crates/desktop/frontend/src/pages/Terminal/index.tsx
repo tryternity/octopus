@@ -30,6 +30,7 @@ import {
   type AgentPhase,
 } from "./agent-activity";
 import { cwdBasename } from "./osc-handlers";
+import { FileTreePanel } from "./FileTreePanel";
 
 type Tab = {
   id: number;
@@ -54,7 +55,7 @@ function loadLayout(): LayoutMode {
 let nextTabId = 1;
 function makeTab(cwd?: string, pendingCommand?: string): Tab {
   nextTabId += 1;
-  return { id: nextTabId, cwd, trackedCwd: null, pendingCommand, ptyId: null };
+  return { id: nextTabId, cwd, trackedCwd: cwd ?? null, pendingCommand, ptyId: null };
 }
 
 export default function Terminal() {
@@ -62,6 +63,7 @@ export default function Terminal() {
   const [tabs, setTabs] = useState<Tab[]>(() => [makeTab()]);
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? 1);
   const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
+  const [fileTreeOpen, setFileTreeOpen] = useState(false);
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -139,13 +141,15 @@ export default function Terminal() {
     };
   }, [addTab]);
 
-  // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd
+  // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd + trackedCwd
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const cwd = params.get("cwd");
     if (cwd) {
       setTabs((prev) =>
-        prev.map((tb, i) => (i === 0 ? { ...tb, cwd: cwd ?? undefined } : tb)),
+        prev.map((tb, i) =>
+          i === 0 ? { ...tb, cwd: cwd ?? undefined, trackedCwd: cwd } : tb,
+        ),
       );
     }
   }, []);
@@ -209,6 +213,16 @@ export default function Terminal() {
     </div>
   );
 
+  const activeTabCwd = tabs.find((tb) => tb.id === activeId)?.trackedCwd ?? null;
+
+  const fileTree = (
+    <FileTreePanel
+      cwd={activeTabCwd}
+      expanded={fileTreeOpen}
+      onToggle={() => setFileTreeOpen(!fileTreeOpen)}
+    />
+  );
+
   if (layout === "sidebar") {
     return (
       <div className="terminal-window terminal-sidebar-layout">
@@ -246,7 +260,10 @@ export default function Terminal() {
             ))}
           </div>
         </aside>
-        {panes}
+        <div className="terminal-content">
+          {panes}
+          {fileTree}
+        </div>
       </div>
     );
   }
@@ -283,7 +300,10 @@ export default function Terminal() {
           <Plus size={14} />
         </button>
       </div>
-      {panes}
+      <div className="terminal-content">
+        {panes}
+        {fileTree}
+      </div>
     </div>
   );
 }

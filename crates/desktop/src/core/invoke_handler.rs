@@ -309,6 +309,7 @@ macro_rules! handler {
             crate::commands::terminal_commands::pty_write,
             crate::commands::terminal_commands::pty_resize,
             crate::commands::terminal_commands::pty_close,
+            crate::commands::terminal_commands::terminal_list_dir,
             // agent CLI hook 安装（Claude/Codex/Gemini/Pi 配置文件注入 OSC 777 marker）
             crate::commands::agent_hooks::agent_enable_hooks,
             crate::commands::agent_hooks::agent_hooks_status,

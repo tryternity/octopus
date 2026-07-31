@@ -871,6 +871,13 @@ terminal:
   searchPrev: Previous
   searchNext: Next
   searchClose: Close search
+  fileTreeExpand: Expand file tree
+  fileTreeCollapse: Collapse file tree
+  fileTreeToggleHidden: Toggle hidden files
+  fileTreeRefresh: Refresh file tree
+  fileTreeLoading: Loading…
+  fileTreeError: Failed to load
+  fileTreeWaiting: Waiting for directory…
 
 # ════════ ActionBar ════════
 actionbar:

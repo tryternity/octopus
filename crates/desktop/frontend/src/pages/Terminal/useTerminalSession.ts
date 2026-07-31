@@ -123,7 +123,9 @@ export function useTerminalSession(opts: {
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const [trackedCwd, setTrackedCwd] = useState<string | null>(null);
+  // 初始值用 openPty 的 cwd——OSC 7 只在 shell 执行命令后（precmd）才发，
+  // 刚开终端时 trackedCwd 为 null 会导致文件树空白。用启动目录做兜底初始值。
+  const [trackedCwd, setTrackedCwd] = useState<string | null>(cwd ?? null);
 
   // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
   // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
@@ -223,14 +225,14 @@ export function useTerminalSession(opts: {
           if (event.isComposing || event.keyCode === 229) return false;
 
           // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
-          if (isFindShortcut(event, { isMac: IS_MAC })) {
+          if (isFindShortcut(event)) {
             event.preventDefault();
             if (event.type === "keydown") onSearchOpenRef.current?.();
             return false;
           }
 
           // Cmd+T（Mac）/ Ctrl+T（其他）→ 新建终端 tab
-          if (isNewTabShortcut(event, { isMac: IS_MAC })) {
+          if (isNewTabShortcut(event)) {
             event.preventDefault();
             if (event.type === "keydown") onNewTabRef.current?.();
             return false;
