@@ -88,19 +88,56 @@ pub fn hide_instant_overlay(app: &AppHandle) {
     }
 }
 
-/// 把窗口定位到主屏底部居中（逻辑坐标）。
+/// 把窗口定位到鼠标所在显示器底部居中（逻辑坐标）。
 ///
-/// 多屏场景取 primary_monitor；失败则保持当前位置（不阻断 show）。
+/// 用 CGEvent::location() 获取鼠标全局坐标（Quartz 逻辑 points），
+/// 遍历 available_monitors 找到鼠标所在的显示器，在该屏底部居中。
+/// 鼠标位置不可用时 fallback 到 primary_monitor。
 fn position_bottom_center(app: &AppHandle, win: &tauri::WebviewWindow) {
-    let Some(monitor) = app.primary_monitor().ok().flatten() else {
-        return;
-    };
+    // 1. 获取鼠标位置（Quartz 逻辑坐标，y 轴向下）
+    let mouse = get_mouse_location();
+
+    // 2. 找鼠标所在的显示器；找不到用主屏
+    let monitor = app.available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| {
+            // 鼠标在显示器物理范围内？
+            let scale = m.scale_factor();
+            let mx_phys = mouse.map(|(mx, _)| mx * scale).unwrap_or(-1.0);
+            let my_phys = mouse.map(|(_, my)| my * scale).unwrap_or(-1.0);
+            let pos = m.position();
+            let size = m.size();
+            mx_phys >= pos.x as f64
+                && mx_phys < (pos.x as f64 + size.width as f64)
+                && my_phys >= pos.y as f64
+                && my_phys < (pos.y as f64 + size.height as f64)
+        })
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    let Some(monitor) = monitor else { return };
     let scale = monitor.scale_factor();
     let size = monitor.size();
     let pos = monitor.position();
     // 逻辑坐标：屏幕宽 / scale - 窗口宽，居中；屏幕高 / scale - 窗口高 - 底部留白。
     let x = (size.width as f64 / scale - OVERLAY_WIDTH) / 2.0;
-    // monitor.position() 是物理坐标的原点（多屏时可能为负），换算到逻辑后加偏移。
+    // monitor.position() 是物理坐标（多屏时可能为负），换算到逻辑后加偏移。
     let y = pos.y as f64 / scale + (size.height as f64 / scale - OVERLAY_HEIGHT - BOTTOM_MARGIN);
     let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+}
+
+/// 获取鼠标全局位置（macOS Quartz 逻辑坐标，y 轴向下）。
+#[cfg(target_os = "macos")]
+fn get_mouse_location() -> Option<(f64, f64)> {
+    use core_graphics::event::CGEvent;
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let event = CGEvent::new(source).ok()?;
+    let point = event.location();
+    Some((point.x, point.y))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_mouse_location() -> Option<(f64, f64)> {
+    None
 }
