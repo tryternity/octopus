@@ -32,7 +32,8 @@ import {
 import { cwdBasename } from "./osc-handlers";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { FileTreePanel } from "./FileTreePanel";
-import { usePanelWidth } from "./usePanelWidth";
+import { usePanelWidth, PANEL_MIN, TERMINAL_MIN } from "./usePanelWidth";
+import { clampPanelWidth } from "./clampPanelWidth";
 import { PanelResizer } from "./PanelResizer";
 
 type Tab = {
@@ -92,14 +93,15 @@ export default function Terminal() {
     if (!contentRef.current) return;
     const rect = contentRef.current.getBoundingClientRect();
     const isSidebarLayout = layout === "sidebar";
-    const otherForFileTree = isSidebarLayout ? sidebarWidthCtrl.width : 0;
     const otherForSidebar = fileTreeOpen ? fileTreeWidthCtrl.width : 0;
-    fileTreeWidthCtrl.clampTo(rect.width, otherForFileTree);
+    // sidebar 先 clamp（独立计算，不依赖 fileTree 结果）
     sidebarWidthCtrl.clampTo(rect.width, otherForSidebar);
-    // 二次收敛：sidebar clamp 后宽度可能变小，fileTree 的 otherSide 应重算
-    if (isSidebarLayout && fileTreeOpen) {
-      fileTreeWidthCtrl.clampTo(rect.width, sidebarWidthCtrl.width);
-    }
+    // 算出 sidebar clamp 后的实际值（clampTo 是 async，读 state 会拿到旧值，直接调纯函数）
+    const sidebarAfter = isSidebarLayout
+      ? clampPanelWidth(sidebarWidthCtrl.width, PANEL_MIN, rect.width, otherForSidebar, TERMINAL_MIN)
+      : 0;
+    // fileTree 用 sidebarAfter 作为 otherSide，避免读 stale state
+    fileTreeWidthCtrl.clampTo(rect.width, sidebarAfter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
