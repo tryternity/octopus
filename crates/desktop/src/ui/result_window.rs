@@ -240,8 +240,13 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         }
     };
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        // 多屏跟随：show 前定位到鼠标所在显示器（取该屏保存的坐标；没存过则顶部居中）。
-        reposition_to_mouse_monitor(&window);
+        // 多屏跟随：仅在窗口**首次显示**（从不可见到可见）时定位到鼠标所在显示器。
+        // 同一会话的后续 show（listening→润色中→最终文本）保持位置不动——避免录音期间
+        // 鼠标移到副屏，结束时窗口跳走（spec 2026-07-31 e2e 修复）。
+        let was_visible = window.is_visible().unwrap_or(false);
+        if !was_visible {
+            reposition_to_mouse_monitor(&window);
+        }
         // 物理窗口无条件 show：冷启动首启 webview 可能尚未 ready（走 pending 分支），此前
         // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
         // （macOS 可见窗口的 webview 优先首绘，亦加速 ready）；文本仍等 ready 后由
