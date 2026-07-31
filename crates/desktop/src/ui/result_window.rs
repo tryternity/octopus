@@ -181,7 +181,8 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
                 in_fast_mode = false;
                 continue;
             }
-            // 精简态 + 可见：读全局鼠标位置，判是否在顶部小条矩形内
+            // 精简态 + 可见：读全局鼠标位置，判是否在可交互 BAR 矩形内
+            // （toggle=顶部小条 / instant=底部指示卡，见下方按模式分支）
             // 统一用物理坐标：cursor_position() 和 outer_position() 都是 PhysicalPosition，
             // 避免多屏不同缩放率下逻辑/物理混合换算错误
             let (mx, my) = match win.cursor_position() {
@@ -194,10 +195,24 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             };
             // 小条屏幕矩形（物理坐标——BAR 常量是逻辑像素，乘 scale_factor 转物理）
             let sf = win.scale_factor().unwrap_or(1.0);
-            let bx0 = wx + BAR_OFFSET_X * sf;
+            // 按模式决定可交互区（顶部 toggle 小条 / 底部 instant 指示卡）
+            let (bar_off_x, bar_off_y, bar_h) = if crate::engine::coordinator::INSTANT_MODE
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                // instant：底部指示卡，水平居中（指示卡 400 宽，但可交互区放宽到窗口宽 720 便于点击）
+                (BAR_OFFSET_X, RESULT_HEIGHT - INSTANT_BAR_H, INSTANT_BAR_H)
+            } else {
+                // toggle 精简态：顶部小条
+                (BAR_OFFSET_X, 0.0, BAR_H)
+            };
+            let bx0 = wx + bar_off_x * sf;
+            let by0 = wy + bar_off_y * sf;
             let bar_w = BAR_W * sf;
-            let bar_h = BAR_H * sf;
-            let in_bar = mx >= bx0 && mx <= bx0 + bar_w && my >= wy && my <= wy + bar_h;
+            let bar_h_phys = bar_h * sf;
+            let in_bar = mx >= bx0
+                && mx <= bx0 + bar_w
+                && my >= by0
+                && my <= by0 + bar_h_phys;
             let want = !in_bar; // 小条外 → 穿透
             if want != cur_ignore {
                 set_result_ignores_mouse(&win, want);
