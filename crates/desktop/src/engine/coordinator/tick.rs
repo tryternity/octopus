@@ -31,7 +31,7 @@ use super::lifecycle::finalize_after_stop;
 ///
 /// hands-free 常驻录音期间，VAD 累积静音 ≥ 此值 → 自动发 `Command::HandsFreeStop`
 /// （等价于用户按键停止）。避免用户开了 hands-free 后忘了关，一直占着麦。
-pub(crate) const HANDS_FREE_SILENCE_TIMEOUT_SECS: f64 = 15.0;
+pub(crate) const HANDS_FREE_SILENCE_TIMEOUT_SECS: f64 = 10.0;
 
 /// 启动 VAD 伪流式 tick 线程
 pub(crate) fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
