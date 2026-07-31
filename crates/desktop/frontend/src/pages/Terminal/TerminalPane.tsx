@@ -9,6 +9,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useTerminalSession } from "./useTerminalSession";
 import { SearchOverlay } from "./SearchOverlay";
 
@@ -68,6 +70,21 @@ export function TerminalPane({
       onConsumeCommand?.();
     }
   }, [session.ptyId, pendingCommand, session, onConsumeCommand]);
+
+  // ASR 文本回写（spec 2026-07-31-asr-paste-self-webview）：后端检测前台是 terminal
+  // webview 时 emit "paste-text" 定向到本窗口。仅活跃 pane 响应——直写 PTY（最可靠，
+  // 绕过 xterm/键盘模拟）。限定 target 为当前窗口 label，避免多终端窗口都写。
+  useEffect(() => {
+    if (!active) return;
+    let unlisten: (() => void) | null = null;
+    const currentLabel = getCurrentWebviewWindow().label;
+    listen<string>("paste-text", (e) => {
+      if (session.ptyId != null) session.write(e.payload);
+    }, { target: currentLabel })
+      .then((fn) => { unlisten = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); };
+  }, [active, session]);
 
   return (
     <div className="terminal-pane">

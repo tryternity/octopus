@@ -8,6 +8,7 @@ use enigo::{Direction, Key};
 use log::info;
 use octopus_clipboard::ClipboardHandle;
 use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Cmd+V 后等待系统粘贴落地、再恢复原剪贴板的延迟。
 const PASTE_RESTORE_DELAY: Duration = Duration::from_millis(200);
@@ -30,8 +31,11 @@ impl From<&str> for PasteMethod {
     }
 }
 
-/// Paste transcribed text to the active window
-pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result<()> {
+/// Paste transcribed text to the active window.
+///
+/// `app` 用于检测前台是否为 octopus 自己的 webview 窗口（terminal / compact_editor 等）——
+/// 是则 emit `paste-text` 事件让前端处理（spec 2026-07-31-asr-paste-self-webview）。
+pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig, app: &AppHandle) -> Result<()> {
     let method = PasteMethod::from(config.paste_method.as_str());
     let wtc = config.write_to_clipboard;
     let switch_ime = config.switch_input_source_on_paste;
@@ -48,7 +52,7 @@ pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result
             write_to_clipboard(text, handle)?;
         }
         PasteMethod::Clipboard => {
-            paste_via_clipboard(text, handle, wtc, switch_ime)?;
+            paste_via_clipboard(text, handle, wtc, switch_ime, app)?;
         }
         PasteMethod::Direct => {
             paste_direct(text, handle, wtc)?;
@@ -124,6 +128,7 @@ fn paste_via_clipboard(
     handle: &ClipboardHandle,
     write_to_clipboard: bool,
     switch_ime: bool,
+    app: &AppHandle,
 ) -> Result<()> {
     let saved = if !write_to_clipboard {
         backup_clipboard(handle)
@@ -150,7 +155,11 @@ fn paste_via_clipboard(
     // 2026-07-31：优先用 cached pid+bundle_id 三级 dispatch（同 focus_tracker 逻辑）。
     // Electron app（ZCode/豆包）不收 CGEventPostToPid → 需全局 post；
     // WKWebView app（微信）需 osascript；原生 app → paste_to_pid 定向。
-    // 无缓存时 fallback 到全局广播（兼容旧逻辑）。
+    //
+    // 2026-07-31 self-webview：cached_pid 为 None（前台是 octopus 自己的 webview 窗口，
+    // focus_tracker 过滤了自身）时，检测聚焦的 octopus webview 窗口 → emit "paste-text"
+    // 让前端处理（terminal 直写 PTY / compact_editor CM6 insert）。WKWebView 收不到合成
+    // Cmd+V，全局广播无效——应用内事件是唯一可靠路径。
     #[cfg(target_os = "macos")]
     {
         let pid = crate::platform::focus_tracker::cached_pid();
@@ -166,6 +175,11 @@ fn paste_via_clipboard(
                 // （activate_cached_app 已把目标 app 拉到前台）
                 crate::platform::keystroke::paste_to_pid(pid)?;
             }
+        } else if let Some(label) = focused_octopus_webview_label(app) {
+            // 前台是 octopus 自己的 webview 窗口（terminal/compact_editor 等）→ emit 事件
+            info!("[paste] self-webview target: {}, emit paste-text", label);
+            let _ = app.emit_to(&label, "paste-text", text.to_string());
+            return Ok(());
         } else {
             crate::platform::keystroke::paste()?;
         }
@@ -188,6 +202,35 @@ fn paste_via_clipboard(
     }
 
     Ok(())
+}
+
+/// 找当前聚焦的 octopus webview 窗口 label（用于 self-webview 文本注入）。
+///
+/// 遍历 `app.webview_windows()`，返回 `is_focused() == Ok(true)` 的窗口 label。
+/// 排除浮窗/指示窗（不接收粘贴文本）：instant_overlay / overlay_window / result_window /
+/// clipboard_window（这些是 ASR/剪贴板的展示窗，不是用户编辑目标）。
+///
+/// 无聚焦窗口 / 异常 → None（调用方 fallback 到全局广播）。
+fn focused_octopus_webview_label(app: &AppHandle) -> Option<String> {
+    /// 不接收 paste-text 的窗口 label（浮窗 / 指示窗 / 展示窗）。
+    const EXCLUDED_PREFIXES: &[&str] = &[
+        "instant_overlay",
+        "overlay_window",
+        "result_window",
+        "clipboard_window",
+        "pin_window",
+        "download_window",
+        "onboarding_window",
+    ];
+    for (label, win) in app.webview_windows() {
+        if EXCLUDED_PREFIXES.iter().any(|p| label.starts_with(p)) {
+            continue;
+        }
+        if win.is_focused().unwrap_or(false) {
+            return Some(label);
+        }
+    }
+    None
 }
 
 fn paste_direct(
