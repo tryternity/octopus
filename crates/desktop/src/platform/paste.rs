@@ -178,7 +178,7 @@ fn paste_via_clipboard(
         } else if let Some(label) = crate::platform::focus_tracker::cached_self_window() {
             // 前台是 octopus 自己的 webview 窗口（terminal/compact_editor 等）→ emit 事件
             // 用 toggle 入口缓存的窗口 label（paste 瞬间 is_focused 已不可靠——
-            // result_window/instant_overlay show 过程会改焦点）。
+            // result_window show 过程会改焦点）。
             info!("[paste] self-webview target: {}, emit paste-text", label);
             let _ = app.emit_to(&label, "paste-text", text.to_string());
             return Ok(());

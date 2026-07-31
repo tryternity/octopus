@@ -121,3 +121,31 @@ poller 的 `BAR_W`/`BAR_H`/`BAR_OFFSET` 需按模式 + `RESULT_CLICK_THROUGH` �
 - cargo build + cargo test（coordinator 调用点迁移全过）
 - tsc + vite build（前端合并编译）
 - e2e：① toggle 录音→顶部 result 视图（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响
+
+## 实现状态（2026-08-01）
+
+**已实现清单：**
+
+- ✅ `result_window.rs` 加 `show_instant(state, text)` + `position_bottom_center` + emit `record-mode`（commit `f1ae9d9d`）
+- ✅ poller 按 `INSTANT_MODE` 切顶部 / 底部双 BAR 区域（`INSTANT_BAR_H=80`，commit `fc9015ad`）—— 顶部 BAR 沿用 `BAR_OFFSET_X`/`BAR_H`，底部 BAR `(BAR_OFFSET_X, RESULT_HEIGHT-INSTANT_BAR_H, INSTANT_BAR_H)`
+- ✅ `instant_overlay.rs` 删除 + ~15 处调用点迁移到 `result_window::show_instant` / `hide_result`（commit `4d2348e3`）：`coordinator/{mod,cancel_discard,lifecycle,paste,polish,session}.rs` + `core/setup.rs` 删 `instant_overlay::precreate`
+- ✅ 前端 `AsrWindow`/Result 页合并 toggle + instant 视图，监听 `record-mode` 切 `display:none`（commit `0632f59f`）：新增 `pages/Result/InstantView.tsx`，`pages/Result/index.tsx` 加视图分支；删 `pages/InstantOverlay/` + `entries/instant-overlay-main.tsx` + `instant-overlay.html` + `vite.config.ts` 入口
+- ✅ `capabilities/default.json` 删 `instant_overlay` window（本任务）
+- ✅ `focus_tracker.rs` `EXCLUDED_PREFIXES` 删 dead `"instant_overlay"` + doc 注释更新；`paste.rs` stale 注释更新（本任务）
+- ✅ `docs/architecture.md` 录音模式段补「单 WebView 合并（2026-08-01）」+ 多屏跟随段 instant 态表述更新（本任务）
+
+**与 spec 的偏差：**
+
+- **前端根组件命名**：spec 写「新建 `AsrWindow` 根组件」或「改造现有 Result page」。实际选了**改造现有 Result page**（`pages/Result/index.tsx` 加视图分支 + 抽出 `InstantView.tsx`），未新建 `AsrWindow`/`asr-window.html`。语义等价、改动更小（不动 `result.html` 入口），符合 spec「或」分支。
+- **`record-mode` emit 时机**：spec 写「show 前 emit」。实际只在窗口首次显示（`!window.is_visible()`）时 emit——避免每次 `update_result`/`show_instant` 重复 emit。语义保留（前端首次切视图），多 emit 是冗余。
+- **`INSTANT_MODE` 调用点**：spec 列 `begin_recording`/`finalize_after_stop`/`do_paste` 三处跳过 `show_result`。实际沿用 Task 1/2 已有结构——coordinator 在各录音入口直接调 `show_instant`/`show_result`（不靠 `INSTANT_MODE` 在 `show_result` 内分流），`INSTANT_MODE` 仅 poller + `show_instant` 自身读。语义保留、调用链更直接。
+- **`record-mode` payload**：spec 写 `"toggle" | "instant"`，实际 emit 的是裸字符串 `"toggle"` / `"instant"`（无对象包裹）。前端 typeof 比较，等价。
+
+**验证结果：**
+
+- `cargo build -p octopus-desktop --features embedded`：0 error / 0 warning
+- `cargo test -p octopus-desktop --features embedded`：全过（含 coordinator FSM / vault cipher / screenshot geometry 单测）
+- `npx tsc --noEmit`（frontend）：0 error
+- `npm run build`（frontend vite）：成功
+
+**剩余手动 e2e（待用户验证）：** ① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。
