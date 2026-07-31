@@ -26,6 +26,12 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
+import { readlineSequence, isShiftEnter } from "./keymap";
+
+/** 平台判定（macOS Option/Cmd 组合键映射用）。 */
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /Mac|iPhone|iPad/.test(navigator.userAgent);
 
 const TERMINAL_FONT_FAMILY =
   '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace';
@@ -165,6 +171,35 @@ export function useTerminalSession(opts: {
         // 用户输入 → PTY
         term.onData((str) => {
           void pty.write(str);
+        });
+        // macOS Option/Cmd 组合键 + IME 兼容 + Shift+Enter
+        // Ctrl 组合键（Ctrl+A/C/...）由 xterm 默认处理走 onData，这里不拦截
+        term.attachCustomKeyEventHandler((event) => {
+          // IME 组合中（中文拼音等）：拦截原生 keydown（含提交候选的 Enter），
+          // xterm 通过 compositionend 收最终字符串，否则会吞字/重复
+          if (event.isComposing || event.keyCode === 229) return false;
+
+          // readline 序列（Option/Cmd 导航+删除）——alternate screen 交 TUI 应用
+          const isAltScreen = term.buffer.active.type === "alternate";
+          const seq = readlineSequence(event, {
+            isMac: IS_MAC,
+            isAlternateScreen: isAltScreen,
+          });
+          if (seq) {
+            event.preventDefault();
+            if (event.type === "keydown") void pty.write(seq);
+            return false; // xterm 不再处理
+          }
+
+          // Shift+Enter → \x1b\r（部分 TUI 多行输入用）
+          if (isShiftEnter(event)) {
+            event.preventDefault();
+            if (event.type === "keydown") void pty.write("\x1b\r");
+            return false;
+          }
+
+          // 其余（Ctrl+A/C/...、Cmd+C/V 复制粘贴）交 xterm 默认
+          return true;
         });
         // 窗口 resize → PTY resize
         term.onResize(({ cols, rows }) => {
