@@ -1,6 +1,7 @@
 //! 通用窗口 + UI 工具功能域。
 
 pub mod result_window;
+pub mod instant_overlay;
 pub mod pin_window;
 pub mod settings_window;
 pub mod onboarding_window;
