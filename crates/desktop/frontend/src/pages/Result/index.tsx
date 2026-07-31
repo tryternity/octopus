@@ -361,17 +361,6 @@ function Result() {
     invoke("set_result_click_through", { expanded: next });
   }, [expanded]);
 
-  // 全局立即润色快捷键
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let cancelled = false;
-    listen("global-polish-trigger", () => polishNow()).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, [polishNow]);
-
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {

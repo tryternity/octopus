@@ -50,8 +50,19 @@ pub fn record_shortcut_mirror() -> parking_lot::MutexGuard<'static, String> {
 }
 
 /// 将 Tauri Accelerator 格式（CmdOrCtrl+Shift+A）转为用户可读格式（⌘⇧A）
+///
+/// `asr_shortcut` 走 handy-keys 名称（如 OptRight）——命中时直接返回友好符号，
+/// 跳过 accelerator 前缀解析。其他快捷键（screenshot/clipboard/record）仍用 Tauri accelerator。
 fn fmt_shortcut(s: &str) -> String {
     if s.is_empty() { return String::new(); }
+    match s {
+        "OptRight" => return "⌥ 右".to_string(),
+        "CmdRight" => return "⌘ 右".to_string(),
+        "CtrlRight" => return "⌃ 右".to_string(),
+        "ShiftRight" => return "⇧ 右".to_string(),
+        "Fn" => return "Fn".to_string(),
+        _ => {}
+    }
     s.replace("CmdOrCtrl+", "⌘").replace("Cmd+", "⌘")
      .replace("Shift+", "⇧").replace("Alt+", "⌥")
      .replace("Control+", "⌃").replace("Super+", "⌘")
