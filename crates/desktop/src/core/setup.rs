@@ -699,6 +699,14 @@ impl<'a> AppSetup<'a> {
             log::error!("Failed to register global polish shortcut: {}", e);
         }
 
+        // 6.3 talk (PTT) 模式：注册 PTT 键监听（record_mode == "talk"）
+        // toggle 模式下不注册（用上面的 asr_shortcut 即可）
+        if self.config.record_mode == "talk" {
+            if let Err(e) = crate::platform::ptt::register_ptt(self.app.handle(), &self.config.ptt_key) {
+                log::warn!("[ptt] 注册失败，降级 toggle: {}", e);
+            }
+        }
+
         info!("octopus-desktop initialized");
     }
 }
