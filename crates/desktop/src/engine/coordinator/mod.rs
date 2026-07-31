@@ -522,8 +522,11 @@ fn build_coordinator_loop(
                         // instant 会话结束：隐藏 instant 浮窗 + 复位标志（下次 Toggle/InstantStart 默认走 result_window）。
                         if INSTANT_MODE.swap(false, Ordering::Relaxed) {
                             crate::ui::instant_overlay::hide_instant_overlay(&app_handle);
+                        } else {
+                            // 非 instant 才 clear_result（clear 会 show+hide result_window，
+                            // instant 模式从未 show result_window，调 clear 反而把它弹出来）
+                            crate::ui::result_window::clear_result(&app_handle);
                         }
-                        crate::ui::result_window::clear_result(&app_handle);
                         crate::ui::tray::update_tray_label(
                             &app_handle,
                             crate::ui::tray::TrayState::Idle,
