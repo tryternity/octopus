@@ -258,3 +258,83 @@ octopus 的"手机遥控 agent"需要：
 | 用 Zellij 的自研 PTY | 过度工程化（nix::pty + login_tty + tokio AsyncFd），portable-pty 已封装 |
 | Zed 的 ACP 协议 | 过重（完整 agent-client-protocol JSON-RPC），octopus 不需要标准化的 agent 协议 |
 | Codux 的 5 路信号融合 | 过于复杂（每 agent 一张 driver 表 + transcript probe），Terax 的 OSC 模式已够用 |
+
+---
+
+## 八、octopus 实现状态 vs Terax 功能差距（2026-07-31）
+
+> 内嵌终端 Task 1-8 + WebGL + 控制键增强完成后，与 Terax 的完整功能对比。
+> 用于后续翻阅、决定下一步补哪些功能。
+
+### 已实现（对齐 Terax）
+
+| 功能 | octopus | Terax | octopus 文件 |
+|---|---|---|---|
+| PTY spawn + 3 线程（reader/flusher/waiter） | ✅ | ✅ | `pty/src/session.rs` |
+| OSC 133/777/9 agent 状态感知（含 auto-arm/finish/溢出防护） | ✅ | ✅ | `pty/src/agent_detect.rs` |
+| Shell 集成脚本（zsh ZDOTDIR / bash --rcfile OSC 133 注入） | ✅ | ✅ | `pty/src/shell_init.rs` + `scripts/` |
+| Tauri 命令层（pty_open/write/resize/close） | ✅ | ✅ | `commands/terminal_commands.rs` |
+| Agent hook 安装（Claude/Codex/Gemini/Pi） | ✅ | ✅ | `commands/agent_hooks.rs` |
+| pty_write raw body + x-pty-id header（绕 JSON） | ✅ | ✅ | `pty-bridge.ts` |
+| 多 tab（visibility 保活） | ✅ | ✅ | `Terminal/index.tsx` |
+| xterm.js + FitAddon + WebLinksAddon | ✅ | ✅ | `useTerminalSession.ts` |
+| **WebGL renderer + context loss 250ms 重连 + 隐藏 tab 释放** | ✅ | ✅ | `useTerminalSession.ts::attachWebgl` |
+| **macOS 控制键（Option 词导航 / Cmd 行首行尾 / IME 兼容 / Shift+Enter / alternate screen 智能切换）** | ✅ | ✅ | `keymap.ts` |
+| agent 状态徽章（working 脉冲 / attention bell / finished 绿点） | ✅ | ✅ | `agent-activity.ts` + `index.tsx::AgentBadge` |
+
+### octopus 独有（Terax 没有）
+
+| 功能 | 说明 |
+|---|---|
+| **tab 改名** | 双击 tab 标题内联编辑（customName > agentName > 默认） |
+| **布局切换** | 顶部 tabs ↔ 左侧 sidebar list（localStorage 持久化） |
+| **多窗口** | 托盘「新建终端」多实例（`terminal_<n>`）+ ActionBar agent 单例（`terminal_action_agent`），Terax 是单窗口应用 |
+
+### Terax 有、octopus 未实现（按优先级）
+
+#### P1（高性价比，建议下一步）
+
+| 功能 | Terax 文件 | 说明 | octopus 补法 |
+|---|---|---|---|
+| **终端内搜索** | `SearchAddon` + 搜索栏 UI | Cmd+F 触发，翻长输出找关键字。高频 | 装 `@xterm/addon-search`，加搜索栏组件 |
+| **字号/字体偏好** | `useTerminalFont.ts` + 设置页 | octopus 固定 13px SF Mono，用户无法调。中频 | config 加 terminalFontSize/Family，`useTerminalFont` 读 |
+
+#### P2（中频需求，看用户反馈）
+
+| 功能 | Terax 文件 | 说明 |
+|---|---|---|
+| **rendererPool（slot 池化）** | `rendererPool.ts`（~900 行） | 隐藏 tab 保活 WebGL + dormantRing 字节缓冲。octopus WebGL active 释放已兜底，多 tab 不卡就不用 |
+| **分屏 pane（split）** | `PaneTreeView.tsx` + `panes.ts` | 水平/垂直分割同时看多终端 |
+| **OSC 7 cwd 追踪** | `osc-handlers.ts::registerCwdHandler` | 新 tab 继承当前目录 + 安全过滤（防命令输出伪造 cwd）+ 标题显示路径 |
+| **文件拖放进终端** | `useTerminalFileDrop.ts` + `quoteShellPath.ts` | 拖文件自动转义路径写入（依赖 quoteShellPath 空格/特殊字符转义） |
+
+#### P3（重功能或低频，暂缓）
+
+| 功能 | Terax 文件 | 说明 |
+|---|---|---|
+| **block 模式** | `block/` 整个目录（~2000 行） | prompt-as-editor：CodeMirror 驱动 shell 输入 + 命令块装饰 + 历史 + 路径补全 + inline 建议。很重的特色功能 |
+| **OSC 52 剪贴板** | `osc-handlers.ts` | 远程程序（SSH）写本地剪贴板，1MiB 上限 |
+| **OSC 133 prompt tracker** | `osc-handlers.ts::registerPromptTracker` | 追踪命令边界（A/B/C/D 标记），block 模式底层依赖 |
+| **bracketed paste** | `terminalPaste.ts` | `\x1b[200~...\x1b[201~` 包裹粘贴，部分程序需要 |
+| **终端剪贴板** | `terminalClipboard.ts` | OSC 52 + Cmd+C 选中复制（部分 xterm 默认已覆盖） |
+| **光标闪烁控制** | `cursorBlink.ts` | 失焦停闪省电 |
+| **字体度量** | `useTerminalFont` 精确列宽 | CJK 对齐细节 |
+| **shell 选择/历史弹出** | block 模式子功能 | 随 block 模式 |
+
+### 测试覆盖现状（octopus）
+
+| 模块 | 测试数 |
+|---|---|
+| agent_detect.rs（OSC 状态机） | 17 |
+| session.rs（spawn/echo/退出码/Drop） | 3 |
+| shell_init.rs（classify/resolve/URL） | 6 |
+| agent_hooks.rs（幂等/merge/Pi） | 12 |
+| terminal_window.rs（URL/label 匹配） | 9 |
+| activation.rs（float_depth/label 匹配） | 3 |
+| keymap.ts（Option/Cmd/删除/readline） | 24 |
+| agent-activity.ts（phaseForSignal/displayLabel） | 11 |
+| useTerminalSession.ts（attachWebgl 降级/context loss） | 4 |
+| **合计** | **89** |
+
+Terax 终端模块测试文件（供后续补功能时参考其测试范式）：`keymap.test.ts` / `agentActivity.test.ts` / `cursorBlink.test.ts` / `dormantRing.test.ts` / `liveTerminals.test.ts` / `osc-handlers.test.ts` / `panes.test.ts` / `quoteShellPath.test.ts` / `terminalClipboard.test.ts` / `terminalPaste.test.ts` / `useTerminalFileDrop.test.ts` / `block/lib/` 下 6 个。
+
