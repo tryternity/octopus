@@ -197,7 +197,7 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             let sf = win.scale_factor().unwrap_or(1.0);
             // 按模式决定可交互区（顶部 toggle 小条 / 底部 instant 指示卡）
             let (bar_off_x, bar_off_y, bar_h) = if crate::engine::coordinator::INSTANT_MODE
-                .load(std::sync::atomic::Ordering::Relaxed)
+                .load(Ordering::Relaxed)
             {
                 // instant：底部指示卡，水平居中（指示卡 400 宽，但可交互区放宽到窗口宽 720 便于点击）
                 (BAR_OFFSET_X, RESULT_HEIGHT - INSTANT_BAR_H, INSTANT_BAR_H)
@@ -348,10 +348,12 @@ fn position_bottom_center(win: &tauri::WebviewWindow) {
         let x = ox + (w - RESULT_WIDTH) / 2.0;
         // 窗口底边贴屏底：窗口 y = 屏底 - 窗口高(480) - margin
         let y = oy + h - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN;
+        debug!("[result_window] instant bottom-center on mouse monitor: ({},{})", x, y);
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         return;
     }
     // fallback：primary monitor（物理坐标除 scale）
+    debug!("[result_window] instant bottom-center: no mouse monitor, fallback to primary");
     if let Ok(Some(m)) = app.primary_monitor() {
         let scale = m.scale_factor();
         let pos = m.position();

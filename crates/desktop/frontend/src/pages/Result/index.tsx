@@ -180,6 +180,9 @@ function Result() {
             if (!prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording false -> true (show-result)" });
             return true;
           });
+          // toggle 会话开始：清 instant 视图残留状态（上次 PTT/hands-free 的指示内容）
+          setInstantState("");
+          setInstantText("");
           setTranslateMode('off');
           setTranslatedText("");
           translatingRef.current = false;
