@@ -17,7 +17,7 @@ use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::engine::TranscriptionEngine;
 use crate::engine::transcript::Transcript;
 use log::{debug, error, info, warn};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -30,7 +30,7 @@ pub(crate) use self::paste::{
 pub(crate) use self::edit::{handle_enter_edit_mode, commit_edit_apply, stage_transcript};
 #[cfg(feature = "cloud")]
 pub(crate) use self::tick::is_cloud_engine;
-pub(crate) use self::tick::{dispatch_tick, log_tick_heartbeat};
+pub(crate) use self::tick::{dispatch_tick, log_tick_heartbeat, HANDS_FREE_SILENCE_TIMEOUT_SECS};
 // retry_agent_task 保持 pub（action_bar_commands 跨 crate 引用 crate::engine::coordinator::retry_agent_task）
 pub use self::agent::retry_agent_task;
 pub(crate) use self::cancel_discard::{handle_cancel, handle_discard};
@@ -69,6 +69,29 @@ pub(crate) static INSTANT_MODE: AtomicBool = AtomicBool::new(false);
 /// 设置 instant 模式标志（InstantStart 设 true；PasteDone/Cancel 回 Idle 时 reset false）。
 pub(crate) fn set_instant_mode(active: bool) {
     INSTANT_MODE.store(active, Ordering::Relaxed);
+}
+
+/// 当前录音模式（spec 2026-07-31 单键三模式状态机）。
+///
+/// PTT 状态机（ptt.rs）通过此静态量读取当前录音状态，决定 keydown/keyup 的语义——
+/// 不需 channel 通信（coordinator 的 stage 在单线程内，ptt.rs 在另一线程，但 RECORDING_MODE
+/// 只需最终一致：状态机判定窗口 260ms，coordinator 命令处理 <<1ms，Relaxed 足够）。
+///
+/// 值：
+/// - `0` = idle（无录音）
+/// - `1` = toggle 录音中
+/// - `2` = PTT 录音中
+/// - `3` = hands-free 录音中
+static RECORDING_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// 取当前录音模式（ptt.rs 的状态机读此值判断 keydown 落在哪种录音态）。
+pub fn recording_mode() -> u8 {
+    RECORDING_MODE.load(Ordering::Relaxed)
+}
+
+/// 设置录音模式（coordinator 命令分支调用，见 mod.rs 各 Command 处理点）。
+pub(crate) fn set_recording_mode(mode: u8) {
+    RECORDING_MODE.store(mode, Ordering::Relaxed);
 }
 
 /// 前端命令：设置翻译模式激活状态。
@@ -156,6 +179,12 @@ pub(crate) enum Command {
     /// talk (PTT) 模式 keyup：停录音，finalize 走 instant 路径（不弹 result_window，
     /// 用 instant 浮窗展示 "done" 后短暂停留再 hide）。
     InstantStop,
+    /// hands-free 模式 keydown（短按确认）：开始常驻录音（instant 浮窗 listening）。
+    /// 静音 60s 超时或用户再按键 → HandsFreeStop 停录 + 尾段粘贴。
+    HandsFreeStart,
+    /// hands-free 模式停止：停录 + finalize + 尾段粘贴 + hide 浮窗 → Idle。
+    /// 由 PTT 状态机（短按/长按/双击在 hands-free 录音中）或静音超时触发。
+    HandsFreeStop,
     /// 音频采集看门狗触发：cpal 断推（samples=0 持续 ≥ STALL_THRESHOLD）→ 自动重连。
     /// 停采集 + 保留 transcript + 重建 pipeline + 重 start，窗口不隐藏。
     /// spec 2026-07-24-audio-watchdog §4.2。stage_kind 标识触发时的活跃 Stage 类型。
@@ -387,6 +416,7 @@ fn build_coordinator_loop(
                             }
                             let prepare_id = now_millis();
                             pending_prepare = Some(prepare_id);
+                            set_recording_mode(1);  // toggle 录音中（实际 begin_recording 在 StartRecording/FallbackStart）
                             let _ = app_handle.emit("prepare-record", prepare_id);
                             // 看门狗：200ms 后若仍在等待态（前端未回推），发 FallbackStart 兜底普通开。
                             let tx_clone = tx.clone();
@@ -527,6 +557,8 @@ fn build_coordinator_loop(
                             // instant 模式从未 show result_window，调 clear 反而把它弹出来）
                             crate::ui::result_window::clear_result(&app_handle);
                         }
+                        // 录音模式归零（PTT 状态机据此判断下次 keydown 落在 idle）。
+                        set_recording_mode(0);
                         crate::ui::tray::update_tray_label(
                             &app_handle,
                             crate::ui::tray::TrayState::Idle,
@@ -679,6 +711,7 @@ fn build_coordinator_loop(
                         crate::platform::focus_tracker::save_frontmost_pid();
                         // 置 instant 标志：begin_recording / finalize / do_paste 据此跳过 result_window。
                         set_instant_mode(true);
+                        set_recording_mode(2);  // PTT 录音中
                         // 同 Toggle：拉最新 mic/engine_mode + runtime 字段（开新会话生效）。
                         let rc = runtime_config.read();
                         config.microphone = rc.microphone.clone();
@@ -715,6 +748,58 @@ fn build_coordinator_loop(
                             editing = false;
                         }
                         info!("InstantStop: stopping (instant mode)");
+                        handle_toggle(
+                            &mut stage, &audio, &config, &app_handle, &tx,
+                        );
+                    }
+                    Command::HandsFreeStart => {
+                        // hands-free keydown（短按确认）：常驻录音，instant 浮窗 listening。
+                        // busy 保护：非 Idle 忽略（PTT 状态机已保证 idle 态触发，此处二次防护）。
+                        if !matches!(stage, Stage::Idle) {
+                            debug!("HandsFreeStart ignored: not Idle (stage={})", stage_name(&stage));
+                            continue;
+                        }
+                        #[cfg(target_os = "macos")]
+                        crate::platform::focus_tracker::save_frontmost_pid();
+                        // 复用 instant 路径（浮窗 + finalize 跳 result_window）+ 标 hands-free 模式。
+                        set_instant_mode(true);
+                        set_recording_mode(3);  // hands-free 录音中
+                        let rc = runtime_config.read();
+                        config.microphone = rc.microphone.clone();
+                        config.engine_mode = rc.engine_mode.clone();
+                        sync_runtime_fields(&mut config, &rc);
+                        drop(rc);
+                        use_streaming = config.engine_mode == "embedded"
+                            && crate::core::config::is_streaming_engine();
+                        #[cfg(feature = "cloud")]
+                        {
+                            use_cloud_streaming = is_cloud_engine(&config);
+                            if use_cloud_streaming { use_streaming = false; }
+                        }
+                        info!("HandsFreeStart: hands-free mode, instant overlay (silence timeout {}s)",
+                              HANDS_FREE_SILENCE_TIMEOUT_SECS);
+                        begin_recording(
+                            &mut stage, &audio, &engine, &config, &app_handle, &tx,
+                            use_streaming, None,
+                            RecordType::Input,
+                            #[cfg(feature = "cloud")] use_cloud_streaming,
+                        );
+                    }
+                    Command::HandsFreeStop => {
+                        // hands-free 停止：用户按键（短按/长按/双击在 hands-free 录音中）
+                        // 或静音 60s 超时触发。同 InstantStop：停录 + finalize 走 instant 路径。
+                        // 非活跃态收到（已被 Cancel/超时停了）→ no-op。
+                        if matches!(stage, Stage::Idle) {
+                            debug!("HandsFreeStop ignored: not recording (stage={})", stage_name(&stage));
+                            continue;
+                        }
+                        if editing {
+                            if let Some(text) = edit_buffer.take() {
+                                commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
+                            }
+                            editing = false;
+                        }
+                        info!("HandsFreeStop: stopping hands-free (instant mode)");
                         handle_toggle(
                             &mut stage, &audio, &config, &app_handle, &tx,
                         );
@@ -786,6 +871,23 @@ impl Coordinator {
     pub fn instant_stop(&self) {
         let tx = self.tx.lock();
         if tx.send(Command::InstantStop).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
+    /// hands-free keydown（短按确认）：HandsFreeStart（常驻录音 + instant 浮窗 listening）。
+    pub fn hands_free_start(&self) {
+        let tx = self.tx.lock();
+        if tx.send(Command::HandsFreeStart).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
+    /// hands-free 停止：HandsFreeStop（停录 + finalize + 尾段粘贴 → Idle）。
+    /// 由 PTT 状态机（hands-free 录音中任意按键）或静音 60s 超时触发。
+    pub fn hands_free_stop(&self) {
+        let tx = self.tx.lock();
+        if tx.send(Command::HandsFreeStop).is_err() {
             error!("Coordinator channel closed");
         }
     }
@@ -976,6 +1078,27 @@ mod tests {
         assert!(INSTANT_MODE.swap(false, Ordering::Relaxed));
         // 再次读取已归零
         assert!(!INSTANT_MODE.load(Ordering::Relaxed));
+    }
+
+    // ── RECORDING_MODE（单键三模式状态机，spec 2026-07-31）──
+    // PttFsm 通过 recording_mode() 读取当前录音态决定 keydown/keyup 语义。
+    // 值：0=idle, 1=toggle, 2=ptt, 3=hands-free。
+
+    #[test]
+    fn recording_mode_set_and_read() {
+        set_recording_mode(2);  // PTT
+        assert_eq!(recording_mode(), 2);
+        set_recording_mode(3);  // hands-free
+        assert_eq!(recording_mode(), 3);
+        set_recording_mode(0);  // 回 idle（测试间清理）
+        assert_eq!(recording_mode(), 0);
+    }
+
+    #[test]
+    fn recording_mode_toggle_value() {
+        set_recording_mode(1);
+        assert_eq!(recording_mode(), 1, "toggle 录音中应为 1");
+        set_recording_mode(0);
     }
 
 }

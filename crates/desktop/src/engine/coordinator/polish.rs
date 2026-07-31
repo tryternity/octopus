@@ -14,7 +14,7 @@ use crate::core::db_queue::{DbCommand, get_db_sender};
 use crate::engine::transcript::Transcript;
 use log::{debug, info, warn};
 use std::sync::mpsc::Sender;
-use super::{Command, Stage, RecordType, MIN_POLISH_INTERVAL_SEC};
+use super::{Command, Stage, RecordType, MIN_POLISH_INTERVAL_SEC, set_recording_mode};
 use super::paste::{
     do_paste, stage_name, active_llm_name, active_asr_engine_name, update_transcription_raw,
 };
@@ -35,6 +35,7 @@ pub(crate) fn start_final_polish_or_paste(
         *stage = Stage::Idle;
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
+        set_recording_mode(0);  // 回 Idle
         return;
     }
 

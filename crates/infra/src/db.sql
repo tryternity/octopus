@@ -418,7 +418,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     -- 密码箱（vault）
     ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键'),
     ('record_mode',               'toggle',  '录音模式 toggle/talk'),
-    ('ptt_key',                   'AltRight', 'talk 模式 PTT 按键（右侧修饰键）');
+    ('ptt_key',                   'OptRight', '单键三模式 PTT 按键（右侧修饰键，handy-keys 名称：OptRight/ShiftRight/CtrlRight/CmdRight/Fn）');
 
 -- 剪贴板其他配置项（非快捷键）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
