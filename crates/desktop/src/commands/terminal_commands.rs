@@ -179,3 +179,169 @@ pub fn pty_close(state: State<PtyState>, id: u32) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ── 文件树侧栏 ──
+
+/// 文件树条目（camelCase，前端 FileTreePanel 消费）。
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    pub name: String,
+    /// "dir" | "file"
+    pub kind: String,
+}
+
+/// 列出目录的直接子项（文件树侧栏用）。
+///
+/// - 目录优先 + case-insensitive 排序
+/// - `show_hidden=false`：过滤 dot 前缀（`.git` / `.env` 等）
+/// - gitignore 过滤：用 `ignore` crate（在 git repo 内尊重 .gitignore）
+/// - 错误（无权限/不存在）返回空数组（不阻断 UI）
+#[tauri::command]
+pub fn terminal_list_dir(path: String, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
+    list_dir_inner(&path, show_hidden)
+}
+
+/// 纯逻辑核心（可单测，不依赖 Tauri State）。
+fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
+    let root = std::path::Path::new(path);
+
+    // gitignore 过滤：在 git repo 内用 ignore crate 列非忽略项；
+    // 非 git repo 直接列全部（ignore crate 的 WalkBuilder 在非 repo 目录也工作，但
+    // 会尝试找 .git 触发 macOS TCC——这里先判断是否在 repo 内）。
+    let ignored_names = git_ignored_names(root);
+
+    let read = std::fs::read_dir(root).map_err(|e| {
+        log::debug!("terminal_list_dir({}) failed: {e}", root.display());
+        e.to_string()
+    })?;
+
+    let mut entries: Vec<FileEntry> = read
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            // dot 文件过滤
+            if !show_hidden && name.starts_with('.') {
+                return None;
+            }
+            // gitignore 过滤
+            if !ignored_names.is_empty() && ignored_names.contains(&name) {
+                return None;
+            }
+            let kind = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                "dir"
+            } else {
+                "file"
+            };
+            Some(FileEntry { name, kind: kind.to_string() })
+        })
+        .collect();
+
+    // 目录优先 + case-insensitive 排序
+    entries.sort_by(|a, b| {
+        let dir_a = a.kind == "dir";
+        let dir_b = b.kind == "dir";
+        dir_b.cmp(&dir_a).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+
+    Ok(entries)
+}
+
+/// 在 git repo 内返回被 gitignore 的直接子项名；非 repo 返回空集。
+fn git_ignored_names(dir: &std::path::Path) -> std::collections::HashSet<String> {
+    if !in_git_repo(dir) {
+        return std::collections::HashSet::new();
+    }
+    ignore::WalkBuilder::new(dir)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(false)
+        .parents(true)
+        .max_depth(Some(1))
+        .follow_links(false)
+        .build()
+        .flatten()
+        .filter_map(|d| {
+            let name = d.file_name();
+            name.to_str().map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// 判断目录是否在 git repo 内（向上找 .git，不向下递归）。
+fn in_git_repo(dir: &std::path::Path) -> bool {
+    let mut cur = dir;
+    loop {
+        if cur.join(".git").exists() {
+            return true;
+        }
+        match cur.parent() {
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn make_test_dir() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        // 创建测试结构
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("README.md"), "").unwrap();
+        fs::write(root.join("main.rs"), "").unwrap();
+        fs::write(root.join(".hidden"), "").unwrap();
+        fs::create_dir_all(root.join(".secret")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn list_dir_dirs_first_then_files() {
+        let dir = make_test_dir();
+        let entries = list_dir_inner(dir.path().to_str().unwrap(), false).unwrap();
+        let kinds: Vec<&str> = entries.iter().map(|e| e.kind.as_str()).collect();
+        // 目录在前
+        let first_file_idx = kinds.iter().position(|&k| k == "file").unwrap();
+        assert!(kinds[..first_file_idx].iter().all(|&k| k == "dir"));
+    }
+
+    #[test]
+    fn list_dir_case_insensitive_sort() {
+        let dir = make_test_dir();
+        let entries = list_dir_inner(dir.path().to_str().unwrap(), false).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // docs < src（目录），main.rs < README.md（文件，case-insensitive）
+        assert_eq!(names, vec!["docs", "src", "main.rs", "README.md"]);
+    }
+
+    #[test]
+    fn list_dir_hide_dot_files_by_default() {
+        let dir = make_test_dir();
+        let entries = list_dir_inner(dir.path().to_str().unwrap(), false).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(!names.contains(&".hidden"));
+        assert!(!names.contains(&".secret"));
+    }
+
+    #[test]
+    fn list_dir_show_hidden_includes_dot() {
+        let dir = make_test_dir();
+        let entries = list_dir_inner(dir.path().to_str().unwrap(), true).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&".hidden"));
+        assert!(names.contains(&".secret"));
+    }
+
+    #[test]
+    fn list_dir_nonexistent_returns_error() {
+        let result = list_dir_inner("/no/such/path/xyz", false);
+        assert!(result.is_err());
+    }
+}

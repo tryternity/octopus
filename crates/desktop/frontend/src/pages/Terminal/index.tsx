@@ -30,6 +30,7 @@ import {
   type AgentPhase,
 } from "./agent-activity";
 import { cwdBasename } from "./osc-handlers";
+import { FileTreePanel } from "./FileTreePanel";
 
 type Tab = {
   id: number;
@@ -62,6 +63,7 @@ export default function Terminal() {
   const [tabs, setTabs] = useState<Tab[]>(() => [makeTab()]);
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? 1);
   const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
+  const [fileTreeOpen, setFileTreeOpen] = useState(false);
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -209,6 +211,16 @@ export default function Terminal() {
     </div>
   );
 
+  const activeTabCwd = tabs.find((tb) => tb.id === activeId)?.trackedCwd ?? null;
+
+  const fileTree = (
+    <FileTreePanel
+      cwd={activeTabCwd}
+      expanded={fileTreeOpen}
+      onToggle={() => setFileTreeOpen(!fileTreeOpen)}
+    />
+  );
+
   if (layout === "sidebar") {
     return (
       <div className="terminal-window terminal-sidebar-layout">
@@ -246,7 +258,10 @@ export default function Terminal() {
             ))}
           </div>
         </aside>
-        {panes}
+        <div className="terminal-content">
+          {panes}
+          {fileTree}
+        </div>
       </div>
     );
   }
@@ -283,7 +298,10 @@ export default function Terminal() {
           <Plus size={14} />
         </button>
       </div>
-      {panes}
+      <div className="terminal-content">
+        {panes}
+        {fileTree}
+      </div>
     </div>
   );
 }
