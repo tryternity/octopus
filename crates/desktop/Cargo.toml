@@ -25,6 +25,9 @@ octopus-asr-local = { path = "../asr-local", optional = true }
 # 内嵌终端 PTY（portable-pty + OSC agent 状态感知）
 octopus-pty = { path = "../pty" }
 
+# 文件树侧栏 gitignore 过滤（terminal_list_dir 命令用）
+ignore = "0.4"
+
 # Unicode normalization（兼容字符归一化，如 WPS 康熙部首）
 unicode-normalization.workspace = true
 

@@ -801,3 +801,131 @@ html, body {
   background: var(--color-accent);
   color: var(--color-foreground);
 }
+
+/* ── 文件树侧栏（右侧，默认隐藏）── */
+.terminal-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 收缩态：小长条 */
+.file-tree-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  flex-shrink: 0;
+  background: var(--color-background);
+  border-left: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.file-tree-collapsed:hover {
+  background: var(--color-accent);
+}
+.file-tree-collapse-arrow {
+  font-size: 16px;
+  color: var(--color-muted-foreground);
+  line-height: 1;
+}
+.file-tree-tool-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* 展开态：工具条 + 文件树 */
+.file-tree-panel {
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--color-background);
+  border-left: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+/* 工具条（上方横向）*/
+.file-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.file-tree-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.file-tree-tool-btn:hover {
+  background: var(--color-accent);
+  color: var(--color-foreground);
+}
+
+/* 文件树主体（下方滚动）*/
+.file-tree-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  cursor: pointer;
+  color: var(--color-foreground);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.08s;
+}
+.file-tree-row:hover {
+  background: var(--color-accent);
+}
+.file-tree-row-selected {
+  background: var(--color-accent);
+}
+.file-tree-chevron {
+  flex-shrink: 0;
+  color: var(--color-muted-foreground);
+}
+.file-tree-chevron-spacer {
+  width: 12px;
+  flex-shrink: 0;
+}
+.file-tree-icon-dir {
+  flex-shrink: 0;
+  color: var(--color-muted-foreground);
+}
+.file-tree-icon-file {
+  flex-shrink: 0;
+  color: var(--color-muted-foreground);
+  opacity: 0.6;
+}
+.file-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-tree-loading {
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  padding: 2px 0;
+}
+.file-tree-empty {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+}

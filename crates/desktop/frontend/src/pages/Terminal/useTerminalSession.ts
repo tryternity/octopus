@@ -123,7 +123,9 @@ export function useTerminalSession(opts: {
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const [trackedCwd, setTrackedCwd] = useState<string | null>(null);
+  // 初始值用 openPty 的 cwd——OSC 7 只在 shell 执行命令后（precmd）才发，
+  // 刚开终端时 trackedCwd 为 null 会导致文件树空白。用启动目录做兜底初始值。
+  const [trackedCwd, setTrackedCwd] = useState<string | null>(cwd ?? null);
 
   // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
   // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
