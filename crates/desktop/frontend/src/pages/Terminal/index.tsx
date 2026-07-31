@@ -16,7 +16,7 @@
  * - sidebar 激活项左侧 2px 强调条（比 border 更有存在感）
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -32,6 +32,9 @@ import {
 import { cwdBasename } from "./osc-handlers";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { FileTreePanel } from "./FileTreePanel";
+import { usePanelWidth, PANEL_MIN, TERMINAL_MIN } from "./usePanelWidth";
+import { clampPanelWidth } from "./clampPanelWidth";
+import { PanelResizer } from "./PanelResizer";
 
 type Tab = {
   id: number;
@@ -69,12 +72,37 @@ export default function Terminal() {
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [, forceUpdate] = useState(0);
 
+  // ── panel 宽度（拖拽 + localStorage 持久化，全局一份）──
+  const sidebarWidthCtrl = usePanelWidth("octopus-terminal-sidebar-width", 200);
+  const fileTreeWidthCtrl = usePanelWidth("octopus-terminal-file-tree-width", 240);
+  // .terminal-content 容器 ref——拖动时实时取 boundingRect 算 clamp 边界
+  const contentRef = useRef<HTMLDivElement>(null);
+
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
   useEffect(() => subscribeAgentActivity(() => forceUpdate((n) => n + 1)), []);
 
   // 绑定 agent 信号 listener（幂等）
   useEffect(() => {
     ensureAgentActivityListener();
+  }, []);
+
+  // 启动 clamp：窗口缩小后重开，已存宽度按当前容器重算。
+  // 不写回 localStorage（保留用户偏好，下次大窗口恢复），只改本次渲染值。
+  // 依赖：空数组（仅启动时跑一次，用闭包内的初始 width 值）。
+  useEffect(() => {
+    if (!contentRef.current) return;
+    const rect = contentRef.current.getBoundingClientRect();
+    const isSidebarLayout = layout === "sidebar";
+    const otherForSidebar = fileTreeOpen ? fileTreeWidthCtrl.width : 0;
+    // sidebar 先 clamp（独立计算，不依赖 fileTree 结果）
+    sidebarWidthCtrl.clampTo(rect.width, otherForSidebar);
+    // 算出 sidebar clamp 后的实际值（clampTo 是 async，读 state 会拿到旧值，直接调纯函数）
+    const sidebarAfter = isSidebarLayout
+      ? clampPanelWidth(sidebarWidthCtrl.width, PANEL_MIN, rect.width, otherForSidebar, TERMINAL_MIN)
+      : 0;
+    // fileTree 用 sidebarAfter 作为 otherSide，避免读 stale state
+    fileTreeWidthCtrl.clampTo(rect.width, sidebarAfter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addTab = useCallback((cwd?: string, command?: string) => {
@@ -84,6 +112,29 @@ export default function Terminal() {
     setTabs((prev) => [...prev, tab]);
     setActiveId(tab.id);
   }, [tabs, activeId]);
+
+  // 首次 agent 联动复用占位首 tab：窗口新建时 useState 建了一个空 tab（无 command），
+  // Rust 的首个 new-tab event 到达时若直接 addTab 会多出一个空 tab。改为：首个 command
+  // 写进占位 tab（设 cwd + pendingCommand），之后的新 tab 走正常 addTab。
+  // 仅 listener 路径用；用户主动「新建 tab」（+ 按钮/Cmd+T/右键）始终走 addTab。
+  const firstTabVacant = useRef(true);
+  const consumeFirstTab = useCallback((cwd?: string, command?: string) => {
+    if (firstTabVacant.current) {
+      firstTabVacant.current = false;
+      setTabs((prev) => prev.map((tb, i) =>
+        i === 0
+          ? {
+              ...tb,
+              cwd: cwd ?? tb.cwd,
+              trackedCwd: cwd ?? tb.trackedCwd,
+              pendingCommand: command,
+            }
+          : tb,
+      ));
+      return;
+    }
+    addTab(cwd, command);
+  }, [addTab]);
 
   const closeTab = useCallback(
     (id: number) => {
@@ -138,24 +189,33 @@ export default function Terminal() {
   // ⚠️ 必须限定 target 为当前窗口 label——否则 listen 默认 {kind:'Any'} 会收到
   // 所有窗口的事件，导致 Rust emit_to 定向失效，每个终端窗口都开 tab。
   // Rust 端 open_terminal_with_command 用 emit_to(label) 定向，前端这里对齐。
+  //
+  // 稳定化（2026-07-31，对齐 TerminalPane paste-text 的 d5a879ed 修复）：
+  // addTab/consumeFirstTab 依赖 [tabs, activeId]，每次 tabs 变化引用就变。若 listener
+  // effect 依赖回调本身，会随每次 tabs 变化 cleanup + re-register（listen 是 async Promise，
+  // 间隙 listener 未注册）→ emit 撞上间隙就丢 → agent 命令建不出 tab。
+  // 改用 consumeFirstTabRef 持有最新回调，effect 只挂一次（[] 依赖），target 用
+  // {kind:'WebviewWindow', label} 精确匹配（比裸 string AnyLabel 投递更可靠）。
+  const consumeFirstTabRef = useRef(consumeFirstTab);
+  consumeFirstTabRef.current = consumeFirstTab;
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
     listen<{ cwd?: string; command?: string }>(
       "terminal://new-tab",
       (e) => {
-        addTab(e.payload.cwd, e.payload.command);
+        consumeFirstTabRef.current(e.payload.cwd, e.payload.command);
       },
-      { target: currentLabel },
+      { target: { kind: "WebviewWindow", label: currentLabel } },
     )
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch((err) => console.error("[Terminal] new-tab listener failed:", err));
     return () => {
       unlisten?.();
     };
-  }, [addTab]);
+  }, []);
 
   // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd + trackedCwd
   useEffect(() => {
@@ -236,6 +296,18 @@ export default function Terminal() {
       cwd={activeTabCwd}
       expanded={fileTreeOpen}
       onToggle={() => setFileTreeOpen(!fileTreeOpen)}
+      width={fileTreeWidthCtrl.width}
+      onResizerStart={fileTreeWidthCtrl.startDrag}
+      onResizerMove={(clientX) => {
+        if (!contentRef.current) return;
+        fileTreeWidthCtrl.updateFromPointer(
+          clientX,
+          contentRef.current.getBoundingClientRect(),
+          "left",
+          layout === "sidebar" ? sidebarWidthCtrl.width : 0,
+        );
+      }}
+      onResizerEnd={fileTreeWidthCtrl.endDrag}
     />
   );
 
@@ -251,8 +323,11 @@ export default function Terminal() {
     return (
       <>
       {tabContextMenu}
-      <div className="terminal-window terminal-sidebar-layout">
-        <aside className="terminal-sidebar">
+      <div className="terminal-window terminal-sidebar-layout" ref={contentRef}>
+        <aside
+          className="terminal-sidebar"
+          style={{ width: `${sidebarWidthCtrl.width}px` }}
+        >
           <div className="terminal-sidebar-header">
             <button
               className="terminal-layout-toggle"
@@ -288,6 +363,21 @@ export default function Terminal() {
               />
             ))}
           </div>
+          {/* 拖拽手柄（右边缘）——sidebar 没有收缩态，始终渲染 */}
+          <PanelResizer
+            side="right"
+            onStart={sidebarWidthCtrl.startDrag}
+            onMove={(clientX) => {
+              if (!contentRef.current) return;
+              sidebarWidthCtrl.updateFromPointer(
+                clientX,
+                contentRef.current.getBoundingClientRect(),
+                "right",
+                fileTreeOpen ? fileTreeWidthCtrl.width : 0,
+              );
+            }}
+            onEnd={sidebarWidthCtrl.endDrag}
+          />
         </aside>
         <div className="terminal-content">
           {panes}
@@ -301,7 +391,7 @@ export default function Terminal() {
   return (
     <>
     {tabContextMenu}
-    <div className="terminal-window">
+    <div className="terminal-window" ref={contentRef}>
       <div className="terminal-tabbar" role="tablist">
         <button
           className="terminal-layout-toggle"

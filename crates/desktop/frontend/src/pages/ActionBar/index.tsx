@@ -627,10 +627,31 @@ export default function ActionBar() {
         return;
       }
       // url 类型：params 替换 {query}/{text}，无 params 用选中文本
+      // ⚠️ TODO（重构待办）：本 slash 分流与 executeItem（走后端 execute_action_bar）
+      // 是两套实现，易分裂（本 url 空 action_data 分支就是补漏）。长期应统一——斜杠
+      // 路径也走 execute_action_bar（后端单一真相源），删掉前端重复的动作处理逻辑。
+      // 详见 memory: project_unify-actionbar-execute-paths。
       if (actionType === "url") {
         const ctx = contextRef.current;
         const fallbackText = params || ctx?.text || "";
         const rawUrl = (data.action_data as string) || item.actionData || "";
+        // action_data 空 = 「选中文本即 URL」项（如系统「网页」菜单，action_data=''）。
+        // 对齐后端 script.rs url 分支：空时用 fallbackText 当 URL（缺 scheme 补 https://）。
+        // 不补的话 openUrlTemplate 的 `if (!url) return` 会静默无反应（斜杠命令打不开网页）。
+        if (!rawUrl) {
+          const raw = fallbackText.trim();
+          if (!raw) return;
+          const directUrl = raw.startsWith("http://") || raw.startsWith("https://")
+            ? raw
+            : `https://${raw}`;
+          try {
+            await invoke("open_url", { url: directUrl });
+            invoke("action_bar_dismiss", { reason: "slash-url" });
+          } catch (e) {
+            showQuickError(String(e).slice(0, 40));
+          }
+          return;
+        }
         await openUrlTemplate(rawUrl, fallbackText, "slash-url");
         return;
       }

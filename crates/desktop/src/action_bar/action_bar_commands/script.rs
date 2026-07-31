@@ -526,7 +526,12 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             // open_terminal_with_command 内部用 run_on_main_thread 调度 AppKit，
             // 可在 async worker 线程安全调用（无需 spawn_blocking）。
             match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &command) {
-                Ok(_) => log::info!("[action-bar] agent 已启动到内嵌终端（cwd={}, cmd={}）", cwd, command),
+                Ok(_) => {
+                    // command 可能是长 prompt（几百字），只打前 60 字符 + 省略号，避免刷屏
+                    let cmd_preview: String = command.chars().take(60).collect();
+                    let ellipsis = if command.chars().count() > 60 { "…" } else { "" };
+                    log::info!("[action-bar] agent 已启动到内嵌终端（cwd={}, cmd={}{}）", cwd, cmd_preview, ellipsis);
+                }
                 Err(e) => {
                     log::warn!("[action-bar] 内嵌终端失败，fallback 到 Terminal.app: {}", e);
                     let launcher = crate::action_bar::terminal_launcher::TerminalAppLauncher;
