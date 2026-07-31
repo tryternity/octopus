@@ -166,24 +166,33 @@ export default function Terminal() {
   // ⚠️ 必须限定 target 为当前窗口 label——否则 listen 默认 {kind:'Any'} 会收到
   // 所有窗口的事件，导致 Rust emit_to 定向失效，每个终端窗口都开 tab。
   // Rust 端 open_terminal_with_command 用 emit_to(label) 定向，前端这里对齐。
+  //
+  // 稳定化（2026-07-31，对齐 TerminalPane paste-text 的 d5a879ed 修复）：
+  // addTab 依赖 [tabs, activeId]，每次 tabs 变化引用就变。若 listener effect 依赖
+  // [addTab]，会随每次 tabs 变化 cleanup + re-register（listen 是 async Promise，
+  // 间隙 listener 未注册）→ emit 撞上间隙就丢 → agent 命令建不出 tab。
+  // 改用 addTabRef 持有最新 addTab，effect 只挂一次（[] 依赖），target 用
+  // {kind:'WebviewWindow', label} 精确匹配（比裸 string AnyLabel 投递更可靠）。
+  const addTabRef = useRef(addTab);
+  addTabRef.current = addTab;
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
     listen<{ cwd?: string; command?: string }>(
       "terminal://new-tab",
       (e) => {
-        addTab(e.payload.cwd, e.payload.command);
+        addTabRef.current(e.payload.cwd, e.payload.command);
       },
-      { target: currentLabel },
+      { target: { kind: "WebviewWindow", label: currentLabel } },
     )
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch((err) => console.error("[Terminal] new-tab listener failed:", err));
     return () => {
       unlisten?.();
     };
-  }, [addTab]);
+  }, []);
 
   // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd + trackedCwd
   useEffect(() => {
