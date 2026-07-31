@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ChevronRight, ChevronDown, Folder, File } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
+import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 
 type FileEntry = {
   name: string;
@@ -38,6 +39,19 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
   // 目录路径 → 子项状态（懒加载缓存）
   const [tree, setTree] = useState<Record<string, ChildrenState>>({});
   const [selected, setSelected] = useState<string | null>(null);
+  const [menuPos, setMenuPos] = useState<MenuPosition>(null);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+
+  /** 文件树节点右键：复制路径 / 复制名称 */
+  const openNodeMenu = useCallback((e: React.MouseEvent, name: string, fullPath: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuItems([
+      { label: t("terminal.ctxCopyPath"), action: () => navigator.clipboard.writeText(fullPath) },
+      { label: t("terminal.ctxCopyName"), action: () => navigator.clipboard.writeText(name) },
+    ]);
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  }, [t]);
 
   // cwd 变化时重置树
   useEffect(() => {
@@ -128,6 +142,7 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
             if (isDir) toggleDir(fullPath);
             else setSelected(fullPath);
           }}
+          onContextMenu={(e) => openNodeMenu(e, name, fullPath)}
         >
           {isDir ? (
             <>
@@ -215,6 +230,7 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
           <div className="file-tree-empty">{t("terminal.fileTreeWaiting")}</div>
         )}
       </div>
+      <ContextMenu position={menuPos} items={menuItems} onClose={() => setMenuPos(null)} />
     </div>
   );
 }

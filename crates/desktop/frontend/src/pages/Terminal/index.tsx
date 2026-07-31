@@ -30,6 +30,7 @@ import {
   type AgentPhase,
 } from "./agent-activity";
 import { cwdBasename } from "./osc-handlers";
+import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { FileTreePanel } from "./FileTreePanel";
 
 type Tab = {
@@ -64,6 +65,7 @@ export default function Terminal() {
   const [activeId, setActiveId] = useState(() => tabs[0]?.id ?? 1);
   const [layout, setLayout] = useState<LayoutMode>(() => loadLayout());
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
+  const [tabMenu, setTabMenu] = useState<{ pos: MenuPosition; items: MenuItem[] } | null>(null);
   const [, forceUpdate] = useState(0);
 
   // agent 状态变化时强制重渲染（subscribe 模式替代 zustand）
@@ -109,6 +111,26 @@ export default function Terminal() {
       ),
     );
   }, []);
+
+  /** 打开 tab 右键菜单 */
+  const openTabMenu = useCallback((e: React.MouseEvent, tabId: number) => {
+    e.preventDefault();
+    setTabMenu({
+      pos: { x: e.clientX, y: e.clientY },
+      items: [
+        { label: t("terminal.ctxNewTab"), action: () => addTab() },
+        { label: t("terminal.ctxRename"), action: () => {
+          // 触发改名：模拟双击逻辑——用 DOM event 找到 tab 元素双击
+          // 简化：直接用 renameTab 设空再让用户双击。或直接 prompt。
+          // 最简：tab 改名走双击，右键也设 editing——但 editing 在子组件内。
+          // 这里用 window.prompt 兜底（简单直接）
+          const name = window.prompt(t("terminal.ctxRename"));
+          if (name !== null) renameTab(tabId, name);
+        }},
+        { label: t("terminal.ctxClose"), action: () => closeTab(tabId) },
+      ],
+    });
+  }, [addTab, closeTab, renameTab, t]);
 
   const toggleLayout = useCallback(() => {
     setLayout((prev) => {
@@ -223,8 +245,18 @@ export default function Terminal() {
     />
   );
 
+  const tabContextMenu = (
+    <ContextMenu
+      position={tabMenu?.pos ?? null}
+      items={tabMenu?.items ?? []}
+      onClose={() => setTabMenu(null)}
+    />
+  );
+
   if (layout === "sidebar") {
     return (
+      <>
+      {tabContextMenu}
       <div className="terminal-window terminal-sidebar-layout">
         <aside className="terminal-sidebar">
           <div className="terminal-sidebar-header">
@@ -255,6 +287,7 @@ export default function Terminal() {
                 onClick={() => setActiveId(m.tab.id)}
                 onClose={() => closeTab(m.tab.id)}
                 onRename={(name) => renameTab(m.tab.id, name)}
+                onContextMenu={(e) => openTabMenu(e, m.tab.id)}
                 closeLabel={t("terminal.closeTab")}
               />
             ))}
@@ -265,10 +298,13 @@ export default function Terminal() {
           {fileTree}
         </div>
       </div>
+      </>
     );
   }
 
   return (
+    <>
+    {tabContextMenu}
     <div className="terminal-window">
       <div className="terminal-tabbar" role="tablist">
         <button
@@ -289,6 +325,7 @@ export default function Terminal() {
             onClick={() => setActiveId(m.tab.id)}
             onClose={() => closeTab(m.tab.id)}
             onRename={(name) => renameTab(m.tab.id, name)}
+            onContextMenu={(e) => openTabMenu(e, m.tab.id)}
           />
         ))}
         <button
@@ -305,6 +342,7 @@ export default function Terminal() {
         {fileTree}
       </div>
     </div>
+    </>
   );
 }
 
@@ -346,8 +384,9 @@ function TabButton(props: {
   onClick: () => void;
   onClose: () => void;
   onRename: (name: string) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
-  const { active, phase, label, onClick, onClose, onCloseLabel, onRename } =
+  const { active, phase, label, onClick, onClose, onCloseLabel, onRename, onContextMenu } =
     props;
   const [editing, setEditing] = useState(false);
   return (
@@ -356,6 +395,7 @@ function TabButton(props: {
       role="tab"
       aria-selected={active}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       <button
         className="terminal-tab-close"
@@ -402,8 +442,9 @@ function SidebarItem(props: {
   onClick: () => void;
   onClose: () => void;
   onRename: (name: string) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
-  const { active, phase, label, onClick, onClose, closeLabel, onRename } =
+  const { active, phase, label, onClick, onClose, closeLabel, onRename, onContextMenu } =
     props;
   const [editing, setEditing] = useState(false);
   return (
@@ -412,6 +453,7 @@ function SidebarItem(props: {
       role="tab"
       aria-selected={active}
       onClick={onClick}
+      onContextMenu={onContextMenu}
     >
       <button
         className="terminal-tab-close"

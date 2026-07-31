@@ -878,6 +878,15 @@ terminal:
   fileTreeLoading: Loading…
   fileTreeError: Failed to load
   fileTreeWaiting: Waiting for directory…
+  ctxCopy: Copy
+  ctxPaste: Paste
+  ctxSelectAll: Select All
+  ctxClear: Clear
+  ctxRename: Rename
+  ctxClose: Close
+  ctxNewTab: New Tab
+  ctxCopyPath: Copy Path
+  ctxCopyName: Copy Name
 
 # ════════ ActionBar ════════
 actionbar:
