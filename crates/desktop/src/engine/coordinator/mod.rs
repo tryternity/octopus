@@ -339,6 +339,11 @@ fn build_coordinator_loop(
                             // Idle → 两阶段开录音：sync runtime + emit prepare-record + spawn 200ms 看门狗。
                             // 前端 listen prepare-record 后回推 currentSelectionRef（或 null）→ StartRecording；
                             // 200ms 未响应 → FallbackStart 普通开（selection=None）。
+                            //
+                            // 缓存前台 app（pid + bundle_id）——用户按快捷键瞬间 frontmost 是目标 app。
+                            // 录音结束粘贴时用此 pid 定向发送，避免录音期间切窗口粘错。
+                            #[cfg(target_os = "macos")]
+                            crate::platform::focus_tracker::save_frontmost_pid();
                             let rc = runtime_config.read();
                             // Task 2 后：激活引擎统一从 ACTIVE_ENGINES 缓存取（resolve_active_engine），
                             // 不再从 rc.asr_engine 读 + 写回校正。

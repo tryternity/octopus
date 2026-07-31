@@ -1,11 +1,72 @@
-//! 全局窗口焦点追踪——记住"弹出剪贴板窗口之前的那个前台应用"，
-//! 双击粘贴时恢复焦点到该应用。
+//! 全局窗口焦点追踪——记住"弹出剪贴板/结果窗口之前的那个前台应用"，
+//! 双击粘贴/ASR 粘贴时用缓存的 pid 定向发送，避免切窗口后粘错。
 //!
 //! 平台策略：
-//! - macOS：不追踪 PID——窗口 hide 后 macOS 自动还焦点给上一个应用。
-//!   只需 hide + 延迟 + osascript 模拟 Cmd+V。
+//! - macOS：`save_frontmost_pid` 在操作开始时缓存前台 app 的 pid + bundle_id；
+//!   `simulate_paste` / ASR paste 时用 `cached_pid()` 走 `paste_to_pid` 定向发送。
+//!   无缓存时 fallback 到实时 `frontmost_app()` 检测（兼容旧逻辑）。
 //! - Windows：SetWinEventHook + SetForegroundWindow + enigo Shift+Insert（Task 2）
 //! - Linux：X11 focus event + XRaiseWindow + enigo Shift+Insert（Task 3）
+
+use std::sync::Mutex;
+
+/// 缓存的前台 app：(pid, bundle_id)。操作开始时缓存，粘贴时用。
+/// 过滤自身（octopus）——缓存的是用户真正要粘贴到的目标 app。
+static CACHED_PREV: Mutex<Option<(i32, String)>> = Mutex::new(None);
+
+/// 缓存当前前台 app 的 pid + bundle_id（过滤自身）。
+/// 在操作开始时调（如 ASR toggle 入口、剪贴板浮窗 show 前）。
+#[cfg(target_os = "macos")]
+pub fn save_frontmost_pid() {
+    let frontmost = crate::platform::app_context::macos_ax::frontmost_app();
+    if let Some((pid, bid, name)) = frontmost {
+        // 过滤自身（octopus-desktop / octopus）
+    if name != "octopus" && name != "octopus-desktop" && !name.starts_with("osascript") {
+            let bundle = bid.unwrap_or_default();
+            log::info!("[focus] cached frontmost: pid={} bundle={} name={}", pid, bundle, name);
+            *CACHED_PREV.lock().unwrap() = Some((pid, bundle));
+        } else {
+            log::debug!("[focus] frontmost is self ({}), skip caching", name);
+        }
+    } else {
+        log::debug!("[focus] frontmost_app() returned None, nothing to cache");
+    }
+}
+
+/// 读缓存的 pid。粘贴时用（paste_to_pid 定向发送）。
+pub fn cached_pid() -> Option<i32> {
+    CACHED_PREV.lock().unwrap().as_ref().map(|(pid, _)| *pid)
+}
+
+/// 读缓存的 bundle_id。dispatch 路径选择用（如 WKWebView osascript fallback）。
+pub fn cached_bundle_id() -> Option<String> {
+    CACHED_PREV.lock().unwrap().as_ref().map(|(_, bid)| bid.clone())
+}
+
+/// 清理缓存。粘贴完成后调（下次操作重新缓存）。
+pub fn clear_cached_pid() {
+    *CACHED_PREV.lock().unwrap() = None;
+}
+
+/// 激活缓存的前台 app（paste 前 call，确保目标窗口在前台接收按键）。
+/// 用 NSRunningApplication.activateWithOptions（NSApplicationActivationPolicyRegular）。
+#[cfg(target_os = "macos")]
+pub fn activate_cached_app() {
+    let pid = match cached_pid() {
+        Some(p) => p,
+        None => return,
+    };
+    use objc2_app_kit::{NSRunningApplication, NSApplicationActivationOptions};
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        app.activateWithOptions(NSApplicationActivationOptions(1 << 0));
+        log::info!("[focus] activated cached app pid={}", pid);
+    } else {
+        log::warn!("[focus] cached pid={} not found (process exited?)", pid);
+    }
+    log::info!("[focus] activated cached app pid={}", pid);
+    // 给窗口一点时间成为 key window
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
 
 pub struct FocusTracker;
 
@@ -107,7 +168,29 @@ fn simulate_paste_platform() {
     // 切输入源可能短暂抢焦点（Carbon TIS API），等 50ms 让焦点稳定再发 keystroke
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    // 2026-07-21 三级 dispatch：
+    // 2026-07-31：优先用缓存的 pid（预探测目标窗口），避免浮窗打开期间切窗口粘错。
+    // 无缓存时 fallback 到实时 frontmost_app() 检测（兼容旧逻辑）。
+    if let Some(pid) = cached_pid() {
+        // 先激活缓存的目标 app（确保窗口在前台接收按键）
+        activate_cached_app();
+        let bid = cached_bundle_id();
+        if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) {
+            log::info!("simulate_paste: cached WKWebView app {:?} → osascript", bid);
+            if let Err(e) = crate::platform::keystroke::paste_via_osascript() {
+                log::warn!("simulate_paste (cached osascript): {}", e);
+            }
+        } else {
+            log::info!("simulate_paste: cached pid={}", pid);
+            if let Err(e) = crate::platform::keystroke::paste_to_pid(pid) {
+                log::warn!("simulate_paste (cached pid): {}", e);
+            }
+        }
+        // 用完即清（下次操作重新缓存）
+        clear_cached_pid();
+        return;
+    }
+
+    // 2026-07-21 三级 dispatch（无缓存时的 fallback）：
     //   1. WKWebView 嵌套 app（微信内置浏览器）→ osascript（~200ms，走 System Events 菜单路由）
     //   2. Electron app（豆包/ZCode）→ CGEventPostToPid（定向，< 5ms）
     //   3. 原生 app → CGEventPostToPid（或全局 post fallback）

@@ -55,6 +55,10 @@ pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result
         }
     }
 
+    // 粘贴完成：清理缓存的 pid（下次操作重新缓存）
+    #[cfg(target_os = "macos")]
+    crate::platform::focus_tracker::clear_cached_pid();
+
     Ok(())
 }
 
@@ -142,9 +146,29 @@ fn paste_via_clipboard(
     // 2026-07-20 perf：原 enigo 三段式（Press Mod → Click V → Release Mod）改用统一
     // keystroke 模块（macOS 走 CGEvent，与 focus_tracker 共用）。其他平台 keystroke
     // 是 no-op，保留 enigo fallback（仅非 macOS 走 enigo）。
+    //
+    // 2026-07-31：优先用 cached pid+bundle_id 三级 dispatch（同 focus_tracker 逻辑）。
+    // Electron app（ZCode/豆包）不收 CGEventPostToPid → 需全局 post；
+    // WKWebView app（微信）需 osascript；原生 app → paste_to_pid 定向。
+    // 无缓存时 fallback 到全局广播（兼容旧逻辑）。
     #[cfg(target_os = "macos")]
     {
-        crate::platform::keystroke::paste()?;
+        let pid = crate::platform::focus_tracker::cached_pid();
+        let bid = crate::platform::focus_tracker::cached_bundle_id();
+        if let Some(pid) = pid {
+            // 先激活缓存的目标 app（确保它的窗口在前台接收按键），
+            // 否则 post_to_pid 发了事件但目标 app 不在前台 → 不生效（Electron 尤其明显）。
+            crate::platform::focus_tracker::activate_cached_app();
+            if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) {
+                crate::platform::keystroke::paste_via_osascript()?;
+            } else {
+                // Electron app（ZCode/豆包）和原生 app 都走 post_to_pid
+                // （activate_cached_app 已把目标 app 拉到前台）
+                crate::platform::keystroke::paste_to_pid(pid)?;
+            }
+        } else {
+            crate::platform::keystroke::paste()?;
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
