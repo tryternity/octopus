@@ -133,6 +133,7 @@ poller 的 `BAR_W`/`BAR_H`/`BAR_OFFSET` 需按模式 + `RESULT_CLICK_THROUGH` �
 - ✅ `capabilities/default.json` 删 `instant_overlay` window（本任务）
 - ✅ `focus_tracker.rs` `EXCLUDED_PREFIXES` 删 dead `"instant_overlay"` + doc 注释更新；`paste.rs` stale 注释更新（本任务）
 - ✅ `docs/architecture.md` 录音模式段补「单 WebView 合并（2026-08-01）」+ 多屏跟随段 instant 态表述更新（本任务）
+- ✅ 最终审查后清理：`cancel_discard.rs`（2 处）+ `lifecycle.rs`（2 处）的冗余 `hide_result` 双调用简化为 `swap + hide_result`（commit `2cec1698`，最终审查推荐——合并后两调用同窗口，内层冗余；`mod.rs:553` 的 `if/else` 分支不动，load-bearing）
 
 **与 spec 的偏差：**
 
