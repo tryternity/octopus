@@ -426,8 +426,8 @@ pub fn trigger_global_edit(app: &tauri::AppHandle) {
     }
 }
 
-/// 注册全局编辑快捷键。与 shortcut::register_shortcut 的区别：handler 调用
-/// trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
+/// 注册全局编辑快捷键：解析 + on_shortcut，失败返回 Err（供调用方回滚旧快捷键）。
+/// handler 调用 trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
 pub fn register_edit_global_shortcut(
     app: &tauri::AppHandle,
     shortcut_str: &str,
