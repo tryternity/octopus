@@ -374,7 +374,11 @@ fn collect_json_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<(
 /// `UNIQUE(name)` 约束失败——此时跳过该版本（log::warn），不阻断整个 pull。
 /// 用户需手动重命名其中一个版本后再 sync。
 ///
-/// 调用方：vault engine.rs sync_now 的 pull 阶段。
+/// ⚠️ **本函数无方向感知**（已被 [`merge_hotwords`] 取代，常规 sync_now 不再调用）。
+/// 只要 `sync_md5 != outline.md5` 就触发 upsert——本地加词后 `sync_md5` 变了，
+/// 此函数会用旧文件覆盖新 DB（见 `pull_function_direction_blind_by_design` 测试）。
+/// 保留供：首次 clone 场景（DB 空，pull 不会丢数据）+ 未来参考。常规同步请用
+/// [`merge_hotwords`]（按 `updated_at` 判方向）。
 pub fn pull_hotwords_from_files() -> Result<usize> {
     let remote_outline = read_hotword_outline()?;
     let db_sets = octopus_infra::db::list_hotword_sets()?;
@@ -430,11 +434,163 @@ fn hotword_md5_mismatch_v2(uuid: &str, outline_md5: &str, db_sets: &[HotwordSet]
 
 /// Push 阶段：SQLite 最新数据 → 文件系统 + 更新 outline。
 ///
-/// 返回实际变更（写/删）的文件数。调用方：vault engine.rs sync_now 的 push 阶段。
+/// 返回实际变更（写/删）的文件数。调用方：vault engine.rs sync_now 的 push 阶段（NoUpstream
+/// 首次推送分支）+ enable_sync 首次启用同步路径。常规 sync_now 走 [`merge_hotwords`]。
 pub fn push_hotwords_to_files() -> Result<usize> {
     let sets = octopus_infra::db::list_hotword_sets()?;
     let (_, changed) = incremental_export_hotwords(&sets)?;
     Ok(changed)
+}
+
+// === merge engine（2026-08-01，取代 pull+push 两步）===
+
+/// merge_hotwords 的结果报告（对称于 vault `MergeReport`，但独立于 vault crate——
+/// sync 不能依赖 vault，依赖方向是 vault → sync）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HotwordMergeReport {
+    /// 远程 → DB（远程 updated_at 更新 / DB 无）
+    pub pulled: usize,
+    /// DB → 远程（DB updated_at 更新 / outline 无 / 冲突 DB 赢）
+    pub pushed: usize,
+    /// updated_at 相等 + md5 不等的冲突数（DB 赢）
+    pub conflicts: usize,
+    /// 文件读取失败等跳过数
+    pub skipped: usize,
+}
+
+/// 3-way merge：DB ↔ 文件系统按 `updated_at` 最新赢，相等时 md5 比对 DB 赢。
+///
+/// 对称于 vault 的 `merge_vault`（engine.rs），去掉 vault 的 stamp/meta 校验（热词无加密、
+/// 无 meta、无 folder）。merge 完后从 DB 最新状态重建 outline（DB 是单一真相源）。
+///
+/// ## 为什么取代 pull + push 两步
+///
+/// 原 `pull_hotwords_from_files` 无方向感知——只要 `sync_md5 != outline.md5` 就触发
+/// upsert（全字段覆盖）。本地加词后 `refill_sync_md5` 正确改写 `sync_md5`，必然与旧
+/// outline 的 md5 不等 → pull 用旧文件覆盖 DB 新数据 → 新词丢失（详见
+/// 2026-08-01-hotword-sync-merge-model spec 的根因分析）。
+///
+/// merge 用 `updated_at` 时间戳判方向，彻底避免「旧 outline 覆盖新 DB」。
+///
+/// ## 调用方
+///
+/// `sync_now`（vault engine.rs）—— `skip_pull`（NoUpstream 首次推送）时调用方走
+/// `push_hotwords_to_files`，其余走 `merge_hotwords`。
+pub fn merge_hotwords() -> Result<HotwordMergeReport> {
+    let remote_outline = read_hotword_outline()?;
+    let db_sets = octopus_infra::db::list_hotword_sets()?;
+    let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
+        db_sets.iter().map(|h| (h.id.as_str(), h)).collect();
+    let mut report = HotwordMergeReport::default();
+
+    // 阶段 1：遍历 outline（远程），逐条 3-way 判定
+    for (uuid, entry) in &remote_outline.ciphers {
+        let remote_updated = entry.updated_ms;
+        match db_by_id.get(uuid.as_str()) {
+            None => {
+                // DB 无 → pull（读文件 upsert，回填 sync_md5）
+                match read_hotword_set_file(uuid) {
+                    Ok(file) => {
+                        let h = file.to_hotword_set(None);
+                        let md5 = hotword_set_md5(&h);
+                        let mut h = h;
+                        h.sync_md5 = Some(md5);
+                        match octopus_infra::db::upsert_hotword_set(&h) {
+                            Ok(()) => report.pulled += 1,
+                            Err(e) => {
+                                log::warn!(
+                                    "[sync] 热词 merge: 版本 {} pull 跳过（可能 name 冲突）：{}",
+                                    uuid,
+                                    e
+                                );
+                                report.skipped += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[sync] 热词 merge: 版本 {} 文件读取失败，已跳过：{}",
+                            uuid,
+                            e
+                        );
+                        report.skipped += 1;
+                    }
+                }
+            }
+            Some(db_h) => {
+                let local_updated = iso_to_unix_ms(&db_h.updated_at);
+                if remote_updated > local_updated {
+                    // 远程更新 → pull 覆盖 DB
+                    match read_hotword_set_file(uuid) {
+                        Ok(file) => {
+                            let h = file.to_hotword_set(None);
+                            let md5 = hotword_set_md5(&h);
+                            let mut h = h;
+                            h.sync_md5 = Some(md5);
+                            match octopus_infra::db::upsert_hotword_set(&h) {
+                                Ok(()) => report.pulled += 1,
+                                Err(e) => {
+                                    log::warn!(
+                                        "[sync] 热词 merge: 版本 {} pull 跳过：{}",
+                                        uuid,
+                                        e
+                                    );
+                                    report.skipped += 1;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "[sync] 热词 merge: 版本 {} 文件读取失败，已跳过：{}",
+                                uuid,
+                                e
+                            );
+                            report.skipped += 1;
+                        }
+                    }
+                } else if local_updated > remote_updated {
+                    // DB 更新 → push 覆盖文件
+                    write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+                    report.pushed += 1;
+                } else {
+                    // 时间戳相等 → md5 比对，冲突 DB 赢
+                    let db_md5 = db_h
+                        .sync_md5
+                        .clone()
+                        .unwrap_or_else(|| hotword_set_md5(db_h));
+                    if db_md5 != entry.md5 {
+                        write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+                        report.pushed += 1;
+                        report.conflicts += 1;
+                    }
+                    // md5 相同 → skip
+                }
+            }
+        }
+    }
+
+    // 阶段 2：DB 有 + outline 无 → push（写文件）
+    for db_h in &db_sets {
+        if !remote_outline.ciphers.contains_key(&db_h.id) {
+            write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+            report.pushed += 1;
+        }
+    }
+
+    // 阶段 3：从 DB 最新状态重建 outline（DB 是单一真相源，对称于 vault export_all_to_files）。
+    // merge 已把 .sync 拉回 DB（阶段 1 pull），DB 反映合并后的最新状态——export_all
+    // 清空目录重写文件 + 写 outline，幂等（无变化 git 不产生 diff）。
+    let latest = octopus_infra::db::list_hotword_sets()?;
+    export_all_hotwords(&latest)?;
+
+    log::info!(
+        "[sync] merge_hotwords 完成：pulled={} pushed={} conflicts={} skipped={}",
+        report.pulled,
+        report.pushed,
+        report.conflicts,
+        report.skipped
+    );
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1010,17 +1166,17 @@ mod tests {
         assert!(db::get_hotword_set(id_ok).is_ok(), "正常版本应在 DB");
     }
 
-    /// 回归守护（spec 2026-07-25-hotword-sync-overwrite-bug）：记录「pull 用旧 outline
-    /// 覆盖本地新 DB」的 bug 场景。
+    /// 守护：`pull_hotwords_from_files` **设计上无方向感知**——会用旧文件覆盖本地新 DB。
     ///
-    /// bug 链：本地加词 → DB sync_md5 变了 → sync_now 的 pull 阶段读旧 outline（远端无新
-    /// commit，文件是上次 sync 的旧状态）→ md5 mismatch → upsert 旧文件版本覆盖 DB → 新词丢失。
+    /// 这不是 bug，是 pull 函数的设计契约（它只做单向「文件 → DB」，不判方向）。
+    /// 历史 bug 在于 sync_now 曾依赖此函数做双向同步（已修复——常规 sync 改用
+    /// [`merge_hotwords`]，见上方 `merge_keeps_local_newer_set_not_overwritten` 测试）。
     ///
-    /// **修复在 sync_now 层（engine.rs）**：merge UpToDate 时跳过 pull，不调用本函数。
-    /// 本测试文档化「pull 函数本身仍会覆盖」这一事实——若未来有人改 pull 逻辑，此测试
-    /// 确保不会意外引入「pull 不覆盖」的假设（那会破坏 FastForwarded 路径的正常拉取）。
+    /// 本测试保留是为了：① 文档化 pull 的无方向特性；② 防止未来有人误改 pull 加方向
+    /// 判断（那会让首次 clone 的「DB 空 → pull 全量」路径出问题）。pull 现仅用于
+    /// 首次 clone 场景（DB 空，无覆盖风险）+ 测试 reference。
     #[test]
-    fn pull_overwrites_local_new_data_when_outline_stale_documented_bug() {
+    fn pull_function_direction_blind_by_design() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
@@ -1038,21 +1194,20 @@ mod tests {
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
         // DB 现在有「苹果 香蕉」，文件还是旧的「苹果」
 
-        // 直接调 pull（模拟 bug 触发——sync_now 在 UpToDate 时已跳过此调用）
+        // 直接调 pull——会覆盖（这是 pull 的设计行为，非 bug）
         let _pulled = pull_hotwords_from_files().expect("pull");
 
-        // 文档化 bug：pull 用旧文件（只有「苹果」）覆盖了 DB（「苹果 香蕉」）
+        // pull 用旧文件（只有「苹果」）覆盖了 DB（「苹果 香蕉」）——设计如此
         let after = db::get_hotword_set(id).unwrap();
         assert_eq!(
             after.words_text, "苹果",
-            "pull 会用旧 outline 覆盖本地新数据（这是已知 bug，修复在 sync_now 层跳过 pull）"
+            "pull 无方向感知，会用旧文件覆盖新 DB（设计契约；常规 sync 用 merge_hotwords 避免此行为）"
         );
-        // 关键：此测试证明 pull 函数本身不区分方向。修复依赖 sync_now 在 UpToDate 时不调用 pull。
     }
 
-    /// 回归守护（修复后）：push 阶段（incremental_export）正确导出本地新数据到文件。
-    /// 配合 sync_now 的 UpToDate 跳过 pull，完整流程：本地加词 → sync（跳过 pull）→
-    /// push 导出新词到文件 → commit + push → 远端拿到新词。本地数据不丢。
+    /// 回归守护：push 阶段（incremental_export）正确导出本地新数据到文件。
+    /// merge_hotwords 内部阶段 2/3 也复用此导出能力——本地加词 → merge 判定 DB 更新 →
+    /// push 导出新词到文件 → commit + push → 远端拿到新词。
     #[test]
     fn push_exports_local_new_data_when_outline_stale() {
         let _g = DbSyncGuard::new();
@@ -1103,5 +1258,167 @@ mod tests {
         let (outline3, changed3) = incremental_export_hotwords(&sets2).expect("third");
         assert!(changed3 > 0);
         assert!(outline3.vault_version > v1, "有变化版本应递增");
+    }
+
+    // === merge_hotwords 测试（2026-08-01，对称于 vault merge_vault）===
+    //
+    // merge_hotwords 取代 pull+push 两步——按 updated_at 最新赢，相等时 md5 比对 DB 赢。
+    // 修复「本地加词后 sync 被旧 outline 覆盖」bug（原 pull_hotwords_from_files 无方向感知）。
+    //
+    // 时间戳策略：DB 的 updated_at = datetime('now') ≈ 当前毫秒。要构造「远程更新」用
+    // 远未来 updated_ms（如 9999999999999）；「远程更旧」用 updated_ms: 1。
+
+    /// 辅助：手写一份 outline.json + 对应 set 文件，模拟「远程仓库」状态。
+    /// 远程 outline 的 updated_ms 由调用方指定，与文件内容解耦。
+    fn write_remote_set(id: &str, name: &str, words: &str, updated_ms: i64) {
+        let file = HotwordSetFile {
+            version: 1,
+            id: id.into(),
+            name: name.into(),
+            enabled: true,
+            words_text: words.into(),
+            created_at: "2026-07-22 10:00:00".into(),
+            updated_at: "2026-07-22 10:00:00".into(),
+        };
+        write_hotword_set_file(&file).unwrap();
+        let mut outline = read_hotword_outline().unwrap_or_default();
+        let md5 = hotword_set_md5_from_fields(name, true, words);
+        outline.ciphers.insert(
+            id.into(),
+            OutlineEntry {
+                md5,
+                updated_ms,
+            },
+        );
+        write_hotword_outline(&outline).unwrap();
+    }
+
+    /// merge：远程 updated_ms 较新 → pull 覆盖 DB。
+    #[test]
+    fn merge_pulls_remote_newer_set() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "merge-aaaa-0001";
+        // DB 旧内容
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 远程有新内容（updated_ms 远未来 → 比 DB 的 now 新）
+        write_remote_set(id, "测试集", "苹果 香蕉 葡萄", 9999999999999);
+
+        let report = merge_hotwords().expect("merge");
+        assert_eq!(report.pulled, 1, "应拉取 1 条远程更新");
+
+        let after = db::get_hotword_set(id).unwrap();
+        assert_eq!(
+            after.words_text, "苹果 香蕉 葡萄",
+            "DB 应被远程新版本覆盖"
+        );
+    }
+
+    /// merge（核心回归）：本地新加词、outline 仍是旧的 → DB 不被旧文件覆盖，且文件被更新。
+    ///
+    /// 这就是「热词加词后 sync 消失」bug 的 merge 版守护。原 pull_hotwords_from_files
+    /// 会用旧文件覆盖 DB（见 pull_overwrites..._documented_bug），merge 不会。
+    #[test]
+    fn merge_keeps_local_newer_set_not_overwritten() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "merge-bbbb-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+
+        // 本地加词（sync_md5 回填）——outline 仍是旧的「苹果」
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
+        db::update_hotword_set_sync_md5(id, &md5).unwrap();
+
+        // 手写一份旧 outline（updated_ms=1 → 比 DB 的 now 旧），模拟远程无新 commit
+        // 文件本身还是 export 出的旧「苹果」
+        let mut stale_outline = read_hotword_outline().unwrap();
+        stale_outline.ciphers.insert(
+            id.into(),
+            OutlineEntry {
+                md5: hotword_set_md5_from_fields("测试集", true, "苹果"),
+                updated_ms: 1,
+            },
+        );
+        write_hotword_outline(&stale_outline).unwrap();
+
+        let report = merge_hotwords().expect("merge");
+
+        let after = db::get_hotword_set(id).unwrap();
+        assert_eq!(
+            after.words_text, "苹果 香蕉",
+            "本地新词不应被旧 outline 覆盖（merge 方向感知）"
+        );
+        // push 侧：本地新内容应被推到文件
+        assert!(report.pushed >= 1, "本地更新应 push 到文件");
+        let file = read_hotword_set_file(id).expect("read file");
+        assert_eq!(
+            file.words_text, "苹果 香蕉",
+            "文件应被 DB 新内容覆盖"
+        );
+    }
+
+    /// merge：DB 有、outline 无 → push 写文件 + outline 重建含该条目。
+    #[test]
+    fn merge_pushes_db_only_set() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "merge-cccc-0001";
+        db::insert_hotword_set(id, "仅本地").unwrap();
+        db::set_hotword_set_words(id, "苹果").unwrap();
+        // outline 为空（不 export，模拟「DB 有数据但远程 outline 空」）
+        write_hotword_outline(&Outline::default()).unwrap();
+
+        let report = merge_hotwords().expect("merge");
+        assert!(report.pushed >= 1, "DB only set 应 push 到文件");
+
+        // 文件被写出
+        let file = read_hotword_set_file(id).expect("文件应存在");
+        assert_eq!(file.words_text, "苹果");
+
+        // outline 重建后含该条目
+        let outline = read_hotword_outline().unwrap();
+        assert!(outline.ciphers.contains_key(id), "outline 应含新 push 条目");
+    }
+
+    /// merge：updated_ms 相等 + md5 不等（内容冲突）→ DB 赢（push DB 到文件）。
+    #[test]
+    fn merge_db_wins_on_equal_timestamp_md5_conflict() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let id = "merge-dddd-0001";
+        db::insert_hotword_set(id, "测试集").unwrap();
+        db::set_hotword_set_words(id, "苹果 香蕉").unwrap(); // DB 新内容
+        let db_updated_ms = iso_to_unix_ms(&db::get_hotword_set(id).unwrap().updated_at);
+
+        // 文件写旧内容，outline 用与 DB 相同的 updated_ms 但旧 md5
+        write_remote_set(id, "测试集", "苹果（旧）", db_updated_ms);
+
+        let report = merge_hotwords().expect("merge");
+        assert!(report.conflicts >= 1, "应记录 1 次冲突");
+
+        // 文件被 DB 内容覆盖（DB 赢）
+        let file = read_hotword_set_file(id).expect("read file");
+        assert_eq!(
+            file.words_text, "苹果 香蕉",
+            "冲突时 DB 赢——文件应被 DB 内容覆盖"
+        );
     }
 }

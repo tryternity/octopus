@@ -1,7 +1,8 @@
 # 热词同步覆盖 Bug 分析（待定方案）
 
 > **日期**：2026-07-25
-> **状态**：✅ 已实现（方案：merge UpToDate 时跳过 pull；用户确认 last-write-wins 可接受）
+> **状态**：⚠️ 已归档——本 spec 的修复（UpToDate 跳过 pull）于 2026-07-27 被 `10e56330` revert，bug 回归。2026-08-01 由 [merge 模型升级](../2026-08-01-hotword-sync-merge-model.md) 取代（热词 pull/push 升级到 `merge_hotwords`，对称于 vault `merge_vault`，根治）。
+> **原状态**：✅ 已实现（方案：merge UpToDate 时跳过 pull；用户确认 last-write-wins 可接受）
 > **症状**：新增的热词，进行 git 同步后消失了
 
 ---

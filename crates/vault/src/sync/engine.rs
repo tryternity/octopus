@@ -720,8 +720,8 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     // 时间戳）DB 赢。NoUpstream（首次推送）时 .sync outline 由 enable_sync 写过
     // ——merge 会判定「outline == DB」无变化，安全。
     //
-    // 热词子系统（octopus_sync::hotword）独立维护 pull/push 两步，不受 vault
-    // merge 影响——本机 vault merge 模型尚未推广到 hotword。
+    // 热词已升级到 merge_hotwords（2026-08-01，对称于 merge_vault）——详见下方
+    // hotword merge 调用 + spec 2026-08-01-hotword-sync-merge-model.md。
     let merge_report = if skip_pull {
         // NoUpstream：远程无 main 分支，文件系统已由 enable_sync 写过——
         // 走 push_to_files 把本地最新 DB 写到文件系统（merge_vault 也能做，但
@@ -742,27 +742,33 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     let pulled = merge_report.pulled;
     let pushed = merge_report.pushed;
     let skipped = merge_report.skipped;
-    // 热词 pull（v46：sync_now 同时同步 vault + hotword）
-    let hotwords_pulled = if skip_pull {
-        0
-    } else {
-        match octopus_sync::hotword::pull_hotwords_from_files() {
-            Ok(n) => n,
+    // 热词 merge（v46：sync_now 同时同步 vault + hotword；2026-08-01 改用 merge_hotwords，
+    // 对称于上面的 merge_vault）。NoUpstream（首次推送）时远程无内容可 merge，
+    // 走 push_hotwords_to_files 把本地 DB 写到文件。
+    let hotwords_merged = if skip_pull {
+        match octopus_sync::hotword::push_hotwords_to_files() {
+            Ok(n) => octopus_sync::hotword::HotwordMergeReport {
+                pushed: n,
+                pulled: 0,
+                conflicts: 0,
+                skipped: 0,
+            },
             Err(e) => {
-                log::warn!("[sync] 热词 pull 失败（不阻断 vault 同步）：{}", e);
-                0
+                log::warn!("[sync] 热词首次推送失败（不阻断 vault 同步）：{}", e);
+                octopus_sync::hotword::HotwordMergeReport::default()
+            }
+        }
+    } else {
+        match octopus_sync::hotword::merge_hotwords() {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[sync] 热词 merge 失败（不阻断 vault 同步）：{}", e);
+                octopus_sync::hotword::HotwordMergeReport::default()
             }
         }
     };
-
-    // 热词 push
-    let hotwords_pushed = match octopus_sync::hotword::push_hotwords_to_files() {
-        Ok(n) => n,
-        Err(e) => {
-            log::warn!("[sync] 热词 push 失败（不阻断 vault 同步）：{}", e);
-            0
-        }
-    };
+    let hotwords_pulled = hotwords_merged.pulled;
+    let hotwords_pushed = hotwords_merged.pushed;
 
     // 5. commit（无变化时 git_commit 返 false，不阻断流程）
     let root = octopus_sync::store::sync_root();
