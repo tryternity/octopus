@@ -883,6 +883,7 @@ terminal:
   fileTreeExpand: 展开文件树
   fileTreeCollapse: 收起文件树
   fileTreeToggleHidden: 切换隐藏文件
+  fileTreeRefresh: 刷新文件树
   fileTreeLoading: 加载中…
   fileTreeError: 加载失败
   fileTreeWaiting: 等待目录…

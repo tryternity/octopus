@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, ChevronDown, Eye, EyeOff, Folder, File } from "lucide-react";
+import { ChevronRight, ChevronDown, Eye, EyeOff, Folder, File, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 
@@ -71,13 +71,30 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showHidden]);
 
-  // 展开时自动加载根目录
+  // 展开时（false→true）自动加载根目录——总是重新加载，不管之前状态
   useEffect(() => {
-    if (expanded && cwd && tree[cwd]?.status === "idle") {
+    if (expanded && cwd) {
       void loadDir(cwd, showHidden);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, cwd]);
+  }, [expanded]);
+
+  // cwd 变化时重新加载根目录 + 重置展开状态
+  useEffect(() => {
+    if (expanded && cwd) {
+      void loadDir(cwd, showHidden);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd]);
+
+  /** 手动刷新：重新加载根目录 + 所有展开的子目录 */
+  const refresh = useCallback(() => {
+    if (!cwd) return;
+    void loadDir(cwd, showHidden);
+    for (const dir of expandedDirs) {
+      void loadDir(dir, showHidden);
+    }
+  }, [cwd, showHidden, expandedDirs, loadDir]);
 
   const toggleDir = (dirPath: string) => {
     setExpandedDirs((prev) => {
@@ -171,6 +188,13 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
           title={t("terminal.fileTreeToggleHidden")}
         >
           {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+        <button
+          className="file-tree-tool-btn"
+          onClick={refresh}
+          title={t("terminal.fileTreeRefresh")}
+        >
+          <RefreshCw size={14} />
         </button>
       </div>
       <div className="file-tree-body">
