@@ -713,6 +713,7 @@ html, body {
   flex-direction: row;
 }
 .terminal-sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 200px;
@@ -836,8 +837,33 @@ html, body {
   display: block;
 }
 
+/* ── panel 拖拽手柄（4px，贴在 panel 边缘）── */
+.terminal-panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+  transition: background 0.12s;
+}
+.terminal-panel-resizer:hover,
+.terminal-resizing .terminal-panel-resizer {
+  background: var(--color-accent);
+}
+.terminal-panel-resizer-side-left { left: -2px; }   /* file-tree 用：手柄在左边缘 */
+.terminal-panel-resizer-side-right { right: -2px; } /* sidebar 用：手柄在右边缘 */
+
+/* 拖动中：禁选中文本、统一光标 */
+.terminal-resizing {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
 /* 展开态：工具条 + 文件树 */
 .file-tree-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 240px;
