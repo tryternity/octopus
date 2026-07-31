@@ -48,6 +48,26 @@ pub fn clear_cached_pid() {
     *CACHED_PREV.lock().unwrap() = None;
 }
 
+/// 激活缓存的前台 app（paste 前 call，确保目标窗口在前台接收按键）。
+/// 用 NSRunningApplication.activateWithOptions（NSApplicationActivationPolicyRegular）。
+#[cfg(target_os = "macos")]
+pub fn activate_cached_app() {
+    let pid = match cached_pid() {
+        Some(p) => p,
+        None => return,
+    };
+    use objc2_app_kit::{NSRunningApplication, NSApplicationActivationOptions};
+    if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+        app.activateWithOptions(NSApplicationActivationOptions(1 << 0));
+        log::info!("[focus] activated cached app pid={}", pid);
+    } else {
+        log::warn!("[focus] cached pid={} not found (process exited?)", pid);
+    }
+    log::info!("[focus] activated cached app pid={}", pid);
+    // 给窗口一点时间成为 key window
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}
+
 pub struct FocusTracker;
 
 /// simulate_copy 实际走的 dispatch 路径。调用方据此调整后续行为
@@ -151,6 +171,8 @@ fn simulate_paste_platform() {
     // 2026-07-31：优先用缓存的 pid（预探测目标窗口），避免浮窗打开期间切窗口粘错。
     // 无缓存时 fallback 到实时 frontmost_app() 检测（兼容旧逻辑）。
     if let Some(pid) = cached_pid() {
+        // 先激活缓存的目标 app（确保窗口在前台接收按键）
+        activate_cached_app();
         let bid = cached_bundle_id();
         if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) {
             log::info!("simulate_paste: cached WKWebView app {:?} → osascript", bid);
