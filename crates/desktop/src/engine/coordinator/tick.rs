@@ -18,6 +18,7 @@ use super::{
     AUDIO_STALL_THRESHOLD,
     STREAMING_TICK_INTERVAL_MS,
     VAD_SEGMENTED_TICK_INTERVAL_MS,
+    recording_mode,
 };
 #[cfg(feature = "cloud")]
 use super::CLOUD_STREAMING_TICK_INTERVAL_MS;
@@ -25,6 +26,12 @@ use super::CLOUD_STREAMING_TICK_INTERVAL_MS;
 use super::paste::{stage_name, update_transcription_raw, active_asr_engine_name};
 use super::polish::check_and_trigger_polish;
 use super::lifecycle::finalize_after_stop;
+
+/// hands-free 模式静音自动停止阈值（秒）。spec 2026-07-31 单键三模式。
+///
+/// hands-free 常驻录音期间，VAD 累积静音 ≥ 此值 → 自动发 `Command::HandsFreeStop`
+/// （等价于用户按键停止）。避免用户开了 hands-free 后忘了关，一直占着麦。
+pub(crate) const HANDS_FREE_SILENCE_TIMEOUT_SECS: f64 = 60.0;
 
 /// 启动 VAD 伪流式 tick 线程
 pub(crate) fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
@@ -178,9 +185,26 @@ pub(crate) fn dispatch_tick(
         }
         Stage::VadSegmented { pipeline, transcript, .. } => {
             let events = pipeline.tick(&samples, transcript);
+            // 读 silence_duration 放进局部变量，避免下方 check_audio_stall(stage) 与
+            // pipeline 借用冲突（pipeline 是 &mut，stage 是 &，不可同时持有）。
+            let hf_silence = if recording_mode() == 3 {
+                Some(pipeline.silence_duration())
+            } else {
+                None
+            };
             apply_pipeline_events(events, transcript, config, app_handle, tx);
             if check_audio_stall(audio, stage) {
                 let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::VadSegmented });
+            }
+            // hands-free 静音超时：常驻录音忘了关 → 自动停（spec 2026-07-31）。
+            if let Some(sil) = hf_silence {
+                if sil >= HANDS_FREE_SILENCE_TIMEOUT_SECS {
+                    warn!(
+                        "[hands-free] silence {:.1}s ≥ {}s, auto-stop",
+                        sil, HANDS_FREE_SILENCE_TIMEOUT_SECS
+                    );
+                    let _ = tx.send(Command::HandsFreeStop);
+                }
             }
         }
         Stage::WaitingCompletion { pipeline, transcript, tick_active } => {

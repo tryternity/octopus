@@ -21,7 +21,7 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
-use super::{Command, Stage, RecordType, TRANSLATION_ACTIVE, INSTANT_MODE};
+use super::{Command, Stage, RecordType, TRANSLATION_ACTIVE, INSTANT_MODE, set_recording_mode};
 use super::paste::{stage_name, do_paste, active_asr_engine_name};
 #[cfg(feature = "cloud")]
 use super::paste::update_transcription_raw;
@@ -397,6 +397,7 @@ pub(crate) fn finalize_after_stop(
         }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
+        set_recording_mode(0);  // 回 Idle
         return;
     }
 
@@ -404,6 +405,7 @@ pub(crate) fn finalize_after_stop(
     // AgentBridge 用 db_text() 不追加句号（句号是 paste 逻辑，不适合 agent task）
     if dispatch_by_record_type(&transcript, &transcript.db_text(), app_handle) {
         *stage = Stage::Idle;
+        set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
     }
 
@@ -461,6 +463,7 @@ pub(crate) fn finalize_cloud(
         }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
+        set_recording_mode(0);  // 回 Idle
         return;
     }
 
@@ -472,6 +475,7 @@ pub(crate) fn finalize_cloud(
     // 统一分流：AgentBridge → execute_agent_task
     if dispatch_by_record_type(&transcript, &combined, app_handle) {
         *stage = Stage::Idle;
+        set_recording_mode(0);  // AgentBridge 派发后回 Idle
         return;
     }
 

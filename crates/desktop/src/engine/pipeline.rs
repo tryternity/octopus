@@ -443,6 +443,9 @@ impl VadSegmentedPipeline {
     /// 当前在途识别数（WaitingCompletion 收尾判定 active_count==0 用）。
     pub(crate) fn active_count(&self) -> u32 { self.active_count }
 
+    /// 当前累积静音秒数（hands-free 静音超时检测用，spec 2026-07-31）。
+    pub(crate) fn silence_duration(&self) -> f64 { self.silence_duration }
+
     /// spawn 一段离线识别（搬迁自 coordinator.rs:1446，改发 SegmentResult 到 self.tx）。
     fn spawn_offline(&self, speech_samples: Vec<f32>, seq: u64) {
         let engine = self.engine.clone();

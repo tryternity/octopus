@@ -218,11 +218,16 @@ pub struct AppConfig {
     #[serde(default = "default_vault_autotype_shortcut")]
     pub vault_autotype_shortcut: String,
 
-    /// 录音模式: "toggle"（默认，按一次开始/再按一次停止）| "talk"（PTT 按住说话松开识别）
+    /// 录音模式: "toggle"（默认，按一次开始/再按一次停止）| "talk"（PTT 按住说话松开识别）。
+    ///
+    /// 注意（spec 2026-07-31 单键三模式）：ptt 键现在通过按键时长 + 双击区分
+    /// 三种模式（长按=PTT / 双击=toggle / 短按=hands-free），不再互斥于 record_mode。
+    /// record_mode 主要影响 asr_shortcut（Alt+Shift+A）走哪种模式。
     #[serde(default = "default_record_mode")]
     pub record_mode: String,
 
-    /// talk 模式 PTT 键（默认 "AltRight" = 右 Option）。支持 AltRight/ShiftRight/ControlRight/MetaRight。
+    /// 单键三模式 PTT 键（默认 "OptRight" = 右 Option）。spec 2026-07-31。
+    /// 支持 handy-keys 名称：OptRight / ShiftRight / CtrlRight / CmdRight / Fn。
     #[serde(default = "default_ptt_key")]
     pub ptt_key: String,
 
@@ -345,7 +350,7 @@ fn default_record_mode() -> String {
     "toggle".into()
 }
 fn default_ptt_key() -> String {
-    "AltRight".into()
+    "OptRight".into()
 }
 fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
