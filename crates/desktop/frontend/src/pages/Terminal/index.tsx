@@ -113,6 +113,29 @@ export default function Terminal() {
     setActiveId(tab.id);
   }, [tabs, activeId]);
 
+  // 首次 agent 联动复用占位首 tab：窗口新建时 useState 建了一个空 tab（无 command），
+  // Rust 的首个 new-tab event 到达时若直接 addTab 会多出一个空 tab。改为：首个 command
+  // 写进占位 tab（设 cwd + pendingCommand），之后的新 tab 走正常 addTab。
+  // 仅 listener 路径用；用户主动「新建 tab」（+ 按钮/Cmd+T/右键）始终走 addTab。
+  const firstTabVacant = useRef(true);
+  const consumeFirstTab = useCallback((cwd?: string, command?: string) => {
+    if (firstTabVacant.current) {
+      firstTabVacant.current = false;
+      setTabs((prev) => prev.map((tb, i) =>
+        i === 0
+          ? {
+              ...tb,
+              cwd: cwd ?? tb.cwd,
+              trackedCwd: cwd ?? tb.trackedCwd,
+              pendingCommand: command,
+            }
+          : tb,
+      ));
+      return;
+    }
+    addTab(cwd, command);
+  }, [addTab]);
+
   const closeTab = useCallback(
     (id: number) => {
       setTabs((prev) => {
@@ -168,20 +191,20 @@ export default function Terminal() {
   // Rust 端 open_terminal_with_command 用 emit_to(label) 定向，前端这里对齐。
   //
   // 稳定化（2026-07-31，对齐 TerminalPane paste-text 的 d5a879ed 修复）：
-  // addTab 依赖 [tabs, activeId]，每次 tabs 变化引用就变。若 listener effect 依赖
-  // [addTab]，会随每次 tabs 变化 cleanup + re-register（listen 是 async Promise，
+  // addTab/consumeFirstTab 依赖 [tabs, activeId]，每次 tabs 变化引用就变。若 listener
+  // effect 依赖回调本身，会随每次 tabs 变化 cleanup + re-register（listen 是 async Promise，
   // 间隙 listener 未注册）→ emit 撞上间隙就丢 → agent 命令建不出 tab。
-  // 改用 addTabRef 持有最新 addTab，effect 只挂一次（[] 依赖），target 用
+  // 改用 consumeFirstTabRef 持有最新回调，effect 只挂一次（[] 依赖），target 用
   // {kind:'WebviewWindow', label} 精确匹配（比裸 string AnyLabel 投递更可靠）。
-  const addTabRef = useRef(addTab);
-  addTabRef.current = addTab;
+  const consumeFirstTabRef = useRef(consumeFirstTab);
+  consumeFirstTabRef.current = consumeFirstTab;
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
     listen<{ cwd?: string; command?: string }>(
       "terminal://new-tab",
       (e) => {
-        addTabRef.current(e.payload.cwd, e.payload.command);
+        consumeFirstTabRef.current(e.payload.cwd, e.payload.command);
       },
       { target: { kind: "WebviewWindow", label: currentLabel } },
     )
