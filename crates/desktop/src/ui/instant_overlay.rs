@@ -21,8 +21,8 @@ pub const WINDOW_LABEL: &str = "instant_overlay";
 
 const OVERLAY_WIDTH: f64 = 400.0;
 const OVERLAY_HEIGHT: f64 = 80.0;
-/// 底部留白（逻辑像素）——浮窗底边距屏幕底边的距离。
-const BOTTOM_MARGIN: f64 = 80.0;
+/// 底部留白（逻辑像素）——浮窗底边距屏幕底边的距离。尽量贴近底部不干扰工作区。
+const BOTTOM_MARGIN: f64 = 8.0;
 
 /// instant-state 事件 payload（序列化传给前端）。
 #[derive(Clone, serde::Serialize)]
@@ -30,6 +30,25 @@ const BOTTOM_MARGIN: f64 = 80.0;
 struct InstantStatePayload {
     state: String,
     text: String,
+}
+
+/// 启动时预创建 instant 浮窗壳（隐藏）。首次 show 时零延迟（WebView 已加载）。
+pub fn precreate(app: &AppHandle) {
+    if app.get_webview_window(WINDOW_LABEL).is_some() {
+        return;
+    }
+    let _ = build_float_window(app, FloatWindowSpec {
+        label: WINDOW_LABEL,
+        url: "instant-overlay.html",
+        title: "Instant",
+        inner_size: (OVERLAY_WIDTH, OVERLAY_HEIGHT),
+        visible: false,
+        resizable: false,
+        position: None,
+        focused: Some(false),
+        accept_first_mouse: None,
+    });
+    log::info!("[instant-overlay] precreated (hidden)");
 }
 
 /// 创建 instant 浮窗（如不存在），并显示 + 推送状态。

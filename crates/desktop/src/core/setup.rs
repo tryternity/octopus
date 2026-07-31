@@ -58,6 +58,10 @@ impl<'a> AppSetup<'a> {
         self.init_pty();
         self.init_tray();
         self.create_result_window();
+        // talk 模式预创建 instant 浮窗壳（隐藏），首次 show 零延迟。
+        if self.config.record_mode == "talk" {
+            crate::ui::instant_overlay::precreate(self.app.handle());
+        }
         self.register_shortcuts();
         Ok(())
     }
