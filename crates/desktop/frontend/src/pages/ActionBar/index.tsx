@@ -627,6 +627,10 @@ export default function ActionBar() {
         return;
       }
       // url 类型：params 替换 {query}/{text}，无 params 用选中文本
+      // ⚠️ TODO（重构待办）：本 slash 分流与 executeItem（走后端 execute_action_bar）
+      // 是两套实现，易分裂（本 url 空 action_data 分支就是补漏）。长期应统一——斜杠
+      // 路径也走 execute_action_bar（后端单一真相源），删掉前端重复的动作处理逻辑。
+      // 详见 memory: project_unify-actionbar-execute-paths。
       if (actionType === "url") {
         const ctx = contextRef.current;
         const fallbackText = params || ctx?.text || "";
