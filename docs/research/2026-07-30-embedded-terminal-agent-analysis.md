@@ -294,6 +294,7 @@ octopus 的"手机遥控 agent"需要：
 | **布局切换** | 顶部 tabs ↔ 左侧 sidebar list（localStorage 持久化） |
 | **多窗口** | 托盘「新建终端」多实例（`terminal_<n>`）+ ActionBar agent 单例（`terminal_action_agent`），Terax 是单窗口应用 |
 | **文件树侧栏** | 右侧默认隐藏，工具条切换展开/收缩。懒加载 + gitignore 过滤 + dot 文件切换。根目录跟随当前 tab cwd（OSC 7）。Terax 有完整 explorer（git 状态/拖放/CRUD），octopus Phase 1 仅展示 |
+| **panel 可调宽度** | sidebar + file-tree 拖拽边缘改宽度，全局 localStorage 记忆（min=50，max 由终端最小宽推导）。Terax 固定宽度 |
 | **Cmd+T / Ctrl+T 新建 tab** | 不区分平台，Cmd 或 Ctrl+T 都支持 |
 | **右键菜单（三区域）** | 终端内容区（复制/粘贴/全选/清屏）+ tab 标签（改名/关闭/新建）+ 文件树（复制路径/复制名称）。自绘浮层 `ContextMenu.tsx`，剪贴板走 `document.execCommand`（WKWebView `navigator.clipboard` 实测不可靠），改名复用 `forceEditing` prop（`window.prompt` 在 WKWebView 不工作）。Terax 用系统原生右键菜单 |
 | **rAF 节流** | 巨量输出 Ctrl+C 回到命令行（xterm write buffer 积压修复），Terax 靠 rendererPool 绕过 |
