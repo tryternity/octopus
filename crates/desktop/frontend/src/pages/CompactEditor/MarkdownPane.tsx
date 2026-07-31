@@ -59,20 +59,26 @@ export function MarkdownPane({
 
   // ASR 文本回写（spec 2026-07-31-asr-paste-self-webview）：后端 emit "paste-text"
   // 到聚焦窗口。仅非只读 + 编辑器已挂载时响应——CM6 在光标处插入文本。
-  // 限定 target 为当前窗口 label，避免多窗口都写。
+  // 限定 target 为当前窗口 label（WebviewWindow 精确匹配），避免多窗口都写。
   useEffect(() => {
     if (readOnly) return;
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
-    listen<string>("paste-text", (e) => {
-      const view = viewRef.current;
-      if (!view) return;
-      const sel = view.state.selection.main;
-      view.dispatch({ changes: { from: sel.from, insert: e.payload } });
-    }, { target: currentLabel })
+    listen<string>(
+      "paste-text",
+      (e) => {
+        const view = viewRef.current;
+        if (!view) return;
+        const sel = view.state.selection.main;
+        view.dispatch({ changes: { from: sel.from, insert: e.payload } });
+      },
+      { target: { kind: "WebviewWindow", label: currentLabel } },
+    )
       .then((fn) => { unlisten = fn; })
-      .catch(() => {});
-    return () => { unlisten?.(); };
+      .catch((err) => console.error("[MarkdownPane] paste-text listener failed:", err));
+    return () => {
+      unlisten?.();
+    };
   }, [readOnly]);
 
   // splitRatio 拖拽中只更新 state，释放时落盘（避免逐帧 localStorage IO）
