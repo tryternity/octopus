@@ -830,6 +830,11 @@ html, body {
   color: var(--color-muted-foreground);
   line-height: 1;
 }
+.file-tree-tool-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 
 /* 展开态：工具条 + 文件树 */
 .file-tree-panel {

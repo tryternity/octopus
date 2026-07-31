@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronRight, ChevronDown, Eye, EyeOff, Folder, File, RefreshCw } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, File } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 
@@ -166,7 +166,7 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
   if (!expanded) {
     return (
       <div className="file-tree-collapsed" onClick={onToggle} title={t("terminal.fileTreeExpand")}>
-        <span className="file-tree-collapse-arrow">«</span>
+        <img src="icons/angles-left.svg" alt="expand" className="file-tree-tool-icon" />
       </div>
     );
   }
@@ -180,21 +180,22 @@ export function FileTreePanel({ cwd, expanded, onToggle }: Props) {
           onClick={onToggle}
           title={t("terminal.fileTreeCollapse")}
         >
-          <span className="file-tree-collapse-arrow">»</span>
+          <img src="icons/angles-right.svg" alt="collapse" className="file-tree-tool-icon" />
         </button>
         <button
           className="file-tree-tool-btn"
           onClick={() => setShowHidden(!showHidden)}
           title={t("terminal.fileTreeToggleHidden")}
+          style={{ opacity: showHidden ? 1 : 0.5 }}
         >
-          {showHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+          <img src="icons/eye.svg" alt="hidden" className="file-tree-tool-icon" />
         </button>
         <button
           className="file-tree-tool-btn"
           onClick={refresh}
           title={t("terminal.fileTreeRefresh")}
         >
-          <RefreshCw size={14} />
+          <img src="icons/refresh.svg" alt="refresh" className="file-tree-tool-icon" />
         </button>
       </div>
       <div className="file-tree-body">
