@@ -6,7 +6,7 @@
  *
  * 参考实现：CompactEditor MarkdownPane.tsx:205-216（pointer capture + dragging class）。
  */
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 
 type Props = {
   side: "left" | "right";
@@ -17,6 +17,14 @@ type Props = {
 
 export function PanelResizer({ side, onStart, onMove, onEnd }: Props) {
   const draggingRef = useRef(false);
+
+  // 卸载清理：若组件在拖拽中途卸载（布局切换/fileTree 收起/HMR），
+  // documentElement 会残留 terminal-resizing class → 全局 user-select:none。
+  useEffect(() => {
+    return () => {
+      document.documentElement.classList.remove("terminal-resizing");
+    };
+  }, []);
 
   const handleDown = (e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = true;

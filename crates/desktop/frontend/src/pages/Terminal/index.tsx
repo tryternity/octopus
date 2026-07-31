@@ -291,7 +291,7 @@ export default function Terminal() {
     return (
       <>
       {tabContextMenu}
-      <div className="terminal-window terminal-sidebar-layout">
+      <div className="terminal-window terminal-sidebar-layout" ref={contentRef}>
         <aside
           className="terminal-sidebar"
           style={{ width: `${sidebarWidthCtrl.width}px` }}
@@ -347,7 +347,7 @@ export default function Terminal() {
             onEnd={sidebarWidthCtrl.endDrag}
           />
         </aside>
-        <div className="terminal-content" ref={contentRef}>
+        <div className="terminal-content">
           {panes}
           {fileTree}
         </div>
@@ -359,7 +359,7 @@ export default function Terminal() {
   return (
     <>
     {tabContextMenu}
-    <div className="terminal-window">
+    <div className="terminal-window" ref={contentRef}>
       <div className="terminal-tabbar" role="tablist">
         <button
           className="terminal-layout-toggle"
@@ -393,7 +393,7 @@ export default function Terminal() {
           <Plus size={14} />
         </button>
       </div>
-      <div className="terminal-content" ref={contentRef}>
+      <div className="terminal-content">
         {panes}
         {fileTree}
       </div>
