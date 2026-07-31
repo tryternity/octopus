@@ -200,21 +200,7 @@ export default function Terminal() {
     return (
       <div className="terminal-window terminal-sidebar-layout">
         <aside className="terminal-sidebar">
-          <div className="terminal-sidebar-list" role="tablist">
-            {tabMeta.map((m) => (
-              <SidebarItem
-                key={m.tab.id}
-                active={m.active}
-                phase={m.phase}
-                label={m.label}
-                onClick={() => setActiveId(m.tab.id)}
-                onClose={() => closeTab(m.tab.id)}
-                onRename={(name) => renameTab(m.tab.id, name)}
-                closeLabel={t("terminal.closeTab")}
-              />
-            ))}
-          </div>
-          <div className="terminal-sidebar-footer">
+          <div className="terminal-sidebar-header">
             <button
               className="terminal-sidebar-new"
               onClick={() => addTab()}
@@ -231,6 +217,20 @@ export default function Terminal() {
             >
               <LayoutPanelTop size={15} />
             </button>
+          </div>
+          <div className="terminal-sidebar-list" role="tablist">
+            {tabMeta.map((m) => (
+              <SidebarItem
+                key={m.tab.id}
+                active={m.active}
+                phase={m.phase}
+                label={m.label}
+                onClick={() => setActiveId(m.tab.id)}
+                onClose={() => closeTab(m.tab.id)}
+                onRename={(name) => renameTab(m.tab.id, name)}
+                closeLabel={t("terminal.closeTab")}
+              />
+            ))}
           </div>
         </aside>
         {panes}
@@ -324,6 +324,16 @@ function TabButton(props: {
       aria-selected={active}
       onClick={onClick}
     >
+      <button
+        className="terminal-tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={onCloseLabel}
+      >
+        <X size={12} />
+      </button>
       <AgentBadge phase={phase} />
       {editing ? (
         <RenameInput
@@ -346,16 +356,6 @@ function TabButton(props: {
           {label}
         </span>
       )}
-      <button
-        className="terminal-tab-close"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        aria-label={onCloseLabel}
-      >
-        <X size={12} />
-      </button>
     </div>
   );
 }
@@ -380,6 +380,16 @@ function SidebarItem(props: {
       aria-selected={active}
       onClick={onClick}
     >
+      <button
+        className="terminal-tab-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        aria-label={closeLabel}
+      >
+        <X size={12} />
+      </button>
       <AgentBadge phase={phase} />
       {editing ? (
         <RenameInput
@@ -402,16 +412,6 @@ function SidebarItem(props: {
           {label}
         </span>
       )}
-      <button
-        className="terminal-tab-close"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        aria-label={closeLabel}
-      >
-        <X size={12} />
-      </button>
     </div>
   );
 }

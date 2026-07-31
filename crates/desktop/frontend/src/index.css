@@ -492,6 +492,7 @@ html, body {
   justify-content: center;
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -500,8 +501,11 @@ html, body {
   opacity: 0;
   transition: opacity 0.12s, background 0.12s;
 }
+/* hover tab/sidebar-item 或 active 时显示关闭按钮 */
 .terminal-tab:hover .terminal-tab-close,
-.terminal-tab-active .terminal-tab-close {
+.terminal-tab-active .terminal-tab-close,
+.terminal-sidebar-item:hover .terminal-tab-close,
+.terminal-sidebar-item-active .terminal-tab-close {
   opacity: 1;
 }
 .terminal-tab-close:hover {
@@ -712,8 +716,6 @@ html, body {
   min-height: 0;
   overflow-y: auto;
   padding: 6px 6px 0;
-  /* macOS 拖动区域——sidebar 顶部可拖窗 */
-  -webkit-app-region: drag;
 }
 .terminal-sidebar-item {
   position: relative;
@@ -756,12 +758,18 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.terminal-sidebar-footer {
+.terminal-sidebar-header {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 6px;
-  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  /* macOS 拖动区域——sidebar 顶部 header 可拖窗 */
+  -webkit-app-region: drag;
+}
+/* header 内按钮不参与拖窗 */
+.terminal-sidebar-header button {
   -webkit-app-region: no-drag;
 }
 .terminal-sidebar-new {
