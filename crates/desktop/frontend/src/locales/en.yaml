@@ -867,6 +867,10 @@ terminal:
   closeTab: Close Tab
   layoutSidebar: Switch to sidebar list
   layoutTabs: Switch to top tabs
+  searchPlaceholder: Search terminal…
+  searchPrev: Previous
+  searchNext: Next
+  searchClose: Close search
 
 # ════════ ActionBar ════════
 actionbar:

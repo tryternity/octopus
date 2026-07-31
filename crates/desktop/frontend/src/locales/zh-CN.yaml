@@ -876,6 +876,10 @@ terminal:
   closeTab: 关闭标签页
   layoutSidebar: 切换为侧栏列表
   layoutTabs: 切换为顶部标签页
+  searchPlaceholder: 搜索终端…
+  searchPrev: 上一个
+  searchNext: 下一个
+  searchClose: 关闭搜索
 
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:

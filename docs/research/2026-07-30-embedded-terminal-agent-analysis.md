@@ -258,3 +258,162 @@ octopus 的"手机遥控 agent"需要：
 | 用 Zellij 的自研 PTY | 过度工程化（nix::pty + login_tty + tokio AsyncFd），portable-pty 已封装 |
 | Zed 的 ACP 协议 | 过重（完整 agent-client-protocol JSON-RPC），octopus 不需要标准化的 agent 协议 |
 | Codux 的 5 路信号融合 | 过于复杂（每 agent 一张 driver 表 + transcript probe），Terax 的 OSC 模式已够用 |
+
+---
+
+## 八、octopus 实现状态 vs Terax 功能差距（2026-07-31）
+
+> 内嵌终端 Task 1-8 + WebGL + 控制键增强完成后，与 Terax 的完整功能对比。
+> 用于后续翻阅、决定下一步补哪些功能。
+
+### 已实现（对齐 Terax）
+
+| 功能 | octopus | Terax | octopus 文件 |
+|---|---|---|---|
+| PTY spawn + 3 线程（reader/flusher/waiter） | ✅ | ✅ | `pty/src/session.rs` |
+| OSC 133/777/9 agent 状态感知（含 auto-arm/finish/溢出防护） | ✅ | ✅ | `pty/src/agent_detect.rs` |
+| Shell 集成脚本（zsh ZDOTDIR / bash --rcfile OSC 133 注入） | ✅ | ✅ | `pty/src/shell_init.rs` + `scripts/` |
+| Tauri 命令层（pty_open/write/resize/close） | ✅ | ✅ | `commands/terminal_commands.rs` |
+| Agent hook 安装（Claude/Codex/Gemini/Pi） | ✅ | ✅ | `commands/agent_hooks.rs` |
+| pty_write raw body + x-pty-id header（绕 JSON） | ✅ | ✅ | `pty-bridge.ts` |
+| 多 tab（visibility 保活） | ✅ | ✅ | `Terminal/index.tsx` |
+| xterm.js + FitAddon + WebLinksAddon | ✅ | ✅ | `useTerminalSession.ts` |
+| **WebGL renderer + context loss 250ms 重连 + 隐藏 tab 释放** | ✅ | ✅ | `useTerminalSession.ts::attachWebgl` |
+| **macOS 控制键（Option 词导航 / Cmd 行首行尾 / IME 兼容 / Shift+Enter / alternate screen 智能切换）** | ✅ | ✅ | `keymap.ts` |
+| agent 状态徽章（working 脉冲 / attention bell / finished 绿点） | ✅ | ✅ | `agent-activity.ts` + `index.tsx::AgentBadge` |
+
+### octopus 独有（Terax 没有）
+
+| 功能 | 说明 |
+|---|---|
+| **tab 改名** | 双击 tab 标题内联编辑（customName > agentName > 默认） |
+| **布局切换** | 顶部 tabs ↔ 左侧 sidebar list（localStorage 持久化） |
+| **多窗口** | 托盘「新建终端」多实例（`terminal_<n>`）+ ActionBar agent 单例（`terminal_action_agent`），Terax 是单窗口应用 |
+
+### Terax 有、octopus 未实现（按优先级）
+
+#### P1（高性价比，建议下一步）
+
+| 功能 | Terax 文件 | 说明 | octopus 补法 |
+|---|---|---|---|
+| **终端内搜索** | `SearchAddon` + 搜索栏 UI | Cmd+F 触发，翻长输出找关键字。高频 | 装 `@xterm/addon-search`，加搜索栏组件 |
+| **字号/字体偏好** | `useTerminalFont.ts` + 设置页 | octopus 固定 13px SF Mono，用户无法调。中频 | config 加 terminalFontSize/Family，`useTerminalFont` 读 |
+
+#### P2（中频需求，看用户反馈）
+
+| 功能 | Terax 文件 | 说明 |
+|---|---|---|
+| **rendererPool（slot 池化）** | `rendererPool.ts`（~900 行） | 隐藏 tab 保活 WebGL + dormantRing 字节缓冲。octopus WebGL active 释放已兜底，多 tab 不卡就不用 |
+| **分屏 pane（split）** | `PaneTreeView.tsx` + `panes.ts` | 水平/垂直分割同时看多终端 |
+| **OSC 7 cwd 追踪** | `osc-handlers.ts::registerCwdHandler` | 新 tab 继承当前目录 + 安全过滤（防命令输出伪造 cwd）+ 标题显示路径 |
+| **文件拖放进终端** | `useTerminalFileDrop.ts` + `quoteShellPath.ts` | 拖文件自动转义路径写入（依赖 quoteShellPath 空格/特殊字符转义） |
+
+#### P3（重功能或低频，暂缓）
+
+| 功能 | Terax 文件 | 说明 |
+|---|---|---|
+| **block 模式** | `block/` 整个目录（~2000 行） | prompt-as-editor：CodeMirror 驱动 shell 输入 + 命令块装饰 + 历史 + 路径补全 + inline 建议。很重的特色功能 |
+| **OSC 52 剪贴板** | `osc-handlers.ts` | 远程程序（SSH）写本地剪贴板，1MiB 上限 |
+| **OSC 133 prompt tracker** | `osc-handlers.ts::registerPromptTracker` | 追踪命令边界（A/B/C/D 标记），block 模式底层依赖 |
+| **bracketed paste** | `terminalPaste.ts` | `\x1b[200~...\x1b[201~` 包裹粘贴，部分程序需要 |
+| **终端剪贴板** | `terminalClipboard.ts` | OSC 52 + Cmd+C 选中复制（部分 xterm 默认已覆盖） |
+| **光标闪烁控制** | `cursorBlink.ts` | 失焦停闪省电 |
+| **字体度量** | `useTerminalFont` 精确列宽 | CJK 对齐细节 |
+| **shell 选择/历史弹出** | block 模式子功能 | 随 block 模式 |
+
+### 测试覆盖现状（octopus）
+
+| 模块 | 测试数 |
+|---|---|
+| agent_detect.rs（OSC 状态机） | 17 |
+| session.rs（spawn/echo/退出码/Drop） | 3 |
+| shell_init.rs（classify/resolve/URL） | 6 |
+| agent_hooks.rs（幂等/merge/Pi） | 12 |
+| terminal_window.rs（URL/label 匹配） | 9 |
+| activation.rs（float_depth/label 匹配） | 3 |
+| keymap.ts（Option/Cmd/删除/readline） | 24 |
+| agent-activity.ts（phaseForSignal/displayLabel） | 11 |
+| useTerminalSession.ts（attachWebgl 降级/context loss） | 4 |
+| **合计** | **89** |
+
+Terax 终端模块测试文件（供后续补功能时参考其测试范式）：`keymap.test.ts` / `agentActivity.test.ts` / `cursorBlink.test.ts` / `dormantRing.test.ts` / `liveTerminals.test.ts` / `osc-handlers.test.ts` / `panes.test.ts` / `quoteShellPath.test.ts` / `terminalClipboard.test.ts` / `terminalPaste.test.ts` / `useTerminalFileDrop.test.ts` / `block/lib/` 下 6 个。
+
+---
+
+## 九、多 tab 性能架构对比：octopus vs Terax（2026-07-31）
+
+> 起因：octopus 终端 `yes` 巨量输出时 Ctrl+C 后回不到命令行（xterm write buffer 积压）。修复用 rAF 节流后追问「Terax 怎么解决的」——发现 Terax 根本没这个问题，因为 rendererPool 架构。
+
+### 核心差异：xterm 实例管理策略
+
+| 维度 | octopus（每 tab 常驻 xterm） | Terax（rendererPool 池化） |
+|---|---|---|
+| 架构 | N 个 tab = **N 个 xterm 实例**（全部常驻内存） | N 个 tab = **~8 个 xterm slot**（固定池） |
+| 隐藏 tab 的 PTY 输出 | 仍走 `term.write`（rAF 节流兜底） | 进 **dormantRing**（1MiB 环形缓冲），不碰 xterm |
+| 切回 tab | 瞬间（xterm 还在 DOM，visibility 保活） | 有延迟（serializeAddon 快照恢复 + dormantRing drain 补播漏掉的输出） |
+| WebGL context | active 切换 dispose/attach（已实现） | slot park/evict 天然管理 |
+| 内存 | O(tab 数)——每 tab 一个完整 xterm + scrollback | O(固定 slot 数)——超出 slot 数的 tab evict 释放 |
+| 实现复杂度 | ~300 行 useTerminalSession | ~1200 行（rendererPool + dormantRing + serializeAddon + slot 调度） |
+
+### Terax rendererPool 工作原理（`rendererPool.ts` ~900 行）
+
+1. **固定 slot 池**：创建有限数量的 xterm slot（默认 ~8），每个 slot 绑定一个 leaf（tab 的终端实例）
+2. **leaf → slot 绑定**：活跃 tab 的 leaf 绑定到 slot，xterm 实时渲染
+3. **隐藏 tab park**：tab 切走时 slot 进入 park 状态——保留 xterm buffer（scrollback 不丢），暂停渲染（省 GPU/CPU）
+4. **slot 不够时 evict**：如果所有 slot 都被占用且来了新 tab，按 evictionScore（可见性/alt-screen/busy/focus 加权）选最低分的 slot evict——释放 xterm 实例
+5. **evict 前快照**：`serializeAddon.serialize({ scrollback: cap })` 保存当前 buffer 快照 + 光标位置
+6. **切回 evicted tab 恢复**：重新 acquire slot → `term.write(snapshot)` 恢复快照 → `dormantRing.drain()` 补播隐藏期间漏掉的输出
+7. **dormantRing 背压**：隐藏期间 PTY 输出进环形缓冲（1MiB 上限），溢出丢旧行（对齐 LF 边界），不会无限增长
+
+### octopus 的 rAF 节流方案（当前架构下的补偿）
+
+```typescript
+// useTerminalSession.ts：每帧（~16ms）最多 term.write 一次
+// 积压时只保留最新块丢弃中间，避免 xterm write buffer 无限积压
+let pendingOutput: Uint8Array | null = null;
+let rafScheduled = false;
+const flushOutput = () => {
+  rafScheduled = false;
+  if (disposed || !pendingOutput) return;
+  const data = pendingOutput;
+  pendingOutput = null;
+  term.write(data);
+};
+onData: (bytes) => {
+  pendingOutput = bytes;
+  if (!rafScheduled) {
+    rafScheduled = true;
+    requestAnimationFrame(flushOutput);
+  }
+}
+```
+
+**效果**：
+- 正常输出（prompt/命令回显）：每帧 flush，无感知延迟
+- 巨量输出（yes/seq）：每帧只 write 最新块，xterm buffer 每帧最多积压一块
+- Ctrl+C 后 xterm 很快消化完（最多一帧的数据量），prompt 立即显示
+- htop（alternate screen）：每帧重绘量小，不受影响
+
+**为什么不用 xterm write callback 做反压**（踩过的坑）：`term.write(data, callback)` 的 callback 在数据解析完后触发，但**不可靠**——某些情况不触发，导致 `writeBusy` 永久 true，新终端只能响应首键。rAF 用浏览器渲染帧节拍，稳定可靠。
+
+### 为什么 octopus 需要 rAF 而 Terax 不需要
+
+Terax 的隐藏 tab 输出不经过 xterm（进 dormantRing），所以不存在 write buffer 积压问题。octopus 每 tab 常驻 xterm，隐藏 tab 的输出仍走 `term.write`——必须前端限速。
+
+### 演进路径
+
+| 阶段 | 方案 | 适用场景 |
+|---|---|---|
+| **当前** | 每 tab 常驻 xterm + rAF 节流 | 少量 tab（< 10）日常使用 |
+| **P2 备选** | 引入 rendererPool（移植 Terax slot 池化 + dormantRing） | 重度多 tab（> 10）+ 后台长时间跑命令 |
+
+引入 rendererPool 后 rAF 节流可移除（rendererPool 的 dormantRing 接管隐藏 tab 输出缓冲）。代价是 ~900 行额外复杂度 + 切回 tab 有快照恢复延迟。
+
+### tradeoff 决策记录
+
+octopus Phase 1 选择「简单架构 + rAF 兜底」而非 rendererPool，理由：
+1. octopus 是 AI 办公入口（agent CLI 为主），用户极少同时开 > 10 个终端 tab
+2. rendererPool 的切回延迟（快照恢复 + drain）对交互体验有损
+3. rAF 节流已解决最严重的 Ctrl+C 积压问题，日常使用无感知
+4. 保留演进路径——如用户反馈 tab 多卡，再上 rendererPool（功能差距对比 P2）
+
