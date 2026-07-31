@@ -9,15 +9,25 @@
 //! - Linux：X11 focus event + XRaiseWindow + enigo Shift+Insert（Task 3）
 
 use std::sync::Mutex;
+use tauri::Manager;
 
 /// 缓存的前台 app：(pid, bundle_id)。操作开始时缓存，粘贴时用。
 /// 过滤自身（octopus）——缓存的是用户真正要粘贴到的目标 app。
 static CACHED_PREV: Mutex<Option<(i32, String)>> = Mutex::new(None);
 
+/// 缓存的自身 webview 窗口 label（前台是 octopus 自己时，记下聚焦的窗口）。
+/// toggle 入口（terminal/compact_editor 聚焦）时缓存，粘贴时 emit "paste-text" 用。
+/// spec 2026-07-31-asr-paste-self-webview：粘贴时再查 is_focused 已不可靠
+/// （result_window/instant_overlay show 过程会改焦点），必须在 toggle 瞬间捕获。
+static CACHED_SELF_WINDOW: Mutex<Option<String>> = Mutex::new(None);
+
 /// 缓存当前前台 app 的 pid + bundle_id（过滤自身）。
 /// 在操作开始时调（如 ASR toggle 入口、剪贴板浮窗 show 前）。
+///
+/// `app` 用于前台是 octopus 自己时，捕获聚焦的自身 webview 窗口 label
+/// （CACHED_SELF_WINDOW）——粘贴时 emit "paste-text" 定向到该窗口。
 #[cfg(target_os = "macos")]
-pub fn save_frontmost_pid() {
+pub fn save_frontmost_pid(app: &tauri::AppHandle) {
     let frontmost = crate::platform::app_context::macos_ax::frontmost_app();
     if let Some((pid, bid, name)) = frontmost {
         // 过滤自身（octopus-desktop / octopus）
@@ -25,12 +35,47 @@ pub fn save_frontmost_pid() {
             let bundle = bid.unwrap_or_default();
             log::info!("[focus] cached frontmost: pid={} bundle={} name={}", pid, bundle, name);
             *CACHED_PREV.lock().unwrap() = Some((pid, bundle));
+            // 外部 app：清掉 self-window 缓存
+            *CACHED_SELF_WINDOW.lock().unwrap() = None;
         } else {
-            log::debug!("[focus] frontmost is self ({}), skip caching", name);
+            // 前台是自身 → 捕获聚焦的 webview 窗口 label（粘贴目标）
+            let label = focused_self_webview_label(app);
+            log::info!("[focus] frontmost is self ({}), cached self-window={:?}", name, label);
+            *CACHED_SELF_WINDOW.lock().unwrap() = label;
         }
     } else {
         log::debug!("[focus] frontmost_app() returned None, nothing to cache");
     }
+}
+
+/// 找当前聚焦的 octopus webview 窗口 label（排除浮窗/指示窗/展示窗）。
+/// 无聚焦窗口 → None。
+fn focused_self_webview_label(app: &tauri::AppHandle) -> Option<String> {
+    /// 不接收 paste-text 的窗口 label（浮窗 / 指示窗 / 展示窗）。
+    const EXCLUDED_PREFIXES: &[&str] = &[
+        "instant_overlay",
+        "overlay_window",
+        "result_window",
+        "clipboard_window",
+        "pin_window",
+        "download_window",
+        "onboarding_window",
+        "settings_window",
+    ];
+    for (label, win) in app.webview_windows() {
+        if EXCLUDED_PREFIXES.iter().any(|p| label.starts_with(p)) {
+            continue;
+        }
+        if win.is_focused().unwrap_or(false) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+/// 读缓存的自身 webview 窗口 label（粘贴时用）。
+pub fn cached_self_window() -> Option<String> {
+    CACHED_SELF_WINDOW.lock().unwrap().clone()
 }
 
 /// 读缓存的 pid。粘贴时用（paste_to_pid 定向发送）。
@@ -46,6 +91,7 @@ pub fn cached_bundle_id() -> Option<String> {
 /// 清理缓存。粘贴完成后调（下次操作重新缓存）。
 pub fn clear_cached_pid() {
     *CACHED_PREV.lock().unwrap() = None;
+    *CACHED_SELF_WINDOW.lock().unwrap() = None;
 }
 
 /// 激活缓存的前台 app（paste 前 call，确保目标窗口在前台接收按键）。

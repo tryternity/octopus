@@ -10,6 +10,8 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useTerminalSession } from "./useTerminalSession";
 import { SearchOverlay } from "./SearchOverlay";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
@@ -116,6 +118,37 @@ export function TerminalPane({
       onConsumeCommand?.();
     }
   }, [session.ptyId, pendingCommand, session, onConsumeCommand]);
+
+  // ASR 文本回写（spec 2026-07-31-asr-paste-self-webview）：后端检测前台是 terminal
+  // webview 时 emit "paste-text" 定向到本窗口。仅活跃 pane 响应——直写 PTY（最可靠，
+  // 绕过 xterm/键盘模拟）。限定 target 为当前窗口 label，避免多终端窗口都写。
+  //
+  // session 对象每次渲染都是新引用（useTerminalSession 返回字面量），不能放 deps——
+  // 否则每渲染都 unlisten/listen，间隙丢事件。用 ref 持有最新 session，effect 只挂一次。
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  useEffect(() => {
+    if (!active) return;
+    let unlisten: (() => void) | null = null;
+    const currentLabel = getCurrentWebviewWindow().label;
+    listen<string>(
+      "paste-text",
+      (e) => {
+        const s = sessionRef.current;
+        if (s.ptyId != null) {
+          s.write(e.payload);
+        }
+      },
+      { target: { kind: "WebviewWindow", label: currentLabel } },
+    )
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => console.error("[TerminalPane] paste-text listener failed:", err));
+    return () => {
+      unlisten?.();
+    };
+  }, [active]);
 
   return (
     <div className="terminal-pane">

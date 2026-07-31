@@ -103,11 +103,13 @@ pub fn hide_instant_overlay(app: &AppHandle) {
 /// （CoreGraphics 原生逻辑坐标，不除 scale——AGENTS.md 坐标 gotcha）。
 /// 鼠标位置不可用时 fallback 到 primary_monitor。
 fn position_bottom_center(app: &AppHandle, win: &tauri::WebviewWindow) {
-    let mouse = get_mouse_location();
+    let mouse = crate::ui::window_position::get_mouse_location();
     log::info!("[instant-overlay] mouse_location={:?}", mouse);
 
     // 优先路径：用 CGDisplay::bounds()（原生逻辑坐标）找鼠标所在屏
-    if let Some((origin_x, origin_y, w, h)) = find_monitor_at_mouse(mouse) {
+    if let Some((_display_id, origin_x, origin_y, w, h)) =
+        crate::ui::window_position::find_monitor_at_mouse(mouse)
+    {
         log::info!("[instant-overlay] monitor bounds: origin=({},{}) size=({},{})",
             origin_x, origin_y, w, h);
         let x = origin_x + (w - OVERLAY_WIDTH) / 2.0;
@@ -125,57 +127,4 @@ fn position_bottom_center(app: &AppHandle, win: &tauri::WebviewWindow) {
     let x = (size.width as f64 / scale - OVERLAY_WIDTH) / 2.0;
     let y = pos.y as f64 / scale + (size.height as f64 / scale - OVERLAY_HEIGHT - BOTTOM_MARGIN);
     let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
-}
-
-/// 获取鼠标全局位置（macOS Quartz 逻辑坐标，y 轴向下）。
-#[cfg(target_os = "macos")]
-fn get_mouse_location() -> Option<(f64, f64)> {
-    use core_graphics::event::CGEvent;
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
-    let event = CGEvent::new(source).ok()?;
-    let point = event.location();
-    Some((point.x, point.y))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_mouse_location() -> Option<(f64, f64)> {
-    None
-}
-
-/// 遍历所有显示器，找鼠标所在的那个，返回其逻辑 bounds (origin_x, origin_y, width, height)。
-/// 用 CoreGraphics CGDisplay::bounds()（原生逻辑坐标，不需要除 scale）。
-#[cfg(target_os = "macos")]
-fn find_monitor_at_mouse(mouse: Option<(f64, f64)>) -> Option<(f64, f64, f64, f64)> {
-    use core_graphics::display::CGDisplay;
-
-    let (mx, my) = mouse?;
-    let displays = CGDisplay::active_displays().ok()?;
-
-    for display_id in displays {
-        let bounds = CGDisplay::new(display_id).bounds();
-        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-            continue;
-        }
-        // CGDisplay::bounds() 返回 Quartz 逻辑坐标（points），
-        // 与 CGEvent::location() 同坐标系，直接比较。
-        if mx >= bounds.origin.x
-            && mx < bounds.origin.x + bounds.size.width
-            && my >= bounds.origin.y
-            && my < bounds.origin.y + bounds.size.height
-        {
-            return Some((
-                bounds.origin.x,
-                bounds.origin.y,
-                bounds.size.width,
-                bounds.size.height,
-            ));
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "macos"))]
-fn find_monitor_at_mouse(_mouse: Option<(f64, f64)>) -> Option<(f64, f64, f64, f64)> {
-    None
 }

@@ -174,7 +174,7 @@ pub(crate) fn do_paste(
                 let _ = app_handle_emit.emit("clipboard://changed", ());
             }
 
-            crate::platform::paste::paste(&text_to_paste, &clipboard_handle, &config)
+            crate::platform::paste::paste(&text_to_paste, &clipboard_handle, &config, &app_handle_emit)
         }).await;
 
         match res {

@@ -31,7 +31,7 @@ use super::lifecycle::finalize_after_stop;
 ///
 /// hands-free 常驻录音期间，VAD 累积静音 ≥ 此值 → 自动发 `Command::HandsFreeStop`
 /// （等价于用户按键停止）。避免用户开了 hands-free 后忘了关，一直占着麦。
-pub(crate) const HANDS_FREE_SILENCE_TIMEOUT_SECS: f64 = 60.0;
+pub(crate) const HANDS_FREE_SILENCE_TIMEOUT_SECS: f64 = 10.0;
 
 /// 启动 VAD 伪流式 tick 线程
 pub(crate) fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
@@ -176,11 +176,27 @@ pub(crate) fn dispatch_tick(
     match stage {
         Stage::Streaming { pipeline, transcript, .. } => {
             let events = pipeline.tick(&samples, transcript);
+            // hands-free 静音超时：流式引擎也要检测（hands-free 可能用 streaming）。
+            let hf_silence = if recording_mode() == 3 {
+                Some(pipeline.silence_duration())
+            } else {
+                None
+            };
             apply_pipeline_events(events, transcript, config, app_handle, tx);
             // 看门狗：cpal 断推检测（spec 2026-07-24-audio-watchdog §4.1）。
             // WaitingCompletion 天然免疫（is_recording 已 false → stall=0）。
             if check_audio_stall(audio, stage) {
                 let _ = tx.send(Command::RestartCapture { stage_kind: RestartStageKind::Streaming });
+            }
+            // hands-free 静音超时（同 VadSegmented 分支）。
+            if let Some(sil) = hf_silence {
+                if sil >= HANDS_FREE_SILENCE_TIMEOUT_SECS {
+                    warn!(
+                        "[hands-free] silence {:.1}s ≥ {}s (streaming), auto-stop",
+                        sil, HANDS_FREE_SILENCE_TIMEOUT_SECS
+                    );
+                    let _ = tx.send(Command::HandsFreeStop);
+                }
             }
         }
         Stage::VadSegmented { pipeline, transcript, .. } => {

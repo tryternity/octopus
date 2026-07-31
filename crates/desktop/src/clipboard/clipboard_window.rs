@@ -290,7 +290,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 #[cfg(target_os = "macos")]
                 { crate::platform::activation::before_floating_window_show(app); }
                 #[cfg(target_os = "macos")]
-                { crate::platform::focus_tracker::save_frontmost_pid(); }
+                { crate::platform::focus_tracker::save_frontmost_pid(app); }
                 window.show()?;
                 let _ = app.emit("clipboard://expand", ());
                 window.set_focus()?;
@@ -305,7 +305,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             #[cfg(target_os = "macos")]
             { crate::platform::activation::before_floating_window_show(app); }
             #[cfg(target_os = "macos")]
-            { crate::platform::focus_tracker::save_frontmost_pid(); }
+            { crate::platform::focus_tracker::save_frontmost_pid(app); }
             window.show()?;
             window.set_focus()?;
         }
@@ -324,7 +324,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                         #[cfg(target_os = "macos")]
                         { crate::platform::activation::before_floating_window_show(&app2); }
                         #[cfg(target_os = "macos")]
-                        { crate::platform::focus_tracker::save_frontmost_pid(); }
+                        { crate::platform::focus_tracker::save_frontmost_pid(&app2); }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }

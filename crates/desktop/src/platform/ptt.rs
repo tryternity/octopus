@@ -93,7 +93,7 @@ static PTT_STATE: Lazy<Mutex<Option<PttState>>> = Lazy::new(|| Mutex::new(None))
 /// 注意：FSM 的 `Idle` 指「等待下一次按键序列」，**不等于** coordinator 的
 /// `RECORDING_MODE==0`。toggle 录音中用户短按（polish_now）后 FSM 回 Idle，
 /// 但 `RECORDING_MODE` 仍为 1（toggle 录音未停）。
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum PttFsm {
     /// 空闲：等待 keydown 开始新序列。
     Idle,
@@ -103,10 +103,34 @@ enum PttFsm {
     ShortPressWait { timer_start: Instant },
     /// PTT 录音中（长按已确认）。keyup → instant_stop → Idle。
     PttRecording,
-    /// toggle 录音中（RECORDING_MODE==1）按键，等判定：短按润色 or 长按结束。
+    /// toggle 录音中（RECORDING_MODE==1）keydown，等判定：长按结束 or 短按润色。
     ToggleInWait { timer_start: Instant },
     /// hands-free 录音中（RECORDING_MODE==3）按键，等判定：任何结果都 → hands_free_stop。
     HandsFreeInWait { timer_start: Instant },
+}
+
+/// FSM 转移动作——纯逻辑，不依赖 Coordinator（便于单测）。
+///
+/// `on_keydown` / `on_keyup` / `drive_timeouts` 先计算 next state + action，
+/// 再由调用方把 action 派发到 Coordinator。这样 FSM 流转可脱离 Coordinator 单测。
+#[derive(Debug, PartialEq, Eq)]
+enum FsmAction {
+    /// 无副作用（仅状态转移）。
+    None,
+    /// 启动 toggle 录音（双击 idle 触发）。
+    ToggleStart,
+    /// 结束 toggle 录音（双击 toggle 中 / 长按 toggle 中触发）。
+    ToggleEnd,
+    /// PTT 开始（长按 idle 触发）。
+    InstantStart,
+    /// PTT 结束（keyup 触发）。
+    InstantStop,
+    /// 立即润色（toggle 中单击确认触发，录音继续）。
+    PolishNow,
+    /// hands-free 开始（短按 idle 触发）。
+    HandsFreeStart,
+    /// hands-free 停止（hands-free 中任意按键 / 超时触发）。
+    HandsFreeStop,
 }
 
 impl PttFsm {
@@ -117,6 +141,74 @@ impl PttFsm {
     /// 距 timer_start 是否已超 TAP_TIMEOUT_MS。
     fn timed_out(timer_start: Instant) -> bool {
         timer_start.elapsed() >= Duration::from_millis(TAP_TIMEOUT_MS)
+    }
+
+    /// keydown 的纯逻辑：返回 (新状态, 动作)。不调 Coordinator。
+    fn next_on_keydown(self, mode: u8) -> (PttFsm, FsmAction) {
+        match self {
+            PttFsm::Idle => {
+                if mode == 1 {
+                    (PttFsm::ToggleInWait { timer_start: Instant::now() }, FsmAction::None)
+                } else if mode == 3 {
+                    (PttFsm::HandsFreeInWait { timer_start: Instant::now() }, FsmAction::None)
+                } else {
+                    (PttFsm::Pending { timer_start: Instant::now() }, FsmAction::None)
+                }
+            }
+            // 真 idle 短按后双击 → 启动 toggle
+            PttFsm::ShortPressWait { .. } => (PttFsm::Idle, FsmAction::ToggleStart),
+            // 其他态（重复/异常）：复位到 Idle
+            _ => (PttFsm::Idle, FsmAction::None),
+        }
+    }
+
+    /// keyup 的纯逻辑：返回 (新状态, 动作)。不调 Coordinator。
+    fn next_on_keyup(self) -> (PttFsm, FsmAction) {
+        match self {
+            PttFsm::Pending { timer_start } => {
+                if timer_start.elapsed() < Duration::from_millis(TAP_TIMEOUT_MS) {
+                    (PttFsm::ShortPressWait { timer_start: Instant::now() }, FsmAction::None)
+                } else {
+                    // 防御：≥ timeout 才松开应已是 PttRecording，当作 PTT stop
+                    (PttFsm::Idle, FsmAction::InstantStop)
+                }
+            }
+            PttFsm::PttRecording => (PttFsm::Idle, FsmAction::InstantStop),
+            PttFsm::ToggleInWait { timer_start } => {
+                if timer_start.elapsed() < Duration::from_millis(TAP_TIMEOUT_MS) {
+                    // 短按（单击）→ 立即润色（polish_now），toggle 录音继续。
+                    // 注：toggle 中不识别双击——曾试过 ToggleShortWait 等双击判定，
+                    // 但 260ms 窗口下手感不佳（双击难触发）。改为单击润色 + 长按结束。
+                    (PttFsm::Idle, FsmAction::PolishNow)
+                } else {
+                    // 长按：drive_timeouts 已 toggle 结束；keyup 仅复位
+                    (PttFsm::Idle, FsmAction::None)
+                }
+            }
+            PttFsm::HandsFreeInWait { .. } => (PttFsm::Idle, FsmAction::HandsFreeStop),
+            // Idle / ShortPressWait 收到 keyup（无对应 keydown 或事件丢失）：忽略
+            other => (other, FsmAction::None),
+        }
+    }
+
+    /// 超时的纯逻辑：返回 (新状态, 动作)。不调 Coordinator。
+    /// 仅当时态超时才返回转移；否则返回 (原状态, None)。
+    fn next_on_timeout(&self) -> (PttFsm, FsmAction) {
+        match self {
+            PttFsm::Pending { timer_start } if PttFsm::timed_out(*timer_start) => {
+                (PttFsm::PttRecording, FsmAction::InstantStart)
+            }
+            PttFsm::ShortPressWait { timer_start } if PttFsm::timed_out(*timer_start) => {
+                (PttFsm::Idle, FsmAction::HandsFreeStart)
+            }
+            PttFsm::ToggleInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
+                (PttFsm::Idle, FsmAction::ToggleEnd)
+            }
+            PttFsm::HandsFreeInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
+                (PttFsm::Idle, FsmAction::HandsFreeStop)
+            }
+            other => (*other, FsmAction::None),
+        }
     }
 }
 
@@ -222,126 +314,46 @@ fn handle_hotkey_event(
 
 /// keydown 事件处理：按当前 FSM 态 + RECORDING_MODE 派发。
 fn on_keydown(coordinator: &Coordinator, fsm: &mut PttFsm, mode: u8) {
-    match fsm {
-        // idle + keydown → Pending（开始计时，等 keyup 或超时判定长按/短按）。
-        // 即使 toggle/hands-free 录音中（mode≠0），只要 FSM 在 Idle 也走 Pending
-        // —— 在 Pending 内不会触发录音启动，仅计时；若录音进行中，Pending 的超时
-        // 分支会被下方 toggle/hands-free 的 in_wait 逻辑覆盖（见 on_keyup 路径）。
-        // 但为避免歧义，录音中 keydown 直接进对应 in_wait（不走 Pending）：
-        PttFsm::Idle => {
-            if mode == 1 {
-                // toggle 录音中 → ToggleInWait（等短按润色 or 长按结束）
-                *fsm = PttFsm::ToggleInWait { timer_start: Instant::now() };
-                log::info!("[ptt] Idle(toggle) + keydown → ToggleInWait");
-            } else if mode == 3 {
-                // hands-free 录音中 → HandsFreeInWait（任何结果都停）
-                *fsm = PttFsm::HandsFreeInWait { timer_start: Instant::now() };
-                log::info!("[ptt] Idle(hands-free) + keydown → HandsFreeInWait");
-            } else {
-                // 真 idle（mode==0）→ Pending（计时判定长按/短按）
-                *fsm = PttFsm::Pending { timer_start: Instant::now() };
-                log::info!("[ptt] Idle + keydown → Pending");
-            }
-        }
-        // ShortPressWait 内再 keydown = 双击 → toggle（spec：双击触发同一个 coordinator.toggle()）。
-        PttFsm::ShortPressWait { .. } => {
-            log::info!("[ptt] ShortPressWait + keydown → double-click → toggle()");
-            coordinator.toggle();
-            *fsm = PttFsm::Idle;
-        }
-        // 其他态收到 keydown（重复/异常）：重置到 Idle，防状态机卡死。
-        // PttRecording 不应收到 keydown（键还按着）；Pending/InWait 收到说明事件丢失。
-        _ => {
-            // 其他态收到 keydown（重复/异常）：重置到 Idle，防状态机卡死。
-            log::warn!("[ptt] unexpected keydown in non-idle state, resetting to Idle");
-            *fsm = PttFsm::Idle;
-        }
-    }
+    let prev = std::mem::replace(fsm, PttFsm::Idle);
+    let (next, action) = prev.next_on_keydown(mode);
+    *fsm = next;
+    log::info!("[ptt] keydown mode={} → {:?} action={:?}", mode, fsm, action);
+    dispatch_action(coordinator, action);
 }
 
 /// keyup 事件处理。
 fn on_keyup(coordinator: &Coordinator, fsm: &mut PttFsm) {
-    match fsm {
-        // Pending + keyup < TAP_TIMEOUT → ShortPressWait（等双击 or 确认 hands-free）。
-        PttFsm::Pending { timer_start } => {
-            let elapsed = timer_start.elapsed();
-            if elapsed < Duration::from_millis(TAP_TIMEOUT_MS) {
-                log::info!("[ptt] Pending + keyup ({:?}) → ShortPressWait (short press)", elapsed);
-                *fsm = PttFsm::ShortPressWait { timer_start: Instant::now() };
-            } else {
-                // ≥ TAP_TIMEOUT 才松开：应已是 PttRecording（drive_timeouts 提前转移了）。
-                // 防御性处理：当 instant_start。
-                log::warn!("[ptt] Pending + keyup ({:?} ≥ timeout) — should be PttRecording, treating as PTT stop", elapsed);
-                coordinator.instant_stop();
-                *fsm = PttFsm::Idle;
-            }
-        }
-        // PttRecording + keyup → instant_stop → Idle（长按松开，停录+粘贴）。
-        PttFsm::PttRecording => {
-            log::info!("[ptt] PttRecording + keyup → instant_stop()");
-            coordinator.instant_stop();
-            *fsm = PttFsm::Idle;
-        }
-        // ToggleInWait + keyup < TAP_TIMEOUT → 短按 → polish_now（FSM 回 Idle，toggle 录音继续）。
-        PttFsm::ToggleInWait { timer_start } => {
-            let elapsed = timer_start.elapsed();
-            if elapsed < Duration::from_millis(TAP_TIMEOUT_MS) {
-                log::info!("[ptt] ToggleInWait + keyup ({:?}) → polish_now() (short, toggle continues)", elapsed);
-                coordinator.polish_now();
-            } else {
-                // ≥ TAP_TIMEOUT：drive_timeouts 已触发 toggle() 结束录音；keyup 仅复位。
-                log::debug!("[ptt] ToggleInWait + keyup after timeout (toggle already ended)");
-            }
-            *fsm = PttFsm::Idle;
-        }
-        // HandsFreeInWait + keyup → hands_free_stop（无论短按长按，任何操作都停）。
-        PttFsm::HandsFreeInWait { timer_start } => {
-            let elapsed = timer_start.elapsed();
-            log::info!("[ptt] HandsFreeInWait + keyup ({:?}) → hands_free_stop()", elapsed);
-            coordinator.hands_free_stop();
-            *fsm = PttFsm::Idle;
-        }
-        // Idle / ShortPressWait 收到 keyup（无对应 keydown 或事件丢失）：忽略。
-        other => {
-            log::debug!("[ptt] keyup in state {:?}, ignoring", other);
-        }
-    }
+    let prev = std::mem::replace(fsm, PttFsm::Idle);
+    let (next, action) = prev.next_on_keyup();
+    *fsm = next;
+    log::info!("[ptt] keyup → {:?} action={:?}", fsm, action);
+    dispatch_action(coordinator, action);
 }
 
 /// 超时驱动：每个 tick（~10ms）检查各计时态是否超时，触发对应转移。
-///
-/// - `Pending` ≥ TAP_TIMEOUT → PttRecording（长按确认，instant_start）
-/// - `ShortPressWait` ≥ TAP_TIMEOUT → hands_free_start（短按确认）
-/// - `ToggleInWait` ≥ TAP_TIMEOUT → toggle()（结束 toggle 录音）
-/// - `HandsFreeInWait` ≥ TAP_TIMEOUT → hands_free_stop()
 fn drive_timeouts(app: &AppHandle, fsm: &mut PttFsm) {
     let Some(coordinator) = app.try_state::<Coordinator>() else { return };
-    match fsm {
-        PttFsm::Pending { timer_start } if PttFsm::timed_out(*timer_start) => {
-            // 长按确认 → PTT 录音（instant_start 用 instant 浮窗）。
-            log::info!("[ptt] Pending timeout → PttRecording → instant_start()");
-            coordinator.instant_start();
-            *fsm = PttFsm::PttRecording;
-        }
-        PttFsm::ShortPressWait { timer_start } if PttFsm::timed_out(*timer_start) => {
-            // 短按确认（无双击）→ hands-free（常驻录音）。
-            log::info!("[ptt] ShortPressWait timeout → hands_free_start()");
-            coordinator.hands_free_start();
-            *fsm = PttFsm::Idle;
-        }
-        PttFsm::ToggleInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
-            // toggle 录音中长按 → 结束 toggle（toggle() 活跃态分支停录+粘贴）。
-            log::info!("[ptt] ToggleInWait timeout → toggle() (end toggle)");
+    let (next, action) = fsm.next_on_timeout();
+    if action != FsmAction::None {
+        *fsm = next;
+        log::info!("[ptt] timeout → {:?} action={:?}", fsm, action);
+        dispatch_action(&coordinator, action);
+    }
+}
+
+/// 把 FSM 计算出的 action 派发到 Coordinator。
+fn dispatch_action(coordinator: &Coordinator, action: FsmAction) {
+    match action {
+        FsmAction::None => {}
+        FsmAction::ToggleStart | FsmAction::ToggleEnd => {
+            // toggle() 在 Idle 态开始录音，在活跃态停止——同一个命令，coordinator 据 stage 分流。
             coordinator.toggle();
-            *fsm = PttFsm::Idle;
         }
-        PttFsm::HandsFreeInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
-            // hands-free 录音中长按 → 停止（任何操作都停）。
-            log::info!("[ptt] HandsFreeInWait timeout → hands_free_stop()");
-            coordinator.hands_free_stop();
-            *fsm = PttFsm::Idle;
-        }
-        _ => {}  // Idle / PttRecording / 未超时的计时态：无操作。
+        FsmAction::InstantStart => coordinator.instant_start(),
+        FsmAction::InstantStop => coordinator.instant_stop(),
+        FsmAction::PolishNow => coordinator.polish_now(),
+        FsmAction::HandsFreeStart => coordinator.hands_free_start(),
+        FsmAction::HandsFreeStop => coordinator.hands_free_stop(),
     }
 }
 
@@ -504,5 +516,74 @@ mod tests {
         // elapsed == TAP_TIMEOUT → timed_out = true（≥ 语义）
         let start = Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS);
         assert!(PttFsm::timed_out(start), "elapsed == timeout 应判超时（≥）");
+    }
+
+    // ── toggle 录音中按键行为（spec 2026-07-31，e2e 后定稿）──
+    // toggle 中不识别双击（曾试过 ToggleShortWait 等双击判定，260ms 窗口手感不佳，
+    // 双击难触发）。最终行为：单击 → 立即润色（录音继续）；长按 → 结束录音。
+
+    /// toggle 录音中**短按（单击）** keyup → 立即 PolishNow（润色，录音继续）。
+    #[test]
+    fn toggle_short_click_polishes_immediately() {
+        // toggle 录音中（mode==1）：keydown → ToggleInWait
+        let (fsm, a) = PttFsm::Idle.next_on_keydown(1);
+        assert!(matches!(fsm, PttFsm::ToggleInWait { .. }));
+        assert_eq!(a, FsmAction::None);
+
+        // 短按 keyup（timer_start 刚设，必 < 260ms）→ 立即 PolishNow + 回 Idle
+        let (fsm, a) = fsm.next_on_keyup();
+        assert!(matches!(fsm, PttFsm::Idle));
+        assert_eq!(a, FsmAction::PolishNow, "短按 keyup 应立即润色");
+    }
+
+    /// toggle 录音中**长按**（≥260ms 不松）→ ToggleEnd（结束录音）。
+    #[test]
+    fn toggle_long_press_ends_recording() {
+        // toggle 录音中：keydown → ToggleInWait
+        let (fsm, _) = PttFsm::Idle.next_on_keydown(1);
+        // 模拟长按超时（≥260ms 未松开）
+        let expired = PttFsm::ToggleInWait {
+            timer_start: Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS + 10),
+        };
+        let (fsm, a) = expired.next_on_timeout();
+        assert!(matches!(fsm, PttFsm::Idle));
+        assert_eq!(a, FsmAction::ToggleEnd, "长按应结束 toggle 录音");
+    }
+
+    /// toggle 录音中长按 keyup（超时后松开）→ 无动作（drive_timeouts 已 toggle 结束）。
+    #[test]
+    fn toggle_long_press_keyup_after_timeout_noop() {
+        // 模拟 ToggleInWait 已超时（长按期间 drive_timeouts 已触发 ToggleEnd）
+        let expired = PttFsm::ToggleInWait {
+            timer_start: Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS + 10),
+        };
+        let (fsm, a) = expired.next_on_keyup();
+        assert!(matches!(fsm, PttFsm::Idle));
+        assert_eq!(a, FsmAction::None, "长按超时后 keyup 不应重复发命令");
+    }
+
+    // ── 真 idle 双击 → 启动 toggle（对照测试，确认两条双击路径不混淆）──
+
+    #[test]
+    fn idle_double_click_starts_toggle() {
+        // 真 idle（mode==0）：第一次 keydown → Pending
+        let (fsm, _) = PttFsm::Idle.next_on_keydown(0);
+        assert!(matches!(fsm, PttFsm::Pending { .. }));
+        // 短按 keyup → ShortPressWait
+        let (fsm, _) = fsm.next_on_keyup();
+        assert!(matches!(fsm, PttFsm::ShortPressWait { .. }));
+        // 260ms 内再 keydown = 双击 → ToggleStart（启动 toggle 录音）
+        let (fsm, a) = fsm.next_on_keydown(0);
+        assert!(matches!(fsm, PttFsm::Idle));
+        assert_eq!(a, FsmAction::ToggleStart, "真 idle 双击应启动 toggle");
+    }
+
+    // ── FsmAction PartialEq 验证（测试基础设施）──
+
+    #[test]
+    fn fsm_action_eq_works() {
+        assert_eq!(FsmAction::None, FsmAction::None);
+        assert_ne!(FsmAction::ToggleStart, FsmAction::ToggleEnd);
+        assert_ne!(FsmAction::PolishNow, FsmAction::ToggleEnd);
     }
 }

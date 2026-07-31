@@ -310,6 +310,11 @@ impl StreamingPipeline {
         self.engine.current_partial()
     }
 
+    /// 当前累积静音秒数（hands-free 静音超时检测用，spec 2026-07-31）。
+    pub(crate) fn silence_duration(&self) -> f64 {
+        self.engine.silence_duration()
+    }
+
     /// stop 路径分派：cloud → `Some(CloudStreamHandle)`（coordinator spawn close_async）；local → `None`。
     /// cfg cloud（与 trait 方法同步门控）。
     #[cfg(feature = "cloud")]

@@ -394,7 +394,7 @@ fn build_coordinator_loop(
                             // 缓存前台 app（pid + bundle_id）——用户按快捷键瞬间 frontmost 是目标 app。
                             // 录音结束粘贴时用此 pid 定向发送，避免录音期间切窗口粘错。
                             #[cfg(target_os = "macos")]
-                            crate::platform::focus_tracker::save_frontmost_pid();
+                            crate::platform::focus_tracker::save_frontmost_pid(&app_handle);
                             let rc = runtime_config.read();
                             // Task 2 后：激活引擎统一从 ACTIVE_ENGINES 缓存取（resolve_active_engine），
                             // 不再从 rc.asr_engine 读 + 写回校正。
@@ -708,7 +708,7 @@ fn build_coordinator_loop(
                         }
                         // 缓存前台 app pid（粘贴时定向发送）——同 Toggle 的 Idle 分支。
                         #[cfg(target_os = "macos")]
-                        crate::platform::focus_tracker::save_frontmost_pid();
+                        crate::platform::focus_tracker::save_frontmost_pid(&app_handle);
                         // 置 instant 标志：begin_recording / finalize / do_paste 据此跳过 result_window。
                         set_instant_mode(true);
                         set_recording_mode(2);  // PTT 录音中
@@ -760,7 +760,7 @@ fn build_coordinator_loop(
                             continue;
                         }
                         #[cfg(target_os = "macos")]
-                        crate::platform::focus_tracker::save_frontmost_pid();
+                        crate::platform::focus_tracker::save_frontmost_pid(&app_handle);
                         // 复用 instant 路径（浮窗 + finalize 跳 result_window）+ 标 hands-free 模式。
                         set_instant_mode(true);
                         set_recording_mode(3);  // hands-free 录音中

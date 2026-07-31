@@ -12,9 +12,15 @@
 | 当前状态 | 短按（<260ms 松开） | 长按（≥260ms 不松） | 双击（260ms 内两次按下） |
 |---|---|---|---|
 | **idle** | → hands-free toggle | → PTT（松开识别+粘贴） | → toggle（弹 result_window） |
-| **toggle 录音中** | → 立即润色 | → 结束 toggle | → 结束 toggle |
+| **toggle 录音中** | → 立即润色（录音继续） | → 结束 toggle | → 两次润色（**不识别双击**，= 两次独立短按） |
 | **hands-free 录音中** | → 停止（任何操作都停） | → 停止 | → 停止 |
 | **PTT 录音中** | —（按着键呢） | keyup → 停止+粘贴 | — |
+
+> **toggle 录音中不识别双击**（2026-07-31 e2e 后定稿）：曾试过 `ToggleShortWait`
+> 态等双击判定（260ms 内第二次 keydown = 双击结束），但 260ms 窗口手感不佳——双击
+> 难稳定触发。最终改为：toggle 中**只识别单击（润色）和长按（结束）**，不识别双击。
+> 短按 keyup 立即 `polish_now()` + 回 Idle（无 260ms 延迟）。双击的实际效果是两次
+> 独立单击 = 两次润色（录音继续）。
 
 ### 常量
 
@@ -35,10 +41,10 @@ const TAP_TIMEOUT_MS: u64 = 260;  // 短按/双击判定窗口（后续可开放
 enum PttFsm {
     Idle,
     Pending { timer_start: Instant },         // keydown 后等判定：长按 or 短按
-    ShortPressWait { timer_start: Instant },  // 短按松开后等判定：双击 or 确认 hands-free
+    ShortPressWait { timer_start: Instant },  // 真 idle 短按松开后等判定：双击 or 确认 hands-free
     PttRecording,                              // PTT 录音中（长按已确认）
-    ToggleInWait { timer_start: Instant },     // toggle 录音中按键，等判定：短按润色 or 结束
-    HandsFreeInWait { timer_start: Instant },  // hands-free 中按键，等判定
+    ToggleInWait { timer_start: Instant },     // toggle 录音中 keydown，等判定：长按结束 or 短按润色
+    HandsFreeInWait { timer_start: Instant },  // hands-free 中按键，等判定（任何结果都停）
 }
 ```
 
@@ -58,8 +64,8 @@ ptt_recording + keyup → coordinator.instant_stop() → Idle
 
 toggle 录音中（RECORDING_MODE==1）+ keydown → ToggleInWait(t2)
 toggle_in_wait:
-  keyup < TAP_TIMEOUT → 短按 → coordinator.polish_now() → Idle（继续录音）
-  t2 超时 → coordinator.toggle()（结束 toggle）→ Idle
+  keyup < TAP_TIMEOUT → 短按（单击）→ coordinator.polish_now() → Idle（录音继续）
+  t2 超时 → coordinator.toggle()（长按结束 toggle）→ Idle
 
 hands-free 中（RECORDING_MODE==3）+ keydown → HandsFreeInWait(t3)
 hands_free_in_wait:
@@ -112,7 +118,7 @@ Command::HandsFreeStop,
 
 hands-free 录音常驻，**两种停止方式**：
 1. 用户按键（短按/长按/双击都触发 HandsFreeStop）
-2. **静音超 60 秒自动停**（`HANDS_FREE_SILENCE_TIMEOUT_SECS = 60`）——避免忘关一直录
+2. **静音超 10 秒自动停**（`HANDS_FREE_SILENCE_TIMEOUT_SECS = 10`）——避免忘关一直录
 
 停止后走与 PTT 相同的 finalize 路径（尾段 drain + finalize_after_stop → do_paste →
 hide 浮窗 → Idle），**一次性粘贴全部文本**。
@@ -128,7 +134,8 @@ hide 浮窗 → Idle），**一次性粘贴全部文本**。
 
 `dispatch_tick` 的 VadSegmented 分支里，hands-free 模式（RECORDING_MODE==3）下
 读 `pipeline.silence_duration()`（VAD 累积静音秒数）≥ `HANDS_FREE_SILENCE_TIMEOUT_SECS`
-→ 自动发 `Command::HandsFreeStop`。与用户按键等价。
+→ 自动发 `Command::HandsFreeStop`。与用户按键等价。**VadSegmented + Streaming 两个分支
+都检测**（hands-free 可能用任一引擎）。
 
 ### 实现要点
 
@@ -156,9 +163,30 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 | `crates/desktop/src/engine/pipeline.rs` | VadSegmentedPipeline 暴露 `silence_duration()`（已有字段，加 pub getter） |
 | `crates/infra/src/db.sql` | ptt_key seed 从 AltRight 改 OptRight |
 | `crates/infra/src/config.rs` | default_ptt_key + 注释 |
+| `crates/desktop/src/ui/window_position.rs` | 提取多屏 helper（get_mouse_location / find_monitor_at_mouse / find_window_display_id）+ per-display save/load（按 display_id 分键） |
+| `crates/desktop/src/ui/result_window.rs` | show_result 加 reposition_to_mouse_monitor（取鼠标所在屏的保存坐标）+ Moved 改 per-display save |
+| `crates/desktop/src/ui/instant_overlay.rs` | 删本地 monitor helper 副本，use window_position 公共函数 |
 | `docs/architecture.md` | 更新 |
 
-> 注：本次实现 hands-free = 单段粘贴（停录后一次性粘贴全部）+ 静音 60s 超时兜底。
+### result_window 多屏跟随（2026-07-31 增补）
+
+toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**：
+- **按屏存位置**：key = `window_pos.result@{display_id}`（每屏独立）。Moved 事件经
+  `find_window_display_id`（窗口所在 Tauri Monitor 的逻辑 origin → 匹配
+  CGDisplay::active_displays 找 display_id）分键保存。
+- **show 时取鼠标所在屏坐标**：`find_monitor_at_mouse`（CGEvent 鼠标位置 → CGDisplay
+  bounds 命中 → display_id + bounds）→ load 该 display_id 坐标 → set_position。
+  该屏没存过 → 用 bounds 算顶部居中 + 存。
+- **热插拔不管**：display_id 变 → key 对不上 → fallback 默认顶部居中（符合预期）。
+- **仅首次显示 reposition**（e2e 修复）：`reposition_to_mouse_monitor` 只在窗口**从不可见到
+  可见**（`is_visible() == false`）时执行。同一会话的后续 show（listening→润色中→最终文本）
+  保持位置不动——避免录音期间鼠标移到副屏，结束时窗口跳走。窗口 hide 后下次 show 重新定位。
+- **不变量**：clipboard_window 不受影响（仍用单值 save/load_window_position）；
+  instant_overlay 不变（底部居中，复用同一套 monitor helper）。
+- **坐标系**：CGEvent/CGDisplay bounds = 逻辑坐标（不除 scale）；Tauri Monitor/
+  outer_position = 物理像素（÷ scale 转逻辑）。display_id 经 CGDisplay::active_displays 拿。
+
+> 注：本次实现 hands-free = 单段粘贴（停录后一次性粘贴全部）+ 静音 10s 超时兜底。
 > finalize_after_stop / do_paste / PasteDone **无需加 hands-free 分支**——复用 instant
 > 路径（INSTANT_MODE 已覆盖浮窗 + 跳 result_window）。VAD 自动段粘贴推迟（见上文）。
 
@@ -168,10 +196,12 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 
 - ✅ **PttFsm 6 态状态机**（ptt.rs 重写）：Idle / Pending / ShortPressWait /
   PttRecording / ToggleInWait / HandsFreeInWait。常驻 manager 线程局部变量。
+  FSM 逻辑抽为纯方法 `next_on_keydown` / `next_on_keyup` / `next_on_timeout`
+  （返回 `(PttFsm, FsmAction)`，不依赖 Coordinator），便于单测。
 - ✅ **TAP_TIMEOUT_MS = 260**（常量，后续可开放为配置项）。
 - ✅ **超时驱动**（`drive_timeouts`）：manager 循环每 ~10ms 检查计时态超时，触发
   Pending→PttRecording（长按）/ ShortPressWait→hands-free（短按确认）/
-  ToggleInWait→toggle 结束 / HandsFreeInWait→hands_free_stop。
+  ToggleInWait→toggle 结束（长按）/ HandsFreeInWait→hands_free_stop。
 - ✅ **RECORDING_MODE AtomicU8**（mod.rs）：`recording_mode()` pub fn 供 ptt.rs 读，
   `set_recording_mode()` 在命令分支设值（Toggle Idle→1, InstantStart→2,
   HandsFreeStart→3, 各 Idle 回归点→0）。
@@ -184,7 +214,9 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 - ✅ **db.sql seed**：`ptt_key` 从 `AltRight` 改 `OptRight`（handy-keys 语义对齐）。
   注：未升 schema version（AltRight 仍可解析，旧库无需清重建）。
 - ✅ **pipeline.rs**：`VadSegmentedPipeline::silence_duration()` pub(crate) getter。
-- ✅ **测试**：8 个新测试（PttFsm 初始态 + timed_out 边界 + RECORDING_MODE set/read）。
+- ✅ **测试**：11 ptt 测试（PttFsm 初始态 + timed_out 边界 + toggle 单击立即润色/
+  长按结束/长按 keyup noop + 真 idle 双击启动 + FsmAction eq）+ 2 RECORDING_MODE 测试
+  + 4 window_position 多屏测试（per-display save/load round trip + key 隔离 + 非 macOS None）。
 
 ### 偏差与决策
 
@@ -199,8 +231,15 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
    被阻塞（如长 GC）导致 drive_timeouts 未及时执行，keyup 落在 Pending 且超时——
    防御性当作 PTT stop（instant_stop），避免状态卡死。
 
-3. **ToggleInWait keyup 超时后的处理**：drive_timeouts 超时已发 toggle() 结束录音，
-   keyup 仅复位 FSM 到 Idle（不重复发命令）。与 spec 一致（`t2 超时 → toggle() → Idle`）。
+3. **toggle 录音中不识别双击（2026-07-31 e2e 后定稿，回退）**：曾两轮迭代——
+   ① 初版：toggle 中短按 keyup 立即 `polish_now()` + 回 Idle（双击 = 两次单击 = 两次润色）。
+   ② 中间版：新增 `ToggleShortWait` 态等双击判定（短按不立即润色，260ms 内再 keydown
+   = 双击结束），但 e2e 实测 260ms 窗口手感不佳——双击难稳定触发，单击润色反而被延迟。
+   ③ 最终版（当前）：**回退到不识别双击**——toggle 中短按 keyup 立即润色 + 回 Idle，
+   长按（≥260ms）结束录音。移除 `ToggleShortWait` 态，FSM 回到 6 态。双击的实际效果
+   是两次润色（录音继续），用户用长按结束。回归测试：
+   `toggle_short_click_polishes_immediately` / `toggle_long_press_ends_recording` /
+   `toggle_long_press_keyup_after_timeout_noop`。
 
 4. **VAD 自动段粘贴推迟**：spec 原设想 hands-free 每段自动粘贴，实现路径复杂
    （paste-and-continue 机制）+ 风险大。改为单段粘贴 + 静音超时兜底。待手感验证后
@@ -214,5 +253,5 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 
 - `cargo build -p octopus-desktop --features embedded` ✅ 0 error 0 warning
 - `cargo build -p octopus-desktop --features embedded,cloud,vault` ✅
-- `cargo test -p octopus-desktop --features embedded` ✅ 474 passed (含 8 个新测试)
+- `cargo test -p octopus-desktop --features embedded` ✅ 488 passed（含 11 ptt + 2 RECORDING_MODE + 4 window_position 多屏测试）
 - ⏳ e2e 手动验证（待用户在桌面应用实测三模式交互）

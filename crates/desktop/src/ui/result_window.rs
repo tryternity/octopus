@@ -61,11 +61,11 @@ pub fn create_result_window(app: &tauri::AppHandle) {
                 }
             });
 
-            // 移动结束后保存位置
+            // 移动结束后保存位置（按屏存：每屏独立记位置，show 时取鼠标所在屏的坐标）
             let win_clone = window.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Moved(_) = event {
-                    crate::ui::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+                    crate::ui::window_position::save_current_position_per_display(&win_clone, WINDOW_LABEL);
                 }
             });
 
@@ -240,6 +240,13 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         }
     };
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        // 多屏跟随：仅在窗口**首次显示**（从不可见到可见）时定位到鼠标所在显示器。
+        // 同一会话的后续 show（listening→润色中→最终文本）保持位置不动——避免录音期间
+        // 鼠标移到副屏，结束时窗口跳走（spec 2026-07-31 e2e 修复）。
+        let was_visible = window.is_visible().unwrap_or(false);
+        if !was_visible {
+            reposition_to_mouse_monitor(&window);
+        }
         // 物理窗口无条件 show：冷启动首启 webview 可能尚未 ready（走 pending 分支），此前
         // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
         // （macOS 可见窗口的 webview 优先首绘，亦加速 ready）；文本仍等 ready 后由
@@ -249,6 +256,36 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
             // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
             let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
         }
+    }
+}
+
+/// show 前把窗口定位到鼠标所在显示器（spec 2026-07-31 单键三模式 result_window 多屏跟随）。
+///
+/// 每屏独立存位置（`window_pos.{label}@{display_id}`）：
+/// - 鼠标所在屏有保存坐标 → set_position 到该坐标。
+/// - 无保存坐标 → 该屏顶部居中（用屏 bounds 算）+ 存下来（下次拖拽会覆盖）。
+/// - 无鼠标 / 找不到屏（非 macOS）→ no-op，沿用当前位置。
+fn reposition_to_mouse_monitor(window: &tauri::WebviewWindow) {
+    use crate::ui::window_position::{
+        find_monitor_at_mouse, get_mouse_location, load_window_position_for_display,
+        save_window_position_for_display,
+    };
+    let mouse = get_mouse_location();
+    let Some((display_id, ox, oy, w, _h)) = find_monitor_at_mouse(mouse) else {
+        // 无鼠标 / 找不到屏：沿用当前位置（兼容非 macOS / 无 CGDisplay 权限）
+        return;
+    };
+    if let Some((x, y)) = load_window_position_for_display(WINDOW_LABEL, display_id) {
+        // 该屏有保存坐标 → 用它
+        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        debug!("[result_window] reposition to saved {}@{}: {},{}", WINDOW_LABEL, display_id, x, y);
+    } else {
+        // 无保存 → 该屏顶部居中（与 create 时 primary fallback 一致）+ 存
+        let x = ox + (w - RESULT_WIDTH) / 2.0;
+        let y = oy + 80.0;
+        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        save_window_position_for_display(WINDOW_LABEL, display_id, x, y);
+        debug!("[result_window] reposition to default top-center on display {}: {},{}", display_id, x, y);
     }
 }
 
