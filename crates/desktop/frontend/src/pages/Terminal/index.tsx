@@ -55,7 +55,7 @@ function loadLayout(): LayoutMode {
 let nextTabId = 1;
 function makeTab(cwd?: string, pendingCommand?: string): Tab {
   nextTabId += 1;
-  return { id: nextTabId, cwd, trackedCwd: null, pendingCommand, ptyId: null };
+  return { id: nextTabId, cwd, trackedCwd: cwd ?? null, pendingCommand, ptyId: null };
 }
 
 export default function Terminal() {
@@ -141,13 +141,15 @@ export default function Terminal() {
     };
   }, [addTab]);
 
-  // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd
+  // 读 URL query 的 cwd（窗口首次打开时 Rust 注入）→ 设为首个 tab 的 cwd + trackedCwd
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const cwd = params.get("cwd");
     if (cwd) {
       setTabs((prev) =>
-        prev.map((tb, i) => (i === 0 ? { ...tb, cwd: cwd ?? undefined } : tb)),
+        prev.map((tb, i) =>
+          i === 0 ? { ...tb, cwd: cwd ?? undefined, trackedCwd: cwd } : tb,
+        ),
       );
     }
   }, []);
