@@ -123,9 +123,11 @@ listen<string>("paste-text", (e) => {
 
 1. 外部 app 粘贴路径**完全不变**（cached_pid 有值走原 dispatch）
 2. clipboard 粘贴路径（clipboard_window 双击粘贴）同样受影响——前台是 octopus webview
-   时也走 emit。但 clipboard_window 是浮窗，通常前台是外部 app，暂可不改（后续验证）
+   时也走 emit。**e2e 验证通过（2026-07-31）**：clipboard_window 的 self-webview 场景正常。
 3. terminal 直写 PTY 不经剪贴板（文本不污染用户剪贴板）——但 ASR 路径已写剪贴板
    （clipboard_history），此处只是注入方式不同，不影响历史记录
+4. **terminal 多 tab**：ASR 回写活跃 tab 的 PTY。**e2e 验证通过（2026-07-31）**：多 tab
+   切换 + 回写正常。
 
 ## 边界
 
