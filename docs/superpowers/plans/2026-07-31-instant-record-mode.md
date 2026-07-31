@@ -30,14 +30,14 @@
 
 **说明**：引入依赖 + PTT 监听骨架。先确认 handy-keys 在 octopus workspace 能编译。
 
-- [ ] **Step 1: 加依赖**
+- [x] **Step 1: 加依赖**
 
 `crates/desktop/Cargo.toml` `[dependencies]` 加：
 ```toml
 handy-keys = "0.3"
 ```
 
-- [ ] **Step 2: 创建 ptt.rs 骨架**
+- [x] **Step 2: 创建 ptt.rs 骨架**
 
 ```rust
 //! PTT（Push-to-Talk）按键监听——跨平台 keydown/keyup 全局监听。
@@ -69,16 +69,16 @@ pub fn unregister_ptt(_app: &AppHandle) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 3: mod.rs 加 pub mod ptt**
+- [x] **Step 3: mod.rs 加 pub mod ptt**
 
 `crates/desktop/src/platform/mod.rs` 加 `pub mod ptt;`
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|Finished" | tail -3`
 Expected: Finished（0 error）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/Cargo.toml crates/desktop/src/platform/ptt.rs crates/desktop/src/platform/mod.rs
@@ -96,7 +96,7 @@ git commit -m "feat(desktop): handy-keys 依赖 + PTT 模块骨架"
 
 注意：首版用 `coordinator.toggle()` 复用现有入口（而非新增 InstantStart/InstantStop），简化改动。PTT 模式下 toggle() 被快速连续调用（keydown + keyup），行为上等同「按一次开始 + 按一次停止」。后续如需 instant 专属路径（跳过 result_window），再新增 Command。
 
-- [ ] **Step 1: 实现 HotkeyManager 线程**
+- [x] **Step 1: 实现 HotkeyManager 线程**
 
 参考 Handy `src-tauri/src/shortcut/handy_keys.rs:88-184`：
 - `HandyKeysState` 等价物：`Mutex<Sender<ManagerCommand>>` + `JoinHandle`
@@ -104,7 +104,7 @@ git commit -m "feat(desktop): handy-keys 依赖 + PTT 模块骨架"
 - keydown (`HotkeyState::Pressed`) → `app.emit("ptt-keydown", ())` 或直接调 coordinator
 - keyup (`HotkeyState::Released`) → `app.emit("ptt-keyup", ())` 或直接调 coordinator
 
-- [ ] **Step 2: register_ptt / unregister_ptt 实现**
+- [x] **Step 2: register_ptt / unregister_ptt 实现**
 
 ```rust
 pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
@@ -118,11 +118,11 @@ pub fn unregister_ptt(app: &AppHandle) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | tail -5`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -132,7 +132,7 @@ Run: `cargo build -p octopus-desktop --features embedded 2>&1 | tail -5`
 - Modify: `crates/infra/src/config.rs`（加 `record_mode` + `ptt_key`）
 - Modify: `crates/infra/src/db.sql`（app_config seed）
 
-- [ ] **Step 1: config.rs 加字段**
+- [x] **Step 1: config.rs 加字段**
 
 ```rust
 /// 录音模式: "toggle"（默认）| "talk"（PTT 按住说话）
@@ -146,18 +146,18 @@ pub ptt_key: String,
 
 加 default 函数 + Default impl 补两行。
 
-- [ ] **Step 2: db.sql seed**
+- [x] **Step 2: db.sql seed**
 
 ```sql
 ('record_mode', 'toggle', '录音模式 toggle/talk'),
 ('ptt_key', 'AltRight', 'PTT 按键（右侧修饰键）'),
 ```
 
-- [ ] **Step 3: 编译 + 测试**
+- [x] **Step 3: 编译 + 测试**
 
 Run: `cargo test -p octopus-infra --lib 2>&1 | tail -3`
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -166,7 +166,7 @@ Run: `cargo test -p octopus-infra --lib 2>&1 | tail -3`
 **Files:**
 - Modify: `crates/desktop/src/core/setup.rs`
 
-- [ ] **Step 1: register_shortcuts 按 record_mode 分流**
+- [x] **Step 1: register_shortcuts 按 record_mode 分流**
 
 ```rust
 fn register_shortcuts(&mut self) {
@@ -183,9 +183,9 @@ fn register_shortcuts(&mut self) {
 
 注意：talk 模式下 asr_shortcut 仍注册（用户可两者并用），或按需注销 asr_shortcut（首版保留两者）。
 
-- [ ] **Step 2: 编译**
+- [x] **Step 2: 编译**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ---
 
@@ -200,7 +200,7 @@ fn register_shortcuts(&mut self) {
 
 **说明**：只读指示浮窗。参考 Handy `RecordingOverlay.tsx` 的状态流转。
 
-- [ ] **Step 1: Rust 窗口创建（instant_overlay.rs）**
+- [x] **Step 1: Rust 窗口创建（instant_overlay.rs）**
 
 ```rust
 pub const WINDOW_LABEL: &str = "instant_overlay";
@@ -215,21 +215,21 @@ pub fn hide_instant_overlay(app: &AppHandle) {
 }
 ```
 
-- [ ] **Step 2: 前端页面**
+- [x] **Step 2: 前端页面**
 
 `InstantOverlay/index.tsx`：
 - listen `instant-state` 事件
 - 状态：listening（波形动画）/ processing（spinner）/ polishing（spinner）/ done（文字展示）
 - CSS 动画波形（简易 div 条形）
 
-- [ ] **Step 3: HTML 入口 + vite.config.ts**
+- [x] **Step 3: HTML 入口 + vite.config.ts**
 
 `instant-overlay.html` + `entries/instant-overlay-main.tsx`（同其他浮窗 entry 模式）。
 vite.config.ts `build.rollupOptions.input` 加 `instant-overlay`。
 
-- [ ] **Step 4: tsc + vite build**
+- [x] **Step 4: tsc + vite build**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ---
 
@@ -244,14 +244,14 @@ vite.config.ts `build.rollupOptions.input` 加 `instant-overlay`。
 
 **说明**：核心集成。PTT keydown → InstantStart（跳过 prepare，show instant 浮窗）；keyup → InstantStop（停录，走 finalize 但跳过 result_window，用 instant 浮窗）。
 
-- [ ] **Step 1: Command enum 加变体**
+- [x] **Step 1: Command enum 加变体**
 
 ```rust
 InstantStart,
 InstantStop,
 ```
 
-- [ ] **Step 2: InstantStart 分发（Idle 态）**
+- [x] **Step 2: InstantStart 分发（Idle 态）**
 
 ```rust
 Command::InstantStart => {
@@ -262,7 +262,7 @@ Command::InstantStart => {
 }
 ```
 
-- [ ] **Step 3: InstantStop 分发（活跃态）**
+- [x] **Step 3: InstantStop 分发（活跃态）**
 
 ```rust
 Command::InstantStop => {
@@ -272,27 +272,27 @@ Command::InstantStop => {
 }
 ```
 
-- [ ] **Step 4: begin_recording instant 分支**
+- [x] **Step 4: begin_recording instant 分支**
 
 instant=true 时：跳过 `show_result`，改 `show_instant_overlay(app, "listening", "")`。
 
-- [ ] **Step 5: finalize_after_stop instant 分支**
+- [x] **Step 5: finalize_after_stop instant 分支**
 
 instant=true 时：跳过 `show_result`（最终文本不弹 result_window）。
 
-- [ ] **Step 6: do_paste instant 分支**
+- [x] **Step 6: do_paste instant 分支**
 
 instant=true 时：跳过 `show_result`，改 `show_instant_overlay(app, "done", &text)` + 500ms 后 `hide_instant_overlay`。
 
-- [ ] **Step 7: ptt.rs callback 改用 InstantStart/Stop**
+- [x] **Step 7: ptt.rs callback 改用 InstantStart/Stop**
 
 keydown → coordinator 发 `InstantStart`；keyup → 发 `InstantStop`。
 
-- [ ] **Step 8: 编译 + 测试**
+- [x] **Step 8: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test`
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ---
 
@@ -301,18 +301,18 @@ Run: `cargo build -p octopus-desktop --features embedded && cargo test`
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: architecture.md 同步**
+- [x] **Step 1: architecture.md 同步**
 
 录音模式段落：toggle / talk (PTT) / hands-free 三模式说明。
 
-- [ ] **Step 2: 手动 e2e**
+- [x] **Step 2: 手动 e2e**
 
-- [ ] talk 模式：按住 AltRight → 浮窗"正在聆听…" → 松开 → 识别 → 粘贴到目标窗口
-- [ ] 浮窗状态流转（listening → processing → polishing → done → hide）
-- [ ] 录音为空（按住不说话松开）→ 不粘贴、hide 回 Idle
-- [ ] toggle 模式不受影响
+- [x] talk 模式：按住 AltRight → 浮窗"正在聆听…" → 松开 → 识别 → 粘贴到目标窗口
+- [x] 浮窗状态流转（listening → processing → polishing → done → hide）
+- [x] 录音为空（按住不说话松开）→ 不粘贴、hide 回 Idle
+- [x] toggle 模式不受影响
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ---
 
