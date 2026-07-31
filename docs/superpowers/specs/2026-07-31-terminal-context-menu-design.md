@@ -15,8 +15,8 @@
 ## 范围
 
 ### 1. 终端内容区右键（核心）
-- **复制**：有选中时 `term.getSelection()` → 系统剪贴板（`navigator.clipboard.writeText`）。无选中时禁用。
-- **粘贴**：`navigator.clipboard.readText()` → `term.paste(text)`。
+- **复制**：有选中时 `term.getSelection()` → 系统剪贴板。无选中时禁用。**WKWebView 的 `navigator.clipboard` 不可靠**（e2e 验证），实际用「临时 textarea + `document.execCommand('copy')`」兜底。
+- **粘贴**：`document.execCommand('paste')` → xterm 内置 textarea 聚焦后触发，xterm 监听 `paste` 事件写入 PTY。`navigator.clipboard.readText()` 在 WKWebView 受限。
 - **全选**：`term.select(0, 0, term.cols, term.rows)`（选中当前可见 buffer）。
 - **清屏**：`term.clear()`（清空 scrollback，保留当前行）。
 - 右键时如果有选中，不丢失选中（先弹菜单，不先取消选区）。
@@ -86,14 +86,16 @@ onContextMenu={(e) => {
 1. 终端右键不取消已有选区（先弹菜单）
 2. 无选中时「复制」禁用（disabled）
 3. 菜单点击外部关闭
-4. macOS WKWebView 的 `navigator.clipboard` 可用（WKWebView 支持 Clipboard API）
+4. **剪贴板一律走 `document.execCommand`**（WKWebView `navigator.clipboard` 不可靠，e2e 验证失败）
+5. tab 改名复用 `forceEditing` prop（不依赖 `window.prompt`，后者在 WKWebView 不工作）
 
 ## 测试策略
 
 - **ContextMenu 组件**：纯 UI，靠 e2e 冒烟
 - **菜单项逻辑**：复制/粘贴/清屏调 xterm API，靠 e2e（右键 → 点复制 → 系统剪贴板验证）
 
-## 风险
+## 风险（已 e2e 验证，2026-07-31）
 
-1. **WKWebView clipboard 权限**：`navigator.clipboard.readText()` 可能需要 HTTPS 或 user gesture。contextmenu 事件算 user gesture，应可用。如果不行，fallback 到 `document.execCommand('paste')` 或 Tauri clipboard plugin。
-2. **xterm selectAll**：`term.select()` 的参数语义（起点 + 行数/列数）需确认 xterm 6 的 API。
+1. **WKWebView clipboard 权限**：~~`navigator.clipboard.readText()` 可能需要 HTTPS 或 user gesture~~ → **实测不可靠**，复制/粘贴一律改走 `document.execCommand('copy'/'paste')`（e2e 通过）。复制需临时 textarea 聚焦，粘贴依赖 xterm 内置 textarea 处于聚焦态。
+2. **xterm selectAll**：`term.select(0, 0, term.cols, term.rows)` 已验证可用（xterm 6）。
+3. **菜单点击外部不关闭**：contextmenu 事件不触发 mousedown/click，需在 `useEffect` 内立即注册监听（不延迟），且同时监听 mousedown + click + contextmenu + wheel + Escape（capture 阶段）。已修复（commit `3cfaddf6`）。
