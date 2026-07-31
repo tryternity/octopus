@@ -335,6 +335,11 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
     Ok(result)
 }
 
+/// AI（LLM 润色/摘要/解释）操作超时秒数。auto_translate 不受此限（长文本本地翻译）。
+/// spec 2026-07-31-actionbar-execute-paths-unification：超时从前端移到后端，
+/// 避免 LLM 线程泄漏（前端超时只丢 UI 结果，后端线程仍跑）。
+const AI_TIMEOUT_SECS: u64 = 10;
+
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
 /// Quick Execute（全局快捷键）和 ActionBar 路径共用——action_bar_show_result_internal
@@ -428,14 +433,22 @@ pub(crate) async fn execute_action_bar_inner(item_id: i64, text: String, app: &A
             let enriched_text = build_enriched_text(&text);
             let prompt = resolve_prompt_reference(&item.action_data);
             let config_clone = llm_config.clone();
-            // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime
-            let result = tokio::task::spawn_blocking(move || {
+            // LLM 调用是同步阻塞 HTTP——必须 spawn_blocking 防卡 tokio runtime。
+            // tokio::time::timeout 包裹：超时返回 Err（auto_translate 路径上方已 return，不进这里）。
+            // 注意：超时后 spawn_blocking 线程无法立即中断（同步 reqwest），会继续跑到结束才回收——
+            // 但前端立即收到 Err 释放 UI，比原「前端超时 + 后端永远跑」改进。spec 风险 #3。
+            let llm_future = tokio::task::spawn_blocking(move || {
                 octopus_llm::chat_text_with_prompt(&prompt, &enriched_text, &config_clone, None)
-            }).await
-                .map_err(|e| e2s_ctx("LLM 线程异常: {}", e))?
-                .map_err(e2s)?;
-            action_bar_show_result(result, String::new(), item.title, app.clone(), true);
-            Ok(true)
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(AI_TIMEOUT_SECS), llm_future).await {
+                Ok(Ok(res)) => {
+                    let result = res.map_err(e2s)?;
+                    action_bar_show_result(result, String::new(), item.title, app.clone(), true);
+                    Ok(true)
+                }
+                Ok(Err(e)) => Err(e2s_ctx("LLM 线程异常: {}", e)),
+                Err(_elapsed) => Err(format!("AI 操作超时（{}秒）", AI_TIMEOUT_SECS)),
+            }
         }
         "url" => {
             let url = if item.action_data.is_empty() {
