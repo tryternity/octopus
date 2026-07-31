@@ -214,6 +214,10 @@ pub(crate) fn dispatch_tick(
             }
             // hands-free 静音超时：常驻录音忘了关 → 自动停（spec 2026-07-31）。
             if let Some(sil) = hf_silence {
+                // 诊断：hands-free 模式下每 ~2s 打一次 silence 值，确认是否在增长
+                if sil > 0.0 && (sil as i64) % 2 == 0 && (sil - sil.floor()) < 0.15 {
+                    log::info!("[hands-free] VadSegmented silence={:.1}s (timeout={}s)", sil, HANDS_FREE_SILENCE_TIMEOUT_SECS);
+                }
                 if sil >= HANDS_FREE_SILENCE_TIMEOUT_SECS {
                     warn!(
                         "[hands-free] silence {:.1}s ≥ {}s, auto-stop",
