@@ -225,14 +225,14 @@ export function useTerminalSession(opts: {
           if (event.isComposing || event.keyCode === 229) return false;
 
           // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
-          if (isFindShortcut(event, { isMac: IS_MAC })) {
+          if (isFindShortcut(event)) {
             event.preventDefault();
             if (event.type === "keydown") onSearchOpenRef.current?.();
             return false;
           }
 
           // Cmd+T（Mac）/ Ctrl+T（其他）→ 新建终端 tab
-          if (isNewTabShortcut(event, { isMac: IS_MAC })) {
+          if (isNewTabShortcut(event)) {
             event.preventDefault();
             if (event.type === "keydown") onNewTabRef.current?.();
             return false;
