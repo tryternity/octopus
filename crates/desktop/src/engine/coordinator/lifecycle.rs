@@ -365,7 +365,7 @@ pub(crate) fn finalize_after_stop(
         info!("Toggle stop: polish_pending=true, entering StoppingPolish");
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
         if INSTANT_MODE.load(Ordering::Relaxed) {
-            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+            crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
             crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
         }
@@ -393,7 +393,7 @@ pub(crate) fn finalize_after_stop(
         *stage = Stage::Idle;
         // instant 空结果：隐藏 instant 浮窗 + 复位标志。
         if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-            crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+            crate::ui::result_window::hide_result(app_handle);
         }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
@@ -459,7 +459,7 @@ pub(crate) fn finalize_cloud(
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
         if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-            crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+            crate::ui::result_window::hide_result(app_handle);
         }
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
@@ -485,7 +485,7 @@ pub(crate) fn finalize_cloud(
         info!("CloudStreaming finalize: polish_pending=true, entering StoppingPolish");
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
         if INSTANT_MODE.load(Ordering::Relaxed) {
-            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+            crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
             crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
         }

@@ -57,8 +57,8 @@ pub(crate) static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Instant（talk/PTT）模式激活标志——InstantStart 时 set(true)，会话结束回 Idle 时 reset(false)。
 ///
-/// 作用：让 begin_recording / finalize_after_stop / do_paste 三处跳过 result_window，
-/// 改用 instant_overlay 浮窗（只读、不抢焦点、底部居中）。同 TRANSLATION_ACTIVE 的 static
+/// 作用：让 begin_recording / finalize_after_stop / do_paste 三处走 result_window 的
+/// instant 精简模式（只读、不抢焦点、底部居中）。同 TRANSLATION_ACTIVE 的 static
 /// 模式——避免给 begin_recording / finalize_after_stop / do_paste 的众多调用点逐一加参数。
 ///
 /// 生命周期：InstantStart → set(true) → begin_recording(跳 show_result) → ... →
@@ -551,7 +551,7 @@ fn build_coordinator_loop(
                         stage = Stage::Idle;
                         // instant 会话结束：隐藏 instant 浮窗 + 复位标志（下次 Toggle/InstantStart 默认走 result_window）。
                         if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-                            crate::ui::instant_overlay::hide_instant_overlay(&app_handle);
+                            crate::ui::result_window::hide_result(&app_handle);
                         } else {
                             // 非 instant 才 clear_result（clear 会 show+hide result_window，
                             // instant 模式从未 show result_window，调 clear 反而把它弹出来）

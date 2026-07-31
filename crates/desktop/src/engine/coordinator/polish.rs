@@ -58,7 +58,7 @@ pub(crate) fn start_final_polish_or_paste(
             // 进入异步润色状态
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
             if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+                crate::ui::result_window::show_instant(app_handle, "polishing", "");
             } else {
                 crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
             }

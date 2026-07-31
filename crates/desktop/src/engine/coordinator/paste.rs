@@ -90,7 +90,7 @@ pub(crate) fn do_paste(
     let text_to_paste_owned: String;
     let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
         if INSTANT_MODE.load(Ordering::Relaxed) {
-            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+            crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
             crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...");
         }
@@ -124,7 +124,7 @@ pub(crate) fn do_paste(
     // instant 模式：用 instant 浮窗 "done" 态展示最终文本（PasteDone 后 hide）。
     // 非 instant：正常 show_result（用户可编辑结果窗）。
     if INSTANT_MODE.load(Ordering::Relaxed) {
-        crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", text_to_paste);
+        crate::ui::result_window::show_instant(app_handle, "done", text_to_paste);
     } else {
         crate::ui::result_window::show_result(app_handle, text_to_paste);
     }

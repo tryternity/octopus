@@ -84,7 +84,7 @@ pub(crate) fn handle_cancel(
     }
     *stage = Stage::Idle;
     if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+        crate::ui::result_window::hide_result(app_handle);
     }
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
@@ -250,7 +250,7 @@ pub(crate) fn handle_discard(
 
     *stage = Stage::Idle;
     if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
+        crate::ui::result_window::hide_result(app_handle);
     }
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);

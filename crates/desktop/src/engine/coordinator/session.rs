@@ -28,7 +28,7 @@ use super::tick::start_cloud_streaming_tick_thread;
 /// 保持与 talk 模式「只看状态、结果粘贴后即隐藏」的语义一致。
 fn show_listening_start(app_handle: &tauri::AppHandle, show_text: &str, is_continuation: bool) {
     if INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-        crate::ui::instant_overlay::show_instant_overlay(app_handle, "listening", "");
+        crate::ui::result_window::show_instant(app_handle, "listening", "");
         return;
     }
     if is_continuation {
@@ -68,7 +68,7 @@ pub(crate) fn begin_recording(
         let _ = app_handle.emit("mic-error", "麦克风不可用，请在系统设置中授权麦克风权限");
         if INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
             // instant 模式：错误也走 instant 浮窗（done 态展示提示文字）。
-            crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", "麦克风不可用");
+            crate::ui::result_window::show_instant(app_handle, "done", "麦克风不可用");
         } else {
             crate::ui::result_window::show_result(app_handle, "");
         }
