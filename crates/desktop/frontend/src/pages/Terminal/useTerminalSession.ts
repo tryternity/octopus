@@ -159,39 +159,10 @@ export function useTerminalSession(opts: {
 
     // 2. openPty + 接线 onData/onResize
     let disposed = false;
-    // xterm write 反压：write(data, callback) 的 callback 在解析完触发。
-    // 持续高速输出（yes）时 xterm 解析跟不上，callback 积压。
-    // 用 callback 追踪 xterm 是否在消化——积压时丢弃中间块只保留最新块，
-    // 避免 Ctrl+C 后 xterm 还在慢慢消化几 MB 积压导致 prompt 不显示。
-    let writeBusy = false;
-    let pendingChunk: Uint8Array | null = null;
-    const flushWrite = () => {
-      if (writeBusy || !pendingChunk) return;
-      writeBusy = true;
-      const chunk = pendingChunk;
-      pendingChunk = null;
-      term.write(chunk, () => {
-        writeBusy = false;
-        // 还有积压 → 继续消化（但不再累积新的，因为 on_data 会持续更新 pendingChunk）
-        if (pendingChunk) {
-          // 微任务调度，避免递归爆栈
-          Promise.resolve().then(flushWrite);
-        }
-      });
-    };
-
     openPty(cols, rows, {
       onData: (bytes) => {
-        if (writeBusy) {
-          // xterm 在消化上一块 → 新数据暂存为 pending（覆盖式——丢中间保最新）
-          pendingChunk = bytes;
-        } else {
-          term.write(bytes, () => {
-            writeBusy = false;
-            if (pendingChunk) Promise.resolve().then(flushWrite);
-          });
-          writeBusy = true;
-        }
+        // PTY 输出 → xterm 渲染
+        term.write(bytes);
       },
       onExit: (code) => {
         if (disposed) return;
