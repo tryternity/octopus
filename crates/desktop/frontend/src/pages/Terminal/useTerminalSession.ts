@@ -214,17 +214,6 @@ export function useTerminalSession(opts: {
             return false;
           }
 
-          // Ctrl+C：显式直接发 \x03 到 PTY（绕过 xterm 按键转换，巨量输出时更及时），
-          // 但 return true 让 xterm 也处理（恢复 UI 状态——滚动到底部等）。
-          // 跨平台都是 Ctrl+C（macOS Cmd+C 是复制，不会进这个分支）。
-          if (
-            event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey &&
-            (event.key === "c" || event.key === "C")
-          ) {
-            if (event.type === "keydown") void pty.write("\x03");
-            return true;
-          }
-
           // 其余（Ctrl+A/C/...、Cmd+C/V 复制粘贴）交 xterm 默认
           return true;
         });
