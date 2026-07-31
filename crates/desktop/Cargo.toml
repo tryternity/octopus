@@ -127,6 +127,7 @@ percent-encoding = "2"
 
 # Extension Package zip 解压
 zip = "2"
+handy-keys = "0.3.2"
 
 [features]
 default = ["embedded", "vault"]
