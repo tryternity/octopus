@@ -174,6 +174,7 @@ export default function Terminal() {
             cwd={tab.cwd}
             active={tab.id === activeId}
             pendingCommand={tab.pendingCommand}
+            onNewTab={() => addTab()}
             onConsumeCommand={() => {
               setTabs((prev) =>
                 prev.map((tb) =>

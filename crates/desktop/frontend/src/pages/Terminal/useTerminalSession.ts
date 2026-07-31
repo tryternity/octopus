@@ -27,7 +27,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
-import { readlineSequence, isShiftEnter, isFindShortcut } from "./keymap";
+import { readlineSequence, isShiftEnter, isFindShortcut, isNewTabShortcut } from "./keymap";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
 const IS_MAC =
@@ -111,9 +111,11 @@ export function useTerminalSession(opts: {
   active?: boolean;
   /** Cmd+F 触发时回调（TerminalPane 打开搜索栏）。 */
   onSearchOpen?: () => void;
+  /** Cmd/Ctrl+T 触发时回调（新建 tab）。 */
+  onNewTab?: () => void;
   onExit?: (code: number) => void;
 }): TerminalSession {
-  const { container, cwd, onExit, onSearchOpen } = opts;
+  const { container, cwd, onExit, onSearchOpen, onNewTab } = opts;
   const active = opts.active ?? true;
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
@@ -212,6 +214,13 @@ export function useTerminalSession(opts: {
           if (isFindShortcut(event, { isMac: IS_MAC })) {
             event.preventDefault();
             if (event.type === "keydown") onSearchOpen?.();
+            return false;
+          }
+
+          // Cmd+T（Mac）/ Ctrl+T（其他）→ 新建终端 tab
+          if (isNewTabShortcut(event, { isMac: IS_MAC })) {
+            event.preventDefault();
+            if (event.type === "keydown") onNewTab?.();
             return false;
           }
 

@@ -109,3 +109,17 @@ export function isFindShortcut(
   if (opts.isMac && event.ctrlKey) return false; // Mac 上 Cmd 不含 Ctrl
   return event.key === "f" || event.code === "KeyF";
 }
+
+/**
+ * Cmd+T（macOS）/ Ctrl+T（其他）→ 新建终端 tab。
+ * 与 isFindShortcut 同模式：纯 Cmd/Ctrl+T，无 Alt/Shift 干扰。
+ */
+export function isNewTabShortcut(
+  event: TerminalKeyEvent,
+  opts: PlatformOpts,
+): boolean {
+  const mod = opts.isMac ? event.metaKey : event.ctrlKey;
+  if (!mod || event.altKey || event.shiftKey) return false;
+  if (opts.isMac && event.ctrlKey) return false;
+  return event.key === "t" || event.code === "KeyT";
+}
