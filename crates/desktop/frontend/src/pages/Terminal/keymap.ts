@@ -94,3 +94,18 @@ export function isShiftEnter(event: TerminalKeyEvent): boolean {
     !event.metaKey
   );
 }
+
+/**
+ * Cmd+F（macOS）/ Ctrl+F（其他）→ 触发终端内搜索。
+ * 纯 Cmd/Ctrl+F，无 Alt/Shift 干扰。handler 里 preventDefault + return false
+ * 阻止 WKWebView 默认页面搜索。
+ */
+export function isFindShortcut(
+  event: TerminalKeyEvent,
+  opts: PlatformOpts,
+): boolean {
+  const mod = opts.isMac ? event.metaKey : event.ctrlKey;
+  if (!mod || event.altKey || event.shiftKey) return false;
+  if (opts.isMac && event.ctrlKey) return false; // Mac 上 Cmd 不含 Ctrl
+  return event.key === "f" || event.code === "KeyF";
+}

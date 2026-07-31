@@ -1,16 +1,16 @@
 /**
- * 单个终端面板——挂载 xterm 实例 + PTY session。
+ * 单个终端面板——挂载 xterm 实例 + PTY session + 搜索浮层。
  *
  * 职责：
  * - 调用 useTerminalSession 创建 xterm + PTY
  * - 上报 ptyId 给父组件（用于 agent 状态映射）
  * - 消费 pendingCommand（ActionBar 联动：shell 就绪后写入命令 + 回车）
- *
- * 相对 Terax TerminalPane：去掉 forwardRef/blocks/搜索/cwd 回调（Phase 1 不需要）。
+ * - 终端内搜索（Cmd+F 触发，SearchOverlay 浮层）
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTerminalSession } from "./useTerminalSession";
+import { SearchOverlay } from "./SearchOverlay";
 
 type Props = {
   cwd?: string;
@@ -32,7 +32,13 @@ export function TerminalPane({
   onPtyId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const session = useTerminalSession({ container: containerRef, cwd, active });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const session = useTerminalSession({
+    container: containerRef,
+    cwd,
+    active,
+    onSearchOpen: () => setSearchOpen(true),
+  });
 
   // 上报 ptyId（session 連接成功后变化）
   useEffect(() => {
@@ -49,5 +55,16 @@ export function TerminalPane({
     }
   }, [session.ptyId, pendingCommand, session, onConsumeCommand]);
 
-  return <div ref={containerRef} className="terminal-pane" />;
+  return (
+    <div className="terminal-pane">
+      <div ref={containerRef} className="terminal-pane-canvas" />
+      {searchOpen && active && session.searchAddon && (
+        <SearchOverlay
+          addon={session.searchAddon}
+          onClose={() => setSearchOpen(false)}
+          onFocusTerminal={() => session.focus()}
+        />
+      )}
+    </div>
+  );
 }

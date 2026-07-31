@@ -23,10 +23,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
-import { readlineSequence, isShiftEnter } from "./keymap";
+import { readlineSequence, isShiftEnter, isFindShortcut } from "./keymap";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
 const IS_MAC =
@@ -50,6 +51,8 @@ export type TerminalSession = {
   focus: () => void;
   /** PTY session id（未连接时 null）。 */
   ptyId: number | null;
+  /** SearchAddon 实例（终端内搜索用，未初始化时 null）。 */
+  searchAddon: SearchAddon | null;
 };
 
 /**
@@ -106,12 +109,15 @@ export function useTerminalSession(opts: {
   container: React.RefObject<HTMLDivElement | null>;
   cwd?: string;
   active?: boolean;
+  /** Cmd+F 触发时回调（TerminalPane 打开搜索栏）。 */
+  onSearchOpen?: () => void;
   onExit?: (code: number) => void;
 }): TerminalSession {
-  const { container, cwd, onExit } = opts;
+  const { container, cwd, onExit, onSearchOpen } = opts;
   const active = opts.active ?? true;
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -136,6 +142,9 @@ export function useTerminalSession(opts: {
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
     term.open(el);
     // 首次 fit 拿到 cols/rows 再 openPty（PTY 需要正确初始尺寸）
     fitAddon.fit();
@@ -178,6 +187,13 @@ export function useTerminalSession(opts: {
           // IME 组合中（中文拼音等）：拦截原生 keydown（含提交候选的 Enter），
           // xterm 通过 compositionend 收最终字符串，否则会吞字/重复
           if (event.isComposing || event.keyCode === 229) return false;
+
+          // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
+          if (isFindShortcut(event, { isMac: IS_MAC })) {
+            event.preventDefault();
+            if (event.type === "keydown") onSearchOpen?.();
+            return false;
+          }
 
           // readline 序列（Option/Cmd 导航+删除）——alternate screen 交 TUI 应用
           const isAltScreen = term.buffer.active.type === "alternate";
@@ -276,5 +292,6 @@ export function useTerminalSession(opts: {
       termRef.current?.focus();
     },
     ptyId,
+    searchAddon: searchAddonRef.current,
   };
 }
