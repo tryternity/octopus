@@ -131,23 +131,18 @@ export function TerminalPane({
     if (!active) return;
     let unlisten: (() => void) | null = null;
     const currentLabel = getCurrentWebviewWindow().label;
-    console.log("[TerminalPane] mount paste-text listener, label=", currentLabel, "active=", active);
     listen<string>(
       "paste-text",
       (e) => {
         const s = sessionRef.current;
-        console.log("[TerminalPane] paste-text received, ptyId=", s.ptyId, "len=", e.payload.length);
         if (s.ptyId != null) {
           s.write(e.payload);
-        } else {
-          console.warn("[TerminalPane] ptyId null, cannot write");
         }
       },
       { target: { kind: "WebviewWindow", label: currentLabel } },
     )
       .then((fn) => {
         unlisten = fn;
-        console.log("[TerminalPane] paste-text listener registered OK");
       })
       .catch((err) => console.error("[TerminalPane] paste-text listener failed:", err));
     return () => {
