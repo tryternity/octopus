@@ -36,11 +36,7 @@ struct InstantStatePayload {
 ///
 /// `state`: "listening" | "processing" | "polishing" | "done"
 /// `text`: 实时识别文字或最终文字（listening 期间可空）。
-///
-/// 首次调用时创建窗口（底部居中、透明、不抢焦点），后续调用复用：
-/// 重定位到底部居中（多屏切换兜底）+ show + emit `instant-state`。
 pub fn show_instant_overlay(app: &AppHandle, state: &str, text: &str) {
-    // 不存在则创建（懒创建——toggle 模式下永不创建，节省资源）。
     let win = match app.get_webview_window(WINDOW_LABEL) {
         Some(w) => w,
         None => match build_float_window(app, FloatWindowSpec {
@@ -48,12 +44,9 @@ pub fn show_instant_overlay(app: &AppHandle, state: &str, text: &str) {
             url: "instant-overlay.html",
             title: "Instant",
             inner_size: (OVERLAY_WIDTH, OVERLAY_HEIGHT),
-            // 首次 build 时直接可见（下面会 set_position + emit）。
             visible: true,
             resizable: false,
-            // position 在 build 后用主屏底部居中重算（多屏 / 缩放自适应）。
             position: None,
-            // 不抢焦点：talk 模式下用户正在前台 app 工作，浮窗只做指示。
             focused: Some(false),
             accept_first_mouse: None,
         }) {
@@ -65,12 +58,8 @@ pub fn show_instant_overlay(app: &AppHandle, state: &str, text: &str) {
         },
     };
 
-    // 重定位到主屏底部居中（每次 show 都重算，应对多屏 / 缩放变化）。
     position_bottom_center(app, &win);
-
     let _ = win.show();
-    // 不调 set_focus——instant 浮窗不抢键盘焦点。
-
     let _ = app.emit_to(
         WINDOW_LABEL,
         "instant-state",
@@ -91,37 +80,30 @@ pub fn hide_instant_overlay(app: &AppHandle) {
 /// 把窗口定位到鼠标所在显示器底部居中（逻辑坐标）。
 ///
 /// 用 CGEvent::location() 获取鼠标全局坐标（Quartz 逻辑 points），
-/// 遍历 available_monitors 找到鼠标所在的显示器，在该屏底部居中。
+/// 用 CGDisplay::active_displays() + bounds() 找鼠标所在的显示器
+/// （CoreGraphics 原生逻辑坐标，不除 scale——AGENTS.md 坐标 gotcha）。
 /// 鼠标位置不可用时 fallback 到 primary_monitor。
 fn position_bottom_center(app: &AppHandle, win: &tauri::WebviewWindow) {
-    // 1. 获取鼠标位置（Quartz 逻辑坐标，y 轴向下）
     let mouse = get_mouse_location();
+    log::info!("[instant-overlay] mouse_location={:?}", mouse);
 
-    // 2. 找鼠标所在的显示器；找不到用主屏
-    let monitor = app.available_monitors()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|m| {
-            // 鼠标在显示器物理范围内？
-            let scale = m.scale_factor();
-            let mx_phys = mouse.map(|(mx, _)| mx * scale).unwrap_or(-1.0);
-            let my_phys = mouse.map(|(_, my)| my * scale).unwrap_or(-1.0);
-            let pos = m.position();
-            let size = m.size();
-            mx_phys >= pos.x as f64
-                && mx_phys < (pos.x as f64 + size.width as f64)
-                && my_phys >= pos.y as f64
-                && my_phys < (pos.y as f64 + size.height as f64)
-        })
-        .or_else(|| app.primary_monitor().ok().flatten());
+    // 优先路径：用 CGDisplay::bounds()（原生逻辑坐标）找鼠标所在屏
+    if let Some((origin_x, origin_y, w, h)) = find_monitor_at_mouse(mouse) {
+        log::info!("[instant-overlay] monitor bounds: origin=({},{}) size=({},{})",
+            origin_x, origin_y, w, h);
+        let x = origin_x + (w - OVERLAY_WIDTH) / 2.0;
+        let y = origin_y + h - OVERLAY_HEIGHT - BOTTOM_MARGIN;
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        return;
+    }
 
-    let Some(monitor) = monitor else { return };
+    // fallback：primary_monitor（物理坐标除 scale）
+    log::warn!("[instant-overlay] no monitor found at mouse, fallback to primary");
+    let Some(monitor) = app.primary_monitor().ok().flatten() else { return };
     let scale = monitor.scale_factor();
-    let size = monitor.size();
     let pos = monitor.position();
-    // 逻辑坐标：屏幕宽 / scale - 窗口宽，居中；屏幕高 / scale - 窗口高 - 底部留白。
+    let size = monitor.size();
     let x = (size.width as f64 / scale - OVERLAY_WIDTH) / 2.0;
-    // monitor.position() 是物理坐标（多屏时可能为负），换算到逻辑后加偏移。
     let y = pos.y as f64 / scale + (size.height as f64 / scale - OVERLAY_HEIGHT - BOTTOM_MARGIN);
     let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
 }
@@ -139,5 +121,42 @@ fn get_mouse_location() -> Option<(f64, f64)> {
 
 #[cfg(not(target_os = "macos"))]
 fn get_mouse_location() -> Option<(f64, f64)> {
+    None
+}
+
+/// 遍历所有显示器，找鼠标所在的那个，返回其逻辑 bounds (origin_x, origin_y, width, height)。
+/// 用 CoreGraphics CGDisplay::bounds()（原生逻辑坐标，不需要除 scale）。
+#[cfg(target_os = "macos")]
+fn find_monitor_at_mouse(mouse: Option<(f64, f64)>) -> Option<(f64, f64, f64, f64)> {
+    use core_graphics::display::CGDisplay;
+
+    let (mx, my) = mouse?;
+    let displays = CGDisplay::active_displays().ok()?;
+
+    for display_id in displays {
+        let bounds = CGDisplay::new(display_id).bounds();
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            continue;
+        }
+        // CGDisplay::bounds() 返回 Quartz 逻辑坐标（points），
+        // 与 CGEvent::location() 同坐标系，直接比较。
+        if mx >= bounds.origin.x
+            && mx < bounds.origin.x + bounds.size.width
+            && my >= bounds.origin.y
+            && my < bounds.origin.y + bounds.size.height
+        {
+            return Some((
+                bounds.origin.x,
+                bounds.origin.y,
+                bounds.size.width,
+                bounds.size.height,
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn find_monitor_at_mouse(_mouse: Option<(f64, f64)>) -> Option<(f64, f64, f64, f64)> {
     None
 }
