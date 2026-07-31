@@ -159,10 +159,30 @@ export function useTerminalSession(opts: {
 
     // 2. openPty + 接线 onData/onResize
     let disposed = false;
+    // rAF 节流：每帧（~16ms）最多 write 一次。yes 这种持续高速输出
+    // 会产生大量 onData 回调——用 rAF 合并，积压时只保留最新块丢弃中间。
+    // 效果：xterm write buffer 不会无限积压，Ctrl+C 后很快消化完显示 prompt。
+    // htop（alternate screen TUI）每帧重绘量小，不受影响。
+    let pendingOutput: Uint8Array | null = null;
+    let rafScheduled = false;
+    const flushOutput = () => {
+      rafScheduled = false;
+      if (disposed || !pendingOutput) return;
+      const data = pendingOutput;
+      pendingOutput = null;
+      term.write(data);
+    };
+
     openPty(cols, rows, {
       onData: (bytes) => {
-        // PTY 输出 → xterm 渲染
-        term.write(bytes);
+        if (rafScheduled) {
+          // 本帧已调度 → 新数据覆盖暂存（丢中间保最新）
+          pendingOutput = bytes;
+        } else {
+          pendingOutput = bytes;
+          rafScheduled = true;
+          requestAnimationFrame(flushOutput);
+        }
       },
       onExit: (code) => {
         if (disposed) return;
@@ -245,6 +265,9 @@ export function useTerminalSession(opts: {
     // 4. cleanup
     return () => {
       disposed = true;
+      // rAF 可能已调度但未执行——用标志位让它 no-op（无法直接 cancelAnimationFrame
+      // 因为没存 handle，但 disposed=true + flushOutput 检查 pendingOutput 即可）
+      pendingOutput = null;
       resizeObserver.disconnect();
       if (webglRef.current) {
         try {
