@@ -281,6 +281,10 @@ octopus 的"手机遥控 agent"需要：
 | **WebGL renderer + context loss 250ms 重连 + 隐藏 tab 释放** | ✅ | ✅ | `useTerminalSession.ts::attachWebgl` |
 | **macOS 控制键（Option 词导航 / Cmd 行首行尾 / IME 兼容 / Shift+Enter / alternate screen 智能切换）** | ✅ | ✅ | `keymap.ts` |
 | agent 状态徽章（working 脉冲 / attention bell / finished 绿点） | ✅ | ✅ | `agent-activity.ts` + `index.tsx::AgentBadge` |
+| **终端内搜索（Cmd+F + SearchAddon 增量搜索 + ↑↓ 导航）** | ✅ | ✅ | `SearchOverlay.tsx` + `useTerminalSession.ts` |
+| **OSC 7 cwd 追踪（新 tab 继承目录 + 标题显示路径 + 安全过滤）** | ✅ | ✅ | `osc-handlers.ts` + zshrc/bashrc OSC 7 发射 |
+| **OSC 133 prompt tracker（inCommand 安全过滤）** | ✅ | ✅ | `osc-handlers.ts::registerPromptTracker` |
+| **rAF 节流（巨量输出 Ctrl+C 回到命令行）** | ✅ | ❌ Terax 靠 rendererPool 绕过 | `useTerminalSession.ts` |
 
 ### octopus 独有（Terax 没有）
 
@@ -296,7 +300,6 @@ octopus 的"手机遥控 agent"需要：
 
 | 功能 | Terax 文件 | 说明 | octopus 补法 |
 |---|---|---|---|
-| **终端内搜索** | `SearchAddon` + 搜索栏 UI | Cmd+F 触发，翻长输出找关键字。高频 | 装 `@xterm/addon-search`，加搜索栏组件 |
 | **字号/字体偏好** | `useTerminalFont.ts` + 设置页 | octopus 固定 13px SF Mono，用户无法调。中频 | config 加 terminalFontSize/Family，`useTerminalFont` 读 |
 
 #### P2（中频需求，看用户反馈）
@@ -305,7 +308,6 @@ octopus 的"手机遥控 agent"需要：
 |---|---|---|
 | **rendererPool（slot 池化）** | `rendererPool.ts`（~900 行） | 隐藏 tab 保活 WebGL + dormantRing 字节缓冲。octopus WebGL active 释放已兜底，多 tab 不卡就不用 |
 | **分屏 pane（split）** | `PaneTreeView.tsx` + `panes.ts` | 水平/垂直分割同时看多终端 |
-| **OSC 7 cwd 追踪** | `osc-handlers.ts::registerCwdHandler` | 新 tab 继承当前目录 + 安全过滤（防命令输出伪造 cwd）+ 标题显示路径 |
 | **文件拖放进终端** | `useTerminalFileDrop.ts` + `quoteShellPath.ts` | 拖文件自动转义路径写入（依赖 quoteShellPath 空格/特殊字符转义） |
 
 #### P3（重功能或低频，暂缓）
@@ -314,7 +316,6 @@ octopus 的"手机遥控 agent"需要：
 |---|---|---|
 | **block 模式** | `block/` 整个目录（~2000 行） | prompt-as-editor：CodeMirror 驱动 shell 输入 + 命令块装饰 + 历史 + 路径补全 + inline 建议。很重的特色功能 |
 | **OSC 52 剪贴板** | `osc-handlers.ts` | 远程程序（SSH）写本地剪贴板，1MiB 上限 |
-| **OSC 133 prompt tracker** | `osc-handlers.ts::registerPromptTracker` | 追踪命令边界（A/B/C/D 标记），block 模式底层依赖 |
 | **bracketed paste** | `terminalPaste.ts` | `\x1b[200~...\x1b[201~` 包裹粘贴，部分程序需要 |
 | **终端剪贴板** | `terminalClipboard.ts` | OSC 52 + Cmd+C 选中复制（部分 xterm 默认已覆盖） |
 | **光标闪烁控制** | `cursorBlink.ts` | 失焦停闪省电 |
@@ -331,10 +332,12 @@ octopus 的"手机遥控 agent"需要：
 | agent_hooks.rs（幂等/merge/Pi） | 12 |
 | terminal_window.rs（URL/label 匹配） | 9 |
 | activation.rs（float_depth/label 匹配） | 3 |
-| keymap.ts（Option/Cmd/删除/readline） | 24 |
+| keymap.ts（Option/Cmd/删除/readline/isFind/isNewTab） | 37 |
 | agent-activity.ts（phaseForSignal/displayLabel） | 11 |
 | useTerminalSession.ts（attachWebgl 降级/context loss） | 4 |
-| **合计** | **89** |
+| osc-handlers.ts（parseOsc7/cwdBasename/updateShellIntegration） | 13 |
+| **合计（前端）** | **66** |
+| **合计（含 Rust）** | **97** |
 
 Terax 终端模块测试文件（供后续补功能时参考其测试范式）：`keymap.test.ts` / `agentActivity.test.ts` / `cursorBlink.test.ts` / `dormantRing.test.ts` / `liveTerminals.test.ts` / `osc-handlers.test.ts` / `panes.test.ts` / `quoteShellPath.test.ts` / `terminalClipboard.test.ts` / `terminalPaste.test.ts` / `useTerminalFileDrop.test.ts` / `block/lib/` 下 6 个。
 
