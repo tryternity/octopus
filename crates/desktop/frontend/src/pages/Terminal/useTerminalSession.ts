@@ -28,6 +28,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
 import { readlineSequence, isShiftEnter, isFindShortcut, isNewTabShortcut } from "./keymap";
+import { registerCwdHandler, registerPromptTracker, createShellIntegrationState } from "./osc-handlers";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
 const IS_MAC =
@@ -53,6 +54,8 @@ export type TerminalSession = {
   ptyId: number | null;
   /** SearchAddon 实例（终端内搜索用，未初始化时 null）。 */
   searchAddon: SearchAddon | null;
+  /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
+  cwd: string | null;
 };
 
 /**
@@ -120,6 +123,15 @@ export function useTerminalSession(opts: {
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [trackedCwd, setTrackedCwd] = useState<string | null>(null);
+
+  // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
+  // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
+  // 不会反映到 handler 里。用 ref 中转让 handler 始终调最新的。
+  const onSearchOpenRef = useRef(onSearchOpen);
+  const onNewTabRef = useRef(onNewTab);
+  onSearchOpenRef.current = onSearchOpen;
+  onNewTabRef.current = onNewTab;
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -213,14 +225,14 @@ export function useTerminalSession(opts: {
           // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
           if (isFindShortcut(event, { isMac: IS_MAC })) {
             event.preventDefault();
-            if (event.type === "keydown") onSearchOpen?.();
+            if (event.type === "keydown") onSearchOpenRef.current?.();
             return false;
           }
 
           // Cmd+T（Mac）/ Ctrl+T（其他）→ 新建终端 tab
           if (isNewTabShortcut(event, { isMac: IS_MAC })) {
             event.preventDefault();
-            if (event.type === "keydown") onNewTab?.();
+            if (event.type === "keydown") onNewTabRef.current?.();
             return false;
           }
 
@@ -246,6 +258,10 @@ export function useTerminalSession(opts: {
           // 其余（Ctrl+A/C/...、Cmd+C/V 复制粘贴）交 xterm 默认
           return true;
         });
+        // OSC 7 cwd 追踪 + OSC 133 prompt tracker（安全过滤）
+        const shellState = createShellIntegrationState();
+        registerPromptTracker(term, shellState);
+        registerCwdHandler(term, (c) => setTrackedCwd(c), shellState);
         // 窗口 resize → PTY resize
         term.onResize(({ cols, rows }) => {
           void pty.resize(cols, rows);
@@ -325,5 +341,6 @@ export function useTerminalSession(opts: {
     },
     ptyId,
     searchAddon: searchAddonRef.current,
+    cwd: trackedCwd,
   };
 }

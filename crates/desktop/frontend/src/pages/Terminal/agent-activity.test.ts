@@ -32,24 +32,28 @@ describe("displayLabel", () => {
   const fallback = "终端";
 
   it("customName 优先（用户改名）", () => {
-    expect(displayLabel("我的会话", "claude", fallback)).toBe("我的会话");
+    expect(displayLabel("我的会话", "octopus", "claude", fallback)).toBe("我的会话");
   });
 
-  it("customName 空白回退 agentName", () => {
-    expect(displayLabel("   ", "claude", fallback)).toBe("claude");
-    expect(displayLabel("", "codex", fallback)).toBe("codex");
+  it("customName 空白 → cwdBasename", () => {
+    expect(displayLabel("   ", "octopus", "claude", fallback)).toBe("octopus");
+    expect(displayLabel("", "proj", "codex", fallback)).toBe("proj");
   });
 
-  it("无 customName 用 agentName", () => {
-    expect(displayLabel(undefined, "gemini", fallback)).toBe("gemini");
+  it("无 customName 用 cwdBasename", () => {
+    expect(displayLabel(undefined, "myproject", null, fallback)).toBe("myproject");
   });
 
-  it("无 customName 无 agentName 用 fallback", () => {
-    expect(displayLabel(undefined, null, fallback)).toBe(fallback);
-    expect(displayLabel("", null, fallback)).toBe(fallback);
+  it("无 customName 无 cwdBasename 用 agentName", () => {
+    expect(displayLabel(undefined, null, "gemini", fallback)).toBe("gemini");
   });
 
-  it("customName 仅空格字符视为空白", () => {
-    expect(displayLabel(" \t\n ", "claude", fallback)).toBe("claude");
+  it("无 customName 无 cwdBasename 无 agentName 用 fallback", () => {
+    expect(displayLabel(undefined, null, null, fallback)).toBe(fallback);
+    expect(displayLabel("", null, null, fallback)).toBe(fallback);
+  });
+
+  it("customName 优先于 cwdBasename + agentName", () => {
+    expect(displayLabel("改名", "octopus", "claude", fallback)).toBe("改名");
   });
 });

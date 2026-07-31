@@ -24,6 +24,8 @@ type Props = {
   onPtyId?: (ptyId: number) => void;
   /** Cmd/Ctrl+T 新建 tab 回调。 */
   onNewTab?: () => void;
+  /** OSC 7 cwd 变化时上报（父组件更新 tab.trackedCwd）。 */
+  onCwd?: (cwd: string) => void;
 };
 
 export function TerminalPane({
@@ -33,6 +35,7 @@ export function TerminalPane({
   onConsumeCommand,
   onPtyId,
   onNewTab,
+  onCwd,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -50,6 +53,13 @@ export function TerminalPane({
       onPtyId?.(session.ptyId);
     }
   }, [session.ptyId, onPtyId]);
+
+  // 上报 cwd（OSC 7 追踪，cd 后变化）
+  useEffect(() => {
+    if (session.cwd) {
+      onCwd?.(session.cwd);
+    }
+  }, [session.cwd, onCwd]);
 
   // 消费 pendingCommand：ptyId 就绪（shell 可接收输入）后写入 + 回车
   useEffect(() => {
