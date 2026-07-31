@@ -48,7 +48,6 @@ const config = {
         "record-control": "record-control.html",
         download: "download.html",
         onboarding: "onboarding.html",
-        "instant-overlay": "instant-overlay.html",
       },
     },
   },
