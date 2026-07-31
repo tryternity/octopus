@@ -218,6 +218,14 @@ pub struct AppConfig {
     #[serde(default = "default_vault_autotype_shortcut")]
     pub vault_autotype_shortcut: String,
 
+    /// 录音模式: "toggle"（默认，按一次开始/再按一次停止）| "talk"（PTT 按住说话松开识别）
+    #[serde(default = "default_record_mode")]
+    pub record_mode: String,
+
+    /// talk 模式 PTT 键（默认 "AltRight" = 右 Option）。支持 AltRight/ShiftRight/ControlRight/MetaRight。
+    #[serde(default = "default_ptt_key")]
+    pub ptt_key: String,
+
     /// vault 离开焦点后的锁定超时（秒）。默认 180 = 3 分钟。
     ///
     /// 含义：保险库 tab 离开前台（切 tab / 关窗口 / 应用失焦）超过此秒数后，
@@ -333,6 +341,12 @@ fn default_record_shortcut() -> String {
 fn default_vault_autotype_shortcut() -> String {
     "CmdOrCtrl+Shift+S".into()
 }
+fn default_record_mode() -> String {
+    "toggle".into()
+}
+fn default_ptt_key() -> String {
+    "AltRight".into()
+}
 fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
 }
@@ -380,6 +394,8 @@ impl Default for AppConfig {
             screenshot_shortcut: default_screenshot_shortcut(),
             record_shortcut: default_record_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
+            record_mode: default_record_mode(),
+            ptt_key: default_ptt_key(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
             onboarding_completed: false,
         }

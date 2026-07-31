@@ -56,7 +56,11 @@ pub(crate) fn start_final_polish_or_paste(
         Some(llm_config) => {
             // 进入异步润色状态
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
-            crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
+            if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+                crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+            } else {
+                crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
+            }
 
             let id = transcript.id;
             let raw_text = transcript.db_text();

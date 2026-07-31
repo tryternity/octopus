@@ -58,6 +58,10 @@ impl<'a> AppSetup<'a> {
         self.init_pty();
         self.init_tray();
         self.create_result_window();
+        // talk 模式预创建 instant 浮窗壳（隐藏），首次 show 零延迟。
+        if self.config.record_mode == "talk" {
+            crate::ui::instant_overlay::precreate(self.app.handle());
+        }
         self.register_shortcuts();
         Ok(())
     }
@@ -684,9 +688,12 @@ impl<'a> AppSetup<'a> {
 
     /// ASR + edit + polish 全局快捷键注册。
     fn register_shortcuts(&self) {
-        // 6. Register global shortcut
-        if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
-            log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
+        // 6. Register global shortcut（toggle 模式才注册 asr_shortcut；
+        // talk 模式用 PTT 键替代，不注册 asr_shortcut 避免两条路径冲突）
+        if self.config.record_mode != "talk" {
+            if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
+                log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
+            }
         }
 
         // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
@@ -697,6 +704,14 @@ impl<'a> AppSetup<'a> {
         // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
         if let Err(e) = crate::ui::result_window::register_polish_global_shortcut(self.app.handle(), &self.config.polish_global_shortcut) {
             log::error!("Failed to register global polish shortcut: {}", e);
+        }
+
+        // 6.3 talk (PTT) 模式：注册 PTT 键监听（record_mode == "talk"）
+        // toggle 模式下不注册（用上面的 asr_shortcut 即可）
+        if self.config.record_mode == "talk" {
+            if let Err(e) = crate::platform::ptt::register_ptt(self.app.handle(), &self.config.ptt_key) {
+                log::warn!("[ptt] 注册失败，降级 toggle: {}", e);
+            }
         }
 
         info!("octopus-desktop initialized");
