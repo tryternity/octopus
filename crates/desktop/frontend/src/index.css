@@ -693,9 +693,9 @@ html, body {
   background: var(--color-accent);
   color: var(--color-foreground);
 }
-/* tabs 模式下切换器靠右（推到 tab 栏末尾） */
-.terminal-layout-toggle-tabbar {
-  margin-left: auto;
+/* tab 栏给切换图标留点右边距（与首个 tab 分隔） */
+.terminal-layout-toggle {
+  margin-right: 2px;
 }
 
 /* ── Sidebar 布局（左侧 list）── */

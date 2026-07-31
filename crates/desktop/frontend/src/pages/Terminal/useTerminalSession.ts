@@ -214,6 +214,17 @@ export function useTerminalSession(opts: {
             return false;
           }
 
+          // Ctrl+C：显式直接发 \x03 到 PTY（绕过 xterm 按键转换，巨量输出时更及时），
+          // 但 return true 让 xterm 也处理（恢复 UI 状态——滚动到底部等）。
+          // 跨平台都是 Ctrl+C（macOS Cmd+C 是复制，不会进这个分支）。
+          if (
+            event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey &&
+            (event.key === "c" || event.key === "C")
+          ) {
+            if (event.type === "keydown") void pty.write("\x03");
+            return true;
+          }
+
           // 其余（Ctrl+A/C/...、Cmd+C/V 复制粘贴）交 xterm 默认
           return true;
         });
@@ -263,37 +274,6 @@ export function useTerminalSession(opts: {
     // cwd 变化不重建 session（cwd 只在首次 openPty 用）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // 6. window 级 Ctrl+C/Ctrl+Z 兜底——巨量输出时 xterm 的 keydown 可能被延迟，
-  // 用户按 Ctrl+C 无法及时中断。window listener 优先级最高，直接发 \x03/\x1a。
-  // 仅 active tab 生效（避免多 tab 串扰），且仅在前台进程非 shell 时才有意义
-  // （shell prompt 时 Ctrl+C 只是清行，但发了也无害）。
-  useEffect(() => {
-    if (!active) return;
-    const handler = (e: KeyboardEvent) => {
-      // 仅 Ctrl 组合（macOS 上 Ctrl 不是 Cmd——Cmd+C 是复制）
-      if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
-      if (e.key !== "c" && e.key !== "C" && e.key !== "z" && e.key !== "Z") return;
-      // 只在终端区域有焦点时接管（container 或其子元素）
-      const el = container.current;
-      if (!el) return;
-      const target = e.target as Node | null;
-      if (!target || !el.contains(target)) return;
-      const pty = ptyRef.current;
-      if (!pty) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "c" || e.key === "C") {
-        void pty.write("\x03"); // SIGINT
-      } else {
-        void pty.write("\x1a"); // SIGTSTP
-      }
-    };
-    // capture 阶段——比 xterm 的 keydown 更早
-    window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
 
   // 5. active 切换：隐藏 tab 释放 WebGL（防 ~16 context 上限），切回重连
   useEffect(() => {
