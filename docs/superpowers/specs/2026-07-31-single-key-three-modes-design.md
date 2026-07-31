@@ -12,14 +12,15 @@
 | 当前状态 | 短按（<260ms 松开） | 长按（≥260ms 不松） | 双击（260ms 内两次按下） |
 |---|---|---|---|
 | **idle** | → hands-free toggle | → PTT（松开识别+粘贴） | → toggle（弹 result_window） |
-| **toggle 录音中** | → 立即润色（录音继续） | → 结束 toggle | → 结束 toggle |
+| **toggle 录音中** | → 立即润色（录音继续） | → 结束 toggle | → 两次润色（**不识别双击**，= 两次独立短按） |
 | **hands-free 录音中** | → 停止（任何操作都停） | → 停止 | → 停止 |
 | **PTT 录音中** | —（按着键呢） | keyup → 停止+粘贴 | — |
 
-> **toggle 录音中单击/双击必须区分**（2026-07-31 澄清）：单击 = 润色（录音继续），
-> 双击 = 结束录音。两者都基于短按，区别在 260ms 内是否有第二次 keydown。实现要点：
-> toggle 中第一次短按 keyup **不立即润色**，先进 `ShortPressWait` 等判定——
-> 260ms 内再 keydown = 双击 → 结束；超时无第二次 = 单击 → 润色。
+> **toggle 录音中不识别双击**（2026-07-31 e2e 后定稿）：曾试过 `ToggleShortWait`
+> 态等双击判定（260ms 内第二次 keydown = 双击结束），但 260ms 窗口手感不佳——双击
+> 难稳定触发。最终改为：toggle 中**只识别单击（润色）和长按（结束）**，不识别双击。
+> 短按 keyup 立即 `polish_now()` + 回 Idle（无 260ms 延迟）。双击的实际效果是两次
+> 独立单击 = 两次润色（录音继续）。
 
 ### 常量
 
@@ -34,17 +35,16 @@ const TAP_TIMEOUT_MS: u64 = 260;  // 短按/双击判定窗口（后续可开放
 
 ## PTT 状态机（ptt.rs 重构）
 
-7 态有限状态机，替代当前简单的 Pressed→start / Released→stop：
+6 态有限状态机，替代当前简单的 Pressed→start / Released→stop：
 
 ```rust
 enum PttFsm {
     Idle,
-    Pending { timer_start: Instant },          // keydown 后等判定：长按 or 短按
-    ShortPressWait { timer_start: Instant },   // 真 idle 短按松开后等判定：双击 or 确认 hands-free
-    PttRecording,                               // PTT 录音中（长按已确认）
-    ToggleInWait { timer_start: Instant },      // toggle 录音中 keydown，等判定：长按结束 or 短按
-    ToggleShortWait { timer_start: Instant },   // toggle 录音中短按松开后等判定：双击结束 or 单击润色
-    HandsFreeInWait { timer_start: Instant },   // hands-free 中按键，等判定（任何结果都停）
+    Pending { timer_start: Instant },         // keydown 后等判定：长按 or 短按
+    ShortPressWait { timer_start: Instant },  // 真 idle 短按松开后等判定：双击 or 确认 hands-free
+    PttRecording,                              // PTT 录音中（长按已确认）
+    ToggleInWait { timer_start: Instant },     // toggle 录音中 keydown，等判定：长按结束 or 短按润色
+    HandsFreeInWait { timer_start: Instant },  // hands-free 中按键，等判定（任何结果都停）
 }
 ```
 
@@ -64,11 +64,8 @@ ptt_recording + keyup → coordinator.instant_stop() → Idle
 
 toggle 录音中（RECORDING_MODE==1）+ keydown → ToggleInWait(t2)
 toggle_in_wait:
-  keyup < TAP_TIMEOUT → 短按 → ToggleShortWait(t2')（不立即润色，等双击判定）
+  keyup < TAP_TIMEOUT → 短按（单击）→ coordinator.polish_now() → Idle（录音继续）
   t2 超时 → coordinator.toggle()（长按结束 toggle）→ Idle
-toggle_short_wait:
-  t2' 内 keydown → 双击 → coordinator.toggle()（结束 toggle）→ Idle
-  t2' 超时 → 单击确认 → coordinator.polish_now()（润色，toggle 继续录音）→ Idle
 
 hands-free 中（RECORDING_MODE==3）+ keydown → HandsFreeInWait(t3)
 hands_free_in_wait:
@@ -175,15 +172,14 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 
 ### 已实现
 
-- ✅ **PttFsm 7 态状态机**（ptt.rs 重写）：Idle / Pending / ShortPressWait /
-  PttRecording / ToggleInWait / **ToggleShortWait** / HandsFreeInWait。常驻 manager
-  线程局部变量。FSM 逻辑抽为纯方法 `next_on_keydown` / `next_on_keyup` /
-  `next_on_timeout`（返回 `(PttFsm, FsmAction)`，不依赖 Coordinator），便于单测。
+- ✅ **PttFsm 6 态状态机**（ptt.rs 重写）：Idle / Pending / ShortPressWait /
+  PttRecording / ToggleInWait / HandsFreeInWait。常驻 manager 线程局部变量。
+  FSM 逻辑抽为纯方法 `next_on_keydown` / `next_on_keyup` / `next_on_timeout`
+  （返回 `(PttFsm, FsmAction)`，不依赖 Coordinator），便于单测。
 - ✅ **TAP_TIMEOUT_MS = 260**（常量，后续可开放为配置项）。
 - ✅ **超时驱动**（`drive_timeouts`）：manager 循环每 ~10ms 检查计时态超时，触发
   Pending→PttRecording（长按）/ ShortPressWait→hands-free（短按确认）/
-  ToggleInWait→toggle 结束（长按）/ **ToggleShortWait→polish_now（单击确认润色）** /
-  HandsFreeInWait→hands_free_stop。
+  ToggleInWait→toggle 结束（长按）/ HandsFreeInWait→hands_free_stop。
 - ✅ **RECORDING_MODE AtomicU8**（mod.rs）：`recording_mode()` pub fn 供 ptt.rs 读，
   `set_recording_mode()` 在命令分支设值（Toggle Idle→1, InstantStart→2,
   HandsFreeStart→3, 各 Idle 回归点→0）。
@@ -196,8 +192,8 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 - ✅ **db.sql seed**：`ptt_key` 从 `AltRight` 改 `OptRight`（handy-keys 语义对齐）。
   注：未升 schema version（AltRight 仍可解析，旧库无需清重建）。
 - ✅ **pipeline.rs**：`VadSegmentedPipeline::silence_duration()` pub(crate) getter。
-- ✅ **测试**：14 个新测试（PttFsm 初始态 + timed_out 边界 + RECORDING_MODE set/read
-  + **toggle 单击/双击/长按行为回归** + 真 idle 双击启动 toggle + FsmAction eq）。
+- ✅ **测试**：11 个新测试（PttFsm 初始态 + timed_out 边界 + RECORDING_MODE set/read
+  + **toggle 单击立即润色 / 长按结束 / 长按 keyup noop** + 真 idle 双击启动 toggle + FsmAction eq）。
 
 ### 偏差与决策
 
@@ -212,7 +208,15 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
    被阻塞（如长 GC）导致 drive_timeouts 未及时执行，keyup 落在 Pending 且超时——
    防御性当作 PTT stop（instant_stop），避免状态卡死。
 
-3. **~~ToggleInWait keyup 超时后的处理~~**（已废弃，见 #6 ToggleShortWait）。
+3. **toggle 录音中不识别双击（2026-07-31 e2e 后定稿，回退）**：曾两轮迭代——
+   ① 初版：toggle 中短按 keyup 立即 `polish_now()` + 回 Idle（双击 = 两次单击 = 两次润色）。
+   ② 中间版：新增 `ToggleShortWait` 态等双击判定（短按不立即润色，260ms 内再 keydown
+   = 双击结束），但 e2e 实测 260ms 窗口手感不佳——双击难稳定触发，单击润色反而被延迟。
+   ③ 最终版（当前）：**回退到不识别双击**——toggle 中短按 keyup 立即润色 + 回 Idle，
+   长按（≥260ms）结束录音。移除 `ToggleShortWait` 态，FSM 回到 6 态。双击的实际效果
+   是两次润色（录音继续），用户用长按结束。回归测试：
+   `toggle_short_click_polishes_immediately` / `toggle_long_press_ends_recording` /
+   `toggle_long_press_keyup_after_timeout_noop`。
 
 4. **VAD 自动段粘贴推迟**：spec 原设想 hands-free 每段自动粘贴，实现路径复杂
    （paste-and-continue 机制）+ 风险大。改为单段粘贴 + 静音超时兜底。待手感验证后
@@ -221,15 +225,6 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 5. **HandsFreeStop 复用 handle_toggle**：不新建 finalize 路径，复用 InstantStop 的
    handle_toggle（instant 标志已置 → finalize/do_paste 走 instant 浮窗路径）。
    hands-free 与 PTT 的停止路径完全一致，仅 RECORDING_MODE 值不同。
-
-6. **toggle 录音中单击/双击区分（2026-07-31 修复，新增 ToggleShortWait 态）**：
-   初版实现 toggle 中短按 keyup 立即 `polish_now()` + 回 Idle，导致"双击"被当成两次
-   独立单击（两次润色），**不会结束录音**——与 spec 表格"双击→结束 toggle"矛盾。
-   修复：新增 `ToggleShortWait` 态，toggle 中短按 keyup **不立即润色**，先进
-   ToggleShortWait 等判定——260ms 内再 keydown = 双击 → toggle() 结束；超时无第二次
-   = 单击确认 → polish_now()。FSM 从 6 态增至 7 态。回归测试：
-   `toggle_double_click_ends_recording` / `toggle_single_click_polishes` /
-   `toggle_long_press_ends_recording` / `toggle_short_keyup_does_not_immediately_polish`。
 
 ### 验证
 

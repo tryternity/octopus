@@ -103,11 +103,8 @@ enum PttFsm {
     ShortPressWait { timer_start: Instant },
     /// PTT 录音中（长按已确认）。keyup → instant_stop → Idle。
     PttRecording,
-    /// toggle 录音中（RECORDING_MODE==1）keydown，等判定：长按结束 or 短按进 ToggleShortWait。
+    /// toggle 录音中（RECORDING_MODE==1）keydown，等判定：长按结束 or 短按润色。
     ToggleInWait { timer_start: Instant },
-    /// toggle 录音中短按松开后等判定：双击（TAP_TIMEOUT 内再 keydown → toggle 结束）
-    /// or 确认单击润色（超时 → polish_now）。
-    ToggleShortWait { timer_start: Instant },
     /// hands-free 录音中（RECORDING_MODE==3）按键，等判定：任何结果都 → hands_free_stop。
     HandsFreeInWait { timer_start: Instant },
 }
@@ -160,8 +157,6 @@ impl PttFsm {
             }
             // 真 idle 短按后双击 → 启动 toggle
             PttFsm::ShortPressWait { .. } => (PttFsm::Idle, FsmAction::ToggleStart),
-            // toggle 录音中短按后双击 → 结束 toggle
-            PttFsm::ToggleShortWait { .. } => (PttFsm::Idle, FsmAction::ToggleEnd),
             // 其他态（重复/异常）：复位到 Idle
             _ => (PttFsm::Idle, FsmAction::None),
         }
@@ -181,15 +176,17 @@ impl PttFsm {
             PttFsm::PttRecording => (PttFsm::Idle, FsmAction::InstantStop),
             PttFsm::ToggleInWait { timer_start } => {
                 if timer_start.elapsed() < Duration::from_millis(TAP_TIMEOUT_MS) {
-                    // 短按 → 进 ToggleShortWait 等双击判定（不立即润色）
-                    (PttFsm::ToggleShortWait { timer_start: Instant::now() }, FsmAction::None)
+                    // 短按（单击）→ 立即润色（polish_now），toggle 录音继续。
+                    // 注：toggle 中不识别双击——曾试过 ToggleShortWait 等双击判定，
+                    // 但 260ms 窗口下手感不佳（双击难触发）。改为单击润色 + 长按结束。
+                    (PttFsm::Idle, FsmAction::PolishNow)
                 } else {
                     // 长按：drive_timeouts 已 toggle 结束；keyup 仅复位
                     (PttFsm::Idle, FsmAction::None)
                 }
             }
             PttFsm::HandsFreeInWait { .. } => (PttFsm::Idle, FsmAction::HandsFreeStop),
-            // Idle / ShortPressWait / ToggleShortWait 收到 keyup：忽略
+            // Idle / ShortPressWait 收到 keyup（无对应 keydown 或事件丢失）：忽略
             other => (other, FsmAction::None),
         }
     }
@@ -206,10 +203,6 @@ impl PttFsm {
             }
             PttFsm::ToggleInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
                 (PttFsm::Idle, FsmAction::ToggleEnd)
-            }
-            PttFsm::ToggleShortWait { timer_start } if PttFsm::timed_out(*timer_start) => {
-                // 单击确认（无双击）→ 润色，toggle 录音继续
-                (PttFsm::Idle, FsmAction::PolishNow)
             }
             PttFsm::HandsFreeInWait { timer_start } if PttFsm::timed_out(*timer_start) => {
                 (PttFsm::Idle, FsmAction::HandsFreeStop)
@@ -525,48 +518,22 @@ mod tests {
         assert!(PttFsm::timed_out(start), "elapsed == timeout 应判超时（≥）");
     }
 
-    // ── toggle 录音中三种按键行为（spec 2026-07-31 澄清）──
-    // 单击 → 润色（录音继续）；双击 → 结束录音；长按 → 结束录音。
-    // 这是核心回归测试：曾误实现为「双击 = 两次单击 = 两次润色」，已修复。
+    // ── toggle 录音中按键行为（spec 2026-07-31，e2e 后定稿）──
+    // toggle 中不识别双击（曾试过 ToggleShortWait 等双击判定，260ms 窗口手感不佳，
+    // 双击难触发）。最终行为：单击 → 立即润色（录音继续）；长按 → 结束录音。
 
-    /// toggle 录音中**双击** → ToggleEnd（结束录音）。
-    /// 回归：曾误实现为两次独立短按（各自 PolishNow），不结束录音。
+    /// toggle 录音中**短按（单击）** keyup → 立即 PolishNow（润色，录音继续）。
     #[test]
-    fn toggle_double_click_ends_recording() {
-        // toggle 录音中（mode==1）：第一次 keydown
+    fn toggle_short_click_polishes_immediately() {
+        // toggle 录音中（mode==1）：keydown → ToggleInWait
         let (fsm, a) = PttFsm::Idle.next_on_keydown(1);
         assert!(matches!(fsm, PttFsm::ToggleInWait { .. }));
         assert_eq!(a, FsmAction::None);
 
-        // 短按 keyup（< 260ms）→ ToggleShortWait（等双击判定，不立即润色）
+        // 短按 keyup（timer_start 刚设，必 < 260ms）→ 立即 PolishNow + 回 Idle
         let (fsm, a) = fsm.next_on_keyup();
-        assert!(matches!(fsm, PttFsm::ToggleShortWait { .. }));
-        assert_eq!(a, FsmAction::None, "短按 keyup 不应立即润色——要等双击判定");
-
-        // 260ms 内第二次 keydown = 双击 → ToggleEnd（结束 toggle 录音）
-        let (fsm, a) = fsm.next_on_keydown(1);
         assert!(matches!(fsm, PttFsm::Idle));
-        assert_eq!(a, FsmAction::ToggleEnd, "双击应结束 toggle 录音，而非润色");
-    }
-
-    /// toggle 录音中**单击**（短按 + 超时无双击）→ PolishNow（润色，录音继续）。
-    #[test]
-    fn toggle_single_click_polishes() {
-        // toggle 录音中：keydown → ToggleInWait
-        let (fsm, _) = PttFsm::Idle.next_on_keydown(1);
-        // 短按 keyup → ToggleShortWait
-        let (fsm, a) = fsm.next_on_keyup();
-        assert!(matches!(fsm, PttFsm::ToggleShortWait { .. }));
-        assert_eq!(a, FsmAction::None);
-
-        // 超时无第二次 keydown = 单击确认 → PolishNow
-        // 模拟超时：构造一个已过期的 ToggleShortWait
-        let expired = PttFsm::ToggleShortWait {
-            timer_start: Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS + 10),
-        };
-        let (fsm, a) = expired.next_on_timeout();
-        assert!(matches!(fsm, PttFsm::Idle));
-        assert_eq!(a, FsmAction::PolishNow, "单击超时应触发润色");
+        assert_eq!(a, FsmAction::PolishNow, "短按 keyup 应立即润色");
     }
 
     /// toggle 录音中**长按**（≥260ms 不松）→ ToggleEnd（结束录音）。
@@ -583,14 +550,16 @@ mod tests {
         assert_eq!(a, FsmAction::ToggleEnd, "长按应结束 toggle 录音");
     }
 
-    /// toggle 录音中短按 keyup **不立即润色**（进 ToggleShortWait）。
-    /// 回归核心断言：修复前 keyup 直接 PolishNow + 回 Idle，导致双击被吞。
+    /// toggle 录音中长按 keyup（超时后松开）→ 无动作（drive_timeouts 已 toggle 结束）。
     #[test]
-    fn toggle_short_keyup_does_not_immediately_polish() {
-        let (fsm, _) = PttFsm::Idle.next_on_keydown(1);
-        // 短按 keyup（timer_start 刚设，必 < 260ms）
-        let (_, a) = fsm.next_on_keyup();
-        assert_eq!(a, FsmAction::None, "短按 keyup 必须等双击判定，不能立即润色");
+    fn toggle_long_press_keyup_after_timeout_noop() {
+        // 模拟 ToggleInWait 已超时（长按期间 drive_timeouts 已触发 ToggleEnd）
+        let expired = PttFsm::ToggleInWait {
+            timer_start: Instant::now() - Duration::from_millis(TAP_TIMEOUT_MS + 10),
+        };
+        let (fsm, a) = expired.next_on_keyup();
+        assert!(matches!(fsm, PttFsm::Idle));
+        assert_eq!(a, FsmAction::None, "长按超时后 keyup 不应重复发命令");
     }
 
     // ── 真 idle 双击 → 启动 toggle（对照测试，确认两条双击路径不混淆）──
