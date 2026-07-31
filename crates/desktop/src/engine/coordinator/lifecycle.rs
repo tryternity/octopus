@@ -392,9 +392,7 @@ pub(crate) fn finalize_after_stop(
         TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         // instant 空结果：隐藏 instant 浮窗 + 复位标志。
-        if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-            crate::ui::result_window::hide_result(app_handle);
-        }
+        INSTANT_MODE.swap(false, Ordering::Relaxed);
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         set_recording_mode(0);  // 回 Idle
@@ -458,9 +456,7 @@ pub(crate) fn finalize_cloud(
     if combined.is_empty() {
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
-        if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-            crate::ui::result_window::hide_result(app_handle);
-        }
+        INSTANT_MODE.swap(false, Ordering::Relaxed);
         crate::ui::result_window::hide_result(app_handle);
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         set_recording_mode(0);  // 回 Idle
