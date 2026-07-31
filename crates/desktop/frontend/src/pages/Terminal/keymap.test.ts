@@ -9,6 +9,7 @@ import {
   readlineSequence,
   isShiftEnter,
   isFindShortcut,
+  isNewTabShortcut,
   type TerminalKeyEvent,
 } from "./keymap";
 
@@ -136,5 +137,23 @@ describe("isFindShortcut", () => {
   });
   it("无修饰 F → false", () => {
     expect(isFindShortcut(evt({ key: "f" }), { isMac: true })).toBe(false);
+  });
+});
+
+describe("isNewTabShortcut", () => {
+  it("Mac Cmd+T → true", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, key: "t" }), { isMac: true })).toBe(true);
+  });
+  it("非 Mac Ctrl+T → true", () => {
+    expect(isNewTabShortcut(evt({ ctrlKey: true, key: "t" }), { isMac: false })).toBe(true);
+  });
+  it("Mac Ctrl+T → false（Mac 用 Cmd）", () => {
+    expect(isNewTabShortcut(evt({ ctrlKey: true, key: "t" }), { isMac: true })).toBe(false);
+  });
+  it("Cmd+Shift+T → false", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, shiftKey: true, key: "t" }), { isMac: true })).toBe(false);
+  });
+  it("Cmd+其他键 → false", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, key: "f" }), { isMac: true })).toBe(false);
   });
 });

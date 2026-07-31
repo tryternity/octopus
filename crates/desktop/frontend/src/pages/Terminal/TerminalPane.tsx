@@ -22,6 +22,8 @@ type Props = {
   onConsumeCommand?: () => void;
   /** PTY 连接成功后上报 ptyId（父组件用于 agent 状态映射）。 */
   onPtyId?: (ptyId: number) => void;
+  /** Cmd/Ctrl+T 新建 tab 回调。 */
+  onNewTab?: () => void;
 };
 
 export function TerminalPane({
@@ -30,6 +32,7 @@ export function TerminalPane({
   pendingCommand,
   onConsumeCommand,
   onPtyId,
+  onNewTab,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -38,6 +41,7 @@ export function TerminalPane({
     cwd,
     active,
     onSearchOpen: () => setSearchOpen(true),
+    onNewTab,
   });
 
   // 上报 ptyId（session 連接成功后变化）
