@@ -162,7 +162,25 @@ hands-free 复用 instant 模式的浮窗 + finalize 路径：
 | `crates/desktop/src/engine/pipeline.rs` | VadSegmentedPipeline 暴露 `silence_duration()`（已有字段，加 pub getter） |
 | `crates/infra/src/db.sql` | ptt_key seed 从 AltRight 改 OptRight |
 | `crates/infra/src/config.rs` | default_ptt_key + 注释 |
+| `crates/desktop/src/ui/window_position.rs` | 提取多屏 helper（get_mouse_location / find_monitor_at_mouse / find_window_display_id）+ per-display save/load（按 display_id 分键） |
+| `crates/desktop/src/ui/result_window.rs` | show_result 加 reposition_to_mouse_monitor（取鼠标所在屏的保存坐标）+ Moved 改 per-display save |
+| `crates/desktop/src/ui/instant_overlay.rs` | 删本地 monitor helper 副本，use window_position 公共函数 |
 | `docs/architecture.md` | 更新 |
+
+### result_window 多屏跟随（2026-07-31 增补）
+
+toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**：
+- **按屏存位置**：key = `window_pos.result@{display_id}`（每屏独立）。Moved 事件经
+  `find_window_display_id`（窗口所在 Tauri Monitor 的逻辑 origin → 匹配
+  CGDisplay::active_displays 找 display_id）分键保存。
+- **show 时取鼠标所在屏坐标**：`find_monitor_at_mouse`（CGEvent 鼠标位置 → CGDisplay
+  bounds 命中 → display_id + bounds）→ load 该 display_id 坐标 → set_position。
+  该屏没存过 → 用 bounds 算顶部居中 + 存。
+- **热插拔不管**：display_id 变 → key 对不上 → fallback 默认顶部居中（符合预期）。
+- **不变量**：clipboard_window 不受影响（仍用单值 save/load_window_position）；
+  instant_overlay 不变（底部居中，复用同一套 monitor helper）。
+- **坐标系**：CGEvent/CGDisplay bounds = 逻辑坐标（不除 scale）；Tauri Monitor/
+  outer_position = 物理像素（÷ scale 转逻辑）。display_id 经 CGDisplay::active_displays 拿。
 
 > 注：本次实现 hands-free = 单段粘贴（停录后一次性粘贴全部）+ 静音 60s 超时兜底。
 > finalize_after_stop / do_paste / PasteDone **无需加 hands-free 分支**——复用 instant
