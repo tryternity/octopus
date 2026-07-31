@@ -220,6 +220,7 @@ function Result() {
         }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
+        ["polish-started", () => setPolishLoading(true)],
         ["polish-error", (msg) => {
           setPolishLoading(false);
           setPolishError(typeof msg === "string" ? msg : "润色失败");
