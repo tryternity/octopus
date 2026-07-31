@@ -416,7 +416,9 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_shortcut',        'CmdOrCtrl+Shift+R','录屏快捷键（呼出/暂停-恢复 toggle）'),
     -- 停止录屏固定为 Escape（record_hotkey.rs 的 STOP_SHORTCUT 常量），不暴露为配置项
     -- 密码箱（vault）
-    ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键');
+    ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键'),
+    ('record_mode',               'toggle',  '录音模式 toggle/talk'),
+    ('ptt_key',                   'AltRight', 'talk 模式 PTT 按键（右侧修饰键）');
 
 -- 剪贴板其他配置项（非快捷键）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
