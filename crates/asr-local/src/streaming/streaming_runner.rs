@@ -176,7 +176,9 @@ pub struct StreamingRunner {
     vad: Option<SileroVad>,
     silence_duration: f64,
     flushed: bool,
-    /// 流式纠错开关（spec §3.3 新增 hook，默认 false——desktop 流式现无纠错，行为不变）。
+    /// 流式纠错开关：由调用方按 `asr_correct && language != "en"` 传入（coordinator 算好）。
+    /// true 时 `maybe_correct` 对 Partial/Committed 过 corrector，`finish` 对 Final 过 corrector。
+    /// corrector 候选仅来自用户热词表（HotwordIndex），无热词即 no-op（2026-08-01 激活）。
     correct: bool,
     /// 开口前静音门控：VAD 检出首个语音前丢弃样本不喂 engine，避免启动噪声/话筒瞬态触发
     /// spurious token（实测 paraformer 首 chunk 在 ~0.6s 噪声上 alpha_sum≈1.3 误 fire 出"嗯"，
@@ -275,11 +277,22 @@ impl StreamingRunner {
         events
     }
 
-    /// 收尾：engine.finish（追加句号 + 简繁归一）→ ITN 数字归一化 → `Final`。
+    /// 收尾：engine.finish（追加句号 + 简繁归一）→ 热词纠错（correct=true 时）→ ITN 数字归一化 → `Final`。
     /// Partial/Committed 不过 ITN（数字未说完可能误转），仅 Final 过。
+    ///
+    /// 热词纠错注入点（spec `docs/features/asr-engine.md` §注入点：finish 返回前）。
+    /// correct=true 时对 finish 全文过 corrector——与 `maybe_correct` 处理 Partial/Committed
+    /// 对称。corrector 确定性幂等，Partial 阶段已纠过的内容再纠无副作用。
     pub fn finish(&mut self) -> TranscriptEvent {
         match self.engine.finish() {
-            Ok(text) => TranscriptEvent::Final(crate::itn::normalize(&text)),
+            Ok(text) => {
+                let corrected = if self.correct {
+                    crate::corrector::get_corrector().correct(&text)
+                } else {
+                    text
+                };
+                TranscriptEvent::Final(crate::itn::normalize(&corrected))
+            }
             Err(e) => TranscriptEvent::Error(e.to_string()),
         }
     }
@@ -501,5 +514,94 @@ mod tests {
         let mut r = runner(FakeStreamingEngine::new(vec![], vec![], "空尾。"));
         let ev = r.finish_with_tail(&[]);
         assert_eq!(ev, TranscriptEvent::Final("空尾。".to_string()));
+    }
+
+    // === 流式热词纠错测试（2026-08-01，激活 correct 开关 + finish 注入）===
+    //
+    // corrector 是全局单例（LightCorrector），跨测试共享——以下测试用 serial() guard 串行，
+    // 每个测试开头注入已知热词、结尾清空（避免污染其它测试）。模式对称 corrector.rs 的测试。
+
+    /// corrector 测试串行 guard——复用 corrector 模块的跨模块共享锁
+    ///（`CORRECTOR_TEST_LOCK`）。streaming_runner 测试与 corrector 测试共用同一全局单例，
+    /// 必须串行，否则并发测试互相覆盖热词表。
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        crate::text::corrector::test_serial()
+    }
+
+    /// 装载热词到全局 corrector（调用方须先持 serial() guard）。
+    fn load_hotwords(words: &[&str]) {
+        let v: Vec<String> = words.iter().map(|s| s.to_string()).collect();
+        crate::corrector::reload_hotwords(v);
+    }
+
+    /// 带 correct 开关的 runner（seen_speech=true 跳过开口门控，聚焦 correct 逻辑）。
+    fn runner_with_correct(fake: FakeStreamingEngine, correct: bool) -> StreamingRunner {
+        let mut r = StreamingRunner::new(Arc::new(fake), correct).unwrap();
+        r.seen_speech = true;
+        r
+    }
+
+    /// correct=true 时，Partial 事件文本应被热词纠错。
+    #[test]
+    fn streaming_runner_correct_applied_when_enabled() {
+        let _g = serial();
+        // 清空前序测试残留命中 + 装载已知热词
+        let _ = crate::corrector::drain_hits();
+        load_hotwords(&["已经"]);
+        // 预先清空本次 correct 可能产生的残留（reload 不清 pending_hits，drain 才清）
+
+        // fake accept 返回「以经」（「已经」的同音误识）→ correct 应替换成「已经」
+        let mut r = runner_with_correct(FakeStreamingEngine::new(vec!["以经"], vec![], "已经"), true);
+        let evs = r.push_samples(&[0.0; 1600]);
+        assert_eq!(
+            evs,
+            vec![TranscriptEvent::Partial("已经".to_string())],
+            "correct=true 时 Partial 应被热词纠错"
+        );
+
+        // 清理：清空热词 + 命中，避免污染其它测试
+        load_hotwords(&[]);
+        let _ = crate::corrector::drain_hits();
+    }
+
+    /// correct=false 时，Partial 事件文本原样返回（守护现有行为）。
+    #[test]
+    fn streaming_runner_no_correct_when_disabled() {
+        let _g = serial();
+        let _ = crate::corrector::drain_hits();
+        load_hotwords(&["已经"]);
+
+        // correct=false → 即使有热词也不纠
+        let mut r = runner_with_correct(FakeStreamingEngine::new(vec!["以经"], vec![], "已经"), false);
+        let evs = r.push_samples(&[0.0; 1600]);
+        assert_eq!(
+            evs,
+            vec![TranscriptEvent::Partial("以经".to_string())],
+            "correct=false 时 Partial 原样返回，不纠错"
+        );
+
+        load_hotwords(&[]);
+        let _ = crate::corrector::drain_hits();
+    }
+
+    /// correct=true 时，finish() 产的 Final 文本也应被热词纠错（spec asr-engine.md §注入点）。
+    #[test]
+    fn streaming_runner_finish_applies_correct_when_enabled() {
+        let _g = serial();
+        let _ = crate::corrector::drain_hits();
+        load_hotwords(&["已经"]);
+
+        // fake finish 返回「我们以经到了」（含同音误识「以经」）
+        let mut r = runner_with_correct(FakeStreamingEngine::new(vec![], vec![], "我们以经到了"), true);
+        let ev = r.finish();
+        match ev {
+            TranscriptEvent::Final(text) => {
+                assert_eq!(text, "我们已经到了", "finish 的 Final 应被热词纠错");
+            }
+            other => panic!("finish 应返回 Final，实际：{:?}", other),
+        }
+
+        load_hotwords(&[]);
+        let _ = crate::corrector::drain_hits();
     }
 }

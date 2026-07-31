@@ -293,7 +293,9 @@ fn default_asr_hardware_accelerated() -> bool {
     false
 }
 fn default_asr_correct() -> bool {
-    false
+    // 2026-08-01 改为 true：用户加了热词就期望生效（流式+批量）。
+    // corrector 无热词即 no-op（零过纠铁证保留），无副作用。存量库 DB 已有值不受影响（INSERT OR IGNORE）。
+    true
 }
 fn default_output_simplified() -> bool {
     true
@@ -444,7 +446,7 @@ mod tests {
         assert!(cfg.write_to_clipboard, "write_to_clipboard 应默认 true");
         assert_eq!(cfg.pause_polish_threshold_ms, 600.0);
         assert!(!cfg.asr_hardware_accelerated);
-        assert!(!cfg.asr_correct);
+        assert!(cfg.asr_correct, "asr_correct 应默认 true（2026-08-01，加了热词即生效）");
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
         assert_eq!(cfg.edit_global_shortcut, "Alt+E");

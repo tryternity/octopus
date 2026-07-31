@@ -229,7 +229,10 @@ pub(crate) fn prepare_streaming_session(
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
 
     // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
-    let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+    // correct = asr_correct 且非英文（corrector 是中文拼音纠错器，英文无意义且可能扰动；
+    // skip_corrector 流式引擎 trait 无此方法，zipformer/paraformer 都不 skip，暂不考虑）。
+    let correct = config.asr_correct && !config.language.eq_ignore_ascii_case("en");
+    let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, correct) {
         Ok(e) => e,
         Err(e) => {
             error!("LocalPipelineEngine init failed: {}, abort streaming", e);
