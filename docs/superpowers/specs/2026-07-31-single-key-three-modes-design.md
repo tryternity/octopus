@@ -118,7 +118,7 @@ Command::HandsFreeStop,
 
 hands-free 录音常驻，**两种停止方式**：
 1. 用户按键（短按/长按/双击都触发 HandsFreeStop）
-2. **静音超 60 秒自动停**（`HANDS_FREE_SILENCE_TIMEOUT_SECS = 60`）——避免忘关一直录
+2. **静音超 15 秒自动停**（`HANDS_FREE_SILENCE_TIMEOUT_SECS = 15`）——避免忘关一直录
 
 停止后走与 PTT 相同的 finalize 路径（尾段 drain + finalize_after_stop → do_paste →
 hide 浮窗 → Idle），**一次性粘贴全部文本**。
@@ -134,7 +134,8 @@ hide 浮窗 → Idle），**一次性粘贴全部文本**。
 
 `dispatch_tick` 的 VadSegmented 分支里，hands-free 模式（RECORDING_MODE==3）下
 读 `pipeline.silence_duration()`（VAD 累积静音秒数）≥ `HANDS_FREE_SILENCE_TIMEOUT_SECS`
-→ 自动发 `Command::HandsFreeStop`。与用户按键等价。
+→ 自动发 `Command::HandsFreeStop`。与用户按键等价。**VadSegmented + Streaming 两个分支
+都检测**（hands-free 可能用任一引擎）。
 
 ### 实现要点
 
@@ -182,7 +183,7 @@ toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**
 - **坐标系**：CGEvent/CGDisplay bounds = 逻辑坐标（不除 scale）；Tauri Monitor/
   outer_position = 物理像素（÷ scale 转逻辑）。display_id 经 CGDisplay::active_displays 拿。
 
-> 注：本次实现 hands-free = 单段粘贴（停录后一次性粘贴全部）+ 静音 60s 超时兜底。
+> 注：本次实现 hands-free = 单段粘贴（停录后一次性粘贴全部）+ 静音 15s 超时兜底。
 > finalize_after_stop / do_paste / PasteDone **无需加 hands-free 分支**——复用 instant
 > 路径（INSTANT_MODE 已覆盖浮窗 + 跳 result_window）。VAD 自动段粘贴推迟（见上文）。
 
