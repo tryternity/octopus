@@ -20,6 +20,9 @@ const BAR_W: f64 = 720.0;
 const BAR_H: f64 = 116.0;
 const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0;
 
+/// instant 模式底部指示卡高度（穿透 poller 用，Task 3）。
+const INSTANT_BAR_H: f64 = 80.0;
+
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
 static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -246,6 +249,8 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         let was_visible = window.is_visible().unwrap_or(false);
         if !was_visible {
             reposition_to_mouse_monitor(&window);
+            // toggle 模式 emit record-mode（仅首次显示时，避免重复 emit）
+            let _ = app.emit_to(WINDOW_LABEL, "record-mode", "toggle");
         }
         // 物理窗口无条件 show：冷启动首启 webview 可能尚未 ready（走 pending 分支），此前
         // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
@@ -256,6 +261,28 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
             // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
             let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
         }
+    }
+}
+
+/// instant 模式（PTT/hands-free）show 窗口：emit instant-state + 底部定位 + record-mode。
+///
+/// 与 [`show_result`] 的区别：
+/// - 位置用 [`position_bottom_center`]（窗口贴鼠标所在屏底），而非 [`reposition_to_mouse_monitor`]（顶部居中）。
+/// - emit `record-mode: "instant"`（仅在首次显示时），让前端切到 instant UI（底部指示卡）。
+/// - emit `instant-state {state, text}` 而非 `show-result`：前端据此渲染录音中/转写中等态。
+pub fn show_instant(app: &tauri::AppHandle, state: &str, text: &str) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let was_visible = window.is_visible().unwrap_or(false);
+        if !was_visible {
+            position_bottom_center(&window);
+            let _ = app.emit_to(WINDOW_LABEL, "record-mode", "instant");
+        }
+        let _ = window.show();
+        let _ = app.emit_to(
+            WINDOW_LABEL,
+            "instant-state",
+            serde_json::json!({ "state": state, "text": text }),
+        );
     }
 }
 
@@ -286,6 +313,38 @@ fn reposition_to_mouse_monitor(window: &tauri::WebviewWindow) {
         let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         save_window_position_for_display(WINDOW_LABEL, display_id, x, y);
         debug!("[result_window] reposition to default top-center on display {}: {},{}", display_id, x, y);
+    }
+}
+
+/// instant 模式定位：窗口底部贴鼠标所在屏底（指示卡在 720×480 透明区底部居中）。
+///
+/// 与 [`reposition_to_mouse_monitor`] 的区别：toggle 模式（show_result）用顶部居中、
+/// 按屏记忆用户拖拽位置；instant 模式（PTT/hands-free）用底部贴底，指示卡始终贴屏底可见。
+/// 不按屏存（instant 是临时态，下次进 instant 重新定位）。
+///
+/// 从 `instant_overlay.rs` 的 `position_bottom_center` 搬入，改用 result_window 的常量
+/// （`RESULT_WIDTH`=720 / `RESULT_HEIGHT`=480）。
+fn position_bottom_center(win: &tauri::WebviewWindow) {
+    let app = win.app_handle();
+    let mouse = crate::ui::window_position::get_mouse_location();
+    // 窗口底边贴屏底：指示卡（底部）在 720×480 透明区底部居中，留 8px 边距
+    const INSTANT_BOTTOM_MARGIN: f64 = 8.0;
+    if let Some((_did, ox, oy, w, h)) = crate::ui::window_position::find_monitor_at_mouse(mouse) {
+        let x = ox + (w - RESULT_WIDTH) / 2.0;
+        // 窗口底边贴屏底：窗口 y = 屏底 - 窗口高(480) - margin
+        let y = oy + h - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN;
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        return;
+    }
+    // fallback：primary monitor（物理坐标除 scale）
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let x = (size.width as f64 / scale - RESULT_WIDTH) / 2.0;
+        let y = pos.y as f64 / scale
+            + (size.height as f64 / scale - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN);
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
     }
 }
 
