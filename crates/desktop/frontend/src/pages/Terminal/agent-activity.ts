@@ -49,6 +49,22 @@ export function getAgentActivity(): AgentActivityState {
   return state;
 }
 
+/**
+ * 计算 tab 显示标题（pure，可单测）。
+ *
+ * 优先级：customName（用户改名）> agentName（OSC 检测）> fallback（默认标题）。
+ * customName 空白（trim 后空）视为未设置，回退 agentName/fallback。
+ */
+export function displayLabel(
+  customName: string | undefined,
+  agentName: string | null,
+  fallback: string,
+): string {
+  if (customName && customName.trim()) return customName;
+  if (agentName) return agentName;
+  return fallback;
+}
+
 /** 将原始检测器信号映射到相位（pure，可单测）。 */
 export function phaseForSignal(
   kind: string,

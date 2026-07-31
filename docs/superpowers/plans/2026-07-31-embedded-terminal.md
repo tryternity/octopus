@@ -562,7 +562,7 @@ Result: ✓ built（terminal-*.js 348kB）；cargo 0 error 0 warning；agent-act
 > - **线程安全**：`open_terminal_with_command` 内部用 `run_on_main_thread` 调度 AppKit，可在 async worker 线程安全调用（无需 spawn_blocking，与原 Terminal.app 路径不同——osascript 才需 spawn_blocking）。
 > - **移除 dead_code allow**：Task 6 加的 `#[allow(dead_code)]` 现在接入消费方，已移除。
 > - **端到端链路验证**（代码审查）：前端 invoke `execute_action_bar` → agent 分支 derive_cwd + render_command → `open_terminal_with_command` → `open_terminal_window`（新建/聚焦）+ emit `"terminal://new-tab" {cwd, command}` → 前端 listen → addTab → TerminalPane → openPty(cwd) + write(command + "\n")。类型链 `&AppHandle` 匹配 ✓。
-> - **验证**：cargo check 0 error 0 warning；全测试回归绿（pty 26 + agent_hooks 12 + terminal_window 7 = 45 测试）。
+> - **验证**：cargo check 0 error 0 warning；全测试回归绿（当时 45 测试，后续补测见 Self-Review 测试覆盖段，现 61 测试）。e2e 验证通过（agent 单例窗口 + 定向 emit_to + 前端 listen target 限定）。
 
 **Files:**
 - Modify: `crates/desktop/src/action_bar/action_bar_commands/script.rs`（agent 分支）
@@ -586,18 +586,18 @@ match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &
 Run: `cargo check -p octopus-desktop --features embedded,cloud,custom-protocol`
 Result: 0 error 0 warning ✓
 
-- [ ] **Step 3: 手动冒烟测试（待用户执行）**
+- [x] **Step 3: 手动冒烟测试**（2026-07-31 用户 e2e 验证通过）
 
-```bash
-cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_feature_0729
-./run-octopus.sh
-```
+测试项与结果：
+1. ✅ 托盘菜单点「新建终端」→ 终端窗口打开 → shell 可交互（`ls` / `echo hi` 正常）
+2. ✅ ActionBar 选 agent 项 → **agent 单例窗口**（`terminal_action_agent`）聚焦 + 新 tab + agent 命令自动写入执行
+3. ✅ 多 tab 创建/切换/关闭；tab 改名（双击内联编辑）+ 布局切换（顶部 tabs ↔ 左侧 sidebar）
+4. ✅ **关键 bug 修复验证**：agent 命令不再让所有终端窗口都开 tab（前端 listen 限定 target 为当前窗口 label，Rust emit_to 定向对齐）
 
-测试项：
-1. 托盘菜单点「终端」→ 终端窗口打开 → shell 可交互（`ls` / `echo hi` 正常）
-2. 设置页 ActionBarPanel 选 agent 项 → 终端窗口聚焦 + 新 tab + agent 命令自动写入执行
-3. 终端输入命令 → 正常执行；多 tab 创建/切换/关闭（最后一个关了建新空 tab）
-4. 安装 agent hook 后（设置页触发 `agent_enable_hooks`），agent 运行时 tab 徽章变色（working 脉冲 / attention bell / finished 绿点）
+> 冒烟过程中发现并修复的 bug：
+> - 多窗口实例化（原单例只聚焦，用户期望每次新窗口）→ 托盘改多实例 `terminal_<n>`
+> - 双重开 tab（emit 全局广播）→ agent 改单例 `terminal_action_agent` + emit_to 定向
+> - 前端 listen 默认 Any 收所有事件 → 限定 `{ target: getCurrentWebviewWindow().label }`
 
 - [x] **Step 4: Commit**
 
@@ -615,12 +615,13 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/daily_feature_0729
 - ✅ ActionBar 替换（内嵌终端优先 + Terminal.app fallback）— Task 8
 - ✅ Agent hook 安装（Claude/Codex/Gemini/Pi）— Task 5 Step 2
 
-**Placeholder scan:** 无 TODO/TBD。每步有具体代码或参考路径。唯一未完成项是 Task 8 Step 3 手动冒烟（需 GUI 操作，留给用户）。
+**Placeholder scan:** 无 TODO/TBD。每步有具体代码或参考路径。全部 Task 1-8 已完成（含手动冒烟 e2e 验证通过）。
 
 **Type consistency:** `PtyState`/`PtySession`/`AgentSignal`/`Transition` 在 Task 1-3 定义，Task 5-8 消费。`Tab`（含 ptyId/pendingCommand）在 Task 7 定义，Task 8 的 emit payload `NewTabPayload` 与前端 listen 的 `{cwd, command}` 结构对齐。casing：`NewTabPayload` 用 `#[serde(rename_all = "camelCase")]`（cwd/command 单词无变化，符合规范）。
 
-**测试覆盖（51 测试）：**
+**测试覆盖（61 测试）：**
 - pty crate：26（OSC 状态机 17 + spawn/echo/退出码/Drop 3 + shell_init 6）
 - desktop agent_hooks：12（幂等/merge 保留 foreign/迁移/Pi 扩展等）
-- desktop terminal_window：7（URL 构造 + percent-encode）
-- frontend agent-activity：6（phaseForSignal 纯映射）
+- desktop terminal_window：9（URL 构造 + percent-encode + label 匹配/alloc 唯一性）
+- desktop activation：3（float_depth 生命周期 + is_regular_window/should_hide_on_float label 匹配——多实例终端接入浮窗协调的回归守护）
+- frontend agent-activity：11（phaseForSignal 6 + displayLabel 优先级 5——customName > agentName > fallback）
