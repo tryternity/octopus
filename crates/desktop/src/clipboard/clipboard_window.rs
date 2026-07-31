@@ -289,6 +289,8 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 crate::clipboard::clipboard_dock::stop_edge_poll(&window);
                 #[cfg(target_os = "macos")]
                 { crate::platform::activation::before_floating_window_show(app); }
+                #[cfg(target_os = "macos")]
+                { crate::platform::focus_tracker::save_frontmost_pid(); }
                 window.show()?;
                 let _ = app.emit("clipboard://expand", ());
                 window.set_focus()?;
@@ -302,6 +304,8 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             // 非 docked：不可见或无焦点 → show + focus
             #[cfg(target_os = "macos")]
             { crate::platform::activation::before_floating_window_show(app); }
+            #[cfg(target_os = "macos")]
+            { crate::platform::focus_tracker::save_frontmost_pid(); }
             window.show()?;
             window.set_focus()?;
         }
@@ -319,6 +323,8 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                     if !window.is_visible().unwrap_or(false) {
                         #[cfg(target_os = "macos")]
                         { crate::platform::activation::before_floating_window_show(&app2); }
+                        #[cfg(target_os = "macos")]
+                        { crate::platform::focus_tracker::save_frontmost_pid(); }
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
