@@ -1,7 +1,7 @@
 /**
  * 通用右键浮层菜单组件。
  *
- * position: fixed 浮层，点击外部关闭。不引入 radix-ui（轻量自绘）。
+ * position: fixed 浮层，点击外部 / Esc / 滚动 关闭。不引入 radix-ui（轻量自绘）。
  * 由调用方管理 open 状态 + 坐标，传 items 数组。
  */
 
@@ -26,25 +26,32 @@ export function ContextMenu({ position, items, onClose }: Props) {
 
   useEffect(() => {
     if (!position) return;
-    // 点击外部关闭
-    const handleClick = (e: MouseEvent) => {
+
+    // 点击外部关闭——同时监听 mousedown（xterm 等可能消费 click）和 click（兜底）
+    const handlePointerDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         onClose();
       }
     };
-    // Escape 关闭
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    // 延迟一帧注册，避免触发 contextmenu 的同一次 click 立即关闭
-    const id = requestAnimationFrame(() => {
-      window.addEventListener("mousedown", handleClick, true);
-      window.addEventListener("keydown", handleKey, true);
-    });
+    const handleScroll = () => onClose();
+
+    // 立即注册（不延迟）——contextmenu 事件本身不会触发 mousedown/click，
+    // 所以不会误关闭。capture 阶段确保在 xterm 等组件之前捕获。
+    window.addEventListener("mousedown", handlePointerDown, true);
+    window.addEventListener("click", handlePointerDown, true);
+    window.addEventListener("keydown", handleKey, true);
+    window.addEventListener("wheel", handleScroll, true);
+    window.addEventListener("contextmenu", handlePointerDown, true);
+
     return () => {
-      cancelAnimationFrame(id);
-      window.removeEventListener("mousedown", handleClick, true);
+      window.removeEventListener("mousedown", handlePointerDown, true);
+      window.removeEventListener("click", handlePointerDown, true);
       window.removeEventListener("keydown", handleKey, true);
+      window.removeEventListener("wheel", handleScroll, true);
+      window.removeEventListener("contextmenu", handlePointerDown, true);
     };
   }, [position, onClose]);
 
@@ -60,7 +67,8 @@ export function ContextMenu({ position, items, onClose }: Props) {
         <div
           key={i}
           className={`context-menu-item ${item.disabled ? "context-menu-item-disabled" : ""}`}
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             if (item.disabled) return;
             item.action();
             onClose();
