@@ -119,7 +119,9 @@ fuzzy 选中候选后按 Tab：
   ↓ 用户上下键选 + 回车
   ↓
 executeSearchResult case "slash":
-  ├─ url 类型 → 替换 {query}/{text} = params（无 params 用选中文本）→ open_url
+  ├─ url 类型 + action_data 非空 → 替换 {query}/{text} = params（无 params 用选中文本）→ open_url
+  ├─ url 类型 + action_data 空 → 用 params/选中文本当 URL（缺 scheme 补 https://）→ open_url
+  │    （「选中文本即 URL」项，如系统「网页」菜单 action_data=''，对齐后端 script.rs url 分支）
   ├─ agent/ai/script + 有 params → execute_action_bar(text=params)
   └─ agent need_voice + 无 params → trigger_agent_voice（录音路径，不变）
 ```
@@ -219,12 +221,25 @@ case "slash": {
   if (item.actionType === "url") {
     // url 类型：params 替换 {query}/{text}，无 params 用选中文本
     const fallbackText = params || contextRef.current?.text || "";
-    const url = item.actionData
-      .replace(/\{query\}/g, encodeURIComponent(fallbackText))
-      .replace(/\{text\}/g, encodeURIComponent(fallbackText));
-    if (url) {
-      await invoke("open_url", { url });
-      invoke("action_bar_dismiss", { reason: "slash-url" });
+    if (item.actionData) {
+      // action_data 非空：模板替换
+      const url = item.actionData
+        .replace(/\{query\}/g, encodeURIComponent(fallbackText))
+        .replace(/\{text\}/g, encodeURIComponent(fallbackText));
+      if (url) {
+        await invoke("open_url", { url });
+        invoke("action_bar_dismiss", { reason: "slash-url" });
+      }
+    } else {
+      // action_data 空 = 「选中文本即 URL」项（如系统「网页」菜单）
+      // 对齐后端 script.rs url 分支：用 fallbackText 当 URL，缺 scheme 补 https://
+      const raw = fallbackText.trim();
+      if (raw) {
+        const directUrl = raw.startsWith("http://") || raw.startsWith("https://")
+          ? raw : `https://${raw}`;
+        await invoke("open_url", { url: directUrl });
+        invoke("action_bar_dismiss", { reason: "slash-url" });
+      }
     }
   } else if (item.actionType === "agent" && item.needVoice && !params) {
     // agent need_voice + 无参数 → 录音路径（不变）
