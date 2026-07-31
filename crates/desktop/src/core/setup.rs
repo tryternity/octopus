@@ -684,9 +684,12 @@ impl<'a> AppSetup<'a> {
 
     /// ASR + edit + polish 全局快捷键注册。
     fn register_shortcuts(&self) {
-        // 6. Register global shortcut
-        if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
-            log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
+        // 6. Register global shortcut（toggle 模式才注册 asr_shortcut；
+        // talk 模式用 PTT 键替代，不注册 asr_shortcut 避免两条路径冲突）
+        if self.config.record_mode != "talk" {
+            if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
+                log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
+            }
         }
 
         // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
