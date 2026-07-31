@@ -55,6 +55,22 @@ pub(crate) fn set_current_transcription_id(id: i64) {
 /// finalize_after_stop 读取此标志：true 时对最终文本做同步翻译，粘贴译文而非原文。
 pub(crate) static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Instant（talk/PTT）模式激活标志——InstantStart 时 set(true)，会话结束回 Idle 时 reset(false)。
+///
+/// 作用：让 begin_recording / finalize_after_stop / do_paste 三处跳过 result_window，
+/// 改用 instant_overlay 浮窗（只读、不抢焦点、底部居中）。同 TRANSLATION_ACTIVE 的 static
+/// 模式——避免给 begin_recording / finalize_after_stop / do_paste 的众多调用点逐一加参数。
+///
+/// 生命周期：InstantStart → set(true) → begin_recording(跳 show_result) → ... →
+/// InstantStop → finalize(跳 show_result) → do_paste(用 instant overlay "done") →
+/// PasteDone 回 Idle → reset(false)。
+pub(crate) static INSTANT_MODE: AtomicBool = AtomicBool::new(false);
+
+/// 设置 instant 模式标志（InstantStart 设 true；PasteDone/Cancel 回 Idle 时 reset false）。
+pub(crate) fn set_instant_mode(active: bool) {
+    INSTANT_MODE.store(active, Ordering::Relaxed);
+}
+
 /// 前端命令：设置翻译模式激活状态。
 #[tauri::command]
 pub fn set_translation_active(active: bool) {
@@ -134,6 +150,12 @@ pub(crate) enum Command {
     FallbackStart { prepare_id: i64 },
     /// action bar agent 录音（跳过 prepare-record 两阶段，无 selection）
     StartAgentRecording { task_id: String },
+    /// talk (PTT) 模式 keydown：跳过两阶段 prepare + 用 instant 浮窗（不弹 result_window）。
+    /// Idle → begin_recording（instant=true）；busy 时忽略。
+    InstantStart,
+    /// talk (PTT) 模式 keyup：停录音，finalize 走 instant 路径（不弹 result_window，
+    /// 用 instant 浮窗展示 "done" 后短暂停留再 hide）。
+    InstantStop,
     /// 音频采集看门狗触发：cpal 断推（samples=0 持续 ≥ STALL_THRESHOLD）→ 自动重连。
     /// 停采集 + 保留 transcript + 重建 pipeline + 重 start，窗口不隐藏。
     /// spec 2026-07-24-audio-watchdog §4.2。stage_kind 标识触发时的活跃 Stage 类型。
@@ -497,6 +519,10 @@ fn build_coordinator_loop(
                         }
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
+                        // instant 会话结束：隐藏 instant 浮窗 + 复位标志（下次 Toggle/InstantStart 默认走 result_window）。
+                        if INSTANT_MODE.swap(false, Ordering::Relaxed) {
+                            crate::ui::instant_overlay::hide_instant_overlay(&app_handle);
+                        }
                         crate::ui::result_window::clear_result(&app_handle);
                         crate::ui::tray::update_tray_label(
                             &app_handle,
@@ -638,6 +664,58 @@ fn build_coordinator_loop(
                             #[cfg(feature = "cloud")] use_cloud_streaming,
                         );
                     }
+                    Command::InstantStart => {
+                        // talk (PTT) keydown：跳过两阶段 prepare，直接开录音 + instant 浮窗。
+                        // busy 保护：非 Idle 忽略（避免重入；PTT keyup 通常很快，防抖由用户手控）。
+                        if !matches!(stage, Stage::Idle) {
+                            debug!("InstantStart ignored: not Idle (stage={})", stage_name(&stage));
+                            continue;
+                        }
+                        // 缓存前台 app pid（粘贴时定向发送）——同 Toggle 的 Idle 分支。
+                        #[cfg(target_os = "macos")]
+                        crate::platform::focus_tracker::save_frontmost_pid();
+                        // 置 instant 标志：begin_recording / finalize / do_paste 据此跳过 result_window。
+                        set_instant_mode(true);
+                        // 同 Toggle：拉最新 mic/engine_mode + runtime 字段（开新会话生效）。
+                        let rc = runtime_config.read();
+                        config.microphone = rc.microphone.clone();
+                        config.engine_mode = rc.engine_mode.clone();
+                        sync_runtime_fields(&mut config, &rc);
+                        drop(rc);
+                        use_streaming = config.engine_mode == "embedded"
+                            && crate::core::config::is_streaming_engine();
+                        #[cfg(feature = "cloud")]
+                        {
+                            use_cloud_streaming = is_cloud_engine(&config);
+                            if use_cloud_streaming { use_streaming = false; }
+                        }
+                        info!("InstantStart: talk mode, instant overlay");
+                        begin_recording(
+                            &mut stage, &audio, &engine, &config, &app_handle, &tx,
+                            use_streaming, None,
+                            RecordType::Input,
+                            #[cfg(feature = "cloud")] use_cloud_streaming,
+                        );
+                    }
+                    Command::InstantStop => {
+                        // talk (PTT) keyup：停录音。同 Toggle 活跃态停录，但 instant 标志已置
+                        // → finalize/do_paste 走 instant 路径（跳 result_window）。
+                        if matches!(stage, Stage::Idle) {
+                            debug!("InstantStop ignored: not recording");
+                            continue;
+                        }
+                        // 编辑态提交（同 Toggle 活跃态分支的 editing 处理）。
+                        if editing {
+                            if let Some(text) = edit_buffer.take() {
+                                commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
+                            }
+                            editing = false;
+                        }
+                        info!("InstantStop: stopping (instant mode)");
+                        handle_toggle(
+                            &mut stage, &audio, &config, &app_handle, &tx,
+                        );
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -689,6 +767,22 @@ impl Coordinator {
     pub fn start_agent_recording(&self, task_id: String) {
         let tx = self.tx.lock();
         if tx.send(Command::StartAgentRecording { task_id }).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
+    /// talk (PTT) keydown：InstantStart（跳过 prepare，用 instant 浮窗）。
+    pub fn instant_start(&self) {
+        let tx = self.tx.lock();
+        if tx.send(Command::InstantStart).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
+    /// talk (PTT) keyup：InstantStop（停录音，instant 路径 finalize）。
+    pub fn instant_stop(&self) {
+        let tx = self.tx.lock();
+        if tx.send(Command::InstantStop).is_err() {
             error!("Coordinator channel closed");
         }
     }
@@ -859,6 +953,26 @@ mod tests {
             RecordType::AgentBridge { task_id } => assert_eq!(task_id, "xyz"),
             _ => panic!("clone 应保持变体"),
         }
+    }
+
+    // ── INSTANT_MODE（talk/PTT 模式标志）──
+
+    #[test]
+    fn instant_mode_default_false() {
+        // 静态标志可能被前序测试污染，这里校验默认语义：reset 后 swap 取 false。
+        set_instant_mode(false);
+        assert!(!INSTANT_MODE.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn instant_mode_set_and_consume() {
+        set_instant_mode(true);
+        // InstantStart 后置位 → begin_recording/finalize/do_paste 读到 true
+        assert!(INSTANT_MODE.load(Ordering::Relaxed));
+        // PasteDone 回 Idle → swap(false) 消费（取回 true，标志归零）
+        assert!(INSTANT_MODE.swap(false, Ordering::Relaxed));
+        // 再次读取已归零
+        assert!(!INSTANT_MODE.load(Ordering::Relaxed));
     }
 
 }

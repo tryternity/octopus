@@ -15,6 +15,7 @@ use std::sync::mpsc::Sender;
 use tauri::{Emitter, Manager};
 use super::{
     Command, Stage, DB_FLUSH_INTERVAL_MS, FALLBACK_STREAMING_SPEC, TRANSLATION_ACTIVE,
+    INSTANT_MODE,
 };
 
 /// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
@@ -88,7 +89,11 @@ pub(crate) fn do_paste(
     // swap 消费确保只翻译一次（多个 do_paste 调用只有首个触发）。
     let text_to_paste_owned: String;
     let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
-        crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+        if INSTANT_MODE.load(Ordering::Relaxed) {
+            crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+        } else {
+            crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+        }
         // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
         // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）。
         // do_translate 已 async 化（云端引擎走 HTTP）——coordinator 非 tokio 线程，
@@ -116,7 +121,13 @@ pub(crate) fn do_paste(
         text_to_paste
     };
 
-    crate::ui::result_window::show_result(app_handle, text_to_paste);
+    // instant 模式：用 instant 浮窗 "done" 态展示最终文本（PasteDone 后 hide）。
+    // 非 instant：正常 show_result（用户可编辑结果窗）。
+    if INSTANT_MODE.load(Ordering::Relaxed) {
+        crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", text_to_paste);
+    } else {
+        crate::ui::result_window::show_result(app_handle, text_to_paste);
+    }
 
     *stage = Stage::Pasting {
         id,

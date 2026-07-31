@@ -18,14 +18,14 @@
 //! HotkeyManager 单线程持有，命令通过 mpsc channel 传递（同 Handy
 //! `handy_keys.rs` 的 manager_thread 模式）。
 //!
-//! ## 首版语义
+//! ## 首版语义（已升级为 instant 专属路径）
 //!
-//! keydown → `coordinator.toggle()`（开始录音）
-//! keyup   → `coordinator.toggle()`（停止录音）
+//! keydown → `coordinator.instant_start()`（InstantStart：跳过 prepare + instant 浮窗）
+//! keyup   → `coordinator.instant_stop()`（InstantStop：停录，finalize 走 instant 路径）
 //!
-//! PTT 模式下 toggle() 被快速连续调用（keydown + keyup），行为上等同
-//! 「按一次开始 + 按一次停止」。后续如需 instant 专属路径（跳过
-//! result_window），再新增 Command。
+//! InstantStart/Stop 与 Toggle 的区别：跳过两阶段 prepare-record（PTT 无需前端
+//! 回推选区）、用 instant_overlay（只读、不抢焦点、底部居中）替代 result_window。
+//! 录音生命周期（begin_recording / finalize / do_paste）由 INSTANT_MODE 标志分流。
 
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
@@ -175,18 +175,19 @@ fn handle_hotkey_event(
 
     match app.try_state::<Coordinator>() {
         Some(coordinator) => {
-            // 首版语义：keydown/keyup 都调 toggle()。
-            //   Pressed  → toggle 开始录音
-            //   Released → toggle 停止录音
+            // talk (PTT) 模式专属路径：keydown → InstantStart，keyup → InstantStop。
+            //   Pressed  → instant_start（跳过 prepare + instant 浮窗 listening）
+            //   Released → instant_stop（停录，instant 路径 finalize）
             match event.state {
                 HotkeyState::Pressed => {
-                    log::info!("[ptt] keydown → coordinator.toggle() (start)");
+                    log::info!("[ptt] keydown → coordinator.instant_start()");
+                    coordinator.instant_start();
                 }
                 HotkeyState::Released => {
-                    log::info!("[ptt] keyup → coordinator.toggle() (stop)");
+                    log::info!("[ptt] keyup → coordinator.instant_stop()");
+                    coordinator.instant_stop();
                 }
             }
-            coordinator.toggle();
         }
         None => {
             log::error!("[ptt] Coordinator not found in Tauri state");
