@@ -124,6 +124,14 @@ export function useTerminalSession(opts: {
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [trackedCwd, setTrackedCwd] = useState<string | null>(null);
+
+  // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
+  // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
+  // 不会反映到 handler 里。用 ref 中转让 handler 始终调最新的。
+  const onSearchOpenRef = useRef(onSearchOpen);
+  const onNewTabRef = useRef(onNewTab);
+  onSearchOpenRef.current = onSearchOpen;
+  onNewTabRef.current = onNewTab;
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -217,14 +225,14 @@ export function useTerminalSession(opts: {
           // Cmd+F（Mac）/ Ctrl+F（其他）→ 触发终端内搜索
           if (isFindShortcut(event, { isMac: IS_MAC })) {
             event.preventDefault();
-            if (event.type === "keydown") onSearchOpen?.();
+            if (event.type === "keydown") onSearchOpenRef.current?.();
             return false;
           }
 
           // Cmd+T（Mac）/ Ctrl+T（其他）→ 新建终端 tab
           if (isNewTabShortcut(event, { isMac: IS_MAC })) {
             event.preventDefault();
-            if (event.type === "keydown") onNewTab?.();
+            if (event.type === "keydown") onNewTabRef.current?.();
             return false;
           }
 
