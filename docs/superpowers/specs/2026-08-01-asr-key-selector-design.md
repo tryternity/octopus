@@ -60,6 +60,7 @@
 - `register_shortcut(asr_shortcut)` 调用删除
 - `register_polish_global_shortcut(polish_global_shortcut)` 调用删除
 - `register_ptt(&config.ptt_key)` → `register_ptt(&config.asr_shortcut)`
+- **register_ptt 兜底**：parse `asr_shortcut` 值失败时（不在合法 5 值内），fallback 注册默认右 Alt（OptRight）+ warn log
 
 ### core/shortcut.rs
 
@@ -110,7 +111,7 @@
 ## 风险
 
 - **toggle 失去独立组合快捷键**：用户必须双击单键触发 toggle。双击已验证可用。托盘菜单保留 toggle 入口（现有）
-- **asr_shortcut 值兼容**：旧用户 DB 里 `asr_shortcut='Alt+A'`（Tauri 加速键），升级后 `register_ptt("Alt+A")` 会 parse 失败（handy-keys 不认 Alt+A 格式）。需 seed 迁移或 `register_ptt` 兜底（parse 失败时 fallback OptRight + warn）
+- **asr_shortcut 值不合法**：`register_ptt` parse 失败时（值不在 OptRight/CmdRight/CtrlRight/ShiftRight/Fn 内），fallback 到默认右 Alt（OptRight）+ warn。无旧用户兼容包袱，开发者手动清 DB
 - **register_shortcut 删除影响**：确认 core/shortcut.rs 无其他导出/调用后删除；若文件还有其他函数（如 unregister），保留文件删函数
 
 ## 文件改动
@@ -131,4 +132,4 @@
 
 - cargo build + cargo test（删除字段后所有引用点全清理）
 - tsc + vite build（dropdown UI 编译）
-- e2e：① 设置页选不同 PTT 键→即时生效 ② 改键后三模式仍工作 ③ edit_global_shortcut 不受影响 ④ 工具栏立即润色按钮仍工作 ⑤ 旧 DB asr_shortcut='Alt+A' 升级兜底
+- e2e：① 设置页选不同 PTT 键→即时生效 ② 改键后三模式仍工作 ③ edit_global_shortcut 不受影响 ④ 工具栏立即润色按钮仍工作 ⑤ asr_shortcut 值不合法时 fallback OptRight
