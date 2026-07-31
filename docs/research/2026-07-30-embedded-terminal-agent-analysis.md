@@ -338,3 +338,82 @@ octopus 的"手机遥控 agent"需要：
 
 Terax 终端模块测试文件（供后续补功能时参考其测试范式）：`keymap.test.ts` / `agentActivity.test.ts` / `cursorBlink.test.ts` / `dormantRing.test.ts` / `liveTerminals.test.ts` / `osc-handlers.test.ts` / `panes.test.ts` / `quoteShellPath.test.ts` / `terminalClipboard.test.ts` / `terminalPaste.test.ts` / `useTerminalFileDrop.test.ts` / `block/lib/` 下 6 个。
 
+---
+
+## 九、多 tab 性能架构对比：octopus vs Terax（2026-07-31）
+
+> 起因：octopus 终端 `yes` 巨量输出时 Ctrl+C 后回不到命令行（xterm write buffer 积压）。修复用 rAF 节流后追问「Terax 怎么解决的」——发现 Terax 根本没这个问题，因为 rendererPool 架构。
+
+### 核心差异：xterm 实例管理策略
+
+| 维度 | octopus（每 tab 常驻 xterm） | Terax（rendererPool 池化） |
+|---|---|---|
+| 架构 | N 个 tab = **N 个 xterm 实例**（全部常驻内存） | N 个 tab = **~8 个 xterm slot**（固定池） |
+| 隐藏 tab 的 PTY 输出 | 仍走 `term.write`（rAF 节流兜底） | 进 **dormantRing**（1MiB 环形缓冲），不碰 xterm |
+| 切回 tab | 瞬间（xterm 还在 DOM，visibility 保活） | 有延迟（serializeAddon 快照恢复 + dormantRing drain 补播漏掉的输出） |
+| WebGL context | active 切换 dispose/attach（已实现） | slot park/evict 天然管理 |
+| 内存 | O(tab 数)——每 tab 一个完整 xterm + scrollback | O(固定 slot 数)——超出 slot 数的 tab evict 释放 |
+| 实现复杂度 | ~300 行 useTerminalSession | ~1200 行（rendererPool + dormantRing + serializeAddon + slot 调度） |
+
+### Terax rendererPool 工作原理（`rendererPool.ts` ~900 行）
+
+1. **固定 slot 池**：创建有限数量的 xterm slot（默认 ~8），每个 slot 绑定一个 leaf（tab 的终端实例）
+2. **leaf → slot 绑定**：活跃 tab 的 leaf 绑定到 slot，xterm 实时渲染
+3. **隐藏 tab park**：tab 切走时 slot 进入 park 状态——保留 xterm buffer（scrollback 不丢），暂停渲染（省 GPU/CPU）
+4. **slot 不够时 evict**：如果所有 slot 都被占用且来了新 tab，按 evictionScore（可见性/alt-screen/busy/focus 加权）选最低分的 slot evict——释放 xterm 实例
+5. **evict 前快照**：`serializeAddon.serialize({ scrollback: cap })` 保存当前 buffer 快照 + 光标位置
+6. **切回 evicted tab 恢复**：重新 acquire slot → `term.write(snapshot)` 恢复快照 → `dormantRing.drain()` 补播隐藏期间漏掉的输出
+7. **dormantRing 背压**：隐藏期间 PTY 输出进环形缓冲（1MiB 上限），溢出丢旧行（对齐 LF 边界），不会无限增长
+
+### octopus 的 rAF 节流方案（当前架构下的补偿）
+
+```typescript
+// useTerminalSession.ts：每帧（~16ms）最多 term.write 一次
+// 积压时只保留最新块丢弃中间，避免 xterm write buffer 无限积压
+let pendingOutput: Uint8Array | null = null;
+let rafScheduled = false;
+const flushOutput = () => {
+  rafScheduled = false;
+  if (disposed || !pendingOutput) return;
+  const data = pendingOutput;
+  pendingOutput = null;
+  term.write(data);
+};
+onData: (bytes) => {
+  pendingOutput = bytes;
+  if (!rafScheduled) {
+    rafScheduled = true;
+    requestAnimationFrame(flushOutput);
+  }
+}
+```
+
+**效果**：
+- 正常输出（prompt/命令回显）：每帧 flush，无感知延迟
+- 巨量输出（yes/seq）：每帧只 write 最新块，xterm buffer 每帧最多积压一块
+- Ctrl+C 后 xterm 很快消化完（最多一帧的数据量），prompt 立即显示
+- htop（alternate screen）：每帧重绘量小，不受影响
+
+**为什么不用 xterm write callback 做反压**（踩过的坑）：`term.write(data, callback)` 的 callback 在数据解析完后触发，但**不可靠**——某些情况不触发，导致 `writeBusy` 永久 true，新终端只能响应首键。rAF 用浏览器渲染帧节拍，稳定可靠。
+
+### 为什么 octopus 需要 rAF 而 Terax 不需要
+
+Terax 的隐藏 tab 输出不经过 xterm（进 dormantRing），所以不存在 write buffer 积压问题。octopus 每 tab 常驻 xterm，隐藏 tab 的输出仍走 `term.write`——必须前端限速。
+
+### 演进路径
+
+| 阶段 | 方案 | 适用场景 |
+|---|---|---|
+| **当前** | 每 tab 常驻 xterm + rAF 节流 | 少量 tab（< 10）日常使用 |
+| **P2 备选** | 引入 rendererPool（移植 Terax slot 池化 + dormantRing） | 重度多 tab（> 10）+ 后台长时间跑命令 |
+
+引入 rendererPool 后 rAF 节流可移除（rendererPool 的 dormantRing 接管隐藏 tab 输出缓冲）。代价是 ~900 行额外复杂度 + 切回 tab 有快照恢复延迟。
+
+### tradeoff 决策记录
+
+octopus Phase 1 选择「简单架构 + rAF 兜底」而非 rendererPool，理由：
+1. octopus 是 AI 办公入口（agent CLI 为主），用户极少同时开 > 10 个终端 tab
+2. rendererPool 的切回延迟（快照恢复 + drain）对交互体验有损
+3. rAF 节流已解决最严重的 Ctrl+C 积压问题，日常使用无感知
+4. 保留演进路径——如用户反馈 tab 多卡，再上 rendererPool（功能差距对比 P2）
+
