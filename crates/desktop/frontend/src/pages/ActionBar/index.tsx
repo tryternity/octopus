@@ -631,6 +631,23 @@ export default function ActionBar() {
         const ctx = contextRef.current;
         const fallbackText = params || ctx?.text || "";
         const rawUrl = (data.action_data as string) || item.actionData || "";
+        // action_data 空 = 「选中文本即 URL」项（如系统「网页」菜单，action_data=''）。
+        // 对齐后端 script.rs url 分支：空时用 fallbackText 当 URL（缺 scheme 补 https://）。
+        // 不补的话 openUrlTemplate 的 `if (!url) return` 会静默无反应（斜杠命令打不开网页）。
+        if (!rawUrl) {
+          const raw = fallbackText.trim();
+          if (!raw) return;
+          const directUrl = raw.startsWith("http://") || raw.startsWith("https://")
+            ? raw
+            : `https://${raw}`;
+          try {
+            await invoke("open_url", { url: directUrl });
+            invoke("action_bar_dismiss", { reason: "slash-url" });
+          } catch (e) {
+            showQuickError(String(e).slice(0, 40));
+          }
+          return;
+        }
         await openUrlTemplate(rawUrl, fallbackText, "slash-url");
         return;
       }
