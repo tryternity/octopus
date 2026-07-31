@@ -41,6 +41,7 @@ use crate::engine::coordinator::Coordinator;
 const PTT_BINDING_ID: &str = "ptt";
 
 /// 发往 manager 线程的命令。
+#[allow(dead_code)]  // Unregister/Shutdown 预留给热重载/清理
 enum ManagerCommand {
     /// 注册 PTT 热键；返回注册结果。
     Register {
@@ -61,6 +62,7 @@ enum ManagerCommand {
 /// `ui/tray.rs`、`platform/activation.rs`）。首次 register 时启动
 /// manager 线程；unregister 仅发注销命令，线程常驻等待下一次注册
 /// （避免反复 spawn CGEventTap）。进程退出由 channel 断开自然回收。
+#[allow(dead_code)]  // thread_handle 预留给将来 join
 struct PttState {
     command_sender: Sender<ManagerCommand>,
     thread_handle: Option<JoinHandle<()>>,
@@ -258,6 +260,7 @@ pub fn register_ptt(app: &AppHandle, key: &str) -> Result<(), String> {
 ///
 /// 仅注销当前热键，manager 线程常驻（等待下一次注册）。若希望彻底关闭
 /// 线程，可扩展为发送 Shutdown 命令。
+#[allow(dead_code)]  // 预留给热重载（record_mode 切换时注销旧键）
 pub fn unregister_ptt(app: &AppHandle) -> Result<(), String> {
     log::info!("[ptt] unregister_ptt");
 
