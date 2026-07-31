@@ -114,46 +114,52 @@ describe("isShiftEnter", () => {
 });
 
 describe("isFindShortcut", () => {
-  it("Mac Cmd+F → true", () => {
-    expect(isFindShortcut(evt({ metaKey: true, key: "f" }), { isMac: true })).toBe(true);
+  it("Cmd+F → true", () => {
+    expect(isFindShortcut(evt({ metaKey: true, key: "f" }))).toBe(true);
   });
-  it("Mac Cmd+F（code 兜底）→ true", () => {
-    expect(isFindShortcut(evt({ metaKey: true, code: "KeyF" }), { isMac: true })).toBe(true);
+  it("Ctrl+F → true", () => {
+    expect(isFindShortcut(evt({ ctrlKey: true, key: "f" }))).toBe(true);
   });
-  it("非 Mac Ctrl+F → true", () => {
-    expect(isFindShortcut(evt({ ctrlKey: true, key: "f" }), { isMac: false })).toBe(true);
+  it("Cmd+F（code 兜底）→ true", () => {
+    expect(isFindShortcut(evt({ metaKey: true, code: "KeyF" }))).toBe(true);
   });
-  it("Mac Ctrl+F → false（Mac 用 Cmd 不是 Ctrl）", () => {
-    expect(isFindShortcut(evt({ ctrlKey: true, key: "f" }), { isMac: true })).toBe(false);
+  it("Cmd+Ctrl+F → true（Cmd 或 Ctrl 都行）", () => {
+    expect(isFindShortcut(evt({ metaKey: true, ctrlKey: true, key: "f" }))).toBe(true);
   });
-  it("Mac Cmd+Ctrl+F → false（含 Ctrl 干扰）", () => {
-    expect(isFindShortcut(evt({ metaKey: true, ctrlKey: true, key: "f" }), { isMac: true })).toBe(false);
+  it("Cmd+Shift+F → false", () => {
+    expect(isFindShortcut(evt({ metaKey: true, shiftKey: true, key: "f" }))).toBe(false);
   });
-  it("Cmd+Shift+F → false（含 Shift）", () => {
-    expect(isFindShortcut(evt({ metaKey: true, shiftKey: true, key: "f" }), { isMac: true })).toBe(false);
-  });
-  it("Cmd+其他键 → false", () => {
-    expect(isFindShortcut(evt({ metaKey: true, key: "c" }), { isMac: true })).toBe(false);
+  it("Alt+Cmd+F → false", () => {
+    expect(isFindShortcut(evt({ metaKey: true, altKey: true, key: "f" }))).toBe(false);
   });
   it("无修饰 F → false", () => {
-    expect(isFindShortcut(evt({ key: "f" }), { isMac: true })).toBe(false);
+    expect(isFindShortcut(evt({ key: "f" }))).toBe(false);
+  });
+  it("Cmd+其他键 → false", () => {
+    expect(isFindShortcut(evt({ metaKey: true, key: "c" }))).toBe(false);
   });
 });
 
 describe("isNewTabShortcut", () => {
-  it("Mac Cmd+T → true", () => {
-    expect(isNewTabShortcut(evt({ metaKey: true, key: "t" }), { isMac: true })).toBe(true);
+  it("Cmd+T → true", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, key: "t" }))).toBe(true);
   });
-  it("非 Mac Ctrl+T → true", () => {
-    expect(isNewTabShortcut(evt({ ctrlKey: true, key: "t" }), { isMac: false })).toBe(true);
+  it("Ctrl+T → true", () => {
+    expect(isNewTabShortcut(evt({ ctrlKey: true, key: "t" }))).toBe(true);
   });
-  it("Mac Ctrl+T → false（Mac 用 Cmd）", () => {
-    expect(isNewTabShortcut(evt({ ctrlKey: true, key: "t" }), { isMac: true })).toBe(false);
+  it("Cmd+T（code 兜底）→ true", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, code: "KeyT" }))).toBe(true);
   });
   it("Cmd+Shift+T → false", () => {
-    expect(isNewTabShortcut(evt({ metaKey: true, shiftKey: true, key: "t" }), { isMac: true })).toBe(false);
+    expect(isNewTabShortcut(evt({ metaKey: true, shiftKey: true, key: "t" }))).toBe(false);
+  });
+  it("Alt+Cmd+T → false", () => {
+    expect(isNewTabShortcut(evt({ metaKey: true, altKey: true, key: "t" }))).toBe(false);
+  });
+  it("无修饰 T → false", () => {
+    expect(isNewTabShortcut(evt({ key: "t" }))).toBe(false);
   });
   it("Cmd+其他键 → false", () => {
-    expect(isNewTabShortcut(evt({ metaKey: true, key: "f" }), { isMac: true })).toBe(false);
+    expect(isNewTabShortcut(evt({ metaKey: true, key: "f" }))).toBe(false);
   });
 });

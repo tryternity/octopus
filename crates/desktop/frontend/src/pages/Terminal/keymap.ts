@@ -96,30 +96,22 @@ export function isShiftEnter(event: TerminalKeyEvent): boolean {
 }
 
 /**
- * Cmd+F（macOS）/ Ctrl+F（其他）→ 触发终端内搜索。
- * 纯 Cmd/Ctrl+F，无 Alt/Shift 干扰。handler 里 preventDefault + return false
- * 阻止 WKWebView 默认页面搜索。
+ * Cmd+F / Ctrl+F → 触发终端内搜索。
+ * Cmd 或 Ctrl+F 都支持（不区分平台），无 Alt/Shift 干扰。
+ * handler 里 preventDefault + return false 阻止 WKWebView 默认页面搜索。
  */
-export function isFindShortcut(
-  event: TerminalKeyEvent,
-  opts: PlatformOpts,
-): boolean {
-  const mod = opts.isMac ? event.metaKey : event.ctrlKey;
-  if (!mod || event.altKey || event.shiftKey) return false;
-  if (opts.isMac && event.ctrlKey) return false; // Mac 上 Cmd 不含 Ctrl
+export function isFindShortcut(event: TerminalKeyEvent): boolean {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey)
+    return false;
   return event.key === "f" || event.code === "KeyF";
 }
 
 /**
- * Cmd+T（macOS）/ Ctrl+T（其他）→ 新建终端 tab。
- * 与 isFindShortcut 同模式：纯 Cmd/Ctrl+T，无 Alt/Shift 干扰。
+ * Cmd+T / Ctrl+T → 新建终端 tab。
+ * Cmd 或 Ctrl+T 都支持（不区分平台），无 Alt/Shift 干扰。
  */
-export function isNewTabShortcut(
-  event: TerminalKeyEvent,
-  opts: PlatformOpts,
-): boolean {
-  const mod = opts.isMac ? event.metaKey : event.ctrlKey;
-  if (!mod || event.altKey || event.shiftKey) return false;
-  if (opts.isMac && event.ctrlKey) return false;
+export function isNewTabShortcut(event: TerminalKeyEvent): boolean {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey)
+    return false;
   return event.key === "t" || event.code === "KeyT";
 }
