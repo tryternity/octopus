@@ -103,10 +103,11 @@ match result {
 后端 `execute_action_bar_inner` 不动——它只接收 text 参数，不关心来源。前端各自在调用前构造好 text。
 
 ### 删除项
-- 前端 `openUrlTemplate` helper（`index.tsx:569-580`）
-- 前端 url 分支的 action_data 空处理（`index.tsx:634-657`）——后端 `script.rs:441-449` 已有
-- 前端 slash 分流里 url/agent 的特殊分支（统一走 execute_action_bar / trigger_agent_voice）
-- 前端 `executeAiItem` 的 `timedOutRef` + `setTimeout` 机制
+- 前端 slash 分流里 url 特殊分支（`index.tsx:634-657` 的 `openUrlTemplate` 调用 + action_data 空处理）——后端 `script.rs:441-449` 已有
+- 前端 slash 分流里 agent needVoice 的 `&& !params` 条件（改为始终走 voice）
+- 前端 `executeAiItem`（含 `timedOutRef` + `setTimeout` 机制）——ai 超时移后端
+
+**注意**：`openUrlTemplate` helper **函数本身保留**——搜索结果 switch 的 `case "url"`（quicklink/关键词触发，`index.tsx:723`）仍用它。搜索运行时类型按范围决策不纳入本次统一。仅删 slash 分流对它的调用。
 
 ## 不变量
 
