@@ -80,27 +80,38 @@ else if let Some(label) = cached_self_window() {
 
 ### 前端改动
 
-各 webview 窗口按需监听 `paste-text` 事件（payload: `{ text: string }`）：
+各 webview 窗口按需监听 `paste-text` 事件（payload: `{ text: string }`）。
+**关键实现细节**（e2e 调试后定稿）：
+- target 必须用 `{ kind: "WebviewWindow", label }` 精确匹配，字符串（AnyLabel）不可靠
+- listener 依赖项要稳定——`useTerminalSession` 返回的对象每次渲染新引用，放 effect deps
+  会导致反复 unlisten/listen 间隙丢事件；用 `ref` 持有最新 session，effect 只挂一次
 
-#### terminal（`pages/Terminal/index.tsx`）
+#### terminal（`pages/Terminal/TerminalPane.tsx`）
 
+每个 pane 各自监听，仅 `active` pane 响应——直写 PTY（最可靠，绕过 xterm/键盘模拟）：
 ```ts
-listen<string>("paste-text", (e) => {
-  // 定向到当前窗口（同 terminal://new-tab 的 target 限定）
-  pty.write(e.payload);  // 直接写 PTY——最可靠，绕过 xterm
-}, { target: { kind: "webview_window", label: currentWindowLabel } });
+const sessionRef = useRef(session);
+sessionRef.current = session;
+useEffect(() => {
+  if (!active) return;
+  const currentLabel = getCurrentWebviewWindow().label;
+  listen<string>("paste-text", (e) => {
+    const s = sessionRef.current;
+    if (s.ptyId != null) s.write(e.payload);  // 直写活跃 tab 的 PTY
+  }, { target: { kind: "WebviewWindow", label: currentLabel } })
+    .then((fn) => { /* unlisten */ });
+}, [active]);  // 只依赖 active，不依赖 session（引用不稳定）
 ```
 
-注：直写 PTY 比 `term.paste()` 更可靠（不经 xterm 中转，shell 直接收到）。
-多 tab 时写活跃 tab 的 PTY（前端已知 activePtyId）。
-
-#### compact_editor（`pages/CompactEditor/index.tsx`）
+#### compact_editor（`pages/CompactEditor/MarkdownPane.tsx`）
 
 ```ts
 listen<string>("paste-text", (e) => {
-  // CM6 editor insert at cursor（活跃 tab）
-  cmEditor.dispatch({ changes: { from: cmEditor.state.selection.main.from, insert: e.payload } });
-});
+  const view = viewRef.current;
+  if (!view) return;
+  const sel = view.state.selection.main;
+  view.dispatch({ changes: { from: sel.from, insert: e.payload } });  // CM6 光标处插入
+}, { target: { kind: "WebviewWindow", label: currentLabel } });
 ```
 
 #### 其他窗口（settings / clipboard 等）
@@ -118,22 +129,62 @@ listen<string>("paste-text", (e) => {
 
 ## 边界
 
-- **聚焦窗口检测**：`WebviewWindow::is_focused()` 跨平台 API。若多个窗口都报 focused
-  （异常），取第一个。无聚焦窗口（用户切到桌面）→ fallback 广播。
+- **聚焦窗口检测时机**：必须在 toggle 入口（save_frontmost_pid）缓存，paste 时已不可靠
+  （见上「关键：在 toggle 入口缓存窗口 label」）。`focused_self_webview_label` 用
+  `WebviewWindow::is_focused()`，排除浮窗/展示窗。
 - **事件竞态**：emit 后后端立即 return，不等前端确认。若前端未 listen（旧版本前端），
   文本静默丢弃。可接受——新版本前端会 listen。
-- **多 tab terminal**：前端写活跃 tab 的 PTY（`activePtyId`）。切 tab 后下次粘贴写新 tab。
+- **多 tab terminal**：前端写活跃 tab 的 PTY（active pane 的 session.write）。切 tab 后
+  下次粘贴写新活跃 tab。
+- **target 格式**：必须 `{ kind: "WebviewWindow", label }`，字符串（AnyLabel）实测不可靠。
 
 ## 文件改动
 
 | 文件 | 操作 |
 |---|---|
-| `crates/desktop/src/platform/paste.rs` | `paste()` 加 `app: &AppHandle` 参数；`paste_via_clipboard` 加 self-webview emit 分支；新增 `focused_octopus_webview_label` |
-| `crates/desktop/src/engine/coordinator/paste.rs` | `do_paste` 传 `app_handle` 给 `platform::paste::paste` |
-| `crates/desktop/src/platform/paste.rs` 其他调用点 | clipboard 粘贴路径同步加 app 参数（或保留旧签名做 wrapper） |
-| `crates/desktop/frontend/src/pages/Terminal/index.tsx` | listen "paste-text" → `pty.write(text)`（活跃 tab） |
-| `crates/desktop/frontend/src/pages/CompactEditor/index.tsx` | listen "paste-text" → CM6 insert |
+| `crates/desktop/src/platform/focus_tracker.rs` | `save_frontmost_pid(app)` 加参数；前台是自身时缓存窗口 label 到 `CACHED_SELF_WINDOW`；新增 `cached_self_window()` + `focused_self_webview_label()`；`clear_cached_pid` 同步清 |
+| `crates/desktop/src/platform/paste.rs` | `paste()` 加 `app: &AppHandle` 参数；`paste_via_clipboard` 加 self-webview emit 分支（读 `cached_self_window()`） |
+| `crates/desktop/src/engine/coordinator/paste.rs` | `do_paste` 传 `app_handle_emit` 给 `platform::paste::paste` |
+| `crates/desktop/src/engine/coordinator/mod.rs` | 3 处 `save_frontmost_pid(app_handle)` 传参（Toggle / InstantStart / HandsFreeStart） |
+| `crates/desktop/src/clipboard/clipboard_window.rs` | 3 处 `save_frontmost_pid(app)` 传参 |
+| `crates/desktop/frontend/src/pages/Terminal/TerminalPane.tsx` | listen "paste-text" → `session.write(text)`（active pane，sessionRef 稳定化） |
+| `crates/desktop/frontend/src/pages/CompactEditor/MarkdownPane.tsx` | listen "paste-text" → CM6 光标处 insert |
 | `docs/architecture.md` | 更新粘贴 dispatch 说明（加 self-webview 分支） |
+
+## 实现状态（2026-07-31 完成，e2e 验证基本通过）
+
+### 已实现
+
+- ✅ **focus_tracker 缓存自身窗口 label**：`save_frontmost_pid(app)` 前台是 octopus 自己时，
+  经 `focused_self_webview_label` 找聚焦的非浮窗 webview 窗口 label，存 `CACHED_SELF_WINDOW`。
+- ✅ **paste self-webview 分支**：`cached_pid()` 为 None 时读 `cached_self_window()`，
+  `emit_to(label, "paste-text", text)` 定向到该窗口。
+- ✅ **TerminalPane listener**：active pane 监听 paste-text，直写 PTY（sessionRef 稳定化，
+  避免引用不稳定反复 unlisten/listen）。
+- ✅ **MarkdownPane listener**：非只读时监听，CM6 光标处 insert。
+- ✅ **target 精确匹配**：`{ kind: "WebviewWindow", label }`（非字符串 AnyLabel）。
+
+### 偏差与决策
+
+1. **缓存时机从 paste 时改为 toggle 时**（关键修复）：初版在 paste 时调
+   `focused_octopus_webview_label(app)` 检测聚焦窗口，但 paste 瞬间 is_focused 已不可靠
+   （result_window/instant_overlay show 改焦点）。改为 toggle 入口缓存窗口 label。
+   `focused_octopus_webview_label` 函数已从 paste.rs 删除（逻辑移到 focus_tracker 的
+   `focused_self_webview_label`，在缓存时调用）。
+
+2. **listener 依赖项稳定化**：`useTerminalSession` 返回对象每次渲染新引用，放 effect deps
+   导致反复 unlisten/listen 间隙丢事件。用 `sessionRef` 持有最新 session，effect 只依赖
+   `[active]`。
+
+3. **target 格式**：字符串（AnyLabel）实测对 WebviewWindow 不可靠，改为
+   `{ kind: "WebviewWindow", label }` 精确匹配。
+
+### 验证
+
+- `cargo build -p octopus-desktop --features embedded` ✅ 0 error 0 warning
+- `cargo test -p octopus-desktop --features embedded` ✅ 488 passed
+- `npx tsc --noEmit` ✅ 0 error
+- e2e 实测：terminal + 图文编辑器 ASR 回写基本通过（用户确认「基本功能都 ok」）
 
 ## 验证
 

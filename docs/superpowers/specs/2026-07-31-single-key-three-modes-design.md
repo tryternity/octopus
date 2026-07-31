@@ -178,6 +178,9 @@ toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**
   bounds 命中 → display_id + bounds）→ load 该 display_id 坐标 → set_position。
   该屏没存过 → 用 bounds 算顶部居中 + 存。
 - **热插拔不管**：display_id 变 → key 对不上 → fallback 默认顶部居中（符合预期）。
+- **仅首次显示 reposition**（e2e 修复）：`reposition_to_mouse_monitor` 只在窗口**从不可见到
+  可见**（`is_visible() == false`）时执行。同一会话的后续 show（listening→润色中→最终文本）
+  保持位置不动——避免录音期间鼠标移到副屏，结束时窗口跳走。窗口 hide 后下次 show 重新定位。
 - **不变量**：clipboard_window 不受影响（仍用单值 save/load_window_position）；
   instant_overlay 不变（底部居中，复用同一套 monitor helper）。
 - **坐标系**：CGEvent/CGDisplay bounds = 逻辑坐标（不除 scale）；Tauri Monitor/
