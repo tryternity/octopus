@@ -656,6 +656,7 @@ settings:
     renameHint: 点击重命名
     wordsCount: 词
     addPlaceholder: 人名 / 地名 / 术语
+    batchPlaceholder: 批量添加，任意空白（空格/Tab/换行）分割
     addBtn: 添加
     appendBtn: 追加
     appendHint: 导入追加到当前版本

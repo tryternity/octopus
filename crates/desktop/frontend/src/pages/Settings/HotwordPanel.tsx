@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
-import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow } from 'lucide-react';
+import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { Toggle } from '@/components/ui/toggle';
 import { Input } from '@/components/ui/input';
@@ -46,7 +46,6 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   /** fuzzy 搜索结果（null=无搜索显示全部；string[]=命中的词，已按 match_score 降序）。
    *  由 debounce effect 调后端 filter_hotwords_fuzzy 异步填充（复用 matcher::match_score，
@@ -61,9 +60,12 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [creating, setCreating] = useState<'create' | 'import' | null>(null);
   const [createVal, setCreateVal] = useState('');
   /** 挖掘确认态：候选词 + 当前勾选集合（不落库，确认后才 add_words_to_set）。
-   *  关掉即丢弃；切菜单重进组件卸载也自然清空。 */
+   *  关掉即丢弃；切菜单重进组件卸载也自然清空。2026-08-01 改为浮窗呈现（原内联面板）。 */
   const [minePending, setMinePending] = useState<{ words: string[]; selected: Set<string> } | null>(null);
   const [mineInput, setMineInput] = useState('');
+  /** 批量添加浮层（点击「添加」图标弹出 textarea，空白分割批量 add_words_to_set）。 */
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addModalText, setAddModalText] = useState('');
   // Escape 取消守卫：Escape 置 true → commitCreate/commitRename 吞掉 input 卸载触发的 blur 提交；
   // 每次打开输入（按钮 / startRename）重置 false，防残留误吞下次正常 Enter/失焦提交。
   const createCancelledRef = useRef(false);
@@ -163,17 +165,19 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   }, [refresh, showToast]);
 
   // ── 单词操作 ──
-  const addWord = useCallback(async () => {
-    const w = input.trim();
-    if (!w || selectedId === null) return;
+  /** 批量添加浮层确认：textarea 按任意空白（空格/tab/换行）分割 → add_words_to_set。 */
+  const commitAddModal = useCallback(async () => {
+    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    setAddModalOpen(false);
+    setAddModalText('');
+    if (words.length === 0 || selectedId === null) return;
     try {
-      const added = await invoke<boolean>('add_word_to_set', { id: selectedId, word: w });
-      setInput('');
-      showToast(added ? t('settings.hotword.added') : t('settings.hotword.exists'));
+      const n = await invoke<number>('add_words_to_set', { id: selectedId, words });
+      showToast(n > 0 ? t('settings.hotword.addedN', { n }) : t('settings.hotword.allExist'));
       await refresh();
-      if (added) flashAdded([w]);
-    } catch (e) { showToast(t('settings.hotword.addFailed') + e); }
-  }, [input, selectedId, refresh, flashAdded, showToast]);
+      if (n > 0) flashAdded(words.slice(0, n));
+    } catch (e) { showToast(t('settings.hotword.addFailed2') + e); }
+  }, [addModalText, selectedId, refresh, flashAdded, showToast]);
 
   const removeWord = useCallback(async (word: string) => {
     if (selectedId === null) return;
@@ -457,96 +461,23 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
                   </>
                 )}
               </div>
-            </div>
-          </CardHeader>
-
-          {/* 操作行：添加 input + 添加/追加/覆盖/挖掘 */}
-          <div className="border-b border-border/60 px-4 py-2.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                variant="default"
-                size="full"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addWord()}
-                placeholder={t('settings.hotword.addPlaceholder')}
-                disabled={!selected}
-                className="min-w-[160px] flex-1"
-              />
-              <Button variant="voice" size="sm" onClick={addWord} disabled={!selected}>
-                <Plus /> {t('settings.hotword.addBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('append')} disabled={!selected} title={t('settings.hotword.appendHint')}>
-                <Upload /> {t('settings.hotword.appendBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('overwrite')} disabled={!selected} title={t('settings.hotword.overwriteHint')}>
-                <Upload /> {t('settings.hotword.overwriteBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={mine} disabled={!selected}>
-                <Wand2 /> {t('settings.hotword.mineBtn')}
-              </Button>
-            </div>
-          </div>
-
-          {/* 挖掘确认面板（条件显示，info 色调区分于操作行） */}
-          {minePending && (
-            <div className="border-b border-info/30 bg-info/5 px-4 py-2.5 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-muted-foreground">
-                  {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
-                </span>
-                <div className="flex flex-shrink-0 items-center gap-3">
-                  <button
-                    onClick={() => {
-                      const allSel = minePending.selected.size === minePending.words.length;
-                      setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
-                    }}
-                    className="text-xs text-muted-foreground hover:text-info"
-                  >
-                    {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
-                  </button>
-                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button>
-                </div>
-              </div>
-              <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
-                {minePending.words.map((w) => {
-                  const on = minePending.selected.has(w);
-                  return (
-                    <button
-                      key={w}
-                      onClick={() => toggleMineSel(w)}
-                      className={cn(
-                        'rounded-md border px-2 py-1 text-xs transition-colors',
-                        on ? 'border-info bg-info/15 text-info' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
-                      )}
-                    >
-                      {w}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Input
-                  variant="default"
-                  size="full"
-                  value={mineInput}
-                  onChange={(e) => setMineInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
-                  placeholder={t('settings.hotword.manualPlaceholder')}
-                  className="text-xs"
-                />
-                <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
-                <Button
-                  variant="voice"
-                  size="sm"
-                  onClick={commitMine}
-                  disabled={minePending.selected.size === 0}
-                >
-                  {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
+              {/* 操作图标按钮：追加 / 覆盖 / 挖掘 / 添加（纯图标，title 提示） */}
+              <div className="flex flex-shrink-0 items-center gap-0.5 border-l border-border/60 pl-1.5">
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={() => doImport('append')} title={t('settings.hotword.appendBtn')} aria-label={t('settings.hotword.appendBtn')}>
+                  <Upload className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={() => doImport('overwrite')} title={t('settings.hotword.overwriteBtn')} aria-label={t('settings.hotword.overwriteBtn')}>
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={mine} title={t('settings.hotword.mineBtn')} aria-label={t('settings.hotword.mineBtn')}>
+                  <Wand2 className="h-4 w-4" />
+                </Button>
+                <Button variant="voice" size="icon-sm" disabled={!selected} onClick={() => { setAddModalText(''); setAddModalOpen(true); }} title={t('settings.hotword.addBtn')} aria-label={t('settings.hotword.addBtn')}>
+                  <Plus className="h-4 w-4" />
                 </Button>
               </div>
             </div>
-          )}
+          </CardHeader>
 
           {/* 词卡网格（占满剩余空间，可滚动） */}
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -594,6 +525,90 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
           </div>
         </Card>
       </div>
+
+      {/* ════ 浮窗：批量添加（textarea，空白分割） ════ */}
+      {addModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setAddModalOpen(false)}>
+          <div className="w-[420px] rounded-lg border border-border bg-background p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center gap-2">
+              <Plus className="h-4 w-4 text-voice" />
+              <span className="text-sm font-semibold">{t('settings.hotword.addBtn')}</span>
+            </div>
+            <textarea
+              autoFocus
+              value={addModalText}
+              onChange={(e) => setAddModalText(e.target.value)}
+              placeholder={t('settings.hotword.batchPlaceholder')}
+              className="h-32 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-voice/50 focus:outline-none focus:ring-2 focus:ring-voice/15"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setAddModalOpen(false); setAddModalText(''); }}>{t('settings.hotword.cancel')}</Button>
+              <Button variant="voice" size="sm" onClick={commitAddModal} disabled={!addModalText.trim()}>{t('settings.hotword.addBtn')}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════ 浮窗：挖掘确认（候选词 chip，原内联面板改浮窗） ════ */}
+      {minePending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setMinePending(null)}>
+          <div className="flex max-h-[80vh] w-[480px] flex-col rounded-lg border border-border bg-background p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-4 w-4 text-info" />
+                <span className="text-sm font-semibold">{t('settings.hotword.mineBtn')}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  const allSel = minePending.selected.size === minePending.words.length;
+                  setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                }}
+                className="text-xs text-muted-foreground hover:text-info"
+              >
+                {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 overflow-y-auto py-1">
+              {minePending.words.map((w) => {
+                const on = minePending.selected.has(w);
+                return (
+                  <button
+                    key={w}
+                    onClick={() => toggleMineSel(w)}
+                    className={cn(
+                      'rounded-md border px-2 py-1 text-xs transition-colors',
+                      on ? 'border-info bg-info/15 text-info' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
+                    )}
+                  >
+                    {w}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex items-center gap-1.5">
+              <Input
+                variant="default"
+                size="full"
+                value={mineInput}
+                onChange={(e) => setMineInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
+                placeholder={t('settings.hotword.manualPlaceholder')}
+                className="text-xs"
+              />
+              <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setMinePending(null)}>{t('settings.hotword.cancel')}</Button>
+              <Button variant="voice" size="sm" onClick={commitMine} disabled={minePending.selected.size === 0}>
+                {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

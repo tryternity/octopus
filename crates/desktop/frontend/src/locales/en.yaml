@@ -649,6 +649,7 @@ settings:
     renameHint: Click to rename
     wordsCount: words
     addPlaceholder: Names / Places / Terms
+    batchPlaceholder: Batch add, split by any whitespace (space/Tab/newline)
     addBtn: Add
     appendBtn: Append
     appendHint: Import and append to current version
