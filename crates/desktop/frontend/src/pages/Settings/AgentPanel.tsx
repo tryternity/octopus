@@ -179,7 +179,7 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                   </Badge>
                 )}
                 {a.isAvailable ? (
-                  <span className="text-[10px] text-success">●</span>
+                  <span className={cn("text-[10px]", a.isDefault ? "text-success" : "text-warning")}>●</span>
                 ) : (
                   <span className="text-[10px] text-muted-foreground/40">○</span>
                 )}
