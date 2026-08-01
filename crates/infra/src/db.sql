@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     content     TEXT    NOT NULL,
     description TEXT    NOT NULL DEFAULT '',
     is_system   INTEGER NOT NULL DEFAULT 0,
+    app_bundle_ids TEXT NOT NULL DEFAULT '',   -- JSON 数组 ["com.tencent.xinWeChat"]，空=全局（不关联特定 app）
+    inject_context INTEGER NOT NULL DEFAULT 0,    -- 0=不注入 app 上下文，1=注入（user prompt 头部加「当前应用：名称」）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -395,7 +397,7 @@ VALUES
 
 -- prompts 表 seed 已外置到 crates/infra/seeds/prompts/，由 seeds::load_prompt_seeds
 -- 在 load_external_seeds 时一次性加载（INSERT OR IGNORE，保护用户编辑）。
--- 文件清单：default-polish.md（id=1 默认润色）/ advanced-polish.md（id=2 进阶润色）。
+-- 文件清单：faithful.md（id=1 忠实校对）/ user-intent.md（id=2 意图整理）/ app-casual.md（id=3 口语化）。
 -- llm_provider seed 已外置到 crates/infra/seeds/llm_providers.json，由
 -- seeds::load_llm_providers_seed 一次性加载（7 个 provider）。
 
@@ -421,7 +423,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('hide_toolbar',             'false',                                '结果展示区工具栏是否自动隐藏'),
     ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度'),
     ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co'),
-    ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段）');
+    ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段，默认 1=忠实校对）');
 
 -- 全局快捷键 seed（统一管理，按功能分组；与 config.rs 的 default_*_shortcut 函数保持一致）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES

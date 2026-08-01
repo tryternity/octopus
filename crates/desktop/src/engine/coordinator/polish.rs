@@ -84,12 +84,19 @@ pub(crate) fn start_final_polish_or_paste(
             // → 跨会话污染。带 session_id（= 本会话 transcript.id），handler 校验当前
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
+            // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
+            let (prompt_content, app_context) = resolve_app_aware_prompt();
             std::thread::spawn(move || {
                 // catch_unwind 兜底：polish_regions 内部 panic（JSON 反序列化 / 网络库内部）
                 // 会让线程静默死亡，FinalPolishDone 永不发送 → 永久卡在 Stage::Polishing
                 // （该 stage 忽略所有快捷键与录音触发，需重启恢复）。捕获 panic 后发 Err，
                 // coordinator 走与润色失败相同的降级路径（用 fallback_text 粘贴）。
-                let inner = || match octopus_llm::polish_regions(&regions, &llm_config) {
+                let inner = || match octopus_llm::polish_regions(
+                    &regions,
+                    &llm_config,
+                    &prompt_content,
+                    app_context.as_ref(),
+                ) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -194,7 +201,7 @@ pub(crate) fn handle_final_polish_done(
 
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
-/// `input.segments` 转多段润色协议（Edited 段 preserve 原样保留，其余润色，spec §12 / §2.C）。
+/// `input.segments` 转多段润色协议（Edited 段 preserve {} 标记为语境参考，其余润色，spec §12 / §2.C）。
 /// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
 /// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 pub(crate) fn spawn_polish_thread(
@@ -204,7 +211,7 @@ pub(crate) fn spawn_polish_thread(
     ignore_mode: bool,
     session_id: i64,
 ) {
-    // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
+    // 段模型多段润色：Edited 段 preserve=true（LLM {} 标记为语境参考），其余待润色。
     let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
         crate::core::config::llm_config_ignore_mode()
@@ -215,9 +222,16 @@ pub(crate) fn spawn_polish_thread(
         Some(c) => c,
         None => return,
     };
+    // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
+    let (prompt_content, app_context) = resolve_app_aware_prompt();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish_regions(&regions, &llm_config) {
+        let result = match octopus_llm::polish_regions(
+            &regions,
+            &llm_config,
+            &prompt_content,
+            app_context.as_ref(),
+        ) {
             Ok(polished) => Ok(polished),
             Err(e) => {
                 log::warn!("Polish thread error: {}", e);
@@ -229,13 +243,34 @@ pub(crate) fn spawn_polish_thread(
 }
 
 /// 把 transcript 的 PolishInput（segments 快照）转成 octopus_llm 多段润色输入。
-/// Edited 段 preserve=true（人工校对，原样保留）；Raw/Polished 段 preserve=false（待润色）。
+/// Edited 段 preserve=true（人工校对，[] 标记为语境参考）；Raw/Polished 段 preserve=false（待润色）。
 /// 两处润色触发点（spawn_polish_thread + 最终润色内联）共用，避免折叠逻辑重复。
 pub(crate) fn polish_input_to_regions(input: &crate::engine::transcript::PolishInput) -> Vec<octopus_llm::PolishRegion> {
     input.segments.iter().map(|s| octopus_llm::PolishRegion {
         preserve: s.kind == crate::engine::transcript::SegmentKind::Edited,
         text: s.text.clone(),
     }).collect()
+}
+
+/// 解析当前前台 app 对应的润色模板 + app 上下文。
+/// 返回 (模板规则文本, inject_context 时构造的 AppContext，否则 None)。
+///
+/// 必须在 coordinator 线程调用（focus_tracker 缓存反映 op-start 的 app；
+/// DB 读取 / 文件读取都廉价）。两处润色触发点（spawn_polish_thread + 最终润色内联）
+/// 在 spawn 前调一次，结果 move 进 closure——避免在 spawned thread 内重读。
+fn resolve_app_aware_prompt() -> (String, Option<octopus_llm::AppContext>) {
+    let bundle_id = crate::platform::focus_tracker::cached_bundle_id();
+    let resolved = super::prompt_route::resolve_polish_prompt(bundle_id.as_deref());
+    let app_context = if resolved.inject_context {
+        crate::platform::focus_tracker::cached_app_name().map(|name| octopus_llm::AppContext {
+            name,
+            category: octopus_llm::classify_app_context(bundle_id.as_deref().unwrap_or(""))
+                .to_string(),
+        })
+    } else {
+        None
+    };
+    (resolved.content, app_context)
 }
 
 /// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 对完整 ASR 全量润色（mode=2 only）。

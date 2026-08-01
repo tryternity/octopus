@@ -398,37 +398,43 @@ download_mirror: ""               # HF 下载镜像（空 = 官方源），cli d
 | `id` | INTEGER PK AUTOINCREMENT——系统主键，用户不可编辑，`app_config.active_polish_prompt` 引用此字段 |
 | `title` | TEXT——用户可读别名，**允许重复**（用户自行区分即可） |
 | `category` | TEXT——用途分类，当前固定 `voice_text_polish`（语音文本润色） |
-| `content` | TEXT——system prompt 的「风格规则」部分（不含增量保留规则） |
+| `content` | TEXT——**文件名引用**（v50，不含 `.md`），运行时 `read_prompt_file(content)` 读 `~/.octopus/.sync/prompts/polish/<content>.md`；存「风格规则」部分（不含 edited 标记规则） |
 | `description` | TEXT——用户可读描述 |
-| `is_system` | INTEGER——`1`=系统内置（不可编辑/删除），`0`=用户自建 |
+| `is_system` | INTEGER——`1`=系统内置（**2026-07-19 起可编辑不可删**），`0`=用户自建 |
 | `created_at` / `updated_at` | TEXT——时间戳 |
 
 ### seed
 
+3 条系统内置（2026-08-01 重构，旧 6 模板→3 模板，详见 [spec](superpowers/specs/2026-08-01-polish-prompt-templates-design.md)）：
+
 ```sql
 INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system) VALUES
-    (1, '默认润色', 'voice_text_polish', '<内置 6 条风格规则>', '默认润色（系统内置）', 1),
-    (2, '进阶润色（断续纠正）', 'voice_text_polish', '<默认 6 条 + 断续纠正/重复修正/同音漂移 3 条强化规则>', '进阶版：针对断续纠正、重复修正、同音漂移场景强化的润色 prompt（系统内置）', 1);
+    (1, '润色-忠实校对',   'voice_text_polish', 'faithful',     '只纠错不改意…（系统内置）', 1),
+    (2, '润色-意图整理',   'voice_text_polish', 'user-intent',  '清洗噪声+结构化…（系统内置）', 1),
+    (3, '润色-口语化',     'voice_text_polish', 'app-casual',   '保留口语味，聊天标点…（系统内置）', 1);
 ```
 
-固定 `id=1`（默认润色）/ `id=2`（进阶润色（断续纠正））为系统内置 prompt（`is_system=1`，不可编辑/删除）。
+每个 seed md 文件内嵌 few-shot 示例（faithful 3 例 / user-intent 2 例 / app-casual 3 例），演示 `[]` edited 标记输入 → 去括号纯文本输出。旧模板（default-polish / advanced-polish / sayit-*）移到 `crates/infra/seeds/prompts/history/` 保留对比，不再 seed。
 
 ### Prompt 组装
 
-`content` 只存「风格规则」部分。润色时由 `llm::prompt::build_system_prompt(content)` 强制拼接 `INCREMENTAL_RULE`（第 7 条增量保留规则，代码常量，用户不可见/不可改）：
+`content` 只存「风格规则」部分。润色时由 `llm::prompt::build_system_prompt(content)` 强制拼接 `EDITED_MARKER_RULE`（2026-08-01 重构：替代旧 `INCREMENTAL_RULE`——`[]` edited 标记规则，代码常量，用户不可见/不可改）：
 
 ```
-system_prompt = content + "\n" + INCREMENTAL_RULE
+system_prompt = content + "\n" + EDITED_MARKER_RULE
+# EDITED_MARKER_RULE = "文本中 [方括号] 标记的词语是用户手动修正过的，请信任这些用词，并在润色全文时以其为语境参考。输出时去掉方括号标记，仅输出纯文本。"
 ```
+
+edited 段（用户手动修正）在 `regions_prompt` / `user_prompt` 中用 `[方括号]` 内联标记拼回全文，全文连贯发给 LLM（不再用 region 标记法把文本切碎）。
 
 ### 运行时切换
 
-设置窗口 prompt 管理页提供 6 个 Tauri 命令：`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`。切换 active prompt 即时生效（`set_system_prompt` 写 `RwLock<String>`），下次润色用新 prompt；进行中的润色不受影响。
+设置窗口 prompt 管理页提供 7 个 Tauri 命令：`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt` / `restore_prompt_from_seed`。切换 active prompt 即时生效（`set_system_prompt` 写 `RwLock<String>`），下次润色用新 prompt；进行中的润色不受影响。
 
 ### 降级
 
 - `active_polish_prompt` 指向不存在的 id → fallback 到 `id=1` + warn 日志 + 自动修正 app_config
-- DB 读 prompt 失败 → fallback 到空 content（仅增量规则）+ warn 日志
+- DB 读 prompt 失败 → fallback 到空 content（仅 edited 标记规则）+ warn 日志
 
 ## 模型下载
 
