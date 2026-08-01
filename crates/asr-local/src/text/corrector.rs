@@ -1,7 +1,5 @@
-// TODO(e2e 后清理)：有界热词纠错改为「热词命中即替换」（见 correct_greedy），
-// unigram/bigram gain 评分机制（score_sentence/get_word_score/is_jieba_valid_word/
-// bigram_scores/CTX_HALF）已不再驱动纠错，暂留待激进模式或移除。
-#![allow(dead_code)]
+// 有界热词纠错：热词命中即替换（correct_greedy），不依赖 unigram/bigram 评分。
+// unigram_scores 保留供 is_common_word（miner 过滤常用词）；bigram 评分机制已移除。
 use std::collections::HashMap;
 use std::io::Read;
 use flate2::read::GzDecoder;
@@ -11,14 +9,11 @@ use pinyin::ToPinyin;
 use crate::hotword::{normalize_fuzzy_pinyin, HotwordIndex};
 
 const UNIGRAM_GZ: &[u8] = include_bytes!("corrector_data/unigram.txt.gz");
-const BIGRAM_GZ: &[u8] = include_bytes!("corrector_data/bigram.txt.gz");
 
 pub struct LightCorrector {
     jieba: Jieba,
-    // Unigram log probabilities: word -> log(prob)（评分用，保留）
+    // Unigram log probabilities: word -> log(prob)（is_common_word 用，miner 过滤常用词）
     unigram_scores: HashMap<String, f64>,
-    // Bigram log probabilities: w1 -> { w2 -> log(prob) }（评分用，保留）
-    bigram_scores: HashMap<String, HashMap<String, f64>>,
     // 热词索引——纠错候选的唯一来源。热路径读锁，reload 整体替换。
     // 空索引 → find_candidates 短路返回单候选 → 零纠错（消灭全词典自由联想的过纠根因）。
     hotwords: parking_lot::RwLock<HotwordIndex>,
@@ -53,10 +48,8 @@ impl Default for LightCorrector {
 impl LightCorrector {
     pub fn new() -> Self {
         let mut unigram_scores: HashMap<String, f64> = HashMap::new();
-        let mut bigram_scores: HashMap<String, HashMap<String, f64>> = HashMap::new();
-        let mut raw_unigram_freqs: HashMap<String, f64> = HashMap::new();
 
-        // 1. Decompress and parse unigrams（仅保留 unigram 评分；热词索引改由 reload 注入）
+        // Decompress and parse unigrams（is_common_word 用；热词索引改由 reload 注入）
         let mut unigram_decoder = GzDecoder::new(UNIGRAM_GZ);
         let mut unigram_str = String::new();
         if let Err(e) = unigram_decoder.read_to_string(&mut unigram_str) {
@@ -70,8 +63,7 @@ impl LightCorrector {
                     let word = parts[0].to_string();
                     if let Ok(freq) = parts[1].parse::<f64>() {
                         total_unigram_freq += freq;
-                        unigrams.push((word.clone(), freq));
-                        raw_unigram_freqs.insert(word, freq);
+                        unigrams.push((word, freq));
                     }
                 }
             }
@@ -82,75 +74,21 @@ impl LightCorrector {
                     unigram_scores.insert(word.clone(), freq.ln() - log_total);
                 }
             }
-            // 注：原「全词典 → fuzzy pinyin → 候选」映射已删除。
-            // 纠错候选唯一来源是 HotwordIndex（reload_hotwords 注入），消灭全词典自由联想的过纠根因。
-        }
-
-        // 2. Decompress and parse bigrams
-        let mut bigram_decoder = GzDecoder::new(BIGRAM_GZ);
-        let mut bigram_str = String::new();
-        if let Err(e) = bigram_decoder.read_to_string(&mut bigram_str) {
-            log::error!("Failed to decompress embedded bigrams: {}", e);
-        } else {
-            let mut raw_bigrams = Vec::new();
-            let mut w1_total_freq = HashMap::new();
-
-            for line in bigram_str.lines() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() == 2 {
-                    let pair = parts[0];
-                    if let Ok(freq) = parts[1].parse::<f64>() {
-                        if let Some(colon_pos) = pair.find(':') {
-                            let w1 = pair[..colon_pos].to_string();
-                            let w2 = pair[colon_pos + 1..].to_string();
-                            *w1_total_freq.entry(w1.clone()).or_insert(0.0) += freq;
-                            raw_bigrams.push((w1, w2, freq));
-                        }
-                    }
-                }
-            }
-
-            for (w1, w2, freq) in raw_bigrams {
-                let denom = if let Some(&uni_freq) = raw_unigram_freqs.get(&w1) {
-                    uni_freq
-                } else {
-                    w1_total_freq.get(&w1).copied().unwrap_or(freq)
-                };
-                let denom = if denom < freq { freq } else { denom };
-                let log_prob = freq.ln() - denom.ln();
-                bigram_scores.entry(w1).or_default().insert(w2, log_prob);
-            }
         }
 
         Self {
             jieba: Jieba::new(),
             unigram_scores,
-            bigram_scores,
             hotwords: parking_lot::RwLock::new(HotwordIndex::empty()),
             active_words: parking_lot::RwLock::new(Vec::new()),
             pending_hits: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
-    fn is_jieba_valid_word(&self, word: &str) -> bool {
-        let cuts = self.jieba.cut(word, false);
-        cuts.len() == 1 && cuts[0] == word
-    }
-
     /// 暴露内部 jieba 分词器供 miner 复用（避免每次新建 Jieba 的词典加载开销）。
     /// `jieba_rs::Jieba::cut` 是 `&self` 只读，线程安全可跨线程共享。
     pub fn jieba(&self) -> &Jieba {
         &self.jieba
-    }
-
-    fn get_word_score(&self, word: &str) -> f64 {
-        if let Some(&score) = self.unigram_scores.get(word) {
-            score
-        } else if self.is_jieba_valid_word(word) {
-            -12.0
-        } else {
-            -18.0
-        }
     }
 
     /// 候选词**唯一来自 HotwordIndex**（active 热词）。
@@ -179,63 +117,9 @@ impl LightCorrector {
         candidates
     }
 
-    fn score_sentence(&self, text: &str) -> f64 {
-        let words: Vec<&str> = self.jieba.cut(text, false);
-        if words.is_empty() {
-            return -99.0;
-        }
-
-        let alpha = 1.0;
-        let beta = 1.5;
-        let mut total_score = 0.0;
-
-        for i in 0..words.len() {
-            let w = words[i];
-            let score_uni = self.get_word_score(w);
-
-            let score_prev = if i > 0 {
-                let w_prev = words[i - 1];
-                if let Some(next_map) = self.bigram_scores.get(w_prev) {
-                    if let Some(&log_prob) = next_map.get(w) {
-                        log_prob
-                    } else {
-                        self.get_word_score(w) - 2.0
-                    }
-                } else {
-                    self.get_word_score(w) - 2.0
-                }
-            } else {
-                0.0
-            };
-
-            let score_next = if i + 1 < words.len() {
-                let w_next = words[i + 1];
-                if let Some(next_map) = self.bigram_scores.get(w) {
-                    if let Some(&log_prob) = next_map.get(w_next) {
-                        log_prob
-                    } else {
-                        self.get_word_score(w_next) - 2.0
-                    }
-                } else {
-                    self.get_word_score(w_next) - 2.0
-                }
-            } else {
-                0.0
-            };
-
-            total_score += alpha * score_uni + beta * (score_prev + score_next);
-        }
-
-        total_score / (words.len() as f64)
-    }
-
     pub fn correct(&self, text: &str) -> String {
         self.correct_greedy(text)
     }
-
-    /// 上下文窗口半幅（评分用）：窗口中心词前后各取 CTX_HALF 个字，
-    /// 总长 ≤ 2*CTX_HALF + sz。jieba.cut 在 30 字规模开销极低。
-    const CTX_HALF: usize = 15;
 
     /// 贪心纠错：从左到右单次扫描，每处取最优候选词**原地替换**后继续前进。
     ///

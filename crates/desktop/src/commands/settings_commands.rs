@@ -377,9 +377,9 @@ fn apply_config_value(
                 if tok.is_empty() {
                     continue;
                 }
-                if !matches!(tok, "f/h" | "hu/wu" | "n/l" | "r/l") {
+                if !matches!(tok, "f/h" | "hu/wu" | "n/l" | "r/l" | "yun/yong" | "fei/hui") {
                     return Err(format!(
-                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l、r/l 子集）",
+                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l、r/l、yun/yong、fei/hui 子集）",
                         tok
                     ));
                 }
@@ -652,27 +652,43 @@ pub fn create_prompt(
     title: String,
     content: String,
     description: String,
+    app_bundle_ids: String,
+    inject_context: bool,
 ) -> Result<i64, String> {
     if title.trim().is_empty() {
         return Err("title 不能为空".into());
     }
-    octopus_infra::db::insert_prompt(&title, &content, &description)
-        .map_err(e2s)
+    let id = octopus_infra::db::insert_prompt(&title, &content, &description, &app_bundle_ids, inject_context)
+        .map_err(e2s)?;
+    crate::engine::coordinator::invalidate_route_cache();
+    Ok(id)
 }
 
 /// 更新 prompt（允许 system prompt 编辑——配合「复原默认」按钮；is_system 字段在 SQL
 /// UPDATE 中不被修改，系统/用户身份保持不变）。
+///
+/// 系统内置模板的路由字段（app_bundle_ids + inject_context）锁定不可改——保持全局
+/// fallback 角色。用户传入的值被忽略，回写 DB 现有值（防御：即便绕过前端灰禁调用也无效）。
 #[tauri::command]
 pub fn update_prompt(
     id: i64,
     title: String,
     content: String,
     description: String,
+    app_bundle_ids: String,
+    inject_context: bool,
 ) -> Result<(), String> {
     if title.trim().is_empty() {
         return Err("title 不能为空".into());
     }
-    octopus_infra::db::update_prompt(id, &title, &content, &description).map_err(e2s)?;
+    // 系统模板路由字段锁定：忽略传入值，用 DB 现有值回写
+    let (app_bundle_ids, inject_context) =
+        match octopus_infra::db::load_prompt(id).map_err(e2s)? {
+            Some(rec) if rec.is_system => (rec.app_bundle_ids, rec.inject_context),
+            _ => (app_bundle_ids, inject_context),
+        };
+    octopus_infra::db::update_prompt(id, &title, &content, &description, &app_bundle_ids, inject_context).map_err(e2s)?;
+    crate::engine::coordinator::invalidate_route_cache();
     // 若更新的是当前激活 prompt，同步刷新 system_prompt
     let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     if active == id {
@@ -688,6 +704,7 @@ pub fn update_prompt(
 pub fn delete_prompt(id: i64) -> Result<(), String> {
     let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     octopus_infra::db::delete_prompt(id).map_err(e2s)?;
+    crate::engine::coordinator::invalidate_route_cache();
     // 删除激活项 → fallback 到 id=1
     if active == id {
         log::warn!("删除了激活 prompt id={}，回退到 id=1", id);
@@ -791,6 +808,12 @@ mod tests {
         // 四组组合合法
         apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,hu/wu,n/l,r/l")).unwrap();
         assert_eq!(cfg.fuzzy_dialect, "f/h,hu/wu,n/l,r/l");
+        // yun/yong 合法（2026-08-01 新增）
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,yun/yong")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "f/h,yun/yong");
+        // fei/hui 合法（2026-08-01 新增）
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("fei/hui")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "fei/hui");
     }
 
     #[test]

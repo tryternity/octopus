@@ -1,9 +1,9 @@
 //! 共享特征提取设施：mel filterbank、LFR 堆叠、窗口函数。
 //!
-//! 抽取自 paraformer.rs（正确实现）+ fbank.rs（待修）+ zipformer.rs（待修）。
+//! 抽取自 paraformer.rs（正确实现）+ fbank.rs + zipformer.rs。
 //! 统一使用 mel 空间计算 filterbank 权重（对齐 kaldi_native_fbank）。
-//! 修复 C1：fbank.rs / zipformer.rs 此前在 Hz 空间算权重，与 paraformer 的
-//! mel 空间实现不一致，影响特征正确性。
+//! C1 修复已完成（2026-07-21）：fbank.rs / zipformer.rs 原在 Hz 空间算权重，
+//! 已改为 mel 空间（与本模块 mel_filterbank 统一）。
 
 use ndarray::Array2;
 

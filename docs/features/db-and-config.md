@@ -1,6 +1,6 @@
 # 数据持久化与配置
 
-> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v51。
+> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v54。
 
 源文件：`crates/infra/src/db.rs`、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
 
@@ -119,22 +119,23 @@ v4+ 多 prompt 管理；**v50 改造**：`content` 从完整 md 文本改为**�
 | `is_system` | 0/1 |
 | 时间戳 | — |
 
-seed 2 条系统内置：`id=1` 默认润色 + `id=2` 进阶润色（断续纠正），均 `is_system=1`。v50 后**可编辑**（调 `open_file_in_editor` 用 CompactEditor 打开 md 文件编辑）。
+seed 3 条系统内置（2026-08-01 重构，旧 6 模板→3 模板，详见 [spec](../superpowers/specs/2026-08-01-polish-prompt-templates-design.md)）：`id=1` faithful（忠实校对）/ `id=2` user-intent（意图整理）/ `id=3` app-casual（口语化整理），均 `is_system=1` + 内嵌 few-shot 示例。v50 后**可编辑**（调 `open_file_in_editor` 用 CompactEditor 打开 md 文件编辑）。
 
 **文件目录布局**（v50）：
 ```
 ~/.octopus/.sync/prompts/
 ├── polish/    # 润色 prompt（prompts 表 content 引用这里）
-│   ├── 润色-默认.md
-│   └── 润色-进阶.md
+│   ├── faithful.md
+│   ├── user-intent.md
+│   └── app-casual.md
 └── command/   # 命令面板 agent/ai 的 @文件名引用（action_data 以 @ 开头）
 ```
 
 **新建 prompt**：`create_prompt_file(category, name)` 创建空 md → `create_prompt` 写 DB 记录（content=文件名）→ 自动打开 CompactEditor 编辑。
 
-`app_config.active_polish_prompt` 存激活 id（默认 `'1'`）。
+`app_config.active_polish_prompt` 存激活 id（默认 `'1'`=faithful）。
 
-`llm::prompt::build_system_prompt(content) = content + INCREMENTAL_RULE`（第 7 条增量规则代码常量强制拼接，用户不可见）。
+`llm::prompt::build_system_prompt(content) = content + EDITED_MARKER_RULE`（2026-08-01 重构：替代旧 `INCREMENTAL_RULE`，`[]` edited 标记规则代码常量强制拼接——"文本中 [方括号] 标记的词语是用户手动修正过的，请信任这些用词，并在润色全文时以其为语境参考。输出时去掉方括号标记，仅输出纯文本。"，用户不可见/不用理解）。
 
 ---
 
@@ -197,7 +198,7 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 | `paste_method` | `clipboard` | `clipboard` / `direct` / `none` |
 | `write_to_clipboard` | `true` | 粘贴后是否留剪贴板 |
 | `asr_hardware_accelerated` | `false` | GPU 加速 |
-| `asr_correct` | `false` | 拼音纠错 |
+| `asr_correct` | `true` | 拼音纠错（2026-08-01 默认改 true，加了热词即生效） |
 | `denoise_mode` | 1 | 0 关 / 1 RNNoise / 2 DeepFilterNet3 |
 | `output_simplified` | `true` | 简繁归一化 |
 | `hide_toolbar` | `false` | 工具栏自动隐藏 |

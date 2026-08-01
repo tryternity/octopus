@@ -575,8 +575,8 @@ settings:
     cancel: 取消
     newBtn: 新建
     builtin: 内置
-    activeBadge: 激活中
     activate: 激活
+    currentActive: 当前使用
     view: 查看
     edit: 编辑
     delete: 删除
@@ -585,6 +585,14 @@ settings:
     restore: 复原默认
     restored: 已恢复为默认内容（点击保存生效）
     restoreFailed: "复原失败："
+    routeConfigTitle: 路由配置
+    routeConfig: 路由配置
+    routeConfigDisabled: 内置模板保持全局，不可配置路由
+    injectContext: 注入应用上下文
+    injectContextHint: 润色时把「当前应用：名称（类别）」加到 prompt 头部，让模型按 app 场景适配风格
+    injectContextBadge: 注入上下文
+    boundApps: "绑定 ${n} 个应用"
+    globalPrompt: 全局（所有应用）
   history:
     polishPolished: 已润色
     polishFailed: 润色失败
@@ -616,6 +624,8 @@ settings:
     huWu: hu/wu（胡 / 吴）
     nL: n/l（刘 / 牛）
     rL: r/l（热 / 乐）
+    yunYong: yun/yong（孕 / 用）
+    feiHui: fei/hui（飞 / 回）
     loadFailed: "加载失败："
     newVersion: 已新建版本
     importedVersion: 已导入为新版本
