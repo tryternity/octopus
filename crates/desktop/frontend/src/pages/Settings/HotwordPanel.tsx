@@ -36,8 +36,7 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
 ];
 
 /// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
-const SORT_OPTIONS: { value: 'time' | 'alpha' | 'hits'; key: string }[] = [
-  { value: 'time', key: 'settings.hotword.sortDefault' },
+const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
   { value: 'alpha', key: 'settings.hotword.sortAlpha' },
   { value: 'hits', key: 'settings.hotword.sortHit' },
 ];
@@ -49,7 +48,7 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<'time' | 'alpha' | 'hits'>('time');
+  const [sort, setSort] = useState<'alpha' | 'hits'>('alpha');
   const [sortOpen, setSortOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
@@ -98,8 +97,7 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
     const arr = q ? words.filter((w) => w.toLowerCase().includes(q)) : words;
     return [...arr].sort((a, b) => {
       if (sort === 'hits') return (hits[b] ?? 0) - (hits[a] ?? 0);
-      if (sort === 'alpha') return a.localeCompare(b);
-      return 0; // time：保留 normalize 后的存储序（拼音首字母序）
+      return a.localeCompare(b); // alpha（默认）
     });
   }, [words, query, sort, hits]);
 
@@ -412,8 +410,8 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
                   size="icon-sm"
                   disabled={!selected || words.length === 0}
                   onClick={() => setSortOpen((v) => !v)}
-                  aria-label={t('settings.hotword.sortDefault')}
-                  title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortDefault')}
+                  aria-label={t('settings.hotword.sortAlpha')}
+                  title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortAlpha')}
                 >
                   <ArrowDownWideNarrow className="h-4 w-4" />
                 </Button>
@@ -544,19 +542,23 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
                   const h = hits[w] ?? 0;
                   return (
                     <div key={w} className={cn(
-                      'group relative rounded-md border bg-background px-3 py-1.5 pr-6 transition-colors',
+                      'group relative flex items-center justify-center rounded-md border bg-background px-3 py-1.5 transition-colors',
                       recentlyAdded.has(w)
                         ? 'border-voice bg-voice/10'
                         : h > 0
                           ? 'border-success/30 bg-success/5'
-                          : 'border-border hover:border-foreground/25'
+                          : 'border-border hover:border-destructive/40'
                     )}>
-                      {/* hover 显删除按钮 */}
-                      <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100" aria-label={`删除 ${w}`}>
-                        <X className="h-3 w-3" />
+                      {/* hover 时中间显现红色大 X（覆盖词，点击删除） */}
+                      <button
+                        onClick={() => removeWord(w)}
+                        className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 text-destructive opacity-0 backdrop-blur-[1px] transition-opacity group-hover:opacity-100"
+                        aria-label={`删除 ${w}`}
+                      >
+                        <X className="h-5 w-5" strokeWidth={2.5} />
                       </button>
-                      {/* 词 + 命中数同行：词 truncate，命中数右对齐 */}
-                      <div className="flex items-center gap-1.5">
+                      {/* 词 + 命中数同行（底层，hover 时被 X 覆盖） */}
+                      <div className="flex w-full items-center gap-1.5">
                         <span className="min-w-0 flex-1 truncate text-sm">{w}</span>
                         <span className={cn(
                           'flex-shrink-0 font-mono text-[10px] tabular-nums',
