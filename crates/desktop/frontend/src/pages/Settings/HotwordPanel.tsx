@@ -34,6 +34,7 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'n/l', key: 'settings.hotword.nL' },
   { tok: 'r/l', key: 'settings.hotword.rL' },
   { tok: 'yun/yong', key: 'settings.hotword.yunYong' },
+  { tok: 'fei/hui', key: 'settings.hotword.feiHui' },
 ];
 
 /// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
