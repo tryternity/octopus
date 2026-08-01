@@ -162,6 +162,11 @@ export function FileTreePanel({
         <div
           className={`file-tree-row ${isSelected ? "file-tree-row-selected" : ""}`}
           style={{ paddingLeft: `${depth * 12 + 4}px` }}
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", fullPath);
+            e.dataTransfer.effectAllowed = "copy";
+          }}
           onClick={() => {
             if (isDir) toggleDir(fullPath);
             else setSelected(fullPath);

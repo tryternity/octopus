@@ -15,6 +15,8 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useTerminalSession } from "./useTerminalSession";
 import { SearchOverlay } from "./SearchOverlay";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
+import { relPath } from "./relPath";
+import { shellEscape } from "./shellEscape";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -152,7 +154,28 @@ export function TerminalPane({
 
   return (
     <div className="terminal-pane">
-      <div ref={containerRef} className="terminal-pane-canvas" onContextMenu={openContextMenu} />
+      <div
+        ref={containerRef}
+        className="terminal-pane-canvas"
+        onContextMenu={openContextMenu}
+        onDragOver={(e) => {
+          // 允许 drop（否则浏览器/WKWebView 拒绝）
+          if (e.dataTransfer.types.includes("text/plain")) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={(e) => {
+          const fullPath = e.dataTransfer.getData("text/plain");
+          if (!fullPath) return;
+          e.preventDefault();
+          const s = sessionRef.current;
+          const rel = relPath(fullPath, s.cwd ?? "");
+          const escaped = shellEscape(rel);
+          s.write(escaped); // 插入光标位置，不回车
+          s.focus(); // 自动聚焦终端
+        }}
+      />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay
           addon={session.searchAddon}
