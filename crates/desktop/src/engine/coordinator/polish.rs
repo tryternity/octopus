@@ -194,7 +194,7 @@ pub(crate) fn handle_final_polish_done(
 
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
-/// `input.segments` 转多段润色协议（Edited 段 preserve [] 标记为语境参考，其余润色，spec §12 / §2.C）。
+/// `input.segments` 转多段润色协议（Edited 段 preserve {} 标记为语境参考，其余润色，spec §12 / §2.C）。
 /// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
 /// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 pub(crate) fn spawn_polish_thread(
@@ -204,7 +204,7 @@ pub(crate) fn spawn_polish_thread(
     ignore_mode: bool,
     session_id: i64,
 ) {
-    // 段模型多段润色：Edited 段 preserve=true（LLM [] 标记为语境参考），其余待润色。
+    // 段模型多段润色：Edited 段 preserve=true（LLM {} 标记为语境参考），其余待润色。
     let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
         crate::core::config::llm_config_ignore_mode()
