@@ -205,13 +205,23 @@ pub fn polish_regions(
     }
     let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
 
-    chat_text(
+    let result = chat_text(
         &prompt::system_prompt(),
         &prompt::regions_prompt(regions),
         max_tokens,
         config,
         None,
-    )
+    )?;
+    // 防御性 strip：LLM 可能未遵守「去掉花括号标记」，残留 {} 会泄漏到最终文本。
+    Ok(strip_edited_markers(&result))
+}
+
+/// 去除 LLM 输出中残留的 edited 标记花括号（{word} → word）。
+/// 仅去除包裹单个词的 `{}`，不影响 JSON/代码中的合法花括号（那些不会出现在润色输出中）。
+fn strip_edited_markers(text: &str) -> String {
+    // 简单策略：去掉所有 { 和 } 字符。
+    // 润色输出是纯文本（无 JSON/代码），花括号在此语境的唯一来源就是 edited 标记。
+    text.replace(['{', '}'], "")
 }
 
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
@@ -250,4 +260,17 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_edited_markers_removes_braces() {
+        assert_eq!(strip_edited_markers("hello {world}"), "hello world");
+        assert_eq!(strip_edited_markers("{nginx}配置"), "nginx配置");
+        assert_eq!(strip_edited_markers("no markers here"), "no markers here");
+        assert_eq!(strip_edited_markers("{a}{b}"), "ab");
+    }
 }
