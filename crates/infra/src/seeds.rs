@@ -66,17 +66,17 @@ fn load_prompt_seeds(conn: &Connection) -> Result<()> {
     // content 字段存 dest_filename（不含 .md），运行时读 ~/.octopus/.sync/prompts/polish/<content>.md
     let seeds = [
         (1i64, "faithful.md", "润色-忠实校对", "忠实校对",
-         "只纠错不改意，保留原始句式。ASR 异常修复强（系统内置）"),
+         "只纠错不改意，保留原始句式。ASR 异常修复强（系统内置）", 0i64),
         (2i64, "user-intent.md", "润色-意图整理", "意图整理",
-         "清洗噪声+结构化，多要点自动转列表（系统内置）"),
+         "清洗噪声+结构化，多要点自动转列表（系统内置）", 0i64),
         (3i64, "app-casual.md", "润色-口语化", "口语化整理",
-         "保留口语味，聊天标点，适合即时通讯（系统内置）"),
+         "保留口语味，聊天标点，适合即时通讯（系统内置）", 1i64),
     ];
     // 拷贝 md 文件到 ~/.octopus/.sync/prompts/polish/（幂等，已存在跳过）
     let polish_dir = crate::paths::octopus_config_home()
         .join(".sync").join("prompts").join("polish");
     let _ = std::fs::create_dir_all(&polish_dir);
-    for (_, seed_file, dest_name, _, _) in &seeds {
+    for (_, seed_file, dest_name, _, _, _) in &seeds {
         let src = prompts_dir.join(seed_file);
         let dst = polish_dir.join(format!("{}.md", dest_name));
         if !dst.exists() {
@@ -86,12 +86,12 @@ fn load_prompt_seeds(conn: &Connection) -> Result<()> {
         }
     }
     // DB content 存文件名引用（不含 .md）
-    for (id, _, dest_name, title, desc) in seeds {
+    for (id, _, dest_name, title, desc, inject) in seeds {
         // INSERT OR IGNORE：id 已存在则跳过（保护用户编辑）
         conn.execute(
-            "INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system)
-             VALUES (?1, ?2, 'voice_text_polish', ?3, ?4, 1)",
-            rusqlite::params![id, title, dest_name, desc],
+            "INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system, inject_context)
+             VALUES (?1, ?2, 'voice_text_polish', ?3, ?4, 1, ?5)",
+            rusqlite::params![id, title, dest_name, desc, inject],
         ).with_context(|| format!("插入 prompt seed id={}", id))?;
     }
     Ok(())

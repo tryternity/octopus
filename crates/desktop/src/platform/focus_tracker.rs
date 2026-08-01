@@ -11,9 +11,9 @@
 use std::sync::Mutex;
 use tauri::Manager;
 
-/// 缓存的前台 app：(pid, bundle_id)。操作开始时缓存，粘贴时用。
+/// 缓存的前台 app：(pid, bundle_id, name)。操作开始时缓存，粘贴时用。
 /// 过滤自身（octopus）——缓存的是用户真正要粘贴到的目标 app。
-static CACHED_PREV: Mutex<Option<(i32, String)>> = Mutex::new(None);
+static CACHED_PREV: Mutex<Option<(i32, String, String)>> = Mutex::new(None);
 
 /// 缓存的自身 webview 窗口 label（前台是 octopus 自己时，记下聚焦的窗口）。
 /// toggle 入口（terminal/compact_editor 聚焦）时缓存，粘贴时 emit "paste-text" 用。
@@ -34,7 +34,7 @@ pub fn save_frontmost_pid(app: &tauri::AppHandle) {
     if name != "octopus" && name != "octopus-desktop" && !name.starts_with("osascript") {
             let bundle = bid.unwrap_or_default();
             log::info!("[focus] cached frontmost: pid={} bundle={} name={}", pid, bundle, name);
-            *CACHED_PREV.lock().unwrap() = Some((pid, bundle));
+            *CACHED_PREV.lock().unwrap() = Some((pid, bundle, name));
             // 外部 app：清掉 self-window 缓存
             *CACHED_SELF_WINDOW.lock().unwrap() = None;
         } else {
@@ -79,12 +79,17 @@ pub fn cached_self_window() -> Option<String> {
 
 /// 读缓存的 pid。粘贴时用（paste_to_pid 定向发送）。
 pub fn cached_pid() -> Option<i32> {
-    CACHED_PREV.lock().unwrap().as_ref().map(|(pid, _)| *pid)
+    CACHED_PREV.lock().unwrap().as_ref().map(|(pid, _, _)| *pid)
 }
 
 /// 读缓存的 bundle_id。dispatch 路径选择用（如 WKWebView osascript fallback）。
 pub fn cached_bundle_id() -> Option<String> {
-    CACHED_PREV.lock().unwrap().as_ref().map(|(_, bid)| bid.clone())
+    CACHED_PREV.lock().unwrap().as_ref().map(|(_, bid, _)| bid.clone())
+}
+
+/// 读缓存的 app name。润色 prompt 注入「当前应用：名称」用。
+pub fn cached_app_name() -> Option<String> {
+    CACHED_PREV.lock().unwrap().as_ref().map(|(_, _, name)| name.clone())
 }
 
 /// 清理缓存。粘贴完成后调（下次操作重新缓存）。

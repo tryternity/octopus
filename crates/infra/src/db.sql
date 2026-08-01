@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     content     TEXT    NOT NULL,
     description TEXT    NOT NULL DEFAULT '',
     is_system   INTEGER NOT NULL DEFAULT 0,
+    app_bundle_ids TEXT NOT NULL DEFAULT '',   -- JSON 数组 ["com.tencent.xinWeChat"]，空=全局（不关联特定 app）
+    inject_context INTEGER NOT NULL DEFAULT 0,    -- 0=不注入 app 上下文，1=注入（user prompt 头部加「当前应用：名称」）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
