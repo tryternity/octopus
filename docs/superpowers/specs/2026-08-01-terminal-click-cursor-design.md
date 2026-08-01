@@ -1,7 +1,49 @@
 # 终端点击定位命令行光标
 
-> **日期**：2026-08-01
+> **状态：❌ 探索失败，已回滚——当前用 xterm 内置 altClickMovesCursor（不精确但可用）**
+> **日期**：2026-08-01（探索），2026-08-02（回滚）
 > **关联**：[内嵌终端设计](2026-07-31-embedded-terminal-design.md)、[控制键设计](2026-07-31-terminal-keymap-design.md)
+
+## 探索记录（失败教训 + 成功经验，供后续优化参考）
+
+### 目标
+
+命令行输入态，鼠标点击（或 Alt+Click）直接把光标移到点击位置，替代左右键移动。比 xterm 内置 altClickMovesCursor 更精确。
+
+### xterm 内置 altClickMovesCursor 的问题
+
+xterm 6.0 默认开启 `altClickMovesCursor: true`——Alt+Click 移动光标。**能用但不精确**：根因是 xterm 不知道 shell 真实光标位置，只能读 `buffer.active.cursorX`（渲染侧光标），多行/续行场景会偏。
+
+### 我们的方案（已回滚）
+
+试图自定义实现：document mousedown/mouseup 监听 Alt+Click → 坐标换算 → 门控 → 发方向键序列移动光标。
+
+### 失败的三个根因
+
+1. **React onClick/onMouseDown 被 xterm canvas 内部元素拦截**——xterm 的内部 canvas/textarea 不让 click/mousedown 冒泡到 `.terminal-pane-canvas`。改 document 级监听后 mousedown/mouseup 能收到，但这引出后续问题。
+
+2. **OSC 133 inCommand 门控不稳定**——shell 启动时序导致 `inCommand` 卡在 true（precmd 的 D+A 标记被 registerPromptTracker 漏掉），`isPromptActive()` 永远返回 false，门控永远挡住。放宽门控（去掉 inCommand）后，命令执行中也响应（不安全）。
+
+3. **方向键序列 readline 不认**——用 CUF/CUB（`\x1b[nC`）shell 字面输出 C；改用方向键重复（`\x1b[C` × n）后仍然不工作（shell 未在 readline 输入态时方向键被当字面字符）。根因可能是 shell 不在 prompt 态（OSC 133 问题导致），或 PTY write 的时序问题。
+
+### 成功经验（保留）
+
+1. **Maximum update depth exceeded 修复**（`1aa2abd6`）——探索过程中发现并修复的预存 bug：TerminalPane 的 onPtyId/onCwd effect 依赖内联回调（每次渲染新引用）+ setTabs 无等值判断 → 无限循环。修复：回调用 ref 持有 + setTabs 加等值短路。**这个修复独立有效，已保留。**
+
+2. **clickCursor.ts 纯函数**（pixelToCol / shouldMoveCursor / buildCursorMoveSequence）——坐标换算 + 门控逻辑正确（13 测试通过）。文件保留备用。后续如果找到正确的光标移动方式，这些纯函数可直接复用。
+
+3. **useTerminalSession 的 onPtyId/onCwd 回调用 ref 持有**——TerminalPane 上报 effect 的稳定化模式（对齐 AGENTS.md listener gotcha），已保留。
+
+### 后续优化方向（待探索）
+
+- **修 OSC 133 时序**：registerPromptTracker 注册时机晚于 shell 第一个 precmd，导致 inCommand 卡 true。修这个后 isPromptActive 门控才能可靠工作。
+- **用 xterm API 而非 PTY write**：xterm 内置的 altClickMovesCursor 可能用 `term.input()` 或内部 API（而非写 PTY）。研究 xterm 源码的 `_moveToCell` 或类似方法，用 xterm 原生方式移动光标。
+- **terax 参考**：Terax 用 block 模式（命令行输入是 DOM input，不是 xterm grid），所以它不需要「点击定位 xterm 光标」。octopus 走纯 xterm grid 路线，无现成参考。
+
+---
+
+以下为原设计文档（探索方案，已回滚，保留供参考）：
+
 
 ## 目标
 
