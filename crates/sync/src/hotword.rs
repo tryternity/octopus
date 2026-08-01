@@ -51,26 +51,22 @@ pub fn hotword_set_file_path(uuid: &str) -> PathBuf {
 
 // === md5 指纹 ===
 
-/// 热词版本的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
+/// 热词版本元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
 ///
-/// 拼接字段顺序（固定，不可变）：`name | enabled | words_text`
-///
-/// `words_text` 已 normalize（拼音首字母排序 + 去重），跨设备字节一致——md5 也一致。
+/// v57 起 set 只存元数据（词数据在 hotword_words），拼接字段：`name | enabled`。
 pub fn hotword_set_md5(h: &HotwordSet) -> String {
-    hotword_set_md5_from_fields(&h.name, h.enabled, &h.words_text)
+    hotword_set_md5_from_fields(&h.name, h.enabled)
 }
 
 /// 从基本字段算 md5——用于写命令填 sync_md5（避免重复读完整 row）。
-///
-/// 与 `hotword_set_md5(&HotwordSet)` 对同一数据算出的 md5 相同。
-pub fn hotword_set_md5_from_fields(name: &str, enabled: bool, words_text: &str) -> String {
-    let input = format!("{}|{}|{}", name, enabled, words_text);
+pub fn hotword_set_md5_from_fields(name: &str, enabled: bool) -> String {
+    let input = format!("{}|{}", name, enabled);
     md5_hex(input.as_bytes())
 }
 
 // === 文件格式 ===
 
-/// 单个热词版本的文件内容（明文 JSON，不加密）。
+/// 单个热词版本的文件内容（明文 JSON，不加密）。v57 起只含元数据（词数据在 words/ 目录）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotwordSetFile {
@@ -82,8 +78,6 @@ pub struct HotwordSetFile {
     pub name: String,
     /// 是否勾选生效。
     pub enabled: bool,
-    /// 空格分隔的归一化词列表（已 normalize_words_text）。
-    pub words_text: String,
     /// 创建时间（SQLite datetime 格式，跨设备不同但保留用于排序）。
     pub created_at: String,
     /// 更新时间。
@@ -98,7 +92,6 @@ impl HotwordSetFile {
             id: h.id.clone(),
             name: h.name.clone(),
             enabled: h.enabled,
-            words_text: h.words_text.clone(),
             created_at: h.created_at.clone(),
             updated_at: h.updated_at.clone(),
         }
@@ -110,7 +103,6 @@ impl HotwordSetFile {
             id: self.id.clone(),
             name: self.name.clone(),
             enabled: self.enabled,
-            words_text: self.words_text.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             sync_md5,
@@ -617,12 +609,11 @@ mod tests {
         }
     }
 
-    fn sample_set(id: &str, name: &str, words: &str) -> HotwordSet {
+    fn sample_set(id: &str, name: &str) -> HotwordSet {
         HotwordSet {
             id: id.into(),
             name: name.into(),
             enabled: true,
-            words_text: words.into(),
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
             sync_md5: None,
@@ -633,16 +624,16 @@ mod tests {
 
     #[test]
     fn hotword_set_md5_is_deterministic() {
-        let h1 = sample_set("uuid-1", "版本A", "苹果 香蕉");
-        let h2 = sample_set("uuid-2", "版本A", "苹果 香蕉");
-        // id 不同但逻辑内容相同 → md5 应相同
+        let h1 = sample_set("uuid-1", "版本A");
+        let h2 = sample_set("uuid-2", "版本A");
+        // id 不同但逻辑内容（name|enabled）相同 → md5 应相同
         assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     #[test]
     fn hotword_set_md5_ignores_timestamps() {
-        let mut h1 = sample_set("uuid-1", "版本A", "苹果");
-        let mut h2 = sample_set("uuid-1", "版本A", "苹果");
+        let mut h1 = sample_set("uuid-1", "版本A");
+        let mut h2 = sample_set("uuid-1", "版本A");
         h2.created_at = "1999-01-01 00:00:00".into();
         h2.updated_at = "2099-12-31 23:59:59".into();
         let _ = &mut h1;
@@ -651,44 +642,27 @@ mod tests {
 
     #[test]
     fn hotword_set_md5_changes_on_name_change() {
-        let h1 = sample_set("uuid-1", "版本A", "苹果");
-        let mut h2 = sample_set("uuid-1", "版本B", "苹果");
+        let h1 = sample_set("uuid-1", "版本A");
+        let mut h2 = sample_set("uuid-1", "版本B");
         let _ = &mut h2;
         assert_ne!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     #[test]
     fn hotword_set_md5_changes_on_enabled_change() {
-        let h1 = sample_set("uuid-1", "版本A", "苹果");
-        let mut h2 = sample_set("uuid-1", "版本A", "苹果");
+        let h1 = sample_set("uuid-1", "版本A");
+        let mut h2 = sample_set("uuid-1", "版本A");
         h2.enabled = false;
         let _ = &mut h2;
         assert_ne!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     #[test]
-    fn hotword_set_md5_changes_on_words_change() {
-        let h1 = sample_set("uuid-1", "版本A", "苹果");
-        let mut h2 = sample_set("uuid-1", "版本A", "香蕉");
-        let _ = &mut h2;
-        assert_ne!(hotword_set_md5(&h1), hotword_set_md5(&h2));
-    }
-
-    #[test]
     fn hotword_set_md5_from_fields_matches_struct() {
-        let h = sample_set("uuid-1", "版本A", "苹果 香蕉");
+        let h = sample_set("uuid-1", "版本A");
         let from_struct = hotword_set_md5(&h);
-        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled, &h.words_text);
+        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled);
         assert_eq!(from_struct, from_fields);
-    }
-
-    #[test]
-    fn hotword_set_md5_normalizes_equivalent_words() {
-        // words_text 已 normalize（调用方保证），相同内容顺序不同应由调用方 normalize
-        // 这里测：相同 words_text 字符串 → 相同 md5（即使传不同 id）
-        let h1 = sample_set("uuid-1", "版本A", "苹果 香蕉");
-        let h2 = sample_set("uuid-2", "版本A", "苹果 香蕉");
-        assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     // === 文件读写测试 ===
@@ -696,7 +670,7 @@ mod tests {
     #[test]
     fn hotword_set_file_round_trip() {
         let _g = SyncRootGuard::new();
-        let h = sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "测试版本", "苹果 香蕉");
+        let h = sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "测试版本");
         let file = HotwordSetFile::from_hotword_set(&h);
         write_hotword_set_file(&file).expect("write");
 
@@ -747,8 +721,8 @@ mod tests {
     fn export_all_writes_all_sets() {
         let _g = SyncRootGuard::new();
         let sets = vec![
-            sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "版本A", "苹果"),
-            sample_set("b2c3d4e5-f6a7-4890-9002-bcdef234567", "版本B", "香蕉"),
+            sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "版本A"),
+            sample_set("b2c3d4e5-f6a7-4890-9002-bcdef234567", "版本B"),
         ];
         let outline = export_all_hotwords(&sets).expect("export");
         assert_eq!(outline.ciphers.len(), 2);
@@ -761,7 +735,7 @@ mod tests {
     #[test]
     fn incremental_export_zero_changes_on_unchanged_data() {
         let _g = SyncRootGuard::new();
-        let sets = vec![sample_set("a1b2c3d4-0001", "版本A", "苹果")];
+        let sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
 
         // 第一次 export（全量）
         let first = export_all_hotwords(&sets).expect("first export");
@@ -775,8 +749,8 @@ mod tests {
     fn incremental_export_writes_only_changed() {
         let _g = SyncRootGuard::new();
         let sets = vec![
-            sample_set("a1b2c3d4-0001", "版本A", "苹果"),
-            sample_set("a1b2c3d4-0002", "版本B", "香蕉"),
+            sample_set("a1b2c3d4-0001", "版本A"),
+            sample_set("a1b2c3d4-0002", "版本B"),
         ];
         export_all_hotwords(&sets).expect("initial");
 
@@ -791,13 +765,13 @@ mod tests {
     fn incremental_export_deletes_missing() {
         let _g = SyncRootGuard::new();
         let sets = vec![
-            sample_set("a1b2c3d4-0001", "版本A", "苹果"),
-            sample_set("a1b2c3d4-0002", "版本B", "香蕉"),
+            sample_set("a1b2c3d4-0001", "版本A"),
+            sample_set("a1b2c3d4-0002", "版本B"),
         ];
         export_all_hotwords(&sets).expect("initial");
 
         // SQLite 删了一个（只剩版本A）
-        let sets2 = vec![sample_set("a1b2c3d4-0001", "版本A", "苹果")];
+        let sets2 = vec![sample_set("a1b2c3d4-0001", "版本A")];
         let (outline, changed) = incremental_export_hotwords(&sets2).expect("incremental");
         assert_eq!(changed, 1, "删了一个版本，应 1 变更");
         assert_eq!(outline.ciphers.len(), 1);
@@ -815,7 +789,7 @@ mod tests {
     #[test]
     fn incremental_export_protects_sync_data_when_db_empty() {
         let _g = SyncRootGuard::new();
-        let sets = vec![sample_set("a1b2c3d4-0001", "版本A", "苹果")];
+        let sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
         export_all_hotwords(&sets).expect("initial");
         assert!(read_hotword_set_file("a1b2c3d4-0001").is_ok());
 
@@ -832,7 +806,7 @@ mod tests {
     fn incremental_export_outline_uses_sync_md5() {
         let _g = SyncRootGuard::new();
         // 预设 sync_md5——incremental_export 应把它写入 outline（而非临时算）
-        let mut sets = vec![sample_set("a1b2c3d4-0001", "版本A", "苹果")];
+        let mut sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
         sets[0].sync_md5 = Some("preset-md5-value".into());
 
         let (outline, _) = incremental_export_hotwords(&sets).expect("export");
@@ -847,8 +821,8 @@ mod tests {
     fn import_returns_files_with_correct_data() {
         let _g = SyncRootGuard::new();
         let sets = vec![
-            sample_set("a1b2c3d4-0001", "版本A", "苹果 香蕉"),
-            sample_set("b2c3d4e5-0002", "版本B", "葡萄"),
+            sample_set("a1b2c3d4-0001", "版本A"),
+            sample_set("b2c3d4e5-0002", "版本B"),
         ];
         export_all_hotwords(&sets).expect("export");
 
@@ -1243,7 +1217,7 @@ mod tests {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        let sets = vec![sample_set("33333333-0001", "版本A", "苹果")];
+        let sets = vec![sample_set("33333333-0001", "版本A")];
         let (outline1, changed1) = incremental_export_hotwords(&sets).expect("first");
         assert!(changed1 > 0);
         let v1 = outline1.vault_version;
@@ -1254,7 +1228,7 @@ mod tests {
         assert_eq!(outline2.vault_version, v1, "无变化版本不递增");
 
         // 有变化（改 words_text）
-        let sets2 = vec![sample_set("33333333-0001", "版本A", "苹果 香蕉")];
+        let sets2 = vec![sample_set("33333333-0001", "版本A")];
         let (outline3, changed3) = incremental_export_hotwords(&sets2).expect("third");
         assert!(changed3 > 0);
         assert!(outline3.vault_version > v1, "有变化版本应递增");
