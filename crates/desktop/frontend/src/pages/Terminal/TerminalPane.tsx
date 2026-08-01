@@ -212,9 +212,11 @@ export function TerminalPane({
       const clickCol = pixelToCol(e.clientX, rect.left, rect.width, s.cols);
       const clickRow = Math.max(0, Math.min(s.rows - 1, Math.floor((e.clientY - rect.top) / (rect.height / s.rows))));
 
-      // 门控
+      // 门控：normal buffer（非 TUI）+ 当前光标行才响应。
+      // 不用 isPromptActive（OSC 133 inCommand）——shell 启动时序导致 inCommand 状态不稳定
+      // （启动脚本 preexec 发 C 但 precmd 的 D+A 可能被漏）。bufferType + clickRow 已足够区分。
       if (!shouldMoveCursor({
-        inCommand: !s.isPromptActive(),
+        inCommand: false, // 放宽：不依赖 OSC 133，靠 bufferType + clickRow 门控
         bufferType: s.bufferType,
         clickRow,
         cursorY: s.cursorY,
