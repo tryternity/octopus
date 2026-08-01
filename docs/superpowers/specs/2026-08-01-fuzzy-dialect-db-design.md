@@ -62,7 +62,7 @@ seed 7 条：fei/hui + yun/yong + **si/ci**（syllable）；n/l + f/h + r/l（in
 迁移 v56 时把 `init_schema` 从「单分支 `if v == 54`」重构为 **while 循环迁移链**：`let mut cur = v; while cur < CURRENT_SCHEMA_VERSION { match cur { 54 => ..., 55 => ..., _ => bail } cur += 1; PRAGMA user_version = cur }`。每个分支升 1 版本，v54→v55→v56... 串行，未来加 v57 只需加一个 `match` 分支，无需再改外层结构。`_ =>` 兜底 bail 54 以下旧库（不支持表结构自动迁移）。
 
 ### 4.2 seed 在两处（db.sql + mod.rs 迁移分支）
-`fuzzy_dialect_rules` 表的 CREATE + seed 6 条**同时存在于** ① `crates/infra/src/db.sql`（全新库 `v==0` 由 `execute_batch` 一次性建出）；② `crates/infra/src/db/mod.rs` 的 `55 =>` 迁移分支（存量库 v55→v56 升级用）。两处内容必须一致（token / label / from_py / to_py / match_type / enabled=0 / sort_order）。改规则时两处都要改。
+`fuzzy_dialect_rules` 表的 CREATE + seed 7 条**同时存在于** ① `crates/infra/src/db.sql`（全新库 `v==0` 由 `execute_batch` 一次性建出）；② `crates/infra/src/db/mod.rs` 的 `55 =>` 迁移分支（存量库 v55→v56 升级用）。两处内容必须一致（token / label / from_py / to_py / match_type / enabled=0 / sort_order）。改规则时两处都要改。
 
 ### 4.3 旧 fuzzy_dialect 字符串迁移（保留状态）
 v55→v56 迁移分支读旧 `app_config.fuzzy_dialect`（逗号分隔 token，如 `"f/h,r/l"`）→ `split(',')` → `UPDATE fuzzy_dialect_rules SET enabled=1 WHERE token=?`（逐个 token）。**不删 app_config.fuzzy_dialect 行**——留作历史，不再读。日志记录迁移的旧值或「无旧配置」。

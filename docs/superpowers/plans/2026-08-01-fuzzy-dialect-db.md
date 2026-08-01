@@ -11,7 +11,7 @@
 **commit**：`920ccb90 refactor(hotword): 方言规则 DB 化（后端）+ schema v55→v56`
 
 文件：
-- `crates/infra/src/db.sql` — 新增 `fuzzy_dialect_rules` 表 CREATE + seed 6 条（全新库）
+- `crates/infra/src/db.sql` — 新增 `fuzzy_dialect_rules` 表 CREATE + seed 7 条（全新库；si/ci 后续追加）
 - `crates/infra/src/db/mod.rs` — `CURRENT_SCHEMA_VERSION` v55→v56；`init_schema` 改 **while 循环迁移链**（`while cur < CURRENT { match cur {...} }`），新增 `55 =>` 分支建表 + seed + 旧 `app_config.fuzzy_dialect` 字符串开关迁移到表 `enabled`
 - `crates/infra/src/db/hotword.rs` — 新增 `FuzzyDialectRule` struct + `FUZZY_RULE_COLS` + `list_fuzzy_dialect_rules` / `list_enabled_fuzzy_dialect_rules` / `set_fuzzy_dialect_rule_enabled`
 - `crates/asr-local/src/text/hotword.rs` — 废弃 `FuzzyRules` struct + const 表 + `parse_dialect`；新增 `FUZZY_RULES_CACHE: OnceLock<RwLock<Vec<FuzzyDialectRule>>>` + `set_fuzzy_rules_cache` + `normalize_with_rules(py, rules)`（按 match_type 分组：基础→syllable→initial→special_hu）；`normalize_fuzzy_pinyin` 改读 cache
