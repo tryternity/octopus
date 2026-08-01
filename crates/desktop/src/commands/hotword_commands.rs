@@ -109,6 +109,28 @@ pub fn delete_hotword_set(id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── 回收站 GC（2026-08-02）──
+
+/// 统计回收站 tombstone 数（前端按钮「回收站 (N)」用）。
+#[tauri::command]
+pub fn count_hotword_tombstones() -> Result<i64, String> {
+    db::count_hotword_tombstones().map_err(e2s)
+}
+
+/// 清空回收站——硬删所有 set tombstone + 其词 + 所有 word tombstone（不限年龄）。
+/// 用户确认后调。清完 export 重建（清 .sync）。
+#[tauri::command]
+pub fn purge_hotword_tombstones() -> Result<usize, String> {
+    let purged = db::purge_all_hotword_tombstones().map_err(e2s)?;
+    if purged > 0 {
+        // 清 .sync：export 不含超期/已删 tombstone
+        if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+            log::warn!("[hotword] 手动清空后 export 重建失败（不阻断）：{}", e);
+        }
+    }
+    Ok(purged)
+}
+
 #[tauri::command]
 pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
     db::toggle_hotword_set(&id, enabled).map_err(e2s)?;

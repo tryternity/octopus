@@ -660,6 +660,11 @@ settings:
     importVersionPlaceholder: Import version name (Enter then select txt)
     newVersionBtn: New Version
     importBtn: Import Version
+    purgeBtn: Empty Recycle Bin
+    purgeConfirmTitle: Empty Recycle Bin
+    purgeConfirmMsg: Empty the recycle bin? This permanently deletes all removed dictionaries (cannot be undone).
+    purgedMsg: "Emptied ${n} deleted dictionaries"
+    purgeFailed: "Empty failed: "
     renameHint: Click to rename
     wordsCount: words
     addPlaceholder: Names / Places / Terms

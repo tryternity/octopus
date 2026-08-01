@@ -119,6 +119,12 @@ pub fn hotword_word_md5(w: &HotwordWord) -> String {
     hotword_word_md5_from_fields(&w.set_id, &w.word, &w.pinyin, w.is_deleted)
 }
 
+/// tombstone 是否超期（GC 2026-08-02）——`now_secs - is_deleted > RETENTION`。
+/// 活跃（is_deleted=0）永远不超期。用于 export 跳过 + merge pull skip，防跨设备复活。
+fn is_tombstone_expired(is_deleted: i64, now_secs: i64) -> bool {
+    is_deleted > 0 && now_secs - is_deleted > octopus_infra::db::HOTWORD_TOMBSTONE_RETENTION_SECS
+}
+
 // === 文件格式 ===
 
 /// 词典元数据文件内容（明文 JSON）。v57 起只含元数据（词数据在 words/ 目录）。
@@ -185,8 +191,10 @@ pub struct HotwordWordFile {
     pub word: String,
     /// 原始拼音（空格分隔，不经归一化）。
     pub pinyin: String,
-    /// 软删标记（sync 传播用——文件不删，is_deleted=true 走 merge 路径）。
-    pub is_deleted: bool,
+    /// 软删标记：0=活跃，>0=删除时刻 epoch 秒（tombstone）。统一语义（GC 2026-08-02，原 bool 0/1）。
+    /// version 1 文件 is_deleted=0/1 反序列化为 i64（1=epoch 1 秒=1970 年，超期被 GC；0=活跃）。
+    #[serde(default)]
+    pub is_deleted: i64,
     /// 创建时间（SQLite datetime 格式，跨设备不同但保留用于排序）。
     pub created_at: String,
     /// 更新时间。
@@ -427,8 +435,16 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
     }
 
     // 2. 写每个词典 + 收集总 outline 的 set entries
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let mut set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     for h in sets {
+        // GC 2026-08-02：超期 set tombstone 不写文件 + 不进 outline（清空步骤已删其目录）
+        if is_tombstone_expired(h.is_deleted, now_secs) {
+            continue;
+        }
         // 2a. 词典目录 + meta.json
         write_hotword_set_file(&HotwordSetMeta::from_hotword_set(h))?;
 
@@ -436,6 +452,10 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
         let set_words = words_by_set.get(h.id.as_str()).cloned().unwrap_or_default();
         let mut word_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
         for w in &set_words {
+            // GC：超期 word tombstone 不写文件 + 不进 outline
+            if is_tombstone_expired(w.is_deleted, now_secs) {
+                continue;
+            }
             write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
             let md5 = w
                 .sync_md5
@@ -524,8 +544,24 @@ pub fn incremental_export_hotwords_with(
     let mut new_set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     let id_set: std::collections::HashSet<&str> = sets.iter().map(|h| h.id.as_str()).collect();
 
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut changed = 0usize;
+    let mut new_set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+    let id_set: std::collections::HashSet<&str> = sets.iter().map(|h| h.id.as_str()).collect();
+
     // set 层 diff
     for h in sets {
+        // GC 2026-08-02：超期 set tombstone 不写文件 + 不进 outline + 删其目录
+        if is_tombstone_expired(h.is_deleted, now_secs) {
+            if let Ok(set_dir) = hotword_set_dir(&h.id) {
+                let _ = std::fs::remove_dir_all(&set_dir); // 幂等
+            }
+            changed += 1;
+            continue;
+        }
         let new_md5 = h.sync_md5.clone().unwrap_or_else(|| hotword_set_md5(h));
         let old_entry = old_outline.sets.get(&h.id);
         let set_needs_rebuild = match old_entry {
@@ -546,6 +582,10 @@ pub fn incremental_export_hotwords_with(
         let mut set_outline_changed = false;
 
         for w in &set_words {
+            // GC：超期 word tombstone 不写文件 + 不进 outline
+            if is_tombstone_expired(w.is_deleted, now_secs) {
+                continue;
+            }
             let new_wmd5 = w
                 .sync_md5
                 .clone()
@@ -759,6 +799,10 @@ pub struct HotwordMergeReport {
 ///
 /// merge 完后从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
 pub fn merge_hotwords() -> Result<HotwordMergeReport> {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let remote_outline = read_hotword_outline()?;
     let db_sets = db::list_all_hotword_sets()?; // 含 tombstone（is_deleted>0）——merge 需感知软删态
     let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
@@ -771,7 +815,7 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
         match db_by_id.get(uuid.as_str()) {
             None => {
                 // DB 无 → pull（读 meta 文件 upsert，回填 sync_md5）
-                match pull_set(uuid) {
+                match pull_set(uuid, now_secs) {
                     Ok(true) => report.pulled += 1,
                     Ok(false) => report.skipped += 1,
                     Err(e) => {
@@ -784,7 +828,7 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
                 let local_updated = iso_to_unix_ms(&db_h.updated_at);
                 if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB
-                    match pull_set(uuid) {
+                    match pull_set(uuid, now_secs) {
                         Ok(true) => report.pulled += 1,
                         Ok(false) => report.skipped += 1,
                         Err(e) => {
@@ -825,7 +869,7 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     // 远程词典在阶段 1 已 pull 到 DB，故这里以 DB 词典为准遍历即可覆盖。
     let latest_sets = db::list_all_hotword_sets()?; // 含 tombstone——word merge 也要覆盖软删词典的词
     for set in &latest_sets {
-        merge_hotword_words(&set.id, &mut report)?;
+        merge_hotword_words(&set.id, &mut report, now_secs)?;
     }
 
     // === 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）===
@@ -842,10 +886,16 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
 }
 
 /// Pull 单个词典（读 meta 文件 → upsert DB，回填 sync_md5）。
-/// 返回 Ok(true) 表示成功 upsert，Ok(false) 表示 name 冲突跳过。
-fn pull_set(uuid: &str) -> Result<bool> {
+/// 返回 Ok(true) 表示成功 upsert，Ok(false) 表示 name 冲突/超期 tombstone 跳过。
+/// GC 2026-08-02：超期 tombstone（is_deleted>0 且超 RETENTION）不 pull——防 GC 后跨设备复活。
+fn pull_set(uuid: &str, now_secs: i64) -> Result<bool> {
     match read_hotword_set_file(uuid) {
         Ok(file) => {
+            // 超期 tombstone 不复活——本机已 GC（或即将 GC），不 pull 回来
+            if is_tombstone_expired(file.is_deleted, now_secs) {
+                log::debug!("[sync] 热词 merge: 词典 {} 超期 tombstone，skip pull", uuid);
+                return Ok(false);
+            }
             let h = file.to_hotword_set(None);
             let md5 = hotword_set_md5(&h);
             let mut h = h;
@@ -868,7 +918,11 @@ fn pull_set(uuid: &str) -> Result<bool> {
 
 /// 单个词典的 word 级 3-way merge（对称 vault cipher merge）。
 /// 读词典内 outline（远程）+ DB 该词典的词（本地），逐词判定。
-fn merge_hotword_words(set_id: &str, report: &mut HotwordMergeReport) -> Result<()> {
+fn merge_hotword_words(
+    set_id: &str,
+    report: &mut HotwordMergeReport,
+    now_secs: i64,
+) -> Result<()> {
     let remote_outline = read_hotword_set_outline(set_id)?;
     let db_words = db::list_all_hotword_words()?;
     let db_words: Vec<&HotwordWord> = db_words.iter().filter(|w| w.set_id == set_id).collect();
@@ -881,7 +935,7 @@ fn merge_hotword_words(set_id: &str, report: &mut HotwordMergeReport) -> Result<
         match db_by_id.get(uuid.as_str()) {
             None => {
                 // DB 无 → pull（读词文件 upsert，回填 sync_md5）
-                match pull_word(set_id, uuid) {
+                match pull_word(set_id, uuid, now_secs) {
                     Ok(true) => report.pulled += 1,
                     Ok(false) => report.skipped += 1,
                     Err(e) => {
@@ -897,7 +951,7 @@ fn merge_hotword_words(set_id: &str, report: &mut HotwordMergeReport) -> Result<
                 let local_updated = iso_to_unix_ms(&db_w.updated_at);
                 if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB（软删传播：is_deleted=true 的词 pull 后 DB 也变软删）
-                    match pull_word(set_id, uuid) {
+                    match pull_word(set_id, uuid, now_secs) {
                         Ok(true) => report.pulled += 1,
                         Ok(false) => report.skipped += 1,
                         Err(e) => {
@@ -937,10 +991,15 @@ fn merge_hotword_words(set_id: &str, report: &mut HotwordMergeReport) -> Result<
 }
 
 /// Pull 单个词（读词文件 → upsert DB，回填 sync_md5）。
-/// 返回 Ok(true) 表示成功 upsert，Ok(false) 不应发生（词无 name 冲突）。
-fn pull_word(set_id: &str, uuid: &str) -> Result<bool> {
+/// 返回 Ok(true) 表示成功 upsert，Ok(false) 不应发生（词无 name 冲突）或超期 tombstone skip。
+/// GC 2026-08-02：超期 tombstone 不 pull（防 GC 后跨设备复活）。
+fn pull_word(set_id: &str, uuid: &str, now_secs: i64) -> Result<bool> {
     match read_hotword_word_file(set_id, uuid) {
         Ok(file) => {
+            if is_tombstone_expired(file.is_deleted, now_secs) {
+                log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", uuid);
+                return Ok(false);
+            }
             let w = file.to_hotword_word(None);
             let md5 = hotword_word_md5(&w);
             let mut w = w;
@@ -1039,7 +1098,7 @@ mod tests {
 
     // === word md5 测试 ===
 
-    fn sample_word(set_id: &str, word: &str, pinyin: &str, is_deleted: bool) -> HotwordWord {
+    fn sample_word(set_id: &str, word: &str, pinyin: &str, is_deleted: i64) -> HotwordWord {
         HotwordWord {
             id: octopus_infra::hotword_text::hotword_word_uuid(set_id, word),
             set_id: set_id.into(),
@@ -1054,15 +1113,15 @@ mod tests {
 
     #[test]
     fn hotword_word_md5_is_deterministic() {
-        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
-        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
+        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
         assert_eq!(hotword_word_md5(&w1), hotword_word_md5(&w2));
     }
 
     #[test]
     fn hotword_word_md5_ignores_timestamps() {
-        let mut w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
-        let mut w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let mut w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
+        let mut w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
         w2.created_at = "1999-01-01 00:00:00".into();
         w2.updated_at = "2099-12-31 23:59:59".into();
         let _ = &mut w1;
@@ -1071,8 +1130,8 @@ mod tests {
 
     #[test]
     fn hotword_word_md5_changes_on_is_deleted() {
-        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
-        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", true);
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
+        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", 1700000000);
         assert_ne!(
             hotword_word_md5(&w1),
             hotword_word_md5(&w2),
@@ -1082,8 +1141,8 @@ mod tests {
 
     #[test]
     fn hotword_word_md5_changes_on_word() {
-        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
-        let w2 = sample_word("set-1", "浮窗", "fu chuang", false);
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
+        let w2 = sample_word("set-1", "浮窗", "fu chuang", 0);
         assert_ne!(hotword_word_md5(&w1), hotword_word_md5(&w2));
     }
 
@@ -1091,8 +1150,8 @@ mod tests {
     #[test]
     fn hotword_word_md5_pipe_collision_safe() {
         // 场景：set_id="x", word="a|b" 与 set_id="x|a", word="b" 的拼接不同
-        let m1 = hotword_word_md5_from_fields("x", "a|b", "", false);
-        let m2 = hotword_word_md5_from_fields("x|a", "b", "", false);
+        let m1 = hotword_word_md5_from_fields("x", "a|b", "", 0);
+        let m2 = hotword_word_md5_from_fields("x|a", "b", "", 0);
         assert_ne!(m1, m2, "长度前缀应防 | 碰撞");
     }
 
@@ -1123,7 +1182,7 @@ mod tests {
     fn hotword_word_file_round_trip() {
         let _g = SyncRootGuard::new();
         let set_id = "a1b2c3d4-e5f6-4789-8901-abcdef123456";
-        let w = sample_word(set_id, "八爪鱼", "ba zhao yu", false);
+        let w = sample_word(set_id, "八爪鱼", "ba zhao yu", 0);
         let file = HotwordWordFile::from_hotword_word(&w);
         write_hotword_word_file(&file).expect("write");
 
@@ -1131,7 +1190,7 @@ mod tests {
         assert_eq!(loaded.id, w.id);
         assert_eq!(loaded.word, "八爪鱼");
         assert_eq!(loaded.pinyin, "ba zhao yu");
-        assert!(!loaded.is_deleted);
+        assert_eq!(loaded.is_deleted, 0);
     }
 
     #[test]
@@ -1780,7 +1839,7 @@ mod tests {
 
     /// 辅助：手写一个远程词文件 + 词典 outline 条目，模拟「远程仓库」某词状态。
     /// set_id 需已存在于 DB（word merge 遍历 DB 词典）。
-    fn write_remote_word(set_id: &str, word: &str, pinyin: &str, is_deleted: bool, updated_ms: i64) {
+    fn write_remote_word(set_id: &str, word: &str, pinyin: &str, is_deleted: i64, updated_ms: i64) {
         let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, word);
         let file = HotwordWordFile {
             version: 1,
@@ -1806,7 +1865,7 @@ mod tests {
     }
 
     /// 测试辅助：某 set 的全部词（含软删，按 word 排序），用于断言。
-    fn all_words_in_set(set_id: &str) -> Vec<(String, bool)> {
+    fn all_words_in_set(set_id: &str) -> Vec<(String, i64)> {
         db::list_all_hotword_words()
             .unwrap()
             .into_iter()
@@ -1826,14 +1885,14 @@ mod tests {
         let set_id = "word-aaaa-0001";
         db::insert_hotword_set(set_id, "测试词典").unwrap();
         // 远程加词「八爪鱼」
-        write_remote_word(set_id, "八爪鱼", "ba zhao yu", false, 9999999999999);
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", 0, 9999999999999);
 
         let report = merge_hotwords().expect("merge");
 
         // DB 应 pull 到「八爪鱼」
         let words = all_words_in_set(set_id);
         assert!(
-            words.iter().any(|(w, d)| w == "八爪鱼" && !d),
+            words.iter().any(|(w, d)| w == "八爪鱼" && *d == 0),
             "DB 应 pull 到远程新词「八爪鱼」: {:?}",
             words
         );
@@ -1864,7 +1923,7 @@ mod tests {
             words: BTreeMap::from([(
                 word_uuid,
                 OutlineEntry {
-                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼", "ba zhao yu", false),
+                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼", "ba zhao yu", 0),
                     updated_ms: 1,
                 },
             )]),
@@ -1876,7 +1935,7 @@ mod tests {
         // 「浮窗」不应丢失
         let words = all_words_in_set(set_id);
         assert!(
-            words.iter().any(|(w, d)| w == "浮窗" && !d),
+            words.iter().any(|(w, d)| w == "浮窗" && *d == 0),
             "本地新词「浮窗」不应被旧 outline 覆盖: {:?}",
             words
         );
@@ -1922,16 +1981,20 @@ mod tests {
         add_words(set_id, "八爪鱼");
         export_all_hotwords().expect("export 初始（is_deleted=0）");
 
-        // 远程（A 机）软删「八爪鱼」——is_deleted=true, updated_ms 远未来
-        write_remote_word(set_id, "八爪鱼", "ba zhao yu", true, 9999999999999);
+        // 远程（A 机）软删「八爪鱼」——is_deleted=当前秒（未超期 tombstone，应传播）, updated_ms 远未来
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", now_secs, 9999999999999);
 
         merge_hotwords().expect("merge");
 
-        // B 机 DB 的「八爪鱼」应变软删（is_deleted=true）
+        // B 机 DB 的「八爪鱼」应变软删（is_deleted>0）
         let w = db::get_hotword_word(set_id, "八爪鱼").unwrap().unwrap();
         assert!(
-            w.is_deleted,
-            "软删应跨设备传播：B 机「八爪鱼」应 is_deleted=true，实际 is_deleted={}",
+            w.is_deleted > 0,
+            "软删应跨设备传播：B 机「八爪鱼」应 is_deleted>0，实际 is_deleted={}",
             w.is_deleted
         );
     }
@@ -1952,7 +2015,7 @@ mod tests {
         );
 
         // 远程写同名词但不同拼音（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
-        write_remote_word(set_id, "八爪鱼", "ba zhua yu", false, db_updated_ms);
+        write_remote_word(set_id, "八爪鱼", "ba zhua yu", 0, db_updated_ms);
 
         let report = merge_hotwords().expect("merge");
         assert!(report.conflicts >= 1, "应记录至少 1 次 word 冲突");
@@ -2002,6 +2065,73 @@ mod tests {
         assert!(
             db::list_hotword_sets().unwrap().iter().all(|x| x.id != set_id),
             "软删的集不应出现在 list_hotword_sets"
+        );
+    }
+
+    // === GC 年龄过滤（2026-08-02，防超期 tombstone 跨设备复活）===
+
+    /// 超期 set tombstone 不 pull（防复活）：A GC 删了超期 tombstone → B merge 时即使旧 outline
+    /// 有该 tombstone（读 meta.json 发现 is_deleted 超期）→ skip，不 pull 回 DB。
+    #[test]
+    fn merge_expired_set_tombstone_not_resurrected() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "gc-aaaa-0001";
+        db::insert_hotword_set(set_id, "待GC词典").unwrap();
+        export_all_hotwords().expect("export 初始");
+
+        // 模拟 A 机 GC：硬删 DB tombstone（这里直接不建 tombstone，模拟 GC 后 DB 无该集）
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        // 但远程 outline + meta.json 仍有该集的**超期** tombstone（is_deleted=远过去，如 1000 秒=1970 年）
+        write_remote_set_with(set_id, "待GC词典", 9999999999999, 1000);
+
+        merge_hotwords().expect("merge");
+
+        // B 机不应 pull 回这个超期 tombstone——DB 里不应有该集
+        assert!(
+            db::get_hotword_set(set_id).is_err(),
+            "超期 tombstone 不应被 pull 复活"
+        );
+        // export 后 outline 也不应含（merge 末尾 export 过滤超期）
+        let outline = read_hotword_outline().unwrap();
+        assert!(
+            !outline.sets.contains_key(set_id),
+            "超期 tombstone 不应进 outline"
+        );
+    }
+
+    /// 超期 word tombstone 不 pull（防复活）+ export 不含。
+    #[test]
+    fn merge_expired_word_tombstone_not_resurrected() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "gc-bbbb-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始");
+
+        // 模拟 A 机 GC：硬删「八爪鱼」word tombstone（这里直接硬删，模拟 GC 后 DB 无该词）
+        db::hard_delete_hotword_set(set_id).unwrap();
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+
+        // 远程有「八爪鱼」的**超期** word tombstone（is_deleted=1000=1970 年，超期）
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", 1000, 9999999999999);
+
+        merge_hotwords().expect("merge");
+
+        // B 机不应 pull 回超期 word tombstone
+        assert!(
+            db::get_hotword_word(set_id, "八爪鱼").unwrap().is_none(),
+            "超期 word tombstone 不应被 pull 复活"
         );
     }
 }

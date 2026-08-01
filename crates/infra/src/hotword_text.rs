@@ -61,11 +61,13 @@ pub fn normalize_words_text(words: &str) -> String {
 ///
 /// 此函数放在 infra（无项目内依赖的底层 crate），sync crate 与 db crate 都调它，
 /// 避免在 sync（db 不依赖 sync）和 db（无 md5 实现）两处重复实现指纹逻辑。
+///
+/// `is_deleted` 统一为 i64 epoch 秒（0=活跃，>0=删除时刻）——参与 md5 输入，软删后值变化触发 diff。
 pub fn hotword_word_md5_from_fields(
     set_id: &str,
     word: &str,
     pinyin: &str,
-    is_deleted: bool,
+    is_deleted: i64,
 ) -> String {
     let input = format!(
         "{}|{}|{}|{}|{}|{}|{}",

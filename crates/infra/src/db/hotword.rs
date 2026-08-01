@@ -30,6 +30,12 @@ const HOTWORD_SET_COLS: &str = "id, name, enabled, created_at, updated_at, sync_
 /// （专业术语/专有名词），超出建议用户另建新词典分摊。
 pub const HOTWORD_SET_MAX_WORDS: usize = 3000;
 
+/// tombstone 保留时长（秒）——超过此时长的软删 set/词被 GC 硬删。硬编码 10 天。
+///
+/// GC 触发：scheduler 每日 `purge_expired_hotword_tombstones` + sync merge 按年龄过滤
+/// （防跨设备复活）。详见 `2026-08-02-hotword-tombstone-gc` spec。
+pub const HOTWORD_TOMBSTONE_RETENTION_SECS: i64 = 10 * 86400;
+
 /// 校验 set 的词数是否超容量上限。统计 hotword_words 中该 set 的活跃词（is_deleted=0）。
 fn ensure_within_capacity(conn: &Connection, set_id: &str, adding: usize) -> Result<()> {
     let cur: i64 = conn.query_row(
@@ -206,6 +212,87 @@ pub fn hard_delete_hotword_set(id: &str) -> Result<()> {
     })
 }
 
+// ── tombstone GC（2026-08-02）──软删 set/词超期后硬删，防 DB + .sync 无限堆积 ──
+
+/// 硬删超期 tombstone——set is_deleted>0 且 `now - is_deleted > RETENTION` + 其词记录 + 超期 word。
+///
+/// GC 范围：① set tombstone（超期）→ 连带词记录（硬删）；② 活跃词典里的超期 word tombstone（硬删）。
+/// 返回硬删的 set 数（词数不返回，日志记）。scheduler 每日调 + export 重建清 .sync。
+///
+/// 跨设备自洽：merge 按年龄过滤（`pull_set`/`pull_word` 超期 skip），GC 后 export 不含超期
+/// tombstone → 对端 pull 时即使旧 outline 有也 skip → 收敛。详见 tombstone-gc spec §3。
+pub fn purge_expired_hotword_tombstones(now_secs: i64) -> Result<usize> {
+    ensure_db()?;
+    let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
+    with_db(|conn| {
+        let mut purged_sets = 0usize;
+        // 1. 超期 set tombstone：先收集 id（连带删词 + hits），再硬删
+        let expired_set_ids: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
+            )?;
+            let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in &expired_set_ids {
+            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+            purged_sets += 1;
+        }
+        // 2. 超期 word tombstone（活跃词典里的软删词）——is_deleted>0 且超期
+        let word_cutoff = cutoff; // 同阈值
+        let n = conn.execute(
+            "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
+            params![word_cutoff],
+        )?;
+        if purged_sets > 0 || n > 0 {
+            log::info!(
+                "[hotword-gc] purged {} set tombstones + {} word tombstones (cutoff={})",
+                purged_sets,
+                n,
+                cutoff
+            );
+        }
+        Ok(purged_sets)
+    })
+}
+
+/// 统计 set tombstone 数（前端「回收站 (N)」按钮用）。
+pub fn count_hotword_tombstones() -> Result<i64> {
+    ensure_db()?;
+    with_db(|conn| {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM hotword_sets WHERE is_deleted > 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n)
+    })
+}
+
+/// 手动清空回收站——硬删所有 set tombstone（不限年龄）+ 其词 + 所有 word tombstone。
+/// 前端「清空回收站」按钮调（用户确认后）。
+pub fn purge_all_hotword_tombstones() -> Result<usize> {
+    ensure_db()?;
+    with_db(|conn| {
+        let tombstone_set_ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let mut purged = 0usize;
+        for id in &tombstone_set_ids {
+            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+            purged += 1;
+        }
+        // 所有 word tombstone（不限年龄）
+        let n = conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
+        log::info!("[hotword-gc] manual purge: {} sets + {} words", purged, n);
+        Ok(purged)
+    })
+}
+
 /// upsert 热词版本元数据——sync pull 从文件读回写 SQLite 用（v46 新增，v57 去 words_text，v58 加 is_deleted）。
 ///
 /// `id` 已存在时按全字段覆盖（name/enabled/created_at/updated_at/sync_md5/is_deleted），
@@ -263,7 +350,8 @@ pub struct HotwordWord {
     pub set_id: String,
     pub word: String,
     pub pinyin: String,
-    pub is_deleted: bool,
+    /// 软删标记：0=活跃，>0=删除时刻 epoch 秒（tombstone）。统一语义（GC 2026-08-02，原 bool 0/1）。
+    pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
     pub sync_md5: Option<String>,
@@ -277,7 +365,7 @@ fn row_to_hotword_word(row: &rusqlite::Row) -> rusqlite::Result<HotwordWord> {
         set_id: row.get(1)?,
         word: row.get(2)?,
         pinyin: row.get(3)?,
-        is_deleted: row.get::<_, i64>(4)? != 0,
+        is_deleted: row.get(4)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         sync_md5: row.get(7)?,
@@ -380,7 +468,7 @@ pub(crate) fn add_word_to_set_at(conn: &Connection, set_id: &str, word: &str) ->
         return Ok(false); // 已活跃，幂等无操作
     }
     // sync_md5：写入时填（对齐 vault cipher storage 层）——word 级 merge 据此 diff
-    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, false);
+    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
     // ON CONFLICT(set_id, word)：已存在（软删态）→ 恢复 is_deleted=0；不存在 → INSERT
     conn.execute(
         "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
@@ -411,7 +499,7 @@ pub(crate) fn add_words_to_set_at(
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, false);
+        let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
         let n = conn.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
              VALUES (?1, ?2, ?3, ?4, 0, ?5)
@@ -433,7 +521,11 @@ pub fn remove_word_from_set(set_id: &str, word: &str) -> Result<()> {
 }
 
 pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &str) -> Result<()> {
-    // 软删前先读 pinyin（md5 需要它）——is_deleted=true 的 md5 与活跃态不同（参与 diff）
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // 软删前先读 pinyin（md5 需要它）——is_deleted>0 的 md5 与活跃态不同（参与 diff）
     let pinyin: String = conn
         .query_row(
             "SELECT pinyin FROM hotword_words WHERE set_id=?1 AND word=?2 AND is_deleted=0",
@@ -441,11 +533,12 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
             |r| r.get(0),
         )
         .unwrap_or_default();
-    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, true);
+    let sync_md5 =
+        crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, now_secs);
     conn.execute(
-        "UPDATE hotword_words SET is_deleted=1, sync_md5=?3, updated_at=datetime('now')
+        "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
          WHERE set_id=?1 AND word=?2 AND is_deleted=0",
-        params![set_id, word, sync_md5],
+        params![set_id, word, sync_md5, now_secs],
     )?;
     Ok(())
 }
@@ -463,7 +556,11 @@ pub(crate) fn set_words_in_set_at(
 ) -> Result<()> {
     let unique: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
     ensure_within_capacity(conn, set_id, unique.len())?;
-    // 软删不在新列表的活跃词——逐词算 is_deleted=true 的 md5（需读 pinyin）
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // 软删不在新列表的活跃词——逐词算 is_deleted=now_secs 的 md5（需读 pinyin）
     let to_remove: Vec<(String, String)> = {
         let json_list = serde_json::to_string(&unique.iter().collect::<Vec<_>>())?;
         let mut stmt = conn.prepare(
@@ -477,11 +574,11 @@ pub(crate) fn set_words_in_set_at(
     };
     for (word, pinyin) in &to_remove {
         let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, pinyin, true);
+            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, pinyin, now_secs);
         conn.execute(
-            "UPDATE hotword_words SET is_deleted=1, sync_md5=?3, updated_at=datetime('now')
+            "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
              WHERE set_id=?1 AND word=?2 AND is_deleted=0",
-            params![set_id, word, sync_md5],
+            params![set_id, word, sync_md5, now_secs],
         )?;
     }
     // 添加/恢复新列表的词
@@ -489,7 +586,7 @@ pub(crate) fn set_words_in_set_at(
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
         let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, false);
+            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
         conn.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
              VALUES (?1, ?2, ?3, ?4, 0, ?5)
@@ -517,7 +614,7 @@ pub(crate) fn upsert_hotword_word_at(conn: &Connection, w: &HotwordWord) -> Resu
             updated_at=excluded.updated_at, sync_md5=excluded.sync_md5",
         params![
             w.id, w.set_id, w.word, w.pinyin,
-            if w.is_deleted { 1 } else { 0 },
+            w.is_deleted,
             w.created_at, w.updated_at, w.sync_md5,
         ],
     )?;
@@ -743,7 +840,7 @@ mod tests {
         assert_eq!(words[1].word, "吴大锐");
         // 拼音存原始（八爪鱼 → ba zhao yu）
         assert_eq!(words[0].pinyin, "ba zhao yu");
-        assert!(!words[0].is_deleted);
+        assert_eq!(words[0].is_deleted, 0);
 
         // remove_word（软删——is_deleted=1，记录保留）
         remove_word_from_set_at(&conn, &id, "八爪鱼").unwrap();
@@ -752,12 +849,12 @@ mod tests {
         assert_eq!(words_after[0].word, "吴大锐");
         // 软删记录仍在 DB（is_deleted=1）
         let soft = get_hotword_word_at(&conn, &id, "八爪鱼").unwrap().unwrap();
-        assert!(soft.is_deleted);
+        assert!(soft.is_deleted > 0);
 
         // 软删后重新加同词 → 恢复（is_deleted=0）
         assert!(add_word_to_set_at(&conn, &id, "八爪鱼").unwrap());
         let restored = get_hotword_word_at(&conn, &id, "八爪鱼").unwrap().unwrap();
-        assert!(!restored.is_deleted);
+        assert_eq!(restored.is_deleted, 0);
 
         // delete set 连带删词
         delete_hotword_set_at(&conn, &id).unwrap();
@@ -934,7 +1031,7 @@ mod tests {
         assert_eq!(word_set, ["苹果", "西瓜"].into_iter().collect());
         // 软删的香蕉仍在 DB
         let banana = get_hotword_word_at(&conn, "override-set", "香蕉").unwrap().unwrap();
-        assert!(banana.is_deleted);
+        assert!(banana.is_deleted > 0);
     }
 
     // ── word sync_md5 填充（2026-08-01 word 级 merge，对齐 vault storage 层）──
@@ -951,7 +1048,7 @@ mod tests {
         add_word_to_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let w = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
         let expected = crate::hotword_text::hotword_word_md5_from_fields(
-            "md5-set", "八爪鱼", &w.pinyin, false,
+            "md5-set", "八爪鱼", &w.pinyin, 0,
         );
         assert_eq!(
             w.sync_md5.as_deref(),
@@ -963,7 +1060,7 @@ mod tests {
         remove_word_from_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let soft = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
         let expected_soft = crate::hotword_text::hotword_word_md5_from_fields(
-            "md5-set", "八爪鱼", &soft.pinyin, true,
+            "md5-set", "八爪鱼", &soft.pinyin, soft.is_deleted,
         );
         assert_eq!(
             soft.sync_md5.as_deref(),
@@ -997,7 +1094,7 @@ mod tests {
         set_words_in_set_at(&conn, "ov-set", &["苹果".into()]).unwrap();
         let banana = get_hotword_word_at(&conn, "ov-set", "香蕉").unwrap().unwrap();
         let expected_soft = crate::hotword_text::hotword_word_md5_from_fields(
-            "ov-set", "香蕉", &banana.pinyin, true,
+            "ov-set", "香蕉", &banana.pinyin, banana.is_deleted,
         );
         assert_eq!(
             banana.sync_md5.as_deref(),
@@ -1036,7 +1133,7 @@ mod tests {
 
         // 级联软删词
         let word = get_hotword_word_at(&conn, id1, "八爪鱼").unwrap().unwrap();
-        assert!(word.is_deleted, "词典软删后其词也应级联软删");
+        assert!(word.is_deleted > 0, "词典软删后其词也应级联软删");
 
         // 重建同名「项目A」（新 UUID）——UNIQUE(name,is_deleted) 不冲突
         let id2 = "softdel-bbbb-0002";
@@ -1077,5 +1174,124 @@ mod tests {
         );
         // list 过滤掉
         assert!(list_hotword_sets_at(&conn).unwrap().is_empty());
+    }
+
+    // ── tombstone GC（2026-08-02）──
+
+    /// purge_expired_hotword_tombstones：超期 set tombstone 硬删 + 活跃词典不动 + 超期 word 硬删。
+    #[test]
+    fn purge_expired_tombstones_deletes_old_keeps_active() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        // 活跃词典（不应被 GC）
+        insert_hotword_set_at(&conn, "active-set", "活跃词典").unwrap();
+        add_word_to_set_at(&conn, "active-set", "苹果").unwrap();
+
+        // 超期 set tombstone（is_deleted=远过去）
+        conn.execute(
+            "INSERT INTO hotword_sets (id, name, is_deleted) VALUES ('old-tomb', '旧删', 1000)",
+            [],
+        )
+        .unwrap(); // is_deleted=1000（1970 年，远超期）
+        conn.execute(
+            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted) \
+             VALUES ('w1', 'old-tomb', '旧词', '', 1000)",
+            [],
+        )
+        .unwrap();
+
+        // 未超期 set tombstone（is_deleted=未来，不应被 GC）
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        conn.execute(
+            "INSERT INTO hotword_sets (id, name, is_deleted) VALUES ('new-tomb', '新删', ?1)",
+            params![future],
+        )
+        .unwrap();
+
+        let now = future; // now = 当前
+        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        assert_eq!(purged, 1, "应硬删 1 个超期 set tombstone（旧删）");
+
+        // 活跃词典还在
+        assert!(get_hotword_set_at(&conn, "active-set").is_ok());
+        // 超期 tombstone 硬删了
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM hotword_sets WHERE id='old-tomb'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "超期 set tombstone 应硬删");
+        // 未超期 tombstone 还在
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM hotword_sets WHERE id='new-tomb'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "未超期 set tombstone 不应被 GC");
+    }
+
+    /// count_hotword_tombstones + purge_all_hotword_tombstones（手动清空）。
+    #[test]
+    fn count_and_purge_all_tombstones() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        conn.execute(
+            "INSERT INTO hotword_sets (id, name, is_deleted) VALUES ('t1', '删1', 1000), ('t2', '删2', 2000)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(count_hotword_tombstones_pub(&conn).unwrap(), 2);
+
+        let purged = purge_all_hotword_tombstones_pub(&conn).unwrap();
+        assert_eq!(purged, 2, "应清空 2 个 tombstone");
+        assert_eq!(count_hotword_tombstones_pub(&conn).unwrap(), 0);
+    }
+
+    // 测试用 pub 包装（避免 ensure_db/with_db 在 in-memory 测里走全局 DB）
+    fn purge_expired_hotword_tombstones_pub(conn: &Connection, now_secs: i64) -> Result<usize> {
+        let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
+        let mut purged_sets = 0usize;
+        let expired_set_ids: Vec<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM hotword_sets WHERE is_deleted > 0 AND is_deleted < ?1",
+            )?;
+            let rows = stmt.query_map(params![cutoff], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in &expired_set_ids {
+            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+            purged_sets += 1;
+        }
+        let _ = conn.execute(
+            "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
+            params![cutoff],
+        )?;
+        Ok(purged_sets)
+    }
+    fn count_hotword_tombstones_pub(conn: &Connection) -> Result<i64> {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM hotword_sets WHERE is_deleted > 0",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    fn purge_all_hotword_tombstones_pub(conn: &Connection) -> Result<usize> {
+        let ids: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM hotword_sets WHERE is_deleted > 0")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let mut purged = 0usize;
+        for id in &ids {
+            conn.execute("DELETE FROM hotword_words WHERE set_id=?1", params![id])?;
+            conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+            purged += 1;
+        }
+        conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
+        Ok(purged)
     }
 }

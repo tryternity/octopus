@@ -667,6 +667,11 @@ settings:
     importVersionPlaceholder: 导入版本名称（Enter 后再选 txt）
     newVersionBtn: 新建版本
     importBtn: 导入新版本
+    purgeBtn: 清空回收站
+    purgeConfirmTitle: 清空回收站
+    purgeConfirmMsg: 清空回收站？将永久删除所有已删除的词典（无法恢复）。
+    purgedMsg: 已清空 ${n} 个已删除词典
+    purgeFailed: "清空失败："
     renameHint: 点击重命名
     wordsCount: 词
     addPlaceholder: 人名 / 地名 / 术语
