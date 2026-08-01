@@ -175,6 +175,9 @@ export function useTerminalSession(opts: {
         selectionBackground: "rgba(255,255,255,0.18)",
       },
       allowProposedApi: true,
+      // 关掉内置 Alt+Click 移动光标（不精确），改用 TerminalPane 的精确算法
+      //（OSC 133 门控 + cursorX 偏移）。见 clickCursor.ts + spec 2026-08-01。
+      altClickMovesCursor: false,
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
