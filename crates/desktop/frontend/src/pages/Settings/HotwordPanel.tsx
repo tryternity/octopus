@@ -338,198 +338,197 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
         </div>
       </div>
 
-      {/* ════ 右栏：方言模糊 + 新增热词（上） / 选中场景的词（下） ════ */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {/* ── 右上：所有场景共用的方言模糊 + 新增热词 ── */}
-        <div className="rounded-lg border border-border bg-background">
-          {/* 热词纠错总开关（2026-08-01 从系统设置-语音迁入——在加热词的地方控制纠错更直观） */}
-          <div className="border-b border-border/60 px-4 py-3">
-            <div className="flex items-center justify-between">
-              <div className="min-w-0">
-                <div className="text-[13px]">{t('settings.general.pinyinCorrect')}</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">{t('settings.general.pinyinCorrectHint')}</div>
-              </div>
-              <Toggle
-                on={asrCorrect}
-                onClick={() => setVal('asr_correct', !asrCorrect)}
-                aria-label={t('settings.general.pinyinCorrect')}
+      {/* ════ 右栏：单个连续 card，border-b 分隔各区 ════ */}
+      <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border bg-background">
+        {/* 拼音纠错总开关（2026-08-01 从系统设置-语音迁入） */}
+        <div className="border-b border-border/60 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0">
+              <div className="text-[13px]">{t('settings.general.pinyinCorrect')}</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">{t('settings.general.pinyinCorrectHint')}</div>
+            </div>
+            <Toggle
+              on={asrCorrect}
+              onClick={() => setVal('asr_correct', !asrCorrect)}
+              aria-label={t('settings.general.pinyinCorrect')}
+            />
+          </div>
+        </div>
+
+        {/* 方言模糊（2x2 grid） */}
+        <div className="border-b border-border/60 px-4 py-3">
+          <div className="mb-2 flex items-center gap-2">
+            <Type className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">{t('settings.hotword.dialectFuzzy')}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-0.5">
+            {DIALECT_KEYS.map(({ tok, key }) => {
+              const label = t(key);
+              return (
+                <div key={tok} className="flex items-center justify-between py-1.5">
+                  <span className="text-[13px]">{label}</span>
+                  <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 场景名 + 搜索 + 排序（同一行） */}
+        <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <BookMarked className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">{selected ? selected.name : t('settings.hotword.selectVersionFirst')}</span>
+            {selected && (
+              <span className="font-mono text-[10px] text-muted-foreground/60">
+                {words.length} {t('settings.hotword.wordsCount')}
+              </span>
+            )}
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="relative w-[140px]">
+              <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+              <Input
+                variant="default"
+                size="full"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t('settings.hotword.searchPlaceholder')}
+                disabled={!selected || words.length === 0}
+                className="pl-7"
               />
             </div>
+            <Select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')}
+              className="flex-shrink-0"
+              disabled={!selected || words.length === 0}
+              aria-label="排序方式"
+            >
+              <option value="time">{t('settings.hotword.sortDefault')}</option>
+              <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
+              <option value="hits">{t('settings.hotword.sortHit')}</option>
+            </Select>
           </div>
-          {/* 方言模糊（2x2 grid） */}
-          <div className="border-b border-border/60 px-4 py-3">
-            <div className="mb-2 flex items-center gap-2">
-              <Type className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">{t('settings.hotword.dialectFuzzy')}</span>
+        </div>
+
+        {/* 新增热词：input + 添加/追加/覆盖/挖掘 */}
+        <div className="border-b border-border/60 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              variant="default"
+              size="full"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addWord()}
+              placeholder={t('settings.hotword.addPlaceholder')}
+              disabled={!selected}
+              className="min-w-[160px] flex-1"
+            />
+            <Button variant="voice" size="default" onClick={addWord} disabled={!selected}>
+              <Plus /> {t('settings.hotword.addBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => doImport('append')} disabled={!selected} title={t('settings.hotword.appendHint')}>
+              <Upload /> {t('settings.hotword.appendBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => doImport('overwrite')} disabled={!selected} title={t('settings.hotword.overwriteHint')}>
+              <Upload /> {t('settings.hotword.overwriteBtn')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={mine} disabled={!selected}>
+              <Wand2 /> {t('settings.hotword.mineBtn')}
+            </Button>
+          </div>
+        </div>
+
+        {/* 挖掘确认面板（条件显示，在操作行与词卡之间） */}
+        {minePending && (
+          <div className="border-b border-voice/30 bg-voice/5 px-3 py-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
+              </span>
+              <div className="flex flex-shrink-0 items-center gap-2">
+                <button
+                  onClick={() => {
+                    const allSel = minePending.selected.size === minePending.words.length;
+                    setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                  }}
+                  className="text-xs text-muted-foreground hover:text-voice"
+                >
+                  {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
+                </button>
+                <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-0.5">
-              {DIALECT_KEYS.map(({ tok, key }) => {
-                const label = t(key);
+            <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
+              {minePending.words.map((w) => {
+                const on = minePending.selected.has(w);
                 return (
-                  <div key={tok} className="flex items-center justify-between py-1.5">
-                    <span className="text-[13px]">{label}</span>
-                    <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+                  <button
+                    key={w}
+                    onClick={() => toggleMineSel(w)}
+                    className={cn(
+                      'rounded-md border px-2 py-1 text-xs transition-colors',
+                      on ? 'border-voice bg-voice/15 text-voice' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
+                    )}
+                  >
+                    {w}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Input
+                variant="default"
+                size="full"
+                value={mineInput}
+                onChange={(e) => setMineInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
+                placeholder={t('settings.hotword.manualPlaceholder')}
+                className="text-xs"
+              />
+              <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
+              <Button
+                variant="voice"
+                size="sm"
+                onClick={commitMine}
+                disabled={minePending.selected.size === 0}
+              >
+                {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* 词卡网格（占满剩余空间，可滚动） */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {!selected ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.selectVersionFirst')}</p>
+          ) : words.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
+          ) : visible.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {visible.map((w) => {
+                const h = hits[w] ?? 0;
+                return (
+                  <div key={w} className={cn(
+                    'raycast-ring relative max-w-[200px] min-w-[112px] rounded-md border bg-background px-3 py-2 pr-7 transition-colors duration-700',
+                    recentlyAdded.has(w) ? 'border-voice bg-voice/15 ring-1 ring-voice/30' : 'border-border hover:border-foreground/25'
+                  )}>
+                    <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/60 hover:text-destructive" aria-label={`删除 ${w}`}>
+                      <X className="h-3 w-3" />
+                    </button>
+                    <div className="truncate text-sm">
+                      {w} <span className={cn('font-mono text-[10px] tabular-nums', h > 0 ? 'text-voice' : 'text-muted-foreground/50')}>{h}</span>
+                    </div>
                   </div>
                 );
               })}
             </div>
-          </div>
-          {/* 新增热词：input + 添加/追加/覆盖/挖掘（仅选中场景时可用） */}
-          {/* 搜索 + 排序（选中场景且有词时显示，移到操作区顶部——与新增热词同区，截图布局） */}
-          {selected && words.length > 0 && (
-            <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
-              <div className="relative min-w-0 flex-1">
-                <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                <Input variant="default" size="full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="pl-7" />
-              </div>
-              <Select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className="flex-shrink-0" aria-label="排序方式">
-                <option value="time">{t('settings.hotword.sortDefault')}</option>
-                <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
-                <option value="hits">{t('settings.hotword.sortHit')}</option>
-              </Select>
-            </div>
           )}
-          <div className="px-4 py-3">
-            <div className="mb-2 flex items-center gap-2">
-              <Plus className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">
-                {selected ? t('settings.hotword.addBtn') : t('settings.hotword.selectVersionFirst')}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                variant="default"
-                size="full"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addWord()}
-                placeholder={t('settings.hotword.addPlaceholder')}
-                disabled={!selected}
-                className="min-w-[160px] flex-1"
-              />
-              <Button variant="voice" size="default" onClick={addWord} disabled={!selected}>
-                <Plus /> {t('settings.hotword.addBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('append')} disabled={!selected} title={t('settings.hotword.appendHint')}>
-                <Upload /> {t('settings.hotword.appendBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('overwrite')} disabled={!selected} title={t('settings.hotword.overwriteHint')}>
-                <Upload /> {t('settings.hotword.overwriteBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={mine} disabled={!selected}>
-                <Wand2 /> {t('settings.hotword.mineBtn')}
-              </Button>
-            </div>
-          </div>
         </div>
-
-        {/* ── 右下：选中场景的词（搜索 + 排序 + 词卡） ── */}
-        {selected ? (
-          <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border bg-background">
-            {/* 头部：场景名 + 词数 */}
-            <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <BookMarked className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-semibold">{selected.name}</span>
-                <span className="font-mono text-[10px] text-muted-foreground/60">
-                  {words.length} {t('settings.hotword.wordsCount')}
-                </span>
-              </div>
-            </div>
-
-            {/* 挖掘确认面板 */}
-            {minePending && (
-              <div className="border-b border-voice/30 bg-voice/5 px-3 py-2.5 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
-                  </span>
-                  <div className="flex flex-shrink-0 items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const allSel = minePending.selected.size === minePending.words.length;
-                        setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
-                      }}
-                      className="text-xs text-muted-foreground hover:text-voice"
-                    >
-                      {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
-                    </button>
-                    <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button>
-                  </div>
-                </div>
-                <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
-                  {minePending.words.map((w) => {
-                    const on = minePending.selected.has(w);
-                    return (
-                      <button
-                        key={w}
-                        onClick={() => toggleMineSel(w)}
-                        className={cn(
-                          'rounded-md border px-2 py-1 text-xs transition-colors',
-                          on ? 'border-voice bg-voice/15 text-voice' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
-                        )}
-                      >
-                        {w}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    variant="default"
-                    size="full"
-                    value={mineInput}
-                    onChange={(e) => setMineInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
-                    placeholder={t('settings.hotword.manualPlaceholder')}
-                    className="text-xs"
-                  />
-                  <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
-                  <Button
-                    variant="voice"
-                    size="sm"
-                    onClick={commitMine}
-                    disabled={minePending.selected.size === 0}
-                  >
-                    {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* 词卡网格（搜索+排序已移到右上方操作区） */}
-            <div className="flex-1 overflow-y-auto p-4">
-              {words.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
-              ) : visible.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {visible.map((w) => {
-                    const h = hits[w] ?? 0;
-                    return (
-                      <div key={w} className={cn(
-                        'raycast-ring relative max-w-[200px] min-w-[112px] rounded-md border bg-background px-3 py-2 pr-7 transition-colors duration-700',
-                        recentlyAdded.has(w) ? 'border-voice bg-voice/15 ring-1 ring-voice/30' : 'border-border hover:border-foreground/25'
-                      )}>
-                        <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/60 hover:text-destructive" aria-label={`删除 ${w}`}>
-                          <X className="h-3 w-3" />
-                        </button>
-                        <div className="truncate text-sm">
-                          {w} <span className={cn('font-mono text-[10px] tabular-nums', h > 0 ? 'text-voice' : 'text-muted-foreground/50')}>{h}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-1 items-center justify-center rounded-lg border border-border bg-background text-sm text-muted-foreground">
-            {t('settings.hotword.selectVersionFirst')}
-          </div>
-        )}
       </div>
     </div>
   );
