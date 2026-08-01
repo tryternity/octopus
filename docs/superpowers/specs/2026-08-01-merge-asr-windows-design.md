@@ -149,4 +149,4 @@ poller 的 `BAR_W`/`BAR_H`/`BAR_OFFSET` 需按模式 + `RESULT_CLICK_THROUGH` �
 - `npx tsc --noEmit`（frontend）：0 error
 - `npm run build`（frontend vite）：成功
 
-**剩余手动 e2e（待用户验证）：** ① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。
+**e2e 手动验证通过（2026-07-31）：** ① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。

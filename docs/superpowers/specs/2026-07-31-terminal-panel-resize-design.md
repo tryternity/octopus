@@ -193,7 +193,7 @@ clamp 后的实际值不写回 localStorage（保留用户原始偏好，下次�
 | 对侧 panel 隐藏 | raw=600, container=800, otherSideWidth=0 → max=480 | 480 |
 | 极小窗口 | raw=200, container=400, otherSideWidth=0 → max=400-320=80 | 80 |
 
-### e2e 冒烟（手动）
+### e2e 冒烟（手动）— ✅ 已合入 main，日常使用验证中
 
 - 拖 sidebar 右边缘 → 宽度变化 + 终端实时 refit
 - 拖 file-tree 左边缘 → 同上

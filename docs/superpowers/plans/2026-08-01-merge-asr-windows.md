@@ -52,7 +52,7 @@
 - Produces: `show_result` 改为先 emit `record-mode: "toggle"` 再走原逻辑
 - Produces: `INSTANT_BAR_H: f64 = 80.0`（底部指示卡高度，poller 用）
 
-- [ ] **Step 1: 加 show_instant 函数 + record-mode emit**
+- [x] **Step 1: 加 show_instant 函数 + record-mode emit**
 
 在 `result_window.rs` 的 `show_result` 之后加 `show_instant`。先读 `show_result` 现状（line 228-255）作模板。`show_instant` 结构同 `show_result`，但：
 - emit `record-mode: "instant"`（show 前）
@@ -97,7 +97,7 @@ pub fn show_instant(app: &tauri::AppHandle, state: &str, text: &str) {
 }
 ```
 
-- [ ] **Step 2: 加 position_bottom_center（从 instant_overlay 搬）**
+- [x] **Step 2: 加 position_bottom_center（从 instant_overlay 搬）**
 
 在 `reposition_to_mouse_monitor` 附近加。从 `instant_overlay.rs:99-128` 的 `position_bottom_center` 搬入，改用 result_window 的常量（窗口宽 720，指示卡底部居中）。需要 import `crate::ui::window_position::{get_mouse_location, find_monitor_at_mouse}`（已在 reposition 用过）：
 ```rust
@@ -126,7 +126,7 @@ fn position_bottom_center(win: &tauri::WebviewWindow) {
 }
 ```
 
-- [ ] **Step 3: 加 INSTANT_BAR_H 常量（poller 用，Task 3）**
+- [x] **Step 3: 加 INSTANT_BAR_H 常量（poller 用，Task 3）**
 
 在 `BAR_H` 附近加：
 ```rust
@@ -134,16 +134,16 @@ fn position_bottom_center(win: &tauri::WebviewWindow) {
 const INSTANT_BAR_H: f64 = 80.0;
 ```
 
-- [ ] **Step 4: 加 imports（serde_json / Emitter 如缺）**
+- [x] **Step 4: 加 imports（serde_json / Emitter 如缺）**
 
 确认 `use tauri::Emitter;` 已在 result_window.rs（show_result 用了 emit_to）。`serde_json::json!` 用于 instant-state payload——确认 `serde_json` 在 desktop crate 依赖（已在）。
 
-- [ ] **Step 5: build 验证**
+- [x] **Step 5: build 验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning"`
 Expected: 无 error/warning（show_instant 暂未被调用，可能有 dead_code warning——Task 2 调用点迁移后消除）
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/ui/result_window.rs
@@ -168,24 +168,24 @@ git commit -m "feat(result_window): 加 show_instant + 底部定位 + record-mod
 - `instant_overlay::hide_instant_overlay(app)` → `result_window::hide_result(app)`（5 处：cancel_discard.rs:87,253 / mod.rs:554 / lifecycle.rs:396,462）
 - `instant_overlay::precreate(app)` → 删除（setup.rs:62）
 
-- [ ] **Step 1: 迁移 session.rs 两处**
+- [x] **Step 1: 迁移 session.rs 两处**
 
 `crates/desktop/src/engine/coordinator/session.rs`:
 - line 31: `crate::ui::instant_overlay::show_instant_overlay(app_handle, "listening", "");` → `crate::ui::result_window::show_instant(app_handle, "listening", "");`
 - line 71: `crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", "麦克风不可用");` → `crate::ui::result_window::show_instant(app_handle, "done", "麦克风不可用");`
 
-- [ ] **Step 2: 迁移 polish.rs 一处**
+- [x] **Step 2: 迁移 polish.rs 一处**
 
 `crates/desktop/src/engine/coordinator/polish.rs`:
 - line 61: `crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");` → `crate::ui::result_window::show_instant(app_handle, "polishing", "");`
 
-- [ ] **Step 3: 迁移 paste.rs 两处**
+- [x] **Step 3: 迁移 paste.rs 两处**
 
 `crates/desktop/src/engine/coordinator/paste.rs`:
 - line 93: `crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");` → `crate::ui::result_window::show_instant(app_handle, "polishing", "");`
 - line 127: `crate::ui::instant_overlay::show_instant_overlay(app_handle, "done", text_to_paste);` → `crate::ui::result_window::show_instant(app_handle, "done", text_to_paste);`
 
-- [ ] **Step 4: 迁移 lifecycle.rs 三处 show + 两处 hide**
+- [x] **Step 4: 迁移 lifecycle.rs 三处 show + 两处 hide**
 
 `crates/desktop/src/engine/coordinator/lifecycle.rs`:
 - line 368: `show_instant_overlay(app_handle, "polishing", "")` → `result_window::show_instant(app_handle, "polishing", "")`
@@ -193,38 +193,38 @@ git commit -m "feat(result_window): 加 show_instant + 底部定位 + record-mod
 - line 462: `hide_instant_overlay(app_handle)` → `result_window::hide_result(app_handle)`
 - line 488: `show_instant_overlay(app_handle, "polishing", "")` → `result_window::show_instant(app_handle, "polishing", "")`
 
-- [ ] **Step 5: 迁移 cancel_discard.rs 两处 hide**
+- [x] **Step 5: 迁移 cancel_discard.rs 两处 hide**
 
 `crates/desktop/src/engine/coordinator/cancel_discard.rs`:
 - line 87: `crate::ui::instant_overlay::hide_instant_overlay(app_handle);` → `crate::ui::result_window::hide_result(app_handle);`
 - line 253: 同上
 
-- [ ] **Step 6: 迁移 mod.rs 一处 hide（PasteDone 分支）**
+- [x] **Step 6: 迁移 mod.rs 一处 hide（PasteDone 分支）**
 
 `crates/desktop/src/engine/coordinator/mod.rs`:
 - line 554: `crate::ui::instant_overlay::hide_instant_overlay(&app_handle);` → `crate::ui::result_window::hide_result(&app_handle);`
 
-- [ ] **Step 7: 删 setup.rs precreate 调用**
+- [x] **Step 7: 删 setup.rs precreate 调用**
 
 `crates/desktop/src/core/setup.rs`:
 - line 62: 删 `crate::ui::instant_overlay::precreate(self.app.handle());`
 
-- [ ] **Step 8: 删 instant_overlay.rs + mod.rs 声明**
+- [x] **Step 8: 删 instant_overlay.rs + mod.rs 声明**
 
 - 删文件 `crates/desktop/src/ui/instant_overlay.rs`
 - `crates/desktop/src/ui/mod.rs`: 删 `pub mod instant_overlay;`
 
-- [ ] **Step 9: build 验证**
+- [x] **Step 9: build 验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning"`
 Expected: 0 error 0 warning（所有调用点已迁移，instant_overlay 删除后无残留引用）
 
-- [ ] **Step 10: cargo test 验证**
+- [x] **Step 10: cargo test 验证**
 
 Run: `cargo test -p octopus-desktop --features embedded 2>&1 | tail -3`
 Expected: 全部通过（488+ passed，0 failed）
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add -A
@@ -245,7 +245,7 @@ git commit -m "refactor: 迁移 instant_overlay 调用点到 result_window + 删
 - toggle 精简态（`RESULT_CLICK_THROUGH=true` + `INSTANT_MODE=false`）：顶部 720×116（现状）
 - instant 态（`INSTANT_MODE=true`）：底部 720×80（指示卡区域）
 
-- [ ] **Step 1: 抽 BAR 区域计算为按模式返回 (offset_x, offset_y, bar_w, bar_h)**
+- [x] **Step 1: 抽 BAR 区域计算为按模式返回 (offset_x, offset_y, bar_w, bar_h)**
 
 在 poller 的光标命中判定处（line ~195），把固定的 `BAR_OFFSET_X` / `BAR_H` 改为按模式：
 ```rust
@@ -262,16 +262,16 @@ let (bar_off_x, bar_off_y, bar_h) = if crate::engine::coordinator::INSTANT_MODE
 ```
 然后光标命中判定用 `bar_off_x` / `bar_off_y` / `bar_h`（替换原硬编码 `0.0` 偏移 + `BAR_H`）。
 
-- [ ] **Step 2: 确认 INSTANT_MODE 可见性**
+- [x] **Step 2: 确认 INSTANT_MODE 可见性**
 
 `coordinator/mod.rs` 的 `INSTANT_MODE` 是 `pub(crate)`——result_window 在同 crate，可直接 `crate::engine::coordinator::INSTANT_MODE`。如不可见，改 `pub(crate)`。
 
-- [ ] **Step 3: build 验证**
+- [x] **Step 3: build 验证**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning"`
 Expected: 0 error 0 warning
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/ui/result_window.rs
@@ -291,14 +291,14 @@ git commit -m "feat(result_window): poller 适配 instant 模式底部 BAR 区�
 **Interfaces:**
 - Consumes: 后端 `record-mode` 事件（`"toggle" | "instant"`）+ `instant-state` 事件（`{state, text}`）
 
-- [ ] **Step 1: 新建 InstantView.tsx（从 InstantOverlay/index.tsx 搬）**
+- [x] **Step 1: 新建 InstantView.tsx（从 InstantOverlay/index.tsx 搬）**
 
 `crates/desktop/frontend/src/pages/Result/InstantView.tsx`——从 `InstantOverlay/index.tsx` 搬入组件逻辑（4 态指示 + 波形/spinner），但：
 - 移除 `getCurrentWebviewWindow().listen`（监听上移到 AsrWindow 根，props 传入 state/text）
 - 渲染容器改为 720×480 透明区底部居中（CSS `position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:400px;`）
 - 组件签名改为 `export function InstantView({ state, text }: { state: string; text: string })`
 
-- [ ] **Step 2: 改造 Result/index.tsx 为 AsrWindow 根**
+- [x] **Step 2: 改造 Result/index.tsx 为 AsrWindow 根**
 
 在 Result page 根组件加：
 - state: `recordMode: "toggle" | "instant"`（默认 "toggle"）
@@ -322,22 +322,22 @@ return (
 );
 ```
 
-- [ ] **Step 3: 删 InstantOverlay page + instant-overlay.html**
+- [x] **Step 3: 删 InstantOverlay page + instant-overlay.html**
 
 - 删 `crates/desktop/frontend/src/pages/InstantOverlay/`
 - 删 `crates/desktop/frontend/instant-overlay.html`
 
-- [ ] **Step 4: tsc 验证**
+- [x] **Step 4: tsc 验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5`
 Expected: 0 error（InstantOverlay 删除后无残留引用；InstantView 类型正确）
 
-- [ ] **Step 5: vite build 验证**
+- [x] **Step 5: vite build 验证**
 
 Run: `cd crates/desktop/frontend && npm run build 2>&1 | tail -3`
 Expected: build 成功
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -352,15 +352,15 @@ git commit -m "feat(frontend): AsrWindow 合并 toggle + instant 视图（record
 - Modify: `crates/desktop/capabilities/default.json`
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 删 instant_overlay window 权限**
+- [x] **Step 1: 删 instant_overlay window 权限**
 
 `crates/desktop/capabilities/default.json` line 4 的 `windows` 数组：删 `"instant_overlay"`。
 
-- [ ] **Step 2: 更新 architecture.md**
+- [x] **Step 2: 更新 architecture.md**
 
 更新窗口说明段：result_window 与 instant_overlay 合并为单实例；INSTANT_MODE 语义变更（选视图+位置而非选窗口）；穿透 poller 双 BAR 区域。
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 Run:
 ```bash
@@ -370,18 +370,18 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 ```
 Expected: build 0 error 0 warning；test 全过；tsc 0 error；vite build 成功
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
 git commit -m "chore: 删 instant_overlay capabilities + 文档同步"
 ```
 
-- [ ] **Step 5: spec 标记实现状态**
+- [x] **Step 5: spec 标记实现状态**
 
 在 `docs/superpowers/specs/2026-08-01-merge-asr-windows-design.md` 末尾加「实现状态」段（已实现清单 + 偏差 + 验证结果）。
 
-- [ ] **Step 6: e2e 提示**
+- [x] **Step 6: e2e 提示**
 
 提示用户 e2e 验证：① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。
 

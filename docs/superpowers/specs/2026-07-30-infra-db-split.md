@@ -1,6 +1,6 @@
 # infra/db.rs 拆分 spec（infra crate 大文件重构）
 
-> **Status: 🔨 待实现**（2026-07-30，分支 `daily_refactor_asr_local`）
+> **Status: ✅ 已完成**（2026-07-30，`crates/infra/src/db/` 9 子文件已落地）
 
 ## 背景
 
