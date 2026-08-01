@@ -277,8 +277,8 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
           </div>
         </CardHeader>
         <CardContent className="py-2.5">
-          {/* 方言模糊（2x4 横排，全局开关） */}
-          <div className="grid grid-cols-5 gap-x-4">
+          {/* 方言模糊（5 开关，3 列两行，全局开关） */}
+          <div className="grid grid-cols-3 gap-x-8 gap-y-2">
             {DIALECT_KEYS.map(({ tok, key }) => {
               const label = t(key);
               return (
