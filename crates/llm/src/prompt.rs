@@ -11,9 +11,45 @@ const EDITED_MARKER_RULE: &str = "文本中 {花括号} 标记的词语是用户
 /// 启动时由 main.rs 从 DB 加载并 set_system_prompt。
 static SYSTEM_PROMPT: RwLock<String> = RwLock::new(String::new());
 
+/// app 上下文（注入 user prompt 头部，仅 inject_context=1 的模板用）。
+#[derive(Debug, Clone)]
+pub struct AppContext {
+    pub name: String,
+    /// 空串=无类别（仅注入 app 名称）。
+    pub category: String,
+}
+
+/// bundle_id → 类别映射（精简，覆盖典型场景，其余靠 LLM 从 app 名称推断）。
+/// 大小写不敏感：真实 bundle id 常用 CamelCase（如 com.microsoft.Word）。
+pub fn classify_app_context(bundle_id: &str) -> &'static str {
+    let b = bundle_id.to_ascii_lowercase();
+    let b = b.as_str();
+    match b {
+        b if b.starts_with("com.tencent.xinwechat") || b.starts_with("com.tencent.qq") => "即时通讯",
+        b if b.starts_with("com.microsoft.word")
+            || b.starts_with("com.apple.textedit")
+            || b.starts_with("com.apple.pages") => "文档写作",
+        _ => "",
+    }
+}
+
+/// 构造 app 上下文前缀行。name 为空 → 无前缀；category 为空 → 仅 app 名。
+fn app_context_prefix(app_context: Option<&AppContext>) -> String {
+    match app_context {
+        Some(ctx) if !ctx.name.is_empty() => {
+            if ctx.category.is_empty() {
+                format!("当前应用：{}\n", ctx.name)
+            } else {
+                format!("当前应用：{}（{}）\n", ctx.name, ctx.category)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 /// 拼接用户 prompt content + 强制 edited 标记规则。
 /// content 为 DB prompts 表的 content 字段（纯风格规则，不含 edited 标记逻辑）。
-pub(crate) fn build_system_prompt(content: &str) -> String {
+pub fn build_system_prompt(content: &str) -> String {
     format!("{}\n{}", content.trim_end(), EDITED_MARKER_RULE)
 }
 
@@ -52,7 +88,10 @@ pub(crate) fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
 /// LLM 输出整篇（含润色后的全文），仅纯文本，无 `{}`。
 ///
 /// 无 preserve 段时 body 无 `{}`，等价全量润色（与 user_prompt(None) 等价语义）。
-pub(crate) fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
+pub(crate) fn regions_prompt(
+    regions: &[crate::PolishRegion],
+    app_context: Option<&AppContext>,
+) -> String {
     let mut body = String::new();
     for r in regions {
         if r.preserve {
@@ -61,7 +100,7 @@ pub(crate) fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
             body.push_str(&r.text);
         }
     }
-    format!("请润色以下语音识别文本：\n{}", body)
+    format!("{}请润色以下语音识别文本：\n{}", app_context_prefix(app_context), body)
 }
 
 #[cfg(test)]
@@ -108,7 +147,7 @@ mod tests {
     #[test]
     fn regions_prompt_no_preserve_is_plain() {
         let rs = vec![crate::PolishRegion { preserve: false, text: "你好".into() }];
-        let p = regions_prompt(&rs);
+        let p = regions_prompt(&rs, None);
         assert!(p.contains("请润色以下语音识别文本"));
         assert!(!p.contains("原样保留"));
         assert!(!p.contains('{'));  // 无 preserve → 无花括号
@@ -120,8 +159,43 @@ mod tests {
             crate::PolishRegion { preserve: true, text: "已确认".into() },
             crate::PolishRegion { preserve: false, text: "待润色".into() },
         ];
-        let p = regions_prompt(&rs);
+        let p = regions_prompt(&rs, None);
         assert!(p.contains("{已确认}"));
         assert!(p.contains("待润色"));
+    }
+
+    #[test]
+    fn app_context_prefix_none_is_empty() {
+        assert_eq!(super::app_context_prefix(None), "");
+        let ctx = super::AppContext { name: String::new(), category: String::new() };
+        assert_eq!(super::app_context_prefix(Some(&ctx)), "");
+    }
+
+    #[test]
+    fn app_context_prefix_with_category() {
+        let ctx = super::AppContext { name: "微信".into(), category: "即时通讯".into() };
+        assert_eq!(super::app_context_prefix(Some(&ctx)), "当前应用：微信（即时通讯）\n");
+    }
+
+    #[test]
+    fn app_context_prefix_without_category() {
+        let ctx = super::AppContext { name: "Code".into(), category: String::new() };
+        assert_eq!(super::app_context_prefix(Some(&ctx)), "当前应用：Code\n");
+    }
+
+    #[test]
+    fn regions_prompt_injects_app_context() {
+        let regions = vec![crate::PolishRegion { preserve: false, text: "你好".into() }];
+        let ctx = super::AppContext { name: "微信".into(), category: "即时通讯".into() };
+        let p = super::regions_prompt(&regions, Some(&ctx));
+        assert!(p.starts_with("当前应用：微信（即时通讯）\n请润色以下语音识别文本：\n"));
+        assert!(p.ends_with("你好"));
+    }
+
+    #[test]
+    fn classify_app_context_known_and_unknown() {
+        assert_eq!(super::classify_app_context("com.tencent.xinWeChat"), "即时通讯");
+        assert_eq!(super::classify_app_context("com.microsoft.Word"), "文档写作");
+        assert_eq!(super::classify_app_context("com.apple.Safari"), "");
     }
 }

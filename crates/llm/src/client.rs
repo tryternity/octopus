@@ -198,6 +198,8 @@ pub fn chat_text_with_prompt(
 pub fn polish_regions(
     regions: &[PolishRegion],
     config: &CompatibleLlmConfig,
+    prompt_content: &str,
+    app_context: Option<&prompt::AppContext>,
 ) -> Result<String> {
     let total_chars: usize = regions.iter().map(|r| r.text.chars().count()).sum();
     if total_chars == 0 {
@@ -206,8 +208,8 @@ pub fn polish_regions(
     let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
 
     let result = chat_text(
-        &prompt::system_prompt(),
-        &prompt::regions_prompt(regions),
+        &prompt::build_system_prompt(prompt_content),
+        &prompt::regions_prompt(regions, app_context),
         max_tokens,
         config,
         None,
