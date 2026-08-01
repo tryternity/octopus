@@ -17,9 +17,9 @@ pub struct LightCorrector {
     // 热词索引——纠错候选的唯一来源。热路径读锁，reload 整体替换。
     // 空索引 → find_candidates 短路返回单候选 → 零纠错（消灭全词典自由联想的过纠根因）。
     hotwords: parking_lot::RwLock<HotwordIndex>,
-    // active 热词原文缓存——方言规则（FuzzyRules）变更时用它重建 hotwords 索引
+    // active 热词缓存（word, pinyin, hit_count）——方言规则变更时用它重建 hotwords 索引
     //（索引 key 由 normalize_fuzzy_pinyin 生成，规则变 key 必变，见 reload_fuzzy_dialect）。
-    active_words: parking_lot::RwLock<Vec<String>>,
+    active_words: parking_lot::RwLock<Vec<(String, String, i64)>>,
     // 本次 correct 命中的热词收集（correct_greedy push，pipeline 经 drain_hits 取走后 bump DB）。
     // corrector 保持纯内存不碰 DB；命中计数持久化交调用层，避免单测污染真实 DB。
     pending_hits: parking_lot::Mutex<Vec<String>>,
@@ -93,6 +93,8 @@ impl LightCorrector {
 
     /// 候选词**唯一来自 HotwordIndex**（active 热词）。
     /// 空热词或无命中 → 仅返回原词（单候选，correct_greedy 视为无操作）。
+    /// 多命中时按 hit_count 降序排序（命中多的优先——用户验证过的更可信），
+    /// hit_count 相同按 word 字典序（确定性，避免 HashSet 迭代序不确定）。
     fn find_candidates(&self, query_word: &str) -> Vec<String> {
         let char_len = query_word.chars().count();
         if char_len < 2 {
@@ -107,14 +109,17 @@ impl LightCorrector {
         if query_py.is_empty() {
             return vec![query_word.to_string()];
         }
-        let mut candidates: Vec<String> = idx
+        let mut candidates: Vec<(String, i64)> = idx
             .lookup(char_len, &query_py)
             .cloned()
             .unwrap_or_default();
-        if !candidates.contains(&query_word.to_string()) {
-            candidates.push(query_word.to_string());
+        // hit_count 降序 + 平局 word 字典序升序（确定性）
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // 原词追加末尾（不参与排序——correct_greedy find 跳过它）
+        if !candidates.iter().any(|(w, _)| w == query_word) {
+            candidates.push((query_word.to_string(), 0));
         }
-        candidates
+        candidates.into_iter().map(|(w, _)| w).collect()
     }
 
     pub fn correct(&self, text: &str) -> String {
@@ -181,15 +186,16 @@ pub fn is_common_word(word: &str) -> bool {
     get_corrector().unigram_scores.contains_key(word)
 }
 
-/// 用 active 热词文本列表重建 corrector 的热词索引。
-/// 启动时（DB 初始化后）与每次热词增删/确认后调用。
-/// 同时缓存原文到 `active_words`，供 [`reload_fuzzy_dialect`] 重建索引用。
+/// 用 active 热词列表重建 corrector 的热词索引。
+/// entries = [(word, pinyin, hit_count)]，pinyin 是 DB 原始拼音，hit_count 用于多命中排序。
+/// 启动时（DB 初始化后）与每次热词增删后调用。
+/// 同时缓存到 `active_words`，供 [`reload_fuzzy_dialect`] 重建索引用。
 /// corrector 未初始化时先 force init（空索引），再写入——确保首调也能落地。
-pub fn reload_hotwords(words: Vec<String>) {
-    // 锁外预建索引（拼音转换 CPU 密集），避免持有 hotwords 写锁期间阻塞 ASR 读热路径。
-    let new_index = HotwordIndex::from_words(&words);
+pub fn reload_hotwords(entries: Vec<(String, String, i64)>) {
+    // 锁外预建索引（拼音归一化 CPU 密集），避免持有 hotwords 写锁期间阻塞 ASR 读热路径。
+    let new_index = HotwordIndex::from_words(&entries);
     let apply = |c: &LightCorrector| {
-        *c.active_words.write() = words;
+        *c.active_words.write() = entries;
         *c.hotwords.write() = new_index;
     };
     if let Some(c) = CORRECTOR.get() {
@@ -260,10 +266,23 @@ mod tests {
         crate::text::corrector::test_serial()
     }
 
-    /// 辅助：给单例 corrector 装载热词后返回它。调用方须先持 `serial()` guard。
+    /// 辅助：给单例 corrector 装载热词（hit_count=0）后返回它。调用方须先持 `serial()` guard。
     fn with_hotwords(words: &[&str]) -> &'static LightCorrector {
-        let v: Vec<String> = words.iter().map(|s| s.to_string()).collect();
-        reload_hotwords(v);
+        let entries: Vec<(String, String, i64)> = words
+            .iter()
+            .map(|s| (s.to_string(), crate::hotword::word_raw_pinyin(s), 0))
+            .collect();
+        reload_hotwords(entries);
+        get_corrector()
+    }
+
+    /// 辅助：给单例 corrector 装载热词（带 hit_count）后返回它。
+    fn with_hotwords_scored(words: &[(&str, i64)]) -> &'static LightCorrector {
+        let entries: Vec<(String, String, i64)> = words
+            .iter()
+            .map(|(s, hc)| (s.to_string(), crate::hotword::word_raw_pinyin(s), *hc))
+            .collect();
+        reload_hotwords(entries);
         get_corrector()
     }
 
@@ -408,5 +427,50 @@ mod tests {
         assert_eq!(drain_hits(), vec!["浮窗".to_string()]);
         // drain 后清空
         assert!(drain_hits().is_empty());
+    }
+
+    // ── P2 多命中 hit_count 排序（2026-08-01）──
+    // 同音多热词命中时，hit_count 高的优先（用户验证过的更可信）；
+    // hit_count 相同按 word 字典序（确定性，避免 HashSet 迭代序不确定）。
+
+    #[test]
+    fn multi_hit_picks_higher_hit_count() {
+        let _g = serial();
+        set_rules(&[]);
+        // 「浮窗」(hit=5) 和「福川」(hit=1) 拼音归一相同。输入「福创」——两者都是候选。
+        // hit_count 5 > 1 → 浮窗胜出。
+        let c = with_hotwords_scored(&[("浮窗", 5), ("福川", 1)]);
+        assert_eq!(c.correct("福创"), "浮窗", "hit_count 5 > 1，浮窗应胜出");
+    }
+
+    #[test]
+    fn multi_hit_zero_count_picks_alpha_order() {
+        let _g = serial();
+        set_rules(&[]);
+        // 两个都 0 hit_count → 字典序确定性（不取决于 HashSet 迭代序）
+        let c = with_hotwords_scored(&[("浮窗", 0), ("福川", 0)]);
+        let r1 = c.correct("福创");
+        let c2 = with_hotwords_scored(&[("浮窗", 0), ("福川", 0)]);
+        let r2 = c2.correct("福创");
+        assert_eq!(r1, r2, "零 hit_count 时应确定性选一个（{} vs {}）", r1, r2);
+    }
+
+    #[test]
+    fn multi_hit_deterministic_across_reloads() {
+        let _g = serial();
+        set_rules(&[]);
+        // 「浮窗」(fu-chuang, hit=3) 和「福川」(fu-chuan, hit=7) 拼音归一相同。
+        // 输入「福创」(fu-chuang→归一同) —— 两个热词都是候选（都不是原词）。
+        // hit_count 7 > 3 → 福川胜出。多次 reload 结果应一致（确定性）。
+        let r1 = {
+            let c = with_hotwords_scored(&[("浮窗", 3), ("福川", 7)]);
+            c.correct("福创")
+        };
+        let r2 = {
+            let c = with_hotwords_scored(&[("浮窗", 3), ("福川", 7)]);
+            c.correct("福创")
+        };
+        assert_eq!(r1, r2, "多次 reload 结果应一致（确定性）：{} vs {}", r1, r2);
+        assert_eq!(r1, "福川", "hit_count 7 > 3，福川应胜出（实际 {}）", r1);
     }
 }

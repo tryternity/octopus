@@ -9,9 +9,7 @@ use crate::core::error_util::e2s;
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
 fn reload_after_write() {
     match db::list_active_words() {
-        Ok(words) => octopus_asr_local::corrector::reload_hotwords(
-            words.iter().map(|(w, _)| w.clone()).collect(),
-        ),
+        Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
         Err(e) => log::warn!("[hotword] reload 失败: {}", e),
     }
 }

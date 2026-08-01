@@ -110,9 +110,7 @@ impl<'a> AppSetup<'a> {
         // 启动时装载 active 热词到 corrector（force init + reload 索引）。
         // 之后所有引擎纠错自动用上热词（候选有界，空热词即 no-op 零过纠）。
         match octopus_asr_local::db::list_active_words() {
-            Ok(words) => octopus_asr_local::corrector::reload_hotwords(
-                words.iter().map(|(w, _)| w.clone()).collect(),
-            ),
+            Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
             Err(e) => log::warn!("[hotword] 启动装载失败，纠错以空热词运行: {}", e),
         }
 

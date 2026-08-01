@@ -247,27 +247,31 @@ pub(crate) fn list_words_in_set_at(conn: &Connection, set_id: &str) -> Result<Ve
     Ok(list)
 }
 
-/// 纠错热路径用——取所有 enabled set 的活跃词（word + 原始拼音），跨 set 去重并集。
-/// 返回 (word, pinyin) 对——拼音随词带出，HotwordIndex 不必现算 to_pinyin。
-pub fn list_active_words() -> Result<Vec<(String, String)>> {
+/// 纠错热路径用——取所有 enabled set 的活跃词（word + 原始拼音 + hit_count），跨 set 去重并集。
+/// 返回 (word, pinyin, hit_count) 三元组——拼音随词带出（HotwordIndex 不必现算 to_pinyin），
+/// hit_count 从 hotword_hits LEFT JOIN（无命中记录 = 0），用于 correct 多命中排序。
+pub fn list_active_words() -> Result<Vec<(String, String, i64)>> {
     ensure_db()?;
     with_db(|conn| list_active_words_at(conn))
 }
 
-pub(crate) fn list_active_words_at(conn: &Connection) -> Result<Vec<(String, String)>> {
+pub(crate) fn list_active_words_at(conn: &Connection) -> Result<Vec<(String, String, i64)>> {
     let mut stmt = conn.prepare(
-        "SELECT w.word, w.pinyin FROM hotword_words w
+        "SELECT w.word, w.pinyin, COALESCE(h.hit_count, 0) FROM hotword_words w
          JOIN hotword_sets s ON w.set_id = s.id
+         LEFT JOIN hotword_hits h ON h.word = w.word
          WHERE s.enabled = 1 AND w.is_deleted = 0",
     )?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    // 跨 set 去重（同词取第一条的拼音——同词拼音必然相同）
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })?;
+    // 跨 set 去重（同词取第一条——同词拼音必然相同，hit_count 全局一致）
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
     for r in rows {
-        let (w, p) = r?;
+        let (w, p, hc) = r?;
         if seen.insert(w.clone()) {
-            out.push((w, p));
+            out.push((w, p, hc));
         }
     }
     Ok(out)
@@ -720,10 +724,10 @@ mod tests {
         add_word_to_set_at(&conn, "set-off", "浮窗").unwrap();
 
         let words = list_active_words_at(&conn).unwrap();
-        let word_set: std::collections::HashSet<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+        let word_set: std::collections::HashSet<&str> = words.iter().map(|(w, _, _)| w.as_str()).collect();
         assert_eq!(word_set, ["八爪鱼", "吴大锐", "周会"].into_iter().collect());
         // 拼音带出
-        let bz = words.iter().find(|(w, _)| w == "八爪鱼").unwrap();
+        let bz = words.iter().find(|(w, _, _)| w == "八爪鱼").unwrap();
         assert_eq!(bz.1, "ba zhao yu");
 
         // 全关 → 空
