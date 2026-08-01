@@ -677,7 +677,6 @@ mod tests {
         let loaded = read_hotword_set_file(&h.id).expect("read");
         assert_eq!(loaded.id, h.id);
         assert_eq!(loaded.name, h.name);
-        assert_eq!(loaded.words_text, h.words_text);
         assert_eq!(loaded.enabled, h.enabled);
     }
 
@@ -754,9 +753,9 @@ mod tests {
         ];
         export_all_hotwords(&sets).expect("initial");
 
-        // 改一个版本的词（sync_md5 会变——因为 words_text 变了）
+        // 改一个版本的 name（sync_md5 会变）
         let mut sets2 = sets.clone();
-        sets2[0].words_text = "葡萄".into();
+        sets2[0].name = "版本A改".into();
         let (_, changed) = incremental_export_hotwords(&sets2).expect("incremental");
         assert_eq!(changed, 1, "只改了一个版本，应 1 变更");
     }
@@ -830,7 +829,6 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         // 验证内容完整（不丢字段）
         let a = loaded.iter().find(|f| f.name == "版本A").expect("应有版本A");
-        assert_eq!(a.words_text, "苹果 香蕉");
         assert!(a.enabled);
     }
 
@@ -841,6 +839,22 @@ mod tests {
     // 文件内容一致；测试里省略 git 层，直接用同一文件系统验证 pull/push 逻辑。
 
     use octopus_infra::db;
+
+    /// 测试辅助：空格分隔的词 → Vec<String>，调 add_words_to_set。
+    fn add_words(set_id: &str, words: &str) {
+        let ws: Vec<String> = words.split_whitespace().map(|s| s.to_string()).collect();
+        db::add_words_to_set(set_id, &ws).unwrap();
+    }
+
+    /// 测试辅助：某 set 的活跃词文本（空格分隔，按 word 排序），便于断言。
+    fn words_text_of(set_id: &str) -> String {
+        db::list_words_in_set(set_id)
+            .unwrap()
+            .iter()
+            .map(|w| w.word.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 
     /// DB + sync_root 双隔离 guard——pull/push 测试用。
     struct DbSyncGuard {
@@ -877,7 +891,7 @@ mod tests {
         // A 机：写 SQLite + export 到文件（模拟 A push）
         let id_a = "aaaaaaaa-0001";
         db::insert_hotword_set(id_a, "A机版本").unwrap();
-        db::set_hotword_set_words(id_a, "苹果 香蕉").unwrap();
+        add_words(id_a, "苹果 香蕉");
         let sets = db::list_hotword_sets().unwrap();
         export_all_hotwords(&sets).expect("A export");
 
@@ -894,7 +908,6 @@ mod tests {
         let b_sets = db::list_hotword_sets().unwrap();
         assert_eq!(b_sets.len(), 1);
         assert_eq!(b_sets[0].name, "A机版本");
-        assert_eq!(b_sets[0].words_text, "苹果 香蕉");
         assert_eq!(b_sets[0].id, id_a, "id 应保持一致（跨设备 UUID 隔离）");
         assert!(b_sets[0].sync_md5.is_some(), "pull 后应有 sync_md5");
     }
@@ -910,7 +923,7 @@ mod tests {
 
         let id = "bbbbbbbb-0001";
         db::insert_hotword_set(id, "原版本").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
+        add_words(id, "苹果");
 
         // 首次 export（模拟初始同步）
         let sets = db::list_hotword_sets().unwrap();
@@ -979,7 +992,7 @@ mod tests {
         }
 
         db::insert_hotword_set("dddddddd-0001", "版本").unwrap();
-        db::set_hotword_set_words("dddddddd-0001", "苹果").unwrap();
+        add_words("dddddddd-0001", "苹果");
 
         // 第一次 push
         let first = push_hotwords_to_files().expect("first push");
@@ -1032,7 +1045,7 @@ mod tests {
 
         let id = "eeeeeeee-0001";
         db::insert_hotword_set(id, "版本").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
+        add_words(id, "苹果");
         // 回填 sync_md5（模拟 desktop 命令层行为）
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
@@ -1084,7 +1097,7 @@ mod tests {
         // 设备 A：建 "同名版本" UUID-A
         let id_a = "ffffffff-aaaa";
         db::insert_hotword_set(id_a, "同名版本").unwrap();
-        db::set_hotword_set_words(id_a, "苹果").unwrap();
+        add_words(id_a, "苹果");
         export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export A");
 
         // 清 DB，模拟设备 B 初始空
@@ -1095,7 +1108,7 @@ mod tests {
         // 设备 B 本地也建了一个同名版本（不同 UUID）
         let id_b = "ffffffff-bbbb";
         db::insert_hotword_set(id_b, "同名版本").unwrap();
-        db::set_hotword_set_words(id_b, "香蕉").unwrap();
+        add_words(id_b, "香蕉");
 
         // B pull A 的版本——upsert 因 name UNIQUE 冲突失败，该版本被跳过（不 panic）
         let pulled = pull_hotwords_from_files().expect("pull 不应 panic");
@@ -1159,23 +1172,21 @@ mod tests {
         // 模拟「上次 sync 的状态」：export 旧版本到文件
         let id = "dddddddd-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
         export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
 
-        // 模拟「本地新加词」：DB 加了「香蕉」，sync_md5 已回填
-        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        // 本地改 name + 回填 sync_md5
+        db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
-        // DB 现在有「苹果 香蕉」，文件还是旧的「苹果」
 
-        // 直接调 pull——会覆盖（这是 pull 的设计行为，非 bug）
+        // 直接调 pull——会用旧文件（name="测试集"）覆盖 DB（name="测试集改"）
         let _pulled = pull_hotwords_from_files().expect("pull");
 
-        // pull 用旧文件（只有「苹果」）覆盖了 DB（「苹果 香蕉」）——设计如此
+        // pull 无方向感知——旧文件覆盖了 DB 新 name（设计契约）
         let after = db::get_hotword_set(id).unwrap();
         assert_eq!(
-            after.words_text, "苹果",
-            "pull 无方向感知，会用旧文件覆盖新 DB（设计契约；常规 sync 用 merge_hotwords 避免此行为）"
+            after.name, "测试集",
+            "pull 无方向感知，会用旧文件覆盖新 DB name（设计契约；常规 sync 用 merge_hotwords 避免此行为）"
         );
     }
 
@@ -1191,11 +1202,10 @@ mod tests {
 
         let id = "eeeeeeee-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
         export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
 
-        // 本地加词
-        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        // 本地改 name（set 元数据变更 → sync_md5 变）
+        db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
@@ -1203,10 +1213,9 @@ mod tests {
         let pushed = push_hotwords_to_files().expect("push");
         assert_eq!(pushed, 1, "应导出 1 个变化的版本");
 
-        // 文件现在含新词（验证 export 正确）
+        // 文件现在含新 name（验证 export 正确）
         let file = read_hotword_set_file(id).expect("read file");
-        let h = file.to_hotword_set(None);
-        assert_eq!(h.words_text, "苹果 香蕉", "push 应把本地新词写入文件");
+        assert_eq!(file.name, "测试集改");
     }
 
     /// incremental_export 的 vault_version 在有变化时递增，无变化时不递增（回归守护）。
@@ -1227,8 +1236,8 @@ mod tests {
         assert_eq!(changed2, 0);
         assert_eq!(outline2.vault_version, v1, "无变化版本不递增");
 
-        // 有变化（改 words_text）
-        let sets2 = vec![sample_set("33333333-0001", "版本A")];
+        // 有变化（改 name → sync_md5 变）
+        let sets2 = vec![sample_set("33333333-0001", "版本A改")];
         let (outline3, changed3) = incremental_export_hotwords(&sets2).expect("third");
         assert!(changed3 > 0);
         assert!(outline3.vault_version > v1, "有变化版本应递增");
@@ -1244,19 +1253,19 @@ mod tests {
 
     /// 辅助：手写一份 outline.json + 对应 set 文件，模拟「远程仓库」状态。
     /// 远程 outline 的 updated_ms 由调用方指定，与文件内容解耦。
-    fn write_remote_set(id: &str, name: &str, words: &str, updated_ms: i64) {
+    /// `words` 参数预留（word 级 sync 待做，当前 set 文件只存元数据）。
+    fn write_remote_set(id: &str, name: &str, _words: &str, updated_ms: i64) {
         let file = HotwordSetFile {
             version: 1,
             id: id.into(),
             name: name.into(),
             enabled: true,
-            words_text: words.into(),
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
         };
         write_hotword_set_file(&file).unwrap();
         let mut outline = read_hotword_outline().unwrap_or_default();
-        let md5 = hotword_set_md5_from_fields(name, true, words);
+        let md5 = hotword_set_md5_from_fields(name, true);
         outline.ciphers.insert(
             id.into(),
             OutlineEntry {
@@ -1267,7 +1276,7 @@ mod tests {
         write_hotword_outline(&outline).unwrap();
     }
 
-    /// merge：远程 updated_ms 较新 → pull 覆盖 DB。
+    /// merge：远程 updated_ms 较新 → pull 覆盖 DB（set 元数据层）。
     #[test]
     fn merge_pulls_remote_newer_set() {
         let _g = DbSyncGuard::new();
@@ -1276,22 +1285,17 @@ mod tests {
         }
 
         let id = "merge-aaaa-0001";
-        // DB 旧内容
-        db::insert_hotword_set(id, "测试集").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
+        db::insert_hotword_set(id, "旧名").unwrap();
         export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
 
-        // 远程有新内容（updated_ms 远未来 → 比 DB 的 now 新）
-        write_remote_set(id, "测试集", "苹果 香蕉 葡萄", 9999999999999);
+        // 远程有新 name（updated_ms 远未来 → 比 DB 的 now 新）
+        write_remote_set(id, "新名", "", 9999999999999);
 
         let report = merge_hotwords().expect("merge");
         assert_eq!(report.pulled, 1, "应拉取 1 条远程更新");
 
         let after = db::get_hotword_set(id).unwrap();
-        assert_eq!(
-            after.words_text, "苹果 香蕉 葡萄",
-            "DB 应被远程新版本覆盖"
-        );
+        assert_eq!(after.name, "新名", "DB name 应被远程新版本覆盖");
     }
 
     /// merge（核心回归）：本地新加词、outline 仍是旧的 → DB 不被旧文件覆盖，且文件被更新。
@@ -1307,21 +1311,19 @@ mod tests {
 
         let id = "merge-bbbb-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
         export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
 
-        // 本地加词（sync_md5 回填）——outline 仍是旧的「苹果」
-        db::set_hotword_set_words(id, "苹果 香蕉").unwrap();
+        // 本地改 name（sync_md5 变）——outline 仍是旧的「测试集」
+        db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
-        // 手写一份旧 outline（updated_ms=1 → 比 DB 的 now 旧），模拟远程无新 commit
-        // 文件本身还是 export 出的旧「苹果」
+        // 手写一份旧 outline（updated_ms=1 → 比 DB 的 now 旧）
         let mut stale_outline = read_hotword_outline().unwrap();
         stale_outline.ciphers.insert(
             id.into(),
             OutlineEntry {
-                md5: hotword_set_md5_from_fields("测试集", true, "苹果"),
+                md5: hotword_set_md5_from_fields("测试集", true),
                 updated_ms: 1,
             },
         );
@@ -1331,16 +1333,13 @@ mod tests {
 
         let after = db::get_hotword_set(id).unwrap();
         assert_eq!(
-            after.words_text, "苹果 香蕉",
-            "本地新词不应被旧 outline 覆盖（merge 方向感知）"
+            after.name, "测试集改",
+            "本地新 name 不应被旧 outline 覆盖（merge 方向感知）"
         );
-        // push 侧：本地新内容应被推到文件
+        // push 侧：本地新 name 应被推到文件
         assert!(report.pushed >= 1, "本地更新应 push 到文件");
-        let file = read_hotword_set_file(id).expect("read file");
-        assert_eq!(
-            file.words_text, "苹果 香蕉",
-            "文件应被 DB 新内容覆盖"
-        );
+        let _file = read_hotword_set_file(id).expect("read file");
+        // word 级 sync 待做——set 文件只存元数据，词数据在 words/ 目录（后续）
     }
 
     /// merge：DB 有、outline 无 → push 写文件 + outline 重建含该条目。
@@ -1353,7 +1352,7 @@ mod tests {
 
         let id = "merge-cccc-0001";
         db::insert_hotword_set(id, "仅本地").unwrap();
-        db::set_hotword_set_words(id, "苹果").unwrap();
+        add_words(id, "苹果");
         // outline 为空（不 export，模拟「DB 有数据但远程 outline 空」）
         write_hotword_outline(&Outline::default()).unwrap();
 
@@ -1362,7 +1361,6 @@ mod tests {
 
         // 文件被写出
         let file = read_hotword_set_file(id).expect("文件应存在");
-        assert_eq!(file.words_text, "苹果");
 
         // outline 重建后含该条目
         let outline = read_hotword_outline().unwrap();
@@ -1378,21 +1376,17 @@ mod tests {
         }
 
         let id = "merge-dddd-0001";
-        db::insert_hotword_set(id, "测试集").unwrap();
-        db::set_hotword_set_words(id, "苹果 香蕉").unwrap(); // DB 新内容
+        db::insert_hotword_set(id, "新名").unwrap(); // DB 用新 name
         let db_updated_ms = iso_to_unix_ms(&db::get_hotword_set(id).unwrap().updated_at);
 
-        // 文件写旧内容，outline 用与 DB 相同的 updated_ms 但旧 md5
-        write_remote_set(id, "测试集", "苹果（旧）", db_updated_ms);
+        // 文件写旧 name，outline 用与 DB 相同的 updated_ms 但旧 md5（name 不同 → md5 不同）
+        write_remote_set(id, "旧名", "", db_updated_ms);
 
         let report = merge_hotwords().expect("merge");
-        assert!(report.conflicts >= 1, "应记录 1 次冲突");
+        assert!(report.conflicts >= 1, "应记录 1 次冲突（name 不同 + 时间戳相等）");
 
-        // 文件被 DB 内容覆盖（DB 赢）
+        // 文件被 DB 内容覆盖（DB 赢）——name 应为 DB 的「新名」
         let file = read_hotword_set_file(id).expect("read file");
-        assert_eq!(
-            file.words_text, "苹果 香蕉",
-            "冲突时 DB 赢——文件应被 DB 内容覆盖"
-        );
+        assert_eq!(file.name, "新名", "冲突时 DB 赢——文件 name 应为 DB 的「新名」");
     }
 }

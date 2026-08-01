@@ -96,6 +96,8 @@ macro_rules! handler {
             crate::action_bar::action_bar_commands::create_prompt_file,
             // ── hotword_commands ──
             crate::commands::hotword_commands::list_hotword_sets,
+            crate::commands::hotword_commands::list_words_in_set,
+            crate::commands::hotword_commands::list_word_counts,
             crate::commands::hotword_commands::create_hotword_set,
             crate::commands::hotword_commands::rename_hotword_set,
             crate::commands::hotword_commands::delete_hotword_set,

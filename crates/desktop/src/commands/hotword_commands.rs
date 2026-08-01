@@ -8,8 +8,10 @@ use crate::core::error_util::e2s;
 /// 写库后统一 reload corrector 热词索引（enabled 版本并集）。
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
 fn reload_after_write() {
-    match db::list_active_hotword_words() {
-        Ok(words) => octopus_asr_local::corrector::reload_hotwords(words),
+    match db::list_active_words() {
+        Ok(words) => octopus_asr_local::corrector::reload_hotwords(
+            words.iter().map(|(w, _)| w.clone()).collect(),
+        ),
         Err(e) => log::warn!("[hotword] reload 失败: {}", e),
     }
 }
@@ -37,6 +39,28 @@ fn refill_sync_md5(id: &str) {
 #[tauri::command]
 pub fn list_hotword_sets() -> Result<Vec<HotwordSet>, String> {
     db::list_hotword_sets().map_err(e2s)
+}
+
+/// 列出某版本的活跃词列表（v57：词数据在 hotword_words 表，不再在 set.wordsText）。
+#[tauri::command]
+pub fn list_words_in_set(set_id: String) -> Result<Vec<String>, String> {
+    db::list_words_in_set(&set_id)
+        .map(|ws| ws.into_iter().map(|w| w.word).collect())
+        .map_err(e2s)
+}
+
+/// 批量查各版本的活跃词数（前端列表 Badge 用，避免逐个 list_words_in_set）。
+#[tauri::command]
+pub fn list_word_counts() -> Result<std::collections::HashMap<String, i64>, String> {
+    let sets = db::list_hotword_sets().map_err(e2s)?;
+    let mut counts = std::collections::HashMap::new();
+    for s in sets {
+        let n = db::list_words_in_set(&s.id)
+            .map(|ws| ws.len() as i64)
+            .unwrap_or(0);
+        counts.insert(s.id, n);
+    }
+    Ok(counts)
 }
 
 /// fuzzy 过滤热词列表（汉字 + 拼音首字母 + 匹配度排序）。
@@ -179,8 +203,9 @@ pub async fn import_hotwords(
             "new" => {
                 let name = new_name.unwrap_or_else(|| "导入版本".to_string());
                 let id = Uuid::new_v4().to_string();
+                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::insert_hotword_set(&id, &name).map_err(e2s)?;
-                db::set_hotword_set_words(&id, &content).map_err(e2s)?;
+                db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
@@ -195,7 +220,8 @@ pub async fn import_hotwords(
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
-                db::set_hotword_set_words(&id, &content).map_err(e2s)?;
+                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
+                db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
                 Ok(id)
@@ -207,11 +233,13 @@ pub async fn import_hotwords(
     .map_err(e2s)?
 }
 
-/// 导出某版本 words_text 到 txt（用户选保存路径）。
+/// 导出某版本词列表到 txt（用户选保存路径）。
 #[tauri::command]
 pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let set = db::get_hotword_set(&set_id).map_err(e2s)?;
+        let words = db::list_words_in_set(&set_id).map_err(e2s)?;
+        let words_text = words.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join("\n");
         use tauri_plugin_dialog::DialogExt;
         let save_path = app_handle
             .dialog()
@@ -221,8 +249,8 @@ pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: String) -> Re
             .blocking_save_file();
         if let Some(path) = save_path {
             let path = path.as_path().ok_or("无效路径")?;
-            std::fs::write(path, &set.words_text).map_err(e2s)?;
-            log::info!("[hotword] 导出版本「{}」到 {}", set.name, path.display());
+            std::fs::write(path, &words_text).map_err(e2s)?;
+            log::info!("[hotword] 导出版本「{}」（{} 词）到 {}", set.name, words.len(), path.display());
         }
         Ok(())
     })

@@ -15,7 +15,6 @@ interface HotwordSet {
   id: string;
   name: string;
   enabled: boolean;
-  wordsText: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +46,10 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
+  /** 各 set 的活跃词数（id → count），列表 Badge 用。v57 词数据在 hotword_words 表。 */
+  const [wordCounts, setWordCounts] = useState<Record<string, number>>({});
+  /** 当前选中 set 的活跃词列表（选中时 invoke list_words_in_set 加载）。 */
+  const [selectedWords, setSelectedWords] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   /** fuzzy 搜索结果（null=无搜索显示全部；string[]=命中的词，已按 match_score 降序）。
@@ -84,18 +87,30 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [s, h] = await Promise.all([
+    const [s, h, wc] = await Promise.all([
       invoke<HotwordSet[]>('list_hotword_sets'),
       invoke<Record<string, number>>('list_hotword_hits'),
+      invoke<Record<string, number>>('list_word_counts'),
     ]);
     setSets(s);
     setHits(h);
+    setWordCounts(wc);
     if (s.length > 0 && (selectedId === null || !s.some((x) => x.id === selectedId))) {
       setSelectedId(s[0].id);
     }
     setLoaded(true);
     return s;
   }, [selectedId]);
+
+  // v57：选中 set 变化时加载该 set 的活跃词列表（词数据不再在 HotwordSet.wordsText）。
+  useEffect(() => {
+    if (selectedId === null) { setSelectedWords([]); return; }
+    let cancelled = false;
+    invoke<string[]>('list_words_in_set', { setId: selectedId })
+      .then((ws) => { if (!cancelled) setSelectedWords(ws); })
+      .catch(() => { if (!cancelled) setSelectedWords([]); });
+    return () => { cancelled = true; };
+  }, [selectedId, sets]);
 
   useEffect(() => {
     refresh().catch((e) => showToast(t('settings.hotword.loadFailed') + e));
@@ -123,7 +138,7 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   }, [showToast]);
 
   const selected = sets.find((s) => s.id === selectedId) || null;
-  const words = useMemo(() => (selected?.wordsText.split(/\s+/).filter(Boolean) ?? []), [selected]);
+  const words = selectedWords; // v57：词列表从 list_words_in_set 加载（不再从 set.wordsText split）
 
   // fuzzy 搜索：debounce 120ms 后调后端 filter_hotwords_fuzzy（复用 matcher::match_score，
   // 汉字+拼音首字母+匹配度排序）。空 query → null（显示全部）。
@@ -236,12 +251,12 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
     if (selectedId === null) { showToast(t('settings.hotword.selectTargetFirst')); return; }
     try {
       const candidates = await invoke<string[]>('list_hotword_candidates');
-      const existing = new Set(selected?.wordsText.split(/\s+/).filter(Boolean) ?? []);
+      const existing = new Set(selectedWords);
       const fresh = candidates.filter((w) => !existing.has(w));
       if (fresh.length === 0) { showToast(t('settings.hotword.noNewCandidates')); return; }
       setMinePending({ words: fresh, selected: new Set(fresh) });
     } catch (e) { showToast(t('settings.hotword.mineFailed') + e); }
-  }, [selectedId, selected, showToast]);
+  }, [selectedId, selectedWords, showToast]);
 
   const toggleMineSel = (w: string) => {
     if (!minePending) return;
@@ -357,7 +372,7 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
           ) : (
             sets.map((s) => {
               const active = selectedId === s.id;
-              const cnt = s.wordsText.split(/\s+/).filter(Boolean).length;
+              const cnt = wordCounts[s.id] ?? 0;
               return (
                 <div
                   key={s.id}
