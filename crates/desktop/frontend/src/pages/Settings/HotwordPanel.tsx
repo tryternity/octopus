@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
-import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
+import { Type, Plus, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { Toggle } from '@/components/ui/toggle';
 import { Input } from '@/components/ui/input';
@@ -407,9 +407,41 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
 
         {/* ── Card 2：热词版本（场景名 + 搜索 + 操作 + 词卡，占满剩余空间） ── */}
         <Card className="flex min-h-0 flex-1 flex-col">
-          {/* 头部：场景名 + 词数（左）+ 搜索（中，加宽）+ 排序（右，缩短） */}
+          {/* 头部：排序图标（左，点击下拉）+ 场景名 + 词数 + 搜索（右）+ 操作图标 */}
           <CardHeader className="gap-2">
-            <BookMarked className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+            {/* 排序：图标按钮 + 点击下拉（兼作场景名前的视觉锚点） */}
+            <div className="relative flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={!selected || words.length === 0}
+                onClick={() => setSortOpen((v) => !v)}
+                aria-label={t('settings.hotword.sortAlpha')}
+                title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortAlpha')}
+              >
+                <ArrowDownWideNarrow className="h-4 w-4" />
+              </Button>
+              {sortOpen && (
+                <>
+                  {/* outside-click 关闭 */}
+                  <div className="fixed inset-0 z-20" onClick={() => setSortOpen(false)} />
+                  <div className="absolute left-0 top-full z-30 mt-1 min-w-[88px] rounded-md border border-border bg-background py-1 shadow-md">
+                    {SORT_OPTIONS.map((o) => (
+                      <button
+                        key={o.value}
+                        onClick={() => { setSort(o.value); setSortOpen(false); }}
+                        className={cn(
+                          'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent',
+                          sort === o.value ? 'font-medium text-voice' : 'text-foreground'
+                        )}
+                      >
+                        {t(o.key)}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <CardTitle className="flex-shrink-0">{selected ? selected.name : t('settings.hotword.selectVersionFirst')}</CardTitle>
             {selected && (
               <Badge variant="muted" size="sm" className="flex-shrink-0">{words.length}</Badge>
@@ -427,39 +459,6 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
                   disabled={!selected || words.length === 0}
                   className="pl-7"
                 />
-              </div>
-              {/* 排序：图标按钮 + 点击下拉（简化空间） */}
-              <div className="relative flex-shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!selected || words.length === 0}
-                  onClick={() => setSortOpen((v) => !v)}
-                  aria-label={t('settings.hotword.sortAlpha')}
-                  title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortAlpha')}
-                >
-                  <ArrowDownWideNarrow className="h-4 w-4" />
-                </Button>
-                {sortOpen && (
-                  <>
-                    {/* outside-click 关闭 */}
-                    <div className="fixed inset-0 z-20" onClick={() => setSortOpen(false)} />
-                    <div className="absolute right-0 top-full z-30 mt-1 min-w-[88px] rounded-md border border-border bg-background py-1 shadow-md">
-                      {SORT_OPTIONS.map((o) => (
-                        <button
-                          key={o.value}
-                          onClick={() => { setSort(o.value); setSortOpen(false); }}
-                          className={cn(
-                            'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent',
-                            sort === o.value ? 'font-medium text-voice' : 'text-foreground'
-                          )}
-                        >
-                          {t(o.key)}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
               </div>
               {/* 操作图标按钮：追加 / 覆盖 / 挖掘 / 添加（纯图标，title 提示） */}
               <div className="flex flex-shrink-0 items-center gap-0.5 border-l border-border/60 pl-1.5">
