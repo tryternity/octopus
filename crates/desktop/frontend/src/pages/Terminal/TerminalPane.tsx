@@ -251,6 +251,8 @@ export function TerminalPane({
             cursorY: s.cursorY,
           })) return;
 
+          // 有选区时点击是「取消选区」而非「定位光标」——放行给 xterm 原生处理
+          if (s.hasSelection()) return;
           // 偏移 + 转义序列（CUF/CUB）→ 写入 PTY
           const delta = clickCol - s.cursorX;
           const seq = buildCursorMoveSequence(delta);
