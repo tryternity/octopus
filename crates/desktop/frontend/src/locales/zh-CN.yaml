@@ -669,7 +669,7 @@ settings:
     manualPlaceholder: 手动补一个词（Enter 加入候选）
     manualBtn: 补词
     addSelectedN: 添加选中的 ${n} 个
-    searchPlaceholder: 搜索（汉字）
+    searchPlaceholder: 搜索（模糊）
     sortDefault: 默认
     sortAlpha: 字母
     sortHit: 命中度

@@ -41,6 +41,16 @@ const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
   { value: 'hits', key: 'settings.hotword.sortHit' },
 ];
 
+/// 子序列匹配：query 的每个字符按顺序出现在 word 中（允许间隔）。
+/// fuzzy 搜索用——如 isSubsequence("八鱼", "八爪鱼") = true。
+function isSubsequence(query: string, word: string): boolean {
+  let i = 0;
+  for (let j = 0; j < word.length && i < query.length; j++) {
+    if (word[j] === query[i]) i++;
+  }
+  return i === query.length;
+}
+
 export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
@@ -94,7 +104,20 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const arr = q ? words.filter((w) => w.toLowerCase().includes(q)) : words;
+    // fuzzy 搜索：query 的字符按序出现在词中即命中（允许间隔，如「八鱼」匹配「八爪鱼」）。
+    // 优先级：连续子串 > 跳跃匹配——连续命中的词排序靠前，更符合直觉。
+    const arr = q
+      ? words
+          .map((w) => {
+            const lw = w.toLowerCase();
+            const idx = lw.indexOf(q);
+            if (idx >= 0) return { w, score: 0 - idx }; // 连续匹配，score 越大越靠前（首位最高）
+            return isSubsequence(q, lw) ? { w, score: -1000 } : null; // 跳跃匹配，排末尾
+          })
+          .filter((x): x is { w: string; score: number } => x !== null)
+          .sort((a, b) => b.score - a.score)
+          .map((x) => x.w)
+      : words;
     return [...arr].sort((a, b) => {
       if (sort === 'hits') return (hits[b] ?? 0) - (hits[a] ?? 0);
       return a.localeCompare(b); // alpha（默认）

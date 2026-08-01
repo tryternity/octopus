@@ -662,7 +662,7 @@ settings:
     manualPlaceholder: Add a word manually (Enter to add)
     manualBtn: Add Word
     addSelectedN: Add ${n} selected
-    searchPlaceholder: Search (Chinese)
+    searchPlaceholder: Search (fuzzy)
     sortDefault: Default
     sortAlpha: Alphabetical
     sortHit: Hit Rate
