@@ -77,9 +77,11 @@ bump +1（加 2 列）。无旧用户兼容包袱，开发者手动清 DB。
 ### 润色模板路由
 
 新增 `resolve_polish_prompt(app_bundle_id: Option<&str>) -> (prompt_id, prompt_content, inject_context)`：
-- 查 DB：`SELECT * FROM prompts WHERE app_bundle_ids LIKE '%bundle_id%' ORDER BY updated_at DESC LIMIT 1`
+- **缓存**：`static ROUTE_CACHE: RwLock<HashMap<String, i64>>`（bundle_id → prompt_id）。命中直接取 prompt_id，查 DB 取 content
+- **未命中**：查 DB `SELECT * FROM prompts WHERE app_bundle_ids LIKE '%bundle_id%' ORDER BY updated_at DESC LIMIT 1`
 - 无匹配 → 读 `active_polish_prompt` 配置值取默认模板
 - 返回模板 id + content + inject_context 标志
+- **缓存失效**：`invalidate_route_cache()`——模板 CRUD（create/update/delete）后调，清空整个缓存
 
 调用点：`spawn_polish_thread` + 最终润色内联（润色前解析模板，不再用全局 `system_prompt()`）
 
@@ -136,7 +138,7 @@ pub(crate) struct AppContext {
 ## 风险
 
 - **app 名称泄漏到输出**：LLM 把「当前应用：微信」写进润色结果。概率低（指令明确说输出纯文本）。可在 strip 层加防御
-- **模板路由开销**：每次润色查 DB。润色非高频（停顿/手动/最终），可接受。可缓存（bundle_id → prompt_id 映射，模板更新时清缓存）
+- **模板路由缓存**：`RwLock<HashMap<bundle_id, prompt_id>>` 缓存路由结果。首次查 DB 后缓存，后续直接命中。模板 CRUD（create/update/delete）时清缓存（`invalidate_route_cache()`）
 - **冷门 app bundle_id**：用户需要知道 bundle_id 才能关联。可加 app picker（从已安装 app 列选取），但 MVP 先手动输入
 - **schema 变更**：prompts 表加 2 列，bump schema version
 
