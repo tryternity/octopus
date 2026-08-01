@@ -50,7 +50,7 @@ ActionBar 菜单项的执行当前有**两套独立实现**，按 action_type �
 
 斜杠路径的 DB action_type 动作**全部走 `execute_action_bar(itemId, text)`**，后端成为唯一动作处理点。前端只负责两件事：
 1. **解析 itemId + params**（从 slash 结果的 `slashLockedItemIdRef` 或 `data.id`）
-2. **构造 text**：`text = params || ctx?.text || ""`（slash 参数优先于选中文本）
+2. **构造 text**：用 `buildActionText(actionType, params, ctx?.text)`——按 action_type 分流（url/copy_path 二选一；ai/script/agent 拼接），详见下文「text 来源统一」
 
 ### 按 action_type 的分流
 
@@ -61,7 +61,7 @@ ActionBar 菜单项的执行当前有**两套独立实现**，按 action_type �
 | **copy_path** | `execute_action_bar(itemId, text)` | 同上 |
 | **ai** | `execute_action_bar(itemId, text)` | 后端加超时保护（见下） |
 | **agent** + needVoice | `trigger_agent_voice(itemId)`（**忽略 slash params**） | 与直接点击一致（都无视参数走 voice） |
-| **agent** + 非 needVoice | `execute_action_bar(itemId, text)` | text = `params \|\| ctx.text` |
+| **agent** + 非 needVoice | `execute_action_bar(itemId, text)` | text 由 `buildActionText` 拼接（params + 选中文本） |
 
 ### ai 超时移到后端（核心决策）
 
@@ -94,13 +94,14 @@ match result {
 - 斜杠 ai 自动获得超时保护
 - 前端 `executeAiItem` 可大幅简化
 
-### text 来源统一
+### text 来源统一（按 action_type 分流）
 
-两条路径的 text 来源系统性差异，在**调用点**统一：
-- 直接点击：`text = ctx?.text || ""`（选中文本）
-- 斜杠：`text = params || ctx?.text || ""`（参数优先）
+两条路径的 text 构造抽成 `buildActionText(actionType, params, selectedText)` 纯函数共用，**按 action_type 分流语义**（2026-08-01 调整：原 `params || ctx.text` 二选一改为按类型分流）：
 
-后端 `execute_action_bar_inner` 不动——它只接收 text 参数，不关心来源。前端各自在调用前构造好 text。
+- **url / copy_path**：`params || selectedText || ""`（二选一，params 优先）——text 当**单值数据**（URL / 路径）用，绝不能含换行（否则 URL 编码出 `%0A`、路径断裂）
+- **ai / script / agent**：\`${params || ""}\n${selectedText || ""}\`.trim()（**拼接**，中间换行）——text 当**文本内容**（prompt / 脚本输入 / agent 指令）用。这样斜杠「指令 + 选中文本」能同时传给动作；直接点击 params 恒空，trim 后等价于选中文本（行为不变）
+
+后端 `execute_action_bar_inner` 不动——它只接收 text 参数，不关心来源/组合方式。前端在调用前用 `buildActionText` 构造好 text（两条路径共用，保证语义一致）。
 
 ### 删除项
 - 前端 slash 分流里 url 特殊分支（`index.tsx:634-657` 的 `openUrlTemplate` 调用 + action_data 空处理）——后端 `script.rs:441-449` 已有
@@ -113,7 +114,8 @@ match result {
 
 1. **后端单一真相源**：DB action_type 的动作处理只在 `execute_action_bar_inner`，前端不自己实现动作逻辑
 2. **needVoice 始终走 voice**：needVoice 的 agent 无论直接点击还是斜杠，都走 `trigger_agent_voice`（忽略 slash params）
-3. **text 来源在调用点统一**：前端构造好 text 传后端，后端不关心来源
+3. **text 构造按 action_type 分流**（`buildActionText`）：url/copy_path 二选一（单值数据，**绝不含换行**）；ai/script/agent 拼接（文本内容）。两条执行路径共用同一函数
+4. **auto_translate 不超时**：保持现状（长文本本地翻译）
 4. **auto_translate 不超时**：保持现状（长文本本地翻译）
 5. **搜索运行时类型不受影响**：launch_app/open_file/copy_and_reveal/copy 仍是前端 Provider 独占
 
