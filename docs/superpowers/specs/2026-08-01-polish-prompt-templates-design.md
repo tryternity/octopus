@@ -176,3 +176,42 @@ few-shot 示例（3 个，含 `[]` edited 标记）：
 - cargo build + cargo test（prompt.rs 测试适配新格式）
 - tsc（无前端改动，确认不破坏）
 - e2e：① faithful 模板润色（[] 标记正确处理）② user-intent 结构化 ③ app-casual 口语风 ④ edited 段不被改（[] 信任机制）⑤ 无 edited 段全量润色 ⑥ 切换模板生效
+
+## 实现状态（2026-08-01）
+
+### 已实现清单
+
+| 项 | 状态 | 落地 |
+|---|---|---|
+| `INCREMENTAL_RULE` → `EDITED_MARKER_RULE` | ✅ | `crates/llm/src/prompt.rs:7`（内容改为 `[]` 标记规则，用户不可见） |
+| `build_system_prompt(content) = content + EDITED_MARKER_RULE` | ✅ | `crates/llm/src/prompt.rs:15-17` |
+| `CONFIRMED_MARKER` 删除 | ✅ | 不再用「已确认部分」标记，整文件已无此常量 |
+| `regions_prompt` 改 `[]` 内联拼接 | ✅ | `crates/llm/src/prompt.rs:54-64`（preserve 段 `[...]`，其余原样按序拼） |
+| `user_prompt(preserved, to_polish)` 改 `[]` 标记 | ✅ | `crates/llm/src/prompt.rs:39-47`（preserved 用 `[]` 包裹拼到 raw 前） |
+| `PolishRegion { preserve: bool, text: String }` struct 不变 | ✅ | 调用链不变（transcript segments → PolishRegion → regions_prompt → LLM），仅内部构造变 |
+| 新建 `faithful.md`（9 规则 + 3 few-shot） | ✅ | `crates/infra/seeds/prompts/faithful.md` |
+| 新建 `user-intent.md`（8 规则 + 2 few-shot） | ✅ | `crates/infra/seeds/prompts/user-intent.md` |
+| 新建 `app-casual.md`（7 规则 + 3 few-shot） | ✅ | `crates/infra/seeds/prompts/app-casual.md` |
+| 旧 6 模板移 `history/`（保留对比，非删除） | ✅ | `crates/infra/seeds/prompts/history/`（default-polish / advanced-polish / sayit-casual / sayit-faithful / sayit-intent / sayit-zh2en） |
+| `seeds.rs` seed 列表更新（2→3 新模板） | ✅ | `crates/infra/src/seeds.rs:68-72`（id=1/2/3 → faithful/user-intent/app-casual） |
+| `db.sql` `active_polish_prompt` 默认 `'1'`=faithful | ✅ | `crates/infra/src/db.sql:400`（描述补「默认 1=忠实校对」） |
+| `restore_prompt_from_seed` id→name 映射同步 | ✅ | `desktop items.rs`（避免「复原默认」按钮报「无对应 seed 文件」） |
+| prompt.rs 单测适配新格式 | ✅ | `build_system_prompt_appends_incremental_rule` 断言改 `方括号`/`信任`；`user_prompt_with_preserved_marks_boundary` 断言 `[已确认文本]`；新增 `regions_prompt_*` 2 测 |
+| db/prompts.rs `prompt_crud_round_trip` | ✅ | seed 条数 2→3、标题断言更新 |
+| seeds.rs 3 个单测 prompt 名引用 default-polish → faithful | ✅ | `assert!(dir.join("prompts/faithful.md").exists())` 等 |
+| `docs/architecture.md` 同步 | ✅ | `prompts` 表段 + 新增 `[] edited 标记机制` 段 + 润色全篇一次段引用回链 |
+
+### 偏差（相对原 spec）
+
+- **无偏差**：核心设计（`[]` 标记机制 + EDITED_MARKER_RULE + 3 模板 + few-shot）与 spec 完全一致。`PolishRegion` struct、调用链、`build_system_prompt` 签名均按 spec 不变量保持不变。
+
+### 验证结果
+
+- **`cargo build -p octopus-desktop --features embedded`**：Finished，0 error 0 warning
+- **`cargo test -p octopus-desktop --features embedded`**：488 passed; 0 failed; 1 ignored; 0 measured
+- prompt.rs 5 个新/改单测全过（`user_prompt_without_preserved_is_plain` / `user_prompt_with_preserved_marks_boundary` / `build_system_prompt_appends_incremental_rule` / `regions_prompt_no_preserve_is_plain` / `regions_prompt_marks_preserved_regions`）
+- e2e（spec §验证 ①-⑥）：本次 Task 4 未新增 e2e 测试（原 spec 列为手工验证项），代码路径由单测守护；如需补 e2e，建议在后续迭代中加 `faithful 模板 + [] edited 输入 → 去括号纯文本输出` 端到端用例
+
+### 风险跟踪
+
+- spec 列「LLM 不去 `[]`」「`[]` 与 Markdown 冲突」均为运行时 LLM 行为风险，依赖实际模型遵循度。EDITED_MARKER_RULE 已明确「输出时去掉方括号」、few-shot 示例演示去掉。若线上发现残留 `[]`，可在代码层 post-process 去除残余（防御性，未实现，待实测触发再加）。

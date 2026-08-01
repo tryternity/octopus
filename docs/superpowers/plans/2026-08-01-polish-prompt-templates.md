@@ -28,7 +28,7 @@
 **Interfaces:**
 - Produces: `EDITED_MARKER_RULE`（替代 INCREMENTAL_RULE）；`regions_prompt` / `user_prompt` 改 `[]` 拼接
 
-- [ ] **Step 1: INCREMENTAL_RULE → EDITED_MARKER_RULE**
+- [x] **Step 1: INCREMENTAL_RULE → EDITED_MARKER_RULE**
 
 `crates/llm/src/prompt.rs`：
 - 删 `const INCREMENTAL_RULE`（line 12）+ `const CONFIRMED_MARKER`（line 8）
@@ -45,7 +45,7 @@ pub(crate) fn build_system_prompt(content: &str) -> String {
 }
 ```
 
-- [ ] **Step 2: regions_prompt 改 [] 内联拼接**
+- [x] **Step 2: regions_prompt 改 [] 内联拼接**
 
 ```rust
 pub(crate) fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
@@ -62,7 +62,7 @@ pub(crate) fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
 ```
 注意：不再有「无 preserve 段走全量润色分支」——统一拼接（无 preserve 时 body 无 `[]`，等价全量润色）。
 
-- [ ] **Step 3: user_prompt(preserved, to_polish) 改 [] 标记**
+- [x] **Step 3: user_prompt(preserved, to_polish) 改 [] 标记**
 
 ```rust
 pub(crate) fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
@@ -77,7 +77,7 @@ pub(crate) fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
 ```
 edited 部分用 `[]` 包裹拼到 raw 前，统一一句指令。
 
-- [ ] **Step 4: 更新测试**
+- [x] **Step 4: 更新测试**
 
 prompt.rs 的 `#[cfg(test)] mod tests`：
 - `user_prompt_without_preserved_is_plain`：不变（无 preserve 仍 plain）
@@ -86,13 +86,13 @@ prompt.rs 的 `#[cfg(test)] mod tests`：
 - `regions_prompt_no_preserve_is_plain`：不变（无 preserve 仍 plain）
 - `regions_prompt_marks_preserved_regions`：改为断言含 `[已确认]`（不再是「原样保留」/「待润色」）
 
-- [ ] **Step 5: build + test 验证**
+- [x] **Step 5: build + test 验证**
 
 Run: `cargo build -p octopus-llm 2>&1 | grep -E "^error|^warning"`
 Run: `cargo test -p octopus-llm 2>&1 | tail -3`
 Expected: 0 error 0 warning，测试全过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/llm/src/prompt.rs
@@ -111,7 +111,7 @@ git commit -m "refactor(prompt): [] edited 标记替代 region 标记法 + EDITE
 - Move: `crates/infra/seeds/prompts/advanced-polish.md` → `history/`
 - Move: `crates/infra/seeds/prompts/sayit-*.md` → `history/`（4 个）
 
-- [ ] **Step 1: 创建 history/ 子目录 + 移动旧模板**
+- [x] **Step 1: 创建 history/ 子目录 + 移动旧模板**
 
 ```bash
 mkdir -p crates/infra/seeds/prompts/history
@@ -123,25 +123,25 @@ mv crates/infra/seeds/prompts/sayit-intent.md crates/infra/seeds/prompts/history
 mv crates/infra/seeds/prompts/sayit-zh2en.md crates/infra/seeds/prompts/history/
 ```
 
-- [ ] **Step 2: 创建 faithful.md**
+- [x] **Step 2: 创建 faithful.md**
 
 `crates/infra/seeds/prompts/faithful.md`——忠实校对模板（参考 spec §faithful 核心规则 + few-shot）。内容含：
 - Role + 9 条规则（绝对防御/提纯去噪/纠错/ASR 异常修复/数字格式/中英空格/标点/静默/禁止改写）
 - 3 个 few-shot 示例（含 `[]` edited 标记，演示输入→输出）
 
-- [ ] **Step 3: 创建 user-intent.md**
+- [x] **Step 3: 创建 user-intent.md**
 
 `crates/infra/seeds/prompts/user-intent.md`——意图整理模板。内容含：
 - Role + 8 条规则（绝对防御/清除冗余/自我纠正/纠错/ASR 异常修复/标点+空格/主动结构化/静默）
 - 2 个 few-shot 示例（含结构化列表输出 + `[]` 标记）
 
-- [ ] **Step 4: 创建 app-casual.md**
+- [x] **Step 4: 创建 app-casual.md**
 
 `crates/infra/seeds/prompts/app-casual.md`——口语化整理模板。内容含：
 - Role + 7 条规则（绝对防御/去噪/顺句/纠错/ASR 异常修复/聊天标点/静默）
 - 3 个 few-shot 示例（含 `[]` 标记，口语风输出）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -156,7 +156,7 @@ git commit -m "feat(prompts): 3 新模板（faithful/user-intent/app-casual）+ 
 - Modify: `crates/infra/src/seeds.rs`（`load_prompt_seeds` 的 seeds 数组）
 - Modify: `crates/infra/src/db.sql`（active_polish_prompt 默认值）
 
-- [ ] **Step 1: seeds.rs — seeds 数组改为 3 个新模板**
+- [x] **Step 1: seeds.rs — seeds 数组改为 3 个新模板**
 
 `crates/infra/src/seeds.rs` `load_prompt_seeds`（line 67-71）：
 ```rust
@@ -170,18 +170,18 @@ let seeds = [
 ];
 ```
 
-- [ ] **Step 2: db.sql — active_polish_prompt 默认值**
+- [x] **Step 2: db.sql — active_polish_prompt 默认值**
 
 `crates/infra/src/db.sql` 找 `active_polish_prompt` seed 行（约 line 400）：
 `'1'` 保持（id=1 = faithful，新默认）。description 更新为 `'激活的润色 prompt id（prompts 表 id 字段，默认 1=忠实校对）'`。
 
-- [ ] **Step 3: build + test 验证**
+- [x] **Step 3: build + test 验证**
 
 Run: `cargo build -p octopus-infra 2>&1 | grep -E "^error|^warning"`
 Run: `cargo test -p octopus-infra 2>&1 | tail -3`
 Expected: 0 error 0 warning
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -195,7 +195,7 @@ git commit -m "refactor(seeds): prompt seed 列表改 3 新模板 + active_polis
 **Files:**
 - Modify: `docs/architecture.md`（润色 prompt 段更新）
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished"
@@ -203,18 +203,18 @@ cargo test -p octopus-desktop --features embedded 2>&1 | tail -3
 ```
 Expected: build 0 error 0 warning，test 全过
 
-- [ ] **Step 2: architecture.md 更新**
+- [x] **Step 2: architecture.md 更新**
 
 找到润色/prompt 相关段，更新：
 - 3 模板（faithful/user-intent/app-casual）替代旧 6 个
 - [] edited 标记机制（替代 region 标记法 + INCREMENTAL_RULE）
 - EDITED_MARKER_RULE 代码层拼接
 
-- [ ] **Step 3: spec 加实现状态段**
+- [x] **Step 3: spec 加实现状态段**
 
 `docs/superpowers/specs/2026-08-01-polish-prompt-templates-design.md` 末尾加实现状态。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
