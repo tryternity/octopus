@@ -93,6 +93,22 @@ pub fn toggle_hotword_set(id: String, enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+// ── 方言模糊规则（fuzzy_dialect_rules DB 表，2026-08-01）──
+
+/// 列出全部方言规则（含未启用），供前端渲染 toggles。
+#[tauri::command]
+pub fn list_fuzzy_dialect_rules() -> Result<Vec<octopus_infra::db::FuzzyDialectRule>, String> {
+    db::list_fuzzy_dialect_rules().map_err(e2s)
+}
+
+/// 设置单条方言规则开关（前端 toggle 用）。写库后 reload corrector 索引（规则变 key 必变）。
+#[tauri::command]
+pub fn set_fuzzy_dialect_rule(token: String, enabled: bool) -> Result<(), String> {
+    db::set_fuzzy_dialect_rule_enabled(&token, enabled).map_err(e2s)?;
+    octopus_asr_local::corrector::reload_fuzzy_dialect();
+    Ok(())
+}
+
 // ── 单词增删（系统透明维护 words_text）──
 
 #[tauri::command]

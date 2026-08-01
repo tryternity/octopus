@@ -179,6 +179,29 @@ CREATE TABLE IF NOT EXISTS hotword_hits (
     hit_count   INTEGER NOT NULL DEFAULT 0
 );
 
+-- ── 方言模糊规则（fuzzy_dialect_rules）拼音归一规则，DB 驱动便于服务推送 ──────
+-- match_type: 'syllable'(整音节精确 ==) / 'initial'(声母前缀 starts_with) / 'special_hu'(hu→wu+huX→wX)
+-- enabled: 用户开关（0 关 / 1 开），默认全关（基础规则平翘舌+前后鼻音始终开，不在此表）
+-- sort_order: 同 match_type 内的应用顺序（小→大）
+CREATE TABLE IF NOT EXISTS fuzzy_dialect_rules (
+    token       TEXT    PRIMARY KEY,             -- 唯一标识 'f/h'、'yun/yong'
+    label       TEXT    NOT NULL,                -- 显示名 'f/h（浮 / 护）'
+    from_py     TEXT    NOT NULL,                -- 源拼音 'f'、'yun'、'hu'
+    to_py       TEXT    NOT NULL,                -- 目标拼音 'h'、'yong'、'w'
+    match_type  TEXT    NOT NULL,                -- 'syllable' | 'initial' | 'special_hu'
+    enabled     INTEGER NOT NULL DEFAULT 0,
+    sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+-- 方言模糊规则 seed（6 条，默认全关）
+INSERT OR IGNORE INTO fuzzy_dialect_rules (token, label, from_py, to_py, match_type, enabled, sort_order) VALUES
+    ('fei/hui',  'fei/hui（飞 / 回）',  'fei', 'hui',  'syllable',  0, 1),
+    ('yun/yong', 'yun/yong（孕 / 用）', 'yun', 'yong', 'syllable',  0, 2),
+    ('n/l',      'n/l（刘 / 牛）',      'n',   'l',    'initial',   0, 1),
+    ('f/h',      'f/h（浮 / 护）',      'f',   'h',    'initial',   0, 2),
+    ('r/l',      'r/l（热 / 乐）',      'r',   'l',    'initial',   0, 3),
+    ('hu/wu',    'hu/wu（胡 / 吴）',    'hu',  'w',    'special_hu', 0, 1);
+
 -- ── Agent Adapter（用户自定义 agent 适配器）──────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_adapters (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -650,6 +650,10 @@ settings:
     addFailed2: "Add failed:"
     dialectFuzzy: Dialect Fuzzy
     correctSection: Dialect Fuzzy + Hotword Correction
+    tabCorrect: Correction
+    tabManage: Dictionaries
+    groupInitial: Initial Consonants
+    groupSyllable: Whole Syllables
     versionsN: Hotword Versions (${n})
     loading: Loading…
     newVersionPlaceholder: Version name (Enter to confirm / Esc to cancel)

@@ -127,12 +127,6 @@ pub struct AppConfig {
     #[serde(default = "default_asr_correct")]
     pub asr_correct: bool,
 
-    /// ASR 热词纠错的方言模糊规则——逗号分隔 token 子集：`f/h`（福建）、`hu/wu`（江浙）、`n/l`（湖南）。
-    /// 空 = 仅基础规则（平翘舌+前后鼻音，始终开）。corrector 启动装载 + set_config 时 reload 生效。
-    /// 存 app_config 表（category='setting', config_key='fuzzy_dialect'），serde 自动映射。
-    #[serde(default)]
-    pub fuzzy_dialect: String,
-
     /// ASR 输出字形：true→简体（繁→简），false→繁体（简→繁）。默认简体。
     #[serde(default = "default_output_simplified")]
     pub output_simplified: bool,
@@ -354,8 +348,7 @@ impl Default for AppConfig {
             pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
-            // fuzzy_dialect 默认空 = 仅基础规则（平翘舌+前后鼻音）
-            fuzzy_dialect: String::new(),
+            // fuzzy_dialect 已迁移到 fuzzy_dialect_rules DB 表（2026-08-01）
             output_simplified: default_output_simplified(),
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
