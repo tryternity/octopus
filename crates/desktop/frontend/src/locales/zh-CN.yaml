@@ -930,8 +930,8 @@ agentPanel:
   addNew: 新增
   editAdapter: 编辑 Adapter
   newAdapter: 新增 Adapter
-  installed: ✅ 已安装
-  notFound: ❌ 未找到
+  installed: 已安装
+  notFound: 未找到
   builtin: 内置
   default: 默认
   defaultAgentLabel: 当前默认：
