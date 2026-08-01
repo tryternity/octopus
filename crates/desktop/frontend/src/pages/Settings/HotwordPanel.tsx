@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
-import { Type, Plus, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
+import { Plus, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { Toggle } from '@/components/ui/toggle';
 import { Input } from '@/components/ui/input';
@@ -295,38 +295,43 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
       {subTab === 'correct' && (
         <Card>
           <CardHeader>
-            <Type className="h-4 w-4 text-muted-foreground" />
-            <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
-            {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
-            <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+            {/* 热词纠错总开关——toggle 占图标位（最左），标题文字在后 */}
+            <div onClick={(e) => e.stopPropagation()}>
               <Toggle
                 on={asrCorrect}
                 onClick={() => setVal('asr_correct', !asrCorrect)}
                 aria-label={t('settings.general.pinyinCorrect')}
               />
             </div>
+            <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
           </CardHeader>
           <CardContent className="py-2.5">
-            {/* 组 1：声母模糊（initial + special_hu） */}
+            {/* 组 1：声母模糊（initial + special_hu）—— 标题 + 填充横线 */}
             <div>
-              <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupInitial')}</div>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">{t('settings.hotword.groupInitial')}</span>
+                <span className="h-px flex-1 bg-border/60" />
+              </div>
               <div className="grid grid-cols-3 gap-x-6 gap-y-2">
                 {dialectRules.filter((r) => r.matchType === 'initial' || r.matchType === 'special_hu').map((r) => (
-                  <div key={r.token} className="flex items-center justify-between">
-                    <span className="text-sm">{r.label}</span>
+                  <div key={r.token} className="flex items-center gap-2">
                     <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
+                    <span className="text-sm">{r.label}</span>
                   </div>
                 ))}
               </div>
             </div>
-            {/* 组 2：整音节模糊（syllable）——分割线分隔 */}
-            <div className="mt-3 border-t border-border/60 pt-3">
-              <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupSyllable')}</div>
+            {/* 组 2：整音节模糊（syllable）—— 标题 + 填充横线 */}
+            <div className="mt-3">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">{t('settings.hotword.groupSyllable')}</span>
+                <span className="h-px flex-1 bg-border/60" />
+              </div>
               <div className="grid grid-cols-3 gap-x-6 gap-y-2">
                 {dialectRules.filter((r) => r.matchType === 'syllable').map((r) => (
-                  <div key={r.token} className="flex items-center justify-between">
-                    <span className="text-sm">{r.label}</span>
+                  <div key={r.token} className="flex items-center gap-2">
                     <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
+                    <span className="text-sm">{r.label}</span>
                   </div>
                 ))}
               </div>
