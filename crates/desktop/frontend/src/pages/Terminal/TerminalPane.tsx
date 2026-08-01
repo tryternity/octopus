@@ -17,7 +17,7 @@ import { SearchOverlay } from "./SearchOverlay";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { relPath } from "./relPath";
 import { shellEscape } from "./shellEscape";
-import { takeDragPath, clearDragPath } from "./dragStore";
+import { takeDragPath } from "./dragStore";
 import { useT } from "@/lib/i18n";
 
 type Props = {
