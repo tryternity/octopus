@@ -15,11 +15,11 @@ use pinyin::ToPinyin;
 /// - `rl`（r/l 不分）：声母 r→l（n、r、l 在 nl+rl 同开时都归一到 l，互不冲突）
 /// - `hw`（hu/wu 不分）：单字 hu→wu，其余 huX→wX（huang→wang、hua→wa）；
 ///   **不覆盖** hui↔wei（韵母 ui/ei 不同，拼音级无法统一）
-/// - `yun_yong`（yun/yong 硬映射）：整体音节对，拼音无统一尾缀规则。
-///   解决「孕妇」→「用户」（yun-fu vs yong-hu，配合 fh）等跨韵母误识。
-/// - `fei_hui`（fei/hui 硬映射）：同上，飞/回类跨韵母误识。
+/// - `yun_yong`（yun/yong）：整音节归一 yun→yong（孕/用）。解决「孕妇」→「用户」
+///   （yun-fu vs yong-hu，配合 fh）等误识。
+/// - `fei_hui`（fei/hui）：整音节归一 fei→hui（飞/回）。
 ///
-/// `yun_yong` / `fei_hui` 是独立步骤（不参与声母 else if 互斥），可与 fh/nl 等同时作用。
+/// yun_yong / fei_hui 是整音节（含声母+韵母），匹配精确——不像声母规则那样影响所有同声母字。
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct FuzzyRules {
     /// f/h 不分：声母 f→h
@@ -30,9 +30,9 @@ pub struct FuzzyRules {
     pub rl: bool,
     /// hu/wu 不分：单字 hu→wu，其余 huX→wX
     pub hw: bool,
-    /// yun/yong 硬映射（孕/用）
+    /// yun/yong 整音节归一（孕/用）
     pub yun_yong: bool,
-    /// fei/hui 硬映射（飞/回）
+    /// fei/hui 整音节归一（飞/回）
     pub fei_hui: bool,
 }
 
@@ -97,9 +97,9 @@ fn normalize_with_rules(py: &str, rules: &FuzzyRules) -> String {
     } else if n.ends_with("ang") {
         n = n[..n.len() - 3].to_string() + "an";
     }
-    // 硬映射音节对（整体音节，无统一尾缀规则，需逐对编码）。
-    // 独立步骤——不参与声母 else if 互斥（「孕妇」需 yun→yong + fu→hu 同时作用）。
-    // 两组各自独立开关（yun_yong / fei_hui）。
+    // 整音节归一（yun→yong、fei→hui）——含声母+韵母的完整音节对，匹配精确。
+    // 放在声母方言组之前：声母组是 else if 互斥（一个字只归一组），
+    // 但整音节归一可能与声母组叠加（「孕妇」yun→yong + fu→hu）。
     if rules.yun_yong && n == "yun" {
         n = "yong".to_string();
     } else if rules.fei_hui && n == "fei" {
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(norm("ren", r), "len"); // 人
     }
 
-    // ── yun_yong / fei_hui 硬映射音节对（各自独立开关）──
+    // ── yun_yong / fei_hui 整音节归一（各自独立开关）──
 
     #[test]
     fn normalize_yun_yong_mapping() {
@@ -297,11 +297,11 @@ mod tests {
     }
 
     /// 核心场景：yun_yong + fh 叠加——「孕妇」(yun-fu) 经 yun→yong + fu→hu = yong-hu = 「用户」(yong-hu)。
-    /// yun_yong 是独立步骤（不参与声母 else if 互斥），可与 fh 同时作用。
+    /// yun_yong 整音节归一在声母组之前，可与 fh 同时作用。
     #[test]
     fn yun_yong_overlaps_with_fh() {
         let r = FuzzyRules { yun_yong: true, fh: true, ..Default::default() };
-        // 单字验证：yun→yong（yun_yong 独立步骤），fu→hu（fh 声母组）
+        // 单字验证：yun→yong（整音节归一），fu→hu（fh 声母组）
         assert_eq!(norm("yun", r), "yong");
         assert_eq!(norm("fu", r), "hu");
         // 整词等价：「孕妇」yong-hu = 「用户」yong-hu（find_candidates 经 lookup 命中）
