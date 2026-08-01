@@ -21,7 +21,7 @@
 
 | 入口 | 用途 |
 |---|---|
-| `set_hotword_set_words` | 覆盖导入 / 新建导入 |
+| `set_words_in_set` | 覆盖导入 / 新建导入（v57：原 `set_hotword_set_words`，words_text 列移除后改名） |
 | `add_word_to_set_at` | 单词追加 |
 | `add_words_to_set` | 批量追加（挖掘确认、批量添加浮层） |
 
