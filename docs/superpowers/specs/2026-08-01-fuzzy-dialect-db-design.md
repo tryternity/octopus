@@ -1,7 +1,7 @@
 # 方言模糊规则 DB 化 + 配置页拆双 Tab
 
 > **日期**：2026-08-01
-> **状态**：🔜 待实现
+> **状态**：✅ 已实现（commit `920ccb90` 后端 / `a32eea54` 前端双 Tab / `4675dbdc` UI 分两组）
 > **背景**：方言规则从代码硬编码（FuzzyRules struct + const 表 + app_config.fuzzy_dialect 字符串）迁移到 DB 表，便于后续服务推送更新；配置页拆两个子 Tab（纠错设置 / 词典维护）。
 
 ## 1. 动机
@@ -52,7 +52,29 @@ seed 6 条：fei/hui + yun/yong（syllable）；n/l + f/h + r/l（initial）；h
 - 读旧 app_config.fuzzy_dialect 字符串 → 解析 token → UPDATE enabled=1（保留开关）
 - 删 app_config.fuzzy_dialect 行
 
-## 4. 不在范围
-- 服务推送更新（后续）
-- 用户自定义规则（后续）
-- 基础规则（平翘舌+前后鼻音）DB 化（始终开无开关）
+## 4. 实现注记（实际落地与设计差异 / 补充）
+
+### 4.1 init_schema 改 while 循环迁移链（额外重构）
+迁移 v56 时把 `init_schema` 从「单分支 `if v == 54`」重构为 **while 循环迁移链**：`let mut cur = v; while cur < CURRENT_SCHEMA_VERSION { match cur { 54 => ..., 55 => ..., _ => bail } cur += 1; PRAGMA user_version = cur }`。每个分支升 1 版本，v54→v55→v56... 串行，未来加 v57 只需加一个 `match` 分支，无需再改外层结构。`_ =>` 兜底 bail 54 以下旧库（不支持表结构自动迁移）。
+
+### 4.2 seed 在两处（db.sql + mod.rs 迁移分支）
+`fuzzy_dialect_rules` 表的 CREATE + seed 6 条**同时存在于** ① `crates/infra/src/db.sql`（全新库 `v==0` 由 `execute_batch` 一次性建出）；② `crates/infra/src/db/mod.rs` 的 `55 =>` 迁移分支（存量库 v55→v56 升级用）。两处内容必须一致（token / label / from_py / to_py / match_type / enabled=0 / sort_order）。改规则时两处都要改。
+
+### 4.3 旧 fuzzy_dialect 字符串迁移（保留状态）
+v55→v56 迁移分支读旧 `app_config.fuzzy_dialect`（逗号分隔 token，如 `"f/h,r/l"`）→ `split(',')` → `UPDATE fuzzy_dialect_rules SET enabled=1 WHERE token=?`（逐个 token）。**不删 app_config.fuzzy_dialect 行**——留作历史，不再读。日志记录迁移的旧值或「无旧配置」。
+
+### 4.4 normalize_with_rules 分组遍历 + matched flag 互斥（与数组顺序无关）
+`normalize_with_rules(py, rules)` 按 match_type **分三个独立 for 循环**遍历：syllable 组 → initial 组 → special_hu 组，每组的循环间用 `matched` flag 互斥（syllable 命中则跳过 initial/special_hu）。**正确性与 rules 数组的传入顺序无关**——分组遍历保证 syllable 总在 initial 前评估，即使调用方把 initial 规则排在数组前面，`fei` 仍走 fei/hui（syllable）而非被 f/h（initial）抢成 hei。
+
+DB 层 `list_fuzzy_dialect_rules` / `list_enabled_fuzzy_dialect_rules` 的 SQL `ORDER BY match_type, sort_order` **仅为输出确定性**（UI 展示顺序稳定、log 可复现），不参与归一化正确性。回归测试 `syllable_beats_initial_regardless_of_array_order` 锁定此行为（sorted + shuffled 两组 rules 断言结果一致）。
+
+### 4.5 前端规则按 match_type 分两组展示
+TAB 1「纠错设置」方言规则 toggle 按 `matchType` 分两个视觉组：**声母模糊**（initial：n/l、f/h、r/l）+ **整音节模糊**（syllable：fei/hui、yun/yong）。special_hu（hu/wu）归到声母模糊组（视觉上与声母类规则同类）。乐观更新：toggle 即调 `set_fuzzy_dialect_rule(token, enabled)` 写 DB，失败回滚 UI 状态。
+
+### 4.6 FUZZY_RULES_CACHE 全局缓存
+`crates/asr-local/src/text/hotword.rs` 的 `FUZZY_RULES_CACHE: OnceLock<RwLock<Vec<FuzzyDialectRule>>>` 持 enabled 规则缓存，`reload_fuzzy_dialect()`（无参，内部 `list_enabled_fuzzy_dialect_rules` 读 DB）调 `set_fuzzy_rules_cache` 更新。`normalize_fuzzy_pinyin(py)` 读 cache 调 `normalize_with_rules`。启动 setup 先 `reload_fuzzy_dialect`（设 cache）再 `reload_hotwords`（建索引）——顺序不能反（索引 key 由 normalize 生成，规则变 key 必变）。
+
+## 5. 不在范围
+- 服务推送更新（后续）——本次 DB 化就是为此铺路
+- 用户自定义规则（后续，UI 需新增编辑入口）
+- 基础规则（平翘舌 + 前后鼻音）DB 化（始终开无开关，代码内联）
