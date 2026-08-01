@@ -16,3 +16,13 @@ export function shellEscape(s: string): string {
   // 单引号转义：' → '"'"'（POSIX 标准双引号法，对齐后端 shell_escape_single）
   return `'${s.replace(/'/g, "'\"'\"'")}'`;
 }
+
+/**
+ * 格式化多个路径为 shell 命令行参数（各转义 + 空格连接 + 末尾空格）。
+ * 照搬 Terax formatDroppedPaths：末尾空格便于连续粘贴/继续输入。
+ *
+ * 用于 OS 文件拖入（onDragDropEvent 的 paths 数组）。内部单文件拖拽用 shellEscape。
+ */
+export function formatDroppedPaths(paths: string[]): string {
+  return `${paths.map(shellEscape).join(" ")} `;
+}

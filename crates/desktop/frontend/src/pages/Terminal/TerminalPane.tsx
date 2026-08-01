@@ -12,11 +12,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useTerminalSession } from "./useTerminalSession";
 import { SearchOverlay } from "./SearchOverlay";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { relPath } from "./relPath";
-import { shellEscape } from "./shellEscape";
+import { shellEscape, formatDroppedPaths } from "./shellEscape";
 import { takeDragPath } from "./dragStore";
 import { useT } from "@/lib/i18n";
 
@@ -180,6 +181,35 @@ export function TerminalPane({
     document.addEventListener("mouseup", handleMouseUp);
     return () => document.removeEventListener("mouseup", handleMouseUp);
   }, []);
+
+  // OS 文件拖入（Finder → 终端）：Tauri onDragDropEvent。照搬 Terax useTerminalFileDrop。
+  // 只活跃 pane 挂（非活跃 tab 的 pane 隐藏，drop 一定落在活跃 pane）。
+  // 完整 OS 原生拖拽体验（ghost 影像 + 可靠 drop），补足内部 DOM 拖拽（pointer events）的不足。
+  useEffect(() => {
+    if (!active) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type === "drop") {
+          if (!p.paths.length) return;
+          const s = sessionRef.current;
+          // OS 文件用绝对路径（不经 relPath——Finder 拖入的文件不一定在 cwd 子树）
+          s.paste(formatDroppedPaths(p.paths));
+          s.focus();
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch((err) => console.error("[TerminalPane] drag-drop listen failed:", err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [active]);
 
   return (
     <div className="terminal-pane">
