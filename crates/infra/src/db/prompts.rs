@@ -337,6 +337,26 @@ mod tests {
         assert!(found.inject_context);
     }
 
+    /// 不变量：3 个系统内置 seed 模板固定全局（app_bundle_ids=''）+ 固定 inject_context。
+    /// 系统模板保持「全局 fallback」角色，不可绑特定 app——前端「路由配置」按钮灰禁，
+    /// 后端 update_prompt 命令对 is_system=true 回写 DB 现有值（忽略传入）。本测试守护 seed 值。
+    #[test]
+    fn system_prompts_locked_global_routing() {
+        let conn = open_init();
+        crate::seeds::load_external_seeds(&conn).unwrap();
+        let seeds = list_prompts_at(&conn).unwrap();
+        let system_seeds: Vec<_> = seeds.iter().filter(|p| p.is_system).collect();
+        assert_eq!(system_seeds.len(), 3, "应有 3 个系统内置 seed");
+        for p in &system_seeds {
+            assert_eq!(p.app_bundle_ids, "", "系统模板 {} 应全局（app_bundle_ids 空）", p.title);
+        }
+        // inject_context：app-casual（content=润色-口语化）=1，faithful/user-intent=0
+        let casual = system_seeds.iter().find(|p| p.content == "润色-口语化").unwrap();
+        assert!(casual.inject_context, "app-casual seed inject_context 应=1");
+        let others: Vec<_> = system_seeds.iter().filter(|p| p.content != "润色-口语化").collect();
+        assert!(others.iter().all(|p| !p.inject_context), "faithful/user-intent seed inject_context 应=0");
+    }
+
     #[test]
     fn active_prompt_id_roundtrip() {
         setup_test_db();

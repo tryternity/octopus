@@ -236,22 +236,25 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               <FileText className="h-3 w-3" />
               <code>{p.content}.md</code>
             </div>
-            {/* app 关联指示：有绑定→显示绑定的 app 数；无绑定→显示全局 */}
-            <div className="flex items-center gap-1.5 mt-1 text-[11px]">
-              <Route className="h-3 w-3 text-muted-foreground/50" />
-              {(() => {
-                let bound = 0;
-                try { const a = JSON.parse(p.appBundleIds || "[]"); bound = Array.isArray(a) ? a.length : 0; } catch { /* */ }
-                return bound > 0
-                  ? <span className="text-voice/80">{t("settings.prompts.boundApps", { n: bound })}</span>
-                  : <span className="text-muted-foreground/50">{t("settings.prompts.globalPrompt")}</span>;
-              })()}
-              {p.injectContext && (
-                <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">
-                  {t("settings.prompts.injectContextBadge")}
-                </Badge>
-              )}
-            </div>
+            {/* app 关联指示：有绑定→显示绑定的 app 数；无绑定→显示全局。
+                系统内置模板固定全局 + inject_context，不展示此行（值不可改，展示易误导） */}
+            {!p.isSystem && (
+              <div className="flex items-center gap-1.5 mt-1 text-[11px]">
+                <Route className="h-3 w-3 text-muted-foreground/50" />
+                {(() => {
+                  let bound = 0;
+                  try { const a = JSON.parse(p.appBundleIds || "[]"); bound = Array.isArray(a) ? a.length : 0; } catch { /* */ }
+                  return bound > 0
+                    ? <span className="text-voice/80">{t("settings.prompts.boundApps", { n: bound })}</span>
+                    : <span className="text-muted-foreground/50">{t("settings.prompts.globalPrompt")}</span>;
+                })()}
+                {p.injectContext && (
+                  <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">
+                    {t("settings.prompts.injectContextBadge")}
+                  </Badge>
+                )}
+              </div>
+            )}
             <div className="flex gap-1.5 mt-2">
               {!isActive && (
                 <Button variant="ghost" size="sm" onClick={() => activate(p.id)}>
@@ -261,7 +264,14 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               <Button variant="ghost" size="sm" onClick={() => editInEditor(p)}>
                 <Pencil /> {t("settings.prompts.edit")}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setRouteEditing(p)}>
+              {/* 系统内置模板锁定全局 + 固定 inject_context（保持 fallback 角色），不可路由配置 */}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={p.isSystem}
+                onClick={() => setRouteEditing(p)}
+                title={p.isSystem ? t("settings.prompts.routeConfigDisabled") : undefined}
+              >
                 <Route /> {t("settings.prompts.routeConfig")}
               </Button>
               {!p.isSystem && (

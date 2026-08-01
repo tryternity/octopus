@@ -63,6 +63,8 @@ ALTER TABLE prompts ADD COLUMN inject_context INTEGER NOT NULL DEFAULT 0;
 
 用户自建模板默认 `app_bundle_ids=''`（全局）、`inject_context=1`。
 
+**系统内置模板路由字段锁定**：3 个 `is_system=1` 模板保持「全局 fallback」角色——`app_bundle_ids` 恒为 `''`、`inject_context` 恒为 seed 值（faithful=0 / user-intent=0 / app-casual=1），不可绑特定 app。前端「路由配置」按钮对系统模板灰禁（title 提示「内置模板保持全局，不可配置路由」），卡片不展示 app 关联/注入指示（值固定，展示易误导）；后端 `update_prompt` 命令对 `is_system=true` 回写 DB 现有值，忽略传入的 `app_bundle_ids`/`inject_context`（防御：绕过前端灰禁直调命令也无效）。回归测试 `system_prompts_locked_global_routing` 守护 seed 值。
+
 ### schema version
 
 bump +1（加 2 列）。无旧用户兼容包袱，开发者手动清 DB。

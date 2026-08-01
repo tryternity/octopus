@@ -581,6 +581,7 @@ settings:
     restoreFailed: "Restore failed:"
     routeConfigTitle: Routing
     routeConfig: Routing
+    routeConfigDisabled: Built-in templates stay global; routing is not configurable
     injectContext: Inject app context
     injectContextHint: Prepends the current app name and category to the prompt so the model adapts style per app
     injectContextBadge: Inject context

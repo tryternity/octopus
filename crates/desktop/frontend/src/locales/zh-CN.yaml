@@ -587,6 +587,7 @@ settings:
     restoreFailed: "复原失败："
     routeConfigTitle: 路由配置
     routeConfig: 路由配置
+    routeConfigDisabled: 内置模板保持全局，不可配置路由
     injectContext: 注入应用上下文
     injectContextHint: 润色时把「当前应用：名称（类别）」加到 prompt 头部，让模型按 app 场景适配风格
     injectContextBadge: 注入上下文
