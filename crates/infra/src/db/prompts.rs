@@ -350,10 +350,10 @@ mod tests {
         for p in &system_seeds {
             assert_eq!(p.app_bundle_ids, "", "系统模板 {} 应全局（app_bundle_ids 空）", p.title);
         }
-        // inject_context：app-casual（content=润色-口语化）=1，faithful/user-intent=0
-        let casual = system_seeds.iter().find(|p| p.content == "润色-口语化").unwrap();
+        // inject_context：app-casual（content=润色-场景自适应）=1，faithful/user-intent=0
+        let casual = system_seeds.iter().find(|p| p.content == "润色-场景自适应").unwrap();
         assert!(casual.inject_context, "app-casual seed inject_context 应=1");
-        let others: Vec<_> = system_seeds.iter().filter(|p| p.content != "润色-口语化").collect();
+        let others: Vec<_> = system_seeds.iter().filter(|p| p.content != "润色-场景自适应").collect();
         assert!(others.iter().all(|p| !p.inject_context), "faithful/user-intent seed inject_context 应=0");
     }
 

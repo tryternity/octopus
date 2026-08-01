@@ -69,7 +69,7 @@ fn load_prompt_seeds(conn: &Connection) -> Result<()> {
          "只纠错不改意，保留原始句式。ASR 异常修复强（系统内置）", 0i64),
         (2i64, "user-intent.md", "润色-意图整理", "意图整理",
          "清洗噪声+结构化，多要点自动转列表（系统内置）", 0i64),
-        (3i64, "app-casual.md", "润色-口语化", "场景自适应",
+        (3i64, "app-casual.md", "润色-场景自适应", "场景自适应",
          "按前台 app 针对性适配：微信/QQ 口语化、Word 书面办公化、IDE/agent 条理化技术化（系统内置）", 1i64),
     ];
     // 拷贝 md 文件到 ~/.octopus/.sync/prompts/polish/（幂等，已存在跳过）
