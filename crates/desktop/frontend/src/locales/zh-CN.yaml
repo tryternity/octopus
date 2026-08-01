@@ -612,10 +612,10 @@ settings:
     delete: 删除
     deleteConfirm: 再次点击确认删除
   hotword:
-    fH: f/h 不分（浮 / 护）
-    huWu: hu/wu 不分（黄 / 王）
-    nL: n/l 不分（刘 / 牛）
-    rL: r/l 不分（热 / 乐）
+    fH: f/h（浮 / 护）
+    huWu: hu/wu（胡 / 吴）
+    nL: n/l（刘 / 牛）
+    rL: r/l（热 / 乐）
     loadFailed: "加载失败："
     newVersion: 已新建版本
     importedVersion: 已导入为新版本

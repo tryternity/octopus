@@ -605,10 +605,10 @@ settings:
     delete: Delete
     deleteConfirm: Click again to confirm
   hotword:
-    fH: f/h confusion (浮 / 护)
-    huWu: hu/wu confusion (黄 / 王)
-    nL: n/l confusion (刘 / 牛)
-    rL: r/l confusion (热 / 乐)
+    fH: f/h (浮 / 护)
+    huWu: hu/wu (胡 / 吴)
+    nL: n/l (刘 / 牛)
+    rL: r/l (热 / 乐)
     loadFailed: "Load failed:"
     newVersion: New version created
     importedVersion: Imported as new version
