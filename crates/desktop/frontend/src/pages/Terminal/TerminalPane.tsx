@@ -158,17 +158,21 @@ export function TerminalPane({
         ref={containerRef}
         className="terminal-pane-canvas"
         onContextMenu={openContextMenu}
-        onDragOver={(e) => {
+        // capture 阶段监听：xterm 在 canvas 内部元素上 attach 的 listener 可能拦截
+        // bubble 阶段的 drop（实测 WKWebView 下 onDrop 不触发）。capture 从根向下传播，
+        // 在 target 阶段之前触发，确保先于 xterm 拿到 drop 事件。
+        onDragOverCapture={(e) => {
           // 允许 drop（否则浏览器/WKWebView 拒绝）
           if (e.dataTransfer.types.includes("text/plain")) {
             e.preventDefault();
             e.dataTransfer.dropEffect = "copy";
           }
         }}
-        onDrop={(e) => {
+        onDropCapture={(e) => {
           const fullPath = e.dataTransfer.getData("text/plain");
           if (!fullPath) return;
           e.preventDefault();
+          e.stopPropagation();
           const s = sessionRef.current;
           const rel = relPath(fullPath, s.cwd ?? "");
           const escaped = shellEscape(rel);
