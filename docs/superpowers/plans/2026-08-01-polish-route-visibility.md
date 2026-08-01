@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 文案只在常规模式 `show_result` 显示；instant 模式（`show_instant`）不变
+- 文案在常规模式 `show_result` + instant 模式 `show_instant` 都显示（instant 后补，见实施记录 `b800d523`）；中间润色不显示
 - 中间润色（`spawn_polish_thread`，mode=2）不显示路由提示（现状不变，本就不弹浮窗文案）
 - `polish_regions` 的 content/app_context 传递逻辑不变（只多了展示用元数据）
 - perf 打点不受影响（仍记录 source/bundle/prompt_id/title）
@@ -418,7 +418,7 @@ git commit -m "docs(sync): 路由命中可视化 architecture + spec + plan 同�
 - ✅ `polish_status_text` helper（Task 2，4 单测覆盖 4 个文案分支）
 - ✅ 最终润色 show 文案（Task 3）
 - ✅ 时序调整 resolve 提前（Task 3 Step 1）
-- ✅ instant 模式不变（Task 3 注释明确）
+- ✅ instant 模式后补显示（`b800d523`，原草案判断失误 e2e 后修正；spec 已同步）
 - ✅ 中间润色不改（Task 2 Step 4 仅改解构 + Step 5 改字段引用，不调 show_result）
 - ✅ 降级显示「⏳ 润色中」（Task 2 Step 3 helper + Step 7 测试）
 - ✅ 文档同步（Task 4）
@@ -437,6 +437,9 @@ git commit -m "docs(sync): 路由命中可视化 architecture + spec + plan 同�
 - `0441bfb1` Task 1：ResolvedPrompt 加 template_title + route_hit 字段
 - `bddbeebd` Task 2：resolve_app_aware_prompt 返回 ResolvedAppPrompt 结构体 + polish_status_text helper（4 单测）+ 两处 polish_regions 调用适配
 - `7927a91b` Task 3：最终润色路径 resolve_app_aware_prompt 提前到 show_result 前 + show_result 文案改用 polish_status_text；移除 #[allow(dead_code)]
+- `b800d523` 后补（e2e 反馈）：instant 模式也显示路由文案——前端 InstantView.tsx polishing 态渲染 text（之前硬编码「润色中…」忽略 text）+ 后端 show_instant 传 polish_status_text。原 spec 草案判断「instant 不改」失误，e2e 发现用户主要用 instant 模式遂补上。
 - （Task 4：本文档同步）
 
-验证：build 0 error 0 warning，desktop 495 passed（含 4 个 polish_status_text 新测试）。无偏差（实现与 spec 方案 A 完全一致）。
+验证：build 0 error 0 warning，desktop 495 passed（含 4 个 polish_status_text 新测试）。
+
+**偏差**（e2e 后补）：原方案 A 说「instant 模式不变」，e2e 验证后改为「instant 也显示」。spec 已同步修正（见 spec「设计变更」注）。

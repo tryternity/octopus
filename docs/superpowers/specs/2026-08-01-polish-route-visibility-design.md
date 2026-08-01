@@ -16,7 +16,9 @@
 | 默认模板 + inject_context 时 | 同上（模板名后不加 app，因为默认模板可能全局生效） | `⏳ 润色中 · 场景自适应` |
 | 解析失败（降级空 prompt） | `⏳ 润色中` | `⏳ 润色中` |
 
-instant 模式（PTT/hands-free）：`show_instant("polishing", "")` 的 text 字段暂不改（instant 是底部小指示卡，空间极小，文案塞不下模板信息）。instant 用户按住键说话，对「用了哪个模板」的感知需求弱。仅常规模式（`show_result`）显示模板信息。
+instant 模式（PTT/hands-free）：同样显示模板信息。`show_instant("polishing", &status_text)` 把文案通过 `instant-state` 事件的 text 字段传给前端；`InstantView.tsx` 的 polishing 态有 text 时显示 text（之前硬编码「润色中…」忽略 text，`b800d523` 修复）。instant 指示卡 400px 宽，「⏳ 润色中 · 场景自适应（微信）」放得下。
+
+> 设计变更（`b800d523`）：原 spec 草案判断「instant 空间不够，不改」，e2e 验证发现用户主要用 instant 模式，遂补上。教训：设计阶段对用户实际使用模式的假设需 e2e 验证。
 
 ### 为什么不做独立提示条
 
@@ -87,7 +89,7 @@ coordinator 线程（spawn 前）:
 
 ## 不变量
 
-1. 文案只在常规模式 `show_result` 显示；instant 模式不变
+1. 常规模式（`show_result`）与 instant 模式（`show_instant`）都显示路由文案；中间润色（mode=2）不显示（本就不弹浮窗文案）
 2. 中间润色（mode=2）不显示路由提示（现状不变）
 3. 解析失败（空 prompt 降级）显示 `⏳ 润色中`（不带模板名）
 4. `polish_regions` 的 content/app_context 传递逻辑不变（只多了展示用的元数据）
@@ -108,7 +110,7 @@ coordinator 线程（spawn 前）:
 ## 验证
 
 - cargo build + cargo test（结构体字段 + 文案拼接 helper 的单测）
-- e2e：① 命中 app 关联→浮窗显示「模板名（app名）」② 默认模板→只显示模板名 ③ 解析失败→只显示「润色中」④ instant 模式不变
+- e2e：① 命中 app 关联→浮窗显示「模板名（app名）」② 默认模板→只显示模板名 ③ 解析失败→只显示「润色中」④ 常规 + instant 模式都显示 ⑤ 中间润色不显示
 
 ## 实现状态（2026-08-01）
 
@@ -116,5 +118,5 @@ coordinator 线程（spawn 前）:
 - `ResolvedPrompt` + `ResolvedAppPrompt` 加展示用元数据（template_title / app_name / route_hit）
 - `polish_status_text` 4 分支文案（4 单测覆盖）
 - 最终润色路径 `resolve_app_aware_prompt` 提前到 show_result 前，文案携带模板名
-- instant / 中间润色不变（spec 不变量 1/2 守护）
+- instant / 中间润色：instant 已补显示（`b800d523`，原 spec 草案判断失误，e2e 后修正）；中间润色仍不显示（本就不弹浮窗文案）
 - desktop 495 passed，build 0 warning
