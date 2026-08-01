@@ -260,7 +260,39 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const enabledTokens = new Set(dialect.split(',').map((s) => s.trim()));
 
   return (
-    <div className="flex h-full gap-4">
+    <div className="flex h-full flex-col gap-3">
+      {/* ════ 顶部横条：方言模糊 + 热词纠错（全局配置，跨左右栏全宽） ════ */}
+      <Card>
+        <CardHeader>
+          <Type className="h-4 w-4 text-muted-foreground" />
+          <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
+          {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
+          <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              on={asrCorrect}
+              onClick={() => setVal('asr_correct', !asrCorrect)}
+              aria-label={t('settings.general.pinyinCorrect')}
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="py-2.5">
+          {/* 方言模糊（2x4 横排，全局开关） */}
+          <div className="grid grid-cols-4 gap-x-6">
+            {DIALECT_KEYS.map(({ tok, key }) => {
+              const label = t(key);
+              return (
+                <div key={tok} className="flex items-center justify-between">
+                  <span className="text-sm">{label}</span>
+                  <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ════ 下方分栏：左词典列表 + 右热词面板 ════ */}
+      <div className="flex min-h-0 flex-1 gap-4">
       {/* ════ 左栏：场景（版本）列表——宽度对齐 Settings sidebar 176px ════ */}
       <div className="flex w-[176px] flex-shrink-0 flex-col rounded-lg border border-border bg-muted/30">
         {/* 列表区 */}
@@ -371,41 +403,7 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
         </div>
       </div>
 
-      {/* ════ 右栏：两张 Card（配置卡 + 热词版本卡），对齐设置页范式 ════ */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3">
-
-        {/* ── Card 1：方言模糊 + 热词纠错（配置区，自然高度） ── */}
-        <Card>
-          <CardHeader>
-            <Type className="h-4 w-4 text-muted-foreground" />
-            <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
-            {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
-            <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
-              <Toggle
-                on={asrCorrect}
-                onClick={() => setVal('asr_correct', !asrCorrect)}
-                aria-label={t('settings.general.pinyinCorrect')}
-              />
-            </div>
-          </CardHeader>
-          <CardContent className="py-3">
-            {/* 方言模糊（2x2 grid） */}
-            <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.dialectFuzzy')}</div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-0.5">
-              {DIALECT_KEYS.map(({ tok, key }) => {
-                const label = t(key);
-                return (
-                  <div key={tok} className="flex items-center justify-between py-1.5">
-                    <span className="text-sm">{label}</span>
-                    <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* ── Card 2：热词版本（场景名 + 搜索 + 操作 + 词卡，占满剩余空间） ── */}
+      {/* ════ 右栏：热词版本卡（场景名 + 搜索 + 操作 + 词卡，占满剩余空间） ════ */}
         <Card className="flex min-h-0 flex-1 flex-col">
           {/* 头部：排序图标（左，点击下拉）+ 场景名 + 词数 + 搜索（右）+ 操作图标 */}
           <CardHeader className="gap-2">
