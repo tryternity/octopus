@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn build_system_prompt_appends_incremental_rule() {
+    fn build_system_prompt_appends_edited_marker_rule() {
         let content = "# Role\n你是润色助手。";
         let built = build_system_prompt(content);
         assert!(built.starts_with("# Role\n你是润色助手。"));

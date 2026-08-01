@@ -56,7 +56,7 @@ struct MessageContent {
     content: String,
 }
 
-/// 一段文档区域。preserve=true → 原样保留（edited）；false → 待润色。
+/// 一段文档区域。preserve=true → 用户已校对（[] 标记为语境参考）；false → 待润色。
 /// 字段顺序/类型严格按 plan，Task 4 coordinator 按此构造。
 #[derive(Debug, Clone)]
 pub struct PolishRegion {
