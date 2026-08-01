@@ -7,6 +7,9 @@ use std::sync::RwLock;
 /// 用 {花括号} 而非 [方括号]——避免与 few-shot 示例里的 [技术术语] 标记冲突。
 const EDITED_MARKER_RULE: &str = "文本中 {花括号} 标记的词语是用户手动修正过的，请信任这些用词，并在润色全文时以其为语境参考。输出时去掉花括号标记，仅输出纯文本。";
 
+/// <> hotwords 候选标记规则（热词多命中时，LLM 从候选选一个）。
+const HOTWORDS_MARKER_RULE: &str = "文本中 <尖括号> 内用竖线分隔的多个词语是语音识别的候选词，请根据上下文选择最合适的一个，去掉尖括号和竖线，仅输出选中的词语。";
+
 /// 当前激活的完整 system prompt（用户 prompt 部分 + EDITED_MARKER_RULE）。
 /// 启动时由 main.rs 从 DB 加载并 set_system_prompt。
 static SYSTEM_PROMPT: RwLock<String> = RwLock::new(String::new());
@@ -71,7 +74,7 @@ fn app_context_prefix(app_context: Option<&AppContext>) -> String {
 /// 拼接用户 prompt content + 强制 edited 标记规则。
 /// content 为 DB prompts 表的 content 字段（纯风格规则，不含 edited 标记逻辑）。
 pub fn build_system_prompt(content: &str) -> String {
-    format!("{}\n{}", content.trim_end(), EDITED_MARKER_RULE)
+    format!("{}\n{}\n{}", content.trim_end(), EDITED_MARKER_RULE, HOTWORDS_MARKER_RULE)
 }
 
 /// 设置当前 system prompt（content 为用户 prompt 部分，内部自动拼接 edited 标记规则）。
@@ -105,10 +108,9 @@ pub(crate) fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
 }
 
 /// 段模型多段润色 user prompt。
-/// preserve=true 的段（edited）用 `{...}` 内联标记；其余段原样拼接。
-/// LLM 输出整篇（含润色后的全文），仅纯文本，无 `{}`。
-///
-/// 无 preserve 段时 body 无 `{}`，等价全量润色（与 user_prompt(None) 等价语义）。
+/// preserve=true 的段（edited）用 `{...}` 内联标记；
+/// candidates=Some 的段（hotwords）用 `<a|b|c>` 标记（LLM 从列表选一个）；
+/// 其余段原样拼接。LLM 输出整篇（含润色后的全文），仅纯文本，无标记符号。
 pub(crate) fn regions_prompt(
     regions: &[crate::PolishRegion],
     app_context: Option<&AppContext>,
@@ -117,6 +119,9 @@ pub(crate) fn regions_prompt(
     for r in regions {
         if r.preserve {
             body.push_str(&format!("{{{}}}", r.text));
+        } else if let Some(ref cands) = r.candidates {
+            // 热词候选：<候选1|候选2|候选3>
+            body.push_str(&format!("<{}>", cands.join("|")));
         } else {
             body.push_str(&r.text);
         }
@@ -167,7 +172,7 @@ mod tests {
 
     #[test]
     fn regions_prompt_no_preserve_is_plain() {
-        let rs = vec![crate::PolishRegion { preserve: false, text: "你好".into() }];
+        let rs = vec![crate::PolishRegion { preserve: false, text: "你好".into() , candidates: None }];
         let p = regions_prompt(&rs, None);
         assert!(p.contains("请润色以下语音识别文本"));
         assert!(!p.contains("原样保留"));
@@ -177,8 +182,8 @@ mod tests {
     #[test]
     fn regions_prompt_marks_preserved_regions() {
         let rs = vec![
-            crate::PolishRegion { preserve: true, text: "已确认".into() },
-            crate::PolishRegion { preserve: false, text: "待润色".into() },
+            crate::PolishRegion { preserve: true, text: "已确认".into() , candidates: None },
+            crate::PolishRegion { preserve: false, text: "待润色".into() , candidates: None },
         ];
         let p = regions_prompt(&rs, None);
         assert!(p.contains("{已确认}"));
@@ -206,7 +211,7 @@ mod tests {
 
     #[test]
     fn regions_prompt_injects_app_context() {
-        let regions = vec![crate::PolishRegion { preserve: false, text: "你好".into() }];
+        let regions = vec![crate::PolishRegion { preserve: false, text: "你好".into() , candidates: None }];
         let ctx = super::AppContext { name: "微信".into(), category: "即时通讯".into() };
         let p = super::regions_prompt(&regions, Some(&ctx));
         assert!(p.starts_with("当前应用：微信（即时通讯）\n请润色以下语音识别文本：\n"));

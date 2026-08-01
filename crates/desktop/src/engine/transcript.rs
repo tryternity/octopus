@@ -429,6 +429,21 @@ impl Transcript {
     /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
     pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
 
+    /// 标记 Hotwords 段：drain_candidates 拿到 (word, candidates) 列表后，
+    /// 在 segments 里找到 text == word 的段（取第一个未标记的），改为 Hotwords kind + 存候选。
+    /// 多个匹配时按顺序标记（corrector 收集顺序 = 文本位置顺序）。
+    pub fn mark_hotwords(&mut self, hits: &[(String, Vec<String>)]) {
+        for (word, candidates) in hits {
+            // 找第一个 text == word 且非 Hotwords/Edited 的段
+            if let Some(seg) = self.segments.iter_mut().find(|s| {
+                s.text == *word && s.kind != SegmentKind::Hotwords && s.kind != SegmentKind::Edited
+            }) {
+                seg.kind = SegmentKind::Hotwords;
+                seg.candidates = Some(candidates.clone());
+            }
+        }
+    }
+
     /// 取润色输入：快照 segments + 记 caret offset/末尾态 + 标记 pending。
     pub fn take_polish_input(&mut self) -> PolishInput {
         // 选中替换：润色前删除待删范围，避免快照含选中旧字。
@@ -543,32 +558,53 @@ impl Transcript {
     }
 }
 
-/// 润色回填：snapshot + LLM 输出 full → 新 segments（edited 串匹配定位，间隙 Polished，无 Raw）。
+/// 润色回填：snapshot + LLM 输出 full → 新 segments（edited/hotwords 串匹配定位，间隙 Polished，无 Raw）。
+/// Hotwords 段尝试匹配所有候选（LLM 可能选了非第一个），匹配到的候选词标 Edited（已选定）。
 fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
-    let edited: Vec<&str> = snapshot.iter()
-        .filter(|s| s.kind == SegmentKind::Edited).map(|s| s.text.as_str()).collect();
-    if edited.is_empty() {
-        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string() , candidates: None }];
+    // 收集锚点：Edited（固定文本）+ Hotwords（所有候选词都可能被 LLM 选中）
+    struct Anchor {
+        texts: Vec<String>,      // 尝试匹配的文本列表（Edited 只有 1 个，Hotwords 有多个候选）
+        kind: SegmentKind,       // 匹配后标记的 kind
+        candidates: Option<Vec<String>>,
+    }
+    let anchors: Vec<Anchor> = snapshot.iter().filter_map(|s| match s.kind {
+        SegmentKind::Edited => Some(Anchor {
+            texts: vec![s.text.clone()], kind: SegmentKind::Edited, candidates: None,
+        }),
+        SegmentKind::Hotwords => Some(Anchor {
+            texts: s.candidates.clone().unwrap_or_else(|| vec![s.text.clone()]),
+            kind: SegmentKind::Edited,  // LLM 选定后变 Edited
+            candidates: None,
+        }),
+        _ => None,
+    }).collect();
+    if anchors.is_empty() {
+        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string(), candidates: None }];
     }
     let full_chars: Vec<char> = full.chars().collect();
     let mut segs = Vec::new();
     let mut cursor = 0usize;
-    for ed in &edited {
-        let ed_chars: Vec<char> = ed.chars().collect();
-        match find_from(&full_chars, &ed_chars, cursor) {
-            Some(start) => {
+    for anchor in &anchors {
+        // 在 full 里找任一候选词
+        let found = anchor.texts.iter().find_map(|t| {
+            let t_chars: Vec<char> = t.chars().collect();
+            find_from(&full_chars, &t_chars, cursor).map(|start| (start, t_chars))
+        });
+        match found {
+            Some((start, matched_chars)) => {
                 if start > cursor {
                     let gap: String = full_chars[cursor..start].iter().collect();
-                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap , candidates: None }); }
+                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap, candidates: None }); }
                 }
-                let end = start + ed_chars.len();
-                segs.push(Segment { kind: SegmentKind::Edited, text: full_chars[start..end].iter().collect() , candidates: None });
+                let end = start + matched_chars.len();
+                let matched_text: String = full_chars[start..end].iter().collect();
+                segs.push(Segment { kind: anchor.kind, text: matched_text, candidates: anchor.candidates.clone() });
                 cursor = end;
             }
             None => {
-                // 匹配不到（LLM 擅改）：剩余全作 Polished，停止（best-effort）
+                // 匹配不到（LLM 擅改所有候选）：剩余全作 Polished，停止（best-effort）
                 if cursor < full_chars.len() {
-                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect() , candidates: None });
+                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect(), candidates: None });
                     cursor = full_chars.len();
                 }
                 break;

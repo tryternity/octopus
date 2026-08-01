@@ -370,6 +370,12 @@ pub(crate) fn finalize_after_stop(
     // 0. flush 滞留 diverted（引擎 end-of-stream 纠正）：stop 后不再有 apply 补发，
     //    不 flush 会被 finish_text 读取时静默丢弃（末尾文字丢失）。
     transcript.flush_diverted();
+    // 0b. drain corrector 多命中候选 → 标记 Hotwords 段（多候选时用户可下拉选择）。
+    //     Streaming 分支已在 L160 drain_hits；这里统一 drain_candidates 覆盖所有路径。
+    let candidates = octopus_asr_local::corrector::drain_candidates();
+    if !candidates.is_empty() {
+        transcript.mark_hotwords(&candidates);
+    }
     // 1. 立即润色仍在途：等其完成再走 final 路径（避免丢弃润色结果）
     if transcript.polish_pending() {
         info!("Toggle stop: polish_pending=true, entering StoppingPolish");

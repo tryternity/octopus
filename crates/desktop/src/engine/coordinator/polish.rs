@@ -251,6 +251,11 @@ pub(crate) fn polish_input_to_regions(input: &crate::engine::transcript::PolishI
     input.segments.iter().map(|s| octopus_llm::PolishRegion {
         preserve: s.kind == crate::engine::transcript::SegmentKind::Edited,
         text: s.text.clone(),
+        candidates: if s.kind == crate::engine::transcript::SegmentKind::Hotwords {
+            s.candidates.clone()
+        } else {
+            None
+        },
     }).collect()
 }
 

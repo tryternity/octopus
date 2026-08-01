@@ -26,6 +26,9 @@ pub struct LightCorrector {
     // 本次 correct 命中的热词收集（correct_greedy push，pipeline 经 drain_hits 取走后 bump DB）。
     // corrector 保持纯内存不碰 DB；命中计数持久化交调用层，避免单测污染真实 DB。
     pending_hits: parking_lot::Mutex<Vec<String>>,
+    // 本次 correct 多命中候选收集（>1 候选时，coordinator drain 后标记 Hotwords 段）。
+    // (命中的词, 该位置全部候选列表 top5)。单候选不收集（无选择意义）。
+    pending_candidates: parking_lot::Mutex<Vec<(String, Vec<String>)>>,
 }
 
 /// 词级归一化模糊拼音（每个字归一化后用 `-` 连接）。
@@ -86,6 +89,7 @@ impl LightCorrector {
             active_words: parking_lot::RwLock::new(Vec::new()),
             bigrams: parking_lot::RwLock::new(std::collections::HashMap::new()),
             pending_hits: parking_lot::Mutex::new(Vec::new()),
+            pending_candidates: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -173,6 +177,15 @@ impl LightCorrector {
                         window_word, hw
                     );
                     self.pending_hits.lock().push(hw.clone());
+                    // 多候选（>1 个非原词热词）→ 收集候选列表供 Hotwords 段展示
+                    let hotword_candidates: Vec<String> = candidates.iter()
+                        .filter(|c| *c != &window_word)
+                        .take(5)  // 兜底保护：最多 5 个
+                        .cloned()
+                        .collect();
+                    if hotword_candidates.len() > 1 {
+                        self.pending_candidates.lock().push((hw.clone(), hotword_candidates));
+                    }
                     let hw_chars: Vec<char> = hw.chars().collect();
                     chars[i..(sz + i)].copy_from_slice(&hw_chars[..sz]);
                     replaced_sz = sz;
@@ -294,6 +307,16 @@ pub fn drain_hits() -> Vec<String> {
     CORRECTOR
         .get()
         .map(|c| std::mem::take(&mut *c.pending_hits.lock()))
+        .unwrap_or_default()
+}
+
+/// 取出并清空本次 corrector 多命中候选列表（correct_greedy 命中 >1 候选时收集）。
+/// 返回 (命中的词, 该位置全部候选 top5)。coordinator 据此标记 Hotwords 段。
+/// 单例未初始化返回空。跨 correct 调用累积，未 drain 则残留。
+pub fn drain_candidates() -> Vec<(String, Vec<String>)> {
+    CORRECTOR
+        .get()
+        .map(|c| std::mem::take(&mut *c.pending_candidates.lock()))
         .unwrap_or_default()
 }
 

@@ -57,11 +57,13 @@ struct MessageContent {
 }
 
 /// 一段文档区域。preserve=true → 用户已校对（{} 标记为语境参考）；false → 待润色。
-/// 字段顺序/类型严格按 plan，Task 4 coordinator 按此构造。
+/// candidates=Some → 热词多命中候选（<> 标记，LLM 从列表选一个）。
 #[derive(Debug, Clone)]
 pub struct PolishRegion {
     pub preserve: bool,
     pub text: String,
+    /// 热词多命中候选列表（Hotwords 段）。Some 时 regions_prompt 用 `<a|b|c>` 标记。
+    pub candidates: Option<Vec<String>>,
 }
 
 /// 按 provider 分派思考模式关闭方式：
@@ -222,8 +224,8 @@ pub fn polish_regions(
 /// 仅去除包裹单个词的 `{}`，不影响 JSON/代码中的合法花括号（那些不会出现在润色输出中）。
 fn strip_edited_markers(text: &str) -> String {
     // 简单策略：去掉所有 { 和 } 字符。
-    // 润色输出是纯文本（无 JSON/代码），花括号在此语境的唯一来源就是 edited 标记。
-    text.replace(['{', '}'], "")
+    // 润色输出是纯文本（无 JSON/代码），花括号/尖括号在此语境的唯一来源就是 edited/hotwords 标记。
+    text.replace(['{', '}', '<', '>'], "")
 }
 
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
