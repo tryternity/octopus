@@ -9,6 +9,7 @@ mod agent;
 mod cancel_discard;
 mod session;
 mod polish;
+mod prompt_route;
 mod lifecycle;
 
 use crate::engine::audio::SharedAudioState;
@@ -38,6 +39,7 @@ pub(crate) use self::session::begin_recording;
 pub(crate) use self::polish::{
     handle_final_polish_done, handle_polish_done, handle_polish_now,
 };
+pub(crate) use self::prompt_route::invalidate_route_cache;
 pub(crate) use self::lifecycle::{handle_toggle, restart_capture_keep_transcript};
 #[cfg(feature = "cloud")]
 pub(crate) use self::lifecycle::handle_cloud_streaming_done;
