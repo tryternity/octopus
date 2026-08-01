@@ -159,8 +159,7 @@ export function TerminalPane({
   // 完全绕开 xterm 内部元素的事件拦截（HTML5 DnD 在 WKWebView 不可靠）。
   useEffect(() => {
     const handleMouseUp = (e: MouseEvent) => {
-      const path = takeDragPath();
-      document.body.classList.remove("terminal-file-dragging"); // 清除拖拽视觉反馈
+      const path = takeDragPath(); // 取出路径 + 清除 ghost/body class（takeDragPath 内部 cleanupGhost）
       if (path === null) return; // 无拖拽进行中（普通 mouseup）
       // hit-test：鼠标是否在本 canvas 矩形内
       const canvas = containerRef.current;

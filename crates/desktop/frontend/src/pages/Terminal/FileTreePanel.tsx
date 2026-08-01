@@ -14,7 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { PanelResizer } from "./PanelResizer";
-import { setDragPath } from "./dragStore";
+import { startDrag } from "./dragStore";
 
 type FileEntry = {
   name: string;
@@ -168,10 +168,8 @@ export function FileTreePanel({
           // 只设状态，不干扰 click——click 在 mouseup 后触发，dragPath 已被取走/清除）。
           onMouseDown={(e) => {
             if (e.button === 0) {
-              setDragPath(fullPath);
+              startDrag(fullPath, name); // 记录路径 + 创建 ghost + 启动 mousemove 跟踪
               e.preventDefault(); // 禁止浏览器默认文本选择（拖动时涂蓝）
-              // 拖拽视觉反馈：body 加 class，终端 canvas 用 CSS 高亮提示可放置
-              document.body.classList.add("terminal-file-dragging");
             }
           }}
           onClick={() => {
