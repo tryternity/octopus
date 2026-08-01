@@ -1,6 +1,6 @@
 # 数据持久化与配置
 
-> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v51。
+> 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v54。
 
 源文件：`crates/infra/src/db.rs`、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
 
@@ -197,7 +197,7 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 | `paste_method` | `clipboard` | `clipboard` / `direct` / `none` |
 | `write_to_clipboard` | `true` | 粘贴后是否留剪贴板 |
 | `asr_hardware_accelerated` | `false` | GPU 加速 |
-| `asr_correct` | `false` | 拼音纠错 |
+| `asr_correct` | `true` | 拼音纠错（2026-08-01 默认改 true，加了热词即生效） |
 | `denoise_mode` | 1 | 0 关 / 1 RNNoise / 2 DeepFilterNet3 |
 | `output_simplified` | `true` | 简繁归一化 |
 | `hide_toolbar` | `false` | 工具栏自动隐藏 |

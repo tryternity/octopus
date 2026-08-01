@@ -144,7 +144,7 @@
 
 **数据**：unigram 词表 + bigram 共现表（各 40,000 条，压缩后 ~450KB）`include_bytes!` 静态嵌入，运行时解压 ~30MB。源自 jieba `dict.txt.big` + gotokenizer `bigram.txt`，由 `scripts/generate_corrector_data.py` 离线生成。
 
-**开关**：`app_config.asr_correct`（默认 `false`）。
+**开关**：`app_config.asr_correct`（2026-08-01 默认改 `true`，加了热词即生效）。
 
 **跳过规则**（两类）：
 1. **引擎级**：`OfflineAsrEngine::skip_corrector()` 返回 true → 跳过（Qwen3-ASR、SenseVoice-orig、云端 `CloudBatchEngine`）
@@ -319,11 +319,13 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 - 挖掘两步走：`list_hotword_candidates`（不写 DB）→ 用户确认面板 → `add_words_to_set`（批量写）。
 
 **热词多版本管理**：
-- `hotword_sets` 表（v23 新增）：`id, name(UNIQUE), enabled, words_text, created_at, updated_at`。勾选叠加生效（生效词 = 所有 `enabled=1` 版本的全局并集去重）。
+- `hotword_sets` 表（v23 新增）：`id, name(UNIQUE), enabled, words_text, created_at, updated_at, sync_md5`（v46 加，git 同步增量 diff 用）。勾选叠加生效（生效词 = 所有 `enabled=1` 版本的全局并集去重）。
+- **单版本词数上限 `HOTWORD_SET_MAX_WORDS = 3000`**（2026-08-01）：写入（`set_hotword_set_words` / `add_word_to_set` / `add_words_to_set`）前 `ensure_within_capacity` 校验 normalize 后词数，超限 bail「词典容量已满，建议另建新词典」。限制理由：`HotwordIndex::from_words` 构建 O(N) + fuzzy `match_score` 逐词 O(N)，词数过大影响启动 + 搜索性能。
 - `hotword_hits` 表：`word PK, hit_count`。全局统计（按 word，不按版本）；删版本不删命中。
 - **`words_text` 不变量**：始终规范化——按任意空白分割 → 去重 → 按 `(pinyin_initials, localeCompare)` 排序 → 空格拼接。所有写入路径（增/删/导入/挖掘）都经 `normalize_words_text`。
 - `pinyin_initials` 放在 infra（asr-local 依赖 infra，反向不可），asr-local re-export。
 - 导入 3 模式：新建版本 / 追加到当前版本 / 覆盖当前版本（覆盖需确认）。
+- **fuzzy 搜索**（2026-08-01）：`filter_hotwords_fuzzy(query, words)` Tauri 命令复用 `matcher::match_score`（exact > prefix > word-prefix > pinyin > fuzzy 五级 scoring，与 ActionBar 同款），汉字 + 拼音首字母匹配（如「by」命中「八爪鱼」bzy），按匹配度降序。前端 debounce 120ms 调用。
 - WKWebView 不支持 `window.prompt/confirm` → 用 inline input + `@tauri-apps/plugin-dialog` 原生确认。
 
 **全引擎一致**：11 个引擎均 `skip_corrector=false`，确保热词纠错对所有引擎一致生效。
