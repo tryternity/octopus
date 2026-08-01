@@ -56,6 +56,8 @@ export type TerminalSession = {
   searchAddon: SearchAddon | null;
   /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
   cwd: string | null;
+  /** OSC 133 命令行输入态（命令执行中为 true）——供点击定位光标门控读取。 */
+  inCommand: boolean;
   // ── 右键菜单需要的 xterm 操作 ──
   hasSelection: () => boolean;
   getSelection: () => string | undefined;
@@ -132,6 +134,9 @@ export function useTerminalSession(opts: {
   // 初始值用 openPty 的 cwd——OSC 7 只在 shell 执行命令后（precmd）才发，
   // 刚开终端时 trackedCwd 为 null 会导致文件树空白。用启动目录做兜底初始值。
   const [trackedCwd, setTrackedCwd] = useState<string | null>(cwd ?? null);
+  // OSC 133 shell 集成状态——持有 inCommand（命令行输入态），供点击定位光标门控读。
+  // 提到外层 ref 是因为 return 在 useEffect 外，访问不到 term.open 闭包内的局部变量。
+  const shellStateRef = useRef(createShellIntegrationState());
 
   // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
   // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
@@ -267,7 +272,8 @@ export function useTerminalSession(opts: {
           return true;
         });
         // OSC 7 cwd 追踪 + OSC 133 prompt tracker（安全过滤）
-        const shellState = createShellIntegrationState();
+        // 复用外层 ref——return 通过 shellStateRef.current.inCommand 读取最新态
+        const shellState = shellStateRef.current;
         registerPromptTracker(term, shellState);
         registerCwdHandler(term, (c) => setTrackedCwd(c), shellState);
         // 窗口 resize → PTY resize
@@ -350,6 +356,7 @@ export function useTerminalSession(opts: {
     ptyId,
     searchAddon: searchAddonRef.current,
     cwd: trackedCwd,
+    inCommand: shellStateRef.current.inCommand,
     hasSelection: () => termRef.current?.hasSelection() ?? false,
     getSelection: () => termRef.current?.getSelection() ?? undefined,
     paste: (text: string) => termRef.current?.paste(text),
