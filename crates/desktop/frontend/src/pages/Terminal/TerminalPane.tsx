@@ -159,6 +159,7 @@ export function TerminalPane({
   useEffect(() => {
     const handleMouseUp = (e: MouseEvent) => {
       const path = takeDragPath();
+      document.body.classList.remove("terminal-file-dragging"); // 清除拖拽视觉反馈
       if (path === null) return; // 无拖拽进行中（普通 mouseup）
       // hit-test：鼠标是否在本 canvas 矩形内
       const canvas = containerRef.current;

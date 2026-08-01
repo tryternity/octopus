@@ -564,6 +564,18 @@ html, body {
   height: 100%;
 }
 
+/* ── 文件拖拽视觉反馈（pointer events 方案，body.terminal-file-dragging）── */
+/* 拖拽中：文件树节点半透明 + grabbing 光标 */
+body.terminal-file-dragging .file-tree-row {
+  opacity: 0.6;
+  cursor: grabbing;
+}
+/* 拖拽悬停在终端 canvas：高亮边框提示可放置 */
+body.terminal-file-dragging .terminal-pane-canvas:hover {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
+}
+
 /* ── 搜索浮层（Cmd+F 触发，浮在终端区内右上角）── */
 .terminal-search-overlay {
   position: absolute;

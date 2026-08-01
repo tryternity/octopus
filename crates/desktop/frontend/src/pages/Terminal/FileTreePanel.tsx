@@ -167,7 +167,12 @@ export function FileTreePanel({
           // 终端 canvas 的 mouseup 读 dragStore 写入。普通 click 仍走 onClick（mousedown
           // 只设状态，不干扰 click——click 在 mouseup 后触发，dragPath 已被取走/清除）。
           onMouseDown={(e) => {
-            if (e.button === 0) setDragPath(fullPath);
+            if (e.button === 0) {
+              setDragPath(fullPath);
+              e.preventDefault(); // 禁止浏览器默认文本选择（拖动时涂蓝）
+              // 拖拽视觉反馈：body 加 class，终端 canvas 用 CSS 高亮提示可放置
+              document.body.classList.add("terminal-file-dragging");
+            }
           }}
           onClick={() => {
             if (isDir) toggleDir(fullPath);
