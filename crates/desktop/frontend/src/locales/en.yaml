@@ -639,6 +639,7 @@ settings:
     allExist: Selected words already exist
     addFailed2: "Add failed:"
     dialectFuzzy: Dialect Fuzzy
+    correctSection: Dialect Fuzzy + Hotword Correction
     versionsN: Hotword Versions (${n})
     loading: Loading…
     newVersionPlaceholder: Version name (Enter to confirm / Esc to cancel)
