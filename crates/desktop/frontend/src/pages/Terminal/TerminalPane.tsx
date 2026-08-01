@@ -240,11 +240,12 @@ export function TerminalPane({
           const rect = (screen as HTMLElement).getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) return;
           const clickCol = pixelToCol(e.clientX, rect.left, rect.width, s.cols);
-          const clickRow = Math.floor((e.clientY - rect.top) / (rect.height / s.rows));
+          const clickRow = Math.max(0, Math.min(s.rows - 1, Math.floor((e.clientY - rect.top) / (rect.height / s.rows))));
 
           // 门控：命令行输入态 + normal buffer + 当前光标行才响应
+          // isPromptActive() 是 click-time reader（读 OSC 133 live 值，非 render 快照）
           if (!shouldMoveCursor({
-            inCommand: s.inCommand,
+            inCommand: !s.isPromptActive(),
             bufferType: s.bufferType,
             clickRow,
             cursorY: s.cursorY,
@@ -255,6 +256,7 @@ export function TerminalPane({
           const seq = buildCursorMoveSequence(delta);
           if (seq) s.write(seq);
           s.focus(); // 即使 delta=0 也聚焦终端（点击就应获焦）
+        }}
       />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay

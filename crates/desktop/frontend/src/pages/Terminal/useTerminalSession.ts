@@ -56,8 +56,8 @@ export type TerminalSession = {
   searchAddon: SearchAddon | null;
   /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
   cwd: string | null;
-  /** OSC 133 命令行输入态（命令执行中为 true）——供点击定位光标门控读取。 */
-  inCommand: boolean;
+  /** 是否在命令行输入态（prompt，非命令执行中）——click-time reader，读 OSC 133 live 值。 */
+  isPromptActive: () => boolean;
   /** 终端列数（点击定位坐标换算用）。 */
   cols: number;
   /** 终端行数（点击行换算用）。 */
@@ -366,7 +366,7 @@ export function useTerminalSession(opts: {
     ptyId,
     searchAddon: searchAddonRef.current,
     cwd: trackedCwd,
-    inCommand: shellStateRef.current.inCommand,
+    isPromptActive: () => !shellStateRef.current.inCommand,
     // 点击定位光标用——读 termRef.current 实时值（render 时的快照），
     // click handler 在事件触发瞬间通过 sessionRef.current 读最新值。
     cols: termRef.current?.cols ?? 80,
