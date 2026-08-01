@@ -73,4 +73,4 @@
 
 - **HotwordIndex 拼音优化**：from_words 接收带拼音结构，跳过 to_pinyin 现算（当前临时方案仍现算）。
 - **correct 多命中排序**：hotword_words 已带元数据，后续 spec 做。
-- **set 级删除复活问题**：`delete_hotword_set` 是硬删（DELETE FROM），两设备并发删/加同名 set 可能复活——见 [hotword-sync-merge-model spec](../specs/2026-08-01-hotword-sync-merge-model.md) 的 set 级 tombstone task。**注**：word 级已有 `is_deleted` 软删（本次 word 级 merge 实现），词级软删传播正常；set 级软删是独立后续。
+- ~~**set 级删除复活问题**~~：**已解决**（2026-08-02，[set 软删 spec](../specs/2026-08-02-hotword-set-soft-delete.md)）——set 级 `is_deleted` 存时间戳 + `UNIQUE(name,is_deleted)` + tombstone 经 merge 传播。词级软删（`hotword_words.is_deleted`）此前已解决（本次 word 级 merge）。
