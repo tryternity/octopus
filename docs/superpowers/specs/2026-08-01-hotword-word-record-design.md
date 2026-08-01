@@ -1,7 +1,7 @@
 # 热词存储拆分单记录 + sync 重构
 
 > **日期**：2026-08-01
-> **状态**：🔜 待实现
+> **状态**：✅ 已实现（存储拆分 + set 级 sync；word 级 merge 待后续）
 > **背景**：`hotword_sets.words_text`（空格分隔大文本）拆成 `hotword_words` 表（每词一条记录），sync 从 set 级降到 word 级 3-way merge（对齐 vault）。驱动：单词级软删（is_deleted）、按 updated_at 增量同步、确定性 UUID 跨设备合并。
 
 ## 1. 动机
