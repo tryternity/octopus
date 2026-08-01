@@ -267,13 +267,14 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               </div>
             )}
             <div className="flex gap-1.5 mt-2">
-              {/* 已激活→绿色「已激活」灰禁；未激活→黄/橙「激活」可点（暖色提示待激活，区别于绿色已激活） */}
+              {/* 已激活→绿色「已激活」灰禁；未激活→黄/橙「激活」可点。
+                  两按钮 min-w 等宽——「已激活」3字 vs「激活」2字宽度差会让后续「编辑」按钮错位。 */}
               {isActive ? (
-                <Button variant="success" size="sm" disabled className="cursor-default">
+                <Button variant="success" size="sm" disabled className="cursor-default min-w-[5.5rem] justify-center">
                   <Check /> {t("settings.prompts.activated")}
                 </Button>
               ) : (
-                <Button variant="warning-soft" size="sm" onClick={() => activate(p.id)}>
+                <Button variant="warning-soft" size="sm" onClick={() => activate(p.id)} className="min-w-[5.5rem] justify-center">
                   <Check /> {t("settings.prompts.activate")}
                 </Button>
               )}
