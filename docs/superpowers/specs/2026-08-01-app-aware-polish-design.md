@@ -161,3 +161,19 @@ pub(crate) struct AppContext {
 - cargo build + cargo test（schema 变更 + prompt 构造 + 路由逻辑）
 - tsc + vite build（前端模板编辑 UI）
 - e2e：① 无 app 关联→用默认模板 ② app 关联→自动切模板 ③ inject_context=1→user prompt 含 app 信息 ④ inject_context=0→不注入 ⑤ faithful/user-intent 不受影响 ⑥ 一个 app 多模板→取最新
+
+## 实现状态（2026-08-01）
+
+全部 5 task 已实现并 commit。与原设计的偏差：
+
+1. **`polish_regions` 接收显式 `prompt_content` 而非 `set_system_prompt`**：原设计 Step 3 草案用 `set_system_prompt(&content)` 临时改全局态。实际实现改为 `polish_regions(regions, config, prompt_content: &str, app_context)` 接收显式 prompt_content，内部 `build_system_prompt(prompt_content)` 构造 system prompt。理由：全局 `SYSTEM_PROMPT: RwLock<String>` 在中间润色（spawn_polish_thread）与最终润色（start_final_polish_or_paste 内联线程）并发时会竞态——app A 的路由 set 后，app B 的路由可能覆盖。显式传参彻底隔离，spec §「不再用全局 system_prompt()」的方向一致。
+
+2. **`classify_app_context` case-insensitive**：原设计 `b.starts_with("com.microsoft.word")`（小写）匹配不到真实 bundle_id `com.microsoft.Word`（大写 W）。实现改 `to_ascii_lowercase` 后比小写前缀，覆盖 `com.apple.TextEdit` / `com.apple.Pages` 等真实大小写。
+
+3. **前端用独立「路由配置」弹窗（RouteConfigDialog）而非内联编辑表单**：原设计提「模板编辑 UI」未定形态。实现选独立弹窗（卡片加「路由配置」按钮 → 弹窗内 AppPicker + inject_context Toggle），因 prompt 内容编辑走外部 .md 编辑器，app 关联/inject_context 是 DB 字段需独立 UI 入口。复用 actionbar AppPicker 组件。新建表单也带 inject_context Toggle（默认 true）。
+
+4. **dev DB 迁移提供脚本**：原设计说「无旧用户兼容包袱，开发者手动清 DB」。实现额外提供 `scripts/migrate-db-54-to-55.sh`（ALTER TABLE 加列 + 填系统 seed inject_context + 升 user_version，幂等，保留其他表数据）——开发库已有其他数据（模型/剪贴板/vault），清库代价高，迁移脚本保留数据。init_schema 的 bail 分支不变。
+
+5. **`resolve_polish_prompt` 无关联时不写缓存**：原设计未明。实现中 bundle_id 有但查无关联模板时**不写缓存**（bundle_id 可能是任何未关联 app，写缓存后用户加关联也无法生效——CRUD 时虽全清但中间窗口不准）。仅命中关联模板时写缓存。
+
+测试：infra 158 PASS（含 find_prompt_by_bundle_id 新测试）+ llm 12 PASS（含 AppContext 注入 6 新测试）+ desktop 493 PASS + sync 110 PASS（:memory: fresh DB）；前端 tsc + vite build 0 error。CI 等效（:memory:）全绿。

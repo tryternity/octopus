@@ -29,7 +29,7 @@
 - Modify: `crates/infra/src/seeds.rs`（seed inject_context 值）
 - Modify: `crates/desktop/src/platform/focus_tracker.rs`（缓存 name）
 
-- [ ] **Step 1: db.sql prompts 加 2 列 + schema bump**
+- [x] **Step 1: db.sql prompts 加 2 列 + schema bump**
 
 `crates/infra/src/db.sql` prompts 表（约 line 37）加：
 ```sql
@@ -38,14 +38,14 @@
 ```
 schema version +1。
 
-- [ ] **Step 2: seeds.rs inject_context 值**
+- [x] **Step 2: seeds.rs inject_context 值**
 
 `crates/infra/src/seeds.rs` load_prompt_seeds 的 INSERT 语句加 inject_context 列：
 - faithful (id=1): inject_context=0
 - user-intent (id=2): inject_context=0
 - app-casual (id=3): inject_context=1
 
-- [ ] **Step 3: focus_tracker 缓存 app name**
+- [x] **Step 3: focus_tracker 缓存 app name**
 
 `crates/desktop/src/platform/focus_tracker.rs`：
 - `CACHED_PREV` 从 `Mutex<Option<(i32, String)>>` 改为 `Mutex<Option<(i32, String, String)>>`（pid, bundle_id, name）
@@ -53,12 +53,12 @@ schema version +1。
 - `cached_bundle_id()` 和 `cached_pid()` 适配新 tuple
 - 新增 `pub fn cached_app_name() -> Option<String>`
 
-- [ ] **Step 4: build + test**
+- [x] **Step 4: build + test**
 
 Run: `cargo build -p octopus-infra -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning"`
 Expected: 可能有 error（seeds.rs INSERT 列数不匹配等）——修到 0 error 0 warning
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -73,7 +73,7 @@ git commit -m "feat(db): prompts 加 app_bundle_ids + inject_context 列 + focus
 - Modify: `crates/llm/src/prompt.rs`
 - Modify: `crates/llm/src/client.rs`
 
-- [ ] **Step 1: prompt.rs 加 AppContext struct + 类别映射**
+- [x] **Step 1: prompt.rs 加 AppContext struct + 类别映射**
 
 ```rust
 /// app 上下文（注入 user prompt 头部，仅 inject_context=1 的模板用）。
@@ -92,7 +92,7 @@ pub fn classify_app_context(bundle_id: &str) -> &'static str {
 }
 ```
 
-- [ ] **Step 2: regions_prompt 加 app_context 参数**
+- [x] **Step 2: regions_prompt 加 app_context 参数**
 
 ```rust
 pub(crate) fn regions_prompt(regions: &[crate::PolishRegion], app_context: Option<&AppContext>) -> String {
@@ -114,11 +114,11 @@ pub(crate) fn regions_prompt(regions: &[crate::PolishRegion], app_context: Optio
 }
 ```
 
-- [ ] **Step 3: user_prompt 加 app_context 参数（对称改）**
+- [x] **Step 3: user_prompt 加 app_context 参数（对称改）**
 
 同 regions_prompt，加 `app_context: Option<&AppContext>` 参数，头部注入。
 
-- [ ] **Step 4: client.rs polish_regions 加 app_context 参数**
+- [x] **Step 4: client.rs polish_regions 加 app_context 参数**
 
 ```rust
 pub fn polish_regions(
@@ -136,16 +136,16 @@ pub fn polish_regions(
 }
 ```
 
-- [ ] **Step 5: 更新测试**
+- [x] **Step 5: 更新测试**
 
 prompt.rs 测试适配新签名（regions_prompt/user_prompt 加 `None` 参数 = 无 app 上下文，等价旧行为）。加 app_context 注入测试。
 
-- [ ] **Step 6: build + test**
+- [x] **Step 6: build + test**
 
 Run: `cargo build -p octopus-llm && cargo test -p octopus-llm`
 Expected: 0 error 0 warning，全过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -160,7 +160,7 @@ git commit -m "feat(prompt): AppContext 注入 user prompt 头部 + regions_prom
 - Modify: `crates/desktop/src/engine/coordinator/polish.rs`
 - Modify: `crates/infra/src/db.rs` 或 `crates/desktop/src/commands/` — 新增路由查询函数
 
-- [ ] **Step 1: 新增 resolve_polish_prompt + 路由缓存**
+- [x] **Step 1: 新增 resolve_polish_prompt + 路由缓存**
 
 在 coordinator/polish.rs 或新模块：
 ```rust
@@ -210,7 +210,7 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> (String, bool) {
 }
 ```
 
-- [ ] **Step 2: spawn_polish_thread + 最终润色传 app_context**
+- [x] **Step 2: spawn_polish_thread + 最终润色传 app_context**
 
 `spawn_polish_thread` 调用前：
 ```rust
@@ -233,16 +233,16 @@ octopus_llm::polish_regions(&regions, &llm_config, app_context.as_ref())
 
 注意：最终润色内联路径（polish.rs:88-92）同样改。
 
-- [ ] **Step 3: settings_commands create/update/delete_prompt 调 invalidate_route_cache**
+- [x] **Step 3: settings_commands create/update/delete_prompt 调 invalidate_route_cache**
 
 模板 CRUD 后清缓存。
 
-- [ ] **Step 4: build + test**
+- [x] **Step 4: build + test**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop --features embedded`
 Expected: 0 error 0 warning，全过
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -256,26 +256,26 @@ git commit -m "feat(polish): 模板路由（缓存 + resolve_polish_prompt）+ c
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Settings/` — 找到润色模板编辑 UI
 
-- [ ] **Step 1: 模板编辑表单加 AppPicker + inject_context 开关**
+- [x] **Step 1: 模板编辑表单加 AppPicker + inject_context 开关**
 
 在润色模板编辑（创建/编辑 prompt）表单加：
 - `<AppPicker value={app_bundle_ids} onChange={...} />`（复用 `pages/Settings/ActionBar/AppPicker.tsx`）
 - inject_context 开关（Toggle/Checkbox）
 
-- [ ] **Step 2: create/update prompt Tauri 命令传 app_bundle_ids + inject_context**
+- [x] **Step 2: create/update prompt Tauri 命令传 app_bundle_ids + inject_context**
 
 前端 invoke create_prompt/update_prompt 时多传这两个字段。
 
-- [ ] **Step 3: 后端 create/update_prompt 命令加参数**
+- [x] **Step 3: 后端 create/update_prompt 命令加参数**
 
 `settings_commands.rs` 的 create_prompt/update_prompt 加 app_bundle_ids + inject_context 参数。
 
-- [ ] **Step 4: tsc + vite build**
+- [x] **Step 4: tsc + vite build**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npm run build`
 Expected: 0 error
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -286,7 +286,7 @@ git commit -m "feat(settings): 模板编辑加 AppPicker + inject_context 开关
 
 ## Task 5: 全量验证 + 文档同步
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished"
@@ -294,11 +294,11 @@ cargo test -p octopus-desktop --features embedded 2>&1 | tail -3
 cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 ```
 
-- [ ] **Step 2: architecture.md 更新**
+- [x] **Step 2: architecture.md 更新**
 
-- [ ] **Step 3: spec 加实现状态**
+- [x] **Step 3: spec 加实现状态**
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ---
 
@@ -313,3 +313,14 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 - ✅ 文档（Task 5）
 
 **Type consistency:** AppContext struct 在 prompt.rs 定义、coordinator 构造、polish_regions 消费——签名一致。resolve_polish_prompt 返回 (content, inject)——coordinator 消费一致。
+
+## 实施记录
+
+全部 task 完成，commit 序列（branch daily_bugfix_0730）：
+- `0372a571` Task 1：DB schema（prompts 加 app_bundle_ids + inject_context，v54→v55）+ seeds + focus_tracker 缓存 name
+- `89b3717b` Task 2：prompt.rs AppContext + classify_app_context + regions_prompt 加 app_context；client.rs polish_regions 接收显式 prompt_content + app_context
+- `64e74219` Task 3：coordinator/prompt_route.rs 路由缓存 + resolve_polish_prompt；polish.rs resolve_app_aware_prompt；settings_commands CRUD 扩参 + invalidate
+- `1f461c7e` Task 4：Prompts/RouteConfigDialog + PromptsPanel 卡片路由配置按钮 + 新建表单 inject_context Toggle + i18n
+- （Task 5：本文档同步）
+
+与原 plan 的偏差详见 spec「## 实现状态」。关键：polish_regions 改显式 prompt_content（非 set_system_prompt）、classify_app_context case-insensitive、前端用独立弹窗、提供 dev DB 迁移脚本。
