@@ -915,7 +915,7 @@ portable-pty 封装 + OSC agent 状态感知，2026-07-31 新增（Task 1-4）�
 v1 扁平单表 `hotwords`（word/status/hit_count）于 2026-07-11 升级为「多版本词表 + 多选叠加 + 全局命中」（spec：[2026-07-11-hotword-sets-design.md](superpowers/specs/2026-07-11-hotword-sets-design.md)）。旧 `hotwords` 表于 2026-07-23 从 db.sql 删除（零读写废弃表，热词数据全在 `hotword_sets.words_text`）。不同工作/场景用不同热词集合，像「主题」一样可切换，多个版本同时勾选叠加生效。
 
 - **数据层**（`infra/db.rs` + `db.sql`，schema v22→v23）：
-  - `hotword_sets`（版本）：`id / name(UNIQUE) / enabled / words_text / created_at / updated_at`。`words_text` 是空格分隔的规范词文本——版本 = 一坨纯文本，**非逐词 DB 行**。
+  - `hotword_sets`（版本）：`id / name(UNIQUE) / enabled / words_text / created_at / updated_at`。`words_text` 是空格分隔的规范词文本——版本 = 一坨纯文本，**非逐词 DB 行**。**单版本词数上限 `HOTWORD_SET_MAX_WORDS = 3000`**（2026-08-01）：写入（`set_hotword_set_words` / `add_word_to_set` / `add_words_to_set`）前 `ensure_within_capacity` 校验 normalize 后词数，超限 bail「词典容量已满，建议另建新词典」。限制理由：`HotwordIndex::from_words` 构建 O(N) + fuzzy `match_score` 逐词 O(N)，词数过大影响启动 + 搜索性能。
   - `hotword_hits`（全局命中）：`word(PK) / hit_count`。命中按词全局记一份，**不绑版本**（同词跨版本命中累加到同一行）。
   - 全新库由 db.sql seed 默认空「通用」版本（`INSERT OR IGNORE`，开箱即用）；升级库（v22）v23 一次性迁移：现有 active 热词 → 「通用」版本 `words_text`（normalize 排序去重；db.sql 已 seed 的空「通用」经 `ON CONFLICT` upsert 并入 active 词、不丢词），hit_count → `hotword_hits`，pending 词丢弃。旧 `hotwords` 表保留停用（不 DROP，留待后续清理）；Rust 侧旧 hotword 函数（`list_hotwords`/`insert_hotword`/`confirm_pending_hotword` 等）已删。
 - **生效词 = enabled 版本并集**（`list_active_hotword_words`）：`SELECT words_text FROM hotword_sets WHERE enabled=1` → 切词去重并集 → `HotwordIndex`。多选叠加；全关 = 空集 = corrector no-op（零过纠铁证保留）。签名 `() -> Vec<String>` 不变，main.rs setup / reload 调用点零改。
