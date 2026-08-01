@@ -495,6 +495,8 @@ pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
 
 /// 取最近 limit 条 voice（ASR 识别）记录的 content——bigram 上下文打分用（仅 ASR 语料）。
 /// 与 `list_recent_text` 区别：只取 item_type='voice'，语料更纯（与纠错场景一致）。
+/// **故意不过滤 is_deleted**（INV-C1 对齐）：软删 voice 仍是 bigram 语料来源，
+/// voice 软删回收站上限 VOICE_TRASH_MAX=500（2026-08-02 从 100 提升，丰富 bigram 语料）。
 pub fn list_recent_voice_text(limit: i64) -> Result<Vec<String>> {
     ensure_db()?;
     with_db(|conn| {

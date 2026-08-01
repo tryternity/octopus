@@ -252,15 +252,18 @@ pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Res
 //   - 语音（item_type='voice'）：软删（UPDATE is_deleted = 1），is_deleted=1 不可见
 //     —— voice 软删内容主要用于热词挖掘（INV-C1：list_recent_text 不过滤 is_deleted）
 //        及后续优化语音识别准确性，非用户可还原的回收站
-//     —— voice 软删数据 ≤ VOICE_TRASH_MAX（100）条，超出按 created_at 物理删最老的（INV-1）
+//     —— voice 软删数据 ≤ VOICE_TRASH_MAX（500）条，超出按 created_at 物理删最老的（INV-1）
+//       2026-08-02 从 100 提升到 500：bigram 上下文打分需要更丰富的 ASR 语料，
+//       软删 voice 是高质量语料来源（INV-C1），更多保留 → bigram 统计更稳。
 //     —— 回收站概念不暴露给用户：无 trash tab / 无还原 / 无清空回收站命令
 //   - 其他（text/ocr/image/file）：物理 DELETE（image 另做 blob 清理）
 //
 // delete_item / delete_items：前端默认删除入口，按 item_type 分流（voice 软删 / 其他物理删）。
 // permanent_delete_item：delete_item/delete_items 内部复用的物理删实现（image 含 blob 清理）。
 
-/// voice 软删回收站上限（用户决策 2026-07-29）。超出部分按 created_at 物理删最老的。
-pub const VOICE_TRASH_MAX: u32 = 100;
+/// voice 软删回收站上限。超出部分按 created_at 物理删最老的。
+/// 2026-08-02 从 100 提升到 500——bigram 上下文打分需要更丰富 ASR 语料。
+pub const VOICE_TRASH_MAX: u32 = 500;
 
 /// 判断 id 对应的 item_type 是否为语音。查不到返回 false（已删除的行不纠结）。
 fn is_voice_item(conn: &Connection, id: i64) -> bool {
@@ -809,22 +812,23 @@ mod tests {
 
     #[test]
     fn voice_trash_limit_enforced_on_delete() {
-        // 回收站已有 100 条 voice（age 100..1 秒，id 越大越新），
-        // 再软删 1 条 → 最老 1 条被物理删，回收站恰好 100 条。
+        let max = VOICE_TRASH_MAX as i64;
+        // 回收站已有 max 条 voice（age max..1 秒，id 越大越新），
+        // 再软删 1 条 → 最老 1 条被物理删，回收站恰好 max 条。
         let conn = open_test_db();
-        for i in 0..100 {
-            insert_voice_at(&conn, 1000 + i, &format!("旧{}", i), 100 - i as u64);
+        for i in 0..max {
+            insert_voice_at(&conn, 1000 + i, &format!("旧{}", i), (max - i) as u64);
         }
         // 先把它们标为已软删（模拟回收站现状）
         conn.execute("UPDATE clipboard_history SET is_deleted = 1", []).unwrap();
-        assert_eq!(voice_trash_count(&conn), 100);
+        assert_eq!(voice_trash_count(&conn), max);
 
         // 插一条新 voice 并软删（触发 enforce）
         insert_voice_at(&conn, 2000, "新删", 0);
         delete_item(&conn, 2000).unwrap();
 
-        // INV-1：回收站恰好 100 条
-        assert_eq!(voice_trash_count(&conn), 100);
+        // INV-1：回收站恰好 max 条
+        assert_eq!(voice_trash_count(&conn), max);
         // 最老的（id=1000, age=100s）被物理删
         let oldest: i64 = conn.query_row(
             "SELECT COUNT(*) FROM clipboard_history WHERE id = 1000", [], |r| r.get(0),
@@ -888,25 +892,27 @@ mod tests {
 
     #[test]
     fn clear_history_voice_trash_limit_enforced() {
-        // 清空历史时若 voice 进回收站后超 100 → enforce 物理删最老至恰好 100
+        let max = VOICE_TRASH_MAX as i64;
+        let extra = 5; // 超 max 多少条
+        // 清空历史时若 voice 进回收站后超 max → enforce 物理删最老至恰好 max
         let conn = open_test_db();
-        // 105 条 voice（id=1000 最新 age=0 ... id=1104 最老 age=208s）
-        for i in 0..105 {
+        // max+extra 条 voice（id=1000 最新 age=0 ... 最老 age 最大）
+        for i in 0..max + extra {
             insert_voice_at(&conn, 1000 + i, &format!("v{}", i), i as u64 * 2);
         }
         clear_history(&conn, false).unwrap();
-        // 全部进回收站后 105 > 100，enforce 删 5 条最老的 → 恰好 100
-        assert_eq!(voice_trash_count(&conn), 100);
-        // 最老 5 条（id=1100..1104，age 最大）被物理删
-        for id in 1100..1105 {
+        // 全部进回收站后 max+extra > max，enforce 删 extra 条最老的 → 恰好 max
+        assert_eq!(voice_trash_count(&conn), max);
+        // 最老 extra 条被物理删
+        for id in (1000 + max)..(1000 + max + extra) {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM clipboard_history WHERE id = ?", params![id], |r| r.get(0),
             ).unwrap();
             assert_eq!(count, 0, "id={} 应被 enforce 物理删", id);
         }
-        // 第 6 老（id=1099）保留在回收站
+        // 第 extra+1 老（id=1000+max-1）保留在回收站
         let kept: i64 = conn.query_row(
-            "SELECT is_deleted FROM clipboard_history WHERE id = 1099", [], |r| r.get(0),
+            "SELECT is_deleted FROM clipboard_history WHERE id = ?", params![1000 + max - 1], |r| r.get(0),
         ).unwrap();
         assert_eq!(kept, 1);
     }
