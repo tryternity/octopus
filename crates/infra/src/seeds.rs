@@ -65,9 +65,12 @@ fn load_prompt_seeds(conn: &Connection) -> Result<()> {
     // (id, seed_filename, dest_filename_without_ext, title, description)
     // content 字段存 dest_filename（不含 .md），运行时读 ~/.octopus/.sync/prompts/polish/<content>.md
     let seeds = [
-        (1i64, "default-polish.md", "润色-默认", "默认润色", "默认润色（系统内置）"),
-        (2i64, "advanced-polish.md", "润色-进阶", "进阶润色（断续纠正）",
-         "进阶版：针对断续纠正、重复修正、同音漂移场景强化的润色 prompt（系统内置）"),
+        (1i64, "faithful.md", "润色-忠实校对", "忠实校对",
+         "只纠错不改意，保留原始句式。ASR 异常修复强（系统内置）"),
+        (2i64, "user-intent.md", "润色-意图整理", "意图整理",
+         "清洗噪声+结构化，多要点自动转列表（系统内置）"),
+        (3i64, "app-casual.md", "润色-口语化", "口语化整理",
+         "保留口语味，聊天标点，适合即时通讯（系统内置）"),
     ];
     // 拷贝 md 文件到 ~/.octopus/.sync/prompts/polish/（幂等，已存在跳过）
     let polish_dir = crate::paths::octopus_config_home()
@@ -235,7 +238,7 @@ fn upsert_agent_submenu(
 }
 
 /// 给 desktop crate 复原按钮用——按 prompt 简称返回 seed 文件路径。
-/// name 示例："default-polish" / "advanced-polish"
+/// name 示例："faithful" / "user-intent" / "app-casual"
 pub fn seed_prompt_path(name: &str) -> Option<PathBuf> {
     let path = seeds_dir().join("prompts").join(format!("{}.md", name));
     if path.exists() {
@@ -254,12 +257,12 @@ mod tests {
         let dir = seeds_dir();
         // dev 模式必须存在（仓库内）
         assert!(dir.exists(), "seeds_dir() 在 dev 模式应存在: {:?}", dir);
-        assert!(dir.join("prompts/default-polish.md").exists());
+        assert!(dir.join("prompts/faithful.md").exists());
     }
 
     #[test]
     fn seed_prompt_path_returns_some_for_known_name() {
-        let path = seed_prompt_path("default-polish");
+        let path = seed_prompt_path("faithful");
         assert!(path.is_some());
         assert!(path.unwrap().exists());
     }
@@ -287,14 +290,14 @@ mod load_tests {
     }
 
     #[test]
-    fn load_prompt_seeds_inserts_two_prompts() {
+    fn load_prompt_seeds_inserts_three_prompts() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
         load_prompt_seeds(&conn).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM prompts WHERE category='voice_text_polish'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 2, "应插入默认润色 + 进阶润色两条");
+        assert_eq!(count, 3, "应插入忠实校对 + 意图整理 + 口语化三条");
     }
 
     #[test]
@@ -316,9 +319,9 @@ mod load_tests {
     fn load_prompt_seeds_missing_file_returns_err() {
         let _guard = SEEDS_FILE_MUTEX.lock().unwrap();
         let conn = fresh_db();
-        // 暂时把 default-polish.md 改名
-        let path = seeds_dir().join("prompts/default-polish.md");
-        let backup = seeds_dir().join("prompts/default-polish.md.bak");
+        // 暂时把 faithful.md 改名
+        let path = seeds_dir().join("prompts/faithful.md");
+        let backup = seeds_dir().join("prompts/faithful.md.bak");
         std::fs::rename(&path, &backup).unwrap();
         let result = load_prompt_seeds(&conn);
         std::fs::rename(&backup, &path).unwrap(); // 恢复，防污染其他测试

@@ -197,19 +197,21 @@ mod tests {
     #[test]
     fn prompt_crud_round_trip() {
         let conn = open_init();
-        // prompts seed 已外置到 seeds/prompts/——通过 loader 加载初始 2 条。
+        // prompts seed 已外置到 seeds/prompts/——通过 loader 加载初始 3 条。
         crate::seeds::load_external_seeds(&conn).unwrap();
-        // list 初值：2 条系统内置（id=1 默认润色 + id=2 进阶润色（断续纠正））
+        // list 初值：3 条系统内置（id=1 忠实校对 + id=2 意图整理 + id=3 口语化整理）
         let list = list_prompts_at(&conn).unwrap();
-        assert_eq!(list.len(), 2, "seed 应有 2 条系统内置 prompt");
+        assert_eq!(list.len(), 3, "seed 应有 3 条系统内置 prompt");
         assert!(list[0].is_system);
-        assert_eq!(list[0].title, "默认润色");
+        assert_eq!(list[0].title, "忠实校对");
         assert!(list[1].is_system);
-        assert_eq!(list[1].title, "进阶润色（断续纠正）");
+        assert_eq!(list[1].title, "意图整理");
+        assert!(list[2].is_system);
+        assert_eq!(list[2].title, "口语化整理");
 
         // insert 用户 prompt（id 应大于 seed 最大 id）
         let id = insert_prompt_at(&conn, "技术写作", "rule1", "desc1").unwrap();
-        assert!(id > 2, "用户 prompt id 应大于 seed 最大 id(2)");
+        assert!(id > 3, "用户 prompt id 应大于 seed 最大 id(3)");
 
         // load
         let loaded = load_prompt_at(&conn, id).unwrap().unwrap();
@@ -253,9 +255,9 @@ mod tests {
     #[test]
     fn update_prompt_at_allows_system_prompt() {
         let conn = open_init();
-        // open_init 只建表，不 seed——需手动加载外部 seed（id=1/2 系统 prompt）
+        // open_init 只建表，不 seed——需手动加载外部 seed（id=1/2/3 系统 prompt）
         crate::seeds::load_external_seeds(&conn).unwrap();
-        // seed 后 id=1 是系统内置（默认润色）
+        // seed 后 id=1 是系统内置（忠实校对）
         let before = load_prompt_at(&conn, 1).unwrap().unwrap();
         assert!(before.is_system, "seed id=1 应是 is_system=true");
 
