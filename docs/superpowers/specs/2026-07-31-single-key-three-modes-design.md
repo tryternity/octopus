@@ -257,4 +257,4 @@ toggle 的 result_window 在 `show_result` 时定位到**鼠标所在显示器**
 - `cargo build -p octopus-desktop --features embedded` ✅ 0 error 0 warning
 - `cargo build -p octopus-desktop --features embedded,cloud,vault` ✅
 - `cargo test -p octopus-desktop --features embedded` ✅ 488 passed（含 11 ptt + 2 RECORDING_MODE + 4 window_position 多屏测试）
-- ⏳ e2e 手动验证（待用户在桌面应用实测三模式交互）
+- ✅ e2e 手动验证通过（2026-07-31）：长按=PTT / 双击=toggle / 短按=hands-free 三模式交互正常
