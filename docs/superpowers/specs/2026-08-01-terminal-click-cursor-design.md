@@ -17,7 +17,7 @@ xterm 6.0 默认开启 `altClickMovesCursor`（Alt+Click 移动光标），实�
 
 ### 包含
 - TerminalPane canvas click handler：点击换算列号 + 门控 + 发转义序列
-- `useTerminalSession` 暴露 `inCommand`（OSC 133 状态）
+- `useTerminalSession` 暴露 `isPromptActive()`（OSC 133 click-time reader）
 - 直接点击（无需 Alt）
 
 ### 不包含
@@ -68,22 +68,20 @@ const clickRow = Math.floor((e.clientY - rect.top) / cellHeight);
 
 **TUI 鼠标模式**：`term.mouseTrackingMode`（xterm.d.ts:1932）为非 `'none'` 时，TUI 程序已接管鼠标——但 type='normal' 门控已覆盖大部分 TUI（vim/htop 用 alternate screen）。mouseTrackingMode 作为额外保险（如 tmux 在 normal screen 开鼠标）。
 
-### inCommand 暴露
+### isPromptActive 暴露（click-time reader）
 
 当前 `ShellIntegrationState`（osc-handlers.ts:38）只存 `inCommand: boolean`，且是 `useTerminalSession` 内部闭包变量，**未暴露给消费者**。
 
-改造：`useTerminalSession` 返回值加 `inCommand: boolean`（从 `shellState` 读）。TerminalPane 的 click handler 用 `sessionRef.current.inCommand`。
+改造：`useTerminalSession` 返回值加 `isPromptActive(): boolean`——**click-time 闭包 reader**（非 render-time 快照）。
 
 ```typescript
-// useTerminalSession.ts 返回值（line 343 附近）加：
-return {
-  // ... 现有字段
-  inCommand: shellState.inCommand,
-  // ...
-};
+// useTerminalSession.ts 返回值加：
+isPromptActive: () => !shellStateRef.current.inCommand,
 ```
 
-注意：`shellState` 是闭包内变量（line 270），返回值里读 `shellState.inCommand` 时，由于 session 对象每次渲染重新构造（字面量），会读到最新值。
+**为什么用闭包 reader 而非字段**：`inCommand` 在 OSC 133 触发时更新（`updateShellIntegration` 原地改 `shellStateRef.current.inCommand`），但**不触发 React re-render**。若 session 暴露 `inCommand: boolean` 字段（render-time 快照），click 时读到的可能是 stale 值（命令执行中误判为可输入）。用闭包 reader（`() => !shellStateRef.current.inCommand`），click 时读 live 值，确保准确。
+
+`shellStateRef` 是外层 ref（`useRef(createShellIntegrationState())`），OSC 133 的 `registerPromptTracker` 持有同一对象引用，原地修改 inCommand，闭包 reader 读到最新。TerminalPane 的 click handler 用 `!s.isPromptActive()` 作 inCommand 门控值。
 
 ### 转义序列
 

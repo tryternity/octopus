@@ -40,7 +40,7 @@
 **Interfaces:**
 - Produces: `pixelToCol` / `shouldMoveCursor` / `buildCursorMoveSequence` —— Task 3 的 click handler 调用。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `crates/desktop/frontend/src/pages/Terminal/clickCursor.test.ts`:
 
@@ -105,12 +105,12 @@ describe("buildCursorMoveSequence", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/Terminal/clickCursor.test.ts`
 Expected: FAIL，`Failed to resolve import "./clickCursor"`。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `crates/desktop/frontend/src/pages/Terminal/clickCursor.ts`:
 
@@ -155,12 +155,12 @@ export function buildCursorMoveSequence(delta: number): string {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/Terminal/clickCursor.test.ts`
 Expected: PASS（12 个 it 全过）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/clickCursor.ts crates/desktop/frontend/src/pages/Terminal/clickCursor.test.ts
@@ -181,7 +181,7 @@ git commit -m "feat(terminal): clickCursor 纯函数——坐标换算/门控/�
 - `shellState` 当前定义在 `term.open().then()` 回调内（line 270），是闭包局部变量，return（line 343）访问不到。
 - 改造：用 ref 持有 shellState（`shellStateRef`），在 OSC 133 回调里更新 ref.current，return 里读 ref.current.inCommand。
 
-- [ ] **Step 1: 把 shellState 提到外层 ref**
+- [x] **Step 1: 把 shellState 提到外层 ref**
 
 修改 `useTerminalSession.ts`。在 `const [trackedCwd, setTrackedCwd] = useState(...)`（line 134）附近加：
 
@@ -199,7 +199,7 @@ git commit -m "feat(terminal): clickCursor 纯函数——坐标换算/门控/�
         registerCwdHandler(term, (c) => setTrackedCwd(c), shellState);
 ```
 
-- [ ] **Step 2: session 返回值加 inCommand**
+- [x] **Step 2: session 返回值加 inCommand**
 
 在 return 对象（line 343）加：
 
@@ -222,12 +222,12 @@ git commit -m "feat(terminal): clickCursor 纯函数——坐标换算/门控/�
 rg -n "type PtySession|interface PtySession|cwd: string" crates/desktop/frontend/src/pages/Terminal/useTerminalSession.ts | head
 ```
 
-- [ ] **Step 3: tsc + vitest**
+- [x] **Step 3: tsc + vitest**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npx vitest run`
 Expected: tsc 0 error；vitest 全过（不回归）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/useTerminalSession.ts
@@ -252,7 +252,7 @@ shellState 提到外层 ref（原在 term.open 闭包内），session 返回值�
 - 文件拖拽的 `document mouseup`（line 160）用 `takeDragPath()` 区分——拖拽中不触发光标移动（takeDragPath 返回非 null）。
 - click vs drag 区分：mousedown 记录起点，mouseup 判移动 <4px。
 
-- [ ] **Step 1: import clickCursor 纯函数**
+- [x] **Step 1: import clickCursor 纯函数**
 
 TerminalPane 顶部 import 加：
 
@@ -260,7 +260,7 @@ TerminalPane 顶部 import 加：
 import { pixelToCol, shouldMoveCursor, buildCursorMoveSequence } from "./clickCursor";
 ```
 
-- [ ] **Step 2: 加 mousedown 起点 ref + canvas click handler**
+- [x] **Step 2: 加 mousedown 起点 ref + canvas click handler**
 
 在组件内（sessionRef 定义附近）加 mousedown 起点 ref：
 
@@ -325,7 +325,7 @@ import { pixelToCol, shouldMoveCursor, buildCursorMoveSequence } from "./clickCu
 
 实现时核实：session 是否已暴露 cols/rows？若无，加到返回值（或暴露 term）。**Task 3 Step 2b 专门处理这个**。
 
-- [ ] **Step 2b: 给 TerminalSession 加 cols/cursorX/cursorY/bufferType getter（已确认需要）**
+- [x] **Step 2b: 给 TerminalSession 加 cols/cursorX/cursorY/bufferType getter（已确认需要）**
 
 已确认 `TerminalSession`（useTerminalSession.ts:48-64）**未暴露** cols/cursorX/cursorY/bufferType。采用方案 A（只暴露需要的 getter，不暴露整个 term）：
 
@@ -360,12 +360,12 @@ export type TerminalSession = {
 
 3. Step 2 的 click handler 用 `s.cols` / `s.cursorX` / `s.cursorY` / `s.bufferType`（不需直接访问 term 实例）。
 
-- [ ] **Step 3: tsc + vitest**
+- [x] **Step 3: tsc + vitest**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npx vitest run`
 Expected: tsc 0 error；vitest 全过（原 + Task 1 的 12 = 新总数）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/TerminalPane.tsx crates/desktop/frontend/src/pages/Terminal/useTerminalSession.ts
@@ -382,7 +382,7 @@ git commit -m "feat(terminal): 点击定位命令行光标——canvas click han
 **Files:**
 - 无代码改动，验证 + 文档
 
-- [ ] **Step 1: 构建 + 手动 e2e**
+- [x] **Step 1: 构建 + 手动 e2e**
 
 Run:
 ```bash
@@ -398,18 +398,18 @@ Run:
 6. ✅ 命令执行中（如 `sleep 5`）点击 → 不触发（inCommand 门控）
 7. ✅ 点击非当前行（历史输出）→ 不触发（cursorY 门控）
 
-- [ ] **Step 2: 更新 architecture.md**
+- [x] **Step 2: 更新 architecture.md**
 
 Modify `docs/architecture.md` 终端章节，补「点击定位命令行光标（OSC 133 门控）」。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/
 git commit -m "docs(sync): 点击定位命令行光标——architecture 同步"
 ```
 
-- [ ] **Step 4: Review plan（强制——回看偏差）**
+- [x] **Step 4: Review plan（强制——回看偏差）**
 
 实现完成后回到本 plan，把实际偏差（如 term 实例访问方案、click vs drag 阈值实测）回写。
 
@@ -433,3 +433,27 @@ git commit -m "docs(sync): 点击定位命令行光标——architecture 同步"
 **已知实现注意**（非占位符）：
 - ~~Task 3 Step 2b 的 term 实例访问：session 可能不暴露 cols/rows/buffer~~ —— 已确认 `TerminalSession`（line 48-64）未暴露，采用方案 A 加 cols/rows/cursorX/cursorY/bufferType getter（Task 3 Step 2b 已定稿）。
 - Task 2 的 shellStateRef：`createShellIntegrationState()` 在外层 ref 初始化，`.then()` 回调内用 `shellStateRef.current`。注意 `registerPromptTracker` 接收的是 ref.current（对象引用），OSC 133 更新 inCommand 时直接改 ref.current.inCommand——return 读 `shellStateRef.current.inCommand` 拿到最新。
+
+## 实施记录（Review plan 回写，2026-08-01）
+
+4 个 task 全部实现完成 + e2e 通过。最终全分支 review 发现 3 个问题，已修复。
+
+### 关键偏离：inCommand 字段 → isPromptActive() click-time reader
+
+plan 原写 session 暴露 `inCommand: boolean` 字段（render-time 快照）。最终 review 发现 **Important 问题**：OSC 133 更新 inCommand 不触发 React re-render，click 时读到的 session.inCommand 可能 stale（命令执行中误判为可输入态）。
+
+**修复**（`d21e98bc`）：改为 `isPromptActive(): boolean` 闭包 reader（`() => !shellStateRef.current.inCommand`），click 时读 live 值。TerminalPane 用 `!s.isPromptActive()` 作门控。
+
+### 最终 review 的 3 个问题
+
+1. **Critical：onClick 缺闭合 `}}`**（`268adccc` 引入）——Minor #1 fix 时漏了 onClick 箭头函数的闭合，tsc 失败。`d21e98bc` 修复。
+2. **Important：inCommand render-time 快照 stale** —— 改 isPromptActive click-time reader（见上）。
+3. **Minor：clickRow 未 clamp** —— rect 边缘点击可能越界，加 Math.max/min clamp。
+
+### 其他
+
+- Task 1 测试 13 个（plan 写 12，brief 代码实际 13 个 it，实现按 brief 代码为准）
+- Task 3 implementer 额外加 `rect.width <= 0` guard（除零保护），合理保留
+- Task 3 Minor #1（delta=0 也聚焦）已应用（`268adccc`，focus 移到 if 外）
+
+**最终验证**：tsc 0 error · vitest 471/471 · rust test 491 passed · e2e 通过。
