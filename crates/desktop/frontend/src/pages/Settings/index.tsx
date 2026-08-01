@@ -188,7 +188,6 @@ function Settings() {
           <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} isVaultEnabled={isVaultEnabled !== false} />
         ) : effectivePage === "hotword" ? (
           <HotwordPanel
-            dialect={(configResp.config.fuzzy_dialect as string) || ""}
             asrCorrect={configResp.config.asr_correct as boolean}
             setVal={setVal}
             showToast={showToast}

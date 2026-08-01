@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { UnderlineTabs } from '@/components/ui/tabs';
 
 interface HotwordSet {
   id: string;
@@ -19,23 +20,22 @@ interface HotwordSet {
   updatedAt: string;
 }
 
+interface FuzzyDialectRule {
+  token: string;
+  label: string;
+  fromPy: string;
+  toPy: string;
+  matchType: string;
+  enabled: boolean;
+  sortOrder: number;
+}
+
 interface Props {
-  /** app_config.fuzzy_dialect（逗号分隔 token：f/h、hu/wu、n/l、r/l） */
-  dialect: string;
   /** app_config.asr_correct——热词纠错总开关（2026-08-01 从系统设置-语音迁入） */
   asrCorrect: boolean;
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
   showToast: (msg: string) => void;
 }
-
-const DIALECT_KEYS: { tok: string; key: string }[] = [
-  { tok: 'f/h', key: 'settings.hotword.fH' },
-  { tok: 'hu/wu', key: 'settings.hotword.huWu' },
-  { tok: 'n/l', key: 'settings.hotword.nL' },
-  { tok: 'r/l', key: 'settings.hotword.rL' },
-  { tok: 'yun/yong', key: 'settings.hotword.yunYong' },
-  { tok: 'fei/hui', key: 'settings.hotword.feiHui' },
-];
 
 /// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
 const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
@@ -43,7 +43,7 @@ const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
   { value: 'hits', key: 'settings.hotword.sortHit' },
 ];
 
-export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
+export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
@@ -55,6 +55,10 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [fuzzyMatches, setFuzzyMatches] = useState<string[] | null>(null);
   const [sort, setSort] = useState<'alpha' | 'hits'>('alpha');
   const [sortOpen, setSortOpen] = useState(false);
+  /** 子 Tab：correct（纠错设置）/ manage（词典维护）。2026-08-01 拆分原单 Panel。 */
+  const [subTab, setSubTab] = useState<'correct' | 'manage'>('correct');
+  /** 方言模糊规则列表（从 DB 读，TAB 1 渲染 toggles）。 */
+  const [dialectRules, setDialectRules] = useState<FuzzyDialectRule[]>([]);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -96,6 +100,27 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   useEffect(() => {
     refresh().catch((e) => showToast(t('settings.hotword.loadFailed') + e));
   }, [refresh, showToast]);
+
+  // 加载方言规则（TAB 1 用，从 DB 读）
+  const refreshDialectRules = useCallback(async () => {
+    try {
+      const rules = await invoke<FuzzyDialectRule[]>('list_fuzzy_dialect_rules');
+      setDialectRules(rules);
+    } catch (e) { /* 静默失败，不影响词典管理 */ }
+  }, []);
+  useEffect(() => { void refreshDialectRules(); }, [refreshDialectRules]);
+
+  // 方言规则 toggle——写 DB + reload corrector
+  const toggleDialectRule = useCallback(async (token: string, enabled: boolean) => {
+    // 乐观更新：立即切换 UI，失败回退
+    setDialectRules((prev) => prev.map((r) => r.token === token ? { ...r, enabled } : r));
+    try {
+      await invoke('set_fuzzy_dialect_rule', { token, enabled });
+    } catch (e) {
+      setDialectRules((prev) => prev.map((r) => r.token === token ? { ...r, enabled: !enabled } : r));
+      showToast(String(e));
+    }
+  }, [showToast]);
 
   const selected = sets.find((s) => s.id === selectedId) || null;
   const words = useMemo(() => (selected?.wordsText.split(/\s+/).filter(Boolean) ?? []), [selected]);
@@ -254,44 +279,50 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
     } catch (e) { showToast(t('settings.hotword.addFailed2') + e); }
   }, [minePending, selectedId, refresh, flashAdded, showToast]);
 
-  const toggleDialect = useCallback((tok: string) => {
-    const sset = new Set(dialect.split(',').map((s) => s.trim()).filter(Boolean));
-    if (sset.has(tok)) sset.delete(tok); else sset.add(tok);
-    void setVal('fuzzy_dialect', [...sset].join(','));
-  }, [dialect, setVal]);
-  const enabledTokens = new Set(dialect.split(',').map((s) => s.trim()));
-
   return (
     <div className="flex h-full flex-col gap-3">
-      {/* ════ 顶部横条：方言模糊 + 热词纠错（全局配置，跨左右栏全宽） ════ */}
-      <Card>
-        <CardHeader>
-          <Type className="h-4 w-4 text-muted-foreground" />
-          <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
-          {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
-          <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
-            <Toggle
-              on={asrCorrect}
-              onClick={() => setVal('asr_correct', !asrCorrect)}
-              aria-label={t('settings.general.pinyinCorrect')}
-            />
-          </div>
-        </CardHeader>
-        <CardContent className="py-2.5">
-          {/* 方言模糊（5 开关，3 列两行，全局开关） */}
-          <div className="grid grid-cols-3 gap-x-8 gap-y-2">
-            {DIALECT_KEYS.map(({ tok, key }) => {
-              const label = t(key);
-              return (
-                <div key={tok} className="flex items-center justify-between">
-                  <span className="text-sm">{label}</span>
-                  <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+      {/* ════ UnderlineTabs：纠错设置 / 词典维护 ════ */}
+      <UnderlineTabs
+        items={[
+          { key: 'correct', label: t('settings.hotword.tabCorrect') },
+          { key: 'manage', label: t('settings.hotword.tabManage') },
+        ]}
+        active={subTab}
+        onChange={(k) => setSubTab(k as 'correct' | 'manage')}
+      />
+
+      {/* ════ TAB 1：纠错设置（asr_correct 总开关 + 方言规则 toggles） ════ */}
+      {subTab === 'correct' && (
+        <Card>
+          <CardHeader>
+            <Type className="h-4 w-4 text-muted-foreground" />
+            <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
+            {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
+            <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+              <Toggle
+                on={asrCorrect}
+                onClick={() => setVal('asr_correct', !asrCorrect)}
+                aria-label={t('settings.general.pinyinCorrect')}
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="py-2.5">
+            {/* 方言模糊规则（从 DB 读，每条一行 Toggle） */}
+            <div className="grid grid-cols-3 gap-x-8 gap-y-2">
+              {dialectRules.map((r) => (
+                <div key={r.token} className="flex items-center justify-between">
+                  <span className="text-sm">{r.label}</span>
+                  <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
                 </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ════ TAB 2：词典维护（原左栏词典列表 + 右栏热词卡） ════ */}
+      {subTab === 'manage' && (
+        <>
 
       {/* ════ 下方分栏：左词典列表 + 右热词面板 ════ */}
       <div className="flex min-h-0 flex-1 gap-4">
@@ -607,6 +638,8 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
             </div>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
