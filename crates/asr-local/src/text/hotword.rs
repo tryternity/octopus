@@ -248,7 +248,7 @@ mod tests {
     }
 
     /// 核心场景：yun/yong + f/h 叠加——「孕妇」(yun-fu) 经 yun→yong + fu→hu = yong-hu = 「用户」(yong-hu)。
-    /// syllable 组在 initial 组前（规则按 match_type 排序），可与 f/h 同时作用。
+    /// syllable 组（yun→yong）与 initial 组（fu→hu）可同时作用在不同字上（按字独立归一）。
     /// 注意：HotwordIndex::from_words 读全局 normalize 缓存，须持 corrector 串行锁避免并发污染。
     #[test]
     fn yun_yong_overlaps_with_fh() {
@@ -258,7 +258,7 @@ mod tests {
             rule("yun/yong", "yun", "yong", "syllable", 2),
             rule("f/h", "f", "h", "initial", 2),
         ]);
-        // 模拟 DB 读出的排序：syllable 在 initial 前
+        // 模拟 DB 读出的顺序（ORDER BY match_type，仅为展示确定性，不影响归一正确性）
         let rules = [
             rule("yun/yong", "yun", "yong", "syllable", 2),
             rule("f/h", "f", "h", "initial", 2),
@@ -322,5 +322,44 @@ mod tests {
         assert_eq!(norm("niu", &rules), "liu"); // nl
         assert_eq!(norm("re", &rules), "le"); // rl
         assert_eq!(norm("huang", &rules), "wan"); // hw（基础 ang→an 后 hu→w）
+    }
+
+    /// 回归：syllable 组（整音节精确）优先于 initial 组（声母前缀），无论 rules 数组顺序。
+    /// 关键场景：fei/hui（syllable）+ f/h（initial）同开——fei 必须走 fei/hui 归一到 hui，
+    /// 不能被 f/h 抢成 hei。实现按 match_type 分组遍历（syllable → initial → special_hu）
+    /// + matched flag 互斥，与 rules 传入顺序无关（DB 排序只为输出确定性，不影响正确性）。
+    #[test]
+    fn syllable_beats_initial_regardless_of_array_order() {
+        // ① syllable 在 initial 前（DB ORDER BY match_type 的自然序）
+        let rules_sorted = [
+            rule("fei/hui", "fei", "hui", "syllable", 1),
+            rule("f/h", "f", "h", "initial", 2),
+        ];
+        assert_eq!(norm("fei", &rules_sorted), "hui"); // 走 fei/hui，不被 f/h 抢成 hei
+        assert_eq!(norm("fu", &rules_sorted), "hu"); // 非 syllable 命中 → initial 生效
+        assert_eq!(norm("hui", &rules_sorted), "hui"); // 目标端不变
+
+        // ② initial 在 syllable 前（打乱顺序）——分组遍历保证结果不变
+        let rules_shuffled = [
+            rule("f/h", "f", "h", "initial", 2),
+            rule("fei/hui", "fei", "hui", "syllable", 1),
+        ];
+        assert_eq!(norm("fei", &rules_shuffled), "hui", "数组顺序不影响：syllable 分组必先于 initial");
+        assert_eq!(norm("fu", &rules_shuffled), "hu");
+        assert_eq!(norm("hui", &rules_shuffled), "hui");
+    }
+
+    /// 回归：special_hu 不抢先于 syllable 命中的整音节。
+    /// hu（单字）若同时配了某 syllable 规则，syllable 先命中则 special_hu 不再作用。
+    #[test]
+    fn syllable_beats_special_hu() {
+        let rules = [
+            rule("fei/hui", "fei", "hui", "syllable", 1),
+            rule("hu/wu", "hu", "w", "special_hu", 1),
+        ];
+        // fei → syllable 命中 hui，不走 special_hu（fei 也不匹配 hu 前缀）
+        assert_eq!(norm("fei", &rules), "hui");
+        // hu 不匹配 fei（syllable 未命中）→ special_hu 生效 → wu
+        assert_eq!(norm("hu", &rules), "wu");
     }
 }

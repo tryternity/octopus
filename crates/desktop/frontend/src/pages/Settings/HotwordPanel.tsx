@@ -306,11 +306,11 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
               />
             </div>
           </CardHeader>
-          <CardContent className="py-2.5 space-y-3">
-            {/* 组 1：声母规则（initial + special_hu） */}
+          <CardContent className="py-2.5">
+            {/* 组 1：声母模糊（initial + special_hu） */}
             <div>
               <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupInitial')}</div>
-              <div className="grid grid-cols-4 gap-x-6 gap-y-2">
+              <div className="grid grid-cols-3 gap-x-6 gap-y-2">
                 {dialectRules.filter((r) => r.matchType === 'initial' || r.matchType === 'special_hu').map((r) => (
                   <div key={r.token} className="flex items-center justify-between">
                     <span className="text-sm">{r.label}</span>
@@ -319,10 +319,10 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
                 ))}
               </div>
             </div>
-            {/* 组 2：整音节规则（syllable） */}
-            <div>
+            {/* 组 2：整音节模糊（syllable）——分割线分隔 */}
+            <div className="mt-3 border-t border-border/60 pt-3">
               <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupSyllable')}</div>
-              <div className="grid grid-cols-4 gap-x-6 gap-y-2">
+              <div className="grid grid-cols-3 gap-x-6 gap-y-2">
                 {dialectRules.filter((r) => r.matchType === 'syllable').map((r) => (
                   <div key={r.token} className="flex items-center justify-between">
                     <span className="text-sm">{r.label}</span>
