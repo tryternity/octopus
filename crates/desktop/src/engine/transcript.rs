@@ -14,11 +14,17 @@ use std::time::{Duration, Instant};
 const DIVERTED_PENDING_LIMIT: usize = 500;
 
 /// 段类型。后态覆盖前态：Raw → Polished → Edited。
+/// Hotwords：热词多命中替换段（text=得分最高候选，candidates=完整候选列表最多 5 个）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SegmentKind { Raw, Polished, Edited }
+pub enum SegmentKind { Raw, Polished, Edited, Hotwords }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Segment { pub kind: SegmentKind, pub text: String }
+pub struct Segment {
+    pub kind: SegmentKind,
+    pub text: String,
+    /// Hotwords 段的候选列表（得分降序，最多 5 个，text 是第一个 = 默认选择）。其他 kind 为 None。
+    pub candidates: Option<Vec<String>>,
+}
 
 /// 给 octopus_llm 的润色输入（segments 快照）。edited 段标 preserve，其余待润色。
 #[derive(Debug, Clone)]
@@ -235,7 +241,7 @@ impl Transcript {
         if gap > 0 && self.segments[gap - 1].kind == SegmentKind::Raw {
             self.segments[gap - 1].text.push_str(delta);
         } else {
-            self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() });
+            self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() , candidates: None });
             self.caret_gap = gap + 1;
             // 诊断（spec 2026-07-19 第二轮）：新段插入位置，验证假设 D（caret 落点看不到）
             crate::core::perf_log::log(&format!(
@@ -261,8 +267,8 @@ impl Transcript {
                 let left: String = chars[..rel].iter().collect();
                 let right: String = chars[rel..].iter().collect();
                 let kind = seg.kind;
-                self.segments[i] = Segment { kind, text: left };
-                self.segments.insert(i + 1, Segment { kind, text: right });
+                self.segments[i] = Segment { kind, text: left, candidates: None };
+                self.segments.insert(i + 1, Segment { kind, text: right, candidates: None });
                 return i + 1;
             }
             acc += len;
@@ -335,6 +341,7 @@ impl Transcript {
                 SegmentKind::Raw => "R",
                 SegmentKind::Polished => "P",
                 SegmentKind::Edited => "E",
+                SegmentKind::Hotwords => "H",
             })
             .zip(self.segments.iter().map(|s| s.text.as_str()))
             .map(|(k, t)| format!("{}:\"{}\"", k, t))
@@ -383,7 +390,7 @@ impl Transcript {
         }
         if dirty_ranges.is_empty() {
             if has_edited {
-                self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
+                self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() , candidates: None }];
                 self.caret_gap = 1;
             }
             // has_edited=false → 纯删除，不改原段 kind（segments 不变，仅文本缩短已在 flat 中反映）
@@ -495,20 +502,25 @@ impl Transcript {
     pub fn last_polish_time(&self) -> Instant { self.last_polish_time }
     pub fn set_mode(&mut self, mode: PolishMode) { self.mode = mode; }
 
-    /// 段序列化给 DB（JSON）。 [{"kind":"raw|polished|edited","text":"..."}]
+    /// 段序列化给 DB（JSON）。 [{"kind":"raw|polished|edited|hotwords","text":"...","candidates":[...]}]
+    /// candidates 字段仅 hotwords 段含（其他 kind 省略，向后兼容）。
     pub fn segments_json(&self) -> String {
         serde_json::to_string(
             &self.segments.iter().map(|s| {
                 let k = match s.kind {
-                    SegmentKind::Raw => "raw", SegmentKind::Polished => "polished", SegmentKind::Edited => "edited",
+                    SegmentKind::Raw => "raw", SegmentKind::Polished => "polished",
+                    SegmentKind::Edited => "edited", SegmentKind::Hotwords => "hotwords",
                 };
-                serde_json::json!({ "kind": k, "text": s.text })
+                let mut obj = serde_json::json!({ "kind": k, "text": s.text });
+                if let Some(ref cands) = s.candidates {
+                    obj["candidates"] = serde_json::json!(cands);
+                }
+                obj
             }).collect::<Vec<_>>(),
         ).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// 从 DB JSON 恢复 segments（Idle 态编辑时用——保留已有 Raw/Polished/Edited 标记）。
-    /// JSON 格式：[{"kind":"raw|polished|edited","text":"..."}]
+    /// 从 DB JSON 恢复 segments（Idle 态编辑时用——保留已有 Raw/Polished/Edited/Hotwords 标记）。
     pub fn restore_segments(&mut self, json: &str) {
         if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
             self.segments.clear();
@@ -516,11 +528,14 @@ impl Transcript {
                 let kind = match item.get("kind").and_then(|v| v.as_str()) {
                     Some("polished") => SegmentKind::Polished,
                     Some("edited") => SegmentKind::Edited,
+                    Some("hotwords") => SegmentKind::Hotwords,
                     _ => SegmentKind::Raw,
                 };
                 let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let candidates: Option<Vec<String>> = item.get("candidates")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
                 if !text.is_empty() {
-                    self.segments.push(Segment { kind, text });
+                    self.segments.push(Segment { kind, text, candidates });
                 }
             }
             self.caret_gap = self.segments.len();
@@ -533,7 +548,7 @@ fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
     let edited: Vec<&str> = snapshot.iter()
         .filter(|s| s.kind == SegmentKind::Edited).map(|s| s.text.as_str()).collect();
     if edited.is_empty() {
-        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string() }];
+        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string() , candidates: None }];
     }
     let full_chars: Vec<char> = full.chars().collect();
     let mut segs = Vec::new();
@@ -544,16 +559,16 @@ fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
             Some(start) => {
                 if start > cursor {
                     let gap: String = full_chars[cursor..start].iter().collect();
-                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap }); }
+                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap , candidates: None }); }
                 }
                 let end = start + ed_chars.len();
-                segs.push(Segment { kind: SegmentKind::Edited, text: full_chars[start..end].iter().collect() });
+                segs.push(Segment { kind: SegmentKind::Edited, text: full_chars[start..end].iter().collect() , candidates: None });
                 cursor = end;
             }
             None => {
                 // 匹配不到（LLM 擅改）：剩余全作 Polished，停止（best-effort）
                 if cursor < full_chars.len() {
-                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect() });
+                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect() , candidates: None });
                     cursor = full_chars.len();
                 }
                 break;
@@ -562,7 +577,7 @@ fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
     }
     if cursor < full_chars.len() {
         let rest: String = full_chars[cursor..].iter().collect();
-        if !rest.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: rest }); }
+        if !rest.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: rest , candidates: None }); }
     }
     segs
 }
@@ -592,7 +607,7 @@ fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
             return;
         }
     }
-    result.push(Segment { kind, text: text.to_string() });
+    result.push(Segment { kind, text: text.to_string(), candidates: None });
 }
 
 /// 按 dirty ranges 重建段列表。
@@ -676,10 +691,10 @@ fn rebuild_segments(
 mod tests {
     use super::*;
 
-    fn raw(t: &str) -> Segment { Segment { kind: SegmentKind::Raw, text: t.into() } }
+    fn raw(t: &str) -> Segment { Segment { kind: SegmentKind::Raw, text: t.into() , candidates: None } }
     fn pol(t: &str) -> Segment { kind_seg(SegmentKind::Polished, t) }
     fn edt(t: &str) -> Segment { kind_seg(SegmentKind::Edited, t) }
-    fn kind_seg(k: SegmentKind, t: &str) -> Segment { Segment { kind: k, text: t.into() } }
+    fn kind_seg(k: SegmentKind, t: &str) -> Segment { Segment { kind: k, text: t.into() , candidates: None } }
 
     // ── 默认零回归 ──
     #[test]
@@ -1245,8 +1260,8 @@ mod user_scenario_tests {
     #[test]
     fn rebuild_segments_preserves_clean_kind() {
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "AB".into() },
-            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+            Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() , candidates: None },
         ];
         let result = rebuild_segments(&old, "ABCD", &[(2, 4)]);
         assert_eq!(result.len(), 2);
@@ -1259,20 +1274,20 @@ mod user_scenario_tests {
     #[test]
     fn rebuild_segments_multiple_dirty_ranges() {
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "ABCDEF".into() },
+            Segment { kind: SegmentKind::Raw, text: "ABCDEF".into() , candidates: None },
         ];
         let result = rebuild_segments(&old, "ABCDEF", &[(1, 2), (4, 5)]);
         assert_eq!(result.len(), 5);
-        assert_eq!(result[0], Segment { kind: SegmentKind::Raw, text: "A".into() });
-        assert_eq!(result[1], Segment { kind: SegmentKind::Edited, text: "B".into() });
-        assert_eq!(result[2], Segment { kind: SegmentKind::Raw, text: "CD".into() });
-        assert_eq!(result[3], Segment { kind: SegmentKind::Edited, text: "E".into() });
-        assert_eq!(result[4], Segment { kind: SegmentKind::Raw, text: "F".into() });
+        assert_eq!(result[0], Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None });
+        assert_eq!(result[1], Segment { kind: SegmentKind::Edited, text: "B".into() , candidates: None });
+        assert_eq!(result[2], Segment { kind: SegmentKind::Raw, text: "CD".into() , candidates: None });
+        assert_eq!(result[3], Segment { kind: SegmentKind::Edited, text: "E".into() , candidates: None });
+        assert_eq!(result[4], Segment { kind: SegmentKind::Raw, text: "F".into() , candidates: None });
     }
 
     #[test]
     fn push_or_merge_same_kind() {
-        let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() }];
+        let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None }];
         push_or_merge(&mut result, SegmentKind::Raw, "CD");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "ABCD");
@@ -1285,8 +1300,8 @@ mod user_scenario_tests {
         // old: [Raw("AB"), Polished("CD")] → dirty [4,6)（在末尾加"EF"）
         // clean 区域 "ABCD" 跨越 Raw + Polished → 应各自保留 kind
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "AB".into() },
-            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+            Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() , candidates: None },
         ];
         let result = rebuild_segments(&old, "ABCDEF", &[(4, 6)]);
         // Raw("AB") + Polished("CD") + Edited("EF")
@@ -1304,8 +1319,8 @@ mod user_scenario_tests {
         // old: [Raw("A"), Polished("B")] → 用户删除 "A" → new = "B"
         // 无 dirty ranges，has_edited=false → rebuild_segments 保留原 kind
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "A".into() },
-            Segment { kind: SegmentKind::Polished, text: "B".into() },
+            Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None },
+            Segment { kind: SegmentKind::Polished, text: "B".into() , candidates: None },
         ];
         let result = rebuild_segments(&old, "B", &[]);
         // "B" 应保持 Polished（不退化为 Raw）
@@ -1322,9 +1337,9 @@ mod user_scenario_tests {
         // 此时 new_flat="AC" 在 old_flat="ABC" 中不是连续子串
         // old_chars walk: A 匹配 old[0]=Raw, C 匹配 old[2]=Edited（跳过被删的 B）
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "A".into() },
-            Segment { kind: SegmentKind::Polished, text: "B".into() },
-            Segment { kind: SegmentKind::Edited, text: "C".into() },
+            Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None },
+            Segment { kind: SegmentKind::Polished, text: "B".into() , candidates: None },
+            Segment { kind: SegmentKind::Edited, text: "C".into() , candidates: None },
         ];
         let result = rebuild_segments(&old, "AC", &[]);
         let actual_text: String = result.iter().map(|s| s.text.as_str()).collect();
@@ -1405,7 +1420,7 @@ mod user_scenario_tests {
         let mut t = Transcript::new(302, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("种子"); // cum=shown="种子", consumed=2
         // 模拟历史 diverted flush 导致 shown 膨胀（与 cum 分歧）—— shown 500 字符，cum 仍 2 字符
-        t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)) }];
+        t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)), candidates: None }];
 
         // 引擎持续给不同 4 字符 full（模拟日志：首字符"种"同 shown → lcp=1，diff=3）
         let mut max_shown = t.finish_text().chars().count();
