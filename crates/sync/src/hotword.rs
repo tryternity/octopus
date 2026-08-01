@@ -1,33 +1,45 @@
-//! 热词同步——`.sync/hotword/` 目录的文件存储 + md5 增量同步（2026-07-22 Task 13.6）。
+//! 热词同步——`.sync/hotword/` 两级 outline 层级 + md5 增量同步（2026-08-01 word 级 merge）。
 //!
 //! 热词是 `.sync/` 目录扩展的第一个非 vault 数据类型。与 vault 同步的区别：
 //! - **明文存储**：热词不含密码等高敏感信息（当前 SQLite 也是明文），文件不加密
-//! - **无 meta**：热词没有 vault_meta 那样的全局配置，只有 sets + outline
-//! - **复用 Outline 结构**：热词 outline 用 Outline.ciphers 字段存 hotword set entries
-//!   （字段名内部细节，功能正确；folders 字段留空）
+//! - **无 meta**：热词没有 vault_meta 那样的全局配置，只有 outline + set meta + word files
+//! - **两级 outline**：总 outline 只管词典，词典内 outline 只管词（2026-08-01 重构，
+//!   脱离复用 vault `Outline`——`ciphers`/`folders` 字段对热词语义错误）
 //!
-//! ## 目录结构
+//! ## 目录结构（两级）
 //!
 //! ```text
 //! ~/.octopus/.sync/hotword/
-//! ├── outline.json              { version, vault_version, ciphers: {uuid: {md5, updated_ms}} }
-//! └── sets/<2hex>/<uuid>.json   单个热词版本（明文 JSON）
+//! ├── outline.json                 ← 总 outline：只描述词典状态
+//! │     { version, hotwordVersion, sets: { <setUuid>: {md5, updatedMs} } }
+//! └── <set-uuid>/                  ← 每个词典一个目录（目录名 = 词典 ID）
+//!     ├── meta.json                ← 词典元数据（name/enabled/createdAt/updatedAt）
+//!     ├── outline.json             ← 本词典的词状态
+//!     │     { words: { <wordUuid>: {md5, updatedMs} } }
+//!     └── <2hex>/<word-uuid>.json  ← 词文件（按词 UUID 前2位分桶）
 //! ```
+//!
+//! **为什么两级而非扁平**：① 3 万词条拆成 N 个 3 千项的词典 outline，git diff 只碰改动词典；
+//! ② 删词典 = `rm -r <set-id>/` 原子完整；③ 语义干净——总 outline 管词典，词状态归属各自词典。
+//! **词文件名用 UUID**（=v5(set_id,word)，软删/改拼音不变），内容 MD5 做 outline 变化指纹。
 //!
 //! ## md5 指纹
 //!
-//! 拼接字段：`name | enabled | words_text`（不含 id / created_at / updated_at / sync_md5）。
-//! `words_text` 已经过 normalize_words_text（拼音首字母排序 + 去重）——跨设备字节一致。
+//! - **set md5**：`name | enabled`（纯元数据；词变更不再改 set md5——word 有自己的 sync_md5）
+//! - **word md5**（长度前缀防 `|` 碰撞，实现在 infra `hotword_word_md5_from_fields`）：
+//!   `{set_id_len}|{set_id}|{word_len}|{word}|{pinyin_len}|{pinyin}|{is_deleted}`
 //!
-//! 详见 spec §4.13 + plan Task 13.6。
+//! 详见 spec `2026-08-01-hotword-word-record-design.md` §3 + plan `2026-08-01-hotword-word-level-merge.md`。
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use octopus_infra::db::HotwordSet;
+use octopus_infra::db::{self, HotwordSet, HotwordWord};
+use octopus_infra::hotword_text::hotword_word_md5_from_fields;
 
-use crate::outline::{Outline, OutlineEntry};
-use crate::store::{iso_to_unix_ms, md5_hex, shard_dir, sync_root};
+use crate::outline::OutlineEntry;
+use crate::store::{iso_to_unix_ms, md5_hex, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
 
@@ -36,22 +48,59 @@ pub fn hotword_dir() -> PathBuf {
     sync_root().join("hotword")
 }
 
-/// `~/.octopus/.sync/hotword/outline.json`——增量索引。
+/// `~/.octopus/.sync/hotword/outline.json`——增量索引（总，只管词典）。
 pub fn hotword_outline_path() -> PathBuf {
     hotword_dir().join("outline.json")
 }
 
-/// 热词版本文件路径：`hotword/sets/<2hex>/<uuid>.json`（与 vault cipher 同样分桶）。
-pub fn hotword_set_file_path(uuid: &str) -> PathBuf {
-    hotword_dir()
-        .join("sets")
-        .join(shard_dir(uuid))
-        .join(format!("{}.json", uuid))
+/// path traversal 校验——拒绝含 `/` `\` `..` `\0` 或空的 uuid/id（对齐 vault `validate_uuid`）。
+///
+/// set 目录名（= set_id）与 word 文件名（= word_uuid）都过此校验——远程 outline 的恶意
+/// id（如 `../../meta`）会在路径构造入口被拦截，read/write/delete 三路径统一防护。
+/// 不强制严格 UUID 格式（测试用简短 id 方便），只拒绝 path traversal 字符。
+fn validate_hotword_uuid(uuid: &str) -> Result<()> {
+    if uuid.is_empty()
+        || uuid.contains('/')
+        || uuid.contains('\\')
+        || uuid.contains("..")
+        || uuid.contains('\0')
+    {
+        anyhow::bail!(
+            "非法 uuid（含路径分隔符 / \\ .. 或空）：{}——拒绝 path traversal",
+            uuid
+        );
+    }
+    Ok(())
+}
+
+/// 词典目录：`hotword/<set-uuid>/`（每个词典一个目录）。
+pub fn hotword_set_dir(set_id: &str) -> Result<PathBuf> {
+    validate_hotword_uuid(set_id)?;
+    Ok(hotword_dir().join(set_id))
+}
+
+/// 词典元数据文件：`hotword/<set-uuid>/meta.json`。
+pub fn hotword_meta_file_path(set_id: &str) -> Result<PathBuf> {
+    Ok(hotword_set_dir(set_id)?.join("meta.json"))
+}
+
+/// 词典内 outline：`hotword/<set-uuid>/outline.json`（只管该词典的词）。
+pub fn hotword_set_outline_path(set_id: &str) -> Result<PathBuf> {
+    Ok(hotword_set_dir(set_id)?.join("outline.json"))
+}
+
+/// 词文件路径：`hotword/<set-uuid>/<2hex>/<word-uuid>.json`（复用 `shard_dir`，按 word_uuid 分桶）。
+pub fn hotword_word_file_path(set_id: &str, word_uuid: &str) -> Result<PathBuf> {
+    validate_hotword_uuid(set_id)?;
+    validate_hotword_uuid(word_uuid)?;
+    Ok(hotword_set_dir(set_id)?
+        .join(shard_dir(word_uuid))
+        .join(format!("{}.json", word_uuid)))
 }
 
 // === md5 指纹 ===
 
-/// 热词版本元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
+/// 词典元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
 ///
 /// v57 起 set 只存元数据（词数据在 hotword_words），拼接字段：`name | enabled`。
 pub fn hotword_set_md5(h: &HotwordSet) -> String {
@@ -64,12 +113,17 @@ pub fn hotword_set_md5_from_fields(name: &str, enabled: bool) -> String {
     md5_hex(input.as_bytes())
 }
 
+/// 词记录的逻辑内容 md5——委托 infra `hotword_word_md5_from_fields`（长度前缀防碰撞）。
+pub fn hotword_word_md5(w: &HotwordWord) -> String {
+    hotword_word_md5_from_fields(&w.set_id, &w.word, &w.pinyin, w.is_deleted)
+}
+
 // === 文件格式 ===
 
-/// 单个热词版本的文件内容（明文 JSON，不加密）。v57 起只含元数据（词数据在 words/ 目录）。
+/// 词典元数据文件内容（明文 JSON）。v57 起只含元数据（词数据在 words/ 目录）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HotwordSetFile {
+pub struct HotwordSetMeta {
     /// 文件格式版本（当前 1）。
     pub version: u32,
     /// UUID（与 SQLite hotword_sets.id 一致）。
@@ -84,7 +138,7 @@ pub struct HotwordSetFile {
     pub updated_at: String,
 }
 
-impl HotwordSetFile {
+impl HotwordSetMeta {
     /// 从 SQLite 行转换。
     pub fn from_hotword_set(h: &HotwordSet) -> Self {
         Self {
@@ -110,67 +164,220 @@ impl HotwordSetFile {
     }
 }
 
-// === 读写函数 ===
+/// 单个词记录的文件内容（明文 JSON，不加密）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordWordFile {
+    /// 文件格式版本（当前 1）。
+    pub version: u32,
+    /// 确定性 UUID（= hotword_word_uuid(set_id, word)，跨设备一致）。
+    pub id: String,
+    /// 所属词典 UUID。
+    pub set_id: String,
+    /// 词文本。
+    pub word: String,
+    /// 原始拼音（空格分隔，不经归一化）。
+    pub pinyin: String,
+    /// 软删标记（sync 传播用——文件不删，is_deleted=true 走 merge 路径）。
+    pub is_deleted: bool,
+    /// 创建时间（SQLite datetime 格式，跨设备不同但保留用于排序）。
+    pub created_at: String,
+    /// 更新时间。
+    pub updated_at: String,
+}
 
-/// 读 outline.json。文件不存在时返回默认空 outline（首次同步）。
-pub fn read_hotword_outline() -> Result<Outline> {
+impl HotwordWordFile {
+    /// 从 SQLite 行转换。
+    pub fn from_hotword_word(w: &HotwordWord) -> Self {
+        Self {
+            version: 1,
+            id: w.id.clone(),
+            set_id: w.set_id.clone(),
+            word: w.word.clone(),
+            pinyin: w.pinyin.clone(),
+            is_deleted: w.is_deleted,
+            created_at: w.created_at.clone(),
+            updated_at: w.updated_at.clone(),
+        }
+    }
+
+    /// 转换回 HotwordWord（sync pull 用——sync_md5 由调用方算填）。
+    pub fn to_hotword_word(&self, sync_md5: Option<String>) -> HotwordWord {
+        HotwordWord {
+            id: self.id.clone(),
+            set_id: self.set_id.clone(),
+            word: self.word.clone(),
+            pinyin: self.pinyin.clone(),
+            is_deleted: self.is_deleted,
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            sync_md5,
+        }
+    }
+}
+
+// === 两级 outline 结构 ===
+
+/// 总 outline——只描述词典状态（词状态归属各自词典的 `HotwordSetOutline`）。
+///
+/// 2026-08-01 重构：脱离复用 vault `Outline`（`ciphers`/`folders` 字段对热词语义错误）。
+/// 所有字段 `#[serde(default)]`——旧 outline.json（vault Outline 格式，含 `ciphers`/
+/// `folders` 无 `sets`）反序列化时 `sets` 默认空，安全降级（全新库策略：从 DB 重建）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordOutline {
+    /// outline 格式版本（当前 1）。
+    #[serde(default = "default_outline_version")]
+    pub version: u32,
+    /// hotword outline 整体版本（monotonic 递增，有变化时 +1）。
+    #[serde(default)]
+    pub hotword_version: u64,
+    /// 词典 entries：set_uuid → {md5, updatedMs}。BTreeMap 保序列化顺序稳定。
+    #[serde(default)]
+    pub sets: BTreeMap<String, OutlineEntry>,
+}
+
+fn default_outline_version() -> u32 {
+    1
+}
+
+impl Default for HotwordOutline {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            hotword_version: 0,
+            sets: BTreeMap::new(),
+        }
+    }
+}
+
+/// 词典内 outline——只描述该词典的词状态。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordSetOutline {
+    /// outline 格式版本（当前 1）。
+    #[serde(default = "default_outline_version")]
+    pub version: u32,
+    /// 该词典的 outline 版本（monotonic 递增，有变化时 +1）。
+    #[serde(default)]
+    pub hotword_version: u64,
+    /// 词 entries：word_uuid → {md5, updatedMs}。BTreeMap 保序列化顺序稳定。
+    #[serde(default)]
+    pub words: BTreeMap<String, OutlineEntry>,
+}
+
+impl Default for HotwordSetOutline {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            hotword_version: 0,
+            words: BTreeMap::new(),
+        }
+    }
+}
+
+// === outline 读写 ===
+
+/// 读总 outline.json。文件不存在时返回默认空 outline（首次同步）。
+pub fn read_hotword_outline() -> Result<HotwordOutline> {
     let path = hotword_outline_path();
     match std::fs::read_to_string(&path) {
         Ok(content) => {
-            let outline: Outline = serde_json::from_str(&content)
+            let outline: HotwordOutline = serde_json::from_str(&content)
                 .with_context(|| format!("hotword outline.json 解析失败：{}", path.display()))?;
             Ok(outline)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Outline::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HotwordOutline::default()),
         Err(e) => Err(anyhow::Error::new(e)
             .context(format!("读 hotword outline.json 失败：{}", path.display()))),
     }
 }
 
-/// 写 outline.json（pretty print）。
-pub fn write_hotword_outline(outline: &Outline) -> Result<()> {
+/// 写总 outline.json（原子写，pretty print）。
+pub fn write_hotword_outline(outline: &HotwordOutline) -> Result<()> {
     let path = hotword_outline_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
-    }
     let json = serde_json::to_string_pretty(outline).context("序列化 hotword outline 失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写 hotword outline.json 失败：{}", path.display()))?;
-    Ok(())
+    write_atomically(&path, &format!("{}\n", json))
 }
 
-/// 读单个热词版本文件。
-pub fn read_hotword_set_file(uuid: &str) -> Result<HotwordSetFile> {
-    let path = hotword_set_file_path(uuid);
+/// 读词典内 outline.json。文件不存在时返回默认空 outline。
+pub fn read_hotword_set_outline(set_id: &str) -> Result<HotwordSetOutline> {
+    let path = hotword_set_outline_path(set_id)?;
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let outline: HotwordSetOutline = serde_json::from_str(&content).with_context(|| {
+                format!("hotword set outline.json 解析失败：{}", path.display())
+            })?;
+            Ok(outline)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HotwordSetOutline::default()),
+        Err(e) => Err(anyhow::Error::new(e)
+            .context(format!("读 hotword set outline.json 失败：{}", path.display()))),
+    }
+}
+
+/// 写词典内 outline.json（原子写）。
+pub fn write_hotword_set_outline(set_id: &str, outline: &HotwordSetOutline) -> Result<()> {
+    let path = hotword_set_outline_path(set_id)?;
+    let json =
+        serde_json::to_string_pretty(outline).context("序列化 hotword set outline 失败")?;
+    write_atomically(&path, &format!("{}\n", json))
+}
+
+// === 文件读写 ===
+
+/// 读词典元数据文件。
+pub fn read_hotword_set_file(set_id: &str) -> Result<HotwordSetMeta> {
+    let path = hotword_meta_file_path(set_id)?;
     let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("读热词版本文件失败：{}", path.display()))?;
-    let file: HotwordSetFile =
-        serde_json::from_str(&content).context("热词版本文件 JSON 解析失败")?;
+        .with_context(|| format!("读热词词典元数据失败：{}", path.display()))?;
+    let file: HotwordSetMeta =
+        serde_json::from_str(&content).context("热词词典元数据 JSON 解析失败")?;
     Ok(file)
 }
 
-/// 写单个热词版本文件（含分桶目录创建）。
-pub fn write_hotword_set_file(file: &HotwordSetFile) -> Result<()> {
-    let path = hotword_set_file_path(&file.id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建桶目录失败：{}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(file).context("序列化热词版本文件失败")?;
-    std::fs::write(&path, format!("{}\n", json))
-        .with_context(|| format!("写热词版本文件失败：{}", path.display()))?;
-    Ok(())
+/// 写词典元数据文件（原子写，含目录创建）。
+pub fn write_hotword_set_file(meta: &HotwordSetMeta) -> Result<()> {
+    let path = hotword_meta_file_path(&meta.id)?;
+    let json = serde_json::to_string_pretty(meta).context("序列化热词词典元数据失败")?;
+    write_atomically(&path, &format!("{}\n", json))
 }
 
-/// 删除单个热词版本文件（文件不存在时返 Ok——幂等）。
-pub fn delete_hotword_set_file(uuid: &str) -> Result<()> {
-    let path = hotword_set_file_path(uuid);
+/// 删词典元数据文件（文件不存在时返 Ok——幂等）。
+pub fn delete_hotword_set_file(set_id: &str) -> Result<()> {
+    let path = hotword_meta_file_path(set_id)?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(anyhow::Error::new(e)
-            .context(format!("删热词版本文件失败：{}", path.display()))),
+            .context(format!("删热词词典元数据失败：{}", path.display()))),
+    }
+}
+
+/// 读词记录文件。
+pub fn read_hotword_word_file(set_id: &str, word_uuid: &str) -> Result<HotwordWordFile> {
+    let path = hotword_word_file_path(set_id, word_uuid)?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("读热词词文件失败：{}", path.display()))?;
+    let file: HotwordWordFile = serde_json::from_str(&content).context("热词词文件 JSON 解析失败")?;
+    Ok(file)
+}
+
+/// 写词记录文件（原子写，含分桶目录创建）。
+pub fn write_hotword_word_file(file: &HotwordWordFile) -> Result<()> {
+    let path = hotword_word_file_path(&file.set_id, &file.id)?;
+    let json = serde_json::to_string_pretty(file).context("序列化热词词文件失败")?;
+    write_atomically(&path, &format!("{}\n", json))
+}
+
+/// 删词记录文件（文件不存在时返 Ok——幂等）。
+pub fn delete_hotword_word_file(set_id: &str, word_uuid: &str) -> Result<()> {
+    let path = hotword_word_file_path(set_id, word_uuid)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(anyhow::Error::new(e)
+            .context(format!("删热词词文件失败：{}", path.display()))),
     }
 }
 
@@ -178,42 +385,85 @@ pub fn delete_hotword_set_file(uuid: &str) -> Result<()> {
 
 /// 从 SQLite 全量导出到文件系统——首次启用同步时用（push_initial）。
 ///
-/// 步骤：
-/// 1. 清空 sets/ 目录（防 stale 文件残留）
-/// 2. 写所有版本文件
-/// 3. 生成 outline.json
-pub fn export_all_hotwords(sets: &[HotwordSet]) -> Result<Outline> {
+/// 无参：内部自己读 DB（list_hotword_sets + list_all_hotword_words）。
+pub fn export_all_hotwords() -> Result<HotwordOutline> {
+    let sets = db::list_hotword_sets()?;
+    let words = db::list_all_hotword_words()?;
+    export_all_hotwords_with(&sets, &words)
+}
+
+/// 全量导出核心（接收数据而非读 DB）——测试用（无 DB 隔离场景）。
+pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> Result<HotwordOutline> {
     let dir = hotword_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("创建 hotword 目录失败：{}", dir.display()))?;
 
-    // 1. 清空 sets/（保留 outline.json）
-    let sets_dir = dir.join("sets");
-    if sets_dir.exists() {
-        std::fs::remove_dir_all(&sets_dir).context("清空 hotword/sets/ 失败")?;
+    // 按 set_id 分组词（一个 set 的词一起写 + 一起进该 set 的 outline）
+    let mut words_by_set: std::collections::HashMap<&str, Vec<&HotwordWord>> =
+        std::collections::HashMap::new();
+    for w in words {
+        words_by_set.entry(w.set_id.as_str()).or_default().push(w);
     }
 
-    // 2. 写所有版本文件 + 收集 (uuid, md5)
-    // BTreeMap 保证 outline.json 序列化顺序稳定
-    let mut entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    // 1. 清空所有词典目录（每个 set 一个 <set-id>/ 目录）。保留 outline.json。
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("读 hotword 目录失败：{}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path); // 词典目录——清空重建
+            }
+        }
+    }
+
+    // 2. 写每个词典 + 收集总 outline 的 set entries
+    let mut set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     for h in sets {
-        write_hotword_set_file(&HotwordSetFile::from_hotword_set(h))?;
-        let md5 = h.sync_md5.clone().unwrap_or_else(|| hotword_set_md5(h));
-        entries.insert(
+        // 2a. 词典目录 + meta.json
+        write_hotword_set_file(&HotwordSetMeta::from_hotword_set(h))?;
+
+        // 2b. 该词典的词文件 + 词典内 outline
+        let set_words = words_by_set.get(h.id.as_str()).cloned().unwrap_or_default();
+        let mut word_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+        for w in &set_words {
+            write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
+            let md5 = w
+                .sync_md5
+                .clone()
+                .unwrap_or_else(|| hotword_word_md5(w));
+            word_entries.insert(
+                w.id.clone(),
+                OutlineEntry {
+                    md5,
+                    updated_ms: iso_to_unix_ms(&w.updated_at),
+                },
+            );
+        }
+        let set_outline = HotwordSetOutline {
+            version: 1,
+            hotword_version: 1, // 首次导出从 1 开始
+            words: word_entries,
+        };
+        write_hotword_set_outline(&h.id, &set_outline)?;
+
+        // 2c. 总 outline 的 set entry
+        let set_md5 = h.sync_md5.clone().unwrap_or_else(|| hotword_set_md5(h));
+        set_entries.insert(
             h.id.clone(),
             OutlineEntry {
-                md5,
+                md5: set_md5,
                 updated_ms: iso_to_unix_ms(&h.updated_at),
             },
         );
     }
 
-    // 3. 写 outline.json
-    let outline = Outline {
+    // 3. 写总 outline.json
+    let outline = HotwordOutline {
         version: 1,
-        vault_version: 1, // 首次导出从 1 开始（字段名 vault_version 复用，语义为 hotword_version）
-        ciphers: entries, // 复用 ciphers 字段存 hotword set entries
-        folders: std::collections::BTreeMap::new(), // 热词无 folder 概念，留空
+        hotword_version: 1, // 首次导出从 1 开始
+        sets: set_entries,
     };
     write_hotword_outline(&outline)?;
 
@@ -222,20 +472,27 @@ pub fn export_all_hotwords(sets: &[HotwordSet]) -> Result<Outline> {
 
 /// 增量导出——sync_now 用，只写真正变化的文件（不清空目录）。
 ///
-/// 与 `export_all_hotwords` 的区别：
-/// - `export_all_hotwords`：清空 + 全写（首次启用同步时用）
-/// - `incremental_export_hotwords`：读旧 outline + 对比 sync_md5 → 只写变化文件 + 删 SQLite 无的
+/// 无参：内部自己读 DB。返回 (new_outline, changed_count)。
+pub fn incremental_export_hotwords() -> Result<(HotwordOutline, usize)> {
+    let sets = db::list_hotword_sets()?;
+    let words = db::list_all_hotword_words()?;
+    incremental_export_hotwords_with(&sets, &words)
+}
+
+/// 增量导出核心（接收数据而非读 DB）——测试用（无 DB 隔离场景）。
 ///
-/// 返回 (new_outline, changed_count)——changed_count 是实际写/删的文件数。
-pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usize)> {
+/// 分两层 diff：
+/// - set 层（总 outline）：新增/改 md5 的词典 → 写 meta.json + 该词典词全量重建
+/// - word 层（词典内 outline）：逐词 diff md5，只写变化的词文件
+pub fn incremental_export_hotwords_with(
+    sets: &[HotwordSet],
+    words: &[HotwordWord],
+) -> Result<(HotwordOutline, usize)> {
     let dir = hotword_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("创建 hotword 目录失败：{}", dir.display()))?;
 
-    // 1. 读旧 outline 做 diff
-    // HW1 修复（2026-07-24）：与 vault M8 对称——解析错不再 unwrap_or_default 吞成空，
-    // 否则删除循环遍历空 outline → 不执行 → stale 文件残留 → clone 复活。
-    // read_hotword_outline 已把 NotFound 转 Ok(default)，故 Err 必为解析错 → 降级全量重建。
+    // 读旧总 outline（解析错降级全量重建——与原 HW1 修复对齐，防 stale 文件残留复活）
     let old_outline = match read_hotword_outline() {
         Ok(o) => o,
         Err(e) => {
@@ -243,27 +500,80 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
                 "[hotword-sync] outline.json 解析失败，降级为全量重建：{}",
                 e
             );
-            let outline = export_all_hotwords(sets)?;
+            let outline = export_all_hotwords_with(sets, words)?;
             return Ok((outline, sets.len()));
         }
     };
-    let mut changed = 0usize;
 
-    // 2. 对比 md5，只写变化的
-    let mut entries: std::collections::BTreeMap<String, OutlineEntry> = std::collections::BTreeMap::new();
+    let mut words_by_set: std::collections::HashMap<&str, Vec<&HotwordWord>> =
+        std::collections::HashMap::new();
+    for w in words {
+        words_by_set.entry(w.set_id.as_str()).or_default().push(w);
+    }
+
+    let mut changed = 0usize;
+    let mut new_set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
     let id_set: std::collections::HashSet<&str> = sets.iter().map(|h| h.id.as_str()).collect();
+
+    // set 层 diff
     for h in sets {
         let new_md5 = h.sync_md5.clone().unwrap_or_else(|| hotword_set_md5(h));
-        let old_entry = old_outline.ciphers.get(&h.id);
-        let needs_write = match old_entry {
-            None => true,           // 新增
+        let old_entry = old_outline.sets.get(&h.id);
+        let set_needs_rebuild = match old_entry {
+            None => true,                    // 新增词典
             Some(old) => old.md5 != new_md5, // md5 变了
         };
-        if needs_write {
-            write_hotword_set_file(&HotwordSetFile::from_hotword_set(h))?;
+        if set_needs_rebuild {
             changed += 1;
         }
-        entries.insert(
+
+        // 写 meta.json（新增或 md5 变时重写；幂等，无变化也不报错）
+        write_hotword_set_file(&HotwordSetMeta::from_hotword_set(h))?;
+
+        // 词典内词层 diff（每个词典都跑——即使 set 未变，词可能单独变）
+        let set_words = words_by_set.get(h.id.as_str()).cloned().unwrap_or_default();
+        let old_set_outline = read_hotword_set_outline(&h.id).unwrap_or_default();
+        let mut new_word_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+        let mut set_outline_changed = false;
+
+        for w in &set_words {
+            let new_wmd5 = w
+                .sync_md5
+                .clone()
+                .unwrap_or_else(|| hotword_word_md5(w));
+            let old_wentry = old_set_outline.words.get(&w.id);
+            let word_needs_write = match old_wentry {
+                None => true,
+                Some(old) => old.md5 != new_wmd5,
+            };
+            if word_needs_write {
+                write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
+                changed += 1;
+                set_outline_changed = true;
+            }
+            new_word_entries.insert(
+                w.id.clone(),
+                OutlineEntry {
+                    md5: new_wmd5,
+                    updated_ms: iso_to_unix_ms(&w.updated_at),
+                },
+            );
+        }
+
+        // 词典内 outline 增量版本号
+        let new_set_version = if set_outline_changed {
+            old_set_outline.hotword_version.wrapping_add(1)
+        } else {
+            old_set_outline.hotword_version
+        };
+        let set_outline = HotwordSetOutline {
+            version: 1,
+            hotword_version: new_set_version,
+            words: new_word_entries,
+        };
+        write_hotword_set_outline(&h.id, &set_outline)?;
+
+        new_set_entries.insert(
             h.id.clone(),
             OutlineEntry {
                 md5: new_md5,
@@ -271,118 +581,104 @@ pub fn incremental_export_hotwords(sets: &[HotwordSet]) -> Result<(Outline, usiz
             },
         );
     }
-    // 删 SQLite 无但 outline 有的文件。
-    // ⚠️ 保护（2026-07-27 sync 覆盖 bug 修复，与 vault store.rs 同款）：
-    // DB 空但 .sync outline 有数据时跳过删除——防止空 DB 覆盖已有热词数据。
+
+    // 删 SQLite 无但 outline 有的词典目录。
+    // ⚠️ 保护（对齐原 set 级保护）：DB 空但 .sync outline 有数据时跳过删除——防止空 DB 覆盖。
     let db_empty = sets.is_empty();
-    let sync_has_data = !old_outline.ciphers.is_empty();
+    let sync_has_data = !old_outline.sets.is_empty();
     if db_empty && sync_has_data {
         log::warn!(
             "[sync] DB 无热词但 .sync outline 有数据（sets={}）——跳过删除，防止空 DB 覆盖",
-            old_outline.ciphers.len()
+            old_outline.sets.len()
         );
     } else {
-        for old_uuid in old_outline.ciphers.keys() {
-            if !id_set.contains(old_uuid.as_str()) {
-                let _ = delete_hotword_set_file(old_uuid); // 幂等
+        for old_set_id in old_outline.sets.keys() {
+            if !id_set.contains(old_set_id.as_str()) {
+                if let Ok(set_dir) = hotword_set_dir(old_set_id) {
+                    let _ = std::fs::remove_dir_all(&set_dir); // 幂等
+                }
                 changed += 1;
             }
         }
     }
 
-    // 3. 写新 outline
-    // ⚠️ 保护延续（2026-07-27，与 vault store.rs 同款）：db_empty && sync_has_data 时，
-    // 不写空 outline 覆盖旧 outline——否则 pull 读空 outline 拉到 0 条。
+    // ⚠️ 保护延续：db_empty && sync_has_data 时，保留旧 outline 不覆盖。
     if db_empty && sync_has_data {
         log::warn!(
-            "[sync] DB 无热词——保留旧 outline 不覆盖（sets={}），热词文件也未删",
-            old_outline.ciphers.len()
+            "[sync] DB 无热词——保留旧 outline 不覆盖（sets={}），词典文件也未删",
+            old_outline.sets.len()
         );
         return Ok((old_outline, 0));
     }
-    // vault_version 只在 changed > 0 时 +1
+
+    // 总 outline 版本号（有变化时 +1）
     let new_version = if changed > 0 {
-        old_outline.vault_version.wrapping_add(1)
+        old_outline.hotword_version.wrapping_add(1)
     } else {
-        old_outline.vault_version
+        old_outline.hotword_version
     };
-    let outline = Outline {
+    let outline = HotwordOutline {
         version: 1,
-        vault_version: new_version,
-        ciphers: entries,
-        folders: std::collections::BTreeMap::new(),
+        hotword_version: new_version,
+        sets: new_set_entries,
     };
     write_hotword_outline(&outline)?;
 
     Ok((outline, changed))
 }
 
-/// 从文件系统全量导入——sync pull / clone_initial 用。
+/// 从文件系统全量导入词典元数据——sync pull / clone_initial 用。
 ///
-/// 读所有 sets/<桶>/<uuid>.json 文件，返回 HotwordSetFile 列表（sync_md5 由调用方算填）。
-pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetFile>> {
-    let sets_dir = hotword_dir().join("sets");
-    let mut files = Vec::new();
-    collect_json_files(&sets_dir, &mut files)?;
-    files.sort(); // 按路径排序，结果稳定
-
-    let mut sets = Vec::new();
-    for entry in files {
-        let content = std::fs::read_to_string(&entry)
-            .with_context(|| format!("读热词版本文件失败：{}", entry.display()))?;
-        let file: HotwordSetFile = serde_json::from_str(&content)
-            .with_context(|| format!("解析热词版本文件失败：{}", entry.display()))?;
-        sets.push(file);
-    }
-    Ok(sets)
-}
-
-/// 递归收集目录下所有 .json 文件（与 vault store::collect_json_files 同实现，内联避免跨 crate 依赖）。
-fn collect_json_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> Result<()> {
+/// 扫描 hotword/ 下每个词典目录的 meta.json，返回 HotwordSetMeta 列表。
+pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
+    let dir = hotword_dir();
+    let mut metas = Vec::new();
     if !dir.is_dir() {
-        return Ok(());
+        return Ok(metas);
     }
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("读目录失败：{}", dir.display()))?
+    // 每个词典目录（直接子目录）的 meta.json
+    let mut set_dirs: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("读 hotword 目录失败：{}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_json_files(&path, out)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("json") {
-            out.push(path);
+            set_dirs.push(path);
         }
     }
-    Ok(())
+    set_dirs.sort(); // 按路径排序，结果稳定
+
+    for set_dir in set_dirs {
+        let meta_path = set_dir.join("meta.json");
+        if !meta_path.exists() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&meta_path)
+            .with_context(|| format!("读词典元数据失败：{}", meta_path.display()))?;
+        let meta: HotwordSetMeta = serde_json::from_str(&content)
+            .with_context(|| format!("解析词典元数据失败：{}", meta_path.display()))?;
+        metas.push(meta);
+    }
+    Ok(metas)
 }
 
 // === sync engine（pull / push）===
 
-/// Pull 阶段：文件系统 → SQLite。对比 outline 找出新增/修改，读文件 upsert。
+/// Pull 阶段（set 层）：文件系统 → SQLite。对比 outline 找出新增/修改，读文件 upsert。
 ///
-/// 返回实际拉取（upsert）的条数。删除传播由 push 阶段处理（SQLite 无的文件被删）。
-///
-/// **name 冲突容错**：两设备各自建了同名版本（不同 UUID）时，upsert 会触发
-/// `UNIQUE(name)` 约束失败——此时跳过该版本（log::warn），不阻断整个 pull。
-/// 用户需手动重命名其中一个版本后再 sync。
-///
-/// ⚠️ **本函数无方向感知**（已被 [`merge_hotwords`] 取代，常规 sync_now 不再调用）。
-/// 只要 `sync_md5 != outline.md5` 就触发 upsert——本地加词后 `sync_md5` 变了，
-/// 此函数会用旧文件覆盖新 DB（见 `pull_function_direction_blind_by_design` 测试）。
-/// 保留供：首次 clone 场景（DB 空，pull 不会丢数据）+ 未来参考。常规同步请用
-/// [`merge_hotwords`]（按 `updated_at` 判方向）。
+/// 返回实际拉取的词典条数。**本函数无方向感知**（已被 [`merge_hotwords`] 取代，常规
+/// sync_now 不再调用）。保留供首次 clone 场景 + 未来参考。
 pub fn pull_hotwords_from_files() -> Result<usize> {
     let remote_outline = read_hotword_outline()?;
-    let db_sets = octopus_infra::db::list_hotword_sets()?;
+    let db_sets = db::list_hotword_sets()?;
 
     let db_ids: std::collections::HashSet<&str> = db_sets.iter().map(|h| h.id.as_str()).collect();
     let mut count = 0;
 
-    for (uuid, entry) in &remote_outline.ciphers {
-        // HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault #2 对齐），
-        // 不再调 hotword_md5_mismatch 读文件（消除双读——pull 主体行 354 还要读一次）。
+    for (uuid, entry) in &remote_outline.sets {
         let needs_update = !db_ids.contains(uuid.as_str())
-            || hotword_md5_mismatch_v2(uuid, &entry.md5, &db_sets);
+            || hotword_set_md5_mismatch(uuid, &entry.md5, &db_sets);
         if needs_update {
             match read_hotword_set_file(uuid) {
                 Ok(file) => {
@@ -390,21 +686,19 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
                     let md5 = hotword_set_md5(&h);
                     let mut h = h;
                     h.sync_md5 = Some(md5);
-                    // upsert 可能因 name UNIQUE 冲突失败（两设备同名不同 UUID）——跳过不阻断
-                    match octopus_infra::db::upsert_hotword_set(&h) {
+                    match db::upsert_hotword_set(&h) {
                         Ok(()) => count += 1,
                         Err(e) => {
                             log::warn!(
-                                "[sync] 热词版本 {} pull 跳过（可能 name 冲突）：{}",
+                                "[sync] 热词词典 {} pull 跳过（可能 name 冲突）：{}",
                                 uuid, e
                             );
                         }
                     }
                 }
-                // #10 修复（与 vault engine.rs 对齐）：损坏文件不再静默吞
                 Err(e) => {
                     log::warn!(
-                        "[sync] 热词版本 {} 文件读取失败，已跳过：{}",
+                        "[sync] 热词词典 {} 文件读取失败，已跳过：{}",
                         uuid, e
                     );
                 }
@@ -415,22 +709,20 @@ pub fn pull_hotwords_from_files() -> Result<usize> {
     Ok(count)
 }
 
-/// HW3 修复（2026-07-24）：用 outline.md5 对比 DB sync_md5（与 vault cipher_md5_mismatch 对齐）。
-/// 不再读文件——消除双读（pull 主体还要读一次文件 upsert）。
-fn hotword_md5_mismatch_v2(uuid: &str, outline_md5: &str, db_sets: &[HotwordSet]) -> bool {
+/// 用 outline.md5 对比 DB sync_md5（与 vault cipher_md5_mismatch 对齐）。
+fn hotword_set_md5_mismatch(uuid: &str, outline_md5: &str, db_sets: &[HotwordSet]) -> bool {
     match db_sets.iter().find(|h| h.id == uuid) {
-        None => true, // DB 无 → 需 pull
+        None => true,
         Some(h) => h.sync_md5.as_deref().unwrap_or("") != outline_md5,
     }
 }
 
-/// Push 阶段：SQLite 最新数据 → 文件系统 + 更新 outline。
+/// Push 阶段（set 层）：SQLite 最新数据 → 文件系统 + 更新 outline。
 ///
 /// 返回实际变更（写/删）的文件数。调用方：vault engine.rs sync_now 的 push 阶段（NoUpstream
-/// 首次推送分支）+ enable_sync 首次启用同步路径。常规 sync_now 走 [`merge_hotwords`]。
+/// 首次推送分支）+ enable_sync 首次启用同步路径。
 pub fn push_hotwords_to_files() -> Result<usize> {
-    let sets = octopus_infra::db::list_hotword_sets()?;
-    let (_, changed) = incremental_export_hotwords(&sets)?;
+    let (_, changed) = incremental_export_hotwords()?;
     Ok(changed)
 }
 
@@ -452,59 +744,29 @@ pub struct HotwordMergeReport {
 
 /// 3-way merge：DB ↔ 文件系统按 `updated_at` 最新赢，相等时 md5 比对 DB 赢。
 ///
-/// 对称于 vault 的 `merge_vault`（engine.rs），去掉 vault 的 stamp/meta 校验（热词无加密、
-/// 无 meta、无 folder）。merge 完后从 DB 最新状态重建 outline（DB 是单一真相源）。
+/// 分两阶段：
+/// 1. **set 层 merge**（词典元数据）：遍历总 outline，逐词典 3-way 判定
+/// 2. **word 层 merge**（词数据）：对每个词典读其 outline + DB 该词典的词，逐词 3-way 判定
 ///
-/// ## 为什么取代 pull + push 两步
-///
-/// 原 `pull_hotwords_from_files` 无方向感知——只要 `sync_md5 != outline.md5` 就触发
-/// upsert（全字段覆盖）。本地加词后 `refill_sync_md5` 正确改写 `sync_md5`，必然与旧
-/// outline 的 md5 不等 → pull 用旧文件覆盖 DB 新数据 → 新词丢失（详见
-/// 2026-08-01-hotword-sync-merge-model spec 的根因分析）。
-///
-/// merge 用 `updated_at` 时间戳判方向，彻底避免「旧 outline 覆盖新 DB」。
-///
-/// ## 调用方
-///
-/// `sync_now`（vault engine.rs）—— `skip_pull`（NoUpstream 首次推送）时调用方走
-/// `push_hotwords_to_files`，其余走 `merge_hotwords`。
+/// merge 完后从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
 pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     let remote_outline = read_hotword_outline()?;
-    let db_sets = octopus_infra::db::list_hotword_sets()?;
+    let db_sets = db::list_hotword_sets()?;
     let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
         db_sets.iter().map(|h| (h.id.as_str(), h)).collect();
     let mut report = HotwordMergeReport::default();
 
-    // 阶段 1：遍历 outline（远程），逐条 3-way 判定
-    for (uuid, entry) in &remote_outline.ciphers {
+    // === 阶段 1：set 层 merge（词典元数据）===
+    for (uuid, entry) in &remote_outline.sets {
         let remote_updated = entry.updated_ms;
         match db_by_id.get(uuid.as_str()) {
             None => {
-                // DB 无 → pull（读文件 upsert，回填 sync_md5）
-                match read_hotword_set_file(uuid) {
-                    Ok(file) => {
-                        let h = file.to_hotword_set(None);
-                        let md5 = hotword_set_md5(&h);
-                        let mut h = h;
-                        h.sync_md5 = Some(md5);
-                        match octopus_infra::db::upsert_hotword_set(&h) {
-                            Ok(()) => report.pulled += 1,
-                            Err(e) => {
-                                log::warn!(
-                                    "[sync] 热词 merge: 版本 {} pull 跳过（可能 name 冲突）：{}",
-                                    uuid,
-                                    e
-                                );
-                                report.skipped += 1;
-                            }
-                        }
-                    }
+                // DB 无 → pull（读 meta 文件 upsert，回填 sync_md5）
+                match pull_set(uuid) {
+                    Ok(true) => report.pulled += 1,
+                    Ok(false) => report.skipped += 1,
                     Err(e) => {
-                        log::warn!(
-                            "[sync] 热词 merge: 版本 {} 文件读取失败，已跳过：{}",
-                            uuid,
-                            e
-                        );
+                        log::warn!("[sync] 热词 merge: 词典 {} 文件读取失败，已跳过：{}", uuid, e);
                         report.skipped += 1;
                     }
                 }
@@ -513,36 +775,17 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
                 let local_updated = iso_to_unix_ms(&db_h.updated_at);
                 if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB
-                    match read_hotword_set_file(uuid) {
-                        Ok(file) => {
-                            let h = file.to_hotword_set(None);
-                            let md5 = hotword_set_md5(&h);
-                            let mut h = h;
-                            h.sync_md5 = Some(md5);
-                            match octopus_infra::db::upsert_hotword_set(&h) {
-                                Ok(()) => report.pulled += 1,
-                                Err(e) => {
-                                    log::warn!(
-                                        "[sync] 热词 merge: 版本 {} pull 跳过：{}",
-                                        uuid,
-                                        e
-                                    );
-                                    report.skipped += 1;
-                                }
-                            }
-                        }
+                    match pull_set(uuid) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
                         Err(e) => {
-                            log::warn!(
-                                "[sync] 热词 merge: 版本 {} 文件读取失败，已跳过：{}",
-                                uuid,
-                                e
-                            );
+                            log::warn!("[sync] 热词 merge: 词典 {} pull 跳过：{}", uuid, e);
                             report.skipped += 1;
                         }
                     }
                 } else if local_updated > remote_updated {
                     // DB 更新 → push 覆盖文件
-                    write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+                    write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
                     report.pushed += 1;
                 } else {
                     // 时间戳相等 → md5 比对，冲突 DB 赢
@@ -551,29 +794,33 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
                         .clone()
                         .unwrap_or_else(|| hotword_set_md5(db_h));
                     if db_md5 != entry.md5 {
-                        write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+                        write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
                         report.pushed += 1;
                         report.conflicts += 1;
                     }
-                    // md5 相同 → skip
                 }
             }
         }
     }
 
-    // 阶段 2：DB 有 + outline 无 → push（写文件）
+    // set：DB 有 + outline 无 → push（写 meta 文件）
     for db_h in &db_sets {
-        if !remote_outline.ciphers.contains_key(&db_h.id) {
-            write_hotword_set_file(&HotwordSetFile::from_hotword_set(db_h))?;
+        if !remote_outline.sets.contains_key(&db_h.id) {
+            write_hotword_set_file(&HotwordSetMeta::from_hotword_set(db_h))?;
             report.pushed += 1;
         }
     }
 
-    // 阶段 3：从 DB 最新状态重建 outline（DB 是单一真相源，对称于 vault export_all_to_files）。
-    // merge 已把 .sync 拉回 DB（阶段 1 pull），DB 反映合并后的最新状态——export_all
-    // 清空目录重写文件 + 写 outline，幂等（无变化 git 不产生 diff）。
-    let latest = octopus_infra::db::list_hotword_sets()?;
-    export_all_hotwords(&latest)?;
+    // === 阶段 2：word 层 merge（每个词典的词数据）===
+    // 对每个 DB 存在的词典，读其 outline + DB 该词典的词，逐词 3-way merge。
+    // 远程词典在阶段 1 已 pull 到 DB，故这里以 DB 词典为准遍历即可覆盖。
+    let latest_sets = db::list_hotword_sets()?;
+    for set in &latest_sets {
+        merge_hotword_words(&set.id, &mut report)?;
+    }
+
+    // === 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）===
+    export_all_hotwords()?;
 
     log::info!(
         "[sync] merge_hotwords 完成：pulled={} pushed={} conflicts={} skipped={}",
@@ -583,6 +830,122 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
         report.skipped
     );
     Ok(report)
+}
+
+/// Pull 单个词典（读 meta 文件 → upsert DB，回填 sync_md5）。
+/// 返回 Ok(true) 表示成功 upsert，Ok(false) 表示 name 冲突跳过。
+fn pull_set(uuid: &str) -> Result<bool> {
+    match read_hotword_set_file(uuid) {
+        Ok(file) => {
+            let h = file.to_hotword_set(None);
+            let md5 = hotword_set_md5(&h);
+            let mut h = h;
+            h.sync_md5 = Some(md5);
+            match db::upsert_hotword_set(&h) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    log::warn!(
+                        "[sync] 热词 merge: 词典 {} pull 跳过（可能 name 冲突）：{}",
+                        uuid,
+                        e
+                    );
+                    Ok(false)
+                }
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 单个词典的 word 级 3-way merge（对称 vault cipher merge）。
+/// 读词典内 outline（远程）+ DB 该词典的词（本地），逐词判定。
+fn merge_hotword_words(set_id: &str, report: &mut HotwordMergeReport) -> Result<()> {
+    let remote_outline = read_hotword_set_outline(set_id)?;
+    let db_words = db::list_all_hotword_words()?;
+    let db_words: Vec<&HotwordWord> = db_words.iter().filter(|w| w.set_id == set_id).collect();
+    let db_by_id: std::collections::HashMap<&str, &HotwordWord> =
+        db_words.iter().map(|w| (w.id.as_str(), *w)).collect();
+
+    // word：outline 有 → 3-way 判定
+    for (uuid, entry) in &remote_outline.words {
+        let remote_updated = entry.updated_ms;
+        match db_by_id.get(uuid.as_str()) {
+            None => {
+                // DB 无 → pull（读词文件 upsert，回填 sync_md5）
+                match pull_word(set_id, uuid) {
+                    Ok(true) => report.pulled += 1,
+                    Ok(false) => report.skipped += 1,
+                    Err(e) => {
+                        log::warn!(
+                            "[sync] 热词 merge: 词 {} 文件读取失败，已跳过：{}",
+                            uuid, e
+                        );
+                        report.skipped += 1;
+                    }
+                }
+            }
+            Some(db_w) => {
+                let local_updated = iso_to_unix_ms(&db_w.updated_at);
+                if remote_updated > local_updated {
+                    // 远程更新 → pull 覆盖 DB（软删传播：is_deleted=true 的词 pull 后 DB 也变软删）
+                    match pull_word(set_id, uuid) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
+                        Err(e) => {
+                            log::warn!("[sync] 热词 merge: 词 {} pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if local_updated > remote_updated {
+                    // DB 更新 → push 覆盖文件
+                    write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
+                    report.pushed += 1;
+                } else {
+                    // 时间戳相等 → md5 比对，冲突 DB 赢
+                    let db_md5 = db_w
+                        .sync_md5
+                        .clone()
+                        .unwrap_or_else(|| hotword_word_md5(db_w));
+                    if db_md5 != entry.md5 {
+                        write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
+                        report.pushed += 1;
+                        report.conflicts += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // word：DB 有 + outline 无 → push（写词文件）
+    for db_w in &db_words {
+        if !remote_outline.words.contains_key(&db_w.id) {
+            write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
+            report.pushed += 1;
+        }
+    }
+
+    Ok(())
+}
+
+/// Pull 单个词（读词文件 → upsert DB，回填 sync_md5）。
+/// 返回 Ok(true) 表示成功 upsert，Ok(false) 不应发生（词无 name 冲突）。
+fn pull_word(set_id: &str, uuid: &str) -> Result<bool> {
+    match read_hotword_word_file(set_id, uuid) {
+        Ok(file) => {
+            let w = file.to_hotword_word(None);
+            let md5 = hotword_word_md5(&w);
+            let mut w = w;
+            w.sync_md5 = Some(md5);
+            match db::upsert_hotword_word(&w) {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    log::warn!("[sync] 热词 merge: 词 {} upsert 跳过：{}", uuid, e);
+                    Ok(false)
+                }
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -626,7 +989,6 @@ mod tests {
     fn hotword_set_md5_is_deterministic() {
         let h1 = sample_set("uuid-1", "版本A");
         let h2 = sample_set("uuid-2", "版本A");
-        // id 不同但逻辑内容（name|enabled）相同 → md5 应相同
         assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
@@ -665,53 +1027,187 @@ mod tests {
         assert_eq!(from_struct, from_fields);
     }
 
+    // === word md5 测试 ===
+
+    fn sample_word(set_id: &str, word: &str, pinyin: &str, is_deleted: bool) -> HotwordWord {
+        HotwordWord {
+            id: octopus_infra::hotword_text::hotword_word_uuid(set_id, word),
+            set_id: set_id.into(),
+            word: word.into(),
+            pinyin: pinyin.into(),
+            is_deleted,
+            created_at: "2026-07-22 10:00:00".into(),
+            updated_at: "2026-07-22 10:00:00".into(),
+            sync_md5: None,
+        }
+    }
+
+    #[test]
+    fn hotword_word_md5_is_deterministic() {
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        assert_eq!(hotword_word_md5(&w1), hotword_word_md5(&w2));
+    }
+
+    #[test]
+    fn hotword_word_md5_ignores_timestamps() {
+        let mut w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let mut w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        w2.created_at = "1999-01-01 00:00:00".into();
+        w2.updated_at = "2099-12-31 23:59:59".into();
+        let _ = &mut w1;
+        assert_eq!(hotword_word_md5(&w1), hotword_word_md5(&w2));
+    }
+
+    #[test]
+    fn hotword_word_md5_changes_on_is_deleted() {
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", true);
+        assert_ne!(
+            hotword_word_md5(&w1),
+            hotword_word_md5(&w2),
+            "软删 is_deleted 变化应改变 md5"
+        );
+    }
+
+    #[test]
+    fn hotword_word_md5_changes_on_word() {
+        let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", false);
+        let w2 = sample_word("set-1", "浮窗", "fu chuang", false);
+        assert_ne!(hotword_word_md5(&w1), hotword_word_md5(&w2));
+    }
+
+    /// 长度前缀防 `|` 碰撞：`{a}|{b}` vs `{a|b}|{}` 不应产生相同 md5。
+    #[test]
+    fn hotword_word_md5_pipe_collision_safe() {
+        // 场景：set_id="x", word="a|b" 与 set_id="x|a", word="b" 的拼接不同
+        let m1 = hotword_word_md5_from_fields("x", "a|b", "", false);
+        let m2 = hotword_word_md5_from_fields("x|a", "b", "", false);
+        assert_ne!(m1, m2, "长度前缀应防 | 碰撞");
+    }
+
     // === 文件读写测试 ===
 
     #[test]
     fn hotword_set_file_round_trip() {
         let _g = SyncRootGuard::new();
-        let h = sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "测试版本");
-        let file = HotwordSetFile::from_hotword_set(&h);
-        write_hotword_set_file(&file).expect("write");
+        let id = "a1b2c3d4-e5f6-4789-8901-abcdef123456";
+        let h = sample_set(id, "测试版本");
+        let meta = HotwordSetMeta::from_hotword_set(&h);
+        write_hotword_set_file(&meta).expect("write");
 
-        let loaded = read_hotword_set_file(&h.id).expect("read");
-        assert_eq!(loaded.id, h.id);
-        assert_eq!(loaded.name, h.name);
-        assert_eq!(loaded.enabled, h.enabled);
+        let loaded = read_hotword_set_file(id).expect("read");
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.name, "测试版本");
+        assert!(loaded.enabled);
     }
 
     #[test]
     fn delete_hotword_set_file_is_idempotent() {
         let _g = SyncRootGuard::new();
-        let uuid = "a1b2c3d4-e5f6-4789-8901-abcdef123456";
-        // 文件不存在时删除应返 Ok（幂等）
-        delete_hotword_set_file(uuid).expect("删不存在的文件应 Ok");
+        let id = "a1b2c3d4-e5f6-4789-8901-abcdef123456";
+        delete_hotword_set_file(id).expect("删不存在的文件应 Ok");
+    }
+
+    #[test]
+    fn hotword_word_file_round_trip() {
+        let _g = SyncRootGuard::new();
+        let set_id = "a1b2c3d4-e5f6-4789-8901-abcdef123456";
+        let w = sample_word(set_id, "八爪鱼", "ba zhao yu", false);
+        let file = HotwordWordFile::from_hotword_word(&w);
+        write_hotword_word_file(&file).expect("write");
+
+        let loaded = read_hotword_word_file(set_id, &w.id).expect("read");
+        assert_eq!(loaded.id, w.id);
+        assert_eq!(loaded.word, "八爪鱼");
+        assert_eq!(loaded.pinyin, "ba zhao yu");
+        assert!(!loaded.is_deleted);
+    }
+
+    #[test]
+    fn delete_hotword_word_file_is_idempotent() {
+        let _g = SyncRootGuard::new();
+        let set_id = "a1b2c3d4-0001";
+        let word_uuid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        delete_hotword_word_file(set_id, word_uuid).expect("删不存在的文件应 Ok");
+    }
+
+    /// path traversal 防护：含 `..` `/` `\` 的 id 应被拒。
+    #[test]
+    fn hotword_paths_reject_traversal() {
+        for evil in ["../../meta", "..\\..\\meta", "a/../../b", "a\\b", "", "with/slash"] {
+            assert!(
+                hotword_set_dir(evil).is_err(),
+                "set_dir 应拒绝 path traversal：{}",
+                evil
+            );
+            assert!(
+                hotword_meta_file_path(evil).is_err(),
+                "meta_path 应拒绝 path traversal：{}",
+                evil
+            );
+            assert!(
+                hotword_word_file_path(evil, "safe-uuid").is_err(),
+                "word_file_path(set) 应拒绝 path traversal：{}",
+                evil
+            );
+            assert!(
+                hotword_word_file_path("safe-set", evil).is_err(),
+                "word_file_path(word) 应拒绝 path traversal：{}",
+                evil
+            );
+        }
     }
 
     #[test]
     fn hotword_outline_round_trip() {
         let _g = SyncRootGuard::new();
-        let outline = Outline {
+        let outline = HotwordOutline {
             version: 1,
-            vault_version: 42,
-            ciphers: std::collections::BTreeMap::from([
-                ("uuid-1".into(), OutlineEntry { md5: "md5a".into(), updated_ms: 1000 }),
-            ]),
-            folders: std::collections::BTreeMap::new(),
+            hotword_version: 42,
+            sets: BTreeMap::from([(
+                "uuid-1".into(),
+                OutlineEntry {
+                    md5: "md5a".into(),
+                    updated_ms: 1000,
+                },
+            )]),
         };
         write_hotword_outline(&outline).expect("write");
         let loaded = read_hotword_outline().expect("read");
-        assert_eq!(loaded.vault_version, 42);
-        assert_eq!(loaded.ciphers.len(), 1);
-        assert_eq!(loaded.ciphers["uuid-1"].md5, "md5a");
+        assert_eq!(loaded.hotword_version, 42);
+        assert_eq!(loaded.sets.len(), 1);
+        assert_eq!(loaded.sets["uuid-1"].md5, "md5a");
+    }
+
+    #[test]
+    fn hotword_set_outline_round_trip() {
+        let _g = SyncRootGuard::new();
+        let set_id = "a1b2c3d4-0001";
+        let outline = HotwordSetOutline {
+            version: 1,
+            hotword_version: 7,
+            words: BTreeMap::from([(
+                "word-uuid-1".into(),
+                OutlineEntry {
+                    md5: "md5w".into(),
+                    updated_ms: 2000,
+                },
+            )]),
+        };
+        write_hotword_set_outline(set_id, &outline).expect("write");
+        let loaded = read_hotword_set_outline(set_id).expect("read");
+        assert_eq!(loaded.hotword_version, 7);
+        assert_eq!(loaded.words.len(), 1);
+        assert_eq!(loaded.words["word-uuid-1"].md5, "md5w");
     }
 
     #[test]
     fn read_hotword_outline_missing_returns_default() {
         let _g = SyncRootGuard::new();
         let outline = read_hotword_outline().expect("应返默认空 outline");
-        assert_eq!(outline.vault_version, 0);
-        assert!(outline.ciphers.is_empty());
+        assert_eq!(outline.hotword_version, 0);
+        assert!(outline.sets.is_empty());
     }
 
     // === export/import 测试 ===
@@ -723,10 +1219,9 @@ mod tests {
             sample_set("a1b2c3d4-e5f6-4789-8901-abcdef123456", "版本A"),
             sample_set("b2c3d4e5-f6a7-4890-9002-bcdef234567", "版本B"),
         ];
-        let outline = export_all_hotwords(&sets).expect("export");
-        assert_eq!(outline.ciphers.len(), 2);
+        let outline = export_all_hotwords_with(&sets, &[]).expect("export");
+        assert_eq!(outline.sets.len(), 2);
 
-        // 文件实际写到了分桶目录
         let loaded = import_hotwords_from_files().expect("import");
         assert_eq!(loaded.len(), 2);
     }
@@ -736,12 +1231,13 @@ mod tests {
         let _g = SyncRootGuard::new();
         let sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
 
-        // 第一次 export（全量）
-        let first = export_all_hotwords(&sets).expect("first export");
-        // 第二次 incremental——sync_md5 已在 outline 里，应 0 变更
-        let (outline, changed) = incremental_export_hotwords(&sets).expect("incremental");
+        let first = export_all_hotwords_with(&sets, &[]).expect("first export");
+        let (outline, changed) = incremental_export_hotwords_with(&sets, &[]).expect("incremental");
         assert_eq!(changed, 0, "无变化时应 0 变更");
-        assert_eq!(outline.vault_version, first.vault_version, "无变化版本不递增");
+        assert_eq!(
+            outline.hotword_version, first.hotword_version,
+            "无变化版本不递增"
+        );
     }
 
     #[test]
@@ -751,12 +1247,11 @@ mod tests {
             sample_set("a1b2c3d4-0001", "版本A"),
             sample_set("a1b2c3d4-0002", "版本B"),
         ];
-        export_all_hotwords(&sets).expect("initial");
+        export_all_hotwords_with(&sets, &[]).expect("initial");
 
-        // 改一个版本的 name（sync_md5 会变）
         let mut sets2 = sets.clone();
         sets2[0].name = "版本A改".into();
-        let (_, changed) = incremental_export_hotwords(&sets2).expect("incremental");
+        let (_, changed) = incremental_export_hotwords_with(&sets2, &[]).expect("incremental");
         assert_eq!(changed, 1, "只改了一个版本，应 1 变更");
     }
 
@@ -767,19 +1262,17 @@ mod tests {
             sample_set("a1b2c3d4-0001", "版本A"),
             sample_set("a1b2c3d4-0002", "版本B"),
         ];
-        export_all_hotwords(&sets).expect("initial");
+        export_all_hotwords_with(&sets, &[]).expect("initial");
 
-        // SQLite 删了一个（只剩版本A）
         let sets2 = vec![sample_set("a1b2c3d4-0001", "版本A")];
-        let (outline, changed) = incremental_export_hotwords(&sets2).expect("incremental");
+        let (outline, changed) = incremental_export_hotwords_with(&sets2, &[]).expect("incremental");
         assert_eq!(changed, 1, "删了一个版本，应 1 变更");
-        assert_eq!(outline.ciphers.len(), 1);
-        assert!(outline.ciphers.contains_key("a1b2c3d4-0001"));
+        assert_eq!(outline.sets.len(), 1);
+        assert!(outline.sets.contains_key("a1b2c3d4-0001"));
 
-        // 文件也应被删
         assert!(
             read_hotword_set_file("a1b2c3d4-0002").is_err(),
-            "已删版本A的文件不应存在"
+            "已删版本的 meta 文件不应存在"
         );
     }
 
@@ -789,30 +1282,14 @@ mod tests {
     fn incremental_export_protects_sync_data_when_db_empty() {
         let _g = SyncRootGuard::new();
         let sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
-        export_all_hotwords(&sets).expect("initial");
+        export_all_hotwords_with(&sets, &[]).expect("initial");
         assert!(read_hotword_set_file("a1b2c3d4-0001").is_ok());
 
-        // DB 完全空（清库场景）→ 不应删文件
-        let (_outline, changed) = incremental_export_hotwords(&[]).expect("empty");
+        let (_outline, changed) = incremental_export_hotwords_with(&[], &[]).expect("empty");
         assert_eq!(changed, 0, "DB 空 + .sync 有数据时不应删任何文件");
         assert!(
             read_hotword_set_file("a1b2c3d4-0001").is_ok(),
             "DB 空时 .sync 的热词文件应保留（防止覆盖）"
-        );
-    }
-
-    #[test]
-    fn incremental_export_outline_uses_sync_md5() {
-        let _g = SyncRootGuard::new();
-        // 预设 sync_md5——incremental_export 应把它写入 outline（而非临时算）
-        let mut sets = vec![sample_set("a1b2c3d4-0001", "版本A")];
-        sets[0].sync_md5 = Some("preset-md5-value".into());
-
-        let (outline, _) = incremental_export_hotwords(&sets).expect("export");
-        assert_eq!(
-            outline.ciphers["a1b2c3d4-0001"].md5,
-            "preset-md5-value",
-            "outline.md5 应用 SQLite 的 sync_md5 值"
         );
     }
 
@@ -823,20 +1300,15 @@ mod tests {
             sample_set("a1b2c3d4-0001", "版本A"),
             sample_set("b2c3d4e5-0002", "版本B"),
         ];
-        export_all_hotwords(&sets).expect("export");
+        export_all_hotwords_with(&sets, &[]).expect("export");
 
         let loaded = import_hotwords_from_files().expect("import");
         assert_eq!(loaded.len(), 2);
-        // 验证内容完整（不丢字段）
         let a = loaded.iter().find(|f| f.name == "版本A").expect("应有版本A");
         assert!(a.enabled);
     }
 
     // === sync engine 集成测试（pull / push） ===
-    //
-    // 模拟 A→B 同步：A 机 export → 文件系统（模拟 git remote）→ B 机 pull。
-    // 共用 sync_root（tempdir）——实际 git 同步时 A push 到 remote，B pull 从 remote，
-    // 文件内容一致；测试里省略 git 层，直接用同一文件系统验证 pull/push 逻辑。
 
     use octopus_infra::db;
 
@@ -844,16 +1316,6 @@ mod tests {
     fn add_words(set_id: &str, words: &str) {
         let ws: Vec<String> = words.split_whitespace().map(|s| s.to_string()).collect();
         db::add_words_to_set(set_id, &ws).unwrap();
-    }
-
-    /// 测试辅助：某 set 的活跃词文本（空格分隔，按 word 排序），便于断言。
-    fn words_text_of(set_id: &str) -> String {
-        db::list_words_in_set(set_id)
-            .unwrap()
-            .iter()
-            .map(|w| w.word.as_str())
-            .collect::<Vec<_>>()
-            .join(" ")
     }
 
     /// DB + sync_root 双隔离 guard——pull/push 测试用。
@@ -866,7 +1328,6 @@ mod tests {
             let sync_path = tmp.path().join(".sync");
             std::fs::create_dir_all(&sync_path).unwrap();
             crate::store::set_test_sync_root(sync_path);
-            // 内存 DB（set_test_db 已设 v46 schema + 默认「通用」seed）
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             db::set_test_db(conn);
             Self { _tmp: tmp }
@@ -882,33 +1343,28 @@ mod tests {
     #[test]
     fn pull_imports_sets_exported_by_other_device() {
         let _g = DbSyncGuard::new();
-        // 清掉默认「通用」seed，聚焦测试数据
         let initial = db::list_hotword_sets().unwrap();
         for h in &initial {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        // A 机：写 SQLite + export 到文件（模拟 A push）
         let id_a = "aaaaaaaa-0001";
         db::insert_hotword_set(id_a, "A机版本").unwrap();
         add_words(id_a, "苹果 香蕉");
-        let sets = db::list_hotword_sets().unwrap();
-        export_all_hotwords(&sets).expect("A export");
+        export_all_hotwords().expect("A export");
 
-        // 清空 SQLite（模拟 B 机初始空 DB）
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
         assert!(db::list_hotword_sets().unwrap().is_empty(), "B 机初始应空");
 
-        // B 机 pull
         let pulled = pull_hotwords_from_files().expect("B pull");
         assert_eq!(pulled, 1, "应拉取 1 个版本");
 
         let b_sets = db::list_hotword_sets().unwrap();
         assert_eq!(b_sets.len(), 1);
         assert_eq!(b_sets[0].name, "A机版本");
-        assert_eq!(b_sets[0].id, id_a, "id 应保持一致（跨设备 UUID 隔离）");
+        assert_eq!(b_sets[0].id, id_a);
         assert!(b_sets[0].sync_md5.is_some(), "pull 后应有 sync_md5");
     }
 
@@ -916,7 +1372,6 @@ mod tests {
     #[test]
     fn bidirectional_sync_converges() {
         let _g = DbSyncGuard::new();
-        // 清默认 seed
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
@@ -925,27 +1380,20 @@ mod tests {
         db::insert_hotword_set(id, "原版本").unwrap();
         add_words(id, "苹果");
 
-        // 首次 export（模拟初始同步）
-        let sets = db::list_hotword_sets().unwrap();
-        export_all_hotwords(&sets).expect("initial export");
+        export_all_hotwords().expect("initial export");
 
-        // A 机改 name + push
         db::rename_hotword_set(id, "A机改名").unwrap();
-        let sets_a = db::list_hotword_sets().unwrap();
         push_hotwords_to_files().expect("A push");
 
-        // B 机 pull → 应看到新 name
-        // 模拟 B 机：先清 DB 再 pull
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("B pull");
         let b_sets = db::list_hotword_sets().unwrap();
         assert_eq!(b_sets[0].name, "A机改名", "B 应看到 A 改的 name");
-        let _ = sets_a; // 避免 unused
     }
 
-    /// 删除传播：A 删热词版本 → push → B pull 后版本消失（文件被删 + outline 无 entry）。
+    /// 删除传播：A 删热词版本 → push → B pull 后版本消失。
     #[test]
     fn delete_propagates_through_sync() {
         let _g = DbSyncGuard::new();
@@ -958,15 +1406,11 @@ mod tests {
         db::insert_hotword_set(id1, "版本1").unwrap();
         db::insert_hotword_set(id2, "版本2").unwrap();
 
-        // 初始 export（2 个版本）
-        let sets = db::list_hotword_sets().unwrap();
-        export_all_hotwords(&sets).expect("initial");
+        export_all_hotwords().expect("initial");
 
-        // A 机删版本2 + push
         db::delete_hotword_set(id2).unwrap();
         push_hotwords_to_files().expect("A push after delete");
 
-        // B 机 pull（模拟 B 先清 DB）
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
@@ -975,15 +1419,12 @@ mod tests {
         let b_sets = db::list_hotword_sets().unwrap();
         assert_eq!(b_sets.len(), 1, "B 应只有 1 个版本（版本2 已删）");
         assert_eq!(b_sets[0].id, id1);
-
-        // 文件也应被删
         assert!(
             read_hotword_set_file(id2).is_err(),
             "已删版本的文件不应存在"
         );
     }
 
-    /// push 后再 push 无变化时应 0 变更（增量 diff 正确）。
     #[test]
     fn push_twice_second_time_zero_changes() {
         let _g = DbSyncGuard::new();
@@ -994,18 +1435,15 @@ mod tests {
         db::insert_hotword_set("dddddddd-0001", "版本").unwrap();
         add_words("dddddddd-0001", "苹果");
 
-        // 第一次 push
         let first = push_hotwords_to_files().expect("first push");
         assert!(first > 0, "首次应有变更");
 
-        // 第二次 push（无变化）
         let second = push_hotwords_to_files().expect("second push");
         assert_eq!(second, 0, "无变化时应 0 变更");
     }
 
-    // === 边界场景补充（2026-07-22）===
+    // === 边界场景补充 ===
 
-    /// 空列表 export/push：DB 无热词（清空默认 seed）时不应 panic，outline 应空。
     #[test]
     fn export_empty_set_list_is_safe() {
         let _g = DbSyncGuard::new();
@@ -1014,28 +1452,20 @@ mod tests {
         }
         assert!(db::list_hotword_sets().unwrap().is_empty());
 
-        // export_all 空列表
-        let outline = export_all_hotwords(&[]).expect("export empty");
-        assert!(outline.ciphers.is_empty());
+        let outline = export_all_hotwords_with(&[], &[]).expect("export empty");
+        assert!(outline.sets.is_empty());
 
-        // incremental_export 空列表
-        let (outline2, changed) = incremental_export_hotwords(&[]).expect("incremental empty");
-        assert!(outline2.ciphers.is_empty());
+        let (outline2, changed) = incremental_export_hotwords_with(&[], &[]).expect("incremental empty");
+        assert!(outline2.sets.is_empty());
         assert_eq!(changed, 0);
 
-        // push 空列表
         let pushed = push_hotwords_to_files().expect("push empty");
         assert_eq!(pushed, 0);
 
-        // pull 空文件
         let pulled = pull_hotwords_from_files().expect("pull empty");
         assert_eq!(pulled, 0);
     }
 
-    /// enabled 切换经 sync 传播：A 机 toggle → push → B 机 pull 后 enabled 一致。
-    ///
-    /// 注意：toggle 后必须回填 sync_md5（与 desktop 命令层 refill_sync_md5 同行为），
-    /// 否则 incremental_export 会因 sync_md5 未变而误判「无变化」不重写文件。
     #[test]
     fn enabled_toggle_propagates_through_sync() {
         let _g = DbSyncGuard::new();
@@ -1046,47 +1476,30 @@ mod tests {
         let id = "eeeeeeee-0001";
         db::insert_hotword_set(id, "版本").unwrap();
         add_words(id, "苹果");
-        // 回填 sync_md5（模拟 desktop 命令层行为）
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
-        // 默认 enabled=true
         assert!(db::get_hotword_set(id).unwrap().enabled);
 
-        // export（enabled=true 状态）
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export enabled=true");
+        export_all_hotwords().expect("export enabled=true");
 
-        // 模拟 B 机：清 DB 后 pull
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("pull");
-        assert!(
-            db::get_hotword_set(id).unwrap().enabled,
-            "B 机 pull 后 enabled 应为 true（与 A 机一致）"
-        );
+        assert!(db::get_hotword_set(id).unwrap().enabled);
 
-        // A 机 toggle enabled=false + 回填 sync_md5 + push
         db::toggle_hotword_set(id, false).unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
         push_hotwords_to_files().expect("push disabled");
 
-        // B 机再次 pull
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("pull again");
-        assert!(
-            !db::get_hotword_set(id).unwrap().enabled,
-            "B 机再次 pull 后 enabled 应为 false（A 机 toggle 已传播）"
-        );
+        assert!(!db::get_hotword_set(id).unwrap().enabled);
     }
 
-    /// name 冲突场景：两设备各自新建同名版本（不同 UUID），pull 时 upsert 不应因
-    /// name UNIQUE 约束失败（upsert 按 id 覆盖，不触发 name 冲突）。
-    ///
-    /// 注意：这是「同名不同 UUID」场景。如果两设备用相同 UUID + 相同 name，
-    /// upsert 直接覆盖无冲突。
     #[test]
     fn pull_same_name_different_uuid_does_not_conflict() {
         let _g = DbSyncGuard::new();
@@ -1094,36 +1507,28 @@ mod tests {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        // 设备 A：建 "同名版本" UUID-A
         let id_a = "ffffffff-aaaa";
         db::insert_hotword_set(id_a, "同名版本").unwrap();
         add_words(id_a, "苹果");
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export A");
+        export_all_hotwords().expect("export A");
 
-        // 清 DB，模拟设备 B 初始空
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        // 设备 B 本地也建了一个同名版本（不同 UUID）
         let id_b = "ffffffff-bbbb";
         db::insert_hotword_set(id_b, "同名版本").unwrap();
         add_words(id_b, "香蕉");
 
-        // B pull A 的版本——upsert 因 name UNIQUE 冲突失败，该版本被跳过（不 panic）
         let pulled = pull_hotwords_from_files().expect("pull 不应 panic");
-        // name 冲突时 A 的版本被跳过，pulled=0；B 的本地版本仍安全存在
         assert_eq!(pulled, 0, "name 冲突的版本应被跳过，pulled=0");
 
-        // B 的本地版本安全无恙（未被冲突破坏）
         let sets = db::list_hotword_sets().unwrap();
-        assert_eq!(sets.len(), 1, "B 本地版本应仍在（A 的因 name 冲突未拉入）");
-        assert!(sets.iter().any(|h| h.id == id_b), "应有 B 的本地版本");
-        assert!(!sets.iter().any(|h| h.id == id_a), "A 的版本因 name 冲突未拉入");
+        assert_eq!(sets.len(), 1);
+        assert!(sets.iter().any(|h| h.id == id_b));
+        assert!(!sets.iter().any(|h| h.id == id_a));
     }
 
-    /// pull 时文件损坏（JSON 解析失败）不应 panic——read_hotword_set_file 返 Err 被
-    /// pull_hotwords_from_files 的 `if let Ok(...)` 吞掉，只跳过该版本。
     #[test]
     fn pull_skips_corrupted_set_file() {
         let _g = DbSyncGuard::new();
@@ -1131,37 +1536,24 @@ mod tests {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        // 正常版本
         let id_ok = "11111111-0001";
         db::insert_hotword_set(id_ok, "正常版本").unwrap();
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export");
+        export_all_hotwords().expect("export");
 
-        // 在文件系统里伪造一个损坏的版本文件（直接写无效 JSON）
-        let corrupt_path = hotword_set_file_path("22222222-corrupt");
-        if let Some(parent) = corrupt_path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
-        std::fs::write(&corrupt_path, "{ this is not valid json }").unwrap();
+        // 伪造一个损坏的词典目录（额外 set，meta.json 写无效 JSON）
+        let corrupt_dir = hotword_set_dir("22222222-corrupt").unwrap();
+        std::fs::create_dir_all(&corrupt_dir).unwrap();
+        std::fs::write(corrupt_dir.join("meta.json"), "{ this is not valid json }").unwrap();
 
-        // 清 DB，pull——损坏文件应被跳过，不 panic
         for h in db::list_hotword_sets().unwrap() {
             let _ = db::delete_hotword_set(&h.id);
         }
+        // pull 只读 outline 列出的 set——伪造目录不在 outline 里，不会读到，不阻断
         let pulled = pull_hotwords_from_files().expect("pull 不应因损坏文件 panic");
-        // 正常版本被拉取，损坏的被跳过
-        assert_eq!(pulled, 1, "只应拉取正常版本，损坏的被跳过");
+        assert_eq!(pulled, 1, "只应拉取正常版本");
         assert!(db::get_hotword_set(id_ok).is_ok(), "正常版本应在 DB");
     }
 
-    /// 守护：`pull_hotwords_from_files` **设计上无方向感知**——会用旧文件覆盖本地新 DB。
-    ///
-    /// 这不是 bug，是 pull 函数的设计契约（它只做单向「文件 → DB」，不判方向）。
-    /// 历史 bug 在于 sync_now 曾依赖此函数做双向同步（已修复——常规 sync 改用
-    /// [`merge_hotwords`]，见上方 `merge_keeps_local_newer_set_not_overwritten` 测试）。
-    ///
-    /// 本测试保留是为了：① 文档化 pull 的无方向特性；② 防止未来有人误改 pull 加方向
-    /// 判断（那会让首次 clone 的「DB 空 → pull 全量」路径出问题）。pull 现仅用于
-    /// 首次 clone 场景（DB 空，无覆盖风险）+ 测试 reference。
     #[test]
     fn pull_function_direction_blind_by_design() {
         let _g = DbSyncGuard::new();
@@ -1169,20 +1561,16 @@ mod tests {
             let _ = db::delete_hotword_set(&h.id);
         }
 
-        // 模拟「上次 sync 的状态」：export 旧版本到文件
         let id = "dddddddd-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+        export_all_hotwords().expect("export 旧版本");
 
-        // 本地改 name + 回填 sync_md5
         db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
-        // 直接调 pull——会用旧文件（name="测试集"）覆盖 DB（name="测试集改"）
         let _pulled = pull_hotwords_from_files().expect("pull");
 
-        // pull 无方向感知——旧文件覆盖了 DB 新 name（设计契约）
         let after = db::get_hotword_set(id).unwrap();
         assert_eq!(
             after.name, "测试集",
@@ -1190,9 +1578,6 @@ mod tests {
         );
     }
 
-    /// 回归守护：push 阶段（incremental_export）正确导出本地新数据到文件。
-    /// merge_hotwords 内部阶段 2/3 也复用此导出能力——本地加词 → merge 判定 DB 更新 →
-    /// push 导出新词到文件 → commit + push → 远端拿到新词。
     #[test]
     fn push_exports_local_new_data_when_outline_stale() {
         let _g = DbSyncGuard::new();
@@ -1202,23 +1587,19 @@ mod tests {
 
         let id = "eeeeeeee-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+        export_all_hotwords().expect("export 旧版本");
 
-        // 本地改 name（set 元数据变更 → sync_md5 变）
         db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
-        // push（DB → 文件）
         let pushed = push_hotwords_to_files().expect("push");
         assert_eq!(pushed, 1, "应导出 1 个变化的版本");
 
-        // 文件现在含新 name（验证 export 正确）
         let file = read_hotword_set_file(id).expect("read file");
         assert_eq!(file.name, "测试集改");
     }
 
-    /// incremental_export 的 vault_version 在有变化时递增，无变化时不递增（回归守护）。
     #[test]
     fn incremental_export_version_increments_only_on_change() {
         let _g = DbSyncGuard::new();
@@ -1227,35 +1608,28 @@ mod tests {
         }
 
         let sets = vec![sample_set("33333333-0001", "版本A")];
-        let (outline1, changed1) = incremental_export_hotwords(&sets).expect("first");
+        let (outline1, changed1) = incremental_export_hotwords_with(&sets, &[]).expect("first");
         assert!(changed1 > 0);
-        let v1 = outline1.vault_version;
+        let v1 = outline1.hotword_version;
 
-        // 无变化再 export
-        let (outline2, changed2) = incremental_export_hotwords(&sets).expect("second");
+        let (outline2, changed2) = incremental_export_hotwords_with(&sets, &[]).expect("second");
         assert_eq!(changed2, 0);
-        assert_eq!(outline2.vault_version, v1, "无变化版本不递增");
+        assert_eq!(outline2.hotword_version, v1, "无变化版本不递增");
 
-        // 有变化（改 name → sync_md5 变）
         let sets2 = vec![sample_set("33333333-0001", "版本A改")];
-        let (outline3, changed3) = incremental_export_hotwords(&sets2).expect("third");
+        let (outline3, changed3) = incremental_export_hotwords_with(&sets2, &[]).expect("third");
         assert!(changed3 > 0);
-        assert!(outline3.vault_version > v1, "有变化版本应递增");
+        assert!(outline3.hotword_version > v1, "有变化版本应递增");
     }
 
-    // === merge_hotwords 测试（2026-08-01，对称于 vault merge_vault）===
+    // === merge_hotwords set 级测试 ===
     //
-    // merge_hotwords 取代 pull+push 两步——按 updated_at 最新赢，相等时 md5 比对 DB 赢。
-    // 修复「本地加词后 sync 被旧 outline 覆盖」bug（原 pull_hotwords_from_files 无方向感知）。
-    //
-    // 时间戳策略：DB 的 updated_at = datetime('now') ≈ 当前毫秒。要构造「远程更新」用
+    // 时间戳策略：DB 的 updated_at = datetime('now') ≈ 当前毫秒。构造「远程更新」用
     // 远未来 updated_ms（如 9999999999999）；「远程更旧」用 updated_ms: 1。
 
-    /// 辅助：手写一份 outline.json + 对应 set 文件，模拟「远程仓库」状态。
-    /// 远程 outline 的 updated_ms 由调用方指定，与文件内容解耦。
-    /// `words` 参数预留（word 级 sync 待做，当前 set 文件只存元数据）。
-    fn write_remote_set(id: &str, name: &str, _words: &str, updated_ms: i64) {
-        let file = HotwordSetFile {
+    /// 辅助：手写一份总 outline + 词典 meta，模拟「远程仓库」状态。
+    fn write_remote_set(id: &str, name: &str, updated_ms: i64) {
+        let meta = HotwordSetMeta {
             version: 1,
             id: id.into(),
             name: name.into(),
@@ -1263,10 +1637,12 @@ mod tests {
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
         };
-        write_hotword_set_file(&file).unwrap();
+        write_hotword_set_file(&meta).unwrap();
+        // 词典内 outline（空词）
+        write_hotword_set_outline(id, &HotwordSetOutline::default()).unwrap();
         let mut outline = read_hotword_outline().unwrap_or_default();
         let md5 = hotword_set_md5_from_fields(name, true);
-        outline.ciphers.insert(
+        outline.sets.insert(
             id.into(),
             OutlineEntry {
                 md5,
@@ -1276,7 +1652,7 @@ mod tests {
         write_hotword_outline(&outline).unwrap();
     }
 
-    /// merge：远程 updated_ms 较新 → pull 覆盖 DB（set 元数据层）。
+    /// merge（set 层）：远程 updated_ms 较新 → pull 覆盖 DB。
     #[test]
     fn merge_pulls_remote_newer_set() {
         let _g = DbSyncGuard::new();
@@ -1286,10 +1662,9 @@ mod tests {
 
         let id = "merge-aaaa-0001";
         db::insert_hotword_set(id, "旧名").unwrap();
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+        export_all_hotwords().expect("export 旧版本");
 
-        // 远程有新 name（updated_ms 远未来 → 比 DB 的 now 新）
-        write_remote_set(id, "新名", "", 9999999999999);
+        write_remote_set(id, "新名", 9999999999999);
 
         let report = merge_hotwords().expect("merge");
         assert_eq!(report.pulled, 1, "应拉取 1 条远程更新");
@@ -1299,9 +1674,6 @@ mod tests {
     }
 
     /// merge（核心回归）：本地新加词、outline 仍是旧的 → DB 不被旧文件覆盖，且文件被更新。
-    ///
-    /// 这就是「热词加词后 sync 消失」bug 的 merge 版守护。原 pull_hotwords_from_files
-    /// 会用旧文件覆盖 DB（见 pull_overwrites..._documented_bug），merge 不会。
     #[test]
     fn merge_keeps_local_newer_set_not_overwritten() {
         let _g = DbSyncGuard::new();
@@ -1311,16 +1683,14 @@ mod tests {
 
         let id = "merge-bbbb-0001";
         db::insert_hotword_set(id, "测试集").unwrap();
-        export_all_hotwords(&db::list_hotword_sets().unwrap()).expect("export 旧版本");
+        export_all_hotwords().expect("export 旧版本");
 
-        // 本地改 name（sync_md5 变）——outline 仍是旧的「测试集」
         db::rename_hotword_set(id, "测试集改").unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
-        // 手写一份旧 outline（updated_ms=1 → 比 DB 的 now 旧）
         let mut stale_outline = read_hotword_outline().unwrap();
-        stale_outline.ciphers.insert(
+        stale_outline.sets.insert(
             id.into(),
             OutlineEntry {
                 md5: hotword_set_md5_from_fields("测试集", true),
@@ -1336,10 +1706,7 @@ mod tests {
             after.name, "测试集改",
             "本地新 name 不应被旧 outline 覆盖（merge 方向感知）"
         );
-        // push 侧：本地新 name 应被推到文件
         assert!(report.pushed >= 1, "本地更新应 push 到文件");
-        let _file = read_hotword_set_file(id).expect("read file");
-        // word 级 sync 待做——set 文件只存元数据，词数据在 words/ 目录（后续）
     }
 
     /// merge：DB 有、outline 无 → push 写文件 + outline 重建含该条目。
@@ -1353,18 +1720,15 @@ mod tests {
         let id = "merge-cccc-0001";
         db::insert_hotword_set(id, "仅本地").unwrap();
         add_words(id, "苹果");
-        // outline 为空（不 export，模拟「DB 有数据但远程 outline 空」）
-        write_hotword_outline(&Outline::default()).unwrap();
+        write_hotword_outline(&HotwordOutline::default()).unwrap();
 
         let report = merge_hotwords().expect("merge");
         assert!(report.pushed >= 1, "DB only set 应 push 到文件");
 
-        // 文件被写出
-        let file = read_hotword_set_file(id).expect("文件应存在");
+        let _file = read_hotword_set_file(id).expect("文件应存在");
 
-        // outline 重建后含该条目
         let outline = read_hotword_outline().unwrap();
-        assert!(outline.ciphers.contains_key(id), "outline 应含新 push 条目");
+        assert!(outline.sets.contains_key(id), "outline 应含新 push 条目");
     }
 
     /// merge：updated_ms 相等 + md5 不等（内容冲突）→ DB 赢（push DB 到文件）。
@@ -1376,17 +1740,207 @@ mod tests {
         }
 
         let id = "merge-dddd-0001";
-        db::insert_hotword_set(id, "新名").unwrap(); // DB 用新 name
+        db::insert_hotword_set(id, "新名").unwrap();
         let db_updated_ms = iso_to_unix_ms(&db::get_hotword_set(id).unwrap().updated_at);
 
-        // 文件写旧 name，outline 用与 DB 相同的 updated_ms 但旧 md5（name 不同 → md5 不同）
-        write_remote_set(id, "旧名", "", db_updated_ms);
+        write_remote_set(id, "旧名", db_updated_ms);
 
         let report = merge_hotwords().expect("merge");
         assert!(report.conflicts >= 1, "应记录 1 次冲突（name 不同 + 时间戳相等）");
 
-        // 文件被 DB 内容覆盖（DB 赢）——name 应为 DB 的「新名」
         let file = read_hotword_set_file(id).expect("read file");
         assert_eq!(file.name, "新名", "冲突时 DB 赢——文件 name 应为 DB 的「新名」");
+    }
+
+    // === merge_hotwords word 级测试（核心——4+1 场景）===
+    //
+    // 对称 set 级 merge 测试。write_remote_word 手写词文件 + 词典 outline 模拟远程状态。
+
+    /// 辅助：手写一个远程词文件 + 词典 outline 条目，模拟「远程仓库」某词状态。
+    /// set_id 需已存在于 DB（word merge 遍历 DB 词典）。
+    fn write_remote_word(set_id: &str, word: &str, pinyin: &str, is_deleted: bool, updated_ms: i64) {
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, word);
+        let file = HotwordWordFile {
+            version: 1,
+            id: word_uuid.clone(),
+            set_id: set_id.into(),
+            word: word.into(),
+            pinyin: pinyin.into(),
+            is_deleted,
+            created_at: "2026-07-22 10:00:00".into(),
+            updated_at: "2026-07-22 10:00:00".into(),
+        };
+        write_hotword_word_file(&file).unwrap();
+        let mut outline = read_hotword_set_outline(set_id).unwrap_or_default();
+        let md5 = hotword_word_md5_from_fields(set_id, word, pinyin, is_deleted);
+        outline.words.insert(
+            word_uuid,
+            OutlineEntry {
+                md5,
+                updated_ms,
+            },
+        );
+        write_hotword_set_outline(set_id, &outline).unwrap();
+    }
+
+    /// 测试辅助：某 set 的全部词（含软删，按 word 排序），用于断言。
+    fn all_words_in_set(set_id: &str) -> Vec<(String, bool)> {
+        db::list_all_hotword_words()
+            .unwrap()
+            .into_iter()
+            .filter(|w| w.set_id == set_id)
+            .map(|w| (w.word, w.is_deleted))
+            .collect()
+    }
+
+    /// word merge 场景 1：远程加了 DB 没有的新词（updated_ms 远未来）→ DB pull 到该词。
+    #[test]
+    fn merge_pulls_remote_newer_word() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let set_id = "word-aaaa-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        // 远程加词「八爪鱼」
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", false, 9999999999999);
+
+        let report = merge_hotwords().expect("merge");
+
+        // DB 应 pull 到「八爪鱼」
+        let words = all_words_in_set(set_id);
+        assert!(
+            words.iter().any(|(w, d)| w == "八爪鱼" && !d),
+            "DB 应 pull 到远程新词「八爪鱼」: {:?}",
+            words
+        );
+        assert!(report.pulled >= 1, "应记录至少 1 次 pull");
+    }
+
+    /// word merge 场景 2：本地加了新词、词典 outline 仍是旧的 → DB 不被覆盖，文件被更新。
+    #[test]
+    fn merge_keeps_local_newer_word_not_overwritten() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let set_id = "word-bbbb-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始");
+
+        // 本地再加一词「浮窗」（词典 outline 仍是旧的）
+        add_words(set_id, "浮窗");
+
+        // 手写一份旧词典 outline（「浮窗」无 entry，updated_ms=1 远旧）
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        let stale = HotwordSetOutline {
+            version: 1,
+            hotword_version: 0,
+            words: BTreeMap::from([(
+                word_uuid,
+                OutlineEntry {
+                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼", "ba zhao yu", false),
+                    updated_ms: 1,
+                },
+            )]),
+        };
+        write_hotword_set_outline(set_id, &stale).unwrap();
+
+        let report = merge_hotwords().expect("merge");
+
+        // 「浮窗」不应丢失
+        let words = all_words_in_set(set_id);
+        assert!(
+            words.iter().any(|(w, d)| w == "浮窗" && !d),
+            "本地新词「浮窗」不应被旧 outline 覆盖: {:?}",
+            words
+        );
+        assert!(report.pushed >= 1, "本地新词应 push 到文件");
+    }
+
+    /// word merge 场景 3：DB 有词、词典 outline 无 → push 写词文件 + outline 重建含。
+    #[test]
+    fn merge_pushes_db_only_word() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let set_id = "word-cccc-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "苹果");
+        // 词典 outline 为空（不 export 该词）
+        write_hotword_set_outline(set_id, &HotwordSetOutline::default()).unwrap();
+
+        let report = merge_hotwords().expect("merge");
+        assert!(report.pushed >= 1, "DB only 词应 push 到文件");
+
+        // outline 重建后含该词
+        let outline = read_hotword_set_outline(set_id).unwrap();
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "苹果");
+        assert!(
+            outline.words.contains_key(&word_uuid),
+            "词典 outline 应含 push 的词"
+        );
+    }
+
+    /// word merge 场景 4：软删跨设备传播——A 软删词（is_deleted=1, updated_ms 新）→ B merge 后该词变软删。
+    #[test]
+    fn merge_soft_delete_propagates() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let set_id = "word-dddd-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始（is_deleted=0）");
+
+        // 远程（A 机）软删「八爪鱼」——is_deleted=true, updated_ms 远未来
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", true, 9999999999999);
+
+        merge_hotwords().expect("merge");
+
+        // B 机 DB 的「八爪鱼」应变软删（is_deleted=true）
+        let w = db::get_hotword_word(set_id, "八爪鱼").unwrap().unwrap();
+        assert!(
+            w.is_deleted,
+            "软删应跨设备传播：B 机「八爪鱼」应 is_deleted=true，实际 is_deleted={}",
+            w.is_deleted
+        );
+    }
+
+    /// word merge 场景 5：updated_ms 相等 + md5 不等（内容冲突）→ DB 赢（push DB 到文件）。
+    #[test]
+    fn merge_db_wins_on_equal_timestamp_word_conflict() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::delete_hotword_set(&h.id);
+        }
+
+        let set_id = "word-eeee-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        let db_updated_ms = iso_to_unix_ms(
+            &db::get_hotword_word(set_id, "八爪鱼").unwrap().unwrap().updated_at,
+        );
+
+        // 远程写同名词但不同拼音（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
+        write_remote_word(set_id, "八爪鱼", "ba zhua yu", false, db_updated_ms);
+
+        let report = merge_hotwords().expect("merge");
+        assert!(report.conflicts >= 1, "应记录至少 1 次 word 冲突");
+
+        // 文件应被 DB 内容覆盖——读回验证
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        let file = read_hotword_word_file(set_id, &word_uuid).expect("read file");
+        assert_eq!(
+            file.pinyin, "ba zhao yu",
+            "冲突 DB 赢——文件 pinyin 应为 DB 的「ba zhao yu」"
+        );
     }
 }

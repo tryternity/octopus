@@ -1,7 +1,7 @@
 //! 通用文件存储工具——`~/.octopus/.sync/` git repo 路径 + hash 工具 + 分桶。
 //!
 //! 与具体业务数据（cipher/folder/hotword）无关的通用同步基础设施。各业务数据
-//! 的文件格式（MetaFile / CipherFile / HotwordSetFile 等）留在各自的模块：
+//! 的文件格式（MetaFile / CipherFile / HotwordSetMeta / HotwordWordFile 等）留在各自的模块：
 //! - vault 业务：`octopus_vault::sync::store`
 //! - hotword 业务：`octopus_sync::hotword`（待实现）
 //!
@@ -19,6 +19,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use sha2::{Digest, Sha256};
 
 // === 测试隔离 ===
@@ -151,6 +152,63 @@ pub fn iso_to_unix_ms(s: &str) -> i64 {
     let days = era * 146097 + doe as i64 - 719468;
     let secs = days * 86400 + h * 3600 + mi * 60 + se;
     secs * 1000
+}
+
+// === 原子写（2026-08-01，对齐 vault store::write_atomically）===
+
+/// 原子写文件：写临时文件 → fsync → rename → fsync 父目录（POSIX）。
+///
+/// 搬自 `crates/vault/src/sync/store.rs::write_atomically`（vault 的 private，跨 crate 拿不到，
+/// 故在 sync crate 内联一份）。hotword set meta / word 文件都用它，对齐 vault 持久化保证：
+/// ①临时文件同目录（同卷 → rename 原子）；②fsync 数据 + 目录项扛断电；
+/// ③临时文件名前缀 `.`（隐藏，不被 `collect_json_files` 的 `.json` 扫描命中）。
+pub(crate) fn write_atomically(path: &std::path::Path, content: &str) -> Result<(), anyhow::Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+    }
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("data");
+    let tmp_path = path.with_file_name(format!(".{}.tmp", file_name));
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+        // N3 修复（2026-07-24）：rename 后 fsync 父目录——POSIX 下目录项更新
+        // 需 fsync 才能扛断电，否则断电恰在 rename 后可能丢 rename（恢复后看到旧版本）。
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all(); // 目录 fsync 失败不阻断（best-effort）
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("创建临时文件失败：{}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("写入临时文件失败：{}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("fsync 临时文件失败：{}", tmp_path.display()))?;
+        }
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!("原子替换失败：{} -> {}", tmp_path.display(), path.display())
+        })?;
+        // Windows: MoveFileEx(REPLACE_EXISTING) 已保证可见性，无需目录 fsync
+    }
+    Ok(())
 }
 
 // === 自动同步状态持久化（2026-07-22 Phase 2）===

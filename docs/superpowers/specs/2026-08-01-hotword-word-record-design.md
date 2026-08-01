@@ -1,7 +1,7 @@
 # 热词存储拆分单记录 + sync 重构
 
 > **日期**：2026-08-01
-> **状态**：✅ 已实现（存储拆分 + set 级 sync；word 级 merge 待后续）
+> **状态**：✅ 已实现（存储拆分 + set 级 sync + word 级 3-way merge，两级 outline 层级）
 > **背景**：`hotword_sets.words_text`（空格分隔大文本）拆成 `hotword_words` 表（每词一条记录），sync 从 set 级降到 word 级 3-way merge（对齐 vault）。驱动：单词级软删（is_deleted）、按 updated_at 增量同步、确定性 UUID 跨设备合并。
 
 ## 1. 动机
@@ -58,16 +58,26 @@ pub fn hotword_word_uuid(set_id: &str, word: &str) -> String {
 
 ## 3. sync 模型：word 级 3-way merge
 
-### 文件布局
+### 文件布局（两级 outline 层级——2026-08-01 实现版）
 
 ```
 ~/.octopus/.sync/hotword/
-├── outline.json                    ← 词级 outline（uuid → {md5, updated_ms}）
-├── sets/<2hex>/<set-uuid>.json     ← set 元数据（name/enabled，不再含 words_text）
-└── words/<2hex>/<word-uuid>.json   ← 每词一个文件（新）
+├── outline.json                 ← 总 outline：只描述词典状态
+│     { version, hotwordVersion, sets: { <setUuid>: {md5, updatedMs} } }
+└── <set-uuid>/                  ← 每个词典一个目录（目录名 = 词典 ID）
+    ├── meta.json                ← 词典元数据（name/enabled/createdAt/updatedAt）
+    ├── outline.json             ← 本词典的词状态
+    │     { words: { <wordUuid>: {md5, updatedMs} } }
+    └── <2hex>/<word-uuid>.json  ← 词文件（按词 UUID 前2位分桶）
 ```
 
-复用 `shard_dir`（UUID 前 2 hex，256 桶），加 path traversal 校验（对齐 vault，当前 hotword 缺）。
+**为什么两级而非扁平**：① 3 万词条拆成 N 个 3 千项的词典 outline，git diff 只碰改动词典；
+② 删词典 = `rm -r <set-id>/` 原子完整；③ 语义干净——总 outline 管词典，词状态归属各自词典。
+**词文件名用 UUID**（=v5(set_id,word)，软删/改拼音不变），内容 MD5 做 outline 变化指纹。
+（原设计是扁平 `sets/ + words/` 共用一个 outline，实现时改为两级——见 plan 实施记录。）
+
+复用 `shard_dir`（UUID 前 2 hex，256 桶），`validate_hotword_uuid` 校验 set 目录名 + word 文件名
+（对齐 vault path traversal 防护）。`write_atomically` 原子写（对齐 vault 持久化保证）。
 
 ### HotwordWordFile 格式
 
@@ -94,18 +104,31 @@ struct HotwordWordFile {
 
 词文本可能含任意 Unicode（含 `|`），用长度前缀分隔（vault 靠密文 base64 不含 `|`，热词明文必须防碰撞）。**不含 created_at/updated_at**（时间戳跨设备必然不同）。
 
-### merge 逻辑（对称 vault merge_vault）
+### merge 逻辑（两阶段，对称 vault merge_vault）
 
-每条 word 记录：
-- outline 有 + DB 无 → pull（.sync → DB）
-- DB 有 + outline 无 → push（DB → .sync）
-- 都有 → 比 updated_ms：remote > local → pull；local > remote → push；相等 → md5 比对，不同 → DB 赢（conflict），相同 → 跳过
+**阶段 1：set 层 merge**（词典元数据，遍历总 outline.sets）
+- 总 outline 有 + DB 无 → pull（读 meta.json → upsert DB）
+- 都有 → 比 updated_ms：remote > local → pull；local > remote → push；相等 → md5 比对，不同 → DB 赢
+- DB 有 + outline 无 → push（写 meta.json）
 
-set 级 merge 保留（set 元数据 name/enabled 仍需同步）。merge 后从 DB 重建 outline。
+**阶段 2：word 层 merge**（每个词典的词数据，遍历 DB 词典 → 读词典内 outline.words）
+- 词典 outline 有 + DB 无 → pull（读词文件 → upsert_hotword_word，回填 word sync_md5）
+- 都有 → 比 updated_ms：remote > local → pull（软删传播：is_deleted=true pull 后 DB 也变软删）；local > remote → push；相等 → md5 比对，不同 → DB 赢
+- DB 有 + 词典 outline 无 → push（写词文件）
+
+merge 完后从 DB 最新状态重建所有文件 + outline（`export_all_hotwords`，DB 是单一真相源）。
+
+### word sync_md5 填充（DB 层写入时填，对齐 vault storage 层）
+
+`add_word_to_set_at` / `remove_word_from_set_at` / `set_words_in_set_at` 写入时算 word md5 填
+`sync_md5` 列（infra `hotword_word_md5_from_fields`）。set 的 `sync_md5` = 纯元数据指纹（name|enabled），
+词变更不再改 set md5——desktop `refill_sync_md5` 已简化（移除原词指纹组合方案）。
 
 ### 软删
 
-`remove_word` = `UPDATE hotword_words SET is_deleted=1, updated_at=now`。文件不删，走标准 merge 路径（is_deleted 参与 md5）。`list_words_in_set` / `list_active_words` 过滤 `is_deleted=0`。
+`remove_word` = `UPDATE hotword_words SET is_deleted=1, updated_at=now, sync_md5=<is_deleted=true 指纹>`。
+文件不删（UUID 不含 is_deleted，文件名不变），走标准 merge 路径（is_deleted 参与 md5）。
+`list_words_in_set` / `list_active_words` 过滤 `is_deleted=0`。
 
 ## 4. HotwordIndex 适配
 
