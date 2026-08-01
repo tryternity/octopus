@@ -58,7 +58,7 @@ pub(crate) fn start_final_polish_or_paste(
             // 进入异步润色状态
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
             if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::ui::instant_overlay::show_instant_overlay(app_handle, "polishing", "");
+                crate::ui::result_window::show_instant(app_handle, "polishing", "");
             } else {
                 crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
             }
@@ -513,5 +513,9 @@ pub(crate) fn handle_polish_now(
         input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>(),
     ));
     info!("PolishNow triggered, polishing {} chars", input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>());
+    // 通知前端「润色开始」（按钮变灰）——后端发起的润色（如 toggle 中按 alt 键）绕过
+    // 前端 polishNow()，前端 setPolishLoading(true) 不会被触发。emit polish-started 让
+    // 前端无论从哪发起都能反馈润色态。polish-done/polish-error 恢复。
+    let _ = app_handle.emit("polish-started", ());
     spawn_polish_thread(input, config, tx, true, transcript.id);
 }

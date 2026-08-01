@@ -18,7 +18,7 @@ static CACHED_PREV: Mutex<Option<(i32, String)>> = Mutex::new(None);
 /// 缓存的自身 webview 窗口 label（前台是 octopus 自己时，记下聚焦的窗口）。
 /// toggle 入口（terminal/compact_editor 聚焦）时缓存，粘贴时 emit "paste-text" 用。
 /// spec 2026-07-31-asr-paste-self-webview：粘贴时再查 is_focused 已不可靠
-/// （result_window/instant_overlay show 过程会改焦点），必须在 toggle 瞬间捕获。
+/// （result_window show 过程会改焦点），必须在 toggle 瞬间捕获。
 static CACHED_SELF_WINDOW: Mutex<Option<String>> = Mutex::new(None);
 
 /// 缓存当前前台 app 的 pid + bundle_id（过滤自身）。
@@ -53,7 +53,6 @@ pub fn save_frontmost_pid(app: &tauri::AppHandle) {
 fn focused_self_webview_label(app: &tauri::AppHandle) -> Option<String> {
     /// 不接收 paste-text 的窗口 label（浮窗 / 指示窗 / 展示窗）。
     const EXCLUDED_PREFIXES: &[&str] = &[
-        "instant_overlay",
         "overlay_window",
         "result_window",
         "clipboard_window",

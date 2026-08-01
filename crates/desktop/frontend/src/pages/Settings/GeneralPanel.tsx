@@ -200,11 +200,16 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <CardTitle>{t("settings.general.shortcut")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <Row label={t("settings.general.asrShortcut")} effect={t("settings.effect.now")}>
-              <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
-            </Row>
-            <Row label={t("settings.general.polishShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.polishShortcutHint")}>
-              <ShortcutButton shortcut={cfg.polish_global_shortcut as string} capturing={capturingKey === "polish_global_shortcut"} onClick={() => startShortcutCapture("polish_global_shortcut")} />
+            {/* 语音识别（单键三模式触发键）——dropdown 5 选 1，非 ShortcutButton capture。
+                后端 set_config("asr_shortcut") 校验枚举 + 热重载 PTT。 */}
+            <Row label={t("settings.general.asrShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.asrShortcutHint")}>
+              <Select value={(cfg.asr_shortcut as string) || "OptRight"} onChange={(e) => setVal("asr_shortcut", e.target.value)}>
+                <option value="OptRight">{t("settings.general.asrKeyOptRight")}</option>
+                <option value="CmdRight">{t("settings.general.asrKeyCmdRight")}</option>
+                <option value="CtrlRight">{t("settings.general.asrKeyCtrlRight")}</option>
+                <option value="ShiftRight">{t("settings.general.asrKeyShiftRight")}</option>
+                <option value="Fn">{t("settings.general.asrKeyFn")}</option>
+              </Select>
             </Row>
             <Row label={t("settings.general.editShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.editShortcutHint")}>
               <ShortcutButton shortcut={cfg.edit_global_shortcut as string} capturing={capturingKey === "edit_global_shortcut"} onClick={() => startShortcutCapture("edit_global_shortcut")} />

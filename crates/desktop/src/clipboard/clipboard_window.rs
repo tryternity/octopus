@@ -242,7 +242,7 @@ pub fn clipboard_dock_collapse(app: AppHandle) {
 }
 
 /// 注册剪贴板浮窗全局快捷键。main 启动注册 + set_config 热重载共用，
-/// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致：
+/// 与 result_window::register_edit_global_shortcut 范式一致：
 /// 解析 + on_shortcut，失败返回 Err（供调用方回滚旧快捷键）。
 pub fn register_clipboard_shortcut(
     app: &tauri::AppHandle,

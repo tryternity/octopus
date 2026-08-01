@@ -15,6 +15,7 @@ import {
   buildTranslatePopupItems,
 } from "./translateMode";
 import { useT, t as ti18n } from "@/lib/i18n";
+import { InstantView } from "./InstantView";
 
 const POLISH_MODES = [0, 1, 2];
 const DENOISE_MODES = [0, 1, 2];
@@ -63,6 +64,11 @@ function Result() {
   const [translateMode, setTranslateMode] = useState<TranslateMode>('off');
   const [translatedText, setTranslatedText] = useState("");
   const [translating, setTranslating] = useState(false);
+  // record-mode 切换：toggle（CM6 编辑器视图）/ instant（PTT/hands-free 指示卡视图）
+  const [recordMode, setRecordMode] = useState<"toggle" | "instant">("toggle");
+  // instant-state：{ state, text }——供 InstantView 渲染
+  const [instantState, setInstantState] = useState("");
+  const [instantText, setInstantText] = useState("");
 
   const asrEditorRef = useRef<AsrEditorHandle>(null);
   const caretRef = useRef<number | null>(null);
@@ -174,6 +180,9 @@ function Result() {
             if (!prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording false -> true (show-result)" });
             return true;
           });
+          // toggle 会话开始：清 instant 视图残留状态（上次 PTT/hands-free 的指示内容）
+          setInstantState("");
+          setInstantText("");
           setTranslateMode('off');
           setTranslatedText("");
           translatingRef.current = false;
@@ -214,6 +223,7 @@ function Result() {
         }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
+        ["polish-started", () => setPolishLoading(true)],
         ["polish-error", (msg) => {
           setPolishLoading(false);
           setPolishError(typeof msg === "string" ? msg : "润色失败");
@@ -224,6 +234,17 @@ function Result() {
             prepareId: p as number,
             selection: null,
           });
+        }],
+        // record-mode：切 AsrWindow 视图（toggle 编辑器 ↔ instant 指示卡）。payload 是纯字符串。
+        ["record-mode", (p) => {
+          const mode = p as string;
+          if (mode === "toggle" || mode === "instant") setRecordMode(mode);
+        }],
+        // instant-state：{ state, text }——驱动 InstantView 四态指示。
+        ["instant-state", (p) => {
+          const payload = p as { state: string; text: string };
+          setInstantState(payload?.state ?? "");
+          setInstantText(payload?.text ?? "");
         }],
       ];
       await Promise.all(handlers.map(async ([event, handler]) => {
@@ -339,17 +360,6 @@ function Result() {
     setExpanded(next);
     invoke("set_result_click_through", { expanded: next });
   }, [expanded]);
-
-  // 全局立即润色快捷键
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let cancelled = false;
-    listen("global-polish-trigger", () => polishNow()).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, [polishNow]);
 
   // ── Keyboard shortcuts ──
   useEffect(() => {
@@ -472,7 +482,9 @@ function Result() {
   ];
 
   return (
-    <div className="relative w-full h-full">
+    <div className="asr-window-root relative w-full h-full">
+    {/* toggle 视图：CM6 编辑器 + toolbar（display:none 切换，保留 CM6 state 不卸载） */}
+    <div style={{ display: recordMode === "toggle" ? "block" : "none" }} className="relative w-full h-full">
     {/* 润色失败气泡 */}
     {polishError && (
       <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md bg-red-500 text-white text-xs shadow-lg animate-pulse">
@@ -605,6 +617,11 @@ function Result() {
           {toast}
         </div>
       )}
+    </div>
+    </div>
+    {/* instant 视图：PTT/hands-free 指示卡（display:none 切换） */}
+    <div style={{ display: recordMode === "instant" ? "block" : "none" }}>
+      <InstantView state={instantState} text={instantText} />
     </div>
     </div>
   );

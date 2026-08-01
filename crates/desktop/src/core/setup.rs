@@ -58,8 +58,6 @@ impl<'a> AppSetup<'a> {
         self.init_pty();
         self.init_tray();
         self.create_result_window();
-        // 预创建 instant 浮窗壳（隐藏），PTT 首次 show 零延迟。
-        crate::ui::instant_overlay::precreate(self.app.handle());
         self.register_shortcuts();
         Ok(())
     }
@@ -684,28 +682,22 @@ impl<'a> AppSetup<'a> {
         crate::ui::result_window::create_result_window(self.app.handle());
     }
 
-    /// ASR + edit + polish 全局快捷键注册。
+    /// ASR + edit 全局快捷键注册。
     fn register_shortcuts(&self) {
-        // 6. Register global shortcut——toggle（asr_shortcut）和 talk（PTT）同时注册，
-        // 用户按哪个键就走哪个模式，不互斥。
-        if let Err(e) = crate::core::shortcut::register_shortcut(self.app.handle(), &self.config.asr_shortcut) {
-            log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
-        }
-
         // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
         if let Err(e) = crate::ui::result_window::register_edit_global_shortcut(self.app.handle(), &self.config.edit_global_shortcut) {
             log::error!("Failed to register global edit shortcut: {}", e);
         }
 
-        // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
-        if let Err(e) = crate::ui::result_window::register_polish_global_shortcut(self.app.handle(), &self.config.polish_global_shortcut) {
-            log::error!("Failed to register global polish shortcut: {}", e);
-        }
-
-        // 6.3 talk (PTT) 模式：注册 PTT 键监听——与 toggle 的 asr_shortcut 并存，
-        // 用户按 asr_shortcut 走 toggle（结果窗可编辑），按 PTT 键走 talk（指示浮窗快速粘贴）
-        if let Err(e) = crate::platform::ptt::register_ptt(self.app.handle(), &self.config.ptt_key) {
-            log::warn!("[ptt] 注册失败，仅 toggle 可用: {}", e);
+        // 单键三模式：注册 asr_shortcut 键监听（handy-keys）。值不合法时 fallback OptRight。
+        let asr_key = if ["OptRight", "CmdRight", "CtrlRight", "ShiftRight", "Fn"].contains(&self.config.asr_shortcut.as_str()) {
+            &self.config.asr_shortcut
+        } else {
+            log::warn!("[setup] asr_shortcut '{}' 不合法，fallback OptRight", self.config.asr_shortcut);
+            "OptRight"
+        };
+        if let Err(e) = crate::platform::ptt::register_ptt(self.app.handle(), asr_key) {
+            log::warn!("[ptt] 注册失败: {}", e);
         }
 
         info!("octopus-desktop initialized");

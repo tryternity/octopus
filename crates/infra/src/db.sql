@@ -402,10 +402,9 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
 -- 全局快捷键 seed（统一管理，按功能分组；与 config.rs 的 default_*_shortcut 函数保持一致）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     -- 识别 / 结果窗
-    ('asr_shortcut',           'Alt+A',            '全局 ASR 激活/关闭快捷键'),
+    ('asr_shortcut',           'OptRight',         '单键三模式触发键（handy-keys 名：OptRight/CmdRight/CtrlRight/ShiftRight/Fn）'),
     ('edit_shortcut',          'CmdOrCtrl+Enter',  '结果窗编辑 toggle 快捷键（进入/保存同键）'),
     ('edit_global_shortcut',   'Alt+E',            '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
-    ('polish_global_shortcut', 'Alt+S',            '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
     -- 剪贴板
     ('clipboard_shortcut',     'Alt+C',            '剪贴板历史窗口快捷键'),
     -- 操作面板（AI 命令面板）
@@ -416,9 +415,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('record_shortcut',        'CmdOrCtrl+Shift+R','录屏快捷键（呼出/暂停-恢复 toggle）'),
     -- 停止录屏固定为 Escape（record_hotkey.rs 的 STOP_SHORTCUT 常量），不暴露为配置项
     -- 密码箱（vault）
-    ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键'),
-    ('record_mode',               'toggle',  '录音模式 toggle/talk'),
-    ('ptt_key',                   'OptRight', '单键三模式 PTT 按键（右侧修饰键，handy-keys 名称：OptRight/ShiftRight/CtrlRight/CmdRight/Fn）');
+    ('vault_autotype_shortcut',    'CmdOrCtrl+Shift+S', '密码箱 Auto-Type 全局快捷键');
 
 -- 剪贴板其他配置项（非快捷键）
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES

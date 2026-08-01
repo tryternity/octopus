@@ -82,7 +82,7 @@
 | 模式 | 触发 | 行为 |
 |------|------|------|
 | 停顿润色（mode=2） | 静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 段边界 | 全篇一次润色，不重置流式引擎 |
-| 立即润色（PolishNow） | 工具栏「立即润色」按钮 / `polish_global_shortcut` | 忽略 mode |
+| 立即润色（PolishNow） | 工具栏「立即润色」按钮 / toggle 中按单键短按 | 忽略 mode（2026-08-01：原 `polish_global_shortcut` 已删除） |
 | 最终润色 | 停止后（mode=1/2） | `Stage::Polishing` 异步线程跑 LLM |
 
 ---
@@ -103,7 +103,6 @@ CM6 `selectionSet` 事件替代旧 contentEditable 拖选流程：
 | `asr_shortcut` | — | 全局 | 开始/停止录音（Toggle） |
 | `edit_shortcut` | CmdOrCtrl+Enter | 结果窗聚焦 | toggle 进入/保存编辑 |
 | `edit_global_shortcut` | CmdOrCtrl+Shift+E | 全局 | 唤起结果窗 + toggle 编辑 |
-| `polish_global_shortcut` | CmdOrCtrl+Shift+S | 全局 | 唤起结果窗（不聚焦）+ 立即润色 |
 | Esc | — | 结果窗 | 取消录音（Cancel） |
 
 ---

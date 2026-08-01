@@ -58,12 +58,11 @@
 
 | 配置键 | 默认 | 功能 |
 |--------|------|------|
-| `asr_shortcut` | — | 开始/停止录音（Toggle） |
+| `asr_shortcut` | OptRight | 单键三模式触发（长按=PTT / 双击=toggle / 短按=hands-free） |
 | `clipboard_shortcut` | CmdOrCtrl+Shift+D | 唤起剪贴板浮窗（toggle 按焦点判断） |
 | `screenshot_shortcut` | Alt+S | 截图 / 滚动截图模式 |
 | `edit_shortcut` | CmdOrCtrl+Enter | 结果窗内 toggle 编辑（非全局，不在设置页管理） |
 | `edit_global_shortcut` | CmdOrCtrl+Shift+E | 全局唤起结果窗 + toggle 编辑 |
-| `polish_global_shortcut` | CmdOrCtrl+Shift+S | 全局唤起结果窗（不聚焦）+ 立即润色 |
 
 **注册策略**：先注册后持久化——`unregister` 旧的 + `register` 新的，注册成功才写共享 `AppConfig` + `save_app_config`。**任一失败则恢复旧快捷键并返回 Err**（前端 toast 报冲突）。
 

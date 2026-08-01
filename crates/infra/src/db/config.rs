@@ -219,7 +219,6 @@ mod tests {
         cfg.denoise_mode = 2;
         cfg.edit_shortcut = "Alt+2".into();
         cfg.edit_global_shortcut = "Alt+3".into();
-        cfg.polish_global_shortcut = "Alt+4".into();
         cfg.download_mirror = "https://mirror.test".into();
         cfg.clipboard_shortcut = "Alt+5".into();
         cfg.clipboard_max_items = 42;

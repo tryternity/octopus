@@ -83,9 +83,7 @@ pub(crate) fn handle_cancel(
         }
     }
     *stage = Stage::Idle;
-    if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
-    }
+    INSTANT_MODE.swap(false, Ordering::Relaxed);
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
     set_recording_mode(0);  // 回 Idle，PTT 状态机据此判定下次 keydown 落在 idle
@@ -249,9 +247,7 @@ pub(crate) fn handle_discard(
     }
 
     *stage = Stage::Idle;
-    if INSTANT_MODE.swap(false, Ordering::Relaxed) {
-        crate::ui::instant_overlay::hide_instant_overlay(app_handle);
-    }
+    INSTANT_MODE.swap(false, Ordering::Relaxed);
     crate::ui::result_window::hide_result(app_handle);
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
     set_recording_mode(0);  // 回 Idle，PTT 状态机据此判定下次 keydown 落在 idle

@@ -20,6 +20,9 @@ const BAR_W: f64 = 720.0;
 const BAR_H: f64 = 116.0;
 const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0;
 
+/// instant 模式底部指示卡高度（穿透 poller 用，Task 3）。
+const INSTANT_BAR_H: f64 = 80.0;
+
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
 static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -178,7 +181,8 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
                 in_fast_mode = false;
                 continue;
             }
-            // 精简态 + 可见：读全局鼠标位置，判是否在顶部小条矩形内
+            // 精简态 + 可见：读全局鼠标位置，判是否在可交互 BAR 矩形内
+            // （toggle=顶部小条 / instant=底部指示卡，见下方按模式分支）
             // 统一用物理坐标：cursor_position() 和 outer_position() 都是 PhysicalPosition，
             // 避免多屏不同缩放率下逻辑/物理混合换算错误
             let (mx, my) = match win.cursor_position() {
@@ -191,10 +195,24 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             };
             // 小条屏幕矩形（物理坐标——BAR 常量是逻辑像素，乘 scale_factor 转物理）
             let sf = win.scale_factor().unwrap_or(1.0);
-            let bx0 = wx + BAR_OFFSET_X * sf;
+            // 按模式决定可交互区（顶部 toggle 小条 / 底部 instant 指示卡）
+            let (bar_off_x, bar_off_y, bar_h) = if crate::engine::coordinator::INSTANT_MODE
+                .load(Ordering::Relaxed)
+            {
+                // instant：底部指示卡，水平居中（指示卡 400 宽，但可交互区放宽到窗口宽 720 便于点击）
+                (BAR_OFFSET_X, RESULT_HEIGHT - INSTANT_BAR_H, INSTANT_BAR_H)
+            } else {
+                // toggle 精简态：顶部小条
+                (BAR_OFFSET_X, 0.0, BAR_H)
+            };
+            let bx0 = wx + bar_off_x * sf;
+            let by0 = wy + bar_off_y * sf;
             let bar_w = BAR_W * sf;
-            let bar_h = BAR_H * sf;
-            let in_bar = mx >= bx0 && mx <= bx0 + bar_w && my >= wy && my <= wy + bar_h;
+            let bar_h_phys = bar_h * sf;
+            let in_bar = mx >= bx0
+                && mx <= bx0 + bar_w
+                && my >= by0
+                && my <= by0 + bar_h_phys;
             let want = !in_bar; // 小条外 → 穿透
             if want != cur_ignore {
                 set_result_ignores_mouse(&win, want);
@@ -246,6 +264,8 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         let was_visible = window.is_visible().unwrap_or(false);
         if !was_visible {
             reposition_to_mouse_monitor(&window);
+            // toggle 模式 emit record-mode（仅首次显示时，避免重复 emit）
+            let _ = app.emit_to(WINDOW_LABEL, "record-mode", "toggle");
         }
         // 物理窗口无条件 show：冷启动首启 webview 可能尚未 ready（走 pending 分支），此前
         // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
@@ -256,6 +276,28 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
             // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
             let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
         }
+    }
+}
+
+/// instant 模式（PTT/hands-free）show 窗口：emit instant-state + 底部定位 + record-mode。
+///
+/// 与 [`show_result`] 的区别：
+/// - 位置用 [`position_bottom_center`]（窗口贴鼠标所在屏底），而非 [`reposition_to_mouse_monitor`]（顶部居中）。
+/// - emit `record-mode: "instant"`（仅在首次显示时），让前端切到 instant UI（底部指示卡）。
+/// - emit `instant-state {state, text}` 而非 `show-result`：前端据此渲染录音中/转写中等态。
+pub fn show_instant(app: &tauri::AppHandle, state: &str, text: &str) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let was_visible = window.is_visible().unwrap_or(false);
+        if !was_visible {
+            position_bottom_center(&window);
+            let _ = app.emit_to(WINDOW_LABEL, "record-mode", "instant");
+        }
+        let _ = window.show();
+        let _ = app.emit_to(
+            WINDOW_LABEL,
+            "instant-state",
+            serde_json::json!({ "state": state, "text": text }),
+        );
     }
 }
 
@@ -286,6 +328,40 @@ fn reposition_to_mouse_monitor(window: &tauri::WebviewWindow) {
         let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         save_window_position_for_display(WINDOW_LABEL, display_id, x, y);
         debug!("[result_window] reposition to default top-center on display {}: {},{}", display_id, x, y);
+    }
+}
+
+/// instant 模式定位：窗口底部贴鼠标所在屏底（指示卡在 720×480 透明区底部居中）。
+///
+/// 与 [`reposition_to_mouse_monitor`] 的区别：toggle 模式（show_result）用顶部居中、
+/// 按屏记忆用户拖拽位置；instant 模式（PTT/hands-free）用底部贴底，指示卡始终贴屏底可见。
+/// 不按屏存（instant 是临时态，下次进 instant 重新定位）。
+///
+/// 从 `instant_overlay.rs` 的 `position_bottom_center` 搬入，改用 result_window 的常量
+/// （`RESULT_WIDTH`=720 / `RESULT_HEIGHT`=480）。
+fn position_bottom_center(win: &tauri::WebviewWindow) {
+    let app = win.app_handle();
+    let mouse = crate::ui::window_position::get_mouse_location();
+    // 窗口底边贴屏底：指示卡（底部）在 720×480 透明区底部居中，留 8px 边距
+    const INSTANT_BOTTOM_MARGIN: f64 = 8.0;
+    if let Some((_did, ox, oy, w, h)) = crate::ui::window_position::find_monitor_at_mouse(mouse) {
+        let x = ox + (w - RESULT_WIDTH) / 2.0;
+        // 窗口底边贴屏底：窗口 y = 屏底 - 窗口高(480) - margin
+        let y = oy + h - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN;
+        debug!("[result_window] instant bottom-center on mouse monitor: ({},{})", x, y);
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        return;
+    }
+    // fallback：primary monitor（物理坐标除 scale）
+    debug!("[result_window] instant bottom-center: no mouse monitor, fallback to primary");
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let x = (size.width as f64 / scale - RESULT_WIDTH) / 2.0;
+        let y = pos.y as f64 / scale
+            + (size.height as f64 / scale - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN);
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
     }
 }
 
@@ -350,8 +426,8 @@ pub fn trigger_global_edit(app: &tauri::AppHandle) {
     }
 }
 
-/// 注册全局编辑快捷键。与 shortcut::register_shortcut 的区别：handler 调用
-/// trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
+/// 注册全局编辑快捷键：解析 + on_shortcut，失败返回 Err（供调用方回滚旧快捷键）。
+/// handler 调用 trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
 pub fn register_edit_global_shortcut(
     app: &tauri::AppHandle,
     shortcut_str: &str,
@@ -369,38 +445,6 @@ pub fn register_edit_global_shortcut(
         })
         .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
     debug!("Registered global edit shortcut: {}", shortcut_str);
-    Ok(())
-}
-
-/// 全局立即润色快捷键被按下：show 结果窗（**不 set_focus**，润色不需窗口聚焦接收键盘）
-/// 并通知前端触发 polish_now。前端 polishNow 内部判空（无结果静默）+ polishLoading
-/// 门控（幂等）。与 trigger_global_edit 的区别仅在此处不 set_focus。
-pub fn trigger_global_polish(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.show();
-        let _ = window.emit("global-polish-trigger", ());
-    }
-}
-
-/// 注册全局立即润色快捷键。与 register_edit_global_shortcut 的区别：handler 调
-/// trigger_global_polish。set_config 热重载时复用此函数。
-pub fn register_polish_global_shortcut(
-    app: &tauri::AppHandle,
-    shortcut_str: &str,
-) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-    let shortcut: Shortcut = shortcut_str
-        .parse()
-        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut(shortcut, move |_ah, _scut, event| {
-            if event.state() == ShortcutState::Pressed {
-                trigger_global_polish(&app_handle);
-            }
-        })
-        .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
-    debug!("Registered global polish shortcut: {}", shortcut_str);
     Ok(())
 }
 

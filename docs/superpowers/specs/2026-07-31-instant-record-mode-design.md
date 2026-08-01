@@ -1,5 +1,11 @@
 # 录音模式（talk/PTT + hands-free）— 设计规格
 
+> **注记（2026-08-01）**：本 spec 描述的 talk/hands-free **交互设计仍有效**（PTT 按住说话、
+> hands-free 常驻 + 静音超时等行为不变）。但「instant_overlay 独立窗口」部分已被
+> [2026-08-01-merge-asr-windows-design.md](2026-08-01-merge-asr-windows-design.md) 取代——
+> instant_overlay 窗口已删除，instant 指示卡合并进 result_window 单实例（record-mode 切换视图）。
+> 下文涉及 `instant_overlay` 独立窗口 / label / 400×80 尺寸的描述以此注记为准（已过时）。
+
 - **日期**：2026-07-31
 - **类型**：新功能（新交互模式 + 新窗口 + coordinator 扩展）
 - **范围**：新增talk (PTT) + 免提两种录音模式，与现有 toggle 模式并存

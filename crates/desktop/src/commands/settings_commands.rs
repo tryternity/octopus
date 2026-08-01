@@ -137,9 +137,9 @@ pub fn set_config(
         .map_err(|e| e2s_ctx("写入 DB 失败", e))?;
         return Ok(());
     }
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_screenshot_sc, old_action_bar_sc, old_vault_autotype_sc, old_record_sc, mut cfg) = {
         let g = rc.read();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.vault_autotype_shortcut.clone(), g.record_shortcut.clone(), g.clone())
     };
     // vault feature off 时 old_vault_autotype_sc 不被读；非 macOS 时 old_record_sc 不被读——
     // 统一标 unused 避免 warning。
@@ -148,15 +148,14 @@ pub fn set_config(
 
     // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
     // 若先 save 再 register，注册失败时无效快捷键已写入 DB → 下次启动依然失败。
+    // asr_shortcut 热重载：PTT 键（不再用 Tauri global-shortcut）。
+    // unregister 旧 + register 新；失败回滚旧键（保证用户至少有可用 PTT 键）。
     if key == "asr_shortcut" && cfg.asr_shortcut != old_asr_sc {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_asr_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::core::shortcut::register_shortcut(&app_handle, &cfg.asr_shortcut) {
-            // 注册失败：尝试恢复旧快捷键，避免用户完全失去快捷键
-            let _ = crate::core::shortcut::register_shortcut(&app_handle, &old_asr_sc);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        let _ = crate::platform::ptt::unregister_ptt(&app_handle);
+        if let Err(e) = crate::platform::ptt::register_ptt(&app_handle, &cfg.asr_shortcut) {
+            log::warn!("[set_config] register_ptt 新键失败，回滚旧键: {}", e);
+            let _ = crate::platform::ptt::register_ptt(&app_handle, &old_asr_sc);
+            return Err(format!("PTT 键注册失败，配置未更改: {}", e));
         }
     }
 
@@ -173,17 +172,7 @@ pub fn set_config(
         }
     }
 
-    // polish_global_shortcut 热重载：注册成功后才持久化（同 asr/edit_global 审查 Issue 3）。
-    if key == "polish_global_shortcut" && cfg.polish_global_shortcut != old_polish_global {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_polish_global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        if let Err(e) = crate::ui::result_window::register_polish_global_shortcut(&app_handle, &cfg.polish_global_shortcut) {
-            let _ = crate::ui::result_window::register_polish_global_shortcut(&app_handle, &old_polish_global);
-            return Err(format!("快捷键注册失败，配置未更改: {}", e));
-        }
-    }
+    // polish_global_shortcut 已删除（Task 2 后不再支持 polish 全局快捷键）。
 
     if key == "clipboard_shortcut" && cfg.clipboard_shortcut != old_clipboard_sc {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -421,7 +410,13 @@ fn apply_config_value(
             cfg.pause_polish_threshold_ms = v;
         }
         "asr_shortcut" => {
-            cfg.asr_shortcut = value.as_str().ok_or("asr_shortcut 需要字符串")?.to_string();
+            // PTT 键名白名单（与 platform::ptt::register_ptt 的 parse 对齐）。
+            // 非法值拒绝（前端误传保护）——避免无意义字符串进入 DB。
+            let v = value.as_str().ok_or("asr_shortcut 需要字符串")?;
+            if !["OptRight", "CmdRight", "CtrlRight", "ShiftRight", "Fn"].contains(&v) {
+                return Err("asr_shortcut 必须是 OptRight/CmdRight/CtrlRight/ShiftRight/Fn 之一".into());
+            }
+            cfg.asr_shortcut = v.to_string();
         }
         "edit_shortcut" => {
             cfg.edit_shortcut = value.as_str().ok_or("edit_shortcut 需要字符串")?.to_string();
@@ -429,9 +424,7 @@ fn apply_config_value(
         "edit_global_shortcut" => {
             cfg.edit_global_shortcut = value.as_str().ok_or("edit_global_shortcut 需要字符串")?.to_string();
         }
-        "polish_global_shortcut" => {
-            cfg.polish_global_shortcut = value.as_str().ok_or("polish_global_shortcut 需要字符串")?.to_string();
-        }
+        // Task 2 后：polish_global_shortcut 已从 AppConfig 删除（不再支持 polish 全局快捷键）。
         // Task 2 后：asr_engine / polish_llm / ocr_model / translate_engine 已从 AppConfig 删除，
         // 激活态统一走 switch_active_model 命令（DB models.is_enabled）。set_config 不再处理这 4 个 key。
         "clipboard_shortcut" => {
@@ -776,8 +769,11 @@ mod tests {
     #[test]
     fn apply_config_string_fields() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        apply_config_value(&mut cfg, "asr_shortcut", &json!("Ctrl+Alt+Z")).unwrap();
-        assert_eq!(cfg.asr_shortcut, "Ctrl+Alt+Z");
+        // asr_shortcut 是 PTT 键名白名单（OptRight/CmdRight/...）
+        apply_config_value(&mut cfg, "asr_shortcut", &json!("OptRight")).unwrap();
+        assert_eq!(cfg.asr_shortcut, "OptRight");
+        // 非白名单值应被拒绝
+        assert!(apply_config_value(&mut cfg, "asr_shortcut", &json!("Ctrl+Alt+Z")).is_err());
         apply_config_value(&mut cfg, "microphone", &json!("External Mic")).unwrap();
         assert_eq!(cfg.microphone, "External Mic");
     }
