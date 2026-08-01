@@ -33,11 +33,15 @@ pub(crate) struct ResolvedPrompt {
 /// - 否则 → active_polish_prompt（用户激活的默认模板）
 ///
 /// 返回 ResolvedPrompt。读文件失败时 content="" 作为降级（LLM 用空 system prompt）。
+///
+/// perf 打点：路由决策路径（cache-hit / db-hit / default）记 perf_log，
+/// 便于排查「为何没用我绑的模板」。bundle_id=None（无 app 信息）也记 default。
 pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
     if let Some(bid) = bundle_id {
         // 1. 缓存命中
         if let Some(&cached_id) = ROUTE_CACHE.read().unwrap().get(bid) {
             if let Some(rec) = load_record(cached_id) {
+                perf_log_route("cache-hit", Some(bid), rec.id, &rec.title);
                 return resolve_record(&rec);
             }
         }
@@ -45,6 +49,7 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
         if let Ok(Some(rec)) = octopus_infra::db::find_prompt_by_bundle_id(bid) {
             // 写缓存
             ROUTE_CACHE.write().unwrap().insert(bid.to_string(), rec.id);
+            perf_log_route("db-hit", Some(bid), rec.id, &rec.title);
             return resolve_record(&rec);
         }
         // 3. 无关联 → 默认模板（不写缓存，bundle_id 可能是任何未关联 app）
@@ -52,9 +57,25 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
     // 4. 默认：active_polish_prompt
     let default_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
     match load_record(default_id) {
-        Some(rec) => resolve_record(&rec),
-        None => ResolvedPrompt { content: String::new(), inject_context: false },
+        Some(rec) => {
+            perf_log_route("default", bundle_id, rec.id, &rec.title);
+            resolve_record(&rec)
+        }
+        None => {
+            crate::core::perf_log::log(&format!(
+                "[POLISH] route source=default bundle={:?} (load_record 失败，空 prompt 降级)", bundle_id
+            ));
+            ResolvedPrompt { content: String::new(), inject_context: false }
+        }
     }
+}
+
+/// 路由决策 perf 打点。source: cache-hit / db-hit / default。
+fn perf_log_route(source: &str, bundle_id: Option<&str>, prompt_id: i64, title: &str) {
+    crate::core::perf_log::log(&format!(
+        "[POLISH] route source={} bundle={:?} prompt_id={} title={}",
+        source, bundle_id, prompt_id, title
+    ));
 }
 
 fn load_record(id: i64) -> Option<octopus_infra::db::PromptRecord> {

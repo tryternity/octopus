@@ -21,14 +21,35 @@ pub struct AppContext {
 
 /// bundle_id → 类别映射（精简，覆盖典型场景，其余靠 LLM 从 app 名称推断）。
 /// 大小写不敏感：真实 bundle id 常用 CamelCase（如 com.microsoft.Word）。
+/// 类别名与 app-casual 模板 Role 段场景对齐：聊天通讯 / 编程开发 / 文档写作。
 pub fn classify_app_context(bundle_id: &str) -> &'static str {
     let b = bundle_id.to_ascii_lowercase();
     let b = b.as_str();
     match b {
-        b if b.starts_with("com.tencent.xinwechat") || b.starts_with("com.tencent.qq") => "即时通讯",
+        // 即时通讯 / 聊天通讯
+        b if b.starts_with("com.tencent.xinwechat")
+            || b.starts_with("com.tencent.qq")
+            || b.starts_with("com.tencent.wework")     // 企业微信
+            || b.starts_with("com.tencent.dingtalk")   // 钉钉
+            || b.starts_with("com.tinyspeck.slack")    // Slack (Mac)
+            || b.starts_with("com.slack")              // Slack 备用前缀
+            || b.starts_with("com.lark")               // 飞书 Lark（含 com.lark.electron / com.electron.lark）
+            || b.starts_with("com.electron.lark")
+            => "即时通讯",
+        // 编程开发（IDE / 编辑器）
+        b if b.starts_with("com.microsoft.vscode")
+            || b.starts_with("com.apple.dt.xcode")     // Xcode
+            || b.starts_with("com.jetbrains")          // IntelliJ/PyCharm/GoLand/CLion 等
+            || b.starts_with("com.todesktop")          // Cursor 等 todesktop 打包的 Electron IDE
+            || b.starts_with("com.sublimetext")
+            || b.starts_with("com.neovide")            // neovim GUI
+            => "编程开发",
+        // 文档写作
         b if b.starts_with("com.microsoft.word")
             || b.starts_with("com.apple.textedit")
-            || b.starts_with("com.apple.pages") => "文档写作",
+            || b.starts_with("com.apple.pages")
+            || b.starts_with("com.microsoft.onenote.mac") // OneNote
+            => "文档写作",
         _ => "",
     }
 }
@@ -194,8 +215,23 @@ mod tests {
 
     #[test]
     fn classify_app_context_known_and_unknown() {
+        // 即时通讯
         assert_eq!(super::classify_app_context("com.tencent.xinWeChat"), "即时通讯");
+        assert_eq!(super::classify_app_context("com.tencent.qq"), "即时通讯");
+        assert_eq!(super::classify_app_context("com.tencent.DingTalk"), "即时通讯");
+        assert_eq!(super::classify_app_context("com.tinyspeck.slack"), "即时通讯");
+        assert_eq!(super::classify_app_context("com.lark.electron"), "即时通讯");
+        // 编程开发
+        assert_eq!(super::classify_app_context("com.microsoft.VSCode"), "编程开发");
+        assert_eq!(super::classify_app_context("com.apple.dt.Xcode"), "编程开发");
+        assert_eq!(super::classify_app_context("com.jetbrains.intellij"), "编程开发");
+        assert_eq!(super::classify_app_context("com.todesktop.230313mzl4w4u92"), "编程开发"); // Cursor
+        // 文档写作
         assert_eq!(super::classify_app_context("com.microsoft.Word"), "文档写作");
+        assert_eq!(super::classify_app_context("com.apple.TextEdit"), "文档写作");
+        assert_eq!(super::classify_app_context("com.microsoft.onenote.mac"), "文档写作");
+        // 未知（靠 LLM 推断）
         assert_eq!(super::classify_app_context("com.apple.Safari"), "");
+        assert_eq!(super::classify_app_context("com.bitwarden.desktop"), "");
     }
 }
