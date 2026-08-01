@@ -85,7 +85,7 @@ pub(crate) fn start_final_polish_or_paste(
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
             // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
-            let (prompt_content, app_context) = resolve_app_aware_prompt();
+            let resolved_prompt = resolve_app_aware_prompt();
             std::thread::spawn(move || {
                 // catch_unwind 兜底：polish_regions 内部 panic（JSON 反序列化 / 网络库内部）
                 // 会让线程静默死亡，FinalPolishDone 永不发送 → 永久卡在 Stage::Polishing
@@ -94,8 +94,8 @@ pub(crate) fn start_final_polish_or_paste(
                 let inner = || match octopus_llm::polish_regions(
                     &regions,
                     &llm_config,
-                    &prompt_content,
-                    app_context.as_ref(),
+                    &resolved_prompt.content,
+                    resolved_prompt.app_context.as_ref(),
                 ) {
                     Ok(polished) => {
                         if polished.is_empty() {
@@ -223,14 +223,14 @@ pub(crate) fn spawn_polish_thread(
         None => return,
     };
     // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
-    let (prompt_content, app_context) = resolve_app_aware_prompt();
+    let resolved_prompt = resolve_app_aware_prompt();
     let tx = tx.clone();
     std::thread::spawn(move || {
         let result = match octopus_llm::polish_regions(
             &regions,
             &llm_config,
-            &prompt_content,
-            app_context.as_ref(),
+            &resolved_prompt.content,
+            resolved_prompt.app_context.as_ref(),
         ) {
             Ok(polished) => Ok(polished),
             Err(e) => {
@@ -252,25 +252,63 @@ pub(crate) fn polish_input_to_regions(input: &crate::engine::transcript::PolishI
     }).collect()
 }
 
+/// resolve_app_aware_prompt 的解析结果。content + app_context 移入 spawn 线程供 polish_regions 用；
+/// template_title / app_name / route_hit 是展示用元数据（浮窗「润色中」文案）。
+#[allow(dead_code)]  // 展示字段由 polish_status_text 读，Task 3 接入浮窗显示
+struct ResolvedAppPrompt {
+    content: String,
+    app_context: Option<octopus_llm::AppContext>,
+    /// 模板显示名（降级时空串）
+    template_title: String,
+    /// 前台 app 名（route_hit=true 时用于文案）
+    app_name: Option<String>,
+    /// 是否命中 app 关联模板
+    route_hit: bool,
+}
+
 /// 解析当前前台 app 对应的润色模板 + app 上下文。
-/// 返回 (模板规则文本, inject_context 时构造的 AppContext，否则 None)。
+/// 返回 ResolvedAppPrompt（content + app_context 移入 spawn 线程供 polish_regions 用；
+/// template_title / app_name / route_hit 为展示用元数据）。
 ///
 /// 必须在 coordinator 线程调用（focus_tracker 缓存反映 op-start 的 app；
 /// DB 读取 / 文件读取都廉价）。两处润色触发点（spawn_polish_thread + 最终润色内联）
 /// 在 spawn 前调一次，结果 move 进 closure——避免在 spawned thread 内重读。
-fn resolve_app_aware_prompt() -> (String, Option<octopus_llm::AppContext>) {
+fn resolve_app_aware_prompt() -> ResolvedAppPrompt {
     let bundle_id = crate::platform::focus_tracker::cached_bundle_id();
     let resolved = super::prompt_route::resolve_polish_prompt(bundle_id.as_deref());
+    let app_name = crate::platform::focus_tracker::cached_app_name();
     let app_context = if resolved.inject_context {
-        crate::platform::focus_tracker::cached_app_name().map(|name| octopus_llm::AppContext {
-            name,
+        app_name.as_ref().map(|name| octopus_llm::AppContext {
+            name: name.clone(),
             category: octopus_llm::classify_app_context(bundle_id.as_deref().unwrap_or(""))
                 .to_string(),
         })
     } else {
         None
     };
-    (resolved.content, app_context)
+    ResolvedAppPrompt {
+        content: resolved.content,
+        app_context,
+        template_title: resolved.template_title,
+        app_name,
+        route_hit: resolved.route_hit,
+    }
+}
+
+/// 拼接浮窗「润色中」文案：命中 app 关联→「⏳ 润色中 · 模板名（app名）」；
+/// 默认→「⏳ 润色中 · 模板名」；降级（空模板名）→「⏳ 润色中」。
+#[allow(dead_code)]  // Task 3 接入浮窗显示
+fn polish_status_text(r: &ResolvedAppPrompt) -> String {
+    if r.route_hit {
+        if let Some(ref app) = r.app_name {
+            return format!("⏳ 润色中 · {}（{}）", r.template_title, app);
+        }
+    }
+    if r.template_title.is_empty() {
+        "⏳ 润色中".to_string()
+    } else {
+        format!("⏳ 润色中 · {}", r.template_title)
+    }
 }
 
 /// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 对完整 ASR 全量润色（mode=2 only）。
@@ -553,4 +591,45 @@ pub(crate) fn handle_polish_now(
     // 前端无论从哪发起都能反馈润色态。polish-done/polish-error 恢复。
     let _ = app_handle.emit("polish-started", ());
     spawn_polish_thread(input, config, tx, true, transcript.id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polish_status_text_route_hit_with_app() {
+        let r = ResolvedAppPrompt {
+            content: String::new(), app_context: None,
+            template_title: "场景自适应".into(), app_name: Some("微信".into()), route_hit: true,
+        };
+        assert_eq!(polish_status_text(&r), "⏳ 润色中 · 场景自适应（微信）");
+    }
+
+    #[test]
+    fn polish_status_text_route_hit_no_app_name() {
+        let r = ResolvedAppPrompt {
+            content: String::new(), app_context: None,
+            template_title: "场景自适应".into(), app_name: None, route_hit: true,
+        };
+        assert_eq!(polish_status_text(&r), "⏳ 润色中 · 场景自适应");
+    }
+
+    #[test]
+    fn polish_status_text_default_template() {
+        let r = ResolvedAppPrompt {
+            content: String::new(), app_context: None,
+            template_title: "忠实校对".into(), app_name: Some("微信".into()), route_hit: false,
+        };
+        assert_eq!(polish_status_text(&r), "⏳ 润色中 · 忠实校对");
+    }
+
+    #[test]
+    fn polish_status_text_empty_title_degraded() {
+        let r = ResolvedAppPrompt {
+            content: String::new(), app_context: None,
+            template_title: String::new(), app_name: None, route_hit: false,
+        };
+        assert_eq!(polish_status_text(&r), "⏳ 润色中");
+    }
 }
