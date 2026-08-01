@@ -1,51 +1,76 @@
-# 终端文件拖拽——文件树拖文件/文件夹到终端，相对路径插入
+# 终端文件拖拽——文件树 + Finder 拖文件到终端
 
+> **状态：✅ 实现完成（已 e2e 验证）**
 > **日期**：2026-08-01
 > **关联**：[文件树设计](2026-07-31-terminal-file-tree-design.md)、[内嵌终端设计](2026-07-31-embedded-terminal-design.md)、research（Terax `useTerminalFileDrop.ts` + `quoteShellPath.ts` 先例）
 
 ## 目标
 
-从文件树侧栏拖文件/文件夹到终端内容区，插入**相对当前 cwd 的、shell 转义的路径**到光标位置（不回车），终端自动聚焦。
+把文件拖到终端内容区，插入 shell 转义路径到光标位置（不回车）+ 自动聚焦。支持两个入口：
+1. **文件树内部拖拽**（webview DOM）：插入相对当前 cwd 的路径
+2. **Finder OS 文件拖入**：插入绝对路径（OS 文件不一定在 cwd 子树）
 
 ## 范围
 
 ### 包含
-- FileTreePanel 节点设为可拖拽源（`draggable` + `onDragStart` 写 fullPath）
-- TerminalPane 终端区设为 drop 目标（`onDragOver` + `onDrop`）
-- 相对路径计算（cwd 子树内相对，外部回退绝对）
+- FileTreePanel 节点 mousedown 发起拖拽（pointer events 方案 + 自定义 ghost）
+- Finder/OS 文件拖入（Tauri `onDragDropEvent`，OS 原生 ghost）
+- TerminalPane canvas 接收 drop（document mouseup hit-test / onDragDropEvent）
+- 相对路径计算（文件树拖拽用，cwd 子树内相对，外部回退绝对）
 - shell 转义（空格/特殊字符单引号包裹）
-- 插入不回车 + 自动聚焦终端
+- 插入不回车（`session.paste`）+ 自动聚焦终端
 
 ### 不包含
-- **多选拖拽**：本次仅单拖（文件树现为单选）。多选多拖留后续（需先做多选机制）
-- **Finder 等外部拖入**：仅文件树内拖拽（外部拖入的路径语义不同，后续）
+- **多选拖拽**：本次仅单拖（文件树现为单选）。多选多拖留后续
 - **拖到非终端目标**（如编辑器）：仅终端内容区
 
 ## 架构
 
-### 三个新单元
+### 为什么不用 HTML5 DnD（重要决策）
 
-1. **`relPath.ts`**（纯函数）：`relPath(fullPath, cwd)` → 相对路径或回退绝对路径
-2. **`shellEscape.ts`**（纯函数）：`shellEscape(s)` → shell 安全转义（对齐后端 `shell_escape_single` 安全级别）
-3. **拖拽接线**：FileTreePanel `renderNode` 加拖拽源 + TerminalPane canvas 加 drop 目标
+**实测**：HTML5 Drag and Drop（`draggable`/`dataTransfer`）在 WKWebView + xterm canvas 下**完全不可靠**——`onDrop`（bubble 阶段）不触发，`onDropCapture`（capture 阶段）也不触发。这是 WKWebView 的已知限制。
+
+因此采用**双入口分治**：
+- **Finder OS 拖入**用 Tauri 原生 `onDragDropEvent`（OS 层事件，绕开 HTML5 DnD）
+- **文件树内部拖拽**用 pointer events 模拟（mousedown/mouseup，绕开 HTML5 DnD）
+
+### 五个单元
+
+1. **`relPath.ts`**（纯函数）：`relPath(fullPath, cwd)` → 相对路径或回退绝对路径（仅文件树拖拽用）
+2. **`shellEscape.ts`**（纯函数）：`shellEscape(s)` shell 转义 + `formatDroppedPaths(paths)` 多文件格式化
+3. **`dragStore.ts`**（模块级状态 + ghost）：`startDrag(path, label)` 创建 ghost + 启动 mousemove 跟踪；`takeDragPath()` 取路径 + 清除 ghost
+4. **文件树拖拽源**：FileTreePanel `renderNode` 的 `onMouseDown` 调 `startDrag(fullPath, name)`
+5. **终端 drop 目标**：
+   - 文件树拖拽：TerminalPane `document mouseup` + containerRef hit-test → `takeDragPath` → relPath + shellEscape + `session.paste`
+   - OS 拖拽：TerminalPane `getCurrentWebview().onDragDropEvent` → `formatDroppedPaths(p.paths)` + `session.paste`（只活跃 pane 挂）
 
 ### 数据流
 
+**文件树内部拖拽**（pointer events）：
 ```
-用户拖 FileTreePanel 节点
-  → onDragStart: e.dataTransfer.setData("text/plain", fullPath)
-  → 拖到 .terminal-pane-canvas
-  → onDragOver: e.preventDefault()（允许 drop，否则浏览器/WKWebView 拒绝）
-  → onDrop:
-      const fullPath = e.dataTransfer.getData("text/plain")
-      const cwd = session.cwd  // useTerminalSession 内部的实时 trackedCwd（OSC 7）
-      const rel = relPath(fullPath, cwd ?? "")
-      const escaped = shellEscape(rel)
-      session.write(escaped)    // 插入光标位置，不回车
-      term.focus()              // 自动聚焦，用户可立即继续输入
+用户在文件树节点 mousedown
+  → startDrag(fullPath, name)：dragStore 记录路径 + 创建 ghost + 启动 mousemove 跟踪
+  → 拖动（mousemove）：ghost 跟随鼠标（显示文件名）+ body.terminal-file-dragging 触发 CSS（节点半透明 + canvas hover 高亮）
+  → 拖到终端 canvas 松开（document mouseup）：
+      const path = takeDragPath()  // 取路径 + 清除 ghost/body class
+      hit-test：鼠标是否在 containerRef 矩形内
+      是 → const rel = relPath(path, sessionRef.current.cwd)
+           const escaped = shellEscape(rel)
+           session.paste(escaped) + session.focus()
+      否 → 忽略（path 已被 take 清除）
 ```
 
-**trackedCwd 来源**：`useTerminalSession` 内部已有 `trackedCwd`（OSC 7 实时追踪，`useTerminalSession.ts:134`），通过 `session.cwd` 暴露。TerminalPane 的 drop handler 直接读 `session.cwd`，**无需改 props 接线**——cd 后相对路径基准自动跟随。
+**Finder OS 文件拖入**（Tauri onDragDropEvent）：
+```
+用户从 Finder 拖文件到窗口（OS 原生 ghost）
+  → getCurrentWebview().onDragDropEvent payload.type === "drop"
+  → p.paths（OS 文件路径数组，绝对路径）
+  → session.paste(formatDroppedPaths(p.paths)) + session.focus()
+```
+
+### 写入方式：paste 而非 write（参考 Terax）
+
+拖文件本质是「用户粘贴路径」，用 `session.paste`（bracketed paste mode）而非 `session.write`（字面写 PTY）。终端跑 Claude Code 等开启 bracketed paste 的程序时，paste 让它正确识别为一次完整输入（而非逐字符）；普通 shell 两者行为一致。
 
 ## relPath 算法
 
@@ -56,62 +81,47 @@
 | `/proj/src/a.ts` | `/proj` | `src/a.ts` | 子树内，去前缀 |
 | `/proj` | `/proj` | `.` | 等于 cwd 本身 |
 | `/other/file` | `/proj` | `/other/file` | 外部，回退绝对 |
-| `/proj` | `/other` | `/proj` | 父级，回退绝对 |
-| `/proj/src/a.ts` | `/proj/` | `src/a.ts` | cwd 尾斜杠规范化后匹配 |
+| `/proj/src/a.ts` | `/proj/` | `src/a.ts` | cwd 尾斜杠规范化 |
 
-**实现要点**：
-- 规范化：`cwd = cwd.replace(/\/+$/, "")` 去尾部斜杠
-- 判定：
-  - `fullPath === cwd` → `"."`
-  - `fullPath.startsWith(cwd + "/")` → `fullPath.slice(cwd.length + 1)`
-  - 否则 → `fullPath`（绝对路径，不转义——shellEscape 仍会处理其特殊字符）
-
-**不变量**：relPath 只管路径关系，**不做 shell 转义**（空格等留给 shellEscape）。即子树内的 `my dir/b.ts` 返回 `my dir/b.ts`（带空格），由 shellEscape 包成 `'my dir/b.ts'`。
+**仅文件树拖拽用**（OS 拖入用绝对路径，不经 relPath——Finder 文件不一定在 cwd 子树）。
 
 ## shellEscape 规则
 
-对齐后端 `shell_escape_single`（`agent_adapter.rs:205`）的安全级别——单引号包裹 + 单引号转义。
+对齐后端 `shell_escape_single`（`agent_adapter.rs:205`）安全级别。
 
-| 输入 | 输出 | 说明 |
-|---|---|---|
-| `file.txt` | `file.txt` | 无特殊字符，原样（更可读） |
-| `my file.txt` | `'my file.txt'` | 含空格，单引号包裹 |
-| `it's.txt` | `'it'\''s.txt'` | 含单引号，标准转义（闭引号 + `\'` + 开引号） |
-| `src/a.ts` | `src/a.ts` | 路径分隔符 `/` 是安全字符，原样 |
-| `a$b.txt` | `'a$b.txt'` | 含 `$`，单引号包裹防变量展开 |
-
-**判定「需要转义」**：检查是否含 `[^a-zA-Z0-9_./@:-]` 之外的字符（字母数字下划线 + `.`/`/`/`@`/`:`/`-` 是 shell 安全字符集）。含任一非安全字符 → 单引号包裹。
-
-**单引号转义**：单引号字符串内无法直接含单引号，用 `'\''` 序列（闭引号 + 反斜杠转义单引号 + 开引号）拆分。
-
-**不变量**：shellEscape 不做路径关系判断——输入是什么就转义什么。relPath 和 shellEscape 严格分工，可独立测。
-
-## 接线位置
-
-| 文件 | 改动 |
-|---|---|
-| `crates/desktop/frontend/src/pages/Terminal/FileTreePanel.tsx` | `renderNode`（~line 162）的行 div 加 `draggable` + `onDragStart`（setData fullPath） |
-| `crates/desktop/frontend/src/pages/Terminal/TerminalPane.tsx` | `.terminal-pane-canvas`（~line 153）加 `onDragOver`（preventDefault）+ `onDrop`（读 dataTransfer → relPath → shellEscape → session.write + term.focus） |
+- 含任一非安全字符（`[^a-zA-Z0-9_./@:-]`）→ 单引号包裹
+- 含单引号 → POSIX 标准转义 `'"'"'`
+- 无特殊字符 → 原样
+- `formatDroppedPaths(paths)`：多文件各转义 + 空格连接 + 末尾空格（OS 拖入用，照搬 Terax）
 
 ## 不变量
 
-1. **仅单拖**：本次不支持多选拖拽（文件树单选机制不变）
-2. **相对路径基准是实时 trackedCwd**（OSC 7），不是文件树 cwd 或初始 cwd
-3. **插入不回车**：只 `session.write(text)`，不自动 `\n`
-4. **drop 后自动聚焦终端**：`term.focus()`
-5. **relPath / shellEscape 严格分工**：relPath 只管路径关系不转义，shellEscape 只转义不管路径关系
-6. **外部/父目录文件回退绝对路径**：避免 `../../` 难看相对路径
+1. **双入口独立**：文件树拖拽（pointer events）和 OS 拖入（onDragDropEvent）互不干扰
+2. **文件树拖拽用相对路径**（relPath）；**OS 拖入用绝对路径**（formatDroppedPaths）
+3. **插入不回车**：只 `session.paste(text)`，不自动 `\n`
+4. **drop 后自动聚焦终端**：`session.focus()`
+5. **OS 拖入只活跃 pane 响应**：非活跃 tab 隐藏，listener 只在 active 时挂
+6. **relPath/shellEscape 严格分工**：relPath 只管路径关系不转义，shellEscape 只转义不管路径关系
 
 ## 测试策略
 
 | 单元 | 覆盖 | 方式 |
 |---|---|---|
-| `relPath` | 子树内/等于 cwd/外部/父级/尾斜杠/cwd 为空 | vitest 纯函数（~8 case） |
-| `shellEscape` | 无特殊/空格/单引号/`$`/路径分隔符/空字符串 | vitest 纯函数（~6 case） |
-| 拖拽接线 | dragStart 写 dataTransfer / drop 读 + write / 不回车 / 聚焦 | e2e 手动（HTML5 拖拽在 WKWebView 难单测） |
+| `relPath` | 子树内/等于 cwd/外部/父级/尾斜杠/cwd 为空 | vitest 纯函数（9 case） |
+| `shellEscape` | 无特殊/空格/单引号/`$`/路径分隔符/空字符串 | vitest 纯函数（7 case） |
+| 拖拽接线 | mousedown 设状态 / mouseup hit-test + paste / OS onDragDropEvent / ghost 创建移除 | e2e 手动（已验证通过） |
 
-## 风险
+## 风险（已解决）
 
-1. **xterm drop 事件被吞**：xterm.js 可能拦截 drop 事件到其内部 textarea。若 `.terminal-pane-canvas` 收不到 onDrop，需在容器父 div 监听，或用 `ondragover`/`ondrop` 直接挂 canvas 父元素。实现时验证事件能否到达。
-2. **WKWebView HTML5 拖拽**：WKWebView 对 HTML5 drag/drop 的支持需 e2e 验证。这是主要不确定性——若不工作，备选方案是用 pointer events 模拟（mousedown 跟踪 + 判定 canvas 区域）。
-3. **session.cwd 时序**：drop 时 `session.cwd` 必须是最新值。useTerminalSession 的 session 对象每次渲染新引用，drop handler 若闭包捕获旧 session 会拿到 stale cwd——用 ref 持有最新 session（对齐 paste-text listener 的稳定化模式，AGENTS.md gotcha）。
+1. ~~xterm drop 事件被吞~~ → **已确认 HTML5 DnD 在 WKWebView 完全不可靠**，改用 pointer events + OS 拖入绕开
+2. ~~WKWebView HTML5 拖拽~~ → **改用 Tauri onDragDropEvent（OS）+ pointer events（内部）**
+3. **OS 拖入绝对路径**：Finder 文件用绝对路径不经 relPath——可能较长，但 OS 文件不在 cwd 子树时相对路径会是 `../../`（更难看），绝对路径更合理
+
+## 关键文件
+
+- `crates/desktop/frontend/src/pages/Terminal/relPath.ts`（纯函数 + 9 测试）
+- `crates/desktop/frontend/src/pages/Terminal/shellEscape.ts`（纯函数 + formatDroppedPaths + 7 测试）
+- `crates/desktop/frontend/src/pages/Terminal/dragStore.ts`（模块级状态 + ghost 管理）
+- `crates/desktop/frontend/src/pages/Terminal/FileTreePanel.tsx`（renderNode onMouseDown → startDrag）
+- `crates/desktop/frontend/src/pages/Terminal/TerminalPane.tsx`（document mouseup hit-test + onDragDropEvent listener）
+- 参考实现：Terax `useTerminalFileDrop.ts` + `quoteShellPath.ts`
