@@ -28,7 +28,7 @@
 **Interfaces:**
 - Produces: `ResolvedPrompt { content: String, inject_context: bool, template_title: String, route_hit: bool }`——Task 2 的 `resolve_app_aware_prompt` 消费
 
-- [ ] **Step 1: 扩展 `ResolvedPrompt` 结构体**
+- [x] **Step 1: 扩展 `ResolvedPrompt` 结构体**
 
 `crates/desktop/src/engine/coordinator/prompt_route.rs` 当前 `ResolvedPrompt` 定义（约 line 25-30）：
 ```rust
@@ -51,7 +51,7 @@ pub(crate) struct ResolvedPrompt {
 }
 ```
 
-- [ ] **Step 2: `resolve_record` 填充新字段**
+- [x] **Step 2: `resolve_record` 填充新字段**
 
 `resolve_record`（约 line 64-69）当前：
 ```rust
@@ -74,7 +74,7 @@ fn resolve_record(rec: &octopus_infra::db::PromptRecord, route_hit: bool) -> Res
 }
 ```
 
-- [ ] **Step 3: `resolve_polish_prompt` 三个调用点传 route_hit**
+- [x] **Step 3: `resolve_polish_prompt` 三个调用点传 route_hit**
 
 `resolve_polish_prompt`（约 line 36-58）有三处调 `resolve_record` + 一处降级 `ResolvedPrompt`。改为：
 
@@ -119,7 +119,7 @@ default 分支（约 line 53-57）：
     }
 ```
 
-- [ ] **Step 4: build + test**
+- [x] **Step 4: build + test**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished"`
 Expected: 0 error 0 warning（`resolve_record` 签名改了但所有调用点都在同文件内，Step 3 已全改）。若有 `prompt_route` 之外的 `resolve_record` 调用（grep 确认无），一并改。
@@ -127,7 +127,7 @@ Expected: 0 error 0 warning（`resolve_record` 签名改了但所有调用点都
 Run: `cargo test -p octopus-desktop --features embedded 2>&1 | grep -E "test result|FAILED" | tail -3`
 Expected: 全过（本 task 无新测试，字段扩展不破坏现有行为）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/engine/coordinator/prompt_route.rs
@@ -145,7 +145,7 @@ git commit -m "feat(prompt-route): ResolvedPrompt 加 template_title + route_hit
 - Consumes: Task 1 的 `ResolvedPrompt { content, inject_context, template_title, route_hit }`
 - Produces: `ResolvedAppPrompt` 结构体 + `polish_status_text()` helper——Task 3 的最终润色路径消费
 
-- [ ] **Step 1: 定义 `ResolvedAppPrompt` 结构体**
+- [x] **Step 1: 定义 `ResolvedAppPrompt` 结构体**
 
 在 `polish.rs` 靠近 `resolve_app_aware_prompt`（约 line 255）之前定义：
 ```rust
@@ -163,7 +163,7 @@ struct ResolvedAppPrompt {
 }
 ```
 
-- [ ] **Step 2: 重写 `resolve_app_aware_prompt` 返回结构体**
+- [x] **Step 2: 重写 `resolve_app_aware_prompt` 返回结构体**
 
 当前（约 line 261-274）返回 `(String, Option<octopus_llm::AppContext>)`。改为返回 `ResolvedAppPrompt`：
 ```rust
@@ -191,7 +191,7 @@ fn resolve_app_aware_prompt() -> ResolvedAppPrompt {
 ```
 注意：`app_name` 现在只读一次（之前在闭包里读两次），存到结构体里复用。
 
-- [ ] **Step 3: 加 `polish_status_text` helper**
+- [x] **Step 3: 加 `polish_status_text` helper**
 
 紧跟 `resolve_app_aware_prompt` 之后加：
 ```rust
@@ -211,7 +211,7 @@ fn polish_status_text(r: &ResolvedAppPrompt) -> String {
 }
 ```
 
-- [ ] **Step 4: 更新两处 `resolve_app_aware_prompt` 调用点的解构**
+- [x] **Step 4: 更新两处 `resolve_app_aware_prompt` 调用点的解构**
 
 两处调用点（最终润色 line 88 + 中间润色 line 226）当前是：
 ```rust
@@ -226,7 +226,7 @@ let resolved_prompt = resolve_app_aware_prompt();
 let resolved_prompt = resolve_app_aware_prompt();
 ```
 
-- [ ] **Step 5: 修正两处的 `polish_regions` 调用（用结构体字段）**
+- [x] **Step 5: 修正两处的 `polish_regions` 调用（用结构体字段）**
 
 最终润色路径 spawn 内联（约 line 92）当前：
 ```rust
@@ -246,12 +246,12 @@ let resolved_prompt = resolve_app_aware_prompt();
         let result = match octopus_llm::polish_regions(&regions, &llm_config, &resolved_prompt.content, resolved_prompt.app_context.as_ref()) {
 ```
 
-- [ ] **Step 6: build**
+- [x] **Step 6: build**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished" | tail -5`
 Expected: 0 error 0 warning。`resolved_prompt` 在 spawn 闭包内 move（结构体整体 move 进闭包，字段 `.content`/`.app_context` 借用 OK）。若有 borrow 报错（闭包借 `resolved_prompt.content` 又 move 整个结构体），改为在 spawn 前先 `let content = resolved_prompt.content.clone();` 拆出——但通常 `&resolved_prompt.content` 在 `move` 闭包里因 `resolved_prompt` 也被 move 而合法。
 
-- [ ] **Step 7: 加 `polish_status_text` 单测**
+- [x] **Step 7: 加 `polish_status_text` 单测**
 
 在 `polish.rs` 的 `#[cfg(test)] mod tests`（若不存在则在文件末尾加）加测试：
 ```rust
@@ -300,7 +300,7 @@ mod tests {
 
 注意：先 grep `polish.rs` 是否已有 `#[cfg(test)] mod tests`——若有，把测试加进去（`use super::*;` 可能已存在）；若无，新建。`ResolvedAppPrompt` 字段需在测试可见（已是模块内私有 fn 用的 struct，同模块测试可访问）。
 
-- [ ] **Step 8: test + Commit**
+- [x] **Step 8: test + Commit**
 
 Run: `cargo test -p octopus-desktop --features embedded polish_status 2>&1 | tail -8`
 Expected: 4 个 polish_status_text 测试全过。
@@ -320,7 +320,7 @@ git commit -m "feat(polish): resolve_app_aware_prompt 返回结构体 + polish_s
 **Interfaces:**
 - Consumes: Task 2 的 `resolve_app_aware_prompt() -> ResolvedAppPrompt` + `polish_status_text()`
 
-- [ ] **Step 1: 把 `resolve_app_aware_prompt()` 提前到 `show_result` 之前**
+- [x] **Step 1: 把 `resolve_app_aware_prompt()` 提前到 `show_result` 之前**
 
 `start_final_polish_or_paste` 当前结构（约 line 57-88）：
 ```rust
@@ -359,7 +359,7 @@ git commit -m "feat(polish): resolve_app_aware_prompt 返回结构体 + polish_s
 
 注意：删掉原 line 88 的 `let resolved_prompt = resolve_app_aware_prompt();`（已提前）。保留 `std::thread::spawn` 闭包内对 `resolved_prompt.content` / `resolved_prompt.app_context` 的引用（Task 2 Step 5 已改）。
 
-- [ ] **Step 2: build + test**
+- [x] **Step 2: build + test**
 
 Run: `cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished" | tail -5`
 Expected: 0 error 0 warning。注意 `show_result` 第二参数是 `&str`，`polish_status_text` 返回 `String`——传 `&polish_status_text(&resolved_prompt)` 即可（临时值借引用在 show_result 调用期间有效）。
@@ -367,7 +367,7 @@ Expected: 0 error 0 warning。注意 `show_result` 第二参数是 `&str`，`pol
 Run: `cargo test -p octopus-desktop --features embedded 2>&1 | grep -E "test result|FAILED" | tail -3`
 Expected: 全过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/engine/coordinator/polish.rs
@@ -378,7 +378,7 @@ git commit -m "feat(polish): 最终润色 show_result 文案携带命中的模�
 
 ## Task 4: 全量验证 + 文档同步
 
-- [ ] **Step 1: 全量验证**
+- [x] **Step 1: 全量验证**
 
 ```bash
 cargo build -p octopus-desktop --features embedded 2>&1 | grep -E "^error|^warning|Finished"
@@ -386,7 +386,7 @@ cargo test -p octopus-desktop --features embedded 2>&1 | grep -E "test result|FA
 ```
 Expected: 0 error 0 warning，全测试过。
 
-- [ ] **Step 2: spec 加实现状态**
+- [x] **Step 2: spec 加实现状态**
 
 `docs/superpowers/specs/2026-08-01-polish-route-visibility-design.md` 末尾加：
 ```markdown
@@ -395,13 +395,13 @@ Expected: 0 error 0 warning，全测试过。
 已实现方案 A（文案携带）。commit 序列见 plan「## 实施记录」。
 ```
 
-- [ ] **Step 3: plan 加实施记录 + checkbox 全勾**
+- [x] **Step 3: plan 加实施记录 + checkbox 全勾**
 
-- [ ] **Step 4: architecture.md 同步**
+- [x] **Step 4: architecture.md 同步**
 
 `docs/architecture.md` 应用感知润色子节补一句：浮窗「润色中」文案携带命中的模板名 + app 名（route_hit=true 时）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -430,3 +430,13 @@ git commit -m "docs(sync): 路由命中可视化 architecture + spec + plan 同�
 - `polish_regions(&regions, &config, &resolved_prompt.content, resolved_prompt.app_context.as_ref())` Task 2 Step 5 两处一致 ✓
 
 **Placeholder scan:** 无 TBD/TODO，每步含完整代码 + 命令 + 预期输出 ✓
+
+## 实施记录
+
+全部 4 task 完成，commit 序列（branch daily_bugfix_0730）：
+- `0441bfb1` Task 1：ResolvedPrompt 加 template_title + route_hit 字段
+- `bddbeebd` Task 2：resolve_app_aware_prompt 返回 ResolvedAppPrompt 结构体 + polish_status_text helper（4 单测）+ 两处 polish_regions 调用适配
+- `7927a91b` Task 3：最终润色路径 resolve_app_aware_prompt 提前到 show_result 前 + show_result 文案改用 polish_status_text；移除 #[allow(dead_code)]
+- （Task 4：本文档同步）
+
+验证：build 0 error 0 warning，desktop 495 passed（含 4 个 polish_status_text 新测试）。无偏差（实现与 spec 方案 A 完全一致）。

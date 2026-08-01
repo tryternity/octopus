@@ -109,3 +109,12 @@ coordinator 线程（spawn 前）:
 
 - cargo build + cargo test（结构体字段 + 文案拼接 helper 的单测）
 - e2e：① 命中 app 关联→浮窗显示「模板名（app名）」② 默认模板→只显示模板名 ③ 解析失败→只显示「润色中」④ instant 模式不变
+
+## 实现状态（2026-08-01）
+
+已实现方案 A（文案携带）。commit 序列见 plan「## 实施记录」。无偏差——实现与 spec 完全一致：
+- `ResolvedPrompt` + `ResolvedAppPrompt` 加展示用元数据（template_title / app_name / route_hit）
+- `polish_status_text` 4 分支文案（4 单测覆盖）
+- 最终润色路径 `resolve_app_aware_prompt` 提前到 show_result 前，文案携带模板名
+- instant / 中间润色不变（spec 不变量 1/2 守护）
+- desktop 495 passed，build 0 warning
