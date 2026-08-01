@@ -17,6 +17,7 @@ import { SearchOverlay } from "./SearchOverlay";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { relPath } from "./relPath";
 import { shellEscape } from "./shellEscape";
+import { takeDragPath, clearDragPath } from "./dragStore";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -152,33 +153,37 @@ export function TerminalPane({
     };
   }, [active]);
 
+  // 文件树拖拽（pointer events 方案）：document mouseup 时 hit-test 判定鼠标是否在
+  // 本 canvas 内，是则取 dragPath 写入终端。document 级监听 + containerRef hit-test，
+  // 完全绕开 xterm 内部元素的事件拦截（HTML5 DnD 在 WKWebView 不可靠）。
+  useEffect(() => {
+    const handleMouseUp = (e: MouseEvent) => {
+      const path = takeDragPath();
+      if (path === null) return; // 无拖拽进行中（普通 mouseup）
+      // hit-test：鼠标是否在本 canvas 矩形内
+      const canvas = containerRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom;
+      if (!inside) return; // 拖到 canvas 外松开——忽略（dragPath 已被 take 清除）
+      const s = sessionRef.current;
+      const rel = relPath(path, s.cwd ?? "");
+      const escaped = shellEscape(rel);
+      s.write(escaped); // 插入光标位置，不回车
+      s.focus(); // 自动聚焦终端
+    };
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => document.removeEventListener("mouseup", handleMouseUp);
+  }, []);
+
   return (
     <div className="terminal-pane">
       <div
         ref={containerRef}
         className="terminal-pane-canvas"
         onContextMenu={openContextMenu}
-        // capture 阶段监听：xterm 在 canvas 内部元素上 attach 的 listener 可能拦截
-        // bubble 阶段的 drop（实测 WKWebView 下 onDrop 不触发）。capture 从根向下传播，
-        // 在 target 阶段之前触发，确保先于 xterm 拿到 drop 事件。
-        onDragOverCapture={(e) => {
-          // 允许 drop（否则浏览器/WKWebView 拒绝）
-          if (e.dataTransfer.types.includes("text/plain")) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "copy";
-          }
-        }}
-        onDropCapture={(e) => {
-          const fullPath = e.dataTransfer.getData("text/plain");
-          if (!fullPath) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const s = sessionRef.current;
-          const rel = relPath(fullPath, s.cwd ?? "");
-          const escaped = shellEscape(rel);
-          s.write(escaped); // 插入光标位置，不回车
-          s.focus(); // 自动聚焦终端
-        }}
       />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay

@@ -14,6 +14,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useT } from "@/lib/i18n";
 import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { PanelResizer } from "./PanelResizer";
+import { setDragPath } from "./dragStore";
 
 type FileEntry = {
   name: string;
@@ -162,10 +163,11 @@ export function FileTreePanel({
         <div
           className={`file-tree-row ${isSelected ? "file-tree-row-selected" : ""}`}
           style={{ paddingLeft: `${depth * 12 + 4}px` }}
-          draggable
-          onDragStart={(e) => {
-            e.dataTransfer.setData("text/plain", fullPath);
-            e.dataTransfer.effectAllowed = "copy";
+          // pointer events 方案：mousedown 记录拖拽路径（HTML5 DnD 在 WKWebView 不可靠）。
+          // 终端 canvas 的 mouseup 读 dragStore 写入。普通 click 仍走 onClick（mousedown
+          // 只设状态，不干扰 click——click 在 mouseup 后触发，dragPath 已被取走/清除）。
+          onMouseDown={(e) => {
+            if (e.button === 0) setDragPath(fullPath);
           }}
           onClick={() => {
             if (isDir) toggleDir(fullPath);
