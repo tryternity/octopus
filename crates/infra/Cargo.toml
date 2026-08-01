@@ -21,3 +21,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 pinyin = "0.10"
 sysinfo = "0.32"
 uuid = { version = "1", features = ["v5"] }
+# md5 用于热词 word sync_md5 内容指纹（纯 diff 用途，非安全）——2026-08-01 word 级 merge。
+# infra 是无项目内依赖的底层 crate，但允许外部 crate 依赖（md-5 与 sync crate 同版本）。
+md-5 = "0.10"
