@@ -307,11 +307,12 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 
 **核心架构决策**：候选词来源从「全词典模糊拼音」改为「仅 HotwordIndex」——根除了过度纠错问题。HotwordIndex 是有界集合（仅含用户配置的热词），空热词时 no-op（零过纠）。
 
-**方言模糊规则**（可配置，4 组）：
-- f/h 不分（浮/护）
-- hu/wu 不分（黄/王）
-- n/l 不分（刘/牛）
-- r/l 不分（热/乐）
+**方言模糊规则**（可配置，5 组，存 `app_config.fuzzy_dialect`）：
+- f/h（浮/护）
+- hu/wu（胡/吴）
+- n/l（刘/牛）
+- r/l（热/乐）
+- yun/yong（孕/用）—— 硬映射整体音节对 yun→yong + fei→hui，解决「孕妇」→「用户」等跨韵母误识；独立步骤可与 f/h 叠加
 
 **命中统计分层**：
 - Corrector 只收集命中（`pending_hits` + `drain_hits()`），不写 DB。

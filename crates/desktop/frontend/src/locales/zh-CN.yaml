@@ -616,6 +616,7 @@ settings:
     huWu: hu/wu（胡 / 吴）
     nL: n/l（刘 / 牛）
     rL: r/l（热 / 乐）
+    yunYong: yun/yong（孕 / 用）
     loadFailed: "加载失败："
     newVersion: 已新建版本
     importedVersion: 已导入为新版本
