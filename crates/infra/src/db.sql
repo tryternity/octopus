@@ -164,13 +164,17 @@ CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 -- id 用 TEXT UUID（v46 改造）：支持 git 同步跨设备无冲突，与 vault_ciphers 一致。
 -- sync_md5：内容指纹（md5），增量同步 diff 用，由 sync crate 计算填入（不在 infra 算）。
 -- v57 起 words_text 列移除——词数据迁到 hotword_words 表（每词一条记录），set 只存元数据。
+-- v58 起 is_deleted 存删除时刻 epoch 秒（0=活跃，>0=删除时刻）+ UNIQUE(name, is_deleted)
+-- 复合约束——软删 tombstone 不占 name，用户可重建同名活跃词典（详见 2026-08-02-hotword-set-soft-delete spec）。
 CREATE TABLE IF NOT EXISTS hotword_sets (
     id          TEXT    PRIMARY KEY,             -- UUID v4 字符串（不再自增——支持 git 同步）
-    name        TEXT    NOT NULL UNIQUE,
+    name        TEXT    NOT NULL,
     enabled     INTEGER NOT NULL DEFAULT 1,   -- 0/1 是否勾选生效
     sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff，NULL 表示待算）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    is_deleted  INTEGER NOT NULL DEFAULT 0,   -- 0=活跃，>0=删除时刻 epoch 秒（tombstone）
+    UNIQUE(name, is_deleted)                      -- 活跃同名唯一；tombstone 各自带时间戳不冲突
 );
 
 -- ── ASR 热词词记录（hotword_words）每词一条，schema v57（2026-08-01）───────────

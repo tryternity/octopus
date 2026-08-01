@@ -111,7 +111,7 @@ TDD 先写 4 个 merge 测试（`crates/sync/src/hotword.rs`）：
 
 ## 5. 已知问题（不在本次修复）
 
-- [ ] **热词 set 级删除复活（跨设备）**：`delete_hotword_set` 是硬删（`DELETE FROM hotword_sets + hotword_words`，无 set 级 `is_deleted`）。A 删集 → push 删文件 → B merge 不删 DB → B push 又写回 → A merge 复活。vault 已用 `is_deleted` 软删（commit `7c52ffc3`）。**注**：**词级软删已解决**——`hotword_words.is_deleted`（schema v57）+ word 级 merge（2026-08-02 commit `96560238`）让删词跨设备正确传播（`merge_soft_delete_propagates` 测试覆盖）。本 task 仅指 **set 级**（整本词典删除），修需 schema 加 set 级软删字段 + merge tombstone，留作后续。
+- [x] **热词 set 级删除复活（跨设备）**：~~`delete_hotword_set` 是硬删（`DELETE FROM hotword_sets + hotword_words`，无 set 级 `is_deleted`）。A 删集 → push 删文件 → B merge 不删 DB → B push 又写回 → A merge 复活。~~ **已解决**（2026-08-02，schema v58，[spec](2026-08-02-hotword-set-soft-delete.md)）：set 级 `is_deleted` 存删除时刻 epoch 秒（0=活跃，>0=删除时刻）+ `UNIQUE(name, is_deleted)` 复合约束，tombstone 经 merge 传播。`merge_set_soft_delete_propagates` 测试覆盖。**注**：词级软删（`hotword_words.is_deleted`）早已解决（commit `96560238`）。
 - [ ] **多设备同时改 last-write-wins**：用户已确认可接受，不做冲突合并。
 
 ## 6. 代码位置速查（2026-08-01 状态）

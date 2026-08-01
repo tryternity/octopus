@@ -102,14 +102,15 @@ pub fn hotword_word_file_path(set_id: &str, word_uuid: &str) -> Result<PathBuf> 
 
 /// 词典元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
 ///
-/// v57 起 set 只存元数据（词数据在 hotword_words），拼接字段：`name | enabled`。
+/// v58 起 set md5 含 is_deleted（软删后 md5 变化触发 outline diff → merge 传播 tombstone）。
+/// 拼接字段：`name | enabled | is_deleted`。
 pub fn hotword_set_md5(h: &HotwordSet) -> String {
-    hotword_set_md5_from_fields(&h.name, h.enabled)
+    hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted)
 }
 
 /// 从基本字段算 md5——用于写命令填 sync_md5（避免重复读完整 row）。
-pub fn hotword_set_md5_from_fields(name: &str, enabled: bool) -> String {
-    let input = format!("{}|{}", name, enabled);
+pub fn hotword_set_md5_from_fields(name: &str, enabled: bool, is_deleted: i64) -> String {
+    let input = format!("{}|{}|{}", name, enabled, is_deleted);
     md5_hex(input.as_bytes())
 }
 
@@ -121,10 +122,11 @@ pub fn hotword_word_md5(w: &HotwordWord) -> String {
 // === 文件格式 ===
 
 /// 词典元数据文件内容（明文 JSON）。v57 起只含元数据（词数据在 words/ 目录）。
+/// v58 起 version 2——加 is_deleted（tombstone 传播）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotwordSetMeta {
-    /// 文件格式版本（当前 1）。
+    /// 文件格式版本（当前 2）。version 1 文件（无 is_deleted）反序列化 is_deleted=0（serde default）。
     pub version: u32,
     /// UUID（与 SQLite hotword_sets.id 一致）。
     pub id: String,
@@ -132,6 +134,9 @@ pub struct HotwordSetMeta {
     pub name: String,
     /// 是否勾选生效。
     pub enabled: bool,
+    /// 软删标记：0=活跃，>0=删除时刻 epoch 秒（tombstone）。serde default 兼容 version 1 文件。
+    #[serde(default)]
+    pub is_deleted: i64,
     /// 创建时间（SQLite datetime 格式，跨设备不同但保留用于排序）。
     pub created_at: String,
     /// 更新时间。
@@ -142,10 +147,11 @@ impl HotwordSetMeta {
     /// 从 SQLite 行转换。
     pub fn from_hotword_set(h: &HotwordSet) -> Self {
         Self {
-            version: 1,
+            version: 2,
             id: h.id.clone(),
             name: h.name.clone(),
             enabled: h.enabled,
+            is_deleted: h.is_deleted,
             created_at: h.created_at.clone(),
             updated_at: h.updated_at.clone(),
         }
@@ -157,6 +163,7 @@ impl HotwordSetMeta {
             id: self.id.clone(),
             name: self.name.clone(),
             enabled: self.enabled,
+            is_deleted: self.is_deleted,
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             sync_md5,
@@ -385,9 +392,10 @@ pub fn delete_hotword_word_file(set_id: &str, word_uuid: &str) -> Result<()> {
 
 /// 从 SQLite 全量导出到文件系统——首次启用同步时用（push_initial）。
 ///
-/// 无参：内部自己读 DB（list_hotword_sets + list_all_hotword_words）。
+/// 无参：内部自己读 DB（list_all_hotword_sets + list_all_hotword_words）。
+/// v58 起 set 软删——export 含 tombstone（is_deleted>0）传播删除意图。
 pub fn export_all_hotwords() -> Result<HotwordOutline> {
-    let sets = db::list_hotword_sets()?;
+    let sets = db::list_all_hotword_sets()?;
     let words = db::list_all_hotword_words()?;
     export_all_hotwords_with(&sets, &words)
 }
@@ -473,8 +481,9 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
 /// 增量导出——sync_now 用，只写真正变化的文件（不清空目录）。
 ///
 /// 无参：内部自己读 DB。返回 (new_outline, changed_count)。
+/// v58 起 set 软删——含 tombstone 词典（is_deleted>0）传播删除意图。
 pub fn incremental_export_hotwords() -> Result<(HotwordOutline, usize)> {
-    let sets = db::list_hotword_sets()?;
+    let sets = db::list_all_hotword_sets()?;
     let words = db::list_all_hotword_words()?;
     incremental_export_hotwords_with(&sets, &words)
 }
@@ -671,7 +680,7 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
 /// sync_now 不再调用）。保留供首次 clone 场景 + 未来参考。
 pub fn pull_hotwords_from_files() -> Result<usize> {
     let remote_outline = read_hotword_outline()?;
-    let db_sets = db::list_hotword_sets()?;
+    let db_sets = db::list_all_hotword_sets()?; // 含 tombstone（is_deleted>0）——merge 需感知软删态
 
     let db_ids: std::collections::HashSet<&str> = db_sets.iter().map(|h| h.id.as_str()).collect();
     let mut count = 0;
@@ -751,7 +760,7 @@ pub struct HotwordMergeReport {
 /// merge 完后从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）。
 pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     let remote_outline = read_hotword_outline()?;
-    let db_sets = db::list_hotword_sets()?;
+    let db_sets = db::list_all_hotword_sets()?; // 含 tombstone（is_deleted>0）——merge 需感知软删态
     let db_by_id: std::collections::HashMap<&str, &HotwordSet> =
         db_sets.iter().map(|h| (h.id.as_str(), h)).collect();
     let mut report = HotwordMergeReport::default();
@@ -814,7 +823,7 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     // === 阶段 2：word 层 merge（每个词典的词数据）===
     // 对每个 DB 存在的词典，读其 outline + DB 该词典的词，逐词 3-way merge。
     // 远程词典在阶段 1 已 pull 到 DB，故这里以 DB 词典为准遍历即可覆盖。
-    let latest_sets = db::list_hotword_sets()?;
+    let latest_sets = db::list_all_hotword_sets()?; // 含 tombstone——word merge 也要覆盖软删词典的词
     for set in &latest_sets {
         merge_hotword_words(&set.id, &mut report)?;
     }
@@ -980,6 +989,7 @@ mod tests {
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
             sync_md5: None,
+            is_deleted: 0,
         }
     }
 
@@ -1023,7 +1033,7 @@ mod tests {
     fn hotword_set_md5_from_fields_matches_struct() {
         let h = sample_set("uuid-1", "版本A");
         let from_struct = hotword_set_md5(&h);
-        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled);
+        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted);
         assert_eq!(from_struct, from_fields);
     }
 
@@ -1345,7 +1355,7 @@ mod tests {
         let _g = DbSyncGuard::new();
         let initial = db::list_hotword_sets().unwrap();
         for h in &initial {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id_a = "aaaaaaaa-0001";
@@ -1354,7 +1364,7 @@ mod tests {
         export_all_hotwords().expect("A export");
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         assert!(db::list_hotword_sets().unwrap().is_empty(), "B 机初始应空");
 
@@ -1373,7 +1383,7 @@ mod tests {
     fn bidirectional_sync_converges() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "bbbbbbbb-0001";
@@ -1386,19 +1396,21 @@ mod tests {
         push_hotwords_to_files().expect("A push");
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("B pull");
         let b_sets = db::list_hotword_sets().unwrap();
         assert_eq!(b_sets[0].name, "A机改名", "B 应看到 A 改的 name");
     }
 
-    /// 删除传播：A 删热词版本 → push → B pull 后版本消失。
+    /// 删除传播（v58 软删语义）：A 软删热词版本 → push → B pull 后版本也变软删（tombstone 传播）。
+    /// 软删后：版本2 仍在 DB（is_deleted>0）+ meta.json 仍在文件（is_deleted>0 tombstone），
+    /// list_hotword_sets 过滤掉（用户看不见），但不再是「文件消失」式硬删。
     #[test]
     fn delete_propagates_through_sync() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id1 = "cccccccc-0001";
@@ -1408,28 +1420,31 @@ mod tests {
 
         export_all_hotwords().expect("initial");
 
+        // A 软删版本2（is_deleted=时间戳，tombstone）+ push
         db::delete_hotword_set(id2).unwrap();
         push_hotwords_to_files().expect("A push after delete");
 
+        // 模拟 B 机：硬清活跃集（仅版本1 活跃，版本2 已软删不在 list 里）→ pull
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("B pull");
 
+        // B 的 list_hotword_sets 只剩版本1（版本2 是 tombstone，is_deleted>0 被过滤）
         let b_sets = db::list_hotword_sets().unwrap();
-        assert_eq!(b_sets.len(), 1, "B 应只有 1 个版本（版本2 已删）");
+        assert_eq!(b_sets.len(), 1, "B 活跃版本应只 1 个（版本1）");
         assert_eq!(b_sets[0].id, id1);
-        assert!(
-            read_hotword_set_file(id2).is_err(),
-            "已删版本的文件不应存在"
-        );
+
+        // 版本2 的 tombstone 文件仍在（is_deleted>0）——软删不删文件
+        let tombstone = read_hotword_set_file(id2).expect("tombstone meta.json 应存在（软删不删文件）");
+        assert!(tombstone.is_deleted > 0, "tombstone meta 应 is_deleted>0");
     }
 
     #[test]
     fn push_twice_second_time_zero_changes() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         db::insert_hotword_set("dddddddd-0001", "版本").unwrap();
@@ -1448,7 +1463,7 @@ mod tests {
     fn export_empty_set_list_is_safe() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         assert!(db::list_hotword_sets().unwrap().is_empty());
 
@@ -1470,7 +1485,7 @@ mod tests {
     fn enabled_toggle_propagates_through_sync() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "eeeeeeee-0001";
@@ -1483,7 +1498,7 @@ mod tests {
         export_all_hotwords().expect("export enabled=true");
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("pull");
         assert!(db::get_hotword_set(id).unwrap().enabled);
@@ -1494,7 +1509,7 @@ mod tests {
         push_hotwords_to_files().expect("push disabled");
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         pull_hotwords_from_files().expect("pull again");
         assert!(!db::get_hotword_set(id).unwrap().enabled);
@@ -1504,7 +1519,7 @@ mod tests {
     fn pull_same_name_different_uuid_does_not_conflict() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id_a = "ffffffff-aaaa";
@@ -1513,7 +1528,7 @@ mod tests {
         export_all_hotwords().expect("export A");
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id_b = "ffffffff-bbbb";
@@ -1533,7 +1548,7 @@ mod tests {
     fn pull_skips_corrupted_set_file() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id_ok = "11111111-0001";
@@ -1546,7 +1561,7 @@ mod tests {
         std::fs::write(corrupt_dir.join("meta.json"), "{ this is not valid json }").unwrap();
 
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
         // pull 只读 outline 列出的 set——伪造目录不在 outline 里，不会读到，不阻断
         let pulled = pull_hotwords_from_files().expect("pull 不应因损坏文件 panic");
@@ -1558,7 +1573,7 @@ mod tests {
     fn pull_function_direction_blind_by_design() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "dddddddd-0001";
@@ -1582,7 +1597,7 @@ mod tests {
     fn push_exports_local_new_data_when_outline_stale() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "eeeeeeee-0001";
@@ -1604,7 +1619,7 @@ mod tests {
     fn incremental_export_version_increments_only_on_change() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let sets = vec![sample_set("33333333-0001", "版本A")];
@@ -1628,12 +1643,19 @@ mod tests {
     // 远未来 updated_ms（如 9999999999999）；「远程更旧」用 updated_ms: 1。
 
     /// 辅助：手写一份总 outline + 词典 meta，模拟「远程仓库」状态。
+    /// is_deleted 默认 0（活跃）；tombstone 测试传 >0（删除时刻 epoch 秒）。
     fn write_remote_set(id: &str, name: &str, updated_ms: i64) {
+        write_remote_set_with(id, name, updated_ms, 0);
+    }
+
+    /// 辅助：write_remote_set 的 tombstone 版（可指定 is_deleted）。
+    fn write_remote_set_with(id: &str, name: &str, updated_ms: i64, is_deleted: i64) {
         let meta = HotwordSetMeta {
-            version: 1,
+            version: 2,
             id: id.into(),
             name: name.into(),
             enabled: true,
+            is_deleted,
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
         };
@@ -1641,7 +1663,7 @@ mod tests {
         // 词典内 outline（空词）
         write_hotword_set_outline(id, &HotwordSetOutline::default()).unwrap();
         let mut outline = read_hotword_outline().unwrap_or_default();
-        let md5 = hotword_set_md5_from_fields(name, true);
+        let md5 = hotword_set_md5_from_fields(name, true, is_deleted);
         outline.sets.insert(
             id.into(),
             OutlineEntry {
@@ -1657,7 +1679,7 @@ mod tests {
     fn merge_pulls_remote_newer_set() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "merge-aaaa-0001";
@@ -1678,7 +1700,7 @@ mod tests {
     fn merge_keeps_local_newer_set_not_overwritten() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "merge-bbbb-0001";
@@ -1693,7 +1715,7 @@ mod tests {
         stale_outline.sets.insert(
             id.into(),
             OutlineEntry {
-                md5: hotword_set_md5_from_fields("测试集", true),
+                md5: hotword_set_md5_from_fields("测试集", true, 0),
                 updated_ms: 1,
             },
         );
@@ -1714,7 +1736,7 @@ mod tests {
     fn merge_pushes_db_only_set() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "merge-cccc-0001";
@@ -1736,7 +1758,7 @@ mod tests {
     fn merge_db_wins_on_equal_timestamp_md5_conflict() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let id = "merge-dddd-0001";
@@ -1798,7 +1820,7 @@ mod tests {
     fn merge_pulls_remote_newer_word() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let set_id = "word-aaaa-0001";
@@ -1823,7 +1845,7 @@ mod tests {
     fn merge_keeps_local_newer_word_not_overwritten() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let set_id = "word-bbbb-0001";
@@ -1866,7 +1888,7 @@ mod tests {
     fn merge_pushes_db_only_word() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let set_id = "word-cccc-0001";
@@ -1892,7 +1914,7 @@ mod tests {
     fn merge_soft_delete_propagates() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let set_id = "word-dddd-0001";
@@ -1919,7 +1941,7 @@ mod tests {
     fn merge_db_wins_on_equal_timestamp_word_conflict() {
         let _g = DbSyncGuard::new();
         for h in db::list_hotword_sets().unwrap() {
-            let _ = db::delete_hotword_set(&h.id);
+            let _ = db::hard_delete_hotword_set(&h.id);
         }
 
         let set_id = "word-eeee-0001";
@@ -1941,6 +1963,45 @@ mod tests {
         assert_eq!(
             file.pinyin, "ba zhao yu",
             "冲突 DB 赢——文件 pinyin 应为 DB 的「ba zhao yu」"
+        );
+    }
+
+    // === set 级软删 tombstone 传播（v58，对称 word 级 merge_soft_delete_propagates）===
+
+    /// set 级软删跨设备传播：A 软删集（is_deleted=时间戳，updated_ms 新）→ B merge 后该集也变软删。
+    /// 对称 word 级 merge_soft_delete_propagates（1891-1915）。
+    #[test]
+    fn merge_set_soft_delete_propagates() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "set-softdel-0001";
+        db::insert_hotword_set(set_id, "待删词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始（is_deleted=0）");
+
+        // 远程（A 机）软删该集——is_deleted=时间戳, updated_ms 远未来（比 DB 的 now 新）
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1800000000);
+        write_remote_set_with(set_id, "待删词典", 9999999999999, now_secs);
+
+        merge_hotwords().expect("merge");
+
+        // B 机 DB 的该集应变软删（is_deleted>0）
+        let s = db::get_hotword_set(set_id).unwrap();
+        assert!(
+            s.is_deleted > 0,
+            "set 级软删应跨设备传播：B 机该集应 is_deleted>0，实际 {}",
+            s.is_deleted
+        );
+        // list_hotword_sets 过滤掉（用户看不见）
+        assert!(
+            db::list_hotword_sets().unwrap().iter().all(|x| x.id != set_id),
+            "软删的集不应出现在 list_hotword_sets"
         );
     }
 }

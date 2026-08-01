@@ -336,7 +336,7 @@ docs/
 
 ```
 ~/.octopus/
-├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets/hotword_words 等表，schema v57）
+├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets/hotword_words 等表，schema v58）
 ├── config.yaml         # 应用配置（缺失用默认值）
 ├── VOICE_POLISH.md     # 自定义润色 prompt（可选，覆盖内置默认）
 ├── .sync/              # git 同步仓库根（GitHub/Gitee private repo 的本地 clone）
