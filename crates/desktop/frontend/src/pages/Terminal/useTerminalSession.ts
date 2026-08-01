@@ -56,18 +56,6 @@ export type TerminalSession = {
   searchAddon: SearchAddon | null;
   /** 当前工作目录（OSC 7 追踪，null = 尚未收到）。 */
   cwd: string | null;
-  /** 是否在命令行输入态（prompt，非命令执行中）——click-time reader，读 OSC 133 live 值。 */
-  isPromptActive: () => boolean;
-  /** 终端列数（点击定位坐标换算用）。 */
-  cols: number;
-  /** 终端行数（点击行换算用）。 */
-  rows: number;
-  /** 当前光标列（点击偏移计算用）。 */
-  cursorX: number;
-  /** 当前光标行（门控：只当前行响应）。 */
-  cursorY: number;
-  /** buffer 类型（门控：非 alternate 才响应）。 */
-  bufferType: "normal" | "alternate";
   // ── 右键菜单需要的 xterm 操作 ──
   hasSelection: () => boolean;
   getSelection: () => string | undefined;
@@ -146,8 +134,6 @@ export function useTerminalSession(opts: {
   const [trackedCwd, setTrackedCwd] = useState<string | null>(cwd ?? null);
   // OSC 133 shell 集成状态——持有 inCommand（命令行输入态），供点击定位光标门控读。
   // 提到外层 ref 是因为 return 在 useEffect 外，访问不到 term.open 闭包内的局部变量。
-  const shellStateRef = useRef(createShellIntegrationState());
-
   // 回调用 ref 持有最新版本——xterm handler 在 useEffect([]) 注册，
   // 闭包捕获的是首次 render 的回调，后续更新（如 addTab 随 tabs 变化重建）
   // 不会反映到 handler 里。用 ref 中转让 handler 始终调最新的。
@@ -175,9 +161,6 @@ export function useTerminalSession(opts: {
         selectionBackground: "rgba(255,255,255,0.18)",
       },
       allowProposedApi: true,
-      // 关掉内置 Alt+Click 移动光标（不精确），改用 TerminalPane 的精确算法
-      //（OSC 133 门控 + cursorX 偏移）。见 clickCursor.ts + spec 2026-08-01。
-      altClickMovesCursor: false,
     });
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -286,7 +269,7 @@ export function useTerminalSession(opts: {
         });
         // OSC 7 cwd 追踪 + OSC 133 prompt tracker（安全过滤）
         // 复用外层 ref——return 通过 shellStateRef.current.inCommand 读取最新态
-        const shellState = shellStateRef.current;
+        const shellState = createShellIntegrationState();
         registerPromptTracker(term, shellState);
         registerCwdHandler(term, (c) => setTrackedCwd(c), shellState);
         // 窗口 resize → PTY resize
@@ -369,14 +352,6 @@ export function useTerminalSession(opts: {
     ptyId,
     searchAddon: searchAddonRef.current,
     cwd: trackedCwd,
-    isPromptActive: () => !shellStateRef.current.inCommand,
-    // 点击定位光标用——读 termRef.current 实时值（render 时的快照），
-    // click handler 在事件触发瞬间通过 sessionRef.current 读最新值。
-    cols: termRef.current?.cols ?? 80,
-    rows: termRef.current?.rows ?? 24,
-    cursorX: termRef.current?.buffer.active.cursorX ?? 0,
-    cursorY: termRef.current?.buffer.active.cursorY ?? 0,
-    bufferType: termRef.current?.buffer.active.type ?? "normal",
     hasSelection: () => termRef.current?.hasSelection() ?? false,
     getSelection: () => termRef.current?.getSelection() ?? undefined,
     paste: (text: string) => termRef.current?.paste(text),

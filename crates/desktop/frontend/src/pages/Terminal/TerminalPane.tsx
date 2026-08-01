@@ -19,7 +19,6 @@ import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { relPath } from "./relPath";
 import { shellEscape, formatDroppedPaths } from "./shellEscape";
 import { takeDragPath } from "./dragStore";
-import { pixelToCol, shouldMoveCursor, buildCursorMoveSequence } from "./clickCursor";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -138,8 +137,6 @@ export function TerminalPane({
   // 否则每渲染都 unlisten/listen，间隙丢事件。用 ref 持有最新 session，effect 只挂一次。
   const sessionRef = useRef(session);
   sessionRef.current = session;
-  // click vs drag 区分：mousedown 记录起点，移动 <4px 算 click（触发光标移动）
-  const mouseDownPos = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
     if (!active) return;
     let unlisten: (() => void) | null = null;
@@ -163,77 +160,27 @@ export function TerminalPane({
     };
   }, [active]);
 
-  // 文件树拖拽 + Alt+Click 光标定位（pointer events 方案）：document mouseup 时
-  // hit-test 判定鼠标是否在 canvas 内。document 级监听绕开 xterm 内部元素的事件拦截。
+  // 文件树拖拽（pointer events 方案）：document mouseup 时 hit-test 判定鼠标是否在
+  // canvas 内，是则取 dragPath 写入终端。document 级监听绕开 xterm 内部元素的事件拦截。
   useEffect(() => {
-    const isInCanvas = (e: MouseEvent): boolean => {
-      const canvas = containerRef.current;
-      if (!canvas) return false;
-      const rect = canvas.getBoundingClientRect();
-      return e.clientX >= rect.left && e.clientX <= rect.right &&
-        e.clientY >= rect.top && e.clientY <= rect.bottom;
-    };
-
-    // mousedown 记录 Alt+Click 起点（用于 mouseup 判定 click vs drag）
-    const handleMouseDown = (e: MouseEvent) => {
-      if (e.button === 0 && e.altKey && isInCanvas(e)) {
-        mouseDownPos.current = { x: e.clientX, y: e.clientY };
-      }
-    };
-
     const handleMouseUp = (e: MouseEvent) => {
-      // 优先处理文件拖拽
       const path = takeDragPath();
-      if (path !== null) {
-        if (!isInCanvas(e)) return;
-        const s = sessionRef.current;
-        const rel = relPath(path, s.cwd ?? "");
-        const escaped = shellEscape(rel);
-        s.paste(escaped);
-        s.focus();
-        return;
-      }
-
-      // Alt+Click 光标定位（替代 xterm 内置 altClickMovesCursor，更精确）
-      const down = mouseDownPos.current;
-      mouseDownPos.current = null;
-      if (!down || !e.altKey || e.button !== 0) return;
-      // click vs drag：移动 <4px 算 click
-      const moved = Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y);
-      if (moved > 4) return;
-      if (!isInCanvas(e)) return;
-
+      if (path === null) return; // 无拖拽进行中（普通 mouseup）
+      const canvas = containerRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const inside =
+        e.clientX >= rect.left && e.clientX <= rect.right &&
+        e.clientY >= rect.top && e.clientY <= rect.bottom;
+      if (!inside) return;
       const s = sessionRef.current;
-      // 坐标换算
-      const screen = containerRef.current?.querySelector(".xterm-screen");
-      if (!screen) return;
-      const rect = (screen as HTMLElement).getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const clickCol = pixelToCol(e.clientX, rect.left, rect.width, s.cols);
-      const clickRow = Math.max(0, Math.min(s.rows - 1, Math.floor((e.clientY - rect.top) / (rect.height / s.rows))));
-
-      // 门控：normal buffer（非 TUI）+ 当前光标行才响应。
-      // 不用 isPromptActive（OSC 133 inCommand）——shell 启动时序导致 inCommand 状态不稳定
-      // （启动脚本 preexec 发 C 但 precmd 的 D+A 可能被漏）。bufferType + clickRow 已足够区分。
-      if (!shouldMoveCursor({
-        inCommand: false, // 放宽：不依赖 OSC 133，靠 bufferType + clickRow 门控
-        bufferType: s.bufferType,
-        clickRow,
-        cursorY: s.cursorY,
-      })) return;
-      if (s.hasSelection()) return; // 有选区时点击是取消选区
-
-      const delta = clickCol - s.cursorX;
-      const seq = buildCursorMoveSequence(delta);
-      if (seq) s.write(seq);
+      const rel = relPath(path, s.cwd ?? "");
+      const escaped = shellEscape(rel);
+      s.paste(escaped);
       s.focus();
     };
-    document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      document.removeEventListener("mousedown", handleMouseDown);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
+    return () => document.removeEventListener("mouseup", handleMouseUp);
   }, []);
 
   // OS 文件拖入（Finder → 终端）：Tauri onDragDropEvent。照搬 Terax useTerminalFileDrop。
