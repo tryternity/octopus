@@ -60,10 +60,11 @@ pub(crate) fn start_final_polish_or_paste(
             // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
             // 提前到 show 之前——让「润色中」文案能携带命中的模板名。
             let resolved_prompt = resolve_app_aware_prompt();
+            let status_text = polish_status_text(&resolved_prompt);
             if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::ui::result_window::show_instant(app_handle, "polishing", "");
+                crate::ui::result_window::show_instant(app_handle, "polishing", &status_text);
             } else {
-                crate::ui::result_window::show_result(app_handle, &polish_status_text(&resolved_prompt));
+                crate::ui::result_window::show_result(app_handle, &status_text);
             }
 
             let id = transcript.id;
