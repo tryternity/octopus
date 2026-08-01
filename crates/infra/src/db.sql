@@ -163,15 +163,32 @@ CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 -- ── ASR 热词版本（hotword_sets）多场景词表，多选叠加 ──────────────────────────
 -- id 用 TEXT UUID（v46 改造）：支持 git 同步跨设备无冲突，与 vault_ciphers 一致。
 -- sync_md5：内容指纹（md5），增量同步 diff 用，由 sync crate 计算填入（不在 infra 算）。
+-- v57 起 words_text 列移除——词数据迁到 hotword_words 表（每词一条记录），set 只存元数据。
 CREATE TABLE IF NOT EXISTS hotword_sets (
     id          TEXT    PRIMARY KEY,             -- UUID v4 字符串（不再自增——支持 git 同步）
     name        TEXT    NOT NULL UNIQUE,
     enabled     INTEGER NOT NULL DEFAULT 1,   -- 0/1 是否勾选生效
-    words_text  TEXT    NOT NULL DEFAULT '',
     sync_md5    TEXT,                             -- md5 内容指纹（增量同步 diff，NULL 表示待算）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── ASR 热词词记录（hotword_words）每词一条，schema v57（2026-08-01）───────────
+-- 业务键 (set_id, word) 复合唯一；id 用确定性 UUID v5（hotword_word_uuid）跨设备一致。
+-- pinyin 存原始拼音（to_pinyin().plain()，不经归一化——方言规则运行时生效）。
+-- is_deleted 软删（对齐 vault），文件不删，走标准 sync merge 路径。
+CREATE TABLE IF NOT EXISTS hotword_words (
+    id          TEXT    PRIMARY KEY,             -- hotword_word_uuid(set_id, word) 确定性 v5
+    set_id      TEXT    NOT NULL,                -- 逻辑 FK hotword_sets.id
+    word        TEXT    NOT NULL,
+    pinyin      TEXT    NOT NULL DEFAULT '',     -- 原始拼音空格分隔 "ba zhao yu"（非汉字词为空）
+    is_deleted  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    sync_md5    TEXT,
+    UNIQUE(set_id, word)
+);
+CREATE INDEX IF NOT EXISTS idx_hotword_words_set ON hotword_words(set_id);
 
 -- ── ASR 热词全局命中计数（hotword_hits）词级，不绑版本 ────────────────────────
 CREATE TABLE IF NOT EXISTS hotword_hits (
@@ -193,10 +210,11 @@ CREATE TABLE IF NOT EXISTS fuzzy_dialect_rules (
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
--- 方言模糊规则 seed（6 条，默认全关）
+-- 方言模糊规则 seed（7 条，默认全关）
 INSERT OR IGNORE INTO fuzzy_dialect_rules (token, label, from_py, to_py, match_type, enabled, sort_order) VALUES
     ('fei/hui',  'fei/hui（飞 / 回）',  'fei', 'hui',  'syllable',  0, 1),
     ('yun/yong', 'yun/yong（孕 / 用）', 'yun', 'yong', 'syllable',  0, 2),
+    ('si/ci',    'si/ci（四 / 词）',    'si',  'ci',   'syllable',  0, 3),
     ('n/l',      'n/l（刘 / 牛）',      'n',   'l',    'initial',   0, 1),
     ('f/h',      'f/h（浮 / 护）',      'f',   'h',    'initial',   0, 2),
     ('r/l',      'r/l（热 / 乐）',      'r',   'l',    'initial',   0, 3),
@@ -531,8 +549,9 @@ WHERE NOT EXISTS (SELECT 1 FROM action_bar_items WHERE title='问豆包' AND par
 
 -- ─── ASR 热词 seed（hotword_sets）────────────────────────────────────────────
 -- 默认「通用」版本：固定 UUID（跨设备一致——两台机器的「通用」集 sync 时 id 相同不冲突）。
-INSERT OR IGNORE INTO hotword_sets(id, name, enabled, words_text, sync_md5)
-VALUES('00000000-0000-0000-0000-000000000001', '通用', 1, '', NULL);
+-- v57 起 set 不含词数据（words_text 列已删）；「通用」集默认空词，用户自行添加。
+INSERT OR IGNORE INTO hotword_sets(id, name, enabled, sync_md5)
+VALUES('00000000-0000-0000-0000-000000000001', '通用', 1, NULL);
 
 -- ─── Agent Adapter seed（agent_adapters）─────────────────────────────────────
 -- 内置 agent（is_system=1，用户不可删除，仅可改 is_default）

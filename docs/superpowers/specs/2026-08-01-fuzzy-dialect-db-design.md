@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS fuzzy_dialect_rules (
 );
 ```
 
-seed 6 条：fei/hui + yun/yong（syllable）；n/l + f/h + r/l（initial）；hu/wu（special_hu）。
+seed 7 条：fei/hui + yun/yong + **si/ci**（syllable）；n/l + f/h + r/l（initial）；hu/wu（special_hu）。
+
+**si/ci 规则的「4 归 1」机制**（2026-08-01 新增）：基础规则（始终开）已把 `shi→si`、`chi→ci`（平翘舌归一），故 syllable 规则 `si→ci` 一条即可让 si/shi/chi/ci 四者全部收口到 ci——`shi`（时）经基础变 `si` 再经规则变 `ci`，`chi`（吃）经基础已变 `ci`。label 用 `si/ci（四 / 词）` 展示一对高频易混字，sort_order=3（syllable 组内 fei→yun→si）。**注意**：这是整音节精确匹配（`==`），不影响 se/ce、san/can 等其他 si/ci 开头的音节。
 
 **match_type 语义**：
 - `syllable`：拼音 `== from_py` → 替换成 `to_py`（整音节精确）
@@ -30,6 +32,8 @@ seed 6 条：fei/hui + yun/yong（syllable）；n/l + f/h + r/l（initial）；h
 - `special_hu`：单字 hu→wu + huX→wX（非单字符，硬编码逻辑）
 
 执行顺序：基础规则（始终开）→ syllable 组 → initial 组 → special_hu。一个字只归一组（flag 互斥）。
+
+> **⚠️ 存量 DB 注意**：si/ci 是在 schema v56 已发布后追加的 seed（仅改 db.sql + mod.rs v55→v56 分支的 seed，**不升 schema 版本**）。故**已迁移到 v56 的存量 DB 不会自动获得第 7 条**（v55→v56 分支已执行过，`INSERT OR IGNORE` 不会重跑）。全新库从 db.sql 建出则有全部 7 条。存量 DB 需手动 `INSERT INTO fuzzy_dialect_rules VALUES ('si/ci','si/ci（四 / 词）','si','ci','syllable',0,3)` 或清库重建。
 
 废弃 `app_config.fuzzy_dialect` 字符串——开关状态在 `fuzzy_dialect_rules.enabled`。
 

@@ -241,6 +241,21 @@ mod tests {
     }
 
     #[test]
+    fn normalize_si_ci_collapse() {
+        // si→ci：四/词收口（平翘舌 + 齿音）。
+        // 关键：基础规则先把 shi→si、chi→ci，故这一条 si→ci 让 si/shi/chi/ci 四者全收口到 ci。
+        let rules = [rule("si/ci", "si", "ci", "syllable", 3)];
+        assert_eq!(norm("si", &rules), "ci");   // 四 → 词
+        assert_eq!(norm("shi", &rules), "ci");  // 时：基础 shi→si，再 si→ci
+        assert_eq!(norm("ci", &rules), "ci");   // 词：目标端不变
+        assert_eq!(norm("chi", &rules), "ci");  // 吃：基础 chi→ci
+        // 不应误伤其他 si/ci 开头的音节（syllable 是精确匹配，se/ce/san/can 不受影响）
+        assert_eq!(norm("se", &rules), "se");
+        assert_eq!(norm("ce", &rules), "ce");
+        assert_eq!(norm("san", &rules), "san");
+    }
+
+    #[test]
     fn no_rules_no_dialect_normalization() {
         // 空规则：yun/fei 不归一（仅基础规则）
         assert_eq!(norm("yun", &[]), "yun");

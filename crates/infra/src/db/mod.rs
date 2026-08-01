@@ -305,6 +305,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     INSERT OR IGNORE INTO fuzzy_dialect_rules (token, label, from_py, to_py, match_type, enabled, sort_order) VALUES
                         ('fei/hui', 'fei/hui（飞 / 回）', 'fei', 'hui', 'syllable', 0, 1),
                         ('yun/yong', 'yun/yong（孕 / 用）', 'yun', 'yong', 'syllable', 0, 2),
+                        ('si/ci', 'si/ci（四 / 词）', 'si', 'ci', 'syllable', 0, 3),
                         ('n/l', 'n/l（刘 / 牛）', 'n', 'l', 'initial', 0, 1),
                         ('f/h', 'f/h（浮 / 护）', 'f', 'h', 'initial', 0, 2),
                         ('r/l', 'r/l（热 / 乐）', 'r', 'l', 'initial', 0, 3),
@@ -327,6 +328,67 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     log::info!("DB migrated v55→v56: fuzzy_dialect_rules 表建立（无旧 fuzzy_dialect 配置）");
                 }
             }
+            56 => {
+                // v56→v57：热词拆分单记录——建 hotword_words 表，把 hotword_sets.words_text
+                // 拆成每词一条记录（确定性 UUID v5 + 原始拼音），然后 DROP words_text 列。
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS hotword_words (
+                        id          TEXT    PRIMARY KEY,
+                        set_id      TEXT    NOT NULL,
+                        word        TEXT    NOT NULL,
+                        pinyin      TEXT    NOT NULL DEFAULT '',
+                        is_deleted  INTEGER NOT NULL DEFAULT 0,
+                        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                        updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                        sync_md5    TEXT,
+                        UNIQUE(set_id, word)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_hotword_words_set ON hotword_words(set_id);",
+                )
+                .context("迁移 v56→v57：建 hotword_words 表")?;
+                // 把现有 words_text 拆成词记录（仅当列存在——全新库 v57 已无此列）
+                let has_words_text: bool = {
+                    let mut stmt = conn.prepare("PRAGMA table_info(hotword_sets)")?;
+                    let cols: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1))?
+                        .filter_map(|r| r.ok()).collect();
+                    cols.iter().any(|c| c == "words_text")
+                };
+                if has_words_text {
+                    let sets: Vec<(String, String)> = {
+                        let mut stmt = conn.prepare("SELECT id, words_text FROM hotword_sets")?;
+                        let rows = stmt.query_map([], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                        })?;
+                        let mut out = Vec::new();
+                        for r in rows {
+                            out.push(r?);
+                        }
+                        out
+                    };
+                    use rusqlite::params;
+                    let mut total_words = 0;
+                    for (set_id, words_text) in &sets {
+                        for word in words_text.split_whitespace() {
+                            let id = crate::hotword_text::hotword_word_uuid(set_id, word);
+                            let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
+                            let _ = conn.execute(
+                                "INSERT OR IGNORE INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+                                 VALUES (?1, ?2, ?3, ?4, 0)",
+                                params![id, set_id, word, pinyin],
+                            );
+                            total_words += 1;
+                        }
+                    }
+                    conn.execute("ALTER TABLE hotword_sets DROP COLUMN words_text", [])
+                        .context("迁移 v56→v57：DROP words_text 列")?;
+                    log::info!(
+                        "DB migrated v56→v57: hotword_words 表建立，{} 个 set 共 {} 词迁移完成，words_text 列已删",
+                        sets.len(), total_words
+                    );
+                } else {
+                    log::info!("DB migrated v56→v57: hotword_words 表建立（无 words_text 列，跳过迁移）");
+                }
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -347,10 +409,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v57（2026-08-01）：热词拆分单记录——hotword_words 表（每词一条，确定性 UUID v5 + 原始拼音 + 软删）+ hotword_sets DROP words_text 列。
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 56;
+pub const CURRENT_SCHEMA_VERSION: u32 = 57;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。

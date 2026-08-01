@@ -2,12 +2,37 @@
 //! 纯函数、无 DB、无全局状态——供 db.rs（迁移/写 words_text）与 asr-local/desktop 复用。
 
 use pinyin::ToPinyin;
+use uuid::Uuid;
 
 /// 词 → 拼音首字母串（大写，非汉字跳过）。如「八爪鱼」→`BZY`、「浮窗」→`FC`。
 pub fn pinyin_initials(word: &str) -> String {
     word.chars()
         .filter_map(|c| c.to_pinyin().and_then(|p| p.plain().chars().next()))
         .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+// ── 热词单记录（hotword_words 表，2026-08-01 schema v57）──────────────────────
+// 每词一条记录，业务键 (set_id, word)，id 用确定性 UUID v5 跨设备一致。
+
+/// 热词 UUID v5 的固定 namespace（任意固定值，跨设备/版本必须一致）。
+/// 一旦定下不可改（改了所有词 id 变化，sync 全量冲突）。
+pub const HOTWORD_NAMESPACE: Uuid = Uuid::from_u128(0x6f63746f7075735f686f74776f7264_00);
+
+/// 生成热词词记录的确定性 UUID（v5 SHA1-based）。
+/// `(set_id, word)` 相同 → UUID 相同 → 跨设备独立加同词到同词典天然合并。
+/// 输出标准带连字符 UUID 格式，复用 sync `shard_dir`（filter hex take 2）。
+pub fn hotword_word_uuid(set_id: &str, word: &str) -> String {
+    // 用 "{set_id}/{word}" 拼接作 v5 name，避免 set_id 含分隔符歧义（set_id 是 UUID，不含 /）。
+    Uuid::new_v5(&HOTWORD_NAMESPACE, format!("{set_id}/{word}").as_bytes()).to_string()
+}
+
+/// 词 → 原始拼音 Vec（每字 `to_pinyin().plain()`，非汉字跳过）。
+/// 如「八爪鱼」→ `["ba", "zhao", "yu"]`。**不经归一化**（方言规则运行时生效，DB 只存原始）。
+/// 含非汉字的词返回的 Vec 长度 < 字数，调用方可据此判断是否有效热词。
+pub fn word_plain_pinyins(word: &str) -> Vec<String> {
+    word.chars()
+        .filter_map(|c| c.to_pinyin().map(|p| p.plain().to_string()))
         .collect()
 }
 
@@ -66,5 +91,55 @@ mod tests {
         // 含非汉字的词保留（HotwordIndex 会自行跳过；normalize 不删）。
         // AI助手 首字母 = ZS（助=Z、手=S），八爪鱼 = BZY；B < Z → 八爪鱼 在前。
         assert_eq!(normalize_words_text("AI助手 八爪鱼"), "八爪鱼 AI助手");
+    }
+
+    // ── hotword_word_uuid 确定性（v5）──
+
+    #[test]
+    fn hotword_word_uuid_is_deterministic() {
+        // 同 (set_id, word) → 同 UUID（跨设备一致，v5 SHA1-based）
+        let a = hotword_word_uuid("00000000-0000-0000-0000-000000000001", "八爪鱼");
+        let b = hotword_word_uuid("00000000-0000-0000-0000-000000000001", "八爪鱼");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hotword_word_uuid_differs_by_set_or_word() {
+        let base = hotword_word_uuid("00000000-0000-0000-0000-000000000001", "八爪鱼");
+        // 不同词 → 不同 UUID
+        assert_ne!(base, hotword_word_uuid("00000000-0000-0000-0000-000000000001", "浮窗"));
+        // 不同 set → 不同 UUID（同词跨 set 是独立记录）
+        assert_ne!(base, hotword_word_uuid("00000000-0000-0000-0000-000000000002", "八爪鱼"));
+    }
+
+    #[test]
+    fn hotword_word_uuid_is_valid_uuid_format() {
+        let id = hotword_word_uuid("00000000-0000-0000-0000-000000000001", "八爪鱼");
+        // 标准 8-4-4-4-12 带连字符，v5 版本号（第三段开头 5）
+        assert_eq!(id.len(), 36);
+        assert!(id.starts_with("00000") || id.chars().nth(14) == Some('5'),
+            "v5 UUID 第三段应以 5 开头，got {id}");
+    }
+
+    // ── word_plain_pinyins 原始拼音 ──
+
+    #[test]
+    fn word_plain_pinyins_basic() {
+        assert_eq!(word_plain_pinyins("八爪鱼"), vec!["ba".to_string(), "zhao".to_string(), "yu".to_string()]);
+        assert_eq!(word_plain_pinyins("浮窗"), vec!["fu".to_string(), "chuang".to_string()]);
+    }
+
+    #[test]
+    fn word_plain_pinyins_skips_non_hanzi() {
+        // 含非汉字：返回 Vec 长度 < 字数（调用方可据此判断有效性）
+        let py = word_plain_pinyins("AI助手");
+        assert_eq!(py, vec!["zhu".to_string(), "shou".to_string()]); // 只有「助手」两字
+        assert_eq!(py.len(), 2); // < 4 字符
+    }
+
+    #[test]
+    fn word_plain_pinyins_empty_for_pure_non_hanzi() {
+        assert!(word_plain_pinyins("ABC123").is_empty());
+        assert!(word_plain_pinyins("").is_empty());
     }
 }
