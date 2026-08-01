@@ -651,6 +651,8 @@ settings:
     correctSection: 方言模糊 + 热词纠错
     tabCorrect: 纠错设置
     tabManage: 词典维护
+    groupInitial: 声母模糊
+    groupSyllable: 整音节模糊
     versionsN: 热词版本（${n}）
     loading: 加载中…
     newVersionPlaceholder: 版本名称（Enter 确认 / Esc 取消）

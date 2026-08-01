@@ -306,15 +306,30 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
               />
             </div>
           </CardHeader>
-          <CardContent className="py-2.5">
-            {/* 方言模糊规则（从 DB 读，每条一行 Toggle） */}
-            <div className="grid grid-cols-3 gap-x-8 gap-y-2">
-              {dialectRules.map((r) => (
-                <div key={r.token} className="flex items-center justify-between">
-                  <span className="text-sm">{r.label}</span>
-                  <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
-                </div>
-              ))}
+          <CardContent className="py-2.5 space-y-3">
+            {/* 组 1：声母规则（initial + special_hu） */}
+            <div>
+              <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupInitial')}</div>
+              <div className="grid grid-cols-4 gap-x-6 gap-y-2">
+                {dialectRules.filter((r) => r.matchType === 'initial' || r.matchType === 'special_hu').map((r) => (
+                  <div key={r.token} className="flex items-center justify-between">
+                    <span className="text-sm">{r.label}</span>
+                    <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* 组 2：整音节规则（syllable） */}
+            <div>
+              <div className="mb-1.5 text-xs text-muted-foreground">{t('settings.hotword.groupSyllable')}</div>
+              <div className="grid grid-cols-4 gap-x-6 gap-y-2">
+                {dialectRules.filter((r) => r.matchType === 'syllable').map((r) => (
+                  <div key={r.token} className="flex items-center justify-between">
+                    <span className="text-sm">{r.label}</span>
+                    <Toggle on={r.enabled} onClick={() => toggleDialectRule(r.token, !r.enabled)} aria-label={r.label} />
+                  </div>
+                ))}
+              </div>
             </div>
           </CardContent>
         </Card>
