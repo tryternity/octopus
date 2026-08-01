@@ -102,27 +102,33 @@ export function TerminalPane({
     },
   ];
 
-  // 上报 ptyId（session 連接成功后变化）
+  // 上报回调用 ref 持有（避免内联回调引用变化导致 effect 循环——AGENTS.md listener 稳定化同款）
+  const onPtyIdRef = useRef(onPtyId); onPtyIdRef.current = onPtyId;
+  const onCwdRef = useRef(onCwd); onCwdRef.current = onCwd;
+  const onConsumeCommandRef = useRef(onConsumeCommand); onConsumeCommandRef.current = onConsumeCommand;
+
+  // 上报 ptyId（session 連接成功后变化）——只依赖 ptyId 值，不依赖回调引用
   useEffect(() => {
     if (session.ptyId != null) {
-      onPtyId?.(session.ptyId);
+      onPtyIdRef.current?.(session.ptyId);
     }
-  }, [session.ptyId, onPtyId]);
+  }, [session.ptyId]);
 
-  // 上报 cwd（OSC 7 追踪，cd 后变化）
+  // 上报 cwd（OSC 7 追踪，cd 后变化）——只依赖 cwd 值
   useEffect(() => {
     if (session.cwd) {
-      onCwd?.(session.cwd);
+      onCwdRef.current?.(session.cwd);
     }
-  }, [session.cwd, onCwd]);
+  }, [session.cwd]);
 
   // 消费 pendingCommand：ptyId 就绪（shell 可接收输入）后写入 + 回车
+  // session 每次渲染新引用，用 sessionRef 持有最新——effect 只依赖 ptyId/pendingCommand
   useEffect(() => {
     if (session.ptyId != null && pendingCommand) {
-      session.write(`${pendingCommand}\n`);
-      onConsumeCommand?.();
+      sessionRef.current.write(`${pendingCommand}\n`);
+      onConsumeCommandRef.current?.();
     }
-  }, [session.ptyId, pendingCommand, session, onConsumeCommand]);
+  }, [session.ptyId, pendingCommand]);
 
   // ASR 文本回写（spec 2026-07-31-asr-paste-self-webview）：后端检测前台是 terminal
   // webview 时 emit "paste-text" 定向到本窗口。仅活跃 pane 响应——直写 PTY（最可靠，
