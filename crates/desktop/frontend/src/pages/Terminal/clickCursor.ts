@@ -30,9 +30,15 @@ export function shouldMoveCursor(state: {
   );
 }
 
-/** 偏移量 → ANSI 转义序列（CUF 右移 / CUB 左移）。delta=0 返回空字符串。 */
+/**
+ * 偏移量 → 方向键序列（readline 可识别的输入）。
+ *
+ * 用方向键（`\x1b[C` 右 / `\x1b[D` 左）重复 delta 次，而非 CUF/CUB（`\x1b[nC`）。
+ * 原因：CUF/CUB 是终端显示控制序列，shell readline 不认（字面输出 C/D）；
+ * 方向键是 readline 的输入序列，shell 正确识别为光标移动。
+ */
 export function buildCursorMoveSequence(delta: number): string {
   if (delta === 0) return "";
-  if (delta > 0) return `\x1b[${delta}C`;
-  return `\x1b[${-delta}D`;
+  if (delta > 0) return "\x1b[C".repeat(delta);
+  return "\x1b[D".repeat(-delta);
 }
