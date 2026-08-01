@@ -375,6 +375,20 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
             </div>
           </div>
           {/* 新增热词：input + 添加/追加/覆盖/挖掘（仅选中场景时可用） */}
+          {/* 搜索 + 排序（选中场景且有词时显示，移到操作区顶部——与新增热词同区，截图布局） */}
+          {selected && words.length > 0 && (
+            <div className="flex items-center gap-2 border-b border-border/60 px-4 py-2.5">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+                <Input variant="default" size="full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="pl-7" />
+              </div>
+              <Select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className="flex-shrink-0" aria-label="排序方式">
+                <option value="time">{t('settings.hotword.sortDefault')}</option>
+                <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
+                <option value="hits">{t('settings.hotword.sortHit')}</option>
+              </Select>
+            </div>
+          )}
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
               <Plus className="h-4 w-4 text-muted-foreground" />
@@ -483,22 +497,7 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
               </div>
             )}
 
-            {/* 搜索 + 排序 */}
-            {words.length > 0 && (
-              <div className="flex items-center gap-2 border-b border-border/40 px-4 py-2">
-                <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                  <Input variant="default" size="full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="pl-7" />
-                </div>
-                <Select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className="flex-shrink-0" aria-label="排序方式">
-                  <option value="time">{t('settings.hotword.sortDefault')}</option>
-                  <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
-                  <option value="hits">{t('settings.hotword.sortHit')}</option>
-                </Select>
-              </div>
-            )}
-
-            {/* 词卡网格 */}
+            {/* 词卡网格（搜索+排序已移到右上方操作区） */}
             <div className="flex-1 overflow-y-auto p-4">
               {words.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
