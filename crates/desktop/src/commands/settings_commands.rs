@@ -377,9 +377,9 @@ fn apply_config_value(
                 if tok.is_empty() {
                     continue;
                 }
-                if !matches!(tok, "f/h" | "hu/wu" | "n/l" | "r/l") {
+                if !matches!(tok, "f/h" | "hu/wu" | "n/l" | "r/l" | "yun/yong" | "fei/hui") {
                     return Err(format!(
-                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l、r/l 子集）",
+                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l、r/l、yun/yong、fei/hui 子集）",
                         tok
                     ));
                 }
@@ -808,6 +808,12 @@ mod tests {
         // 四组组合合法
         apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,hu/wu,n/l,r/l")).unwrap();
         assert_eq!(cfg.fuzzy_dialect, "f/h,hu/wu,n/l,r/l");
+        // yun/yong 合法（2026-08-01 新增）
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,yun/yong")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "f/h,yun/yong");
+        // fei/hui 合法（2026-08-01 新增）
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("fei/hui")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "fei/hui");
     }
 
     #[test]

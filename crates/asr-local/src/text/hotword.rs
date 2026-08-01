@@ -9,12 +9,17 @@ use pinyin::ToPinyin;
 /// **基础规则（平翘舌 zh/ch/sh→z/c/s + 前后鼻音 ing/eng/ang→in/en/an）始终开启**，
 /// 不在此处控制——它们是跨方言的常见识别容错。
 ///
-/// 四组方言混淆按需启用（归一化单向，索引与查询共用 [`normalize_fuzzy_pinyin`] → 双向对称命中）：
+/// 六组方言混淆按需启用（归一化单向，索引与查询共用 [`normalize_fuzzy_pinyin`] → 双向对称命中）：
 /// - `fh`（f/h 不分）：声母 f→h
 /// - `nl`（n/l 不分）：声母 n→l
 /// - `rl`（r/l 不分）：声母 r→l（n、r、l 在 nl+rl 同开时都归一到 l，互不冲突）
 /// - `hw`（hu/wu 不分）：单字 hu→wu，其余 huX→wX（huang→wang、hua→wa）；
 ///   **不覆盖** hui↔wei（韵母 ui/ei 不同，拼音级无法统一）
+/// - `yun_yong`（yun/yong）：整音节归一 yun→yong（孕/用）。解决「孕妇」→「用户」
+///   （yun-fu vs yong-hu，配合 fh）等误识。
+/// - `fei_hui`（fei/hui）：整音节归一 fei→hui（飞/回）。
+///
+/// yun_yong / fei_hui 是整音节（含声母+韵母），匹配精确——不像声母规则那样影响所有同声母字。
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct FuzzyRules {
     /// f/h 不分：声母 f→h
@@ -25,6 +30,10 @@ pub struct FuzzyRules {
     pub rl: bool,
     /// hu/wu 不分：单字 hu→wu，其余 huX→wX
     pub hw: bool,
+    /// yun/yong 整音节归一（孕/用）
+    pub yun_yong: bool,
+    /// fei/hui 整音节归一（飞/回）
+    pub fei_hui: bool,
 }
 
 static FUZZY_RULES: OnceLock<parking_lot::RwLock<FuzzyRules>> = OnceLock::new();
@@ -41,7 +50,8 @@ pub fn set_fuzzy_rules(r: FuzzyRules) {
 }
 
 /// 解析 `fuzzy_dialect` 配置串（逗号分隔 token）→ [`FuzzyRules`]。
-/// token：`f/h`→fh、`hu/wu`→hw、`n/l`→nl、`r/l`→rl；空白与未知 token 忽略（前向兼容）。
+/// token：`f/h`→fh、`hu/wu`→hw、`n/l`→nl、`r/l`→rl、`yun/yong`→yun_yong、`fei/hui`→fei_hui；
+/// 空白与未知 token 忽略（前向兼容）。
 pub fn parse_dialect(s: &str) -> FuzzyRules {
     let mut r = FuzzyRules::default();
     for tok in s.split(',').map(|t| t.trim().to_lowercase()) {
@@ -53,6 +63,8 @@ pub fn parse_dialect(s: &str) -> FuzzyRules {
             "hu/wu" => r.hw = true,
             "n/l" => r.nl = true,
             "r/l" => r.rl = true,
+            "yun/yong" => r.yun_yong = true,
+            "fei/hui" => r.fei_hui = true,
             _ => {} // 未知 token 忽略（前向兼容未来扩展）
         }
     }
@@ -65,8 +77,24 @@ pub fn normalize_fuzzy_pinyin(py: &str) -> String {
     normalize_with_rules(py, &fuzzy_store().read())
 }
 
+/// 整音节归一规则表（精确匹配 `n == from`）。一个字只归一组（首个命中即替换）。
+/// 添加新规则：往此表加一行 `(from, to, |r| r.xxx)`，FuzzyRules 加字段 + parse_dialect 加 token。
+/// fei 在声母 f/h 前（fei 首字母 f，精确匹配优先于声母 starts_with）。
+const SYLLABLE_RULES: &[(&str, &str, fn(&FuzzyRules) -> bool)] = &[
+    ("fei", "hui", |r| r.fei_hui),
+    ("yun", "yong", |r| r.yun_yong),
+];
+
+/// 声母归一规则表（首字母 `from`→`to`）。一个字只归一组（首个命中即替换）。
+/// 添加新规则：往此表加一行 `(from, to, |r| r.xxx)`。
+const INITIAL_RULES: &[(char, char, fn(&FuzzyRules) -> bool)] = &[
+    ('n', 'l', |r| r.nl),
+    ('f', 'h', |r| r.fh),
+    ('r', 'l', |r| r.rl),
+];
+
 /// 归一化逻辑（纯函数，便于单测无全局污染）。
-/// 顺序：基础规则（始终）→ 可选方言 nl → fh → hw。
+/// 顺序：基础规则（平翘舌 + 前后鼻音，始终开）→ 整音节归一表 → 声母归一表 → hu/wu（特殊）。
 fn normalize_with_rules(py: &str, rules: &FuzzyRules) -> String {
     let mut n = py.to_lowercase();
     // 基础规则（始终开）：平翘舌
@@ -85,17 +113,29 @@ fn normalize_with_rules(py: &str, rules: &FuzzyRules) -> String {
     } else if n.ends_with("ang") {
         n = n[..n.len() - 3].to_string() + "an";
     }
-    // 可选方言组（fuzzy_dialect 控制）。基础规则不改首字母（zh→z 去尾 h、ing/eng/ang 改尾），
-    // 故方言组仍可基于「基础后」的首字母 n/f/r/hu 互斥判断——else if 防止 fh 把 fu→hu 后被 hw
-    // 二次捕获（一个字只归一组）。nl/rl 都归一到 l，但 n 与 r 首字母不同，同开也不冲突。
-    if rules.nl && n.starts_with('n') {
-        n = format!("l{}", &n[1..]);
-    } else if rules.fh && n.starts_with('f') {
-        n = format!("h{}", &n[1..]);
-    } else if rules.rl && n.starts_with('r') {
-        n = format!("l{}", &n[1..]);
-    } else if rules.hw {
-        // 单字 hu→wu（"胡/无"）；须先精确判 hu 再 starts_with，否则 hu 走第二分支变 "w"（非法拼音）。
+    // 整音节归一（精确匹配，一个字只归一组）
+    let mut syllable_matched = false;
+    for &(from, to, enabled) in SYLLABLE_RULES {
+        if enabled(rules) && n == from {
+            n = to.to_string();
+            syllable_matched = true;
+            break;
+        }
+    }
+    // 声母归一（首字母替换，一个字只归一组；整音节已命中则跳过）
+    let mut initial_matched = syllable_matched;
+    if !initial_matched {
+        for &(from, to, enabled) in INITIAL_RULES {
+            if enabled(rules) && n.starts_with(from) {
+                n = format!("{}{}", to, &n[1..]);
+                initial_matched = true;
+                break;
+            }
+        }
+    }
+    // hu/wu（特殊：单字 hu→wu 整音节，其余 huX→wX 前缀；非单字符替换，不适合声母表）
+    // 仅在前两组未命中时跑——防 fh 把 fu→hu 后被 hw 二次转 wu（一个字只归一组）
+    if !initial_matched && rules.hw {
         if n == "hu" {
             n = "wu".to_string();
         } else if n.starts_with("hu") {
@@ -247,6 +287,51 @@ mod tests {
         assert_eq!(norm("ren", r), "len"); // 人
     }
 
+    // ── yun_yong / fei_hui 整音节归一（各自独立开关）──
+
+    #[test]
+    fn normalize_yun_yong_mapping() {
+        let r = FuzzyRules { yun_yong: true, ..Default::default() };
+        // yun→yong：孕→用（「孕妇」yong-hu 命中「用户」yong-hu）
+        assert_eq!(norm("yun", r), "yong");
+        assert_eq!(norm("yong", r), "yong"); // 目标端不变，双向对称
+        // yun_yong 不影响 fei（fei 归 fei_hui 管）
+        assert_eq!(norm("fei", r), "fei");
+    }
+
+    #[test]
+    fn normalize_fei_hui_mapping() {
+        let r = FuzzyRules { fei_hui: true, ..Default::default() };
+        // fei→hui：飞→回
+        assert_eq!(norm("fei", r), "hui");
+        assert_eq!(norm("hui", r), "hui");
+        // fei_hui 不影响 yun
+        assert_eq!(norm("yun", r), "yun");
+    }
+
+    #[test]
+    fn yun_yong_fei_hui_off_by_default() {
+        // 默认关：yun/fei 不归一
+        assert_eq!(norm("yun", FuzzyRules::default()), "yun");
+        assert_eq!(norm("fei", FuzzyRules::default()), "fei");
+    }
+
+    /// 核心场景：yun_yong + fh 叠加——「孕妇」(yun-fu) 经 yun→yong + fu→hu = yong-hu = 「用户」(yong-hu)。
+    /// yun_yong 整音节归一在声母组之前，可与 fh 同时作用。
+    #[test]
+    fn yun_yong_overlaps_with_fh() {
+        let r = FuzzyRules { yun_yong: true, fh: true, ..Default::default() };
+        // 单字验证：yun→yong（整音节归一），fu→hu（fh 声母组）
+        assert_eq!(norm("yun", r), "yong");
+        assert_eq!(norm("fu", r), "hu");
+        // 整词等价：「孕妇」yong-hu = 「用户」yong-hu（find_candidates 经 lookup 命中）
+        let idx = HotwordIndex::from_words(&["用户".to_string()]);
+        // 模拟 find_candidates 的查询拼音：孕妇 = yun-fu → 归一 yong-hu
+        let query_py = [norm("yun", r), norm("fu", r)].join("-");
+        assert_eq!(query_py, "yong-hu");
+        assert!(idx.lookup(2, &query_py).is_some(), "孕妇归一后应命中用户");
+    }
+
     #[test]
     fn normalize_nl_rl_both() {
         // nl + rl 同开：n 与 r 首字母不同，互不干扰，都归一到 l
@@ -287,7 +372,7 @@ mod tests {
     fn normalize_fh_nl_hw_combine() {
         // 四组同时开互不干扰（else if 互斥，一个拼音只归一组）；
         // 关键：fu 经 fh→hu 后**不**被 hw 二次转 wu（else if 链终止）。
-        let r = FuzzyRules { fh: true, nl: true, hw: true, rl: true };
+        let r = FuzzyRules { fh: true, nl: true, hw: true, rl: true, yun_yong: false, fei_hui: false };
         assert_eq!(norm("fu", r), "hu"); // fh（不被 hw 二次捕获）
         assert_eq!(norm("niu", r), "liu"); // nl
         assert_eq!(norm("re", r), "le"); // rl

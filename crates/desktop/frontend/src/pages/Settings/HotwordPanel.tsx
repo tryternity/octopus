@@ -33,6 +33,8 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'hu/wu', key: 'settings.hotword.huWu' },
   { tok: 'n/l', key: 'settings.hotword.nL' },
   { tok: 'r/l', key: 'settings.hotword.rL' },
+  { tok: 'yun/yong', key: 'settings.hotword.yunYong' },
+  { tok: 'fei/hui', key: 'settings.hotword.feiHui' },
 ];
 
 /// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
@@ -276,8 +278,8 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
           </div>
         </CardHeader>
         <CardContent className="py-2.5">
-          {/* 方言模糊（2x4 横排，全局开关） */}
-          <div className="grid grid-cols-4 gap-x-6">
+          {/* 方言模糊（5 开关，3 列两行，全局开关） */}
+          <div className="grid grid-cols-3 gap-x-8 gap-y-2">
             {DIALECT_KEYS.map(({ tok, key }) => {
               const label = t(key);
               return (
