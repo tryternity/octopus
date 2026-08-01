@@ -37,6 +37,7 @@ macro_rules! handler {
             crate::engine::coordinator::set_selection,
             crate::engine::coordinator::set_translation_active,
             crate::engine::coordinator::start_recording,
+            crate::engine::coordinator::edit_flushed,
             // ── result_window ──
             crate::ui::result_window::result_window_ready,
             crate::ui::result_window::set_result_click_through,
