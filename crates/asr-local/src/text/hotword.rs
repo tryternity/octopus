@@ -77,8 +77,24 @@ pub fn normalize_fuzzy_pinyin(py: &str) -> String {
     normalize_with_rules(py, &fuzzy_store().read())
 }
 
+/// 整音节归一规则表（精确匹配 `n == from`）。一个字只归一组（首个命中即替换）。
+/// 添加新规则：往此表加一行 `(from, to, |r| r.xxx)`，FuzzyRules 加字段 + parse_dialect 加 token。
+/// fei 在声母 f/h 前（fei 首字母 f，精确匹配优先于声母 starts_with）。
+const SYLLABLE_RULES: &[(&str, &str, fn(&FuzzyRules) -> bool)] = &[
+    ("fei", "hui", |r| r.fei_hui),
+    ("yun", "yong", |r| r.yun_yong),
+];
+
+/// 声母归一规则表（首字母 `from`→`to`）。一个字只归一组（首个命中即替换）。
+/// 添加新规则：往此表加一行 `(from, to, |r| r.xxx)`。
+const INITIAL_RULES: &[(char, char, fn(&FuzzyRules) -> bool)] = &[
+    ('n', 'l', |r| r.nl),
+    ('f', 'h', |r| r.fh),
+    ('r', 'l', |r| r.rl),
+];
+
 /// 归一化逻辑（纯函数，便于单测无全局污染）。
-/// 顺序：基础规则（始终）→ 可选方言 nl → fh → hw。
+/// 顺序：基础规则（平翘舌 + 前后鼻音，始终开）→ 整音节归一表 → 声母归一表 → hu/wu（特殊）。
 fn normalize_with_rules(py: &str, rules: &FuzzyRules) -> String {
     let mut n = py.to_lowercase();
     // 基础规则（始终开）：平翘舌
@@ -97,25 +113,29 @@ fn normalize_with_rules(py: &str, rules: &FuzzyRules) -> String {
     } else if n.ends_with("ang") {
         n = n[..n.len() - 3].to_string() + "an";
     }
-    // 整音节归一（yun→yong、fei→hui）——含声母+韵母的完整音节对，匹配精确。
-    // 放在声母方言组之前：声母组是 else if 互斥（一个字只归一组），
-    // 但整音节归一可能与声母组叠加（「孕妇」yun→yong + fu→hu）。
-    if rules.yun_yong && n == "yun" {
-        n = "yong".to_string();
-    } else if rules.fei_hui && n == "fei" {
-        n = "hui".to_string();
+    // 整音节归一（精确匹配，一个字只归一组）
+    let mut syllable_matched = false;
+    for &(from, to, enabled) in SYLLABLE_RULES {
+        if enabled(rules) && n == from {
+            n = to.to_string();
+            syllable_matched = true;
+            break;
+        }
     }
-    // 可选方言组（fuzzy_dialect 控制）。基础规则不改首字母（zh→z 去尾 h、ing/eng/ang 改尾），
-    // 故方言组仍可基于「基础后」的首字母 n/f/r/hu 互斥判断——else if 防止 fh 把 fu→hu 后被 hw
-    // 二次捕获（一个字只归一组）。nl/rl 都归一到 l，但 n 与 r 首字母不同，同开也不冲突。
-    if rules.nl && n.starts_with('n') {
-        n = format!("l{}", &n[1..]);
-    } else if rules.fh && n.starts_with('f') {
-        n = format!("h{}", &n[1..]);
-    } else if rules.rl && n.starts_with('r') {
-        n = format!("l{}", &n[1..]);
-    } else if rules.hw {
-        // 单字 hu→wu（"胡/无"）；须先精确判 hu 再 starts_with，否则 hu 走第二分支变 "w"（非法拼音）。
+    // 声母归一（首字母替换，一个字只归一组；整音节已命中则跳过）
+    let mut initial_matched = syllable_matched;
+    if !initial_matched {
+        for &(from, to, enabled) in INITIAL_RULES {
+            if enabled(rules) && n.starts_with(from) {
+                n = format!("{}{}", to, &n[1..]);
+                initial_matched = true;
+                break;
+            }
+        }
+    }
+    // hu/wu（特殊：单字 hu→wu 整音节，其余 huX→wX 前缀；非单字符替换，不适合声母表）
+    // 仅在前两组未命中时跑——防 fh 把 fu→hu 后被 hw 二次转 wu（一个字只归一组）
+    if !initial_matched && rules.hw {
         if n == "hu" {
             n = "wu".to_string();
         } else if n.starts_with("hu") {
