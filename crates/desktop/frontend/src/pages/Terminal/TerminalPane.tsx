@@ -253,11 +253,8 @@ export function TerminalPane({
           // 偏移 + 转义序列（CUF/CUB）→ 写入 PTY
           const delta = clickCol - s.cursorX;
           const seq = buildCursorMoveSequence(delta);
-          if (seq) {
-            s.write(seq);
-            s.focus();
-          }
-        }}
+          if (seq) s.write(seq);
+          s.focus(); // 即使 delta=0 也聚焦终端（点击就应获焦）
       />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay
