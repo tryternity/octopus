@@ -26,6 +26,10 @@ pub(crate) struct ResolvedPrompt {
     /// 模板规则文本（已从文件读出）
     pub content: String,
     pub inject_context: bool,
+    /// 模板显示名（用于浮窗「润色中」文案；降级时为空串）
+    pub template_title: String,
+    /// 是否命中 app 关联模板（true=显示 app 名；false=默认模板，只显示模板名）
+    pub route_hit: bool,
 }
 
 /// 按前台 app bundle_id 解析润色模板。
@@ -42,7 +46,7 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
         if let Some(&cached_id) = ROUTE_CACHE.read().unwrap().get(bid) {
             if let Some(rec) = load_record(cached_id) {
                 perf_log_route("cache-hit", Some(bid), rec.id, &rec.title);
-                return resolve_record(&rec);
+                return resolve_record(&rec, true);
             }
         }
         // 2. 查 DB（app_bundle_ids LIKE）
@@ -50,7 +54,7 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
             // 写缓存
             ROUTE_CACHE.write().unwrap().insert(bid.to_string(), rec.id);
             perf_log_route("db-hit", Some(bid), rec.id, &rec.title);
-            return resolve_record(&rec);
+            return resolve_record(&rec, true);
         }
         // 3. 无关联 → 默认模板（不写缓存，bundle_id 可能是任何未关联 app）
     }
@@ -59,13 +63,18 @@ pub(crate) fn resolve_polish_prompt(bundle_id: Option<&str>) -> ResolvedPrompt {
     match load_record(default_id) {
         Some(rec) => {
             perf_log_route("default", bundle_id, rec.id, &rec.title);
-            resolve_record(&rec)
+            resolve_record(&rec, false)
         }
         None => {
             crate::core::perf_log::log(&format!(
                 "[POLISH] route source=default bundle={:?} (load_record 失败，空 prompt 降级)", bundle_id
             ));
-            ResolvedPrompt { content: String::new(), inject_context: false }
+            ResolvedPrompt {
+                content: String::new(),
+                inject_context: false,
+                template_title: String::new(),
+                route_hit: false,
+            }
         }
     }
 }
@@ -82,9 +91,11 @@ fn load_record(id: i64) -> Option<octopus_infra::db::PromptRecord> {
     octopus_infra::db::load_prompt(id).ok().flatten()
 }
 
-fn resolve_record(rec: &octopus_infra::db::PromptRecord) -> ResolvedPrompt {
+fn resolve_record(rec: &octopus_infra::db::PromptRecord, route_hit: bool) -> ResolvedPrompt {
     ResolvedPrompt {
         content: read_prompt_file(&rec.content),
         inject_context: rec.inject_context,
+        template_title: rec.title.clone(),
+        route_hit,
     }
 }
