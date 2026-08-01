@@ -295,6 +295,7 @@ octopus 的"手机遥控 agent"需要：
 | **多窗口** | 托盘「新建终端」多实例（`terminal_<n>`）+ ActionBar agent 单例（`terminal_action_agent`），Terax 是单窗口应用 |
 | **文件树侧栏** | 右侧默认隐藏，工具条切换展开/收缩。懒加载 + gitignore 过滤 + dot 文件切换。根目录跟随当前 tab cwd（OSC 7）。Terax 有完整 explorer（git 状态/拖放/CRUD），octopus Phase 1 仅展示 |
 | **panel 可调宽度** | sidebar + file-tree 拖拽边缘改宽度，全局 localStorage 记忆（min=50，max 由终端最小宽推导）。Terax 固定宽度 |
+| **文件拖放进终端** | 文件树节点拖到终端内容区，插入相对当前 cwd（OSC 7 实时）的 shell 转义路径（不回车）+ 自动聚焦。`relPath`（子树内相对，外部回退绝对）+ `shellEscape`（对齐后端 `shell_escape_single`）。Terax 用 `useTerminalFileDrop.ts` + `quoteShellPath.ts` |
 | **Cmd+T / Ctrl+T 新建 tab** | 不区分平台，Cmd 或 Ctrl+T 都支持 |
 | **右键菜单（三区域）** | 终端内容区（复制/粘贴/全选/清屏）+ tab 标签（改名/关闭/新建）+ 文件树（复制路径/复制名称）。自绘浮层 `ContextMenu.tsx`，剪贴板走 `document.execCommand`（WKWebView `navigator.clipboard` 实测不可靠），改名复用 `forceEditing` prop（`window.prompt` 在 WKWebView 不工作）。Terax 用系统原生右键菜单 |
 | **rAF 节流** | 巨量输出 Ctrl+C 回到命令行（xterm write buffer 积压修复），Terax 靠 rendererPool 绕过 |
@@ -311,9 +312,8 @@ octopus 的"手机遥控 agent"需要：
 
 | 功能 | Terax 文件 | 说明 |
 |---|---|---|
-| **rendererPool（slot 池化）** | `rendererPool.ts`（~900 行） | 隐藏 tab 保活 WebGL + dormantRing 字节缓冲。octopus WebGL active 释放已兜底，多 tab 不卡就不用 |
+| **rendererPool（slot 池化）** | `rendererPool.ts`（~900 行） | 隐藏 tab 保活 WebGL + dormantRing 字节缓冲。octopus WebGL active 释放已兜底，多 tab 不卡就用 |
 | **分屏 pane（split）** | `PaneTreeView.tsx` + `panes.ts` | 水平/垂直分割同时看多终端 |
-| **文件拖放进终端** | `useTerminalFileDrop.ts` + `quoteShellPath.ts` | 拖文件自动转义路径写入（依赖 quoteShellPath 空格/特殊字符转义） |
 
 #### P3（重功能或低频，暂缓）
 
