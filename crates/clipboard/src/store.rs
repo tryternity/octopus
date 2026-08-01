@@ -265,14 +265,6 @@ pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Res
 /// 2026-08-02 从 100 提升到 500——bigram 上下文打分需要更丰富 ASR 语料。
 pub const VOICE_TRASH_MAX: u32 = 500;
 
-/// 判断 id 对应的 item_type 是否为语音。查不到返回 false（已删除的行不纠结）。
-fn is_voice_item(conn: &Connection, id: i64) -> bool {
-    conn.query_row(
-        "SELECT item_type FROM clipboard_history WHERE id = ?", params![id],
-        |r| r.get::<_, String>(0),
-    ).ok().map(|t| t == "voice").unwrap_or(false)
-}
-
 /// 软删 voice 后保证回收站 voice ≤ max_trash 条（INV-1）。
 ///
 /// 若回收站内 voice 数量超过上限，按 `created_at ASC` 物理删最老的至恰好等于上限。
@@ -402,7 +394,7 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
         [],
     )?;
     if short_voice > 0 {
-        log::info!("[voice-trash] 清空历史：{} 条过短 voice 物理删（< {} 字节）", short_voice, VOICE_SOFT_DELETE_MIN_LEN);
+        log::info!("[voice-trash] 清空历史：{} 条过短 voice 物理删（< {} 字符）", short_voice, VOICE_SOFT_DELETE_MIN_LEN);
     }
 
     // 2b. voice 够长 → 软删（进回收站，保留作 bigram 语料）
