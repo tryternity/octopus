@@ -58,6 +58,16 @@ export type TerminalSession = {
   cwd: string | null;
   /** OSC 133 命令行输入态（命令执行中为 true）——供点击定位光标门控读取。 */
   inCommand: boolean;
+  /** 终端列数（点击定位坐标换算用）。 */
+  cols: number;
+  /** 终端行数（点击行换算用）。 */
+  rows: number;
+  /** 当前光标列（点击偏移计算用）。 */
+  cursorX: number;
+  /** 当前光标行（门控：只当前行响应）。 */
+  cursorY: number;
+  /** buffer 类型（门控：非 alternate 才响应）。 */
+  bufferType: "normal" | "alternate";
   // ── 右键菜单需要的 xterm 操作 ──
   hasSelection: () => boolean;
   getSelection: () => string | undefined;
@@ -357,6 +367,13 @@ export function useTerminalSession(opts: {
     searchAddon: searchAddonRef.current,
     cwd: trackedCwd,
     inCommand: shellStateRef.current.inCommand,
+    // 点击定位光标用——读 termRef.current 实时值（render 时的快照），
+    // click handler 在事件触发瞬间通过 sessionRef.current 读最新值。
+    cols: termRef.current?.cols ?? 80,
+    rows: termRef.current?.rows ?? 24,
+    cursorX: termRef.current?.buffer.active.cursorX ?? 0,
+    cursorY: termRef.current?.buffer.active.cursorY ?? 0,
+    bufferType: termRef.current?.buffer.active.type ?? "normal",
     hasSelection: () => termRef.current?.hasSelection() ?? false,
     getSelection: () => termRef.current?.getSelection() ?? undefined,
     paste: (text: string) => termRef.current?.paste(text),

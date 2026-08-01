@@ -19,6 +19,7 @@ import { ContextMenu, type MenuPosition, type MenuItem } from "./ContextMenu";
 import { relPath } from "./relPath";
 import { shellEscape, formatDroppedPaths } from "./shellEscape";
 import { takeDragPath } from "./dragStore";
+import { pixelToCol, shouldMoveCursor, buildCursorMoveSequence } from "./clickCursor";
 import { useT } from "@/lib/i18n";
 
 type Props = {
@@ -131,6 +132,8 @@ export function TerminalPane({
   // 否则每渲染都 unlisten/listen，间隙丢事件。用 ref 持有最新 session，effect 只挂一次。
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  // click vs drag 区分：mousedown 记录起点，移动 <4px 算 click（触发光标移动）
+  const mouseDownPos = useRef<{ x: number; y: number } | null>(null);
   useEffect(() => {
     if (!active) return;
     let unlisten: (() => void) | null = null;
@@ -216,6 +219,45 @@ export function TerminalPane({
         ref={containerRef}
         className="terminal-pane-canvas"
         onContextMenu={openContextMenu}
+        onMouseDown={(e) => {
+          if (e.button === 0) mouseDownPos.current = { x: e.clientX, y: e.clientY };
+        }}
+        onClick={(e) => {
+          // click vs drag 区分：移动 <4px 算 click
+          const down = mouseDownPos.current;
+          mouseDownPos.current = null;
+          if (!down) return;
+          const moved = Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y);
+          if (moved > 4) return; // 拖拽选择，放行
+          // 文件拖拽：document mouseup 的 takeDragPath 已先在 document 级触发，
+          // takeDragPath 返回非 null 即说明本次是文件拖入——这里 onClick 不会与
+          // 光标移动冲突（拖拽起点移动距离必 >4px，已在上面早退）。
+
+          const s = sessionRef.current;
+          // 坐标换算：.xterm-screen getBoundingClientRect（xterm 渲染层实际尺寸）
+          const screen = containerRef.current?.querySelector(".xterm-screen");
+          if (!screen) return;
+          const rect = (screen as HTMLElement).getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return;
+          const clickCol = pixelToCol(e.clientX, rect.left, rect.width, s.cols);
+          const clickRow = Math.floor((e.clientY - rect.top) / (rect.height / s.rows));
+
+          // 门控：命令行输入态 + normal buffer + 当前光标行才响应
+          if (!shouldMoveCursor({
+            inCommand: s.inCommand,
+            bufferType: s.bufferType,
+            clickRow,
+            cursorY: s.cursorY,
+          })) return;
+
+          // 偏移 + 转义序列（CUF/CUB）→ 写入 PTY
+          const delta = clickCol - s.cursorX;
+          const seq = buildCursorMoveSequence(delta);
+          if (seq) {
+            s.write(seq);
+            s.focus();
+          }
+        }}
       />
       {searchOpen && active && session.searchAddon && (
         <SearchOverlay
