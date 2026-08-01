@@ -43,6 +43,24 @@ function getDebounceMs(tab: TabId): number {
   return (DEBOUNCED_TABS as Set<string>).has(tab) ? DELAYED_SEARCH_DEBOUNCE_MS : 0;
 }
 
+/**
+ * 构造传给 execute_action_bar 的 text——按 action_type 分流语义：
+ * - url/copy_path：text 当单值数据（URL/路径）用，二选一（params 优先于选中文本）
+ * - ai/script/agent：text 当文本内容（prompt/脚本输入/agent 指令）用，params 与选中文本
+ *   拼接（中间换行）——这样斜杠「指令 + 选中文本」能同时传给动作，直接点击 params 为空
+ *   trim 后等价于选中文本。
+ *
+ * 两条执行路径（直接点击 / 斜杠）共用，保证语义一致。
+ */
+export function buildActionText(actionType: string, params: string | undefined, selectedText: string | undefined): string {
+  const p = params || "";
+  const s = selectedText || "";
+  if (actionType === "url" || actionType === "copy_path") {
+    return p || s;
+  }
+  return `${p}\n${s}`.trim();
+}
+
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
   const [view, setView] = useState<View>("main");
@@ -466,7 +484,8 @@ export default function ActionBar() {
   const executeItem = async (item: ActionBarItem) => {
     const ctx = contextRef.current;
     // accepts=any 的项不需要选中内容——无 ctx 时用空文本
-    const text = ctx?.text || "";
+    // text 按 action_type 构造（url/copy_path 二选一；ai/script/agent 拼接），与斜杠路径共用 buildActionText
+    const text = buildActionText(item.actionType, "", ctx?.text);
 
     if (item.actionType === "submenu") {
       submenuParentIdRef.current = item.id;
@@ -589,10 +608,10 @@ export default function ActionBar() {
       }
       // 斜杠路径统一走后端（spec 2026-07-31-actionbar-execute-paths-unification）：
       // DB action_type 动作全走 execute_action_bar，后端是唯一动作处理点。
-      // 前端只负责：解析 itemId + 构造 text（params 优先于选中文本）+ 选命令。
+      // 前端只负责：解析 itemId + 构造 text（按 action_type 分流，见 buildActionText）+ 选命令。
       // needVoice agent 始终走 trigger_agent_voice（忽略 slash params，与直接点击一致）。
       const ctx = contextRef.current;
-      const text = params || ctx?.text || "";
+      const text = buildActionText(actionType, params, ctx?.text);
 
       // agent needVoice → 联动语音录音（与 executeItem 一致，无视 params）
       if (actionType === "agent" && item.needVoice) {
