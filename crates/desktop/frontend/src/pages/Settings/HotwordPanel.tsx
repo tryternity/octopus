@@ -2,10 +2,10 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
-import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2 } from 'lucide-react';
+import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { Toggle } from '@/components/ui/toggle';
-import { Input, Select } from '@/components/ui/input';
+import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -35,6 +35,13 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'r/l', key: 'settings.hotword.rL' },
 ];
 
+/// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
+const SORT_OPTIONS: { value: 'time' | 'alpha' | 'hits'; key: string }[] = [
+  { value: 'time', key: 'settings.hotword.sortDefault' },
+  { value: 'alpha', key: 'settings.hotword.sortAlpha' },
+  { value: 'hits', key: 'settings.hotword.sortHit' },
+];
+
 export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
@@ -43,6 +50,7 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'time' | 'alpha' | 'hits'>('time');
+  const [sortOpen, setSortOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -348,9 +356,8 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
           <CardHeader>
             <Type className="h-4 w-4 text-muted-foreground" />
             <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
-            {/* 热词纠错总开关——放头部右侧（配置区唯一的主开关） */}
-            <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-              <span className="text-xs text-muted-foreground">{t('settings.general.pinyinCorrect')}</span>
+            {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
+            <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
               <Toggle
                 on={asrCorrect}
                 onClick={() => setVal('asr_correct', !asrCorrect)}
@@ -398,17 +405,39 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
                   className="pl-7"
                 />
               </div>
-              <Select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')}
-                className="w-[68px] flex-shrink-0"
-                disabled={!selected || words.length === 0}
-                aria-label="排序方式"
-              >
-                <option value="time">{t('settings.hotword.sortDefault')}</option>
-                <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
-                <option value="hits">{t('settings.hotword.sortHit')}</option>
-              </Select>
+              {/* 排序：图标按钮 + 点击下拉（简化空间） */}
+              <div className="relative flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!selected || words.length === 0}
+                  onClick={() => setSortOpen((v) => !v)}
+                  aria-label={t('settings.hotword.sortDefault')}
+                  title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortDefault')}
+                >
+                  <ArrowDownWideNarrow className="h-4 w-4" />
+                </Button>
+                {sortOpen && (
+                  <>
+                    {/* outside-click 关闭 */}
+                    <div className="fixed inset-0 z-20" onClick={() => setSortOpen(false)} />
+                    <div className="absolute right-0 top-full z-30 mt-1 min-w-[88px] rounded-md border border-border bg-background py-1 shadow-md">
+                      {SORT_OPTIONS.map((o) => (
+                        <button
+                          key={o.value}
+                          onClick={() => { setSort(o.value); setSortOpen(false); }}
+                          className={cn(
+                            'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent',
+                            sort === o.value ? 'font-medium text-voice' : 'text-foreground'
+                          )}
+                        >
+                          {t(o.key)}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </CardHeader>
 
@@ -509,29 +538,31 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
             ) : visible.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
             ) : (
-              <div className="flex flex-wrap gap-2">
+              // grid auto-fill + 1fr：卡片等宽拉满，消除右侧空白，最后一行左对齐
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-2">
                 {visible.map((w) => {
                   const h = hits[w] ?? 0;
                   return (
                     <div key={w} className={cn(
-                      'group relative max-w-[200px] min-w-[112px] rounded-md border bg-background px-3 py-1.5 pr-7 transition-colors',
+                      'group relative rounded-md border bg-background px-3 py-1.5 pr-6 transition-colors',
                       recentlyAdded.has(w)
                         ? 'border-voice bg-voice/10'
                         : h > 0
                           ? 'border-success/30 bg-success/5'
                           : 'border-border hover:border-foreground/25'
                     )}>
-                      {/* hover 显删除按钮，普通态只显示词+命中数 */}
+                      {/* hover 显删除按钮 */}
                       <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/40 opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100" aria-label={`删除 ${w}`}>
                         <X className="h-3 w-3" />
                       </button>
-                      <div className="truncate text-sm">
-                        {w}
+                      {/* 词 + 命中数同行：词 truncate，命中数右对齐 */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-sm">{w}</span>
+                        <span className={cn(
+                          'flex-shrink-0 font-mono text-[10px] tabular-nums',
+                          h > 0 ? 'text-success' : 'text-muted-foreground/50'
+                        )}>{h}</span>
                       </div>
-                      {/* 命中数：h>0 用 success Badge，h=0 不显示 */}
-                      {h > 0 && (
-                        <Badge variant="success" size="sm" className="absolute bottom-1 right-1.5">{h}</Badge>
-                      )}
                     </div>
                   );
                 })}
