@@ -423,7 +423,7 @@ settings:
     ocrModelHint: 截图识别用，改后重启生效
     shortcut: 快捷键
     asrShortcut: 语音识别
-    asrShortcutHint: "单键三模式：长按说话 / 双击切换免提 / 短按开关"
+    asrShortcutHint: "单键三模式：长按-即时录音识别 / 双击-免提录音识别 / 短按-可编辑录音识别"
     asrKeyOptRight: 右 Option (⌥)
     asrKeyCmdRight: 右 Command (⌘)
     asrKeyCtrlRight: 右 Control (⌃)
