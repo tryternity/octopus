@@ -67,13 +67,13 @@ for word in octopus_asr_local::corrector::drain_hits() {
 
 放 finish 后而非每 tick：corrector 的 `pending_hits` 是 `Mutex<Vec>` 跨 tick 累积，整场会话 drain 一次即可（与批量「一次转写 drain 一次」对称）。
 
-### 3.4 `asr_correct` 默认改 `true`
+### 3.4 `asr_correct` 默认改 `true` + 存量库迁移（schema v54→v55）
 
 - `config.rs::default_asr_correct()` → `true`
 - `db.sql` seed `'false'` → `'true'`
 - `config.rs::app_config_default_values` 测试 assert 改 `true`
 
-**存量用户**：`INSERT OR IGNORE` 不覆盖已有 key，存量库的 `asr_correct` 保持原值（false）。不做 schema 数据迁移——开关已搬到热词管理页面（§3.5），存量用户在热词页能看到它并手动开启（原位置「系统设置-语音」过于隐蔽，用户反馈一直没注意到）。
+**存量库迁移（schema v54→v55）**：初版（c71ceac5）只改 seed，但 `INSERT OR IGNORE` 对存量库无效——存量用户的 `asr_correct` 仍是 `'false'`，加了热词却因开关关着永不生效（用户实测反馈「热词没用上」）。schema v54→v55 数据迁移：`UPDATE app_config SET config_value='true' WHERE config_key='asr_correct'`（`db/mod.rs::init_schema` v54 分支）。真实 DB 已推进到 v55。
 
 ### 3.5 UI 迁移：开关从「系统设置-语音」搬到「热词管理」
 
