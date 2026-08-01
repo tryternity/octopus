@@ -417,8 +417,12 @@ settings:
     ocrModelHint: For screenshot OCR, restart to apply
     shortcut: Shortcuts
     asrShortcut: Voice Recognition
-    polishShortcut: Recognition Polish
-    polishShortcutHint: Polish current recognition result
+    asrShortcutHint: "Single key, three modes: hold to talk / double-tap toggle hands-free / short press on-off"
+    asrKeyOptRight: Right Option (⌥)
+    asrKeyCmdRight: Right Command (⌘)
+    asrKeyCtrlRight: Right Control (⌃)
+    asrKeyShiftRight: Right Shift (⇧)
+    asrKeyFn: Fn
     editShortcut: Voice Edit
     editShortcutHint: Invoke result window when any app is focused
     clipboardShortcut: Clipboard
@@ -891,7 +895,6 @@ terminal:
 # ════════ ActionBar ════════
 actionbar:
   processing: Processing
-  timeout: Request timeout (${n}s)
   searchPlaceholder: Search apps, files, commands…
   noResults: No results
 

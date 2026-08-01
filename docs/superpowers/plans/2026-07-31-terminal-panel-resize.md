@@ -46,7 +46,7 @@
 **Interfaces:**
 - Produces: `clampPanelWidth(raw: number, min: number, containerWidth: number, otherSideWidth: number, terminalMin: number): number` —— Task 2 的 `usePanelWidth.updateFromPointer` 调用此函数。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `crates/desktop/frontend/src/pages/Terminal/clampPanelWidth.test.ts`:
 
@@ -92,12 +92,12 @@ describe("clampPanelWidth", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/Terminal/clampPanelWidth.test.ts`
 Expected: FAIL，报 `Failed to resolve import "./clampPanelWidth"` 或 `clampPanelWidth is not defined`。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `crates/desktop/frontend/src/pages/Terminal/clampPanelWidth.ts`:
 
@@ -126,12 +126,12 @@ export function clampPanelWidth(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd crates/desktop/frontend && npx vitest run src/pages/Terminal/clampPanelWidth.test.ts`
 Expected: PASS（6 个 it 全过）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/clampPanelWidth.ts crates/desktop/frontend/src/pages/Terminal/clampPanelWidth.test.ts
@@ -165,7 +165,7 @@ git commit -m "feat(terminal): clampPanelWidth 纯函数 + 测试（panel resize
   ```
 - Task 3、Task 4 调用 `usePanelWidth` 的返回值。
 
-- [ ] **Step 1: Write the hook implementation**
+- [x] **Step 1: Write the hook implementation**
 
 Create `crates/desktop/frontend/src/pages/Terminal/usePanelWidth.ts`:
 
@@ -252,12 +252,12 @@ export function usePanelWidth(storageKey: string, defaultWidth: number) {
 
 **注意**：`widthRef.current = width` 直接赋值（非 useEffect）——render 期同步，确保 endDrag 闭包读到的总是最新 width。CompactEditor 用 `useEffect` 同步 ref 是因为它在 render 中读 ref 做布局计算；这里只在 event handler 读，render 期赋值更直接（React 允许 render 期写自己的 ref，但不允许写别人的）。
 
-- [ ] **Step 2: Type check**
+- [x] **Step 2: Type check**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error（hook 无消费者时不会报未使用，因 export 了）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/usePanelWidth.ts
@@ -276,7 +276,7 @@ git commit -m "feat(terminal): usePanelWidth hook——宽度状态 + 持久化 
 - Consumes: 无（纯展示 + pointer 事件转发）
 - Produces: `PanelResizer` 组件，Task 4 在 index.tsx 渲染。
 
-- [ ] **Step 1: Write PanelResizer component**
+- [x] **Step 1: Write PanelResizer component**
 
 Create `crates/desktop/frontend/src/pages/Terminal/PanelResizer.tsx`:
 
@@ -337,7 +337,7 @@ export function PanelResizer({ side, onStart, onMove, onEnd }: Props) {
 }
 ```
 
-- [ ] **Step 2: Add CSS**
+- [x] **Step 2: Add CSS**
 
 在 `crates/desktop/frontend/src/index.css` 找到 `.file-tree-panel {` 定义（约 840 行），在其**前面**插入 resizer 样式：
 
@@ -397,12 +397,12 @@ export function PanelResizer({ side, onStart, onMove, onEnd }: Props) {
 }
 ```
 
-- [ ] **Step 3: Type check + build**
+- [x] **Step 3: Type check + build**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 error。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/PanelResizer.tsx crates/desktop/frontend/src/index.css
@@ -421,7 +421,7 @@ git commit -m "feat(terminal): PanelResizer 组件 + 手柄 CSS（4px col-resize
 - Consumes: `usePanelWidth`、`PanelResizer`、`PANEL_MIN`、`TERMINAL_MIN` from Task 2/3。
 - Produces: 可拖拽的 sidebar + file-tree，宽度持久化。
 
-- [ ] **Step 1: FileTreePanel 加 width prop + 内嵌 resizer**
+- [x] **Step 1: FileTreePanel 加 width prop + 内嵌 resizer**
 
 Modify `crates/desktop/frontend/src/pages/Terminal/FileTreePanel.tsx`。
 
@@ -466,7 +466,7 @@ export function FileTreePanel({ cwd, expanded, onToggle, width, onResizerStart, 
 
 > **设计决策**：resizer 放 FileTreePanel 展开态根 div 内部，而非外层 wrapper——因为收缩态（`.file-tree-collapsed`，24px 小条）不需要 resizer，FileTreePanel 自己控制何时展开。`.file-tree-panel` 在 Task 3 已加 `position: relative`，PanelResizer 的 `position: absolute` 相对它定位。
 
-- [ ] **Step 2: index.tsx 引入 hooks + 容器 ref**
+- [x] **Step 2: index.tsx 引入 hooks + 容器 ref**
 
 Modify `crates/desktop/frontend/src/pages/Terminal/index.tsx`。
 
@@ -489,7 +489,7 @@ import { usePanelWidth } from "./usePanelWidth";
   const contentRef = useRef<HTMLDivElement>(null);
 ```
 
-- [ ] **Step 3: 启动 clamp**
+- [x] **Step 3: 启动 clamp**
 
 index.tsx 加一个 useEffect（放在上面 hook 声明之后）：
 
@@ -515,7 +515,7 @@ index.tsx 加一个 useEffect（放在上面 hook 声明之后）：
 
 > **注意**：`contentRef.current` 在首次渲染后才有值，所以 useEffect 在 mount 后跑（React 保证）。`.terminal-content` div 要加 `ref={contentRef}`（Step 5 会改两处渲染分支）。
 
-- [ ] **Step 4: 给 .terminal-content 加 ref + sidebar 加 width style + resizer**
+- [x] **Step 4: 给 .terminal-content 加 ref + sidebar 加 width style + resizer**
 
 sidebar 模式渲染（约 254 行 `<div className="terminal-window terminal-sidebar-layout">` 块内）：
 
@@ -555,7 +555,7 @@ sidebar aside（约 255 行）改为带 width style + 内嵌 resizer：
 
 > `.terminal-sidebar` 在 Task 3 已加 `position: relative`，PanelResizer 相对它定位。
 
-- [ ] **Step 5: tabs 模式 .terminal-content 加 ref + fileTree 传 width/resizer**
+- [x] **Step 5: tabs 模式 .terminal-content 加 ref + fileTree 传 width/resizer**
 
 tabs 模式渲染（约 333 行 `<div className="terminal-window">` 块内），把 `<div className="terminal-content">` 改为加 ref：
 ```typescript
@@ -590,7 +590,7 @@ fileTree 变量定义（约 234 行）改成传 width + resizer 回调：
 
 > FileTreePanel 收缩态（`expanded=false`）返回 `.file-tree-collapsed`（24px 小条），不渲染 resizer（Step 1 的 `onResizerStart && ...` 条件保证）。展开态才有 resizer。
 
-- [ ] **Step 6: Type check + test + build**
+- [x] **Step 6: Type check + test + build**
 
 Run:
 ```bash
@@ -601,7 +601,7 @@ npm run build
 ```
 Expected: tsc 0 error，vitest 全过（原 68 测试 + Task 1 的 6 个 = 74），build 成功。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Terminal/index.tsx crates/desktop/frontend/src/pages/Terminal/FileTreePanel.tsx
@@ -615,7 +615,7 @@ git commit -m "feat(terminal): sidebar + file-tree 可拖拽改宽度，localSto
 **Files:**
 - 无代码改动，验证 + 文档
 
-- [ ] **Step 1: 构建桌面应用并手动验证**
+- [x] **Step 1: 构建桌面应用并手动验证**
 
 Run（在 worktree 根）:
 ```bash
@@ -635,25 +635,25 @@ cd crates/desktop && cargo run -p octopus-desktop --features embedded,custom-pro
 6. ✅ 缩小 Tauri 窗口到最小 560px，重开 → 宽度 clamp 到合法范围
 7. ✅ 多窗口：A 窗口拖动改宽度，B 窗口仍是旧值（可接受，spec 已声明）
 
-- [ ] **Step 2: 更新 architecture.md**
+- [x] **Step 2: 更新 architecture.md**
 
 Modify `docs/architecture.md`，在终端相关章节补充 panel resize 能力（找到文件树/侧栏描述处，加一句「panel 宽度可拖拽调整，全局 localStorage 记忆」）。
 
-- [ ] **Step 3: 更新 research 功能差距表**
+- [x] **Step 3: 更新 research 功能差距表**
 
 Modify `docs/research/2026-07-30-embedded-terminal-agent-analysis.md`，「octopus 独有功能」表加一行：
 ```
 | **panel 可调宽度** | sidebar + file-tree 拖拽边缘改宽度，全局 localStorage 记忆（min=50，max 由终端最小宽推导）。Terax 固定宽度 |
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md docs/research/2026-07-30-embedded-terminal-agent-analysis.md
 git commit -m "docs(sync): panel resize 同步 architecture + research"
 ```
 
-- [ ] **Step 5: Review plan（强制——回看偏差）**
+- [x] **Step 5: Review plan（强制——回看偏差）**
 
 实现完成后回到本 plan，把实际偏差（如 clampTo 是否真需要二次收敛、contentRef 在两布局分支是否都正确取到 rect）回写到对应 Task 的注释里。**plan 是「实施记录」而非「一次性待办」**。
 
@@ -684,4 +684,22 @@ git commit -m "docs(sync): panel resize 同步 architecture + research"
 - **clampTo 用 setWidth 函数式更新**（`setWidth((prev) => clamp(...))`）——避免闭包读到 stale width，且无需把 width 加进 useCallback 依赖。
 - **启动 clamp 二次收敛**——sidebar clamp 后宽度变小会影响 fileTree 的 otherSide，再 clamp 一次 fileTree。仅在 sidebar 模式 + fileTree 展开时需要。
 - **contentRef 两布局分支都要绑**——sidebar 模式（Step 4）和 tabs 模式（Step 5）的 `.terminal-content` 都加 `ref={contentRef}`，否则切布局后 ref 失效。
+
+## 实施记录（Review plan 回写，2026-07-31）
+
+实际实现与 plan 的偏差，已在 subagent-driven-development 流程中修复：
+
+1. **启动 clamp stale-state（Task 4，commit `f8e0dd4b`）**
+   - plan 原写的「二次收敛」`fileTreeWidthCtrl.clampTo(rect.width, sidebarWidthCtrl.width)` 读的是 **pre-clamp 的 stale closure 值**（React setState 异步），二次收敛实际是 no-op。
+   - 修复：用纯函数 `clampPanelWidth` 同步算出 `sidebarAfter`，传给 fileTree 的 clampTo。
+
+2. **几何 reference 元素错误（Task 4，commit `2b944caa`，最终全分支 review 发现）**
+   - plan 原写 `contentRef` 绑在 `.terminal-content`。但 sidebar 布局下 `.terminal-content` 在 sidebar **右侧**，`containerRect.left` 是 sidebar 的移动右边缘 → sidebar 拖拽 raw 自我参照、宽度抖动；fileTree 的 panelMax 把 sidebar 减两次。
+   - 修复：`contentRef` 上移到 `.terminal-window`（包含 sidebar 的行容器）。sidebar/fileTree 的几何 + panelMax 全部正确。
+
+3. **PanelResizer 卸载清理（Task 3，commit `2b944caa`）**
+   - plan 原写的 PanelResizer 无 unmount cleanup。若组件在拖拽中卸载（切布局/收 fileTree/HMR），`terminal-resizing` class 泄漏到 `document.documentElement` → 全局 `cursor: col-resize` + 不可选中。
+   - 修复：加 `useEffect(() => () => classList.remove("terminal-resizing"), [])`，对齐 CompactEditor 先例。
+
+**最终验证**：tsc 0 error · vitest 428/428 · desktop rust test 488 passed · e2e 通过（sidebar/fileTree 拖拽实时 refit + 持久化 + 启动 clamp）。
 

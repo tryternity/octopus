@@ -74,7 +74,7 @@ pub struct AppConfig {
     #[serde(default = "default_ui_language")]
     pub ui_language: String,
 
-    /// 全局 ASR 激活/关闭快捷键
+    /// 单键三模式触发键（handy-keys 名：OptRight/CmdRight/CtrlRight/ShiftRight/Fn），长按=PTT / 双击=toggle / 短按=hands-free
     #[serde(default = "default_asr_shortcut")]
     pub asr_shortcut: String,
 
@@ -158,12 +158,6 @@ pub struct AppConfig {
     #[serde(default = "default_edit_global_shortcut")]
     pub edit_global_shortcut: String,
 
-    /// 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 polish_now
-    /// （复用工具栏「立即润色」按钮语义：空文本静默、polishLoading 幂等）。
-    /// 默认 "Alt+S"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
-    #[serde(default = "default_polish_global_shortcut")]
-    pub polish_global_shortcut: String,
-
     /// HF 模型下载镜像 host（如 `https://hf-mirror.com`）。空 = 官方源 huggingface.co。
     /// cli `download --mirror` 临时覆盖此值；优先级 `--mirror` > 此字段 > 官方源。
     #[serde(default = "default_download_mirror")]
@@ -218,19 +212,6 @@ pub struct AppConfig {
     #[serde(default = "default_vault_autotype_shortcut")]
     pub vault_autotype_shortcut: String,
 
-    /// 录音模式: "toggle"（默认，按一次开始/再按一次停止）| "talk"（PTT 按住说话松开识别）。
-    ///
-    /// 注意（spec 2026-07-31 单键三模式）：ptt 键现在通过按键时长 + 双击区分
-    /// 三种模式（长按=PTT / 双击=toggle / 短按=hands-free），不再互斥于 record_mode。
-    /// record_mode 主要影响 asr_shortcut（Alt+Shift+A）走哪种模式。
-    #[serde(default = "default_record_mode")]
-    pub record_mode: String,
-
-    /// 单键三模式 PTT 键（默认 "OptRight" = 右 Option）。spec 2026-07-31。
-    /// 支持 handy-keys 名称：OptRight / ShiftRight / CtrlRight / CmdRight / Fn。
-    #[serde(default = "default_ptt_key")]
-    pub ptt_key: String,
-
     /// vault 离开焦点后的锁定超时（秒）。默认 180 = 3 分钟。
     ///
     /// 含义：保险库 tab 离开前台（切 tab / 关窗口 / 应用失焦）超过此秒数后，
@@ -269,7 +250,7 @@ fn default_ui_language() -> String {
     "zh-CN".into()
 }
 fn default_asr_shortcut() -> String {
-    "CmdOrCtrl+Shift+A".into()
+    "OptRight".into()
 }
 fn default_paste_method() -> String {
     "clipboard".into()
@@ -312,9 +293,6 @@ fn default_edit_shortcut() -> String {
 fn default_edit_global_shortcut() -> String {
     "Alt+E".into()
 }
-fn default_polish_global_shortcut() -> String {
-    "Alt+S".into()
-}
 fn default_download_mirror() -> String {
     String::new()
 }
@@ -347,12 +325,6 @@ fn default_record_shortcut() -> String {
 }
 fn default_vault_autotype_shortcut() -> String {
     "CmdOrCtrl+Shift+S".into()
-}
-fn default_record_mode() -> String {
-    "toggle".into()
-}
-fn default_ptt_key() -> String {
-    "OptRight".into()
 }
 fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
@@ -389,7 +361,6 @@ impl Default for AppConfig {
             denoise_mode: default_denoise_mode(),
             edit_shortcut: default_edit_shortcut(),
             edit_global_shortcut: default_edit_global_shortcut(),
-            polish_global_shortcut: default_polish_global_shortcut(),
             download_mirror: default_download_mirror(),
             clipboard_shortcut: default_clipboard_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
@@ -401,8 +372,6 @@ impl Default for AppConfig {
             screenshot_shortcut: default_screenshot_shortcut(),
             record_shortcut: default_record_shortcut(),
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
-            record_mode: default_record_mode(),
-            ptt_key: default_ptt_key(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
             onboarding_completed: false,
         }
@@ -450,7 +419,6 @@ mod tests {
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
         assert_eq!(cfg.edit_global_shortcut, "Alt+E");
-        assert_eq!(cfg.polish_global_shortcut, "Alt+S");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

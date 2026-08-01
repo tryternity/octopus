@@ -225,6 +225,19 @@ match crate::ui::terminal_window::open_terminal_with_command(&app, Some(&cwd), &
 
 内嵌终端可在 async worker 线程安全调用（内部 `run_on_main_thread` 调度 AppKit），无需 spawn_blocking（与原 Terminal.app osascript 路径不同）。
 
+#### new-tab listener 稳定化（⚠️ 易踩坑，2026-07-31 修复）
+
+前端 `listen("terminal://new-tab")` 必须遵守两条约束，否则 agent 命令建不出 tab（emit 到达时 listener 未注册 → event 丢）：
+
+1. **listener effect 依赖最小化**：`addTab`/`consumeFirstTab` 的 `useCallback` 依赖 `[tabs, activeId]`，引用随 tabs 变化。若 listener 的 `useEffect` 依赖回调本身，会每次 tabs 变化 cleanup + re-register（`listen()` 是 async Promise，re-register 间隙 listener 未注册）→ emit 撞间隙就丢。**必须用 `ref` 持有回调（`consumeFirstTabRef.current = fn`），effect 只挂一次（`[]` 依赖）**。
+2. **target 精确匹配**：`{ target: { kind: "WebviewWindow", label } }`（不用裸 string AnyLabel，后者投递不如 WebviewWindow 可靠）。
+
+同款模式见 `TerminalPane.tsx` 的 paste-text listener（commit `d5a879ed`）。详见 AGENTS.md「跨窗口 event listener 必须稳定化」gotcha。
+
+#### 首 tab 复用（消除多余空 tab，2026-07-31）
+
+窗口新建时 `useState(() => [makeTab()])` 建一个占位空 tab，若首个 new-tab event 走 `addTab` 会多出一个空 tab。listener 路径改用 `consumeFirstTab(cwd, command)`：首个 command 写进占位 tab（设 cwd + pendingCommand），之后的 command 走正常 addTab。**仅 listener（agent 联动）路径消费首 tab**；用户主动新建 tab（+按钮/Cmd+T/右键）始终 addTab 新开。
+
 ### capabilities
 
 `capabilities/default.json` 加 `terminal_window` 到 windows 数组。

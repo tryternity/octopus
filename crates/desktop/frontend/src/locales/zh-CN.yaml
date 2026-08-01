@@ -423,8 +423,12 @@ settings:
     ocrModelHint: 截图识别用，改后重启生效
     shortcut: 快捷键
     asrShortcut: 语音识别
-    polishShortcut: 识别润色
-    polishShortcutHint: 对当前识别结果立即润色
+    asrShortcutHint: "单键三模式：长按说话 / 双击切换免提 / 短按开关"
+    asrKeyOptRight: 右 Option (⌥)
+    asrKeyCmdRight: 右 Command (⌘)
+    asrKeyCtrlRight: 右 Control (⌃)
+    asrKeyShiftRight: 右 Shift (⇧)
+    asrKeyFn: Fn
     editShortcut: 语音编辑
     editShortcutHint: 任意应用聚焦时唤起结果窗并编辑
     clipboardShortcut: 剪贴板
@@ -900,7 +904,6 @@ terminal:
 # ════════ ActionBar 悬浮操作栏 ════════
 actionbar:
   processing: 处理中
-  timeout: 请求超时（${n}s）
   searchPlaceholder: 搜索应用、文件、命令…
   noResults: 无结果
 

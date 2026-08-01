@@ -43,7 +43,23 @@ function getDebounceMs(tab: TabId): number {
   return (DEBOUNCED_TABS as Set<string>).has(tab) ? DELAYED_SEARCH_DEBOUNCE_MS : 0;
 }
 
-const AI_TIMEOUT_MS = 10000;
+/**
+ * 构造传给 execute_action_bar 的 text——按 action_type 分流语义：
+ * - url/copy_path：text 当单值数据（URL/路径）用，二选一（params 优先于选中文本）
+ * - ai/script/agent：text 当文本内容（prompt/脚本输入/agent 指令）用，params 与选中文本
+ *   拼接（中间换行）——这样斜杠「指令 + 选中文本」能同时传给动作，直接点击 params 为空
+ *   trim 后等价于选中文本。
+ *
+ * 两条执行路径（直接点击 / 斜杠）共用，保证语义一致。
+ */
+export function buildActionText(actionType: string, params: string | undefined, selectedText: string | undefined): string {
+  const p = params || "";
+  const s = selectedText || "";
+  if (actionType === "url" || actionType === "copy_path") {
+    return p || s;
+  }
+  return `${p}\n${s}`.trim();
+}
 
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
@@ -56,7 +72,6 @@ export default function ActionBar() {
   const subBtnRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchEngineRef = useRef("google");
-  const timedOutRef = useRef(false);
   const contextRef = useRef<Context | null>(null);
   const viewRef = useRef<View>("main");
   const submenuParentIdRef = useRef<number | null>(null);
@@ -466,44 +481,11 @@ export default function ActionBar() {
 
   // ── 动作执行 ──
 
-  const executeAiItem = async (item: ActionBarItem) => {
-    const ctx = contextRef.current;
-    const text = ctx?.text || "";
-    setView("loading");
-    timedOutRef.current = false;
-
-    // 本地翻译（auto_translate）可能耗时很长（长文本分段），不设超时
-    // LLM 操作保留 10s 超时
-    const isTranslate = item.actionData === "auto_translate";
-    const timeoutMs = isTranslate ? 0 : AI_TIMEOUT_MS;
-    const timeoutId = timeoutMs > 0 ? setTimeout(() => {
-      timedOutRef.current = true;
-      showQuickError(t("actionbar.timeout", { n: timeoutMs / 1000 }));
-      setView("main");
-    }, timeoutMs) : null;
-
-    try {
-      await invoke("execute_action_bar", { itemId: item.id, text });
-      if (timeoutId) clearTimeout(timeoutId);
-      if (timedOutRef.current) {
-        console.warn("[action-bar] AI result arrived after timeout, discarding");
-        return;
-      }
-      // LLM 路径：action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
-      // 本地翻译路径：后端 return Ok(true) 不预隐藏，翻译完成后主线程隐藏 + 开结果 tab
-      // 两种路径都依赖后端收口，前端 view 保持 "loading" 直到窗口被隐藏
-    } catch (e) {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (timedOutRef.current) return;
-      showQuickError(String(e).slice(0, 40));
-      setView("main");
-    }
-  };
-
   const executeItem = async (item: ActionBarItem) => {
     const ctx = contextRef.current;
     // accepts=any 的项不需要选中内容——无 ctx 时用空文本
-    const text = ctx?.text || "";
+    // text 按 action_type 构造（url/copy_path 二选一；ai/script/agent 拼接），与斜杠路径共用 buildActionText
+    const text = buildActionText(item.actionType, "", ctx?.text);
 
     if (item.actionType === "submenu") {
       submenuParentIdRef.current = item.id;
@@ -523,10 +505,8 @@ export default function ActionBar() {
       return;
     }
 
-    if (item.actionType === "ai") {
-      executeAiItem(item);
-      return;
-    }
+    // ai 不再单独分流——后端 execute_action_bar_inner 的 ai 分支自带超时
+    // （spec 2026-07-31：超时从前端移到后端，避免 LLM 线程泄漏）
 
     // agent 类型：need_voice=true → 联动语音录音；否则直接执行
     // 2026-07-19 v40 改：从扫描 actionData.includes("{{voice}}") 改为 needVoice 字段
@@ -626,37 +606,15 @@ export default function ActionBar() {
         console.warn("[slash] 菜单项未找到:", itemId);
         return;
       }
-      // url 类型：params 替换 {query}/{text}，无 params 用选中文本
-      // ⚠️ TODO（重构待办）：本 slash 分流与 executeItem（走后端 execute_action_bar）
-      // 是两套实现，易分裂（本 url 空 action_data 分支就是补漏）。长期应统一——斜杠
-      // 路径也走 execute_action_bar（后端单一真相源），删掉前端重复的动作处理逻辑。
-      // 详见 memory: project_unify-actionbar-execute-paths。
-      if (actionType === "url") {
-        const ctx = contextRef.current;
-        const fallbackText = params || ctx?.text || "";
-        const rawUrl = (data.action_data as string) || item.actionData || "";
-        // action_data 空 = 「选中文本即 URL」项（如系统「网页」菜单，action_data=''）。
-        // 对齐后端 script.rs url 分支：空时用 fallbackText 当 URL（缺 scheme 补 https://）。
-        // 不补的话 openUrlTemplate 的 `if (!url) return` 会静默无反应（斜杠命令打不开网页）。
-        if (!rawUrl) {
-          const raw = fallbackText.trim();
-          if (!raw) return;
-          const directUrl = raw.startsWith("http://") || raw.startsWith("https://")
-            ? raw
-            : `https://${raw}`;
-          try {
-            await invoke("open_url", { url: directUrl });
-            invoke("action_bar_dismiss", { reason: "slash-url" });
-          } catch (e) {
-            showQuickError(String(e).slice(0, 40));
-          }
-          return;
-        }
-        await openUrlTemplate(rawUrl, fallbackText, "slash-url");
-        return;
-      }
-      // agent need_voice + 无参数 → 联动语音录音路径（与 executeItem 一致）
-      if (actionType === "agent" && item.needVoice && !params) {
+      // 斜杠路径统一走后端（spec 2026-07-31-actionbar-execute-paths-unification）：
+      // DB action_type 动作全走 execute_action_bar，后端是唯一动作处理点。
+      // 前端只负责：解析 itemId + 构造 text（按 action_type 分流，见 buildActionText）+ 选命令。
+      // needVoice agent 始终走 trigger_agent_voice（忽略 slash params，与直接点击一致）。
+      const ctx = contextRef.current;
+      const text = buildActionText(actionType, params, ctx?.text);
+
+      // agent needVoice → 联动语音录音（与 executeItem 一致，无视 params）
+      if (actionType === "agent" && item.needVoice) {
         setView("loading");
         try {
           await invoke("trigger_agent_voice", { itemId });
@@ -666,15 +624,13 @@ export default function ActionBar() {
         }
         return;
       }
-      // 其他（agent/ai/script + 有参数，或 agent 非 need_voice）→ execute_action_bar
-      // text 用 slash params，回退选中文本（execute_action_bar_inner 据 action_type 分流）
-      const ctx = contextRef.current;
-      const text = params || ctx?.text || "";
+
+      // 其他（url/ai/script/copy_path/非voice agent）→ execute_action_bar
       setView("loading");
       try {
         await invoke("execute_action_bar", { itemId, text });
         // ai/script 异步结果由后端收口（action_bar_show_result 隐藏浮窗）；
-        // url/agent-without-voice 已在上面分流，此处多为 script/ai，同步 dismiss 兜底
+        // url/copy_path 后端 Ok(false) 外层收口。同步 dismiss 兜底。
         invoke("action_bar_dismiss", { reason: "slash-exec" });
       } catch (e) {
         showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));

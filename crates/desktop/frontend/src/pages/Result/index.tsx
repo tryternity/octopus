@@ -180,6 +180,9 @@ function Result() {
             if (!prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording false -> true (show-result)" });
             return true;
           });
+          // toggle 会话开始：清 instant 视图残留状态（上次 PTT/hands-free 的指示内容）
+          setInstantState("");
+          setInstantText("");
           setTranslateMode('off');
           setTranslatedText("");
           translatingRef.current = false;
@@ -357,17 +360,6 @@ function Result() {
     setExpanded(next);
     invoke("set_result_click_through", { expanded: next });
   }, [expanded]);
-
-  // 全局立即润色快捷键
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    let cancelled = false;
-    listen("global-polish-trigger", () => polishNow()).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, [polishNow]);
 
   // ── Keyboard shortcuts ──
   useEffect(() => {

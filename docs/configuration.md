@@ -292,7 +292,7 @@ octopus-cli config
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
-| `asr_shortcut` | string | `CmdOrCtrl+Shift+A` | desktop | 全局 ASR 激活/关闭快捷键（Tauri Accelerator 格式）。GUI 设置页可配（快捷键捕获按钮 + `check_shortcut` 冲突检测 + 热重载）。旧字段名 `shortcut` 经 serde alias 向后兼容 |
+| `asr_shortcut` | string | `OptRight` | desktop | 单键三模式触发键（handy-keys 名：OptRight/CmdRight/CtrlRight/ShiftRight/Fn）。长按=PTT / 双击=toggle / 短按=hands-free。GUI 设置页 dropdown 5 选 1 + 热重载（unregister_ptt/register_ptt）。值不合法 fallback OptRight。**2026-08-01 从 Tauri 加速键（Alt+A）升级为单键名** |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none。**已废弃**（2026-06-21 审查修复）：`recording_overlay` 窗口及 `overlay.rs` 模块已整体删除，UI 统一到 `result_window`。字段保留于 config 结构（避免 DB schema 迁移），但无任何使用方 |
@@ -307,7 +307,6 @@ octopus-cli config
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `edit_shortcut` | string | `"CmdOrCtrl+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。**跨平台**：`CmdOrCtrl` 在 macOS=⌘、Win/Linux=Ctrl（前端 `parseShortcut` 按 `e.metaKey||e.ctrlKey` 判定）；旧默认 `Cmd+Enter` 仅匹配 macOS、Win/Linux 下 Ctrl+Enter 失效——**DB v15→v16 迁移**自动把 `Cmd+Enter` 升级为 `CmdOrCtrl+Enter`（仅动等于旧默认的行，保留用户自定义值）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
 | `edit_global_shortcut` | string | `"CmdOrCtrl+Shift+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
-| `polish_global_shortcut` | string | `"CmdOrCtrl+Shift+S"` | desktop | 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 `polish_now`（复用工具栏「立即润色」按钮语义：空文本静默、幂等）。GUI 设置页可配 + 热重载 |
 | `clipboard_shortcut` | string | `"CmdOrCtrl+Shift+D"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
 | `clipboard_max_items` | int | `1000` | desktop | 剪贴板最大保留条数（不含收藏，超出自动清理） |
 | `clipboard_max_age_days` | int | `30` | desktop | 剪贴板自动清理天数（超过此天数的非收藏记录自动删除） |
@@ -317,7 +316,7 @@ octopus-cli config
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（`polish_mode`、`polish_min_interval`、`pause_polish_threshold_ms`），`asr_*`（`asr_hardware_accelerated`、`asr_correct`）控制推理后端 / 输出后处理。**模型激活**（asr_engine / polish_llm / ocr_model / translate_engine）已从 AppConfig 移除，改存 DB `models.is_enabled`——详见下方「模型激活」节。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。`active_polish_prompt` 属润色行为（与 `polish_*` 同组，但存独立 key，由 `db::load_active_prompt_id()` 读，不入 `AppConfig` struct）。
 
-> **快捷键字段**（`asr_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `clipboard_shortcut` / `screenshot_shortcut`）均为 Tauri Accelerator 格式、GUI 设置页可配 + 热重载。`clipboard_*`（`clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` / `clipboard_enabled`）控制剪贴板历史（浮窗快捷键 + 容量/清理 + 是否监听）。`clipboard_enabled`（默认 `true`）是否启用剪贴板历史监听——已纳入 `AppConfig`，设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时翻转 watcher flag，无需重启）；列表项**双击默认粘贴**（固定行为，不可配）。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。
+> **快捷键字段**（`asr_shortcut`（单键名，dropdown）/ `edit_shortcut` / `edit_global_shortcut` / `clipboard_shortcut` / `screenshot_shortcut`）GUI 设置页可配 + 热重载。`asr_shortcut` 是 handy-keys 单键名（非 Tauri Accelerator），其余为 Tauri Accelerator 格式。`clipboard_*`（`clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` / `clipboard_enabled`）控制剪贴板历史（浮窗快捷键 + 容量/清理 + 是否监听）。`clipboard_enabled`（默认 `true`）是否启用剪贴板历史监听——已纳入 `AppConfig`，设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时翻转 watcher flag，无需重启）；列表项**双击默认粘贴**（固定行为，不可配）。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。
 
 ### 模型激活（2026-07-17 重构后）
 
@@ -347,7 +346,7 @@ language: "auto"
 engine_mode: "embedded"          # embedded | websocket | grpc
 
 # 桌面交互
-asr_shortcut: "CmdOrCtrl+Shift+A"  # 全局 ASR 激活/关闭快捷键（旧字段名 shortcut 仍兼容）
+asr_shortcut: "OptRight"  # 单键三模式触发键（handy-keys 名：OptRight/CmdRight/CtrlRight/ShiftRight/Fn）
 paste_method: "clipboard"        # clipboard | direct | none
 write_to_clipboard: true         # 粘贴后是否把识别结果留在剪贴板（false = 等同重构前现状）
 
@@ -365,7 +364,6 @@ output_simplified: true          # ASR 输出字形：true=简体（繁→简）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
 edit_shortcut: "CmdOrCtrl+Enter"  # 编辑 toggle 快捷键（窗口内，进入/保存都用此键；CmdOrCtrl 跨平台=⌘/Ctrl）
 edit_global_shortcut: "CmdOrCtrl+Shift+E"  # 全局编辑（跨应用唤起结果窗 + toggle）
-polish_global_shortcut: "CmdOrCtrl+Shift+S"  # 全局立即润色（show 结果窗不聚焦 + polish_now）
 
 # 剪贴板历史浮窗
 clipboard_shortcut: "CmdOrCtrl+Shift+D"  # 剪贴板历史浮窗快捷键

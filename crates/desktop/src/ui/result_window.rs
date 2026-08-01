@@ -197,7 +197,7 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             let sf = win.scale_factor().unwrap_or(1.0);
             // 按模式决定可交互区（顶部 toggle 小条 / 底部 instant 指示卡）
             let (bar_off_x, bar_off_y, bar_h) = if crate::engine::coordinator::INSTANT_MODE
-                .load(std::sync::atomic::Ordering::Relaxed)
+                .load(Ordering::Relaxed)
             {
                 // instant：底部指示卡，水平居中（指示卡 400 宽，但可交互区放宽到窗口宽 720 便于点击）
                 (BAR_OFFSET_X, RESULT_HEIGHT - INSTANT_BAR_H, INSTANT_BAR_H)
@@ -348,10 +348,12 @@ fn position_bottom_center(win: &tauri::WebviewWindow) {
         let x = ox + (w - RESULT_WIDTH) / 2.0;
         // 窗口底边贴屏底：窗口 y = 屏底 - 窗口高(480) - margin
         let y = oy + h - RESULT_HEIGHT - INSTANT_BOTTOM_MARGIN;
+        debug!("[result_window] instant bottom-center on mouse monitor: ({},{})", x, y);
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
         return;
     }
     // fallback：primary monitor（物理坐标除 scale）
+    debug!("[result_window] instant bottom-center: no mouse monitor, fallback to primary");
     if let Ok(Some(m)) = app.primary_monitor() {
         let scale = m.scale_factor();
         let pos = m.position();
@@ -424,8 +426,8 @@ pub fn trigger_global_edit(app: &tauri::AppHandle) {
     }
 }
 
-/// 注册全局编辑快捷键。与 shortcut::register_shortcut 的区别：handler 调用
-/// trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
+/// 注册全局编辑快捷键：解析 + on_shortcut，失败返回 Err（供调用方回滚旧快捷键）。
+/// handler 调用 trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
 pub fn register_edit_global_shortcut(
     app: &tauri::AppHandle,
     shortcut_str: &str,
@@ -443,38 +445,6 @@ pub fn register_edit_global_shortcut(
         })
         .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
     debug!("Registered global edit shortcut: {}", shortcut_str);
-    Ok(())
-}
-
-/// 全局立即润色快捷键被按下：show 结果窗（**不 set_focus**，润色不需窗口聚焦接收键盘）
-/// 并通知前端触发 polish_now。前端 polishNow 内部判空（无结果静默）+ polishLoading
-/// 门控（幂等）。与 trigger_global_edit 的区别仅在此处不 set_focus。
-pub fn trigger_global_polish(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.show();
-        let _ = window.emit("global-polish-trigger", ());
-    }
-}
-
-/// 注册全局立即润色快捷键。与 register_edit_global_shortcut 的区别：handler 调
-/// trigger_global_polish。set_config 热重载时复用此函数。
-pub fn register_polish_global_shortcut(
-    app: &tauri::AppHandle,
-    shortcut_str: &str,
-) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-    let shortcut: Shortcut = shortcut_str
-        .parse()
-        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
-    let app_handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut(shortcut, move |_ah, _scut, event| {
-            if event.state() == ShortcutState::Pressed {
-                trigger_global_polish(&app_handle);
-            }
-        })
-        .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
-    debug!("Registered global polish shortcut: {}", shortcut_str);
     Ok(())
 }
 

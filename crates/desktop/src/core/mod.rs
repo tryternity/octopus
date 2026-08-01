@@ -11,4 +11,5 @@ pub mod error_util;
 pub mod perf_log;
 pub mod file_watcher;
 pub mod extensions;
-pub mod shortcut;
+// shortcut.rs 已删除：register_shortcut（原 asr toggle 热重载用）被 PTT 热重载取代
+// （platform::ptt::register_ptt / unregister_ptt）。

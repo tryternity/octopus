@@ -76,7 +76,7 @@ static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard::clipboard_commands::OcrResult)>> = Mutex::new(None);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
-/// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
+/// 与 result_window::register_edit_global_shortcut 范式一致。
 pub fn register_screenshot_shortcut(
     app: &tauri::AppHandle,
     shortcut_str: &str,
