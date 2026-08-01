@@ -67,13 +67,22 @@ for word in octopus_asr_local::corrector::drain_hits() {
 
 放 finish 后而非每 tick：corrector 的 `pending_hits` 是 `Mutex<Vec>` 跨 tick 累积，整场会话 drain 一次即可（与批量「一次转写 drain 一次」对称）。
 
-### 3.4 `asr_correct` 默认改 `true`
+### 3.4 `asr_correct` 默认改 `true` + 存量库迁移
 
 - `config.rs::default_asr_correct()` → `true`
 - `db.sql` seed `'false'` → `'true'`
 - `config.rs::app_config_default_values` 测试 assert 改 `true`
 
-**存量用户**：`INSERT OR IGNORE` 不覆盖已有 key。存量库的 `asr_correct` 保持原值（false），用户需在设置页手动开。**不加强制 schema 迁移**（避免「最小惊讶」——老用户可能故意关了）。新用户开箱即用。
+**存量库迁移（schema v54→v55，2026-08-01 补）**：初版（c71ceac5）只改 seed，但 `INSERT OR IGNORE` 对存量库无效——存量用户的 `asr_correct` 仍是 `'false'`，加了热词却因开关关着永不生效（用户实测反馈「热词没用上」）。补 schema v54→v55 数据迁移：`UPDATE app_config SET config_value='true' WHERE config_key='asr_correct'`（`db/mod.rs::init_schema` v54 分支）。用户若故意关过，可在热词管理页面重新手动关。
+
+### 3.5 UI 迁移：开关从「系统设置-语音」搬到「热词管理」
+
+`asr_correct` 开关原在 `GeneralPanel`（系统设置-语音），用户难以发现（反馈「一直没注意到这个开关」）。2026-08-01 迁到 `HotwordPanel`（热词管理）——在加热词的地方控制纠错，语义更直观：
+
+- `HotwordPanel.tsx`：加 `asrCorrect` prop，在方言模糊区上方加「热词纠错」总开关
+- `Settings/index.tsx`：传 `asrCorrect={configResp.config.asr_correct}`
+- `GeneralPanel.tsx`：删 asr_correct 行
+- i18n 复用现有 `pinyinCorrect` / `pinyinCorrectHint` 文案
 
 ## 4. 测试隔离（corrector 全局单例）
 

@@ -1,7 +1,8 @@
 -- octopus DB 初始化脚本（schema 唯一真相源，2026-07-27 极简化重构）
 -- 由 db.rs init_schema 执行：user_version == 0（全新库）时 execute_batch 本脚本。
 -- schema 变更：直接改本文件 + 升 db.rs 的 CURRENT_SCHEMA_VERSION 常量。
--- 旧版本库（0 < v < CURRENT_SCHEMA_VERSION）一律 bail，不再支持自动迁移——清库重建。
+-- 旧版本库（0 < v < CURRENT_SCHEMA_VERSION）：表结构变更一律 bail 清库重建；
+-- 纯数据迁移（如 v54→v55 的 asr_correct 翻 true）在 init_schema 加分支保留，不 bail。
 -- 全部 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
 --
 -- 文件结构（2026-07-28 重组）：

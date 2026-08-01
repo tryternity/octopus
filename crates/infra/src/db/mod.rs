@@ -236,8 +236,9 @@ where
 /// schema 变更直接改 db.sql + 升 `user_version`，旧库一律清库重建（`rm ~/.octopus/octopus.db*`）。
 ///
 /// 分支：
-/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v54
-/// - `v == 54`：最新，no-op
+/// - `v == 0`：全新库——db.sql 建表 + 外置 seed + yaml 迁移 + manifest 填充 → v55
+/// - `v == 55`：最新，no-op
+/// - `v == 54`：数据迁移——asr_correct 强制翻 true（热词纠错开关，2026-08-01）
 /// - `v != 0 && v < 54`：旧版本库——不支持自动迁移，bail 提示清库
 ///
 /// schema 变更流程：改 db.sql + 升 `user_version`（init_schema 末尾 + db.sql 注释）。
@@ -267,6 +268,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
+    // v54 → v55：数据迁移（无表结构变更）——asr_correct 强制翻 true。
+    // 2026-08-01：热词纠错开关原默认 false，存量用户加了热词却因开关关着不生效。
+    // db.sql seed 已改 true（仅全新库生效），此迁移覆盖存量库。用户若故意关过，可重新手动关。
+    if v == 54 {
+        conn.execute(
+            "UPDATE app_config SET config_value = 'true' WHERE config_key = 'asr_correct'",
+            [],
+        )
+        .context("迁移 v54→v55：asr_correct 翻 true")?;
+        conn.execute(
+            &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
+            [],
+        )?;
+        log::info!("DB migrated v54→v55: asr_correct 强制翻 true（热词纠错开关，让存量用户热词生效）");
+        return Ok(());
+    }
+
     // 1 <= v < 54：旧版本库，不再支持自动迁移
     anyhow::bail!(
         "DB schema version {} is outdated (current {}). \
@@ -279,10 +297,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-/// ⚠️ 本次不改版本号——用户手动 DROP + CREATE image_data 表，不走清库流程（保留其他表数据）。
-/// 全新库（user_version=0）时 db.sql 已是新 schema；旧库需手动重建 image_data 表。
-pub const CURRENT_SCHEMA_VERSION: u32 = 54;
+pub const CURRENT_SCHEMA_VERSION: u32 = 55;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
@@ -687,6 +704,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(val, "1");
+    }
+
+    // ── v54→v55 数据迁移：asr_correct 强制翻 true ──
+
+    /// 辅助：构造一个指定 user_version 的库（跑 INIT_SQL 建表 + seed，再覆盖版本号 + asr_correct）。
+    fn open_with_version(version: u32, asr_correct: &str) -> Connection {
+        let conn = open_init();
+        conn.execute(
+            "UPDATE app_config SET config_value = ?1 WHERE config_key = 'asr_correct'",
+            params![asr_correct],
+        )
+        .unwrap();
+        conn.execute(&format!("PRAGMA user_version = {}", version), [])
+            .unwrap();
+        conn
+    }
+
+    /// v54 库（asr_correct='false'）→ init_schema → asr_correct 翻 true + user_version 升 55。
+    /// 这是存量用户的迁移路径：他们加了热词但因开关关着不生效，迁移后立即生效。
+    #[test]
+    fn migrate_v54_to_v55_flips_asr_correct_to_true() {
+        let conn = open_with_version(54, "false");
+        // 迁移前确认
+        let before: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key='asr_correct'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, "false", "迁移前应为 false（存量库状态）");
+
+        init_schema(&conn).expect("v54→v55 迁移");
+
+        let after: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key='asr_correct'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, "true", "迁移后 asr_correct 应翻 true");
+
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, CURRENT_SCHEMA_VERSION, "user_version 应升到 {}", CURRENT_SCHEMA_VERSION);
+    }
+
+    /// v55 库（已是最新）→ init_schema → no-op（不重复迁移）。
+    #[test]
+    fn init_schema_noop_on_current_version() {
+        let conn = open_with_version(CURRENT_SCHEMA_VERSION, "true");
+        init_schema(&conn).expect("已是最新版本应 no-op");
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, CURRENT_SCHEMA_VERSION);
+    }
+
+    /// v < 54 的旧库 → init_schema → bail（不支持自动迁移）。
+    #[test]
+    fn init_schema_bails_on_very_old_version() {
+        let conn = open_with_version(53, "false");
+        assert!(init_schema(&conn).is_err(), "v53 旧库应 bail 提示清库");
     }
 
     // ── FTS5 搜索测试见 db/transcription.rs ──

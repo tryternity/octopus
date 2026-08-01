@@ -20,6 +20,8 @@ interface HotwordSet {
 interface Props {
   /** app_config.fuzzy_dialect（逗号分隔 token：f/h、hu/wu、n/l、r/l） */
   dialect: string;
+  /** app_config.asr_correct——热词纠错总开关（2026-08-01 从系统设置-语音迁入） */
+  asrCorrect: boolean;
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
   showToast: (msg: string) => void;
 }
@@ -31,7 +33,7 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'r/l', key: 'settings.hotword.rL' },
 ];
 
-export function HotwordPanel({ dialect, setVal, showToast }: Props) {
+export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
@@ -340,6 +342,20 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         {/* ── 右上：所有场景共用的方言模糊 + 新增热词 ── */}
         <div className="rounded-lg border border-border bg-background">
+          {/* 热词纠错总开关（2026-08-01 从系统设置-语音迁入——在加热词的地方控制纠错更直观） */}
+          <div className="border-b border-border/60 px-4 py-3">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-[13px]">{t('settings.general.pinyinCorrect')}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">{t('settings.general.pinyinCorrectHint')}</div>
+              </div>
+              <Toggle
+                on={asrCorrect}
+                onClick={() => setVal('asr_correct', !asrCorrect)}
+                aria-label={t('settings.general.pinyinCorrect')}
+              />
+            </div>
+          </div>
           {/* 方言模糊（2x2 grid） */}
           <div className="border-b border-border/60 px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
