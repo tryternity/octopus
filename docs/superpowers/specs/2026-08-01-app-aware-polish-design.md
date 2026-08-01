@@ -57,9 +57,9 @@ ALTER TABLE prompts ADD COLUMN inject_context INTEGER NOT NULL DEFAULT 0;
 
 | id | 模板 | app_bundle_ids | inject_context |
 |---|---|---|---|
-| 1 | faithful | `''`（全局） | 0 |
-| 2 | user-intent | `''`（全局） | 0 |
-| 3 | app-casual | `''`（全局） | 1 |
+| 1 | faithful（忠实校对） | `''`（全局） | 0 |
+| 2 | user-intent（意图整理） | `''`（全局） | 0 |
+| 3 | app-casual（场景自适应） | `''`（全局） | 1 |
 
 用户自建模板默认 `app_bundle_ids=''`（全局）、`inject_context=1`。
 

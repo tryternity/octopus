@@ -260,7 +260,7 @@ mod tests {
         assert!(list[1].is_system);
         assert_eq!(list[1].title, "意图整理");
         assert!(list[2].is_system);
-        assert_eq!(list[2].title, "口语化整理");
+        assert_eq!(list[2].title, "场景自适应");
 
         // insert 用户 prompt（id 应大于 seed 最大 id）
         let id = insert_prompt_at(&conn, "技术写作", "rule1", "desc1", "", false).unwrap();
