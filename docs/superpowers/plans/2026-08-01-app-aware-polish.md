@@ -302,6 +302,27 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 
 ---
 
+## Task 6: e2e 反馈后的 3 项改进（系统模板锁定 + 激活态对齐 + app-casual 改名）
+
+e2e 验证后用户反馈驱动的 3 项改进，均在 Task 1-5 完成后追加。
+
+- [x] **Step 1: 系统内置模板锁定全局——不可配置路由**
+
+3 个 `is_system=1` 模板保持「全局 fallback」角色。前端「路由配置」按钮灰禁（title 提示）+ 卡片不展示 app 关联/注入指示；后端 `update_prompt` 对 `is_system=true` 回写 DB 现有值（防御）。回归测试 `system_prompts_locked_global_routing`。
+commit `e73d3ca2`
+
+- [x] **Step 2: 激活态对齐模型管理（CurrentBanner + 绿色按钮）**
+
+去掉红色「激活中」badge；列表顶部加 CurrentBanner（绿色 success 横幅显示当前激活模板名）；卡片「激活」按钮始终显示（当前→绿色「已激活」灰禁，其余→绿色「激活」可点），复用 `ModelRow.tsx` 的 `variant="success"` 风格。
+commit `0fa20998`
+
+- [x] **Step 3: app-casual 模板改「场景自适应」——去口语化暗示**
+
+md 提示词 Role + Rules §2/§3 重写（去「保留自然语气」「不过度书面化」等口语化暗示，改按 app 针对性：微信/QQ→口语、Word→书面办公、IDE/agent→条理技术化）。seeds.rs title `口语化整理`→`场景自适应`，dest_name `润色-口语化`→`润色-场景自适应`（文件名同步改名）。
+commit `143898a0` + `b7bc26d3`
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -311,6 +332,9 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 - ✅ 模板路由 + 缓存（Task 3）
 - ✅ AppPicker UI（Task 4）
 - ✅ 文档（Task 5）
+- ✅ 系统模板锁定全局（Task 6 Step 1）
+- ✅ 激活态对齐模型管理（Task 6 Step 2）
+- ✅ app-casual 改「场景自适应」（Task 6 Step 3）
 
 **Type consistency:** AppContext struct 在 prompt.rs 定义、coordinator 构造、polish_regions 消费——签名一致。resolve_polish_prompt 返回 (content, inject)——coordinator 消费一致。
 
@@ -321,6 +345,10 @@ cd crates/desktop/frontend && npx tsc --noEmit && npm run build 2>&1 | tail -3
 - `89b3717b` Task 2：prompt.rs AppContext + classify_app_context + regions_prompt 加 app_context；client.rs polish_regions 接收显式 prompt_content + app_context
 - `64e74219` Task 3：coordinator/prompt_route.rs 路由缓存 + resolve_polish_prompt；polish.rs resolve_app_aware_prompt；settings_commands CRUD 扩参 + invalidate
 - `1f461c7e` Task 4：Prompts/RouteConfigDialog + PromptsPanel 卡片路由配置按钮 + 新建表单 inject_context Toggle + i18n
-- （Task 5：本文档同步）
+- `36178015` Task 5：architecture + spec 实现状态 + plan 实施记录
+- `e73d3ca2` Task 6.1：系统内置模板锁定全局——不可配置路由（前端灰禁 + 后端防御 + 回归测试）
+- `0fa20998` Task 6.2：激活态对齐模型管理——CurrentBanner + 绿色按钮 + 去 activeBadge
+- `143898a0` Task 6.3：app-casual 改「场景自适应」——md 提示词去口语化暗示 + seeds title/description
+- `b7bc26d3` Task 6.3：文件名同步改名 润色-口语化→润色-场景自适应
 
-与原 plan 的偏差详见 spec「## 实现状态」。关键：polish_regions 改显式 prompt_content（非 set_system_prompt）、classify_app_context case-insensitive、前端用独立弹窗、提供 dev DB 迁移脚本。
+与原 plan 的偏差详见 spec「## 实现状态」。关键：polish_regions 改显式 prompt_content（非 set_system_prompt）、classify_app_context case-insensitive、前端用独立弹窗、提供 dev DB 迁移脚本、系统模板锁定 + 激活态对齐模型管理（Task 6 e2e 反馈驱动）。

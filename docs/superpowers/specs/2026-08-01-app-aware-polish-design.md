@@ -121,12 +121,13 @@ pub(crate) struct AppContext {
 ### 设置页模板编辑
 
 润色模板编辑区加：
-- **关联应用**：复用 actionbar 的 `AppPicker` 组件（`pages/Settings/ActionBar/AppPicker.tsx`）——已实现 app 搜索 + 多选（icon + name + bundle_id），调 `list_all_apps` Tauri 命令。空=全局模板（不关联特定 app）
-- **注入应用上下文**：开关（inject_context）
+- **关联应用**：复用 actionbar 的 `AppPicker` 组件（`pages/Settings/ActionBar/AppPicker.tsx`）——已实现 app 搜索 + 多选（icon + name + bundle_id），调 `list_all_apps` Tauri 命令。空=全局模板（不关联特定 app）。入口为独立「路由配置」弹窗（`Prompts/RouteConfigDialog.tsx`），卡片加「路由配置」按钮触发
+- **注入应用上下文**：开关（inject_context，Toggle），弹窗内 + 新建表单各一个（新建默认 true）
 
 ### 模板列表展示
 
-模板卡片显示关联的 app（如有），方便用户识别。
+- 模板卡片显示关联的 app（如有，非系统模板），方便用户识别
+- **激活态对齐模型管理**：列表顶部 `CurrentBanner`（绿色 success 横幅，显示当前激活模板名，复用 `ModelRow.tsx` 风格）；卡片「激活」按钮始终显示——当前激活→绿色「已激活」灰禁，其余→绿色「激活」可点（`variant="success"`）。去掉红色「激活中」badge（与绿色按钮重复）
 
 ## 不变量
 
@@ -174,8 +175,14 @@ pub(crate) struct AppContext {
 
 3. **前端用独立「路由配置」弹窗（RouteConfigDialog）而非内联编辑表单**：原设计提「模板编辑 UI」未定形态。实现选独立弹窗（卡片加「路由配置」按钮 → 弹窗内 AppPicker + inject_context Toggle），因 prompt 内容编辑走外部 .md 编辑器，app 关联/inject_context 是 DB 字段需独立 UI 入口。复用 actionbar AppPicker 组件。新建表单也带 inject_context Toggle（默认 true）。
 
-4. **dev DB 迁移提供脚本**：原设计说「无旧用户兼容包袱，开发者手动清 DB」。实现额外提供 `scripts/migrate-db-54-to-55.sh`（ALTER TABLE 加列 + 填系统 seed inject_context + 升 user_version，幂等，保留其他表数据）——开发库已有其他数据（模型/剪贴板/vault），清库代价高，迁移脚本保留数据。init_schema 的 bail 分支不变。
+4. **dev DB 迁移**：原设计说「无旧用户兼容包袱，开发者手动清 DB」。实现期先提供了 `scripts/migrate-db-54-to-55.sh`（ALTER TABLE 加列 + 填 seed + 升 user_version，幂等）。**后由 main 的 `11ee6fb9` 引入正式数据迁移链**（v54→v55→v56，`init_schema` 加 `v == 54` / `v == 55` 迁移分支），dev DB 自动迁到 v56，脚本现作历史参考（prompts 加列已被 v55 schema 全量覆盖）。
 
 5. **`resolve_polish_prompt` 无关联时不写缓存**：原设计未明。实现中 bundle_id 有但查无关联模板时**不写缓存**（bundle_id 可能是任何未关联 app，写缓存后用户加关联也无法生效——CRUD 时虽全清但中间窗口不准）。仅命中关联模板时写缓存。
 
-测试：infra 158 PASS（含 find_prompt_by_bundle_id 新测试）+ llm 12 PASS（含 AppContext 注入 6 新测试）+ desktop 493 PASS + sync 110 PASS（:memory: fresh DB）；前端 tsc + vite build 0 error。CI 等效（:memory:）全绿。
+6. **系统内置模板路由字段锁定**（e2e 反馈驱动）：3 个 `is_system=1` 模板保持「全局 fallback」角色，`app_bundle_ids` 恒 `''`、`inject_context` 恒 seed 值，不可绑特定 app。前端「路由配置」按钮灰禁 + 卡片不展示 app 关联/注入指示；后端 `update_prompt` 对 `is_system=true` 回写 DB 现有值（防御）。回归测试 `system_prompts_locked_global_routing`。
+
+7. **激活态对齐模型管理**（e2e 反馈驱动）：列表顶部加 `CurrentBanner`（绿色横幅显示当前激活模板名），卡片「激活」按钮始终显示（当前→绿色「已激活」灰禁，其余→绿色「激活」），去掉红色「激活中」badge。复用 `ModelRow.tsx` 的 `variant="success"` 风格。
+
+8. **app-casual 模板改「场景自适应」**（e2e 反馈驱动）：原 title「口语化整理」过度偏向口语化，与「Word→书面化」「IDE→条理化」矛盾。md 提示词 Role + Rules 重写（去「保留自然语气」等暗示，改按 app 针对性）；seeds title/description/dest_name 同步改名（`润色-口语化`→`润色-场景自适应`）。
+
+测试：infra 162 PASS（含 find_prompt_by_bundle_id + system_prompts_locked_global_routing）+ llm 12 PASS（含 AppContext 注入 6 新测试）+ desktop 491 PASS + sync 110 PASS；前端 tsc + vite build 0 error。e2e 真机验证通过（用户确认）。
