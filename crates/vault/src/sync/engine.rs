@@ -1683,7 +1683,7 @@ mod tests {
 
         // 清空 DB 热词（模拟 B 机 clone 前 DB 无热词）
         for h in octopus_infra::db::list_hotword_sets().expect("list") {
-            let _ = octopus_infra::db::delete_hotword_set(&h.id);
+            let _ = octopus_infra::db::hard_delete_hotword_set(&h.id);
         }
         assert!(
             octopus_infra::db::list_hotword_sets().unwrap().is_empty(),

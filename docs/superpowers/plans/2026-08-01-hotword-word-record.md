@@ -37,13 +37,13 @@
 
 **后续已完成**：word 级 3-way merge 由 [2026-08-01-hotword-word-level-merge.md](2026-08-01-hotword-word-level-merge.md) 实现（commit `96560238`）——两级 outline 层级 + `HotwordWordFile` + `hotword_word_md5` + `merge_hotword_words` + word sync_md5 DB 层填充。`HotwordSetFile` 进一步演化为 `HotwordSetMeta`（两级结构 `<set-id>/meta.json`）。
 
-### Task 4：asr-local 适配（临时方案）✅
+### Task 4：asr-local 适配（临时方案，已被后续 commit 升级）✅
 
 **commit**：`ab492146`
 
 - `reload_hotwords` 调 `list_active_words()`（带 pinyin），但暂时只取词文本（`.iter().map(|(w, _)| w.clone())`）
 - corrector 逻辑不变（排序留后续）
-- **待做（后续）**：HotwordIndex::from_words 接收带拼音结构，跳过 to_pinyin 现算
+- **后续已升级**：commit `af517dcc`（[pinyin-and-ranking spec](../specs/2026-08-01-hotword-pinyin-and-ranking-design.md)）——`from_words` 改接 `(word, pinyin, hit_count)` 三元组，跳过 `to_pinyin()` 现算；`reload_hotwords` 直接传三元组（不再丢弃拼音）；多命中按 hit_count 排序。
 
 ### Task 5：desktop 命令 + 前端适配 ✅
 
@@ -66,11 +66,11 @@
 | §2 UUID v5 确定性 | Task 1 | ✅ |
 | §2 拼音存原始 | Task 1-2 | ✅ |
 | §3 sync word 级 3-way merge | Task 3 + [word-level-merge plan](2026-08-01-hotword-word-level-merge.md) | ✅（两级 outline 层级，2026-08-02 完成） |
-| §4 HotwordIndex 适配 | Task 4 | ⏳ 临时方案✅ / 拼音优化待后续 |
+| §4 HotwordIndex 适配 | Task 4 + [pinyin-and-ranking spec](../specs/2026-08-01-hotword-pinyin-and-ranking-design.md) | ✅（commit `af517dcc`，from_words 跳过 to_pinyin 现算） |
 | §5 迁移 v56→v57 | Task 2 | ✅ |
 
 ## 不在范围（留后续）
 
-- **HotwordIndex 拼音优化**：from_words 接收带拼音结构，跳过 to_pinyin 现算（当前临时方案仍现算）。
-- **correct 多命中排序**：hotword_words 已带元数据，后续 spec 做。
-- **set 级删除复活问题**：`delete_hotword_set` 是硬删（DELETE FROM），两设备并发删/加同名 set 可能复活——见 [hotword-sync-merge-model spec](../specs/2026-08-01-hotword-sync-merge-model.md) 的 set 级 tombstone task。**注**：word 级已有 `is_deleted` 软删（本次 word 级 merge 实现），词级软删传播正常；set 级软删是独立后续。
+- ~~**HotwordIndex 拼音优化**~~：**已解决**（commit `af517dcc`，[pinyin-and-ranking spec](../specs/2026-08-01-hotword-pinyin-and-ranking-design.md)）——`from_words` 接收 `(word, pinyin, hit_count)` 三元组，跳过 `to_pinyin()` 现算，只做必要的 `normalize_fuzzy_pinyin`（方言规则运行时生效，不能预存归一化 key）。
+- ~~**correct 多命中排序**~~：**已解决**（同 commit `af517dcc`）——hit_count JOIN 进 list_active_words，多命中按 hit_count 降序排序。
+- ~~**set 级删除复活问题**~~：**已解决**（2026-08-02，[set 软删 spec](../specs/2026-08-02-hotword-set-soft-delete.md)）——set 级 `is_deleted` 存时间戳 + `UNIQUE(name,is_deleted)` + tombstone 经 merge 传播。词级软删（`hotword_words.is_deleted`）此前已解决（本次 word 级 merge）。
