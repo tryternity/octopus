@@ -494,7 +494,7 @@ UPDATE action_bar_items SET trigger_keyword='github' WHERE id=11 AND trigger_key
 -- 「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
 INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
 SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
-set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
+set the clipboard to (do shell script "printf %s \"$OCTOPUS_TEXT\"")
 do shell script "open -a Doubao"
 delay 2
 tell application "System Events"
