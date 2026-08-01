@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
  * - destructive（bg-destructive 红底）：删除二次确认
  * - destructive-ghost（hover 变红）：危险图标按钮（Trash 等）
  * - success（bg-success 绿底）：激活/成功确认
+ * - warning-soft（bg-warning 软底）：待激活提示（与 success 已激活对仗，黄/橙暖色区别于绿色）
  *
  * Raycast 签名交互：hover 用 opacity 过渡（0.85~0.9）而非背景色切换。
  * raycast 主题下可叠加 .raycast-btn-shadow 获得 macOS 按钮压感。
@@ -34,6 +35,7 @@ const buttonVariants = cva(
         "destructive-ghost":
           "text-muted-foreground hover:text-destructive hover:bg-destructive/10",
         success: "bg-success/15 text-success hover:bg-success/25",
+        "warning-soft": "bg-warning/15 text-warning hover:bg-warning/25",
         "voice-soft": "bg-voice/10 text-voice hover:bg-voice/20",
       },
       size: {
