@@ -172,12 +172,6 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                 {a.isSystem && (
                   <Badge>{t("agentPanel.builtin")}</Badge>
                 )}
-                {a.isDefault && (
-                  <Badge variant="success">
-                    <Star className="w-3 h-3 mr-1" />
-                    {t("agentPanel.default")}
-                  </Badge>
-                )}
               </div>
               <div className="text-xs text-muted-foreground font-mono mt-1 truncate">
                 <span>{a.detectBinary}</span>
