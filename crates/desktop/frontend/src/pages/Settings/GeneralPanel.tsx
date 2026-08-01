@@ -273,9 +273,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
               <Row label={t("settings.general.hardwareAccel")} effect={t("settings.effect.nextRecording")}>
                 <Toggle on={cfg.asr_hardware_accelerated as boolean} onClick={() => toggleVal("asr_hardware_accelerated")} />
               </Row>
-              <Row label={t("settings.general.pinyinCorrect")} effect={t("settings.effect.now")} hint={t("settings.general.pinyinCorrectHint")}>
-                <Toggle on={cfg.asr_correct as boolean} onClick={() => toggleVal("asr_correct")} />
-              </Row>
               <Row label={t("settings.general.tradSimpOutput")} effect={t("settings.effect.now")} hint={t("settings.general.tradSimpOutputHint")}>
                 <Toggle on={cfg.output_simplified as boolean} onClick={() => toggleVal("output_simplified")} />
               </Row>

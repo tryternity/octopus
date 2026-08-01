@@ -189,6 +189,7 @@ function Settings() {
         ) : effectivePage === "hotword" ? (
           <HotwordPanel
             dialect={(configResp.config.fuzzy_dialect as string) || ""}
+            asrCorrect={configResp.config.asr_correct as boolean}
             setVal={setVal}
             showToast={showToast}
           />

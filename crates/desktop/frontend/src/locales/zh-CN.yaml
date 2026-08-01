@@ -612,10 +612,10 @@ settings:
     delete: 删除
     deleteConfirm: 再次点击确认删除
   hotword:
-    fH: f/h 不分（浮 / 护）
-    huWu: hu/wu 不分（黄 / 王）
-    nL: n/l 不分（刘 / 牛）
-    rL: r/l 不分（热 / 乐）
+    fH: f/h（浮 / 护）
+    huWu: hu/wu（胡 / 吴）
+    nL: n/l（刘 / 牛）
+    rL: r/l（热 / 乐）
     loadFailed: "加载失败："
     newVersion: 已新建版本
     importedVersion: 已导入为新版本
@@ -646,6 +646,7 @@ settings:
     allExist: 选中词均已存在
     addFailed2: "添加失败："
     dialectFuzzy: 方言模糊
+    correctSection: 方言模糊 + 热词纠错
     versionsN: 热词版本（${n}）
     loading: 加载中…
     newVersionPlaceholder: 版本名称（Enter 确认 / Esc 取消）
@@ -655,6 +656,7 @@ settings:
     renameHint: 点击重命名
     wordsCount: 词
     addPlaceholder: 人名 / 地名 / 术语
+    batchPlaceholder: 批量添加，任意空白（空格/Tab/换行）分割
     addBtn: 添加
     appendBtn: 追加
     appendHint: 导入追加到当前版本
@@ -668,7 +670,7 @@ settings:
     manualPlaceholder: 手动补一个词（Enter 加入候选）
     manualBtn: 补词
     addSelectedN: 添加选中的 ${n} 个
-    searchPlaceholder: 搜索（汉字）
+    searchPlaceholder: 搜索（模糊）
     sortDefault: 默认
     sortAlpha: 字母
     sortHit: 命中度

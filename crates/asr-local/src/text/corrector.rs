@@ -227,20 +227,33 @@ pub fn drain_hits() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// corrector 全局单例的测试串行锁（跨模块共享）。
+///
+/// corrector 是进程级单例，`reload_hotwords` 改全局热词索引。任何测试只要 touch
+/// corrector（含 streaming_runner / engines / pipeline 的测试），都必须先持此锁，
+/// 避免并发测试互相覆盖热词表。本模块 tests 内的 `serial()` 也复用此锁。
+#[cfg(test)]
+pub(crate) static CORRECTOR_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+/// 持此 guard 的测试段串行执行（跨模块统一锁）。调用方 `let _g = test_serial();`。
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    CORRECTOR_TEST_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
-
-    /// corrector 是进程级单例，reload 会改全局热词索引。
-    /// 测试间用此锁串行化 reload+correct+assert 段，避免并发测试互相覆盖热词表。
-    /// （仅在测试代码内加锁；生产路径无此开销。）
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     /// 持有此 guard 的测试段串行执行：correct 为只读，但 reload 写全局，
     /// 故整段 reload+correct+assert 必须在锁内（见各测试首行 `let _g = serial();`）。
+    /// 复用跨模块共享的 `CORRECTOR_TEST_LOCK`（streaming_runner / pipeline 等测试共用）。
     fn serial() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::text::corrector::test_serial()
     }
 
     /// 辅助：给单例 corrector 装载热词后返回它。调用方须先持 `serial()` guard。

@@ -39,6 +39,29 @@ pub fn list_hotword_sets() -> Result<Vec<HotwordSet>, String> {
     db::list_hotword_sets().map_err(e2s)
 }
 
+/// fuzzy 过滤热词列表（汉字 + 拼音首字母 + 匹配度排序）。
+///
+/// 复用 `octopus_search::matcher::match_score`（与 ActionBar 同款算法：
+/// exact > prefix > word-prefix > pinyin > fuzzy，取最高分）。
+/// 调用方：前端 HotwordPanel 搜索框（debounce 后 invoke）。
+///
+/// 返回按 score 降序排列的命中词（未命中的被过滤）。空 query 返回空。
+#[tauri::command]
+pub fn filter_hotwords_fuzzy(query: String, words: Vec<String>) -> Result<Vec<String>, String> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut scored: Vec<(String, octopus_search::matcher::Score)> = words
+        .into_iter()
+        .filter_map(|w| {
+            octopus_search::matcher::match_score(&query, &w).map(|s| (w, s))
+        })
+        .collect();
+    // score 降序（高分 = 更匹配 = 排前）
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    Ok(scored.into_iter().map(|(w, _)| w).collect())
+}
+
 /// 新建热词版本。v46：id 由后端生成 UUID（不再 AUTOINCREMENT），返回 String。
 #[tauri::command]
 pub fn create_hotword_set(name: String) -> Result<String, String> {
@@ -309,5 +332,47 @@ mod tests {
         // 不存在的 id——不应 panic
         refill_sync_md5("nonexistent-uuid-xxxx");
         // 函数无返回值，只要不 panic 即通过
+    }
+
+    // ── filter_hotwords_fuzzy：复用 matcher::match_score 的 fuzzy 搜索 ──
+
+    #[test]
+    fn fuzzy_filters_and_sorts_by_match_score() {
+        // 「八爪鱼」(bzy) 前缀命中「八」最高分；「浮窗」(fc) 拼音命中「bz」不行；
+        // 「版本」(bf) 不命中「bz」。验证过滤 + 排序。
+        let words = vec!["八爪鱼".to_string(), "版本".to_string(), "八哥".to_string()];
+        let result = filter_hotwords_fuzzy("八".into(), words.clone()).expect("fuzzy");
+        // 「八爪鱼」「八哥」都是前缀命中，排在前面；「版本」不命中被过滤
+        assert!(result.contains(&"八爪鱼".to_string()), "应命中八爪鱼");
+        assert!(result.contains(&"八哥".to_string()), "应命中八哥");
+        assert!(!result.contains(&"版本".to_string()), "版本不应命中「八」");
+    }
+
+    #[test]
+    fn fuzzy_pinyin_initials_match() {
+        // 「by」匹配「八爪鱼」的拼音首字母 bzy（contains）—— 拼音 fuzzy 核心
+        let words = vec!["八爪鱼".to_string(), "版本".to_string()];
+        let result = filter_hotwords_fuzzy("bzy".into(), words.clone()).expect("fuzzy");
+        assert_eq!(result, vec!["八爪鱼".to_string()], "bzy 应命中八爪鱼（拼音首字母）");
+    }
+
+    #[test]
+    fn fuzzy_exact_ranks_above_prefix() {
+        // query 等于某个词 → exact 10000 > prefix；该词应排第一
+        let words = vec!["八爪鱼".to_string(), "八".to_string()];
+        let result = filter_hotwords_fuzzy("八".into(), words.clone()).expect("fuzzy");
+        assert_eq!(result[0], "八", "精确匹配「八」应排第一（exact > prefix）");
+    }
+
+    #[test]
+    fn fuzzy_empty_query_returns_empty() {
+        let result = filter_hotwords_fuzzy("".into(), vec!["八爪鱼".into()]).expect("fuzzy");
+        assert!(result.is_empty(), "空 query 应返回空");
+    }
+
+    #[test]
+    fn fuzzy_no_match_returns_empty() {
+        let result = filter_hotwords_fuzzy("zzz".into(), vec!["八爪鱼".into()]).expect("fuzzy");
+        assert!(result.is_empty(), "无匹配应返回空");
     }
 }

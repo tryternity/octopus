@@ -154,6 +154,14 @@ pub(crate) fn handle_toggle(
             pipeline.reset();
             if !final_text.is_empty() {
                 transcript.apply_engine_full(&final_text);
+                // 热词命中计数（best-effort，对称批量 postprocess_text）。
+                // corrector 在流式 correct()（Partial/Committed/finish）时收集命中到 pending_hits，
+                // 这里整场会话结束时 drain + bump 入库。失败仅 warn，不阻断。
+                for word in octopus_asr_local::corrector::drain_hits() {
+                    if let Err(e) = octopus_infra::db::bump_hotword_hit_by_word(&word) {
+                        log::warn!("[hotword] 流式命中计数失败 '{}': {}", word, e);
+                    }
+                }
             }
             info!("Final streaming text: '{}'", transcript.db_text());
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
@@ -296,7 +304,9 @@ pub(crate) fn restart_capture_keep_transcript(
                 return;
             }
         };
-        let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+        // correct = asr_correct 且非英文（与 session.rs begin_recording 对称）
+        let correct = config.asr_correct && !config.language.eq_ignore_ascii_case("en");
+        let local_engine = match crate::engine::pipeline::LocalPipelineEngine::from_session(streaming_engine, correct) {
             Ok(e) => e,
             Err(e) => {
                 error!("[WATCHDOG] LocalPipelineEngine init failed: {}", e);

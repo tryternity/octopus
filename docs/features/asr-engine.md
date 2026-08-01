@@ -164,7 +164,18 @@
 
 - **数据**：「开放词典网」CC-BY 3.0 单字对照表（`data/t2s.txt` 繁→简、`data/s2t.txt` 简→繁），`include_str!` 编译期嵌入。仅转字形不转地域用词；简→繁一对多取数据首选（已消歧）
 - **开关**：`app_config.output_simplified`（默认 `true`=简体）；`true`→繁转简，`false`→简转繁
-- **注入点**：`engine.rs::transcribe_with_vad` 返回前（离线统一出口）+ `streaming_engine.rs::finish` 返回前（流式统一出口），在 corrector 之后、paste/入库之前。增量中间显示段不转换
+- **注入点**：`engine.rs::transcribe_with_vad` 返回前（离线统一出口）+ `streaming_runner.rs::finish` 返回前（流式统一出口），在 corrector 之后、paste/入库之前。增量中间显示段不转换
+
+### 流式热词纠错（2026-08-01 激活）
+
+流式听写路径此前 `correct` 硬编码 `false`，热词索引建好但永不执行。2026-08-01 修复：
+
+- **激活 correct 开关**：`coordinator` 传 `correct = config.asr_correct && language != "en"` 给 `StreamingRunner`（`session.rs` + `lifecycle.rs` 两处 `from_session`）。`StreamingRunner.maybe_correct` 对 Partial/Committed 过 corrector，`finish` 对 Final 过 corrector（对称批量 `postprocess_text`）。
+- **命中计数入库**：`finish` 后 `drain_hits()` + `bump_hotword_hit_by_word`（`lifecycle.rs`），与批量路径对称——corrector 收集命中、coordinator 持久化。
+- **门控位置**：`is_english` 在 coordinator 算（`StreamingRunner` 不持 language）；`skip_corrector` 流式引擎 trait 无此方法（zipformer/paraformer 都不 skip），暂不考虑。
+- **`asr_correct` 默认改 `true`**：用户加了热词就期望生效。corrector 无热词即 no-op（零过纠铁证保留）。存量库 DB 已有值不受影响（`INSERT OR IGNORE`），老用户可在设置页手动开。
+
+详见 [spec](../superpowers/specs/2026-08-01-hotword-streaming-effective.md)。
 
 ## 硬件加速
 

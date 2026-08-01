@@ -2,11 +2,13 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
-import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2 } from 'lucide-react';
+import { Type, Plus, X, Search, Upload, Download, Trash2, Wand2, ArrowDownWideNarrow, RefreshCw } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { Toggle } from '@/components/ui/toggle';
-import { Input, Select } from '@/components/ui/input';
+import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
 interface HotwordSet {
   id: string;
@@ -20,6 +22,8 @@ interface HotwordSet {
 interface Props {
   /** app_config.fuzzy_dialect（逗号分隔 token：f/h、hu/wu、n/l、r/l） */
   dialect: string;
+  /** app_config.asr_correct——热词纠错总开关（2026-08-01 从系统设置-语音迁入） */
+  asrCorrect: boolean;
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
   showToast: (msg: string) => void;
 }
@@ -31,14 +35,24 @@ const DIALECT_KEYS: { tok: string; key: string }[] = [
   { tok: 'r/l', key: 'settings.hotword.rL' },
 ];
 
-export function HotwordPanel({ dialect, setVal, showToast }: Props) {
+/// 排序选项（图标下拉用）——label 经 i18n key 解析，避免硬编码文案。
+const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
+  { value: 'alpha', key: 'settings.hotword.sortAlpha' },
+  { value: 'hits', key: 'settings.hotword.sortHit' },
+];
+
+export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<'time' | 'alpha' | 'hits'>('time');
+  /** fuzzy 搜索结果（null=无搜索显示全部；string[]=命中的词，已按 match_score 降序）。
+   *  由 debounce effect 调后端 filter_hotwords_fuzzy 异步填充（复用 matcher::match_score，
+   *  汉字+拼音首字母+匹配度排序，与 ActionBar 同款算法）。 */
+  const [fuzzyMatches, setFuzzyMatches] = useState<string[] | null>(null);
+  const [sort, setSort] = useState<'alpha' | 'hits'>('alpha');
+  const [sortOpen, setSortOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -46,9 +60,12 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const [creating, setCreating] = useState<'create' | 'import' | null>(null);
   const [createVal, setCreateVal] = useState('');
   /** 挖掘确认态：候选词 + 当前勾选集合（不落库，确认后才 add_words_to_set）。
-   *  关掉即丢弃；切菜单重进组件卸载也自然清空。 */
+   *  关掉即丢弃；切菜单重进组件卸载也自然清空。2026-08-01 改为浮窗呈现（原内联面板）。 */
   const [minePending, setMinePending] = useState<{ words: string[]; selected: Set<string> } | null>(null);
   const [mineInput, setMineInput] = useState('');
+  /** 批量添加浮层（点击「添加」图标弹出 textarea，空白分割批量 add_words_to_set）。 */
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addModalText, setAddModalText] = useState('');
   // Escape 取消守卫：Escape 置 true → commitCreate/commitRename 吞掉 input 卸载触发的 blur 提交；
   // 每次打开输入（按钮 / startRename）重置 false，防残留误吞下次正常 Enter/失焦提交。
   const createCancelledRef = useRef(false);
@@ -81,15 +98,31 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const selected = sets.find((s) => s.id === selectedId) || null;
   const words = useMemo(() => (selected?.wordsText.split(/\s+/).filter(Boolean) ?? []), [selected]);
 
+  // fuzzy 搜索：debounce 120ms 后调后端 filter_hotwords_fuzzy（复用 matcher::match_score，
+  // 汉字+拼音首字母+匹配度排序）。空 query → null（显示全部）。
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setFuzzyMatches(null); return; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await invoke<string[]>('filter_hotwords_fuzzy', { query: q, words });
+        if (!cancelled) setFuzzyMatches(result);
+      } catch { if (!cancelled) setFuzzyMatches([]); }
+    }, 120);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, words]);
+
+  // visible：fuzzy 命中的词（null=全部）+ sort 排序。
+  // fuzzy 由后端 match_score 算（汉字+拼音+匹配度），已自带 score 降序；
+  // 用户切 sort 时按字母/命中度重排覆盖 fuzzy 的 score 顺序。
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const arr = q ? words.filter((w) => w.toLowerCase().includes(q)) : words;
+    const arr = fuzzyMatches ?? words;
     return [...arr].sort((a, b) => {
       if (sort === 'hits') return (hits[b] ?? 0) - (hits[a] ?? 0);
-      if (sort === 'alpha') return a.localeCompare(b);
-      return 0; // time：保留 normalize 后的存储序（拼音首字母序）
+      return a.localeCompare(b); // alpha（默认）
     });
-  }, [words, query, sort, hits]);
+  }, [fuzzyMatches, words, sort, hits]);
 
   // ── 版本操作 ──
   // 新建 / 导入新版本：inline input 输入名（WKWebView 不支持 window.prompt）。
@@ -132,17 +165,19 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   }, [refresh, showToast]);
 
   // ── 单词操作 ──
-  const addWord = useCallback(async () => {
-    const w = input.trim();
-    if (!w || selectedId === null) return;
+  /** 批量添加浮层确认：textarea 按任意空白（空格/tab/换行）分割 → add_words_to_set。 */
+  const commitAddModal = useCallback(async () => {
+    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    setAddModalOpen(false);
+    setAddModalText('');
+    if (words.length === 0 || selectedId === null) return;
     try {
-      const added = await invoke<boolean>('add_word_to_set', { id: selectedId, word: w });
-      setInput('');
-      showToast(added ? t('settings.hotword.added') : t('settings.hotword.exists'));
+      const n = await invoke<number>('add_words_to_set', { id: selectedId, words });
+      showToast(n > 0 ? t('settings.hotword.addedN', { n }) : t('settings.hotword.allExist'));
       await refresh();
-      if (added) flashAdded([w]);
-    } catch (e) { showToast(t('settings.hotword.addFailed') + e); }
-  }, [input, selectedId, refresh, flashAdded, showToast]);
+      if (n > 0) flashAdded(words.slice(0, n));
+    } catch (e) { showToast(t('settings.hotword.addFailed2') + e); }
+  }, [addModalText, selectedId, refresh, flashAdded, showToast]);
 
   const removeWord = useCallback(async (word: string) => {
     if (selectedId === null) return;
@@ -225,9 +260,41 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const enabledTokens = new Set(dialect.split(',').map((s) => s.trim()));
 
   return (
-    <div className="flex h-full gap-4">
-      {/* ════ 左栏：场景（版本）列表 ════ */}
-      <div className="flex w-[180px] flex-shrink-0 flex-col rounded-lg border border-border bg-muted/30 raycast-ring">
+    <div className="flex h-full flex-col gap-3">
+      {/* ════ 顶部横条：方言模糊 + 热词纠错（全局配置，跨左右栏全宽） ════ */}
+      <Card>
+        <CardHeader>
+          <Type className="h-4 w-4 text-muted-foreground" />
+          <CardTitle>{t('settings.hotword.correctSection')}</CardTitle>
+          {/* 热词纠错总开关——放头部右侧（仅 toggle，无文字） */}
+          <div className="ml-auto" onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              on={asrCorrect}
+              onClick={() => setVal('asr_correct', !asrCorrect)}
+              aria-label={t('settings.general.pinyinCorrect')}
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="py-2.5">
+          {/* 方言模糊（2x4 横排，全局开关） */}
+          <div className="grid grid-cols-4 gap-x-6">
+            {DIALECT_KEYS.map(({ tok, key }) => {
+              const label = t(key);
+              return (
+                <div key={tok} className="flex items-center justify-between">
+                  <span className="text-sm">{label}</span>
+                  <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ════ 下方分栏：左词典列表 + 右热词面板 ════ */}
+      <div className="flex min-h-0 flex-1 gap-4">
+      {/* ════ 左栏：场景（版本）列表——宽度对齐 Settings sidebar 176px ════ */}
+      <div className="flex w-[176px] flex-shrink-0 flex-col rounded-lg border border-border bg-muted/30">
         {/* 列表区 */}
         <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {!loaded ? (
@@ -242,15 +309,15 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                 <div
                   key={s.id}
                   className={cn(
-                    'relative rounded-md px-2 py-2 transition-colors cursor-pointer',
+                    'group relative mx-2 rounded-md px-2.5 py-2 transition-colors cursor-pointer',
                     active ? 'bg-accent' : 'hover:bg-accent/60',
                   )}
                   onClick={() => setSelectedId(s.id)}
                 >
-                  {/* 选中态左侧 voice 竖条——与 Settings sidebar 一致 */}
-                  {active && <span className="absolute left-[-8px] top-1.5 bottom-1.5 w-[2px] rounded-full bg-voice" />}
-                  {/* 第一行：场景名称 + 词数（点击重命名） */}
-                  <div className="min-w-0">
+                  {/* 选中态左侧 voice 竖条——mx-2 让竖条落在容器灰边上 */}
+                  {active && <span className="absolute left-[-10px] top-1.5 bottom-1.5 w-[2px] rounded-full bg-voice" />}
+                  {/* 第一行：场景名 + 词数 Badge */}
+                  <div className="min-w-0 flex items-center gap-1.5">
                     {renaming === s.id ? (
                       <Input
                         variant="default"
@@ -263,28 +330,28 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                         className="focus:border-voice"
                       />
                     ) : (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setSelectedId(s.id); startRename(s.id, s.name); }}
-                        className={cn('block w-full truncate text-left text-[13px] hover:text-voice', active && 'font-medium text-foreground')}
-                        title={t('settings.hotword.renameHint')}
-                      >
-                        {s.name}
-                        <span className="ml-1.5 font-mono text-[10px] font-normal text-muted-foreground/60">{cnt} {t('settings.hotword.wordsCount')}</span>
-                      </button>
+                      <>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setSelectedId(s.id); startRename(s.id, s.name); }}
+                          className={cn('min-w-0 flex-1 truncate text-left text-sm hover:text-voice', active && 'font-medium text-foreground')}
+                          title={t('settings.hotword.renameHint')}
+                        >
+                          {s.name}
+                        </button>
+                        {cnt > 0 && <Badge variant="muted" size="sm">{cnt}</Badge>}
+                      </>
                     )}
                   </div>
-                  {/* 第二行：左 Toggle 启用，右对齐 导出/删除。
-                      不在外层 stopPropagation——点空白区域仍可切换场景，
-                      stopPropagation 移到各控件自身防误触。 */}
-                  <div className="mt-1 flex items-center justify-between">
-                    <div onClick={(e) => e.stopPropagation()}>
+                  {/* 第二行：左 Toggle 启用状态点，右 hover 显导出/删除 */}
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-1.5">
                       <Toggle
                         on={s.enabled}
                         onClick={() => toggleSet(s.id, !s.enabled)}
                         aria-label={`启用 ${s.name}`}
                       />
                     </div>
-                    <div className="flex items-center gap-0.5">
+                    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                       <Button variant="ghost" size="icon-sm" onClick={(e) => { e.stopPropagation(); setSelectedId(s.id); doExport(); }} aria-label="导出">
                         <Download />
                       </Button>
@@ -336,186 +403,209 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
         </div>
       </div>
 
-      {/* ════ 右栏：方言模糊 + 新增热词（上） / 选中场景的词（下） ════ */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {/* ── 右上：所有场景共用的方言模糊 + 新增热词 ── */}
-        <div className="rounded-lg border border-border bg-background">
-          {/* 方言模糊（2x2 grid） */}
-          <div className="border-b border-border/60 px-4 py-3">
-            <div className="mb-2 flex items-center gap-2">
-              <Type className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">{t('settings.hotword.dialectFuzzy')}</span>
-            </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-0.5">
-              {DIALECT_KEYS.map(({ tok, key }) => {
-                const label = t(key);
-                return (
-                  <div key={tok} className="flex items-center justify-between py-1.5">
-                    <span className="text-[13px]">{label}</span>
-                    <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} aria-label={label} />
+      {/* ════ 右栏：热词版本卡（场景名 + 搜索 + 操作 + 词卡，占满剩余空间） ════ */}
+        <Card className="flex min-h-0 flex-1 flex-col">
+          {/* 头部：排序图标（左，点击下拉）+ 场景名 + 词数 + 搜索（右）+ 操作图标 */}
+          <CardHeader className="gap-2">
+            {/* 排序：图标按钮 + 点击下拉（兼作场景名前的视觉锚点） */}
+            <div className="relative flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={!selected || words.length === 0}
+                onClick={() => setSortOpen((v) => !v)}
+                aria-label={t('settings.hotword.sortAlpha')}
+                title={t(SORT_OPTIONS.find((o) => o.value === sort)?.key ?? 'settings.hotword.sortAlpha')}
+              >
+                <ArrowDownWideNarrow className="h-4 w-4" />
+              </Button>
+              {sortOpen && (
+                <>
+                  {/* outside-click 关闭 */}
+                  <div className="fixed inset-0 z-20" onClick={() => setSortOpen(false)} />
+                  <div className="absolute left-0 top-full z-30 mt-1 min-w-[88px] rounded-md border border-border bg-background py-1 shadow-md">
+                    {SORT_OPTIONS.map((o) => (
+                      <button
+                        key={o.value}
+                        onClick={() => { setSort(o.value); setSortOpen(false); }}
+                        className={cn(
+                          'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent',
+                          sort === o.value ? 'font-medium text-voice' : 'text-foreground'
+                        )}
+                      >
+                        {t(o.key)}
+                      </button>
+                    ))}
                   </div>
+                </>
+              )}
+            </div>
+            <CardTitle className="flex-shrink-0">{selected ? selected.name : t('settings.hotword.selectVersionFirst')}</CardTitle>
+            {selected && (
+              <Badge variant="muted" size="sm" className="flex-shrink-0">{words.length}</Badge>
+            )}
+            {/* 搜索框加宽（flex-1）+ 排序缩短（w-[68px]，项只有 2 字） */}
+            <div className="ml-auto flex flex-1 items-center justify-end gap-2">
+              <div className="relative min-w-[120px] max-w-[220px] flex-1">
+                <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+                <Input
+                  variant="default"
+                  size="full"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={t('settings.hotword.searchPlaceholder')}
+                  disabled={!selected || words.length === 0}
+                  className="pl-7"
+                />
+              </div>
+              {/* 操作图标按钮：追加 / 覆盖 / 挖掘 / 添加（纯图标，title 提示） */}
+              <div className="flex flex-shrink-0 items-center gap-0.5 border-l border-border/60 pl-1.5">
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={() => doImport('append')} title={t('settings.hotword.appendBtn')} aria-label={t('settings.hotword.appendBtn')}>
+                  <Upload className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={() => doImport('overwrite')} title={t('settings.hotword.overwriteBtn')} aria-label={t('settings.hotword.overwriteBtn')}>
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" disabled={!selected} onClick={mine} title={t('settings.hotword.mineBtn')} aria-label={t('settings.hotword.mineBtn')}>
+                  <Wand2 className="h-4 w-4" />
+                </Button>
+                <Button variant="voice" size="icon-sm" disabled={!selected} onClick={() => { setAddModalText(''); setAddModalOpen(true); }} title={t('settings.hotword.addBtn')} aria-label={t('settings.hotword.addBtn')}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+
+          {/* 词卡网格（占满剩余空间，可滚动） */}
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {!selected ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.selectVersionFirst')}</p>
+            ) : words.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
+            ) : visible.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
+            ) : (
+              // grid auto-fill + 1fr：卡片等宽拉满，消除右侧空白，最后一行左对齐
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-2">
+                {visible.map((w) => {
+                  const h = hits[w] ?? 0;
+                  return (
+                    <div key={w} className={cn(
+                      'group relative flex items-center justify-center rounded-md border bg-background px-3 py-1.5 transition-colors',
+                      recentlyAdded.has(w)
+                        ? 'border-voice bg-voice/10'
+                        : h > 0
+                          ? 'border-success/30 bg-success/5'
+                          : 'border-border hover:border-destructive/40'
+                    )}>
+                      {/* hover 时中间显现红色大 X（覆盖词，点击删除） */}
+                      <button
+                        onClick={() => removeWord(w)}
+                        className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 text-destructive opacity-0 backdrop-blur-[1px] transition-opacity group-hover:opacity-100"
+                        aria-label={`删除 ${w}`}
+                      >
+                        <X className="h-5 w-5" strokeWidth={2.5} />
+                      </button>
+                      {/* 词 + 命中数同行（底层，hover 时被 X 覆盖） */}
+                      <div className="flex w-full items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-sm">{w}</span>
+                        <span className={cn(
+                          'flex-shrink-0 font-mono text-[10px] tabular-nums',
+                          h > 0 ? 'text-success' : 'text-muted-foreground/50'
+                        )}>{h}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* ════ 浮窗：批量添加（textarea，空白分割） ════ */}
+      {addModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setAddModalOpen(false)}>
+          <div className="w-[420px] rounded-lg border border-border bg-background p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center gap-2">
+              <Plus className="h-4 w-4 text-voice" />
+              <span className="text-sm font-semibold">{t('settings.hotword.addBtn')}</span>
+            </div>
+            <textarea
+              autoFocus
+              value={addModalText}
+              onChange={(e) => setAddModalText(e.target.value)}
+              placeholder={t('settings.hotword.batchPlaceholder')}
+              className="h-32 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-voice/50 focus:outline-none focus:ring-2 focus:ring-voice/15"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setAddModalOpen(false); setAddModalText(''); }}>{t('settings.hotword.cancel')}</Button>
+              <Button variant="voice" size="sm" onClick={commitAddModal} disabled={!addModalText.trim()}>{t('settings.hotword.addBtn')}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════ 浮窗：挖掘确认（候选词 chip，原内联面板改浮窗） ════ */}
+      {minePending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setMinePending(null)}>
+          <div className="flex max-h-[80vh] w-[480px] flex-col rounded-lg border border-border bg-background p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Wand2 className="h-4 w-4 text-info" />
+                <span className="text-sm font-semibold">{t('settings.hotword.mineBtn')}</span>
+                <span className="text-xs text-muted-foreground">
+                  {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  const allSel = minePending.selected.size === minePending.words.length;
+                  setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                }}
+                className="text-xs text-muted-foreground hover:text-info"
+              >
+                {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 overflow-y-auto py-1">
+              {minePending.words.map((w) => {
+                const on = minePending.selected.has(w);
+                return (
+                  <button
+                    key={w}
+                    onClick={() => toggleMineSel(w)}
+                    className={cn(
+                      'rounded-md border px-2 py-1 text-xs transition-colors',
+                      on ? 'border-info bg-info/15 text-info' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
+                    )}
+                  >
+                    {w}
+                  </button>
                 );
               })}
             </div>
-          </div>
-          {/* 新增热词：input + 添加/追加/覆盖/挖掘（仅选中场景时可用） */}
-          <div className="px-4 py-3">
-            <div className="mb-2 flex items-center gap-2">
-              <Plus className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">
-                {selected ? t('settings.hotword.addBtn') : t('settings.hotword.selectVersionFirst')}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="mt-3 flex items-center gap-1.5">
               <Input
                 variant="default"
                 size="full"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addWord()}
-                placeholder={t('settings.hotword.addPlaceholder')}
-                disabled={!selected}
-                className="min-w-[160px] flex-1"
+                value={mineInput}
+                onChange={(e) => setMineInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
+                placeholder={t('settings.hotword.manualPlaceholder')}
+                className="text-xs"
               />
-              <Button variant="voice" size="default" onClick={addWord} disabled={!selected}>
-                <Plus /> {t('settings.hotword.addBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('append')} disabled={!selected} title={t('settings.hotword.appendHint')}>
-                <Upload /> {t('settings.hotword.appendBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => doImport('overwrite')} disabled={!selected} title={t('settings.hotword.overwriteHint')}>
-                <Upload /> {t('settings.hotword.overwriteBtn')}
-              </Button>
-              <Button variant="outline" size="sm" onClick={mine} disabled={!selected}>
-                <Wand2 /> {t('settings.hotword.mineBtn')}
+              <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setMinePending(null)}>{t('settings.hotword.cancel')}</Button>
+              <Button variant="voice" size="sm" onClick={commitMine} disabled={minePending.selected.size === 0}>
+                {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
               </Button>
             </div>
           </div>
         </div>
-
-        {/* ── 右下：选中场景的词（搜索 + 排序 + 词卡） ── */}
-        {selected ? (
-          <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-border bg-background">
-            {/* 头部：场景名 + 词数 */}
-            <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <BookMarked className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-semibold">{selected.name}</span>
-                <span className="font-mono text-[10px] text-muted-foreground/60">
-                  {words.length} {t('settings.hotword.wordsCount')}
-                </span>
-              </div>
-            </div>
-
-            {/* 挖掘确认面板 */}
-            {minePending && (
-              <div className="border-b border-voice/30 bg-voice/5 px-3 py-2.5 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
-                  </span>
-                  <div className="flex flex-shrink-0 items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const allSel = minePending.selected.size === minePending.words.length;
-                        setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
-                      }}
-                      className="text-xs text-muted-foreground hover:text-voice"
-                    >
-                      {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
-                    </button>
-                    <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button>
-                  </div>
-                </div>
-                <div className="flex max-h-44 flex-wrap gap-1.5 overflow-y-auto">
-                  {minePending.words.map((w) => {
-                    const on = minePending.selected.has(w);
-                    return (
-                      <button
-                        key={w}
-                        onClick={() => toggleMineSel(w)}
-                        className={cn(
-                          'rounded-md border px-2 py-1 text-xs transition-colors',
-                          on ? 'border-voice bg-voice/15 text-voice' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
-                        )}
-                      >
-                        {w}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    variant="default"
-                    size="full"
-                    value={mineInput}
-                    onChange={(e) => setMineInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
-                    placeholder={t('settings.hotword.manualPlaceholder')}
-                    className="text-xs"
-                  />
-                  <Button variant="outline" size="sm" onClick={addMineWord}>{t('settings.hotword.manualBtn')}</Button>
-                  <Button
-                    variant="voice"
-                    size="sm"
-                    onClick={commitMine}
-                    disabled={minePending.selected.size === 0}
-                  >
-                    {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* 搜索 + 排序 */}
-            {words.length > 0 && (
-              <div className="flex items-center gap-2 border-b border-border/40 px-4 py-2">
-                <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
-                  <Input variant="default" size="full" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="pl-7" />
-                </div>
-                <Select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className="flex-shrink-0" aria-label="排序方式">
-                  <option value="time">{t('settings.hotword.sortDefault')}</option>
-                  <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
-                  <option value="hits">{t('settings.hotword.sortHit')}</option>
-                </Select>
-              </div>
-            )}
-
-            {/* 词卡网格 */}
-            <div className="flex-1 overflow-y-auto p-4">
-              {words.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
-              ) : visible.length === 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {visible.map((w) => {
-                    const h = hits[w] ?? 0;
-                    return (
-                      <div key={w} className={cn(
-                        'raycast-ring relative max-w-[200px] min-w-[112px] rounded-md border bg-background px-3 py-2 pr-7 transition-colors duration-700',
-                        recentlyAdded.has(w) ? 'border-voice bg-voice/15 ring-1 ring-voice/30' : 'border-border hover:border-foreground/25'
-                      )}>
-                        <button onClick={() => removeWord(w)} className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground/60 hover:text-destructive" aria-label={`删除 ${w}`}>
-                          <X className="h-3 w-3" />
-                        </button>
-                        <div className="truncate text-sm">
-                          {w} <span className={cn('font-mono text-[10px] tabular-nums', h > 0 ? 'text-voice' : 'text-muted-foreground/50')}>{h}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-1 items-center justify-center rounded-lg border border-border bg-background text-sm text-muted-foreground">
-            {t('settings.hotword.selectVersionFirst')}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }
