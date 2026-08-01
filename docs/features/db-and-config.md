@@ -207,7 +207,7 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 | `clipboard_max_items` | 1000 | 最大保留条数 |
 | `clipboard_max_age_days` | 30 | 自动清理天数 |
 | `switch_input_source_on_paste` | true | 粘贴前临时切到 ABC 输入法（仅 macOS，防 CJK 乱码） |
-| 快捷键们 | — | `asr_shortcut` / `clipboard_shortcut` / `screenshot_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `action_bar_shortcut` |
+| 快捷键们 | — | `asr_shortcut`（单键名）/ `clipboard_shortcut` / `screenshot_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `action_bar_shortcut` |
 
 ### 环境变量系统（v22 新增，`category='env'`）
 
