@@ -113,13 +113,13 @@ export function ModelRow({
           </Button>
         ) : (
           <>
-            {/* 激活 / 已激活 */}
+            {/* 激活 / 已激活——配色对齐提示配方：已激活=绿色 success，未激活=黄/橙 warning-soft */}
             {model.isCurrent ? (
-              <Button variant="ghost" size="sm" disabled className="cursor-default">
+              <Button variant="success" size="sm" disabled className="cursor-default">
                 {t("settings.models.activated")}
               </Button>
             ) : (
-              <Button variant="success" size="sm" onClick={onActivate}>
+              <Button variant="warning-soft" size="sm" onClick={onActivate}>
                 {t("settings.models.activate")}
               </Button>
             )}

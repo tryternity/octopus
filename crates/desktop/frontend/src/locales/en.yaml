@@ -921,8 +921,8 @@ agentPanel:
   addNew: Add
   editAdapter: Edit Adapter
   newAdapter: New Adapter
-  installed: ✅ Installed
-  notFound: ❌ Not found
+  installed: Installed
+  notFound: Not found
   builtin: Built-in
   default: Default
   defaultAgentLabel: "Current default:"

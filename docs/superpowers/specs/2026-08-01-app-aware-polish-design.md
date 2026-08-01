@@ -127,7 +127,7 @@ pub(crate) struct AppContext {
 ### 模板列表展示
 
 - 模板卡片显示关联的 app（如有，非系统模板），方便用户识别
-- **激活态对齐模型管理**：列表顶部 `CurrentBanner`（绿色 success 横幅，显示当前激活模板名，复用 `ModelRow.tsx` 风格）；卡片「激活」按钮始终显示——当前激活→绿色「已激活」灰禁，其余→绿色「激活」可点（`variant="success"`）。去掉红色「激活中」badge（与绿色按钮重复）
+- **激活态对齐模型管理**：列表顶部 `CurrentBanner`（绿色 success 横幅，显示当前激活模板名，复用 `ModelRow.tsx` 风格）；卡片「激活」按钮始终显示——当前激活→绿色「已激活」灰禁（`variant="success"`），其余→黄/橙「激活」可点（`variant="warning-soft"`，2026-08-01 后改——原设计未激活也绿色，视觉区分不开）。去掉红色「激活中」badge（与绿色按钮重复）
 
 ## 不变量
 
@@ -181,7 +181,7 @@ pub(crate) struct AppContext {
 
 6. **系统内置模板路由字段锁定**（e2e 反馈驱动）：3 个 `is_system=1` 模板保持「全局 fallback」角色，`app_bundle_ids` 恒 `''`、`inject_context` 恒 seed 值，不可绑特定 app。前端「路由配置」按钮灰禁 + 卡片不展示 app 关联/注入指示；后端 `update_prompt` 对 `is_system=true` 回写 DB 现有值（防御）。回归测试 `system_prompts_locked_global_routing`。
 
-7. **激活态对齐模型管理**（e2e 反馈驱动）：列表顶部加 `CurrentBanner`（绿色横幅显示当前激活模板名），卡片「激活」按钮始终显示（当前→绿色「已激活」灰禁，其余→绿色「激活」），去掉红色「激活中」badge。复用 `ModelRow.tsx` 的 `variant="success"` 风格。
+7. **激活态对齐模型管理**（e2e 反馈驱动）：列表顶部加 `CurrentBanner`（绿色横幅显示当前激活模板名），卡片「激活」按钮始终显示——当前→绿色「已激活」灰禁（`success`），其余→黄/橙「激活」（`warning-soft`，后改——原设计未激活也绿色视觉混淆），去掉红色「激活中」badge。
 
 8. **app-casual 模板改「场景自适应」**（e2e 反馈驱动）：原 title「口语化整理」过度偏向口语化，与「Word→书面化」「IDE→条理化」矛盾。md 提示词 Role + Rules 重写（去「保留自然语气」等暗示，改按 app 针对性）；seeds title/description/dest_name 同步改名（`润色-口语化`→`润色-场景自适应`）。
 

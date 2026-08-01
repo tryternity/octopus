@@ -116,12 +116,12 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
             <div className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 text-[11px]",
               def.isAvailable
-                ? "border-voice bg-voice/[0.08]"
+                ? "border-success bg-success/[0.08]"
                 : "border-muted-foreground/30 bg-muted/30",
             )}>
               <Star className={cn(
                 "w-3 h-3 shrink-0",
-                def.isAvailable ? "fill-voice text-voice" : "text-muted-foreground/50",
+                def.isAvailable ? "fill-success text-success" : "text-muted-foreground/50",
               )} />
               <span className="text-muted-foreground">{t("agentPanel.defaultAgentLabel")}</span>
               <span className="font-medium text-foreground">{def.displayName}</span>
@@ -156,14 +156,14 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
             key={a.key}
             className={cn(
               "group relative flex items-start gap-3 rounded-lg border p-3.5 transition-colors",
-              a.isAvailable ? "border-voice/25 bg-voice/[0.03]" : "border-border",
-              a.isDefault && "border-voice/40",
+              a.isAvailable ? "border-success/25 bg-success/[0.03]" : "border-border",
+              a.isDefault && "border-success/40",
             )}
           >
-            {/* 状态色条 */}
+            {/* 状态色条——配色对齐提示配方：已安装/默认=绿色 success，不可用=灰 */}
             <div className={cn(
               "absolute left-0 top-3 bottom-3 w-[3px] rounded-full",
-              a.isAvailable ? (a.isDefault ? "bg-voice" : "bg-success") : "bg-muted-foreground/30",
+              a.isAvailable ? "bg-success" : "bg-muted-foreground/30",
             )} />
 
             <div className="flex-1 min-w-0 pl-2">
@@ -172,17 +172,6 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
                 {a.isSystem && (
                   <Badge>{t("agentPanel.builtin")}</Badge>
                 )}
-                {a.isDefault && (
-                  <Badge variant="voice">
-                    <Star className="w-3 h-3 mr-1" />
-                    {t("agentPanel.default")}
-                  </Badge>
-                )}
-                {a.isAvailable ? (
-                  <span className="text-[10px] text-success">●</span>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground/40">○</span>
-                )}
               </div>
               <div className="text-xs text-muted-foreground font-mono mt-1 truncate">
                 <span>{a.detectBinary}</span>
@@ -190,24 +179,23 @@ function AdapterTab({ showToast }: { showToast: (msg: string) => void }) {
               </div>
             </div>
             <div className="shrink-0 flex flex-col items-end gap-1.5">
-              {a.isAvailable ? (
-                <span className="text-[10px] text-success font-mono flex items-center gap-0.5">
-                  {t("agentPanel.installed")} <Check className="w-3 h-3" />
-                </span>
-              ) : (
-                <span className="text-[10px] text-muted-foreground font-mono flex items-center gap-0.5">
-                  {t("agentPanel.notFound")} <X className="w-3 h-3" />
+              {/* 未安装：红色 X + 「未找到」文字。已安装不显示状态标识（靠按钮区分）。 */}
+              {!a.isAvailable && (
+                <span className="text-[10px] text-destructive font-mono flex items-center gap-0.5">
+                  <X className="w-3 h-3" />
+                  {t("agentPanel.notFound")}
                 </span>
               )}
-              {/* 设为默认 / 取消默认按钮：仅可用 agent 显示（不可用不能被设为默认） */}
+              {/* 设为默认 / 取消默认——配色对齐提示配方：默认=绿色 success 五角星，非默认=黄/橙 warning-soft 五角星。
+                  已默认仍可点（取消默认），不 disabled。 */}
               {a.isAvailable && (
                 <Button
-                  variant={a.isDefault ? "outline" : "ghost"}
+                  variant={a.isDefault ? "success" : "warning-soft"}
                   size="sm"
                   onClick={() => handleToggleDefault(a)}
                 >
                   {a.isDefault ? t("agentPanel.unsetDefault") : t("agentPanel.setDefault")}
-                  <Star className={cn("w-3.5 h-3.5", a.isDefault && "fill-voice text-voice")} />
+                  <Star className={cn("w-3.5 h-3.5", a.isDefault ? "fill-success text-success" : "fill-warning text-warning")} />
                 </Button>
               )}
             </div>
