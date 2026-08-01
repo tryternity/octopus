@@ -107,6 +107,7 @@ macro_rules! handler {
             crate::commands::hotword_commands::add_words_to_set,
             crate::commands::hotword_commands::import_hotwords,
             crate::commands::hotword_commands::export_hotwords,
+            crate::commands::hotword_commands::filter_hotwords_fuzzy,
             // ── clipboard_commands ──
             crate::clipboard::clipboard_commands::query_clipboard_history,
             crate::clipboard::clipboard_commands::toggle_clipboard_favorite,

@@ -41,16 +41,6 @@ const SORT_OPTIONS: { value: 'alpha' | 'hits'; key: string }[] = [
   { value: 'hits', key: 'settings.hotword.sortHit' },
 ];
 
-/// 子序列匹配：query 的每个字符按顺序出现在 word 中（允许间隔）。
-/// fuzzy 搜索用——如 isSubsequence("八鱼", "八爪鱼") = true。
-function isSubsequence(query: string, word: string): boolean {
-  let i = 0;
-  for (let j = 0; j < word.length && i < query.length; j++) {
-    if (word[j] === query[i]) i++;
-  }
-  return i === query.length;
-}
-
 export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) {
   const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
@@ -58,6 +48,10 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
+  /** fuzzy 搜索结果（null=无搜索显示全部；string[]=命中的词，已按 match_score 降序）。
+   *  由 debounce effect 调后端 filter_hotwords_fuzzy 异步填充（复用 matcher::match_score，
+   *  汉字+拼音首字母+匹配度排序，与 ActionBar 同款算法）。 */
+  const [fuzzyMatches, setFuzzyMatches] = useState<string[] | null>(null);
   const [sort, setSort] = useState<'alpha' | 'hits'>('alpha');
   const [sortOpen, setSortOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -102,27 +96,31 @@ export function HotwordPanel({ dialect, asrCorrect, setVal, showToast }: Props) 
   const selected = sets.find((s) => s.id === selectedId) || null;
   const words = useMemo(() => (selected?.wordsText.split(/\s+/).filter(Boolean) ?? []), [selected]);
 
+  // fuzzy 搜索：debounce 120ms 后调后端 filter_hotwords_fuzzy（复用 matcher::match_score，
+  // 汉字+拼音首字母+匹配度排序）。空 query → null（显示全部）。
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) { setFuzzyMatches(null); return; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await invoke<string[]>('filter_hotwords_fuzzy', { query: q, words });
+        if (!cancelled) setFuzzyMatches(result);
+      } catch { if (!cancelled) setFuzzyMatches([]); }
+    }, 120);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, words]);
+
+  // visible：fuzzy 命中的词（null=全部）+ sort 排序。
+  // fuzzy 由后端 match_score 算（汉字+拼音+匹配度），已自带 score 降序；
+  // 用户切 sort 时按字母/命中度重排覆盖 fuzzy 的 score 顺序。
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    // fuzzy 搜索：query 的字符按序出现在词中即命中（允许间隔，如「八鱼」匹配「八爪鱼」）。
-    // 优先级：连续子串 > 跳跃匹配——连续命中的词排序靠前，更符合直觉。
-    const arr = q
-      ? words
-          .map((w) => {
-            const lw = w.toLowerCase();
-            const idx = lw.indexOf(q);
-            if (idx >= 0) return { w, score: 0 - idx }; // 连续匹配，score 越大越靠前（首位最高）
-            return isSubsequence(q, lw) ? { w, score: -1000 } : null; // 跳跃匹配，排末尾
-          })
-          .filter((x): x is { w: string; score: number } => x !== null)
-          .sort((a, b) => b.score - a.score)
-          .map((x) => x.w)
-      : words;
+    const arr = fuzzyMatches ?? words;
     return [...arr].sort((a, b) => {
       if (sort === 'hits') return (hits[b] ?? 0) - (hits[a] ?? 0);
       return a.localeCompare(b); // alpha（默认）
     });
-  }, [words, query, sort, hits]);
+  }, [fuzzyMatches, words, sort, hits]);
 
   // ── 版本操作 ──
   // 新建 / 导入新版本：inline input 输入名（WKWebView 不支持 window.prompt）。
