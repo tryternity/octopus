@@ -605,10 +605,10 @@ settings:
     delete: Delete
     deleteConfirm: Click again to confirm
   hotword:
-    fH: f/h confusion (浮 / 护)
-    huWu: hu/wu confusion (黄 / 王)
-    nL: n/l confusion (刘 / 牛)
-    rL: r/l confusion (热 / 乐)
+    fH: f/h (浮 / 护)
+    huWu: hu/wu (胡 / 吴)
+    nL: n/l (刘 / 牛)
+    rL: r/l (热 / 乐)
     loadFailed: "Load failed:"
     newVersion: New version created
     importedVersion: Imported as new version
@@ -639,6 +639,7 @@ settings:
     allExist: Selected words already exist
     addFailed2: "Add failed:"
     dialectFuzzy: Dialect Fuzzy
+    correctSection: Dialect Fuzzy + Hotword Correction
     versionsN: Hotword Versions (${n})
     loading: Loading…
     newVersionPlaceholder: Version name (Enter to confirm / Esc to cancel)
@@ -648,6 +649,7 @@ settings:
     renameHint: Click to rename
     wordsCount: words
     addPlaceholder: Names / Places / Terms
+    batchPlaceholder: Batch add, split by any whitespace (space/Tab/newline)
     addBtn: Add
     appendBtn: Append
     appendHint: Import and append to current version
@@ -661,7 +663,7 @@ settings:
     manualPlaceholder: Add a word manually (Enter to add)
     manualBtn: Add Word
     addSelectedN: Add ${n} selected
-    searchPlaceholder: Search (Chinese)
+    searchPlaceholder: Search (fuzzy)
     sortDefault: Default
     sortAlpha: Alphabetical
     sortHit: Hit Rate

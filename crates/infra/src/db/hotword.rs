@@ -19,6 +19,26 @@ pub struct HotwordSet {
 
 const HOTWORD_SET_COLS: &str = "id, name, enabled, words_text, created_at, updated_at, sync_md5";
 
+/// 单个热词词典（版本）的词数上限（2026-08-01）。
+///
+/// 限制理由：① 加载时 `HotwordIndex::from_words` 构建 O(N) 索引；② fuzzy 搜索
+/// `match_score` 逐词 O(N) 匹配。词数过大影响启动 + 搜索性能。3000 覆盖典型场景
+/// （专业术语/专有名词），超出建议用户另建新词典分摊。
+pub const HOTWORD_SET_MAX_WORDS: usize = 3000;
+
+/// 校验写入后的词数是否超容量上限。`prospective_words_text` 是「将要写入」的内容
+/// （已 normalize 或待 normalize 均可——normalize 只去重排序不改变词数）。
+fn ensure_within_capacity(prospective_words_text: &str) -> Result<()> {
+    let n = prospective_words_text.split_whitespace().count();
+    if n > HOTWORD_SET_MAX_WORDS {
+        anyhow::bail!(
+            "词典容量已满（{} 词上限），建议另建新词典分摊（当前 {} 词）",
+            HOTWORD_SET_MAX_WORDS, n
+        );
+    }
+    Ok(())
+}
+
 fn row_to_hotword_set(row: &rusqlite::Row) -> rusqlite::Result<HotwordSet> {
     Ok(HotwordSet {
         id: row.get(0)?,
@@ -133,6 +153,7 @@ pub fn set_hotword_set_words(id: &str, words_text: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         let normalized = crate::hotword_text::normalize_words_text(words_text);
+        ensure_within_capacity(&normalized)?;
         let n = conn.execute(
             "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
             params![normalized, id],
@@ -160,6 +181,7 @@ pub(crate) fn add_word_to_set_at(conn: &Connection, id: &str, word: &str) -> Res
         .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))?;
     let merged = format!("{} {}", cur, word);
     let normalized = crate::hotword_text::normalize_words_text(&merged);
+    ensure_within_capacity(&normalized)?;
     let added = normalized != cur;
     conn.execute(
         "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
@@ -182,6 +204,7 @@ pub fn add_words_to_set(id: &str, words: &[String]) -> Result<usize> {
         let before: std::collections::HashSet<&str> = cur.split_whitespace().collect();
         let merged = format!("{} {}", cur, words.join(" "));
         let normalized = crate::hotword_text::normalize_words_text(&merged);
+        ensure_within_capacity(&normalized)?;
         let after: std::collections::HashSet<&str> = normalized.split_whitespace().collect();
         let added = after.len().saturating_sub(before.len());
         conn.execute(
@@ -492,5 +515,81 @@ mod tests {
 
         let hits = list_hotword_hits_at(conn).unwrap();
         assert_eq!(hits.get("吴大锐"), Some(&2i64));
+    }
+
+    // ── 容量上限 HOTWORD_SET_MAX_WORDS（2026-08-01）──
+
+    /// 生成 n 个不重复的伪词（w0..w{n-1}）。
+    fn fake_words(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("w{}", i)).collect()
+    }
+
+    /// set_hotword_set_words：恰好 3000 词通过，3001 词被拒。
+    #[test]
+    fn set_words_respects_capacity_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "cap-set", "容量测试").unwrap();
+        // 走 _at 版本，直接用本地 conn
+        let exactly = fake_words(HOTWORD_SET_MAX_WORDS).join(" ");
+        let normalized = crate::hotword_text::normalize_words_text(&exactly);
+        assert!(ensure_within_capacity(&normalized).is_ok(), "3000 词应在上限内");
+
+        let over = fake_words(HOTWORD_SET_MAX_WORDS + 1).join(" ");
+        let normalized_over = crate::hotword_text::normalize_words_text(&over);
+        let err = ensure_within_capacity(&normalized_over).unwrap_err();
+        assert!(err.to_string().contains("容量已满"), "超限应返容量错误：{}", err);
+    }
+
+    /// add_words_to_set：批量追加后总词数超 3000 应被拒（不部分写入）。
+    #[test]
+    fn add_words_rejects_when_exceeding_capacity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "cap-add", "批量容量测试").unwrap();
+
+        // 先填到 2999 词
+        let base = fake_words(2999);
+        let base_normalized = crate::hotword_text::normalize_words_text(&base.join(" "));
+        conn.execute(
+            "UPDATE hotword_sets SET words_text=?1 WHERE id='cap-add'",
+            params![base_normalized],
+        ).unwrap();
+
+        // 模拟 add_words_to_set 内部逻辑：merge + normalize + 校验
+        let extra: Vec<String> = (2999..2999 + 5).map(|i| format!("w{}", i)).collect();
+        let merged = format!("{} {}", base_normalized, extra.join(" "));
+        let merged_normalized = crate::hotword_text::normalize_words_text(&merged);
+        let err = ensure_within_capacity(&merged_normalized).unwrap_err();
+        assert!(err.to_string().contains("容量已满"), "超限应返容量错误：{}", err);
+
+        // 原内容未被改动
+        let after: String = conn.query_row(
+            "SELECT words_text FROM hotword_sets WHERE id='cap-add'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(after.split_whitespace().count(), 2999, "被拒后原内容不应改动");
+    }
+
+    /// add_word_to_set_at：单词追加超限被拒。
+    #[test]
+    fn add_single_word_rejects_when_at_capacity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "cap-one", "单词容量测试").unwrap();
+
+        // 填满 3000 词
+        let full = fake_words(HOTWORD_SET_MAX_WORDS).join(" ");
+        let full_normalized = crate::hotword_text::normalize_words_text(&full);
+        conn.execute(
+            "UPDATE hotword_sets SET words_text=?1 WHERE id='cap-one'",
+            params![full_normalized],
+        ).unwrap();
+
+        // 再加一个新词 → 3001，add_word_to_set_at 内部 ensure_within_capacity 应拒
+        let err = add_word_to_set_at(&conn, "cap-one", "溢出词").unwrap_err();
+        assert!(err.to_string().contains("容量已满"), "满后再加应拒：{}", err);
     }
 }

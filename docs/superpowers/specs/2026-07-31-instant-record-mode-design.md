@@ -47,9 +47,9 @@
 - ✅ seed 默认值写死（`record_mode = "toggle"`，`ptt_key = "AltRight"`）
 - ✅ coordinator 新增 instant 路径
 - ✅ 复用现有引擎/润色/粘贴
-- ⏳ hands-free 模式（首版标记 TODO，或作为 PTT 变体）
-- ⏳ 设置 UI / 用户自定义键 → 后续迭代
-- ⏳ PTT/免提时长区分（方案 A）→ 后续迭代
+- ✅ hands-free 模式（已实现——单键三模式短按触发，静音 10s 超时，详见 single-key-three-modes-design.md）
+- ✅ 设置 UI / 用户自定义键（已实现——asr-key-selector dropdown 5 选 1，详见 asr-key-selector-design.md）
+- ✅ PTT/免提时长区分（已实现——单键三模式按键时长 + 双击检测，TAP_TIMEOUT_MS=260）
 
 ## 核心决策
 

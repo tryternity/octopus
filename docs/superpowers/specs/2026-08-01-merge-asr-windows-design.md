@@ -79,6 +79,8 @@ poller 的 `BAR_W`/`BAR_H`/`BAR_OFFSET` 需按模式 + `RESULT_CLICK_THROUGH` �
 - **instant 视图**：现有 InstantOverlay 的全部（4 态指示 + 波形/spinner），渲染在 720×480 透明区的底部居中（CSS `position:absolute; bottom; center`）
 - 现有 `show-result`（文本）+ `instant-state`（状态）事件保留，前端按当前 mode 分发到对应视图
 
+> **2026-08-01 补记（instant 实时文字）**：本设计假设「两个事件都喂 instant 视图」，但实现时 `update-result`（流式 partial 文本通道）只写了 toggle 视图的 `text` state，没路由到 `instantText`——致 instant 模式录音中只显示「正在聆听…」，看不到实时文字。已修复：`update-result` handler 在 `recordMode === "instant"` 时也写 `instantText`（读 `recordModeRef` 避免闭包陷阱），InstantView listening 态显示尾部最新内容（28 字符）。详见 [instant-live-text spec](2026-08-01-instant-live-text.md)。
+
 ### 删除独立 instant 页
 
 - 删除 `instant-overlay.html`
@@ -149,4 +151,4 @@ poller 的 `BAR_W`/`BAR_H`/`BAR_OFFSET` 需按模式 + `RESULT_CLICK_THROUGH` �
 - `npx tsc --noEmit`（frontend）：0 error
 - `npm run build`（frontend vite）：成功
 
-**剩余手动 e2e（待用户验证）：** ① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。
+**e2e 手动验证通过（2026-07-31）：** ① toggle 录音→顶部 result（CM6 可编辑）② PTT→底部 instant 指示卡 ③ hands-free→底部指示卡 ④ 穿透：instant 态透明区可点穿 ⑤ toggle 精简/长篇态穿透不变 ⑥ ASR 回写外部窗口不受影响。

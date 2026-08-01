@@ -165,7 +165,7 @@
 - `cargo test -p octopus-desktop --features embedded` ✅ all pass（含新增 `apply_config_value` 白名单校验测试：合法值通过 / 非法值 `"Ctrl+Alt+Z"` 返回 Err）
 - `npx tsc --noEmit` ✅ 0 error
 - `npm run build` ✅ vite build 成功
-- ⏳ e2e 手动验证（待用户在桌面应用实测：① 设置页选不同 PTT 键→即时生效 ② 改键后三模式仍工作 ③ edit_global_shortcut 不受影响 ④ 工具栏立即润色按钮仍工作 ⑤ asr_shortcut 值不合法 fallback OptRight）
+- ✅ e2e 手动验证通过（2026-07-31）：① 设置页选不同 PTT 键→即时生效 ② 改键后三模式仍工作 ③ edit_global_shortcut 不受影响 ④ 工具栏立即润色按钮仍工作 ⑤ asr_shortcut 值不合法 fallback OptRight
 
 ### 文件改动汇总
 
