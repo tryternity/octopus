@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Cloud, HardDrive, Plus } from "lucide-react";
@@ -71,6 +71,11 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
+  // listener 稳定化 ref（effect 依赖 []，回调读 ref 拿最新——AGENTS.md gotcha）
+  const loadRef = useRef(load); loadRef.current = load;
+  const tRef = useRef(t); tRef.current = t;
+  const showToastRef = useRef(showToast); showToastRef.current = showToast;
+
   useEffect(() => {
     load();
     let unlistens: UnlistenFn[] = [];
@@ -85,10 +90,11 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
           const data = p as { repo: string; already_ready?: boolean; error?: string };
           setBusyRepo(null);
           setProgress((prev) => { const next = { ...prev }; delete next[data.repo]; return next; });
-          if (data.error) showToast(t("settings.models.downloadFailed") + data.error);
-          else if (data.already_ready) showToast(t("settings.models.alreadyReady"));
-          else showToast(t("settings.models.downloadComplete"));
-          load();
+          // 用 ref 读最新 t/load（effect 依赖 []，闭包捕获会 stale——AGENTS.md listener 稳定化 gotcha）
+          if (data.error) showToastRef.current(tRef.current("settings.models.downloadFailed") + data.error);
+          else if (data.already_ready) showToastRef.current(tRef.current("settings.models.alreadyReady"));
+          else showToastRef.current(tRef.current("settings.models.downloadComplete"));
+          loadRef.current();
         }],
       ];
       for (const [event, handler] of subs) {
@@ -98,7 +104,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       }
     })();
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
-  }, [load, showToast, t]);
+  }, []);
 
   // Task 2 后：统一走 switch_active_model(domain, id)。
   const onActivate = async (id: number) => {

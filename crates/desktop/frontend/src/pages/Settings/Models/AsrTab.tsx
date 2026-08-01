@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Cloud, HardDrive, Plus } from "lucide-react";
@@ -67,6 +67,11 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast, t]);
 
+  // listener 稳定化 ref（effect 依赖 []，回调读 ref 拿最新——AGENTS.md gotcha）
+  const loadRef = useRef(load); loadRef.current = load;
+  const tRef = useRef(t); tRef.current = t;
+  const showToastRef = useRef(showToast); showToastRef.current = showToast;
+
   useEffect(() => {
     load();
     let unlistens: UnlistenFn[] = [];
@@ -85,10 +90,10 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           const data = p as { repo: string; already_ready?: boolean; error?: string };
           setBusyRepo(null);
           setProgress((prev) => { const next = { ...prev }; delete next[data.repo]; return next; });
-          if (data.error) showToast(t("settings.models.downloadFailed") + data.error);
-          else if (data.already_ready) showToast(t("settings.models.alreadyReady"));
-          else showToast(t("settings.models.downloadComplete"));
-          load();
+          if (data.error) showToastRef.current(tRef.current("settings.models.downloadFailed") + data.error);
+          else if (data.already_ready) showToastRef.current(tRef.current("settings.models.alreadyReady"));
+          else showToastRef.current(tRef.current("settings.models.downloadComplete"));
+          loadRef.current();
         }],
       ];
       for (const [event, handler] of subs) {
@@ -98,7 +103,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       }
     })();
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
-  }, [load, showToast, t]);
+  }, []);
 
   // Task 2 后：currentLabel 仍从 get_config 的 asrEngines（带 current 标记）取。
   const currentLabel = engines.find((e) => e.current)?.label ?? "";
