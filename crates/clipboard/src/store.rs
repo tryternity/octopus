@@ -385,26 +385,23 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
         cleanup_unreferenced_images(conn)?;
     }
 
-    // 2a. voice 太短（< VOICE_SOFT_DELETE_MIN_LEN）→ 物理删（对 bigram 语料无价值）
+    // 2a. 所有 voice 软删（进回收站）
+    let voice_rows = conn.execute(
+        &format!("UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice'{fav} AND is_deleted = 0", fav = fav_clause),
+        [],
+    )?;
+
+    // 2b. 回收站里太短的 voice（< VOICE_SOFT_DELETE_MIN_LEN）→ 物理删（对 bigram 语料无价值）
     let short_voice = conn.execute(
         &format!(
-            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min}{fav} AND is_deleted = 0",
-            min = VOICE_SOFT_DELETE_MIN_LEN, fav = fav_clause,
+            "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
+            min = VOICE_SOFT_DELETE_MIN_LEN,
         ),
         [],
     )?;
     if short_voice > 0 {
         log::info!("[voice-trash] 清空历史：{} 条过短 voice 物理删（< {} 字符）", short_voice, VOICE_SOFT_DELETE_MIN_LEN);
     }
-
-    // 2b. voice 够长 → 软删（进回收站，保留作 bigram 语料）
-    let voice_rows = conn.execute(
-        &format!(
-            "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND length(content) >= {min}{fav} AND is_deleted = 0",
-            min = VOICE_SOFT_DELETE_MIN_LEN, fav = fav_clause,
-        ),
-        [],
-    )?;
 
     // 3. voice 回收站容量上限（INV-1）
     if voice_rows > 0 {
@@ -446,19 +443,19 @@ pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: b
         cleanup_unreferenced_images(conn)?;
     }
 
-    // 2a. voice 太短 → 物理删（对 bigram 语料无价值）
-    let short_sql = format!(
-        "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND {wc}",
-        min = VOICE_SOFT_DELETE_MIN_LEN, wc = where_clause
-    );
-    let short_rows = conn.execute(&short_sql, [])?;
-
-    // 2b. voice 够长 → 软删（进回收站）
+    // 2a. 所有匹配的 voice 软删（进回收站）
     let voice_sql = format!(
-        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND length(content) >= {min} AND {wc}",
-        min = VOICE_SOFT_DELETE_MIN_LEN, wc = where_clause
+        "UPDATE clipboard_history SET is_deleted = 1 WHERE item_type = 'voice' AND {wc}",
+        wc = where_clause
     );
     let voice_rows = conn.execute(&voice_sql, [])?;
+
+    // 2b. 回收站里太短的 voice → 物理删（对 bigram 语料无价值）
+    let short_sql = format!(
+        "DELETE FROM clipboard_history WHERE item_type = 'voice' AND length(content) < {min} AND is_deleted = 1",
+        min = VOICE_SOFT_DELETE_MIN_LEN
+    );
+    let short_rows = conn.execute(&short_sql, [])?;
 
     // 3. voice 回收站容量上限（INV-1）
     if voice_rows > 0 {
