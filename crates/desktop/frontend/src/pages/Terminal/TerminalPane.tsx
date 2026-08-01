@@ -172,7 +172,9 @@ export function TerminalPane({
       const s = sessionRef.current;
       const rel = relPath(path, s.cwd ?? "");
       const escaped = shellEscape(rel);
-      s.write(escaped); // 插入光标位置，不回车
+      // 用 paste（bracketed paste）而非 write：拖文件=用户粘贴语义，让 Claude Code 等
+      // 开启 bracketed paste mode 的程序正确识别为一次完整输入（而非逐字符）。参考 Terax。
+      s.paste(escaped);
       s.focus(); // 自动聚焦终端
     };
     document.addEventListener("mouseup", handleMouseUp);
