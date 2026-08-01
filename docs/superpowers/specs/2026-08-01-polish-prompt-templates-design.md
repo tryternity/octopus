@@ -165,9 +165,9 @@ few-shot 示例（3 个，含 `[]` edited 标记）：
 | `crates/infra/seeds/prompts/faithful.md` | 新建（faithful 模板 + few-shot） |
 | `crates/infra/seeds/prompts/user-intent.md` | 新建（user-intent 模板 + few-shot） |
 | `crates/infra/seeds/prompts/app-casual.md` | 新建（app-casual 模板 + few-shot） |
-| `crates/infra/seeds/prompts/default-polish.md` | **删除** |
-| `crates/infra/seeds/prompts/advanced-polish.md` | **删除** |
-| `crates/infra/seeds/prompts/sayit-*.md` | **删除**（4 个） |
+| `crates/infra/seeds/prompts/default-polish.md` | **移到 `history/` 子目录**（保留对比，后续手工删除） |
+| `crates/infra/seeds/prompts/advanced-polish.md` | **移到 `history/`** |
+| `crates/infra/seeds/prompts/sayit-*.md` | **移到 `history/`**（4 个） |
 | `crates/infra/src/seeds.rs`（或 seed 加载逻辑） | seed 列表更新（删旧 + 加新 3 个） |
 | `crates/infra/src/db.sql` | active_polish_prompt 默认值更新（指向 faithful） |
 
