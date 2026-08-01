@@ -57,10 +57,13 @@ pub(crate) fn start_final_polish_or_paste(
         Some(llm_config) => {
             // 进入异步润色状态
             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Processing);
+            // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
+            // 提前到 show 之前——让「润色中」文案能携带命中的模板名。
+            let resolved_prompt = resolve_app_aware_prompt();
             if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
                 crate::ui::result_window::show_instant(app_handle, "polishing", "");
             } else {
-                crate::ui::result_window::show_result(app_handle, "⏳ 最终润色中...");
+                crate::ui::result_window::show_result(app_handle, &polish_status_text(&resolved_prompt));
             }
 
             let id = transcript.id;
@@ -84,8 +87,6 @@ pub(crate) fn start_final_polish_or_paste(
             // → 跨会话污染。带 session_id（= 本会话 transcript.id），handler 校验当前
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
-            // 应用感知：在 coordinator 线程解析模板（focus_tracker 缓存反映 op-start app）。
-            let resolved_prompt = resolve_app_aware_prompt();
             std::thread::spawn(move || {
                 // catch_unwind 兜底：polish_regions 内部 panic（JSON 反序列化 / 网络库内部）
                 // 会让线程静默死亡，FinalPolishDone 永不发送 → 永久卡在 Stage::Polishing
@@ -254,7 +255,6 @@ pub(crate) fn polish_input_to_regions(input: &crate::engine::transcript::PolishI
 
 /// resolve_app_aware_prompt 的解析结果。content + app_context 移入 spawn 线程供 polish_regions 用；
 /// template_title / app_name / route_hit 是展示用元数据（浮窗「润色中」文案）。
-#[allow(dead_code)]  // 展示字段由 polish_status_text 读，Task 3 接入浮窗显示
 struct ResolvedAppPrompt {
     content: String,
     app_context: Option<octopus_llm::AppContext>,
@@ -297,7 +297,6 @@ fn resolve_app_aware_prompt() -> ResolvedAppPrompt {
 
 /// 拼接浮窗「润色中」文案：命中 app 关联→「⏳ 润色中 · 模板名（app名）」；
 /// 默认→「⏳ 润色中 · 模板名」；降级（空模板名）→「⏳ 润色中」。
-#[allow(dead_code)]  // Task 3 接入浮窗显示
 fn polish_status_text(r: &ResolvedAppPrompt) -> String {
     if r.route_hit {
         if let Some(ref app) = r.app_name {
