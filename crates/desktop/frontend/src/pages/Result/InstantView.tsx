@@ -65,7 +65,8 @@ export function InstantView({ state, text }: { state: string; text: string }) {
 
   const typedState = state as InstantState;
   const isListeningTail = typedState === "listening" && !!text;
-  const showText = (typedState === "done" || isListeningTail) ? text : "";
+  // polishing 态：若后端传了 text（路由命中的模板名），显示它；否则用默认 label「润色中…」
+  const showText = (typedState === "done" || isListeningTail || (typedState === "polishing" && !!text)) ? text : "";
 
   return (
     // 720×480 透明区底部居中——容器是 absolute 定位，内部指示卡为可视元素。
