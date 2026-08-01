@@ -319,12 +319,16 @@ pub fn reload_hotwords(words: Vec<String>) {
     }
 }
 
-/// 更新方言模糊规则（`fuzzy_dialect` 配置串）并用当前 active 热词重建索引。
-/// set_config（规则变更后）与启动装载调用。
+/// 从 DB 重新加载方言模糊规则（enabled 的规则）并用当前 active 热词重建索引。
+/// set_config（规则变更后）与启动装载调用。2026-08-01 改无参——规则从 DB 读，不再接收字符串。
 /// **必须重建索引**：`HotwordIndex::from_words` 用 [`crate::hotword::normalize_fuzzy_pinyin`]
 /// 生成索引 key，规则变则 key 变，旧索引与新查询规则不一致会漏命中。用缓存的 `active_words` 原文重建。
-pub fn reload_fuzzy_dialect(dialect: &str) {
-    crate::hotword::set_fuzzy_rules(crate::hotword::parse_dialect(dialect));
+pub fn reload_fuzzy_dialect() {
+    // 从 DB 读 enabled 规则（按 match_type + sort_order 排序），更新全局缓存
+    match crate::db::list_enabled_fuzzy_dialect_rules() {
+        Ok(rules) => crate::hotword::set_fuzzy_rules_cache(rules),
+        Err(e) => log::warn!("[corrector] 读方言规则失败，用空规则: {}", e),
+    }
     // 确保单例已初始化（active_words 存在）；未初始化时 force init 空 words。
     let _ = get_corrector();
     if let Some(c) = CORRECTOR.get() {
@@ -379,6 +383,24 @@ mod tests {
         get_corrector()
     }
 
+    /// 辅助：设置方言规则（直接注入缓存，不经 DB）。调用方须先持 `serial()` guard。
+    /// 传空 slice = 清空所有方言规则（仅基础规则）。
+    fn set_rules(rules: &[(&str, &str, &str, &str)]) {
+        let v: Vec<octopus_infra::db::FuzzyDialectRule> = rules
+            .iter()
+            .map(|(token, from, to, mt)| octopus_infra::db::FuzzyDialectRule {
+                token: token.to_string(),
+                label: token.to_string(),
+                from_py: from.to_string(),
+                to_py: to.to_string(),
+                match_type: mt.to_string(),
+                enabled: true,
+                sort_order: 1,
+            })
+            .collect();
+        crate::hotword::set_fuzzy_rules_cache(v);
+    }
+
     #[test]
     fn test_hotword_homophone_replace() {
         let _g = serial();
@@ -390,9 +412,9 @@ mod tests {
     #[test]
     fn test_hotword_leci_to_reci() {
         // 用户报告：「乐词」应被纠正为「热词」（le-ci → re-ci，l/r 混淆）
-        // 需先开 rl 模糊规则（实际运行时 reload_fuzzy_dialect("r/l") 会设）
+        // 需先开 rl 模糊规则
         let _g = serial();
-        crate::hotword::set_fuzzy_rules(crate::hotword::FuzzyRules { rl: true, ..Default::default() });
+        set_rules(&[("r/l", "r", "l", "initial")]);
         let c = with_hotwords(&["热词"]);
         let result = c.correct("乐词");
         assert_eq!(result, "热词", "乐词应被热词纠正为热词（l/r 混淆）");
@@ -457,7 +479,7 @@ mod tests {
     #[test]
     fn test_dialect_fh_corrects() {
         let _g = serial();
-        reload_fuzzy_dialect("f/h");
+        set_rules(&[("f/h", "f", "h", "initial")]);
         // 复刻用户 e2e：热词「浮窗」，识别成「护窗」(hu) → fh 规则 fu/hu 归一 → 命中替换。
         let c = with_hotwords(&["浮窗"]);
         assert_eq!(c.correct("开护窗"), "开浮窗");
@@ -466,7 +488,7 @@ mod tests {
     #[test]
     fn test_dialect_nl_corrects() {
         let _g = serial();
-        reload_fuzzy_dialect("n/l");
+        set_rules(&[("n/l", "n", "l", "initial")]);
         // 牛总 niu-zong → nl n→l → liu-zong；热词「刘总」liu-zong。命中。
         let c = with_hotwords(&["刘总"]);
         assert_eq!(c.correct("牛总"), "刘总");
@@ -475,7 +497,7 @@ mod tests {
     #[test]
     fn test_dialect_hw_corrects() {
         let _g = serial();
-        reload_fuzzy_dialect("hu/wu");
+        set_rules(&[("hu/wu", "hu", "w", "special_hu")]);
         // 小王 xiao-wang → 基础 wang→wan → xiao-wan；
         // 小黄 xiao-huang → 基础 huang→huan → hw hu→w → xiao-wan。归一相同，命中。
         let c = with_hotwords(&["小黄"]);
@@ -485,7 +507,7 @@ mod tests {
     #[test]
     fn test_dialect_default_off_no_correct() {
         let _g = serial();
-        reload_fuzzy_dialect("");
+        set_rules(&[]); // 无方言规则
         // 默认方言全关：护窗 hu 不归一到 fu，不纠正（防回归）。
         let c = with_hotwords(&["浮窗"]);
         assert_eq!(c.correct("开护窗"), "开护窗");
@@ -494,7 +516,7 @@ mod tests {
     #[test]
     fn test_drain_hits_collects_matches() {
         let _g = serial();
-        reload_fuzzy_dialect("");
+        set_rules(&[]); // 无方言规则
         let _ = drain_hits(); // 清空前序测试残留（pending_hits 跨 correct 累积）
         let c = with_hotwords(&["浮窗"]);
         assert_eq!(c.correct("开福川"), "开浮窗");

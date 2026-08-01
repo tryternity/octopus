@@ -370,6 +370,74 @@ pub(crate) fn list_hotword_hits_at(conn: &Connection) -> Result<std::collections
     Ok(map)
 }
 
+// ── FuzzyDialectRule（方言模糊规则）DB 驱动，2026-08-01 ──────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuzzyDialectRule {
+    pub token: String,
+    pub label: String,
+    pub from_py: String,
+    pub to_py: String,
+    /// 'syllable'(整音节精确) | 'initial'(声母前缀) | 'special_hu'(hu→wu+huX→wX)
+    pub match_type: String,
+    pub enabled: bool,
+    pub sort_order: i64,
+}
+
+fn row_to_fuzzy_rule(row: &rusqlite::Row) -> rusqlite::Result<FuzzyDialectRule> {
+    Ok(FuzzyDialectRule {
+        token: row.get(0)?,
+        label: row.get(1)?,
+        from_py: row.get(2)?,
+        to_py: row.get(3)?,
+        match_type: row.get(4)?,
+        enabled: row.get::<_, i64>(5)? != 0,
+        sort_order: row.get(6)?,
+    })
+}
+
+const FUZZY_RULE_COLS: &str = "token, label, from_py, to_py, match_type, enabled, sort_order";
+
+/// 列出全部方言规则（含未启用），按 match_type + sort_order 排序。
+pub fn list_fuzzy_dialect_rules() -> Result<Vec<FuzzyDialectRule>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FUZZY_RULE_COLS} FROM fuzzy_dialect_rules ORDER BY match_type, sort_order"
+        ))?;
+        let rows = stmt.query_map([], row_to_fuzzy_rule)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// 只列出 enabled=1 的规则（normalize 用），按 match_type + sort_order 排序。
+pub fn list_enabled_fuzzy_dialect_rules() -> Result<Vec<FuzzyDialectRule>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FUZZY_RULE_COLS} FROM fuzzy_dialect_rules WHERE enabled=1 ORDER BY match_type, sort_order"
+        ))?;
+        let rows = stmt.query_map([], row_to_fuzzy_rule)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
+/// 设置单条规则的开关（前端 toggle 用）。
+pub fn set_fuzzy_dialect_rule_enabled(token: &str, enabled: bool) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        let n = conn.execute(
+            "UPDATE fuzzy_dialect_rules SET enabled=?1 WHERE token=?2",
+            params![if enabled { 1 } else { 0 }, token],
+        )?;
+        if n == 0 {
+            anyhow::bail!("方言规则 {} 不存在", token);
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

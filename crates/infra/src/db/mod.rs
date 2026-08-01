@@ -278,38 +278,79 @@ fn init_schema(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    // v54 → v55：数据迁移（无表结构变更）——asr_correct 强制翻 true。
-    // 2026-08-01：热词纠错开关原默认 false，存量用户加了热词却因开关关着不生效。
-    // db.sql seed 已改 true（仅全新库生效），此迁移覆盖存量 v54 库。
-    if v == 54 {
-        conn.execute(
-            "UPDATE app_config SET config_value = 'true' WHERE config_key = 'asr_correct'",
-            [],
-        )
-        .context("迁移 v54→v55：asr_correct 翻 true")?;
-        conn.execute(
-            &format!("PRAGMA user_version = {}", CURRENT_SCHEMA_VERSION),
-            [],
-        )?;
-        log::info!("DB migrated v54→v55: asr_correct 强制翻 true（热词纠错开关，让存量用户热词生效）");
-        return Ok(());
+    // 数据迁移链：v54→v55→v56... 每个 migration 升 1 版本，循环到 CURRENT。
+    // 1 <= v < 54 的旧库 bail（不支持表结构迁移，但纯数据迁移 v54+ 可保留）。
+    let mut cur = v;
+    while cur < CURRENT_SCHEMA_VERSION {
+        match cur {
+            54 => {
+                // v54→v55：asr_correct 强制翻 true（热词纠错开关，存量用户加了热词不生效）
+                conn.execute(
+                    "UPDATE app_config SET config_value = 'true' WHERE config_key = 'asr_correct'",
+                    [],
+                )
+                .context("迁移 v54→v55：asr_correct 翻 true")?;
+                log::info!("DB migrated v54→v55: asr_correct 翻 true");
+            }
+            55 => {
+                // v55→v56：方言规则 DB 化——建 fuzzy_dialect_rules 表 + seed，
+                // 并把旧 app_config.fuzzy_dialect 字符串的开关状态迁移到表的 enabled 字段。
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS fuzzy_dialect_rules (
+                        token TEXT PRIMARY KEY, label TEXT NOT NULL,
+                        from_py TEXT NOT NULL, to_py TEXT NOT NULL,
+                        match_type TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+                        sort_order INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT OR IGNORE INTO fuzzy_dialect_rules (token, label, from_py, to_py, match_type, enabled, sort_order) VALUES
+                        ('fei/hui', 'fei/hui（飞 / 回）', 'fei', 'hui', 'syllable', 0, 1),
+                        ('yun/yong', 'yun/yong（孕 / 用）', 'yun', 'yong', 'syllable', 0, 2),
+                        ('n/l', 'n/l（刘 / 牛）', 'n', 'l', 'initial', 0, 1),
+                        ('f/h', 'f/h（浮 / 护）', 'f', 'h', 'initial', 0, 2),
+                        ('r/l', 'r/l（热 / 乐）', 'r', 'l', 'initial', 0, 3),
+                        ('hu/wu', 'hu/wu（胡 / 吴）', 'hu', 'w', 'special_hu', 0, 1);",
+                )
+                .context("迁移 v55→v56：建 fuzzy_dialect_rules 表 + seed")?;
+                // 旧 fuzzy_dialect 字符串 → 表 enabled 迁移
+                if let Ok(old_dialect) = conn.query_row::<String, _, _>(
+                    "SELECT config_value FROM app_config WHERE config_key='fuzzy_dialect'",
+                    [], |r| r.get(0),
+                ) {
+                    for tok in old_dialect.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+                        let _ = conn.execute(
+                            "UPDATE fuzzy_dialect_rules SET enabled=1 WHERE token=?1",
+                            params![tok],
+                        );
+                    }
+                    log::info!("DB migrated v55→v56: fuzzy_dialect_rules 表建立，旧开关 '{}' 已迁移", old_dialect);
+                } else {
+                    log::info!("DB migrated v55→v56: fuzzy_dialect_rules 表建立（无旧 fuzzy_dialect 配置）");
+                }
+            }
+            _ => {
+                anyhow::bail!(
+                    "DB schema version {} is outdated (current {}). \
+                     This build no longer supports auto-migration. \
+                     Run: rm ~/.octopus/octopus.db* (then restart app to rebuild from db.sql).",
+                    cur, CURRENT_SCHEMA_VERSION
+                );
+            }
+        }
+        cur += 1;
+        conn.execute(&format!("PRAGMA user_version = {}", cur), [])?;
     }
-
-    // 1 <= v < 54：旧版本库，不再支持自动迁移
-    anyhow::bail!(
-        "DB schema version {} is outdated (current {}). \
-         This build no longer supports auto-migration. \
-         Run: rm ~/.octopus/octopus.db* (then restart app to rebuild from db.sql).",
-        v,
-        CURRENT_SCHEMA_VERSION
-    );
+    if v != CURRENT_SCHEMA_VERSION {
+        log::info!("DB migrated v{}→v{}", v, CURRENT_SCHEMA_VERSION);
+    }
+    Ok(())
 }
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 55;
+pub const CURRENT_SCHEMA_VERSION: u32 = 56;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。
