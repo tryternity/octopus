@@ -127,7 +127,17 @@ pub fn init_test_db() {
 /// 1. `TEST_MODE`（[`init_test_db`] 设置）→ in-memory，不碰文件系统
 /// 2. `OCTOPUS_DB_PATH` 环境变量 → 指定路径（`:memory:` 同样 in-memory）
 /// 3. 默认 → `~/.octopus/octopus.db`
+///
+/// **测试覆盖感知**（2026-08-01）：若当前线程已通过 [`set_test_db`] 注入 thread_local
+/// 连接，直接返回 Ok——[`with_db`] 会用 thread_local 连接，不碰全局 DB。这避免了
+/// `ensure_db` 打开真实 `~/.octopus/octopus.db` 破坏测试隔离（如真实 DB 版本不匹配
+/// 触发 init_schema bail）。生产环境 thread_local 恒为 None，此分支不生效。
 pub fn ensure_db() -> Result<()> {
+    // 测试覆盖：当前线程已注入 test DB → with_db 会用它，跳过全局初始化
+    let has_override = TEST_DB_OVERRIDE.with(|cell| cell.borrow().is_some());
+    if has_override {
+        return Ok(());
+    }
     if DB.get().is_some() {
         return Ok(());
     }
