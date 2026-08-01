@@ -569,8 +569,8 @@ settings:
     cancel: Cancel
     newBtn: New
     builtin: Built-in
-    activeBadge: Active
     activate: Activate
+    currentActive: Current
     view: View
     edit: Edit
     delete: Delete

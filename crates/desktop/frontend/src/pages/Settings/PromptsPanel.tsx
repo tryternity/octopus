@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Plus, Pencil, Check, Trash2, FileText, Route } from "lucide-react";
+import { Plus, Pencil, Check, Trash2, FileText, Route, CheckCircle2 } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -215,6 +215,18 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
           <Plus /> {t("settings.prompts.newBtn")}
         </Button>
       </div>
+      {/* 当前激活模板提示（对齐模型管理的 CurrentBanner） */}
+      {(() => {
+        const active = prompts.find((p) => p.id === activeId);
+        if (!active) return null;
+        return (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-success bg-success/10 text-[11px] mb-2">
+            <CheckCircle2 className="w-3 h-3 text-success shrink-0" />
+            <span className="text-muted-foreground">{t("settings.prompts.currentActive")}</span>
+            <span className="font-medium text-foreground">{active.title}</span>
+          </div>
+        );
+      })()}
       {prompts.map((p) => {
         const isActive = activeId === p.id;
         return (
@@ -228,7 +240,6 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
             <div className="flex items-center gap-2 mb-1">
               <span className="text-sm font-medium">{p.title}</span>
               {p.isSystem && <Badge>{t("settings.prompts.builtin")}</Badge>}
-              {isActive && <Badge variant="voice">{t("settings.prompts.activeBadge")}</Badge>}
             </div>
             {p.description && <div className="text-xs text-muted-foreground/70 mb-1">{p.description}</div>}
             {/* 文件名引用展示 */}
@@ -256,8 +267,13 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
               </div>
             )}
             <div className="flex gap-1.5 mt-2">
-              {!isActive && (
-                <Button variant="ghost" size="sm" onClick={() => activate(p.id)}>
+              {/* 激活态对齐模型管理：当前激活→绿色「已激活」灰禁；其余→绿色「激活」可点 */}
+              {isActive ? (
+                <Button variant="success" size="sm" disabled className="cursor-default">
+                  <Check /> {t("settings.prompts.activated")}
+                </Button>
+              ) : (
+                <Button variant="success" size="sm" onClick={() => activate(p.id)}>
                   <Check /> {t("settings.prompts.activate")}
                 </Button>
               )}

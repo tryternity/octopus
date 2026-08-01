@@ -575,8 +575,8 @@ settings:
     cancel: 取消
     newBtn: 新建
     builtin: 内置
-    activeBadge: 激活中
     activate: 激活
+    currentActive: 当前使用
     view: 查看
     edit: 编辑
     delete: 删除
