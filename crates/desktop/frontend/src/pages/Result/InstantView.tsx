@@ -53,9 +53,10 @@ const STATE_LABEL: Record<InstantState, string> = {
 };
 
 /// listening 态显示尾部最新内容——用户说话时能看到最新说的词。
-/// 卡片单行可见约 24 个中文字符（400px − 图标 − padding ≈ 340px，14px 字体），取 28 留 buffer。
-/// 超长文本截尾部子串展示（让最新内容可见，而非开头截断尾部省略）。
-const LISTENING_TAIL_CHARS = 28;
+/// 尾部最新内容完整展示（不省略），前面累积的旧内容若超出卡片宽度则开头省略号（…）。
+/// 实现用 CSS `direction: rtl`——`truncate`（text-overflow:ellipsis）的省略号出现在左侧，
+/// 中文字符顺序不受影响（仅块方向变 RTL，强 LTR 的中文字符内部顺序不变）。
+/// done 态保持默认 LTR + truncate（开头完整，尾部省略——终态完整度优先）。
 
 export function InstantView({ state, text }: { state: string; text: string }) {
   // 初始无状态（窗口刚 show 但首帧事件未到）→ 不渲染可见内容，
@@ -63,11 +64,8 @@ export function InstantView({ state, text }: { state: string; text: string }) {
   if (!state) return null;
 
   const typedState = state as InstantState;
-  const showText = typedState === "done"
-    ? text
-    : (text && typedState === "listening"
-      ? (text.length > LISTENING_TAIL_CHARS ? text.slice(-LISTENING_TAIL_CHARS) : text)
-      : "");
+  const isListeningTail = typedState === "listening" && !!text;
+  const showText = (typedState === "done" || isListeningTail) ? text : "";
 
   return (
     // 720×480 透明区底部居中——容器是 absolute 定位，内部指示卡为可视元素。
@@ -97,10 +95,15 @@ export function InstantView({ state, text }: { state: string; text: string }) {
         <div className="flex-1 min-w-0 flex items-center">
           {showText ? (
             <span
+              // listening 态 dir=rtl：truncate 的省略号出现在左侧（开头），尾部最新内容完整展示。
+              // done 态保持默认 LTR：省略号在右侧（尾部），开头完整（终态完整度优先）。
+              // 文本用 FSI/PDI（\u2068..\u2069）隔离——根据首字符方向自动选定段落方向，
+              // 避免 RTL 容器把英文/数字尾巴顺序颠倒（中文首字符→隔离为 LTR，内部顺序不变）。
+              dir={isListeningTail ? "rtl" : "ltr"}
               className="text-[14px] font-medium leading-tight text-foreground truncate"
               title={showText}
             >
-              {showText}
+              {isListeningTail ? `\u2068${showText}\u2069` : showText}
             </span>
           ) : (
             <span

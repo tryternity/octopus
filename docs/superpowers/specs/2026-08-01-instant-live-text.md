@@ -43,22 +43,22 @@ InstantView 本身已支持 listening 态显示 text（`InstantView.tsx:61-63`�
 
 toggle 模式不写 `instantText`——InstantView 被 `display:none` 隐藏，无需更新。
 
-### 3.2 InstantView 显示尾部最新内容
+### 3.2 InstantView 尾部完整 + 开头省略
 
-`InstantView.tsx` 的 `showText` 在 listening 态取尾部最新内容：
+`InstantView.tsx` listening 态用 CSS `direction: rtl` 让 `truncate`（`text-overflow:ellipsis`）的省略号出现在**左侧**（开头），**尾部最新内容完整展示**（不在尾部省略）。done 态保持默认 LTR（省略号在右侧尾部，开头完整——终态完整度优先）。
 
 ```tsx
-const LISTENING_TAIL_CHARS = 28;
-const showText = typedState === "done"
-  ? text
-  : (text && typedState === "listening"
-    ? (text.length > LISTENING_TAIL_CHARS ? text.slice(-LISTENING_TAIL_CHARS) : text)
-    : "");
+const isListeningTail = typedState === "listening" && !!text;
+const showText = (typedState === "done" || isListeningTail) ? text : "";
+// 渲染：
+<span dir={isListeningTail ? "rtl" : "ltr"} className="... truncate">
+  {isListeningTail ? `\u2068${showText}\u2069` : showText}
+</span>
 ```
 
-理由：InstantView 是底部小卡片（400px 宽，单行 `truncate`），完整 partial 是流式累积全文（可能很长）。用户说话时关心**最新说的词**（尾部），而非开头。截尾部 28 字符（卡片可见宽度 ≈ 340px − 图标 − padding，14px 中文字体 ≈ 24 字，取 28 留 buffer）。
+理由：用户说话时关心**最新说的内容**（尾部），应完整可见；前面累积的旧内容若超出卡片宽度则开头省略（…）。`direction: rtl` 让浏览器按可见宽度自动在左侧截断（不依赖固定字符数），比 `slice(-N)` 更准确（不会截到最新一句话的中间）。
 
-done 态保持完整文本（短暂停留展示最终结果，配 `truncate` 开头截断即可——done 是终态，完整度优先）。
+**双向文本隔离**：文本用 FSI/PDI（`\u2068`/`\u2069`）包裹——根据首字符方向自动选定段落方向，避免 RTL 容器把英文/数字尾巴顺序颠倒（ASR 中文转录首字符必为中文 → 隔离为 LTR，内部字符顺序不变）。
 
 ## 4. 不在本次范围
 
@@ -71,6 +71,6 @@ done 态保持完整文本（短暂停留展示最终结果，配 `truncate` 开
 |---|---|
 | `crates/desktop/frontend/src/pages/Result/index.tsx` `recordModeRef` | 避免 update-result handler 闭包陷阱 |
 | `crates/desktop/frontend/src/pages/Result/index.tsx` `update-result` handler | instant 模式路由 partial 到 instantText |
-| `crates/desktop/frontend/src/pages/Result/InstantView.tsx` `showText` + `LISTENING_TAIL_CHARS` | listening 态尾部最新内容显示 |
+| `crates/desktop/frontend/src/pages/Result/InstantView.tsx` `showText` + `dir=rtl` + FSI 隔离 | listening 态尾部完整 + 开头省略 |
 | `crates/desktop/src/ui/result_window.rs::update_result` | 后端 emit `update-result`（不分模式，已存在） |
 | `crates/desktop/src/engine/coordinator/tick.rs:148` | 流式 tick 调 update_result（已存在） |
