@@ -13,7 +13,7 @@ PR 0801 热词页 UI 重构过程中的功能增强。事后补录 spec + plan�
 ### Task 1：单词典容量限制 3000 词 ✅
 
 - [x] `HOTWORD_SET_MAX_WORDS = 3000` 常量 + `ensure_within_capacity` 校验函数
-- [x] 三写入口加校验：`set_hotword_set_words` / `add_word_to_set_at` / `add_words_to_set`
+- [x] 三写入口加校验：`set_words_in_set`（v57 前为 `set_hotword_set_words`）/ `add_word_to_set_at` / `add_words_to_set`
 - [x] TDD 3 测试（边界 3000 通过 / 批量超限被拒不部分写入 / 单词满后再加被拒）
 - commit `93c377df`
 

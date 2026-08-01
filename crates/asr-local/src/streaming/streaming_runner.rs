@@ -530,7 +530,10 @@ mod tests {
 
     /// 装载热词到全局 corrector（调用方须先持 serial() guard）。
     fn load_hotwords(words: &[&str]) {
-        let v: Vec<String> = words.iter().map(|s| s.to_string()).collect();
+        let v: Vec<(String, String, i64)> = words
+            .iter()
+            .map(|s| (s.to_string(), crate::hotword::word_raw_pinyin(s), 0))
+            .collect();
         crate::corrector::reload_hotwords(v);
     }
 

@@ -110,9 +110,7 @@ impl<'a> AppSetup<'a> {
         // 启动时装载 active 热词到 corrector（force init + reload 索引）。
         // 之后所有引擎纠错自动用上热词（候选有界，空热词即 no-op 零过纠）。
         match octopus_asr_local::db::list_active_words() {
-            Ok(words) => octopus_asr_local::corrector::reload_hotwords(
-                words.iter().map(|(w, _)| w.clone()).collect(),
-            ),
+            Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
             Err(e) => log::warn!("[hotword] 启动装载失败，纠错以空热词运行: {}", e),
         }
 
@@ -201,6 +199,34 @@ impl<'a> AppSetup<'a> {
                                 },
                             );
                         }
+                    }
+                });
+            }));
+            // bigram 上下文索引（2026-08-01）：扫历史 voice 文本建字级 bigram 频次表，
+            // 供 corrector 多命中排序的上下文打分。CPU 空闲时跑，interval 600s（= tick 每轮跑）。
+            // reload_bigrams 内部调 DB + 建索引（几十 ms 级），不需子线程。
+            scheduler.register_task("bigram_index", 600, Box::new(|| {
+                octopus_asr_local::corrector::reload_bigrams();
+            }));
+            // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +
+            // export 重建清 .sync。跨设备自洽——merge 按年龄过滤防复活。详见
+            // docs/superpowers/specs/2026-08-02-hotword-tombstone-gc.md。
+            scheduler.register_task("hotword_tombstone_gc", 86400, Box::new(|| {
+                std::thread::spawn(|| {
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    match octopus_infra::db::purge_expired_hotword_tombstones(now_secs) {
+                        Ok(n) if n > 0 => {
+                            log::info!("[hotword-gc] purged {} expired tombstones, rebuilding .sync", n);
+                            // 清 .sync：export 不含超期 tombstone（is_tombstone_expired 过滤）
+                            if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+                                log::warn!("[hotword-gc] export 重建失败（不阻断 GC）：{}", e);
+                            }
+                        }
+                        Ok(_) => {} // 无超期 tombstone，no-op
+                        Err(e) => log::warn!("[hotword-gc] purge 失败：{}", e),
                     }
                 });
             }));

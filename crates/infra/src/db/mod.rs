@@ -389,6 +389,31 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     log::info!("DB migrated v56→v57: hotword_words 表建立（无 words_text 列，跳过迁移）");
                 }
             }
+            57 => {
+                // v57→v58：hotword_sets 加 set 级软删——is_deleted 存删除时刻 epoch 秒
+                // （0=活跃，>0=删除时刻）+ UNIQUE(name, is_deleted) 复合约束。
+                // SQLite 不支持 ALTER TABLE 改约束（name 单列 UNIQUE → name+is_deleted 复合），
+                // 用建表复制法：建新表（含 is_deleted + 复合 UNIQUE）→ 复制数据 → DROP 旧 → RENAME。
+                // 现有行 is_deleted=0（活跃），复制时显式填 0。
+                conn.execute_batch(
+                    "CREATE TABLE hotword_sets_new (
+                        id          TEXT    PRIMARY KEY,
+                        name        TEXT    NOT NULL,
+                        enabled     INTEGER NOT NULL DEFAULT 1,
+                        sync_md5    TEXT,
+                        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                        updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                        is_deleted  INTEGER NOT NULL DEFAULT 0,
+                        UNIQUE(name, is_deleted)
+                    );
+                    INSERT INTO hotword_sets_new (id, name, enabled, sync_md5, created_at, updated_at, is_deleted)
+                    SELECT id, name, enabled, sync_md5, created_at, updated_at, 0 FROM hotword_sets;
+                    DROP TABLE hotword_sets;
+                    ALTER TABLE hotword_sets_new RENAME TO hotword_sets;",
+                )
+                .context("迁移 v57→v58：hotword_sets 加 is_deleted + UNIQUE(name,is_deleted)")?;
+                log::info!("DB migrated v57→v58: hotword_sets 加 set 级软删（is_deleted 时间戳 + 复合 UNIQUE）");
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -409,11 +434,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 /// 当前 schema 版本——db.sql 建出的库就是这个版本。
 /// 升 schema 时：改 db.sql + 改这个常量 + 改 db.sql 顶部注释。
+/// v58（2026-08-02）：hotword_sets 加 set 级软删——is_deleted 存删除时刻 epoch 秒 + UNIQUE(name,is_deleted) 复合约束（建表复制法迁移）。
 /// v57（2026-08-01）：热词拆分单记录——hotword_words 表（每词一条，确定性 UUID v5 + 原始拼音 + 软删）+ hotword_sets DROP words_text 列。
 /// v56（2026-08-01）：方言规则 DB 化——fuzzy_dialect_rules 表 + 旧 fuzzy_dialect 开关迁移。
 /// v55（2026-08-01）：数据迁移——asr_correct 强制翻 true（让存量用户热词生效，无表结构变更）。
 /// v54（2026-07-30）：image_data 表移除 blob + image_type 列（原图改文件系统存储）。
-pub const CURRENT_SCHEMA_VERSION: u32 = 57;
+pub const CURRENT_SCHEMA_VERSION: u32 = 58;
 
 /// v28 迁移：为所有 source_type IN (0,1)（builtin+local）且 secret_key 为空的模型填充 manifest JSON。
 /// 按 domain 分发到 model_manifests 常量。

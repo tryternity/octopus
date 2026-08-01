@@ -93,14 +93,26 @@ pub fn char_fuzzy_pinyin(c: char) -> Option<String> {
     c.to_pinyin().map(|p| normalize_fuzzy_pinyin(p.plain()))
 }
 
+/// 单字 → 原始拼音（不经归一化）；非汉字返回 None。测试 + DB 写入用。
+pub fn char_raw_pinyin(c: char) -> Option<String> {
+    c.to_pinyin().map(|p| p.plain().to_string())
+}
+
+/// 词 → 原始拼音空格分隔（每字 char_raw_pinyin，非汉字跳过）。
+/// 与 infra `word_plain_pinyins` 等价（asr-local 测试用，避免跨 crate 依赖）。
+pub fn word_raw_pinyin(word: &str) -> String {
+    word.chars().filter_map(char_raw_pinyin).collect::<Vec<_>>().join(" ")
+}
+
 /// 词 → 拼音首字母串（大写，非汉字跳过）。实现搬至 `octopus_infra::hotword_text`
 /// （infra 为底层，db.rs 迁移/写 words_text 需复用，避免循环依赖）。
 pub use octopus_infra::hotword_text::pinyin_initials;
 
 /// 热词的内存索引：按「字数 → 归一化拼音 → 候选词列表」分组。
 /// 纠错热路径按窗口字数与拼音 O(1) 查表。
+/// 候选词携带 hit_count（correct 多命中时按 hit_count 降序排序，确定性）。
 pub struct HotwordIndex {
-    by_len_py: HashMap<usize, HashMap<String, Vec<String>>>,
+    by_len_py: HashMap<usize, HashMap<String, Vec<(String, i64)>>>,
     active_words: HashSet<String>,
 }
 
@@ -109,19 +121,25 @@ impl HotwordIndex {
         Self { by_len_py: HashMap::new(), active_words: HashSet::new() }
     }
 
-    /// words 为 active 热词文本列表（来自 DB list_active_hotword_words）。
+    /// entries = [(word, raw_pinyin, hit_count)]，raw_pinyin 是 DB 存的原始拼音
+    /// （空格分隔 "ba zhao yu"，不经归一化）。from_words 跳过 to_pinyin 现算，
+    /// 只做 normalize_fuzzy_pinyin 生成 key（方言规则运行时生效）。
     /// 单字热词忽略（歧义太大）；含非汉字的热词忽略（拼音数 ≠ 字数）。
-    pub fn from_words(words: &[String]) -> Self {
-        let mut by_len_py: HashMap<usize, HashMap<String, Vec<String>>> = HashMap::new();
+    pub fn from_words(entries: &[(String, String, i64)]) -> Self {
+        let mut by_len_py: HashMap<usize, HashMap<String, Vec<(String, i64)>>> = HashMap::new();
         let mut active_words = HashSet::new();
-        for w in words {
+        for (w, raw_pinyin, hit_count) in entries {
             let chars: Vec<char> = w.chars().collect();
             let len = chars.len();
             if len < 2 { continue; }
-            let py: Vec<String> = chars.iter().filter_map(|&c| char_fuzzy_pinyin(c)).collect();
+            // DB 原始拼音 split → 逐字 normalize_fuzzy_pinyin（跳过 to_pinyin 查表）
+            let py: Vec<String> = raw_pinyin
+                .split_whitespace()
+                .map(|p| normalize_fuzzy_pinyin(p))
+                .collect();
             if py.len() != len { continue; } // 含非汉字 → 跳过
             let key = py.join("-");
-            by_len_py.entry(len).or_default().entry(key).or_default().push(w.clone());
+            by_len_py.entry(len).or_default().entry(key).or_default().push((w.clone(), *hit_count));
             active_words.insert(w.clone());
         }
         Self { by_len_py, active_words }
@@ -131,7 +149,7 @@ impl HotwordIndex {
 
     pub fn max_len(&self) -> usize { *self.by_len_py.keys().max().unwrap_or(&0) }
 
-    pub fn lookup(&self, len: usize, py: &str) -> Option<&Vec<String>> {
+    pub fn lookup(&self, len: usize, py: &str) -> Option<&Vec<(String, i64)>> {
         self.by_len_py.get(&len)?.get(py)
     }
 }
@@ -169,9 +187,9 @@ mod tests {
     #[test]
     fn groups_by_length_and_pinyin() {
         let idx = HotwordIndex::from_words(&[
-            "八爪鱼".to_string(),   // 八(ba) 爪(zhao→zao) 鱼(yu) → "ba-zao-yu", len 3
-            "巴掌鱼".to_string(),   // 巴(ba) 掌(zhang→zan) 鱼(yu) → "ba-zan-yu", len 3
-            "吴大锐".to_string(),   // 吴(wu) 大(da) 锐(rui) → "wu-da-rui", len 3
+            ("八爪鱼".to_string(), word_raw_pinyin("八爪鱼"), 0),   // → "ba-zao-yu", len 3
+            ("巴掌鱼".to_string(), word_raw_pinyin("巴掌鱼"), 0),   // → "ba-zan-yu", len 3
+            ("吴大锐".to_string(), word_raw_pinyin("吴大锐"), 0),   // → "wu-da-rui", len 3
         ]);
         assert!(!idx.is_empty());
         assert_eq!(idx.max_len(), 3);
@@ -282,7 +300,7 @@ mod tests {
         assert_eq!(norm("yun", &rules), "yong");
         assert_eq!(norm("fu", &rules), "hu");
         // 整词等价：「孕妇」yong-hu = 「用户」yong-hu（HotwordIndex 用全局缓存归一）
-        let idx = HotwordIndex::from_words(&["用户".to_string()]);
+        let idx = HotwordIndex::from_words(&[("用户".to_string(), word_raw_pinyin("用户"), 0)]);
         let query_py = [norm("yun", &rules), norm("fu", &rules)].join("-");
         assert_eq!(query_py, "yong-hu");
         assert!(idx.lookup(2, &query_py).is_some(), "孕妇归一后应命中用户");

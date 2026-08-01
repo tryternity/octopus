@@ -49,6 +49,47 @@ pub fn normalize_words_text(words: &str) -> String {
     keyed.into_iter().map(|(_, w)| w).collect::<Vec<_>>().join(" ")
 }
 
+// ── 热词词记录 sync md5 指纹（2026-08-01 word 级 merge）─────────────────────────
+
+/// 词记录 sync md5（hex 32 字符）——长度前缀分隔防 `|` 碰撞。
+///
+/// 拼接格式：`{set_id_len}|{set_id}|{word_len}|{word}|{pinyin_len}|{pinyin}|{is_deleted}`
+///
+/// **不含 created_at/updated_at**（时间戳跨设备必然不同，否则同词不同写入时刻 md5 永不等，
+/// sync 永远冲突）。词文本含任意 Unicode（含 `|`），故用长度前缀分隔——单纯用 `|` 分隔时，
+/// `{a}|{b}` 与 `{a|b}|{}` 会产生相同拼接，碰撞。长度前缀让解析无歧义。
+///
+/// 此函数放在 infra（无项目内依赖的底层 crate），sync crate 与 db crate 都调它，
+/// 避免在 sync（db 不依赖 sync）和 db（无 md5 实现）两处重复实现指纹逻辑。
+///
+/// `is_deleted` 统一为 i64 epoch 秒（0=活跃，>0=删除时刻）——参与 md5 输入，软删后值变化触发 diff。
+pub fn hotword_word_md5_from_fields(
+    set_id: &str,
+    word: &str,
+    pinyin: &str,
+    is_deleted: i64,
+) -> String {
+    let input = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        set_id.len(),
+        set_id,
+        word.len(),
+        word,
+        pinyin.len(),
+        pinyin,
+        is_deleted
+    );
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    let mut s = String::with_capacity(32);
+    for b in result.iter() {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

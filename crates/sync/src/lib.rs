@@ -10,7 +10,7 @@
 //!   hash 工具 / `iso_to_unix_ms` 时间转换
 //! - **vault crate 提供**：vault 业务数据文件格式（MetaFile / CipherFile / FolderFile）
 //!   + cipher/folder 的 md5 指纹 + vault sync engine
-//! - **hotword 模块（本 crate）**：热词同步（md5 指纹 + HotwordSetFile + engine）
+//! - **hotword 模块（本 crate）**：热词同步（两级 outline + HotwordSetMeta / HotwordWordFile + engine）
 //!
 //! ## 跨 crate 依赖方向
 //!

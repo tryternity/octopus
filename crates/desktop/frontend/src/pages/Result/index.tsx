@@ -246,6 +246,12 @@ function Result() {
             selection: null,
           });
         }],
+        // flush-edit：后端停止录音/润色前强制 commit 编辑器内容（防抖未提交的编辑）。
+        // 前端 commit（清防抖 timer + 提交）后回传 edit_flushed 通知后端继续。
+        ["flush-edit", (flushId) => {
+          asrEditorRef.current?.commit();
+          void invoke("edit_flushed", { flushId: flushId as number });
+        }],
         // record-mode：切 AsrWindow 视图（toggle 编辑器 ↔ instant 指示卡）。payload 是纯字符串。
         ["record-mode", (p) => {
           const mode = p as string;

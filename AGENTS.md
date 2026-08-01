@@ -336,13 +336,13 @@ docs/
 
 ```
 ~/.octopus/
-├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets 等表，schema v55）
+├── octopus.db          # SQLite（唯一存储：models/app_config/clipboard_history/vault_*/hotword_sets/hotword_words 等表，schema v58）
 ├── config.yaml         # 应用配置（缺失用默认值）
 ├── VOICE_POLISH.md     # 自定义润色 prompt（可选，覆盖内置默认）
 ├── .sync/              # git 同步仓库根（GitHub/Gitee private repo 的本地 clone）
 │   ├── .git/
 │   ├── vault/          # vault 数据（加密）：meta.json + outline.json + ciphers/<2hex>/<uuid>.json + folders/
-│   └── hotword/        # 热词数据（明文）：outline.json + sets/<2hex>/<uuid>.json
+│   └── hotword/        # 热词数据（明文，两级 outline）：outline.json（总，词典）+ <set-uuid>/{meta.json, outline.json（词）, <2hex>/<word-uuid>.json}
 └── models/
     ├── vad.onnx             # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌的 silero_vad_v4；不存在用 include_bytes! 内嵌加载）
     └── zipformer/           # 默认 ASR（兜底引擎 zipformer-small，27M，source_type=0 builtin，首次启动下载，Step 3 已实现）

@@ -111,10 +111,10 @@ TDD 先写 4 个 merge 测试（`crates/sync/src/hotword.rs`）：
 
 ## 5. 已知问题（不在本次修复）
 
-- [ ] **热词软删 tombstone（跨设备删除复活）**：`delete_hotword_set` 是硬删（`DELETE FROM`，无 `deleted_at` 列）。A 删集 → push 删文件 → B merge 不删 DB → B push 又写回 → A merge 复活。vault 已用 `is_deleted` 软删（commit `7c52ffc3`），热词仍是硬删。修这个需要 schema 升级（加 `deleted_at` 字段）+ merge 同步 tombstone，影响面更大，留作后续。**注**：本次 merge 模型不改变删除传播行为——`merge_hotwords` 阶段 2「DB 有 + outline 无 → push」会在 B 机把 A 删的集又 push 回去（与旧 pull/push 行为一致）。彻底修复需软删。
+- [x] **热词 set 级删除复活（跨设备）**：~~`delete_hotword_set` 是硬删（`DELETE FROM hotword_sets + hotword_words`，无 set 级 `is_deleted`）。A 删集 → push 删文件 → B merge 不删 DB → B push 又写回 → A merge 复活。~~ **已解决**（2026-08-02，schema v58，[spec](2026-08-02-hotword-set-soft-delete.md)）：set 级 `is_deleted` 存删除时刻 epoch 秒（0=活跃，>0=删除时刻）+ `UNIQUE(name, is_deleted)` 复合约束，tombstone 经 merge 传播。`merge_set_soft_delete_propagates` 测试覆盖。**注**：词级软删（`hotword_words.is_deleted`）早已解决（commit `96560238`）。
 - [ ] **多设备同时改 last-write-wins**：用户已确认可接受，不做冲突合并。
 
-## 6. 代码位置速查（2026-08-01 状态）
+## 6. 代码位置速查（2026-08-01 状态；set 级软删 tombstone 见 [2026-08-02 spec](2026-08-02-hotword-set-soft-delete.md)）
 
 | 位置 | 作用 |
 |---|---|
@@ -124,3 +124,5 @@ TDD 先写 4 个 merge 测试（`crates/sync/src/hotword.rs`）：
 | `crates/sync/src/hotword.rs::push_hotwords_to_files` | push（NoUpstream + enable_sync 用） |
 | `crates/vault/src/sync/engine.rs::sync_now` | 调用 merge_hotwords（line ~745） |
 | `crates/vault/src/sync/engine.rs::merge_vault` | vault merge（对称参考，line ~1021） |
+| `crates/infra/src/db/hotword.rs::delete_hotword_set` | set 级软删（v58，is_deleted=时间戳） |
+| `crates/infra/src/db/hotword.rs::list_all_hotword_sets` | 含 tombstone（sync export 用，v58 新增） |

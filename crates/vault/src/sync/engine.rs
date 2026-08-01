@@ -206,13 +206,9 @@ fn push_initial() -> Result<(), SyncError> {
     store::export_all_to_files(&meta, &ciphers, &folders)?;
 
     // 2.5 热词全量导出（v46：push_initial 同时导出 vault + hotword）
-    match octopus_infra::db::list_hotword_sets() {
-        Ok(hotword_sets) => {
-            if let Err(e) = octopus_sync::hotword::export_all_hotwords(&hotword_sets) {
-                log::warn!("[sync] 热词初始导出失败（不阻断 vault）：{}", e);
-            }
-        }
-        Err(e) => log::warn!("[sync] 读热词列表失败（跳过热词初始导出）：{}", e),
+    // export_all_hotwords 无参——内部自己读 DB（list_hotword_sets + list_all_hotword_words）。
+    if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+        log::warn!("[sync] 热词初始导出失败（不阻断 vault）：{}", e);
     }
 
     // 3. git init + commit（在 .sync/ 根——git 自动跟踪 vault/ + hotword/ 子目录）
@@ -1595,8 +1591,9 @@ mod tests {
         // IntegrationGuard 的 set_test_db 已建默认「通用」热词 seed——再加一个版本
         octopus_infra::db::insert_hotword_set("test-uuid-hotword-a", "测试版本A")
             .expect("insert hotword set");
-        octopus_infra::db::set_hotword_set_words("test-uuid-hotword-a", "苹果 香蕉")
-            .expect("set words");
+        let words: Vec<String> = "苹果 香蕉".split_whitespace().map(|s| s.to_string()).collect();
+        octopus_infra::db::add_words_to_set("test-uuid-hotword-a", &words)
+            .expect("add words");
 
         enable_sync().expect("enable_sync");
 
@@ -1609,24 +1606,24 @@ mod tests {
             "enable_sync 后应生成 .sync/hotword/outline.json"
         );
 
-        // outline 应含 2 个 entry（默认「通用」+ 测试版本A）
+        // 总 outline 应含至少 2 个词典 entry（默认「通用」+ 测试版本A）
         let outline = octopus_sync::hotword::read_hotword_outline().expect("read outline");
         assert!(
-            outline.ciphers.len() >= 2,
-            "hotword outline 应含至少 2 个版本（通用 + 测试A），实际 {}",
-            outline.ciphers.len()
+            outline.sets.len() >= 2,
+            "hotword outline 应含至少 2 个词典（通用 + 测试A），实际 {}",
+            outline.sets.len()
         );
         assert!(
-            outline.ciphers.contains_key("test-uuid-hotword-a"),
+            outline.sets.contains_key("test-uuid-hotword-a"),
             "hotword outline 应含测试版本A"
         );
 
-        // sets/ 下应有版本文件（分桶）
+        // 词典 meta.json 应存在（两级结构：<set-id>/meta.json）
         let set_file =
-            octopus_sync::hotword::hotword_set_file_path("test-uuid-hotword-a");
+            octopus_sync::hotword::hotword_meta_file_path("test-uuid-hotword-a").expect("meta path");
         assert!(
             set_file.exists(),
-            "热词版本文件应存在：{}",
+            "热词词典 meta.json 应存在：{}",
             set_file.display()
         );
         let _ = g;
@@ -1649,20 +1646,20 @@ mod tests {
         // 新增热词版本（DB 层）
         octopus_infra::db::insert_hotword_set("test-uuid-push-1", "推送测试")
             .expect("insert");
-        octopus_infra::db::set_hotword_set_words("test-uuid-push-1", "葡萄")
-            .expect("set words");
+        octopus_infra::db::add_words_to_set("test-uuid-push-1", &["葡萄".to_string()])
+            .expect("add words");
 
         // 调 push——应把新版本写入文件
         let pushed = octopus_sync::hotword::push_hotwords_to_files().expect("push");
         assert!(pushed > 0, "新增版本应有变更写入");
 
-        // 文件应存在
-        let set_file = octopus_sync::hotword::hotword_set_file_path("test-uuid-push-1");
-        assert!(set_file.exists(), "push 后版本文件应存在");
+        // meta.json 应存在
+        let set_file = octopus_sync::hotword::hotword_meta_file_path("test-uuid-push-1").expect("meta path");
+        assert!(set_file.exists(), "push 后词典 meta.json 应存在");
 
-        // outline 应含新版本
+        // 总 outline 应含新版本
         let outline = octopus_sync::hotword::read_hotword_outline().expect("outline");
-        assert!(outline.ciphers.contains_key("test-uuid-push-1"));
+        assert!(outline.sets.contains_key("test-uuid-push-1"));
         let _ = g;
     }
 
@@ -1682,12 +1679,11 @@ mod tests {
             .expect("insert 1");
         octopus_infra::db::insert_hotword_set("test-uuid-pull-2", "拉取测试2")
             .expect("insert 2");
-        let sets = octopus_infra::db::list_hotword_sets().expect("list");
-        octopus_sync::hotword::export_all_hotwords(&sets).expect("export");
+        octopus_sync::hotword::export_all_hotwords().expect("export");
 
         // 清空 DB 热词（模拟 B 机 clone 前 DB 无热词）
         for h in octopus_infra::db::list_hotword_sets().expect("list") {
-            let _ = octopus_infra::db::delete_hotword_set(&h.id);
+            let _ = octopus_infra::db::hard_delete_hotword_set(&h.id);
         }
         assert!(
             octopus_infra::db::list_hotword_sets().unwrap().is_empty(),

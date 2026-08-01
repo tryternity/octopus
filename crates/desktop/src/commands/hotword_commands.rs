@@ -9,32 +9,23 @@ use crate::core::error_util::e2s;
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
 fn reload_after_write() {
     match db::list_active_words() {
-        Ok(words) => octopus_asr_local::corrector::reload_hotwords(
-            words.iter().map(|(w, _)| w.clone()).collect(),
-        ),
+        Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
         Err(e) => log::warn!("[hotword] reload 失败: {}", e),
     }
 }
 
-/// 写操作后回填 sync_md5——读完整 row + 词列表算 md5 再 update。
+/// 写操作后回填 set 的 sync_md5——只算元数据指纹（name|enabled）。
 ///
-/// v57：set md5 = 元数据指纹（name|enabled）+ 词数据指纹（该 set 的活跃词列表）。
-/// 加词/删词改变词列表 → 词指纹变 → set sync_md5 变 → sync 检测到变化。
-/// （word 级 merge 尚未实现，词变更暂经 set 级 sync 传播——set 文件含元数据，
-/// sync 检测到 md5 变化后 push 整个 set + 对端 pull 覆盖元数据；词数据本身的对端
-/// 合并待后续 word 级 merge。）
+/// v57（2026-08-01 word 级 merge 后）：set sync_md5 = 纯元数据指纹。词变更不再
+/// 改 set 的 sync_md5——每条 word 记录有自己的 sync_md5（DB 层写入时填，见
+/// `add_word_to_set_at`），word 级 merge 据此 diff。set 的 sync_md5 只反映 name/enabled
+/// 变化（rename / toggle）。
 ///
 /// 失败仅告警，不阻断写操作（sync 时会检测到 NULL 重算）。
 fn refill_sync_md5(id: &str) {
     match db::get_hotword_set(id) {
         Ok(h) => {
-            let set_md5 = octopus_sync::hotword::hotword_set_md5(&h);
-            // 词指纹：该 set 的活跃词文本（按 word 排序，跨设备一致）
-            let words_fingerprint = db::list_words_in_set(id)
-                .map(|ws| ws.iter().map(|w| w.word.as_str()).collect::<Vec<_>>().join("\n"))
-                .unwrap_or_default();
-            let combined = format!("{}|{}", set_md5, octopus_sync::store::md5_hex(words_fingerprint.as_bytes()));
-            let md5 = octopus_sync::store::md5_hex(combined.as_bytes());
+            let md5 = octopus_sync::hotword::hotword_set_md5(&h);
             if let Err(e) = db::update_hotword_set_sync_md5(id, &md5) {
                 log::warn!("[hotword] 回填 sync_md5 失败 {}: {}", id, e);
             }
@@ -116,6 +107,28 @@ pub fn delete_hotword_set(id: String) -> Result<(), String> {
     db::delete_hotword_set(&id).map_err(e2s)?;
     reload_after_write();
     Ok(())
+}
+
+// ── 回收站 GC（2026-08-02）──
+
+/// 统计回收站 tombstone 数（前端按钮「回收站 (N)」用）。
+#[tauri::command]
+pub fn count_hotword_tombstones() -> Result<i64, String> {
+    db::count_hotword_tombstones().map_err(e2s)
+}
+
+/// 清空回收站——硬删所有 set tombstone + 其词 + 所有 word tombstone（不限年龄）。
+/// 用户确认后调。清完 export 重建（清 .sync）。
+#[tauri::command]
+pub fn purge_hotword_tombstones() -> Result<usize, String> {
+    let purged = db::purge_all_hotword_tombstones().map_err(e2s)?;
+    if purged > 0 {
+        // 清 .sync：export 不含超期/已删 tombstone
+        if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+            log::warn!("[hotword] 手动清空后 export 重建失败（不阻断）：{}", e);
+        }
+    }
+    Ok(purged)
 }
 
 #[tauri::command]
@@ -315,33 +328,36 @@ mod tests {
         assert!(!db::get_hotword_set(&id).unwrap().enabled);
     }
 
-    /// add_word / remove_word 后 sync_md5 应更新（words_text 变 → md5 变）。
+    /// add_word / remove_word 后 set 的 sync_md5 不变（v57 word 级 merge：set md5 只反映
+    /// 元数据 name|enabled），但每条 word 记录有自己的 sync_md5（DB 层写入时填）。
     #[test]
-    fn word_operations_update_sync_md5() {
+    fn word_operations_dont_change_set_md5_but_fill_word_md5() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_empty = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
 
-        // add_word
+        // add_word——set 的 sync_md5 不变（元数据未变），但 word 记录有自己的 sync_md5
         let added = add_word_to_set(id.clone(), "苹果".into()).expect("add");
         assert!(added);
         let md5_one = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_ne!(md5_empty, md5_one, "加词后 md5 应变化");
+        assert_eq!(md5_empty, md5_one, "加词后 set 的 sync_md5 不应变（word 有自己的 md5）");
+        let w = db::get_hotword_word(&id, "苹果").unwrap().unwrap();
+        assert!(w.sync_md5.is_some(), "word 记录应有自己的 sync_md5");
 
-        // 再加一词
+        // 再加一词——set md5 仍不变
         add_word_to_set(id.clone(), "香蕉".into()).expect("add 2");
         let md5_two = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_ne!(md5_one, md5_two, "再加词 md5 应变化");
+        assert_eq!(md5_one, md5_two, "再加词 set 的 sync_md5 仍不变");
 
-        // remove_word
+        // remove_word（软删）——set md5 仍不变，但 word 的 sync_md5 变成 is_deleted=true 指纹
         remove_word_from_set(id.clone(), "苹果".into()).expect("remove");
         let md5_removed = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_ne!(md5_two, md5_removed, "删词后 md5 应变化");
+        assert_eq!(md5_two, md5_removed, "删词后 set 的 sync_md5 不应变");
     }
 
-    /// add_words（批量）后 sync_md5 应更新。
+    /// add_words（批量）后 set 的 sync_md5 不变，但 word 记录有 sync_md5。
     #[test]
-    fn add_words_updates_sync_md5() {
+    fn add_words_doesnt_change_set_md5_but_fills_word_md5() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
@@ -353,12 +369,17 @@ mod tests {
         .expect("add_words");
         assert_eq!(n, 2);
         let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_ne!(md5_before, md5_after, "批量加词后 md5 应变化");
+        assert_eq!(md5_before, md5_after, "批量加词后 set 的 sync_md5 不应变");
+        for word in &["葡萄", "橘子"] {
+            let w = db::get_hotword_word(&id, word).unwrap().unwrap();
+            assert!(w.sync_md5.is_some(), "批量加的词应有 sync_md5: {}", word);
+        }
     }
 
     /// 回填的 sync_md5 应非 NULL——incremental_export 有 sync_md5 时直接用（不 fallback），
     /// 故只要非 NULL 即可被正确识别为「无变化」（跨设备一致性的基础）。
-    /// v57：sync_md5 = 元数据指纹 + 词数据指纹（refill_sync_md5 组合），不再等于纯元数据 md5。
+    /// v57：set sync_md5 = 纯元数据指纹（refill_sync_md5 算 name|enabled）；word 级 merge
+    /// 后词变更不再改 set md5（word 有自己的 sync_md5）。
     #[test]
     fn refilled_md5_matches_incremental_export() {
         setup_db();
@@ -370,12 +391,11 @@ mod tests {
         let db_md5 = h.sync_md5.expect("应已回填（非 NULL）");
 
         // sync_md5 非 NULL → incremental_export 直接用它（不 fallback 到 hotword_set_md5）
-        // 验证：再 export 一次（无变化），outline.md5 应等于 db_md5
+        // 验证：再 export 一次（无变化），二次 export 应 0 变更
         use octopus_sync::hotword::incremental_export_hotwords;
-        let sets = db::list_hotword_sets().unwrap(); // 含默认「通用」+ 测试版本
-        let (_outline, _changed) = incremental_export_hotwords(&sets).expect("first export");
+        let (_outline, _changed) = incremental_export_hotwords().expect("first export");
         // 第二次（sync_md5 已在 outline）应无变化
-        let (_outline2, changed2) = incremental_export_hotwords(&sets).expect("export 2");
+        let (_outline2, changed2) = incremental_export_hotwords().expect("export 2");
         assert_eq!(changed2, 0, "sync_md5 已回填，二次 export 应无变化");
         let _ = db_md5;
     }

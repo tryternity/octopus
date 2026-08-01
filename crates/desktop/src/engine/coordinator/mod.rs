@@ -122,6 +122,15 @@ impl Default for RecordType {
     fn default() -> Self { RecordType::Input }
 }
 
+/// flush-edit 同步原因——决定 EditFlushed/FlushTimeout 后走哪个续逻辑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlushReason {
+    /// Toggle 停止录音（含 InstantStop/HandsFreeStop）
+    Stop,
+    /// 后端发起的 PolishNow（PTT/hotkey）
+    PolishNow,
+}
+
 /// 协调器命令
 pub(crate) enum Command {
     /// 切换录音状态（开始/停止）
@@ -173,6 +182,11 @@ pub(crate) enum Command {
     StartRecording { prepare_id: i64, selection: Option<(String, usize, usize)>, record_type: RecordType },
     /// 看门狗超时兜底：prepare-record 发出后 200ms 前端未响应 → 普通开录音（selection=None）。
     FallbackStart { prepare_id: i64 },
+    /// 前端响应 flush-edit 事件：已 commit 编辑器内容到后端，可继续停止/润色。
+    /// flush_id 跨会话/超时护栏（同 prepare_id 语义）。
+    EditFlushed { flush_id: u64 },
+    /// 看门狗超时兜底：flush-edit 发出后 200ms 前端未响应 → 直接继续（编辑可能丢但不卡死）。
+    FlushTimeout { flush_id: u64 },
     /// action bar agent 录音（跳过 prepare-record 两阶段，无 selection）
     StartAgentRecording { task_id: String },
     /// talk (PTT) 模式 keydown：跳过两阶段 prepare + 用 instant 浮窗（不弹 result_window）。
@@ -319,6 +333,20 @@ impl Coordinator {
     }
 }
 
+/// 发出 flush-edit 事件让前端强制 commit 编辑器内容（防抖未提交的编辑）。
+/// 返回 flush_id（时间戳）。看门狗 200ms 后发 FlushTimeout 兜底。
+/// 调用方存 `pending_flush = Some((flush_id, reason))`，在 EditFlushed/FlushTimeout 到达后续走原逻辑。
+fn emit_flush_edit(app_handle: &tauri::AppHandle, tx: &Sender<Command>) -> u64 {
+    let flush_id = now_millis() as u64;
+    let _ = app_handle.emit("flush-edit", flush_id);
+    let tx_clone = tx.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = tx_clone.send(Command::FlushTimeout { flush_id });
+    });
+    flush_id
+}
+
 fn build_coordinator_loop(
     rx: Receiver<Command>,
     tx: Sender<Command>,
@@ -344,6 +372,10 @@ fn build_coordinator_loop(
             // C3 两阶段 Toggle：Idle→Toggle 进等待，存 prepare_id 校验前端 StartRecording / 看门狗
             // FallbackStart。前端 200ms 内回推选区→StartRecording；超时→FallbackStart 普通开。
             let mut pending_prepare: Option<i64> = None;
+            // flush-edit 两阶段同步：停止录音/润色前 emit flush-edit → 前端 commit → EditFlushed 回传。
+            // pending_flush = Some((flush_id, reason))：等待前端回传；None = 无等待。
+            // 超时 200ms → FlushTimeout 兜底（编辑可能丢但不卡死）。
+            let mut pending_flush: Option<(u64, FlushReason)> = None;
             // 诊断打点局部状态（spec 2026-07-19-asr-edit-stall-observability）：
             // - last_heartbeat / ticks_since_heartbeat：1Hz 节流 `[HEARTBEAT]`，证明 tick 线程在跑
             // - last_editing_logged：检测 editing 翻转，打 `[STATE]`（与 5 处精确触发点互补，
@@ -375,14 +407,17 @@ fn build_coordinator_loop(
                             ));
                         }
                         if !matches!(stage, Stage::Idle) {
-                            // 活跃录音态 → 停录音（handle_toggle 走非 Idle 分支）
-                            handle_toggle(
-                                &mut stage,
-                                &audio,
-                                &config,
-                                &app_handle,
-                                &tx,
-                            );
+                            if pending_flush.is_some() {
+                                // 已在等待 flush（重复 Toggle）→ 忽略
+                                debug!("Toggle: flush already pending, ignoring");
+                            } else {
+                                // 活跃录音态 → 先 flush 前端编辑（防抖未 commit 的），再停录音。
+                                // emit flush-edit → 前端 commit + invoke edit_flushed → EditFlushed 到达后走 handle_toggle。
+                                // 200ms 超时 → FlushTimeout 兜底（编辑可能丢但不卡死）。
+                                let flush_id = emit_flush_edit(&app_handle, &tx);
+                                pending_flush = Some((flush_id, FlushReason::Stop));
+                                debug!("Toggle: pending flush_id={} before stop", flush_id);
+                            }
                         } else if pending_prepare.is_some() {
                             // 等待态（已 emit prepare-record）再按 Toggle → 取消等待。
                             // 看门狗的 FallbackStart 到达时 prepare_id 不匹配被丢弃，不会重复开录音。
@@ -577,7 +612,13 @@ fn build_coordinator_loop(
                         handle_cloud_streaming_done(&mut stage, text, session_id, &config, &app_handle, &tx);
                     }
                     Command::PolishNow => {
-                        handle_polish_now(&mut stage, &config, &app_handle, &tx);
+                        // 先 flush 前端编辑（前端按钮已 commit 则秒回 invoke；PTT/hotkey 未 commit 则补上）
+                        if pending_flush.is_some() {
+                            debug!("PolishNow: flush already pending, ignoring");
+                        } else {
+                            let flush_id = emit_flush_edit(&app_handle, &tx);
+                            pending_flush = Some((flush_id, FlushReason::PolishNow));
+                        }
                     }
                     Command::EnterEditMode => {
                         handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
@@ -672,6 +713,26 @@ fn build_coordinator_loop(
                             );
                         }
                     }
+                    Command::EditFlushed { flush_id } | Command::FlushTimeout { flush_id } => {
+                        // 前端响应 flush-edit（或 200ms 超时兜底）：校验 flush_id 后走续逻辑。
+                        if pending_flush.is_none() || pending_flush.unwrap().0 != flush_id {
+                            debug!("Flush id mismatch (incoming={}, pending={:?}), discarding", flush_id, pending_flush);
+                            continue;
+                        }
+                        let (_, reason) = pending_flush.take().unwrap();
+                        match reason {
+                            FlushReason::Stop => {
+                                // 停录音：走原 handle_toggle（排空 + finalize_after_stop）
+                                handle_toggle(&mut stage, &audio, &config, &app_handle, &tx);
+                            }
+                            FlushReason::PolishNow => {
+                                // 后端发起润色：走原 handle_polish_now
+                                handle_polish_now(
+                                    &mut stage, &config, &app_handle, &tx,
+                                );
+                            }
+                        }
+                    }
                     Command::StartAgentRecording { task_id } => {
                         if !matches!(stage, Stage::Idle) {
                             warn!("StartAgentRecording ignored: not Idle, marking task failed");
@@ -750,9 +811,9 @@ fn build_coordinator_loop(
                             editing = false;
                         }
                         info!("InstantStop: stopping (instant mode)");
-                        handle_toggle(
-                            &mut stage, &audio, &config, &app_handle, &tx,
-                        );
+                        // flush 前端编辑（instant 模式无编辑器，前端秒回 invoke 不延迟）
+                        let flush_id = emit_flush_edit(&app_handle, &tx);
+                        pending_flush = Some((flush_id, FlushReason::Stop));
                     }
                     Command::HandsFreeStart => {
                         // hands-free keydown（短按确认）：常驻录音，instant 浮窗 listening。
@@ -802,9 +863,8 @@ fn build_coordinator_loop(
                             editing = false;
                         }
                         info!("HandsFreeStop: stopping hands-free (instant mode)");
-                        handle_toggle(
-                            &mut stage, &audio, &config, &app_handle, &tx,
-                        );
+                        let flush_id = emit_flush_edit(&app_handle, &tx);
+                        pending_flush = Some((flush_id, FlushReason::Stop));
                     }
                 }
             }
@@ -851,6 +911,14 @@ impl Coordinator {
             if tx.send(Command::EnterEditMode).is_err() {
                 error!("Coordinator channel closed");
             }
+    }
+
+    /// 前端响应 flush-edit：已 commit 编辑器内容，通知后端继续停止/润色。
+    pub fn edit_flushed(&self, flush_id: u64) {
+        let tx = self.tx.lock();
+        if tx.send(Command::EditFlushed { flush_id }).is_err() {
+            error!("Coordinator channel closed");
+        }
     }
 
     /// action bar agent 录音触发：创建 agent task → 开始录音
@@ -963,6 +1031,12 @@ pub fn polish_now(coordinator: tauri::State<'_, Coordinator>) {
 #[tauri::command]
 pub fn enter_edit_mode(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.enter_edit_mode();
+}
+
+/// 前端命令：响应 flush-edit 事件——已 commit 编辑器内容，可继续停止/润色。
+#[tauri::command]
+pub fn edit_flushed(coordinator: tauri::State<'_, Coordinator>, flush_id: u64) {
+    coordinator.edit_flushed(flush_id);
 }
 
 /// 前端命令：更新编辑缓冲（input 防抖推送）。
