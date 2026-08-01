@@ -52,6 +52,11 @@ const STATE_LABEL: Record<InstantState, string> = {
   done: "",
 };
 
+/// listening 态显示尾部最新内容——用户说话时能看到最新说的词。
+/// 卡片单行可见约 24 个中文字符（400px − 图标 − padding ≈ 340px，14px 字体），取 28 留 buffer。
+/// 超长文本截尾部子串展示（让最新内容可见，而非开头截断尾部省略）。
+const LISTENING_TAIL_CHARS = 28;
+
 export function InstantView({ state, text }: { state: string; text: string }) {
   // 初始无状态（窗口刚 show 但首帧事件未到）→ 不渲染可见内容，
   // 保持透明（避免空壳闪烁）。事件到达后立即可见。
@@ -60,7 +65,9 @@ export function InstantView({ state, text }: { state: string; text: string }) {
   const typedState = state as InstantState;
   const showText = typedState === "done"
     ? text
-    : (text && typedState === "listening" ? text : "");
+    : (text && typedState === "listening"
+      ? (text.length > LISTENING_TAIL_CHARS ? text.slice(-LISTENING_TAIL_CHARS) : text)
+      : "");
 
   return (
     // 720×480 透明区底部居中——容器是 absolute 定位，内部指示卡为可视元素。

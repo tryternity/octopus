@@ -69,6 +69,11 @@ function Result() {
   // instant-state：{ state, text }——供 InstantView 渲染
   const [instantState, setInstantState] = useState("");
   const [instantText, setInstantText] = useState("");
+  // recordMode 的 ref——update-result handler 在 [] effect 内注册，闭包捕获旧 recordMode，
+  // 读 ref 避免 React 闭包陷阱（对齐 translateModeRef / toolbarVisibleRef 模式）。
+  // 用于 instant 模式把流式 partial 也喂给 InstantView（实时文字显示）。
+  const recordModeRef = useRef<"toggle" | "instant">("toggle");
+  useEffect(() => { recordModeRef.current = recordMode; }, [recordMode]);
 
   const asrEditorRef = useRef<AsrEditorHandle>(null);
   const caretRef = useRef<number | null>(null);
@@ -202,6 +207,12 @@ function Result() {
           const payload = p as { text: string; insertion: boolean; caret: number };
           caretRef.current = payload.insertion ? payload.caret : null;
           setText(payload.text);
+          // instant 模式：流式 partial 也喂给 InstantView（实时文字显示）。
+          // 读 recordModeRef 避免 React 闭包陷阱（handler 在 [] effect 注册）。
+          // toggle 模式不写——InstantView 被 display:none 隐藏，无需更新。
+          if (recordModeRef.current === "instant") {
+            setInstantText(payload.text);
+          }
         }],
         ["clear-result", () => {
           setText("");
