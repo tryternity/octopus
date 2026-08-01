@@ -119,7 +119,7 @@ pub(crate) struct AppContext {
 ### 设置页模板编辑
 
 润色模板编辑区加：
-- **关联应用**：bundle_id 输入（同 actionbar app_bundle_ids 编辑方式——多选/输入 bundle_id）
+- **关联应用**：复用 actionbar 的 `AppPicker` 组件（`pages/Settings/ActionBar/AppPicker.tsx`）——已实现 app 搜索 + 多选（icon + name + bundle_id），调 `list_all_apps` Tauri 命令。空=全局模板（不关联特定 app）
 - **注入应用上下文**：开关（inject_context）
 
 ### 模板列表展示
@@ -139,7 +139,7 @@ pub(crate) struct AppContext {
 
 - **app 名称泄漏到输出**：LLM 把「当前应用：微信」写进润色结果。概率低（指令明确说输出纯文本）。可在 strip 层加防御
 - **模板路由缓存**：`RwLock<HashMap<bundle_id, prompt_id>>` 缓存路由结果。首次查 DB 后缓存，后续直接命中。模板 CRUD（create/update/delete）时清缓存（`invalidate_route_cache()`）
-- **冷门 app bundle_id**：用户需要知道 bundle_id 才能关联。可加 app picker（从已安装 app 列选取），但 MVP 先手动输入
+- **冷门 app bundle_id**：复用 AppPicker 组件（调 `list_all_apps` 从已安装 app 列选取），用户不需知道 bundle_id
 - **schema 变更**：prompts 表加 2 列，bump schema version
 
 ## 文件改动
