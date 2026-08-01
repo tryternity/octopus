@@ -370,8 +370,8 @@ mod tests {
 
     #[test]
     fn normalize_fh_nl_hw_combine() {
-        // 四组同时开互不干扰（else if 互斥，一个拼音只归一组）；
-        // 关键：fu 经 fh→hu 后**不**被 hw 二次转 wu（else if 链终止）。
+        // 声母组同时开互不干扰（一个拼音只归一组，循环 break）；
+        // 关键：fu 经 fh→hu 后**不**被 hw 二次转 wu（initial_matched flag 阻断 hw）。
         let r = FuzzyRules { fh: true, nl: true, hw: true, rl: true, yun_yong: false, fei_hui: false };
         assert_eq!(norm("fu", r), "hu"); // fh（不被 hw 二次捕获）
         assert_eq!(norm("niu", r), "liu"); // nl
