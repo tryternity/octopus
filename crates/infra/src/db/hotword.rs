@@ -493,6 +493,25 @@ pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
     })
 }
 
+/// 取最近 limit 条 voice（ASR 识别）记录的 content——bigram 上下文打分用（仅 ASR 语料）。
+/// 与 `list_recent_text` 区别：只取 item_type='voice'，语料更纯（与纠错场景一致）。
+pub fn list_recent_voice_text(limit: i64) -> Result<Vec<String>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT content FROM clipboard_history
+             WHERE item_type = 'voice' AND content IS NOT NULL AND content != ''
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    })
+}
+
 /// 命中计数 +1（按词文本——corrector 命中时只有文本）。写全局 `hotword_hits`（upsert）。
 /// pipeline 在 correct 后批量调用（best-effort，失败由调用方忽略，不阻断纠错）。
 pub fn bump_hotword_hit_by_word(word: &str) -> Result<()> {

@@ -20,6 +20,9 @@ pub struct LightCorrector {
     // active 热词缓存（word, pinyin, hit_count）——方言规则变更时用它重建 hotwords 索引
     //（索引 key 由 normalize_fuzzy_pinyin 生成，规则变 key 必变，见 reload_fuzzy_dialect）。
     active_words: parking_lot::RwLock<Vec<(String, String, i64)>>,
+    // 字级 bigram 频次表（用户历史 voice 语料）——多命中上下文打分用。
+    // scheduler CPU 空闲时 reload_bigrams 整体替换；空表 → bigram_score=0，回退 hit_count 排序。
+    bigrams: parking_lot::RwLock<std::collections::HashMap<(char, char), usize>>,
     // 本次 correct 命中的热词收集（correct_greedy push，pipeline 经 drain_hits 取走后 bump DB）。
     // corrector 保持纯内存不碰 DB；命中计数持久化交调用层，避免单测污染真实 DB。
     pending_hits: parking_lot::Mutex<Vec<String>>,
@@ -81,6 +84,7 @@ impl LightCorrector {
             unigram_scores,
             hotwords: parking_lot::RwLock::new(HotwordIndex::empty()),
             active_words: parking_lot::RwLock::new(Vec::new()),
+            bigrams: parking_lot::RwLock::new(std::collections::HashMap::new()),
             pending_hits: parking_lot::Mutex::new(Vec::new()),
         }
     }
@@ -93,9 +97,10 @@ impl LightCorrector {
 
     /// 候选词**唯一来自 HotwordIndex**（active 热词）。
     /// 空热词或无命中 → 仅返回原词（单候选，correct_greedy 视为无操作）。
-    /// 多命中时按 hit_count 降序排序（命中多的优先——用户验证过的更可信），
-    /// hit_count 相同按 word 字典序（确定性，避免 HashSet 迭代序不确定）。
-    fn find_candidates(&self, query_word: &str) -> Vec<String> {
+    /// 多命中时按 `bigram_score * W_CONTEXT + hit_count * W_HIT` 降序排序
+    /// （上下文频次主导，hit_count 辅助），平局按 word 字典序（确定性）。
+    /// `prev_char`/`next_char` = 窗口前后字符（'\0' 表示无边界），用于 bigram 上下文打分。
+    fn find_candidates(&self, query_word: &str, prev_char: char, next_char: char) -> Vec<String> {
         let char_len = query_word.chars().count();
         if char_len < 2 {
             return vec![query_word.to_string()];
@@ -113,8 +118,16 @@ impl LightCorrector {
             .lookup(char_len, &query_py)
             .cloned()
             .unwrap_or_default();
-        // hit_count 降序 + 平局 word 字典序升序（确定性）
-        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // bigram 上下文分 + hit_count 组合排序（降序 + 平局字典序）
+        let bg = self.bigrams.read();
+        candidates.sort_by(|a, b| {
+            let sa = bigram_score(&bg, &a.0, prev_char, next_char) * W_CONTEXT
+                + a.1 as f64 * W_HIT;
+            let sb = bigram_score(&bg, &b.0, prev_char, next_char) * W_CONTEXT
+                + b.1 as f64 * W_HIT;
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         // 原词追加末尾（不参与排序——correct_greedy find 跳过它）
         if !candidates.iter().any(|(w, _)| w == query_word) {
             candidates.push((query_word.to_string(), 0));
@@ -128,9 +141,8 @@ impl LightCorrector {
 
     /// 贪心纠错：从左到右单次扫描，每处取最优候选词**原地替换**后继续前进。
     ///
-    /// **性能**：候选词评分用局部上下文（±15 字窗口）而非全句，
-    /// 避免 N 字句 × K 候选 × O(N²) jieba 分词的 O(N³K) 爆炸；
-    /// 单次扫描替代旧 `correct_depth` 的递归回头（最多 5 轮全句扫描）。
+    /// **性能**：单次扫描 + 字级 bigram 上下文打分（O(1) 查表），替代旧 `correct_depth`
+    /// 的递归回头（最多 5 轮全句 jieba 分词 O(N³K) 爆炸）。
     fn correct_greedy(&self, text: &str) -> String {
         if text.trim().is_empty() {
             return text.to_string();
@@ -148,11 +160,13 @@ impl LightCorrector {
                     continue;
                 }
                 let window_word: String = chars[i..i + sz].iter().collect();
-                let candidates = self.find_candidates(&window_word);
+                let prev_char = if i > 0 { chars[i - 1] } else { '\0' };
+                let next_char = if i + sz < n { chars[i + sz] } else { '\0' };
+                let candidates = self.find_candidates(&window_word, prev_char, next_char);
                 // 热词命中（候选含 ≠ 原词的热词）→ 直接替换。
-                // spec 意图：热词是用户显式指定，低频专名语料分数本就低，
-                // 不靠 unigram/bigram gain 否决（旧 gain 机制反向坑了热词）。
-                // 多热词同音取首个（lookup 顺序 = from_words 插入序）。
+                // spec 意图：热词是用户显式指定，命中即替换不否决。
+                // 多热词同音时 find_candidates 已按 bigram 上下文 + hit_count 排序，
+                // 这里取排序后第一个非原词候选。
                 if let Some(hw) = candidates.iter().find(|c| *c != &window_word) {
                     log::info!(
                         "[ASR Correct] Hotword replace '{}' → '{}'",
@@ -225,6 +239,52 @@ pub fn reload_fuzzy_dialect() {
         let words = c.active_words.read().clone();
         *c.hotwords.write() = HotwordIndex::from_words(&words);
     }
+}
+
+/// 上下文打分权重（bigram 主导，hit_count 辅助）。
+const W_CONTEXT: f64 = 1.0;
+const W_HIT: f64 = 0.3;
+
+/// 从 DB 重新加载字级 bigram 频次表（用户历史 voice 语料）。
+/// scheduler CPU 空闲时调。失败告警不阻断（bigrams 空 → bigram_score=0，回退 hit_count 排序）。
+pub fn reload_bigrams() {
+    match crate::miner::build_char_bigram_index() {
+        Ok(index) => {
+            let _ = get_corrector();
+            if let Some(c) = CORRECTOR.get() {
+                *c.bigrams.write() = index;
+                log::info!("[corrector] bigram 索引已加载（{} 条字对）", c.bigrams.read().len());
+            }
+        }
+        Err(e) => log::warn!("[corrector] 加载 bigram 索引失败，用空表: {}", e),
+    }
+}
+
+/// 候选词在当前上下文的 bigram 打分（前缀 + 后缀字对频次）。
+/// `prev_char` = 窗口前一字符（'\0' 表示文本开头无前缀），`next_char` = 窗口后一字符（'\0' 表示文末）。
+fn bigram_score(
+    bigrams: &std::collections::HashMap<(char, char), usize>,
+    word: &str,
+    prev_char: char,
+    next_char: char,
+) -> f64 {
+    let mut score = 0.0;
+    let chars: Vec<char> = word.chars().collect();
+    let first = chars.first().copied();
+    let last = chars.last().copied();
+    // 前缀 bigram：(prev_char, word 首字)
+    if prev_char != '\0' {
+        if let Some(fc) = first {
+            score += *bigrams.get(&(prev_char, fc)).unwrap_or(&0) as f64;
+        }
+    }
+    // 后缀 bigram：(word 末字, next_char)
+    if next_char != '\0' {
+        if let Some(lc) = last {
+            score += *bigrams.get(&(lc, next_char)).unwrap_or(&0) as f64;
+        }
+    }
+    score
 }
 
 /// 取出并清空本次 corrector 命中的热词列表（`correct_greedy` push，pipeline 纠错后调）。
@@ -472,5 +532,57 @@ mod tests {
         };
         assert_eq!(r1, r2, "多次 reload 结果应一致（确定性）：{} vs {}", r1, r2);
         assert_eq!(r1, "福川", "hit_count 7 > 3，福川应胜出（实际 {}）", r1);
+    }
+
+    // ── bigram 上下文打分（2026-08-01）──
+    // 上下文频次主导排序，hit_count 辅助。bigram 命中的候选优先于纯 hit_count 高的。
+
+    /// 辅助：注入 bigram 索引到 corrector 单例。
+    fn set_bigrams(texts: &[&str]) {
+        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let idx = crate::miner::build_char_bigram_index_from(&owned);
+        let c = get_corrector();
+        *c.bigrams.write() = idx;
+    }
+
+    #[test]
+    fn bigram_context_overrides_lower_hit_count() {
+        let _g = serial();
+        set_rules(&[]);
+        // 历史语料里「打开浮窗」常见 → (开,浮)(浮,窗) bigram 频次高
+        set_bigrams(&["打开浮窗", "打开浮窗", "打开浮窗"]);
+        // 「浮窗」hit=1 但 bigram 命中高；「福川」hit=10 但 bigram 不命中
+        // 上下文主导：浮窗 bigram_score ≈ 3+3=6 * 1.0 = 6，福川 hit 10 * 0.3 = 3 → 浮窗胜
+        let c = with_hotwords_scored(&[("浮窗", 1), ("福川", 10)]);
+        assert_eq!(c.correct("开福创"), "开浮窗",
+            "bigram 上下文命中应优先于 hit_count（浮窗 bigram≈6 > 福川 hit 3）");
+    }
+
+    #[test]
+    fn no_bigram_falls_back_to_hit_count() {
+        let _g = serial();
+        set_rules(&[]);
+        // 无 bigram 索引（空）→ 回退 hit_count 排序
+        set_bigrams(&[]);
+        let c = with_hotwords_scored(&[("浮窗", 1), ("福川", 10)]);
+        assert_eq!(c.correct("开福创"), "开福川",
+            "无 bigram 时回退 hit_count 排序（福川 hit 10 > 浮窗 hit 1）");
+    }
+
+    #[test]
+    fn bigram_tie_keeps_deterministic() {
+        let _g = serial();
+        set_rules(&[]);
+        // 两词 bigram 都不命中 + hit_count 相同 → 字典序确定性
+        set_bigrams(&[]);
+        let r1 = {
+            let c = with_hotwords_scored(&[("浮窗", 0), ("福川", 0)]);
+            c.correct("开福创")
+        };
+        let r2 = {
+            let c = with_hotwords_scored(&[("浮窗", 0), ("福川", 0)]);
+            c.correct("开福创")
+        };
+        assert_eq!(r1, r2, "bigram + hit_count 都平局时字典序确定性（{} vs {}）", r1, r2);
     }
 }

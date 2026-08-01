@@ -57,6 +57,29 @@ pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
     Ok(words)
 }
 
+/// bigram 上下文打分用的历史条数（与挖掘共用，但只取 voice）。
+const BIGRAM_HISTORY_LIMIT: i64 = 500;
+
+/// 扫历史 voice 文本 → 字级 bigram 频次表。
+/// 对每条文本取相邻字符对计数（不分词，极轻量）。
+/// 用于 corrector 多命中排序的上下文打分（bigram_score）。
+pub fn build_char_bigram_index() -> anyhow::Result<std::collections::HashMap<(char, char), usize>> {
+    let texts = octopus_infra::db::list_recent_voice_text(BIGRAM_HISTORY_LIMIT)?;
+    Ok(build_char_bigram_index_from(&texts))
+}
+
+/// 从给定文本列表构建字级 bigram 频次表（测试用，不碰 DB）。
+pub fn build_char_bigram_index_from(texts: &[String]) -> std::collections::HashMap<(char, char), usize> {
+    let mut index: std::collections::HashMap<(char, char), usize> = std::collections::HashMap::new();
+    for t in texts {
+        let chars: Vec<char> = t.chars().collect();
+        for pair in chars.windows(2) {
+            *index.entry((pair[0], pair[1])).or_insert(0) += 1;
+        }
+    }
+    index
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +104,31 @@ mod tests {
         // collect_candidate_words 不写 DB，仅返回候选词列表（依赖 list_recent_text）。
         // 此处只验返回类型与非 panic；真实历史由 e2e 覆盖。
         let _ = collect_candidate_words();
+    }
+
+    // ── 字级 bigram 构建（2026-08-01）──
+
+    #[test]
+    fn bigram_counts_adjacent_char_pairs() {
+        let idx = build_char_bigram_index_from(&["打开八爪鱼".into()]);
+        // (打,开)(开,八)(八,爪)(爪,鱼) 各 1
+        assert_eq!(idx.get(&('打', '开')), Some(&1));
+        assert_eq!(idx.get(&('开', '八')), Some(&1));
+        assert_eq!(idx.get(&('八', '爪')), Some(&1));
+        assert_eq!(idx.get(&('爪', '鱼')), Some(&1));
+        // 不相邻的字符对不在
+        assert!(idx.get(&('打', '八')).is_none());
+    }
+
+    #[test]
+    fn bigram_accumulates_across_texts() {
+        let idx = build_char_bigram_index_from(&[
+            "打开八爪鱼".into(),
+            "打开浮窗".into(),
+        ]);
+        // 「打开」在两条都出现 → (打,开) = 2
+        assert_eq!(idx.get(&('打', '开')), Some(&2));
+        // 跨条不连续（条1末「鱼」+ 条2首「打」不是 bigram）
+        assert!(idx.get(&('鱼', '打')).is_none());
     }
 }
