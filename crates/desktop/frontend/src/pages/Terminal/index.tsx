@@ -270,18 +270,18 @@ export default function Terminal() {
               );
             }}
             onPtyId={(ptyId) => {
-              setTabs((prev) =>
-                prev.map((tb) =>
-                  tb.id === tab.id ? { ...tb, ptyId } : tb,
-                ),
-              );
+              setTabs((prev) => {
+                const idx = prev.findIndex((tb) => tb.id === tab.id);
+                if (idx < 0 || prev[idx].ptyId === ptyId) return prev; // 等值短路，不触发重渲染
+                return prev.map((tb) => (tb.id === tab.id ? { ...tb, ptyId } : tb));
+              });
             }}
             onCwd={(c) => {
-              setTabs((prev) =>
-                prev.map((tb) =>
-                  tb.id === tab.id ? { ...tb, trackedCwd: c } : tb,
-                ),
-              );
+              setTabs((prev) => {
+                const idx = prev.findIndex((tb) => tb.id === tab.id);
+                if (idx < 0 || prev[idx].trackedCwd === c) return prev; // 等值短路
+                return prev.map((tb) => (tb.id === tab.id ? { ...tb, trackedCwd: c } : tb));
+              });
             }}
           />
         </div>

@@ -1,5 +1,8 @@
 # 终端点击定位命令行光标 Implementation Plan
 
+> **状态：❌ 已回滚——自定义实现失败，恢复 xterm 内置 altClickMovesCursor。详见 spec 探索记录。**
+> 保留的成果：Maximum update depth exceeded 修复 + clickCursor.ts 纯函数 + onPtyId/onCwd ref 稳定化。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 终端命令行输入态，鼠标点击直接把光标移到点击位置（无需 Alt，精确）。

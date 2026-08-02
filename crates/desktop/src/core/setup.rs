@@ -208,6 +208,28 @@ impl<'a> AppSetup<'a> {
             scheduler.register_task("bigram_index", 600, Box::new(|| {
                 octopus_asr_local::corrector::reload_bigrams();
             }));
+            // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +
+            // export 重建清 .sync。跨设备自洽——merge 按年龄过滤防复活。详见
+            // docs/superpowers/specs/2026-08-02-hotword-tombstone-gc.md。
+            scheduler.register_task("hotword_tombstone_gc", 86400, Box::new(|| {
+                std::thread::spawn(|| {
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    match octopus_infra::db::purge_expired_hotword_tombstones(now_secs) {
+                        Ok(n) if n > 0 => {
+                            log::info!("[hotword-gc] purged {} expired tombstones, rebuilding .sync", n);
+                            // 清 .sync：export 不含超期 tombstone（is_tombstone_expired 过滤）
+                            if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+                                log::warn!("[hotword-gc] export 重建失败（不阻断 GC）：{}", e);
+                            }
+                        }
+                        Ok(_) => {} // 无超期 tombstone，no-op
+                        Err(e) => log::warn!("[hotword-gc] purge 失败：{}", e),
+                    }
+                });
+            }));
             scheduler.spawn();
         }
     }

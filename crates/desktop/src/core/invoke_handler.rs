@@ -102,6 +102,8 @@ macro_rules! handler {
             crate::commands::hotword_commands::create_hotword_set,
             crate::commands::hotword_commands::rename_hotword_set,
             crate::commands::hotword_commands::delete_hotword_set,
+            crate::commands::hotword_commands::count_hotword_tombstones,
+            crate::commands::hotword_commands::purge_hotword_tombstones,
             crate::commands::hotword_commands::toggle_hotword_set,
             crate::commands::hotword_commands::add_word_to_set,
             crate::commands::hotword_commands::remove_word_from_set,

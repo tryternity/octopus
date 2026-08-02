@@ -142,8 +142,8 @@ ALTER TABLE hotword_sets_new RENAME TO hotword_sets;
 
 ## 6. 不在范围（留后续）
 
-- **回收站 UI**：is_deleted>0 的词典当前只是 tombstone（不显示），未来可做回收站面板展示 + 恢复 + 永久删。
-- **tombstone GC**：软删词典长期堆积。未来加「30 天后硬删」或「用户手动清空回收站」。
+- **回收站 UI**：is_deleted>0 的词典当前只是 tombstone（不显示）+ 手动「清空回收站」按钮（2026-08-02）。未来可做回收站面板展示 + 恢复 + 单条永久删。
+- ~~**tombstone GC**~~：**已解决**（2026-08-02，[tombstone GC spec](2026-08-02-hotword-tombstone-gc.md)）——超期（>10 天）自动硬删（scheduler 每日）+ 手动清空按钮 + merge 按年龄过滤防跨设备复活。retention 当前硬编码 10 天，未来可加 config。
 - **correct 多命中排序**：与 set 软删无关，单独后续。
 
 ## 7. 风险

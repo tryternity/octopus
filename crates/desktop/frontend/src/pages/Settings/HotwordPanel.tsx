@@ -65,6 +65,7 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
+  const [tombstoneCount, setTombstoneCount] = useState(0);
   const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState<'create' | 'import' | null>(null);
   const [createVal, setCreateVal] = useState('');
@@ -87,14 +88,16 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   }, []);
 
   const refresh = useCallback(async () => {
-    const [s, h, wc] = await Promise.all([
+    const [s, h, wc, tc] = await Promise.all([
       invoke<HotwordSet[]>('list_hotword_sets'),
       invoke<Record<string, number>>('list_hotword_hits'),
       invoke<Record<string, number>>('list_word_counts'),
+      invoke<number>('count_hotword_tombstones').catch(() => 0),
     ]);
     setSets(s);
     setHits(h);
     setWordCounts(wc);
+    setTombstoneCount(tc);
     if (s.length > 0 && (selectedId === null || !s.some((x) => x.id === selectedId))) {
       setSelectedId(s[0].id);
     }
@@ -204,6 +207,16 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
     if (!(await confirmDialog(t('settings.hotword.deleteConfirmMsg', { name }), { title: t('settings.hotword.deleteConfirmTitle'), kind: 'warning' }))) return;
     try { await invoke('delete_hotword_set', { id }); await refresh(); }
     catch (e) { showToast(t('settings.hotword.deleteFailed') + e); }
+  }, [refresh, showToast]);
+
+  /** 清空回收站——硬删所有软删词典（用户确认后）。 */
+  const purgeTombstones = useCallback(async () => {
+    if (!(await confirmDialog(t('settings.hotword.purgeConfirmMsg'), { title: t('settings.hotword.purgeConfirmTitle'), kind: 'warning' }))) return;
+    try {
+      const n = await invoke<number>('purge_hotword_tombstones');
+      await refresh();
+      showToast(t('settings.hotword.purgedMsg', { n }));
+    } catch (e) { showToast(t('settings.hotword.purgeFailed') + e); }
   }, [refresh, showToast]);
 
   // ── 单词操作 ──
@@ -466,6 +479,17 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
               >
                 <Upload />
               </Button>
+              {tombstoneCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={purgeTombstones}
+                  aria-label={t('settings.hotword.purgeBtn')}
+                  title={t('settings.hotword.purgeBtn')}
+                >
+                  <Trash2 /> {tombstoneCount}
+                </Button>
+              )}
             </div>
           )}
         </div>

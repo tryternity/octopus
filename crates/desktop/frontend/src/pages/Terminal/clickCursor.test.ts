@@ -43,16 +43,16 @@ describe("shouldMoveCursor", () => {
 });
 
 describe("buildCursorMoveSequence", () => {
-  it("delta>0 → CUF 右移", () => {
-    expect(buildCursorMoveSequence(5)).toBe("\x1b[5C");
+  it("delta>0 → 右键重复（readline 输入序列）", () => {
+    expect(buildCursorMoveSequence(5)).toBe("\x1b[C\x1b[C\x1b[C\x1b[C\x1b[C");
   });
-  it("delta<0 → CUB 左移", () => {
-    expect(buildCursorMoveSequence(-3)).toBe("\x1b[3D");
+  it("delta<0 → 左键重复", () => {
+    expect(buildCursorMoveSequence(-3)).toBe("\x1b[D\x1b[D\x1b[D");
   });
   it("delta=0 → 空字符串（不动）", () => {
     expect(buildCursorMoveSequence(0)).toBe("");
   });
-  it("delta=1 → 单步右移", () => {
-    expect(buildCursorMoveSequence(1)).toBe("\x1b[1C");
+  it("delta=1 → 单步右键", () => {
+    expect(buildCursorMoveSequence(1)).toBe("\x1b[C");
   });
 });
