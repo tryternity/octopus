@@ -118,9 +118,21 @@ setFontFamily: (family: string) => {
 - 用户存了旧格式 CSS 降级链（如 `'"SF Mono", Menlo, ...'`）→ dropdown `value` 匹配不到任何系统字体 → 回退到首项（首个系统等宽字体）
 - `get_config` 失败（终端窗口未注册命令）→ catch 静默降级用默认字体
 
+## 测试覆盖（2026-08-02 补录）
+
+| 测试 | 文件 | 覆盖 |
+|------|------|------|
+| `isFontAtDefault`（前端纯函数） | `Settings/fontPrefs.test.ts`（17 tests） | 「恢复默认」按钮显隐条件：默认状态（字号13+Menlo / 缺失字段）+ 偏离（字号/字体任一偏离）+ 边界（非数字/0/负数/点前缀残留/大小写敏感）+ 常量值守护 |
+| `parse_monospace_fonts`（Rust 纯函数） | `settings_commands.rs` 内联 `#[cfg(test)]`（8 tests） | fc-list 输出解析：过滤点前缀 + sort/dedup + 补 SF Mono/Monaco + 不重复补 + trim 空白 + 空输入 + 过滤空行 + 保留含空格字体名 |
+
+**纯函数提取理由**：原逻辑内联在 `GeneralPanel.tsx` JSX（显隐条件）和 `list_monospace_fonts` 命令（`fc-list` 子进程调用）中，不可直接单测。提取为纯函数后：
+- `fontPrefs.ts::isFontAtDefault(size, family)` —— 显隐条件可独立测试，防回归（如 `&&` 误写 `||` 会导致按钮永远显示/永不显示）
+- `settings_commands.rs::parse_monospace_fonts(raw)` —— 解析逻辑可独立测试，不依赖外部 `fc-list` 命令
+
 ## 演进历史
 
 1. **v1（初始）**：硬编码 CSS 降级链 `'"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace'`
 2. **v2**：AppConfig 加配置字段，设置页固定 7 预设 + 自定义输入框
 3. **v3**：去掉固定预设 + 自定义，下拉动态加载 `fc-list` 系统字体（过滤 `.` 前缀）+ 「恢复默认」按钮。理由：固定预设不覆盖用户已装的编程字体（JetBrains Mono / Fira Code 等），自定义输入框又多一个 UI 路径——直接列系统所有等宽字体最简洁
 4. **v4（当前）**：默认字体从 SF Mono 改为 Menlo。理由：SF Mono 字宽大，同行内容少且像有空格（"字和字跨度太大，让人觉得中间有空格"）。Menlo 是 macOS Terminal.app 传统默认，基于 Bitstream Vera Mono，字符紧凑相连。
+5. **v5**：纯函数提取补单测（`isFontAtDefault` + `parse_monospace_fonts`），防回归。

@@ -34,3 +34,4 @@ package.json
 
 # 录屏 helper 编译产物（Task 9 build-macos-helper.sh 生成）
 /crates/desktop/binaries/
+/config/

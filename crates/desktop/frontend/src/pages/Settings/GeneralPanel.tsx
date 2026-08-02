@@ -17,13 +17,15 @@ import { UnderlineTabs } from "@/components/ui/tabs";
 import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
+import {
+  TERMINAL_FONT_SIZE_DEFAULT,
+  TERMINAL_FONT_FAMILY_DEFAULT,
+  isFontAtDefault,
+} from "./fontPrefs";
 
 // 字号 slider 边界——与 Terminal/index.tsx MIN/MAX_FONT_SIZE 对齐。
 const TERMINAL_FONT_SIZE_MIN = 8;
 const TERMINAL_FONT_SIZE_MAX = 32;
-const TERMINAL_FONT_SIZE_DEFAULT = 13;
-// 默认字体族——与 infra/config.rs default_terminal_font_family() 对齐（单一真相源在后端）。
-const TERMINAL_FONT_FAMILY_DEFAULT = "Menlo";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -409,12 +411,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
                 >
                   {t("settings.general.fontPreviewText")}
                 </div>
-                {/* 恢复默认：字号 13 + SF Mono。仅当当前值偏离默认时显示，避免无意义点击。 */}
-                {(typeof cfg.terminal_font_size === "number"
-                  && cfg.terminal_font_size !== TERMINAL_FONT_SIZE_DEFAULT)
-                  || (typeof cfg.terminal_font_family === "string"
-                    && cfg.terminal_font_family
-                    && cfg.terminal_font_family !== TERMINAL_FONT_FAMILY_DEFAULT) ? (
+                {/* 恢复默认：字号 13 + Menlo。仅当当前值偏离默认时显示，避免无意义点击。
+                    显隐逻辑提取为 isFontAtDefault 纯函数（fontPrefs.ts），便于单测。 */}
+                {!isFontAtDefault(cfg.terminal_font_size, cfg.terminal_font_family) ? (
                   <button
                     type="button"
                     onClick={() => {
