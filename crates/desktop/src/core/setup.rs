@@ -202,10 +202,9 @@ impl<'a> AppSetup<'a> {
                     }
                 });
             }));
-            // bigram 上下文索引（2026-08-01）：扫历史 voice 文本建字级 bigram 频次表，
-            // 供 corrector 多命中排序的上下文打分。CPU 空闲时跑，interval 600s（= tick 每轮跑）。
-            // reload_bigrams 内部调 DB + 建索引（几十 ms 级），不需子线程。
-            scheduler.register_task("bigram_index", 600, Box::new(|| {
+            // bigram 上下文索引：扫历史 voice 文本建字级 bigram 频次表，
+            // 供 corrector 多命中排序的上下文打分。轻量任务（几十 ms），不受 CPU 空闲检查。
+            scheduler.register_task_skip_idle("bigram_index", 600, Box::new(|| {
                 octopus_asr_local::corrector::reload_bigrams();
             }));
             // 热词 tombstone GC（2026-08-02）：每日硬删超期（>10 天）软删 set/词 +

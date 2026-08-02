@@ -22,6 +22,8 @@ struct ScheduledTask {
     interval_secs: u64,
     last_run: Mutex<Option<Instant>>,
     run: Box<dyn Fn() + Send + 'static>,
+    /// true=不受 CPU 空闲检查（轻量任务，几十 ms 级，不需等空闲）。
+    skip_idle_check: bool,
 }
 
 impl ScheduledTask {
@@ -85,11 +87,33 @@ impl Scheduler {
         interval_secs: u64,
         run: Box<dyn Fn() + Send + 'static>,
     ) {
+        self.register_task_inner(name, interval_secs, run, false);
+    }
+
+    /// 注册一个**不受 CPU 空闲检查**的轻量定时任务。
+    /// 用于几十 ms 级的轻量任务（如 bigram 索引刷新），不需要等 CPU 空闲。
+    pub fn register_task_skip_idle(
+        &mut self,
+        name: &str,
+        interval_secs: u64,
+        run: Box<dyn Fn() + Send + 'static>,
+    ) {
+        self.register_task_inner(name, interval_secs, run, true);
+    }
+
+    fn register_task_inner(
+        &mut self,
+        name: &str,
+        interval_secs: u64,
+        run: Box<dyn Fn() + Send + 'static>,
+        skip_idle_check: bool,
+    ) {
         self.tasks.push(ScheduledTask {
             name: name.to_string(),
             interval_secs,
             last_run: Mutex::new(None),
             run,
+            skip_idle_check,
         });
     }
 
@@ -116,14 +140,23 @@ impl Scheduler {
                 loop {
                     std::thread::sleep(Duration::from_secs(tick));
 
-                    // CPU 空闲检测——忙则跳过本轮所有任务
+                    // 轻量任务（skip_idle_check=true）不受 CPU 空闲检查，每 tick 到期即跑
+                    for task in tasks.iter() {
+                        if task.skip_idle_check && task.is_due() {
+                            log::debug!("[scheduler] 执行轻量任务: {}", task.name);
+                            (task.run)();
+                            task.mark_run();
+                        }
+                    }
+
+                    // 重任务（skip_idle_check=false）需 CPU 空闲才跑
                     if !octopus_infra::cpu::is_cpu_idle(threshold) {
-                        log::debug!("[scheduler] CPU 忙，跳过本轮（{} 个任务）", tasks.len());
+                        log::debug!("[scheduler] CPU 忙，跳过重任务（{} 个）", tasks.len());
                         continue;
                     }
 
                     for task in tasks.iter() {
-                        if task.is_due() {
+                        if !task.skip_idle_check && task.is_due() {
                             log::debug!("[scheduler] 执行任务: {}", task.name);
                             (task.run)();
                             task.mark_run();
