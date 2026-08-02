@@ -236,7 +236,12 @@ export default function Clipboard() {
   const [dockMode, setDockMode] = useState<"none" | "collapsed" | "expanded">("none");
 
   // 监听 dock 事件
+  // cancelled 哨兵：listen() 是 async Promise，若组件在 Promise resolve 前卸载，
+  // cleanup 跑时 unlisteners 还是空的 → 监听器泄漏。resolve 时检查 cancelled，
+  // 已卸载则立即注销刚拿到的 unlisten 函数。（常驻 dock 窗口实际不会触发，
+  // 但防未来改成可关闭窗口 + React StrictMode 双调用。）
   useEffect(() => {
+    let cancelled = false;
     const unlisteners: Array<() => void> = [];
     listen("clipboard://dock-changed", (edge) => {
       if (edge === "right" || edge === "left") {
@@ -246,10 +251,19 @@ export default function Clipboard() {
         setDockEdge(null);
         setDockMode("none");
       }
-    }).then(f => unlisteners.push(f));
-    listen("clipboard://expand", () => setDockMode("expanded")).then(f => unlisteners.push(f));
-    listen("clipboard://collapse", () => setDockMode("collapsed")).then(f => unlisteners.push(f));
-    return () => unlisteners.forEach(f => f());
+    }).then(f => {
+      if (cancelled) { f(); } else { unlisteners.push(f); }
+    });
+    listen("clipboard://expand", () => setDockMode("expanded")).then(f => {
+      if (cancelled) { f(); } else { unlisteners.push(f); }
+    });
+    listen("clipboard://collapse", () => setDockMode("collapsed")).then(f => {
+      if (cancelled) { f(); } else { unlisteners.push(f); }
+    });
+    return () => {
+      cancelled = true;
+      unlisteners.forEach(f => f());
+    };
   }, []);
 
   return (
