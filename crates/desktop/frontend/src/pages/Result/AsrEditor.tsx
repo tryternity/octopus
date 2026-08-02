@@ -81,9 +81,9 @@ function buildTheme(expanded: boolean) {
   }, { dark: false });
 }
 
-/** 清除指定 from 位置附近的 hotword 装饰（selectCandidate 选定后调用）。
- * 用 from 而非 segIndex——map 后位置变但 selectCandidate 知道点击的 from。 */
-const removeHotwordAt = StateEffect.define<number>();
+/** 按 UUID 清除指定 hotword 装饰（selectCandidate 选定后调用）。
+ * UUID 是稳定标识，比位置更可靠——选定后该段变 Edited，装饰按 id 精确移除。 */
+const removeHotwordById = StateEffect.define<string>();
 
 /**
  * hotwords 段 Decoration StateField（map 主导 + UUID 稳定标识）。
@@ -139,14 +139,13 @@ const hotwordsField = StateField.define<DecorationSet>({
             });
           }
         }
-      } else if (e.is(removeHotwordAt)) {
-        // 选定候选：清除包含该 from 位置的 hotword 装饰（即时反馈）
-        const pos = e.value;
+      } else if (e.is(removeHotwordById)) {
+        // 选定候选：按 UUID 清除该 hotword 装饰（即时反馈，不等后端）
+        const idToRemove = e.value;
         decos = decos.update({
-          filter: (from, to, deco) => {
-            const isHotword = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-id"];
-            if (!isHotword) return true;
-            return !(pos >= from && pos < to);
+          filter: (_from, _to, deco) => {
+            const id = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-id"];
+            return id !== idToRemove;
           },
         });
       }
@@ -177,7 +176,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   segmentsRef.current = segments;
 
   // 候选下拉浮层状态：点击 .cm-hotword 时打开，选中候选 / 外部点击 / Esc 时关闭。
-  const [dropdown, setDropdown] = useState<{ from: number; to: number; candidates: string[]; left: number; top: number } | null>(null);
+  const [dropdown, setDropdown] = useState<{ from: number; to: number; candidates: string[]; id: string; left: number; top: number } | null>(null);
 
   // 重算 hotwords 装饰：用最新 segments + doc 算 ranges，dispatch setHotwords。
   // 失配（segments 拼接 != doc）→ 跳过保留已有装饰。后端无 segments → 全清。
@@ -449,6 +448,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
       from,
       to,
       candidates,
+      id,
       left: coords.left - (hostRect?.left ?? 0),
       top: coords.bottom - (hostRect?.top ?? 0) + 2,
     });
@@ -461,8 +461,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     const dd = dropdown;
     if (!view || !dd) return;
     setDropdown(null);
-    // 清除该位置的 hotword 装饰（选定后变 Edited，不再显示下拉）
-    view.dispatch({ effects: removeHotwordAt.of(dd.from) });
+    // 按 UUID 清除该 hotword 装饰（选定后变 Edited，不再显示下拉）
+    view.dispatch({ effects: removeHotwordById.of(dd.id) });
     // dispatch 替换 [from, to) → candidate（CM6 对相同文本的替换是 no-op changes，但 dirtyRange 仍标记）
     view.dispatch({
       changes: { from: dd.from, to: dd.to, insert: candidate },
