@@ -685,6 +685,7 @@ settings:
     renameHint: 点击重命名
     wordsCount: 词
     addPlaceholder: 人名 / 地名 / 术语
+    usageHint: 💡 只加引擎容易识别错的专有名词（人名/地名/专业术语），不加常用词——常用词反而增加误纠
     batchPlaceholder: 批量添加，任意空白（空格/Tab/换行）分割
     addBtn: 添加
     appendBtn: 追加

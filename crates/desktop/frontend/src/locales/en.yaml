@@ -678,6 +678,7 @@ settings:
     renameHint: Click to rename
     wordsCount: words
     addPlaceholder: Names / Places / Terms
+    usageHint: "💡 Add only proper nouns the engine misrecognizes (names/places/terms), not common words — common words increase false corrections"
     batchPlaceholder: Batch add, split by any whitespace (space/Tab/newline)
     addBtn: Add
     appendBtn: Append

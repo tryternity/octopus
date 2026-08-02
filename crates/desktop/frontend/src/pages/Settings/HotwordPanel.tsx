@@ -397,6 +397,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
       {/* ════ TAB 2：词典维护（原左栏词典列表 + 右栏热词卡） ════ */}
       {subTab === 'manage' && (
         <>
+      {/* 使用提示 */}
+      <p className="text-xs text-muted-foreground">{t('settings.hotword.usageHint')}</p>
 
       {/* ════ 下方分栏：左词典列表 + 右热词面板 ════ */}
       <div className="flex min-h-0 flex-1 gap-4">
