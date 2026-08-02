@@ -247,11 +247,20 @@ pub fn purge_expired_hotword_tombstones(now_secs: i64) -> Result<usize> {
             "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
             params![word_cutoff],
         )?;
-        if purged_sets > 0 || n > 0 {
+        // 3. hotword_hits 孤儿清理：词在所有活跃词典（is_deleted=0 的 hotword_words）消失 → 命中清零。
+        //    放在删 word tombstone 之后——保证超期硬删的词的 hits 也被清。hits 不参与 sync，
+        //    各机独立按本地活跃词集合判定孤儿，无跨设备复活问题。详见 tombstone-gc spec §5。
+        let orphan_hits = conn.execute(
+            "DELETE FROM hotword_hits WHERE word NOT IN \
+             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+            [],
+        )?;
+        if purged_sets > 0 || n > 0 || orphan_hits > 0 {
             log::info!(
-                "[hotword-gc] purged {} set tombstones + {} word tombstones (cutoff={})",
+                "[hotword-gc] purged {} set tombstones + {} word tombstones + {} orphan hits (cutoff={})",
                 purged_sets,
                 n,
+                orphan_hits,
                 cutoff
             );
         }
@@ -290,7 +299,16 @@ pub fn purge_all_hotword_tombstones() -> Result<usize> {
         }
         // 所有 word tombstone（不限年龄）
         let n = conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
-        log::info!("[hotword-gc] manual purge: {} sets + {} words", purged, n);
+        // hotword_hits 孤儿清理（同 purge_expired 逻辑，详见 tombstone-gc spec §5）
+        let orphan_hits = conn.execute(
+            "DELETE FROM hotword_hits WHERE word NOT IN \
+             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+            [],
+        )?;
+        log::info!(
+            "[hotword-gc] manual purge: {} sets + {} words + {} orphan hits",
+            purged, n, orphan_hits
+        );
         Ok(purged)
     })
 }
@@ -1251,6 +1269,78 @@ mod tests {
         assert_eq!(count_hotword_tombstones_pub(&conn).unwrap(), 0);
     }
 
+    /// GC 清 hotword_hits 孤儿：词在所有活跃词典消失 → 命中行清零。
+    /// 跨 set 同词（任一活跃 set 存在）→ 保留。
+    #[test]
+    fn purge_orphan_hotword_hits_when_word_fully_gone() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        // set-A 活跃，含「苹果」；set-B 活跃，含「香蕉」
+        insert_hotword_set_at(&conn, "set-A", "词典A").unwrap();
+        add_word_to_set_at(&conn, "set-A", "苹果").unwrap();
+        insert_hotword_set_at(&conn, "set-B", "词典B").unwrap();
+        add_word_to_set_at(&conn, "set-B", "香蕉").unwrap();
+
+        // 三词各 bump 命中（橘子从无词记录——纯孤儿）
+        bump_hotword_hit_by_word_at(&conn, "苹果").unwrap();
+        bump_hotword_hit_by_word_at(&conn, "香蕉").unwrap();
+        bump_hotword_hit_by_word_at(&conn, "橘子").unwrap();
+
+        // 无 tombstone，now 取当前——purge_expired 不删 set/词，但应清孤儿 hits
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        assert_eq!(purged, 0, "无 tombstone，set 不删");
+
+        // 橘子（孤儿）被清；苹果/香蕉（活跃词）保留
+        let hits = list_hotword_hits_at(&conn).unwrap();
+        assert_eq!(hits.get("苹果"), Some(&1i64), "活跃词命中应保留");
+        assert_eq!(hits.get("香蕉"), Some(&1i64), "活跃词命中应保留");
+        assert!(!hits.contains_key("橘子"), "孤儿词命中应被清");
+    }
+
+    /// GC 后 hotword_hits 「同词在另一活跃 set 存在」→ 保留，不误清。
+    #[test]
+    fn purge_keeps_hits_when_word_still_active_in_any_set() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+
+        // set-A、set-B 都含「苹果」（跨 set 同词）
+        insert_hotword_set_at(&conn, "set-A", "词典A").unwrap();
+        add_word_to_set_at(&conn, "set-A", "苹果").unwrap();
+        insert_hotword_set_at(&conn, "set-B", "词典B").unwrap();
+        add_word_to_set_at(&conn, "set-B", "苹果").unwrap();
+
+        bump_hotword_hit_by_word_at(&conn, "苹果").unwrap();
+        bump_hotword_hit_by_word_at(&conn, "苹果").unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT hit_count FROM hotword_hits WHERE word='苹果'", [], |r| r.get(0)).unwrap(),
+            2
+        );
+
+        // 软删 set-A（超期 tombstone），GC 硬删 set-A + 其词记录
+        conn.execute(
+            "UPDATE hotword_sets SET is_deleted=1000 WHERE id='set-A'",
+            [],
+        )
+        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let purged = purge_expired_hotword_tombstones_pub(&conn, now).unwrap();
+        assert_eq!(purged, 1, "硬删 1 个超期 set tombstone");
+
+        // 「苹果」在 set-B 仍活跃 → hits 保留，hit_count 不变
+        let hits = list_hotword_hits_at(&conn).unwrap();
+        assert_eq!(hits.get("苹果"), Some(&2i64), "跨 set 同词在任一活跃 set 存在 → 命中保留");
+    }
+
     // 测试用 pub 包装（避免 ensure_db/with_db 在 in-memory 测里走全局 DB）
     fn purge_expired_hotword_tombstones_pub(conn: &Connection, now_secs: i64) -> Result<usize> {
         let cutoff = now_secs - HOTWORD_TOMBSTONE_RETENTION_SECS;
@@ -1270,6 +1360,12 @@ mod tests {
         let _ = conn.execute(
             "DELETE FROM hotword_words WHERE is_deleted > 0 AND is_deleted < ?1",
             params![cutoff],
+        )?;
+        // hotword_hits 孤儿清理（与生产函数同步——详见 tombstone-gc spec §5）
+        let _ = conn.execute(
+            "DELETE FROM hotword_hits WHERE word NOT IN \
+             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+            [],
         )?;
         Ok(purged_sets)
     }
@@ -1293,6 +1389,12 @@ mod tests {
             purged += 1;
         }
         conn.execute("DELETE FROM hotword_words WHERE is_deleted > 0", [])?;
+        // hotword_hits 孤儿清理（与生产函数同步——详见 tombstone-gc spec §5）
+        conn.execute(
+            "DELETE FROM hotword_hits WHERE word NOT IN \
+             (SELECT word FROM hotword_words WHERE is_deleted = 0)",
+            [],
+        )?;
         Ok(purged)
     }
 }
