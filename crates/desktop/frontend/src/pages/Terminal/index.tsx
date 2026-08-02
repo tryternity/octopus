@@ -93,17 +93,25 @@ export default function Terminal() {
   fontSizeRef.current = fontSize;
 
   useEffect(() => {
-    invoke<{ config: Record<string, unknown> }>("get_config")
-      .then((res) => {
-        const cfg = res.config;
-        const size = cfg.terminal_font_size;
-        const family = cfg.terminal_font_family;
-        if (typeof size === "number" && size > 0) setFontSize(size);
-        if (typeof family === "string" && family.length > 0) setFontFamily(family);
-      })
-      .catch(() => {
-        // terminal 窗口可能未注册 get_config 命令——静默降级用默认字体
-      });
+    // 读 config 字体（mount + config-changed 都调）
+    const loadFontConfig = () => {
+      invoke<{ config: Record<string, unknown> }>("get_config")
+        .then((res) => {
+          const cfg = res.config;
+          const size = cfg.terminal_font_size;
+          const family = cfg.terminal_font_family;
+          if (typeof size === "number" && size > 0) setFontSize(size);
+          if (typeof family === "string" && family.length > 0) setFontFamily(family);
+        })
+        .catch(() => {
+          // terminal 窗口可能未注册 get_config 命令——静默降级用默认字体
+        });
+    };
+    loadFontConfig();
+    // 设置页改字体后（不同窗口），set_config emit config-changed → 重读
+    let unlisten: (() => void) | null = null;
+    listen("config-changed", loadFontConfig).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { unlisten?.(); };
   }, []);
 
   // Cmd/Ctrl+= / - → clamp 8-32 + setState（触发 useTerminalSession 字体 effect）+ persist
