@@ -25,12 +25,10 @@ const HOTWORD_SET_COLS: &str = "id, name, enabled, created_at, updated_at, sync_
 
 /// 单个热词词典（版本）的词数上限（2026-08-01）。
 ///
-/// 限制理由：① 加载时 `HotwordIndex::from_words` 构建 O(N) 索引（2万词 ~8ms，一次性）；
-/// ② 热路径查询是 O(1) HashMap lookup（by_len_py 双层 HashMap），词数不影响查询速度，
-/// 开销只在同音词聚集的 key 下排序（最差 ~30 词/key，μs 级）。
-/// 20000 覆盖专业领域词库导入（如 THUOCL IT 词表 16000 词），5 词典 × 2万 = 10万词
-/// 流式 correct 最差 ~0.15ms/帧（占 200ms tick 0.07%），性能可接受。
-pub const HOTWORD_SET_MAX_WORDS: usize = 20000;
+/// 限制理由：热词只加专有名词（人名/地名/术语），不加常用词——
+/// 常用词增加碰撞面导致误纠。3000 覆盖典型场景（专有名词/产品名/术语），
+/// 超出建议用户另建新词典分摊。
+pub const HOTWORD_SET_MAX_WORDS: usize = 3000;
 
 /// tombstone 保留时长（秒）——超过此时长的软删 set/词被 GC 硬删。硬编码 10 天。
 ///
