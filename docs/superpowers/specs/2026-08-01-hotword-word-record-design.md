@@ -90,7 +90,8 @@ struct HotwordWordFile {
     set_id: String,
     word: String,
     pinyin: String,
-    is_deleted: bool,
+    /// 0=活跃，>0=删除时刻 epoch 秒（tombstone）。统一语义（GC 2026-08-02，原 bool 0/1）。
+    is_deleted: i64,
     created_at: String,
     updated_at: String,
 }
