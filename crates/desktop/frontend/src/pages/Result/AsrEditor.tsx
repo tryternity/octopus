@@ -115,14 +115,20 @@ const hotwordsField = StateField.define<DecorationSet>({
             if (id) existingIds.add(id);
             iter.next();
           }
-          // 新 id 追加；已有 id 保留 map 后 offset
+          // 新 id 追加；已有 id 保留 map 后 offset。
+          // 装饰自带 candidates（JSON 序列化）——点击时直接从装饰读，不依赖 segmentsRef
+          // （避免选定某个后 segmentsRef 变化与装饰保留的时序不一致导致点击无候选）。
           const toAdd: Range<Decoration>[] = [];
           for (const r of e.value) {
             if (!existingIds.has(r.id)) {
               toAdd.push(
                 Decoration.mark({
                   class: "cm-hotword",
-                  attributes: { "data-hw": r.candidates[0] ?? "", "data-hw-id": r.id },
+                  attributes: {
+                    "data-hw": r.candidates[0] ?? "",
+                    "data-hw-id": r.id,
+                    "data-hw-cands": JSON.stringify(r.candidates),
+                  },
                 }).range(r.from, r.to),
               );
             }
@@ -419,32 +425,35 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   useEffect(() => { refreshHotwords(); }, [segments, refreshHotwords]);
 
   // 点击 .cm-hotword → 打开候选下拉浮层。
+  // 从装饰 DOM 直接读 candidates（data-hw-cands），不依赖 segmentsRef——
+  // 避免"选定某个后 segmentsRef 变化与装饰保留（UUID）时序不一致导致点击无候选"。
   const handleHotwordClick = useCallback((event: MouseEvent) => {
     const view = viewRef.current;
     if (!view) return;
     const target = event.target as HTMLElement;
-    if (!target.closest(".cm-hotword")) return;
-    // CM6 posAtCoords 需要 {x, y}（客户端坐标，相对视口）
+    const span = target.closest(".cm-hotword") as HTMLElement | null;
+    if (!span) return;
+    const candsJson = span.getAttribute("data-hw-cands");
+    if (!candsJson) return;
+    let candidates: string[];
+    try { candidates = JSON.parse(candsJson); } catch { return; }
+    if (!Array.isArray(candidates) || candidates.length === 0) return;
+    // CM6 posAtCoords 定位点击的 char offset
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (pos == null) return;
-    // 在当前 segments 里找包含 pos 的 hotwords 段
-    const segs = segmentsRef.current;
-    if (!segs) return;
-    const doc = view.state.doc.toString();
-    const ranges = hotwordRanges(segs, doc);
-    const hit = ranges.find((r) => pos >= r.from && pos < r.to);
-    if (!hit) return;
+    // 从装饰 StateField 读该位置的精确 [from,to]（比 posAtCoords 更准）
+    const decos = view.state.field(hotwordsField);
+    let from = pos, to = pos + 1;
+    decos.between(pos, pos, (f, t) => { from = f; to = t; });
     event.preventDefault();
     event.stopPropagation();
-    // 浮层定位：段起点的屏幕坐标（coordsAtPos 返回相对视口的 Rect）
-    const coords = view.coordsAtPos(hit.from);
+    const coords = view.coordsAtPos(from);
     if (!coords) return;
-    // host 容器的视口偏移（浮层绝对定位相对 host）
     const hostRect = hostRef.current?.getBoundingClientRect();
     setDropdown({
-      from: hit.from,
-      to: hit.to,
-      candidates: hit.candidates,
+      from,
+      to,
+      candidates,
       left: coords.left - (hostRect?.left ?? 0),
       top: coords.bottom - (hostRect?.top ?? 0) + 2,
     });
