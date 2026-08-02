@@ -429,6 +429,9 @@ impl Transcript {
     /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
     pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
 
+    /// 是否含 Hotwords 段（流式 emit 判定：有则须传 segments 保留下拉装饰，无新候选也不清空）。
+    pub fn has_hotwords(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Hotwords) }
+
     /// 标记 Hotwords 段：drain_candidates 拿到 (word, candidates) 列表后，
     /// 在 segments 里找到含 word 的段（子串匹配），把 word 劈出来标 Hotwords。
     ///
@@ -1114,6 +1117,34 @@ mod tests {
         // "入河乙" 劈成 [hotwords("入河")][raw("乙")]，caret_gap=1 不变（在被劈段之前）
         assert_eq!(t.caret_gap, 1, "中插态 caret_gap 在劈段前不应动");
         assert!(t.is_inserting());
+    }
+
+    #[test]
+    fn has_hotwords_detects_marked_segment() {
+        let mut t = Transcript::new(9, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("前")];
+        assert!(!t.has_hotwords());
+        t.mark_hotwords(&[("前".to_string(), vec!["前".to_string(), "钱".to_string()])]);
+        assert!(t.has_hotwords(), "标记后应含 Hotwords 段");
+    }
+
+    #[test]
+    fn has_hotwords_preserved_after_append_no_new_hit() {
+        // 回归问题 2：首次标记 Hotwords 段后，后续新语音（无新热词命中）追加，
+        // transcript 仍含 Hotwords 段 → has_hotwords=true → emit 应传 segments 保装饰。
+        let mut t = Transcript::new(10, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.apply_engine_full("测试入河");
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string(), "如何".to_string()])]);
+        assert!(t.has_hotwords());
+        // 后续新语音（无新热词）
+        t.apply_engine_full("测试入河后面");
+        assert!(t.has_hotwords(), "追加后 Hotwords 段仍在");
+        // Hotwords 段文本不变（未被破坏）
+        assert!(t.segments.iter().any(|s| s.kind == SegmentKind::Hotwords && s.text == "入河"),
+            "Hotwords 段应保留，实际 segs={:?}", t.segments);
+        // segments_json 含 hotwords 段（前端据此渲染）
+        let j = t.segments_json();
+        assert!(j.contains("\"kind\":\"hotwords\""), "segments_json 应含 hotwords 段");
     }
 
     #[test]

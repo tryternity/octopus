@@ -177,9 +177,10 @@ impl LightCorrector {
                         window_word, hw
                     );
                     self.pending_hits.lock().push(hw.clone());
-                    // 多候选（>1 个非原词热词）→ 收集候选列表供 Hotwords 段展示
+                    // 多候选（>1 个热词候选）→ 收集完整候选列表（含原词）供 Hotwords 段展示。
+                    // 含原词：用户可能想选回原文（原词也是合法候选）。mark_hotwords 匹配的 word
+                    // 是替换后的 hw，候选列表给用户全选项（含原词 + 替换词 + 其他同音热词）。
                     let hotword_candidates: Vec<String> = candidates.iter()
-                        .filter(|c| *c != &window_word)
                         .take(5)  // 兜底保护：最多 5 个
                         .cloned()
                         .collect();
@@ -514,12 +515,12 @@ mod tests {
 
     #[test]
     fn test_drain_candidates_collects_multi_hit() {
-        // 多命中（>1 非原词热词）时 drain_candidates 收集候选列表；
-        // 单命中（仅 1 个非原词热词）不收集（无选择意义）。
+        // 多命中（>1 候选）时 drain_candidates 收集完整候选列表（含原词）。
+        // 含原词：用户可能想选回原文（原词也是合法候选）。
         let _g = serial();
         set_rules(&[]);
         let _ = drain_candidates(); // 清空前序残留
-        // 「浮窗」「福川」同音（归一后），输入「福创」→ 两候选 → 收集
+        // 「浮窗」「福川」同音（归一后），输入「福创」→ 候选 [浮窗, 福川, 福创(原词)]
         let c = with_hotwords_scored(&[("浮窗", 5), ("福川", 1)]);
         assert_eq!(c.correct("福创"), "浮窗");
         let cands = drain_candidates();
@@ -528,20 +529,25 @@ mod tests {
         assert_eq!(word, "浮窗", "命中的词 = 替换后的词");
         assert!(list.contains(&"浮窗".to_string()), "候选含浮窗");
         assert!(list.contains(&"福川".to_string()), "候选含福川");
-        assert!(list.len() >= 2, "至少 2 个候选");
+        assert!(list.contains(&"福创".to_string()), "候选含原词福创（用户可选回原文）");
+        assert!(list.len() >= 3, "至少 3 个候选（2 热词 + 原词）");
         // drain 后清空
         assert!(drain_candidates().is_empty());
     }
 
     #[test]
-    fn test_drain_candidates_skips_single_hit() {
-        // 单命中（仅 1 个热词，原词非热词）→ 不收集（无下拉选择意义）。
+    fn test_drain_candidates_single_hit_includes_original() {
+        // 单热词命中：候选含热词 + 原词（用户可选回原文），len=2 > 1 → 收集。
         let _g = serial();
         set_rules(&[]);
         let _ = drain_candidates();
         let c = with_hotwords(&["浮窗"]); // 仅 1 个热词
         assert_eq!(c.correct("开福川"), "开浮窗");
-        assert!(drain_candidates().is_empty(), "单命中不应收集候选");
+        let cands = drain_candidates();
+        assert_eq!(cands.len(), 1, "单热词命中也收集（含原词选项）");
+        let (_, list) = &cands[0];
+        assert!(list.contains(&"浮窗".to_string()), "候选含热词浮窗");
+        assert!(list.contains(&"福川".to_string()), "候选含原词福川");
     }
 
     #[test]
