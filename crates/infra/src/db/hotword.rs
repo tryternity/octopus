@@ -25,10 +25,12 @@ const HOTWORD_SET_COLS: &str = "id, name, enabled, created_at, updated_at, sync_
 
 /// 单个热词词典（版本）的词数上限（2026-08-01）。
 ///
-/// 限制理由：① 加载时 `HotwordIndex::from_words` 构建 O(N) 索引；② fuzzy 搜索
-/// `match_score` 逐词 O(N) 匹配。词数过大影响启动 + 搜索性能。3000 覆盖典型场景
-/// （专业术语/专有名词），超出建议用户另建新词典分摊。
-pub const HOTWORD_SET_MAX_WORDS: usize = 3000;
+/// 限制理由：① 加载时 `HotwordIndex::from_words` 构建 O(N) 索引（2万词 ~8ms，一次性）；
+/// ② 热路径查询是 O(1) HashMap lookup（by_len_py 双层 HashMap），词数不影响查询速度，
+/// 开销只在同音词聚集的 key 下排序（最差 ~30 词/key，μs 级）。
+/// 20000 覆盖专业领域词库导入（如 THUOCL IT 词表 16000 词），5 词典 × 2万 = 10万词
+/// 流式 correct 最差 ~0.15ms/帧（占 200ms tick 0.07%），性能可接受。
+pub const HOTWORD_SET_MAX_WORDS: usize = 20000;
 
 /// tombstone 保留时长（秒）——超过此时长的软删 set/词被 GC 硬删。硬编码 10 天。
 ///
@@ -961,12 +963,22 @@ mod tests {
 
     // ── 容量上限 HOTWORD_SET_MAX_WORDS（v57：按 hotword_words 行数校验）──
 
-    /// 生成 n 个不重复的伪词（w0..w{n-1}）。
-    fn fake_words(n: usize) -> Vec<String> {
-        (0..n).map(|i| format!("w{}", i)).collect()
+    /// 事务批量 INSERT n 个伪词到 set（绕过容量校验，填充到接近/达上限）。
+    /// 事务包裹比逐条 INSERT 快约 10x（2 万词 ~30ms vs ~300ms）。
+    fn fill_words_batch(conn: &Connection, set_id: &str, n: usize) {
+        conn.execute_batch("BEGIN").unwrap();
+        for i in 0..n {
+            let w = format!("w{}", i);
+            let id = crate::hotword_text::hotword_word_uuid(set_id, &w);
+            conn.execute(
+                "INSERT OR IGNORE INTO hotword_words (id, set_id, word, pinyin, is_deleted) VALUES (?1, ?2, ?3, '', 0)",
+                params![id, set_id, w],
+            ).unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
     }
 
-    /// add_word_to_set_at：满 3000 后再加被拒。
+    /// add_word_to_set_at：满上限后再加被拒。
     #[test]
     fn add_single_word_rejects_when_at_capacity() {
         let conn = Connection::open_in_memory().unwrap();
@@ -974,21 +986,15 @@ mod tests {
         conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
         insert_hotword_set_at(&conn, "cap-one", "单词容量测试").unwrap();
 
-        // 填满 3000 词（直接批量 INSERT，绕过容量校验填充）
-        for w in fake_words(HOTWORD_SET_MAX_WORDS) {
-            let id = crate::hotword_text::hotword_word_uuid("cap-one", &w);
-            conn.execute(
-                "INSERT OR IGNORE INTO hotword_words (id, set_id, word, pinyin, is_deleted) VALUES (?1, ?2, ?3, '', 0)",
-                params![id, "cap-one", w],
-            ).unwrap();
-        }
+        // 填满上限词（事务批量 INSERT，绕过容量校验填充）
+        fill_words_batch(&conn, "cap-one", HOTWORD_SET_MAX_WORDS);
 
-        // 再加一个新词 → 3001，应被拒
+        // 再加一个新词 → 超限，应被拒
         let err = add_word_to_set_at(&conn, "cap-one", "溢出词").unwrap_err();
         assert!(err.to_string().contains("容量已满"), "满后再加应拒：{}", err);
     }
 
-    /// add_words_to_set_at：批量追加后超 3000 被拒。
+    /// add_words_to_set_at：批量追加后超上限被拒。
     #[test]
     fn add_words_rejects_when_exceeding_capacity() {
         let conn = Connection::open_in_memory().unwrap();
@@ -996,17 +1002,12 @@ mod tests {
         conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
         insert_hotword_set_at(&conn, "cap-add", "批量容量测试").unwrap();
 
-        // 先填 2999 词
-        for w in fake_words(2999) {
-            let id = crate::hotword_text::hotword_word_uuid("cap-add", &w);
-            conn.execute(
-                "INSERT OR IGNORE INTO hotword_words (id, set_id, word, pinyin, is_deleted) VALUES (?1, ?2, ?3, '', 0)",
-                params![id, "cap-add", w],
-            ).unwrap();
-        }
+        // 先填到上限 - 1
+        fill_words_batch(&conn, "cap-add", HOTWORD_SET_MAX_WORDS - 1);
 
-        // 再批量加 5 词 → 3004，超限被拒
-        let extra: Vec<String> = (2999..2999 + 5).map(|i| format!("w{}", i)).collect();
+        // 再批量加 5 词 → 超限被拒
+        let base = HOTWORD_SET_MAX_WORDS - 1;
+        let extra: Vec<String> = (base..base + 5).map(|i| format!("w{}", i)).collect();
         let err = add_words_to_set_at(&conn, "cap-add", &extra).unwrap_err();
         assert!(err.to_string().contains("容量已满"), "超限应拒：{}", err);
     }
