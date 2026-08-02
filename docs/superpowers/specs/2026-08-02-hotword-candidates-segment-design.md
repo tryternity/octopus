@@ -54,8 +54,9 @@ pub struct Segment {
 **stop 兜底**（`finalize_after_stop`）：同样 drain_candidates + mark_hotwords，覆盖流式
 未 drain 的残留（如 close 时引擎 end-of-stream 纠正）。
 
-`mark_hotwords`：在 transcript.segments 里找到 text == word 的段（可能有多个匹配——取第一个未标记的），
-标记 kind = `Hotwords`，candidates = Some(candidates)。
+`mark_hotwords`：在 transcript.segments 里找**含 word 子串**的段（流式/VadSegmented 场景段是整句，
+word 是单个词，精确匹配 text==word 永远匹配不到）。子串劈段：含 word 的段劈成
+`[前缀(原kind)] + [word(Hotwords)] + [后缀(原kind)]`。已标 Hotwords/Edited 跳过（用户已选定）。
 
 ### 前端 CM6 渲染（Task 4 已实现）
 
