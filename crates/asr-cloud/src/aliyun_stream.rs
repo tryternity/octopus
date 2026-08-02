@@ -248,6 +248,22 @@ async fn run_ws_session(
                         }
                     }
                     Message::Binary(_) => {} // binary 等忽略
+                    Message::Close(_) => {
+                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                        // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态句
+                        // 发 Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
+                        log::debug!("aliyun(FunASR): WS 连接关闭");
+                        if !committed.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(committed.clone()));
+                            let _ = result_tx.send(StreamEvent::Finished);
+                        } else {
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                "aliyun(FunASR) WS 连接关闭但未收到稳态识别结果".into()
+                            ));
+                        }
+                        return Ok(());
+                    }
                     _ => {}
                 }
             }
@@ -517,6 +533,23 @@ async fn run_qwen_realtime_session(
                         }
                     }
                     Message::Binary(_) => {} // binary 等忽略
+                    Message::Close(_) => {
+                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                        // close_async 把 partial 当成功（#3）。现显式处理：有已提交稳态
+                        // 文本（...completed 累积的 accumulated_text）发 Finished，否则
+                        // Failed 暴露异常（参照 baidu_stream.rs:214）。
+                        log::debug!("aliyun(Qwen): WS 连接关闭");
+                        if !accumulated_text.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(accumulated_text.clone()));
+                            let _ = result_tx.send(StreamEvent::Finished);
+                        } else {
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                "aliyun(Qwen) WS 连接关闭但未收到稳态识别结果".into()
+                            ));
+                        }
+                        return Ok(());
+                    }
                     _ => {}
                 }
             }

@@ -218,7 +218,24 @@ async fn run_tencent_session(
                     Message::Binary(_) => {
                         // 腾讯 ASR 不发 binary 响应，忽略
                     }
-                    _ => {} // ping/close 等忽略
+                    Message::Close(_) => {
+                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                        // close_async 把 partial 当成功（#3）。现显式处理：有稳态结果发
+                        // Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
+                        log::debug!("tencent: WS 连接关闭");
+                        let stable: String = stable_segments.values().cloned().collect();
+                        if !stable.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(stable));
+                            let _ = result_tx.send(StreamEvent::Finished);
+                        } else {
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                "tencent WS 连接关闭但未收到稳态识别结果".into()
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    _ => {} // ping 等忽略
                 }
             }
         }

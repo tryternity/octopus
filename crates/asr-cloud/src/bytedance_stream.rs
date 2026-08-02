@@ -69,6 +69,7 @@ const SER_NONE: u8 = 0x0;
 const SER_JSON: u8 = 0x1;
 
 const COMP_GZIP: u8 = 0x1;
+const COMP_NONE: u8 = 0x0;
 
 /// 建连 + 发初始 config + 推 pre-roll PCM + 启动后台 WS task。
 ///
@@ -181,7 +182,7 @@ async fn run_bytedance_session(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             &pcm,
         )?;
         ws.send(Message::binary(audio_frame))
@@ -190,6 +191,12 @@ async fn run_bytedance_session(
     }
 
     // 4. 双向循环
+    // bytedance 无累加器——每帧 result.text 直接发 Text 事件（且是该次识别的累积文本）。
+    // 为处理服务端主动 Close（#4），记录最后一次 text；Close 时若有 text 则当 best-effort
+    // Finished（用户至少拿到已识别内容），否则 Failed。注意：稳态确认仅末帧（flags==0x3）
+    // 才发，发了就 return，故 Close 路径下 flags==0x3 必然未到——Close 携带的 text 是
+    // 「未到末帧的最佳识别」，按异常但可用的结果处理。
+    let mut last_text: Option<String> = None;
     loop {
         tokio::select! {
             // 收 PCM 指令
@@ -200,7 +207,7 @@ async fn run_bytedance_session(
                             MSG_AUDIO_ONLY_REQUEST,
                             FLAG_NO_SEQUENCE,
                             SER_NONE,
-                            COMP_GZIP,
+                            COMP_NONE,
                             &pcm,
                         )?;
                         ws.send(Message::binary(audio_frame))
@@ -213,7 +220,7 @@ async fn run_bytedance_session(
                             MSG_AUDIO_ONLY_REQUEST,
                             FLAG_NEG_SEQUENCE,
                             SER_NONE,
-                            COMP_GZIP,
+                            COMP_NONE,
                             &[],
                         )?;
                         ws.send(Message::binary(last_frame))
@@ -252,6 +259,7 @@ async fn run_bytedance_session(
                             let json_val: Value = serde_json::from_str(&json_str)
                                 .context("bytedance 响应 JSON 解析失败")?;
                             if let Some(text) = json_val["result"]["text"].as_str() {
+                                last_text = Some(text.to_string());
                                 let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                             }
                             if parsed.flags == 0x3 {
@@ -272,7 +280,24 @@ async fn run_bytedance_session(
                             log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
                         }
                     }
-                } // text/close/ping 等忽略
+                } else if let Message::Close(_) = msg {
+                    // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现注释「text/close/ping
+                    // 等忽略」未处理 Close → 随后 ws.next() 返 Ok(None) → break →
+                    // return Ok(()) 无终态事件，close_async 把 partial 当成功（#3）。
+                    // 现显式处理：有 text（best-effort，未到末帧）发 Finished 让用户拿到
+                    // 已识别内容；无 text 发 Failed 暴露异常。
+                    log::debug!("bytedance: WS 连接关闭");
+                    if let Some(t) = last_text.take() {
+                        let _ = result_tx.send(StreamEvent::Text(t));
+                        let _ = result_tx.send(StreamEvent::Finished);
+                    } else {
+                        let _ = result_tx.send(StreamEvent::Failed(
+                            "bytedance WS 连接关闭但未收到识别结果".into()
+                        ));
+                    }
+                    return Ok(());
+                }
+                // text/ping 等忽略
             }
         }
     }
@@ -401,34 +426,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_client_frame_audio() {
-        let payload = b"test_audio";
+    fn test_build_client_frame_audio_uses_none_compression() {
+        // 回归 #6：PCM s16le 高熵，gzip 无效（ratio 0.9-1.1）且双向编解码是热路径 CPU 浪费。
+        // 音频帧（含 pre-roll / realtime / 末帧）改 COMP_NONE，协议合法（0x0=NONE）。
+        let payload = b"test_audio_pcm_s16le";
         let frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             payload,
         ).unwrap();
-        // header 4B + payload_size 4B + gzip(payload)
+        // header 4B + payload_size 4B + raw payload（未压缩，长度等于 payload）
         assert_eq!(frame[0], 0x11); // ver=1, hdr=1
         assert_eq!((frame[1] >> 4) & 0xF, MSG_AUDIO_ONLY_REQUEST);
         assert_eq!(frame[1] & 0xF, FLAG_NO_SEQUENCE);
         assert_eq!((frame[2] >> 4) & 0xF, SER_NONE);
-        assert_eq!(frame[2] & 0xF, COMP_GZIP);
+        assert_eq!(frame[2] & 0xF, COMP_NONE, "音频帧 compression 必须是 NONE");
+        // payload 原样保留（未 gzip）
+        let payload_size = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
+        assert_eq!(payload_size as usize, payload.len(), "NONE 帧长度 == 原始 payload");
+        assert_eq!(&frame[8..], payload);
     }
 
     #[test]
-    fn test_build_client_frame_last() {
+    fn test_build_client_frame_last_uses_none_compression() {
+        // 末帧（空 payload）也用 COMP_NONE（与音频帧一致）
         let frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NEG_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             &[],
         ).unwrap();
         // 末帧 flags = 0x2 (NEG_SEQUENCE)
         assert_eq!(frame[1] & 0xF, FLAG_NEG_SEQUENCE);
+        assert_eq!(frame[2] & 0xF, COMP_NONE);
+    }
+
+    /// 初始 JSON config 帧仍用 GZIP（文本可压，合理）——确保未误改。
+    #[test]
+    fn test_build_client_frame_config_uses_gzip() {
+        let config = r#"{"user":{"uid":"test"}}"#;
+        let frame = build_client_frame(
+            MSG_FULL_CLIENT_REQUEST,
+            FLAG_NO_SEQUENCE,
+            SER_JSON,
+            COMP_GZIP,
+            config.as_bytes(),
+        ).unwrap();
+        assert_eq!((frame[2] >> 4) & 0xF, SER_JSON);
+        assert_eq!(frame[2] & 0xF, COMP_GZIP, "JSON config 帧保持 GZIP（文本可压）");
     }
 
     #[test]

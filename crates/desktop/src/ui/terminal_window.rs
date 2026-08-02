@@ -7,12 +7,26 @@
 //! macOS：开窗切 Regular（Dock 显图标），所有终端窗口关闭后切回 Accessory，
 //! 与 settings / compact_editor 对称（注册在 activation::REGULAR_WINDOWS 用通配判断）。
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 终端窗口 label 前缀（实际 label = `terminal_<n>`，capabilities 用 `terminal_*`）。
 pub const WINDOW_LABEL_PREFIX: &str = "terminal_";
+
+/// 前端 listener 注册后向本窗口 emit 的事件名。
+///
+/// 新建 agent 窗口时 React mount 是异步的，`terminal://new-tab` listener 在首帧
+/// 才注册。后端若固定 sleep(250ms) 后 emit，慢 mount（冷启动/老机器/debug build）
+/// 会撞上未注册的 listener → 事件被 Tauri 静默丢弃 → 空终端。
+///
+/// 改为「前端 ready 回拉」：前端 listener 注册成功后 emit 本事件，后端收到才 emit
+/// new-tab；带 READY_TIMEOUT 兜底，超时则强制 emit 一次（避免 ready 永不到时命令彻底丢）。
+const READY_EVENT: &str = "terminal://ready";
+/// 等前端 ready 的超时。超过则强制 emit new-tab 一次（前端可能仍在 mount，事件可能
+/// 丢失，但比「命令彻底丢」强——至少快 mount 的场景有救）。
+const READY_TIMEOUT_MS: u64 = 5000;
 
 /// ActionBar 联动事件 payload（emit "terminal://new-tab"）。
 /// 前端 listen 后新开 tab，cwd 作为 shell 启动目录，command 写入 shell（如 `claude`）。
@@ -69,6 +83,41 @@ fn urlencode(s: &str) -> String {
     }
     out
 }
+
+/// 新窗口场景：等前端 listener 注册（`terminal://ready`）后再 emit new-tab，避免
+/// 慢 mount 时事件被 Tauri 静默丢弃。带 READY_TIMEOUT_MS 兜底——超时则强制 emit 一次。
+///
+/// `fired` 防重复 emit（ready 先到则取消 watchdog；watchdog 先到则忽略后续 ready）。
+/// 用法：建窗后直接调此函数，主调线程立即返回（once 注册 + watchdog spawn 后）。
+fn emit_new_tab_on_ready(app_handle: tauri::AppHandle, payload: NewTabPayload) {
+    let label = AGENT_WINDOW_LABEL.to_string();
+    let fired = Arc::new(AtomicBool::new(false));
+
+    // once 收到前端 ready → emit new-tab（若 watchdog 未抢先）。
+    // 每个闭包各 clone 一份 app/label/payload，避免借用冲突。
+    let fired_once = fired.clone();
+    let app_once = app_handle.clone();
+    let label_once = label.clone();
+    let payload_once = payload.clone();
+    let _once_id = app_handle.once(READY_EVENT, move |_e| {
+        if fired_once.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let _ = app_once.emit_to(&label_once, "terminal://new-tab", payload_once);
+        }
+    });
+
+    // watchdog：超时则强制 emit（若 ready 未到）。
+    let fired_wd = fired.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(READY_TIMEOUT_MS));
+        if fired_wd.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            log::warn!(
+                "[terminal] agent 窗口 {READY_TIMEOUT_MS}ms 内未收到 ready，强制 emit new-tab（前端 mount 可能超时）"
+            );
+            let _ = app_handle.emit_to(&label, "terminal://new-tab", payload);
+        }
+    });
+}
+
 
 /// 分配一个新的终端窗口 label（`terminal_<递增id>`）。
 fn alloc_label() -> String {
@@ -202,22 +251,17 @@ pub fn open_terminal_with_command(
             let _ = w.show();
             let _ = w.set_focus();
             log::info!("[terminal] agent window created");
-            // 新窗口 React mount 是异步的，listen 在首帧注册。
-            // 延迟 emit_to 定向推送 command，兜底 mount 完成时序。
-            let app = app_handle.clone();
-            let cmd = command.to_string();
-            let cwd_clone = cwd.map(|s| s.to_string());
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let _ = app.emit_to(
-                    AGENT_WINDOW_LABEL,
-                    "terminal://new-tab",
-                    NewTabPayload {
-                        cwd: cwd_clone,
-                        command: Some(cmd),
-                    },
-                );
-            });
+            // 新窗口 React mount 是异步的，listen 在首帧才注册。固定 sleep(250ms) 在
+            // 慢 mount 时会丢事件。改用「前端 ready 回拉」：等 listener 注册成功后
+            // 前端 emit terminal://ready，本端 once 接收后再 emit new-tab；带
+            // READY_TIMEOUT_MS 兜底（超时强制 emit，至少快 mount 场景有救）。
+            emit_new_tab_on_ready(
+                app_handle.clone(),
+                NewTabPayload {
+                    cwd: cwd.map(|s| s.to_string()),
+                    command: Some(command.to_string()),
+                },
+            );
             Ok(())
         }
         Err(e) => {

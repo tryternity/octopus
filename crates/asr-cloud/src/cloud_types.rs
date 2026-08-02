@@ -123,13 +123,22 @@ impl CloudStreamHandle {
         }
         let mut rx = self.result_rx;
         let mut text = String::new();
-        tokio::time::timeout(
+        // 健康的 WS task 总会发 Finished（成功）或 Failed（错误）作为终态。若 sender
+        // drop 而没发终态（WS task 因服务端主动 Close 静默退出见 #4，或 panic），
+        // rx.recv() 返 None → 循环正常结束。旧实现直接返回 Ok(text)，把 partial/空
+        // 结果当成功，鉴权过期/超时/限流断连时错误被完全吞没。现改为 bail!——与
+        // Failed 分支一致，让调用方能区分「正常完成」与「异常截断」。
+        let mut finished = false;
+        let inner: Result<()> = tokio::time::timeout(
             std::time::Duration::from_secs(CLOUD_CLOSE_TIMEOUT_SECS),
             async {
                 while let Some(event) = rx.recv().await {
                     match event {
                         StreamEvent::Text(t) => text = t,
-                        StreamEvent::Finished => break,
+                        StreamEvent::Finished => {
+                            finished = true;
+                            break;
+                        }
                         StreamEvent::Failed(msg) => bail!("cloud task-failed: {}", msg),
                     }
                 }
@@ -137,7 +146,16 @@ impl CloudStreamHandle {
             },
         )
         .await
-        .map_err(|_| anyhow!("cloud close 超时（{}s）", CLOUD_CLOSE_TIMEOUT_SECS))??;
+        .map_err(|_| anyhow!("cloud close 超时（{}s）", CLOUD_CLOSE_TIMEOUT_SECS))?;
+        inner?;
+        if !finished {
+            // sender drop 但无终态事件——异常截断（服务端断连未发 Failed 等）。
+            // 不返回 partial text（可能不准）；让调用方按错误处理。影响 4 个 provider。
+            bail!(
+                "cloud session closed without terminal event ({} bytes partial text)",
+                text.len()
+            );
+        }
         Ok(text)
     }
 }
@@ -229,5 +247,51 @@ mod tests {
             }
         }
         assert_eq!(finish_count, 1, "close_async 在 finish() 之后不应重发 Finish");
+    }
+
+    /// 回归 #3：sender drop 但没发终态（Finished/Failed）时，close_async 必须报错，
+    /// 不能把 partial/空 text 当成功返回。模拟服务端主动 Close（#4）导致 WS task
+    /// 静默退出、未发终态的场景。
+    #[tokio::test]
+    async fn close_async_fails_on_channel_close_without_finished() {
+        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        handle.finish().unwrap(); // 置 finished=true，跳过重发
+        // 只发 partial Text，不发 Finished 就 drop sender
+        result_tx.send(StreamEvent::Text("partial".into())).ok();
+        drop(result_tx);
+        let res = handle.close_async().await;
+        assert!(
+            res.is_err(),
+            "sender 无终态 drop 时应报错，而非返回 partial text"
+        );
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("without terminal event"),
+            "错误信息应说明是异常截断，got: {msg}"
+        );
+    }
+
+    /// 正常路径：sender 发 Text + Finished，close_async 返回 text（保证修复未破坏正常流程）。
+    #[tokio::test]
+    async fn close_async_returns_text_on_normal_finished() {
+        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        handle.finish().unwrap();
+        result_tx.send(StreamEvent::Text("最终结果".into())).ok();
+        result_tx.send(StreamEvent::Finished).ok();
+        drop(result_tx);
+        let text = handle.close_async().await.unwrap();
+        assert_eq!(text, "最终结果");
+    }
+
+    /// Failed 终态正常传播（既有行为，回归测试保证）。
+    #[tokio::test]
+    async fn close_async_propagates_failed_event() {
+        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        handle.finish().unwrap();
+        result_tx.send(StreamEvent::Failed("鉴权失败".into())).ok();
+        drop(result_tx);
+        let res = handle.close_async().await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("鉴权失败"));
     }
 }

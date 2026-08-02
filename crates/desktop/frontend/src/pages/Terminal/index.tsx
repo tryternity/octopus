@@ -18,7 +18,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useT } from "@/lib/i18n";
@@ -261,6 +261,13 @@ export default function Terminal() {
     )
       .then((fn) => {
         unlisten = fn;
+        // listener 注册成功 → 向本窗口 emit ready，通知后端「可以推送 new-tab 了」。
+        // 消除「后端固定 sleep(250ms) 后 emit」的竞态：慢 mount 时事件会被 Tauri 静默
+        // 丢弃，导致 agent 窗口空终端。现在 listener 必然已注册，后端 once 收到 ready
+        // 后 emit 的事件必能被收到。后端带 5s 超时兜底（见 emit_new_tab_on_ready）。
+        emit("terminal://ready", { windowLabel: currentLabel }).catch((err) =>
+          console.error("[Terminal] ready emit failed:", err),
+        );
       })
       .catch((err) => console.error("[Terminal] new-tab listener failed:", err));
     return () => {

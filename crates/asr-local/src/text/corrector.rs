@@ -104,6 +104,10 @@ impl LightCorrector {
     /// 多命中时按 `bigram_score * W_CONTEXT + hit_count * W_HIT` 降序排序
     /// （上下文频次主导，hit_count 辅助），平局按 word 字典序（确定性）。
     /// `prev_char`/`next_char` = 窗口前后字符（'\0' 表示无边界），用于 bigram 上下文打分。
+    ///
+    /// **性能**（优化 #8）：避免 `.cloned()` 整个候选 Vec + 全排序。改用借用 + 预计算每个
+    /// 候选的 score 到 Vec<(score, &str)>，再用 `select_nth_unstable_by` 取前 N（O(n) 平均）
+    /// 仅对 top-K 排序。下游 correct_greedy 只用首个非原词候选 + take(5)，故 top-6 足够。
     fn find_candidates(&self, query_word: &str, prev_char: char, next_char: char) -> Vec<String> {
         let char_len = query_word.chars().count();
         if char_len < 2 {
@@ -118,25 +122,51 @@ impl LightCorrector {
         if query_py.is_empty() {
             return vec![query_word.to_string()];
         }
-        let mut candidates: Vec<(String, i64)> = idx
-            .lookup(char_len, &query_py)
-            .cloned()
-            .unwrap_or_default();
-        // bigram 上下文分 + hit_count 组合排序（降序 + 平局字典序）
+        let candidates_vec = match idx.lookup(char_len, &query_py) {
+            Some(v) => v,
+            None => return vec![query_word.to_string()],
+        };
+        // 预计算每个候选的 score（避免排序比较时反复调 bigram_score）
         let bg = self.bigrams.read();
-        candidates.sort_by(|a, b| {
-            let sa = bigram_score(&bg, &a.0, prev_char, next_char) * W_CONTEXT
-                + a.1 as f64 * W_HIT;
-            let sb = bigram_score(&bg, &b.0, prev_char, next_char) * W_CONTEXT
-                + b.1 as f64 * W_HIT;
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        // 原词追加末尾（不参与排序——correct_greedy find 跳过它）
-        if !candidates.iter().any(|(w, _)| w == query_word) {
-            candidates.push((query_word.to_string(), 0));
+        // (score, word_idx) —— 用 idx 引用避免 clone String；排序后按 idx 取回
+        let mut scored: Vec<(f64, usize)> = candidates_vec
+            .iter()
+            .enumerate()
+            .map(|(i, (w, hc))| {
+                let s = bigram_score(&bg, w, prev_char, next_char) * W_CONTEXT + *hc as f64 * W_HIT;
+                (s, i)
+            })
+            .collect();
+        // 下游 take(5)，取前 6（含可能的原词位置）足够。select_nth_unstable_by O(n) 平均。
+        let top_k = scored.len().min(6);
+        if top_k < scored.len() {
+            scored.select_nth_unstable_by(top_k, |a, b| {
+                // 降序（b 先）+ 平局按 word 字典序（确定性，对齐原实现）
+                let word_a = &candidates_vec[a.1].0;
+                let word_b = &candidates_vec[b.1].0;
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| word_a.cmp(word_b))
+            });
         }
-        candidates.into_iter().map(|(w, _)| w).collect()
+        // 仅对 top-K 排序（远小于全集）
+        scored[..top_k].sort_by(|a, b| {
+            let word_a = &candidates_vec[a.1].0;
+            let word_b = &candidates_vec[b.1].0;
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| word_a.cmp(word_b))
+        });
+        // 映射回 String（top-K clone，远少于全 clone）
+        let mut result: Vec<String> = scored[..top_k]
+            .iter()
+            .map(|(_, i)| candidates_vec[*i].0.clone())
+            .collect();
+        // 原词追加末尾（不参与排序——correct_greedy find 跳过它）
+        if !result.iter().any(|w| w == query_word) {
+            result.push(query_word.to_string());
+        }
+        result
     }
 
     pub fn correct(&self, text: &str) -> String {
@@ -219,6 +249,13 @@ pub fn is_common_word(word: &str) -> bool {
 /// 启动时（DB 初始化后）与每次热词增删后调用。
 /// 同时缓存到 `active_words`，供 [`reload_fuzzy_dialect`] 重建索引用。
 /// corrector 未初始化时先 force init（空索引），再写入——确保首调也能落地。
+///
+/// **已知可接受竞态**：`active_words` 与 `hotwords` 是两个独立 `RwLock`（struct 字段），
+/// `apply` 内两次 `write()` 非原子——并发 reader 可能观察到 `active_words` 已更新但
+/// `hotwords` 未更新的瞬时态。窗口仅两次进程内写锁获取（微秒级），且仅影响
+/// `reload_fuzzy_dialect`（罕见 config 变更路径），不影响流式纠错热路径（读 `hotwords`
+/// 不读 `active_words`）。瞬时自愈（下次 reload 一致）。不修——合并为单 `RwLock<Config>`
+/// 会增 hot 路径锁竞争，得不偿失。
 pub fn reload_hotwords(entries: Vec<(String, String, i64)>) {
     // 锁外预建索引（拼音归一化 CPU 密集），避免持有 hotwords 写锁期间阻塞 ASR 读热路径。
     let new_index = HotwordIndex::from_words(&entries);

@@ -195,7 +195,8 @@ pub struct FileEntry {
 ///
 /// - 目录优先 + case-insensitive 排序
 /// - `show_hidden=false`：过滤 dot 前缀（`.git` / `.env` 等）
-/// - gitignore 过滤：用 `ignore` crate（在 git repo 内尊重 .gitignore）
+/// - gitignore 过滤：在 git repo 内用 `ignore` crate 的 Gitignore 匹配器
+///   判断每个直接子项是否被 `.gitignore` 命中（命中 → 隐藏）；非 repo 不过滤
 /// - 错误（无权限/不存在）返回空数组（不阻断 UI）
 #[tauri::command]
 pub fn terminal_list_dir(path: String, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
@@ -206,10 +207,10 @@ pub fn terminal_list_dir(path: String, show_hidden: bool) -> Result<Vec<FileEntr
 fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
     let root = std::path::Path::new(path);
 
-    // gitignore 过滤：在 git repo 内用 ignore crate 列非忽略项；
-    // 非 git repo 直接列全部（ignore crate 的 WalkBuilder 在非 repo 目录也工作，但
-    // 会尝试找 .git 触发 macOS TCC——这里先判断是否在 repo 内）。
-    let ignored_names = git_ignored_names(root);
+    // gitignore 过滤：在 git repo 内用 ignore crate 的 Gitignore 匹配器，
+    // 对每个直接子项判断是否被 .gitignore 命中（命中 → 隐藏）。
+    // 非 git repo 不过滤（避免 ignore crate 的 WalkBuilder 触发 macOS TCC 找 .git）。
+    let matcher = build_gitignore_matcher(root);
 
     let read = std::fs::read_dir(root).map_err(|e| {
         log::debug!("terminal_list_dir({}) failed: {e}", root.display());
@@ -224,9 +225,12 @@ fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, Strin
             if !show_hidden && name.starts_with('.') {
                 return None;
             }
-            // gitignore 过滤
-            if !ignored_names.is_empty() && ignored_names.contains(&name) {
-                return None;
+            // gitignore 过滤：命中 Ignore 的直接子项隐藏
+            if let Some(m) = &matcher {
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if let ignore::Match::Ignore(_) = m.matched(&e.path(), is_dir) {
+                    return None;
+                }
             }
             let kind = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 "dir"
@@ -247,39 +251,71 @@ fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, Strin
     Ok(entries)
 }
 
-/// 在 git repo 内返回被 gitignore 的直接子项名；非 repo 返回空集。
-fn git_ignored_names(dir: &std::path::Path) -> std::collections::HashSet<String> {
-    if !in_git_repo(dir) {
-        return std::collections::HashSet::new();
+/// 构建 gitignore 匹配器，用于判断 `dir` 的直接子项是否应被隐藏。
+///
+/// 收集 `.gitignore` 的范围（对齐 git 语义）：
+/// - `dir` 及其祖先到 repo root 的每一级 `.gitignore`
+/// - repo root 的 `.git/info/exclude`
+/// - 全局 excludesfile（`core.excludesFile`）
+///
+/// 非 git repo（无 `.git`）返回 None（不过滤）。匹配以 `dir` 为 root 做相对路径剥离，
+/// 故对直接子项用 `matched(path, is_dir)` 判断。
+fn build_gitignore_matcher(dir: &std::path::Path) -> Option<ignore::gitignore::Gitignore> {
+    let repo_root = find_repo_root(dir)?;
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(dir);
+    // git 优先级（低 → 高，后加者覆盖先加者，Gitignore 内部按「最后匹配胜出」处理）：
+    //   全局 excludesfile < .git/info/exclude < repo root .gitignore < ... < dir .gitignore
+    // 故添加顺序：先全局，再 repo root 的 .git/info/exclude，再从 repo root 向下到 dir 逐级 .gitignore。
+    if let Some(global) = ignore::gitignore::gitconfig_excludes_path() {
+        if global.is_file() {
+            if let Some(e) = builder.add(&global) {
+                log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", global.display());
+            }
+        }
     }
-    ignore::WalkBuilder::new(dir)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .ignore(false)
-        .parents(true)
-        .max_depth(Some(1))
-        .follow_links(false)
-        .build()
-        .flatten()
-        .filter_map(|d| {
-            let name = d.file_name();
-            name.to_str().map(|s| s.to_string())
-        })
-        .collect()
+    let info_exclude = repo_root.join(".git").join("info").join("exclude");
+    if info_exclude.is_file() {
+        if let Some(e) = builder.add(&info_exclude) {
+            log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", info_exclude.display());
+        }
+    }
+    // 从 repo root 向下到 dir（含），逐级 add .gitignore（越靠近 dir 优先级越高）。
+    let mut chain: Vec<std::path::PathBuf> = Vec::new();
+    let mut cur = Some(dir.to_path_buf());
+    while let Some(p) = cur {
+        chain.push(p.clone());
+        if p == repo_root {
+            break;
+        }
+        cur = p.parent().map(|x| x.to_path_buf());
+    }
+    for p in chain.into_iter().rev() {
+        let gi = p.join(".gitignore");
+        if gi.is_file() {
+            if let Some(e) = builder.add(&gi) {
+                log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", gi.display());
+            }
+        }
+    }
+    match builder.build() {
+        Ok(m) => Some(m),
+        Err(e) => {
+            log::debug!("build_gitignore_matcher: build 失败: {e}");
+            None
+        }
+    }
 }
 
-/// 判断目录是否在 git repo 内（向上找 .git，不向下递归）。
-fn in_git_repo(dir: &std::path::Path) -> bool {
+/// 向上查找包含 `.git` 的最近祖先，返回其路径（repo root）。找不到返回 None。
+fn find_repo_root(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut cur = dir;
     loop {
         if cur.join(".git").exists() {
-            return true;
+            return Some(cur.to_path_buf());
         }
         match cur.parent() {
             Some(p) => cur = p,
-            None => return false,
+            None => return None,
         }
     }
 }
@@ -343,5 +379,65 @@ mod tests {
     fn list_dir_nonexistent_returns_error() {
         let result = list_dir_inner("/no/such/path/xyz", false);
         assert!(result.is_err());
+    }
+
+    /// 在带 .git + .gitignore 的临时 repo 内验证 gitignore 过滤语义：
+    /// - target/、node_modules/、*.log 被隐藏
+    /// - src/、Cargo.toml、keep.log（!keep.log 白名单）可见
+    /// 回归 #1（旧实现 WalkBuilder 语义反向，把非 ignored 项当「要隐藏的集合」）。
+    #[test]
+    fn list_dir_filters_gitignore_in_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        // 初始化 .git（让 find_repo_root 命中）
+        fs::create_dir_all(root.join(".git")).unwrap();
+        // .gitignore：目录型、glob、白名单各覆盖一种
+        fs::write(
+            root.join(".gitignore"),
+            "target\nnode_modules/\n*.log\n!keep.log\n",
+        )
+        .unwrap();
+        // 匹配的被忽略项
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::create_dir_all(root.join("node_modules")).unwrap();
+        fs::write(root.join("debug.log"), "").unwrap();
+        // 白名单（!keep.log）应可见
+        fs::write(root.join("keep.log"), "").unwrap();
+        // 非匹配项应可见
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "").unwrap();
+
+        // show_hidden=true 隔离 dot 分支，专测 gitignore
+        let entries = list_dir_inner(root.to_str().unwrap(), true).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+        // 被忽略项必须隐藏
+        assert!(!names.contains(&"target"), "target 应被 gitignore 隐藏");
+        assert!(!names.contains(&"node_modules"), "node_modules 应被 gitignore 隐藏");
+        assert!(!names.contains(&"debug.log"), "*.log 应被 gitignore 隐藏");
+        // 非忽略项必须可见（这是旧 bug 的核心：旧实现把这些隐藏了）
+        assert!(names.contains(&"src"), "src 应可见（旧 bug 错误隐藏）");
+        assert!(names.contains(&"Cargo.toml"), "Cargo.toml 应可见（旧 bug 错误隐藏）");
+        // 白名单（!keep.log）可见
+        assert!(names.contains(&"keep.log"), "keep.log 被 !keep.log 白名单保留");
+        // .git 目录在 show_hidden=true 下可见（不在 gitignore 里，仅 dot 过滤会挡）
+        assert!(names.contains(&".git"), ".git 在 show_hidden 下应可见");
+    }
+
+    /// 非 git repo（无 .git）不过滤，所有项可见。
+    #[test]
+    fn list_dir_no_gitignore_outside_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        // 有 .gitignore 但无 .git → 不算 repo
+        fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(root.join("debug.log"), "").unwrap();
+        fs::write(root.join("keep.txt"), "").unwrap();
+
+        let entries = list_dir_inner(root.to_str().unwrap(), true).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // 非 repo：.gitignore 不生效，两者都可见
+        assert!(names.contains(&"debug.log"));
+        assert!(names.contains(&"keep.txt"));
     }
 }
