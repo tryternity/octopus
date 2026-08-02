@@ -698,8 +698,8 @@ fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
 }
 
 /// 按 dirty ranges 重建段列表。
-/// dirty 区间内标 Edited；区间外用 LCS diff 对齐 old_flat → new_flat，
-/// 保留匹配字符的原 segment kind，不匹配的（因删除导致偏移）标 Raw 兜底。
+/// dirty 区间内标 Edited；区间外用字符 walk 对齐 old_flat → new_flat，
+/// 保留匹配字符的原 segment kind + hotword 段的 candidates/id（按字符映射恢复）。
 /// dirty ranges 被 clamp 到 [0, total] 防越界。
 fn rebuild_segments(
     old_segments: &[Segment],
@@ -709,7 +709,7 @@ fn rebuild_segments(
     let new_chars: Vec<char> = new_flat.chars().collect();
     let total = new_chars.len();
 
-    // 1. 构建 old_flat + 每个 char 的 kind 映射
+    // 1. 构建 old_flat + 每个 char 的 kind/candidates/id 映射
     let old_flat: String = old_segments.iter().map(|s| s.text.as_str()).collect();
     let old_chars: Vec<char> = old_flat.chars().collect();
     let old_kinds: Vec<SegmentKind> = {
@@ -717,6 +717,25 @@ fn rebuild_segments(
         for seg in old_segments {
             for _ in 0..seg.text.chars().count() {
                 v.push(seg.kind);
+            }
+        }
+        v
+    };
+    // hotword 段的 candidates/id 按字符映射（clean 区域恢复用）
+    let old_cands: Vec<Option<Vec<String>>> = {
+        let mut v = Vec::with_capacity(old_chars.len());
+        for seg in old_segments {
+            for _ in 0..seg.text.chars().count() {
+                v.push(seg.candidates.clone());
+            }
+        }
+        v
+    };
+    let old_ids: Vec<Option<String>> = {
+        let mut v = Vec::with_capacity(old_chars.len());
+        for seg in old_segments {
+            for _ in 0..seg.text.chars().count() {
+                v.push(seg.id.clone());
             }
         }
         v
@@ -734,22 +753,20 @@ fn rebuild_segments(
         }
     }
 
-    // 3. 对 non-dirty 区域用 LCS 对齐 old_flat，保留 kind
-    // LCS diff：逐字符比较 old_flat 和 new_flat 的 non-dirty 部分
-    // 简化方案：对 non-dirty 区域，用字符匹配 walk——按顺序匹配 old_chars 中的对应字符
+    // 3. 对 non-dirty 区域用字符 walk 对齐 old_flat，保留 kind + hotword candidates/id
     let mut result = Vec::new();
     let mut old_idx = 0usize;
     let mut pos = 0usize;
 
     while pos < total {
         if is_dirty[pos] {
-            // dirty 区域——收集连续 dirty chars 标 Edited
+            // dirty 区域——收集连续 dirty chars 标 Edited（丢弃 candidates/id）
             let start = pos;
             while pos < total && is_dirty[pos] { pos += 1; }
             let text: String = new_chars[start..pos].iter().collect();
             push_or_merge(&mut result, SegmentKind::Edited, &text);
         } else {
-            // clean 区域——逐字符匹配 old_flat 保留 kind
+            // clean 区域——逐字符匹配 old_flat 保留 kind + candidates/id
             let start = pos;
             while pos < total && !is_dirty[pos] { pos += 1; }
             let clean_chars = &new_chars[start..pos];
@@ -761,7 +778,7 @@ fn rebuild_segments(
                     old_idx += 1;
                 }
                 if old_idx < old_chars.len() {
-                    push_or_merge(&mut result, old_kinds[old_idx], &ch.to_string());
+                    push_or_merge_full(&mut result, old_kinds[old_idx], ch, &old_cands[old_idx], &old_ids[old_idx]);
                     old_idx += 1;
                 } else {
                     // old 中找不到（不应发生——clean 区域应完全匹配）→ Raw 兜底
@@ -772,6 +789,37 @@ fn rebuild_segments(
     }
 
     result
+}
+
+/// push_or_merge 的完整版：保留 hotword 段的 candidates/id。
+/// 同 kind + 同 id 的相邻字符合并（同一个 hotword 段的字符合并）；id 不同则新起段。
+fn push_or_merge_full(
+    result: &mut Vec<Segment>,
+    kind: SegmentKind,
+    ch: char,
+    cands: &Option<Vec<String>>,
+    id: &Option<String>,
+) {
+    // hotword 段：同 id 才合并（不同 hotword 段即使 kind 都是 Hotwords 也不合并）
+    if kind == SegmentKind::Hotwords {
+        if let (Some(last), Some(ref id_val)) = (result.last_mut(), id) {
+            if last.kind == SegmentKind::Hotwords
+                && last.id.as_deref() == Some(id_val.as_str())
+            {
+                last.text.push(ch);
+                return;
+            }
+        }
+        result.push(Segment {
+            kind,
+            text: ch.to_string(),
+            candidates: cands.clone(),
+            id: id.clone(),
+        });
+        return;
+    }
+    // 非 hotword 段：按 kind 合并（candidates/id 为 None）
+    push_or_merge(result, kind, &ch.to_string());
 }
 
 #[cfg(test)]
@@ -1554,6 +1602,33 @@ mod user_scenario_tests {
         assert_eq!(result[1].text, "CD");
         assert_eq!(result[2].kind, SegmentKind::Edited);
         assert_eq!(result[2].text, "EF");
+    }
+
+    #[test]
+    fn rebuild_preserves_hotword_id_in_clean_range() {
+        // 选定某个 hotword 后（dirty 该区间），clean 区域的其余 hotword 段须保留 id/candidates。
+        // old: [Hotwords("入河" id1), Raw("X"), Hotwords("入河" id2)]
+        // dirty [0,2)（选定第一个 → 变 Edited），clean 区域保留第二个的 id2 + candidates。
+        let old = vec![
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(),
+                      candidates: Some(vec!["入河".into(), "汝河".into(), "如何".into()]), id: Some("id1".into()) },
+            Segment { kind: SegmentKind::Raw, text: "X".into(), candidates: None, id: None },
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(),
+                      candidates: Some(vec!["入河".into(), "汝河".into(), "如何".into()]), id: Some("id2".into()) },
+        ];
+        // 选第一个"入河"为"如何"：new_flat = "如何X入河"，dirty [0,2)
+        let result = rebuild_segments(&old, "如何X入河", &[(0, 2)]);
+        // Edited("如何") + Raw("X") + Hotwords("入河" id2 candidates 保留)
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].kind, SegmentKind::Edited);
+        assert_eq!(result[0].text, "如何");
+        assert_eq!(result[0].id, None);
+        assert_eq!(result[1].kind, SegmentKind::Raw);
+        assert_eq!(result[1].text, "X");
+        assert_eq!(result[2].kind, SegmentKind::Hotwords, "clean 区域 hotword 段保留 kind");
+        assert_eq!(result[2].text, "入河");
+        assert_eq!(result[2].id, Some("id2".into()), "保留 id（前端装饰据此识别）");
+        assert_eq!(result[2].candidates, Some(vec!["入河".into(), "汝河".into(), "如何".into()]));
     }
 
     #[test]
