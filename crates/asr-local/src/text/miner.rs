@@ -1,8 +1,6 @@
 //! 候选挖掘：扫历史 ASR 文本，jieba 分词 + 词频过滤，低频高频专名 → 返回候选词列表（命令层追加到版本）。
 //! jieba 复用 corrector 单例（见 collect_candidate_words），避免每次新建的词典加载开销。
 
-/// 用户历史中至少出现此次数才作候选。
-const MIN_USER_COUNT: usize = 2;
 /// 单次挖掘回看的历史条数。
 const HISTORY_LIMIT: i64 = 500;
 /// 单次最多写入的候选数。
@@ -31,59 +29,35 @@ pub fn is_candidate(word: &str) -> bool {
 /// 扫历史 → jieba 分词 → 词频过滤 → top-N 候选词。返回词列表（不写 DB）。
 /// 命令层拿去追加到用户选定版本（废弃旧 pending 流）。
 ///
-/// 排序策略：**用户编辑过的词优先 + 低频专名补充**。
-/// - 从 segments JSON 提取 Edited 段文本（用户手动改过的 = 引擎识别错了）→ 高优先级
-/// - 从 content 全文提取（补充候选）→ 低优先级
-/// - 同优先级内频次升序（低频专名优先，高频词可能是常用词不适合当热词）
+/// 策略：**只从用户编辑过的段（segments kind=edited）提取**。
+/// 用户编辑 = 引擎识别错了用户才改。在这部分里按频次**降序**——
+/// 反复编辑的词（高频）说明引擎反复识别错，是最有价值的热词候选。
 pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
-    let texts = octopus_infra::db::list_recent_text(HISTORY_LIMIT)?;
-    if texts.is_empty() {
-        return Ok(Vec::new());
-    }
-    // 读 segments JSON，提取 Edited 段文本（用户手动编辑过的 = 引擎识别错）
+    // 只读 Edited 段文本（用户手动纠正过的 = 引擎识别错的）
     let edited_texts = octopus_infra::db::list_recent_edited_segments(HISTORY_LIMIT)
         .unwrap_or_default();
-    // 复用 corrector 单例的 jieba（cut 是 &self 只读，线程安全）；避免每次挖掘重建词典。
+    if edited_texts.is_empty() {
+        log::info!("[hotword-miner] 无编辑历史，跳过挖掘");
+        return Ok(Vec::new());
+    }
+    // 复用 corrector 单例的 jieba（cut 是 &self 只读，线程安全）
     let jieba = crate::corrector::get_corrector().jieba();
-
-    // 两路计数：edited_count（用户编辑过）+ total_count（全部历史）
-    let mut edited_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut total_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-
-    // Edited 段文本 → edited_counts
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for t in &edited_texts {
         for w in jieba.cut(t, true) {
             if !is_candidate(w) { continue; }
-            *edited_counts.entry(w.to_string()).or_insert(0) += 1;
+            *counts.entry(w.to_string()).or_insert(0) += 1;
         }
     }
-    // 全文 → total_counts
-    for t in &texts {
-        for w in jieba.cut(t, true) {
-            if !is_candidate(w) { continue; }
-            *total_counts.entry(w.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    // 合并：edited_count > 0 的词标记高优先级（edited=true），其余低优先级
-    let mut ranked: Vec<(String, usize, bool)> = total_counts
+    // 频次降序——反复编辑的词排前面（引擎反复识别错 = 最需要热词纠错）
+    let mut ranked: Vec<(String, usize)> = counts
         .into_iter()
-        .filter(|(_, c)| *c >= MIN_USER_COUNT)
-        .map(|(w, c)| {
-            let edited = *edited_counts.get(&w).unwrap_or(&0);
-            (w, c, edited > 0)
-        })
         .collect();
-    // 排序：edited=true 优先（用户编辑过 > 未编辑），同组内频次升序（低频专名优先）
-    ranked.sort_by(|a, b| {
-        b.2.cmp(&a.2)  // edited=true 排前
-            .then_with(|| a.1.cmp(&b.1))  // 频次升序
-    });
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
     ranked.truncate(MAX_CANDIDATES);
-    let words: Vec<String> = ranked.into_iter().map(|(w, _, _)| w).collect();
-    log::info!("[hotword-miner] 挖掘 {} 条候选词（编辑优先 {} 条）",
-        words.len(),
-        words.iter().filter(|w| edited_counts.contains_key(*w)).count());
+    let words: Vec<String> = ranked.into_iter().map(|(w, _)| w).collect();
+    log::info!("[hotword-miner] 挖掘 {} 条候选词（编辑段 {} 条文本，高频优先）",
+        words.len(), edited_texts.len());
     Ok(words)
 }
 
