@@ -3,7 +3,7 @@ import { Compartment, EditorState, StateEffect, StateField, type Transaction, ty
 import { EditorView, keymap, drawSelection, Decoration, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { invoke } from "@tauri-apps/api/core";
-import { hotwordRanges, type Segment } from "./hotwords";
+import { hotwordRanges, findCandidatesById, type Segment } from "./hotwords";
 import { cn } from "@/lib/utils";
 
 const IDLE_TIMEOUT = 2000;
@@ -116,19 +116,13 @@ const hotwordsField = StateField.define<DecorationSet>({
             iter.next();
           }
           // 新 id 追加；已有 id 保留 map 后 offset。
-          // 装饰自带 candidates（JSON 序列化）——点击时直接从装饰读，不依赖 segmentsRef
-          // （避免选定某个后 segmentsRef 变化与装饰保留的时序不一致导致点击无候选）。
           const toAdd: Range<Decoration>[] = [];
           for (const r of e.value) {
             if (!existingIds.has(r.id)) {
               toAdd.push(
                 Decoration.mark({
                   class: "cm-hotword",
-                  attributes: {
-                    "data-hw": r.candidates[0] ?? "",
-                    "data-hw-id": r.id,
-                    "data-hw-cands": JSON.stringify(r.candidates),
-                  },
+                  attributes: { "data-hw": r.candidates[0] ?? "", "data-hw-id": r.id },
                 }).range(r.from, r.to),
               );
             }
@@ -425,19 +419,20 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   useEffect(() => { refreshHotwords(); }, [segments, refreshHotwords]);
 
   // 点击 .cm-hotword → 打开候选下拉浮层。
-  // 从装饰 DOM 直接读 candidates（data-hw-cands），不依赖 segmentsRef——
-  // 避免"选定某个后 segmentsRef 变化与装饰保留（UUID）时序不一致导致点击无候选"。
+  // 从装饰 DOM 读 UUID（data-hw-id），用 UUID 去 segments（单一真相源）查 candidates——
+  // 不依赖位置/时序：选定某个后该段变 Edited（id 丢），其余段 id 不变仍能查到。
   const handleHotwordClick = useCallback((event: MouseEvent) => {
     const view = viewRef.current;
     if (!view) return;
     const target = event.target as HTMLElement;
     const span = target.closest(".cm-hotword") as HTMLElement | null;
     if (!span) return;
-    const candsJson = span.getAttribute("data-hw-cands");
-    if (!candsJson) return;
-    let candidates: string[];
-    try { candidates = JSON.parse(candsJson); } catch { return; }
-    if (!Array.isArray(candidates) || candidates.length === 0) return;
+    const id = span.getAttribute("data-hw-id");
+    if (!id) return;
+    const segs = segmentsRef.current;
+    if (!segs) return;
+    const candidates = findCandidatesById(segs, id);
+    if (!candidates) return;
     // CM6 posAtCoords 定位点击的 char offset
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (pos == null) return;

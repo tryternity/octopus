@@ -4,6 +4,7 @@ import {
   segmentsMatchText,
   hotwordRanges,
   applyCandidate,
+  findCandidatesById,
   type Segment,
 } from "./hotwords";
 
@@ -139,6 +140,40 @@ describe("hotwordRanges", () => {
   it("hotwords 段 candidates 空 数组 → 跳过", () => {
     const segs = [hot("x", [])];
     expect(hotwordRanges(segs, "x")).toEqual([]);
+  });
+});
+
+// ── findCandidatesById ──
+describe("findCandidatesById", () => {
+  it("按 UUID 查到候选", () => {
+    const segs = [
+      hot("入河", ["入河", "汝河", "如何"], "id1"),
+      raw("中间"),
+      hot("入河", ["入河", "汝河", "如何"], "id2"),
+    ];
+    expect(findCandidatesById(segs, "id1")).toEqual(["入河", "汝河", "如何"]);
+    expect(findCandidatesById(segs, "id2")).toEqual(["入河", "汝河", "如何"]);
+  });
+
+  it("选定某个后（该段 Edited）其余仍能查到", () => {
+    // 第一个选定后变 Edited（无 id），第二、三个仍是 hotword
+    const segs: Segment[] = [
+      { kind: "edited", text: "如何" },
+      hot("入河", ["入河", "汝河", "如何"], "id2"),
+      hot("入河", ["入河", "汝河", "如何"], "id3"),
+    ];
+    expect(findCandidatesById(segs, "id1")).toBeNull(); // 已变 Edited
+    expect(findCandidatesById(segs, "id2")).toEqual(["入河", "汝河", "如何"]);
+    expect(findCandidatesById(segs, "id3")).toEqual(["入河", "汝河", "如何"]);
+  });
+
+  it("UUID 不存在 → null", () => {
+    const segs = [hot("入河", ["入河", "汝河"], "id1")];
+    expect(findCandidatesById(segs, "不存在")).toBeNull();
+  });
+
+  it("空 segments → null", () => {
+    expect(findCandidatesById([], "any")).toBeNull();
   });
 });
 

@@ -105,6 +105,18 @@ export function hotwordRanges(segments: Segment[], doc: string): HotwordRange[] 
 }
 
 /**
+ * 按 UUID 在 segments 里查该 hotword 段的候选列表。
+ * 点击装饰时调用——装饰带 UUID（稳定标识），用它查 segments（单一真相源）取 candidates，
+ * 不依赖位置/时序。选定某个后该段变 Edited（id 丢），其余段 id 不变仍能查到。
+ * 找不到（id 不在 segments）→ null。
+ */
+export function findCandidatesById(segments: Segment[], id: string): string[] | null {
+  const seg = segments.find((s) => s.kind === "hotwords" && s.id === id);
+  if (!seg || !seg.candidates || seg.candidates.length === 0) return null;
+  return seg.candidates;
+}
+
+/**
  * 选中候选 → 替换 doc 中 [from, to) 为 candidate，返回新 doc + dirtyRange。
  * 纯函数：不触碰 CM6 state，供测试 + AsrEditor 调用 view.dispatch。
  * dirtyRange 的 to 是替换后的新结束 offset（from + candidate.length）。
