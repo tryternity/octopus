@@ -57,6 +57,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync" | "terminal">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
+  // 字体族「自定义」模式本地状态——独立于 cfg，避免 onChange 早返回导致 dropdown 回弹。
+  // 初始化时若 cfg 值不匹配任何预设（DB 已存自定义值），则直接进入自定义模式显示输入框。
+  const [isCustomFont, setIsCustomFont] = useState<boolean>(
+    () => !TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family)
+  );
 
   useEffect(() => {
     invoke<ThemeInfo[]>("list_themes").then(setThemes).catch(console.error);
@@ -386,14 +391,16 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
               hint={t("settings.general.terminalFontHint")}
             >
               <Select
-                value={
-                  TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family)
-                    ? (cfg.terminal_font_family as string)
-                    : TERMINAL_CUSTOM_VALUE
-                }
+                value={isCustomFont ? TERMINAL_CUSTOM_VALUE : (cfg.terminal_font_family as string)}
                 onChange={(e) => {
                   const v = e.target.value;
-                  if (v === TERMINAL_CUSTOM_VALUE) return; // 切到自定义不立即清空，保留当前值编辑
+                  if (v === TERMINAL_CUSTOM_VALUE) {
+                    // 进入自定义模式：不清空 cfg，保留当前值进入输入框编辑。
+                    setIsCustomFont(true);
+                    return;
+                  }
+                  // 选预设：退出自定义模式 + 写入预设值。
+                  setIsCustomFont(false);
                   void setVal("terminal_font_family", v);
                 }}
               >
@@ -406,9 +413,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
               </Select>
             </Row>
 
-            {/* 自定义字体族输入——仅在选中「自定义」或 config 值非预设时显示。
+            {/* 自定义字体族输入——仅在「自定义」模式下显示。
                 onBlur 提交：避免每次按键触发 set_config + xterm 重建（首字符写完才持久化）。 */}
-            {!TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family) && (
+            {isCustomFont && (
               <Row
                 label={t("settings.general.fontFamilyCustom")}
                 effect={t("settings.effect.now")}
