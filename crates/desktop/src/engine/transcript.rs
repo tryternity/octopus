@@ -470,7 +470,15 @@ impl Transcript {
             if !suffix.is_empty() {
                 replacement.push(Segment { kind, text: suffix, candidates: None });
             }
+            // splice 前记 caret_gap，劈段后偏移（caret 在被劈段之后 → 按新增段数右移）。
+            // 不修则流式末尾追加态（caret_gap==旧 len）劈段后 caret_gap<新 len → is_inserting=true
+            // → 下帧 delta 插到中间（新内容跑到候选词位置），破坏结构。
+            let old_caret_gap = self.caret_gap;
+            let delta = replacement.len() as isize - 1; // 替换 1 段为 N 段
             self.segments.splice(idx..=idx, replacement);
+            if old_caret_gap > idx {
+                self.caret_gap = (old_caret_gap as isize + delta) as usize;
+            }
         }
     }
 
@@ -1074,6 +1082,38 @@ mod tests {
         assert_eq!(t.segments.len(), 1);
         assert_eq!(t.segments[0].kind, SegmentKind::Raw);
         assert_eq!(t.segments[0].text, "完全不同");
+    }
+
+    #[test]
+    fn mark_hotwords_preserves_caret_gap_at_tail() {
+        // 流式末尾追加态回归：caret_gap==len，劈段后 caret_gap 须仍==新 len。
+        // 不修则 caret_gap<新 len → is_inserting=true → 下帧 delta 插中间（bug）。
+        let mut t = Transcript::new(6, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.apply_engine_full("测试入河"); // 单 Raw 段，caret_gap==1==len（末尾追加态）
+        assert_eq!(t.caret_gap, 1);
+        assert!(!t.is_inserting());
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈成 [raw("测试")][hotwords("入河")]，len=2
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.caret_gap, 2, "劈段后 caret_gap 须跟到新末尾，实际 {}", t.caret_gap);
+        assert!(!t.is_inserting(), "末尾追加态不应变中插态");
+        // 后续 delta 追加到末尾（非中间）
+        t.apply_engine_full("测试入河后续");
+        assert_eq!(t.finish_text(), "测试入河后续");
+        assert!(t.segments.last().map(|s| s.text.ends_with("后续")).unwrap_or(false),
+            "新内容应在末尾段，实际 segs={:?}", t.segments);
+    }
+
+    #[test]
+    fn mark_hotwords_preserves_mid_insert_caret() {
+        // 中插态回归：caret_gap 在被劈段之前 → 不受劈段影响（不动）。
+        let mut t = Transcript::new(7, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("甲"), raw("入河乙")];
+        t.caret_gap = 1; // 中插：在"甲"之后、"入河乙"之前
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // "入河乙" 劈成 [hotwords("入河")][raw("乙")]，caret_gap=1 不变（在被劈段之前）
+        assert_eq!(t.caret_gap, 1, "中插态 caret_gap 在劈段前不应动");
+        assert!(t.is_inserting());
     }
 
     // ── 选中替换（delete_range / set_selection / pending_delete）──
