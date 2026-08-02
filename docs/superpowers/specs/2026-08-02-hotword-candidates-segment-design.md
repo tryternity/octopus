@@ -47,16 +47,22 @@ pub struct Segment {
 
 ### coordinator 层
 
-`finalize_after_stop` 的 `apply_engine_full` 后调 `drain_candidates()`：
-- 拿到 `(word, candidates)` 列表
-- 在 transcript.segments 里找到 text == word 的段（可能有多个匹配——取第一个未标记的）
-- 标记 kind = `Hotwords`，candidates = Some(candidates)
+**流式实时标记**（`apply_pipeline_events` 的 Emit 分支）：每帧 correct 后 `drain_candidates()`
+→ 非空时 `transcript.mark_hotwords` → `update_result` 传 segments。录音中即可见候选下拉，
+无需等 stop。仅在有新候选时序列化 segments（无命中传 None，零开销）。
+
+**stop 兜底**（`finalize_after_stop`）：同样 drain_candidates + mark_hotwords，覆盖流式
+未 drain 的残留（如 close 时引擎 end-of-stream 纠正）。
+
+`mark_hotwords`：在 transcript.segments 里找到 text == word 的段（可能有多个匹配——取第一个未标记的），
+标记 kind = `Hotwords`，candidates = Some(candidates)。
 
 ### 前端 CM6 渲染（Task 4 已实现）
 
 **传输**：扩展 `update-result`/`show-result` payload 加可选 `segments` 字段（`Option<&str>`）。
-- 流式 tick 传 `None`（省序列化，无性能回归）；stop 后 `finalize_after_stop` 的 `show_result` 传
-  `transcript.segments_json()`；Idle 编辑 / polish 后的 `update_result` 也传 segments。
+- 流式 tick 有新候选时传 `segments_json()`（实时标记），无候选传 `None`（零开销）；
+  stop 后 `finalize_after_stop` 的 `show_result` 传 `transcript.segments_json()`；
+  Idle 编辑 / polish 后的 `update_result` 也传 segments。
 - `show-result` 原 bare string payload 改 object `{ text, segments }`（前端 handler 兼容旧 bare string）。
 
 **渲染**：CM6 `StateField<DecorationSet>` + `Decoration.mark`（**非** WidgetType——避免 widget 内文本
