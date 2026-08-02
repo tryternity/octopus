@@ -204,6 +204,8 @@ if !finished {
 
 **注**：bytedance spec 原设计用 `got_last_frame`（flags==0x3 置 true），但实现改为「末帧时直接判 last_text 非空」——因 flags==0x3 帧到达后立即 return，Close 分支不可能在末帧后触发，故无需单独 `got_last_frame` 标志。**G1/G2 复审发现**：原实现 `last_text = Some("")`（空 text 也存）导致末帧/Close 发空 text 当成功，改为「仅非空 text 才存 last_text」，末帧时 `last_text.is_some()` 等价于「收到过实质识别内容」。
 
+**H1 三轮复审发现 G1 未完全覆盖**：G1 只修了 `last_text` 更新的判空，但 `result_tx.send(StreamEvent::Text(text))` 仍在判空块外——空 text 仍无条件发送。`close_async` 的 `StreamEvent::Text(t) => text = t` 无条件覆盖，空 Text 会覆盖之前累积的非空文本（序列 `[Text("你好"), Text(""), Finished]` → `Ok("")`，丢失有效结果）。修复：send 也移进 `if !text.is_empty()` 块，对齐其他 3 家 provider 的 `!display.is_empty()` 保护。`close_async` 的覆盖语义是契约（每次覆盖取最新），由 provider 层保证不发空 Text，cloud_types 加 `close_async_empty_text_overwrites_contract` 测试固化该契约。
+
 **回归测试**：每家 `close_frame_emits_failed_when_no_stable_result` + `close_frame_emits_finished_when_stable`（mock WS 流注入 Close 帧）。
 
 ### 2.3 baidu Close partial-as-Finished（#11）

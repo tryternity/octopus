@@ -259,12 +259,14 @@ async fn run_bytedance_session(
                             let json_val: Value = serde_json::from_str(&json_str)
                                 .context("bytedance 响应 JSON 解析失败")?;
                             if let Some(text) = json_val["result"]["text"].as_str() {
-                                // 仅非空 text 记入 last_text（G1/G2：空 text 不应作为
-                                // 「best-effort 结果」——末帧/Close 时空 text 当成功会吞错误）。
+                                // 仅非空 text 处理（G1/G2/H1：空 text 不应记入 last_text，
+                                // 也不应发 Text 事件——close_async 的 text = t 会用空串覆盖
+                                // 之前累积的非空文本，导致有效结果丢失。其他 3 家 provider
+                                // 都有 !display.is_empty() 保护，bytedance 对齐）。
                                 if !text.is_empty() {
                                     last_text = Some(text.to_string());
+                                    let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                                 }
-                                let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                             }
                             if parsed.flags == 0x3 {
                                 // 末帧响应（NEG_WITH_SEQUENCE）——全部结束。
