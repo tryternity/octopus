@@ -1116,6 +1116,31 @@ mod tests {
         assert!(t.is_inserting());
     }
 
+    #[test]
+    fn mark_hotwords_mid_insert_caret_after_split_seg() {
+        // 中插态 + caret 在被劈段之后：前面段被 mark_hotwords 劈，caret_gap 须右移。
+        // 场景：[raw("入河")][raw("后")][raw("面")]，caret_gap=2（"后"之后、"面"之前）。
+        // mark_hotwords 劈"入河"段（idx=0）→ 精确匹配不劈（整段就是 word），但测偏移用"入河X"。
+        let mut t = Transcript::new(8, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("前入河"), raw("后面")];
+        t.caret_gap = 2; // 越界 clamp 到 len=2 = 末尾……构造中插需 3 段
+        // 重新构造明确中插：[raw("前入河")][raw("后")][raw("面")]，caret_gap=2（"后"后）
+        t.segments = vec![raw("前入河"), raw("后"), raw("面")];
+        t.caret_gap = 2;
+        assert!(t.is_inserting());
+        // 劈第一个段"前入河"（idx=0）→ [raw("前")][hotwords("入河")]，插 1 段（1→2）
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈后 segs=[raw("前"),hotwords("入河"),raw("后"),raw("面")]，caret_gap 应 2→3
+        assert_eq!(t.caret_gap, 3, "caret 在被劈段之后须右移 1，实际 {}", t.caret_gap);
+        assert!(t.is_inserting(), "仍是中插态");
+        assert_eq!(t.segments[t.caret_gap].text, "面", "caret 仍指向'面'段之前");
+        // 后续 delta 插到 caret（"后"与"面"之间），不破坏 hotwords 段
+        t.apply_engine_full("前入河后插话面");
+        let result = t.finish_text();
+        assert!(result.contains("入河"), "hotwords 段不被破坏");
+        assert!(result.contains("插话"), "新内容插到中插点");
+    }
+
     // ── 选中替换（delete_range / set_selection / pending_delete）──
     #[test]
     fn delete_range_basic() {
