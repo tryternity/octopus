@@ -38,7 +38,7 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync" | "terminal">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "font" | "env" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
   // 系统已安装的等宽字体族名列表——mount 时通过 list_monospace_fonts 后端命令拉取。
   // 列表元素即字体族名（如 "Menlo"），直接作为下拉 label + value，也直接写入
@@ -119,8 +119,8 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
     { key: "voice", label: t("settings.general.tabVoice") },
+    { key: "font", label: t("settings.general.tabFont") },
     { key: "env", label: t("settings.general.tabEnv") },
-    { key: "terminal", label: t("settings.general.tabTerminal") },
     // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
     ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "sync", label: t("settings.general.tabSync") },
@@ -335,8 +335,8 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <EnvironmentPanel showToast={showToast} />
       )}
 
-      {/* ── 终端字体（terminal_font_size / terminal_font_family）── */}
-      {activeTab === "terminal" && (
+      {/* ── 字体字号（terminal_font_size / terminal_font_family；后续可扩展编辑器字体）── */}
+      {activeTab === "font" && (
         <Card className="mb-3">
           <CardHeader>
             <TerminalSquare className="w-4 h-4 text-muted-foreground" />
