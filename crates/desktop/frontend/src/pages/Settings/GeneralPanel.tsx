@@ -12,31 +12,12 @@ import ShortcutButton from "@/components/ShortcutButton";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Row } from "@/components/ui/row";
 import { Toggle } from "@/components/ui/toggle";
-import { Input, Select } from "@/components/ui/input";
+import { Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
 import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
 
-/**
- * 终端字体族预设——dropdown 选项映射到 CSS font-family 字符串。
- *
- * 值必须与 Rust AppConfig default_terminal_font_family 同格式（逗号分隔，含空格的字体名加引号），
- * 这样 get_config 读回的值能直接与预设 value 匹配选中当前项。
- * 若 config 中的值不匹配任何预设，dropdown 显示「自定义」并展开文本输入框。
- */
-const TERMINAL_FONT_PRESETS: { label: string; value: string }[] = [
-  // SF Mono 值与 Rust AppConfig default_terminal_font_family 完全一致——
-  // 保证出厂默认 config 读回时 dropdown 选中「SF Mono」而非掉进「自定义」。
-  { label: "SF Mono", value: '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace' },
-  { label: "Menlo", value: "Menlo, Monaco, monospace" },
-  { label: "Monaco", value: "Monaco, Menlo, monospace" },
-  { label: "Cascadia Code", value: '"Cascadia Code", Menlo, Monaco, monospace' },
-  { label: "JetBrains Mono", value: '"JetBrains Mono", monospace' },
-  { label: "Fira Code", value: '"Fira Code", monospace' },
-  { label: "Roboto Mono", value: '"Roboto Mono", monospace' },
-];
-const TERMINAL_CUSTOM_VALUE = "__custom__";
 // 字号 slider 边界——与 Terminal/index.tsx MIN/MAX_FONT_SIZE 对齐。
 const TERMINAL_FONT_SIZE_MIN = 8;
 const TERMINAL_FONT_SIZE_MAX = 32;
@@ -57,14 +38,17 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync" | "terminal">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
-  // 字体族「自定义」模式本地状态——独立于 cfg，避免 onChange 早返回导致 dropdown 回弹。
-  // 初始化时若 cfg 值不匹配任何预设（DB 已存自定义值），则直接进入自定义模式显示输入框。
-  const [isCustomFont, setIsCustomFont] = useState<boolean>(
-    () => !TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family)
-  );
+  // 系统已安装的等宽字体族名列表——mount 时通过 list_monospace_fonts 后端命令拉取。
+  // 列表元素即字体族名（如 "Menlo"），直接作为下拉 label + value，也直接写入
+  // terminal_font_family（xterm fontFamily 接受单个族名，浏览器自动 fallback monospace）。
+  const [monoFonts, setMonoFonts] = useState<string[]>([]);
 
   useEffect(() => {
     invoke<ThemeInfo[]>("list_themes").then(setThemes).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    invoke<string[]>("list_monospace_fonts").then(setMonoFonts).catch(console.error);
   }, []);
 
   const t = useT();
@@ -383,60 +367,29 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
               </div>
             </Row>
 
-            {/* 字体族：dropdown 预设 + 自定义时展开文本输入框。
-                config 值匹配预设 → 选中对应项；否则 → 选中「自定义」并显示当前值。 */}
+            {/* 字体族：dropdown 选项来自系统已安装的等宽字体（list_monospace_fonts 动态加载）。
+                value 即字体族名（如 "Menlo"），直接存入 terminal_font_family——xterm
+                fontFamily 接受单个族名，浏览器自动 fallback 到 monospace。
+                若 config 存的是旧格式 CSS 降级链（如 '"SF Mono", Menlo, ...'）匹配不到任何
+                系统字体，dropdown 回退到首项（首个系统等宽字体）。 */}
             <Row
               label={t("settings.general.fontFamily")}
               effect={t("settings.effect.now")}
               hint={t("settings.general.terminalFontHint")}
             >
               <Select
-                value={isCustomFont ? TERMINAL_CUSTOM_VALUE : (cfg.terminal_font_family as string)}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === TERMINAL_CUSTOM_VALUE) {
-                    // 进入自定义模式：不清空 cfg，保留当前值进入输入框编辑。
-                    setIsCustomFont(true);
-                    return;
-                  }
-                  // 选预设：退出自定义模式 + 写入预设值。
-                  setIsCustomFont(false);
-                  void setVal("terminal_font_family", v);
-                }}
+                value={
+                  monoFonts.includes(cfg.terminal_font_family as string)
+                    ? (cfg.terminal_font_family as string)
+                    : monoFonts[0] ?? ""
+                }
+                onChange={(e) => void setVal("terminal_font_family", e.target.value)}
               >
-                {TERMINAL_FONT_PRESETS.map((p) => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
+                {monoFonts.map((f) => (
+                  <option key={f} value={f}>{f}</option>
                 ))}
-                <option value={TERMINAL_CUSTOM_VALUE}>
-                  {t("settings.general.fontFamilyCustom")}
-                </option>
               </Select>
             </Row>
-
-            {/* 自定义字体族输入——仅在「自定义」模式下显示。
-                onBlur 提交：避免每次按键触发 set_config + xterm 重建（首字符写完才持久化）。 */}
-            {isCustomFont && (
-              <Row
-                label={t("settings.general.fontFamilyCustom")}
-                effect={t("settings.effect.now")}
-                hint={t("settings.general.fontFamilyCustomHint")}
-              >
-                <Input
-                  variant="mono"
-                  size="full"
-                  defaultValue={typeof cfg.terminal_font_family === "string"
-                    ? cfg.terminal_font_family
-                    : ""}
-                  placeholder={t("settings.general.fontFamilyCustomPlaceholder")}
-                  onBlur={(e) => {
-                    const v = e.target.value.trim();
-                    if (v && v !== cfg.terminal_font_family) {
-                      void setVal("terminal_font_family", v);
-                    }
-                  }}
-                />
-              </Row>
-            )}
 
             {/* 预览——用当前字号 + 字体族渲染样例文字，让用户直观感受效果。 */}
             <Row label={t("settings.general.fontPreview")}>
