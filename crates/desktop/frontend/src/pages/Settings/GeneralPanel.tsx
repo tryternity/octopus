@@ -23,7 +23,7 @@ const TERMINAL_FONT_SIZE_MIN = 8;
 const TERMINAL_FONT_SIZE_MAX = 32;
 const TERMINAL_FONT_SIZE_DEFAULT = 13;
 // 默认字体族——与 infra/config.rs default_terminal_font_family() 对齐（单一真相源在后端）。
-const TERMINAL_FONT_FAMILY_DEFAULT = "SF Mono";
+const TERMINAL_FONT_FAMILY_DEFAULT = "Menlo";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;

@@ -35,8 +35,8 @@ const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-/** 默认字体族——opts.fontFamily 未传时兜底。 */
-const DEFAULT_FONT_FAMILY = "SF Mono";
+/** 默认字体族——opts.fontFamily 未传时兜底。与 Rust AppConfig default_terminal_font_family 对齐。 */
+const DEFAULT_FONT_FAMILY = "Menlo";
 /** 默认字号——opts.fontSize 未传时兜底。 */
 const DEFAULT_FONT_SIZE = 13;
 

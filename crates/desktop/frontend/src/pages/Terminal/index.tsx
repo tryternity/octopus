@@ -60,8 +60,7 @@ function loadLayout(): LayoutMode {
 // 字体偏好默认值——与 Rust AppConfig default_terminal_font_size/family 对齐。
 // get_config 异步返回前用此兜底；返回后 setState 覆盖。
 const DEFAULT_TERMINAL_FONT_SIZE = 13;
-const DEFAULT_TERMINAL_FONT_FAMILY =
-  '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace';
+const DEFAULT_TERMINAL_FONT_FAMILY = "Menlo";
 // Cmd+=/- 调字号的 clamp 边界（spec 8-32，覆盖可读范围又不至于挤爆布局）。
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;

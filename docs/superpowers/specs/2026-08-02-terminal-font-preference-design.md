@@ -8,11 +8,11 @@
 
 ## 目标
 
-终端默认字号 13px / 字体 SF Mono，但用户偏好各异（视力需要大字号、个人审美偏好特定等宽字体）。提供设置页 + 快捷键两入口，运行时即时生效（不需重启终端），跨窗口同步（设置页改了，已打开的终端窗口也跟上）。
+终端默认字号 13px / 字体 Menlo，但用户偏好各异（视力需要大字号、个人审美偏好特定等宽字体）。提供设置页 + 快捷键两入口，运行时即时生效（不需重启终端），跨窗口同步（设置页改了，已打开的终端窗口也跟上）。
 
 ## 范围
 
-- ✅ 配置存储：`AppConfig.terminal_font_size`（f64，默认 13）/ `terminal_font_family`（String，默认 "SF Mono"），存 DB `n` 表（与所有 AppConfig 字段一致）
+- ✅ 配置存储：`AppConfig.terminal_font_size`（f64，默认 13）/ `terminal_font_family`（String，默认 "Menlo"），存 DB `n` 表（与所有 AppConfig 字段一致）
 - ✅ 设置页入口（GeneralPanel terminal tab）：字号 slider 8-32 + 字体族下拉 + 预览 + 「恢复默认」按钮
 - ✅ 终端快捷键入口：`Cmd/Ctrl + =`/`+` 增大、`Cmd/Ctrl + -` 减小（clamp 8-32）
 - ✅ 运行时即时生效：`term.options.fontSize`/`fontFamily` + `fitAddon.fit()` + `refresh()`
@@ -33,11 +33,13 @@
 pub struct AppConfig {
     // ...
     pub terminal_font_size: f64,        // 默认 13.0
-    pub terminal_font_family: String,   // 默认 "SF Mono"
+    pub terminal_font_family: String,   // 默认 "Menlo"
 }
 
 fn default_terminal_font_family() -> String {
-    "SF Mono".to_string()
+    // Menlo：macOS Terminal.app 传统默认字体，基于 Bitstream Vera Mono。
+    // 字符紧凑相连无松散感（SF Mono 字宽大，同行内容少且像有空格）。
+    "Menlo".to_string()
 }
 ```
 
@@ -99,9 +101,9 @@ setFontFamily: (family: string) => {
 - 字号 slider（8-32，整数 step）
 - 字体族 dropdown：`invoke("list_monospace_fonts")` mount 时拉系统字体列表
 - 预览行：用当前字号/字体渲染样例文字 `"The quick brown fox 123"`
-- 「恢复默认」按钮：仅在字号≠13 或字体≠"SF Mono" 时显示（避免无意义点击），点击 `setVal("terminal_font_size", 13)` + `setVal("terminal_font_family", "SF Mono")`
+- 「恢复默认」按钮：仅在字号≠13 或字体≠"Menlo" 时显示（避免无意义点击），点击 `setVal("terminal_font_size", 13)` + `setVal("terminal_font_family", "Menlo")`
 
-**默认值单一真相源**：后端 `default_terminal_font_family()` 返回 "SF Mono"，前端常量 `TERMINAL_FONT_FAMILY_DEFAULT = "SF Mono"` / `TERMINAL_FONT_SIZE_DEFAULT = 13` 与之对齐。改默认值时两处都要改。
+**默认值单一真相源**：后端 `default_terminal_font_family()` 返回 "Menlo"，前端常量 `TERMINAL_FONT_FAMILY_DEFAULT = "Menlo"` / `TERMINAL_FONT_SIZE_DEFAULT = 13` 与之对齐。改默认值时两处都要改（实际有 3 处常量：`index.tsx` 的 `DEFAULT_TERMINAL_FONT_FAMILY`、`useTerminalSession.ts` 的 `DEFAULT_FONT_FAMILY`、`GeneralPanel.tsx` 的 `TERMINAL_FONT_FAMILY_DEFAULT`）。
 
 ## 不变量
 
@@ -120,4 +122,5 @@ setFontFamily: (family: string) => {
 
 1. **v1（初始）**：硬编码 CSS 降级链 `'"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace'`
 2. **v2**：AppConfig 加配置字段，设置页固定 7 预设 + 自定义输入框
-3. **v3（当前）**：去掉固定预设 + 自定义，下拉动态加载 `fc-list` 系统字体（过滤 `.` 前缀）+ 「恢复默认」按钮。理由：固定预设不覆盖用户已装的编程字体（JetBrains Mono / Fira Code 等），自定义输入框又多一个 UI 路径——直接列系统所有等宽字体最简洁
+3. **v3**：去掉固定预设 + 自定义，下拉动态加载 `fc-list` 系统字体（过滤 `.` 前缀）+ 「恢复默认」按钮。理由：固定预设不覆盖用户已装的编程字体（JetBrains Mono / Fira Code 等），自定义输入框又多一个 UI 路径——直接列系统所有等宽字体最简洁
+4. **v4（当前）**：默认字体从 SF Mono 改为 Menlo。理由：SF Mono 字宽大，同行内容少且像有空格（"字和字跨度太大，让人觉得中间有空格"）。Menlo 是 macOS Terminal.app 传统默认，基于 Bitstream Vera Mono，字符紧凑相连。
