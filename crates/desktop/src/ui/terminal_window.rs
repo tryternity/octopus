@@ -28,6 +28,14 @@ const READY_EVENT: &str = "terminal://ready";
 /// 丢失，但比「命令彻底丢」强——至少快 mount 的场景有救）。
 const READY_TIMEOUT_MS: u64 = 5000;
 
+/// 前端 emit `terminal://ready` 的 payload（见 index.tsx `emit("terminal://ready", {windowLabel})`）。
+/// 用于 once 闭包校验来源窗口，避免多窗口并发 mount 时误收别的窗口的 ready（F3）。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyPayload {
+    window_label: String,
+}
+
 /// ActionBar 联动事件 payload（emit "terminal://new-tab"）。
 /// 前端 listen 后新开 tab，cwd 作为 shell 启动目录，command 写入 shell（如 `claude`）。
 #[derive(Clone, Debug, serde::Serialize)]
@@ -95,11 +103,22 @@ fn emit_new_tab_on_ready(app_handle: tauri::AppHandle, payload: NewTabPayload) {
 
     // once 收到前端 ready → emit new-tab（若 watchdog 未抢先）。
     // 每个闭包各 clone 一份 app/label/payload，避免借用冲突。
+    // **校验 windowLabel**（F3）：前端所有终端窗口 mount 时都 emit terminal://ready，
+    // 多窗口并发 mount 时 once 可能误收别的窗口的 ready → 提前 emit（agent listener
+    // 未就绪 → 事件丢 + fired=true 使 watchdog 不兜底）。仅接受 AGENT_WINDOW_LABEL 的 ready。
     let fired_once = fired.clone();
     let app_once = app_handle.clone();
     let label_once = label.clone();
     let payload_once = payload.clone();
-    let _once_id = app_handle.once(READY_EVENT, move |_e| {
+    let expected_label = AGENT_WINDOW_LABEL.to_string();
+    let _once_id = app_handle.once(READY_EVENT, move |e| {
+        // 解析 payload，校验来源窗口 label
+        let is_from_agent = serde_json::from_str::<ReadyPayload>(e.payload())
+            .map(|p| p.window_label == expected_label)
+            .unwrap_or(false);
+        if !is_from_agent {
+            return; // 别的窗口的 ready，忽略
+        }
         if fired_once.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             let _ = app_once.emit_to(&label_once, "terminal://new-tab", payload_once);
         }

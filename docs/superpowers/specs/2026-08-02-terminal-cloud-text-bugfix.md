@@ -306,6 +306,39 @@ if !finished {
 ## 6. 不在范围
 
 - pty crate 引入 tokio（违反「纯逻辑」设计约束）
-- 终端文件树支持嵌套 `.gitignore` 递归（直接子项层面足够，子目录自身可见性不受其内容影响）
 - agent_detect 连字符误报的两全方案（设计特性，文档化即可）
 - reload 并发窗口的彻底修复（瞬时自愈，低优先）
+
+## 7. 复审修复（2026-08-02 第二轮，F1-F3 + 次要）
+
+首轮修复后的边角缺陷复查，全部 CONFIRMED 并修复：
+
+### F1. gitignore 嵌套 + 前导斜杠 pattern 误隐藏
+
+**根因**：首轮修复把所有 .gitignore 合并进 `GitignoreBuilder::new(dir)` 单一 root。前导斜杠 pattern（`/build`）的 `actual=build`（无 `**/`），当 `dir` 是 repo 子目录（如 `repo/src`）时，`matched` 剥离 root=src 后 `/build` 误命中 `src/build`——而 git 实际跟踪它（根 `/build` 不匹配嵌套）。
+
+**实证复现**：独立测试程序（`/tmp/f1_test`）确认 `dir=repo/src` 时 `/build` 误隐藏 `src/build`，`git check-ignore src/build` 无输出（git 不忽略）。
+
+**修复**：`build_gitignore_matchers` 改为对**每个 .gitignore 用其所在目录为 root 单独建一个 matcher**，返回 `Vec<Gitignore>`（按优先级低→高：全局 excludesfile < .git/info/exclude < repo_root→dir 逐级 .gitignore）。调用方逐个 `matched`，按 git「最后匹配胜出」语义：从高优先级（末尾）向低优先级查，Ignore→隐藏 / Whitelist(`!`)→可见（覆盖低优先级 Ignore）/ None→继续查。
+
+**回归测试**：`list_dir_nested_leading_slash_does_not_over_hide`——tempdir 建 repo + 根 `.gitignore`（`/build` + `*.log`）+ `src/build/`（应可见）+ `src/debug.log`（应隐藏，全局 pattern）+ 根 `build/`（应隐藏）。列 `src/` 断言 `build` 可见、`debug.log` 隐藏；列 repo 根断言 `build` 隐藏。
+
+### F2. baidu stable↔partial 英文粘连
+
+**根因**：`accumulate_display` 的 `fin_texts.join(sep)` 已加分隔符（首轮 #5 主修复），但 `format!("{}{}", stable, current_partial)` 在 stable 与 partial 间无 sep。英文场景 `stable="hello world"` + `partial="to"` → `"hello worldto"`（应 `"hello world to"`）。
+
+**修复**：`stable` 与 `current_partial` 间插 sep（仅当 `!stable.is_empty()` 且 partial 非空——首句 partial 不加，避免前导空格）。`format!("{}{}{}", stable, sep, current_partial)`。
+
+**回归测试**：`test_accumulate_display_english_with_partial`（`["hello world"]+"to"+"en"` → `"hello world to"`）+ `test_accumulate_display_first_partial_no_leading_sep`（首句 partial 无前导 sep）。中文场景 `["你好"]+"世"` → `"你好，世"`（句间逗号，语义正确）。
+
+### F3. ready once 不校验 windowLabel
+
+**根因**：前端所有终端窗口（含多实例 `terminal_<n>`）mount 时都 emit `terminal://ready`（index.tsx）。后端 `emit_new_tab_on_ready` 的 once 闭包 `move |_e|` 忽略 payload，多窗口并发 mount 时 agent 的 once 可能误收别的窗口的 ready → 提前 emit（agent listener 未就绪 → 事件丢 + fired=true 使 watchdog 不兜底）。
+
+**修复**：once 闭包解析 payload（新增 `ReadyPayload { windowLabel }` struct + `rename_all="camelCase"` 对齐前端），仅当 `window_label == AGENT_WINDOW_LABEL` 才触发 emit。解析失败（`unwrap_or(false)`）忽略，靠 5s watchdog 兜底（比误触发安全）。
+
+### 次要瑕疵
+
+- itn.rs 尾部多余空行清理（fmt 风格）
+- corrector.rs `top_k` 注释明确「下游 take(5)，取 6 含余量；改下游须同步」（防未来下游改 take(7) 漏候选）
+

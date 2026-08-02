@@ -207,10 +207,12 @@ pub fn terminal_list_dir(path: String, show_hidden: bool) -> Result<Vec<FileEntr
 fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
     let root = std::path::Path::new(path);
 
-    // gitignore 过滤：在 git repo 内用 ignore crate 的 Gitignore 匹配器，
+    // gitignore 过滤：在 git repo 内用 ignore crate 的 Gitignore 匹配器列表，
     // 对每个直接子项判断是否被 .gitignore 命中（命中 → 隐藏）。
     // 非 git repo 不过滤（避免 ignore crate 的 WalkBuilder 触发 macOS TCC 找 .git）。
-    let matcher = build_gitignore_matcher(root);
+    // 每个 .gitignore 用其所在目录为 root 单独建 matcher（修复 F1：前导斜杠 pattern
+    // 锚定问题——合并进单一 root 会在嵌套场景误隐藏 git 跟踪的文件）。
+    let matchers = build_gitignore_matchers(root);
 
     let read = std::fs::read_dir(root).map_err(|e| {
         log::debug!("terminal_list_dir({}) failed: {e}", root.display());
@@ -225,11 +227,17 @@ fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, Strin
             if !show_hidden && name.starts_with('.') {
                 return None;
             }
-            // gitignore 过滤：命中 Ignore 的直接子项隐藏
-            if let Some(m) = &matcher {
+            // gitignore 过滤：matchers 按优先级低→高排列。git「最后匹配胜出」语义：
+            // 从高优先级（末尾，离 dir 近）向低优先级查，第一个 Match 决定。
+            // Ignore → 隐藏；Whitelist(`!`) → 可见（覆盖低优先级的 Ignore）。
+            if !matchers.is_empty() {
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                if let ignore::Match::Ignore(_) = m.matched(&e.path(), is_dir) {
-                    return None;
+                for m in matchers.iter().rev() {
+                    match m.matched(&e.path(), is_dir) {
+                        ignore::Match::Ignore(_) => return None,
+                        ignore::Match::Whitelist(_) => break, // 该项被白名单保留
+                        ignore::Match::None => {} // 继续查更低优先级
+                    }
                 }
             }
             let kind = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -251,35 +259,45 @@ fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, Strin
     Ok(entries)
 }
 
-/// 构建 gitignore 匹配器，用于判断 `dir` 的直接子项是否应被隐藏。
+/// 构建 gitignore 匹配器列表，用于判断 `dir` 的直接子项是否应被隐藏。
 ///
-/// 收集 `.gitignore` 的范围（对齐 git 语义）：
-/// - `dir` 及其祖先到 repo root 的每一级 `.gitignore`
-/// - repo root 的 `.git/info/exclude`
-/// - 全局 excludesfile（`core.excludesFile`）
+/// **每个 `.gitignore` 用其所在目录为 root 单独建一个 matcher**（而非全合并进 `dir`）。
+/// 这样前导斜杠 pattern（`/build`）锚定到该 .gitignore 所在目录，与 git 语义一致。
+/// 合并进单一 root 会导致 `/build`（actual=`build`，无 `**/`）在嵌套场景误命中——
+/// `dir=repo/src` 时 repo 根的 `/build` 会误隐藏 `src/build`（git 实际跟踪它）。
 ///
-/// 非 git repo（无 `.git`）返回 None（不过滤）。匹配以 `dir` 为 root 做相对路径剥离，
-/// 故对直接子项用 `matched(path, is_dir)` 判断。
-fn build_gitignore_matcher(dir: &std::path::Path) -> Option<ignore::gitignore::Gitignore> {
-    let repo_root = find_repo_root(dir)?;
-    let mut builder = ignore::gitignore::GitignoreBuilder::new(dir);
-    // git 优先级（低 → 高，后加者覆盖先加者，Gitignore 内部按「最后匹配胜出」处理）：
-    //   全局 excludesfile < .git/info/exclude < repo root .gitignore < ... < dir .gitignore
-    // 故添加顺序：先全局，再 repo root 的 .git/info/exclude，再从 repo root 向下到 dir 逐级 .gitignore。
+/// 返回的 matcher 按 git 优先级排序（低 → 高）：调用方逐个 matched，任一命中即隐藏。
+/// 优先级（低 → 高）：全局 excludesfile < .git/info/exclude < repo_root .gitignore <
+/// ... < dir .gitignore。后查的（更高优先级）可覆盖先查的（whitelist `!` 胜出）。
+///
+/// 非 git repo（无 `.git`）返回空 Vec（不过滤）。
+fn build_gitignore_matchers(dir: &std::path::Path) -> Vec<ignore::gitignore::Gitignore> {
+    let mut matchers: Vec<ignore::gitignore::Gitignore> = Vec::new();
+    let repo_root = match find_repo_root(dir) {
+        Some(r) => r,
+        None => return matchers, // 非 repo
+    };
+    // 全局 excludesfile（最低优先级）—— root 用其父目录（与 git 行为近似）
     if let Some(global) = ignore::gitignore::gitconfig_excludes_path() {
         if global.is_file() {
-            if let Some(e) = builder.add(&global) {
-                log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", global.display());
+            let root = global.parent().unwrap_or(&repo_root).to_path_buf();
+            let mut b = ignore::gitignore::GitignoreBuilder::new(&root);
+            let _ = b.add(&global);
+            if let Ok(m) = b.build() {
+                matchers.push(m);
             }
         }
     }
+    // .git/info/exclude（root = repo_root）
     let info_exclude = repo_root.join(".git").join("info").join("exclude");
     if info_exclude.is_file() {
-        if let Some(e) = builder.add(&info_exclude) {
-            log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", info_exclude.display());
+        let mut b = ignore::gitignore::GitignoreBuilder::new(&repo_root);
+        let _ = b.add(&info_exclude);
+        if let Ok(m) = b.build() {
+            matchers.push(m);
         }
     }
-    // 从 repo root 向下到 dir（含），逐级 add .gitignore（越靠近 dir 优先级越高）。
+    // 从 repo_root 向下到 dir（含），逐级 .gitignore（root = 该 .gitignore 所在目录）
     let mut chain: Vec<std::path::PathBuf> = Vec::new();
     let mut cur = Some(dir.to_path_buf());
     while let Some(p) = cur {
@@ -292,18 +310,16 @@ fn build_gitignore_matcher(dir: &std::path::Path) -> Option<ignore::gitignore::G
     for p in chain.into_iter().rev() {
         let gi = p.join(".gitignore");
         if gi.is_file() {
-            if let Some(e) = builder.add(&gi) {
-                log::debug!("build_gitignore_matcher: 读取 {} 失败: {e}", gi.display());
+            let mut b = ignore::gitignore::GitignoreBuilder::new(&p);
+            let _ = b.add(&gi);
+            if let Ok(m) = b.build() {
+                matchers.push(m);
+            } else {
+                log::debug!("build_gitignore_matchers: build {} 失败", gi.display());
             }
         }
     }
-    match builder.build() {
-        Ok(m) => Some(m),
-        Err(e) => {
-            log::debug!("build_gitignore_matcher: build 失败: {e}");
-            None
-        }
-    }
+    matchers
 }
 
 /// 向上查找包含 `.git` 的最近祖先，返回其路径（repo root）。找不到返回 None。
@@ -439,5 +455,46 @@ mod tests {
         // 非 repo：.gitignore 不生效，两者都可见
         assert!(names.contains(&"debug.log"));
         assert!(names.contains(&"keep.txt"));
+    }
+
+    /// 回归 F1：嵌套目录 + 前导斜杠 pattern 误隐藏。
+    /// repo 根 .gitignore 有 `/build`（仅忽略根 build/）。用户在 repo/src/ 打开文件树
+    /// （dir=repo/src），src/build/ 应**可见**（git 跟踪它，根 /build 不匹配 src/build）。
+    /// 旧实现把所有 .gitignore 合并进 dir=src 单一 root，/build 的 actual=`build`（无 **/）
+    /// 在 src 下误命中 src/build → 误隐藏 git 跟踪的文件。
+    #[test]
+    fn list_dir_nested_leading_slash_does_not_over_hide() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        // repo 根 .gitignore：/build 仅忽略根 build/，*.log 全局
+        fs::write(repo.join(".gitignore"), "/build\n*.log\n").unwrap();
+        // 根 build/（应被忽略）+ src/build/（应可见，git 跟踪）
+        fs::create_dir_all(repo.join("build")).unwrap();
+        fs::create_dir_all(repo.join("src").join("build")).unwrap();
+        fs::write(repo.join("src").join("build").join("file.txt"), "").unwrap();
+        fs::write(repo.join("src").join("keep.txt"), "").unwrap();
+        fs::write(repo.join("src").join("debug.log"), "").unwrap();
+
+        // 列 src/（嵌套场景）
+        let src = repo.join("src");
+        let entries = list_dir_inner(src.to_str().unwrap(), true).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // src/build/ 必须可见（根 /build 不匹配它）——这是 F1 的核心
+        assert!(
+            names.contains(&"build"),
+            "src/build 应可见（根 /build 不匹配嵌套目录），got: {:?}",
+            names
+        );
+        // *.log 全局 pattern 仍生效（无斜杠 → **/，跨目录匹配）
+        assert!(!names.contains(&"debug.log"), "*.log 全局应隐藏 src/debug.log");
+        // 普通文件可见
+        assert!(names.contains(&"keep.txt"));
+
+        // 对照：列 repo 根（dir==repo_root），根 build/ 应被 /build 忽略
+        let root_entries = list_dir_inner(repo.to_str().unwrap(), true).unwrap();
+        let root_names: Vec<&str> = root_entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(!root_names.contains(&"build"), "根 /build 应隐藏根 build/");
+        assert!(root_names.contains(&"src"), "src 应可见");
     }
 }

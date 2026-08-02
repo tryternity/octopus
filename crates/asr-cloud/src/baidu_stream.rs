@@ -253,15 +253,23 @@ async fn run_baidu_session(
 /// 拼接稳态句 + 当前 partial 为显示文本。
 ///
 /// 稳态句之间插入分隔符（英文空格 / 中文逗号），避免多句直接 concat 导致英文单词
-/// 粘连（`"hello world"+"today"→"helloworldtoday"`）。partial 不加分隔符（它是当前
-/// 句的中间结果，与稳态句之间无句间分隔语义）。
+/// 粘连（`"hello world"+"today"→"helloworldtoday"`）。
+///
+/// stable↔partial 之间也插 sep（修复 F2）：partial 是新句开头，与上一稳态句之间是
+/// 句间关系，英文需空格分隔（`"hello world"+"to"→"hello world to"` 而非
+/// `"hello worldto"`）。仅当 `!fin_texts.is_empty()`（已有稳态句）且 partial 非空时加——
+/// 首句 partial（fin_texts 空）前不加，避免前导空格。
 fn accumulate_display(fin_texts: &[String], current_partial: &str, language: &str) -> String {
     let sep = sentence_separator(language);
     let stable: String = fin_texts.join(sep);
     if current_partial.is_empty() {
         stable
+    } else if stable.is_empty() {
+        // 首句 partial（无稳态句）——直接用 partial，不加前导 sep
+        current_partial.to_string()
     } else {
-        format!("{}{}", stable, current_partial)
+        // 有稳态句 + partial ——stable 与 partial 间插 sep（句间分隔）
+        format!("{}{}{}", stable, sep, current_partial)
     }
 }
 
@@ -284,8 +292,8 @@ mod tests {
     #[test]
     fn test_accumulate_display_with_partial() {
         let fin = vec!["你好".to_string()];
-        // partial 不加分隔符（当前句中间结果，与稳态句无句间分隔语义）
-        assert_eq!(accumulate_display(&fin, "世", "zh"), "你好世");
+        // 稳态句 + partial 之间插中文逗号（句间分隔）
+        assert_eq!(accumulate_display(&fin, "世", "zh"), "你好，世");
     }
 
     #[test]
@@ -301,11 +309,20 @@ mod tests {
         assert_eq!(accumulate_display(&fin, "", "en"), "hello world today is good");
     }
 
-    /// 回归 #5：英文稳态句 + partial（partial 前不插分隔符）。
+    /// 回归 #5 + F2：英文稳态句 + partial，partial 前插空格（句间分隔）。
+    /// 旧实现 "hello world"+"to" → "hello worldto"（粘连），新 → "hello world to"。
     #[test]
     fn test_accumulate_display_english_with_partial() {
         let fin = vec!["hello world".to_string()];
-        assert_eq!(accumulate_display(&fin, "to", "en"), "hello worldto");
+        assert_eq!(accumulate_display(&fin, "to", "en"), "hello world to");
+    }
+
+    /// 回归 F2：首句 partial（无稳态句）不加前导分隔符。
+    #[test]
+    fn test_accumulate_display_first_partial_no_leading_sep() {
+        // fin_texts 空 + partial 非空 → 直接 partial，无前导空格/逗号
+        assert_eq!(accumulate_display(&[], "hello", "en"), "hello");
+        assert_eq!(accumulate_display(&[], "你好", "zh"), "你好");
     }
 
     /// 回归 #11：Close 分支稳态判定逻辑（fin_texts 非空 = 稳态）。

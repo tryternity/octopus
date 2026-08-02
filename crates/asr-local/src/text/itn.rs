@@ -236,7 +236,4 @@ mod tests {
         assert_eq!(normalize("三十六计走为上"), "三十六计走为上");
         assert_eq!(normalize("花了二百五买了十五个"), "花了二百五买了15个");
     }
-
-
 }
-

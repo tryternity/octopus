@@ -137,7 +137,9 @@ impl LightCorrector {
                 (s, i)
             })
             .collect();
-        // 下游 take(5)，取前 6（含可能的原词位置）足够。select_nth_unstable_by O(n) 平均。
+        // 下游 correct_greedy 取首个非原词候选 + hotword_candidates.take(5)。
+        // 取 top-6（≥ take(5)+1）含余量；⚠️ 若下游改 take(7) 须同步调大此值，
+        // 否则会漏掉第 6 名之后的候选。select_nth_unstable_by O(n) 平均。
         let top_k = scored.len().min(6);
         if top_k < scored.len() {
             scored.select_nth_unstable_by(top_k, |a, b| {
