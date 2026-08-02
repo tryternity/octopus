@@ -145,14 +145,26 @@ pub(crate) fn apply_pipeline_events(
                 // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
                 // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
                 if !display.is_empty() {
-                    crate::ui::result_window::update_result(app_handle, &display, insertion, caret);
+                    // 流式实时标记 Hotwords 段：drain corrector 多命中候选 → mark_hotwords。
+                    let candidates = octopus_asr_local::corrector::drain_candidates();
+                    if !candidates.is_empty() {
+                        transcript.mark_hotwords(&candidates);
+                    }
+                    // 有 Hotwords 段（新标记或已有）→ 传 segments 保留下拉装饰。
+                    // 无新候选时若已标 Hotwords 段，也须传——否则前端清空 segments state 装饰消失。
+                    let segs = if transcript.has_hotwords() {
+                        Some(transcript.segments_json())
+                    } else {
+                        None
+                    };
+                    crate::ui::result_window::update_result(app_handle, &display, insertion, caret, segs.as_deref());
                 }
             }
             PipelineEvent::Polish { silence } => {
                 check_and_trigger_polish(transcript, silence, config, tx);
             }
             PipelineEvent::Error(e) => {
-                crate::ui::result_window::update_result(app_handle, &e, false, 0);
+                crate::ui::result_window::update_result(app_handle, &e, false, 0, None);
             }
             PipelineEvent::Speaking(speaking) => {
                 crate::core::perf_log::log(&format!("[SPEAKING] emit {}", speaking));

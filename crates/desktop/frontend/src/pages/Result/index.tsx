@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { type IconName } from "@/components/SvgIcon";
 import { parseShortcut, matchShortcut } from "./shortcut";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
+import { parseSegments, type Segment } from "./hotwords";
 import { Toolbar, type ToolDef } from "./Toolbar";
 import { TranslationPane } from "./TranslationPane";
 import {
@@ -69,6 +70,8 @@ function Result() {
   // instant-state：{ state, text }——供 InstantView 渲染
   const [instantState, setInstantState] = useState("");
   const [instantText, setInstantText] = useState("");
+  // segments：后端 segments_json 解析（含 hotwords 候选）。null = 无段信息（降级扁平 text）。
+  const [segments, setSegments] = useState<Segment[] | null>(null);
   // recordMode 的 ref——update-result handler 在 [] effect 内注册，闭包捕获旧 recordMode，
   // 读 ref 避免 React 闭包陷阱（对齐 translateModeRef / toolbarVisibleRef 模式）。
   // 用于 instant 模式把流式 partial 也喂给 InstantView（实时文字显示）。
@@ -178,7 +181,11 @@ function Result() {
     (async () => {
       const handlers: [string, (payload: unknown) => void][] = [
         ["show-result", (p) => {
-          const t = p as string;
+          // payload: { text, segments }（2026-08-02 hotwords 下拉）。segments 可为 null。
+          const payload = p as { text: string; segments?: string | null } | string;
+          // 兼容：极旧逻辑可能传 bare string，统一提取 text/segments。
+          const t = typeof payload === "string" ? payload : payload.text;
+          const segJson = typeof payload === "string" ? null : (payload.segments ?? null);
           const isPlaceholder = t === "正在聆听…" || t === "正在聆听..." || t === "Listening…" || t === "Listening...";
           setVisible(true);
           setIsRecording((prev) => {
@@ -196,17 +203,20 @@ function Result() {
           refreshActive();
           if (isPlaceholder) {
             setText("");
+            setSegments(null);
             caretRef.current = null;
             setAsrEditorResetKey(k => k + 1);
           } else {
             setText(t);
+            setSegments(parseSegments(segJson));
             caretRef.current = null;
           }
         }],
         ["update-result", (p) => {
-          const payload = p as { text: string; insertion: boolean; caret: number };
+          const payload = p as { text: string; insertion: boolean; caret: number; segments?: string | null };
           caretRef.current = payload.insertion ? payload.caret : null;
           setText(payload.text);
+          setSegments(parseSegments(payload.segments));
           // instant 模式：流式 partial 也喂给 InstantView（实时文字显示）。
           // 读 recordModeRef 避免 React 闭包陷阱（handler 在 [] effect 注册）。
           // toggle 模式不写——InstantView 被 display:none 隐藏，无需更新。
@@ -216,6 +226,7 @@ function Result() {
         }],
         ["clear-result", () => {
           setText("");
+          setSegments(null);
           caretRef.current = null;
           setVisible(false);
           setIsRecording((prev) => {
@@ -226,6 +237,7 @@ function Result() {
         }],
         ["hide-result", () => {
           setVisible(false);
+          setSegments(null);
           setIsRecording((prev) => {
             if (prev) void invoke("perf_log_cmd", { msg: "[FE] isRecording true -> false (hide-result)" });
             return false;
@@ -553,6 +565,7 @@ function Result() {
               key={asrEditorResetKey}
               ref={asrEditorRef}
               text={text}
+              segments={segments}
               caret={caretRef.current}
               expanded={expanded}
               onCommit={(payload) => {
@@ -577,6 +590,7 @@ function Result() {
                 key={asrEditorResetKey}
                 ref={asrEditorRef}
                 text={text}
+                segments={segments}
                 caret={caretRef.current}
                 expanded={true}
                 onCommit={(payload) => {

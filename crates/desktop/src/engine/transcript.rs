@@ -14,11 +14,21 @@ use std::time::{Duration, Instant};
 const DIVERTED_PENDING_LIMIT: usize = 500;
 
 /// 段类型。后态覆盖前态：Raw → Polished → Edited。
+/// Hotwords：热词多命中替换段（text=得分最高候选，candidates=完整候选列表最多 5 个）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SegmentKind { Raw, Polished, Edited }
+pub enum SegmentKind { Raw, Polished, Edited, Hotwords }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Segment { pub kind: SegmentKind, pub text: String }
+pub struct Segment {
+    pub kind: SegmentKind,
+    pub text: String,
+    /// Hotwords 段的候选列表（得分降序，最多 5 个，text 是第一个 = 默认选择）。其他 kind 为 None。
+    pub candidates: Option<Vec<String>>,
+    /// Hotwords 段的稳定标识（UUID，mark_hotwords 劈段时生成）。
+    /// 前端装饰用它做唯一键——map 后位置/段 index 变都不影响，中插/追加不丢装饰。
+    /// 其他 kind 为 None。
+    pub id: Option<String>,
+}
 
 /// 给 octopus_llm 的润色输入（segments 快照）。edited 段标 preserve，其余待润色。
 #[derive(Debug, Clone)]
@@ -235,7 +245,7 @@ impl Transcript {
         if gap > 0 && self.segments[gap - 1].kind == SegmentKind::Raw {
             self.segments[gap - 1].text.push_str(delta);
         } else {
-            self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() });
+            self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() , candidates: None, id: None });
             self.caret_gap = gap + 1;
             // 诊断（spec 2026-07-19 第二轮）：新段插入位置，验证假设 D（caret 落点看不到）
             crate::core::perf_log::log(&format!(
@@ -261,8 +271,8 @@ impl Transcript {
                 let left: String = chars[..rel].iter().collect();
                 let right: String = chars[rel..].iter().collect();
                 let kind = seg.kind;
-                self.segments[i] = Segment { kind, text: left };
-                self.segments.insert(i + 1, Segment { kind, text: right });
+                self.segments[i] = Segment { kind, text: left, candidates: None, id: None };
+                self.segments.insert(i + 1, Segment { kind, text: right, candidates: None, id: None });
                 return i + 1;
             }
             acc += len;
@@ -335,6 +345,7 @@ impl Transcript {
                 SegmentKind::Raw => "R",
                 SegmentKind::Polished => "P",
                 SegmentKind::Edited => "E",
+                SegmentKind::Hotwords => "H",
             })
             .zip(self.segments.iter().map(|s| s.text.as_str()))
             .map(|(k, t)| format!("{}:\"{}\"", k, t))
@@ -383,7 +394,7 @@ impl Transcript {
         }
         if dirty_ranges.is_empty() {
             if has_edited {
-                self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
+                self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() , candidates: None, id: None }];
                 self.caret_gap = 1;
             }
             // has_edited=false → 纯删除，不改原段 kind（segments 不变，仅文本缩短已在 flat 中反映）
@@ -421,6 +432,63 @@ impl Transcript {
 
     /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
     pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
+
+    /// 是否含 Hotwords 段（流式 emit 判定：有则须传 segments 保留下拉装饰，无新候选也不清空）。
+    pub fn has_hotwords(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Hotwords) }
+
+    /// 标记 Hotwords 段：drain_candidates 拿到 (word, candidates) 列表后，
+    /// 在 segments 里找到含 word 的段（子串匹配），把 word 劈出来标 Hotwords。
+    ///
+    /// 流式/VadSegmented 场景下段是整句（如"测试入河"），word 是单个词（"入河"），
+    /// 不能用精确匹配（旧实现 s.text == word 永远匹配不到整句段）。改为子串劈段：
+    /// 含 word 的段劈成 [前缀(原kind)] + [word(Hotwords)] + [后缀(原kind)]。
+    /// 多个匹配按段顺序标第一个未标记的；同一段多次命中取第一个（避免重复劈）。
+    /// 已是 Hotwords/Edited 的 word 跳过（用户已选定）。
+    pub fn mark_hotwords(&mut self, hits: &[(String, Vec<String>)]) {
+        for (word, candidates) in hits {
+            if word.is_empty() { continue; }
+            // 找第一个含 word 子串、且非 Hotwords/Edited 的段
+            let mut found: Option<(usize, usize)> = None; // (seg_idx, char_off_within_seg)
+            for (i, seg) in self.segments.iter().enumerate() {
+                if seg.kind == SegmentKind::Hotwords || seg.kind == SegmentKind::Edited { continue; }
+                if let Some(byte_off) = seg.text.find(word.as_str()) {
+                    // str::find 返回 byte offset，转 char offset（切分用 char 维度）
+                    let char_off = seg.text[..byte_off].chars().count();
+                    found = Some((i, char_off));
+                    break;
+                }
+            }
+            let (idx, char_off) = match found { Some(x) => x, None => continue };
+            // 劈段：segments[idx] → 前缀(原kind) + word(Hotwords) + 后缀(原kind)
+            let kind = self.segments[idx].kind;
+            let word_char_len = word.chars().count();
+            let chars: Vec<char> = self.segments[idx].text.chars().collect();
+            let prefix: String = chars[..char_off].iter().collect();
+            let suffix: String = chars[char_off + word_char_len..].iter().collect();
+            let mut replacement = Vec::new();
+            if !prefix.is_empty() {
+                replacement.push(Segment { kind, text: prefix, candidates: None, id: None });
+            }
+            replacement.push(Segment {
+                kind: SegmentKind::Hotwords,
+                text: word.clone(),
+                candidates: Some(candidates.clone()),
+                id: Some(uuid::Uuid::new_v4().to_string()),
+            });
+            if !suffix.is_empty() {
+                replacement.push(Segment { kind, text: suffix, candidates: None, id: None });
+            }
+            // splice 前记 caret_gap，劈段后偏移（caret 在被劈段之后 → 按新增段数右移）。
+            // 不修则流式末尾追加态（caret_gap==旧 len）劈段后 caret_gap<新 len → is_inserting=true
+            // → 下帧 delta 插到中间（新内容跑到候选词位置），破坏结构。
+            let old_caret_gap = self.caret_gap;
+            let delta = replacement.len() as isize - 1; // 替换 1 段为 N 段
+            self.segments.splice(idx..=idx, replacement);
+            if old_caret_gap > idx {
+                self.caret_gap = (old_caret_gap as isize + delta) as usize;
+            }
+        }
+    }
 
     /// 取润色输入：快照 segments + 记 caret offset/末尾态 + 标记 pending。
     pub fn take_polish_input(&mut self) -> PolishInput {
@@ -495,20 +563,28 @@ impl Transcript {
     pub fn last_polish_time(&self) -> Instant { self.last_polish_time }
     pub fn set_mode(&mut self, mode: PolishMode) { self.mode = mode; }
 
-    /// 段序列化给 DB（JSON）。 [{"kind":"raw|polished|edited","text":"..."}]
+    /// 段序列化给 DB（JSON）。 [{"kind":"raw|polished|edited|hotwords","text":"...","candidates":[...],"id":"..."}]
+    /// candidates/id 字段仅 hotwords 段含（其他 kind 省略，向后兼容）。
     pub fn segments_json(&self) -> String {
         serde_json::to_string(
             &self.segments.iter().map(|s| {
                 let k = match s.kind {
-                    SegmentKind::Raw => "raw", SegmentKind::Polished => "polished", SegmentKind::Edited => "edited",
+                    SegmentKind::Raw => "raw", SegmentKind::Polished => "polished",
+                    SegmentKind::Edited => "edited", SegmentKind::Hotwords => "hotwords",
                 };
-                serde_json::json!({ "kind": k, "text": s.text })
+                let mut obj = serde_json::json!({ "kind": k, "text": s.text });
+                if let Some(ref cands) = s.candidates {
+                    obj["candidates"] = serde_json::json!(cands);
+                }
+                if let Some(ref id) = s.id {
+                    obj["id"] = serde_json::json!(id);
+                }
+                obj
             }).collect::<Vec<_>>(),
         ).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// 从 DB JSON 恢复 segments（Idle 态编辑时用——保留已有 Raw/Polished/Edited 标记）。
-    /// JSON 格式：[{"kind":"raw|polished|edited","text":"..."}]
+    /// 从 DB JSON 恢复 segments（Idle 态编辑时用——保留已有 Raw/Polished/Edited/Hotwords 标记）。
     pub fn restore_segments(&mut self, json: &str) {
         if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(json) {
             self.segments.clear();
@@ -516,11 +592,16 @@ impl Transcript {
                 let kind = match item.get("kind").and_then(|v| v.as_str()) {
                     Some("polished") => SegmentKind::Polished,
                     Some("edited") => SegmentKind::Edited,
+                    Some("hotwords") => SegmentKind::Hotwords,
                     _ => SegmentKind::Raw,
                 };
                 let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let candidates: Option<Vec<String>> = item.get("candidates")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let id: Option<String> = item.get("id")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
                 if !text.is_empty() {
-                    self.segments.push(Segment { kind, text });
+                    self.segments.push(Segment { kind, text, candidates, id });
                 }
             }
             self.caret_gap = self.segments.len();
@@ -528,32 +609,53 @@ impl Transcript {
     }
 }
 
-/// 润色回填：snapshot + LLM 输出 full → 新 segments（edited 串匹配定位，间隙 Polished，无 Raw）。
+/// 润色回填：snapshot + LLM 输出 full → 新 segments（edited/hotwords 串匹配定位，间隙 Polished，无 Raw）。
+/// Hotwords 段尝试匹配所有候选（LLM 可能选了非第一个），匹配到的候选词标 Edited（已选定）。
 fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
-    let edited: Vec<&str> = snapshot.iter()
-        .filter(|s| s.kind == SegmentKind::Edited).map(|s| s.text.as_str()).collect();
-    if edited.is_empty() {
-        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string() }];
+    // 收集锚点：Edited（固定文本）+ Hotwords（所有候选词都可能被 LLM 选中）
+    struct Anchor {
+        texts: Vec<String>,      // 尝试匹配的文本列表（Edited 只有 1 个，Hotwords 有多个候选）
+        kind: SegmentKind,       // 匹配后标记的 kind
+        candidates: Option<Vec<String>>,
+    }
+    let anchors: Vec<Anchor> = snapshot.iter().filter_map(|s| match s.kind {
+        SegmentKind::Edited => Some(Anchor {
+            texts: vec![s.text.clone()], kind: SegmentKind::Edited, candidates: None,
+        }),
+        SegmentKind::Hotwords => Some(Anchor {
+            texts: s.candidates.clone().unwrap_or_else(|| vec![s.text.clone()]),
+            kind: SegmentKind::Edited,  // LLM 选定后变 Edited
+            candidates: None,
+        }),
+        _ => None,
+    }).collect();
+    if anchors.is_empty() {
+        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string(), candidates: None, id: None }];
     }
     let full_chars: Vec<char> = full.chars().collect();
     let mut segs = Vec::new();
     let mut cursor = 0usize;
-    for ed in &edited {
-        let ed_chars: Vec<char> = ed.chars().collect();
-        match find_from(&full_chars, &ed_chars, cursor) {
-            Some(start) => {
+    for anchor in &anchors {
+        // 在 full 里找任一候选词
+        let found = anchor.texts.iter().find_map(|t| {
+            let t_chars: Vec<char> = t.chars().collect();
+            find_from(&full_chars, &t_chars, cursor).map(|start| (start, t_chars))
+        });
+        match found {
+            Some((start, matched_chars)) => {
                 if start > cursor {
                     let gap: String = full_chars[cursor..start].iter().collect();
-                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap }); }
+                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap, candidates: None, id: None }); }
                 }
-                let end = start + ed_chars.len();
-                segs.push(Segment { kind: SegmentKind::Edited, text: full_chars[start..end].iter().collect() });
+                let end = start + matched_chars.len();
+                let matched_text: String = full_chars[start..end].iter().collect();
+                segs.push(Segment { kind: anchor.kind, text: matched_text, candidates: anchor.candidates.clone(), id: None });
                 cursor = end;
             }
             None => {
-                // 匹配不到（LLM 擅改）：剩余全作 Polished，停止（best-effort）
+                // 匹配不到（LLM 擅改所有候选）：剩余全作 Polished，停止（best-effort）
                 if cursor < full_chars.len() {
-                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect() });
+                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect(), candidates: None, id: None });
                     cursor = full_chars.len();
                 }
                 break;
@@ -562,7 +664,7 @@ fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
     }
     if cursor < full_chars.len() {
         let rest: String = full_chars[cursor..].iter().collect();
-        if !rest.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: rest }); }
+        if !rest.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: rest , candidates: None, id: None }); }
     }
     segs
 }
@@ -592,12 +694,12 @@ fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
             return;
         }
     }
-    result.push(Segment { kind, text: text.to_string() });
+    result.push(Segment { kind, text: text.to_string(), candidates: None, id: None });
 }
 
 /// 按 dirty ranges 重建段列表。
-/// dirty 区间内标 Edited；区间外用 LCS diff 对齐 old_flat → new_flat，
-/// 保留匹配字符的原 segment kind，不匹配的（因删除导致偏移）标 Raw 兜底。
+/// dirty 区间内标 Edited；区间外用字符 walk 对齐 old_flat → new_flat，
+/// 保留匹配字符的原 segment kind + hotword 段的 candidates/id（按字符映射恢复）。
 /// dirty ranges 被 clamp 到 [0, total] 防越界。
 fn rebuild_segments(
     old_segments: &[Segment],
@@ -607,7 +709,7 @@ fn rebuild_segments(
     let new_chars: Vec<char> = new_flat.chars().collect();
     let total = new_chars.len();
 
-    // 1. 构建 old_flat + 每个 char 的 kind 映射
+    // 1. 构建 old_flat + 每个 char 的 kind/candidates/id 映射
     let old_flat: String = old_segments.iter().map(|s| s.text.as_str()).collect();
     let old_chars: Vec<char> = old_flat.chars().collect();
     let old_kinds: Vec<SegmentKind> = {
@@ -615,6 +717,25 @@ fn rebuild_segments(
         for seg in old_segments {
             for _ in 0..seg.text.chars().count() {
                 v.push(seg.kind);
+            }
+        }
+        v
+    };
+    // hotword 段的 candidates/id 按字符映射（clean 区域恢复用）
+    let old_cands: Vec<Option<Vec<String>>> = {
+        let mut v = Vec::with_capacity(old_chars.len());
+        for seg in old_segments {
+            for _ in 0..seg.text.chars().count() {
+                v.push(seg.candidates.clone());
+            }
+        }
+        v
+    };
+    let old_ids: Vec<Option<String>> = {
+        let mut v = Vec::with_capacity(old_chars.len());
+        for seg in old_segments {
+            for _ in 0..seg.text.chars().count() {
+                v.push(seg.id.clone());
             }
         }
         v
@@ -632,22 +753,20 @@ fn rebuild_segments(
         }
     }
 
-    // 3. 对 non-dirty 区域用 LCS 对齐 old_flat，保留 kind
-    // LCS diff：逐字符比较 old_flat 和 new_flat 的 non-dirty 部分
-    // 简化方案：对 non-dirty 区域，用字符匹配 walk——按顺序匹配 old_chars 中的对应字符
+    // 3. 对 non-dirty 区域用字符 walk 对齐 old_flat，保留 kind + hotword candidates/id
     let mut result = Vec::new();
     let mut old_idx = 0usize;
     let mut pos = 0usize;
 
     while pos < total {
         if is_dirty[pos] {
-            // dirty 区域——收集连续 dirty chars 标 Edited
+            // dirty 区域——收集连续 dirty chars 标 Edited（丢弃 candidates/id）
             let start = pos;
             while pos < total && is_dirty[pos] { pos += 1; }
             let text: String = new_chars[start..pos].iter().collect();
             push_or_merge(&mut result, SegmentKind::Edited, &text);
         } else {
-            // clean 区域——逐字符匹配 old_flat 保留 kind
+            // clean 区域——逐字符匹配 old_flat 保留 kind + candidates/id
             let start = pos;
             while pos < total && !is_dirty[pos] { pos += 1; }
             let clean_chars = &new_chars[start..pos];
@@ -659,7 +778,7 @@ fn rebuild_segments(
                     old_idx += 1;
                 }
                 if old_idx < old_chars.len() {
-                    push_or_merge(&mut result, old_kinds[old_idx], &ch.to_string());
+                    push_or_merge_full(&mut result, old_kinds[old_idx], ch, &old_cands[old_idx], &old_ids[old_idx]);
                     old_idx += 1;
                 } else {
                     // old 中找不到（不应发生——clean 区域应完全匹配）→ Raw 兜底
@@ -672,14 +791,45 @@ fn rebuild_segments(
     result
 }
 
+/// push_or_merge 的完整版：保留 hotword 段的 candidates/id。
+/// 同 kind + 同 id 的相邻字符合并（同一个 hotword 段的字符合并）；id 不同则新起段。
+fn push_or_merge_full(
+    result: &mut Vec<Segment>,
+    kind: SegmentKind,
+    ch: char,
+    cands: &Option<Vec<String>>,
+    id: &Option<String>,
+) {
+    // hotword 段：同 id 才合并（不同 hotword 段即使 kind 都是 Hotwords 也不合并）
+    if kind == SegmentKind::Hotwords {
+        if let (Some(last), Some(ref id_val)) = (result.last_mut(), id) {
+            if last.kind == SegmentKind::Hotwords
+                && last.id.as_deref() == Some(id_val.as_str())
+            {
+                last.text.push(ch);
+                return;
+            }
+        }
+        result.push(Segment {
+            kind,
+            text: ch.to_string(),
+            candidates: cands.clone(),
+            id: id.clone(),
+        });
+        return;
+    }
+    // 非 hotword 段：按 kind 合并（candidates/id 为 None）
+    push_or_merge(result, kind, &ch.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn raw(t: &str) -> Segment { Segment { kind: SegmentKind::Raw, text: t.into() } }
+    fn raw(t: &str) -> Segment { Segment { kind: SegmentKind::Raw, text: t.into() , candidates: None, id: None } }
     fn pol(t: &str) -> Segment { kind_seg(SegmentKind::Polished, t) }
     fn edt(t: &str) -> Segment { kind_seg(SegmentKind::Edited, t) }
-    fn kind_seg(k: SegmentKind, t: &str) -> Segment { Segment { kind: k, text: t.into() } }
+    fn kind_seg(k: SegmentKind, t: &str) -> Segment { Segment { kind: k, text: t.into() , candidates: None, id: None } }
 
     // ── 默认零回归 ──
     #[test]
@@ -923,6 +1073,161 @@ mod tests {
         assert!(j.contains("\"kind\":\"raw\""));
         assert!(j.contains("\"kind\":\"edited\""));
         assert!(j.contains("\"text\":\"a\""));
+    }
+
+    // ── mark_hotwords（子串劈段）──
+    #[test]
+    fn mark_hotwords_splits_sentence_segment() {
+        // VadSegmented 场景：段是整句"测试入河"，word="入河"。
+        // 旧精确匹配（text==word）永远匹配不到 → 子串劈段修复。
+        let mut t = Transcript::new(1, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("测试入河")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈成 [raw("测试")][hotwords("入河")][raw("")] → 空 suffix 不留
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.segments[0].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[0].text, "测试");
+        assert_eq!(t.segments[1].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[1].text, "入河");
+        assert_eq!(t.segments[1].candidates, Some(vec!["入河".to_string(), "汝河".to_string()]));
+        // 段拼接不变（display_text 不变）
+        assert_eq!(t.finish_text(), "测试入河");
+    }
+
+    #[test]
+    fn mark_hotwords_word_at_start() {
+        let mut t = Transcript::new(2, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("入河测试")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+        assert_eq!(t.segments[1].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[1].text, "测试");
+    }
+
+    #[test]
+    fn mark_hotwords_exact_match_single_segment() {
+        // 精确匹配（word == 整段）仍工作——段直接标 Hotwords 不劈。
+        let mut t = Transcript::new(3, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("入河")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+    }
+
+    #[test]
+    fn mark_hotwords_skips_already_marked() {
+        // 已标 Hotwords/Edited 的段不重复标（用户已选定）。
+        let mut t = Transcript::new(4, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(), candidates: Some(vec!["入河".into()]), id: None },
+            raw("后面入河"),
+        ];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 第一个已是 Hotwords 跳过；第二个"后面入河"含"入河"→劈
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+        // 第二个被劈
+        assert!(t.segments.iter().any(|s| s.text == "后面" && s.kind == SegmentKind::Raw));
+        assert!(t.segments.iter().any(|s| s.text == "入河" && s.kind == SegmentKind::Hotwords && s.candidates.is_some()));
+    }
+
+    #[test]
+    fn mark_hotwords_word_not_found_noop() {
+        // word 不在任何段里 → 无操作。
+        let mut t = Transcript::new(5, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("完全不同")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.segments[0].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[0].text, "完全不同");
+    }
+
+    #[test]
+    fn mark_hotwords_preserves_caret_gap_at_tail() {
+        // 流式末尾追加态回归：caret_gap==len，劈段后 caret_gap 须仍==新 len。
+        // 不修则 caret_gap<新 len → is_inserting=true → 下帧 delta 插中间（bug）。
+        let mut t = Transcript::new(6, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.apply_engine_full("测试入河"); // 单 Raw 段，caret_gap==1==len（末尾追加态）
+        assert_eq!(t.caret_gap, 1);
+        assert!(!t.is_inserting());
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈成 [raw("测试")][hotwords("入河")]，len=2
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.caret_gap, 2, "劈段后 caret_gap 须跟到新末尾，实际 {}", t.caret_gap);
+        assert!(!t.is_inserting(), "末尾追加态不应变中插态");
+        // 后续 delta 追加到末尾（非中间）
+        t.apply_engine_full("测试入河后续");
+        assert_eq!(t.finish_text(), "测试入河后续");
+        assert!(t.segments.last().map(|s| s.text.ends_with("后续")).unwrap_or(false),
+            "新内容应在末尾段，实际 segs={:?}", t.segments);
+    }
+
+    #[test]
+    fn mark_hotwords_preserves_mid_insert_caret() {
+        // 中插态回归：caret_gap 在被劈段之前 → 不受劈段影响（不动）。
+        let mut t = Transcript::new(7, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("甲"), raw("入河乙")];
+        t.caret_gap = 1; // 中插：在"甲"之后、"入河乙"之前
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // "入河乙" 劈成 [hotwords("入河")][raw("乙")]，caret_gap=1 不变（在被劈段之前）
+        assert_eq!(t.caret_gap, 1, "中插态 caret_gap 在劈段前不应动");
+        assert!(t.is_inserting());
+    }
+
+    #[test]
+    fn has_hotwords_detects_marked_segment() {
+        let mut t = Transcript::new(9, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("前")];
+        assert!(!t.has_hotwords());
+        t.mark_hotwords(&[("前".to_string(), vec!["前".to_string(), "钱".to_string()])]);
+        assert!(t.has_hotwords(), "标记后应含 Hotwords 段");
+    }
+
+    #[test]
+    fn has_hotwords_preserved_after_append_no_new_hit() {
+        // 回归问题 2：首次标记 Hotwords 段后，后续新语音（无新热词命中）追加，
+        // transcript 仍含 Hotwords 段 → has_hotwords=true → emit 应传 segments 保装饰。
+        let mut t = Transcript::new(10, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.apply_engine_full("测试入河");
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string(), "如何".to_string()])]);
+        assert!(t.has_hotwords());
+        // 后续新语音（无新热词）
+        t.apply_engine_full("测试入河后面");
+        assert!(t.has_hotwords(), "追加后 Hotwords 段仍在");
+        // Hotwords 段文本不变（未被破坏）
+        assert!(t.segments.iter().any(|s| s.kind == SegmentKind::Hotwords && s.text == "入河"),
+            "Hotwords 段应保留，实际 segs={:?}", t.segments);
+        // segments_json 含 hotwords 段（前端据此渲染）
+        let j = t.segments_json();
+        assert!(j.contains("\"kind\":\"hotwords\""), "segments_json 应含 hotwords 段");
+    }
+
+    #[test]
+    fn mark_hotwords_mid_insert_caret_after_split_seg() {
+        // 中插态 + caret 在被劈段之后：前面段被 mark_hotwords 劈，caret_gap 须右移。
+        // 场景：[raw("入河")][raw("后")][raw("面")]，caret_gap=2（"后"之后、"面"之前）。
+        // mark_hotwords 劈"入河"段（idx=0）→ 精确匹配不劈（整段就是 word），但测偏移用"入河X"。
+        let mut t = Transcript::new(8, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("前入河"), raw("后面")];
+        t.caret_gap = 2; // 越界 clamp 到 len=2 = 末尾……构造中插需 3 段
+        // 重新构造明确中插：[raw("前入河")][raw("后")][raw("面")]，caret_gap=2（"后"后）
+        t.segments = vec![raw("前入河"), raw("后"), raw("面")];
+        t.caret_gap = 2;
+        assert!(t.is_inserting());
+        // 劈第一个段"前入河"（idx=0）→ [raw("前")][hotwords("入河")]，插 1 段（1→2）
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈后 segs=[raw("前"),hotwords("入河"),raw("后"),raw("面")]，caret_gap 应 2→3
+        assert_eq!(t.caret_gap, 3, "caret 在被劈段之后须右移 1，实际 {}", t.caret_gap);
+        assert!(t.is_inserting(), "仍是中插态");
+        assert_eq!(t.segments[t.caret_gap].text, "面", "caret 仍指向'面'段之前");
+        // 后续 delta 插到 caret（"后"与"面"之间），不破坏 hotwords 段
+        t.apply_engine_full("前入河后插话面");
+        let result = t.finish_text();
+        assert!(result.contains("入河"), "hotwords 段不被破坏");
+        assert!(result.contains("插话"), "新内容插到中插点");
     }
 
     // ── 选中替换（delete_range / set_selection / pending_delete）──
@@ -1245,8 +1550,8 @@ mod user_scenario_tests {
     #[test]
     fn rebuild_segments_preserves_clean_kind() {
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "AB".into() },
-            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+            Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None, id: None },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() , candidates: None, id: None },
         ];
         let result = rebuild_segments(&old, "ABCD", &[(2, 4)]);
         assert_eq!(result.len(), 2);
@@ -1259,20 +1564,20 @@ mod user_scenario_tests {
     #[test]
     fn rebuild_segments_multiple_dirty_ranges() {
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "ABCDEF".into() },
+            Segment { kind: SegmentKind::Raw, text: "ABCDEF".into() , candidates: None, id: None },
         ];
         let result = rebuild_segments(&old, "ABCDEF", &[(1, 2), (4, 5)]);
         assert_eq!(result.len(), 5);
-        assert_eq!(result[0], Segment { kind: SegmentKind::Raw, text: "A".into() });
-        assert_eq!(result[1], Segment { kind: SegmentKind::Edited, text: "B".into() });
-        assert_eq!(result[2], Segment { kind: SegmentKind::Raw, text: "CD".into() });
-        assert_eq!(result[3], Segment { kind: SegmentKind::Edited, text: "E".into() });
-        assert_eq!(result[4], Segment { kind: SegmentKind::Raw, text: "F".into() });
+        assert_eq!(result[0], Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None, id: None });
+        assert_eq!(result[1], Segment { kind: SegmentKind::Edited, text: "B".into() , candidates: None, id: None });
+        assert_eq!(result[2], Segment { kind: SegmentKind::Raw, text: "CD".into() , candidates: None, id: None });
+        assert_eq!(result[3], Segment { kind: SegmentKind::Edited, text: "E".into() , candidates: None, id: None });
+        assert_eq!(result[4], Segment { kind: SegmentKind::Raw, text: "F".into() , candidates: None, id: None });
     }
 
     #[test]
     fn push_or_merge_same_kind() {
-        let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() }];
+        let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None, id: None }];
         push_or_merge(&mut result, SegmentKind::Raw, "CD");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "ABCD");
@@ -1285,8 +1590,8 @@ mod user_scenario_tests {
         // old: [Raw("AB"), Polished("CD")] → dirty [4,6)（在末尾加"EF"）
         // clean 区域 "ABCD" 跨越 Raw + Polished → 应各自保留 kind
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "AB".into() },
-            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+            Segment { kind: SegmentKind::Raw, text: "AB".into() , candidates: None, id: None },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() , candidates: None, id: None },
         ];
         let result = rebuild_segments(&old, "ABCDEF", &[(4, 6)]);
         // Raw("AB") + Polished("CD") + Edited("EF")
@@ -1300,12 +1605,39 @@ mod user_scenario_tests {
     }
 
     #[test]
+    fn rebuild_preserves_hotword_id_in_clean_range() {
+        // 选定某个 hotword 后（dirty 该区间），clean 区域的其余 hotword 段须保留 id/candidates。
+        // old: [Hotwords("入河" id1), Raw("X"), Hotwords("入河" id2)]
+        // dirty [0,2)（选定第一个 → 变 Edited），clean 区域保留第二个的 id2 + candidates。
+        let old = vec![
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(),
+                      candidates: Some(vec!["入河".into(), "汝河".into(), "如何".into()]), id: Some("id1".into()) },
+            Segment { kind: SegmentKind::Raw, text: "X".into(), candidates: None, id: None },
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(),
+                      candidates: Some(vec!["入河".into(), "汝河".into(), "如何".into()]), id: Some("id2".into()) },
+        ];
+        // 选第一个"入河"为"如何"：new_flat = "如何X入河"，dirty [0,2)
+        let result = rebuild_segments(&old, "如何X入河", &[(0, 2)]);
+        // Edited("如何") + Raw("X") + Hotwords("入河" id2 candidates 保留)
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].kind, SegmentKind::Edited);
+        assert_eq!(result[0].text, "如何");
+        assert_eq!(result[0].id, None);
+        assert_eq!(result[1].kind, SegmentKind::Raw);
+        assert_eq!(result[1].text, "X");
+        assert_eq!(result[2].kind, SegmentKind::Hotwords, "clean 区域 hotword 段保留 kind");
+        assert_eq!(result[2].text, "入河");
+        assert_eq!(result[2].id, Some("id2".into()), "保留 id（前端装饰据此识别）");
+        assert_eq!(result[2].candidates, Some(vec!["入河".into(), "汝河".into(), "如何".into()]));
+    }
+
+    #[test]
     fn rebuild_pure_delete_preserves_segment_kinds() {
         // old: [Raw("A"), Polished("B")] → 用户删除 "A" → new = "B"
         // 无 dirty ranges，has_edited=false → rebuild_segments 保留原 kind
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "A".into() },
-            Segment { kind: SegmentKind::Polished, text: "B".into() },
+            Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None, id: None },
+            Segment { kind: SegmentKind::Polished, text: "B".into() , candidates: None, id: None },
         ];
         let result = rebuild_segments(&old, "B", &[]);
         // "B" 应保持 Polished（不退化为 Raw）
@@ -1322,9 +1654,9 @@ mod user_scenario_tests {
         // 此时 new_flat="AC" 在 old_flat="ABC" 中不是连续子串
         // old_chars walk: A 匹配 old[0]=Raw, C 匹配 old[2]=Edited（跳过被删的 B）
         let old = vec![
-            Segment { kind: SegmentKind::Raw, text: "A".into() },
-            Segment { kind: SegmentKind::Polished, text: "B".into() },
-            Segment { kind: SegmentKind::Edited, text: "C".into() },
+            Segment { kind: SegmentKind::Raw, text: "A".into() , candidates: None, id: None },
+            Segment { kind: SegmentKind::Polished, text: "B".into() , candidates: None, id: None },
+            Segment { kind: SegmentKind::Edited, text: "C".into() , candidates: None, id: None },
         ];
         let result = rebuild_segments(&old, "AC", &[]);
         let actual_text: String = result.iter().map(|s| s.text.as_str()).collect();
@@ -1405,7 +1737,7 @@ mod user_scenario_tests {
         let mut t = Transcript::new(302, PolishMode::Intermediate, crate::engine::coordinator::RecordType::Input);
         t.apply_engine_full("种子"); // cum=shown="种子", consumed=2
         // 模拟历史 diverted flush 导致 shown 膨胀（与 cum 分歧）—— shown 500 字符，cum 仍 2 字符
-        t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)) }];
+        t.segments = vec![Segment { kind: SegmentKind::Raw, text: format!("种子{}", "X".repeat(496)), candidates: None, id: None }];
 
         // 引擎持续给不同 4 字符 full（模拟日志：首字符"种"同 shown → lcp=1，diff=3）
         let mut max_shown = t.finish_text().chars().count();

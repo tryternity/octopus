@@ -26,6 +26,9 @@ pub struct LightCorrector {
     // 本次 correct 命中的热词收集（correct_greedy push，pipeline 经 drain_hits 取走后 bump DB）。
     // corrector 保持纯内存不碰 DB；命中计数持久化交调用层，避免单测污染真实 DB。
     pending_hits: parking_lot::Mutex<Vec<String>>,
+    // 本次 correct 多命中候选收集（>1 候选时，coordinator drain 后标记 Hotwords 段）。
+    // (命中的词, 该位置全部候选列表 top5)。单候选不收集（无选择意义）。
+    pending_candidates: parking_lot::Mutex<Vec<(String, Vec<String>)>>,
 }
 
 /// 词级归一化模糊拼音（每个字归一化后用 `-` 连接）。
@@ -86,6 +89,7 @@ impl LightCorrector {
             active_words: parking_lot::RwLock::new(Vec::new()),
             bigrams: parking_lot::RwLock::new(std::collections::HashMap::new()),
             pending_hits: parking_lot::Mutex::new(Vec::new()),
+            pending_candidates: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -173,6 +177,16 @@ impl LightCorrector {
                         window_word, hw
                     );
                     self.pending_hits.lock().push(hw.clone());
+                    // 多候选（>1 个热词候选）→ 收集完整候选列表（含原词）供 Hotwords 段展示。
+                    // 含原词：用户可能想选回原文（原词也是合法候选）。mark_hotwords 匹配的 word
+                    // 是替换后的 hw，候选列表给用户全选项（含原词 + 替换词 + 其他同音热词）。
+                    let hotword_candidates: Vec<String> = candidates.iter()
+                        .take(5)  // 兜底保护：最多 5 个
+                        .cloned()
+                        .collect();
+                    if hotword_candidates.len() > 1 {
+                        self.pending_candidates.lock().push((hw.clone(), hotword_candidates));
+                    }
                     let hw_chars: Vec<char> = hw.chars().collect();
                     chars[i..(sz + i)].copy_from_slice(&hw_chars[..sz]);
                     replaced_sz = sz;
@@ -294,6 +308,16 @@ pub fn drain_hits() -> Vec<String> {
     CORRECTOR
         .get()
         .map(|c| std::mem::take(&mut *c.pending_hits.lock()))
+        .unwrap_or_default()
+}
+
+/// 取出并清空本次 corrector 多命中候选列表（correct_greedy 命中 >1 候选时收集）。
+/// 返回 (命中的词, 该位置全部候选 top5)。coordinator 据此标记 Hotwords 段。
+/// 单例未初始化返回空。跨 correct 调用累积，未 drain 则残留。
+pub fn drain_candidates() -> Vec<(String, Vec<String>)> {
+    CORRECTOR
+        .get()
+        .map(|c| std::mem::take(&mut *c.pending_candidates.lock()))
         .unwrap_or_default()
 }
 
@@ -487,6 +511,60 @@ mod tests {
         assert_eq!(drain_hits(), vec!["浮窗".to_string()]);
         // drain 后清空
         assert!(drain_hits().is_empty());
+    }
+
+    #[test]
+    fn test_drain_candidates_collects_multi_hit() {
+        // 多命中（>1 候选）时 drain_candidates 收集完整候选列表（含原词）。
+        // 含原词：用户可能想选回原文（原词也是合法候选）。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates(); // 清空前序残留
+        // 「浮窗」「福川」同音（归一后），输入「福创」→ 候选 [浮窗, 福川, 福创(原词)]
+        let c = with_hotwords_scored(&[("浮窗", 5), ("福川", 1)]);
+        assert_eq!(c.correct("福创"), "浮窗");
+        let cands = drain_candidates();
+        assert_eq!(cands.len(), 1, "应收集 1 组候选（1 处命中）");
+        let (word, list) = &cands[0];
+        assert_eq!(word, "浮窗", "命中的词 = 替换后的词");
+        assert!(list.contains(&"浮窗".to_string()), "候选含浮窗");
+        assert!(list.contains(&"福川".to_string()), "候选含福川");
+        assert!(list.contains(&"福创".to_string()), "候选含原词福创（用户可选回原文）");
+        assert!(list.len() >= 3, "至少 3 个候选（2 热词 + 原词）");
+        // drain 后清空
+        assert!(drain_candidates().is_empty());
+    }
+
+    #[test]
+    fn test_drain_candidates_single_hit_includes_original() {
+        // 单热词命中：候选含热词 + 原词（用户可选回原文），len=2 > 1 → 收集。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates();
+        let c = with_hotwords(&["浮窗"]); // 仅 1 个热词
+        assert_eq!(c.correct("开福川"), "开浮窗");
+        let cands = drain_candidates();
+        assert_eq!(cands.len(), 1, "单热词命中也收集（含原词选项）");
+        let (_, list) = &cands[0];
+        assert!(list.contains(&"浮窗".to_string()), "候选含热词浮窗");
+        assert!(list.contains(&"福川".to_string()), "候选含原词福川");
+    }
+
+    #[test]
+    fn drain_candidates_user_scenario_ruhe() {
+        // 用户场景复现：热词"如何""入河""汝河"（同音 ru he），输入"如何"。
+        // "如何"既是原词也是热词——find_candidates 应返回 3 个，filter 排除原词后 2 个 → 收集。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates();
+        let c = with_hotwords(&["如何", "入河", "汝河"]);
+        assert_eq!(c.correct("测试如何"), "测试入河");
+        let cands = drain_candidates();
+        assert!(!cands.is_empty(), "3 个同音热词应收集候选，实际 drain={:?}", cands);
+        let (word, list) = &cands[0];
+        assert_eq!(word, "入河");
+        assert!(list.contains(&"入河".to_string()));
+        assert!(list.contains(&"汝河".to_string()));
     }
 
     // ── P2 多命中 hit_count 排序（2026-08-01）──
