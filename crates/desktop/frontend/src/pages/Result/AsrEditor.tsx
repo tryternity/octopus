@@ -454,7 +454,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     >
       {dropdown && (
         <div
-          className="hotword-dropdown absolute z-40 min-w-[80px] max-w-[240px] max-h-[180px] overflow-y-auto rounded-md border border-black/[0.10] shadow-lg shadow-black/[0.12] py-0.5"
+          className="hotword-dropdown absolute z-40 flex flex-row flex-wrap items-center gap-x-0.5 gap-y-0 max-w-[680px] rounded-md border border-black/[0.10] shadow-lg shadow-black/[0.12] px-1 py-0.5"
           style={{
             left: dropdown.left,
             top: dropdown.top,
@@ -462,16 +462,20 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
           }}
         >
           {dropdown.candidates.map((c, i) => (
-            <div
-              key={c + i}
-              className={cn(
-                "px-2.5 py-1 cursor-pointer text-[13px] transition-colors hover:bg-[#007aff]/[0.08]",
-                i === 0 && "font-medium",
+            <div key={c + i} className="flex items-center gap-x-0.5">
+              {i > 0 && (
+                <span className="text-[12px] select-none" style={{ color: "var(--color-muted-foreground)" }}>·</span>
               )}
-              style={{ color: i === 0 ? "var(--color-voice, #d97706)" : "var(--color-foreground)" }}
-              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); selectCandidate(c); }}
-            >
-              {c}
+              <span
+                className={cn(
+                  "px-1.5 py-0.5 cursor-pointer text-[13px] rounded transition-colors hover:bg-[#007aff]/[0.08]",
+                  i === 0 && "font-medium",
+                )}
+                style={{ color: i === 0 ? "var(--color-voice, #d97706)" : "var(--color-foreground)" }}
+                onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); selectCandidate(c); }}
+              >
+                {c}
+              </span>
             </div>
           ))}
         </div>
