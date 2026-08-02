@@ -113,6 +113,8 @@ impl<'a> AppSetup<'a> {
             Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
             Err(e) => log::warn!("[hotword] 启动装载失败，纠错以空热词运行: {}", e),
         }
+        // bigram 索引启动时立即加载（不等 scheduler 首次 tick）。
+        octopus_asr_local::corrector::reload_bigrams();
 
         self.clipboard_handle = Some(clipboard_handle);
         Ok(())
