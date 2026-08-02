@@ -179,6 +179,26 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   // 候选下拉浮层状态：点击 .cm-hotword 时打开，选中候选 / 外部点击 / Esc 时关闭。
   const [dropdown, setDropdown] = useState<{ from: number; to: number; candidates: string[]; left: number; top: number } | null>(null);
 
+  // 重算 hotwords 装饰：用最新 segments + doc 算 ranges，dispatch setHotwords。
+  // 失配（segments 拼接 != doc）→ 跳过保留已有装饰。后端无 segments → 全清。
+  // 被 segments effect 和 text effect（writeDoc 后）调用——解决 diverted 延迟期间
+  // segments effect 失配跳过、doc 同步后需补算的时序问题。
+  const refreshHotwords = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const segs = segmentsRef.current;
+    if (!segs) {
+      view.dispatch({ effects: setHotwords.of([]) });
+      return;
+    }
+    const doc = view.state.doc.toString();
+    const ranges = hotwordRanges(segs, doc);
+    if (ranges.length === 0 && segs.some((s) => s.kind === "hotwords")) {
+      return; // 失配，保留已有
+    }
+    view.dispatch({ effects: setHotwords.of(ranges) });
+  }, []);
+
   // onCommit ref——避免 mount effect 闭包陈旧
   const onCommitRef = useRef(onCommit);
   onCommitRef.current = onCommit;
@@ -354,7 +374,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
           divertedTimerRef.current = null;
           if (pendingDivertedRef.current) {
             writeDoc(pendingDivertedRef.current, caretRef.current);
-            pendingDivertedRef.current = null;
+            refreshHotwords(); // doc 同步后重算装饰（diverted 延迟期间 segments effect 失配跳过了）
           }
         }, DIVERTED_DELAY_MS);
       }
@@ -362,6 +382,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
     clearDivertedTimer();
     writeDoc(text, caretRef.current);
+    refreshHotwords(); // append 路径 doc 已同步，重算装饰
   }, [text]);
 
   useEffect(() => {
@@ -394,21 +415,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
   }
 
-  // segments prop 变化 → dispatch setHotwords（只追加新 hotword，已有装饰靠 map 跟随不被覆盖）。
-  // 失配（segments 拼接 != doc）→ ranges 空 → 不追加（已有装饰保留）。后端无 segments → 全清。
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    const segs = segmentsRef.current;
-    if (!segs) {
-      // 后端明确无 segments（流式 placeholder / clear）→ 全清装饰
-      view.dispatch({ effects: setHotwords.of([]) });
-      return;
-    }
-    const doc = view.state.doc.toString();
-    const ranges = hotwordRanges(segs, doc);
-    view.dispatch({ effects: setHotwords.of(ranges) });
-  }, [segments]);
+  // segments prop 变化 → refreshHotwords
+  useEffect(() => { refreshHotwords(); }, [segments, refreshHotwords]);
 
   // 点击 .cm-hotword → 打开候选下拉浮层。
   const handleHotwordClick = useCallback((event: MouseEvent) => {
