@@ -35,9 +35,11 @@ const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-const TERMINAL_FONT_FAMILY =
+/** 默认字体族——opts.fontFamily 未传时兜底。 */
+const DEFAULT_FONT_FAMILY =
   '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace';
-const TERMINAL_FONT_SIZE = 13;
+/** 默认字号——opts.fontSize 未传时兜底。 */
+const DEFAULT_FONT_SIZE = 13;
 
 /**
  * WKWebView sleep/wake 或 GPU reset 后的 context 丢失恢复延迟（ms）。
@@ -62,6 +64,11 @@ export type TerminalSession = {
   paste: (text: string) => void;
   selectAll: () => void;
   clear: () => void;
+  // ── 运行时改字体（设置页字号/字体变化时调）──
+  /** 改字号：更新 term.options + fit（cols/rows 可能变）+ refresh 重绘。 */
+  setFontSize: (size: number) => void;
+  /** 改字体族：更新 term.options + refresh 重绘（无需 fit，列数不变）。 */
+  setFontFamily: (family: string) => void;
 };
 
 /**
@@ -118,6 +125,10 @@ export function useTerminalSession(opts: {
   container: React.RefObject<HTMLDivElement | null>;
   cwd?: string;
   active?: boolean;
+  /** 终端字号（默认 13；运行时可用 setFontSize 改）。 */
+  fontSize?: number;
+  /** 终端字体族（默认 SF Mono/Menlo 栈；运行时可用 setFontFamily 改）。 */
+  fontFamily?: string;
   /** Cmd+F 触发时回调（TerminalPane 打开搜索栏）。 */
   onSearchOpen?: () => void;
   /** Cmd/Ctrl+T 触发时回调（新建 tab）。 */
@@ -129,6 +140,9 @@ export function useTerminalSession(opts: {
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  // fitAddon 在 useEffect 内创建，setFontSize 运行时需要触发 fit（字号变 cols/rows 会变），
+  // 提到外层 ref 让 return 对象能访问到。
+  const fitAddonRef = useRef<FitAddon | null>(null);
   // 初始值用 openPty 的 cwd——OSC 7 只在 shell 执行命令后（precmd）才发，
   // 刚开终端时 trackedCwd 为 null 会导致文件树空白。用启动目录做兜底初始值。
   const [trackedCwd, setTrackedCwd] = useState<string | null>(cwd ?? null);
@@ -150,8 +164,8 @@ export function useTerminalSession(opts: {
 
     // 1. 创建 xterm Terminal
     const term = new Terminal({
-      fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: TERMINAL_FONT_SIZE,
+      fontFamily: opts.fontFamily ?? DEFAULT_FONT_FAMILY,
+      fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
       cursorBlink: true,
       // 终端画布固定深色（终端惯例），不随主题切换——终端是 signature 元素
       theme: {
@@ -163,6 +177,7 @@ export function useTerminalSession(opts: {
       allowProposedApi: true,
     });
     const fitAddon = new FitAddon();
+    fitAddonRef.current = fitAddon;
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
     const searchAddon = new SearchAddon();
@@ -316,6 +331,7 @@ export function useTerminalSession(opts: {
       }
       term.dispose();
       termRef.current = null;
+      fitAddonRef.current = null;
       setPtyId(null);
     };
     // cwd 变化不重建 session（cwd 只在首次 openPty 用）
@@ -363,5 +379,21 @@ export function useTerminalSession(opts: {
       term.select(0, 0, term.cols * buf.length);
     },
     clear: () => termRef.current?.clear(),
+    setFontSize: (size: number) => {
+      const term = termRef.current;
+      if (!term) return;
+      term.options.fontSize = size;
+      // 字号变 → cols/rows 可能变 → 重新 fit 后通知 PTY resize（onResize 自动触发）
+      fitAddonRef.current?.fit();
+      term.refresh(0, term.rows - 1);
+    },
+    setFontFamily: (family: string) => {
+      const term = termRef.current;
+      if (!term) return;
+      term.options.fontFamily = family;
+      // 字体族等宽情况下列数不变，但字宽可能微调——fit 一下保险
+      fitAddonRef.current?.fit();
+      term.refresh(0, term.rows - 1);
+    },
   };
 }
