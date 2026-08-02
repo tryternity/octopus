@@ -217,8 +217,8 @@ impl HotwordWordFile {
         }
     }
 
-    /// 转换回 HotwordWord（sync pull 用——sync_md5 由调用方算填）。
-    pub fn to_hotword_word(&self, sync_md5: Option<String>) -> HotwordWord {
+    /// 转换回 HotwordWord（sync pull 用）。
+    pub fn to_hotword_word(&self) -> HotwordWord {
         HotwordWord {
             id: self.id.clone(),
             set_id: self.set_id.clone(),
@@ -227,7 +227,6 @@ impl HotwordWordFile {
             is_deleted: self.is_deleted,
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
-            sync_md5,
         }
     }
 }
@@ -458,10 +457,7 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
                 continue;
             }
             write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
-            let md5 = w
-                .sync_md5
-                .clone()
-                .unwrap_or_else(|| hotword_word_md5(w));
+            let md5 = hotword_word_md5(w);
             word_entries.insert(
                 w.id.clone(),
                 OutlineEntry {
@@ -583,10 +579,7 @@ pub fn incremental_export_hotwords_with(
             if is_tombstone_expired(w.is_deleted, now_secs) {
                 continue;
             }
-            let new_wmd5 = w
-                .sync_md5
-                .clone()
-                .unwrap_or_else(|| hotword_word_md5(w));
+            let new_wmd5 = hotword_word_md5(w);
             let old_wentry = old_set_outline.words.get(&w.id);
             let word_needs_write = match old_wentry {
                 None => true,
@@ -961,16 +954,7 @@ fn merge_hotword_words(
                     write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
                     report.pushed += 1;
                 } else {
-                    // 时间戳相等 → md5 比对，冲突 DB 赢
-                    let db_md5 = db_w
-                        .sync_md5
-                        .clone()
-                        .unwrap_or_else(|| hotword_word_md5(db_w));
-                    if db_md5 != entry.md5 {
-                        write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
-                        report.pushed += 1;
-                        report.conflicts += 1;
-                    }
+                    // 时间戳相等 → word 不可变（id=f(set_id,word)，不可改名）→ 无冲突，跳过
                 }
             }
         }
@@ -997,10 +981,7 @@ fn pull_word(set_id: &str, uuid: &str, now_secs: i64) -> Result<bool> {
                 log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", uuid);
                 return Ok(false);
             }
-            let w = file.to_hotword_word(None);
-            let md5 = hotword_word_md5(&w);
-            let mut w = w;
-            w.sync_md5 = Some(md5);
+            let w = file.to_hotword_word();
             match db::upsert_hotword_word(&w) {
                 Ok(()) => Ok(true),
                 Err(e) => {
@@ -1106,7 +1087,6 @@ mod tests {
             is_deleted,
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
-            sync_md5: None,
         }
     }
 

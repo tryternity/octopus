@@ -356,10 +356,9 @@ pub struct HotwordWord {
     pub is_deleted: i64,
     pub created_at: String,
     pub updated_at: String,
-    pub sync_md5: Option<String>,
 }
 
-const HOTWORD_WORD_COLS: &str = "id, set_id, word, pinyin, is_deleted, created_at, updated_at, sync_md5";
+const HOTWORD_WORD_COLS: &str = "id, set_id, word, pinyin, is_deleted, created_at, updated_at";
 
 fn row_to_hotword_word(row: &rusqlite::Row) -> rusqlite::Result<HotwordWord> {
     Ok(HotwordWord {
@@ -370,7 +369,6 @@ fn row_to_hotword_word(row: &rusqlite::Row) -> rusqlite::Result<HotwordWord> {
         is_deleted: row.get(4)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
-        sync_md5: row.get(7)?,
     })
 }
 
@@ -469,15 +467,13 @@ pub(crate) fn add_word_to_set_at(conn: &Connection, set_id: &str, word: &str) ->
     if already_active {
         return Ok(false); // 已活跃，幂等无操作
     }
-    // sync_md5：写入时填（对齐 vault cipher storage 层）——word 级 merge 据此 diff
-    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
     // ON CONFLICT(set_id, word)：已存在（软删态）→ 恢复 is_deleted=0；不存在 → INSERT
     conn.execute(
-        "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5)
+        "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+         VALUES (?1, ?2, ?3, ?4, 0)
          ON CONFLICT(set_id, word) DO UPDATE SET
-            is_deleted=0, pinyin=excluded.pinyin, sync_md5=excluded.sync_md5, updated_at=datetime('now')",
-        params![id, set_id, word, pinyin, sync_md5],
+            is_deleted=0, pinyin=excluded.pinyin, updated_at=datetime('now')",
+        params![id, set_id, word, pinyin],
     )?;
     Ok(true)
 }
@@ -501,13 +497,12 @@ pub(crate) fn add_words_to_set_at(
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         let n = conn.execute(
-            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5)
+            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, 0)
              ON CONFLICT(set_id, word) DO UPDATE SET
-                is_deleted=0, pinyin=excluded.pinyin, sync_md5=excluded.sync_md5, updated_at=datetime('now')",
-            params![id, set_id, word, pinyin, sync_md5],
+                is_deleted=0, pinyin=excluded.pinyin, updated_at=datetime('now')",
+            params![id, set_id, word, pinyin],
         )?;
         if n > 0 {
             added += 1;
@@ -527,20 +522,10 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    // 软删前先读 pinyin（md5 需要它）——is_deleted>0 的 md5 与活跃态不同（参与 diff）
-    let _pinyin: String = conn
-        .query_row(
-            "SELECT pinyin FROM hotword_words WHERE set_id=?1 AND word=?2 AND is_deleted=0",
-            params![set_id, word],
-            |r| r.get(0),
-        )
-        .unwrap_or_default();
-    let sync_md5 =
-        crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
     conn.execute(
-        "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
+        "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
          WHERE set_id=?1 AND word=?2 AND is_deleted=0",
-        params![set_id, word, sync_md5, now_secs],
+        params![set_id, word, now_secs],
     )?;
     Ok(())
 }
@@ -575,26 +560,22 @@ pub(crate) fn set_words_in_set_at(
         rows.filter_map(|r| r.ok()).collect()
     };
     for (word, _pinyin) in &to_remove {
-        let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         conn.execute(
-            "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
+            "UPDATE hotword_words SET is_deleted=?3, updated_at=datetime('now')
              WHERE set_id=?1 AND word=?2 AND is_deleted=0",
-            params![set_id, word, sync_md5, now_secs],
+            params![set_id, word, now_secs],
         )?;
     }
     // 添加/恢复新列表的词
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         conn.execute(
-            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
-             VALUES (?1, ?2, ?3, ?4, 0, ?5)
+            "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, 0)
              ON CONFLICT(set_id, word) DO UPDATE SET
-                is_deleted=0, pinyin=excluded.pinyin, sync_md5=excluded.sync_md5, updated_at=datetime('now')",
-            params![id, set_id, word, pinyin, sync_md5],
+                is_deleted=0, pinyin=excluded.pinyin, updated_at=datetime('now')",
+            params![id, set_id, word, pinyin],
         )?;
     }
     Ok(())
@@ -608,16 +589,16 @@ pub fn upsert_hotword_word(w: &HotwordWord) -> Result<()> {
 
 pub(crate) fn upsert_hotword_word_at(conn: &Connection, w: &HotwordWord) -> Result<()> {
     conn.execute(
-        "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, created_at, updated_at, sync_md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
             set_id=excluded.set_id, word=excluded.word, pinyin=excluded.pinyin,
             is_deleted=excluded.is_deleted, created_at=excluded.created_at,
-            updated_at=excluded.updated_at, sync_md5=excluded.sync_md5",
+            updated_at=excluded.updated_at",
         params![
             w.id, w.set_id, w.word, w.pinyin,
             w.is_deleted,
-            w.created_at, w.updated_at, w.sync_md5,
+            w.created_at, w.updated_at,
         ],
     )?;
     Ok(())
@@ -637,18 +618,6 @@ pub fn list_all_hotword_words() -> Result<Vec<HotwordWord>> {
             list.push(r?);
         }
         Ok(list)
-    })
-}
-
-/// 只更新词记录的 sync_md5（写命令后回填）。
-pub fn update_hotword_word_sync_md5(id: &str, sync_md5: &str) -> Result<()> {
-    ensure_db()?;
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE hotword_words SET sync_md5 = ?1 WHERE id = ?2",
-            params![sync_md5, id],
-        )?;
-        Ok(())
     })
 }
 
@@ -1048,31 +1017,24 @@ mod tests {
 
         add_word_to_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let w = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
-        let expected = crate::hotword_text::hotword_word_md5_from_fields("md5-set", "八爪鱼");
-        assert_eq!(
-            w.sync_md5.as_deref(),
-            Some(expected.as_str()),
-            "add 后 sync_md5 应等于 md5(set_id+word)"
-        );
+        assert_eq!(w.word, "八爪鱼");
+        assert_eq!(w.is_deleted, 0, "add 后 is_deleted=0");
 
-        // 软删 → sync_md5 不变（身份指纹不含 is_deleted）
+        // 软删
         remove_word_from_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let soft = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
-        assert_eq!(
-            soft.sync_md5.as_deref(),
-            Some(expected.as_str()),
-            "软删后 sync_md5 应不变（md5 不含 is_deleted）"
-        );
+        assert!(soft.is_deleted > 0, "软删后 is_deleted>0");
 
-        // 恢复（重新 add）→ sync_md5 不变（身份指纹稳定）
+        // 恢复（重新 add）
         add_word_to_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let restored = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
-        assert_eq!(restored.sync_md5, w.sync_md5, "恢复后 md5 应回到活跃指纹");
+        assert_eq!(restored.is_deleted, 0, "恢复后 is_deleted=0");
+        assert_eq!(restored.word, w.word, "恢复后 word 不变");
     }
 
-    /// add_words_to_set_at 批量 + set_words_in_set_at 覆盖（含软删）都填 sync_md5。
+    /// add_words_to_set_at 批量 + set_words_in_set_at 覆盖（含软删）。
     #[test]
-    fn word_sync_md5_filled_on_batch_and_override() {
+    fn word_batch_and_override_lifecycle() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
@@ -1082,18 +1044,15 @@ mod tests {
         add_words_to_set_at(&conn, "ov-set", &["苹果".into(), "香蕉".into()]).unwrap();
         for word in &["苹果", "香蕉"] {
             let w = get_hotword_word_at(&conn, "ov-set", word).unwrap().unwrap();
-            assert!(w.sync_md5.is_some(), "批量加的词应有 sync_md5: {}", word);
+            assert_eq!(w.is_deleted, 0, "批量加的词应活跃: {}", word);
         }
 
-        // 覆盖为 [苹果] —— 香蕉软删（md5 不变，身份指纹不含 is_deleted）
+        // 覆盖为 [苹果] —— 香蕉软删
         set_words_in_set_at(&conn, "ov-set", &["苹果".into()]).unwrap();
         let banana = get_hotword_word_at(&conn, "ov-set", "香蕉").unwrap().unwrap();
-        let expected_banana = crate::hotword_text::hotword_word_md5_from_fields("ov-set", "香蕉");
-        assert_eq!(
-            banana.sync_md5.as_deref(),
-            Some(expected_banana.as_str()),
-            "覆盖软删的香蕉 sync_md5 应不变（md5 不含 is_deleted）"
-        );
+        assert!(banana.is_deleted > 0, "覆盖后香蕉应软删");
+        let apple = get_hotword_word_at(&conn, "ov-set", "苹果").unwrap().unwrap();
+        assert_eq!(apple.is_deleted, 0, "苹果仍活跃");
     }
 
     // ── set 级软删（v58，is_deleted 存时间戳 + UNIQUE(name,is_deleted)）──

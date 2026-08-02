@@ -348,28 +348,29 @@ mod tests {
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_empty = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
 
-        // add_word——set 的 sync_md5 不变（元数据未变），但 word 记录有自己的 sync_md5
+        // add_word——set 的 sync_md5 不变（元数据未变）
         let added = add_word_to_set(id.clone(), "苹果".into()).expect("add");
         assert!(added);
         let md5_one = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_eq!(md5_empty, md5_one, "加词后 set 的 sync_md5 不应变（word 有自己的 md5）");
+        assert_eq!(md5_empty, md5_one, "加词后 set 的 sync_md5 不应变");
         let w = db::get_hotword_word(&id, "苹果").unwrap().unwrap();
-        assert!(w.sync_md5.is_some(), "word 记录应有自己的 sync_md5");
+        assert_eq!(w.word, "苹果");
+        assert_eq!(w.is_deleted, 0);
 
         // 再加一词——set md5 仍不变
         add_word_to_set(id.clone(), "香蕉".into()).expect("add 2");
         let md5_two = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
         assert_eq!(md5_one, md5_two, "再加词 set 的 sync_md5 仍不变");
 
-        // remove_word（软删）——set md5 仍不变，但 word 的 sync_md5 变成 is_deleted=true 指纹
+        // remove_word（软删）——set md5 仍不变
         remove_word_from_set(id.clone(), "苹果".into()).expect("remove");
         let md5_removed = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
         assert_eq!(md5_two, md5_removed, "删词后 set 的 sync_md5 不应变");
     }
 
-    /// add_words（批量）后 set 的 sync_md5 不变，但 word 记录有 sync_md5。
+    /// add_words（批量）后 set 的 sync_md5 不变。
     #[test]
-    fn add_words_doesnt_change_set_md5_but_fills_word_md5() {
+    fn add_words_doesnt_change_set_md5() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
@@ -384,7 +385,7 @@ mod tests {
         assert_eq!(md5_before, md5_after, "批量加词后 set 的 sync_md5 不应变");
         for word in &["葡萄", "橘子"] {
             let w = db::get_hotword_word(&id, word).unwrap().unwrap();
-            assert!(w.sync_md5.is_some(), "批量加的词应有 sync_md5: {}", word);
+            assert_eq!(w.is_deleted, 0, "批量加的词应活跃: {}", word);
         }
     }
 
