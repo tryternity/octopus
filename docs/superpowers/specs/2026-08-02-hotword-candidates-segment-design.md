@@ -8,7 +8,7 @@
 
 当前 `correct_greedy` 多命中时自动选得分最高的替换。用户希望看到完整候选列表，手动选择。
 
-## 2. 方案 A：correct 仍替换成第一个，段携带候选列表
+## 2. 设计：correct 仍替换成第一个，段携带候选列表
 
 corrector 行为不变（替换成得分最高的），但额外收集候选列表传给 Transcript。Transcript 把命中替换的段标记为 `Hotwords` kind + 携带候选列表。前端渲染下拉选择。
 
