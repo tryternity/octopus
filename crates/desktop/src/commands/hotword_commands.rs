@@ -5,13 +5,15 @@ use octopus_infra::db::{self, HotwordSet};
 use uuid::Uuid;
 use crate::core::error_util::e2s;
 
-/// 写库后统一 reload corrector 热词索引（enabled 版本并集）。
+/// 写库后统一 reload corrector 热词索引（enabled 版本并集）+ bigram 上下文索引。
 /// 失败仅告警，不阻断写操作（下次启动会重新装载）。
 fn reload_after_write() {
     match db::list_active_words() {
         Ok(entries) => octopus_asr_local::corrector::reload_hotwords(entries),
         Err(e) => log::warn!("[hotword] reload 失败: {}", e),
     }
+    // bigram 索引一并刷新（构建快几十 ms，不依赖 scheduler 的 CPU 空闲判定）。
+    octopus_asr_local::corrector::reload_bigrams();
 }
 
 /// 写操作后回填 set 的 sync_md5——只算元数据指纹（name|enabled）。
