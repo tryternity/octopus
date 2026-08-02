@@ -540,10 +540,6 @@ pub fn incremental_export_hotwords_with(
         words_by_set.entry(w.set_id.as_str()).or_default().push(w);
     }
 
-    let mut changed = 0usize;
-    let mut new_set_entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
-    let id_set: std::collections::HashSet<&str> = sets.iter().map(|h| h.id.as_str()).collect();
-
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
