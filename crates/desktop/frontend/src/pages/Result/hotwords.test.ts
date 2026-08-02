@@ -8,7 +8,7 @@ import {
 } from "./hotwords";
 
 const raw = (t: string): Segment => ({ kind: "raw", text: t });
-const hot = (t: string, c: string[]): Segment => ({ kind: "hotwords", text: t, candidates: c });
+const hot = (t: string, c: string[], id = "hw1"): Segment => ({ kind: "hotwords", text: t, candidates: c, id });
 
 // ── parseSegments ──
 describe("parseSegments", () => {
@@ -107,15 +107,15 @@ describe("hotwordRanges", () => {
 
   it("多 hotwords 段 → 各自 offset", () => {
     const segs = [
-      hot("甲", ["甲", "假"]),
+      hot("甲", ["甲", "假"], "id1"),
       raw("中间"),
-      hot("乙", ["乙", "已"]),
+      hot("乙", ["乙", "已"], "id2"),
     ];
     const doc = "甲中间乙";
     const ranges = hotwordRanges(segs, doc);
     expect(ranges).toHaveLength(2);
-    expect(ranges[0]).toEqual({ from: 0, to: 1, candidates: ["甲", "假"], segIndex: 0 });
-    expect(ranges[1]).toEqual({ from: 3, to: 4, candidates: ["乙", "已"], segIndex: 2 });
+    expect(ranges[0]).toEqual({ from: 0, to: 1, candidates: ["甲", "假"], id: "id1" });
+    expect(ranges[1]).toEqual({ from: 3, to: 4, candidates: ["乙", "已"], id: "id2" });
   });
 
   it("无 hotwords 段 → 空数组", () => {

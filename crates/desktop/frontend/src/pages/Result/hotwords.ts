@@ -17,12 +17,14 @@
 /** 段类型（对齐后端 SegmentKind：raw/polished/edited/hotwords）。 */
 export type SegmentKind = "raw" | "polished" | "edited" | "hotwords";
 
-/** 段（对齐后端 Segment serde JSON）。candidates 仅 hotwords 段含。 */
+/** 段（对齐后端 Segment serde JSON）。candidates/id 仅 hotwords 段含。 */
 export interface Segment {
   kind: SegmentKind;
   text: string;
   /** hotwords 段的候选列表（得分降序，最多 5 个；text 是第一个 = 默认选择）。 */
   candidates?: string[];
+  /** hotwords 段的稳定 UUID（前端装饰用它做唯一键）。 */
+  id?: string;
 }
 
 /** hotwords 段在 doc 里的定位 + 候选（驱动 Decoration.mark + 浮层下拉）。 */
@@ -33,8 +35,8 @@ export interface HotwordRange {
   to: number;
   /** 候选列表（text 是第一个）。 */
   candidates: string[];
-  /** 该段在 segments 数组中的 index（稳定标识，区分多个相同 word 的 hotword 段）。 */
-  segIndex: number;
+  /** 稳定 UUID（后端生成，map 后位置/段 index 变都不影响，中插/追加不丢装饰）。 */
+  id: string;
 }
 
 /**
@@ -61,6 +63,9 @@ export function parseSegments(json: string | null | undefined): Segment[] | null
     const seg: Segment = { kind: kind as SegmentKind, text };
     if (Array.isArray(obj.candidates) && obj.candidates.every((c) => typeof c === "string")) {
       seg.candidates = obj.candidates as string[];
+    }
+    if (typeof obj.id === "string") {
+      seg.id = obj.id;
     }
     segments.push(seg);
   }
@@ -89,11 +94,10 @@ export function hotwordRanges(segments: Segment[], doc: string): HotwordRange[] 
   if (!segmentsMatchText(segments, doc)) return [];
   const ranges: HotwordRange[] = [];
   let offset = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
+  for (const seg of segments) {
     const len = seg.text.length;
-    if (seg.kind === "hotwords" && seg.candidates && seg.candidates.length > 0) {
-      ranges.push({ from: offset, to: offset + len, candidates: seg.candidates, segIndex: i });
+    if (seg.kind === "hotwords" && seg.candidates && seg.candidates.length > 0 && seg.id) {
+      ranges.push({ from: offset, to: offset + len, candidates: seg.candidates, id: seg.id });
     }
     offset += len;
   }

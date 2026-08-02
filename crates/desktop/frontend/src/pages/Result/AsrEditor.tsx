@@ -9,10 +9,9 @@ import { cn } from "@/lib/utils";
 const IDLE_TIMEOUT = 2000;
 const DIVERTED_DELAY_MS = 300;
 
-/** 推入 hotwords 段定位（[from,to,candidates,segIndex] 列表），驱动 hotwordsField 合并 DecorationSet。
- * segIndex = 段在 segments 数组中的位置（稳定标识，区分多个相同 word）。
- * map 主导：已有 segIndex 保留 map 后 offset，新 segIndex 追加，消失的 filter 清除。 */
-const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[]; segIndex: number }>>();
+/** 推入 hotwords 段定位（[from,to,candidates,id] 列表），驱动 hotwordsField 合并 DecorationSet。
+ * id = 后端生成的 UUID（稳定标识）。map 主导：已有 id 保留 map 后 offset，新 id 追加，消失的 filter 清除。 */
+const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[]; id: string }>>();
 
 export interface AsrEditorCommit {
   text: string;
@@ -82,19 +81,22 @@ function buildTheme(expanded: boolean) {
   }, { dark: false });
 }
 
+/** 清除指定 from 位置附近的 hotword 装饰（selectCandidate 选定后调用）。
+ * 用 from 而非 segIndex——map 后位置变但 selectCandidate 知道点击的 from。 */
+const removeHotwordAt = StateEffect.define<number>();
+
 /**
- * hotwords 段 Decoration StateField（map 主导策略）。
+ * hotwords 段 Decoration StateField（map 主导 + UUID 稳定标识）。
  *
- * 类比富文本：hotword 标记像粗体——一旦建立就跟随内容移动，编辑/中插/追加时不被破坏。
- * CM6 的 decos.map(tr.changes) 就是这个"跟随"机制。
+ * 类比富文本粗体：hotword 装饰一旦建立就跟随内容移动（CM6 decos.map），
+ * 编辑/中插/追加/段重建都不破坏它。
  *
- * 稳定标识：segIndex（段在 segments 数组中的位置）。每个 hotword 段有唯一 segIndex，
- * 区分多个相同 word（如连续 2 个"如何"）。map 后位置变但 segIndex 不变。
- *
- * setHotwords effect 智能合并（非全量替换）：
- * - 已有且 segIndex 在新 ranges → 保留 map 后 offset（不被后端重算覆盖）
- * - 新 segIndex（不在已有）→ 追加
- * - 已有但 segIndex 不在新 ranges → filter 清除（用户选定变 Edited / 后端确认移除）
+ * UUID 稳定标识：后端 mark_hotwords 劈段时生成 UUID 存进 Segment.id，经 segments_json
+ * 传到前端。装饰带 data-hw-id 属性。合并按 id（非位置/段 index/word 文本）：
+ * - 已有 id 在新 ranges → 保留 map 后 offset（不被后端重算覆盖，防编辑跳位）
+ * - 新 id（不在已有）→ 追加
+ * - 已有 id 不在新 ranges → filter 清除（用户选定变 Edited / 后端确认移除）
+ * removeHotwordAt：选定候选时按位置清除（即时反馈，不等后端）。
  */
 const hotwordsField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -103,43 +105,50 @@ const hotwordsField = StateField.define<DecorationSet>({
     for (const e of tr.effects) {
       if (e.is(setHotwords)) {
         if (e.value.length === 0) {
-          // 后端无 segments（流式 placeholder / 清空）→ 全清
           decos = Decoration.none;
         } else {
-          // 新 ranges 的 segIndex 集合
-          const newSegIndices = new Set(e.value.map((r) => r.segIndex));
-          // 已有装饰的 segIndex 集合
-          const existingSegIndices = new Set<number>();
+          const newIds = new Set(e.value.map((r) => r.id));
+          const existingIds = new Set<string>();
           const iter = decos.iter();
           while (iter.value) {
-            const idxStr = (iter.value.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-idx"];
-            if (idxStr) existingSegIndices.add(Number(idxStr));
+            const id = (iter.value.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-id"];
+            if (id) existingIds.add(id);
             iter.next();
           }
-          // 新 segIndex（不在已有）→ 追加；已有 → 保留 map 后 offset
+          // 新 id 追加；已有 id 保留 map 后 offset
           const toAdd: Range<Decoration>[] = [];
           for (const r of e.value) {
-            if (!existingSegIndices.has(r.segIndex)) {
+            if (!existingIds.has(r.id)) {
               toAdd.push(
                 Decoration.mark({
                   class: "cm-hotword",
-                  attributes: { "data-hw": r.candidates[0] ?? "", "data-hw-idx": String(r.segIndex) },
+                  attributes: { "data-hw": r.candidates[0] ?? "", "data-hw-id": r.id },
                 }).range(r.from, r.to),
               );
             }
           }
-          // 已有但不在新 ranges 的 segIndex → filter 清除
-          if (toAdd.length > 0 || existingSegIndices.size > 0) {
+          // 已有但不在新 ranges 的 id → filter 清除
+          if (toAdd.length > 0 || existingIds.size > 0) {
             decos = decos.update({
               add: toAdd,
               filter: (_from, _to, deco) => {
-                const idxStr = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-idx"];
-                if (!idxStr) return true; // 非 hotword 装饰保留
-                return newSegIndices.has(Number(idxStr));
+                const id = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-id"];
+                if (!id) return true;
+                return newIds.has(id);
               },
             });
           }
         }
+      } else if (e.is(removeHotwordAt)) {
+        // 选定候选：清除包含该 from 位置的 hotword 装饰（即时反馈）
+        const pos = e.value;
+        decos = decos.update({
+          filter: (from, to, deco) => {
+            const isHotword = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-id"];
+            if (!isHotword) return true;
+            return !(pos >= from && pos < to);
+          },
+        });
       }
     }
     return decos;
@@ -385,9 +394,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
   }
 
-  // segments prop 变化 → dispatch setHotwords effect（驱动 hotwordsField 合并装饰）。
-  // map 主导策略：编辑/中插/追加时不清空装饰（CM6 map 自动跟随），只让 field 做智能合并
-  // （新 word 追加 / 消失 word 清除 / 已有 word 保留 map 后 offset）。
+  // segments prop 变化 → dispatch setHotwords（只追加新 hotword，已有装饰靠 map 跟随不被覆盖）。
+  // 失配（segments 拼接 != doc）→ ranges 空 → 不追加（已有装饰保留）。后端无 segments → 全清。
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -399,12 +407,6 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
     const doc = view.state.doc.toString();
     const ranges = hotwordRanges(segs, doc);
-    // 失配（segments 拼接 != doc，如用户刚编辑后端还没返回）→ 跳过 dispatch，让 map 跟随。
-    // hotwordRanges 失配时返回空数组，但空数组在这里语义是"不清空"（与后端无 segments 区分）。
-    if (ranges.length === 0 && segs.some((s) => s.kind === "hotwords")) {
-      // segments 含 hotword 但 ranges 空 = 失配，跳过（保留已有装饰靠 map 跟随）
-      return;
-    }
     view.dispatch({ effects: setHotwords.of(ranges) });
   }, [segments]);
 
@@ -447,6 +449,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     const dd = dropdown;
     if (!view || !dd) return;
     setDropdown(null);
+    // 清除该位置的 hotword 装饰（选定后变 Edited，不再显示下拉）
+    view.dispatch({ effects: removeHotwordAt.of(dd.from) });
     // dispatch 替换 [from, to) → candidate（CM6 对相同文本的替换是 no-op changes，但 dirtyRange 仍标记）
     view.dispatch({
       changes: { from: dd.from, to: dd.to, insert: candidate },
