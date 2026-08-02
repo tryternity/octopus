@@ -33,6 +33,8 @@ export interface HotwordRange {
   to: number;
   /** 候选列表（text 是第一个）。 */
   candidates: string[];
+  /** 该段在 segments 数组中的 index（稳定标识，区分多个相同 word 的 hotword 段）。 */
+  segIndex: number;
 }
 
 /**
@@ -87,10 +89,11 @@ export function hotwordRanges(segments: Segment[], doc: string): HotwordRange[] 
   if (!segmentsMatchText(segments, doc)) return [];
   const ranges: HotwordRange[] = [];
   let offset = 0;
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     const len = seg.text.length;
     if (seg.kind === "hotwords" && seg.candidates && seg.candidates.length > 0) {
-      ranges.push({ from: offset, to: offset + len, candidates: seg.candidates });
+      ranges.push({ from: offset, to: offset + len, candidates: seg.candidates, segIndex: i });
     }
     offset += len;
   }

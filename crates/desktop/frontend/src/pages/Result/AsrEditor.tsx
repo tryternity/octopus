@@ -9,10 +9,10 @@ import { cn } from "@/lib/utils";
 const IDLE_TIMEOUT = 2000;
 const DIVERTED_DELAY_MS = 300;
 
-/** 推入 hotwords 段定位（[from,to,candidates] 列表），驱动 hotwordsField 合并 DecorationSet。
- * map 主导策略：已存在的 hotword 装饰靠 CM6 map 跟随（不被 setHotwords 覆盖 offset），
- * setHotwords 只追加新 word + 清除不再出现的 word（用户选定变 Edited）。 */
-const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[] }>>();
+/** 推入 hotwords 段定位（[from,to,candidates,segIndex] 列表），驱动 hotwordsField 合并 DecorationSet。
+ * segIndex = 段在 segments 数组中的位置（稳定标识，区分多个相同 word）。
+ * map 主导：已有 segIndex 保留 map 后 offset，新 segIndex 追加，消失的 filter 清除。 */
+const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[]; segIndex: number }>>();
 
 export interface AsrEditorCommit {
   text: string;
@@ -86,13 +86,15 @@ function buildTheme(expanded: boolean) {
  * hotwords 段 Decoration StateField（map 主导策略）。
  *
  * 类比富文本：hotword 标记像粗体——一旦建立就跟随内容移动，编辑/中插/追加时不被破坏。
- * CM6 的 decos.map(tr.changes) 就是这个"跟随"机制：用户编辑时装饰自动 map 到新坐标。
+ * CM6 的 decos.map(tr.changes) 就是这个"跟随"机制。
  *
- * setHotwords effect 做智能合并（非全量替换）：
- * - 已有同 word 的装饰 → 保留 map 后的 offset（不被后端重算覆盖，防编辑时跳位）
- * - 新 word（不在已有）→ 追加
- * - 已有但不在新 ranges 的 word → 清除（用户选定变 Edited / 后端确认移除）
- * 以 word 文本（data-hw 属性）为去重键——同 word 不重复加。
+ * 稳定标识：segIndex（段在 segments 数组中的位置）。每个 hotword 段有唯一 segIndex，
+ * 区分多个相同 word（如连续 2 个"如何"）。map 后位置变但 segIndex 不变。
+ *
+ * setHotwords effect 智能合并（非全量替换）：
+ * - 已有且 segIndex 在新 ranges → 保留 map 后 offset（不被后端重算覆盖）
+ * - 新 segIndex（不在已有）→ 追加
+ * - 已有但 segIndex 不在新 ranges → filter 清除（用户选定变 Edited / 后端确认移除）
  */
 const hotwordsField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -104,36 +106,36 @@ const hotwordsField = StateField.define<DecorationSet>({
           // 后端无 segments（流式 placeholder / 清空）→ 全清
           decos = Decoration.none;
         } else {
-          // 收集已有装饰的 word 集合（data-hw 属性）
-          const existingWords = new Set<string>();
-          decos.between(0, decos.size, (_f, _t, deco) => {
-            const hw = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw"];
-            if (hw) existingWords.add(hw);
-          });
-          // 新 ranges 里已有 word → 跳过（保留 map 后 offset）；新 word → 追加
+          // 新 ranges 的 segIndex 集合
+          const newSegIndices = new Set(e.value.map((r) => r.segIndex));
+          // 已有装饰的 segIndex 集合
+          const existingSegIndices = new Set<number>();
+          const iter = decos.iter();
+          while (iter.value) {
+            const idxStr = (iter.value.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-idx"];
+            if (idxStr) existingSegIndices.add(Number(idxStr));
+            iter.next();
+          }
+          // 新 segIndex（不在已有）→ 追加；已有 → 保留 map 后 offset
           const toAdd: Range<Decoration>[] = [];
-          const newWords = new Set<string>();
           for (const r of e.value) {
-            const word = r.candidates[0] ?? "";
-            newWords.add(word);
-            if (!existingWords.has(word)) {
+            if (!existingSegIndices.has(r.segIndex)) {
               toAdd.push(
                 Decoration.mark({
                   class: "cm-hotword",
-                  attributes: { "data-hw": word },
+                  attributes: { "data-hw": r.candidates[0] ?? "", "data-hw-idx": String(r.segIndex) },
                 }).range(r.from, r.to),
               );
             }
           }
-          // 已有但不在新 ranges 的 word → filter 清除（用户选定变 Edited 等）
-          if (toAdd.length > 0 || existingWords.size > 0) {
+          // 已有但不在新 ranges 的 segIndex → filter 清除
+          if (toAdd.length > 0 || existingSegIndices.size > 0) {
             decos = decos.update({
               add: toAdd,
               filter: (_from, _to, deco) => {
-                const hw = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw"];
-                // 非 hotword 装饰保留；hotword 装饰按是否在新 ranges 决定
-                if (!hw) return true;
-                return newWords.has(hw);
+                const idxStr = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw-idx"];
+                if (!idxStr) return true; // 非 hotword 装饰保留
+                return newSegIndices.has(Number(idxStr));
               },
             });
           }

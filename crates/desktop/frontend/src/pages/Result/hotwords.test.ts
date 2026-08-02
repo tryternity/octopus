@@ -114,8 +114,8 @@ describe("hotwordRanges", () => {
     const doc = "甲中间乙";
     const ranges = hotwordRanges(segs, doc);
     expect(ranges).toHaveLength(2);
-    expect(ranges[0]).toEqual({ from: 0, to: 1, candidates: ["甲", "假"] });
-    expect(ranges[1]).toEqual({ from: 3, to: 4, candidates: ["乙", "已"] });
+    expect(ranges[0]).toEqual({ from: 0, to: 1, candidates: ["甲", "假"], segIndex: 0 });
+    expect(ranges[1]).toEqual({ from: 3, to: 4, candidates: ["乙", "已"], segIndex: 2 });
   });
 
   it("无 hotwords 段 → 空数组", () => {
