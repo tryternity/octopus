@@ -247,7 +247,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   // ── 单词操作 ──
   /** 批量添加浮层确认：textarea 按任意空白（空格/tab/换行）分割 → add_words_to_set。 */
   const commitAddModal = useCallback(async () => {
-    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    // 按空白分割后过滤纯数字 token（支持粘贴 `词 DF值` 格式，DF 列自动丢弃）。
+    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter((s) => s && isNaN(Number(s)));
     setAddModalOpen(false);
     setAddModalText('');
     if (words.length === 0 || selectedId === null) return;

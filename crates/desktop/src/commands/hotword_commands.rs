@@ -220,12 +220,18 @@ pub async fn import_hotwords(
         };
         let path = path.as_path().ok_or("无效路径")?;
         let content = std::fs::read_to_string(path).map_err(e2s)?;
+        // 按空白分割后过滤纯数字 token（`词 DF值` 格式的 DF 列被丢弃，只留词语）。
+        // 支持两种导入格式：纯词语（每行一个或多个）/ 词语+DF（第二列数字自动滤掉）。
+        let words: Vec<String> = content
+            .split_whitespace()
+            .filter(|s| s.parse::<i64>().is_err())
+            .map(|s| s.to_string())
+            .collect();
 
         match mode.as_str() {
             "new" => {
                 let name = new_name.unwrap_or_else(|| "导入版本".to_string());
                 let id = Uuid::new_v4().to_string();
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::insert_hotword_set(&id, &name).map_err(e2s)?;
                 db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
@@ -234,7 +240,6 @@ pub async fn import_hotwords(
             }
             "append" => {
                 let id = target_set_id.ok_or("append 模式需 target_set_id")?;
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::add_words_to_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
@@ -242,7 +247,6 @@ pub async fn import_hotwords(
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
