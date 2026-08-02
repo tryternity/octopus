@@ -45,6 +45,8 @@ vault `empty_trash` 持 sync lock purge DB + 清 .sync。但跨设备：A purge 
 
 **跨设备自洽证明**：A 机 GC 后 export 不含超期 tombstone；B 机 pull 时即使旧 outline 有该 tombstone，merge 读 meta.json 检查年龄超期也 skip；B 机下次 GC 也清掉 → 收敛。各机 GC 时机不同也自洽（都按 10 天阈值）。
 
+**hotword_hits 孤儿清理的跨设备语义**：hits 表**不参与 sync**（纯本地统计），孤儿清理是本地 GC 行为。各机独立按本地活跃词集合判定孤儿——A 机清了某词 hits，B 机该词仍活跃就保留，B 机该词也消失则下次 GC 也清。无复活问题（hits 不是 tombstone，不传播删除意图）。
+
 ## 4. retention + 常量
 
 - `HOTWORD_TOMBSTONE_RETENTION_SECS = 10 * 86400`（硬编码 10 天）
@@ -53,8 +55,16 @@ vault `empty_trash` 持 sync lock purge DB + 清 .sync。但跨设备：A purge 
 ## 5. GC 范围
 
 统一处理 set + word 两层 tombstone（is_deleted 统一后，两层都按年龄 GC）：
-- set tombstone（is_deleted>0）：超期硬删 set + 其词记录 + 其 hotword_hits（孤儿）
+- set tombstone（is_deleted>0）：超期硬删 set + 其词记录
 - word tombstone（活跃词典里 is_deleted>0 的词）：超期硬删词记录
+- **hotword_hits 孤儿清理**（词级命中表，`word TEXT PK / hit_count`）：两个 purge 函数末尾统一清「全局已无活跃词」的命中行：
+  ```sql
+  DELETE FROM hotword_hits WHERE word NOT IN
+    (SELECT word FROM hotword_words WHERE is_deleted = 0)
+  ```
+  - 放在删 word tombstone **之后**——先删超期 word 记录，再据此清孤儿，保证超期硬删的词的 hits 也被清
+  - **语义**（2026-08-02 确定）：词在所有活跃词典消失 → 命中数清零；下次重新加入从零计数。废弃旧「同词重新加入仍复用」隐含特性
+  - **跨 set 同词保留**：若词在任一活跃 set 存在（哪怕别的 set 删了），hits 保留——`NOT IN (活跃词)` 语义天然保证
 
 ## 6. 触发
 
