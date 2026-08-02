@@ -430,17 +430,47 @@ impl Transcript {
     pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
 
     /// 标记 Hotwords 段：drain_candidates 拿到 (word, candidates) 列表后，
-    /// 在 segments 里找到 text == word 的段（取第一个未标记的），改为 Hotwords kind + 存候选。
-    /// 多个匹配时按顺序标记（corrector 收集顺序 = 文本位置顺序）。
+    /// 在 segments 里找到含 word 的段（子串匹配），把 word 劈出来标 Hotwords。
+    ///
+    /// 流式/VadSegmented 场景下段是整句（如"测试入河"），word 是单个词（"入河"），
+    /// 不能用精确匹配（旧实现 s.text == word 永远匹配不到整句段）。改为子串劈段：
+    /// 含 word 的段劈成 [前缀(原kind)] + [word(Hotwords)] + [后缀(原kind)]。
+    /// 多个匹配按段顺序标第一个未标记的；同一段多次命中取第一个（避免重复劈）。
+    /// 已是 Hotwords/Edited 的 word 跳过（用户已选定）。
     pub fn mark_hotwords(&mut self, hits: &[(String, Vec<String>)]) {
         for (word, candidates) in hits {
-            // 找第一个 text == word 且非 Hotwords/Edited 的段
-            if let Some(seg) = self.segments.iter_mut().find(|s| {
-                s.text == *word && s.kind != SegmentKind::Hotwords && s.kind != SegmentKind::Edited
-            }) {
-                seg.kind = SegmentKind::Hotwords;
-                seg.candidates = Some(candidates.clone());
+            if word.is_empty() { continue; }
+            // 找第一个含 word 子串、且非 Hotwords/Edited 的段
+            let mut found: Option<(usize, usize)> = None; // (seg_idx, char_off_within_seg)
+            for (i, seg) in self.segments.iter().enumerate() {
+                if seg.kind == SegmentKind::Hotwords || seg.kind == SegmentKind::Edited { continue; }
+                if let Some(byte_off) = seg.text.find(word.as_str()) {
+                    // str::find 返回 byte offset，转 char offset（切分用 char 维度）
+                    let char_off = seg.text[..byte_off].chars().count();
+                    found = Some((i, char_off));
+                    break;
+                }
             }
+            let (idx, char_off) = match found { Some(x) => x, None => continue };
+            // 劈段：segments[idx] → 前缀(原kind) + word(Hotwords) + 后缀(原kind)
+            let kind = self.segments[idx].kind;
+            let word_char_len = word.chars().count();
+            let chars: Vec<char> = self.segments[idx].text.chars().collect();
+            let prefix: String = chars[..char_off].iter().collect();
+            let suffix: String = chars[char_off + word_char_len..].iter().collect();
+            let mut replacement = Vec::new();
+            if !prefix.is_empty() {
+                replacement.push(Segment { kind, text: prefix, candidates: None });
+            }
+            replacement.push(Segment {
+                kind: SegmentKind::Hotwords,
+                text: word.clone(),
+                candidates: Some(candidates.clone()),
+            });
+            if !suffix.is_empty() {
+                replacement.push(Segment { kind, text: suffix, candidates: None });
+            }
+            self.segments.splice(idx..=idx, replacement);
         }
     }
 
@@ -974,6 +1004,76 @@ mod tests {
         assert!(j.contains("\"kind\":\"raw\""));
         assert!(j.contains("\"kind\":\"edited\""));
         assert!(j.contains("\"text\":\"a\""));
+    }
+
+    // ── mark_hotwords（子串劈段）──
+    #[test]
+    fn mark_hotwords_splits_sentence_segment() {
+        // VadSegmented 场景：段是整句"测试入河"，word="入河"。
+        // 旧精确匹配（text==word）永远匹配不到 → 子串劈段修复。
+        let mut t = Transcript::new(1, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("测试入河")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 劈成 [raw("测试")][hotwords("入河")][raw("")] → 空 suffix 不留
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.segments[0].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[0].text, "测试");
+        assert_eq!(t.segments[1].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[1].text, "入河");
+        assert_eq!(t.segments[1].candidates, Some(vec!["入河".to_string(), "汝河".to_string()]));
+        // 段拼接不变（display_text 不变）
+        assert_eq!(t.finish_text(), "测试入河");
+    }
+
+    #[test]
+    fn mark_hotwords_word_at_start() {
+        let mut t = Transcript::new(2, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("入河测试")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+        assert_eq!(t.segments[1].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[1].text, "测试");
+    }
+
+    #[test]
+    fn mark_hotwords_exact_match_single_segment() {
+        // 精确匹配（word == 整段）仍工作——段直接标 Hotwords 不劈。
+        let mut t = Transcript::new(3, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("入河")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+    }
+
+    #[test]
+    fn mark_hotwords_skips_already_marked() {
+        // 已标 Hotwords/Edited 的段不重复标（用户已选定）。
+        let mut t = Transcript::new(4, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![
+            Segment { kind: SegmentKind::Hotwords, text: "入河".into(), candidates: Some(vec!["入河".into()]) },
+            raw("后面入河"),
+        ];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        // 第一个已是 Hotwords 跳过；第二个"后面入河"含"入河"→劈
+        assert_eq!(t.segments[0].kind, SegmentKind::Hotwords);
+        assert_eq!(t.segments[0].text, "入河");
+        // 第二个被劈
+        assert!(t.segments.iter().any(|s| s.text == "后面" && s.kind == SegmentKind::Raw));
+        assert!(t.segments.iter().any(|s| s.text == "入河" && s.kind == SegmentKind::Hotwords && s.candidates.is_some()));
+    }
+
+    #[test]
+    fn mark_hotwords_word_not_found_noop() {
+        // word 不在任何段里 → 无操作。
+        let mut t = Transcript::new(5, PolishMode::Disabled, crate::engine::coordinator::RecordType::Input);
+        t.segments = vec![raw("完全不同")];
+        t.mark_hotwords(&[("入河".to_string(), vec!["入河".to_string(), "汝河".to_string()])]);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.segments[0].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[0].text, "完全不同");
     }
 
     // ── 选中替换（delete_range / set_selection / pending_delete）──

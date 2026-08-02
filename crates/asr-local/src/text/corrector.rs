@@ -544,6 +544,23 @@ mod tests {
         assert!(drain_candidates().is_empty(), "单命中不应收集候选");
     }
 
+    #[test]
+    fn drain_candidates_user_scenario_ruhe() {
+        // 用户场景复现：热词"如何""入河""汝河"（同音 ru he），输入"如何"。
+        // "如何"既是原词也是热词——find_candidates 应返回 3 个，filter 排除原词后 2 个 → 收集。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates();
+        let c = with_hotwords(&["如何", "入河", "汝河"]);
+        assert_eq!(c.correct("测试如何"), "测试入河");
+        let cands = drain_candidates();
+        assert!(!cands.is_empty(), "3 个同音热词应收集候选，实际 drain={:?}", cands);
+        let (word, list) = &cands[0];
+        assert_eq!(word, "入河");
+        assert!(list.contains(&"入河".to_string()));
+        assert!(list.contains(&"汝河".to_string()));
+    }
+
     // ── P2 多命中 hit_count 排序（2026-08-01）──
     // 同音多热词命中时，hit_count 高的优先（用户验证过的更可信）；
     // hit_count 相同按 word 字典序（确定性，避免 HashSet 迭代序不确定）。
