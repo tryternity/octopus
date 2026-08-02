@@ -195,7 +195,21 @@ pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
     if edited_texts.is_empty() {
         return Ok(Vec::new());
     }
-    let joined = edited_texts.join("\n");
+    // 预处理：过滤标点/过短/纯数字/无汉字的噪声段，保留有意义的编辑文本
+    let cleaned: Vec<String> = edited_texts
+        .into_iter()
+        .filter(|t| {
+            let chars: Vec<char> = t.chars().collect();
+            if chars.len() < 2 { return false; }          // 单字/标点
+            if chars.iter().all(|c| !('\u{4e00}'..='\u{9fff}').contains(c)) { return false; } // 无汉字
+            if t.trim().parse::<i64>().is_ok() { return false; } // 纯数字
+            true
+        })
+        .collect();
+    if cleaned.is_empty() {
+        return Ok(Vec::new());
+    }
+    let joined = cleaned.join("\n");
 
     // 挖掘提示词：用户自定义覆盖（~/.octopus/HOTWORD_MINE.md）> 内置默认
     let prompt = std::fs::read_to_string(
