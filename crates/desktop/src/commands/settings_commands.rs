@@ -464,6 +464,45 @@ fn apply_config_value(
     Ok(())
 }
 
+/// 列出系统已安装的等宽字体（终端字体选择用）。
+/// 优先用 fc-list（fontconfig），不可用时 fallback 到 macOS 常见白名单。
+#[tauri::command]
+pub fn list_monospace_fonts() -> Result<Vec<String>, String> {
+    // 尝试 fc-list（homebrew fontconfig）——列出 spacing=mono 的字体族
+    if let Ok(output) = std::process::Command::new("fc-list")
+        .args([":spacing=mono", "family"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut fonts: Vec<String> = text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            fonts.sort();
+            fonts.dedup();
+            // fc-list 可能漏掉 macOS 特殊字体（SF Mono），手动加
+            for extra in ["SF Mono", "Monaco"] {
+                if !fonts.iter().any(|f| f == extra) {
+                    fonts.push(extra.to_string());
+                }
+            }
+            fonts.sort();
+            return Ok(fonts);
+        }
+    }
+    // fallback：macOS 自带 + 常见编程字体白名单
+    Ok(vec![
+        "Andale Mono".into(),
+        "Courier New".into(),
+        "Menlo".into(),
+        "Monaco".into(),
+        "PT Mono".into(),
+        "SF Mono".into(),
+    ])
+}
+
 #[tauri::command]
 pub fn get_env_vars() -> Result<Vec<(String, String)>, String> {
     octopus_infra::db::list_env_vars().map_err(e2s)

@@ -336,7 +336,7 @@ fn default_terminal_font_size() -> f64 {
     13.0
 }
 fn default_terminal_font_family() -> String {
-    r#""SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace"#.to_string()
+    "SF Mono".to_string()
 }
 
 fn default_segment_silence() -> f64 {

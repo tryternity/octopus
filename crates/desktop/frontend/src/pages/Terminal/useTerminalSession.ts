@@ -36,8 +36,7 @@ const IS_MAC =
   /Mac|iPhone|iPad/.test(navigator.userAgent);
 
 /** 默认字体族——opts.fontFamily 未传时兜底。 */
-const DEFAULT_FONT_FAMILY =
-  '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace';
+const DEFAULT_FONT_FAMILY = "SF Mono";
 /** 默认字号——opts.fontSize 未传时兜底。 */
 const DEFAULT_FONT_SIZE = 13;
 
