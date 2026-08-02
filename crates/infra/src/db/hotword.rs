@@ -664,8 +664,38 @@ pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
     })
 }
 
-/// 取最近 limit 条 voice（ASR 识别）记录的 content——bigram 上下文打分用（仅 ASR 语料）。
-/// 与 `list_recent_text` 区别：只取 item_type='voice'，语料更纯（与纠错场景一致）。
+/// 取最近 limit 条记录的 segments JSON 里 kind="edited" 的段文本。
+/// 用户编辑过的段 = 引擎识别错了（用户才改），这些段里的词是高质量热词候选。
+/// 解析失败/无 segments 的记录跳过（返回空不报错）。
+pub fn list_recent_edited_segments(limit: i64) -> Result<Vec<String>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT segments FROM clipboard_history
+             WHERE item_type = 'voice' AND segments IS NOT NULL AND segments != ''
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows {
+            let json = r?;
+            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+                for item in &arr {
+                    let kind = item.get("kind").and_then(|v| v.as_str());
+                    let text = item.get("text").and_then(|v| v.as_str());
+                    if kind == Some("edited") {
+                        if let Some(t) = text {
+                            if !t.is_empty() {
+                                list.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(list)
+    })
+}
 /// **故意不过滤 is_deleted**（INV-C1 对齐）：软删 voice 仍是 bigram 语料来源，
 /// voice 软删回收站上限 VOICE_TRASH_MAX=500（2026-08-02 从 100 提升，丰富 bigram 语料）。
 pub fn list_recent_voice_text(limit: i64) -> Result<Vec<String>> {
