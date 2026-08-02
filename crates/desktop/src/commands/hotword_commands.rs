@@ -184,9 +184,28 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 
 // ── 挖掘候选（不落库，前端确认后再批量 add_words_to_set）──
 
-/// 挖掘候选词列表（扫历史 + jieba + 词频过滤），不写库。前端展示候选供用户勾选确认。
+/// 挖掘候选词列表（LLM 优先 + jieba 兜底），不写库。前端展示候选供用户勾选确认。
 #[tauri::command]
-pub fn list_hotword_candidates() -> Result<Vec<String>, String> {
+pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
+    // 读用户编辑段文本（LLM 和 jieba 共用数据源）
+    let edited_texts = octopus_infra::db::list_recent_edited_segments(500).map_err(e2s)?;
+    if edited_texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let joined = edited_texts.join("\n");
+
+    // 尝试 LLM 挖掘（语义理解，远超 jieba 分词）
+    if let Some(llm_config) = crate::core::config::llm_config_ignore_mode() {
+        match octopus_llm::mine_hotwords(&joined, &llm_config) {
+            Ok(words) if !words.is_empty() => {
+                log::info!("[hotword-miner] LLM 挖掘 {} 条候选", words.len());
+                return Ok(words);
+            }
+            Ok(_) => log::info!("[hotword-miner] LLM 返回空，回退 jieba"),
+            Err(e) => log::warn!("[hotword-miner] LLM 挖掘失败，回退 jieba: {}", e),
+        }
+    }
+    // 回退 jieba（现有逻辑）
     octopus_asr_local::miner::collect_candidate_words().map_err(e2s)
 }
 
