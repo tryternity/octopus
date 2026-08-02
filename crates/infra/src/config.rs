@@ -226,6 +226,14 @@ pub struct AppConfig {
     /// 用户点「完成」后置 true，不再弹。重置需清 DB。
     #[serde(default)]
     pub onboarding_completed: bool,
+
+    /// 终端字号（px）。默认 13。
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: f64,
+
+    /// 终端字体族（CSS font-family 字符串）。默认 SF Mono 系列。
+    #[serde(default = "default_terminal_font_family")]
+    pub terminal_font_family: String,
 }
 
 fn default_engine_mode() -> String {
@@ -324,6 +332,13 @@ fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
 }
 
+fn default_terminal_font_size() -> f64 {
+    13.0
+}
+fn default_terminal_font_family() -> String {
+    r#""SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace"#.to_string()
+}
+
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -367,6 +382,8 @@ impl Default for AppConfig {
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
             onboarding_completed: false,
+            terminal_font_size: default_terminal_font_size(),
+            terminal_font_family: default_terminal_font_family(),
         }
     }
 }

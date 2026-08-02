@@ -450,6 +450,15 @@ fn apply_config_value(
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }
+        // 终端字体偏好（无副作用：前端读 get_config 后直接套到 xterm CSS，不需重注册/重启）。
+        "terminal_font_size" => {
+            let v = value.as_f64().ok_or("terminal_font_size 需要数值")?;
+            if v <= 0.0 { return Err("terminal_font_size 必须大于 0".into()); }
+            cfg.terminal_font_size = v;
+        }
+        "terminal_font_family" => {
+            cfg.terminal_font_family = value.as_str().ok_or("terminal_font_family 需要字符串")?.to_string();
+        }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
     Ok(())
