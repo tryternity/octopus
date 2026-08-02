@@ -1,5 +1,5 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from "react";
-import { Compartment, EditorState, StateEffect, StateField, type Transaction, type ChangeSpec, Prec } from "@codemirror/state";
+import { Compartment, EditorState, StateEffect, StateField, type Transaction, type ChangeSpec, type Range, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection, Decoration, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,7 +9,9 @@ import { cn } from "@/lib/utils";
 const IDLE_TIMEOUT = 2000;
 const DIVERTED_DELAY_MS = 300;
 
-/** 推入 hotwords 段定位（[from,to,candidates] 列表），驱动 hotwordsField 重建 DecorationSet。 */
+/** 推入 hotwords 段定位（[from,to,candidates] 列表），驱动 hotwordsField 合并 DecorationSet。
+ * map 主导策略：已存在的 hotword 装饰靠 CM6 map 跟随（不被 setHotwords 覆盖 offset），
+ * setHotwords 只追加新 word + 清除不再出现的 word（用户选定变 Edited）。 */
 const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[] }>>();
 
 export interface AsrEditorCommit {
@@ -81,12 +83,16 @@ function buildTheme(expanded: boolean) {
 }
 
 /**
- * hotwords 段 Decoration StateField。
- * - create：空 DecorationSet。
- * - setHotwords effect：用新 ranges 重建（每段一个 Decoration.mark [from,to) class=cm-hotword）。
- * - doc 变化（用户编辑）：CM6 自动 map 装饰到新坐标；但 hotwords offset 由后端 segments 决定，
- *   编辑后会失配——故编辑态下 React 不再 dispatch setHotwords（editingRef gate），提交后后端
- *   返回新 segments 自然恢复。
+ * hotwords 段 Decoration StateField（map 主导策略）。
+ *
+ * 类比富文本：hotword 标记像粗体——一旦建立就跟随内容移动，编辑/中插/追加时不被破坏。
+ * CM6 的 decos.map(tr.changes) 就是这个"跟随"机制：用户编辑时装饰自动 map 到新坐标。
+ *
+ * setHotwords effect 做智能合并（非全量替换）：
+ * - 已有同 word 的装饰 → 保留 map 后的 offset（不被后端重算覆盖，防编辑时跳位）
+ * - 新 word（不在已有）→ 追加
+ * - 已有但不在新 ranges 的 word → 清除（用户选定变 Edited / 后端确认移除）
+ * 以 word 文本（data-hw 属性）为去重键——同 word 不重复加。
  */
 const hotwordsField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -95,11 +101,42 @@ const hotwordsField = StateField.define<DecorationSet>({
     for (const e of tr.effects) {
       if (e.is(setHotwords)) {
         if (e.value.length === 0) {
+          // 后端无 segments（流式 placeholder / 清空）→ 全清
           decos = Decoration.none;
         } else {
-          decos = Decoration.set(e.value.map((r) =>
-            Decoration.mark({ class: "cm-hotword" }).range(r.from, r.to),
-          ), true);
+          // 收集已有装饰的 word 集合（data-hw 属性）
+          const existingWords = new Set<string>();
+          decos.between(0, decos.size, (_f, _t, deco) => {
+            const hw = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw"];
+            if (hw) existingWords.add(hw);
+          });
+          // 新 ranges 里已有 word → 跳过（保留 map 后 offset）；新 word → 追加
+          const toAdd: Range<Decoration>[] = [];
+          const newWords = new Set<string>();
+          for (const r of e.value) {
+            const word = r.candidates[0] ?? "";
+            newWords.add(word);
+            if (!existingWords.has(word)) {
+              toAdd.push(
+                Decoration.mark({
+                  class: "cm-hotword",
+                  attributes: { "data-hw": word },
+                }).range(r.from, r.to),
+              );
+            }
+          }
+          // 已有但不在新 ranges 的 word → filter 清除（用户选定变 Edited 等）
+          if (toAdd.length > 0 || existingWords.size > 0) {
+            decos = decos.update({
+              add: toAdd,
+              filter: (_from, _to, deco) => {
+                const hw = (deco.spec as { attributes?: Record<string, string> })?.attributes?.["data-hw"];
+                // 非 hotword 装饰保留；hotword 装饰按是否在新 ranges 决定
+                if (!hw) return true;
+                return newWords.has(hw);
+              },
+            });
+          }
         }
       }
     }
@@ -346,25 +383,28 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
   }
 
-  // segments prop 变化 → dispatch setHotwords effect（驱动 hotwordsField 重建装饰）。
-  // 编辑态下不渲染（editingRef gate）：用户键入后段 offset 失配，装饰会错位；提交后后端
-  // 返回新 segments（该段已 Edited）自然恢复。dropdown 打开时也不重算（避免下拉闪烁）。
+  // segments prop 变化 → dispatch setHotwords effect（驱动 hotwordsField 合并装饰）。
+  // map 主导策略：编辑/中插/追加时不清空装饰（CM6 map 自动跟随），只让 field 做智能合并
+  // （新 word 追加 / 消失 word 清除 / 已有 word 保留 map 后 offset）。
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    if (editingRef.current || dropdown) {
-      view.dispatch({ effects: setHotwords.of([]) });
-      return;
-    }
     const segs = segmentsRef.current;
     if (!segs) {
+      // 后端明确无 segments（流式 placeholder / clear）→ 全清装饰
       view.dispatch({ effects: setHotwords.of([]) });
       return;
     }
     const doc = view.state.doc.toString();
     const ranges = hotwordRanges(segs, doc);
+    // 失配（segments 拼接 != doc，如用户刚编辑后端还没返回）→ 跳过 dispatch，让 map 跟随。
+    // hotwordRanges 失配时返回空数组，但空数组在这里语义是"不清空"（与后端无 segments 区分）。
+    if (ranges.length === 0 && segs.some((s) => s.kind === "hotwords")) {
+      // segments 含 hotword 但 ranges 空 = 失配，跳过（保留已有装饰靠 map 跟随）
+      return;
+    }
     view.dispatch({ effects: setHotwords.of(ranges) });
-  }, [segments, dropdown]);
+  }, [segments]);
 
   // 点击 .cm-hotword → 打开候选下拉浮层。
   const handleHotwordClick = useCallback((event: MouseEvent) => {
