@@ -100,17 +100,18 @@ pub fn hotword_word_file_path(set_id: &str, word_uuid: &str) -> Result<PathBuf> 
 
 // === md5 指纹 ===
 
-/// 词典元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
+/// 词典元数据的身份 md5——只含 id + name（身份标识），不含 enabled/is_deleted 等状态。
 ///
-/// v58 起 set md5 含 is_deleted（软删后 md5 变化触发 outline diff → merge 传播 tombstone）。
-/// 拼接字段：`name | enabled | is_deleted`。
+/// md5 是"这个 set 是谁"的指纹，用于 outline diff 判断 set 是否新增/改名。
+/// 不含状态字段（is_deleted/enabled/updated_at）——状态变化靠时间戳比较决定方向，
+/// 不应触发 md5 diff（否则删除/启用切换后 md5 变了但 outline 没同步更新 → 不必要的 push/pull）。
 pub fn hotword_set_md5(h: &HotwordSet) -> String {
-    hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted)
+    hotword_set_md5_from_fields(&h.id, &h.name)
 }
 
 /// 从基本字段算 md5——用于写命令填 sync_md5（避免重复读完整 row）。
-pub fn hotword_set_md5_from_fields(name: &str, enabled: bool, is_deleted: i64) -> String {
-    let input = format!("{}|{}|{}", name, enabled, is_deleted);
+pub fn hotword_set_md5_from_fields(id: &str, name: &str) -> String {
+    let input = format!("{}|{}", id, name);
     md5_hex(input.as_bytes())
 }
 
@@ -1051,20 +1052,24 @@ mod tests {
     // === md5 指纹测试 ===
 
     #[test]
-    fn hotword_set_md5_is_deterministic() {
+    fn hotword_set_md5_same_id_name_deterministic() {
         let h1 = sample_set("uuid-1", "版本A");
-        let h2 = sample_set("uuid-2", "版本A");
+        let h2 = sample_set("uuid-1", "版本A");
         assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     #[test]
-    fn hotword_set_md5_ignores_timestamps() {
+    fn hotword_set_md5_ignores_timestamps_and_state() {
+        // md5 只含 id+name，不含 created_at/updated_at/enabled/is_deleted
         let mut h1 = sample_set("uuid-1", "版本A");
         let mut h2 = sample_set("uuid-1", "版本A");
         h2.created_at = "1999-01-01 00:00:00".into();
         h2.updated_at = "2099-12-31 23:59:59".into();
+        h2.enabled = false;
+        h2.is_deleted = 99999;
         let _ = &mut h1;
-        assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
+        assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2),
+            "md5 应不含时间戳/enabled/is_deleted——状态变化靠时间戳比较");
     }
 
     #[test]
@@ -1076,11 +1081,9 @@ mod tests {
     }
 
     #[test]
-    fn hotword_set_md5_changes_on_enabled_change() {
+    fn hotword_set_md5_changes_on_id_change() {
         let h1 = sample_set("uuid-1", "版本A");
-        let mut h2 = sample_set("uuid-1", "版本A");
-        h2.enabled = false;
-        let _ = &mut h2;
+        let h2 = sample_set("uuid-2", "版本A");
         assert_ne!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
@@ -1088,7 +1091,7 @@ mod tests {
     fn hotword_set_md5_from_fields_matches_struct() {
         let h = sample_set("uuid-1", "版本A");
         let from_struct = hotword_set_md5(&h);
-        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted);
+        let from_fields = hotword_set_md5_from_fields(&h.id, &h.name);
         assert_eq!(from_struct, from_fields);
     }
 
@@ -1718,7 +1721,7 @@ mod tests {
         // 词典内 outline（空词）
         write_hotword_set_outline(id, &HotwordSetOutline::default()).unwrap();
         let mut outline = read_hotword_outline().unwrap_or_default();
-        let md5 = hotword_set_md5_from_fields(name, true, is_deleted);
+        let md5 = hotword_set_md5_from_fields(id, name);
         outline.sets.insert(
             id.into(),
             OutlineEntry {
@@ -1770,7 +1773,7 @@ mod tests {
         stale_outline.sets.insert(
             id.into(),
             OutlineEntry {
-                md5: hotword_set_md5_from_fields("测试集", true, 0),
+                md5: hotword_set_md5_from_fields(id, "测试集"),
                 updated_ms: 1,
             },
         );

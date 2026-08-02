@@ -323,18 +323,21 @@ mod tests {
         assert_ne!(md5_before, md5_after, "rename 后 md5 应变化");
     }
 
-    /// toggle enabled 后 sync_md5 应更新（enabled 变 → md5 变）。
+    /// toggle enabled 后 enabled 变化 + updated_at 刷新（触发 sync 时间戳比较）。
+    /// md5 不变（身份指纹只含 id+name，enabled 是状态——靠 updated_at 比较决定方向）。
     #[test]
-    fn toggle_hotword_set_updates_sync_md5() {
+    fn toggle_hotword_set_updates_state() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
-        let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        let before = db::get_hotword_set(&id).unwrap();
 
         toggle_hotword_set(id.clone(), false).expect("toggle off");
-        let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        let after = db::get_hotword_set(&id).unwrap();
 
-        assert_ne!(md5_before, md5_after, "toggle enabled 后 md5 应变化");
-        assert!(!db::get_hotword_set(&id).unwrap().enabled);
+        assert!(!after.enabled, "toggle 后 enabled=false");
+        assert!(after.updated_at >= before.updated_at, "updated_at 应刷新");
+        // md5 不变（身份指纹不含 enabled）
+        assert_eq!(before.sync_md5, after.sync_md5, "toggle enabled 不应改变 md5");
     }
 
     /// add_word / remove_word 后 set 的 sync_md5 不变（v57 word 级 merge：set md5 只反映
