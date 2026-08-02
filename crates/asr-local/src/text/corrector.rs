@@ -512,6 +512,38 @@ mod tests {
         assert!(drain_hits().is_empty());
     }
 
+    #[test]
+    fn test_drain_candidates_collects_multi_hit() {
+        // 多命中（>1 非原词热词）时 drain_candidates 收集候选列表；
+        // 单命中（仅 1 个非原词热词）不收集（无选择意义）。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates(); // 清空前序残留
+        // 「浮窗」「福川」同音（归一后），输入「福创」→ 两候选 → 收集
+        let c = with_hotwords_scored(&[("浮窗", 5), ("福川", 1)]);
+        assert_eq!(c.correct("福创"), "浮窗");
+        let cands = drain_candidates();
+        assert_eq!(cands.len(), 1, "应收集 1 组候选（1 处命中）");
+        let (word, list) = &cands[0];
+        assert_eq!(word, "浮窗", "命中的词 = 替换后的词");
+        assert!(list.contains(&"浮窗".to_string()), "候选含浮窗");
+        assert!(list.contains(&"福川".to_string()), "候选含福川");
+        assert!(list.len() >= 2, "至少 2 个候选");
+        // drain 后清空
+        assert!(drain_candidates().is_empty());
+    }
+
+    #[test]
+    fn test_drain_candidates_skips_single_hit() {
+        // 单命中（仅 1 个热词，原词非热词）→ 不收集（无下拉选择意义）。
+        let _g = serial();
+        set_rules(&[]);
+        let _ = drain_candidates();
+        let c = with_hotwords(&["浮窗"]); // 仅 1 个热词
+        assert_eq!(c.correct("开福川"), "开浮窗");
+        assert!(drain_candidates().is_empty(), "单命中不应收集候选");
+    }
+
     // ── P2 多命中 hit_count 排序（2026-08-01）──
     // 同音多热词命中时，hit_count 高的优先（用户验证过的更可信）；
     // hit_count 相同按 word 字典序（确定性，避免 HashSet 迭代序不确定）。

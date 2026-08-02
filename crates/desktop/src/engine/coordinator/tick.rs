@@ -145,7 +145,17 @@ pub(crate) fn apply_pipeline_events(
                 // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
                 // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
                 if !display.is_empty() {
-                    crate::ui::result_window::update_result(app_handle, &display, insertion, caret, None);
+                    // 流式实时标记 Hotwords 段：drain corrector 多命中候选 → mark_hotwords →
+                    // emit 带 segments（前端即时渲染下拉）。流式过程中每帧 correct 后候选已收集，
+                    // 不 drain 则要等 stop 才标记——用户录音中看不到候选。
+                    let candidates = octopus_asr_local::corrector::drain_candidates();
+                    let segs = if !candidates.is_empty() {
+                        transcript.mark_hotwords(&candidates);
+                        Some(transcript.segments_json())
+                    } else {
+                        None
+                    };
+                    crate::ui::result_window::update_result(app_handle, &display, insertion, caret, segs.as_deref());
                 }
             }
             PipelineEvent::Polish { silence } => {
