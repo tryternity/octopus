@@ -629,6 +629,7 @@ settings:
     yunYong: yun/yong (孕 / 用)
     feiHui: fei/hui (飞 / 回)
     loadFailed: "Load failed:"
+    loadingMore: "Loading more… (${shown}/${total})"
     newVersion: New version created
     importedVersion: Imported as new version
     newFailed: "Create failed:"
@@ -667,7 +668,7 @@ settings:
     loading: Loading…
     newVersionPlaceholder: Version name (Enter to confirm / Esc to cancel)
     importVersionPlaceholder: Import version name (Enter then select txt)
-    newVersionBtn: New Version
+    newVersionBtn: New
     importBtn: Import Version
     purgeBtn: Empty Recycle Bin
     purgeConfirmTitle: Empty Recycle Bin

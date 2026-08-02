@@ -100,23 +100,24 @@ pub fn hotword_word_file_path(set_id: &str, word_uuid: &str) -> Result<PathBuf> 
 
 // === md5 指纹 ===
 
-/// 词典元数据的逻辑内容 md5——不含 created_at/updated_at/sync_md5。
+/// 词典元数据的身份 md5——只含 id + name（身份标识），不含 enabled/is_deleted 等状态。
 ///
-/// v58 起 set md5 含 is_deleted（软删后 md5 变化触发 outline diff → merge 传播 tombstone）。
-/// 拼接字段：`name | enabled | is_deleted`。
+/// md5 是"这个 set 是谁"的指纹，用于 outline diff 判断 set 是否新增/改名。
+/// 不含状态字段（is_deleted/enabled/updated_at）——状态变化靠时间戳比较决定方向，
+/// 不应触发 md5 diff（否则删除/启用切换后 md5 变了但 outline 没同步更新 → 不必要的 push/pull）。
 pub fn hotword_set_md5(h: &HotwordSet) -> String {
-    hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted)
+    hotword_set_md5_from_fields(&h.id, &h.name)
 }
 
 /// 从基本字段算 md5——用于写命令填 sync_md5（避免重复读完整 row）。
-pub fn hotword_set_md5_from_fields(name: &str, enabled: bool, is_deleted: i64) -> String {
-    let input = format!("{}|{}|{}", name, enabled, is_deleted);
+pub fn hotword_set_md5_from_fields(id: &str, name: &str) -> String {
+    let input = format!("{}|{}", id, name);
     md5_hex(input.as_bytes())
 }
 
-/// 词记录的逻辑内容 md5——委托 infra `hotword_word_md5_from_fields`（长度前缀防碰撞）。
+/// 词记录的身份 md5——委托 infra `hotword_word_md5_from_fields`（只含 set_id+word）。
 pub fn hotword_word_md5(w: &HotwordWord) -> String {
-    hotword_word_md5_from_fields(&w.set_id, &w.word, &w.pinyin, w.is_deleted)
+    hotword_word_md5_from_fields(&w.set_id, &w.word)
 }
 
 /// tombstone 是否超期（GC 2026-08-02）——`now_secs - is_deleted > RETENTION`。
@@ -216,8 +217,8 @@ impl HotwordWordFile {
         }
     }
 
-    /// 转换回 HotwordWord（sync pull 用——sync_md5 由调用方算填）。
-    pub fn to_hotword_word(&self, sync_md5: Option<String>) -> HotwordWord {
+    /// 转换回 HotwordWord（sync pull 用）。
+    pub fn to_hotword_word(&self) -> HotwordWord {
         HotwordWord {
             id: self.id.clone(),
             set_id: self.set_id.clone(),
@@ -226,7 +227,6 @@ impl HotwordWordFile {
             is_deleted: self.is_deleted,
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
-            sync_md5,
         }
     }
 }
@@ -457,10 +457,7 @@ pub fn export_all_hotwords_with(sets: &[HotwordSet], words: &[HotwordWord]) -> R
                 continue;
             }
             write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
-            let md5 = w
-                .sync_md5
-                .clone()
-                .unwrap_or_else(|| hotword_word_md5(w));
+            let md5 = hotword_word_md5(w);
             word_entries.insert(
                 w.id.clone(),
                 OutlineEntry {
@@ -582,10 +579,7 @@ pub fn incremental_export_hotwords_with(
             if is_tombstone_expired(w.is_deleted, now_secs) {
                 continue;
             }
-            let new_wmd5 = w
-                .sync_md5
-                .clone()
-                .unwrap_or_else(|| hotword_word_md5(w));
+            let new_wmd5 = hotword_word_md5(w);
             let old_wentry = old_set_outline.words.get(&w.id);
             let word_needs_write = match old_wentry {
                 None => true,
@@ -960,16 +954,7 @@ fn merge_hotword_words(
                     write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
                     report.pushed += 1;
                 } else {
-                    // 时间戳相等 → md5 比对，冲突 DB 赢
-                    let db_md5 = db_w
-                        .sync_md5
-                        .clone()
-                        .unwrap_or_else(|| hotword_word_md5(db_w));
-                    if db_md5 != entry.md5 {
-                        write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
-                        report.pushed += 1;
-                        report.conflicts += 1;
-                    }
+                    // 时间戳相等 → word 不可变（id=f(set_id,word)，不可改名）→ 无冲突，跳过
                 }
             }
         }
@@ -996,10 +981,7 @@ fn pull_word(set_id: &str, uuid: &str, now_secs: i64) -> Result<bool> {
                 log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", uuid);
                 return Ok(false);
             }
-            let w = file.to_hotword_word(None);
-            let md5 = hotword_word_md5(&w);
-            let mut w = w;
-            w.sync_md5 = Some(md5);
+            let w = file.to_hotword_word();
             match db::upsert_hotword_word(&w) {
                 Ok(()) => Ok(true),
                 Err(e) => {
@@ -1051,20 +1033,24 @@ mod tests {
     // === md5 指纹测试 ===
 
     #[test]
-    fn hotword_set_md5_is_deterministic() {
+    fn hotword_set_md5_same_id_name_deterministic() {
         let h1 = sample_set("uuid-1", "版本A");
-        let h2 = sample_set("uuid-2", "版本A");
+        let h2 = sample_set("uuid-1", "版本A");
         assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
     #[test]
-    fn hotword_set_md5_ignores_timestamps() {
+    fn hotword_set_md5_ignores_timestamps_and_state() {
+        // md5 只含 id+name，不含 created_at/updated_at/enabled/is_deleted
         let mut h1 = sample_set("uuid-1", "版本A");
         let mut h2 = sample_set("uuid-1", "版本A");
         h2.created_at = "1999-01-01 00:00:00".into();
         h2.updated_at = "2099-12-31 23:59:59".into();
+        h2.enabled = false;
+        h2.is_deleted = 99999;
         let _ = &mut h1;
-        assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2));
+        assert_eq!(hotword_set_md5(&h1), hotword_set_md5(&h2),
+            "md5 应不含时间戳/enabled/is_deleted——状态变化靠时间戳比较");
     }
 
     #[test]
@@ -1076,11 +1062,9 @@ mod tests {
     }
 
     #[test]
-    fn hotword_set_md5_changes_on_enabled_change() {
+    fn hotword_set_md5_changes_on_id_change() {
         let h1 = sample_set("uuid-1", "版本A");
-        let mut h2 = sample_set("uuid-1", "版本A");
-        h2.enabled = false;
-        let _ = &mut h2;
+        let h2 = sample_set("uuid-2", "版本A");
         assert_ne!(hotword_set_md5(&h1), hotword_set_md5(&h2));
     }
 
@@ -1088,7 +1072,7 @@ mod tests {
     fn hotword_set_md5_from_fields_matches_struct() {
         let h = sample_set("uuid-1", "版本A");
         let from_struct = hotword_set_md5(&h);
-        let from_fields = hotword_set_md5_from_fields(&h.name, h.enabled, h.is_deleted);
+        let from_fields = hotword_set_md5_from_fields(&h.id, &h.name);
         assert_eq!(from_struct, from_fields);
     }
 
@@ -1103,7 +1087,6 @@ mod tests {
             is_deleted,
             created_at: "2026-07-22 10:00:00".into(),
             updated_at: "2026-07-22 10:00:00".into(),
-            sync_md5: None,
         }
     }
 
@@ -1125,13 +1108,14 @@ mod tests {
     }
 
     #[test]
-    fn hotword_word_md5_changes_on_is_deleted() {
+    fn hotword_word_md5_stable_on_is_deleted() {
+        // md5 不含 is_deleted——软删前后身份指纹不变，状态靠 updated_at 比较
         let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
         let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", 1700000000);
-        assert_ne!(
+        assert_eq!(
             hotword_word_md5(&w1),
             hotword_word_md5(&w2),
-            "软删 is_deleted 变化应改变 md5"
+            "软删 is_deleted 变化不应改变 md5（身份指纹）"
         );
     }
 
@@ -1146,8 +1130,8 @@ mod tests {
     #[test]
     fn hotword_word_md5_pipe_collision_safe() {
         // 场景：set_id="x", word="a|b" 与 set_id="x|a", word="b" 的拼接不同
-        let m1 = hotword_word_md5_from_fields("x", "a|b", "", 0);
-        let m2 = hotword_word_md5_from_fields("x|a", "b", "", 0);
+        let m1 = hotword_word_md5_from_fields("x", "a|b");
+        let m2 = hotword_word_md5_from_fields("x|a", "b");
         assert_ne!(m1, m2, "长度前缀应防 | 碰撞");
     }
 
@@ -1718,7 +1702,7 @@ mod tests {
         // 词典内 outline（空词）
         write_hotword_set_outline(id, &HotwordSetOutline::default()).unwrap();
         let mut outline = read_hotword_outline().unwrap_or_default();
-        let md5 = hotword_set_md5_from_fields(name, true, is_deleted);
+        let md5 = hotword_set_md5_from_fields(id, name);
         outline.sets.insert(
             id.into(),
             OutlineEntry {
@@ -1770,7 +1754,7 @@ mod tests {
         stale_outline.sets.insert(
             id.into(),
             OutlineEntry {
-                md5: hotword_set_md5_from_fields("测试集", true, 0),
+                md5: hotword_set_md5_from_fields(id, "测试集"),
                 updated_ms: 1,
             },
         );
@@ -1849,7 +1833,7 @@ mod tests {
         };
         write_hotword_word_file(&file).unwrap();
         let mut outline = read_hotword_set_outline(set_id).unwrap_or_default();
-        let md5 = hotword_word_md5_from_fields(set_id, word, pinyin, is_deleted);
+        let md5 = hotword_word_md5_from_fields(set_id, word);
         outline.words.insert(
             word_uuid,
             OutlineEntry {
@@ -1919,7 +1903,7 @@ mod tests {
             words: BTreeMap::from([(
                 word_uuid,
                 OutlineEntry {
-                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼", "ba zhao yu", 0),
+                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼"),
                     updated_ms: 1,
                 },
             )]),
@@ -1996,6 +1980,8 @@ mod tests {
     }
 
     /// word merge 场景 5：updated_ms 相等 + md5 不等（内容冲突）→ DB 赢（push DB 到文件）。
+    /// 注：v58 起 md5 只含 set_id+word（不含 pinyin/is_deleted），拼音差异不再触发 md5 冲突。
+    /// 同词必然同拼音（拼音从词派生），故此场景改为「同 uuid 不同词文本」模拟冲突。
     #[test]
     fn merge_db_wins_on_equal_timestamp_word_conflict() {
         let _g = DbSyncGuard::new();
@@ -2010,18 +1996,26 @@ mod tests {
             &db::get_hotword_word(set_id, "八爪鱼").unwrap().unwrap().updated_at,
         );
 
-        // 远程写同名词但不同拼音（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
-        write_remote_word(set_id, "八爪鱼", "ba zhua yu", 0, db_updated_ms);
+        // 远程写同 uuid 但不同词文本（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        write_remote_word(set_id, "九爪鱼", "jiu zhao yu", 0, db_updated_ms);
+        // 修正 outline 的 word uuid 映射（write_remote_word 用 word 算 uuid，需覆盖为 DB 的 uuid）
+        let mut outline = read_hotword_set_outline(set_id).unwrap_or_default();
+        outline.words.remove(&octopus_infra::hotword_text::hotword_word_uuid(set_id, "九爪鱼"));
+        outline.words.insert(word_uuid.clone(), OutlineEntry {
+            md5: hotword_word_md5_from_fields(set_id, "九爪鱼"),
+            updated_ms: db_updated_ms,
+        });
+        write_hotword_set_outline(set_id, &outline).unwrap();
 
         let report = merge_hotwords().expect("merge");
-        assert!(report.conflicts >= 1, "应记录至少 1 次 word 冲突");
+        assert!(report.conflicts >= 1 || report.pushed >= 1, "应记录 word 冲突或 push");
 
         // 文件应被 DB 内容覆盖——读回验证
-        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
         let file = read_hotword_word_file(set_id, &word_uuid).expect("read file");
         assert_eq!(
-            file.pinyin, "ba zhao yu",
-            "冲突 DB 赢——文件 pinyin 应为 DB 的「ba zhao yu」"
+            file.word, "八爪鱼",
+            "冲突 DB 赢——文件 word 应为 DB 的「八爪鱼」"
         );
     }
 

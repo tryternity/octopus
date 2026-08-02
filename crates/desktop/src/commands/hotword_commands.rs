@@ -105,6 +105,11 @@ pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_hotword_set(id: String) -> Result<(), String> {
     db::delete_hotword_set(&id).map_err(e2s)?;
+    // 删除后必须 export 到 .sync——否则 sync 文件还存旧态（is_deleted=0），
+    // 下次 merge 时 pull_set 把它拉活（软删 10 天内不超期，pull_set 不跳过）→ 复活。
+    if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+        log::warn!("[hotword] 删除后 export 失败（不阻断，但可能导致 sync 复活）：{}", e);
+    }
     reload_after_write();
     Ok(())
 }
@@ -220,12 +225,18 @@ pub async fn import_hotwords(
         };
         let path = path.as_path().ok_or("无效路径")?;
         let content = std::fs::read_to_string(path).map_err(e2s)?;
+        // 按空白分割后过滤纯数字 token（`词 DF值` 格式的 DF 列被丢弃，只留词语）。
+        // 支持两种导入格式：纯词语（每行一个或多个）/ 词语+DF（第二列数字自动滤掉）。
+        let words: Vec<String> = content
+            .split_whitespace()
+            .filter(|s| s.parse::<i64>().is_err())
+            .map(|s| s.to_string())
+            .collect();
 
         match mode.as_str() {
             "new" => {
                 let name = new_name.unwrap_or_else(|| "导入版本".to_string());
                 let id = Uuid::new_v4().to_string();
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::insert_hotword_set(&id, &name).map_err(e2s)?;
                 db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
@@ -234,7 +245,6 @@ pub async fn import_hotwords(
             }
             "append" => {
                 let id = target_set_id.ok_or("append 模式需 target_set_id")?;
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::add_words_to_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
@@ -242,7 +252,6 @@ pub async fn import_hotwords(
             }
             "overwrite" => {
                 let id = target_set_id.ok_or("overwrite 模式需 target_set_id")?;
-                let words: Vec<String> = content.split_whitespace().map(|s| s.to_string()).collect();
                 db::set_words_in_set(&id, &words).map_err(e2s)?;
                 refill_sync_md5(&id);
                 reload_after_write();
@@ -314,18 +323,21 @@ mod tests {
         assert_ne!(md5_before, md5_after, "rename 后 md5 应变化");
     }
 
-    /// toggle enabled 后 sync_md5 应更新（enabled 变 → md5 变）。
+    /// toggle enabled 后 enabled 变化 + updated_at 刷新（触发 sync 时间戳比较）。
+    /// md5 不变（身份指纹只含 id+name，enabled 是状态——靠 updated_at 比较决定方向）。
     #[test]
-    fn toggle_hotword_set_updates_sync_md5() {
+    fn toggle_hotword_set_updates_state() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
-        let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        let before = db::get_hotword_set(&id).unwrap();
 
         toggle_hotword_set(id.clone(), false).expect("toggle off");
-        let md5_after = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
+        let after = db::get_hotword_set(&id).unwrap();
 
-        assert_ne!(md5_before, md5_after, "toggle enabled 后 md5 应变化");
-        assert!(!db::get_hotword_set(&id).unwrap().enabled);
+        assert!(!after.enabled, "toggle 后 enabled=false");
+        assert!(after.updated_at >= before.updated_at, "updated_at 应刷新");
+        // md5 不变（身份指纹不含 enabled）
+        assert_eq!(before.sync_md5, after.sync_md5, "toggle enabled 不应改变 md5");
     }
 
     /// add_word / remove_word 后 set 的 sync_md5 不变（v57 word 级 merge：set md5 只反映
@@ -336,28 +348,29 @@ mod tests {
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_empty = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
 
-        // add_word——set 的 sync_md5 不变（元数据未变），但 word 记录有自己的 sync_md5
+        // add_word——set 的 sync_md5 不变（元数据未变）
         let added = add_word_to_set(id.clone(), "苹果".into()).expect("add");
         assert!(added);
         let md5_one = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
-        assert_eq!(md5_empty, md5_one, "加词后 set 的 sync_md5 不应变（word 有自己的 md5）");
+        assert_eq!(md5_empty, md5_one, "加词后 set 的 sync_md5 不应变");
         let w = db::get_hotword_word(&id, "苹果").unwrap().unwrap();
-        assert!(w.sync_md5.is_some(), "word 记录应有自己的 sync_md5");
+        assert_eq!(w.word, "苹果");
+        assert_eq!(w.is_deleted, 0);
 
         // 再加一词——set md5 仍不变
         add_word_to_set(id.clone(), "香蕉".into()).expect("add 2");
         let md5_two = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
         assert_eq!(md5_one, md5_two, "再加词 set 的 sync_md5 仍不变");
 
-        // remove_word（软删）——set md5 仍不变，但 word 的 sync_md5 变成 is_deleted=true 指纹
+        // remove_word（软删）——set md5 仍不变
         remove_word_from_set(id.clone(), "苹果".into()).expect("remove");
         let md5_removed = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
         assert_eq!(md5_two, md5_removed, "删词后 set 的 sync_md5 不应变");
     }
 
-    /// add_words（批量）后 set 的 sync_md5 不变，但 word 记录有 sync_md5。
+    /// add_words（批量）后 set 的 sync_md5 不变。
     #[test]
-    fn add_words_doesnt_change_set_md5_but_fills_word_md5() {
+    fn add_words_doesnt_change_set_md5() {
         setup_db();
         let id = create_hotword_set("版本".into()).expect("create");
         let md5_before = db::get_hotword_set(&id).unwrap().sync_md5.unwrap();
@@ -372,7 +385,7 @@ mod tests {
         assert_eq!(md5_before, md5_after, "批量加词后 set 的 sync_md5 不应变");
         for word in &["葡萄", "橘子"] {
             let w = db::get_hotword_word(&id, word).unwrap().unwrap();
-            assert!(w.sync_md5.is_some(), "批量加的词应有 sync_md5: {}", word);
+            assert_eq!(w.is_deleted, 0, "批量加的词应活跃: {}", word);
         }
     }
 

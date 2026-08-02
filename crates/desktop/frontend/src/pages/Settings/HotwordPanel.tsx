@@ -58,8 +58,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   const [fuzzyMatches, setFuzzyMatches] = useState<string[] | null>(null);
   const [sort, setSort] = useState<'alpha' | 'hits'>('alpha');
   const [sortOpen, setSortOpen] = useState(false);
-  /** 子 Tab：correct（纠错设置）/ manage（词典维护）。2026-08-01 拆分原单 Panel。 */
-  const [subTab, setSubTab] = useState<'correct' | 'manage'>('correct');
+  /** 子 Tab：manage（词典维护）/ correct（纠错设置）。manage 在前（常用）。 */
+  const [subTab, setSubTab] = useState<'correct' | 'manage'>('manage');
   /** 方言模糊规则列表（从 DB 读，TAB 1 渲染 toggles）。 */
   const [dialectRules, setDialectRules] = useState<FuzzyDialectRule[]>([]);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -169,6 +169,31 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
     });
   }, [fuzzyMatches, words, sort, hits]);
 
+  // 分页滚动加载：visible 可能上万词，全量渲染 DOM 卡顿。displayCount 控制渲染前 N 个，
+  // 滚动到底部（哨兵 div 进入视口）+PAGE_SIZE 续载。切 set / 搜索 / 排序时重置。
+  const PAGE_SIZE = 200;
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
+  useEffect(() => { setDisplayCount(PAGE_SIZE); }, [selectedId, query, sort, fuzzyMatches]);
+  const visiblePaged = useMemo(() => visible.slice(0, displayCount), [visible, displayCount]);
+  // 哨兵 ref + IntersectionObserver 检测到底加载更多
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = scrollContainerRef.current;
+    if (!sentinel || !root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setDisplayCount((prev) => prev + PAGE_SIZE);
+        }
+      },
+      { root, rootMargin: '100px' },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [visiblePaged.length, visible.length]);
+
   // ── 版本操作 ──
   // 新建 / 导入新版本：inline input 输入名（WKWebView 不支持 window.prompt）。
   const commitCreate = useCallback(async () => {
@@ -222,7 +247,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   // ── 单词操作 ──
   /** 批量添加浮层确认：textarea 按任意空白（空格/tab/换行）分割 → add_words_to_set。 */
   const commitAddModal = useCallback(async () => {
-    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    // 按空白分割后过滤纯数字 token（支持粘贴 `词 DF值` 格式，DF 列自动丢弃）。
+    const words = addModalText.split(/\s+/).map((s) => s.trim()).filter((s) => s && isNaN(Number(s)));
     setAddModalOpen(false);
     setAddModalText('');
     if (words.length === 0 || selectedId === null) return;
@@ -312,8 +338,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
       {/* ════ UnderlineTabs：纠错设置 / 词典维护 ════ */}
       <UnderlineTabs
         items={[
-          { key: 'correct', label: t('settings.hotword.tabCorrect') },
           { key: 'manage', label: t('settings.hotword.tabManage') },
+          { key: 'correct', label: t('settings.hotword.tabCorrect') },
         ]}
         active={subTab}
         onChange={(k) => setSubTab(k as 'correct' | 'manage')}
@@ -568,8 +594,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
             </div>
           </CardHeader>
 
-          {/* 词卡网格（占满剩余空间，可滚动） */}
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {/* 词卡网格（占满剩余空间，可滚动 + 分页加载） */}
+          <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto p-4">
             {!selected ? (
               <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.selectVersionFirst')}</p>
             ) : words.length === 0 ? (
@@ -577,9 +603,10 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
             ) : visible.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
             ) : (
-              // grid auto-fill + 1fr：卡片等宽拉满，消除右侧空白，最后一行左对齐
+              <>
+              {/* grid auto-fill + 1fr：卡片等宽拉满，消除右侧空白，最后一行左对齐 */}
               <div className="grid grid-cols-[repeat(auto-fill,minmax(112px,1fr))] gap-2">
-                {visible.map((w) => {
+                {visiblePaged.map((w) => {
                   const h = hits[w] ?? 0;
                   return (
                     <div key={w} className={cn(
@@ -610,6 +637,14 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
                   );
                 })}
               </div>
+              {/* 哨兵：进入视口时 IntersectionObserver 触发 +PAGE_SIZE 续载。
+                  还有未渲染词时才挂（避免无谓观察）；加载提示文字。 */}
+              {displayCount < visible.length && (
+                <div ref={sentinelRef} className="py-3 text-center text-xs text-muted-foreground">
+                  {t('settings.hotword.loadingMore', { shown: displayCount, total: visible.length })}
+                </div>
+              )}
+              </>
             )}
           </div>
         </Card>

@@ -53,31 +53,26 @@ pub fn normalize_words_text(words: &str) -> String {
 
 /// 词记录 sync md5（hex 32 字符）——长度前缀分隔防 `|` 碰撞。
 ///
-/// 拼接格式：`{set_id_len}|{set_id}|{word_len}|{word}|{pinyin_len}|{pinyin}|{is_deleted}`
+/// 拼接格式：`{set_id_len}|{set_id}|{word_len}|{word}`
 ///
-/// **不含 created_at/updated_at**（时间戳跨设备必然不同，否则同词不同写入时刻 md5 永不等，
-/// sync 永远冲突）。词文本含任意 Unicode（含 `|`），故用长度前缀分隔——单纯用 `|` 分隔时，
-/// `{a}|{b}` 与 `{a|b}|{}` 会产生相同拼接，碰撞。长度前缀让解析无歧义。
+/// **不含 created_at/updated_at**（时间戳跨设备必然不同）。词文本含任意 Unicode（含 `|`），
+/// 故用长度前缀分隔——单纯用 `|` 分隔时 `{a}|{b}` 与 `{a|b}|{}` 会碰撞。长度前缀无歧义。
 ///
-/// 此函数放在 infra（无项目内依赖的底层 crate），sync crate 与 db crate 都调它，
-/// 避免在 sync（db 不依赖 sync）和 db（无 md5 实现）两处重复实现指纹逻辑。
+/// **不含 pinyin/is_deleted**（v58 修正）：md5 是身份指纹（这个词是谁），不是状态快照。
+/// pinyin 是从 word 派生的数据（word 变了拼音自然变），is_deleted 是状态（靠 updated_at
+/// 时间戳比较决定 merge 方向）。含这些会导致删除/拼音重算后 md5 变化但 outline 没同步 → 不必要 diff。
 ///
-/// `is_deleted` 统一为 i64 epoch 秒（0=活跃，>0=删除时刻）——参与 md5 输入，软删后值变化触发 diff。
+/// 此函数放在 infra（无项目内依赖的底层 crate），sync crate 与 db crate 都调它。
 pub fn hotword_word_md5_from_fields(
     set_id: &str,
     word: &str,
-    pinyin: &str,
-    is_deleted: i64,
 ) -> String {
     let input = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}",
         set_id.len(),
         set_id,
         word.len(),
         word,
-        pinyin.len(),
-        pinyin,
-        is_deleted
     );
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();
