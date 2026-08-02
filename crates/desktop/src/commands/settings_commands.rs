@@ -475,25 +475,7 @@ pub fn list_monospace_fonts() -> Result<Vec<String>, String> {
     {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
-            let mut fonts: Vec<String> = text
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                // 过滤 "." 开头的系统隐藏/特殊字体（.Apple Color Emoji UI / .LastResort /
-                // .SF NS Mono / .Times LT MM 等）。它们不是真实可用的等宽字体，xterm 选中后
-                // 渲染异常（字变小 + 间距大）。
-                .filter(|l| !l.starts_with('.'))
-                .collect();
-            fonts.sort();
-            fonts.dedup();
-            // fc-list 可能漏掉 macOS 特殊字体（SF Mono），手动加
-            for extra in ["SF Mono", "Monaco"] {
-                if !fonts.iter().any(|f| f == extra) {
-                    fonts.push(extra.to_string());
-                }
-            }
-            fonts.sort();
-            return Ok(fonts);
+            return Ok(parse_monospace_fonts(&text));
         }
     }
     // fallback：macOS 自带 + 常见编程字体白名单
@@ -505,6 +487,34 @@ pub fn list_monospace_fonts() -> Result<Vec<String>, String> {
         "PT Mono".into(),
         "SF Mono".into(),
     ])
+}
+
+/// 解析 fc-list 输出为去重排序后的等宽字体族列表（纯函数，便于单测）。
+///
+/// 处理步骤：
+/// 1. 按行切分 + trim + 过滤空行
+/// 2. 过滤 `.` 开头的系统隐藏/特殊字体（`.Apple Color Emoji UI` / `.LastResort` /
+///    `.SF NS Mono` / `.Times LT MM` 等）——它们不是真实可用的等宽字体，xterm 选中后
+///    渲染异常（字变小 + 间距大）
+/// 3. sort + dedup
+/// 4. 补 SF Mono / Monaco（fc-list 可能漏掉 macOS 特殊字体）
+pub fn parse_monospace_fonts(raw_output: &str) -> Vec<String> {
+    let mut fonts: Vec<String> = raw_output
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.starts_with('.'))
+        .collect();
+    fonts.sort();
+    fonts.dedup();
+    // fc-list 可能漏掉 macOS 特殊字体（SF Mono），手动补
+    for extra in ["SF Mono", "Monaco"] {
+        if !fonts.iter().any(|f| f == extra) {
+            fonts.push(extra.to_string());
+        }
+    }
+    fonts.sort();
+    fonts
 }
 
 #[tauri::command]
@@ -829,4 +839,87 @@ mod tests {
     }
 
     // fuzzy_dialect 测试已删除（迁移到 fuzzy_dialect_rules DB 表，不再经 app_config 字符串）
+
+    // ── parse_monospace_fonts：fc-list 输出解析 + 过滤 ──
+
+    #[test]
+    fn parse_monospace_fonts_filters_dot_prefix() {
+        // macOS fontconfig 会列出 .Apple Color Emoji UI / .LastResort / .SF NS Mono 等
+        // 系统隐藏字体——非真实等宽，xterm 选中后渲染异常，必须过滤。
+        let raw = "Menlo\n.Apple Color Emoji UI\nMonaco\n.SF NS Mono\n.LastResort";
+        let fonts = parse_monospace_fonts(raw);
+        assert!(!fonts.contains(&".Apple Color Emoji UI".to_string()));
+        assert!(!fonts.contains(&".SF NS Mono".to_string()));
+        assert!(!fonts.contains(&".LastResort".to_string()));
+        assert!(fonts.contains(&"Menlo".to_string()));
+        assert!(fonts.contains(&"Monaco".to_string()));
+    }
+
+    #[test]
+    fn parse_monospace_fonts_sorts_and_dedups() {
+        // fc-list 输出可能乱序 + 重复（多个 weight 同名）
+        let raw = "Monaco\nMenlo\nMonaco\nMenlo\nAndale Mono";
+        let fonts = parse_monospace_fonts(raw);
+        // 去重
+        let dedup_count = fonts.iter().filter(|f| **f == "Monaco").count();
+        assert_eq!(dedup_count, 1);
+        // 排序（字母序）——Andale Mono 在前
+        assert_eq!(fonts[0], "Andale Mono");
+    }
+
+    #[test]
+    fn parse_monospace_fonts_supplements_sf_mono_monaco() {
+        // fc-list 可能漏掉 SF Mono（macOS 特殊字体），手动补
+        let raw = "Menlo\nAndale Mono";
+        let fonts = parse_monospace_fonts(raw);
+        assert!(fonts.contains(&"SF Mono".to_string()), "应补 SF Mono");
+        assert!(fonts.contains(&"Monaco".to_string()), "应补 Monaco");
+    }
+
+    #[test]
+    fn parse_monospace_fonts_no_duplicate_supplement() {
+        // fc-list 已列出 SF Mono 时，补丁不应重复加
+        let raw = "Menlo\nSF Mono\nMonaco";
+        let fonts = parse_monospace_fonts(raw);
+        let sf_count = fonts.iter().filter(|f| **f == "SF Mono").count();
+        let monaco_count = fonts.iter().filter(|f| **f == "Monaco").count();
+        assert_eq!(sf_count, 1, "SF Mono 不应重复");
+        assert_eq!(monaco_count, 1, "Monaco 不应重复");
+    }
+
+    #[test]
+    fn parse_monospace_fonts_trims_whitespace() {
+        // fc-list 输出可能有尾随空格/前导空格
+        let raw = "  Menlo  \n\tMonaco\t\n  SF Mono";
+        let fonts = parse_monospace_fonts(raw);
+        assert!(fonts.contains(&"Menlo".to_string()));
+        assert!(fonts.contains(&"Monaco".to_string()));
+        // 不应含带空格的原始项
+        assert!(!fonts.iter().any(|f| f.contains("  ") || f.starts_with(' ')));
+    }
+
+    #[test]
+    fn parse_monospace_fonts_empty_input() {
+        // fc-list 输出为空（极端情况）——只返回补丁的 SF Mono / Monaco
+        let fonts = parse_monospace_fonts("");
+        assert_eq!(fonts, vec!["Monaco".to_string(), "SF Mono".to_string()]);
+    }
+
+    #[test]
+    fn parse_monospace_fonts_filters_empty_lines() {
+        let raw = "\n\nMenlo\n\n\nMonaco\n";
+        let fonts = parse_monospace_fonts(raw);
+        assert!(fonts.contains(&"Menlo".to_string()));
+        assert!(fonts.contains(&"Monaco".to_string()));
+        // 不应含空串
+        assert!(!fonts.iter().any(|f| f.is_empty()));
+    }
+
+    #[test]
+    fn parse_monospace_fonts_preserves_spaces_in_names() {
+        // 合法字体名含空格（如 "Courier New"）不应被破坏——只 trim 首尾
+        let raw = "Courier New\nSF Mono";
+        let fonts = parse_monospace_fonts(raw);
+        assert!(fonts.contains(&"Courier New".to_string()), "含空格的字体名应保留");
+    }
 }
