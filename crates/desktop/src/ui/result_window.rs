@@ -24,7 +24,9 @@ const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0;
 const INSTANT_BAR_H: f64 = 80.0;
 
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
-static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
+/// 窗口未 ready 时暂存的初始 payload：(text, segments_json)。
+/// segments_json 为 None 表示无段信息（流式 tick / placeholder 等无 hotwords 场景）。
+static PENDING_TEXT: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
 static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 // 精简态=true（顶部小条可点 + 下方透明区穿透）；长篇态=false（整窗 720×480 可交互）。
 static RESULT_CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
@@ -86,8 +88,8 @@ pub fn create_result_window(app: &tauri::AppHandle) {
 pub fn result_window_ready(app_handle: tauri::AppHandle) {
     WINDOW_READY.store(true, Ordering::Relaxed);
     let pending = PENDING_TEXT.lock().take();
-    if let Some(text) = pending {
-        show_result(&app_handle, &text);
+    if let Some((text, segments)) = pending {
+        show_result(&app_handle, &text, segments.as_deref());
     }
 }
 
@@ -243,7 +245,10 @@ fn set_result_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
 }
 
 /// 显示结果窗口并展示识别文本。
-pub fn show_result(app: &tauri::AppHandle, text: &str) {
+/// `segments` = 可选的 `segments_json()`（含 hotwords 候选）；None 时前端清空段状态。
+/// payload 改 object `{ text, segments }`（2026-08-02 hotwords 下拉）：show-result 原是 bare
+/// string，前端 handler 已同步改为读对象。
+pub fn show_result(app: &tauri::AppHandle, text: &str, segments: Option<&str>) {
     let _ = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     // 「判 ready + 写 pending」收进同一把 PENDING_TEXT 锁，与 result_window_ready 的
     // store(true)+take 互斥——消除「load(false) 后、写 pending 前 ready 已 take 走 None」
@@ -253,7 +258,7 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         if WINDOW_READY.load(Ordering::Relaxed) {
             true
         } else {
-            *guard = Some(text.to_string());
+            *guard = Some((text.to_string(), segments.map(|s| s.to_string())));
             false
         }
     };
@@ -274,7 +279,11 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
         let _ = window.show();
         if need_emit {
             // emit_to 定向——show-result 含完整文本，无需广播到其他窗口
-            let _ = app.emit_to(WINDOW_LABEL, "show-result", text);
+            let _ = app.emit_to(
+                WINDOW_LABEL,
+                "show-result",
+                serde_json::json!({ "text": text, "segments": segments }),
+            );
         }
     }
 }
@@ -369,19 +378,27 @@ fn position_bottom_center(win: &tauri::WebviewWindow) {
 /// insertion=true 表示中间插入态（光标在中间），前端立即渲染、跳过 diverted 300ms 延迟。
 /// caret = 光标在扁平文本里的 char 偏移（insertion=true 时前端据此定位闪烁光标，使其跟在最后插入的文字后
 /// 右移）；insertion=false 时前端忽略 caret（传 0 即可，光标回末尾）。
-/// payload 对象 `{ text, insertion, caret }`，前端 handler 在 Task 7 同步改为读对象。
+/// `segments` = 可选 `segments_json()`（hotwords 候选）；流式 tick 传 None（省序列化），
+/// stop/edit/polish 后传 Some 让前端渲染 hotwords 下拉。
+/// payload 对象 `{ text, insertion, caret, segments }`，前端 handler 同步读对象。
 ///
 /// **emit_to 定向**（2026-07-17 性能优化）：流式识别期间每 tick 触发，原先 `window.emit`
 /// 走全局广播到所有 webview（Emitter::emit 默认实现），每个窗口都反序列化 payload。
 /// 改用 emit_to 只发给 result_window，避免无关节点解析大文本。
-pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret: usize) {
+pub fn update_result(
+    app: &tauri::AppHandle,
+    text: &str,
+    insertion: bool,
+    caret: usize,
+    segments: Option<&str>,
+) {
     // 同 show_result：判 ready + 写 pending 进同一锁，消除与 result_window_ready 的竞态。
     let need_emit = {
         let mut guard = PENDING_TEXT.lock();
         if WINDOW_READY.load(Ordering::Relaxed) {
             true
         } else {
-            *guard = Some(text.to_string());
+            *guard = Some((text.to_string(), segments.map(|s| s.to_string())));
             false
         }
     };
@@ -390,7 +407,7 @@ pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret:
             let _ = app.emit_to(
                 WINDOW_LABEL,
                 "update-result",
-                serde_json::json!({ "text": text, "insertion": insertion, "caret": caret }),
+                serde_json::json!({ "text": text, "insertion": insertion, "caret": caret, "segments": segments }),
             );
         }
     }

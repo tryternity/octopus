@@ -1,7 +1,7 @@
 # Hotwords 段：多命中候选列表 + 用户可选
 
 > **日期**：2026-08-02
-> **状态**：🔜 待实现
+> **状态**：✅ 已实现（后端 Task 1-3/5 + 前端 Task 4）
 > **依赖**：P3 bigram 上下文打分已完成（find_candidates 已返回排序候选）
 
 ## 1. 动机
@@ -52,13 +52,30 @@ pub struct Segment {
 - 在 transcript.segments 里找到 text == word 的段（可能有多个匹配——取第一个未标记的）
 - 标记 kind = `Hotwords`，candidates = Some(candidates)
 
-### 前端 CM6 渲染
+### 前端 CM6 渲染（Task 4 已实现）
 
-AsrEditor 接收 segments（新增 prop），对 `hotwords` 段渲染下拉选择：
-- 默认显示 text（第一个候选 = 得分最高）
-- hover/click 展开候选列表
-- 用户选择 → commit_edit（text 改成选中的，kind → Edited）
-- 未选择保持 Hotwords（润色时 LLM 选）
+**传输**：扩展 `update-result`/`show-result` payload 加可选 `segments` 字段（`Option<&str>`）。
+- 流式 tick 传 `None`（省序列化，无性能回归）；stop 后 `finalize_after_stop` 的 `show_result` 传
+  `transcript.segments_json()`；Idle 编辑 / polish 后的 `update_result` 也传 segments。
+- `show-result` 原 bare string payload 改 object `{ text, segments }`（前端 handler 兼容旧 bare string）。
+
+**渲染**：CM6 `StateField<DecorationSet>` + `Decoration.mark`（**非** WidgetType——避免 widget 内文本
+不参与光标定位/搜索的复杂度）：
+- `.cm-hotword` class：波浪下划线（`--color-voice` 色）+ hover 高亮 + `cursor: pointer`。
+- `hotwords.ts::hotwordRanges(segments, doc)` 纯函数：遍历段累加 char offset 产 `[from, to, candidates]`。
+  段拼接 != doc 时返回空（降级，防 offset 错位）。
+- `setHotwords` StateEffect 从 React 推 ranges；`editingRef` 为真 / dropdown 打开时不重算（防编辑态错位 + 下拉闪烁）。
+
+**下拉浮层**（React，非 CM6 widget）：点击 `.cm-hotword` → `view.posAtCoords` 定位段 →
+`view.coordsAtPos(from)` 算屏幕坐标 → 绝对定位浮层。渲染候选列表（第一项标"推荐/Top"）。
+外部点击 / Esc 关闭（对齐现有 popup close 模式）。
+
+**选词**：复用 `commit_edit`（不新增 IPC）——`selectCandidate` → `view.dispatch({changes: 替换})` +
+`addDirtyRange` + `doCommit()`。后端 `rebuild_segments` 自动把该段标 Edited、去掉 Hotwords。
+即便选了 == 原文的第一个候选也提交（标 dirty 让后端标 Edited，润色时不再 `<候选>` 标记）。
+
+**编辑态抑制**：用户键入时 `editingRef.current === true` → segments effect dispatch 空装饰
+（防 hotwords offset 漂移错位）。提交后后端返回新 segments（该段已 Edited）自然恢复。
 
 ### regions_prompt（润色 LLM）
 

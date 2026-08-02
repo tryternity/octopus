@@ -96,11 +96,12 @@ pub(crate) fn commit_edit_apply(
             if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
                 id,
                 text: text.to_string(),
-                segments,
+                segments: segments.clone(),
             }) {
                 warn!("Queue DB UpdateEditedSegments (idle) failed: {}", e);
             }
-            crate::ui::result_window::update_result(app_handle, text, false, 0);
+            // 传 segments：编辑后 rebuild 可能仍含 Hotwords 段（用户改了别处），前端据此渲染下拉。
+            crate::ui::result_window::update_result(app_handle, text, false, 0, Some(&segments));
             info!("Edit committed in Idle (id={}, {} chars)", id, text.chars().count());
             return;
         }
@@ -112,18 +113,18 @@ pub(crate) fn commit_edit_apply(
     transcript.commit_edit(text, dirty_ranges, has_edited);
     if let Some((s, e)) = selection { transcript.set_selection(s, e); }
     else if let Some(c) = caret { transcript.set_caret(c); }
+    let segs = transcript.segments_json();
     if transcript.db_inserted() {
         let id = transcript.id;
-        let segments = transcript.segments_json();
         if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
             id,
             text: text.to_string(),
-            segments,
+            segments: segs.clone(),
         }) {
             warn!("Queue DB UpdateEditedSegments failed: {}", e);
         }
     }
-    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
+    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0, Some(&segs));
     info!("Edit committed ({} chars)", text.chars().count());
 }
 

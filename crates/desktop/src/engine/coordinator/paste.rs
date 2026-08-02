@@ -92,7 +92,7 @@ pub(crate) fn do_paste(
         if INSTANT_MODE.load(Ordering::Relaxed) {
             crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
-            crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+            crate::ui::result_window::show_result(app_handle, "⏳ 最终翻译中...", None);
         }
         // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
         // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）。
@@ -126,7 +126,9 @@ pub(crate) fn do_paste(
     if INSTANT_MODE.load(Ordering::Relaxed) {
         crate::ui::result_window::show_instant(app_handle, "done", text_to_paste);
     } else {
-        crate::ui::result_window::show_result(app_handle, text_to_paste);
+        // 传 segments：paste 前用户仍可在结果窗选择 hotwords 候选（do_paste 的 segments 参数
+        // 来自 transcript.segments_json()，含 Hotwords 段 + 候选）。
+        crate::ui::result_window::show_result(app_handle, text_to_paste, Some(segments));
     }
 
     *stage = Stage::Pasting {

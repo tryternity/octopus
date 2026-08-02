@@ -64,7 +64,7 @@ pub(crate) fn start_final_polish_or_paste(
             if super::INSTANT_MODE.load(std::sync::atomic::Ordering::Relaxed) {
                 crate::ui::result_window::show_instant(app_handle, "polishing", &status_text);
             } else {
-                crate::ui::result_window::show_result(app_handle, &status_text);
+                crate::ui::result_window::show_result(app_handle, &status_text, None);
             }
 
             let id = transcript.id;
@@ -510,7 +510,8 @@ pub(crate) fn handle_polish_done(
                     warn!("Queue DB update_polish_result failed: {}", e);
                 }
                 if !transcript.full().is_empty() {
-                    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
+                    let segs = transcript.segments_json();
+                    crate::ui::result_window::update_result(app_handle, &transcript.display_text(), false, 0, Some(&segs));
                 }
             }
         }

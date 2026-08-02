@@ -98,7 +98,7 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
                                 task.agent_key
                             );
                             let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-                            crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                            crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg), None);
                             crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                             return;
                         }
@@ -114,7 +114,7 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
             } else {
                 let msg = "没有可用的 agent（菜单未指定；默认不可用；列表全部未安装）".to_string();
                 let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
-                crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg));
+                crate::ui::result_window::show_result(app_handle, &format!("❌ {}", msg), None);
                 crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
                 return;
             }
@@ -135,7 +135,7 @@ pub(crate) fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, t
             }
             Err(e) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", &e);
-                crate::ui::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e));
+                crate::ui::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e), None);
             }
         }
         let _ = app_clone.emit("agent-task://updated", ());

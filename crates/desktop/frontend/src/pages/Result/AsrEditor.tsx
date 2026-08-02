@@ -1,11 +1,16 @@
-import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import { Compartment, EditorState, type Transaction, type ChangeSpec, Prec } from "@codemirror/state";
-import { EditorView, keymap, drawSelection } from "@codemirror/view";
+import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useCallback } from "react";
+import { Compartment, EditorState, StateEffect, StateField, type Transaction, type ChangeSpec, Prec } from "@codemirror/state";
+import { EditorView, keymap, drawSelection, Decoration, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { invoke } from "@tauri-apps/api/core";
+import { hotwordRanges, type Segment } from "./hotwords";
+import { useT } from "@/lib/i18n";
 
 const IDLE_TIMEOUT = 2000;
 const DIVERTED_DELAY_MS = 300;
+
+/** 推入 hotwords 段定位（[from,to,candidates] 列表），驱动 hotwordsField 重建 DecorationSet。 */
+const setHotwords = StateEffect.define<Array<{ from: number; to: number; candidates: string[] }>>();
 
 export interface AsrEditorCommit {
   text: string;
@@ -22,6 +27,8 @@ export interface AsrEditorHandle {
 
 interface AsrEditorProps {
   text: string;
+  /** 后端 segments（含 hotwords 候选）。null = 无段信息（流式 / placeholder），不渲染装饰。 */
+  segments?: Segment[] | null;
   caret?: number | null;
   expanded: boolean;
   onCommit: (payload: AsrEditorCommit) => void;
@@ -59,13 +66,53 @@ function buildTheme(expanded: boolean) {
       borderLeftWidth: "1.5px",
     },
     ".cm-line": { padding: "0" },
+    // hotwords 段：波浪下划线 + voice 色 + 可点光标。点击展开候选下拉浮层。
+    ".cm-hotword": {
+      textDecoration: "underline wavy var(--color-voice, #d97706)",
+      textDecorationThickness: "1.5px",
+      textUnderlineOffset: "3px",
+      cursor: "pointer",
+      borderRadius: "2px",
+    },
+    ".cm-hotword:hover": {
+      backgroundColor: "color-mix(in srgb, var(--color-voice, #d97706) 12%, transparent)",
+    },
   }, { dark: false });
 }
 
+/**
+ * hotwords 段 Decoration StateField。
+ * - create：空 DecorationSet。
+ * - setHotwords effect：用新 ranges 重建（每段一个 Decoration.mark [from,to) class=cm-hotword）。
+ * - doc 变化（用户编辑）：CM6 自动 map 装饰到新坐标；但 hotwords offset 由后端 segments 决定，
+ *   编辑后会失配——故编辑态下 React 不再 dispatch setHotwords（editingRef gate），提交后后端
+ *   返回新 segments 自然恢复。
+ */
+const hotwordsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(decos, tr) {
+    decos = decos.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setHotwords)) {
+        if (e.value.length === 0) {
+          decos = Decoration.none;
+        } else {
+          decos = Decoration.set(e.value.map((r) =>
+            Decoration.mark({ class: "cm-hotword" }).range(r.from, r.to),
+          ), true);
+        }
+      }
+    }
+    return decos;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function AsrEditor(
-  { text, caret, expanded, onCommit },
+  { text, segments, caret, expanded, onCommit },
   ref,
 ) {
+  const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const themeCompartment = useRef(new Compartment());
@@ -77,6 +124,13 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   const divertedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const caretRef = useRef(caret);
   caretRef.current = caret;
+
+  // segments ref——segments prop 变化时 dispatch setHotwords effect（mount effect 闭包读最新值）。
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+
+  // 候选下拉浮层状态：点击 .cm-hotword 时打开，选中候选 / 外部点击 / Esc 时关闭。
+  const [dropdown, setDropdown] = useState<{ from: number; to: number; candidates: string[]; left: number; top: number } | null>(null);
 
   // onCommit ref——避免 mount effect 闭包陈旧
   const onCommitRef = useRef(onCommit);
@@ -193,6 +247,9 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
         }])),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         themeCompartment.current.of(buildTheme(expanded)),
+        hotwordsField,
+        // 点击 .cm-hotword → 打开候选下拉（domEventHandlers 在 capture 后冒泡，不干扰 selection）
+        EditorView.domEventHandlers({ click: handleHotwordClick }),
         EditorView.updateListener.of((update) => {
           // 非编辑态光标/选区变化 → 防抖通知后端
           if (update.selectionSet && !editingRef.current && !update.docChanged) {
@@ -290,15 +347,141 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     }
   }
 
+  // segments prop 变化 → dispatch setHotwords effect（驱动 hotwordsField 重建装饰）。
+  // 编辑态下不渲染（editingRef gate）：用户键入后段 offset 失配，装饰会错位；提交后后端
+  // 返回新 segments（该段已 Edited）自然恢复。dropdown 打开时也不重算（避免下拉闪烁）。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (editingRef.current || dropdown) {
+      view.dispatch({ effects: setHotwords.of([]) });
+      return;
+    }
+    const segs = segmentsRef.current;
+    if (!segs) {
+      view.dispatch({ effects: setHotwords.of([]) });
+      return;
+    }
+    const doc = view.state.doc.toString();
+    const ranges = hotwordRanges(segs, doc);
+    view.dispatch({ effects: setHotwords.of(ranges) });
+  }, [segments, dropdown]);
+
+  // 点击 .cm-hotword → 打开候选下拉浮层。
+  const handleHotwordClick = useCallback((event: MouseEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const target = event.target as HTMLElement;
+    if (!target.closest(".cm-hotword")) return;
+    // CM6 posAtCoords 需要 {x, y}（客户端坐标，相对视口）
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos == null) return;
+    // 在当前 segments 里找包含 pos 的 hotwords 段
+    const segs = segmentsRef.current;
+    if (!segs) return;
+    const doc = view.state.doc.toString();
+    const ranges = hotwordRanges(segs, doc);
+    const hit = ranges.find((r) => pos >= r.from && pos < r.to);
+    if (!hit) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // 浮层定位：段起点的屏幕坐标（coordsAtPos 返回相对视口的 Rect）
+    const coords = view.coordsAtPos(hit.from);
+    if (!coords) return;
+    // host 容器的视口偏移（浮层绝对定位相对 host）
+    const hostRect = hostRef.current?.getBoundingClientRect();
+    setDropdown({
+      from: hit.from,
+      to: hit.to,
+      candidates: hit.candidates,
+      left: coords.left - (hostRect?.left ?? 0),
+      top: coords.bottom - (hostRect?.top ?? 0) + 2,
+    });
+  }, []);
+
+  // 选中候选 → applyCandidate 替换 doc + 标 dirty + 立即 commit（走 commit_edit，后端 rebuild 标 Edited）。
+  // 即便选了 == 原文的第一个候选，也提交（标 dirty 让后端 rebuild 该段为 Edited，润色时不再标 <候选>）。
+  const selectCandidate = useCallback((candidate: string) => {
+    const view = viewRef.current;
+    const dd = dropdown;
+    if (!view || !dd) return;
+    setDropdown(null);
+    // dispatch 替换 [from, to) → candidate（CM6 对相同文本的替换是 no-op changes，但 dirtyRange 仍标记）
+    view.dispatch({
+      changes: { from: dd.from, to: dd.to, insert: candidate },
+      selection: { anchor: dd.from + candidate.length },
+    });
+    // 标 dirty + 进编辑态 + 立即 commit（复用现有提交流程）
+    if (!editingRef.current) {
+      editingRef.current = true;
+      clearDivertedTimer();
+      void invoke("perf_log_cmd", { msg: "[FE] enter_edit_mode invoked (hotword select)" });
+      invoke("enter_edit_mode");
+    }
+    hasEditedRef.current = true;
+    addDirtyRange(dd.from, dd.from + candidate.length);
+    doCommit();
+  }, [dropdown]);
+
+  // 外部点击 / Esc 关闭下拉（对齐现有 popup close 模式）
+  useEffect(() => {
+    if (!dropdown) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".hotword-dropdown")) {
+        setDropdown(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDropdown(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [dropdown]);
+
   return (
     <div
       ref={hostRef}
-      className="asr-cm-editor"
+      className="asr-cm-editor relative"
       style={{
         height: expanded ? "100%" : "63px",
         width: "100%",
         overflow: "hidden",
       }}
-    />
+    >
+      {dropdown && (
+        <div
+          className="hotword-dropdown absolute z-40 min-w-[120px] max-w-[280px] rounded-md border border-black/[0.10] shadow-lg shadow-black/[0.12] py-0.5"
+          style={{
+            left: dropdown.left,
+            top: dropdown.top,
+            backgroundColor: "var(--color-surface)",
+          }}
+        >
+          <div className="px-2.5 py-1 text-[10px] select-none" style={{ color: "var(--color-muted-foreground)" }}>
+            {t("result.hotwords.tooltip")}
+          </div>
+          {dropdown.candidates.map((c, i) => (
+            <div
+              key={c + i}
+              className="px-2.5 py-1 cursor-pointer text-[13px] flex items-center gap-1.5 transition-colors hover:bg-[#007aff]/[0.08]"
+              style={{ color: "var(--color-foreground)" }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); selectCandidate(c); }}
+            >
+              {i === 0 && (
+                <span className="text-[10px] shrink-0" style={{ color: "var(--color-voice, #d97706)" }}>
+                  {t("result.hotwords.default")}
+                </span>
+              )}
+              <span className="flex-1 min-w-0 truncate">{c}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 });

@@ -280,9 +280,9 @@ pub(crate) fn restart_capture_keep_transcript(
 
     // 展示旧文本（窗口一直可见，is_continuation 路径——不走 show-result else 清空 caret）
     let show_placeholder = if show_text.is_empty() { "正在聆听…" } else { "🎙️ 麦克风重连中…" };
-    crate::ui::result_window::show_result(app_handle, show_placeholder);
+    crate::ui::result_window::show_result(app_handle, show_placeholder, None);
     if !show_text.is_empty() {
-        crate::ui::result_window::update_result(app_handle, &show_text, false, 0);
+        crate::ui::result_window::update_result(app_handle, &show_text, false, 0, None);
     }
     crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Recording);
     let _ = app_handle.emit("mic-reconnecting", ());
@@ -383,7 +383,7 @@ pub(crate) fn finalize_after_stop(
         if INSTANT_MODE.load(Ordering::Relaxed) {
             crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
-            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...", None);
         }
         *stage = Stage::StoppingPolish { transcript };
         return;
@@ -426,7 +426,9 @@ pub(crate) fn finalize_after_stop(
     // instant 模式：跳过 result_window 预览（do_paste 会用 instant 浮窗 "done" 态展示最终文本）。
     // 非 instant：正常 show_result 展示识别结果（润色/paste 期间用户可看）。
     if !INSTANT_MODE.load(Ordering::Relaxed) {
-        crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+        // 传 segments：stop 后展示含 Hotwords 段的完整候选（mark_hotwords 已在上方完成）。
+        let segs = transcript.segments_json();
+        crate::ui::result_window::show_result(app_handle, &transcript.display_text(), Some(&segs));
     }
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
@@ -499,7 +501,7 @@ pub(crate) fn finalize_cloud(
         if INSTANT_MODE.load(Ordering::Relaxed) {
             crate::ui::result_window::show_instant(app_handle, "polishing", "");
         } else {
-            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+            crate::ui::result_window::show_result(app_handle, "⏳ 等待润色完成...", None);
         }
         *stage = Stage::StoppingPolish { transcript };
         return;
@@ -507,7 +509,9 @@ pub(crate) fn finalize_cloud(
 
     // instant 模式：跳过 result_window 预览（do_paste 会用 instant 浮窗 "done" 态展示最终文本）。
     if !INSTANT_MODE.load(Ordering::Relaxed) {
-        crate::ui::result_window::show_result(app_handle, &transcript.display_text());
+        // 传 segments：stop 后展示含 Hotwords 段的完整候选（mark_hotwords 已在上方完成）。
+        let segs = transcript.segments_json();
+        crate::ui::result_window::show_result(app_handle, &transcript.display_text(), Some(&segs));
     }
     start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
 }

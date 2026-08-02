@@ -32,10 +32,10 @@ fn show_listening_start(app_handle: &tauri::AppHandle, show_text: &str, is_conti
         return;
     }
     if is_continuation {
-        crate::ui::result_window::show_result(app_handle, "正在聆听…");
-        crate::ui::result_window::update_result(app_handle, show_text, false, 0);
+        crate::ui::result_window::show_result(app_handle, "正在聆听…", None);
+        crate::ui::result_window::update_result(app_handle, show_text, false, 0, None);
     } else {
-        crate::ui::result_window::show_result(app_handle, show_text);
+        crate::ui::result_window::show_result(app_handle, show_text, None);
     }
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn begin_recording(
             // instant 模式：错误也走 instant 浮窗（done 态展示提示文字）。
             crate::ui::result_window::show_instant(app_handle, "done", "麦克风不可用");
         } else {
-            crate::ui::result_window::show_result(app_handle, "");
+            crate::ui::result_window::show_result(app_handle, "", None);
         }
         crate::ui::tray::update_tray_label(app_handle, crate::ui::tray::TrayState::Idle);
         return;

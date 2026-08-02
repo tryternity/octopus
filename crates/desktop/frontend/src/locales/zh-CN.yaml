@@ -994,6 +994,9 @@ result:
   translateClose: 关闭翻译
   translating: 翻译中…
   translateFail: "翻译失败："
+  hotwords:
+    tooltip: 候选词
+    default: 推荐
 
 # ════════ Screenshot 截图 ════════
 screenshot:
