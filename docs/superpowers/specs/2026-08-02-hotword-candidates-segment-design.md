@@ -21,7 +21,8 @@ pub enum SegmentKind { Raw, Polished, Edited, Hotwords }
 pub struct Segment {
     pub kind: SegmentKind,
     pub text: String,
-    pub candidates: Option<Vec<String>>,  // Hotwords 段的候选（最多 5 个，得分降序）
+    pub candidates: Option<Vec<String>>,  // Hotwords 段的候选（最多 5 个，得分降序，含原词）
+    pub id: Option<String>,               // Hotwords 段的 UUID（mark_hotwords 生成，前端装饰稳定标识）
 }
 ```
 
@@ -30,26 +31,27 @@ pub struct Segment {
 ```json
 [
   { "kind": "raw", "text": "需要你修正这个" },
-  { "kind": "hotwords", "text": "注释", "candidates": ["注释", "主意", "注意"] },
+  { "kind": "hotwords", "text": "注释", "candidates": ["注释", "主意", "注意"], "id": "a1b2c3..." },
   { "kind": "raw", "text": "修复下面的错误。" }
 ]
 ```
 
-`candidates` 是可选字段——其他 kind 不含此字段（向后兼容旧 segments JSON）。
+`candidates`/`id` 是可选字段——其他 kind 不含（向后兼容旧 segments JSON）。
+候选列表**含原词**（用户可选回原文）。
 
 ### corrector 层
 
-`correct_greedy` 命中多候选时（> 1），除了替换成第一个，还收集完整候选列表：
+`correct_greedy` 命中热词时（候选 > 1，含原词），除了替换成第一个，还收集完整候选列表：
 - 新增 `pending_candidates: Mutex<Vec<(String, Vec<String>)>>`——(命中的词, 该位置全部候选)
-- `find_candidates` 排序后 truncate(5)
+- `find_candidates` 排序后 truncate(5)，**不排除原词**（用户可选回原文）
 - 新增 `drain_candidates() -> Vec<(String, Vec<String>)>`
-- 单候选（== 1）不收集（无选择意义）
+- 候选含原词（至少热词 + 原词 2 个）才收集
 
 ### coordinator 层
 
 **流式实时标记**（`apply_pipeline_events` 的 Emit 分支）：每帧 correct 后 `drain_candidates()`
-→ 非空时 `transcript.mark_hotwords` → `update_result` 传 segments。录音中即可见候选下拉，
-无需等 stop。仅在有新候选时序列化 segments（无命中传 None，零开销）。
+→ 非空时 `transcript.mark_hotwords`（生成 UUID）→ 有 Hotwords 段就传 segments（`has_hotwords` 判定，
+无新候选也保留装饰）。录音中即可见候选下拉，无需等 stop。
 
 **stop 兜底**（`finalize_after_stop`）：同样 drain_candidates + mark_hotwords，覆盖流式
 未 drain 的残留（如 close 时引擎 end-of-stream 纠正）。
@@ -58,7 +60,7 @@ pub struct Segment {
 word 是单个词，精确匹配 text==word 永远匹配不到）。子串劈段：含 word 的段劈成
 `[前缀(原kind)] + [word(Hotwords)] + [后缀(原kind)]`。已标 Hotwords/Edited 跳过（用户已选定）。
 
-### 前端 CM6 渲染（Task 4 已实现）
+### 前端 CM6 渲染（Task 4 已实现，经多轮迭代定型）
 
 **传输**：扩展 `update-result`/`show-result` payload 加可选 `segments` 字段（`Option<&str>`）。
 - 流式 tick 有新候选时传 `segments_json()`（实时标记），无候选传 `None`（零开销）；
@@ -66,23 +68,33 @@ word 是单个词，精确匹配 text==word 永远匹配不到）。子串劈段
   Idle 编辑 / polish 后的 `update_result` 也传 segments。
 - `show-result` 原 bare string payload 改 object `{ text, segments }`（前端 handler 兼容旧 bare string）。
 
-**渲染**：CM6 `StateField<DecorationSet>` + `Decoration.mark`（**非** WidgetType——避免 widget 内文本
-不参与光标定位/搜索的复杂度）：
-- `.cm-hotword` class：波浪下划线（`--color-voice` 色）+ hover 高亮 + `cursor: pointer`。
-- `hotwords.ts::hotwordRanges(segments, doc)` 纯函数：遍历段累加 char offset 产 `[from, to, candidates]`。
-  段拼接 != doc 时返回空（降级，防 offset 错位）。
-- `setHotwords` StateEffect 从 React 推 ranges；`editingRef` 为真 / dropdown 打开时不重算（防编辑态错位 + 下拉闪烁）。
+**Segment UUID 稳定标识**（关键演进）：`Segment` 加 `id: Option<String>` 字段，`mark_hotwords`
+劈段时 `uuid::Uuid::new_v4()` 生成。`segments_json`/`restore_segments` 序列化/解析 id。
+UUID 是装饰生命周期的核心——不依赖位置/段 index/word 文本，中插/追加/段重建都不影响已生成 id。
 
-**下拉浮层**（React，非 CM6 widget）：点击 `.cm-hotword` → `view.posAtCoords` 定位段 →
-`view.coordsAtPos(from)` 算屏幕坐标 → 绝对定位浮层。渲染候选列表（第一项标"推荐/Top"）。
-外部点击 / Esc 关闭（对齐现有 popup close 模式）。
+**渲染**（map 主导 + UUID 标识，类比富文本粗体）：
+- CM6 `StateField<DecorationSet>` + `Decoration.mark`（`.cm-hotword` 波浪下划线 + voice 色）。
+- 装饰带 `data-hw-id` 属性（UUID）。`decos.map(tr.changes)` 主导——用户编辑/中插/追加时装饰自动跟随。
+- `setHotwords` StateEffect 智能合并（非全量替换）：已有 id 保留 map 后 offset、新 id 追加、消失的 id filter 清。
+- `removeHotwordById` StateEffect：选定候选时按 UUID 精确清除该装饰（即时反馈，不等后端）。
+- 失配（segments 拼接 != doc，如 writeDoc diverted 300ms 延迟期间）→ 跳过 dispatch 保留已有装饰。
+  `refreshHotwords` 在 writeDoc 后（append + diverted 两路径）补算——doc 同步后重算。
 
-**选词**：复用 `commit_edit`（不新增 IPC）——`selectCandidate` → `view.dispatch({changes: 替换})` +
-`addDirtyRange` + `doCommit()`。后端 `rebuild_segments` 自动把该段标 Edited、去掉 Hotwords。
-即便选了 == 原文的第一个候选也提交（标 dirty 让后端标 Edited，润色时不再 `<候选>` 标记）。
+**点击查候选**（按 UUID，不按位置/时序）：点击 `.cm-hotword` → 读 `data-hw-id` →
+`findCandidatesById(segments, id)` 在 segments 按 UUID 查候选（单一真相源，不在 DOM 存数据）。
+从 StateField 读精确 `[from,to]` + `coordsAtPos` 算屏幕坐标。
 
-**编辑态抑制**：用户键入时 `editingRef.current === true` → segments effect dispatch 空装饰
-（防 hotwords offset 漂移错位）。提交后后端返回新 segments（该段已 Edited）自然恢复。
+**下拉浮层**（React，横向排列）：候选词横向 flex 一行铺开（`·` 分隔），第一个用 voice 色 + 加粗区分。
+- 自适应定位：右侧空间不够 → 左移贴右边缘；下方空间不够 → 向上弹（防溢出折叠）。
+- 外部点击 / Esc 关闭。
+
+**选词**：复用 `commit_edit`（不新增 IPC）——`selectCandidate` → `removeHotwordById`（清该装饰）+
+`view.dispatch({changes: 替换})` + `addDirtyRange` + `doCommit()`。候选含原词（用户可选回原文）。
+
+**rebuild_segments 保留 clean 区域 id**（关键修复）：`commit_edit` 走 `rebuild_segments` 字符级重建，
+加了 `old_cands`/`old_ids` 按字符映射——dirty 区间标 Edited（丢弃 id），clean 区域的 hotword 段
+经 `push_or_merge_full` 恢复 candidates/id（同 id 合并）。否则选定某个后其余 hotword 段 id 全丢 →
+前端装饰全清。
 
 ### regions_prompt（润色 LLM）
 
