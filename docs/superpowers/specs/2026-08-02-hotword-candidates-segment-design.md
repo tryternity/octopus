@@ -47,6 +47,12 @@ pub struct Segment {
 - 新增 `drain_candidates() -> Vec<(String, Vec<String>)>`
 - 候选含原词（至少热词 + 原词 2 个）才收集
 
+**候选含原词的设计理由**（方言归一场景）：方言规则（如 `r→l` + `si→ci`）让不同拼音
+归一到同一 key。用户设热词"热词"(re-ci)，说带口音的"热词"被引擎识别成"乐视"(le-si)。
+`find_candidates("乐视")` 按 `le-ci` 查（归一后）→ 命中热词"热词" → 候选 `["热词","乐视"]`
+（热词 + 原词）。correct_greedy 替换成"热词"（纠正引擎误识别），但候选保留"乐视"——
+万一用户真想说"乐视"（引擎识别正确），可选回去。这是方言纠错的正确效果。
+
 ### coordinator 层
 
 **流式实时标记**（`apply_pipeline_events` 的 Emit 分支）：每帧 correct 后 `drain_candidates()`
