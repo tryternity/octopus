@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS hotword_words (
     is_deleted  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    sync_md5    TEXT,
+    sync_md5    TEXT,                     -- 已废弃（2026-08-02）：word id 是确定性主键，sync_md5 冗余。列保留避免 migration。
     UNIQUE(set_id, word)
 );
 CREATE INDEX IF NOT EXISTS idx_hotword_words_set ON hotword_words(set_id);
@@ -97,33 +97,32 @@ struct HotwordWordFile {
 }
 ```
 
-### md5 指纹（长度前缀分隔防 `|` 碰撞）
+### md5 指纹（身份指纹，不含状态字段）
 
-```
-{set_id_len}|{set_id}|{word_len}|{word}|{pinyin_len}|{pinyin}|{is_deleted}
-```
+**set 级 md5** = `md5(id|name)`——身份指纹，不含 enabled/is_deleted/时间戳。
+set name 可改（rename），md5 变化触发 outline diff 判断改名。状态变化（删除/启用）靠 updated_at 时间戳比较。
 
-词文本可能含任意 Unicode（含 `|`），用长度前缀分隔（vault 靠密文 base64 不含 `|`，热词明文必须防碰撞）。**不含 created_at/updated_at**（时间戳跨设备必然不同）。
+**word 级无 sync_md5**（2026-08-02 去掉）——word id = `uuid_v5(namespace, "{set_id}/{word}")` 已是确定性业务主键。
+word 不可改名、拼音是附属品（`pinyin = f(word)`），id 已唯一标识记录，sync_md5 完全冗余。
+DB 列保留（避免 migration），代码层不读写。
 
 ### merge 逻辑（两阶段，对称 vault merge_vault）
 
 **阶段 1：set 层 merge**（词典元数据，遍历总 outline.sets）
 - 总 outline 有 + DB 无 → pull（读 meta.json → upsert DB）
-- 都有 → 比 updated_ms：remote > local → pull；local > remote → push；相等 → md5 比对，不同 → DB 赢
+- 都有 → 比 updated_ms：remote > local → pull；local > remote → push；相等 → md5 比对（判断改名），不同 → DB 赢
 - DB 有 + outline 无 → push（写 meta.json）
 
 **阶段 2：word 层 merge**（每个词典的词数据，遍历 DB 词典 → 读词典内 outline.words）
-- 词典 outline 有 + DB 无 → pull（读词文件 → upsert_hotword_word，回填 word sync_md5）
-- 都有 → 比 updated_ms：remote > local → pull（软删传播：is_deleted=true pull 后 DB 也变软删）；local > remote → push；相等 → md5 比对，不同 → DB 赢
+- 词典 outline 有 + DB 无 → pull（读词文件 → upsert_hotword_word）
+- 都有 → 比 updated_ms：remote > local → pull（软删传播：is_deleted pull 后 DB 也变软删）；local > remote → push；**相等 → 跳过**（word 不可变，id=f(set_id,word) 确定，时间戳相等 = 无变化）
 - DB 有 + 词典 outline 无 → push（写词文件）
 
 merge 完后从 DB 最新状态重建所有文件 + outline（`export_all_hotwords`，DB 是单一真相源）。
 
-### word sync_md5 填充（DB 层写入时填，对齐 vault storage 层）
+**删除后 export**（2026-08-02 修复）：`delete_hotword_set` 后必须 `export_all_hotwords`——
+否则 sync 文件还存旧态（is_deleted=0），下次 merge pull_set 复活（软删 10 天内不超期不跳过）。
 
-`add_word_to_set_at` / `remove_word_from_set_at` / `set_words_in_set_at` 写入时算 word md5 填
-`sync_md5` 列（infra `hotword_word_md5_from_fields`）。set 的 `sync_md5` = 纯元数据指纹（name|enabled），
-词变更不再改 set md5——desktop `refill_sync_md5` 已简化（移除原词指纹组合方案）。
 
 ### 软删
 
