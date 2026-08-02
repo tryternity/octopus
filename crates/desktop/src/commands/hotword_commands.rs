@@ -105,6 +105,11 @@ pub fn rename_hotword_set(id: String, name: String) -> Result<(), String> {
 #[tauri::command]
 pub fn delete_hotword_set(id: String) -> Result<(), String> {
     db::delete_hotword_set(&id).map_err(e2s)?;
+    // 删除后必须 export 到 .sync——否则 sync 文件还存旧态（is_deleted=0），
+    // 下次 merge 时 pull_set 把它拉活（软删 10 天内不超期，pull_set 不跳过）→ 复活。
+    if let Err(e) = octopus_sync::hotword::export_all_hotwords() {
+        log::warn!("[hotword] 删除后 export 失败（不阻断，但可能导致 sync 复活）：{}", e);
+    }
     reload_after_write();
     Ok(())
 }
