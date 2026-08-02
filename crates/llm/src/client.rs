@@ -194,25 +194,16 @@ pub fn chat_text_with_prompt(
 
 /// 用 LLM 从用户编辑段文本中提取热词候选（专有名词）。
 ///
+/// `system_prompt` = 挖掘提示词（调用方从 resource 文件读，允许用户自定义覆盖）。
 /// 复用润色 LLM 客户端（同 API key / endpoint）。
-/// 用户编辑段 = 引擎识别错了用户才改 → 其中的专有名词是高质量热词候选。
-/// LLM 语义理解远超 jieba 分词（能提取"八爪鱼""浮窗"这类 jieba 会拆碎的词）。
-///
 /// 失败返回 Err（调用方回退 jieba 分词挖掘）。
-pub fn mine_hotwords(edited_texts: &str, config: &CompatibleLlmConfig) -> Result<Vec<String>> {
+pub fn mine_hotwords(system_prompt: &str, edited_texts: &str, config: &CompatibleLlmConfig) -> Result<Vec<String>> {
     if edited_texts.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let system = "你是一个语音识别纠错助手。用户会给你语音识别后手动编辑纠正的文本片段，\
-从中提取引擎容易识别错的专有名词（人名、地名、产品名、技术术语、项目名等）。\
-要求：\n\
-1. 只提取专有名词，不含常用词（如\"我们\"\"这个\"\"可以\"\"实际上\"）\n\
-2. 每行一个词，不要标点、不要编号、不要解释\n\
-3. 词长 2-6 字\n\
-4. 如果文本中没有专有名词，直接返回空行";
     let user = format!("以下是语音识别后用户手动编辑纠正的文本片段：\n\n{}", edited_texts);
 
-    let response = chat_text_with_prompt(system, &user, config, Some(30))?;
+    let response = chat_text_with_prompt(system_prompt, &user, config, Some(30))?;
     // 解析 LLM 返回——每行一个词，只保留纯汉字行（2-6 字）
     let words: Vec<String> = response
         .lines()

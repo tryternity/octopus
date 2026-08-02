@@ -184,6 +184,9 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 
 // ── 挖掘候选（不落库，前端确认后再批量 add_words_to_set）──
 
+/// 挖掘提示词（编译期从 resource 文件嵌入，用户可在 ~/.octopus/HOTWORD_MINE.md 覆盖）。
+const HOTWORD_MINE_PROMPT: &str = include_str!("../../resources/hotword_mine.md");
+
 /// 挖掘候选词列表（LLM 优先 + jieba 兜底），不写库。前端展示候选供用户勾选确认。
 #[tauri::command]
 pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
@@ -194,9 +197,16 @@ pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
     }
     let joined = edited_texts.join("\n");
 
+    // 挖掘提示词：用户自定义覆盖（~/.octopus/HOTWORD_MINE.md）> 内置默认
+    let prompt = std::fs::read_to_string(
+        std::path::Path::new(&octopus_infra::paths::octopus_config_home())
+            .join("HOTWORD_MINE.md"),
+    )
+    .unwrap_or_else(|_| HOTWORD_MINE_PROMPT.to_string());
+
     // 尝试 LLM 挖掘（语义理解，远超 jieba 分词）
     if let Some(llm_config) = crate::core::config::llm_config_ignore_mode() {
-        match octopus_llm::mine_hotwords(&joined, &llm_config) {
+        match octopus_llm::mine_hotwords(&prompt, &joined, &llm_config) {
             Ok(words) if !words.is_empty() => {
                 log::info!("[hotword-miner] LLM 挖掘 {} 条候选", words.len());
                 return Ok(words);
