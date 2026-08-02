@@ -471,6 +471,17 @@ settings:
     autoCleanDays: 自动清理天数
     autoCleanDaysHint: 超过此天数的非收藏记录自动删除
     shortcutRecordingHint: 按下快捷键…（Esc 取消）
+    # 终端字体偏好（terminal_font_size / terminal_font_family）
+    tabTerminal: 终端
+    terminalFont: 终端字体
+    terminalFontHint: 内置终端字号与字体族，立即生效
+    fontSize: 字号
+    fontFamily: 字体族
+    fontFamilyCustom: 自定义
+    fontFamilyCustomHint: CSS font-family 字符串（逗号分隔，可用引号包裹含空格的字体名）
+    fontFamilyCustomPlaceholder: 如 "JetBrains Mono", "Fira Code", monospace
+    fontPreview: 预览
+    fontPreviewText: The quick brown fox 123
   env:
     pathsTitle: 保存路径
     recordings: 录屏

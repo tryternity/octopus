@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette, AlertCircle } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette, AlertCircle, TerminalSquare } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import { isMac } from "@/lib/platform";
@@ -12,11 +12,35 @@ import ShortcutButton from "@/components/ShortcutButton";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Row } from "@/components/ui/row";
 import { Toggle } from "@/components/ui/toggle";
-import { Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { UnderlineTabs } from "@/components/ui/tabs";
 import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
+
+/**
+ * 终端字体族预设——dropdown 选项映射到 CSS font-family 字符串。
+ *
+ * 值必须与 Rust AppConfig default_terminal_font_family 同格式（逗号分隔，含空格的字体名加引号），
+ * 这样 get_config 读回的值能直接与预设 value 匹配选中当前项。
+ * 若 config 中的值不匹配任何预设，dropdown 显示「自定义」并展开文本输入框。
+ */
+const TERMINAL_FONT_PRESETS: { label: string; value: string }[] = [
+  // SF Mono 值与 Rust AppConfig default_terminal_font_family 完全一致——
+  // 保证出厂默认 config 读回时 dropdown 选中「SF Mono」而非掉进「自定义」。
+  { label: "SF Mono", value: '"SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace' },
+  { label: "Menlo", value: "Menlo, Monaco, monospace" },
+  { label: "Monaco", value: "Monaco, Menlo, monospace" },
+  { label: "Cascadia Code", value: '"Cascadia Code", Menlo, Monaco, monospace' },
+  { label: "JetBrains Mono", value: '"JetBrains Mono", monospace' },
+  { label: "Fira Code", value: '"Fira Code", monospace' },
+  { label: "Roboto Mono", value: '"Roboto Mono", monospace' },
+];
+const TERMINAL_CUSTOM_VALUE = "__custom__";
+// 字号 slider 边界——与 Terminal/index.tsx MIN/MAX_FONT_SIZE 对齐。
+const TERMINAL_FONT_SIZE_MIN = 8;
+const TERMINAL_FONT_SIZE_MAX = 32;
+const TERMINAL_FONT_SIZE_DEFAULT = 13;
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -31,7 +55,7 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync" | "terminal">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
 
   useEffect(() => {
@@ -105,6 +129,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     { key: "shortcut", label: t("settings.general.tabShortcut") },
     { key: "voice", label: t("settings.general.tabVoice") },
     { key: "env", label: t("settings.general.tabEnv") },
+    { key: "terminal", label: t("settings.general.tabTerminal") },
     // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
     ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
     { key: "sync", label: t("settings.general.tabSync") },
@@ -317,6 +342,113 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       )}
       {activeTab === "env" && (
         <EnvironmentPanel showToast={showToast} />
+      )}
+
+      {/* ── 终端字体（terminal_font_size / terminal_font_family）── */}
+      {activeTab === "terminal" && (
+        <Card className="mb-3">
+          <CardHeader>
+            <TerminalSquare className="w-4 h-4 text-muted-foreground" />
+            <CardTitle>{t("settings.general.terminalFont")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* 字号：slider + 数字显示。onchange 立即 setVal，xterm 即时 effect。 */}
+            <Row
+              label={t("settings.general.fontSize")}
+              effect={t("settings.effect.now")}
+              hint={t("settings.general.terminalFontHint")}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={TERMINAL_FONT_SIZE_MIN}
+                  max={TERMINAL_FONT_SIZE_MAX}
+                  step={1}
+                  value={typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                    ? cfg.terminal_font_size
+                    : TERMINAL_FONT_SIZE_DEFAULT}
+                  onChange={(e) => setVal("terminal_font_size", Number(e.target.value))}
+                  className="w-40 accent-voice"
+                />
+                <span className="w-10 text-right text-sm tabular-nums">
+                  {typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                    ? cfg.terminal_font_size
+                    : TERMINAL_FONT_SIZE_DEFAULT}
+                </span>
+              </div>
+            </Row>
+
+            {/* 字体族：dropdown 预设 + 自定义时展开文本输入框。
+                config 值匹配预设 → 选中对应项；否则 → 选中「自定义」并显示当前值。 */}
+            <Row
+              label={t("settings.general.fontFamily")}
+              effect={t("settings.effect.now")}
+              hint={t("settings.general.terminalFontHint")}
+            >
+              <Select
+                value={
+                  TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family)
+                    ? (cfg.terminal_font_family as string)
+                    : TERMINAL_CUSTOM_VALUE
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === TERMINAL_CUSTOM_VALUE) return; // 切到自定义不立即清空，保留当前值编辑
+                  void setVal("terminal_font_family", v);
+                }}
+              >
+                {TERMINAL_FONT_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+                <option value={TERMINAL_CUSTOM_VALUE}>
+                  {t("settings.general.fontFamilyCustom")}
+                </option>
+              </Select>
+            </Row>
+
+            {/* 自定义字体族输入——仅在选中「自定义」或 config 值非预设时显示。
+                onBlur 提交：避免每次按键触发 set_config + xterm 重建（首字符写完才持久化）。 */}
+            {!TERMINAL_FONT_PRESETS.some((p) => p.value === cfg.terminal_font_family) && (
+              <Row
+                label={t("settings.general.fontFamilyCustom")}
+                effect={t("settings.effect.now")}
+                hint={t("settings.general.fontFamilyCustomHint")}
+              >
+                <Input
+                  variant="mono"
+                  size="full"
+                  defaultValue={typeof cfg.terminal_font_family === "string"
+                    ? cfg.terminal_font_family
+                    : ""}
+                  placeholder={t("settings.general.fontFamilyCustomPlaceholder")}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    if (v && v !== cfg.terminal_font_family) {
+                      void setVal("terminal_font_family", v);
+                    }
+                  }}
+                />
+              </Row>
+            )}
+
+            {/* 预览——用当前字号 + 字体族渲染样例文字，让用户直观感受效果。 */}
+            <Row label={t("settings.general.fontPreview")}>
+              <div
+                className="flex-1 rounded-md border border-border/40 bg-background px-3 py-2 text-muted-foreground"
+                style={{
+                  fontSize: `${typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                    ? cfg.terminal_font_size
+                    : TERMINAL_FONT_SIZE_DEFAULT}px`,
+                  fontFamily: typeof cfg.terminal_font_family === "string" && cfg.terminal_font_family
+                    ? cfg.terminal_font_family
+                    : undefined,
+                }}
+              >
+                {t("settings.general.fontPreviewText")}
+              </div>
+            </Row>
+          </CardContent>
+        </Card>
       )}
       {activeTab === "sync" && (
         <div className="h-[calc(100vh-200px)] overflow-auto">
