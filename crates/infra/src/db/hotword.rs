@@ -470,7 +470,7 @@ pub(crate) fn add_word_to_set_at(conn: &Connection, set_id: &str, word: &str) ->
         return Ok(false); // 已活跃，幂等无操作
     }
     // sync_md5：写入时填（对齐 vault cipher storage 层）——word 级 merge 据此 diff
-    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
+    let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
     // ON CONFLICT(set_id, word)：已存在（软删态）→ 恢复 is_deleted=0；不存在 → INSERT
     conn.execute(
         "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
@@ -501,7 +501,7 @@ pub(crate) fn add_words_to_set_at(
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-        let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
+        let sync_md5 = crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         let n = conn.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
              VALUES (?1, ?2, ?3, ?4, 0, ?5)
@@ -528,7 +528,7 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     // 软删前先读 pinyin（md5 需要它）——is_deleted>0 的 md5 与活跃态不同（参与 diff）
-    let pinyin: String = conn
+    let _pinyin: String = conn
         .query_row(
             "SELECT pinyin FROM hotword_words WHERE set_id=?1 AND word=?2 AND is_deleted=0",
             params![set_id, word],
@@ -536,7 +536,7 @@ pub(crate) fn remove_word_from_set_at(conn: &Connection, set_id: &str, word: &st
         )
         .unwrap_or_default();
     let sync_md5 =
-        crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, now_secs);
+        crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
     conn.execute(
         "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
          WHERE set_id=?1 AND word=?2 AND is_deleted=0",
@@ -574,9 +574,9 @@ pub(crate) fn set_words_in_set_at(
         })?;
         rows.filter_map(|r| r.ok()).collect()
     };
-    for (word, pinyin) in &to_remove {
+    for (word, _pinyin) in &to_remove {
         let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, pinyin, now_secs);
+            crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         conn.execute(
             "UPDATE hotword_words SET is_deleted=?4, sync_md5=?3, updated_at=datetime('now')
              WHERE set_id=?1 AND word=?2 AND is_deleted=0",
@@ -588,7 +588,7 @@ pub(crate) fn set_words_in_set_at(
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
         let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
         let sync_md5 =
-            crate::hotword_text::hotword_word_md5_from_fields(set_id, word, &pinyin, 0);
+            crate::hotword_text::hotword_word_md5_from_fields(set_id, word);
         conn.execute(
             "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted, sync_md5)
              VALUES (?1, ?2, ?3, ?4, 0, ?5)
@@ -1048,29 +1048,23 @@ mod tests {
 
         add_word_to_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let w = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
-        let expected = crate::hotword_text::hotword_word_md5_from_fields(
-            "md5-set", "八爪鱼", &w.pinyin, 0,
-        );
+        let expected = crate::hotword_text::hotword_word_md5_from_fields("md5-set", "八爪鱼");
         assert_eq!(
             w.sync_md5.as_deref(),
             Some(expected.as_str()),
-            "add 后 sync_md5 应等于 md5(is_deleted=false)"
+            "add 后 sync_md5 应等于 md5(set_id+word)"
         );
 
-        // 软删 → sync_md5 变成 is_deleted=true 的指纹（参与 word 级 diff）
+        // 软删 → sync_md5 不变（身份指纹不含 is_deleted）
         remove_word_from_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let soft = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
-        let expected_soft = crate::hotword_text::hotword_word_md5_from_fields(
-            "md5-set", "八爪鱼", &soft.pinyin, soft.is_deleted,
-        );
         assert_eq!(
             soft.sync_md5.as_deref(),
-            Some(expected_soft.as_str()),
-            "remove 后 sync_md5 应等于 md5(is_deleted=true)"
+            Some(expected.as_str()),
+            "软删后 sync_md5 应不变（md5 不含 is_deleted）"
         );
-        assert_ne!(w.sync_md5, soft.sync_md5, "软删前后 md5 应不同");
 
-        // 恢复（重新 add）→ sync_md5 回到 is_deleted=false 指纹
+        // 恢复（重新 add）→ sync_md5 不变（身份指纹稳定）
         add_word_to_set_at(&conn, "md5-set", "八爪鱼").unwrap();
         let restored = get_hotword_word_at(&conn, "md5-set", "八爪鱼").unwrap().unwrap();
         assert_eq!(restored.sync_md5, w.sync_md5, "恢复后 md5 应回到活跃指纹");
@@ -1091,16 +1085,14 @@ mod tests {
             assert!(w.sync_md5.is_some(), "批量加的词应有 sync_md5: {}", word);
         }
 
-        // 覆盖为 [苹果] —— 香蕉软删（md5 变 is_deleted=true），苹果保留
+        // 覆盖为 [苹果] —— 香蕉软删（md5 不变，身份指纹不含 is_deleted）
         set_words_in_set_at(&conn, "ov-set", &["苹果".into()]).unwrap();
         let banana = get_hotword_word_at(&conn, "ov-set", "香蕉").unwrap().unwrap();
-        let expected_soft = crate::hotword_text::hotword_word_md5_from_fields(
-            "ov-set", "香蕉", &banana.pinyin, banana.is_deleted,
-        );
+        let expected_banana = crate::hotword_text::hotword_word_md5_from_fields("ov-set", "香蕉");
         assert_eq!(
             banana.sync_md5.as_deref(),
-            Some(expected_soft.as_str()),
-            "覆盖软删的香蕉应有 is_deleted=true 的 sync_md5"
+            Some(expected_banana.as_str()),
+            "覆盖软删的香蕉 sync_md5 应不变（md5 不含 is_deleted）"
         );
     }
 

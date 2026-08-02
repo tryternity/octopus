@@ -115,9 +115,9 @@ pub fn hotword_set_md5_from_fields(id: &str, name: &str) -> String {
     md5_hex(input.as_bytes())
 }
 
-/// 词记录的逻辑内容 md5——委托 infra `hotword_word_md5_from_fields`（长度前缀防碰撞）。
+/// 词记录的身份 md5——委托 infra `hotword_word_md5_from_fields`（只含 set_id+word）。
 pub fn hotword_word_md5(w: &HotwordWord) -> String {
-    hotword_word_md5_from_fields(&w.set_id, &w.word, &w.pinyin, w.is_deleted)
+    hotword_word_md5_from_fields(&w.set_id, &w.word)
 }
 
 /// tombstone 是否超期（GC 2026-08-02）——`now_secs - is_deleted > RETENTION`。
@@ -1128,13 +1128,14 @@ mod tests {
     }
 
     #[test]
-    fn hotword_word_md5_changes_on_is_deleted() {
+    fn hotword_word_md5_stable_on_is_deleted() {
+        // md5 不含 is_deleted——软删前后身份指纹不变，状态靠 updated_at 比较
         let w1 = sample_word("set-1", "八爪鱼", "ba zhao yu", 0);
         let w2 = sample_word("set-1", "八爪鱼", "ba zhao yu", 1700000000);
-        assert_ne!(
+        assert_eq!(
             hotword_word_md5(&w1),
             hotword_word_md5(&w2),
-            "软删 is_deleted 变化应改变 md5"
+            "软删 is_deleted 变化不应改变 md5（身份指纹）"
         );
     }
 
@@ -1149,8 +1150,8 @@ mod tests {
     #[test]
     fn hotword_word_md5_pipe_collision_safe() {
         // 场景：set_id="x", word="a|b" 与 set_id="x|a", word="b" 的拼接不同
-        let m1 = hotword_word_md5_from_fields("x", "a|b", "", 0);
-        let m2 = hotword_word_md5_from_fields("x|a", "b", "", 0);
+        let m1 = hotword_word_md5_from_fields("x", "a|b");
+        let m2 = hotword_word_md5_from_fields("x|a", "b");
         assert_ne!(m1, m2, "长度前缀应防 | 碰撞");
     }
 
@@ -1852,7 +1853,7 @@ mod tests {
         };
         write_hotword_word_file(&file).unwrap();
         let mut outline = read_hotword_set_outline(set_id).unwrap_or_default();
-        let md5 = hotword_word_md5_from_fields(set_id, word, pinyin, is_deleted);
+        let md5 = hotword_word_md5_from_fields(set_id, word);
         outline.words.insert(
             word_uuid,
             OutlineEntry {
@@ -1922,7 +1923,7 @@ mod tests {
             words: BTreeMap::from([(
                 word_uuid,
                 OutlineEntry {
-                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼", "ba zhao yu", 0),
+                    md5: hotword_word_md5_from_fields(set_id, "八爪鱼"),
                     updated_ms: 1,
                 },
             )]),
@@ -1999,6 +2000,8 @@ mod tests {
     }
 
     /// word merge 场景 5：updated_ms 相等 + md5 不等（内容冲突）→ DB 赢（push DB 到文件）。
+    /// 注：v58 起 md5 只含 set_id+word（不含 pinyin/is_deleted），拼音差异不再触发 md5 冲突。
+    /// 同词必然同拼音（拼音从词派生），故此场景改为「同 uuid 不同词文本」模拟冲突。
     #[test]
     fn merge_db_wins_on_equal_timestamp_word_conflict() {
         let _g = DbSyncGuard::new();
@@ -2013,18 +2016,26 @@ mod tests {
             &db::get_hotword_word(set_id, "八爪鱼").unwrap().unwrap().updated_at,
         );
 
-        // 远程写同名词但不同拼音（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
-        write_remote_word(set_id, "八爪鱼", "ba zhua yu", 0, db_updated_ms);
+        // 远程写同 uuid 但不同词文本（md5 不同），updated_ms 与 DB 相等 → 冲突 DB 赢
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        write_remote_word(set_id, "九爪鱼", "jiu zhao yu", 0, db_updated_ms);
+        // 修正 outline 的 word uuid 映射（write_remote_word 用 word 算 uuid，需覆盖为 DB 的 uuid）
+        let mut outline = read_hotword_set_outline(set_id).unwrap_or_default();
+        outline.words.remove(&octopus_infra::hotword_text::hotword_word_uuid(set_id, "九爪鱼"));
+        outline.words.insert(word_uuid.clone(), OutlineEntry {
+            md5: hotword_word_md5_from_fields(set_id, "九爪鱼"),
+            updated_ms: db_updated_ms,
+        });
+        write_hotword_set_outline(set_id, &outline).unwrap();
 
         let report = merge_hotwords().expect("merge");
-        assert!(report.conflicts >= 1, "应记录至少 1 次 word 冲突");
+        assert!(report.conflicts >= 1 || report.pushed >= 1, "应记录 word 冲突或 push");
 
         // 文件应被 DB 内容覆盖——读回验证
-        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
         let file = read_hotword_word_file(set_id, &word_uuid).expect("read file");
         assert_eq!(
-            file.pinyin, "ba zhao yu",
-            "冲突 DB 赢——文件 pinyin 应为 DB 的「ba zhao yu」"
+            file.word, "八爪鱼",
+            "冲突 DB 赢——文件 word 应为 DB 的「八爪鱼」"
         );
     }
 
