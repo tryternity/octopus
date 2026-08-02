@@ -675,7 +675,7 @@ settings:
     loading: 加载中…
     newVersionPlaceholder: 版本名称（Enter 确认 / Esc 取消）
     importVersionPlaceholder: 导入版本名称（Enter 后再选 txt）
-    newVersionBtn: 新建版本
+    newVersionBtn: 新建
     importBtn: 导入新版本
     purgeBtn: 清空回收站
     purgeConfirmTitle: 清空回收站
