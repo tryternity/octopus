@@ -990,9 +990,6 @@ result:
   translateClose: Close Translation
   translating: Translating…
   translateFail: "Translation failed:"
-  hotwords:
-    tooltip: Candidates
-    default: Top
 
 # ════════ Screenshot ════════
 screenshot:

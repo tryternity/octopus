@@ -4,7 +4,7 @@ import { EditorView, keymap, drawSelection, Decoration, type DecorationSet } fro
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { invoke } from "@tauri-apps/api/core";
 import { hotwordRanges, type Segment } from "./hotwords";
-import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 const IDLE_TIMEOUT = 2000;
 const DIVERTED_DELAY_MS = 300;
@@ -112,7 +112,6 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   { text, segments, caret, expanded, onCommit },
   ref,
 ) {
-  const t = useT();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const themeCompartment = useRef(new Compartment());
@@ -455,29 +454,24 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     >
       {dropdown && (
         <div
-          className="hotword-dropdown absolute z-40 min-w-[120px] max-w-[280px] rounded-md border border-black/[0.10] shadow-lg shadow-black/[0.12] py-0.5"
+          className="hotword-dropdown absolute z-40 min-w-[80px] max-w-[240px] max-h-[180px] overflow-y-auto rounded-md border border-black/[0.10] shadow-lg shadow-black/[0.12] py-0.5"
           style={{
             left: dropdown.left,
             top: dropdown.top,
             backgroundColor: "var(--color-surface)",
           }}
         >
-          <div className="px-2.5 py-1 text-[10px] select-none" style={{ color: "var(--color-muted-foreground)" }}>
-            {t("result.hotwords.tooltip")}
-          </div>
           {dropdown.candidates.map((c, i) => (
             <div
               key={c + i}
-              className="px-2.5 py-1 cursor-pointer text-[13px] flex items-center gap-1.5 transition-colors hover:bg-[#007aff]/[0.08]"
-              style={{ color: "var(--color-foreground)" }}
+              className={cn(
+                "px-2.5 py-1 cursor-pointer text-[13px] transition-colors hover:bg-[#007aff]/[0.08]",
+                i === 0 && "font-medium",
+              )}
+              style={{ color: i === 0 ? "var(--color-voice, #d97706)" : "var(--color-foreground)" }}
               onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); selectCandidate(c); }}
             >
-              {i === 0 && (
-                <span className="text-[10px] shrink-0" style={{ color: "var(--color-voice, #d97706)" }}>
-                  {t("result.hotwords.default")}
-                </span>
-              )}
-              <span className="flex-1 min-w-0 truncate">{c}</span>
+              {c}
             </div>
           ))}
         </div>
