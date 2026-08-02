@@ -444,13 +444,23 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     const coords = view.coordsAtPos(from);
     if (!coords) return;
     const hostRect = hostRef.current?.getBoundingClientRect();
+    if (!hostRect) return;
+    // 浮层宽度估算：候选文本总长 × ~14px/字 + 分隔符 + padding。
+    // 候选间用 · 分隔（约 8px），每候选 px-1.5（12px）+ 字宽。
+    const estWidth = candidates.reduce((acc, c) => acc + c.length * 14 + 20, 0) + 8;
+    // 默认左对齐装饰段起点；右侧空间不够（浮层会溢出折叠）→ 左移贴右边缘
+    let left = coords.left - hostRect.left;
+    const rightEdge = hostRect.width;
+    if (left + estWidth > rightEdge) {
+      left = Math.max(0, rightEdge - estWidth - 8);
+    }
     setDropdown({
       from,
       to,
       candidates,
       id,
-      left: coords.left - (hostRect?.left ?? 0),
-      top: coords.bottom - (hostRect?.top ?? 0) + 2,
+      left,
+      top: coords.bottom - hostRect.top + 2,
     });
   }, []);
 
