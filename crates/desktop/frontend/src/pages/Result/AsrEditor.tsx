@@ -454,13 +454,23 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     if (left + estWidth > rightEdge) {
       left = Math.max(0, rightEdge - estWidth - 8);
     }
+    // 默认向下弹（装饰段底部下方）；下方空间不够（浮层溢出 host 底部）→ 向上弹（段顶部上方）
+    const estHeight = 28; // 单行横向：13px 字 + py-0.5 padding + border
+    const belowSpace = hostRect.bottom - coords.bottom;
+    let top: number;
+    if (belowSpace < estHeight + 4) {
+      // 向上弹：段顶部 - 浮层高 - 间距
+      top = coords.top - hostRect.top - estHeight - 2;
+    } else {
+      top = coords.bottom - hostRect.top + 2;
+    }
     setDropdown({
       from,
       to,
       candidates,
       id,
       left,
-      top: coords.bottom - hostRect.top + 2,
+      top,
     });
   }, []);
 
