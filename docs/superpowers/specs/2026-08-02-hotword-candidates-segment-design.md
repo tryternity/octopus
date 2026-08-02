@@ -43,7 +43,7 @@ pub struct Segment {
 
 `correct_greedy` 命中热词时（候选 > 1，含原词），除了替换成第一个，还收集完整候选列表：
 - 新增 `pending_candidates: Mutex<Vec<(String, Vec<String>)>>`——(命中的词, 该位置全部候选)
-- `find_candidates` 排序后 truncate(5)，**不排除原词**（用户可选回原文）
+- `correct_greedy` 对 `find_candidates` 返回的完整候选列表 take(5) 截断后收集，**不排除原词**（原词由 find_candidates 追加末尾不参与排序，用户可选回原文）
 - 新增 `drain_candidates() -> Vec<(String, Vec<String>)>`
 - 候选含原词（至少热词 + 原词 2 个）才收集
 
