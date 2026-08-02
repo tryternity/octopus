@@ -115,3 +115,25 @@ export function isNewTabShortcut(event: TerminalKeyEvent): boolean {
     return false;
   return event.key === "t" || event.code === "KeyT";
 }
+
+/**
+ * Cmd/Ctrl + = / - / + → 调整终端字号（increase / decrease）。
+ * 不区分平台（Cmd 或 Ctrl 都行），无 Alt/Shift 干扰。
+ * - "=" 或 "+" → "increase"
+ * - "-" → "decrease"
+ * - 其余 → null
+ *
+ * 注意：Shift+= 在多数布局上产出 "+"，但 macOS Cmd+Shift+= 经常被浏览器映射成
+ * Cmd+=（metaKey + key='='），所以 "=" 和 "+" 都按 increase 处理更稳。
+ */
+export function isFontShortcut(
+  event: TerminalKeyEvent,
+): "increase" | "decrease" | null {
+  if (!(event.metaKey || event.ctrlKey)) return null;
+  // Alt/Shift 干扰直接 null（避免 Alt+= 这类组合误触发）。
+  // Shift+= → "+" 仍允许（Shift 单独按下不影响判定，因为 Shift 本就是 "+" 的来源）。
+  if (event.altKey) return null;
+  if (event.key === "=" || event.key === "+") return "increase";
+  if (event.key === "-") return "decrease";
+  return null;
+}

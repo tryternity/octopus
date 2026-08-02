@@ -48,6 +48,7 @@ macro_rules! handler {
             // ── settings_commands（配置 / 历史 / prompt / env）──
             crate::commands::settings_commands::get_config,
             crate::commands::settings_commands::set_config,
+            crate::commands::settings_commands::list_monospace_fonts,
             crate::commands::settings_commands::get_history,
             crate::commands::settings_commands::delete_history,
             crate::commands::settings_commands::check_shortcut,

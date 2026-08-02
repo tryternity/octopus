@@ -226,6 +226,14 @@ pub struct AppConfig {
     /// 用户点「完成」后置 true，不再弹。重置需清 DB。
     #[serde(default)]
     pub onboarding_completed: bool,
+
+    /// 终端字号（px）。默认 13。
+    #[serde(default = "default_terminal_font_size")]
+    pub terminal_font_size: f64,
+
+    /// 终端字体族（单个族名，浏览器自动 fallback monospace）。默认 Menlo。
+    #[serde(default = "default_terminal_font_family")]
+    pub terminal_font_family: String,
 }
 
 fn default_engine_mode() -> String {
@@ -324,6 +332,16 @@ fn default_vault_lock_timeout_secs() -> u64 {
     180 // 3 分钟（焦点失活后）
 }
 
+fn default_terminal_font_size() -> f64 {
+    13.0
+}
+fn default_terminal_font_family() -> String {
+    // Menlo：macOS Terminal.app 传统默认字体，基于 Bitstream Vera Mono。
+    // 字符紧凑相连无松散感（SF Mono 字宽大，同行内容少且像有空格）。
+    // 详见 spec 2026-08-02-terminal-font-preference-design.md §演进历史。
+    "Menlo".to_string()
+}
+
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -367,6 +385,8 @@ impl Default for AppConfig {
             vault_autotype_shortcut: default_vault_autotype_shortcut(),
             vault_lock_timeout_secs: default_vault_lock_timeout_secs(),
             onboarding_completed: false,
+            terminal_font_size: default_terminal_font_size(),
+            terminal_font_family: default_terminal_font_family(),
         }
     }
 }

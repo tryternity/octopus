@@ -19,6 +19,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Plus, X, Bell, LayoutPanelLeft, LayoutPanelTop } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useT } from "@/lib/i18n";
 import { TerminalPane } from "./TerminalPane";
@@ -56,6 +57,14 @@ function loadLayout(): LayoutMode {
   return localStorage.getItem(LAYOUT_KEY) === "sidebar" ? "sidebar" : "tabs";
 }
 
+// 字体偏好默认值——与 Rust AppConfig default_terminal_font_size/family 对齐。
+// get_config 异步返回前用此兜底；返回后 setState 覆盖。
+const DEFAULT_TERMINAL_FONT_SIZE = 13;
+const DEFAULT_TERMINAL_FONT_FAMILY = "Menlo";
+// Cmd+=/- 调字号的 clamp 边界（spec 8-32，覆盖可读范围又不至于挤爆布局）。
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 32;
+
 let nextTabId = 1;
 function makeTab(cwd?: string, pendingCommand?: string): Tab {
   nextTabId += 1;
@@ -71,6 +80,48 @@ export default function Terminal() {
   const [tabMenu, setTabMenu] = useState<{ pos: MenuPosition; items: MenuItem[] } | null>(null);
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [, forceUpdate] = useState(0);
+
+  // ── 字体偏好（AppConfig terminal_font_size / terminal_font_family）──
+  // mount 时 get_config 读一次，覆盖默认值。Cmd+=/- 改后即时 setState + set_config 持久化。
+  // 透传给 TerminalPane → useTerminalSession（首值用于 new Terminal，后续变化 effect 套到 xterm）。
+  const [fontSize, setFontSize] = useState<number>(DEFAULT_TERMINAL_FONT_SIZE);
+  const [fontFamily, setFontFamily] = useState<string>(DEFAULT_TERMINAL_FONT_FAMILY);
+  // 用 ref 持有最新 fontSize——onFontResize 是个稳定 useCallback 才能挂在所有 pane 上，
+  // 但又必须读最新值算 next，闭包捕获会 stale，故 ref 中转。
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
+
+  useEffect(() => {
+    // 读 config 字体（mount + config-changed 都调）
+    const loadFontConfig = () => {
+      invoke<{ config: Record<string, unknown> }>("get_config")
+        .then((res) => {
+          const cfg = res.config;
+          const size = cfg.terminal_font_size;
+          const family = cfg.terminal_font_family;
+          if (typeof size === "number" && size > 0) setFontSize(size);
+          if (typeof family === "string" && family.length > 0) setFontFamily(family);
+        })
+        .catch(() => {
+          // terminal 窗口可能未注册 get_config 命令——静默降级用默认字体
+        });
+    };
+    loadFontConfig();
+    // 设置页改字体后（不同窗口），set_config emit config-changed → 重读
+    let unlisten: (() => void) | null = null;
+    listen("config-changed", loadFontConfig).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { unlisten?.(); };
+  }, []);
+
+  // Cmd/Ctrl+= / - → clamp 8-32 + setState（触发 useTerminalSession 字体 effect）+ persist
+  const handleFontResize = useCallback((delta: 1 | -1) => {
+    const next = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSizeRef.current + delta));
+    if (next === fontSizeRef.current) return; // 已到边界，跳过 persist
+    setFontSize(next);
+    fontSizeRef.current = next; // 同步 ref，避免连按 + 时累积滞后
+    // fire-and-forget——失败不阻塞 UI（用户按字号键不应卡顿）
+    invoke("set_config", { key: "terminal_font_size", value: next }).catch(() => {});
+  }, []);
 
   // ── panel 宽度（拖拽 + localStorage 持久化，全局一份）──
   const sidebarWidthCtrl = usePanelWidth("octopus-terminal-sidebar-width", 200);
@@ -259,6 +310,9 @@ export default function Terminal() {
             cwd={tab.cwd}
             active={tab.id === activeId}
             pendingCommand={tab.pendingCommand}
+            fontSize={fontSize}
+            fontFamily={fontFamily}
+            onFontResize={handleFontResize}
             onNewTab={() => addTab()}
             onConsumeCommand={() => {
               setTabs((prev) =>

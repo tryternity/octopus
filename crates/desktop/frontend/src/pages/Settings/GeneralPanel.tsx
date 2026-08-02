@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette, AlertCircle } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Palette, AlertCircle, TerminalSquare } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import { isMac } from "@/lib/platform";
@@ -18,6 +18,13 @@ import { PermissionCard, PERMISSIONS } from "@/components/PermissionCard";
 import SyncPanel from "./Vault/SyncPanel";
 import EnvironmentPanel from "./EnvironmentPanel";
 
+// 字号 slider 边界——与 Terminal/index.tsx MIN/MAX_FONT_SIZE 对齐。
+const TERMINAL_FONT_SIZE_MIN = 8;
+const TERMINAL_FONT_SIZE_MAX = 32;
+const TERMINAL_FONT_SIZE_DEFAULT = 13;
+// 默认字体族——与 infra/config.rs default_terminal_font_family() 对齐（单一真相源在后端）。
+const TERMINAL_FONT_FAMILY_DEFAULT = "Menlo";
+
 interface GeneralPanelProps {
   configResp: ConfigResponse;
   setVal: (key: string, value: string | number | boolean) => Promise<void>;
@@ -31,11 +38,19 @@ interface GeneralPanelProps {
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig, isVaultEnabled }: GeneralPanelProps) {
   const { config: cfg, prompts, activePromptId, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "env" | "sync">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "shortcut" | "permission" | "voice" | "font" | "env" | "sync">("general");
   const [themes, setThemes] = useState<ThemeInfo[]>([]);
+  // 系统已安装的等宽字体族名列表——mount 时通过 list_monospace_fonts 后端命令拉取。
+  // 列表元素即字体族名（如 "Menlo"），直接作为下拉 label + value，也直接写入
+  // terminal_font_family（xterm fontFamily 接受单个族名，浏览器自动 fallback monospace）。
+  const [monoFonts, setMonoFonts] = useState<string[]>([]);
 
   useEffect(() => {
     invoke<ThemeInfo[]>("list_themes").then(setThemes).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    invoke<string[]>("list_monospace_fonts").then(setMonoFonts).catch(console.error);
   }, []);
 
   const t = useT();
@@ -104,6 +119,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     { key: "general", label: t("settings.general.tabGeneral") },
     { key: "shortcut", label: t("settings.general.tabShortcut") },
     { key: "voice", label: t("settings.general.tabVoice") },
+    { key: "font", label: t("settings.general.tabFont") },
     { key: "env", label: t("settings.general.tabEnv") },
     // macOS 专有：隐私与权限 tab（麦克风/辅助功能/屏幕录制）
     ...(isMac ? [{ key: "permission", label: t("settings.general.tabPermission") }] : []),
@@ -317,6 +333,103 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       )}
       {activeTab === "env" && (
         <EnvironmentPanel showToast={showToast} />
+      )}
+
+      {/* ── 字体字号（terminal_font_size / terminal_font_family；后续可扩展编辑器字体）── */}
+      {activeTab === "font" && (
+        <Card className="mb-3">
+          <CardHeader>
+            <TerminalSquare className="w-4 h-4 text-muted-foreground" />
+            <CardTitle>{t("settings.general.terminalFont")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* 字号：slider + 数字显示。onchange 立即 setVal，xterm 即时 effect。 */}
+            <Row
+              label={t("settings.general.fontSize")}
+              effect={t("settings.effect.now")}
+              hint={t("settings.general.terminalFontHint")}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={TERMINAL_FONT_SIZE_MIN}
+                  max={TERMINAL_FONT_SIZE_MAX}
+                  step={1}
+                  value={typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                    ? cfg.terminal_font_size
+                    : TERMINAL_FONT_SIZE_DEFAULT}
+                  onChange={(e) => setVal("terminal_font_size", Number(e.target.value))}
+                  className="w-40 accent-voice"
+                />
+                <span className="w-10 text-right text-sm tabular-nums">
+                  {typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                    ? cfg.terminal_font_size
+                    : TERMINAL_FONT_SIZE_DEFAULT}
+                </span>
+              </div>
+            </Row>
+
+            {/* 字体族：dropdown 选项来自系统已安装的等宽字体（list_monospace_fonts 动态加载）。
+                value 即字体族名（如 "Menlo"），直接存入 terminal_font_family——xterm
+                fontFamily 接受单个族名，浏览器自动 fallback 到 monospace。
+                若 config 存的是旧格式 CSS 降级链（如 '"SF Mono", Menlo, ...'）匹配不到任何
+                系统字体，dropdown 回退到首项（首个系统等宽字体）。 */}
+            <Row
+              label={t("settings.general.fontFamily")}
+              effect={t("settings.effect.now")}
+              hint={t("settings.general.terminalFontHint")}
+            >
+              <Select
+                value={
+                  monoFonts.includes(cfg.terminal_font_family as string)
+                    ? (cfg.terminal_font_family as string)
+                    : monoFonts[0] ?? ""
+                }
+                onChange={(e) => void setVal("terminal_font_family", e.target.value)}
+              >
+                {monoFonts.map((f) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </Select>
+            </Row>
+
+            {/* 预览——用当前字号 + 字体族渲染样例文字，让用户直观感受效果。 */}
+            <Row label={t("settings.general.fontPreview")}>
+              <div className="flex items-center gap-2 flex-1">
+                <div
+                  className="flex-1 rounded-md border border-border/40 bg-background px-3 py-2 text-muted-foreground"
+                  style={{
+                    fontSize: `${typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                      ? cfg.terminal_font_size
+                      : TERMINAL_FONT_SIZE_DEFAULT}px`,
+                    fontFamily: typeof cfg.terminal_font_family === "string" && cfg.terminal_font_family
+                      ? cfg.terminal_font_family
+                      : undefined,
+                  }}
+                >
+                  {t("settings.general.fontPreviewText")}
+                </div>
+                {/* 恢复默认：字号 13 + SF Mono。仅当当前值偏离默认时显示，避免无意义点击。 */}
+                {(typeof cfg.terminal_font_size === "number"
+                  && cfg.terminal_font_size !== TERMINAL_FONT_SIZE_DEFAULT)
+                  || (typeof cfg.terminal_font_family === "string"
+                    && cfg.terminal_font_family
+                    && cfg.terminal_font_family !== TERMINAL_FONT_FAMILY_DEFAULT) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void setVal("terminal_font_size", TERMINAL_FONT_SIZE_DEFAULT);
+                      void setVal("terminal_font_family", TERMINAL_FONT_FAMILY_DEFAULT);
+                    }}
+                    className="shrink-0 px-2.5 py-1 rounded-md text-xs border border-border bg-transparent hover:bg-muted transition-colors"
+                  >
+                    {t("settings.general.fontRestoreDefault")}
+                  </button>
+                ) : null}
+              </div>
+            </Row>
+          </CardContent>
+        </Card>
       )}
       {activeTab === "sync" && (
         <div className="h-[calc(100vh-200px)] overflow-auto">

@@ -465,6 +465,15 @@ settings:
     autoCleanDays: Auto-clean Days
     autoCleanDaysHint: Auto-delete non-favorite records older than this
     shortcutRecordingHint: Press shortcut… (Esc to cancel)
+    # Font preferences (terminal_font_size / terminal_font_family; editor fonts may be added later)
+    tabFont: Fonts
+    terminalFont: Terminal Font
+    terminalFontHint: Built-in terminal font size and family, applies immediately
+    fontSize: Font Size
+    fontFamily: Font Family
+    fontPreview: Preview
+    fontPreviewText: The quick brown fox 123
+    fontRestoreDefault: Restore Default
   env:
     pathsTitle: Save Paths
     recordings: Recording

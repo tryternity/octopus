@@ -450,9 +450,61 @@ fn apply_config_value(
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }
+        // 终端字体偏好（无副作用：前端读 get_config 后直接套到 xterm CSS，不需重注册/重启）。
+        "terminal_font_size" => {
+            let v = value.as_f64().ok_or("terminal_font_size 需要数值")?;
+            if v <= 0.0 { return Err("terminal_font_size 必须大于 0".into()); }
+            cfg.terminal_font_size = v;
+        }
+        "terminal_font_family" => {
+            cfg.terminal_font_family = value.as_str().ok_or("terminal_font_family 需要字符串")?.to_string();
+        }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
     Ok(())
+}
+
+/// 列出系统已安装的等宽字体（终端字体选择用）。
+/// 优先用 fc-list（fontconfig），不可用时 fallback 到 macOS 常见白名单。
+#[tauri::command]
+pub fn list_monospace_fonts() -> Result<Vec<String>, String> {
+    // 尝试 fc-list（homebrew fontconfig）——列出 spacing=mono 的字体族
+    if let Ok(output) = std::process::Command::new("fc-list")
+        .args([":spacing=mono", "family"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let mut fonts: Vec<String> = text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                // 过滤 "." 开头的系统隐藏/特殊字体（.Apple Color Emoji UI / .LastResort /
+                // .SF NS Mono / .Times LT MM 等）。它们不是真实可用的等宽字体，xterm 选中后
+                // 渲染异常（字变小 + 间距大）。
+                .filter(|l| !l.starts_with('.'))
+                .collect();
+            fonts.sort();
+            fonts.dedup();
+            // fc-list 可能漏掉 macOS 特殊字体（SF Mono），手动加
+            for extra in ["SF Mono", "Monaco"] {
+                if !fonts.iter().any(|f| f == extra) {
+                    fonts.push(extra.to_string());
+                }
+            }
+            fonts.sort();
+            return Ok(fonts);
+        }
+    }
+    // fallback：macOS 自带 + 常见编程字体白名单
+    Ok(vec![
+        "Andale Mono".into(),
+        "Courier New".into(),
+        "Menlo".into(),
+        "Monaco".into(),
+        "PT Mono".into(),
+        "SF Mono".into(),
+    ])
 }
 
 #[tauri::command]

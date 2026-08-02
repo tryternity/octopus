@@ -35,6 +35,12 @@ type Props = {
   onNewTab?: () => void;
   /** OSC 7 cwd 变化时上报（父组件更新 tab.trackedCwd）。 */
   onCwd?: (cwd: string) => void;
+  /** 终端字号（来自 AppConfig，运行时随 Cmd+=/- 变化）。 */
+  fontSize?: number;
+  /** 终端字体族（来自 AppConfig，设置页改后变化）。 */
+  fontFamily?: string;
+  /** Cmd/Ctrl+= / - 触发时回调（父组件 clamp + persist + 反向同步 fontSize prop）。 */
+  onFontResize?: (delta: 1 | -1) => void;
 };
 
 export function TerminalPane({
@@ -45,6 +51,9 @@ export function TerminalPane({
   onPtyId,
   onNewTab,
   onCwd,
+  fontSize,
+  fontFamily,
+  onFontResize,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -60,8 +69,11 @@ export function TerminalPane({
     container: containerRef,
     cwd,
     active,
+    fontSize,
+    fontFamily,
     onSearchOpen: () => setSearchOpen(true),
     onNewTab,
+    onFontResize,
   });
 
   const terminalMenuItems: MenuItem[] = [
