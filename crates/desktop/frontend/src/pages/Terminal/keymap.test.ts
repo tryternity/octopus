@@ -10,6 +10,7 @@ import {
   isShiftEnter,
   isFindShortcut,
   isNewTabShortcut,
+  isFontShortcut,
   type TerminalKeyEvent,
 } from "./keymap";
 
@@ -161,5 +162,35 @@ describe("isNewTabShortcut", () => {
   });
   it("Cmd+其他键 → false", () => {
     expect(isNewTabShortcut(evt({ metaKey: true, key: "f" }))).toBe(false);
+  });
+});
+
+describe("isFontShortcut", () => {
+  it("Cmd+= → increase", () => {
+    expect(isFontShortcut(evt({ metaKey: true, key: "=" }))).toBe("increase");
+  });
+  it("Ctrl+= → increase", () => {
+    expect(isFontShortcut(evt({ ctrlKey: true, key: "=" }))).toBe("increase");
+  });
+  it("Cmd++（Shift+= 产出 +）→ increase", () => {
+    expect(isFontShortcut(evt({ metaKey: true, shiftKey: true, key: "+" }))).toBe("increase");
+  });
+  it("Cmd+- → decrease", () => {
+    expect(isFontShortcut(evt({ metaKey: true, key: "-" }))).toBe("decrease");
+  });
+  it("Ctrl+- → decrease", () => {
+    expect(isFontShortcut(evt({ ctrlKey: true, key: "-" }))).toBe("decrease");
+  });
+  it("Cmd+Ctrl+= → increase（Cmd 或 Ctrl 都行）", () => {
+    expect(isFontShortcut(evt({ metaKey: true, ctrlKey: true, key: "=" }))).toBe("increase");
+  });
+  it("Alt+Cmd+= → null（Alt 干扰）", () => {
+    expect(isFontShortcut(evt({ metaKey: true, altKey: true, key: "=" }))).toBeNull();
+  });
+  it("无修饰 = → null", () => {
+    expect(isFontShortcut(evt({ key: "=" }))).toBeNull();
+  });
+  it("Cmd+其他键 → null", () => {
+    expect(isFontShortcut(evt({ metaKey: true, key: "f" }))).toBeNull();
   });
 });

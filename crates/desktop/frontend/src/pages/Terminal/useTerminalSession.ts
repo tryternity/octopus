@@ -27,7 +27,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 
 import { openPty, type PtySession } from "./pty-bridge";
-import { readlineSequence, isShiftEnter, isFindShortcut, isNewTabShortcut } from "./keymap";
+import { readlineSequence, isShiftEnter, isFindShortcut, isNewTabShortcut, isFontShortcut } from "./keymap";
 import { registerCwdHandler, registerPromptTracker, createShellIntegrationState } from "./osc-handlers";
 
 /** 平台判定（macOS Option/Cmd 组合键映射用）。 */
@@ -133,9 +133,11 @@ export function useTerminalSession(opts: {
   onSearchOpen?: () => void;
   /** Cmd/Ctrl+T 触发时回调（新建 tab）。 */
   onNewTab?: () => void;
+  /** Cmd/Ctrl+= / - 触发时回调（字号 +/-）。delta=1 增大，-1 减小。父组件负责 clamp + persist。 */
+  onFontResize?: (delta: 1 | -1) => void;
   onExit?: (code: number) => void;
 }): TerminalSession {
-  const { container, cwd, onExit, onSearchOpen, onNewTab } = opts;
+  const { container, cwd, onExit, onSearchOpen, onNewTab, onFontResize } = opts;
   const active = opts.active ?? true;
   const termRef = useRef<Terminal | null>(null);
   const ptyRef = useRef<PtySession | null>(null);
@@ -153,8 +155,10 @@ export function useTerminalSession(opts: {
   // 不会反映到 handler 里。用 ref 中转让 handler 始终调最新的。
   const onSearchOpenRef = useRef(onSearchOpen);
   const onNewTabRef = useRef(onNewTab);
+  const onFontResizeRef = useRef(onFontResize);
   onSearchOpenRef.current = onSearchOpen;
   onNewTabRef.current = onNewTab;
+  onFontResizeRef.current = onFontResize;
   const webglRef = useRef<WebglAddon | null>(null);
   const [ptyId, setPtyId] = useState<number | null>(null);
 
@@ -260,6 +264,16 @@ export function useTerminalSession(opts: {
             return false;
           }
 
+          // Cmd/Ctrl+= / - → 字号 +/-（父组件 clamp + persist + 反向同步回 setFontSize）
+          const fontAction = isFontShortcut(event);
+          if (fontAction) {
+            event.preventDefault();
+            if (event.type === "keydown") {
+              onFontResizeRef.current?.(fontAction === "increase" ? 1 : -1);
+            }
+            return false;
+          }
+
           // readline 序列（Option/Cmd 导航+删除）——alternate screen 交 TUI 应用
           const isAltScreen = term.buffer.active.type === "alternate";
           const seq = readlineSequence(event, {
@@ -358,7 +372,30 @@ export function useTerminalSession(opts: {
     }
   }, [active]);
 
-  return {
+  // 6. 字体 prop 变化 → 即时套到 xterm（get_config 异步读回后 + Cmd+=/- 后 index.tsx 改 state）
+  // 初始值在 useEffect([]) 创建 Terminal 时已用 opts.fontSize/fontFamily，这里只处理「后续变化」。
+  // 用 lastAppliedRef 跳过首次——首次 effect 跑时构造器已套好同样的值，再调一遍 fit/refresh 浪费。
+  // useTerminalSession 返回的 setFontSize/setFontFamily 已封装 fit+refresh，直接复用。
+  const sessionSelfRef = useRef<{ setFontSize: (n: number) => void; setFontFamily: (s: string) => void } | null>(null);
+  // 初始 ref = 首次渲染的 opts 值——首值构造器已套，effect 跳过避免冗余 fit/refresh。
+  const lastFontSizeRef = useRef<number | undefined>(opts.fontSize);
+  const lastFontFamilyRef = useRef<string | undefined>(opts.fontFamily);
+  useEffect(() => {
+    if (opts.fontSize != null && sessionSelfRef.current && opts.fontSize !== lastFontSizeRef.current) {
+      sessionSelfRef.current.setFontSize(opts.fontSize);
+      lastFontSizeRef.current = opts.fontSize;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.fontSize]);
+  useEffect(() => {
+    if (opts.fontFamily != null && sessionSelfRef.current && opts.fontFamily !== lastFontFamilyRef.current) {
+      sessionSelfRef.current.setFontFamily(opts.fontFamily);
+      lastFontFamilyRef.current = opts.fontFamily;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opts.fontFamily]);
+
+  const session = {
     write: (data: string) => {
       ptyRef.current?.write(data);
     },
@@ -396,4 +433,7 @@ export function useTerminalSession(opts: {
       term.refresh(0, term.rows - 1);
     },
   };
+  // 暴露给字体 prop 变化 effect（同次渲染同步赋值——effect 在 commit 后跑，能拿到最新）
+  sessionSelfRef.current = session;
+  return session;
 }
