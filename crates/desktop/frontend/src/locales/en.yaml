@@ -620,6 +620,7 @@ settings:
     yunYong: yun/yong (孕 / 用)
     feiHui: fei/hui (飞 / 回)
     loadFailed: "Load failed:"
+    loadingMore: "Loading more… (${shown}/${total})"
     newVersion: New version created
     importedVersion: Imported as new version
     newFailed: "Create failed:"

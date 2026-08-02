@@ -627,6 +627,7 @@ settings:
     yunYong: yun/yong（孕 / 用）
     feiHui: fei/hui（飞 / 回）
     loadFailed: "加载失败："
+    loadingMore: "加载更多…（${shown}/${total}）"
     newVersion: 已新建版本
     importedVersion: 已导入为新版本
     newFailed: "新建失败："
