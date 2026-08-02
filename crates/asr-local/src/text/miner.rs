@@ -30,6 +30,10 @@ pub fn is_candidate(word: &str) -> bool {
 
 /// 扫历史 → jieba 分词 → 词频过滤 → top-N 候选词。返回词列表（不写 DB）。
 /// 命令层拿去追加到用户选定版本（废弃旧 pending 流）。
+///
+/// 排序策略：**频次升序**（低频优先）——挖掘目标是引擎容易识别错的专名（人名/地名/术语），
+/// 专名在用户历史中通常只出现几次（低频）。高频词（说了很多次）大概率是常用词，
+/// 即便 is_common_word 没过滤掉，也不应排前面（加热词后反而引入碰撞面导致误纠）。
 pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
     let texts = octopus_infra::db::list_recent_text(HISTORY_LIMIT)?;
     if texts.is_empty() {
@@ -50,10 +54,11 @@ pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
         .into_iter()
         .filter(|(_, c)| *c >= MIN_USER_COUNT)
         .collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    // 频次升序——低频专名优先（高频词更可能是常用词，不适合当热词）
+    ranked.sort_by(|a, b| a.1.cmp(&b.1));
     ranked.truncate(MAX_CANDIDATES);
     let words: Vec<String> = ranked.into_iter().map(|(w, _)| w).collect();
-    log::info!("[hotword-miner] 挖掘 {} 条候选词", words.len());
+    log::info!("[hotword-miner] 挖掘 {} 条候选词（低频优先）", words.len());
     Ok(words)
 }
 
