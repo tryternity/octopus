@@ -22,6 +22,8 @@ import EnvironmentPanel from "./EnvironmentPanel";
 const TERMINAL_FONT_SIZE_MIN = 8;
 const TERMINAL_FONT_SIZE_MAX = 32;
 const TERMINAL_FONT_SIZE_DEFAULT = 13;
+// 默认字体族——与 infra/config.rs default_terminal_font_family() 对齐（单一真相源在后端）。
+const TERMINAL_FONT_FAMILY_DEFAULT = "SF Mono";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -393,18 +395,37 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
             {/* 预览——用当前字号 + 字体族渲染样例文字，让用户直观感受效果。 */}
             <Row label={t("settings.general.fontPreview")}>
-              <div
-                className="flex-1 rounded-md border border-border/40 bg-background px-3 py-2 text-muted-foreground"
-                style={{
-                  fontSize: `${typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
-                    ? cfg.terminal_font_size
-                    : TERMINAL_FONT_SIZE_DEFAULT}px`,
-                  fontFamily: typeof cfg.terminal_font_family === "string" && cfg.terminal_font_family
-                    ? cfg.terminal_font_family
-                    : undefined,
-                }}
-              >
-                {t("settings.general.fontPreviewText")}
+              <div className="flex items-center gap-2 flex-1">
+                <div
+                  className="flex-1 rounded-md border border-border/40 bg-background px-3 py-2 text-muted-foreground"
+                  style={{
+                    fontSize: `${typeof cfg.terminal_font_size === "number" && cfg.terminal_font_size > 0
+                      ? cfg.terminal_font_size
+                      : TERMINAL_FONT_SIZE_DEFAULT}px`,
+                    fontFamily: typeof cfg.terminal_font_family === "string" && cfg.terminal_font_family
+                      ? cfg.terminal_font_family
+                      : undefined,
+                  }}
+                >
+                  {t("settings.general.fontPreviewText")}
+                </div>
+                {/* 恢复默认：字号 13 + SF Mono。仅当当前值偏离默认时显示，避免无意义点击。 */}
+                {(typeof cfg.terminal_font_size === "number"
+                  && cfg.terminal_font_size !== TERMINAL_FONT_SIZE_DEFAULT)
+                  || (typeof cfg.terminal_font_family === "string"
+                    && cfg.terminal_font_family
+                    && cfg.terminal_font_family !== TERMINAL_FONT_FAMILY_DEFAULT) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void setVal("terminal_font_size", TERMINAL_FONT_SIZE_DEFAULT);
+                      void setVal("terminal_font_family", TERMINAL_FONT_FAMILY_DEFAULT);
+                    }}
+                    className="shrink-0 px-2.5 py-1 rounded-md text-xs border border-border bg-transparent hover:bg-muted transition-colors"
+                  >
+                    {t("settings.general.fontRestoreDefault")}
+                  </button>
+                ) : null}
               </div>
             </Row>
           </CardContent>

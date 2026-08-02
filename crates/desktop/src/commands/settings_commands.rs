@@ -479,6 +479,10 @@ pub fn list_monospace_fonts() -> Result<Vec<String>, String> {
                 .lines()
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty())
+                // 过滤 "." 开头的系统隐藏/特殊字体（.Apple Color Emoji UI / .LastResort /
+                // .SF NS Mono / .Times LT MM 等）。它们不是真实可用的等宽字体，xterm 选中后
+                // 渲染异常（字变小 + 间距大）。
+                .filter(|l| !l.starts_with('.'))
                 .collect();
             fonts.sort();
             fonts.dedup();
