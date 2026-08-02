@@ -199,8 +199,10 @@ if !finished {
 |---|---|---|
 | aliyun Fun-ASR | `!committed.is_empty()` | 稳态→Text+Finished；否则 Failed |
 | aliyun Qwen | `!accumulated_text.is_empty()` | 同上 |
-| bytedance | 新增 `got_last_frame`（`flags==0x3` 置 true）+ `last_text` | 稳态→Text(last)+Finished；否则 Failed |
+| bytedance | `last_text`（仅非空 text 才存，G1/G2 修复） | 末帧 flags==0x3 时：`last_text.is_some()`→Finished，否则 Failed；Close 时：`last_text.take()` 非空→Text+Finished，否则 Failed |
 | tencent | `!stable_segments.is_empty()` | 稳态→Text+Finished；否则 Failed |
+
+**注**：bytedance spec 原设计用 `got_last_frame`（flags==0x3 置 true），但实现改为「末帧时直接判 last_text 非空」——因 flags==0x3 帧到达后立即 return，Close 分支不可能在末帧后触发，故无需单独 `got_last_frame` 标志。**G1/G2 复审发现**：原实现 `last_text = Some("")`（空 text 也存）导致末帧/Close 发空 text 当成功，改为「仅非空 text 才存 last_text」，末帧时 `last_text.is_some()` 等价于「收到过实质识别内容」。
 
 **回归测试**：每家 `close_frame_emits_failed_when_no_stable_result` + `close_frame_emits_finished_when_stable`（mock WS 流注入 Close 帧）。
 
@@ -336,6 +338,10 @@ if !finished {
 **根因**：前端所有终端窗口（含多实例 `terminal_<n>`）mount 时都 emit `terminal://ready`（index.tsx）。后端 `emit_new_tab_on_ready` 的 once 闭包 `move |_e|` 忽略 payload，多窗口并发 mount 时 agent 的 once 可能误收别的窗口的 ready → 提前 emit（agent listener 未就绪 → 事件丢 + fired=true 使 watchdog 不兜底）。
 
 **修复**：once 闭包解析 payload（新增 `ReadyPayload { windowLabel }` struct + `rename_all="camelCase"` 对齐前端），仅当 `window_label == AGENT_WINDOW_LABEL` 才触发 emit。解析失败（`unwrap_or(false)`）忽略，靠 5s watchdog 兜底（比误触发安全）。
+
+**⚠️ G3 复审：F3 的 once 修复无效，已改用 listen**。核实 Tauri 2.11.2 源码（`event/listener.rs:160-177`）：`once` 的实现是 `listen` + wrapper 闭包——wrapper 取出 handler 调用后**无条件 `unlisten(id)`**，即使 handler 内 `return`。故 F3 的 windowLabel 校验（不匹配则 return）会导致：别的窗口 ready 先到 → 闭包调用 → return → once 监听器已移除 → agent 自己的 ready 到达时无 listener → 退化为固定 5s watchdog 延迟（失去 ready 回拉的时序优势）。
+
+**G3 正确修复**：改用 `listen`（非 once），闭包内仅在 windowLabel 匹配时 emit + 手动 `unlisten(e.id())`；不匹配则继续监听。watchdog 超时后也 `unlisten(listen_id)` 清理（避免泄漏）。payload 用 `Arc<Mutex<Option<NewTabPayload>>>` 共享给 listen + watchdog（Fn 闭包不能 move），先到者 `take()` 并 emit。
 
 ### 次要瑕疵
 

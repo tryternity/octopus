@@ -259,12 +259,25 @@ async fn run_bytedance_session(
                             let json_val: Value = serde_json::from_str(&json_str)
                                 .context("bytedance 响应 JSON 解析失败")?;
                             if let Some(text) = json_val["result"]["text"].as_str() {
-                                last_text = Some(text.to_string());
+                                // 仅非空 text 记入 last_text（G1/G2：空 text 不应作为
+                                // 「best-effort 结果」——末帧/Close 时空 text 当成功会吞错误）。
+                                if !text.is_empty() {
+                                    last_text = Some(text.to_string());
+                                }
                                 let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                             }
                             if parsed.flags == 0x3 {
-                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束
-                                let _ = result_tx.send(StreamEvent::Finished);
+                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束。
+                                // 稳态判据：有非空 last_text（收到过实质识别内容）才发 Finished，
+                                // 否则发 Failed 暴露异常（对齐其他 provider 的 !stable.is_empty() 判据，
+                                // 防空 text 当成功吞掉鉴权降级/空音频等异常）。
+                                if last_text.is_some() {
+                                    let _ = result_tx.send(StreamEvent::Finished);
+                                } else {
+                                    let _ = result_tx.send(StreamEvent::Failed(
+                                        "bytedance 末帧响应但无有效识别结果".into()
+                                    ));
+                                }
                                 return Ok(());
                             }
                         }
@@ -284,8 +297,10 @@ async fn run_bytedance_session(
                     // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现注释「text/close/ping
                     // 等忽略」未处理 Close → 随后 ws.next() 返 Ok(None) → break →
                     // return Ok(()) 无终态事件，close_async 把 partial 当成功（#3）。
-                    // 现显式处理：有 text（best-effort，未到末帧）发 Finished 让用户拿到
-                    // 已识别内容；无 text 发 Failed 暴露异常。
+                    // 现显式处理：有非空 last_text（best-effort，未到末帧但收到过实质内容）
+                    // 发 Finished 让用户拿到已识别内容；否则 Failed 暴露异常。
+                    // 注：last_text 仅在非空时存（见上面 MSG_FULL_SERVER_RESPONSE），
+                    // 故 Some 必非空，Close 不会发空 text。
                     log::debug!("bytedance: WS 连接关闭");
                     if let Some(t) = last_text.take() {
                         let _ = result_tx.send(StreamEvent::Text(t));

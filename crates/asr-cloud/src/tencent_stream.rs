@@ -270,7 +270,9 @@ fn build_signed_url(
     // 取 uuid v4 低 32 位：u32::MAX=4294967295 恰好 10 位，满足位数约束且真随机。
     // 不复用 timestamp：同秒多请求/未来并发场景下 nonce 须唯一；voice_id 虽唯一已能
     // 避免被误判重放，但按文档用随机数更稳妥。复用 uuid v4 随机性，避免引入 rand 依赖。
-    let nonce = (uuid::Uuid::new_v4().as_u128() as u32).to_string();
+    // +1 保证非 0：u32 低 32 位理论全 0（概率 2^-32）时 nonce="0" 非正整数可能被签名拒；
+    // +1 后 [1, 2^32] 均为正整数，最坏 nonce=1（仍合法）。
+    let nonce = ((uuid::Uuid::new_v4().as_u128() as u32).saturating_add(1)).to_string();
 
     // 收集参数（字典序）
     let mut params: Vec<(&str, String)> = vec![

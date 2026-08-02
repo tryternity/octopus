@@ -96,44 +96,62 @@ fn urlencode(s: &str) -> String {
 /// 慢 mount 时事件被 Tauri 静默丢弃。带 READY_TIMEOUT_MS 兜底——超时则强制 emit 一次。
 ///
 /// `fired` 防重复 emit（ready 先到则取消 watchdog；watchdog 先到则忽略后续 ready）。
-/// 用法：建窗后直接调此函数，主调线程立即返回（once 注册 + watchdog spawn 后）。
+/// 用法：建窗后直接调此函数，主调线程立即返回（listen 注册 + watchdog spawn 后）。
+///
+/// **用 `listen` 而非 `once`**（G3 修复）：Tauri 的 `once` 闭包被调用即无条件 unlisten
+/// （tauri-2.11.2/src/event/listener.rs:169-176），即使闭包内 `return` 不 emit。前端所有
+/// 终端窗口 mount 时都 emit terminal://ready，若用 once + windowLabel 校验，别的窗口的
+/// ready 先到 → 闭包调用 → return → once 已失效 → agent 的 ready 到达时无 listener →
+/// 退化为固定 5s watchdog 延迟（失去 ready 回拉的时序优势）。改用 listen，闭包内仅在
+/// windowLabel 匹配时 emit + 手动 unlisten，不匹配则继续监听 agent 自己的 ready。
 fn emit_new_tab_on_ready(app_handle: tauri::AppHandle, payload: NewTabPayload) {
     let label = AGENT_WINDOW_LABEL.to_string();
     let fired = Arc::new(AtomicBool::new(false));
 
-    // once 收到前端 ready → emit new-tab（若 watchdog 未抢先）。
-    // 每个闭包各 clone 一份 app/label/payload，避免借用冲突。
-    // **校验 windowLabel**（F3）：前端所有终端窗口 mount 时都 emit terminal://ready，
-    // 多窗口并发 mount 时 once 可能误收别的窗口的 ready → 提前 emit（agent listener
-    // 未就绪 → 事件丢 + fired=true 使 watchdog 不兜底）。仅接受 AGENT_WINDOW_LABEL 的 ready。
-    let fired_once = fired.clone();
-    let app_once = app_handle.clone();
-    let label_once = label.clone();
-    let payload_once = payload.clone();
+    // listen 收到前端 ready → 校验 windowLabel → 匹配则 emit new-tab + unlisten。
+    // 每个闭包各 clone 一份 app/label，避免借用冲突。payload 用 Mutex<Option> 包裹——
+    // listen 闭包是 Fn（非 FnOnce，可能被多次调用直到匹配），不能直接 move payload。
+    let fired_listen = fired.clone();
+    let app_listen = app_handle.clone();
+    let label_listen = label.clone();
+    // payload 用 Arc<Mutex<Option>> 共享给 listen + watchdog——两者竞争 fired，先到者 take 并 emit。
+    let payload_cell = Arc::new(std::sync::Mutex::new(Some(payload)));
+    let payload_cell_wd = payload_cell.clone(); // watchdog 用（在 move 进 listen 前 clone）
     let expected_label = AGENT_WINDOW_LABEL.to_string();
-    let _once_id = app_handle.once(READY_EVENT, move |e| {
+    let listen_id = app_handle.listen(READY_EVENT, move |e| {
         // 解析 payload，校验来源窗口 label
         let is_from_agent = serde_json::from_str::<ReadyPayload>(e.payload())
             .map(|p| p.window_label == expected_label)
             .unwrap_or(false);
         if !is_from_agent {
-            return; // 别的窗口的 ready，忽略
+            return; // 别的窗口的 ready，忽略但不 unlisten（继续等 agent 的 ready）
         }
-        if fired_once.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            let _ = app_once.emit_to(&label_once, "terminal://new-tab", payload_once);
+        // 匹配到 agent 窗口的 ready——emit new-tab（若 watchdog 未抢先）+ unlisten
+        if fired_listen.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            if let Some(p) = payload_cell.lock().unwrap().take() {
+                let _ = app_listen.emit_to(&label_listen, "terminal://new-tab", p);
+            }
         }
+        // 手动 unlisten（用事件携带的 handler id）。无论 watchdog 是否已抢先都移除——
+        // fired 已 true，后续 ready 无需处理。
+        app_listen.unlisten(e.id());
     });
 
-    // watchdog：超时则强制 emit（若 ready 未到）。
+    // watchdog：超时则强制 emit（若 ready 未到）+ unlisten（清理监听器）。
     let fired_wd = fired.clone();
+    let app_wd = app_handle.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(READY_TIMEOUT_MS));
         if fired_wd.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             log::warn!(
                 "[terminal] agent 窗口 {READY_TIMEOUT_MS}ms 内未收到 ready，强制 emit new-tab（前端 mount 可能超时）"
             );
-            let _ = app_handle.emit_to(&label, "terminal://new-tab", payload);
+            if let Some(p) = payload_cell_wd.lock().unwrap().take() {
+                let _ = app_wd.emit_to(&label, "terminal://new-tab", p);
+            }
         }
+        // 无论是否超时 emit，都清理 listen（避免泄漏——ready 永不到时监听器会一直挂着）
+        app_wd.unlisten(listen_id);
     });
 }
 
