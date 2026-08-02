@@ -427,7 +427,13 @@ export function useTerminalSession(opts: {
       const term = termRef.current;
       if (!term) return;
       term.options.fontFamily = family;
-      // 字体族等宽情况下列数不变，但字宽可能微调——fit 一下保险
+      // WebGL renderer 缓存了旧字体的字符 atlas——fontFamily 变化必须 dispose + 重新 attach，
+      // 否则 atlas 不重建，渲染的字宽错乱（字变小 + 间距大）。
+      if (webglRef.current) {
+        try { webglRef.current.dispose(); } catch { /* already disposed */ }
+        webglRef.current = null;
+      }
+      webglRef.current = attachWebgl(term, webglRef);
       fitAddonRef.current?.fit();
       term.refresh(0, term.rows - 1);
     },
