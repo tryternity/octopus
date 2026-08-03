@@ -58,15 +58,23 @@ pub fn open(
     _language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<CloudStreamHandle> {
+    // 签名在 open() 完成（启动期失败经 Err 补发 Failed）；run 函数接收已签名 URL。
+    let (appid, secretid) = appid_secretid
+        .split_once(':')
+        .context("tencent source 字段格式应为 appid:secretid")?;
+    if appid.is_empty() || secretid.is_empty() {
+        bail!("tencent appid 或 secretid 为空（source 字段格式 appid:secretid）");
+    }
+    let voice_id = uuid::Uuid::new_v4().to_string();
+    let ws_url = build_signed_url(appid, secretid, &secret_key, &engine_model_type, &voice_id)?;
+
     let (handle, pcm_rx, result_tx) = CloudStreamHandle::new();
     tokio::spawn(async move {
         let tx_for_err = result_tx.clone();
         let result = run_tencent_session(
             pcm_rx,
             result_tx,
-            appid_secretid,
-            secret_key,
-            engine_model_type,
+            ws_url,
             pre_roll_samples,
         )
         .await;
@@ -82,27 +90,16 @@ pub fn open(
 }
 
 /// 后台 WS 会话主逻辑：建连 → pre-roll → 双向循环 → 结束信号 → 收结果。
+///
+/// `ws_url` 参数化（P2-1 WS mock）：prod 调用传真签名 URL（`wss://...&signature=...`），
+/// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（不校验签名，见 `test_ws_server`）。
 async fn run_tencent_session(
     mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
-    appid_secretid: String,
-    secret_key: String,
-    engine_model_type: String,
+    ws_url: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
-    // 1. 解析 appid:secretid
-    let (appid, secretid) = appid_secretid
-        .split_once(':')
-        .context("tencent source 字段格式应为 appid:secretid")?;
-    if appid.is_empty() || secretid.is_empty() {
-        bail!("tencent appid 或 secretid 为空（source 字段格式 appid:secretid）");
-    }
-
-    // 2. 构造签名 URL
-    let voice_id = uuid::Uuid::new_v4().to_string();
-    let ws_url = build_signed_url(appid, secretid, &secret_key, &engine_model_type, &voice_id)?;
-
-    // 3. 建连
+    // 1. 建连（URL 已在 open() 签名完成）
     let request = ws_url.into_client_request().context("tencent WS 请求构造失败")?;
     let (mut ws, _resp) = tokio::time::timeout(
         std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
@@ -218,7 +215,24 @@ async fn run_tencent_session(
                     Message::Binary(_) => {
                         // 腾讯 ASR 不发 binary 响应，忽略
                     }
-                    _ => {} // ping/close 等忽略
+                    Message::Close(_) => {
+                        // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现落 _ => {} 忽略，
+                        // 随后 ws.next() 返 Ok(None) → break → return Ok(()) 无终态事件，
+                        // close_async 把 partial 当成功（#3）。现显式处理：有稳态结果发
+                        // Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
+                        log::debug!("tencent: WS 连接关闭");
+                        let stable: String = stable_segments.values().cloned().collect();
+                        if !stable.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(stable));
+                            let _ = result_tx.send(StreamEvent::Finished);
+                        } else {
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                "tencent WS 连接关闭但未收到稳态识别结果".into()
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    _ => {} // ping 等忽略
                 }
             }
         }
@@ -253,7 +267,9 @@ fn build_signed_url(
     // 取 uuid v4 低 32 位：u32::MAX=4294967295 恰好 10 位，满足位数约束且真随机。
     // 不复用 timestamp：同秒多请求/未来并发场景下 nonce 须唯一；voice_id 虽唯一已能
     // 避免被误判重放，但按文档用随机数更稳妥。复用 uuid v4 随机性，避免引入 rand 依赖。
-    let nonce = (uuid::Uuid::new_v4().as_u128() as u32).to_string();
+    // +1 保证非 0：u32 低 32 位理论全 0（概率 2^-32）时 nonce="0" 非正整数可能被签名拒；
+    // +1 后 [1, 2^32] 均为正整数，最坏 nonce=1（仍合法）。
+    let nonce = ((uuid::Uuid::new_v4().as_u128() as u32).saturating_add(1)).to_string();
 
     // 收集参数（字典序）
     let mut params: Vec<(&str, String)> = vec![
@@ -413,5 +429,65 @@ mod tests {
         let sig1 = url1.split("&signature=").nth(1).unwrap();
         let sig2 = url2.split("&signature=").nth(1).unwrap();
         assert_ne!(sig1, sig2);
+    }
+
+    // ── P2-1 WS mock：Close 帧终态测试（spec §2.2）──
+
+    use crate::test_ws_server::WsTestServer;
+    use crate::cloud_types::{CloudStreamHandle, StreamEvent};
+
+    /// 辅助：spawn run_tencent_session 连 in-process server，收集事件直到 Finished/Failed。
+    async fn spawn_tencent_and_collect(url: String) -> Vec<StreamEvent> {
+        let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+        let tx_clone = result_tx.clone();
+        tokio::spawn(async move {
+            let result = run_tencent_session(pcm_rx, result_tx, url, Vec::new()).await;
+            if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
+        });
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = handle.try_recv_text() {
+                events.push(ev);
+                if matches!(events.last(), Some(StreamEvent::Finished) | Some(StreamEvent::Failed(_))) {
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        events
+    }
+
+    /// 回归 spec §2.2：收到稳态（slice_type=2）后 Close → Finished。
+    #[tokio::test]
+    async fn close_frame_emits_finished_when_stable() {
+        let server = WsTestServer::start_script(vec![
+            // 稳态结果：code=0 + result.slice_type=2
+            Message::Text(r#"{"code":0,"result":{"slice_type":2,"index":0,"voice_text_str":"你好"}}"#.into()),
+        ]).await;
+        let events = spawn_tencent_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "稳态 Close 应发 Finished，实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 spec §2.2：仅非稳态（slice_type=0/1）后 Close → Failed。
+    #[tokio::test]
+    async fn close_frame_emits_failed_when_no_stable() {
+        let server = WsTestServer::start_script(vec![
+            // 非稳态 partial：slice_type=1
+            Message::Text(r#"{"code":0,"result":{"slice_type":1,"index":0,"voice_text_str":"部分"}}"#.into()),
+        ]).await;
+        let events = spawn_tencent_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+            "非稳态 Close 应发 Failed，实际 events: {:?}", events
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "非稳态 Close 不应发 Finished"
+        );
     }
 }

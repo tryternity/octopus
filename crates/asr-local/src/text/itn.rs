@@ -38,44 +38,51 @@ const BLACKLIST: &[&str] = &[
 /// 3. 还原黑名单占位符
 pub fn normalize(text: &str) -> String {
     // 1. 保护黑名单词（只在词边界匹配——前后非数字字符时）
+    //
+    // 优化（#10）：旧实现每匹配一个黑名单词就重 collect 全文 chars（O(N)）+ 线性扫描
+    // （O(N)），K 处匹配 → O(N·K)。改为单次遍历：用 str::find 迭代收集所有匹配的
+    // 字节区间，校验边界后统一从后向前 replace_range 替换（避免索引偏移 + 重复 collect）。
     let is_digit = |c: char| CN_DIGITS.contains(c);
     let mut protected = text.to_string();
     let mut placeholders: Vec<(String, String)> = Vec::new();
 
     for (idx, word) in BLACKLIST.iter().enumerate() {
-        loop {
-            let chars: Vec<char> = protected.chars().collect();
-            let word_chars: Vec<char> = word.chars().collect();
-            let mut found_pos = None;
-
-            // 在 chars 里找 word，检查前后边界
-            let mut search_start = 0;
-            while search_start + word_chars.len() <= chars.len() {
-                let slice = &chars[search_start..search_start + word_chars.len()];
-                if slice == word_chars.as_slice() {
-                    // 检查前一个字符是否数字
-                    let prev_ok = search_start == 0 || !is_digit(chars[search_start - 1]);
-                    // 检查后一个字符是否数字
-                    let after = search_start + word_chars.len();
-                    let next_ok = after >= chars.len() || !is_digit(chars[after]);
+        let word_byte_len = word.len();
+        if word_byte_len == 0 {
+            continue;
+        }
+        // 收集所有匹配的字节区间（含边界校验）。
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut search_from = 0usize;
+        while search_from <= protected.len() {
+            // str::find 返回字节位置（保证是 UTF-8 边界，因 word 是 &str 子串）
+            match protected[search_from..].find(word) {
+                None => break,
+                Some(rel_start) => {
+                    let byte_start = search_from + rel_start;
+                    let byte_end = byte_start + word_byte_len;
+                    // 边界校验：前一字符与后一字符不得为数字（与原实现语义一致）
+                    let prev_ok = byte_start == 0
+                        || !is_digit(
+                            protected[..byte_start].chars().next_back().unwrap_or('\0'),
+                        );
+                    let next_ok = byte_end >= protected.len()
+                        || !is_digit(protected[byte_end..].chars().next().unwrap_or('\0'));
                     if prev_ok && next_ok {
-                        found_pos = Some(search_start);
-                        break;
+                        ranges.push((byte_start, byte_end));
                     }
+                    // 无论是否采用，都越过本次匹配继续找（避免重叠死循环）
+                    search_from = byte_end;
                 }
-                search_start += 1;
             }
-
-            if let Some(pos) = found_pos {
-                let ph = format!("\u{0000}B{idx}P{pos}\u{0000}");
-                // 替换 chars 里的 word 为占位符
-                let before: String = chars[..pos].iter().collect();
-                let after: String = chars[pos + word_chars.len()..].iter().collect();
-                protected = format!("{before}{ph}{after}");
-                placeholders.push((ph, word.to_string()));
-            } else {
-                break;
-            }
+        }
+        // 从后向前替换（字节索引不变，避免偏移）
+        for &(start, _end) in ranges.iter().rev() {
+            // 占位符含 NUL（\u{0000}，单字节），不与中文/数字冲突；idx 标识黑名单词序号，
+            // start 标识本次匹配的字节位置（同 idx 多匹配时位置唯一）。
+            let ph = format!("\u{0000}B{idx}P{start}\u{0000}");
+            protected.replace_range(start..start + word_byte_len, &ph);
+            placeholders.push((ph, word.to_string()));
         }
     }
 
@@ -196,6 +203,25 @@ mod tests {
         assert_eq!(normalize("五一假期"), "五一假期");
         assert_eq!(normalize("八一建军节"), "八一建军节");
         assert_eq!(normalize("十一国庆"), "十一国庆");
+    }
+
+    /// 回归 #10：同一黑名单词在文本中出现多次时，全部应被保护（旧实现每匹配一处
+    /// 重 collect 全文，可能漏掉或索引错乱）。单次扫描收集所有匹配后统一替换。
+    #[test]
+    fn blacklist_multiple_matches_all_protected() {
+        // 「万一」出现 3 次（前后非数字字符隔开）→ 全部保护，中间 2+ 连续数字正常转。
+        assert_eq!(
+            normalize("万一来不及，万一出错，万一有二百五十六块"),
+            "万一来不及，万一出错，万一有256块"
+        );
+        // 多个不同黑名单词（前后非数字）混排 → 全部保护
+        assert_eq!(normalize("万一咋办，千万小心"), "万一咋办，千万小心");
+        // 长文本多次匹配（前后非数字隔开，验证不退化 / 不丢匹配）。
+        // 注：「万一」直接相邻时彼此互为数字边界，全部不保护（与原实现一致），
+        // 故用非数字分隔。
+        let long = (0..50).map(|_| "万一，").collect::<String>();
+        let expected = long.clone();
+        assert_eq!(normalize(&long), expected, "50 个「万一，」应全部保护");
     }
 
     // ── 混合文本 ──

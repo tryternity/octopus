@@ -678,8 +678,30 @@ impl<'a> AppSetup<'a> {
     ///
     /// PtyState 是空 HashMap，pty_open 时填充。无重型初始化（不像 engine 要预热），
     /// 纯 manage 即可——session 在 pty_open 按需 spawn。
+    ///
+    /// 另起一个轻量 reaper 线程，每 5s 回收已退出（`is_exited()==true`）的 session。
+    /// 兜底前端崩溃/路由切换不调 `pty_close` 的场景——否则 sessions map 残留
+    /// `Arc<PtySession>` + 死 PTY fd 直到应用退出。reaper 用 std::thread（不引入
+    /// tokio 到 pty crate，保持其纯逻辑）；daemon 线程随 app 生命周期，进程退出 OS 回收。
     fn init_pty(&self) {
         self.app.manage(octopus_pty::PtyState::new());
+        let handle = self.app.handle().clone();
+        let reaper = std::thread::Builder::new()
+            .name("octopus-pty-reaper".into())
+            .spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let state = match handle.try_state::<octopus_pty::PtyState>() {
+                    Some(s) => s,
+                    None => continue, // app 尚未 manage 或正在关闭
+                };
+                let dead = state.reap_exited();
+                if !dead.is_empty() {
+                    log::debug!("pty reaper 回收 {} 个已退出 session: {:?}", dead.len(), dead);
+                }
+            });
+        if let Err(e) = reaper {
+            log::warn!("pty reaper 线程启动失败（死 session 不会被自动回收）: {e}");
+        }
     }
 
     /// i18n 初始化 + tray 创建 + 麦克风子菜单预热 + locale 变化 listener。

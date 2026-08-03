@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS hotword_words (
     is_deleted  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    sync_md5    TEXT,                     -- 已废弃（2026-08-02）：word id 是确定性主键，sync_md5 冗余。列保留避免 migration。
     UNIQUE(set_id, word)
 );
 CREATE INDEX IF NOT EXISTS idx_hotword_words_set ON hotword_words(set_id);
@@ -33,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_hotword_words_set ON hotword_words(set_id);
 
 **业务键** = `(set_id, word)` 复合唯一约束。同词跨 set 是独立记录（各自 UUID / is_deleted / updated_at）。
 
-**`hotword_sets` 变更**：DROP `words_text` 列（迁移后，已查清无索引/触发器/视图引用）。`hotword_sets` 只保留元数据：`id / name / enabled / created_at / updated_at / sync_md5`。
+**`hotword_sets` 变更**：DROP `words_text` 列（迁移后，已查清无索引/触发器/视图引用）。`hotword_sets` 只保留元数据：`id / name / enabled / is_deleted / created_at / updated_at / sync_md5`（v58 加 `is_deleted` epoch 秒 + `UNIQUE(name, is_deleted)` 复合约束）。
 
 **`hotword_hits` 不变**：全局表 `word → hit_count`，不绑 set。correct 排序留后续 spec。
 
@@ -104,7 +103,8 @@ set name 可改（rename），md5 变化触发 outline diff 判断改名。状�
 
 **word 级无 sync_md5**（2026-08-02 去掉）——word id = `uuid_v5(namespace, "{set_id}/{word}")` 已是确定性业务主键。
 word 不可改名、拼音是附属品（`pinyin = f(word)`），id 已唯一标识记录，sync_md5 完全冗余。
-DB 列保留（避免 migration），代码层不读写。
+DB 列已删除（db.sql 建表 SQL 不含 sync_md5），代码层不读写。
+注：outline 增量 export 仍用 `hotword_word_md5(set_id, word)` 现算词指纹做文件 diff（写到词典内 outline.json），但 merge 阶段时间戳相等时跳过不比较。
 
 ### merge 逻辑（两阶段，对称 vault merge_vault）
 
@@ -120,14 +120,15 @@ DB 列保留（避免 migration），代码层不读写。
 
 merge 完后从 DB 最新状态重建所有文件 + outline（`export_all_hotwords`，DB 是单一真相源）。
 
-**删除后 export**（2026-08-02 修复）：`delete_hotword_set` 后必须 `export_all_hotwords`——
-否则 sync 文件还存旧态（is_deleted=0），下次 merge pull_set 复活（软删 10 天内不超期不跳过）。
+**删除后不立即 export**：`delete_hotword_set` 只更新 DB + reload corrector 索引，
+不调 `export_all_hotwords`（全量重建太慢，删除大词典时卡顿）。
+同步是 scheduler 定时器的事——下次 merge 时 DB 的 updated_at 更新 → DB 赢 → push 软删态到 .sync。
 
 
 ### 软删
 
-`remove_word` = `UPDATE hotword_words SET is_deleted=1, updated_at=now, sync_md5=<is_deleted=true 指纹>`。
-文件不删（UUID 不含 is_deleted，文件名不变），走标准 merge 路径（is_deleted 参与 md5）。
+`remove_word_from_set` = `UPDATE hotword_words SET is_deleted=now_secs, updated_at=now`（is_deleted 存删除时刻 epoch 秒，v58 统一语义）。
+文件不删（UUID 不含 is_deleted，文件名不变），走标准 merge 路径。
 `list_words_in_set` / `list_active_words` 过滤 `is_deleted=0`。
 
 ## 4. HotwordIndex 适配

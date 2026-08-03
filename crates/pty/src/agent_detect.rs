@@ -304,11 +304,25 @@ impl AgentDetector {
     /// 匹配命令名是否为已知 agent CLI。
     /// 支持路径前缀（/usr/local/bin/claude）、npx 包装（npx claude）、
     /// 连字符后缀（claude-enigma）。
+    ///
+    /// **引号剥离**：shell 可能 emit 带引号的命令（`'claude'`、`"claude code"`），
+    /// 旧实现 split_whitespace 不剥引号 → token 带 `'`/`"` 前缀 → strip_prefix 失败。
+    /// 现对每个 token 先剥首尾的 `'` / `"` 再匹配。
     fn match_agent(&self, cmd: &[u8]) -> Option<String> {
         let cmd = std::str::from_utf8(cmd).ok()?;
         for token in cmd.split_whitespace() {
             if token.starts_with('-') {
                 continue; // flag，跳过
+            }
+            // 剥首尾引号（shell 可能 emit 'claude' / "claude" 形式）
+            let token = token
+                .strip_prefix(['\'', '"'].as_ref())
+                .unwrap_or(token)
+                .strip_suffix(['\'', '"'].as_ref())
+                .unwrap_or(token);
+            // 剥引号后可能是空串或仍以 - 开头（如 '"-p"'）——重新检查
+            if token.is_empty() || token.starts_with('-') {
+                continue;
             }
             let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
             if let Some(agent) = self.agents.iter().find(|a| {
@@ -386,6 +400,28 @@ mod tests {
         assert_eq!(
             run(&mut d, &osc("133;C;claude-enigma")),
             vec![started("claude")]
+        );
+    }
+
+    /// 回归 #4.2：shell emit 带引号的命令名（'claude' / "claude"）应被识别。
+    /// 旧实现 split_whitespace 不剥引号 → token 带 ' / " 前缀 → strip_prefix 失败。
+    #[test]
+    fn arms_on_quoted_command() {
+        let mut d1 = AgentDetector::new();
+        assert_eq!(
+            run(&mut d1, &osc("133;C;'claude' -p hello")),
+            vec![started("claude")]
+        );
+        let mut d2 = AgentDetector::new();
+        assert_eq!(
+            run(&mut d2, &osc("133;C;\"codex\"")),
+            vec![started("codex")]
+        );
+        // 引号包裹的带参命令
+        let mut d3 = AgentDetector::new();
+        assert_eq!(
+            run(&mut d3, &osc("133;C;'gemini' --foo")),
+            vec![started("gemini")]
         );
     }
 

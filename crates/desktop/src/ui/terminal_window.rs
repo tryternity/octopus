@@ -7,12 +7,34 @@
 //! macOS：开窗切 Regular（Dock 显图标），所有终端窗口关闭后切回 Accessory，
 //! 与 settings / compact_editor 对称（注册在 activation::REGULAR_WINDOWS 用通配判断）。
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// 终端窗口 label 前缀（实际 label = `terminal_<n>`，capabilities 用 `terminal_*`）。
 pub const WINDOW_LABEL_PREFIX: &str = "terminal_";
+
+/// 前端 listener 注册后向本窗口 emit 的事件名。
+///
+/// 新建 agent 窗口时 React mount 是异步的，`terminal://new-tab` listener 在首帧
+/// 才注册。后端若固定 sleep(250ms) 后 emit，慢 mount（冷启动/老机器/debug build）
+/// 会撞上未注册的 listener → 事件被 Tauri 静默丢弃 → 空终端。
+///
+/// 改为「前端 ready 回拉」：前端 listener 注册成功后 emit 本事件，后端收到才 emit
+/// new-tab；带 READY_TIMEOUT 兜底，超时则强制 emit 一次（避免 ready 永不到时命令彻底丢）。
+const READY_EVENT: &str = "terminal://ready";
+/// 等前端 ready 的超时。超过则强制 emit new-tab 一次（前端可能仍在 mount，事件可能
+/// 丢失，但比「命令彻底丢」强——至少快 mount 的场景有救）。
+const READY_TIMEOUT_MS: u64 = 5000;
+
+/// 前端 emit `terminal://ready` 的 payload（见 index.tsx `emit("terminal://ready", {windowLabel})`）。
+/// 用于 once 闭包校验来源窗口，避免多窗口并发 mount 时误收别的窗口的 ready（F3）。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyPayload {
+    window_label: String,
+}
 
 /// ActionBar 联动事件 payload（emit "terminal://new-tab"）。
 /// 前端 listen 后新开 tab，cwd 作为 shell 启动目录，command 写入 shell（如 `claude`）。
@@ -32,6 +54,14 @@ const WIDTH: f64 = 1000.0;
 const HEIGHT: f64 = 640.0;
 const MIN_WIDTH: f64 = 560.0;
 const MIN_HEIGHT: f64 = 360.0;
+
+/// 日志友好的字符串截断：取前 `max_chars` 个字符（按 char，非 byte，中文安全）。
+/// 调用方自行追加省略号（`if s.chars().count() > max_chars { "…" }`），
+/// 这样日志格式字符串里省略号可见，便于 grep。
+/// 用于避免长 prompt（agent 命令可能几百字）刷屏 log。
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
 
 /// 构造终端窗口初始 URL（纯函数，便于单测）。
 ///
@@ -69,6 +99,70 @@ fn urlencode(s: &str) -> String {
     }
     out
 }
+
+/// 新窗口场景：等前端 listener 注册（`terminal://ready`）后再 emit new-tab，避免
+/// 慢 mount 时事件被 Tauri 静默丢弃。带 READY_TIMEOUT_MS 兜底——超时则强制 emit 一次。
+///
+/// `fired` 防重复 emit（ready 先到则取消 watchdog；watchdog 先到则忽略后续 ready）。
+/// 用法：建窗后直接调此函数，主调线程立即返回（listen 注册 + watchdog spawn 后）。
+///
+/// **用 `listen` 而非 `once`**（G3 修复）：Tauri 的 `once` 闭包被调用即无条件 unlisten
+/// （tauri-2.11.2/src/event/listener.rs:169-176），即使闭包内 `return` 不 emit。前端所有
+/// 终端窗口 mount 时都 emit terminal://ready，若用 once + windowLabel 校验，别的窗口的
+/// ready 先到 → 闭包调用 → return → once 已失效 → agent 的 ready 到达时无 listener →
+/// 退化为固定 5s watchdog 延迟（失去 ready 回拉的时序优势）。改用 listen，闭包内仅在
+/// windowLabel 匹配时 emit + 手动 unlisten，不匹配则继续监听 agent 自己的 ready。
+fn emit_new_tab_on_ready(app_handle: tauri::AppHandle, payload: NewTabPayload) {
+    let label = AGENT_WINDOW_LABEL.to_string();
+    let fired = Arc::new(AtomicBool::new(false));
+
+    // listen 收到前端 ready → 校验 windowLabel → 匹配则 emit new-tab + unlisten。
+    // 每个闭包各 clone 一份 app/label，避免借用冲突。payload 用 Mutex<Option> 包裹——
+    // listen 闭包是 Fn（非 FnOnce，可能被多次调用直到匹配），不能直接 move payload。
+    let fired_listen = fired.clone();
+    let app_listen = app_handle.clone();
+    let label_listen = label.clone();
+    // payload 用 Arc<Mutex<Option>> 共享给 listen + watchdog——两者竞争 fired，先到者 take 并 emit。
+    let payload_cell = Arc::new(std::sync::Mutex::new(Some(payload)));
+    let payload_cell_wd = payload_cell.clone(); // watchdog 用（在 move 进 listen 前 clone）
+    let expected_label = AGENT_WINDOW_LABEL.to_string();
+    let listen_id = app_handle.listen(READY_EVENT, move |e| {
+        // 解析 payload，校验来源窗口 label
+        let is_from_agent = serde_json::from_str::<ReadyPayload>(e.payload())
+            .map(|p| p.window_label == expected_label)
+            .unwrap_or(false);
+        if !is_from_agent {
+            return; // 别的窗口的 ready，忽略但不 unlisten（继续等 agent 的 ready）
+        }
+        // 匹配到 agent 窗口的 ready——emit new-tab（若 watchdog 未抢先）+ unlisten
+        if fired_listen.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            if let Some(p) = payload_cell.lock().unwrap().take() {
+                let _ = app_listen.emit_to(&label_listen, "terminal://new-tab", p);
+            }
+        }
+        // 手动 unlisten（用事件携带的 handler id）。无论 watchdog 是否已抢先都移除——
+        // fired 已 true，后续 ready 无需处理。
+        app_listen.unlisten(e.id());
+    });
+
+    // watchdog：超时则强制 emit（若 ready 未到）+ unlisten（清理监听器）。
+    let fired_wd = fired.clone();
+    let app_wd = app_handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(READY_TIMEOUT_MS));
+        if fired_wd.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            log::warn!(
+                "[terminal] agent 窗口 {READY_TIMEOUT_MS}ms 内未收到 ready，强制 emit new-tab（前端 mount 可能超时）"
+            );
+            if let Some(p) = payload_cell_wd.lock().unwrap().take() {
+                let _ = app_wd.emit_to(&label, "terminal://new-tab", p);
+            }
+        }
+        // 无论是否超时 emit，都清理 listen（避免泄漏——ready 永不到时监听器会一直挂着）
+        app_wd.unlisten(listen_id);
+    });
+}
+
 
 /// 分配一个新的终端窗口 label（`terminal_<递增id>`）。
 fn alloc_label() -> String {
@@ -167,8 +261,10 @@ pub fn open_terminal_with_command(
             },
         );
         log::info!(
-            "[terminal] agent window reused, new tab cwd={:?} command={}",
-            cwd, command
+            "[terminal] agent window reused, new tab cwd={:?} command={}{}",
+            cwd,
+            truncate_for_log(command, 60),
+            if command.chars().count() > 60 { "…" } else { "" },
         );
         return Ok(());
     }
@@ -202,22 +298,17 @@ pub fn open_terminal_with_command(
             let _ = w.show();
             let _ = w.set_focus();
             log::info!("[terminal] agent window created");
-            // 新窗口 React mount 是异步的，listen 在首帧注册。
-            // 延迟 emit_to 定向推送 command，兜底 mount 完成时序。
-            let app = app_handle.clone();
-            let cmd = command.to_string();
-            let cwd_clone = cwd.map(|s| s.to_string());
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let _ = app.emit_to(
-                    AGENT_WINDOW_LABEL,
-                    "terminal://new-tab",
-                    NewTabPayload {
-                        cwd: cwd_clone,
-                        command: Some(cmd),
-                    },
-                );
-            });
+            // 新窗口 React mount 是异步的，listen 在首帧才注册。固定 sleep(250ms) 在
+            // 慢 mount 时会丢事件。改用「前端 ready 回拉」：等 listener 注册成功后
+            // 前端 emit terminal://ready，本端 once 接收后再 emit new-tab；带
+            // READY_TIMEOUT_MS 兜底（超时强制 emit，至少快 mount 场景有救）。
+            emit_new_tab_on_ready(
+                app_handle.clone(),
+                NewTabPayload {
+                    cwd: cwd.map(|s| s.to_string()),
+                    command: Some(command.to_string()),
+                },
+            );
             Ok(())
         }
         Err(e) => {
@@ -297,6 +388,29 @@ mod tests {
     fn urlencode_encodes_special() {
         assert_eq!(urlencode("a b"), "a%20b");
         assert_eq!(urlencode("a?b=c"), "a%3Fb%3Dc");
+    }
+
+    #[test]
+    fn truncate_for_log_short_string_unchanged() {
+        assert_eq!(truncate_for_log("claude", 60), "claude");
+        assert_eq!(truncate_for_log("", 60), "");
+    }
+
+    #[test]
+    fn truncate_for_log_long_string_cut() {
+        let long = "a".repeat(100);
+        let t = truncate_for_log(&long, 60);
+        assert_eq!(t.chars().count(), 60, "应截断到 60 字符");
+        assert_eq!(t, "a".repeat(60));
+    }
+
+    #[test]
+    fn truncate_for_log_char_boundary_safe() {
+        // 中文按 char 截断（非 byte），3 字符中文 = 9 字节但 chars().count()==3
+        let zh = "你好世界测试";
+        let t = truncate_for_log(zh, 3);
+        assert_eq!(t.chars().count(), 3);
+        assert_eq!(t, "你好世");
     }
 
     #[test]

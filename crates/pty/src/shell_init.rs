@@ -58,22 +58,56 @@ impl Shell {
     }
 }
 
-/// 获取登录 shell（getpwuid.pw_shell）。
+/// 获取登录 shell（getpwuid_r.pw_shell）。
+///
+/// 用可重入版 `getpwuid_r`（而非 `getpwuid`）：后者返回进程级静态缓冲区指针，
+/// 两个 PTY 并发 spawn（用户快速连开两个终端）会竞争该缓冲区，读到错误 shell 路径。
+/// `getpwuid_r` 由调用方提供 `passwd` 结构 + buffer，线程安全。
 fn login_shell() -> Option<String> {
     #[cfg(unix)]
     {
         use std::ffi::CStr;
+        use std::ptr;
         unsafe {
             let uid = libc::getuid();
-            let pw = libc::getpwuid(uid);
-            if pw.is_null() {
+            let mut pwd: libc::passwd = std::mem::zeroed();
+            // POSIX 建议 sysconf(_SC_GETPW_R_SIZE_MAX) 拿初始大小；-1 时用 4KB 兜底。
+            // ERANGE 时倍增重试，上限 256KiB（远超任何合理场景）。
+            let mut cap = 4096usize;
+            let cap_max = 256 * 1024;
+            loop {
+                let mut buf = vec![0u8; cap];
+                let mut result: *mut libc::passwd = ptr::null_mut();
+                let ret = libc::getpwuid_r(
+                    uid,
+                    &mut pwd,
+                    buf.as_mut_ptr() as *mut libc::c_char,
+                    buf.len(),
+                    &mut result,
+                );
+                if ret == 0 {
+                    if result.is_null() {
+                        // uid 未找到
+                        return None;
+                    }
+                    let shell_ptr = (*result).pw_shell;
+                    if shell_ptr.is_null() {
+                        return None;
+                    }
+                    return CStr::from_ptr(shell_ptr).to_str().ok().map(String::from);
+                }
+                if ret == libc::ERANGE {
+                    if cap >= cap_max {
+                        log::warn!("getpwuid_r: buffer 不足（已试 {cap} 字节），放弃");
+                        return None;
+                    }
+                    cap *= 2;
+                    continue;
+                }
+                // 其他错误（ENOENT 等）
+                log::debug!("getpwuid_r failed: errno={ret}");
                 return None;
             }
-            let shell_ptr = (*pw).pw_shell;
-            if shell_ptr.is_null() {
-                return None;
-            }
-            CStr::from_ptr(shell_ptr).to_str().ok().map(String::from)
         }
     }
     #[cfg(not(unix))]
@@ -234,6 +268,50 @@ mod tests {
         assert!(matches!(Shell::classify("/usr/bin/bash"), Shell::Bash));
         assert!(matches!(Shell::classify("/bin/sh"), Shell::Other));
         assert!(matches!(Shell::classify("/usr/bin/fish"), Shell::Other));
+    }
+
+    /// 回归 #12：getpwuid（非可重入）返回进程级静态缓冲区，并发调用会竞争。
+    /// 改用 getpwuid_r 后，10 线程并发应全部拿到一致结果且无 panic。
+    #[test]
+    fn login_shell_concurrent_safe() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // 先拿到单线程基准值（若环境无 passwd 条目则跳过并发断言）
+        let baseline = login_shell();
+
+        let n = 10;
+        let mismatches = Arc::new(AtomicUsize::new(0));
+        let panics = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mismatches = mismatches.clone();
+            let panics = panics.clone();
+            let baseline = baseline.clone();
+            handles.push(std::thread::spawn(move || {
+                // catch_unwind 捕获 panic（竞态损坏可能触发 UB，至少不静默崩溃）
+                let res = std::panic::catch_unwind(|| login_shell());
+                match res {
+                    Ok(v) => {
+                        if v != baseline {
+                            mismatches.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    Err(_) => {
+                        panics.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread join");
+        }
+        assert_eq!(panics.load(Ordering::SeqCst), 0, "并发调用不应 panic");
+        assert_eq!(
+            mismatches.load(Ordering::SeqCst),
+            0,
+            "并发结果应与单线程基准一致"
+        );
     }
 
     #[test]

@@ -1,0 +1,403 @@
+# 终端 / 云识别 / 文本后处理批量 bugfix
+
+> **日期**：2026-08-02
+> **状态**：✅ 已实现（首轮 18 处 + 复审 F1-F3/G1-G4/H1 共 9 处，全修复，全量测试通过）
+> **来源**：外部代码审查报告（32 候选核实 13 成立 + 5 次要）→ 3 轮独立复审（F1-F3 / G1-G4 / H1），全量复查 CONFIRMED
+> **分支**：`.worktrees/bugfix_pr_0801`（bugfix/pr-0801）
+
+## 0. 复查结论
+
+外部报告的 13 个问题 + 5 个次要项**全部 CONFIRMED，无一驳回**。核实中纠正了几处措辞（不影响成立性）：
+
+| 报告措辞 | 实际情况 |
+|---|---|
+| #8「per frame」 | 实为「per `correct()` 调用」（每稳态句一次，非每音频帧） |
+| #10「K 处黑名单」 | K 是 26 个黑名单词的匹配总和 |
+| #13「flusher 永久自旋」 | 不是无限自旋（waiter 正常完成时 done 会被置位）；是 sessions map 残留 Arc+死 PTY fd 直到应用退出 |
+| fontPrefs「jsdoc 与代码矛盾」 | 仅 `@returns` 一行反了；函数名/代码/块注释都对 |
+
+## 1. 终端严重（🔴）
+
+### 1.1 gitignore 过滤语义反向（#1）
+
+**根因**：`crates/desktop/src/commands/terminal_commands.rs:251 git_ignored_names` 用 `ignore::WalkBuilder`（默认 yield 非 ignored、skip ignored），返回的实为「要显示的集合」；调用方 `:228` 当「要隐藏的集合」用 → git repo 内 `src/`、`Cargo.toml` 全隐藏，反而只显示 `target/`、`node_modules/`。单测用 tempdir（非 repo）走 `in_git_repo=false` 短路，掩盖 bug。
+
+**修复**：改用 `ignore::gitignore::GitignoreBuilder` 构建匹配器：
+1. 从 `dir` 及其祖先向上到 repo root，逐级 `builder.add(.gitignore)`
+2. 加 `.git/info/exclude`（repo root 下）
+3. 加全局 excludesfile（`gitconfig_excludes_path()`）
+4. 对 `dir` 的每个直接子项 `matcher.matched(path, is_dir)`，`Match::Ignore` → 加入「要隐藏的集合」
+
+重构 `in_git_repo` → `find_repo_root(dir) -> Option<PathBuf>`，复用向上遍历同时拿到 repo root。
+
+**不变量**：
+- 目录型 pattern（`node_modules/`）必须传 `is_dir=true`，否则 trailing-slash pattern 不匹配
+- 子目录自身的 `.gitignore` 不影响直接子项的可见性（`foo` 含被忽略文件，但 `foo` 本身仍可见）
+- 非 git repo（无 `.git`）→ 空集合（保持现状）
+
+**回归测试**：`list_dir_filters_gitignore_in_repo`——tempdir 建 `.git/` + `.gitignore`（`target`、`node_modules/`、`*.log`、`!keep.log`）+ 匹配/不匹配文件，`show_hidden=true` 隔离 dot 分支，断言 target/node_modules/*.log 隐藏、src/keep.log 可见。
+
+### 1.2 waiter join 超时（#2）
+
+**根因**：`crates/pty/src/session.rs:273 reader_thread.join()` 无界阻塞。shell 起的后台进程（`sleep 100 &`、daemon、powerlevel10k）持 PTY slave fd → shell 退出后 master read 永不 EOF → reader 永不退 → join 永久阻塞 → `on_exit(code)` 永不调 → 前端永远显示「运行中」，flusher 永远循环。
+
+**修复**：`JoinHandle::join` 无 stable `try_join`，改用「spawn 计时守护线程 + channel 传 join 结果 + recv_timeout」：
+
+```rust
+let (jtx, jrx) = std::sync::mpsc::channel();
+let rhandle = reader_thread;
+let jthr = thread::Builder::new()
+    .name("octopus-pty-reader-join".into())
+    .spawn(move || {
+        let res = rhandle.join();
+        let _ = jtx.send(res);
+    });
+match jrx.recv_timeout(JOIN_TIMEOUT) {
+    Ok(Ok(())) => { /* reader 正常退出，jthr 已自然结束 */ }
+    Ok(Err(panic)) => log::error!("pty reader thread panicked: {panic:?}"),
+    Err(_) => {
+        log::warn!("pty reader 未在 {:?} 内退出（后台进程持 slave fd），强制收尾", JOIN_TIMEOUT);
+        // jthr + reader 线程泄漏：阻塞在 read，session Drop（master fd 关）时 OS 回收，benign
+    }
+}
+// 保留 :276-283 tail-drain 序列不变
+```
+
+**关键不变量**（深度核实确认）：
+- **force-finalize 不丢数据**：所有字节要么已被 flusher 发出，要么在 `pending`；`session.rs:277 std::mem::take(&pending)` 原子取全部
+- **顺序保证保留**：`on_data(tail)` 严格先于 `on_exit(code)`（都在 waiter 线程顺序执行）
+- **泄漏 benign**：超时后 reader 仍阻塞在 `read()`，session Drop 时 master fd 关 → read 返 EOF → reader 退出；jthr 也随之退出。进程级泄漏，应用退出时 OS 回收
+- **常量**：`const JOIN_TIMEOUT: Duration = Duration::from_secs(2);`
+
+**回归测试**：
+- `tail_drained_on_normal_exit`（核心层，mock reader 即时 EOF，断言 pending 取空 + on_exit 收到 code）
+- `waiter_finalizes_on_reader_hang`（`#[ignore]`，文档化复现 `sleep 100 &` 后 exit）
+
+### 1.3 waiter spawn 失败清理（#9）
+
+**根因**：waiter 是最后 spawn 的线程（顺序：reader → flusher → waiter）；spawn 失败（RLIMIT_NPROC）返 Err → Drop 杀但不 reap → 僵尸 child；flusher 已在跑但 `done` 永不被置位 → flusher 永旋；`pending`/`on_data`/`on_signal` Arc 永不释放。
+
+**修复**：waiter spawn 的 `.map_err` 闭包内做清理：
+1. `child.kill()` + `child.wait()` reap 僵尸
+2. `done.store(true, Release)` + `cv.notify_all()` 让 flusher 退
+3. reader 由 master drop（session Drop 时）触发 EOF 退
+
+抽成 helper `cleanup_on_waiter_spawn_fail(child, done, cv)` 保证 reap + 停 flusher。
+
+**回归测试**：难造 RLIMIT_NPROC，文档化 + helper 单测（验证 done 被置位 + child 被 reap，用 mock Child）。
+
+### 1.4 getpwuid_r（#12）
+
+**根因**：`crates/pty/src/shell_init.rs:68 libc::getpwuid`（非可重入版）返回进程级静态缓冲区指针。两 PTY 并发 spawn（用户快速连开两终端）竞争该缓冲区，可能读到错误 shell 路径。
+
+**修复**：改 `getpwuid_r`（可重入，调用方提供 `passwd` + `buf`）。`buf` 用 `[u8; 4096]`（POSIX 建议 `sysconf(_SC_GETPW_R_SIZE_MAX)`，4KB 通常足够；不够则 `ERANGE` 时扩容重试）。
+
+```rust
+fn login_shell() -> Option<String> {
+    let uid = unsafe { libc::getuid() };
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0u8; 4096];
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    loop {
+        let ret = unsafe {
+            libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr() as *mut _, buf.len(), &mut result)
+        };
+        if ret == 0 {
+            if result.is_null() { return None; }
+            // 读 (*result).pw_shell → CStr → String
+        } else if ret == libc::ERANGE {
+            buf.resize(buf.len() * 2, 0);
+        } else {
+            return None;
+        }
+    }
+}
+```
+
+**回归测试**：`login_shell_concurrent_safe`（10 线程并发调，断言无 panic 且结果一致）。
+
+### 1.5 服务端 reaper（#13）
+
+**根因**：`PtyState`（`crates/pty/src/lib.rs:17`）纯被动 state，无后台扫描。仅 `pty_close`（前端）+ `pty_open` 早 re-check 移除。前端崩溃/路由切换不处理 `on_exit` → sessions map 残留 `Arc<PtySession>` + 死 PTY fd 直到应用退出。
+
+**修复**：在 desktop 的 `init_pty`（`crates/desktop/src/core/setup.rs:681`）`.manage()` 后 spawn 一个 `std::thread`（**不引入 tokio 到 pty crate**，保持其「纯逻辑无 tauri」设计约束）。reaper 每 5s 扫描 `state.sessions.read()`，收集 `is_exited()==true` 的 id，释放读锁后取写锁 `remove`。
+
+```rust
+// pty crate 加可测方法
+impl PtyState {
+    pub fn reap_exited(&self) -> Vec<u32> {
+        let dead: Vec<u32> = self.sessions.read()
+            .iter().filter(|(_, s)| s.is_exited()).map(|(id, _)| *id).collect();
+        if !dead.is_empty() {
+            let mut sessions = self.sessions.write();
+            for id in &dead { sessions.remove(id); }
+        }
+        dead
+    }
+}
+
+// desktop setup.rs init_pty
+fn init_pty(&self) {
+    let state = octopus_pty::PtyState::new();
+    self.app.manage(state);
+    let handle = self.app.handle().clone();
+    std::thread::Builder::new().name("octopus-pty-reaper".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(5));
+            if let Some(state) = handle.try_state::<octopus_pty::PtyState>() {
+                let dead = state.reap_exited();
+                if !dead.is_empty() {
+                    log::debug!("pty reaper 回收 {} 个已退出 session: {:?}", dead.len(), dead);
+                }
+            }
+        }).ok();
+}
+```
+
+**不变量**：
+- 只 reap `exited==true`（waiter 已跑完，reader/flusher 已退或已超时强制退）
+- 写锁互斥，不与 `pty_close` 竞争
+- daemon 线程，随 app 生命周期，进程退出 OS 回收
+
+**回归测试**：`reap_exited_removes_dead_sessions` —— 构造 PtyState 塞入 mock session（`exited=true`），调 `reap_exited()`，断言被移除；`exited=false` 的保留。mock 需 `PtySession` 可构造（或加 `#[cfg(test)]` 测试 helper）。
+
+### 1.6 agent 窗口 ready 回拉（#7）
+
+**根因**：`crates/desktop/src/ui/terminal_window.rs:210-220` 新窗口分支固定 `sleep(250ms)` + 单次 emit + `let _ =` 丢结果，无 ack。慢 mount（冷启动 React+xterm、老机器、debug build）> 250ms 时前端 listener 未注册，事件被 Tauri 静默丢弃 → agent 窗口弹出但命令未写入，空终端无错误。
+
+**修复**（前端 ready 回拉 + 后端超时兜底）：
+
+**前端**（`crates/desktop/frontend/src/pages/Terminal/index.tsx:262`）：`listen("terminal://new-tab").then(fn => unlisten=fn)` 块内，listener 注册成功后立即 `emit("terminal://ready", { windowLabel: currentLabel })`。保证 listener 先注册再发 ready（消除竞态——ready 到达时 listener 必然已在）。
+
+**后端**（`terminal_window.rs` 新窗口分支）：改 `sleep(250ms)+emit` 为 `listen_once("terminal://ready", move |_| { emit_to(new-tab) })` + 5s 超时兜底（超时则强制 emit 一次 + log::warn，避免 ready 永不到时命令彻底丢）。事件名常量化。
+
+**回归测试**：后端逻辑抽成可测函数 `wait_for_ready_then_emit(app, payload, timeout) -> Result<(), Elapsed>`，单测覆盖「ready 到→emit」「超时→兜底 emit」两路径（用 mock listener）。前端无单测，手动验证。
+
+## 2. 云识别（🔴🟠）
+
+### 2.1 close_async channel-close-as-Failed（#3）🔴
+
+**根因**：`crates/asr-cloud/src/cloud_types.rs:129-141` `while let Some(event) = rx.recv().await`，WS task 因服务端主动 Close（见 #4）静默退出而未发 Finished/Failed → `result_tx` drop → `rx.recv()` 返 None → 循环正常结束 → 返 `Ok(text)`。text 可能 partial 或空。鉴权过期/超时/限流断连时用户拿到不完整结果却以为成功，错误被吞（无 bail、无日志）。影响全部 4 个 provider。
+
+**修复**：加 `let mut finished = false;`，`StreamEvent::Finished => { finished = true; break; }`，循环后：
+```rust
+if !finished {
+    bail!("cloud session closed without terminal event ({} bytes partial)", text.len());
+}
+```
+与现有 `Failed` 分支 `bail!` 一致。调用方 `lifecycle.rs:539 handle_cloud_streaming_done` 已能容错 Err（仅 `warn!`，partial transcript 仍可 paste）。
+
+**回归测试**：`close_async_fails_on_channel_close_without_finished`——mock `result_tx` 只发 Text 不发 Finished 就 drop，断言 close_async 返 Err。
+
+### 2.2 三家补 Close 帧（#4）🟠
+
+**根因**：aliyun(`:251`)/bytedance(`:275`)/tencent(`:221`) Close 落 `_ => {}`，`ws.next()` 返 `Ok(None)` → break → `return Ok(())` 无终态事件——是 #3 的触发路径。baidu(`:214`) 是唯一正确参照。
+
+**修复**：每家加 `Message::Close(_) => { ...; return Ok(()); }`，参照 baidu 模板，按各家「稳态判定」分支：
+
+| Provider | 稳态判定变量 | Close 时行为 |
+|---|---|---|
+| aliyun Fun-ASR | `!committed.is_empty()` | 稳态→Text+Finished；否则 Failed |
+| aliyun Qwen | `!accumulated_text.is_empty()` | 同上 |
+| bytedance | `last_text`（仅非空 text 才存，G1/G2 修复） | 末帧 flags==0x3 时：`last_text.is_some()`→Finished，否则 Failed；Close 时：`last_text.take()` 非空→Text+Finished，否则 Failed |
+| tencent | `!stable_segments.is_empty()` | 稳态→Text+Finished；否则 Failed |
+
+**注**：bytedance spec 原设计用 `got_last_frame`（flags==0x3 置 true），但实现改为「末帧时直接判 last_text 非空」——因 flags==0x3 帧到达后立即 return，Close 分支不可能在末帧后触发，故无需单独 `got_last_frame` 标志。
+
+**⚠️ G1/G2/H1 复审**：原实现空 text 处理有缺陷（空 text 当成功 + 空 Text 污染累积器），三轮复审逐步修复——详见 §8。
+
+**回归测试**（P2-1 已实现，2026-08-03）：4 家各补 `close_frame_emits_finished_when_stable` + `close_frame_emits_failed_when_no_stable`，用 **in-process tokio-tungstenite server**（`test_ws_server.rs` harness）真走一遍 WS 协议注入 Close 帧。bytedance 额外补末帧分支（`last_frame_*`）+ H1 空 text 回归（`last_frame_with_intermediate_empty_text_keeps_valid`）。详见 §10 P2-1。
+
+### 2.3 baidu Close partial-as-Finished（#11）
+
+**根因**：`baidu_stream.rs:216` 只查 `display` 非空，不查是否收到过 FIN_TEXT。仅 MID_TEXT partial（`current_partial` 非空、`fin_texts` 空）时 `accumulate_display` 返非空却发 Finished，把可能不准确的 partial 当最终结果。
+
+**修复**：改判 `let stable = !fin_texts.is_empty();`：
+- `stable` → Text(display)+Finished（display 一定非空，因 `fin_texts.concat()` 非空）
+- `!stable && !display.is_empty()` → Failed("仅收到非稳态 partial")
+- 空 → Failed("未收到识别结果")
+
+**回归测试**：`baidu_close_with_only_partial_emits_failed`（fin_texts 空 + current_partial 非空 → Close → Failed）。
+
+### 2.4 baidu 多句分隔符（#5）🟠
+
+**根因**：`baidu_stream.rs:243 accumulate_display` `fin_texts.concat()` 无分隔，英文粘连（`"hello world"+"today"→"helloworldtoday"`）。`_language` 参数未用。aliyun 用 `sentence_separator(&language)`（英文空格、中文逗号）。
+
+**修复**：`accumulate_display` 接收 language（`_language: &str` → `language: &str`），`fin_texts.join(sentence_separator(language))`。调用点 `:217` 传 `&language`。
+
+**回归测试**：扩 `accumulate_display` 单测：
+- 英文 `["hello world","today is good"]` + "en" → `"hello world today is good"`
+- 中文 `["你好","世界"]` + "zh" → `"你好，世界"`
+
+### 2.5 bytedance PCM 帧 COMP_NONE（#6）🟠（性能）
+
+**根因**：`bytedance_stream.rs:183,204,216` 三处音频帧 `COMP_GZIP`；PCM s16le 高熵 gzip 无效（ratio 0.9-1.1），双向 gzip 热路径（每 ~33ms 一帧）CPU 浪费 + 增端到端延迟。JSON config（`:166-172`）用 gzip 合理（文本可压），保留。
+
+**修复**：加 `const COMP_NONE: u8 = 0x0;`（协议头注释 `:32-33` 已声明合法），三处音频帧 `COMP_GZIP → COMP_NONE`。
+
+**⚠️ 需实测**：bytedance 服务端对音频帧 NONE 的兼容性（协议声明合法，但实现可能假设 gzip）。改完先手动跑一次 bytedance 识别验证，不通过则回退。
+
+**回归测试**：`build_client_frame_audio_uses_none_compression`（音频帧 compression==0x0）；`config_frame_uses_gzip`（JSON config 仍 gzip）。
+
+## 3. asr-local 文本后处理（🟡🟢）
+
+### 3.1 corrector find_candidates 优化（#8）🟡
+
+**根因**：`corrector.rs:121-134` 每次 `.lookup().cloned()` 整个 `Vec<(String,i64)>`（含 String 堆分配）+ `sort_by` 全排序后大部分丢弃（下游 `take(5)`，`correct_greedy` 取首个非原候选）。N=30/max_sz=4 约 90 次/correct()。`bigram_score` 在每次比较时重算（HashMap lookup + `word.chars().collect()`）。
+
+**修复**：
+1. `.cloned()` 改 borrow（`lookup` 返 `Option<&Vec>`）
+2. 用 `select_nth_unstable_by`（O(n) 平均）取 top-5 再 sort，避免全排序
+3. `bigram_score` 结果缓存（预计算每个候选的 score 到 `Vec<(f64, &String, i64)>` 再 sort，避免比较时重算）
+
+保留 tie-break `.then_with(|| a.0.cmp(&b.0))` 确定性。
+
+**回归测试**：现有 `correct_greedy` 测试保证语义不变；加 `find_candidates_returns_top5_sorted` 验证排序+tie-break。
+
+### 3.2 itn 黑名单单次扫描（#10）🟡
+
+**根因**：`itn.rs:47 chars().collect()` 在 loop{} 内，每匹配一黑名单词重 collect 全文 O(N) + 线性扫描 O(N)，K 处匹配 → O(N·K)。
+
+**修复**：单次遍历——对每个黑名单词用 `str::find` 迭代收集所有匹配 `(byte_start, byte_end)`，记录后统一从后向前 `replace_range` 替换（避免索引偏移）。或用 `aho_corasick`（若已在依赖）；否则朴素多词扫描。
+
+**回归测试**：`normalize_blacklist_multiple_matches`——长文本含多个黑名单词 + 嵌套，断言全替换。
+
+### 3.3 miner DB 错误传播（🟢）
+
+**根因**：`miner.rs:37 .unwrap_or_default()` 把 DB 故障伪装「无编辑历史」，与兄弟函数 `:71` 用 `?` 不一致，日志误导诊断。
+
+**修复**：改 `?` 传播。若调用方不能容错则 log::error + 返空（可观测）。需检查 `mine()` 调用方（desktop 层）对 Err 的处理。
+
+**回归测试**：`mine_propagates_db_error`（mock DB 返 Err，断言 mine 返 Err）。
+
+### 3.4 miner 排序 tie-break（🟢）
+
+**根因**：`miner.rs:56 sort_by(|a,b| b.1.cmp(&a.1))` 无 tie-break，HashMap 迭代序不确定，同频候选跨次运行不同。
+
+**修复**：加 `.then_with(|| a.0.cmp(&b.0))`（字典序），对齐 corrector:133。
+
+**回归测试**：`mine_ranking_deterministic_on_ties`（同频多候选，多次运行结果一致）。
+
+### 3.5 reload 并发窗口（🟢，可选）
+
+**根因**：`corrector.rs:226-227` 两独立写锁非原子；`:247`+`:254` 规则先换索引后建 → 瞬时新查询/旧 key 漏命中。瞬时自愈。
+
+**修复**（低优先）：reload_hotwords 用单个 `RwLock<HotwordConfig>` 包 active_words+hotwords 原子换；reload_fuzzy_dialect 先建新索引再换规则（调换 247/254 顺序）。或文档化为「已知可接受竞态」不修。
+
+## 4. 次要（🟢）
+
+### 4.1 fontPrefs jsdoc
+
+`crates/desktop/frontend/src/pages/Settings/fontPrefs.ts:21 @returns` 反了。改 jsdoc 为「true 表示在默认状态，不显示按钮」。代码不动。
+
+### 4.2 agent_detect 引号 + 连字符误报
+
+**引号**（`agent_detect.rs:309`）：`split_whitespace` 不剥引号，`'claude'`/`"claude"` 匹配失败。修复：token 先 `trim_matches(|c| c=='\''||c=='"')`。
+
+**连字符误报**（`:315-316`）：连字符后缀是设计特性（`claude-enigma`→`claude`），但 `claude-config` 误报。难两全，**保守只修引号**（明确 bug），连字符误报文档化为「已知设计行为」。
+
+**回归测试**：`match_agent_strips_quotes`（`'claude'`/`"claude"` → claude）。
+
+## 5. 验证纪律
+
+每任务后强制：编译（0 error 0 warning）+ 测试（核心层 `cargo test --lib`）+ 影响面 grep + 端到端链路。
+
+关键手动验证：
+- #1：octopus repo 根目录文件树显示 src/Cargo.toml，隐藏 target/node_modules
+- #2：`sleep 100 &` 后 exit shell，验证 tab 不假死
+- #6：bytedance 实测识别正常（COMP_NONE 兼容性）
+
+## 6. 不在范围
+
+- pty crate 引入 tokio（违反「纯逻辑」设计约束）
+- agent_detect 连字符误报的两全方案（设计特性，文档化即可）
+- reload 并发窗口的彻底修复（瞬时自愈，低优先）
+
+## 7. 复审修复（2026-08-02 第二轮，F1-F3 + 次要）
+
+首轮修复后的边角缺陷复查，全部 CONFIRMED 并修复：
+
+### F1. gitignore 嵌套 + 前导斜杠 pattern 误隐藏
+
+**根因**：首轮修复把所有 .gitignore 合并进 `GitignoreBuilder::new(dir)` 单一 root。前导斜杠 pattern（`/build`）的 `actual=build`（无 `**/`），当 `dir` 是 repo 子目录（如 `repo/src`）时，`matched` 剥离 root=src 后 `/build` 误命中 `src/build`——而 git 实际跟踪它（根 `/build` 不匹配嵌套）。
+
+**实证复现**：独立测试程序（`/tmp/f1_test`）确认 `dir=repo/src` 时 `/build` 误隐藏 `src/build`，`git check-ignore src/build` 无输出（git 不忽略）。
+
+**修复**：`build_gitignore_matchers` 改为对**每个 .gitignore 用其所在目录为 root 单独建一个 matcher**，返回 `Vec<Gitignore>`（按优先级低→高：全局 excludesfile < .git/info/exclude < repo_root→dir 逐级 .gitignore）。调用方逐个 `matched`，按 git「最后匹配胜出」语义：从高优先级（末尾）向低优先级查，Ignore→隐藏 / Whitelist(`!`)→可见（覆盖低优先级 Ignore）/ None→继续查。
+
+**回归测试**：`list_dir_nested_leading_slash_does_not_over_hide`——tempdir 建 repo + 根 `.gitignore`（`/build` + `*.log`）+ `src/build/`（应可见）+ `src/debug.log`（应隐藏，全局 pattern）+ 根 `build/`（应隐藏）。列 `src/` 断言 `build` 可见、`debug.log` 隐藏；列 repo 根断言 `build` 隐藏。
+
+### F2. baidu stable↔partial 英文粘连
+
+**根因**：`accumulate_display` 的 `fin_texts.join(sep)` 已加分隔符（首轮 #5 主修复），但 `format!("{}{}", stable, current_partial)` 在 stable 与 partial 间无 sep。英文场景 `stable="hello world"` + `partial="to"` → `"hello worldto"`（应 `"hello world to"`）。
+
+**修复**：`stable` 与 `current_partial` 间插 sep（仅当 `!stable.is_empty()` 且 partial 非空——首句 partial 不加，避免前导空格）。`format!("{}{}{}", stable, sep, current_partial)`。
+
+**回归测试**：`test_accumulate_display_english_with_partial`（`["hello world"]+"to"+"en"` → `"hello world to"`）+ `test_accumulate_display_first_partial_no_leading_sep`（首句 partial 无前导 sep）。中文场景 `["你好"]+"世"` → `"你好，世"`（句间逗号，语义正确）。
+
+### F3. ready once 不校验 windowLabel
+
+**根因**：前端所有终端窗口（含多实例 `terminal_<n>`）mount 时都 emit `terminal://ready`（index.tsx）。后端 `emit_new_tab_on_ready` 的 once 闭包 `move |_e|` 忽略 payload，多窗口并发 mount 时 agent 的 once 可能误收别的窗口的 ready → 提前 emit（agent listener 未就绪 → 事件丢 + fired=true 使 watchdog 不兜底）。
+
+**修复**：once 闭包解析 payload（新增 `ReadyPayload { windowLabel }` struct + `rename_all="camelCase"` 对齐前端），仅当 `window_label == AGENT_WINDOW_LABEL` 才触发 emit。解析失败（`unwrap_or(false)`）忽略，靠 5s watchdog 兜底（比误触发安全）。
+
+**⚠️ G3 复审：F3 的 once 修复无效**。核实 Tauri 2.11.2 源码（`event/listener.rs:160-177`）：`once` 闭包被调用即无条件 `unlisten(id)`，即使内部 `return`。F3 的 windowLabel 校验导致别的窗口 ready 先到时 once 已失效 → 退化为固定 5s watchdog 延迟。**正确修复改用 listen + 手动 unlisten**——详见 §8 G3。
+
+### 次要瑕疵
+
+- itn.rs 尾部多余空行清理（fmt 风格）
+- corrector.rs `top_k` 注释明确「下游 take(5)，取 6 含余量；改下游须同步」（防未来下游改 take(7) 漏候选）
+
+## 8. 三轮复审（2026-08-02/03，G1-G4 + H1）
+
+二轮（G1-G4）+ 三轮（H1）复审发现的首轮修复边角缺陷，全部 CONFIRMED 并修复：
+
+### G1/G2/H1. bytedance 空 text 当成功 + 空 Text 污染累积器
+
+**G1/G2 根因**（`bytedance_stream.rs`）：`last_text = Some(text.to_string())` 无条件存（含空 text）→ 末帧（flags==0x3）/Close 时 `last_text.is_some()` 为真 → 发 Finished → `close_async` 返 `Ok("")`，空结果当成功吞掉鉴权降级/空音频等异常。
+
+**G1/G2 修复**：仅非空 text 才存 `last_text`（`if !text.is_empty()`）；末帧 `last_text.is_some()` 才 Finished，否则 Failed。
+
+**H1 三轮发现 G1 未完全覆盖**：G1 只把 `last_text` 更新移进判空块，但 `result_tx.send(StreamEvent::Text(text))` 仍在块外——空 text 仍无条件发送。`close_async` 的 `StreamEvent::Text(t) => text = t` 无条件覆盖，序列 `[Text("你好"), Text(""), Finished]` → `Ok("")`，丢失有效结果。
+
+**H1 修复**：send 也移进 `if !text.is_empty()` 块，对齐其他 3 家 provider 的 `!display.is_empty()` 保护。
+
+**契约固化**：`close_async` 的覆盖语义（每次取最新）是契约，由 provider 层保证不发空 Text。`cloud_types::close_async_empty_text_overwrites_contract` 测试固化该契约（防未来误改 close_async 或 provider 重犯）。
+
+### G3. F3 的 once 修复无效，改用 listen
+
+**根因**：Tauri 2.11.2 源码（`event/listener.rs:160-177`）——`once` 是 `listen` + wrapper 闭包，wrapper 取出 handler 调用后**无条件 `unlisten(id)`**，即使 handler 内 `return`。F3 的 windowLabel 校验（不匹配则 return）导致：别的窗口 ready 先到 → 闭包调用 → return → once 监听器已移除 → agent 自己的 ready 到达时无 listener → 退化为固定 5s watchdog 延迟。
+
+**修复**：改用 `listen`（非 once），闭包内仅在 windowLabel 匹配时 emit + 手动 `unlisten(e.id())`；不匹配则继续监听。watchdog 超时后也 `unlisten(listen_id)` 清理。payload 用 `Arc<Mutex<Option<NewTabPayload>>>` 共享给 listen + watchdog，先到者 `take()` 并 emit。
+
+### G4. tencent nonce 理论可为 0（非正整数）
+
+**根因**（`tencent_stream.rs:273`）：`nonce = (uuid v4 as u128 as u32).to_string()`。uuid 低 32 位全 0（概率 2^-32）→ `nonce="0"` 非正整数，腾讯文档要求「随机正整数」，可能导致签名被拒。
+
+**修复**：`.saturating_add(1)`，范围变为 `[1, 4294967295]` 全正整数。`saturating_add` 对 `u32::MAX` 饱和不溢出（仍为 `u32::MAX`），最坏 `nonce=1`（合法）。
+
+## 9. P2 后续（2026-08-03）
+
+### P2-2. cloud close 错误诊断落库
+
+**核实澄清**：审查发现 partial 兜底**现状已有效**——`finalize_cloud:465` 的 `append_segment(&current_partial)` 在 `combined.is_empty()` 判断**之前**执行，Err 时只要 partial 非空，已写进 segments → `db_text()` 非空 → 会写 DB（含 partial）。真正缺失的是 **close 返回的 Err 字符串没落库**，排查云端鉴权/超时/断连只能翻日志。
+
+**修复**：`finalize_cloud` 加 `cloud_error: Option<&str>` 参数；`handle_cloud_streaming_done` Err 分支提取 `e` 传入；`finalize_cloud` 写 `update_transcription_raw` 后调 `octopus_infra::db::update_meta_field(transcript.id, "cloud_close_error", err)` 落 `meta_info.cloud_close_error`。新 `update_meta_field` 用 `json_set(COALESCE(meta_info,'{}'), '$.key', value)` 增量写（不覆盖 engine/char_count 等），NULL meta 兜底 `'{}'`。单测：`update_meta_field_increments_json` + `update_meta_field_handles_null_meta`。
+
+### P2-1. asr-cloud WS mock 基础设施（in-process server）
+
+**背景**：4 家 provider 的 `run_xxx_session` WS 主循环零覆盖，spec §2.2 要求的 Close 帧终态测试缺失，靠代码审查保证。
+
+**方案**：**in-process tokio-tungstenite server**（与项目 `download` crate 的 `httpmock` 真集成哲学一致，零新依赖）。
+
+1. **共享 harness**（`crates/asr-cloud/src/test_ws_server.rs`）：`WsTestServer::start(handler)` bind `127.0.0.1:0` 随机端口 + `accept_async` 接受连接，handler 闭包自由控制收发；`WsTestServer::start_script(Vec<Message>)` 纯发剧本模式。`ws_url()` 返回 `ws://127.0.0.1:{port}/`（带 `/` path 根——tungstenite 0.24 对无 path 的 URL 拼 query 后 `connect_async` 握手失败报 `HTTP format error`）。
+
+2. **endpoint 可注入化**：4 家 `run_xxx_session` 的 connect URL 从 const 改为参数——prod `open()` 传真 endpoint（wss://），测试传 `ws://127.0.0.1:{port}/`。aliyun 已参数化无需改；baidu/bytedance endpoint 提为参数；tencent 签名 URL 拼接从 run 函数移到 open（run 接收已签名 URL）。
+
+3. **测试覆盖**（共 11 个 + harness 3 个）：
+   - baidu/aliyun/tencent 各 2 个（Close 稳态→Finished / 非稳态→Failed）
+   - bytedance 5 个（末帧稳态/非稳态 + H1 空 text 不发 Text + 空 text 中间帧不污染 + Close 稳态/非稳态）
+   - harness 3 个（script 发消息 / handler 收 client 消息 / URL 带 query 握手）
+
+**踩坑**：tungstenite 0.24 `connect_async("ws://host:port?query")` 因无 path 构造的 HTTP 请求行非法 → server `accept_async` 报 `HTTP format error: invalid format`。修复：`ws_url()` 加 `/`，provider 拼 query 得 `ws://host:port/?sn=x`（path=`/`）合法。
+

@@ -32,12 +32,57 @@ use crate::agent_detect::{AgentDetector, Transition};
 const FLUSH_COALESCE: Duration = Duration::from_millis(4);
 const FLUSH_MAX_IDLE: Duration = Duration::from_millis(50);
 const READ_BUF: usize = 16 * 1024;
+// waiter 等 reader 退出的超时。若 shell 起了后台进程持有 PTY slave fd（sleep 100 &、
+// daemon、powerlevel10k），shell 退出后 master read 永不 EOF → reader 永不退。
+// 超时后强制收尾（取 pending tail + on_exit），reader 线程泄漏（阻塞在 read，session
+// Drop 时 master fd 关 → read 返 EOF → reader 退；进程级泄漏，OS 回收，benign）。
+// 见 session.rs waiter 注释 + spec 2026-08-02-terminal-cloud-text-bugfix.md §1.2。
+const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 // pending buffer 上限。溢出时丢弃整个 buffer 并 emit SGR-reset + 提示。
 // 只丢部分前缀会把 CSI 序列切成两半，破坏 xterm 屏幕状态。4 MiB ≈ 1000 个满屏 80x24。
 const MAX_PENDING: usize = 4 * 1024 * 1024;
 // 硬重置（ESC c）+ 暗色提示。背压丢弃 backlog 时原样写入流。
 const OVERFLOW_NOTICE: &[u8] =
     b"\x1bc\x1b[2m[octopus: dropped output due to backpressure]\x1b[0m\r\n";
+
+/// 带超时地 join reader 线程。
+///
+/// `JoinHandle::join` 无 stable `try_join`，故 spawn 一个计时守护线程把 join 结果
+/// 投递到 channel，主调线程用 `recv_timeout` 等待。超时则放弃等待（reader 仍阻塞在
+/// master read），调用方继续走 tail-drain + on_exit——这是「强制收尾」路径。
+///
+/// 返回值与 `JoinHandle::join` 一致：`Ok(())` 正常退出（panic 已被 join 捕获为 Err），
+/// `Err(panic_payload)` reader panic。超时不报错（只是 log::warn），返回 `Ok(())` 让
+/// 调用方继续收尾。
+fn join_reader_with_timeout(
+    handle: thread::JoinHandle<()>,
+    name: &str,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), Box<dyn std::any::Any + Send>>>();
+    let _join_helper = thread::Builder::new()
+        .name(format!("octopus-pty-{name}-join"))
+        .spawn(move || {
+            let res = handle.join();
+            let _ = tx.send(res);
+        })
+        .map_err(|e| {
+            // 极端情况：连计时守护线程都 spawn 失败。返回一个伪 panic payload。
+            log::error!("spawn {name} join helper failed: {e}");
+            Box::new(format!("spawn {name} join helper: {e}"))
+                as Box<dyn std::any::Any + Send>
+        })?;
+    match rx.recv_timeout(timeout) {
+        Ok(res) => res,
+        Err(_) => {
+            log::warn!(
+                "pty {name} 未在 {timeout:?} 内退出（后台进程持 slave fd？），强制收尾；\
+                 {name} 线程将泄漏至 session drop"
+            );
+            Ok(())
+        }
+    }
+}
 
 /// 单个 PTY 会话。
 pub struct PtySession {
@@ -146,7 +191,7 @@ where
     let pair = pty_system.openpty(size).map_err(|e| e.to_string())?;
 
     let cmd = crate::shell_init::build_command(cwd, shell)?;
-    let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave); // 关键——slave 必须在 master 读取前 drop
 
     // 若下面的管道 setup 失败，guard 会 kill 已 spawn 的 shell，防泄漏。
@@ -254,13 +299,21 @@ where
 
     // ── waiter 线程 ──
     // child.wait() → 等 reader join（EOF）→ flush tail → on_exit(code)。
-    let pending_e = pending;
-    let done_e = done;
+    let pending_e = pending.clone();
+    let done_e = done.clone();
     let exited_w = exited;
     let on_data_exit = on_data; // 复用 on_data 处理 tail（与 Terax 一致）
-    thread::Builder::new()
+    // waiter spawn 失败时用于兜底清理（见下方 match Err 分支）：保留 done + pending +
+    // killer 的克隆，确保 flusher 能退出、child 能被 reap。
+    let done_fallback = done.clone();
+    let pending_fallback = pending.clone();
+    let mut child_for_waiter = Some(child);
+    let waiter_handle = thread::Builder::new()
         .name("octopus-pty-waiter".into())
         .spawn(move || {
+            // child 由 Some 取出；若闭包从未执行（spawn 失败），child 留在 Option
+            // 里随闭包 drop——但 spawn 失败时我们改用 child_fallback 路径（见下）。
+            let mut child = child_for_waiter.take().expect("waiter: child present");
             let code = match child.wait() {
                 Ok(status) => status.exit_code() as i32,
                 Err(e) => {
@@ -270,7 +323,10 @@ where
             };
             exited_w.store(true, Ordering::Release);
             // 等 reader 撞 EOF 后再取 pending 快照，最后一行输出不会和 Exit 事件竞争。
-            if let Err(e) = reader_thread.join() {
+            // 带超时：grandchild 持 slave fd 时 reader 永不 EOF，超时强制收尾（见
+            // READER_JOIN_TIMEOUT 注释）。force-finalize 不丢数据——所有字节要么已
+            // flush 要么在 pending，下面 mem::take 原子取全部。
+            if let Err(e) = join_reader_with_timeout(reader_thread, "reader", READER_JOIN_TIMEOUT) {
                 log::error!("pty reader thread panicked: {e:?}");
             }
             let (lock, cv) = &*pending_e;
@@ -281,8 +337,25 @@ where
             done_e.store(true, Ordering::Release);
             cv.notify_all();
             on_exit(code);
-        })
-        .map_err(|e| format!("spawn waiter thread: {e}"))?;
+        });
+    match waiter_handle {
+        Ok(_) => {}
+        // waiter 是最后 spawn 的线程；若 spawn 失败（RLIMIT_NPROC/资源耗尽），reader
+        // 和 flusher 已 spawn。闭包被 drop，但 child_for_waiter 的 child 仍在闭包的
+        // Option 里随闭包 drop——portable_pty Child drop 不 reap → 僵尸。flusher 缺
+        // done 信号 → 永旋 + Arc 不释放。
+        // 兜底：①done_fallback 置位 + pending_fallback notify → flusher 退；②session
+        // 的 killer 字段在 session drop（本函数返 Err → 调用方 drop session Arc）时
+        // kill child → reader 撞 EOF 退。僵尸 child 接受（罕见，进程退出 OS 回收）。
+        Err(e) => {
+            log::error!(
+                "spawn waiter thread failed: {e}; 标记 flusher 退出（child 由 session Drop kill）"
+            );
+            done_fallback.store(true, Ordering::Release);
+            pending_fallback.1.notify_all();
+            return Err(format!("spawn waiter thread: {e}"));
+        }
+    }
 
     log::info!("pty spawned id={id} cols={cols} rows={rows} shell_pid={shell_pid}");
     Ok((session, size))
@@ -451,7 +524,7 @@ mod tests {
                     .map(|s| s.exit_code() as i32)
                     .unwrap_or(-1);
                 exited_w.store(true, Ordering::Release);
-                let _ = reader_thread.join();
+                let _ = join_reader_with_timeout(reader_thread, "reader-test", READER_JOIN_TIMEOUT);
                 let (lock, cv) = &*pending_e;
                 let tail = std::mem::take(&mut *lock.lock().unwrap());
                 if !tail.is_empty() {
@@ -532,5 +605,59 @@ mod tests {
         assert_eq!(code, 42, "non-zero exit code must propagate");
         let s = String::from_utf8_lossy(&data);
         assert!(s.contains("done"), "output should arrive before exit, got: {s:?}");
+    }
+
+    /// 验证 join_reader_with_timeout 在 reader 永不退出时不会无限阻塞（核心 #2 回归）。
+    /// 用一个永久 sleep 的线程模拟「卡死的 reader」，设 200ms 超时，断言总耗时 < 1s
+    /// （远小于 sleep 的 30s）且函数返回 Ok。
+    #[test]
+    fn join_reader_with_timeout_does_not_block_forever() {
+        let hung = thread::Builder::new()
+            .name("test-hung-reader".into())
+            .spawn(|| {
+                thread::sleep(Duration::from_secs(30));
+            })
+            .expect("spawn hung reader");
+        let start = Instant::now();
+        let res = join_reader_with_timeout(hung, "reader-test", Duration::from_millis(200));
+        let elapsed = start.elapsed();
+        assert!(res.is_ok(), "超时路径应返回 Ok(())，不报错");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "应在 ~200ms 返回而非阻塞 30s，实际 {:?}",
+            elapsed
+        );
+    }
+
+    /// 验证 join_reader_with_timeout 在 reader 正常退出时立即返回（不卡超时）。
+    #[test]
+    fn join_reader_with_timeout_returns_fast_on_normal_exit() {
+        let done = thread::Builder::new()
+            .name("test-fast-reader".into())
+            .spawn(|| {})
+            .expect("spawn fast reader");
+        let start = Instant::now();
+        let res = join_reader_with_timeout(done, "reader-test", Duration::from_secs(5));
+        let elapsed = start.elapsed();
+        assert!(res.is_ok(), "正常退出返回 Ok(())");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "应立即返回，实际 {:?}",
+            elapsed
+        );
+    }
+
+    /// 回归 #2：shell 起后台进程持 slave fd 后，waiter 必须能超时收尾、on_exit 正常触发。
+    /// 用 `sleep 100 &` 让 grandchild 持 fd，shell 立即 exit 0。若无超时，waiter 卡在
+    /// reader.join() → on_exit 永不调 → spawn_collect 5s 超时拿到 -999。
+    /// 标记 #[ignore]：依赖真实 PTY + sleep，CI 环境可能受限；手动跑验证。
+    #[test]
+    #[ignore = "real-pty: 需真实 PTY + sleep，验证 grandchild 持 fd 的假死场景"]
+    fn waiter_finalizes_on_reader_hang_grandchild_holds_fd() {
+        // `sleep 100 &` 起 grandchild 持 slave fd；shell exit 0。
+        // 修复前：reader 永不 EOF → waiter.join 永久阻塞 → on_exit 不触发 → code=-999。
+        // 修复后：READER_JOIN_TIMEOUT(2s) 超时 → on_exit(0) 触发。
+        let (code, _data) = spawn_collect(None, "sleep 100 & exit 0");
+        assert_eq!(code, 0, "waiter 必须超时收尾并触发 on_exit(0)，而非假死");
     }
 }

@@ -133,7 +133,7 @@ pub(crate) fn handle_toggle(
                 }
                 // 无活跃 session：无需等 close，直接 finalize_cloud（无标点补全，服务端已分句）
                 let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
-                finalize_cloud(stage, tr, partial, config, app_handle, tx);
+                finalize_cloud(stage, tr, partial, config, app_handle, tx, None);
                 return;
             }
 
@@ -457,6 +457,7 @@ pub(crate) fn finalize_cloud(
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
+    cloud_error: Option<&str>,
 ) {
     // flush 滞留 diverted（cloud close 返回整段最终文本，常与 tentative partial 发散→diverted）：
     // 不 flush 会被下方 db_text() 读取时丢弃。
@@ -484,6 +485,17 @@ pub(crate) fn finalize_cloud(
     // 确保 DB 记录已 INSERT（在 dispatch 之前——AgentBridge 也应进 ASR 历史）
     if let Err(e) = update_transcription_raw(&mut transcript, &active_asr_engine_name(), "streaming") {
         warn!("CloudStreaming finalize INSERT failed: {}", e);
+    }
+    // 错误诊断落库（P2-2）：cloud close 返回 Err 时把错误信息写 meta_info.cloud_close_error，
+    // 便于排查云端鉴权/超时/断连等问题。partial 兜底已在上面 append_segment 处理（现状有效）。
+    if let Some(err) = cloud_error {
+        if let Err(e) = octopus_infra::db::update_meta_field(
+            transcript.id,
+            "cloud_close_error",
+            err,
+        ) {
+            warn!("CloudStreaming finalize 写 cloud_close_error 失败: {}", e);
+        }
     }
 
     // 统一分流：AgentBridge → execute_agent_task
@@ -536,7 +548,7 @@ pub(crate) fn handle_cloud_streaming_done(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    let (transcript, partial) = match stage {
+    let (transcript, partial, cloud_error) = match stage {
         Stage::CloudClosing { transcript, current_partial } => {
             if transcript.id != session_id {
                 warn!(
@@ -546,19 +558,23 @@ pub(crate) fn handle_cloud_streaming_done(
                 return;
             }
             // close 返回的是整个 session 的完整文本，非空则 apply_engine_full 喂回（前缀追加；diverted 重算基准）
-            match &text {
-                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); }
-                Ok(_) => {}
-                Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
-            }
+            // Err 时提取错误信息传给 finalize_cloud 落 meta_info.cloud_close_error（P2-2 诊断落库）。
+            let cloud_error = match &text {
+                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); None }
+                Ok(_) => None,
+                Err(e) => {
+                    warn!("CloudStreaming close WSS failed: {}", e);
+                    Some(e.clone())
+                }
+            };
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
             let p = std::mem::take(current_partial);
-            (tr, p)
+            (tr, p, cloud_error)
         }
         _ => {
             warn!("CloudStreamingDone received but stage != CloudClosing, ignoring");
             return;
         }
     };
-    finalize_cloud(stage, transcript, partial, config, app_handle, tx);
+    finalize_cloud(stage, transcript, partial, config, app_handle, tx, cloud_error.as_deref());
 }

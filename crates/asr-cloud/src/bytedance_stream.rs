@@ -69,6 +69,7 @@ const SER_NONE: u8 = 0x0;
 const SER_JSON: u8 = 0x1;
 
 const COMP_GZIP: u8 = 0x1;
+const COMP_NONE: u8 = 0x0;
 
 /// 建连 + 发初始 config + 推 pre-roll PCM + 启动后台 WS task。
 ///
@@ -83,7 +84,7 @@ pub fn open(
     tokio::spawn(async move {
         let tx_for_err = result_tx.clone();
         let result =
-            run_bytedance_session(pcm_rx, result_tx, api_key, resource_id, language, pre_roll_samples)
+            run_bytedance_session(pcm_rx, result_tx, ENDPOINT, api_key, resource_id, language, pre_roll_samples)
                 .await;
         // session 契约：Ok = 已通过 result_tx 通知最终结果（Finished/运行期 Failed，
         // 见 run_bytedance_session 内 WS 错误分支 return Ok 处）；仅 Err（签名/建连等启动期失败，
@@ -97,16 +98,20 @@ pub fn open(
 }
 
 /// 后台 WS 会话主逻辑：建连 → 发初始 config → pre-roll → 双向循环 → 末帧 → 收结果。
+///
+/// `endpoint` 参数化（P2-1 WS mock）：prod 调用传真 `const ENDPOINT`（`wss://...`），
+/// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（见 `test_ws_server`）。
 async fn run_bytedance_session(
     mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
+    endpoint: &str,
     api_key: String,
     resource_id: String,
     language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
     // 1. 建连（带火山引擎特有的握手 headers）
-    let mut request = ENDPOINT.into_client_request()
+    let mut request = endpoint.into_client_request()
         .context("bytedance WS 请求构造失败")?;
     let headers = request.headers_mut();
     headers.insert(
@@ -135,7 +140,7 @@ async fn run_bytedance_session(
     )
     .await
     .map_err(|_| anyhow::anyhow!("bytedance WS connect timeout"))?
-    .with_context(|| format!("bytedance WS 连接失败: {}", ENDPOINT))?;
+    .with_context(|| format!("bytedance WS 连接失败: {}", endpoint))?;
 
     // 2. 发 FULL_CLIENT_REQUEST（初始 JSON config，gzip 压缩）
     let lang = if language.is_empty() || language == "auto" || language == "zh" {
@@ -181,7 +186,7 @@ async fn run_bytedance_session(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             &pcm,
         )?;
         ws.send(Message::binary(audio_frame))
@@ -190,6 +195,12 @@ async fn run_bytedance_session(
     }
 
     // 4. 双向循环
+    // bytedance 无累加器——每帧 result.text 直接发 Text 事件（且是该次识别的累积文本）。
+    // 为处理服务端主动 Close（#4），记录最后一次 text；Close 时若有 text 则当 best-effort
+    // Finished（用户至少拿到已识别内容），否则 Failed。注意：稳态确认仅末帧（flags==0x3）
+    // 才发，发了就 return，故 Close 路径下 flags==0x3 必然未到——Close 携带的 text 是
+    // 「未到末帧的最佳识别」，按异常但可用的结果处理。
+    let mut last_text: Option<String> = None;
     loop {
         tokio::select! {
             // 收 PCM 指令
@@ -200,7 +211,7 @@ async fn run_bytedance_session(
                             MSG_AUDIO_ONLY_REQUEST,
                             FLAG_NO_SEQUENCE,
                             SER_NONE,
-                            COMP_GZIP,
+                            COMP_NONE,
                             &pcm,
                         )?;
                         ws.send(Message::binary(audio_frame))
@@ -213,7 +224,7 @@ async fn run_bytedance_session(
                             MSG_AUDIO_ONLY_REQUEST,
                             FLAG_NEG_SEQUENCE,
                             SER_NONE,
-                            COMP_GZIP,
+                            COMP_NONE,
                             &[],
                         )?;
                         ws.send(Message::binary(last_frame))
@@ -252,11 +263,27 @@ async fn run_bytedance_session(
                             let json_val: Value = serde_json::from_str(&json_str)
                                 .context("bytedance 响应 JSON 解析失败")?;
                             if let Some(text) = json_val["result"]["text"].as_str() {
-                                let _ = result_tx.send(StreamEvent::Text(text.to_string()));
+                                // 仅非空 text 处理（G1/G2/H1：空 text 不应记入 last_text，
+                                // 也不应发 Text 事件——close_async 的 text = t 会用空串覆盖
+                                // 之前累积的非空文本，导致有效结果丢失。其他 3 家 provider
+                                // 都有 !display.is_empty() 保护，bytedance 对齐）。
+                                if !text.is_empty() {
+                                    last_text = Some(text.to_string());
+                                    let _ = result_tx.send(StreamEvent::Text(text.to_string()));
+                                }
                             }
                             if parsed.flags == 0x3 {
-                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束
-                                let _ = result_tx.send(StreamEvent::Finished);
+                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束。
+                                // 稳态判据：有非空 last_text（收到过实质识别内容）才发 Finished，
+                                // 否则发 Failed 暴露异常（对齐其他 provider 的 !stable.is_empty() 判据，
+                                // 防空 text 当成功吞掉鉴权降级/空音频等异常）。
+                                if last_text.is_some() {
+                                    let _ = result_tx.send(StreamEvent::Finished);
+                                } else {
+                                    let _ = result_tx.send(StreamEvent::Failed(
+                                        "bytedance 末帧响应但无有效识别结果".into()
+                                    ));
+                                }
                                 return Ok(());
                             }
                         }
@@ -272,7 +299,26 @@ async fn run_bytedance_session(
                             log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
                         }
                     }
-                } // text/close/ping 等忽略
+                } else if let Message::Close(_) = msg {
+                    // 服务端主动 Close（鉴权失败/超时/限流等）。旧实现注释「text/close/ping
+                    // 等忽略」未处理 Close → 随后 ws.next() 返 Ok(None) → break →
+                    // return Ok(()) 无终态事件，close_async 把 partial 当成功（#3）。
+                    // 现显式处理：有非空 last_text（best-effort，未到末帧但收到过实质内容）
+                    // 发 Finished 让用户拿到已识别内容；否则 Failed 暴露异常。
+                    // 注：last_text 仅在非空时存（见上面 MSG_FULL_SERVER_RESPONSE），
+                    // 故 Some 必非空，Close 不会发空 text。
+                    log::debug!("bytedance: WS 连接关闭");
+                    if let Some(t) = last_text.take() {
+                        let _ = result_tx.send(StreamEvent::Text(t));
+                        let _ = result_tx.send(StreamEvent::Finished);
+                    } else {
+                        let _ = result_tx.send(StreamEvent::Failed(
+                            "bytedance WS 连接关闭但未收到识别结果".into()
+                        ));
+                    }
+                    return Ok(());
+                }
+                // text/ping 等忽略
             }
         }
     }
@@ -401,34 +447,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_client_frame_audio() {
-        let payload = b"test_audio";
+    fn test_build_client_frame_audio_uses_none_compression() {
+        // 回归 #6：PCM s16le 高熵，gzip 无效（ratio 0.9-1.1）且双向编解码是热路径 CPU 浪费。
+        // 音频帧（含 pre-roll / realtime / 末帧）改 COMP_NONE，协议合法（0x0=NONE）。
+        let payload = b"test_audio_pcm_s16le";
         let frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             payload,
         ).unwrap();
-        // header 4B + payload_size 4B + gzip(payload)
+        // header 4B + payload_size 4B + raw payload（未压缩，长度等于 payload）
         assert_eq!(frame[0], 0x11); // ver=1, hdr=1
         assert_eq!((frame[1] >> 4) & 0xF, MSG_AUDIO_ONLY_REQUEST);
         assert_eq!(frame[1] & 0xF, FLAG_NO_SEQUENCE);
         assert_eq!((frame[2] >> 4) & 0xF, SER_NONE);
-        assert_eq!(frame[2] & 0xF, COMP_GZIP);
+        assert_eq!(frame[2] & 0xF, COMP_NONE, "音频帧 compression 必须是 NONE");
+        // payload 原样保留（未 gzip）
+        let payload_size = u32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
+        assert_eq!(payload_size as usize, payload.len(), "NONE 帧长度 == 原始 payload");
+        assert_eq!(&frame[8..], payload);
     }
 
     #[test]
-    fn test_build_client_frame_last() {
+    fn test_build_client_frame_last_uses_none_compression() {
+        // 末帧（空 payload）也用 COMP_NONE（与音频帧一致）
         let frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NEG_SEQUENCE,
             SER_NONE,
-            COMP_GZIP,
+            COMP_NONE,
             &[],
         ).unwrap();
         // 末帧 flags = 0x2 (NEG_SEQUENCE)
         assert_eq!(frame[1] & 0xF, FLAG_NEG_SEQUENCE);
+        assert_eq!(frame[2] & 0xF, COMP_NONE);
+    }
+
+    /// 初始 JSON config 帧仍用 GZIP（文本可压，合理）——确保未误改。
+    #[test]
+    fn test_build_client_frame_config_uses_gzip() {
+        let config = r#"{"user":{"uid":"test"}}"#;
+        let frame = build_client_frame(
+            MSG_FULL_CLIENT_REQUEST,
+            FLAG_NO_SEQUENCE,
+            SER_JSON,
+            COMP_GZIP,
+            config.as_bytes(),
+        ).unwrap();
+        assert_eq!((frame[2] >> 4) & 0xF, SER_JSON);
+        assert_eq!(frame[2] & 0xF, COMP_GZIP, "JSON config 帧保持 GZIP（文本可压）");
     }
 
     #[test]
@@ -488,6 +557,133 @@ mod tests {
             msg.contains("payload 不完整") && msg.contains("100"),
             "截断帧应 bail 并点明 payload_size 与实际不符，实际报错: {}",
             msg
+        );
+    }
+
+    // ── P2-1 WS mock：Close 帧终态测试 + H1 空 text 回归（spec §2.2 + §8 G1/G2/H1）──
+
+    use crate::test_ws_server::WsTestServer;
+    use crate::cloud_types::{CloudStreamHandle, StreamEvent};
+
+    /// 辅助：构造 bytedance server 响应二进制帧（FULL_SERVER_RESPONSE）。
+    /// flags=0x1 正常帧，0x3 末帧。payload 是 raw JSON（无压缩，方便测试）。
+    fn build_server_response(json_payload: &str, flags: u8) -> Vec<u8> {
+        let payload_bytes = json_payload.as_bytes();
+        let mut frame = vec![0x11u8, (MSG_FULL_SERVER_RESPONSE << 4) | flags, (SER_JSON << 4) | COMP_NONE, 0x00];
+        frame.extend_from_slice(&1u32.to_be_bytes()); // sequence
+        frame.extend_from_slice(&(payload_bytes.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload_bytes);
+        frame
+    }
+
+    /// 辅助：spawn run_bytedance_session 连 in-process server，收集事件直到 Finished/Failed。
+    async fn spawn_bytedance_and_collect(url: String) -> Vec<StreamEvent> {
+        let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+        let tx_clone = result_tx.clone();
+        tokio::spawn(async move {
+            let result = run_bytedance_session(
+                pcm_rx, result_tx, &url,
+                "testkey".into(), "volc.test".into(), "zh".into(), Vec::new(),
+            ).await;
+            if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
+        });
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = handle.try_recv_text() {
+                events.push(ev);
+                if matches!(events.last(), Some(StreamEvent::Finished) | Some(StreamEvent::Failed(_))) {
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        events
+    }
+
+    /// 回归 spec §2.2：有 text（稳态）+ 末帧 → Finished。
+    #[tokio::test]
+    async fn last_frame_emits_finished_when_text_present() {
+        let resp = build_server_response(r#"{"result":{"text":"你好"}}"#, 0x3); // 末帧 flags=0x3
+        let server = WsTestServer::start_script(vec![
+            Message::Binary(resp),
+        ]).await;
+        let events = spawn_bytedance_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "有 text + 末帧应发 Finished，实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 G1/H1：末帧但无 text（last_text 从未非空）→ Failed（不当成功）。
+    #[tokio::test]
+    async fn last_frame_emits_failed_when_no_text() {
+        // 空 text 响应 + 末帧：last_text 仍 None（G1 修复：空 text 不存）→ Failed（H1：空 text 不发 Text）
+        let resp = build_server_response(r#"{"result":{"text":""}}"#, 0x3);
+        let server = WsTestServer::start_script(vec![
+            Message::Binary(resp),
+        ]).await;
+        let events = spawn_bytedance_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+            "末帧无 text 应发 Failed，实际 events: {:?}", events
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "末帧无 text 不应发 Finished"
+        );
+    }
+
+    /// 回归 H1 副作用：[text("你好"), 空 text, 末帧] → Finished + last_text="你好"（空 text 不污染）。
+    #[tokio::test]
+    async fn last_frame_with_intermediate_empty_text_keeps_valid() {
+        let resp1 = build_server_response(r#"{"result":{"text":"你好"}}"#, 0x1); // 正常帧
+        let resp2 = build_server_response(r#"{"result":{"text":""}}"#, 0x1);    // 空 text（H1：不发 Text 事件）
+        let resp3 = build_server_response(r#"{"result":{"text":""}}"#, 0x3);    // 末帧（last_text=Some("你好") → Finished）
+        let server = WsTestServer::start_script(vec![
+            Message::Binary(resp1),
+            Message::Binary(resp2),
+            Message::Binary(resp3),
+        ]).await;
+        let events = spawn_bytedance_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "[你好, 空, 末帧] last_text=你好 → 应 Finished，实际 events: {:?}", events
+        );
+        // 断言有 Text("你好") 事件（H1：空 text 不发 Text，你好保留）
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Text(t) if t == "你好")),
+            "应有 Text(\"你好\")（空 text 不覆盖），实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 spec §2.2：Close 帧 + 有 last_text → Finished（best-effort）。
+    #[tokio::test]
+    async fn close_frame_emits_finished_when_text_present() {
+        let resp = build_server_response(r#"{"result":{"text":"你好"}}"#, 0x1); // 正常帧（非末帧）
+        let server = WsTestServer::start_script(vec![
+            Message::Binary(resp),
+            // server 发完响应后 close（start_script 自动 close）
+        ]).await;
+        let events = spawn_bytedance_and_collect(server.ws_url()).await;
+        // Close 时 last_text=Some("你好") → Text("你好") + Finished
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "Close + 有 text 应 Finished，实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 spec §2.2：Close 帧 + 无 text → Failed。
+    #[tokio::test]
+    async fn close_frame_emits_failed_when_no_text() {
+        let server = WsTestServer::start_script(vec![
+            // 不发任何响应，直接 close（start_script 发完空剧本后 close）
+        ]).await;
+        let events = spawn_bytedance_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+            "Close 无 text 应 Failed，实际 events: {:?}", events
         );
     }
 }
