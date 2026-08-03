@@ -144,8 +144,20 @@ impl Scheduler {
                     for task in tasks.iter() {
                         if task.skip_idle_check && task.is_due() {
                             log::debug!("[scheduler] 执行轻量任务: {}", task.name);
-                            (task.run)();
-                            task.mark_run();
+                            // catch_unwind 防一个任务 panic 杀死整个调度线程
+                            // （闭包非 UnwindSafe，需 AssertUnwindSafe 包装）。
+                            // panic 也 mark_run：否则 is_due() 下个 tick 仍 true，
+                            // deterministic panic 每 tick 重跑（默认 interval 600s 给问题任务冷却期）。
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.run)())) {
+                                Ok(_) => task.mark_run(),
+                                Err(_) => {
+                                    log::error!(
+                                        "[scheduler] 任务 {} panic，已吞，标记 last_run 避免每 tick 重试，继续调度",
+                                        task.name
+                                    );
+                                    task.mark_run();
+                                }
+                            }
                         }
                     }
 
@@ -158,8 +170,20 @@ impl Scheduler {
                     for task in tasks.iter() {
                         if !task.skip_idle_check && task.is_due() {
                             log::debug!("[scheduler] 执行任务: {}", task.name);
-                            (task.run)();
-                            task.mark_run();
+                            // catch_unwind 防一个任务 panic 杀死整个调度线程
+                            // （闭包非 UnwindSafe，需 AssertUnwindSafe 包装）。
+                            // panic 也 mark_run：否则 is_due() 下个 tick 仍 true，
+                            // deterministic panic 每 tick 重跑（默认 interval 600s 给问题任务冷却期）。
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (task.run)())) {
+                                Ok(_) => task.mark_run(),
+                                Err(_) => {
+                                    log::error!(
+                                        "[scheduler] 任务 {} panic，已吞，标记 last_run 避免每 tick 重试，继续调度",
+                                        task.name
+                                    );
+                                    task.mark_run();
+                                }
+                            }
                         }
                     }
                 }

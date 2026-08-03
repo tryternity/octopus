@@ -33,15 +33,35 @@ pub(crate) fn sidecar_path(dest: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// 原子写 sidecar：写 .tmp 再 rename。
+/// 原子写 sidecar：写 .tmp → fsync → rename → fsync 父目录（best-effort）。
+///
+/// #11 对齐修复（2026-08-03）：原实现 `std::fs::write` + `rename` 无 fsync，
+/// 与 vault/keychain.rs save_machine_key 的 #11 修复不对称。断电恰在 rename 后
+/// （目录项已更新但数据未落盘）→ sidecar 空/半 → JSON 解析失败 → 续传进度丢失。
+/// POSIX `rename(2)` 只原子地切目录项，内容持久化需 fsync；目录项本身的更新
+/// （rename 的可见性）需 fsync 父目录才抗断电。详见 keychain.rs:347-401 注释。
 pub fn save(dest: &Path, state: &ResumeState) -> std::io::Result<()> {
+    use std::io::Write;
     let path = sidecar_path(dest);
     let mut tmp = path.clone();
     tmp.set_extension("json.tmp");
     let bytes = serde_json::to_vec(state)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp, &bytes)?;
+    // 1. 写 tmp + fsync 内容（保证 rename 前数据已落盘）
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+    }
+    // 2. rename（原子切目录项）
     std::fs::rename(&tmp, &path)?;
+    // 3. fsync 父目录（best-effort）：保证 rename 的目录项更新也落盘，扛断电。
+    //    失败不阻断——与 keychain.rs #11 修复一致（目录 fsync 在某些 FS 上不可用）。
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 

@@ -48,21 +48,29 @@ pub fn save_frontmost_pid(app: &tauri::AppHandle) {
     }
 }
 
-/// 找当前聚焦的 octopus webview 窗口 label（排除浮窗/指示窗/展示窗）。
+/// 找当前聚焦的 octopus webview 窗口 label（只返回真正监听 paste-text 的窗口）。
 /// 无聚焦窗口 → None。
+///
+/// 白名单策略（2026-08-03 fix）：只返回有 paste-text listener 的窗口——
+///   - `terminal_*`（含 `terminal_action_agent`，前端 TerminalPane.tsx 注册 listener）
+///   - `compact_editor_window`（前端 MarkdownPane.tsx 注册 listener）
+///
+/// 旧实现用黑名单（EXCLUDED_PREFIXES）排除浮窗/指示窗/展示窗，但漏了
+/// `action_bar_window`/`record_*`/`password_generator_window` 等——这些窗口聚焦时
+/// （如 action_bar 主动 makeKeyAndOrderFront 夺焦）被当成粘贴目标，emit_to 的
+/// "paste-text" 事件无 listener 接收，转写文本静默丢失。黑名单需随新窗口不断维护，
+/// 改白名单后新增窗口默认不接收 paste-text（需显式登记），更防未来漏配。
 fn focused_self_webview_label(app: &tauri::AppHandle) -> Option<String> {
-    /// 不接收 paste-text 的窗口 label（浮窗 / 指示窗 / 展示窗）。
-    const EXCLUDED_PREFIXES: &[&str] = &[
-        "overlay_window",
-        "result_window",
-        "clipboard_window",
-        "pin_window",
-        "download_window",
-        "onboarding_window",
-        "settings_window",
-    ];
+    /// 判断 label 是否注册了 paste-text listener（白名单）。
+    fn has_paste_text_listener(label: &str) -> bool {
+        // 终端多实例前缀 + agent 单例
+        label.starts_with(crate::ui::terminal_window::WINDOW_LABEL_PREFIX)
+            || label == crate::ui::terminal_window::AGENT_WINDOW_LABEL
+            // 紧凑编辑器（MarkdownPane 注册 listener）
+            || label == crate::commands::compact_editor_window::WINDOW_LABEL
+    }
     for (label, win) in app.webview_windows() {
-        if EXCLUDED_PREFIXES.iter().any(|p| label.starts_with(p)) {
+        if !has_paste_text_listener(&label) {
             continue;
         }
         if win.is_focused().unwrap_or(false) {

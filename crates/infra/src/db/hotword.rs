@@ -468,10 +468,11 @@ pub fn add_word_to_set(set_id: &str, word: &str) -> Result<bool> {
 }
 
 pub(crate) fn add_word_to_set_at(conn: &Connection, set_id: &str, word: &str) -> Result<bool> {
-    ensure_within_capacity(conn, set_id, 1)?;
     let id = crate::hotword_text::hotword_word_uuid(set_id, word);
     let pinyin = crate::hotword_text::word_plain_pinyins(word).join(" ");
-    // 先查是否已存在且活跃——避免容量校验后重复加浪费配额判断
+    // 先查是否已存在且活跃——幂等短路，避免对满词典再加已存在词时误撞容量上限
+    // （顺序很关键：若先 ensure_within_capacity，词典满 + 加已存在词会返回容量错误
+    // 而非幂等 Ok(false)，破坏 (set_id, word) 复合键的幂等语义）。
     let already_active: bool = conn
         .query_row(
             "SELECT is_deleted FROM hotword_words WHERE set_id=?1 AND word=?2",
@@ -483,6 +484,8 @@ pub(crate) fn add_word_to_set_at(conn: &Connection, set_id: &str, word: &str) ->
     if already_active {
         return Ok(false); // 已活跃，幂等无操作
     }
+    // 容量校验放在去重之后：仅对真正要新增/恢复的词检查配额
+    ensure_within_capacity(conn, set_id, 1)?;
     // ON CONFLICT(set_id, word)：已存在（软删态）→ 恢复 is_deleted=0；不存在 → INSERT
     conn.execute(
         "INSERT INTO hotword_words (id, set_id, word, pinyin, is_deleted)
@@ -508,7 +511,22 @@ pub(crate) fn add_words_to_set_at(
     // 去重输入
     let unique: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
     let unique: Vec<&str> = unique.into_iter().collect();
-    ensure_within_capacity(conn, set_id, unique.len())?;
+    // 先查 set 内已活跃词集合，只对真正新增的词数（only_new.len()）校验容量。
+    // P2-4 fix（2026-08-03）：旧实现用 unique.len()（含已活跃词）——2950+100（其中 50
+    // 已存在）实增 50 未超限却被拒。与单条版 add_word_to_set_at 的"先查重再校验"
+    // 保持一致（P1-4），只是批量版一次查全集而非逐条。
+    let existing_active: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT word FROM hotword_words WHERE set_id=?1 AND is_deleted=0",
+        )?;
+        let rows = stmt.query_map(params![set_id], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let only_new: Vec<&&str> = unique
+        .iter()
+        .filter(|w| !existing_active.contains(**w))
+        .collect();
+    ensure_within_capacity(conn, set_id, only_new.len())?;
     let mut added = 0;
     for word in &unique {
         let id = crate::hotword_text::hotword_word_uuid(set_id, word);
@@ -558,7 +576,17 @@ pub(crate) fn set_words_in_set_at(
     words: &[String],
 ) -> Result<()> {
     let unique: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
-    ensure_within_capacity(conn, set_id, unique.len())?;
+    // 覆盖语义容量校验（2026-08-03 fix）：最终活跃词数 = unique.len()
+    // （不在新列表的旧词会被软删）。旧实现误用 `ensure_within_capacity`（追加语义，
+    // 叠加 cur）—— 2000 词覆盖导入 2500（最终 2500 < 3000 合法）会被误拒。
+    // 覆盖语义下旧词会被软删，cur 不参与最终计数，直接判 unique.len() 是否超上限。
+    if unique.len() > HOTWORD_SET_MAX_WORDS {
+        anyhow::bail!(
+            "词典容量已满（{} 词上限），覆盖导入 {} 词超限",
+            HOTWORD_SET_MAX_WORDS,
+            unique.len()
+        );
+    }
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1009,6 +1037,23 @@ mod tests {
         assert!(err.to_string().contains("容量已满"), "满后再加应拒：{}", err);
     }
 
+    /// add_word_to_set_at：词典满后再加【已存在活跃词】应幂等 Ok(false)，而非撞容量错误。
+    /// 回归 P1-4：去重必须在容量校验之前。
+    #[test]
+    fn add_existing_word_at_capacity_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "cap-idem", "幂等容量测试").unwrap();
+
+        // 填满上限词（fill_words_batch 用 w{i} 命名）
+        fill_words_batch(&conn, "cap-idem", HOTWORD_SET_MAX_WORDS);
+
+        // 拿一个已存在的活跃词再 add → 必须幂等 Ok(false)，不能撞容量错误
+        let res = add_word_to_set_at(&conn, "cap-idem", "w0").unwrap();
+        assert!(!res, "满词典加已存在词应幂等 Ok(false)：res={}", res);
+    }
+
     /// add_words_to_set_at：批量追加后超上限被拒。
     #[test]
     fn add_words_rejects_when_exceeding_capacity() {
@@ -1048,6 +1093,90 @@ mod tests {
         // 软删的香蕉仍在 DB
         let banana = get_hotword_word_at(&conn, "override-set", "香蕉").unwrap().unwrap();
         assert!(banana.is_deleted > 0);
+    }
+
+    /// P2-3 回归：set_words_in_set_at 覆盖语义——2000 词词典覆盖导入 2500 新词
+    /// （最终 2500 < 3000 上限）应成功，不被误用追加校验（cur+adding）拒绝。
+    /// 旧实现 ensure_within_capacity(cur=2000, adding=2500) → 4500 > 3000 误拒。
+    #[test]
+    fn set_words_overwrite_below_max_succeeds_even_if_cur_plus_new_exceeds() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "ov-cap", "覆盖容量测试").unwrap();
+
+        // 先填 2000 词（绕过校验批量插入）
+        fill_words_batch(&conn, "ov-cap", 2000);
+
+        // 覆盖导入 2500 个全新词（n0..n2499，与 w{i} 不重叠）——最终活跃 2500 < 3000 合法
+        let new_words: Vec<String> = (0..2500).map(|i| format!("n{}", i)).collect();
+        set_words_in_set_at(&conn, "ov-cap", &new_words).expect("覆盖语义：最终 2500 < 3000 应成功");
+
+        // 校验最终活跃词数 = 2500（旧 2000 词全部软删）
+        let active = list_words_in_set_at(&conn, "ov-cap").unwrap();
+        assert_eq!(active.len(), 2500, "覆盖后应只剩新导入的 2500 词");
+    }
+
+    /// P2-3 守护：set_words_in_set_at 覆盖语义——导入词数本身超上限（> 3000）仍应被拒。
+    #[test]
+    fn set_words_overwrite_above_max_still_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "ov-over", "覆盖超限测试").unwrap();
+
+        // 覆盖导入 3001 个词（本身超上限）→ 应拒
+        let too_many: Vec<String> = (0..=HOTWORD_SET_MAX_WORDS).map(|i| format!("x{}", i)).collect();
+        let err = set_words_in_set_at(&conn, "ov-over", &too_many).unwrap_err();
+        assert!(
+            err.to_string().contains("超限") || err.to_string().contains("容量"),
+            "导入词数本身超上限应拒：{}",
+            err
+        );
+    }
+
+    /// P2-4 回归：add_words_to_set_at 批量追加——2950 词 + 100（其中 50 已存在）
+    /// 实增 50 未超限应成功，不被含已活跃词的 unique.len() 误拒。
+    /// 旧实现 ensure_within_capacity(cur=2950, adding=100) → 3050 > 3000 误拒。
+    #[test]
+    fn add_words_with_existing_active_does_not_double_count_capacity() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "add-cap", "批量容量回归").unwrap();
+
+        // 先填 2950 词（w0..w2949）
+        fill_words_batch(&conn, "add-cap", 2950);
+
+        // 追加 100 词：50 个已存在（w0..w49）+ 50 个全新（new0..new49）
+        // 实际新增 50，未超上限（2950 + 50 = 3000）
+        let mut batch: Vec<String> = (0..50).map(|i| format!("w{}", i)).collect(); // 已存在
+        batch.extend((0..50).map(|i| format!("new{}", i))); // 全新
+        let _added = add_words_to_set_at(&conn, "add-cap", &batch)
+            .expect("含已活跃词的批量追加应只对新增校验容量，50 新增未超限");
+        // _added 计数：50 全新 INSERT + 50 已存在恢复（is_deleted=0→0 不变，但 ON CONFLICT
+        // UPDATE 仍算 n=1）。只校验不报错即可，added 数值非本回归重点。
+
+        // 最终活跃词数 = 2950 + 50 = 3000（恰好上限）
+        let active = list_words_in_set_at(&conn, "add-cap").unwrap();
+        assert_eq!(active.len(), 3000, "2950 + 50 新增 = 3000 恰好上限");
+    }
+
+    /// P2-4 守护：add_words_to_set_at 批量追加——真正新增词数超上限仍应被拒。
+    #[test]
+    fn add_words_truly_new_exceeding_capacity_still_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
+        insert_hotword_set_at(&conn, "add-over", "批量超限守护").unwrap();
+
+        // 填到 2950
+        fill_words_batch(&conn, "add-over", 2950);
+
+        // 追加 60 个全新词 → 实增 60，2950 + 60 = 3010 > 3000 应拒
+        let batch: Vec<String> = (0..60).map(|i| format!("new{}", i)).collect();
+        let err = add_words_to_set_at(&conn, "add-over", &batch).unwrap_err();
+        assert!(err.to_string().contains("容量已满"), "真正新增超限应拒：{}", err);
     }
 
     // ── word sync_md5 填充（2026-08-01 word 级 merge，对齐 vault storage 层）──

@@ -212,7 +212,19 @@ async fn run_ws_session(
                                     current_sentence_id = -1; // 等下一个新句
                                 }
 
-                                let combined = format!("{}{}", committed, current_sentence);
+                                // partial 拼接也需 sep 守卫（与 commit 分支一致）：
+                                // committed（已提交句）与 current_sentence（当前句 partial）
+                                // 之间若无分隔会实时显示粘连（commit 时自愈，但 partial 高频
+                                // 显示期间会闪现粘连）。仅当两者均非空且 committed 未以 sep 结尾
+                                // 时插入 sep。
+                                let combined = if !committed.is_empty()
+                                    && !current_sentence.is_empty()
+                                    && !committed.ends_with(sep)
+                                {
+                                    format!("{}{}{}", committed, sep, current_sentence)
+                                } else {
+                                    format!("{}{}", committed, current_sentence)
+                                };
                                 log::debug!(
                                     "[FunASR-Stream] sid={} end={} text={:?} combined={:?}",
                                     sentence_id, sentence_end, text, combined
@@ -487,7 +499,18 @@ async fn run_qwen_realtime_session(
                                 let text = v["text"].as_str().unwrap_or("");
                                 let stash = v["stash"].as_str().unwrap_or("");
                                 let partial = format!("{}{}", text, stash);
-                                let combined = format!("{}{}", accumulated_text, partial);
+                                // partial 拼接补 sep 守卫（与 completed 分支一致）：
+                                // accumulated_text（已完成句）与 partial（当前句）之间若无
+                                // 分隔，实时显示会粘连（completed 时自愈，partial 期间闪现）。
+                                // 仅当两者均非空且 accumulated_text 未以 sep 结尾时插 sep。
+                                let combined = if !accumulated_text.is_empty()
+                                    && !partial.is_empty()
+                                    && !accumulated_text.ends_with(sep)
+                                {
+                                    format!("{}{}{}", accumulated_text, sep, partial)
+                                } else {
+                                    format!("{}{}", accumulated_text, partial)
+                                };
                                 log::debug!(
                                     "[Qwen-Stream] partial text={:?} stash={:?} combined={:?}",
                                     text, stash, combined
@@ -691,6 +714,38 @@ mod tests {
         assert!(
             !events.iter().any(|e| matches!(e, StreamEvent::Finished)),
             "非稳态 Close 不应发 Finished"
+        );
+    }
+
+    /// 回归 P2-1：FunASR partial 拼接漏 sep。
+    /// 第一句 sentence_end=true 提交后，第二句 partial（sentence_end=false）
+    /// 拼到 committed 上时必须插入句间分隔符，否则实时显示粘连。
+    /// 中文语言 sep=「，」。验证最近一条 partial 文本含「，」。
+    #[tokio::test]
+    async fn funasr_partial_inserts_sep_between_sentences() {
+        // 句1：sentence_end=true，commit "你好"
+        let resp1 = r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"你好","sentence_id":1,"sentence_end":true}}}}"#;
+        // 句2：sentence_end=false，partial "世界"
+        let resp2 = r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"世界","sentence_id":2,"sentence_end":false}}}}"#;
+        let server = WsTestServer::start_script(vec![
+            Message::Text(resp1.into()),
+            Message::Text(resp2.into()),
+        ]).await;
+        let events = spawn_aliyun_and_collect(server.ws_url()).await;
+
+        // 句2 partial 合并事件 = committed("你好") + sep + current_sentence("世界")
+        // 在事件流中寻找同时含「你好」与「世界」的那条 Text（即 partial 合并结果）。
+        // Close 帧随后只发 committed（丢弃未提交的 current_sentence），故不能取最后一条 Text。
+        let merged_partial = events.iter().find_map(|e| match e {
+            StreamEvent::Text(t) if t.contains("你好") && t.contains("世界") => Some(t.as_str()),
+            _ => None,
+        });
+        // committed="你好" + sep="，" + partial="世界" → "你好，世界"
+        // 修复前会粘连成 "你好世界"
+        assert!(
+            merged_partial.map(|t| t.contains('，')).unwrap_or(false),
+            "FunASR partial 应在 committed 与当前句间插 sep（，），实际 events: {:?}",
+            events
         );
     }
 }

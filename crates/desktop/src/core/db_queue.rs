@@ -45,6 +45,17 @@ pub(crate) enum DbCommand {
     Delete {
         id: i64,
     },
+    /// 增量写 meta_info 单字段（诊断用，审查 #3/#4）。
+    /// 走 DB 队列保证 FIFO：cloud_close_error 必须在 Insert 之后执行（异步 Insert 入队后，
+    /// 同步 update_meta_field 会命中 0 行——走队列保证顺序）。
+    /// 仅 cloud feature 下使用（finalize_cloud 的 enqueue_cloud_close_error），非 cloud 时
+    /// 不存在——cfg gate 避免 dead_code warning。
+    #[cfg(feature = "cloud")]
+    UpdateMetaField {
+        id: i64,
+        key: String,
+        value: String,
+    },
 }
 
 static DB_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<DbCommand>> = std::sync::OnceLock::new();
@@ -122,6 +133,12 @@ fn process_db_command(cmd: DbCommand) {
         DbCommand::Delete { id } => {
             if let Err(e) = octopus_infra::db::delete_transcriptions(&[id]) {
                 warn!("Background DB delete failed: {}", e);
+            }
+        }
+        #[cfg(feature = "cloud")]
+        DbCommand::UpdateMetaField { id, key, value } => {
+            if let Err(e) = octopus_infra::db::update_meta_field(id, &key, &value) {
+                warn!("Background DB update_meta_field failed: {}", e);
             }
         }
     }

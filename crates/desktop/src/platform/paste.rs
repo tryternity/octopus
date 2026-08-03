@@ -164,26 +164,30 @@ fn paste_via_clipboard(
     {
         let pid = crate::platform::focus_tracker::cached_pid();
         let bid = crate::platform::focus_tracker::cached_bundle_id();
-        if let Some(pid) = pid {
-            // 先激活缓存的目标 app（确保它的窗口在前台接收按键），
-            // 否则 post_to_pid 发了事件但目标 app 不在前台 → 不生效（Electron 尤其明显）。
+        // 第三轮 P1-2：keystroke 失败（AX 权限被撤销等）时必须先还原剪贴板再传播错误，
+        // 否则 wtc=false 时用户原剪贴板（已被 :139 write_text 覆盖）永远不还原。
+        // restore_then 函数：先 sleep + restore（wtc=false 时），再传播 inject 错误。
+        let inject: Result<()> = if let Some(pid) = pid {
             crate::platform::focus_tracker::activate_cached_app();
             if crate::platform::keystroke::needs_osascript_fallback(bid.as_deref()) {
-                crate::platform::keystroke::paste_via_osascript()?;
+                crate::platform::keystroke::paste_via_osascript()
             } else {
-                // Electron app（ZCode/豆包）和原生 app 都走 post_to_pid
-                // （activate_cached_app 已把目标 app 拉到前台）
-                crate::platform::keystroke::paste_to_pid(pid)?;
+                crate::platform::keystroke::paste_to_pid(pid)
             }
         } else if let Some(label) = crate::platform::focus_tracker::cached_self_window() {
-            // 前台是 octopus 自己的 webview 窗口（terminal/compact_editor 等）→ emit 事件
-            // 用 toggle 入口缓存的窗口 label（paste 瞬间 is_focused 已不可靠——
-            // result_window show 过程会改焦点）。
             info!("[paste] self-webview target: {}, emit paste-text", label);
             let _ = app.emit_to(&label, "paste-text", text.to_string());
-            return Ok(());
+            Ok(())
         } else {
-            crate::platform::keystroke::paste()?;
+            crate::platform::keystroke::paste()
+        };
+        if let Err(e) = inject {
+            // keystroke 失败：先还原剪贴板（wtc=false 时），再传播错误。
+            if !write_to_clipboard {
+                std::thread::sleep(PASTE_RESTORE_DELAY);
+                restore_clipboard(handle, saved);
+            }
+            return Err(e);
         }
     }
     #[cfg(not(target_os = "macos"))]

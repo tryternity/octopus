@@ -450,6 +450,27 @@ pub(crate) fn finalize_after_stop(
 /// 共用，避免 finalize 逻辑重复。`transcript` / `current_partial` 为 owned（已从
 /// stage 移出），`stage: &mut Stage` 仅用于写回 Idle/Polishing/Pasting，无别名冲突。
 #[cfg(feature = "cloud")]
+/// 把 cloud close 错误信息入 DB 队列（审查 #3/#4）。
+///
+/// 走 `DbCommand::UpdateMetaField` 而非同步 `update_meta_field`：DB 队列 FIFO 保证
+/// `UpdateMetaField` 在 `Insert`（update_transcription_raw 异步入队）之后执行，
+/// 避免「INSERT 未处理时同步 UPDATE 命中 0 行」的竞态导致诊断丢失。
+fn enqueue_cloud_close_error(id: i64, err: &str) {
+    use crate::core::db_queue::{DbCommand, get_db_sender};
+    let sender = get_db_sender();
+    if sender
+        .send(DbCommand::UpdateMetaField {
+            id,
+            key: "cloud_close_error".to_string(),
+            value: err.to_string(),
+        })
+        .is_err()
+    {
+        log::warn!("CloudStreaming finalize: DB 队列已关，cloud_close_error 未入队");
+    }
+}
+
+#[cfg(feature = "cloud")]
 pub(crate) fn finalize_cloud(
     stage: &mut Stage,
     mut transcript: Transcript,
@@ -473,6 +494,27 @@ pub(crate) fn finalize_cloud(
 
     let combined = transcript.db_text();
     if combined.is_empty() {
+        // 审查 #3 / 第三轮 P1-1：即使 combined 空（云端彻底失败、无任何文本），cloud_close_error
+        // 仍要落库——这恰是最该捕获诊断的场景。不能借道 update_transcription_raw（它在
+        // full().is_empty() 时直接 return Ok 不入队 Insert，导致 UPDATE 命中 0 行诊断丢失），
+        // 必须直接 sender.send(DbCommand::Insert { text: "", ... }) 强制建空记录。
+        if let Some(err) = cloud_error {
+            use crate::core::db_queue::{DbCommand, get_db_sender};
+            let sender = get_db_sender();
+            if sender
+                .send(DbCommand::Insert {
+                    id: transcript.id,
+                    text: String::new(),
+                    segments: String::new(),
+                    engine: active_asr_engine_name(),
+                    engine_mode: Some("streaming".to_string()),
+                })
+                .is_err()
+            {
+                warn!("CloudStreaming finalize(空): DB 队列已关，空记录未入队");
+            }
+            enqueue_cloud_close_error(transcript.id, err);
+        }
         dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
         INSTANT_MODE.swap(false, Ordering::Relaxed);
@@ -486,16 +528,11 @@ pub(crate) fn finalize_cloud(
     if let Err(e) = update_transcription_raw(&mut transcript, &active_asr_engine_name(), "streaming") {
         warn!("CloudStreaming finalize INSERT failed: {}", e);
     }
-    // 错误诊断落库（P2-2）：cloud close 返回 Err 时把错误信息写 meta_info.cloud_close_error，
-    // 便于排查云端鉴权/超时/断连等问题。partial 兜底已在上面 append_segment 处理（现状有效）。
+    // 错误诊断落库（审查 #3/#4）：cloud close 返回 Err 时把错误信息写 meta_info.cloud_close_error，
+    // 便于排查云端鉴权/超时/断连等问题。走 DbCommand 队列保证 FIFO（INSERT 先于 UpdateMetaField，
+    // 避免「异步 INSERT 入队后同步 update_meta_field 命中 0 行」的竞态）。
     if let Some(err) = cloud_error {
-        if let Err(e) = octopus_infra::db::update_meta_field(
-            transcript.id,
-            "cloud_close_error",
-            err,
-        ) {
-            warn!("CloudStreaming finalize 写 cloud_close_error 失败: {}", e);
-        }
+        enqueue_cloud_close_error(transcript.id, err);
     }
 
     // 统一分流：AgentBridge → execute_agent_task
