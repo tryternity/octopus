@@ -268,26 +268,42 @@ export function useTerminalSession(opts: {
     // 2. openPty + 接线 onData/onResize
     let disposed = false;
     // rAF 节流：每帧（~16ms）最多 write 一次。yes 这种持续高速输出
-    // 会产生大量 onData 回调——用 rAF 合并，积压时只保留最新块丢弃中间。
+    // 会产生大量 onData 回调——用 rAF 合并，同帧内多块**累积拼接**（不丢弃）。
     // 效果：xterm write buffer 不会无限积压，Ctrl+C 后很快消化完显示 prompt。
     // htop（alternate screen TUI）每帧重绘量小，不受影响。
-    let pendingOutput: Uint8Array | null = null;
+    //
+    // ⚠️ 必须累积不能丢弃（2026-08-03 修复）：旧逻辑"覆盖丢中间块"对高速连续
+    // 输出（yes）无害（丢中间帧不影响最终状态），但对 shell 回显是致命的——
+    // shell 逐字符/小块回显用户输入，快速输入+回删时多个 onData 在同一帧内
+    // 到达，旧逻辑只保留最后一块 → 丢失前面的回显字符 → xterm 显示的文本和
+    // shell 实际接收的输入不一致（用户看到 clone 但 shell 收到 clonne）。
+    // 改为累积：同帧内多块拼接到 pendingBuffer，flush 时一次性 write 全部。
+    let pendingChunks: Uint8Array[] = [];
     let rafScheduled = false;
     const flushOutput = () => {
       rafScheduled = false;
-      if (disposed || !pendingOutput) return;
-      const data = pendingOutput;
-      pendingOutput = null;
-      term.write(data);
+      if (disposed || pendingChunks.length === 0) return;
+      // 拼接本帧累积的所有块——多数情况只有 1 块（常规输出），高速时多块合并
+      const chunks = pendingChunks;
+      pendingChunks = [];
+      if (chunks.length === 1) {
+        term.write(chunks[0]);
+      } else {
+        const total = chunks.reduce((s, c) => s + c.length, 0);
+        const merged = new Uint8Array(total);
+        let offset = 0;
+        for (const c of chunks) {
+          merged.set(c, offset);
+          offset += c.length;
+        }
+        term.write(merged);
+      }
     };
 
     openPty(cols, rows, {
       onData: (bytes) => {
-        if (rafScheduled) {
-          // 本帧已调度 → 新数据覆盖暂存（丢中间保最新）
-          pendingOutput = bytes;
-        } else {
-          pendingOutput = bytes;
+        pendingChunks.push(bytes);
+        if (!rafScheduled) {
           rafScheduled = true;
           requestAnimationFrame(flushOutput);
         }
@@ -414,8 +430,8 @@ export function useTerminalSession(opts: {
     return () => {
       disposed = true;
       // rAF 可能已调度但未执行——用标志位让它 no-op（无法直接 cancelAnimationFrame
-      // 因为没存 handle，但 disposed=true + flushOutput 检查 pendingOutput 即可）
-      pendingOutput = null;
+      // 因为没存 handle，但 disposed=true + flushOutput 检查 pendingChunks 即可）
+      pendingChunks = [];
       resizeObserver.disconnect();
       window.removeEventListener("focus", refocusIfActive);
       document.removeEventListener("visibilitychange", refocusIfActive);
