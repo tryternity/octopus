@@ -37,7 +37,13 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         ));
 
         #[cfg(target_os = "macos")]
-        { crate::platform::activation::before_floating_window_show(app); }
+        {
+            crate::platform::activation::before_floating_window_show(app);
+            // 激活 app（makeKeyAndOrderFront 在 app 非活跃时无法夺焦——macOS 要求 app
+            // 先 active）。before_floating_window_show 已隐藏终端等 Regular 窗口，故激活
+            // 不会把它们带到前台。顺序关键：隐藏 → 激活 → show+makeKey。
+            crate::platform::activation::activate_self();
+        }
 
         let _ = win.show();
 
