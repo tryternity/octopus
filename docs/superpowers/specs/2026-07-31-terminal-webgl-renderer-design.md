@@ -76,6 +76,14 @@ function attachWebgl(term: Terminal): WebglAddon | null {
 
 **`term.focus()` 是 cursor blink 修复的关键（2026-08-03）**：切走 tab 时 `visibility:hidden` 会让 xterm 的隐藏 textarea 失焦（W3C 规范），切回 tab 时新 attach 的 WebGL renderer 的 `CursorBlinkStateManager`（`addon-webgl/src/CursorBlinkStateManager.ts:31-33`）构造时因 `isFocused=false` **不启动 600ms blink 定时器**，光标永久停留在静态 solid block 不闪。`term.focus()` 触发 textarea focus 事件 → `CoreBrowserTerminal._handleTextAreaFocus` → `onFocus` → `RenderService.handleFocus` → `renderer.handleFocus` → `CursorBlinkStateManager.resume()`，启动 blink 定时器，光标恢复闪烁。回归测试：`useTerminalSession.test.ts > applyActive`。
 
+**4 个触发点全部补 focus（2026-08-03 第二轮）**：除切 tab 外，还有 3 个会让新 WebGL renderer 在 `isFocused=false` 状态 attach 的场景，都必须 `term.focus()`：
+1. **切 tab**（`applyActive`）——已覆盖，见上。
+2. **窗口/webview 失焦再回来**（切其他 app、agent 退出、最小化恢复、合盖开盖）——`useEffect([])` 内监听 `window focus` + `document visibilitychange`，窗口重新可见时仅 active pane 调 `term.focus()`（用 `activeRef` 读当前 active，监听器只注册一次）。这是「切来切去偶发无光标」的根因——窗口失焦时 xterm textarea blur → renderer `handleBlur → pause()`（光标停静态态），窗口回来时没有代码重新 focus → `resume()` 不触发。
+3. **context loss 重连**（`attachWebgl` 内 `onContextLoss` 回调，250ms 后重 attach）——重连成功后 `term.refresh` + `term.focus()`。
+4. **`setFontFamily` 重 attach**（字体族变化时 dispose + 重 attach 重建字符 atlas）——重 attach 后 `term.focus()`。
+
+回归测试覆盖：1（`applyActive` 4 用例）、3（`attachWebgl > context loss` 断言 focus 被调）。2/4 属 UI 集成层（监听器/对象方法在 effect 闭包内），靠 e2e 实测验证。
+
 代价：切回 tab 极短重连闪烁（WebGL 重建 < 50ms，可接受）。
 
 ### 降级矩阵

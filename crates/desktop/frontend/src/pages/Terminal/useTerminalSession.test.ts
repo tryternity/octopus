@@ -18,11 +18,12 @@ import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { attachWebgl, applyActive } from "./useTerminalSession";
 
-/** 最小 term mock（满足 attachWebgl 需要的 loadAddon/refresh/rows）。 */
+/** 最小 term mock（满足 attachWebgl 需要的 loadAddon/refresh/rows/focus）。 */
 function makeTermMock() {
   return {
     loadAddon: vi.fn(),
     refresh: vi.fn(),
+    focus: vi.fn(),
     rows: 24,
   } as unknown as Parameters<typeof attachWebgl>[0];
 }
@@ -71,7 +72,7 @@ describe("attachWebgl", () => {
     expect(term.loadAddon).not.toHaveBeenCalled();
   });
 
-  it("context loss → dispose + ref 清空 + 250ms 后重连 refresh", () => {
+  it("context loss → dispose + ref 清空 + 250ms 后重连 refresh + focus", () => {
     vi.useFakeTimers();
     const first = makeWebglMock();
     const reattached = makeWebglMock();
@@ -102,6 +103,9 @@ describe("attachWebgl", () => {
     expect(ref.current).toBe(reattached);
     // 重连后 refresh 重绘（0 到 rows-1）
     expect(term.refresh).toHaveBeenCalledWith(0, 23);
+    // 重连后 focus——新 renderer 的 CursorBlinkStateManager 可能因 isFocused=false
+    // 不启动 blink 定时器，focus 触发 resume() 恢复光标闪烁
+    expect(term.focus).toHaveBeenCalled();
     vi.useRealTimers();
   });
 
