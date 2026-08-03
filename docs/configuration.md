@@ -301,7 +301,7 @@ octopus-cli config
 | `polish_min_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒，节流用），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s`。旧名 `polish_interval` 迁移时自动重命名 |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 >= 600**（须大于句间停顿最大值 600ms），否则润色先于尾音冲刷、快照缺尾音。GUI 设置页改为下拉（600~1000ms 五档），label 名为「润色停顿阈值」 |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
-| `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
+| `asr_correct` | bool | `true` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。2026-08-01 默认改 `true`（加了热词即生效，无热词 corrector no-op 零过纠）。详见 [architecture.md §ASR 纠错](../architecture.md) |
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 DB `app_config` 表。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
@@ -358,7 +358,7 @@ polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色
 polish_min_interval: 5.0         # 秒，仅 polish_mode=2 生效（中间润色最小间隔；旧名 polish_interval 迁移时自动重命名）
 pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 >= 600）
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
-asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
+asr_correct: true                # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
 denoise_mode: 1                  # 环境降噪：0=关闭直通 / 1=RNNoise（默认）/ 2=DeepFilterNet3（48kHz 全频带，~7.9MB 模型）；亦可工具栏运行时切换（set_denoise_mode）
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示

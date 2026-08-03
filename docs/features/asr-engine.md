@@ -307,15 +307,18 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 
 **核心架构决策**：候选词来源从「全词典模糊拼音」改为「仅 HotwordIndex」——根除了过度纠错问题。HotwordIndex 是有界集合（仅含用户配置的热词），空热词时 no-op（零过纠）。
 
-**方言模糊规则**（可配置，6 组，存 `app_config.fuzzy_dialect`）：
-- f/h（浮/护）—— 声母 f→h
-- hu/wu（胡/吴）—— 声母 hu→wu
-- n/l（刘/牛）—— 声母 n→l
-- r/l（热/乐）—— 声母 r→l
-- yun/yong（孕/用）—— 整音节归一 yun→yong，解决「孕妇」→「用户」误识
-- fei/hui（飞/回）—— 整音节归一 fei→hui
+**方言模糊规则**（DB 驱动，2026-08-01 从 `app_config.fuzzy_dialect` 字符串开关迁移到 `fuzzy_dialect_rules` 表，schema v56）：
 
-前 4 组是声母规则（影响所有同声母字），后 2 组是整音节归一（含声母+韵母，匹配精确，不影响其它字）。
+7 组内置（seed）+ 用户可在设置页 HotwordPanel「纠错设置」Tab 增删开关：
+- f/h（浮/护）—— `match_type=initial` 声母前缀 f→h
+- hu/wu（胡/吴）—— `match_type=special_hu` 硬编码 hu→wu + huX→wX
+- n/l（刘/牛）—— `match_type=initial` 声母前缀 n→l
+- r/l（热/乐）—— `match_type=initial` 声母前缀 r→l
+- yun/yong（孕/用）—— `match_type=syllable` 整音节精确 yun→yong
+- fei/hui（飞/回）—— `match_type=syllable` 整音节精确 fei→hui
+- si/ci（思/词）—— `match_type=syllable` 整音节精确 si→ci（4 归 1 机制：si/ci/zci 都映射到同一 key）
+
+**`match_type` 三组语义**：`syllable`（`py == from_py` 整音节精确，须排在 initial 前避免 fei 被 f/h 抢）/ `initial`（`py.starts_with(from_py)` 声母前缀）/ `special_hu`（hu→wu 硬编码）。rules 按 `(match_type, sort_order)` 排序。详见 [architecture.md §方言模糊规则可配](../architecture.md)。
 
 **命中统计分层**：
 - Corrector 只收集命中（`pending_hits` + `drain_hits()`），不写 DB。
