@@ -655,6 +655,7 @@ settings:
     selectTargetFirst: Please select target version first
     noNewCandidates: No new candidates found
     mineFailed: "Mining failed:"
+    miningInProgress: Mining hotword candidates with LLM…
     addedN: Added ${n} words
     allExist: Selected words already exist
     addFailed2: "Add failed:"
