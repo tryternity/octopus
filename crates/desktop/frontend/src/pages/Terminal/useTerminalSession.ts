@@ -245,6 +245,22 @@ export function useTerminalSession(opts: {
     // WebGL renderer：默认 attach（GPU 不可用自动降级 Canvas）
     if (active) {
       webglRef.current = attachWebgl(term, webglRef);
+      // 冷启动焦点修复：WebglRenderer 构造时若 textarea 未聚焦，其
+      // CursorBlinkStateManager 的构造函数因 isFocused=false 不启动 600ms blink
+      // 定时器（addon-webgl/src/CursorBlinkStateManager.ts:31-33），isPaused 永久 true
+      // → 光标"可见但不闪"。第一个 tab（窗口冷启动创建）尤其容易踩——renderer 构造时
+      // WKWebView 窗口刚 show()，textarea 还没收到 focus 事件。
+      // 用 rAF 延迟一帧 focus：等 WKWebView 真正可见后再聚焦 textarea，触发
+      // handleFocus → resume() 启动 blink 定时器。openPty.then 里的同步 focus 对快
+      // PTY 场景有效但慢窗口就绪场景可能太早（textarea 还不能接收焦点）。
+      requestAnimationFrame(() => {
+        if (disposed) return;
+        try {
+          term.focus();
+        } catch {
+          // term 已 dispose 等边界——忽略
+        }
+      });
     }
 
     const { cols, rows } = term;
