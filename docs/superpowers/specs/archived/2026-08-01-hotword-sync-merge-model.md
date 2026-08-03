@@ -112,6 +112,7 @@ TDD 先写 4 个 merge 测试（`crates/sync/src/hotword.rs`）：
 ## 5. 已知问题（不在本次修复）
 
 - [x] **热词 set 级删除复活（跨设备）**：~~`delete_hotword_set` 是硬删（`DELETE FROM hotword_sets + hotword_words`，无 set 级 `is_deleted`）。A 删集 → push 删文件 → B merge 不删 DB → B push 又写回 → A merge 复活。~~ **已解决**（2026-08-02，schema v58，[spec](2026-08-02-hotword-set-soft-delete.md)）：set 级 `is_deleted` 存删除时刻 epoch 秒（0=活跃，>0=删除时刻）+ `UNIQUE(name, is_deleted)` 复合约束，tombstone 经 merge 传播。`merge_set_soft_delete_propagates` 测试覆盖。**注**：词级软删（`hotword_words.is_deleted`）早已解决（commit `96560238`）。
+- [x] **删除单向传播（2026-08-03）**：`pull_set`/`pull_word` 旧逻辑在远程 `updated_ms` 更新时无条件 `upsert`（含 `is_deleted`），会把 DB 的 tombstone 覆盖回 active → 复活。场景：用户删词典 → git sync → `git merge --ff-only` 拉到远程旧 active 版本（`updated_ms` 更新）→ `pull_set` 复活。修复：`pull_set`/`pull_word` 加 tombstone 保护——DB 已 `is_deleted>0` 且远程文件 `is_deleted==0` 时拒绝 pull（返回 false）。反向（DB active + 远程 tombstone）不受影响——远程删除正常传播。回归测试：`merge_local_set_delete_not_resurrected_by_remote_active` + `merge_local_word_delete_not_resurrected_by_remote_active`。
 - [ ] **多设备同时改 last-write-wins**：用户已确认可接受，不做冲突合并。
 
 ## 6. 代码位置速查（2026-08-01 状态；set 级软删 tombstone 见 [2026-08-02 spec](2026-08-02-hotword-set-soft-delete.md)）
