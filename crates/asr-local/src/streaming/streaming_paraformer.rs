@@ -240,6 +240,10 @@ impl StreamingParaformer {
         // flush 结束 = 段边界。下次 accept 是新段首 chunk，置 fresh_segment 让其 mask_left=false
         //（保新句音头；feat_cache 已被零 padding 冲成静音，不 mask left 不会重 fire 上段尾）。
         self.fresh_segment = true;
+        // 段边界后去重上下文失效：上段尾 token 与新段首 token 是不同句，不应被
+        // `tid == self.last_emitted_token`（见 process_chunk_at 去重逻辑）误判为重复。
+        // 重置为 -1（无），避免新段首有效 token 被误去重。R4-4。
+        self.last_emitted_token = -1;
         if had_new_tokens {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {

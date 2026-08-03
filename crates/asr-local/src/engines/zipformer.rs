@@ -516,6 +516,10 @@ impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
         } else {
             compute_fbank_features(samples)?
         };
+        // 空音频（0 帧）直接返回空文本（审查 #1/R4-1 配套，对齐 qwen3_asr.rs:164-167）。
+        if my_feats.nrows() == 0 {
+            return Ok(String::new());
+        }
         // 离线路径：对整段特征做全局归一化再分 chunk 送 encoder。
         // 与流式路径（per-chunk 归一化）不同——离线一次性处理整段音频，
         // 全局 max_v 稳定；且这些模型本质是流式模型，sherpa-onnx 离线
@@ -869,6 +873,10 @@ impl crate::engine::OfflineAsrEngine for ZipformerTransducerEngine {
         } else {
             compute_fbank_features(samples)?
         };
+        // 空音频（0 帧）直接返回空文本（审查 #1/R4-1 配套，对齐 CTC transcribe）。
+        if my_feats.nrows() == 0 {
+            return Ok(String::new());
+        }
         // 离线路径全局归一化（同 CTC 注释，详见 ZipformerCtcEngine::transcribe）
         if self.is_whisper {
             crate::feature::normalize_whisper_features(&mut my_feats);
@@ -1087,6 +1095,12 @@ fn whisper_hann_window(size: usize) -> Vec<f32> {
 }
 
 pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<f32>> {
+    // 空输入防御（审查 #1/R4-1，对齐 qwen3_asr.rs:697-704）：samples 为空时，下方反射映射的条件
+    // `s_in_wave < 0 || s_in_wave >= wave_dim` 在 wave_dim==0 时退化为 `s < 0 || s >= 0`（恒真），
+    // 反射会陷入 `199 ↔ -200` 二态振荡、卡死整个进程（非 panic 非 Result，无法兜底）。
+    if samples.is_empty() {
+        return Ok(Array2::zeros((0, Z_NUM_BINS)));
+    }
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
@@ -1148,6 +1162,11 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
 
 
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
+    // 空输入防御（审查 #1/R4-1，对齐 qwen3_asr.rs:697-704 + compute_whisper_features_linear）：
+    // wave_dim==0 时反射条件恒真→死循环卡死进程。
+    if samples.is_empty() {
+        return Ok(Array2::zeros((0, Z_NUM_BINS)));
+    }
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
@@ -1501,6 +1520,29 @@ mod tests {
     /// 浮点近似比较（容差 1e-5）。
     fn approx_eq(actual: f32, expected: f32) -> bool {
         (actual - expected).abs() < 1e-5
+    }
+
+    /// 回归 R4-1：空输入曾因反射映射 `s < 0 || s >= 0`（wave_dim==0）恒真
+    /// 陷入 `199 ↔ -200` 二态振荡、卡死整个进程。现 guard 返回 (0, Z_NUM_BINS)。
+    #[test]
+    fn compute_whisper_features_linear_empty_does_not_hang() {
+        let mel = compute_whisper_features_linear(&[]).expect("空输入应返回 Ok，不死循环");
+        assert_eq!(mel.shape(), &[0, Z_NUM_BINS]);
+    }
+
+    #[test]
+    fn compute_fbank_features_empty_does_not_hang() {
+        let fbank = compute_fbank_features(&[]).expect("空输入应返回 Ok，不死循环");
+        assert_eq!(fbank.shape(), &[0, Z_NUM_BINS]);
+    }
+
+    /// 极短但非空输入（len==1）：反射边界不越界、不死循环。
+    #[test]
+    fn compute_features_single_sample_no_panic() {
+        let mel = compute_whisper_features_linear(&[0.0f32]).expect("单样本 whisper 特征应 Ok");
+        assert_eq!(mel.shape()[1], Z_NUM_BINS);
+        let fbank = compute_fbank_features(&[0.0f32]).expect("单样本 fbank 特征应 Ok");
+        assert_eq!(fbank.shape()[1], Z_NUM_BINS);
     }
 
     /// compute_whisper_features_linear golden pin：前 2 帧 × 5 bin。

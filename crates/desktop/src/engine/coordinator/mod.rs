@@ -520,6 +520,7 @@ fn build_coordinator_loop(
                             crate::core::perf_log::log("[STATE] cancel-during-edit cleared");
                         }
                         pending_prepare = None;
+                        pending_flush = None; // R4-8：清残留 flush 定时器，防 200ms 后 FlushTimeout 停掉下一次录音
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::Discard => {
@@ -529,6 +530,7 @@ fn build_coordinator_loop(
                             crate::core::perf_log::log("[STATE] discard-during-edit cleared");
                         }
                         pending_prepare = None;
+                        pending_flush = None; // R4-8：同 Cancel
                         handle_discard(&mut stage, &audio, &app_handle, &config);
                     }
                     Command::RestartCapture { stage_kind } => {

@@ -33,6 +33,8 @@ use tokio_tungstenite::{
 };
 
 use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
+// 多句拼接分隔符（英文=空格 / 其他=中文逗号，参照 baidu_stream.rs accumulate_display）。
+use octopus_asr_local::sentence_separator;
 
 /// HMAC-SHA1 类型别名。
 type HmacSha1 = Hmac<Sha1>;
@@ -55,7 +57,7 @@ pub fn open(
     appid_secretid: String,
     secret_key: String,
     engine_model_type: String,
-    _language: String,
+    language: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<CloudStreamHandle> {
     // 签名在 open() 完成（启动期失败经 Err 补发 Failed）；run 函数接收已签名 URL。
@@ -76,6 +78,7 @@ pub fn open(
             result_tx,
             ws_url,
             pre_roll_samples,
+            language,
         )
         .await;
         // session 契约：Ok = 已通过 result_tx 通知最终结果（Finished/运行期 Failed，
@@ -98,7 +101,10 @@ async fn run_tencent_session(
     result_tx: mpsc::UnboundedSender<StreamEvent>,
     ws_url: String,
     pre_roll_samples: Vec<f32>,
+    language: String,
 ) -> Result<()> {
+    // 多句拼接分隔符（英文空格 / 其他中文逗号）。R4-3：避免多稳态句粘连。
+    let sep = sentence_separator(&language);
     // 1. 建连（URL 已在 open() 签名完成）
     let request = ws_url.into_client_request().context("tencent WS 请求构造失败")?;
     let (mut ws, _resp) = tokio::time::timeout(
@@ -172,8 +178,9 @@ async fn run_tencent_session(
                         }
                         // 检查 final=1（全部识别结束）
                         if json.get("final").and_then(|f| f.as_i64()) == Some(1) {
-                            // 最终文本 = 所有稳态句拼接
-                            let stable: String = stable_segments.values().cloned().collect();
+                            // 最终文本 = 所有稳态句拼接（sep 分隔，避免多句粘连）
+                            let stable: String =
+                                stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
                             if !stable.is_empty() {
                                 let _ = result_tx.send(StreamEvent::Text(stable));
                             }
@@ -200,12 +207,17 @@ async fn run_tencent_session(
                                 }
                                 _ => {}
                             }
-                            // 发送累积显示文本 = 稳态句 + 当前 partial
-                            let stable: String = stable_segments.values().cloned().collect();
+                            // 发送累积显示文本 = 稳态句（sep 分隔）+ 当前 partial
+                            let stable: String =
+                                stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
                             let display = if current_partial.is_empty() {
                                 stable
+                            } else if stable.is_empty() {
+                                // 首句 partial（无稳态句）——直接 partial，不加前导 sep
+                                current_partial.clone()
                             } else {
-                                format!("{}{}", stable, current_partial)
+                                // 有稳态句 + partial——stable 与 partial 间插 sep（句间分隔）
+                                format!("{}{}{}", stable, sep, current_partial)
                             };
                             if !display.is_empty() {
                                 let _ = result_tx.send(StreamEvent::Text(display));
@@ -221,7 +233,8 @@ async fn run_tencent_session(
                         // close_async 把 partial 当成功（#3）。现显式处理：有稳态结果发
                         // Finished，否则 Failed 暴露异常（参照 baidu_stream.rs:214）。
                         log::debug!("tencent: WS 连接关闭");
-                        let stable: String = stable_segments.values().cloned().collect();
+                        let stable: String =
+                            stable_segments.values().cloned().collect::<Vec<_>>().join(sep);
                         if !stable.is_empty() {
                             let _ = result_tx.send(StreamEvent::Text(stable));
                             let _ = result_tx.send(StreamEvent::Finished);
@@ -437,11 +450,13 @@ mod tests {
     use crate::cloud_types::{CloudStreamHandle, StreamEvent};
 
     /// 辅助：spawn run_tencent_session 连 in-process server，收集事件直到 Finished/Failed。
+    /// language 默认传 "zh"（sep=「，」；多句场景测试用）。
     async fn spawn_tencent_and_collect(url: String) -> Vec<StreamEvent> {
         let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
         let tx_clone = result_tx.clone();
         tokio::spawn(async move {
-            let result = run_tencent_session(pcm_rx, result_tx, url, Vec::new()).await;
+            let result =
+                run_tencent_session(pcm_rx, result_tx, url, Vec::new(), "zh".to_string()).await;
             if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
         });
         let mut events = Vec::new();

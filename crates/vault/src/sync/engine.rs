@@ -552,6 +552,24 @@ fn clone_initial(remote_url: &str) -> Result<(), SyncError> {
         }
         Err(e) => log::warn!("[sync] 热词导入失败（不阻断 vault clone）：{}", e),
     }
+    // 4.1 R4-9：导入词数据（import_hotwords_from_files 只读词典 meta，词需单独导入，
+    // 否则 clone 后词典是空壳，要等下次 sync_now 的 merge_hotwords 才 pull 词）。
+    match octopus_sync::hotword::import_hotword_words_from_files() {
+        Ok(sets_words) => {
+            let mut total = 0;
+            for (set_id, words) in &sets_words {
+                for wf in words {
+                    let w = wf.to_hotword_word();
+                    if let Err(e) = octopus_infra::db::upsert_hotword_word(&w) {
+                        log::warn!("[sync] clone: 词 upsert 失败 set={} word={}: {}", set_id, w.word, e);
+                    }
+                    total += 1;
+                }
+            }
+            log::info!("[sync] clone_initial：{} 词典、{} 词导入 SQLite", sets_words.len(), total);
+        }
+        Err(e) => log::warn!("[sync] 热词词数据导入失败（不阻断 vault clone）：{}", e),
+    }
 
     log::info!(
         "[sync] clone_initial 完成：{} ciphers, {} folders 导入 SQLite",

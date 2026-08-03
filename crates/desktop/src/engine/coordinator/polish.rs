@@ -228,16 +228,27 @@ pub(crate) fn spawn_polish_thread(
     let resolved_prompt = resolve_app_aware_prompt();
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish_regions(
-            &regions,
-            &llm_config,
-            &resolved_prompt.content,
-            resolved_prompt.app_context.as_ref(),
-        ) {
-            Ok(polished) => Ok(polished),
-            Err(e) => {
+        // catch_unwind 兜底（审查 R4-6，对齐同文件 start_final_polish_or_paste:92-125）：
+        // polish_regions 内部 panic（JSON 反序列化 / 网络库）→ 线程静默死 →
+        // PolishDone 永不发 → Stage::StoppingPolish 卡死，Toggle/PolishNow 全被忽略。
+        // panic 时仍发 PolishDone(Err) 让 coordinator 能 finalize 退出 StoppingPolish。
+        let inner = || {
+            octopus_llm::polish_regions(
+                &regions,
+                &llm_config,
+                &resolved_prompt.content,
+                resolved_prompt.app_context.as_ref(),
+            )
+        };
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(inner)) {
+            Ok(Ok(polished)) => Ok(polished),
+            Ok(Err(e)) => {
                 log::warn!("Polish thread error: {}", e);
                 Err(e.to_string())
+            }
+            Err(panic) => {
+                log::error!("Polish thread panic: {:?}", panic);
+                Err("polish thread panic".to_string())
             }
         };
         let _ = tx.send(Command::PolishDone { result, session_id });

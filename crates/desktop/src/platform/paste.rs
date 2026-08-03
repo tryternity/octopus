@@ -49,7 +49,11 @@ pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig, app: &App
 
     match method {
         PasteMethod::None => {
-            write_to_clipboard(text, handle)?;
+            // None 语义=不模拟按键（不 Cmd+V / 不 direct type），但是否写剪贴板尊重 wtc：
+            // wtc=false 时不应覆盖用户剪贴板内容。R4-5。
+            if wtc {
+                write_to_clipboard(text, handle)?;
+            }
         }
         PasteMethod::Clipboard => {
             paste_via_clipboard(text, handle, wtc, switch_ime, app)?;

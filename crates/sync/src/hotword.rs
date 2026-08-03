@@ -702,6 +702,48 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
     Ok(metas)
 }
 
+/// 首次 clone 时导入所有词数据（R4-9：`import_hotwords_from_files` 只读词典 meta，
+/// 词数据需本函数补——读每个词典的 outline.json + 逐词读文件，返回 (set_id, 词) 列表）。
+///
+/// 与 vault 的 `import_all_from_files`（递归 walk_json_files）对称——vault clone 一次
+/// 导入全部 cipher 数据，hotword clone 也应一次导入全部词，而非等下次 sync_now 的
+/// merge_hotwords 才 pull（clone → 下次 sync 之间词典是空壳，UX 等同数据丢失）。
+pub fn import_hotword_words_from_files() -> Result<Vec<(String, Vec<HotwordWordFile>)>> {
+    let dir = hotword_dir();
+    let mut result = Vec::new();
+    if !dir.is_dir() {
+        return Ok(result);
+    }
+    for entry in std::fs::read_dir(&dir)
+        .with_context(|| format!("读 hotword 目录失败：{}", dir.display()))?
+    {
+        let entry = entry?;
+        let set_dir = entry.path();
+        if !set_dir.is_dir() {
+            continue;
+        }
+        let set_id = match set_dir.file_name().and_then(|n| n.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        // 跳过无 meta 的目录（非词典目录）
+        if !set_dir.join("meta.json").exists() {
+            continue;
+        }
+        // 读词典 outline 获取词 UUID 列表
+        let outline = read_hotword_set_outline(&set_id).unwrap_or_default();
+        let mut words = Vec::new();
+        for (word_uuid, _entry) in &outline.words {
+            match read_hotword_word_file(&set_id, word_uuid) {
+                Ok(wf) => words.push(wf),
+                Err(e) => log::warn!("[sync] clone: 读词文件失败 set={} word={}: {}", set_id, word_uuid, e),
+            }
+        }
+        result.push((set_id, words));
+    }
+    Ok(result)
+}
+
 // === sync engine（pull / push）===
 
 /// Pull 阶段（set 层）：文件系统 → SQLite。对比 outline 找出新增/修改，读文件 upsert。

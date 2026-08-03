@@ -165,3 +165,33 @@
 
 - **P1-3 vault permanent_delete + sync 复活**：permanent_delete 只删 DB 行不写 tombstone → 他机 sync push 复活。已有废弃 tombstone spec（`2026-07-26-vault-tombstone-design.md`），当前 is_deleted merge 只解决软删。完整修复需引入 cipher tombstone（对称热词），设计层面大改，留待后续。
 - **P2-7 merge_hotwords N×M 全表扫**：每 set 调 `list_all_hotword_words()` 全表扫+filter。3 万词条 × N 词典 ~0.5s，sync 低频可接受。优化方案（入口一次查询按 set_id 分组）留待后续。
+
+## 6. 第四轮审查修复（2026-08-03，R4-1～R4-9）
+
+第四轮全新核查发现：前几轮的 4 处修复（#1/#2/#5/#6 + P1-2 的 None 子项）在 merge main 时被覆盖丢失（main 的文件版本无这些修复），spec 误标「已实现」。另新增 4 条真实问题。全部 CONFIRMED 并修复。
+
+### R4-1～R4-5：重新应用丢失的修复
+
+- **R4-1 zipformer 空输入 guard**（#1 重做）：两特征函数 + 两 transcribe 加 guard（同第二轮，被 merge 覆盖）。
+- **R4-2 hotword 级联 is_deleted=now_secs**（#6 重做）：级联词 UPDATE 改 `?2`+now_secs（被 merge 覆盖）。
+- **R4-3 tencent language 透传 + sep**（#2 重做）：open 补 language + 3 处 join(sep)（被 merge 覆盖）。
+- **R4-4 paraformer flush last_emitted_token=-1**（#5 重做）：flush 末尾重置（被 merge 覆盖）。
+- **R4-5 PasteMethod::None 尊重 wtc**（第三轮重做）：None 分支 `if wtc`（被 merge 覆盖）。
+
+### R4-6. spawn_polish_thread 缺 catch_unwind（新发现）
+
+**根因**：`polish.rs:230-244` 的 `std::thread::spawn` 闭包对 `polish_regions` 无 catch_unwind（同文件 `start_final_polish_or_paste:92-125` 有）。panic → 线程静默死 → PolishDone 永不发 → Stage::StoppingPolish 卡死。
+
+**修复**：闭包内包 `catch_unwind(AssertUnwindSafe(inner))`，panic 时发 `PolishDone(Err)` 让 coordinator 能 finalize 退出 StoppingPolish。
+
+### R4-8. Cancel/Discard 不清 pending_flush（新发现）
+
+**根因**：`mod.rs:522/:531` Cancel/Discard 清 `pending_prepare` 但漏 `pending_flush`。停录音 → 200ms 内 Esc → 立刻重开 → 残留 FlushTimeout 准时到 → 停掉刚开的录音。
+
+**修复**：Cancel/Discard 两处补 `pending_flush = None;`。
+
+### R4-9. clone_initial 只导入词典 meta，词数据全丢（新发现）
+
+**根因**：`import_hotwords_from_files`（sync/hotword.rs:672）只读各词典 meta.json，不读词文件/outline。B 机首次 clone 后词典是空壳，词要等下次 sync_now 才 pull。与 vault 路径（import_all_from_files 递归）不对称。
+
+**修复**：新增 `import_hotword_words_from_files`（读每个词典 outline + 逐词读文件），engine.rs clone_initial 在导入词典 meta 后调它导入词数据。

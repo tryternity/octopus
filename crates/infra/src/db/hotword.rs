@@ -182,10 +182,12 @@ pub(crate) fn delete_hotword_set_at(conn: &Connection, id: &str) -> Result<()> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     // 级联软删词记录（保持原硬删行为：删词典=清空其词）。词级 tombstone 也参与 sync 传播。
+    // is_deleted 用 now_secs（与 set 一致：删除时刻 epoch 秒）——非字面量 1（1=1970-01-01，
+    // GC 当日硬删 + sync 过滤→词 tombstone 不传播→对端复活词）。R4-2。
     conn.execute(
-        "UPDATE hotword_words SET is_deleted=1, updated_at=datetime('now')
+        "UPDATE hotword_words SET is_deleted=?2, updated_at=datetime('now')
          WHERE set_id=?1 AND is_deleted=0",
-        params![id],
+        params![id, now_secs],
     )?;
     // 软删词典：is_deleted=删除时刻 epoch 秒，updated_at 刷新（merge 方向判定用）
     let n = conn.execute(
