@@ -119,7 +119,7 @@ fn is_regular_window(label: &str) -> bool {
 /// 浮窗 show 时需临时隐藏的其他 Regular 窗口，
 /// 防止 set_focus 激活 app 后这些窗口抢焦点。
 ///
-/// 注意：`clipboard_window` **不在**此列表——它是 always_on-top 浮窗，
+/// 注意：`clipboard_window` **不在**此列表——它是 always-on-top 浮窗，
 /// dock 收缩态下一直 visible（8px 细条 + 鼠标穿透），不抢焦点。
 /// 如果列入，其他浮窗（action_bar/compact_editor）的 show→hide 周期会
 /// 把 dock 态剪贴板拖进 hide→裸 show 循环，导致 DOCK_EXPANDED 状态不一致
@@ -462,8 +462,13 @@ pub fn activate_self() {
 ///
 /// 用于 action bar 场景——`ActivateAllWindows` 会 unhide + raise 所有 Regular 窗口
 /// （把用户已隐藏/最小化的终端/编辑器强行抬到前台，盖住用户正在操作的浏览器等源 app）。
-/// `NSApplication::activate()` 激活 app（makeKeyAndOrderFront 有效），但不 unhide
-/// 其他窗口——用户原本可见/不可见的窗口保持原样。
+/// `NSApplication::activate()` 不 unhide 其他窗口——用户原本可见/不可见的窗口保持原样。
+///
+/// ⚠️ **与 `activate_self` 的取舍**：这里**故意放弃** `activateWithOptions` 兜底——
+/// 它是"更可靠但会抬所有窗口"，本函数要"不抬但可能不够强"。`NSApplication::activate()`
+/// 是协作式激活（Apple 文档明说不保证成功，同上 `activate_self` 文档），后台夺焦场景
+/// 若实测发现 makeKeyAndOrderFront 仍无效，应回退到 `activate_self` 或改走
+/// `NSWindow::orderFrontRegardless`（见 architecture.md action bar 焦点修复链 TODO）。
 ///
 /// 必须在主线程调用。
 #[cfg(target_os = "macos")]
