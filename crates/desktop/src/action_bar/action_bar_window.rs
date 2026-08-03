@@ -38,10 +38,13 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
 
         #[cfg(target_os = "macos")]
         {
-            crate::platform::activation::before_floating_window_show(app);
+            // action bar 不隐藏终端（hide_regular=false）：终端本来可见就保持可见，
+            // 本来不可见就保持不可见——action bar 不该有副作用改变其他窗口可见性。
+            // action bar 是 always_on_top 浮窗，视觉层级在终端之上 + makeKeyAndOrderFront
+            // 夺 key window，终端虽 order front 但在 action bar 下层且不持 key。
+            crate::platform::activation::before_floating_window_show(app, false);
             // 激活 app（makeKeyAndOrderFront 在 app 非活跃时无法夺焦——macOS 要求 app
-            // 先 active）。before_floating_window_show 已隐藏终端等 Regular 窗口，故激活
-            // 不会把它们带到前台。顺序关键：隐藏 → 激活 → show+makeKey。
+            // 先 active）。顺序关键：记录状态 → 激活 → show+makeKey。
             crate::platform::activation::activate_self();
         }
 

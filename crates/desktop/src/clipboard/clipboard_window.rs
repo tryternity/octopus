@@ -288,7 +288,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 DOCK_EXPANDED.store(true, Ordering::SeqCst);
                 crate::clipboard::clipboard_dock::stop_edge_poll(&window);
                 #[cfg(target_os = "macos")]
-                { crate::platform::activation::before_floating_window_show(app); }
+                { crate::platform::activation::before_floating_window_show(app, true); }
                 #[cfg(target_os = "macos")]
                 { crate::platform::focus_tracker::save_frontmost_pid(app); }
                 window.show()?;
@@ -303,7 +303,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         } else {
             // 非 docked：不可见或无焦点 → show + focus
             #[cfg(target_os = "macos")]
-            { crate::platform::activation::before_floating_window_show(app); }
+            { crate::platform::activation::before_floating_window_show(app, true); }
             #[cfg(target_os = "macos")]
             { crate::platform::focus_tracker::save_frontmost_pid(app); }
             window.show()?;
@@ -322,7 +322,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                     // 100ms 内若窗口已被二次按键提前 show，不重复 before_show + show（防 depth 泄漏）
                     if !window.is_visible().unwrap_or(false) {
                         #[cfg(target_os = "macos")]
-                        { crate::platform::activation::before_floating_window_show(&app2); }
+                        { crate::platform::activation::before_floating_window_show(&app2, true); }
                         #[cfg(target_os = "macos")]
                         { crate::platform::focus_tracker::save_frontmost_pid(&app2); }
                         let _ = window.show();
