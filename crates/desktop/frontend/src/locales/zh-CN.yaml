@@ -662,6 +662,7 @@ settings:
     selectTargetFirst: 请先选择目标版本
     noNewCandidates: 未发现新候选
     mineFailed: "挖掘失败："
+    miningInProgress: 正在用大模型挖掘候选词…
     addedN: 已添加 ${n} 词
     allExist: 选中词均已存在
     addFailed2: "添加失败："

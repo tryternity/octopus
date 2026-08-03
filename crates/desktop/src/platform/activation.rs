@@ -206,10 +206,19 @@ unsafe impl Sync for SendApp {}
 #[cfg(target_os = "macos")]
 static PREV_APP: Lazy<Mutex<Option<SendApp>>> = Lazy::new(|| Mutex::new(None));
 
-/// 浮窗 show 前调用：app 非活跃时隐藏 Regular 窗口 + 记录前台 app。
+/// 浮窗 show 前调用：app 非活跃时记录前台 app（焦点交还目标），可选隐藏 Regular 窗口。
 /// 配合 `after_floating_window_hide` 形成闭环。
+///
+/// `hide_regular`：app 后台时是否临时隐藏终端等 Regular 窗口。
+/// - `true`（默认场景：clipboard/record/vault）：隐藏 Regular 窗口，防止 app 激活时
+///   把它们带到前台。
+/// - `false`（action bar 场景）：**不隐藏**——终端本来可见就保持可见，本来不可见就
+///   保持不可见（用户偏好：action bar 不该有副作用改变其他窗口可见性）。action bar
+///   是 always_on_top 浮窗（floating level），视觉层级在终端之上；show 时配合
+///   `makeKeyAndOrderFront` 夺 key window，终端虽 order front 但在 action bar 下层
+///   且不持 key，不抢焦点。
 #[cfg(target_os = "macos")]
-pub fn before_floating_window_show(app: &tauri::AppHandle) {
+pub fn before_floating_window_show(app: &tauri::AppHandle, hide_regular: bool) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSWorkspace, NSRunningApplication};
 
@@ -231,8 +240,8 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
                 }
             }
 
-            // app 后台时临时隐藏其他窗口
-            if is_inactive {
+            // app 后台时临时隐藏其他窗口（action bar 场景跳过——保持终端可见性不变）
+            if is_inactive && hide_regular {
                 let mut hidden = Vec::new();
                 for (label, w) in app.webview_windows() {
                     if !should_hide_on_float(&label) {

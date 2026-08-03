@@ -65,7 +65,7 @@ pub fn show_password_generator_window(app: &AppHandle, x: f64, y: f64) {
 
         #[cfg(target_os = "macos")]
         {
-            crate::platform::activation::before_floating_window_show(app);
+            crate::platform::activation::before_floating_window_show(app, true);
         }
 
         let _ = win.show();

@@ -72,6 +72,10 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   /** 挖掘确认态：候选词 + 当前勾选集合（不落库，确认后才 add_words_to_set）。
    *  关掉即丢弃；切菜单重进组件卸载也自然清空。2026-08-01 改为浮窗呈现（原内联面板）。 */
   const [minePending, setMinePending] = useState<{ words: string[]; selected: Set<string> } | null>(null);
+  /** 挖掘中 loading 态——点击挖掘按钮立即弹浮窗显示 loading，LLM 完成后填候选。 */
+  const [mining, setMining] = useState(false);
+  /** 挖掘取消标记——用户点取消时置 true，LLM 返回后丢弃结果。 */
+  const miningCancelledRef = useRef(false);
   const [mineInput, setMineInput] = useState('');
   /** 批量添加浮层（点击「添加」图标弹出 textarea，空白分割批量 add_words_to_set）。 */
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -284,18 +288,32 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
   }, [selectedId, showToast]);
 
   // ── 挖掘（先候选后确认，不直接落库）──
-  // 点「挖掘」→ 后端扫历史拿候选 → 排除当前版本已有词 → 弹确认面板。
-  // 用户在面板里取消勾选 / 手动补词 → 点确认才批量 add_words_to_set。
+  // 点「挖掘」→ 立即弹浮窗显示 loading → LLM 挖掘 → 填候选。
+  // 用户可随时取消（关闭浮窗），取消后 LLM 返回的结果丢弃。
   const mine = useCallback(async () => {
     if (selectedId === null) { showToast(t('settings.hotword.selectTargetFirst')); return; }
+    // 立即弹浮窗 + loading
+    miningCancelledRef.current = false;
+    setMining(true);
+    setMinePending({ words: [], selected: new Set() });
     try {
-      const candidates = await invoke<string[]>('list_hotword_candidates');
-      const existing = new Set(selectedWords);
-      const fresh = candidates.filter((w) => !existing.has(w));
-      if (fresh.length === 0) { showToast(t('settings.hotword.noNewCandidates')); return; }
-      setMinePending({ words: fresh, selected: new Set(fresh) });
-    } catch (e) { showToast(t('settings.hotword.mineFailed') + e); }
-  }, [selectedId, selectedWords, showToast]);
+      const candidates = await invoke<string[]>('list_hotword_candidates', { setId: selectedId });
+      // 用户已取消 → 丢弃结果
+      if (miningCancelledRef.current) return;
+      if (candidates.length === 0) {
+        setMinePending(null);
+        showToast(t('settings.hotword.noNewCandidates'));
+        return;
+      }
+      setMinePending({ words: candidates, selected: new Set(candidates) });
+    } catch (e) {
+      if (miningCancelledRef.current) return;
+      setMinePending(null);
+      showToast(t('settings.hotword.mineFailed') + e);
+    } finally {
+      setMining(false);
+    }
+  }, [selectedId, showToast]);
 
   const toggleMineSel = (w: string) => {
     if (!minePending) return;
@@ -675,10 +693,20 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
         </div>
       )}
 
-      {/* ════ 浮窗：挖掘确认（候选词 chip，原内联面板改浮窗） ════ */}
+      {/* ════ 浮窗：挖掘确认（候选词 chip + loading 态） ════ */}
       {minePending && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setMinePending(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => { miningCancelledRef.current = true; setMinePending(null); setMining(false); }}>
           <div className="flex max-h-[80vh] w-[480px] flex-col rounded-lg border border-border bg-background p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            {mining ? (
+              /* 挖掘中 loading 态 */
+              <div className="flex flex-col items-center justify-center gap-3 py-12">
+                <div className="h-8 w-8 animate-spin rounded-full border-2 border-info border-t-transparent" />
+                <span className="text-sm text-muted-foreground">{t('settings.hotword.miningInProgress')}</span>
+                <Button variant="outline" size="sm" onClick={() => { miningCancelledRef.current = true; setMinePending(null); setMining(false); }}>{t('settings.hotword.cancel')}</Button>
+              </div>
+            ) : (
+              /* 挖掘完成——候选词列表 */
+              <>
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Wand2 className="h-4 w-4 text-info" />
@@ -688,11 +716,15 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
                 </span>
               </div>
               <button
-                onClick={() => {
-                  const allSel = minePending.selected.size === minePending.words.length;
-                  setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMinePending((prev) => {
+                    if (!prev) return prev;
+                    const allSel = prev.selected.size === prev.words.length;
+                    return { ...prev, selected: allSel ? new Set() : new Set(prev.words) };
+                  });
                 }}
-                className="text-xs text-muted-foreground hover:text-info"
+                className="relative z-10 shrink-0 cursor-pointer text-xs text-muted-foreground hover:text-info"
               >
                 {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
               </button>
@@ -732,6 +764,8 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
                 {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
               </Button>
             </div>
+              </>
+            )}
           </div>
         </div>
       )}

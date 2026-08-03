@@ -376,6 +376,14 @@ if !finished {
 
 **修复**：`.saturating_add(1)`，范围变为 `[1, 4294967295]` 全正整数。`saturating_add` 对 `u32::MAX` 饱和不溢出（仍为 `u32::MAX`），最坏 `nonce=1`（合法）。
 
+### R1/D1/D2 四轮复审（2026-08-03）
+
+**R1. aliyun FunASR 空 Text 未判空**（与 H1 同源）：`aliyun_stream.rs:220` 的 `result_tx.send(StreamEvent::Text(combined))` 无判空（同文件 Qwen 3 处都有 `if !combined.is_empty()`）。`combined = format!("{}{}", committed, current_sentence)` 在首帧/缓冲帧/VAD 静音过渡帧（服务端发 `sentence.text=""`）时为空串 → 经 close_async 覆盖 → 空结果当成功。修复：加 `if !combined.is_empty()`，对齐 Qwen + 其他 provider。
+
+**D1. close_async 防御性判空**（根因修复）：R1 恰好证明 H1 的「逐 provider 堵漏」契约脆弱——4+1 个 provider 各自保证不发空 Text，任一遗漏（如 R1 的 aliyun）就让空结果当成功漏网。close_async 作为公共收尾层加防御：`StreamEvent::Text(t) if !t.is_empty() => text = t`（空 Text 忽略，保留上次非空累积），从根上消除整类 bug。原 `close_async_empty_text_overwrites_contract` 测试（固化「空 Text 覆盖」）更新为 `close_async_ignores_empty_text_keeps_last_non_empty`（固化新契约：空 Text 不覆盖）。
+
+**D2. 全局 excludesfile root 用 repo_root**（git 语义对齐）：`build_gitignore_matchers` 的全局 excludesfile 原用 `global.parent()` 为 root。实测 git 语义：全局 excludesfile 的 pattern 相对工作目录根（repo root），而非文件所在目录。`global.parent()` 在 excludesfile 恰好位于 repo 内部时（极罕见）会导致前导斜杠 pattern 锚定错误；改用 `repo_root` 对齐 git 真实行为。注：常见场景（excludesfile 在 `~/.config/git/` 等 repo 外位置）原实现实测也不误隐藏（路径剥离失败返 None），故影响极小，属正确性改进。
+
 ## 9. P2 后续（2026-08-03）
 
 ### P2-2. cloud close 错误诊断落库

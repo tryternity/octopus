@@ -188,8 +188,9 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 const HOTWORD_MINE_PROMPT: &str = include_str!("../../resources/hotword_mine.md");
 
 /// 挖掘候选词列表（LLM 优先 + jieba 兜底），不写库。前端展示候选供用户勾选确认。
+/// `set_id` = 当前选中词典（用于排除已有热词 + 去重）。
 #[tauri::command]
-pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
+pub async fn list_hotword_candidates(set_id: String) -> Result<Vec<String>, String> {
     // 读用户编辑段文本（LLM 和 jieba 共用数据源）
     let edited_texts = octopus_infra::db::list_recent_edited_segments(500).map_err(e2s)?;
     if edited_texts.is_empty() {
@@ -219,18 +220,38 @@ pub async fn list_hotword_candidates() -> Result<Vec<String>, String> {
     .unwrap_or_else(|_| HOTWORD_MINE_PROMPT.to_string());
 
     // 尝试 LLM 挖掘（语义理解，远超 jieba 分词）
-    if let Some(llm_config) = crate::core::config::llm_config_ignore_mode() {
+    let mut words = if let Some(llm_config) = crate::core::config::llm_config_ignore_mode() {
         match octopus_llm::mine_hotwords(&prompt, &joined, &llm_config) {
-            Ok(words) if !words.is_empty() => {
-                log::info!("[hotword-miner] LLM 挖掘 {} 条候选", words.len());
-                return Ok(words);
+            Ok(ws) if !ws.is_empty() => {
+                log::info!("[hotword-miner] LLM 挖掘 {} 条候选", ws.len());
+                ws
             }
-            Ok(_) => log::info!("[hotword-miner] LLM 返回空，回退 jieba"),
-            Err(e) => log::warn!("[hotword-miner] LLM 挖掘失败，回退 jieba: {}", e),
+            Ok(_) => {
+                log::info!("[hotword-miner] LLM 返回空，回退 jieba");
+                octopus_asr_local::miner::collect_candidate_words().map_err(e2s)?
+            }
+            Err(e) => {
+                log::warn!("[hotword-miner] LLM 挖掘失败，回退 jieba: {}", e);
+                octopus_asr_local::miner::collect_candidate_words().map_err(e2s)?
+            }
         }
+    } else {
+        octopus_asr_local::miner::collect_candidate_words().map_err(e2s)?
+    };
+
+    // 去重（LLM/jieba 可能返回重复词）
+    let mut seen = std::collections::HashSet::new();
+    words.retain(|w| seen.insert(w.clone()));
+
+    // 排除选中词典已有的热词（避免重复推荐）
+    if let Ok(existing) = octopus_infra::db::list_words_in_set(&set_id) {
+        let existing_set: std::collections::HashSet<String> =
+            existing.into_iter().map(|w| w.word).collect();
+        words.retain(|w| !existing_set.contains(w));
     }
-    // 回退 jieba（现有逻辑）
-    octopus_asr_local::miner::collect_candidate_words().map_err(e2s)
+
+    log::info!("[hotword-miner] 返回 {} 条候选（去重+排除已有）", words.len());
+    Ok(words)
 }
 
 /// 批量追加多词到指定版本（挖掘确认 / 手动批量）。返回实际新增条数。

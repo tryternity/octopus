@@ -134,7 +134,13 @@ impl CloudStreamHandle {
             async {
                 while let Some(event) = rx.recv().await {
                     match event {
-                        StreamEvent::Text(t) => text = t,
+                        // 防御性判空（D1）：空 Text 不覆盖已累积的非空文本。
+                        // 契约上 provider 不应发空 Text（各 provider 有 !display.is_empty()
+                        // 保护），但历史 bug（H1 bytedance / R1 aliyun FunASR）证明逐
+                        // provider 堵漏有单点遗漏风险。close_async 作为公共收尾层加防御，
+                        // 从根上消除「任一 provider 漏判空 → 空结果当成功」整类 bug。
+                        StreamEvent::Text(t) if !t.is_empty() => text = t,
+                        StreamEvent::Text(_) => {} // 空 Text 忽略（保留上次非空累积）
                         StreamEvent::Finished => {
                             finished = true;
                             break;
@@ -283,23 +289,23 @@ mod tests {
         assert_eq!(text, "最终结果");
     }
 
-    /// 契约约束（H1 文档化）：close_async 的 `text = t` 无条件覆盖——空 Text 会覆盖
-    /// 之前累积的非空文本。故 **provider 不应发送空 Text 事件**（bytedance H1 修复：
-    /// 空 text 不发 Text，对齐其他 3 家的 !display.is_empty() 保护）。
-    /// 此测试固化该契约：若未来 close_async 加防御性「非空才覆盖」，需同步更新此测试。
+    /// 防御性判空（D1 修复）：close_async 忽略空 Text，保留上次非空累积。
+    /// 历史：H1（bytedance）/ R1（aliyun FunASR）证明「逐 provider 堵漏」有单点遗漏
+    /// 风险——任一 provider 漏判空就发空 Text，旧契约 `text = t` 无条件覆盖导致有效
+    /// 结果丢失。D1 在 close_async 公共收尾层加防御 `if !t.is_empty()`，从根上消除
+    /// 整类 bug。此测试固化新契约：空 Text 不覆盖。
     #[tokio::test]
-    async fn close_async_empty_text_overwrites_contract() {
+    async fn close_async_ignores_empty_text_keeps_last_non_empty() {
         let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
         handle.finish().unwrap();
-        // 序列 [Text("你好"), Text(""), Finished] —— 当前契约下 Text("") 覆盖 "你好"
+        // 序列 [Text("你好"), Text(""), Finished] —— 空 Text 不应覆盖 "你好"
         result_tx.send(StreamEvent::Text("你好".into())).ok();
         result_tx.send(StreamEvent::Text("".into())).ok();
         result_tx.send(StreamEvent::Finished).ok();
         drop(result_tx);
         let text = handle.close_async().await.unwrap();
-        // 当前行为：空 Text 覆盖 → 返 ""。provider 层（bytedance H1）保证不发空 Text，
-        // 故该序列不应出现；此测试固化 close_async 的覆盖语义。
-        assert_eq!(text, "");
+        // 新契约：空 Text 忽略 → 返 "你好"（保留上次非空累积）
+        assert_eq!(text, "你好");
     }
 
     /// Failed 终态正常传播（既有行为，回归测试保证）。
