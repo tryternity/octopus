@@ -494,3 +494,30 @@ git commit -m "refactor(record-annotation): 补齐使用 useAnnotationInteractio
 **Placeholder scan:** 无 TODO/TBD，每个 step 都有具体代码。
 
 **Type consistency:** `ToolContext` 在 Task 1 定义，Task 2/3/4 消费。`TextDraft` 在 Task 1 定义，各场景消费。`AnnotationInteraction` 接口贯穿所有 task。
+
+---
+
+## 实施记录 + 遗留 TODO（2026-08-03 回写）
+
+**当前状态：部分完成，保留待续（不归档）。**
+
+### 已完成
+
+- ✅ **Task 1**：`crates/desktop/frontend/src/components/Annotation/useAnnotationInteraction.ts` 已实现，barrel `index.ts` 导出。接口与 plan 完全对齐：`ClientToNatural` / `ToolContext` / `TextDraft` / `UseAnnotationInteractionOptions` / `AnnotationInteraction`。
+- ✅ **Task 2**：`pages/ImagePreview/index.tsx` 已接入 hook（`index.tsx:9` import + `:376` 调用 `useAnnotationInteraction`）。
+
+### 未完成（遗留 TODO）
+
+- ❌ **Task 3**：`pages/Screenshot/index.tsx` **未接入**——只 import 了 `useAnnotationState` + 工具栏辅助函数，标注鼠标交互仍是内联实现。
+- ❌ **Task 4**：`pages/RecordAnnotation/index.tsx` **未接入**——同 Screenshot，仅 import `useAnnotationState`，鼠标交互内联。
+
+### 已同步的现状标注
+
+- hook 文件 `useAnnotationInteraction.ts` 顶部注释已更新，标明「仅 ImagePreview 已接入；Screenshot 和 RecordAnnotation 未完成迁移」，并指向本 plan 的 Task 3/4。
+
+### 续接要点（未来重启时）
+
+1. **Screenshot 差异点**：`clientToNatural` 返回屏幕坐标（非自然像素——导出时 scale 转）；保留选区 crop 逻辑不进 hook。
+2. **RecordAnnotation 差异点**：`clientToNatural` 用 `canvasRectRef` 减 offset（`{ x: cx - canvasRectRef.current.ox, y: cy - canvasRectRef.current.oy }`）。
+3. 两个场景的迁移模式参考 ImagePreview 的 `index.tsx:376`：保留场景特有的 onMouseDown 前后置逻辑（工具栏浮窗 / 选区 / 平移），把核心标注逻辑替换为 `handleMouseDown(e, { tool, color, width, fontSize, filled })`。
+

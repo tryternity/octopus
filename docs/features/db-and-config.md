@@ -2,13 +2,13 @@
 
 > 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v54。
 
-源文件：`crates/infra/src/db.rs`、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
+源文件：`crates/infra/src/db/`（mod.rs + 按域拆分子模块：prompts/config/transcription/agent/hotword/action_bar/vault/models）、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
 
 ---
 
 ## 1. SQLite 连接
 
-- **存储**：`~/.octopus/octopus.db`（`crates/infra/src/db.rs`，全局 `OnceLock<parking_lot::Mutex<Connection>>`）
+- **存储**：`~/.octopus/octopus.db`（`crates/infra/src/db/mod.rs`，全局 `OnceLock<parking_lot::Mutex<Connection>>`）
 - **WAL 模式**：`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`（多任务并发友好，server 多连接不再 SQLITE_BUSY）
 - **并发约束**：`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化）——闭包内可安全地再调 `with_db`（如间接读 config / 查模型 meta）。回归测试 `with_db_reentrant_no_deadlock` 守护。仍为单连接排他。
 - `with_db` 为公开 API 供其他 crate 调用。
