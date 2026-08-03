@@ -120,6 +120,48 @@ export function attachWebgl(
   }
 }
 
+/**
+ * 应用 active 变化：切回 tab 重连 WebGL + focus；切走 tab 释放 WebGL。
+ *
+ * 提取为纯函数（接收 term + webglRef + active）便于单测——useEffect 内的薄封装调它。
+ *
+ * **focus 的关键作用（cursor blink 修复）**：切走 tab 时 `visibility:hidden` 会让 xterm 的
+ * 隐藏 textarea 失焦（W3C 规范），切回 tab 时新 attach 的 WebGL renderer 的
+ * `CursorBlinkStateManager` 构造时因 `isFocused=false` **不启动 600ms blink 定时器**
+ * （`addon-webgl/src/CursorBlinkStateManager.ts:31-33`），光标永久停留在静态 solid block
+ * 不闪。`term.focus()` 触发 textarea focus 事件 → `CoreBrowserTerminal._handleTextAreaFocus`
+ * → `onFocus` → `RenderService.handleFocus` → `renderer.handleFocus`
+ * → `CursorBlinkStateManager.resume()`，启动 blink 定时器，光标恢复闪烁。
+ *
+ * @param term xterm Terminal 实例
+ * @param webglRef 持有当前 WebglAddon 的 ref（active 切换读写，防重复 attach）
+ * @param active tab 是否活跃
+ * @param webglFactory 可选的 WebglAddon 工厂（测试注入 mock；生产默认由 attachWebgl 用 new WebglAddon()）
+ */
+export function applyActive(
+  term: Terminal,
+  webglRef: React.RefObject<WebglAddon | null>,
+  active: boolean,
+  webglFactory?: () => WebglAddon,
+): void {
+  if (active) {
+    // 切回 tab：attach WebGL（若尚未 attach）
+    if (!webglRef.current) {
+      webglRef.current = attachWebgl(term, webglRef, webglFactory);
+    }
+    // 重新 focus xterm 启动 blink 定时器（详见函数注释）
+    term.focus();
+  } else {
+    // 切走 tab：dispose WebGL（Canvas 兜底渲染保留 scrollback）
+    if (webglRef.current) {
+      try {
+        webglRef.current.dispose();
+      } catch {}
+      webglRef.current = null;
+    }
+  }
+}
+
 export function useTerminalSession(opts: {
   container: React.RefObject<HTMLDivElement | null>;
   cwd?: string;
@@ -351,24 +393,11 @@ export function useTerminalSession(opts: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 5. active 切换：隐藏 tab 释放 WebGL（防 ~16 context 上限），切回重连
+  // 5. active 切换：隐藏 tab 释放 WebGL（防 ~16 context 上限），切回重连 + focus
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    if (active) {
-      // 切回 tab：attach WebGL（若尚未 attach）
-      if (!webglRef.current) {
-        webglRef.current = attachWebgl(term, webglRef);
-      }
-    } else {
-      // 切走 tab：dispose WebGL（Canvas 兜底渲染保留 scrollback）
-      if (webglRef.current) {
-        try {
-          webglRef.current.dispose();
-        } catch {}
-        webglRef.current = null;
-      }
-    }
+    applyActive(term, webglRef, active);
   }, [active]);
 
   // 6. 字体 prop 变化 → 即时套到 xterm（get_config 异步读回后 + Cmd+=/- 后 index.tsx 改 state）

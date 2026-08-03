@@ -70,9 +70,11 @@ function attachWebgl(term: Terminal): WebglAddon | null {
 
 ### active 变化的 attach/dispose
 
-`useTerminalSession` 的 `useEffect([active])`：
+`useTerminalSession` 的 `useEffect([active])`（逻辑封装在 `applyActive` 纯函数里，便于单测）：
 - active true→false：`webglRef.current?.dispose()` + 置 null（释放 context，Canvas 兜底渲染保留 scrollback）
-- active false→true：`attachWebgl(term)` + 存 ref（切回 tab 重连 WebGL）
+- active false→true：`attachWebgl(term)` + 存 ref（切回 tab 重连 WebGL）+ **`term.focus()`**
+
+**`term.focus()` 是 cursor blink 修复的关键（2026-08-03）**：切走 tab 时 `visibility:hidden` 会让 xterm 的隐藏 textarea 失焦（W3C 规范），切回 tab 时新 attach 的 WebGL renderer 的 `CursorBlinkStateManager`（`addon-webgl/src/CursorBlinkStateManager.ts:31-33`）构造时因 `isFocused=false` **不启动 600ms blink 定时器**，光标永久停留在静态 solid block 不闪。`term.focus()` 触发 textarea focus 事件 → `CoreBrowserTerminal._handleTextAreaFocus` → `onFocus` → `RenderService.handleFocus` → `renderer.handleFocus` → `CursorBlinkStateManager.resume()`，启动 blink 定时器，光标恢复闪烁。回归测试：`useTerminalSession.test.ts > applyActive`。
 
 代价：切回 tab 极短重连闪烁（WebGL 重建 < 50ms，可接受）。
 
