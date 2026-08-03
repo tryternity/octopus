@@ -41,13 +41,11 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
             // action bar 不隐藏终端（hide_regular=false）：终端本来可见就保持可见，
             // 本来不可见就保持不可见——action bar 不该有副作用改变其他窗口可见性。
             crate::platform::activation::before_floating_window_show(app, false);
-            // 激活 app（makeKeyAndOrderFront 在 app 非活跃时无法夺焦——macOS 要求 app
-            // 先 active）。activate_self 的 ActivateAllWindows 会把终端/编辑器抬到前台。
-            crate::platform::activation::activate_self();
-            // 压回被激活抬上来的 Regular 窗口（终端/编辑器/设置）——保持可见但不浮前。
-            // 顺序关键：激活（app active，makeKey 有效）→ 压回 Regular → show+makeKey
-            // （action bar 浮在最前持 key）。dismiss 时焦点回原 app，用户点终端即抬前。
-            crate::platform::activation::order_back_regular_windows(app);
+            // 轻量激活（activate_self_no_raise）：只 NSApplication::activate()，不调
+            // activateWithOptions(ActivateAllWindows)——后者会 unhide+raise 所有窗口，
+            // 把用户已隐藏/最小化的终端/编辑器强行抬到前台，盖住源 app（浏览器等）。
+            // 轻量版激活 app（makeKeyAndOrderFront 有效）但不 unhide 其他窗口。
+            crate::platform::activation::activate_self_no_raise();
         }
 
         let _ = win.show();

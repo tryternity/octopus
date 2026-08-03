@@ -141,45 +141,6 @@ fn should_hide_on_float(label: &str) -> bool {
             .any(|p| label.starts_with(p))
 }
 
-/// action bar 场景专用：激活 app 后，把可见的 Regular 窗口（终端/编辑器/设置）
-/// 压回 z-order 后面（orderBack:），保持它们可见但不浮在最前。
-///
-/// 背景：`activate_self` 的 `NSRunningApplication::activateWithOptions(ActivateAllWindows)`
-/// 会把所有窗口带到前台——终端/编辑器原本不是焦点时会被抬上来（用户不期望）。
-/// action bar 是 always_on_top 浮窗（floating level），在 Regular 之上；压回 Regular 后，
-/// action bar 仍浮在最前 + 持 key window（makeKeyAndOrderFront）。
-///
-/// 只压回**可见的** Regular 窗口（已隐藏的不动）；不改变 key 状态（action bar 的
-/// makeKeyAndOrderFront 会夺取 key）。dismiss action bar 时焦点回原 app，
-/// Regular 窗口 z-order 自然恢复（用户点终端/编辑器即抬前）。
-#[cfg(target_os = "macos")]
-pub fn order_back_regular_windows(app: &tauri::AppHandle) {
-    use objc2_app_kit::NSWindow;
-    for (label, w) in app.webview_windows() {
-        if !should_hide_on_float(&label) {
-            continue;
-        }
-        // 只压回可见的——已隐藏的不动（保持用户原本状态）
-        if !w.is_visible().unwrap_or(false) {
-            continue;
-        }
-        if let Ok(ns_ptr) = w.ns_window() {
-            if !ns_ptr.is_null() {
-                unsafe {
-                    let ns_win = &*(ns_ptr as *const NSWindow);
-                    // orderBack: 把窗口送到 app 窗口列表后面（保持可见，不抬到最前）。
-                    // 不用 orderOut:（会隐藏）——用户要终端保持可见。
-                    ns_win.orderBack(None);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub fn order_back_regular_windows(_app: &tauri::AppHandle) {}
-
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
 ///
 /// 必须在 `WindowEvent::Destroyed`（窗口已从 app 移除）里调用——此时被关窗口的
@@ -496,6 +457,34 @@ pub fn activate_self() {
     }
     log::info!("[activation] activate_self pid={}", pid);
 }
+
+/// 轻量激活：只 `NSApplication::activate()`，**不** `NSRunningApplication::activateWithOptions(ActivateAllWindows)`。
+///
+/// 用于 action bar 场景——`ActivateAllWindows` 会 unhide + raise 所有 Regular 窗口
+/// （把用户已隐藏/最小化的终端/编辑器强行抬到前台，盖住用户正在操作的浏览器等源 app）。
+/// `NSApplication::activate()` 激活 app（makeKeyAndOrderFront 有效），但不 unhide
+/// 其他窗口——用户原本可见/不可见的窗口保持原样。
+///
+/// 必须在主线程调用。
+#[cfg(target_os = "macos")]
+pub fn activate_self_no_raise() {
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = match MainThreadMarker::new() {
+        Some(mtm) => mtm,
+        None => {
+            log::warn!("[activation] activate_self_no_raise called off main thread, skipping");
+            return;
+        }
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    app.activate();
+    log::info!("[activation] activate_self_no_raise (no ActivateAllWindows)");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_self_no_raise() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn activate_self() {}
