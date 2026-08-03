@@ -195,3 +195,55 @@
 **根因**：`import_hotwords_from_files`（sync/hotword.rs:672）只读各词典 meta.json，不读词文件/outline。B 机首次 clone 后词典是空壳，词要等下次 sync_now 才 pull。与 vault 路径（import_all_from_files 递归）不对称。
 
 **修复**：新增 `import_hotword_words_from_files`（读每个词典 outline + 逐词读文件），engine.rs clone_initial 在导入词典 meta 后调它导入词数据。
+
+## 7. 第五轮审查修复（2026-08-03，S1～S3 + A1 + L1～L3）
+
+第五轮全新核查确认第四轮 8 个修复全部落地，另新发现 10 条问题。7 条修复 + 3 条文档化。
+
+### S1. 词级软删在首推路径不传播
+
+**根因**：`incremental_export_hotwords_with`（sync/hotword.rs:582-592）词文件条件写（md5 不变不写），而词 md5 不含 is_deleted → 软删词 md5 不变 → 词文件不重写 → 盘上留 stale is_deleted=0。常规 sync 的 export_all_hotwords 全量重写自愈，仅首推（NoUpstream）窗口期暴露。
+
+**修复**：词文件改无条件写（对齐 set 文件 :569 + export_all :459）。
+
+### S2. merge_hotword_words N×M 全表扫（性能）
+
+**根因**：每 set 调 `merge_hotword_words` 内部都 `list_all_hotword_words()` 全表扫 + filter。10 词典×3000 词 = 30 万行扫描。
+
+**修复**：入口一次查询按 set_id 分组成 `HashMap`，传引用进 merge_hotword_words。
+
+### S3. clone_initial 缺 is_tombstone_expired 守卫
+
+**根因**：import 函数直接返回所有词典/词，无超期 tombstone 过滤。clone 会复活超期 tombstone（常规路径 pull_set/pull_word 有守卫）。
+
+**修复**：import 函数内部加 `is_tombstone_expired` 过滤。
+
+### A1. pipeline 段间拼接对 CJK 标点错插空格
+
+**根因**：pipeline.rs:146-153 的 char 级 `is_cjk` 漏 CJK 标点(0x3000-303F)/全角(FF00-FFEF) → 段以「。」结尾 + 下段汉字 → needs_space=true →「你好。 世界」。对照 paraformer smart_append 字节级 `<0x80` 判 ASCII 正确。
+
+**修复**：改字节级 ASCII 判定（对齐 smart_append），两侧都非 ASCII（CJK 标点/全角/汉字首字节 ≥0x80）不插空格。
+
+### L1. strip_edited_markers 抹字面括号
+
+**根因**：client.rs:250-253 无条件全删 `{}/<>`，注释说「仅去包裹单词的 {}」。用户字面括号（代码/数学/HTML）被抹。
+
+**修复**：改正则只去包裹标记的括号。
+
+### L2. 另存 WebP 实写 JPEG
+
+**根因**：clipboard_commands.rs webp 分支直写 blob（不解码重编），blob 默认是 JPEG → .webp 文件实为 JPEG。
+
+**修复**：按 magic byte 判断格式解码后重编为 WebP。
+
+### L3. suppress_flag 写失败不回滚
+
+**根因**：handle.rs 四个写入方法先 store(true) 后写，`?` 失败不回滚 flag → 下次 Cmd+C 被吞。
+
+**修复**：失败分支补 store(false) 回滚 flag。
+
+### 文档化（不修，需先量化/影响极低）
+
+- **A2 Whisper Hann 窗 symmetric vs periodic**：zipformer/whisper 用 `/(size-1)`（symmetric），qwen3 用 `/size`（periodic，对齐 PyTorch 默认）。golden test 钉死错误值。修改需先 A/B 量化 WER 影响 + 重新生成 golden 值，留待后续。
+- **L4 热词候选 join("|") 无转义**：候选含字面 `|` 则 LLM 看到的候选数错。中文热词几乎不含 `|`，影响极低。
+- **L5 detect_selection restore 前 clear_suppress 微秒竞态**：窗口极窄（单线程两条语句间 watcher 恰好调度），且仅多存一条记录（非数据损坏）。

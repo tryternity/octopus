@@ -581,12 +581,16 @@ pub fn incremental_export_hotwords_with(
             }
             let new_wmd5 = hotword_word_md5(w);
             let old_wentry = old_set_outline.words.get(&w.id);
-            let word_needs_write = match old_wentry {
+            // 无条件写词文件（对齐 :569 set 文件 + export_all_hotwords_with :459）：
+            // word md5 不含 is_deleted（身份指纹，见 hotword_text.rs:61-63）→ 软删后 md5 不变 →
+            // 旧逻辑（md5 diff 才写）不重写词文件 → 盘上留 stale is_deleted=0，首推不传播软删。
+            // changed/set_outline_changed 仍只跟 md5 diff（保持 push_twice 0 变更语义）。
+            write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
+            let word_changed = match old_wentry {
                 None => true,
                 Some(old) => old.md5 != new_wmd5,
             };
-            if word_needs_write {
-                write_hotword_word_file(&HotwordWordFile::from_hotword_word(w))?;
+            if word_changed {
                 changed += 1;
                 set_outline_changed = true;
             }
@@ -670,6 +674,10 @@ pub fn incremental_export_hotwords_with(
 ///
 /// 扫描 hotword/ 下每个词典目录的 meta.json，返回 HotwordSetMeta 列表。
 pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let dir = hotword_dir();
     let mut metas = Vec::new();
     if !dir.is_dir() {
@@ -697,6 +705,11 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
             .with_context(|| format!("读词典元数据失败：{}", meta_path.display()))?;
         let meta: HotwordSetMeta = serde_json::from_str(&content)
             .with_context(|| format!("解析词典元数据失败：{}", meta_path.display()))?;
+        // clone_initial 守卫：超期 set tombstone 跳过（防 GC 后跨设备复活，
+        // 对齐 pull_set:927）。常规 merge 路径已有守卫，此处补 clone_initial。
+        if is_tombstone_expired(meta.is_deleted, now_secs) {
+            continue;
+        }
         metas.push(meta);
     }
     Ok(metas)
@@ -709,6 +722,10 @@ pub fn import_hotwords_from_files() -> Result<Vec<HotwordSetMeta>> {
 /// 导入全部 cipher 数据，hotword clone 也应一次导入全部词，而非等下次 sync_now 的
 /// merge_hotwords 才 pull（clone → 下次 sync 之间词典是空壳，UX 等同数据丢失）。
 pub fn import_hotword_words_from_files() -> Result<Vec<(String, Vec<HotwordWordFile>)>> {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let dir = hotword_dir();
     let mut result = Vec::new();
     if !dir.is_dir() {
@@ -735,7 +752,14 @@ pub fn import_hotword_words_from_files() -> Result<Vec<(String, Vec<HotwordWordF
         let mut words = Vec::new();
         for (word_uuid, _entry) in &outline.words {
             match read_hotword_word_file(&set_id, word_uuid) {
-                Ok(wf) => words.push(wf),
+                Ok(wf) => {
+                    // clone_initial 守卫：超期 word tombstone 跳过（防 GC 后跨设备复活，
+                    // 对齐 pull_word）。常规 merge 路径已有守卫，此处补 clone_initial。
+                    if is_tombstone_expired(wf.is_deleted, now_secs) {
+                        continue;
+                    }
+                    words.push(wf);
+                }
                 Err(e) => log::warn!("[sync] clone: 读词文件失败 set={} word={}: {}", set_id, word_uuid, e),
             }
         }
@@ -899,9 +923,19 @@ pub fn merge_hotwords() -> Result<HotwordMergeReport> {
     // === 阶段 2：word 层 merge（每个词典的词数据）===
     // 对每个 DB 存在的词典，读其 outline + DB 该词典的词，逐词 3-way merge。
     // 远程词典在阶段 1 已 pull 到 DB，故这里以 DB 词典为准遍历即可覆盖。
+    // 第五轮 S2：入口一次查询按 set_id 分组，避免 N 个词典 × N 次 list_all_hotword_words() 全表扫。
     let latest_sets = db::list_all_hotword_sets()?; // 含 tombstone——word merge 也要覆盖软删词典的词
+    let all_words = db::list_all_hotword_words()?;
+    let words_by_set: std::collections::HashMap<&str, Vec<&HotwordWord>> = {
+        let mut map: std::collections::HashMap<&str, Vec<&HotwordWord>> = std::collections::HashMap::new();
+        for w in &all_words {
+            map.entry(w.set_id.as_str()).or_default().push(w);
+        }
+        map
+    };
     for set in &latest_sets {
-        merge_hotword_words(&set.id, &mut report, now_secs)?;
+        let set_words = words_by_set.get(set.id.as_str()).map(|v| v.as_slice()).unwrap_or(&[]);
+        merge_hotword_words(&set.id, set_words, &mut report, now_secs)?;
     }
 
     // === 阶段 3：从 DB 最新状态重建所有文件 + outline（DB 是单一真相源）===
@@ -967,14 +1001,14 @@ fn pull_set(uuid: &str, now_secs: i64) -> Result<bool> {
 /// 读词典内 outline（远程）+ DB 该词典的词（本地），逐词判定。
 fn merge_hotword_words(
     set_id: &str,
+    set_words: &[&HotwordWord],
     report: &mut HotwordMergeReport,
     now_secs: i64,
 ) -> Result<()> {
     let remote_outline = read_hotword_set_outline(set_id)?;
-    let db_words = db::list_all_hotword_words()?;
-    let db_words: Vec<&HotwordWord> = db_words.iter().filter(|w| w.set_id == set_id).collect();
+    // 第五轮 S2：set_words 由调用方预查询分组传入，不再每 set 全表扫 list_all_hotword_words()。
     let db_by_id: std::collections::HashMap<&str, &HotwordWord> =
-        db_words.iter().map(|w| (w.id.as_str(), *w)).collect();
+        set_words.iter().map(|w| (w.id.as_str(), *w)).collect();
 
     // word：outline 有 → 3-way 判定
     for (uuid, entry) in &remote_outline.words {
@@ -1018,7 +1052,7 @@ fn merge_hotword_words(
     }
 
     // word：DB 有 + outline 无 → push（写词文件）
-    for db_w in &db_words {
+    for db_w in set_words {
         if !remote_outline.words.contains_key(&db_w.id) {
             write_hotword_word_file(&HotwordWordFile::from_hotword_word(db_w))?;
             report.pushed += 1;

@@ -245,12 +245,20 @@ pub fn polish_regions(
     Ok(strip_edited_markers(&result))
 }
 
-/// 去除 LLM 输出中残留的 edited 标记花括号（{word} → word）。
-/// 仅去除包裹单个词的 `{}`，不影响 JSON/代码中的合法花括号（那些不会出现在润色输出中）。
+/// 去除 LLM 输出中残留的 edited/hotwords 标记：
+/// - `{word}`（edited 语境标记）→ `word`
+/// - `<cand1|cand2>`（hotwords 多候选标记）→ 整体移除
+///
+/// 仅去包裹标记的括号，不影响用户文本里的字面 `{`/`}`/`<`/`>`（代码/数学/HTML）——
+/// 那些场景下括号是无修饰的散字符，不构成 `{...}`/`<...>` 的配对标记。
+/// 正则要求内部无嵌套 `{}`/`<>`（标记格式契约），字面文本里的孤立括号不受影响。
 fn strip_edited_markers(text: &str) -> String {
-    // 简单策略：去掉所有 { 和 } 字符。
-    // 润色输出是纯文本（无 JSON/代码），花括号/尖括号在此语境的唯一来源就是 edited/hotwords 标记。
-    text.replace(['{', '}', '<', '>'], "")
+    // {word} → word（edited 语境标记，内部不含嵌套 {}）
+    let edited_re = regex::Regex::new(r"\{([^{}]*)\}").unwrap();
+    let text = edited_re.replace_all(&text, "$1").to_string();
+    // <cand1|cand2|cand3> → 移除（hotwords 候选标记，LLM 应已选定一个，残留才清理）
+    let hotwords_re = regex::Regex::new(r"<[^<>]*>").unwrap();
+    hotwords_re.replace_all(&text, "").to_string()
 }
 
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。

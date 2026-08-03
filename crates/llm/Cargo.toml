@@ -10,6 +10,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 once_cell.workspace = true
 octopus-infra = { path = "../infra" }
+regex = "1"
 
 [dev-dependencies]
 octopus-asr-local = { path = "../asr-local" }

@@ -53,29 +53,47 @@ impl ClipboardHandle {
     pub fn write_text(&self, text: &str) -> Result<()> {
         self.suppress_flag.store(true, Ordering::SeqCst);
         let ctx = self.ctx.lock();
-        ctx.set_text(text.to_string())
-            .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
-        Ok(())
+        match ctx.set_text(text.to_string()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // 回滚 flag：写失败时撤销 suppress，否则下次 Cmd+C 会被吞（flag 留 true）。
+                self.suppress_flag.store(false, Ordering::SeqCst);
+                Err(anyhow::anyhow!("Clipboard write failed: {}", e))
+            }
+        }
     }
 
     /// 写入 PNG 图片到剪贴板（设置 suppress flag）。
     pub fn write_image(&self, png_bytes: &[u8]) -> Result<()> {
         self.suppress_flag.store(true, Ordering::SeqCst);
         let ctx = self.ctx.lock();
-        let img = clipboard_rs::common::RustImageData::from_bytes(png_bytes)
-            .map_err(|e| anyhow::anyhow!("Failed to create RustImageData: {}", e))?;
-        ctx.set_image(img)
-            .map_err(|e| anyhow::anyhow!("Clipboard write image failed: {}", e))?;
-        Ok(())
+        let img = match clipboard_rs::common::RustImageData::from_bytes(png_bytes) {
+            Ok(img) => img,
+            Err(e) => {
+                self.suppress_flag.store(false, Ordering::SeqCst);
+                return Err(anyhow::anyhow!("Failed to create RustImageData: {}", e));
+            }
+        };
+        match ctx.set_image(img) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.suppress_flag.store(false, Ordering::SeqCst);
+                Err(anyhow::anyhow!("Clipboard write image failed: {}", e))
+            }
+        }
     }
 
     /// 写入文件路径列表到剪贴板（设置 suppress flag）。
     pub fn write_files(&self, files: Vec<String>) -> Result<()> {
         self.suppress_flag.store(true, Ordering::SeqCst);
         let ctx = self.ctx.lock();
-        ctx.set_files(files)
-            .map_err(|e| anyhow::anyhow!("Clipboard write files failed: {}", e))?;
-        Ok(())
+        match ctx.set_files(files) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.suppress_flag.store(false, Ordering::SeqCst);
+                Err(anyhow::anyhow!("Clipboard write files failed: {}", e))
+            }
+        }
     }
 
     /// 直接写入 RustImageData 到剪贴板（设置 suppress flag）。
@@ -83,9 +101,13 @@ impl ClipboardHandle {
     pub fn set_image(&self, img: clipboard_rs::common::RustImageData) -> Result<()> {
         self.suppress_flag.store(true, Ordering::SeqCst);
         let ctx = self.ctx.lock();
-        ctx.set_image(img)
-            .map_err(|e| anyhow::anyhow!("Clipboard set image failed: {}", e))?;
-        Ok(())
+        match ctx.set_image(img) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.suppress_flag.store(false, Ordering::SeqCst);
+                Err(anyhow::anyhow!("Clipboard set image failed: {}", e))
+            }
+        }
     }
 
     pub fn read_text(&self) -> Result<String> {

@@ -282,21 +282,32 @@ pub async fn save_image_item(
     let base_name = &blob_hash[..8.min(blob_hash.len())];
     let save_path = unique_path(&downloads_dir, base_name, ext);
 
-    // 5. 编码写入——CPU/IO 密集（JPEG 解码 + PNG/JPEG 编码 + 文件写入）移入 spawn_blocking
+    // 5. 编码写入——CPU/IO 密集（解码 + PNG/JPEG/WebP 编码 + 文件写入）移入 spawn_blocking
     let save_path_clone = save_path.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // magic byte 判断 blob 真实格式：DB 里 image_data 可能是 JPEG（默认 q85 入库）
+        // 或 WebP（兜底/老数据）。原代码硬编 Jpeg 解码，blob 是 WebP 时会解码失败。
+        let blob_fmt = if image_blob.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            ::image::ImageFormat::Jpeg
+        } else {
+            ::image::ImageFormat::WebP
+        };
         match ext {
             "png" => {
-                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
+                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
                     .map_err(e2s)?;
                 img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
                     .map_err(e2s)?;
             }
             "webp" => {
-                std::fs::write(&save_path_clone, &image_blob).map_err(e2s)?;
+                // 重编为 WebP（不直写 blob）：blob 可能是 JPEG，直写会让 .webp 文件实为 JPEG。
+                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
+                    .map_err(e2s)?;
+                img.save_with_format(&save_path_clone, ::image::ImageFormat::WebP)
+                    .map_err(e2s)?;
             }
             _ => {
-                let img = ::image::load_from_memory_with_format(&image_blob, ::image::ImageFormat::Jpeg)
+                let img = ::image::load_from_memory_with_format(&image_blob, blob_fmt)
                     .map_err(e2s)?;
                 let rgb = img.to_rgb8();
                 let mut buf = std::io::BufWriter::new(
