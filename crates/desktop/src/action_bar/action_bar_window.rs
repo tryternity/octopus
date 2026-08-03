@@ -41,13 +41,18 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
             // action bar 不隐藏终端（hide_regular=false）：终端本来可见就保持可见，
             // 本来不可见就保持不可见——action bar 不该有副作用改变其他窗口可见性。
             crate::platform::activation::before_floating_window_show(app, false);
-            // 实验性：跨屏场景下 activate_self_no_raise（NSApplication::activate()）
-            // 仍会把副屏窗口抬到前台（macOS 26 的 activate() 语义是激活到前台）。
-            // 改为不主动激活——依赖 makeKeyAndOrderFront 对 floating window 的
-            // 隐式激活能力（floating window 可在 app 非完全 active 时持 key）。
-            // 若实测 action bar 拿不到焦点，需恢复 activate_self_no_raise 并接受
-            // 跨屏窗口被抬前，或换 setActivationPolicy 方案。
-            // crate::platform::activation::activate_self_no_raise();
+            // 激活 app（makeKeyAndOrderFront 在 app 非活跃时无法夺焦——macOS 要求 app
+            // 先 active）。用 activate_self_no_raise（只 NSApplication::activate()，不调
+            // activateWithOptions(ActivateAllWindows)）——不 unhide 已隐藏的窗口。
+            //
+            // ⚠️ 已知限制（TODO 后续解决）：跨屏场景下 NSApplication::activate() 仍会把
+            // app 抬到前台，导致副屏的终端/编辑器窗口被抬到副屏最前（盖住副屏其他 app）。
+            // 同屏 OK（action bar 浮在最前盖住抬上来的窗口）。根本矛盾：activate 给焦点
+            // 但抬窗口，不 activate 不抬窗口但无焦点。后续可借鉴：
+            //   ① NSWindow::orderFrontRegardless（跨 app 抬单窗口不激活整个 app）
+            //   ② 激活后 NSApplication::deactivate() + 保留 action bar key
+            //   ③ 临时 setActivationPolicy 切换
+            crate::platform::activation::activate_self_no_raise();
         }
 
         let _ = win.show();
