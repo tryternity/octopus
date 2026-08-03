@@ -277,11 +277,13 @@ fn build_gitignore_matchers(dir: &std::path::Path) -> Vec<ignore::gitignore::Git
         Some(r) => r,
         None => return matchers, // 非 repo
     };
-    // 全局 excludesfile（最低优先级）—— root 用其父目录（与 git 行为近似）
+    // 全局 excludesfile（最低优先级）—— root 用 repo_root（D2 修复）。
+    // git 语义下全局 excludesfile 的 pattern 相对工作目录根（即 repo root），而非该
+    // 文件所在目录。旧用 global.parent() 在 excludesfile 恰好位于 repo 内部时（极罕见）
+    // 会导致前导斜杠 pattern 锚定错误；用 repo_root 对齐 git 真实行为。
     if let Some(global) = ignore::gitignore::gitconfig_excludes_path() {
         if global.is_file() {
-            let root = global.parent().unwrap_or(&repo_root).to_path_buf();
-            let mut b = ignore::gitignore::GitignoreBuilder::new(&root);
+            let mut b = ignore::gitignore::GitignoreBuilder::new(&repo_root);
             let _ = b.add(&global);
             if let Ok(m) = b.build() {
                 matchers.push(m);

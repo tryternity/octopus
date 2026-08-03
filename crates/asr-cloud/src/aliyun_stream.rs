@@ -217,7 +217,14 @@ async fn run_ws_session(
                                     "[FunASR-Stream] sid={} end={} text={:?} combined={:?}",
                                     sentence_id, sentence_end, text, combined
                                 );
-                                let _ = result_tx.send(StreamEvent::Text(combined));
+                                // 仅非空 combined 发 Text（R1：与 H1 同源——空 Text 会经
+                                // close_async 的 text=t 覆盖之前累积的非空文本，导致有效
+                                // 结果丢失。combined 在 committed+current_sentence 同时为空时
+                                // 为空串：首帧/缓冲帧/VAD 静音过渡帧。对齐同文件 Qwen line 489
+                                // 的 if !combined.is_empty() + 其他 3 家 provider）。
+                                if !combined.is_empty() {
+                                    let _ = result_tx.send(StreamEvent::Text(combined));
+                                }
                             }
                             Some("task-finished") => {
                                 // 提交未提交的最后一句
