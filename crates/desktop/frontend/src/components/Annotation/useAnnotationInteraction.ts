@@ -3,6 +3,10 @@
 //
 // 各场景只需提供 clientToNatural 坐标函数 + useAnnotationState 返回值。
 // 平移（pan）/选区（crop）/窗口管理/全图加载拦截不纳入 hook（各场景自己处理）。
+//
+// ⚠️ 迁移进度（2026-08-03）：仅 ImagePreview 已接入。Screenshot 和 RecordAnnotation
+// 仍用各自内联的鼠标交互逻辑，未完成「统一三场景」目标。遗留迁移记录在
+// docs/superpowers/plans/2026-07-30-annotation-interaction-unification.md Task 3/4。
 
 import { useState, useRef, useCallback } from "react";
 import type { Annotation, Tool } from "@/lib/annotation";
