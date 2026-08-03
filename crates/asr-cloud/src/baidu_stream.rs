@@ -53,7 +53,7 @@ pub fn open(
     tokio::spawn(async move {
         let tx_for_err = result_tx.clone();
         let result =
-            run_baidu_session(pcm_rx, result_tx, appid, appkey, dev_pid, language, pre_roll_samples)
+            run_baidu_session(pcm_rx, result_tx, ENDPOINT, appid, appkey, dev_pid, language, pre_roll_samples)
                 .await;
         // session 契约：Ok = 已通过 result_tx 通知最终结果（Finished/运行期 Failed，
         // 见 run_baidu_session 内 WS 错误分支 return Ok 处）；仅 Err（签名/建连等启动期失败，
@@ -67,9 +67,13 @@ pub fn open(
 }
 
 /// 后台 WS 会话主逻辑：建连 → START → pre-roll → 双向循环 → FINISH → 收结果。
+///
+/// `endpoint` 参数化（P2-1 WS mock）：prod 调用传真 `const ENDPOINT`（`wss://...`），
+/// 测试用 in-process server 时传 `ws://127.0.0.1:{port}`（见 `test_ws_server`）。
 async fn run_baidu_session(
     mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
+    endpoint: &str,
     appid: String,
     appkey: String,
     dev_pid: String,
@@ -89,7 +93,7 @@ async fn run_baidu_session(
     let cuid = sn.clone(); // cuid 也用 UUID（统计 UV，不影响识别）
 
     // 3. 建连
-    let ws_url = format!("{}?sn={}", ENDPOINT, sn);
+    let ws_url = format!("{}?sn={}", endpoint, sn);
     let (mut ws, _resp) = tokio::time::timeout(
         std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
         connect_async(&ws_url),
@@ -358,5 +362,90 @@ mod tests {
         assert_eq!("15372".parse::<i64>().unwrap(), 15372);
         assert_eq!("1737".parse::<i64>().unwrap(), 1737);
         assert!("invalid".parse::<i64>().is_err());
+    }
+
+    // ── P2-1 WS mock：Close 帧终态测试（spec §2.2）──
+    // 用 in-process tokio-tungstenite server（test_ws_server harness）真走一遍 WS 协议，
+    // 覆盖 run_baidu_session 的 Close 分支稳态判定逻辑。
+
+    use crate::test_ws_server::WsTestServer;
+    use crate::cloud_types::{CloudStreamHandle, StreamEvent};
+
+    /// 回归 spec §2.2：收到 FIN_TEXT（稳态）后 Close → 应发 Text + Finished。
+    #[tokio::test]
+    async fn close_frame_emits_finished_when_stable() {
+        // server 按剧本发：FIN_TEXT（稳态）→ Close。不读 client（避开握手时序）。
+        let server = WsTestServer::start_script(vec![
+            Message::Text(r#"{"type":"FIN_TEXT","result":"你好","err_no":0}"#.into()),
+        ]).await;
+        let url = server.ws_url();
+        let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+        let tx_clone = result_tx.clone();
+        tokio::spawn(async move {
+            let result = run_baidu_session(
+                pcm_rx, result_tx, &url,
+                "1050000017".into(), "testkey".into(), "15372".into(),
+                "zh".into(), Vec::new(),
+            ).await;
+            if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
+        });
+
+        // 收集事件（最多 2s，等 connect + 握手 + 收消息）
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = handle.try_recv_text() {
+                events.push(ev);
+                if matches!(events.last(), Some(StreamEvent::Finished) | Some(StreamEvent::Failed(_))) {
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "稳态 Close 应发 Finished，实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 spec §2.2：仅 MID_TEXT（非稳态）后 Close → 应发 Failed（不发 Finished）。
+    #[tokio::test]
+    async fn close_frame_emits_failed_when_no_stable() {
+        let server = WsTestServer::start_script(vec![
+            Message::Text(r#"{"type":"MID_TEXT","result":"部分识别","err_no":0}"#.into()),
+        ]).await;
+        let url = server.ws_url();
+        let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+        let tx_clone = result_tx.clone();
+        tokio::spawn(async move {
+            let result = run_baidu_session(
+                pcm_rx, result_tx, &url,
+                "1050000017".into(), "testkey".into(), "15372".into(),
+                "zh".into(), Vec::new(),
+            ).await;
+            if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
+        });
+
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = handle.try_recv_text() {
+                events.push(ev);
+                if matches!(events.last(), Some(StreamEvent::Finished) | Some(StreamEvent::Failed(_))) {
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+            "非稳态 Close 应发 Failed，实际 events: {:?}", events
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "非稳态 Close 不应发 Finished"
+        );
     }
 }

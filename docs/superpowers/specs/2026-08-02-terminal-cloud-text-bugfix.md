@@ -1,8 +1,8 @@
 # 终端 / 云识别 / 文本后处理批量 bugfix
 
 > **日期**：2026-08-02
-> **状态**：✅ 已实现（18 处 bug 全修复，全量测试通过）
-> **来源**：外部代码审查报告（32 候选核实 13 成立 + 5 次要），全量复查 CONFIRMED
+> **状态**：✅ 已实现（首轮 18 处 + 复审 F1-F3/G1-G4/H1 共 9 处，全修复，全量测试通过）
+> **来源**：外部代码审查报告（32 候选核实 13 成立 + 5 次要）→ 3 轮独立复审（F1-F3 / G1-G4 / H1），全量复查 CONFIRMED
 > **分支**：`.worktrees/bugfix_pr_0801`（bugfix/pr-0801）
 
 ## 0. 复查结论
@@ -202,11 +202,11 @@ if !finished {
 | bytedance | `last_text`（仅非空 text 才存，G1/G2 修复） | 末帧 flags==0x3 时：`last_text.is_some()`→Finished，否则 Failed；Close 时：`last_text.take()` 非空→Text+Finished，否则 Failed |
 | tencent | `!stable_segments.is_empty()` | 稳态→Text+Finished；否则 Failed |
 
-**注**：bytedance spec 原设计用 `got_last_frame`（flags==0x3 置 true），但实现改为「末帧时直接判 last_text 非空」——因 flags==0x3 帧到达后立即 return，Close 分支不可能在末帧后触发，故无需单独 `got_last_frame` 标志。**G1/G2 复审发现**：原实现 `last_text = Some("")`（空 text 也存）导致末帧/Close 发空 text 当成功，改为「仅非空 text 才存 last_text」，末帧时 `last_text.is_some()` 等价于「收到过实质识别内容」。
+**注**：bytedance spec 原设计用 `got_last_frame`（flags==0x3 置 true），但实现改为「末帧时直接判 last_text 非空」——因 flags==0x3 帧到达后立即 return，Close 分支不可能在末帧后触发，故无需单独 `got_last_frame` 标志。
 
-**H1 三轮复审发现 G1 未完全覆盖**：G1 只修了 `last_text` 更新的判空，但 `result_tx.send(StreamEvent::Text(text))` 仍在判空块外——空 text 仍无条件发送。`close_async` 的 `StreamEvent::Text(t) => text = t` 无条件覆盖，空 Text 会覆盖之前累积的非空文本（序列 `[Text("你好"), Text(""), Finished]` → `Ok("")`，丢失有效结果）。修复：send 也移进 `if !text.is_empty()` 块，对齐其他 3 家 provider 的 `!display.is_empty()` 保护。`close_async` 的覆盖语义是契约（每次覆盖取最新），由 provider 层保证不发空 Text，cloud_types 加 `close_async_empty_text_overwrites_contract` 测试固化该契约。
+**⚠️ G1/G2/H1 复审**：原实现空 text 处理有缺陷（空 text 当成功 + 空 Text 污染累积器），三轮复审逐步修复——详见 §8。
 
-**回归测试**：每家 `close_frame_emits_failed_when_no_stable_result` + `close_frame_emits_finished_when_stable`（mock WS 流注入 Close 帧）。
+**回归测试**（P2-1 已实现，2026-08-03）：4 家各补 `close_frame_emits_finished_when_stable` + `close_frame_emits_failed_when_no_stable`，用 **in-process tokio-tungstenite server**（`test_ws_server.rs` harness）真走一遍 WS 协议注入 Close 帧。bytedance 额外补末帧分支（`last_frame_*`）+ H1 空 text 回归（`last_frame_with_intermediate_empty_text_keeps_valid`）。详见 §10 P2-1。
 
 ### 2.3 baidu Close partial-as-Finished（#11）
 
@@ -341,12 +341,63 @@ if !finished {
 
 **修复**：once 闭包解析 payload（新增 `ReadyPayload { windowLabel }` struct + `rename_all="camelCase"` 对齐前端），仅当 `window_label == AGENT_WINDOW_LABEL` 才触发 emit。解析失败（`unwrap_or(false)`）忽略，靠 5s watchdog 兜底（比误触发安全）。
 
-**⚠️ G3 复审：F3 的 once 修复无效，已改用 listen**。核实 Tauri 2.11.2 源码（`event/listener.rs:160-177`）：`once` 的实现是 `listen` + wrapper 闭包——wrapper 取出 handler 调用后**无条件 `unlisten(id)`**，即使 handler 内 `return`。故 F3 的 windowLabel 校验（不匹配则 return）会导致：别的窗口 ready 先到 → 闭包调用 → return → once 监听器已移除 → agent 自己的 ready 到达时无 listener → 退化为固定 5s watchdog 延迟（失去 ready 回拉的时序优势）。
-
-**G3 正确修复**：改用 `listen`（非 once），闭包内仅在 windowLabel 匹配时 emit + 手动 `unlisten(e.id())`；不匹配则继续监听。watchdog 超时后也 `unlisten(listen_id)` 清理（避免泄漏）。payload 用 `Arc<Mutex<Option<NewTabPayload>>>` 共享给 listen + watchdog（Fn 闭包不能 move），先到者 `take()` 并 emit。
+**⚠️ G3 复审：F3 的 once 修复无效**。核实 Tauri 2.11.2 源码（`event/listener.rs:160-177`）：`once` 闭包被调用即无条件 `unlisten(id)`，即使内部 `return`。F3 的 windowLabel 校验导致别的窗口 ready 先到时 once 已失效 → 退化为固定 5s watchdog 延迟。**正确修复改用 listen + 手动 unlisten**——详见 §8 G3。
 
 ### 次要瑕疵
 
 - itn.rs 尾部多余空行清理（fmt 风格）
 - corrector.rs `top_k` 注释明确「下游 take(5)，取 6 含余量；改下游须同步」（防未来下游改 take(7) 漏候选）
+
+## 8. 三轮复审（2026-08-02/03，G1-G4 + H1）
+
+二轮（G1-G4）+ 三轮（H1）复审发现的首轮修复边角缺陷，全部 CONFIRMED 并修复：
+
+### G1/G2/H1. bytedance 空 text 当成功 + 空 Text 污染累积器
+
+**G1/G2 根因**（`bytedance_stream.rs`）：`last_text = Some(text.to_string())` 无条件存（含空 text）→ 末帧（flags==0x3）/Close 时 `last_text.is_some()` 为真 → 发 Finished → `close_async` 返 `Ok("")`，空结果当成功吞掉鉴权降级/空音频等异常。
+
+**G1/G2 修复**：仅非空 text 才存 `last_text`（`if !text.is_empty()`）；末帧 `last_text.is_some()` 才 Finished，否则 Failed。
+
+**H1 三轮发现 G1 未完全覆盖**：G1 只把 `last_text` 更新移进判空块，但 `result_tx.send(StreamEvent::Text(text))` 仍在块外——空 text 仍无条件发送。`close_async` 的 `StreamEvent::Text(t) => text = t` 无条件覆盖，序列 `[Text("你好"), Text(""), Finished]` → `Ok("")`，丢失有效结果。
+
+**H1 修复**：send 也移进 `if !text.is_empty()` 块，对齐其他 3 家 provider 的 `!display.is_empty()` 保护。
+
+**契约固化**：`close_async` 的覆盖语义（每次取最新）是契约，由 provider 层保证不发空 Text。`cloud_types::close_async_empty_text_overwrites_contract` 测试固化该契约（防未来误改 close_async 或 provider 重犯）。
+
+### G3. F3 的 once 修复无效，改用 listen
+
+**根因**：Tauri 2.11.2 源码（`event/listener.rs:160-177`）——`once` 是 `listen` + wrapper 闭包，wrapper 取出 handler 调用后**无条件 `unlisten(id)`**，即使 handler 内 `return`。F3 的 windowLabel 校验（不匹配则 return）导致：别的窗口 ready 先到 → 闭包调用 → return → once 监听器已移除 → agent 自己的 ready 到达时无 listener → 退化为固定 5s watchdog 延迟。
+
+**修复**：改用 `listen`（非 once），闭包内仅在 windowLabel 匹配时 emit + 手动 `unlisten(e.id())`；不匹配则继续监听。watchdog 超时后也 `unlisten(listen_id)` 清理。payload 用 `Arc<Mutex<Option<NewTabPayload>>>` 共享给 listen + watchdog，先到者 `take()` 并 emit。
+
+### G4. tencent nonce 理论可为 0（非正整数）
+
+**根因**（`tencent_stream.rs:273`）：`nonce = (uuid v4 as u128 as u32).to_string()`。uuid 低 32 位全 0（概率 2^-32）→ `nonce="0"` 非正整数，腾讯文档要求「随机正整数」，可能导致签名被拒。
+
+**修复**：`.saturating_add(1)`，范围变为 `[1, 4294967295]` 全正整数。`saturating_add` 对 `u32::MAX` 饱和不溢出（仍为 `u32::MAX`），最坏 `nonce=1`（合法）。
+
+## 9. P2 后续（2026-08-03）
+
+### P2-2. cloud close 错误诊断落库
+
+**核实澄清**：审查发现 partial 兜底**现状已有效**——`finalize_cloud:465` 的 `append_segment(&current_partial)` 在 `combined.is_empty()` 判断**之前**执行，Err 时只要 partial 非空，已写进 segments → `db_text()` 非空 → 会写 DB（含 partial）。真正缺失的是 **close 返回的 Err 字符串没落库**，排查云端鉴权/超时/断连只能翻日志。
+
+**修复**：`finalize_cloud` 加 `cloud_error: Option<&str>` 参数；`handle_cloud_streaming_done` Err 分支提取 `e` 传入；`finalize_cloud` 写 `update_transcription_raw` 后调 `octopus_infra::db::update_meta_field(transcript.id, "cloud_close_error", err)` 落 `meta_info.cloud_close_error`。新 `update_meta_field` 用 `json_set(COALESCE(meta_info,'{}'), '$.key', value)` 增量写（不覆盖 engine/char_count 等），NULL meta 兜底 `'{}'`。单测：`update_meta_field_increments_json` + `update_meta_field_handles_null_meta`。
+
+### P2-1. asr-cloud WS mock 基础设施（in-process server）
+
+**背景**：4 家 provider 的 `run_xxx_session` WS 主循环零覆盖，spec §2.2 要求的 Close 帧终态测试缺失，靠代码审查保证。
+
+**方案**：**in-process tokio-tungstenite server**（与项目 `download` crate 的 `httpmock` 真集成哲学一致，零新依赖）。
+
+1. **共享 harness**（`crates/asr-cloud/src/test_ws_server.rs`）：`WsTestServer::start(handler)` bind `127.0.0.1:0` 随机端口 + `accept_async` 接受连接，handler 闭包自由控制收发；`WsTestServer::start_script(Vec<Message>)` 纯发剧本模式。`ws_url()` 返回 `ws://127.0.0.1:{port}/`（带 `/` path 根——tungstenite 0.24 对无 path 的 URL 拼 query 后 `connect_async` 握手失败报 `HTTP format error`）。
+
+2. **endpoint 可注入化**：4 家 `run_xxx_session` 的 connect URL 从 const 改为参数——prod `open()` 传真 endpoint（wss://），测试传 `ws://127.0.0.1:{port}/`。aliyun 已参数化无需改；baidu/bytedance endpoint 提为参数；tencent 签名 URL 拼接从 run 函数移到 open（run 接收已签名 URL）。
+
+3. **测试覆盖**（共 11 个 + harness 3 个）：
+   - baidu/aliyun/tencent 各 2 个（Close 稳态→Finished / 非稳态→Failed）
+   - bytedance 5 个（末帧稳态/非稳态 + H1 空 text 不发 Text + 空 text 中间帧不污染 + Close 稳态/非稳态）
+   - harness 3 个（script 发消息 / handler 收 client 消息 / URL 带 query 握手）
+
+**踩坑**：tungstenite 0.24 `connect_async("ws://host:port?query")` 因无 path 构造的 HTTP 请求行非法 → server `accept_async` 报 `HTTP format error: invalid format`。修复：`ws_url()` 加 `/`，provider 拼 query 得 `ws://host:port/?sn=x`（path=`/`）合法。
 

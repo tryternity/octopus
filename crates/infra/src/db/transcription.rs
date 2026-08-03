@@ -54,6 +54,37 @@ pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
     })
 }
 
+/// 增量更新 meta_info 的单个 JSON key（诊断/辅助字段用，不覆盖 engine/char_count 等）。
+///
+/// 用 `json_set(COALESCE(meta_info,'{}'), '$.key', value)` 增量写入：
+/// - meta_info 为 NULL 时 `'{}'` 兜底，避免 `json_set(NULL, ...)` 返 NULL 丢全部 meta
+/// - 只动 `$.{key}` 一个路径，其余 meta 字段（engine/char_count/polished 等）原样保留
+///
+/// 用途：云端 ASR close 异常时写 `cloud_close_error`（`finalize_cloud` Err 路径落库便于诊断），
+/// 未来也可写其他诊断/辅助字段。
+pub fn update_meta_field(id: i64, key: &str, value: &str) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        update_meta_field_at(conn, id, key, value)?;
+        Ok(())
+    })
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。返回实际更新的行数。
+pub(crate) fn update_meta_field_at(
+    conn: &Connection,
+    id: i64,
+    key: &str,
+    value: &str,
+) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE clipboard_history
+         SET meta_info=json_set(COALESCE(meta_info,'{}'), ?1, ?2)
+         WHERE id=?3",
+        params![format!("$.{}", key), value, id],
+    )?)
+}
+
 /// 停顿润色后更新 polish_status/polish_model + segments/text 列。
 /// `text` = 润色后扁平（与 segments 段拼接一致）；`segments` = segments_json（润色后段，Polished/Edited）。
 /// 新 schema：UPDATE clipboard_history content + segments + meta_info（polished/polish_model）。
@@ -525,5 +556,61 @@ mod tests {
         assert_eq!(escape_fts5_match("会议纪要"), "\"会议纪要\"");
         assert_eq!(escape_fts5_match("a\"b"), "\"a\"\"b\"");
         assert_eq!(escape_fts5_match("AND"), "\"AND\"");
+    }
+
+    /// update_meta_field_at 增量写 meta JSON：新 key 加入 + 原 engine/char_count 不丢。
+    /// 用例：模拟云端 close 异常后写 cloud_close_error 诊断字段。
+    #[test]
+    fn update_meta_field_increments_json() {
+        let conn = open_init();
+        // 建记录，meta_info 已含 engine/char_count（模拟 insert_transcription_at_id 后的状态）
+        conn.execute(
+            "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
+             VALUES (100, 'voice', '你好',
+                '{\"engine\":\"baidu\",\"polished\":false,\"char_count\":2}',
+                '2026-08-03 00:00:00')",
+            [],
+        )
+        .unwrap();
+        // 写诊断字段
+        let rows = update_meta_field_at(&conn, 100, "cloud_close_error", "cloud close 超时（8s）").unwrap();
+        assert_eq!(rows, 1, "应更新 1 行");
+        // 读回：cloud_close_error 已加，engine/char_count 原样保留
+        let (engine, char_count, cloud_err): (String, i64, String) = conn
+            .query_row(
+                "SELECT json_extract(meta_info,'$.engine'),
+                        json_extract(meta_info,'$.char_count'),
+                        json_extract(meta_info,'$.cloud_close_error')
+                 FROM clipboard_history WHERE id=100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(engine, "baidu", "原 engine 不丢");
+        assert_eq!(char_count, 2, "原 char_count 不丢");
+        assert_eq!(cloud_err, "cloud close 超时（8s）");
+    }
+
+    /// update_meta_field_at 对 NULL meta_info 兜底 '{}'：不会丢全部 meta。
+    #[test]
+    fn update_meta_field_handles_null_meta() {
+        let conn = open_init();
+        // meta_info 为 NULL（异常状态）
+        conn.execute(
+            "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
+             VALUES (200, 'voice', 'test', NULL, '2026-08-03 00:00:00')",
+            [],
+        )
+        .unwrap();
+        update_meta_field_at(&conn, 200, "cloud_close_error", "err").unwrap();
+        let cloud_err: String = conn
+            .query_row(
+                "SELECT json_extract(meta_info,'$.cloud_close_error')
+                 FROM clipboard_history WHERE id=200",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(cloud_err, "err", "NULL meta 兜底空对象后能写入");
     }
 }

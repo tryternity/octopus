@@ -620,4 +620,70 @@ mod tests {
         assert!(id.starts_with("evt_"), "event_id 应以 evt_ 开头: {}", id);
         assert!(id.len() > 10, "event_id 应有足够长度: {}", id);
     }
+
+    // ── P2-1 WS mock：Close 帧终态测试（spec §2.2）──
+    // 测 Fun-ASR 协议（run_ws_session），稳态判定 = !committed.is_empty()（sentence_end=true 提交）。
+
+    use crate::test_ws_server::WsTestServer;
+    use crate::cloud_types::{CloudStreamHandle, StreamEvent};
+
+    /// 辅助：spawn run_ws_session 连 in-process server，收集事件直到 Finished/Failed。
+    async fn spawn_aliyun_and_collect(url: String) -> Vec<StreamEvent> {
+        let (mut handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+        let tx_clone = result_tx.clone();
+        tokio::spawn(async move {
+            let result = run_ws_session(
+                pcm_rx, result_tx, url,
+                "testkey".into(), "paraformer-realtime-v2".into(), "zh".into(), Vec::new(),
+            ).await;
+            if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
+        });
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(ev) = handle.try_recv_text() {
+                events.push(ev);
+                if matches!(events.last(), Some(StreamEvent::Finished) | Some(StreamEvent::Failed(_))) {
+                    break;
+                }
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        events
+    }
+
+    /// 回归 spec §2.2：收到稳态（sentence_end=true）后 Close → Finished。
+    #[tokio::test]
+    async fn close_frame_emits_finished_when_stable() {
+        // result-generated + sentence_end=true（稳态提交）
+        let resp = r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"你好","sentence_id":1,"sentence_end":true}}}}"#;
+        let server = WsTestServer::start_script(vec![
+            Message::Text(resp.into()),
+        ]).await;
+        let events = spawn_aliyun_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "稳态 Close 应发 Finished，实际 events: {:?}", events
+        );
+    }
+
+    /// 回归 spec §2.2：仅非稳态（sentence_end=false）后 Close → Failed。
+    #[tokio::test]
+    async fn close_frame_emits_failed_when_no_stable() {
+        // result-generated + sentence_end=false（非稳态 partial）
+        let resp = r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"部分","sentence_id":1,"sentence_end":false}}}}"#;
+        let server = WsTestServer::start_script(vec![
+            Message::Text(resp.into()),
+        ]).await;
+        let events = spawn_aliyun_and_collect(server.ws_url()).await;
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+            "非稳态 Close 应发 Failed，实际 events: {:?}", events
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Finished)),
+            "非稳态 Close 不应发 Finished"
+        );
+    }
 }

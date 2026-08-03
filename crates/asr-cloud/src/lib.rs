@@ -15,6 +15,8 @@ pub mod tencent_stream;
 pub mod baidu_stream;
 pub mod config;
 pub mod batch;
+#[cfg(test)]
+pub(crate) mod test_ws_server;
 
 pub use config::open_cloud_session;
 pub use batch::{CloudBatchEngine, is_cloud_spec};
