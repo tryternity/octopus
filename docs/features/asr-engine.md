@@ -140,9 +140,15 @@
 
 ## ASR 纠错器（Corrector）
 
-`crates/asr-local/src/corrector.rs`——基于拼音映射 + Bigram 转移概率的轻量级中文拼音纠错。
+`crates/asr-local/src/corrector.rs`——基于拼音映射 + 字级 bigram 上下文打分的轻量级中文热词纠错。
 
-**数据**：unigram 词表 + bigram 共现表（各 40,000 条，压缩后 ~450KB）`include_bytes!` 静态嵌入，运行时解压 ~30MB。源自 jieba `dict.txt.big` + gotokenizer `bigram.txt`，由 `scripts/generate_corrector_data.py` 离线生成。
+**候选源**：仅用户热词 `HotwordIndex`（2026-07 重构，根除过纠——空热词 no-op 零过纠）。候选拼音经 `normalize_fuzzy_pinyin` 归一化（方言规则运行时生效），查询侧对识别文本滑窗逐字算 `char_fuzzy_pinyin` 召回。
+
+**多命中排序**（2026-08-01）：`find_candidates(query_word, prev_char, next_char)` 按组合分数 `bigram_score * W_CONTEXT(1.0) + hit_count * W_HIT(0.3)` 降序 + 字典序 tie-break。`bigram_score` 是字级 bigram 上下文频次（用户历史 voice 语料统计），`hit_count` 来自 `hotword_hits` 表（LEFT JOIN `list_active_words`）。`HotwordIndex::from_words` 接收 `(word, pinyin, hit_count)` 三元组，pinyin 来自 DB `hotword_words.pinyin` 原始拼音（跳过 `to_pinyin()` 现算，仅做归一化生成 key）。详见 [architecture.md §ASR 纠错](../architecture.md)。
+
+**bigram 索引**（2026-08-01 字级，替代旧 jieba 静态表）：`build_char_bigram_index` 从用户 voice 历史（`WHERE item_type='voice'`）取相邻字符对计数，存 `LightCorrector.bigrams: RwLock<HashMap<(char,char), usize>>`。挂 scheduler 定时任务 `bigram_index`（interval 600s，CPU 空闲时构建），启动 setup 立即 reload 一次。空 bigram 时打分退化为纯 hit_count 排序（zero-context fallback）。
+
+> **历史**：旧版用 jieba `dict.txt.big` + gotokenizer `bigram.txt` 离线生成的 4 万条静态 unigram/bigram（`include_bytes!` 嵌入），2026-08-01 commit `dceb7322` 删除——改用用户实际 voice 语料动态构建，更贴合用户语言习惯。
 
 **开关**：`app_config.asr_correct`（2026-08-01 默认改 `true`，加了热词即生效）。
 
