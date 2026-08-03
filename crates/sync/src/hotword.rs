@@ -886,6 +886,21 @@ fn pull_set(uuid: &str, now_secs: i64) -> Result<bool> {
                 log::debug!("[sync] 热词 merge: 词典 {} 超期 tombstone，skip pull", uuid);
                 return Ok(false);
             }
+            // 删除单向传播（2026-08-03）：DB 已 tombstone 且远程 meta active 时拒绝 pull——
+            // 防本地删除被远程旧 active 状态复活（用户删词典→sync→git ff 拉到远程 active 版本→复活）。
+            // 反向（DB active + 远程 tombstone）允许——远程删除正常传播到本地。
+            if file.is_deleted == 0 {
+                if let Ok(db_h) = db::get_hotword_set(uuid) {
+                    if db_h.is_deleted > 0 {
+                        log::info!(
+                            "[sync] 热词 merge: 词典 {} 本地已删除（is_deleted={}），远程 active，拒绝复活",
+                            uuid,
+                            db_h.is_deleted
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
             let h = file.to_hotword_set(None);
             let md5 = hotword_set_md5(&h);
             let mut h = h;
@@ -925,7 +940,7 @@ fn merge_hotword_words(
         match db_by_id.get(uuid.as_str()) {
             None => {
                 // DB 无 → pull（读词文件 upsert，回填 sync_md5）
-                match pull_word(set_id, uuid, now_secs) {
+                match pull_word(set_id, uuid, now_secs, None) {
                     Ok(true) => report.pulled += 1,
                     Ok(false) => report.skipped += 1,
                     Err(e) => {
@@ -941,7 +956,7 @@ fn merge_hotword_words(
                 let local_updated = iso_to_unix_ms(&db_w.updated_at);
                 if remote_updated > local_updated {
                     // 远程更新 → pull 覆盖 DB（软删传播：is_deleted=true 的词 pull 后 DB 也变软删）
-                    match pull_word(set_id, uuid, now_secs) {
+                    match pull_word(set_id, uuid, now_secs, Some(db_w)) {
                         Ok(true) => report.pulled += 1,
                         Ok(false) => report.skipped += 1,
                         Err(e) => {
@@ -974,12 +989,25 @@ fn merge_hotword_words(
 /// Pull 单个词（读词文件 → upsert DB，回填 sync_md5）。
 /// 返回 Ok(true) 表示成功 upsert，Ok(false) 不应发生（词无 name 冲突）或超期 tombstone skip。
 /// GC 2026-08-02：超期 tombstone 不 pull（防 GC 后跨设备复活）。
-fn pull_word(set_id: &str, uuid: &str, now_secs: i64) -> Result<bool> {
+fn pull_word(set_id: &str, uuid: &str, now_secs: i64, db_current: Option<&HotwordWord>) -> Result<bool> {
     match read_hotword_word_file(set_id, uuid) {
         Ok(file) => {
             if is_tombstone_expired(file.is_deleted, now_secs) {
                 log::debug!("[sync] 热词 merge: 词 {} 超期 tombstone，skip pull", uuid);
                 return Ok(false);
+            }
+            // 删除单向传播（2026-08-03）：DB 已 tombstone 且远程词 active 时拒绝 pull——
+            // 防本地删词被远程旧 active 状态复活（对称 pull_set 保护）。
+            if file.is_deleted == 0 {
+                if let Some(db_w) = db_current {
+                    if db_w.is_deleted > 0 {
+                        log::info!(
+                            "[sync] 热词 merge: 词 {}（词典 {}）本地已删除（is_deleted={}），远程 active，拒绝复活",
+                            uuid, set_id, db_w.is_deleted
+                        );
+                        return Ok(false);
+                    }
+                }
             }
             let w = file.to_hotword_word();
             match db::upsert_hotword_word(&w) {
@@ -2123,5 +2151,96 @@ mod tests {
             db::get_hotword_word(set_id, "八爪鱼").unwrap().is_none(),
             "超期 word tombstone 不应被 pull 复活"
         );
+    }
+
+    // === 删除单向传播（2026-08-03，防本地删除被远程旧 active 状态复活）===
+
+    /// 本地软删 set + 远程仍是 active（updated_ms 更新）→ merge 不复活。
+    /// 复现用户场景：删词典 → git sync → git ff 拉到远程 active 版本 → 旧逻辑会复活。
+    #[test]
+    fn merge_local_set_delete_not_resurrected_by_remote_active() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "res-set-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        export_all_hotwords().expect("export 初始 active");
+
+        // 本地软删该 set（模拟用户点删除——DB 改 tombstone，updated_at 推进）
+        db::delete_hotword_set(set_id).unwrap();
+        let db_h = db::get_hotword_set(set_id).unwrap();
+        assert!(db_h.is_deleted > 0, "前置：DB 已软删");
+
+        // 远程（git ff 拉来的）仍是 active 且 updated_ms 比本地删除时刻更新
+        // → 旧逻辑会 pull_set 复活；新逻辑应拒绝（删除单向传播）
+        write_remote_set_with(set_id, "测试词典", 9999999999999, 0);
+
+        let report = merge_hotwords().expect("merge");
+
+        // DB 不应被复活——is_deleted 仍 > 0
+        let after = db::get_hotword_set(set_id).unwrap();
+        assert!(
+            after.is_deleted > 0,
+            "本地软删的 set 不应被远程 active 复活，实际 is_deleted={}",
+            after.is_deleted
+        );
+        // 用户视角：list_hotword_sets 过滤掉
+        assert!(
+            db::list_hotword_sets().unwrap().iter().all(|x| x.id != set_id),
+            "软删 set 不应出现在 list_hotword_sets"
+        );
+        // 应记 skipped（拒绝 pull）
+        assert!(report.skipped >= 1, "应记 skipped（拒绝复活 pull）");
+    }
+
+    /// 本地软删 word + 远程仍是 active（updated_ms 更新）→ merge 不复活。
+    /// 对称 set 级测试。
+    #[test]
+    fn merge_local_word_delete_not_resurrected_by_remote_active() {
+        let _g = DbSyncGuard::new();
+        for h in db::list_hotword_sets().unwrap() {
+            let _ = db::hard_delete_hotword_set(&h.id);
+        }
+
+        let set_id = "res-word-0001";
+        db::insert_hotword_set(set_id, "测试词典").unwrap();
+        add_words(set_id, "八爪鱼");
+        export_all_hotwords().expect("export 初始 active");
+
+        // 本地软删该词（模拟用户删词）
+        let word_uuid = octopus_infra::hotword_text::hotword_word_uuid(set_id, "八爪鱼");
+        db::remove_word_from_set(set_id, "八爪鱼").unwrap();
+        let db_w = db::list_all_hotword_words()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == word_uuid)
+            .expect("word tombstone 应在 DB");
+        assert!(db_w.is_deleted > 0, "前置：词已软删");
+
+        // 远程仍是 active 且 updated_ms 比本地删除时刻更新 → 旧逻辑会 pull_word 复活
+        write_remote_word(set_id, "八爪鱼", "ba zhao yu", 0, 9999999999999);
+
+        let report = merge_hotwords().expect("merge");
+
+        // DB 不应被复活——is_deleted 仍 > 0
+        let after = db::list_all_hotword_words()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == word_uuid)
+            .expect("word 仍在 DB");
+        assert!(
+            after.is_deleted > 0,
+            "本地软删的词不应被远程 active 复活，实际 is_deleted={}",
+            after.is_deleted
+        );
+        // 用户视角：list_words_in_set 过滤掉
+        let words = db::list_words_in_set(set_id).unwrap();
+        assert!(
+            !words.iter().any(|w| w.word == "八爪鱼"),
+            "软删的词不应出现在 list_words_in_set"
+        );
+        assert!(report.skipped >= 1, "应记 skipped（拒绝复活 pull）");
     }
 }
