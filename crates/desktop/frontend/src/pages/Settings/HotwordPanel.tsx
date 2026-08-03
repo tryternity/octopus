@@ -688,11 +688,15 @@ export function HotwordPanel({ asrCorrect, setVal, showToast }: Props) {
                 </span>
               </div>
               <button
-                onClick={() => {
-                  const allSel = minePending.selected.size === minePending.words.length;
-                  setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMinePending((prev) => {
+                    if (!prev) return prev;
+                    const allSel = prev.selected.size === prev.words.length;
+                    return { ...prev, selected: allSel ? new Set() : new Set(prev.words) };
+                  });
                 }}
-                className="text-xs text-muted-foreground hover:text-info"
+                className="relative z-10 shrink-0 cursor-pointer text-xs text-muted-foreground hover:text-info"
               >
                 {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
               </button>
