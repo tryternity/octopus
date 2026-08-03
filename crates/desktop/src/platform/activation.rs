@@ -119,7 +119,7 @@ fn is_regular_window(label: &str) -> bool {
 /// 浮窗 show 时需临时隐藏的其他 Regular 窗口，
 /// 防止 set_focus 激活 app 后这些窗口抢焦点。
 ///
-/// 注意：`clipboard_window` **不在**此列表——它是 always-on-top 浮窗，
+/// 注意：`clipboard_window` **不在**此列表——它是 always_on-top 浮窗，
 /// dock 收缩态下一直 visible（8px 细条 + 鼠标穿透），不抢焦点。
 /// 如果列入，其他浮窗（action_bar/compact_editor）的 show→hide 周期会
 /// 把 dock 态剪贴板拖进 hide→裸 show 循环，导致 DOCK_EXPANDED 状态不一致
@@ -140,6 +140,45 @@ fn should_hide_on_float(label: &str) -> bool {
             .iter()
             .any(|p| label.starts_with(p))
 }
+
+/// action bar 场景专用：激活 app 后，把可见的 Regular 窗口（终端/编辑器/设置）
+/// 压回 z-order 后面（orderBack:），保持它们可见但不浮在最前。
+///
+/// 背景：`activate_self` 的 `NSRunningApplication::activateWithOptions(ActivateAllWindows)`
+/// 会把所有窗口带到前台——终端/编辑器原本不是焦点时会被抬上来（用户不期望）。
+/// action bar 是 always_on_top 浮窗（floating level），在 Regular 之上；压回 Regular 后，
+/// action bar 仍浮在最前 + 持 key window（makeKeyAndOrderFront）。
+///
+/// 只压回**可见的** Regular 窗口（已隐藏的不动）；不改变 key 状态（action bar 的
+/// makeKeyAndOrderFront 会夺取 key）。dismiss action bar 时焦点回原 app，
+/// Regular 窗口 z-order 自然恢复（用户点终端/编辑器即抬前）。
+#[cfg(target_os = "macos")]
+pub fn order_back_regular_windows(app: &tauri::AppHandle) {
+    use objc2_app_kit::NSWindow;
+    for (label, w) in app.webview_windows() {
+        if !should_hide_on_float(&label) {
+            continue;
+        }
+        // 只压回可见的——已隐藏的不动（保持用户原本状态）
+        if !w.is_visible().unwrap_or(false) {
+            continue;
+        }
+        if let Ok(ns_ptr) = w.ns_window() {
+            if !ns_ptr.is_null() {
+                unsafe {
+                    let ns_win = &*(ns_ptr as *const NSWindow);
+                    // orderBack: 把窗口送到 app 窗口列表后面（保持可见，不抬到最前）。
+                    // 不用 orderOut:（会隐藏）——用户要终端保持可见。
+                    ns_win.orderBack(None);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+pub fn order_back_regular_windows(_app: &tauri::AppHandle) {}
 
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
 ///
