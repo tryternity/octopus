@@ -140,9 +140,15 @@
 
 ## ASR 纠错器（Corrector）
 
-`crates/asr-local/src/corrector.rs`——基于拼音映射 + Bigram 转移概率的轻量级中文拼音纠错。
+`crates/asr-local/src/corrector.rs`——基于拼音映射 + 字级 bigram 上下文打分的轻量级中文热词纠错。
 
-**数据**：unigram 词表 + bigram 共现表（各 40,000 条，压缩后 ~450KB）`include_bytes!` 静态嵌入，运行时解压 ~30MB。源自 jieba `dict.txt.big` + gotokenizer `bigram.txt`，由 `scripts/generate_corrector_data.py` 离线生成。
+**候选源**：仅用户热词 `HotwordIndex`（2026-07 重构，根除过纠——空热词 no-op 零过纠）。候选拼音经 `normalize_fuzzy_pinyin` 归一化（方言规则运行时生效），查询侧对识别文本滑窗逐字算 `char_fuzzy_pinyin` 召回。
+
+**多命中排序**（2026-08-01）：`find_candidates(query_word, prev_char, next_char)` 按组合分数 `bigram_score * W_CONTEXT(1.0) + hit_count * W_HIT(0.3)` 降序 + 字典序 tie-break。`bigram_score` 是字级 bigram 上下文频次（用户历史 voice 语料统计），`hit_count` 来自 `hotword_hits` 表（LEFT JOIN `list_active_words`）。`HotwordIndex::from_words` 接收 `(word, pinyin, hit_count)` 三元组，pinyin 来自 DB `hotword_words.pinyin` 原始拼音（跳过 `to_pinyin()` 现算，仅做归一化生成 key）。详见 [architecture.md §ASR 纠错](../architecture.md)。
+
+**bigram 索引**（2026-08-01 字级，替代旧 jieba 静态表）：`build_char_bigram_index` 从用户 voice 历史（`WHERE item_type='voice'`）取相邻字符对计数，存 `LightCorrector.bigrams: RwLock<HashMap<(char,char), usize>>`。挂 scheduler 定时任务 `bigram_index`（interval 600s，CPU 空闲时构建），启动 setup 立即 reload 一次。空 bigram 时打分退化为纯 hit_count 排序（zero-context fallback）。
+
+> **历史**：旧版用 jieba `dict.txt.big` + gotokenizer `bigram.txt` 离线生成的 4 万条静态 unigram/bigram（`include_bytes!` 嵌入），2026-08-01 commit `dceb7322` 删除——改用用户实际 voice 语料动态构建，更贴合用户语言习惯。
 
 **开关**：`app_config.asr_correct`（2026-08-01 默认改 `true`，加了热词即生效）。
 
@@ -307,15 +313,18 @@ is_streaming_engine() = resolve_active_engine("asr").entry.is_streaming
 
 **核心架构决策**：候选词来源从「全词典模糊拼音」改为「仅 HotwordIndex」——根除了过度纠错问题。HotwordIndex 是有界集合（仅含用户配置的热词），空热词时 no-op（零过纠）。
 
-**方言模糊规则**（可配置，6 组，存 `app_config.fuzzy_dialect`）：
-- f/h（浮/护）—— 声母 f→h
-- hu/wu（胡/吴）—— 声母 hu→wu
-- n/l（刘/牛）—— 声母 n→l
-- r/l（热/乐）—— 声母 r→l
-- yun/yong（孕/用）—— 整音节归一 yun→yong，解决「孕妇」→「用户」误识
-- fei/hui（飞/回）—— 整音节归一 fei→hui
+**方言模糊规则**（DB 驱动，2026-08-01 从 `app_config.fuzzy_dialect` 字符串开关迁移到 `fuzzy_dialect_rules` 表，schema v56）：
 
-前 4 组是声母规则（影响所有同声母字），后 2 组是整音节归一（含声母+韵母，匹配精确，不影响其它字）。
+7 组内置（seed）+ 用户可在设置页 HotwordPanel「纠错设置」Tab 增删开关：
+- f/h（浮/护）—— `match_type=initial` 声母前缀 f→h
+- hu/wu（胡/吴）—— `match_type=special_hu` 硬编码 hu→wu + huX→wX
+- n/l（刘/牛）—— `match_type=initial` 声母前缀 n→l
+- r/l（热/乐）—— `match_type=initial` 声母前缀 r→l
+- yun/yong（孕/用）—— `match_type=syllable` 整音节精确 yun→yong
+- fei/hui（飞/回）—— `match_type=syllable` 整音节精确 fei→hui
+- si/ci（思/词）—— `match_type=syllable` 整音节精确 si→ci（4 归 1 机制：si/ci/zci 都映射到同一 key）
+
+**`match_type` 三组语义**：`syllable`（`py == from_py` 整音节精确，须排在 initial 前避免 fei 被 f/h 抢）/ `initial`（`py.starts_with(from_py)` 声母前缀）/ `special_hu`（hu→wu 硬编码）。rules 按 `(match_type, sort_order)` 排序。详见 [architecture.md §方言模糊规则可配](../architecture.md)。
 
 **命中统计分层**：
 - Corrector 只收集命中（`pending_hits` + `drain_hits()`），不写 DB。

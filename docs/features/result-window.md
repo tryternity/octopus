@@ -126,3 +126,22 @@ CM6 `selectionSet` 事件替代旧 contentEditable 拖选流程：
 - `measureCaretPx` / `codePointOffsetTo` / `codePointOffsetBefore` / `placeCaretAtCodePoint` 抽到 `Result/caret.ts`（纯函数可测，`locateCpOffset` 为 measure/place 共享 helper）
 - `caret.test.ts`（14 测）锁 code-point → UTF-16 offset 对齐 + null/空容器/多文本节点分支
 - jsdom 无 `Range.getBoundingClientRect`，defineProperty 补零矩形
+
+---
+
+## 11. Instant 视图（PTT/hands-free 模式）
+
+2026-08-01 合并窗口重构后，`result_window`（720×480 透明窗）成为 ASR 唯一窗口实例——按录音模式在前端切换两套视图，`display:none` 不卸载组件（保留 CM6 编辑状态）：
+
+- **toggle 视图**（上述 §1-10）：顶部居中精简小条 + 工具栏 + CM6 编辑器
+- **instant 视图**（PTT/hands-free）：底部居中指示卡（`pages/Result/InstantView.tsx`，从原独立 `InstantOverlay` 搬入）
+
+**模式切换**：后端在 show 前按 `INSTANT_MODE` 决定位置（toggle 顶部居中 / instant 贴底 `position_bottom_center`）+ emit `record-mode: "toggle"|"instant"`；前端 listener 设 `recordModeRef`（ref 持有，避免 React 闭包陷阱）→ 切换两视图的 `display`。穿透 poller 按模式切可交互区（顶部 `BAR_H` / 底部 `INSTANT_BAR_H=80`）。
+
+**InstantView 四态**（listening/processing/polishing/done）：
+
+- **listening 实时显示尾部最新内容**（2026-08-01）：流式识别期间 `update-result` 事件 payload.text 持续追加，listening 态显示**末尾 28 字符**（`LISTENING_TAIL_CHARS = 28`，`text.slice(-28)`）——用户看到的是「正在说的最新字」，不是从头开始累积的长文本。容器 `dir="rtl"` 让省略号出现在开头（视觉上"从右侧涌入"）。done 态保留完整文本（`truncate` 开头截断）。
+- processing / polishing：spinner 动画 + 状态文案（如路由命中可视化携带「⏳ 润色中 · 模板名（app名）」，详见 [architecture.md §应用感知润色](../architecture.md)）
+- done：文本展示 500ms 后 `hide_result` 回 Idle
+
+详见 [merge-asr-windows spec](../superpowers/specs/archived/2026-08-01-merge-asr-windows-design.md) + [instant-live-text spec](../superpowers/specs/archived/2026-08-01-instant-live-text.md)。
