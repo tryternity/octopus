@@ -40,13 +40,31 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         { crate::platform::activation::before_floating_window_show(app); }
 
         let _ = win.show();
-        let _ = win.set_focus();
 
         #[cfg(target_os = "macos")]
         {
-            // 诊断：set_focus 后窗口是否真的成为 key/main window。
-            // 比读 NSApplication::isActive 更准确——isActive 是 app 级，isKeyWindow 是窗口级。
-            // 若 isKeyWindow=false，说明 set_focus 没让透明窗口成 key（焦点问题的直接证据）。
+            // 强制拿 key window：app active 且终端（Regular main window）可见时，
+            // Tauri 的 set_focus（内部 orderFront + makeKey）不够强制——AppKit 倾向
+            // 保持 Regular main window 为 key，导致 action bar 拿不到焦点、终端闪一下。
+            // 直接用 NSWindow makeKeyAndOrderFront: 更强制（让 floating panel 立即成 key）。
+            use objc2_app_kit::NSWindow;
+            if let Ok(ns_ptr) = win.ns_window() {
+                if !ns_ptr.is_null() {
+                    unsafe {
+                        let ns_win = &*(ns_ptr as *const NSWindow);
+                        ns_win.makeKeyAndOrderFront(None);
+                    }
+                }
+            } else {
+                let _ = win.set_focus(); // fallback：拿不到 ns_window 时退回 Tauri set_focus
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        { let _ = win.set_focus(); }
+
+        #[cfg(target_os = "macos")]
+        {
+            // 诊断：makeKeyAndOrderFront 后窗口是否真的成为 key/main window。
             use objc2::msg_send;
             use objc2::runtime::AnyObject;
             if let Ok(ns_ptr) = win.ns_window() {
@@ -54,7 +72,7 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
                 unsafe {
                     let is_key: bool = msg_send![ns_win, isKeyWindow];
                     let is_main: bool = msg_send![ns_win, isMainWindow];
-                    log::info!("[action-bar][show] after set_focus: isKeyWindow={} isMainWindow={}", is_key, is_main);
+                    log::info!("[action-bar][show] after makeKeyAndOrderFront: isKeyWindow={} isMainWindow={}", is_key, is_main);
                 }
             }
         }
@@ -96,26 +114,28 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
 /// （Sublime `subl --command` 延迟抢焦的核心修复）。
 #[cfg(target_os = "macos")]
 fn check_and_consolidate_focus(app: &AppHandle, at_ms: u64, consolidate: bool) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
+    use objc2_app_kit::NSWindow;
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
-        // 已 dismiss 的窗口跳过——consolidate=true 分支会 set_focus，对隐藏窗口夺焦是 bug
+        // 已 dismiss 的窗口跳过——consolidate=true 分支会夺焦，对隐藏窗口夺焦是 bug
         if !win.is_visible().unwrap_or(false) {
             return;
         }
         if let Ok(ns_ptr) = win.ns_window() {
-            let ns_win: *mut AnyObject = ns_ptr as *mut AnyObject;
-            unsafe {
-                let before: bool = msg_send![ns_win, isKeyWindow];
-                if consolidate && !before {
-                    let _ = win.set_focus();
-                    let after: bool = msg_send![ns_win, isKeyWindow];
-                    log::info!(
-                        "[action-bar][focus@{}ms] lost → consolidate {}→{}",
-                        at_ms, before, after
-                    );
-                } else {
-                    log::info!("[action-bar][focus@{}ms] isKeyWindow={}", at_ms, before);
+            if !ns_ptr.is_null() {
+                unsafe {
+                    let ns_win = &*(ns_ptr as *const NSWindow);
+                    let before: bool = ns_win.isKeyWindow();
+                    if consolidate && !before {
+                        // 用 makeKeyAndOrderFront 巩固（与 show 时一致，比 set_focus 强制）
+                        ns_win.makeKeyAndOrderFront(None);
+                        let after: bool = ns_win.isKeyWindow();
+                        log::info!(
+                            "[action-bar][focus@{}ms] lost → consolidate {}→{}",
+                            at_ms, before, after
+                        );
+                    } else {
+                        log::info!("[action-bar][focus@{}ms] isKeyWindow={}", at_ms, before);
+                    }
                 }
             }
         }
