@@ -55,6 +55,14 @@ const HEIGHT: f64 = 640.0;
 const MIN_WIDTH: f64 = 560.0;
 const MIN_HEIGHT: f64 = 360.0;
 
+/// 日志友好的字符串截断：取前 `max_chars` 个字符（按 char，非 byte，中文安全）。
+/// 调用方自行追加省略号（`if s.chars().count() > max_chars { "…" }`），
+/// 这样日志格式字符串里省略号可见，便于 grep。
+/// 用于避免长 prompt（agent 命令可能几百字）刷屏 log。
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 /// 构造终端窗口初始 URL（纯函数，便于单测）。
 ///
 /// - `cwd`：注入为 `?cwd=<encoded>`，前端 mount 后读 query 传给 pty_open。
@@ -253,8 +261,10 @@ pub fn open_terminal_with_command(
             },
         );
         log::info!(
-            "[terminal] agent window reused, new tab cwd={:?} command={}",
-            cwd, command
+            "[terminal] agent window reused, new tab cwd={:?} command={}{}",
+            cwd,
+            truncate_for_log(command, 60),
+            if command.chars().count() > 60 { "…" } else { "" },
         );
         return Ok(());
     }
@@ -378,6 +388,29 @@ mod tests {
     fn urlencode_encodes_special() {
         assert_eq!(urlencode("a b"), "a%20b");
         assert_eq!(urlencode("a?b=c"), "a%3Fb%3Dc");
+    }
+
+    #[test]
+    fn truncate_for_log_short_string_unchanged() {
+        assert_eq!(truncate_for_log("claude", 60), "claude");
+        assert_eq!(truncate_for_log("", 60), "");
+    }
+
+    #[test]
+    fn truncate_for_log_long_string_cut() {
+        let long = "a".repeat(100);
+        let t = truncate_for_log(&long, 60);
+        assert_eq!(t.chars().count(), 60, "应截断到 60 字符");
+        assert_eq!(t, "a".repeat(60));
+    }
+
+    #[test]
+    fn truncate_for_log_char_boundary_safe() {
+        // 中文按 char 截断（非 byte），3 字符中文 = 9 字节但 chars().count()==3
+        let zh = "你好世界测试";
+        let t = truncate_for_log(zh, 3);
+        assert_eq!(t.chars().count(), 3);
+        assert_eq!(t, "你好世");
     }
 
     #[test]
