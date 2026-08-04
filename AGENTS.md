@@ -326,7 +326,12 @@ docs/
 ├── architecture.md          # 架构概览（最权威的结构文档）
 ├── api.md                    # Server HTTP/WS API
 ├── configuration.md          # 配置指南
-├── asr_archiveture_opt.md    # ASR 引擎架构重构总结
+├── download_architure.md    # 模型下载架构
+├── features/                 # 按模块的功能说明（screenshot.md 等）
+├── research/                 # 竞品调研 / 技术分析报告（按日期，非 spec/plan 的研究性文档）
+├── dictionaries/             # 词典资源（纠错 / 拼音等）
+├── code-review/              # 代码审查报告
+├── pr/                       # PR 相关说明
 └── superpowers/
     ├── specs/                 # 功能设计规格（按日期，大需求必备）
     └── plans/                 # 实施计划（按日期，大需求必备）
