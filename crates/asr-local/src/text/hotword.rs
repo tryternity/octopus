@@ -135,7 +135,7 @@ impl HotwordIndex {
             // DB 原始拼音 split → 逐字 normalize_fuzzy_pinyin（跳过 to_pinyin 查表）
             let py: Vec<String> = raw_pinyin
                 .split_whitespace()
-                .map(|p| normalize_fuzzy_pinyin(p))
+                .map(normalize_fuzzy_pinyin)
                 .collect();
             if py.len() != len { continue; } // 含非汉字 → 跳过
             let key = py.join("-");

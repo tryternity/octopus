@@ -78,7 +78,7 @@ const WKWEBVIEW_FALLBACK_APPS: &[&str] = &[
 /// 检查 bundle id 是否需要 osascript fallback（WKWebView 嵌套 app）。
 pub fn needs_osascript_fallback(bundle_id: Option<&str>) -> bool {
     match bundle_id {
-        Some(bid) => WKWEBVIEW_FALLBACK_APPS.iter().any(|&fallback| bid == fallback),
+        Some(bid) => WKWEBVIEW_FALLBACK_APPS.contains(&bid),
         None => false,
     }
 }

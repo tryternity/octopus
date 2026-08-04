@@ -51,7 +51,7 @@ pub async fn search_files(query: &str) -> Vec<SearchResult> {
         })
         .collect();
 
-    results.sort_by(|a, b| b.0.cmp(&a.0));
+    results.sort_by_key(|x| std::cmp::Reverse(x.0));
     results.into_iter().take(10).map(|(s, mut r)| { r.score = s; r }).collect()
 }
 

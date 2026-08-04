@@ -261,20 +261,20 @@ fn encrypt_cipher_fields(
     // 与 symmetric.rs:60 decrypt 侧 Zeroizing<Vec<u8>> 对称——decrypt 出方向清零，
     // encrypt 入方向也应收 Zeroizing。包 Zeroizing::new + &* 借用，零额外开销。
     let data_json = Zeroizing::new(serde_json::to_vec(data)?);
-    let data = key.encrypt(&*data_json)?;
+    let data = key.encrypt(&data_json)?;
     let fields = if fields.is_empty() {
         None
     } else {
         // E-ZEROIZE-PLAINTEXT-JSON-VEC 修复：fields 含 Field.value（自定义隐藏字段）明文
         let json = Zeroizing::new(serde_json::to_vec(fields)?);
-        Some(key.encrypt(&*json)?)
+        Some(key.encrypt(&json)?)
     };
     let password_history = if password_history.is_empty() {
         None
     } else {
         // E-ZEROIZE-PLAINTEXT-JSON-VEC 修复：含历史 password 明文
         let json = Zeroizing::new(serde_json::to_vec(password_history)?);
-        Some(key.encrypt(&*json)?)
+        Some(key.encrypt(&json)?)
     };
     Ok(CipherEncStrings {
         name,

@@ -402,15 +402,14 @@ pub fn update_result(
             false
         }
     };
-    if need_emit {
-        if app.get_webview_window(WINDOW_LABEL).is_some() {
+    if need_emit
+        && app.get_webview_window(WINDOW_LABEL).is_some() {
             let _ = app.emit_to(
                 WINDOW_LABEL,
                 "update-result",
                 serde_json::json!({ "text": text, "insertion": insertion, "caret": caret, "segments": segments }),
             );
         }
-    }
 }
 
 /// 清空结果窗口内容并隐藏（粘贴完成后调用）。

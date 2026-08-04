@@ -711,7 +711,7 @@ mod tests {
         ).unwrap()
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
         .filter_map(|r| r.ok()).collect();
-        assert!(non_submenu.len() > 0, "seed 应有非 submenu 项");
+        assert!(!non_submenu.is_empty(), "seed 应有非 submenu 项");
         for (atype, accepts) in &non_submenu {
             assert_eq!(accepts, "text", "{} 类型 accepts 应为 'text'，实际: {}", atype, accepts);
         }

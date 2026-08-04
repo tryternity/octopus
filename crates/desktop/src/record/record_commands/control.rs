@@ -75,6 +75,7 @@ pub async fn record_start_default(
 /// 失败模式：
 /// - 读 DB 失败 → 返回 Err（让调用方 toast 提示）
 /// - 找不到主屏 → 返回 Err（多屏环境异常或 helper --list-displays 失败）
+///
 /// 其他字段用 spec §5.4 seed 默认值兜底（解析失败保留 seed）。
 /// 组装默认 RecordConfig（从 DB 读 record_* + ASR microphone）。
 ///

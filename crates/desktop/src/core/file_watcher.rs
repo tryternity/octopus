@@ -55,18 +55,15 @@ pub fn start_app_watcher() {
         // 不能省略此绑定——否则 watcher 在闭包开头即 drop，无法收事件。
         let _watcher = watcher;
         let mut last_trigger = Instant::now();
-        for ev in rx {
-            if let Ok(e) = ev {
-                if matches!(e.kind, EventKind::Create(_) | EventKind::Remove(_)) {
-                    if last_trigger.elapsed() > DEBOUNCE {
-                        last_trigger = Instant::now();
-                        if let Some(engine) = octopus_search::get_engine() {
-                            let n = engine.refresh_app_index();
-                            log::info!("[file_watcher] app 目录变化，重扫: {} 个应用", n);
-                        }
+        for e in rx.into_iter().flatten() {
+            if matches!(e.kind, EventKind::Create(_) | EventKind::Remove(_))
+                && last_trigger.elapsed() > DEBOUNCE {
+                    last_trigger = Instant::now();
+                    if let Some(engine) = octopus_search::get_engine() {
+                        let n = engine.refresh_app_index();
+                        log::info!("[file_watcher] app 目录变化，重扫: {} 个应用", n);
                     }
                 }
-            }
         }
         // rx 关闭（watcher drop）后循环自然退出。
         log::debug!("[file_watcher] 事件循环退出");
@@ -103,8 +100,8 @@ pub fn start_prompt_file_watcher(app: tauri::AppHandle) {
         let mut last_trigger = Instant::now();
         for ev in rx {
             if let Ok(e) = ev {
-                if matches!(e.kind, EventKind::Modify(_)) {
-                    if last_trigger.elapsed() > PROMPT_DEBOUNCE {
+                if matches!(e.kind, EventKind::Modify(_))
+                    && last_trigger.elapsed() > PROMPT_DEBOUNCE {
                         last_trigger = Instant::now();
                         // 取变化的 .md 文件路径，emit 给前端
                         for path in &e.paths {
@@ -115,7 +112,6 @@ pub fn start_prompt_file_watcher(app: tauri::AppHandle) {
                             }
                         }
                     }
-                }
             }
         }
         log::debug!("[file_watcher] prompt 事件循环退出");

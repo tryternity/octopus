@@ -32,19 +32,14 @@ use super::{
 /// 默认（前端不传 / null）：`PasswordOnly`——最稳健，webmail SPA 首选。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum AutoTypeMode {
     UsernamePassword,
+    #[default]
     PasswordOnly,
     UsernameOnly,
 }
 
-impl Default for AutoTypeMode {
-    fn default() -> Self {
-        // 默认 PasswordOnly：webmail SPA 最稳健，且与现代密码管理器
-        // （Bitwarden/1Password 桌面助手）默认行为对齐。
-        AutoTypeMode::PasswordOnly
-    }
-}
 
 
 // === Tauri 命令 ===

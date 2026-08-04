@@ -151,7 +151,7 @@ impl SearchEngine {
                 icon: a.icon.clone(),
             })
             .collect();
-        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        apps.sort_by_key(|a| a.name.to_lowercase());
         apps
     }
 
@@ -247,7 +247,7 @@ impl SearchEngine {
         let mut all: Vec<SearchResult> = batches.into_iter().flatten().collect();
         dedup_by_identity(&mut all);
         self.frequency.boost(&mut all, query);
-        all.sort_by(|a, b| b.score.cmp(&a.score));
+        all.sort_by_key(|x| std::cmp::Reverse(x.score));
         all.truncate(MAX_TOTAL_RESULTS);
         all
     }
@@ -299,7 +299,7 @@ impl SearchEngine {
             self.frequency.boost(&mut batch, query);
             collected.extend(batch);
             dedup_by_identity(&mut collected);
-            collected.sort_by(|a, b| b.score.cmp(&a.score));
+            collected.sort_by_key(|x| std::cmp::Reverse(x.score));
             collected.truncate(MAX_TOTAL_RESULTS);
             emit(SearchBatch {
                 run_id: run_id.to_string(),

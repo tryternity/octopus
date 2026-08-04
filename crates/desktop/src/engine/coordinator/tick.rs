@@ -96,6 +96,7 @@ pub(crate) fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<Atomi
 /// tick 线程诊断打点（spec 2026-07-19-asr-edit-stall-observability）：
 /// - 检测 `editing` 翻转（覆盖 5 处精确触发点之外的间接复位路径），翻转即打 `[STATE]`
 /// - 距上次心跳 ≥ 1s 打 `[HEARTBEAT]`（1Hz 节流），证明 tick 线程在跑 + 当前 stage/editing
+///
 /// 调用方：三个 Tick 分支（StreamingTick / VadSegmentedTick / CloudStreamingTick）入口。
 pub(crate) fn log_tick_heartbeat(
     stage: &Stage,

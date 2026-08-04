@@ -613,7 +613,7 @@ pub async fn read_subtitle(
     // 查 DB 拿 file_path + audio_tracks（用于解析 mp4 路径 + track_used 推断）
     let meta_opt: Option<octopus_record::RecordingMeta> = with_db_blocking(move |conn| {
         let store = RecordStore::new(conn);
-        Ok(store.get(id)?)
+        store.get(id)
     })
     .await?;
     let meta = match meta_opt {

@@ -346,7 +346,7 @@ fn drop_overlapped_blocks(covered_until_y: f64, blocks: &mut Vec<OcrBlock>) {
 /// 非ASCII（中文等）、标点、已有空格保持不变。
 fn segment_english_words(text: &str) -> String {
     /// 编译期内嵌 37 万英文词表（words_common.txt，~4MB → 二进制内）。
-    const WORDS_RAW: &str = include_str!("../assets/words_common.txt");
+    const WORDS_RAW: &str = octopus_infra::resources::ocr_words_common();
 
     use std::collections::HashSet;
     static WORD_SET: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();

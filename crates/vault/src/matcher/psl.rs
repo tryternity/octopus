@@ -19,11 +19,11 @@ use std::net::IpAddr;
 ///
 /// 升级 `publicsuffix` crate 版本不会自动更新这份列表——需手动重新下载：
 /// ```bash
-/// curl -o crates/vault/data/public_suffix_list.dat \
+/// curl -o crates/infra/resources/dicts/public_suffix_list.dat \
 ///   https://publicsuffix.org/list/public_suffix_list.dat
 /// ```
 /// Mozilla 大约每月更新一次 PSL，建议季度级同步。
-static PSL_BYTES: &[u8] = include_bytes!("../../data/public_suffix_list.dat");
+static PSL_BYTES: &[u8] = octopus_infra::resources::public_suffix_list();
 
 /// 内嵌 PSL 单例——`OnceLock` 保证首次访问时解析一次。
 static PSL: std::sync::OnceLock<publicsuffix::List> = std::sync::OnceLock::new();

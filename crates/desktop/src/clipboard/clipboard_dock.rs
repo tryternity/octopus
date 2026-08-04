@@ -84,7 +84,7 @@ pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edg
 /// 与 result_window::start_click_through_poller 统一模式。
 fn probe_position(window: &tauri::WebviewWindow, edge: &'static str) -> Option<(bool, bool)> {
     let cursor = window.cursor_position().ok()?;
-    let (mx, my) = (cursor.x as f64, cursor.y as f64);
+    let (mx, my) = (cursor.x, cursor.y);
     let pos = window.outer_position().ok()?;
     let (wx, wy) = (pos.x as f64, pos.y as f64);
     let size = window.outer_size().ok()?;

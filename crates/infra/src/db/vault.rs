@@ -580,7 +580,7 @@ mod tests {
     /// 在内存 DB 上执行 db.sql，得到含全部 schema（含 vault v38 表）的连接。
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../db.sql")).unwrap();
+        conn.execute_batch(crate::resources::db_schema_sql()).unwrap();
         conn.execute("PRAGMA user_version = 43", []).unwrap();
         conn
     }

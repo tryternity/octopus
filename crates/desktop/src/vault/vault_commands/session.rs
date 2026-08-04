@@ -93,7 +93,7 @@ pub fn vault_set_lock_timeout(
     config: State<'_, SharedRuntimeConfig>,
     secs: u64,
 ) -> Result<(), String> {
-    if secs != 0 && (secs < 30 || secs > 3600) {
+    if secs != 0 && !(30..=3600).contains(&secs) {
         return Err(vault_error::serialize(&VaultError::InvalidInput(format!(
             "超时值无效：{}（应为 0=永不，或 30-3600）",
             secs
