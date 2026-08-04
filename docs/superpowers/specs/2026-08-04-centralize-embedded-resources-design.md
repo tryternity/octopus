@@ -203,12 +203,71 @@ infra 不依赖 vault/ocr——单向，无环。
 | 文档 | 更新 |
 |---|---|
 | `docs/architecture.md` §infra | 加 `resources` 模块描述 |
-| `docs/architecture.md` §各 crate | vault/ocr/asr-local/desktop 资源描述改为"经 infra::resources 加载" |
-| 本 spec | 实施记录（如有偏差） |
+| 本 spec | 实施记录（见 §10） |
 
 ---
 
 ## 9. 关联文档
+
+- 阶段 1-3 stitch 重构：`docs/superpowers/specs/2026-08-04-stitch-refactor-design.md`
+- `infra/seeds.rs`：运行时 seed 加载（本次不动，仅对照机制差异）
+- `infra/src/paths.rs`：运行时路径（本次不动）
+
+---
+
+## 10. 实施记录（2026-08-04）
+
+### 10.1 完成情况
+
+| 项 | spec 设计 | 实际实现 |
+|---|---|---|
+| infra/resources/ 目录 | sql/dicts/models/vad/prompts | ✅ 与 spec 一致 |
+| 8 个 pub fn API | pub fn | ✅ 但改为 **`pub const fn`**（见 10.2） |
+| 9 个 git mv | 见 §3.1 | ✅ 全部完成（含 NOTICE 跟随 t2s/s2t） |
+| 删 eff_large_wordlist.txt | 死文件 | ✅ |
+| 14 处消费点改 API | 见 §3.3 | ✅ |
+| 5 处 env! 统一 | 见 §3.4 | ✅ |
+| Cargo.toml 新增依赖 | vault/ocr | ❌ **vault/ocr 已依赖 infra，无需新增** |
+| architecture.md 同步 | §infra 加 resources | ✅ |
+
+### 10.2 关键偏差：API 用 `pub const fn`（非 `pub fn`）
+
+spec §2.2 写的是 `pub fn`，实际实现改为 **`pub const fn`**。
+
+**原因**：多个消费点是 `const` 上下文，不能用普通 fn 初始化：
+- `infra/src/db/mod.rs:101`: `const INIT_SQL: &str = ...`
+- `ocr/src/engine.rs:349`: `const WORDS_RAW: &str = ...`
+- `asr-local/src/text/hans.rs:18,20`: `const T2S_DATA` / `const S2T_DATA`
+- `asr-local/src/text/corrector.rs:11`: `const UNIGRAM_GZ`
+- `asr-local/src/audio/vad.rs:27`: `const VAD_BYTES`
+- `desktop/src/commands/hotword_commands.rs:188`: `const HOTWORD_MINE_PROMPT`
+- `desktop/src/ui/settings_window.rs:108`: `const ICON_PNG`（env! 本身是 const，不受影响）
+
+`include_str!`/`include_bytes!` 本身是 const 表达式，包装成 `const fn` 即可保留 const 语义——所有 `const X = fn_call()` 都能用。
+
+### 10.3 Cargo.toml 依赖修正
+
+spec §3.5 说 vault/ocr 新增 infra 依赖——实际检查发现**两者早已依赖 infra**（vault 用于 db/seeds，ocr 用于 paddle-ocr config），Cargo.toml 无需改动。
+
+### 10.4 验证
+
+- `cargo build --workspace`：0 error
+- `cargo test --workspace`：全过，各 crate 测试数 = baseline（infra 183 / vault 258 / ocr 34 / asr-local 170 / clipboard 23 / record 50 / capx 55）
+- clippy（涉及 crate）：0 新增 warning（各 crate warning 数 = main baseline）
+- 残留引用扫描：空
+- `../../` include 残留：空
+- 空目录清理：6 个全删（vault/data / ocr/assets / asr-local/{data,models} / corrector_data / desktop/resources）
+
+### 10.5 未在 architecture.md §各 crate 更新资源描述
+
+spec §8 原计划"vault/ocr/asr-local/desktop 资源描述改为'经 infra::resources 加载'"——实际未改各 crate 章节，因为：
+- architecture.md 各 crate 章节本就没有详细列每个 include 资源（只描述模块功能）
+- 资源加载方式是实现细节，不属于架构描述
+- 只在 §infra 加了 resources 模块总览即足够
+
+### 10.6 architecture.md §各 crate 章节
+
+未改——这些章节描述的是 crate 的功能职责，资源加载是实现细节，不属于架构层面。infra §resources 总览已足够让读者找到"工程内联资源在哪"。
 
 - 阶段 1-3 stitch 重构：`docs/superpowers/specs/2026-08-04-stitch-refactor-design.md`
 - `infra/seeds.rs`：运行时 seed 加载（本次不动，仅对照机制差异）
