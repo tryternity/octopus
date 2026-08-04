@@ -60,7 +60,7 @@ impl super::Stitcher {
         (maxv - minv) < CONTENT_ROW_MAXMIN
     }
 
-    /// 画布底部连续“常数行”数（亮度无关——区别于 scan_content_tail_in 的「暗+常数」双判定）。
+    /// 画布底部连续"常数行"数（亮度无关——区别于 scan_content_tail_in 的「暗+常数」双判定）。
     /// 逐行从画布底往上累加抽样像素的运行 min/max，(max-min) ≥ CONTENT_ROW_MAXMIN 即命中内容行停止。
     /// 用于锚点自愈：画布底部常数（纯黑/纯白/纯灰背景，或 1D 假匹配 append 的常数块）时 Sobel 退化、
     /// 锚点失效；裁掉常数尾让锚点回到真实内容底。
@@ -146,7 +146,7 @@ impl super::Stitcher {
         self.sticky_bottom = sticky_b;
     }
 
-    /// 检测当前帧底部“无内容常数尾”高度：从帧底部（跳过 sticky_bottom 区）往上逐行算
+    /// 检测当前帧底部"无内容常数尾"高度：从帧底部（跳过 sticky_bottom 区）往上逐行算
     /// R 通道 max-min，连续 max-min ≤ CONTENT_ROW_MAXMIN 的行数。纯黑/纯色空白行（暗色编辑器
     /// 内容不到底下方的纯黑区、滚动后期选区底部露出的背景）max-min≈0、无滚动信息；若 append
     /// 或画布底部停在此处，canvas-anchored 底部 strip 锚点退化（常数模板 NCC 假匹配 score≈1.0
@@ -165,14 +165,14 @@ impl super::Stitcher {
         self.scan_content_tail_in(frame.as_raw(), frame.height() as usize)
     }
 
-    /// 在任意 RGBA 缓冲（当前帧 或 画布种子首帧）底部扫描“无内容暗常数尾”高度：跳过
+    /// 在任意 RGBA 缓冲（当前帧 或 画布种子首帧）底部扫描"无内容暗常数尾"高度：跳过
     /// sticky_bottom 区，从底部往上逐行算 R 通道 max-min，连续 max-min≤CONTENT_ROW_MAXMIN
     /// 且最亮 luma<CONTENT_TAIL_MAX_LUMA 的行数。
     ///
     /// 抽出缓冲参数化的原因：init 裁剪画布种子（首帧）必须读**首帧自身**的暗尾，而非当前
     /// 第二帧的暗尾。首帧在 app 聚焦/滚动开始前由 setup 单独捕获，暗尾常大于已滚动后的第二帧；
     /// 用第二帧暗尾裁首帧会留残余暗尾 → 画布底部常数 → canvas_has=false 首帧即死锁（release
-    /// 实测 296×160 矮选区”滚动不拼接”）。故 init 读 canvas_buf（=首帧）、每帧检测读 frame。
+    /// 实测 296×160 矮选区"滚动不拼接"）。故 init 读 canvas_buf（=首帧）、每帧检测读 frame。
     pub(crate) fn scan_content_tail_in(&self, buf: &[u8], h: usize) -> u32 {
         let w = self.canvas_w as usize;
         let scan_bottom = h.saturating_sub(self.sticky_bottom as usize);
@@ -196,7 +196,7 @@ impl super::Stitcher {
                 if v > maxv {
                     maxv = v;
                 }
-                // 一旦超出“暗常数”任一条件 → 该行有内容，无需扫完整行
+                // 一旦超出"暗常数"任一条件 → 该行有内容，无需扫完整行
                 if maxv - minv > CONTENT_ROW_MAXMIN || maxv >= CONTENT_TAIL_MAX_LUMA {
                     break;
                 }
@@ -211,7 +211,7 @@ impl super::Stitcher {
 
     /// 自适应 strip 高度：内容高 < strip_h*3 时按 content_h/3 缩小 strip，留 2/3 作 NCC 搜索范围；
     /// 否则用配置 strip_h。MIN_STRIP 下限防退化。矮选区（如 162px 物理高含 80px 暗尾 → 内容 82px）
-    /// 固定 80 strip 会吃光 ROI 使搜索范围≈0 → 首帧即失配死锁（2026-07-10 release 实测“滚动没拼接”）；
+    /// 固定 80 strip 会吃光 ROI 使搜索范围≈0 → 首帧即失配死锁（2026-07-10 release 实测"滚动没拼接"）；
     /// 自适应后 strip≈27、搜索范围≈55，首帧即可锁定 dy。
     pub(crate) fn effective_strip_for(&self, content_h: u32) -> u32 {
         self.config

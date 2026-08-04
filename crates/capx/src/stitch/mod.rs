@@ -102,7 +102,7 @@ pub struct Stitcher {
     pub(crate) same_dy_count: u32,
     /// 上一帧的有效区灰度（相邻帧参考 fallback 用）。每帧 process_frame 末尾更新。
     pub(crate) prev_gray: Option<GrayBuf>,
-    /// 首帧底部“无内容常数尾”高度（如选区下半截恒定纯黑空白）。与 sticky_bottom 同为
+    /// 首帧底部"无内容常数尾"高度（如选区下半截恒定纯黑空白）。与 sticky_bottom 同为
     /// 应排除的底部固定区，但 sticky_bottom 依赖首/次帧逐像素相等（光标闪烁/抗锯齿/scrollbar
     /// 差异会漏检），content_tail 直接看单行 max-min 补缺口。裁掉后画布底部停在真实内容底。
     pub(crate) content_tail: u32,
