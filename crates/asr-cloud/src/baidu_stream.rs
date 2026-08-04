@@ -53,7 +53,10 @@ pub fn open(
     tokio::spawn(async move {
         let tx_for_err = result_tx.clone();
         let result =
-            run_baidu_session(pcm_rx, result_tx, ENDPOINT, appid, appkey, dev_pid, language, pre_roll_samples)
+            run_baidu_session(pcm_rx, result_tx, BaiduSessionConfig {
+                endpoint: ENDPOINT.to_string(),
+                appid, appkey, dev_pid, language, pre_roll_samples,
+            })
                 .await;
         // session 契约：Ok = 已通过 result_tx 通知最终结果（Finished/运行期 Failed，
         // 见 run_baidu_session 内 WS 错误分支 return Ok 处）；仅 Err（签名/建连等启动期失败，
@@ -66,6 +69,17 @@ pub fn open(
     Ok(handle)
 }
 
+/// run_baidu_session 配置——owned String（async fn 跨 await 持有，不能用 &'a）。
+/// channel（pcm_rx/result_tx）不进 config，它们是运行时 I/O。
+pub(crate) struct BaiduSessionConfig {
+    pub endpoint: String,
+    pub appid: String,
+    pub appkey: String,
+    pub dev_pid: String,
+    pub language: String,
+    pub pre_roll_samples: Vec<f32>,
+}
+
 /// 后台 WS 会话主逻辑：建连 → START → pre-roll → 双向循环 → FINISH → 收结果。
 ///
 /// `endpoint` 参数化（P2-1 WS mock）：prod 调用传真 `const ENDPOINT`（`wss://...`），
@@ -73,13 +87,11 @@ pub fn open(
 async fn run_baidu_session(
     mut pcm_rx: mpsc::UnboundedReceiver<PcmFrame>,
     result_tx: mpsc::UnboundedSender<StreamEvent>,
-    endpoint: &str,
-    appid: String,
-    appkey: String,
-    dev_pid: String,
-    language: String,
-    pre_roll_samples: Vec<f32>,
+    config: BaiduSessionConfig,
 ) -> Result<()> {
+    // 从 config 解包（函数体内用裸名，保持原逻辑不变）
+    let BaiduSessionConfig { endpoint, appid, appkey, dev_pid, language, pre_roll_samples } = config;
+
     // 1. 解析 appid / dev_pid 字符串为整数（fail-fast：配置错误时明确报错，而非静默发 0）
     let appid_int: i64 = appid
         .parse()
@@ -383,9 +395,14 @@ mod tests {
         let tx_clone = result_tx.clone();
         tokio::spawn(async move {
             let result = run_baidu_session(
-                pcm_rx, result_tx, &url,
-                "1050000017".into(), "testkey".into(), "15372".into(),
-                "zh".into(), Vec::new(),
+                pcm_rx, result_tx, BaiduSessionConfig {
+                    endpoint: url,
+                    appid: "1050000017".into(),
+                    appkey: "testkey".into(),
+                    dev_pid: "15372".into(),
+                    language: "zh".into(),
+                    pre_roll_samples: Vec::new(),
+                },
             ).await;
             if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
         });
@@ -420,9 +437,14 @@ mod tests {
         let tx_clone = result_tx.clone();
         tokio::spawn(async move {
             let result = run_baidu_session(
-                pcm_rx, result_tx, &url,
-                "1050000017".into(), "testkey".into(), "15372".into(),
-                "zh".into(), Vec::new(),
+                pcm_rx, result_tx, BaiduSessionConfig {
+                    endpoint: url,
+                    appid: "1050000017".into(),
+                    appkey: "testkey".into(),
+                    dev_pid: "15372".into(),
+                    language: "zh".into(),
+                    pre_roll_samples: Vec::new(),
+                },
             ).await;
             if let Err(e) = result { let _ = tx_clone.send(StreamEvent::Failed(e.to_string())); }
         });
