@@ -189,6 +189,9 @@ export default function SyncPanel({
       setStatus((prev) => (prev ? { ...prev, syncing: true } : prev));
       await invoke("vault_sync_now");
     } catch (e) {
+      // 第十三轮 P3-1：回滚 syncing——invoke 失败（spawn_blocking 错等）时不会收到
+      // vault-sync-done 事件，若不回滚 syncing 则进度条永久卡住（对齐 handleSyncNow :169）。
+      setStatus((prev) => (prev ? { ...prev, syncing: false } : prev));
       showToast(t("settings.vault.sync.resolveFailed") + String(e), "error");
     }
     setResolving(false);

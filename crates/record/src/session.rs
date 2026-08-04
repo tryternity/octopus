@@ -156,7 +156,15 @@ impl RecordSession {
             inner.last_request = Some(request.clone());
         }
 
-        let req_json = serde_json::to_string(&request)?;
+        // 第十三轮 P3-3：序列化失败（理论极低概率）也要 reset_to_idle——state 已切
+        // Starting（:153），不清理会卡 Starting。对齐 spawn 失败路径 :170-176。
+        let req_json = match serde_json::to_string(&request) {
+            Ok(s) => s,
+            Err(e) => {
+                self.reset_to_idle().await;
+                return Err(RecordError::Json(e));
+            }
+        };
         // kill_on_drop：极端情况（进程 panic / SessionInner drop）下 helper 不残留为孤儿。
         let child_result = tokio::process::Command::new(helper_path)
             .arg(&req_json)
