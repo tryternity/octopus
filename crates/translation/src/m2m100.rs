@@ -176,12 +176,11 @@ impl M2M100Engine {
                 continue;
             }
 
-            if current_token_count + sent_tokens > MAX_ENCODER_TOKENS {
-                if !current.is_empty() {
+            if current_token_count + sent_tokens > MAX_ENCODER_TOKENS
+                && !current.is_empty() {
                     chunks.push(std::mem::take(&mut current));
                     current_token_count = 2;
                 }
-            }
 
             current.push_str(&sentence);
             current_token_count += sent_tokens;

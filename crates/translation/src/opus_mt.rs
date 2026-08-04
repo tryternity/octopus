@@ -83,7 +83,7 @@ impl OpusMTEngine {
             tokenizer,
             decoder_start_id,
             eos_id,
-            pad_id: pad_id,
+            pad_id,
         })
     }
 

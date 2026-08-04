@@ -105,7 +105,7 @@ pub fn set_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    const ICON_PNG: &[u8] = include_bytes!("../../icons/icon.png");
+    const ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/icon.png"));
 
     // 安全检查：仅主线程可调 AppKit
     let mtm = match MainThreadMarker::new() {

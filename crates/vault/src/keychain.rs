@@ -69,7 +69,7 @@ pub const KEYCHAIN_USER: &str = "machine-key";
 //     仅多一次 thread_local 读，对生产零影响。
 thread_local! {
     static TEST_KEYCHAIN_OVERRIDE: std::cell::RefCell<Option<InMemoryKeychain>>
-        = std::cell::RefCell::new(None);
+        = const { std::cell::RefCell::new(None) };
 }
 
 /// 进程内 in-memory Keychain（仅测试用）。
@@ -245,7 +245,7 @@ pub fn load_or_create_machine_key() -> Result<Zeroizing<[u8; 32]>> {
     // 这里直接 move 进返回值——无栈残留（之前 Zeroizing::new(裸数组) 是 Copy，
     // new_key 栈变量 drop no-op → K_machine 字节残留）。
     let new_key = random_32();
-    save_machine_key(&*new_key)?;
+    save_machine_key(&new_key)?;
     Ok(new_key)
 }
 
@@ -528,7 +528,7 @@ mod tests {
         assert!(load_machine_key().unwrap().is_none());
 
         let key = random_32();
-        save_machine_key(&*key).expect("save 应成功");
+        save_machine_key(&key).expect("save 应成功");
         let loaded = load_machine_key()
             .expect("load 应成功")
             .expect("应读到刚保存的 key");

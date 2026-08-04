@@ -285,7 +285,7 @@ mod load_tests {
 
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("db.sql")).unwrap();
+        conn.execute_batch(crate::resources::db_schema_sql()).unwrap();
         conn
     }
 

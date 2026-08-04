@@ -489,7 +489,7 @@ fn read_pages_text(path: &std::path::Path) -> Option<String> {
                     if let Ok(s) = std::str::from_utf8(&current) {
                         // 过滤掉明显的二进制噪音（含大量 ? 的串）
                         let readable = s.chars().filter(|c| !c.is_control()).count();
-                        if readable >= 4 && !s.contains("​​") {
+                        if readable >= 4 && !s.contains("\u{200B}\u{200B}") {
                             fragments.push(s.to_string());
                         }
                     }
@@ -798,7 +798,7 @@ fn bundle_id_to_procname(bundle_id: &str) -> String {
         // 通用：取 bundle_id 最后一段
         bundle_id
             .split('.')
-            .last()
+            .next_back()
             .unwrap_or(bundle_id)
             .to_string()
     }
@@ -1589,7 +1589,7 @@ unsafe fn get_attribute_value(
     if err != 0 || value.is_null() {
         return Err(anyhow::anyhow!(
             "AXUIElementCopyAttributeValue({}) error: {} ({})",
-            attr.to_string(),
+            attr,
             err,
             ax_error_desc(err),
         ));
@@ -1613,7 +1613,7 @@ unsafe fn get_attribute_string(
         CFRelease(value);
         return Err(anyhow::anyhow!(
             "AX 属性 {} 返回非 CFString 类型 (CFTypeID={})",
-            attr.to_string(),
+            attr,
             actual_type
         ));
     }
@@ -2077,9 +2077,9 @@ mod tests {
         let content = format!("{}SELECTED{}", before, after);
         let result = slice_around_text(&content, "SELECTED", 1000).unwrap();
         assert_eq!(result.0.as_ref().unwrap().len(), 1000);
-        assert_eq!(result.0.as_ref().unwrap().chars().all(|c| c == 'A'), true);
+        assert!(result.0.as_ref().unwrap().chars().all(|c| c == 'A'));
         assert_eq!(result.1.as_ref().unwrap().len(), 1000);
-        assert_eq!(result.1.as_ref().unwrap().chars().all(|c| c == 'B'), true);
+        assert!(result.1.as_ref().unwrap().chars().all(|c| c == 'B'));
     }
 
     #[test]

@@ -1550,8 +1550,8 @@ mod tests {
     fn golden_whisper_features() {
         let mel = compute_whisper_features_linear(&golden_samples()).unwrap();
         let golden: [[f32; 5]; 2] = [
-            [377.192078, 50.866940, 4.699553, 0.658000, 0.239028],
-            [442.780151, 49.902119, 2.679944, 0.062936, 0.009593],
+            [377.192_08, 50.866_94, 4.699553, 0.658000, 0.239028],
+            [442.780_15, 49.902_12, 2.679944, 0.062936, 0.009593],
         ];
         for (fi, row) in golden.iter().enumerate() {
             for (bi, &exp) in row.iter().enumerate() {
@@ -1590,7 +1590,7 @@ mod tests {
         crate::feature::normalize_whisper_features(&mut mel);
         let golden: [[f32; 5]; 2] = [
             [1.644141, 1.426609, 1.168014, 0.954557, 0.844612],
-            [1.661547, 1.424530, 1.107031, 0.699725, 0.495486],
+            [1.661547, 1.424_53, 1.107031, 0.699725, 0.495486],
         ];
         for (fi, row) in golden.iter().enumerate() {
             for (bi, &exp) in row.iter().enumerate() {

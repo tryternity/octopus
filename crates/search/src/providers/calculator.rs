@@ -68,7 +68,7 @@ fn looks_like_expression(s: &str) -> bool {
         c.is_ascii_digit()
             || matches!(c, '+' | '-' | '*' | '/' | '%' | '(' | ')' | '.' | ' ')
     });
-    has_op && all_valid && !s.ends_with(|c: char| matches!(c, '+' | '-' | '*' | '/'))
+    has_op && all_valid && !s.ends_with(['+', '-', '*', '/'])
 }
 
 /// 将表达式中的整数字面量改为浮点字面量（如 `10` → `10.0`，`10.5` 保持不变）。

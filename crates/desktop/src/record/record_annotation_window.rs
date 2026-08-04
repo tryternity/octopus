@@ -81,10 +81,10 @@ pub fn create_annotation_window(
     };
 
     // 选区在屏幕上的全局逻辑位置（物理 → 逻辑 / scale）
-    let sel_global_x = mon_x + (x as f64 / scale);
-    let sel_global_y = mon_y + (y as f64 / scale);
-    let sel_logical_w = w as f64 / scale;
-    let sel_logical_h = h as f64 / scale;
+    let sel_global_x = mon_x + (x / scale);
+    let sel_global_y = mon_y + (y / scale);
+    let sel_logical_w = w / scale;
+    let sel_logical_h = h / scale;
 
     // 窗口 = 选区所在显示器全屏（与截图 Screenshot 同模式）。
     let win_x = mon_x;

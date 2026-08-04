@@ -37,7 +37,7 @@ pub fn frontmost_bundle_id() -> Result<String> {
         set bundleId to bundle identifier of frontApp
     end tell
     "#;
-    Ok(run_osascript(script)?)
+    run_osascript(script)
 }
 
 fn script_for_browser(bundle_id: &str) -> Option<&'static str> {

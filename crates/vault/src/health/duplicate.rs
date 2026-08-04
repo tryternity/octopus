@@ -102,22 +102,18 @@ mod tests {
 
     #[test]
     fn test_no_duplicates() {
-        let ciphers = vec![
-            make_cipher("c1", Some("a")),
+        let ciphers = [make_cipher("c1", Some("a")),
             make_cipher("c2", Some("b")),
-            make_cipher("c3", Some("c")),
-        ];
+            make_cipher("c3", Some("c"))];
         assert!(find_duplicates(&ciphers.iter().collect::<Vec<_>>()).is_empty());
     }
 
     #[test]
     fn test_finds_duplicates() {
-        let ciphers = vec![
-            make_cipher("c1", Some("same")),
+        let ciphers = [make_cipher("c1", Some("same")),
             make_cipher("c2", Some("same")),
             make_cipher("c3", Some("different")),
-            make_cipher("c4", Some("same")),
-        ];
+            make_cipher("c4", Some("same"))];
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].cipher_ids.len(), 3);
@@ -125,13 +121,11 @@ mod tests {
 
     #[test]
     fn test_multiple_duplicate_groups() {
-        let ciphers = vec![
-            make_cipher("c1", Some("a")),
+        let ciphers = [make_cipher("c1", Some("a")),
             make_cipher("c2", Some("a")),
             make_cipher("c3", Some("b")),
             make_cipher("c4", Some("b")),
-            make_cipher("c5", Some("unique")),
-        ];
+            make_cipher("c5", Some("unique"))];
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 2);
     }
@@ -177,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_skip_none_password() {
-        let ciphers = vec![make_cipher("c1", None), make_cipher("c2", None)];
+        let ciphers = [make_cipher("c1", None), make_cipher("c2", None)];
         assert!(find_duplicates(&ciphers.iter().collect::<Vec<_>>()).is_empty());
     }
 
@@ -187,7 +181,7 @@ mod tests {
         let mut c1 = make_cipher("c1", Some("same"));
         let c2 = make_cipher("c2", Some("same"));
         c1.is_deleted = true; // c1 软删
-        let ciphers = vec![c1, c2];
+        let ciphers = [c1, c2];
         // c1 被过滤后只剩 c2（无重复）——不应报告重复组
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert!(
@@ -201,10 +195,8 @@ mod tests {
     /// 不能让日志 / 错误信息意外泄露哈希。cipher_ids 应正常显示。
     #[test]
     fn test_debug_redacts_password_hash() {
-        let ciphers = vec![
-            make_cipher("redact-1", Some("topsecret")),
-            make_cipher("redact-2", Some("topsecret")),
-        ];
+        let ciphers = [make_cipher("redact-1", Some("topsecret")),
+            make_cipher("redact-2", Some("topsecret"))];
         let groups = find_duplicates(&ciphers.iter().collect::<Vec<_>>());
         assert_eq!(groups.len(), 1);
 

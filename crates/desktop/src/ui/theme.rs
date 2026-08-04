@@ -4,8 +4,6 @@ use crate::core::error_util::e2s;
 use std::sync::OnceLock;
 
 /// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。
-
-/// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。
 /// 用户自定义主题 JSON 里 colors 对象的 key 与这些字段名一致（kebab-case）。
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "kebab-case")]

@@ -488,7 +488,7 @@ fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<Veri
     // 清单空 → 自举生成 + 确保置 true。
     if secret_key.trim().is_empty() {
         let manifest = bootstrap_manifest(&dir).map_err(|e| e2s_ctx("生成清单失败", e))?;
-        apply_model_state(&repo, Some(&manifest), true)?;
+        apply_model_state(repo, Some(&manifest), true)?;
         return Ok(VerifyResult {
             ok: true,
             bootstrapped: true,
@@ -541,7 +541,7 @@ fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<Veri
     };
     save_verified_cache(&dir, &cache);
     if broken.is_empty() {
-        apply_model_state(&repo, None, true)?;
+        apply_model_state(repo, None, true)?;
         Ok(VerifyResult {
             ok: true,
             bootstrapped: false,
@@ -549,7 +549,7 @@ fn verify_model_inner(model_name: String, repo: &str, full: bool) -> Result<Veri
             message: "校验通过，模型就绪".into(),
         })
     } else {
-        apply_model_state(&repo, None, false)?;
+        apply_model_state(repo, None, false)?;
         Ok(VerifyResult {
             ok: false,
             bootstrapped: false,

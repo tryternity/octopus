@@ -525,10 +525,7 @@ pub(crate) fn build_enriched_text(text: &str) -> String {
 pub(crate) fn get_mouse_position(_app: &AppHandle) -> Option<(f64, f64)> {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        Ok(s) => Some(s),
-        Err(_) => None,
-    };
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok();
     let event = match &source {
         Some(s) => CGEvent::new(s.clone()).ok(),
         None => None,

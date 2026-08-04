@@ -45,7 +45,7 @@ impl SearchProvider for CommandProvider {
             })
             .collect();
         // 按 score 降序——name 命中（高分）排在 keywords/description 命中前。
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|x| std::cmp::Reverse(x.0));
         scored
             .into_iter()
             .take(20)

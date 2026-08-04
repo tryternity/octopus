@@ -233,7 +233,7 @@ fn list_dir_inner(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, Strin
             if !matchers.is_empty() {
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 for m in matchers.iter().rev() {
-                    match m.matched(&e.path(), is_dir) {
+                    match m.matched(e.path(), is_dir) {
                         ignore::Match::Ignore(_) => return None,
                         ignore::Match::Whitelist(_) => break, // 该项被白名单保留
                         ignore::Match::None => {} // 继续查更低优先级
@@ -402,6 +402,7 @@ mod tests {
     /// 在带 .git + .gitignore 的临时 repo 内验证 gitignore 过滤语义：
     /// - target/、node_modules/、*.log 被隐藏
     /// - src/、Cargo.toml、keep.log（!keep.log 白名单）可见
+    ///
     /// 回归 #1（旧实现 WalkBuilder 语义反向，把非 ignored 项当「要隐藏的集合」）。
     #[test]
     fn list_dir_filters_gitignore_in_repo() {

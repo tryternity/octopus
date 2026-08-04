@@ -24,7 +24,7 @@ fn vad_sessions() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>> {
 
 /// silero_vad_16k_op15.onnx——官方 16kHz 专用精简版（1.2MB，opset 15）。
 /// 去掉 8kHz 分支（If 节点），比完整版 silero_vad.onnx（2.3MB）小 46%。
-const VAD_BYTES: &[u8] = include_bytes!("../../models/silero_vad_v6.onnx");
+const VAD_BYTES: &[u8] = octopus_infra::resources::silero_vad_v6_onnx();
 const VAD_CACHE_KEY: &str = "builtin://silero_vad_v6";
 
 /// v6 LSTM 状态维度（config.json state_dim=128）。

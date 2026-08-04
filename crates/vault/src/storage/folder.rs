@@ -73,7 +73,7 @@ pub fn create_folder(id: &str, name: &str, key: &DerivedKey) -> Result<()> {
     let encrypted = key.encrypt(name.as_bytes())?;
     // 新建 folder sort_order=0（db.sql DEFAULT）——md5 用 0 算
     let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, 0, false);
-    Ok(db::insert_vault_folder(id, &encrypted, &md5)?)
+    db::insert_vault_folder(id, &encrypted, &md5)
 }
 
 /// 重命名 folder。`new_name` 是明文；内部加密后写库。
@@ -87,7 +87,7 @@ pub fn rename_folder(id: &str, new_name: &str, key: &DerivedKey) -> Result<()> {
         .map(|f| f.sort_order)
         .unwrap_or(0);
     let md5 = crate::sync::fingerprint::folder_md5_from_fields(id, &encrypted, sort_order, false);
-    Ok(db::update_vault_folder_name(id, &encrypted, &md5)?)
+    db::update_vault_folder_name(id, &encrypted, &md5)
 }
 
 /// 软删除 folder（统一 cipher+folder 语义，2026-07-27 v53）。

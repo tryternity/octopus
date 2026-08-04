@@ -51,6 +51,7 @@ pub const DEFAULT_USER_VAULT_TIMEOUT_SECS: u64 = 5 * 60;
 /// 仍生效，外部只能拿到 Arc 句柄，无法直接取出明文 slice。
 ///
 /// 字段在 Task 17+ 才会被真正读写，此处保留完整结构以便 AppState 早期落地。
+#[derive(Default)]
 pub struct VaultSession {
     /// None = 未解锁（用户密码 vault 锁定）
     pub user_vault_key: Option<Arc<DerivedKey>>,
@@ -64,16 +65,6 @@ pub struct VaultSession {
     pub last_active_at: Option<Instant>,
 }
 
-impl Default for VaultSession {
-    fn default() -> Self {
-        Self {
-            user_vault_key: None,
-            app_key: None,
-            unlocked_at: None,
-            last_active_at: None,
-        }
-    }
-}
 
 impl VaultSession {
     /// user_vault_key 是否仍处于解锁有效期内（非空且 last_active_at 未超时）。

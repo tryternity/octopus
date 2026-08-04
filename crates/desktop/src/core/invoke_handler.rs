@@ -20,9 +20,9 @@ macro_rules! handler {
     () => {
         tauri::generate_handler![
             // ── runtime_config（工具栏状态 / 引擎切换 / 模式开关）──
-            crate::core::runtime_config::toolbar_state,
-            crate::core::runtime_config::list_asr_engines,
-            crate::core::runtime_config::switch_active_model,
+            $crate::core::runtime_config::toolbar_state,
+            $crate::core::runtime_config::list_asr_engines,
+            $crate::core::runtime_config::switch_active_model,
             crate::core::runtime_config::set_polish_mode,
             crate::core::runtime_config::list_llm_models,
             crate::core::runtime_config::set_denoise_mode,

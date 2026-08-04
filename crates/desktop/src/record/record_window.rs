@@ -93,7 +93,7 @@ fn compute_position(app: &AppHandle) -> (f64, f64) {
     app.primary_monitor()
         .ok()
         .flatten()
-        .and_then(|m| {
+        .map(|m| {
             let scale = m.scale_factor();
             let pos = m.position();
             let sz = m.size();
@@ -103,7 +103,7 @@ fn compute_position(app: &AppHandle) -> (f64, f64) {
             let x = pos.x as f64 + mon_w / 2.0 - WIDTH / 2.0;
             // 垂直上 1/3：显示器顶部 + 高度/3 - 浮窗高度/2（浮窗中心对齐上 1/3 线）
             let y = pos.y as f64 + mon_h / 3.0 - HEIGHT / 2.0;
-            Some((x, y.max(0.0)))
+            (x, y.max(0.0))
         })
         .unwrap_or((100.0, 100.0))
 }
