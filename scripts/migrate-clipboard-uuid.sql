@@ -76,11 +76,10 @@ INSERT INTO clipboard_history_fts(rowid, content)
 -- history_id 直接作 PK（= clipboard_history.id，一对一），无独立 id；
 -- sync_md5 存 history 内容指纹（检测 history 行编辑）；created_at 用 history 行自己的。
 CREATE TABLE IF NOT EXISTS clipboard_favorites (
-    history_id      TEXT PRIMARY KEY,           -- = clipboard_history.id（一对一）
+    history_id      TEXT PRIMARY KEY,           -- = clipboard_history.id（逻辑关联，无 FK 约束）
     is_deleted      INTEGER NOT NULL DEFAULT 0, -- 0=active，>0=epoch 秒（tombstone）
     updated_at      TEXT NOT NULL,              -- sync 时间戳比较用
-    sync_md5        TEXT,                       -- md5 内容指纹（检测 history 行编辑）
-    FOREIGN KEY (history_id) REFERENCES clipboard_history(id)
+    sync_md5        TEXT                        -- md5 内容指纹（检测 history 行编辑）
 );
 CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;
 

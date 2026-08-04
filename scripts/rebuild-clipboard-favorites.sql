@@ -10,8 +10,7 @@ CREATE TABLE clipboard_favorites (
     history_id   TEXT PRIMARY KEY,
     is_deleted   INTEGER NOT NULL DEFAULT 0,
     updated_at   TEXT NOT NULL,
-    sync_md5     TEXT,
-    FOREIGN KEY (history_id) REFERENCES clipboard_history(id)
+    sync_md5     TEXT
 );
 CREATE INDEX idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;
 
