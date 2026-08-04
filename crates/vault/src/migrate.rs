@@ -63,7 +63,7 @@ pub fn migrate_secret_keys_to_encrypted(app_key: &DerivedKey) -> Result<usize> {
             // tx drop 时 rollback 自动触发，但错误信息已捕获不会丢失。
             tx.execute(
                 "UPDATE models SET secret_key = ? WHERE id = ?",
-                &[enc as &dyn rusqlite::ToSql, id as &dyn rusqlite::ToSql],
+                [enc as &dyn rusqlite::ToSql, id as &dyn rusqlite::ToSql],
             )
             .with_context(|| format!("迁移 model id={} 失败", id))?;
         }

@@ -597,7 +597,7 @@ pub fn list_asr_cloud_presets() -> Result<Vec<(String, String, String)>> {
             let value: String = r.get(1)?;
             // key = "provider:category"
             let parts: Vec<&str> = key.splitn(2, ':').collect();
-            let provider = parts.get(0).unwrap_or(&"").to_string();
+            let provider = parts.first().unwrap_or(&"").to_string();
             let category = parts.get(1).unwrap_or(&"").to_string();
             Ok((provider, category, value))
         })?;
@@ -749,7 +749,7 @@ pub fn get_model_by_id(id: i64) -> Result<Option<ModelRow>> {
                     language, description, source_type, is_thinking, is_streaming, is_enabled, is_available
              FROM models WHERE id = ?1",
         )?;
-        let row = stmt.query_row(params![id], |r| model_row_mapper(r)).optional()?;
+        let row = stmt.query_row(params![id], model_row_mapper).optional()?;
         Ok(row)
     })
 }
@@ -762,7 +762,7 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
 }
 
 /// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。ORDER BY id 保证确定性。
-
+///
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
 pub(crate) fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Option<ModelRow>> {
     let mut stmt = conn.prepare(
@@ -770,7 +770,7 @@ pub(crate) fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Opt
                 language, description, source_type, is_thinking, is_streaming, is_enabled, is_available
          FROM models WHERE domain=?1 AND is_enabled=1 AND is_available=1 ORDER BY id LIMIT 1",
     )?;
-    let row = stmt.query_row(params![domain], |r| model_row_mapper(r)).optional()?;
+    let row = stmt.query_row(params![domain], model_row_mapper).optional()?;
     Ok(row)
 }
 
@@ -838,11 +838,11 @@ pub(crate) fn get_asr_model_by_spec_at(conn: &Connection, provider: Option<&str>
     let row = match (provider, category) {
         (Some(p), Some(c)) => {
             let mut stmt = conn.prepare(SQL_FULL)?;
-            stmt.query_row(params![p, c, model_name], |r| model_row_mapper(r)).optional()?
+            stmt.query_row(params![p, c, model_name], model_row_mapper).optional()?
         }
         _ => {
             let mut stmt = conn.prepare(SQL_NAME)?;
-            stmt.query_row(params![model_name], |r| model_row_mapper(r)).optional()?
+            stmt.query_row(params![model_name], model_row_mapper).optional()?
         }
     };
     Ok(row)
@@ -1255,8 +1255,8 @@ mod tests {
         assert_eq!(active.domain, "asr");
         // §6.1 推理正确性：完整字段（source/secret_key/model_name 与 DB 一致）
         assert!(active.source.starts_with("asr/"));
-        assert_eq!(active.is_available, true);
-        assert_eq!(active.is_enabled, true);
+        assert!(active.is_available);
+        assert!(active.is_enabled);
 
         // 反例：手动设一个 is_enabled=1 AND is_available=0 的行 → 不应命中
         conn.execute(

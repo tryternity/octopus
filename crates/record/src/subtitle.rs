@@ -245,7 +245,7 @@ pub fn latest_srt_path(mp4_path: &Path) -> Option<std::path::PathBuf> {
         if name.starts_with(&prefix) && name.ends_with(".srt") {
             let mid = &name[prefix.len()..name.len() - 4];
             if let Ok(n) = mid.parse::<u32>() {
-                if best.as_ref().map_or(true, |(bn, _)| n > *bn) {
+                if best.as_ref().is_none_or(|(bn, _)| n > *bn) {
                     best = Some((n, entry.path()));
                 }
             }
@@ -330,7 +330,7 @@ fn parse_srt_timestamp_line(line: &str) -> Option<(u64, u64)> {
 fn parse_srt_time(s: &str) -> Option<u64> {
     // HH:MM:SS,mmm 或 HH:MM:SS.mmm
     let s = s.trim();
-    let (hms, ms_str) = if let Some(idx) = s.find(|c: char| c == ',' || c == '.') {
+    let (hms, ms_str) = if let Some(idx) = s.find([',', '.']) {
         (&s[..idx], &s[idx + 1..])
     } else {
         // 无毫秒部分

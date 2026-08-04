@@ -264,7 +264,7 @@ pub fn search_bookmarks(query: &str, bookmarks: &[BookmarkEntry]) -> Vec<SearchR
             }))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|x| std::cmp::Reverse(x.0));
     // 按 url 去重（bookmark_bar + synced 同步可能产出同 URL，保留高分首个）
     let mut seen = std::collections::HashSet::new();
     scored.into_iter()

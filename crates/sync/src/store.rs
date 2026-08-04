@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 // cfg(test) 只在当前 crate 编译测试时生效，下游 crate 看不到。
 // 改为始终 pub + #[doc(hidden)]（与 infra::db::set_test_db 同模式）。
 thread_local! {
-    static TEST_SYNC_ROOT: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
+    static TEST_SYNC_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// 测试专用：设置临时 sync_root（TempDir 路径）。

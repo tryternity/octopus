@@ -75,6 +75,7 @@ pub async fn open_privacy_settings(section: PrivacySection) -> Result<(), String
 /// 唯一可靠探测：尝试 `build_input_stream` + `play`——
 ///   - 授权：成功，立即 pause+drop（不真录音）
 ///   - 未授权/拒绝：build 或 play 失败
+///
 /// 副作用：首次调用（未授权态）触发 TCC 弹窗——故 check 与 request 实为同一实现。
 ///
 /// **格式适配**（曾踩坑）：`default_input_config()` 可能返回 F32/I16/U16 任一格式，
@@ -165,6 +166,7 @@ pub async fn request_accessibility_permission() -> Result<PermissionStatus, Stri
 ///   - 已授权：osascript 成功退出（exit 0）
 ///   - 未授权/被拒：osascript 失败（-1743 errAEEventNotPermitted）或超时
 ///   - 首次调用（未决定态）：触发 TCC 弹窗（无法避免）
+///
 /// 故 check 与 request 同实现——首次 check 即触发弹窗。
 ///
 /// 复用 finder_selection.rs 的 timeout wrapper 模式（spawn + 5s poll），

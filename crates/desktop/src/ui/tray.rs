@@ -146,7 +146,7 @@ fn build_microphone_submenu(
     let default_item = CheckMenuItem::with_id(
         app,
         MIC_DEFAULT_ID,
-        &crate::ui::i18n::t("tray.microphoneDefault", &[]),
+        crate::ui::i18n::t("tray.microphoneDefault", &[]),
         true,
         current_mic.is_empty(),
         None::<&str>,
@@ -239,7 +239,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        &crate::ui::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]),
+        crate::ui::i18n::t("tray.engineInfo", &[("engine", &fmt_engine_label())]),
         false,
         None::<&str>,
     )
@@ -260,10 +260,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .map_err(|e| format!("clipboard menu: {e}"))?;
     // 图文编辑：打开空白 CompactEditor（临时文本 tab，不写 DB）。
-    let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::ui::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
+    let compact_editor = MenuItem::with_id(app, "compact_editor", crate::ui::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
         .map_err(|e| format!("compact_editor menu: {e}"))?;
     // 内嵌终端（Task 6，2026-07-30）：打开终端窗口（单例）。
-    let terminal = MenuItem::with_id(app, "terminal", &crate::ui::i18n::t("tray.terminal", &[]), true, None::<&str>)
+    let terminal = MenuItem::with_id(app, "terminal", crate::ui::i18n::t("tray.terminal", &[]), true, None::<&str>)
         .map_err(|e| format!("terminal menu: {e}"))?;
 
     // ── 录屏组（Task 14，2026-07-25）：仅 macOS 编译 ──
@@ -282,7 +282,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let record_start = MenuItem::with_id(
         app,
         "record_start",
-        &crate::ui::i18n::t("tray.recordStart", &[("shortcut", &record_sc_display)]),
+        crate::ui::i18n::t("tray.recordStart", &[("shortcut", &record_sc_display)]),
         true,
         None::<&str>,
     )
@@ -291,12 +291,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
 
-    let settings = MenuItem::with_id(app, "settings", &crate::ui::i18n::t("tray.settings", &[]), true, None::<&str>)
+    let settings = MenuItem::with_id(app, "settings", crate::ui::i18n::t("tray.settings", &[]), true, None::<&str>)
         .map_err(|e| format!("settings menu: {e}"))?;
     // 系统设置（顶部）与下方功能组之间的分隔线（2026-07-29）。
     let sep_settings = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator_settings: {e}"))?;
-    let quit = MenuItem::with_id(app, "quit", &crate::ui::i18n::t("tray.quit", &[]), true, None::<&str>)
+    let quit = MenuItem::with_id(app, "quit", crate::ui::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
     // 菜单组装（用户决策 2026-07-25；2026-07-29 调整 settings 位置 + 加麦克风子菜单）：

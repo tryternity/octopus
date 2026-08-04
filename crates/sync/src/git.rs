@@ -250,6 +250,7 @@ pub fn git_add_all(path: &Path) -> Result<(), SyncError> {
 /// G2 修复（2026-07-24）：精确化错误处理——
 /// 之前 allow_exit_codes: &[1] 无条件放行 exit 1（不只限于 nothing to commit），
 /// + Err(GitError) => Ok(false) 兜底吞掉真实失败（index.lock/磁盘满/hook 拒绝）。
+///
 /// 现在直接处理 git commit 输出：成功（exit 0）→ true；无变化（stdout/stderr 含
 /// "nothing to commit"，exit 1）→ false；其余失败 → Err。
 pub fn git_commit(path: &Path, msg: &str) -> Result<bool, SyncError> {

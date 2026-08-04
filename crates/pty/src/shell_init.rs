@@ -290,7 +290,7 @@ mod tests {
             let baseline = baseline.clone();
             handles.push(std::thread::spawn(move || {
                 // catch_unwind 捕获 panic（竞态损坏可能触发 UB，至少不静默崩溃）
-                let res = std::panic::catch_unwind(|| login_shell());
+                let res = std::panic::catch_unwind(login_shell);
                 match res {
                     Ok(v) => {
                         if v != baseline {
@@ -343,7 +343,6 @@ mod tests {
         let cmd = build_command(None, zsh).unwrap();
         let env: std::collections::HashMap<&str, &str> = cmd
             .iter_extra_env_as_str()
-            .map(|(k, v)| (k, v))
             .collect();
         assert!(
             env.contains_key("ZDOTDIR"),

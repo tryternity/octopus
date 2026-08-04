@@ -186,7 +186,7 @@ fn frontmost_browser_frame() -> Option<(f64, f64, f64, f64)> {
         }
         let owner_name: CFString = unsafe { TCFType::wrap_under_get_rule(owner_ptr as *const _) };
         let owner_str = owner_name.to_string();
-        if !BROWSER_OWNER_NAMES.iter().any(|n| *n == owner_str.as_str()) {
+        if !BROWSER_OWNER_NAMES.contains(&owner_str.as_str()) {
             continue;
         }
 

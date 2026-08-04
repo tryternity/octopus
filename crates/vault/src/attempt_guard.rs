@@ -23,7 +23,7 @@ static GUARD: OnceLock<UnlockAttemptGuard> = OnceLock::new();
 
 /// 进程级 guard 单例（首次访问惰性初始化）。
 pub fn guard() -> &'static UnlockAttemptGuard {
-    GUARD.get_or_init(|| UnlockAttemptGuard::new())
+    GUARD.get_or_init(UnlockAttemptGuard::new)
 }
 
 /// 暴力破解防护 guard。
@@ -33,6 +33,12 @@ pub fn guard() -> &'static UnlockAttemptGuard {
 pub struct UnlockAttemptGuard {
     failures: AtomicU32,
     next_allowed_at: AtomicU64,
+}
+
+impl Default for UnlockAttemptGuard {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UnlockAttemptGuard {

@@ -134,7 +134,7 @@ impl TotpGenerator {
         if self.step == 0 {
             anyhow::bail!("TOTP step=0（无效配置，应被 from_otpauth_url clamp 拦截）");
         }
-        Ok(self.inner.generate_current().context("TOTP 生成失败")?)
+        self.inner.generate_current().context("TOTP 生成失败")
     }
 
     /// 当前 step 内剩余秒数。按 self.step（可能 30 / 60 等）算。
@@ -202,7 +202,7 @@ mod tests {
     fn test_seconds_remaining_in_range_default_30s() {
         let gen = TotpGenerator::from_base32("JBSWY3DPEHPK3PXP").unwrap();
         let r = gen.seconds_remaining();
-        assert!(r >= 1 && r <= 30, "seconds_remaining 应在 1..=30，实际 {}", r);
+        assert!((1..=30).contains(&r), "seconds_remaining 应在 1..=30，实际 {}", r);
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(code.len(), 8, "digits 应解析为 8");
         // 剩余秒数应按 period=60 算
         let r = gen.seconds_remaining();
-        assert!(r >= 1 && r <= 60, "seconds_remaining 应在 1..=60，实际 {}", r);
+        assert!((1..=60).contains(&r), "seconds_remaining 应在 1..=60，实际 {}", r);
     }
 
     /// otpauth:// URL 缺省参数（只必填 secret）→ 走 RFC 默认（SHA1/6/30）。
@@ -357,7 +357,7 @@ mod tests {
         let (code, remaining) = gen.current_with_remaining().unwrap();
         assert_eq!(code.len(), 6);
         assert!(
-            remaining >= 1 && remaining <= 30,
+            (1..=30).contains(&remaining),
             "remaining 应在 1..=30，实际 {}",
             remaining
         );

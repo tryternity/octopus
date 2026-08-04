@@ -750,7 +750,7 @@ pub fn import_hotword_words_from_files() -> Result<Vec<(String, Vec<HotwordWordF
         // 读词典 outline 获取词 UUID 列表
         let outline = read_hotword_set_outline(&set_id).unwrap_or_default();
         let mut words = Vec::new();
-        for (word_uuid, _entry) in &outline.words {
+        for word_uuid in outline.words.keys() {
             match read_hotword_word_file(&set_id, word_uuid) {
                 Ok(wf) => {
                     // clone_initial 守卫：超期 word tombstone 跳过（防 GC 后跨设备复活，

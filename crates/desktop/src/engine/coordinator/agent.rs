@@ -165,10 +165,7 @@ pub fn parse_agent_context(context_json: &str) -> AgentContext {
 
 /// 重试 failed task（用已有 transcribed_text 重新执行）
 pub fn retry_agent_task(app_handle: &tauri::AppHandle, task_id: &str) {
-    match octopus_infra::db::load_agent_task(task_id) {
-        Ok(Some(t)) => execute_agent_task(app_handle, task_id, &t.transcribed_text),
-        _ => {}
-    }
+    if let Ok(Some(t)) = octopus_infra::db::load_agent_task(task_id) { execute_agent_task(app_handle, task_id, &t.transcribed_text) }
 }
 
 #[cfg(test)]
