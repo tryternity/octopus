@@ -127,3 +127,91 @@ pub(crate) fn parabolic_refine_from_response(response: &Image<image::Luma<f32>>,
         best_y
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::tests::make_frame;
+    use crate::stitch::{GrayBuf, StitchConfig, Stitcher, to_feature_map};
+    /// 默认测试尺寸：宽度需足够大让 X_START_RATIO..X_END_RATIO 区间有意义，
+    /// 高度需远大于 STRIP_H + MAX_SCROLL。
+    const TW: u32 = 400;
+    const TH: u32 = 600;
+
+    #[test]
+    fn test_ncc_matches_known_offset() {
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - StitchConfig::default().strip_h) as usize, TH as usize);
+        let template = canvas_strip.to_gray_image();
+        let search_region = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let result = ncc_match(&template, &search_region);
+        assert!(result.is_some(), "NCC 应返回匹配结果");
+        let ncc = result.unwrap();
+        assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_finds_known_offset() {
+        // f0 底部 strip（y∈[TH-strip_h,TH)）在 f1(scroll=30) 中出现在 y=TH-strip_h-30 处
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let expected_y = (TH - strip_h - 30) as f64; // 490
+        let (refined_y, score) = ncc_match_range(&template, &search, expected_y - 5.0, expected_y + 5.0)
+            .expect("range 内应匹配");
+        assert!(
+            (refined_y - expected_y).abs() < 2.0,
+            "refined_y 应≈{}, 实际 {}", expected_y, refined_y
+        );
+        assert!(score > 0.5, "range 内匹配 score 应 > 0.5: {}", score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_rejects_out_of_range_offset() {
+        // 真偏移 y=490，range 只给 [0,10] → 返回 range 内峰（≠490），refined_y < 15
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let (refined_y, _) = ncc_match_range(&template, &search, 0.0, 10.0)
+            .expect("range 内应有某峰");
+        assert!(
+            refined_y < 15.0,
+            "range 外偏移不应被选, refined_y={}", refined_y
+        );
+    }
+
+    #[test]
+    fn test_two_stage_refine_preserves_subpixel() {
+        // 帧宽 TW=400。ncc_downsample_width=9999 → 单阶段；=200 → 两阶段(scale=0.5)。
+        // f0 底部 strip 在 f1(scroll=40) 中 y=TH-strip_h-40=480 处。
+        // 两阶段与单阶段 refined_y 误差应 < 0.5px（保亚像素）。
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 40);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize);
+        let curr_full = GrayBuf::from_rgba_roi(&f1, 0, TH as usize);
+        let (tmpl, _) = to_feature_map(&canvas_strip);
+        let (search, _) = to_feature_map(&curr_full);
+
+        let s_single = Stitcher::new(f0.clone(), StitchConfig { ncc_downsample_width: 9999, ..Default::default() });
+        let s_two = Stitcher::new(f0.clone(), StitchConfig { ncc_downsample_width: 200, ..Default::default() });
+
+        let ry_single = match s_single.primary_ncc(&tmpl, &search, TW) {
+            PrimaryOutcome::Matched(y, _) => y,
+            _ => panic!("单阶段应匹配成功"),
+        };
+        let ry_two = match s_two.primary_ncc(&tmpl, &search, TW) {
+            PrimaryOutcome::Matched(y, _) => y,
+            _ => panic!("两阶段应匹配成功"),
+        };
+        assert!(
+            (ry_two - ry_single).abs() < 0.5,
+            "两阶段 refined_y 与单阶段误差应 <0.5px: single={}, two={}", ry_single, ry_two
+        );
+    }
+}

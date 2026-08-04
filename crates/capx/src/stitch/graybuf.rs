@@ -153,3 +153,162 @@ pub(crate) fn row_projection_means(buf: &GrayBuf, cols: &[usize], y_start: u32, 
     }
     proj
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::tests::{make_frame, make_frame_textured};
+    /// 默认测试尺寸：宽度需足够大让 X_START_RATIO..X_END_RATIO 区间有意义，
+    /// 高度需远大于 STRIP_H + MAX_SCROLL。
+    const TW: u32 = 400;
+    const TH: u32 = 600;
+
+    /// P1-5 测试：自写 Sobel + Welford 归一化的 to_feature_map 必须与原 imageproc
+    /// 实现像素级一致（边界 clamp / kernel 系数 / sqrt 幅值 / mean+3σ 归一化全部对齐）。
+    /// 钉死行为，防止未来手写 Sobel 漂移。
+    fn reference_feature_map(gray: &GrayBuf) -> (image::GrayImage, bool) {
+        use imageproc::gradients::sobel_gradients;
+        let luma_img = gray.to_gray_image();
+        let gradients = sobel_gradients(&luma_img);
+        let max_gradient = gradients.iter().copied().max().unwrap_or(0);
+        if max_gradient == 0 {
+            return (image::GrayImage::new(luma_img.width(), luma_img.height()), false);
+        }
+        let n = (gradients.width() * gradients.height()) as f64;
+        let sum: f64 = gradients.iter().map(|&p| p as f64).sum();
+        let mean = sum / n;
+        let var: f64 = gradients.iter().map(|&p| {
+            let d = p as f64 - mean;
+            d * d
+        }).sum::<f64>() / n;
+        let stddev = var.sqrt();
+        let normalizer = ((mean + 3.0 * stddev) as f32).max(1.0);
+        let normalized = image::GrayImage::from_fn(gradients.width(), gradients.height(), |x, y| {
+            let g = gradients.get_pixel(x, y)[0] as f32;
+            let scaled = (g / normalizer) * 255.0;
+            image::Luma([scaled.round().clamp(0.0, 255.0) as u8])
+        });
+        (normalized, true)
+    }
+
+    #[test]
+    fn to_feature_map_matches_reference_constant() {
+        // 常数图：max_gradient=0 → 返回 (空白, false)
+        let gray = GrayBuf { data: vec![100; 12 * 7], width: 12, y_offset: 0 };
+        let (feat, has) = to_feature_map(&gray);
+        assert!(!has, "常数图 Sobel 应退化");
+        assert_eq!(feat.dimensions(), (12, 7));
+        let (ref_feat, ref_has) = reference_feature_map(&gray);
+        assert_eq!(has, ref_has);
+        assert_eq!(feat.dimensions(), ref_feat.dimensions());
+    }
+
+    #[test]
+    fn to_feature_map_matches_reference_gradient() {
+        // y 方向线性渐变 + 水平条纹，覆盖 Sobel 非零场景
+        let w = 32usize;
+        let h = 24usize;
+        let data: Vec<u8> = (0..h).flat_map(|y| {
+            (0..w).map(move |x| {
+                let mut v = (y * 8) as u32 % 256;
+                if (x + y) % 7 == 0 { v = (v + 80) % 256; }
+                v as u8
+            })
+        }).collect();
+        let gray = GrayBuf { data, width: w, y_offset: 0 };
+        let (feat, has) = to_feature_map(&gray);
+        let (ref_feat, ref_has) = reference_feature_map(&gray);
+        assert_eq!(has, ref_has, "has_feature 不一致");
+        assert!(has, "此输入应有 Sobel 特征");
+        assert_eq!(feat.dimensions(), ref_feat.dimensions());
+        // 像素级比对（允许 ±1 浮点误差：Welford vs 两遍 sum 的浮点差异）
+        let a = feat.as_raw();
+        let b = ref_feat.as_raw();
+        assert_eq!(a.len(), b.len());
+        let max_diff = a.iter().zip(b.iter()).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0);
+        assert!(max_diff <= 1, "自写 Sobel 与 imageproc 对照最大像素差 {} > 1", max_diff);
+    }
+
+    #[test]
+    fn to_feature_map_matches_reference_realistic() {
+        // 模拟真实滚动截图：宽 200 高 100，含文字行 + 噪点
+        let w = 200usize;
+        let h = 100usize;
+        let data: Vec<u8> = (0..h).flat_map(|y| {
+            (0..w).map(move |x| {
+                let base = ((y / 20) * 50 + x / 30 * 30) as u32 % 256;
+                let noise = ((x * 13 + y * 7) % 17) as u32;
+                ((base + noise) % 256) as u8
+            })
+        }).collect();
+        let gray = GrayBuf { data, width: w, y_offset: 0 };
+        let (feat, has) = to_feature_map(&gray);
+        let (ref_feat, ref_has) = reference_feature_map(&gray);
+        assert_eq!(has, ref_has);
+        assert!(has);
+        let a = feat.as_raw();
+        let b = ref_feat.as_raw();
+        let max_diff = a.iter().zip(b.iter()).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0);
+        assert!(max_diff <= 1, "realistic 场景最大像素差 {} > 1", max_diff);
+    }
+
+    #[test]
+    fn to_feature_map_handles_small_images() {
+        // 1×1 和 2×2：边界 clamp 不应 panic
+        let tiny = GrayBuf { data: vec![50, 200], width: 2, y_offset: 0 };
+        let (feat, has) = to_feature_map(&tiny);
+        assert_eq!(feat.dimensions(), (2, 1));
+        let _ = has;
+
+        let single = GrayBuf { data: vec![128], width: 1, y_offset: 0 };
+        let (feat2, has2) = to_feature_map(&single);
+        assert_eq!(feat2.dimensions(), (1, 1));
+        // 单像素 Sobel 必退化（无邻居差分）
+        assert!(!has2);
+    }
+
+    #[test]
+    fn test_graybuf_color_pixel_luma() {
+        // 验证彩色像素的灰度公式（非灰度输入）
+        // R=100, G=150, B=200 → luma = (2126*100 + 7152*150 + 722*200) / 10000
+        //                         = (212600 + 1072800 + 144400) / 10000 = 1429800 / 10000 = 142
+        let mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> = image::ImageBuffer::new(1, 1);
+        img.put_pixel(0, 0, image::Rgba([100, 150, 200, 255]));
+        let buf = GrayBuf::from_rgba_roi(&img, 0, img.height() as usize);
+        assert_eq!(buf.row(0)[0], 142, "彩色像素灰度公式验证");
+    }
+
+    #[test]
+    fn test_graybuf_matches_image_grayscale() {
+        // 验证 GrayBuf::from_rgba 与 image::imageops::grayscale 逐像素相等
+        let img = make_frame(TW, TH, 0);
+        let reference = image::imageops::grayscale(&img);
+        let buf = GrayBuf::from_rgba_roi(&img, 0, img.height() as usize);
+        assert_eq!(buf.width, TW as usize);
+        assert_eq!(buf.data.len(), TW as usize * TH as usize);
+        for y in 0..TH as usize {
+            for x in 0..TW as usize {
+                let a = reference.get_pixel(x as u32, y as u32)[0];
+                let b = buf.row(y)[x];
+                assert_eq!(a, b, "灰度不一致 @ ({},{})", x, y);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sobel_pure_color_degrades() {
+        // 真正的纯色帧（固定像素值，无渐变）
+        let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> = image::ImageBuffer::from_pixel(TW, TH, image::Rgba([128, 128, 128, 255]));
+        let gray = GrayBuf::from_rgba_roi(&img, 0, TH as usize);
+        let (_feat, has_feat) = to_feature_map(&gray);
+        assert!(!has_feat, "纯色帧应无 Sobel 特征");
+    }
+
+    #[test]
+    fn test_sobel_textured_has_features() {
+        let f = make_frame_textured(TW, TH, 0, 2);
+        let gray = GrayBuf::from_rgba_roi(&f, 0, TH as usize);
+        let (_feat, has_feat) = to_feature_map(&gray);
+        assert!(has_feat, "密集条纹帧应有 Sobel 特征");
+    }
+}
