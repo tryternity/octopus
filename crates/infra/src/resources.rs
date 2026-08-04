@@ -13,3 +13,12 @@
 pub const fn db_schema_sql() -> &'static str {
     include_str!("../resources/sql/schema.sql")
 }
+
+// ── 字典 / 词表 ──────────────────────────────────────────────────
+
+/// Mozilla Public Suffix List（vault 域名匹配用）。
+/// 季度级同步：curl -o crates/infra/resources/dicts/public_suffix_list.dat \
+///   https://publicsuffix.org/list/public_suffix_list.dat
+pub const fn public_suffix_list() -> &'static [u8] {
+    include_bytes!("../resources/dicts/public_suffix_list.dat")
+}
