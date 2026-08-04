@@ -397,8 +397,8 @@
 | 6+7 | `71740669`（rAF 单独）+ `09dec35a`（其余） | L1-b regex 预编译 + C1 webp 摒弃 + N1 webp 前端清理 + P2-a dest fsync + P2-b search spawn_blocking + N2 rAF 背压 |
 | 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
 | 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
-| 11 | （本轮，待 commit） | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
-| 12 | （本轮，待 commit） | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
+| 11 | `f22eac7f` | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
+| 12 | `67ce6dc4` | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
