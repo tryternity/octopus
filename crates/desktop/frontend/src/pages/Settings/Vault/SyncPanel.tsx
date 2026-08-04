@@ -500,7 +500,7 @@ export default function SyncPanel({
                 size="full"
                 value={resolvePwd}
                 onChange={(e) => setResolvePwd(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleResolve()}
+                onKeyDown={(e) => e.key === "Enter" && !resolving && handleResolve()}
                 placeholder={t("settings.vault.sync.resolvePwdPlaceholder")}
                 autoFocus
               />
