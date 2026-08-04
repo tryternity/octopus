@@ -14,7 +14,7 @@ octopus 配置分两部分：
 ├── octopus.db          # 嵌入式 SQLite：models + transcriptions + app_config + prompts 表（唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/             # 随应用打包的小模型（固定路径）
-    ├── vad.onnx   # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌 silero_vad_v4；不进 DB）
+    ├── vad.onnx   # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌 silero_vad_v6；不进 DB）
     └── zipformer/           # 默认 ASR（model.int8.onnx + tokens.txt）
 
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice-orig/qwen3/paraformer/firered 等，按需下载）
@@ -22,7 +22,7 @@ octopus 配置分两部分：
 
 ## 模型配置（octopus.db）
 
-模型配置唯一来源是 `models` 表。首次建库时自动执行 [`db.sql`](../crates/infra/src/db.sql)（`include_str!` 编译期嵌入），写入默认 ASR 引擎与 LLM 润色模型。
+模型配置唯一来源是 `models` 表。首次建库时自动执行 [`schema.sql`](../crates/infra/resources/sql/schema.sql)（`include_str!` 编译期嵌入），写入默认 ASR 引擎与 LLM 润色模型。
 
 ### models 表 schema
 
@@ -56,7 +56,7 @@ octopus 配置分两部分：
 
 ### 默认 ASR seed
 
-完整权威 seed 在 [`crates/infra/src/db.sql`](../crates/infra/src/db.sql)（编译期 `include_str!` 嵌入，首次建库写入）——**以它为准，下表仅作概览**。当前 ASR seed 共 21 行：13 local + 8 云端（aliyun 3 / bytedance 2 / tencent 2 / baidu 1）。
+完整权威 seed 在 [`crates/infra/resources/sql/schema.sql`](../crates/infra/resources/sql/schema.sql)（编译期 `include_str!` 嵌入，首次建库写入）——**以它为准，下表仅作概览**。当前 ASR seed 共 21 行：13 local + 8 云端（aliyun 3 / bytedance 2 / tencent 2 / baidu 1）。
 
 | provider | category | 代表 model_name | 说明 |
 |---|---|---|---|
@@ -246,7 +246,7 @@ rm -f ~/.octopus/octopus.db
 # 下次启动 ensure_db 重建新 schema + seed
 ```
 
-**VAD 不进表**：内嵌 `silero_vad_v4.onnx`（随应用打包，`include_bytes!`）；磁盘 `~/.octopus/models/vad.onnx` 存在时覆盖（通用名，可放任意 VAD 模型，见 `VAD_OVERRIDE_PATH`）。
+**VAD 不进表**：内嵌 `silero_vad_v6.onnx`（2026-08-04 从 v4 升级，随应用打包，`include_bytes!`）；磁盘 `~/.octopus/models/vad.onnx` 存在时覆盖（通用名，可放任意 VAD 模型，见 `VAD_OVERRIDE_PATH`）。
 
 查看当前 DB 中的引擎：
 
@@ -267,7 +267,7 @@ octopus-cli config
 
 `models` 表可手动编辑（增删模型条目），但**需重启进程生效**——`asr::load_config()` 首次读出后缓存到 `OnceLock`，运行中不热更新。引擎激活由 DB `is_enabled` 决定（每域仅 1 个=1，经设置页 `switch_active_model` 切换）。**唯一键** `UNIQUE(domain, provider, category, model_name)` 允许跨 provider 同名模型共存（如 deepseek-v4-flash 在 deepseek 直连与 aliyun 代管下各一行）。
 
-> **开发阶段 schema 变更**：直接修改 [`crates/infra/src/db.sql`](../crates/infra/src/db.sql)，然后删除 `~/.octopus/octopus.db` 并重启即可重新初始化。无迁移逻辑，开发期以此替代。
+> **开发阶段 schema 变更**：直接修改 [`crates/infra/resources/sql/schema.sql`](../crates/infra/resources/sql/schema.sql)，然后删除 `~/.octopus/octopus.db` 并重启即可重新初始化。无迁移逻辑，开发期以此替代。
 
 ### model.json / history.txt 已废弃
 
@@ -438,7 +438,7 @@ edited 段（用户手动修正）在 `regions_prompt` / `user_prompt` 中用 `[
 
 ## 模型下载
 
-VAD 模型（silero_vad_v4.onnx 1.7MB）内嵌进二进制（`include_bytes!`），无需下载。默认 ASR 兜底引擎（zipformer 27M）计划改为首次启动自动下载。其他大模型用 `huggingface-cli` 按需下载到 HF 缓存：
+VAD 模型（silero_vad_v6.onnx 1.23MB，2026-08-04 从 v4 升级）内嵌进二进制（`include_bytes!`），无需下载。默认 ASR 兜底引擎（zipformer 27M）计划改为首次启动自动下载。其他大模型用 `huggingface-cli` 按需下载到 HF 缓存：
 
 ```bash
 # 安装 HF CLI
