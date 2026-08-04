@@ -397,3 +397,93 @@
 | 6+7 | `71740669`（rAF 单独）+ `09dec35a`（其余） | L1-b regex 预编译 + C1 webp 摒弃 + N1 webp 前端清理 + P2-a dest fsync + P2-b search spawn_blocking + N2 rAF 背压 |
 | 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
 | 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
+| 11 | （本轮，待 commit） | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
+
+## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
+
+第十一轮全新核查发现 2 处问题（P1 + P2），外加 P3 纵深防御观察（非阻塞，不本轮修）。两报告问题全部 CONFIRMED（4/4 + 6/6 证据 Read 核实）。
+
+### P1. vault cipher + folder 多设备 sync ping-pong — 永不收敛 + git 历史无限膨胀 🔴
+
+**根因**：pull/clone 路径复用业务 upsert，业务 SQL 硬编 `updated_at = datetime('now')`，远程时间戳在落库时丢失。多设备交替 sync 后，cipher/folder 的 `updated_at` 互相覆盖性递增，每次 sync 都产生「内容未变但时间戳更新」的空 commit，永不收敛。
+
+**4 证据链**（全部 Read 核实）：
+1. `vault.rs:342-364 update_vault_cipher_at` 硬编 `updated_at = datetime('now')`（业务 UPDATE 路径）。
+2. `vault.rs:312-332 insert_vault_cipher_at` 的 INSERT 不含 `created_at`/`updated_at` 列 → SQLite DEFAULT = now。
+3. `engine.rs:587-603 build_cipher_input_from_file`（原函数）构造的 `VaultCipherInput` 字段无 `created_at`/`updated_at`（远程时间戳在此丢失）。
+4. `store.rs:517 export_all_to_files` 算 outline：`updated_ms: iso_to_unix_ms(&c.updated_at)` —— outline.updated_ms 来自 DB.updated_at（pull 后 = 本机 now）。
+
+**folder 路径同型**：`update_vault_folder_fields:504` 同样硬编 `datetime('now')`，folder merge 同样用 updated_ms 比较 → folder 改名/排序跨设备也 ping-pong。
+
+**触发链**：A 创建 cipher（DB=T_A1, outline=T_A1, push）→ B pull（build_cipher_input_from_file 丢 T_A1 → 落库 DB=T_B1）→ B export（outline=T_B1, push）→ A fetch（outline T_B1 > DB T_A1 → pull → update_vault_cipher_at DB=T_A2）→ … 永不收敛。
+
+**为何前 10 轮未发现**：单设备 sync 时 DB.updated_at 与 outline.updated_ms 同源（都基于同一 DB 值），md5 比对跳过，单设备完全不触发。必须 ≥2 设备交替 cross sync 才暴露。vault 是密码管理器，数据一致性是核心契约。
+
+**为何多轮未发现（补充）**：现有测试 `pull_uses_md5_not_updated_at:1980` 守护 md5 比对（updated_at 不同但 md5 相同应跳过），但**没有测试验证 pull 后 DB.updated_at 的值**——它假设 pull 会写 now，断言只看 pulled 计数。ping-pong 的本质是「时间戳值丢失」而非「md5 比对错」，测试盲区。
+
+**修复方式**（sync-only upsert，不碰 `VaultCipherInput`）：
+
+**决策理由**：`VaultCipherInput` 有 23 个构造点，本地路径必须保持 `datetime('now')`（标记「我改了」），改 struct 字段风险高。`VaultCipher`/`VaultFolder` 已含远程时间戳（`CipherFile::to_vault_cipher():273-274` / `FolderFile::to_vault_folder():312-313` 保留 created_at/updated_at），数据已现成。故新增专用 sync-only upsert 路径，与 `_at` 后缀范式（`update_vault_cipher_at` 已存在）一致。
+
+**infra/db/vault.rs 新增 4 个 pub fn**（紧邻现有 cipher/folder 函数）：
+1. `insert_vault_cipher_sync_at(conn, row: &VaultCipher)` —— INSERT 含 `created_at, updated_at` 列（用 row 值）。
+2. `update_vault_cipher_sync_at(conn, id, row: &VaultCipher)` —— UPDATE 显式写 `created_at = ?, updated_at = ?`（非 `datetime('now')`）。
+3. `insert_vault_folder_sync_at(conn, row: &VaultFolder)` —— folder 版 INSERT。
+4. `update_vault_folder_sync_at(conn, id, row: &VaultFolder)` —— folder 版 UPDATE（含 sort_order + is_deleted + 时间戳）。
+
+**vault/src/sync/engine.rs 新增 2 个 upsert + 重接 6 处调用点**：
+- `upsert_cipher_from_file(row: &VaultCipher)` —— load 存在性 → Some 调 `update_vault_cipher_sync_at`，None 调 `insert_vault_cipher_sync_at`。
+- `upsert_folder_from_file(row: &VaultFolder)` —— folder 版。
+- 6 处调用点改用新函数：cipher pull 新增 + cipher pull 更新 + folder pull 新增 + folder pull 更新 + clone cipher + clone folder。
+- **删除** 3 个旧函数（`build_cipher_input_from_file` / `upsert_cipher` / `upsert_folder_with_sort`）——它们已无生产/测试调用（pull/clone 全改新函数后变死代码）。`build_cipher_input_from_file` 的「丢时间戳」是 ping-pong 的直接原因，删除即根治。
+
+**业务路径保持不变**：`save_cipher` / `soft_delete` / `restore` / `create_folder` / `rename_folder` 等本机编辑仍走 `datetime('now')`（业务 upsert），语义正确——本机编辑刷新时间戳标记「我改了」，下次 push 传播这个新时间戳。
+
+**回归测试**（engine.rs 测试模块，3 测试）：
+1. `cipher_pull_preserves_remote_timestamp` —— 写文件 cipher `updated_at=2099` + outline `updated_ms=2099` → DB 空 → merge pull → 断言 `DB.updated_at == "2099-12-31 23:59:59"`（不是本机 now）+ `created_at == "2099-01-01 00:00:00"`。
+2. `folder_pull_preserves_remote_timestamp` —— folder 版，断言 `DB.updated_at` + `sort_order` 保留。
+3. `sync_converges_after_round_trip_no_ping_pong`（核心收敛测试）—— 模拟多设备 round-trip：①DB 有 cipher（push, 本机 T1）②模拟 B 机 pull 后回写（outline.updated_ms=T1，时间戳不变）③再 merge → 断言 `pulled == 0 && pushed == 0`（收敛）+ `DB.updated_at` 仍 T1。钉死收敛契约。
+
+**更新 `clone_preserves_soft_deleted_at` 测试**（T1 修复，2026-07-24）：原测试用 `build_cipher_input_from_file` + `upsert_cipher`（旧路径），现改用 `upsert_cipher_from_file`（新生产路径），保持「测试调生产构造点」不变量（MatchType#1 防护）。
+
+### P2. infra v57→v58 schema 迁移缺事务 — 崩溃致 DB 不可恢复 🟠
+
+**根因**：`db/mod.rs:397`（57 => 分支）的 `conn.execute_batch(...)` 含 4 条 DDL（CREATE new + INSERT + DROP old + RENAME），未包事务。`execute_batch` 在 autocommit 模式下逐条自动提交，DROP TABLE 与 RENAME 之间崩溃（断电 / kill -9 / panic）→ hotword_sets 已提交删除 + hotword_sets_new 残留 → 重启 init_schema 走到 `CREATE TABLE hotword_sets_new`（非 IF NOT EXISTS）报 `table already exists` → 迁移 fail → `ensure_db` 持续 Err → 应用无法启动，DB 不可恢复。对比同文件 `insert_vault_ciphers_batch:303`（正确用 `unchecked_transaction`）。
+
+**修复**（`db/mod.rs:397`）：
+```rust
+let tx = conn.unchecked_transaction()?;
+tx.execute_batch("CREATE TABLE hotword_sets_new ...; INSERT ...; DROP TABLE hotword_sets; ALTER TABLE hotword_sets_new RENAME TO hotword_sets;")?;
+tx.commit()?;
+```
+4 条 DDL 原子化（全成功或全回滚）。`unchecked_transaction(&self)` 接收 `&Connection`（不需 `&mut`），与 `init_schema(conn: &Connection)` 签名兼容。
+
+**未修（P3 技术债）**：v56→v57 的 `execute_batch`（建 `hotword_words` 表 + seed，`IF NOT EXISTS`，无 DROP）非破坏性，未包事务——风险低（中间崩溃留空表，重启幂等），留作技术债。
+
+### P3 观察汇总（技术债，非阻塞，不本轮修）
+
+| # | 位置 | 观察 |
+|---|---|---|
+| 1 | `SyncPanel.tsx:175,195` | `handleResolve` 函数体缺 `if(resolving) return` 早返回 + `useCallback` deps 缺 `resolving`（纵深防御，按钮 disabled + Enter `!resolving` 两入口已守住，新增第三入口会漏） |
+| 2 | `db/mod.rs` 多处 | hotword/agent/action_bar 的多语句写入未包事务（同 P2 迁移的同类问题，但非破坏性 DDL，风险低） |
+| 3 | 迁移错误处理 | 部分 `let _ =` 吞迁移返回值；`set_test_db` user_version=46 |
+| 4 | LIKE 查询 | 部分 LIKE 未 escape 用户输入中的 `%`/`_` |
+| 5 | `opus_mt.rs:173-203` | 单句超长（500+ 无标点）缺字符硬切，依赖 `truncate(500,...,Right)` 丢尾部（m2m100 有 `split_into_chunks` 硬切，opus_mt 无等价处理）。罕见不 panic |
+| 6 | `dlp/main.rs:236-328` | yt-dlp/ffmpeg 子进程无 timeout，直播流源可能永久挂起。CLI 惯例，用户可 Ctrl-C |
+| 7 | `cloud.rs:43-50` vs `translate.rs:94-122` | CloudModel 直接 await（内部 blocking reqwest）vs FallbackLlm 走 spawn_blocking，隔离方式不一致。当前调用链已隔离，未来改 `tokio::spawn` 直接 await 会暴露 |
+
+### 健康确认（本轮无 ≥80 发现）
+
+- pty crate（3 线程模型 / ChildKillGuard RAII / join_reader_with_timeout / overflow 背压 / getpwuid_r 可重入 / write_if_changed 原子）：健康。
+- translation crate（ngram 重复惩罚越界保护 / m2m100 8-token 重复检测 / argmax NaN 安全 / i64→u32 边界检查 / normalize_cjk_spaces）：健康。
+- dlp crate（DownloadedFileGuard RAII / reqwest 300s 超时）：健康。
+
+### 验证
+
+- `cargo build -p octopus-infra -p octopus-vault` —— 0 error 0 warning。
+- `cargo test -p octopus-infra --lib` —— 183 passed（含迁移测试）。
+- `cargo test -p octopus-vault --lib` —— 262 passed（259 旧 + 3 新 P1 回归）。
+
+### 历史遗留项升级（文档化 → 已修）
+
+交接笔记原列「P2-3 vault 时间戳跨设备覆盖（VaultCipherInput 加字段 + SQL，较大改动）」为「文档化不修」——本轮 P1 已修复（采用 sync-only upsert 方式，比原设想的「VaultCipherInput 加字段」风险更低）。此项从「文档化不修」升级为「已修」。

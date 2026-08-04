@@ -363,6 +363,69 @@ pub fn update_vault_cipher_at(conn: &Connection, id: &str, input: &VaultCipherIn
     Ok(())
 }
 
+// ── sync-only cipher upsert（保留远程时间戳，第十一轮 P1 修复）──
+//
+// 与业务版 `insert_vault_cipher_at` / `update_vault_cipher_at` 的区别：
+// 业务版硬编 `updated_at = datetime('now')`（本机编辑刷新时间戳，标记「我改了」），
+// 但 sync pull 路径复用业务版会丢失远程时间戳 → 跨设备 ping-pong（详见 spec 第十一轮 P1）。
+// sync 版显式写入 row.created_at / row.updated_at（来自 .sync 文件的远程值），
+// 让「最后修改者」的时间戳跨设备存活，merge 的 updated_ms 比对才能收敛。
+//
+// 数据源：row: &VaultCipher 直接来自 `CipherFile::to_vault_cipher()`（已含远程时间戳），
+// 不经 VaultCipherInput（丢时间戳），调用方算好 sync_md5 填 row.sync_md5。
+
+pub fn insert_vault_cipher_sync_at(conn: &Connection, row: &VaultCipher) -> Result<()> {
+    conn.execute(
+        "INSERT INTO vault_ciphers (id, folder_id, favorite, atype, name, notes, data, fields,
+            password_history, reprompt, is_deleted, sync_md5, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            row.id,
+            row.folder_id,
+            row.favorite as i32,
+            row.atype,
+            row.name,
+            row.notes,
+            row.data,
+            row.fields,
+            row.password_history,
+            row.reprompt,
+            row.is_deleted as i32,
+            row.sync_md5,
+            row.created_at,
+            row.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_vault_cipher_sync_at(conn: &Connection, id: &str, row: &VaultCipher) -> Result<()> {
+    conn.execute(
+        "UPDATE vault_ciphers SET
+            folder_id = ?1, favorite = ?2, atype = ?3, name = ?4, notes = ?5, data = ?6,
+            fields = ?7, password_history = ?8, reprompt = ?9, is_deleted = ?10, sync_md5 = ?11,
+            created_at = ?12, updated_at = ?13
+         WHERE id = ?14",
+        params![
+            row.folder_id,
+            row.favorite as i32,
+            row.atype,
+            row.name,
+            row.notes,
+            row.data,
+            row.fields,
+            row.password_history,
+            row.reprompt,
+            row.is_deleted as i32,
+            row.sync_md5,
+            row.created_at,
+            row.updated_at,
+            id,
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn permanent_delete_vault_cipher(id: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| permanent_delete_vault_cipher_at(conn, id))
@@ -506,6 +569,50 @@ pub fn update_vault_folder_fields(
         )?;
         Ok(affected)
     })
+}
+
+// ── sync-only folder upsert（保留远程时间戳，第十一轮 P1 修复）──
+//
+// 同 cipher 的 sync 版：业务版 `update_vault_folder_fields` 硬编 `updated_at = datetime('now')`，
+// sync pull 复用会丢远程时间戳 → folder 改名/排序跨设备 ping-pong。
+// sync 版显式写 row.created_at / row.updated_at（来自 .sync 文件的远程值）。
+// 与第八轮 P0（folder 软删同步）的 `upsert_folder_with_sort` 区别：后者仍硬编 now，
+// 仅解决 is_deleted 传播；本版同时解决时间戳收敛。
+
+pub fn insert_vault_folder_sync_at(conn: &Connection, row: &VaultFolder) -> Result<()> {
+    conn.execute(
+        "INSERT INTO vault_folders (id, name, sort_order, is_deleted, sync_md5, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            row.id,
+            row.name,
+            row.sort_order,
+            row.is_deleted,
+            row.sync_md5,
+            row.created_at,
+            row.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_vault_folder_sync_at(conn: &Connection, id: &str, row: &VaultFolder) -> Result<usize> {
+    let affected = conn.execute(
+        "UPDATE vault_folders SET
+            name = ?1, sort_order = ?2, is_deleted = ?3, sync_md5 = ?4,
+            created_at = ?5, updated_at = ?6
+         WHERE id = ?7",
+        params![
+            row.name,
+            row.sort_order,
+            row.is_deleted,
+            row.sync_md5,
+            row.created_at,
+            row.updated_at,
+            id,
+        ],
+    )?;
+    Ok(affected)
 }
 
 /// 软删除 folder（统一 cipher+folder 语义，2026-07-27 v53）。
