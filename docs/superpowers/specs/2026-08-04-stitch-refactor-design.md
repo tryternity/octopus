@@ -88,9 +88,12 @@ dispatcher：`try_fallback`（787，`&mut self`）。共享出口：`apply_fallb
 |---|---|---|---|
 | **1** | 纯机械拆分 + 可见性调整 | 极低 | ✅ 完成（2026-08-04，merge `10f7d211`） |
 | **2** | finalize dedupe / extract_strip helper / 常量分组 | 低 | 🟡 部分完成（2026-08-04，见下） |
-| 3（远期） | 降级链 trait 抽象（`FallbackStep`）/ 队列解耦 / 双向滚动 | 中高 | 独立 brainstorming |
+| **3a** | 降级链 trait 抽象（`FallbackStep`） | 中 | 🟡 已实现待 e2e（2026-08-04，分支 `refactor/stitch-trait`） |
+| 3b（远期） | 队列解耦 / 双向滚动 | 中高 | 独立 brainstorming |
 
 阶段 1 的 `pub(crate)` 可见性不阻碍阶段 2/3——dedupe、抽 helper、trait 化都在已可见范围内。
+
+**阶段 3a 进展**：见 [`2026-08-04-stitch-fallback-trait-design.md`](2026-08-04-stitch-fallback-trait-design.md)——5 个 `FallbackStep` 实现 + dispatcher 从 60 行 if 链 → 35 行迭代。
 
 **阶段 2 实施记录（2026-08-04，分支 `refactor/stitch-cleanup`）**：
 - ✅ 常量按功能注释分组（4 组：匹配阈值 / 采样几何 / 画布自愈 / 时序平滑），顺手修 `DY_HISTORY_LEN` doc 被前一行吞的小 bug

@@ -3,8 +3,180 @@
 //! 拆分自原 stitch.rs（2026-08-04），机械迁移无行为变更。
 //! dispatcher try_fallback 按序尝试：邻帧参考 NCC → 1D 投影 → 静止检测 → best-guess。
 //! 所有方法为 inherent method（split-impl），签名一字不改。
+//!
+//! 2026-08-04 阶段 3：try_fallback 重写为迭代 5 个 `FallbackStep` trait 实现。
+//! 每个 step 封装一种匹配策略 + 副作用（reset streak / clear history 等）。
 
 use super::*;
+
+// ===== 降级链 trait 抽象（2026-08-04 阶段 3）=====
+
+/// 降级链单步的输出。dispatcher 据此决定链路走向。
+#[derive(Debug)]
+pub(crate) enum StepOutcome {
+    /// 本步已应用（副作用 + apply_fallback_match 已在 step 内调用）。
+    Applied(Result<bool>),
+    /// 本步求出 dy 但未 apply，请求 dispatcher 走 apply_fallback_match(verify)。
+    /// 保留扩展点——本次所有步骤都用 Applied，未来若 step 需要"延迟 apply"再用。
+    #[allow(dead_code)]
+    Candidate {
+        dy: f64,
+        confidence: f64,
+        sad: f64,
+        verify: bool,
+    },
+    /// 本步判定画面静止，链路应短路返回 Ok(false)。
+    Stationary,
+    /// 本步未匹配，继续下一步。
+    Skip,
+}
+
+/// 步骤执行上下文。聚合步骤所需输入 + Stitcher 可变引用。
+/// 显式列出字段，限制 step 只触与本步相关的输入。
+pub(crate) struct FallbackCtx<'a> {
+    pub stitcher: &'a mut Stitcher,
+    pub frame: &'a RgbaImage,
+    pub curr_gray: &'a GrayBuf,
+    pub canvas_gray: &'a GrayBuf,
+    pub w: u32,
+    pub eff_top: u32,
+    pub eff_bottom: u32,
+    pub sample_cols: &'a [usize],
+}
+
+/// 降级链单步。每个实现封装一种 fallback 策略 + 其副作用。
+pub(crate) trait FallbackStep {
+    /// 步骤名（日志用）。
+    fn name(&self) -> &'static str;
+    /// 尝试本步降级。
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome;
+}
+
+// ===== 5 个 FallbackStep 实现（2026-08-04 阶段 3）=====
+
+/// 步骤 1：相邻帧参考 NCC。
+/// 用前一帧底部 strip 当模板，在当前帧做 NCC，求 dy。
+/// 突变帧时画布底部旧模板失配，前一帧与当前帧重叠最大 → 求出正确 dy。
+pub(crate) struct PrevFrameStep;
+
+impl FallbackStep for PrevFrameStep {
+    fn name(&self) -> &'static str { "prev_frame" }
+
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome {
+        // 先判断 prev_gray 是否存在（不可变借用，match 后释放）
+        let dy = {
+            let prev_gray = match &ctx.stitcher.prev_gray {
+                Some(g) => g,
+                None => return StepOutcome::Skip,
+            };
+            ctx.stitcher.try_match_prev_frame(
+                prev_gray, ctx.curr_gray, ctx.eff_top, ctx.eff_bottom,
+            )
+        };
+        let dy = match dy {
+            Some(dy) => dy,
+            None => return StepOutcome::Skip,
+        };
+        // 副作用：reset streak + stuck（与原 dispatcher 行为一致）
+        ctx.stitcher.best_guess_streak = 0;
+        ctx.stitcher.ncc_stuck_count = 0;
+        // apply（verify=false：dy 已过内部 validate_ncc_match，且 prev≠canvas 底部，2D 验证会误杀）
+        let result = ctx.stitcher.apply_fallback_match(
+            dy, 0.0, 0.0, ctx.frame, ctx.curr_gray, ctx.canvas_gray,
+            ctx.sample_cols, false, ctx.w, ctx.eff_top, ctx.eff_bottom,
+        );
+        StepOutcome::Applied(result)
+    }
+}
+
+/// 步骤 2：1D 行投影 SAD 匹配（低纹理场景）。
+pub(crate) struct Projection1DStep;
+
+impl FallbackStep for Projection1DStep {
+    fn name(&self) -> &'static str { "1d_projection" }
+
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome {
+        let x_start = (ctx.w as f64 * X_START_RATIO) as u32;
+        let x_end = (ctx.w as f64 * X_END_RATIO) as u32;
+        let max_scroll = ctx.stitcher.config.max_scroll;
+        match ctx.stitcher.try_match_1d_projection(
+            ctx.canvas_gray, ctx.curr_gray, x_start, x_end,
+            ctx.eff_top, ctx.eff_bottom, max_scroll, 10.0,
+        ) {
+            Some((dy, conf, sad)) => {
+                log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
+                ctx.stitcher.best_guess_streak = 0;
+                let result = ctx.stitcher.apply_fallback_match(
+                    dy, conf, sad, ctx.frame, ctx.curr_gray, ctx.canvas_gray,
+                    ctx.sample_cols, true, ctx.w, ctx.eff_top, ctx.eff_bottom,
+                );
+                StepOutcome::Applied(result)
+            }
+            None => StepOutcome::Skip,
+        }
+    }
+}
+
+/// 步骤 3：静止检测。画面没动时短路，不进 best_guess。
+pub(crate) struct StationaryStep;
+
+impl FallbackStep for StationaryStep {
+    fn name(&self) -> &'static str { "stationary" }
+
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome {
+        let sad = ctx.stitcher.quick_stationary_check(
+            ctx.curr_gray, ctx.canvas_gray, ctx.sample_cols,
+        );
+        if sad < STATIONARY_SAD {
+            log::info!("[stitch] stationary detected (sad={:.2})", sad);
+            ctx.stitcher.dy_history.clear();
+            ctx.stitcher.best_guess_streak = 0;
+            ctx.stitcher.last_dy = None;
+            StepOutcome::Stationary
+        } else {
+            StepOutcome::Skip
+        }
+    }
+}
+
+/// 步骤 4：历史 dy 中位数估算（best_guess）。streak < 3 才用，熔断后跳过。
+pub(crate) struct BestGuessStep;
+
+impl FallbackStep for BestGuessStep {
+    fn name(&self) -> &'static str { "best_guess" }
+
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome {
+        if ctx.stitcher.best_guess_streak >= 3 {
+            return StepOutcome::Skip;
+        }
+        match ctx.stitcher.estimate_dy_hint() {
+            Some(dy) => {
+                log::info!("[stitch] best-guess dy={:.1} (streak={})",
+                    dy, ctx.stitcher.best_guess_streak + 1);
+                ctx.stitcher.best_guess_streak += 1;
+                let result = ctx.stitcher.apply_fallback_match(
+                    dy, 0.0, 0.0, ctx.frame, ctx.curr_gray, ctx.canvas_gray,
+                    ctx.sample_cols, true, ctx.w, ctx.eff_top, ctx.eff_bottom,
+                );
+                StepOutcome::Applied(result)
+            }
+            None => StepOutcome::Skip,
+        }
+    }
+}
+
+/// 步骤 5（终步）：所有降级失败，skip 该帧。
+pub(crate) struct SkipStep;
+
+impl FallbackStep for SkipStep {
+    fn name(&self) -> &'static str { "skip" }
+
+    fn try_step(&mut self, ctx: &mut FallbackCtx) -> StepOutcome {
+        log::info!("[stitch] all fallbacks exhausted, skipping frame");
+        ctx.stitcher.last_dy = None;
+        StepOutcome::Applied(Ok(false))
+    }
+}
 
 impl super::Stitcher {
     /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
@@ -52,6 +224,9 @@ impl super::Stitcher {
     }
 
     /// 降级链：NCC 匹配失败时的兜底处理。
+    ///
+    /// 2026-08-04 阶段 3 重写：迭代 5 个 `FallbackStep` trait 实现，
+    /// 每步封装匹配策略 + 副作用。步骤顺序：prev_frame → 1D → stationary → best_guess → skip。
     pub(crate) fn try_fallback(
         &mut self,
         frame: &RgbaImage,
@@ -61,56 +236,48 @@ impl super::Stitcher {
         eff_top: u32,
         eff_bottom: u32,
     ) -> Result<bool> {
+        // 抽样列：2D 反向验证与静止检测共用，提前算一次复用
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
-        // 抽样列：2D 反向验证与静止检测共用，提前算一次复用（消除下方重复计算）
         let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
             .step_by(SAMPLE_STEP_X)
             .collect();
-        let max_scroll = self.config.max_scroll;
 
-        // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
-        // 前一帧与当前帧重叠最大、突变边界共同特征 → 求出正确 dy，不盲 append 污染画布。
-        if let Some(prev_gray) = &self.prev_gray {
-            if let Some(dy) = self.try_match_prev_frame(prev_gray, curr_gray, eff_top, eff_bottom) {
-                self.best_guess_streak = 0;
-                self.ncc_stuck_count = 0;
-                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, canvas_gray, &sample_cols, false, w, eff_top, eff_bottom);
+        // 步骤顺序固定（不变量）：prev_frame → 1d → stationary → best_guess → skip
+        let mut steps: [Box<dyn FallbackStep>; 5] = [
+            Box::new(PrevFrameStep),
+            Box::new(Projection1DStep),
+            Box::new(StationaryStep),
+            Box::new(BestGuessStep),
+            Box::new(SkipStep),
+        ];
+
+        for step in &mut steps {
+            log::debug!("[stitch] fallback step: trying {}", step.name());
+            let mut ctx = FallbackCtx {
+                stitcher: self,
+                frame,
+                curr_gray,
+                canvas_gray,
+                w,
+                eff_top,
+                eff_bottom,
+                sample_cols: &sample_cols,
+            };
+            match step.try_step(&mut ctx) {
+                StepOutcome::Applied(result) => return result,
+                StepOutcome::Candidate { dy, confidence, sad, verify } => {
+                    // 当前所有 step 都用 Applied；Candidate 保留扩展点，此处兜底处理
+                    return self.apply_fallback_match(
+                        dy, confidence, sad, frame, curr_gray, canvas_gray,
+                        &sample_cols, verify, w, eff_top, eff_bottom,
+                    );
+                }
+                StepOutcome::Stationary => return Ok(false),
+                StepOutcome::Skip => continue,
             }
         }
-
-        // 降级：1D 灰度投影匹配
-        if let Some((dy, conf, sad)) = self.try_match_1d_projection(
-            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 10.0,
-        ) {
-            log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
-            self.best_guess_streak = 0;
-            return self.apply_fallback_match(dy, conf, sad, frame, curr_gray, canvas_gray, &sample_cols, true, w, eff_top, eff_bottom);
-        }
-
-        // 静止检测：匹配全失败时检查画面是否实际没动
-        let stationary_sad = self.quick_stationary_check(curr_gray, canvas_gray, &sample_cols);
-        if stationary_sad < STATIONARY_SAD {
-            log::info!("[stitch] stationary detected before best-guess (sad={:.2})", stationary_sad);
-            self.dy_history.clear();
-            self.best_guess_streak = 0;
-            self.last_dy = None;
-            return Ok(false);
-        }
-
-        // Best-Guess：历史 dy 中位数估算
-        // 熔断后仍重试：当用户重新开始滚动时 NCC 恢复匹配会重置 streak
-        if self.best_guess_streak < 3 {
-            if let Some(dy) = self.estimate_dy_hint() {
-                log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
-                self.best_guess_streak += 1;
-                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, canvas_gray, &sample_cols, true, w, eff_top, eff_bottom);
-            }
-        }
-
-        log::info!("[stitch] all fallbacks exhausted, skipping frame");
-        self.last_dy = None;
-        Ok(false)
+        unreachable!("SkipStep is terminal, always returns Applied(Ok(false))")
     }
 
     /// 轻量静止检测：比较当前帧底部 strip 与画布底部 strip 的全局 SAD。
@@ -366,6 +533,90 @@ mod tests {
     /// 高度需远大于 STRIP_H + MAX_SCROLL。
     const TW: u32 = 400;
     const TH: u32 = 600;
+
+    // ===== FallbackStep 单元测试（2026-08-04 阶段 3）=====
+    // 验证各 step 的 outcome + 副作用，与 dispatcher 端到端测试互补。
+
+    /// 构造测试用 FallbackCtx（填占位 GrayBuf，多数 step 早退不触达匹配）。
+    /// 调用方负责保持 stitcher/frame/gray 借用链。
+    fn make_test_ctx<'a>(
+        stitcher: &'a mut Stitcher,
+        frame: &'a RgbaImage,
+        curr_gray: &'a GrayBuf,
+        canvas_gray: &'a GrayBuf,
+        sample_cols: &'a [usize],
+    ) -> FallbackCtx<'a> {
+        FallbackCtx {
+            stitcher,
+            frame,
+            curr_gray,
+            canvas_gray,
+            w: TW,
+            eff_top: 0,
+            eff_bottom: TH,
+            sample_cols,
+        }
+    }
+
+    #[test]
+    fn test_prev_frame_step_skip_when_no_prev_gray() {
+        // new 后 prev_gray = None（首帧 init 前）→ step 应早退 Skip
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        assert!(stitcher.prev_gray.is_none(), "new 后 prev_gray 应为 None");
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = PrevFrameStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        assert!(matches!(outcome, StepOutcome::Skip), "prev_gray=None 应返回 Skip，实际 {:?}", outcome);
+    }
+
+    #[test]
+    fn test_best_guess_step_skip_when_streak_exhausted() {
+        // best_guess_streak >= 3（熔断）→ step 应直接 Skip，不递增 streak
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        stitcher.best_guess_streak = 3;
+        // 即使 dy_history 有内容（让 estimate_dy_hint 理论上能返 Some），门控应优先短路
+        stitcher.dy_history.push_back(-10.0);
+        stitcher.dy_history.push_back(-10.0);
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = BestGuessStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        assert!(matches!(outcome, StepOutcome::Skip), "streak>=3 应返回 Skip，实际 {:?}", outcome);
+        assert_eq!(ctx.stitcher.best_guess_streak, 3, "熔断时 streak 不应递增");
+    }
+
+    #[test]
+    fn test_skip_step_returns_applied_ok_false() {
+        // 终步：永远返 Applied(Ok(false)) + 清 last_dy
+        let f0 = make_frame(TW, TH, 0);
+        let mut stitcher = Stitcher::new(f0.clone(), StitchConfig::default());
+        stitcher.last_dy = Some(-10.0); // 设非 None，验证 step 会清
+
+        let curr_gray = GrayBuf { data: vec![128u8; TW as usize * TH as usize], width: TW as usize, y_offset: 0 };
+        let canvas_gray = stitcher.extract_canvas_bottom_gray(stitcher.eff_strip_h);
+        let sample_cols = verify_sample_cols(TW);
+
+        let mut step = SkipStep;
+        let mut ctx = make_test_ctx(&mut stitcher, &f0, &curr_gray, &canvas_gray, &sample_cols);
+        let outcome = step.try_step(&mut ctx);
+        match outcome {
+            StepOutcome::Applied(Ok(false)) => (),
+            other => panic!("期望 Applied(Ok(false))，实际 {:?}", other),
+        }
+        assert!(ctx.stitcher.last_dy.is_none(), "skip 应清 last_dy");
+    }
+
 
     #[test]
     fn test_fallback_expanded_search_range() {
