@@ -185,7 +185,7 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 // ── 挖掘候选（不落库，前端确认后再批量 add_words_to_set）──
 
 /// 挖掘提示词（编译期从 resource 文件嵌入，用户可在 ~/.octopus/HOTWORD_MINE.md 覆盖）。
-const HOTWORD_MINE_PROMPT: &str = include_str!("../../resources/hotword_mine.md");
+const HOTWORD_MINE_PROMPT: &str = octopus_infra::resources::hotword_mine_prompt();
 
 /// 挖掘候选词列表（LLM 优先 + jieba 兜底），不写库。前端展示候选供用户勾选确认。
 /// `set_id` = 当前选中词典（用于排除已有热词 + 去重）。

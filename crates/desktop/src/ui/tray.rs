@@ -360,7 +360,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
         .icon(
             app.default_window_icon()
                 .cloned()
-                .unwrap_or_else(|| Image::from_bytes(include_bytes!("../../icons/icon.png")).unwrap()),
+                .unwrap_or_else(|| Image::from_bytes(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/icons/icon.png"))).unwrap()),
         )
         .menu(&menu)
         .show_menu_on_left_click(true)

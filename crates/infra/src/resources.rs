@@ -50,3 +50,10 @@ pub const fn corrector_unigram_gz() -> &'static [u8] {
 pub const fn silero_vad_v6_onnx() -> &'static [u8] {
     include_bytes!("../resources/models/vad/silero_vad_v6.onnx")
 }
+
+// ── Prompt ───────────────────────────────────────────────────────
+
+/// 热词挖掘 LLM prompt（从用户编辑文本提取热词候选）。
+pub const fn hotword_mine_prompt() -> &'static str {
+    include_str!("../resources/prompts/hotword_mine.md")
+}
