@@ -747,6 +747,8 @@ fn rebuild_segments(
         let s = raw_start.min(total);
         let e = raw_end.min(total);
         if s < e {
+            // 范围内全置 true——按 index 设 bool 数组，enumerate 无增益
+            #[allow(clippy::needless_range_loop)]
             for i in s..e {
                 is_dirty[i] = true;
             }

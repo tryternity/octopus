@@ -57,9 +57,9 @@ pub fn image_file_path(hash: &str) -> PathBuf {
 /// 展开 `~` 为 $HOME（macOS/Linux）。已是绝对路径则原样返回。
 /// 不引入 shellexpand 依赖——手动展开足够（录屏 macOS-only）。
 fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
+    if let Some(rest) = path.strip_prefix("~/") {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(&path[2..])
+        PathBuf::from(home).join(rest)
     } else if path == "~" {
         PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
     } else {

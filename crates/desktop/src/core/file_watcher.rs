@@ -98,6 +98,8 @@ pub fn start_prompt_file_watcher(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let _watcher = watcher; // keep-alive
         let mut last_trigger = Instant::now();
+        // 显式 if let Ok——保留 Err 可观察性（未来日志）；不用 .flatten() 丢 Err
+        #[allow(clippy::manual_flatten)]
         for ev in rx {
             if let Ok(e) = ev {
                 if matches!(e.kind, EventKind::Modify(_))

@@ -1099,7 +1099,7 @@ mod tests {
 
         // 二次：SQLite 只剩 c2（c1 被删）→ c1 文件应被删
         // 注意：DB 非空（有 c2），所以删除保护不触发，正常删除 c1
-        let (_, changed) = incremental_export(&meta, &[c2.clone()], &[]).expect("second");
+        let (_, changed) = incremental_export(&meta, std::slice::from_ref(&c2), &[]).expect("second");
         assert_eq!(changed, 1, "应删 1 个文件（c1）");
         assert!(
             !cipher_file_path("a1b2c3d4-e5f6-4789-8901-abcdef123456").unwrap().exists(),
@@ -1194,7 +1194,7 @@ mod tests {
         let c1 = sample_cipher("a1b2c3d4-e5f6-4789-8901-abcdef123456");
 
         // 首次——有变化，version 应 +1（从 0 → 1）
-        let (outline1, changed1) = incremental_export(&meta, &[c1.clone()], &[]).expect("first");
+        let (outline1, changed1) = incremental_export(&meta, std::slice::from_ref(&c1), &[]).expect("first");
         assert_eq!(changed1, 1);
         assert_eq!(outline1.vault_version, 1, "首次有变化应 +1");
 

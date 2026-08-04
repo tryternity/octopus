@@ -138,6 +138,8 @@ mod tests {
     fn test_duplicate_groups_order_stable() {
         // 构造 3 组重复（首个 cipher_id 分别 c1/c3/c5），故意打乱 hash 顺序
         // （"z"/"a"/"m" 的 hash 顺序与 cipher_id 顺序无关）
+        // clippy 误报 vec!——这是数组字面量非 vec![x; N]
+        #[allow(clippy::useless_vec)]
         let ciphers = vec![
             make_cipher("c1", Some("zzz")), // group Z: c1, c2
             make_cipher("c2", Some("zzz")),

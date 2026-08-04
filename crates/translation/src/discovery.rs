@@ -17,15 +17,15 @@ pub fn discover_translation_models() -> Vec<TranslationModelInfo> {
         Err(_) => return Vec::new(),
     };
     rows.iter()
-        .filter_map(|r| {
+        .map(|r| {
             let (downloaded, path) = check_model_ready(&r.model_name, &r.source);
-            Some(TranslationModelInfo {
+            TranslationModelInfo {
                 name: r.model_name.clone(),
                 source: r.source.clone(),
                 downloaded,
                 size_mb: 0,
                 path,
-            })
+            }
         })
         .collect()
 }

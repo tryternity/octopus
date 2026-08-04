@@ -535,11 +535,11 @@ fn build_coordinator_loop(
                     Command::RestartCapture { stage_kind } => {
                         // 看门狗触发：cpal 断推 → 自动重连（spec 2026-07-24-audio-watchdog §4.2）。
                         // stage_kind 用于校验触发时的 stage 与当前一致（跨命令竞态防护）。
-                        let kind_matches = match (&stage, stage_kind) {
-                            (Stage::Streaming { .. }, RestartStageKind::Streaming) => true,
-                            (Stage::VadSegmented { .. }, RestartStageKind::VadSegmented) => true,
-                            _ => false,
-                        };
+                        let kind_matches = matches!(
+                            (&stage, stage_kind),
+                            (Stage::Streaming { .. }, RestartStageKind::Streaming)
+                                | (Stage::VadSegmented { .. }, RestartStageKind::VadSegmented)
+                        );
                         if !kind_matches {
                             warn!("[WATCHDOG] stage mismatch (current={}, expected_kind={:?}), skip restart",
                                 stage_name(&stage), stage_kind);
