@@ -34,7 +34,7 @@
 | 不足 | 影响 | 出现的模块 |
 |---|---|---|
 | **平台覆盖严重不均** | Action Bar（`window.rs:19-24` `#[cfg(not(target_os = "macos"))] return`）、Terminal（删 ConPTY）、录屏（Swift helper 仅 mac）、密码箱 Auto-Type（仅 `macos.rs`）只跑 macOS | Action Bar / Terminal / 录屏 / Vault |
-| **无加密 / 无 secret 检测** | `clipboard_history` 全明文，不检测密码管理器 concealed type；vault 的 `keychain.rs:14-30` 坦承 machine-key 是 obfuscation 而非真加密 | 剪贴板 / Vault |
+| **无加密 / 无 secret 检测** | `clipboard_history` 全明文（与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口）；不检测密码管理器 concealed type；vault 的 `keychain.rs:14-30` 坦承 machine-key 是 obfuscation 而非真加密（受 adhoc 签名限制） | 剪贴板 / Vault |
 | **无云同步 / 无团队流** | 剪贴板零依赖 sync crate；所有模块都不做团队共享 / 云分享链接（CleanShot Cloud、Cap 分享、Bitwarden 组织都没有） | 剪贴板 / 截图 / 录屏 / Vault |
 | **无浏览器扩展 / 系统级集成** | 没有任何 Native Messaging、IME 输入法、Passkey provider、桌面搜索集成 | Vault / Action Bar / 翻译 |
 | **生态/社区/文档弱** | 私有仓 + 零社区分发，相对 sherpa-onnx 12.9k★ / Pot 19.1k★ / kiss-translator 11.6k★ / WezTerm 全平台 | 全部 |
@@ -45,7 +45,7 @@
 |---|---|---|---|
 | 1. ASR | 本地 7 族 + 云端 4 家国内服务商统一 trait，热词单记录 + git 软删，Silero VAD v6（2026-08-04 升级） | 无说话人分离、无词级时间戳 / SRT、Whisper 仅 small.en | 词级时间戳导出 + 集成 sherpa-onnx 分离 |
 | 2. 截图 | 三平台原生贴图（NSWindow / Win32 LAYERED / GTK3）+ 自研滚动 NCC 拼接（2026-08-04 拆分为 5 模块） | 截图翻译 UI 缺（通路就绪）、无窗口/元素截图入口、贴图能力弱于 PixPin | 截图翻译 UI 接线 + 贴图能力补齐 |
-| 3. 剪贴板 | text/voice/ocr/image/file 统一表 + FTS5 trigram，与 ASR/OCR 联动 | 无加密、无云同步、无 macro、无粘贴队列 | secret 检测 + 字段级加密（学 ortu） |
+| 3. 剪贴板 | text/voice/ocr/image/file 统一表 + FTS5 trigram，与 ASR/OCR 联动 | 无云同步、无粘贴队列、无 macro、富文本仅标记不存原文（明文存储与 Maccy/EcoPaste 同档位，加 sync 前不构成缺口） | sync 接入（同步前先做 sqlite3mc 整库加密）+ 粘贴队列 |
 | 4. 翻译 | Opus-MT + m2m100 + CloudLlm 5+1 provider 三引擎统一 trait + 兜底降级 | 无 glossary、无 OCR/截图翻译 pipeline、双语对照弱 | glossary 表 + OCR→translate 接线 |
 | 5. Action Bar | OCR/ASR/translate/clipboard/terminal/vault 全栈聚合 + agent CLI 启动 + CompactEditor tab | 仅 macOS、无扩展生态、跨屏焦点问题 | AX 直读选中文本 + 扩展注册中心 |
 | 6. Terminal | OSC agent 状态感知（Claude/Codex/Gemini/Pi 工作相位）+ ASR 直写 PTY + WKWebView 稳定性细节 | 无 GPU 渲染、无 SSH、无 AI 命令、无 shell history sync | Atuin 集成 + russh 远程 |
@@ -353,7 +353,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 ### 3.4 Octopus 不足 / 缺失
 
-1. **无加密（最大缺口）。** `clipboard_history` 表明文存储，含密码/token/私人对话时无任何保护。Maccy/CopyQ 至少过滤密码管理器内容（`org.nspasteboard.ConcealedType`），ortu 做字段级 AES-256-GCM，UniClipboard 做 E2EE。octopus 的 watcher 甚至不检测 secret 类型——这是隐私敏感工具的硬伤。
+1. **本地明文存储，与竞品同档位（Maccy / EcoPaste / CopyQ 默认明文），仅在加 sync 时成为问题。** `clipboard_history` 表明文存储，无应用层加密。但：① 字段级 AES-GCM 加密会破坏 FTS5 trigram 索引（加密列无法 tokenize）——这是 ortu 那套方案无法移植的核心障碍；② 运行时浮窗/历史可见，加密只能防「离线磁盘取证」，威胁模型与 FileVault/BitLocker 全盘加密重叠，应用层 ROI 差；③ 行业惯例：本地优先剪贴板工具默认明文 + 文件权限 0600 + 全盘加密覆盖本地威胁。**真正需要加密的时机是接入 sync 时**（同步前必须加密，否则 git repo 明文外泄）——见 §3.5 P2。Maccy/CopyQ 至少做的「过滤密码管理器 concealed type」octopus 也没做（P3 修补）。
 2. **无云同步 / 无跨设备。** vault 和热词都用 `octopus-sync` git 同步，**唯独 clipboard 不用**（grep 确认零依赖）。EcoPaste-Pro 的 transfer 插件 + UniClipboard 的 iroh P2P 都已成熟。octopus 已有 sync 基建却没接到 clipboard，是低成本就能补的能力。
 3. **无 macro / 脚本 / snippets。** CopyQ 的 ECMAScript 引擎、Ditto 的 ChaiScript、ortu 的 snippets+transforms（`{{date}}` 变量、JSON 美化、Base64 编解码）octopus 都没有。对开发者用户这是高价值功能。
 4. **无常用优先排序。** 列表只按 `created_at DESC` 排（`store.rs:104`），不像 VloamClip 按使用频率排序。高频话术只能靠 `is_favorite` 手动收藏。
@@ -365,9 +365,7 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 ### 3.5 建议改进方向
 
-**P0（隐私基线）。** ① 加 secret 检测分类器（参考 ortu 的 ~30 探测器：API key / JWT / SSH key / env var），命中时跳过记录或字段级加密；② 检测 `org.nspasteboard.ConcealedType` 等平台密码管理器标记自动跳过；③ 对 `is_favorite` 项提供可选的 AES-256-GCM 字段级加密（密钥存系统钥匙串），威胁模型照抄 ortu（防落盘窥探，不防本机恶意软件）。
-
-**P1（补齐 sync）。** 复用现有 `octopus-sync`（git）或新加 WebDAV/transfer 插件（参考 EcoPaste-Pro 的双插件拆分：`tauri-plugin-eco-webdav` 备份 + `tauri-plugin-transfer` 实时同步）。**必须做防回环**（传输回写指纹，避免接收→回写剪贴板→watcher 重复入库→重复推送）。凭据走系统钥匙串不明文落库。统一表的好处是同步一张表即同步 text/voice/ocr/image/file 全类型——这是相对竞品的同步优势。
+**P1（补齐 sync）。** 复用现有 `octopus-sync`（git）或新加 WebDAV/transfer 插件（参考 EcoPaste-Pro 的双插件拆分：`tauri-plugin-eco-webdav` 备份 + `tauri-plugin-transfer` 实时同步）。**必须做防回环**（传输回写指纹，避免接收→回写剪贴板→watcher 重复入库→重复推送）。凭据走系统钥匙串不明文落库。统一表的好处是同步一张表即同步 text/voice/ocr/image/file 全类型——这是相对竞品的同步优势。**⚠️ 前置依赖**：同步前必须先做整库加密（见下 P2），否则 git repo 明文外泄。
 
 **P1（粘贴队列）。** 仿 ortu paste stack / VloamClip 队列：加 `clipboard_queue` 内存表（或复用现有 `desktop/clipboard/clipboard_queue.rs` 的 channel 改造），全局热键「入栈」「粘下一条」，支持 FIFO/LIFO + 去重。填表/批量录入场景刚需。
 
@@ -377,7 +375,13 @@ octopus 把「剪贴板历史」做成了 ASR / OCR / 截图 / 文件搬运的**
 
 **P2（回收站对用户可见）。** 把 voice 的 `is_deleted` 软删模式扩到全类型，加 trash tab + 还原命令 + 清空回收站。容量上限按 EcoPaste-Pro 的 7/15/30 天可配。
 
+**P2（整库加密——sync 的前置依赖，本地场景可选）。** 用 **sqlite3mc / SQLCipher 整库加密**（Ditto 用的就是 SQLite3MC；`rusqlite` 加 `bundled-sqlite3mc` feature 即可），**不是字段级 AES-GCM**。理由：① 性能透明（页级 AES，~5-15% DB op 开销）；② FTS5 trigram 索引照常工作（索引也加密，搜索不受影响——字段级加密做不到这点）；③ 应用代码 0 行改动（连接时传 key 即可）。**密钥管理复用 vault 现成基建**：`crates/vault/src/keychain.rs` 的 HKDF-SHA256(machine_id || username || 常量) 派生方案（注释坦言是 obfuscation 而非真加密，但比纯硬编码好一档——攻击者需要知道 machine_id + username，不只逆向二进制）。**触发时机**：纯本地场景靠 FileVault/BitLocker + 文件权限 0600 已足够；**接入 sync（P1）时此项变为强制前置**，否则同步出去的就是明文。
+
+**P3（concealed type 检测——做个好公民）。** 检测平台密码管理器隐私 hint，自动跳过记录：macOS `org.nspasteboard.ConcealedType`（1Password/KeePassXC 复制密码时设此标记）、Linux `x-kde-passwordManagerHint`、Windows `ExcludeClipboardContentFromMonitorProcessing`。这不是「加密」，是尊重其他 app 的隐私约定——几行代码，零运行时成本。注意：octopus 主仓有 vault 模块（用户自己复制 vault 里的密码时会触发），此特性对自家 vault 也有保护效果。
+
 **P3（智能分组）。** 参考 ortu 的规则分类器（URL/Code/JSON/Shell/Email/Secret/Path + 置信度打分）或 EcoPaste-Pro 的 12 类扩展识别（加颜色/Markdown/Windows 指令），把扁平历史变成可治理的资料库。octopus 已有 `item_type` 一级分类，可在其上加二级 `subtype`。
+
+> **修订记录（2026-08-04）**：原 P0「secret 检测 + 字段级加密」已删除——字段级 AES-GCM 会破坏 FTS5 trigram 索引（无法 tokenize 加密列），运行时浮窗可见使加密只能防「离线磁盘取证」（与 FileVault 全盘加密威胁模型重叠，应用层 ROI 差）。secret 分类器（30 个正则探测器）误报率高、维护成本重、对运行时可见的剪贴板价值有限，一并删除。改为 P2 整库加密（绑定 sync 时机）+ P3 concealed type 检测（零成本好公民行为）。
 
 ---
 
@@ -1124,13 +1128,13 @@ Sources:
 
 ### 10.2 三条横切改进线（性价比高于单模块补齐）
 
-**A. 统一 secret 检测 + 字段级加密（横切 Clipboard + Vault + Translation）**
+**A. 整库加密基建（横切 Clipboard + Vault + Translation + sync 接入前置）**
 
-- 剪贴板无加密是 P0 隐私硬伤（学 ortu 的 30 探测器）
-- vault 的 API key 透明解密 chokepoint 已成熟（`vault_secret_access.rs`）
-- 翻译的 `v1:` 加密密文已就绪
+- vault 已有成熟基建：`crates/vault/src/keychain.rs` HKDF-SHA256(machine_id || username || 常量) 派生 key + `vault_secret_access.rs` 的 `v1:` 透明加解密 chokepoint
+- 翻译已复用：`models.secret_key` 的云端行以 `v1:` 加密（`translate.rs:100-103`）
+- 剪贴板接入 sync 前必须加密，否则 git repo 明文外泄——这是触发整库加密的**真正时机**
 
-→ **统一**：把 vault 的 `try_decrypt_secret_global` 能力泛化成「octopus-wide secret store」，剪贴板的 favorite 项 / API key / SSH key 自动字段级加密。一次工程，三个模块受益。
+→ **统一**：把 octopus DB 从明文 SQLite 切到 **sqlite3mc / SQLCipher 整库加密**（`rusqlite` 加 `bundled-sqlite3mc` feature，连接时传 key 即可，应用代码 0 行改动，FTS5 trigram 索引照常工作）。key 管理复用 vault 的 HKDF 派生方案。**一次性、全模块受益**：剪贴板历史 / vault ciphers / 翻译 secret_key / 热词 / action bar 配置全部入库即加密。在接入 sync（B 线）前完成此项，B 线就自动安全。**注意**：本地优先场景靠 FileVault/BitLocker + 0600 文件权限已覆盖威胁模型，此线**仅当 B 线启动时才必要**。
 
 **B. octopus-sync git 同步扩展到 Clipboard（横切 Clipboard + Vault + Hotword）**
 
@@ -1155,13 +1159,14 @@ Sources:
 | Vault | Passkey 提供方 | 2026 密码管理器生死线，不补会被 Bitwarden/ProtonPass 拉开代差 |
 | ASR | 词级时间戳 + SRT 导出 | 解锁会议/字幕/配音场景；与录屏的 `generate_subtitle` 联动收益翻倍 |
 | ASR | 说话人分离 | 相对 sherpa/WhisperX/moss 最显著缺口；会议纪要必备 |
-| Clipboard | secret 检测 + 字段级加密 | 隐私基线；密码/token 明文落盘是硬伤 |
 | Record | 录制中实时转写 | 差异化杀手锏；ASR 流式引擎基础已就绪，无竞品（Cap 是云端） |
 | Translation | glossary + OCR→translate pipeline | 专业翻译痛点 + 截图翻译 UI 接线（C 线） |
 | Screenshot | 截图翻译 UI 接线（C 线） | 通路就绪只缺 UI，一周可上线 |
 | OCR | PP-Structure 接入 + VLM OCR | 文档解析能力补齐；PaddleOCR-VL 1.6B 是同源最佳路径 |
 | ActionBar | AX 直读选中文本 + 扩展注册中心 | 绕过 Cmd+C 剪贴板污染；启动生态 |
 | Terminal | Atuin 集成 + russh SSH | history sync 是最显眼缺口；SSH 扩展运维场景 |
+
+> **修订记录（2026-08-04）**：原 Clipboard 行「secret 检测 + 字段级加密」已删除——字段级加密破坏 FTS5 索引、运行时浮窗可见使加密 ROI 差，与竞品（Maccy/EcoPaste 默认明文）同档位。整库加密（sqlite3mc）降为 P2，**绑定 sync 接入时机**（同步前才必要）。concealed type 检测降为 P3（零成本好公民）。详见 §3.5 修订记录。
 
 ### 10.4 octopus 不应该追的方向
 
