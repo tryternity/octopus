@@ -544,10 +544,8 @@ impl StreamingParaformer {
             self.feat_cache.copy_from_slice(src);
         } else {
             // 回退：逐元素拷贝（理论不会走到，combined 是 owned C-order）
-            let mut i = 0;
-            for &v in new_cache_view.iter() {
+            for (i, &v) in new_cache_view.iter().enumerate() {
                 self.feat_cache[i] = v;
-                i += 1;
             }
         }
 

@@ -155,7 +155,7 @@ mod tests {
         assert_eq!(idx.get(&('八', '爪')), Some(&1));
         assert_eq!(idx.get(&('爪', '鱼')), Some(&1));
         // 不相邻的字符对不在
-        assert!(idx.get(&('打', '八')).is_none());
+        assert!(!idx.contains_key(&('打', '八')));
     }
 
     #[test]
@@ -167,6 +167,6 @@ mod tests {
         // 「打开」在两条都出现 → (打,开) = 2
         assert_eq!(idx.get(&('打', '开')), Some(&2));
         // 跨条不连续（条1末「鱼」+ 条2首「打」不是 bigram）
-        assert!(idx.get(&('鱼', '打')).is_none());
+        assert!(!idx.contains_key(&('鱼', '打')));
     }
 }

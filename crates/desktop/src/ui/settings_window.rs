@@ -20,7 +20,7 @@ static PENDING_PAGE: Mutex<Option<String>> = Mutex::new(None);
 /// `initial_page`: 可选，指定初始页面（"history" | "clipboard" | "settings" | "models" | "prompts"）。
 #[tauri::command]
 pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>) {
-    if let Some(_) = app_handle.get_webview_window(WINDOW_LABEL) {
+    if app_handle.get_webview_window(WINDOW_LABEL).is_some() {
         // macOS: app 可能被其他应用遮挡——set_focus 仅设焦点不激活 app。
         // 需要切 Regular + 主线程 activate 才能把 app 带到前台。
         // 用 activation::activate_self 双保险（NSApplication + NSRunningApplication），

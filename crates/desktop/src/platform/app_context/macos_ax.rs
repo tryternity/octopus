@@ -1089,14 +1089,13 @@ fn find_file_path(filename: &str, bundle_id: &str, deadline: Instant) -> Option<
     stdout
         .lines()
         .filter(|l| !l.is_empty())
-        .filter(|l| {
+        .find(|l| {
             // 文件名精确匹配（mdfind -name 可能返回子串匹配）
             std::path::Path::new(l)
                 .file_name()
                 .map(|n| n.to_string_lossy().as_ref() == filename)
                 .unwrap_or(false)
         })
-        .next()
         .map(std::path::PathBuf::from)
 }
 
