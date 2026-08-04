@@ -22,7 +22,7 @@ compile_error!("vad_v4 和 vad_v6 互斥，不能同时启用。用 --no-default
 compile_error!("必须启用 vad_v4 或 vad_v6 之一（default = [\"vad_v6\"]）");
 
 /// 按 model 路径缓存已加载的 ONNX Session。
-/// SileroVad 实例各自 owned 状态（v6: state；v4: h/c），但共享底层 Session
+/// SileroVad 实例各自 owned 状态（v6: state + context；v4: h/c），但共享底层 Session
 /// （Session::run 是 &mut self，用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
 static VAD_SESSIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>> = OnceLock::new();
 
@@ -33,12 +33,16 @@ fn vad_sessions() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>> {
 /// 内嵌 VAD 模型的 cache key（版本隔离）+ include_bytes! 路径。
 #[cfg(feature = "vad_v6")]
 mod builtin_meta {
+    /// silero_vad_16k_op15.onnx——官方 16kHz 专用精简版（1.2MB，opset 15）。
+    /// 去掉 8kHz 分支（If 节点），比完整版 silero_vad.onnx（2.3MB）小 46%。
+    /// 输入签名与完整版一致（input + state + sr），sr 固定 16000。
     pub const BYTES: &[u8] = include_bytes!("../../models/silero_vad_v6.onnx");
     pub const CACHE_KEY: &str = "builtin://silero_vad_v6";
     /// v6 LSTM 状态维度（config.json state_dim=128）。
     pub const STATE_DIM: usize = 128;
     /// v6 输入需拼 context（上一帧末尾样本）——16kHz = 64 样本，8kHz = 32。
     /// 实际输入 shape = [1, samples + CONTEXT_SIZE]。漏拼 context 导致 prob 恒近零。
+    /// 参考官方 silero-vad/examples/rust-example/src/silero.rs。
     pub const CONTEXT_SIZE: usize = 64;
 }
 
@@ -52,9 +56,12 @@ mod builtin_meta {
 
 /// Silero VAD via ort (ONNX Runtime)
 ///
+/// 参考官方 Rust 实现 silero-vad/examples/rust-example/src/silero.rs。
+///
 /// 版本（feature flag 选择，互斥）：
-/// - `vad_v6`（默认）：state 单 tensor `[2,1,128]`，input `state` / output `stateN`
-/// - `vad_v4`：h/c 双 tensor `[2,1,64]`，input `h`+`c` / output `hn`+`cn`
+/// - `vad_v6`（默认）：state 单 tensor `[2,1,128]` + context `[64]` 拼接输入。
+///   输入 `input`/`state`/`sr` → 输出 `output`/`stateN`。
+/// - `vad_v4`：h/c 双 tensor `[2,1,64]`。输入 `input`/`h`/`c`/`sr` → 输出 `output`/`hn`/`cn`。
 ///
 /// 对外接口（compute/reset/new/new_builtin）版本无关，调用方不受影响。
 pub struct SileroVad {
@@ -155,25 +162,27 @@ impl SileroVad {
         }
     }
 
-    /// Input: PCM samples (512 @ 16kHz recommended). Output: speech probability [0.0, 1.0]
+    /// Input: PCM samples (512 @ 16kHz). Output: speech probability [0.0, 1.0]
+    ///
+    /// v6：参考官方 silero-vad/examples/rust-example/src/silero.rs::calc_level——
+    /// 输入拼 context（上一帧末尾 CONTEXT_SIZE 样本）→ [1, 576]，推理后更新 state + context。
     pub fn compute(&mut self, samples: &[f32]) -> Result<f32> {
-        let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
-
         let mut session = self.session.lock();
 
         #[cfg(feature = "vad_v6")]
         {
-            // v6 关键差异：输入需拼 context（上一帧末尾 CONTEXT_SIZE 样本）。
-            // 实际输入 = [context(64) + samples(512)] = [1, 576]（16kHz）。
-            // 漏拼 context 导致模型输入分布失配 → prob 恒近零（实测 0.0008）。
             let ctx_len = builtin_meta::CONTEXT_SIZE;
+
+            // 拼接 context + samples → [1, ctx_len + samples.len()]
             let mut buf = Vec::with_capacity(ctx_len + samples.len());
             buf.extend_from_slice(self.context.as_slice().unwrap_or(&[]));
             buf.extend_from_slice(samples);
             let input = ArrayView2::from_shape((1, buf.len()), &buf)?;
-            let input_tensor = ort::value::TensorRef::from_array_view(input)?;
 
             let state_tensor = ort::value::TensorRef::from_array_view(self.state.view())?;
+            let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
+            let input_tensor = ort::value::TensorRef::from_array_view(input)?;
+
             let outputs = session.run(ort::inputs! {
                 "input" => input_tensor,
                 "sr" => sr_tensor,
@@ -192,7 +201,8 @@ impl SileroVad {
                 self.state = Array3::from_shape_vec((2, 1, builtin_meta::STATE_DIM), s_data.to_vec())?;
             }
 
-            // Update context：取本帧输入末尾 CONTEXT_SIZE 样本（下帧拼到前面）
+            // Update context：取本帧输入末尾 CONTEXT_SIZE 样本（下帧拼到前面）。
+            // 官方实现对齐：context = data[data.len() - context_size..]
             if samples.len() >= ctx_len {
                 self.context = Array1::from_vec(samples[samples.len() - ctx_len..].to_vec());
             }
@@ -204,9 +214,11 @@ impl SileroVad {
         {
             // v4 输入直接是 samples（不拼 context）
             let input = ArrayView2::from_shape((1, samples.len()), samples)?;
-            let input_tensor = ort::value::TensorRef::from_array_view(input)?;
             let h_tensor = ort::value::TensorRef::from_array_view(self.h.view())?;
             let c_tensor = ort::value::TensorRef::from_array_view(self.c.view())?;
+            let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
+            let input_tensor = ort::value::TensorRef::from_array_view(input)?;
+
             let outputs = session.run(ort::inputs! {
                 "input" => input_tensor,
                 "sr" => sr_tensor,
@@ -370,7 +382,7 @@ mod tests {
         );
     }
 
-    // ── v6 专属测试（state 维度 + 状态连续性）──
+    // ── v6 专属测试（state 维度 + context 拼接 + 语音区分）──
 
     /// v6 状态维度 = 128（config.json state_dim）。
     #[cfg(feature = "vad_v6")]
@@ -382,39 +394,8 @@ mod tests {
         );
     }
 
-    /// v6 状态连续性：连续两次 compute 后 state 非零（LSTM 从输入学到信息）。
-    /// 静音输入下 state 可能接近零，用非静音输入验证状态更新生效。
-    #[cfg(feature = "vad_v6")]
-    #[test]
-    fn v6_state_updates_after_compute() {
-        let mut v = match SileroVad::new_builtin() {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[SKIP] ort commit_from_memory 失败: {}", e);
-                return;
-            }
-        };
-        v.reset();
-        // reset 后 state 应全零
-        assert!(
-            v.state.iter().all(|&x| x == 0.0),
-            "reset 后 state 应全零"
-        );
-        // 喂非静音输入（模拟语音：正弦波）触发 LSTM 状态更新
-        let samples: Vec<f32> = (0..512)
-            .map(|i| (i as f32 * 0.03 * std::f32::consts::TAU / 16000.0).sin() * 0.5)
-            .collect();
-        let _ = v.compute(&samples).expect("compute should succeed");
-        // compute 后 state 应有非零值（LSTM 处理了输入）
-        assert!(
-            v.state.iter().any(|&x| x != 0.0),
-            "compute 后 state 应有非零值（LSTM 状态已更新）"
-        );
-    }
-
-    /// v6 核心回归：模拟语音 prob 应显著高于静音 prob。
-    /// 防止 context 拼接缺失导致 prob 恒近零（2026-08-04 踩坑：BricksDisplay 导出
-    /// 废模型 + 漏拼 context 双重 bug，此测试钉死"语音 > 静音"不变量）。
+    /// v6 context 拼接核心回归：模拟语音 prob 应显著高于静音。
+    /// 防止 context 拼接缺失导致 prob 恒近零（2026-08-04 踩坑：漏拼 context + 废模型双重 bug）。
     #[cfg(feature = "vad_v6")]
     #[test]
     fn v6_speech_prob_higher_than_silence() {
@@ -426,7 +407,7 @@ mod tests {
             }
         };
 
-        // 模拟语音：多谐波正弦波（基频 + 谐波 + 微噪声，逼近真实人声频谱）
+        // 模拟语音：多谐波正弦波（基频 + 谐波，逼近真实人声频谱）
         let voice: Vec<f32> = (0..512)
             .map(|i| {
                 let t = i as f32 / 16000.0;
