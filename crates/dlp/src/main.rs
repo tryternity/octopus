@@ -329,8 +329,9 @@ async fn main() -> Result<()> {
     // 临时文件清理由 _cleanup_guard 在函数退出（含上方 ? 提前返回）时统一处理
 
     if !ffmpeg_status.success() {
-        eprintln!("ffmpeg execution failed during transcoding.");
-        std::process::exit(1);
+        // 第十四轮 P3-3：改 bail!（非 exit）——exit(1) 跳过 _cleanup_guard Drop（:297），
+        // 临时文件残留。bail! 走正常函数返回路径，guard Drop 清理。
+        anyhow::bail!("ffmpeg execution failed during transcoding.");
     }
 
     eprintln!("Audio extraction completed successfully.");

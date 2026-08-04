@@ -1122,8 +1122,17 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                             // 第十一轮 P1：sync-only upsert 保留远程时间戳（同上）
                             let mut row = folder_file.to_vault_folder();
                             row.sync_md5 = Some(crate::sync::fingerprint::folder_md5(&row));
-                            upsert_folder_from_file(&row)?;
-                            report.pulled += 1;
+                            // 第十四轮 P2-2：删除单向传播守卫（同 cipher :1196，对齐 hotword）
+                            if !row.is_deleted && db_f.is_deleted {
+                                log::info!(
+                                    "[sync] merge: folder {} 本地已软删，远程 active，拒绝复活",
+                                    uuid
+                                );
+                                report.skipped += 1;
+                            } else {
+                                upsert_folder_from_file(&row)?;
+                                report.pulled += 1;
+                            }
                         }
                         Err(e) => {
                             log::warn!("[sync] merge: folder {} 文件读取失败，已跳过：{}", uuid, e);
@@ -1192,8 +1201,20 @@ pub(crate) fn merge_vault() -> Result<MergeReport, SyncError> {
                             // 第十一轮 P1：sync-only upsert 保留远程时间戳（同上）
                             let mut row = cipher_file.to_vault_cipher();
                             row.sync_md5 = Some(crate::sync::fingerprint::cipher_md5(&row));
-                            upsert_cipher_from_file(&row)?;
-                            report.pulled += 1;
+                            // 第十四轮 P2-2：删除单向传播守卫（对齐 hotword :965-979）——
+                            // 远程 active + 本地已软删（tombstone）时拒绝 pull，防跨设备时钟偏差
+                            // + 删除竞争致删除被复活。反向（DB active + 远程 tombstone）允许——
+                            // 远程删除正常传播。可自愈（用户重删，下次 sync 推删除），非数据丢失。
+                            if !row.is_deleted && db_c.is_deleted {
+                                log::info!(
+                                    "[sync] merge: cipher {} 本地已软删，远程 active，拒绝复活",
+                                    uuid
+                                );
+                                report.skipped += 1;
+                            } else {
+                                upsert_cipher_from_file(&row)?;
+                                report.pulled += 1;
+                            }
                         }
                         Err(e) => {
                             log::warn!("[sync] merge: cipher {} 文件读取失败，已跳过：{}", uuid, e);

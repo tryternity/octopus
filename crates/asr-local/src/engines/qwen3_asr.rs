@@ -602,6 +602,10 @@ fn run_decoder_step(
                             slice.assign(&delta);
                         }
                     }
+                } else {
+                    // 第十四轮 P3-9：维度异常静默丢 KV delta——模型损坏触发，生成乱码不报错。
+                    // 加 log warn 让异常可观测（原静默跳过，难诊断）。
+                    log::warn!("[qwen3-asr] layer {} key_delta 维度异常 {:?}（期望 4D 且 dim1={}），跳过", i, kd, s);
                 }
             }
 
@@ -623,6 +627,8 @@ fn run_decoder_step(
                             slice.assign(&delta);
                         }
                     }
+                } else {
+                    log::warn!("[qwen3-asr] layer {} value_delta 维度异常 {:?}（期望 4D 且 dim1={}），跳过", i, vd, s);
                 }
             }
         }

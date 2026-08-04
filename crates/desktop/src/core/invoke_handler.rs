@@ -407,6 +407,10 @@ macro_rules! handler {
             crate::record::record_commands::list_subtitle_llms,
             #[cfg(target_os = "macos")]
             crate::record::record_commands::check_ffmpeg,
+            // 第十四轮 P1-2：record_commands 整模块 #![cfg(target_os = "macos")]（mod.rs:11），
+            // get_record_status 也在该模块内，非 mac build 时符号不存在 → 引用未定义 → 编译失败。
+            // 前后 35+ 项都有 cfg gate，唯独它漏写。
+            #[cfg(target_os = "macos")]
             crate::record::record_commands::get_record_status,
         ]
     };

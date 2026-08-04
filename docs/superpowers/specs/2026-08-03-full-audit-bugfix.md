@@ -400,6 +400,7 @@
 | 11 | `f22eac7f` | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
 | 12 | `67ce6dc4` | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
 | 13 | `f9a25a20` | P2-1 open_settings 不 show + P3-1 SyncPanel resolve syncing 回滚 + P3-3 record serde 序列化失败 reset_to_idle + P3-2 文档化 |
+| 14 | `71e7e10f` | P1-1 Result setInterval ref + P1-2 invoke_handler cfg gate + P2-1 vault serde default + P2-2 merge 删除守卫 + P2-3 rename_folder + P2-4 fps/codec + P3-3/4/5/6/7/8/9 |
 
 ## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
 
@@ -591,4 +592,88 @@ tx.commit()?;
 
 - `cargo build` record/desktop(cloud,vault) —— 0 error 0 warning。
 - `cargo test`：record 50 / desktop 520 全过。
+- tsc exit 0。
+
+## 17. 第十四轮审查修复（2026-08-04，2 P1 + 4 P2 + 7 P3）
+
+第十四轮全新核查（5 模块域并行代理 + 亲自 Read 核实）。报告 15 个问题全部 CONFIRMED，本轮修复 13 个（2 P1 + 4 P2 + 7 P3），2 个文档化不修（P3-1 block_on / P3-2 autotype，低风险）。
+
+### P1-1. Result 自动翻译 setInterval 漏用 ref 🔴
+
+**根因**：`Result/index.tsx:384` setInterval effect deps 含 `doTranslate`（:389）。流式 ASR `update-result` 高频 `setText` → `text` 变 → `doTranslate`（useCallback deps `[text, showToast]`）新引用 → effect 重起 → `clearInterval`+新 timer → 4s/8s/12s 跑不满，录音中自动翻译完全不触发。同文件 `:412` keydown 正确用 `doTranslateRef.current()`，`:332` ref 已同步——纯 setInterval effect 漏用 ref 的疏忽。
+
+**修复**：`:384 doTranslate()` → `doTranslateRef.current()`；deps `[translateMode, doTranslate]` → `[translateMode]`。
+
+### P1-2. invoke_handler get_record_status 漏 cfg gate 🔴
+
+**根因**：`invoke_handler.rs:410` `get_record_status` 前后 35+ 个 record_commands 项都有 `#[cfg(target_os="macos")]`，唯独它漏。record_commands 模块 `#![cfg(target_os="macos")]`（mod.rs:11）→ 非 mac build 时符号不存在 → 引用未定义 → 编译失败。mac-only 不触发，但 Linux/Windows CI 立刻炸。
+
+**修复**：`:410` 前补 `#[cfg(target_os = "macos")]`。
+
+### P2-1. vault CipherPlaintextMeta + FolderFile 缺 serde default 🟠
+
+**根因**：`store.rs:225`（CipherPlaintextMeta.is_deleted）+ `:287`（FolderFile.is_deleted）缺 `#[serde(default)]`。老格式文件（软删 v53 上线前 sync、之后未再 sync）缺 is_deleted → `read_cipher_file` 报错 → `import_all_from_files` log::warn + 静默跳过 → 用户密码/分类静默丢失。对照 hotword HotwordSetMeta:145 加了 default，vault 漏。cipher 是密码主数据，丢失比 folder 严重。
+
+**修复**：两字段加 `#[serde(default)]`（老文件 → false，符合 MVP 语义），对齐 hotword。
+
+### P2-2. vault merge pull 缺删除单向传播守卫 🟠
+
+**根因**：hotword `pull_set`（hotword.rs:965-979）有守卫：远程 active + 本地 tombstone → 拒绝 pull（防本地删除被远程旧 active 复活）。vault merge pull 的 `remote_updated > local_updated` 分支（engine.rs cipher :1188 / folder :1118）直接 upsert，无此守卫。跨设备时钟偏差 + 删除竞争（设备 A active 时钟超前 > 设备 B 软删）→ pull 覆盖 → 删除复活。可自愈（用户重删），非数据丢失。
+
+**修复**：cipher + folder pull 分支前置 `if !row.is_deleted && existing_db.is_deleted { skip }`（对齐 hotword）。
+
+### P2-3. vault rename_folder 硬编 is_deleted=false 🟠
+
+**根因**：`folder.rs:89` `folder_md5_from_fields(id, &encrypted, sort_order, false)` 硬编 false。软删态 folder rename 后 DB row is_deleted=1 但 sync_md5 按 false 算 → md5 与 row 不一致 → 跨设备 sync ping-pong。另 `:84` 用 `list_vault_folders().find()` O(N)，应 O(1)。与第十二轮 P3-4 hotword rename 同型对称遗漏。
+
+**修复**：改 `load_vault_folder` O(1) + 读真实 is_deleted 算 md5。
+
+### P2-4. record control fps/codec 硬编 🟠
+
+**根因**：`control.rs:462-463` `fps: 30, codec: "h264".into()` 硬编。RecordConfig 支持 record_fps/record_codec，用户改 60fps/HEVC 后入库 recordings.fps/codec 恒 30/h264，前端列表展示错误。
+
+**修复**：MetaFields 加 `fps: u32` + `codec: String`；derive_fields_from_request 从 `req.video.fps` / `req.video.codec`（VideoCodec → "h264"/"hevc"）填；record_stop 加两 Option 参数；stop_and_store_inner 用 fields 值。
+
+### P3-3. dlp exit(1) 跳过 _cleanup_guard Drop
+
+`main.rs:333` `std::process::exit(1)` 跳过 `_cleanup_guard` Drop → 临时文件残留。改 `anyhow::bail!`（走正常返回路径，guard Drop 清理）。
+
+### P3-4. ActionBar getSubItems 读 menuItems state 非 ref
+
+`ActionBar/index.tsx:475` 读 `menuItems`（闭包）非 `menuItemsRef.current`（:727 已同步）。keyboard 展开子菜单默认选中项错。改 `menuItemsRef.current.length > 0 ? menuItemsRef.current : menuItems`。
+
+### P3-5. OCR strip_unordered_marker ASCII 标记误判
+
+`layout.rs:217` ASCII 标记（-/*/+) 不要求后续空格 → `-1/*5/+1/+5°C` 数学片段误判列表项。改 ASCII 标记要求后续空格（Unicode 符号不要求）。
+
+### P3-6. CompactEditor hoverTimer cleanup 漏清
+
+`CompactEditor/index.tsx:128` unmount cleanup 只清 `savedFlashTimer`，`hoverTimer` 漏清 → 泄漏。补 `clearTimeout(hoverTimer.current)`。
+
+### P3-7. Result speakingTimer/polish-error timer cleanup
+
+`Result/index.tsx` speakingTimer 无 unmount cleanup + `:261` polish-error `setTimeout` 无 ref 管理。补 unmount cleanup effect（清 speakingTimer + polishErrorTimerRef + toastTimerRef）+ polish-error 用 ref。
+
+### P3-8. streaming_zipformer chunk_len/shift 无下界
+
+`streaming_zipformer.rs:55-62` `unwrap_or(77|64)` 无 `.max(1)`，异常模型（metadata=0）→ frame_idx += 0 原地踏步死循环。补 `.max(1)`。
+
+### P3-9. qwen3 run_decoder_step 维度异常静默丢 KV delta
+
+`qwen3_asr.rs:590/611` 维度不匹配（kd.len()!=4 || kd[1]!=s）时静默跳过，无 log。模型损坏触发，生成乱码不报错。补 `log::warn!`。
+
+### 文档化不修（低优先级）
+
+- **P3-1 settings_commands block_on**（settings_commands.rs:225）：`tauri::async_runtime::block_on` 读 `state().await`（读锁快），复用全局 runtime 非嵌套，无 panic 风险。留技术债。
+- **P3-2 autotype copy_concealed 吞错**（autotype.rs:137）：罕见双失败（autotype+clipboard），降 P3 留技术债。
+
+### 观察项（不入修复）
+
+- vault md5 故意不含 is_deleted（设计取舍，有 P2-2 守卫兜底）
+- config/pty 代理 4 项均 < 80（set_test_db user_version=46 staleness / image.rs 注释 jpeg:100 vs 92 / session.rs Mutex unwrap / cloud.rs blocking HTTP）
+
+### 验证
+
+- `cargo build` vault/record/desktop(cloud,vault)/dlp/ocr/asr-local —— 0 error 0 warning。
+- `cargo test`：vault 262 / record 50 / ocr 35 / desktop 520 全过。
 - tsc exit 0。

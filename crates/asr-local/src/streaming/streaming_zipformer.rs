@@ -52,14 +52,18 @@ impl StreamingZipformer {
 
         // Read chunk parameters from model metadata
         let metadata = session.metadata()?;
+        // 第十四轮 P3-8：.max(1) 下界保护——异常模型（metadata=0）会导致 frame_idx += 0
+        // 原地踏步死循环。unwrap_or 已兜底默认值，但 metadata 显式 0 仍会穿透。
         let chunk_len: usize = metadata
             .custom("T")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(77);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(77)
+            .max(1);
         let chunk_shift: usize = metadata
             .custom("decode_chunk_len")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(64);
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(1);
         let is_whisper = metadata
             .custom("feature")
             .map(|s| s == "whisper")

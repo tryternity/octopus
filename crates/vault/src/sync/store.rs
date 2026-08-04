@@ -222,6 +222,10 @@ pub struct CipherPlaintextMeta {
     pub favorite: bool,
     pub atype: i64,
     pub reprompt: i64,
+    /// 第十四轮 P2-1：serde default 兼容老格式文件（软删功能 v53 上线前 sync 的 cipher
+    /// 文件无此字段）——缺 default 则 read_cipher_file 报错 → import/merge 静默跳过 → 密码丢失。
+    /// 对齐 hotword HotwordSetMeta:145。老文件 → false（活跃），符合 MVP 语义。
+    #[serde(default)]
     pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -284,6 +288,8 @@ pub struct FolderFile {
     pub id: String,
     pub encrypted_name: String,
     pub sort_order: i64,
+    /// 第十四轮 P2-1：serde default 兼容老格式文件（同 CipherPlaintextMeta）。
+    #[serde(default)]
     pub is_deleted: bool,
     pub created_at: String,
     pub updated_at: String,

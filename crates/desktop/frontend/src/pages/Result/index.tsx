@@ -82,6 +82,8 @@ function Result() {
   const caretRef = useRef<number | null>(null);
   const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
   const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 第十四轮 P3-7：polish-error setTimeout 用 ref 管理（原无 ref，unmount 泄漏 + 连续错误被截短）
+  const polishErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
   const lastTranslatedRef = useRef<string>("");
   const translatingRef = useRef(false);
@@ -107,6 +109,14 @@ function Result() {
     setToast(msg);
     setToastError(isError);
     toastTimerRef.current = setTimeout(() => { setToast(null); setToastError(false); }, ms);
+  }, []);
+
+  // 第十四轮 P3-7：unmount 清理所有 timer ref（speakingTimer / polishErrorTimer / toastTimer）
+  // 防 leak（原 speakingTimer / polishErrorTimer 无 unmount cleanup）。
+  useEffect(() => () => {
+    if (speakingTimer.current) clearTimeout(speakingTimer.current);
+    if (polishErrorTimerRef.current) clearTimeout(polishErrorTimerRef.current);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   const showToolbar = useCallback(() => {
@@ -258,7 +268,9 @@ function Result() {
         ["polish-error", (msg) => {
           setPolishLoading(false);
           setPolishError(typeof msg === "string" ? msg : "润色失败");
-          setTimeout(() => setPolishError(null), POLISH_ERROR_TIMEOUT_MS);
+          // 第十四轮 P3-7：ref 管理 timer（防泄漏 + 连续错误被截短）
+          if (polishErrorTimerRef.current) clearTimeout(polishErrorTimerRef.current);
+          polishErrorTimerRef.current = setTimeout(() => setPolishError(null), POLISH_ERROR_TIMEOUT_MS);
         }],
         ["prepare-record", (p) => {
           invoke("start_recording", {
@@ -381,12 +393,15 @@ function Result() {
     const timer = setInterval(() => {
       const current = asrEditorRef.current?.getText() ?? "";
       if (current !== lastTranslatedRef.current && !translatingRef.current && current.trim()) {
-        doTranslate();
+        // 第十四轮 P1-1：用 ref 而非闭包 doTranslate——流式 ASR 高频 setText → text 变 →
+        // doTranslate 新引用 → 本 effect 重起 → clearInterval+新 timer → 4s/8s/12s 跑不满。
+        // doTranslateRef 在 :332 同步，:412 keydown 已正确用 ref，此处漏用。
+        doTranslateRef.current();
       }
     }, secs * 1000);
 
     return () => clearInterval(timer);
-  }, [translateMode, doTranslate]);
+  }, [translateMode]); // 第十四轮 P1-1：移除 doTranslate（改用 ref，避免流式打断 timer）
 
   const onSave = useCallback(() => {
     asrEditorRef.current?.commit();

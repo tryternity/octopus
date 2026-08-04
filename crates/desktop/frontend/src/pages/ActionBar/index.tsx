@@ -472,7 +472,8 @@ export default function ActionBar() {
     if (i.actionType === "url" && i.actionData === "") return urlResult.isUrl;
     return true;
   });
-  const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId && i.isEnabled && isItemVisible(i));
+  // 第十四轮 P3-4：读 menuItemsRef.current（对齐 :586/:604/:667），防闭包旧 menuItems
+  const getSubItems = (parentId: number) => (menuItemsRef.current.length > 0 ? menuItemsRef.current : menuItems).filter((i) => i.parentId === parentId && i.isEnabled && isItemVisible(i));
 
   // items 变化时 clamp 选中索引——防删除/设置改动后越界
   useEffect(() => {
