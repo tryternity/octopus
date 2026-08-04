@@ -434,6 +434,7 @@ macOS 有**两套**坐标 API，**必须区分**：
 - `compact_editor_window.rs`——Monitor position/size 除 scale
 - `window_position.rs::is_position_visible`——Monitor position/size 除 scale
 - `record_control_window.rs::compute_position`——曾 `let _ = display_id;` 丢弃 display_id 永远用 `primary_monitor()` + `Monitor::position()` 未除 scale，双重错误导致副屏录制 pill 跑到主屏右下角。改用 `CGDisplay::new(display_id).bounds()` 直接查逻辑边界（2026-07-26）
+- `record_window.rs::compute_position` + `ui/overlay_window.rs` fallback——`pos.x/y`（Monitor::position 物理像素）未除 scale 直接加 `sz.width/scale`（逻辑）混算，下游 `LogicalPosition` 契约违反。主屏 origin≠0 + Retina 时偏移。改 `pos.x as f64 / scale` 统一逻辑坐标（2026-08-04 第十二轮 P2-3/P2-4）
 
 **诊断方法**：日志打印 raw 坐标 + scale factor，对比预期逻辑值（主屏左上角应该是 ~0,0；1440×900 逻辑屏的右下角应该是 ~1440,900）。
 

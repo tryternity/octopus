@@ -374,7 +374,6 @@ pub async fn download_model(
             expected_hash: if file.sha256.is_empty() { None }
                 else { Some(octopus_download::Hash::Sha256(file.sha256.clone())) },
             expected_size: if file.size > 0 { Some(file.size) } else { None },
-            ..Default::default()
         };
 
         let permit = sem.clone().acquire_owned().await

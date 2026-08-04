@@ -192,6 +192,7 @@ mod tests {
     /// 这是 serde 自动 load/save 的回归守卫——新增字段后若遗漏注册（旧手动枚举的坑），
     /// 此测试会因该字段回到 default 而失败。历史踩坑 4 次，见 archived specs 2026-06-28。
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // test 设多字段哨兵值，字面量太长
     fn app_config_roundtrip_all_fields() {
         use crate::config::{AppConfig, PolishMode};
         let conn = open_init();

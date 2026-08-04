@@ -20,23 +20,38 @@ static PENDING_PAGE: Mutex<Option<String>> = Mutex::new(None);
 /// `initial_page`: 可选，指定初始页面（"history" | "clipboard" | "settings" | "models" | "prompts"）。
 #[tauri::command]
 pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>) {
-    if let Some(_) = app_handle.get_webview_window(WINDOW_LABEL) {
+    if app_handle.get_webview_window(WINDOW_LABEL).is_some() {
         // macOS: app 可能被其他应用遮挡——set_focus 仅设焦点不激活 app。
         // 需要切 Regular + 主线程 activate 才能把 app 带到前台。
         // 用 activation::activate_self 双保险（NSApplication + NSRunningApplication），
         // 应对托盘菜单关闭时 macOS 焦点恢复覆盖 activate 的"偶尔不激活"问题。
+        //
+        // 第十三轮 P2-1：窗口可能在浮窗存活期间被 before_floating_window_show 临时隐藏
+        //（settings_window 在 WINDOWS_TO_HIDE_ON_FLOAT 列表）。此时 set_focus 对 hidden
+        // 窗口无效，且 restore_hidden_windows_only 因 depth>0 不恢复 → 用户点托盘「打开设置」
+        // 无反应，直到 ESC 关浮窗。补 w.show() 对齐 compact_editor_commands:243 范式。
         #[cfg(target_os = "macos")]
         {
             let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
             let ah = app_handle.clone();
             let _ = app_handle.run_on_main_thread(move || {
                 crate::platform::activation::activate_self();
-                let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
+                let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| {
+                    if !w.is_visible().unwrap_or(false) {
+                        let _ = w.show();
+                    }
+                    let _ = w.set_focus();
+                });
             });
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = app_handle.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
+            let _ = app_handle.get_webview_window(WINDOW_LABEL).map(|w| {
+                if !w.is_visible().unwrap_or(false) {
+                    let _ = w.show();
+                }
+                let _ = w.set_focus();
+            });
         }
         // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { RefreshCw, Plus, Trash2, GitBranch, Download, AlertCircle } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import type { ToastVariant } from "@/lib/useToast";
@@ -188,13 +189,16 @@ export default function SyncPanel({
       setStatus((prev) => (prev ? { ...prev, syncing: true } : prev));
       await invoke("vault_sync_now");
     } catch (e) {
+      // 第十三轮 P3-1：回滚 syncing——invoke 失败（spawn_blocking 错等）时不会收到
+      // vault-sync-done 事件，若不回滚 syncing 则进度条永久卡住（对齐 handleSyncNow :169）。
+      setStatus((prev) => (prev ? { ...prev, syncing: false } : prev));
       showToast(t("settings.vault.sync.resolveFailed") + String(e), "error");
     }
     setResolving(false);
   }, [resolveMode, resolvePwd, showToast, t]);
 
   const handleDisable = useCallback(async () => {
-    if (!confirm(t("settings.vault.sync.disableConfirm"))) return;
+    if (!(await confirmDialog(t("settings.vault.sync.disableConfirm"), { title: t("settings.vault.sync.disableConfirmTitle"), kind: "warning" }))) return;
     setBusy(true);
     try {
       await invoke("vault_sync_disable");
@@ -499,7 +503,7 @@ export default function SyncPanel({
                 size="full"
                 value={resolvePwd}
                 onChange={(e) => setResolvePwd(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleResolve()}
+                onKeyDown={(e) => e.key === "Enter" && !resolving && handleResolve()}
                 placeholder={t("settings.vault.sync.resolvePwdPlaceholder")}
                 autoFocus
               />

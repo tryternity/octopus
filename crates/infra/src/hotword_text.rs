@@ -17,6 +17,8 @@ pub fn pinyin_initials(word: &str) -> String {
 
 /// 热词 UUID v5 的固定 namespace（任意固定值，跨设备/版本必须一致）。
 /// 一旦定下不可改（改了所有词 id 变化，sync 全量冲突）。
+// hex = "octopus_hotword" ASCII 编码 + _00 后缀，语义固定不重排
+#[allow(clippy::unusual_byte_groupings)]
 pub const HOTWORD_NAMESPACE: Uuid = Uuid::from_u128(0x6f63746f7075735f686f74776f7264_00);
 
 /// 生成热词词记录的确定性 UUID（v5 SHA1-based）。

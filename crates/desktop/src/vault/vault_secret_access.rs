@@ -198,6 +198,7 @@ mod tests {
     }
 
     /// 构造一个 app_key 已注入的 session。
+    #[allow(clippy::field_reassign_with_default)] // 只设 app_key 一个字段，其余用 default
     fn session_with_app_key(key: Arc<DerivedKey>) -> SharedVaultSession {
         let mut s = VaultSession::default();
         s.app_key = Some(key);

@@ -97,13 +97,15 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string, var
     window.addEventListener("focus", handleFocus);
     window.addEventListener("blur", handleBlur);
     // document visibilitychange（macOS 切桌面 / 最小化时也触发）
-    document.addEventListener("visibilitychange", () => {
+    // 第十轮 P1-2：用具名函数替代匿名箭头，cleanup 补 removeEventListener（旧匿名无法移除→泄漏）。
+    const handleVisibilityChange = () => {
       if (document.hidden) {
         handleBlur();
       } else {
         handleFocus();
       }
-    });
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     // unmount 时主动锁定保险库——关闭设置窗口 / 切换到其他设置 tab
     // 都会触发 unmount，确保离开页面后必须重新输主密码（防偷窥）。
@@ -111,6 +113,7 @@ export default function VaultPanel({ showToast }: { showToast: (msg: string, var
       stopHeartbeat();
       window.removeEventListener("focus", handleFocus);
       window.removeEventListener("blur", handleBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       invoke("vault_lock").catch(() => {
         // 静默失败：可能在测试 / 关闭 app 期间，无需打扰用户
       });

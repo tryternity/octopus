@@ -104,11 +104,15 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
             Unit::ListItemOrdered(text, y, _h) => {
                 // 检查与前一个列表项的间距——大间距说明是不同列表
                 if prev_was_list {
+                    // 第十二轮 P2-2：need_split 加「前项类型不一致」判定——
+                    // ordered→unordered→ordered（小间距）时第二段 ordered 应从 1 开始，
+                    // 否则从残留计数继续（原 ordered_counter 仅大间距/BodyParagraph/Heading 重置）。
                     let need_split = match units.get(unit_idx - 1) {
-                        Some(Unit::ListItemOrdered(_, py, ph))
-                        | Some(Unit::ListItemUnordered(_, py, ph)) => {
+                        Some(Unit::ListItemOrdered(_, py, ph)) => {
                             y - (py + ph) > median_h * PARAGRAPH_GAP_RATIO
                         }
+                        // 第十二轮 P2-2：前项是无序 → 列表类型切换，强制分段 + 重置计数
+                        Some(Unit::ListItemUnordered(..)) => true,
                         _ => false,
                     };
                     if need_split {
@@ -127,9 +131,11 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
             }
             Unit::ListItemUnordered(text, y, _h) => {
                 if prev_was_list {
+                    // 第十二轮 P2-2：同 Ordered 分支，前项类型不一致即分段。
                     let need_split = match units.get(unit_idx - 1) {
-                        Some(Unit::ListItemOrdered(_, py, ph))
-                        | Some(Unit::ListItemUnordered(_, py, ph)) => {
+                        // 前项是有序 → 列表类型切换，强制分段 + 重置计数
+                        Some(Unit::ListItemOrdered(..)) => true,
+                        Some(Unit::ListItemUnordered(_, py, ph)) => {
                             y - (py + ph) > median_h * PARAGRAPH_GAP_RATIO
                         }
                         _ => false,
@@ -484,6 +490,30 @@ mod tests {
             mk_block("③ 第三项", 10.0, 48.0, 100.0, 20.0),
         ];
         assert_eq!(to_markdown(&blocks), "1. 第一项\n2. 第二项\n3. 第三项");
+    }
+
+    /// 第十二轮 P2-2 回归：ordered→unordered→ordered（小间距）第二段 ordered 应从 1 开始。
+    /// 修复前：need_split 只看几何间距，小间距不重置 → 第二段 ordered 从残留计数（4）继续。
+    /// 修复后：need_split 加「前项类型不一致」判定 → 类型切换即重置。
+    #[test]
+    fn end_to_end_list_type_switch_resets_counter() {
+        let blocks = vec![
+            // 第一组 ordered（3 项，y=0/24/48，间距小）
+            mk_block("① 甲", 10.0, 0.0, 100.0, 20.0),
+            mk_block("② 乙", 10.0, 24.0, 100.0, 20.0),
+            mk_block("③ 丙", 10.0, 48.0, 100.0, 20.0),
+            // 无序（2 项，y=72/96，间距小）
+            mk_block("• 丁", 10.0, 72.0, 100.0, 20.0),
+            mk_block("• 戊", 10.0, 96.0, 100.0, 20.0),
+            // 第二组 ordered（2 项，y=120/144，间距小）——应从 1 开始，不是 4
+            mk_block("④ 己", 10.0, 120.0, 100.0, 20.0),
+            mk_block("⑤ 庚", 10.0, 144.0, 100.0, 20.0),
+        ];
+        assert_eq!(
+            to_markdown(&blocks),
+            "1. 甲\n2. 乙\n3. 丙\n\n- 丁\n- 戊\n\n1. 己\n2. 庚",
+            "P2-2: 列表类型切换（ordered→unordered→ordered）第二段 ordered 必须从 1 开始"
+        );
     }
 
     #[test]

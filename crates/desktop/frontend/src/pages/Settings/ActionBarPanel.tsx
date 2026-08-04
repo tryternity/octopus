@@ -37,6 +37,11 @@ export default function ActionBarPanel({
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const titleDraftRef = useRef<string | null>(null);
   titleDraftRef.current = titleDraft;
+  // 第十二轮 P3-3：triggerKeyword draft debounce（对齐 titleDraft 范式）——
+  // 原实现每按键 IPC + refresh，慢时字符黏滞。draft 本地缓冲 + 300ms 合并提交。
+  const [triggerDraft, setTriggerDraft] = useState<string | null>(null);
+  const triggerDraftRef = useRef<string | null>(null);
+  triggerDraftRef.current = triggerDraft;
   const [inlineCapturingGlobal, setInlineCapturingGlobal] = useState(false);
   const [capturingItem, setCapturingItem] = useState<{ id: number; kind: "global" } | null>(null);
 
@@ -287,7 +292,17 @@ export default function ActionBarPanel({
     return () => clearTimeout(timer);
   }, [titleDraft, updateMainInline]);
 
-  useEffect(() => { setTitleDraft(null); }, [effectiveSelectedId]);
+  // triggerKeyword draft debounce（P3-3，对齐 title draft :281-288 范式）
+  useEffect(() => {
+    if (triggerDraft === null) return;
+    const timer = setTimeout(() => {
+      const draft = triggerDraftRef.current;
+      if (draft !== null) { updateMainInline({ triggerKeyword: draft }); setTriggerDraft(null); }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [triggerDraft, updateMainInline]);
+
+  useEffect(() => { setTitleDraft(null); setTriggerDraft(null); }, [effectiveSelectedId]);
 
   const isEditing = editingId !== null || draftParentId !== undefined;
 
@@ -451,10 +466,10 @@ export default function ActionBarPanel({
                         <input
                           className="h-[38px] w-full bg-background border border-border rounded-md px-3 text-sm font-mono outline-none transition-all focus:border-voice/50 focus:ring-2 focus:ring-voice/15"
                           placeholder={t("settings.actionBar.slashNamePlaceholder")}
-                          value={selectedMain.triggerKeyword || ""}
+                          value={triggerDraft !== null ? triggerDraft : (selectedMain.triggerKeyword || "")}
                           onChange={(e) => {
                             const val = e.target.value.trim().toLowerCase();
-                            updateMainInline({ triggerKeyword: val });
+                            setTriggerDraft(val); // P3-3：draft 本地缓冲，300ms debounce 提交
                           }}
                         />
                       </FormField>

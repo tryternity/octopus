@@ -283,6 +283,13 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                     crate::clipboard::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(&e));
                 }
                 let _ = app.emit("clipboard://collapse", ());
+                // 第十二轮 P1-1：闭合 FLOAT_DEPTH 引用计数（collapsed→expanded 调了
+                // before_floating_window_show 递增 depth + 隐藏 Regular 窗口；此处收缩时
+                // 必须递减，否则奇数次 toggle 后 depth>0 永久 → restore_hidden_windows_only
+                // early return → 被隐藏的 settings/compact_editor/terminal 永久消失）。
+                // 用 keep_active 变体：dock 收缩态窗口仍 visible，不 deactivate 交还前台焦点。
+                #[cfg(target_os = "macos")]
+                { crate::platform::activation::after_floating_window_hide_keep_active(app); }
             } else {
                 // 收缩 → 展开 + 获焦
                 DOCK_EXPANDED.store(true, Ordering::SeqCst);

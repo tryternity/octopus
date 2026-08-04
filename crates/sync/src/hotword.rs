@@ -1568,7 +1568,7 @@ mod tests {
 
         export_all_hotwords().expect("initial export");
 
-        db::rename_hotword_set(id, "A机改名").unwrap();
+        db::rename_hotword_set(id, "A机改名", &hotword_set_md5_from_fields(id, "A机改名")).unwrap();
         push_hotwords_to_files().expect("A push");
 
         for h in db::list_hotword_sets().unwrap() {
@@ -1756,7 +1756,7 @@ mod tests {
         db::insert_hotword_set(id, "测试集").unwrap();
         export_all_hotwords().expect("export 旧版本");
 
-        db::rename_hotword_set(id, "测试集改").unwrap();
+        db::rename_hotword_set(id, "测试集改", &hotword_set_md5_from_fields(id, "测试集改")).unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
@@ -1780,7 +1780,7 @@ mod tests {
         db::insert_hotword_set(id, "测试集").unwrap();
         export_all_hotwords().expect("export 旧版本");
 
-        db::rename_hotword_set(id, "测试集改").unwrap();
+        db::rename_hotword_set(id, "测试集改", &hotword_set_md5_from_fields(id, "测试集改")).unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
@@ -1883,7 +1883,7 @@ mod tests {
         db::insert_hotword_set(id, "测试集").unwrap();
         export_all_hotwords().expect("export 旧版本");
 
-        db::rename_hotword_set(id, "测试集改").unwrap();
+        db::rename_hotword_set(id, "测试集改", &hotword_set_md5_from_fields(id, "测试集改")).unwrap();
         let md5 = hotword_set_md5(&db::get_hotword_set(id).unwrap());
         db::update_hotword_set_sync_md5(id, &md5).unwrap();
 
