@@ -9,7 +9,7 @@ use super::{collect_rows, ensure_db, now_string, with_db, Connection, Result, pa
 /// `segments` = transcript.segments_json()（段 JSON 真相源）。
 /// 新 schema：写入 clipboard_history（item_type='voice'），meta_info JSON 存 engine/engine_mode/char_count。
 pub fn insert_transcription_at_id(
-    id: i64,
+    id: &str,
     text: &str,
     segments: &str,
     engine: &str,
@@ -40,7 +40,7 @@ pub fn insert_transcription_at_id(
 
 /// 流式分段后更新 text/segments（完整 ASR 扁平 + 段 JSON）。
 /// 新 schema：UPDATE clipboard_history SET content + segments + meta_info.char_count。
-pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
+pub fn update_text_segments(id: &str, text: &str, segments: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         let char_count = text.chars().count() as i64;
@@ -62,7 +62,7 @@ pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
 ///
 /// 用途：云端 ASR close 异常时写 `cloud_close_error`（`finalize_cloud` Err 路径落库便于诊断），
 /// 未来也可写其他诊断/辅助字段。
-pub fn update_meta_field(id: i64, key: &str, value: &str) -> Result<()> {
+pub fn update_meta_field(id: &str, key: &str, value: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         update_meta_field_at(conn, id, key, value)?;
@@ -73,7 +73,7 @@ pub fn update_meta_field(id: i64, key: &str, value: &str) -> Result<()> {
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。返回实际更新的行数。
 pub(crate) fn update_meta_field_at(
     conn: &Connection,
-    id: i64,
+    id: &str,
     key: &str,
     value: &str,
 ) -> Result<usize> {
@@ -89,7 +89,7 @@ pub(crate) fn update_meta_field_at(
 /// `text` = 润色后扁平（与 segments 段拼接一致）；`segments` = segments_json（润色后段，Polished/Edited）。
 /// 新 schema：UPDATE clipboard_history content + segments + meta_info（polished/polish_model）。
 pub fn update_polished(
-    id: i64,
+    id: &str,
     polish_status: &str,
     polish_model: Option<&str>,
     segments: &str,
@@ -114,7 +114,7 @@ pub fn update_polished(
 /// 用户提交编辑 / 中间润色折回后更新 edited/text/segments。
 /// `text` = finish_text 扁平；`segments` = segments_json（commit_edit 路径写单条 Edited 段）。
 /// 新 schema：UPDATE clipboard_history content + segments。
-pub fn update_edited_segments(id: i64, text: &str, segments: &str) -> Result<()> {
+pub fn update_edited_segments(id: &str, text: &str, segments: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         update_edited_segments_at(conn, id, text, segments)?;
@@ -125,7 +125,7 @@ pub fn update_edited_segments(id: i64, text: &str, segments: &str) -> Result<()>
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。返回实际更新的行数。
 pub(crate) fn update_edited_segments_at(
     conn: &Connection,
-    id: i64,
+    id: &str,
     text: &str,
     segments: &str,
 ) -> Result<usize> {
@@ -139,7 +139,7 @@ pub(crate) fn update_edited_segments_at(
 /// `text` = transcript.db_text()（finish_text 扁平，最终展示文本）；`segments` = segments_json（最终段）。
 /// 新 schema：UPDATE clipboard_history content + segments + meta_info。
 pub fn finalize_transcription(
-    id: i64,
+    id: &str,
     text: &str,
     segments: &str,
     polish_status: &str,
@@ -168,7 +168,7 @@ pub fn finalize_transcription(
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionRecord {
-    pub id: i64,
+    pub id: String,
     pub created_at: String,
     pub engine: String,
     pub polish_status: String,
@@ -202,22 +202,23 @@ pub(crate) fn list_transcriptions_search_at(
                 segments: row.get(5)?, text: row.get(6)?,
             })
         };
-        let select_cols = "SELECT id, created_at,
-                COALESCE(json_extract(meta_info, '$.engine'), '') as engine,
-                CASE WHEN json_extract(meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
-                CAST(json_extract(meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
-                segments, content
-         FROM clipboard_history";
+        let select_cols = "SELECT c.id, c.created_at,
+                COALESCE(json_extract(c.meta_info, '$.engine'), '') as engine,
+                CASE WHEN json_extract(c.meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
+                CAST(json_extract(c.meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
+                c.segments, c.content
+         FROM clipboard_history c";
 
         if q.chars().count() >= 3 {
             // FTS5 MATCH：trigram tokenizer 对 >=3 字符生成 3-gram 做倒排索引查找（子串语义）
+            // id 改 TEXT(UUID) 后不能用 id=rowid 关联，改用隐式 rowid JOIN（FTS5 content 表的 rowid = clipboard_history 隐式 rowid）
             let escaped = escape_fts5_match(q);
             let mut stmt = conn.prepare(&format!(
                 "{select_cols}
-                 WHERE item_type = 'voice'
-                   AND id IN (SELECT rowid FROM clipboard_history_fts
+                 WHERE c.item_type = 'voice'
+                   AND c.rowid IN (SELECT rowid FROM clipboard_history_fts
                               WHERE clipboard_history_fts MATCH ?1)
-                 ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+                 ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
             ))?;
             let rows = stmt.query_map(params![escaped, limit, offset], row_mapper)?;
             return Ok(collect_rows(rows, "fts5 search"));
@@ -226,8 +227,8 @@ pub(crate) fn list_transcriptions_search_at(
         let pattern = format!("%{}%", q);
         let mut stmt = conn.prepare(&format!(
             "{select_cols}
-             WHERE item_type = 'voice' AND content LIKE ?1
-             ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+             WHERE c.item_type = 'voice' AND c.content LIKE ?1
+             ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3"
         ))?;
         let rows = stmt.query_map(params![pattern, limit, offset], row_mapper)?;
         return Ok(collect_rows(rows, "like search"));
@@ -243,7 +244,7 @@ pub(crate) fn escape_fts5_match(q: &str) -> String {
 
 /// 批量删除识别记录（按 id）。返回实际删除的行数。
 /// 新 schema：DELETE FROM clipboard_history WHERE id IN (...)。
-pub fn delete_transcriptions(ids: &[i64]) -> Result<usize> {
+pub fn delete_transcriptions(ids: &[String]) -> Result<usize> {
     if ids.is_empty() {
         return Ok(0);
     }
@@ -251,7 +252,7 @@ pub fn delete_transcriptions(ids: &[i64]) -> Result<usize> {
     with_db(|conn| delete_transcriptions_at(conn, ids))
 }
 
-pub(crate) fn delete_transcriptions_at(conn: &Connection, ids: &[i64]) -> Result<usize> {
+pub(crate) fn delete_transcriptions_at(conn: &Connection, ids: &[String]) -> Result<usize> {
     if ids.is_empty() {
         return Ok(0);
     }
@@ -277,7 +278,7 @@ pub(crate) fn list_transcriptions_at(
                 CAST(json_extract(meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
                 segments, content
          FROM clipboard_history WHERE item_type = 'voice'
-         ORDER BY id DESC LIMIT ?1 OFFSET ?2"
+         ORDER BY created_at DESC, id DESC LIMIT ?1 OFFSET ?2"
     )?;
     let rows = stmt.query_map(params![limit, offset], |row| {
         Ok(TranscriptionRecord {
@@ -316,28 +317,28 @@ mod tests {
         // 新 schema：voice 条目存 clipboard_history，content=text，segments=段 JSON，meta_info JSON 存 engine/polished/char_count/duration_ms。
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, segments, meta_info, created_at)
-             VALUES (100, 'voice', '首段', '[{\"kind\":\"raw\",\"text\":\"首段\"}]', '{\"engine\":\"sensevoice\",\"polished\":false,\"char_count\":2}', '2026-06-14 00:00:00')",
+             VALUES ('test-100', 'voice', '首段', '[{\"kind\":\"raw\",\"text\":\"首段\"}]', '{\"engine\":\"sensevoice\",\"polished\":false,\"char_count\":2}', '2026-06-14 00:00:00')",
             [],
         )
         .unwrap();
         // 流式补段 → 更新 content/segments
         conn.execute(
             "UPDATE clipboard_history SET content='首段二段', segments='[{\"kind\":\"raw\",\"text\":\"首段二段\"}]',
-                meta_info=json_set(meta_info,'$.char_count',4) WHERE id=100",
+                meta_info=json_set(meta_info,'$.char_count',4) WHERE id='test-100'",
             [],
         )
         .unwrap();
         // finalize → 写最终 content/segments/meta_info
         conn.execute(
             "UPDATE clipboard_history SET content='润色', segments='[{\"kind\":\"polished\",\"text\":\"润色\"}]',
-                meta_info=json_set(meta_info,'$.polished',1,'$.char_count',2,'$.duration_ms',5000) WHERE id=100",
+                meta_info=json_set(meta_info,'$.polished',1,'$.char_count',2,'$.duration_ms',5000) WHERE id='test-100'",
             [],
         )
         .unwrap();
 
         let (text, segments, polished, dur): (String, String, i64, Option<i64>) = conn
             .query_row(
-                "SELECT content, segments, json_extract(meta_info,'$.polished'), json_extract(meta_info,'$.duration_ms') FROM clipboard_history WHERE id=100",
+                "SELECT content, segments, json_extract(meta_info,'$.polished'), json_extract(meta_info,'$.duration_ms') FROM clipboard_history WHERE id='test-100'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
@@ -353,28 +354,28 @@ mod tests {
         let conn = open_init();
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
-             VALUES (100, 'voice', '你好', '{\"engine\":\"whisper\",\"polished\":false}', '2026-06-17 10:00:00')",
+             VALUES ('test-100', 'voice', '你好', '{\"engine\":\"whisper\",\"polished\":false}', '2026-06-17 10:00:00')",
             [],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, segments, meta_info, created_at)
-             VALUES (200, 'voice', '你好，世界。', '[{\"kind\":\"polished\",\"text\":\"你好，世界。\"}]', '{\"engine\":\"qwen3\",\"polished\":true}', '2026-06-17 11:00:00')",
+             VALUES ('test-200', 'voice', '你好，世界。', '[{\"kind\":\"polished\",\"text\":\"你好，世界。\"}]', '{\"engine\":\"qwen3\",\"polished\":true}', '2026-06-17 11:00:00')",
             [],
         )
         .unwrap();
         let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
-        assert_eq!(rows[1].id, 100);
+        assert_eq!(rows[0].id, "test-200", "最新在前（created_at 降序）");
+        assert_eq!(rows[1].id, "test-100");
         assert_eq!(rows[0].text.as_deref(), Some("你好，世界。"));
         assert_eq!(rows[0].polish_status, "done");
         let page1 = list_transcriptions_at(&conn, 1, 0).unwrap();
         assert_eq!(page1.len(), 1);
-        assert_eq!(page1[0].id, 200);
+        assert_eq!(page1[0].id, "test-200");
         let page2 = list_transcriptions_at(&conn, 1, 1).unwrap();
         assert_eq!(page2.len(), 1);
-        assert_eq!(page2[0].id, 100);
+        assert_eq!(page2[0].id, "test-100");
         let page3 = list_transcriptions_at(&conn, 10, 2).unwrap();
         assert!(page3.is_empty());
     }
@@ -382,7 +383,11 @@ mod tests {
     #[test]
     fn delete_transcriptions_removes_specified_ids() {
         let conn = open_init();
-        for &(id, eng, txt) in &[(100i64, "whisper", "你好"), (200, "qwen3", "你好世界"), (300, "sensevoice", "测试")] {
+        for &(id, eng, txt) in &[
+            ("test-100", "whisper", "你好"),
+            ("test-200", "qwen3", "你好世界"),
+            ("test-300", "sensevoice", "测试"),
+        ] {
             conn.execute(
                 "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
                  VALUES (?1, 'voice', ?2, ?3, '2026-06-17 10:00:00')",
@@ -393,13 +398,13 @@ mod tests {
         let n = conn
             .execute(
                 "DELETE FROM clipboard_history WHERE id IN (?,?)",
-                params![200, 300],
+                params!["test-200", "test-300"],
             )
             .unwrap();
         assert_eq!(n, 2);
         let remaining = list_transcriptions_at(&conn, 10, 0).unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].id, 100);
+        assert_eq!(remaining[0].id, "test-100");
     }
 
     #[test]
@@ -407,7 +412,7 @@ mod tests {
         let conn = open_init();
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
-             VALUES (100, 'voice', '你好', '{\"engine\":\"whisper\",\"polished\":false}', '2026-06-17 10:00:00')",
+             VALUES ('test-100', 'voice', '你好', '{\"engine\":\"whisper\",\"polished\":false}', '2026-06-17 10:00:00')",
             [],
         )
         .unwrap();
@@ -421,7 +426,7 @@ mod tests {
     #[test]
     fn delete_transcriptions_at_via_internal_fn() {
         let conn = open_init();
-        for &(id, txt) in &[(100i64, "你好"), (200, "世界")] {
+        for &(id, txt) in &[("test-100", "你好"), ("test-200", "世界")] {
             conn.execute(
                 "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
                  VALUES (?, 'voice', ?, '{\"engine\":\"test\",\"polished\":false}', '2026-06-17 10:00:00')",
@@ -429,7 +434,7 @@ mod tests {
             )
             .unwrap();
         }
-        let n = delete_transcriptions_at(&conn, &[100, 200]).unwrap();
+        let n = delete_transcriptions_at(&conn, &["test-100".to_string(), "test-200".to_string()]).unwrap();
         assert_eq!(n, 2);
         assert!(list_transcriptions_at(&conn, 10, 0).unwrap().is_empty());
     }
@@ -437,45 +442,45 @@ mod tests {
     #[test]
     fn update_edited_text_persists_and_lists() {
         let conn = open_init();
-        // id=100：将被编辑的记录
+        // id="test-100"：将被编辑的记录
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, segments, meta_info, created_at)
-             VALUES (100, 'voice', '润色稿', '[{\"kind\":\"polished\",\"text\":\"润色稿\"}]', '{\"engine\":\"whisper\",\"polished\":true}', '2026-06-18 10:00:00')",
+             VALUES ('test-100', 'voice', '润色稿', '[{\"kind\":\"polished\",\"text\":\"润色稿\"}]', '{\"engine\":\"whisper\",\"polished\":true}', '2026-06-18 10:00:00')",
             [],
         )
         .unwrap();
-        // id=200：未编辑的对照记录
+        // id="test-200"：未编辑的对照记录
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
-             VALUES (200, 'voice', '另一条', '{\"engine\":\"qwen3\",\"polished\":false}', '2026-06-18 11:00:00')",
+             VALUES ('test-200', 'voice', '另一条', '{\"engine\":\"qwen3\",\"polished\":false}', '2026-06-18 11:00:00')",
             [],
         )
         .unwrap();
 
         // 走真实 update_edited_segments_at（而非裸 SQL），断言返回行数 1
         let segs = r#"[{"kind":"edited","text":"手改文本"}]"#;
-        let n = update_edited_segments_at(&conn, 100, "手改文本", segs).unwrap();
+        let n = update_edited_segments_at(&conn, "test-100", "手改文本", segs).unwrap();
         assert_eq!(n, 1);
 
         // 经 list_transcriptions_at 回读，同时验证 list 列序映射正确
         let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
-        assert_eq!(rows[1].id, 100);
+        assert_eq!(rows[0].id, "test-200", "最新在前（created_at 降序）");
+        assert_eq!(rows[1].id, "test-100");
         assert_eq!(rows[1].text.as_deref(), Some("手改文本"));
         assert_eq!(rows[1].segments.as_deref(), Some(segs));
         // 未编辑记录：text 仍是原值
         assert_eq!(rows[0].text.as_deref(), Some("另一条"));
 
         // 不存在的 id：返回 0 行更新
-        let missing = update_edited_segments_at(&conn, 9999, "无效", "[]").unwrap();
+        let missing = update_edited_segments_at(&conn, "test-9999", "无效", "[]").unwrap();
         assert_eq!(missing, 0);
     }
 
     // ── FTS5 搜索（trigram MATCH >=3 char，LIKE 回退 <3 char）──
 
     /// 辅助：插入 voice 行，返回连接
-    fn open_with_voice(rows: &[(i64, &str)]) -> Connection {
+    fn open_with_voice(rows: &[(&str, &str)]) -> Connection {
         let conn = open_init();
         for &(id, text) in rows {
             conn.execute(
@@ -490,31 +495,31 @@ mod tests {
     #[test]
     fn fts5_search_long_query_uses_match() {
         let conn = open_with_voice(&[
-            (100, "今天的会议纪要很详细"),
-            (200, "明天去爬山"),
+            ("test-100", "今天的会议纪要很详细"),
+            ("test-200", "明天去爬山"),
         ]);
         // 4 字符 → FTS5 MATCH 路径
         let rows = list_transcriptions_search_at(&conn, 10, 0, Some("会议纪要")).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, 100);
+        assert_eq!(rows[0].id, "test-100");
         assert_eq!(rows[0].text.as_deref(), Some("今天的会议纪要很详细"));
     }
 
     #[test]
     fn fts5_search_short_query_falls_back_to_like() {
         let conn = open_with_voice(&[
-            (100, "你好世界"),
-            (200, "再见"),
+            ("test-100", "你好世界"),
+            ("test-200", "再见"),
         ]);
         // 2 字符 → LIKE 回退（trigram 无法生成 3-gram）
         let rows = list_transcriptions_search_at(&conn, 10, 0, Some("你好")).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, 100);
+        assert_eq!(rows[0].id, "test-100");
     }
 
     #[test]
     fn fts5_search_special_chars_no_panic() {
-        let conn = open_with_voice(&[(100, "test*result"), (200, "a\"quoted\"b")]);
+        let conn = open_with_voice(&[("test-100", "test*result"), ("test-200", "a\"quoted\"b")]);
         // 含 FTS5 特殊字符的查询不应 panic 或 SQL 错误
         let _ = list_transcriptions_search_at(&conn, 10, 0, Some("test*resu")).unwrap();
         let _ = list_transcriptions_search_at(&conn, 10, 0, Some("AND")).unwrap();
@@ -523,32 +528,33 @@ mod tests {
 
     #[test]
     fn fts5_search_empty_content_not_indexed() {
-        let conn = open_with_voice(&[(100, ""), (200, "有内容的记录")]);
+        let conn = open_with_voice(&[("test-100", ""), ("test-200", "有内容的记录")]);
         // 空 content 不索引，但搜索应正常返回有内容的行
         let rows = list_transcriptions_search_at(&conn, 10, 0, Some("有内容的")).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, 200);
+        assert_eq!(rows[0].id, "test-200");
     }
 
     #[test]
     fn fts5_backfill_sql_is_idempotent() {
         // 验证 backfill SQL 本身的正确性与幂等性（实际触发器行为由 FTS5 外部内容表保证）
-        let conn = open_with_voice(&[(100, "历史遗留的会议记录"), (200, "另一条记录")]);
-        // backfill SQL（与 init_schema v17→v18 相同）
+        let conn = open_with_voice(&[("test-100", "历史遗留的会议记录"), ("test-200", "另一条记录")]);
+        // backfill SQL（id 改 TEXT(UUID) 后用隐式 rowid 关联 FTS5，而非 id）
         let backfill = "INSERT INTO clipboard_history_fts(rowid, content)
-             SELECT id, content FROM clipboard_history
+             SELECT rowid, content FROM clipboard_history
              WHERE content != ''
-               AND id NOT IN (SELECT rowid FROM clipboard_history_fts)";
+               AND rowid NOT IN (SELECT rowid FROM clipboard_history_fts)";
         // 触发器已索引这些行（NOT IN 排除）→ backfill 不插入（幂等）
         conn.execute_batch(backfill).unwrap();
+        // 隐式 rowid 不再等于业务 id——按 content 的非空行计数（两条 voice 都有内容）
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM clipboard_history_fts WHERE rowid IN (100,200)", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM clipboard_history_fts WHERE content != ''", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2, "行已在索引中，backfill 幂等不重复");
         // backfill 后搜索仍正常
         let rows = list_transcriptions_search_at(&conn, 10, 0, Some("会议记录")).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, 100);
+        assert_eq!(rows[0].id, "test-100");
     }
 
     #[test]
@@ -566,14 +572,14 @@ mod tests {
         // 建记录，meta_info 已含 engine/char_count（模拟 insert_transcription_at_id 后的状态）
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
-             VALUES (100, 'voice', '你好',
+             VALUES ('test-100', 'voice', '你好',
                 '{\"engine\":\"baidu\",\"polished\":false,\"char_count\":2}',
                 '2026-08-03 00:00:00')",
             [],
         )
         .unwrap();
         // 写诊断字段
-        let rows = update_meta_field_at(&conn, 100, "cloud_close_error", "cloud close 超时（8s）").unwrap();
+        let rows = update_meta_field_at(&conn, "test-100", "cloud_close_error", "cloud close 超时（8s）").unwrap();
         assert_eq!(rows, 1, "应更新 1 行");
         // 读回：cloud_close_error 已加，engine/char_count 原样保留
         let (engine, char_count, cloud_err): (String, i64, String) = conn
@@ -581,7 +587,7 @@ mod tests {
                 "SELECT json_extract(meta_info,'$.engine'),
                         json_extract(meta_info,'$.char_count'),
                         json_extract(meta_info,'$.cloud_close_error')
-                 FROM clipboard_history WHERE id=100",
+                 FROM clipboard_history WHERE id='test-100'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -598,15 +604,15 @@ mod tests {
         // meta_info 为 NULL（异常状态）
         conn.execute(
             "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
-             VALUES (200, 'voice', 'test', NULL, '2026-08-03 00:00:00')",
+             VALUES ('test-200', 'voice', 'test', NULL, '2026-08-03 00:00:00')",
             [],
         )
         .unwrap();
-        update_meta_field_at(&conn, 200, "cloud_close_error", "err").unwrap();
+        update_meta_field_at(&conn, "test-200", "cloud_close_error", "err").unwrap();
         let cloud_err: String = conn
             .query_row(
                 "SELECT json_extract(meta_info,'$.cloud_close_error')
-                 FROM clipboard_history WHERE id=200",
+                 FROM clipboard_history WHERE id='test-200'",
                 [],
                 |r| r.get::<_, String>(0),
             )

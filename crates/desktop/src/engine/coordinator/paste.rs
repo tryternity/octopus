@@ -159,7 +159,7 @@ pub(crate) fn do_paste(
             // tid=0（sentinel，无有效会话）时跳过——cancel 后 paste 的边界场景。
             let touched = if id > 0 {
                 octopus_infra::db::with_db(|conn| {
-                    octopus_clipboard::store::touch_created_at(conn, id)
+                    octopus_clipboard::store::touch_created_at(conn, &id.to_string())
                 })
             } else {
                 Ok(())

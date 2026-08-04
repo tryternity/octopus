@@ -77,7 +77,7 @@ pub struct FileEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipboardItem {
-    pub id: i64,
+    pub id: String,
     pub item_type: ItemType,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
