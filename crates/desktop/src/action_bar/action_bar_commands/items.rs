@@ -21,6 +21,7 @@ fn derive_need_voice(action_type: &str, action_data: &str) -> bool {
     action_type == "agent" && action_data.contains("{{voice}}")
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri 命令参数平铺（前端 invoke JSON 传）
 #[tauri::command]
 pub fn create_action_bar_item(
     parent_id: Option<i64>,
@@ -43,10 +44,27 @@ pub fn create_action_bar_item(
         return Err("同级菜单项已达上限 35 个（Alt+1-9 + a-z 定位）".into());
     }
     let need_voice = derive_need_voice(&action_type, &action_data);
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), is_enabled.unwrap_or(true), need_voice, app_bundle_ids.as_deref().unwrap_or(""))
+    octopus_infra::db::insert_action_bar_item(&octopus_infra::db::ActionBarItemInput {
+        parent_id,
+        fields: octopus_infra::db::ActionBarItemFields {
+            title: &title,
+            icon: &icon,
+            action_type: &action_type,
+            action_data: &action_data,
+            is_async,
+            write_output_to_clipboard,
+            agent: &agent,
+            accepts: &accepts,
+            trigger_keyword: trigger_keyword.as_deref().unwrap_or(""),
+            is_enabled: is_enabled.unwrap_or(true),
+            need_voice,
+            app_bundle_ids: app_bundle_ids.as_deref().unwrap_or(""),
+        },
+    })
         .map_err(e2s)
 }
 
+#[allow(clippy::too_many_arguments)] // Tauri 命令参数平铺（前端 invoke JSON 传）
 #[tauri::command]
 pub fn update_action_bar_item(
     id: i64,
@@ -64,7 +82,23 @@ pub fn update_action_bar_item(
 ) -> Result<(), String> {
     // need_voice 自动从 action_type + action_data 推导（前端不再传）
     let need_voice = derive_need_voice(&action_type, &action_data);
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard, &agent, &accepts, trigger_keyword.as_deref().unwrap_or(""), need_voice, app_bundle_ids.as_deref().unwrap_or(""))
+    octopus_infra::db::update_action_bar_item(&octopus_infra::db::ActionBarItemUpdate {
+        id,
+        fields: octopus_infra::db::ActionBarItemFields {
+            title: &title,
+            icon: &icon,
+            action_type: &action_type,
+            action_data: &action_data,
+            is_async,
+            write_output_to_clipboard,
+            agent: &agent,
+            accepts: &accepts,
+            trigger_keyword: trigger_keyword.as_deref().unwrap_or(""),
+            is_enabled,
+            need_voice,
+            app_bundle_ids: app_bundle_ids.as_deref().unwrap_or(""),
+        },
+    })
         .map_err(e2s)
 }
 

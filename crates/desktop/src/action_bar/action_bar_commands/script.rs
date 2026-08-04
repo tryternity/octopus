@@ -305,11 +305,17 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
         let duration_ms = started.elapsed().as_millis() as i64;
         let finished_at = now_epoch_secs();
         let error_msg = script_error_msg(&result);
-        let _ = octopus_infra::db::insert_script_run(
-            item_id, &script_type, result.exit_code,
-            &result.stdout, &result.stderr, &error_msg,
-            &started_at, Some(&finished_at), Some(duration_ms),
-        );
+        let _ = octopus_infra::db::insert_script_run(&octopus_infra::db::ScriptRunRecord {
+            item_id,
+            script_type: &script_type,
+            exit_code: result.exit_code,
+            stdout: &result.stdout,
+            stderr: &result.stderr,
+            error_msg: &error_msg,
+            started_at: &started_at,
+            finished_at: Some(&finished_at),
+            duration_ms: Some(duration_ms),
+        });
     });
     Ok(())
 }
@@ -325,11 +331,17 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
     let duration_ms = started.elapsed().as_millis() as i64;
     let finished_at = now_epoch_secs();
     let error_msg = script_error_msg(&result);
-    let _ = octopus_infra::db::insert_script_run(
-        item_id, &script_type, result.exit_code,
-        &result.stdout, &result.stderr, &error_msg,
-        &started_at, Some(&finished_at), Some(duration_ms),
-    );
+    let _ = octopus_infra::db::insert_script_run(&octopus_infra::db::ScriptRunRecord {
+        item_id,
+        script_type: &script_type,
+        exit_code: result.exit_code,
+        stdout: &result.stdout,
+        stderr: &result.stderr,
+        error_msg: &error_msg,
+        started_at: &started_at,
+        finished_at: Some(&finished_at),
+        duration_ms: Some(duration_ms),
+    });
     // 标记已落库（ScriptResult 原样返回给上层）
     let _ = &mut result; // 消费 mut borrow
     Ok(result)
