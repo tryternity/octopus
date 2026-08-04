@@ -86,8 +86,8 @@ dispatcher：`try_fallback`（787，`&mut self`）。共享出口：`apply_fallb
 
 | 阶段 | 内容 | 风险 | 状态 |
 |---|---|---|---|
-| **1** | 纯机械拆分 + 可见性调整 | 极低 | ✅ 完成（2026-08-04，main `10f7d211`） |
-| **2** | finalize dedupe / extract_strip helper / 常量分组 | 低 | 🟡 部分完成（2026-08-04，main `880f620a`） |
+| **1** | 纯机械拆分 + 可见性调整 | 极低 | ✅ 完成（2026-08-04，merge `10f7d211`） |
+| **2** | finalize dedupe / extract_strip helper / 常量分组 | 低 | 🟡 部分完成（2026-08-04，见下） |
 | **3a** | 降级链 trait 抽象（`FallbackStep`） | 中 | 🟡 已实现待 e2e（2026-08-04，分支 `refactor/stitch-trait`） |
 | 3b（远期） | 队列解耦 / 双向滚动 | 中高 | 独立 brainstorming |
 
@@ -95,7 +95,7 @@ dispatcher：`try_fallback`（787，`&mut self`）。共享出口：`apply_fallb
 
 **阶段 3a 进展**：见 [`2026-08-04-stitch-fallback-trait-design.md`](2026-08-04-stitch-fallback-trait-design.md)——5 个 `FallbackStep` 实现 + dispatcher 从 60 行 if 链 → 35 行迭代。
 
-**阶段 2 实施记录（2026-08-04，分支 `refactor/stitch-cleanup`，已 push origin 待 merge）**：
+**阶段 2 实施记录（2026-08-04，分支 `refactor/stitch-cleanup`）**：
 - ✅ 常量按功能注释分组（4 组：匹配阈值 / 采样几何 / 画布自愈 / 时序平滑），顺手修 `DY_HISTORY_LEN` doc 被前一行吞的小 bug
 - ✅ 抽 `GrayBuf::bottom_strip(strip_h)` helper，消除 `try_match_prev_frame` 手工构造 GrayBuf 的重复切片；+3 单测覆盖 normal / exceeds_height / zero
 - ❌ **finalize NCC dedupe 跳过**——读码后发现 finalize 与 `best_ncc_match` 控制流差异比本 spec 预期大：

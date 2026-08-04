@@ -57,6 +57,19 @@ impl GrayBuf {
             }
         }
     }
+
+    /// 取底部 `strip_h` 行作为独立 GrayBuf（y_offset 归零）。
+    /// 用于 canvas-anchored 模板提取与相邻帧参考 fallback：把已对齐到底部的内容
+    /// 切出来作 NCC 模板。`strip_h` 超过本 buffer 行数时返回整个 buffer。
+    pub(crate) fn bottom_strip(&self, strip_h: usize) -> GrayBuf {
+        let total_h = self.data.len() / self.width;
+        let start_row = total_h.saturating_sub(strip_h);
+        GrayBuf {
+            data: self.data[start_row * self.width..].to_vec(),
+            width: self.width,
+            y_offset: 0,
+        }
+    }
 }
 
 /// 将 GrayBuf 转为 Sobel 梯度特征图 + 归一化。
@@ -293,6 +306,49 @@ mod tests {
                 assert_eq!(a, b, "灰度不一致 @ ({},{})", x, y);
             }
         }
+    }
+
+    #[test]
+    fn test_graybuf_bottom_strip_normal() {
+        // 构造 4×8 GrayBuf（每行填行号作为内容），取底部 3 行
+        let width = 4;
+        let total_h = 8;
+        let strip_h = 3;
+        let data: Vec<u8> = (0..total_h).flat_map(|y| vec![y as u8; width]).collect();
+        let buf = GrayBuf { data, width, y_offset: 0 };
+        let strip = buf.bottom_strip(strip_h);
+        assert_eq!(strip.width, width);
+        assert_eq!(strip.y_offset, 0);
+        assert_eq!(strip.data.len(), width * strip_h);
+        // 底部 3 行 = 第 5、6、7 行（值 5、6、7）
+        for (i, &v) in strip.data.iter().enumerate() {
+            let expected = (total_h - strip_h + i / width) as u8;
+            assert_eq!(v, expected, "bottom_strip[{}] = {}, 期望 {}", i, v, expected);
+        }
+    }
+
+    #[test]
+    fn test_graybuf_bottom_strip_exceeds_height() {
+        // strip_h 超过 buffer 行数 → saturating_sub 兜底，返回整个 buffer
+        let width = 2;
+        let total_h = 3;
+        let data: Vec<u8> = (0..total_h).flat_map(|y| vec![y as u8; width]).collect();
+        let buf = GrayBuf { data: data.clone(), width, y_offset: 0 };
+        let strip = buf.bottom_strip(10);
+        assert_eq!(strip.data, data, "strip_h > total_h 时应返回整个 buffer");
+        assert_eq!(strip.data.len(), width * total_h);
+    }
+
+    #[test]
+    fn test_graybuf_bottom_strip_zero() {
+        // strip_h=0 → 返回空 buffer（data.len()=0）
+        let width = 4;
+        let data = vec![10u8; width * 5];
+        let buf = GrayBuf { data, width, y_offset: 0 };
+        let strip = buf.bottom_strip(0);
+        assert_eq!(strip.data.len(), 0);
+        assert_eq!(strip.width, width);
+        assert_eq!(strip.y_offset, 0);
     }
 
     #[test]
