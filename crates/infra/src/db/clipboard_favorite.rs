@@ -27,18 +27,6 @@ fn parse_favorite(row: &rusqlite::Row) -> rusqlite::Result<ClipboardFavorite> {
     })
 }
 
-fn iso_now() -> String {
-    // 与 infra 其他模块一致——用 SQL datetime('now') 在 INSERT/UPDATE 里生成。
-    // 本函数仅用于需要 Rust 端时间戳的 sync upsert 路径。
-    // chrono 不在 infra deps，用 std 格式化。
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("epoch:{secs}")
-}
-
 // ── _at 变体（接 &Connection，测试 + sync 用）──
 
 pub(crate) fn insert_favorite_at(
