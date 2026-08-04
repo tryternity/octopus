@@ -344,7 +344,7 @@ docs/
 │   ├── vault/          # vault 数据（加密）：meta.json + outline.json + ciphers/<2hex>/<uuid>.json + folders/
 │   └── hotword/        # 热词数据（明文，两级 outline）：outline.json（总，词典）+ <set-uuid>/{meta.json, outline.json（词）, <2hex>/<word-uuid>.json}
 └── models/
-    ├── vad.onnx             # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌的 silero_vad_v4；不存在用 include_bytes! 内嵌加载）
+    ├── vad.onnx             # VAD 覆盖（可选——通用名，放任意 VAD 模型覆盖内嵌的 silero_vad_v6；不存在用 include_bytes! 内嵌加载）
     └── zipformer/           # 默认 ASR（兜底引擎 zipformer-small，27M，source_type=0 builtin，首次启动下载，Step 3 已实现）
 
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存
