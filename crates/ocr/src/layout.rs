@@ -313,7 +313,6 @@ fn classify_line(text: &str, h: f64, median_h: f64) -> (LineKind, String) {
 
 /// 判断 reflow 时两行之间是否需要插入空格（CJK 感知）。
 /// ASCII↔非 ASCII 边界补空格；CJK↔CJK 不补。
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -762,7 +762,7 @@ pub fn get_active_model(domain: &str) -> Result<Option<ModelRow>> {
 }
 
 /// 查询指定域的激活模型（is_enabled=1 且 is_available=1），每域仅一个。ORDER BY id 保证确定性。
-
+///
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
 pub(crate) fn get_active_model_at(conn: &Connection, domain: &str) -> Result<Option<ModelRow>> {
     let mut stmt = conn.prepare(
