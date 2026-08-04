@@ -635,7 +635,7 @@ fn pull_favorite(history_id: &str, key: &ClipboardKey) -> Result<bool> {
             None => {
                 // DB 无 → 直接 INSERT tombstone favorite（不解密 payload、不还原 history 行）。
                 // tombstone 的唯一目的是传播「此 history_id 已删除」，内容已无意义。
-                // 对应 export 时 build_history_row 返回的空内容占位——pull 方不需要它。
+                // 如果 history 行恰好存在（is_favorite 可能=1），也要清掉收藏标记。
                 let fav = octopus_infra::db::ClipboardFavorite {
                     history_id: history_id.to_string(),
                     is_deleted: file.is_deleted,
@@ -643,7 +643,10 @@ fn pull_favorite(history_id: &str, key: &ClipboardKey) -> Result<bool> {
                     sync_md5: None, // tombstone 不参与内容 diff
                 };
                 octopus_infra::db::upsert_favorite_sync(&fav)?;
-                log::debug!("[sync] 收藏 pull: {} DB 无 → INSERT tombstone（不还原 history）", history_id);
+                // history 行可能存在且 is_favorite=1（favorites 表记录丢了但 history 标记还在）
+                // ——幂等清掉，不存在则 no-op
+                let _ = octopus_infra::db::set_clipboard_is_favorite(history_id, false);
+                log::debug!("[sync] 收藏 pull: {} DB 无 → INSERT tombstone + 清 history.is_favorite", history_id);
                 Ok(true)
             }
             Some(_) => {
