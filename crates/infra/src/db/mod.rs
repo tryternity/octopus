@@ -423,6 +423,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 tx.commit()?;
                 log::info!("DB migrated v57→v58: hotword_sets 加 set 级软删（is_deleted 时间戳 + 复合 UNIQUE）");
             }
+            58 => {
+                // v58→v59：clipboard_history.id INTEGER→TEXT(UUID) + clipboard_favorites 表。
+                // **破坏性变更**——无法自动迁移（id 类型变更，老数据是 INTEGER 毫秒戳）。
+                // 用户必须清库重建（spec 2026-08-05-clipboard-favorite-sync-design.md §1.2）。
+                anyhow::bail!(
+                    "DB schema v58→v59 is a breaking change (clipboard_history.id INTEGER→TEXT UUID). \
+                     Run: rm ~/.octopus/octopus.db* (then restart app to rebuild)."
+                );
+            }
             _ => {
                 anyhow::bail!(
                     "DB schema version {} is outdated (current {}). \
@@ -870,20 +879,22 @@ mod tests {
         conn
     }
 
-    /// v54 库（asr_correct='false'）→ init_schema → asr_correct 翻 true + user_version 升 55。
+    /// v54 库 → init_schema → 迁移到 v58 成功（asr_correct 翻 true + v55/v56/v57/v58 步骤），
+    /// 但 v58→v59 是破坏性变更（clipboard_history.id INTEGER→TEXT），bail!
     #[test]
     fn migrate_v54_to_v55_flips_asr_correct_to_true() {
         let conn = open_with_version(54, "false");
-        init_schema(&conn).expect("v54→v55 迁移");
-        let after: String = conn
-            .query_row(
-                "SELECT config_value FROM app_config WHERE config_key='asr_correct'",
-                [], |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(after, "true", "迁移后 asr_correct 应翻 true");
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, CURRENT_SCHEMA_VERSION);
+        // v54→v58 迁移成功，但 v58→v59 bail（破坏性变更——clipboard_history.id 类型变更）
+        let result = init_schema(&conn);
+        assert!(
+            result.is_err(),
+            "v54→v59 迁移应在 v58→v59 步骤 bail（破坏性变更），实际成功"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("breaking change"),
+            "错误消息应含 'breaking change'，实际：{}", err_msg
+        );
     }
 
     /// v55 库（已是最新）→ init_schema → no-op（不重复迁移）。

@@ -44,7 +44,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
 
   useEffect(() => { loadHistory(true); }, [debouncedSearch]);
 
-  const toggleSelect = (id: number) => {
+  const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
