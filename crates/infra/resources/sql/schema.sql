@@ -87,17 +87,15 @@ CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
 CREATE INDEX IF NOT EXISTS idx_clip_deleted   ON clipboard_history(is_deleted) WHERE is_deleted = 1;
 
 -- ── 剪贴板收藏（clipboard_favorites）──────────────────────────────────────────
--- 仅文本类（text/voice/ocr）的 favorite 才进此表并 sync；image/file 不进。
--- favorites 表只存同步锚点（uuid + history_id + tombstone），内容真相在 clipboard_history。
+-- 极简 4 字段——favorites 是 clipboard_history 的附属表，history_id 直接作主键 + 同步锚点。
+-- 内容真相在 clipboard_history（created_at 用 history 行自己的，不重复存）。
+-- is_deleted：0=active，>0=epoch 秒（tombstone，跨设备软删意图传播）。
+-- sync_md5：history 内容指纹（md5）——history 行内容可编辑，需指纹检测变化驱动 sync diff。
 CREATE TABLE IF NOT EXISTS clipboard_favorites (
-    id              TEXT PRIMARY KEY,           -- UUID v4（同步锚点，跨设备稳定）
-    history_id      TEXT NOT NULL,              -- 指向 clipboard_history.id（UUID，跨设备一致）
-    is_deleted      INTEGER NOT NULL DEFAULT 0, -- 0=活跃，>0=删除时刻 epoch 秒（tombstone）
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    sync_md5        TEXT,
-    UNIQUE(history_id, is_deleted),
-    FOREIGN KEY (history_id) REFERENCES clipboard_history(id)
+    history_id      TEXT PRIMARY KEY,           -- = clipboard_history.id（一对一，无独立 id）
+    is_deleted      INTEGER NOT NULL DEFAULT 0, -- 0=active，>0=epoch 秒（tombstone）
+    updated_at      TEXT NOT NULL,              -- sync 时间戳比较用
+    sync_md5        TEXT                        -- md5 内容指纹（检测 history 行编辑）
 );
 CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;
 

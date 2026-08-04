@@ -72,15 +72,14 @@ END;
 INSERT INTO clipboard_history_fts(rowid, content)
     SELECT rowid, content FROM clipboard_history WHERE content != '';
 
--- ========== 7. 新建 clipboard_favorites 表 ==========
+-- ========== 7. 新建 clipboard_favorites 表（极简 4 字段） ==========
+-- history_id 直接作 PK（= clipboard_history.id，一对一），无独立 id；
+-- sync_md5 存 history 内容指纹（检测 history 行编辑）；created_at 用 history 行自己的。
 CREATE TABLE IF NOT EXISTS clipboard_favorites (
-    id              TEXT PRIMARY KEY,
-    history_id      TEXT NOT NULL,
-    is_deleted      INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    sync_md5        TEXT,
-    UNIQUE(history_id, is_deleted),
+    history_id      TEXT PRIMARY KEY,           -- = clipboard_history.id（一对一）
+    is_deleted      INTEGER NOT NULL DEFAULT 0, -- 0=active，>0=epoch 秒（tombstone）
+    updated_at      TEXT NOT NULL,              -- sync 时间戳比较用
+    sync_md5        TEXT,                       -- md5 内容指纹（检测 history 行编辑）
     FOREIGN KEY (history_id) REFERENCES clipboard_history(id)
 );
 CREATE INDEX IF NOT EXISTS idx_clip_fav_active ON clipboard_favorites(is_deleted) WHERE is_deleted = 0;

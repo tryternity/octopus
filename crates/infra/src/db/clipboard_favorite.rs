@@ -1,59 +1,58 @@
 //! 剪贴板收藏（clipboard_favorites）表 CRUD。
-//! Task 3 实现——当前是空 stub 让 Task 1 编译通过。
+//!
+//! 极简 4 字段——`history_id` 直接作主键（= clipboard_history.id，一对一），
+//! `is_deleted` 是 tombstone（0=active / >0=epoch 秒），`updated_at` 给 sync 比时间戳，
+//! `sync_md5` 存 history 内容指纹（history 行内容可编辑，sync 用它检测变化）。
+//! 内容真相在 clipboard_history，favorite 只是「收藏」状态标记 + 同步锚点。
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
 #[derive(Debug, Clone)]
 pub struct ClipboardFavorite {
-    pub id: String,
-    pub history_id: String,
-    pub is_deleted: i64,
-    pub created_at: String,
+    pub history_id: String,        // PK = clipboard_history.id
+    pub is_deleted: i64,           // 0=active，>0=epoch 秒 tombstone
     pub updated_at: String,
-    pub sync_md5: Option<String>,
+    pub sync_md5: Option<String>,  // history 内容指纹（检测 history 行编辑）
 }
 
-const COLS: &str = "id, history_id, is_deleted, created_at, updated_at, sync_md5";
+const COLS: &str = "history_id, is_deleted, updated_at, sync_md5";
 
 fn parse_favorite(row: &rusqlite::Row) -> rusqlite::Result<ClipboardFavorite> {
     Ok(ClipboardFavorite {
-        id: row.get(0)?,
-        history_id: row.get(1)?,
-        is_deleted: row.get(2)?,
-        created_at: row.get(3)?,
-        updated_at: row.get(4)?,
-        sync_md5: row.get(5)?,
+        history_id: row.get(0)?,
+        is_deleted: row.get(1)?,
+        updated_at: row.get(2)?,
+        sync_md5: row.get(3)?,
     })
 }
 
 // ── _at 变体（接 &Connection，测试 + sync 用）──
 
-pub(crate) fn insert_favorite_at(
-    conn: &Connection,
-    id: &str,
-    history_id: &str,
-    is_deleted: i64,
-) -> Result<()> {
+pub(crate) fn insert_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO clipboard_favorites (id, history_id, is_deleted, created_at, updated_at)
-         VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))",
-        params![id, history_id, is_deleted],
+        "INSERT INTO clipboard_favorites (history_id, is_deleted, updated_at, sync_md5)
+         VALUES (?1, 0, datetime('now'), NULL)",
+        params![history_id],
     )?;
     Ok(())
 }
 
-pub(crate) fn soft_delete_favorite_at(conn: &Connection, id: &str, epoch_secs: i64) -> Result<()> {
+pub(crate) fn soft_delete_favorite_at(
+    conn: &Connection,
+    history_id: &str,
+    epoch_secs: i64,
+) -> Result<()> {
     conn.execute(
-        "UPDATE clipboard_favorites SET is_deleted = ?1, updated_at = datetime('now') WHERE id = ?2",
-        params![epoch_secs, id],
+        "UPDATE clipboard_favorites SET is_deleted = ?1, updated_at = datetime('now') WHERE history_id = ?2",
+        params![epoch_secs, history_id],
     )?;
     Ok(())
 }
 
 pub(crate) fn list_active_favorites_at(conn: &Connection) -> Result<Vec<ClipboardFavorite>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM clipboard_favorites WHERE is_deleted = 0 ORDER BY created_at DESC"
+        "SELECT {COLS} FROM clipboard_favorites WHERE is_deleted = 0"
     ))?;
     let rows = stmt.query_map([], parse_favorite)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -65,18 +64,66 @@ pub(crate) fn list_all_favorites_at(conn: &Connection) -> Result<Vec<ClipboardFa
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+pub(crate) fn load_favorite_at(
+    conn: &Connection,
+    history_id: &str,
+) -> Result<Option<ClipboardFavorite>> {
+    let mut stmt =
+        conn.prepare(&format!("SELECT {COLS} FROM clipboard_favorites WHERE history_id = ?1"))?;
+    let mut rows = stmt.query(params![history_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(parse_favorite(row)?)),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn restore_favorite_at(conn: &Connection, history_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_favorites SET is_deleted = 0, updated_at = datetime('now') WHERE history_id = ?1",
+        params![history_id],
+    )?;
+    Ok(())
+}
+
+/// sync pull 用——按 history_id UPSERT，显式带 updated_at + sync_md5（来自远程文件，
+/// 不写 datetime('now')）。sync_md5 由调用方从 history_row 内容算好后传入。
+pub(crate) fn upsert_favorite_sync_at(
+    conn: &Connection,
+    fav: &ClipboardFavorite,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO clipboard_favorites (history_id, is_deleted, updated_at, sync_md5)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(history_id) DO UPDATE SET
+            is_deleted=excluded.is_deleted,
+            updated_at=excluded.updated_at,
+            sync_md5=excluded.sync_md5",
+        params![fav.history_id, fav.is_deleted, fav.updated_at, fav.sync_md5],
+    )?;
+    Ok(())
+}
+
+/// sync push 后用——更新 sync_md5（export 后写入磁盘指纹，下次 merge 据此比对冲突）。
+pub(crate) fn set_sync_md5_at(conn: &Connection, history_id: &str, md5: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_favorites SET sync_md5 = ?1 WHERE history_id = ?2",
+        params![md5, history_id],
+    )?;
+    Ok(())
+}
+
 // ── pub 包装（走 ensure_db / with_db）──
 
 use crate::db::{ensure_db, with_db};
 
-pub fn insert_favorite(id: &str, history_id: &str) -> Result<()> {
+pub fn insert_favorite(history_id: &str) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| insert_favorite_at(conn, id, history_id, 0))
+    with_db(|conn| insert_favorite_at(conn, history_id))
 }
 
-pub fn soft_delete_favorite(id: &str, epoch_secs: i64) -> Result<()> {
+pub fn soft_delete_favorite(history_id: &str, epoch_secs: i64) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| soft_delete_favorite_at(conn, id, epoch_secs))
+    with_db(|conn| soft_delete_favorite_at(conn, history_id, epoch_secs))
 }
 
 pub fn list_active_favorites() -> Result<Vec<ClipboardFavorite>> {
@@ -89,41 +136,26 @@ pub fn list_all_favorites() -> Result<Vec<ClipboardFavorite>> {
     with_db(list_all_favorites_at)
 }
 
-pub fn load_favorite(id: &str) -> Result<Option<ClipboardFavorite>> {
+pub fn load_favorite(history_id: &str) -> Result<Option<ClipboardFavorite>> {
     ensure_db()?;
-    with_db(|conn| {
-        let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM clipboard_favorites WHERE id = ?1"))?;
-        let mut rows = stmt.query(params![id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(parse_favorite(row)?)),
-            None => Ok(None),
-        }
-    })
+    with_db(|conn| load_favorite_at(conn, history_id))
 }
 
-pub fn load_favorite_by_history(history_id: &str) -> Result<Option<ClipboardFavorite>> {
+pub fn restore_favorite(history_id: &str) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {COLS} FROM clipboard_favorites WHERE history_id = ?1 ORDER BY is_deleted ASC LIMIT 1"
-        ))?;
-        let mut rows = stmt.query(params![history_id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(parse_favorite(row)?)),
-            None => Ok(None),
-        }
-    })
+    with_db(|conn| restore_favorite_at(conn, history_id))
 }
 
-pub fn restore_favorite(id: &str) -> Result<()> {
+/// sync upsert——显式带 is_deleted + updated_at + sync_md5（来自远程文件，不写 datetime('now')）。
+pub fn upsert_favorite_sync(fav: &ClipboardFavorite) -> Result<()> {
     ensure_db()?;
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE clipboard_favorites SET is_deleted = 0, updated_at = datetime('now') WHERE id = ?1",
-            params![id],
-        )?;
-        Ok(())
-    })
+    with_db(|conn| upsert_favorite_sync_at(conn, fav))
+}
+
+/// sync push 后用——更新 sync_md5（export 后写入磁盘指纹）。
+pub fn set_sync_md5(history_id: &str, md5: &str) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| set_sync_md5_at(conn, history_id, md5))
 }
 
 // ── 剪贴板历史行读取 + UPSERT（剪贴板收藏同步用）──
@@ -242,33 +274,6 @@ pub fn set_clipboard_is_favorite(id: &str, is_fav: bool) -> Result<()> {
     })
 }
 
-/// sync upsert（含 is_deleted + sync_md5）——对称 hotword upsert_hotword_set
-pub fn upsert_favorite_sync(fav: &ClipboardFavorite) -> Result<()> {
-    ensure_db()?;
-    with_db(|conn| {
-        let existing: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM clipboard_favorites WHERE id = ?1",
-                params![fav.id],
-                |r| r.get(0),
-            )
-            .ok();
-        if existing.is_some() {
-            conn.execute(
-                "UPDATE clipboard_favorites SET history_id=?1, is_deleted=?2, sync_md5=?3, updated_at=?4 WHERE id=?5",
-                params![fav.history_id, fav.is_deleted, fav.sync_md5, fav.updated_at, fav.id],
-            )?;
-        } else {
-            conn.execute(
-                "INSERT INTO clipboard_favorites (id, history_id, is_deleted, created_at, updated_at, sync_md5)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![fav.id, fav.history_id, fav.is_deleted, fav.created_at, fav.updated_at, fav.sync_md5],
-            )?;
-        }
-        Ok(())
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,32 +285,99 @@ mod tests {
         conn
     }
 
+    fn insert_history(conn: &rusqlite::Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO clipboard_history (id, item_type, content, created_at) VALUES (?1, 'text', 'hello', '2026-08-05')",
+            [id],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn insert_and_list_favorite() {
         let conn = setup();
-        conn.execute(
-            "INSERT INTO clipboard_history (id, item_type, content, created_at) VALUES (?1, 'text', 'hello', '2026-08-05')",
-            ["hist-uuid-1"],
-        ).unwrap();
-        insert_favorite_at(&conn, "fav-uuid-1", "hist-uuid-1", 0).unwrap();
+        insert_history(&conn, "hist-1");
+        insert_favorite_at(&conn, "hist-1").unwrap();
         let favs = list_active_favorites_at(&conn).unwrap();
         assert_eq!(favs.len(), 1);
-        assert_eq!(favs[0].id, "fav-uuid-1");
-        assert_eq!(favs[0].history_id, "hist-uuid-1");
+        assert_eq!(favs[0].history_id, "hist-1");
+        assert_eq!(favs[0].is_deleted, 0);
     }
 
     #[test]
     fn soft_delete_and_tombstone() {
         let conn = setup();
-        conn.execute(
-            "INSERT INTO clipboard_history (id, item_type, content, created_at) VALUES (?1, 'text', 'hello', '2026-08-05')",
-            ["hist-uuid-2"],
-        ).unwrap();
-        insert_favorite_at(&conn, "fav-uuid-2", "hist-uuid-2", 0).unwrap();
-        soft_delete_favorite_at(&conn, "fav-uuid-2", 1722835200).unwrap();
+        insert_history(&conn, "hist-2");
+        insert_favorite_at(&conn, "hist-2").unwrap();
+        soft_delete_favorite_at(&conn, "hist-2", 1722835200).unwrap();
         let active = list_active_favorites_at(&conn).unwrap();
-        assert!(active.iter().all(|f| f.id != "fav-uuid-2"));
+        assert!(active.iter().all(|f| f.history_id != "hist-2"));
         let all = list_all_favorites_at(&conn).unwrap();
-        assert!(all.iter().any(|f| f.id == "fav-uuid-2" && f.is_deleted > 0));
+        assert!(all
+            .iter()
+            .any(|f| f.history_id == "hist-2" && f.is_deleted > 0));
+    }
+
+    #[test]
+    fn restore_favorite_works() {
+        let conn = setup();
+        insert_history(&conn, "hist-3");
+        insert_favorite_at(&conn, "hist-3").unwrap();
+        soft_delete_favorite_at(&conn, "hist-3", 1700000000).unwrap();
+        restore_favorite_at(&conn, "hist-3").unwrap();
+        let active = list_active_favorites_at(&conn).unwrap();
+        assert!(active.iter().any(|f| f.history_id == "hist-3"));
+    }
+
+    #[test]
+    fn upsert_sync_insert_and_update() {
+        let conn = setup();
+        insert_history(&conn, "hist-4");
+        // 第一次：INSERT（远程值，sync_md5 = 内容指纹）
+        upsert_favorite_sync_at(
+            &conn,
+            &ClipboardFavorite {
+                history_id: "hist-4".into(),
+                is_deleted: 0,
+                updated_at: "2026-08-01 10:00:00".into(),
+                sync_md5: Some("md5a".into()),
+            },
+        )
+        .unwrap();
+        let fav = load_favorite_at(&conn, "hist-4").unwrap().unwrap();
+        assert_eq!(fav.is_deleted, 0);
+        assert_eq!(fav.updated_at, "2026-08-01 10:00:00");
+        assert_eq!(fav.sync_md5.as_deref(), Some("md5a"));
+
+        // 第二次：UPDATE（远程改了 is_deleted + updated_at + sync_md5）
+        upsert_favorite_sync_at(
+            &conn,
+            &ClipboardFavorite {
+                history_id: "hist-4".into(),
+                is_deleted: 1700000123,
+                updated_at: "2026-08-02 11:00:00".into(),
+                sync_md5: Some("md5b".into()),
+            },
+        )
+        .unwrap();
+        let fav = load_favorite_at(&conn, "hist-4").unwrap().unwrap();
+        assert_eq!(fav.is_deleted, 1700000123);
+        assert_eq!(fav.updated_at, "2026-08-02 11:00:00");
+        assert_eq!(fav.sync_md5.as_deref(), Some("md5b"));
+    }
+
+    #[test]
+    fn set_sync_md5_updates_existing_row() {
+        let conn = setup();
+        insert_history(&conn, "hist-5");
+        insert_favorite_at(&conn, "hist-5").unwrap();
+        // insert 后 sync_md5 = NULL
+        let fav = load_favorite_at(&conn, "hist-5").unwrap().unwrap();
+        assert!(fav.sync_md5.is_none(), "新建 favorite sync_md5 应为 NULL");
+
+        // set_sync_md5 写入指纹
+        set_sync_md5_at(&conn, "hist-5", "fingerprint").unwrap();
+        let fav = load_favorite_at(&conn, "hist-5").unwrap().unwrap();
+        assert_eq!(fav.sync_md5.as_deref(), Some("fingerprint"));
     }
 }
