@@ -271,14 +271,28 @@ impl RecordSession {
     }
 
     pub async fn stop(&self) -> RecordResult<StoppedInfo> {
+        // 第十二轮 P2-1：stdin write 失败时不能 ? 早返回——state 已切 Stopping（:279），
+        // 必须先释放锁再 reset_to_idle 清理（对齐超时分支 :300 的 reset_to_idle 模式）。
+        // 旧实现 write 失败 ? 早返回 → state 卡 Stopping → 后续 ESC 撞同路径 → 须 tray 强制停止。
         {
-            let mut inner = self.inner.lock().await;
-            if inner.state == SessionState::Idle {
-                return Err(RecordError::NotRunning);
-            }
-            inner.state = SessionState::Stopping;
-            if let Some(stdin) = inner.stdin.as_mut() {
-                stdin.write_all(b"stop\n").await.map_err(RecordError::SpawnFailed)?;
+            let write_err: Option<RecordError> = {
+                let mut inner = self.inner.lock().await;
+                if inner.state == SessionState::Idle {
+                    return Err(RecordError::NotRunning);
+                }
+                inner.state = SessionState::Stopping;
+                if let Some(stdin) = inner.stdin.as_mut() {
+                    match stdin.write_all(b"stop\n").await {
+                        Ok(()) => None,
+                        Err(e) => Some(RecordError::SpawnFailed(e)),
+                    }
+                } else {
+                    None
+                }
+            }; // 锁释放
+            if let Some(e) = write_err {
+                self.reset_to_idle().await;
+                return Err(e);
             }
         }
 

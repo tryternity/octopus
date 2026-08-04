@@ -2,7 +2,7 @@
 
 > 嵌入式 SQLite（`~/.octopus/octopus.db`）是唯一存储——识别历史、剪贴板历史、模型配置、应用配置、润色 prompt、图片 BLOB、vault 三表、热词集、录屏记录全部在这一个库。WAL 模式 + ReentrantMutex 并发安全，schema v54。
 
-源文件：`crates/infra/src/db/`（mod.rs + 按域拆分子模块：prompts/config/transcription/agent/hotword/action_bar/vault/models）、`crates/infra/src/db.sql`、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
+源文件：`crates/infra/src/db/`（mod.rs + 按域拆分子模块：prompts/config/transcription/agent/hotword/action_bar/vault/models）、`crates/infra/resources/sql/schema.sql`（2026-08-04 内联资源集中化时从 `infra/src/db.sql` 迁入 `infra/resources/`）、`crates/infra/src/config.rs`、`crates/desktop/src/db_queue.rs`。
 
 ---
 
@@ -70,7 +70,7 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 
 ### models（模型目录）
 
-唯一来源，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed。
+唯一来源，schema 见 `crates/infra/resources/sql/schema.sql`，首次建库 `user_version=0` 时整体执行一次 seed。
 
 | 列 | 说明 |
 |---|---|
@@ -258,7 +258,7 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 ├── octopus.db          # 嵌入式 SQLite（models + clipboard_history + app_config + prompts + image_data 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/
-    ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载，随包）
+    ├── silero_vad_v6.onnx   # VAD（1.23M，2026-08-04 从 v4 升级；find_silero_vad 固定加载，随包）
     ├── zipformer/           # 默认 ASR（27M，随包）
     └── <HF repo>/           # cli download 下的大模型
 

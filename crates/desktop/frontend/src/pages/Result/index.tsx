@@ -95,10 +95,18 @@ function Result() {
 
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
 
+  // 第十二轮 P3-1：toast timer 用 ref 管理——连续不同 ms 的 toast，前次 timer 未到期时
+  // 新 toast 的 timer 并行跑，早到的会截短后到的（如 3000ms 后接 5000ms，3000ms 到期清掉后者）。
+  // 对齐 Settings/index.tsx toastTimerRef 范式。
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((msg: string, ms = 2000, isError = false) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToast(msg);
     setToastError(isError);
-    setTimeout(() => { setToast(null); setToastError(false); }, ms);
+    toastTimerRef.current = setTimeout(() => { setToast(null); setToastError(false); }, ms);
   }, []);
 
   const showToolbar = useCallback(() => {

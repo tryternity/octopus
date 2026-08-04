@@ -394,7 +394,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 // SQLite 不支持 ALTER TABLE 改约束（name 单列 UNIQUE → name+is_deleted 复合），
                 // 用建表复制法：建新表（含 is_deleted + 复合 UNIQUE）→ 复制数据 → DROP 旧 → RENAME。
                 // 现有行 is_deleted=0（活跃），复制时显式填 0。
-                conn.execute_batch(
+                //
+                // 第十一轮 P2：包 unchecked_transaction。execute_batch 在 autocommit 模式下逐条
+                // 自动提交，DROP TABLE 与 RENAME 之间崩溃（断电/kill -9）→ 旧表已删 + _new 残留 →
+                // 重启 CREATE TABLE hotword_sets_new（非 IF NOT EXISTS）报 table already exists →
+                // 迁移 fail → ensure_db 持续 Err → 应用无法启动，DB 不可恢复。事务保证 4 条 DDL
+                // 原子（全成功或全回滚），对齐 insert_vault_ciphers_batch（vault.rs:303）范式。
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch(
                     "CREATE TABLE hotword_sets_new (
                         id          TEXT    PRIMARY KEY,
                         name        TEXT    NOT NULL,
@@ -411,6 +418,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
                     ALTER TABLE hotword_sets_new RENAME TO hotword_sets;",
                 )
                 .context("迁移 v57→v58：hotword_sets 加 is_deleted + UNIQUE(name,is_deleted)")?;
+                tx.commit()?;
                 log::info!("DB migrated v57→v58: hotword_sets 加 set 级软删（is_deleted 时间戳 + 复合 UNIQUE）");
             }
             _ => {

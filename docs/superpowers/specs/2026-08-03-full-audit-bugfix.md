@@ -1,8 +1,8 @@
-# 全量代码审查 bugfix（21 crate，14 处修复）
+# 全量代码审查 bugfix（21 crate，多轮迭代）
 
-> **日期**：2026-08-03
-> **状态**：✅ 已实现（14 处全修复，全量测试通过）
-> **来源**：外部全量代码审查报告（21 crate 非增量审查，14 个具体问题 + 中低清单）
+> **日期**：2026-08-03 起，10 轮迭代（§1-7 = 轮 1-5，§8-12 = 轮 6-10）
+> **状态**：✅ 已实现（10 轮共 ~40 处修复，每轮全量测试通过）
+> **来源**：外部全量代码审查报告（21 crate 非增量审查，14 个具体问题 + 中低清单）→ 之后 9 轮自驱迭代复审（修复作用域不全 / 修复引入副作用 / 新发现）
 > **分支**：`.worktrees/bugfix_pr_0801`（bugfix/pr-0801）
 
 ## 0. 复查结论
@@ -247,3 +247,306 @@
 - **A2 Whisper Hann 窗 symmetric vs periodic**：zipformer/whisper 用 `/(size-1)`（symmetric），qwen3 用 `/size`（periodic，对齐 PyTorch 默认）。golden test 钉死错误值。修改需先 A/B 量化 WER 影响 + 重新生成 golden 值，留待后续。
 - **L4 热词候选 join("|") 无转义**：候选含字面 `|` 则 LLM 看到的候选数错。中文热词几乎不含 `|`，影响极低。
 - **L5 detect_selection restore 前 clear_suppress 微秒竞态**：窗口极窄（单线程两条语句间 watcher 恰好调度），且仅多存一条记录（非数据损坏）。
+
+## 8. 第六轮审查修复（2026-08-04，L1-b / C1+I1 / L1-a 文档化）
+
+第六轮聚焦第五轮 L1/L2 修复的**完善与残余风险收口**。第三/五轮已修 L1（`strip_edited_markers` regex 只去包裹标记）+ L2（WebP 另存实写 JPEG → magic byte 判断重编），但留下两处尾巴：① regex 每次 polish 现场编译（热路径开销）② WebP 另存分支重编后业务上已决定**摒弃 WebP**（image crate 未启 webp feature），保留兼容代码是死路径 + 误导未来维护者。
+
+### L1-b. strip_edited_markers regex 改 static Lazy 预编译
+
+**根因**：`client.rs:250-253`（第五轮 L1 修复后）每次 `polish_regions` 调用都 `Regex::new × 2`（`{...}` + `<...>`）。中间润色 mode=2 由停顿驱动频繁触发（每段停顿一次），regex 编译是热路径不必要开销。
+
+**修复**：两个 regex 提为 `static Lazy<Regex>`（`RE_EDITED_MARKER` / `RE_HOTWORDS_MARKER`，`client.rs:258-261`），`strip_edited_markers` 改用 static 引用。对齐同文件已有的 `HTTP_CLIENT: Lazy<reqwest::blocking::Client>`（:10）范式。
+
+### C1+I1. 移除 WebP 兼容代码（业务摒弃收口）
+
+**根因**：第五轮 L2 修复时给 `save_image_item` 加了 magic byte 判断（blob 是 JPEG 还是 WebP）+ WebP 分支（重编为 WebP）。但业务决策**已摒弃 WebP**：① `image` crate 的 `webp` feature 未启用（Cargo.toml 未开），`ImageFormat::WebP` 解码/编码运行时必失败；② DB `image_data.blob` 恒为 JPEG（`IMAGE_SAVE_QUALITY=jpeg:85` 入库）。保留的 WebP 分支是死路径，且 magic byte 逻辑（`starts_with(&[0xFF,0xD8,0xFF])` ? Jpeg : WebP）把任何非 JPEG blob 误判为 WebP → 老数据/损坏数据走必失败的 WebP 解码。
+
+**修复**（`clipboard_commands.rs:274-303`）：
+- 删 `"webp" => "webp"` ext 映射分支，`fmt` 落入 `_` 一律按 jpg 处理（含旧前端误传的 webp）。
+- 删 magic byte 判断，3 处 `load_from_memory_with_format` 硬编 `ImageFormat::Jpeg`。
+- 删 `"webp" =>` 编码分支（原 `img.save_with_format(..., WebP)`）。
+- 注释更新：「image_data.blob 恒为 JPEG（2026-08-03 已摒弃 WebP 落库）」。
+
+### L1-a. 字面花括号残余风险文档化（不修）
+
+**现状**：L1 regex `\{([^{}]*)\}` 无法区分「edited 标记 `{word}`」与「用户字面花括号 `{key:value}`」（代码/JSON/数学语法）。补测试 `strip_edited_markers_literal_braces_residual_risk` 钉死两个已知限制：① 平铺字面花括号 `config={key:value}` → `config=key:value`（误抹）；② 嵌套 `{config={key:value}}` → 外层泄漏 `{config=key:value}`（内层先匹配消耗，外层不再重扫）。**可接受**：ASR 转写文本几乎不含代码语法。
+
+## 9. 第七轮审查修复（2026-08-04，N1 / P2-a / P2-b / N2-rAF）
+
+第七轮发现第六轮 WebP 摒弃**清理不彻底**（前端仍有 WebP 痕迹）+ 3 处新问题（download dest fsync / search DB spawn_blocking / 终端 rAF 背压）。rAF 背压单独成 commit `71740669`（用户报告的 shell 回显丢失 bug），其余合入 `09dec35a`。
+
+### N1. WebP 摒弃前端清理不彻底
+
+**根因**：第六轮 C1 只清了后端 `clipboard_commands.rs`，前端 2 处仍留 WebP：① `SaveImagePopover.tsx` 的 `ImageFormat` 类型 + `FORMATS` 选项含 `"webp"`（用户仍能选 WebP，但后端已不支持 → 落入 `_` 按 jpg 处理，用户看到的扩展名与实际不符）；② `ImagePreview/index.tsx` 全图 Blob MIME 写 `image/webp`（但 blob 实为 JPEG → MIME 与内容不符，部分图片预览组件可能据此误判）。
+
+**修复**：
+- `SaveImagePopover.tsx:7` `ImageFormat = "jpeg" | "webp" | "png"` → `"jpeg" | "png"`；删 `{ value: "webp", label: "WebP" }` 选项。
+- `ImagePreview/index.tsx:198` Blob MIME `image/webp` → `image/jpeg`（对齐实际 blob 内容）。
+- `architecture.md §clipboard.image` 同步：默认 `IMAGE_SAVE_QUALITY` 从 `"jpeg:100"` 更正为 `"jpeg:92"`，新增「WebP 已摒弃（2026-08-03）」段落。
+
+### P2-a. download dest rename 无 fsync（对称补全）
+
+**根因**：`downloader.rs:470` 段下载完成 `std::fs::rename(&part, &task.dest)?` 只原子切目录项，**不 fsync 数据**。POSIX 语义：rename 持久化目录项 ≠ 内容持久化。断电序列：rename 成功 → 内容仍在 page cache → 断电 → dest 存在但内容空/半 → sidecar `resume.rs` 已 `remove(dest)`（认为完成）→ 无法识别为未完成 → 不会自动重下 → 用户拿到损坏文件。与已修的 sidecar `resume.rs` save（#11/P2-8）+ `keychain.rs` rename（#11）不对称——这两处都补了 fsync，download dest 漏。
+
+**修复**（`downloader.rs:470-482`）：rename 前对 part 文件 `f.sync_all()`（数据持久化），rename 后对父目录 `dir.sync_all()`（目录项持久化）。两处 best-effort（`let _ = ...`，失败 log warn 不阻断——数据最终也会被 OS 刷盘，且 fsync 失败无优雅恢复路径）。
+
+### P2-b. search MenuProvider async 里同步阻塞 DB
+
+**根因**：`search/providers/menu.rs:21-23` `async fn search` 直接调 `octopus_infra::db::list_action_bar_items()`（同步，持 `with_db` 全局 `ReentrantMutex`）。搜索与转录持久化 / 热词写 / 配置 save 共享同一 DB 锁，任一持锁时搜索 `await` 点卡住 tokio worker（搜索是高频用户操作）。
+
+**修复**（`menu.rs:22-27`）：`tokio::task::spawn_blocking(octopus_infra::db::list_action_bar_items).await`，把同步 DB 调用移到阻塞线程池，`Ok(Ok(r)) => r, _ => return vec![]`（JoinFailure / DB error 都降级空结果）。
+
+### N2. 终端 rAF 节流覆盖丢弃 → shell 回显丢失 🔴（用户报告）
+
+**根因**：`useTerminalSession.ts` PTY 输出的 rAF 节流旧逻辑「同帧内多块只保留最新，丢弃中间」（`pendingOutput = bytes` 覆盖）。对高速连续输出（`yes` / `cat` 大文件）无害（中间帧本就该丢），但对 **shell 回显致命**：shell 逐字符/小块回显用户输入，快速输入 + 回删时多个 `onData` 在同一帧（~16ms）内到达，旧逻辑只保留最后一块 → 丢失前面的回显字符 → xterm 显示的文本和 shell 实际接收的输入不一致。
+
+**症状**（用户报告）：输入 `git clonne` → 回删改成 `git clone` → 显示 `clone` 但 shell 报错 `'clonne' is not a git command`——回显的中间块被 rAF 丢弃，显示的是本地回显 + 残留拼凑的假象，shell 实际收到的是第一次完整输入。
+
+**修复**（commit `71740669`，`useTerminalSession.ts:281-313`）：同帧内多块**累积拼接**到 `pendingChunks: Uint8Array[]`，`flushOutput` 时合并成一个 `Uint8Array` 一次性 `term.write`。多数情况只有 1 块（常规输出无额外开销），高速时多块合并（保数据完整不丢）。
+
+**注**：此修复在第八轮发现引入新问题（窗口隐藏时 `pendingChunks` 无界增长），见 §10 N2-背压。
+
+## 10. 第八轮审查修复（2026-08-04，P0 folder 软删同步 + N2 背压 O(N²)）
+
+第八轮发现第七轮 rAF 背压修复**引入性能回归**（O(N²) reduce）+ 一处 P0 级新发现（vault folder 软删跨设备同步失效，与已修的 cipher H2 同型漏修）。合入 commit `63dfba46`。
+
+### P0. vault folder 软删跨设备同步失效 🔴（cipher H2 同型漏修）
+
+**根因**：cipher 早在 H2 修复（`pull_preserves_soft_deleted_at`）已让软删 cipher 跨设备同步——`cipher_md5` 含 `is_deleted`、`upsert_cipher` 透传 `is_deleted`、DB INSERT/UPDATE 含列。但 **folder 路径完全对称地漏修**：
+- `fingerprint.rs::folder_md5_from_fields(id, name, sort_order)` **不含 is_deleted**（硬编 `0u8`，:98 `format!("{}|{}|{}|{}", id, name, sort_order, 0u8)`）。
+- `db::insert_vault_folder_with_sort` / `update_vault_folder_fields` SQL **不含 is_deleted 列**（INSERT 用 DEFAULT 0，UPDATE 不碰）。
+- `engine.rs::upsert_folder_with_sort` 签名 **不接 is_deleted**。
+- 3 处调用（`clone_initial` / `merge_vault` pull 新 folder / pull 更新 folder）**丢弃 `folder_file.is_deleted`**。
+
+**触发链**：A 机软删 folder → `write_folder_file(is_deleted=true)` + outline md5（但 md5 算的时候 is_deleted 没参与）→ B 机 pull → `upsert_folder_with_sort` SQL 不含 is_deleted → INSERT DEFAULT 0 / UPDATE 不碰 → **folder 复活成 live** → B 机 push 反向覆盖 → A 机的删除被撤销。跨设备删除意图无法传播。
+
+**修复**（5 层对称修复，对齐 cipher H2）：
+1. `fingerprint.rs:101` `folder_md5_from_fields` 加 `is_deleted: bool` 参数，`format!` 用 `is_deleted as u8`（对称 `cipher_md5_from_input`）。
+2. `db/vault.rs:456` `insert_vault_folder_with_sort` 加 `is_deleted: bool` 参数 + INSERT SQL 加 `is_deleted` 列。
+3. `db/vault.rs:494` `update_vault_folder_fields` 加 `is_deleted: bool` 参数 + UPDATE SQL 加 `is_deleted = ?5`。
+4. `engine.rs:622` `upsert_folder_with_sort` 加 `is_deleted: bool` 参数，透传给 INSERT/UPDATE。
+5. 3 处调用补 `folder_file.is_deleted`：`clone_initial:535-536` / `merge_vault` pull 新 folder `:1123,1130` / pull 更新 folder `:1151,1158`。另 `folder.rs::create_folder` / `rename_folder` 算 md5 传 `false`（新建/改名必 live）。
+
+**回归测试**（`engine.rs:2202 pull_preserves_soft_deleted_folder`）：写一个 `is_deleted=true` 的 folder 文件 + outline → `merge_vault` pull → 断言 DB 中 `is_deleted` 必须存活（不能复活成 false）。对齐 cipher H2 的 `pull_preserves_soft_deleted_at`。
+
+### N2. 终端 rAF 背压 O(N²)（第七轮修复引入的回归）
+
+**根因**：第七轮 N2 背压守卫（`pendingBytes >= 2MB` 同步 flush）用 `pendingChunks.reduce((s, c) => s + c.length, 0)` 每次 `onData` 算总字节。`onData` 是热路径（PTY 每次输出都调），`pendingChunks` 长度随累积线性增长 → 每次 reduce O(N) → 整体 O(N²)。高速输出（`yes`）时 N 快速增长，CPU 飙升。
+
+**修复**（`useTerminalSession.ts:282,290,308`）：与 `pendingChunks` 平行维护 `pendingBytes` 计数器——push 时 `pendingBytes += bytes.length`，flush 时 `pendingBytes = 0`。热路径 O(1)，消除 reduce。
+
+## 11. 第九轮审查修复（2026-08-04，P1 SyncPanel confirm + P2-a alert + P2-b toast）
+
+第九轮聚焦**前端 WKWebView 兼容性**——`window.confirm` / `window.alert` 在 WKWebView 静默失效（confirm 返 false、alert 不显示），导致禁用 vault sync 按钮失效、翻译失败无反馈、toast 被前次 timer 误清。合入 commit `63dfba46`（与第八轮同 commit）。
+
+### P1. SyncPanel window.confirm 在 WKWebView 静默返 false 🔴
+
+**根因**：`SyncPanel.tsx:198` `handleDisable` 用 `if (!confirm(t("...disableConfirm"))) return;`。语义是「用户点取消（confirm 返 false）则 return」。但 WKWebView 下 `window.confirm` **不弹框且静默返回 `false`** → `!false === true` → 永远 return → **禁用 vault sync 按钮永远失效**（点了没反应）。
+
+**修复**（`SyncPanel.tsx:4,198`）：改用 `@tauri-apps/plugin-dialog` 的 `confirm`（alias `confirmDialog`）：`if (!(await confirmDialog(t("...disableConfirm"), { title: t("...disableConfirmTitle"), kind: "warning" }))) return;`。对齐同目录 `HotwordPanel` 已用 `plugin-dialog` 的范式。**WKWebView 下原生 `confirm/alert/prompt` 不可靠**是已知坑（AGENTS.md 历史教训），所有确认/提示必须走 `plugin-dialog`。
+
+### P2-a. CompactEditor window.alert 在 WKWebView 不显示
+
+**根因**：`CompactEditor/index.tsx:502` 翻译启动失败 catch 里 `alert(ti18n("editor.translateFail") + ": " + String(e))`。WKWebView 下 `window.alert` 不显示 → 用户翻译失败无任何反馈。
+
+**修复**：删 `alert(...)`，保留 `console.error(...)`（已有）。**注**：此修复在第十轮发现引入回归（只 `setTranslating(false)` 不回滚 `translatedText` 占位 → 译文区永留「⏳ 正在翻译...」），见 §12 P2-4。
+
+### P2-b. Settings showToast 无 timerRef → error toast 被前次 success timer 清掉
+
+**根因**：`Settings/index.tsx:68` `showToast` 的 success 分支 `setTimeout(() => setToast(null), 2000)` 未存 timer ref。时序：success toast 设置 + 调度 2s 清除 → 1s 后 error toast 来 → error 分支不设新 timer（`if variant === error return`）→ 前次 success 的 2s timer 到期 → `setToast(null)` → **error toast 被清掉**（用户来不及看）。
+
+**修复**（`Settings/index.tsx:71-79`）：`toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)`。每次 `showToast` 先 `clearTimeout(toastTimerRef.current)` 清前次 timer（无论 success/error），success 分支设新 timer 存 ref，error 分支不设（保持不自动消失，让用户手动关闭）。
+
+## 12. 第十轮审查修复（2026-08-04，P1-1 hotword spawn_blocking + P1-2 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚）
+
+第十轮收口第九轮前端修复**引入的回归**（P2-4）+ 3 处新发现（hotword LLM 阻塞 tokio / VaultPanel 监听器泄漏 / SyncPanel 并发 resolve）。合入 commit `1c6145e4`。
+
+### P1-1. list_hotword_candidates LLM 阻塞 tokio worker 🔴
+
+**根因**：`hotword_commands.rs:193` `async fn list_hotword_candidates` 直接在 async 命令体里跑 DB 读 + 文件 IO + **sync LLM 调用**（`octopus_llm::mine_hotwords`，5-30s 阻塞）。tokio worker 被占期间，同 worker 的 `pty_open` / search emit / 其他命令全排队。与同文件 `import_hotwords:284` / `export_hotwords`（都用 `spawn_blocking`）不对称。
+
+**修复**（`hotword_commands.rs:197-271`）：整体塞 `tauri::async_runtime::spawn_blocking(move || { ... }).await`，内部逻辑不变（读 edited_segments → 过滤 → 读 prompt 文件 → LLM 挖掘 / jieba 回退 → 去重 → 排除已有）。`.map_err(|e| format!("list_hotword_candidates join failed: {}", e))?` 处理 JoinFailure。
+
+### P1-2. VaultPanel visibilitychange 匿名函数无法 cleanup → 监听器泄漏
+
+**根因**：`VaultPanel.tsx:100` `document.addEventListener("visibilitychange", () => { ... })` 用匿名箭头函数。cleanup effect 里要 `removeEventListener` 但**没存函数引用** → 无法移除 → 每次 mount/unmount（切设置 tab、开关窗口）累积一个监听器 → 泄漏。多次切换后 N 个监听器同时触发 `handleFocus/handleBlur` → 重复 `vault_lock` / heartbeat 抖动。
+
+**修复**（`VaultPanel.tsx:101-116`）：提为具名 `const handleVisibilityChange = () => { ... }`，`addEventListener` + cleanup `removeEventListener` 都用同一引用。
+
+### P2-3. SyncPanel handleResolve Enter 无 resolving 守卫（防并发 resolve）
+
+**根因**：`SyncPanel.tsx:503` resolve 密码输入框 `onKeyDown={(e) => e.key === "Enter" && handleResolve()}`。`resolving` 状态已有（按钮 disabled 用），但 Enter 键没查 → 用户连按 Enter / 输入法触发的多次 keydown → 并发 `handleResolve` → 多次 `vault_sync_resolve` 命令 → 冲突状态。
+
+**修复**（`SyncPanel.tsx:503`）：`onKeyDown={(e) => e.key === "Enter" && !resolving && handleResolve()}`，加 `!resolving` 守卫。
+
+### P2-4. CompactEditor 翻译失败不回滚 translatedText 占位（第九轮 P2-a 引入的回归）
+
+**根因**：第九轮 P2-a 删 `alert` 时，catch 分支只剩 `setTranslating(false)`。但翻译启动时已 `setTabs` 把 `translatedText` 设成 `'⏳ ' + ti18n("editor.translating")` + `mode: 'contrast'`（`CompactEditor/index.tsx:487`）。失败后只 `setTranslating(false)` 不回滚 → **译文区永留「⏳ 正在翻译...」占位**，用户以为还在翻译。
+
+**修复**（`CompactEditor/index.tsx:504-514`）：catch 分支补回滚——`tabsRef.current.map` 把失败 tab 的 `mode` 回 `'single'` + `translatedText: undefined`，`setTabs(rollback)`。
+
+## 13. 各轮修复索引（按 commit）
+
+| 轮次 | commit | 内容 |
+|---|---|---|
+| 1-2 | （多 commit） | 外部报告 14 处 + F1-F3/G1-G4/H1 复审 |
+| 3 | `762557bb` | P1-1～P2-8 共 11 处 |
+| 4 | `1370bd48` | R4-1～R4-9（5 处重做 + 4 处新发现） |
+| 5 | `95210d92` | S1～S3 + A1 + L1～L3（7 修复 + 3 文档化） |
+| 6+7 | `71740669`（rAF 单独）+ `09dec35a`（其余） | L1-b regex 预编译 + C1 webp 摒弃 + N1 webp 前端清理 + P2-a dest fsync + P2-b search spawn_blocking + N2 rAF 背压 |
+| 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
+| 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
+| 11 | （本轮，待 commit） | P1 vault cipher+folder ping-pong 收敛（sync-only upsert 保留远程时间戳）+ P2 v57→v58 迁移事务 |
+| 12 | （本轮，待 commit） | P1-1 dock FLOAT_DEPTH 泄漏 + P1-2 MarkdownPreview 链接拦截 + P2-1 record stop 卡 Stopping + P2-2 OCR 编号不重置 + P2-3/4 坐标混算 + P3-1/2/3/4 + doc |
+
+## 14. 第十一轮审查修复（2026-08-04，P1 vault ping-pong + P2 v57→v58 迁移事务）
+
+第十一轮全新核查发现 2 处问题（P1 + P2），外加 P3 纵深防御观察（非阻塞，不本轮修）。两报告问题全部 CONFIRMED（4/4 + 6/6 证据 Read 核实）。
+
+### P1. vault cipher + folder 多设备 sync ping-pong — 永不收敛 + git 历史无限膨胀 🔴
+
+**根因**：pull/clone 路径复用业务 upsert，业务 SQL 硬编 `updated_at = datetime('now')`，远程时间戳在落库时丢失。多设备交替 sync 后，cipher/folder 的 `updated_at` 互相覆盖性递增，每次 sync 都产生「内容未变但时间戳更新」的空 commit，永不收敛。
+
+**4 证据链**（全部 Read 核实）：
+1. `vault.rs:342-364 update_vault_cipher_at` 硬编 `updated_at = datetime('now')`（业务 UPDATE 路径）。
+2. `vault.rs:312-332 insert_vault_cipher_at` 的 INSERT 不含 `created_at`/`updated_at` 列 → SQLite DEFAULT = now。
+3. `engine.rs:587-603 build_cipher_input_from_file`（原函数）构造的 `VaultCipherInput` 字段无 `created_at`/`updated_at`（远程时间戳在此丢失）。
+4. `store.rs:517 export_all_to_files` 算 outline：`updated_ms: iso_to_unix_ms(&c.updated_at)` —— outline.updated_ms 来自 DB.updated_at（pull 后 = 本机 now）。
+
+**folder 路径同型**：`update_vault_folder_fields:504` 同样硬编 `datetime('now')`，folder merge 同样用 updated_ms 比较 → folder 改名/排序跨设备也 ping-pong。
+
+**触发链**：A 创建 cipher（DB=T_A1, outline=T_A1, push）→ B pull（build_cipher_input_from_file 丢 T_A1 → 落库 DB=T_B1）→ B export（outline=T_B1, push）→ A fetch（outline T_B1 > DB T_A1 → pull → update_vault_cipher_at DB=T_A2）→ … 永不收敛。
+
+**为何前 10 轮未发现**：单设备 sync 时 DB.updated_at 与 outline.updated_ms 同源（都基于同一 DB 值），md5 比对跳过，单设备完全不触发。必须 ≥2 设备交替 cross sync 才暴露。vault 是密码管理器，数据一致性是核心契约。
+
+**为何多轮未发现（补充）**：现有测试 `pull_uses_md5_not_updated_at:1980` 守护 md5 比对（updated_at 不同但 md5 相同应跳过），但**没有测试验证 pull 后 DB.updated_at 的值**——它假设 pull 会写 now，断言只看 pulled 计数。ping-pong 的本质是「时间戳值丢失」而非「md5 比对错」，测试盲区。
+
+**修复方式**（sync-only upsert，不碰 `VaultCipherInput`）：
+
+**决策理由**：`VaultCipherInput` 有 23 个构造点，本地路径必须保持 `datetime('now')`（标记「我改了」），改 struct 字段风险高。`VaultCipher`/`VaultFolder` 已含远程时间戳（`CipherFile::to_vault_cipher():273-274` / `FolderFile::to_vault_folder():312-313` 保留 created_at/updated_at），数据已现成。故新增专用 sync-only upsert 路径，与 `_at` 后缀范式（`update_vault_cipher_at` 已存在）一致。
+
+**infra/db/vault.rs 新增 4 个 pub fn**（紧邻现有 cipher/folder 函数）：
+1. `insert_vault_cipher_sync_at(conn, row: &VaultCipher)` —— INSERT 含 `created_at, updated_at` 列（用 row 值）。
+2. `update_vault_cipher_sync_at(conn, id, row: &VaultCipher)` —— UPDATE 显式写 `created_at = ?, updated_at = ?`（非 `datetime('now')`）。
+3. `insert_vault_folder_sync_at(conn, row: &VaultFolder)` —— folder 版 INSERT。
+4. `update_vault_folder_sync_at(conn, id, row: &VaultFolder)` —— folder 版 UPDATE（含 sort_order + is_deleted + 时间戳）。
+
+**vault/src/sync/engine.rs 新增 2 个 upsert + 重接 6 处调用点**：
+- `upsert_cipher_from_file(row: &VaultCipher)` —— load 存在性 → Some 调 `update_vault_cipher_sync_at`，None 调 `insert_vault_cipher_sync_at`。
+- `upsert_folder_from_file(row: &VaultFolder)` —— folder 版。
+- 6 处调用点改用新函数：cipher pull 新增 + cipher pull 更新 + folder pull 新增 + folder pull 更新 + clone cipher + clone folder。
+- **删除** 3 个旧函数（`build_cipher_input_from_file` / `upsert_cipher` / `upsert_folder_with_sort`）——它们已无生产/测试调用（pull/clone 全改新函数后变死代码）。`build_cipher_input_from_file` 的「丢时间戳」是 ping-pong 的直接原因，删除即根治。
+
+**业务路径保持不变**：`save_cipher` / `soft_delete` / `restore` / `create_folder` / `rename_folder` 等本机编辑仍走 `datetime('now')`（业务 upsert），语义正确——本机编辑刷新时间戳标记「我改了」，下次 push 传播这个新时间戳。
+
+**回归测试**（engine.rs 测试模块，3 测试）：
+1. `cipher_pull_preserves_remote_timestamp` —— 写文件 cipher `updated_at=2099` + outline `updated_ms=2099` → DB 空 → merge pull → 断言 `DB.updated_at == "2099-12-31 23:59:59"`（不是本机 now）+ `created_at == "2099-01-01 00:00:00"`。
+2. `folder_pull_preserves_remote_timestamp` —— folder 版，断言 `DB.updated_at` + `sort_order` 保留。
+3. `sync_converges_after_round_trip_no_ping_pong`（核心收敛测试）—— 模拟多设备 round-trip：①DB 有 cipher（push, 本机 T1）②模拟 B 机 pull 后回写（outline.updated_ms=T1，时间戳不变）③再 merge → 断言 `pulled == 0 && pushed == 0`（收敛）+ `DB.updated_at` 仍 T1。钉死收敛契约。
+
+**更新 `clone_preserves_soft_deleted_at` 测试**（T1 修复，2026-07-24）：原测试用 `build_cipher_input_from_file` + `upsert_cipher`（旧路径），现改用 `upsert_cipher_from_file`（新生产路径），保持「测试调生产构造点」不变量（MatchType#1 防护）。
+
+### P2. infra v57→v58 schema 迁移缺事务 — 崩溃致 DB 不可恢复 🟠
+
+**根因**：`db/mod.rs:397`（57 => 分支）的 `conn.execute_batch(...)` 含 4 条 DDL（CREATE new + INSERT + DROP old + RENAME），未包事务。`execute_batch` 在 autocommit 模式下逐条自动提交，DROP TABLE 与 RENAME 之间崩溃（断电 / kill -9 / panic）→ hotword_sets 已提交删除 + hotword_sets_new 残留 → 重启 init_schema 走到 `CREATE TABLE hotword_sets_new`（非 IF NOT EXISTS）报 `table already exists` → 迁移 fail → `ensure_db` 持续 Err → 应用无法启动，DB 不可恢复。对比同文件 `insert_vault_ciphers_batch:303`（正确用 `unchecked_transaction`）。
+
+**修复**（`db/mod.rs:397`）：
+```rust
+let tx = conn.unchecked_transaction()?;
+tx.execute_batch("CREATE TABLE hotword_sets_new ...; INSERT ...; DROP TABLE hotword_sets; ALTER TABLE hotword_sets_new RENAME TO hotword_sets;")?;
+tx.commit()?;
+```
+4 条 DDL 原子化（全成功或全回滚）。`unchecked_transaction(&self)` 接收 `&Connection`（不需 `&mut`），与 `init_schema(conn: &Connection)` 签名兼容。
+
+**未修（P3 技术债）**：v56→v57 的 `execute_batch`（建 `hotword_words` 表 + seed，`IF NOT EXISTS`，无 DROP）非破坏性，未包事务——风险低（中间崩溃留空表，重启幂等），留作技术债。
+
+### P3 观察汇总（技术债，非阻塞，不本轮修）
+
+| # | 位置 | 观察 |
+|---|---|---|
+| 1 | `SyncPanel.tsx:175,195` | `handleResolve` 函数体缺 `if(resolving) return` 早返回 + `useCallback` deps 缺 `resolving`（纵深防御，按钮 disabled + Enter `!resolving` 两入口已守住，新增第三入口会漏） |
+| 2 | `db/mod.rs` 多处 | hotword/agent/action_bar 的多语句写入未包事务（同 P2 迁移的同类问题，但非破坏性 DDL，风险低） |
+| 3 | 迁移错误处理 | 部分 `let _ =` 吞迁移返回值；`set_test_db` user_version=46 |
+| 4 | LIKE 查询 | 部分 LIKE 未 escape 用户输入中的 `%`/`_` |
+| 5 | `opus_mt.rs:173-203` | 单句超长（500+ 无标点）缺字符硬切，依赖 `truncate(500,...,Right)` 丢尾部（m2m100 有 `split_into_chunks` 硬切，opus_mt 无等价处理）。罕见不 panic |
+| 6 | `dlp/main.rs:236-328` | yt-dlp/ffmpeg 子进程无 timeout，直播流源可能永久挂起。CLI 惯例，用户可 Ctrl-C |
+| 7 | `cloud.rs:43-50` vs `translate.rs:94-122` | CloudModel 直接 await（内部 blocking reqwest）vs FallbackLlm 走 spawn_blocking，隔离方式不一致。当前调用链已隔离，未来改 `tokio::spawn` 直接 await 会暴露 |
+
+### 健康确认（本轮无 ≥80 发现）
+
+- pty crate（3 线程模型 / ChildKillGuard RAII / join_reader_with_timeout / overflow 背压 / getpwuid_r 可重入 / write_if_changed 原子）：健康。
+- translation crate（ngram 重复惩罚越界保护 / m2m100 8-token 重复检测 / argmax NaN 安全 / i64→u32 边界检查 / normalize_cjk_spaces）：健康。
+- dlp crate（DownloadedFileGuard RAII / reqwest 300s 超时）：健康。
+
+### 验证
+
+- `cargo build -p octopus-infra -p octopus-vault` —— 0 error 0 warning。
+- `cargo test -p octopus-infra --lib` —— 183 passed（含迁移测试）。
+- `cargo test -p octopus-vault --lib` —— 262 passed（259 旧 + 3 新 P1 回归）。
+
+### 历史遗留项升级（文档化 → 已修）
+
+交接笔记原列「P2-3 vault 时间戳跨设备覆盖（VaultCipherInput 加字段 + SQL，较大改动）」为「文档化不修」——本轮 P1 已修复（采用 sync-only upsert 方式，比原设想的「VaultCipherInput 加字段」风险更低）。此项从「文档化不修」升级为「已修」。
+
+## 15. 第十二轮审查修复（2026-08-04，2 P1 + 4 P2 + 4 P3 + 1 doc）
+
+第十二轮全新核查（5 模块域：desktop 核心 / 前端 / ASR+OCR+polish / vault+infra / config+pty）。报告 10 个问题**全部 CONFIRMED**（每个证据点亲自 Read 核实）。全部修复。
+
+### P1-1. clipboard dock hotkey expanded→collapsed FLOAT_DEPTH 泄漏 🔴
+
+**根因**：`clipboard_window.rs:278-285` hotkey toggle 的 expanded→collapsed 分支只切 `DOCK_EXPANDED=false` + emit collapse，**不调 `after_floating_window_hide*`**；而 collapsed→expanded 分支（:291）调了 `before_floating_window_show`（depth+1，隐藏 Regular 窗口）。奇数次 toggle 后 depth>0 永久 → `restore_hidden_windows_only`（activation.rs:319）`if !float_depth_decrement_and_is_zero() { return }` early return → 被隐藏的 settings/compact_editor/terminal 窗口永久消失（托盘 open_settings 只 set_focus 无 show）。历史债（git 证实非本 PR 引入）。
+
+**修复**：expanded→collapsed 分支（:285 emit collapse 后）加 `after_floating_window_hide_keep_active(app)`。选 `keep_active` 变体（非普通 hide）：dock 收缩态 clipboard_window 仍 visible（只宽度收窄），不能 deactivate 交还前台焦点——会打断用户当前工作。`keep_active`（activation.rs:353）递减 depth + 恢复隐藏 Regular 窗口但不 deactivate。
+
+**作用域**：只改 hotkey toggle 路径。`clipboard_dock_expand`/`clipboard_dock_collapse` Tauri 命令（:223/:234）不碰 depth（不调 before_floating_window_show），无需改。
+
+### P1-2. MarkdownPreview 空内容挂载后链接拦截永久失效 🔴
+
+**根因**：`CompactEditor/MarkdownPreview.tsx` click listener effect（:34-68）绑到 `<article>`，但①effect deps 是 `[]`（仅挂载一次）②空内容分支（:70-76）不渲染 `<article>` → mount 时 `articleRef.current=null` → `if(!article) return` 早退、listener 不注册 → 后续内容到达 `<article>` 挂载但 effect 不重跑 → 点链接无 preventDefault → WKWebView 导航到外链，编辑上下文丢失。
+
+**修复**（方案 C，委托到容器）：listener 从 `<article>` 挪到外层 `<div>`（两分支都渲染的稳定容器）。新增 `containerRef` 指向根 `<div>`（两分支都加 ref），click 冒泡到 div，`closest("a")` 仍命中 article 内链接。空内容分支也生效（div 总在），保留「仅挂载一次」语义。锚点跳转 `article.querySelector` 改 `containerRef.current?.querySelector`（查询范围等价）。
+
+### P2-1. record stop() stdin 写失败卡 Stopping 🟠
+
+**根因**：`record/src/session.rs:281` `stdin.write_all(b"stop\n").await.map_err(RecordError::SpawnFailed)?` 失败时 `?` 早返回，state 已切 Stopping（:279）但无 `reset_to_idle`。对比超时分支（:300）有 `reset_to_idle`。helper 崩溃/被 kill/系统休眠后 ESC → state 卡 Stopping → 后续 ESC 撞同路径 → 须 tray「强制停止」恢复。
+
+**修复**：把 write 结果捕获到 lock 段外（锁先释放，reset_to_idle 内部再锁），失败时调 `self.reset_to_idle().await` 再返错。对齐超时分支模式。
+
+### P2-2. OCR ordered_counter 列表类型切换不重置 🟠
+
+**根因**：`ocr/src/layout.rs:104-149` 的 `need_split`（:107/:130）只看几何间距（`y - (py+ph) > median_h * PARAGRAPH_GAP_RATIO`），不看列表类型。ordered→unordered→ordered（小间距）时第二段 ordered 从残留计数继续（ordered_counter 仅 Heading/大间距/BodyParagraph 重置）。
+
+**修复**：`need_split` 加「前项列表类型不一致即重置」——Ordered 分支检查前项是 `ListItemUnordered` → true；Unordered 分支检查前项是 `ListItemOrdered` → true。用 `Some(Unit::ListItemUnordered(..)) => true` 简洁模式。回归测试 `end_to_end_list_type_switch_resets_counter`（ordered 3 项 + unordered 2 项 + ordered 2 项小间距，断言第二段从 1 开始）。
+
+### P2-3/P2-4. record_window + overlay_window 坐标混算 🟠
+
+**根因**：`record_window.rs:103` + `overlay_window.rs:58` 把 `pos.x`（`Monitor::position()` 物理像素）未除 scale 直接加 `mon_w=sz.width/scale`（逻辑），下游 `set_position(LogicalPosition)` 契约违反。主屏 origin≠0 + Retina 时偏移。这是 AGENTS.md「物理/逻辑坐标转换」已知 gotcha 的新实例（已修 compact_editor_window/window_position）。
+
+**修复**：`pos.x as f64` → `pos.x as f64 / scale`（position 也除 scale 统一逻辑）。两处同模式。
+
+### P3-1. Result/index.tsx toast timer ref
+
+`Result/index.tsx:101` `setTimeout` 未存 ref，连续不同 ms 的 toast 早到 timer 截短后到。照搬第九轮 Settings `toastTimerRef` 范式——`useRef<ReturnType<typeof setTimeout> | null>(null)`，showToast 先 clearTimeout 前次。
+
+### P3-2. ImagePreview prevNatW 闭包旧值
+
+`ImagePreview/index.tsx:229` full-load effect deps 仅 `[imageId]`，闭包里 `natW` 是前图旧值（缩略图 naturalWidth）。加 `natWRef` 镜像 + `setNatWSync` setter（对齐同文件 `setZoomSync` 范式），`:229 prevNatW = natWRef.current`（读最新值）。低风险（触发窗窄、不损数据）。
+
+### P3-3. ActionBarPanel triggerKeyword debounce
+
+`ActionBarPanel.tsx` 的 `titleDraft` 有 debounce（:280-288），`triggerKeyword` input 无（:454-457 每按键 IPC + refresh，慢时字符黏滞）。照搬 titleDraft 范式：加 `triggerDraft` state + ref + 300ms debounce effect，input `value={triggerDraft !== null ? triggerDraft : ...}` + onChange `setTriggerDraft`。
+
+### P3-4. rename_hotword_set_at 刷 sync_md5（防御性）
+
+`infra/db/hotword.rs:140` 不刷 sync_md5，与 vault `update_vault_folder_name` 不对称。当前 caller（desktop `refill_sync_md5`，10 处）全兜底，零触发；残留风险：未来 cli/server 直调会 ping-pong。修复：`rename_hotword_set_at` / `rename_hotword_set` 加 `sync_md5` 参数，UPDATE 含 `sync_md5=?2`。caller（desktop Tauri 命令 + 6 测试）算 md5 传入（`hotword_set_md5_from_fields`）。对齐 vault 范式。
+
+### P3-doc. engine.rs:2223 stale 注释
+
+`engine.rs:2223` 注释引用已删除的 `build_cipher_input_from_file`（第十一轮删），改 `upsert_cipher_from_file`。
+
+### 验证
+
+- `cargo build` infra/record/ocr/vault/sync/desktop(cloud,vault) —— 0 error 0 warning。
+- `cargo test`：infra 183 / record 50 / ocr 35（+1 P2-2）/ vault 262 / sync 126 / desktop 520 全过。
+- tsc exit 0 + vite build 成功。

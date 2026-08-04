@@ -97,12 +97,17 @@ fn compute_position(app: &AppHandle) -> (f64, f64) {
             let scale = m.scale_factor();
             let pos = m.position();
             let sz = m.size();
+            // 第十二轮 P2-3：Monitor position/size 都是物理像素，统一除 scale 转逻辑坐标。
+            // 旧实现 pos.x/y 未除（物理）+ mon_w/h 除了（逻辑）混算 → 主屏 origin≠0 + Retina 偏移。
+            // 对齐 AGENTS.md「Monitor position/size 除 scale」+ compact_editor_window 范式。
+            let mon_x = pos.x as f64 / scale;
+            let mon_y = pos.y as f64 / scale;
             let mon_w = sz.width as f64 / scale;
             let mon_h = sz.height as f64 / scale;
             // 水平居中：显示器中心 - 浮窗宽度/2
-            let x = pos.x as f64 + mon_w / 2.0 - WIDTH / 2.0;
+            let x = mon_x + mon_w / 2.0 - WIDTH / 2.0;
             // 垂直上 1/3：显示器顶部 + 高度/3 - 浮窗高度/2（浮窗中心对齐上 1/3 线）
-            let y = pos.y as f64 + mon_h / 3.0 - HEIGHT / 2.0;
+            let y = mon_y + mon_h / 3.0 - HEIGHT / 2.0;
             (x, y.max(0.0))
         })
         .unwrap_or((100.0, 100.0))

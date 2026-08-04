@@ -20,6 +20,12 @@ function useDebounced<T>(value: T, delayMs: number): T {
 export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
   const debouncedSource = useDebounced(source, 150);
   const articleRef = useRef<HTMLElement>(null);
+  // 第十二轮 P1-2：click listener 委托到容器 div（两分支都渲染的稳定容器）。
+  // 旧实现绑到 <article>，但空内容分支不渲染 <article> → effect mount 时 articleRef=null
+  // 早返回、listener 不注册 → 后续内容到达 <article> 挂载但 effect 不重跑（deps []）
+  // → 链接点击无 preventDefault → WKWebView 导航到外链，编辑上下文丢失。
+  // 委托到容器：click 冒泡，closest("a") 仍命中 article 内链接，空内容分支也生效。
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // useMemo 同步派生 HTML（避免 setState 额外重绘周期）
   const html = useMemo(() => renderMarkdown(debouncedSource), [debouncedSource]);
@@ -32,8 +38,8 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
 
   // 全局事件委托：链接拦截 + 代码块复制（仅挂载一次，html 变化不重绑）
   useEffect(() => {
-    const article = articleRef.current;
-    if (!article) return;
+    const container = containerRef.current;
+    if (!container) return;
     const onClick = async (e: MouseEvent) => {
       // 代码块复制按钮
       const copyBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-copy]");
@@ -54,7 +60,7 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
       if (href.startsWith("#")) {
         e.preventDefault();
         const id = decodeURIComponent(href.slice(1));
-        const target = article.querySelector(`[id="${CSS.escape(id)}"]`);
+        const target = container.querySelector(`[id="${CSS.escape(id)}"]`);
         target?.scrollIntoView({ behavior: "smooth", block: "start" });
       } else if (/^https?:\/\//.test(href)) {
         e.preventDefault();
@@ -63,20 +69,20 @@ export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
         e.preventDefault();
       }
     };
-    article.addEventListener("click", onClick);
-    return () => article.removeEventListener("click", onClick);
+    container.addEventListener("click", onClick);
+    return () => container.removeEventListener("click", onClick);
   }, []);
 
   if (source.trim().length === 0) {
     return (
-      <div className="md-preview flex-1 flex items-center justify-center">
+      <div ref={containerRef} className="md-preview flex-1 flex items-center justify-center">
         <span className="text-sm text-muted-foreground">{t("editor.previewEmpty")}</span>
       </div>
     );
   }
 
   return (
-    <div className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
+    <div ref={containerRef} className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
       <article ref={articleRef} className="md-prose" />
     </div>
   );

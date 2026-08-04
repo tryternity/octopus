@@ -23,7 +23,7 @@ octopus-server 提供的 HTTP 和 WebSocket 接口。
 ```json
 {
   "asr_engine": "sensevoice-orig",
-  "vad_model": "/path/to/silero_vad_v4.onnx"
+  "vad_model": "/path/to/silero_vad_v6.onnx"
 }
 ```
 

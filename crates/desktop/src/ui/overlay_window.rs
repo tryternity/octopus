@@ -55,8 +55,9 @@ fn show_at_mouse(app: &AppHandle, payload: &OverlayPayload) {
                         let scale = m.scale_factor();
                         let pos = m.position();
                         let sz = m.size();
-                        ((pos.x as f64 + sz.width as f64 / scale / 2.0) - 160.0,
-                              (pos.y as f64 + sz.height as f64 / scale / 2.0) - 40.0)
+                        // 第十二轮 P2-4：pos.x/y 物理像素也除 scale 统一逻辑坐标（对齐 record_window P2-3）。
+                        ((pos.x as f64 / scale + sz.width as f64 / scale / 2.0) - 160.0,
+                              (pos.y as f64 / scale + sz.height as f64 / scale / 2.0) - 40.0)
                     })
                     .unwrap_or((400.0, 300.0));
                 (cx, cy)

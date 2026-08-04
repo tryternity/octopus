@@ -76,6 +76,10 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // useAnnotationInteraction 内部持有；这里保留 zoom/位图/平移相关的本组件独有 ref。
   const zoomRef = useRef(1);
   const scaledBitmapRef = useRef<ImageBitmap | null>(null);
+  // 第十二轮 P3-2：natWRef 镜像 natW——full-load effect deps 仅 [imageId]，闭包里的 natW
+  // 是前图旧值（缩略图 naturalWidth），用户在 thumb→full 窗内手动缩放后 prevNatW 读旧值
+  // → ratio 偏差 → 图片跳大小。ref 化让 :223 prevNatW 读最新值（同图缩放正确）。
+  const natWRef = useRef(initialWidth || 0);
   const zoomVersionRef = useRef(0);
   const userZoomedRef = useRef(false);
   // fit 模式：'fitWindow' | 'fitWidth' | 'manual'。ResizeObserver 据此决定是否自动重算
@@ -97,6 +101,8 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     }
     setZoom(clamped);
   };
+  // natW 同步 setter（镜像 ref，对齐 setZoomSync 范式）——P3-2：full-load effect 闭包读 natW 旧值
+  const setNatWSync = (w: number) => { natWRef.current = w; setNatW(w); };
   const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP, true);
   const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
   const zoomReset = () => setZoomSync(1, true);
@@ -165,7 +171,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
     fitModeRef.current = 'fitWindow';
     annotation.drawingRef.current = null;
     setAnnotations([]);
-    setNatW(0);
+    setNatWSync(0);
     setNatH(0);
     setFullNatW(0);
     setFullNatH(0);
@@ -185,7 +191,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         imgRef.current = thumbImg;
         setDataUrl(thumbDataUrl);
         const fitZoom = computeFitZoom(thumbImg.naturalWidth, thumbImg.naturalHeight);
-        setNatW(thumbImg.naturalWidth);
+        setNatWSync(thumbImg.naturalWidth);
         setNatH(thumbImg.naturalHeight);
         setZoomSync(fitZoom);
       };
@@ -215,14 +221,14 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
         setFullNatH(fullImg.naturalHeight);
         if (!userZoomedRef.current) {
           const fitZoom = computeFitZoom(fullImg.naturalWidth, fullImg.naturalHeight);
-          setNatW(fullImg.naturalWidth);
+          setNatWSync(fullImg.naturalWidth);
           setNatH(fullImg.naturalHeight);
           setZoomSync(fitZoom);
         } else {
           // 用户已手动缩放：等比例修正 zoom 保持视觉大小不变
-          const prevNatW = natW;
+          const prevNatW = natWRef.current; // P3-2：读 ref 最新值（非闭包旧 natW）
           const ratio = prevNatW / fullImg.naturalWidth;
-          setNatW(fullImg.naturalWidth);
+          setNatWSync(fullImg.naturalWidth);
           setNatH(fullImg.naturalHeight);
           if (ratio > 0 && ratio !== 1) {
             setZoomSync(zoomRef.current * ratio, true);

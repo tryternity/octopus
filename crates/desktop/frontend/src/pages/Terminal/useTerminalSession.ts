@@ -279,6 +279,7 @@ export function useTerminalSession(opts: {
     // shell 实际接收的输入不一致（用户看到 clone 但 shell 收到 clonne）。
     // 改为累积：同帧内多块拼接到 pendingBuffer，flush 时一次性 write 全部。
     let pendingChunks: Uint8Array[] = [];
+    let pendingBytes = 0; // 第八轮 N2：与 pendingChunks 平行维护，消除 reduce 的 O(N²)
     let rafScheduled = false;
     const flushOutput = () => {
       rafScheduled = false;
@@ -286,6 +287,7 @@ export function useTerminalSession(opts: {
       // 拼接本帧累积的所有块——多数情况只有 1 块（常规输出），高速时多块合并
       const chunks = pendingChunks;
       pendingChunks = [];
+      pendingBytes = 0;
       if (chunks.length === 1) {
         term.write(chunks[0]);
       } else {
@@ -303,10 +305,11 @@ export function useTerminalSession(opts: {
     openPty(cols, rows, {
       onData: (bytes) => {
         pendingChunks.push(bytes);
+        pendingBytes += bytes.length;
         // 第七轮 N2：窗口隐藏时 WKWebView requestAnimationFrame 暂停 → pendingChunks 无界累积。
         // 背压：累积超 2MB 时同步 flush（丢 rAF 节流，防恢复时一次 write 巨 buffer 卡顿）。
+        // 第八轮 N2：用 pendingBytes 计数器替代每次 reduce（消除 O(N²)，热路径 O(1)）。
         const PENDING_FLUSH_THRESHOLD = 2 * 1024 * 1024;
-        const pendingBytes = pendingChunks.reduce((s, c) => s + c.length, 0);
         if (pendingBytes >= PENDING_FLUSH_THRESHOLD) {
           flushOutput();
           return;

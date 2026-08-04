@@ -118,7 +118,7 @@ K_machine（本地文件密文）──┴── HKDF ──→ app_key
 
 ### URL 匹配（防钓鱼）
 
-- **eTLD+1**：用内嵌 Mozilla public suffix list（`crates/vault/data/public_suffix_list.dat`），非「split-on-dot take last two」——`barclays.co.uk` 不会匹配 `evil-attacker.co.uk`
+- **eTLD+1**：用内嵌 Mozilla public suffix list（`crates/infra/resources/dicts/public_suffix_list.dat`，2026-08-04 从 `vault/data/` 迁入 `infra/resources/dicts/`），非「split-on-dot take last two」——`barclays.co.uk` 不会匹配 `evil-attacker.co.uk`
 - **5 种策略**（per-uri `match_type`）：Domain（默认，eTLD+1）/ Host / Exact / StartsWith / RegularExpression / Never
 - **等价域名**：`default_equivalent_domains()`（如 google.com ↔ youtube.com）
 - **URL 检测失败 → 返回空列表**（2026-07-21 安全加固）：不返回 fallback 最近 20 条，防钓鱼误选。用户可通过搜索框主动搜索（`vault_search_ciphers`）

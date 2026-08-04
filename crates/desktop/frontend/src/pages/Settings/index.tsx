@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen as rawListen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Event } from "@tauri-apps/api/event";
@@ -65,10 +65,18 @@ function Settings() {
   // follow-up #10: vault feature 探针。null = 未拉取；false 时隐藏 vault nav。
   const [isVaultEnabled, setIsVaultEnabled] = useState<boolean | null>(null);
 
+  // 第九轮 P2-b：toast timer 用 ref 管理——前次 success timer 未到期时来 error toast，
+  // 旧实现 error 不设新 timer → 前次 success timer 到期 setToast(null) 清掉 error。
+  // 修复：每次 showToast 清前次 timer，error 不设新 timer（保持不自动消失）。
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((msg: string, variant: ToastVariant = "success") => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToast({ msg, variant });
     if (variant === "error") return; // error 不自动消失——让用户看清楚后手动关闭
-    setTimeout(() => setToast(null), 2000);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2000);
   }, []);
 
   const dismissToast = useCallback(() => setToast(null), []);

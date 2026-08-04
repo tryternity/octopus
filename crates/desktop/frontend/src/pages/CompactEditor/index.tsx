@@ -500,9 +500,18 @@ function CompactEditor() {
         registerTranslateSession(sessionId, tab.key);
       }
     }).catch((e) => {
-      console.error("翻译启动失败:", e);
+      // 第九轮 P2-a：WKWebView 不显示 window.alert → 去掉无效 alert。
+      // 第十轮 P2-4：回滚 translatedText 占位（旧实现只 setTranslating(false) 不回滚 →
+      // 译文区永留「⏳ 正在翻译...」）+ mode 回 single。
+      console.error(ti18n("editor.translateFail") + ":", e);
       setTranslating(false);
-      alert(ti18n("editor.translateFail") + ": " + String(e));
+      const rollback = tabsRef.current.map((t, i) =>
+        i === idx
+          ? { ...t, mode: 'single' as const, translatedText: undefined }
+          : t
+      );
+      tabsRef.current = rollback;
+      setTabs(rollback);
     });
   }, []);
 
