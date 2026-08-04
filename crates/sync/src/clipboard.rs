@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::outline::OutlineEntry;
-use crate::store::{shard_dir, sync_root, write_atomically};
+use crate::store::{iso_to_unix_ms, md5_hex, shard_dir, sync_root, write_atomically};
 
 // === 路径辅助 ===
 
@@ -348,6 +348,421 @@ pub fn delete_favorite_file(uuid: &str) -> Result<()> {
     }
 }
 
+// === Task 6: 全量导出（DB → .sync 文件）===
+
+/// 收藏的身份 md5——只含 `id | history_id`（身份标识），不含 is_deleted / sync_md5 / 时间戳。
+///
+/// 与 hotword_set_md5 同语义——md5 是「这个 favorite 是谁」的指纹，用于 outline diff 判断
+/// 新增/重指向（history_id 改了）。状态变化（is_deleted / content 改动）靠时间戳比较决定方向，
+/// 不触发 md5 diff（否则软删后 md5 变了但 outline 没同步更新 → 不必要的 push/pull）。
+pub fn favorite_md5(id: &str, history_id: &str) -> String {
+    md5_hex(format!("{}|{}", id, history_id).as_bytes())
+}
+
+/// 内容指纹——md5 of content bytes。存入 `FavoritePayload.content_hash`。
+///
+/// 跨设备一致性校验用：A 机写入「内容 X」，B 机 pull 后算 md5 应等于 content_hash。
+/// 不进 outline（outline.md5 是身份指纹 `id|history_id`）——content_hash 在加密 payload 内。
+fn content_hash(content: &str) -> String {
+    md5_hex(content.as_bytes())
+}
+
+/// 从 DB 全量导出到 `.sync/clipboard/`——DB 是单一真相源，文件系统重建。
+///
+/// 流程：
+/// 1. 加载 clipboard key
+/// 2. `list_all_favorites`（含 tombstone）
+/// 3. 清空 favorites/ 目录后重建
+/// 4. 每个 favorite：JOIN clipboard_history 取行 → 构建 FavoritePayload → 加密 → 写文件 → 进 outline
+/// 5. 写 outline.json
+///
+/// 与 `hotword::export_all_hotwords` 对称——merge 末尾调本函数重建所有文件（DB 是真相源）。
+pub fn export_all_favorites() -> Result<ClipboardOutline> {
+    let key = load_or_create_clipboard_key()?;
+    let favs = octopus_infra::db::list_all_favorites()?; // 含 tombstone
+
+    // 确保 clipboard/ 目录存在
+    let clip_dir = clipboard_dir()?;
+    std::fs::create_dir_all(&clip_dir)
+        .with_context(|| format!("创建 clipboard 目录失败：{}", clip_dir.display()))?;
+
+    // 清空 favorites/ 子目录（含分片子目录），保留 clipboard.key + outline.json
+    let fav_dir = favorites_dir()?;
+    if fav_dir.is_dir() {
+        std::fs::remove_dir_all(&fav_dir)
+            .with_context(|| format!("清空 favorites/ 失败：{}", fav_dir.display()))?;
+    }
+    std::fs::create_dir_all(&fav_dir)
+        .with_context(|| format!("重建 favorites/ 失败：{}", fav_dir.display()))?;
+
+    // 每个 favorite 写文件 + 进 outline
+    let mut entries: BTreeMap<String, OutlineEntry> = BTreeMap::new();
+    for fav in &favs {
+        // JOIN clipboard_history——拉不到行也写文件（payload 含 history_row 快照可能空）
+        let row = octopus_infra::db::load_clipboard_history_row(&fav.history_id)
+            .with_context(|| format!("读历史行失败 history_id={}", fav.history_id))?;
+
+        let history_row = match row {
+            Some(r) => HistoryRowJson {
+                id: r.id,
+                item_type: r.item_type,
+                content: r.content,
+                ref_data: r.ref_data,
+                meta_info: r.meta_info,
+                is_rich: r.is_rich,
+                created_at: r.created_at,
+                segments: r.segments,
+            },
+            None => {
+                // history 行已不在 DB（用户清了历史但 favorite tombstone 还在）。
+                // 用最小占位行写文件——favorite 的 tombstone 仍需传播删除意图。
+                log::warn!(
+                    "[sync] 收藏 {} 引用的历史行 {} 在 DB 中找不到——写占位 payload",
+                    fav.id,
+                    fav.history_id
+                );
+                HistoryRowJson {
+                    id: fav.history_id.clone(),
+                    item_type: "text".into(),
+                    content: String::new(),
+                    ref_data: None,
+                    meta_info: None,
+                    is_rich: false,
+                    created_at: fav.created_at.clone(),
+                    segments: None,
+                }
+            }
+        };
+
+        let content_hash_val = content_hash(&history_row.content);
+        let payload = FavoritePayload {
+            history_row,
+            favorite_id: fav.id.clone(),
+            content_hash: content_hash_val,
+        };
+        let payload_json = serde_json::to_string(&payload).context("序列化 FavoritePayload 失败")?;
+        let encrypted = key
+            .encrypt(payload_json.as_bytes())
+            .context("加密 FavoritePayload 失败")?;
+
+        let file = ClipboardFavoriteFile {
+            version: 1,
+            id: fav.id.clone(),
+            is_deleted: fav.is_deleted,
+            encrypted_payload: encrypted,
+            created_at: fav.created_at.clone(),
+            updated_at: fav.updated_at.clone(),
+        };
+        write_favorite_file(&file)?;
+
+        entries.insert(
+            fav.id.clone(),
+            OutlineEntry {
+                md5: favorite_md5(&fav.id, &fav.history_id),
+                updated_ms: iso_to_unix_ms(&fav.updated_at),
+            },
+        );
+    }
+
+    let outline = ClipboardOutline {
+        version: 1,
+        favorites: entries,
+    };
+    write_clipboard_outline(&outline)?;
+    Ok(outline)
+}
+
+// === Task 7: 双向 merge（DB ↔ .sync 文件）===
+
+/// merge 报告——对称 `hotword::HotwordMergeReport`（独立于 vault crate，sync 不能依赖 vault）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardMergeReport {
+    /// 远程 → DB（远程 updated_at 更新 / DB 无 / 远程 tombstone 单向优先）
+    pub pulled: usize,
+    /// DB → 远程（DB updated_at 更新 / outline 无 / 冲突 DB 赢）
+    pub pushed: usize,
+    /// updated_at 相等 + md5 不等的冲突数（DB 赢）
+    pub conflicts: usize,
+    /// 文件读取失败等跳过数
+    pub skipped: usize,
+}
+
+/// 3-way merge：DB ↔ 文件系统按 `updated_at` 最新赢，相等 md5 比对 DB 赢。
+///
+/// 对称 `hotword::merge_hotwords`，含 tombstone 单向优先 fix（对称 set/word 级修复，
+/// 防本地 active 写回文件覆盖远程 tombstone → 第三台机器复活）。
+///
+/// 流程：
+/// 1. 遍历 remote outline 的 favorite：DB 无 → pull；DB 有 → tombstone 优先 / 时间戳比较 / md5 冲突
+/// 2. DB 有 + outline 无 → push
+/// 3. 末尾 `export_all_favorites` 从 DB 最新状态重建所有文件 + outline
+pub fn merge_clipboard_favorites() -> Result<ClipboardMergeReport> {
+    let remote_outline = read_clipboard_outline()?;
+    let db_favs = octopus_infra::db::list_all_favorites()?; // 含 tombstone
+    let db_by_id: std::collections::HashMap<&str, &octopus_infra::db::ClipboardFavorite> = db_favs
+        .iter()
+        .map(|f| (f.id.as_str(), f))
+        .collect();
+    let mut report = ClipboardMergeReport::default();
+    let key = load_or_create_clipboard_key()?;
+
+    // === 阶段 1：outline 有 → 3-way 判定 ===
+    for (uuid, entry) in &remote_outline.favorites {
+        let remote_updated = entry.updated_ms;
+        match db_by_id.get(uuid.as_str()) {
+            None => {
+                // DB 无 → pull
+                match pull_favorite(uuid, &key) {
+                    Ok(true) => report.pulled += 1,
+                    Ok(false) => report.skipped += 1,
+                    Err(e) => {
+                        log::warn!("[sync] 收藏 merge: {} 文件读取失败，已跳过：{}", uuid, e);
+                        report.skipped += 1;
+                    }
+                }
+            }
+            Some(db_f) => {
+                // 🔴 tombstone 单向优先 fix（对称 hotword set/word 修复）：删除是单向终态——
+                // 远程已 tombstone（is_deleted>0）时，无论本地时间戳多新都应 pull tombstone 到 DB，
+                // 不把本地 active 写回文件覆盖远程 tombstone（否则第三台机器当新收藏复活）。
+                let remote_is_tombstone = read_favorite_file(uuid)
+                    .map(|f| f.is_deleted > 0)
+                    .unwrap_or(false);
+                let local_updated = iso_to_unix_ms(&db_f.updated_at);
+                if remote_is_tombstone {
+                    match pull_favorite(uuid, &key) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
+                        Err(e) => {
+                            log::warn!(
+                                "[sync] 收藏 merge: {} tombstone pull 跳过：{}",
+                                uuid, e
+                            );
+                            report.skipped += 1;
+                        }
+                    }
+                } else if remote_updated > local_updated {
+                    // 远程更新 → pull 覆盖 DB
+                    match pull_favorite(uuid, &key) {
+                        Ok(true) => report.pulled += 1,
+                        Ok(false) => report.skipped += 1,
+                        Err(e) => {
+                            log::warn!("[sync] 收藏 merge: {} pull 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else if local_updated > remote_updated {
+                    // DB 更新 → push 覆盖文件
+                    match push_favorite(db_f, &key) {
+                        Ok(()) => report.pushed += 1,
+                        Err(e) => {
+                            log::warn!("[sync] 收藏 merge: {} push 跳过：{}", uuid, e);
+                            report.skipped += 1;
+                        }
+                    }
+                } else {
+                    // 时间戳相等 → md5 比对，冲突 DB 赢
+                    let db_md5 = favorite_md5(&db_f.id, &db_f.history_id);
+                    if db_md5 != entry.md5 {
+                        match push_favorite(db_f, &key) {
+                            Ok(()) => {
+                                report.pushed += 1;
+                                report.conflicts += 1;
+                            }
+                            Err(e) => {
+                                log::warn!("[sync] 收藏 merge: {} 冲突 push 跳过：{}", uuid, e);
+                                report.skipped += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // === 阶段 2：DB 有 + outline 无 → push ===
+    for db_f in &db_favs {
+        if !remote_outline.favorites.contains_key(&db_f.id) {
+            match push_favorite(db_f, &key) {
+                Ok(()) => report.pushed += 1,
+                Err(e) => {
+                    log::warn!("[sync] 收藏 merge: DB only {} push 跳过：{}", db_f.id, e);
+                    report.skipped += 1;
+                }
+            }
+        }
+    }
+
+    // === 阶段 3：从 DB 最新状态重建所有文件 + outline ===
+    export_all_favorites()?;
+
+    log::info!(
+        "[sync] merge_clipboard_favorites 完成：pulled={} pushed={} conflicts={} skipped={}",
+        report.pulled,
+        report.pushed,
+        report.conflicts,
+        report.skipped
+    );
+    Ok(report)
+}
+
+/// Pull 单个收藏（文件 → DB）。返回 Ok(true) 成功 upsert，Ok(false) 跳过。
+///
+/// tombstone（is_deleted>0）：
+/// - DB 有且 active → soft_delete_favorite + history.is_favorite=0
+/// - DB 无 → 解密 payload，UPSERT history 行 + UPSERT favorite（is_deleted>0） + history.is_favorite=0
+///
+/// active（is_deleted==0）：
+/// - 解密 payload 取 HistoryRowJson
+/// - UPSERT history 行
+/// - UPSERT favorite（is_deleted=0）
+/// - history.is_favorite=1
+fn pull_favorite(uuid: &str, key: &ClipboardKey) -> Result<bool> {
+    let file = read_favorite_file(uuid)?;
+
+    if file.is_deleted > 0 {
+        // tombstone
+        let existing = octopus_infra::db::load_favorite(uuid)?;
+        match existing {
+            Some(fav) if fav.is_deleted == 0 => {
+                // DB active → 软删
+                octopus_infra::db::soft_delete_favorite(uuid, file.is_deleted)?;
+                octopus_infra::db::set_clipboard_is_favorite(&fav.history_id, false)?;
+                log::debug!("[sync] 收藏 pull: {} DB active → 软删", uuid);
+                Ok(true)
+            }
+            None => {
+                // DB 无 → 解密 payload 还原行 + tombstone favorite
+                let payload = decrypt_payload(key, &file.encrypted_payload, uuid)?;
+                upsert_history_from_payload(&payload)?;
+                let mut fav = octopus_infra::db::ClipboardFavorite {
+                    id: payload.favorite_id.clone(),
+                    history_id: payload.history_row.id.clone(),
+                    is_deleted: file.is_deleted,
+                    created_at: file.created_at.clone(),
+                    updated_at: file.updated_at.clone(),
+                    sync_md5: Some(favorite_md5(&payload.favorite_id, &payload.history_row.id)),
+                };
+                let _ = &mut fav; // 占位，未来扩展
+                octopus_infra::db::upsert_favorite_sync(&fav)?;
+                octopus_infra::db::set_clipboard_is_favorite(&payload.history_row.id, false)?;
+                log::debug!("[sync] 收藏 pull: {} DB 无 → 还原 tombstone", uuid);
+                Ok(true)
+            }
+            Some(_) => {
+                // DB 已是 tombstone——已是终态，跳过
+                log::debug!("[sync] 收藏 pull: {} DB 已 tombstone，skip", uuid);
+                Ok(false)
+            }
+        }
+    } else {
+        // active
+        let payload = decrypt_payload(key, &file.encrypted_payload, uuid)?;
+        upsert_history_from_payload(&payload)?;
+        let fav = octopus_infra::db::ClipboardFavorite {
+            id: payload.favorite_id.clone(),
+            history_id: payload.history_row.id.clone(),
+            is_deleted: 0,
+            created_at: file.created_at.clone(),
+            updated_at: file.updated_at.clone(),
+            sync_md5: Some(favorite_md5(&payload.favorite_id, &payload.history_row.id)),
+        };
+        octopus_infra::db::upsert_favorite_sync(&fav)?;
+        octopus_infra::db::set_clipboard_is_favorite(&payload.history_row.id, true)?;
+        log::debug!("[sync] 收藏 pull: {} active → 还原", uuid);
+        Ok(true)
+    }
+}
+
+/// 解密 payload 并校验 favorite_id 一致（防文件 ↔ payload 错配）。
+fn decrypt_payload(
+    key: &ClipboardKey,
+    encrypted: &str,
+    expected_fav_id: &str,
+) -> Result<FavoritePayload> {
+    let plaintext = key.decrypt(encrypted)?;
+    let payload: FavoritePayload =
+        serde_json::from_slice(&plaintext).context("解密后 payload JSON 解析失败")?;
+    if payload.favorite_id != expected_fav_id {
+        anyhow::bail!(
+            "payload.favorite_id ({}) 与文件 id ({}) 不符——拒绝错配",
+            payload.favorite_id,
+            expected_fav_id
+        );
+    }
+    Ok(payload)
+}
+
+/// 把 payload 内的 history_row UPSERT 进 DB。
+fn upsert_history_from_payload(payload: &FavoritePayload) -> Result<()> {
+    let r = &payload.history_row;
+    octopus_infra::db::upsert_clipboard_history_sync(
+        &r.id,
+        &r.item_type,
+        &r.content,
+        r.ref_data.as_deref(),
+        r.meta_info.as_deref(),
+        r.is_rich,
+        &r.created_at,
+        r.segments.as_deref(),
+    )
+}
+
+/// Push 单个收藏（DB → 文件）——读 history 行构建 payload 加密写文件。
+fn push_favorite(
+    fav: &octopus_infra::db::ClipboardFavorite,
+    key: &ClipboardKey,
+) -> Result<()> {
+    let row = octopus_infra::db::load_clipboard_history_row(&fav.history_id)?;
+    let history_row = match row {
+        Some(r) => HistoryRowJson {
+            id: r.id,
+            item_type: r.item_type,
+            content: r.content,
+            ref_data: r.ref_data,
+            meta_info: r.meta_info,
+            is_rich: r.is_rich,
+            created_at: r.created_at,
+            segments: r.segments,
+        },
+        None => {
+            log::warn!(
+                "[sync] push 收藏 {}: history 行 {} 不存在，写占位 payload",
+                fav.id,
+                fav.history_id
+            );
+            HistoryRowJson {
+                id: fav.history_id.clone(),
+                item_type: "text".into(),
+                content: String::new(),
+                ref_data: None,
+                meta_info: None,
+                is_rich: false,
+                created_at: fav.created_at.clone(),
+                segments: None,
+            }
+        }
+    };
+
+    let payload = FavoritePayload {
+        history_row,
+        favorite_id: fav.id.clone(),
+        content_hash: content_hash(&fav.history_id),
+    };
+    let payload_json = serde_json::to_string(&payload)?;
+    let encrypted = key.encrypt(payload_json.as_bytes())?;
+    let file = ClipboardFavoriteFile {
+        version: 1,
+        id: fav.id.clone(),
+        is_deleted: fav.is_deleted,
+        encrypted_payload: encrypted,
+        created_at: fav.created_at.clone(),
+        updated_at: fav.updated_at.clone(),
+    };
+    write_favorite_file(&file)
+}
+
 // === 测试 ===
 
 #[cfg(test)]
@@ -630,5 +1045,219 @@ mod tests {
         assert_eq!(restored.favorite_id, payload.favorite_id);
         assert_eq!(restored.history_row.content, "剪贴板收藏内容");
         assert!(restored.history_row.is_rich);
+    }
+
+    // === Task 7: merge_clipboard_favorites 测试 ===
+    //
+    // 复用 hotword 测试模式——DB + sync_root 双隔离 guard，DB 用 in-memory SQLite。
+
+    use octopus_infra::db;
+
+    /// DB + sync_root 双隔离 guard——merge 测试用（对称 hotword DbSyncGuard）。
+    struct DbSyncGuard {
+        _tmp: TempDir,
+    }
+    impl DbSyncGuard {
+        fn new() -> Self {
+            let tmp = TempDir::new().expect("tempdir");
+            let sync_path = tmp.path().join(".sync");
+            std::fs::create_dir_all(&sync_path).unwrap();
+            crate::store::set_test_sync_root(sync_path);
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            db::set_test_db(conn);
+            Self { _tmp: tmp }
+        }
+    }
+    impl Drop for DbSyncGuard {
+        fn drop(&mut self) {
+            crate::store::clear_test_sync_root();
+        }
+    }
+
+    /// 测试辅助：在 DB 插入一个 clipboard_history 行（item_type='text'）。
+    fn insert_history_row(id: &str, content: &str) {
+        db::upsert_clipboard_history_sync(
+            id,
+            "text",
+            content,
+            None,
+            None,
+            false,
+            "2026-08-03 10:00:00",
+            None,
+        )
+        .expect("insert_history_row");
+    }
+
+    /// 测试辅助：手写一份远程收藏文件（加密 + 写盘）+ outline entry，模拟「远程仓库」状态。
+    /// `is_deleted` = 0 → active；>0 → tombstone（删除时刻 epoch 秒）。
+    fn write_remote_favorite(
+        fav_id: &str,
+        history_id: &str,
+        content: &str,
+        is_deleted: i64,
+        updated_ms: i64,
+    ) {
+        let key = load_or_create_clipboard_key().expect("key");
+        let history_row = HistoryRowJson {
+            id: history_id.into(),
+            item_type: "text".into(),
+            content: content.into(),
+            ref_data: None,
+            meta_info: None,
+            is_rich: false,
+            created_at: "2026-08-03 10:00:00".into(),
+            segments: None,
+        };
+        let payload = FavoritePayload {
+            history_row,
+            favorite_id: fav_id.into(),
+            content_hash: md5_hex(content.as_bytes()),
+        };
+        let payload_json = serde_json::to_string(&payload).unwrap();
+        let encrypted = key.encrypt(payload_json.as_bytes()).unwrap();
+        let file = ClipboardFavoriteFile {
+            version: 1,
+            id: fav_id.into(),
+            is_deleted,
+            encrypted_payload: encrypted,
+            created_at: "2026-08-03 10:00:00".into(),
+            updated_at: "2026-08-03 10:00:00".into(),
+        };
+        write_favorite_file(&file).unwrap();
+        // outline entry
+        let mut outline = read_clipboard_outline().unwrap_or_default();
+        outline.favorites.insert(
+            fav_id.into(),
+            OutlineEntry {
+                md5: favorite_md5(fav_id, history_id),
+                updated_ms,
+            },
+        );
+        write_clipboard_outline(&outline).unwrap();
+    }
+
+    /// 测试 1：远程有收藏、DB 空 → merge 后 DB 拉到 favorite + history 行。
+    #[test]
+    fn merge_pulls_remote_favorite_to_empty_db() {
+        let _g = DbSyncGuard::new();
+        // 确保 DB 无任何 favorite
+        assert!(db::list_all_favorites().unwrap().is_empty());
+
+        let fav_id = "pull-aaaa-0001";
+        let history_id = "hist-aaaa-0001";
+        write_remote_favorite(fav_id, history_id, "远程文本", 0, 9999999999999);
+
+        let report = merge_clipboard_favorites().expect("merge");
+        assert_eq!(report.pulled, 1, "应拉取 1 条远程收藏");
+
+        // DB 应有该 favorite（active）
+        let fav = db::load_favorite(fav_id).unwrap().expect("favorite 应在 DB");
+        assert_eq!(fav.history_id, history_id);
+        assert_eq!(fav.is_deleted, 0, "应为 active");
+
+        // history 行也应被还原
+        let row = db::load_clipboard_history_row(history_id)
+            .unwrap()
+            .expect("history 行应被 pull 还原");
+        assert_eq!(row.content, "远程文本");
+
+        // history.is_favorite 应 = 1（active favorite 还原后置位）
+        // 直接查 DB 验证
+        let is_fav: i64 = db::with_db(|conn| {
+            conn.query_row(
+                "SELECT is_favorite FROM clipboard_history WHERE id = ?1",
+                rusqlite::params![history_id],
+                |r| r.get(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .unwrap();
+        assert_eq!(is_fav, 1, "history.is_favorite 应 = 1");
+    }
+
+    /// 测试 2：DB 有收藏、outline 空（文件未写） → merge 后文件被写。
+    #[test]
+    fn merge_pushes_local_only_favorite() {
+        let _g = DbSyncGuard::new();
+        // 确保 outline 为空
+        write_clipboard_outline(&ClipboardOutline::default()).unwrap();
+
+        let history_id = "hist-bbbb-0001";
+        insert_history_row(history_id, "本地文本");
+        db::insert_favorite("push-bbbb-0001", history_id).expect("insert_favorite");
+
+        let report = merge_clipboard_favorites().expect("merge");
+        assert!(report.pushed >= 1, "DB only favorite 应 push 到文件");
+
+        // 文件应存在
+        let file = read_favorite_file("push-bbbb-0001").expect("文件应被写");
+        assert_eq!(file.id, "push-bbbb-0001");
+        assert_eq!(file.is_deleted, 0);
+
+        // outline 应含该 entry（export_all_favorites 重建）
+        let outline = read_clipboard_outline().unwrap();
+        assert!(
+            outline.favorites.contains_key("push-bbbb-0001"),
+            "outline 应含 push 的 favorite"
+        );
+
+        // 文件能解密还原 payload
+        let key = load_or_create_clipboard_key().unwrap();
+        let payload = decrypt_payload(&key, &file.encrypted_payload, "push-bbbb-0001").unwrap();
+        assert_eq!(payload.history_row.content, "本地文本");
+    }
+
+    /// 测试 3（核心回归——对称 hotword set/word tombstone 优先 fix）：
+    /// 远程是 tombstone（A 机删除后 push），本地 DB 仍 active 且 updated_at 更新
+    /// → merge 的 `local_updated > remote_updated` 分支不能把 active 写回文件覆盖 tombstone。
+    /// 应走 pull tombstone 路径——DB 变 tombstone + 文件保持 tombstone。
+    #[test]
+    fn merge_remote_tombstone_not_overwritten_by_local_active_newer() {
+        let _g = DbSyncGuard::new();
+
+        let fav_id = "revive-cccc-0001";
+        let history_id = "hist-cccc-0001";
+        // 初始：DB 有 active favorite（updated_at ≈ now）
+        insert_history_row(history_id, "会被删除的收藏");
+        db::insert_favorite(fav_id, history_id).expect("insert favorite");
+        // export 写 active 文件 + outline
+        export_all_favorites().expect("export 初始 active");
+
+        // 远程被 A 机删除后 push：tombstone（is_deleted=1 小时前，未超期）
+        // updated_ms=1000（比本地 DB 更早——模拟「A 删除了一个很久没动的收藏，B 最近刚改过」）
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let recent_tombstone = now_secs - 3600;
+        write_remote_favorite(fav_id, history_id, "会被删除的收藏", recent_tombstone, 1000);
+
+        // 前置：本地 DB 仍 active，updated_at 比远程 tombstone 新
+        let db_fav = db::load_favorite(fav_id).unwrap().expect("favorite 应在 DB");
+        assert_eq!(db_fav.is_deleted, 0, "前置：本地 DB 仍 active");
+        let local_updated = iso_to_unix_ms(&db_fav.updated_at);
+        assert!(
+            local_updated > 1000,
+            "前置：本地 updated_at 比远程 tombstone 新"
+        );
+
+        let _report = merge_clipboard_favorites().expect("merge");
+
+        // 🔴 BUG 复现点：merge 后 DB 应被 tombstone 覆盖（不应复活）
+        let after = db::load_favorite(fav_id).unwrap().expect("favorite 仍在 DB");
+        assert!(
+            after.is_deleted > 0,
+            "🔴 复活 bug：远程 tombstone 应覆盖本地 active，实际 DB is_deleted={}",
+            after.is_deleted
+        );
+
+        // 文件也应保持 tombstone
+        let file = read_favorite_file(fav_id).expect("文件应存在");
+        assert!(
+            file.is_deleted > 0,
+            "🔴 文件应保持 tombstone（不被本地 active 覆盖），实际 is_deleted={}",
+            file.is_deleted
+        );
     }
 }

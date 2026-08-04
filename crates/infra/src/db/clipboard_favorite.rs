@@ -138,6 +138,122 @@ pub fn restore_favorite(id: &str) -> Result<()> {
     })
 }
 
+// ── 剪贴板历史行读取 + UPSERT（剪贴板收藏同步用）──
+
+/// `clipboard_history` 的可序列化镜像——只含 sync 跨设备传播的字段。
+///
+/// 与 `octopus_sync::clipboard::HistoryRowJson` 对齐——本 struct 不导出给 sync crate，
+/// 而是作为 DB → sync 的中转：DB 读出 `HistoryRowData`，sync crate 用 `HistoryRowJson`
+/// 序列化后加密写入 favorite 文件。字段集合相同（camelCase 由 sync 端 serde 处理）。
+#[derive(Debug, Clone)]
+pub struct HistoryRowData {
+    pub id: String,
+    pub item_type: String,
+    pub content: String,
+    pub ref_data: Option<String>,
+    pub meta_info: Option<String>,
+    pub is_rich: bool,
+    pub created_at: String,
+    pub segments: Option<String>,
+}
+
+/// 按 id 读单个 clipboard_history 行（含收藏文件所需全部字段）。不存在返 None。
+pub fn load_clipboard_history_row(id: &str) -> Result<Option<HistoryRowData>> {
+    ensure_db()?;
+    with_db(|conn| load_clipboard_history_row_at(conn, id))
+}
+
+pub(crate) fn load_clipboard_history_row_at(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<HistoryRowData>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, item_type, content, ref_data, meta_info, is_rich, created_at, segments
+         FROM clipboard_history WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query(params![id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(HistoryRowData {
+            id: row.get(0)?,
+            item_type: row.get(1)?,
+            content: row.get(2)?,
+            ref_data: row.get(3)?,
+            meta_info: row.get(4)?,
+            is_rich: row.get::<_, i64>(5)? != 0,
+            created_at: row.get(6)?,
+            segments: row.get(7)?,
+        })),
+        None => Ok(None),
+    }
+}
+
+/// sync pull 用——把远程拉来的历史行 UPSERT 进 clipboard_history（按 id 唯一）。
+///
+/// 不动 `is_favorite` / `is_deleted` / `has_thumbnail`（这些是本地状态，由调用方按需调
+/// [`set_clipboard_is_favorite`] 等单独设置）。`created_at` 来自远程（跨设备一致），
+/// 缺失时回退到 `datetime('now')`。
+pub fn upsert_clipboard_history_sync(
+    id: &str,
+    item_type: &str,
+    content: &str,
+    ref_data: Option<&str>,
+    meta_info: Option<&str>,
+    is_rich: bool,
+    created_at: &str,
+    segments: Option<&str>,
+) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        upsert_clipboard_history_sync_at(
+            conn, id, item_type, content, ref_data, meta_info, is_rich, created_at, segments,
+        )
+    })
+}
+
+pub(crate) fn upsert_clipboard_history_sync_at(
+    conn: &Connection,
+    id: &str,
+    item_type: &str,
+    content: &str,
+    ref_data: Option<&str>,
+    meta_info: Option<&str>,
+    is_rich: bool,
+    created_at: &str,
+    segments: Option<&str>,
+) -> Result<()> {
+    let created = if created_at.is_empty() {
+        super::now_string()
+    } else {
+        created_at.to_string()
+    };
+    conn.execute(
+        "INSERT INTO clipboard_history
+            (id, item_type, content, ref_data, meta_info, is_rich, created_at, segments)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            item_type=excluded.item_type,
+            content=excluded.content,
+            ref_data=excluded.ref_data,
+            meta_info=excluded.meta_info,
+            is_rich=excluded.is_rich,
+            segments=excluded.segments",
+        params![id, item_type, content, ref_data, meta_info, is_rich as i64, created, segments],
+    )?;
+    Ok(())
+}
+
+/// 设置某历史行的 is_favorite 标记——sync pull favorite 后同步本地 favorite 状态用。
+pub fn set_clipboard_is_favorite(id: &str, is_fav: bool) -> Result<()> {
+    ensure_db()?;
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE clipboard_history SET is_favorite = ?1 WHERE id = ?2",
+            params![is_fav as i64, id],
+        )?;
+        Ok(())
+    })
+}
+
 /// sync upsert（含 is_deleted + sync_md5）——对称 hotword upsert_hotword_set
 pub fn upsert_favorite_sync(fav: &ClipboardFavorite) -> Result<()> {
     ensure_db()?;

@@ -642,6 +642,9 @@ pub struct SyncReport {
     /// 热词同步统计（v46 新增——sync_now 同时同步 vault + hotword）。
     pub hotwords_pulled: usize,
     pub hotwords_pushed: usize,
+    /// 剪贴板收藏同步统计（2026-08-03 新增——对称 hotwords_*）。
+    pub clipboard_pulled: usize,
+    pub clipboard_pushed: usize,
     /// push 失败的 remote → 用户可读错误消息（SyncError 的 Display，#4 修复）。
     ///
     /// 空 = 全部 remote 推送成功；非空 = 部分 remote 失败（本地已 commit，未上云）。
@@ -773,6 +776,18 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
     let hotwords_pulled = hotwords_merged.pulled;
     let hotwords_pushed = hotwords_merged.pushed;
 
+    // 剪贴板收藏 merge（2026-08-03 新增——对称 hotword merge）。
+    // 与 hotword merge 同步走，失败不阻断 vault/hotword 已完成的同步（已是本地真相源）。
+    let clipboard_merged = match octopus_sync::clipboard::merge_clipboard_favorites() {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[sync] 剪贴板收藏 merge 失败（不阻断已完成的 vault/hotword 同步）：{}", e);
+            octopus_sync::clipboard::ClipboardMergeReport::default()
+        }
+    };
+    let clipboard_pulled = clipboard_merged.pulled;
+    let clipboard_pushed = clipboard_merged.pushed;
+
     // 5. commit（无变化时 git_commit 返 false，不阻断流程）
     let root = octopus_sync::store::sync_root();
     git::git_add_all(&root)?;
@@ -809,8 +824,8 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
             "首次同步完成，已推送到远程".to_string()
         } else {
             format!(
-                "同步完成：vault 拉取 {} 条/推送 {} 条，热词拉取 {} 条/推送 {} 条",
-                pulled, pushed, hotwords_pulled, hotwords_pushed
+                "同步完成：vault 拉取 {} 条/推送 {} 条，热词拉取 {} 条/推送 {} 条，剪贴板收藏拉取 {} 条/推送 {} 条",
+                pulled, pushed, hotwords_pulled, hotwords_pushed, clipboard_pulled, clipboard_pushed
             )
         }
     } else {
@@ -836,6 +851,8 @@ pub fn sync_now() -> Result<SyncReport, SyncError> {
         deleted: 0,
         hotwords_pulled,
         hotwords_pushed,
+        clipboard_pulled,
+        clipboard_pushed,
         push_errors,
         skipped,
         message,
