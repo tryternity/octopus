@@ -23,12 +23,7 @@ impl super::Stitcher {
             return None;
         }
         // prev 底部 eff_strip_h 行裁为独立模板（y_offset 归零）
-        let strip_rows = self.eff_strip_h as usize;
-        let prev_strip = GrayBuf {
-            data: prev_gray.data[(prev_h - strip_rows) * prev_gray.width..].to_vec(),
-            width: prev_gray.width,
-            y_offset: 0,
-        };
+        let prev_strip = prev_gray.bottom_strip(self.eff_strip_h as usize);
         let (tmpl_feat, tmpl_has) = to_feature_map(&prev_strip);
         let (curr_feat, curr_has) = to_feature_map(curr_gray);
         // 任一侧 Sobel 退化（strip 常数，如选区下半截纯黑）：灰度也必然常数，
