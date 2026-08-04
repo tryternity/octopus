@@ -1,8 +1,8 @@
-# 全量代码审查 bugfix（21 crate，14 处修复）
+# 全量代码审查 bugfix（21 crate，多轮迭代）
 
-> **日期**：2026-08-03
-> **状态**：✅ 已实现（14 处全修复，全量测试通过）
-> **来源**：外部全量代码审查报告（21 crate 非增量审查，14 个具体问题 + 中低清单）
+> **日期**：2026-08-03 起，10 轮迭代（§1-7 = 轮 1-5，§8-12 = 轮 6-10）
+> **状态**：✅ 已实现（10 轮共 ~40 处修复，每轮全量测试通过）
+> **来源**：外部全量代码审查报告（21 crate 非增量审查，14 个具体问题 + 中低清单）→ 之后 9 轮自驱迭代复审（修复作用域不全 / 修复引入副作用 / 新发现）
 > **分支**：`.worktrees/bugfix_pr_0801`（bugfix/pr-0801）
 
 ## 0. 复查结论
@@ -247,3 +247,153 @@
 - **A2 Whisper Hann 窗 symmetric vs periodic**：zipformer/whisper 用 `/(size-1)`（symmetric），qwen3 用 `/size`（periodic，对齐 PyTorch 默认）。golden test 钉死错误值。修改需先 A/B 量化 WER 影响 + 重新生成 golden 值，留待后续。
 - **L4 热词候选 join("|") 无转义**：候选含字面 `|` 则 LLM 看到的候选数错。中文热词几乎不含 `|`，影响极低。
 - **L5 detect_selection restore 前 clear_suppress 微秒竞态**：窗口极窄（单线程两条语句间 watcher 恰好调度），且仅多存一条记录（非数据损坏）。
+
+## 8. 第六轮审查修复（2026-08-04，L1-b / C1+I1 / L1-a 文档化）
+
+第六轮聚焦第五轮 L1/L2 修复的**完善与残余风险收口**。第三/五轮已修 L1（`strip_edited_markers` regex 只去包裹标记）+ L2（WebP 另存实写 JPEG → magic byte 判断重编），但留下两处尾巴：① regex 每次 polish 现场编译（热路径开销）② WebP 另存分支重编后业务上已决定**摒弃 WebP**（image crate 未启 webp feature），保留兼容代码是死路径 + 误导未来维护者。
+
+### L1-b. strip_edited_markers regex 改 static Lazy 预编译
+
+**根因**：`client.rs:250-253`（第五轮 L1 修复后）每次 `polish_regions` 调用都 `Regex::new × 2`（`{...}` + `<...>`）。中间润色 mode=2 由停顿驱动频繁触发（每段停顿一次），regex 编译是热路径不必要开销。
+
+**修复**：两个 regex 提为 `static Lazy<Regex>`（`RE_EDITED_MARKER` / `RE_HOTWORDS_MARKER`，`client.rs:258-261`），`strip_edited_markers` 改用 static 引用。对齐同文件已有的 `HTTP_CLIENT: Lazy<reqwest::blocking::Client>`（:10）范式。
+
+### C1+I1. 移除 WebP 兼容代码（业务摒弃收口）
+
+**根因**：第五轮 L2 修复时给 `save_image_item` 加了 magic byte 判断（blob 是 JPEG 还是 WebP）+ WebP 分支（重编为 WebP）。但业务决策**已摒弃 WebP**：① `image` crate 的 `webp` feature 未启用（Cargo.toml 未开），`ImageFormat::WebP` 解码/编码运行时必失败；② DB `image_data.blob` 恒为 JPEG（`IMAGE_SAVE_QUALITY=jpeg:85` 入库）。保留的 WebP 分支是死路径，且 magic byte 逻辑（`starts_with(&[0xFF,0xD8,0xFF])` ? Jpeg : WebP）把任何非 JPEG blob 误判为 WebP → 老数据/损坏数据走必失败的 WebP 解码。
+
+**修复**（`clipboard_commands.rs:274-303`）：
+- 删 `"webp" => "webp"` ext 映射分支，`fmt` 落入 `_` 一律按 jpg 处理（含旧前端误传的 webp）。
+- 删 magic byte 判断，3 处 `load_from_memory_with_format` 硬编 `ImageFormat::Jpeg`。
+- 删 `"webp" =>` 编码分支（原 `img.save_with_format(..., WebP)`）。
+- 注释更新：「image_data.blob 恒为 JPEG（2026-08-03 已摒弃 WebP 落库）」。
+
+### L1-a. 字面花括号残余风险文档化（不修）
+
+**现状**：L1 regex `\{([^{}]*)\}` 无法区分「edited 标记 `{word}`」与「用户字面花括号 `{key:value}`」（代码/JSON/数学语法）。补测试 `strip_edited_markers_literal_braces_residual_risk` 钉死两个已知限制：① 平铺字面花括号 `config={key:value}` → `config=key:value`（误抹）；② 嵌套 `{config={key:value}}` → 外层泄漏 `{config=key:value}`（内层先匹配消耗，外层不再重扫）。**可接受**：ASR 转写文本几乎不含代码语法。
+
+## 9. 第七轮审查修复（2026-08-04，N1 / P2-a / P2-b / N2-rAF）
+
+第七轮发现第六轮 WebP 摒弃**清理不彻底**（前端仍有 WebP 痕迹）+ 3 处新问题（download dest fsync / search DB spawn_blocking / 终端 rAF 背压）。rAF 背压单独成 commit `71740669`（用户报告的 shell 回显丢失 bug），其余合入 `09dec35a`。
+
+### N1. WebP 摒弃前端清理不彻底
+
+**根因**：第六轮 C1 只清了后端 `clipboard_commands.rs`，前端 2 处仍留 WebP：① `SaveImagePopover.tsx` 的 `ImageFormat` 类型 + `FORMATS` 选项含 `"webp"`（用户仍能选 WebP，但后端已不支持 → 落入 `_` 按 jpg 处理，用户看到的扩展名与实际不符）；② `ImagePreview/index.tsx` 全图 Blob MIME 写 `image/webp`（但 blob 实为 JPEG → MIME 与内容不符，部分图片预览组件可能据此误判）。
+
+**修复**：
+- `SaveImagePopover.tsx:7` `ImageFormat = "jpeg" | "webp" | "png"` → `"jpeg" | "png"`；删 `{ value: "webp", label: "WebP" }` 选项。
+- `ImagePreview/index.tsx:198` Blob MIME `image/webp` → `image/jpeg`（对齐实际 blob 内容）。
+- `architecture.md §clipboard.image` 同步：默认 `IMAGE_SAVE_QUALITY` 从 `"jpeg:100"` 更正为 `"jpeg:92"`，新增「WebP 已摒弃（2026-08-03）」段落。
+
+### P2-a. download dest rename 无 fsync（对称补全）
+
+**根因**：`downloader.rs:470` 段下载完成 `std::fs::rename(&part, &task.dest)?` 只原子切目录项，**不 fsync 数据**。POSIX 语义：rename 持久化目录项 ≠ 内容持久化。断电序列：rename 成功 → 内容仍在 page cache → 断电 → dest 存在但内容空/半 → sidecar `resume.rs` 已 `remove(dest)`（认为完成）→ 无法识别为未完成 → 不会自动重下 → 用户拿到损坏文件。与已修的 sidecar `resume.rs` save（#11/P2-8）+ `keychain.rs` rename（#11）不对称——这两处都补了 fsync，download dest 漏。
+
+**修复**（`downloader.rs:470-482`）：rename 前对 part 文件 `f.sync_all()`（数据持久化），rename 后对父目录 `dir.sync_all()`（目录项持久化）。两处 best-effort（`let _ = ...`，失败 log warn 不阻断——数据最终也会被 OS 刷盘，且 fsync 失败无优雅恢复路径）。
+
+### P2-b. search MenuProvider async 里同步阻塞 DB
+
+**根因**：`search/providers/menu.rs:21-23` `async fn search` 直接调 `octopus_infra::db::list_action_bar_items()`（同步，持 `with_db` 全局 `ReentrantMutex`）。搜索与转录持久化 / 热词写 / 配置 save 共享同一 DB 锁，任一持锁时搜索 `await` 点卡住 tokio worker（搜索是高频用户操作）。
+
+**修复**（`menu.rs:22-27`）：`tokio::task::spawn_blocking(octopus_infra::db::list_action_bar_items).await`，把同步 DB 调用移到阻塞线程池，`Ok(Ok(r)) => r, _ => return vec![]`（JoinFailure / DB error 都降级空结果）。
+
+### N2. 终端 rAF 节流覆盖丢弃 → shell 回显丢失 🔴（用户报告）
+
+**根因**：`useTerminalSession.ts` PTY 输出的 rAF 节流旧逻辑「同帧内多块只保留最新，丢弃中间」（`pendingOutput = bytes` 覆盖）。对高速连续输出（`yes` / `cat` 大文件）无害（中间帧本就该丢），但对 **shell 回显致命**：shell 逐字符/小块回显用户输入，快速输入 + 回删时多个 `onData` 在同一帧（~16ms）内到达，旧逻辑只保留最后一块 → 丢失前面的回显字符 → xterm 显示的文本和 shell 实际接收的输入不一致。
+
+**症状**（用户报告）：输入 `git clonne` → 回删改成 `git clone` → 显示 `clone` 但 shell 报错 `'clonne' is not a git command`——回显的中间块被 rAF 丢弃，显示的是本地回显 + 残留拼凑的假象，shell 实际收到的是第一次完整输入。
+
+**修复**（commit `71740669`，`useTerminalSession.ts:281-313`）：同帧内多块**累积拼接**到 `pendingChunks: Uint8Array[]`，`flushOutput` 时合并成一个 `Uint8Array` 一次性 `term.write`。多数情况只有 1 块（常规输出无额外开销），高速时多块合并（保数据完整不丢）。
+
+**注**：此修复在第八轮发现引入新问题（窗口隐藏时 `pendingChunks` 无界增长），见 §10 N2-背压。
+
+## 10. 第八轮审查修复（2026-08-04，P0 folder 软删同步 + N2 背压 O(N²)）
+
+第八轮发现第七轮 rAF 背压修复**引入性能回归**（O(N²) reduce）+ 一处 P0 级新发现（vault folder 软删跨设备同步失效，与已修的 cipher H2 同型漏修）。合入 commit `63dfba46`。
+
+### P0. vault folder 软删跨设备同步失效 🔴（cipher H2 同型漏修）
+
+**根因**：cipher 早在 H2 修复（`pull_preserves_soft_deleted_at`）已让软删 cipher 跨设备同步——`cipher_md5` 含 `is_deleted`、`upsert_cipher` 透传 `is_deleted`、DB INSERT/UPDATE 含列。但 **folder 路径完全对称地漏修**：
+- `fingerprint.rs::folder_md5_from_fields(id, name, sort_order)` **不含 is_deleted**（硬编 `0u8`，:98 `format!("{}|{}|{}|{}", id, name, sort_order, 0u8)`）。
+- `db::insert_vault_folder_with_sort` / `update_vault_folder_fields` SQL **不含 is_deleted 列**（INSERT 用 DEFAULT 0，UPDATE 不碰）。
+- `engine.rs::upsert_folder_with_sort` 签名 **不接 is_deleted**。
+- 3 处调用（`clone_initial` / `merge_vault` pull 新 folder / pull 更新 folder）**丢弃 `folder_file.is_deleted`**。
+
+**触发链**：A 机软删 folder → `write_folder_file(is_deleted=true)` + outline md5（但 md5 算的时候 is_deleted 没参与）→ B 机 pull → `upsert_folder_with_sort` SQL 不含 is_deleted → INSERT DEFAULT 0 / UPDATE 不碰 → **folder 复活成 live** → B 机 push 反向覆盖 → A 机的删除被撤销。跨设备删除意图无法传播。
+
+**修复**（5 层对称修复，对齐 cipher H2）：
+1. `fingerprint.rs:101` `folder_md5_from_fields` 加 `is_deleted: bool` 参数，`format!` 用 `is_deleted as u8`（对称 `cipher_md5_from_input`）。
+2. `db/vault.rs:456` `insert_vault_folder_with_sort` 加 `is_deleted: bool` 参数 + INSERT SQL 加 `is_deleted` 列。
+3. `db/vault.rs:494` `update_vault_folder_fields` 加 `is_deleted: bool` 参数 + UPDATE SQL 加 `is_deleted = ?5`。
+4. `engine.rs:622` `upsert_folder_with_sort` 加 `is_deleted: bool` 参数，透传给 INSERT/UPDATE。
+5. 3 处调用补 `folder_file.is_deleted`：`clone_initial:535-536` / `merge_vault` pull 新 folder `:1123,1130` / pull 更新 folder `:1151,1158`。另 `folder.rs::create_folder` / `rename_folder` 算 md5 传 `false`（新建/改名必 live）。
+
+**回归测试**（`engine.rs:2202 pull_preserves_soft_deleted_folder`）：写一个 `is_deleted=true` 的 folder 文件 + outline → `merge_vault` pull → 断言 DB 中 `is_deleted` 必须存活（不能复活成 false）。对齐 cipher H2 的 `pull_preserves_soft_deleted_at`。
+
+### N2. 终端 rAF 背压 O(N²)（第七轮修复引入的回归）
+
+**根因**：第七轮 N2 背压守卫（`pendingBytes >= 2MB` 同步 flush）用 `pendingChunks.reduce((s, c) => s + c.length, 0)` 每次 `onData` 算总字节。`onData` 是热路径（PTY 每次输出都调），`pendingChunks` 长度随累积线性增长 → 每次 reduce O(N) → 整体 O(N²)。高速输出（`yes`）时 N 快速增长，CPU 飙升。
+
+**修复**（`useTerminalSession.ts:282,290,308`）：与 `pendingChunks` 平行维护 `pendingBytes` 计数器——push 时 `pendingBytes += bytes.length`，flush 时 `pendingBytes = 0`。热路径 O(1)，消除 reduce。
+
+## 11. 第九轮审查修复（2026-08-04，P1 SyncPanel confirm + P2-a alert + P2-b toast）
+
+第九轮聚焦**前端 WKWebView 兼容性**——`window.confirm` / `window.alert` 在 WKWebView 静默失效（confirm 返 false、alert 不显示），导致禁用 vault sync 按钮失效、翻译失败无反馈、toast 被前次 timer 误清。合入 commit `63dfba46`（与第八轮同 commit）。
+
+### P1. SyncPanel window.confirm 在 WKWebView 静默返 false 🔴
+
+**根因**：`SyncPanel.tsx:198` `handleDisable` 用 `if (!confirm(t("...disableConfirm"))) return;`。语义是「用户点取消（confirm 返 false）则 return」。但 WKWebView 下 `window.confirm` **不弹框且静默返回 `false`** → `!false === true` → 永远 return → **禁用 vault sync 按钮永远失效**（点了没反应）。
+
+**修复**（`SyncPanel.tsx:4,198`）：改用 `@tauri-apps/plugin-dialog` 的 `confirm`（alias `confirmDialog`）：`if (!(await confirmDialog(t("...disableConfirm"), { title: t("...disableConfirmTitle"), kind: "warning" }))) return;`。对齐同目录 `HotwordPanel` 已用 `plugin-dialog` 的范式。**WKWebView 下原生 `confirm/alert/prompt` 不可靠**是已知坑（AGENTS.md 历史教训），所有确认/提示必须走 `plugin-dialog`。
+
+### P2-a. CompactEditor window.alert 在 WKWebView 不显示
+
+**根因**：`CompactEditor/index.tsx:502` 翻译启动失败 catch 里 `alert(ti18n("editor.translateFail") + ": " + String(e))`。WKWebView 下 `window.alert` 不显示 → 用户翻译失败无任何反馈。
+
+**修复**：删 `alert(...)`，保留 `console.error(...)`（已有）。**注**：此修复在第十轮发现引入回归（只 `setTranslating(false)` 不回滚 `translatedText` 占位 → 译文区永留「⏳ 正在翻译...」），见 §12 P2-4。
+
+### P2-b. Settings showToast 无 timerRef → error toast 被前次 success timer 清掉
+
+**根因**：`Settings/index.tsx:68` `showToast` 的 success 分支 `setTimeout(() => setToast(null), 2000)` 未存 timer ref。时序：success toast 设置 + 调度 2s 清除 → 1s 后 error toast 来 → error 分支不设新 timer（`if variant === error return`）→ 前次 success 的 2s timer 到期 → `setToast(null)` → **error toast 被清掉**（用户来不及看）。
+
+**修复**（`Settings/index.tsx:71-79`）：`toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)`。每次 `showToast` 先 `clearTimeout(toastTimerRef.current)` 清前次 timer（无论 success/error），success 分支设新 timer 存 ref，error 分支不设（保持不自动消失，让用户手动关闭）。
+
+## 12. 第十轮审查修复（2026-08-04，P1-1 hotword spawn_blocking + P1-2 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚）
+
+第十轮收口第九轮前端修复**引入的回归**（P2-4）+ 3 处新发现（hotword LLM 阻塞 tokio / VaultPanel 监听器泄漏 / SyncPanel 并发 resolve）。合入 commit `1c6145e4`。
+
+### P1-1. list_hotword_candidates LLM 阻塞 tokio worker 🔴
+
+**根因**：`hotword_commands.rs:193` `async fn list_hotword_candidates` 直接在 async 命令体里跑 DB 读 + 文件 IO + **sync LLM 调用**（`octopus_llm::mine_hotwords`，5-30s 阻塞）。tokio worker 被占期间，同 worker 的 `pty_open` / search emit / 其他命令全排队。与同文件 `import_hotwords:284` / `export_hotwords`（都用 `spawn_blocking`）不对称。
+
+**修复**（`hotword_commands.rs:197-271`）：整体塞 `tauri::async_runtime::spawn_blocking(move || { ... }).await`，内部逻辑不变（读 edited_segments → 过滤 → 读 prompt 文件 → LLM 挖掘 / jieba 回退 → 去重 → 排除已有）。`.map_err(|e| format!("list_hotword_candidates join failed: {}", e))?` 处理 JoinFailure。
+
+### P1-2. VaultPanel visibilitychange 匿名函数无法 cleanup → 监听器泄漏
+
+**根因**：`VaultPanel.tsx:100` `document.addEventListener("visibilitychange", () => { ... })` 用匿名箭头函数。cleanup effect 里要 `removeEventListener` 但**没存函数引用** → 无法移除 → 每次 mount/unmount（切设置 tab、开关窗口）累积一个监听器 → 泄漏。多次切换后 N 个监听器同时触发 `handleFocus/handleBlur` → 重复 `vault_lock` / heartbeat 抖动。
+
+**修复**（`VaultPanel.tsx:101-116`）：提为具名 `const handleVisibilityChange = () => { ... }`，`addEventListener` + cleanup `removeEventListener` 都用同一引用。
+
+### P2-3. SyncPanel handleResolve Enter 无 resolving 守卫（防并发 resolve）
+
+**根因**：`SyncPanel.tsx:503` resolve 密码输入框 `onKeyDown={(e) => e.key === "Enter" && handleResolve()}`。`resolving` 状态已有（按钮 disabled 用），但 Enter 键没查 → 用户连按 Enter / 输入法触发的多次 keydown → 并发 `handleResolve` → 多次 `vault_sync_resolve` 命令 → 冲突状态。
+
+**修复**（`SyncPanel.tsx:503`）：`onKeyDown={(e) => e.key === "Enter" && !resolving && handleResolve()}`，加 `!resolving` 守卫。
+
+### P2-4. CompactEditor 翻译失败不回滚 translatedText 占位（第九轮 P2-a 引入的回归）
+
+**根因**：第九轮 P2-a 删 `alert` 时，catch 分支只剩 `setTranslating(false)`。但翻译启动时已 `setTabs` 把 `translatedText` 设成 `'⏳ ' + ti18n("editor.translating")` + `mode: 'contrast'`（`CompactEditor/index.tsx:487`）。失败后只 `setTranslating(false)` 不回滚 → **译文区永留「⏳ 正在翻译...」占位**，用户以为还在翻译。
+
+**修复**（`CompactEditor/index.tsx:504-514`）：catch 分支补回滚——`tabsRef.current.map` 把失败 tab 的 `mode` 回 `'single'` + `translatedText: undefined`，`setTabs(rollback)`。
+
+## 13. 各轮修复索引（按 commit）
+
+| 轮次 | commit | 内容 |
+|---|---|---|
+| 1-2 | （多 commit） | 外部报告 14 处 + F1-F3/G1-G4/H1 复审 |
+| 3 | `762557bb` | P1-1～P2-8 共 11 处 |
+| 4 | `1370bd48` | R4-1～R4-9（5 处重做 + 4 处新发现） |
+| 5 | `95210d92` | S1～S3 + A1 + L1～L3（7 修复 + 3 文档化） |
+| 6+7 | `71740669`（rAF 单独）+ `09dec35a`（其余） | L1-b regex 预编译 + C1 webp 摒弃 + N1 webp 前端清理 + P2-a dest fsync + P2-b search spawn_blocking + N2 rAF 背压 |
+| 8+9 | `63dfba46` | P0 folder 软删同步 + N2 背压 O(N²) + P1 SyncPanel confirm + P2-a alert + P2-b toast |
+| 10 | `1c6145e4` | P1-1 hotword spawn_blocking + P1-2 VaultPanel 监听器泄漏 + P2-3 Enter 守卫 + P2-4 翻译回滚 |
