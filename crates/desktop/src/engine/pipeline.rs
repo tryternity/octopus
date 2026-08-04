@@ -380,7 +380,7 @@ pub(crate) fn vad_preroll(vad: &mut SileroVad) {
 fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec<f32> {
     filter_vad.reset();
     vad_preroll(filter_vad);
-    let speech = octopus_asr_local::audio::filter_speech(samples, filter_vad, 480, 0.5);
+    let speech = octopus_asr_local::audio::filter_speech(samples, filter_vad, 512, 0.5);
     if speech.is_empty() {
         log::debug!("VadSegmented: no speech detected in buffer");
         Vec::new()
