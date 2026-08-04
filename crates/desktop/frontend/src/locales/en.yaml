@@ -1169,7 +1169,7 @@ onboarding:
       title: Accessibility
       description: Required for screenshot / focus return / auto input
       usage: Used to read selected text in foreground apps (ActionBar context awareness), simulate keyboard input (auto-paste / Auto-Type password filling), and return focus to the result window. These features fail silently when not granted.
-      operation: Click "Request Permission" to open System Settings. Check octopus in the Accessibility list. Once granted, screenshot, auto-paste, and password filling work correctly.
+      operation: Click "Request Permission" to open System Settings. Check octopus in the Accessibility list. ⚠️ App restart required after granting — quit and reopen to enable screenshot, auto-paste, and password filling.
     screen:
       title: Screen Recording
       description: Required for screen recording / screenshot
@@ -1179,7 +1179,7 @@ onboarding:
       title: Automation
       description: Required for Auto-Type / focus restore / selection capture
       usage: Used to control System Events (keyboard simulation, frontmost app detection), Finder (file selection), and browsers (URL detection) via AppleScript. Vault Auto-Type, ActionBar text capture, and focus restore depend on this permission. These features fail silently when not granted.
-      operation: Click "Request Permission" to run a System Events probe. A system dialog will appear on first use — select "Allow" to grant. Once granted, Auto-Type, selection capture, and other features work normally.
+      operation: Click "Request Permission" to run a System Events probe. A system dialog will appear on first use — select "Allow" to grant. ⚠️ App restart required after granting — quit and reopen to enable Auto-Type, selection capture, and other features.
     operationGranted: Permission granted. Related features work normally.
     operationDenied: Permission denied. Click "Open System Settings" and re-check octopus in the list.
     upgradeNote: "⚠️ This app has no Apple certificate. After upgrading to a new version, if permissions are lost (list item grayed out), click − to remove the old entry, then click + to re-add the new octopus.app."
