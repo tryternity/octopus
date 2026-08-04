@@ -469,7 +469,7 @@ mod tests {
                 (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
             })
             .collect();
-        let segs = segment_audio_vad(&samples, &mut vad, 480, 0.4, 500, 25000);
+        let segs = segment_audio_vad(&samples, &mut vad, 512, 0.4, 500, 25000);
         for s in &segs {
             assert!(!s.is_empty(), "segment 不应为空");
             assert!(
@@ -504,7 +504,7 @@ mod tests {
         let mut samples = mk(0.0, 1.0);
         samples.extend(mk(0.3, 2.0));
         samples.extend(mk(0.0, 1.0));
-        let out = filter_speech(&samples, &mut vad, 480, 0.5);
+        let out = filter_speech(&samples, &mut vad, 512, 0.5);
         assert!(
             out.len() <= samples.len(),
             "filter_speech 结果 {} 超过输入 {}（trim 不应增长）",
@@ -532,7 +532,7 @@ mod tests {
                 (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
             })
             .collect();
-        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 480, 0.4, 500, 25000);
+        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 512, 0.4, 500, 25000);
         let mut prev_end = 0usize;
         for s in &segs {
             assert!(!s.samples.is_empty(), "段不应为空");
@@ -564,7 +564,7 @@ mod tests {
         };
         // 全零 = 绝对静音
         let samples = vec![0.0f32; 16000 * 5];
-        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 480, 0.4, 500, 25000);
+        let segs = segment_audio_vad_with_offsets(&samples, &mut vad, 512, 0.4, 500, 25000);
         // VAD 对全零应判静音；不强断言空（VAD 可能误判），但所有段下标合法
         for s in &segs {
             assert!(s.offset_samples + s.samples.len() <= samples.len());
@@ -596,8 +596,8 @@ mod tests {
                 (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
             })
             .collect();
-        let orig = segment_audio_vad(&samples, &mut vad1, 480, 0.4, 500, 25000);
-        let with_off = segment_audio_vad_with_offsets(&samples, &mut vad2, 480, 0.4, 500, 25000);
+        let orig = segment_audio_vad(&samples, &mut vad1, 512, 0.4, 500, 25000);
+        let with_off = segment_audio_vad_with_offsets(&samples, &mut vad2, 512, 0.4, 500, 25000);
         assert_eq!(orig.len(), with_off.len(), "两版本段数应一致");
         for (o, w) in orig.iter().zip(with_off.iter()) {
             assert_eq!(o, &w.samples, "段内容应一致");
