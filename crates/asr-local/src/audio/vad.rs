@@ -13,20 +13,54 @@ const _: fn() = || {
     assert_send_sync::<Session>();
 };
 
+// ── VAD 版本 feature 互斥守护 ──
+// vad_v6 / vad_v4 不能同时启用（两套 ONNX 签名，struct 字段互斥）。
+// 开发期用 cargo --no-default-features --features vad_v4 切换；验证通过后删 v4。
+#[cfg(all(feature = "vad_v4", feature = "vad_v6"))]
+compile_error!("vad_v4 和 vad_v6 互斥，不能同时启用。用 --no-default-features --features <其一>");
+#[cfg(not(any(feature = "vad_v4", feature = "vad_v6")))]
+compile_error!("必须启用 vad_v4 或 vad_v6 之一（default = [\"vad_v6\"]）");
+
 /// 按 model 路径缓存已加载的 ONNX Session。
-/// SileroVad 实例各自 owned h/c/sr，但共享底层 Session（Session::run 是 &mut self，
-/// 所以用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
+/// SileroVad 实例各自 owned 状态（v6: state；v4: h/c），但共享底层 Session
+/// （Session::run 是 &mut self，用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
 static VAD_SESSIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>> = OnceLock::new();
 
 fn vad_sessions() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>> {
     VAD_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Silero VAD v4 via ort (ONNX Runtime)
-/// Stateful model with LSTM hidden/cell states
+/// 内嵌 VAD 模型的 cache key（版本隔离）+ include_bytes! 路径。
+#[cfg(feature = "vad_v6")]
+mod builtin_meta {
+    pub const BYTES: &[u8] = include_bytes!("../../models/silero_vad_v6.onnx");
+    pub const CACHE_KEY: &str = "builtin://silero_vad_v6";
+    /// v6 LSTM 状态维度（config.json state_dim=128）。
+    pub const STATE_DIM: usize = 128;
+}
+
+#[cfg(feature = "vad_v4")]
+mod builtin_meta {
+    pub const BYTES: &[u8] = include_bytes!("../../models/silero_vad_v4.onnx");
+    pub const CACHE_KEY: &str = "builtin://silero_vad_v4";
+    /// v4 LSTM hidden/cell 维度。
+    pub const STATE_DIM: usize = 64;
+}
+
+/// Silero VAD via ort (ONNX Runtime)
+///
+/// 版本（feature flag 选择，互斥）：
+/// - `vad_v6`（默认）：state 单 tensor `[2,1,128]`，input `state` / output `stateN`
+/// - `vad_v4`：h/c 双 tensor `[2,1,64]`，input `h`+`c` / output `hn`+`cn`
+///
+/// 对外接口（compute/reset/new/new_builtin）版本无关，调用方不受影响。
 pub struct SileroVad {
-    session: Arc<Mutex<Session>>,   // 共享缓存：相同 path 复用同一 Session（run 需 &mut self，故 Mutex）
+    session: Arc<Mutex<Session>>,   // 共享缓存：相同 path 复用同一 Session
+    #[cfg(feature = "vad_v6")]
+    state: Array3<f32>,             // [2, 1, 128]
+    #[cfg(feature = "vad_v4")]
     h: Array3<f32>,                 // [2, 1, 64]
+    #[cfg(feature = "vad_v4")]
     c: Array3<f32>,                 // [2, 1, 64]
     sr: Array1<i64>,                // scalar: 16000
 }
@@ -58,21 +92,15 @@ impl SileroVad {
                 s
             }
         };
-        Ok(Self {
-            session,
-            h: Array3::zeros((2, 1, 64)),
-            c: Array3::zeros((2, 1, 64)),
-            sr: Array1::from_vec(vec![16000i64]),
-        })
+        Ok(Self::with_session(session))
     }
 
     /// 从编译期内嵌字节加载 VAD（`include_bytes!`），不落盘、不读磁盘文件。
     ///
-    /// 内嵌模型 1.7MB，ort `commit_from_memory` 直接从 `&[u8]` 构造 Session。
-    /// 缓存 key 用 `builtin://silero_vad_v4` 与磁盘路径缓存隔离。
+    /// 模型版本由 feature flag 决定（vad_v6 / vad_v4）。ort `commit_from_memory` 直接
+    /// 从 `&[u8]` 构造 Session。缓存 key 用版本化的 `builtin://` URI 与磁盘路径隔离。
     pub fn new_builtin() -> Result<Self> {
-        const VAD_BYTES: &[u8] = include_bytes!("../../models/silero_vad_v4.onnx");
-        let cache_key = PathBuf::from("builtin://silero_vad_v4");
+        let cache_key = PathBuf::from(builtin_meta::CACHE_KEY);
         let session = {
             let mut cache = vad_sessions().lock();
             if let Some(s) = cache.get(&cache_key) {
@@ -85,7 +113,7 @@ impl SileroVad {
                 let s = Arc::new(Mutex::new(
                     Session::builder()
                         .context("Failed to create ORT session builder")?
-                        .commit_from_memory(VAD_BYTES)
+                        .commit_from_memory(builtin_meta::BYTES)
                         .context("Failed to load Silero VAD from embedded bytes")?,
                 ));
                 cache.insert(cache_key, s.clone());
@@ -96,56 +124,109 @@ impl SileroVad {
                 s
             }
         };
-        Ok(Self {
-            session,
-            h: Array3::zeros((2, 1, 64)),
-            c: Array3::zeros((2, 1, 64)),
-            sr: Array1::from_vec(vec![16000i64]),
-        })
+        Ok(Self::with_session(session))
     }
 
-    /// Input: 480 samples (30ms @ 16kHz). Output: speech probability [0.0, 1.0]
+    /// 公共构造：session 共享缓存逻辑提取后，初始化版本相关的状态字段。
+    fn with_session(session: Arc<Mutex<Session>>) -> Self {
+        let dim = builtin_meta::STATE_DIM;
+        #[cfg(feature = "vad_v6")]
+        {
+            Self {
+                session,
+                state: Array3::zeros((2, 1, dim)),
+                sr: Array1::from_vec(vec![16000i64]),
+            }
+        }
+        #[cfg(feature = "vad_v4")]
+        {
+            Self {
+                session,
+                h: Array3::zeros((2, 1, dim)),
+                c: Array3::zeros((2, 1, dim)),
+                sr: Array1::from_vec(vec![16000i64]),
+            }
+        }
+    }
+
+    /// Input: PCM samples (512 @ 16kHz recommended). Output: speech probability [0.0, 1.0]
     pub fn compute(&mut self, samples: &[f32]) -> Result<f32> {
         let input = ArrayView2::from_shape((1, samples.len()), samples)?;
-        let h_tensor = ort::value::TensorRef::from_array_view(self.h.view())?;
-        let c_tensor = ort::value::TensorRef::from_array_view(self.c.view())?;
         let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
         let input_tensor = ort::value::TensorRef::from_array_view(input)?;
 
         let mut session = self.session.lock();
-        let outputs = session.run(ort::inputs! {
-            "input" => input_tensor,
-            "sr" => sr_tensor,
-            "h" => h_tensor,
-            "c" => c_tensor
-        })?;
 
-        // Extract probability
-        let (_shape, data) = outputs["output"].try_extract_tensor::<f32>()?;
-        let prob = data[0];
+        #[cfg(feature = "vad_v6")]
+        {
+            let state_tensor = ort::value::TensorRef::from_array_view(self.state.view())?;
+            let outputs = session.run(ort::inputs! {
+                "input" => input_tensor,
+                "sr" => sr_tensor,
+                "state" => state_tensor
+            })?;
 
-        // Update hidden/cell states for next call
-        let (_h_shape, h_data) = outputs["hn"].try_extract_tensor::<f32>()?;
-        if let Some(h_slice) = self.h.as_slice_mut() {
-            h_slice.copy_from_slice(h_data);
-        } else {
-            self.h = Array3::from_shape_vec((2, 1, 64), h_data.to_vec())?;
+            // Extract probability
+            let (_shape, data) = outputs["output"].try_extract_tensor::<f32>()?;
+            let prob = data[0];
+
+            // Update state for next call（v6 单 state tensor）
+            let (_s_shape, s_data) = outputs["stateN"].try_extract_tensor::<f32>()?;
+            if let Some(s_slice) = self.state.as_slice_mut() {
+                s_slice.copy_from_slice(s_data);
+            } else {
+                self.state = Array3::from_shape_vec((2, 1, builtin_meta::STATE_DIM), s_data.to_vec())?;
+            }
+
+            Ok(prob)
         }
 
-        let (_c_shape, c_data) = outputs["cn"].try_extract_tensor::<f32>()?;
-        if let Some(c_slice) = self.c.as_slice_mut() {
-            c_slice.copy_from_slice(c_data);
-        } else {
-            self.c = Array3::from_shape_vec((2, 1, 64), c_data.to_vec())?;
-        }
+        #[cfg(feature = "vad_v4")]
+        {
+            let h_tensor = ort::value::TensorRef::from_array_view(self.h.view())?;
+            let c_tensor = ort::value::TensorRef::from_array_view(self.c.view())?;
+            let outputs = session.run(ort::inputs! {
+                "input" => input_tensor,
+                "sr" => sr_tensor,
+                "h" => h_tensor,
+                "c" => c_tensor
+            })?;
 
-        Ok(prob)
+            // Extract probability
+            let (_shape, data) = outputs["output"].try_extract_tensor::<f32>()?;
+            let prob = data[0];
+
+            // Update hidden/cell states for next call
+            let (_h_shape, h_data) = outputs["hn"].try_extract_tensor::<f32>()?;
+            if let Some(h_slice) = self.h.as_slice_mut() {
+                h_slice.copy_from_slice(h_data);
+            } else {
+                self.h = Array3::from_shape_vec((2, 1, builtin_meta::STATE_DIM), h_data.to_vec())?;
+            }
+
+            let (_c_shape, c_data) = outputs["cn"].try_extract_tensor::<f32>()?;
+            if let Some(c_slice) = self.c.as_slice_mut() {
+                c_slice.copy_from_slice(c_data);
+            } else {
+                self.c = Array3::from_shape_vec((2, 1, builtin_meta::STATE_DIM), c_data.to_vec())?;
+            }
+
+            Ok(prob)
+        }
     }
 
     /// Reset LSTM states (call between different audio segments)
     pub fn reset(&mut self) {
-        self.h = Array3::zeros((2, 1, 64));
-        self.c = Array3::zeros((2, 1, 64));
+        let dim = builtin_meta::STATE_DIM;
+        #[cfg(feature = "vad_v6")]
+        {
+            self.state = Array3::zeros((2, 1, dim));
+        }
+        #[cfg(feature = "vad_v4")]
+        {
+            self.h = Array3::zeros((2, 1, dim));
+            self.c = Array3::zeros((2, 1, dim));
+        }
     }
 }
 
@@ -183,7 +264,7 @@ mod tests {
             }
         };
         v.reset();
-        let samples = vec![0.0f32; 480];
+        let samples = vec![0.0f32; 512];
         let prob = v.compute(&samples).expect("compute should succeed");
         assert!((0.0..=1.0).contains(&prob), "概率应在 [0,1]，实际 {}", prob);
     }
@@ -238,7 +319,7 @@ mod tests {
             }
         };
         v.reset();
-        let samples = vec![0.0f32; 480];
+        let samples = vec![0.0f32; 512];
         let prob = v.compute(&samples).expect("compute should succeed");
         assert!(
             (0.0..=1.0).contains(&prob),
@@ -257,11 +338,65 @@ mod tests {
                 return;
             }
         };
-        // 确认 builtin:// cache key 存在（全局缓存可能在测试间累积，不验证唯一性）
+        // 确认 builtin:// cache key 存在（版本相关，v6/v4 各自的 key）
         let cache = vad_sessions().lock();
         assert!(
-            cache.contains_key(&PathBuf::from("builtin://silero_vad_v4")),
-            "builtin:// cache key 应存在"
+            cache.contains_key(&PathBuf::from(builtin_meta::CACHE_KEY)),
+            "builtin:// cache key 应存在：{}",
+            builtin_meta::CACHE_KEY
+        );
+    }
+
+    // ── v6 专属测试（state 维度 + 状态连续性）──
+
+    /// v6 状态维度 = 128（config.json state_dim）。
+    #[cfg(feature = "vad_v6")]
+    #[test]
+    fn v6_state_dim_is_128() {
+        assert_eq!(
+            builtin_meta::STATE_DIM, 128,
+            "v6 LSTM 状态维度应为 128"
+        );
+    }
+
+    /// v6 状态连续性：连续两次 compute 后 state 非零（LSTM 从输入学到信息）。
+    /// 静音输入下 state 可能接近零，用非静音输入验证状态更新生效。
+    #[cfg(feature = "vad_v6")]
+    #[test]
+    fn v6_state_updates_after_compute() {
+        let mut v = match SileroVad::new_builtin() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] ort commit_from_memory 失败: {}", e);
+                return;
+            }
+        };
+        v.reset();
+        // reset 后 state 应全零
+        assert!(
+            v.state.iter().all(|&x| x == 0.0),
+            "reset 后 state 应全零"
+        );
+        // 喂非静音输入（模拟语音：正弦波）触发 LSTM 状态更新
+        let samples: Vec<f32> = (0..512)
+            .map(|i| (i as f32 * 0.03 * std::f32::consts::TAU / 16000.0).sin() * 0.5)
+            .collect();
+        let _ = v.compute(&samples).expect("compute should succeed");
+        // compute 后 state 应有非零值（LSTM 处理了输入）
+        assert!(
+            v.state.iter().any(|&x| x != 0.0),
+            "compute 后 state 应有非零值（LSTM 状态已更新）"
+        );
+    }
+
+    // ── v4 专属测试（回退验证用）──
+
+    #[cfg(feature = "vad_v4")]
+    #[test]
+    fn v4_state_dim_is_64() {
+        assert_eq!(
+            builtin_meta::STATE_DIM, 64,
+            "v4 LSTM hidden/cell 维度应为 64"
         );
     }
 }
